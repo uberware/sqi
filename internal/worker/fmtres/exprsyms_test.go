@@ -54,7 +54,7 @@ func TestTaskSymbols_JobParamTypes(t *testing.T) {
 			"Locs":  "LIST[PATH]",
 		},
 	}
-	syms, err := fmtres.TaskSymbols(msg, "/work", "", false)
+	syms, err := fmtres.TaskSymbols(msg, "/work", "", false, nil)
 	if err != nil {
 		t.Fatalf("TaskSymbols: %v", err)
 	}
@@ -142,7 +142,7 @@ func TestTaskSymbols_TaskParamTypes(t *testing.T) {
 			"Out":   "PATH",
 		},
 	}
-	syms, err := fmtres.TaskSymbols(msg, "/work", "", false)
+	syms, err := fmtres.TaskSymbols(msg, "/work", "", false, nil)
 	if err != nil {
 		t.Fatalf("TaskSymbols: %v", err)
 	}
@@ -188,7 +188,7 @@ func TestTaskSymbols_JobPathParamIsMappedAtBindTime(t *testing.T) {
 			{SourcePathFormat: "POSIX", SourcePath: "/mnt/shared", DestinationPath: "/local/cache"},
 		},
 	}
-	syms, err := fmtres.TaskSymbols(msg, "/work", "", false)
+	syms, err := fmtres.TaskSymbols(msg, "/work", "", false, nil)
 	if err != nil {
 		t.Fatalf("TaskSymbols: %v", err)
 	}
@@ -234,7 +234,7 @@ func TestTaskSymbols_TaskPathParamIsMappedAtBindTime(t *testing.T) {
 			{SourcePathFormat: "POSIX", SourcePath: "/mnt/shared", DestinationPath: "/local/cache"},
 		},
 	}
-	syms, err := fmtres.TaskSymbols(msg, "/work", "", false)
+	syms, err := fmtres.TaskSymbols(msg, "/work", "", false, nil)
 	if err != nil {
 		t.Fatalf("TaskSymbols: %v", err)
 	}
@@ -276,7 +276,7 @@ func TestTaskSymbols_PathParamNoRulesPassesThrough(t *testing.T) {
 		JobParameters:     map[string]string{"Scene": "/mnt/shared/project/shot.ma"},
 		JobParameterTypes: map[string]string{"Scene": "PATH"},
 	}
-	syms, err := fmtres.TaskSymbols(msg, "/work", "", false)
+	syms, err := fmtres.TaskSymbols(msg, "/work", "", false, nil)
 	if err != nil {
 		t.Fatalf("TaskSymbols: %v", err)
 	}
@@ -296,7 +296,7 @@ func TestTaskSymbols_ChunkIntTaskParam(t *testing.T) {
 		Parameters:     map[string]string{"Frames": "1-10"},
 		ParameterTypes: map[string]string{"Frames": "CHUNK[INT]"},
 	}
-	syms, err := fmtres.TaskSymbols(msg, "/work", "", false)
+	syms, err := fmtres.TaskSymbols(msg, "/work", "", false, nil)
 	if err != nil {
 		t.Fatalf("TaskSymbols: %v", err)
 	}
@@ -327,7 +327,7 @@ func TestTaskSymbols_ChunkIntTaskParam_InvalidRangeFallsBackToUnresolved(t *test
 		Parameters:     map[string]string{"Frames": "not-a-range"},
 		ParameterTypes: map[string]string{"Frames": "CHUNK[INT]"},
 	}
-	syms, err := fmtres.TaskSymbols(msg, "/work", "", false)
+	syms, err := fmtres.TaskSymbols(msg, "/work", "", false, nil)
 	if err != nil {
 		t.Fatalf("TaskSymbols: %v", err)
 	}
@@ -343,7 +343,7 @@ func TestTaskSymbols_ChunkIntTaskParam_InvalidRangeFallsBackToUnresolved(t *test
 // ── TaskSymbols: session symbols ────────────────────────────────────────────
 
 func TestTaskSymbols_SessionSymbols_WithPathMapping(t *testing.T) {
-	syms, err := fmtres.TaskSymbols(&protocol.AssignMsg{}, "/work/session1", "/work/session1/path_mapping.json", true)
+	syms, err := fmtres.TaskSymbols(&protocol.AssignMsg{}, "/work/session1", "/work/session1/path_mapping.json", true, nil)
 	if err != nil {
 		t.Fatalf("TaskSymbols: %v", err)
 	}
@@ -365,7 +365,7 @@ func TestTaskSymbols_SessionSymbols_WithPathMapping(t *testing.T) {
 }
 
 func TestTaskSymbols_SessionSymbols_NoPathMapping(t *testing.T) {
-	syms, err := fmtres.TaskSymbols(&protocol.AssignMsg{}, "/work/session1", "", false)
+	syms, err := fmtres.TaskSymbols(&protocol.AssignMsg{}, "/work/session1", "", false, nil)
 	if err != nil {
 		t.Fatalf("TaskSymbols: %v", err)
 	}
@@ -387,7 +387,7 @@ func TestTaskSymbols_SessionSymbols_NoPathMapping(t *testing.T) {
 
 func TestTaskSymbols_Identity(t *testing.T) {
 	msg := &protocol.AssignMsg{JobName: "RenderJob", StepName: "Render"}
-	syms, err := fmtres.TaskSymbols(msg, "/work", "", false)
+	syms, err := fmtres.TaskSymbols(msg, "/work", "", false, nil)
 	if err != nil {
 		t.Fatalf("TaskSymbols: %v", err)
 	}
@@ -410,7 +410,7 @@ func TestTaskSymbols_TaskFile(t *testing.T) {
 			{Name: "Script", Filename: "run.py"},
 		},
 	}
-	syms, err := fmtres.TaskSymbols(msg, "/work/session1", "", false)
+	syms, err := fmtres.TaskSymbols(msg, "/work/session1", "", false, nil)
 	if err != nil {
 		t.Fatalf("TaskSymbols: %v", err)
 	}
@@ -438,7 +438,7 @@ func TestTaskSymbols_EmbeddedFileNameError(t *testing.T) {
 			{Name: "Bad", Filename: "../escape"},
 		},
 	}
-	if _, err := fmtres.TaskSymbols(msg, "/work", "", false); err == nil {
+	if _, err := fmtres.TaskSymbols(msg, "/work", "", false, nil); err == nil {
 		t.Fatal("TaskSymbols with an invalid embedded filename returned no error")
 	}
 }
@@ -449,7 +449,7 @@ func TestTaskSymbols_ExcludesEnvFile(t *testing.T) {
 	msg := &protocol.AssignMsg{
 		EmbeddedFiles: []protocol.EmbeddedFile{{Name: "TaskFile"}},
 	}
-	syms, err := fmtres.TaskSymbols(msg, "/work", "", false)
+	syms, err := fmtres.TaskSymbols(msg, "/work", "", false, nil)
 	if err != nil {
 		t.Fatalf("TaskSymbols: %v", err)
 	}
@@ -472,7 +472,7 @@ func TestEnvSymbols_ExposesParamAndEnvFile(t *testing.T) {
 		Name:          "Env1",
 		EmbeddedFiles: []protocol.EmbeddedFile{{Name: "Config"}},
 	}
-	syms, err := fmtres.EnvSymbols(msg, env, "/work", "", false)
+	syms, err := fmtres.EnvSymbols(msg, env, "/work", "", false, nil)
 	if err != nil {
 		t.Fatalf("EnvSymbols: %v", err)
 	}
@@ -518,7 +518,7 @@ func TestEnvSymbols_ExcludesTaskSymbols(t *testing.T) {
 		StepName:       "S",
 	}
 	env := &protocol.AssignEnvironment{Name: "Env1"}
-	syms, err := fmtres.EnvSymbols(msg, env, "/work", "", false)
+	syms, err := fmtres.EnvSymbols(msg, env, "/work", "", false, nil)
 	if err != nil {
 		t.Fatalf("EnvSymbols: %v", err)
 	}
@@ -540,7 +540,7 @@ func TestEnvSymbols_ExcludesTaskSymbols(t *testing.T) {
 func TestEnvSymbols_StepEnvironmentGetsStepName(t *testing.T) {
 	msg := &protocol.AssignMsg{StepName: "Render"}
 	env := &protocol.AssignEnvironment{Name: "Env1", StepEnvironment: true}
-	syms, err := fmtres.EnvSymbols(msg, env, "/work", "", false)
+	syms, err := fmtres.EnvSymbols(msg, env, "/work", "", false, nil)
 	if err != nil {
 		t.Fatalf("EnvSymbols: %v", err)
 	}
@@ -555,7 +555,7 @@ func TestEnvSymbols_EmbeddedFileNameError(t *testing.T) {
 	env := &protocol.AssignEnvironment{
 		EmbeddedFiles: []protocol.EmbeddedFile{{Name: "Bad", Filename: "../escape"}},
 	}
-	if _, err := fmtres.EnvSymbols(msg, env, "/work", "", false); err == nil {
+	if _, err := fmtres.EnvSymbols(msg, env, "/work", "", false, nil); err == nil {
 		t.Fatal("EnvSymbols with an invalid embedded filename returned no error")
 	}
 }
@@ -742,7 +742,7 @@ func TestPhase2Phase3Agreement(t *testing.T) {
 		// for that case pinned on its own, so it cannot be confused with a
 		// real regression here.
 		phase2 := openjd.SymbolsFor(tmpl, step, nil, openjd.ScopeStepScript, jobParams)
-		phase3, err := fmtres.TaskSymbols(buildAgreementMsg(jobParams), workDir, pathMapFile, true)
+		phase3, err := fmtres.TaskSymbols(buildAgreementMsg(jobParams), workDir, pathMapFile, true, nil)
 		if err != nil {
 			t.Fatalf("TaskSymbols: %v", err)
 		}
@@ -757,7 +757,7 @@ func TestPhase2Phase3Agreement(t *testing.T) {
 			StepEnvironment: true,
 			EmbeddedFiles:   []protocol.EmbeddedFile{{Name: "Config"}},
 		}
-		phase3, err := fmtres.EnvSymbols(msg, env, workDir, pathMapFile, true)
+		phase3, err := fmtres.EnvSymbols(msg, env, workDir, pathMapFile, true, nil)
 		if err != nil {
 			t.Fatalf("EnvSymbols: %v", err)
 		}
@@ -786,7 +786,7 @@ func TestPhase2Phase3Agreement_NoPathMappingOmitsRulesFile(t *testing.T) {
 	}
 
 	phase2 := openjd.SymbolsFor(tmpl, step, nil, openjd.ScopeStepScript, jobParams)
-	phase3, err := fmtres.TaskSymbols(buildAgreementMsg(jobParams), "/work", "", false)
+	phase3, err := fmtres.TaskSymbols(buildAgreementMsg(jobParams), "/work", "", false, nil)
 	if err != nil {
 		t.Fatalf("TaskSymbols: %v", err)
 	}
@@ -813,11 +813,11 @@ func TestApplyTaskLet_SequentialPropagation(t *testing.T) {
 		StepTemplateLet: []string{"x = 1", "y = x + 1"},
 		StepScriptLet:   []string{"z = y + 1"},
 	}
-	syms, err := fmtres.TaskSymbols(msg, "/work", "", false)
+	syms, err := fmtres.TaskSymbols(msg, "/work", "", false, nil)
 	if err != nil {
 		t.Fatalf("TaskSymbols: %v", err)
 	}
-	if err := fmtres.ApplyTaskLet(msg, syms, nil); err != nil {
+	if err := fmtres.ApplyTaskLet(msg, syms, nil, nil); err != nil {
 		t.Fatalf("ApplyTaskLet: %v", err)
 	}
 
@@ -852,11 +852,11 @@ func TestApplyTaskLet_HostOnlySymbol(t *testing.T) {
 	msg := &protocol.AssignMsg{
 		StepScriptLet: []string{"wd = Session.WorkingDirectory"},
 	}
-	syms, err := fmtres.TaskSymbols(msg, "/work/session1", "", false)
+	syms, err := fmtres.TaskSymbols(msg, "/work/session1", "", false, nil)
 	if err != nil {
 		t.Fatalf("TaskSymbols: %v", err)
 	}
-	if err := fmtres.ApplyTaskLet(msg, syms, nil); err != nil {
+	if err := fmtres.ApplyTaskLet(msg, syms, nil, nil); err != nil {
 		t.Fatalf("ApplyTaskLet: %v", err)
 	}
 
@@ -888,11 +888,11 @@ func TestApplyTaskLet_StepTemplateLetCannotSeeHostSymbols(t *testing.T) {
 				ParameterTypes:  map[string]string{"Frame": "INT"},
 				StepTemplateLet: []string{"x = " + ref},
 			}
-			syms, err := fmtres.TaskSymbols(msg, "/work", "", false)
+			syms, err := fmtres.TaskSymbols(msg, "/work", "", false, nil)
 			if err != nil {
 				t.Fatalf("TaskSymbols: %v", err)
 			}
-			if err := fmtres.ApplyTaskLet(msg, syms, nil); err == nil {
+			if err := fmtres.ApplyTaskLet(msg, syms, nil, nil); err == nil {
 				t.Fatalf("ApplyTaskLet: want an unknown-symbol error for StepTemplateLet referencing %s, got nil", ref)
 			}
 			if _, ok := syms.Lookup("x"); ok {
@@ -910,11 +910,11 @@ func TestApplyTaskLet_StepTemplateLetCannotSeeHostSymbols(t *testing.T) {
 				ParameterTypes: map[string]string{"Frame": "INT"},
 				StepScriptLet:  []string{"x = " + ref},
 			}
-			syms, err := fmtres.TaskSymbols(msg, "/work", "", false)
+			syms, err := fmtres.TaskSymbols(msg, "/work", "", false, nil)
 			if err != nil {
 				t.Fatalf("TaskSymbols: %v", err)
 			}
-			if err := fmtres.ApplyTaskLet(msg, syms, nil); err != nil {
+			if err := fmtres.ApplyTaskLet(msg, syms, nil, nil); err != nil {
 				t.Fatalf("ApplyTaskLet: %v (StepScriptLet referencing %s should succeed)", err, ref)
 			}
 			if _, ok := syms.Lookup("x"); !ok {
@@ -939,11 +939,11 @@ func TestApplyTaskLet_StepTemplateLetSeesParamAndIdentity(t *testing.T) {
 		StepTemplateLet:   []string{"doubled = Param.Scale * 2", "label = Job.Name + '/' + Step.Name"},
 		StepScriptLet:     []string{"tripled = doubled + Param.Scale"},
 	}
-	syms, err := fmtres.TaskSymbols(msg, "/work", "", false)
+	syms, err := fmtres.TaskSymbols(msg, "/work", "", false, nil)
 	if err != nil {
 		t.Fatalf("TaskSymbols: %v", err)
 	}
-	if err := fmtres.ApplyTaskLet(msg, syms, nil); err != nil {
+	if err := fmtres.ApplyTaskLet(msg, syms, nil, nil); err != nil {
 		t.Fatalf("ApplyTaskLet: %v", err)
 	}
 
@@ -972,11 +972,11 @@ func TestApplyTaskLet_ScriptShadowingTemplateRejected(t *testing.T) {
 		StepTemplateLet: []string{"x = 1"},
 		StepScriptLet:   []string{"x = 2"},
 	}
-	syms, err := fmtres.TaskSymbols(msg, "/work", "", false)
+	syms, err := fmtres.TaskSymbols(msg, "/work", "", false, nil)
 	if err != nil {
 		t.Fatalf("TaskSymbols: %v", err)
 	}
-	if err := fmtres.ApplyTaskLet(msg, syms, nil); err == nil {
+	if err := fmtres.ApplyTaskLet(msg, syms, nil, nil); err == nil {
 		t.Fatal("ApplyTaskLet: want an error for the script shadowing the template's binding, got nil")
 	}
 
@@ -992,11 +992,11 @@ func TestApplyTaskLet_WithinBlockShadowingRejected(t *testing.T) {
 	msg := &protocol.AssignMsg{
 		StepTemplateLet: []string{"x = 1", "x = 2"},
 	}
-	syms, err := fmtres.TaskSymbols(msg, "/work", "", false)
+	syms, err := fmtres.TaskSymbols(msg, "/work", "", false, nil)
 	if err != nil {
 		t.Fatalf("TaskSymbols: %v", err)
 	}
-	if err := fmtres.ApplyTaskLet(msg, syms, nil); err == nil {
+	if err := fmtres.ApplyTaskLet(msg, syms, nil, nil); err == nil {
 		t.Fatal("ApplyTaskLet: want an error for a same-block shadow, got nil")
 	}
 	x, ok := syms.Lookup("x")
@@ -1016,11 +1016,11 @@ func TestApplyTaskLet_FailureSurfacesWithoutHidingOthers(t *testing.T) {
 	msg := &protocol.AssignMsg{
 		StepTemplateLet: []string{"bad = NoSuchSymbol", "good = 1"},
 	}
-	syms, err := fmtres.TaskSymbols(msg, "/work", "", false)
+	syms, err := fmtres.TaskSymbols(msg, "/work", "", false, nil)
 	if err != nil {
 		t.Fatalf("TaskSymbols: %v", err)
 	}
-	err = fmtres.ApplyTaskLet(msg, syms, nil)
+	err = fmtres.ApplyTaskLet(msg, syms, nil, nil)
 	if err == nil {
 		t.Fatal("ApplyTaskLet: want an error for the unknown-symbol binding, got nil")
 	}
@@ -1041,12 +1041,12 @@ func TestApplyTaskLet_FailureSurfacesWithoutHidingOthers(t *testing.T) {
 // TestApplyTaskLet_CapEnforced_MutationCheck, below, for the mutation-tested
 // proof that this assertion is not vacuous.
 func TestApplyTaskLet_CapEnforced(t *testing.T) {
-	syms, err := fmtres.TaskSymbols(&protocol.AssignMsg{}, "/work", "", false)
+	syms, err := fmtres.TaskSymbols(&protocol.AssignMsg{}, "/work", "", false, nil)
 	if err != nil {
 		t.Fatalf("TaskSymbols: %v", err)
 	}
 	msg := &protocol.AssignMsg{StepTemplateLet: makeLetSequence(51)}
-	if err := fmtres.ApplyTaskLet(msg, syms, nil); err != nil {
+	if err := fmtres.ApplyTaskLet(msg, syms, nil, nil); err != nil {
 		t.Fatalf("ApplyTaskLet: %v", err)
 	}
 
@@ -1081,11 +1081,11 @@ func TestApplyEnvLet_BasicAndNil(t *testing.T) {
 		},
 	}
 	msg := &protocol.AssignMsg{}
-	syms, err := fmtres.EnvSymbols(msg, env, "/work/session1", "", false)
+	syms, err := fmtres.EnvSymbols(msg, env, "/work/session1", "", false, nil)
 	if err != nil {
 		t.Fatalf("EnvSymbols: %v", err)
 	}
-	if err := fmtres.ApplyEnvLet(env, syms, nil); err != nil {
+	if err := fmtres.ApplyEnvLet(env, syms, nil, nil); err != nil {
 		t.Fatalf("ApplyEnvLet: %v", err)
 	}
 	cfg, ok := syms.Lookup("cfg")
@@ -1097,7 +1097,7 @@ func TestApplyEnvLet_BasicAndNil(t *testing.T) {
 		t.Errorf("cfg = %q, want it to equal Env.File.Config = %q", cfg.String(), envFile.String())
 	}
 
-	if err := fmtres.ApplyEnvLet(nil, expr.MapSymbols{}, nil); err != nil {
+	if err := fmtres.ApplyEnvLet(nil, expr.MapSymbols{}, nil, nil); err != nil {
 		t.Errorf("ApplyEnvLet(nil, ...) = %v, want nil (a no-op)", err)
 	}
 }
@@ -1106,11 +1106,11 @@ func TestApplyEnvLet_BasicAndNil(t *testing.T) {
 // environment counterpart.
 func TestApplyEnvLet_ShadowRejected(t *testing.T) {
 	env := &protocol.AssignEnvironment{Let: []string{"x = 1", "x = 2"}}
-	syms, err := fmtres.EnvSymbols(&protocol.AssignMsg{}, env, "/work", "", false)
+	syms, err := fmtres.EnvSymbols(&protocol.AssignMsg{}, env, "/work", "", false, nil)
 	if err != nil {
 		t.Fatalf("EnvSymbols: %v", err)
 	}
-	if err := fmtres.ApplyEnvLet(env, syms, nil); err == nil {
+	if err := fmtres.ApplyEnvLet(env, syms, nil, nil); err == nil {
 		t.Fatal("ApplyEnvLet: want an error for a same-block shadow, got nil")
 	}
 	x, ok := syms.Lookup("x")
@@ -1132,12 +1132,12 @@ func TestApplyEnvLet_ShadowRejected(t *testing.T) {
 // assertion in the suite: with 51 independent bindings, exactly 50 must be
 // bound, never 51.
 func TestApplyTaskLet_CapEnforced_MutationCheck(t *testing.T) {
-	syms, err := fmtres.TaskSymbols(&protocol.AssignMsg{}, "/work", "", false)
+	syms, err := fmtres.TaskSymbols(&protocol.AssignMsg{}, "/work", "", false, nil)
 	if err != nil {
 		t.Fatalf("TaskSymbols: %v", err)
 	}
 	msg := &protocol.AssignMsg{StepTemplateLet: makeLetSequence(51)}
-	if err := fmtres.ApplyTaskLet(msg, syms, nil); err != nil {
+	if err := fmtres.ApplyTaskLet(msg, syms, nil, nil); err != nil {
 		t.Fatalf("ApplyTaskLet: %v", err)
 	}
 
@@ -1234,11 +1234,11 @@ func TestPhase2Phase3Agreement_LetBindings(t *testing.T) {
 	// evaluated via ApplyTaskLet against TaskSymbols' table.
 	msg := buildAgreementMsg(jobParams)
 	msg.StepScriptLet = step.Script.Let
-	phase3, err := fmtres.TaskSymbols(msg, "/work", "", false)
+	phase3, err := fmtres.TaskSymbols(msg, "/work", "", false, nil)
 	if err != nil {
 		t.Fatalf("TaskSymbols: %v", err)
 	}
-	if err := fmtres.ApplyTaskLet(msg, phase3, nil); err != nil {
+	if err := fmtres.ApplyTaskLet(msg, phase3, nil, nil); err != nil {
 		t.Fatalf("ApplyTaskLet: %v", err)
 	}
 
@@ -1287,7 +1287,7 @@ func TestEnvSymbols_StepEnvironmentSeesStepTemplateLet(t *testing.T) {
 	msg := stepEnvMsg(`outdir = "/tmp/out"`, `tagged = Param.Scene + "-v1"`)
 	env := &protocol.AssignEnvironment{Name: "E", StepEnvironment: true}
 
-	syms, err := fmtres.EnvSymbols(msg, env, "/work", "", false)
+	syms, err := fmtres.EnvSymbols(msg, env, "/work", "", false, nil)
 	if err != nil {
 		t.Fatalf("EnvSymbols: %v", err)
 	}
@@ -1307,7 +1307,7 @@ func TestEnvSymbols_JobEnvironmentIgnoresStepTemplateLet(t *testing.T) {
 	msg := stepEnvMsg(`outdir = "/tmp/out"`)
 	env := &protocol.AssignEnvironment{Name: "E"} // StepEnvironment false
 
-	syms, err := fmtres.EnvSymbols(msg, env, "/work", "", false)
+	syms, err := fmtres.EnvSymbols(msg, env, "/work", "", false, nil)
 	if err != nil {
 		t.Fatalf("EnvSymbols: %v", err)
 	}
@@ -1335,7 +1335,7 @@ func TestEnvSymbols_StepTemplateLetCannotSeeEnvSymbols(t *testing.T) {
 			StepEnvironment: true,
 			EmbeddedFiles:   []protocol.EmbeddedFile{{Name: "Config", Filename: "cfg.txt"}},
 		}
-		_, err := fmtres.EnvSymbols(msg, env, "/work", "/work/pm.json", true)
+		_, err := fmtres.EnvSymbols(msg, env, "/work", "/work/pm.json", true, nil)
 		if err == nil {
 			t.Errorf("%s: want an unknown-symbol error, got nil", src)
 			continue
@@ -1359,11 +1359,11 @@ func TestApplyEnvLet_ShadowsStepTemplateLetRejected(t *testing.T) {
 		Let:             []string{`outdir = "/tmp/elsewhere"`},
 	}
 
-	syms, err := fmtres.EnvSymbols(msg, env, "/work", "", false)
+	syms, err := fmtres.EnvSymbols(msg, env, "/work", "", false, nil)
 	if err != nil {
 		t.Fatalf("EnvSymbols: %v", err)
 	}
-	err = fmtres.ApplyEnvLet(env, syms, nil)
+	err = fmtres.ApplyEnvLet(env, syms, nil, nil)
 	if err == nil {
 		t.Fatal("ApplyEnvLet: want a shadow rejection, got nil")
 	}
@@ -1434,11 +1434,11 @@ steps:
 		OnEnter:         &protocol.Action{Command: "echo", Args: []string{"{{ outdir }}"}},
 		OnExit:          &protocol.Action{Command: "echo", Args: []string{"{{ outdir }}"}},
 	}
-	syms, err := fmtres.EnvSymbols(msg, env, "/work", "", false)
+	syms, err := fmtres.EnvSymbols(msg, env, "/work", "", false, nil)
 	if err != nil {
 		t.Fatalf("phase 3 EnvSymbols: %v", err)
 	}
-	vars, err := fmtres.ResolveVarsExpr(env.Variables, syms, nil)
+	vars, err := fmtres.ResolveVarsExpr(env.Variables, syms, nil, nil)
 	if err != nil {
 		t.Fatalf("phase 3 ResolveVarsExpr: %v", err)
 	}
@@ -1446,7 +1446,7 @@ steps:
 		t.Errorf("OUT = %q, want %q", vars["OUT"], "/tmp/out")
 	}
 	for label, action := range map[string]*protocol.Action{"onEnter": env.OnEnter, "onExit": env.OnExit} {
-		got, aerr := fmtres.ResolveActionExpr(action, syms, nil)
+		got, aerr := fmtres.ResolveActionExpr(action, syms, nil, nil)
 		if aerr != nil {
 			t.Fatalf("phase 3 ResolveActionExpr(%s): %v", label, aerr)
 		}
@@ -1503,12 +1503,12 @@ func tableBytes(syms expr.MapSymbols) int64 {
 // table under the limit.
 func TestApplyTaskLet_RetainedBytesBounded(t *testing.T) {
 	msg := bigLetMsg(50)
-	syms, err := fmtres.TaskSymbols(msg, "/work", "", false)
+	syms, err := fmtres.TaskSymbols(msg, "/work", "", false, nil)
 	if err != nil {
 		t.Fatalf("TaskSymbols: %v", err)
 	}
 
-	err = fmtres.ApplyTaskLet(msg, syms, nil)
+	err = fmtres.ApplyTaskLet(msg, syms, nil, nil)
 	if err == nil {
 		t.Fatal("ApplyTaskLet: want a retained-bytes error, got nil -- 50 x ~9.9 MB was accepted")
 	}
@@ -1546,11 +1546,11 @@ func TestApplyTaskLet_RetainedBytesAccumulatesAcrossBlocks(t *testing.T) {
 		StepScriptLet:     []string{`b0 = "x" * (Param.N * 100000)`},
 	}
 
-	syms, err := fmtres.TaskSymbols(msg, "/work", "", false)
+	syms, err := fmtres.TaskSymbols(msg, "/work", "", false, nil)
 	if err != nil {
 		t.Fatalf("TaskSymbols: %v", err)
 	}
-	err = fmtres.ApplyTaskLet(msg, syms, nil)
+	err = fmtres.ApplyTaskLet(msg, syms, nil, nil)
 	if err == nil {
 		t.Fatal("ApplyTaskLet: want a retained-bytes error; the script block reused the template block's budget")
 	}
@@ -1576,11 +1576,11 @@ func TestApplyEnvLet_RetainedBytesBounded(t *testing.T) {
 		env.Let = append(env.Let, fmt.Sprintf(`a%d = "x" * (Param.N * 100000)`, i))
 	}
 
-	syms, err := fmtres.EnvSymbols(msg, env, "/work", "", false)
+	syms, err := fmtres.EnvSymbols(msg, env, "/work", "", false, nil)
 	if err != nil {
 		t.Fatalf("EnvSymbols: %v", err)
 	}
-	if err := fmtres.ApplyEnvLet(env, syms, nil); err == nil {
+	if err := fmtres.ApplyEnvLet(env, syms, nil, nil); err == nil {
 		t.Fatal("ApplyEnvLet: want a retained-bytes error, got nil")
 	}
 	if got := tableBytes(syms); got > 10_000_000 {
@@ -1594,11 +1594,11 @@ func TestApplyEnvLet_RetainedBytesBounded(t *testing.T) {
 // legitimate templates.
 func TestApplyTaskLet_RetainedBytesAllowsOrdinaryBlocks(t *testing.T) {
 	msg := &protocol.AssignMsg{EXPR: true, StepScriptLet: makeLetSequence(50)}
-	syms, err := fmtres.TaskSymbols(msg, "/work", "", false)
+	syms, err := fmtres.TaskSymbols(msg, "/work", "", false, nil)
 	if err != nil {
 		t.Fatalf("TaskSymbols: %v", err)
 	}
-	if err := fmtres.ApplyTaskLet(msg, syms, nil); err != nil {
+	if err := fmtres.ApplyTaskLet(msg, syms, nil, nil); err != nil {
 		t.Fatalf("ApplyTaskLet: %v -- 50 ordinary bindings must fit the retained-bytes budget", err)
 	}
 	if _, ok := syms.Lookup("a49"); !ok {
@@ -1635,12 +1635,12 @@ func TestApplyTaskLet_StepTemplateLetCannotOverwriteSpecSymbols(t *testing.T) {
 			Args:    []string{"{{ Session.WorkingDirectory }}", "{{ Task.Param.N }}"},
 		},
 	}
-	syms, err := fmtres.TaskSymbols(msg, "/work", "", false)
+	syms, err := fmtres.TaskSymbols(msg, "/work", "", false, nil)
 	if err != nil {
 		t.Fatalf("TaskSymbols: %v", err)
 	}
 
-	lerr := fmtres.ApplyTaskLet(msg, syms, nil)
+	lerr := fmtres.ApplyTaskLet(msg, syms, nil, nil)
 	if lerr == nil {
 		t.Fatal("ApplyTaskLet: want shadow rejections for all three bindings, got nil")
 	}
@@ -1650,7 +1650,7 @@ func TestApplyTaskLet_StepTemplateLetCannotOverwriteSpecSymbols(t *testing.T) {
 		}
 	}
 
-	action, aerr := fmtres.ResolveActionExpr(msg.OnRun, syms, nil)
+	action, aerr := fmtres.ResolveActionExpr(msg.OnRun, syms, nil, nil)
 	if aerr != nil {
 		t.Fatalf("ResolveActionExpr: %v", aerr)
 	}
@@ -1675,7 +1675,7 @@ func TestApplyTaskLet_StepTemplateLetCannotOverwriteSpecSymbols(t *testing.T) {
 // 6.00 MB, the projection measured 0.00 MB, the 9 MB binding was admitted and
 // merged, and the table held 15.00 MB against a 10 MB limit. The step-script
 // block then correctly refused to add more, so the real ceiling was
-// "the per-table LetRetainedBytes limit plus whatever the projection excludes" -- not a
+// "LetRetainedBytes plus whatever the projection excludes" -- not a
 // bound. After the fix the table stays at 6.00 MB and both blocks refuse.
 func TestApplyTaskLet_RetainedBytesCountsNonProjectedSymbols(t *testing.T) {
 	// A 3 MB STRING task parameter: bound twice (Task.Param./Task.RawParam.),
@@ -1686,7 +1686,7 @@ func TestApplyTaskLet_RetainedBytesCountsNonProjectedSymbols(t *testing.T) {
 		ParameterTypes:  map[string]string{"Big": "STRING"},
 		StepTemplateLet: []string{`a0 = "x" * 9000000`},
 	}
-	syms, err := fmtres.TaskSymbols(msg, "/work", "", false)
+	syms, err := fmtres.TaskSymbols(msg, "/work", "", false, nil)
 	if err != nil {
 		t.Fatalf("TaskSymbols: %v", err)
 	}
@@ -1694,7 +1694,7 @@ func TestApplyTaskLet_RetainedBytesCountsNonProjectedSymbols(t *testing.T) {
 		t.Fatalf("fixture is broken: table starts at %d bytes, want at least 6,000,000 outside the projection", start)
 	}
 
-	if err := fmtres.ApplyTaskLet(msg, syms, nil); err == nil {
+	if err := fmtres.ApplyTaskLet(msg, syms, nil, nil); err == nil {
 		t.Fatal("ApplyTaskLet: want a retained-bytes error; the step-template block metered the projection, not the merge target")
 	}
 	if _, ok := syms.Lookup("a0"); ok {

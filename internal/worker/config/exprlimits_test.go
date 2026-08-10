@@ -25,11 +25,11 @@ import (
 // a constant to itself would pass whatever it became. These five numbers are
 // the fixed limits every release before E4d compiled in.
 var defaultExprConfig = ExprConfig{
-	ExprOperationLimit:          1_000_000,
-	ExprMemoryLimit:             20_000_000,
-	ExprAssignmentPositions:     10_000,
-	ExprAssignmentRetainedBytes: 20_000_000,
-	ExprLetRetainedBytes:        10_000_000,
+	OperationLimit:          1_000_000,
+	MemoryLimit:             20_000_000,
+	AssignmentPositions:     10_000,
+	AssignmentRetainedBytes: 20_000_000,
+	LetRetainedBytes:        10_000_000,
 }
 
 func TestDefault_ExprLimits(t *testing.T) {
@@ -64,11 +64,11 @@ expr:
 		t.Fatalf("Load: %v", err)
 	}
 	want := ExprConfig{
-		ExprOperationLimit:          11111,
-		ExprMemoryLimit:             2222222,
-		ExprAssignmentPositions:     3333,
-		ExprAssignmentRetainedBytes: 4444444,
-		ExprLetRetainedBytes:        5555555,
+		OperationLimit:          11111,
+		MemoryLimit:             2222222,
+		AssignmentPositions:     3333,
+		AssignmentRetainedBytes: 4444444,
+		LetRetainedBytes:        5555555,
 	}
 	if cfg.Expr != want {
 		t.Errorf("loaded expr block = %+v, want %+v", cfg.Expr, want)
@@ -93,11 +93,11 @@ expr:
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	if cfg.Expr.ExprOperationLimit != 50_000 {
-		t.Errorf("operation_limit = %d, want the configured 50000", cfg.Expr.ExprOperationLimit)
+	if cfg.Expr.OperationLimit != 50_000 {
+		t.Errorf("operation_limit = %d, want the configured 50000", cfg.Expr.OperationLimit)
 	}
 	want := defaultExprConfig
-	want.ExprOperationLimit = 50_000
+	want.OperationLimit = 50_000
 	if cfg.Expr != want {
 		t.Errorf("expr block = %+v, want the other four at their defaults %+v", cfg.Expr, want)
 	}
@@ -112,23 +112,23 @@ func TestLoad_ExprLimitsFromEnv(t *testing.T) {
 	}{
 		{
 			env: "SQI_WORKER_EXPR_OPERATION_LIMIT", val: "12345", want: 12345,
-			get: func(c ExprConfig) int64 { return c.ExprOperationLimit },
+			get: func(c ExprConfig) int64 { return c.OperationLimit },
 		},
 		{
 			env: "SQI_WORKER_EXPR_MEMORY_LIMIT", val: "2345678", want: 2345678,
-			get: func(c ExprConfig) int64 { return c.ExprMemoryLimit },
+			get: func(c ExprConfig) int64 { return c.MemoryLimit },
 		},
 		{
 			env: "SQI_WORKER_EXPR_ASSIGNMENT_POSITIONS", val: "3456", want: 3456,
-			get: func(c ExprConfig) int64 { return c.ExprAssignmentPositions },
+			get: func(c ExprConfig) int64 { return c.AssignmentPositions },
 		},
 		{
 			env: "SQI_WORKER_EXPR_ASSIGNMENT_RETAINED_BYTES", val: "4567890", want: 4567890,
-			get: func(c ExprConfig) int64 { return c.ExprAssignmentRetainedBytes },
+			get: func(c ExprConfig) int64 { return c.AssignmentRetainedBytes },
 		},
 		{
 			env: "SQI_WORKER_EXPR_LET_RETAINED_BYTES", val: "5678901", want: 5678901,
-			get: func(c ExprConfig) int64 { return c.ExprLetRetainedBytes },
+			get: func(c ExprConfig) int64 { return c.LetRetainedBytes },
 		},
 	}
 	for _, tc := range tests {
@@ -167,9 +167,9 @@ func TestLoad_ExprMalformedEnvKeepsLowerLayer(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	if cfg.Expr.ExprOperationLimit != DefaultWorkerExprOperationLimit {
+	if cfg.Expr.OperationLimit != DefaultWorkerExprOperationLimit {
 		t.Errorf("a malformed env value must leave the default in place, got %d",
-			cfg.Expr.ExprOperationLimit)
+			cfg.Expr.OperationLimit)
 	}
 }
 
@@ -186,27 +186,27 @@ func TestValidate_ExprLimits(t *testing.T) {
 		{
 			key: "expr.operation_limit", env: "SQI_WORKER_EXPR_OPERATION_LIMIT",
 			min: MinWorkerExprOperationLimit, max: MaxWorkerExprOperationLimit,
-			set: func(c *ExprConfig, v int64) { c.ExprOperationLimit = v },
+			set: func(c *ExprConfig, v int64) { c.OperationLimit = v },
 		},
 		{
 			key: "expr.memory_limit", env: "SQI_WORKER_EXPR_MEMORY_LIMIT",
 			min: MinWorkerExprMemoryLimit, max: MaxWorkerExprMemoryLimit,
-			set: func(c *ExprConfig, v int64) { c.ExprMemoryLimit = v },
+			set: func(c *ExprConfig, v int64) { c.MemoryLimit = v },
 		},
 		{
 			key: "expr.assignment_positions", env: "SQI_WORKER_EXPR_ASSIGNMENT_POSITIONS",
 			min: MinWorkerExprAssignmentPositions, max: MaxWorkerExprAssignmentPositions,
-			set: func(c *ExprConfig, v int64) { c.ExprAssignmentPositions = v },
+			set: func(c *ExprConfig, v int64) { c.AssignmentPositions = v },
 		},
 		{
 			key: "expr.assignment_retained_bytes", env: "SQI_WORKER_EXPR_ASSIGNMENT_RETAINED_BYTES",
 			min: MinWorkerExprAssignmentRetainedBytes, max: MaxWorkerExprAssignmentRetainedBytes,
-			set: func(c *ExprConfig, v int64) { c.ExprAssignmentRetainedBytes = v },
+			set: func(c *ExprConfig, v int64) { c.AssignmentRetainedBytes = v },
 		},
 		{
 			key: "expr.let_retained_bytes", env: "SQI_WORKER_EXPR_LET_RETAINED_BYTES",
 			min: MinWorkerExprLetRetainedBytes, max: MaxWorkerExprLetRetainedBytes,
-			set: func(c *ExprConfig, v int64) { c.ExprLetRetainedBytes = v },
+			set: func(c *ExprConfig, v int64) { c.LetRetainedBytes = v },
 		},
 	}
 
@@ -266,7 +266,7 @@ func TestValidate_ExprLimits(t *testing.T) {
 func TestValidate_ExprLimitsAreIndependent(t *testing.T) {
 	cfg := Default()
 	cfg.NATS.URL = "nats://localhost:4222"
-	cfg.Expr.ExprAssignmentPositions = 1
+	cfg.Expr.AssignmentPositions = 1
 
 	errs := Validate(cfg)
 	if len(errs) != 1 {

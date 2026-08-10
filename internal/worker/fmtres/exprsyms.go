@@ -137,13 +137,13 @@ const pathFlavor = expr.PathNative
 // evaluation must be metered by the SAME operator-configured per-evaluation
 // limits as every other one in this package. Before Task 2 it was the one
 // evaluator here that no budget reached, so an operator tightening the memory
-// limit would have seen every other position honour it and this one silently
+// limit would have seen every other position honor it and this one silently
 // keep the compiled-in default. Omitting it (this package's own unit tests)
 // meters against the defaults, exactly as [assignmentBudgetOrFresh] documents.
 func TaskSymbols(
-	msg *protocol.AssignMsg, workDir, pathMapFile string, hasPathMap bool, budget ...*AssignmentBudget,
+	msg *protocol.AssignMsg, workDir, pathMapFile string, hasPathMap bool, budget *AssignmentBudget,
 ) (expr.MapSymbols, error) {
-	lim := assignmentBudgetOrFresh(budget).Limits()
+	lim := budgetOrDefault(budget).Limits()
 	syms := expr.MapSymbols{}
 	if err := bindJobParamSymbols(msg, syms, lim); err != nil {
 		return nil, err
@@ -231,9 +231,9 @@ func TaskSymbols(
 // reason (a job PATH parameter is bound here too).
 func EnvSymbols(
 	msg *protocol.AssignMsg, env *protocol.AssignEnvironment, workDir, pathMapFile string, hasPathMap bool,
-	budget ...*AssignmentBudget,
+	budget *AssignmentBudget,
 ) (expr.MapSymbols, error) {
-	lim := assignmentBudgetOrFresh(budget).Limits()
+	lim := budgetOrDefault(budget).Limits()
 	syms := expr.MapSymbols{}
 	if err := bindJobParamSymbols(msg, syms, lim); err != nil {
 		return nil, err
@@ -251,7 +251,7 @@ func EnvSymbols(
 	}
 	if env.StepEnvironment {
 		if err := applyStepTemplateLet(
-			msg.StepTemplateLet, syms, ExprEvalOptions(lim, msg.PathMap), budget...,
+			msg.StepTemplateLet, syms, ExprEvalOptions(lim, msg.PathMap), budget,
 		); err != nil {
 			return nil, err
 		}
@@ -529,7 +529,8 @@ const maxLetBindings = 50
 // ApplyTaskLet, 50 bindings of `a<i> = "x" * (Task.Param.N * 100000)` with
 // N = 99 retained 495 MB in 49 ms -- and phase 2 CANNOT reject that template,
 // because Task.Param.N is unresolved[int] at submission, so `"x" *
-// unresolved` costs nothing under submissionLimits(). An ordinary jobs.write
+// unresolved` costs nothing under the server's own per-evaluation
+// submission limits. An ordinary jobs.write
 // user could therefore OOM-kill sqi-worker and take down every unrelated
 // task on the host. That is E3's server-side Critical transposed and worse:
 // server-side the same gap is bounded by a 50 MB request-scoped table in a
@@ -569,7 +570,7 @@ const maxLetBindings = 50
 //     header is counted). That is a coincidence of two independently chosen
 //     round numbers, not a designed relationship. E4a said the day the limit
 //     became configurable it should not default to sitting exactly on another
-//     bound; it still does, because moving a default is a behaviour change
+//     bound; it still does, because moving a default is a behavior change
 //     E4d was not permitted to make.
 //  2. Because the accounting measures the whole table (tableRetainedBytes),
 //     a job whose own parameters are already large -- a big LIST[PATH], a
@@ -661,7 +662,7 @@ func splitLetBinding(raw string) (name, exprSrc string, err error) {
 // comment for the full account. Omitting it (every pre-Task-4 caller) charges
 // a fresh, throwaway budget that can never trip from one block alone.
 func evalLetBindings(
-	label string, lets []string, syms, mergeTarget expr.MapSymbols, opts []expr.Option, budget ...*AssignmentBudget,
+	label string, lets []string, syms, mergeTarget expr.MapSymbols, opts []expr.Option, budget *AssignmentBudget,
 ) error {
 	if len(lets) > maxLetBindings {
 		lets = lets[:maxLetBindings]
@@ -685,7 +686,7 @@ func evalLetBindings(
 	}
 
 	retained := tableRetainedBytes(budgeted)
-	b := assignmentBudgetOrFresh(budget)
+	b := budgetOrDefault(budget)
 	var errs []error
 	for i, raw := range lets {
 		if err := b.Err(); err != nil {
@@ -874,12 +875,13 @@ func stepTemplateLetScope(full expr.MapSymbols) expr.MapSymbols {
 // charged against the SAME [AssignmentBudget] every environment table this
 // assignment builds shares -- see session.Session's own accessor for how the
 // one budget object reaches every phase-3 call site for one assignment.
-func ApplyTaskLet(msg *protocol.AssignMsg, syms expr.MapSymbols, pathMap []protocol.PathMapRule, budget ...*AssignmentBudget) error {
-	b := assignmentBudgetOrFresh(budget)
+func ApplyTaskLet(
+	msg *protocol.AssignMsg, syms expr.MapSymbols, pathMap []protocol.PathMapRule, budget *AssignmentBudget,
+) error {
+	b := budgetOrDefault(budget)
 	opts := ExprEvalOptions(b.Limits(), pathMap)
-	budget = []*AssignmentBudget{b}
-	tmplErr := applyStepTemplateLet(msg.StepTemplateLet, syms, opts, budget...)
-	scriptErr := evalLetBindings("step script let", msg.StepScriptLet, syms, nil, opts, budget...)
+	tmplErr := applyStepTemplateLet(msg.StepTemplateLet, syms, opts, b)
+	scriptErr := evalLetBindings("step script let", msg.StepScriptLet, syms, nil, opts, b)
 	return errors.Join(tmplErr, scriptErr)
 }
 
@@ -896,13 +898,15 @@ func ApplyTaskLet(msg *protocol.AssignMsg, syms expr.MapSymbols, pathMap []proto
 // the narrowed table also holds Job.Name/Step.Name/Param.*/RawParam.*, which
 // syms already has (they are where the narrowed view came from). This mirrors
 // checkStepExpressions' preLetKeys/stepLet computation (exprcheck.go) exactly.
-func applyStepTemplateLet(lets []string, syms expr.MapSymbols, opts []expr.Option, budget ...*AssignmentBudget) error {
+func applyStepTemplateLet(
+	lets []string, syms expr.MapSymbols, opts []expr.Option, budget *AssignmentBudget,
+) error {
 	tmplScope := stepTemplateLetScope(syms)
 	preLetKeys := make(map[string]struct{}, len(tmplScope))
 	for k := range tmplScope {
 		preLetKeys[k] = struct{}{}
 	}
-	err := evalLetBindings("step template let", lets, tmplScope, syms, opts, budget...)
+	err := evalLetBindings("step template let", lets, tmplScope, syms, opts, budget)
 	for k, v := range tmplScope {
 		if _, existed := preLetKeys[k]; !existed {
 			syms[k] = v
@@ -934,10 +938,12 @@ func applyStepTemplateLet(lets []string, syms expr.MapSymbols, opts []expr.Optio
 //
 // Callers pass the result of EnvSymbols as syms. See [ApplyTaskLet] for
 // pathMap and budget.
-func ApplyEnvLet(env *protocol.AssignEnvironment, syms expr.MapSymbols, pathMap []protocol.PathMapRule, budget ...*AssignmentBudget) error {
+func ApplyEnvLet(
+	env *protocol.AssignEnvironment, syms expr.MapSymbols, pathMap []protocol.PathMapRule, budget *AssignmentBudget,
+) error {
 	if env == nil {
 		return nil
 	}
-	b := assignmentBudgetOrFresh(budget)
+	b := budgetOrDefault(budget)
 	return evalLetBindings("environment let", env.Let, syms, nil, ExprEvalOptions(b.Limits(), pathMap), b)
 }

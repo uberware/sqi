@@ -1009,6 +1009,17 @@ func (s *Session) resolveEnvEntry(env protocol.AssignEnvironment) (*protocol.Act
 // ASSIGNMENT-WIDE ledger is exempted. See
 // TestSession_ExitEnvironments_EXPR_AllOnExitRunAfterEntryNearsBudgetCap
 // (session_expr_budget_test.go) for the regression test.
+//
+// E4d TASK 2, FIX ROUND 1: what this path passes is [Session.teardownBudget],
+// a FRESH budget PER CALL carrying the host's configured LIMITS. Task 2's
+// first round built one budget for the whole method and passed it to all four
+// calls, which re-created fix round 1's Critical 2 in a new place: the four
+// calls' POSITION charges then accumulated against a single cap, so an
+// environment with 9,000 variables and a 1,500-arg onExit entered fine
+// (9,001 positions) and then failed teardown at position 10,001 -- and
+// ExitEnvironments logs a resolve failure and CONTINUES, so the onExit was
+// silently skipped. Before Task 2 each call got its own throwaway ledger,
+// which is the behavior teardownBudget restores.
 func (s *Session) resolveEnvAction(env protocol.AssignEnvironment, action *protocol.Action, vars map[string]string) (*protocol.Action, map[string]string, error) {
 	if !s.msg.EXPR {
 		scope, err := s.envScope(env.EmbeddedFiles)
@@ -1030,36 +1041,54 @@ func (s *Session) resolveEnvAction(env protocol.AssignEnvironment, action *proto
 	// for a step environment (Template Schemas §3.6.2 row 1) — see its own doc
 	// comment. Without it, teardown fails the same way entry did: an onExit
 	// action referencing a step-template binding is an unknown symbol.
-	teardownBudget := fmtres.NewAssignmentBudget(s.exprBudget.Limits())
-	syms, err := fmtres.EnvSymbols(s.msg, &env, s.WorkDir, s.pathMapFile, s.hasPathMap, teardownBudget)
+	//
+	// EVERY CALL BELOW GETS ITS OWN budget FROM [Session.teardownBudget], and
+	// the "own" is the load-bearing word. See that method for why sharing one
+	// across the four is a silently-skipped onExit.
+	syms, err := fmtres.EnvSymbols(s.msg, &env, s.WorkDir, s.pathMapFile, s.hasPathMap, s.teardownBudget())
 	if err != nil {
 		return nil, nil, err
 	}
 	// Variables FIRST, before this environment's own let: block is bound —
 	// see [Session.resolveEnvEntry]'s identical comment and
 	// fmtres.ApplyEnvLet's doc comment for why the order is load-bearing.
-	//
-	// NOT s.exprBudget on any of the three calls below -- see this method's
-	// own doc comment (fix round 1, Critical 2) for why teardown is exempt
-	// from the assignment-wide LEDGER. It is a FRESH budget rather than none
-	// (E4d Task 2): a budget carries the operator's per-evaluation and
-	// per-table LIMITS as well as the ledger, and passing none would meter
-	// teardown against the built-in defaults instead of this host's
-	// configuration -- silently, and only on the teardown path. Fresh ledger,
-	// same limits: exactly the exemption fix round 1 intended, no more.
-	resolvedVars, err := fmtres.ResolveVarsExpr(vars, syms, s.msg.PathMap, teardownBudget)
+	resolvedVars, err := fmtres.ResolveVarsExpr(vars, syms, s.msg.PathMap, s.teardownBudget())
 	if err != nil {
 		return nil, nil, err
 	}
 	// Exactly one call over this table — see fmtres.ApplyEnvLet's doc comment.
-	if err := fmtres.ApplyEnvLet(&env, syms, s.msg.PathMap, teardownBudget); err != nil {
+	if err := fmtres.ApplyEnvLet(&env, syms, s.msg.PathMap, s.teardownBudget()); err != nil {
 		return nil, nil, fmt.Errorf("let bindings: %w", err)
 	}
-	resolvedAction, err := fmtres.ResolveActionExpr(action, syms, s.msg.PathMap, teardownBudget)
+	resolvedAction, err := fmtres.ResolveActionExpr(action, syms, s.msg.PathMap, s.teardownBudget())
 	if err != nil {
 		return nil, nil, err
 	}
 	return resolvedAction, resolvedVars, nil
+}
+
+// teardownBudget returns a FRESH [fmtres.AssignmentBudget] carrying this
+// host's configured expression LIMITS and an EMPTY ledger, for one
+// environment-teardown evaluation.
+//
+// CALL IT ONCE PER EVALUATION, never once per method. Both halves matter and
+// each has already been a defect:
+//
+//   - SAME LIMITS. Passing nil instead would meter teardown against the
+//     built-in defaults rather than the operator's expr: configuration --
+//     silently, and only on this path.
+//   - FRESH, PER CALL. The assignment-wide ledger must not be charged here at
+//     all (see [Session.resolveEnvAction]'s doc comment: an exhausted budget
+//     makes ExitEnvironments SKIP an onExit, turning a resource bound into a
+//     resource leak), and one shared budget across a single teardown's four
+//     evaluations re-creates that failure at a smaller scale -- their position
+//     charges accumulate against one cap, so a large-but-legal environment
+//     that entered successfully fails at exit.
+//
+// Allocating four tiny structs per environment teardown is not a cost worth
+// optimizing against a silently skipped license check-in.
+func (s *Session) teardownBudget() *fmtres.AssignmentBudget {
+	return fmtres.NewAssignmentBudget(s.exprBudget.Limits())
 }
 
 // ── Dynamic environment (openjd_env directives) ───────────────────────────────

@@ -197,25 +197,24 @@ func simpleTaskLetMsg(name string, n int) *protocol.AssignMsg {
 }
 
 // TestAssignmentBudget_AcrossTables_RetainedBytes is this task's central
-// proof for the retained-bytes dimension: EXPR sub-project E4a's
-// the per-table LetRetainedBytes limit (10 MB) already bounds ONE table; this asserts the
+// proof for the retained-bytes dimension: EXPR sub-project E4a's per-table
+// bound (LetRetainedBytes, 10 MB) already bounds ONE table; this asserts the
 // NEW bound sums across SEVERAL tables the SAME assignment builds, which
 // nothing bounded before this task.
 //
 // Three tables (mirroring a task table plus two environment tables one
 // session might enter), each retaining ~7,000,064 bytes -- individually
-// comfortably under the per-table LetRetainedBytes limit (10,000,000) -- but the third
-// table's own contribution pushes the ASSIGNMENT's cumulative total
-// (21,000,192 bytes) over assignmentMaxRetainedBytes (20,000,000), even
-// though every table, considered alone, would pass the per-table LetRetainedBytes limit's
-// own per-table check.
+// comfortably under LetRetainedBytes (10,000,000) -- but the third table's
+// own contribution pushes the ASSIGNMENT's cumulative total (21,000,192
+// bytes) over AssignmentRetainedBytes (20,000,000), even though every table,
+// considered alone, would pass the per-table check.
 func TestAssignmentBudget_AcrossTables_RetainedBytes(t *testing.T) {
 	const bytesPerTable = 7_000_000 // + 64-byte header = 7,000,064 via expr.SizeOf
 	budget := fmtres.NewAssignmentBudget(fmtres.ExprLimits{})
 
 	// Table 1: the task's own table.
 	msg1 := simpleTaskLetMsg("a0", bytesPerTable)
-	syms1, err := fmtres.TaskSymbols(msg1, "/work", "", false)
+	syms1, err := fmtres.TaskSymbols(msg1, "/work", "", false, nil)
 	if err != nil {
 		t.Fatalf("TaskSymbols (table 1): %v", err)
 	}
@@ -226,7 +225,7 @@ func TestAssignmentBudget_AcrossTables_RetainedBytes(t *testing.T) {
 
 	// Table 2: one environment's table.
 	env2 := &protocol.AssignEnvironment{Name: "Env1", Let: []string{fmt.Sprintf(`b0 = "x" * %d`, bytesPerTable)}}
-	syms2, err := fmtres.EnvSymbols(&protocol.AssignMsg{}, env2, "/work", "", false)
+	syms2, err := fmtres.EnvSymbols(&protocol.AssignMsg{}, env2, "/work", "", false, nil)
 	if err != nil {
 		t.Fatalf("EnvSymbols (table 2): %v", err)
 	}
@@ -239,7 +238,7 @@ func TestAssignmentBudget_AcrossTables_RetainedBytes(t *testing.T) {
 	// ASSIGNMENT's cumulative total over the top, even though it is, on its
 	// own, exactly as compliant as tables 1 and 2 were.
 	env3 := &protocol.AssignEnvironment{Name: "Env2", Let: []string{fmt.Sprintf(`c0 = "x" * %d`, bytesPerTable)}}
-	syms3, err := fmtres.EnvSymbols(&protocol.AssignMsg{}, env3, "/work", "", false)
+	syms3, err := fmtres.EnvSymbols(&protocol.AssignMsg{}, env3, "/work", "", false, nil)
 	if err != nil {
 		t.Fatalf("EnvSymbols (table 3): %v", err)
 	}
@@ -375,13 +374,13 @@ func TestResolveVarsExpr_ChargesOnePerVar(t *testing.T) {
 // existing callers.
 func TestAssignmentBudget_OmittedGivesFreshThrowaway(t *testing.T) {
 	action := &protocol.Action{Command: "echo", Args: []string{"hello"}}
-	if _, err := fmtres.ResolveActionExpr(action, nil, nil); err != nil {
+	if _, err := fmtres.ResolveActionExpr(action, nil, nil, nil); err != nil {
 		t.Fatalf("ResolveActionExpr with no budget argument must behave exactly as before this task: %v", err)
 	}
-	if _, err := fmtres.ResolveVarsExpr(map[string]string{"K": "v"}, nil, nil); err != nil {
+	if _, err := fmtres.ResolveVarsExpr(map[string]string{"K": "v"}, nil, nil, nil); err != nil {
 		t.Fatalf("ResolveVarsExpr with no budget argument: %v", err)
 	}
-	if _, err := fmtres.ResolveEmbeddedFilesExpr([]protocol.EmbeddedFile{{Name: "a", Data: "1"}}, nil, nil); err != nil {
+	if _, err := fmtres.ResolveEmbeddedFilesExpr([]protocol.EmbeddedFile{{Name: "a", Data: "1"}}, nil, nil, nil); err != nil {
 		t.Fatalf("ResolveEmbeddedFilesExpr with no budget argument: %v", err)
 	}
 }

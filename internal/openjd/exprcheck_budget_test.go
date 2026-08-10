@@ -359,9 +359,10 @@ func TestCheckTemplateExpressions_TemplateWideBudget_BaseSpecUnaffected(t *testi
 // meantime.
 //
 // What Task 2 did do is make the relation SATISFIABLE at every legal setting:
-// fmtres.MaxExprAssignmentPositions equals MaxExprTemplatePositions, so there
-// is no server value an operator can choose that a worker cannot legally
-// match. That is a precondition for Task 3, not a substitute for it.
+// fmtres.MaxExprAssignmentPositions is >= MaxExprTemplatePositions (today both
+// are 100,000), so there is no server value an operator can choose that a
+// worker cannot legally match. That is a precondition for Task 3, not a
+// substitute for it.
 func TestTemplateBudget_WorkerCapIsNotTighter(t *testing.T) {
 	if fmtres.DefaultAssignmentPositions < defaultTemplatePositions {
 		t.Fatalf("the worker's per-assignment position cap (%d) is TIGHTER than the server's "+
@@ -376,8 +377,14 @@ func TestTemplateBudget_WorkerCapIsNotTighter(t *testing.T) {
 	// cap as far as MaxExprTemplatePositions, so the worker's configurable
 	// ceiling must reach at least that far or the relation above becomes
 	// unsatisfiable BY CONFIGURATION -- there would exist a legal server
-	// setting no legal worker setting could match. E4d Task 2 set the two
-	// equal deliberately; this fails if either moves alone.
+	// setting no legal worker setting could match.
+	//
+	// What is asserted is that relation (worker ceiling >= server ceiling),
+	// NOT equality: raising the worker's ceiling alone, or lowering this
+	// package's alone, keeps satisfiability and keeps this green. Only the two
+	// moves that break it -- lowering the worker's or raising this one past it
+	// -- fail here. E4d Task 2 happens to set them equal (both 100,000); that
+	// is the current value, not the invariant.
 	if fmtres.MaxExprAssignmentPositions < MaxExprTemplatePositions {
 		t.Fatalf("the worker's configurable position CEILING (%d) is below the server's (%d): "+
 			"an operator could set openjd.expr_template_positions to a value no worker's "+

@@ -23,11 +23,11 @@ import (
 // wrong dimension.
 func TestExprLimitsFromConfig(t *testing.T) {
 	got := exprLimitsFromConfig(workerconfig.ExprConfig{
-		ExprOperationLimit:          11,
-		ExprMemoryLimit:             22,
-		ExprAssignmentPositions:     33,
-		ExprAssignmentRetainedBytes: 44,
-		ExprLetRetainedBytes:        55,
+		OperationLimit:          11,
+		MemoryLimit:             22,
+		AssignmentPositions:     33,
+		AssignmentRetainedBytes: 44,
+		LetRetainedBytes:        55,
 	})
 	want := fmtres.ExprLimits{
 		OperationLimit:          11,

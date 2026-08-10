@@ -188,7 +188,7 @@ const (
 	// The worked calculation above still stands as the FLOOR: 1,841 for a
 	// generous real session, so 10,000 leaves ~5.4x headroom rather than the
 	// ~2.7x that 5,000 gave. The wall-clock tradeoff of raising it is the
-	// same one exprcheck.go's maxTemplateExprPositions records for the
+	// same one internal/openjd's own template-position limit records for the
 	// server, on a host that is executing one task rather than serving an
 	// API request.
 	//
@@ -230,7 +230,7 @@ const (
 	// across the session's entry phase, which is what this counter
 	// enforces -- it is NOT a claim that N tables' worth of bytes are ever
 	// simultaneously live in the process. This mirrors exprcheck.go's own
-	// maxTemplateExprRetainedBytes, which states the identical distinction
+	// template-retained-bytes counter, which states the identical distinction
 	// for the server-side counter it is deliberately kept equal to in
 	// magnitude reasoning (see below): "measures CUMULATIVE ALLOCATION
 	// across the walk, not PEAK LIVE RETENTION at any one instant."
@@ -305,26 +305,29 @@ func NewAssignmentBudget(lim ExprLimits) *AssignmentBudget {
 // the mutex -- limits is written once by the constructor and never again.
 func (b *AssignmentBudget) Limits() ExprLimits { return b.limits }
 
-// assignmentBudgetOrFresh returns budget[0] when the caller supplied one, or
-// a brand-new [AssignmentBudget] otherwise -- see [AssignmentBudget]'s own
-// doc comment for why this is the mechanism that keeps every pre-Task-4 call
-// site in this package compiling and behaving unchanged. budget[0] == nil is
-// treated the same as "no budget supplied", since a nil *AssignmentBudget
-// must never reach ChargePositions/ChargeRetainedBytes -- both dereference
-// the receiver.
+// budgetOrDefault returns b, or a brand-new default-limited [AssignmentBudget]
+// when b is nil.
 //
-// COST OF THIS CONVENIENCE, stated rather than smoothed over: a caller that
-// supplies no budget gets the DEFAULT limits, not the operator's. That is
-// unavoidable here (this function has no access to configuration) and the
-// same tradeoff internal/openjd's templateBudgetOrFresh documents. Every
-// production path supplies one -- session.Manager.Create builds it, and
-// session.Session/executor thread it into every phase-3 call, including the
-// environment-teardown path, which passes a FRESH budget carrying the same
-// limits rather than none. The remaining no-budget callers are this package's
-// own unit tests.
-func assignmentBudgetOrFresh(budget []*AssignmentBudget) *AssignmentBudget {
-	if len(budget) > 0 && budget[0] != nil {
-		return budget[0]
+// EVERY phase-3 entry point in this package takes its budget as a REQUIRED
+// parameter (E4d Task 2, fix round 1). It used to be a variadic tail, and that
+// shape is exactly what let executor.resolveAssignmentExpr meter every PATH
+// parameter against the compiled-in defaults for one commit: omitting the
+// argument compiled, ran, and produced no failure anywhere. A required
+// parameter cannot be omitted by accident; nil is a deliberate word a reviewer
+// can see.
+//
+// nil is still ACCEPTED, and means "the built-in defaults" -- it is what this
+// package's own unit tests pass when the limits are not what they are testing,
+// and a nil budget must never reach ChargePositions/ChargeRetainedBytes, which
+// both dereference the receiver. It is NOT an acceptable thing for a
+// PRODUCTION call site to pass, and that is enforced rather than requested:
+// TestPhase3EntryPoints_ProductionCallersAlwaysPassABudget
+// (budgetguard_test.go) parses internal/worker/session and
+// internal/worker/executor and fails on any non-test call that passes a
+// literal nil.
+func budgetOrDefault(b *AssignmentBudget) *AssignmentBudget {
+	if b != nil {
+		return b
 	}
 	return NewAssignmentBudget(ExprLimits{})
 }

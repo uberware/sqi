@@ -13,6 +13,7 @@ package session
 import (
 	"context"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -153,5 +154,63 @@ func TestResolveEnvAction_TeardownUsesTheConfiguredLimits(t *testing.T) {
 	if _, _, err := s.resolveEnvAction(env, nil, nil); err != nil {
 		t.Fatalf("teardown must re-resolve the same block under the SAME configured limits "+
 			"(and a fresh ledger): %v", err)
+	}
+}
+
+// TestResolveEnvAction_TeardownBudgetIsFreshPerEvaluation is the reviewer's
+// construction from E4d Task 2's fix round 1, kept as a regression test.
+//
+// THE DEFECT: Task 2's first round built ONE budget in resolveEnvAction and
+// passed it to all four of its evaluations (EnvSymbols, ResolveVarsExpr,
+// ApplyEnvLet, ResolveActionExpr), so their POSITION charges accumulated
+// against a single 10,000 cap. Before Task 2, each call got its own throwaway
+// ledger and nothing accumulated.
+//
+// THE CONSEQUENCE, and why this is not merely tidiness: an environment with
+// 9,000 variables and a 1,500-arg onExit ENTERS successfully (9,001 positions
+// against the assignment-wide ledger) and then fails at TEARDOWN --
+// 9,000 variables + 1 command + 1,500 args = 10,501 against one shared cap.
+// [Session.ExitEnvironments] treats a resolve failure as a WARNING and
+// continues, so the onExit is silently SKIPPED: the license check-in, daemon
+// shutdown or unmount never runs. That is exactly the leak E4c's fix round 1
+// Critical 2 exists to prevent, re-created one level down.
+//
+// It is reachable at the shipped defaults, and more easily once an operator
+// raises the server's openjd.expr_template_positions (Task 1 made values up to
+// 100,000 legal), because the template budget is not gated by EnforceLimits.
+//
+// Mutation: replace the four s.teardownBudget() calls with one shared budget
+// and this test fails, naming the assignment-wide budget.
+func TestResolveEnvAction_TeardownBudgetIsFreshPerEvaluation(t *testing.T) {
+	vars := make(map[string]string, 9_000)
+	for i := range 9_000 {
+		vars["V"+strconv.Itoa(i)] = "x"
+	}
+	args := make([]string, 1_500)
+	for i := range args {
+		args[i] = "a"
+	}
+
+	env := protocol.AssignEnvironment{
+		Name:      "env",
+		Variables: vars,
+		OnEnter:   &protocol.Action{Command: "true"},
+	}
+	msg := &protocol.AssignMsg{JobID: "j", EXPR: true, Environments: []protocol.AssignEnvironment{env}}
+
+	mgr := NewManager(
+		filepath.Join(t.TempDir(), "sessions"), false, isolation.NewFake(nil),
+		workerconfig.IsolationConfig{}, fmtres.ExprLimits{}, nopLogger(),
+	)
+	s, err := mgr.Create(context.Background(), msg)
+	if err != nil {
+		t.Fatalf("Create: 9,001 positions is under the 10,000 assignment-wide default: %v", err)
+	}
+
+	onExit := &protocol.Action{Command: "true", Args: args}
+	if _, _, err := s.resolveEnvAction(env, onExit, vars); err != nil {
+		t.Fatalf("teardown must resolve 9,000 variables and a 1,500-arg onExit -- each evaluation "+
+			"gets its OWN ledger, so nothing accumulates across the four. A shared budget makes "+
+			"ExitEnvironments skip this onExit with only a log line. Got: %v", err)
 	}
 }

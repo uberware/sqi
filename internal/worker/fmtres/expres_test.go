@@ -69,13 +69,13 @@ func TestResolveActionExpr_LoneReferenceInheritsTargetType(t *testing.T) {
 		Parameters:     map[string]string{"Out": "/renders/out.exr"},
 		ParameterTypes: map[string]string{"Out": "PATH"},
 	}
-	syms, err := fmtres.TaskSymbols(msg, "/work", "", false)
+	syms, err := fmtres.TaskSymbols(msg, "/work", "", false, nil)
 	if err != nil {
 		t.Fatalf("TaskSymbols: %v", err)
 	}
 
 	action := &protocol.Action{Command: "{{ Task.Param.Out }}"}
-	out, err := fmtres.ResolveActionExpr(action, syms, nil)
+	out, err := fmtres.ResolveActionExpr(action, syms, nil, nil)
 	if err != nil {
 		t.Fatalf("ResolveActionExpr: %v", err)
 	}
@@ -96,7 +96,7 @@ func TestResolveActionExpr_LoneArgListFlattensAndNullDrops(t *testing.T) {
 		Command: "render",
 		Args:    []string{"{{ ['a', 'b', 'c'] }}", "{{ None }}", "-x"},
 	}
-	out, err := fmtres.ResolveActionExpr(action, expr.MapSymbols{}, nil)
+	out, err := fmtres.ResolveActionExpr(action, expr.MapSymbols{}, nil, nil)
 	if err != nil {
 		t.Fatalf("ResolveActionExpr: %v", err)
 	}
@@ -123,7 +123,7 @@ func TestResolveActionExpr_LoneArgListFlattensAndNullDrops(t *testing.T) {
 // with the result concatenated.
 func TestResolveActionExpr_EmbeddedReferenceStringified(t *testing.T) {
 	action := &protocol.Action{Command: "Items: {{ [1, 2, 3] }}"}
-	out, err := fmtres.ResolveActionExpr(action, expr.MapSymbols{}, nil)
+	out, err := fmtres.ResolveActionExpr(action, expr.MapSymbols{}, nil, nil)
 	if err != nil {
 		t.Fatalf("ResolveActionExpr: %v", err)
 	}
@@ -139,7 +139,7 @@ func TestResolveActionExpr_EmbeddedReferenceStringified(t *testing.T) {
 // diagnostic rendering.
 func TestResolveActionExpr_EmbeddedNullRendersEmpty(t *testing.T) {
 	action := &protocol.Action{Command: "before[{{ None }}]after"}
-	out, err := fmtres.ResolveActionExpr(action, expr.MapSymbols{}, nil)
+	out, err := fmtres.ResolveActionExpr(action, expr.MapSymbols{}, nil, nil)
 	if err != nil {
 		t.Fatalf("ResolveActionExpr: %v", err)
 	}
@@ -159,12 +159,12 @@ func TestResolveActionExpr_TaskParam(t *testing.T) {
 		Parameters:     map[string]string{"Frame": "7"},
 		ParameterTypes: map[string]string{"Frame": "INT"},
 	}
-	syms, err := fmtres.TaskSymbols(msg, "/work", "", false)
+	syms, err := fmtres.TaskSymbols(msg, "/work", "", false, nil)
 	if err != nil {
 		t.Fatalf("TaskSymbols: %v", err)
 	}
 	action := &protocol.Action{Command: "{{ Task.Param.Frame + 1 }}"}
-	out, err := fmtres.ResolveActionExpr(action, syms, nil)
+	out, err := fmtres.ResolveActionExpr(action, syms, nil, nil)
 	if err != nil {
 		t.Fatalf("ResolveActionExpr: %v", err)
 	}
@@ -182,12 +182,12 @@ func TestResolveActionExpr_TaskParam(t *testing.T) {
 // host, for the first time.
 func TestResolveActionExpr_SessionWorkingDirectory(t *testing.T) {
 	const workDir = "/work/session1"
-	syms, err := fmtres.TaskSymbols(&protocol.AssignMsg{}, workDir, "", false)
+	syms, err := fmtres.TaskSymbols(&protocol.AssignMsg{}, workDir, "", false, nil)
 	if err != nil {
 		t.Fatalf("TaskSymbols: %v", err)
 	}
 	action := &protocol.Action{Command: "{{ Session.WorkingDirectory / 'frames' }}"}
-	out, err := fmtres.ResolveActionExpr(action, syms, nil)
+	out, err := fmtres.ResolveActionExpr(action, syms, nil, nil)
 	if err != nil {
 		t.Fatalf("ResolveActionExpr: %v", err)
 	}
@@ -207,12 +207,12 @@ func TestResolveActionExpr_TaskFile(t *testing.T) {
 	msg := &protocol.AssignMsg{
 		EmbeddedFiles: []protocol.EmbeddedFile{{Name: "Script", Filename: "run.py"}},
 	}
-	syms, err := fmtres.TaskSymbols(msg, workDir, "", false)
+	syms, err := fmtres.TaskSymbols(msg, workDir, "", false, nil)
 	if err != nil {
 		t.Fatalf("TaskSymbols: %v", err)
 	}
 	action := &protocol.Action{Command: "python", Args: []string{"{{ Task.File.Script }}"}}
-	out, err := fmtres.ResolveActionExpr(action, syms, nil)
+	out, err := fmtres.ResolveActionExpr(action, syms, nil, nil)
 	if err != nil {
 		t.Fatalf("ResolveActionExpr: %v", err)
 	}
@@ -239,7 +239,7 @@ func TestResolveActionExpr_TaskFile(t *testing.T) {
 // error), now extended to expr's own positioned errors.
 func TestResolveActionExpr_ErrorSurfacesWithContext(t *testing.T) {
 	action := &protocol.Action{Command: "{{ Task.Param.DoesNotExist }}"}
-	_, err := fmtres.ResolveActionExpr(action, expr.MapSymbols{}, nil)
+	_, err := fmtres.ResolveActionExpr(action, expr.MapSymbols{}, nil, nil)
 	if err == nil {
 		t.Fatal("ResolveActionExpr: want an error for an unknown symbol, got nil")
 	}
@@ -263,7 +263,7 @@ func TestResolveActionExpr_ErrorSurfacesWithContext(t *testing.T) {
 // field name like "command".
 func TestResolveVarsExpr_ErrorNamesTheVariableKey(t *testing.T) {
 	vars := map[string]string{"BAD": "{{ 1 / 0 }}"}
-	_, err := fmtres.ResolveVarsExpr(vars, expr.MapSymbols{}, nil)
+	_, err := fmtres.ResolveVarsExpr(vars, expr.MapSymbols{}, nil, nil)
 	if err == nil {
 		t.Fatal("ResolveVarsExpr: want an error for a division by zero, got nil")
 	}
@@ -288,7 +288,7 @@ func TestResolveActionExpr_UnresolvedFallbackErrorsInsteadOfPanicking(t *testing
 		Parameters:     map[string]string{"Frames": "not-a-range"},
 		ParameterTypes: map[string]string{"Frames": "CHUNK[INT]"},
 	}
-	syms, err := fmtres.TaskSymbols(msg, "/work", "", false)
+	syms, err := fmtres.TaskSymbols(msg, "/work", "", false, nil)
 	if err != nil {
 		t.Fatalf("TaskSymbols: %v", err)
 	}
@@ -298,7 +298,7 @@ func TestResolveActionExpr_UnresolvedFallbackErrorsInsteadOfPanicking(t *testing
 	}
 
 	action := &protocol.Action{Command: "{{ Task.Param.Frames }}"}
-	_, err = fmtres.ResolveActionExpr(action, syms, nil)
+	_, err = fmtres.ResolveActionExpr(action, syms, nil, nil)
 	if err == nil {
 		t.Fatal("ResolveActionExpr: want an error for an unresolved fallback value, got nil (and no panic)")
 	}
@@ -326,7 +326,7 @@ func TestResolveActionExpr_OverBudgetRejectedByOperationLimit(t *testing.T) {
 		Command: "echo",
 		Args:    []string{"{{ len([x for x in range(1100000) if x > 999999999]) }}"},
 	}
-	_, err := fmtres.ResolveActionExpr(action, expr.MapSymbols{}, nil)
+	_, err := fmtres.ResolveActionExpr(action, expr.MapSymbols{}, nil, nil)
 	if err == nil {
 		t.Fatal("ResolveActionExpr: want an operation-limit error, got nil")
 	}
@@ -379,13 +379,13 @@ func TestResolveActionExpr_ApplyPathMapping(t *testing.T) {
 		ParameterTypes: map[string]string{"Scene": "PATH"},
 		PathMap:        pathMap,
 	}
-	syms, err := fmtres.TaskSymbols(msg, "/work", "", false)
+	syms, err := fmtres.TaskSymbols(msg, "/work", "", false, nil)
 	if err != nil {
 		t.Fatalf("TaskSymbols: %v", err)
 	}
 
 	action := &protocol.Action{Command: "{{ apply_path_mapping(Task.Param.Scene) }}"}
-	out, err := fmtres.ResolveActionExpr(action, syms, pathMap)
+	out, err := fmtres.ResolveActionExpr(action, syms, pathMap, nil)
 	if err != nil {
 		t.Fatalf("ResolveActionExpr: %v", err)
 	}
@@ -415,12 +415,12 @@ func TestResolveActionExpr_ApplyPathMappingNoRulesPassesThrough(t *testing.T) {
 		Parameters:     map[string]string{"Scene": "/mnt/shared/project/shot.ma"},
 		ParameterTypes: map[string]string{"Scene": "PATH"},
 	}
-	syms, err := fmtres.TaskSymbols(msg, "/work", "", false)
+	syms, err := fmtres.TaskSymbols(msg, "/work", "", false, nil)
 	if err != nil {
 		t.Fatalf("TaskSymbols: %v", err)
 	}
 	action := &protocol.Action{Command: "{{ apply_path_mapping(Task.Param.Scene) }}"}
-	out, err := fmtres.ResolveActionExpr(action, syms, nil)
+	out, err := fmtres.ResolveActionExpr(action, syms, nil, nil)
 	if err != nil {
 		t.Fatalf("ResolveActionExpr: %v", err)
 	}
@@ -466,12 +466,12 @@ func TestResolveActionExpr_ApplyPathMappingNoRulesPassesThrough(t *testing.T) {
 // claim can only be checked on the host it is actually about.
 func TestExprEvalOptions_CarriesNativePathFlavor(t *testing.T) {
 	const workDir = "/work/session1"
-	syms, err := fmtres.TaskSymbols(&protocol.AssignMsg{}, workDir, "", false)
+	syms, err := fmtres.TaskSymbols(&protocol.AssignMsg{}, workDir, "", false, nil)
 	if err != nil {
 		t.Fatalf("TaskSymbols: %v", err)
 	}
 	action := &protocol.Action{Command: "{{ Session.WorkingDirectory / 'a' / 'b' }}"}
-	got, err := fmtres.ResolveActionExpr(action, syms, nil)
+	got, err := fmtres.ResolveActionExpr(action, syms, nil, nil)
 	if err != nil {
 		t.Fatalf("ResolveActionExpr: %v", err)
 	}
@@ -543,12 +543,12 @@ func TestResolveEmbeddedFilesExpr(t *testing.T) {
 		Parameters:     map[string]string{"Frame": "3"},
 		ParameterTypes: map[string]string{"Frame": "INT"},
 	}
-	syms, err := fmtres.TaskSymbols(msg, "/work", "", false)
+	syms, err := fmtres.TaskSymbols(msg, "/work", "", false, nil)
 	if err != nil {
 		t.Fatalf("TaskSymbols: %v", err)
 	}
 	files := []protocol.EmbeddedFile{{Name: "Script", Data: "frame = {{ Task.Param.Frame }}"}}
-	out, err := fmtres.ResolveEmbeddedFilesExpr(files, syms, nil)
+	out, err := fmtres.ResolveEmbeddedFilesExpr(files, syms, nil, nil)
 	if err != nil {
 		t.Fatalf("ResolveEmbeddedFilesExpr: %v", err)
 	}
@@ -558,7 +558,7 @@ func TestResolveEmbeddedFilesExpr(t *testing.T) {
 	if len(files) != 1 || files[0].Data != "frame = {{ Task.Param.Frame }}" {
 		t.Error("ResolveEmbeddedFilesExpr mutated its input")
 	}
-	if got, err := fmtres.ResolveEmbeddedFilesExpr(nil, syms, nil); got != nil || err != nil {
+	if got, err := fmtres.ResolveEmbeddedFilesExpr(nil, syms, nil, nil); got != nil || err != nil {
 		t.Errorf("ResolveEmbeddedFilesExpr(nil) = (%v, %v), want (nil, nil)", got, err)
 	}
 }
@@ -568,12 +568,12 @@ func TestResolveVarsExpr(t *testing.T) {
 		JobParameters:     map[string]string{"Scene": "hello"},
 		JobParameterTypes: map[string]string{"Scene": "STRING"},
 	}
-	syms, err := fmtres.TaskSymbols(msg, "/work", "", false)
+	syms, err := fmtres.TaskSymbols(msg, "/work", "", false, nil)
 	if err != nil {
 		t.Fatalf("TaskSymbols: %v", err)
 	}
 	vars := map[string]string{"SCENE_NAME": "{{ Param.Scene }}"}
-	out, err := fmtres.ResolveVarsExpr(vars, syms, nil)
+	out, err := fmtres.ResolveVarsExpr(vars, syms, nil, nil)
 	if err != nil {
 		t.Fatalf("ResolveVarsExpr: %v", err)
 	}
@@ -583,7 +583,7 @@ func TestResolveVarsExpr(t *testing.T) {
 	if vars["SCENE_NAME"] != "{{ Param.Scene }}" {
 		t.Error("ResolveVarsExpr mutated its input")
 	}
-	if got, err := fmtres.ResolveVarsExpr(nil, syms, nil); got != nil || err != nil {
+	if got, err := fmtres.ResolveVarsExpr(nil, syms, nil, nil); got != nil || err != nil {
 		t.Errorf("ResolveVarsExpr(nil) = (%v, %v), want (nil, nil)", got, err)
 	}
 }
@@ -625,14 +625,14 @@ func TestResolveActionExpr_FloatCarryPreservedInReprAndSubstitution(t *testing.T
 		JobParameters:     map[string]string{"Scale": "3.500"},
 		JobParameterTypes: map[string]string{"Scale": "FLOAT"},
 	}
-	syms, err := fmtres.TaskSymbols(msg, "/work", "", false)
+	syms, err := fmtres.TaskSymbols(msg, "/work", "", false, nil)
 	if err != nil {
 		t.Fatalf("TaskSymbols: %v", err)
 	}
 
 	t.Run("plain substitution", func(t *testing.T) {
 		action := &protocol.Action{Command: "{{ Param.Scale }}"}
-		out, err := fmtres.ResolveActionExpr(action, syms, nil)
+		out, err := fmtres.ResolveActionExpr(action, syms, nil, nil)
 		if err != nil {
 			t.Fatalf("ResolveActionExpr: %v", err)
 		}
@@ -643,7 +643,7 @@ func TestResolveActionExpr_FloatCarryPreservedInReprAndSubstitution(t *testing.T
 
 	t.Run("repr_py", func(t *testing.T) {
 		action := &protocol.Action{Command: "{{ repr_py(Param.Scale) }}"}
-		out, err := fmtres.ResolveActionExpr(action, syms, nil)
+		out, err := fmtres.ResolveActionExpr(action, syms, nil, nil)
 		if err != nil {
 			t.Fatalf("ResolveActionExpr: %v", err)
 		}
@@ -656,7 +656,7 @@ func TestResolveActionExpr_FloatCarryPreservedInReprAndSubstitution(t *testing.T
 // ── nil action ───────────────────────────────────────────────────────────────
 
 func TestResolveActionExpr_Nil(t *testing.T) {
-	out, err := fmtres.ResolveActionExpr(nil, expr.MapSymbols{}, nil)
+	out, err := fmtres.ResolveActionExpr(nil, expr.MapSymbols{}, nil, nil)
 	if out != nil || err != nil {
 		t.Errorf("ResolveActionExpr(nil) = (%v, %v), want (nil, nil)", out, err)
 	}

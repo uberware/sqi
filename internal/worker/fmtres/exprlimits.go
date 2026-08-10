@@ -188,22 +188,46 @@ type ExprLimits struct {
 // The FLOORS follow one principle that does NOT apply on the server: a limit
 // tightened too far on a worker rejects work AFTER the job was accepted, once
 // per task, naming a budget the submitter never saw. That is the worst failure
-// shape available (design spec §2 records it as a measured incident), so every
-// floor here is set to at least the largest value a legitimately accepted
-// assignment could need, not to the smallest value this repo's own presets
+// shape available (design spec §2 records it as a measured incident), so no
+// floor here is sized against the smallest value this repo's own presets
 // happen to cost. TestExprLimits_PresetCostsLeaveFloorHeadroom measures the
 // presets on every run and fails if any of them comes within 4x of a floor.
+//
+// WHAT THE FLOORS DO NOT PROMISE, stated here because an earlier revision of
+// this paragraph claimed it and it is false: they are NOT "at least the
+// largest value a legitimately accepted assignment could need". Two of the
+// five (MinExprOperationLimit, MinExprMemoryLimit) are sized against the
+// server's DEFAULTS, and E4d Task 1 -- the same wave -- made those two
+// configurable too, up to 10x their defaults. An operator who raises
+// openjd.expr_operation_limit to 100,000 and leaves a worker at its floor gets
+// a worker 10x tighter than what the server accepted, which is the
+// post-acceptance per-task failure this whole paragraph is about. Sizing these
+// floors from the server's configured value is impossible here (the worker
+// does not read the server's config, and by choice does not receive it) -- it
+// is the same cross-binary problem AssignmentPositions carries, one dimension
+// over, and it belongs to whoever closes that one. Each affected field says so
+// in its own comment; do not re-generalize the promise here.
 const (
 	// MinExprOperationLimit / MaxExprOperationLimit bound
 	// [ExprLimits.OperationLimit].
 	//
-	// Floor: the SERVER's own default per-evaluation operation budget
+	// Floor: the SERVER's own DEFAULT per-evaluation operation budget
 	// (internal/openjd's defaultSubmissionOperations, 10,000). Below that, a
-	// worker could reject at execution an expression the server type-checked
-	// at submit. This is a minimum, not a guarantee of parity: phase 3
-	// evaluates the same expressions against concrete values and E2's Task 10
-	// measured it at ~40x phase 1's cost, which is why the DEFAULT here is
-	// 100x the server's rather than equal to it.
+	// worker would reject at execution an expression the server type-checked
+	// at submit under its own defaults.
+	//
+	// TWO WAYS THAT IS LESS THAN PARITY, both real:
+	//
+	//  1. It is the server's DEFAULT, not the server's configured value, and
+	//     E4d Task 1 made the latter configurable up to 100,000. A farm that
+	//     raises openjd.expr_operation_limit and leaves a worker at this floor
+	//     has a worker tighter than what the server accepts -- the same
+	//     cross-binary breakage AssignmentPositions carries, which no
+	//     compile-time test can see, and which E4d Task 3 owns.
+	//  2. Even at parity it would not guarantee acceptance: phase 3 evaluates
+	//     the same expressions against CONCRETE values and E2's Task 10
+	//     measured it at ~40x phase 1's cost. That is why the DEFAULT here is
+	//     100x the server's rather than equal to it.
 	//
 	// Ceiling: one order of magnitude above the default. Policy, not
 	// catastrophe -- but not open-ended either, because nothing meters wall
@@ -215,11 +239,14 @@ const (
 
 	// MinExprMemoryLimit / MaxExprMemoryLimit bound [ExprLimits.MemoryLimit].
 	//
-	// Floor: the SERVER's own default per-evaluation memory budget
+	// Floor: the SERVER's own DEFAULT per-evaluation memory budget
 	// (internal/openjd's defaultSubmissionMemoryBytes, 1,000,000), for the
 	// same reason as the operation floor -- a phase-3 evaluation holds the
 	// concrete value a phase-2 evaluation only had a placeholder for, so a
 	// worker allowance below what the server accepted rejects after the fact.
+	// It carries the SAME residual gap: the server's value is configurable up
+	// to 10,000,000, so this floor tracks the server's default rather than the
+	// server's setting. See MinExprOperationLimit for the full statement.
 	//
 	// Ceiling: one order of magnitude above the default. This is a catastrophe
 	// ceiling, and the number it really sets is the per-block structural
@@ -244,7 +271,10 @@ const (
 	// reason is the load-bearing one: the worker's cap must be able to reach
 	// the highest value an operator can legally give the server, or the
 	// cross-binary relation of design spec §2 would be unsatisfiable by
-	// configuration. Keep the two equal.
+	// configuration. THE INVARIANT IS >=, NOT EQUALITY -- this ceiling must
+	// never fall below the server's, and that is what
+	// TestTemplateBudget_WorkerCapIsNotTighter asserts. The two being equal
+	// today is a value, not the rule.
 	MinExprAssignmentPositions int64 = 2_000
 	MaxExprAssignmentPositions int64 = 100_000
 

@@ -372,9 +372,10 @@ diagnostics:
 # ── EXPR expression limits ────────────────────────────────────────────────────
 # These five bound what ONE assignment may spend evaluating OpenJD EXPR
 # expressions ON THIS HOST, at task-execution time — after the server has
-# already accepted the job. They are separate from the server's own submission
-# -time limits (sqi-server's openjd.expr_* keys); each worker reads its own,
-# which is what lets a heterogeneous farm size them to each host's real memory.
+# already accepted the job. They are separate from the server's own
+# submission-time limits (sqi-server's openjd.expr_* keys); each worker reads
+# its own, which is what lets a heterogeneous farm size them to each host's
+# real memory.
 #
 # Read this before changing any of them:
 #   * None of these bounds WALL CLOCK. An operation's real cost varies by

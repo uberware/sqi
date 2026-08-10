@@ -25,10 +25,10 @@ import (
 // the two packages' copies of the ranges (and defaults) against each other.
 func exprLimitsFromConfig(cfg workerconfig.ExprConfig) fmtres.ExprLimits {
 	return fmtres.ExprLimits{
-		OperationLimit:          cfg.ExprOperationLimit,
-		MemoryLimit:             cfg.ExprMemoryLimit,
-		AssignmentPositions:     cfg.ExprAssignmentPositions,
-		AssignmentRetainedBytes: cfg.ExprAssignmentRetainedBytes,
-		LetRetainedBytes:        cfg.ExprLetRetainedBytes,
+		OperationLimit:          cfg.OperationLimit,
+		MemoryLimit:             cfg.MemoryLimit,
+		AssignmentPositions:     cfg.AssignmentPositions,
+		AssignmentRetainedBytes: cfg.AssignmentRetainedBytes,
+		LetRetainedBytes:        cfg.LetRetainedBytes,
 	}
 }

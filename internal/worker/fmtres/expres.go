@@ -195,7 +195,8 @@ func ExprEvalOptions(lim ExprLimits, pathMap []protocol.PathMapRule) []expr.Opti
 // -- see that function's doc comment for why the split exists.
 func exprEvalOptionsFor(lim ExprLimits, pathMap []protocol.PathMapRule, flavor expr.PathFormat) []expr.Option {
 	opts := lim.orDefaults().evalOptions()
-	return append(opts,
+	return append(
+		opts,
 		expr.WithPathFormat(flavor),
 		expr.WithPathMapping(ConvertPathMapRules(pathMap)),
 	)
@@ -468,12 +469,12 @@ func resolveArgLoneRef(body string, syms expr.MapSymbols, opts []expr.Option) ([
 // (every pre-Task-4 call site) charges a fresh, throwaway budget no single
 // call can exhaust.
 func ResolveActionExpr(
-	action *protocol.Action, syms expr.MapSymbols, pathMap []protocol.PathMapRule, budget ...*AssignmentBudget,
+	action *protocol.Action, syms expr.MapSymbols, pathMap []protocol.PathMapRule, budget *AssignmentBudget,
 ) (*protocol.Action, error) {
 	if action == nil {
 		return nil, nil
 	}
-	b := assignmentBudgetOrFresh(budget)
+	b := budgetOrDefault(budget)
 	opts := ExprEvalOptions(b.Limits(), pathMap)
 
 	if err := b.ChargePositions(1, "command"); err != nil {
@@ -517,12 +518,12 @@ func ResolveActionExpr(
 // data is malformed, evaluates to an error, or names a symbol syms does not
 // provide. The input slice and its elements are never mutated.
 func ResolveEmbeddedFilesExpr(
-	files []protocol.EmbeddedFile, syms expr.MapSymbols, pathMap []protocol.PathMapRule, budget ...*AssignmentBudget,
+	files []protocol.EmbeddedFile, syms expr.MapSymbols, pathMap []protocol.PathMapRule, budget *AssignmentBudget,
 ) ([]protocol.EmbeddedFile, error) {
 	if files == nil {
 		return nil, nil
 	}
-	b := assignmentBudgetOrFresh(budget)
+	b := budgetOrDefault(budget)
 	opts := ExprEvalOptions(b.Limits(), pathMap)
 	out := make([]protocol.EmbeddedFile, len(files))
 	for i, f := range files {
@@ -556,12 +557,12 @@ func ResolveEmbeddedFilesExpr(
 // not change the OUTCOME (the assignment still fails, with a budget-exceeded
 // error either way), only which key's name appears in it.
 func ResolveVarsExpr(
-	vars map[string]string, syms expr.MapSymbols, pathMap []protocol.PathMapRule, budget ...*AssignmentBudget,
+	vars map[string]string, syms expr.MapSymbols, pathMap []protocol.PathMapRule, budget *AssignmentBudget,
 ) (map[string]string, error) {
 	if vars == nil {
 		return nil, nil
 	}
-	b := assignmentBudgetOrFresh(budget)
+	b := budgetOrDefault(budget)
 	opts := ExprEvalOptions(b.Limits(), pathMap)
 	out := make(map[string]string, len(vars))
 	for k, v := range vars {
