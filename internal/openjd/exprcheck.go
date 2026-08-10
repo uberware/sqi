@@ -754,15 +754,28 @@ const (
 	//	{{ len(range_expr("1-5e6,6e6-9e6")) }}     ~6450s        ~60ms
 	//	{{ sorted([1] + range_expr("1-1e7")) }}    ~3050s        ~80ms
 	//	{{ [0] * 10000000 }}                        ~660s, 2.3GB  ~20ms
+	//	{{ max([len(re_findall("x","x"*9e5))        ~1030s       ~1030s
+	//	      for i in range(2)]) }}
 	//	{{ ("x" * 900000).title() }}                ~571s         ~571s
 	//	{{ re_findall("x", "x" * 900000) }}         ~496s         ~496s
 	//	{{ ("x" * 900000).upper() }}                 ~58s          ~58s
 	//
 	// (Range texts are abbreviated to fit: "1-5e6,6e6-9e6" is
-	// "1-5000000,6000000-9000000" and "1-1e7" is "1-10000000". Row 5 is 57.1
-	// ms per position here; an independent measurement on other hardware put
-	// the same payload at 71 ms, i.e. ~715 s -- treat ~9.5 minutes as the
-	// order, not the digit.)
+	// "1-5000000,6000000-9000000", "1-1e7" is "1-10000000" and "9e5" is
+	// 900000. An independent measurement on other hardware put the .title()
+	// payload at 71 ms rather than 57.1, i.e. ~715 s -- treat every figure
+	// here as an order, not a digit.)
+	//
+	// ROW 5 IS NOT THE WORST, and saying it was is how this comment's
+	// headline figure came to be too low a THIRD time. E4d's whole-branch
+	// review measured the new row above it: the same regex, twice, inside a
+	// comprehension, charges 7,048 of the 10,000 permitted operations at 14.6
+	// us each for ~103 ms -- ~1,030 s over 10,000 positions, and ~1,460 s if
+	// a position spends the whole budget at that rate. .title() reaches only
+	// 8.2 us per operation and leaves ~3,000 of them unspent, so it was never
+	// the maximum; it was merely the payload that had been measured. What the
+	// operation budget bounds is COUNT, and the cost per operation varies by
+	// ~17x among these payloads alone.
 	//
 	// ROWS 1-3 ARE THE ONES THAT MOVED LAST, and they are why this table was
 	// wrong TWICE. A range_expr expands to a list, and three separate things
@@ -780,19 +793,21 @@ const (
 	// So the BULK-MATERIALIZATION class is gone from every path measured to
 	// reach it -- rows 1 to 4, four to five orders of magnitude each, and
 	// with them the multi-gigabyte heap -- while the WALL-CLOCK worst case
-	// remains roughly 9.5 minutes, because it is set by op-cheap, byte-heavy
+	// remains in the tens of minutes (~17 measured, ~24 at the budget
+	// ceiling), because it is set by op-cheap, byte-heavy
 	// work over the ~900 KB string defaultSubmissionMemoryBytes allows to be
 	// live. MEASURED, and the two payloads differ -- an EARLIER revision of
 	// this comment gave one figure for both, understating the case mapping by
 	// 2x: re_findall("x", "x"*900000) spends 3,519 of the 10,000 permitted
 	// operations for ~50 ms of CPU, and ("x"*900000).title() spends 7,034 for
-	// ~57 ms (which is the row 5 figure in the table above: 57.1 ms x 10,000
-	// positions = ~571 s). ("x"*900000).upper() is charged the IDENTICAL 7,034
+	// ~57 ms (which is the .title() row in the table above: 57.1 ms x 10,000
+	// positions = ~571 s -- not the worst row, see above).
+	// ("x"*900000).upper() is charged the IDENTICAL 7,034
 	// for ~6 ms, which is the sharpest statement of why operations do not
 	// bound time. Every per-Eval budget is respected throughout.
 	//
-	// "EVERY PATH MEASURED TO REACH IT" is deliberate wording. Twice now a
-	// stronger claim here was falsified by a construction nobody had
+	// "EVERY PATH MEASURED TO REACH IT" is deliberate wording. Three times now
+	// a stronger claim here was falsified by a construction nobody had
 	// measured, so the enumeration lives in tests that can be extended and
 	// re-run -- internal/openjd/expr/reservework_internal_test.go -- rather
 	// than in an assertion in this comment.

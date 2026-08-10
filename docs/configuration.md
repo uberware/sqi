@@ -653,31 +653,55 @@ Nothing measures the sum, so nothing will report that you crossed it; the
 product is a derived upper bound on what the per-position limit, applied
 that many times, could in principle cost.
 
+`openjd.expr_memory_limit` is **not** a third multiplier here. It decides how
+large a value one evaluation may hold, not what an operation costs: the worst
+construction measured under a 100,000-operation budget costs **the same 1.43 s
+at the default 1,000,000-byte memory limit as at the 10,000,000 maximum**,
+because it never holds more than one intermediate value live. Raise it because
+a template needs to build a large value, not to bound time.
+
 #### 2. None of these limits bounds wall-clock time
 
 An operation's real cost is not uniform. Specification section 1.3.10 rule 3
 (`third_party/openjd-specifications/wiki/2026-02-Expression-Language.md:1090`)
 prices a string operation at *the value's length divided by 256* — so
 byte-heavy work is charged almost nothing. Measured in this repository, all
-three of these expressions stay inside a single position's default
+four of these expressions stay inside a single position's default
 10,000-operation budget:
 
-| Expression | Operations charged | CPU |
-|---|---|---|
-| `("x" * 900000).upper()` | 7,034 | ~6 ms |
-| `("x" * 900000).title()` | 7,034 | ~57 ms |
-| `re_findall("x", "x" * 900000)` | 3,519 | ~50 ms |
+| Expression | Operations charged | CPU | per operation |
+|---|---|---|---|
+| `("x" * 900000).upper()` | 7,034 | ~6 ms | 0.9 µs |
+| `("x" * 900000).title()` | 7,034 | ~58 ms | 8.2 µs |
+| `re_findall("x", "x" * 900000)` | 3,519 | ~51 ms | 14.5 µs |
+| `max([len(re_findall("x", "x" * 900000)) for i in range(2)])` | 7,048 | ~103 ms | 14.6 µs |
 
 The first two are charged **identically** and differ by 9x in time; the third
-is charged **half** as much as either yet costs nearly as much time as the
-slowest. Ten thousand positions of `.title()` — a template body of roughly
-270 KB — cost about **571 seconds** of server CPU on one synchronous request,
-with every budget respected the entire way.
+is charged **half** as much as either yet costs nearly as much time. **The
+per-operation cost varies by ~17x**, which is why no operation budget bounds
+time.
 
-That figure has been measured too low twice, each time by a construction
-nobody had run; the expression package's own note calls it
-**"a floor on the worst case, not a proof of it"**. Treat 9.5 minutes as the
-order of magnitude, not the digit.
+The fourth row is the one to size against. Ten thousand positions of it — a
+template body of roughly 650 KB, well inside the 4 MiB limit — cost about
+**1,030 seconds** (~17 minutes) of server CPU on one synchronous request, with
+every budget respected the entire way; a position that spent its whole
+10,000-operation allowance at that rate would cost ~146 ms, putting the same
+template near **24 minutes**. At the
+two maxima the same construction reaches 98,646 operations in **1.43 s**, and
+100,000 such positions are roughly **40 hours**.
+
+Caveat 1's 100x is the honest scaling factor between those two settings: the
+worst per-operation rate measured is the same (~14.6 µs) at both, so ten times
+the positions times ten times the operations is a hundred times the time.
+Dividing the two measurements above gives ~139x only because the default-side
+construction leaves ~30% of its 10,000-operation budget unspent while the
+maxima-side one uses 98.6% of its 100,000.
+
+**This figure has now been measured too low three times**, each time by a
+construction nobody had run — the previous revision of this table gave 571
+seconds, from `.title()`, which does not maximize the cost per operation. The
+expression package's own note calls it **"a floor on the worst case, not a
+proof of it"**. Treat the order of magnitude as the claim, never the digit.
 
 **So: raising these limits lengthens the worst request your farm can be
 asked to serve, roughly in proportion.** There is no value of these settings
@@ -703,9 +727,9 @@ Two consequences, in both directions:
 
 #### 4. Every worker must be at least as generous as this server
 
-Four of the five worker keys meter the same quantity one phase later, on the
-host, *after* the job has already been accepted. A worker that is **tighter**
-than this server can be handed work this server accepted and fail it there:
+All five worker keys meter the same values one phase later, on the host,
+*after* the job has already been accepted. A worker that is **tighter** than
+this server can be handed work this server accepted and fail it there:
 
 | This server accepts templates under… | …so every worker needs at least |
 |---|---|
@@ -713,8 +737,9 @@ than this server can be handed work this server accepted and fail it there:
 | `openjd.expr_memory_limit` | `expr.memory_limit` |
 | `openjd.expr_template_positions` | `expr.assignment_positions` |
 | `openjd.expr_template_retained_bytes` | `expr.assignment_retained_bytes` |
+| `openjd.expr_template_retained_bytes` | `expr.let_retained_bytes` |
 
-sqi does not leave that to chance. Every worker advertises those four values
+sqi does not leave that to chance. Every worker advertises all five values
 when it registers, and **the scheduler refuses to dispatch an EXPR job to a
 worker whose values are short** — the job is withheld, never accepted and
 then failed per task on the host. What an operator sees:
@@ -733,20 +758,33 @@ then failed per task on the host. What an operator sees:
   may well predate the job — becomes the only signal.
 
 A short worker keeps running **everything else**; only EXPR work is withheld
-from it. So **raise the workers first, then the server.** The fifth worker
-key, `expr.let_retained_bytes`, bounds one symbol table rather than a whole
-walk, has no server counterpart, and is deliberately not part of the
-comparison.
+from it. So **raise the workers first, then the server.**
 
-> **The gate spots an EXPR job by scanning the raw template for the four
-> bytes `EXPR`, not by parsing it.** On a farm whose workers are tighter than
-> this server, a **base-spec** template that merely *mentions* the string —
-> a comment, or an environment variable such as `HOUDINI_EXPR_CACHE` — is
-> withheld from every short worker and flagged with a reason naming EXPR
-> limits it does not use. If you see that message on a job that uses no
-> expressions, this is why; the fix is the same either way — raise the
-> workers, or lower the server. The heuristic only ever errs toward
-> withholding work, never toward dispatching it wrongly.
+The last row pairs one key with two: `expr.let_retained_bytes` bounds a single
+symbol table, a scope this server does not meter separately, so it is compared
+against the template-wide budget that upper-bounds it. That comparison is
+deliberately conservative, and its floor is a tenth of this key's default —
+**a worker whose `expr.let_retained_bytes` is below your
+`openjd.expr_template_retained_bytes` gets no EXPR work**, even though the
+value it holds may be ample for the templates you actually submit. Lower this
+key or raise that one; both are visible, and neither fails a task after
+acceptance.
+
+**None of the five is a guarantee.** They are necessary conditions: phase 3
+binds concrete values this server only had placeholders for, so an accepted
+job can still exhaust a worker that satisfies every row above.
+
+> **The gate spots an EXPR job by scanning the raw template, not by parsing
+> it.** It looks for the bytes `EXPR` *and* the bytes `extensions`, so a
+> **base-spec** template that merely mentions the string — a comment, or an
+> environment variable such as `HOUDINI_EXPR_CACHE` — no longer matches, and
+> is dispatched normally. What still matches without using expressions is a
+> template that declares some *other* extension and mentions `EXPR`
+> elsewhere; such a job is withheld from every short worker and flagged with
+> a reason naming EXPR limits it does not use. If you see that message on a
+> job that uses no expressions, this is why, and the fix is the same either
+> way — raise the workers, or lower the server. The heuristic only ever errs
+> toward withholding work, never toward dispatching it wrongly.
 
 ---
 
@@ -792,6 +830,18 @@ specification's recommended 100 million, for the same reason.
 This is the value that decides how large a string or list a single
 expression can build, so it is also what sets the "~900 KB" in caveat 2's
 measurements.
+
+**What raising it really permits is 50x this number.** The template-wide
+retained-bytes counter is charged once per `let:` **block**, after that block
+finishes, so a single block can transiently hold up to
+`50 x openjd.expr_memory_limit` before anything sees it — 50 MB at this
+default, and **500 MB at the 10000000 maximum**, per concurrent request, on a
+path that is unauthenticated by default. Size the server's RAM against that
+product, not against this number. (50 is the specification's per-block binding
+cap: Template Schemas §3.6.) The same ceiling is stated from the other end
+under [`openjd.expr_template_retained_bytes`](#openjdexpr_template_retained_bytes).
+
+It is **not** a multiplier on wall-clock time — see caveat 1.
 
 ```yaml
 openjd:

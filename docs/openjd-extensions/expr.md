@@ -539,31 +539,43 @@ phase 2's verdict never depends on what phase 1 already spent):
   nothing. Measured on the ~900 KB string `openjd.expr_memory_limit` permits
   to be live at its default:
 
-  | Expression | Operations charged | CPU |
-  |---|---|---|
-  | `("x" * 900000).upper()` | 7,034 | ~6 ms |
-  | `("x" * 900000).title()` | 7,034 | ~57 ms |
-  | `re_findall("x", "x" * 900000)` | 3,519 | ~50 ms |
+  | Expression | Operations charged | CPU | per operation |
+  |---|---|---|---|
+  | `("x" * 900000).upper()` | 7,034 | ~6 ms | 0.9 µs |
+  | `("x" * 900000).title()` | 7,034 | ~58 ms | 8.2 µs |
+  | `re_findall("x", "x" * 900000)` | 3,519 | ~51 ms | 14.5 µs |
+  | `max([len(re_findall("x", "x" * 900000)) for i in range(2)])` | 7,048 | ~103 ms | 14.6 µs |
 
-  All three sit inside one position's default 10,000-operation budget; the
+  All four sit inside one position's default 10,000-operation budget; the
   first two are charged **identically** while differing by 9× in time, and
   the third is charged **half** as much as either while costing nearly as
-  much time as the slowest — four orders of magnitude more time per
-  operation than scalar arithmetic.
-  A ~270 KB template body built entirely from `.title()` positions costs
-  **roughly 571 seconds** of server CPU on the synchronous validate/submit
-  request path, with every budget respected throughout — and on other
-  hardware the same construction measured ~715 s, so treat 9.5 minutes as an
-  order of magnitude, not a digit. **Operators running a publicly-reachable,
-  unauthenticated `POST /api/v1/jobs` should size request timeouts and
-  concurrency against that**, not against the position cap.
+  much time as the slowest — a ~17× spread in time per operation among these,
+  and four orders of magnitude against scalar arithmetic.
+  A ~650 KB template body built entirely from the **fourth** row costs
+  **roughly 1,030 seconds** (~17 minutes) of server CPU on the synchronous
+  validate/submit request path, with every budget respected throughout; a
+  position spending its whole allowance at that rate puts the same template
+  near 24 minutes, and at the two configurable maxima the equivalent
+  construction reaches ~40 hours (100× the 24-minute ceiling: the worst
+  per-operation rate measured, ~14.6 µs, is the same at both settings).
+  **Operators running a publicly-reachable, unauthenticated
+  `POST /api/v1/jobs` should size request timeouts and concurrency against
+  that**, not against the position cap.
+
+  The fourth row is why the previous revision's figure — 571 seconds, from
+  `.title()` — was too low: `.title()` leaves a third of the operation budget
+  unspent and costs little more than half as much per operation as the worst
+  construction measured. Nothing about the limits changed; the measurement
+  did.
 
   The figure is the maximum over an enumerated set of payloads that is
-  measured, not reasoned about: it has been wrong twice, each time because a
-  construction nobody had measured turned out an order of magnitude worse
-  (`{{ len(range_expr("1-5000000,6000000-9000000")) }}` at ~107 minutes, and
-  `{{ [1] == range_expr("1-5000000,6000000-9000000") }}` at ~110 minutes).
-  Both are now bounded arithmetically and cost milliseconds. The table and
+  measured, not reasoned about: it has been wrong three times, each time
+  because a construction nobody had measured turned out worse — twice by an
+  order of magnitude (`{{ len(range_expr("1-5000000,6000000-9000000")) }}` at
+  ~107 minutes and `{{ [1] == range_expr("1-5000000,6000000-9000000") }}` at
+  ~110 minutes, both now bounded arithmetically and costing milliseconds), and
+  once by ~1.8× (the fourth table row above, which no bound rejects because
+  nothing about it is out of budget). The table and
   the enumeration live in `defaultTemplatePositions`' doc comment
   (`internal/openjd/exprcheck.go`) and in
   `internal/openjd/expr/reservework_internal_test.go`. **Treat the number as
@@ -657,7 +669,7 @@ bound, is in the two configuration guides — this section is the map:
 | live bytes, one evaluation | [`openjd.expr_memory_limit`](../configuration.md#openjdexpr_memory_limit) | [`expr.memory_limit`](../worker-configuration.md#exprmemory_limit) |
 | positions, one walk / one assignment | [`openjd.expr_template_positions`](../configuration.md#openjdexpr_template_positions) | [`expr.assignment_positions`](../worker-configuration.md#exprassignment_positions) |
 | retained bytes, one walk / one assignment | [`openjd.expr_template_retained_bytes`](../configuration.md#openjdexpr_template_retained_bytes) | [`expr.assignment_retained_bytes`](../worker-configuration.md#exprassignment_retained_bytes) |
-| retained bytes, one symbol table | *(none)* | [`expr.let_retained_bytes`](../worker-configuration.md#exprlet_retained_bytes) |
+| retained bytes, one symbol table | [`openjd.expr_template_retained_bytes`](../configuration.md#openjdexpr_template_retained_bytes) *(the walk-wide bound that upper-bounds one table)* | [`expr.let_retained_bytes`](../worker-configuration.md#exprlet_retained_bytes) |
 
 Four properties of that surface are worth stating here rather than only in
 the configuration guides:
@@ -672,37 +684,62 @@ the configuration guides:
    against this repository's own reference presets (`presets/sqi/*.yaml`) —
    whose worst case costs 15 positions — with wide headroom. On the
    **worker**, tightening rejects work *after* the job was accepted, so the
-   floors track the largest value a legitimately accepted assignment could
-   need: the server's own defaults for the two per-evaluation dimensions, and
-   2,000 positions against E4c's worked figure of 1,841 for a generous
-   session. That sizing pins the floors to the server's **defaults**, not to
-   a particular server's configured values — which is why property 4 exists.
+   floors are sized well above what a preset happens to cost: the server's own
+   **defaults** for the two per-evaluation dimensions, and 2,000 positions
+   against E4c's worked figure of 1,841 for a generous session.
+
+   **A worker at its floors cannot be assumed to run everything this server
+   accepts, and the floors do not claim it.** They are fixed numbers sized
+   against the server's *defaults*; the server's actual limits are themselves
+   configurable, up to 10x those defaults, and no worker reads them. Two of
+   the five are further apart still: `expr.let_retained_bytes`' floor is a
+   *tenth* of `openjd.expr_template_retained_bytes`' default. Setting a worker
+   to its floors and raising a server key is a supported thing to do, and what
+   happens then is property 4 — the work is **withheld**, visibly — not a
+   per-task failure after acceptance. An earlier revision of this paragraph
+   said the floors "track the largest value a legitimately accepted assignment
+   could need"; `internal/worker/fmtres/exprlimits.go` withdrew exactly that
+   sentence as false, and it should not have been lifted here.
 3. **The ceilings are not all the same kind of bound.** The ones whose
    absence produced measured multi-minute requests and multi-gigabyte heaps
    are **catastrophe** ceilings — one order of magnitude above the default,
    deliberately not a preference. The rest are **policy** ceilings, wide but
    finite, sized against what a legitimate template plausibly needs.
 4. **The server↔worker relation is enforced at runtime, not at load.** Each
-   worker advertises its four comparable caps in its registration message;
-   the server persists them and the scheduler **withholds EXPR work** from
-   any worker whose caps undercut the limits this server accepts templates
-   under. That is a per-job refusal, not a per-host one: a tightened worker
-   keeps running every base-spec job. Neither binary can validate the
-   relation on its own — the worker does not read the server's
-   configuration, and by design does not receive it.
+   worker advertises all five of its caps in its registration message; the
+   server persists them and the scheduler **withholds EXPR work** from any
+   worker whose caps undercut the limits this server accepts templates under.
+   That is a per-job refusal, not a per-host one: a tightened worker keeps
+   running every base-spec job. Neither binary can validate the relation on
+   its own — the worker does not read the server's configuration, and by
+   design does not receive it.
 
-**The gate identifies an EXPR job by scanning the raw template for the bytes
-`EXPR`, not by parsing it** (`jobMayUseEXPR`,
-`internal/scheduler/exprcaps.go`). That is a deliberate superset, and it has
-one live consequence today: on a farm whose workers are tighter than the
-server, a **base-spec** template that merely mentions the string — a comment,
-an environment variable such as `HOUDINI_EXPR_CACHE` — is withheld from every
-short worker and flagged with a reason naming EXPR limits it does not use. An
-operator can hit this without using EXPR at all. The heuristic only ever errs
-toward withholding, never toward dispatching wrongly, and the fix is the same
-either way: raise the workers, or lower the server. The exact fix — persisting
-the declared extension list on the job row at submission and reading a column
-on the lease path — is recorded in that function's own comment as later work.
+   The fifth dimension was not compared when this gate shipped, on the
+   reasoning that the server meters no per-table scope. It does not — but the
+   template-wide retained-bytes budget is a valid **upper bound** on any one
+   table, and without that comparison a worker at its `expr.let_retained_bytes`
+   floor accepted, and then failed once per task, a `let:` block the server
+   had accepted. Comparing against the per-*evaluation* memory limit instead
+   would have been unsound (a table accumulates: eight 1 MB bindings are
+   accepted by a default server and rejected by a 1 MB table), and comparing
+   against the sufficient `50 x` form would exceed the worker key's own legal
+   maximum. `internal/scheduler/exprcaps.go` carries the arithmetic.
+
+**The gate identifies an EXPR job by scanning the raw template, not by parsing
+it** (`jobMayUseEXPR`, `internal/scheduler/exprcaps.go`): it requires both the
+bytes `EXPR` and the bytes `extensions`, the key any declaration sits under.
+That is still a deliberate superset. It no longer matches a **base-spec**
+template that merely mentions the string — a comment, or an environment
+variable such as `HOUDINI_EXPR_CACHE` — which previously meant an operator
+could have a job withheld from every short worker, and its tasks left `ready`
+indefinitely, without using EXPR at all. What still matches is a template that
+declares some *other* extension and mentions `EXPR` elsewhere; no conformance
+fixture and no shipped preset does. A line-scoped check was measured and
+rejected: it matches none of the 209 EXPR fixtures, because the block-sequence
+form puts the value on its own line, and a false negative is the direction that
+re-opens the incident. The exact fix — persisting the declared extension list
+on the job row at submission and reading a column on the lease path — is
+recorded in that function's own comment as later work.
 
 ## Known gaps
 
@@ -717,21 +754,28 @@ on the lease path — is recorded in that function's own comment as later work.
   catastrophically-generous bound on total tasks per job (a distinct,
   task-count dimension — see "Template-wide expression budget" above).
 - **No budget is denominated in time.** The position and byte budgets bound
-  *count* and *memory*, and that is all they claim. The wall-clock worst
-  case remains roughly 9.5 minutes of server CPU for one request with every
-  budget respected, and **that figure has been measured too low twice** —
-  treat it as a floor on the worst case, not a proof of it. Making these
+  *count* and *memory*, and that is all they claim. The wall-clock worst case
+  at the default limits is now measured at roughly **17–24 minutes** of server
+  CPU for one request with every budget respected, and about **40 hours** at
+  the two configurable maxima. **That figure has now been measured too low
+  three times** — 9.5 minutes was the previous revision's, from a construction
+  that does not maximize cost per operation — so treat it as a floor on the
+  worst case, not a proof of it. Making these
   limits operator configuration (E4d) did not change this; it made it
   adjustable in the wrong direction as well as the right one, which is why
   every operator-facing surface now says so. Closing it needs a deadline or
   a work-clock, not a counter — a different mechanism, and later work.
 - **The cross-binary gate is necessary, not sufficient.** A worker at parity
   with the server can still exhaust its own budget on a concrete value phase
-  2 only had a placeholder for. That residual is what the worker's generous
-  defaults exist for; do not read the gate as a guarantee that an accepted
-  job runs. It is also **inert for genuine EXPR jobs** until the registry
-  status flips, since no EXPR template can be submitted today — the byte-scan
-  false positive above is the one live path.
+  2 only had a placeholder for, and the per-table dimension is compared
+  against a walk-wide bound that measures a different scope in both
+  directions (it ignores the worker's whole-table accounting of job
+  parameters, and over-counts a template that spreads its budget across many
+  steps). That residual is what the worker's generous defaults exist for; do
+  not read the gate as a guarantee that an accepted job runs. It is also
+  **inert for genuine EXPR jobs** until the registry status flips, since no
+  EXPR template can be submitted today — the byte-scan false positive above
+  is the one live path.
 - **A worker's advertised caps are not surfaced in the API or the web UI.**
   They are persisted on the worker row, but an operator diagnosing "why is
   this host getting no EXPR work" reads the registration warning or the

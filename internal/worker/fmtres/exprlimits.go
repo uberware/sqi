@@ -152,6 +152,16 @@ type ExprLimits struct {
 	// OOM construction described on MemoryLimit. Its absence is not
 	// hypothetical.
 	//
+	// IT IS ADVERTISED AND COMPARED, against the server's TEMPLATE-wide
+	// retained-bytes budget. There is no per-table quantity on the server to
+	// pair it with, but a template-wide sum is a valid upper bound on any one
+	// of that template's tables, and comparing against it is what closed the
+	// configuration the wave's final review found: a worker at this field's
+	// floor rejecting, once per task, a let: block the server had accepted.
+	// internal/scheduler/exprcaps.go carries the full argument, including why
+	// comparing against the server's per-EVALUATION memory limit instead
+	// would have been unsound.
+	//
 	// TWO PROPERTIES OF THE DEFAULT WORTH KNOWING BEFORE MOVING IT, both
 	// inherited unchanged from the constant it replaces (this wave changes no
 	// default, by requirement):
@@ -207,11 +217,13 @@ type ExprLimits struct {
 // post-acceptance per-task failure this whole paragraph is about. Sizing these
 // floors from the server's configured value is still impossible here (the
 // worker does not read the server's config, and by choice does not receive
-// it). What E4d Task 3 added is the other direction: the worker ADVERTISES all
-// four related values at registration and the server withholds EXPR work from
-// a worker that is short in ANY of them, operations and memory included -- so
-// the consequence of a floor that is too low for a given server is now "this
-// host runs no EXPR jobs", not "every task of an accepted job fails here".
+// it). What E4d Task 3 added is the other direction: the worker ADVERTISES
+// its caps at registration and the server withholds EXPR work from a worker
+// that is short in ANY compared dimension -- so the consequence of a floor
+// that is too low for a given server is now "this host runs no EXPR jobs",
+// not "every task of an accepted job fails here". ALL FIVE are advertised and
+// compared: Task 3 shipped with four, and the wave's final review found the
+// fifth (LetRetainedBytes) reachable through legal configuration and added it.
 // The floors themselves still promise nothing about a particular server. Each
 // affected field says so in its own comment; do not re-generalize the promise
 // here.
@@ -315,10 +327,28 @@ const (
 	// counted alongside it, so anything smaller would be a floor that rejects
 	// accepted work.
 	//
-	// Ceiling: one order of magnitude above the default. Catastrophe bound:
-	// this is the dimension the measured 495 MB OOM lived in, and the worst
-	// case an operator can hand a host is this value plus one in-flight
-	// evaluation's MemoryLimit, per table, per concurrent task slot.
+	// IT IS A TENTH OF THE SERVER'S DEFAULT template-wide retained-bytes
+	// budget, which is not an oversight but the same shape as the operation
+	// and memory floors above: they track the server's DEFAULTS and cannot
+	// track its configured values. One binding is the least a table can
+	// usefully hold; a server accepts a whole template's worth. A worker left
+	// at this floor therefore promises nothing about even a DEFAULT server,
+	// and is offered no EXPR work until either it is raised or
+	// openjd.expr_template_retained_bytes is lowered to meet it. That is
+	// visible -- a registration WARN naming both keys, and an unschedulable
+	// reason on the task -- rather than a per-task failure after acceptance,
+	// which is what internal/scheduler's fifth comparison bought.
+	//
+	// Ceiling: one order of magnitude above the default, and equal to
+	// internal/openjd's MaxExprTemplateRetainedBytes -- which, as with
+	// AssignmentPositions above, is the load-bearing half: the server
+	// compares this value against openjd.expr_template_retained_bytes, so
+	// this ceiling must be able to reach the highest value that key can
+	// legally take, or the relation would be unsatisfiable by configuration.
+	// Catastrophe bound: this is the dimension the measured 495 MB OOM lived
+	// in, and the worst case an operator can hand a host is this value plus
+	// one in-flight evaluation's MemoryLimit, per table, per concurrent task
+	// slot.
 	MinExprLetRetainedBytes int64 = 1_000_000
 	MaxExprLetRetainedBytes int64 = 100_000_000
 )

@@ -150,7 +150,7 @@ func leaseOnce(t *testing.T, s *Scheduler, w store.Worker) int {
 // Now the scheduler refuses to lease the job to that worker at all.
 //
 // Every dimension is exercised separately so that removing any one comparison
-// fails exactly one sub-test -- four dimensions sharing one row are one
+// fails exactly one sub-test -- five dimensions sharing one row are one
 // dimension.
 func TestExprCaps_ViolationThroughConfigurationIsCaught(t *testing.T) {
 	dflt := openjd.DefaultExprLimits()
@@ -458,7 +458,7 @@ func TestExprCaps_UnadvertisedCapsAreThePreE4dDefaults(t *testing.T) {
 // the gate would refuse every worker in the farm and EXPR work would never run.
 //
 // E4d Task 2 established this for positions; it holds for the other three by
-// their existing ranges, and this pins all four so a later range change cannot
+// their existing ranges, and this pins all five so a later range change cannot
 // break it silently.
 func TestExprCaps_RelationIsSatisfiableAtEveryLegalServerSetting(t *testing.T) {
 	tests := []struct {

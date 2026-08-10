@@ -797,10 +797,10 @@ out-of-range value is a **startup failure, not a clamp**.
 
 ### Four caveats before you change any of them
 
-**1. Tightening is not free here the way it is on the server.** Four of these
-five have a server-side counterpart metering the same thing one phase
-earlier, and this worker must not be **tighter** than the server it reports
-to:
+**1. Tightening is not free here the way it is on the server.** Every one of
+these five is compared against a server-side limit metering the same values
+one phase earlier, and this worker must not be **tighter** than the server it
+reports to:
 
 | This worker's key | must be ≥ the server's |
 |---|---|
@@ -808,8 +808,15 @@ to:
 | `expr.memory_limit` | `openjd.expr_memory_limit` |
 | `expr.assignment_positions` | `openjd.expr_template_positions` |
 | `expr.assignment_retained_bytes` | `openjd.expr_template_retained_bytes` |
+| `expr.let_retained_bytes` | `openjd.expr_template_retained_bytes` |
 
-This worker advertises all four when it registers, and the server **refuses
+The last row pairs a **per-table** limit with a **template-wide** one, because
+the server meters no per-table scope. A whole template's retained bytes is a
+valid upper bound on any one of its tables, so the comparison is conservative
+— see [`expr.let_retained_bytes`](#exprlet_retained_bytes), which is where the
+consequence of this key's low floor is spelled out.
+
+This worker advertises all five when it registers, and the server **refuses
 to dispatch EXPR jobs to it while any of them is short** — it does not accept
 the job and then fail it here, once per task, naming a budget the submitter
 never saw. So the cost of tightening past the server is that this host stops
@@ -820,29 +827,37 @@ exists for — the latter only while the server's unschedulable sweep is on
 a task simply waits `ready` with nothing written on it, and the one-off
 registration log line is the only signal — and because the *server* emits it,
 it lands in the server's own log (Admin → Server log, component `server`), not
-in this worker's diagnostics. `expr.let_retained_bytes` has no server
-counterpart, is not advertised, and is not part of the comparison.
+in this worker's diagnostics.
 
 The relation is **necessary, not sufficient.** Phase 3 evaluates concrete
 values where the server had placeholders, so the same expression can
 legitimately cost more here than it did at submit — which is exactly why the
 shipped defaults are 100x the server's operation budget and 20x its memory
 budget rather than equal to them. Matching the server is the floor, not a
-guarantee.
+guarantee: an accepted job can still exhaust a worker that passes every
+comparison, and no configuration on either side makes that impossible.
 
 **2. `operation_limit` and `assignment_positions` multiply.** The cumulative
 operation ceiling for one assignment is their product — 10¹⁰ at the defaults
 (1,000,000 x 10,000), and 10¹² if both are raised to their maxima
 (10,000,000 x 100,000), **100x**. Nothing counts operations cumulatively; the
-product is a derived upper bound, not a measurement.
+product is a derived upper bound, not a measurement. `memory_limit` is not a
+third multiplier on it: raising that lets one evaluation hold a larger value,
+and measured on this branch it does **not** change what an operation costs in
+time.
 
 **3. None of these bounds wall-clock time.** Specification section 1.3.10
 rule 3 prices a string operation at the value's length divided by 256, so
 byte-heavy work is charged almost nothing:
 `("x" * 900000).upper()` and `("x" * 900000).title()` are charged **the same
-7,034 operations** and differ by 9x in CPU (~6 ms vs ~57 ms). Raising a limit
-lengthens the worst assignment this host can be asked to resolve, roughly in
-proportion, and no value makes a slow one impossible.
+7,034 operations** and differ by 9x in CPU (~6 ms vs ~58 ms), and a
+regex over the same string is charged **half** as much for nearly the slowest
+time — a ~17x spread in cost per operation. Raising a limit lengthens the
+worst assignment this host can be asked to resolve, roughly in proportion, and
+no value makes a slow one impossible. Unlike the server's, this cost is
+charged to the task slot the assignment already occupies; see
+[the server's caveat 2](configuration.md#2-none-of-these-limits-bounds-wall-clock-time)
+for the measured numbers, which apply per position here too.
 
 **4. The byte dimensions count cumulative allocation, not peak live
 retention.** A session that never holds more than a few MB live at once is
@@ -953,11 +968,31 @@ budget its `let:` block never asked for. A block that would push the table
 past this stops there with an error rather than spending a fresh evaluation
 budget per remaining binding.
 
-This is the key with **no server counterpart**: it bounds one table, a scope
-the server's template-wide walk does not meter separately, so it is
-deliberately excluded from the registration comparison in caveat 1. It may
-legally be set higher than `expr.assignment_retained_bytes`; the tighter of
-the two simply becomes the effective one.
+It bounds **one table**, a scope the server's template-wide walk does not
+meter separately — but it is advertised and compared all the same, against
+`openjd.expr_template_retained_bytes` (caveat 1's last row). A whole
+template's retained bytes is a valid upper bound on any one of its tables, so
+the comparison is conservative in one direction only: it can withhold EXPR
+work from a worker whose per-table limit was never going to be the binding
+constraint. It is **not** sufficient in the other — see below.
+
+> **Read this before lowering it.** The floor of `1000000` is a **tenth** of
+> `openjd.expr_template_retained_bytes`' default. A worker set anywhere below
+> the server's value for that key is offered **no EXPR work at all** until one
+> of the two moves. That is the intended outcome, and it is the visible one —
+> a registration `WARN` and an `unschedulable_reason` naming both keys. What
+> it replaced is the invisible one: before this comparison existed, such a
+> worker accepted the assignment and failed **every task of the job**, once
+> per task, over a `let:` block the server had already accepted.
+
+Even with the comparison satisfied, this key can still reject an accepted
+job — the accounting measures the *whole table*, and phase 3 binds concrete
+values the server only had placeholders for (`"x" * Task.Param.N` costs
+nothing at submit). Sizing it at exactly the server's value is the floor, not
+a guarantee.
+
+It may legally be set higher than `expr.assignment_retained_bytes`; the
+tighter of the two simply becomes the effective one.
 
 ```yaml
 expr:

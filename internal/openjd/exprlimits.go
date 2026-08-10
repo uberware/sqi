@@ -41,13 +41,16 @@ type ExprLimits struct {
 	// CATASTROPHE BOUND. It is one of the two multiplicands in the derived
 	// cumulative-operation ceiling (TemplatePositions x SubmissionOperations)
 	// and it scales the measured worst-case wall clock of a single request
-	// directly: E4c measured ~9.5 minutes of server CPU for one 4 MiB body at
-	// the default 10,000, because op-cheap byte-heavy work over the ~900 KB
+	// directly: the worst single request measured on this branch is ~17
+	// minutes of server CPU at the default 10,000 (E4d's whole-branch review;
+	// E4c's ~9.5 minutes came from a payload that leaves a third of the
+	// budget unspent), because op-cheap byte-heavy work over the ~900 KB
 	// SubmissionMemoryBytes allows to be live spends only a few thousand of
 	// those 10,000 operations for tens of milliseconds -- measured, a regex
-	// (re_findall) 3,519 for ~50 ms and a case mapping (.title()) 7,034 for
-	// ~57 ms; an earlier revision gave ~3,500 for both. Doubling this
-	// number roughly doubles that floor. Nothing in this package measures
+	// (re_findall) 3,519 for ~50 ms, a case mapping (.title()) 7,034 for
+	// ~57 ms, and that same regex twice inside a comprehension 7,048 for
+	// ~103 ms; an earlier revision gave ~3,500 operations for the first two
+	// alike. Doubling this number roughly doubles that floor. Nothing in this package measures
 	// TIME, so the only lever on the worst case is this count and the position
 	// count -- which is why internal/config caps it at one order of magnitude
 	// above the default rather than leaving it open-ended.
@@ -150,16 +153,23 @@ const (
 	// MinExprSubmissionOperations / MaxExprSubmissionOperations bound
 	// [ExprLimits.SubmissionOperations].
 	//
-	// Ceiling: exactly one order of magnitude above the default. E4c measured
-	// the worst-case single request at ~9.5 minutes of server CPU with this
-	// dimension at 10,000, and nothing in this package measures time, so the
-	// only honest statement about a raised value is that it lengthens that
-	// floor proportionally. Ten times is a deliberate limit on how much worse
+	// Ceiling: exactly one order of magnitude above the default. The
+	// worst-case single request measured with this dimension at 10,000 is
+	// ~17 minutes of server CPU (~24 if a position spends its whole budget at
+	// the worst measured rate), and nothing in this package measures time, so
+	// the only honest statement about a raised value is that it lengthens
+	// that floor proportionally -- at both maxima the same construction
+	// measures ~40 hours. Ten times is a deliberate limit on how much worse
 	// an operator can make the worst request the farm can be asked to serve.
 	//
-	// Floor: two orders of magnitude above the handful of operations a
-	// reference preset's expressions actually spend, and one order of
-	// magnitude below the default so tightening remains meaningful.
+	// Floor: THREE orders of magnitude above what a reference preset's
+	// expressions actually spend, and one order of magnitude below the
+	// default so tightening remains meaningful. The measurement, re-run by
+	// TestExprLimits_FloorsAcceptReferencePresets on every test run, is that
+	// the most expensive single evaluation in any of the six presets costs
+	// exactly 1 operation -- so the headroom is 1000x. An earlier revision of
+	// this sentence said "two orders of magnitude above the handful of
+	// operations"; there is no handful, and the ratio was understated.
 	MinExprSubmissionOperations int64 = 1_000
 	MaxExprSubmissionOperations int64 = 100_000
 
@@ -167,9 +177,22 @@ const (
 	// [ExprLimits.SubmissionMemoryBytes].
 	//
 	// Ceiling: one order of magnitude above the default, a JUDGEMENT, and the
-	// same shape as the other two catastrophe ceilings -- 10 MB of live values
-	// per evaluation is as much as an operator may permit an unauthenticated
-	// submission to hold.
+	// same shape as the other two catastrophe ceilings.
+	//
+	// WHAT THAT CEILING REALLY PERMITS is not 10 MB, and saying "10 MB of
+	// live values per evaluation is as much as an operator may permit an
+	// unauthenticated submission to hold" -- as an earlier revision of this
+	// paragraph did -- understates it by 50x. The charge against
+	// TemplateRetainedBytes lands ONCE PER let: BLOCK, after that block has
+	// finished evaluating, so a single block transiently holds up to
+	// maxLetBindings (50, Template Schemas section 3.6) x THIS number before
+	// any counter sees it: 50 MB at the default and 500 MB at this ceiling,
+	// per concurrently-resolving request. That product, not this number, is
+	// what a host's RAM has to be sized against, and it is the reason this
+	// ceiling is a tight multiple rather than an open range. See
+	// [ExprLimits.TemplateRetainedBytes] and defaultTemplateRetainedBytes'
+	// own comment in exprcheck.go, which state the same product from the
+	// other end.
 	//
 	// It coincides with internal/openjd/expr's fixed maxStringBytes, and an
 	// earlier revision mistook the coincidence for a derivation ("above it the
@@ -179,8 +202,15 @@ const (
 	// re-derive this ceiling from maxStringBytes; if the argument for 10x ever
 	// changes, this number is free to move with it.
 	//
-	// Floor: 4 KB, three orders of magnitude above the few hundred live bytes
-	// a reference preset's largest expression produces.
+	// Floor: 4 KB, 64x the live bytes a reference preset's largest expression
+	// produces. That measurement -- 64 bytes, re-run by
+	// TestExprLimits_FloorsAcceptReferencePresets, and stated correctly in
+	// this file's own floors paragraph above -- is what the number is sized
+	// from. An earlier revision of this sentence said "three orders of
+	// magnitude above the few hundred live bytes": both halves were wrong
+	// (the cost is 64 bytes, not a few hundred, and the ratio is ~1.8 orders,
+	// not 3), and it survived the fix round that added the correct paragraph
+	// three screens up.
 	MinExprSubmissionMemoryBytes int64 = 4_096
 	MaxExprSubmissionMemoryBytes int64 = 10_000_000
 
