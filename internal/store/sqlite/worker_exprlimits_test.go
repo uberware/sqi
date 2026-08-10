@@ -4,21 +4,26 @@ package sqlite_test
 
 import (
 	"context"
+	"reflect"
 	"testing"
 
 	"github.com/uberware/sqi/internal/store"
 )
 
-// TestWorker_ExprLimitsRoundTrip pins migration 00026 and the four accessors
-// that carry a worker's advertised OpenJD EXPR caps through SQLite.
+// TestWorker_ExprLimitsRoundTrip pins migration 00026 and the accessors that
+// carry a worker's advertised OpenJD EXPR caps through SQLite.
 //
 // The scheduler refuses to dispatch an EXPR job to a worker whose caps are
 // below the server's configured limits (internal/scheduler/exprcaps.go). If
 // these values did not survive the round trip they would read back as zero,
 // which the scheduler interprets as "not advertised" — i.e. as the worker's
 // compiled-in defaults — and a genuinely tight worker would be handed work it
-// cannot run. The four values are distinct on purpose: this is four int64s
-// through one JSON column, where a transposition round-trips cleanly.
+// cannot run. The values are distinct on purpose: this is FIVE same-typed
+// int64s through one JSON column, where a transposition round-trips cleanly and
+// no compiler sees it. Every field must appear in both literals below -- a
+// four-of-five literal leaves the omitted dimension zero on both sides of the
+// comparison, which is the one shape this test cannot detect. The field count
+// is asserted at the end for exactly that reason.
 func TestWorker_ExprLimitsRoundTrip(t *testing.T) {
 	s := openTestStore(t)
 	ctx := context.Background()
@@ -29,6 +34,7 @@ func TestWorker_ExprLimitsRoundTrip(t *testing.T) {
 		MemoryLimit:             2_222_222,
 		AssignmentPositions:     3_333,
 		AssignmentRetainedBytes: 4_444_444,
+		LetRetainedBytes:        5_555_555,
 	}
 	registered, err := s.RegisterWorker(ctx, store.Worker{
 		ID: "w1", FarmID: "f1", Hostname: "h1", Status: store.WorkerStatusOnline,
@@ -56,6 +62,7 @@ func TestWorker_ExprLimitsRoundTrip(t *testing.T) {
 		MemoryLimit:             1_000_000,
 		AssignmentPositions:     2_000,
 		AssignmentRetainedBytes: 2_000_000,
+		LetRetainedBytes:        1_000_000,
 	}
 	if _, err := s.RegisterWorker(ctx, store.Worker{
 		ID: "w1", FarmID: "f1", Hostname: "h1", Status: store.WorkerStatusOnline,
@@ -79,6 +86,28 @@ func TestWorker_ExprLimitsRoundTrip(t *testing.T) {
 	}
 	if updated.ExprLimits != tightened {
 		t.Errorf("UpdateWorker returned ExprLimits %+v, want %+v", updated.ExprLimits, tightened)
+	}
+
+	// The comparisons above are only as complete as the literals that feed
+	// them. A dimension left out of BOTH literals is zero on both sides of
+	// every == in this test, so it passes while nothing checks the column
+	// carries it -- and that is not hypothetical: this test shipped covering
+	// four of five fields after the fifth was added. Counting fields would
+	// only catch the NEXT one; assert instead that every field of both
+	// literals is actually populated, which catches an omission in the literal
+	// that already exists.
+	for _, lit := range []struct {
+		name string
+		v    store.WorkerExprLimits
+	}{{"want", want}, {"tightened", tightened}} {
+		rv := reflect.ValueOf(lit.v)
+		for i := range rv.NumField() {
+			if rv.Field(i).IsZero() {
+				t.Errorf("%s.%s is zero: a dimension this test does not populate round-trips as "+
+					"zero on BOTH sides of every comparison above, so the column could drop it "+
+					"with nothing failing", lit.name, rv.Type().Field(i).Name)
+			}
+		}
 	}
 }
 

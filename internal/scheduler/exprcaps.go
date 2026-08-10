@@ -144,12 +144,24 @@ func workerExprCapsOrLegacy(c store.WorkerExprLimits) store.WorkerExprLimits {
 // THE FIFTH IS THE ONE THAT WAS MISSING, and why the server's TEMPLATE-wide
 // budget is what it is compared against. expr.let_retained_bytes bounds ONE
 // phase-3 symbol table; the server meters no such scope, so there is no exact
-// counterpart to pair it with. What there is, is a bound on the same VALUES at
-// a WIDER scope: openjd.expr_template_retained_bytes is the cumulative size of
-// every let: binding the whole walk retains, so for any template this server
-// ACCEPTS, the bindings landing in any ONE of its tables are a subset of that
-// sum and therefore fit under it. A wider scope is a valid upper bound; the
-// comparison is conservative, never optimistic.
+// counterpart to pair it with. What there is, is a bound on PART of the same
+// quantity at a WIDER scope: openjd.expr_template_retained_bytes is the
+// cumulative size of every let: binding the whole walk retains, so for any
+// template this server ACCEPTS, the LET BINDINGS landing in any one of its
+// tables are a subset of that sum and therefore fit under it.
+//
+// THAT IS A BOUND ON THE LET BINDINGS AND ON NOTHING ELSE, and the difference
+// is the residual this comparison does not close. The server charges only the
+// NET DELTA a let: block adds (exprcheck.go's stepLet diff and the script
+// blocks' before/after subtraction, which cancels the baseline); the worker
+// measures the WHOLE TABLE it is about to bind into -- Task.Param.*,
+// Task.File.*, Session.*, Env.File.* included. A 3 MB string parameter puts a
+// table at ~6 MB before a single binding is evaluated (measured; see
+// evalLetBindings' own FIX ROUND 3 note), which this server never charged and
+// therefore never compared. So a worker set EXACTLY at
+// openjd.expr_template_retained_bytes can still fail an accepted job on its
+// parameters alone. This comparison NARROWS the gap; it does not close it, and
+// it must not be quoted as though it did.
 //
 // It is DELIBERATELY CONSERVATIVE in one direction: a template that spreads the
 // template-wide budget across many steps needs far less than that in any one
@@ -171,8 +183,10 @@ func workerExprCapsOrLegacy(c store.WorkerExprLimits) store.WorkerExprLimits {
 // that comparison is 50 x openjd.expr_memory_limit -- 500,000,000 at the
 // server's own ceiling, which exceeds fmtres.MaxExprLetRetainedBytes
 // (100,000,000) and would therefore be unsatisfiable by any legal worker
-// configuration. The template-wide budget is both satisfiable (both ceilings
-// are 100,000,000) and sound.
+// configuration. The template-wide budget is satisfiable at every legal server
+// setting (both ceilings are 100,000,000) and is the tightest server-side
+// quantity that provably upper-bounds one table's LET BINDINGS -- which is why
+// it was chosen, not because it bounds everything the worker meters.
 //
 // WHAT IT STILL DOES NOT PROMISE, for the same reason as the other three: the
 // worker measures the WHOLE table, parameters included, and phase 3 binds
