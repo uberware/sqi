@@ -76,31 +76,80 @@ contain, per declared type — quoting its own table:
 | PATH | `list[FormatString]` | `list[FormatString] \| ListExpressionString` |
 
 Two distinct shapes fall out of that table, handled by different code and
-producing different results:
+producing different results.
 
-**A `<ListExpressionString>` is a whole-field format string that is *exactly
-one* `{{ ... }}` reference** (`fmtstring.LoneRef` — no surrounding text),
-evaluating to a list — e.g.
-`range: "{{ [Param.Scale * 2, Param.Scale + 0.5] }}"` for a FLOAT parameter
-(the spec's own worked example, and one of the three vendored
+**The whole-field target, per declared type.** A whole-field `range` that is
+*exactly one* `{{ ... }}` reference (`fmtstring.LoneRef` — no surrounding
+text) is evaluated against the type section 1.3.12 gives that field:
+
+| Declared type | Whole-field target |
+| --- | --- |
+| INT, CHUNK[INT] | `int \| string \| range_expr \| list[int]` (match-first) |
+| FLOAT | `list[float]` |
+| STRING | `list[string]` |
+| PATH | `list[path]` |
+
+**One function produces that target for both layers.** The checker
+(`checkParameterSpaceExpressions`, `internal/openjd/exprcheck.go`) and the
+resolver (`evalRangeExprField`, `internal/openjd/resolve.go`) both call
+`rangeExprFieldType`, so their accept/reject verdicts *and* their rejection
+messages are identical by construction. An earlier revision of this document
+described two different `expr.Type` values "provably equivalent for every
+accept/reject verdict"; they were equivalent only because both were equally
+wrong — see the note below.
+
+**FLOAT/STRING/PATH: `<ListExpressionString>`.** These three rows extend the
+field with a format string containing an expression that evaluates to a
+**list** — e.g. `range: "{{ [Param.Scale * 2, Param.Scale + 0.5] }}"` for a
+FLOAT parameter (the spec's own worked example, and one of the three vendored
 `expr1.3.11--*-range-expression.yaml` conformance fixtures — named for the
 section's number *before* it was renumbered to 1.3.12, not a citation to a
-section that no longer exists). Per section 1.3.2's "exactly `{{<expr>}}`"
-rule, the target type is inherited from the field itself:
-`internal/openjd/resolve.go`'s `evalRangeExprList` evaluates the expression
-against `list[<the parameter's own element type>]` —
-`list[float]`/`list[string]`/`list[path]` for FLOAT/STRING/PATH, and
-`list[int]` for INT/CHUNK[INT] (a genuine `range_expr` result, e.g. from
-`range_expr(...)`, converts to `list[int]` via section 1.2.3's own list-
-coercion rule, with no detour through range-expression text). Each resulting
-list element becomes one `RangeList` entry, rendered to text with
-`Value.String()`. The phase-2 checker (`checkParameterSpaceExpressions`,
-`internal/openjd/exprcheck.go`) verifies the same field against
-`rangeExprFieldType(type)` — a `range_expr | list[int]` **union** for
-INT/CHUNK[INT] rather than resolve.go's plain `list[int]` — a deliberately
-different `expr.Type` value that is provably equivalent for every accept/
-reject verdict (`rangeExprFieldType`'s own doc comment), not a second,
-independently-chosen target that needs reconciling with the resolver's.
+section that no longer exists). Each resulting list element becomes one
+`RangeList` entry, rendered to text with `Value.String()`, and `RangeExpr` is
+cleared.
+
+**INT/CHUNK[INT]: four members, two outcomes.** Only the INT row carries
+section 1.3.12's `RangeString` note, because only INT/CHUNK[INT] ever had the
+`<IntRangeExpr>` text form for an expression to be "**in addition to**". So
+the whole-field result is dispatched on which member it landed in, and the
+order is load-bearing:
+
+- a **`list[int]`** result, or a **`range_expr`** result (e.g. from
+  `range_expr(...)`, converted with section 1.2.3's own `range_expr →
+  list[int]` rule via `expr.Coerce`, with no detour through range-expression
+  text), becomes the range's **values** in `RangeList`, with `RangeExpr`
+  cleared;
+- an **`int`** or a **`string`** result is range **text**: it is rendered with
+  `Value.String()` into `RangeExpr` and read by `parseIntRangeExpr` under
+  `internal/openjd`'s own base-spec policy, exactly as a hand-typed
+  `"1-100:2"` is. So `range: "{{Param.Frames}}"` with a `STRING` `Frames` of
+  `"1-100:2"` yields the same 50 tasks with or without `extensions: [EXPR]`,
+  and `range: "{{Param.N + 1}}"` with `N = 7` yields the single task `8`.
+
+Recognising the two list-shaped members **before** the text fallback is what
+keeps a lone `{{ range_expr(...) }}` out of `parseIntRangeExpr` — see "Why the
+whole-field/embedded distinction matters" below.
+
+> **Corrected during EXPR sub-project E4b's whole-branch review.** Both layers
+> originally targeted only `range_expr | list[int]`, omitting `int` and
+> `string`. Measured at that HEAD, `range: "{{Param.Frames}}"` with a `STRING`
+> `Frames` was **rejected at template upload** — while the identical template
+> *without* `extensions: [EXPR]` expanded correctly, so declaring the
+> extension *removed* base-spec capability at this field. All six of this
+> repo's reference render presets (`presets/sqi/*.yaml`) use that exact shape.
+> The required target is stated verbatim by the conformance suite
+> (`EXPR/jobs/expr1.2.3--union-target-type.test.yaml:12`), which exercises all
+> four members.
+
+**Symbol table: a step's own `let:` names are in scope here.** Section 3.6.2
+row 1 makes the names a step template's `let:` block binds visible in
+`parameterSpace`, and both layers build that table from the same shared pair
+of helpers (`stepLetSymbols` and `rangeScopeSymbols`, `exprcheck.go`) — the
+`ScopeJob` fixed and family symbols plus the step's let names, and nothing
+else. `ResolveParameterSpaceParams` therefore takes the `*StepTemplate`
+alongside the `*JobTemplate`. (Before the same review, only the checker saw
+those names, so a step-level `let:` plus a range that referenced it validated
+at upload and then failed at submit with `unknown symbol`.)
 
 **Every other RangeList entry or RangeExpr shape — literal text, or a
 `{{...}}` reference embedded in surrounding text — is not a whole-field list
@@ -119,7 +168,7 @@ general embedded-reference rule: unconstrained `expr.TAny`, rendered with
 way, the result is **text**,
 resolved by `resolve.go`'s `resolveRangeExprField`/`resolveRangeListEntry`
 exactly as any other embedded reference resolves — never a value handed
-directly to `evalRangeExprList`'s list-producing path.
+directly to `evalRangeExprField`'s list-producing path.
 
 **Why the whole-field/embedded distinction matters for INT/CHUNK[INT]
 specifically:** `internal/openjd`'s own `<IntRangeExpr>` reader
@@ -150,10 +199,34 @@ defect — see `resolveRangeExprField`'s own doc comment (`resolve.go`) for the
 reasoning — and is pinned by
 `TestResolveParameterSpaceParams_NonLoneRangeExprEmbeddedRangeExprValue`.
 
+**What the checker does *not* judge, and where those errors surface instead.**
+The checker judges an expression's **type**. It never judges the syntax,
+length or value of the range text or range list that expression produces —
+`checkFormatString` discards the evaluated value by design, and at phase 1 a
+symbol-dependent expression has no value to inspect. Three shapes therefore
+type-check and then fail at expansion, all three reported to the submitter as
+a `SubmitValidationError` and none of them able to reach a task:
+
+- a **non-lone** composition whose *composed* text is not valid range syntax
+  (`range: ["x{{ 2.5 }}"]` → `invalid integer "x2.5"`);
+- a **lone text-arm** result that is not valid `<IntRangeExpr>` syntax
+  (`range: "{{ 'abc' }}"` → `invalid integer "abc"`);
+- a **lone empty list** at any type (`range: "{{ [] }}"` → `range list is
+  empty`, or `range produces no values` for CHUNK[INT]) — an empty list is
+  perfectly well *typed*; its length is what is wrong, and length is not a
+  type.
+
+Each is base-spec-equivalent: the same text written as a literal `range` on a
+non-EXPR template fails with the same message, only at validation rather than
+expansion. So what differs is the layer and the JSON pointer, never whether a
+malformed range is caught. All three are pinned by
+`TestRangeCheckerResolverAgreement_KnownNonLoneDivergences`, whose doc comment
+carries the full ruling.
+
 **A computed FLOAT's rendered text is not always what a task receives.**
 Section 1.3.4 ("Float Value Pass-Through",
 `wiki/2026-02-Expression-Language.md:981`) gives computed floats their
-shortest round-tripping decimal string — `evalRangeExprList` and
+shortest round-tripping decimal string — `evalRangeExprField` and
 `resolveRangeListEntry` follow that rule via `Value.String()`, so
 `Param.Scale * 2` with `Scale = 2.5` renders `"5.0"`. But for a FLOAT task
 parameter, that text is not the final value: `internal/openjd/expand.go`'s
