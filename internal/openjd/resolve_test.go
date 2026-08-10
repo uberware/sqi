@@ -865,6 +865,143 @@ func TestResolveParameterSpaceParams_RangeListEntryFloatIsRenormalizedByExpand(t
 	}
 }
 
+// TestResolveParameterSpaceParams_RangeListEntryINTScaleFix is design spec
+// §3's own worked example, and the reason EXPR sub-project E4b Task 2's
+// review amended Task 3's plan to move both layers in one commit: an INT
+// RangeList entry "{{ Param.Scale * 2 }}" with Scale=2.5 evaluates to the
+// float 5.0, which is exactly representable as an int. Once
+// checkParameterSpaceExpressions targets TInt for this position (this
+// task), the checker ACCEPTS it — float -> int is a legal §1.2.3 coercion
+// and 5.0 is integral. Before this test's own fix (threading
+// rangeExprElemType(def.Type) into resolveRangeListEntry's loneTarget too),
+// this function still targeted TargetString and would have rendered "5.0",
+// which expand.go's validateIntList rejects outright ("invalid integer
+// \"5.0\""): checker accepts, expansion fails — design spec §4's drift
+// class. This test proves the fix closes it: resolveRangeListEntry now
+// performs the SAME float -> int coercion the checker verified would
+// succeed, landing on the canonical int text "5" (not "5.0", and not an
+// error), and ExpandParameterSpace accepts that text end to end.
+func TestResolveParameterSpaceParams_RangeListEntryINTScaleFix(t *testing.T) {
+	tmpl := &openjd.JobTemplate{
+		Extensions:           []string{"EXPR"},
+		ParameterDefinitions: []openjd.JobParameter{{Name: "Scale", Type: openjd.JobParamTypeFloat}},
+	}
+	ps := &openjd.StepParameterSpace{
+		TaskParameterDefinitions: []openjd.TaskParamDefinition{
+			{
+				Name:      "P",
+				Type:      openjd.TaskParamTypeInt,
+				RangeList: []string{"{{ Param.Scale * 2 }}"},
+			},
+		},
+	}
+
+	resolved, errs := openjd.ResolveParameterSpaceParams(tmpl, ps, map[string]string{"Scale": "2.5"})
+	if len(errs) != 0 {
+		t.Fatalf("unexpected errors: %v", errs)
+	}
+	if got := resolved.TaskParameterDefinitions[0].RangeList[0]; got != "5" {
+		t.Fatalf("resolve.go's own output = %q, want %q (float->int coercion, not TargetString's float->string \"5.0\")", got, "5")
+	}
+
+	rows, err := openjd.ExpandParameterSpace(resolved)
+	if err != nil {
+		t.Fatalf("ExpandParameterSpace: %v -- the checker accepts this range under the tightened TInt target, so expansion must too", err)
+	}
+	if len(rows) != 1 || rows[0]["P"] != "5" {
+		t.Errorf("expanded rows = %v, want exactly one row with P=5", rows)
+	}
+}
+
+// TestResolveParameterSpaceParams_RangeListEntryINTNonIntegralRejected is
+// TestResolveParameterSpaceParams_RangeListEntryINTScaleFix's other half —
+// design spec §4's agreement instrument requires BOTH directions, not just
+// "the checker's accept resolves cleanly": a NON-integral float entry must
+// now be REJECTED by the resolver too, matching
+// checkParameterSpaceExpressions's own TInt target
+// (TestCheckParameterSpaceExpressions_RangeTargetTypes's INT "entry rejected
+// (wrong scalar type)" row, exprcheck_test.go). Before this task, the
+// permissive TargetString target accepted any scalar unconditionally and
+// would have rendered "2.5" here, silently producing a range value
+// validateIntList rejects only later, at ExpandParameterSpace — never
+// reached by this test, which calls ResolveParameterSpaceParams alone. A
+// range the checker rejects must never reach expansion; proving the
+// resolver itself already refuses it, at the entry's own pointer, is what
+// makes that true regardless of whether a caller checks first.
+func TestResolveParameterSpaceParams_RangeListEntryINTNonIntegralRejected(t *testing.T) {
+	tmpl := &openjd.JobTemplate{
+		Extensions:           []string{"EXPR"},
+		ParameterDefinitions: []openjd.JobParameter{{Name: "Scale", Type: openjd.JobParamTypeFloat}},
+	}
+	ps := &openjd.StepParameterSpace{
+		TaskParameterDefinitions: []openjd.TaskParamDefinition{
+			{
+				Name:      "P",
+				Type:      openjd.TaskParamTypeInt,
+				RangeList: []string{"{{ Param.Scale }}"},
+			},
+		},
+	}
+
+	got, errs := openjd.ResolveParameterSpaceParams(tmpl, ps, map[string]string{"Scale": "2.5"})
+	if got != nil {
+		t.Errorf("expected nil output on error, got %v", got)
+	}
+	if len(errs) != 1 {
+		t.Fatalf("expected 1 error, got %d: %v", len(errs), errs)
+	}
+	if !strings.Contains(errs[0].Pointer, "/parameterSpace/taskParameterDefinitions/0/range/0") {
+		t.Errorf("errs[0].Pointer = %q, want the entry pointer", errs[0].Pointer)
+	}
+	if !strings.Contains(errs[0].Message, "cannot be represented exactly as an int") {
+		t.Errorf("errs[0].Message = %q, want the float->int coercion error", errs[0].Message)
+	}
+}
+
+// TestResolveParameterSpaceParams_RangeListEntryElementTypeRejections is the
+// resolver-side sibling of TestCheckParameterSpaceExpressions_RangeTargetTypes'
+// "entry rejected (wrong scalar type)" table (exprcheck_test.go): for FLOAT
+// and PATH entries too (INT/CHUNK[INT] is the dedicated pair of tests above),
+// a value TargetString would have accepted but rangeExprElemType(typ) does
+// not must now be rejected by the resolver, at the entry's own pointer —
+// design spec §4's "a range the checker rejects must never reach expansion"
+// proven from the resolver's own side, not inferred from the checker table
+// agreeing in principle.
+func TestResolveParameterSpaceParams_RangeListEntryElementTypeRejections(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		typ   openjd.TaskParamType
+		entry string
+	}{
+		// A bool coerces to string unconditionally (section 1.2.3's
+		// catch-all) but has no bool->float rule at all.
+		{name: "FLOAT rejects bool", typ: openjd.TaskParamTypeFloat, entry: "{{ true }}"},
+		// An int coerces to string unconditionally but only a string
+		// coerces to path (section 1.2.3: path <- string only).
+		{name: "PATH rejects int", typ: openjd.TaskParamTypePath, entry: "{{ 5 }}"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			tmpl := &openjd.JobTemplate{Extensions: []string{"EXPR"}}
+			ps := &openjd.StepParameterSpace{
+				TaskParameterDefinitions: []openjd.TaskParamDefinition{
+					{Name: "P", Type: tc.typ, RangeList: []string{tc.entry}},
+				},
+			}
+
+			got, errs := openjd.ResolveParameterSpaceParams(tmpl, ps, map[string]string{})
+			if got != nil {
+				t.Errorf("expected nil output on error, got %v", got)
+			}
+			if len(errs) != 1 {
+				t.Fatalf("expected 1 error, got %d: %v", len(errs), errs)
+			}
+			if !strings.Contains(errs[0].Pointer, "/parameterSpace/taskParameterDefinitions/0/range/0") {
+				t.Errorf("errs[0].Pointer = %q, want the entry pointer", errs[0].Pointer)
+			}
+		})
+	}
+}
+
 // TestResolveParameterSpaceParams_RangeListEntryBaseSpecUnchanged is
 // TestResolveParameterSpaceParams_BaseSpecUnchanged's sibling for the
 // per-entry position: a template that does NOT declare EXPR must keep taking

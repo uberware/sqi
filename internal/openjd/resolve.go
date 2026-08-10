@@ -124,7 +124,7 @@ func ResolveParameterSpaceParams(tmpl *JobTemplate, ps *StepParameterSpace, jobP
 			newList := make([]string, len(def.RangeList))
 			for j, entry := range def.RangeList {
 				eptr := fmt.Sprintf("/parameterSpace/taskParameterDefinitions/%d/range/%d", i, j)
-				resolved, err := resolveRangeListEntry(exprEnabled, entry, syms, scope)
+				resolved, err := resolveRangeListEntry(exprEnabled, entry, def.Type, syms, scope)
 				if err != nil {
 					errs = append(errs, ValidationError{
 						Pointer: eptr,
@@ -286,42 +286,36 @@ func resolveRangeExprField(
 // for byte unchanged from before this task.
 //
 // When exprEnabled is true, entry resolves through resolveFormatStringExpr
-// with target TargetString (exprcheck.go) — matching
+// with target rangeExprElemType(typ) — matching
 // checkParameterSpaceExpressions's own checkFormatString call for a RangeList
-// entry exactly, AS THAT CALL STANDS TODAY: a LONE {{...}} reference is
-// evaluated once against expr.TString (so an int/float/path value naturally
-// coerces to its text form, per section 1.2.3), and anything else (literal
-// text, or a reference embedded in surrounding text) evaluates each embedded
-// reference at expr.TAny and concatenates. Every RangeList entry is a
-// format-string FIELD of one uniform type — string — regardless of the task
-// parameter's own declared Type: the entry's TEXT is what is stored back
-// into RangeList, and expand.go (validateFloatList, PATH's own non-empty
-// check, and so on) is what parses that text into the parameter's actual
-// type, exactly as it already does for a literal (non-EXPR) entry.
+// entry exactly (design spec §3): a LONE {{...}} reference is evaluated once
+// against the task parameter's own declared element type (so an int/float/
+// path value that needs narrowing, e.g. an integral float for an INT entry,
+// gets the SAME §1.2.3 coercion the checker just verified would succeed —
+// not merely a widening to text), and anything else (literal text, or a
+// reference embedded in surrounding text) evaluates each embedded reference
+// at expr.TAny and concatenates. Either way, the entry's TEXT (Value.String())
+// is what is stored back into RangeList, and expand.go (validateIntList,
+// validateFloatList, PATH's own non-empty check, and so on) is what parses
+// that text into the parameter's actual type, exactly as it already does for
+// a literal (non-EXPR) entry.
 //
-// THIS DOES NOT SURVIVE THE CHECKER TIGHTENING ITS OWN TARGET TO THE
-// PARAMETER'S ELEMENT TYPE (design spec §3, not yet implemented as of this
-// task — TargetString is a deliberately loose target chosen to agree with
-// today's checker, not a claim that TargetString is the *correct* target on
-// its own terms). Once the checker targets, say, expr.TInt for an INT
-// RangeList entry, float -> int is a legal §1.2.3 coercion (an integral
-// float succeeds), so the checker accepts an entry like
-// "{{ Param.Scale * 2 }}" with Scale=2.5. This function, still at
-// TargetString, would render that same entry "5.0" — text validateIntList
-// rejects outright ("invalid integer \"5.0\""), because TargetString never
-// performs the float -> int narrowing at all, only ever float -> string.
-// Checker accepts, expansion fails: the exact drift class this task's own
-// whole-field-RangeExpr fix (resolveRangeExprField, above) exists to close,
-// reopened at this position by a change on the OTHER side. Whichever task
-// implements §3 must move the checker's target AND this function's
-// loneTarget together, in one commit — moving one without the other trades
-// today's drift (checker rejects what this function would have resolved,
-// which the current TestResolveParameterSpaceParams_RangeListEntryBaseSpecUnchanged-
-// style tests cannot even observe, since they never disagree at this
-// TargetString choice) for the reverse and observable drift described above.
-func resolveRangeListEntry(exprEnabled bool, entry string, syms expr.MapSymbols, scope fmtstring.Scope) (string, error) {
+// Before this task, this function targeted TargetString regardless of typ,
+// which is what let it drift from the checker the moment the checker started
+// targeting the element type: the checker would accept an INT entry like
+// "{{ Param.Scale * 2 }}" with Scale=2.5 (float -> int is a legal §1.2.3
+// coercion and 5.0 is integral), while this function, still at TargetString,
+// rendered that same entry "5.0" — text validateIntList rejects outright
+// ("invalid integer \"5.0\""). Checker accepts, expansion fails: the exact
+// drift class resolveRangeExprField (above) closes for the whole-field
+// position, reopened here by tightening only one side. Threading typ through
+// closes it: both this function and checkParameterSpaceExpressions now target
+// rangeExprElemType(typ), so a checker accept and a resolver success are the
+// same coercion, not two independent judgment calls that happened to agree
+// before either side had a real target.
+func resolveRangeListEntry(exprEnabled bool, entry string, typ TaskParamType, syms expr.MapSymbols, scope fmtstring.Scope) (string, error) {
 	if exprEnabled {
-		return resolveFormatStringExpr(entry, syms, TargetString, submissionLimits()...)
+		return resolveFormatStringExpr(entry, syms, rangeExprElemType(typ), submissionLimits()...)
 	}
 	return fmtstring.Resolve(entry, scope)
 }
@@ -355,17 +349,15 @@ func resolveFormatStringExpr(s string, syms expr.MapSymbols, loneTarget expr.Typ
 		}
 		// Value.String(), NOT v.AsStr(): AsStr panics (Value.mustBe) for any
 		// payload code other than string, and loneTarget is a caller-supplied
-		// PARAMETER, not a constant — resolveRangeListEntry passes
-		// TargetString today, but a target type is exactly the kind of value
-		// a later position (a per-entry element-typed target, matching the
-		// checker once it stops using TargetString uniformly) will vary. A
-		// parameter that exists to be varied must not crash the process
-		// (inside a synchronous submit handler, no less) the first time it
-		// is. String() is the same rendering evalRangeExprList's elements
-		// already use and is total over every Value — the safe choice here
-		// costs nothing today and removes a latent panic for whoever varies
-		// loneTarget next. See
-		// TestResolveFormatStringExpr_NonStringLoneTargetDoesNotPanic.
+		// PARAMETER, not a constant — resolveRangeListEntry now passes
+		// rangeExprElemType(typ) (design spec §3), which is TInt/TFloat/TPath
+		// for an INT/FLOAT/PATH entry, not always TString. A parameter that
+		// varies must not crash the process (inside a synchronous submit
+		// handler, no less) the first time it does. String() is the same
+		// rendering evalRangeExprList's elements already use and is total
+		// over every Value — the safe choice here costs nothing and is what
+		// makes threading rangeExprElemType through loneTarget safe at all.
+		// See TestResolveFormatStringExpr_NonStringLoneTargetDoesNotPanic.
 		return v.String(), nil
 	}
 

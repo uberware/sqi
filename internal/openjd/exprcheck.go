@@ -634,12 +634,19 @@ func submissionLimits() []expr.Option {
 //
 //	job name                          ScopeJob             TargetString
 //	host requirement values           ScopeJob             TargetString
-//	task-parameter range entries      ScopeJob             TargetString
+//	task-parameter range entries      ScopeJob             TargetString (*)
 //	environment variable values       job/step env         TargetString
 //	env + step embedded-file data     job/step env / step  TargetString
 //	action command                    matching env / step  TargetString
 //	action args entries               matching env / step  TargetArgItem
 //	action timeout                    matching env / step  TargetInt
+//
+// (*) No longer accurate as of EXPR sub-project E4b Task 3: a task-parameter
+// range position targets section 1.3.12's real per-type target
+// (rangeExprElemType/rangeExprFieldType, checkParameterSpaceExpressions's own
+// doc comment), not TargetString uniformly. Left in this table's row rather
+// than rewritten, because the row's SCOPE (ScopeJob) and its place in the
+// walk are still exactly as this table states; only the target type changed.
 //
 // Host requirement values and task-parameter range entries are two of the
 // three positions that had NO format-string scope validation at all before
@@ -995,37 +1002,91 @@ func checkHostRequirementExpressions(hr HostRequirements, base string, syms expr
 // checkParameterSpaceExpressions checks a step's task-parameter range
 // entries -- the other position with no format-string scope validation
 // before Task 9 -- in both of the field's two shapes: each RANGE LIST entry
-// (ScopeJob/TargetString, matching validate.go's validateRangeListValues) and
-// the whole-field RANGE EXPR alternative (ScopeJob/expr.TAny).
+// and the whole-field RANGE EXPR alternative. Both now target section
+// 1.3.12's real types (design spec §3) instead of the permissive
+// TargetString/expr.TAny this function used before that section's positions
+// had a consumer: a RangeList entry targets rangeExprElemType(tp.Type) (int,
+// float, string or path -- the SAME target resolve.go's resolveRangeListEntry
+// now evaluates its own lone {{...}} reference against, per that function's
+// doc comment), and a whole-field RangeExpr targets rangeExprFieldType(tp.Type)
+// (range_expr | list[int] for INT/CHUNK[INT], list[<elem>] otherwise -- the
+// type-level counterpart of evalRangeExprList's own eval target, though NOT
+// the identical Type value; see rangeExprFieldType's own doc comment for why
+// the checker's union differs from the resolver's plain list[elem] while
+// still agreeing on every verdict).
 //
-// RangeExpr does NOT use TargetString, unlike a RangeList entry: the field's
-// target type is not TargetString uniformly. A base-spec RangeExpr is the
-// INT range syntax ("1-100:2", a plain string), but under EXPR it may
-// legitimately be a list-valued expression per section 1.3.11 --
-// "{{ [Param.Scale * 2, Param.Scale + 0.5] }}" evaluates to list[float], and
-// checking it against TargetString would reject the passing
-// expr1.3.11--*-range-expression.yaml fixtures for a type mismatch that is
-// not a real defect. expr.TAny still catches an out-of-scope symbol -- an
-// unknown-symbol failure happens during evaluation, at the symbol lookup, not
-// at the final target coercion, so a target that accepts anything does not
-// weaken the scope check at all, only the (deliberately not-imposed) result
-// type check.
+// exprcheck.go and resolve.go MUST agree on both targets, or the checker's
+// verdict and the resolver's actual coercion drift apart -- design spec §4's
+// agreement instrument exists precisely to catch that: a range the checker
+// accepts must resolve and expand without error, and a range the checker
+// rejects must never reach expansion. A checker that accepted anything
+// (expr.TAny/TargetString, this function's own shape before this task) could
+// never disagree with a resolver, which is also why that permissive choice
+// was never actually validating section 1.3.12's types in the first place.
+//
+// Neither target change weakens scope checking: an out-of-scope symbol fails
+// at evaluation's symbol lookup, before target coercion ever runs, exactly as
+// it did when the target was expr.TAny.
 func checkParameterSpaceExpressions(ps StepParameterSpace, base string, syms expr.MapSymbols) ValidationErrors {
 	var errs ValidationErrors
 	for i, tp := range ps.TaskParameterDefinitions {
 		ptr := fmt.Sprintf("%s/taskParameterDefinitions/%d", base, i)
+		elemType := rangeExprElemType(tp.Type)
 		for j, v := range tp.RangeList {
 			errs = append(errs, checkFormatString(
-				v, fmt.Sprintf("%s/range/%d", ptr, j), ScopeJob, syms, TargetString,
+				v, fmt.Sprintf("%s/range/%d", ptr, j), ScopeJob, syms, elemType,
 				submissionLimits()...,
 			)...)
 		}
 		if tp.RangeExpr != nil {
 			errs = append(errs, checkFormatString(
-				*tp.RangeExpr, ptr+"/range", ScopeJob, syms, expr.TAny,
+				*tp.RangeExpr, ptr+"/range", ScopeJob, syms, rangeExprFieldType(tp.Type),
 				submissionLimits()...,
 			)...)
 		}
 	}
 	return errs
+}
+
+// rangeExprFieldType maps a task-parameter's declared type to the target
+// checkParameterSpaceExpressions verifies a whole-field RangeExpr's lone
+// {{...}} reference against, per section 1.3.12's extended-range table
+// (design spec §3):
+//
+//	INT / CHUNK[INT]   range_expr | list[int]
+//	FLOAT              list[float]
+//	STRING             list[string]
+//	PATH               list[path]
+//
+// INT/CHUNK[INT] is a union rather than resolve.go's plain
+// expr.ListOf(elemType) (evalRangeExprList's own eval target) -- and that
+// difference is deliberate, not a second, independently-chosen target that
+// happens to need reconciling. evalRangeExprList MUST target a plain list:
+// its caller calls v.AsList() on the result, which panics
+// (Value.mustBe) for anything but CodeList, so a range_expr value reaching
+// that target has to be CONVERTED into a real list[int] -- which
+// coerce()'s range_expr -> list[int] rule (coerce.go's coercibleConditional)
+// already does even against a plain list[int] target, with no need for the
+// target to literally name range_expr as a member.
+//
+// This function's caller never calls AsList() -- checkFormatString only asks
+// whether Eval returns an error, discarding the value -- so nothing here
+// requires forcing that same conversion. The union is written anyway because
+// it is the literal type section 1.3.12 states for these two parameter
+// types, and expr.UnionOf's own coerce.go rules (directUnionMember) make a
+// range_expr value's coercion against the union a plain pass-through rather
+// than a list conversion. Both targets are provably interchangeable for this
+// checker's use — coercible(range_expr, list[int]) is true independent of
+// whether list[int] sits alone or inside a union headed by range_expr — so
+// this is a faithfulness choice, not a functional one:
+// TestCheckParameterSpaceExpressions_RangeTargetTypes pins the resulting
+// accept/reject verdicts, not the internal Type value.
+func rangeExprFieldType(typ TaskParamType) expr.Type {
+	elem := rangeExprElemType(typ)
+	switch typ {
+	case TaskParamTypeInt, TaskParamTypeChunkInt:
+		return expr.UnionOf(expr.TRangeExpr, expr.ListOf(elem))
+	default:
+		return expr.ListOf(elem)
+	}
 }

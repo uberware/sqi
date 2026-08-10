@@ -566,10 +566,11 @@ func TestCheckTemplateExpressions_RangeEntries(t *testing.T) {
 // RangeExpr form of the range position (a review finding, distinct from
 // TestCheckTemplateExpressions_RangeEntries above, which only covers the
 // RangeList array form): an out-of-scope reference in RangeExpr must still
-// be rejected even though checkParameterSpaceExpressions deliberately checks
-// it against expr.TAny rather than TargetString. TAny weakens only the
-// RESULT type check, not symbol scoping -- an unknown-symbol failure happens
-// at evaluation's symbol lookup, before any target coercion runs.
+// be rejected regardless of the target checkParameterSpaceExpressions checks
+// it against (rangeExprFieldType(TaskParamTypeString), design spec §3, as of
+// EXPR sub-project E4b Task 3 -- expr.TAny before it). A permissive or a
+// tight target changes only the RESULT type check; an unknown-symbol failure
+// happens at evaluation's symbol lookup, before any target coercion runs.
 func TestCheckTemplateExpressions_RangeExprOutOfScope(t *testing.T) {
 	tmpl := &JobTemplate{
 		Name:       "T",
@@ -603,8 +604,14 @@ func TestCheckTemplateExpressions_RangeExprOutOfScope(t *testing.T) {
 // TestCheckTemplateExpressions_RangeExprListValuedAccepted is the
 // accompanying sanity check: checkParameterSpaceExpressions must NOT regress
 // section 1.3.11's list-valued RangeExpr fixtures
-// (expr1.3.11--*-range-expression.yaml) by forcing TargetString on a value
-// that legitimately evaluates to list[float].
+// (expr1.3.11--*-range-expression.yaml). Before EXPR sub-project E4b Task 3
+// this was checked against a permissive expr.TAny; it is now checked against
+// rangeExprFieldType(TaskParamTypeFloat) (list[float], design spec §3), which
+// this expression's actual result type matches directly rather than merely
+// surviving an unconstrained target.
+// TestCheckParameterSpaceExpressions_RangeTargetTypes is the fuller table
+// this test predates, covering every declared type and both the accept and
+// reject side at both the whole-field and per-entry positions.
 func TestCheckTemplateExpressions_RangeExprListValuedAccepted(t *testing.T) {
 	tmpl := &JobTemplate{
 		Name:                 "T",
@@ -626,8 +633,171 @@ func TestCheckTemplateExpressions_RangeExprListValuedAccepted(t *testing.T) {
 		}},
 	}
 	if errs := checkTemplateExpressions(tmpl, nil); len(errs) != 0 {
-		t.Fatalf("a list-valued RangeExpr must type-check against expr.TAny: %v", errs)
+		t.Fatalf("a list-valued RangeExpr must type-check against list[float]: %v", errs)
 	}
+}
+
+// TestCheckParameterSpaceExpressions_RangeTargetTypes is design spec §3's own
+// table, exercised end to end through checkParameterSpaceExpressions: for
+// each declared task-parameter type, an expression of the position's own
+// target type is ACCEPTED, and one of the wrong shape is REJECTED at the
+// position's own JSON pointer -- at BOTH the whole-field RangeExpr position
+// and a RangeList entry, since the two positions have different targets
+// (rangeExprFieldType -- a list, or for INT/CHUNK[INT] a range_expr -- versus
+// rangeExprElemType -- a bare scalar).
+//
+// The shape-mismatch reject case at each position is built from the SAME
+// expression as the accept case, wrapped or unwrapped in a list literal: a
+// RangeList entry (scalar target) rejects the whole-field's own accepted
+// list, and a whole-field RangeExpr (list/range_expr target) rejects the
+// entry's own accepted scalar.
+//
+// entryReject is a SECOND, narrower reject case at the entry position only,
+// present for every type except STRING: a value of the WRONG scalar type
+// (not merely the wrong shape) that TargetString -- the entry position's
+// target before this task, and every scalar's superset -- would have
+// ACCEPTED. Without threading rangeExprElemType through the entry position
+// too, this subtest cannot fail: TargetString accepts a bool, or a
+// non-integral float, exactly as readily as it accepts a string. STRING has
+// no entryReject because rangeExprElemType(STRING) IS TargetString --
+// section 3's table already had the entry position right for that one type,
+// per the design spec's own note ("the per-entry RangeList positions already
+// use TargetString, which is not right for FLOAT, INT or PATH entries").
+//
+// Neither reject expression references an unbound symbol, so a failure here
+// can only be the target-type coercion this task adds -- not the
+// pre-existing scope check TestCheckTemplateExpressions_RangeEntries/
+// _RangeExprOutOfScope already cover.
+func TestCheckParameterSpaceExpressions_RangeTargetTypes(t *testing.T) {
+	tests := []struct {
+		name        string
+		typ         TaskParamType
+		wholeAccept string
+		entryAccept string
+		entryReject string // "" when there is no type-mismatch (as opposed to shape-mismatch) case
+	}{
+		{
+			name: "INT", typ: TaskParamTypeInt,
+			wholeAccept: "{{ [1, 2, 3] }}", entryAccept: "{{ 5 }}",
+			// 2.5 is not integral: TargetString would render it "2.5"
+			// unchanged, but TInt performs the real float->int narrowing and
+			// rejects a non-exact value (design spec §3's own INT/Scale=2.5
+			// worked example, here as a literal rather than a job-parameter
+			// reference).
+			entryReject: "{{ 2.5 }}",
+		},
+		{
+			name: "CHUNK[INT]", typ: TaskParamTypeChunkInt,
+			wholeAccept: "{{ [1, 2, 3] }}", entryAccept: "{{ 5 }}",
+			entryReject: "{{ 2.5 }}",
+		},
+		{
+			name: "FLOAT", typ: TaskParamTypeFloat,
+			wholeAccept: "{{ [1.0, 2.5] }}", entryAccept: "{{ 2.5 }}",
+			// A bool coerces to string unconditionally (section 1.2.3's
+			// catch-all) but has no bool->float rule at all.
+			entryReject: "{{ true }}",
+		},
+		{
+			name: "STRING", typ: TaskParamTypeString,
+			wholeAccept: "{{ ['a', 'b'] }}", entryAccept: "{{ 'a' }}",
+		},
+		{
+			name: "PATH", typ: TaskParamTypePath,
+			wholeAccept: "{{ [path('/a'), path('/b')] }}", entryAccept: "{{ path('/a') }}",
+			// An int coerces to string unconditionally but only a string
+			// coerces to path (section 1.2.3: path <- string only).
+			entryReject: "{{ 5 }}",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Run("whole-field accepted", func(t *testing.T) {
+				errs := checkRangeField(tc.typ, tc.wholeAccept)
+				if len(errs) != 0 {
+					t.Fatalf("%s range %q: want accepted, got %v", tc.typ, tc.wholeAccept, errs)
+				}
+			})
+			t.Run("whole-field rejected (wrong shape)", func(t *testing.T) {
+				// The bare scalar that the entry position accepts is not a
+				// list (or, for INT/CHUNK[INT], a range_expr) -- exactly the
+				// shape section 1.3.12 requires here.
+				errs := checkRangeField(tc.typ, tc.entryAccept)
+				wantPtr := "/steps/0/parameterSpace/taskParameterDefinitions/0/range"
+				assertRejectedAt(t, errs, wantPtr, tc.entryAccept)
+			})
+			t.Run("entry accepted", func(t *testing.T) {
+				errs := checkRangeEntry(tc.typ, tc.entryAccept)
+				if len(errs) != 0 {
+					t.Fatalf("%s entry %q: want accepted, got %v", tc.typ, tc.entryAccept, errs)
+				}
+			})
+			t.Run("entry rejected (wrong shape)", func(t *testing.T) {
+				// The list literal that the whole-field position accepts is
+				// not a bare scalar -- the shape a RangeList entry requires.
+				errs := checkRangeEntry(tc.typ, tc.wholeAccept)
+				wantPtr := "/steps/0/parameterSpace/taskParameterDefinitions/0/range/0"
+				assertRejectedAt(t, errs, wantPtr, tc.wholeAccept)
+			})
+			if tc.entryReject != "" {
+				t.Run("entry rejected (wrong scalar type)", func(t *testing.T) {
+					errs := checkRangeEntry(tc.typ, tc.entryReject)
+					wantPtr := "/steps/0/parameterSpace/taskParameterDefinitions/0/range/0"
+					assertRejectedAt(t, errs, wantPtr, tc.entryReject)
+				})
+			}
+		})
+	}
+}
+
+// checkRangeField runs checkTemplateExpressions over a single-step template
+// whose one task-parameter definition (type typ) carries body as its
+// whole-field RangeExpr.
+func checkRangeField(typ TaskParamType, body string) ValidationErrors {
+	tmpl := rangeCheckTemplate(typ, nil, &body)
+	return checkTemplateExpressions(tmpl, nil)
+}
+
+// checkRangeEntry is checkRangeField's sibling for a single RangeList entry.
+func checkRangeEntry(typ TaskParamType, body string) ValidationErrors {
+	tmpl := rangeCheckTemplate(typ, []string{body}, nil)
+	return checkTemplateExpressions(tmpl, nil)
+}
+
+func rangeCheckTemplate(typ TaskParamType, rangeList []string, rangeExpr *string) *JobTemplate {
+	return &JobTemplate{
+		Name:       "T",
+		Extensions: []string{"EXPR"},
+		Steps: []StepTemplate{{
+			Name:   "Step1",
+			Script: &StepScript{Actions: StepActions{OnRun: Action{Command: "echo"}}},
+			ParameterSpace: &StepParameterSpace{
+				TaskParameterDefinitions: []TaskParamDefinition{{
+					Name:      "P",
+					Type:      typ,
+					RangeList: rangeList,
+					RangeExpr: rangeExpr,
+				}},
+			},
+		}},
+	}
+}
+
+// assertRejectedAt fails t unless errs contains a ValidationError at exactly
+// wantPtr -- the position's own pointer, since the rejection half is what
+// catches a target wired too loosely.
+func assertRejectedAt(t *testing.T, errs ValidationErrors, wantPtr, body string) {
+	t.Helper()
+	if len(errs) == 0 {
+		t.Fatalf("%q: want a rejection at %s, got none", body, wantPtr)
+	}
+	for _, e := range errs {
+		if e.Pointer == wantPtr {
+			return
+		}
+	}
+	t.Fatalf("%q: want a rejection at %s, got %v", body, wantPtr, errs)
 }
 
 // TestCheckTemplateExpressions_ArgsPositionUsesArgItemTarget pins that the
