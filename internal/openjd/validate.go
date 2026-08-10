@@ -789,9 +789,59 @@ var reservedAttributeAllowed = map[string]map[string]bool{
 // ─── quantitative limits ──────────────────────────────────────────────────────
 
 // Quantitative limits from the OpenJD jobtemplate-2023-09 specification
-// (base spec, no extensions). All of these are enforced only when
-// [ValidateOptions.EnforceLimits] is true.
+// (base spec, no extensions), PLUS [maxSteps], the one constant in this
+// block sqi defines itself rather than transcribes — see its own doc
+// comment. All of these are enforced only when [ValidateOptions.EnforceLimits]
+// is true.
 const (
+	// maxSteps caps the number of steps (<StepTemplate> entries) a job
+	// template may declare.
+	//
+	// UNLIKE every other constant in this block, this is NOT a spec
+	// transcription: OpenJD jobtemplate-2023-09's "Constraints" table lists a
+	// minimum/maximum item count for every other bounded list field this
+	// package caps (parameterDefinitions, taskParameterDefinitions,
+	// hostRequirements amounts/attributes, let bindings, fileFilters, ...)
+	// but states none for <JobTemplate>.steps — checked directly against
+	// third_party/openjd-specifications/wiki/2023-09-Template-Schemas.md, §2
+	// and §3. So this number is a sqi product decision, and per this repo's
+	// convention (see [ValidateOptions.EnforceLimits] doc comment on why an
+	// undefended cap gets raised by the first user who hits it) it has to be
+	// defensible on its own:
+	//
+	//   - A render/compositing job's steps are pipeline PHASES (render,
+	//     denoise, a handful of composite passes, review, deliver, cleanup),
+	//     not one step per unit of work — per-item parallelism is what the
+	//     parameter space exists for (up to maxTaskParameterDefinitions x
+	//     maxTaskParamValues combinations, up to maxTasksPerStep tasks per
+	//     step). A pipeline of dozens of distinct phases is already unusual.
+	//   - Swept across presets/, test/, third_party's conformance fixtures
+	//     and samples, and clients/ (E4c Task 2), the largest step count in
+	//     this repo is 12, in the vendored OpenJD sample
+	//     third_party/openjd-specifications/samples/v2023-09/job_templates/
+	//     task-parameter-definition-showcase.yaml.
+	//   - 100 sits well over an order of magnitude above both of those: it
+	//     will not be the first thing a legitimate template hits, while
+	//     still being an actual, enforceable bound rather than none at all —
+	//     the same "deliberately generous; tune it if legitimate jobs need
+	//     more" stance [maxTasksPerStep] (expand.go) states explicitly for
+	//     the analogous per-step task-count cap.
+	//
+	// Gated by EnforceLimits, like the other bare structural-count caps in
+	// this block (maxJobParameterDefinitions, maxTaskParameterDefinitions,
+	// maxTaskParamValues): this bounds the same per-position validation and
+	// expression-walk cost those caps bound, just multiplied across steps
+	// instead of within one, so it belongs in the same enforcement class.
+	// It is deliberately NOT promoted to an always-on resource-exhaustion
+	// guard the way [maxTasksPerStep] and [maxRangeValues] are — those exist
+	// because a single step (or range) can already blow up unboundedly on
+	// its own even with EnforceLimits: false, which this repo has decided
+	// warrants a guard with no off switch; N steps each individually bounded
+	// by those same always-on guards is a slower, additive multiplication of
+	// an exposure an EnforceLimits: false deployment already accepts today,
+	// not a new one this constant introduces.
+	maxSteps = 100
+
 	// maxJobParameterDefinitions caps parameterDefinitions. The spec range is
 	// 1–50, but the field is optional so only the upper bound is enforced here.
 	maxJobParameterDefinitions = 50
@@ -863,6 +913,15 @@ func validateLimits(t *JobTemplate) ValidationErrors {
 
 	// Job environment name lengths.
 	errs = append(errs, validateEnvNameLimits(t.JobEnvironments, "/jobEnvironments")...)
+
+	// Steps count (upper bound only; "at least one step is required" is a
+	// structural check that runs unconditionally in [ValidateWithOptions]).
+	if len(t.Steps) > maxSteps {
+		errs = append(errs, ValidationError{
+			Pointer: "/steps",
+			Message: fmt.Sprintf("at most %d steps are allowed (got %d)", maxSteps, len(t.Steps)),
+		})
+	}
 
 	for i, s := range t.Steps {
 		base := fmt.Sprintf("/steps/%d", i)

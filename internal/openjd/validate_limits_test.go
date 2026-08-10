@@ -51,6 +51,23 @@ func makeAmounts(n int) []openjd.AmountRequirement {
 	return out
 }
 
+// makeSteps returns n valid, uniquely-named steps, each with a minimal
+// runnable script -- the same shape [minimalValidYAML]'s single step has.
+func makeSteps(n int) []openjd.StepTemplate {
+	out := make([]openjd.StepTemplate, n)
+	for i := range out {
+		out[i] = openjd.StepTemplate{
+			Name: fmt.Sprintf("Step%d", i),
+			Script: &openjd.StepScript{
+				Actions: openjd.StepActions{
+					OnRun: openjd.Action{Command: "echo", Args: []string{"hello"}, ArgsSet: true},
+				},
+			},
+		}
+	}
+	return out
+}
+
 // TestValidate_Limits_Gated is the canonical table covering every quantitative
 // limit at its boundary. Each case mutates a valid base template and asserts
 // that with EnforceLimits=true the expected pointer error appears (or, for "ok"
@@ -77,6 +94,17 @@ func TestValidate_Limits_Gated(t *testing.T) {
 			name:    "job params 51 error",
 			mutate:  func(t *openjd.JobTemplate) { t.ParameterDefinitions = makeJobParams(51) },
 			wantPtr: "/parameterDefinitions",
+		},
+
+		// ── steps count: upper bound 100 (sqi's own cap; the spec defines none) ──
+		{
+			name:   "steps 100 ok",
+			mutate: func(t *openjd.JobTemplate) { t.Steps = makeSteps(100) },
+		},
+		{
+			name:    "steps 101 error",
+			mutate:  func(t *openjd.JobTemplate) { t.Steps = makeSteps(101) },
+			wantPtr: "/steps",
 		},
 
 		// ── job name length: <= 128 ──
