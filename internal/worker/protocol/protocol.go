@@ -145,7 +145,8 @@ type RegisterMsg struct {
 	// enforce when it resolves an assignment's expressions (its expr.*
 	// configuration section).  The server compares them against its own
 	// openjd.expr_* limits and refuses to dispatch an EXPR job to a worker
-	// that is tighter — see [ExprLimits].
+	// that is tighter — see [ExprLimits], which also names the two tests that
+	// keep this key and its four inner keys matching the server's duplicate.
 	//
 	// Adding it here is deliberately a REGISTRATION-payload change and not a
 	// [ProtocolVersion] bump: the version gate is the worker's receiver-side
@@ -159,14 +160,17 @@ type RegisterMsg struct {
 //
 // It mirrors store.WorkerExprLimits field for field and json tag for tag; the
 // two are separate types because the worker binary must never import
-// internal/store.  internal/scheduler's
-// TestWorkerExprLimits_WireKeysMatchTheProtocol is what keeps the tags in step
-// — a renamed tag on either side silently decodes to zero, which the server
-// reads as "not advertised" rather than as an error.
+// internal/store.  A renamed tag on either side silently decodes to zero, which
+// the server reads as "not advertised" rather than as an error, so TWO tests in
+// internal/scheduler keep them in step and neither subsumes the other:
+// TestWorkerExprLimits_WireKeysMatchTheProtocol covers the four keys INSIDE
+// this struct, and TestRegisterMsg_WireFieldsSurviveTheDuplication covers the
+// outer expr_limits key on [RegisterMsg] (and every other field of it) by
+// round-tripping a populated message into the server's duplicate struct.
 //
 // Zero means "not advertised".  A current worker always populates every field
 // (its config layer rejects 0), so only a binary older than EXPR sub-project
-// E4d Task 2 sends zeroes.
+// E4d Task 3 — the change that added this field — sends zeroes.
 type ExprLimits struct {
 	// OperationLimit is the §1.3.10 operation budget for ONE evaluation
 	// (expr.operation_limit).

@@ -13,6 +13,12 @@
 --
 -- NOT NULL DEFAULT '{}' matches gpu_info: scanWorker reads this column into a
 -- plain string, so a NULL would be a scan error rather than an empty struct.
+--
+-- The Down migration's ALTER TABLE ... DROP COLUMN requires SQLite >= 3.35.0
+-- (the same note 00002, 00008 and 00013 carry). Deliberately no CHECK
+-- constraint and no index on the column: SQLite refuses DROP COLUMN on a
+-- column either references, which would make the Down impossible without a
+-- full table rebuild.
 
 -- +goose Up
 ALTER TABLE workers ADD COLUMN expr_limits TEXT NOT NULL DEFAULT '{}';

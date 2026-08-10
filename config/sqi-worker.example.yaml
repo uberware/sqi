@@ -404,7 +404,9 @@ diagnostics:
 #     the server is therefore that this host stops being offered EXPR work
 #     (only EXPR work; it keeps running everything else). The server logs the
 #     reason when this worker registers, and flags any task no capable worker
-#     exists for.
+#     exists for — the latter only while the server's unschedulable sweep is on
+#     (its scheduler.unschedulable_grace > 0, the default); with the sweep off,
+#     such a task waits with nothing written on it.
 #     let_retained_bytes has no server counterpart and is not advertised.
 #
 # An out-of-range value is a startup failure, not a clamp.

@@ -132,6 +132,72 @@ func TestMigrations_00025_QueueRunAsUserDownUp(t *testing.T) {
 	}
 }
 
+// TestMigrations_00026_WorkerExprLimitsDownUp pins 00026_worker_expr_limits in
+// its own right. Before this test the column was covered only INCIDENTALLY, by
+// TestMigrations_00025_QueueRunAsUserDownUp's DownTo(24) passing through it --
+// which asserts nothing about 00026 and would keep passing if 00026's Down
+// silently dropped the wrong thing.
+//
+// Down is the direction worth pinning: SQLite refuses ALTER TABLE DROP COLUMN
+// on a column referenced by a CHECK constraint or an index, so a later revision
+// that adds either to expr_limits makes the Down un-runnable. The re-Up leg
+// then proves the column comes back with its NOT NULL DEFAULT '{}' intact,
+// which is what lets scanWorker read a pre-existing row as the zero struct
+// rather than failing on a NULL.
+func TestMigrations_00026_WorkerExprLimitsDownUp(t *testing.T) {
+	dbPath := t.TempDir() + "/test.db"
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("sql.Open: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	goose.SetBaseFS(migrations.FS)
+	if err := goose.SetDialect("sqlite3"); err != nil {
+		t.Fatalf("SetDialect: %v", err)
+	}
+	if err := goose.Up(db, "."); err != nil {
+		t.Fatalf("goose.Up: %v", err)
+	}
+	if !hasColumn(t, db, "workers", "expr_limits") {
+		t.Fatal("expr_limits column missing after Up")
+	}
+
+	// A row written before the Down must survive the Down/Up cycle, and the
+	// re-added column must default to '{}' rather than NULL -- scanWorker reads
+	// it into a plain string.
+	if _, err := db.ExecContext(
+		t.Context(),
+		`INSERT INTO workers (id, hostname, os, status, registered_at, updated_at)
+		 VALUES ('w-1', 'h', 'linux', 'offline', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')`,
+	); err != nil {
+		t.Fatalf("insert worker: %v", err)
+	}
+
+	if err := goose.DownTo(db, ".", 25); err != nil {
+		t.Fatalf("goose.DownTo(25): %v", err)
+	}
+	if hasColumn(t, db, "workers", "expr_limits") {
+		t.Fatal("expr_limits column still present after Down")
+	}
+
+	if err := goose.Up(db, "."); err != nil {
+		t.Fatalf("goose.Up (re-apply): %v", err)
+	}
+	if !hasColumn(t, db, "workers", "expr_limits") {
+		t.Fatal("expr_limits column missing after re-Up")
+	}
+	var exprLimits string
+	if err := db.QueryRowContext(t.Context(),
+		`SELECT expr_limits FROM workers WHERE id = 'w-1'`).Scan(&exprLimits); err != nil {
+		t.Fatalf("select expr_limits after re-Up: %v (a NULL here is a scanWorker failure "+
+			"for every pre-existing worker row)", err)
+	}
+	if exprLimits != "{}" {
+		t.Errorf("expr_limits = %q for a row that predates the column, want %q", exprLimits, "{}")
+	}
+}
+
 // hasColumn reports whether table has a column named column.
 func hasColumn(t *testing.T, db *sql.DB, table, column string) bool {
 	t.Helper()

@@ -247,6 +247,11 @@ type Scheduler struct {
 	// held only around selectLeaseBatch, never across the long-poll park.
 	leaseLocks sync.Map // workerID -> *sync.Mutex
 
+	// exprCapWarned de-duplicates the registration-time EXPR-limit warning:
+	// workerID -> the last shortfall text logged for it. See
+	// [Scheduler.warnOnExprCapShortfall].
+	exprCapWarned sync.Map // workerID -> string
+
 	// leaseHoldTimeout bounds how long an unfulfillable lease request parks
 	// before replying empty. Overridable in tests.
 	leaseHoldTimeout time.Duration
@@ -678,6 +683,17 @@ func (s *Scheduler) handleWorkerMessage(msg jetstream.Msg) {
 // It carries the worker's self-reported identity and capability data.
 // A later protocol revision may add formal versioning; this struct matches
 // the minimal information the server needs for task matching.
+//
+// IT IS A HAND-MAINTAINED DUPLICATE of [protocol.RegisterMsg], which the server
+// deliberately does not import, and NOTHING BUT A TEST RELATES THE TWO. A json
+// tag that differs on either side does not fail to compile: the field simply
+// decodes to its zero value on every registration, forever, silently.
+// TestRegisterMsg_WireFieldsSurviveTheDuplication marshals a fully-populated
+// protocol.RegisterMsg, decodes it into THIS struct, and asserts every field
+// arrives -- outer keys included. It was added after a reviewer renamed the
+// expr_limits key on the protocol side and watched the entire test suite, the
+// integration suite and make ci stay green while every worker in the farm
+// reported as "not advertised".
 type RegisterMsg struct {
 	// WorkerID is the stable unique identifier for this worker instance.
 	// Workers MUST use the same ID across restarts so that re-registration
@@ -727,11 +743,14 @@ type RegisterMsg struct {
 	Tags map[string]string `json:"tags,omitempty"`
 
 	// ExprLimits are the OpenJD EXPR evaluation caps the worker will enforce.
-	// Decoded straight into the store type: the json tags on protocol.ExprLimits
-	// and store.WorkerExprLimits are identical, and
-	// TestWorkerExprLimits_WireKeysMatchTheProtocol is what keeps them so.
-	// Absent (a worker older than EXPR sub-project E4d Task 2) leaves it zero,
-	// which exprcaps.go reads as that binary's compiled-in defaults.
+	// Decoded straight into the store type: the json tags on
+	// protocol.ExprLimits and store.WorkerExprLimits are identical.
+	// TestWorkerExprLimits_WireKeysMatchTheProtocol covers the FOUR INNER keys;
+	// the outer expr_limits key is covered by
+	// TestRegisterMsg_WireFieldsSurviveTheDuplication (see the type comment) --
+	// two separate tests because a rename of either is independently silent.
+	// Absent (a worker older than EXPR sub-project E4d Task 3) leaves it zero,
+	// which exprcaps.go reads as the compiled-in defaults.
 	ExprLimits store.WorkerExprLimits `json:"expr_limits,omitzero"`
 }
 
@@ -787,18 +806,7 @@ func (s *Scheduler) handleWorkerRegister(ctx context.Context, msg jetstream.Msg)
 
 	s.ensureComputeLocation(ctx, m.ComputeLocation)
 
-	// Diagnostic, NOT the bound: the bound is exprCapsBlock refusing to lease
-	// EXPR work to this worker (exprcaps.go). This is the earliest point an
-	// operator can be told, and it lands in the diagnostics ring buffer and the
-	// Server Log page rather than only on a task that may not exist yet.
-	if short := exprCapShortfall(m.ExprLimits, s.cfg.ExprLimits); short != "" {
-		s.logger.WarnContext(
-			ctx, "scheduler: worker registered with EXPR limits tighter than this server's",
-			slog.String("worker_id", m.WorkerID),
-			slog.String("hostname", m.Hostname),
-			slog.String("detail", short),
-		)
-	}
+	s.warnOnExprCapShortfall(ctx, m)
 
 	s.logger.InfoContext(
 		ctx, "scheduler: worker registered",
@@ -816,6 +824,38 @@ func (s *Scheduler) handleWorkerRegister(ctx context.Context, msg jetstream.Msg)
 	})
 	s.refreshWorkerGauge(ctx)
 	s.ackMsg(ctx, msg)
+}
+
+// warnOnExprCapShortfall logs, at most once per distinct shortfall per worker,
+// that a registering worker's EXPR limits are below this server's.
+//
+// It is a DIAGNOSTIC, not the bound: the bound is exprCapsBlock refusing to
+// lease EXPR work to this worker (exprcaps.go). It exists because that refusal
+// is otherwise only visible on a task, and there may not be one yet.
+//
+// De-duplicated because [Registrar.SetupReconnectHook] re-registers on every
+// NATS reconnect, and a farm that never submits an EXPR template would
+// otherwise accumulate a warning per reconnect about work it never runs. The
+// key is the shortfall text itself, so a CHANGE (either side reconfigured) is
+// reported again; the map is per-process, so a server restart also re-reports.
+func (s *Scheduler) warnOnExprCapShortfall(ctx context.Context, m RegisterMsg) {
+	short := exprCapShortfall(m.ExprLimits, s.cfg.ExprLimits)
+	if short == "" {
+		s.exprCapWarned.Delete(m.WorkerID) // recovered: report again if it recurs
+		return
+	}
+	if prev, ok := s.exprCapWarned.Load(m.WorkerID); ok && prev == short {
+		return
+	}
+	s.exprCapWarned.Store(m.WorkerID, short)
+	s.logger.WarnContext(
+		ctx, "scheduler: worker registered with EXPR limits tighter than this server's",
+		slog.String("worker_id", m.WorkerID),
+		slog.String("hostname", m.Hostname),
+		slog.String("detail", short),
+		slog.String("impact", "this worker is not offered EXPR jobs; it still runs everything else, "+
+			"and a farm that submits no EXPR templates is unaffected"),
+	)
 }
 
 // ensureComputeLocation idempotently registers a compute location reported by a

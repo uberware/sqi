@@ -202,7 +202,10 @@ openjd:
   #     above a worker's counterpart, that worker stops being offered EXPR work
   #     (only EXPR work; it keeps running everything else), the reason is logged
   #     when it registers, and any task with no capable worker is flagged
-  #     unschedulable with the two numbers named. Raise the workers first.
+  #     unschedulable with the two numbers named -- unless you have turned that
+  #     sweep off (scheduler.unschedulable_grace <= 0), in which case such a
+  #     task simply waits, with the registration log line as the only signal.
+  #     Raise the workers first.
   #   * expr_template_retained_bytes counts cumulative ALLOCATION, not peak
   #     live retention. A template that never holds more than a few MB at once
   #     is still charged the sum of every let: block, so sizing a host's RAM

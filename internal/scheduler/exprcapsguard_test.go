@@ -56,6 +56,24 @@ func TestDispatchHasOneGatedPath(t *testing.T) {
 			"evaluateSchedulability]: the first is the bound, the second is what the "+
 			"operator sees", blocked)
 	}
+
+	// exprCapShortfall is the single implementation of the four comparisons.
+	// Post-review the lease path hoists it out of the candidate loop, so the
+	// two gate call sites reach it by different routes -- selectLeaseBatch
+	// computes it once per batch and passes it down, evaluateSchedulability
+	// computes it per worker. Both must still go through THIS function, and
+	// handleWorkerRegister's diagnostic warning is the third caller.
+	if short := productionCallersOf(t, "workerExprShortfall"); len(short) != 2 ||
+		!slices.Contains(short, "selectLeaseBatch") || !slices.Contains(short, "evaluateSchedulability") {
+		t.Fatalf("workerExprShortfall is called from %v; want exactly [selectLeaseBatch "+
+			"evaluateSchedulability] -- a gate call site that computes its own comparison "+
+			"instead is a second implementation waiting to drift", short)
+	}
+	if raw := productionCallersOf(t, "exprCapShortfall"); len(raw) != 2 ||
+		!slices.Contains(raw, "workerExprShortfall") || !slices.Contains(raw, "warnOnExprCapShortfall") {
+		t.Fatalf("exprCapShortfall is called from %v; want exactly [workerExprShortfall "+
+			"warnOnExprCapShortfall]", raw)
+	}
 }
 
 // productionCallersOf returns the names of the non-test functions in this

@@ -479,7 +479,9 @@ func TestLeaseGatesPass_SkipsPausedJob(t *testing.T) {
 		t.Fatalf("CreateTask: %v", err)
 	}
 
-	_, pass, err := h.s.leaseGatesPass(ctx, task, worker)
+	// "" = no EXPR cap shortfall for this worker; the paused-job gate under
+	// test is unrelated to it.
+	_, pass, err := h.s.leaseGatesPass(ctx, task, worker, "")
 	if err != nil {
 		t.Fatalf("leaseGatesPass: unexpected error: %v", err)
 	}

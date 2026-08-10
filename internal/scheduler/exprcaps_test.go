@@ -3,8 +3,10 @@
 package scheduler
 
 import (
+	"context"
 	"encoding/json"
 	"log/slog"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -383,12 +385,14 @@ func TestExprCapShortfall_Table(t *testing.T) {
 // convention for a worker that sends no caps at all, and pins it against
 // fmtres rather than against a literal.
 //
-// The ONLY binaries that omit these fields are ones built before E4d Task 2,
-// which enforce the compiled-in defaults -- Task 2's
-// TestExprLimits_DefaultsMatchPreE4dConstants pins that those defaults ARE the
-// pre-E4d constants. So "absent means the defaults" is not a guess that fails
-// open; it is what such a worker actually enforces. A worker built after Task 2
-// always sends validated non-zero values, because its config layer rejects 0.
+// A worker built from Task 3 onward always sends validated non-zero values (its
+// config layer rejects 0), so silence means an older binary. For one built
+// before Task 2 the assumption is exact -- the limits were fixed constants, and
+// Task 2's TestExprLimits_DefaultsMatchPreE4dConstants pins that today's
+// defaults still equal them. For one built BETWEEN Tasks 2 and 3 it is a guess,
+// because that binary's limits were already configurable; see
+// legacyWorkerExprCaps for why that residual is accepted (it cannot exist
+// outside this unreleased branch, and both alternatives are worse).
 func TestExprCaps_UnadvertisedCapsAreThePreE4dDefaults(t *testing.T) {
 	d := fmtres.DefaultExprLimits()
 	got := workerExprCapsOrLegacy(store.WorkerExprLimits{})
@@ -502,6 +506,88 @@ func TestHandleWorkerRegister_PersistsAdvertisedExprCaps(t *testing.T) {
 	}
 }
 
+// TestHandleWorkerRegister_ExprCapWarningIsDeDuplicated pins the registration
+// diagnostic's noise control (post-review MINOR 7). SetupReconnectHook
+// re-registers on every NATS reconnect, and on a farm that never submits an
+// EXPR template the warning is true but vacuous, so it must not accumulate one
+// line per reconnect. It must still re-report when the shortfall CHANGES --
+// either side reconfigured is news.
+func TestHandleWorkerRegister_ExprCapWarningIsDeDuplicated(t *testing.T) {
+	st := fake.New()
+	logs := &countingHandler{}
+	s := New(schedulerConfigWithPositions(50_000), st, &recordBus{},
+		metrics.New(), slog.New(logs), ws.NoopNotifier{}, nil)
+	s.ctx = t.Context()
+
+	register := func(positions int64) {
+		s.handleWorkerMessage(&fakeJSMsg{
+			subject: bus.SubjectWorkerRegister,
+			data: workerMsgJSON(t, RegisterMsg{
+				WorkerID: "w-1", FarmID: "farm-1", Hostname: "node-1", OS: "linux",
+				ExprLimits: store.WorkerExprLimits{
+					OperationLimit:          fmtres.DefaultExprLimits().OperationLimit,
+					MemoryLimit:             fmtres.DefaultExprLimits().MemoryLimit,
+					AssignmentPositions:     positions,
+					AssignmentRetainedBytes: fmtres.DefaultExprLimits().AssignmentRetainedBytes,
+				},
+			}),
+		})
+	}
+
+	register(10_000) // short: 10,000 < the server's configured 50,000
+	if got := logs.warns; got != 1 {
+		t.Fatalf("first registration logged %d warnings, want 1", got)
+	}
+	register(10_000) // a reconnect, nothing changed
+	if got := logs.warns; got != 1 {
+		t.Fatalf("an unchanged re-registration logged again (total %d, want 1): a warning per "+
+			"NATS reconnect is noise, not a signal", got)
+	}
+	register(20_000) // still short, but by a different amount: news
+	if got := logs.warns; got != 2 {
+		t.Fatalf("a CHANGED shortfall logged %d warnings in total, want 2", got)
+	}
+	register(50_000) // fixed
+	if got := logs.warns; got != 2 {
+		t.Fatalf("a worker that now satisfies the relation logged a warning (total %d, want 2)", got)
+	}
+	// Regressed to the SAME shortfall it last had. This is the row that pins
+	// the de-duplication being CLEARED on recovery: if the remembered text
+	// survives the recovery, this recurrence is silently suppressed and the
+	// operator is never told the worker went short again.
+	register(20_000)
+	if got := logs.warns; got != 3 {
+		t.Fatalf("a recurrence of a previously-seen shortfall, after the worker had recovered, "+
+			"logged %d warnings in total, want 3", got)
+	}
+}
+
+// schedulerConfigWithPositions returns a scheduler config whose server-side
+// template-position limit is n.
+func schedulerConfigWithPositions(n int64) Config {
+	cfg := DefaultConfig()
+	cfg.FarmID = ""
+	cfg.ExprLimits = withPositions(openjd.DefaultExprLimits(), n)
+	return cfg
+}
+
+// countingHandler counts WARN-level records. Only the count matters here; the
+// message text is asserted by the tests that read UnschedulableReason.
+type countingHandler struct{ warns int }
+
+func (*countingHandler) Enabled(_ context.Context, l slog.Level) bool { return l >= slog.LevelWarn }
+
+func (h *countingHandler) Handle(_ context.Context, r slog.Record) error {
+	if r.Level >= slog.LevelWarn {
+		h.warns++
+	}
+	return nil
+}
+
+func (h *countingHandler) WithAttrs(_ []slog.Attr) slog.Handler { return h }
+
+func (h *countingHandler) WithGroup(_ string) slog.Handler { return h }
+
 // TestNew_NormalizesExprLimits pins that a partially-populated (or entirely
 // zero) Config.ExprLimits is filled in with the defaults ONCE, at construction.
 // An unset field left at 0 would make every worker look adequate in that
@@ -562,6 +648,120 @@ func TestWorkerExprLimits_WireKeysMatchTheProtocol(t *testing.T) {
 		t.Fatalf("protocol JSON %s decoded to %+v, want %+v -- a renamed json tag on either "+
 			"side silently drops the cap to zero, which reads as 'unadvertised'", raw, got, want)
 	}
+}
+
+// TestRegisterMsg_WireFieldsSurviveTheDuplication marshals a fully-populated
+// [protocol.RegisterMsg] -- the struct the worker actually publishes -- and
+// decodes it into this package's hand-maintained duplicate, asserting EVERY
+// field arrives.
+//
+// WHY IT EXISTS: TestWorkerExprLimits_WireKeysMatchTheProtocol covers the four
+// INNER keys of the caps object and nothing covered the OUTER expr_limits key.
+// A reviewer renamed it to worker_expr_limits on the protocol side and every
+// unit test, the integration suite and make ci stayed green -- while every
+// worker in the farm reported as "not advertised", workerExprCapsOrLegacy
+// substituted the legacy defaults, and a genuinely tight worker would have been
+// handed EXPR work it cannot run. That is the design spec §2 incident, silently,
+// with CI green.
+//
+// It is deliberately NOT limited to ExprLimits. The duplication is structural:
+// every field of these two structs is related by nothing but a matching string
+// literal, and any of them can be renamed on one side without a compile error.
+// Adding a field to protocol.RegisterMsg that the server needs and forgetting
+// it here produces the same silence, so the last sub-test fails if the two
+// structs stop having the same number of fields.
+func TestRegisterMsg_WireFieldsSurviveTheDuplication(t *testing.T) {
+	sent := protocol.RegisterMsg{
+		Version:            protocol.ProtocolVersion,
+		Type:               protocol.TypeRegister,
+		WorkerID:           "w-1",
+		FarmID:             "farm-1",
+		QueueID:            "queue-1",
+		Name:               "render-node-alpha",
+		Hostname:           "node-1",
+		IPAddress:          "10.0.0.1",
+		ComputeLocation:    "onprem_linux",
+		OS:                 "linux",
+		OSVersion:          "6.1",
+		WorkerVersion:      "v0.9.9",
+		CPUCount:           16,
+		RAMMb:              32768,
+		GPUInfo:            protocol.GPUInfo{Vendor: "NVIDIA", Model: "RTX4090", VRAMMb: 24576, Count: 2},
+		MaxConcurrentTasks: 4,
+		Tags:               map[string]string{"env": "prod"},
+		ExprLimits: protocol.ExprLimits{
+			OperationLimit:          11_111,
+			MemoryLimit:             2_222_222,
+			AssignmentPositions:     3_333,
+			AssignmentRetainedBytes: 4_444_444,
+		},
+	}
+	raw, err := json.Marshal(sent)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var got RegisterMsg
+	if err := json.Unmarshal(raw, &got); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+
+	// One row per field the server reads. A mismatched json tag shows up here
+	// as a zero value, which is exactly how it shows up in production.
+	fields := []struct {
+		name      string
+		got, want any
+	}{
+		{"worker_id", got.WorkerID, sent.WorkerID},
+		{"farm_id", got.FarmID, sent.FarmID},
+		{"queue_id", got.QueueID, sent.QueueID},
+		{"name", got.Name, sent.Name},
+		{"hostname", got.Hostname, sent.Hostname},
+		{"ip_address", got.IPAddress, sent.IPAddress},
+		{"compute_location", got.ComputeLocation, sent.ComputeLocation},
+		{"os", got.OS, sent.OS},
+		{"os_version", got.OSVersion, sent.OSVersion},
+		{"worker_version", got.WorkerVersion, sent.WorkerVersion},
+		{"cpu_count", got.CPUCount, sent.CPUCount},
+		{"ram_mb", got.RAMMb, sent.RAMMb},
+		{"gpu_info.vendor", got.GPUInfo.Vendor, sent.GPUInfo.Vendor},
+		{"gpu_info.model", got.GPUInfo.Model, sent.GPUInfo.Model},
+		{"gpu_info.vram_mb", got.GPUInfo.VRAMMb, sent.GPUInfo.VRAMMb},
+		{"gpu_info.count", got.GPUInfo.Count, sent.GPUInfo.Count},
+		{"tags", got.Tags["env"], sent.Tags["env"]},
+		{"expr_limits.operation_limit", got.ExprLimits.OperationLimit, sent.ExprLimits.OperationLimit},
+		{"expr_limits.memory_limit", got.ExprLimits.MemoryLimit, sent.ExprLimits.MemoryLimit},
+		{"expr_limits.assignment_positions", got.ExprLimits.AssignmentPositions, sent.ExprLimits.AssignmentPositions},
+		{
+			"expr_limits.assignment_retained_bytes",
+			got.ExprLimits.AssignmentRetainedBytes, sent.ExprLimits.AssignmentRetainedBytes,
+		},
+	}
+	for _, f := range fields {
+		t.Run(f.name, func(t *testing.T) {
+			if f.got != f.want {
+				t.Fatalf("%s = %v after the protocol -> scheduler round trip, want %v.\n"+
+					"The two RegisterMsg structs are related by nothing but matching json "+
+					"tags; a rename on either side decodes to the zero value on every "+
+					"registration, silently and forever.", f.name, f.got, f.want)
+			}
+		})
+	}
+
+	// protocol.RegisterMsg carries two fields this struct deliberately does not
+	// (Version and Type, which the subject already identifies, plus
+	// MaxConcurrentTasks, which Phase 1 does not persist). The count check is
+	// what makes a NEW field on the protocol side visible here rather than
+	// silently unread.
+	t.Run("field counts", func(t *testing.T) {
+		sentFields := reflect.TypeFor[protocol.RegisterMsg]().NumField()
+		gotFields := reflect.TypeFor[RegisterMsg]().NumField()
+		if sentFields != gotFields+3 {
+			t.Fatalf("protocol.RegisterMsg has %d fields and scheduler.RegisterMsg %d; the "+
+				"known gap is 3 (version, type, max_concurrent_tasks). A field added to "+
+				"one side must be added here, to the table above, or to this comment "+
+				"with a reason the server does not need it.", sentFields, gotFields)
+		}
+	})
 }
 
 // ── small helpers, one per dimension, so a row reads as its own mutation ──

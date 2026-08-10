@@ -58,9 +58,11 @@ type GPUInfo struct {
 // statement of what that worker will enforce, not a promise the server can
 // verify.
 //
-// A zero field means "not advertised": the only binaries that omit these are
-// ones built before E4d Task 2, which enforce the compiled-in defaults (a
-// current worker's config layer rejects 0, so it always reports a real value).
+// A zero field means "not advertised": a worker built from E4d Task 3 onward
+// always reports a real value (its config layer rejects 0), so silence means an
+// older binary. The scheduler reads that as the compiled-in defaults, which is
+// exact for a pre-Task-2 binary and a documented guess for one built between
+// Tasks 2 and 3 — see internal/scheduler's legacyWorkerExprCaps.
 //
 // The worker's per-symbol-table let-retention cap (expr.let_retained_bytes) is
 // deliberately NOT carried: the server has no per-table equivalent to compare

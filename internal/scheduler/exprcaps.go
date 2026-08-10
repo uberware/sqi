@@ -54,13 +54,28 @@ import (
 
 // legacyWorkerExprCaps is what a worker that advertises nothing is assumed to
 // enforce: the caps compiled into every sqi-worker built before EXPR
-// sub-project E4d Task 2 made them configurable.
+// sub-project E4d Task 3 taught it to advertise them.
 //
-// This is knowledge, not a guess. Only a pre-Task-2 binary can send zeroes — a
-// current worker's configuration layer rejects 0 as out of range, and
-// registration normalizes before publishing — and a pre-Task-2 binary enforces
-// exactly these numbers. Task 2's TestExprLimits_DefaultsMatchPreE4dConstants
-// pins that fmtres.DefaultExprLimits() still equals them, and this package's
+// IT IS KNOWLEDGE FOR ONE OF THE TWO BINARIES THAT CAN SEND ZEROES, AND A GUESS
+// FOR THE OTHER. Any worker built from Task 3 onward always reports real values
+// (its configuration layer rejects 0 as out of range and registration
+// normalizes before publishing), so silence means an older binary — of which
+// there are two kinds:
+//
+//   - Built before Task 2: the limits were fixed constants equal to these
+//     numbers, so the assumption is exact.
+//   - Built between Task 2 and Task 3 (this branch only, never released): the
+//     limits were already configurable, so such a worker may be enforcing
+//     something TIGHTER than this while reporting nothing, and the gate would
+//     pass it work it cannot run.
+//
+// The second case is accepted because it cannot exist outside this unreleased
+// branch, and because the alternatives are worse: reading silence as 0 refuses
+// every pre-Task-3 worker in the farm, and reading it as unlimited fails open
+// in exactly the case this file exists for.
+//
+// Task 2's TestExprLimits_DefaultsMatchPreE4dConstants pins that
+// fmtres.DefaultExprLimits() still equals these numbers, and this package's
 // TestExprCaps_UnadvertisedCapsAreThePreE4dDefaults pins this copy against
 // fmtres so the two cannot drift.
 //
@@ -75,9 +90,11 @@ var legacyWorkerExprCaps = store.WorkerExprLimits{
 }
 
 // workerExprCapsOrLegacy replaces every unadvertised (<= 0) cap with what such
-// a worker actually enforces. Treating an absent value as 0 would report a
-// shortfall in every dimension for every legacy worker; treating it as
-// "unlimited" would fail open in exactly the case this file exists for.
+// a worker is assumed to enforce ([legacyWorkerExprCaps], which records where
+// that assumption is exact and where it is not). Treating an absent value as 0
+// would report a shortfall in every dimension for every pre-Task-3 worker;
+// treating it as "unlimited" would fail open in exactly the case this file
+// exists for.
 func workerExprCapsOrLegacy(c store.WorkerExprLimits) store.WorkerExprLimits {
 	if c.OperationLimit <= 0 {
 		c.OperationLimit = legacyWorkerExprCaps.OperationLimit
@@ -162,28 +179,63 @@ func exprCapShortfall(caps store.WorkerExprLimits, srv openjd.ExprLimits) string
 		"so it is not offered EXPR work"
 }
 
-// jobMayUseEXPR reports whether job's template could produce an assignment
-// requiring worker-side expression evaluation.
+// jobMayUseEXPR is a HEURISTIC, not a decision procedure, and the difference
+// matters in both directions. It reports whether job's raw template contains
+// the bytes "EXPR" anywhere.
 //
-// Deliberately a SUPERSET, and deliberately not a parse. An extension is
-// declared by its literal name in the template document, so a template whose
-// bytes do not contain "EXPR" cannot declare it; a template that mentions it
-// anywhere else (a comment, an environment variable, a command argument) is
-// treated as EXPR-capable, which only makes the gate stricter. Re-parsing every
-// candidate template on every lease request to be exact would cost far more
-// than the mistake is worth: this runs per ready task per lease request, and
-// buildAssignPayload is where a template is parsed, on the winner only.
+// WHAT IT GETS RIGHT: every template written by any tool that exists spells a
+// declared extension literally (`extensions: [EXPR]` / `"extensions":["EXPR"]`),
+// so a real EXPR template always matches. Its only reachable FALSE POSITIVE is
+// a base-spec template that happens to contain those four bytes elsewhere — a
+// comment, a variable named EXPRESSION_MODE — which merely makes the gate
+// stricter, and only on a farm that is already misconfigured.
+//
+// WHAT IT GETS WRONG, stated plainly because an earlier revision of this
+// comment claimed the opposite ("a template whose bytes do not contain EXPR
+// cannot declare it") and that claim is FALSE. The declaration is a decoded
+// STRING, not a byte sequence: YAML's "EXP\x52" and JSON's "\u0045XPR" both
+// decode to EXPR, are accepted by openjd.Parse, and are stored verbatim in
+// store.Job.RawTemplate, so this function returns false for a template that
+// genuinely declares the extension. The gate then passes, the job dispatches to
+// a tight worker, and its tasks fail at run time — the design spec §2 incident
+// this file exists to prevent.
+//
+// WHY IT SHIPS ANYWAY, and what would replace it:
+//
+//  1. It is unreachable today. EXPR is StatusInProgress, so no EXPR template
+//     can be submitted at all; the whole gate is inert until sub-project H.
+//  2. Reaching it requires deliberately obfuscating an extension declaration,
+//     which no authoring tool does and which gains the submitter nothing: the
+//     only consequence is that their own job's tasks fail.
+//  3. The exact check is a document parse, and the cheap placements for it do
+//     not exist. Doing it here costs a parse per CANDIDATE TASK per lease
+//     request (AssignBatchSize is 50, templates are accepted up to 4 MiB) on
+//     any misconfigured farm — an availability problem strictly worse than the
+//     one it closes. Doing it in buildAssignPayload, where the template is
+//     already parsed for the winner only, is after LeaseReadyTask and
+//     createAttemptAndClaimUsage, so it would need a revert that leaves an
+//     orphaned attempt row behind on every retry.
+//
+// H HANDOFF — the clean fix is neither of those two: persist the declared
+// extension list on the job row at submission (where internal/openjd has
+// already parsed and validated it) and read a column here. Exact, no parse on
+// the lease path, and it needs this heuristic only as the fallback for rows
+// written before that column existed.
 func jobMayUseEXPR(job store.Job) bool {
 	return strings.Contains(job.RawTemplate, openjd.ExtensionEXPR)
 }
 
-// exprCapsBlock returns "" when worker may be given job, or the operator-facing
-// reason it may not.
+// exprCapsBlock returns "" when a worker whose shortfall is workerShortfall may
+// be given job, or the operator-facing reason it may not.
 //
-// The dimension comparison runs FIRST because it is four integer comparisons on
-// a value already in hand, and on a correctly-configured farm it returns ""
-// immediately — the template scan only ever happens on a farm that is already
-// misconfigured.
+// workerShortfall is [exprCapShortfall] for that worker, taken as a parameter
+// rather than recomputed because it depends only on the worker and this
+// server's configuration — constant for a whole lease batch, while this
+// function is called once per candidate task. On the passing path that call
+// costs four integer comparisons and allocates nothing; on a misconfigured farm
+// it formats up to four sentences, which is why [Scheduler.selectLeaseBatch]
+// hoists it out of the candidate loop. The template scan below likewise only
+// ever runs on a farm that is already misconfigured.
 //
 // Both callers matter and neither may be dropped: [Scheduler.leaseGatesPass] is
 // the bound (the task is never handed over), and [Scheduler.evaluateSchedulability]
@@ -191,10 +243,15 @@ func jobMayUseEXPR(job store.Job) bool {
 // unschedulable sweep). A bound with no explanation is a silent stall; an
 // explanation with no bound is the warning-nobody-reads this program has
 // repeatedly found is not a bound at all.
-func (s *Scheduler) exprCapsBlock(worker store.Worker, job store.Job) string {
-	reason := exprCapShortfall(worker.ExprLimits, s.cfg.ExprLimits)
-	if reason == "" || !jobMayUseEXPR(job) {
+func exprCapsBlock(workerShortfall string, job store.Job) string {
+	if workerShortfall == "" || !jobMayUseEXPR(job) {
 		return ""
 	}
-	return reason
+	return workerShortfall
+}
+
+// workerExprShortfall is [exprCapShortfall] for worker, against the limits this
+// server accepts templates under.
+func (s *Scheduler) workerExprShortfall(worker store.Worker) string {
+	return exprCapShortfall(worker.ExprLimits, s.cfg.ExprLimits)
 }

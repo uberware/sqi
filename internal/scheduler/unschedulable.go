@@ -118,7 +118,7 @@ func (s *Scheduler) evaluateSchedulability(ctx context.Context, task store.Task,
 		// here the task would sit ready forever while the sweep reported it
 		// schedulable. exprcaps.go's reason is deliberately the operator-facing
 		// one — it names both config keys and both numbers.
-		if reason := s.exprCapsBlock(w, job); reason != "" {
+		if reason := exprCapsBlock(s.workerExprShortfall(w), job); reason != "" {
 			lastReason = reason
 			continue
 		}
