@@ -192,24 +192,60 @@ func ResolveParameterSpaceParams(tmpl *JobTemplate, ps *StepParameterSpace, jobP
 // The result of this branch is still TEXT, assigned back into rangeExpr,
 // exactly as the base-spec branch below does — NOT a value handed to
 // evalRangeExprList's list-producing path. That is deliberate, and it is NOT
-// a second helping of section 2.1's trap (see evalRangeExprList's own doc
-// comment for the trap's full statement): the trap is about not
-// re-stringifying a range_expr VALUE and re-parsing it under
-// internal/openjd's stricter <IntRangeExpr> policy. Here the user did not
-// write an expression that PRODUCES a range — they wrote ordinary
-// <IntRangeExpr> syntax ("1-...") with an expression EMBEDDED in it to
-// compute one piece of that syntax's text ("{{ Param.End * 2 }}" standing in
-// for the end bound). The embedded expression evaluates to a plain int/
-// float/string/path value, rendered to text with Value.String() exactly as
-// checkFormatString's own non-lone branch treats it (expr.TAny, converted to
-// string) — there is no range_expr-typed VALUE anywhere in this branch to
-// mis-stringify. The resulting text ("1-10") is precisely what a base-spec
-// author would have typed by hand, and — for INT/CHUNK[INT] — legitimately
-// belongs to expand.go's parseIntRangeExpr afterward, the same as any other
-// literal <IntRangeExpr> string. Declaring EXPR does not change how an
-// ordinary base-spec RangeExpr resolves in VALUE, only in how its embedded
-// references are evaluated (as expressions, not dotted-identifier lookups)
-// — and, per section 1.3.12, only what a WHOLE-FIELD LONE expression means.
+// a second occurrence of section 2.1's trap (see evalRangeExprList's own doc
+// comment for the trap's full statement) — but NOT for the reason an earlier
+// version of this comment gave. An embedded reference here CAN legitimately
+// evaluate to a genuine range_expr-typed value — "{{ range_expr(\"10-15:2,1-5\") }},7"
+// is a real, reachable input, and Value.String() renders a range_expr value
+// back to ITS OWN <IntRangeExpr> text (rangeexpr.go: the value's payload IS
+// the text range_expr() was called with, unmodified) — so "there is no
+// range_expr-typed VALUE here to mis-stringify" is FALSE; one can be, and
+// String() does stringify it. Confirmed, and pinned by
+// TestResolveParameterSpaceParams_NonLoneRangeExprEmbeddedRangeExprValue:
+// resolving "{{ range_expr(\"10-15:2,1-5\") }},7" produces RangeExpr
+// "10-15:2,1-5,7", which ExpandParameterSpace's parseIntRangeExpr then
+// expands under internal/openjd's OWN first-seen policy to
+// [10,12,14,1,2,3,4,5,7] — the SPEC's own ascending, deduplicated order
+// (section 3.4.1.1.1) for that same composed text would be
+// [1,2,3,4,5,7,10,12,14], so this really does reorder relative to the
+// expression language.
+//
+// The ruling (coordinator, EXPR sub-project E4b Task 2 fix round 1): KEEP
+// this behavior — it is correct, not a defect. Section 2.1's rule is scoped
+// to the LONE whole-field form, where the expression IS the range and
+// evalRangeExprList evaluates it as a VALUE (list[elemType] or, for a
+// genuine range_expr, range_expr's own list[int] coercion — never
+// re-entering <IntRangeExpr> text at all, which is what section 2.1 actually
+// forbids). It does not govern a reference EMBEDDED in surrounding range
+// syntax, which is a different position: section 1.3.2 states plainly that
+// an embedded reference evaluates at expr.TAny and converts to a STRING,
+// full stop, regardless of what type that value happens to be — a
+// range_expr is not special-cased out of that rule, and treating it as
+// special would mean this branch reads the embedded value's TYPE to decide
+// how to render it, which format-string interpolation never does anywhere
+// else in this codebase (worker fmtres's evalEmbeddedRef renders every
+// TAny result the same way, range_expr included). The COMPOSED result —
+// literal text plus the range_expr's own rendered text plus more literal
+// text — is, structurally, an ordinary base-spec <RangeString>: text a human
+// author could have typed by hand, no different in kind from "1-10" in the
+// arithmetic example above. Base-spec text is parsed under
+// internal/openjd's OWN <IntRangeExpr> policy (parseIntRangeExpr,
+// range.go) — that policy's three deliberate divergences from the
+// expression language's (start > end rejected, negative step rejected,
+// first-seen rather than ascending order — see this repo's CLAUDE.md, which
+// records and preserves all three on purpose) apply here exactly as they do
+// to any other literal range string, INCLUDING one assembled partly from an
+// embedded range_expr's own text. This wave does not change that policy or
+// its divergences; it only makes the checker and resolver AGREE about which
+// text reaches it.
+//
+// The resulting text is precisely what a base-spec author would have typed
+// by hand, and — for INT/CHUNK[INT] — legitimately belongs to expand.go's
+// parseIntRangeExpr afterward, the same as any other literal <IntRangeExpr>
+// string. Declaring EXPR does not change how an ordinary base-spec RangeExpr
+// resolves in VALUE, only in how its embedded references are evaluated (as
+// expressions, not dotted-identifier lookups) — and, per section 1.3.12,
+// only what a WHOLE-FIELD LONE expression means.
 //
 // Returns exactly one of rangeExpr (non-nil) or rangeList (non-nil) on
 // success — the caller assigns both straight onto the new definition, so a
@@ -252,20 +288,37 @@ func resolveRangeExprField(
 // When exprEnabled is true, entry resolves through resolveFormatStringExpr
 // with target TargetString (exprcheck.go) — matching
 // checkParameterSpaceExpressions's own checkFormatString call for a RangeList
-// entry exactly: a LONE {{...}} reference is evaluated once against
-// expr.TString (so an int/float/path value naturally coerces to its text
-// form, per section 1.2.3), and anything else (literal text, or a reference
-// embedded in surrounding text) evaluates each embedded reference at
-// expr.TAny and concatenates. Every RangeList entry is a format-string FIELD
-// of one uniform type — string — regardless of the task parameter's own
-// declared Type: the entry's TEXT is what is stored back into RangeList,
-// and expand.go (validateFloatList, PATH's own non-empty check, and so on)
-// is what parses that text into the parameter's actual type, exactly as it
-// already does for a literal (non-EXPR) entry. Evaluating a lone reference
-// against the parameter's element type here, rather than TargetString, would
-// disagree with the checker for no benefit: either coercion path lands on
-// the same rendered text for every legal reference this task's own tests
-// cover.
+// entry exactly, AS THAT CALL STANDS TODAY: a LONE {{...}} reference is
+// evaluated once against expr.TString (so an int/float/path value naturally
+// coerces to its text form, per section 1.2.3), and anything else (literal
+// text, or a reference embedded in surrounding text) evaluates each embedded
+// reference at expr.TAny and concatenates. Every RangeList entry is a
+// format-string FIELD of one uniform type — string — regardless of the task
+// parameter's own declared Type: the entry's TEXT is what is stored back
+// into RangeList, and expand.go (validateFloatList, PATH's own non-empty
+// check, and so on) is what parses that text into the parameter's actual
+// type, exactly as it already does for a literal (non-EXPR) entry.
+//
+// THIS DOES NOT SURVIVE THE CHECKER TIGHTENING ITS OWN TARGET TO THE
+// PARAMETER'S ELEMENT TYPE (design spec §3, not yet implemented as of this
+// task — TargetString is a deliberately loose target chosen to agree with
+// today's checker, not a claim that TargetString is the *correct* target on
+// its own terms). Once the checker targets, say, expr.TInt for an INT
+// RangeList entry, float -> int is a legal §1.2.3 coercion (an integral
+// float succeeds), so the checker accepts an entry like
+// "{{ Param.Scale * 2 }}" with Scale=2.5. This function, still at
+// TargetString, would render that same entry "5.0" — text validateIntList
+// rejects outright ("invalid integer \"5.0\""), because TargetString never
+// performs the float -> int narrowing at all, only ever float -> string.
+// Checker accepts, expansion fails: the exact drift class this task's own
+// whole-field-RangeExpr fix (resolveRangeExprField, above) exists to close,
+// reopened at this position by a change on the OTHER side. Whichever task
+// implements §3 must move the checker's target AND this function's
+// loneTarget together, in one commit — moving one without the other trades
+// today's drift (checker rejects what this function would have resolved,
+// which the current TestResolveParameterSpaceParams_RangeListEntryBaseSpecUnchanged-
+// style tests cannot even observe, since they never disagree at this
+// TargetString choice) for the reverse and observable drift described above.
 func resolveRangeListEntry(exprEnabled bool, entry string, syms expr.MapSymbols, scope fmtstring.Scope) (string, error) {
 	if exprEnabled {
 		return resolveFormatStringExpr(entry, syms, TargetString, submissionLimits()...)
@@ -300,7 +353,20 @@ func resolveFormatStringExpr(s string, syms expr.MapSymbols, loneTarget expr.Typ
 		if v.IsUnresolved() {
 			return "", errUnresolvedRangeValue(v)
 		}
-		return v.AsStr(), nil
+		// Value.String(), NOT v.AsStr(): AsStr panics (Value.mustBe) for any
+		// payload code other than string, and loneTarget is a caller-supplied
+		// PARAMETER, not a constant — resolveRangeListEntry passes
+		// TargetString today, but a target type is exactly the kind of value
+		// a later position (a per-entry element-typed target, matching the
+		// checker once it stops using TargetString uniformly) will vary. A
+		// parameter that exists to be varied must not crash the process
+		// (inside a synchronous submit handler, no less) the first time it
+		// is. String() is the same rendering evalRangeExprList's elements
+		// already use and is total over every Value — the safe choice here
+		// costs nothing today and removes a latent panic for whoever varies
+		// loneTarget next. See
+		// TestResolveFormatStringExpr_NonStringLoneTargetDoesNotPanic.
+		return v.String(), nil
 	}
 
 	segs, err := fmtstring.Segments(s)

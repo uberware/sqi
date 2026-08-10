@@ -722,9 +722,15 @@ func TestResolveParameterSpaceParams_WholeFieldExpressionError(t *testing.T) {
 // (FLOAT/STRING/PATH keep list[... | FormatString] per §1.3.12; INT/CHUNK[INT]
 // may also carry a RangeList per TaskParamDefinition's own doc comment).
 // Asserts each resolves to the right VALUE and the right RENDERING for its
-// type — the FLOAT computed case ("5.0") pins the same shortest-round-trip
-// rendering rule evalRangeExprList's doc comment establishes for the
-// whole-field form, now proven for a per-entry expression too.
+// type AT THIS LAYER — this package's own resolve.go/RangeList text, not
+// what ultimately reaches a task's Parameters map. The FLOAT computed case's
+// "5.0" is this function's own output only; it does NOT claim that text
+// survives to a worker. See TestResolveParameterSpaceParams_
+// RangeListEntryFloatIsRenormalizedByExpand, immediately below, which pins
+// what a caller reading the FULLY expanded parameter space (this function
+// PLUS expand.go's ExpandParameterSpace) actually receives, and records why
+// §2.3's rendering question is moot for a FLOAT range value reached through
+// either the whole-field list form (Task 1) or this per-entry form.
 func TestResolveParameterSpaceParams_RangeListEntryExpressions(t *testing.T) {
 	for _, tc := range []struct {
 		name      string
@@ -799,6 +805,63 @@ func TestResolveParameterSpaceParams_RangeListEntryExpressions(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestResolveParameterSpaceParams_RangeListEntryFloatIsRenormalizedByExpand
+// is EXPR sub-project E4b Task 2's fix-round item 4: the FLOAT case above
+// asserts resolve.go's own output ("5.0" for "{{ Param.Scale * 2 }}",
+// Scale=2.5) and stops there, which does NOT pin what a worker actually
+// receives — expand.go's validateFloatList re-canonicalizes every FLOAT
+// RangeList entry with strconv.FormatFloat(f, 'g', -1, 64), which drops the
+// ".0" evalRangeExprList's/resolveFormatStringExpr's own rendering rule
+// adds. This test runs the SAME entry through the full pipeline
+// (ResolveParameterSpaceParams + ExpandParameterSpace) and pins the value
+// that actually reaches a task row: "5", not "5.0".
+//
+// This makes §2.3's rendering-rule question (which of two competing string
+// forms for a computed float is "correct") MOOT for a FLOAT range value
+// specifically, in EITHER form (Task 1's whole-field list expression or
+// this task's per-entry expression): whatever evalRangeExprList/
+// resolveFormatStringExpr render, expand.go normalizes away before it
+// reaches a task's Parameters map, and it already did so for a literal
+// (non-EXPR) FLOAT RangeList entry too — this is pre-existing behavior this
+// task's own per-entry evaluation did not introduce, only newly made
+// reachable through an EXPR-computed entry.
+func TestResolveParameterSpaceParams_RangeListEntryFloatIsRenormalizedByExpand(t *testing.T) {
+	tmpl := &openjd.JobTemplate{
+		Extensions:           []string{"EXPR"},
+		ParameterDefinitions: []openjd.JobParameter{{Name: "Scale", Type: openjd.JobParamTypeFloat}},
+	}
+	ps := &openjd.StepParameterSpace{
+		TaskParameterDefinitions: []openjd.TaskParamDefinition{
+			{
+				Name:      "P",
+				Type:      openjd.TaskParamTypeFloat,
+				RangeList: []string{"{{ Param.Scale * 2 }}"},
+			},
+		},
+	}
+
+	resolved, errs := openjd.ResolveParameterSpaceParams(tmpl, ps, map[string]string{"Scale": "2.5"})
+	if len(errs) != 0 {
+		t.Fatalf("unexpected errors: %v", errs)
+	}
+	// resolve.go's own output, confirmed for completeness — this is what the
+	// sibling table test above already pins.
+	if got := resolved.TaskParameterDefinitions[0].RangeList[0]; got != "5.0" {
+		t.Fatalf("resolve.go's own output = %q, want %q", got, "5.0")
+	}
+
+	rows, err := openjd.ExpandParameterSpace(resolved)
+	if err != nil {
+		t.Fatalf("ExpandParameterSpace: %v", err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("expanded rows = %v, want exactly 1", rows)
+	}
+	if got := rows[0]["P"]; got != "5" {
+		t.Errorf("what the worker actually receives = %q, want %q (validateFloatList's %%g re-canonicalization)", got, "5")
 	}
 }
 
@@ -1039,5 +1102,131 @@ func TestResolveParameterSpaceParams_NonLoneRangeExprMetered(t *testing.T) {
 	}
 	if !strings.Contains(errs[0].Message, "operation limit exceeded") {
 		t.Errorf("errs[0].Message = %q, want it to contain %q", errs[0].Message, "operation limit exceeded")
+	}
+}
+
+// TestResolveParameterSpaceParams_NonLoneRangeExprEmbeddedRangeExprValue is
+// EXPR sub-project E4b Task 2's fix-round item 1: an embedded reference in a
+// non-lone whole-field RangeExpr CAN legitimately evaluate to a genuine
+// range_expr-typed value — range_expr("10-15:2,1-5") — and Value.String()
+// renders that value back to ITS OWN <IntRangeExpr> text (rangeexpr.go: the
+// value's payload IS the text range_expr() was called with, unmodified).
+// This is the case an earlier version of resolveRangeExprField's doc comment
+// incorrectly claimed could not happen ("there is no range_expr-typed VALUE
+// anywhere in this branch to mis-stringify") — coordinator review found the
+// claim false, verified all three rows below directly against the running
+// code, and ruled the resulting behavior CORRECT (see resolveRangeExprField's
+// doc comment for the ruling and its reasoning, restated briefly in each
+// case's own comment below). This test is what pins that ruling so it cannot
+// silently change.
+//
+// All three cases share one shape: an embedded range_expr(...) call,
+// followed by a literal ",<n>" — deliberately non-lone (fmtstring.LoneRef
+// requires the ENTIRE field to be one reference; the trailing literal rules
+// that out), so all three exercise this task's new
+// resolveFormatStringExpr/checkFormatString-agreement machinery, not
+// evalRangeExprList's whole-field-lone path (which remains genuinely
+// section-2.1-safe, per its own doc comment, and is untouched by this case).
+func TestResolveParameterSpaceParams_NonLoneRangeExprEmbeddedRangeExprValue(t *testing.T) {
+	for _, tc := range []struct {
+		name           string
+		rangeExprText  string
+		wantResolved   string
+		wantExpandErr  string   // substring; empty means expansion must succeed
+		wantExpandRows []string // checked only when wantExpandErr == ""
+	}{
+		{
+			// range_expr("5-1") is legal at the expression layer (section
+			// 3.4.1.1.1 makes "1 - -1" the single value [1], and this repo's
+			// own TestResolveParameterSpaceParams_RangeExprKeepsExpressionPolicy
+			// pins range_expr("5-1") -> ["5"] when it is the LONE whole-field
+			// form). Spliced into base-spec <IntRangeExpr> text via this
+			// non-lone form, the composed text "5-1,7" is parsed by
+			// internal/openjd's OWN stricter parseIntRangeExpr, which rejects
+			// start > end outright — the same rejection
+			// TestResolveParameterSpaceParams_LiteralIntRangeKeepsOpenJDPolicy
+			// already pins for the literal text "5-1" alone.
+			name:          "start > end: resolves, then rejected by internal/openjd's own policy at expand",
+			rangeExprText: `{{ range_expr("5-1") }},7`,
+			wantResolved:  "5-1,7",
+			wantExpandErr: "must be ≤ end",
+		},
+		{
+			// Same shape, the second of internal/openjd's own two rejecting
+			// divergences (negative step, legal at the expression layer,
+			// rejected by parseIntRangeExpr).
+			name:          "negative step: resolves, then rejected by internal/openjd's own policy at expand",
+			rangeExprText: `{{ range_expr("10-1:-1") }},99`,
+			wantResolved:  "10-1:-1,99",
+			wantExpandErr: "must be a positive integer",
+		},
+		{
+			// The THIRD divergence — first-seen vs. ascending order — does
+			// not reject, it silently REORDERS, which is exactly why this
+			// case needs a pinned test rather than an argument: without one,
+			// nothing stops a future change from reordering back to
+			// ascending and no test would notice. range_expr("10-15:2,1-5")
+			// is [1,2,3,4,5,10,12,14] at the expression layer (this repo's
+			// own TestResolveParameterSpaceParams_RangeExprKeepsExpressionPolicy
+			// pins exactly that for the LONE whole-field form). Spliced into
+			// "10-15:2,1-5,7" and parsed under internal/openjd's first-seen
+			// policy (parseIntRangeExpr, range.go — the same divergence
+			// TestResolveParameterSpaceParams_LiteralIntRangeKeepsOpenJDPolicy
+			// pins for the literal text alone), the result is
+			// [10,12,14,1,2,3,4,5,7] — the SPEC's own ascending,
+			// deduplicated order for that same composed text would instead
+			// be [1,2,3,4,5,7,10,12,14].
+			name:           "overlapping sub-ranges: resolves and expands, FIRST-SEEN order (not ascending)",
+			rangeExprText:  `{{ range_expr("10-15:2,1-5") }},7`,
+			wantResolved:   "10-15:2,1-5,7",
+			wantExpandRows: []string{"10", "12", "14", "1", "2", "3", "4", "5", "7"},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			tmpl := &openjd.JobTemplate{Extensions: []string{"EXPR"}}
+			ps := &openjd.StepParameterSpace{
+				TaskParameterDefinitions: []openjd.TaskParamDefinition{
+					{Name: "Frame", Type: openjd.TaskParamTypeInt, RangeExpr: ptr(tc.rangeExprText)},
+				},
+			}
+
+			resolved, errs := openjd.ResolveParameterSpaceParams(tmpl, ps, nil)
+			if len(errs) != 0 {
+				t.Fatalf("ResolveParameterSpaceParams: unexpected errors: %v", errs)
+			}
+			def := resolved.TaskParameterDefinitions[0]
+			if def.RangeExpr == nil || *def.RangeExpr != tc.wantResolved {
+				t.Fatalf("RangeExpr = %v, want %q", def.RangeExpr, tc.wantResolved)
+			}
+			if len(def.RangeList) != 0 {
+				t.Fatalf("RangeList = %v, want empty", def.RangeList)
+			}
+
+			rows, err := openjd.ExpandParameterSpace(resolved)
+			if tc.wantExpandErr != "" {
+				if err == nil {
+					t.Fatalf("ExpandParameterSpace succeeded, want error containing %q", tc.wantExpandErr)
+				}
+				if !strings.Contains(err.Error(), tc.wantExpandErr) {
+					t.Errorf("ExpandParameterSpace error = %q, want it to contain %q", err.Error(), tc.wantExpandErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("ExpandParameterSpace: %v", err)
+			}
+			got := make([]string, len(rows))
+			for i, row := range rows {
+				got[i] = row["Frame"]
+			}
+			if len(got) != len(tc.wantExpandRows) {
+				t.Fatalf("expanded values = %v, want %v", got, tc.wantExpandRows)
+			}
+			for i, want := range tc.wantExpandRows {
+				if got[i] != want {
+					t.Errorf("expanded[%d] = %q, want %q", i, got[i], want)
+				}
+			}
+		})
 	}
 }
