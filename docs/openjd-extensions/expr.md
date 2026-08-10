@@ -216,10 +216,21 @@ a `SubmitValidationError` and none of them able to reach a task:
   perfectly well *typed*; its length is what is wrong, and length is not a
   type.
 
-Each is base-spec-equivalent: the same text written as a literal `range` on a
-non-EXPR template fails with the same message, only at validation rather than
-expansion. So what differs is the layer and the JSON pointer, never whether a
-malformed range is caught. All three are pinned by
+Each is base-spec-*rejecting*: the same text written as a literal `range` on a
+non-EXPR template is refused too, so what differs is the layer and the JSON
+pointer, never whether a malformed range is caught. The **message** matches only
+for the lone-text arm (`{{ 'abc' }}` and a literal `abc` both give
+`invalid integer "abc"`); the other two differ, and the difference was measured
+rather than assumed:
+
+| shape | base-spec literal | EXPR path |
+|---|---|---|
+| lone text `{{ 'abc' }}` | `range expression "abc": invalid integer "abc"` | identical |
+| non-lone `["x{{ 2.5 }}"]` | `value "x2.5" is not a valid integer` (validate) | `invalid integer "x2.5"` (expand) |
+| lone empty `{{ [] }}` | `required` (validate) — never reaches `range list is empty` | `range list is empty` (expand) |
+
+An earlier revision of this paragraph claimed all three share a message. That
+was true of one. All three are pinned by
 `TestRangeCheckerResolverAgreement_KnownNonLoneDivergences`, whose doc comment
 carries the full ruling.
 

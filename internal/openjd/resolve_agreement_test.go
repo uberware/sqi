@@ -798,8 +798,14 @@ func TestRangeCheckerResolverAgreement_KnownNonLoneDivergences(t *testing.T) {
 	// Shape 3, LONE EMPTY LIST -- the review's Minor 1, at every declared
 	// type. An empty list is well-typed at every one of them, so no target
 	// this checker could name would reject it; "range list is empty" is a
-	// LENGTH check, and expand.go is where lengths are checked (base-spec
-	// range: [] fails there too).
+	// LENGTH check, and expand.go is where lengths are checked.
+	//
+	// NOT because base-spec range: [] fails at expansion -- an earlier
+	// revision of this comment said so and it is wrong. A literal range: []
+	// is rejected at VALIDATE with "required" (validate.go's
+	// validateTaskParamRangeAndChunks) and never reaches expand.go at all. So
+	// base-spec is strictly EARLIER and stricter here; the shared property is
+	// only that both refuse, not that they refuse alike.
 	for typ, wantErr := range map[TaskParamType]string{
 		TaskParamTypeInt:    "range list is empty",
 		TaskParamTypeFloat:  "range list is empty",
