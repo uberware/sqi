@@ -583,7 +583,36 @@ func ValidateWithOptions(t *JobTemplate, opts ValidateOptions) ValidationErrors 
 	// change the verdict and its per-position budgets are pure attack surface.
 	// See [ValidateOptions.CheckEXPRExpressionsWhileUnsupported] for the cost
 	// measurement and for why sub-project H deletes this gate.
-	if exprExpressionWalkEnabled(opts.CheckEXPRExpressionsWhileUnsupported) {
+	//
+	// ALSO gated on parameterSpaceOverCaps(t): maxTaskParameterDefinitions
+	// (16) and maxTaskParamValues (1024) -- validateParameterSpaceLimits,
+	// below -- are what make the worst-case per-step construction MAXIMAL
+	// rather than unbounded. Measured directly (E4c Task 1): one step at
+	// exactly those two caps costs ~97s of CPU in this walk alone, and
+	// nothing before this check bounded it -- the checker is the MORE
+	// expensive of the two walks (validateLimits/validateParameterSpaceLimits
+	// runs the resolver's identical positions too, at submit) and was bounded
+	// by nothing but the 4 MiB request body.
+	//
+	// This check is DELIBERATELY NOT gated by opts.EnforceLimits, even though
+	// the parameter-space-limit ValidationErrors themselves still are (below,
+	// unchanged from before this task). The submit pipeline runs with
+	// EnforceLimits: false (see internal/openjd/submit.go), so a walk guard
+	// gated on that flag would protect nothing where it actually matters.
+	// This mirrors the repo's existing always-on resource-exhaustion guards
+	// that apply regardless of EnforceLimits for the identical reason --
+	// [maxRangeValues] (range.go) and [maxTasksPerStep] (expand.go) -- and
+	// keeps this check from becoming the exact bug class
+	// docs/openjd-conformance.md records as already closed once: a structural
+	// safeguard that silently vanishes under EnforceLimits: false.
+	//
+	// An over-cap step's expressions are not left permanently unchecked by
+	// this skip: checkExpressionsAtSubmit (submit.go) re-runs the walk
+	// unconditionally with concrete parameters at submit, before any task is
+	// expanded, so a genuinely malformed expression in an over-cap step is
+	// still caught there -- just not paid for twice, once here for free and
+	// once at submit for real.
+	if exprExpressionWalkEnabled(opts.CheckEXPRExpressionsWhileUnsupported) && !parameterSpaceOverCaps(t) {
 		errs = append(errs, checkTemplateExpressions(t, nil)...)
 	}
 
@@ -848,6 +877,31 @@ func validateEnvNameLimits(envs []Environment, base string) ValidationErrors {
 		}
 	}
 	return errs
+}
+
+// parameterSpaceOverCaps reports whether ANY step in t has a parameter space
+// that [validateParameterSpaceLimits] would flag -- too many task-parameter
+// definitions, a parameter with too many values, or an overlapping INT range.
+//
+// This is deliberately independent of opts.EnforceLimits: [ValidateWithOptions]
+// calls it to decide whether the (expensive) expression walk should run at
+// all, and that decision must hold even when the caller has disabled limit
+// REPORTING, exactly like the package's other always-on resource-exhaustion
+// guards ([maxRangeValues], [maxTasksPerStep]). It intentionally re-derives
+// the same verdict [validateParameterSpaceLimits] produces for the
+// EnforceLimits: true reporting path (see the call inside [validateLimits])
+// rather than sharing state with it, so this function has no effect on which
+// ValidationErrors are reported -- only on whether the walk runs.
+func parameterSpaceOverCaps(t *JobTemplate) bool {
+	for _, s := range t.Steps {
+		if s.ParameterSpace == nil {
+			continue
+		}
+		if len(validateParameterSpaceLimits(*s.ParameterSpace, "")) > 0 {
+			return true
+		}
+	}
+	return false
 }
 
 // validateParameterSpaceLimits checks the gated count and value-count limits for
