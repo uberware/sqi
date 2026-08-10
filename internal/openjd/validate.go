@@ -383,8 +383,15 @@ type ValidateOptions struct {
 	// value-domain correctness, not a size or count cap, so they run from
 	// [validateHostRequirements] unconditionally too.
 	// Resource-exhaustion guards (e.g. the [maxRangeValues] cap in
-	// parseIntRangeExpr) are NOT limit checks: they always apply, regardless of
-	// this flag.
+	// parseIntRangeExpr, the [maxTasksPerStep] cap in ExpandParameterSpace,
+	// and [parameterSpaceOverCaps] gating the expression walk in this
+	// function) are NOT limit checks: they always apply, regardless of this
+	// flag. [parameterSpaceOverCaps] is the one most likely to confuse,
+	// because it REUSES maxTaskParameterDefinitions and maxTaskParamValues --
+	// the same two constants [validateParameterSpaceLimits] checks under this
+	// very flag -- for a different question (should the walk run) than the
+	// gated check asks (should the template be rejected for its size); see
+	// both functions' doc comments.
 	EnforceLimits bool
 
 	// CheckEXPRExpressionsWhileUnsupported runs the EXPR extension's
@@ -585,33 +592,53 @@ func ValidateWithOptions(t *JobTemplate, opts ValidateOptions) ValidationErrors 
 	// measurement and for why sub-project H deletes this gate.
 	//
 	// ALSO gated on parameterSpaceOverCaps(t): maxTaskParameterDefinitions
-	// (16) and maxTaskParamValues (1024) -- validateParameterSpaceLimits,
-	// below -- are what make the worst-case per-step construction MAXIMAL
-	// rather than unbounded. Measured directly (E4c Task 1): one step at
-	// exactly those two caps costs ~97s of CPU in this walk alone, and
-	// nothing before this check bounded it -- the checker is the MORE
-	// expensive of the two walks (validateLimits/validateParameterSpaceLimits
-	// runs the resolver's identical positions too, at submit) and was bounded
-	// by nothing but the 4 MiB request body.
+	// (16) and maxTaskParamValues (1024) -- the two COUNT caps
+	// validateParameterSpaceLimits (below) also checks -- are what make the
+	// worst-case per-step construction MAXIMAL rather than unbounded.
+	// Measured directly (E4c Task 1): one step at exactly those two caps
+	// costs ~97s of CPU in this walk alone, and nothing before this check
+	// bounded it -- the checker is the MORE expensive of the two walks
+	// (validateLimits/validateParameterSpaceLimits runs the resolver's
+	// identical positions too, at submit) and was bounded by nothing but the
+	// 4 MiB request body. parameterSpaceOverCaps deliberately reimplements
+	// only those two O(n) count checks rather than calling
+	// validateParameterSpaceLimits wholesale -- see its own doc comment for
+	// why the omitted overlap check would have made this very guard
+	// quadratic.
 	//
-	// This check is DELIBERATELY NOT gated by opts.EnforceLimits, even though
-	// the parameter-space-limit ValidationErrors themselves still are (below,
-	// unchanged from before this task). The submit pipeline runs with
-	// EnforceLimits: false (see internal/openjd/submit.go), so a walk guard
-	// gated on that flag would protect nothing where it actually matters.
-	// This mirrors the repo's existing always-on resource-exhaustion guards
-	// that apply regardless of EnforceLimits for the identical reason --
-	// [maxRangeValues] (range.go) and [maxTasksPerStep] (expand.go) -- and
-	// keeps this check from becoming the exact bug class
-	// docs/openjd-conformance.md records as already closed once: a structural
-	// safeguard that silently vanishes under EnforceLimits: false.
+	// This check is BOUNDED-COST (O(n) arithmetic, not the walk it guards)
+	// and applies to phase 1 ONLY, regardless of opts.EnforceLimits, even
+	// though the parameter-space-limit ValidationErrors themselves stay
+	// gated (below, unchanged from before this task). It does not primarily
+	// exist to protect an EnforceLimits: false caller from phase 1's cost --
+	// production's DEFAULT is EnforceLimits: true (config.DefaultConfig,
+	// wired at server.go), and every production ValidateWithOptions caller
+	// passes true. Gating this guard on opts.EnforceLimits anyway would still
+	// be wrong: it would make a cheap, always-safe-to-run cost check silently
+	// vanish for the one caller where EnforceLimits IS false by design
+	// (Submit's phase-1 call -- SubmitterOptions.EnforceLimits defaults
+	// false, see submit.go) for zero benefit, which is the exact bug class
+	// docs/openjd-conformance.md records as already closed once. The cap
+	// verdict here is a COST signal (is this walk worth running), not a
+	// POLICY signal (should this template be rejected for its size) -- those
+	// are different questions, so this reuses opts.EnforceLimits' caps
+	// without adopting its gate, the same split [maxRangeValues] (range.go)
+	// and [maxTasksPerStep] (expand.go) already draw for other always-on
+	// resource-exhaustion guards.
 	//
-	// An over-cap step's expressions are not left permanently unchecked by
-	// this skip: checkExpressionsAtSubmit (submit.go) re-runs the walk
-	// unconditionally with concrete parameters at submit, before any task is
-	// expanded, so a genuinely malformed expression in an over-cap step is
-	// still caught there -- just not paid for twice, once here for free and
-	// once at submit for real.
+	// This guard does NOT bound phase 2. checkExpressionsAtSubmit (submit.go)
+	// still calls checkTemplateExpressions UNCONDITIONALLY once EXPR ships
+	// (sub-project H) -- no cap gate, no status gate -- so an over-cap step
+	// skipped here is walked again there, in full, with concrete parameters,
+	// before any task is expanded: no task is ever created from an
+	// unexamined expression. What this guard removes is phase 1's share of
+	// the cost -- free (request-anonymous, pre-parameter-binding) for a
+	// caller that only validates, and otherwise redundant for a caller that
+	// goes on to submit, since phase 2 re-walks the same positions anyway.
+	// An EnforceLimits: false SUBMIT of an over-cap template remains
+	// UNBOUNDED at phase 2 after this task -- gating checkExpressionsAtSubmit
+	// itself is explicitly out of this task's scope and is a later E4c
+	// task's job.
 	if exprExpressionWalkEnabled(opts.CheckEXPRExpressionsWhileUnsupported) && !parameterSpaceOverCaps(t) {
 		errs = append(errs, checkTemplateExpressions(t, nil)...)
 	}
@@ -880,25 +907,56 @@ func validateEnvNameLimits(envs []Environment, base string) ValidationErrors {
 }
 
 // parameterSpaceOverCaps reports whether ANY step in t has a parameter space
-// that [validateParameterSpaceLimits] would flag -- too many task-parameter
-// definitions, a parameter with too many values, or an overlapping INT range.
+// that exceeds maxTaskParameterDefinitions or maxTaskParamValues -- the two
+// COUNT caps that bound [checkTemplateExpressions]'s walk cost.
 //
-// This is deliberately independent of opts.EnforceLimits: [ValidateWithOptions]
-// calls it to decide whether the (expensive) expression walk should run at
-// all, and that decision must hold even when the caller has disabled limit
-// REPORTING, exactly like the package's other always-on resource-exhaustion
-// guards ([maxRangeValues], [maxTasksPerStep]). It intentionally re-derives
-// the same verdict [validateParameterSpaceLimits] produces for the
-// EnforceLimits: true reporting path (see the call inside [validateLimits])
-// rather than sharing state with it, so this function has no effect on which
-// ValidationErrors are reported -- only on whether the walk runs.
+// DELIBERATELY NARROWER than [validateParameterSpaceLimits]: this function
+// must stay O(n) because [ValidateWithOptions] runs it on EVERY
+// EXPR-declaring template regardless of opts.EnforceLimits (see the call
+// site), so an expensive check here would defeat its own purpose by
+// importing cost onto the very path it exists to protect.
+// [validateParameterSpaceLimits] also runs [intRangeHasOverlap], an O(n^2)
+// pairwise scan over an INT range's sub-ranges (range.go) with no early exit
+// once a count cap has already fired -- reusing it wholesale here was tried
+// and measured: on 8,000 non-overlapping INT sub-ranges it roughly DOUBLED
+// this guard's own cost under EnforceLimits: true (84ms -> 148ms), and on
+// 32,000 sub-ranges (a 186 KB body) took an EnforceLimits: false caller from
+// ~0 to ~1.97s -- turning a guard meant to bound cost into a new source of
+// unbounded cost on the one flag-value where nothing used to run here at
+// all. taskParamValueCount's own INT/CHUNK[INT] branch (intRangeExprCount)
+// is a SEPARATE, genuinely O(n) computation -- it sums each sub-range's
+// arithmetic count, it never compares sub-ranges pairwise -- so calling it
+// here is safe and is what this function does instead.
+//
+// A consequence, intentional: an overlap-only violation (e.g. "1-5,3-8",
+// which has no count problem at all) is NOT detected here and does not
+// silence the walk. Overlap makes the parameter space's RESULT
+// questionable, not the walk more EXPENSIVE -- this function answers "is
+// this walk worth its cost", not "is this parameter space otherwise
+// invalid" -- and [validateParameterSpaceLimits] (below, under
+// opts.EnforceLimits) still reports the overlap exactly as before this
+// task.
+//
+// This is deliberately independent of opts.EnforceLimits for the same
+// reason the package's other always-on resource-exhaustion guards are
+// ([maxRangeValues], [maxTasksPerStep]): see the call site in
+// [ValidateWithOptions] for the full reasoning. It intentionally re-derives
+// its own verdict from the same two constants [validateParameterSpaceLimits]
+// checks (see the call inside [validateLimits]) rather than sharing state
+// with it, so this function has no effect on which ValidationErrors are
+// reported -- only on whether the walk runs.
 func parameterSpaceOverCaps(t *JobTemplate) bool {
 	for _, s := range t.Steps {
 		if s.ParameterSpace == nil {
 			continue
 		}
-		if len(validateParameterSpaceLimits(*s.ParameterSpace, "")) > 0 {
+		if len(s.ParameterSpace.TaskParameterDefinitions) > maxTaskParameterDefinitions {
 			return true
+		}
+		for _, tp := range s.ParameterSpace.TaskParameterDefinitions {
+			if n, counted := taskParamValueCount(tp); counted && n > maxTaskParamValues {
+				return true
+			}
 		}
 	}
 	return false
