@@ -514,7 +514,7 @@ func applyBinary(ec evalCtx, op Op, l, r Value) (Value, error) {
 		// (cost_eval_internal_test.go's TestOperationCount_ListEquality),
 		// which sets 1 (call) + 2 (elements) = 3 for a two-element
 		// comparison against the reference's unexplained 2.
-		if n, err := elementCount(l); err != nil {
+		if n, err := elementCountBounded(ec, l); err != nil {
 			return Value{}, err
 		} else if err := ec.m.chargeElements(n); err != nil {
 			return Value{}, err
@@ -632,7 +632,7 @@ func chargeArgs(ec evalCtx, c Cost, args []Value) error {
 		if i < 0 || i >= len(args) {
 			continue
 		}
-		n, err := elementCount(args[i])
+		n, err := elementCountBounded(ec, args[i])
 		if err != nil {
 			return err
 		}
@@ -668,6 +668,28 @@ func chargeResult(ec evalCtx, c Cost, out Value) error {
 		}
 	}
 	return nil
+}
+
+// elementCountBounded is [elementCount] with a reservation in front of the one
+// receiver kind for which COUNTING is itself expensive.
+//
+// A list answers its own count in constant time. A range_expr does not: with
+// two or more sub-ranges rangeExprCount expands to count (rangeexpr.go), so a
+// charge site that called elementCount in order to decide whether the work
+// fits had already done the work by the time it found out -- 687 MB spent to
+// produce a figure the very next line refuses. reserveRangeExprExpansion
+// settles that arithmetically first.
+//
+// Use it at every site that charges BEFORE doing the work it prices.
+// chargeResult is deliberately not one of those sites: its value already
+// exists.
+func elementCountBounded(ec evalCtx, v Value) (int, error) {
+	if v.Type.Code == CodeRangeExpr {
+		if err := reserveRangeExprExpansion(ec, v); err != nil {
+			return 0, err
+		}
+	}
+	return elementCount(v)
 }
 
 // elementCount is a value's rule-2 element count.

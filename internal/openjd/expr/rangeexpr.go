@@ -134,6 +134,143 @@ func rangeExprCount(v Value) (int, error) {
 	return len(expandRanges(ranges, total)), nil
 }
 
+// rangeExprCountBounds returns a LOWER and an UPPER bound on how many integers
+// v expands to, computed purely arithmetically -- nothing is materialized, for
+// any shape of input, which is the one property [rangeExprCount] cannot offer.
+//
+// It exists because rangeExprCount is arithmetic ONLY for a single sub-range.
+// With two or more it calls expandRanges to produce the count, so every caller
+// that wanted a count in order to decide whether the expansion FITS was doing
+// the expansion to find out. Measured at the commit that introduced
+// meter.reserve: len(range_expr("1-5000000,6000000-9000000")) answered 8000001
+// after 645 ms and 687 MB while charging TWO operations, and the same
+// expression reached through list(), a subscript or a comprehension paid the
+// identical 687 MB before the reservation refused it. See
+// reserveRangeExprExpansion, which is what this pair is for.
+//
+// THE UPPER BOUND is the pre-deduplication sum of every sub-range's own count,
+// guarded by checkElementCount exactly as rangeInts guards the same running
+// total before expanding. It is >= the true count always, and EQUAL to it
+// unless sub-ranges overlap.
+//
+// THE LOWER BOUND is the LARGEST single sub-range's count. A single sub-range
+// is an arithmetic progression with a non-zero step, so its own values are
+// strictly monotonic and contain no duplicates (expandOneRange's comment
+// states the same fact) -- every one of them survives deduplication, so the
+// union cannot be smaller than the largest of them. It is <= the true count
+// always, and again EQUAL to it when one sub-range subsumes all the others.
+//
+// A single sub-range collapses both bounds onto the exact count, which is why
+// the common case needs no expansion and no fallback at all.
+func rangeExprCountBounds(v Value) (low, high int, err error) {
+	ranges, perr := intrange.Parse(v.AsRangeExpr())
+	if perr != nil {
+		// Unreachable: RangeExpr validated the text on construction.
+		return 0, 0, fmt.Errorf("invalid range expression %q: %w", v.AsRangeExpr(), perr)
+	}
+	if len(ranges) == 1 {
+		n := ranges[0].Count()
+		return n, n, nil
+	}
+	for _, r := range ranges {
+		n := r.Count()
+		if n > low {
+			low = n
+		}
+		high += n
+		if err := checkElementCount(high); err != nil {
+			return 0, 0, err
+		}
+	}
+	return low, high, nil
+}
+
+// reserveRangeExprCount is [reserveRangeExprExpansion] for a caller that needs
+// only the COUNT and never the values -- len(range_expr) is the only one.
+//
+// The difference is the single-sub-range case, and it is not a nicety: there,
+// rangeExprCount is pure arithmetic on the parsed bounds and allocates
+// nothing, so there is no work to refuse. len(range_expr('1-20000000'))
+// answering 20,000,000 in constant time is a DOCUMENTED, tested property
+// (funcsconv.go's len row, TestLenRangeExpr_DoesNotMaterialize) -- reserving
+// 20,000,000 operations for it would reject the exact query the arithmetic
+// path exists to serve, under any budget tighter than the count itself. That
+// regression was caught by re-running the measurement rather than by any
+// test, which is why the two helpers are now separate functions with this
+// comment between them.
+//
+// With TWO OR MORE sub-ranges counting DOES expand, so from there on this is
+// identical to reserving the expansion.
+func reserveRangeExprCount(ec evalCtx, v Value) error {
+	ranges, err := intrange.Parse(v.AsRangeExpr())
+	if err != nil {
+		// Unreachable: RangeExpr validated the text on construction.
+		return fmt.Errorf("invalid range expression %q: %w", v.AsRangeExpr(), err)
+	}
+	if len(ranges) == 1 {
+		return nil
+	}
+	return reserveRangeExprExpansion(ec, v)
+}
+
+// reserveRangeExprExpansion refuses, BEFORE anything is expanded, when
+// expanding v could not fit the evaluation's remaining operation budget.
+//
+// Every caller that is about to run rangeInts, rangeExprValues or
+// rangeExprCount on a range_expr should call this first. Section 1.3.10 rule 2
+// charges that expansion by its element count, but the charge lands once the
+// elements exist -- and for a range_expr even COUNTING them used to cost the
+// expansion, so the reservation added in the previous fix round could not
+// help: its own input was the thing doing the work.
+//
+// THREE OUTCOMES, in the order they are tried, and the ordering is the whole
+// design:
+//
+//  1. The UPPER bound fits. Accept immediately. An over-estimate that fits
+//     proves the true count fits, so this can never reject wrongly, and it is
+//     the path every legitimate expression takes -- at no allocation.
+//
+//  2. The upper bound does not fit, and neither does the LOWER bound. Refuse
+//     immediately, still at no allocation. The lower bound is a real count of
+//     values that must survive deduplication, so this refusal is exact, not
+//     conservative. Every range_expr with NON-overlapping sub-ranges lands
+//     here, including the 687 MB case above: its largest sub-range alone is
+//     5,000,000 values against a 10,000-operation budget.
+//
+//  3. The upper bound does not fit but the lower one does. The answer genuinely
+//     depends on how much the sub-ranges overlap, and there is no arithmetic
+//     shortcut for the size of a union of arithmetic progressions with
+//     different steps (rangeExprCount's own comment says so). ONLY here is an
+//     expansion worth paying for, and it buys the exact count rather than a
+//     verdict -- so an expression whose sub-ranges overlap enough to fit is
+//     still accepted, and this is not a tightening of the language.
+//
+// THE RESIDUAL, stated rather than left to be discovered: case 3 still
+// expands, and is bounded only by checkElementCount's maxElements floor. It
+// needs OVERLAPPING sub-ranges whose largest member fits the budget while
+// their sum does not -- e.g. a thousand copies of "1-10000" -- and such text
+// is bulky enough (~8 KB per position) that the submission body cap limits how
+// many positions can carry it. It is the same class of residual as the
+// byte-heavy wall-clock worst case recorded on maxTemplateExprPositions
+// (internal/openjd/exprcheck.go), and belongs to the same later question.
+func reserveRangeExprExpansion(ec evalCtx, v Value) error {
+	low, high, err := rangeExprCountBounds(v)
+	if err != nil {
+		return err
+	}
+	if err := ec.m.reserveElements(high); err == nil {
+		return nil // case 1
+	}
+	if err := ec.m.reserveElements(low); err != nil {
+		return err // case 2
+	}
+	n, err := rangeExprCount(v) // case 3
+	if err != nil {
+		return err
+	}
+	return ec.m.reserveElements(n)
+}
+
 // rangeExprValues expands a range_expr to its integers as a boxed []Value,
 // for the one caller that actually needs the boxed form: list(range_expr)
 // (funcsconv.go) becomes a list[int], so boxing there is the RESULT, not

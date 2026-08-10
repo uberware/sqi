@@ -132,8 +132,19 @@ func (m *meter) chargeBytes(s string) error { return m.charge(ceilDiv256(len(s))
 // Call it at a site that has an ARITHMETIC count in hand and has not yet
 // allocated -- the same discipline limits.go's checkElementCount already
 // follows, and usually the very next line after it. See repeatList (ops.go),
-// rangeList (funcslist.go), the list(range_expr) row (funcsconv.go), padWidth
-// (funcsstrpad.go) and evalComprehension's source expansion (comp.go).
+// rangeList (funcslist.go), padWidth (funcsstrpad.go), and -- for the one
+// value whose count is NOT free to obtain -- reserveRangeExprExpansion
+// (rangeexpr.go), which every range_expr site goes through.
+//
+// "ARITHMETIC count" is the load-bearing word, and getting it wrong is how
+// this mechanism was defeated once already. An earlier revision of this
+// comment said "elementCount answers arithmetically for a range_expr
+// (rangeExprCount)". It does not: rangeExprCount is arithmetic only for a
+// SINGLE sub-range, and with two or more it expands the whole range to count
+// it -- so a reservation fed by it materialized 687 MB in order to decide
+// that 687 MB was unaffordable, and on the success path expanded twice.
+// A reservation whose own input does the work it exists to avert is not a
+// reservation. Use rangeExprCountBounds (rangeexpr.go) for that value.
 func (m *meter) reserve(n int64) error {
 	if n <= 0 {
 		return nil

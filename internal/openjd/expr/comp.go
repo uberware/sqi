@@ -137,16 +137,22 @@ func evalListComp(n *ListComp, ec evalCtx, target Type, depth int) (Value, error
 	// runComp charges it below, but only once the items exist, and for a
 	// range_expr iterable "exist" means a full expansion: [x for x in
 	// range_expr("1-10000000")] materialized 1.6 GB in 97 ms and only then
-	// reported 10,000,001 operations against a limit of 10,000. elementCount
-	// answers arithmetically for a range_expr (rangeExprCount) and is exactly
-	// what runComp will charge, so an evaluation that survives this is charged
-	// the same total it always was -- see meter.reserve.
-	count, err := elementCount(iter)
-	if err != nil {
+	// reported 10,000,001 operations against a limit of 10,000.
+	//
+	// reserveIterable, NOT elementCount. The first revision of this
+	// reservation called elementCount, which for a MULTI-sub-range range_expr
+	// expands to produce its answer -- so the reservation's own input did the
+	// work it was meant to avert, and on the SUCCESS path the expansion then
+	// happened a second time inside iterItems: +72 MB and +36 ms per call on
+	// [x for x in range_expr("1-500000,2000000-2400000")], a regression no
+	// operation count could see because the counts were identical.
+	// reserveIterable is arithmetic (rangeexpr.go).
+	//
+	// The CHARGE still comes from runComp's own chargeElements(len(items)),
+	// which is exact, so an evaluation that survives this is charged the same
+	// total it always was -- see meter.reserve.
+	if err := reserveIterable(ec, iter); err != nil {
 		return Value{}, wrapAt(ec.src, n.Iter.Pos(), err)
-	}
-	if err := ec.m.reserveElements(count); err != nil {
-		return Value{}, err
 	}
 	items, err := iterItems(iter)
 	if err != nil {
@@ -366,6 +372,24 @@ func checkCompFilter(n *ListComp, ec evalCtx, depth int) error {
 			"a comprehension filter must be a bool, found %s", c.Type)
 	}
 	ec.m.release(c) // rule 2: consumed determining the filter's declared type only
+	return nil
+}
+
+// reserveIterable refuses a comprehension whose iterable cannot fit the
+// remaining operation budget, before iterItems materializes it.
+//
+// A list is already materialized, so its own length is the exact figure and
+// costs nothing to obtain. A range_expr is not, and counting it is not free
+// either -- reserveRangeExprExpansion (rangeexpr.go) settles it arithmetically
+// rather than by expanding. Any other type is rejected by iterItems itself a
+// line later, and reserves nothing here.
+func reserveIterable(ec evalCtx, iter Value) error {
+	switch iter.Type.Code {
+	case CodeList:
+		return ec.m.reserveElements(len(iter.AsList()))
+	case CodeRangeExpr:
+		return reserveRangeExprExpansion(ec, iter)
+	}
 	return nil
 }
 

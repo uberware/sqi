@@ -50,10 +50,23 @@ var convFuncs = map[string][]Shape{
 		// materializing anything for the common single-sub-range case, and
 		// expanding to count refused a legitimate query:
 		// len(range_expr('1-20000000')) failed the element bound for a number
-		// rangeExprCount produces in constant time. See its doc comment
-		// (rangeexpr.go) for the two-or-more-sub-range fallback, which is
-		// still bounded by the same per-sub-range checkElementCount cap.
-		{Params: []Type{TRangeExpr}, Ret: TInt, Fn: func(args []Value) (Value, error) {
+		// rangeExprCount produces in constant time.
+		//
+		// TWO OR MORE sub-ranges are the case rangeExprCount CANNOT answer
+		// arithmetically, and len() is where that hurt most, because rule 3
+		// exempts len() from charging at all:
+		// len(range_expr("1-5000000,6000000-9000000")) answered after 645 ms
+		// and 687 MB while charging TWO operations, so no budget in the
+		// package could see it. FnCtx and reserveRangeExprExpansion
+		// (rangeexpr.go) put an arithmetic refusal in front of that
+		// expansion. It reserves without charging, so len()'s exemption --
+		// and every operation count the oracle compares -- is untouched;
+		// what changes is only that len() can no longer spend an
+		// evaluation's whole budget's worth of work while billing none of it.
+		{Params: []Type{TRangeExpr}, Ret: TInt, FnCtx: func(ec evalCtx, args []Value) (Value, error) {
+			if err := reserveRangeExprCount(ec, args[0]); err != nil {
+				return Value{}, err
+			}
 			n, err := rangeExprCount(args[0])
 			if err != nil {
 				return Value{}, err
@@ -212,21 +225,23 @@ var convFuncs = map[string][]Shape{
 	// reference — range_expr("1-100") alone is 1, so list()'s own share is
 	// 101 = 1 (call) + 100 (the 100 produced elements).
 	//
-	// FnCtx, not Fn, and the count is RESERVED before rangeExprValues expands
-	// anything: the ResultElements charge lands after the list exists, which
-	// priced list(range_expr("1-10000000")) at 10,000,002 operations against a
-	// 10,000 limit only after allocating 1.6 GB (132 ms measured). The
-	// reserved figure comes from rangeExprCount, which is arithmetic for a
-	// single sub-range rather than an expansion -- charging the cost of
-	// counting must not repeat the work being charged for (elementCount,
-	// ops.go).
+	// FnCtx, not Fn, and the expansion is RESERVED before rangeExprValues
+	// performs it: the ResultElements charge lands after the list exists,
+	// which priced list(range_expr("1-10000000")) at 10,000,002 operations
+	// against a 10,000 limit only after allocating 1.6 GB (132 ms measured).
+	//
+	// reserveRangeExprExpansion, NOT rangeExprCount. The first revision of
+	// this reservation used rangeExprCount, which for two or more sub-ranges
+	// expands to produce its answer -- so the reservation itself did the work
+	// it existed to avert (687 MB before refusing
+	// "1-5000000,6000000-9000000"), and on the success path rangeExprValues
+	// then expanded a SECOND time (+73 MB and +38 ms per call, invisible to
+	// every operation count). The reservation is now arithmetic; the exact
+	// charge still comes from Cost{ResultElements} on the list actually
+	// produced.
 	"list": {
 		{Params: []Type{TRangeExpr}, Ret: ListOf(TInt), Cost: Cost{ResultElements: true}, FnCtx: func(ec evalCtx, args []Value) (Value, error) {
-			n, err := rangeExprCount(args[0])
-			if err != nil {
-				return Value{}, err
-			}
-			if err := ec.m.reserveElements(n); err != nil {
+			if err := reserveRangeExprExpansion(ec, args[0]); err != nil {
 				return Value{}, err
 			}
 			vals, err := rangeExprValues(args[0])

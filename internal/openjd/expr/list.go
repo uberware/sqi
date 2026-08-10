@@ -373,7 +373,13 @@ func chargeIndexReceiver(ec evalCtx, recv Value) error {
 		// rule 3: []rune below touches every byte of the receiver.
 		return ec.m.chargeBytes(recv.AsStr())
 	case CodeRangeExpr:
-		// rule 2: rangeInts below expands the receiver in full.
+		// rule 2: rangeInts below expands the receiver in full. The
+		// reservation comes first because rangeExprCount is itself an
+		// expansion for two or more sub-ranges -- see
+		// reserveRangeExprExpansion (rangeexpr.go).
+		if err := reserveRangeExprExpansion(ec, recv); err != nil {
+			return err
+		}
 		n, err := rangeExprCount(recv)
 		if err != nil {
 			return err

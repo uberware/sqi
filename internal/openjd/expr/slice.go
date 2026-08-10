@@ -256,6 +256,11 @@ func sliceValue(ec evalCtx, recv Value, start, stop, step *int64) (Value, error)
 // for two or more (rangeexpr.go) -- so that an already-exhausted budget is
 // caught before rangeInts does the real work.
 func sliceRangeExpr(ec evalCtx, recv Value, start, stop, step *int64) (Value, error) {
+	// Before rangeExprCount, which for two or more sub-ranges expands to
+	// count -- see reserveRangeExprExpansion (rangeexpr.go).
+	if err := reserveRangeExprExpansion(ec, recv); err != nil {
+		return Value{}, err
+	}
 	n, err := rangeExprCount(recv)
 	if err != nil {
 		return Value{}, err
