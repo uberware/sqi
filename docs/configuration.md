@@ -576,9 +576,12 @@ discovery:
 
 When `true`, submitted job templates are checked against the OpenJD quantitative
 limits — maximum name lengths, parameter-definition counts, per-parameter value
-counts, and host-requirement counts. Set to `false` only in operator
-environments that predate strict limit enforcement and cannot yet update all
-templates; resource-exhaustion guards (the per-range value cap and the per-step
+counts, and host-requirement counts — **plus one sqi-defined limit the OpenJD
+specification does not itself set: a maximum of 100 steps per job template**.
+A template exceeding 100 steps is rejected with an error at `/steps`. Set to
+`false` only in operator environments that predate strict limit enforcement
+and cannot yet update all templates — including templates with more than 100
+steps; resource-exhaustion guards (the per-range value cap and the per-step
 task-count cap) always apply regardless of this setting.
 
 ```yaml

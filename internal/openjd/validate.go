@@ -802,12 +802,15 @@ const (
 	// minimum/maximum item count for every other bounded list field this
 	// package caps (parameterDefinitions, taskParameterDefinitions,
 	// hostRequirements amounts/attributes, let bindings, fileFilters, ...)
-	// but states none for <JobTemplate>.steps — checked directly against
-	// third_party/openjd-specifications/wiki/2023-09-Template-Schemas.md, §2
-	// and §3. So this number is a sqi product decision, and per this repo's
-	// convention (see [ValidateOptions.EnforceLimits] doc comment on why an
-	// undefended cap gets raised by the first user who hits it) it has to be
-	// defensible on its own:
+	// but states none for <JobTemplate>.steps (§1.1, item 8 — immediately
+	// below item 7, parameterDefinitions, which DOES carry element-count
+	// bullets) — checked directly against
+	// third_party/openjd-specifications/wiki/2023-09-Template-Schemas.md.
+	// RFC 0004 later raises parameterDefinitions' own cap to 200 and says
+	// nothing about steps either. So this number is a sqi product decision,
+	// and per this repo's convention (see [ValidateOptions.EnforceLimits]
+	// doc comment on why an undefended cap gets raised by the first user who
+	// hits it) it has to be defensible on its own:
 	//
 	//   - A render/compositing job's steps are pipeline PHASES (render,
 	//     denoise, a handful of composite passes, review, deliver, cleanup),
@@ -827,19 +830,48 @@ const (
 	//     more" stance [maxTasksPerStep] (expand.go) states explicitly for
 	//     the analogous per-step task-count cap.
 	//
+	// WHAT THIS DOES NOT BOUND: [ValidateWithOptions] runs
+	// checkTemplateExpressions (the EXPR expression walk) BEFORE
+	// validateLimits, so by the time this check runs, phase 1's walk over
+	// every step's positions has already completed in full — this cap
+	// cannot and does not reduce phase 1's own cost. (Task 1's
+	// parameterSpaceOverCaps is the pre-walk guard that bounds phase 1;
+	// whether step count belongs in that guard too is Task 3's decision to
+	// make explicitly, not an effect this constant already has.)
+	//
+	// WHAT THIS DOES BOUND: prepareTemplate (submit.go) returns on the FIRST
+	// validation error, before phase 2 (checkExpressionsAtSubmit, re-walking
+	// every position with concrete parameters), before parameter-space
+	// resolution, and before any per-task DB insert. So an over-cap template
+	// is rejected here without ever reaching phase 2's walk, the resolver,
+	// or task creation — that is the real, verified saving.
+	//
 	// Gated by EnforceLimits, like the other bare structural-count caps in
 	// this block (maxJobParameterDefinitions, maxTaskParameterDefinitions,
-	// maxTaskParamValues): this bounds the same per-position validation and
-	// expression-walk cost those caps bound, just multiplied across steps
-	// instead of within one, so it belongs in the same enforcement class.
-	// It is deliberately NOT promoted to an always-on resource-exhaustion
-	// guard the way [maxTasksPerStep] and [maxRangeValues] are — those exist
-	// because a single step (or range) can already blow up unboundedly on
-	// its own even with EnforceLimits: false, which this repo has decided
-	// warrants a guard with no off switch; N steps each individually bounded
-	// by those same always-on guards is a slower, additive multiplication of
-	// an exposure an EnforceLimits: false deployment already accepts today,
-	// not a new one this constant introduces.
+	// maxTaskParamValues): this is a POLICY cap, not a CATASTROPHE bound —
+	// the distinction this repo already draws for [maxTasksPerStep] and
+	// [maxRangeValues], which stay always-on. Those two are set at limits no
+	// legitimate template goes anywhere near (10M range values, 1M tasks in
+	// one step) specifically so EnforceLimits: false — an explicit operator
+	// declaration that legacy templates violating POLICY may still run —
+	// never has to trade "accept my old template" against "don't let the
+	// server fall over": bounded units still multiply, which is exactly why
+	// maxTasksPerStep's own doc comment cites "two 1024-value parameters
+	// joined by a Cartesian product already yield ~1M tasks" as its
+	// rationale. maxSteps is a different kind of number: 100 is tuned 8x
+	// above this repo's own largest known template, a range a real legacy
+	// pipeline could plausibly still reach, so promoting it to always-on
+	// would risk breaking the exact templates EnforceLimits: false exists to
+	// keep working.
+	//
+	// RESIDUAL, PRE-EXISTING, NOT INTRODUCED HERE: with EnforceLimits:
+	// false, a template within maxSteps but with each step individually at
+	// maxTasksPerStep still multiplies to an unbounded total task count
+	// across the job (steps x up to 1,000,000 tasks each) -- a
+	// catastrophe-class exposure, not a policy one, that predates this
+	// constant and is not in this cap's scope to close. Tracked as a
+	// follow-up: an always-on, catastrophically-generous bound on TOTAL
+	// tasks per job, analogous to maxTasksPerStep but summed across steps.
 	maxSteps = 100
 
 	// maxJobParameterDefinitions caps parameterDefinitions. The spec range is
