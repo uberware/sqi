@@ -739,24 +739,41 @@ const (
 	// heap, which is E2's own figure to within 2%.
 	//
 	// MEASURED on this repository's development machine: 10,000 args
-	// positions in one step, timing checkTemplateExpressions alone. Every
-	// figure but the first is scaled x10 from a 1,000-position run; the
-	// first was cheap enough to time at full size directly.
+	// positions in one step, timing checkTemplateExpressions alone, scaled
+	// x10 from a 1,000-position run.
 	//
-	//	payload                              before         after
-	//	{{ [0] * 10000000 }}                 ~660s, 2.3GB   41ms, 7MB
-	//	{{ ("x" * 900000).upper() }}          ~58s          ~58s
-	//	{{ re_findall("x", "x" * 900000) }}  ~492s         ~492s
-	//	{{ ("x" * 900000).title() }}         ~569s         ~569s
+	//	payload                                    before         after
+	//	{{ len(range_expr("1-5e6,6e6-9e6")) }}     ~6450s        ~50ms
+	//	{{ [0] * 10000000 }}                        ~660s, 2.3GB  ~20ms
+	//	{{ ("x" * 900000).title() }}                ~571s         ~571s
+	//	{{ re_findall("x", "x" * 900000) }}         ~496s         ~496s
+	//	{{ ("x" * 900000).upper() }}                 ~58s          ~58s
 	//
-	// meter.reserve (internal/openjd/expr, fix round 2) therefore removes
-	// the BULK-MATERIALIZATION class outright -- a ~16,000x improvement on
-	// the reviewer's own construction, and with it the multi-gigabyte heap
-	// -- while the WALL-CLOCK worst case is UNCHANGED at roughly 9.5
-	// minutes, because it is now set by op-cheap, byte-heavy work: a regex
-	// or a case mapping over the ~900 KB string submissionMemoryLimit
-	// allows to be live spends ~3,500 of the 10,000 permitted operations
-	// and ~50 ms of CPU. Every per-Eval budget is respected throughout.
+	// (Row 1's range text is abbreviated to fit; it is
+	// "1-5000000,6000000-9000000". Row 3 is 57.1 ms per position here; an
+	// independent measurement on other hardware put the same payload at 71
+	// ms, i.e. ~715 s -- treat ~9.5 minutes as the order, not the digit.)
+	//
+	// ROW 1 IS THE ONE THAT MOVED LAST, and it is why this table was wrong
+	// once already. A range_expr with TWO OR MORE sub-ranges cannot be
+	// counted arithmetically -- rangeExprCount expands it to count it -- so
+	// len() over one spent 645 ms and 687 MB per position while charging
+	// TWO operations, invisible to every budget in the package, at ~107
+	// MINUTES for a full template. An earlier revision of this comment
+	// named row 3 as the worst case while row 1 was an order of magnitude
+	// past it. Fixed in internal/openjd/expr by reserveRangeExprExpansion
+	// (rangeexpr.go), which bounds the expansion from arithmetic bounds
+	// instead of from an expansion.
+	//
+	// So meter.reserve and reserveRangeExprExpansion together remove the
+	// BULK-MATERIALIZATION class from every path that reaches it -- rows 1
+	// and 2, four to five orders of magnitude each, and with them the
+	// multi-gigabyte heap -- while the WALL-CLOCK worst case remains
+	// roughly 9.5 minutes, because it is now set by op-cheap, byte-heavy
+	// work: a regex or a case mapping over the ~900 KB string
+	// submissionMemoryLimit allows to be live spends ~3,500 of the 10,000
+	// permitted operations and ~50 ms of CPU. Every per-Eval budget is
+	// respected throughout.
 	//
 	// Recorded plainly rather than smoothed over: this cap is NOT a
 	// wall-time bound, and no value of it can be one while an operation's

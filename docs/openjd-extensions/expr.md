@@ -510,6 +510,22 @@ phase 2's verdict never depends on what phase 1 already spent):
   either constant in isolation and must be stated: nothing in this
   mechanism ever adds up to 100,000,000; it is a bound on what the existing
   per-`Eval` operation limit, applied 10,000 times, could in principle cost.
+- **Neither budget bounds WALL-CLOCK TIME, and no value of either could.**
+  An operation's real cost is not uniform: §1.3.10 rule 3 prices 256 bytes
+  of string work at *one* operation, so a regex or a case mapping over the
+  ~900 KB string `submissionMemoryLimit` permits to be live spends only
+  ~3,500 of a position's 10,000 operations while costing ~50–70 ms of CPU —
+  four orders of magnitude more time per operation than scalar arithmetic.
+  A ~260 KB template body built entirely from such positions is **still
+  rejected, but only after roughly 9.5 minutes** of server CPU on the
+  synchronous validate/submit request path. Measured, not estimated; the
+  figures are in `maxTemplateExprPositions`' own doc comment
+  (`internal/openjd/exprcheck.go`). **Operators running a
+  publicly-reachable, unauthenticated `POST /api/v1/jobs` should size
+  request timeouts and concurrency against that**, not against the position
+  cap. Bounding it properly needs a budget denominated in something closer
+  to time, which is later work; the position and byte budgets above bound
+  *memory* and *count*, and that is all they claim.
 - **The byte dimension measures cumulative allocation, not peak live
   retention.** Both `maxTemplateExprRetainedBytes` and
   `assignmentMaxRetainedBytes` sum every `let:` block's own charge across
