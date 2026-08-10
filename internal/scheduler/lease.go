@@ -179,9 +179,12 @@ func (s *Scheduler) leaseGatesPass(
 
 	// Cross-binary EXPR limits: never hand an EXPR job to a worker whose
 	// advertised caps are tighter than the ones this template was accepted
-	// under. Skipping leaves the task ready for a capable worker; the
-	// unschedulable sweep writes the same reason onto the task if none exists.
-	// See exprcaps.go for why this is a skip and not a submit-time rejection.
+	// under. Skipping leaves the task ready for a capable worker; if none
+	// exists, the unschedulable sweep writes the same reason onto the task --
+	// but only while that sweep is enabled (Config.UnschedulableGrace > 0, the
+	// default; <= 0 is a legitimate "off" setting, and with it off such a task
+	// waits with nothing written on it). See exprcaps.go for why this is a skip
+	// and not a submit-time rejection.
 	if exprCapsBlock(exprShortfall, job) != "" {
 		return d, false, nil
 	}

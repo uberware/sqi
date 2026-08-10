@@ -13,8 +13,8 @@ import (
 	"testing"
 )
 
-// TestDispatchHasOneGatedPath is the completeness guard behind
-// [Scheduler.exprCapsBlock]: the EXPR cap gate lives in leaseGatesPass, which
+// TestDispatchHasOneGatedPath is the completeness guard behind exprCapsBlock:
+// the EXPR cap gate lives in leaseGatesPass, which
 // protects exactly one path to a worker — tryLeaseTask -> buildAssignPayload.
 // A second dispatch path added later would hand out EXPR assignments without
 // ever consulting a worker's advertised caps, and every test in exprcaps_test.go
@@ -22,8 +22,8 @@ import (
 //
 // It asserts two things and refuses to pass vacuously (an empty result fails):
 //
-//  1. buildAssignPayload, the only function that produces an assignment
-//     payload, is called from exactly one production function; and
+//  1. buildAssignPayload, the only production function that marshals a
+//     protocol.AssignMsg, is called from exactly one production function; and
 //  2. that function is tryLeaseTask, which calls leaseGatesPass.
 //
 // If a new dispatch path is genuinely wanted, the fix is to gate it too and
@@ -61,8 +61,11 @@ func TestDispatchHasOneGatedPath(t *testing.T) {
 	// Post-review the lease path hoists it out of the candidate loop, so the
 	// two gate call sites reach it by different routes -- selectLeaseBatch
 	// computes it once per batch and passes it down, evaluateSchedulability
-	// computes it per worker. Both must still go through THIS function, and
-	// handleWorkerRegister's diagnostic warning is the third caller.
+	// computes it per worker. Both must still go through THIS function.
+	// (handleWorkerRegister computes a shortfall too, for its diagnostic
+	// warning, but reaches exprCapShortfall directly rather than through
+	// workerExprShortfall -- it holds a RegisterMsg, not a store.Worker. That is
+	// why the two assertions below name different call-site sets.)
 	if short := productionCallersOf(t, "workerExprShortfall"); len(short) != 2 ||
 		!slices.Contains(short, "selectLeaseBatch") || !slices.Contains(short, "evaluateSchedulability") {
 		t.Fatalf("workerExprShortfall is called from %v; want exactly [selectLeaseBatch "+

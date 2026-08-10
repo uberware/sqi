@@ -249,7 +249,10 @@ type Scheduler struct {
 
 	// exprCapWarned de-duplicates the registration-time EXPR-limit warning:
 	// workerID -> the last shortfall text logged for it. See
-	// [Scheduler.warnOnExprCapShortfall].
+	// [Scheduler.warnOnExprCapShortfall]. Entries are cleared when a worker
+	// stops being short but NOT when it is deleted, so the map retains one
+	// short string per distinct worker ID that has ever registered short with
+	// this process -- bounded, not pruned, and gone on restart.
 	exprCapWarned sync.Map // workerID -> string
 
 	// leaseHoldTimeout bounds how long an unfulfillable lease request parks
@@ -833,8 +836,9 @@ func (s *Scheduler) handleWorkerRegister(ctx context.Context, msg jetstream.Msg)
 // lease EXPR work to this worker (exprcaps.go). It exists because that refusal
 // is otherwise only visible on a task, and there may not be one yet.
 //
-// De-duplicated because [Registrar.SetupReconnectHook] re-registers on every
-// NATS reconnect, and a farm that never submits an EXPR template would
+// De-duplicated because the worker re-registers on every NATS reconnect
+// (internal/worker/registration's Registrar.SetupReconnectHook), and a farm
+// that never submits an EXPR template would
 // otherwise accumulate a warning per reconnect about work it never runs. The
 // key is the shortfall text itself, so a CHANGE (either side reconfigured) is
 // reported again; the map is per-process, so a server restart also re-reports.

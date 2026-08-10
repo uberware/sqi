@@ -159,8 +159,9 @@ type RegisterMsg struct {
 // ExprLimits is a worker's self-reported OpenJD EXPR evaluation caps.
 //
 // It mirrors store.WorkerExprLimits field for field and json tag for tag; the
-// two are separate types because the worker binary must never import
-// internal/store.  A renamed tag on either side silently decodes to zero, which
+// two are separate types because no production file under internal/worker or
+// cmd/sqi-worker imports internal/store -- the worker carries the wire
+// contract, the server carries the persistence model.  A renamed tag on either side silently decodes to zero, which
 // the server reads as "not advertised" rather than as an error, so TWO tests in
 // internal/scheduler keep them in step and neither subsumes the other:
 // TestWorkerExprLimits_WireKeysMatchTheProtocol covers the four keys INSIDE

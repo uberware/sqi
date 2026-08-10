@@ -619,8 +619,9 @@ func TestNew_NormalizesExprLimits(t *testing.T) {
 
 // TestWorkerExprLimits_WireKeysMatchTheProtocol pins that the JSON the worker
 // sends decodes into the store type the server persists. The two structs live
-// in different packages on purpose (the worker binary must never import
-// internal/store); nothing but this test relates their field names.
+// in different packages on purpose (no production file in the worker imports
+// internal/store); nothing but this test and its outer-key companion,
+// TestRegisterMsg_WireFieldsSurviveTheDuplication, relates their field names.
 func TestWorkerExprLimits_WireKeysMatchTheProtocol(t *testing.T) {
 	// Four distinct values: four same-typed int64 fields crossing a package
 	// boundary is exactly the shape where a transposition compiles and runs.
@@ -747,11 +748,14 @@ func TestRegisterMsg_WireFieldsSurviveTheDuplication(t *testing.T) {
 		})
 	}
 
-	// protocol.RegisterMsg carries two fields this struct deliberately does not
-	// (Version and Type, which the subject already identifies, plus
-	// MaxConcurrentTasks, which Phase 1 does not persist). The count check is
-	// what makes a NEW field on the protocol side visible here rather than
-	// silently unread.
+	// protocol.RegisterMsg carries three fields this struct deliberately does
+	// not (Version and Type, which the subject already identifies, and
+	// MaxConcurrentTasks, which Phase 1 does not persist). The two count checks
+	// below are what make a NEW field visible here rather than silently unread,
+	// and they are deliberately separate: the first catches a field added to
+	// ONE side, the second catches one added to BOTH -- which satisfies the
+	// first and would otherwise leave the new tag unguarded, the exact residual
+	// that let the outer expr_limits key go uncovered in the first place.
 	t.Run("field counts", func(t *testing.T) {
 		sentFields := reflect.TypeFor[protocol.RegisterMsg]().NumField()
 		gotFields := reflect.TypeFor[RegisterMsg]().NumField()
@@ -760,6 +764,18 @@ func TestRegisterMsg_WireFieldsSurviveTheDuplication(t *testing.T) {
 				"known gap is 3 (version, type, max_concurrent_tasks). A field added to "+
 				"one side must be added here, to the table above, or to this comment "+
 				"with a reason the server does not need it.", sentFields, gotFields)
+		}
+
+		// One row per field of scheduler.RegisterMsg, except that gpu_info and
+		// expr_limits each contribute four rows instead of one (their inner
+		// keys are what actually carry the values).
+		const nestedExtraRows = 3 + 3 // gpu_info: 4 rows for 1 field; expr_limits: likewise
+		if want := gotFields + nestedExtraRows; len(fields) != want {
+			t.Fatalf("the table covers %d fields but scheduler.RegisterMsg has %d (%d rows "+
+				"expected with gpu_info and expr_limits expanded). Every field must have a "+
+				"row: a json tag with no row is a tag nothing checks, which is how the outer "+
+				"expr_limits key went unguarded until a reviewer renamed it and watched CI "+
+				"stay green.", len(fields), gotFields, want)
 		}
 	})
 }

@@ -108,10 +108,12 @@ var registry = map[string]Extension{
 // ExtensionEXPR is the registry name of the OpenJD expression-language
 // extension.
 //
-// Exported for internal/scheduler, which has to recognize an EXPR-declaring
-// template from its raw bytes -- it decides per lease request whether a job
-// needs a worker capable of phase-3 expression evaluation, and re-parsing every
-// candidate template there would cost more than the decision is worth.
+// Exported for internal/scheduler, which decides per lease request whether a
+// job might need a worker capable of phase-3 expression evaluation. It does so
+// by SCANNING THE RAW TEMPLATE for this name rather than parsing it -- a
+// deliberate heuristic, with both of its error directions written out in that
+// package's exprcaps.go. Do not read this constant's use there as an exact
+// test of what a template declares.
 const ExtensionEXPR = "EXPR"
 
 // LookupExtension returns the registry entry for name and whether it exists.

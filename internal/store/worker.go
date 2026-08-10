@@ -40,9 +40,10 @@ type GPUInfo struct {
 }
 
 // WorkerExprLimits holds the OpenJD EXPR evaluation caps a worker self-reports
-// at registration (its expr.* worker-configuration section, EXPR sub-project
-// E4d Task 2). The server persists them so the scheduler can refuse to dispatch
-// an EXPR job to a worker that cannot run what the server accepted.
+// at registration -- its expr.* worker-configuration section, which EXPR
+// sub-project E4d Task 2 added and Task 3 (this type) taught it to advertise.
+// The server persists them so the scheduler can refuse to dispatch an EXPR job
+// to a worker that cannot run what the server accepted.
 //
 // WHY THE SERVER NEEDS THEM. Expressions in an EXPR template are metered twice:
 // against the server's openjd.expr_* limits when the template is submitted, and

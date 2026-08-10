@@ -220,7 +220,7 @@ func DefaultExprLimits() ExprLimits {
 }
 
 // Normalized is the exported form of [ExprLimits.orDefaults], for the one
-// caller outside this package that needs the values a walk would ACTUALLY
+// production caller outside this package that needs the values a walk would ACTUALLY
 // enforce rather than the ones a config literal happens to carry:
 // internal/scheduler compares them against each worker's advertised EXPR caps
 // before dispatching an EXPR job (EXPR sub-project E4d Task 3). Comparing an

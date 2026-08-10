@@ -157,8 +157,10 @@ const (
 	// but note that with both sides configurable, that test now compares two
 	// DEFAULTS and cannot see a farm whose YAML violates the relation. E4d
 	// Task 3 closed that at runtime, in internal/scheduler: the CONFIGURED
-	// value is advertised to the server at registration and an EXPR job is
-	// never dispatched to a worker whose value is below the server's. What
+	// value is advertised to the server at registration and an EXPR job is not
+	// dispatched to a worker whose value is below the server's (that gate
+	// identifies an EXPR job by a documented heuristic, not exactly -- see
+	// internal/scheduler/exprcaps.go's jobMayUseEXPR). What
 	// Task 2 did was make the relation SATISFIABLE at every legal setting, by
 	// giving this dimension the same ceiling as the server's (see
 	// MaxExprAssignmentPositions).

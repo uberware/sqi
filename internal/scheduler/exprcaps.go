@@ -11,10 +11,11 @@ package scheduler
 // expression positions and the worker at 5,000, a job with one 5,000-variable
 // environment was accepted, created and persisted, and then every task in it
 // failed at runtime. EXPR sub-project E4c fixed it by relating the two
-// CONSTANTS (internal/openjd's TestTemplateBudget_WorkerCapIsNotTighter, which
-// is the only place that can see both packages). E4d Tasks 1 and 2 turned both
-// constants into operator configuration, and a test that compares constants
-// cannot see a YAML file.
+// CONSTANTS (internal/openjd's TestTemplateBudget_WorkerCapIsNotTighter, a
+// TEST-ONLY import of internal/worker/fmtres from a package no production file
+// of which may import it -- this package's tests now do the same). E4d Tasks 1
+// and 2 turned both constants into operator configuration, and a test that
+// compares constants cannot see a YAML file.
 //
 // THE MECHANISM. The worker advertises the caps it will enforce in its
 // registration message; the server persists them on the worker record
@@ -183,12 +184,24 @@ func exprCapShortfall(caps store.WorkerExprLimits, srv openjd.ExprLimits) string
 // matters in both directions. It reports whether job's raw template contains
 // the bytes "EXPR" anywhere.
 //
-// WHAT IT GETS RIGHT: every template written by any tool that exists spells a
-// declared extension literally (`extensions: [EXPR]` / `"extensions":["EXPR"]`),
-// so a real EXPR template always matches. Its only reachable FALSE POSITIVE is
-// a base-spec template that happens to contain those four bytes elsewhere — a
-// comment, a variable named EXPRESSION_MODE — which merely makes the gate
-// stricter, and only on a farm that is already misconfigured.
+// WHAT IT GETS RIGHT: a declared extension is spelled literally
+// (`extensions: [EXPR]` / `"extensions":["EXPR"]`) by everything that writes
+// one -- 207 of the 209 vendored EXPR conformance fixtures contain the bytes,
+// and the two that do not are the two that deliberately omit the declaration
+// (3.6--let-requires-expr.invalid.yaml, expr-extension-missing.invalid.yaml).
+// So a real EXPR template matches.
+//
+// ITS FALSE POSITIVE IS LIVE TODAY, unlike the false negative below. A
+// base-spec template containing those four bytes anywhere -- a comment, an
+// environment variable named HOUDINI_EXPR_CACHE -- is treated as EXPR-capable.
+// On a correctly-configured farm that costs nothing (the shortfall is empty and
+// this function is never called). On a farm whose workers are tighter than the
+// server it is a REAL, REACHABLE misdiagnosis: those workers refuse the job and
+// the task is flagged with a reason about EXPR limits it has nothing to do
+// with. It errs in the safe direction -- work is withheld, never wrongly
+// dispatched -- but the operator sees a message naming a feature they may not
+// use. No shipped preset trips it today (presets/sqi/houdini-rop-render.yaml
+// matches only lowercase `expr`), and that is luck rather than design.
 //
 // WHAT IT GETS WRONG, stated plainly because an earlier revision of this
 // comment claimed the opposite ("a template whose bytes do not contain EXPR
@@ -202,14 +215,17 @@ func exprCapShortfall(caps store.WorkerExprLimits, srv openjd.ExprLimits) string
 //
 // WHY IT SHIPS ANYWAY, and what would replace it:
 //
-//  1. It is unreachable today. EXPR is StatusInProgress, so no EXPR template
-//     can be submitted at all; the whole gate is inert until sub-project H.
+//  1. THE FALSE NEGATIVE is unreachable today -- and only the false negative;
+//     see the live false positive above. Reaching it needs a template that
+//     declares EXPR, and EXPR is StatusInProgress, so no such template can be
+//     submitted at all until sub-project H.
 //  2. Reaching it requires deliberately obfuscating an extension declaration,
 //     which no authoring tool does and which gains the submitter nothing: the
 //     only consequence is that their own job's tasks fail.
 //  3. The exact check is a document parse, and the cheap placements for it do
 //     not exist. Doing it here costs a parse per CANDIDATE TASK per lease
-//     request (AssignBatchSize is 50, templates are accepted up to 4 MiB) on
+//     request (AssignBatchSize defaults to 50; internal/api/jobs.go accepts a
+//     4 MiB request body) on
 //     any misconfigured farm — an availability problem strictly worse than the
 //     one it closes. Doing it in buildAssignPayload, where the template is
 //     already parsed for the winner only, is after LeaseReadyTask and
@@ -232,7 +248,8 @@ func jobMayUseEXPR(job store.Job) bool {
 // rather than recomputed because it depends only on the worker and this
 // server's configuration — constant for a whole lease batch, while this
 // function is called once per candidate task. On the passing path that call
-// costs four integer comparisons and allocates nothing; on a misconfigured farm
+// costs eight integer comparisons (four "was it advertised", four dimensions)
+// and allocates nothing; on a misconfigured farm
 // it formats up to four sentences, which is why [Scheduler.selectLeaseBatch]
 // hoists it out of the candidate loop. The template scan below likewise only
 // ever runs on a farm that is already misconfigured.
