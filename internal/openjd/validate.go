@@ -802,9 +802,10 @@ const (
 	// minimum/maximum item count for every other bounded list field this
 	// package caps (parameterDefinitions, taskParameterDefinitions,
 	// hostRequirements amounts/attributes, let bindings, fileFilters, ...)
-	// but states none for <JobTemplate>.steps (§1.1, item 8 — immediately
-	// below item 7, parameterDefinitions, which DOES carry element-count
-	// bullets) — checked directly against
+	// but states none for <JobTemplate>.steps (§1.1, item 8). The nearest
+	// field that DOES carry element-count bullets is item 6,
+	// parameterDefinitions; item 7, jobEnvironments, sits between them and
+	// carries only uniqueness constraints. Checked directly against
 	// third_party/openjd-specifications/wiki/2023-09-Template-Schemas.md.
 	// RFC 0004 later raises parameterDefinitions' own cap to 200 and says
 	// nothing about steps either. So this number is a sqi product decision,
