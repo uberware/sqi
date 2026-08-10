@@ -465,9 +465,10 @@ func resolveArgLoneRef(body string, syms expr.MapSymbols, opts []expr.Option) ([
 // the command and one for each Args entry, BEFORE resolving it, so a budget
 // already exhausted by an earlier action/environment in this same assignment
 // stops the walk here without doing that entry's own evaluation work. See
-// [AssignmentBudget]'s own doc comment for the full account; omitting it
-// (every pre-Task-4 call site) charges a fresh, throwaway budget no single
-// call can exhaust.
+// [AssignmentBudget]'s own doc comment for the full account. It is a REQUIRED
+// parameter; passing nil (this package's own unit tests) charges a fresh,
+// default-limited throwaway budget no single call can exhaust -- see
+// [budgetOrDefault], which also documents why a production caller must not.
 func ResolveActionExpr(
 	action *protocol.Action, syms expr.MapSymbols, pathMap []protocol.PathMapRule, budget *AssignmentBudget,
 ) (*protocol.Action, error) {

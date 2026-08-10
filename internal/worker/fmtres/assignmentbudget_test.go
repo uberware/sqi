@@ -19,6 +19,7 @@ package fmtres_test
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -367,20 +368,43 @@ func TestResolveVarsExpr_ChargesOnePerVar(t *testing.T) {
 	}
 }
 
-// TestAssignmentBudget_OmittedGivesFreshThrowaway pins that every pre-Task-4
-// call site -- one that supplies no budget at all -- is unaffected: an
-// ordinary, small call must succeed exactly as it did before this task,
-// proving assignmentBudgetOrFresh's zero-argument path is a true no-op for
-// existing callers.
-func TestAssignmentBudget_OmittedGivesFreshThrowaway(t *testing.T) {
+// TestAssignmentBudget_NilIsAFreshDefaultLimitedLedger pins the contract
+// [budgetOrDefault] documents for a nil budget: the DEFAULT limits, on a
+// ledger that is FRESH for that one call.
+//
+// E4d Task 2 fix round 1 made the budget a REQUIRED parameter at every phase-3
+// entry point, so this is no longer "the call shape that omits it" -- omitting
+// it does not compile. nil is what this package's own tests pass when the
+// limits are not what they are testing, and roughly seventy call sites in this
+// package depend on it behaving exactly like an unspent default budget.
+//
+// It is NOT subsumed by budgetguard_test.go's AST guard, which asserts the
+// opposite half: that no PRODUCTION caller passes nil. This one asserts nil
+// still works where it is legitimate.
+func TestAssignmentBudget_NilIsAFreshDefaultLimitedLedger(t *testing.T) {
 	action := &protocol.Action{Command: "echo", Args: []string{"hello"}}
 	if _, err := fmtres.ResolveActionExpr(action, nil, nil, nil); err != nil {
-		t.Fatalf("ResolveActionExpr with no budget argument must behave exactly as before this task: %v", err)
+		t.Fatalf("ResolveActionExpr with a nil budget must resolve an ordinary small action: %v", err)
 	}
 	if _, err := fmtres.ResolveVarsExpr(map[string]string{"K": "v"}, nil, nil, nil); err != nil {
-		t.Fatalf("ResolveVarsExpr with no budget argument: %v", err)
+		t.Fatalf("ResolveVarsExpr with a nil budget: %v", err)
 	}
 	if _, err := fmtres.ResolveEmbeddedFilesExpr([]protocol.EmbeddedFile{{Name: "a", Data: "1"}}, nil, nil, nil); err != nil {
-		t.Fatalf("ResolveEmbeddedFilesExpr with no budget argument: %v", err)
+		t.Fatalf("ResolveEmbeddedFilesExpr with a nil budget: %v", err)
+	}
+
+	// FRESH, not merely default-limited: two successive nil calls each
+	// spending the WHOLE default position allowance must both succeed. A nil
+	// that resolved to one shared package-level budget -- the obvious wrong
+	// implementation -- would fail the second.
+	vars := make(map[string]string, wantAssignmentMaxPositions)
+	for i := range wantAssignmentMaxPositions {
+		vars["V"+strconv.FormatInt(i, 10)] = "v"
+	}
+	for call := 1; call <= 2; call++ {
+		if _, err := fmtres.ResolveVarsExpr(vars, nil, nil, nil); err != nil {
+			t.Fatalf("nil-budget call %d spending the full default allowance (%d positions) must "+
+				"succeed; a shared ledger would fail the second: %v", call, wantAssignmentMaxPositions, err)
+		}
 	}
 }

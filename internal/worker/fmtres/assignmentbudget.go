@@ -265,11 +265,13 @@ const (
 // concurrency figures into the constants above.
 //
 // Use [NewAssignmentBudget] to create one; every phase-3 entry point in this
-// package (ApplyTaskLet, ApplyEnvLet, ResolveActionExpr,
-// ResolveEmbeddedFilesExpr, ResolveVarsExpr) accepts one as an optional
-// trailing argument -- omitting it (every call site that existed before this
-// task) gives that ONE call its own fresh, throwaway allowance, exactly as
-// [templateBudgetOrFresh] does server-side; see [assignmentBudgetOrFresh].
+// package (TaskSymbols, EnvSymbols, ApplyTaskLet, ApplyEnvLet,
+// ResolveActionExpr, ResolveEmbeddedFilesExpr, ResolveVarsExpr) takes one as a
+// REQUIRED trailing parameter. Passing nil is legal and means "the built-in
+// default limits, on a fresh throwaway ledger" -- it is what this package's
+// own unit tests pass when the limits are not what they are testing, and it is
+// never acceptable from a production call site. See [budgetOrDefault] for both
+// halves of that contract and for the guard that enforces the second.
 type AssignmentBudget struct {
 	// limits is the operator's configuration for this assignment, already
 	// normalized (orDefaults) exactly once, in NewAssignmentBudget. It carries

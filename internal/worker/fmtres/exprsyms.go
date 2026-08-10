@@ -138,8 +138,9 @@ const pathFlavor = expr.PathNative
 // limits as every other one in this package. Before Task 2 it was the one
 // evaluator here that no budget reached, so an operator tightening the memory
 // limit would have seen every other position honor it and this one silently
-// keep the compiled-in default. Omitting it (this package's own unit tests)
-// meters against the defaults, exactly as [assignmentBudgetOrFresh] documents.
+// keep the compiled-in default. It is a REQUIRED parameter; passing nil (this
+// package's own unit tests) meters against the defaults -- see
+// [budgetOrDefault], which also documents why a production caller must not.
 func TaskSymbols(
 	msg *protocol.AssignMsg, workDir, pathMapFile string, hasPathMap bool, budget *AssignmentBudget,
 ) (expr.MapSymbols, error) {
@@ -659,8 +660,9 @@ func splitLetBinding(raw string) (name, exprSrc string, err error) {
 // retained bytes (task table plus every environment's) over
 // assignmentMaxRetainedBytes still stops the block, exactly as the per-table
 // check does, just against a wider ledger. See [AssignmentBudget]'s own doc
-// comment for the full account. Omitting it (every pre-Task-4 caller) charges
-// a fresh, throwaway budget that can never trip from one block alone.
+// comment for the full account. It is a REQUIRED parameter; passing nil (this
+// package's own unit tests) charges a fresh, default-limited throwaway budget
+// that can never trip from one block alone -- see [budgetOrDefault].
 func evalLetBindings(
 	label string, lets []string, syms, mergeTarget expr.MapSymbols, opts []expr.Option, budget *AssignmentBudget,
 ) error {

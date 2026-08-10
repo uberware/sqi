@@ -330,8 +330,8 @@ func DefaultExprLimits() ExprLimits {
 // already-normalized value and no call site has to remember to do it. A field
 // is treated as unset rather than as "unlimited" because the zero value is the
 // overwhelmingly common case (every test in this package that does not care,
-// and [assignmentBudgetOrFresh]'s throwaway budget) and because "unlimited" is
-// the one meaning these numbers must never acquire by accident.
+// and [budgetOrDefault]'s throwaway budget for a nil argument) and because
+// "unlimited" is the one meaning these numbers must never acquire by accident.
 func (l ExprLimits) orDefaults() ExprLimits {
 	d := DefaultExprLimits()
 	if l.OperationLimit <= 0 {
