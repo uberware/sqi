@@ -155,10 +155,13 @@ const (
 	// internal/openjd's TestTemplateBudget_WorkerCapIsNotTighter is the only
 	// place that sees both sides of the relation and still needs to read it --
 	// but note that with both sides configurable, that test now compares two
-	// DEFAULTS and cannot see a farm whose YAML violates the relation. Closing
-	// that is E4d Task 3's work. What Task 2 did do is make the relation
-	// SATISFIABLE at every legal setting, by giving this dimension the same
-	// ceiling as the server's (see MaxExprAssignmentPositions).
+	// DEFAULTS and cannot see a farm whose YAML violates the relation. E4d
+	// Task 3 closed that at runtime, in internal/scheduler: the CONFIGURED
+	// value is advertised to the server at registration and an EXPR job is
+	// never dispatched to a worker whose value is below the server's. What
+	// Task 2 did was make the relation SATISFIABLE at every legal setting, by
+	// giving this dimension the same ceiling as the server's (see
+	// MaxExprAssignmentPositions).
 	//
 	// WHY THE RELATION IS LOAD-BEARING: the server charges its 10,000-position
 	// template-wide budget at validate and submit; this budget is charged on

@@ -367,7 +367,7 @@ func (s *Server) start(ctx context.Context) error {
 	// consumer), and heartbeat timeout sweep.
 	// The hub is passed as the notifier so live events are
 	// pushed to subscribed WebSocket clients after each state change.
-	s.sched = scheduler.New(s.cfg.Scheduler, s.store, s.busClient, s.metrics, s.logger, s.wsHub, s.diagBuf)
+	s.sched = scheduler.New(schedulerConfig(s.cfg), s.store, s.busClient, s.metrics, s.logger, s.wsHub, s.diagBuf)
 	go func() {
 		if err := s.sched.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
 			s.logger.ErrorContext(ctx, "scheduler: exited with error", slog.Any("error", err))

@@ -354,15 +354,24 @@ func TestCheckTemplateExpressions_TemplateWideBudget_BaseSpecUnaffected(t *testi
 // fmtres.ExprLimits.AssignmentPositions (the worker config's
 // expr.assignment_positions); the two constants below are only what each falls
 // back to. A farm whose YAML raises one above the other reproduces exactly the
-// failure described above with this test still green -- which is E4d Task 3's
-// problem to close, and why it must not be deleted or weakened in the
-// meantime.
+// failure described above, and NO COMPILE-TIME TEST CAN SEE IT.
+//
+// E4d TASK 3 CLOSES THAT AT RUNTIME, not here. A worker advertises the caps it
+// will enforce in its registration message; the server persists them
+// (store.WorkerExprLimits) and refuses to dispatch an EXPR job to a worker that
+// is tighter than the limits the template was accepted under
+// (internal/scheduler/exprcaps.go, TestExprCaps_ViolationThroughConfiguration-
+// IsCaught). This test remains the DEFAULTS half of the same invariant: it is
+// what fails if a future edit ships a fresh install that violates the relation
+// out of the box, which the runtime gate would then dutifully enforce by
+// refusing every worker in the farm. Do not delete or weaken it.
 //
 // What Task 2 did do is make the relation SATISFIABLE at every legal setting:
 // fmtres.MaxExprAssignmentPositions is >= MaxExprTemplatePositions (today both
 // are 100,000), so there is no server value an operator can choose that a
-// worker cannot legally match. That is a precondition for Task 3, not a
-// substitute for it.
+// worker cannot legally match. internal/scheduler's
+// TestExprCaps_RelationIsSatisfiableAtEveryLegalServerSetting extends that
+// check to all four related dimensions.
 func TestTemplateBudget_WorkerCapIsNotTighter(t *testing.T) {
 	if fmtres.DefaultAssignmentPositions < defaultTemplatePositions {
 		t.Fatalf("the worker's per-assignment position cap (%d) is TIGHTER than the server's "+

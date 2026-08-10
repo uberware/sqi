@@ -96,14 +96,23 @@ var registry = map[string]Extension{
 	// parameter types part of this extension, and those are sub-project F's,
 	// so accepting an EXPR template today would ship a partial implementation
 	// the extension's own contract forbids. Sub-project H flips the status.
-	"EXPR": {
-		Name:    "EXPR",
+	ExtensionEXPR: {
+		Name:    ExtensionEXPR,
 		Origin:  OriginOfficial,
 		Status:  StatusInProgress,
 		Summary: "Python-subset expression language in format strings.",
 		DocPath: "docs/openjd-extensions/expr.md",
 	},
 }
+
+// ExtensionEXPR is the registry name of the OpenJD expression-language
+// extension.
+//
+// Exported for internal/scheduler, which has to recognize an EXPR-declaring
+// template from its raw bytes -- it decides per lease request whether a job
+// needs a worker capable of phase-3 expression evaluation, and re-parsing every
+// candidate template there would cost more than the decision is worth.
+const ExtensionEXPR = "EXPR"
 
 // LookupExtension returns the registry entry for name and whether it exists.
 func LookupExtension(name string) (Extension, bool) {

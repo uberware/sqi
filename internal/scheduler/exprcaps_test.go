@@ -1,0 +1,611 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
+package scheduler
+
+import (
+	"encoding/json"
+	"log/slog"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/google/uuid"
+
+	"github.com/uberware/sqi/internal/bus"
+	"github.com/uberware/sqi/internal/metrics"
+	"github.com/uberware/sqi/internal/openjd"
+	"github.com/uberware/sqi/internal/store"
+	"github.com/uberware/sqi/internal/store/fake"
+	"github.com/uberware/sqi/internal/worker/fmtres"
+	"github.com/uberware/sqi/internal/worker/protocol"
+	"github.com/uberware/sqi/internal/ws"
+)
+
+// This file is EXPR sub-project E4d Task 3: the cross-binary invariant that
+// E4d Tasks 1 and 2 made breakable by configuration.
+//
+// THE FAILURE IT PREVENTS, measured on this branch (design spec §2): when the
+// server allowed 10,000 expression positions and the worker allowed 5,000, a
+// job with one 5,000-variable environment was ACCEPTED, CREATED AND PERSISTED,
+// and then EVERY TASK IN IT FAILED at runtime naming a budget the submitter
+// never saw. E4c closed it by relating the two CONSTANTS
+// (internal/openjd's TestTemplateBudget_WorkerCapIsNotTighter). Tasks 1 and 2
+// turned both constants into operator configuration, so that test now compares
+// two DEFAULTS and a farm's YAML can violate the relation with it green.
+//
+// The mechanism: the worker advertises its own caps in its registration
+// message, the server persists them on the worker record, and the scheduler
+// REFUSES TO DISPATCH an EXPR job to a worker whose advertised caps are below
+// the server's configured limits. The refusal is the bound; the
+// UnschedulableReason the sweep writes is what an operator sees.
+//
+// The tests below are the "test that fails when the relation is violated
+// through CONFIGURATION, not only through constants" that design spec §2
+// requires. TestExprCaps_ViolationThroughConfigurationIsCaught is the one that
+// names the original incident; the rest fence it in (defaults unaffected,
+// base-spec work unaffected, both call sites covered).
+
+// exprTemplateJSON is a minimal template that DECLARES the EXPR extension, so
+// the dispatch gate treats jobs built from it as capable of phase-3 (worker
+// side) expression evaluation.
+const exprTemplateJSON = `{
+  "specificationVersion": "jobtemplate-2023-09",
+  "extensions": ["EXPR"],
+  "name": "j",
+  "steps": [
+    {
+      "name": "render",
+      "script": {
+        "actions": {
+          "onRun": { "command": "render" }
+        }
+      }
+    }
+  ]
+}`
+
+// seedExprLeaseFixture seeds a farm/queue/job/step/ready-task plus one online
+// worker advertising workerCaps, using rawTemplate as the job's template.
+// It returns the worker and the task ID.
+func seedExprLeaseFixture(
+	t *testing.T,
+	st *fake.Store,
+	rawTemplate string,
+	workerCaps store.WorkerExprLimits,
+) (store.Worker, string) {
+	t.Helper()
+	ctx := t.Context()
+	now := time.Now().UTC()
+	if _, err := st.CreateFarm(ctx, store.Farm{ID: "f1", Name: "F1"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.CreateQueue(ctx, store.Queue{ID: "q1", FarmID: "f1", Name: "Q1"}); err != nil {
+		t.Fatal(err)
+	}
+	w, err := st.RegisterWorker(ctx, store.Worker{
+		ID: "w1", FarmID: "f1", Hostname: "h1", Status: store.WorkerStatusOnline,
+		CPUCount: 4, LastHeartbeatAt: &now, Tags: map[string]string{},
+		ExprLimits: workerCaps,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	job, err := st.CreateJob(ctx, store.Job{
+		ID: uuid.NewString(), FarmID: "f1", QueueID: "q1", Name: "j",
+		Status: store.JobStatusRunning, TemplateFormat: store.TemplateFormatJSON,
+		RawTemplate: rawTemplate,
+		CreatedAt:   now, UpdatedAt: now,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	step, err := st.CreateStep(ctx, store.Step{
+		ID: uuid.NewString(), JobID: job.ID, Name: "render",
+		Status: store.StepStatusReady, CreatedAt: now, UpdatedAt: now,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	one := 1
+	tk, err := st.CreateTask(ctx, store.Task{
+		ID: uuid.NewString(), JobID: job.ID, StepID: step.ID,
+		Name: "t", Status: store.TaskStatusReady, Parameters: map[string]string{},
+		RequiredCores: &one, CreatedAt: now, UpdatedAt: now,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return w, tk.ID
+}
+
+// schedulerWithExprLimits returns a scheduler whose server-side expression
+// limits are lim — i.e. the values openjd.expr_* would have produced.
+func schedulerWithExprLimits(st store.Store, lim openjd.ExprLimits) *Scheduler {
+	s := newMetricsScheduler(st, &recordBus{}, "f1")
+	s.cfg.ExprLimits = lim.Normalized()
+	return s
+}
+
+// leaseOnce runs one lease request for w and returns the number of assignments
+// the scheduler handed out.
+func leaseOnce(t *testing.T, s *Scheduler, w store.Worker) int {
+	t.Helper()
+	batch, err := s.selectLeaseBatch(t.Context(), w)
+	if err != nil {
+		t.Fatalf("selectLeaseBatch: %v", err)
+	}
+	return len(batch)
+}
+
+// TestExprCaps_ViolationThroughConfigurationIsCaught is design spec §2's
+// non-negotiable requirement: the relation must be guarded by something a
+// CONFIGURATION can trip, not only a constant.
+//
+// The row that matters is "server raised above the worker's default": the
+// operator sets openjd.expr_template_positions to 50,000 and leaves a worker
+// at the shipped 10,000. Before this task that farm accepted a template
+// costing 20,000 positions and then failed every task of it on that worker.
+// Now the scheduler refuses to lease the job to that worker at all.
+//
+// Every dimension is exercised separately so that removing any one comparison
+// fails exactly one sub-test -- four dimensions sharing one row are one
+// dimension.
+func TestExprCaps_ViolationThroughConfigurationIsCaught(t *testing.T) {
+	dflt := openjd.DefaultExprLimits()
+	workerDefaults := store.WorkerExprLimits{
+		OperationLimit:          fmtres.DefaultExprLimits().OperationLimit,
+		MemoryLimit:             fmtres.DefaultExprLimits().MemoryLimit,
+		AssignmentPositions:     fmtres.DefaultExprLimits().AssignmentPositions,
+		AssignmentRetainedBytes: fmtres.DefaultExprLimits().AssignmentRetainedBytes,
+	}
+
+	tests := []struct {
+		name string
+		// serverLimits is the openjd.expr_* configuration.
+		serverLimits openjd.ExprLimits
+		// workerCaps is what the worker's expr.* configuration advertises.
+		workerCaps store.WorkerExprLimits
+		wantBlock  bool
+		// wantIn, when blocking, must appear in the operator-facing reason.
+		wantIn []string
+	}{
+		{
+			name:         "both sides at their defaults dispatches",
+			serverLimits: dflt,
+			workerCaps:   workerDefaults,
+			wantBlock:    false,
+		},
+		{
+			name:         "worker advertising nothing dispatches at server defaults",
+			serverLimits: dflt,
+			workerCaps:   store.WorkerExprLimits{},
+			wantBlock:    false,
+		},
+		{
+			name:         "server positions raised above the worker's blocks",
+			serverLimits: withPositions(dflt, 50_000),
+			workerCaps:   workerDefaults,
+			wantBlock:    true,
+			wantIn:       []string{"expression positions", "10000", "50000"},
+		},
+		{
+			name:         "worker positions tightened below the server's blocks",
+			serverLimits: dflt,
+			workerCaps:   withWorkerPositions(workerDefaults, fmtres.MinExprAssignmentPositions),
+			wantBlock:    true,
+			wantIn:       []string{"expression positions", "2000", "10000"},
+		},
+		{
+			name:         "server positions raised to exactly the worker's cap dispatches",
+			serverLimits: withPositions(dflt, workerDefaults.AssignmentPositions),
+			workerCaps:   workerDefaults,
+			wantBlock:    false,
+		},
+		{
+			name:         "server positions one above the worker's cap blocks",
+			serverLimits: withPositions(dflt, workerDefaults.AssignmentPositions+1),
+			workerCaps:   workerDefaults,
+			wantBlock:    true,
+			wantIn:       []string{"10001"},
+		},
+		{
+			name:         "server operation limit raised above the worker's blocks",
+			serverLimits: withOperations(dflt, openjd.MaxExprSubmissionOperations),
+			workerCaps:   withWorkerOperations(workerDefaults, fmtres.MinExprOperationLimit),
+			wantBlock:    true,
+			wantIn:       []string{"operations", "10000", "100000"},
+		},
+		{
+			name:         "server memory limit raised above the worker's blocks",
+			serverLimits: withMemory(dflt, openjd.MaxExprSubmissionMemoryBytes),
+			workerCaps:   withWorkerMemory(workerDefaults, fmtres.MinExprMemoryLimit),
+			wantBlock:    true,
+			wantIn:       []string{"live bytes", "1000000", "10000000"},
+		},
+		{
+			name:         "worker retained-bytes cap tightened below the server's blocks",
+			serverLimits: dflt,
+			workerCaps:   withWorkerRetained(workerDefaults, fmtres.MinExprAssignmentRetainedBytes),
+			wantBlock:    true,
+			wantIn:       []string{"retain", "2000000", "10000000"},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			st := fake.New()
+			w, taskID := seedExprLeaseFixture(t, st, exprTemplateJSON, tc.workerCaps)
+			s := schedulerWithExprLimits(st, tc.serverLimits)
+
+			leased := leaseOnce(t, s, w)
+			if tc.wantBlock && leased != 0 {
+				t.Fatalf("leased %d assignments to a worker whose EXPR caps are below the "+
+					"server's configured limits; want 0 -- this is the accepted-then-failed-"+
+					"per-task incident design spec §2 records", leased)
+			}
+			if !tc.wantBlock && leased != 1 {
+				t.Fatalf("leased %d assignments, want 1: a configuration that SATISFIES the "+
+					"relation must not be blocked", leased)
+			}
+			if !tc.wantBlock {
+				return
+			}
+
+			// The bound must also be visible to the operator, on the task, not
+			// only in a log line nobody reads.
+			s.reconcileTaskSchedulability(t.Context(), mustTask(t, st, taskID), []store.Worker{w})
+			got := mustTask(t, st, taskID).UnschedulableReason
+			if got == "" {
+				t.Fatal("task carries no UnschedulableReason: a refusal to dispatch that the " +
+					"operator cannot see is a silent stall")
+			}
+			for _, want := range tc.wantIn {
+				if !strings.Contains(got, want) {
+					t.Errorf("UnschedulableReason %q does not contain %q", got, want)
+				}
+			}
+		})
+	}
+}
+
+// TestExprCaps_BaseSpecWorkIsUnaffected pins that the gate costs a
+// deliberately-tightened worker only EXPR work. Removing the whole host from
+// the farm over a limit that only applies to EXPR templates would be a far
+// worse outage than the one being prevented, and §1 chose per-worker
+// configuration precisely so a small host CAN be sized down.
+func TestExprCaps_BaseSpecWorkIsUnaffected(t *testing.T) {
+	st := fake.New()
+	w, _ := seedExprLeaseFixture(t, st, minimalRenderJSON, store.WorkerExprLimits{
+		OperationLimit:          fmtres.MinExprOperationLimit,
+		MemoryLimit:             fmtres.MinExprMemoryLimit,
+		AssignmentPositions:     fmtres.MinExprAssignmentPositions,
+		AssignmentRetainedBytes: fmtres.MinExprAssignmentRetainedBytes,
+	})
+	s := schedulerWithExprLimits(st, withPositions(openjd.DefaultExprLimits(), openjd.MaxExprTemplatePositions))
+
+	if leased := leaseOnce(t, s, w); leased != 1 {
+		t.Fatalf("a base-spec job was not leased (%d assignments) to a worker whose EXPR caps "+
+			"are below the server's: the gate must narrow to EXPR templates", leased)
+	}
+}
+
+// TestExprCaps_HeterogeneousFarmKeepsTheCapableWorker pins the property that
+// made a per-task refusal the right shape: with one tight worker and one
+// capable worker, the EXPR job runs on the capable one and no task is flagged.
+func TestExprCaps_HeterogeneousFarmKeepsTheCapableWorker(t *testing.T) {
+	st := fake.New()
+	tight, taskID := seedExprLeaseFixture(t, st, exprTemplateJSON, store.WorkerExprLimits{
+		OperationLimit:          fmtres.MinExprOperationLimit,
+		MemoryLimit:             fmtres.MinExprMemoryLimit,
+		AssignmentPositions:     fmtres.MinExprAssignmentPositions,
+		AssignmentRetainedBytes: fmtres.MinExprAssignmentRetainedBytes,
+	})
+	now := time.Now().UTC()
+	big, err := st.RegisterWorker(t.Context(), store.Worker{
+		ID: "w2", FarmID: "f1", Hostname: "h2", Status: store.WorkerStatusOnline,
+		CPUCount: 4, LastHeartbeatAt: &now, Tags: map[string]string{},
+		ExprLimits: store.WorkerExprLimits{
+			OperationLimit:          fmtres.MaxExprOperationLimit,
+			MemoryLimit:             fmtres.MaxExprMemoryLimit,
+			AssignmentPositions:     fmtres.MaxExprAssignmentPositions,
+			AssignmentRetainedBytes: fmtres.MaxExprAssignmentRetainedBytes,
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := schedulerWithExprLimits(st, withPositions(openjd.DefaultExprLimits(), openjd.MaxExprTemplatePositions))
+
+	if leased := leaseOnce(t, s, tight); leased != 0 {
+		t.Fatalf("the tight worker was leased %d EXPR assignments, want 0", leased)
+	}
+	if leased := leaseOnce(t, s, big); leased != 1 {
+		t.Fatalf("the capable worker was leased %d EXPR assignments, want 1", leased)
+	}
+
+	// With a capable worker online the task is schedulable, so the sweep must
+	// not flag it.
+	s.reconcileTaskSchedulability(t.Context(), mustTask(t, st, taskID), []store.Worker{tight, big})
+	if got := mustTask(t, st, taskID).UnschedulableReason; got != "" {
+		t.Errorf("UnschedulableReason = %q, want empty: one capable worker makes the task schedulable", got)
+	}
+}
+
+// TestExprCapShortfall_Table exercises the comparison itself at its boundary,
+// independently of the store and the scheduler. Equality must PASS: the
+// relation is worker >= server, so a worker configured to exactly the server's
+// value can run everything the server accepted.
+func TestExprCapShortfall_Table(t *testing.T) {
+	srv := openjd.ExprLimits{
+		SubmissionOperations:  5_000,
+		SubmissionMemoryBytes: 500_000,
+		TemplatePositions:     5_000,
+		TemplateRetainedBytes: 5_000_000,
+	}
+	exact := store.WorkerExprLimits{
+		OperationLimit:          5_000,
+		MemoryLimit:             500_000,
+		AssignmentPositions:     5_000,
+		AssignmentRetainedBytes: 5_000_000,
+	}
+
+	tests := []struct {
+		name  string
+		caps  store.WorkerExprLimits
+		short bool
+	}{
+		{"exactly equal in every dimension is not a shortfall", exact, false},
+		{"one operation below", withWorkerOperations(exact, 4_999), true},
+		{"one live byte below", withWorkerMemory(exact, 499_999), true},
+		{"one position below", withWorkerPositions(exact, 4_999), true},
+		{"one retained byte below", withWorkerRetained(exact, 4_999_999), true},
+		{"above in every dimension", store.WorkerExprLimits{
+			OperationLimit:          6_000,
+			MemoryLimit:             600_000,
+			AssignmentPositions:     6_000,
+			AssignmentRetainedBytes: 6_000_000,
+		}, false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := exprCapShortfall(tc.caps, srv)
+			if tc.short && got == "" {
+				t.Fatal("want a shortfall, got none")
+			}
+			if !tc.short && got != "" {
+				t.Fatalf("want no shortfall, got %q", got)
+			}
+		})
+	}
+}
+
+// TestExprCaps_UnadvertisedCapsAreThePreE4dDefaults pins the decoding
+// convention for a worker that sends no caps at all, and pins it against
+// fmtres rather than against a literal.
+//
+// The ONLY binaries that omit these fields are ones built before E4d Task 2,
+// which enforce the compiled-in defaults -- Task 2's
+// TestExprLimits_DefaultsMatchPreE4dConstants pins that those defaults ARE the
+// pre-E4d constants. So "absent means the defaults" is not a guess that fails
+// open; it is what such a worker actually enforces. A worker built after Task 2
+// always sends validated non-zero values, because its config layer rejects 0.
+func TestExprCaps_UnadvertisedCapsAreThePreE4dDefaults(t *testing.T) {
+	d := fmtres.DefaultExprLimits()
+	got := workerExprCapsOrLegacy(store.WorkerExprLimits{})
+	want := store.WorkerExprLimits{
+		OperationLimit:          d.OperationLimit,
+		MemoryLimit:             d.MemoryLimit,
+		AssignmentPositions:     d.AssignmentPositions,
+		AssignmentRetainedBytes: d.AssignmentRetainedBytes,
+	}
+	if got != want {
+		t.Fatalf("unadvertised worker caps resolve to %+v, want the worker's own defaults %+v", got, want)
+	}
+}
+
+// TestExprCaps_RelationIsSatisfiableAtEveryLegalServerSetting is the
+// configuration-range half of the invariant, and it is what stops this task's
+// gate from becoming a trap: for every dimension, the worker's configurable
+// CEILING must be at least the server's, or an operator could choose a legal
+// server value that NO legal worker configuration can match -- at which point
+// the gate would refuse every worker in the farm and EXPR work would never run.
+//
+// E4d Task 2 established this for positions; it holds for the other three by
+// their existing ranges, and this pins all four so a later range change cannot
+// break it silently.
+func TestExprCaps_RelationIsSatisfiableAtEveryLegalServerSetting(t *testing.T) {
+	tests := []struct {
+		dimension          string
+		workerMax, srvMax  int64
+		workerDef, srvDef  int64
+		serverKey, workKey string
+	}{
+		{
+			dimension: "positions",
+			workerMax: fmtres.MaxExprAssignmentPositions, srvMax: openjd.MaxExprTemplatePositions,
+			workerDef: fmtres.DefaultExprLimits().AssignmentPositions,
+			srvDef:    openjd.DefaultExprLimits().TemplatePositions,
+			serverKey: "openjd.expr_template_positions", workKey: "expr.assignment_positions",
+		},
+		{
+			dimension: "operations",
+			workerMax: fmtres.MaxExprOperationLimit, srvMax: openjd.MaxExprSubmissionOperations,
+			workerDef: fmtres.DefaultExprLimits().OperationLimit,
+			srvDef:    openjd.DefaultExprLimits().SubmissionOperations,
+			serverKey: "openjd.expr_operation_limit", workKey: "expr.operation_limit",
+		},
+		{
+			dimension: "memory", workerMax: fmtres.MaxExprMemoryLimit, srvMax: openjd.MaxExprSubmissionMemoryBytes,
+			workerDef: fmtres.DefaultExprLimits().MemoryLimit,
+			srvDef:    openjd.DefaultExprLimits().SubmissionMemoryBytes,
+			serverKey: "openjd.expr_memory_limit", workKey: "expr.memory_limit",
+		},
+		{
+			dimension: "retained bytes",
+			workerMax: fmtres.MaxExprAssignmentRetainedBytes, srvMax: openjd.MaxExprTemplateRetainedBytes,
+			workerDef: fmtres.DefaultExprLimits().AssignmentRetainedBytes,
+			srvDef:    openjd.DefaultExprLimits().TemplateRetainedBytes,
+			serverKey: "openjd.expr_template_retained_bytes", workKey: "expr.assignment_retained_bytes",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.dimension, func(t *testing.T) {
+			if tc.workerMax < tc.srvMax {
+				t.Errorf("%s ceiling: %s may be set as high as %d but %s may not exceed %d, "+
+					"so a legal server setting exists that no worker can match and the dispatch "+
+					"gate would starve every EXPR job in the farm",
+					tc.dimension, tc.serverKey, tc.srvMax, tc.workKey, tc.workerMax)
+			}
+			if tc.workerDef < tc.srvDef {
+				t.Errorf("%s default: a fresh install would violate the relation on its own "+
+					"(%s=%d, %s=%d)", tc.dimension, tc.workKey, tc.workerDef, tc.serverKey, tc.srvDef)
+			}
+		})
+	}
+}
+
+// TestHandleWorkerRegister_PersistsAdvertisedExprCaps pins the server half of
+// the registration hop: a worker's advertised EXPR caps must reach the worker
+// record, because that record is what BOTH gate call sites read. Dropped, they
+// read back as zero -- "not advertised" -- and a genuinely tight worker is
+// handed EXPR work it cannot run, which is the incident this whole file exists
+// for.
+//
+// It also drives the message through handleWorkerMessage rather than calling
+// the handler directly, so the JSON tag on the scheduler's own RegisterMsg is
+// exercised end to end.
+func TestHandleWorkerRegister_PersistsAdvertisedExprCaps(t *testing.T) {
+	st := fake.New()
+	s := newMetricsScheduler(st, &recordBus{}, "")
+
+	want := store.WorkerExprLimits{
+		OperationLimit:          11_111,
+		MemoryLimit:             2_222_222,
+		AssignmentPositions:     3_333,
+		AssignmentRetainedBytes: 4_444_444,
+	}
+	msg := &fakeJSMsg{
+		subject: bus.SubjectWorkerRegister,
+		data: workerMsgJSON(t, RegisterMsg{
+			WorkerID: "w-1", FarmID: "farm-1", Hostname: "node-1", OS: "linux",
+			ExprLimits: want,
+		}),
+	}
+	s.handleWorkerMessage(msg)
+
+	w, err := st.GetWorker(t.Context(), "w-1")
+	if err != nil {
+		t.Fatalf("GetWorker: %v", err)
+	}
+	if w.ExprLimits != want {
+		t.Fatalf("persisted ExprLimits = %+v, want %+v", w.ExprLimits, want)
+	}
+}
+
+// TestNew_NormalizesExprLimits pins that a partially-populated (or entirely
+// zero) Config.ExprLimits is filled in with the defaults ONCE, at construction.
+// An unset field left at 0 would make every worker look adequate in that
+// dimension, which is the gate silently failing open.
+func TestNew_NormalizesExprLimits(t *testing.T) {
+	tests := []struct {
+		name string
+		in   openjd.ExprLimits
+		want openjd.ExprLimits
+	}{
+		{"zero value is the defaults", openjd.ExprLimits{}, openjd.DefaultExprLimits()},
+		{
+			name: "one field set keeps the other three at their defaults",
+			in:   openjd.ExprLimits{TemplatePositions: 42},
+			want: withPositions(openjd.DefaultExprLimits(), 42),
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := DefaultConfig()
+			cfg.ExprLimits = tc.in
+			s := New(cfg, fake.New(), &recordBus{}, metrics.New(), slog.New(slog.DiscardHandler), ws.NoopNotifier{}, nil)
+			if got := s.cfg.ExprLimits; got != tc.want {
+				t.Fatalf("scheduler ExprLimits = %+v, want %+v", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestWorkerExprLimits_WireKeysMatchTheProtocol pins that the JSON the worker
+// sends decodes into the store type the server persists. The two structs live
+// in different packages on purpose (the worker binary must never import
+// internal/store); nothing but this test relates their field names.
+func TestWorkerExprLimits_WireKeysMatchTheProtocol(t *testing.T) {
+	// Four distinct values: four same-typed int64 fields crossing a package
+	// boundary is exactly the shape where a transposition compiles and runs.
+	sent := protocol.ExprLimits{
+		OperationLimit:          11,
+		MemoryLimit:             22,
+		AssignmentPositions:     33,
+		AssignmentRetainedBytes: 44,
+	}
+	raw, err := json.Marshal(sent)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var got store.WorkerExprLimits
+	if err := json.Unmarshal(raw, &got); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	want := store.WorkerExprLimits{
+		OperationLimit:          sent.OperationLimit,
+		MemoryLimit:             sent.MemoryLimit,
+		AssignmentPositions:     sent.AssignmentPositions,
+		AssignmentRetainedBytes: sent.AssignmentRetainedBytes,
+	}
+	if got != want {
+		t.Fatalf("protocol JSON %s decoded to %+v, want %+v -- a renamed json tag on either "+
+			"side silently drops the cap to zero, which reads as 'unadvertised'", raw, got, want)
+	}
+}
+
+// ── small helpers, one per dimension, so a row reads as its own mutation ──
+
+func withPositions(l openjd.ExprLimits, n int64) openjd.ExprLimits {
+	l.TemplatePositions = n
+	return l
+}
+
+func withOperations(l openjd.ExprLimits, n int64) openjd.ExprLimits {
+	l.SubmissionOperations = n
+	return l
+}
+
+func withMemory(l openjd.ExprLimits, n int64) openjd.ExprLimits {
+	l.SubmissionMemoryBytes = n
+	return l
+}
+
+func withWorkerPositions(c store.WorkerExprLimits, n int64) store.WorkerExprLimits {
+	c.AssignmentPositions = n
+	return c
+}
+
+func withWorkerOperations(c store.WorkerExprLimits, n int64) store.WorkerExprLimits {
+	c.OperationLimit = n
+	return c
+}
+
+func withWorkerMemory(c store.WorkerExprLimits, n int64) store.WorkerExprLimits {
+	c.MemoryLimit = n
+	return c
+}
+
+func withWorkerRetained(c store.WorkerExprLimits, n int64) store.WorkerExprLimits {
+	c.AssignmentRetainedBytes = n
+	return c
+}
+
+func mustTask(t *testing.T, st *fake.Store, id string) store.Task {
+	t.Helper()
+	task, err := st.GetTask(t.Context(), id)
+	if err != nil {
+		t.Fatalf("GetTask %s: %v", id, err)
+	}
+	return task
+}

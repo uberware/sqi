@@ -114,11 +114,14 @@ type ExprLimits struct {
 	// the server ACCEPTED -- failing every task in the job after submission,
 	// naming a budget the submitter never saw. E4c pinned that with
 	// TestTemplateBudget_WorkerCapIsNotTighter comparing two CONSTANTS. With
-	// both sides now configurable the relation is breakable through YAML, and
-	// re-closing it is E4d Task 3's work, not this type's. What this file does
-	// do about it is set the CEILING (below) equal to the server's own
-	// ceiling, so the relation stays satisfiable at every value an operator
-	// can legally give the server.
+	// both sides configurable the relation became breakable through YAML, and
+	// E4d Task 3 re-closed it OUTSIDE this package: this value is advertised
+	// to the server in the worker's registration message
+	// (protocol.ExprLimits), and internal/scheduler refuses to dispatch an
+	// EXPR job to a worker whose advertised value is below the server's
+	// configured one. What this file does about it is set the CEILING (below)
+	// equal to the server's own ceiling, so the relation stays satisfiable at
+	// every value an operator can legally give the server.
 	AssignmentPositions int64
 
 	// AssignmentRetainedBytes is the cumulative section 1.3.9 size of every
@@ -202,11 +205,16 @@ type ExprLimits struct {
 // openjd.expr_operation_limit to 100,000 and leaves a worker at its floor gets
 // a worker 10x tighter than what the server accepted, which is the
 // post-acceptance per-task failure this whole paragraph is about. Sizing these
-// floors from the server's configured value is impossible here (the worker
-// does not read the server's config, and by choice does not receive it) -- it
-// is the same cross-binary problem AssignmentPositions carries, one dimension
-// over, and it belongs to whoever closes that one. Each affected field says so
-// in its own comment; do not re-generalize the promise here.
+// floors from the server's configured value is still impossible here (the
+// worker does not read the server's config, and by choice does not receive
+// it). What E4d Task 3 added is the other direction: the worker ADVERTISES all
+// four related values at registration and the server withholds EXPR work from
+// a worker that is short in ANY of them, operations and memory included -- so
+// the consequence of a floor that is too low for a given server is now "this
+// host runs no EXPR jobs", not "every task of an accepted job fails here".
+// The floors themselves still promise nothing about a particular server. Each
+// affected field says so in its own comment; do not re-generalize the promise
+// here.
 const (
 	// MinExprOperationLimit / MaxExprOperationLimit bound
 	// [ExprLimits.OperationLimit].
@@ -223,7 +231,10 @@ const (
 	//     raises openjd.expr_operation_limit and leaves a worker at this floor
 	//     has a worker tighter than what the server accepts -- the same
 	//     cross-binary breakage AssignmentPositions carries, which no
-	//     compile-time test can see, and which E4d Task 3 owns.
+	//     compile-time test can see. E4d Task 3 made the server DETECT it from
+	//     this worker's advertised caps and withhold EXPR work
+	//     (internal/scheduler/exprcaps.go); it did not, and could not, make
+	//     this floor track a server it cannot read.
 	//  2. Even at parity it would not guarantee acceptance: phase 3 evaluates
 	//     the same expressions against CONCRETE values and E2's Task 10
 	//     measured it at ~40x phase 1's cost. That is why the DEFAULT here is
@@ -246,7 +257,8 @@ const (
 	// worker allowance below what the server accepted rejects after the fact.
 	// It carries the SAME residual gap: the server's value is configurable up
 	// to 10,000,000, so this floor tracks the server's default rather than the
-	// server's setting. See MinExprOperationLimit for the full statement.
+	// server's setting, and the same runtime gate is what detects the
+	// mismatch. See MinExprOperationLimit for the full statement.
 	//
 	// Ceiling: one order of magnitude above the default. This is a catastrophe
 	// ceiling, and the number it really sets is the per-block structural
@@ -323,6 +335,13 @@ func DefaultExprLimits() ExprLimits {
 		LetRetainedBytes:        defaultLetRetainedBytes,
 	}
 }
+
+// Normalized is the exported form of [ExprLimits.orDefaults]. The worker
+// advertises its caps to the server at registration (protocol.ExprLimits), and
+// what it advertises has to be what it would ENFORCE: an un-normalized zero
+// would be published as "not advertised" while the evaluator quietly used the
+// default. internal/worker/registration is the caller.
+func (l ExprLimits) Normalized() ExprLimits { return l.orDefaults() }
 
 // orDefaults returns l with every unset (<= 0) field replaced by its default.
 //

@@ -5,6 +5,7 @@ package server
 import (
 	"github.com/uberware/sqi/internal/config"
 	"github.com/uberware/sqi/internal/openjd"
+	"github.com/uberware/sqi/internal/scheduler"
 )
 
 // ExprLimitsFromConfig maps the operator's four openjd.expr_* settings onto
@@ -30,4 +31,21 @@ func ExprLimitsFromConfig(c config.OpenJDConfig) openjd.ExprLimits {
 		TemplatePositions:     c.ExprTemplatePositions,
 		TemplateRetainedBytes: c.ExprTemplateRetainedBytes,
 	}
+}
+
+// schedulerConfig returns the [scheduler.Config] the server runs its scheduler
+// with: the caller's Scheduler section, with the EXPR limits overwritten from
+// [Config.OpenJDExprLimits].
+//
+// The override is deliberate and unconditional. The scheduler does not evaluate
+// expressions; it uses these limits for exactly one thing — refusing to
+// dispatch an EXPR job to a worker whose advertised caps are tighter than the
+// limits the template was ACCEPTED under (internal/scheduler's exprcaps.go).
+// Comparing against anything other than the submitter's own limits would gate
+// on a number no submission ever used, so the two are set from one field rather
+// than left to a caller to keep in step.
+func schedulerConfig(cfg Config) scheduler.Config {
+	sched := cfg.Scheduler
+	sched.ExprLimits = cfg.OpenJDExprLimits
+	return sched
 }

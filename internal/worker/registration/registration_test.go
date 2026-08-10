@@ -16,6 +16,7 @@ package registration_test
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"net"
@@ -29,6 +30,8 @@ import (
 	"github.com/uberware/sqi/internal/bus"
 	"github.com/uberware/sqi/internal/worker/capabilities"
 	workerconfig "github.com/uberware/sqi/internal/worker/config"
+	"github.com/uberware/sqi/internal/worker/fmtres"
+	"github.com/uberware/sqi/internal/worker/protocol"
 	"github.com/uberware/sqi/internal/worker/registration"
 )
 
@@ -151,7 +154,10 @@ func newRegistrar(
 	caps capabilities.Capabilities,
 ) *registration.Registrar {
 	tb.Helper()
-	reg, err := registration.New(nc, workerID, cfg, caps, discardLogger())
+	// The zero ExprLimits normalizes to the worker's defaults, which is what
+	// every test here that does not care about them wants advertised.
+	// TestRegister_AdvertisesConfiguredExprLimits is the one that does care.
+	reg, err := registration.New(nc, workerID, cfg, fmtres.ExprLimits{}, caps, discardLogger())
 	if err != nil {
 		tb.Fatalf("registration.New: %v", err)
 	}
@@ -260,6 +266,99 @@ func TestRegister_StoresMessageInStream(t *testing.T) {
 	if got := streamMsgCount(t, nc); got != 1 {
 		t.Errorf("stream holds %d messages after Register; want 1", got)
 	}
+}
+
+// TestRegister_AdvertisesConfiguredExprLimits pins the worker half of EXPR
+// sub-project E4d Task 3's cross-binary gate: the caps a worker will ENFORCE
+// have to reach the server, or the server's dispatch gate has nothing to
+// compare against and silently falls back to assuming the defaults.
+//
+// The four values are deliberately distinct and none is a default: four
+// same-typed int64 fields copied across two struct boundaries (config ->
+// fmtres.ExprLimits -> protocol.ExprLimits) is exactly the shape where a
+// transposition compiles, runs, and advertises the wrong bound.
+func TestRegister_AdvertisesConfiguredExprLimits(t *testing.T) {
+	url := startTestNATS(t)
+	nc := connectNATS(t, url)
+
+	want := fmtres.ExprLimits{
+		OperationLimit:          11_111,
+		MemoryLimit:             2_222_222,
+		AssignmentPositions:     3_333,
+		AssignmentRetainedBytes: 4_444_444,
+		LetRetainedBytes:        5_555_555, // not advertised: no server counterpart
+	}
+	reg, err := registration.New(
+		nc, "worker-expr", minimalCfg(), want,
+		capabilities.Capabilities{OS: "linux"}, discardLogger(),
+	)
+	if err != nil {
+		t.Fatalf("registration.New: %v", err)
+	}
+	if err := reg.Register(context.Background()); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+
+	var got protocol.RegisterMsg
+	if err := json.Unmarshal(firstWorkerStreamMsg(t, nc), &got); err != nil {
+		t.Fatalf("unmarshal RegisterMsg: %v", err)
+	}
+	if got.ExprLimits.OperationLimit != want.OperationLimit ||
+		got.ExprLimits.MemoryLimit != want.MemoryLimit ||
+		got.ExprLimits.AssignmentPositions != want.AssignmentPositions ||
+		got.ExprLimits.AssignmentRetainedBytes != want.AssignmentRetainedBytes {
+		t.Fatalf("advertised ExprLimits = %+v, want operations=%d memory=%d positions=%d retained=%d",
+			got.ExprLimits, want.OperationLimit, want.MemoryLimit,
+			want.AssignmentPositions, want.AssignmentRetainedBytes)
+	}
+}
+
+// TestRegister_UnsetExprLimitsAdvertiseTheDefaults pins that a Registrar built
+// with the zero value advertises the caps the worker would actually enforce.
+// Publishing zeroes would be read by the server as "not advertised".
+func TestRegister_UnsetExprLimitsAdvertiseTheDefaults(t *testing.T) {
+	url := startTestNATS(t)
+	nc := connectNATS(t, url)
+
+	reg := newRegistrar(t, nc, "worker-expr-default", minimalCfg(), capabilities.Capabilities{OS: "linux"})
+	if err := reg.Register(context.Background()); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+
+	var got protocol.RegisterMsg
+	if err := json.Unmarshal(firstWorkerStreamMsg(t, nc), &got); err != nil {
+		t.Fatalf("unmarshal RegisterMsg: %v", err)
+	}
+	d := fmtres.DefaultExprLimits()
+	if got.ExprLimits.OperationLimit != d.OperationLimit ||
+		got.ExprLimits.MemoryLimit != d.MemoryLimit ||
+		got.ExprLimits.AssignmentPositions != d.AssignmentPositions ||
+		got.ExprLimits.AssignmentRetainedBytes != d.AssignmentRetainedBytes {
+		t.Fatalf("advertised ExprLimits = %+v, want the fmtres defaults %+v", got.ExprLimits, d)
+	}
+}
+
+// firstWorkerStreamMsg returns the payload of the first message retained by the
+// SQI_WORKER stream.
+func firstWorkerStreamMsg(tb testing.TB, nc *nats.Conn) []byte {
+	tb.Helper()
+
+	js, err := jetstream.New(nc)
+	if err != nil {
+		tb.Fatalf("firstWorkerStreamMsg: jetstream.New: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	stream, err := js.Stream(ctx, bus.StreamWorker)
+	if err != nil {
+		tb.Fatalf("firstWorkerStreamMsg: Stream: %v", err)
+	}
+	msg, err := stream.GetMsg(ctx, 1)
+	if err != nil {
+		tb.Fatalf("firstWorkerStreamMsg: GetMsg: %v", err)
+	}
+	return msg.Data
 }
 
 // ── LastRegisteredAt ──────────────────────────────────────────────────────────

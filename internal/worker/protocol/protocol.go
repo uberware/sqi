@@ -140,6 +140,46 @@ type RegisterMsg struct {
 
 	// Tags holds arbitrary key/value capability tags the worker self-reports.
 	Tags map[string]string `json:"tags,omitempty"`
+
+	// ExprLimits advertises the OpenJD EXPR evaluation caps this worker will
+	// enforce when it resolves an assignment's expressions (its expr.*
+	// configuration section).  The server compares them against its own
+	// openjd.expr_* limits and refuses to dispatch an EXPR job to a worker
+	// that is tighter — see [ExprLimits].
+	//
+	// Adding it here is deliberately a REGISTRATION-payload change and not a
+	// [ProtocolVersion] bump: the version gate is the worker's receiver-side
+	// check on AssignMsg, and nothing about an assignment changes.  A server
+	// that does not know this field ignores it; a worker that does not send
+	// it reports zeroes, which the server reads as "not advertised".
+	ExprLimits ExprLimits `json:"expr_limits,omitzero"`
+}
+
+// ExprLimits is a worker's self-reported OpenJD EXPR evaluation caps.
+//
+// It mirrors store.WorkerExprLimits field for field and json tag for tag; the
+// two are separate types because the worker binary must never import
+// internal/store.  internal/scheduler's
+// TestWorkerExprLimits_WireKeysMatchTheProtocol is what keeps the tags in step
+// — a renamed tag on either side silently decodes to zero, which the server
+// reads as "not advertised" rather than as an error.
+//
+// Zero means "not advertised".  A current worker always populates every field
+// (its config layer rejects 0), so only a binary older than EXPR sub-project
+// E4d Task 2 sends zeroes.
+type ExprLimits struct {
+	// OperationLimit is the §1.3.10 operation budget for ONE evaluation
+	// (expr.operation_limit).
+	OperationLimit int64 `json:"operation_limit,omitempty"`
+	// MemoryLimit is the §1.3.9 live-byte budget for ONE evaluation
+	// (expr.memory_limit).
+	MemoryLimit int64 `json:"memory_limit,omitempty"`
+	// AssignmentPositions is how many expression positions this worker will
+	// resolve for one assignment (expr.assignment_positions).
+	AssignmentPositions int64 `json:"assignment_positions,omitempty"`
+	// AssignmentRetainedBytes is how many bytes let: bindings may retain
+	// across one assignment (expr.assignment_retained_bytes).
+	AssignmentRetainedBytes int64 `json:"assignment_retained_bytes,omitempty"`
 }
 
 // GPUInfo describes the GPU(s) available on a worker host.

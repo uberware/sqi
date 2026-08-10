@@ -220,7 +220,9 @@ func runStart(cmd *cobra.Command, _ []string) error {
 	// Build the registrar with the merged capability set. Register() is called
 	// once at boot; SetupReconnectHook() ensures the registration is re-sent
 	// on any subsequent NATS reconnect so the server always has a live record.
-	reg, err := registration.New(nc, workerID, cfg.Worker, caps, logger)
+	// The SAME exprLimitsFromConfig call the session manager is built with
+	// (below): what this worker advertises has to be what it enforces.
+	reg, err := registration.New(nc, workerID, cfg.Worker, exprLimitsFromConfig(cfg.Expr), caps, logger)
 	if err != nil {
 		return fmt.Errorf("build registrar: %w", err)
 	}

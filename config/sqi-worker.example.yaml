@@ -390,9 +390,22 @@ diagnostics:
 #     the sum of every environment it enters, so sizing host RAM against
 #     assignment_retained_bytes over-provisions, and sizing it against an
 #     observed RSS under-bounds it.
-#   * TIGHTENING IS NOT FREE HERE THE WAY IT IS ON THE SERVER. A limit set too
-#     low rejects work the server already accepted — once per task, after
-#     submission, naming a budget the submitter never saw.
+#   * TIGHTENING IS NOT FREE HERE THE WAY IT IS ON THE SERVER. Four of these
+#     five have a server-side counterpart that meters the same thing one phase
+#     earlier, and this worker must not be TIGHTER than the server it reports
+#     to:
+#         operation_limit           >= server openjd.expr_operation_limit
+#         memory_limit              >= server openjd.expr_memory_limit
+#         assignment_positions      >= server openjd.expr_template_positions
+#         assignment_retained_bytes >= server openjd.expr_template_retained_bytes
+#     This worker advertises all four at registration and the server REFUSES TO
+#     DISPATCH EXPR jobs to it while any of them is short — it does not accept
+#     the job and then fail it here, once per task. The cost of tightening past
+#     the server is therefore that this host stops being offered EXPR work
+#     (only EXPR work; it keeps running everything else). The server logs the
+#     reason when this worker registers, and flags any task no capable worker
+#     exists for.
+#     let_retained_bytes has no server counterpart and is not advertised.
 #
 # An out-of-range value is a startup failure, not a clamp.
 expr:
@@ -411,8 +424,8 @@ expr:
   # symbol table and every environment the session enters.
   # NOTE: must not be LOWER than the server's openjd.expr_template_positions.
   # An assignment's positions are a subset of its template's, so a lower value
-  # here fails every task of a job the server accepted. Nothing checks that
-  # across the two processes.
+  # here cannot run a job the server accepted — the server sees that from this
+  # worker's registration and withholds EXPR work rather than failing it here.
   # Type: int   Range: 2000-100000   Env: SQI_WORKER_EXPR_ASSIGNMENT_POSITIONS
   assignment_positions: 10000
 

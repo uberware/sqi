@@ -39,6 +39,48 @@ type GPUInfo struct {
 	Count  int `json:"count,omitempty"`
 }
 
+// WorkerExprLimits holds the OpenJD EXPR evaluation caps a worker self-reports
+// at registration (its expr.* worker-configuration section, EXPR sub-project
+// E4d Task 2). The server persists them so the scheduler can refuse to dispatch
+// an EXPR job to a worker that cannot run what the server accepted.
+//
+// WHY THE SERVER NEEDS THEM. Expressions in an EXPR template are metered twice:
+// against the server's openjd.expr_* limits when the template is submitted, and
+// again against the worker's expr.* limits when a task runs. If a worker's cap
+// is TIGHTER than the server's, a job is accepted, created and persisted and
+// then every task of it fails on that host, after submission, naming a budget
+// the submitter never saw. That failure was measured (EXPR design spec §2:
+// server 10,000 positions, worker 5,000). Both sides became operator
+// configuration in E4d, so the relation "worker cap >= server cap" can now be
+// broken by a YAML file; these fields are what let the server see it.
+//
+// Every value is SELF-REPORTED, exactly like CPUCount, RAMMb and Tags. It is a
+// statement of what that worker will enforce, not a promise the server can
+// verify.
+//
+// A zero field means "not advertised": the only binaries that omit these are
+// ones built before E4d Task 2, which enforce the compiled-in defaults (a
+// current worker's config layer rejects 0, so it always reports a real value).
+//
+// The worker's per-symbol-table let-retention cap (expr.let_retained_bytes) is
+// deliberately NOT carried: the server has no per-table equivalent to compare
+// it against — its nearest counterpart, the per-evaluation memory budget, is
+// already the MemoryLimit dimension below.
+type WorkerExprLimits struct {
+	// OperationLimit is the worker's §1.3.10 operation budget for ONE
+	// expression evaluation (expr.operation_limit).
+	OperationLimit int64 `json:"operation_limit,omitempty"`
+	// MemoryLimit is the worker's §1.3.9 live-byte budget for ONE expression
+	// evaluation (expr.memory_limit).
+	MemoryLimit int64 `json:"memory_limit,omitempty"`
+	// AssignmentPositions is how many expression positions the worker will
+	// resolve for ONE assignment (expr.assignment_positions).
+	AssignmentPositions int64 `json:"assignment_positions,omitempty"`
+	// AssignmentRetainedBytes is how many bytes let: bindings may retain
+	// across one assignment (expr.assignment_retained_bytes).
+	AssignmentRetainedBytes int64 `json:"assignment_retained_bytes,omitempty"`
+}
+
 // Worker represents a registered sqi-worker agent. Workers self-report their
 // capabilities at registration; the server persists the reported values and
 // uses them for task matching.
@@ -59,11 +101,15 @@ type Worker struct {
 	// Version is the sqi-worker build version the worker self-reports at
 	// registration (the worker binary's internal/version.Version). May be empty
 	// for workers registered before this field existed.
-	Version         string
-	CPUCount        int
-	RAMMb           int
-	GPUInfo         GPUInfo
-	Tags            map[string]string // arbitrary capability tags
+	Version  string
+	CPUCount int
+	RAMMb    int
+	GPUInfo  GPUInfo
+	Tags     map[string]string // arbitrary capability tags
+	// ExprLimits holds the worker's self-reported OpenJD EXPR evaluation caps.
+	// Zero-valued for workers registered before this field existed; see
+	// [WorkerExprLimits] for what the server does with them.
+	ExprLimits      WorkerExprLimits
 	Status          WorkerStatus
 	LastHeartbeatAt *time.Time
 	RegisteredAt    time.Time

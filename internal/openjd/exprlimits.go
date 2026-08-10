@@ -92,8 +92,14 @@ type ExprLimits struct {
 	// this package ACCEPTED -- failing every task in the job after submission
 	// instead of failing the one request that could have reported it. E4c
 	// pinned that with TestTemplateBudget_WorkerCapIsNotTighter comparing two
-	// CONSTANTS; making both sides configurable makes the relation breakable
-	// through YAML, which is E4d Task 3's problem, not this type's.
+	// CONSTANTS; making both sides configurable made the relation breakable
+	// through YAML, which no compile-time test can see. E4d Task 3 closed that
+	// at RUNTIME rather than here: workers advertise their caps at
+	// registration and internal/scheduler refuses to dispatch an EXPR job to
+	// one that is tighter than the value this field carried at acceptance
+	// (internal/scheduler/exprcaps.go). Nothing about that gate makes a
+	// tighter worker safe -- it makes it visibly unused for EXPR work instead
+	// of silently failing every task.
 	TemplatePositions int64
 
 	// TemplateRetainedBytes is how many bytes every let: block in the template
@@ -212,6 +218,15 @@ func DefaultExprLimits() ExprLimits {
 		TemplateRetainedBytes: defaultTemplateRetainedBytes,
 	}
 }
+
+// Normalized is the exported form of [ExprLimits.orDefaults], for the one
+// caller outside this package that needs the values a walk would ACTUALLY
+// enforce rather than the ones a config literal happens to carry:
+// internal/scheduler compares them against each worker's advertised EXPR caps
+// before dispatching an EXPR job (EXPR sub-project E4d Task 3). Comparing an
+// un-normalized zero would report a shortfall of "0", i.e. no shortfall at
+// all, in every dimension the caller left unset.
+func (l ExprLimits) Normalized() ExprLimits { return l.orDefaults() }
 
 // orDefaults returns l with every unset (<= 0) field replaced by its default.
 //

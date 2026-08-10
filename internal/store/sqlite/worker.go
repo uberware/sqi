@@ -12,7 +12,7 @@ import (
 
 const workerCols = `
 	id, farm_id, queue_id, name, hostname, ip_address, compute_location,
-	os, os_version, version, cpu_count, ram_mb, gpu_info, tags, status,
+	os, os_version, version, cpu_count, ram_mb, gpu_info, tags, expr_limits, status,
 	last_heartbeat_at, registered_at, updated_at`
 
 const (
@@ -20,9 +20,9 @@ const (
 	sqlUpsertWorker = `
 INSERT INTO workers (
 	id, farm_id, queue_id, name, hostname, ip_address, compute_location,
-	os, os_version, version, cpu_count, ram_mb, gpu_info, tags, status,
+	os, os_version, version, cpu_count, ram_mb, gpu_info, tags, expr_limits, status,
 	last_heartbeat_at, registered_at, updated_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT (id) DO UPDATE SET
 	farm_id           = excluded.farm_id,
 	queue_id          = excluded.queue_id,
@@ -37,6 +37,7 @@ ON CONFLICT (id) DO UPDATE SET
 	ram_mb            = excluded.ram_mb,
 	gpu_info          = excluded.gpu_info,
 	tags              = excluded.tags,
+	expr_limits       = excluded.expr_limits,
 	status            = excluded.status,
 	last_heartbeat_at = excluded.last_heartbeat_at,
 	updated_at        = excluded.updated_at
@@ -48,7 +49,7 @@ RETURNING ` + workerCols
 UPDATE workers
 SET farm_id = ?, queue_id = ?, name = ?, hostname = ?, ip_address = ?, compute_location = ?,
 	os = ?, os_version = ?, version = ?, cpu_count = ?, ram_mb = ?, gpu_info = ?, tags = ?,
-	status = ?, last_heartbeat_at = ?, updated_at = ?
+	expr_limits = ?, status = ?, last_heartbeat_at = ?, updated_at = ?
 WHERE id = ?
 RETURNING ` + workerCols
 
@@ -98,12 +99,12 @@ RETURNING ` + workerCols
 func scanWorker(row scanner) (store.Worker, error) {
 	var w store.Worker
 	var farmID, queueID, lastHeartbeat sql.NullString
-	var gpuJSON, tagsJSON, status string
+	var gpuJSON, tagsJSON, exprJSON, status string
 	var registeredAt, updatedAt string
 
 	if err := row.Scan(
 		&w.ID, &farmID, &queueID, &w.Name, &w.Hostname, &w.IPAddress, &w.ComputeLocation,
-		&w.OS, &w.OSVersion, &w.Version, &w.CPUCount, &w.RAMMb, &gpuJSON, &tagsJSON, &status,
+		&w.OS, &w.OSVersion, &w.Version, &w.CPUCount, &w.RAMMb, &gpuJSON, &tagsJSON, &exprJSON, &status,
 		&lastHeartbeat, &registeredAt, &updatedAt,
 	); err != nil {
 		return store.Worker{}, err
@@ -128,6 +129,12 @@ func scanWorker(row scanner) (store.Worker, error) {
 	}
 	w.Tags = tags
 
+	exprLimits, err := unmarshalJSON(exprJSON, store.WorkerExprLimits{})
+	if err != nil {
+		return store.Worker{}, err
+	}
+	w.ExprLimits = exprLimits
+
 	return w, nil
 }
 
@@ -140,9 +147,13 @@ func workerBindArgs(w store.Worker, now string) ([]any, error) {
 	if err != nil {
 		return nil, err
 	}
+	exprJSON, err := marshalJSON(w.ExprLimits)
+	if err != nil {
+		return nil, err
+	}
 	return []any{
 		w.ID, nullString(w.FarmID), nullString(w.QueueID), w.Name, w.Hostname, w.IPAddress, w.ComputeLocation,
-		w.OS, w.OSVersion, w.Version, w.CPUCount, w.RAMMb, gpuJSON, tagsJSON, string(w.Status),
+		w.OS, w.OSVersion, w.Version, w.CPUCount, w.RAMMb, gpuJSON, tagsJSON, exprJSON, string(w.Status),
 		nullTimeToText(w.LastHeartbeatAt), now, now,
 	}, nil
 }
@@ -260,11 +271,15 @@ func (s *Store) UpdateWorker(ctx context.Context, worker store.Worker) (store.Wo
 	if err != nil {
 		return store.Worker{}, err
 	}
+	exprJSON, err := marshalJSON(worker.ExprLimits)
+	if err != nil {
+		return store.Worker{}, err
+	}
 	now := timeToText(time.Now().UTC())
 	row := s.stmtUpdateWorker.QueryRowContext(ctx,
 		nullString(worker.FarmID), nullString(worker.QueueID), worker.Name, worker.Hostname, worker.IPAddress,
 		worker.ComputeLocation, worker.OS, worker.OSVersion, worker.Version, worker.CPUCount, worker.RAMMb,
-		gpuJSON, tagsJSON, string(worker.Status), nullTimeToText(worker.LastHeartbeatAt),
+		gpuJSON, tagsJSON, exprJSON, string(worker.Status), nullTimeToText(worker.LastHeartbeatAt),
 		now, worker.ID)
 	out, err := scanWorker(row)
 	return out, mapErr(err)

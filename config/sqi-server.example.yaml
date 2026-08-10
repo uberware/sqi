@@ -189,6 +189,20 @@ openjd:
   #   * expr_operation_limit and expr_template_positions MULTIPLY. The
   #     cumulative operation ceiling for one request is their product; raising
   #     both raises it twice over (at the maxima, 100x the default ceiling).
+  #   * WORKER LIMITS. Each of these has a counterpart in every worker's own
+  #     expr.* configuration, metering the same thing one phase later, and a
+  #     worker must not be TIGHTER than this server:
+  #         expr_operation_limit         <= worker expr.operation_limit
+  #         expr_memory_limit            <= worker expr.memory_limit
+  #         expr_template_positions      <= worker expr.assignment_positions
+  #         expr_template_retained_bytes <= worker expr.assignment_retained_bytes
+  #     Workers advertise their values at registration, and this server REFUSES
+  #     TO DISPATCH an EXPR job to a worker that is tighter -- it does not
+  #     accept the job and then fail it on the host. If you raise a limit here
+  #     above a worker's counterpart, that worker stops being offered EXPR work
+  #     (only EXPR work; it keeps running everything else), the reason is logged
+  #     when it registers, and any task with no capable worker is flagged
+  #     unschedulable with the two numbers named. Raise the workers first.
   #   * expr_template_retained_bytes counts cumulative ALLOCATION, not peak
   #     live retention. A template that never holds more than a few MB at once
   #     is still charged the sum of every let: block, so sizing a host's RAM
@@ -207,8 +221,7 @@ openjd:
 
   # Expression positions one template may contain, across the whole validation
   # pass. NOTE: your workers' own per-assignment position cap must not be
-  # LOWER than this, or a job this server accepts will fail on every task at
-  # run time instead of being rejected at submit.
+  # LOWER than this (see "worker limits" below).
   # Type: int   Range: 256-100000   Env: SQI_OPENJD_EXPR_TEMPLATE_POSITIONS
   expr_template_positions: 10000
 

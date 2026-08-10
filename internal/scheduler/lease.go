@@ -170,6 +170,15 @@ func (s *Scheduler) leaseGatesPass(
 		return d, false, nil // paused/terminal job: skip (defends the ready-list→lease window)
 	}
 
+	// Cross-binary EXPR limits: never hand an EXPR job to a worker whose
+	// advertised caps are tighter than the ones this template was accepted
+	// under. Skipping leaves the task ready for a capable worker; the
+	// unschedulable sweep writes the same reason onto the task if none exists.
+	// See exprcaps.go for why this is a skip and not a submit-time rejection.
+	if s.exprCapsBlock(worker, job) != "" {
+		return d, false, nil
+	}
+
 	step, err := s.store.GetStep(ctx, task.StepID)
 	if err != nil {
 		return d, false, fmt.Errorf("lease: get step %s: %w", task.StepID, err)

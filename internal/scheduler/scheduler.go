@@ -84,6 +84,7 @@ import (
 	"github.com/uberware/sqi/internal/bus"
 	"github.com/uberware/sqi/internal/diag"
 	"github.com/uberware/sqi/internal/metrics"
+	"github.com/uberware/sqi/internal/openjd"
 	"github.com/uberware/sqi/internal/store"
 	"github.com/uberware/sqi/internal/ws"
 )
@@ -105,6 +106,7 @@ func DefaultConfig() Config {
 		DefaultMaxAttempts:        3,
 		RetryDelay:                30 * time.Second,
 		DefaultFailureLimit:       0,
+		ExprLimits:                openjd.DefaultExprLimits(),
 	}
 }
 
@@ -189,6 +191,17 @@ type Config struct {
 	// failure ceiling. 0 = off (no auto-park) and is a legitimate setting —
 	// like UnschedulableGrace, it is NOT coerced up in [New]. Default: 0.
 	DefaultFailureLimit int
+
+	// ExprLimits are the OpenJD EXPR limits this server enforces when it
+	// ACCEPTS a template (internal/config's openjd.expr_* keys). The scheduler
+	// does not evaluate expressions; it needs them only to compare against each
+	// worker's advertised caps before dispatching an EXPR job — see
+	// exprcaps.go. It must be the same value the submitter is built with, which
+	// is why internal/server sets both from one field rather than letting a
+	// caller populate them independently.
+	//
+	// Zero fields normalize to the defaults in [New].
+	ExprLimits openjd.ExprLimits
 }
 
 // busClient is the subset of [bus.Client] used by the Scheduler. Defined as
@@ -290,6 +303,10 @@ func New(cfg Config, st store.Store, busClient busClient, m *metrics.Metrics, lo
 	if cfg.RetryDelay < 0 {
 		cfg.RetryDelay = DefaultConfig().RetryDelay
 	}
+	// Normalized ONCE here so exprCapShortfall compares against the values a
+	// submission would actually be metered under. An unset field left at 0
+	// would report "no shortfall" in that dimension for every worker.
+	cfg.ExprLimits = cfg.ExprLimits.Normalized()
 	n := notifier
 	if n == nil {
 		n = ws.NoopNotifier{}
@@ -708,6 +725,14 @@ type RegisterMsg struct {
 	// Tags holds arbitrary key/value capability tags the worker self-reports.
 	// Job requirements reference these tags when specifying worker constraints.
 	Tags map[string]string `json:"tags,omitempty"`
+
+	// ExprLimits are the OpenJD EXPR evaluation caps the worker will enforce.
+	// Decoded straight into the store type: the json tags on protocol.ExprLimits
+	// and store.WorkerExprLimits are identical, and
+	// TestWorkerExprLimits_WireKeysMatchTheProtocol is what keeps them so.
+	// Absent (a worker older than EXPR sub-project E4d Task 2) leaves it zero,
+	// which exprcaps.go reads as that binary's compiled-in defaults.
+	ExprLimits store.WorkerExprLimits `json:"expr_limits,omitzero"`
 }
 
 // handleWorkerRegister processes a worker.register message:
@@ -745,6 +770,7 @@ func (s *Scheduler) handleWorkerRegister(ctx context.Context, msg jetstream.Msg)
 		RAMMb:           m.RAMMb,
 		GPUInfo:         m.GPUInfo,
 		Tags:            m.Tags,
+		ExprLimits:      m.ExprLimits,
 		Status:          store.WorkerStatusOnline,
 		LastHeartbeatAt: &now,
 	}
@@ -760,6 +786,19 @@ func (s *Scheduler) handleWorkerRegister(ctx context.Context, msg jetstream.Msg)
 	}
 
 	s.ensureComputeLocation(ctx, m.ComputeLocation)
+
+	// Diagnostic, NOT the bound: the bound is exprCapsBlock refusing to lease
+	// EXPR work to this worker (exprcaps.go). This is the earliest point an
+	// operator can be told, and it lands in the diagnostics ring buffer and the
+	// Server Log page rather than only on a task that may not exist yet.
+	if short := exprCapShortfall(m.ExprLimits, s.cfg.ExprLimits); short != "" {
+		s.logger.WarnContext(
+			ctx, "scheduler: worker registered with EXPR limits tighter than this server's",
+			slog.String("worker_id", m.WorkerID),
+			slog.String("hostname", m.Hostname),
+			slog.String("detail", short),
+		)
+	}
 
 	s.logger.InfoContext(
 		ctx, "scheduler: worker registered",
