@@ -665,6 +665,19 @@ const (
 	// exists), so a real template's per-step position count is not bounded
 	// by any OTHER constant this cap can lean on.
 	//
+	// THAT RATIO ASSUMES BOTH TERMS ARE IN FORCE, AND ONLY ONE ALWAYS IS --
+	// stated explicitly by fix round 2 (whole-branch review, MINOR 3),
+	// because E4d will size an operator knob from it. THIS budget is
+	// always-on: it is a resource-exhaustion guard, reached whether or not
+	// opts.EnforceLimits is set. maxSteps is NOT -- it sits inside
+	// validateLimits, behind EnforceLimits (validate.go). Under the
+	// operator opt-out (enforce_limits: false) the denominator simply
+	// vanishes: step count is unbounded, "positions per step" stops meaning
+	// anything, and the only thing still bounding the walk is this cap's own
+	// absolute value. Not a defect -- the cap holds either way, which is the
+	// property that matters -- but the JUSTIFICATION above is conditional in
+	// a way the number it justifies is not.
+	//
 	// THE WORKED CALCULATION -- one step, generous but plausible for a real,
 	// hand-authored render-pipeline step (not maximal against every
 	// structural cap at once, which is a different, adversarial question

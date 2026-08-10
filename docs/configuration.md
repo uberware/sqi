@@ -584,6 +584,21 @@ and cannot yet update all templates — including templates with more than 100
 steps; resource-exhaustion guards (the per-range value cap and the per-step
 task-count cap) always apply regardless of this setting.
 
+**The step-count relief above does not carry over to `EXPR` templates.** A
+template declaring `extensions: [EXPR]` is *also* subject to the
+template-wide expression budget (`maxTemplateExprPositions` = 10,000,
+`internal/openjd/exprcheck.go`), which is **always on** — a
+resource-exhaustion guard, not a quantitative limit, so `enforce_limits:
+false` does not lift it. That budget counts **expression positions**, not
+steps, so the relief is partial rather than absent: a many-step `EXPR`
+template is accepted only while its *total* positions stay under 10,000. At
+the ~70-positions-per-step shape that constant was sized against, the
+crossover is around 143 steps — so a 300-step `EXPR` template of any
+realistic content is rejected whichever way this flag is set, while a
+300-step template whose steps carry almost no expressions still passes. Only
+a base-spec template gets the unqualified relief this flag promises. See
+`docs/openjd-extensions/expr.md` for what the budget bounds.
+
 ```yaml
 openjd:
   enforce_limits: true

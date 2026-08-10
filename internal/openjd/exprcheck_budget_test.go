@@ -353,3 +353,36 @@ func TestTemplateBudget_WorkerCapIsNotTighter(t *testing.T) {
 			fmtres.MaxAssignmentPositions, maxTemplateExprPositions)
 	}
 }
+
+// TestExprWalkApplies_BaseSpecTemplateShortCircuitsTheCostGuard pins fix round
+// 2's MINOR 1: a template that declares no extensions: [EXPR] must not pay for
+// parameterSpaceOverCaps, the O(n) pre-walk cost guard.
+//
+// The guard exists to decide whether to SKIP the expression walk. For a
+// base-spec template the walk is a no-op, so running the guard is pure waste
+// -- 15 ms on a 200,000-sub-range INT parameter, ~40 ms at the body cap --
+// and it breaks design spec §6's floor that such a template "should cost
+// exactly what it costs today". The call site in ValidateWithOptions is
+// "exprWalkApplies(t, ...) && !parameterSpaceOverCaps(t)", and Go's &&
+// short-circuits, so asserting exprWalkApplies is false for a base-spec
+// template IS the assertion that the guard never runs.
+//
+// The opt-in is passed as TRUE deliberately: this must hold even for the
+// caller that has explicitly asked for expressions to be checked while EXPR
+// is unsupported, and -- more importantly -- it must keep holding after
+// sub-project H flips the extension to StatusSupported, at which point
+// exprExpressionWalkEnabled returns true unconditionally and this term is the
+// only one left.
+func TestExprWalkApplies_BaseSpecTemplateShortCircuitsTheCostGuard(t *testing.T) {
+	base := &JobTemplate{Name: "T"} // no Extensions
+	if exprWalkApplies(base, true) {
+		t.Error("a template with no extensions: [EXPR] must short-circuit before " +
+			"parameterSpaceOverCaps -- see design spec §6's base-spec cost floor")
+	}
+
+	withExpr := &JobTemplate{Name: "T", Extensions: []string{"EXPR"}}
+	if !exprWalkApplies(withExpr, true) {
+		t.Error("an EXPR-declaring template with the opt-in set must still reach the walk; " +
+			"the extension term must narrow the gate, not close it")
+	}
+}

@@ -455,6 +455,30 @@ func exprExpressionWalkEnabled(optIn bool) bool {
 	return optIn
 }
 
+// exprWalkApplies reports whether [ValidateWithOptions] should do ANY phase-1
+// expression work for t -- both the walk itself and the pre-walk cost guard
+// that decides whether to skip it.
+//
+// It is [exprExpressionWalkEnabled] AND the template actually declaring the
+// extension, and the second term is the whole reason this function exists.
+// exprExpressionWalkEnabled consults only the registry's status and the
+// caller's opt-in; it never looks at the template. After sub-project H flips
+// EXPR to [StatusSupported] it therefore returns true for EVERY template,
+// base-spec ones included -- and the call site's other term,
+// parameterSpaceOverCaps, is not free: it walks every step's task-parameter
+// definitions and counts every INT sub-range, measured at 15 ms on a
+// 200,000-sub-range parameter and ~40 ms at the body cap. Spending that to
+// decide whether to skip a walk that would do nothing anyway breaks design
+// spec §6's floor, that a template without extensions: [EXPR] "should cost
+// exactly what it costs today". checkTemplateExpressions checks the
+// extension again on its own; this is not a duplicate of that check but a
+// short-circuit in front of the guard, and Go's && guarantees it as one.
+//
+// Added by fix round 2 (whole-branch review, MINOR 1).
+func exprWalkApplies(t *JobTemplate, optIn bool) bool {
+	return exprExpressionWalkEnabled(optIn) && t.hasExtension("EXPR")
+}
+
 // ─── Validate ─────────────────────────────────────────────────────────────────
 
 // Validate performs semantic validation of a parsed [JobTemplate] and returns
@@ -639,7 +663,10 @@ func ValidateWithOptions(t *JobTemplate, opts ValidateOptions) ValidationErrors 
 	// UNBOUNDED at phase 2 after this task -- gating checkExpressionsAtSubmit
 	// itself is explicitly out of this task's scope and is a later E4c
 	// task's job.
-	if exprExpressionWalkEnabled(opts.CheckEXPRExpressionsWhileUnsupported) && !parameterSpaceOverCaps(t) {
+	// exprWalkApplies, not exprExpressionWalkEnabled alone: the template's own
+	// extensions: key has to be consulted BEFORE parameterSpaceOverCaps, or
+	// the guard runs on templates whose walk is a no-op. See that function.
+	if exprWalkApplies(t, opts.CheckEXPRExpressionsWhileUnsupported) && !parameterSpaceOverCaps(t) {
 		errs = append(errs, checkTemplateExpressions(t, nil)...)
 	}
 
@@ -865,14 +892,19 @@ const (
 	// would risk breaking the exact templates EnforceLimits: false exists to
 	// keep working.
 	//
-	// RESIDUAL, PRE-EXISTING, NOT INTRODUCED HERE: with EnforceLimits:
-	// false, a template within maxSteps but with each step individually at
-	// maxTasksPerStep still multiplies to an unbounded total task count
-	// across the job (steps x up to 1,000,000 tasks each) -- a
-	// catastrophe-class exposure, not a policy one, that predates this
-	// constant and is not in this cap's scope to close. Tracked as a
-	// follow-up: an always-on, catastrophically-generous bound on TOTAL
-	// tasks per job, analogous to maxTasksPerStep but summed across steps.
+	// RESIDUAL, PRE-EXISTING, NOT INTRODUCED HERE: nothing bounds a job's
+	// TOTAL task count, only its per-step one. At the PRODUCTION DEFAULT
+	// (EnforceLimits: true) that already permits maxSteps x maxTasksPerStep
+	// = 100 x 1,000,000 = 10^8 task rows to be attempted from one
+	// submission, with NO operator opt-out required -- stated explicitly
+	// because docs/openjd-extensions/expr.md once described this gap as
+	// needing enforce_limits: false, which understated it. With
+	// EnforceLimits: false the step count is unbounded too, so the product
+	// has no ceiling at all. Either way it is a catastrophe-class exposure,
+	// not a policy one, that predates this constant and is not in this
+	// cap's scope to close. Tracked as a follow-up: an always-on,
+	// catastrophically-generous bound on TOTAL tasks per job, analogous to
+	// maxTasksPerStep but summed across steps.
 	maxSteps = 100
 
 	// maxJobParameterDefinitions caps parameterDefinitions. The spec range is
@@ -1003,10 +1035,15 @@ func validateEnvNameLimits(envs []Environment, base string) ValidationErrors {
 // COUNT caps that bound [checkTemplateExpressions]'s walk cost.
 //
 // DELIBERATELY NARROWER than [validateParameterSpaceLimits]: this function
-// must stay O(n) because [ValidateWithOptions] runs it on EVERY
+// must stay O(n) because [ValidateWithOptions] runs it on every
 // EXPR-declaring template regardless of opts.EnforceLimits (see the call
 // site), so an expensive check here would defeat its own purpose by
-// importing cost onto the very path it exists to protect.
+// importing cost onto the very path it exists to protect. An earlier
+// revision of this sentence said it runs "on EVERY EXPR-declaring template"
+// while the call site gated it on exprExpressionWalkEnabled ALONE -- which
+// consults the registry status, not the template -- so it in fact ran on
+// every template, base-spec ones included. Fix round 2 (whole-branch review,
+// MINOR 1) added the hasExtension("EXPR") term that makes the sentence true.
 // [validateParameterSpaceLimits] also runs [intRangeHasOverlap], an O(n^2)
 // pairwise scan over an INT range's sub-ranges (range.go) with no early exit
 // once a count cap has already fired -- reusing it wholesale here was tried

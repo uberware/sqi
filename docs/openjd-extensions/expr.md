@@ -547,24 +547,33 @@ own denominator: `maxTemplateExprPositions` was chosen against a worked,
 per-step position count times `maxSteps` — see that constant's own doc
 comment (`internal/openjd/exprcheck.go`) for the full arithmetic.
 
-**What this wave deliberately does not reach.** `maxSteps` is itself gated
-by `openjd.enforce_limits`, the same flag as the parameter-space count
-caps — so with `openjd.enforce_limits: false`, step count is unbounded too,
-and a template with many steps that each declare a large `range` (e.g.
-`"1-1000000"`) still multiplies: (step count) × `maxTasksPerStep` task rows
-can be attempted from one submission, validating cheaply and quickly
-because expression cost and task count are different dimensions — this
-wave's budgets bound what *expressions* may cost to evaluate, not how many
-*tasks* a parameter space may expand to. That gap is pre-existing (it
-predates `maxSteps`, and `maxSteps` does not close it even when
-`enforce_limits` is true, since 100 steps at `maxTasksPerStep` each is
-already 10⁸ tasks), requires a deliberate operator opt-out
-(`enforce_limits: false`), and is not attempted by this wave — see
-`maxSteps`'s own "RESIDUAL, PRE-EXISTING, NOT INTRODUCED HERE" paragraph
-(`internal/openjd/validate.go`) for the exact mechanism. Closing it needs an
-always-on, catastrophically-generous bound on **total tasks per job**,
-analogous to `maxTasksPerStep` (`internal/openjd/expand.go`) but summed
-across steps — tracked as later work.
+**What this wave deliberately does not reach.** Task *count* is a different
+dimension from expression *cost*: these budgets bound what *expressions* may
+cost to evaluate, not how many *tasks* a parameter space may expand to. A
+template whose steps each declare a large `range` (e.g. `"1-1000000"`)
+validates cheaply and quickly and then multiplies.
+
+**At the production default (`enforce_limits: true`) this is already 10⁸
+`CreateTask` inserts from one `POST`** — `maxSteps` (100) × `maxTasksPerStep`
+(1,000,000) — and **no operator opt-out is required to reach it**. An
+earlier revision of this page said the gap "requires a deliberate operator
+opt-out (`enforce_limits: false`)" in the same sentence as its own
+parenthetical conceding that `maxSteps` "does not close it even when
+`enforce_limits` is true". Both cannot hold; the opt-out framing was the
+wrong one and is withdrawn here.
+
+What the opt-out changes is only how much *further* it goes: `maxSteps` is
+gated by `openjd.enforce_limits` like the package's other bare
+structural-count caps, so with `openjd.enforce_limits: false` the step count
+is unbounded and the product has no ceiling at all. See `maxSteps`'s own
+"RESIDUAL, PRE-EXISTING, NOT INTRODUCED HERE" paragraph
+(`internal/openjd/validate.go`) for the exact mechanism.
+
+The gap is pre-existing — it predates `maxSteps` — and is not attempted by
+this wave. Closing it needs an always-on, catastrophically-generous bound on
+**total tasks per job**, analogous to `maxTasksPerStep`
+(`internal/openjd/expand.go`) but summed across steps — tracked as later
+work.
 
 ## Known gaps
 
