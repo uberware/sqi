@@ -4,6 +4,7 @@ package openjd
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/uberware/sqi/internal/openjd/expr"
 	"github.com/uberware/sqi/internal/openjd/fmtstring"
@@ -23,7 +24,12 @@ import (
 //   - deciding whether a whole-field RangeExpr that is a LONE {{...}}
 //     expression (fmtstring.LoneRef — the entire field is one reference, no
 //     surrounding text) is section 1.3.12's extended range form and should be
-//     EVALUATED into a value rather than substituted as plain text;
+//     EVALUATED into a value rather than substituted as plain text — and,
+//     for every other shape (a RangeList entry, or a RangeExpr/RangeString
+//     that is literal text or has a reference embedded in surrounding text),
+//     whether each embedded {{...}} is read as an EXPRESSION (evaluated,
+//     expr.TAny, rendered to text) rather than a bare dotted-identifier
+//     lookup (resolveFormatStringExpr, resolveRangeListEntry);
 //   - building the phase-2 ScopeJob symbol table (symbolsFor) that
 //     evaluation runs against, with jobParams already bound concrete —
 //     Submitter.prepareTemplate's step 2d re-check runs the identical
@@ -45,9 +51,10 @@ import (
 //
 // If ps is nil, (nil, nil) is returned immediately.
 //
-// On a malformed reference, an unknown variable, or (EXPR-declared, whole-
-// field expression only) an evaluation error, a [ValidationError] is
-// accumulated with a pointer of the form
+// On a malformed reference, an unknown variable, or (EXPR-declared only) an
+// expression evaluation error — at the whole-field RangeExpr, an individual
+// RangeList entry, or an embedded reference within either — a
+// [ValidationError] is accumulated with a pointer of the form
 //
 //	/parameterSpace/taskParameterDefinitions/<i>/range
 //	/parameterSpace/taskParameterDefinitions/<i>/range/<j>   (RangeList entry j)
@@ -117,7 +124,7 @@ func ResolveParameterSpaceParams(tmpl *JobTemplate, ps *StepParameterSpace, jobP
 			newList := make([]string, len(def.RangeList))
 			for j, entry := range def.RangeList {
 				eptr := fmt.Sprintf("/parameterSpace/taskParameterDefinitions/%d/range/%d", i, j)
-				resolved, err := fmtstring.Resolve(entry, scope)
+				resolved, err := resolveRangeListEntry(exprEnabled, entry, syms, scope)
 				if err != nil {
 					errs = append(errs, ValidationError{
 						Pointer: eptr,
@@ -163,11 +170,46 @@ func ResolveParameterSpaceParams(tmpl *JobTemplate, ps *StepParameterSpace, jobP
 // nothing else) is it section 1.3.12's extended form, evaluated against syms
 // and converted into a range list (see evalRangeExprList). Any other shape —
 // literal text with no {{}} at all ("1-100:2"), or a {{...}} reference
-// embedded in surrounding text ("1-{{Param.End}}") — is not a whole-field
-// list expression and keeps taking the exact same fmtstring.Resolve path the
-// non-EXPR branch does: declaring EXPR does not change how an ordinary
-// base-spec RangeExpr resolves, only what a WHOLE-FIELD lone expression
-// means.
+// embedded in surrounding text ("1-{{Param.End}}") — is NOT a whole-field
+// list expression, but as of this task it is still a section 1.3.2 format
+// string, and §1.3.12 says exactly that of the RangeString: "it is a format
+// string, it can now contain an expression". So it is resolved through
+// resolveFormatStringExpr (below), the same embedded-reference machinery
+// checkFormatString (exprcheck.go) already checks it with, evaluating each
+// {{...}} segment at expr.TAny and rendering with Value.String() — NOT
+// through fmtstring.Resolve, which only understands a bare dotted-identifier
+// reference and rejects anything else as "not a valid dotted identifier".
+//
+// Before this task, that mismatch was exactly the checker/resolver drift
+// EXPR sub-project E4b Task 1's review found: a template with
+// range: "1-{{ Param.End * 2 }}" and extensions: [EXPR] validated cleanly
+// (checkParameterSpaceExpressions checks the WHOLE RangeExpr field, lone or
+// not, through checkFormatString) and then failed at submit here, because
+// this function still routed the non-lone case to base-spec
+// fmtstring.Resolve. Now both agree: both walk the field as segments and
+// evaluate each embedded reference as an expression.
+//
+// The result of this branch is still TEXT, assigned back into rangeExpr,
+// exactly as the base-spec branch below does — NOT a value handed to
+// evalRangeExprList's list-producing path. That is deliberate, and it is NOT
+// a second helping of section 2.1's trap (see evalRangeExprList's own doc
+// comment for the trap's full statement): the trap is about not
+// re-stringifying a range_expr VALUE and re-parsing it under
+// internal/openjd's stricter <IntRangeExpr> policy. Here the user did not
+// write an expression that PRODUCES a range — they wrote ordinary
+// <IntRangeExpr> syntax ("1-...") with an expression EMBEDDED in it to
+// compute one piece of that syntax's text ("{{ Param.End * 2 }}" standing in
+// for the end bound). The embedded expression evaluates to a plain int/
+// float/string/path value, rendered to text with Value.String() exactly as
+// checkFormatString's own non-lone branch treats it (expr.TAny, converted to
+// string) — there is no range_expr-typed VALUE anywhere in this branch to
+// mis-stringify. The resulting text ("1-10") is precisely what a base-spec
+// author would have typed by hand, and — for INT/CHUNK[INT] — legitimately
+// belongs to expand.go's parseIntRangeExpr afterward, the same as any other
+// literal <IntRangeExpr> string. Declaring EXPR does not change how an
+// ordinary base-spec RangeExpr resolves in VALUE, only in how its embedded
+// references are evaluated (as expressions, not dotted-identifier lookups)
+// — and, per section 1.3.12, only what a WHOLE-FIELD LONE expression means.
 //
 // Returns exactly one of rangeExpr (non-nil) or rangeList (non-nil) on
 // success — the caller assigns both straight onto the new definition, so a
@@ -185,6 +227,12 @@ func resolveRangeExprField(
 			}
 			return nil, list, nil
 		}
+
+		resolved, err := resolveFormatStringExpr(raw, syms, expr.TAny, submissionLimits()...)
+		if err != nil {
+			return nil, nil, err
+		}
+		return &resolved, nil, nil
 	}
 
 	resolved, err := fmtstring.Resolve(raw, scope)
@@ -192,6 +240,116 @@ func resolveRangeExprField(
 		return nil, nil, err
 	}
 	return &resolved, nil, nil
+}
+
+// resolveRangeListEntry resolves one RangeList entry (a single FLOAT|STRING|
+// PATH range value, or occasionally a literal INT/CHUNK[INT] value —
+// TaskParamDefinition.RangeList's own doc comment), following the exact same
+// exprEnabled gate resolveRangeExprField's non-EXPR branch does: when
+// exprEnabled is false this is EXACTLY fmtstring.Resolve run over entry, byte
+// for byte unchanged from before this task.
+//
+// When exprEnabled is true, entry resolves through resolveFormatStringExpr
+// with target TargetString (exprcheck.go) — matching
+// checkParameterSpaceExpressions's own checkFormatString call for a RangeList
+// entry exactly: a LONE {{...}} reference is evaluated once against
+// expr.TString (so an int/float/path value naturally coerces to its text
+// form, per section 1.2.3), and anything else (literal text, or a reference
+// embedded in surrounding text) evaluates each embedded reference at
+// expr.TAny and concatenates. Every RangeList entry is a format-string FIELD
+// of one uniform type — string — regardless of the task parameter's own
+// declared Type: the entry's TEXT is what is stored back into RangeList,
+// and expand.go (validateFloatList, PATH's own non-empty check, and so on)
+// is what parses that text into the parameter's actual type, exactly as it
+// already does for a literal (non-EXPR) entry. Evaluating a lone reference
+// against the parameter's element type here, rather than TargetString, would
+// disagree with the checker for no benefit: either coercion path lands on
+// the same rendered text for every legal reference this task's own tests
+// cover.
+func resolveRangeListEntry(exprEnabled bool, entry string, syms expr.MapSymbols, scope fmtstring.Scope) (string, error) {
+	if exprEnabled {
+		return resolveFormatStringExpr(entry, syms, TargetString, submissionLimits()...)
+	}
+	return fmtstring.Resolve(entry, scope)
+}
+
+// resolveFormatStringExpr resolves one EXPR-aware format-string field —
+// either a RangeList entry (loneTarget TargetString) or a whole-field
+// RangeString that is not a lone reference (loneTarget expr.TAny, since
+// resolveRangeExprField's caller already special-cased and consumed the lone
+// case before this function ever runs for that position) — against syms.
+//
+// This mirrors internal/worker/fmtres/expres.go's resolveFormatStringExpr
+// and internal/openjd/exprcheck.go's checkFormatString exactly, per section
+// 1.3.2: a format string that is EXACTLY one reference with no surrounding
+// text (fmtstring.LoneRef) is transparent and inherits loneTarget; anything
+// else — literal text, an embedded reference, or several references — walks
+// fmtstring.Segments and evaluates each reference unconstrained (expr.TAny),
+// rendering with Value.String() and treating a null result as the empty
+// string (RFC 0005), concatenated with the literal text around it.
+func resolveFormatStringExpr(s string, syms expr.MapSymbols, loneTarget expr.Type, opts ...expr.Option) (string, error) {
+	if body, ok := fmtstring.LoneRef(s); ok {
+		e, err := expr.Parse(body)
+		if err != nil {
+			return "", err
+		}
+		v, err := e.Eval(syms, loneTarget, opts...)
+		if err != nil {
+			return "", err
+		}
+		if v.IsUnresolved() {
+			return "", errUnresolvedRangeValue(v)
+		}
+		return v.AsStr(), nil
+	}
+
+	segs, err := fmtstring.Segments(s)
+	if err != nil {
+		return "", err
+	}
+	var b strings.Builder
+	for _, seg := range segs {
+		if !seg.IsRef {
+			b.WriteString(seg.Literal)
+			continue
+		}
+		e, err := expr.Parse(seg.Ref)
+		if err != nil {
+			return "", err
+		}
+		v, err := e.Eval(syms, expr.TAny, opts...)
+		if err != nil {
+			return "", err
+		}
+		if v.IsUnresolved() {
+			return "", errUnresolvedRangeValue(v)
+		}
+		if v.IsNull() {
+			// RFC 0005: within a format string, the target type is string?
+			// and a None/null result is treated as the empty string — unlike
+			// Value.String()'s own "null" rendering, which is a DIAGNOSTIC
+			// form never meant for this position (see
+			// internal/worker/fmtres/expres.go's evalEmbeddedRef, which this
+			// mirrors).
+			continue
+		}
+		b.WriteString(v.String())
+	}
+	return b.String(), nil
+}
+
+// errUnresolvedRangeValue reports an EXPR evaluation that produced a
+// still-unresolved value at a range-field position — unreachable in
+// production for the same reason evalRangeExprList's identical guard is (see
+// that function's doc comment): syms binds every ScopeJob symbol concrete by
+// the time this package's one caller runs. Reported rather than letting an
+// unresolved value's diagnostic "<unresolved[T]>" rendering (Value.String())
+// leak into a range value unnoticed — this codebase's standing convention
+// (expr/value.go's mustBe doc comment).
+func errUnresolvedRangeValue(v expr.Value) error {
+	return fmt.Errorf(
+		"value is unresolved (%s): the submitted text could not be parsed as its declared type", v.Type,
+	)
 }
 
 // evalRangeExprList evaluates body — the inner source of a lone whole-field

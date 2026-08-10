@@ -633,14 +633,26 @@ func TestResolveParameterSpaceParams_BaseSpecUnchanged(t *testing.T) {
 
 // TestResolveParameterSpaceParams_NonLoneRefStaysBaseSpecEvenWithEXPR proves
 // the other half of resolveRangeExprField's contract: declaring EXPR does
-// NOT change how an ordinary (non-whole-field-expression) RangeExpr
-// resolves. A literal <IntRangeExpr> with a substitution embedded in
+// NOT change the VALUE an ordinary (non-whole-field-expression) RangeExpr
+// resolves to. A literal <IntRangeExpr> with a substitution embedded in
 // surrounding text ("{{Param.Start}}-{{Param.End}}") is not a LONE
-// reference, so it keeps taking fmtstring.Resolve exactly as
+// reference, so it resolves to the SAME text
 // TestResolveParameterSpaceParams's "RangeExpr resolved with Param" case
 // (above) already pins for a non-EXPR template — this test pins the SAME
 // input/output pair again with EXPR declared, proving the two branches agree
-// on this shape rather than one silently reinterpreting it.
+// on this shape's VALUE.
+//
+// As of EXPR sub-project E4b Task 2's checker/resolver-drift fix, this is NO
+// LONGER the identical CODE PATH as the non-EXPR case: an EXPR-declared
+// template now resolves this shape through resolveFormatStringExpr (each
+// embedded reference evaluated as an expression, expr.TAny, rendered with
+// Value.String()), not fmtstring.Resolve (each reference read only as a bare
+// dotted-identifier lookup). Both a plain "Param.Start" lookup and an
+// expr.TAny evaluation of the expression "Param.Start" produce the same text
+// for a concrete int value, which is exactly what this test demonstrates —
+// see TestResolveParameterSpaceParams_NonLoneRangeExprEmbeddedExpression,
+// below, for a case (an actual operator, not a bare reference) the base-spec
+// path cannot resolve at all, which is the whole point of the fix.
 func TestResolveParameterSpaceParams_NonLoneRefStaysBaseSpecEvenWithEXPR(t *testing.T) {
 	tmpl := &openjd.JobTemplate{
 		Extensions: []string{"EXPR"},
@@ -701,5 +713,331 @@ func TestResolveParameterSpaceParams_WholeFieldExpressionError(t *testing.T) {
 	}
 	if !strings.Contains(errs[0].Message, `"Param.Missing"`) {
 		t.Errorf("errs[0].Message = %q, want it to name the unknown symbol %q", errs[0].Message, "Param.Missing")
+	}
+}
+
+// TestResolveParameterSpaceParams_RangeListEntryExpressions is EXPR
+// sub-project E4b Task 2's Step 1: an entry that is a lone {{expr}}, one with
+// an expression embedded in surrounding text, and one per element type
+// (FLOAT/STRING/PATH keep list[... | FormatString] per §1.3.12; INT/CHUNK[INT]
+// may also carry a RangeList per TaskParamDefinition's own doc comment).
+// Asserts each resolves to the right VALUE and the right RENDERING for its
+// type — the FLOAT computed case ("5.0") pins the same shortest-round-trip
+// rendering rule evalRangeExprList's doc comment establishes for the
+// whole-field form, now proven for a per-entry expression too.
+func TestResolveParameterSpaceParams_RangeListEntryExpressions(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		typ       string
+		jobType   openjd.JobParamType
+		jobParams map[string]string
+		entries   []string
+		want      []string
+	}{
+		{
+			name: "FLOAT: lone reference, lone expression, embedded, literal",
+			typ:  "FLOAT", jobType: openjd.JobParamTypeFloat,
+			jobParams: map[string]string{"Scale": "2.5"},
+			entries:   []string{"{{ Param.Scale }}", "{{ Param.Scale * 2 }}", "x{{ Param.Scale }}y", "9.9"},
+			want:      []string{"2.5", "5.0", "x2.5y", "9.9"},
+		},
+		{
+			name: "STRING: lone reference, embedded, literal",
+			typ:  "STRING", jobType: openjd.JobParamTypeString,
+			jobParams: map[string]string{"Name": "bg"},
+			entries:   []string{"{{ Param.Name }}", "layer-{{ Param.Name }}", "literal"},
+			want:      []string{"bg", "layer-bg", "literal"},
+		},
+		{
+			name: "PATH: lone reference, embedded",
+			typ:  "PATH", jobType: openjd.JobParamTypePath,
+			jobParams: map[string]string{"Dir": "a/b"},
+			entries:   []string{"{{ Param.Dir }}", "{{ Param.Dir }}/file.txt"},
+			// Bare re-tag, no normalization (coerceScalar's CodePath case,
+			// same as evalRangeExprList's PATH case) — "a/b" survives byte
+			// for byte, and the embedded form concatenates as plain text.
+			want: []string{"a/b", "a/b/file.txt"},
+		},
+		{
+			name: "INT: lone reference, lone expression",
+			typ:  "INT", jobType: openjd.JobParamTypeInt,
+			jobParams: map[string]string{"N": "3"},
+			entries:   []string{"{{ Param.N }}", "{{ Param.N + 1 }}"},
+			want:      []string{"3", "4"},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			tmpl := &openjd.JobTemplate{
+				Extensions:           []string{"EXPR"},
+				ParameterDefinitions: jobParamDefsOfType(tc.jobParams, tc.jobType),
+			}
+			ps := &openjd.StepParameterSpace{
+				TaskParameterDefinitions: []openjd.TaskParamDefinition{
+					{
+						Name:      "P",
+						Type:      openjd.TaskParamType(tc.typ),
+						RangeList: tc.entries,
+					},
+				},
+			}
+
+			got, errs := openjd.ResolveParameterSpaceParams(tmpl, ps, tc.jobParams)
+			if len(errs) != 0 {
+				t.Fatalf("unexpected errors: %v", errs)
+			}
+			if got == nil {
+				t.Fatal("expected non-nil output")
+			}
+
+			def := got.TaskParameterDefinitions[0]
+			if len(def.RangeList) != len(tc.want) {
+				t.Fatalf("RangeList = %v, want %v", def.RangeList, tc.want)
+			}
+			for i, want := range tc.want {
+				if def.RangeList[i] != want {
+					t.Errorf("RangeList[%d] = %q, want %q", i, def.RangeList[i], want)
+				}
+			}
+		})
+	}
+}
+
+// TestResolveParameterSpaceParams_RangeListEntryBaseSpecUnchanged is
+// TestResolveParameterSpaceParams_BaseSpecUnchanged's sibling for the
+// per-entry position: a template that does NOT declare EXPR must keep taking
+// fmtstring.Resolve's exact path for a RangeList entry too, not a new path
+// that happens to produce the same answer for simple references. The entry
+// below ("{{ Param.Scale * 2 }}") is valid EXPR syntax but not a valid
+// base-spec dotted-identifier reference.
+func TestResolveParameterSpaceParams_RangeListEntryBaseSpecUnchanged(t *testing.T) {
+	jobParams := map[string]string{"Scale": "2.5"}
+	ps := &openjd.StepParameterSpace{
+		TaskParameterDefinitions: []openjd.TaskParamDefinition{
+			{
+				Name:      "P",
+				Type:      openjd.TaskParamTypeFloat,
+				RangeList: []string{"{{ Param.Scale * 2 }}"},
+			},
+		},
+	}
+
+	for _, tmpl := range []*openjd.JobTemplate{
+		nil,
+		{Extensions: []string{}},
+		{Extensions: []string{"TASK_CHUNKING"}},
+	} {
+		got, errs := openjd.ResolveParameterSpaceParams(tmpl, ps, jobParams)
+		if got != nil {
+			t.Errorf("tmpl=%v: expected nil output on error, got %v", tmpl, got)
+		}
+		if len(errs) != 1 {
+			t.Fatalf("tmpl=%v: expected 1 error, got %d: %v", tmpl, len(errs), errs)
+		}
+		if !strings.Contains(errs[0].Message, "not a valid dotted identifier") {
+			t.Errorf("tmpl=%v: errs[0].Message = %q, want it to report a malformed dotted-identifier reference", tmpl, errs[0].Message)
+		}
+	}
+}
+
+// TestResolveParameterSpaceParams_RangeListEntryError proves an evaluation
+// error in a RangeList entry expression is reported as a [openjd.ValidationError]
+// at the entry's own pointer, matching the base-spec "unknown variable in
+// RangeList entry" case above.
+func TestResolveParameterSpaceParams_RangeListEntryError(t *testing.T) {
+	tmpl := &openjd.JobTemplate{Extensions: []string{"EXPR"}}
+	ps := &openjd.StepParameterSpace{
+		TaskParameterDefinitions: []openjd.TaskParamDefinition{
+			{
+				Name:      "P",
+				Type:      openjd.TaskParamTypeString,
+				RangeList: []string{"{{ Param.Missing }}"},
+			},
+		},
+	}
+
+	got, errs := openjd.ResolveParameterSpaceParams(tmpl, ps, map[string]string{})
+	if got != nil {
+		t.Errorf("expected nil output on error, got %v", got)
+	}
+	if len(errs) != 1 {
+		t.Fatalf("expected 1 error, got %d: %v", len(errs), errs)
+	}
+	if !strings.Contains(errs[0].Pointer, "/parameterSpace/taskParameterDefinitions/0/range/0") {
+		t.Errorf("errs[0].Pointer = %q, want it to contain the entry pointer", errs[0].Pointer)
+	}
+	if !strings.Contains(errs[0].Message, `"Param.Missing"`) {
+		t.Errorf("errs[0].Message = %q, want it to name the unknown symbol %q", errs[0].Message, "Param.Missing")
+	}
+}
+
+// TestResolveParameterSpaceParams_RangeListEntryMetered proves a per-entry
+// expression is evaluated under the same submission-time budget
+// (submissionLimits(), exprcheck.go) as every other submit-time expression
+// position — the same gap TestResolveParameterSpaceParams_
+// WholeFieldExpressionMetered (above) closed for the whole-field form,
+// now closed for resolveFormatStringExpr's own new Eval call sites too.
+func TestResolveParameterSpaceParams_RangeListEntryMetered(t *testing.T) {
+	tmpl := &openjd.JobTemplate{Extensions: []string{"EXPR"}}
+	ps := &openjd.StepParameterSpace{
+		TaskParameterDefinitions: []openjd.TaskParamDefinition{
+			{
+				Name:      "P",
+				Type:      openjd.TaskParamTypeInt,
+				RangeList: []string{"{{ len([x * 2 for x in range(1, 20000)]) }}"},
+			},
+		},
+	}
+
+	got, errs := openjd.ResolveParameterSpaceParams(tmpl, ps, nil)
+	if got != nil {
+		t.Errorf("expected nil output on error, got %v", got)
+	}
+	if len(errs) != 1 {
+		t.Fatalf("expected 1 error, got %d: %v", len(errs), errs)
+	}
+	if !strings.Contains(errs[0].Message, "operation limit exceeded") {
+		t.Errorf("errs[0].Message = %q, want it to contain %q", errs[0].Message, "operation limit exceeded")
+	}
+}
+
+// TestResolveParameterSpaceParams_NonLoneRangeExprEmbeddedExpression is EXPR
+// sub-project E4b Task 2's plan amendment: with extensions: [EXPR], a
+// non-lone whole-field RangeString may now contain an embedded expression,
+// per §1.3.12 ("it is a format string, it can now contain an expression").
+// Before this task, checkParameterSpaceExpressions (exprcheck.go) accepted
+// this shape at both phase 1 and phase 2 (checkFormatString evaluates every
+// segment as an expression, lone or not), while resolveRangeExprField routed
+// it to base-spec fmtstring.Resolve, which rejects "Param.End * 2" outright
+// as "not a valid dotted identifier" — a template that validated twice and
+// then failed at submit naming a construct the extension itself allows.
+//
+// This test proves the checker and resolver now agree: the SAME template
+// that passes checkParameterSpaceExpressions (proven indirectly — this is
+// resolve.go's own package, not a submission end-to-end test, but
+// checkFormatString's non-lone branch and this function's new
+// resolveFormatStringExpr call are, by construction, the identical
+// expr.TAny/Segments walk) now also resolves successfully here.
+//
+// It also proves the §2.1-adjacent claim in resolveRangeExprField's doc
+// comment: the resolved text ("1-10") is handed to ExpandParameterSpace,
+// which takes it through expand.go's parseIntRangeExpr — internal/openjd's
+// OWN <IntRangeExpr> grammar reader — and it expands correctly. That is
+// legitimate, not section 2.1's trap: the user wrote range SYNTAX with an
+// expression embedded in one piece of it, not an expression that PRODUCES a
+// range_expr value, so there is no range_expr VALUE here to mis-stringify
+// and re-parse under a mismatched policy — only ordinary text, exactly as if
+// the author had typed "1-10" by hand.
+func TestResolveParameterSpaceParams_NonLoneRangeExprEmbeddedExpression(t *testing.T) {
+	tmpl := &openjd.JobTemplate{
+		Extensions: []string{"EXPR"},
+		ParameterDefinitions: []openjd.JobParameter{
+			{Name: "End", Type: openjd.JobParamTypeInt},
+		},
+	}
+	ps := &openjd.StepParameterSpace{
+		TaskParameterDefinitions: []openjd.TaskParamDefinition{
+			{
+				Name:      "Frame",
+				Type:      openjd.TaskParamTypeInt,
+				RangeExpr: ptr("1-{{ Param.End * 2 }}"),
+			},
+		},
+	}
+
+	resolved, errs := openjd.ResolveParameterSpaceParams(tmpl, ps, map[string]string{"End": "5"})
+	if len(errs) != 0 {
+		t.Fatalf("unexpected errors: %v", errs)
+	}
+	if resolved == nil {
+		t.Fatal("expected non-nil output")
+	}
+
+	def := resolved.TaskParameterDefinitions[0]
+	if def.RangeExpr == nil || *def.RangeExpr != "1-10" {
+		t.Fatalf("RangeExpr = %v, want %q", def.RangeExpr, "1-10")
+	}
+	if len(def.RangeList) != 0 {
+		t.Fatalf("RangeList = %v, want empty (this shape resolves through RangeExpr, not RangeList)", def.RangeList)
+	}
+
+	rows, err := openjd.ExpandParameterSpace(resolved)
+	if err != nil {
+		t.Fatalf("ExpandParameterSpace: %v", err)
+	}
+	got := make([]string, len(rows))
+	for i, row := range rows {
+		got[i] = row["Frame"]
+	}
+	want := []string{"1", "2", "3", "4", "5", "6", "7", "8", "9", "10"}
+	if len(got) != len(want) {
+		t.Fatalf("expanded values = %v, want %v", got, want)
+	}
+	for i, w := range want {
+		if got[i] != w {
+			t.Errorf("expanded[%d] = %q, want %q", i, got[i], w)
+		}
+	}
+}
+
+// TestResolveParameterSpaceParams_NonLoneRangeExprError proves an evaluation
+// error in a non-lone whole-field RangeExpr's embedded expression is
+// reported as a [openjd.ValidationError] at the field's own pointer, matching
+// the lone-expression case (TestResolveParameterSpaceParams_
+// WholeFieldExpressionError, above) and the base-spec "unknown variable in
+// RangeExpr" case.
+func TestResolveParameterSpaceParams_NonLoneRangeExprError(t *testing.T) {
+	tmpl := &openjd.JobTemplate{Extensions: []string{"EXPR"}}
+	ps := &openjd.StepParameterSpace{
+		TaskParameterDefinitions: []openjd.TaskParamDefinition{
+			{
+				Name:      "Frame",
+				Type:      openjd.TaskParamTypeInt,
+				RangeExpr: ptr("1-{{ Param.Missing }}"),
+			},
+		},
+	}
+
+	got, errs := openjd.ResolveParameterSpaceParams(tmpl, ps, map[string]string{})
+	if got != nil {
+		t.Errorf("expected nil output on error, got %v", got)
+	}
+	if len(errs) != 1 {
+		t.Fatalf("expected 1 error, got %d: %v", len(errs), errs)
+	}
+	if !strings.Contains(errs[0].Pointer, "/parameterSpace/taskParameterDefinitions/0/range") {
+		t.Errorf("errs[0].Pointer = %q, want it to contain the range pointer", errs[0].Pointer)
+	}
+	if !strings.Contains(errs[0].Message, `"Param.Missing"`) {
+		t.Errorf("errs[0].Message = %q, want it to name the unknown symbol %q", errs[0].Message, "Param.Missing")
+	}
+}
+
+// TestResolveParameterSpaceParams_NonLoneRangeExprMetered proves the new
+// non-lone whole-field embedded-expression path is evaluated under
+// submissionLimits() too — the third new expr.Eval call site this task
+// introduces (per-entry lone, per-entry embedded, and this one all funnel
+// through resolveFormatStringExpr, so this one test covers the shared
+// function's metering, exercised via the whole-field position).
+func TestResolveParameterSpaceParams_NonLoneRangeExprMetered(t *testing.T) {
+	tmpl := &openjd.JobTemplate{Extensions: []string{"EXPR"}}
+	ps := &openjd.StepParameterSpace{
+		TaskParameterDefinitions: []openjd.TaskParamDefinition{
+			{
+				Name:      "Frame",
+				Type:      openjd.TaskParamTypeInt,
+				RangeExpr: ptr("1-{{ len([x * 2 for x in range(1, 20000)]) }}"),
+			},
+		},
+	}
+
+	got, errs := openjd.ResolveParameterSpaceParams(tmpl, ps, nil)
+	if got != nil {
+		t.Errorf("expected nil output on error, got %v", got)
+	}
+	if len(errs) != 1 {
+		t.Fatalf("expected 1 error, got %d: %v", len(errs), errs)
+	}
+	if !strings.Contains(errs[0].Message, "operation limit exceeded") {
+		t.Errorf("errs[0].Message = %q, want it to contain %q", errs[0].Message, "operation limit exceeded")
 	}
 }
