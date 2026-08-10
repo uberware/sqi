@@ -147,7 +147,10 @@ knowing before chasing it:
 - **With the sweep disabled (`scheduler.unschedulable_grace` ≤ `0`) this
   reason is never written at all.** A withheld task simply sits `ready` with
   nothing on it, and the one-off `WARN` the server logs when the short worker
-  registers — which may well predate the job — becomes the only signal.
+  registers — which may well predate the job — becomes the only signal. Look
+  for it under [Admin → Server log](#admin--server-log) (component `server`),
+  **not** in that worker's diagnostics panel: the record is the scheduler's,
+  so it never travels on `worker.diag.<id>`.
 
 ### Why did my task fail?
 

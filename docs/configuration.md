@@ -665,13 +665,14 @@ three of these expressions stay inside a single position's default
 | Expression | Operations charged | CPU |
 |---|---|---|
 | `("x" * 900000).upper()` | 7,034 | ~6 ms |
-| `("x" * 900000).title()` | 7,034 | ~55 ms |
-| `re_findall("x", "x" * 900000)` | 3,519 | ~70 ms |
+| `("x" * 900000).title()` | 7,034 | ~57 ms |
+| `re_findall("x", "x" * 900000)` | 3,519 | ~50 ms |
 
-The first two are charged **identically** and differ by 9x in time. Ten
-thousand positions of the second — a template body of roughly 270 KB — costs
-about **571 seconds** of server CPU on one synchronous request, with every
-budget respected the entire way.
+The first two are charged **identically** and differ by 9x in time; the third
+is charged **half** as much as either yet costs nearly as much time as the
+slowest. Ten thousand positions of `.title()` — a template body of roughly
+270 KB — cost about **571 seconds** of server CPU on one synchronous request,
+with every budget respected the entire way.
 
 That figure has been measured too low twice, each time by a construction
 nobody had run; the expression package's own note calls it
@@ -719,8 +720,10 @@ worker whose values are short** — the job is withheld, never accepted and
 then failed per task on the host. What an operator sees:
 
 - a `WARN` diagnostic when the short worker registers, naming the worker and
-  every short dimension with both numbers and both config keys (Admin →
-  Server log, and the worker's detail page);
+  every short dimension with both numbers and both config keys. **It is the
+  *server* that logs this, so it appears under Admin → Server log — not on
+  that worker's detail page**, which shows only what the worker itself
+  published;
 - `unschedulable_reason` on any `ready` task no capable worker exists for,
   carrying the same text, plus a WebSocket event —
   **but only while the unschedulable sweep is on.** With

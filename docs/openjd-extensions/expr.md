@@ -530,7 +530,8 @@ phase 2's verdict never depends on what phase 1 already spent):
   100,000,000; it is a bound on what the existing per-`Eval` operation limit,
   applied that many times, could in principle cost. The same product exists
   on the worker (`expr.assignment_positions × expr.operation_limit`, 10¹⁰ at
-  the defaults and 10¹³ at the maxima).
+  the defaults and 10¹² at the maxima — also 100×, since the worker's wider
+  operation range is offset by an identical position ceiling).
 - **Neither budget bounds WALL-CLOCK TIME, and no value of either could.**
   An operation's real cost is not uniform: §1.3.10 rule 3
   (`wiki/2026-02-Expression-Language.md:1090`) prices a string operation at
@@ -541,12 +542,14 @@ phase 2's verdict never depends on what phase 1 already spent):
   | Expression | Operations charged | CPU |
   |---|---|---|
   | `("x" * 900000).upper()` | 7,034 | ~6 ms |
-  | `("x" * 900000).title()` | 7,034 | ~55 ms |
-  | `re_findall("x", "x" * 900000)` | 3,519 | ~70 ms |
+  | `("x" * 900000).title()` | 7,034 | ~57 ms |
+  | `re_findall("x", "x" * 900000)` | 3,519 | ~50 ms |
 
-  All three sit inside one position's default 10,000-operation budget, and
-  the first two are charged **identically** while differing by 9× in time —
-  four orders of magnitude more time per operation than scalar arithmetic.
+  All three sit inside one position's default 10,000-operation budget; the
+  first two are charged **identically** while differing by 9× in time, and
+  the third is charged **half** as much as either while costing nearly as
+  much time as the slowest — four orders of magnitude more time per
+  operation than scalar arithmetic.
   A ~270 KB template body built entirely from `.title()` positions costs
   **roughly 571 seconds** of server CPU on the synchronous validate/submit
   request path, with every budget respected throughout — and on other

@@ -818,8 +818,10 @@ the reason when this worker registers, and flags any task no capable worker
 exists for — the latter only while the server's unschedulable sweep is on
 (`scheduler.unschedulable_grace > 0`, the default). With that sweep off, such
 a task simply waits `ready` with nothing written on it, and the one-off
-registration log line is the only signal. `expr.let_retained_bytes` has no
-server counterpart, is not advertised, and is not part of the comparison.
+registration log line is the only signal — and because the *server* emits it,
+it lands in the server's own log (Admin → Server log, component `server`), not
+in this worker's diagnostics. `expr.let_retained_bytes` has no server
+counterpart, is not advertised, and is not part of the comparison.
 
 The relation is **necessary, not sufficient.** Phase 3 evaluates concrete
 values where the server had placeholders, so the same expression can
@@ -829,16 +831,16 @@ budget rather than equal to them. Matching the server is the floor, not a
 guarantee.
 
 **2. `operation_limit` and `assignment_positions` multiply.** The cumulative
-operation ceiling for one assignment is their product — 10¹⁰ at the defaults,
-and 10¹³ if both are raised to their maxima, **1,000x**. Nothing counts
-operations cumulatively; the product is a derived upper bound, not a
-measurement.
+operation ceiling for one assignment is their product — 10¹⁰ at the defaults
+(1,000,000 x 10,000), and 10¹² if both are raised to their maxima
+(10,000,000 x 100,000), **100x**. Nothing counts operations cumulatively; the
+product is a derived upper bound, not a measurement.
 
 **3. None of these bounds wall-clock time.** Specification section 1.3.10
 rule 3 prices a string operation at the value's length divided by 256, so
 byte-heavy work is charged almost nothing:
 `("x" * 900000).upper()` and `("x" * 900000).title()` are charged **the same
-7,034 operations** and differ by 9x in CPU (~6 ms vs ~55 ms). Raising a limit
+7,034 operations** and differ by 9x in CPU (~6 ms vs ~57 ms). Raising a limit
 lengthens the worst assignment this host can be asked to resolve, roughly in
 proportion, and no value makes a slow one impossible.
 
