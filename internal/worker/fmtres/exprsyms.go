@@ -433,6 +433,47 @@ func bindFileSymbols(syms expr.MapSymbols, prefix string, files []protocol.Embed
 // name and value.
 const maxLetBindings = 50
 
+// workerLetRetainedLimit caps the total section 1.3.9 size of everything ONE
+// phase-3 symbol table holds live, measured across every let: block evaluated
+// into it.
+//
+// EXPR sub-project E4a whole-branch review, Critical 2. expres.go's
+// workerOperationLimit/workerMemoryLimit are PER-Eval budgets, and a let:
+// block is the one construct in this package that RETAINS a result rather
+// than rendering it and dropping it: every binding got a fresh 20 MB budget
+// it was then allowed to keep. maxLetBindings bounds the COUNT, so the
+// structural ceiling was maxLetBindings x workerMemoryLimit = 1 GB per block,
+// two blocks per task table plus one per environment table, all of them live
+// concurrently across a worker's task slots. Measured through the real
+// ApplyTaskLet, 50 bindings of `a<i> = "x" * (Task.Param.N * 100000)` with
+// N = 99 retained 495 MB in 49 ms -- and phase 2 CANNOT reject that template,
+// because Task.Param.N is unresolved[int] at submission, so `"x" *
+// unresolved` costs nothing under submissionLimits(). An ordinary jobs.write
+// user could therefore OOM-kill sqi-worker and take down every unrelated
+// task on the host. That is E3's server-side Critical transposed and worse:
+// server-side the same gap is bounded by a 50 MB request-scoped table in a
+// process whose death is one restart.
+//
+// This is the worker-LOCAL bound; the general, template-wide cumulative
+// budget remains sub-project E4c's. It is deliberately a RETAINED-BYTES
+// bound rather than an operation bound, because the construction above
+// spends almost no operations -- an operation budget would not have caught
+// it.
+//
+// Enforced by measuring the table itself (tableRetainedBytes) rather than by
+// threading an accumulator between the callers, which is what makes it a
+// PER-TABLE limit for free: the step-template block's results are merged into
+// the same table the step-script block then measures, and EnvSymbols' merged
+// step-template names are in the table ApplyEnvLet measures. Nothing has to
+// remember to pass a budget along.
+//
+// 10 MB is the number: generous for any legitimate block (bindings are
+// derived from parameters and path text, and phase 2 type-checks the whole
+// block inside a 1 MB per-Eval budget), while making the worst case an
+// operator can be handed 10 MB retained plus at most one in-flight
+// evaluation's workerMemoryLimit -- 30 MB per table, not 2 GB.
+const workerLetRetainedLimit int64 = 10_000_000
+
 // splitLetBinding splits one raw "<name> = <expression>" binding into its
 // bound name and unparsed expression source. The split happens at the FIRST
 // "=" byte, matching internal/openjd's parseLetBinding (letbinding.go): a
@@ -480,6 +521,7 @@ func evalLetBindings(label string, lets []string, syms expr.MapSymbols, opts []e
 		lets = lets[:maxLetBindings]
 	}
 
+	retained := tableRetainedBytes(syms)
 	var errs []error
 	for i, raw := range lets {
 		name, src, err := splitLetBinding(raw)
@@ -505,9 +547,42 @@ func evalLetBindings(label string, lets []string, syms expr.MapSymbols, opts []e
 			errs = append(errs, fmt.Errorf("%s[%d] (%s): %w", label, i, name, err))
 			continue
 		}
+
+		// STOP the block, do not "continue": every failure mode above is a
+		// fault in ONE binding that the rest of the block can be evaluated
+		// past, but this one says the table is full. Continuing would keep
+		// spending a fresh workerMemoryLimit per remaining binding for
+		// nothing -- which is the exhaustion this guard exists to prevent.
+		// The offending value is dropped rather than bound, so the table
+		// never exceeds the limit.
+		size := expr.SizeOf(v)
+		if retained+size > workerLetRetainedLimit {
+			errs = append(errs, fmt.Errorf(
+				"%s[%d] (%s): let bindings would retain %d bytes, over this symbol table's %d-byte limit",
+				label, i, name, retained+size, workerLetRetainedLimit,
+			))
+			break
+		}
+		retained += size
 		syms[name] = v
 	}
 	return errors.Join(errs...)
+}
+
+// tableRetainedBytes reports the total section 1.3.9 size of every value syms
+// currently holds live -- the quantity workerLetRetainedLimit bounds.
+//
+// It measures the WHOLE table, not just let-bound names: the invariant being
+// maintained is "one phase-3 symbol table never retains more than
+// workerLetRetainedLimit bytes", and a table's spec symbols (a PATH
+// parameter's value, an embedded file's path) are retained bytes too. Cost is
+// O(len(syms)) once per let: block -- a few dozen entries.
+func tableRetainedBytes(syms expr.MapSymbols) int64 {
+	var total int64
+	for _, v := range syms {
+		total += expr.SizeOf(v)
+	}
+	return total
 }
 
 // stepTemplateLetScope filters full -- a phase-3 TaskSymbols table -- down to

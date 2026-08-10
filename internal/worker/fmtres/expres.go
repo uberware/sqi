@@ -135,6 +135,13 @@ import (
 // requirement this wave must satisfy is that SOME budget applies, not that
 // it is the tightest one in the codebase. Operator configuration of these
 // numbers is EXPR sub-project E4d's job.
+//
+// NEITHER OF THESE IS AN AGGREGATE BOUND, and for the one construct that
+// retains values across evaluations -- a let: block -- a per-Eval budget is
+// not enough on its own: see exprsyms.go's workerLetRetainedLimit, which
+// bounds what ONE symbol table may hold live. Every other evaluation in this
+// file renders its result to text and drops the Value, which is why the pair
+// below suffices for them.
 const (
 	workerOperationLimit int64 = 1_000_000
 	workerMemoryLimit    int64 = 20_000_000

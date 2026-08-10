@@ -144,6 +144,25 @@ func sizeOf(v Value) int64 {
 	}
 }
 
+// SizeOf reports the section 1.3.9 size, in bytes, that this package charges
+// for holding v live -- the same figure [meter.alloc] adds to an evaluation's
+// memory budget.
+//
+// It exists for callers that RETAIN values across evaluations, which the
+// per-Eval meter by construction cannot bound: each Eval starts with a fresh
+// budget, so a caller that keeps N results alive is exposed to N times the
+// per-Eval limit no matter how tight that limit is. internal/worker/fmtres'
+// let: evaluator is the case this was added for (an EXPR let: block binds up
+// to 50 values into one symbol table and holds them for the whole task); the
+// server-side checker discards every result, which is exactly why a per-Eval
+// cap sufficed there.
+//
+// The figure is implementation-defined by section 1.3.9's own admission
+// ("try to match the actual memory usage of each value as closely as
+// practical"), so treat it as a budgeting unit, not as a Go heap
+// measurement.
+func SizeOf(v Value) int64 { return sizeOf(v) }
+
 // EvalWithMetrics evaluates src and reports the section 1.3.10 operation count
 // alongside the result, mirroring the reference implementation's
 // ParsedExpression.evaluate_with_metrics. It exists for the differential oracle

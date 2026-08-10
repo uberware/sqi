@@ -1455,3 +1455,152 @@ steps:
 		}
 	}
 }
+
+// ── Retained-bytes bound (whole-branch review, Critical 2) ──────────────────
+
+// bigLetSequence builds n bindings that each construct roughly 9.9 MB of
+// string -- comfortably under expres.go's per-Eval workerMemoryLimit, which
+// is exactly the point: every one of them is individually legal, and the
+// exhaustion comes from RETAINING all of them in one table.
+//
+// The multiplier comes from Task.Param.N rather than a literal because that
+// is what makes the template unrejectable at phase 2: Task.Param.N is
+// unresolved[int] at submission time, so `"x" * unresolved` costs
+// submissionLimits() essentially nothing and the checker passes it.
+func bigLetSequence(n int) []string {
+	lets := make([]string, n)
+	for i := range lets {
+		lets[i] = fmt.Sprintf(`a%d = "x" * (Task.Param.N * 100000)`, i)
+	}
+	return lets
+}
+
+func bigLetMsg(n int) *protocol.AssignMsg {
+	return &protocol.AssignMsg{
+		EXPR:           true,
+		Parameters:     map[string]string{"N": "99"},
+		ParameterTypes: map[string]string{"N": "INT"},
+		StepScriptLet:  bigLetSequence(n),
+	}
+}
+
+// tableBytes is the test's own copy of the size sum the package computes
+// internally, so the assertion below measures the table rather than trusting
+// the implementation's own bookkeeping.
+func tableBytes(syms expr.MapSymbols) int64 {
+	var total int64
+	for _, v := range syms {
+		total += expr.SizeOf(v)
+	}
+	return total
+}
+
+// TestApplyTaskLet_RetainedBytesBounded is Critical 2's regression test. At
+// HEAD before the fix this bound all 50 values and retained 495 MB in 49 ms
+// with no error -- one task, on a shared, long-lived worker process, from a
+// template phase 2 accepts. The bound must now stop the block and leave the
+// table under the limit.
+func TestApplyTaskLet_RetainedBytesBounded(t *testing.T) {
+	msg := bigLetMsg(50)
+	syms, err := fmtres.TaskSymbols(msg, "/work", "", false)
+	if err != nil {
+		t.Fatalf("TaskSymbols: %v", err)
+	}
+
+	err = fmtres.ApplyTaskLet(msg, syms, nil)
+	if err == nil {
+		t.Fatal("ApplyTaskLet: want a retained-bytes error, got nil -- 50 x ~9.9 MB was accepted")
+	}
+	if !strings.Contains(err.Error(), "would retain") {
+		t.Errorf("error = %v; want it to name the retained-bytes limit", err)
+	}
+
+	if got := tableBytes(syms); got > 10_000_000 {
+		t.Errorf("table retains %d bytes, over the 10,000,000-byte limit", got)
+	}
+	bound := 0
+	for i := range 50 {
+		if _, ok := syms.Lookup(fmt.Sprintf("a%d", i)); ok {
+			bound++
+		}
+	}
+	if bound != 1 {
+		t.Errorf("bound %d of 50 oversized bindings; want exactly 1 (the block stops at the limit)", bound)
+	}
+}
+
+// TestApplyTaskLet_RetainedBytesAccumulatesAcrossBlocks proves the bound is
+// PER TABLE, not per block: the step-template block's retained bytes are
+// visible to the step-script block, because the guard measures the table it
+// is writing into rather than counting only its own insertions. Splitting one
+// oversized block across the two wire fields must not double the budget.
+func TestApplyTaskLet_RetainedBytesAccumulatesAcrossBlocks(t *testing.T) {
+	// Param.N, not Task.Param.N: the step-template block is evaluated at
+	// ScopeStepTemplate, where task parameters do not exist.
+	msg := &protocol.AssignMsg{
+		EXPR:              true,
+		JobParameters:     map[string]string{"N": "99"},
+		JobParameterTypes: map[string]string{"N": "INT"},
+		StepTemplateLet:   []string{`a0 = "x" * (Param.N * 100000)`},
+		StepScriptLet:     []string{`b0 = "x" * (Param.N * 100000)`},
+	}
+
+	syms, err := fmtres.TaskSymbols(msg, "/work", "", false)
+	if err != nil {
+		t.Fatalf("TaskSymbols: %v", err)
+	}
+	err = fmtres.ApplyTaskLet(msg, syms, nil)
+	if err == nil {
+		t.Fatal("ApplyTaskLet: want a retained-bytes error; the script block reused the template block's budget")
+	}
+	if _, ok := syms.Lookup("a0"); !ok {
+		t.Error(`"a0" (the step-template binding, first and within budget) should be bound`)
+	}
+	if _, ok := syms.Lookup("b0"); ok {
+		t.Error(`"b0" should NOT be bound -- the table was already at its retained-bytes limit`)
+	}
+}
+
+// TestApplyEnvLet_RetainedBytesBounded is the environment counterpart: an
+// environment table is entered once per session and held for the session's
+// whole life, so it needs the same bound the task table gets.
+func TestApplyEnvLet_RetainedBytesBounded(t *testing.T) {
+	msg := &protocol.AssignMsg{
+		EXPR:              true,
+		JobParameters:     map[string]string{"N": "99"},
+		JobParameterTypes: map[string]string{"N": "INT"},
+	}
+	env := &protocol.AssignEnvironment{Name: "E"}
+	for i := range 50 {
+		env.Let = append(env.Let, fmt.Sprintf(`a%d = "x" * (Param.N * 100000)`, i))
+	}
+
+	syms, err := fmtres.EnvSymbols(msg, env, "/work", "", false)
+	if err != nil {
+		t.Fatalf("EnvSymbols: %v", err)
+	}
+	if err := fmtres.ApplyEnvLet(env, syms, nil); err == nil {
+		t.Fatal("ApplyEnvLet: want a retained-bytes error, got nil")
+	}
+	if got := tableBytes(syms); got > 10_000_000 {
+		t.Errorf("environment table retains %d bytes, over the 10,000,000-byte limit", got)
+	}
+}
+
+// TestApplyTaskLet_RetainedBytesAllowsOrdinaryBlocks is the other side of the
+// bound: 50 ordinary bindings -- the maximum a template may declare -- must
+// stay comfortably within it, so the guard cannot be mistaken for a cap on
+// legitimate templates.
+func TestApplyTaskLet_RetainedBytesAllowsOrdinaryBlocks(t *testing.T) {
+	msg := &protocol.AssignMsg{EXPR: true, StepScriptLet: makeLetSequence(50)}
+	syms, err := fmtres.TaskSymbols(msg, "/work", "", false)
+	if err != nil {
+		t.Fatalf("TaskSymbols: %v", err)
+	}
+	if err := fmtres.ApplyTaskLet(msg, syms, nil); err != nil {
+		t.Fatalf("ApplyTaskLet: %v -- 50 ordinary bindings must fit the retained-bytes budget", err)
+	}
+	if _, ok := syms.Lookup("a49"); !ok {
+		t.Error(`"a49" (the 50th ordinary binding) should be bound`)
+	}
+}
