@@ -1653,7 +1653,11 @@ func TestApplyTaskLet_StepTemplateLetCannotOverwriteSpecSymbols(t *testing.T) {
 	if aerr != nil {
 		t.Fatalf("ResolveActionExpr: %v", aerr)
 	}
-	if len(action.Args) != 2 || action.Args[0] != filepath.FromSlash("/work") || action.Args[1] != "5" {
+	// The rendered form of the session directory depends on the evaluation's
+	// path flavor (pathFlavor is expr.PathNative), so it is computed the same
+	// way the table computes it rather than hardcoded to a POSIX spelling.
+	wantWorkDir := expr.Path("/work", expr.PathNative).String()
+	if len(action.Args) != 2 || action.Args[0] != wantWorkDir || action.Args[1] != "5" {
 		t.Errorf("args = %v; want the REAL session directory and task parameter, not the let bindings' values", action.Args)
 	}
 }
