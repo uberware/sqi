@@ -42,9 +42,11 @@ type ExprLimits struct {
 	// cumulative-operation ceiling (TemplatePositions x SubmissionOperations)
 	// and it scales the measured worst-case wall clock of a single request
 	// directly: E4c measured ~9.5 minutes of server CPU for one 4 MiB body at
-	// the default 10,000, because op-cheap byte-heavy work (a regex or a case
-	// mapping over the ~900 KB SubmissionMemoryBytes allows to be live) spends
-	// ~3,500 of those 10,000 operations for ~50 ms of CPU. Doubling this
+	// the default 10,000, because op-cheap byte-heavy work over the ~900 KB
+	// SubmissionMemoryBytes allows to be live spends only a few thousand of
+	// those 10,000 operations for tens of milliseconds -- measured, a regex
+	// (re_findall) 3,519 for ~50 ms and a case mapping (.title()) 7,034 for
+	// ~57 ms; an earlier revision gave ~3,500 for both. Doubling this
 	// number roughly doubles that floor. Nothing in this package measures
 	// TIME, so the only lever on the worst case is this count and the position
 	// count -- which is why internal/config caps it at one order of magnitude

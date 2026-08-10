@@ -638,9 +638,11 @@ const (
 //
 // WHAT THE OPERATION CEILING STILL DOES NOT BOUND is WALL TIME, because an
 // operation's cost is not uniform: section 1.3.10 rule 3 prices 256 bytes of
-// string work at ONE operation, so a regex or a case mapping over a ~900 KB
-// string (the largest defaultSubmissionMemoryBytes allows to be live) spends ~3,500
-// operations and ~50 ms, four orders of magnitude more wall time per
+// string work at ONE operation, so byte-heavy work over a ~900 KB string (the
+// largest defaultSubmissionMemoryBytes allows to be live) spends a few
+// thousand operations for tens of milliseconds -- measured, a regex
+// (re_findall) 3,519 operations for ~50 ms and a case mapping (.title())
+// 7,034 for ~57 ms -- four orders of magnitude more wall time per
 // operation than scalar arithmetic. See the measured figures on
 // defaultTemplatePositions below. Bounding THAT needs a template-wide
 // operation budget sized in wall time, which is sub-project E4d's
@@ -779,10 +781,15 @@ const (
 	// reach it -- rows 1 to 4, four to five orders of magnitude each, and
 	// with them the multi-gigabyte heap -- while the WALL-CLOCK worst case
 	// remains roughly 9.5 minutes, because it is set by op-cheap, byte-heavy
-	// work: a regex or a case mapping over the ~900 KB string
-	// defaultSubmissionMemoryBytes allows to be live spends ~3,500 of the 10,000
-	// permitted operations and ~50 ms of CPU. Every per-Eval budget is
-	// respected throughout.
+	// work over the ~900 KB string defaultSubmissionMemoryBytes allows to be
+	// live. MEASURED, and the two payloads differ -- an EARLIER revision of
+	// this comment gave one figure for both, understating the case mapping by
+	// 2x: re_findall("x", "x"*900000) spends 3,519 of the 10,000 permitted
+	// operations for ~50 ms of CPU, and ("x"*900000).title() spends 7,034 for
+	// ~57 ms (which is the row 5 figure in the table above: 57.1 ms x 10,000
+	// positions = ~571 s). ("x"*900000).upper() is charged the IDENTICAL 7,034
+	// for ~6 ms, which is the sharpest statement of why operations do not
+	// bound time. Every per-Eval budget is respected throughout.
 	//
 	// "EVERY PATH MEASURED TO REACH IT" is deliberate wording. Twice now a
 	// stronger claim here was falsified by a construction nobody had
