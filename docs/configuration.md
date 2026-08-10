@@ -896,6 +896,22 @@ that charges this counter.
 
 Cumulative allocation, not peak live retention — see caveat 3.
 
+> **This key cannot be raised without touching every worker.** It is compared
+> against **two** worker keys (caveat 4): `expr.assignment_retained_bytes`,
+> whose default of `20000000` leaves 2× headroom, and
+> `expr.let_retained_bytes`, whose default is `10000000` — **exactly this
+> default**. So any increase at all puts every default-configured worker below
+> this server and withholds EXPR work from all of them. Raise
+> `expr.let_retained_bytes` on every worker first, to at least the value you
+> intend to set here. Lowering this key is always safe.
+
+Even with both worker keys satisfied, this bound does not cover everything the
+worker meters: it charges only what a `let:` block **adds**, while the worker
+measures the whole symbol table the bindings land in — a job's own large
+`STRING`/`PATH` parameters included. A worker sized exactly at this value can
+still fail an accepted job whose parameters are large. See
+[`expr.let_retained_bytes`](worker-configuration.md#exprlet_retained_bytes).
+
 Note what this does *not* bound: the charge lands once per `let:` **block**,
 after that block finishes evaluating, so a single block can transiently
 retain up to 50 x `openjd.expr_memory_limit` — 50 MB at both defaults —
