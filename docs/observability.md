@@ -114,8 +114,9 @@ Where it surfaces:
   `no online workers` or `no eligible online worker: <reason>`, where
   `<reason>` is one of `farm mismatch`, `queue affinity`,
   `compute location mismatch`, `amount requirement not met`,
-  `attribute requirement not met`, or `usage pool at capacity`. Empty/absent
-  means schedulable.
+  `attribute requirement not met`, `usage pool at capacity`, or a
+  `worker EXPR limits are tighter than this server's: …` sentence naming both
+  numbers and both config keys (see below). Empty/absent means schedulable.
 - **Job**: `task_counts.unschedulable` — the number of `ready` tasks currently
   flagged, a subset of `ready`, not an additional task status.
 - **Web UI**: an "Unschedulable" badge on the job detail page (per affected
@@ -129,6 +130,24 @@ won't clear, check the [Worker diagnostics panel](#worker-diagnostics-panel)
 and the task's reason string together: a `queue affinity` or
 `compute location mismatch` reason usually points at a worker configuration
 mismatch rather than a capacity shortfall.
+
+**The `worker EXPR limits are tighter…` reason is a configuration mismatch,
+not a capacity one.** The scheduler withholds EXPR work from any worker whose
+advertised `expr.*` caps undercut the limits this server accepts templates
+under, and it names both numbers and both config keys. Two things are worth
+knowing before chasing it:
+
+- **You may see it on a job that uses no expressions.** The gate spots an EXPR
+  job by scanning the raw template for the four bytes `EXPR`, so a base-spec
+  template containing them incidentally — a comment, or an environment
+  variable such as `HOUDINI_EXPR_CACHE` — is withheld from every short worker
+  and flagged with this reason. The fix is the same either way: raise the
+  workers' `expr.*` keys, or lower the server's `openjd.expr_*` keys. See
+  [Server → EXPR expression limits](configuration.md#4-every-worker-must-be-at-least-as-generous-as-this-server).
+- **With the sweep disabled (`scheduler.unschedulable_grace` ≤ `0`) this
+  reason is never written at all.** A withheld task simply sits `ready` with
+  nothing on it, and the one-off `WARN` the server logs when the short worker
+  registers — which may well predate the job — becomes the only signal.
 
 ### Why did my task fail?
 

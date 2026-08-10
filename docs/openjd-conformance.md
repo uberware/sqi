@@ -234,8 +234,12 @@ calling out for having passed that way until sub-project D took the reason
 away.
 
 `expr1.3.9--memory-limit-exceeded` (`{{ 'a' * 100000000 }}`) passes, but not
-because section 1.3.9's memory limit is enforced — it isn't; the spec's
-*configurable* limit is still sub-project E's. It passes because
+because section 1.3.9's memory limit rejected it. That limit *is* implemented
+and is now operator configuration
+([`openjd.expr_memory_limit`](configuration.md#openjdexpr_memory_limit),
+default 1,000,000 bytes) — but this fixture never reaches it: measured on this
+branch, the expression is refused with the same error at the submission
+defaults and with no limit options at all. It passes because
 `internal/openjd/expr` carries a hard, non-configurable safety bound
 (`limits.go`'s `maxStringBytes`, 10,000,000 bytes, applied by `checkRepeat`),
 and that bound rejects the expression. **String repetition is implemented** and
