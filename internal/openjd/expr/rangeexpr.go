@@ -216,12 +216,30 @@ func reserveRangeExprCount(ec evalCtx, v Value) error {
 // reserveRangeExprExpansion refuses, BEFORE anything is expanded, when
 // expanding v could not fit the evaluation's remaining operation budget.
 //
-// Every caller that is about to run rangeInts, rangeExprValues or
-// rangeExprCount on a range_expr should call this first. Section 1.3.10 rule 2
-// charges that expansion by its element count, but the charge lands once the
-// elements exist -- and for a range_expr even COUNTING them used to cost the
-// expansion, so the reservation added in the previous fix round could not
+// Every site that is about to expand a range_expr should reach this first,
+// through one of the three wrappers that know their own context:
+// reserveRangeExprCount (len, which needs the count and not the values),
+// reserveRangeExprCoercion (the section 1.2.3 range_expr -> list[int] rule)
+// and reserveEqualityExpansion (listOrRangeEqual's operands). Section 1.3.10
+// rule 2 charges an expansion by its element count, but the charge lands once
+// the elements exist -- and for a range_expr even COUNTING them used to cost
+// the expansion, so the reservation added in the previous fix round could not
 // help: its own input was the thing doing the work.
+//
+// "EVERY SITE" IS A CLAIM, AND IT WAS WRONG ONCE. The first revision of this
+// comment asserted it while four sites still expanded unreserved -- equality's
+// right-hand operand, callShape's argument coercion, coerceTop's target
+// coercion and evalListLit's element coercion, each of them 1.6-2.8 GB under
+// the server's submission budget. Three of the four have NO charge in front of
+// them at all (a coercion is not a call, and list equality is charged
+// left-only by an adjudicated ruling), so no amount of care about charge sites
+// would have found them; they were found by measuring every construction that
+// could reach rangeInts. The enumeration, with those measurements, is
+// TestReserveRangeExpr_CoercionAndEqualityDoNotExpand and
+// TestReserveRangeExpr_RefusalDoesNotExpand
+// (reservework_internal_test.go) -- extend those first if a new expansion
+// site appears, because the claim in this paragraph is only as good as they
+// are.
 //
 // THREE OUTCOMES, in the order they are tried, and the ordering is the whole
 // design:
@@ -269,6 +287,62 @@ func reserveRangeExprExpansion(ec evalCtx, v Value) error {
 		return err
 	}
 	return ec.m.reserveElements(n)
+}
+
+// reserveRangeExprCoercion reserves the expansion that coercing v to target
+// would perform, when that coercion is the range_expr -> list[int] rule of
+// section 1.2.3 (coerce.go). Any other pair reserves nothing: no other
+// coercion in the language materializes a collection out of a compact one.
+//
+// It exists because a COERCION is an expansion that no charge sits in front
+// of. Three of them were found by measurement rather than by reading, all
+// under submissionLimits() and all pre-existing:
+//
+//	range_expr("1-10000000") to a list[int] TARGET      373 ms   2768 MB
+//	sorted([1] + range_expr("1-10000000"))              305 ms   2768 MB
+//	[1] == range_expr("1-10000000")                      97 ms   1624 MB
+//
+// The first two are this function's; the third is
+// reserveEqualityExpansion's, below. Each ran to completion and was caught
+// only afterwards -- by the memory limit, by a charge levied on the already-
+// expanded value, or in the equality case not at all, since section 1.3.10
+// charges list equality against the LEFT operand only.
+func reserveRangeExprCoercion(ec evalCtx, v Value, target Type) error {
+	if v.Type.Code != CodeRangeExpr {
+		return nil
+	}
+	if _, ok := listElem(target); !ok {
+		return nil
+	}
+	return reserveRangeExprExpansion(ec, v)
+}
+
+// reserveEqualityExpansion reserves the expansion listOrRangeEqual (ops.go) is
+// about to perform, WITHOUT charging for it.
+//
+// Section 1.3.10's rule for "list/range equality comparisons" is charged
+// against the LEFT operand only -- an adjudicated ruling
+// (TestOperationCount_ListEquality) that this deliberately does not touch. But
+// listOrRangeEqual expands whichever side is a range_expr, and for a RIGHT-hand
+// one nothing stood in front of that: "[1] == range_expr(
+// "1-5000000,6000000-9000000")" allocated 1603 MB in 651 ms and returned false,
+// having charged three operations. Reserving is exactly the right instrument
+// here, because it refuses without pricing: the charge stays left-only and no
+// operation count moves.
+//
+// The IDENTICAL-TEXT case reserves nothing, because listOrRangeEqual answers it
+// without expanding either side (see its own doc comment). That is not a
+// nicety: "range_expr('1-9000000') == range_expr('1-9000000')" is true, costs
+// two parses, and fits the default operation limit -- reserving both sides
+// would refuse it for work it never does.
+func reserveEqualityExpansion(ec evalCtx, l, r Value) error {
+	if r.Type.Code != CodeRangeExpr {
+		return nil
+	}
+	if l.Type.Code == CodeRangeExpr && l.s == r.s {
+		return nil
+	}
+	return reserveRangeExprExpansion(ec, r)
 }
 
 // rangeExprValues expands a range_expr to its integers as a boxed []Value,

@@ -77,6 +77,13 @@ func (e *Expression) Eval(syms Symbols, target Type, opts ...Option) (Value, err
 // maxElements floor (limits.go). See
 // TestMemoryLimit_CatchesTopLevelCoercion.
 func coerceTop(ec evalCtx, src string, root Node, v Value, target Type) (Value, error) {
+	// A range_expr meeting a list[int] TARGET expands, and nothing charges
+	// for it: the result's own alloc below is what used to catch it, after
+	// 2768 MB had already been built. See reserveRangeExprCoercion
+	// (rangeexpr.go).
+	if err := reserveRangeExprCoercion(ec, v, target); err != nil {
+		return Value{}, wrapAt(src, root.Pos(), err)
+	}
 	out, err := coerce(v, target)
 	if err != nil {
 		// The whole expression failed to meet its context's type, so blame the

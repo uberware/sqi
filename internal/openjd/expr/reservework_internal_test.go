@@ -159,6 +159,87 @@ func TestReserveRangeExpr_SuccessExpandsOnce(t *testing.T) {
 	}
 }
 
+// TestReserveRangeExpr_CoercionAndEqualityDoNotExpand pins the three
+// expansion sites that no CHARGE sits in front of, and that therefore could
+// not be caught by the reservations added in fix round 2.
+//
+// All three are pre-existing and all three were found by measurement, because
+// each one runs to completion and is caught (if at all) only afterwards:
+//
+//   - EQUALITY. Section 1.3.10 charges a list/range comparison against the
+//     LEFT operand only -- an adjudicated ruling
+//     (TestOperationCount_ListEquality) -- but listOrRangeEqual expands
+//     whichever side is a range_expr. A right-hand one had nothing in front of
+//     it: [1] == range_expr("1-5000000,6000000-9000000") allocated 1603 MB in
+//     651 ms, returned false, and charged THREE operations.
+//
+//   - ARGUMENT COERCION. callShape's coercion loop runs BEFORE chargeArgs, so
+//     a range_expr coerced to a list[int] parameter is expanded and only then
+//     billed: sorted([1] + range_expr("1-10000000")) spent 2768 MB before
+//     reporting 10,000,003 operations against a limit of 10,000.
+//
+//   - TARGET COERCION. coerceTop expands a range_expr meeting a list[int]
+//     target with no charge at all; the result's own alloc is what caught it,
+//     after 2768 MB existed. evalListLit's ELEMENT coercion is the same rule
+//     one level down ("[range_expr('1-10000000')]" against a list[list[int]]
+//     target, also 2768 MB) and is covered by the same helper.
+//
+// The reservations are check-only, so the left-only charging ruling and every
+// operation count are untouched -- see reserveEqualityExpansion and
+// reserveRangeExprCoercion (rangeexpr.go).
+func TestReserveRangeExpr_CoercionAndEqualityDoNotExpand(t *testing.T) {
+	const ceiling = 1 << 20
+
+	tests := []struct {
+		name   string
+		src    string
+		target Type
+	}{
+		{"equality, range on the right", `[1] == range_expr(` + multiSubRangeRefused + `)`, TAny},
+		{"inequality, range on the right", `[1] != range_expr("1-10000000")`, TAny},
+		{"range vs differently-spelled range", `range_expr("1-2") == range_expr(` + multiSubRangeRefused + `)`, TAny},
+		{"argument coercion", `sorted([1] + range_expr("1-10000000"))`, TAny},
+		{"target coercion", `range_expr(` + multiSubRangeRefused + `)`, ListOf(TInt)},
+		{"list-literal element coercion", `[range_expr("1-10000000")]`, ListOf(ListOf(TInt))},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var err error
+			allocated := allocDelta(func() {
+				_, err = Eval(tt.src, MapSymbols(nil), tt.target,
+					WithOperationLimit(reserveOpLimit), WithMemoryLimit(reserveMemLimit))
+			})
+			if !errors.Is(err, errOperationLimit) {
+				t.Fatalf("%s = %v; want errOperationLimit", tt.src, err)
+			}
+			if allocated > ceiling {
+				t.Errorf("%s allocated %d bytes before being refused; want under %d.\n"+
+					"An expansion with no charge in front of it still needs a RESERVATION in "+
+					"front of it -- see reserveEqualityExpansion and reserveRangeExprCoercion.",
+					tt.src, allocated, ceiling)
+			}
+		})
+	}
+}
+
+// TestReserveEquality_IdenticalRangeTextStillCompares pins the one case
+// reserveEqualityExpansion deliberately skips.
+//
+// listOrRangeEqual answers two range_exprs with IDENTICAL text without
+// expanding either side, so there is no work to reserve. Reserving it anyway
+// would refuse a nine-million-value self-comparison that costs two parses and
+// fits the default operation limit -- the same shape of false rejection that
+// reserving len()'s single-sub-range count would have caused.
+func TestReserveEquality_IdenticalRangeTextStillCompares(t *testing.T) {
+	v, err := Eval(`range_expr("1-9000000") == range_expr("1-9000000")`, MapSymbols(nil), TAny)
+	if err != nil {
+		t.Fatalf("identical range text expands nothing, so it must still compare: %v", err)
+	}
+	if !v.AsBool() {
+		t.Error("a range_expr must equal itself")
+	}
+}
+
 // TestReserveRangeExprCount_SingleSubRangeStaysFree pins the property that
 // separating reserveRangeExprCount from reserveRangeExprExpansion exists to
 // protect, and that a first draft of this fix broke.

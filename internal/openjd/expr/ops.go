@@ -519,6 +519,15 @@ func applyBinary(ec evalCtx, op Op, l, r Value) (Value, error) {
 		} else if err := ec.m.chargeElements(n); err != nil {
 			return Value{}, err
 		}
+		// The RIGHT operand is RESERVED, never charged -- see
+		// reserveEqualityExpansion (rangeexpr.go). The left-only CHARGE above
+		// is the adjudicated ruling and is unchanged by this; what this adds
+		// is a refusal in front of the expansion listOrRangeEqual performs on
+		// whichever side is a range_expr, which for a right-hand one had
+		// nothing in front of it at all.
+		if err := reserveEqualityExpansion(ec, l, r); err != nil {
+			return Value{}, err
+		}
 		if op == OpEq {
 			return Bool(valuesEqual(l, r)), nil
 		}
@@ -594,6 +603,13 @@ func callShape(ec evalCtx, s Shape, b bindings, args []Value) (Value, error) {
 		want := substitute(s.Params[i], b)
 		if args[i].Type.Equal(want) {
 			continue
+		}
+		// This loop runs BEFORE chargeArgs, so a coercion that materializes
+		// a collection is unpriced work: "sorted([1] + range_expr(
+		// "1-10000000"))" expanded 2768 MB here and was only then charged for
+		// it. See reserveRangeExprCoercion (rangeexpr.go).
+		if err := reserveRangeExprCoercion(ec, args[i], want); err != nil {
+			return Value{}, err
 		}
 		converted, err := coerce(args[i], want)
 		if err != nil {
@@ -683,6 +699,13 @@ func chargeResult(ec evalCtx, c Cost, out Value) error {
 // Use it at every site that charges BEFORE doing the work it prices.
 // chargeResult is deliberately not one of those sites: its value already
 // exists.
+//
+// It is NOT a complete guard against unreserved expansion on its own, and an
+// earlier revision of this comment read as though it were. A charge site is
+// only one of the ways a range_expr gets expanded; the coercions
+// (reserveRangeExprCoercion) and equality's right-hand operand
+// (reserveEqualityExpansion) have no charge in front of them at all. See
+// reserveRangeExprExpansion (rangeexpr.go) for the full enumeration.
 func elementCountBounded(ec evalCtx, v Value) (int, error) {
 	if v.Type.Code == CodeRangeExpr {
 		if err := reserveRangeExprExpansion(ec, v); err != nil {

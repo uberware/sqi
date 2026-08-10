@@ -66,6 +66,13 @@ func evalListLit(n *ListLit, ec evalCtx, target Type, depth int) (Value, error) 
 	}
 	out := make([]Value, len(vals))
 	for i, v := range vals {
+		// A range_expr element meeting a list[int] ELEMENT type expands here,
+		// and nothing charges for it: "[range_expr('1-10000000')]" against a
+		// list[list[int]] target built 2768 MB before the memory limit caught
+		// it. See reserveRangeExprCoercion (rangeexpr.go).
+		if err := reserveRangeExprCoercion(ec, v, elem); err != nil {
+			return Value{}, wrapAt(ec.src, n.Elems[i].Pos(), err)
+		}
 		coerced, err := coerce(v, elem)
 		if err != nil {
 			return Value{}, wrapAt(ec.src, n.Elems[i].Pos(), err)

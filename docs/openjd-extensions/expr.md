@@ -516,15 +516,27 @@ phase 2's verdict never depends on what phase 1 already spent):
   ~900 KB string `submissionMemoryLimit` permits to be live spends only
   ~3,500 of a position's 10,000 operations while costing ~50–70 ms of CPU —
   four orders of magnitude more time per operation than scalar arithmetic.
-  A ~260 KB template body built entirely from such positions is **still
+  A ~270 KB template body built entirely from such positions is **still
   rejected, but only after roughly 9.5 minutes** of server CPU on the
-  synchronous validate/submit request path. Measured, not estimated; the
-  figures are in `maxTemplateExprPositions`' own doc comment
-  (`internal/openjd/exprcheck.go`). **Operators running a
-  publicly-reachable, unauthenticated `POST /api/v1/jobs` should size
-  request timeouts and concurrency against that**, not against the position
-  cap. Bounding it properly needs a budget denominated in something closer
-  to time, which is later work; the position and byte budgets above bound
+  synchronous validate/submit request path — and on other hardware the same
+  construction measured ~12 minutes, so treat that as an order of magnitude,
+  not a digit. **Operators running a publicly-reachable, unauthenticated
+  `POST /api/v1/jobs` should size request timeouts and concurrency against
+  that**, not against the position cap.
+
+  The figure is the maximum over an enumerated set of payloads that is
+  measured, not reasoned about: it has been wrong twice, each time because a
+  construction nobody had measured turned out an order of magnitude worse
+  (`{{ len(range_expr("1-5000000,6000000-9000000")) }}` at ~107 minutes, and
+  `{{ [1] == range_expr("1-5000000,6000000-9000000") }}` at ~110 minutes).
+  Both are now bounded arithmetically and cost milliseconds. The table and
+  the enumeration live in `maxTemplateExprPositions`' doc comment
+  (`internal/openjd/exprcheck.go`) and in
+  `internal/openjd/expr/reservework_internal_test.go`. **Treat the number as
+  a floor on the worst case, not a proof of it.**
+
+  Bounding this properly needs a budget denominated in something closer to
+  time, which is later work; the position and byte budgets above bound
   *memory* and *count*, and that is all they claim.
 - **The byte dimension measures cumulative allocation, not peak live
   retention.** Both `maxTemplateExprRetainedBytes` and

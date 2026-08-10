@@ -743,37 +743,47 @@ const (
 	// x10 from a 1,000-position run.
 	//
 	//	payload                                    before         after
-	//	{{ len(range_expr("1-5e6,6e6-9e6")) }}     ~6450s        ~50ms
+	//	{{ [1] == range_expr("1-5e6,6e6-9e6") }}   ~6510s        ~80ms
+	//	{{ len(range_expr("1-5e6,6e6-9e6")) }}     ~6450s        ~60ms
+	//	{{ sorted([1] + range_expr("1-1e7")) }}    ~3050s        ~80ms
 	//	{{ [0] * 10000000 }}                        ~660s, 2.3GB  ~20ms
 	//	{{ ("x" * 900000).title() }}                ~571s         ~571s
 	//	{{ re_findall("x", "x" * 900000) }}         ~496s         ~496s
 	//	{{ ("x" * 900000).upper() }}                 ~58s          ~58s
 	//
-	// (Row 1's range text is abbreviated to fit; it is
-	// "1-5000000,6000000-9000000". Row 3 is 57.1 ms per position here; an
-	// independent measurement on other hardware put the same payload at 71
-	// ms, i.e. ~715 s -- treat ~9.5 minutes as the order, not the digit.)
+	// (Range texts are abbreviated to fit: "1-5e6,6e6-9e6" is
+	// "1-5000000,6000000-9000000" and "1-1e7" is "1-10000000". Row 5 is 57.1
+	// ms per position here; an independent measurement on other hardware put
+	// the same payload at 71 ms, i.e. ~715 s -- treat ~9.5 minutes as the
+	// order, not the digit.)
 	//
-	// ROW 1 IS THE ONE THAT MOVED LAST, and it is why this table was wrong
-	// once already. A range_expr with TWO OR MORE sub-ranges cannot be
-	// counted arithmetically -- rangeExprCount expands it to count it -- so
-	// len() over one spent 645 ms and 687 MB per position while charging
-	// TWO operations, invisible to every budget in the package, at ~107
-	// MINUTES for a full template. An earlier revision of this comment
-	// named row 3 as the worst case while row 1 was an order of magnitude
-	// past it. Fixed in internal/openjd/expr by reserveRangeExprExpansion
-	// (rangeexpr.go), which bounds the expansion from arithmetic bounds
-	// instead of from an expansion.
+	// ROWS 1-3 ARE THE ONES THAT MOVED LAST, and they are why this table was
+	// wrong TWICE. A range_expr expands to a list, and three separate things
+	// could reach that expansion with nothing in front of them: counting a
+	// MULTI-sub-range one (rangeExprCount expands to count), comparing
+	// against one on the RIGHT of == (section 1.3.10 charges list equality
+	// against the LEFT operand only, an adjudicated ruling), and COERCING one
+	// to list[int] (a coercion is not a call, so no charge site exists at
+	// all). Each ran to completion first: 645-651 ms and 1.6-2.8 GB per
+	// position, one to two orders of magnitude past whatever this table then
+	// named as the worst case. All are fixed in internal/openjd/expr, which
+	// now bounds every such expansion from arithmetic bounds
+	// (reserveRangeExprExpansion, rangeexpr.go) before performing it.
 	//
-	// So meter.reserve and reserveRangeExprExpansion together remove the
-	// BULK-MATERIALIZATION class from every path that reaches it -- rows 1
-	// and 2, four to five orders of magnitude each, and with them the
-	// multi-gigabyte heap -- while the WALL-CLOCK worst case remains
-	// roughly 9.5 minutes, because it is now set by op-cheap, byte-heavy
+	// So the BULK-MATERIALIZATION class is gone from every path measured to
+	// reach it -- rows 1 to 4, four to five orders of magnitude each, and
+	// with them the multi-gigabyte heap -- while the WALL-CLOCK worst case
+	// remains roughly 9.5 minutes, because it is set by op-cheap, byte-heavy
 	// work: a regex or a case mapping over the ~900 KB string
 	// submissionMemoryLimit allows to be live spends ~3,500 of the 10,000
 	// permitted operations and ~50 ms of CPU. Every per-Eval budget is
 	// respected throughout.
+	//
+	// "EVERY PATH MEASURED TO REACH IT" is deliberate wording. Twice now a
+	// stronger claim here was falsified by a construction nobody had
+	// measured, so the enumeration lives in tests that can be extended and
+	// re-run -- internal/openjd/expr/reservework_internal_test.go -- rather
+	// than in an assertion in this comment.
 	//
 	// Recorded plainly rather than smoothed over: this cap is NOT a
 	// wall-time bound, and no value of it can be one while an operation's
