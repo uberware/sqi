@@ -610,13 +610,36 @@ func submissionLimits() []expr.Option {
 // position cap of maxTemplateExprPositions and the existing per-position
 // operation cap (submissionOperationLimit, above), the cumulative operation
 // ceiling is bounded at maxTemplateExprPositions * submissionOperationLimit
-// BY CONSTRUCTION -- no operation counter needs to cross into
-// internal/openjd/expr, which this task deliberately leaves unchanged (it is
-// shared by all three evaluation phases; see design spec §3). State this
-// plainly rather than implying a precise operation accounting that does not
-// exist: the derived ceiling is only as tight as maxTemplateExprPositions is
-// chosen, and it is an upper BOUND, not a measurement -- nothing here counts
-// a single operation.
+// (10,000 x 10,000 = 10^8) -- no operation counter needs to cross into
+// internal/openjd. State this plainly rather than implying a precise
+// operation accounting that does not exist: the derived ceiling is only as
+// tight as maxTemplateExprPositions is chosen, and it is an upper BOUND, not
+// a measurement -- nothing here counts a single operation.
+//
+// THAT DERIVATION WAS FALSE BY A FACTOR OF A THOUSAND until fix round 2
+// (whole-branch review, Critical 1), and the correction lives in
+// internal/openjd/expr, not here. Every Cost.ResultElements/ResultBytes
+// charge is levied by chargeResult AFTER the produced value exists, so
+// "[0] * 10000000" materialized ten million elements (1.1 GB, 108 ms) and
+// only THEN reported 10,000,001 operations against a limit of 10,000. The
+// per-position cap did not bound the work; limits.go's fixed maxElements
+// floor did, three orders of magnitude higher, putting the real ceiling at
+// maxTemplateExprPositions x maxElements ~= 10^11. meter.reserve now refuses
+// such an operation on its ARITHMETIC count before allocating, which is what
+// makes the multiplication above an actual bound rather than a hope. An
+// EARLIER revision of this comment claimed the ceiling held "BY
+// CONSTRUCTION" while resting on that same false premise; the construction
+// it named is only now the construction that exists.
+//
+// WHAT THE OPERATION CEILING STILL DOES NOT BOUND is WALL TIME, because an
+// operation's cost is not uniform: section 1.3.10 rule 3 prices 256 bytes of
+// string work at ONE operation, so a regex or a case mapping over a ~900 KB
+// string (the largest submissionMemoryLimit allows to be live) spends ~3,500
+// operations and ~50 ms, four orders of magnitude more wall time per
+// operation than scalar arithmetic. See the measured figures on
+// maxTemplateExprPositions below. Bounding THAT needs a template-wide
+// operation budget sized in wall time, which is sub-project E4d's
+// operator-configuration question, not this constant's.
 const (
 	// maxTemplateExprPositions caps the number of format-string/let-binding
 	// positions ONE call to checkTemplateExpressions may check -- one unit
@@ -692,19 +715,45 @@ const (
 	// configuration of these limits, "Not in this wave") is where that
 	// tradeoff gets a knob rather than a recompiled constant.
 	//
-	// THE COST TRADEOFF THIS RAISE ACCEPTS: a pathological single-step
-	// construction shaped like E4b's (expensive per-position work, ~6ms
-	// measured for `("x" * 900000).upper()`) now runs for up to
-	// 10,000 x ~6ms =~ 60s of real CPU on the synchronous validate/submit
-	// request path before this budget rejects it, versus ~12s at the
-	// former 2,000-position cap -- still a large improvement over E4b's
-	// original unbounded ~96s (and a categorical one over E2's ~9 minutes),
-	// but a real increase over the tighter value fix round 1 replaced.
-	// Recorded here rather than silently accepted: the choice made in this
-	// round is that avoiding a false rejection of a legitimate template
-	// matters more than tightening this particular worst case further,
-	// which is exactly the operator-configuration question E4d exists to
-	// answer.
+	// THE COST TRADEOFF THIS RAISE ACCEPTS, restated in fix round 2
+	// (whole-branch review, Critical 1) with END-TO-END MEASUREMENTS rather
+	// than the per-expression estimate it carried before. An earlier
+	// revision claimed "10,000 x ~6ms =~ 60s ... a categorical improvement
+	// over E2's ~9 minutes", extrapolated from `("x" * 900000).upper()`.
+	// Both halves were wrong: that expression is not the worst case, and
+	// the construction the reviewer actually ran -- one step, 10,000 args
+	// entries of `{{ [0] * 10000000 }}` -- cost 9m09s and 2.4 GB of peak
+	// heap, which is E2's own figure to within 2%.
+	//
+	// MEASURED on this repository's development machine: 10,000 args
+	// positions in one step, timing checkTemplateExpressions alone. Every
+	// figure but the first is scaled x10 from a 1,000-position run; the
+	// first was cheap enough to time at full size directly.
+	//
+	//	payload                              before         after
+	//	{{ [0] * 10000000 }}                 ~660s, 2.3GB   41ms, 7MB
+	//	{{ ("x" * 900000).upper() }}          ~58s          ~58s
+	//	{{ re_findall("x", "x" * 900000) }}  ~492s         ~492s
+	//	{{ ("x" * 900000).title() }}         ~569s         ~569s
+	//
+	// meter.reserve (internal/openjd/expr, fix round 2) therefore removes
+	// the BULK-MATERIALIZATION class outright -- a ~16,000x improvement on
+	// the reviewer's own construction, and with it the multi-gigabyte heap
+	// -- while the WALL-CLOCK worst case is UNCHANGED at roughly 9.5
+	// minutes, because it is now set by op-cheap, byte-heavy work: a regex
+	// or a case mapping over the ~900 KB string submissionMemoryLimit
+	// allows to be live spends ~3,500 of the 10,000 permitted operations
+	// and ~50 ms of CPU. Every per-Eval budget is respected throughout.
+	//
+	// Recorded plainly rather than smoothed over: this cap is NOT a
+	// wall-time bound, and no value of it can be one while an operation's
+	// cost varies by four orders of magnitude between scalar arithmetic and
+	// a regex over a megabyte. Bounding wall time needs a template-wide
+	// budget denominated in something closer to time, which is E4d's
+	// operator-configuration question. The choice standing in the meantime
+	// is fix round 1's: avoiding a false rejection of a legitimate template
+	// matters more than tightening this particular worst case by lowering
+	// the cap.
 	maxTemplateExprPositions int64 = 10_000
 
 	// maxTemplateExprRetainedBytes caps the cumulative section 1.3.9 size
