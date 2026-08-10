@@ -259,7 +259,7 @@ func (s *Submitter) Submit(
 	// within bounds.
 	deriveBounds := tmpl.hasExtension("SQI_CHUNK_BOUNDS")
 	for i, stepTmpl := range tmpl.Steps {
-		steps, tasks, err := s.createStepWithTasks(ctx, job, stepTmpl, i, boundParams, deriveBounds, blocked, now)
+		steps, tasks, err := s.createStepWithTasks(ctx, tmpl, job, stepTmpl, i, boundParams, deriveBounds, blocked, now)
 		if err != nil {
 			return nil, err
 		}
@@ -309,6 +309,7 @@ func (s *Submitter) finalizeBlockedStatus(ctx context.Context, job store.Job, bl
 // that function's cyclomatic complexity.
 func (s *Submitter) createStepWithTasks(
 	ctx context.Context,
+	tmpl *JobTemplate,
 	job store.Job,
 	stepTmpl StepTemplate,
 	stepIdx int,
@@ -357,7 +358,7 @@ func (s *Submitter) createStepWithTasks(
 	}
 
 	// ── Expand parameter space ──────────────────────────────────────────────
-	taskParamList, err := s.expandStepTaskParams(stepTmpl, stepIdx, boundParams, deriveBounds)
+	taskParamList, err := s.expandStepTaskParams(tmpl, stepTmpl, stepIdx, boundParams, deriveBounds)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -401,13 +402,17 @@ func (s *Submitter) createStepWithTasks(
 // bounds when requested. It is extracted from [Submitter.createStepWithTasks]
 // to keep that function's cyclomatic complexity within bounds.
 func (s *Submitter) expandStepTaskParams(
+	tmpl *JobTemplate,
 	stepTmpl StepTemplate,
 	stepIdx int,
 	boundParams map[string]string,
 	deriveBounds bool,
 ) ([]TaskParams, error) {
-	// Resolve {{Param.*}} / {{RawParam.*}} in the parameter space first.
-	resolvedPS, resolveErrs := ResolveParameterSpaceParams(stepTmpl.ParameterSpace, boundParams)
+	// Resolve {{Param.*}} / {{RawParam.*}} in the parameter space first. tmpl
+	// carries the EXPR declaration and the job-parameter definitions
+	// ResolveParameterSpaceParams needs to evaluate a section 1.3.12 whole-
+	// field range expression — see that function's own doc comment.
+	resolvedPS, resolveErrs := ResolveParameterSpaceParams(tmpl, stepTmpl.ParameterSpace, boundParams)
 	if len(resolveErrs) > 0 {
 		stepPrefix := fmt.Sprintf("/steps/%d", stepIdx)
 		for k := range resolveErrs {

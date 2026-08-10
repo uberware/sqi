@@ -387,6 +387,15 @@ type TaskParamDefinition struct {
 	// RangeExpr holds the raw range string for INT and CHUNK[INT] parameters
 	// when the template uses range expression syntax (e.g. "1-100:2").
 	// Exactly one of RangeExpr or RangeList is set for each definition.
+	//
+	// Under the EXPR extension, section 1.3.12 extends this field for EVERY
+	// type (not only INT/CHUNK[INT]): a whole-field `range: "{{ <expr> }}"`
+	// decodes here the same way for any type — parse.go's decoder does not
+	// distinguish by type — so a STRING or FLOAT definition can carry a
+	// non-nil RangeExpr too, holding a lone expression that evaluates to a
+	// list. ResolveParameterSpaceParams (resolve.go) is what converts that
+	// case into RangeList, clearing RangeExpr, before expand.go ever sees it
+	// — expandTaskParam only ever consults RangeExpr for INT/CHUNK[INT].
 	RangeExpr *string
 	// RangeList holds the explicit value list for all other types, and also for
 	// INT/CHUNK[INT] when the template provides an array of values.
