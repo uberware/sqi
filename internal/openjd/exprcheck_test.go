@@ -691,12 +691,23 @@ func TestCheckParameterSpaceExpressions_RangeTargetTypes(t *testing.T) {
 		typ         TaskParamType
 		wholeAccept string
 		wholeReject string // "" when there is no wrong-ELEMENT-type list to build (STRING)
-		entryAccept string
-		entryReject string // "" when there is no type-mismatch (as opposed to shape-mismatch) case
+		// wholeShapeReject is a BARE SCALAR the whole-field target rejects.
+		// It defaults to entryAccept, because for FLOAT/STRING/PATH the field
+		// target is a plain list and every bare scalar is the wrong shape.
+		// INT/CHUNK[INT] must name their own: section 1.3.12's RangeString
+		// note makes an int and a string LEGAL at that position (they are
+		// range TEXT -- see rangeExprFieldType), so those two rows need a
+		// scalar that is neither, and a bool is the one scalar with no
+		// conversion into any member of "int | string | range_expr |
+		// list[int]".
+		wholeShapeReject string
+		entryAccept      string
+		entryReject      string // "" when there is no type-mismatch (as opposed to shape-mismatch) case
 	}{
 		{
 			name: "INT", typ: TaskParamTypeInt,
 			wholeAccept: "{{ [1, 2, 3] }}", entryAccept: "{{ 5 }}",
+			wholeShapeReject: "{{ true }}",
 			// A list of strings: string->int coercion needs a value that
 			// parses as an int, and "a" does not -- so this is rejected on
 			// the VALUE, not merely the type (list[string] -> list[int] is
@@ -715,8 +726,9 @@ func TestCheckParameterSpaceExpressions_RangeTargetTypes(t *testing.T) {
 		{
 			name: "CHUNK[INT]", typ: TaskParamTypeChunkInt,
 			wholeAccept: "{{ [1, 2, 3] }}", entryAccept: "{{ 5 }}",
-			wholeReject: "{{ ['a'] }}",
-			entryReject: "{{ 2.5 }}",
+			wholeShapeReject: "{{ true }}",
+			wholeReject:      "{{ ['a'] }}",
+			entryReject:      "{{ 2.5 }}",
 		},
 		{
 			name: "FLOAT", typ: TaskParamTypeFloat,
@@ -756,12 +768,18 @@ func TestCheckParameterSpaceExpressions_RangeTargetTypes(t *testing.T) {
 				}
 			})
 			t.Run("whole-field rejected (wrong shape)", func(t *testing.T) {
-				// The bare scalar that the entry position accepts is not a
-				// list (or, for INT/CHUNK[INT], a range_expr) -- exactly the
-				// shape section 1.3.12 requires here.
-				errs := checkRangeField(tc.typ, tc.entryAccept)
+				// A bare scalar that is not one of the shapes section 1.3.12
+				// admits at this position. For FLOAT/STRING/PATH that is any
+				// scalar at all, so the one the ENTRY position accepts is the
+				// natural choice; INT/CHUNK[INT] name their own, because an
+				// int and a string are legal range TEXT there.
+				body := tc.wholeShapeReject
+				if body == "" {
+					body = tc.entryAccept
+				}
+				errs := checkRangeField(tc.typ, body)
 				wantPtr := "/steps/0/parameterSpace/taskParameterDefinitions/0/range"
-				assertRejectedAt(t, errs, wantPtr, tc.entryAccept)
+				assertRejectedAt(t, errs, wantPtr, body)
 			})
 			if tc.wholeReject != "" {
 				t.Run("whole-field rejected (wrong element type)", func(t *testing.T) {

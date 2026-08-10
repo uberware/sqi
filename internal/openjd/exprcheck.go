@@ -632,21 +632,28 @@ func submissionLimits() []expr.Option {
 // validateHostRequirements -> validateAction/validateScriptRefs) position
 // for position, per the table in this sub-project's task brief:
 //
-//	job name                          ScopeJob             TargetString
-//	host requirement values           ScopeJob             TargetString
-//	task-parameter range entries      ScopeJob             TargetString (*)
-//	environment variable values       job/step env         TargetString
-//	env + step embedded-file data     job/step env / step  TargetString
-//	action command                    matching env / step  TargetString
-//	action args entries               matching env / step  TargetArgItem
-//	action timeout                    matching env / step  TargetInt
+//	job name                          ScopeJob                TargetString
+//	host requirement values           ScopeJob + step let     TargetString
+//	task-parameter range entries      ScopeJob + step let     §1.3.12 per-type
+//	environment variable values       job/step env            TargetString
+//	env + step embedded-file data     job/step env / step     TargetString
+//	action command                    matching env / step     TargetString
+//	action args entries               matching env / step     TargetArgItem
+//	action timeout                    matching env / step     TargetInt
 //
-// (*) No longer accurate as of EXPR sub-project E4b Task 3: a task-parameter
-// range position targets section 1.3.12's real per-type target
-// (rangeExprElemType/rangeExprFieldType, checkParameterSpaceExpressions's own
-// doc comment), not TargetString uniformly. Left in this table's row rather
-// than rewritten, because the row's SCOPE (ScopeJob) and its place in the
-// walk are still exactly as this table states; only the target type changed.
+// Two rows of that table need their own sentence, because neither is the flat
+// "one scope, one target" the other six are:
+//
+//   - "ScopeJob + step let" is the SCOPE ScopeJob with the enclosing step
+//     template's let-bound names merged into its symbol table, which is what
+//     section 3.6.2 row 1 grants and nothing more (rangeScopeSymbols). The
+//     scope itself is unchanged: a task-level symbol is still out of reach at
+//     both positions.
+//   - a task-parameter range position does NOT target TargetString. It
+//     targets section 1.3.12's real per-type type -- rangeExprElemType for an
+//     individual range-list entry, rangeExprFieldType for the whole field --
+//     and resolve.go targets the identical types at the identical positions.
+//     See checkParameterSpaceExpressions.
 //
 // Host requirement values and task-parameter range entries are two of the
 // three positions that had NO format-string scope validation at all before
@@ -697,18 +704,8 @@ func checkStepExpressions(tmpl *JobTemplate, s StepTemplate, idx int, params map
 	var errs ValidationErrors
 	base := fmt.Sprintf("/steps/%d", idx)
 
-	stepTemplateSyms := symbolsFor(tmpl, &s, nil, ScopeStepTemplate, params)
-	preLetKeys := make(map[string]struct{}, len(stepTemplateSyms))
-	for k := range stepTemplateSyms {
-		preLetKeys[k] = struct{}{}
-	}
-	errs = append(errs, checkLetBindings(s.Let, base+"/let", ScopeStepTemplate, stepTemplateSyms, submissionLimits()...)...)
-	stepLet := expr.MapSymbols{}
-	for k, v := range stepTemplateSyms {
-		if _, existed := preLetKeys[k]; !existed {
-			stepLet[k] = v
-		}
-	}
+	stepLet, letErrs := stepLetSymbols(tmpl, &s, params, base)
+	errs = append(errs, letErrs...)
 
 	if s.Script != nil {
 		// syms starts as a CLONE of stepLet, not stepLet itself: the step
@@ -774,8 +771,7 @@ func checkStepExpressions(tmpl *JobTemplate, s StepTemplate, idx int, params map
 	// positions, which can move conformance scoring and deserves its own
 	// analysis -- see docs/openjd-conformance.md. No fixture covers it today,
 	// which is why it survived E2 and E3 unnoticed.
-	jobSyms := symbolsFor(tmpl, nil, nil, ScopeJob, params)
-	maps.Copy(jobSyms, stepLet)
+	jobSyms := rangeScopeSymbols(tmpl, stepLet, params)
 
 	if s.ParameterSpace != nil {
 		errs = append(errs, checkParameterSpaceExpressions(*s.ParameterSpace, base+"/parameterSpace", jobSyms)...)
@@ -785,6 +781,72 @@ func checkStepExpressions(tmpl *JobTemplate, s StepTemplate, idx int, params map
 	}
 
 	return errs
+}
+
+// stepLetSymbols evaluates a step template's OWN let: block (section 3.6.2
+// row 1) at ScopeStepTemplate and returns EXACTLY the names it bound --
+// computed as the set-difference between the ScopeStepTemplate table before
+// and after checkLetBindings runs, deliberately NOT the whole post-let table,
+// which also carries Job.Name, Step.Name, Param.* and RawParam.* entries that
+// ScopeStepTemplate exposes and the narrower positions below it do not.
+// Propagating the whole table would silently make a bare Step.Name legal in a
+// host requirement or a task-parameter range, which section 3.6.2 does not
+// grant.
+//
+// base is the step's own JSON pointer prefix; each binding's errors are
+// reported at base + "/let/<i>". Pass "" for a caller whose pointers are
+// already relative to the step (resolve.go's ResolveParameterSpaceParams,
+// whose one production caller prefixes "/steps/<i>" itself).
+//
+// This is shared, rather than duplicated, on purpose. It has TWO callers --
+// the checker (checkStepExpressions) and the resolver
+// (ResolveParameterSpaceParams) -- and them building the table differently is
+// precisely the defect EXPR sub-project E4b's whole-branch review found: the
+// checker merged stepLet and the resolver did not, so a step-level
+// let: ["base = 10"] plus range: "{{ [base, base + 1] }}" validated at upload,
+// passed the phase-2 re-check, and then died in expandStepTaskParams with
+// unknown symbol "base" -- a symbol the checker had just certified. One
+// function means the two tables cannot drift again without the compiler
+// noticing.
+func stepLetSymbols(
+	tmpl *JobTemplate, s *StepTemplate, params map[string]string, base string,
+) (expr.MapSymbols, ValidationErrors) {
+	stepLet := expr.MapSymbols{}
+	if s == nil {
+		return stepLet, nil
+	}
+
+	stepTemplateSyms := symbolsFor(tmpl, s, nil, ScopeStepTemplate, params)
+	preLetKeys := make(map[string]struct{}, len(stepTemplateSyms))
+	for k := range stepTemplateSyms {
+		preLetKeys[k] = struct{}{}
+	}
+	errs := checkLetBindings(s.Let, base+"/let", ScopeStepTemplate, stepTemplateSyms, submissionLimits()...)
+	for k, v := range stepTemplateSyms {
+		if _, existed := preLetKeys[k]; !existed {
+			stepLet[k] = v
+		}
+	}
+	return stepLet, errs
+}
+
+// rangeScopeSymbols builds the symbol table the two ScopeJob-scoped positions
+// inside a step -- its parameterSpace range fields and its hostRequirements
+// values -- are checked and resolved against: ScopeJob's own fixed and family
+// symbols, plus the enclosing step template's let-bound names (stepLet), and
+// nothing else.
+//
+// Section 3.6.2 row 1 changes the TABLE, not the scope: a name the step
+// template's let: bound IS visible here, and a task-level symbol
+// (Task.Param./Task.RawParam./Task.File.) still is not, because ScopeJob's
+// families never included them. See checkStepExpressions' own comment for the
+// pre-existing Job.Name/Step.Name gap this does not close.
+//
+// Shared with resolve.go for the same reason stepLetSymbols is.
+func rangeScopeSymbols(tmpl *JobTemplate, stepLet expr.MapSymbols, params map[string]string) expr.MapSymbols {
+	jobSyms := symbolsFor(tmpl, nil, nil, ScopeJob, params)
+	maps.Copy(jobSyms, stepLet)
+	return jobSyms
 }
 
 // checkEnvironmentExpressions checks the format-string positions of a list of
@@ -1006,14 +1068,22 @@ func checkHostRequirementExpressions(hr HostRequirements, base string, syms expr
 // 1.3.12's real types (design spec §3) instead of the permissive
 // TargetString/expr.TAny this function used before that section's positions
 // had a consumer: a RangeList entry targets rangeExprElemType(tp.Type) (int,
-// float, string or path -- the SAME target resolve.go's resolveRangeListEntry
-// now evaluates its own lone {{...}} reference against, per that function's
-// doc comment), and a whole-field RangeExpr targets rangeExprFieldType(tp.Type)
-// (range_expr | list[int] for INT/CHUNK[INT], list[<elem>] otherwise -- the
-// type-level counterpart of evalRangeExprList's own eval target, though NOT
-// the identical Type value; see rangeExprFieldType's own doc comment for why
-// the checker's union differs from the resolver's plain list[elem] while
-// still agreeing on every verdict).
+// float, string or path) and a whole-field RangeExpr targets
+// rangeExprFieldType(tp.Type) (int | string | range_expr | list[int] for
+// INT/CHUNK[INT], list[<elem>] otherwise).
+//
+// resolve.go calls THE SAME TWO FUNCTIONS at the same two positions
+// (resolveRangeListEntry and evalRangeExprField) -- not a separate target
+// argued to be equivalent, the identical Type value. An earlier revision of
+// this comment pointed at rangeExprFieldType "for why the checker's union
+// differs from the resolver's plain list[elem] while still agreeing on every
+// verdict"; they agreed only because both were equally wrong, and while they
+// agreed on the verdict they reported DIFFERENT MESSAGES for it (validate:
+// "cannot be coerced to list[int] | range_expr", submit: "cannot be coerced
+// to list[int]"). One function per position is what makes both the verdict
+// and the message one thing, and assertRowRejected
+// (resolve_agreement_test.go) now asserts the messages match, not merely the
+// verdicts.
 //
 // exprcheck.go and resolve.go MUST agree on both targets, or the checker's
 // verdict and the resolver's actual coercion drift apart -- design spec §4's
@@ -1053,39 +1123,59 @@ func checkParameterSpaceExpressions(ps StepParameterSpace, base string, syms exp
 // {{...}} reference against, per section 1.3.12's extended-range table
 // (design spec §3):
 //
-//	INT / CHUNK[INT]   range_expr | list[int]
+//	INT / CHUNK[INT]   int | string | range_expr | list[int]
 //	FLOAT              list[float]
 //	STRING             list[string]
 //	PATH               list[path]
 //
-// INT/CHUNK[INT] is a union rather than resolve.go's plain
-// expr.ListOf(elemType) (evalRangeExprList's own eval target) -- and that
-// difference is deliberate, not a second, independently-chosen target that
-// happens to need reconciling. evalRangeExprList MUST target a plain list:
-// its caller calls v.AsList() on the result, which panics
-// (Value.mustBe) for anything but CodeList, so a range_expr value reaching
-// that target has to be CONVERTED into a real list[int] -- which
-// coerce()'s range_expr -> list[int] rule (coerce.go's coercibleConditional)
-// already does even against a plain list[int] target, with no need for the
-// target to literally name range_expr as a member.
+// resolve.go's evalRangeExprField targets THE SAME TYPE, from this same
+// function -- there is no longer a checker target and a separate resolver
+// target to reconcile, and the two layers therefore produce byte-identical
+// rejection messages for the same input. What differs between them is only
+// what each does with the RESULT: the checker discards it, while the resolver
+// dispatches on which union member it landed in (see evalRangeExprField).
 //
-// This function's caller never calls AsList() -- checkFormatString only asks
-// whether Eval returns an error, discarding the value -- so nothing here
-// requires forcing that same conversion. The union is written anyway because
-// it is the literal type section 1.3.12 states for these two parameter
-// types, and expr.UnionOf's own coerce.go rules (directUnionMember) make a
-// range_expr value's coercion against the union a plain pass-through rather
-// than a list conversion. Both targets are provably interchangeable for this
-// checker's use — coercible(range_expr, list[int]) is true independent of
-// whether list[int] sits alone or inside a union headed by range_expr — so
-// this is a faithfulness choice, not a functional one:
+// WHY int AND string ARE MEMBERS, which is the correction this row needed.
+// Section 1.3.12 leaves the INT row "(unchanged, but see RangeString note
+// below)", and that note extends the RangeString with an expression
+// evaluating to a range_expr or a list[int] "in addition to the original
+// <IntRangeExpr> grammar" -- IN ADDITION TO, not instead of. A RangeString is
+// itself a Format String (Template Schemas §3.4.1.1.1), so a lone {{...}}
+// whose result is an int or a string is still the ordinary base-spec form:
+// the expression produced range TEXT, which parseIntRangeExpr then reads. The
+// conformance suite states the required target verbatim --
+// EXPR/jobs/expr1.2.3--union-target-type.test.yaml:12, "INT task 'range':
+// int | string | range_expr | list[int] (match-first)" -- and exercises all
+// four members, including "{{ Param.StrFrames }}" with a STRING job parameter
+// "1-3" expanding to tasks 1, 2, 3 and "{{ Param.IntCount + 1 }}" with
+// IntCount = 7 expanding to the single task 8.
+//
+// A narrower union (range_expr | list[int], this function's shape before EXPR
+// sub-project E4b's whole-branch review) inverted the section's own promise:
+// it made DECLARING the extension REMOVE capability at this field, rejecting
+// range: "{{Param.Frames}}" with a STRING Frames -- the exact shape all six
+// of this repo's own reference render presets use (presets/sqi/*.yaml) --
+// while the identical template WITHOUT extensions: [EXPR] expanded correctly.
+//
+// The union's member ORDER is not load-bearing here: expr.UnionOf sorts
+// members into a canonical order anyway, and section 1.2.3's match-first rule
+// is implemented by coerce.go's directUnionMember, which compares whole types
+// and so is order-independent. Order IS load-bearing one layer down, in
+// evalRangeExprField's dispatch on the result -- see that function.
+//
+// FLOAT/STRING/PATH stay a plain list: their rows extend the field with a
+// <ListExpressionString>, which section 1.3.12 defines as "a format string
+// containing an expression that evaluates to a list", full stop. Only the INT
+// row carries the RangeString note, because only INT/CHUNK[INT] ever had the
+// <IntRangeExpr> text form to be "in addition to".
+//
 // TestCheckParameterSpaceExpressions_RangeTargetTypes pins the resulting
 // accept/reject verdicts, not the internal Type value.
 func rangeExprFieldType(typ TaskParamType) expr.Type {
 	elem := rangeExprElemType(typ)
 	switch typ {
 	case TaskParamTypeInt, TaskParamTypeChunkInt:
-		return expr.UnionOf(expr.TRangeExpr, expr.ListOf(elem))
+		return expr.UnionOf(expr.TInt, expr.TString, expr.TRangeExpr, expr.ListOf(elem))
 	default:
 		return expr.ListOf(elem)
 	}

@@ -27,7 +27,7 @@ import (
 // that exists to be varied must not crash the process — inside a synchronous
 // submit handler, no less — the first time it actually is varied.
 // Value.String() is total over every Value and is already what
-// evalRangeExprList's elements use; this test pins that resolveFormatStringExpr
+// evalRangeExprField's elements use; this test pins that resolveFormatStringExpr
 // never regresses back to AsStr, for every scalar/list shape a target might
 // plausibly produce.
 func TestResolveFormatStringExpr_NonStringLoneTargetDoesNotPanic(t *testing.T) {

@@ -10,7 +10,7 @@ import (
 )
 
 func TestResolveParameterSpaceParams_NilInput(t *testing.T) {
-	got, errs := openjd.ResolveParameterSpaceParams(nil, nil, map[string]string{"X": "1"})
+	got, errs := openjd.ResolveParameterSpaceParams(nil, nil, nil, map[string]string{"X": "1"})
 	if got != nil {
 		t.Errorf("expected nil output for nil input, got %v", got)
 	}
@@ -167,7 +167,7 @@ func TestResolveParameterSpaceParams(t *testing.T) {
 				originalRangeExpr = c.ps.TaskParameterDefinitions[0].RangeExpr
 			}
 
-			got, errs := openjd.ResolveParameterSpaceParams(nil, c.ps, c.jobParams)
+			got, errs := openjd.ResolveParameterSpaceParams(nil, nil, c.ps, c.jobParams)
 
 			// Error-path assertions.
 			if c.wantErrCount > 0 {
@@ -246,7 +246,7 @@ func TestResolveParameterSpaceParams_NoMutation(t *testing.T) {
 		},
 	}
 
-	got, errs := openjd.ResolveParameterSpaceParams(nil, ps, map[string]string{"X": "1"})
+	got, errs := openjd.ResolveParameterSpaceParams(nil, nil, ps, map[string]string{"X": "1"})
 	if len(errs) != 0 {
 		t.Fatalf("unexpected errors: %v", errs)
 	}
@@ -288,7 +288,7 @@ func jobParamDefsOfType(jobParams map[string]string, typ openjd.JobParamType) []
 // RangeExpr cleared so expand.go's expandTaskParam takes the list branch.
 //
 // The FLOAT case's want values ("5.0", "3.0") are not a guess copied from the
-// task brief — see evalRangeExprList's own doc comment (resolve.go) for the
+// task brief — see evalRangeExprField's own doc comment (resolve.go) for the
 // verification (spec citation + a throwaway empirical check) behind them.
 func TestResolveParameterSpaceParams_WholeFieldListExpression(t *testing.T) {
 	for _, tc := range []struct {
@@ -319,7 +319,7 @@ func TestResolveParameterSpaceParams_WholeFieldListExpression(t *testing.T) {
 			// coercion path "INT list expression" above does, just reached via
 			// a function call instead of a literal. A GENUINE range_expr value
 			// (from range_expr(), which the language's own list(range_expr)
-			// conversion and this package's evalRangeExprList both handle via
+			// conversion and this package's evalRangeExprField both handle via
 			// coerce.go's range_expr -> list[int] rule) is what section 2.1's
 			// trap is actually about, and it is NOT exercised by this table at
 			// all — see TestResolveParameterSpaceParams_RangeExprKeepsExpressionPolicy,
@@ -359,7 +359,7 @@ func TestResolveParameterSpaceParams_WholeFieldListExpression(t *testing.T) {
 				},
 			}
 
-			got, errs := openjd.ResolveParameterSpaceParams(tmpl, ps, tc.jobParams)
+			got, errs := openjd.ResolveParameterSpaceParams(tmpl, nil, ps, tc.jobParams)
 			if len(errs) != 0 {
 				t.Fatalf("unexpected errors: %v", errs)
 			}
@@ -391,7 +391,7 @@ func TestResolveParameterSpaceParams_WholeFieldListExpression(t *testing.T) {
 // (the zero intrange.Policy: start may exceed end, a step may be negative,
 // and section 3.4.1.1.1's own worked table orders the result), never
 // internal/openjd's stricter one (Policy{PositiveStepOnly, AscendingOnly},
-// range.go's openjdRangePolicy) — see evalRangeExprList's doc comment for the
+// range.go's openjdRangePolicy) — see evalRangeExprField's doc comment for the
 // full argument.
 //
 // All three rows discriminate the two policies: each is a case
@@ -444,7 +444,7 @@ func TestResolveParameterSpaceParams_RangeExprKeepsExpressionPolicy(t *testing.T
 				},
 			}
 
-			got, errs := openjd.ResolveParameterSpaceParams(tmpl, ps, nil)
+			got, errs := openjd.ResolveParameterSpaceParams(tmpl, nil, ps, nil)
 			if len(errs) != 0 {
 				t.Fatalf("unexpected errors: %v", errs)
 			}
@@ -497,7 +497,7 @@ func TestResolveParameterSpaceParams_LiteralIntRangeKeepsOpenJDPolicy(t *testing
 				},
 			}
 
-			resolved, errs := openjd.ResolveParameterSpaceParams(tmpl, ps, nil)
+			resolved, errs := openjd.ResolveParameterSpaceParams(tmpl, nil, ps, nil)
 			if len(errs) != 0 {
 				t.Fatalf("unexpected resolve errors: %v", errs)
 			}
@@ -546,7 +546,7 @@ func TestResolveParameterSpaceParams_LiteralIntRangeKeepsOpenJDPolicy(t *testing
 // whole-field range expression is evaluated under the same submission-time
 // budget (submissionLimits(), exprcheck.go) as every other submit-time
 // expression position, not expr.Eval's own looser unconfigured defaults.
-// Dropping the metering options from evalRangeExprList's expr.Eval call
+// Dropping the metering options from evalRangeExprField's expr.Eval call
 // leaves every OTHER test in this file passing (none of them evaluates
 // anything expensive enough to trip a 10,000-operation/1MB budget) — this is
 // the one test that would catch it, the same gap EXPR sub-project E3's own
@@ -565,7 +565,7 @@ func TestResolveParameterSpaceParams_WholeFieldExpressionMetered(t *testing.T) {
 		},
 	}
 
-	got, errs := openjd.ResolveParameterSpaceParams(tmpl, ps, nil)
+	got, errs := openjd.ResolveParameterSpaceParams(tmpl, nil, ps, nil)
 	if got != nil {
 		t.Errorf("expected nil output on error, got %v", got)
 	}
@@ -615,7 +615,7 @@ func TestResolveParameterSpaceParams_BaseSpecUnchanged(t *testing.T) {
 		{Extensions: []string{}},
 		{Extensions: []string{"TASK_CHUNKING"}},
 	} {
-		got, errs := openjd.ResolveParameterSpaceParams(tmpl, ps, jobParams)
+		got, errs := openjd.ResolveParameterSpaceParams(tmpl, nil, ps, jobParams)
 		if got != nil {
 			t.Errorf("tmpl=%v: expected nil output on error, got %v", tmpl, got)
 		}
@@ -671,7 +671,7 @@ func TestResolveParameterSpaceParams_NonLoneRefStaysBaseSpecEvenWithEXPR(t *test
 		},
 	}
 
-	got, errs := openjd.ResolveParameterSpaceParams(tmpl, ps, map[string]string{"Start": "1", "End": "5"})
+	got, errs := openjd.ResolveParameterSpaceParams(tmpl, nil, ps, map[string]string{"Start": "1", "End": "5"})
 	if len(errs) != 0 {
 		t.Fatalf("unexpected errors: %v", errs)
 	}
@@ -701,7 +701,7 @@ func TestResolveParameterSpaceParams_WholeFieldExpressionError(t *testing.T) {
 		},
 	}
 
-	got, errs := openjd.ResolveParameterSpaceParams(tmpl, ps, map[string]string{})
+	got, errs := openjd.ResolveParameterSpaceParams(tmpl, nil, ps, map[string]string{})
 	if got != nil {
 		t.Errorf("expected nil output on error, got %v", got)
 	}
@@ -760,7 +760,7 @@ func TestResolveParameterSpaceParams_RangeListEntryExpressions(t *testing.T) {
 			jobParams: map[string]string{"Dir": "a/b"},
 			entries:   []string{"{{ Param.Dir }}", "{{ Param.Dir }}/file.txt"},
 			// Bare re-tag, no normalization (coerceScalar's CodePath case,
-			// same as evalRangeExprList's PATH case) — "a/b" survives byte
+			// same as evalRangeExprField's PATH case) — "a/b" survives byte
 			// for byte, and the embedded form concatenates as plain text.
 			want: []string{"a/b", "a/b/file.txt"},
 		},
@@ -787,7 +787,7 @@ func TestResolveParameterSpaceParams_RangeListEntryExpressions(t *testing.T) {
 				},
 			}
 
-			got, errs := openjd.ResolveParameterSpaceParams(tmpl, ps, tc.jobParams)
+			got, errs := openjd.ResolveParameterSpaceParams(tmpl, nil, ps, tc.jobParams)
 			if len(errs) != 0 {
 				t.Fatalf("unexpected errors: %v", errs)
 			}
@@ -814,7 +814,7 @@ func TestResolveParameterSpaceParams_RangeListEntryExpressions(t *testing.T) {
 // Scale=2.5) and stops there, which does NOT pin what a worker actually
 // receives — expand.go's validateFloatList re-canonicalizes every FLOAT
 // RangeList entry with strconv.FormatFloat(f, 'g', -1, 64), which drops the
-// ".0" evalRangeExprList's/resolveFormatStringExpr's own rendering rule
+// ".0" evalRangeExprField's/resolveFormatStringExpr's own rendering rule
 // adds. This test runs the SAME entry through the full pipeline
 // (ResolveParameterSpaceParams + ExpandParameterSpace) and pins the value
 // that actually reaches a task row: "5", not "5.0".
@@ -822,7 +822,7 @@ func TestResolveParameterSpaceParams_RangeListEntryExpressions(t *testing.T) {
 // This makes §2.3's rendering-rule question (which of two competing string
 // forms for a computed float is "correct") MOOT for a FLOAT range value
 // specifically, in EITHER form (Task 1's whole-field list expression or
-// this task's per-entry expression): whatever evalRangeExprList/
+// this task's per-entry expression): whatever evalRangeExprField/
 // resolveFormatStringExpr render, expand.go normalizes away before it
 // reaches a task's Parameters map, and it already did so for a literal
 // (non-EXPR) FLOAT RangeList entry too — this is pre-existing behavior this
@@ -843,7 +843,7 @@ func TestResolveParameterSpaceParams_RangeListEntryFloatIsRenormalizedByExpand(t
 		},
 	}
 
-	resolved, errs := openjd.ResolveParameterSpaceParams(tmpl, ps, map[string]string{"Scale": "2.5"})
+	resolved, errs := openjd.ResolveParameterSpaceParams(tmpl, nil, ps, map[string]string{"Scale": "2.5"})
 	if len(errs) != 0 {
 		t.Fatalf("unexpected errors: %v", errs)
 	}
@@ -896,7 +896,7 @@ func TestResolveParameterSpaceParams_RangeListEntryINTScaleFix(t *testing.T) {
 		},
 	}
 
-	resolved, errs := openjd.ResolveParameterSpaceParams(tmpl, ps, map[string]string{"Scale": "2.5"})
+	resolved, errs := openjd.ResolveParameterSpaceParams(tmpl, nil, ps, map[string]string{"Scale": "2.5"})
 	if len(errs) != 0 {
 		t.Fatalf("unexpected errors: %v", errs)
 	}
@@ -943,7 +943,7 @@ func TestResolveParameterSpaceParams_RangeListEntryINTNonIntegralRejected(t *tes
 		},
 	}
 
-	got, errs := openjd.ResolveParameterSpaceParams(tmpl, ps, map[string]string{"Scale": "2.5"})
+	got, errs := openjd.ResolveParameterSpaceParams(tmpl, nil, ps, map[string]string{"Scale": "2.5"})
 	if got != nil {
 		t.Errorf("expected nil output on error, got %v", got)
 	}
@@ -988,7 +988,7 @@ func TestResolveParameterSpaceParams_RangeListEntryElementTypeRejections(t *test
 				},
 			}
 
-			got, errs := openjd.ResolveParameterSpaceParams(tmpl, ps, map[string]string{})
+			got, errs := openjd.ResolveParameterSpaceParams(tmpl, nil, ps, map[string]string{})
 			if got != nil {
 				t.Errorf("expected nil output on error, got %v", got)
 			}
@@ -1026,7 +1026,7 @@ func TestResolveParameterSpaceParams_RangeListEntryBaseSpecUnchanged(t *testing.
 		{Extensions: []string{}},
 		{Extensions: []string{"TASK_CHUNKING"}},
 	} {
-		got, errs := openjd.ResolveParameterSpaceParams(tmpl, ps, jobParams)
+		got, errs := openjd.ResolveParameterSpaceParams(tmpl, nil, ps, jobParams)
 		if got != nil {
 			t.Errorf("tmpl=%v: expected nil output on error, got %v", tmpl, got)
 		}
@@ -1055,7 +1055,7 @@ func TestResolveParameterSpaceParams_RangeListEntryError(t *testing.T) {
 		},
 	}
 
-	got, errs := openjd.ResolveParameterSpaceParams(tmpl, ps, map[string]string{})
+	got, errs := openjd.ResolveParameterSpaceParams(tmpl, nil, ps, map[string]string{})
 	if got != nil {
 		t.Errorf("expected nil output on error, got %v", got)
 	}
@@ -1088,7 +1088,7 @@ func TestResolveParameterSpaceParams_RangeListEntryMetered(t *testing.T) {
 		},
 	}
 
-	got, errs := openjd.ResolveParameterSpaceParams(tmpl, ps, nil)
+	got, errs := openjd.ResolveParameterSpaceParams(tmpl, nil, ps, nil)
 	if got != nil {
 		t.Errorf("expected nil output on error, got %v", got)
 	}
@@ -1144,7 +1144,7 @@ func TestResolveParameterSpaceParams_NonLoneRangeExprEmbeddedExpression(t *testi
 		},
 	}
 
-	resolved, errs := openjd.ResolveParameterSpaceParams(tmpl, ps, map[string]string{"End": "5"})
+	resolved, errs := openjd.ResolveParameterSpaceParams(tmpl, nil, ps, map[string]string{"End": "5"})
 	if len(errs) != 0 {
 		t.Fatalf("unexpected errors: %v", errs)
 	}
@@ -1197,7 +1197,7 @@ func TestResolveParameterSpaceParams_NonLoneRangeExprError(t *testing.T) {
 		},
 	}
 
-	got, errs := openjd.ResolveParameterSpaceParams(tmpl, ps, map[string]string{})
+	got, errs := openjd.ResolveParameterSpaceParams(tmpl, nil, ps, map[string]string{})
 	if got != nil {
 		t.Errorf("expected nil output on error, got %v", got)
 	}
@@ -1230,7 +1230,7 @@ func TestResolveParameterSpaceParams_NonLoneRangeExprMetered(t *testing.T) {
 		},
 	}
 
-	got, errs := openjd.ResolveParameterSpaceParams(tmpl, ps, nil)
+	got, errs := openjd.ResolveParameterSpaceParams(tmpl, nil, ps, nil)
 	if got != nil {
 		t.Errorf("expected nil output on error, got %v", got)
 	}
@@ -1262,7 +1262,7 @@ func TestResolveParameterSpaceParams_NonLoneRangeExprMetered(t *testing.T) {
 // requires the ENTIRE field to be one reference; the trailing literal rules
 // that out), so all three exercise this task's new
 // resolveFormatStringExpr/checkFormatString-agreement machinery, not
-// evalRangeExprList's whole-field-lone path (which remains genuinely
+// evalRangeExprField's whole-field-lone path (which remains genuinely
 // section-2.1-safe, per its own doc comment, and is untouched by this case).
 func TestResolveParameterSpaceParams_NonLoneRangeExprEmbeddedRangeExprValue(t *testing.T) {
 	for _, tc := range []struct {
@@ -1327,7 +1327,7 @@ func TestResolveParameterSpaceParams_NonLoneRangeExprEmbeddedRangeExprValue(t *t
 				},
 			}
 
-			resolved, errs := openjd.ResolveParameterSpaceParams(tmpl, ps, nil)
+			resolved, errs := openjd.ResolveParameterSpaceParams(tmpl, nil, ps, nil)
 			if len(errs) != 0 {
 				t.Fatalf("ResolveParameterSpaceParams: unexpected errors: %v", errs)
 			}

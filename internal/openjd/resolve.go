@@ -17,9 +17,10 @@ import (
 // Both "Param.<name>" and "RawParam.<name>" resolve to the same bound string
 // value — path mapping is worker-side and out of scope at submit time.
 //
-// tmpl is the job template ps was parsed from. It exists on this signature
-// for exactly two things, both gated on tmpl.hasExtension("EXPR") (tmpl may
-// be nil, which is treated the same as an extension-less template):
+// tmpl is the job template ps was parsed from, and step is the step template
+// ps belongs to (nil is allowed for both, and a nil tmpl is treated the same
+// as an extension-less template). They exist on this signature for exactly
+// three things, all gated on tmpl.hasExtension("EXPR"):
 //
 //   - deciding whether a whole-field RangeExpr that is a LONE {{...}}
 //     expression (fmtstring.LoneRef — the entire field is one reference, no
@@ -30,21 +31,28 @@ import (
 //     whether each embedded {{...}} is read as an EXPRESSION (evaluated,
 //     expr.TAny, rendered to text) rather than a bare dotted-identifier
 //     lookup (resolveFormatStringExpr, resolveRangeListEntry);
-//   - building the phase-2 ScopeJob symbol table (symbolsFor) that
-//     evaluation runs against, with jobParams already bound concrete —
+//   - building the phase-2 ScopeJob symbol table that evaluation runs
+//     against, with jobParams already bound concrete —
 //     Submitter.prepareTemplate's step 2d re-check runs the identical
 //     construction over the identical map, so a range expression this
 //     package resolves and the one checkTemplateExpressions already accepted
-//     read the same job-parameter values the same way.
+//     read the same job-parameter values the same way;
+//   - evaluating step's OWN let: block and merging the names it binds into
+//     that table, which is what section 3.6.2 row 1 grants a step template's
+//     let: at the parameterSpace position. Both halves are shared with the
+//     checker rather than reimplemented (exprcheck.go's stepLetSymbols and
+//     rangeScopeSymbols), because them being built separately is exactly how
+//     they drifted: before EXPR sub-project E4b's whole-branch review this
+//     function passed no step at all, so a step-level let: ["base = 10"] with
+//     range: "{{ [base, base + 1] }}" validated at upload, passed the phase-2
+//     re-check, and then failed HERE with unknown symbol "base" — a symbol
+//     the checker had just certified.
 //
-// This is the smallest signature change that gets the caller (submit.go's
-// expandStepTaskParams, the function's only production call site) both
-// facts: tmpl already carries the extension declaration AND the parameter
-// definitions symbolsFor needs, so no second parameter (a bool, or a
-// pre-built symbol table) is needed alongside it. A nil tmpl, or one that
-// does not declare EXPR, takes exactly the base-spec substitution path this
-// function has always taken — see [resolveRangeExprField]'s own doc comment
-// for why that matters and how it is proven.
+// A nil tmpl, or one that does not declare EXPR, takes exactly the base-spec
+// substitution path this function has always taken — see
+// [resolveRangeExprField]'s own doc comment for why that matters and how it
+// is proven. step is read only on the EXPR path, so a base-spec caller may
+// pass nil for it freely.
 //
 // The input ps is never mutated; a fresh struct (with a new slice of
 // TaskParamDefinition values) is always returned on success.
@@ -59,25 +67,38 @@ import (
 //	/parameterSpace/taskParameterDefinitions/<i>/range
 //	/parameterSpace/taskParameterDefinitions/<i>/range/<j>   (RangeList entry j)
 //
+// A malformed or unevaluatable entry in step's own let: block is reported the
+// same way, at pointer /let/<i> — the checker has already rejected it by the
+// time production reaches here, but reporting it directly beats letting every
+// range expression that referenced the failed binding fail with a misleading
+// "unknown symbol" instead.
+//
 // All task-parameter definitions are inspected before returning so callers
 // receive a complete error list in one round-trip. On any error (nil, errs)
 // is returned.
-func ResolveParameterSpaceParams(tmpl *JobTemplate, ps *StepParameterSpace, jobParams map[string]string) (*StepParameterSpace, ValidationErrors) {
+func ResolveParameterSpaceParams(
+	tmpl *JobTemplate, step *StepTemplate, ps *StepParameterSpace, jobParams map[string]string,
+) (*StepParameterSpace, ValidationErrors) {
 	if ps == nil {
 		return nil, nil
 	}
 
 	exprEnabled := tmpl != nil && tmpl.hasExtension("EXPR")
 
-	// The phase-2 ScopeJob symbol table (section 1.3.12's range field sits at
-	// the same ScopeJob position host requirements do — see exprcheck.go's
-	// checkStepExpressions), built only when EXPR is declared: step and env
-	// are nil, so only Param.<name>/RawParam.<name> are bound, each to its
-	// concrete jobParams value. Left nil (never read) when EXPR is not
-	// declared, which is the point — see resolveRangeExprField.
+	var errs ValidationErrors
+
+	// The phase-2 symbol table, built only when EXPR is declared, and built by
+	// the CHECKER'S OWN two helpers so the two layers cannot disagree about
+	// what is in scope: ScopeJob's fixed and family symbols (section 1.3.12's
+	// range field sits at the same ScopeJob position host requirements do —
+	// see exprcheck.go's checkStepExpressions) plus, per section 3.6.2 row 1,
+	// the names step's own let: block binds. Left nil (never read) when EXPR
+	// is not declared, which is the point — see resolveRangeExprField.
 	var syms expr.MapSymbols
 	if exprEnabled {
-		syms = symbolsFor(tmpl, nil, nil, ScopeJob, jobParams)
+		stepLet, letErrs := stepLetSymbols(tmpl, step, jobParams, "")
+		errs = append(errs, letErrs...)
+		syms = rangeScopeSymbols(tmpl, stepLet, jobParams)
 	}
 
 	// Build a fmtstring scope: each job-param name → value, exposed as both
@@ -90,7 +111,6 @@ func ResolveParameterSpaceParams(tmpl *JobTemplate, ps *StepParameterSpace, jobP
 		scope["RawParam."+name] = value
 	}
 
-	var errs ValidationErrors
 	newDefs := make([]TaskParamDefinition, len(ps.TaskParameterDefinitions))
 
 	for i, def := range ps.TaskParameterDefinitions {
@@ -167,8 +187,11 @@ func ResolveParameterSpaceParams(tmpl *JobTemplate, ps *StepParameterSpace, jobP
 //
 // When exprEnabled is true, raw is inspected first: only when it is a LONE
 // {{...}} expression (fmtstring.LoneRef — the whole field is one reference,
-// nothing else) is it section 1.3.12's extended form, evaluated against syms
-// and converted into a range list (see evalRangeExprList). Any other shape —
+// nothing else) is it section 1.3.12's whole-field form, evaluated against
+// syms by evalRangeExprField. That evaluation returns EITHER a range list (a
+// list or range_expr result) OR range TEXT (an int or string result, which
+// for an INT/CHUNK[INT] field is the section's own "in addition to the
+// original <IntRangeExpr> grammar" case) — see that function. Any other shape —
 // literal text with no {{}} at all ("1-100:2"), or a {{...}} reference
 // embedded in surrounding text ("1-{{Param.End}}") — is NOT a whole-field
 // list expression, but as of this task it is still a section 1.3.2 format
@@ -191,8 +214,8 @@ func ResolveParameterSpaceParams(tmpl *JobTemplate, ps *StepParameterSpace, jobP
 //
 // The result of this branch is still TEXT, assigned back into rangeExpr,
 // exactly as the base-spec branch below does — NOT a value handed to
-// evalRangeExprList's list-producing path. That is deliberate, and it is NOT
-// a second occurrence of section 2.1's trap (see evalRangeExprList's own doc
+// evalRangeExprField's list-producing path. That is deliberate, and it is NOT
+// a second occurrence of section 2.1's trap (see evalRangeExprField's own doc
 // comment for the trap's full statement) — but NOT for the reason an earlier
 // version of this comment gave. An embedded reference here CAN legitimately
 // evaluate to a genuine range_expr-typed value — "{{ range_expr(\"10-15:2,1-5\") }},7"
@@ -213,7 +236,7 @@ func ResolveParameterSpaceParams(tmpl *JobTemplate, ps *StepParameterSpace, jobP
 // The ruling (coordinator, EXPR sub-project E4b Task 2 fix round 1): KEEP
 // this behavior — it is correct, not a defect. Section 2.1's rule is scoped
 // to the LONE whole-field form, where the expression IS the range and
-// evalRangeExprList evaluates it as a VALUE (list[elemType] or, for a
+// evalRangeExprField evaluates it as a VALUE (list[elemType] or, for a
 // genuine range_expr, range_expr's own list[int] coercion — never
 // re-entering <IntRangeExpr> text at all, which is what section 2.1 actually
 // forbids). It does not govern a reference EMBEDDED in surrounding range
@@ -257,11 +280,10 @@ func resolveRangeExprField(
 ) (rangeExpr *string, rangeList []string, err error) {
 	if exprEnabled {
 		if body, ok := fmtstring.LoneRef(raw); ok {
-			list, err := evalRangeExprList(body, typ, syms)
-			if err != nil {
-				return nil, nil, err
-			}
-			return nil, list, nil
+			// evalRangeExprField returns this function's own two-result shape
+			// directly, so there is nothing to adapt: exactly one of the two
+			// is non-nil either way.
+			return evalRangeExprField(body, typ, syms)
 		}
 
 		resolved, err := resolveFormatStringExpr(raw, syms, expr.TAny, submissionLimits()...)
@@ -356,7 +378,7 @@ func resolveFormatStringExpr(s string, syms expr.MapSymbols, loneTarget expr.Typ
 		// for an INT/FLOAT/PATH entry, not always TString. A parameter that
 		// varies must not crash the process (inside a synchronous submit
 		// handler, no less) the first time it does. String() is the same
-		// rendering evalRangeExprList's elements already use and is total
+		// rendering evalRangeExprField's elements already use and is total
 		// over every Value — the safe choice here costs nothing and is what
 		// makes threading rangeExprElemType through loneTarget safe at all.
 		// See TestResolveFormatStringExpr_NonStringLoneTargetDoesNotPanic.
@@ -400,7 +422,7 @@ func resolveFormatStringExpr(s string, syms expr.MapSymbols, loneTarget expr.Typ
 
 // errUnresolvedRangeValue reports an EXPR evaluation that produced a
 // still-unresolved value at a range-field position — unreachable in
-// production for the same reason evalRangeExprList's identical guard is (see
+// production for the same reason evalRangeExprField's identical guard is (see
 // that function's doc comment): syms binds every ScopeJob symbol concrete by
 // the time this package's one caller runs. Reported rather than letting an
 // unresolved value's diagnostic "<unresolved[T]>" rendering (Value.String())
@@ -412,39 +434,70 @@ func errUnresolvedRangeValue(v expr.Value) error {
 	)
 }
 
-// evalRangeExprList evaluates body — the inner source of a lone whole-field
-// {{...}} range expression — against syms and returns its value as range-list
-// entries, per the design spec's section 1.3.12 extended-range table:
+// evalRangeExprField evaluates body — the inner source of a lone whole-field
+// {{...}} range expression — against syms, and returns EITHER range text
+// (rangeText non-nil) OR range-list entries (rangeList non-nil), never both,
+// per section 1.3.12's extended-range table. That is deliberately
+// resolveRangeExprField's own (rangeExpr, rangeList) return shape, so its lone
+// branch is a bare `return` of this call with nothing to adapt:
 //
-//	INT / CHUNK[INT]   range_expr | list[int]
+//	INT / CHUNK[INT]   int | string | range_expr | list[int]
 //	FLOAT              list[float]
 //	STRING             list[string]
 //	PATH               list[path]
 //
-// The evaluation TARGET is always list[<the field's own element type>]
-// (rangeExprElemType), never a bare range_expr type or expr.TAny. This is
-// what keeps this function on the correct side of the design spec's section
-// 2.1 trap, stated in full there: internal/openjd's OWN <IntRangeExpr>
-// reader (parseIntRangeExpr, expand.go, via internal/openjd/intrange with
-// Policy{PositiveStepOnly, AscendingOnly}) applies a policy that deliberately
-// DIFFERS from internal/openjd/expr's (the zero Policy) in three ways this
-// repo has decided to preserve — it rejects start > end, rejects a negative
-// step, and expands in first-seen rather than increasing order. Stringifying
-// an expression-produced range_expr value back into <IntRangeExpr> text and
-// re-parsing it through that reader would re-admit it under the STRICTER
-// policy, silently rejecting or reordering a range the expression language
-// legitimately produced.
+// The evaluation TARGET is rangeExprFieldType(typ) — literally the CHECKER'S
+// OWN function (exprcheck.go), not a second target chosen to match it. That
+// is what makes the two layers' accept/reject verdicts, and their rejection
+// MESSAGES, identical for the same input. Before EXPR sub-project E4b's
+// whole-branch review they were separately chosen and separately too narrow
+// in the same direction, so they agreed only by coincidence — the checker
+// said "cannot be coerced to list[int] | range_expr" and this function said
+// "cannot be coerced to list[int]" for one and the same template.
 //
-// coerce() (coerce.go) already implements range_expr -> list[int] as one of
-// section 1.2.3's three list rules — coerceList calls the unexported
+// THE TWO INT MEMBERS THAT ARE NOT LISTS. Section 1.3.12 leaves the INT row
+// "(unchanged, but see RangeString note below)", and that note extends the
+// RangeString with an expression evaluating to a range_expr or a list[int]
+// "IN ADDITION TO the original <IntRangeExpr> grammar". A RangeString is
+// itself a Format String (Template Schemas §3.4.1.1.1), so a lone {{...}}
+// evaluating to an int or a string is still that original grammar: the
+// expression produced range TEXT, not a range value. Those two are therefore
+// rendered with Value.String() and handed back as rangeText, which
+// resolveRangeExprField assigns to RangeExpr and expand.go's
+// parseIntRangeExpr then reads under internal/openjd's own base-spec policy —
+// exactly as it reads a hand-typed "1-100:2", and exactly consistent with the
+// embedded-reference ruling in resolveRangeExprField's doc comment: text a
+// human could have typed by hand is base-spec text.
+//
+// THE DISPATCH ORDER BELOW IS LOAD-BEARING, in a way the union's own member
+// order is not (expr.UnionOf sorts members, and section 1.2.3's match-first
+// rule is implemented order-independently — see rangeExprFieldType). A list
+// and a range_expr result MUST be recognized BEFORE the text fallback. Send a
+// lone {{ range_expr("10-15:2,1-5") }} down the text path instead and it
+// would be re-parsed by parseIntRangeExpr, which is precisely the design
+// spec's section 2.1 trap. That trap, stated in full: internal/openjd's OWN
+// <IntRangeExpr> reader (parseIntRangeExpr, expand.go, via
+// internal/openjd/intrange with Policy{PositiveStepOnly, AscendingOnly})
+// applies a policy that deliberately DIFFERS from internal/openjd/expr's (the
+// zero Policy) in three ways this repo has decided to preserve — it rejects
+// start > end, rejects a negative step, and expands in first-seen rather than
+// increasing order. Re-admitting an expression-produced range_expr under the
+// STRICTER policy would silently reject, or silently reorder, a range the
+// expression language legitimately produced.
+// TestRangeCheckerResolverAgreement_LoneRangeExprPolicy is the detector for
+// exactly that mistake: it pins [1,2,3,4,5,10,12,14] (ascending, expr's
+// policy) for that call, where the text path would give [10,12,14,1,2,3,4,5].
+//
+// expr.Coerce (coerce.go) already implements range_expr -> list[int] as one
+// of section 1.2.3's three list rules — coerceList calls the unexported
 // rangeInts directly on the VALUE, with no detour through text at all — so
-// targeting list[int] here reuses the exact same conversion sub-project C1
-// built for the language's own list(range_expr) function, rather than this
-// package writing a second, independent implementation of "take the
-// integers out of a range_expr". One code path, not two: a range_expr result
-// and a literal list[int] result (e.g. from range(), which returns list[int]
-// directly — funcslist.go) are indistinguishable by the time this function's
-// caller sees them.
+// the range_expr arm reuses the exact conversion sub-project C1 built for the
+// language's own list(range_expr) function, rather than this package writing
+// a second, independent implementation of "take the integers out of a
+// range_expr". One code path, not two: a range_expr result and a literal
+// list[int] result (e.g. from range(), which returns list[int] directly —
+// funcslist.go) are indistinguishable by the time this function's caller sees
+// them.
 //
 // Every element is rendered to text with Value.String() — the same
 // conversion coerceScalar's own CodeString case performs (coerce a value to
@@ -467,11 +520,12 @@ func errUnresolvedRangeValue(v expr.Value) error {
 // match the brief's hypothesized values exactly, so there is no ruling to
 // change here, only to record: the existing mechanism already produces the
 // spec-correct answer, reused rather than reimplemented.
-func evalRangeExprList(body string, typ TaskParamType, syms expr.MapSymbols) ([]string, error) {
-	elemType := rangeExprElemType(typ)
-	v, err := expr.Eval(body, syms, expr.ListOf(elemType), submissionLimits()...)
+func evalRangeExprField(
+	body string, typ TaskParamType, syms expr.MapSymbols,
+) (rangeText *string, rangeList []string, err error) {
+	v, err := expr.Eval(body, syms, rangeExprFieldType(typ), submissionLimits()...)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if v.IsUnresolved() {
 		// Unreachable in production: syms binds every ScopeJob symbol
@@ -484,25 +538,51 @@ func evalRangeExprList(body string, typ TaskParamType, syms expr.MapSymbols) ([]
 		// unresolved value flow into output unnoticed (expr/value.go's
 		// mustBe doc comment: "a silent zero would flow into a rendered
 		// command line unnoticed").
-		return nil, fmt.Errorf("range expression %q produced an unresolved value", body)
+		return nil, nil, fmt.Errorf("range expression %q produced an unresolved value", body)
 	}
+
+	// Order matters — see the doc comment. Note also that neither of the two
+	// list-producing arms may be reached with AsList() called unguarded: that
+	// method panics (Value.mustBe) for any payload other than CodeList, and
+	// since this task widened the INT target an int or a string result really
+	// does arrive here. The switch IS the guard.
+	switch v.Type.Code {
+	case expr.CodeList:
+		return nil, listValueTexts(v), nil
+	case expr.CodeRangeExpr:
+		lv, cerr := expr.Coerce(v, expr.ListOf(expr.TInt))
+		if cerr != nil {
+			return nil, nil, cerr
+		}
+		return nil, listValueTexts(lv), nil
+	default:
+		text := v.String()
+		return &text, nil, nil
+	}
+}
+
+// listValueTexts renders a list value's elements to the text form a
+// RangeList entry carries. See evalRangeExprField's doc comment for why
+// Value.String() is the right rendering and what it means for a computed
+// FLOAT.
+func listValueTexts(v expr.Value) []string {
 	elems := v.AsList()
 	out := make([]string, len(elems))
 	for i, elem := range elems {
 		out[i] = elem.String()
 	}
-	return out, nil
+	return out
 }
 
 // rangeExprElemType maps a task-parameter's declared type to the element
-// type evalRangeExprList targets when evaluating a whole-field range
-// expression, per section 1.3.12's extended-range table (see that function's
-// doc comment).
+// type rangeExprFieldType wraps, and the type a single RangeList entry is
+// evaluated against, per section 1.3.12's extended-range table (see
+// evalRangeExprField's doc comment).
 //
 // INT and CHUNK[INT] share expr.TInt: expand.go's expandChunkInt still reads
 // a CHUNK[INT] definition's RangeList as individual integer strings and
 // groups them into chunks itself after this package hands them back —
-// chunking is not this function's, evalRangeExprList's, or
+// chunking is not this function's, evalRangeExprField's, or
 // ResolveParameterSpaceParams' concern, only producing the flat per-value
 // list is.
 func rangeExprElemType(typ TaskParamType) expr.Type {

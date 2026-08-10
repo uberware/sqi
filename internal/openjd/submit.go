@@ -409,10 +409,12 @@ func (s *Submitter) expandStepTaskParams(
 	deriveBounds bool,
 ) ([]TaskParams, error) {
 	// Resolve {{Param.*}} / {{RawParam.*}} in the parameter space first. tmpl
-	// carries the EXPR declaration and the job-parameter definitions
-	// ResolveParameterSpaceParams needs to evaluate a section 1.3.12 whole-
-	// field range expression — see that function's own doc comment.
-	resolvedPS, resolveErrs := ResolveParameterSpaceParams(tmpl, stepTmpl.ParameterSpace, boundParams)
+	// carries the EXPR declaration and the job-parameter definitions, and
+	// stepTmpl carries the step's own let: block (section 3.6.2 row 1), which
+	// together are what ResolveParameterSpaceParams needs to evaluate a
+	// section 1.3.12 whole-field range expression against the same symbol
+	// table the checker used — see that function's own doc comment.
+	resolvedPS, resolveErrs := ResolveParameterSpaceParams(tmpl, &stepTmpl, stepTmpl.ParameterSpace, boundParams)
 	if len(resolveErrs) > 0 {
 		stepPrefix := fmt.Sprintf("/steps/%d", stepIdx)
 		for k := range resolveErrs {
