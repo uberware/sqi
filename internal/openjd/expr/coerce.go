@@ -248,6 +248,37 @@ func scalarCoercible(from, to Code) bool {
 // applied and then failed on the value.
 var errNotCoercible = errors.New("cannot be coerced")
 
+// Coerce converts v to target per section 1.2.3's implicit type coercion --
+// the very same conversion an evaluation's own target type applies to its
+// result, exported so a caller that has ALREADY evaluated can convert once
+// more without re-parsing and re-evaluating the source.
+//
+// It exists for one caller, and the reason is structural rather than
+// convenient. internal/openjd's task-parameter range resolver
+// (resolve.go's evalRangeExprField) must evaluate a whole-field range
+// expression against exactly the type section 1.3.12 gives that field --
+// "int | string | range_expr | list[int]" for an INT parameter -- because
+// anything else would make its accept/reject verdict differ from the
+// checker's, which is the drift the whole wave exists to prevent. But those
+// four union members mean DIFFERENT things downstream: an int or a string
+// becomes range TEXT, while a range_expr or a list becomes the range's
+// VALUES. So the resolver evaluates against the union, then converts the
+// range_expr arm -- and only that arm -- into list[int].
+//
+// Doing that second step through this function reuses section 1.2.3's own
+// range_expr -> list[int] rule (coerceList's rangeInts call, which expands in
+// increasing, de-duplicated order per section 3.4.1.1.1). The alternative
+// would be a second, independent implementation of "take the integers out of
+// a range_expr" living in internal/openjd, whose ordering policy could drift
+// from this package's -- and internal/openjd already has a deliberately
+// DIFFERENT <IntRangeExpr> policy (first-seen order, no negative step, no
+// start > end), so "drift" there is not hypothetical, it is the default
+// outcome of writing the expansion twice.
+//
+// Errors carry no position, exactly as coerce's do: the caller is expected to
+// attach whatever position it has.
+func Coerce(v Value, target Type) (Value, error) { return coerce(v, target) }
+
 // coerce converts v to the target type, per section 1.2.3.
 //
 // Errors carry no position: like every operator implementation, this returns a
@@ -323,6 +354,30 @@ func coerce(v Value, target Type) (Value, error) {
 // Coercing one narrows its constraint and it stays a placeholder — which is
 // what lets a type check proceed through a coercion boundary.
 func coerceUnresolved(v Value, target Type) (Value, error) {
+	// The direct-membership carve-out, the exact counterpart of coerce()'s own
+	// (directUnionMember, below), and missing here until EXPR sub-project
+	// E4b's whole-branch review. coercible answers "does a CONVERSION apply"
+	// and is pinned false for a type a union target already admits unchanged,
+	// so asking it alone made a PLACEHOLDER strictly harder to coerce than a
+	// concrete value of the very same type: coerce() reaches
+	// directUnionMember before it ever consults coercible, and a concrete
+	// string against "int | list[int] | range_expr | string" therefore passed
+	// while unresolved[string] against the identical target was rejected.
+	//
+	// Phase 1 is exactly where that asymmetry bites: every job parameter is an
+	// unresolved placeholder at template-upload time (symbolsFor, exprcheck.go),
+	// so section 1.3.12's four-member INT range union — the first target in
+	// this codebase with more than one scalar member — rejected
+	// range: "{{Param.Frames}}" at upload and then accepted the identical
+	// expression at submit once Frames was bound. Reported at review as
+	// "declaring EXPR removes base-spec capability at this field".
+	//
+	// Narrowing to the whole union (below) rather than to the member is the
+	// same thing every other success here does: a placeholder carries a
+	// constraint, not a decision.
+	if c, ok := unresolvedConstraint(v.Type); ok && directUnionMember(target, c) {
+		return Unresolved(target), nil
+	}
 	if !coercible(v.Type, target) {
 		return Value{}, fmt.Errorf("%s %w to %s", v.Type, errNotCoercible, target)
 	}

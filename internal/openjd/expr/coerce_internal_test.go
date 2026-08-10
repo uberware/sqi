@@ -598,3 +598,120 @@ func valueMayNotFit(v Value, target Type) bool {
 	}
 	return false
 }
+
+// TestCoerceUnresolved_DirectUnionMember pins the carve-out coerceUnresolved
+// gained in EXPR sub-project E4b's whole-branch review fix: a PLACEHOLDER
+// whose constraint a union target already names must coerce exactly as
+// readily as a CONCRETE value of that same type does.
+//
+// Before it, coerceUnresolved consulted only coercible, which is deliberately
+// pinned FALSE for a type a target already admits unchanged (see
+// directUnionMember's own doc comment) -- so an unresolved placeholder was
+// strictly harder to coerce than a real value, and a union with more than one
+// scalar member rejected every placeholder outright. That is not a corner:
+// every job parameter is a placeholder at template-validation time, and
+// section 1.3.12's INT range target
+// ("int | string | range_expr | list[int]") is precisely such a union, so
+// range: "{{Param.Frames}}" was rejected at upload and accepted at submit.
+func TestCoerceUnresolved_DirectUnionMember(t *testing.T) {
+	rangeField := UnionOf(TInt, TString, TRangeExpr, ListOf(TInt))
+
+	tests := []struct {
+		name       string
+		constraint Type
+		target     Type
+		wantOK     bool
+	}{
+		{"string constraint, 4-member range union", TString, rangeField, true},
+		{"int constraint, 4-member range union", TInt, rangeField, true},
+		{"range_expr constraint, 4-member range union", TRangeExpr, rangeField, true},
+		{"list[int] constraint, 4-member range union", ListOf(TInt), rangeField, true},
+		// Not a member and not coercible into one: bool has no conversion to
+		// int, string is ambiguous with two scalar members present, and there
+		// is no bool rule at all.
+		{"bool constraint, 4-member range union", TBool, rangeField, false},
+		{"float constraint, 4-member range union", TFloat, rangeField, false},
+		// The narrower, single-scalar unions that already worked keep working
+		// through coercible's own catch-all, not through the new carve-out.
+		{"string constraint, string? | list[string]", TString, UnionOf(OptionalOf(TString), ListOf(TString)), true},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := coerce(Unresolved(tc.constraint), tc.target)
+			if tc.wantOK {
+				if err != nil {
+					t.Fatalf("coerce(unresolved[%s], %s) = %v, want it to succeed", tc.constraint, tc.target, err)
+				}
+				if !got.IsUnresolved() {
+					t.Fatalf("coerce returned %v, want a placeholder", got)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatalf("coerce(unresolved[%s], %s) = %v, want an error", tc.constraint, tc.target, got)
+			}
+		})
+	}
+}
+
+// TestCoerceUnresolved_MatchesConcreteValue is the invariant behind the test
+// above, stated directly: for every scalar type and the section 1.3.12 range
+// union, a placeholder and a concrete value of the same type must get the
+// SAME verdict. The asymmetry is the bug; this is what would catch it coming
+// back by any route, not only through coerceUnresolved.
+func TestCoerceUnresolved_MatchesConcreteValue(t *testing.T) {
+	target := UnionOf(TInt, TString, TRangeExpr, ListOf(TInt))
+	rng, err := RangeExpr("1-3")
+	if err != nil {
+		t.Fatalf("RangeExpr: %v", err)
+	}
+	concretes := []Value{Int(1), String("1-3"), rng, List(TInt, []Value{Int(1)}), Bool(true), Float(2.5)}
+
+	for _, v := range concretes {
+		t.Run(v.Type.String(), func(t *testing.T) {
+			_, concreteErr := coerce(v, target)
+			_, placeholderErr := coerce(Unresolved(v.Type), target)
+			if (concreteErr == nil) != (placeholderErr == nil) {
+				t.Fatalf(
+					"asymmetry for %s against %s: concrete err = %v, placeholder err = %v",
+					v.Type, target, concreteErr, placeholderErr,
+				)
+			}
+		})
+	}
+}
+
+// TestCoerce_ExportedMatchesInternal pins that the exported Coerce is exactly
+// the internal coerce -- it exists to give internal/openjd's range resolver
+// section 1.2.3's own range_expr -> list[int] conversion rather than a second
+// implementation of it (see Coerce's doc comment), so it must not acquire
+// behavior of its own.
+func TestCoerce_ExportedMatchesInternal(t *testing.T) {
+	rng, err := RangeExpr("10-15:2,1-5")
+	if err != nil {
+		t.Fatalf("RangeExpr: %v", err)
+	}
+
+	got, err := Coerce(rng, ListOf(TInt))
+	if err != nil {
+		t.Fatalf("Coerce(range_expr, list[int]): %v", err)
+	}
+	// Section 3.4.1.1.1's increasing, de-duplicated order -- the whole reason
+	// the resolver must use this conversion and not internal/openjd's own
+	// first-seen <IntRangeExpr> reader.
+	want := []int64{1, 2, 3, 4, 5, 10, 12, 14}
+	elems := got.AsList()
+	if len(elems) != len(want) {
+		t.Fatalf("Coerce produced %d elements, want %d: %v", len(elems), len(want), elems)
+	}
+	for i, w := range want {
+		if elems[i].AsInt() != w {
+			t.Fatalf("element %d = %d, want %d", i, elems[i].AsInt(), w)
+		}
+	}
+
+	if _, err := Coerce(Bool(true), TInt); err == nil {
+		t.Fatal("Coerce(bool, int) = nil error, want the same refusal coerce gives")
+	}
+}
