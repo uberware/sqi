@@ -780,6 +780,33 @@ type templateBudget struct {
 
 func newTemplateBudget() *templateBudget { return &templateBudget{} }
 
+// templateBudgetOrFresh returns budget[0] when the caller supplied one
+// (EXPR sub-project E4c's Task 4: a shared budget threaded in from outside,
+// e.g. submit.go's ONE phase-2 budget spanning both checkTemplateExpressions
+// and every step's ResolveParameterSpaceParams call for the same submission),
+// or a brand-new [templateBudget] otherwise -- the exact allowance
+// checkTemplateExpressions has always allocated for itself.
+//
+// This is the mechanism that keeps every existing call site (validate.go's
+// checkTemplateExpressions(t, nil), every direct unit-test call in this
+// package, and every pre-Task-4 caller of [ResolveParameterSpaceParams])
+// compiling and behaving byte for byte unchanged: a trailing variadic
+// parameter with zero arguments supplied is indistinguishable, at the call
+// site, from a function that never took the parameter at all. Only Task 4's
+// two NEW callers -- submit.go's prepareTemplate/Submit -- ever pass a
+// non-nil budget.
+//
+// budget[0] == nil (an explicit nil passed where a *templateBudget was
+// expected) is treated the same as "no budget supplied": a nil budget must
+// never reach chargePositions/chargeRetainedBytes, both of which write
+// through the pointer unconditionally.
+func templateBudgetOrFresh(budget []*templateBudget) *templateBudget {
+	if len(budget) > 0 && budget[0] != nil {
+		return budget[0]
+	}
+	return newTemplateBudget()
+}
+
 // ok reports whether the budget has not yet been exhausted.
 func (b *templateBudget) ok() bool { return b.err == nil }
 
@@ -942,17 +969,22 @@ func templateExprRetainedBytes(syms expr.MapSymbols) int64 {
 // today -- decodeAction (parse.go) decodes "timeout" as a strict integer, so
 // no format-string body can ever reach this position until that decoder is
 // changed, which is a separate, later gap this task does not close.
-func checkTemplateExpressions(tmpl *JobTemplate, params map[string]string) ValidationErrors {
+func checkTemplateExpressions(tmpl *JobTemplate, params map[string]string, budget ...*templateBudget) ValidationErrors {
 	if tmpl == nil || !tmpl.hasExtension("EXPR") {
 		return nil
 	}
 
-	// b is this CALL's budget -- fresh every time, which is what gives phase
-	// 1 and phase 2 their own separate allowance (design spec §3.1; see
-	// templateBudget's own doc comment). Nothing else needs to change at
-	// either call site (ValidateWithOptions, checkExpressionsAtSubmit) for
-	// that to hold: both already call this function fresh, once per phase.
-	b := newTemplateBudget()
+	// b is this CALL's budget -- fresh every time UNLESS the caller threads
+	// one in (templateBudgetOrFresh), which is what gives phase 1 and phase 2
+	// their own separate allowance (design spec §3.1; see templateBudget's
+	// own doc comment). ValidateWithOptions (phase 1) never passes one, so it
+	// is unaffected by this parameter's addition -- Task 4 lets
+	// checkExpressionsAtSubmit (phase 2) share this call's budget with the
+	// SAME submission's ResolveParameterSpaceParams calls (resolve.go),
+	// because both walk the SAME parameter-space range positions and
+	// together represent one submission's total re-check cost -- see
+	// submit.go's prepareTemplate/Submit.
+	b := templateBudgetOrFresh(budget)
 	var errs ValidationErrors
 
 	if b.chargePositions(1, "/name") {

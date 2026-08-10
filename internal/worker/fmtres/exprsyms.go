@@ -618,7 +618,19 @@ func splitLetBinding(raw string) (name, exprSrc string, err error) {
 // errors.Join'd into one returned error -- nil when every binding in the
 // (possibly truncated) block evaluated successfully. The one exception is
 // the retained-bytes bound, which stops the block; see workerLetRetainedLimit.
-func evalLetBindings(label string, lets []string, syms, mergeTarget expr.MapSymbols, opts []expr.Option) error {
+//
+// budget is EXPR sub-project E4c's Task 4 addition: charged the SAME size
+// (expr.SizeOf(v)) already computed for the per-table workerLetRetainedLimit
+// check, immediately after that check passes -- so a binding that survives
+// its own table's 10 MB ceiling but would push the WHOLE ASSIGNMENT'S
+// retained bytes (task table plus every environment's) over
+// assignmentMaxRetainedBytes still stops the block, exactly as the per-table
+// check does, just against a wider ledger. See [AssignmentBudget]'s own doc
+// comment for the full account. Omitting it (every pre-Task-4 caller) charges
+// a fresh, throwaway budget that can never trip from one block alone.
+func evalLetBindings(
+	label string, lets []string, syms, mergeTarget expr.MapSymbols, opts []expr.Option, budget ...*AssignmentBudget,
+) error {
 	if len(lets) > maxLetBindings {
 		lets = lets[:maxLetBindings]
 	}
@@ -641,8 +653,19 @@ func evalLetBindings(label string, lets []string, syms, mergeTarget expr.MapSymb
 	}
 
 	retained := tableRetainedBytes(budgeted)
+	b := assignmentBudgetOrFresh(budget)
 	var errs []error
 	for i, raw := range lets {
+		if err := b.Err(); err != nil {
+			// The ASSIGNMENT-wide budget (charged by an earlier binding in
+			// THIS block, an earlier block on THIS table, or a DIFFERENT
+			// table this same assignment already built) is already spent.
+			// Stop before evaluating another binding -- there is nothing
+			// left to spend it on, and every remaining binding would just
+			// repeat the same fault.
+			errs = append(errs, fmt.Errorf("%s[%d]: %w", label, i, err))
+			break
+		}
 		name, src, err := splitLetBinding(raw)
 		if err != nil {
 			errs = append(errs, fmt.Errorf("%s[%d]: %w", label, i, err))
@@ -680,6 +703,10 @@ func evalLetBindings(label string, lets []string, syms, mergeTarget expr.MapSymb
 				"%s[%d] (%s): let bindings would retain %d bytes, over this symbol table's %d-byte limit",
 				label, i, name, retained+size, workerLetRetainedLimit,
 			))
+			break
+		}
+		if err := b.ChargeRetainedBytes(size, fmt.Sprintf("%s[%d] (%s)", label, i, name)); err != nil {
+			errs = append(errs, err)
 			break
 		}
 		retained += size
@@ -809,10 +836,16 @@ func stepTemplateLetScope(full expr.MapSymbols) expr.MapSymbols {
 // every binding that DID succeed, since a failed binding does not stop the
 // walk; see this section's own doc comment for why continuing past a
 // failure, rather than aborting, is the intended behavior.
-func ApplyTaskLet(msg *protocol.AssignMsg, syms expr.MapSymbols, pathMap []protocol.PathMapRule) error {
+//
+// budget is EXPR sub-project E4c's Task 4 addition: forwarded verbatim to
+// both blocks' evalLetBindings calls, so the task's own let: retention is
+// charged against the SAME [AssignmentBudget] every environment table this
+// assignment builds shares -- see session.Session's own accessor for how the
+// one budget object reaches every phase-3 call site for one assignment.
+func ApplyTaskLet(msg *protocol.AssignMsg, syms expr.MapSymbols, pathMap []protocol.PathMapRule, budget ...*AssignmentBudget) error {
 	opts := ExprEvalOptions(pathMap)
-	tmplErr := applyStepTemplateLet(msg.StepTemplateLet, syms, opts)
-	scriptErr := evalLetBindings("step script let", msg.StepScriptLet, syms, nil, opts)
+	tmplErr := applyStepTemplateLet(msg.StepTemplateLet, syms, opts, budget...)
+	scriptErr := evalLetBindings("step script let", msg.StepScriptLet, syms, nil, opts, budget...)
 	return errors.Join(tmplErr, scriptErr)
 }
 
@@ -829,13 +862,13 @@ func ApplyTaskLet(msg *protocol.AssignMsg, syms expr.MapSymbols, pathMap []proto
 // the narrowed table also holds Job.Name/Step.Name/Param.*/RawParam.*, which
 // syms already has (they are where the narrowed view came from). This mirrors
 // checkStepExpressions' preLetKeys/stepLet computation (exprcheck.go) exactly.
-func applyStepTemplateLet(lets []string, syms expr.MapSymbols, opts []expr.Option) error {
+func applyStepTemplateLet(lets []string, syms expr.MapSymbols, opts []expr.Option, budget ...*AssignmentBudget) error {
 	tmplScope := stepTemplateLetScope(syms)
 	preLetKeys := make(map[string]struct{}, len(tmplScope))
 	for k := range tmplScope {
 		preLetKeys[k] = struct{}{}
 	}
-	err := evalLetBindings("step template let", lets, tmplScope, syms, opts)
+	err := evalLetBindings("step template let", lets, tmplScope, syms, opts, budget...)
 	for k, v := range tmplScope {
 		if _, existed := preLetKeys[k]; !existed {
 			syms[k] = v
@@ -866,10 +899,10 @@ func applyStepTemplateLet(lets []string, syms expr.MapSymbols, opts []expr.Optio
 // ordering the two calls, since it mutates one table rather than cloning.
 //
 // Callers pass the result of EnvSymbols as syms. See [ApplyTaskLet] for
-// pathMap.
-func ApplyEnvLet(env *protocol.AssignEnvironment, syms expr.MapSymbols, pathMap []protocol.PathMapRule) error {
+// pathMap and budget.
+func ApplyEnvLet(env *protocol.AssignEnvironment, syms expr.MapSymbols, pathMap []protocol.PathMapRule, budget ...*AssignmentBudget) error {
 	if env == nil {
 		return nil
 	}
-	return evalLetBindings("environment let", env.Let, syms, nil, ExprEvalOptions(pathMap))
+	return evalLetBindings("environment let", env.Let, syms, nil, ExprEvalOptions(pathMap), budget...)
 }

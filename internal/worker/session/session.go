@@ -137,6 +137,24 @@ type Session struct {
 	// a state the type cannot be in.
 	msg *protocol.AssignMsg
 
+	// exprBudget is EXPR sub-project E4c's Task 4 addition: the ONE
+	// [fmtres.AssignmentBudget] this whole assignment's phase-3 evaluation
+	// shares -- allocated once, here, in Manager.Create, BEFORE
+	// enterEnvironments runs (so every environment table entered during
+	// session creation already shares it), and reused by every later
+	// resolveEnvAction call (onExit, via ExitEnvironments) and by the
+	// executor's own task-table resolution (internal/worker/executor's
+	// resolveAssignmentExpr, via [Session.ExprBudget]). One object per
+	// SESSION -- not per table, and not a worker-process-wide singleton --
+	// is what bounds an assignment's TOTAL phase-3 retained bytes and
+	// resolved positions across every table it builds; see
+	// fmtres.AssignmentBudget's own doc comment for the full account,
+	// including why per-assignment (rather than process-wide) is the
+	// deliberate scope and how worker concurrency factors into its size.
+	// ALWAYS NON-NIL, for the same reason msg is: set in the same struct
+	// literal Create builds before returning.
+	exprBudget *fmtres.AssignmentBudget
+
 	// staticEnv is the merged, fully-resolved static environment from every
 	// environment's Variables, accumulated in enterOne. Each environment's
 	// values are resolved against that environment's OWN Env.File.* scope (the
@@ -200,6 +218,14 @@ func (s *Session) PathMappingRulesFile() string { return s.pathMapFile }
 // HasPathMappingRules reports whether the assignment carried any path-mapping
 // rules. Exposed to format strings as Session.HasPathMappingRules.
 func (s *Session) HasPathMappingRules() bool { return s.hasPathMap }
+
+// ExprBudget returns this assignment's shared [fmtres.AssignmentBudget] --
+// see the exprBudget field's own doc comment. Callers resolving this
+// session's task action (internal/worker/executor) or any of its
+// environment actions (this package's own enterOne/resolveEnvAction) pass
+// this SAME object to every fmtres phase-3 call so the assignment's total
+// resolved-position and retained-byte spend is charged in one place.
+func (s *Session) ExprBudget() *fmtres.AssignmentBudget { return s.exprBudget }
 
 // WriteEmbeddedFiles materializes files into the session working directory.
 // It is called by the executor before running the step OnRun action so that
@@ -655,6 +681,11 @@ func (m *Manager) Create(ctx context.Context, msg *protocol.AssignMsg) (*Session
 		redactedValues: make(map[string]bool),
 		cred:           cred,
 		baseEnv:        baseEnv,
+		// Fresh per assignment -- set here, before enterEnvironments runs
+		// below, so every environment table this session builds during
+		// entry already shares it. See the exprBudget field's own doc
+		// comment.
+		exprBudget: fmtres.NewAssignmentBudget(),
 	}
 
 	// Enter environments in declaration order.
@@ -899,20 +930,20 @@ func (s *Session) resolveEnvEntry(env protocol.AssignEnvironment) (*protocol.Act
 	// Phase 2 checks Variables against the pre-let table for exactly this
 	// reason (checkEnvironmentExpressions, exprcheck.go); resolving them here
 	// is how phase 3 matches it. See fmtres.ApplyEnvLet's doc comment.
-	resolvedVars, err := fmtres.ResolveVarsExpr(env.Variables, syms, s.msg.PathMap)
+	resolvedVars, err := fmtres.ResolveVarsExpr(env.Variables, syms, s.msg.PathMap, s.exprBudget)
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("resolve environment: %w", err)
 	}
 	// Exactly one call over this table — see fmtres.ApplyEnvLet's doc comment.
 	// Both resolutions below (onEnter, then EmbeddedFiles) reuse this same syms.
-	if err := fmtres.ApplyEnvLet(&env, syms, s.msg.PathMap); err != nil {
+	if err := fmtres.ApplyEnvLet(&env, syms, s.msg.PathMap, s.exprBudget); err != nil {
 		return nil, nil, nil, fmt.Errorf("resolve environment: let bindings: %w", err)
 	}
-	resolvedEnter, err := fmtres.ResolveActionExpr(env.OnEnter, syms, s.msg.PathMap)
+	resolvedEnter, err := fmtres.ResolveActionExpr(env.OnEnter, syms, s.msg.PathMap, s.exprBudget)
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("resolve environment: %w", err)
 	}
-	resolvedFiles, err := fmtres.ResolveEmbeddedFilesExpr(env.EmbeddedFiles, syms, s.msg.PathMap)
+	resolvedFiles, err := fmtres.ResolveEmbeddedFilesExpr(env.EmbeddedFiles, syms, s.msg.PathMap, s.exprBudget)
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("resolve embedded file data: %w", err)
 	}
@@ -958,15 +989,15 @@ func (s *Session) resolveEnvAction(env protocol.AssignEnvironment, action *proto
 	// Variables FIRST, before this environment's own let: block is bound —
 	// see [Session.resolveEnvEntry]'s identical comment and
 	// fmtres.ApplyEnvLet's doc comment for why the order is load-bearing.
-	resolvedVars, err := fmtres.ResolveVarsExpr(vars, syms, s.msg.PathMap)
+	resolvedVars, err := fmtres.ResolveVarsExpr(vars, syms, s.msg.PathMap, s.exprBudget)
 	if err != nil {
 		return nil, nil, err
 	}
 	// Exactly one call over this table — see fmtres.ApplyEnvLet's doc comment.
-	if err := fmtres.ApplyEnvLet(&env, syms, s.msg.PathMap); err != nil {
+	if err := fmtres.ApplyEnvLet(&env, syms, s.msg.PathMap, s.exprBudget); err != nil {
 		return nil, nil, fmt.Errorf("let bindings: %w", err)
 	}
-	resolvedAction, err := fmtres.ResolveActionExpr(action, syms, s.msg.PathMap)
+	resolvedAction, err := fmtres.ResolveActionExpr(action, syms, s.msg.PathMap, s.exprBudget)
 	if err != nil {
 		return nil, nil, err
 	}

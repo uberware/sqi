@@ -121,9 +121,22 @@ type SubmitResult struct {
 // parameters (phase 2, sub-project E2's Task 10). Each step's error is
 // wrapped as a *SubmitValidationError, matching Submit's existing contract.
 // Extracted from Submit to keep its cyclomatic complexity within bounds.
+//
+// submitBudget is EXPR sub-project E4c's Task 4 addition: the ONE
+// [templateBudget] this submission's whole phase-2 re-check spends
+// against -- allocated fresh here (a local variable, never a Submitter
+// field, exactly for the same "fresh per call" reason checkTemplateExpressions
+// itself allocates one per call; see templateBudget's own doc comment),
+// spent first by checkExpressionsAtSubmit below, and returned so Submit can
+// thread the SAME object into every step's ResolveParameterSpaceParams call
+// -- see that function's own doc comment for why the two must share one
+// allowance. It is nil whenever err != nil: a caller that gets an error has
+// nothing to do with the budget, and returning it only on success avoids
+// tempting a future caller into spending against a budget that already
+// reflects a failed, partial walk.
 func (s *Submitter) prepareTemplate(
 	ctx context.Context, rawTemplate string, format store.TemplateFormat, params map[string]string,
-) (tmpl *JobTemplate, boundParams map[string]string, err error) {
+) (tmpl *JobTemplate, boundParams map[string]string, submitBudget *templateBudget, err error) {
 	// ── 1. Parse ──────────────────────────────────────────────────────────
 	parseFormat := FormatYAML
 	if format == store.TemplateFormatJSON {
@@ -132,23 +145,23 @@ func (s *Submitter) prepareTemplate(
 
 	tmpl, err = Parse([]byte(rawTemplate), parseFormat)
 	if err != nil {
-		return nil, nil, &SubmitValidationError{Cause: fmt.Errorf("openjd: submit: parse: %w", err)}
+		return nil, nil, nil, &SubmitValidationError{Cause: fmt.Errorf("openjd: submit: parse: %w", err)}
 	}
 
 	// ── 2. Validate ───────────────────────────────────────────────────────
 	if errs := ValidateWithOptions(tmpl, ValidateOptions{EnforceLimits: s.enforceLimits}); len(errs) > 0 {
-		return nil, nil, &SubmitValidationError{Cause: fmt.Errorf("openjd: submit: validation: %w", errs)}
+		return nil, nil, nil, &SubmitValidationError{Cause: fmt.Errorf("openjd: submit: validation: %w", errs)}
 	}
 
 	// ── 2b. Validate named storage location coverage ────────────
 	if err := s.validateStorageLocations(ctx, tmpl); err != nil {
-		return nil, nil, &SubmitValidationError{Cause: fmt.Errorf("openjd: submit: storage location validation: %w", err)}
+		return nil, nil, nil, &SubmitValidationError{Cause: fmt.Errorf("openjd: submit: storage location validation: %w", err)}
 	}
 
 	// ── 2c. Bind job parameters ────────────────────────────────────────────
 	boundParams, bindErrs := BindJobParameters(tmpl.ParameterDefinitions, params)
 	if len(bindErrs) > 0 {
-		return nil, nil, &SubmitValidationError{Cause: fmt.Errorf("openjd: submit: parameter binding: %w", bindErrs)}
+		return nil, nil, nil, &SubmitValidationError{Cause: fmt.Errorf("openjd: submit: parameter binding: %w", bindErrs)}
 	}
 
 	// ── 2d. Re-check template expressions with concrete parameters ────────
@@ -163,11 +176,12 @@ func (s *Submitter) prepareTemplate(
 	// parameter space. Must run before ResolveParameterSpaceParams (called
 	// per step, in Submit's step loop) so that resolution never sees a
 	// template this check would have rejected.
-	if err := checkExpressionsAtSubmit(tmpl, boundParams); err != nil {
-		return nil, nil, err
+	submitBudget = newTemplateBudget()
+	if err := checkExpressionsAtSubmit(tmpl, boundParams, submitBudget); err != nil {
+		return nil, nil, nil, err
 	}
 
-	return tmpl, boundParams, nil
+	return tmpl, boundParams, submitBudget, nil
 }
 
 // ── Submit ────────────────────────────────────────────────────────────────────
@@ -193,7 +207,7 @@ func (s *Submitter) Submit(
 	opts SubmitOptions,
 ) (*SubmitResult, error) {
 	// ── 1-2d. Parse, validate, bind parameters, re-check expressions ──────
-	tmpl, boundParams, err := s.prepareTemplate(ctx, rawTemplate, format, opts.Parameters)
+	tmpl, boundParams, submitBudget, err := s.prepareTemplate(ctx, rawTemplate, format, opts.Parameters)
 	if err != nil {
 		return nil, err
 	}
@@ -259,7 +273,7 @@ func (s *Submitter) Submit(
 	// within bounds.
 	deriveBounds := tmpl.hasExtension("SQI_CHUNK_BOUNDS")
 	for i, stepTmpl := range tmpl.Steps {
-		steps, tasks, err := s.createStepWithTasks(ctx, tmpl, job, stepTmpl, i, boundParams, deriveBounds, blocked, now)
+		steps, tasks, err := s.createStepWithTasks(ctx, tmpl, job, stepTmpl, i, boundParams, deriveBounds, blocked, now, submitBudget)
 		if err != nil {
 			return nil, err
 		}
@@ -317,6 +331,7 @@ func (s *Submitter) createStepWithTasks(
 	deriveBounds bool,
 	holdPending bool,
 	now time.Time,
+	submitBudget *templateBudget,
 ) (steps []store.Step, tasks []store.Task, err error) {
 	// Collect dependency names from the template.
 	dependsOn := make([]string, 0, len(stepTmpl.Dependencies))
@@ -358,7 +373,7 @@ func (s *Submitter) createStepWithTasks(
 	}
 
 	// ── Expand parameter space ──────────────────────────────────────────────
-	taskParamList, err := s.expandStepTaskParams(tmpl, stepTmpl, stepIdx, boundParams, deriveBounds)
+	taskParamList, err := s.expandStepTaskParams(tmpl, stepTmpl, stepIdx, boundParams, deriveBounds, submitBudget)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -407,6 +422,7 @@ func (s *Submitter) expandStepTaskParams(
 	stepIdx int,
 	boundParams map[string]string,
 	deriveBounds bool,
+	submitBudget *templateBudget,
 ) ([]TaskParams, error) {
 	// Resolve {{Param.*}} / {{RawParam.*}} in the parameter space first. tmpl
 	// carries the EXPR declaration and the job-parameter definitions, and
@@ -414,7 +430,12 @@ func (s *Submitter) expandStepTaskParams(
 	// together are what ResolveParameterSpaceParams needs to evaluate a
 	// section 1.3.12 whole-field range expression against the same symbol
 	// table the checker used — see that function's own doc comment.
-	resolvedPS, resolveErrs := ResolveParameterSpaceParams(tmpl, &stepTmpl, stepTmpl.ParameterSpace, boundParams)
+	//
+	// submitBudget is threaded through so every step's resolver call in this
+	// ONE submission shares the SAME allowance checkExpressionsAtSubmit
+	// (prepareTemplate) already spent against -- EXPR sub-project E4c's Task
+	// 4; see ResolveParameterSpaceParams' own doc comment.
+	resolvedPS, resolveErrs := ResolveParameterSpaceParams(tmpl, &stepTmpl, stepTmpl.ParameterSpace, boundParams, submitBudget)
 	if len(resolveErrs) > 0 {
 		stepPrefix := fmt.Sprintf("/steps/%d", stepIdx)
 		for k := range resolveErrs {
@@ -476,8 +497,17 @@ func (s *Submitter) expandStepTaskParams(
 // Submit until sub-project H flips that status. See
 // TestCheckExpressionsAtSubmit_PhaseDistinction (submit_exprcheck_test.go)
 // for the direct-call proof, and this task's report for the full account.
-func checkExpressionsAtSubmit(tmpl *JobTemplate, boundParams map[string]string) error {
-	if errs := checkTemplateExpressions(tmpl, boundParams); len(errs) > 0 {
+//
+// budget is EXPR sub-project E4c's Task 4 addition: prepareTemplate builds
+// ONE [templateBudget] per submission and passes it here so this call's
+// position/retained-byte spend is charged into the SAME budget Submit later
+// threads into every step's ResolveParameterSpaceParams call (resolve.go) --
+// see that function's own doc comment for why the two must share one
+// allowance rather than each getting its own. Test call sites that omit it
+// (as every pre-Task-4 test does) get a fresh, throwaway allowance instead --
+// see [templateBudgetOrFresh].
+func checkExpressionsAtSubmit(tmpl *JobTemplate, boundParams map[string]string, budget ...*templateBudget) error {
+	if errs := checkTemplateExpressions(tmpl, boundParams, budget...); len(errs) > 0 {
 		return &SubmitValidationError{
 			Cause: fmt.Errorf("openjd: submit: expression re-check with concrete parameters: %w", errs),
 		}

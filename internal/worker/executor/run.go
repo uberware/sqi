@@ -445,17 +445,25 @@ func resolveAssignmentExpr(msg *protocol.AssignMsg, sess *session.Session) (*pro
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("build expression symbols: %w", err)
 	}
+	// budget is EXPR sub-project E4c's Task 4 addition: sess.ExprBudget() is
+	// the ONE fmtres.AssignmentBudget this whole assignment shares -- every
+	// environment table this session already entered (session.go's enterOne)
+	// charged the SAME object, and this task's own table now does too, so
+	// the assignment's total resolved-position and retained-byte spend,
+	// across every table it builds, is bounded together. See
+	// fmtres.AssignmentBudget's own doc comment.
+	budget := sess.ExprBudget()
 	// Exactly one call over this table -- see fmtres.ApplyTaskLet's doc
 	// comment. Every resolution below (OnRun, then the embedded files) reuses
 	// this same syms.
-	if err := fmtres.ApplyTaskLet(msg, syms, msg.PathMap); err != nil {
+	if err := fmtres.ApplyTaskLet(msg, syms, msg.PathMap, budget); err != nil {
 		return nil, nil, nil, fmt.Errorf("let bindings: %w", err)
 	}
-	resolvedRun, err := fmtres.ResolveActionExpr(msg.OnRun, syms, msg.PathMap)
+	resolvedRun, err := fmtres.ResolveActionExpr(msg.OnRun, syms, msg.PathMap, budget)
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("resolve command: %w", err)
 	}
-	resolvedFiles, err := fmtres.ResolveEmbeddedFilesExpr(msg.EmbeddedFiles, syms, msg.PathMap)
+	resolvedFiles, err := fmtres.ResolveEmbeddedFilesExpr(msg.EmbeddedFiles, syms, msg.PathMap, budget)
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("resolve embedded file data: %w", err)
 	}

@@ -74,18 +74,57 @@ import (
 // "unknown symbol" instead.
 //
 // All task-parameter definitions are inspected before returning so callers
-// receive a complete error list in one round-trip. On any error (nil, errs)
-// is returned.
+// receive a complete error list in one round-trip UNLESS the template-wide
+// budget (below) trips first, in which case the walk stops early -- see that
+// paragraph.
+//
+// budget is EXPR sub-project E4c's Task 4 addition: an optional
+// [templateBudget], shared with THE SAME SUBMISSION's checkTemplateExpressions
+// call (submit.go's prepareTemplate builds one and threads it through Submit's
+// step loop to every call this function makes for that one submission). Every
+// task-parameter range position this function resolves -- a RangeList entry,
+// a whole-field RangeExpr, and the step's own let: block -- is ALSO one of
+// checkTemplateExpressions' own positions (checkParameterSpaceExpressions,
+// exprcheck.go), so before this task NEITHER walk's per-call budget saw the
+// other's cost: a template that individually fit under checkTemplateExpressions'
+// cap and under a hypothetical resolver-only cap could still, when both walks
+// run back to back for the same submission (exactly what Submit does), spend
+// twice the position count neither budget alone would catch -- see
+// TestPhase2Budget_ResolverSharesCheckerBudget (resolve_budget_test.go) for
+// the construction that proves it, mirroring EXPR sub-project E4b's own
+// finding that these positions are now evaluated TWICE. Omitting budget (as
+// every pre-Task-4 caller does) gives this call its
+// own fresh, throwaway allowance -- see [templateBudgetOrFresh] -- which is
+// harmless: no legitimate single call comes close to either dimension's cap on
+// its own.
+//
+// The budget is consulted, and charged, ONLY on the EXPR-enabled path: a
+// template that does not declare EXPR takes the exact base-spec substitution
+// this function has always performed, byte for byte, with no budget
+// interaction of any kind -- matching every other EXPR-only behavior this
+// function gates on exprEnabled.
 func ResolveParameterSpaceParams(
 	tmpl *JobTemplate, step *StepTemplate, ps *StepParameterSpace, jobParams map[string]string,
+	budget ...*templateBudget,
 ) (*StepParameterSpace, ValidationErrors) {
 	if ps == nil {
 		return nil, nil
 	}
 
 	exprEnabled := tmpl != nil && tmpl.hasExtension("EXPR")
+	b := templateBudgetOrFresh(budget)
 
 	var errs ValidationErrors
+
+	// If a budget shared with this submission's checkTemplateExpressions call
+	// is ALREADY exhausted (by that call, or by an earlier step's own
+	// ResolveParameterSpaceParams call in the same submission), stop before
+	// doing any of this step's real work -- evaluating its own let: block
+	// still costs a real expr.Eval per binding, and there is nothing left to
+	// spend it on.
+	if exprEnabled && !b.ok() {
+		return nil, b.errs()
+	}
 
 	// The phase-2 symbol table, built only when EXPR is declared, and built by
 	// the CHECKER'S OWN two helpers so the two layers cannot disagree about
@@ -98,6 +137,20 @@ func ResolveParameterSpaceParams(
 	if exprEnabled {
 		stepLet, letErrs := stepLetSymbols(tmpl, step, jobParams, "")
 		errs = append(errs, letErrs...)
+
+		// Charged exactly like checkStepExpressions charges the identical
+		// stepLetSymbols call (exprcheck.go): one position per binding
+		// actually attempted (letPositions mirrors checkLetBindings' own
+		// maxLetBindings truncation), and the net retained bytes stepLet
+		// itself IS -- stepLetSymbols already returns exactly the diff, so
+		// there is no before/after subtraction to do here.
+		var letCount int
+		if step != nil {
+			letCount = len(step.Let)
+		}
+		b.chargePositions(letPositions(letCount), "/let")
+		b.chargeRetainedBytes(templateExprRetainedBytes(stepLet), "/let")
+
 		syms = rangeScopeSymbols(tmpl, stepLet, jobParams)
 	}
 
@@ -114,52 +167,22 @@ func ResolveParameterSpaceParams(
 	newDefs := make([]TaskParamDefinition, len(ps.TaskParameterDefinitions))
 
 	for i, def := range ps.TaskParameterDefinitions {
-		newDef := def // shallow copy — Name, Type, Chunks, Combination are unchanged
-
-		if def.RangeExpr != nil {
-			ptr := fmt.Sprintf("/parameterSpace/taskParameterDefinitions/%d/range", i)
-			newRangeExpr, newRangeList, rerr := resolveRangeExprField(exprEnabled, *def.RangeExpr, def.Type, syms, scope)
-			if rerr != nil {
-				errs = append(errs, ValidationError{
-					Pointer: ptr,
-					Message: rerr.Error(),
-				})
-				// Do not assign; keep processing to accumulate.
-			} else {
-				newDef.RangeExpr = newRangeExpr
-				newDef.RangeList = newRangeList
-			}
-		} else if len(def.RangeList) > 0 {
-			// else if, not a second independent if: the parser guarantees
-			// exactly one of RangeExpr/RangeList is set per definition (see
-			// TaskParamDefinition's own doc comment), so this branch is
-			// unreachable when the RangeExpr branch above ran — but if that
-			// invariant were ever violated, a plain "if" here would silently
-			// overwrite whatever the RangeExpr branch just wrote into
-			// newDef.RangeList using the ORIGINAL def.RangeList, while leaving
-			// RangeExpr cleared (nil) from the branch above: a corrupted
-			// parameter space (list AND nil range field) with no error raised.
-			// else if makes that combination structurally impossible instead
-			// of merely unlikely.
-			newList := make([]string, len(def.RangeList))
-			for j, entry := range def.RangeList {
-				eptr := fmt.Sprintf("/parameterSpace/taskParameterDefinitions/%d/range/%d", i, j)
-				resolved, err := resolveRangeListEntry(exprEnabled, entry, def.Type, syms, scope)
-				if err != nil {
-					errs = append(errs, ValidationError{
-						Pointer: eptr,
-						Message: err.Error(),
-					})
-					newList[j] = entry // placeholder; result discarded on error
-				} else {
-					newList[j] = resolved
-				}
-			}
-			newDef.RangeList = newList
+		if exprEnabled && !b.ok() {
+			// The budget tripped partway through -- on this step's own let:
+			// block, or an earlier definition in this same step, or an
+			// earlier STEP's call sharing this budget. Stop resolving; the
+			// remaining definitions are left zero-valued, which is fine --
+			// b.errs() below makes errs non-empty, so the whole result is
+			// discarded on the way out (the "if len(errs) > 0" branch just
+			// below).
+			break
 		}
-
+		newDef, defErrs := resolveTaskParamDefinition(b, exprEnabled, i, def, syms, scope)
+		errs = append(errs, defErrs...)
 		newDefs[i] = newDef
 	}
+
+	errs = append(errs, b.errs()...)
 
 	if len(errs) > 0 {
 		return nil, errs
@@ -168,6 +191,93 @@ func ResolveParameterSpaceParams(
 	out := *ps // shallow copy — Combination pointer is shared but never modified
 	out.TaskParameterDefinitions = newDefs
 	return &out, nil
+}
+
+// resolveTaskParamDefinition resolves ONE task-parameter definition's range
+// field -- either shape, RangeExpr or RangeList -- charging b (when
+// exprEnabled) exactly as ResolveParameterSpaceParams' own inline loop body
+// did before EXPR sub-project E4c's Task 4 extracted it: this split exists
+// only to keep ResolveParameterSpaceParams' own cyclomatic complexity within
+// the repo's lint budget (see CLAUDE.md's "Lint is strict" convention;
+// exprcheck.go's checkHostRequirementAmount/checkHostRequirementAttribute
+// split for the identical reason), not because the two range shapes needed
+// separating for any behavioral reason -- the "else if, not a second
+// independent if" invariant comment on the RangeList branch, below, is the
+// same one that lived inline before this split.
+//
+// Returns the definition's own copy (Name/Type/Chunks/Combination unchanged,
+// Range* fields resolved when successful) and any errors resolving it
+// produced. On a budget-exhausted charge, the copy is returned unresolved and
+// with no errors of its own -- the caller's own b.errs() call, once the whole
+// walk stops, is what turns that into a reported failure.
+func resolveTaskParamDefinition(
+	b *templateBudget, exprEnabled bool, i int, def TaskParamDefinition, syms expr.MapSymbols, scope fmtstring.Scope,
+) (TaskParamDefinition, ValidationErrors) {
+	newDef := def // shallow copy — Name, Type, Chunks, Combination are unchanged
+
+	if def.RangeExpr != nil {
+		ptr := fmt.Sprintf("/parameterSpace/taskParameterDefinitions/%d/range", i)
+		if exprEnabled && !b.chargePositions(1, ptr) {
+			return newDef, nil
+		}
+		newRangeExpr, newRangeList, rerr := resolveRangeExprField(exprEnabled, *def.RangeExpr, def.Type, syms, scope)
+		if rerr != nil {
+			// Do not assign newDef.RangeExpr/RangeList on error -- returning
+			// the untouched copy alongside the error is what lets the
+			// CALLER'S loop keep accumulating every other definition's
+			// errors in the same pass (unless the budget stops it first).
+			return newDef, ValidationErrors{{Pointer: ptr, Message: rerr.Error()}}
+		}
+		newDef.RangeExpr = newRangeExpr
+		newDef.RangeList = newRangeList
+		return newDef, nil
+	}
+
+	if len(def.RangeList) == 0 {
+		// else if, not a second independent if, in the pre-split inline form:
+		// the parser guarantees exactly one of RangeExpr/RangeList is set per
+		// definition (see TaskParamDefinition's own doc comment), so this
+		// early return only fires when RangeExpr is nil too -- an empty,
+		// range-less definition. Kept as an explicit early return rather than
+		// an else so a caller reading top to bottom sees "RangeExpr wins, or
+		// there is nothing to resolve" before the RangeList branch, matching
+		// the original's own ordering guarantee: this function can never
+		// silently overwrite a RangeExpr-branch result with the ORIGINAL
+		// (unresolved) def.RangeList the way a bare "if" instead of "else if"
+		// would have.
+		return newDef, nil
+	}
+
+	newList, errs := resolveRangeListDefinition(b, exprEnabled, i, def, syms, scope)
+	newDef.RangeList = newList
+	return newDef, errs
+}
+
+// resolveRangeListDefinition resolves every entry of one task-parameter
+// definition's RangeList -- split out of resolveTaskParamDefinition for the
+// same complexity-budget reason that function's own doc comment gives.
+func resolveRangeListDefinition(
+	b *templateBudget, exprEnabled bool, i int, def TaskParamDefinition, syms expr.MapSymbols, scope fmtstring.Scope,
+) ([]string, ValidationErrors) {
+	var errs ValidationErrors
+	newList := make([]string, len(def.RangeList))
+	for j, entry := range def.RangeList {
+		if exprEnabled && !b.ok() {
+			break
+		}
+		eptr := fmt.Sprintf("/parameterSpace/taskParameterDefinitions/%d/range/%d", i, j)
+		if exprEnabled && !b.chargePositions(1, eptr) {
+			break
+		}
+		resolved, err := resolveRangeListEntry(exprEnabled, entry, def.Type, syms, scope)
+		if err != nil {
+			errs = append(errs, ValidationError{Pointer: eptr, Message: err.Error()})
+			newList[j] = entry // placeholder; result discarded on error
+		} else {
+			newList[j] = resolved
+		}
+	}
+	return newList, errs
 }
 
 // resolveRangeExprField resolves one task-parameter definition's whole-field

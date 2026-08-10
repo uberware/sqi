@@ -451,12 +451,26 @@ func resolveArgLoneRef(body string, syms expr.MapSymbols, opts []expr.Option) ([
 // ResolveActionExpr returns a descriptive error -- naming the offending
 // field -- if any reference is malformed, evaluates to an error, or names a
 // symbol syms does not provide. The input action is never mutated.
-func ResolveActionExpr(action *protocol.Action, syms expr.MapSymbols, pathMap []protocol.PathMapRule) (*protocol.Action, error) {
+//
+// budget is EXPR sub-project E4c's Task 4 addition: charges one position for
+// the command and one for each Args entry, BEFORE resolving it, so a budget
+// already exhausted by an earlier action/environment in this same assignment
+// stops the walk here without doing that entry's own evaluation work. See
+// [AssignmentBudget]'s own doc comment for the full account; omitting it
+// (every pre-Task-4 call site) charges a fresh, throwaway budget no single
+// call can exhaust.
+func ResolveActionExpr(
+	action *protocol.Action, syms expr.MapSymbols, pathMap []protocol.PathMapRule, budget ...*AssignmentBudget,
+) (*protocol.Action, error) {
 	if action == nil {
 		return nil, nil
 	}
 	opts := ExprEvalOptions(pathMap)
+	b := assignmentBudgetOrFresh(budget)
 
+	if err := b.ChargePositions(1, "command"); err != nil {
+		return nil, err
+	}
 	cmd, err := resolveFormatStringExpr(action.Command, syms, opts)
 	if err != nil {
 		return nil, fmt.Errorf("command %q: %w", action.Command, err)
@@ -466,6 +480,9 @@ func ResolveActionExpr(action *protocol.Action, syms expr.MapSymbols, pathMap []
 	if action.Args != nil {
 		args = make([]string, 0, len(action.Args))
 		for i, a := range action.Args {
+			if err := b.ChargePositions(1, fmt.Sprintf("arg %d", i)); err != nil {
+				return nil, err
+			}
 			resolved, rerr := resolveArgItemExpr(a, syms, opts)
 			if rerr != nil {
 				return nil, fmt.Errorf("arg %d %q: %w", i, a, rerr)
@@ -487,17 +504,23 @@ func ResolveActionExpr(action *protocol.Action, syms expr.MapSymbols, pathMap []
 // rule). All other fields (Name, Filename, Runnable, EndOfLine) are copied
 // unchanged. A nil slice returns (nil, nil).
 //
-// See [ResolveActionExpr] for syms/pathMap. ResolveEmbeddedFilesExpr returns
-// a descriptive error -- naming the offending file -- when a file's data is
-// malformed, evaluates to an error, or names a symbol syms does not
+// See [ResolveActionExpr] for syms/pathMap/budget. ResolveEmbeddedFilesExpr
+// returns a descriptive error -- naming the offending file -- when a file's
+// data is malformed, evaluates to an error, or names a symbol syms does not
 // provide. The input slice and its elements are never mutated.
-func ResolveEmbeddedFilesExpr(files []protocol.EmbeddedFile, syms expr.MapSymbols, pathMap []protocol.PathMapRule) ([]protocol.EmbeddedFile, error) {
+func ResolveEmbeddedFilesExpr(
+	files []protocol.EmbeddedFile, syms expr.MapSymbols, pathMap []protocol.PathMapRule, budget ...*AssignmentBudget,
+) ([]protocol.EmbeddedFile, error) {
 	if files == nil {
 		return nil, nil
 	}
 	opts := ExprEvalOptions(pathMap)
+	b := assignmentBudgetOrFresh(budget)
 	out := make([]protocol.EmbeddedFile, len(files))
 	for i, f := range files {
+		if err := b.ChargePositions(1, fmt.Sprintf("embedded file %q", f.Name)); err != nil {
+			return nil, err
+		}
 		data, err := resolveFormatStringExpr(f.Data, syms, opts)
 		if err != nil {
 			return nil, fmt.Errorf("embedded file %q: %w", f.Name, err)
@@ -512,17 +535,31 @@ func ResolveEmbeddedFilesExpr(files []protocol.EmbeddedFile, syms expr.MapSymbol
 // of vars with every value resolved via resolveFormatStringExpr. Keys are
 // copied unchanged. A nil map returns (nil, nil).
 //
-// See [ResolveActionExpr] for syms/pathMap. ResolveVarsExpr returns a
+// See [ResolveActionExpr] for syms/pathMap/budget. ResolveVarsExpr returns a
 // descriptive error -- naming the offending variable key -- if any value is
 // malformed, evaluates to an error, or names a symbol syms does not
 // provide. The input map is never mutated.
-func ResolveVarsExpr(vars map[string]string, syms expr.MapSymbols, pathMap []protocol.PathMapRule) (map[string]string, error) {
+//
+// Keys are iterated in MAP ORDER, which is not deterministic across calls --
+// unlike exprcheck.go's checker walk, which sorts (checkEnvironmentExpressions'
+// own reason: reproducible ERROR pointers for a template author). This
+// function has no author-facing position to keep stable; which variable
+// happens to trip an already-near-exhausted budget varying run to run does
+// not change the OUTCOME (the assignment still fails, with a budget-exceeded
+// error either way), only which key's name appears in it.
+func ResolveVarsExpr(
+	vars map[string]string, syms expr.MapSymbols, pathMap []protocol.PathMapRule, budget ...*AssignmentBudget,
+) (map[string]string, error) {
 	if vars == nil {
 		return nil, nil
 	}
 	opts := ExprEvalOptions(pathMap)
+	b := assignmentBudgetOrFresh(budget)
 	out := make(map[string]string, len(vars))
 	for k, v := range vars {
+		if err := b.ChargePositions(1, fmt.Sprintf("variable %q", k)); err != nil {
+			return nil, err
+		}
 		r, err := resolveFormatStringExpr(v, syms, opts)
 		if err != nil {
 			return nil, fmt.Errorf("variable %q: %w", k, err)
