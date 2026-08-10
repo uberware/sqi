@@ -625,20 +625,87 @@ const (
 	// truncation so the count charged here matches the work actually done,
 	// not the possibly-larger count the template declared).
 	//
-	// 2,000 is chosen the way maxSteps was (validate.go, "WHAT THIS DOES
-	// BOUND"): well above a realistic legitimate template's position count
-	// -- a 100-step template (maxSteps) with a handful of let bindings, a
-	// few environment variables, a command, a few args and one range
-	// position per step lands in the low hundreds to low thousands -- while
-	// far below what a SINGLE step's task-parameter range positions can
-	// reach by construction at the existing per-field caps
-	// (maxTaskParameterDefinitions x maxTaskParamValues = 16,384, EXPR
-	// sub-project E4b's own finding, design spec §1.1). That construction
-	// sits within every structural cap Task 1/2 of this sub-project added
-	// (parameterSpaceOverCaps, maxSteps) -- neither rejects it -- and is
-	// exactly what this cap exists to stop, in the low thousands rather
-	// than after evaluating all 16,384 positions.
-	maxTemplateExprPositions int64 = 2_000
+	// 10,000 is chosen the way maxSteps was (validate.go, "WHAT THIS DOES
+	// BOUND"): with a WORKED calculation, not a round guess, and with real
+	// headroom above it -- fix round 1 (post-implementation review) found an
+	// earlier value of 2,000 had a crossover of exactly 20 positions per
+	// step against maxSteps (100), and its own doc comment's illustrative
+	// example ("a handful of let bindings ... a few args") landed on the
+	// ACCEPTED side while a plausible worked example landed on the
+	// REJECTED side -- a comment whose own example straddles the cap is not
+	// a justification.
+	//
+	// THE CROSSOVER: maxTemplateExprPositions / maxSteps = 100 positions
+	// available per step, on average, before a template is rejected purely
+	// on count. There is no cap on Action.Args, EmbeddedFiles, or
+	// Environment.Variables in this package (checked directly; none
+	// exists), so a real template's per-step position count is not bounded
+	// by any OTHER constant this cap can lean on.
+	//
+	// THE WORKED CALCULATION -- one step, generous but plausible for a real,
+	// hand-authored render-pipeline step (not maximal against every
+	// structural cap at once, which is a different, adversarial question
+	// parameterSpaceOverCaps and this budget's own byte dimension answer
+	// separately):
+	//
+	//	command + timeout                                            2
+	//	args (a renderer's CLI flags)                               20
+	//	let (step template + step script, 5 bindings each)          10
+	//	host requirements (3 amounts x min/max, 2 attributes x 4)   14
+	//	range (one RangeExpr -- the idiomatic form, not a raw list)   1
+	//	one step environment (5 vars, 2 files, onEnter+onExit
+	//	  command+3 args each, its own script let of 5)             20
+	//	step's own script embedded files                             3
+	//	                                                     --------
+	//	                                                             70 / step
+	//
+	// x100 steps (maxSteps) = 7,000, plus job-level positions (the job name,
+	// and up to a couple of job environments at a similar weight to one
+	// step environment above) ~= 40, for a total around 7,040.
+	//
+	// 10,000 gives that calculation ~1.4x headroom on its own, ~4.8x
+	// headroom over a MORE MODEST real-world shape (a command, 15 args, 3
+	// environment variables and 2 embedded files per step, no let/host-
+	// requirements/range use at all -- 21 x 100 = 2,100 -- the exact shape
+	// fix round 1's review used to show 2,000 was too tight), and stays at
+	// 61% of the hard ceiling this cap exists to stay under: a SINGLE
+	// step's task-parameter range positions can reach 16,384 by
+	// construction at the existing per-field caps
+	// (maxTaskParameterDefinitions x maxTaskParamValues, EXPR sub-project
+	// E4b's own finding, design spec §1.1) -- a construction that sits
+	// WITHIN every structural cap Task 1/2 of this sub-project added
+	// (parameterSpaceOverCaps, maxSteps), so this budget is the only thing
+	// that still catches it. 10,000 still catches it, in the low tens of
+	// thousands of positions rather than at 16,384 -- see
+	// TestCheckTemplateExpressions_TemplateWideBudget_E4bConstruction.
+	//
+	// WHAT THIS STILL EXCLUDES, stated plainly rather than left implicit: a
+	// 100-step template that uses EVERY category above at generous levels
+	// in EVERY step simultaneously (the full ~70-position shape, not a
+	// realistic subset of it, repeated 100 times with no step lighter than
+	// another) sits close to this cap's floor and a template meaningfully
+	// past that shape -- more like TWO of everything above, or maximal
+	// per-field host requirements (maxHostRequirements = 50) used in most
+	// steps -- is still rejected. That is a real, standing tradeoff this
+	// wave accepts on purpose: per the reviewer, "a false rejection post-H
+	// is worse than a bound E4d can tighten later," and E4d (operator
+	// configuration of these limits, "Not in this wave") is where that
+	// tradeoff gets a knob rather than a recompiled constant.
+	//
+	// THE COST TRADEOFF THIS RAISE ACCEPTS: a pathological single-step
+	// construction shaped like E4b's (expensive per-position work, ~6ms
+	// measured for `("x" * 900000).upper()`) now runs for up to
+	// 10,000 x ~6ms =~ 60s of real CPU on the synchronous validate/submit
+	// request path before this budget rejects it, versus ~12s at the
+	// former 2,000-position cap -- still a large improvement over E4b's
+	// original unbounded ~96s (and a categorical one over E2's ~9 minutes),
+	// but a real increase over the tighter value fix round 1 replaced.
+	// Recorded here rather than silently accepted: the choice made in this
+	// round is that avoiding a false rejection of a legitimate template
+	// matters more than tightening this particular worst case further,
+	// which is exactly the operator-configuration question E4d exists to
+	// answer.
+	maxTemplateExprPositions int64 = 10_000
 
 	// maxTemplateExprRetainedBytes caps the cumulative section 1.3.9 size
 	// (expr.SizeOf) of every value EVERY let: block in the template adds to
@@ -658,14 +725,35 @@ const (
 	// two independently-tuned numbers that happen to land in the same
 	// ballpark. It also SUBSUMES the server's own pre-existing gap:
 	// checkLetBindings' 50-binding cap (maxLetBindings) bounds one BLOCK's
-	// count but nothing bounded the BYTES those 50 could retain (up to
-	// ~50 MB per block, design spec §4) -- and because this counter is
-	// cumulative rather than reset per table, a SINGLE block that alone
-	// retains more than 10 MB trips it exactly as a dedicated per-table
-	// bound would, while many blocks that are each individually compliant
-	// but cumulatively large also trip it, which a per-table-only bound (the
-	// worker's own shape) would not catch. See this task's report for the
-	// construction that proves the second half of that claim.
+	// count but nothing bounded the BYTES those 50 could retain -- and
+	// because this counter is cumulative rather than reset per table, many
+	// blocks that are each individually compliant but cumulatively large
+	// also trip it, which a per-table-only bound (the worker's own shape)
+	// would not catch. See this task's report for the construction that
+	// proves that.
+	//
+	// NOT identical to a dedicated per-table 10 MB bound, corrected by fix
+	// round 1 (post-implementation review): the charge is applied ONCE per
+	// let: block, AFTER checkLetBindings finishes evaluating it (the
+	// before/after-delta or stepLetSymbols-diff technique the call sites
+	// use), not per binding WITHIN it. A single block can therefore
+	// transiently retain up to maxLetBindings x submissionMemoryLimit =
+	// 50 x 1,000,000 = 50,000,000 bytes (50 MB) before this counter ever
+	// sees it and rejects -- the true single-block ceiling this budget
+	// enforces, not 10 MB. It IS still bounded, and the template as a whole
+	// is still rejected the moment that block's full charge lands; it is
+	// bounded by a larger number than a mid-block check (the worker's own
+	// shape, which stops WITHIN a block once the running total crosses its
+	// limit) would allow.
+	//
+	// This counter also measures CUMULATIVE ALLOCATION across the walk, not
+	// PEAK LIVE RETENTION at any one instant -- intentional, and simpler to
+	// reason about than trying to model when Go's garbage collector might
+	// reclaim an earlier block's now-unreferenced values: a template whose
+	// blocks never hold more than a few MB live at once but which declares
+	// many such blocks in sequence is still charged for their sum, and is
+	// still rejected once that sum crosses the limit, exactly as a template
+	// that held all of it live simultaneously would be.
 	maxTemplateExprRetainedBytes int64 = 10_000_000
 )
 

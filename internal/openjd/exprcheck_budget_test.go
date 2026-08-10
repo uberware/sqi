@@ -24,6 +24,19 @@ import (
 // (maxTemplateExprPositions * submissionOperationLimit, exprcheck.go's own
 // doc comment) and has nothing to assert here: no operation counter crosses
 // into internal/openjd/expr for this file to observe.
+//
+// MUTATION-TESTING TRAP, recorded here because a reviewer hit it and had to
+// kill a 600s hang: the CORRECT way to mutation-test either bound is to
+// NEUTER THE CHECK inside templateBudget.chargePositions/
+// chargeRetainedBytes (exprcheck.go) -- e.g. comment out the
+// "if b.positions > maxTemplateExprPositions" branch -- and re-run, NOT to
+// raise maxTemplateExprPositions/maxTemplateExprRetainedBytes themselves.
+// Three of the five tests below SIZE THEIR OWN CONSTRUCTION from the live
+// constant (manyArgs(int(maxTemplateExprPositions) + 50), and
+// int(maxTemplateExprPositions) - 10 in FreshPerCall): raising
+// maxTemplateExprPositions to, say, 2_000_000_000 to "remove the bound"
+// makes those tests try to allocate on the order of two billion string
+// entries, which does not fail fast -- it hangs.
 
 // manyArgs returns n trivial, cheap-to-evaluate EXPR args entries: no
 // retained bytes (checkFormatString discards every result) and negligible
@@ -37,12 +50,28 @@ func manyArgs(n int) []string {
 	return args
 }
 
-// TestCheckTemplateExpressions_TemplateWideBudget_E4bConstruction is EXPR
-// sub-project E4b's own measured construction -- 16 task-parameter
-// definitions x 1024 RangeList entries, each entry `("x" * 900000).upper()`
-// -- turned into a regression test per design spec §6 ("The instrument is
-// the construction"). Unguarded, this cost 96 seconds in the resolver alone,
+// TestCheckTemplateExpressions_TemplateWideBudget_E4bConstruction reproduces
+// the SHAPE of EXPR sub-project E4b's own measured construction -- 16
+// task-parameter definitions x 1024 RangeList entries, one step -- turned
+// into a regression test per design spec §6 ("The instrument is the
+// construction"). E4b's original payload, `{{ ("x" * 900000).upper() }}` in
+// every one of the 16,384 entries, cost 96 seconds in the resolver alone,
 // with every per-Eval budget respected the entire time (design spec §1.1).
+//
+// The payload here is deliberately a trivial `{{ 'a' }}`, NOT E4b's original
+// expensive expression. Fix round 1 (post-implementation review) found the
+// expensive version made this ONE test cost 455s under -race in isolation --
+// the package's dominant race cost by two orders of magnitude over the other
+// four budget tests combined (1.27s) -- for fidelity the assertions below
+// never used: this test proves POSITION COUNT trips the budget, which a
+// trivial payload demonstrates identically to an expensive one (the budget
+// charges one position per checkFormatString call regardless of what that
+// call evaluates), and rejects in ~milliseconds instead of tens of seconds.
+// It also means a REGRESSION in the position bound now fails FAST rather
+// than running to completion in ~95s (non-race) or roughly an hour under
+// race, which on a CI runner reads as a hang, not a red test. The original
+// 900,000-byte-per-entry construction remains what E4b actually measured;
+// it is not re-measured here.
 //
 // It is deliberately BELOW the two count caps Task 1/2 of this sub-project
 // rely on (maxTaskParameterDefinitions = 16, maxTaskParamValues = 1024 --
@@ -60,7 +89,7 @@ func TestCheckTemplateExpressions_TemplateWideBudget_E4bConstruction(t *testing.
 	for i := range defs {
 		rangeList := make([]string, numValues)
 		for j := range rangeList {
-			rangeList[j] = `{{ ("x" * 900000).upper() }}`
+			rangeList[j] = "{{ 'a' }}" // trivial -- see the doc comment above for why
 		}
 		defs[i] = TaskParamDefinition{
 			Name:      fmt.Sprintf("P%d", i),
@@ -85,8 +114,8 @@ func TestCheckTemplateExpressions_TemplateWideBudget_E4bConstruction(t *testing.
 
 	errs := checkTemplateExpressions(tmpl, nil)
 	if len(errs) == 0 {
-		t.Fatal("16 x 1024 expensive range positions, within every existing structural cap, " +
-			"must be rejected by the template-wide budget")
+		t.Fatal("16 x 1024 range positions, within every existing structural cap, " +
+			"must be rejected by the template-wide budget on position COUNT alone")
 	}
 
 	var found bool
