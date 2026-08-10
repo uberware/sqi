@@ -74,7 +74,7 @@ package fmtres
 // large but otherwise-compliant assignment starve every OTHER concurrently
 // running task's budget on the same host -- a much larger design change than
 // this task's brief scopes. Instead, [AssignmentBudget] is intentionally
-// small enough (see assignmentMaxPositions/assignmentMaxRetainedBytes, below)
+// small enough (see MaxAssignmentPositions/assignmentMaxRetainedBytes, below)
 // that CONCURRENCY is accounted for by the PRODUCT of the per-assignment cap
 // and the worker's own concurrent-task ceiling, not by a shared counter: "The
 // server gates concurrency by CPU cores; the worker runs whatever it is
@@ -111,7 +111,7 @@ import (
 )
 
 const (
-	// assignmentMaxPositions caps the number of format-string positions
+	// MaxAssignmentPositions caps the number of format-string positions
 	// (command, one Args entry, one embedded file, one variable value) ONE
 	// assignment's phase-3 evaluation may resolve, summed across the task's
 	// own table and every environment's.
@@ -140,15 +140,54 @@ const (
 	// applies to steps), each environment costing ONLY its entry-side work:
 	// onEnter (command + 20 args = 21) + 10 variables (entry only) + 5
 	// embedded files = 36 positions. 50 x 36 = 1,800, plus the task's own 41,
-	// is 1,841. 5,000 gives that shape ~2.7x headroom while staying well
-	// below a pathological construction (tens of thousands of cheap
-	// positions) that would cost real wall-clock time to resolve one at a
-	// time even under workerOperationLimit/workerMemoryLimit's own
-	// per-position bound. The number itself (5,000) did not change from the
-	// original, wrong derivation -- only the arithmetic that justifies it
-	// did, and the corrected headroom is MORE generous than originally
-	// claimed, not less, so no re-tuning was needed.
-	assignmentMaxPositions int64 = 5_000
+	// is 1,841.
+	//
+	// THE VALUE IS NOT SIZED BY THAT CALCULATION ALONE. It is 10,000 because
+	// internal/openjd's maxTemplateExprPositions is 10,000, and this cap must
+	// never be the TIGHTER of the two -- raised from 5,000 by fix round 2
+	// (whole-branch review, IMPORTANT 1), which found the two constants had
+	// no stated relation, no test, and no mention of each other.
+	//
+	// WHY THE RELATION IS LOAD-BEARING: the server charges its 10,000-position
+	// template-wide budget at validate and submit; this budget is charged on
+	// the WORKER, after the job exists. The positions one assignment resolves
+	// -- its own step action and embedded files, plus every job and step
+	// environment the session enters -- are a SUBSET of the positions the
+	// server's walk already charged for the whole template. So a cap here
+	// BELOW the server's is reachable by a template the server ACCEPTED: one
+	// job environment with 5,000 Variables charged ~5,001 positions
+	// server-side (accepted, well under 10,000) and tripped the old 5,000 cap
+	// here inside session.Manager.Create -- failing EVERY task in the job,
+	// one at a time, after submission, naming a budget the submitter was
+	// never shown. Post-submission per-task failure is the worst available
+	// place to enforce a template-shape rule; making this cap >= the server's
+	// moves that rejection back to the one synchronous request that can
+	// report it. Pinned by TestTemplateBudget_WorkerCapIsNotTighter
+	// (internal/openjd/exprcheck_budget_test.go), which is where BOTH
+	// constants are visible.
+	//
+	// The alternative -- keeping 5,000 here and having the server charge a
+	// per-ASSIGNMENT sub-budget so the rejection happens at submit -- was
+	// rejected as the larger change: the server would have to model which of
+	// a template's positions land in one assignment (a task's own step plus
+	// the environments that task enters), which is a partition of the walk
+	// that nothing in internal/openjd computes today.
+	//
+	// The worked calculation above still stands as the FLOOR: 1,841 for a
+	// generous real session, so 10,000 leaves ~5.4x headroom rather than the
+	// ~2.7x that 5,000 gave. The wall-clock tradeoff of raising it is the
+	// same one exprcheck.go's maxTemplateExprPositions records for the
+	// server, on a host that is executing one task rather than serving an
+	// API request.
+	//
+	// ONE ASSUMPTION IS WORTH NAMING, because a future change could void it:
+	// "an assignment's positions are a subset of the template's" holds while
+	// exactly one task runs per session (see this file's "Scope" section and
+	// session.go's own package comment). If session reuse across tasks lands,
+	// N tasks would share one budget and the subset argument becomes N x the
+	// per-task share -- at which point this cap, and the test pinning it,
+	// both need revisiting.
+	MaxAssignmentPositions int64 = 10_000
 
 	// assignmentMaxRetainedBytes caps the cumulative section 1.3.9 size of
 	// every let-bound value EVERY phase-3 table this assignment builds
@@ -259,11 +298,11 @@ func (b *AssignmentBudget) ChargePositions(n int64, where string) error {
 		return nil
 	}
 	b.positions += n
-	if b.positions > assignmentMaxPositions {
+	if b.positions > MaxAssignmentPositions {
 		b.err = fmt.Errorf(
 			"assignment-wide expression budget exceeded: at most %d expression positions may be "+
 				"resolved for one assignment (reached %d at %s)",
-			assignmentMaxPositions, b.positions, where,
+			MaxAssignmentPositions, b.positions, where,
 		)
 	}
 	return b.err

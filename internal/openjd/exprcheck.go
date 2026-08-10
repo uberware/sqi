@@ -754,6 +754,19 @@ const (
 	// is fix round 1's: avoiding a false rejection of a legitimate template
 	// matters more than tightening this particular worst case by lowering
 	// the cap.
+	//
+	// THE WORKER'S CAP IS TIED TO THIS ONE, and the tie is asserted rather
+	// than assumed. internal/worker/fmtres' MaxAssignmentPositions bounds the
+	// same quantity for phase 3, on the worker, per assignment -- and an
+	// assignment's positions are a SUBSET of its template's, so a worker cap
+	// BELOW this value is reachable by a template this package ACCEPTED, and
+	// fails every task in the job after submission instead of failing the one
+	// request that could have reported it. That was the state until fix round
+	// 2 (whole-branch review, IMPORTANT 1): 10,000 here, 5,000 there, no
+	// stated relation and no test. Lowering THIS constant is not the way to
+	// restore the relation -- see the paragraph above on why it was raised.
+	// TestTemplateBudget_WorkerCapIsNotTighter (exprcheck_budget_test.go)
+	// fails the build if the two ever drift apart again.
 	maxTemplateExprPositions int64 = 10_000
 
 	// maxTemplateExprRetainedBytes caps the cumulative section 1.3.9 size

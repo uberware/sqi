@@ -7,6 +7,8 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+
+	"github.com/uberware/sqi/internal/worker/fmtres"
 )
 
 // This file proves EXPR sub-project E4c's template-wide budget
@@ -308,5 +310,46 @@ func TestCheckTemplateExpressions_TemplateWideBudget_BaseSpecUnaffected(t *testi
 	}
 	if errs := checkTemplateExpressions(tmpl, nil); len(errs) != 0 {
 		t.Fatalf("a non-EXPR template must never enter the walk at all, regardless of size: %v", errs)
+	}
+}
+
+// TestTemplateBudget_WorkerCapIsNotTighter pins the ONE relation between this
+// package's template-wide position budget and the worker's per-assignment one
+// (internal/worker/fmtres, [fmtres.MaxAssignmentPositions]).
+//
+// THE DEFECT IT EXISTS TO PREVENT (EXPR sub-project E4c, whole-branch review,
+// IMPORTANT 1): the two constants were 10,000 here and 5,000 there, with
+// nothing relating them, no test asserting a relation, and neither comment
+// mentioning the other. A template with one job environment declaring 5,000
+// variables charged ~5,001 positions HERE -- comfortably accepted, created
+// and persisted -- and then tripped the worker's 5,000-position budget inside
+// session.Manager.Create, failing EVERY task in the job, one at a time, after
+// submission, naming a budget the submitter never saw.
+//
+// THE RELATION: the positions one assignment resolves on the worker (its own
+// step action and embedded files, plus every job and step environment the
+// session enters) are a SUBSET of the positions this package's walk charged
+// for the whole template. So the worker's cap must be at least this one, or
+// there exists a template the server accepts and the worker cannot run.
+// Fixed by RAISING the worker's cap to match, not by lowering this one --
+// fix round 1 raised this one deliberately to stop rejecting legitimate
+// templates, and the alternative (having the server charge a per-assignment
+// SUB-budget so the rejection lands at submit) needs a partition of the walk
+// that nothing in this package computes.
+//
+// It imports internal/worker/fmtres, which no production file in this package
+// does and none should. That is the point: the two constants live in
+// different packages in different processes, and an invariant between them
+// has to be asserted somewhere that can see both. A test-only import is the
+// cheapest place that also runs under plain `make test`.
+func TestTemplateBudget_WorkerCapIsNotTighter(t *testing.T) {
+	if fmtres.MaxAssignmentPositions < maxTemplateExprPositions {
+		t.Fatalf("the worker's per-assignment position cap (%d) is TIGHTER than the server's "+
+			"template-wide cap (%d).\n"+
+			"An assignment's positions are a subset of its template's, so this makes a job the "+
+			"server ACCEPTS fail on the worker -- per task, after submission, naming a budget the "+
+			"submitter was never shown. Raise fmtres.MaxAssignmentPositions, or give the server a "+
+			"per-assignment sub-budget so the rejection happens at submit.",
+			fmtres.MaxAssignmentPositions, maxTemplateExprPositions)
 	}
 }

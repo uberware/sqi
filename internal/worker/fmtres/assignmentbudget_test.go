@@ -14,7 +14,7 @@ package fmtres_test
 // note: the correct way to mutation-test either bound is to comment out the
 // threshold check inside AssignmentBudget.ChargePositions/
 // ChargeRetainedBytes (assignmentbudget.go), not to raise
-// assignmentMaxPositions/assignmentMaxRetainedBytes -- several tests below
+// MaxAssignmentPositions/assignmentMaxRetainedBytes -- several tests below
 // size their own construction from those live constants.
 
 import (
@@ -27,15 +27,17 @@ import (
 	"github.com/uberware/sqi/internal/worker/protocol"
 )
 
-// wantAssignmentMaxPositions mirrors assignmentbudget.go's own
-// assignmentMaxPositions (5,000) -- this is an EXTERNAL test package
-// (fmtres_test), so it cannot read the unexported constant directly. Kept as
-// one named constant, not a magic number repeated at each call site, so a
-// future change to the real constant has exactly one place here to update
-// too; a test relying on the WRONG value would fail loudly (either accepting
-// a construction meant to trip the budget, or the reverse) rather than
-// silently drifting.
-const wantAssignmentMaxPositions int64 = 5_000
+// wantAssignmentMaxPositions is assignmentbudget.go's own cap, read from the
+// package rather than mirrored as a literal.
+//
+// It WAS a hand-copied 5,000, with a comment explaining that an external test
+// package (fmtres_test) cannot see an unexported constant. Fix round 2
+// (whole-branch review, IMPORTANT 1) exported the constant --
+// [fmtres.MaxAssignmentPositions] -- because internal/openjd's own
+// TestTemplateBudget_WorkerCapIsNotTighter has to read it to pin the
+// server/worker relation, and once it is exported there is no reason for
+// this file to carry a copy that can drift from it.
+const wantAssignmentMaxPositions = fmtres.MaxAssignmentPositions
 
 // ── AssignmentBudget: direct unit tests ─────────────────────────────────────
 
@@ -47,19 +49,22 @@ func TestAssignmentBudget_PositionsDimension(t *testing.T) {
 	b := fmtres.NewAssignmentBudget()
 
 	// Spend right up to the cap in two charges -- proves the counter is
-	// cumulative across CALLS, not merely a single-call check.
-	if err := b.ChargePositions(3000, "first batch"); err != nil {
-		t.Fatalf("3,000 of 5,000 must be accepted: %v", err)
+	// cumulative across CALLS, not merely a single-call check. Sized from the
+	// live constant so raising or lowering the cap cannot silently turn this
+	// into a test of nothing.
+	const first = wantAssignmentMaxPositions / 2
+	if err := b.ChargePositions(first, "first batch"); err != nil {
+		t.Fatalf("%d of %d must be accepted: %v", first, wantAssignmentMaxPositions, err)
 	}
-	if err := b.ChargePositions(1999, "second batch"); err != nil {
-		t.Fatalf("4,999 of 5,000 must be accepted: %v", err)
+	if err := b.ChargePositions(wantAssignmentMaxPositions-first-1, "second batch"); err != nil {
+		t.Fatalf("one under the cap must be accepted: %v", err)
 	}
 	if err := b.ChargePositions(1, "boundary"); err != nil {
-		t.Fatalf("exactly 5,000 must be accepted (the limit is inclusive): %v", err)
+		t.Fatalf("exactly %d must be accepted (the limit is inclusive): %v", wantAssignmentMaxPositions, err)
 	}
 	err := b.ChargePositions(1, "over the top")
 	if err == nil {
-		t.Fatal("the 5,001st position must be rejected")
+		t.Fatalf("position %d must be rejected", wantAssignmentMaxPositions+1)
 	}
 	if !strings.Contains(err.Error(), "expression positions") {
 		t.Errorf("error = %v, want it to name the positions dimension", err)
@@ -164,7 +169,7 @@ func TestAssignmentBudget_ConcurrentCharges(t *testing.T) {
 			rejected++
 		}
 	}
-	// goroutines (200) is comfortably under assignmentMaxPositions (5,000),
+	// goroutines (200) is comfortably under MaxAssignmentPositions,
 	// so every charge must have been accepted, and NONE lost to a race --
 	// 200 successes is only possible if every one of the 200 concurrent
 	// += 1 updates was applied.
@@ -255,12 +260,13 @@ func TestAssignmentBudget_AcrossTables_RetainedBytes(t *testing.T) {
 // each call resolves a handful of plain-literal values, well within those.
 // Only the assignment-wide budget sums the position COUNT across calls.
 //
-// 6 calls x 900 plain-literal variables = 5,400 positions, over
-// assignmentMaxPositions (5,000), even though the largest any single call
-// charges (900) is nowhere close to the cap on its own.
+// The construction is sized from the live cap rather than hardcoded: 12 calls
+// of one twelfth of it, plus enough overshoot to guarantee the last call
+// trips, so that the largest any single call charges is nowhere close to the
+// cap on its own and only the assignment-wide sum catches it.
 func TestAssignmentBudget_AcrossActions_Positions(t *testing.T) {
-	const calls = 6
-	const perCall = 900
+	const calls = 12
+	const perCall = int(wantAssignmentMaxPositions/calls) + 50
 
 	budget := fmtres.NewAssignmentBudget()
 	var lastErr error
@@ -281,7 +287,7 @@ func TestAssignmentBudget_AcrossActions_Positions(t *testing.T) {
 	if lastErr == nil {
 		t.Fatalf("%d calls x %d positions (%d total), over the %d-position assignment-wide budget, "+
 			"must be rejected somewhere -- got %d calls all accepted with no error",
-			calls, perCall, calls*perCall, 5_000, completed)
+			calls, perCall, calls*perCall, wantAssignmentMaxPositions, completed)
 	}
 	if completed >= calls {
 		t.Errorf("expected the budget to trip strictly before the last (%dth) call; all %d completed",
