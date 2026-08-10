@@ -54,6 +54,128 @@ Despite that gate, most of the extension is implemented and tested:
 - **Phase-3 (worker-side) evaluation** — described below. This is what
   EXPR sub-project E4a added: evaluating expressions for real, against a
   real task's concrete values, on the worker that executes it.
+- **Task-parameter range field extensions (section 1.3.12)** — described in
+  the next section. This is what EXPR sub-project E4b added: a submission-
+  time (phase-2/resolve) feature, not a worker one, so it sits before the
+  wire protocol below rather than inside "Worker behavior".
+
+## Task-parameter range field extensions (section 1.3.12)
+
+Base-spec `range` (Template Schemas §3.4.1, `<TaskParameterDefinition>` and
+its four type-specific variants) is either a literal list of values or, for
+INT/CHUNK[INT] only, the succinct `<IntRangeExpr>` string syntax
+(`"1-100:2"`). Section 1.3.12 of the expression language spec
+(`wiki/2026-02-Expression-Language.md:1109`) extends what that field may
+contain, per declared type — quoting its own table:
+
+| Parameter Type | Original `range` Type | Extended `range` Type |
+| --- | --- | --- |
+| INT | `list[int \| FormatString] \| RangeString` | (unchanged, but see `RangeString` note below) |
+| FLOAT | `list[Decimal \| FormatString]` | `list[Decimal \| FormatString] \| ListExpressionString` |
+| STRING | `list[FormatString]` | `list[FormatString] \| ListExpressionString` |
+| PATH | `list[FormatString]` | `list[FormatString] \| ListExpressionString` |
+
+Two distinct shapes fall out of that table, handled by different code and
+producing different results:
+
+**A `<ListExpressionString>` is a whole-field format string that is *exactly
+one* `{{ ... }}` reference** (`fmtstring.LoneRef` — no surrounding text),
+evaluating to a list — e.g.
+`range: "{{ [Param.Scale * 2, Param.Scale + 0.5] }}"` for a FLOAT parameter
+(the spec's own worked example, and one of the three vendored
+`expr1.3.11--*-range-expression.yaml` conformance fixtures — named for the
+section's number *before* it was renumbered to 1.3.12, not a citation to a
+section that no longer exists). Per section 1.3.2's "exactly `{{<expr>}}`"
+rule, the target type is inherited from the field itself:
+`internal/openjd/resolve.go`'s `evalRangeExprList` evaluates the expression
+against `list[<the parameter's own element type>]` —
+`list[float]`/`list[string]`/`list[path]` for FLOAT/STRING/PATH, and
+`list[int]` for INT/CHUNK[INT] (a genuine `range_expr` result, e.g. from
+`range_expr(...)`, converts to `list[int]` via section 1.2.3's own list-
+coercion rule, with no detour through range-expression text). Each resulting
+list element becomes one `RangeList` entry, rendered to text with
+`Value.String()`. The phase-2 checker (`checkParameterSpaceExpressions`,
+`internal/openjd/exprcheck.go`) verifies the same field against
+`rangeExprFieldType(type)` — a `range_expr | list[int]` **union** for
+INT/CHUNK[INT] rather than resolve.go's plain `list[int]` — a deliberately
+different `expr.Type` value that is provably equivalent for every accept/
+reject verdict (`rangeExprFieldType`'s own doc comment), not a second,
+independently-chosen target that needs reconciling with the resolver's.
+
+**Every other RangeList entry or RangeExpr shape — literal text, or a
+`{{...}}` reference embedded in surrounding text — is not a whole-field list
+expression.** For INT/CHUNK[INT], section 1.3.12 says the `RangeString`
+field "is also extended" because, being a format string, it "can now contain
+an expression that evaluates to either a range expression string or a
+`list[int]`" — e.g. `range: "1-{{ Param.End }}"`. For every type, an
+individual RangeList entry was already a format string in the base
+specification — `<TaskParameterStringValue>` (Template Schemas §3.4.2) is
+itself defined as a Format String, and every type's `range` list is built
+from it (INT/FLOAT via `<IntRangeList>`/`<FloatRangeList>`, §3.4.1.1/§3.4.1.2;
+STRING/PATH directly, §3.4.1.3/§3.4.1.4, `# @fmtstring`) — under EXPR, its
+embedded reference is now evaluated as an expression (section 1.3.2's
+general embedded-reference rule: unconstrained `expr.TAny`, rendered with
+`Value.String()`) rather than looked up as a bare dotted identifier. Either
+way, the result is **text**,
+resolved by `resolve.go`'s `resolveRangeExprField`/`resolveRangeListEntry`
+exactly as any other embedded reference resolves — never a value handed
+directly to `evalRangeExprList`'s list-producing path.
+
+**Why the whole-field/embedded distinction matters for INT/CHUNK[INT]
+specifically:** `internal/openjd`'s own `<IntRangeExpr>` reader
+(`parseIntRangeExpr`, via `internal/openjd/intrange`, configured with
+`intrange.Policy{PositiveStepOnly, AscendingOnly}`) applies a policy that
+deliberately diverges from the expression language's (`internal/openjd/expr`
+passes the zero `Policy` and follows the spec) in three ways this repo
+preserves on purpose — it rejects `start > end`, rejects a negative step, and
+expands in first-seen rather than ascending order. A **lone** whole-field
+range expression is consumed directly as a value and never re-enters that
+reader, so it keeps the expression language's own semantics:
+`range_expr("5-1")` resolves to the single value `["5"]` (section 3.4.1.1.1's
+`x-y` formula, for `x > y`, reduces to the set `{x}` — the same rule that
+makes `"1 - -1"` the single value `[1]` in the spec's own worked table),
+where the same text as base-spec literal `<IntRangeExpr>` syntax is rejected
+outright by `internal/openjd`'s own stricter `start > end` check, and
+`range_expr("10-15:2,1-5")` comes out ascending — `[1,2,3,4,5,10,12,14]`, the
+spec's own worked example for that text. An **embedded** occurrence
+of the same call — e.g. `"{{ range_expr(\"10-15:2,1-5\") }},7"` — renders to
+its own `<IntRangeExpr>` text (`Value.String()` on a `range_expr` value
+round-trips the text it was constructed from, unmodified) and the *composed*
+result is ordinary base-spec `<RangeString>` text, parsed by
+`internal/openjd`'s own stricter/differently-ordered reader like any other
+literal range string — so the identical `range_expr(...)` call can legally
+produce different orderings, or accept-vs-reject outcomes, depending only on
+whether it is the field's sole content. This is a deliberate ruling, not a
+defect — see `resolveRangeExprField`'s own doc comment (`resolve.go`) for the
+reasoning — and is pinned by
+`TestResolveParameterSpaceParams_NonLoneRangeExprEmbeddedRangeExprValue`.
+
+**A computed FLOAT's rendered text is not always what a task receives.**
+Section 1.3.4 ("Float Value Pass-Through",
+`wiki/2026-02-Expression-Language.md:981`) gives computed floats their
+shortest round-tripping decimal string — `evalRangeExprList` and
+`resolveRangeListEntry` follow that rule via `Value.String()`, so
+`Param.Scale * 2` with `Scale = 2.5` renders `"5.0"`. But for a FLOAT task
+parameter, that text is not the final value: `internal/openjd/expand.go`'s
+`validateFloatList` re-canonicalizes every FLOAT `RangeList` entry with
+`strconv.FormatFloat(f, 'g', -1, 64)` before a task row is built, which drops
+the trailing `.0` — a task actually receives `"5"`. This re-canonicalization
+is pre-existing and not itself part of section 1.3.12 (it already applied to
+a literal, non-EXPR FLOAT range entry); it is noted here only so `"5.0"` is
+not mistaken for the value a job's command line will see.
+
+**Conformance cannot see this feature.** The `EXPR/job_templates`
+conformance suite (`make test-conformance`) only parses and validates a
+template (`openjd.ValidateWithOptions`) — it never expands a parameter
+space, so it cannot observe what a range resolves *to*, only whether the
+template is accepted. The three fixtures for this feature
+(`expr1.3.11--float-range-expression.yaml`,
+`expr1.3.11--string-range-expression.yaml`,
+`expr1.3.11--path-range-expression.yaml`) already passed before this support
+existed. What actually exercises resolution and expansion end to end is
+`internal/openjd/resolve_agreement_test.go`, which runs the real checker and
+the real resolver+expander against the same templates and asserts they
+agree on every verdict.
 
 ## The wire protocol
 
