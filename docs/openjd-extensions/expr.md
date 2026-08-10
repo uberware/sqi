@@ -45,8 +45,10 @@ Despite that gate, most of the extension is implemented and tested:
   (`internal/openjd/expr/limits.go`, `meter.go`), plus a per-symbol-table
   retained-bytes bound on the worker's `let:` evaluator
   (`internal/worker/fmtres`'s `workerLetRetainedLimit`). These bound
-  individual evaluations and one task's or environment's retained bindings;
-  they are **not** a cumulative, template-wide budget — see Known gaps.
+  individual evaluations and one task's or one environment's retained
+  bindings — and, since EXPR sub-project E4c, a cumulative budget bounds the
+  WHOLE template and the WHOLE assignment on top of them; see "Template-wide
+  expression budget" below.
 - **The scope model and phase-2 checker** — `internal/openjd/scope.go` and
   `internal/openjd/exprcheck.go` type-check every format string and `let:`
   block against the template's declared parameters at submission time, so a
@@ -58,6 +60,12 @@ Despite that gate, most of the extension is implemented and tested:
   the next section. This is what EXPR sub-project E4b added: a submission-
   time (phase-2/resolve) feature, not a worker one, so it sits before the
   wire protocol below rather than inside "Worker behavior".
+- **A template-wide, cumulative expression budget** — described in
+  "Template-wide expression budget" below. This is what EXPR sub-project
+  E4c added: closing the "Bounded evaluation" bullet's own gap, after three
+  separate sub-projects (E2, E3, E4b) each independently found — and each
+  fixed only locally — an unbounded cumulative cost none of the per-`Eval`
+  bounds above ever reached.
 
 ## Task-parameter range field extensions (section 1.3.12)
 
@@ -397,17 +405,179 @@ type on both sides — for every job/task-parameter type EXPR supports
 `internal/worker/fmtres/exprsyms_test.go`'s `TestPhase2Phase3Agreement` and
 `internal/openjd/expr/paramtypes_internal_test.go`.
 
+## Template-wide expression budget (EXPR sub-project E4c)
+
+Sections 1.3.9 and 1.3.10 of the expression language spec
+(`wiki/2026-02-Expression-Language.md:1060` and `:1071`) each bound a
+*single* evaluation: "the evaluator tracks the memory size of live values"
+and "maintains a running operation count," reset for every `Eval` call.
+Every `Eval` in sqi already enforces both, independently, at every phase —
+`submissionLimits()` (phases 1/2, `internal/openjd/exprcheck.go`) and
+`workerOperationLimit`/`workerMemoryLimit` (phase 3,
+`internal/worker/fmtres/expres.go`) — and phase 3 additionally bounds one
+symbol table's own `let:` retention (`workerLetRetainedLimit`, 10 MB,
+`internal/worker/fmtres/exprsyms.go`).
+
+**None of that bounds the whole walk**, and the spec does not ask it to —
+§1.3.9/§1.3.10 only obligate a per-evaluation bound. A template with
+thousands of cheap positions, or many individually-compliant `let:` blocks,
+paid no aggregate cost before this wave. Three sub-projects independently
+found that gap and each fixed it only locally, never closing the underlying
+pattern — the four constructions this wave closes together:
+
+| Sub-project | Construction | Cost | What bounded it before E4c |
+| --- | --- | --- | --- |
+| E2 | an unmetered expression walk over a submitted template | ~9 minutes of server CPU per request | nothing — this is what forced the per-`Eval` limits to exist at all |
+| E3 | a `let:` block whose reported 50-binding cap was never enforced | a 183 KB template body reached 6.9 GB in 1.45 s (`internal/worker/fmtres/exprsyms.go:464`) | nothing — fixed by `checkLetBindings`'s per-block cap, a DIFFERENT mechanism from this wave's budget |
+| E4a | one worker symbol table's `let:` retention, unbounded across the table | 472 MB retained in one table | nothing — fixed by `workerLetRetainedLimit`, per-TABLE, not cumulative |
+| E4b | 16 task-parameter definitions × 1024 `RangeList` entries, one step | 96 s in the resolver alone, with every per-`Eval` budget respected the entire time (`internal/openjd/exprcheck_budget_test.go:17`) | nothing — this wave |
+
+Each prior fix bounded one *table* or one *position*; none summed across a
+whole *walk*. E4c adds exactly that: a cumulative cap, charged once per
+position and once per retained `let:` binding, summed across the entire
+walk rather than reset per position or per table. It is an sqi-specific
+mechanism layered on top of the spec's own per-evaluation bounds, enforced
+independently at three separate points — because a budget shared across two
+walks that charge the same positions silently halves the effective cap for
+each (item 2, below) — never across phases (a fresh budget every call, so
+phase 2's verdict never depends on what phase 1 already spent):
+
+1. **Server, phases 1 and 2 — the checker.** `checkTemplateExpressions`'s own
+   `templateBudget` (`internal/openjd/exprcheck.go`) caps:
+   - `maxTemplateExprPositions` = **10,000** — one charge per
+     format-string/`let:`-binding position actually walked.
+   - `maxTemplateExprRetainedBytes` = **10,000,000** (10 MB) — the summed
+     `expr.SizeOf` of every value a `let:` block adds to its table, the only
+     construct in this walk that retains a value across positions.
+     Deliberately equal to `workerLetRetainedLimit` (below), not a
+     coincidence — the two are chosen to agree.
+   - Fresh per call: `ValidateWithOptions` (phase 1, unresolved parameters)
+     and `checkExpressionsAtSubmit` (phase 2, concrete parameters) each get
+     their own allowance.
+
+2. **Server, phase 2 — the resolver.** `ResolveParameterSpaceParams`
+   (`internal/openjd/resolve.go`), threaded from `submit.go`'s
+   `prepareTemplate`/`Submit`, spends its *own* `templateBudget`
+   (`resolverBudget`), shared across every step's resolver call for one
+   submission but deliberately **not** the checker's own budget
+   (`checkerBudget`). The resolver re-charges the identical range positions
+   and `let:` bytes the checker already charged for the same submission — a
+   post-implementation review found that an earlier version shared one
+   budget between the two, which silently halved the effective cap for
+   those classes: a template `ValidateWithOptions` (phase 1) accepted could
+   be rejected by `Submit` purely because phase 2's two walks were drawing
+   from one 10,000-position/10 MB pool instead of two. Two independent
+   budgets per phase-2 submission — one per walk — is the fix.
+
+3. **Worker, phase 3 — the assignment.** `AssignmentBudget`
+   (`internal/worker/fmtres/assignmentbudget.go`), one per *session*
+   (created once in `session.Manager.Create`, before any environment is
+   entered, and shared by the task's own symbol table and every
+   environment's) caps:
+   - `assignmentMaxPositions` = **5,000**.
+   - `assignmentMaxRetainedBytes` = **20,000,000** (20 MB) — exactly 2×
+     `workerLetRetainedLimit`, sized for the common shape of a task plus one
+     environment near its own per-table ceiling.
+   - **Charged only at environment ENTRY, never at teardown.**
+     `ExitEnvironments`'s own re-evaluation of an environment's `let:` block
+     (`session.go`'s `resolveEnvAction`) deliberately does not pass
+     `s.exprBudget` to any of its three phase-3 calls. This is intentional,
+     not an oversight: the table `resolveEnvAction` builds is rebuilt and
+     discarded regardless of whether the charge is accepted — the
+     allocation happens either way — and `ExitEnvironments` treats a
+     resolve error as a warning and continues past it, so a budget that
+     could still trip at teardown would silently **skip** that
+     environment's `onExit` (license check-ins, daemon shutdowns, unmounts)
+     rather than prevent any memory use. A budget that cannot avert the
+     cost it is charging for must not be allowed to block cleanup it cannot
+     prevent. Per-table (`workerLetRetainedLimit`) and per-`Eval`
+     (`workerOperationLimit`/`workerMemoryLimit`) bounds still apply to the
+     teardown table unconditionally — only the cross-table,
+     assignment-wide ledger is exempt.
+
+**What this budget does not measure, stated plainly:**
+
+- **Operations are derived, not measured.** No operation counter crosses
+  into `internal/openjd/expr` for either the template-wide or the
+  assignment-wide budget — both count POSITIONS only. The server-side
+  operation ceiling is a derived upper bound:
+  `maxTemplateExprPositions × submissionOperationLimit` = 10,000 × 10,000 =
+  **100,000,000** operations, per walk, per phase. Because this ceiling is a
+  *product*, raising either factor raises it proportionally — an operator
+  who later raises the position cap (or the per-position operation cap)
+  also raises the operation ceiling by the same factor, without touching a
+  single line of operation-counting code. This is not obvious from reading
+  either constant in isolation and must be stated: nothing in this
+  mechanism ever adds up to 100,000,000; it is a bound on what the existing
+  per-`Eval` operation limit, applied 10,000 times, could in principle cost.
+- **The byte dimension measures cumulative allocation, not peak live
+  retention.** Both `maxTemplateExprRetainedBytes` and
+  `assignmentMaxRetainedBytes` sum every `let:` block's own charge across
+  the whole walk, in evaluation order — they do not model when Go's garbage
+  collector might reclaim an earlier, now-unreferenced block's values. A
+  template whose `let:` blocks never hold more than a few MB live *at any
+  one instant*, but which declares many such blocks in sequence, is charged
+  for their SUM and rejected once that sum crosses the limit, exactly as a
+  template that held all of it live simultaneously would be — a
+  construction that never holds more than, say, 2.7 MB live at once can
+  still be charged 10.8 MB in total if it retains that much across four
+  sequential `let:` blocks.
+- **A single `let:` block can transiently exceed the server-side 10 MB
+  figure before the budget ever sees it.** The charge lands once, after
+  `checkLetBindings` finishes evaluating a whole block — not per binding
+  within it — so one block can retain up to `maxLetBindings ×
+  submissionMemoryLimit` = 50 × 1,000,000 = **50,000,000 bytes (50 MB)**
+  before this counter rejects it. That is the true single-block ceiling
+  this budget enforces, not 10 MB.
+
+**`maxSteps` = 100** (`internal/openjd/validate.go`) caps the number of
+`<StepTemplate>` entries *any* job template may declare — the one limit
+this wave adds that applies to **every** template, including base-spec ones
+declaring no `extensions:` at all, unlike every other bound on this page,
+which engages only once a template declares `extensions: [EXPR]`. It is not
+a spec transcription: OpenJD's own "Constraints" list for `<JobTemplate>`
+gives `parameterDefinitions` an explicit min/max
+(`wiki/2023-09-Template-Schemas.md:62`–`64`, item 6) but states none at all
+for `steps` (`wiki/2023-09-Template-Schemas.md:71`, item 8) — 100 is an sqi
+product decision, gated by `openjd.enforce_limits`
+(`docs/configuration.md`) like the package's other bare structural-count
+caps, not one of the package's always-on resource-exhaustion guards
+(`maxRangeValues`, `maxTasksPerStep`). It also sizes the position budget's
+own denominator: `maxTemplateExprPositions` was chosen against a worked,
+per-step position count times `maxSteps` — see that constant's own doc
+comment (`internal/openjd/exprcheck.go`) for the full arithmetic.
+
+**What this wave deliberately does not reach.** `maxSteps` is itself gated
+by `openjd.enforce_limits`, the same flag as the parameter-space count
+caps — so with `openjd.enforce_limits: false`, step count is unbounded too,
+and a template with many steps that each declare a large `range` (e.g.
+`"1-1000000"`) still multiplies: (step count) × `maxTasksPerStep` task rows
+can be attempted from one submission, validating cheaply and quickly
+because expression cost and task count are different dimensions — this
+wave's budgets bound what *expressions* may cost to evaluate, not how many
+*tasks* a parameter space may expand to. That gap is pre-existing (it
+predates `maxSteps`, and `maxSteps` does not close it even when
+`enforce_limits` is true, since 100 steps at `maxTasksPerStep` each is
+already 10⁸ tasks), requires a deliberate operator opt-out
+(`enforce_limits: false`), and is not attempted by this wave — see
+`maxSteps`'s own "RESIDUAL, PRE-EXISTING, NOT INTRODUCED HERE" paragraph
+(`internal/openjd/validate.go`) for the exact mechanism. Closing it needs an
+always-on, catastrophically-generous bound on **total tasks per job**,
+analogous to `maxTasksPerStep` (`internal/openjd/expand.go`) but summed
+across steps — tracked as later work.
+
 ## Known gaps
 
-- **No cumulative, template-wide budget.** Both phase 2 and phase 3 bound a
-  single `Eval` call's memory and operation count, and phase 3 additionally
-  bounds what one symbol table's `let:` bindings retain
-  (`workerLetRetainedLimit`) — but nothing yet bounds the total across every
-  expression a whole template or task evaluates, nor across the tables a
-  worker holds concurrently. The worker also has no
-  `validateLetElementCounts`-equivalent to *report* an over-cap `let:` block;
-  it silently truncates at 50, relying on phase 2 having already rejected the
-  template. This is later work.
+- **A cumulative, template-wide budget now exists** (EXPR sub-project E4c;
+  see "Template-wide expression budget" above) — bounding what one
+  submission's checker walk, one submission's resolver walk, and one
+  worker's assignment may cost in total, on top of the per-`Eval` bounds
+  this section used to describe as the only ones. What it still does not
+  reach: the worker has no `validateLetElementCounts`-equivalent to
+  *report* an over-cap `let:` block; it silently truncates at 50, relying
+  on phase 2 having already rejected the template. Also open: an always-on,
+  catastrophically-generous bound on total tasks per job (a distinct,
+  task-count dimension — see "Template-wide expression budget" above).
 - **Workers must be upgraded after the server, never before.** The worker's
   lease loop rejects any `AssignMsg` whose `Version` does not match its own,
   so a `"2"` worker talking to a `"1"` server rejects every assignment it is
