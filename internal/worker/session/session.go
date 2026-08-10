@@ -129,6 +129,12 @@ type Session struct {
 	// for the EXPR path's metering/path-mapping options. Never mutated after
 	// Create; safe to read without the mu lock for that reason, exactly like
 	// jobParams/pathMapFile/hasPathMap above.
+	//
+	// ALWAYS NON-NIL for a Session that exists: Manager.Create dereferences
+	// msg (msg.Isolation) before it ever builds one, so a nil assignment
+	// panics there, not here. resolveEnvEntry/resolveEnvAction therefore read
+	// s.msg unguarded on purpose -- a nil check would be dead code suggesting
+	// a state the type cannot be in.
 	msg *protocol.AssignMsg
 
 	// staticEnv is the merged, fully-resolved static environment from every

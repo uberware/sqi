@@ -13,9 +13,9 @@ symbol's text verbatim. EXPR (RFC 0005/0006) extends that to a small
 Python-subset expression language: arithmetic, comparisons, string/list
 operations, comprehensions, `let:` bindings, path manipulation
 (`Session.WorkingDirectory / 'frames'`), path mapping
-(`apply_path_mapping(...)`), and an ~80-function standard library, all
-evaluatable inside `{{ ... }}`. A template declares it with
-`extensions: [EXPR]`.
+(`apply_path_mapping(...)`), and an 80-function standard library (plus the
+path *properties*, which are not registry entries), all evaluatable inside
+`{{ ... }}`. A template declares it with `extensions: [EXPR]`.
 
 ## Current status
 
@@ -36,12 +36,15 @@ Despite that gate, most of the extension is implemented and tested:
 - **Expression core** — the full type system, coercion, operators,
   comprehensions, call syntax — `internal/openjd/expr` (package doc:
   `internal/openjd/expr/doc.go`).
-- **The ~100-function/property standard library** — conversions, math,
-  string, regex, path, and `apply_path_mapping` — registered in
+- **The standard library** — conversions, math, string, regex, path, and
+  `apply_path_mapping`: 80 registered functions plus the path properties —
   `internal/openjd/expr`'s function tables.
 - **Bounded evaluation** — per-`Eval` memory and operation limits
-  (`internal/openjd/expr/limits.go`, `meter.go`), so an untrusted expression
-  cannot exhaust server or worker resources.
+  (`internal/openjd/expr/limits.go`, `meter.go`), plus a per-symbol-table
+  retained-bytes bound on the worker's `let:` evaluator
+  (`internal/worker/fmtres`'s `workerLetRetainedLimit`). These bound
+  individual evaluations and one task's or environment's retained bindings;
+  they are **not** a cumulative, template-wide budget — see Known gaps.
 - **The scope model and phase-2 checker** — `internal/openjd/scope.go` and
   `internal/openjd/exprcheck.go` type-check every format string and `let:`
   block against the template's declared parameters at submission time, so a
@@ -59,8 +62,10 @@ a version mismatch is rejected outright rather than silently decoded with
 unrecognized fields dropped, so a partially upgraded farm fails loudly
 instead of quietly running a task with the wrong command line.
 `protocol.ProtocolVersion` is currently `"2"`; version `"2"` added the fields
-EXPR phase-3 evaluation needs, all `omitempty` so a base-spec assignment's
-wire bytes are byte-for-byte unchanged:
+EXPR phase-3 evaluation needs. All nine are `omitempty`, so the **added
+fields** leave a base-spec assignment's wire bytes byte-for-byte unchanged —
+the envelope's own `"version":"1"` → `"2"` is of course changed by the bump
+itself, which is what the worker's receiver-side check keys off:
 
 | Field | Purpose |
 | --- | --- |
@@ -70,8 +75,8 @@ wire bytes are byte-for-byte unchanged:
 | `AssignMsg.StepTemplateLet` / `StepScriptLet` | The step template's and step script's `let:` blocks (Template Schemas §3.6), as raw, unparsed `"name = expression"` source in declaration order, re-evaluated on the worker rather than shipped as resolved values — see below. |
 | `AssignEnvironment.Let` / `StepEnvironment` | The same `let:` transport and scope tagging, per environment. |
 
-**Only workers that build assignments through `internal/worker/protocol`
-gain these fields**, and only for a template that declares EXPR — every
+**The server builds every assignment** (`internal/scheduler/assign.go`), and
+populates these fields only for a template that declares EXPR — every
 other message (`RegisterMsg`, `HeartbeatMsg`, `TaskStatusMsg`,
 `LogChunkMsg`) is unaffected, and version enforcement is currently
 **receiver-side on the worker only**: the server does not yet check
@@ -83,8 +88,10 @@ other message (`RegisterMsg`, `HeartbeatMsg`, `TaskStatusMsg`,
 
 `msg.EXPR` selects between two resolution families at both places the
 worker renders format strings — `internal/worker/executor/run.go`'s
-`resolveAssignment` (task actions, embedded files, environment variables)
-and `internal/worker/session/session.go`'s environment-entry resolution:
+`resolveAssignment` (the task's `onRun` action and step embedded files; the
+environment variables it returns are `sess.StaticEnv()`, already resolved at
+enter time, on both branches) and `internal/worker/session/session.go`'s
+environment-entry and environment-exit resolution:
 
 - `EXPR` false (the zero value, every base-spec assignment): the existing
   `fmtstring.Resolve`-backed plain-substitution path, unchanged byte for
@@ -99,8 +106,9 @@ assignment: `Task.Param.*`/`Task.RawParam.*` and `Param.*`/`RawParam.*` are
 bound as concrete `expr.Value`s (typed via `AssignMsg.ParameterTypes`/
 `JobParameterTypes`, concretized from `AssignMsg.Parameters`/
 `JobParameters`), `Session.WorkingDirectory` and the path-mapping symbols are
-bound from the session, and `Task.File.*`/`Env.File.*` are bound from
-materialized embedded-file paths. Every path value is bound under
+bound from the session, and `Task.File.*` is bound from materialized
+embedded-file paths. `Env.File.*` belongs to `EnvSymbols` alone — the
+environment-scope builder, which conversely binds no `Task.*` family at all. Every path value is bound under
 `expr.PathNative` — the worker runs ON the host a task executes on, so a
 Windows worker must evaluate its own native-flavored paths, not a
 POSIX-flavored default.
@@ -117,14 +125,18 @@ evaluates unconstrained and stringifies its natural result.
 
 Every phase-3 evaluation is metered independently of phase 2's submission-time
 limits, via named constants in `internal/worker/fmtres`:
-`workerOperationLimit` and `workerMemoryLimit`.
+`workerOperationLimit` and `workerMemoryLimit`. Those are **per-`Eval`**
+budgets, which is enough for every position that renders a result and drops
+it — but not for `let:`, the one construct that *retains* values; see below.
 
 ### `let:` re-evaluation
 
 `AssignMsg.StepTemplateLet` and `StepScriptLet` (and each
 `AssignEnvironment.Let`) ship as **raw, unparsed source**, not
 pre-resolved values, and the worker re-evaluates them itself
-(`internal/worker/session/session.go`'s let-binding path) in the same
+(`internal/worker/fmtres/exprsyms.go`'s `ApplyTaskLet`/`ApplyEnvLet`, applied
+from `internal/worker/executor/run.go`'s `resolveAssignmentExpr` for the two
+step-level blocks and from `session.go` for an environment's) in the same
 order the template declares — step-template bindings first, then the step
 script's, each new binding visible to the ones after it — building on
 Template Schemas §3.6's ordering rule. A step template's own `let:` block
@@ -135,6 +147,35 @@ block evaluates against, so splitting one ordered evaluation across two
 machines would fragment it, and re-evaluating every block the same way on
 the worker host keeps phase 3 "the same walk with a different table" rather
 than a second mechanism.
+
+A `let:` block is the only phase-3 position that keeps its results, so a
+per-`Eval` budget does not bound it: 50 bindings each within
+`workerMemoryLimit` retain 50 times it. `workerLetRetainedLimit` (10 MB)
+bounds the total section 1.3.9 size **one symbol table** holds live, measured
+across every block evaluated into it — the step template's and the step
+script's for a task, the step template's and the environment's own for an
+environment entry. A block that would push the table past it stops there with
+an error rather than continuing to spend a fresh evaluation budget per
+remaining binding. This is the worker-local bound only; the cumulative,
+template-wide budget is still open (see Known gaps).
+
+### Deliberate phase-2/phase-3 divergences
+
+Three differences between the two phases are correct and intended. They are
+recorded here so they are not re-derived as findings:
+
+1. **`Session.PathMappingRulesFile` is bound conditionally at phase 3.** It
+   appears only when the session actually has rules (`hasPathMap`), matching
+   the pre-EXPR `addPathMappingKeys` rule, so a reference to it with no rules
+   fails as an unknown symbol rather than resolving to an empty path.
+2. **`PathPOSIX` at phase 2, `PathNative` at phase 3.** Expression-Language
+   §1.2.1: "In TEMPLATE scope contexts, POSIX semantics are used for
+   consistency. In host contexts (SESSION and TASK scopes), the semantics
+   match the host's operating system." Phase 3 *is* the host context.
+3. **Path mapping is applied to `Param.<PATH>`/`Task.Param.<PATH>` only at
+   phase 3.** §1.2.2 requires `Param.<name>` to carry the value "with path
+   mapping rules applied"; phase 2 has no session, and therefore no rules, to
+   apply.
 
 ### Phase-2/phase-3 agreement
 
@@ -151,11 +192,21 @@ type on both sides — for every job/task-parameter type EXPR supports
 ## Known gaps
 
 - **No cumulative, template-wide budget.** Both phase 2 and phase 3 bound a
-  single `Eval` call's memory and operation count, but nothing yet bounds
-  the total across every expression a template or task evaluates. The
-  worker has no `validateLetElementCounts`-equivalent to reject an
-  over-cap `let:` block before evaluating it, unlike phase 2's checker.
-  This is later work.
+  single `Eval` call's memory and operation count, and phase 3 additionally
+  bounds what one symbol table's `let:` bindings retain
+  (`workerLetRetainedLimit`) — but nothing yet bounds the total across every
+  expression a whole template or task evaluates, nor across the tables a
+  worker holds concurrently. The worker also has no
+  `validateLetElementCounts`-equivalent to *report* an over-cap `let:` block;
+  it silently truncates at 50, relying on phase 2 having already rejected the
+  template. This is later work.
+- **Workers must be upgraded after the server, never before.** The worker's
+  lease loop rejects any `AssignMsg` whose `Version` does not match its own,
+  so a `"2"` worker talking to a `"1"` server rejects every assignment it is
+  offered and the tasks churn through reclaim until the server is upgraded.
+  The reverse order is the safe one: a `"1"` worker against a `"2"` server
+  also rejects, but the server can still hand that work to upgraded workers.
+  Nothing enforces or detects the ordering today.
 - **Only the worker's lease-loop receiver enforces `Version`.** The other
   worker→server message types decode without a version check today, so a
   version mismatch on those channels is silent. `heartbeat` and

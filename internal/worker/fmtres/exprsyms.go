@@ -32,6 +32,20 @@ package fmtres
 // one thing that distinguishes phase 3 from phases 1 and 2: "the same walk
 // with a different table," now with every placeholder replaced by a value.
 //
+// THREE DIVERGENCES FROM PHASE 2 ARE CORRECT AND INTENDED, written down here
+// and in docs/openjd-extensions/expr.md ("Deliberate phase-2/phase-3
+// divergences") so a reviewer does not have to re-derive them and conclude
+// they are bugs:
+//
+//  1. Session.PathMappingRulesFile is bound CONDITIONALLY (only when the
+//     session has rules), matching the pre-EXPR addPathMappingKeys rule --
+//     bindSessionSymbols below.
+//  2. Paths are PathNative here and PathPOSIX at phase 2 -- pathFlavor below,
+//     which quotes Expression-Language section 1.2.1 for it.
+//  3. Path mapping is applied to Param.<PATH>/Task.Param.<PATH> only HERE.
+//     Section 1.2.2 requires it; phase 2 has no session, hence no rules, to
+//     apply -- paramValueForBinding below.
+//
 // FIX ROUND 1 (Task 4 review): Param.<name>/Task.Param.<name> for a PATH-
 // declared parameter are now bound with the assignment's PathMap rules
 // ALREADY APPLIED, via [mapPathParamValue] (expres.go) -- section 1.2.2:
@@ -52,6 +66,8 @@ package fmtres
 import (
 	"errors"
 	"fmt"
+	"maps"
+	"slices"
 	"strings"
 
 	"github.com/uberware/sqi/internal/openjd/expr"
@@ -64,12 +80,19 @@ import (
 // Session.WorkingDirectory, Session.PathMappingRulesFile.
 //
 // PathNative, not the PathPOSIX internal/openjd's own phase-2
-// concreteJobParamValue hardcodes: phase 3 runs ON THE WORKER HOST, so this
-// is the one evaluation context in sqi today that IS a host context in the
-// sense expr.PathFormat's own doc comment describes ("Nothing in sqi
-// selects [PathNative] yet; sub-project E does, for host contexts") --
-// E4a's whole premise is that the worker is where a template first executes
-// against a real machine. Using PathNative here means a worker running on
+// concreteJobParamValue hardcodes. The specification settles this outright,
+// Expression-Language section 1.2.1: "The path type can have either POSIX or
+// Windows path semantics depending on the evaluation context... In TEMPLATE
+// scope contexts, POSIX semantics are used for consistency. In host contexts
+// (SESSION and TASK scopes), the semantics match the host's operating
+// system." Phase 3 IS a host context -- it runs ON THE WORKER HOST, against
+// a real session directory -- so the flavor is the host's, and phase 2, which
+// runs at TEMPLATE scope, correctly keeps POSIX. (expr.PathFormat's own doc
+// comment anticipates this -- "Nothing in sqi selects [PathNative] yet;
+// sub-project E does, for host contexts" -- but it is a note about sqi's
+// wiring, not the authority; section 1.2.1 is.)
+//
+// Using PathNative here means a worker running on
 // Windows gets Windows path semantics for its own session paths, matching
 // the filesystem it is actually writing to, rather than the POSIX default
 // that exists specifically so a server-side template expands identically
@@ -239,7 +262,12 @@ func EnvSymbols(
 // see [mapPathParamValue]; ordinary INT/FLOAT/STRING parsing failures still
 // fall back to expr.Unresolved exactly as before, unchanged.
 func bindJobParamSymbols(msg *protocol.AssignMsg, syms expr.MapSymbols) error {
-	for name, raw := range msg.JobParameters {
+	// Sorted, because the loop returns on the FIRST failure: iterating the
+	// map directly makes an assignment with two bad PATH parameters report a
+	// different one run to run, which is not something an operator reading a
+	// task failure should have to notice.
+	for _, name := range slices.Sorted(maps.Keys(msg.JobParameters)) {
+		raw := msg.JobParameters[name]
 		paramType, rawType := expr.JobParamTypes(msg.JobParameterTypes[name])
 		v, err := paramValueForBinding(paramType, raw, msg.PathMap)
 		if err != nil {
@@ -267,7 +295,9 @@ func bindJobParamSymbols(msg *protocol.AssignMsg, syms expr.MapSymbols) error {
 // stays built straight from raw (unmapped), even when both share the exact
 // same declared TYPE.
 func bindTaskParamSymbols(msg *protocol.AssignMsg, syms expr.MapSymbols) error {
-	for name, raw := range msg.Parameters {
+	// Sorted for the same reason as bindJobParamSymbols, above.
+	for _, name := range slices.Sorted(maps.Keys(msg.Parameters)) {
+		raw := msg.Parameters[name]
 		t := expr.TaskParamType(msg.ParameterTypes[name])
 		v, err := paramValueForBinding(t, raw, msg.PathMap)
 		if err != nil {
@@ -433,15 +463,21 @@ func bindFileSymbols(syms expr.MapSymbols, prefix string, files []protocol.Embed
 // enforces it, for the identical reason: sub-project E3's whole-branch review
 // found a 183 KB template body reaching 6.9 GB in 1.45s because the cap was
 // REPORTED (validateLetElementCounts) but never ENFORCED at the evaluator
-// that actually retains the bindings' values. The worker has no
-// validateLetElementCounts of its own to report the over-count at all -- an
-// over-long block simply never reaches a running task, because
-// checkLetBindings' own enforcement already rejects the template at
-// submission -- so this guard is defense in depth for a phase-3 evaluator
-// that should never legitimately see more than 50 bindings in a block, not
-// the primary bound. Truncating (not erroring) matches checkLetBindings:
-// evaluating the first 50 and silently dropping the rest is the same choice
-// phase 2 already makes.
+// that actually retains the bindings' values.
+//
+// Which of the two server-side halves does what matters, and an earlier
+// revision of this comment got it backwards. checkLetBindings' enforcement
+// TRUNCATES: it evaluates the first 50 and silently drops the rest, exactly
+// as this function does, which is a COST bound, not a rejection.
+// validateLetElementCounts is what actually REJECTS the template -- and
+// validate.go's own constant says so in as many words ("Reporting is not
+// guarding -- ValidateWithOptions does not short-circuit on the report -- so
+// both are required"). The worker has neither reporter nor rejector of its
+// own; it relies on validateLetElementCounts having already failed the
+// submission, and truncates here as defense in depth for a phase-3 evaluator
+// that should never legitimately see more than 50 bindings in a block. The
+// bound that actually protects the worker against an accepted-but-expensive
+// block is workerLetRetainedLimit, below.
 
 // maxLetBindings caps the number of bindings evalLetBindings will evaluate
 // from a single let: block -- see this section's own doc comment, above, for

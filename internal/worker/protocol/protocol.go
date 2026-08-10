@@ -45,8 +45,13 @@ import "time"
 // [AssignMsg.JobParameterTypes], [AssignEnvironment.Let], [AssignMsg.JobName],
 // [AssignMsg.StepName] and [AssignEnvironment.StepEnvironment] for EXPR
 // phase-3 (worker-side) expression evaluation.  All nine are omitempty and
-// populated only for a template that declares the EXPR extension, so a
-// base-spec assignment's wire bytes are unchanged by this bump.
+// populated only for a template that declares the EXPR extension, so the
+// ADDED FIELDS leave a base-spec assignment's wire bytes unchanged.  The
+// bump itself of course does not: "version":"1" becomes "version":"2" on
+// every message, which is precisely what the worker's receiver-side check
+// (internal/worker/lease.decodeAssignment) keys off, and why workers must
+// be upgraded AFTER the server -- a "2" worker rejects every assignment a
+// "1" server offers it and the tasks churn through reclaim.
 const ProtocolVersion = "2"
 
 // ── Message type constants ────────────────────────────────────────────────────

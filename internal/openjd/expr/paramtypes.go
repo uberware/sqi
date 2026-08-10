@@ -15,11 +15,18 @@ import (
 // resolved form, because the raw value may be a path for another operating
 // system that cannot be parsed locally: Param.<name> is a path (or list of
 // paths), RawParam.<name> stays a string (or list of strings). Every other
-// declared type binds Param and RawParam to the SAME type — section 1.2.2
-// itself: "This is the same as RawParam.<ParamName> for all parameter types
-// except PATH" — so an INT job parameter's RawParam.<name> is int, not
-// string. Do not special-case RawParam to string uniformly; that would
-// contradict the specification for every non-PATH type.
+// declared type binds Param and RawParam to the SAME type. That rule is
+// stated in as many words by Template Schemas §7.3.1's value-reference
+// table — "This is the same as RawParam.<ParamName> for all parameter types
+// except PATH" (wiki/2023-09-Template-Schemas.md:1246) — NOT by
+// Expression-Language §1.2.2, which an earlier revision of this comment cited
+// for it; the substance was right and the citation was wrong. §1.2.2's own
+// contribution is the type table above plus the PATH prose ("Param.<name>
+// has type path with path mapping rules applied, while RawParam.<name> has
+// type string containing the original unmapped value"). So an INT job
+// parameter's RawParam.<name> is int, not string. Do not special-case
+// RawParam to string uniformly; that would contradict the specification for
+// every non-PATH type.
 //
 // An unrecognized spelling floors to "any" rather than leaving the name
 // unbound — an unbound name would make a valid template fail as "unknown
@@ -54,11 +61,16 @@ func JobParamTypes(declared string) (paramType, rawType Type) {
 // 1.2.2's task table. CHUNK[INT] is range_expr, NOT list[int], so that a
 // frame range need not be expanded. Task.Param.<name> and
 // Task.RawParam.<name> share this same type for every declared task-
-// parameter type, including PATH — section 1.2.2's task table describes
-// Task.Param as "the value ... with relevant path mapping rules applied"
-// and Task.RawParam as "the value ... as it was defined, with no path
-// mapping rules applied", a VALUE difference, not a type difference; both
-// remain path.
+// parameter type, including PATH. §1.2.2's task table gives ONE expression
+// type per declared type, with no Param/RawParam split at all; the
+// value-versus-type distinction comes from Template Schemas' own task-
+// parameter definitions, which describe Task.Param.<name> as "the value of
+// the parameter with relevant path mapping rules applied to it" and
+// Task.RawParam.<name> as "the value of the parameter as it was defined,
+// with no path mapping rules applied"
+// (wiki/2023-09-Template-Schemas.md:1991). An earlier revision of this
+// comment attributed those two quotes to §1.2.2, which does not contain
+// them. It is a VALUE difference, not a type difference; both remain path.
 //
 // An unrecognized spelling floors to "any", for the same reason
 // JobParamTypes does. See that function's doc comment for why this mapping
