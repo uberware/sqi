@@ -436,15 +436,6 @@ func resolveAssignmentExpr(msg *protocol.AssignMsg, sess *session.Session) (*pro
 	pathMapFile := sess.PathMappingRulesFile()
 	hasPathMap := sess.HasPathMappingRules()
 
-	// NOT "step embedded files": the base-spec path uses that label because it
-	// wraps AddFileVars alone, but TaskSymbols also fails from job- and
-	// task-parameter binding (mapPathParamValue, via bindJobParamSymbols /
-	// bindTaskParamSymbols). Inheriting the narrower label would send an
-	// operator to look at embeddedFiles for a PATH-parameter fault.
-	syms, err := fmtres.TaskSymbols(msg, workDir, pathMapFile, hasPathMap)
-	if err != nil {
-		return nil, nil, nil, fmt.Errorf("build expression symbols: %w", err)
-	}
 	// budget is EXPR sub-project E4c's Task 4 addition: sess.ExprBudget() is
 	// the ONE fmtres.AssignmentBudget this whole assignment shares -- every
 	// environment table this session already entered (session.go's enterOne)
@@ -453,6 +444,24 @@ func resolveAssignmentExpr(msg *protocol.AssignMsg, sess *session.Session) (*pro
 	// across every table it builds, is bounded together. See
 	// fmtres.AssignmentBudget's own doc comment.
 	budget := sess.ExprBudget()
+
+	// NOT "step embedded files": the base-spec path uses that label because it
+	// wraps AddFileVars alone, but TaskSymbols also fails from job- and
+	// task-parameter binding (mapPathParamValue, via bindJobParamSymbols /
+	// bindTaskParamSymbols). Inheriting the narrower label would send an
+	// operator to look at embeddedFiles for a PATH-parameter fault.
+	//
+	// budget is passed here for its LIMITS, not to charge it (E4d Task 2):
+	// binding a PATH parameter runs a real apply_path_mapping evaluation, and
+	// it must be metered by the same operator-configured numbers as every
+	// other evaluation below. Building the table BEFORE obtaining the budget
+	// -- which is what this function did until Task 2 -- left that one
+	// evaluation on the compiled-in defaults on a host configured otherwise.
+	syms, err := fmtres.TaskSymbols(msg, workDir, pathMapFile, hasPathMap, budget)
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("build expression symbols: %w", err)
+	}
+
 	// Exactly one call over this table -- see fmtres.ApplyTaskLet's doc
 	// comment. Every resolution below (OnRun, then the embedded files) reuses
 	// this same syms.

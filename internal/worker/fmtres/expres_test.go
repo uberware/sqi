@@ -311,11 +311,11 @@ func TestResolveActionExpr_UnresolvedFallbackErrorsInsteadOfPanicking(t *testing
 
 // TestResolveActionExpr_OverBudgetRejectedByOperationLimit is the test the
 // brief calls out by name: it must assert the NAMED limit sqi configured
-// (fmtres's own workerOperationLimit), not merely that some error occurred
+// (fmtres's own ExprLimits.OperationLimit), not merely that some error occurred
 // -- a bare error assertion would still pass under expr.Eval's own
 // unconfigured 10,000,000-operation default and would pin nothing about
 // THIS package's metering. The comprehension iterates well past
-// workerOperationLimit (1,000,000) while its filter (always false) keeps
+// the default OperationLimit (1,000,000) while its filter (always false) keeps
 // the result list empty, so this is an OPERATION-limit rejection
 // specifically, not a memory one -- isolating exactly the bound under test,
 // the same discriminating-example discipline
@@ -345,7 +345,7 @@ func TestResolveActionExpr_OverBudgetRejectedByOperationLimit(t *testing.T) {
 	// of 10000000" (last seven characters "0000000") does not satisfy.
 	const wantSuffix = "the limit of 1000000"
 	if !strings.HasSuffix(msg, wantSuffix) {
-		t.Errorf("error %q does not end with %q (the configured workerOperationLimit); "+
+		t.Errorf("error %q does not end with %q (the configured OperationLimit); "+
 			"this test must pin fmtres's OWN metering, not expr.Eval's default of 10,000,000", msg, wantSuffix)
 	}
 }

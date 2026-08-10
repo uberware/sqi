@@ -321,7 +321,7 @@ func TestCheckTemplateExpressions_TemplateWideBudget_BaseSpecUnaffected(t *testi
 
 // TestTemplateBudget_WorkerCapIsNotTighter pins the ONE relation between this
 // package's template-wide position budget and the worker's per-assignment one
-// (internal/worker/fmtres, [fmtres.MaxAssignmentPositions]).
+// (internal/worker/fmtres, [fmtres.DefaultAssignmentPositions]).
 //
 // THE DEFECT IT EXISTS TO PREVENT (EXPR sub-project E4c, whole-branch review,
 // IMPORTANT 1): the two constants were 10,000 here and 5,000 there, with
@@ -348,22 +348,42 @@ func TestCheckTemplateExpressions_TemplateWideBudget_BaseSpecUnaffected(t *testi
 // different packages in different processes, and an invariant between them
 // has to be asserted somewhere that can see both. A test-only import is the
 // cheapest place that also runs under plain `make test`.
-// SINCE E4d TASK 1 THIS COMPARES DEFAULTS, NOT THE ENFORCED VALUES. The
-// server's cap is now openjd.ExprLimits.TemplatePositions, configurable
-// through openjd.expr_template_positions; defaultTemplatePositions is only
-// what it falls back to. A farm whose server config raises positions above the
-// worker's fixed cap reproduces exactly the failure below with this test still
-// green -- which is E4d Task 3's problem to close, and why it must not be
-// deleted here in the meantime.
+// SINCE E4d TASKS 1 AND 2 THIS COMPARES TWO DEFAULTS, NOT THE ENFORCED
+// VALUES. The server's cap is openjd.ExprLimits.TemplatePositions
+// (openjd.expr_template_positions) and the worker's is
+// fmtres.ExprLimits.AssignmentPositions (the worker config's
+// expr.assignment_positions); the two constants below are only what each falls
+// back to. A farm whose YAML raises one above the other reproduces exactly the
+// failure described above with this test still green -- which is E4d Task 3's
+// problem to close, and why it must not be deleted or weakened in the
+// meantime.
+//
+// What Task 2 did do is make the relation SATISFIABLE at every legal setting:
+// fmtres.MaxExprAssignmentPositions equals MaxExprTemplatePositions, so there
+// is no server value an operator can choose that a worker cannot legally
+// match. That is a precondition for Task 3, not a substitute for it.
 func TestTemplateBudget_WorkerCapIsNotTighter(t *testing.T) {
-	if fmtres.MaxAssignmentPositions < defaultTemplatePositions {
+	if fmtres.DefaultAssignmentPositions < defaultTemplatePositions {
 		t.Fatalf("the worker's per-assignment position cap (%d) is TIGHTER than the server's "+
 			"template-wide cap (%d).\n"+
 			"An assignment's positions are a subset of its template's, so this makes a job the "+
 			"server ACCEPTS fail on the worker -- per task, after submission, naming a budget the "+
-			"submitter was never shown. Raise fmtres.MaxAssignmentPositions, or give the server a "+
-			"per-assignment sub-budget so the rejection happens at submit.",
-			fmtres.MaxAssignmentPositions, defaultTemplatePositions)
+			"submitter was never shown. Raise fmtres.DefaultAssignmentPositions, or give the server "+
+			"a per-assignment sub-budget so the rejection happens at submit.",
+			fmtres.DefaultAssignmentPositions, defaultTemplatePositions)
+	}
+	// The same relation, one level up: an operator may raise this package's
+	// cap as far as MaxExprTemplatePositions, so the worker's configurable
+	// ceiling must reach at least that far or the relation above becomes
+	// unsatisfiable BY CONFIGURATION -- there would exist a legal server
+	// setting no legal worker setting could match. E4d Task 2 set the two
+	// equal deliberately; this fails if either moves alone.
+	if fmtres.MaxExprAssignmentPositions < MaxExprTemplatePositions {
+		t.Fatalf("the worker's configurable position CEILING (%d) is below the server's (%d): "+
+			"an operator could set openjd.expr_template_positions to a value no worker's "+
+			"expr.assignment_positions is allowed to match, making the subset relation above "+
+			"unsatisfiable rather than merely breakable.",
+			fmtres.MaxExprAssignmentPositions, MaxExprTemplatePositions)
 	}
 }
 

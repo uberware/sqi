@@ -22,6 +22,7 @@ import (
 	"testing"
 
 	workerconfig "github.com/uberware/sqi/internal/worker/config"
+	"github.com/uberware/sqi/internal/worker/fmtres"
 	"github.com/uberware/sqi/internal/worker/isolation"
 	"github.com/uberware/sqi/internal/worker/protocol"
 )
@@ -29,7 +30,7 @@ import (
 // bigEnvLetMsg returns an AssignMsg declaring n job environments, each
 // entered in order, each with a let: block that binds ONE name to a string
 // of bytesPerEnv bytes -- individually well under
-// fmtres's own per-table workerLetRetainedLimit (10,000,000 bytes) at the
+// fmtres's own per-table LetRetainedBytes limit (10,000,000 bytes) at the
 // sizes this file's tests use, so any rejection is attributable to the
 // ASSIGNMENT-wide budget summing across environments, not the pre-existing
 // per-table one.
@@ -59,7 +60,7 @@ func bigEnvLetMsg(n, bytesPerEnv int) *protocol.AssignMsg {
 // all three, since each is individually compliant).
 func TestManagerCreate_EnterEnvironment_EXPR_AssignmentBudgetSharedAcrossEnvironments(t *testing.T) {
 	dataDir := t.TempDir()
-	mgr := NewManager(filepath.Join(dataDir, "sessions"), false, isolation.NewFake(nil), workerconfig.IsolationConfig{}, nopLogger())
+	mgr := NewManager(filepath.Join(dataDir, "sessions"), false, isolation.NewFake(nil), workerconfig.IsolationConfig{}, fmtres.ExprLimits{}, nopLogger())
 
 	msg := bigEnvLetMsg(3, 7_000_000)
 
@@ -83,7 +84,7 @@ func TestManagerCreate_EnterEnvironment_EXPR_AssignmentBudgetSharedAcrossEnviron
 // an already-partly-spent allowance from.
 func TestManagerCreate_EnterEnvironment_EXPR_AssignmentBudgetFreshPerSession(t *testing.T) {
 	dataDir := t.TempDir()
-	mgr := NewManager(filepath.Join(dataDir, "sessions"), false, isolation.NewFake(nil), workerconfig.IsolationConfig{}, nopLogger())
+	mgr := NewManager(filepath.Join(dataDir, "sessions"), false, isolation.NewFake(nil), workerconfig.IsolationConfig{}, fmtres.ExprLimits{}, nopLogger())
 
 	// Each session's own environments retain ~14,000,128 bytes (2 x
 	// 7,000,064) -- comfortably under the 20,000,000-byte assignment-wide
@@ -126,7 +127,7 @@ func TestSession_ExitEnvironments_EXPR_AllOnExitRunAfterEntryNearsBudgetCap(t *t
 
 	witnessDir := t.TempDir()
 	dataDir := t.TempDir()
-	mgr := NewManager(filepath.Join(dataDir, "sessions"), false, isolation.NewFake(nil), workerconfig.IsolationConfig{}, nopLogger())
+	mgr := NewManager(filepath.Join(dataDir, "sessions"), false, isolation.NewFake(nil), workerconfig.IsolationConfig{}, fmtres.ExprLimits{}, nopLogger())
 
 	witness := func(name string) string { return filepath.Join(witnessDir, name) }
 

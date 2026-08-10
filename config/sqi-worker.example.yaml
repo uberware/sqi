@@ -368,3 +368,62 @@ diagnostics:
 #   # Case-insensitive on Windows.
 #   # Type: []string   Env: SQI_WORKER_ISOLATION_ENV_PASSTHROUGH (comma-separated)
 #   env_passthrough: ["FLEXLM_*", "ADSKFLEX_*"]
+
+# ── EXPR expression limits ────────────────────────────────────────────────────
+# These five bound what ONE assignment may spend evaluating OpenJD EXPR
+# expressions ON THIS HOST, at task-execution time — after the server has
+# already accepted the job. They are separate from the server's own submission
+# -time limits (sqi-server's openjd.expr_* keys); each worker reads its own,
+# which is what lets a heterogeneous farm size them to each host's real memory.
+#
+# Read this before changing any of them:
+#   * None of these bounds WALL CLOCK. An operation's real cost varies by
+#     orders of magnitude between arithmetic and a regex over a large string,
+#     so raising a limit lengthens the worst assignment this host can be asked
+#     to resolve, roughly in proportion. No value makes a slow one impossible.
+#   * operation_limit and assignment_positions MULTIPLY. The cumulative
+#     operation ceiling for one assignment is their product; raising both
+#     raises it twice over.
+#   * The byte dimensions count cumulative ALLOCATION, not peak live retention.
+#     A session that never holds more than a few MB at once is still charged
+#     the sum of every environment it enters, so sizing host RAM against
+#     assignment_retained_bytes over-provisions, and sizing it against an
+#     observed RSS under-bounds it.
+#   * TIGHTENING IS NOT FREE HERE THE WAY IT IS ON THE SERVER. A limit set too
+#     low rejects work the server already accepted — once per task, after
+#     submission, naming a budget the submitter never saw.
+#
+# An out-of-range value is a startup failure, not a clamp.
+expr:
+  # Operations (specification section 1.3.10) one expression may spend.
+  # Type: int   Range: 10000-10000000   Env: SQI_WORKER_EXPR_OPERATION_LIMIT
+  operation_limit: 1000000
+
+  # Live bytes (specification section 1.3.9) one expression may hold. The
+  # per-let-block structural ceiling is 50x this number — size RAM against
+  # that product, not against this value alone.
+  # Type: int   Range: 1000000-200000000   Env: SQI_WORKER_EXPR_MEMORY_LIMIT
+  memory_limit: 20000000
+
+  # Expression positions (a command, one args entry, one embedded file, one
+  # variable value) one assignment may resolve, summed across the task's own
+  # symbol table and every environment the session enters.
+  # NOTE: must not be LOWER than the server's openjd.expr_template_positions.
+  # An assignment's positions are a subset of its template's, so a lower value
+  # here fails every task of a job the server accepted. Nothing checks that
+  # across the two processes.
+  # Type: int   Range: 2000-100000   Env: SQI_WORKER_EXPR_ASSIGNMENT_POSITIONS
+  assignment_positions: 10000
+
+  # Bytes every let: block in one assignment may cumulatively retain, summed
+  # across the task's table and every environment's.
+  # Type: int   Range: 2000000-200000000
+  # Env: SQI_WORKER_EXPR_ASSIGNMENT_RETAINED_BYTES
+  assignment_retained_bytes: 20000000
+
+  # Bytes ONE symbol table may hold live. Measured across the WHOLE table, so
+  # a job whose own parameters are large spends budget its let: block never
+  # asked for.
+  # Type: int   Range: 1000000-100000000
+  # Env: SQI_WORKER_EXPR_LET_RETAINED_BYTES
+  let_retained_bytes: 10000000

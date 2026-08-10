@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/uberware/sqi/internal/worker/fmtres"
 	"github.com/uberware/sqi/internal/worker/protocol"
 )
 
@@ -150,5 +151,54 @@ func TestExecutor_Dispatch_EXPR_LetBindingAppliedOnceSharedByActionAndFile(t *te
 	}
 	if !hasStdoutLine(capture, "file-doubled=42") {
 		t.Errorf("expected the SAME let-bound value in the embedded file's resolved data; got: %v", capture.all())
+	}
+}
+
+// TestExecutor_Dispatch_EXPR_ConfiguredLimitsReachSymbolBuilding is E4d Task
+// 2's end-to-end wiring proof for the ONE phase-3 evaluation that is not a
+// format-string resolution: the apply_path_mapping call fmtres.TaskSymbols
+// makes for every PATH-declared parameter.
+//
+// It is here rather than in fmtres because the defect it catches is an
+// ORDERING one that only this file can have: resolveAssignmentExpr built the
+// symbol table BEFORE obtaining sess.ExprBudget(), so the table's evaluation
+// silently used the compiled-in defaults on a host configured otherwise --
+// with every fmtres-level test green. Moving the TaskSymbols call back above
+// `budget := sess.ExprBudget()` (or dropping the budget argument) must turn
+// this red.
+//
+// The worker is configured with a 16-byte per-evaluation memory limit, which
+// cannot hold even a short mapped path, so symbol building itself must fail
+// and the task must fail before execution.
+func TestExecutor_Dispatch_EXPR_ConfiguredLimitsReachSymbolBuilding(t *testing.T) {
+	exec, nc, _ := newTestExecutorWithExprLimits(t, fmtres.ExprLimits{MemoryLimit: 16})
+
+	msg := &protocol.AssignMsg{
+		Version:           protocol.ProtocolVersion,
+		Type:              protocol.TypeAssign,
+		TaskID:            "expr-limits-symbols-task",
+		AttemptID:         "attempt-1",
+		JobID:             "job-1",
+		EXPR:              true,
+		JobParameters:     map[string]string{"Scene": "/mnt/show/shot/scene.ma"},
+		JobParameterTypes: map[string]string{"Scene": "PATH"},
+		OnRun: &protocol.Action{
+			Command: "sh",
+			Args:    []string{"-c", "true"},
+		},
+	}
+
+	if err := exec.Dispatch(context.Background(), msg); err != nil {
+		t.Fatalf("Dispatch: %v", err)
+	}
+	waitForStatus(t, nc, 2, 10*time.Second)
+
+	last := nc.lastStatus()
+	if last.Status != "failed" {
+		t.Fatalf("terminal status = %q; want failed -- a 16-byte configured memory limit must reach "+
+			"the PATH parameter's apply_path_mapping evaluation (Message=%q)", last.Status, last.Message)
+	}
+	if !strings.Contains(last.Message, "memory limit") {
+		t.Errorf("Message = %q; want it to name the memory limit the operator configured", last.Message)
 	}
 }

@@ -126,13 +126,29 @@ const pathFlavor = expr.PathNative
 // exactly as they already do for [TaskScope].
 //
 // An error is returned only when an embedded file's Name/Filename is
-// invalid -- see [EmbeddedFileName].
-func TaskSymbols(msg *protocol.AssignMsg, workDir, pathMapFile string, hasPathMap bool) (expr.MapSymbols, error) {
+// invalid -- see [EmbeddedFileName] -- or when a PATH parameter's value
+// cannot be mapped.
+//
+// budget is EXPR sub-project E4d's Task 2 addition, and it is used here
+// PURELY AS THE LIMITS CARRIER: nothing in symbol building charges positions
+// or retained bytes (those dimensions belong to the callers that resolve
+// fields and evaluate let: blocks), but binding a PATH parameter runs a real
+// apply_path_mapping evaluation through [mapPathParamValue], and that
+// evaluation must be metered by the SAME operator-configured per-evaluation
+// limits as every other one in this package. Before Task 2 it was the one
+// evaluator here that no budget reached, so an operator tightening the memory
+// limit would have seen every other position honour it and this one silently
+// keep the compiled-in default. Omitting it (this package's own unit tests)
+// meters against the defaults, exactly as [assignmentBudgetOrFresh] documents.
+func TaskSymbols(
+	msg *protocol.AssignMsg, workDir, pathMapFile string, hasPathMap bool, budget ...*AssignmentBudget,
+) (expr.MapSymbols, error) {
+	lim := assignmentBudgetOrFresh(budget).Limits()
 	syms := expr.MapSymbols{}
-	if err := bindJobParamSymbols(msg, syms); err != nil {
+	if err := bindJobParamSymbols(msg, syms, lim); err != nil {
 		return nil, err
 	}
-	if err := bindTaskParamSymbols(msg, syms); err != nil {
+	if err := bindTaskParamSymbols(msg, syms, lim); err != nil {
 		return nil, err
 	}
 	bindSessionSymbols(syms, workDir, pathMapFile, hasPathMap)
@@ -211,11 +227,15 @@ func TaskSymbols(msg *protocol.AssignMsg, workDir, pathMapFile string, hasPathMa
 // An error is returned when an embedded file's Name/Filename is invalid
 // (see [EmbeddedFileName]), when a PATH parameter's value cannot be mapped,
 // or when any step-template let: binding fails to parse or evaluate.
+// See [TaskSymbols] for budget: the same limits-carrier role, for the same
+// reason (a job PATH parameter is bound here too).
 func EnvSymbols(
 	msg *protocol.AssignMsg, env *protocol.AssignEnvironment, workDir, pathMapFile string, hasPathMap bool,
+	budget ...*AssignmentBudget,
 ) (expr.MapSymbols, error) {
+	lim := assignmentBudgetOrFresh(budget).Limits()
 	syms := expr.MapSymbols{}
-	if err := bindJobParamSymbols(msg, syms); err != nil {
+	if err := bindJobParamSymbols(msg, syms, lim); err != nil {
 		return nil, err
 	}
 	bindSessionSymbols(syms, workDir, pathMapFile, hasPathMap)
@@ -230,7 +250,9 @@ func EnvSymbols(
 		return nil, err
 	}
 	if env.StepEnvironment {
-		if err := applyStepTemplateLet(msg.StepTemplateLet, syms, ExprEvalOptions(msg.PathMap)); err != nil {
+		if err := applyStepTemplateLet(
+			msg.StepTemplateLet, syms, ExprEvalOptions(lim, msg.PathMap), budget...,
+		); err != nil {
 			return nil, err
 		}
 	}
@@ -261,7 +283,7 @@ func EnvSymbols(
 // An error is returned only when mapping a PATH parameter's value fails --
 // see [mapPathParamValue]; ordinary INT/FLOAT/STRING parsing failures still
 // fall back to expr.Unresolved exactly as before, unchanged.
-func bindJobParamSymbols(msg *protocol.AssignMsg, syms expr.MapSymbols) error {
+func bindJobParamSymbols(msg *protocol.AssignMsg, syms expr.MapSymbols, lim ExprLimits) error {
 	// Sorted, because the loop returns on the FIRST failure: iterating the
 	// map directly makes an assignment with two bad PATH parameters report a
 	// different one run to run, which is not something an operator reading a
@@ -269,7 +291,7 @@ func bindJobParamSymbols(msg *protocol.AssignMsg, syms expr.MapSymbols) error {
 	for _, name := range slices.Sorted(maps.Keys(msg.JobParameters)) {
 		raw := msg.JobParameters[name]
 		paramType, rawType := expr.JobParamTypes(msg.JobParameterTypes[name])
-		v, err := paramValueForBinding(paramType, raw, msg.PathMap)
+		v, err := paramValueForBinding(paramType, raw, lim, msg.PathMap)
 		if err != nil {
 			return fmt.Errorf("job parameter %q: %w", name, err)
 		}
@@ -294,12 +316,12 @@ func bindJobParamSymbols(msg *protocol.AssignMsg, syms expr.MapSymbols) error {
 // [paramValueForBinding] (mapped when t is TPath), Task.RawParam.<name>
 // stays built straight from raw (unmapped), even when both share the exact
 // same declared TYPE.
-func bindTaskParamSymbols(msg *protocol.AssignMsg, syms expr.MapSymbols) error {
+func bindTaskParamSymbols(msg *protocol.AssignMsg, syms expr.MapSymbols, lim ExprLimits) error {
 	// Sorted for the same reason as bindJobParamSymbols, above.
 	for _, name := range slices.Sorted(maps.Keys(msg.Parameters)) {
 		raw := msg.Parameters[name]
 		t := expr.TaskParamType(msg.ParameterTypes[name])
-		v, err := paramValueForBinding(t, raw, msg.PathMap)
+		v, err := paramValueForBinding(t, raw, lim, msg.PathMap)
 		if err != nil {
 			return fmt.Errorf("task parameter %q: %w", name, err)
 		}
@@ -325,9 +347,11 @@ func bindTaskParamSymbols(msg *protocol.AssignMsg, syms expr.MapSymbols) error {
 // for path mapping to ever run against today. Equal, not Code alone, so a
 // bare path[T]-shaped union or unresolved wrapper (neither reachable here in
 // practice) does not accidentally match a scalar-only branch.
-func paramValueForBinding(t expr.Type, raw string, pathMap []protocol.PathMapRule) (expr.Value, error) {
+func paramValueForBinding(
+	t expr.Type, raw string, lim ExprLimits, pathMap []protocol.PathMapRule,
+) (expr.Value, error) {
 	if t.Equal(expr.TPath) {
-		return mapPathParamValue(raw, pathMap)
+		return mapPathParamValue(raw, lim, pathMap)
 	}
 	return expr.ValueFromText(t, raw, pathFlavor), nil
 }
@@ -477,7 +501,7 @@ func bindFileSymbols(syms expr.MapSymbols, prefix string, files []protocol.Embed
 // submission, and truncates here as defense in depth for a phase-3 evaluator
 // that should never legitimately see more than 50 bindings in a block. The
 // bound that actually protects the worker against an accepted-but-expensive
-// block is workerLetRetainedLimit, below.
+// block is defaultLetRetainedBytes, below.
 
 // maxLetBindings caps the number of bindings evalLetBindings will evaluate
 // from a single let: block -- see this section's own doc comment, above, for
@@ -486,16 +510,20 @@ func bindFileSymbols(syms expr.MapSymbols, prefix string, files []protocol.Embed
 // name and value.
 const maxLetBindings = 50
 
-// workerLetRetainedLimit caps the total section 1.3.9 size of everything ONE
-// phase-3 symbol table holds live, measured across every let: block evaluated
-// into it.
+// defaultLetRetainedBytes is the DEFAULT cap on the total section 1.3.9 size
+// of everything ONE phase-3 symbol table holds live, measured across every
+// let: block evaluated into it. The enforced value is
+// [ExprLimits.LetRetainedBytes], carried on the assignment's own budget --
+// EXPR sub-project E4d's Task 2 made it operator configuration, which is
+// exactly what the "TWO ROUGH EDGES" paragraph at the end of this comment
+// asked for.
 //
 // EXPR sub-project E4a whole-branch review, Critical 2. expres.go's
-// workerOperationLimit/workerMemoryLimit are PER-Eval budgets, and a let:
+// [ExprLimits.OperationLimit]/[ExprLimits.MemoryLimit] are PER-Eval budgets, and a let:
 // block is the one construct in this package that RETAINS a result rather
 // than rendering it and dropping it: every binding got a fresh 20 MB budget
 // it was then allowed to keep. maxLetBindings bounds the COUNT, so the
-// structural ceiling was maxLetBindings x workerMemoryLimit = 1 GB per block,
+// structural ceiling was maxLetBindings x [ExprLimits.MemoryLimit] = 1 GB per block,
 // two blocks per task table plus one per environment table, all of them live
 // concurrently across a worker's task slots. Measured through the real
 // ApplyTaskLet, 50 bindings of `a<i> = "x" * (Task.Param.N * 100000)` with
@@ -527,18 +555,22 @@ const maxLetBindings = 50
 // derived from parameters and path text, and phase 2 type-checks the whole
 // block inside a 1 MB per-Eval budget), while making the worst case an
 // operator can be handed 10 MB retained plus at most one in-flight
-// evaluation's workerMemoryLimit -- 30 MB per table, not 2 GB.
+// evaluation's [ExprLimits.MemoryLimit] -- 30 MB per table, not 2 GB.
 //
-// TWO ROUGH EDGES, both for E4d (operator configuration) rather than for a
-// hardcoded constant to solve, recorded so the next reader does not mistake
-// either for an oversight:
+// TWO ROUGH EDGES, both recorded for E4d (operator configuration) and both
+// now ANSWERED BY A KNOB rather than by a different number -- E4d Task 2 was
+// required to leave every default byte-for-byte unchanged, so the edges
+// remain in the DEFAULT and the way past either of them is configuration:
 //
 //  1. 10,000,000 is EXACTLY limits.go's maxStringBytes, so the largest single
 //     string the evaluator can produce at all can never be bound, even into
-//     an otherwise empty table. That is a coincidence of two independently
-//     chosen round numbers, not a designed relationship; the day the limit
-//     becomes configurable it should not default to sitting exactly on
-//     another bound.
+//     an otherwise empty table (the check is retained+size > limit, and a
+//     10,000,000-byte string measures slightly more than that once its value
+//     header is counted). That is a coincidence of two independently chosen
+//     round numbers, not a designed relationship. E4a said the day the limit
+//     became configurable it should not default to sitting exactly on another
+//     bound; it still does, because moving a default is a behaviour change
+//     E4d was not permitted to make.
 //  2. Because the accounting measures the whole table (tableRetainedBytes),
 //     a job whose own parameters are already large -- a big LIST[PATH], a
 //     multi-megabyte STRING -- spends budget its let: block never asked for,
@@ -547,7 +579,7 @@ const maxLetBindings = 50
 //     opposite defect (a table could then hold parameters plus a full budget
 //     of bindings), so the whole-table measurement is the right one here;
 //     what it needs is a knob, not a different formula.
-const workerLetRetainedLimit int64 = 10_000_000
+const defaultLetRetainedBytes int64 = 10_000_000
 
 // splitLetBinding splits one raw "<name> = <expression>" binding into its
 // bound name and unparsed expression source. The split happens at the FIRST
@@ -602,7 +634,7 @@ func splitLetBinding(raw string) (name, exprSrc string, err error) {
 //   - the RETAINED-BYTES accounting, or the budget is measured against a
 //     table smaller than the one the bytes end up in, and the stated
 //     invariant ("no phase-3 symbol table retains more than
-//     workerLetRetainedLimit bytes") is simply false.
+//     defaultLetRetainedBytes bytes") is simply false.
 //
 // FIX ROUND 3 (re-review): fix round 2 introduced mergeTarget for the shadow
 // half only and left the byte accounting on syms, which is the identical
@@ -610,17 +642,17 @@ func splitLetBinding(raw string) (name, exprSrc string, err error) {
 // STRING task parameter starts at 6.00 MB; the step-template block measured
 // only the 0.00 MB projection, admitted a 9 MB binding, and merged it, so the
 // table held 15.00 MB against a 10 MB limit. The real ceiling was
-// "workerLetRetainedLimit plus whatever the projection excludes", which is
+// "defaultLetRetainedBytes plus whatever the projection excludes", which is
 // not a bound at all -- Task.Param./Task.RawParam./Task.File./Session./
 // Env.File. are all outside the projection.
 //
 // Every error encountered is collected rather than stopping the block, and
 // errors.Join'd into one returned error -- nil when every binding in the
 // (possibly truncated) block evaluated successfully. The one exception is
-// the retained-bytes bound, which stops the block; see workerLetRetainedLimit.
+// the retained-bytes bound, which stops the block; see defaultLetRetainedBytes.
 //
 // budget is EXPR sub-project E4c's Task 4 addition: charged the SAME size
-// (expr.SizeOf(v)) already computed for the per-table workerLetRetainedLimit
+// (expr.SizeOf(v)) already computed for the per-table defaultLetRetainedBytes
 // check, immediately after that check passes -- so a binding that survives
 // its own table's 10 MB ceiling but would push the WHOLE ASSIGNMENT'S
 // retained bytes (task table plus every environment's) over
@@ -693,15 +725,15 @@ func evalLetBindings(
 		// STOP the block, do not "continue": every failure mode above is a
 		// fault in ONE binding that the rest of the block can be evaluated
 		// past, but this one says the table is full. Continuing would keep
-		// spending a fresh workerMemoryLimit per remaining binding for
+		// spending a fresh MemoryLimit allowance per remaining binding for
 		// nothing -- which is the exhaustion this guard exists to prevent.
 		// The offending value is dropped rather than bound, so the table
 		// never exceeds the limit.
 		size := expr.SizeOf(v)
-		if retained+size > workerLetRetainedLimit {
+		if retained+size > b.limits.LetRetainedBytes {
 			errs = append(errs, fmt.Errorf(
 				"%s[%d] (%s): let bindings would retain %d bytes, over this symbol table's %d-byte limit",
-				label, i, name, retained+size, workerLetRetainedLimit,
+				label, i, name, retained+size, b.limits.LetRetainedBytes,
 			))
 			break
 		}
@@ -716,11 +748,11 @@ func evalLetBindings(
 }
 
 // tableRetainedBytes reports the total section 1.3.9 size of every value syms
-// currently holds live -- the quantity workerLetRetainedLimit bounds.
+// currently holds live -- the quantity defaultLetRetainedBytes bounds.
 //
 // It measures the WHOLE table, not just let-bound names: the invariant being
 // maintained is "one phase-3 symbol table never retains more than
-// workerLetRetainedLimit bytes", and a table's spec symbols (a big STRING or
+// defaultLetRetainedBytes bytes", and a table's spec symbols (a big STRING or
 // PATH parameter's value, an embedded file's path) are retained bytes too.
 // Callers must therefore hand it the table the bindings will land in -- see
 // evalLetBindings' mergeTarget. Cost is O(len(syms)) once per let: block --
@@ -843,7 +875,9 @@ func stepTemplateLetScope(full expr.MapSymbols) expr.MapSymbols {
 // assignment builds shares -- see session.Session's own accessor for how the
 // one budget object reaches every phase-3 call site for one assignment.
 func ApplyTaskLet(msg *protocol.AssignMsg, syms expr.MapSymbols, pathMap []protocol.PathMapRule, budget ...*AssignmentBudget) error {
-	opts := ExprEvalOptions(pathMap)
+	b := assignmentBudgetOrFresh(budget)
+	opts := ExprEvalOptions(b.Limits(), pathMap)
+	budget = []*AssignmentBudget{b}
 	tmplErr := applyStepTemplateLet(msg.StepTemplateLet, syms, opts, budget...)
 	scriptErr := evalLetBindings("step script let", msg.StepScriptLet, syms, nil, opts, budget...)
 	return errors.Join(tmplErr, scriptErr)
@@ -904,5 +938,6 @@ func ApplyEnvLet(env *protocol.AssignEnvironment, syms expr.MapSymbols, pathMap 
 	if env == nil {
 		return nil
 	}
-	return evalLetBindings("environment let", env.Let, syms, nil, ExprEvalOptions(pathMap), budget...)
+	b := assignmentBudgetOrFresh(budget)
+	return evalLetBindings("environment let", env.Let, syms, nil, ExprEvalOptions(b.Limits(), pathMap), b)
 }

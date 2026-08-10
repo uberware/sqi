@@ -87,6 +87,7 @@ import (
 
 	workerconfig "github.com/uberware/sqi/internal/worker/config"
 	"github.com/uberware/sqi/internal/worker/envutil"
+	"github.com/uberware/sqi/internal/worker/fmtres"
 	"github.com/uberware/sqi/internal/worker/isolation"
 	"github.com/uberware/sqi/internal/worker/protocol"
 	"github.com/uberware/sqi/internal/worker/session"
@@ -181,7 +182,7 @@ func newRealProvider(t *testing.T) isolation.Provider {
 func newIsolatedSession(t *testing.T, dataDir, user, group string, isolationCfg workerconfig.IsolationConfig) *session.Session {
 	t.Helper()
 	provider := newRealProvider(t)
-	mgr := session.NewManager(filepath.Join(dataDir, "sessions"), false, provider, isolationCfg, testLogger())
+	mgr := session.NewManager(filepath.Join(dataDir, "sessions"), false, provider, isolationCfg, fmtres.ExprLimits{}, testLogger())
 	msg := &protocol.AssignMsg{
 		JobID:     "job-" + t.Name(),
 		TaskID:    "task-1",
@@ -209,7 +210,8 @@ func newUnisolatedSession(t *testing.T, dataDir string) *session.Session {
 	t.Helper()
 	provider := newRealProvider(t)
 	mgr := session.NewManager(
-		filepath.Join(dataDir, "sessions"), false, provider, workerconfig.IsolationConfig{}, testLogger(),
+		filepath.Join(dataDir, "sessions"), false, provider, workerconfig.IsolationConfig{},
+		fmtres.ExprLimits{}, testLogger(),
 		session.WithSessionRootMode(0o750),
 	)
 	msg := &protocol.AssignMsg{JobID: "job-" + t.Name(), TaskID: "task-1", AttemptID: "attempt-1"}
@@ -772,7 +774,7 @@ func TestIsolation_CredentialClosedOnEnterEnvironmentsFailure(t *testing.T) {
 	dataDir := isolatedDataDir(t)
 	provider := newRealProvider(t)
 	sessionRoot := filepath.Join(dataDir, "sessions")
-	mgr := session.NewManager(sessionRoot, false, provider, workerconfig.IsolationConfig{}, testLogger())
+	mgr := session.NewManager(sessionRoot, false, provider, workerconfig.IsolationConfig{}, fmtres.ExprLimits{}, testLogger())
 
 	msg := &protocol.AssignMsg{
 		JobID:     "job-" + t.Name(),

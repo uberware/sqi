@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	workerconfig "github.com/uberware/sqi/internal/worker/config"
+	"github.com/uberware/sqi/internal/worker/fmtres"
 	"github.com/uberware/sqi/internal/worker/isolation"
 	"github.com/uberware/sqi/internal/worker/protocol"
 )
@@ -57,7 +58,7 @@ func TestCredentialClose_ClosedExactlyOnceOnNormalCleanup(t *testing.T) {
 	name := testAccountName()
 	account := isolation.FakeAccount{UID: testUID(), GID: testGID()}
 	provider := isolation.NewFake(map[string]isolation.FakeAccount{name: account})
-	mgr := NewManager(filepath.Join(dataDir, "sessions"), false, provider, workerconfig.IsolationConfig{}, nopLogger())
+	mgr := NewManager(filepath.Join(dataDir, "sessions"), false, provider, workerconfig.IsolationConfig{}, fmtres.ExprLimits{}, nopLogger())
 
 	msg := &protocol.AssignMsg{JobID: "job-close-ok", Isolation: &protocol.IsolationSpec{User: name}}
 	s, err := mgr.Create(context.Background(), msg)
@@ -85,7 +86,7 @@ func TestCredentialClose_NeverCalledWhenCredentialNeverObtained(t *testing.T) {
 
 	dataDir := t.TempDir()
 	provider := isolation.NewFake(nil) // no accounts registered: Resolve always fails
-	mgr := NewManager(filepath.Join(dataDir, "sessions"), false, provider, workerconfig.IsolationConfig{}, nopLogger())
+	mgr := NewManager(filepath.Join(dataDir, "sessions"), false, provider, workerconfig.IsolationConfig{}, fmtres.ExprLimits{}, nopLogger())
 
 	msg := &protocol.AssignMsg{JobID: "job-close-never", Isolation: &protocol.IsolationSpec{User: "render"}}
 	_, err := mgr.Create(context.Background(), msg)

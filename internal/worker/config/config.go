@@ -69,7 +69,118 @@ type WorkerConfig struct {
 	// a zero-value IsolationConfig behaves exactly as before this feature
 	// existed.
 	Isolation IsolationConfig `yaml:"isolation"`
+
+	// Expr bounds what one assignment may spend evaluating OpenJD EXPR
+	// expressions on this host. Defaults reproduce the fixed limits every
+	// release before EXPR sub-project E4d compiled in.
+	Expr ExprConfig `yaml:"expr"`
 }
+
+// ExprConfig is the operator-facing form of internal/worker/fmtres's
+// ExprLimits: the five numbers that bound phase-3 (task-execution-time) OpenJD
+// expression evaluation on THIS host.
+//
+// Each worker reads its own file, which is what lets a heterogeneous farm size
+// these to each host's real memory. The server has its own, separate set
+// (internal/config's openjd.expr_* keys) covering submission-time evaluation;
+// the two are independent, with one relation between them that configuration
+// can break -- see ExprAssignmentPositions.
+//
+// THREE THINGS TO KNOW BEFORE RAISING ANY OF THEM, none of which is obvious
+// from the numbers:
+//
+//  1. NONE OF THESE BOUNDS WALL CLOCK. Specification section 1.3.10 prices 256
+//     bytes at one operation, so an operation's real cost varies by orders of
+//     magnitude. Raising a limit lengthens the worst assignment this host can
+//     be asked to resolve, roughly in proportion; no setting makes a slow
+//     resolution impossible.
+//  2. expr.operation_limit AND expr.assignment_positions MULTIPLY. The
+//     cumulative operation ceiling for one assignment is their product, so
+//     raising both raises it twice over.
+//  3. THE BYTE DIMENSIONS COUNT CUMULATIVE ALLOCATION, NOT PEAK LIVE
+//     RETENTION. A session that never holds more than a few MB at once is
+//     still charged the sum of every environment it enters, so sizing host RAM
+//     against expr.assignment_retained_bytes over-provisions, and sizing that
+//     number against an observed RSS under-bounds it.
+//
+// An out-of-range value is a startup failure, not a clamp (see [Validate]).
+type ExprConfig struct {
+	// ExprOperationLimit is the specification section 1.3.10 operation budget
+	// for ONE phase-3 expression evaluation.
+	// Default: 1000000   Range: 10000-10000000
+	// Env: SQI_WORKER_EXPR_OPERATION_LIMIT
+	ExprOperationLimit int64 `yaml:"operation_limit"`
+
+	// ExprMemoryLimit is the specification section 1.3.9 live-byte budget for
+	// ONE phase-3 expression evaluation. The per-let-block structural ceiling
+	// is 50x this number, which is the figure to size host RAM against.
+	// Default: 20000000   Range: 1000000-200000000
+	// Env: SQI_WORKER_EXPR_MEMORY_LIMIT
+	ExprMemoryLimit int64 `yaml:"memory_limit"`
+
+	// ExprAssignmentPositions is how many expression positions (a command, one
+	// args entry, one embedded file, one variable value) one assignment may
+	// resolve, summed across the task's own symbol table and every environment
+	// the session enters.
+	//
+	// MUST NOT BE LOWER THAN THE SERVER'S openjd.expr_template_positions. An
+	// assignment's positions are a subset of its template's, so a lower value
+	// here rejects, on this host and once per task, a job the server already
+	// accepted -- naming a budget the submitter never saw. Nothing checks that
+	// across the two processes today.
+	// Default: 10000   Range: 2000-100000
+	// Env: SQI_WORKER_EXPR_ASSIGNMENT_POSITIONS
+	ExprAssignmentPositions int64 `yaml:"assignment_positions"`
+
+	// ExprAssignmentRetainedBytes is the cumulative size of every let-bound
+	// value every phase-3 symbol table one assignment builds retains. See
+	// caveat 3 above: this is allocation across the session's entry phase, not
+	// simultaneously live memory.
+	// Default: 20000000   Range: 2000000-200000000
+	// Env: SQI_WORKER_EXPR_ASSIGNMENT_RETAINED_BYTES
+	ExprAssignmentRetainedBytes int64 `yaml:"assignment_retained_bytes"`
+
+	// ExprLetRetainedBytes is what ONE phase-3 symbol table may hold live.
+	// Note that it measures the WHOLE table, so a job whose own parameters are
+	// large spends budget its let: block never asked for.
+	// Default: 10000000   Range: 1000000-100000000
+	// Env: SQI_WORKER_EXPR_LET_RETAINED_BYTES
+	ExprLetRetainedBytes int64 `yaml:"let_retained_bytes"`
+}
+
+// The defaults and the range an operator may configure each expr: key to.
+//
+// These are deliberate COPIES of internal/worker/fmtres's own constants: this
+// package is the operator-facing configuration layer and fmtres is the
+// enforcement leaf, and the worker's config package does not import it (the
+// same direction internal/config and internal/openjd keep). cmd/sqi-worker is
+// the one place that sees both, and its TestExprLimitsBounds_MatchFmtres fails
+// if a number here ever drifts from the one it bounds.
+//
+// Which of the five is a CATASTROPHE bound (a tight ceiling, tied to a
+// measured failure) and which is a POLICY bound (wide but finite), and why, is
+// recorded on fmtres.ExprLimits' own fields.
+const (
+	DefaultWorkerExprOperationLimit int64 = 1_000_000
+	MinWorkerExprOperationLimit     int64 = 10_000
+	MaxWorkerExprOperationLimit     int64 = 10_000_000
+
+	DefaultWorkerExprMemoryLimit int64 = 20_000_000
+	MinWorkerExprMemoryLimit     int64 = 1_000_000
+	MaxWorkerExprMemoryLimit     int64 = 200_000_000
+
+	DefaultWorkerExprAssignmentPositions int64 = 10_000
+	MinWorkerExprAssignmentPositions     int64 = 2_000
+	MaxWorkerExprAssignmentPositions     int64 = 100_000
+
+	DefaultWorkerExprAssignmentRetainedBytes int64 = 20_000_000
+	MinWorkerExprAssignmentRetainedBytes     int64 = 2_000_000
+	MaxWorkerExprAssignmentRetainedBytes     int64 = 200_000_000
+
+	DefaultWorkerExprLetRetainedBytes int64 = 10_000_000
+	MinWorkerExprLetRetainedBytes     int64 = 1_000_000
+	MaxWorkerExprLetRetainedBytes     int64 = 100_000_000
+)
 
 // IsolationConfig controls running tasks as a queue-configured OS user.
 type IsolationConfig struct {
@@ -383,6 +494,13 @@ func Default() WorkerConfig {
 		Isolation: IsolationConfig{
 			Provider: "logon_user",
 		},
+		Expr: ExprConfig{
+			ExprOperationLimit:          DefaultWorkerExprOperationLimit,
+			ExprMemoryLimit:             DefaultWorkerExprMemoryLimit,
+			ExprAssignmentPositions:     DefaultWorkerExprAssignmentPositions,
+			ExprAssignmentRetainedBytes: DefaultWorkerExprAssignmentRetainedBytes,
+			ExprLetRetainedBytes:        DefaultWorkerExprLetRetainedBytes,
+		},
 	}
 }
 
@@ -495,6 +613,35 @@ func applyEnv(cfg *WorkerConfig) {
 	applyStagingEnv(&cfg.Staging)
 	applyCapabilitiesEnv(&cfg.Capabilities)
 	applyIsolationEnv(&cfg.Isolation)
+	applyExprEnv(&cfg.Expr)
+}
+
+// applyExprEnv overlays the SQI_WORKER_EXPR_* variables onto c.
+//
+// A malformed value is IGNORED rather than rejected, matching every other
+// numeric env var in this file (applyNATSEnv, applyLogStreamerEnv): the lower
+// layer's value survives, and [Validate] still has the final say on whatever
+// value results. That is deliberately unlike internal/config's server-side
+// loader, which errors on a malformed SQI_OPENJD_EXPR_* value -- this file has
+// no error channel to report one through.
+func applyExprEnv(c *ExprConfig) {
+	setInt64Env("SQI_WORKER_EXPR_OPERATION_LIMIT", &c.ExprOperationLimit)
+	setInt64Env("SQI_WORKER_EXPR_MEMORY_LIMIT", &c.ExprMemoryLimit)
+	setInt64Env("SQI_WORKER_EXPR_ASSIGNMENT_POSITIONS", &c.ExprAssignmentPositions)
+	setInt64Env("SQI_WORKER_EXPR_ASSIGNMENT_RETAINED_BYTES", &c.ExprAssignmentRetainedBytes)
+	setInt64Env("SQI_WORKER_EXPR_LET_RETAINED_BYTES", &c.ExprLetRetainedBytes)
+}
+
+// setInt64Env overwrites *dst with the parsed value of environment variable
+// name, when it is set and parses as a base-10 int64.
+func setInt64Env(name string, dst *int64) {
+	v := os.Getenv(name)
+	if v == "" {
+		return
+	}
+	if n, err := strconv.ParseInt(v, 10, 64); err == nil {
+		*dst = n
+	}
 }
 
 func applyIsolationEnv(c *IsolationConfig) {
@@ -750,7 +897,65 @@ func Validate(cfg WorkerConfig) []ValidationError {
 	}
 
 	errs = append(errs, validateIsolation(cfg)...)
+	errs = append(errs, validateExpr(cfg.Expr)...)
 
+	return errs
+}
+
+// validateExpr rejects an out-of-range expr: value at STARTUP rather than
+// clamping it. A clamp would leave an operator who typed 100 believing they
+// had tightened the host when they had not.
+//
+// The message names the bound, the observed value, the env var and the YAML
+// key, because a limit rejected with only "out of range" sends the operator
+// looking through three layers to find which one set it.
+func validateExpr(cfg ExprConfig) []ValidationError {
+	limits := []struct {
+		key      string
+		env      string
+		got      string
+		min, max int64
+		value    int64
+	}{
+		{
+			key: "expr.operation_limit", env: "SQI_WORKER_EXPR_OPERATION_LIMIT",
+			value: cfg.ExprOperationLimit,
+			min:   MinWorkerExprOperationLimit, max: MaxWorkerExprOperationLimit,
+		},
+		{
+			key: "expr.memory_limit", env: "SQI_WORKER_EXPR_MEMORY_LIMIT",
+			value: cfg.ExprMemoryLimit,
+			min:   MinWorkerExprMemoryLimit, max: MaxWorkerExprMemoryLimit,
+		},
+		{
+			key: "expr.assignment_positions", env: "SQI_WORKER_EXPR_ASSIGNMENT_POSITIONS",
+			value: cfg.ExprAssignmentPositions,
+			min:   MinWorkerExprAssignmentPositions, max: MaxWorkerExprAssignmentPositions,
+		},
+		{
+			key: "expr.assignment_retained_bytes", env: "SQI_WORKER_EXPR_ASSIGNMENT_RETAINED_BYTES",
+			value: cfg.ExprAssignmentRetainedBytes,
+			min:   MinWorkerExprAssignmentRetainedBytes, max: MaxWorkerExprAssignmentRetainedBytes,
+		},
+		{
+			key: "expr.let_retained_bytes", env: "SQI_WORKER_EXPR_LET_RETAINED_BYTES",
+			value: cfg.ExprLetRetainedBytes,
+			min:   MinWorkerExprLetRetainedBytes, max: MaxWorkerExprLetRetainedBytes,
+		},
+	}
+
+	var errs []ValidationError
+	for _, l := range limits {
+		if l.value < l.min || l.value > l.max {
+			errs = append(errs, ValidationError{
+				Field: l.key,
+				Message: fmt.Sprintf(
+					"must be between %d and %d, got %d; set %s or %s",
+					l.min, l.max, l.value, l.env, l.key,
+				),
+			})
+		}
+	}
 	return errs
 }
 

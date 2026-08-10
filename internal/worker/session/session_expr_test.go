@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	workerconfig "github.com/uberware/sqi/internal/worker/config"
+	"github.com/uberware/sqi/internal/worker/fmtres"
 	"github.com/uberware/sqi/internal/worker/isolation"
 	"github.com/uberware/sqi/internal/worker/protocol"
 )
@@ -37,7 +38,7 @@ func TestManagerCreate_EnterEnvironment_BaseSpec_ExpressionSyntaxStaysMalformed(
 	}
 
 	dataDir := t.TempDir()
-	mgr := NewManager(filepath.Join(dataDir, "sessions"), false, isolation.NewFake(nil), workerconfig.IsolationConfig{}, nopLogger())
+	mgr := NewManager(filepath.Join(dataDir, "sessions"), false, isolation.NewFake(nil), workerconfig.IsolationConfig{}, fmtres.ExprLimits{}, nopLogger())
 
 	msg := &protocol.AssignMsg{
 		JobID:         "j",
@@ -82,7 +83,7 @@ func TestManagerCreate_EnterEnvironment_EXPR_LetBindingSharedAcrossEnterAndFiles
 	}
 
 	dataDir := t.TempDir()
-	mgr := NewManager(filepath.Join(dataDir, "sessions"), false, isolation.NewFake(nil), workerconfig.IsolationConfig{}, nopLogger())
+	mgr := NewManager(filepath.Join(dataDir, "sessions"), false, isolation.NewFake(nil), workerconfig.IsolationConfig{}, fmtres.ExprLimits{}, nopLogger())
 
 	msg := &protocol.AssignMsg{
 		JobID:             "j",
@@ -145,7 +146,7 @@ func TestManagerCreate_EnterEnvironment_EXPR_VariablesCannotSeeEnvLet(t *testing
 	}
 
 	dataDir := t.TempDir()
-	mgr := NewManager(filepath.Join(dataDir, "sessions"), false, isolation.NewFake(nil), workerconfig.IsolationConfig{}, nopLogger())
+	mgr := NewManager(filepath.Join(dataDir, "sessions"), false, isolation.NewFake(nil), workerconfig.IsolationConfig{}, fmtres.ExprLimits{}, nopLogger())
 
 	msg := &protocol.AssignMsg{
 		JobID:             "j",
@@ -183,7 +184,7 @@ func TestManagerCreate_EnterEnvironment_EXPR_StepEnvironmentSeesStepTemplateLet(
 	}
 
 	dataDir := t.TempDir()
-	mgr := NewManager(filepath.Join(dataDir, "sessions"), false, isolation.NewFake(nil), workerconfig.IsolationConfig{}, nopLogger())
+	mgr := NewManager(filepath.Join(dataDir, "sessions"), false, isolation.NewFake(nil), workerconfig.IsolationConfig{}, fmtres.ExprLimits{}, nopLogger())
 
 	msg := &protocol.AssignMsg{
 		JobID:           "j",
@@ -229,7 +230,7 @@ func TestManagerCreate_EnterEnvironment_EXPR_JobEnvironmentIgnoresStepTemplateLe
 	}
 
 	dataDir := t.TempDir()
-	mgr := NewManager(filepath.Join(dataDir, "sessions"), false, isolation.NewFake(nil), workerconfig.IsolationConfig{}, nopLogger())
+	mgr := NewManager(filepath.Join(dataDir, "sessions"), false, isolation.NewFake(nil), workerconfig.IsolationConfig{}, fmtres.ExprLimits{}, nopLogger())
 
 	msg := &protocol.AssignMsg{
 		JobID:           "j",
@@ -268,7 +269,7 @@ func TestSession_ExitEnvironments_EXPR_LetBindingAppliedOnce(t *testing.T) {
 
 	witnessDir := t.TempDir()
 	dataDir := t.TempDir()
-	mgr := NewManager(filepath.Join(dataDir, "sessions"), false, isolation.NewFake(nil), workerconfig.IsolationConfig{}, nopLogger())
+	mgr := NewManager(filepath.Join(dataDir, "sessions"), false, isolation.NewFake(nil), workerconfig.IsolationConfig{}, fmtres.ExprLimits{}, nopLogger())
 
 	msg := &protocol.AssignMsg{
 		JobID:             "j",
@@ -319,7 +320,7 @@ func TestSession_ExitEnvironments_EXPR_StepEnvironmentSeesStepTemplateLet(t *tes
 
 	witnessDir := t.TempDir()
 	dataDir := t.TempDir()
-	mgr := NewManager(filepath.Join(dataDir, "sessions"), false, isolation.NewFake(nil), workerconfig.IsolationConfig{}, nopLogger())
+	mgr := NewManager(filepath.Join(dataDir, "sessions"), false, isolation.NewFake(nil), workerconfig.IsolationConfig{}, fmtres.ExprLimits{}, nopLogger())
 
 	msg := &protocol.AssignMsg{
 		JobID:           "j",
@@ -369,7 +370,7 @@ func TestSession_ExitEnvironments_EXPR_VariablesCannotSeeEnvLet(t *testing.T) {
 	}
 
 	dataDir := t.TempDir()
-	mgr := NewManager(filepath.Join(dataDir, "sessions"), false, isolation.NewFake(nil), workerconfig.IsolationConfig{}, nopLogger())
+	mgr := NewManager(filepath.Join(dataDir, "sessions"), false, isolation.NewFake(nil), workerconfig.IsolationConfig{}, fmtres.ExprLimits{}, nopLogger())
 
 	msg := &protocol.AssignMsg{
 		JobID:             "j",

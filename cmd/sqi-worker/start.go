@@ -273,8 +273,14 @@ func runStart(cmd *cobra.Command, _ []string) error {
 	// sessionRootMode (see effectiveSessionRoot) is 0711 when sessionRoot was
 	// resolved to a location that must be traversable by another identity, or
 	// 0750 (the pre-split mode) for the non-root fallback under DataDir.
+	// cfg.Expr is this host's operator-configured phase-3 expression budget
+	// (EXPR sub-project E4d, Task 2). It reaches every phase-3 evaluation
+	// through the AssignmentBudget the Manager builds per session — this call
+	// is the only wiring point, so an omission here would silently meter the
+	// whole worker against the built-in defaults.
 	sessionMgr := session.NewManager(
-		sessionRoot, cfg.Worker.KeepFailedSessions, isolationProvider, cfg.Isolation, logger,
+		sessionRoot, cfg.Worker.KeepFailedSessions, isolationProvider, cfg.Isolation,
+		exprLimitsFromConfig(cfg.Expr), logger,
 		session.WithSessionRootMode(sessionRootMode),
 	)
 

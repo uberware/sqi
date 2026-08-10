@@ -11,17 +11,17 @@ package fmtres
 // # What already existed, and the gap this closes
 //
 // EXPR sub-project E4a already bounds ONE symbol table's let: retention
-// (workerLetRetainedLimit, exprsyms.go, 10 MB) and every individual
-// evaluation's own operation/memory cost (workerOperationLimit/
-// workerMemoryLimit, expres.go). Neither bounds the ASSIGNMENT as a whole:
+// (defaultLetRetainedBytes, exprsyms.go, 10 MB) and every individual
+// evaluation's own operation/memory cost ([ExprLimits.OperationLimit]/
+// [ExprLimits.MemoryLimit], expres.go). Neither bounds the ASSIGNMENT as a whole:
 // one assignment resolves MANY tables (the task's own TaskSymbols table, plus
 // one EnvSymbols table per environment ENTERED in the session -- a template
 // may declare many job and step environments) and, within each table, MANY
 // positions (a command, every Args entry, every embedded file's data, every
 // variable value). Before this task nothing summed any of that: an
 // assignment with, say, 20 environments each individually under
-// workerLetRetainedLimit could ALLOCATE up to 20x that in aggregate over the
-// course of entering them (see assignmentMaxRetainedBytes' own comment,
+// defaultLetRetainedBytes could ALLOCATE up to 20x that in aggregate over the
+// course of entering them (see defaultAssignmentRetainedBytes' own comment,
 // below, for why that is a claim about cumulative allocation across entry,
 // not simultaneously live memory), and an assignment with thousands of cheap
 // positions across many actions paid no aggregate cost at all -- both are
@@ -46,7 +46,7 @@ package fmtres
 // variable value (see ResolveActionExpr/ResolveEmbeddedFilesExpr/
 // ResolveVarsExpr). Mirrors exprcheck.go's chargePositions exactly, one
 // charge per position regardless of what that position's own evaluation
-// costs -- workerOperationLimit/workerMemoryLimit already bound the latter.
+// costs -- [ExprLimits.OperationLimit]/[ExprLimits.MemoryLimit] already bound the latter.
 //
 // retainedBytes: charged from every let: block a phase-3 table evaluates
 // (evalLetBindings, exprsyms.go) -- the ONLY construct in this package that
@@ -74,7 +74,7 @@ package fmtres
 // large but otherwise-compliant assignment starve every OTHER concurrently
 // running task's budget on the same host -- a much larger design change than
 // this task's brief scopes. Instead, [AssignmentBudget] is intentionally
-// small enough (see MaxAssignmentPositions/assignmentMaxRetainedBytes, below)
+// small enough (see DefaultAssignmentPositions/defaultAssignmentRetainedBytes, below)
 // that CONCURRENCY is accounted for by the PRODUCT of the per-assignment cap
 // and the worker's own concurrent-task ceiling, not by a shared counter: "The
 // server gates concurrency by CPU cores; the worker runs whatever it is
@@ -82,10 +82,10 @@ package fmtres
 // worker host's core count has, in the same act, sized how much concurrent
 // phase-3 memory that host can carry, because the server never leases more
 // simultaneous tasks than the host has cores for. Capping THIS budget at a
-// small, fixed multiple of workerLetRetainedLimit keeps worst-case worker-wide
+// small, fixed multiple of defaultLetRetainedBytes keeps worst-case worker-wide
 // phase-3 memory a bounded, PREDICTABLE function of core count -- the same
 // resource the operator already provisioned RAM against -- rather than an
-// open-ended one. See assignmentMaxRetainedBytes' own comment for the number.
+// open-ended one. See defaultAssignmentRetainedBytes' own comment for the number.
 //
 // # Thread safety
 //
@@ -111,7 +111,8 @@ import (
 )
 
 const (
-	// MaxAssignmentPositions caps the number of format-string positions
+	// DefaultAssignmentPositions is the DEFAULT cap on the number of
+	// format-string positions
 	// (command, one Args entry, one embedded file, one variable value) ONE
 	// assignment's phase-3 evaluation may resolve, summed across the task's
 	// own table and every environment's.
@@ -143,10 +144,21 @@ const (
 	// is 1,841.
 	//
 	// THE VALUE IS NOT SIZED BY THAT CALCULATION ALONE. It is 10,000 because
-	// internal/openjd's maxTemplateExprPositions is 10,000, and this cap must
-	// never be the TIGHTER of the two -- raised from 5,000 by fix round 2
+	// internal/openjd's own template-position default is 10,000, and this cap
+	// must never be the TIGHTER of the two -- raised from 5,000 by fix round 2
 	// (whole-branch review, IMPORTANT 1), which found the two constants had
 	// no stated relation, no test, and no mention of each other.
+	//
+	// E4d TASK 2 MADE BOTH SIDES CONFIGURABLE, so this constant is now only
+	// the DEFAULT: the enforced value is [ExprLimits.AssignmentPositions],
+	// carried on the assignment's own budget. It stays exported because
+	// internal/openjd's TestTemplateBudget_WorkerCapIsNotTighter is the only
+	// place that sees both sides of the relation and still needs to read it --
+	// but note that with both sides configurable, that test now compares two
+	// DEFAULTS and cannot see a farm whose YAML violates the relation. Closing
+	// that is E4d Task 3's work. What Task 2 did do is make the relation
+	// SATISFIABLE at every legal setting, by giving this dimension the same
+	// ceiling as the server's (see MaxExprAssignmentPositions).
 	//
 	// WHY THE RELATION IS LOAD-BEARING: the server charges its 10,000-position
 	// template-wide budget at validate and submit; this budget is charged on
@@ -187,15 +199,16 @@ const (
 	// N tasks would share one budget and the subset argument becomes N x the
 	// per-task share -- at which point this cap, and the test pinning it,
 	// both need revisiting.
-	MaxAssignmentPositions int64 = 10_000
+	DefaultAssignmentPositions int64 = 10_000
 
-	// assignmentMaxRetainedBytes caps the cumulative section 1.3.9 size of
+	// defaultAssignmentRetainedBytes is the DEFAULT cap on the cumulative
+	// section 1.3.9 size of
 	// every let-bound value EVERY phase-3 table this assignment builds
 	// retains, summed across the task's own table and every environment's --
-	// the aggregate workerLetRetainedLimit (exprsyms.go, 10 MB) does not
+	// the aggregate defaultLetRetainedBytes (exprsyms.go, 10 MB) does not
 	// provide on its own, since that bound is per TABLE.
 	//
-	// 20,000,000 (20 MB) is exactly 2x workerLetRetainedLimit: two tables'
+	// 20,000,000 (20 MB) is exactly 2x defaultLetRetainedBytes: two tables'
 	// worth (the task's own, plus one environment's -- the common shape for a
 	// session that enters a handful of environments, not dozens with heavy
 	// let: blocks each) fits without pressure, while a session entering many
@@ -213,7 +226,7 @@ const (
 	// (a command string, a handful of variable values) survives into
 	// s.staticEnv and the returned action, not the let-bound VALUES that
 	// produced it. So "N environments could retain N x
-	// workerLetRetainedLimit" describes the SUM of everything charged
+	// defaultLetRetainedBytes" describes the SUM of everything charged
 	// across the session's entry phase, which is what this counter
 	// enforces -- it is NOT a claim that N tables' worth of bytes are ever
 	// simultaneously live in the process. This mirrors exprcheck.go's own
@@ -227,7 +240,7 @@ const (
 	// comment for the full account): worst-case worker-wide CUMULATIVE
 	// ALLOCATION THROUGHPUT from this mechanism, summed across every
 	// concurrently-creating session, is bounded by (concurrent session
-	// count) x assignmentMaxRetainedBytes, and concurrent session count is
+	// count) x defaultAssignmentRetainedBytes, and concurrent session count is
 	// itself bounded by the host's CPU core count (the server never leases
 	// more simultaneous work than that). A 64-core worker's worst case is
 	// therefore ~64 x 20 MB = 1.28 GB of allocation activity across
@@ -242,7 +255,7 @@ const (
 	// work (E4d, operator configuration, is the natural place for a
 	// process-wide knob alongside a per-assignment one), recorded here
 	// rather than silently accepted as solved.
-	assignmentMaxRetainedBytes int64 = 20_000_000
+	defaultAssignmentRetainedBytes int64 = 20_000_000
 )
 
 // AssignmentBudget bounds the CUMULATIVE section 1.3.9/1.3.10 cost phase-3
@@ -258,16 +271,39 @@ const (
 // task) gives that ONE call its own fresh, throwaway allowance, exactly as
 // [templateBudgetOrFresh] does server-side; see [assignmentBudgetOrFresh].
 type AssignmentBudget struct {
+	// limits is the operator's configuration for this assignment, already
+	// normalized (orDefaults) exactly once, in NewAssignmentBudget. It carries
+	// all FIVE numbers, not only the two this type counts: every phase-3 entry
+	// point in this package already takes a budget, so making it the single
+	// carrier is what guarantees one assignment's evaluations are all metered
+	// by the same set of numbers. See exprlimits.go.
+	limits    ExprLimits
 	mu        sync.Mutex
 	positions int64
 	retained  int64
 	err       error
 }
 
-// NewAssignmentBudget returns a fresh, unspent [AssignmentBudget].
-func NewAssignmentBudget() *AssignmentBudget {
-	return &AssignmentBudget{}
+// NewAssignmentBudget returns a fresh, unspent [AssignmentBudget] metered by
+// lim. A zero ExprLimits (or any individually unset field) normalizes to the
+// defaults -- see [ExprLimits.orDefaults]; it never means "unlimited".
+//
+// The parameter is deliberately REQUIRED rather than an option: this
+// constructor is where an assignment acquires its limits, and a caller that
+// has operator configuration to supply but silently does not is the exact
+// failure E4d exists to prevent. Callers with nothing to say pass
+// ExprLimits{}.
+func NewAssignmentBudget(lim ExprLimits) *AssignmentBudget {
+	return &AssignmentBudget{limits: lim.orDefaults()}
 }
+
+// Limits returns the normalized [ExprLimits] this budget meters against.
+//
+// It is how the per-evaluation and per-table numbers reach the evaluator: the
+// resolvers build their expr.Option slice from it (ExprEvalOptions), and
+// evalLetBindings reads LetRetainedBytes from it. Read-only, and safe without
+// the mutex -- limits is written once by the constructor and never again.
+func (b *AssignmentBudget) Limits() ExprLimits { return b.limits }
 
 // assignmentBudgetOrFresh returns budget[0] when the caller supplied one, or
 // a brand-new [AssignmentBudget] otherwise -- see [AssignmentBudget]'s own
@@ -276,11 +312,21 @@ func NewAssignmentBudget() *AssignmentBudget {
 // treated the same as "no budget supplied", since a nil *AssignmentBudget
 // must never reach ChargePositions/ChargeRetainedBytes -- both dereference
 // the receiver.
+//
+// COST OF THIS CONVENIENCE, stated rather than smoothed over: a caller that
+// supplies no budget gets the DEFAULT limits, not the operator's. That is
+// unavoidable here (this function has no access to configuration) and the
+// same tradeoff internal/openjd's templateBudgetOrFresh documents. Every
+// production path supplies one -- session.Manager.Create builds it, and
+// session.Session/executor thread it into every phase-3 call, including the
+// environment-teardown path, which passes a FRESH budget carrying the same
+// limits rather than none. The remaining no-budget callers are this package's
+// own unit tests.
 func assignmentBudgetOrFresh(budget []*AssignmentBudget) *AssignmentBudget {
 	if len(budget) > 0 && budget[0] != nil {
 		return budget[0]
 	}
-	return NewAssignmentBudget()
+	return NewAssignmentBudget(ExprLimits{})
 }
 
 // ChargePositions charges n additional format-string positions, naming where
@@ -298,11 +344,11 @@ func (b *AssignmentBudget) ChargePositions(n int64, where string) error {
 		return nil
 	}
 	b.positions += n
-	if b.positions > MaxAssignmentPositions {
+	if b.positions > b.limits.AssignmentPositions {
 		b.err = fmt.Errorf(
 			"assignment-wide expression budget exceeded: at most %d expression positions may be "+
 				"resolved for one assignment (reached %d at %s)",
-			MaxAssignmentPositions, b.positions, where,
+			b.limits.AssignmentPositions, b.positions, where,
 		)
 	}
 	return b.err
@@ -323,11 +369,11 @@ func (b *AssignmentBudget) ChargeRetainedBytes(n int64, where string) error {
 		return nil
 	}
 	b.retained += n
-	if b.retained > assignmentMaxRetainedBytes {
+	if b.retained > b.limits.AssignmentRetainedBytes {
 		b.err = fmt.Errorf(
 			"assignment-wide expression budget exceeded: let bindings may retain at most %d bytes "+
 				"across one assignment (reached %d at %s)",
-			assignmentMaxRetainedBytes, b.retained, where,
+			b.limits.AssignmentRetainedBytes, b.retained, where,
 		)
 	}
 	return b.err

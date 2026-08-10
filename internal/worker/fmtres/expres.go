@@ -86,21 +86,23 @@ package fmtres
 //
 // # Metering (design spec section 4.1)
 //
-// Every evaluation in this file is metered by workerOperationLimit and
-// workerMemoryLimit, below -- named constants, not expr.Eval's own
-// unconfigured defaults, precisely so a caller cannot forget the budget the
-// way an unmetered path would. Phase 3 is the MORE expensive phase (E2's
-// Task 10 measured ~40x one template's cost here versus phase 1, because
-// concrete strings and paths cost real bytes where a placeholder costs
-// none), and the worker is a shared, long-lived process evaluating
-// untrusted templates -- not a request handler that returns after one
-// evaluation -- so an unmetered path here is a worse liability than the one
-// E2's whole-branch review found and fixed server-side (a 183 KB template
-// body reaching 6.9 GB). Operator configuration of these two numbers is
-// EXPR sub-project E4d's job; this wave hardcodes them as named constants
-// so E4d has one clearly-marked place to make configurable, exactly as
-// exprcheck.go's submissionLimits/submissionOperationLimit/
-// submissionMemoryLimit already do for the server-side, request-time path.
+// Every evaluation in this file is metered by [ExprLimits.OperationLimit] and
+// [ExprLimits.MemoryLimit] -- never expr.Eval's own unconfigured defaults,
+// precisely so a caller cannot forget the budget the way an unmetered path
+// would. Phase 3 is the MORE expensive phase (E2's Task 10 measured ~40x one
+// template's cost here versus phase 1, because concrete strings and paths
+// cost real bytes where a placeholder costs none), and the worker is a
+// shared, long-lived process evaluating untrusted templates -- not a request
+// handler that returns after one evaluation -- so an unmetered path here is a
+// worse liability than the one E2's whole-branch review found and fixed
+// server-side (a 183 KB template body reaching 6.9 GB).
+//
+// EXPR sub-project E4d's Task 2 turned the two numbers into operator
+// configuration: they now arrive on the assignment's own [AssignmentBudget]
+// (exprlimits.go), whose defaults are the constants this file used to
+// hardcode. Every function below that evaluates anything takes that budget,
+// so there is no way to reach the evaluator with some OTHER pair of numbers,
+// and no way to reach it with none.
 
 import (
 	"fmt"
@@ -111,40 +113,46 @@ import (
 	"github.com/uberware/sqi/internal/worker/protocol"
 )
 
-// workerOperationLimit and workerMemoryLimit are the section 1.3.10/1.3.9
-// budgets every phase-3 evaluation in this file is metered against, via
-// ExprEvalOptions.
+// defaultWorkerOperationLimit and defaultWorkerMemoryLimit are the DEFAULTS
+// for the section 1.3.10/1.3.9 budgets every phase-3 evaluation in this file
+// is metered against ([ExprLimits.OperationLimit] and
+// [ExprLimits.MemoryLimit], reached via ExprEvalOptions). Before E4d's Task 2
+// they were the only possible values; an operator can now size them per host,
+// within the ranges exprlimits.go documents.
 //
-// Both sit comfortably UNDER internal/openjd/expr's own hard, non-configurable
-// safety floors (limits.go's maxElements and maxStringBytes, both
-// 10,000,000) rather than at or above them: a limit equal to a hard floor
-// would make the two indistinguishable in a test (and in an operator-facing
-// error message) -- whichever construct is cheaper to build would always
-// report "too large" from the hard floor first, never "operation/memory
-// limit exceeded" from the budget meant to be the tunable one.
-//
-// The two numbers are deliberately LOOSER than exprcheck.go's
-// submissionOperationLimit/submissionMemoryLimit (10,000 ops / 1,000,000
-// bytes): that pair exists to keep template VALIDATION cheap on a
+// The two numbers are deliberately LOOSER than internal/openjd's
+// defaultSubmissionOperations/defaultSubmissionMemoryBytes (10,000 ops /
+// 1,000,000 bytes): that pair exists to keep template VALIDATION cheap on a
 // synchronous HTTP request path evaluating mostly UNRESOLVED placeholders,
 // where a template needing more than that budget just to type-check was
 // already a submission-time liability. Phase 3 evaluates the SAME
 // expressions against concrete, real-sized values -- an embedded file's
 // actual body, a real session working directory -- so legitimate templates
 // need materially more room here than they did to type-check; the
-// requirement this wave must satisfy is that SOME budget applies, not that
-// it is the tightest one in the codebase. Operator configuration of these
-// numbers is EXPR sub-project E4d's job.
+// requirement is that SOME budget applies, not that it is the tightest one in
+// the codebase.
+//
+// AN EARLIER REVISION OF THIS COMMENT CLAIMED BOTH NUMBERS "sit comfortably
+// UNDER internal/openjd/expr's own hard, non-configurable safety floors
+// (limits.go's maxElements and maxStringBytes, both 10,000,000)". THAT IS
+// FALSE FOR THE MEMORY LIMIT, which is 20,000,000 -- twice maxStringBytes --
+// and the argument behind it was wrong twice over: the two bound different
+// quantities (maxStringBytes caps one PRODUCED STRING, while section 1.3.9's
+// meter sums LIVE VALUES and recurses into containers, so a list of two 9 MB
+// strings holds ~18 MB with no fixed guard firing), and the operation limit
+// is a count of operations, not of elements, so comparing it to maxElements
+// compares nothing. The claim is withdrawn rather than repaired: neither
+// number is derived from a fixed guard.
 //
 // NEITHER OF THESE IS AN AGGREGATE BOUND, and for the one construct that
 // retains values across evaluations -- a let: block -- a per-Eval budget is
-// not enough on its own: see exprsyms.go's workerLetRetainedLimit, which
+// not enough on its own: see exprsyms.go's defaultLetRetainedBytes, which
 // bounds what ONE symbol table may hold live. Every other evaluation in this
 // file renders its result to text and drops the Value, which is why the pair
 // below suffices for them.
 const (
-	workerOperationLimit int64 = 1_000_000
-	workerMemoryLimit    int64 = 20_000_000
+	defaultWorkerOperationLimit int64 = 1_000_000
+	defaultWorkerMemoryLimit    int64 = 20_000_000
 )
 
 // TargetArgItem is this package's own copy of exprcheck.go's identically
@@ -153,8 +161,9 @@ const (
 var TargetArgItem = expr.UnionOf(expr.OptionalOf(expr.TString), expr.ListOf(expr.TString))
 
 // ExprEvalOptions builds the []expr.Option every phase-3 evaluation in this
-// package should be called with: the worker's own metering
-// (workerOperationLimit/workerMemoryLimit, above), the evaluation's path
+// package should be called with: the assignment's own metering (lim's
+// OperationLimit/MemoryLimit -- a zero ExprLimits normalizes to the defaults
+// above, so there is no unmetered spelling), the evaluation's path
 // flavor (pathFlavor, exprsyms.go's expr.PathNative -- the worker runs ON
 // the host a task executes on, so its own concrete Session.WorkingDirectory
 // and Task.File.* values, and any path literal an expression writes, must
@@ -178,19 +187,18 @@ var TargetArgItem = expr.UnionOf(expr.OptionalOf(expr.TString), expr.ListOf(expr
 // present in source with no observable effect -- see that test's own doc
 // comment for why a POSIX-only CI host cannot otherwise distinguish the
 // option being set from the option having been deleted.
-func ExprEvalOptions(pathMap []protocol.PathMapRule) []expr.Option {
-	return exprEvalOptionsFor(pathMap, pathFlavor)
+func ExprEvalOptions(lim ExprLimits, pathMap []protocol.PathMapRule) []expr.Option {
+	return exprEvalOptionsFor(lim, pathMap, pathFlavor)
 }
 
 // exprEvalOptionsFor is ExprEvalOptions' flavor-parameterized implementation
 // -- see that function's doc comment for why the split exists.
-func exprEvalOptionsFor(pathMap []protocol.PathMapRule, flavor expr.PathFormat) []expr.Option {
-	return []expr.Option{
-		expr.WithOperationLimit(workerOperationLimit),
-		expr.WithMemoryLimit(workerMemoryLimit),
+func exprEvalOptionsFor(lim ExprLimits, pathMap []protocol.PathMapRule, flavor expr.PathFormat) []expr.Option {
+	opts := lim.orDefaults().evalOptions()
+	return append(opts,
 		expr.WithPathFormat(flavor),
 		expr.WithPathMapping(ConvertPathMapRules(pathMap)),
-	}
+	)
 }
 
 // ConvertPathMapRules converts the assignment's wire-format path-mapping
@@ -259,9 +267,9 @@ func convertPathMapSourceFormat(s string) expr.PathMapSourceFormat {
 // gets -- this is exactly the "one place all four settings are assembled"
 // ExprEvalOptions' own doc comment already claims, now also true for
 // symbol construction, not just rendering.
-func mapPathParamValue(raw string, pathMap []protocol.PathMapRule) (expr.Value, error) {
+func mapPathParamValue(raw string, lim ExprLimits, pathMap []protocol.PathMapRule) (expr.Value, error) {
 	syms := expr.MapSymbols{"src": expr.String(raw)}
-	v, err := expr.Eval("apply_path_mapping(src)", syms, expr.TPath, ExprEvalOptions(pathMap)...)
+	v, err := expr.Eval("apply_path_mapping(src)", syms, expr.TPath, ExprEvalOptions(lim, pathMap)...)
 	if err != nil {
 		return expr.Value{}, fmt.Errorf("mapping %q: %w", raw, err)
 	}
@@ -465,8 +473,8 @@ func ResolveActionExpr(
 	if action == nil {
 		return nil, nil
 	}
-	opts := ExprEvalOptions(pathMap)
 	b := assignmentBudgetOrFresh(budget)
+	opts := ExprEvalOptions(b.Limits(), pathMap)
 
 	if err := b.ChargePositions(1, "command"); err != nil {
 		return nil, err
@@ -514,8 +522,8 @@ func ResolveEmbeddedFilesExpr(
 	if files == nil {
 		return nil, nil
 	}
-	opts := ExprEvalOptions(pathMap)
 	b := assignmentBudgetOrFresh(budget)
+	opts := ExprEvalOptions(b.Limits(), pathMap)
 	out := make([]protocol.EmbeddedFile, len(files))
 	for i, f := range files {
 		if err := b.ChargePositions(1, fmt.Sprintf("embedded file %q", f.Name)); err != nil {
@@ -553,8 +561,8 @@ func ResolveVarsExpr(
 	if vars == nil {
 		return nil, nil
 	}
-	opts := ExprEvalOptions(pathMap)
 	b := assignmentBudgetOrFresh(budget)
+	opts := ExprEvalOptions(b.Limits(), pathMap)
 	out := make(map[string]string, len(vars))
 	for k, v := range vars {
 		if err := b.ChargePositions(1, fmt.Sprintf("variable %q", k)); err != nil {

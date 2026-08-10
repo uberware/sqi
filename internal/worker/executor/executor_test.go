@@ -24,6 +24,7 @@ import (
 	"github.com/uberware/sqi/internal/store"
 	workerconfig "github.com/uberware/sqi/internal/worker/config"
 	"github.com/uberware/sqi/internal/worker/executor"
+	"github.com/uberware/sqi/internal/worker/fmtres"
 	"github.com/uberware/sqi/internal/worker/isolation"
 	"github.com/uberware/sqi/internal/worker/metrics"
 	"github.com/uberware/sqi/internal/worker/protocol"
@@ -250,11 +251,27 @@ func (c *captureOutput) all() []capturedLine {
 // NATS.  The caller is responsible for removing the temp dir.
 func newTestExecutor(t *testing.T, capture *captureOutput) (*executor.Executor, *stubNATS, string) {
 	t.Helper()
+	return newTestExecutorLimited(t, capture, fmtres.ExprLimits{})
+}
+
+// newTestExecutorWithExprLimits is newTestExecutor with this host's phase-3
+// expression limits configured -- EXPR sub-project E4d's Task 2. Callers that
+// do not care about them keep using newTestExecutor, which passes the zero
+// value (the built-in defaults).
+func newTestExecutorWithExprLimits(t *testing.T, lim fmtres.ExprLimits) (*executor.Executor, *stubNATS, string) {
+	t.Helper()
+	return newTestExecutorLimited(t, nil, lim)
+}
+
+func newTestExecutorLimited(
+	t *testing.T, capture *captureOutput, lim fmtres.ExprLimits,
+) (*executor.Executor, *stubNATS, string) {
+	t.Helper()
 	tmpDir := t.TempDir()
 	nc := &stubNATS{}
 	m := metrics.New()
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelDebug}))
-	mgr := session.NewManager(filepath.Join(tmpDir, "sessions"), false, isolation.NewFake(nil), workerconfig.IsolationConfig{}, logger)
+	mgr := session.NewManager(filepath.Join(tmpDir, "sessions"), false, isolation.NewFake(nil), workerconfig.IsolationConfig{}, lim, logger)
 	cfg := executor.Config{
 		KillGracePeriod: 500 * time.Millisecond, // short for fast tests
 	}
@@ -1447,7 +1464,7 @@ func TestExecutor_Dispatch_credentialResolutionFailure(t *testing.T) {
 	logger := slog.New(slog.DiscardHandler)
 	// isolation.NewFake(nil): no known accounts, so Resolve always errors —
 	// the injected Provider failure this test is built to drive.
-	mgr := session.NewManager(filepath.Join(parent, "sessions"), false, isolation.NewFake(nil), workerconfig.IsolationConfig{}, logger)
+	mgr := session.NewManager(filepath.Join(parent, "sessions"), false, isolation.NewFake(nil), workerconfig.IsolationConfig{}, fmtres.ExprLimits{}, logger)
 	statusPub := status.New(nc, status.Config{WorkerID: "test-worker"}, logger)
 	exec := executor.New(statusPub, mgr, m, nil, executor.Config{}, logger)
 
@@ -1515,7 +1532,7 @@ func TestExecutor_Dispatch_publishFailureDoesNotWedge(t *testing.T) {
 	nc := &failingNATS{}
 	m := metrics.New()
 	logger := slog.New(slog.DiscardHandler)
-	mgr := session.NewManager(filepath.Join(tmpDir, "sessions"), false, isolation.NewFake(nil), workerconfig.IsolationConfig{}, logger)
+	mgr := session.NewManager(filepath.Join(tmpDir, "sessions"), false, isolation.NewFake(nil), workerconfig.IsolationConfig{}, fmtres.ExprLimits{}, logger)
 	statusPub := status.New(nc, status.Config{WorkerID: "test-worker", MaxRetries: 1, RetryDelay: time.Millisecond}, logger)
 	exec := executor.New(statusPub, mgr, m, nil, executor.Config{}, logger)
 
@@ -1625,7 +1642,7 @@ func TestExecutor_Dispatch_stageScratchCleanedOnPipelineFailure(t *testing.T) {
 	nc := &stubNATS{}
 	m := metrics.New()
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelDebug}))
-	mgr := session.NewManager(filepath.Join(t.TempDir(), "sessions"), false, isolation.NewFake(nil), workerconfig.IsolationConfig{}, logger)
+	mgr := session.NewManager(filepath.Join(t.TempDir(), "sessions"), false, isolation.NewFake(nil), workerconfig.IsolationConfig{}, fmtres.ExprLimits{}, logger)
 	cfg := executor.Config{
 		KillGracePeriod: 500 * time.Millisecond,
 		// Staging configured so the stager.Configured() check passes and
@@ -1693,7 +1710,7 @@ func TestExecutor_Dispatch_stageLocallyProceedsWithStagingDefaults(t *testing.T)
 	nc := &stubNATS{}
 	m := metrics.New()
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelDebug}))
-	mgr := session.NewManager(filepath.Join(t.TempDir(), "sessions"), false, isolation.NewFake(nil), workerconfig.IsolationConfig{}, logger)
+	mgr := session.NewManager(filepath.Join(t.TempDir(), "sessions"), false, isolation.NewFake(nil), workerconfig.IsolationConfig{}, fmtres.ExprLimits{}, logger)
 	cfg := executor.Config{
 		KillGracePeriod: 500 * time.Millisecond,
 		StagingDefaults: true,
@@ -1727,7 +1744,7 @@ func TestExecutor_Dispatch_stageLocallyFailsWithoutStagingDefaults(t *testing.T)
 	nc := &stubNATS{}
 	m := metrics.New()
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelDebug}))
-	mgr := session.NewManager(filepath.Join(t.TempDir(), "sessions"), false, isolation.NewFake(nil), workerconfig.IsolationConfig{}, logger)
+	mgr := session.NewManager(filepath.Join(t.TempDir(), "sessions"), false, isolation.NewFake(nil), workerconfig.IsolationConfig{}, fmtres.ExprLimits{}, logger)
 	cfg := executor.Config{
 		KillGracePeriod: 500 * time.Millisecond,
 		StagingDefaults: false,

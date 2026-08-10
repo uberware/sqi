@@ -13,6 +13,7 @@ import (
 	"testing"
 
 	workerconfig "github.com/uberware/sqi/internal/worker/config"
+	"github.com/uberware/sqi/internal/worker/fmtres"
 	"github.com/uberware/sqi/internal/worker/isolation"
 	"github.com/uberware/sqi/internal/worker/metrics"
 	"github.com/uberware/sqi/internal/worker/protocol"
@@ -144,7 +145,7 @@ func TestTaskActionsCarryCredential(t *testing.T) {
 	uid, gid := testUID(), testGID()
 	account := isolation.FakeAccount{UID: uid, GID: gid}
 	provider := isolation.NewFake(map[string]isolation.FakeAccount{"render": account})
-	mgr := session.NewManager(filepath.Join(dataDir, "sessions"), false, provider, workerconfig.IsolationConfig{}, logger)
+	mgr := session.NewManager(filepath.Join(dataDir, "sessions"), false, provider, workerconfig.IsolationConfig{}, fmtres.ExprLimits{}, logger)
 
 	msg := &protocol.AssignMsg{
 		JobID:     "job-1",

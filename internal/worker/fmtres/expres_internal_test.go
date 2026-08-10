@@ -22,7 +22,7 @@ import (
 // parameter, so this test can force expr.PathWindows regardless of what host
 // it runs on, independent of exprsyms.go's own pathFlavor constant.
 func TestExprEvalOptionsFor_CarriesRequestedPathFlavor(t *testing.T) {
-	opts := exprEvalOptionsFor(nil, expr.PathWindows)
+	opts := exprEvalOptionsFor(ExprLimits{}, nil, expr.PathWindows)
 	v, err := expr.Eval("path('/a/b') / 'c'", expr.MapSymbols{}, expr.TString, opts...)
 	if err != nil {
 		t.Fatalf("expr.Eval: %v", err)

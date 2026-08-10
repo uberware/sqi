@@ -26,7 +26,7 @@
 //
 // # Usage
 //
-//	mgr := session.NewManager(sessionRoot, cfg.Worker.KeepFailedSessions, provider, cfg.Isolation, logger)
+//	mgr := session.NewManager(sessionRoot, cfg.Worker.KeepFailedSessions, provider, cfg.Isolation, limits, logger)
 //	// sessionRoot is resolved by cmd/sqi-worker's effectiveSessionRoot — see
 //	// its doc for why it is deliberately NOT cfg.Worker.DataDir.
 //
@@ -392,7 +392,15 @@ type Manager struct {
 	// Provider) govern worker boot behavior and provider selection, handled
 	// by the caller before NewManager is invoked.
 	isolationCfg workerconfig.IsolationConfig
-	logger       *slog.Logger
+	// exprLimits is the operator's phase-3 expression budget for this host
+	// (EXPR sub-project E4d, Task 2). Every session this Manager creates gets
+	// its own [fmtres.AssignmentBudget] built from it, and every phase-3
+	// evaluation the session performs reads its limits back off that budget.
+	// The zero value normalizes to fmtres.DefaultExprLimits(), so a caller
+	// with no configuration to offer behaves exactly as it did before this
+	// field existed.
+	exprLimits fmtres.ExprLimits
+	logger     *slog.Logger
 }
 
 // ManagerOption customizes a Manager constructed by NewManager. See
@@ -415,15 +423,18 @@ func WithSessionRootMode(mode os.FileMode) ManagerOption {
 // sessions are retained for post-mortem inspection. provider resolves
 // run-as-user credentials for isolated assignments (see Manager.Create);
 // isolationCfg.EnvPassthrough is the additional daemon environment allowlist
-// for isolated sessions. opts may include WithSessionRootMode to override the
-// default 0711 creation mode.
-func NewManager(sessionRoot string, keepFailedSessions bool, provider isolation.Provider, isolationCfg workerconfig.IsolationConfig, logger *slog.Logger, opts ...ManagerOption) *Manager {
+// for isolated sessions. exprLimits is this host's operator-configured
+// phase-3 expression budget (cmd/sqi-worker maps the worker config's expr:
+// section to it; the zero value means "the built-in defaults"). opts may
+// include WithSessionRootMode to override the default 0711 creation mode.
+func NewManager(sessionRoot string, keepFailedSessions bool, provider isolation.Provider, isolationCfg workerconfig.IsolationConfig, exprLimits fmtres.ExprLimits, logger *slog.Logger, opts ...ManagerOption) *Manager {
 	m := &Manager{
 		sessionRoot:        sessionRoot,
 		sessionRootMode:    0o711,
 		keepFailedSessions: keepFailedSessions,
 		provider:           provider,
 		isolationCfg:       isolationCfg,
+		exprLimits:         exprLimits,
 		logger:             logger,
 	}
 	for _, opt := range opts {
@@ -697,7 +708,7 @@ func (m *Manager) Create(ctx context.Context, msg *protocol.AssignMsg) (*Session
 		// below, so every environment table this session builds during
 		// entry already shares it. See the exprBudget field's own doc
 		// comment.
-		exprBudget: fmtres.NewAssignmentBudget(),
+		exprBudget: fmtres.NewAssignmentBudget(m.exprLimits),
 	}
 
 	// Enter environments in declaration order.
@@ -932,7 +943,7 @@ func (s *Session) resolveEnvEntry(env protocol.AssignEnvironment) (*protocol.Act
 	// EnvSymbols also folds in the enclosing step template's let-bound names
 	// for a step environment (Template Schemas §3.6.2 row 1) — see its own doc
 	// comment; this method does not apply that block itself.
-	syms, err := fmtres.EnvSymbols(s.msg, &env, s.WorkDir, s.pathMapFile, s.hasPathMap)
+	syms, err := fmtres.EnvSymbols(s.msg, &env, s.WorkDir, s.pathMapFile, s.hasPathMap, s.exprBudget)
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("resolve environment: %w", err)
 	}
@@ -992,8 +1003,8 @@ func (s *Session) resolveEnvEntry(env protocol.AssignEnvironment) (*protocol.Act
 // check-ins, daemon shutdowns, unmounts) with only a log line. A budget that
 // cannot avert the memory it is charging for -- the allocation happens
 // whether or not the charge is accepted -- must not be allowed to block
-// cleanup it cannot prevent the cost of. Per-table (workerLetRetainedLimit)
-// and per-Eval (workerOperationLimit/workerMemoryLimit) bounds still apply
+// cleanup it cannot prevent the cost of. Per-table (LetRetainedBytes)
+// and per-Eval (OperationLimit/MemoryLimit) bounds still apply
 // to this exit-time table unconditionally; only the cross-table
 // ASSIGNMENT-WIDE ledger is exempted. See
 // TestSession_ExitEnvironments_EXPR_AllOnExitRunAfterEntryNearsBudgetCap
@@ -1019,7 +1030,8 @@ func (s *Session) resolveEnvAction(env protocol.AssignEnvironment, action *proto
 	// for a step environment (Template Schemas §3.6.2 row 1) — see its own doc
 	// comment. Without it, teardown fails the same way entry did: an onExit
 	// action referencing a step-template binding is an unknown symbol.
-	syms, err := fmtres.EnvSymbols(s.msg, &env, s.WorkDir, s.pathMapFile, s.hasPathMap)
+	teardownBudget := fmtres.NewAssignmentBudget(s.exprBudget.Limits())
+	syms, err := fmtres.EnvSymbols(s.msg, &env, s.WorkDir, s.pathMapFile, s.hasPathMap, teardownBudget)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -1027,18 +1039,23 @@ func (s *Session) resolveEnvAction(env protocol.AssignEnvironment, action *proto
 	// see [Session.resolveEnvEntry]'s identical comment and
 	// fmtres.ApplyEnvLet's doc comment for why the order is load-bearing.
 	//
-	// NO s.exprBudget on any of the three calls below -- see this method's
+	// NOT s.exprBudget on any of the three calls below -- see this method's
 	// own doc comment (fix round 1, Critical 2) for why teardown is exempt
-	// from the assignment-wide ledger.
-	resolvedVars, err := fmtres.ResolveVarsExpr(vars, syms, s.msg.PathMap)
+	// from the assignment-wide LEDGER. It is a FRESH budget rather than none
+	// (E4d Task 2): a budget carries the operator's per-evaluation and
+	// per-table LIMITS as well as the ledger, and passing none would meter
+	// teardown against the built-in defaults instead of this host's
+	// configuration -- silently, and only on the teardown path. Fresh ledger,
+	// same limits: exactly the exemption fix round 1 intended, no more.
+	resolvedVars, err := fmtres.ResolveVarsExpr(vars, syms, s.msg.PathMap, teardownBudget)
 	if err != nil {
 		return nil, nil, err
 	}
 	// Exactly one call over this table — see fmtres.ApplyEnvLet's doc comment.
-	if err := fmtres.ApplyEnvLet(&env, syms, s.msg.PathMap); err != nil {
+	if err := fmtres.ApplyEnvLet(&env, syms, s.msg.PathMap, teardownBudget); err != nil {
 		return nil, nil, fmt.Errorf("let bindings: %w", err)
 	}
-	resolvedAction, err := fmtres.ResolveActionExpr(action, syms, s.msg.PathMap)
+	resolvedAction, err := fmtres.ResolveActionExpr(action, syms, s.msg.PathMap, teardownBudget)
 	if err != nil {
 		return nil, nil, err
 	}

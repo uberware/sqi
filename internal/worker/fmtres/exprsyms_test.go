@@ -1459,14 +1459,15 @@ steps:
 // ── Retained-bytes bound (whole-branch review, Critical 2) ──────────────────
 
 // bigLetSequence builds n bindings that each construct roughly 9.9 MB of
-// string -- comfortably under expres.go's per-Eval workerMemoryLimit, which
+// string -- comfortably under expres.go's per-Eval memory limit (ExprLimits.MemoryLimit), which
 // is exactly the point: every one of them is individually legal, and the
 // exhaustion comes from RETAINING all of them in one table.
 //
 // The multiplier comes from Task.Param.N rather than a literal because that
 // is what makes the template unrejectable at phase 2: Task.Param.N is
 // unresolved[int] at submission time, so `"x" * unresolved` costs
-// submissionLimits() essentially nothing and the checker passes it.
+// the server's per-evaluation submission limits essentially nothing, and
+// the checker passes it.
 func bigLetSequence(n int) []string {
 	lets := make([]string, n)
 	for i := range lets {
@@ -1674,7 +1675,7 @@ func TestApplyTaskLet_StepTemplateLetCannotOverwriteSpecSymbols(t *testing.T) {
 // 6.00 MB, the projection measured 0.00 MB, the 9 MB binding was admitted and
 // merged, and the table held 15.00 MB against a 10 MB limit. The step-script
 // block then correctly refused to add more, so the real ceiling was
-// "workerLetRetainedLimit plus whatever the projection excludes" -- not a
+// "the per-table LetRetainedBytes limit plus whatever the projection excludes" -- not a
 // bound. After the fix the table stays at 6.00 MB and both blocks refuse.
 func TestApplyTaskLet_RetainedBytesCountsNonProjectedSymbols(t *testing.T) {
 	// A 3 MB STRING task parameter: bound twice (Task.Param./Task.RawParam.),
