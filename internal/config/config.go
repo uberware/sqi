@@ -544,7 +544,86 @@ type OpenJDConfig struct {
 	// predate the strict limits and cannot yet be updated.
 	// Env: SQI_OPENJD_ENFORCE_LIMITS
 	EnforceLimits bool `yaml:"enforce_limits"`
+
+	// ExprOperationLimit is how many OpenJD expression-language operations
+	// (specification section 1.3.10) ONE expression in a submitted template may
+	// spend at validation time.
+	//
+	// Raising it lengthens the worst request this server can be asked to
+	// serve, roughly in proportion: nothing meters wall clock, and an
+	// operation's real cost varies by orders of magnitude between arithmetic
+	// and a regex over a large string.
+	// Range: [MinOpenJDExprOperationLimit, MaxOpenJDExprOperationLimit].
+	// Env: SQI_OPENJD_EXPR_OPERATION_LIMIT
+	ExprOperationLimit int64 `yaml:"expr_operation_limit"`
+
+	// ExprMemoryLimit is how many live bytes (specification section 1.3.9) ONE
+	// expression in a submitted template may hold at validation time.
+	//
+	// The ceiling is not a preference: above it a fixed, non-configurable
+	// guard inside the evaluator fires first and this setting stops having any
+	// effect.
+	// Range: [MinOpenJDExprMemoryLimit, MaxOpenJDExprMemoryLimit].
+	// Env: SQI_OPENJD_EXPR_MEMORY_LIMIT
+	ExprMemoryLimit int64 `yaml:"expr_memory_limit"`
+
+	// ExprTemplatePositions is how many expression positions ONE template may
+	// contain — cumulative across the whole validation pass, not per field.
+	//
+	// This and ExprOperationLimit MULTIPLY: the cumulative operation ceiling
+	// for one request is their product, and raising both raises it twice over.
+	//
+	// It also has a farm-wide consequence the server cannot check alone: a
+	// worker's own per-assignment position cap must not be lower, or a job
+	// this server ACCEPTS fails on every task at run time instead of failing
+	// the one request that could have reported it.
+	// Range: [MinOpenJDExprTemplatePositions, MaxOpenJDExprTemplatePositions].
+	// Env: SQI_OPENJD_EXPR_TEMPLATE_POSITIONS
+	ExprTemplatePositions int64 `yaml:"expr_template_positions"`
+
+	// ExprTemplateRetainedBytes is how many bytes a template's `let:` bindings
+	// may cumulatively retain across one validation pass.
+	//
+	// Counted as cumulative ALLOCATION, not peak live retention: a template
+	// that never holds more than a few MB at once is still charged the sum of
+	// every block. Sizing a host's RAM against this number will over-provision.
+	// Range: [MinOpenJDExprTemplateRetainedBytes, MaxOpenJDExprTemplateRetainedBytes].
+	// Env: SQI_OPENJD_EXPR_TEMPLATE_RETAINED_BYTES
+	ExprTemplateRetainedBytes int64 `yaml:"expr_template_retained_bytes"`
 }
+
+// The defaults and the operator-configurable range for [OpenJDConfig]'s four
+// EXPR expression limits.
+//
+// These duplicate internal/openjd's DefaultExprLimits and Min/MaxExpr*
+// constants ON PURPOSE: internal/config must not import internal/openjd (that
+// would be a cross-import between two same-level internal packages, and
+// internal/openjd pulls in internal/store). The duplication is pinned by
+// TestExprLimits_ConfigMatchesOpenJD in internal/server -- the one package that
+// may import both -- which fails the build if either side moves without the
+// other.
+//
+// The rationale for each number — which bounds are catastrophe bounds with a
+// ceiling no operator may raise past, which is a policy bound, and what the
+// floors were measured against — lives on internal/openjd's ExprLimits and its
+// Min/Max constants, next to the code the numbers govern.
+const (
+	DefaultOpenJDExprOperationLimit int64 = 10_000
+	MinOpenJDExprOperationLimit     int64 = 1_000
+	MaxOpenJDExprOperationLimit     int64 = 100_000
+
+	DefaultOpenJDExprMemoryLimit int64 = 1_000_000
+	MinOpenJDExprMemoryLimit     int64 = 4_096
+	MaxOpenJDExprMemoryLimit     int64 = 10_000_000
+
+	DefaultOpenJDExprTemplatePositions int64 = 10_000
+	MinOpenJDExprTemplatePositions     int64 = 256
+	MaxOpenJDExprTemplatePositions     int64 = 100_000
+
+	DefaultOpenJDExprTemplateRetainedBytes int64 = 10_000_000
+	MinOpenJDExprTemplateRetainedBytes     int64 = 65_536
+	MaxOpenJDExprTemplateRetainedBytes     int64 = 100_000_000
+)
 
 // DefaultConfig returns a [Config] with sensible defaults suitable for local
 // development. Production deployments should override fields via a config file
@@ -584,7 +663,11 @@ func DefaultConfig() Config {
 			InstanceName: "sqi-server",
 		},
 		OpenJD: OpenJDConfig{
-			EnforceLimits: true,
+			EnforceLimits:             true,
+			ExprOperationLimit:        DefaultOpenJDExprOperationLimit,
+			ExprMemoryLimit:           DefaultOpenJDExprMemoryLimit,
+			ExprTemplatePositions:     DefaultOpenJDExprTemplatePositions,
+			ExprTemplateRetainedBytes: DefaultOpenJDExprTemplateRetainedBytes,
 		},
 		Diagnostics: DiagnosticsConfig{
 			BufferSize: 1000,

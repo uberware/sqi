@@ -28,6 +28,7 @@ type Submitter struct {
 	st            store.Store
 	locSt         store.StorageLocationStore
 	enforceLimits bool
+	exprLimits    ExprLimits
 }
 
 // SubmitterOptions carries optional configuration for a [Submitter].
@@ -36,6 +37,17 @@ type SubmitterOptions struct {
 	// during validation.  Mirrors [ValidateOptions.EnforceLimits].
 	// Defaults to true when using [NewSubmitter].
 	EnforceLimits bool
+
+	// ExprLimits carries the operator-configured EXPR expression limits
+	// (sub-project E4d) into BOTH phases this pipeline runs: phase 1, through
+	// the [ValidateOptions] prepareTemplate builds, and phase 2, through the
+	// two [templateBudget]s it allocates for checkExpressionsAtSubmit and for
+	// every step's ResolveParameterSpaceParams call.
+	//
+	// The zero value means "use the defaults" ([ExprLimits.orDefaults]), so
+	// [NewSubmitter] and every existing SubmitterOptions literal keep the
+	// pre-E4d behavior unchanged.
+	ExprLimits ExprLimits
 }
 
 // NewSubmitter returns a [Submitter] backed by st with default options
@@ -50,7 +62,7 @@ func NewSubmitter(st store.Store) *Submitter {
 // options.  Use this when the caller needs to control [SubmitterOptions.EnforceLimits]
 // based on operator configuration.
 func NewSubmitterWithOptions(st store.Store, opts SubmitterOptions) *Submitter {
-	return &Submitter{st: st, locSt: st, enforceLimits: opts.EnforceLimits}
+	return &Submitter{st: st, locSt: st, enforceLimits: opts.EnforceLimits, exprLimits: opts.ExprLimits}
 }
 
 // ── SubmitOptions ─────────────────────────────────────────────────────────────
@@ -166,7 +178,10 @@ func (s *Submitter) prepareTemplate(
 	}
 
 	// ── 2. Validate ───────────────────────────────────────────────────────
-	if errs := ValidateWithOptions(tmpl, ValidateOptions{EnforceLimits: s.enforceLimits}); len(errs) > 0 {
+	if errs := ValidateWithOptions(tmpl, ValidateOptions{
+		EnforceLimits: s.enforceLimits,
+		ExprLimits:    s.exprLimits,
+	}); len(errs) > 0 {
 		return nil, nil, nil, &SubmitValidationError{Cause: fmt.Errorf("openjd: submit: validation: %w", errs)}
 	}
 
@@ -198,12 +213,12 @@ func (s *Submitter) prepareTemplate(
 	// resolverBudget (below) is a genuinely separate object; see this
 	// function's own doc comment (fix round 1, Critical 1) for why they must
 	// not be the same budget.
-	checkerBudget := newTemplateBudget()
+	checkerBudget := newTemplateBudget(s.exprLimits)
 	if err := checkExpressionsAtSubmit(tmpl, boundParams, checkerBudget); err != nil {
 		return nil, nil, nil, err
 	}
 
-	resolverBudget = newTemplateBudget()
+	resolverBudget = newTemplateBudget(s.exprLimits)
 	return tmpl, boundParams, resolverBudget, nil
 }
 

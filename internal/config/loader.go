@@ -153,7 +153,11 @@ type fileConfig struct {
 	} `yaml:"discovery"`
 
 	OpenJD *struct {
-		EnforceLimits *bool `yaml:"enforce_limits"`
+		EnforceLimits             *bool  `yaml:"enforce_limits"`
+		ExprOperationLimit        *int64 `yaml:"expr_operation_limit"`
+		ExprMemoryLimit           *int64 `yaml:"expr_memory_limit"`
+		ExprTemplatePositions     *int64 `yaml:"expr_template_positions"`
+		ExprTemplateRetainedBytes *int64 `yaml:"expr_template_retained_bytes"`
 	} `yaml:"openjd"`
 
 	Diagnostics *struct {
@@ -404,6 +408,18 @@ func mergeOpenJDFile(cfg *Config, fc fileConfig) {
 	if fc.OpenJD.EnforceLimits != nil {
 		cfg.OpenJD.EnforceLimits = *fc.OpenJD.EnforceLimits
 	}
+	if fc.OpenJD.ExprOperationLimit != nil {
+		cfg.OpenJD.ExprOperationLimit = *fc.OpenJD.ExprOperationLimit
+	}
+	if fc.OpenJD.ExprMemoryLimit != nil {
+		cfg.OpenJD.ExprMemoryLimit = *fc.OpenJD.ExprMemoryLimit
+	}
+	if fc.OpenJD.ExprTemplatePositions != nil {
+		cfg.OpenJD.ExprTemplatePositions = *fc.OpenJD.ExprTemplatePositions
+	}
+	if fc.OpenJD.ExprTemplateRetainedBytes != nil {
+		cfg.OpenJD.ExprTemplateRetainedBytes = *fc.OpenJD.ExprTemplateRetainedBytes
+	}
 }
 
 func mergeDiagnosticsFile(cfg *Config, fc fileConfig) {
@@ -629,6 +645,10 @@ func applyEnv(cfg *Config) error {
 	setString(&cfg.Discovery.InstanceName, "SQI_DISCOVERY_INSTANCE_NAME")
 
 	collect(setBool(&cfg.OpenJD.EnforceLimits, "SQI_OPENJD_ENFORCE_LIMITS"))
+	collect(setInt64(&cfg.OpenJD.ExprOperationLimit, "SQI_OPENJD_EXPR_OPERATION_LIMIT"))
+	collect(setInt64(&cfg.OpenJD.ExprMemoryLimit, "SQI_OPENJD_EXPR_MEMORY_LIMIT"))
+	collect(setInt64(&cfg.OpenJD.ExprTemplatePositions, "SQI_OPENJD_EXPR_TEMPLATE_POSITIONS"))
+	collect(setInt64(&cfg.OpenJD.ExprTemplateRetainedBytes, "SQI_OPENJD_EXPR_TEMPLATE_RETAINED_BYTES"))
 
 	collect(setInt(&cfg.Diagnostics.BufferSize, "SQI_DIAGNOSTICS_BUFFER_SIZE"))
 
@@ -738,6 +758,22 @@ func setInt(dst *int, key string) error {
 		return nil
 	}
 	n, err := strconv.Atoi(v)
+	if err != nil {
+		return fmt.Errorf("%s: invalid integer %q", key, v)
+	}
+	*dst = n
+	return nil
+}
+
+// setInt64 is [setInt] for an int64-valued setting. Separate rather than
+// generic because the two are used through pointers to different types and the
+// error message must still name the key and the offending value identically.
+func setInt64(dst *int64, key string) error {
+	v := strings.TrimSpace(os.Getenv(key))
+	if v == "" {
+		return nil
+	}
+	n, err := strconv.ParseInt(v, 10, 64)
 	if err != nil {
 		return fmt.Errorf("%s: invalid integer %q", key, v)
 	}

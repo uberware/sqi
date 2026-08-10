@@ -23,7 +23,7 @@ import (
 // that removing either bound in isolation fails exactly one of them --
 // "two dimensions that share one test are one dimension" (this task's
 // brief). The third dimension, operations, is derived rather than measured
-// (maxTemplateExprPositions * submissionOperationLimit, exprcheck.go's own
+// (defaultTemplatePositions * defaultSubmissionOperations, exprcheck.go's own
 // doc comment) and has nothing to assert here: no operation counter crosses
 // into internal/openjd/expr for this file to observe.
 //
@@ -31,12 +31,12 @@ import (
 // kill a 600s hang: the CORRECT way to mutation-test either bound is to
 // NEUTER THE CHECK inside templateBudget.chargePositions/
 // chargeRetainedBytes (exprcheck.go) -- e.g. comment out the
-// "if b.positions > maxTemplateExprPositions" branch -- and re-run, NOT to
-// raise maxTemplateExprPositions/maxTemplateExprRetainedBytes themselves.
+// "if b.positions > defaultTemplatePositions" branch -- and re-run, NOT to
+// raise defaultTemplatePositions/defaultTemplateRetainedBytes themselves.
 // Three of the five tests below SIZE THEIR OWN CONSTRUCTION from the live
-// constant (manyArgs(int(maxTemplateExprPositions) + 50), and
-// int(maxTemplateExprPositions) - 10 in FreshPerCall): raising
-// maxTemplateExprPositions to, say, 2_000_000_000 to "remove the bound"
+// constant (manyArgs(int(defaultTemplatePositions) + 50), and
+// int(defaultTemplatePositions) - 10 in FreshPerCall): raising
+// defaultTemplatePositions to, say, 2_000_000_000 to "remove the bound"
 // makes those tests try to allocate on the order of two billion string
 // entries, which does not fail fast -- it hangs.
 
@@ -124,25 +124,25 @@ func TestCheckTemplateExpressions_TemplateWideBudget_E4bConstruction(t *testing.
 	for _, e := range errs {
 		if strings.Contains(e.Message, "template-wide expression budget exceeded") &&
 			strings.Contains(e.Message, "expression positions") &&
-			strings.Contains(e.Message, strconv.FormatInt(maxTemplateExprPositions, 10)) {
+			strings.Contains(e.Message, strconv.FormatInt(defaultTemplatePositions, 10)) {
 			found = true
 			break
 		}
 	}
 	if !found {
 		t.Errorf("want an error naming the positions dimension and its %d-position limit; got %v",
-			maxTemplateExprPositions, errs)
+			defaultTemplatePositions, errs)
 	}
 }
 
 // TestCheckTemplateExpressions_TemplateWideBudget_PositionsDimension isolates
 // the POSITIONS dimension: many CHEAP positions (manyArgs -- no retained
-// bytes, negligible per-position cost), well over maxTemplateExprPositions.
+// bytes, negligible per-position cost), well over defaultTemplatePositions.
 // Mutation target: commenting out chargePositions' cap check (or raising
-// maxTemplateExprPositions past this construction's size) must make this
+// defaultTemplatePositions past this construction's size) must make this
 // test -- and ONLY this dimension's tests -- start passing/accepting.
 func TestCheckTemplateExpressions_TemplateWideBudget_PositionsDimension(t *testing.T) {
-	n := int(maxTemplateExprPositions) + 50
+	n := int(defaultTemplatePositions) + 50
 	tmpl := &JobTemplate{
 		Name:       "T",
 		Extensions: []string{"EXPR"},
@@ -158,7 +158,7 @@ func TestCheckTemplateExpressions_TemplateWideBudget_PositionsDimension(t *testi
 
 	errs := checkTemplateExpressions(tmpl, nil)
 	if len(errs) == 0 {
-		t.Fatalf("%d cheap args entries, over the %d-position budget, must be rejected", n, maxTemplateExprPositions)
+		t.Fatalf("%d cheap args entries, over the %d-position budget, must be rejected", n, defaultTemplatePositions)
 	}
 
 	var found bool
@@ -181,7 +181,7 @@ func TestCheckTemplateExpressions_TemplateWideBudget_PositionsDimension(t *testi
 // proof (design spec §4, "the asymmetry this wave should also close"): many
 // let: blocks, each INDIVIDUALLY well within every existing per-block bound
 // (maxLetBindings = 50 bindings; each binding's own Eval under
-// submissionMemoryLimit = 1,000,000 bytes), that are cumulatively rejected
+// defaultSubmissionMemoryBytes = 1,000,000 bytes), that are cumulatively rejected
 // only because the template-wide budget sums bytes ACROSS blocks.
 //
 // Before this task, nothing bounded that sum: checkLetBindings caps a single
@@ -222,7 +222,7 @@ func TestCheckTemplateExpressions_TemplateWideBudget_RetainedBytesDimension(t *t
 		if len(errs) != 0 {
 			t.Fatalf("one step's %d lets (~%d bytes) must fit comfortably under the %d-byte "+
 				"template-wide budget on its own: %v",
-				bindingsPerStep, bindingsPerStep*(bytesPerBinding+64), maxTemplateExprRetainedBytes, errs)
+				bindingsPerStep, bindingsPerStep*(bytesPerBinding+64), defaultTemplateRetainedBytes, errs)
 		}
 	})
 
@@ -233,16 +233,16 @@ func TestCheckTemplateExpressions_TemplateWideBudget_RetainedBytesDimension(t *t
 		if len(errs) == 0 {
 			t.Fatalf("%d steps x %d lets of ~%d bytes each (~%d bytes total) must exceed the "+
 				"%d-byte template-wide retained-bytes budget, even though every individual block "+
-				"is within maxLetBindings and every individual binding is within submissionMemoryLimit",
+				"is within maxLetBindings and every individual binding is within defaultSubmissionMemoryBytes",
 				steps, bindingsPerStep, bytesPerBinding+64, steps*bindingsPerStep*(bytesPerBinding+64),
-				maxTemplateExprRetainedBytes)
+				defaultTemplateRetainedBytes)
 		}
 
 		var found bool
 		for _, e := range errs {
 			if strings.Contains(e.Message, "template-wide expression budget exceeded") &&
 				strings.Contains(e.Message, "let bindings may retain") &&
-				strings.Contains(e.Message, strconv.FormatInt(maxTemplateExprRetainedBytes, 10)) {
+				strings.Contains(e.Message, strconv.FormatInt(defaultTemplateRetainedBytes, 10)) {
 				found = true
 				if strings.Contains(e.Message, "expression positions") {
 					t.Errorf("the retained-bytes error must not also read like a positions error: %q", e.Message)
@@ -251,7 +251,7 @@ func TestCheckTemplateExpressions_TemplateWideBudget_RetainedBytesDimension(t *t
 		}
 		if !found {
 			t.Errorf("want an error naming the retained-bytes dimension and its %d-byte limit; got %v",
-				maxTemplateExprRetainedBytes, errs)
+				defaultTemplateRetainedBytes, errs)
 		}
 	})
 }
@@ -265,7 +265,7 @@ func TestCheckTemplateExpressions_TemplateWideBudget_RetainedBytesDimension(t *t
 // this same function. A template sized to land just under the position cap
 // must be accepted on every call, not merely the first.
 func TestCheckTemplateExpressions_TemplateWideBudget_FreshPerCall(t *testing.T) {
-	n := int(maxTemplateExprPositions) - 10 // comfortably under the cap
+	n := int(defaultTemplatePositions) - 10 // comfortably under the cap
 	tmpl := &JobTemplate{
 		Name:       "T",
 		Extensions: []string{"EXPR"},
@@ -296,7 +296,7 @@ func TestCheckTemplateExpressions_TemplateWideBudget_FreshPerCall(t *testing.T) 
 // the extension -- proving the hasExtension("EXPR") gate at the top of
 // checkTemplateExpressions, not the budget, is what decides this.
 func TestCheckTemplateExpressions_TemplateWideBudget_BaseSpecUnaffected(t *testing.T) {
-	n := int(maxTemplateExprPositions) + 50
+	n := int(defaultTemplatePositions) + 50
 	tmpl := &JobTemplate{
 		Name: "T", // no Extensions: EXPR is not declared
 		Steps: []StepTemplate{{
@@ -342,15 +342,22 @@ func TestCheckTemplateExpressions_TemplateWideBudget_BaseSpecUnaffected(t *testi
 // different packages in different processes, and an invariant between them
 // has to be asserted somewhere that can see both. A test-only import is the
 // cheapest place that also runs under plain `make test`.
+// SINCE E4d TASK 1 THIS COMPARES DEFAULTS, NOT THE ENFORCED VALUES. The
+// server's cap is now openjd.ExprLimits.TemplatePositions, configurable
+// through openjd.expr_template_positions; defaultTemplatePositions is only
+// what it falls back to. A farm whose server config raises positions above the
+// worker's fixed cap reproduces exactly the failure below with this test still
+// green -- which is E4d Task 3's problem to close, and why it must not be
+// deleted here in the meantime.
 func TestTemplateBudget_WorkerCapIsNotTighter(t *testing.T) {
-	if fmtres.MaxAssignmentPositions < maxTemplateExprPositions {
+	if fmtres.MaxAssignmentPositions < defaultTemplatePositions {
 		t.Fatalf("the worker's per-assignment position cap (%d) is TIGHTER than the server's "+
 			"template-wide cap (%d).\n"+
 			"An assignment's positions are a subset of its template's, so this makes a job the "+
 			"server ACCEPTS fail on the worker -- per task, after submission, naming a budget the "+
 			"submitter was never shown. Raise fmtres.MaxAssignmentPositions, or give the server a "+
 			"per-assignment sub-budget so the rejection happens at submit.",
-			fmtres.MaxAssignmentPositions, maxTemplateExprPositions)
+			fmtres.MaxAssignmentPositions, defaultTemplatePositions)
 	}
 }
 

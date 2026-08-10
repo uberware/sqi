@@ -161,7 +161,7 @@ func ResolveParameterSpaceParams(
 	// is not declared, which is the point — see resolveRangeExprField.
 	var syms expr.MapSymbols
 	if exprEnabled {
-		stepLet, letErrs := stepLetSymbols(tmpl, step, jobParams, "")
+		stepLet, letErrs := stepLetSymbols(tmpl, step, jobParams, "", b.limits)
 		errs = append(errs, letErrs...)
 
 		// Charged exactly like checkStepExpressions charges the identical
@@ -246,7 +246,7 @@ func resolveTaskParamDefinition(
 		if exprEnabled && !b.chargePositions(1, ptr) {
 			return newDef, nil
 		}
-		newRangeExpr, newRangeList, rerr := resolveRangeExprField(exprEnabled, *def.RangeExpr, def.Type, syms, scope)
+		newRangeExpr, newRangeList, rerr := resolveRangeExprField(exprEnabled, *def.RangeExpr, def.Type, syms, scope, b.limits)
 		if rerr != nil {
 			// Do not assign newDef.RangeExpr/RangeList on error -- returning
 			// the untouched copy alongside the error is what lets the
@@ -295,7 +295,7 @@ func resolveRangeListDefinition(
 		if exprEnabled && !b.chargePositions(1, eptr) {
 			break
 		}
-		resolved, err := resolveRangeListEntry(exprEnabled, entry, def.Type, syms, scope)
+		resolved, err := resolveRangeListEntry(exprEnabled, entry, def.Type, syms, scope, b.limits)
 		if err != nil {
 			errs = append(errs, ValidationError{Pointer: eptr, Message: err.Error()})
 			newList[j] = entry // placeholder; result discarded on error
@@ -411,18 +411,22 @@ func resolveRangeListDefinition(
 // list result must come with a nil rangeExpr to clear the old one and let
 // expandTaskParam (expand.go) take the list branch, per the design spec's
 // section 2.
+//
+// lim is the walk's operator-configured [ExprLimits], threaded from the
+// caller's [templateBudget] so this position is metered exactly as the
+// checker's own checkParameterSpaceExpressions call for the same field is.
 func resolveRangeExprField(
-	exprEnabled bool, raw string, typ TaskParamType, syms expr.MapSymbols, scope fmtstring.Scope,
+	exprEnabled bool, raw string, typ TaskParamType, syms expr.MapSymbols, scope fmtstring.Scope, lim ExprLimits,
 ) (rangeExpr *string, rangeList []string, err error) {
 	if exprEnabled {
 		if body, ok := fmtstring.LoneRef(raw); ok {
 			// evalRangeExprField returns this function's own two-result shape
 			// directly, so there is nothing to adapt: exactly one of the two
 			// is non-nil either way.
-			return evalRangeExprField(body, typ, syms)
+			return evalRangeExprField(body, typ, syms, lim)
 		}
 
-		resolved, err := resolveFormatStringExpr(raw, syms, expr.TAny, submissionLimits()...)
+		resolved, err := resolveFormatStringExpr(raw, syms, expr.TAny, lim.evalOptions()...)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -471,9 +475,11 @@ func resolveRangeExprField(
 // rangeExprElemType(typ), so a checker accept and a resolver success are the
 // same coercion, not two independent judgment calls that happened to agree
 // before either side had a real target.
-func resolveRangeListEntry(exprEnabled bool, entry string, typ TaskParamType, syms expr.MapSymbols, scope fmtstring.Scope) (string, error) {
+func resolveRangeListEntry(
+	exprEnabled bool, entry string, typ TaskParamType, syms expr.MapSymbols, scope fmtstring.Scope, lim ExprLimits,
+) (string, error) {
 	if exprEnabled {
-		return resolveFormatStringExpr(entry, syms, rangeExprElemType(typ), submissionLimits()...)
+		return resolveFormatStringExpr(entry, syms, rangeExprElemType(typ), lim.evalOptions()...)
 	}
 	return fmtstring.Resolve(entry, scope)
 }
@@ -657,9 +663,9 @@ func errUnresolvedRangeValue(v expr.Value) error {
 // change here, only to record: the existing mechanism already produces the
 // spec-correct answer, reused rather than reimplemented.
 func evalRangeExprField(
-	body string, typ TaskParamType, syms expr.MapSymbols,
+	body string, typ TaskParamType, syms expr.MapSymbols, lim ExprLimits,
 ) (rangeText *string, rangeList []string, err error) {
-	v, err := expr.Eval(body, syms, rangeExprFieldType(typ), submissionLimits()...)
+	v, err := expr.Eval(body, syms, rangeExprFieldType(typ), lim.evalOptions()...)
 	if err != nil {
 		return nil, nil, err
 	}

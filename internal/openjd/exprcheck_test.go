@@ -885,14 +885,14 @@ func TestCheckTemplateExpressions_ArgsPositionUsesArgItemTarget(t *testing.T) {
 }
 
 // TestCheckTemplateExpressions_AppliesSubmissionLimits pins that the walk
-// applies submissionLimits (a much tighter budget than expr.Eval's own
+// applies ExprLimits.evalOptions (a much tighter budget than expr.Eval's own
 // execution-time defaults) end to end, not just when checkFormatString is
 // called directly with no opts.
 //
 // Each of the two budgets is pinned with a value chosen to sit on ONE side of
 // ONE limit only, so the two sub-tests cannot pass for the wrong reason --
 // an earlier revision of this test used 'a' * 3_000_000, which exceeds BOTH
-// submissionMemoryLimit and submissionOperationLimit at once and asserted
+// defaultSubmissionMemoryBytes and defaultSubmissionOperations at once and asserted
 // only on the operation-limit message; it happened to pass because the
 // operation charge (callShape's chargeResult, ceil(len/256) per section
 // 1.3.10 rule 3) runs BEFORE the memory charge (evalNode's ec.m.alloc, per
@@ -902,16 +902,16 @@ func TestCheckTemplateExpressions_ArgsPositionUsesArgItemTarget(t *testing.T) {
 //
 //   - "over memory, under operations": 'a' * 1,500,000 costs
 //     ceil(1,500,000/256) = 5,860 operations (well under
-//     submissionOperationLimit's 10,000) but allocates a 1,500,000-byte
-//     string (over submissionMemoryLimit's 1,000,000) -- and stays under
+//     defaultSubmissionOperations's 10,000) but allocates a 1,500,000-byte
+//     string (over defaultSubmissionMemoryBytes's 1,000,000) -- and stays under
 //     limits.go's fixed, unrelated maxStringBytes floor (10,000,000), so
 //     that hard cap cannot be what rejects it either.
 //   - "over operations, under memory": a comprehension iterating range(11,000)
 //     with a filter that is always false (`x > 999999`, impossible for any
 //     element range() produces) costs one operation per iteration plus the
-//     call itself -- 11,001 operations, over submissionOperationLimit -- but
+//     call itself -- 11,001 operations, over defaultSubmissionOperations -- but
 //     the filtered-out result list stays EMPTY, so live memory never
-//     approaches submissionMemoryLimit.
+//     approaches defaultSubmissionMemoryBytes.
 func TestCheckTemplateExpressions_AppliesSubmissionLimits(t *testing.T) {
 	newTmpl := func(arg string) *JobTemplate {
 		return &JobTemplate{
@@ -931,10 +931,10 @@ func TestCheckTemplateExpressions_AppliesSubmissionLimits(t *testing.T) {
 	t.Run("over memory limit, under operation limit", func(t *testing.T) {
 		errs := checkTemplateExpressions(newTmpl("{{ 'a' * 1500000 }}"), nil)
 		if len(errs) == 0 {
-			t.Fatal("a 1,500,000-byte literal repeat was accepted; submissionMemoryLimit must reject it")
+			t.Fatal("a 1,500,000-byte literal repeat was accepted; defaultSubmissionMemoryBytes must reject it")
 		}
 		if !strings.Contains(errs[0].Message, "memory limit exceeded") {
-			t.Errorf("want a memory-limit error (submissionMemoryLimit); got: %v", errs[0].Message)
+			t.Errorf("want a memory-limit error (defaultSubmissionMemoryBytes); got: %v", errs[0].Message)
 		}
 	})
 
@@ -944,10 +944,10 @@ func TestCheckTemplateExpressions_AppliesSubmissionLimits(t *testing.T) {
 		)
 		if len(errs) == 0 {
 			t.Fatal("an 11,001-operation, empty-result comprehension was accepted; " +
-				"submissionOperationLimit must reject it")
+				"defaultSubmissionOperations must reject it")
 		}
 		if !strings.Contains(errs[0].Message, "operation limit exceeded") {
-			t.Errorf("want an operation-limit error (submissionOperationLimit); got: %v", errs[0].Message)
+			t.Errorf("want an operation-limit error (defaultSubmissionOperations); got: %v", errs[0].Message)
 		}
 	})
 }

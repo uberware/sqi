@@ -311,13 +311,13 @@ func checkHostOnlyFunctions(e *expr.Expression, scope Scope, ptr string) Validat
 //
 // opts is forwarded verbatim to every Eval call. It is how a caller supplies
 // section 1.3.9/1.3.10 limits (expr.WithMemoryLimit, expr.WithOperationLimit);
-// checkTemplateExpressions's callers pass submissionLimits (below) --
+// checkTemplateExpressions's callers pass ExprLimits.evalOptions (below) --
 // deliberately tighter than expr.Eval's own execution-time defaults, because
 // this function runs at TEMPLATE VALIDATION time, reachable synchronously from
 // POST /api/v1/jobs once the EXPR extension is registered. Tests that call
 // checkFormatString directly pass no opts, which is fine: the package
 // defaults apply, and no committed test's expression does enough real work to
-// approach even submissionLimits' much tighter budget.
+// approach even ExprLimits.evalOptions' much tighter budget.
 func checkFormatString(
 	s, ptr string, scope Scope, syms expr.MapSymbols, target expr.Type, opts ...expr.Option,
 ) ValidationErrors {
@@ -419,10 +419,10 @@ func checkFormatString(
 //
 // let is the first construct in this checker that RETAINS values across
 // evaluations. Every other position goes through checkFormatString, which
-// discards each result -- which is why a per-Eval budget (submissionLimits,
+// discards each result -- which is why a per-Eval budget (ExprLimits.evalOptions,
 // below) was sufficient there. Here, syms[name] = v accumulates one live value
 // per binding in a table no per-Eval limit measures: each binding may
-// legitimately allocate just under submissionMemoryLimit and KEEP it, so N
+// legitimately allocate just under defaultSubmissionMemoryBytes and KEEP it, so N
 // bindings cost N budgets of live memory with nothing counting the sum.
 // Measured through the real Parse + ValidateWithOptions path before this
 // guard existed: 2,000 bindings of `a<i> = "x" * 900000` -- a 57 KB template
@@ -441,7 +441,7 @@ func checkFormatString(
 // opts is forwarded verbatim to every Eval call, exactly as
 // [checkFormatString]'s identically-named tail is: it is how a caller supplies
 // section 1.3.9/1.3.10 limits, and all three walk call sites pass
-// submissionLimits(). checkLetBindings used to hardcode submissionLimits()
+// ExprLimits.evalOptions(). checkLetBindings used to hardcode ExprLimits.evalOptions()
 // internally, which was behaviorally identical but a trap for sub-project E4,
 // which owns the specification's CONFIGURABLE limits: threading an
 // operator-supplied budget through checkTemplateExpressions reaches every
@@ -499,7 +499,7 @@ func checkLetBindings(
 
 // ─── submission-time limits ─────────────────────────────────────────────────
 
-// submissionOperationLimit and submissionMemoryLimit bound every submission-time
+// defaultSubmissionOperations and defaultSubmissionMemoryBytes bound every submission-time
 // evaluation (section 1.3.9/1.3.10) -- checkFormatString's and
 // checkLetBindings' alike -- tighter than expr.Eval's own execution-time
 // defaults
@@ -543,7 +543,7 @@ func checkLetBindings(
 //     Measured directly: `[Param.S.upper() for i in range(10)]` with a
 //     900,000-byte Param.S costs ~520us at phase 1 (nothing to touch, params
 //     is nil) versus ~23ms at phase 2 (roughly 40x) -- and correctly trips
-//     submissionMemoryLimit before completing ("1800128 bytes of live values
+//     defaultSubmissionMemoryBytes before completing ("1800128 bytes of live values
 //     exceeds the limit of 1000000"), because the doubled live string (the
 //     bound value plus its .upper() copy) alone exceeds the 1MB budget. A
 //     submitted parameter value large enough to threaten the budget is
@@ -553,7 +553,7 @@ func checkLetBindings(
 //     therefore the phase that can be genuinely EXPENSIVE per evaluation, not
 //     Phase 1 -- keep that in mind before assuming Phase 1's "cheap
 //     placeholder" reasoning extends to it.
-//   - submissionOperationLimit (10,000) leaves roughly two orders of
+//   - defaultSubmissionOperations (10,000) leaves roughly two orders of
 //     magnitude of headroom over any realistic submission-time expression --
 //     a handful of Param references, arithmetic, string formatting, or a
 //     comprehension over a small literal list (tens of elements) all land in
@@ -561,7 +561,7 @@ func checkLetBindings(
 //     pathological case above to ~119 loop iterations before it trips
 //     (10,000 / 84 operations-per-iteration), well under 20ms measured
 //     directly (see the report for Task 9's timings).
-//   - submissionMemoryLimit (1,000,000 bytes = 1MB) is similarly generous for
+//   - defaultSubmissionMemoryBytes (1,000,000 bytes = 1MB) is similarly generous for
 //     real template text (a job name, command, or args entry is realistically
 //     well under a few KB) while bounding any single large literal
 //     allocation far below limits.go's fixed, non-configurable maxStringBytes
@@ -569,7 +569,7 @@ func checkLetBindings(
 //     first, before it can allocate anywhere close to that floor. The same
 //     budget also catches a large CONCRETE parameter value at phase 2, per
 //     the measurement above -- one limit, enforced identically at both
-//     phases because both go through the same checkFormatString/submissionLimits
+//     phases because both go through the same checkFormatString/ExprLimits.evalOptions
 //     call.
 //
 // A template whose expressions need more than this to type-check against
@@ -577,43 +577,40 @@ func checkLetBindings(
 // (phase 2) was already relying on computation heavy enough to be a
 // submission-time liability; rejecting it here is the intended outcome, not
 // a false positive.
+// SINCE E4d THESE TWO ARE DEFAULTS, NOT THE LIMIT ITSELF. The value actually
+// enforced comes from [ExprLimits] (exprlimits.go), threaded in from
+// internal/config through [ValidateOptions.ExprLimits] /
+// [SubmitterOptions.ExprLimits] and carried to every consumption point by the
+// walk's own [templateBudget]. Everything above still describes why the
+// DEFAULT is what it is -- and, because internal/config's floors and ceilings
+// were sized around these numbers, why an operator may move them only within
+// one order of magnitude (operations) or not above
+// internal/openjd/expr's fixed maxStringBytes (memory).
 const (
-	submissionOperationLimit int64 = 10_000
-	submissionMemoryLimit    int64 = 1_000_000
+	defaultSubmissionOperations  int64 = 10_000
+	defaultSubmissionMemoryBytes int64 = 1_000_000
 )
-
-// submissionLimits builds the expr.Option slice every checkTemplateExpressions
-// call site passes to checkFormatString and to checkLetBindings, through the
-// identical opts tail both take. A function (not a package-level slice) so
-// each call gets its own slice header -- cheap, and avoids any question of the
-// underlying array being mutated by a caller.
-func submissionLimits() []expr.Option {
-	return []expr.Option{
-		expr.WithOperationLimit(submissionOperationLimit),
-		expr.WithMemoryLimit(submissionMemoryLimit),
-	}
-}
 
 // ─── template-wide budget ───────────────────────────────────────────────────
 
-// maxTemplateExprPositions and maxTemplateExprRetainedBytes are the two
+// defaultTemplatePositions and defaultTemplateRetainedBytes are the two
 // dimensions of the per-CALL budget checkTemplateExpressions enforces across
 // its own walk -- design spec §3, §3.1 ("EXPR E4c -- The template-wide
 // cumulative budget"). Both are cumulative across the WHOLE walk, not
-// per-position: submissionOperationLimit/submissionMemoryLimit (above) bound
+// per-position: defaultSubmissionOperations/defaultSubmissionMemoryBytes (above) bound
 // what ONE expression may cost; these two bound what the ENTIRE template may
 // cost, closing the gap three separate sub-projects (E2, E3, E4b) each found
 // independently and each fixed only locally -- see the design spec's §1.1
 // table.
 //
 // A THIRD dimension, operations, is deliberately NOT tracked here. With a
-// position cap of maxTemplateExprPositions and the existing per-position
-// operation cap (submissionOperationLimit, above), the cumulative operation
-// ceiling is bounded at maxTemplateExprPositions * submissionOperationLimit
+// position cap of defaultTemplatePositions and the existing per-position
+// operation cap (defaultSubmissionOperations, above), the cumulative operation
+// ceiling is bounded at defaultTemplatePositions * defaultSubmissionOperations
 // (10,000 x 10,000 = 10^8) -- no operation counter needs to cross into
 // internal/openjd. State this plainly rather than implying a precise
 // operation accounting that does not exist: the derived ceiling is only as
-// tight as maxTemplateExprPositions is chosen, and it is an upper BOUND, not
+// tight as defaultTemplatePositions is chosen, and it is an upper BOUND, not
 // a measurement -- nothing here counts a single operation.
 //
 // THAT DERIVATION WAS FALSE BY A FACTOR OF A THOUSAND until fix round 2
@@ -624,7 +621,7 @@ func submissionLimits() []expr.Option {
 // only THEN reported 10,000,001 operations against a limit of 10,000. The
 // per-position cap did not bound the work; limits.go's fixed maxElements
 // floor did, three orders of magnitude higher, putting the real ceiling at
-// maxTemplateExprPositions x maxElements ~= 10^11. meter.reserve now refuses
+// defaultTemplatePositions x maxElements ~= 10^11. meter.reserve now refuses
 // such an operation on its ARITHMETIC count before allocating, which is what
 // makes the multiplication above an actual bound rather than a hope. An
 // EARLIER revision of this comment claimed the ceiling held "BY
@@ -634,14 +631,14 @@ func submissionLimits() []expr.Option {
 // WHAT THE OPERATION CEILING STILL DOES NOT BOUND is WALL TIME, because an
 // operation's cost is not uniform: section 1.3.10 rule 3 prices 256 bytes of
 // string work at ONE operation, so a regex or a case mapping over a ~900 KB
-// string (the largest submissionMemoryLimit allows to be live) spends ~3,500
+// string (the largest defaultSubmissionMemoryBytes allows to be live) spends ~3,500
 // operations and ~50 ms, four orders of magnitude more wall time per
 // operation than scalar arithmetic. See the measured figures on
-// maxTemplateExprPositions below. Bounding THAT needs a template-wide
+// defaultTemplatePositions below. Bounding THAT needs a template-wide
 // operation budget sized in wall time, which is sub-project E4d's
 // operator-configuration question, not this constant's.
 const (
-	// maxTemplateExprPositions caps the number of format-string/let-binding
+	// defaultTemplatePositions caps the number of format-string/let-binding
 	// positions ONE call to checkTemplateExpressions may check -- one unit
 	// per checkFormatString call and one per let: binding actually attempted
 	// (letPositions, below, mirrors checkLetBindings' own maxLetBindings
@@ -658,7 +655,7 @@ const (
 	// REJECTED side -- a comment whose own example straddles the cap is not
 	// a justification.
 	//
-	// THE CROSSOVER: maxTemplateExprPositions / maxSteps = 100 positions
+	// THE CROSSOVER: defaultTemplatePositions / maxSteps = 100 positions
 	// available per step, on average, before a template is rejected purely
 	// on count. There is no cap on Action.Args, EmbeddedFiles, or
 	// Environment.Variables in this package (checked directly; none
@@ -775,7 +772,7 @@ const (
 	// with them the multi-gigabyte heap -- while the WALL-CLOCK worst case
 	// remains roughly 9.5 minutes, because it is set by op-cheap, byte-heavy
 	// work: a regex or a case mapping over the ~900 KB string
-	// submissionMemoryLimit allows to be live spends ~3,500 of the 10,000
+	// defaultSubmissionMemoryBytes allows to be live spends ~3,500 of the 10,000
 	// permitted operations and ~50 ms of CPU. Every per-Eval budget is
 	// respected throughout.
 	//
@@ -807,9 +804,9 @@ const (
 	// restore the relation -- see the paragraph above on why it was raised.
 	// TestTemplateBudget_WorkerCapIsNotTighter (exprcheck_budget_test.go)
 	// fails the build if the two ever drift apart again.
-	maxTemplateExprPositions int64 = 10_000
+	defaultTemplatePositions int64 = 10_000
 
-	// maxTemplateExprRetainedBytes caps the cumulative section 1.3.9 size
+	// defaultTemplateRetainedBytes caps the cumulative section 1.3.9 size
 	// (expr.SizeOf) of every value EVERY let: block in the template adds to
 	// the symbol table it lands in -- summed across the WHOLE call, not
 	// reset per block or per step. Every other position discards its result
@@ -839,7 +836,7 @@ const (
 	// let: block, AFTER checkLetBindings finishes evaluating it (the
 	// before/after-delta or stepLetSymbols-diff technique the call sites
 	// use), not per binding WITHIN it. A single block can therefore
-	// transiently retain up to maxLetBindings x submissionMemoryLimit =
+	// transiently retain up to maxLetBindings x defaultSubmissionMemoryBytes =
 	// 50 x 1,000,000 = 50,000,000 bytes (50 MB) before this counter ever
 	// sees it and rejects -- the true single-block ceiling this budget
 	// enforces, not 10 MB. It IS still bounded, and the template as a whole
@@ -856,11 +853,11 @@ const (
 	// many such blocks in sequence is still charged for their sum, and is
 	// still rejected once that sum crosses the limit, exactly as a template
 	// that held all of it live simultaneously would be.
-	maxTemplateExprRetainedBytes int64 = 10_000_000
+	defaultTemplateRetainedBytes int64 = 10_000_000
 )
 
-// templateBudget is one phase's allowance against maxTemplateExprPositions
-// and maxTemplateExprRetainedBytes. checkTemplateExpressions allocates a
+// templateBudget is one phase's allowance against defaultTemplatePositions
+// and defaultTemplateRetainedBytes. checkTemplateExpressions allocates a
 // FRESH templateBudget at the top of every call -- see that function -- so
 // phase 1 (ValidateWithOptions, params == nil) and phase 2
 // (checkExpressionsAtSubmit, boundParams concrete) each get their own
@@ -874,13 +871,27 @@ const (
 // further work on ok() or on a charge call's own return value so the walk
 // stops doing real work (parsing, evaluating) once the budget is spent, not
 // merely stops reporting once it is spent.
+// SINCE E4d the budget also CARRIES the four operator-configured limits
+// ([ExprLimits], exprlimits.go) for the walk it belongs to. It is the natural
+// carrier because it is already threaded to every point that needs one: the
+// two per-walk dimensions are its own counters, and `b` is in scope at every
+// call site that used to call the package-level ExprLimits.evalOptions() -- see
+// [ExprLimits.evalOptions], which replaced it. limits is normalized by
+// [newTemplateBudget] and is never the zero value on a live budget.
 type templateBudget struct {
 	positions int64
 	retained  int64
+	limits    ExprLimits
 	err       *ValidationError
 }
 
-func newTemplateBudget() *templateBudget { return &templateBudget{} }
+// newTemplateBudget returns a fresh budget bounded by lim, with every unset
+// field of lim replaced by its default ([ExprLimits.orDefaults]) -- so
+// newTemplateBudget(ExprLimits{}) is exactly the allowance this package
+// enforced before E4d made the four numbers configurable.
+func newTemplateBudget(lim ExprLimits) *templateBudget {
+	return &templateBudget{limits: lim.orDefaults()}
+}
 
 // templateBudgetOrFresh returns budget[0] when the caller supplied one
 // (EXPR sub-project E4c's Task 4: a shared budget threaded in from outside,
@@ -902,11 +913,21 @@ func newTemplateBudget() *templateBudget { return &templateBudget{} }
 // expected) is treated the same as "no budget supplied": a nil budget must
 // never reach chargePositions/chargeRetainedBytes, both of which write
 // through the pointer unconditionally.
+//
+// The FRESH budget it manufactures carries DEFAULT limits, not configured
+// ones: this function has no access to operator configuration, and by E4d's
+// design the budget is the only thing that carries it. A caller that wants
+// configured limits must therefore supply a budget -- which every production
+// path does (validate.go's ValidateWithOptions and submit.go's
+// prepareTemplate both build one from their own options). The remaining
+// no-budget callers are this package's unit tests and any direct caller of
+// [ResolveParameterSpaceParams] outside the submit pipeline, for whom the
+// pre-E4d defaults are exactly the right answer.
 func templateBudgetOrFresh(budget []*templateBudget) *templateBudget {
 	if len(budget) > 0 && budget[0] != nil {
 		return budget[0]
 	}
-	return newTemplateBudget()
+	return newTemplateBudget(ExprLimits{})
 }
 
 // ok reports whether the budget has not yet been exhausted.
@@ -922,13 +943,13 @@ func (b *templateBudget) chargePositions(n int64, ptr string) bool {
 		return false
 	}
 	b.positions += n
-	if b.positions > maxTemplateExprPositions {
+	if b.positions > b.limits.TemplatePositions {
 		b.err = &ValidationError{
 			Pointer: ptr,
 			Message: fmt.Sprintf(
 				"template-wide expression budget exceeded: at most %d expression positions may be "+
 					"checked in one validation pass (reached %d at %s)",
-				maxTemplateExprPositions, b.positions, ptr,
+				b.limits.TemplatePositions, b.positions, ptr,
 			),
 		}
 		return false
@@ -950,13 +971,13 @@ func (b *templateBudget) chargeRetainedBytes(n int64, ptr string) bool {
 		return true
 	}
 	b.retained += n
-	if b.retained > maxTemplateExprRetainedBytes {
+	if b.retained > b.limits.TemplateRetainedBytes {
 		b.err = &ValidationError{
 			Pointer: ptr,
 			Message: fmt.Sprintf(
 				"template-wide expression budget exceeded: let bindings may retain at most %d bytes "+
 					"across the whole template (reached %d at %s)",
-				maxTemplateExprRetainedBytes, b.retained, ptr,
+				b.limits.TemplateRetainedBytes, b.retained, ptr,
 			),
 		}
 		return false
@@ -1092,7 +1113,7 @@ func checkTemplateExpressions(tmpl *JobTemplate, params map[string]string, budge
 	if b.chargePositions(1, "/name") {
 		errs = append(errs, checkFormatString(
 			tmpl.Name, "/name", ScopeJob, symbolsFor(tmpl, nil, nil, ScopeJob, params), TargetString,
-			submissionLimits()...,
+			b.limits.evalOptions()...,
 		)...)
 	}
 
@@ -1132,13 +1153,13 @@ func checkStepExpressions(b *templateBudget, tmpl *JobTemplate, s StepTemplate, 
 	base := fmt.Sprintf("/steps/%d", idx)
 
 	// stepLetSymbols runs unconditionally, regardless of b -- it is bounded
-	// on its own (maxLetBindings bindings, each under submissionMemoryLimit,
+	// on its own (maxLetBindings bindings, each under defaultSubmissionMemoryBytes,
 	// via checkLetBindings), so it is never itself the expensive part of a
 	// step. b is charged with the position/byte cost AFTER it runs: stepLet
 	// is already exactly the diff stepLetSymbols computed (its own doc
 	// comment), so templateExprRetainedBytes(stepLet) is the net bytes this
 	// block added with no before/after subtraction needed.
-	stepLet, letErrs := stepLetSymbols(tmpl, &s, params, base)
+	stepLet, letErrs := stepLetSymbols(tmpl, &s, params, base, b.limits)
 	errs = append(errs, letErrs...)
 	b.chargePositions(letPositions(len(s.Let)), base+"/let")
 	b.chargeRetainedBytes(templateExprRetainedBytes(stepLet), base+"/let")
@@ -1159,7 +1180,7 @@ func checkStepExpressions(b *templateBudget, tmpl *JobTemplate, s StepTemplate, 
 		// delta of the WHOLE table's retained bytes is exactly this block's
 		// own net contribution, with the baseline canceling out.
 		before := templateExprRetainedBytes(syms)
-		errs = append(errs, checkLetBindings(s.Script.Let, base+"/script/let", ScopeStepScript, syms, submissionLimits()...)...)
+		errs = append(errs, checkLetBindings(s.Script.Let, base+"/script/let", ScopeStepScript, syms, b.limits.evalOptions()...)...)
 		b.chargePositions(letPositions(len(s.Script.Let)), base+"/script/let")
 		b.chargeRetainedBytes(templateExprRetainedBytes(syms)-before, base+"/script/let")
 
@@ -1260,8 +1281,12 @@ func checkStepExpressions(b *templateBudget, tmpl *JobTemplate, s StepTemplate, 
 // unknown symbol "base" -- a symbol the checker had just certified. One
 // function means the two tables cannot drift again without the compiler
 // noticing.
+//
+// lim is the walk's operator-configured [ExprLimits]; both callers pass their
+// budget's own (b.limits), which is what keeps this shared helper metered
+// identically to every other position in the same walk.
 func stepLetSymbols(
-	tmpl *JobTemplate, s *StepTemplate, params map[string]string, base string,
+	tmpl *JobTemplate, s *StepTemplate, params map[string]string, base string, lim ExprLimits,
 ) (expr.MapSymbols, ValidationErrors) {
 	stepLet := expr.MapSymbols{}
 	if s == nil {
@@ -1273,7 +1298,7 @@ func stepLetSymbols(
 	for k := range stepTemplateSyms {
 		preLetKeys[k] = struct{}{}
 	}
-	errs := checkLetBindings(s.Let, base+"/let", ScopeStepTemplate, stepTemplateSyms, submissionLimits()...)
+	errs := checkLetBindings(s.Let, base+"/let", ScopeStepTemplate, stepTemplateSyms, lim.evalOptions()...)
 	for k, v := range stepTemplateSyms {
 		if _, existed := preLetKeys[k]; !existed {
 			stepLet[k] = v
@@ -1364,7 +1389,7 @@ func checkEnvironmentExpressions(
 				break
 			}
 			errs = append(errs, checkFormatString(
-				e.Variables[k], varPtr, scope, baseSyms, TargetString, submissionLimits()...,
+				e.Variables[k], varPtr, scope, baseSyms, TargetString, b.limits.evalOptions()...,
 			)...)
 		}
 
@@ -1393,7 +1418,7 @@ func checkEnvironmentExpressions(
 			// diff, and checkLetBindings can only ADD keys, so the baseline
 			// cancels out of the subtraction.
 			before := templateExprRetainedBytes(scriptSyms)
-			errs = append(errs, checkLetBindings(e.Script.Let, ptr+"/script/let", scope, scriptSyms, submissionLimits()...)...)
+			errs = append(errs, checkLetBindings(e.Script.Let, ptr+"/script/let", scope, scriptSyms, b.limits.evalOptions()...)...)
 			b.chargePositions(letPositions(len(e.Script.Let)), ptr+"/script/let")
 			b.chargeRetainedBytes(templateExprRetainedBytes(scriptSyms)-before, ptr+"/script/let")
 		}
@@ -1435,7 +1460,7 @@ func checkScriptRefExpressions(
 		}
 		errs = append(errs, checkFormatString(
 			f.Data, ptr, scope, syms, TargetString,
-			submissionLimits()...,
+			b.limits.evalOptions()...,
 		)...)
 	}
 	return errs
@@ -1481,7 +1506,7 @@ func checkActionExpressions(b *templateBudget, a Action, ptr string, scope Scope
 	cmdPtr := ptr + "/command"
 	if b.chargePositions(1, cmdPtr) {
 		errs = append(errs, checkFormatString(
-			a.Command, cmdPtr, scope, syms, TargetString, submissionLimits()...,
+			a.Command, cmdPtr, scope, syms, TargetString, b.limits.evalOptions()...,
 		)...)
 	}
 	for i, arg := range a.Args {
@@ -1493,14 +1518,14 @@ func checkActionExpressions(b *templateBudget, a Action, ptr string, scope Scope
 			break
 		}
 		errs = append(errs, checkFormatString(
-			arg, argPtr, scope, syms, TargetArgItem, submissionLimits()...,
+			arg, argPtr, scope, syms, TargetArgItem, b.limits.evalOptions()...,
 		)...)
 	}
 	if a.TimeoutSet && b.ok() {
 		timeoutPtr := ptr + "/timeout"
 		if b.chargePositions(1, timeoutPtr) {
 			errs = append(errs, checkFormatString(
-				strconv.Itoa(a.TimeoutSeconds), timeoutPtr, scope, syms, TargetInt, submissionLimits()...,
+				strconv.Itoa(a.TimeoutSeconds), timeoutPtr, scope, syms, TargetInt, b.limits.evalOptions()...,
 			)...)
 		}
 	}
@@ -1540,7 +1565,7 @@ func checkHostRequirementAmount(b *templateBudget, a AmountRequirement, amtPtr s
 		minPtr := amtPtr + "/min"
 		if b.chargePositions(1, minPtr) {
 			errs = append(errs, checkFormatString(
-				*a.Min, minPtr, ScopeJob, syms, TargetString, submissionLimits()...,
+				*a.Min, minPtr, ScopeJob, syms, TargetString, b.limits.evalOptions()...,
 			)...)
 		}
 	}
@@ -1548,7 +1573,7 @@ func checkHostRequirementAmount(b *templateBudget, a AmountRequirement, amtPtr s
 		maxPtr := amtPtr + "/max"
 		if b.chargePositions(1, maxPtr) {
 			errs = append(errs, checkFormatString(
-				*a.Max, maxPtr, ScopeJob, syms, TargetString, submissionLimits()...,
+				*a.Max, maxPtr, ScopeJob, syms, TargetString, b.limits.evalOptions()...,
 			)...)
 		}
 	}
@@ -1566,7 +1591,7 @@ func checkHostRequirementAttribute(b *templateBudget, a AttributeRequirement, at
 		p := fmt.Sprintf("%s/anyOf/%d", attrPtr, k)
 		if b.chargePositions(1, p) {
 			errs = append(errs, checkFormatString(
-				v, p, ScopeJob, syms, TargetString, submissionLimits()...,
+				v, p, ScopeJob, syms, TargetString, b.limits.evalOptions()...,
 			)...)
 		}
 	}
@@ -1577,7 +1602,7 @@ func checkHostRequirementAttribute(b *templateBudget, a AttributeRequirement, at
 		p := fmt.Sprintf("%s/allOf/%d", attrPtr, k)
 		if b.chargePositions(1, p) {
 			errs = append(errs, checkFormatString(
-				v, p, ScopeJob, syms, TargetString, submissionLimits()...,
+				v, p, ScopeJob, syms, TargetString, b.limits.evalOptions()...,
 			)...)
 		}
 	}
@@ -1635,7 +1660,7 @@ func checkParameterSpaceExpressions(b *templateBudget, ps StepParameterSpace, ba
 			}
 			errs = append(errs, checkFormatString(
 				v, p, ScopeJob, syms, elemType,
-				submissionLimits()...,
+				b.limits.evalOptions()...,
 			)...)
 		}
 		if tp.RangeExpr != nil && b.ok() {
@@ -1643,7 +1668,7 @@ func checkParameterSpaceExpressions(b *templateBudget, ps StepParameterSpace, ba
 			if b.chargePositions(1, p) {
 				errs = append(errs, checkFormatString(
 					*tp.RangeExpr, p, ScopeJob, syms, rangeExprFieldType(tp.Type),
-					submissionLimits()...,
+					b.limits.evalOptions()...,
 				)...)
 			}
 		}

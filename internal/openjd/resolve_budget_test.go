@@ -48,8 +48,8 @@ package openjd
 // MUTATION-TESTING TRAP, carried forward from exprcheck_budget_test.go's own
 // note: the correct way to mutation-test any bound in this file is to
 // NEUTER THE CHECK inside templateBudget.chargePositions/chargeRetainedBytes
-// (exprcheck.go), NOT to raise maxTemplateExprPositions/
-// maxTemplateExprRetainedBytes -- several tests below size their own
+// (exprcheck.go), NOT to raise defaultTemplatePositions/
+// defaultTemplateRetainedBytes -- several tests below size their own
 // construction from those live constants, and raising them makes the
 // construction try to allocate on the order of the raised value rather than
 // failing fast.
@@ -112,7 +112,7 @@ func singleStepParamSpaceTemplate(ps *StepParameterSpace, let []string) *JobTemp
 // ExpandParameterSpace beyond it) completely unbounded.
 //
 // Mutation target: commenting out chargePositions' cap check (or raising
-// maxTemplateExprPositions past this construction's size) must make this
+// defaultTemplatePositions past this construction's size) must make this
 // test start accepting.
 func TestResolveParameterSpaceParams_TemplateWideBudget_PositionsDimension(t *testing.T) {
 	const numDefs = maxTaskParameterDefinitions // 16
@@ -149,14 +149,14 @@ func TestResolveParameterSpaceParams_TemplateWideBudget_PositionsDimension(t *te
 	for _, e := range errs {
 		if strings.Contains(e.Message, "template-wide expression budget exceeded") &&
 			strings.Contains(e.Message, "expression positions") &&
-			strings.Contains(e.Message, strconv.FormatInt(maxTemplateExprPositions, 10)) {
+			strings.Contains(e.Message, strconv.FormatInt(defaultTemplatePositions, 10)) {
 			found = true
 			break
 		}
 	}
 	if !found {
 		t.Errorf("want an error naming the positions dimension and its %d-position limit; got %v",
-			maxTemplateExprPositions, errs)
+			defaultTemplatePositions, errs)
 	}
 }
 
@@ -170,7 +170,7 @@ func TestResolveParameterSpaceParams_TemplateWideBudget_PositionsDimension(t *te
 //
 // 12 bindings x 900,064 bytes (expr.SizeOf: a 64-byte header plus a
 // 900,000-byte string) = 10,800,768 bytes, over the budget; each binding's
-// own Eval (900,000 bytes) stays comfortably under submissionMemoryLimit
+// own Eval (900,000 bytes) stays comfortably under defaultSubmissionMemoryBytes
 // (1,000,000 bytes) and the block's own count (12) stays comfortably under
 // maxLetBindings (50), so neither of THOSE per-binding/per-block bounds is
 // what rejects this construction.
@@ -192,7 +192,7 @@ func TestResolveParameterSpaceParams_TemplateWideBudget_RetainedBytesDimension(t
 		t.Fatalf("%d lets of ~%d bytes each (~%d bytes total), over the %d-byte template-wide "+
 			"retained-bytes budget even though the block's own count and each binding's own size are "+
 			"both individually compliant, must be rejected",
-			bindingCount, bytesPerBinding+64, bindingCount*(bytesPerBinding+64), maxTemplateExprRetainedBytes)
+			bindingCount, bytesPerBinding+64, bindingCount*(bytesPerBinding+64), defaultTemplateRetainedBytes)
 	}
 	if resolved != nil {
 		t.Fatalf("resolver reported errors but returned a non-nil space: %+v", resolved)
@@ -202,7 +202,7 @@ func TestResolveParameterSpaceParams_TemplateWideBudget_RetainedBytesDimension(t
 	for _, e := range errs {
 		if strings.Contains(e.Message, "template-wide expression budget exceeded") &&
 			strings.Contains(e.Message, "let bindings may retain") &&
-			strings.Contains(e.Message, strconv.FormatInt(maxTemplateExprRetainedBytes, 10)) {
+			strings.Contains(e.Message, strconv.FormatInt(defaultTemplateRetainedBytes, 10)) {
 			found = true
 			if strings.Contains(e.Message, "expression positions") {
 				t.Errorf("the retained-bytes error must not also read like a positions error: %q", e.Message)
@@ -211,7 +211,7 @@ func TestResolveParameterSpaceParams_TemplateWideBudget_RetainedBytesDimension(t
 	}
 	if !found {
 		t.Errorf("want an error naming the retained-bytes dimension and its %d-byte limit; got %v",
-			maxTemplateExprRetainedBytes, errs)
+			defaultTemplateRetainedBytes, errs)
 	}
 }
 
@@ -222,7 +222,7 @@ func TestResolveParameterSpaceParams_TemplateWideBudget_RetainedBytesDimension(t
 // pre-Task-4 caller's shape): a template sized just under the position cap
 // must be accepted on every independent call.
 func TestResolveParameterSpaceParams_TemplateWideBudget_FreshPerCall(t *testing.T) {
-	n := int(maxTemplateExprPositions) - 10 // comfortably under the cap
+	n := int(defaultTemplatePositions) - 10 // comfortably under the cap
 	ps := &StepParameterSpace{TaskParameterDefinitions: []TaskParamDefinition{{
 		Name: "P", Type: TaskParamTypeString, RangeList: manyRangeEntries(n),
 	}}}
@@ -248,7 +248,7 @@ func TestResolveParameterSpaceParams_TemplateWideBudget_FreshPerCall(t *testing.
 // first place; if it silently succeeded that would itself be evidence the
 // exprEnabled gate had failed open.
 func TestResolveParameterSpaceParams_TemplateWideBudget_BaseSpecUnaffected(t *testing.T) {
-	n := int(maxTemplateExprPositions) + 50
+	n := int(defaultTemplatePositions) + 50
 	entries := make([]string, n)
 	for i := range entries {
 		entries[i] = fmt.Sprintf("Value%d", i) // a valid BASE-SPEC dotted identifier, not an expression
@@ -287,7 +287,7 @@ func TestResolveParameterSpaceParams_TemplateWideBudget_BaseSpecUnaffected(t *te
 //
 // The construction -- 6 task-parameter definitions x 1,000 trivial RangeList
 // entries, one step -- is sized so EACH walk, run alone, comfortably fits
-// under maxTemplateExprPositions (10,000): the checker's own phase-2 walk
+// under defaultTemplatePositions (10,000): the checker's own phase-2 walk
 // charges ~6,001 positions (6,000 range entries plus the job name), and the
 // resolver's walk charges ~6,000 (the same 6,000 range entries, re-walked --
 // EXPR sub-project E4b's own finding that these positions are evaluated
@@ -335,8 +335,8 @@ func TestPhase2Budget_CheckerAndResolverHaveIndependentBudgets(t *testing.T) {
 	})
 
 	t.Run("both accept when each has its OWN budget, exactly as Submit wires them", func(t *testing.T) {
-		checkerBudget := newTemplateBudget()
-		resolverBudget := newTemplateBudget()
+		checkerBudget := newTemplateBudget(ExprLimits{})
+		resolverBudget := newTemplateBudget(ExprLimits{})
 
 		if err := checkExpressionsAtSubmit(tmpl, nil, checkerBudget); err != nil {
 			t.Fatalf("the checker, spending against its OWN budget, must accept this construction: %v", err)
@@ -502,7 +502,7 @@ func TestSubmit_Phase1SpendDoesNotCarryIntoPhase2(t *testing.T) {
 
 	sub := NewSubmitter(st)
 
-	const numArgs = 9990 // 1 (name) + 1 (command) + numArgs stays just under maxTemplateExprPositions
+	const numArgs = 9990 // 1 (name) + 1 (command) + numArgs stays just under defaultTemplatePositions
 	var b strings.Builder
 	b.WriteString("specificationVersion: jobtemplate-2023-09\n")
 	b.WriteString("extensions:\n- EXPR\n")

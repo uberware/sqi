@@ -116,6 +116,15 @@ type Config struct {
 	// job submission.  Default true.  Mirror of config.OpenJDConfig.EnforceLimits.
 	EnforceOpenJDLimits bool
 
+	// OpenJDExprLimits bounds what one submitted template may spend inside the
+	// EXPR expression checker — EXPR sub-project E4d. Mirror of
+	// config.OpenJDConfig's four expr_* keys, mapped in cmd/sqi-server.
+	//
+	// The ZERO VALUE means "use openjd's defaults", so a Config built without
+	// it (every test in this repo that constructs a server.Config literal)
+	// behaves exactly as it did before this field existed.
+	OpenJDExprLimits openjd.ExprLimits
+
 	// PresetLibraryURL is the URL of the community preset library index JSON.
 	// When empty the /api/v1/presets endpoints respond 503.
 	// Mirror of config.PresetLibraryConfig.URL.
@@ -185,6 +194,7 @@ func DefaultConfig() Config {
 		DiscoveryEnabled:      true,
 		DiscoveryInstanceName: "sqi-server",
 		EnforceOpenJDLimits:   true,
+		OpenJDExprLimits:      openjd.DefaultExprLimits(),
 		SeedDefaults:          true,
 	}
 }
@@ -372,6 +382,7 @@ func (s *Server) start(ctx context.Context) error {
 		Store: s.store,
 		Submitter: openjd.NewSubmitterWithOptions(s.store, openjd.SubmitterOptions{
 			EnforceLimits: s.cfg.EnforceOpenJDLimits,
+			ExprLimits:    s.cfg.OpenJDExprLimits,
 		}),
 		Products:  product.NewCatalog(s.store),
 		Scheduler: s.sched,

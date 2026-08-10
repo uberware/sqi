@@ -433,6 +433,18 @@ type ValidateOptions struct {
 	// back on. See TestConformance_EXPRNotSupported's failure message, which
 	// carries H's checklist.
 	CheckEXPRExpressionsWhileUnsupported bool
+
+	// ExprLimits is the operator-configured bound on what this template's EXPR
+	// expression walk may spend — EXPR sub-project E4d. The zero value means
+	// "use the defaults", so every caller that has no operator configuration
+	// to offer (internal/product's ValidateTemplate, this package's own tests,
+	// the conformance harness) keeps the exact pre-E4d behavior by omitting
+	// it.
+	//
+	// It reaches every consumption point through the walk's own
+	// [templateBudget]; see [ExprLimits] for what each of the four bounds and
+	// for which of them an operator may move how far.
+	ExprLimits ExprLimits
 }
 
 // exprExpressionWalkEnabled reports whether [checkTemplateExpressions] should
@@ -667,7 +679,14 @@ func ValidateWithOptions(t *JobTemplate, opts ValidateOptions) ValidationErrors 
 	// extensions: key has to be consulted BEFORE parameterSpaceOverCaps, or
 	// the guard runs on templates whose walk is a no-op. See that function.
 	if exprWalkApplies(t, opts.CheckEXPRExpressionsWhileUnsupported) && !parameterSpaceOverCaps(t) {
-		errs = append(errs, checkTemplateExpressions(t, nil)...)
+		// A budget is passed EXPLICITLY (rather than letting
+		// checkTemplateExpressions allocate its own) for one reason: the
+		// budget is what carries opts.ExprLimits to every metered position.
+		// With no argument the walk would silently run at the defaults, which
+		// is precisely the "knob read but not used" failure E4d must not
+		// ship. Behaviourally this is identical to the old no-argument call
+		// whenever opts.ExprLimits is the zero value.
+		errs = append(errs, checkTemplateExpressions(t, nil, newTemplateBudget(opts.ExprLimits))...)
 	}
 
 	// ── quantitative limits (gated) ───────────────────────────────────────

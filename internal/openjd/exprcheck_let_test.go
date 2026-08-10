@@ -112,7 +112,7 @@ func TestCheckLetBindings_HostOnlyFunctionRejectedInNonHostScope(t *testing.T) {
 
 // overBudgetLetBinding costs ~10,953 operations (a 200-iteration
 // comprehension, each iteration building and upper-casing a 900,000-byte
-// string) -- comfortably over submissionOperationLimit (10,000) but a small
+// string) -- comfortably over defaultSubmissionOperations (10,000) but a small
 // fraction of expr.Eval's own 10,000,000-operation execution-time default. So
 // an assertion that it is REJECTED, naming the 10,000 budget, pins
 // specifically that the SUBMISSION limit fired: a generic "contains an error"
@@ -131,7 +131,7 @@ const overBudgetLetBinding = "a = max([len(('y' * 900000).upper()) for i in rang
 // checkLetBindings takes limits from the caller (an opts tail, matching
 // checkFormatString, so sub-project E4 has one place to thread its
 // configurable section 1.3.9/1.3.10 budget rather than two), a test that
-// passes submissionLimits() explicitly cannot detect a CALL SITE that stops
+// passes DefaultExprLimits().evalOptions() explicitly cannot detect a CALL SITE that stops
 // passing them.
 // TestCheckTemplateExpressions_LetCallSitesPassSubmissionLimits below is the
 // other half, and it covers all three call sites through the real walk.
@@ -139,7 +139,7 @@ func TestCheckLetBindings_OverBudgetEvalIsRejectedAtSubmissionLimit(t *testing.T
 	syms := expr.MapSymbols{}
 	errs := checkLetBindings(
 		[]string{overBudgetLetBinding},
-		"/steps/0/let", ScopeStepTemplate, syms, submissionLimits()...,
+		"/steps/0/let", ScopeStepTemplate, syms, DefaultExprLimits().evalOptions()...,
 	)
 	if len(errs) != 1 {
 		t.Fatalf("checkLetBindings = %v, want exactly one error", errs)
@@ -154,15 +154,15 @@ func TestCheckLetBindings_OverBudgetEvalIsRejectedAtSubmissionLimit(t *testing.T
 
 // TestCheckTemplateExpressions_LetCallSitesPassSubmissionLimits pins that
 // every one of the three let: positions the walk can reach is metered at
-// submissionLimits, by driving the real walk (checkTemplateExpressions) rather
+// ExprLimits.evalOptions, by driving the real walk (checkTemplateExpressions) rather
 // than the leaf.
 //
 // It exists because checkLetBindings now takes its limits from the caller. The
 // leaf test above proves the leaf honors what it is given; only this one
 // proves the walk gives it the tight budget at each site. Nothing else in the
 // repo can: no conformance fixture or oracle case is expensive enough to
-// distinguish submissionLimits from expr.Eval's defaults, so a call site that
-// dropped submissionLimits() would keep the whole suite green.
+// distinguish ExprLimits.evalOptions from expr.Eval's defaults, so a call site that
+// dropped DefaultExprLimits().evalOptions() would keep the whole suite green.
 func TestCheckTemplateExpressions_LetCallSitesPassSubmissionLimits(t *testing.T) {
 	const header = `specificationVersion: jobtemplate-2023-09
 extensions: [EXPR]
@@ -228,7 +228,7 @@ steps:
 			}
 			if !strings.Contains(errs[0].Message, "limit of 10000") {
 				t.Errorf("message %q does not name the submission operation limit (10000); "+
-					"this call site is not passing submissionLimits()", errs[0].Message)
+					"this call site is not passing DefaultExprLimits().evalOptions()", errs[0].Message)
 			}
 		})
 	}
@@ -965,7 +965,7 @@ steps:
 // guard existed sqi told the caller the block was invalid and then evaluated
 // every binding anyway. let is the only construct in this checker that RETAINS
 // a value per binding (syms[name] = v), so the per-Eval budget in
-// submissionLimits -- which counts one evaluation's live bytes and never sees
+// ExprLimits.evalOptions -- which counts one evaluation's live bytes and never sees
 // the table it is handed -- bounds each binding but not their sum. Measured
 // through the real Parse + ValidateWithOptions path with the guard removed:
 // 2,000 bindings of `a<i> = "x" * 900000`, a 57 KB template body, allocated
@@ -986,7 +986,7 @@ func TestCheckLetBindings_StopsAtMaxLetBindings(t *testing.T) {
 	}
 	lets := make([]string, over)
 	for i := range lets {
-		// Each binding retains ~900 KB, just under submissionMemoryLimit --
+		// Each binding retains ~900 KB, just under defaultSubmissionMemoryBytes --
 		// individually legal, collectively unbounded without the guard.
 		lets[i] = fmt.Sprintf("a%d = 'x' * 900000", i)
 	}

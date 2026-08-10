@@ -159,6 +159,7 @@ func runServe(cmd *cobra.Command, _ []string) error {
 		DiscoveryEnabled:      cfg.Discovery.Enabled,
 		DiscoveryInstanceName: cfg.Discovery.InstanceName,
 		EnforceOpenJDLimits:   cfg.OpenJD.EnforceLimits,
+		OpenJDExprLimits:      server.ExprLimitsFromConfig(cfg.OpenJD),
 		PresetLibraryURL:      cfg.PresetLibrary.URL,
 		AuthEnabled:           cfg.Auth.Enabled,
 		AuthValidateJobOwner:  cfg.Auth.ValidateJobOwner,
