@@ -14,7 +14,9 @@ package session
 
 import (
 	"context"
+	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"testing"
@@ -97,6 +99,74 @@ func TestManagerCreate_EnterEnvironment_EXPR_AssignmentBudgetFreshPerSession(t *
 		}
 		if s.ExprBudget() == nil {
 			t.Fatalf("session %d: ExprBudget() must never be nil for a session that exists", i)
+		}
+	}
+}
+
+// TestSession_ExitEnvironments_EXPR_AllOnExitRunAfterEntryNearsBudgetCap is
+// fix round 1's regression test for Critical 2: teardown must not silently
+// skip onExit actions merely because entry-time let bindings pushed the
+// assignment-wide budget close to (or, before the fix, at) its cap.
+//
+// Two environments each let-bind a 7 MB string at ENTRY -- Manager.Create
+// succeeds at ~14,000,128 bytes, comfortably under the 20,000,000-byte
+// assignment-wide cap (the exact construction the coordinator's review
+// verified). BEFORE this fix, resolveEnvAction re-evaluated the SAME two
+// let: blocks a SECOND time at EXIT against the SAME shared budget, pushing
+// the cumulative total to ~21,000,192 bytes -- over the cap -- so
+// ExitEnvironments' second (later-entered) environment failed to resolve,
+// logged a warning, and skipped its onExit entirely, with only the FIRST
+// environment's onExit having already run via the earlier iteration. Both
+// onExit actions must run now: each writes its own witness file, and this
+// test asserts both exist and ExitEnvironments returns no error.
+func TestSession_ExitEnvironments_EXPR_AllOnExitRunAfterEntryNearsBudgetCap(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("test uses POSIX shell commands")
+	}
+
+	witnessDir := t.TempDir()
+	dataDir := t.TempDir()
+	mgr := NewManager(filepath.Join(dataDir, "sessions"), false, isolation.NewFake(nil), workerconfig.IsolationConfig{}, nopLogger())
+
+	witness := func(name string) string { return filepath.Join(witnessDir, name) }
+
+	msg := &protocol.AssignMsg{
+		JobID: "j",
+		EXPR:  true,
+		Environments: []protocol.AssignEnvironment{
+			{
+				Name: "env-a",
+				Let:  []string{`a = "x" * 7000000`},
+				OnExit: &protocol.Action{
+					Command: "sh",
+					Args:    []string{"-c", "touch " + witness("env-a-exited")},
+				},
+			},
+			{
+				Name: "env-b",
+				Let:  []string{`b = "x" * 7000000`},
+				OnExit: &protocol.Action{
+					Command: "sh",
+					Args:    []string{"-c", "touch " + witness("env-b-exited")},
+				},
+			},
+		},
+	}
+
+	s, err := mgr.Create(context.Background(), msg)
+	if err != nil {
+		t.Fatalf("Create: %v -- two 7 MB entry-time let bindings (~14 MB total) must fit under the "+
+			"20 MB assignment-wide cap", err)
+	}
+
+	if err := s.ExitEnvironments(context.Background(), nopLogger()); err != nil {
+		t.Fatalf("ExitEnvironments: %v -- teardown must not fail merely because entry-time let "+
+			"bindings were close to the assignment-wide budget", err)
+	}
+
+	for _, name := range []string{"env-a-exited", "env-b-exited"} {
+		if _, err := os.Stat(witness(name)); err != nil {
+			t.Errorf("witness file %q does not exist: %v -- this environment's onExit did not run", name, err)
 		}
 	}
 }

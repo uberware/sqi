@@ -15,16 +15,29 @@ package fmtres
 // evaluation's own operation/memory cost (workerOperationLimit/
 // workerMemoryLimit, expres.go). Neither bounds the ASSIGNMENT as a whole:
 // one assignment resolves MANY tables (the task's own TaskSymbols table, plus
-// one EnvSymbols table per environment entered in the session -- a template
+// one EnvSymbols table per environment ENTERED in the session -- a template
 // may declare many job and step environments) and, within each table, MANY
 // positions (a command, every Args entry, every embedded file's data, every
 // variable value). Before this task nothing summed any of that: an
 // assignment with, say, 20 environments each individually under
-// workerLetRetainedLimit could retain up to 20x that in aggregate, and an
-// assignment with thousands of cheap positions across many actions paid no
-// aggregate cost at all -- both are the same class of gap E4c Task 3 closed
-// server-side (a per-position and per-table bound that does not sum across
-// the whole walk).
+// workerLetRetainedLimit could ALLOCATE up to 20x that in aggregate over the
+// course of entering them (see assignmentMaxRetainedBytes' own comment,
+// below, for why that is a claim about cumulative allocation across entry,
+// not simultaneously live memory), and an assignment with thousands of cheap
+// positions across many actions paid no aggregate cost at all -- both are
+// the same class of gap E4c Task 3 closed server-side (a per-position and
+// per-table bound that does not sum across the whole walk).
+//
+// Scoped to ENTRY only, not teardown: fix round 1 (post-implementation
+// review, Critical 2) found that charging teardown (session.go's
+// resolveEnvAction, reached via ExitEnvironments) against this same budget
+// let an assignment-wide cap intended to bound resource use become a
+// resource LEAK instead -- an exhausted budget at teardown time made
+// ExitEnvironments silently skip an environment's onExit entirely (it treats
+// a resolve error as a warning and continues), so license check-ins, daemon
+// shutdowns, and unmounts were dropped with only a log line. Teardown is
+// therefore exempt from this budget entirely; see resolveEnvAction's own doc
+// comment in session.go for the full reasoning.
 //
 // # Two dimensions, matching the server's split exactly
 //
@@ -103,18 +116,38 @@ const (
 	// assignment's phase-3 evaluation may resolve, summed across the task's
 	// own table and every environment's.
 	//
-	// WORKED CALCULATION, generous but plausible for a real session: one task
-	// action (command + 30 args + 10 embedded files = 41) plus up to 50
-	// environments entered in one session (no structural cap on environment
-	// count exists today -- see internal/openjd's own maxSteps comment for
-	// the analogous reasoning it applies to steps), each environment costing
-	// onEnter (command + 20 args = 21) + onExit (21) + 10 variables + 5
-	// embedded files = 57 positions. 50 x 57 = 2,850, plus the task's own 41,
-	// is 2,891. 5,000 gives that shape ~1.7x headroom while staying two
-	// orders of magnitude below a pathological construction (tens of
-	// thousands of cheap positions) that would cost real wall-clock time to
-	// resolve one at a time even under workerOperationLimit/
-	// workerMemoryLimit's own per-position bound.
+	// WORKED CALCULATION, generous but plausible for a real session, and
+	// CORRECTED by fix round 1 (post-implementation review): an EARLIER
+	// version of this comment counted onEnter AND onExit as 21 positions
+	// each (42/environment) -- wrong in TWO ways the fix round's other
+	// change (Critical 2, session.go's resolveEnvAction) resolved together.
+	// First, it undercounted: Variables is resolved at BOTH entry
+	// (resolveEnvEntry) and exit (resolveEnvAction) in the pre-fix code, so
+	// the real PRE-FIX charge was onEnter(21) + onExit(21) + variables
+	// charged TWICE (10 + 10) + files(5) = 67, not 57. Second, and mooting
+	// the first: fix round 1's Critical 2 made resolveEnvAction's teardown
+	// path NOT charge this budget AT ALL (see that method's own doc comment
+	// in session.go for why a budget that cannot avert the memory it is
+	// charging for must not be allowed to block cleanup) -- so onExit's
+	// command/args and the SECOND (exit-time) variables resolution now
+	// contribute ZERO positions, not 21 or 10.
+	//
+	// The CURRENT, accurate calculation: one task action (command + 30 args
+	// + 10 embedded files = 41, unaffected -- a task has no exit/teardown
+	// counterpart) plus up to 50 environments entered in one session (no
+	// structural cap on environment count exists today -- see
+	// internal/openjd's own maxSteps comment for the analogous reasoning it
+	// applies to steps), each environment costing ONLY its entry-side work:
+	// onEnter (command + 20 args = 21) + 10 variables (entry only) + 5
+	// embedded files = 36 positions. 50 x 36 = 1,800, plus the task's own 41,
+	// is 1,841. 5,000 gives that shape ~2.7x headroom while staying well
+	// below a pathological construction (tens of thousands of cheap
+	// positions) that would cost real wall-clock time to resolve one at a
+	// time even under workerOperationLimit/workerMemoryLimit's own
+	// per-position bound. The number itself (5,000) did not change from the
+	// original, wrong derivation -- only the arithmetic that justifies it
+	// did, and the corrected headroom is MORE generous than originally
+	// claimed, not less, so no re-tuning was needed.
 	assignmentMaxPositions int64 = 5_000
 
 	// assignmentMaxRetainedBytes caps the cumulative section 1.3.9 size of
@@ -130,20 +163,46 @@ const (
 	// MORE environments, each near its own 10 MB per-table ceiling, is now
 	// caught by THIS budget instead of accumulating unboundedly.
 	//
-	// THE CONCURRENCY ARGUMENT this number is chosen against, stated
-	// plainly (see this file's own package-level doc comment for the full
-	// account): worst-case worker-wide phase-3 memory is bounded by
-	// (concurrent task/session count) x assignmentMaxRetainedBytes, and
-	// concurrent task count is itself bounded by the host's CPU core count
-	// (the server never leases more simultaneous work than that). A 64-core
-	// worker's worst case is therefore ~64 x 20 MB = 1.28 GB -- large, but
-	// BOUNDED and PROPORTIONAL to a resource the operator already sized RAM
-	// against, not the unbounded-per-session accumulation that existed
-	// before this task. This is a real, standing tradeoff, not a proof of a
-	// tight global ceiling -- a genuine process-wide accounting is future
+	// THIS COUNTER MEASURES CUMULATIVE ALLOCATION ACROSS ONE SESSION'S
+	// ENTRY-TIME EVALUATION, NOT PEAK LIVE RETENTION AT ANY ONE INSTANT --
+	// corrected by fix round 1 (post-implementation review), which flagged
+	// an earlier revision of this comment for conflating the two. Each
+	// environment's phase-3 symbol table (EnvSymbols, built in
+	// resolveEnvEntry) is a LOCAL variable: it goes out of scope, and
+	// becomes eligible for GC, once that one environment's onEnter/
+	// Variables/embedded files finish resolving -- only the RESOLVED TEXT
+	// (a command string, a handful of variable values) survives into
+	// s.staticEnv and the returned action, not the let-bound VALUES that
+	// produced it. So "N environments could retain N x
+	// workerLetRetainedLimit" describes the SUM of everything charged
+	// across the session's entry phase, which is what this counter
+	// enforces -- it is NOT a claim that N tables' worth of bytes are ever
+	// simultaneously live in the process. This mirrors exprcheck.go's own
+	// maxTemplateExprRetainedBytes, which states the identical distinction
+	// for the server-side counter it is deliberately kept equal to in
+	// magnitude reasoning (see below): "measures CUMULATIVE ALLOCATION
+	// across the walk, not PEAK LIVE RETENTION at any one instant."
+	//
+	// THE CONCURRENCY ARGUMENT this number is chosen against, restated with
+	// that distinction now explicit (see this file's own package-level doc
+	// comment for the full account): worst-case worker-wide CUMULATIVE
+	// ALLOCATION THROUGHPUT from this mechanism, summed across every
+	// concurrently-creating session, is bounded by (concurrent session
+	// count) x assignmentMaxRetainedBytes, and concurrent session count is
+	// itself bounded by the host's CPU core count (the server never leases
+	// more simultaneous work than that). A 64-core worker's worst case is
+	// therefore ~64 x 20 MB = 1.28 GB of allocation activity across
+	// concurrently-creating sessions, NOT 1.28 GB of simultaneously live
+	// heap -- an operator reading this constant should size against
+	// allocation/GC pressure proportional to core count, not against a
+	// claimed live-memory footprint, which this mechanism does not measure
+	// and did not, before this task, bound at all (the gap this task
+	// closes is the unbounded per-session ACCUMULATION, not a claim about
+	// instantaneous RAM). This is a real, standing tradeoff, not a proof of
+	// a tight global ceiling -- a genuine process-wide accounting is future
 	// work (E4d, operator configuration, is the natural place for a
-	// process-wide knob alongside a per-assignment one), recorded here rather
-	// than silently accepted as solved.
+	// process-wide knob alongside a per-assignment one), recorded here
+	// rather than silently accepted as solved.
 	assignmentMaxRetainedBytes int64 = 20_000_000
 )
 

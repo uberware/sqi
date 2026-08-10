@@ -122,21 +122,38 @@ type SubmitResult struct {
 // wrapped as a *SubmitValidationError, matching Submit's existing contract.
 // Extracted from Submit to keep its cyclomatic complexity within bounds.
 //
-// submitBudget is EXPR sub-project E4c's Task 4 addition: the ONE
-// [templateBudget] this submission's whole phase-2 re-check spends
-// against -- allocated fresh here (a local variable, never a Submitter
-// field, exactly for the same "fresh per call" reason checkTemplateExpressions
-// itself allocates one per call; see templateBudget's own doc comment),
-// spent first by checkExpressionsAtSubmit below, and returned so Submit can
-// thread the SAME object into every step's ResolveParameterSpaceParams call
-// -- see that function's own doc comment for why the two must share one
-// allowance. It is nil whenever err != nil: a caller that gets an error has
+// resolverBudget is EXPR sub-project E4c's Task 4 addition, corrected by fix
+// round 1 (post-implementation review, Critical 1): it is the ONE
+// [templateBudget] every step's ResolveParameterSpaceParams call spends
+// against for this ONE submission -- allocated fresh here (a local variable,
+// never a Submitter field, exactly for the same "fresh per call" reason
+// checkTemplateExpressions itself allocates one per call; see templateBudget's
+// own doc comment) and returned so Submit can thread it through the step
+// loop.
+//
+// It is a SEPARATE object from the budget checkExpressionsAtSubmit spends
+// below (checkerBudget, a purely local variable never returned) --
+// deliberately NOT shared between the two, even though both walks run for
+// the same submission. Fix round 1 found the original design (one budget
+// shared by BOTH the checker's re-check and every step's resolver call) was
+// wrong: the resolver re-charges the EXACT SAME range positions and let
+// bytes checkTemplateExpressions already charged, in the SAME phase, so
+// sharing one allowance between them silently HALVED the effective cap for
+// those classes -- ValidateWithOptions (phase 1, its own independent budget)
+// would accept a template that Submit then rejected purely because phase 2's
+// two walks were drawing from one pool instead of two. Design spec §3.1
+// sanctions exactly two budgets per request (one per walk); this is that.
+// See TestSubmit_ValidateAcceptsMustNotRejectOnBudgetAlone
+// (resolve_budget_test.go) for the constructions that proved the bug and now
+// prove the fix.
+//
+// resolverBudget is nil whenever err != nil: a caller that gets an error has
 // nothing to do with the budget, and returning it only on success avoids
 // tempting a future caller into spending against a budget that already
 // reflects a failed, partial walk.
 func (s *Submitter) prepareTemplate(
 	ctx context.Context, rawTemplate string, format store.TemplateFormat, params map[string]string,
-) (tmpl *JobTemplate, boundParams map[string]string, submitBudget *templateBudget, err error) {
+) (tmpl *JobTemplate, boundParams map[string]string, resolverBudget *templateBudget, err error) {
 	// ── 1. Parse ──────────────────────────────────────────────────────────
 	parseFormat := FormatYAML
 	if format == store.TemplateFormatJSON {
@@ -176,12 +193,18 @@ func (s *Submitter) prepareTemplate(
 	// parameter space. Must run before ResolveParameterSpaceParams (called
 	// per step, in Submit's step loop) so that resolution never sees a
 	// template this check would have rejected.
-	submitBudget = newTemplateBudget()
-	if err := checkExpressionsAtSubmit(tmpl, boundParams, submitBudget); err != nil {
+	//
+	// checkerBudget is spent HERE and only here -- it is not returned, and
+	// resolverBudget (below) is a genuinely separate object; see this
+	// function's own doc comment (fix round 1, Critical 1) for why they must
+	// not be the same budget.
+	checkerBudget := newTemplateBudget()
+	if err := checkExpressionsAtSubmit(tmpl, boundParams, checkerBudget); err != nil {
 		return nil, nil, nil, err
 	}
 
-	return tmpl, boundParams, submitBudget, nil
+	resolverBudget = newTemplateBudget()
+	return tmpl, boundParams, resolverBudget, nil
 }
 
 // ── Submit ────────────────────────────────────────────────────────────────────
@@ -207,7 +230,7 @@ func (s *Submitter) Submit(
 	opts SubmitOptions,
 ) (*SubmitResult, error) {
 	// ── 1-2d. Parse, validate, bind parameters, re-check expressions ──────
-	tmpl, boundParams, submitBudget, err := s.prepareTemplate(ctx, rawTemplate, format, opts.Parameters)
+	tmpl, boundParams, resolverBudget, err := s.prepareTemplate(ctx, rawTemplate, format, opts.Parameters)
 	if err != nil {
 		return nil, err
 	}
@@ -273,7 +296,7 @@ func (s *Submitter) Submit(
 	// within bounds.
 	deriveBounds := tmpl.hasExtension("SQI_CHUNK_BOUNDS")
 	for i, stepTmpl := range tmpl.Steps {
-		steps, tasks, err := s.createStepWithTasks(ctx, tmpl, job, stepTmpl, i, boundParams, deriveBounds, blocked, now, submitBudget)
+		steps, tasks, err := s.createStepWithTasks(ctx, tmpl, job, stepTmpl, i, boundParams, deriveBounds, blocked, now, resolverBudget)
 		if err != nil {
 			return nil, err
 		}
@@ -331,7 +354,7 @@ func (s *Submitter) createStepWithTasks(
 	deriveBounds bool,
 	holdPending bool,
 	now time.Time,
-	submitBudget *templateBudget,
+	resolverBudget *templateBudget,
 ) (steps []store.Step, tasks []store.Task, err error) {
 	// Collect dependency names from the template.
 	dependsOn := make([]string, 0, len(stepTmpl.Dependencies))
@@ -373,7 +396,7 @@ func (s *Submitter) createStepWithTasks(
 	}
 
 	// ── Expand parameter space ──────────────────────────────────────────────
-	taskParamList, err := s.expandStepTaskParams(tmpl, stepTmpl, stepIdx, boundParams, deriveBounds, submitBudget)
+	taskParamList, err := s.expandStepTaskParams(tmpl, stepTmpl, stepIdx, boundParams, deriveBounds, resolverBudget)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -422,7 +445,7 @@ func (s *Submitter) expandStepTaskParams(
 	stepIdx int,
 	boundParams map[string]string,
 	deriveBounds bool,
-	submitBudget *templateBudget,
+	resolverBudget *templateBudget,
 ) ([]TaskParams, error) {
 	// Resolve {{Param.*}} / {{RawParam.*}} in the parameter space first. tmpl
 	// carries the EXPR declaration and the job-parameter definitions, and
@@ -431,11 +454,13 @@ func (s *Submitter) expandStepTaskParams(
 	// section 1.3.12 whole-field range expression against the same symbol
 	// table the checker used — see that function's own doc comment.
 	//
-	// submitBudget is threaded through so every step's resolver call in this
-	// ONE submission shares the SAME allowance checkExpressionsAtSubmit
-	// (prepareTemplate) already spent against -- EXPR sub-project E4c's Task
-	// 4; see ResolveParameterSpaceParams' own doc comment.
-	resolvedPS, resolveErrs := ResolveParameterSpaceParams(tmpl, &stepTmpl, stepTmpl.ParameterSpace, boundParams, submitBudget)
+	// resolverBudget is threaded through so every step's resolver call in this
+	// ONE submission shares ONE allowance with each OTHER -- not with
+	// checkExpressionsAtSubmit's own budget (prepareTemplate), which is a
+	// separate object; see ResolveParameterSpaceParams' own doc comment and
+	// prepareTemplate's (fix round 1, Critical 1) for why the two must not be
+	// the same budget.
+	resolvedPS, resolveErrs := ResolveParameterSpaceParams(tmpl, &stepTmpl, stepTmpl.ParameterSpace, boundParams, resolverBudget)
 	if len(resolveErrs) > 0 {
 		stepPrefix := fmt.Sprintf("/steps/%d", stepIdx)
 		for k := range resolveErrs {
@@ -498,14 +523,17 @@ func (s *Submitter) expandStepTaskParams(
 // TestCheckExpressionsAtSubmit_PhaseDistinction (submit_exprcheck_test.go)
 // for the direct-call proof, and this task's report for the full account.
 //
-// budget is EXPR sub-project E4c's Task 4 addition: prepareTemplate builds
-// ONE [templateBudget] per submission and passes it here so this call's
-// position/retained-byte spend is charged into the SAME budget Submit later
-// threads into every step's ResolveParameterSpaceParams call (resolve.go) --
-// see that function's own doc comment for why the two must share one
-// allowance rather than each getting its own. Test call sites that omit it
-// (as every pre-Task-4 test does) get a fresh, throwaway allowance instead --
-// see [templateBudgetOrFresh].
+// budget is EXPR sub-project E4c's Task 4 addition (its scope corrected by
+// fix round 1, Critical 1): prepareTemplate builds ONE [templateBudget] just
+// for this call (checkerBudget, a local variable, never returned or shared
+// with the resolver's own budget) and passes it here so this call's
+// position/retained-byte spend is charged against an allowance that is
+// SUBMISSION-scoped but ISOLATED from every step's ResolveParameterSpaceParams
+// call (resolve.go) -- see prepareTemplate's own doc comment for why the two
+// must NOT share one allowance: they charge the identical range positions and
+// let bytes, and sharing halves the effective cap for those classes. Test
+// call sites that omit it (as every pre-Task-4 test does) get a fresh,
+// throwaway allowance instead -- see [templateBudgetOrFresh].
 func checkExpressionsAtSubmit(tmpl *JobTemplate, boundParams map[string]string, budget ...*templateBudget) error {
 	if errs := checkTemplateExpressions(tmpl, boundParams, budget...); len(errs) > 0 {
 		return &SubmitValidationError{

@@ -138,19 +138,28 @@ type Session struct {
 	msg *protocol.AssignMsg
 
 	// exprBudget is EXPR sub-project E4c's Task 4 addition: the ONE
-	// [fmtres.AssignmentBudget] this whole assignment's phase-3 evaluation
-	// shares -- allocated once, here, in Manager.Create, BEFORE
+	// [fmtres.AssignmentBudget] this whole assignment's LIVE, entry-time
+	// phase-3 tables share -- allocated once, here, in Manager.Create, BEFORE
 	// enterEnvironments runs (so every environment table entered during
-	// session creation already shares it), and reused by every later
-	// resolveEnvAction call (onExit, via ExitEnvironments) and by the
-	// executor's own task-table resolution (internal/worker/executor's
-	// resolveAssignmentExpr, via [Session.ExprBudget]). One object per
-	// SESSION -- not per table, and not a worker-process-wide singleton --
-	// is what bounds an assignment's TOTAL phase-3 retained bytes and
-	// resolved positions across every table it builds; see
-	// fmtres.AssignmentBudget's own doc comment for the full account,
-	// including why per-assignment (rather than process-wide) is the
-	// deliberate scope and how worker concurrency factors into its size.
+	// session creation already shares it), and reused by the executor's own
+	// task-table resolution (internal/worker/executor's resolveAssignmentExpr,
+	// via [Session.ExprBudget]). One object per SESSION -- not per table, and
+	// not a worker-process-wide singleton -- is what bounds an assignment's
+	// TOTAL entry-time phase-3 retained bytes and resolved positions across
+	// every table it builds; see fmtres.AssignmentBudget's own doc comment
+	// for the full account, including why per-assignment (rather than
+	// process-wide) is the deliberate scope and how worker concurrency
+	// factors into its size.
+	//
+	// FIX ROUND 1 (Critical 2): resolveEnvAction's OWN calls (the teardown
+	// path, reached only via ExitEnvironments) deliberately do NOT charge
+	// this budget -- see that method's own doc comment for why a table that
+	// is rebuilt and immediately discarded at exit must not be charged a
+	// second time against a ledger that cannot avert the memory it would be
+	// charging for, and whose exhaustion would otherwise silently skip
+	// cleanup (ExitEnvironments treats a resolve error as a warning and
+	// continues past it).
+	//
 	// ALWAYS NON-NIL, for the same reason msg is: set in the same struct
 	// literal Create builds before returning.
 	exprBudget *fmtres.AssignmentBudget
@@ -221,10 +230,13 @@ func (s *Session) HasPathMappingRules() bool { return s.hasPathMap }
 
 // ExprBudget returns this assignment's shared [fmtres.AssignmentBudget] --
 // see the exprBudget field's own doc comment. Callers resolving this
-// session's task action (internal/worker/executor) or any of its
-// environment actions (this package's own enterOne/resolveEnvAction) pass
+// session's task action (internal/worker/executor) or an environment's
+// ENTRY-side actions (this package's own enterOne, via resolveEnvEntry) pass
 // this SAME object to every fmtres phase-3 call so the assignment's total
-// resolved-position and retained-byte spend is charged in one place.
+// LIVE resolved-position and retained-byte spend is charged in one place.
+// resolveEnvAction (the EXIT/teardown path, via ExitEnvironments)
+// deliberately does NOT use it -- see that method's own doc comment
+// (fix round 1, Critical 2).
 func (s *Session) ExprBudget() *fmtres.AssignmentBudget { return s.exprBudget }
 
 // WriteEmbeddedFiles materializes files into the session working directory.
@@ -961,6 +973,31 @@ func (s *Session) resolveEnvEntry(env protocol.AssignEnvironment) (*protocol.Act
 // It returns the resolved action copy (nil when action is nil) and the resolved
 // variable map (nil when vars is nil), or an error naming the offending
 // reference when any value cannot be resolved.
+//
+// FIX ROUND 1 (post-implementation review, Critical 2): this method's EXPR
+// path deliberately does NOT pass s.exprBudget to ApplyEnvLet/ResolveVarsExpr/
+// ResolveActionExpr, even though resolveEnvEntry's (entry-side) calls do.
+// resolveEnvAction is called ONLY from [Session.ExitEnvironments] (this
+// method's own doc comment above), which builds a FRESH table here and
+// re-evaluates the SAME environment's let: block a SECOND time -- so
+// charging it against the shared assignment budget double-counts bytes that
+// were already charged once at entry, for a table that no longer exists by
+// the time this one is built (the entry-time syms went out of scope when
+// resolveEnvEntry returned). Verified: two environments each let-binding
+// 7 MB enter successfully at 14 MB, under the 20 MB assignment cap; teardown
+// re-evaluating both blocks a second time would re-charge to ~21 MB and trip
+// the budget -- but ExitEnvironments (session.go) treats a resolve error as
+// a WARNING and continues, so an exhausted budget did not merely fail the
+// task, it silently SKIPPED every remaining environment's onExit (license
+// check-ins, daemon shutdowns, unmounts) with only a log line. A budget that
+// cannot avert the memory it is charging for -- the allocation happens
+// whether or not the charge is accepted -- must not be allowed to block
+// cleanup it cannot prevent the cost of. Per-table (workerLetRetainedLimit)
+// and per-Eval (workerOperationLimit/workerMemoryLimit) bounds still apply
+// to this exit-time table unconditionally; only the cross-table
+// ASSIGNMENT-WIDE ledger is exempted. See
+// TestSession_ExitEnvironments_EXPR_AllOnExitRunAfterEntryNearsBudgetCap
+// (session_expr_budget_test.go) for the regression test.
 func (s *Session) resolveEnvAction(env protocol.AssignEnvironment, action *protocol.Action, vars map[string]string) (*protocol.Action, map[string]string, error) {
 	if !s.msg.EXPR {
 		scope, err := s.envScope(env.EmbeddedFiles)
@@ -989,15 +1026,19 @@ func (s *Session) resolveEnvAction(env protocol.AssignEnvironment, action *proto
 	// Variables FIRST, before this environment's own let: block is bound —
 	// see [Session.resolveEnvEntry]'s identical comment and
 	// fmtres.ApplyEnvLet's doc comment for why the order is load-bearing.
-	resolvedVars, err := fmtres.ResolveVarsExpr(vars, syms, s.msg.PathMap, s.exprBudget)
+	//
+	// NO s.exprBudget on any of the three calls below -- see this method's
+	// own doc comment (fix round 1, Critical 2) for why teardown is exempt
+	// from the assignment-wide ledger.
+	resolvedVars, err := fmtres.ResolveVarsExpr(vars, syms, s.msg.PathMap)
 	if err != nil {
 		return nil, nil, err
 	}
 	// Exactly one call over this table — see fmtres.ApplyEnvLet's doc comment.
-	if err := fmtres.ApplyEnvLet(&env, syms, s.msg.PathMap, s.exprBudget); err != nil {
+	if err := fmtres.ApplyEnvLet(&env, syms, s.msg.PathMap); err != nil {
 		return nil, nil, fmt.Errorf("let bindings: %w", err)
 	}
-	resolvedAction, err := fmtres.ResolveActionExpr(action, syms, s.msg.PathMap, s.exprBudget)
+	resolvedAction, err := fmtres.ResolveActionExpr(action, syms, s.msg.PathMap)
 	if err != nil {
 		return nil, nil, err
 	}

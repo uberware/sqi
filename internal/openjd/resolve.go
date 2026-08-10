@@ -78,25 +78,38 @@ import (
 // budget (below) trips first, in which case the walk stops early -- see that
 // paragraph.
 //
-// budget is EXPR sub-project E4c's Task 4 addition: an optional
-// [templateBudget], shared with THE SAME SUBMISSION's checkTemplateExpressions
-// call (submit.go's prepareTemplate builds one and threads it through Submit's
-// step loop to every call this function makes for that one submission). Every
-// task-parameter range position this function resolves -- a RangeList entry,
-// a whole-field RangeExpr, and the step's own let: block -- is ALSO one of
-// checkTemplateExpressions' own positions (checkParameterSpaceExpressions,
-// exprcheck.go), so before this task NEITHER walk's per-call budget saw the
-// other's cost: a template that individually fit under checkTemplateExpressions'
-// cap and under a hypothetical resolver-only cap could still, when both walks
-// run back to back for the same submission (exactly what Submit does), spend
-// twice the position count neither budget alone would catch -- see
-// TestPhase2Budget_ResolverSharesCheckerBudget (resolve_budget_test.go) for
-// the construction that proves it, mirroring EXPR sub-project E4b's own
-// finding that these positions are now evaluated TWICE. Omitting budget (as
-// every pre-Task-4 caller does) gives this call its
-// own fresh, throwaway allowance -- see [templateBudgetOrFresh] -- which is
-// harmless: no legitimate single call comes close to either dimension's cap on
-// its own.
+// budget is EXPR sub-project E4c's Task 4 addition, corrected by fix round 1
+// (post-implementation review, Critical 1): an optional [templateBudget]
+// shared across EVERY STEP's ResolveParameterSpaceParams call for THE SAME
+// SUBMISSION (submit.go's prepareTemplate builds one -- resolverBudget -- and
+// Submit's step loop threads the same object into every step). It is
+// deliberately NOT the same object as checkExpressionsAtSubmit's own budget,
+// even though this function resolves the identical range positions and let
+// bytes checkTemplateExpressions already charged
+// (checkParameterSpaceExpressions, exprcheck.go) for the same submission:
+// fix round 1 found that sharing ONE budget between the two silently HALVED
+// the effective cap for those classes, so a template ValidateWithOptions
+// (phase 1) accepted could be rejected by Submit (phase 2) purely because two
+// walks were drawing from one pool -- exactly the "fail purely on
+// accumulated cost, with no way for the submitter to see why" failure mode
+// design spec §3.1 exists to prevent, one level down from where Task 3
+// closed it for phase 1 vs. phase 2. §3.1 sanctions two budgets per request;
+// this function's budget is the resolver's own. See
+// TestSubmit_ValidateAcceptsMustNotRejectOnBudgetAlone (resolve_budget_test.go)
+// for the constructions that proved the bug and now prove the fix, and
+// TestPhase2Budget_CheckerAndResolverHaveIndependentBudgets for the
+// unit-level version.
+//
+// Sharing IS still correct, and unchanged, ACROSS STEPS within one budget:
+// a many-step submission's cumulative resolver cost is bounded together,
+// exactly as a many-step template's cumulative checker cost already is
+// (design spec §3's "one budget per phase" reasoning, applied here to "one
+// budget per WALK per phase" instead of "one budget per phase" outright).
+//
+// Omitting budget (as every pre-Task-4 caller does) gives this call its own
+// fresh, throwaway allowance -- see [templateBudgetOrFresh] -- which is
+// harmless: no legitimate single call comes close to either dimension's cap
+// on its own.
 //
 // The budget is consulted, and charged, ONLY on the EXPR-enabled path: a
 // template that does not declare EXPR takes the exact base-spec substitution
@@ -108,6 +121,19 @@ func ResolveParameterSpaceParams(
 	budget ...*templateBudget,
 ) (*StepParameterSpace, ValidationErrors) {
 	if ps == nil {
+		// A step with no parameterSpace at all costs the resolver's ledger
+		// NOTHING -- not even step's own let: block, which normally gets
+		// charged just below (letPositions/templateExprRetainedBytes). This
+		// is the one documented exception to "every step's let is charged
+		// once here": the checker still charges it independently
+		// (checkStepExpressions, exprcheck.go, which runs regardless of
+		// whether the step declares a parameterSpace), so it is not a hole
+		// in what gets BOUNDED -- exprEnabled is never even computed for
+		// this early return, so a heavy let: block on a parameterSpace-less
+		// step is invisible to THIS budget specifically, while a trivial one
+		// on a step that DOES declare a parameterSpace still costs the whole
+		// block. Recorded here because it is asymmetric and easy to miss,
+		// not because it is unsafe.
 		return nil, nil
 	}
 
@@ -116,12 +142,12 @@ func ResolveParameterSpaceParams(
 
 	var errs ValidationErrors
 
-	// If a budget shared with this submission's checkTemplateExpressions call
-	// is ALREADY exhausted (by that call, or by an earlier step's own
-	// ResolveParameterSpaceParams call in the same submission), stop before
-	// doing any of this step's real work -- evaluating its own let: block
-	// still costs a real expr.Eval per binding, and there is nothing left to
-	// spend it on.
+	// If the resolver's OWN budget (shared across every step's call for this
+	// one submission -- NOT with checkExpressionsAtSubmit's; see this
+	// function's own doc comment, fix round 1) is ALREADY exhausted by an
+	// earlier step's call, stop before doing any of this step's real work --
+	// evaluating its own let: block still costs a real expr.Eval per
+	// binding, and there is nothing left to spend it on.
 	if exprEnabled && !b.ok() {
 		return nil, b.errs()
 	}
