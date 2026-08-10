@@ -174,6 +174,48 @@ openjd:
   # Type: bool   Env: SQI_OPENJD_ENFORCE_LIMITS   Flag: --openjd-enforce-limits
   enforce_limits: true
 
+  # ── EXPR expression limits ─────────────────────────────────────────────────
+  # These four bound what ONE submitted job template may spend inside the
+  # OpenJD expression-language checker. They matter because POST /api/v1/jobs
+  # accepts a template of up to 4 MiB and, with auth off (the default), accepts
+  # it anonymously.
+  #
+  # Read this before raising any of them:
+  #   * None of these bounds WALL CLOCK. An operation's real cost varies by
+  #     orders of magnitude between arithmetic and a regex over a large string,
+  #     so raising a limit lengthens the worst request your farm can be asked
+  #     to serve, roughly in proportion. There is no value of these settings
+  #     that makes a slow request impossible.
+  #   * expr_operation_limit and expr_template_positions MULTIPLY. The
+  #     cumulative operation ceiling for one request is their product; raising
+  #     both raises it twice over (at the maxima, 100x the default ceiling).
+  #   * expr_template_retained_bytes counts cumulative ALLOCATION, not peak
+  #     live retention. A template that never holds more than a few MB at once
+  #     is still charged the sum of every let: block, so sizing a host's RAM
+  #     against this number over-provisions, and sizing this number against an
+  #     observed RSS under-bounds it.
+  #
+  # An out-of-range value is a startup failure, not a clamp.
+
+  # Operations (specification section 1.3.10) one expression may spend.
+  # Type: int   Range: 1000-100000   Env: SQI_OPENJD_EXPR_OPERATION_LIMIT
+  expr_operation_limit: 10000
+
+  # Live bytes (specification section 1.3.9) one expression may hold.
+  # Type: int   Range: 4096-10000000   Env: SQI_OPENJD_EXPR_MEMORY_LIMIT
+  expr_memory_limit: 1000000
+
+  # Expression positions one template may contain, across the whole validation
+  # pass. NOTE: your workers' own per-assignment position cap must not be
+  # LOWER than this, or a job this server accepts will fail on every task at
+  # run time instead of being rejected at submit.
+  # Type: int   Range: 256-100000   Env: SQI_OPENJD_EXPR_TEMPLATE_POSITIONS
+  expr_template_positions: 10000
+
+  # Bytes a template's let: bindings may cumulatively retain in one pass.
+  # Type: int   Range: 65536-100000000   Env: SQI_OPENJD_EXPR_TEMPLATE_RETAINED_BYTES
+  expr_template_retained_bytes: 10000000
+
 # ── Diagnostics (in-memory log ring buffer) ──────────────────────────────────
 diagnostics:
   # Maximum diagnostic-log records retained per component (the server plus each

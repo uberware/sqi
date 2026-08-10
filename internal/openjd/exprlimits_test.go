@@ -3,6 +3,7 @@
 package openjd
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -10,7 +11,11 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/google/uuid"
 	"gopkg.in/yaml.v3"
+
+	"github.com/uberware/sqi/internal/store"
+	"github.com/uberware/sqi/internal/store/fake"
 )
 
 // EXPR sub-project E4d, Task 1: the four numbers that bound the server-side
@@ -113,9 +118,24 @@ func TestExprLimits_OrDefaults(t *testing.T) {
 //
 // The presets do not declare EXPR -- the extension is still StatusInProgress
 // -- so the walk is forced on by adding the declaration to the parsed
-// template. That measures the right thing anyway: the position count is a
-// property of the template's SHAPE (how many format-string-bearing fields it
-// has), not of which extension it declares.
+// template. That measures the right thing anyway: the cost is a property of
+// the template's SHAPE (how many format-string-bearing fields it has and what
+// they evaluate), not of which extension it declares.
+//
+// HOW IT ASSERTS, and why it changed in fix round 1: the first version looked
+// for the string "template-wide expression budget exceeded", which only two of
+// the four dimensions ever produce. A per-EVALUATION trip under the floors
+// reports "operation limit exceeded" / "memory limit exceeded" instead and was
+// silently ignored, so MinExprSubmissionOperations and
+// MinExprSubmissionMemoryBytes were asserted by nothing -- a future preset
+// gaining a comprehension or a case mapping would have been rejected by sqi's
+// own floor with this test green. It now matches NO message at all. It
+// compares the error set produced under the floors against the error set
+// produced under the DEFAULTS: any error the floors introduce is a floor-induced
+// rejection, whichever dimension caused it. The presets do produce a couple of
+// unrelated errors of their own (a TASK_CHUNKING range_expr property access
+// that EXPR's checker does not accept), which is exactly why the baseline is a
+// diff rather than "expect zero errors".
 func TestExprLimits_FloorsAcceptReferencePresets(t *testing.T) {
 	paths, err := filepath.Glob(filepath.Join("..", "..", "presets", "sqi", "*.yaml"))
 	if err != nil {
@@ -132,33 +152,122 @@ func TestExprLimits_FloorsAcceptReferencePresets(t *testing.T) {
 		TemplateRetainedBytes: MinExprTemplateRetainedBytes,
 	}
 
+	// One entry per configurable dimension, so adding a fifth knob without
+	// extending this table is a compile-time-visible omission rather than a
+	// silent coverage hole.
+	dims := []struct {
+		name  string
+		floor int64
+		set   func(*ExprLimits, int64)
+	}{
+		{"SubmissionOperations", floors.SubmissionOperations, func(l *ExprLimits, v int64) { l.SubmissionOperations = v }},
+		{"SubmissionMemoryBytes", floors.SubmissionMemoryBytes, func(l *ExprLimits, v int64) { l.SubmissionMemoryBytes = v }},
+		{"TemplatePositions", floors.TemplatePositions, func(l *ExprLimits, v int64) { l.TemplatePositions = v }},
+		{"TemplateRetainedBytes", floors.TemplateRetainedBytes, func(l *ExprLimits, v int64) { l.TemplateRetainedBytes = v }},
+	}
+
 	for _, p := range paths {
 		t.Run(filepath.Base(p), func(t *testing.T) {
-			tmpl := parsePresetTemplate(t, p)
-			tmpl.Extensions = append(tmpl.Extensions, "EXPR")
+			load := func() *JobTemplate {
+				tmpl := parsePresetTemplate(t, p)
+				tmpl.Extensions = append(tmpl.Extensions, "EXPR")
+				return tmpl
+			}
+			walk := func(lim ExprLimits) (map[string]bool, *templateBudget) {
+				b := newTemplateBudget(lim)
+				return errorSet(checkTemplateExpressions(load(), nil, b)), b
+			}
 
-			b := newTemplateBudget(floors)
-			errs := checkTemplateExpressions(tmpl, nil, b)
+			// The baseline: whatever this preset reports with nothing
+			// tightened. Its content is deliberately not asserted -- only that
+			// the floors add nothing to it.
+			baseline, defaultBudget := walk(DefaultExprLimits())
 
-			for _, e := range errs {
-				if strings.Contains(e.Message, "template-wide expression budget exceeded") {
-					t.Fatalf("the configurable FLOOR rejects one of sqi's own reference presets: %v", e)
+			t.Run("all four floors together", func(t *testing.T) {
+				got, _ := walk(floors)
+				for msg := range got {
+					if !baseline[msg] {
+						t.Errorf("the configurable FLOORS reject one of sqi's own reference presets: %s", msg)
+					}
 				}
-			}
-			// Recorded, not asserted against a magic number: this is the
-			// measurement the floors were sized from, and printing it makes a
-			// future preset that grows an order of magnitude visible in the
-			// test log rather than only in a failure.
-			t.Logf("positions=%d (floor %d), retained bytes=%d (floor %d)",
-				b.positions, floors.TemplatePositions, b.retained, floors.TemplateRetainedBytes)
+			})
 
-			if b.positions > floors.TemplatePositions/4 {
-				t.Errorf("this preset costs %d positions against a floor of %d -- less than 4x headroom. "+
-					"Raise MinExprTemplatePositions rather than shipping a floor a real template can approach.",
-					b.positions, floors.TemplatePositions)
+			// Per dimension, the smallest value at which this preset still
+			// produces exactly its baseline errors -- the preset's real cost in
+			// that dimension. Reported alongside the floor so a preset that
+			// grows toward one is visible in the log, and asserted with 4x
+			// headroom so it fails BEFORE a preset can reach the floor.
+			for _, d := range dims {
+				t.Run(d.name, func(t *testing.T) {
+					need := minimalLimit(baseline, load, d.set, d.floor*4)
+					if need > d.floor {
+						t.Fatalf("this preset needs %s >= %d, above the configurable floor of %d: "+
+							"the floor rejects sqi's own template", d.name, need, d.floor)
+					}
+					t.Logf("needs %d, floor %d (%.0fx headroom)", need, d.floor, float64(d.floor)/float64(max64(need, 1)))
+					if need*4 > d.floor {
+						t.Errorf("this preset needs %s >= %d against a floor of %d -- less than 4x headroom. "+
+							"Raise Min%s%s rather than shipping a floor a real template can approach.",
+							d.name, need, d.floor, "Expr", d.name)
+					}
+				})
 			}
+
+			t.Logf("budget cost at the defaults: positions=%d, retained bytes=%d",
+				defaultBudget.positions, defaultBudget.retained)
 		})
 	}
+}
+
+// minimalLimit binary-searches the smallest value of ONE dimension at which
+// the walk still produces exactly baseline -- i.e. the template's real cost in
+// that dimension. The search is valid because every one of these limits is
+// monotone: raising it can only remove errors, never add them. hi is an upper
+// bound the caller believes is sufficient; if even hi is not, hi+1 is returned
+// so the caller reports "needs more than the floor" rather than looping.
+func minimalLimit(baseline map[string]bool, load func() *JobTemplate, set func(*ExprLimits, int64), hi int64) int64 {
+	ok := func(v int64) bool {
+		lim := DefaultExprLimits()
+		set(&lim, v)
+		got := errorSet(checkTemplateExpressions(load(), nil, newTemplateBudget(lim)))
+		if len(got) != len(baseline) {
+			return false
+		}
+		for msg := range got {
+			if !baseline[msg] {
+				return false
+			}
+		}
+		return true
+	}
+	if !ok(hi) {
+		return hi + 1
+	}
+	lo := int64(1)
+	for lo < hi {
+		mid := lo + (hi-lo)/2
+		if ok(mid) {
+			hi = mid
+		} else {
+			lo = mid + 1
+		}
+	}
+	return lo
+}
+
+func errorSet(errs ValidationErrors) map[string]bool {
+	out := make(map[string]bool, len(errs))
+	for _, e := range errs {
+		out[e.Pointer+": "+e.Message] = true
+	}
+	return out
+}
+
+func max64(a, b int64) int64 {
+	if a > b {
+		return a
+	}
+	return b
 }
 
 // parsePresetTemplate reads one presets/sqi definition file and returns its
@@ -471,37 +580,184 @@ func TestValidateWithOptions_ExprLimitsReachTheWalk(t *testing.T) {
 	}
 }
 
-// TestSubmitterOptions_ExprLimitsReachBothBudgets covers the submit pipeline's
-// carrier.
+// TestSubmit_ExprLimitsAreEnforcedThroughTheSubmitter is the submit
+// pipeline's carrier test, end to end through the real [Submitter.Submit].
 //
-// It is STRUCTURAL rather than behavioral, and the reason is worth stating
-// plainly rather than hiding: the submit pipeline's EXPR path is unreachable
-// today. Submit passes CheckEXPRExpressionsWhileUnsupported=false, and while
-// EXPR is StatusInProgress validateExtensions rejects every EXPR-declaring
-// template before the walk would run -- so there is no submission whose
-// verdict this knob can change yet, and a test claiming otherwise would be
-// testing nothing. What CAN be pinned now is that the value an operator
-// configured is the value both of prepareTemplate's budgets and the phase-1
-// ValidateOptions are built from. Sub-project H, which flips the status,
-// should replace this with a real end-to-end submission.
-func TestSubmitterOptions_ExprLimitsReachBothBudgets(t *testing.T) {
-	want := ExprLimits{
-		SubmissionOperations:  1_234,
-		SubmissionMemoryBytes: 5_678,
-		TemplatePositions:     910,
-		TemplateRetainedBytes: 111_213,
+// FIX ROUND 1 REPLACED A MUCH WEAKER TEST HERE, and the mistake is worth
+// recording because this very file's sibling (submit_exprcheck_test.go) warns
+// against it in its own header. The first version asserted only that
+// NewSubmitterWithOptions stored the struct and that newTemplateBudget
+// normalized it; it never called prepareTemplate, so reverting either budget
+// in submit.go to newTemplateBudget(ExprLimits{}) -- or dropping ExprLimits
+// from the phase-1 ValidateOptions -- left it green. The report described it
+// as pinning something it did not pin. It also claimed a real end-to-end test
+// was impossible while EXPR is StatusInProgress; that is false, and
+// TestSubmit_PhaseDistinction_ThroughRealSubmit had already shown the way --
+// temporarily flip the registry entry to StatusSupported, exactly as it does.
+//
+// The three wiring points and what covers each:
+//
+//   - PHASE 1 (submit.go's ValidateOptions.ExprLimits): the "rejects at phase 1,
+//     before parameter binding" sub-test. The plain "positions tightened"
+//     sub-test does NOT pin it -- phase 2 re-walks the identical positions
+//     under the identical limits and masks it -- so the isolating sub-test
+//     submits with a required parameter missing, putting the binding failure
+//     between phase 1 and phase 2.
+//   - PHASE 2 (prepareTemplate's checkerBudget): the "memory at phase 2 only"
+//     sub-test. It uses the same phase-distinction mechanism as
+//     TestSubmit_PhaseDistinction_ThroughRealSubmit: an unresolved Param
+//     placeholder costs almost nothing at phase 1, while the same expression
+//     over a CONCRETE 300,000-byte value costs 300,064 live bytes at phase 2
+//     (measured -- the meter does not hold the bound value and the .upper()
+//     copy simultaneously, so it is not the doubling an earlier draft of this
+//     comment assumed). Tightened to 200,000, phase 1 passes and phase 2
+//     rejects -- so only the phase-2 budget can be what refused it.
+//   - The RESOLVER budget (prepareTemplate's resolverBudget): the
+//     "resolver budget carries them" sub-test, which calls prepareTemplate
+//     directly and inspects the budget it returns. This one is NOT observable
+//     through Submit's verdict, and that is a property of the design rather
+//     than a gap in the test: the checker walks the same range positions
+//     first, under the same limits, so anything that would exhaust the
+//     resolver's allowance exhausts the checker's one walk earlier. Inspecting
+//     the returned budget is the strongest available observation, and it does
+//     fail if submit.go stops passing s.exprLimits there.
+func TestSubmit_ExprLimitsAreEnforcedThroughTheSubmitter(t *testing.T) {
+	prevEXPR := registry["EXPR"]
+	supported := prevEXPR
+	supported.Status = StatusSupported
+	registry["EXPR"] = supported
+	t.Cleanup(func() { registry["EXPR"] = prevEXPR })
+
+	const tmplYAML = `
+specificationVersion: jobtemplate-2023-09
+extensions:
+- EXPR
+name: ExprLimitsJob
+parameterDefinitions:
+- name: S
+  type: STRING
+steps:
+- name: Step1
+  script:
+    actions:
+      onRun:
+        command: echo
+        args:
+        - "{{ Param.S.upper() }}"
+`
+	// /name + /command + one args entry.
+	const positionCost = 3
+	bigParam := map[string]string{"S": strings.Repeat("a", 300_000)}
+
+	submitWith := func(t *testing.T, lim ExprLimits, params map[string]string) error {
+		t.Helper()
+		ctx := context.Background()
+		st := fake.New()
+		farm, err := st.CreateFarm(ctx, store.Farm{ID: uuid.NewString(), Name: "expr-limits-farm"})
+		if err != nil {
+			t.Fatalf("CreateFarm: %v", err)
+		}
+		queue, err := st.CreateQueue(ctx, store.Queue{ID: uuid.NewString(), FarmID: farm.ID, Name: "expr-limits-queue"})
+		if err != nil {
+			t.Fatalf("CreateQueue: %v", err)
+		}
+		sub := NewSubmitterWithOptions(st, SubmitterOptions{EnforceLimits: true, ExprLimits: lim})
+		_, err = sub.Submit(ctx, tmplYAML, store.TemplateFormatYAML, SubmitOptions{
+			FarmID: farm.ID, QueueID: queue.ID, Parameters: params,
+		})
+		return err
 	}
-	s := NewSubmitterWithOptions(nil, SubmitterOptions{EnforceLimits: true, ExprLimits: want})
-	if s.exprLimits != want {
-		t.Fatalf("Submitter.exprLimits = %+v, want %+v", s.exprLimits, want)
-	}
-	if got := newTemplateBudget(s.exprLimits).limits; got != want {
-		t.Fatalf("a budget built from the Submitter's limits = %+v, want %+v", got, want)
-	}
-	// NewSubmitter (no options) must still be the pre-E4d default.
-	if got := newTemplateBudget(NewSubmitter(nil).exprLimits).limits; got != DefaultExprLimits() {
-		t.Fatalf("NewSubmitter must default to %+v, got %+v", DefaultExprLimits(), got)
-	}
+
+	t.Run("defaults accept it", func(t *testing.T) {
+		if err := submitWith(t, ExprLimits{}, bigParam); err != nil {
+			t.Fatalf("the pre-E4d defaults must accept this submission: %v", err)
+		}
+	})
+
+	t.Run("positions tightened below the template's cost", func(t *testing.T) {
+		err := submitWith(t, ExprLimits{TemplatePositions: positionCost - 1}, bigParam)
+		if err == nil {
+			t.Fatal("TemplatePositions below the template's cost must make Submit fail")
+		}
+		if !strings.Contains(err.Error(), "template-wide expression budget exceeded") {
+			t.Fatalf("want the budget's own error; got %v", err)
+		}
+	})
+
+	// PHASE 1 IN ISOLATION. The sub-test above does not actually pin phase 1:
+	// phase 2 re-walks the identical positions under the identical limits, so
+	// dropping ExprLimits from prepareTemplate's ValidateOptions leaves it
+	// green (verified by mutation). The distinguisher is ORDER -- prepareTemplate
+	// runs phase 1, then storage-location checks, then PARAMETER BINDING, then
+	// phase 2. Submitting with no value for a required parameter makes binding
+	// fail, so phase 2 is never reached: if the rejection still names the
+	// budget, only phase 1 can have produced it, and if phase 1 is running at
+	// the defaults the error is the binding failure instead.
+	t.Run("positions tightened rejects at phase 1, before parameter binding", func(t *testing.T) {
+		err := submitWith(t, ExprLimits{TemplatePositions: positionCost - 1}, nil)
+		if err == nil {
+			t.Fatal("expected a rejection")
+		}
+		if !strings.Contains(err.Error(), "template-wide expression budget exceeded") {
+			t.Fatalf("phase 1 must reject on the CONFIGURED budget before parameter binding is attempted; got %v", err)
+		}
+		if strings.Contains(err.Error(), "parameter binding") {
+			t.Fatalf("the walk reached parameter binding, so phase 1 was not running under the configured limit: %v", err)
+		}
+	})
+
+	t.Run("memory tightened trips at phase 2 only", func(t *testing.T) {
+		lim := ExprLimits{SubmissionMemoryBytes: 200_000}
+
+		// Phase 1 sees Param.S as an unresolved placeholder and costs almost
+		// nothing, so a submission with a SMALL value must still succeed --
+		// this is what proves the rejection below comes from phase 2 and not
+		// from the phase-1 walk under the same tightened limit.
+		if err := submitWith(t, lim, map[string]string{"S": "small"}); err != nil {
+			t.Fatalf("a small parameter must still pass under the tightened limit: %v", err)
+		}
+
+		err := submitWith(t, lim, bigParam)
+		if err == nil {
+			t.Fatal("a 300,000-byte parameter must exceed a 200,000-byte per-evaluation limit at phase 2")
+		}
+		if !strings.Contains(err.Error(), "bytes of live values") ||
+			!strings.Contains(err.Error(), "200000") {
+			t.Fatalf("want the memory limit's own error naming the CONFIGURED 200000; got %v", err)
+		}
+	})
+
+	t.Run("the resolver budget carries them", func(t *testing.T) {
+		want := ExprLimits{
+			SubmissionOperations:  1_234,
+			SubmissionMemoryBytes: 5_678_000,
+			TemplatePositions:     910,
+			TemplateRetainedBytes: 111_213,
+		}
+		sub := NewSubmitterWithOptions(fake.New(), SubmitterOptions{EnforceLimits: true, ExprLimits: want})
+		_, _, resolverBudget, err := sub.prepareTemplate(
+			context.Background(), tmplYAML, store.TemplateFormatYAML, map[string]string{"S": "small"},
+		)
+		if err != nil {
+			t.Fatalf("prepareTemplate: %v", err)
+		}
+		if resolverBudget.limits != want {
+			t.Fatalf("prepareTemplate's resolver budget carries %+v, want %+v", resolverBudget.limits, want)
+		}
+	})
+
+	t.Run("NewSubmitter defaults", func(t *testing.T) {
+		sub := NewSubmitter(fake.New())
+		_, _, resolverBudget, err := sub.prepareTemplate(
+			context.Background(), tmplYAML, store.TemplateFormatYAML, map[string]string{"S": "small"},
+		)
+		if err != nil {
+			t.Fatalf("prepareTemplate: %v", err)
+		}
+		if resolverBudget.limits != DefaultExprLimits() {
+			t.Fatalf("NewSubmitter must default to %+v, got %+v", DefaultExprLimits(), resolverBudget.limits)
+		}
+	})
 }
 
 // ── helpers ─────────────────────────────────────────────────────────────────

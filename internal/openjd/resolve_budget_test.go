@@ -45,14 +45,16 @@ package openjd
 // renamed from their original forms rather than deleted, since their "each
 // walk alone accepts" subtests remain useful evidence.
 //
-// MUTATION-TESTING TRAP, carried forward from exprcheck_budget_test.go's own
-// note: the correct way to mutation-test any bound in this file is to
-// NEUTER THE CHECK inside templateBudget.chargePositions/chargeRetainedBytes
-// (exprcheck.go), NOT to raise defaultTemplatePositions/
-// defaultTemplateRetainedBytes -- several tests below size their own
-// construction from those live constants, and raising them makes the
-// construction try to allocate on the order of the raised value rather than
-// failing fast.
+// HOW TO MUTATION-TEST THESE, carried forward from exprcheck_budget_test.go's
+// own note and updated for E4d: set the KNOB -- pass
+// newTemplateBudget(ExprLimits{TemplatePositions: n}) (or
+// TemplateRetainedBytes) as the threaded budget -- or neuter the comparison
+// inside templateBudget.chargePositions/chargeRetainedBytes (exprcheck.go,
+// now reading b.limits.TemplatePositions). Do NOT raise
+// defaultTemplatePositions/defaultTemplateRetainedBytes: several tests below
+// size their own construction from those live constants, and raising them
+// makes the construction try to allocate on the order of the raised value
+// rather than failing fast.
 
 import (
 	"context"

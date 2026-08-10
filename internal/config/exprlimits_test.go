@@ -4,6 +4,7 @@ package config_test
 
 import (
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
@@ -248,5 +249,25 @@ func TestLoad_ExprLimitMalformedEnvIsAnError(t *testing.T) {
 	t.Setenv("SQI_OPENJD_EXPR_TEMPLATE_POSITIONS", "lots")
 	if _, err := config.Load("", config.FlagOverrides{}); err == nil {
 		t.Fatal("a non-numeric SQI_OPENJD_EXPR_TEMPLATE_POSITIONS must be a load error, not a silent default")
+	}
+}
+
+// TestExampleConfig_ExprLimitsMatchDefaults keeps config/sqi-server.example.yaml
+// honest. The example file is what an operator copies, so a value in it that
+// drifts from the shipped default silently changes the behavior of anyone who
+// starts from it -- and nothing else in this repo reads that file, so nothing
+// else would notice. Only the openjd block is asserted; the rest of the example
+// deliberately demonstrates non-default values.
+func TestExampleConfig_ExprLimitsMatchDefaults(t *testing.T) {
+	path := filepath.Join("..", "..", "config", "sqi-server.example.yaml")
+	cfg, err := config.Load(path, config.FlagOverrides{})
+	if err != nil {
+		t.Fatalf("the shipped example config must load: %v", err)
+	}
+	if errs := config.Validate(cfg); len(errs) != 0 {
+		t.Fatalf("the shipped example config must validate: %v", errs)
+	}
+	if got, want := cfg.OpenJD, config.DefaultConfig().OpenJD; got != want {
+		t.Fatalf("config/sqi-server.example.yaml's openjd block = %+v, want the shipped defaults %+v", got, want)
 	}
 }

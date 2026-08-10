@@ -27,18 +27,24 @@ import (
 // doc comment) and has nothing to assert here: no operation counter crosses
 // into internal/openjd/expr for this file to observe.
 //
-// MUTATION-TESTING TRAP, recorded here because a reviewer hit it and had to
-// kill a 600s hang: the CORRECT way to mutation-test either bound is to
-// NEUTER THE CHECK inside templateBudget.chargePositions/
-// chargeRetainedBytes (exprcheck.go) -- e.g. comment out the
-// "if b.positions > defaultTemplatePositions" branch -- and re-run, NOT to
-// raise defaultTemplatePositions/defaultTemplateRetainedBytes themselves.
-// Three of the five tests below SIZE THEIR OWN CONSTRUCTION from the live
-// constant (manyArgs(int(defaultTemplatePositions) + 50), and
+// HOW TO MUTATION-TEST THESE, updated for E4d: since the bounds became
+// configurable, the natural mutation is to SET THE KNOB -- construct the
+// walk's budget with newTemplateBudget(ExprLimits{TemplatePositions: n}) (or
+// TemplateRetainedBytes) and observe the verdict move. That is what
+// exprlimits_test.go does, at the exact boundary. Neutering the comparison
+// inside templateBudget.chargePositions/chargeRetainedBytes (exprcheck.go,
+// now "if b.positions > b.limits.TemplatePositions") still works and is what
+// to reach for when checking that the ERROR PATH itself is live.
+//
+// WHAT NOT TO DO, recorded because a reviewer hit it and had to kill a 600s
+// hang: do not raise defaultTemplatePositions/defaultTemplateRetainedBytes
+// themselves. Three of the five tests below SIZE THEIR OWN CONSTRUCTION from
+// the live constant (manyArgs(int(defaultTemplatePositions) + 50), and
 // int(defaultTemplatePositions) - 10 in FreshPerCall): raising
 // defaultTemplatePositions to, say, 2_000_000_000 to "remove the bound"
 // makes those tests try to allocate on the order of two billion string
-// entries, which does not fail fast -- it hangs.
+// entries, which does not fail fast -- it hangs. Setting the KNOB on a budget
+// has no such hazard: the construction's size stays tied to the default.
 
 // manyArgs returns n trivial, cheap-to-evaluate EXPR args entries: no
 // retained bytes (checkFormatString discards every result) and negligible

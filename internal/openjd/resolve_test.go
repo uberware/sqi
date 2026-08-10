@@ -544,14 +544,14 @@ func TestResolveParameterSpaceParams_LiteralIntRangeKeepsOpenJDPolicy(t *testing
 
 // TestResolveParameterSpaceParams_WholeFieldExpressionMetered proves a
 // whole-field range expression is evaluated under the same submission-time
-// budget (ExprLimits.evalOptions(), exprcheck.go) as every other submit-time
+// budget ([openjd.ExprLimits]'s evalOptions, exprlimits.go) as every other submit-time
 // expression position, not expr.Eval's own looser unconfigured defaults.
 // Dropping the metering options from evalRangeExprField's expr.Eval call
 // leaves every OTHER test in this file passing (none of them evaluates
 // anything expensive enough to trip a 10,000-operation/1MB budget) — this is
 // the one test that would catch it, the same gap EXPR sub-project E3's own
 // review found and fixed for checkLetBindings. Verified by dropping
-// ExprLimits.evalOptions()... from the call, confirming this test fails, and
+// the lim.evalOptions()... tail from the call, confirming this test fails, and
 // restoring it — see task-1-report.md's "Fix round 1" section.
 func TestResolveParameterSpaceParams_WholeFieldExpressionMetered(t *testing.T) {
 	tmpl := &openjd.JobTemplate{Extensions: []string{"EXPR"}}
@@ -1072,7 +1072,7 @@ func TestResolveParameterSpaceParams_RangeListEntryError(t *testing.T) {
 
 // TestResolveParameterSpaceParams_RangeListEntryMetered proves a per-entry
 // expression is evaluated under the same submission-time budget
-// (ExprLimits.evalOptions(), exprcheck.go) as every other submit-time expression
+// ([openjd.ExprLimits]'s evalOptions, exprlimits.go) as every other submit-time expression
 // position — the same gap TestResolveParameterSpaceParams_
 // WholeFieldExpressionMetered (above) closed for the whole-field form,
 // now closed for resolveFormatStringExpr's own new Eval call sites too.
@@ -1214,7 +1214,7 @@ func TestResolveParameterSpaceParams_NonLoneRangeExprError(t *testing.T) {
 
 // TestResolveParameterSpaceParams_NonLoneRangeExprMetered proves the new
 // non-lone whole-field embedded-expression path is evaluated under
-// ExprLimits.evalOptions() too — the third new expr.Eval call site this task
+// the same lim.evalOptions() tail too — the third new expr.Eval call site this task
 // introduces (per-entry lone, per-entry embedded, and this one all funnel
 // through resolveFormatStringExpr, so this one test covers the shared
 // function's metering, exercised via the whole-field position).

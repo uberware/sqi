@@ -311,13 +311,13 @@ func checkHostOnlyFunctions(e *expr.Expression, scope Scope, ptr string) Validat
 //
 // opts is forwarded verbatim to every Eval call. It is how a caller supplies
 // section 1.3.9/1.3.10 limits (expr.WithMemoryLimit, expr.WithOperationLimit);
-// checkTemplateExpressions's callers pass ExprLimits.evalOptions (below) --
+// checkTemplateExpressions's callers pass [ExprLimits.evalOptions] --
 // deliberately tighter than expr.Eval's own execution-time defaults, because
 // this function runs at TEMPLATE VALIDATION time, reachable synchronously from
 // POST /api/v1/jobs once the EXPR extension is registered. Tests that call
 // checkFormatString directly pass no opts, which is fine: the package
 // defaults apply, and no committed test's expression does enough real work to
-// approach even ExprLimits.evalOptions' much tighter budget.
+// approach even the much tighter budget [ExprLimits.evalOptions] supplies.
 func checkFormatString(
 	s, ptr string, scope Scope, syms expr.MapSymbols, target expr.Type, opts ...expr.Option,
 ) ValidationErrors {
@@ -419,8 +419,8 @@ func checkFormatString(
 //
 // let is the first construct in this checker that RETAINS values across
 // evaluations. Every other position goes through checkFormatString, which
-// discards each result -- which is why a per-Eval budget (ExprLimits.evalOptions,
-// below) was sufficient there. Here, syms[name] = v accumulates one live value
+// discards each result -- which is why a per-Eval budget
+// ([ExprLimits.evalOptions]) was sufficient there. Here, syms[name] = v accumulates one live value
 // per binding in a table no per-Eval limit measures: each binding may
 // legitimately allocate just under defaultSubmissionMemoryBytes and KEEP it, so N
 // bindings cost N budgets of live memory with nothing counting the sum.
@@ -441,9 +441,10 @@ func checkFormatString(
 // opts is forwarded verbatim to every Eval call, exactly as
 // [checkFormatString]'s identically-named tail is: it is how a caller supplies
 // section 1.3.9/1.3.10 limits, and all three walk call sites pass
-// ExprLimits.evalOptions(). checkLetBindings used to hardcode ExprLimits.evalOptions()
-// internally, which was behaviorally identical but a trap for sub-project E4,
-// which owns the specification's CONFIGURABLE limits: threading an
+// [ExprLimits.evalOptions]. checkLetBindings used to build those options
+// internally instead of taking them, which was behaviorally identical but a
+// trap for sub-project E4, which owns the specification's CONFIGURABLE
+// limits: threading an
 // operator-supplied budget through checkTemplateExpressions reaches every
 // format-string position via checkFormatString and would have silently missed
 // every let binding -- the one position where budgets ACCUMULATE. One opts
@@ -565,12 +566,17 @@ func checkLetBindings(
 //     real template text (a job name, command, or args entry is realistically
 //     well under a few KB) while bounding any single large literal
 //     allocation far below limits.go's fixed, non-configurable maxStringBytes
-//     floor (10,000,000 bytes) -- so a large literal is caught by THIS limit
-//     first, before it can allocate anywhere close to that floor. The same
-//     budget also catches a large CONCRETE parameter value at phase 2, per
-//     the measurement above -- one limit, enforced identically at both
-//     phases because both go through the same checkFormatString/ExprLimits.evalOptions
-//     call.
+//     floor (10,000,000 bytes) -- so a large SINGLE-STRING literal is caught
+//     by THIS limit first, before it can allocate anywhere close to that
+//     floor. Note the scope of that claim, which E4d Task 1's review had to
+//     narrow: maxStringBytes bounds one PRODUCED STRING, while this limit
+//     bounds the SUM of live values and recurses into containers, so a LIST
+//     of individually-legal strings can hold far more than maxStringBytes
+//     with no fixed guard firing -- this limit is the only thing bounding it.
+//     The same budget also catches a large CONCRETE parameter value at phase
+//     2, per the measurement above -- one limit, enforced identically at both
+//     phases because both go through the same checkFormatString call, under
+//     the same [ExprLimits.evalOptions] tail.
 //
 // A template whose expressions need more than this to type-check against
 // UNRESOLVED placeholders (phase 1) or to evaluate against submitted values
@@ -583,9 +589,11 @@ func checkLetBindings(
 // [SubmitterOptions.ExprLimits] and carried to every consumption point by the
 // walk's own [templateBudget]. Everything above still describes why the
 // DEFAULT is what it is -- and, because internal/config's floors and ceilings
-// were sized around these numbers, why an operator may move them only within
-// one order of magnitude (operations) or not above
-// internal/openjd/expr's fixed maxStringBytes (memory).
+// were sized around these numbers, why an operator may raise EITHER by only
+// one order of magnitude. Neither ceiling is derived from a fixed guard
+// firing first; both are deliberate policy limits. See
+// [ExprLimits.SubmissionMemoryBytes] for the measurement that removed the
+// derivation this comment used to offer for the memory ceiling.
 const (
 	defaultSubmissionOperations  int64 = 10_000
 	defaultSubmissionMemoryBytes int64 = 1_000_000
@@ -875,8 +883,8 @@ const (
 // ([ExprLimits], exprlimits.go) for the walk it belongs to. It is the natural
 // carrier because it is already threaded to every point that needs one: the
 // two per-walk dimensions are its own counters, and `b` is in scope at every
-// call site that used to call the package-level ExprLimits.evalOptions() -- see
-// [ExprLimits.evalOptions], which replaced it. limits is normalized by
+// call site that used to call the package-level submissionLimits() -- see
+// [ExprLimits.evalOptions], the method that replaced it. limits is normalized by
 // [newTemplateBudget] and is never the zero value on a live budget.
 type templateBudget struct {
 	positions int64

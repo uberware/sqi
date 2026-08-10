@@ -88,8 +88,15 @@ func TestDefaultConfig_ExprLimitsAreOpenJDDefaults(t *testing.T) {
 	if got, want := server.DefaultConfig().OpenJDExprLimits, openjd.DefaultExprLimits(); got != want {
 		t.Fatalf("server.DefaultConfig().OpenJDExprLimits = %+v, want %+v", got, want)
 	}
-	var zero openjd.ExprLimits
-	if got := zero; got != (openjd.ExprLimits{}) {
-		t.Fatalf("sanity: the zero value must be zero, got %+v", got)
+
+	// A server.Config literal that OMITS the field -- which every test in this
+	// repo that builds one does -- must still behave as the default. That is
+	// openjd's own normalization and is pinned by TestExprLimits_OrDefaults
+	// there; it cannot be observed from this package without exporting the
+	// normalizer, and duplicating it here as `zero == zero` would assert
+	// nothing. What IS this package's to assert is that the mapping does not
+	// quietly turn a populated config into a zero value.
+	if got := server.ExprLimitsFromConfig(config.DefaultConfig().OpenJD); got == (openjd.ExprLimits{}) {
+		t.Fatal("the default config must map to populated limits, not the zero value")
 	}
 }

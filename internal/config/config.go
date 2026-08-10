@@ -560,9 +560,12 @@ type OpenJDConfig struct {
 	// ExprMemoryLimit is how many live bytes (specification section 1.3.9) ONE
 	// expression in a submitted template may hold at validation time.
 	//
-	// The ceiling is not a preference: above it a fixed, non-configurable
-	// guard inside the evaluator fires first and this setting stops having any
-	// effect.
+	// Raising it permits proportionally more memory per evaluation on an
+	// unauthenticated request path; the ceiling is one order of magnitude above
+	// the default for that reason. (An earlier revision of this comment claimed
+	// a fixed internal guard made a larger value inert. It does not -- that was
+	// measured and disproved. Treat the ceiling as a deliberate policy limit,
+	// not as a point beyond which the setting stops working.)
 	// Range: [MinOpenJDExprMemoryLimit, MaxOpenJDExprMemoryLimit].
 	// Env: SQI_OPENJD_EXPR_MEMORY_LIMIT
 	ExprMemoryLimit int64 `yaml:"expr_memory_limit"`

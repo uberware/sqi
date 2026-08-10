@@ -885,7 +885,7 @@ func TestCheckTemplateExpressions_ArgsPositionUsesArgItemTarget(t *testing.T) {
 }
 
 // TestCheckTemplateExpressions_AppliesSubmissionLimits pins that the walk
-// applies ExprLimits.evalOptions (a much tighter budget than expr.Eval's own
+// applies [ExprLimits.evalOptions] (a much tighter budget than expr.Eval's own
 // execution-time defaults) end to end, not just when checkFormatString is
 // called directly with no opts.
 //

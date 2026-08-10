@@ -154,14 +154,14 @@ func TestCheckLetBindings_OverBudgetEvalIsRejectedAtSubmissionLimit(t *testing.T
 
 // TestCheckTemplateExpressions_LetCallSitesPassSubmissionLimits pins that
 // every one of the three let: positions the walk can reach is metered at
-// ExprLimits.evalOptions, by driving the real walk (checkTemplateExpressions) rather
+// the walk's configured limits, by driving the real walk (checkTemplateExpressions) rather
 // than the leaf.
 //
 // It exists because checkLetBindings now takes its limits from the caller. The
 // leaf test above proves the leaf honors what it is given; only this one
 // proves the walk gives it the tight budget at each site. Nothing else in the
 // repo can: no conformance fixture or oracle case is expensive enough to
-// distinguish ExprLimits.evalOptions from expr.Eval's defaults, so a call site that
+// distinguish the walk's tighter limits from expr.Eval's defaults, so a call site that
 // dropped DefaultExprLimits().evalOptions() would keep the whole suite green.
 func TestCheckTemplateExpressions_LetCallSitesPassSubmissionLimits(t *testing.T) {
 	const header = `specificationVersion: jobtemplate-2023-09
@@ -965,7 +965,7 @@ steps:
 // guard existed sqi told the caller the block was invalid and then evaluated
 // every binding anyway. let is the only construct in this checker that RETAINS
 // a value per binding (syms[name] = v), so the per-Eval budget in
-// ExprLimits.evalOptions -- which counts one evaluation's live bytes and never sees
+// the per-evaluation memory limit -- which counts one evaluation's live bytes and never sees
 // the table it is handed -- bounds each binding but not their sum. Measured
 // through the real Parse + ValidateWithOptions path with the guard removed:
 // 2,000 bindings of `a<i> = "x" * 900000`, a 57 KB template body, allocated

@@ -54,11 +54,26 @@ type ExprLimits struct {
 	// SubmissionMemoryBytes is the section 1.3.9 live-byte budget for ONE
 	// expression evaluation at submission time.
 	//
-	// CATASTROPHE BOUND, and the one with a ceiling that is not a judgement
-	// call: internal/openjd/expr's maxStringBytes (10,000,000) is a FIXED,
-	// non-configurable safety floor underneath every configurable limit, so a
-	// value above it stops being the limit that fires first and this knob
-	// stops meaning anything. internal/config caps it there exactly.
+	// CATASTROPHE BOUND, with a ceiling of one order of magnitude above the
+	// default -- the same shape, and the same reasoning, as
+	// SubmissionOperations and TemplatePositions. It is what bounds the live
+	// string a single evaluation can hold, and therefore how much byte-heavy,
+	// operation-cheap work one position can be asked to do.
+	//
+	// AN EARLIER REVISION OF THIS COMMENT CLAIMED THE CEILING WAS NOT A
+	// JUDGEMENT CALL -- that internal/openjd/expr's fixed maxStringBytes
+	// (10,000,000) would fire first above it, making a larger value inert.
+	// THAT IS FALSE, and it was disproved by measurement in E4d Task 1's
+	// review: maxStringBytes bounds ONE PRODUCED STRING, while section
+	// 1.3.9's meter bounds the SUM of live values and recurses into
+	// containers. `["a"*4000000, "b"*4000000, "c"*4000000]` holds 12,000,192
+	// live bytes with no fixed guard firing -- each string is 4 MB, three
+	// elements is nowhere near maxElements -- so it is rejected at a 10 MB
+	// limit and ACCEPTED at 20 MB. Raising this knob is not inert; it permits
+	// proportionally more live memory per evaluation on an unauthenticated
+	// path. The number is unchanged; only the reason for it is, and the
+	// reason had to change because a false one invites exactly the raise it
+	// claimed was harmless.
 	SubmissionMemoryBytes int64
 
 	// TemplatePositions is how many expression positions ONE
@@ -107,16 +122,20 @@ type ExprLimits struct {
 // may import both.
 //
 // The CEILINGS encode design spec §3's distinction between a catastrophe
-// bound (a ceiling no operator can raise past, tied to a measurement or to a
-// fixed guard) and a policy bound (wide but finite). Which of the four is
-// which, and why, is on each [ExprLimits] field.
+// bound (a tight ceiling, tied to a measurement) and a policy bound (wide but
+// finite). Which of the four is which, and why, is on each [ExprLimits] field.
+// All three catastrophe ceilings are one order of magnitude above their
+// default, and all three are JUDGEMENTS -- none is derived from some fixed
+// guard firing first, which is a derivation this file offered once and had to
+// withdraw (see [ExprLimits.SubmissionMemoryBytes]).
 //
-// The FLOORS all come from one measurement, not from taste: the six reference
-// presets in presets/sqi/ — the templates this repo itself ships — cost at
-// most 15 expression positions, retain 0 let bytes, and evaluate expressions
-// of a few operations and a few hundred bytes each. Every floor below is at
-// least an order of magnitude above what sqi's own templates need, so no
-// operator can tighten a knob to a value that rejects them.
+// The FLOORS all come from measurement, not from taste. The six reference
+// presets in presets/sqi/ -- the templates this repo itself ships -- were
+// measured per dimension by binary search: they cost at most 15 expression
+// positions, retain 0 let bytes, need at most 64 live bytes and at most 1
+// operation in any single evaluation. Every floor below leaves at least 4x
+// headroom over the worst of them (17x to 65536x in practice), so no operator
+// can tighten a knob to a value that rejects sqi's own templates.
 // TestExprLimits_FloorsAcceptReferencePresets re-measures that on every run
 // rather than trusting this paragraph.
 const (
@@ -139,12 +158,18 @@ const (
 	// MinExprSubmissionMemoryBytes / MaxExprSubmissionMemoryBytes bound
 	// [ExprLimits.SubmissionMemoryBytes].
 	//
-	// Ceiling: NOT a judgement call. It is internal/openjd/expr's
-	// maxStringBytes, a fixed, non-configurable safety bound that sits
-	// underneath every configurable limit. At or below it, this knob is the
-	// limit that fires first on a large literal or a large submitted
-	// parameter; above it, the fixed guard fires first and the knob stops
-	// meaning anything, so there is no value in permitting one.
+	// Ceiling: one order of magnitude above the default, a JUDGEMENT, and the
+	// same shape as the other two catastrophe ceilings -- 10 MB of live values
+	// per evaluation is as much as an operator may permit an unauthenticated
+	// submission to hold.
+	//
+	// It coincides with internal/openjd/expr's fixed maxStringBytes, and an
+	// earlier revision mistook the coincidence for a derivation ("above it the
+	// fixed guard fires first, so a larger value is inert"). Measurement
+	// disproved that -- see [ExprLimits.SubmissionMemoryBytes] for the
+	// construction, which holds 12 MB live with no fixed guard firing. Do not
+	// re-derive this ceiling from maxStringBytes; if the argument for 10x ever
+	// changes, this number is free to move with it.
 	//
 	// Floor: 4 KB, three orders of magnitude above the few hundred live bytes
 	// a reference preset's largest expression produces.
@@ -216,10 +241,11 @@ func (l ExprLimits) orDefaults() ExprLimits {
 // evalOptions builds the expr.Option slice every submission-time evaluation
 // runs under -- checkFormatString's and checkLetBindings' alike, plus
 // resolve.go's three expr.Eval call sites, through the identical opts tail
-// they all take. This is E4d's replacement for the package-level
-// ExprLimits.evalOptions() function: a method, so the values come from THIS walk's
-// budget rather than from a constant, and still a function rather than a
-// package-level slice so each call gets its own slice header.
+// they all take. Before E4d this was a package-level submissionLimits()
+// function returning two fixed constants; making it a METHOD is the change --
+// the values now come from THIS walk's budget rather than from a constant. It
+// stays a function rather than a package-level slice so each call gets its own
+// slice header.
 func (l ExprLimits) evalOptions() []expr.Option {
 	return []expr.Option{
 		expr.WithOperationLimit(l.SubmissionOperations),
