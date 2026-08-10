@@ -65,10 +65,16 @@ type GPUInfo struct {
 // exact for a pre-Task-2 binary and a documented guess for one built between
 // Tasks 2 and 3 — see internal/scheduler's legacyWorkerExprCaps.
 //
-// The worker's per-symbol-table let-retention cap (expr.let_retained_bytes) is
-// deliberately NOT carried: the server has no per-table equivalent to compare
-// it against — its nearest counterpart, the per-evaluation memory budget, is
-// already the MemoryLimit dimension below.
+// All FIVE of the worker's expr.* keys are carried. The fifth,
+// LetRetainedBytes, was excluded when this type was written -- on the grounds
+// that the server has no PER-TABLE counterpart to compare it against, which is
+// true -- and the wave's final review showed the exclusion was reachable
+// through legal configuration: a worker at that key's floor rejects, once per
+// task, a let: block the server accepted under a raised
+// openjd.expr_template_retained_bytes. What the server does have is a bound on
+// the same VALUES at a wider scope, and a wider scope is a valid upper bound;
+// see internal/scheduler's exprCapShortfall for the comparison and for what it
+// still cannot promise.
 type WorkerExprLimits struct {
 	// OperationLimit is the worker's §1.3.10 operation budget for ONE
 	// expression evaluation (expr.operation_limit).
@@ -82,6 +88,10 @@ type WorkerExprLimits struct {
 	// AssignmentRetainedBytes is how many bytes let: bindings may retain
 	// across one assignment (expr.assignment_retained_bytes).
 	AssignmentRetainedBytes int64 `json:"assignment_retained_bytes,omitempty"`
+	// LetRetainedBytes is how many bytes ONE phase-3 symbol table may hold
+	// live (expr.let_retained_bytes), measured across the whole table rather
+	// than only its let-bound names.
+	LetRetainedBytes int64 `json:"let_retained_bytes,omitempty"`
 }
 
 // Worker represents a registered sqi-worker agent. Workers self-report their

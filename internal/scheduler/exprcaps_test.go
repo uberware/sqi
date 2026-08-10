@@ -159,6 +159,7 @@ func TestExprCaps_ViolationThroughConfigurationIsCaught(t *testing.T) {
 		MemoryLimit:             fmtres.DefaultExprLimits().MemoryLimit,
 		AssignmentPositions:     fmtres.DefaultExprLimits().AssignmentPositions,
 		AssignmentRetainedBytes: fmtres.DefaultExprLimits().AssignmentRetainedBytes,
+		LetRetainedBytes:        fmtres.DefaultExprLimits().LetRetainedBytes,
 	}
 
 	tests := []struct {
@@ -230,6 +231,44 @@ func TestExprCaps_ViolationThroughConfigurationIsCaught(t *testing.T) {
 			workerCaps:   withWorkerRetained(workerDefaults, fmtres.MinExprAssignmentRetainedBytes),
 			wantBlock:    true,
 			wantIn:       []string{"retain", "2000000", "10000000"},
+		},
+		// The dimension E4d Task 3 left out, and the configuration the wave's
+		// final review reached it through. Server: expr_memory_limit at its
+		// legal maximum, everything else default. Worker: let_retained_bytes at
+		// its legal floor, everything else default. All four ORIGINAL
+		// comparisons pass (memory 20,000,000 >= 10,000,000; operations
+		// 1,000,000 >= 10,000; positions 10,000 >= 10,000; assignment retention
+		// 20,000,000 >= 10,000,000) -- so before the fifth comparison this farm
+		// dispatched, and a step with `let: [big = "x" * 5000000]` was accepted
+		// at 5,000,064 live bytes (inside the raised 10 MB per-evaluation
+		// budget, charged against the 10 MB template-wide budget) and then
+		// failed EVERY task of the job on that host at 5,000,064 > 1,000,000.
+		{
+			name:         "worker let-retention tightened below the server's template budget blocks",
+			serverLimits: withMemory(dflt, openjd.MaxExprSubmissionMemoryBytes),
+			workerCaps:   withWorkerLetRetained(workerDefaults, fmtres.MinExprLetRetainedBytes),
+			wantBlock:    true,
+			wantIn:       []string{"one symbol table", "1000000", "10000000", "expr.let_retained_bytes"},
+		},
+		// The same shortfall with NOTHING raised on the server: the floor of
+		// expr.let_retained_bytes is a tenth of the server's DEFAULT
+		// template-wide retention, so this needs no server misconfiguration at
+		// all -- only a worker tightened to a value its own config layer
+		// accepts.
+		{
+			name:         "worker let-retention at its floor blocks even at server defaults",
+			serverLimits: dflt,
+			workerCaps:   withWorkerLetRetained(workerDefaults, fmtres.MinExprLetRetainedBytes),
+			wantBlock:    true,
+			wantIn:       []string{"one symbol table", "1000000", "10000000"},
+		},
+		{
+			name:         "worker let-retention exactly at the server's template budget dispatches",
+			serverLimits: dflt,
+			workerCaps: withWorkerLetRetained(
+				workerDefaults, openjd.DefaultExprLimits().TemplateRetainedBytes,
+			),
+			wantBlock: false,
 		},
 	}
 
@@ -349,6 +388,7 @@ func TestExprCapShortfall_Table(t *testing.T) {
 		MemoryLimit:             500_000,
 		AssignmentPositions:     5_000,
 		AssignmentRetainedBytes: 5_000_000,
+		LetRetainedBytes:        5_000_000,
 	}
 
 	tests := []struct {
@@ -361,11 +401,13 @@ func TestExprCapShortfall_Table(t *testing.T) {
 		{"one live byte below", withWorkerMemory(exact, 499_999), true},
 		{"one position below", withWorkerPositions(exact, 4_999), true},
 		{"one retained byte below", withWorkerRetained(exact, 4_999_999), true},
+		{"one let-retained byte below", withWorkerLetRetained(exact, 4_999_999), true},
 		{"above in every dimension", store.WorkerExprLimits{
 			OperationLimit:          6_000,
 			MemoryLimit:             600_000,
 			AssignmentPositions:     6_000,
 			AssignmentRetainedBytes: 6_000_000,
+			LetRetainedBytes:        6_000_000,
 		}, false},
 	}
 	for _, tc := range tests {
@@ -401,6 +443,7 @@ func TestExprCaps_UnadvertisedCapsAreThePreE4dDefaults(t *testing.T) {
 		MemoryLimit:             d.MemoryLimit,
 		AssignmentPositions:     d.AssignmentPositions,
 		AssignmentRetainedBytes: d.AssignmentRetainedBytes,
+		LetRetainedBytes:        d.LetRetainedBytes,
 	}
 	if got != want {
 		t.Fatalf("unadvertised worker caps resolve to %+v, want the worker's own defaults %+v", got, want)
@@ -450,6 +493,17 @@ func TestExprCaps_RelationIsSatisfiableAtEveryLegalServerSetting(t *testing.T) {
 			workerDef: fmtres.DefaultExprLimits().AssignmentRetainedBytes,
 			srvDef:    openjd.DefaultExprLimits().TemplateRetainedBytes,
 			serverKey: "openjd.expr_template_retained_bytes", workKey: "expr.assignment_retained_bytes",
+		},
+		{
+			// The fifth dimension is compared against the SAME server key as
+			// the fourth, so satisfiability is not inherited -- expr's
+			// per-table ceiling is its own number and could be lowered
+			// independently.
+			dimension: "let retained bytes",
+			workerMax: fmtres.MaxExprLetRetainedBytes, srvMax: openjd.MaxExprTemplateRetainedBytes,
+			workerDef: fmtres.DefaultExprLimits().LetRetainedBytes,
+			srvDef:    openjd.DefaultExprLimits().TemplateRetainedBytes,
+			serverKey: "openjd.expr_template_retained_bytes", workKey: "expr.let_retained_bytes",
 		},
 	}
 	for _, tc := range tests {
@@ -623,13 +677,14 @@ func TestNew_NormalizesExprLimits(t *testing.T) {
 // internal/store); nothing but this test and its outer-key companion,
 // TestRegisterMsg_WireFieldsSurviveTheDuplication, relates their field names.
 func TestWorkerExprLimits_WireKeysMatchTheProtocol(t *testing.T) {
-	// Four distinct values: four same-typed int64 fields crossing a package
+	// Five distinct values: five same-typed int64 fields crossing a package
 	// boundary is exactly the shape where a transposition compiles and runs.
 	sent := protocol.ExprLimits{
 		OperationLimit:          11,
 		MemoryLimit:             22,
 		AssignmentPositions:     33,
 		AssignmentRetainedBytes: 44,
+		LetRetainedBytes:        55,
 	}
 	raw, err := json.Marshal(sent)
 	if err != nil {
@@ -644,10 +699,24 @@ func TestWorkerExprLimits_WireKeysMatchTheProtocol(t *testing.T) {
 		MemoryLimit:             sent.MemoryLimit,
 		AssignmentPositions:     sent.AssignmentPositions,
 		AssignmentRetainedBytes: sent.AssignmentRetainedBytes,
+		LetRetainedBytes:        sent.LetRetainedBytes,
 	}
 	if got != want {
 		t.Fatalf("protocol JSON %s decoded to %+v, want %+v -- a renamed json tag on either "+
 			"side silently drops the cap to zero, which reads as 'unadvertised'", raw, got, want)
+	}
+
+	// The comparison above is only as complete as the literal that feeds it: a
+	// SIXTH dimension added to both structs and left out of `sent` would leave
+	// both sides zero and this test green. Count the fields so that cannot
+	// happen -- the same reason the outer-key test counts RegisterMsg's.
+	const dimensions = 5
+	if n := reflect.TypeOf(sent).NumField(); n != dimensions {
+		t.Errorf("protocol.ExprLimits has %d fields, this test populates %d: a dimension that "+
+			"is not in the literal above is not covered by it", n, dimensions)
+	}
+	if n := reflect.TypeOf(got).NumField(); n != dimensions {
+		t.Errorf("store.WorkerExprLimits has %d fields, this test compares %d", n, dimensions)
 	}
 }
 
@@ -736,6 +805,10 @@ func TestRegisterMsg_WireFieldsSurviveTheDuplication(t *testing.T) {
 			"expr_limits.assignment_retained_bytes",
 			got.ExprLimits.AssignmentRetainedBytes, sent.ExprLimits.AssignmentRetainedBytes,
 		},
+		{
+			"expr_limits.let_retained_bytes",
+			got.ExprLimits.LetRetainedBytes, sent.ExprLimits.LetRetainedBytes,
+		},
 	}
 	for _, f := range fields {
 		t.Run(f.name, func(t *testing.T) {
@@ -767,9 +840,9 @@ func TestRegisterMsg_WireFieldsSurviveTheDuplication(t *testing.T) {
 		}
 
 		// One row per field of scheduler.RegisterMsg, except that gpu_info and
-		// expr_limits each contribute four rows instead of one (their inner
+		// expr_limits each contribute several rows instead of one (their inner
 		// keys are what actually carry the values).
-		const nestedExtraRows = 3 + 3 // gpu_info: 4 rows for 1 field; expr_limits: likewise
+		const nestedExtraRows = 3 + 4 // gpu_info: 4 rows for 1 field; expr_limits: 5
 		if want := gotFields + nestedExtraRows; len(fields) != want {
 			t.Fatalf("the table covers %d fields but scheduler.RegisterMsg has %d (%d rows "+
 				"expected with gpu_info and expr_limits expanded). Every field must have a "+
@@ -817,6 +890,11 @@ func withWorkerRetained(c store.WorkerExprLimits, n int64) store.WorkerExprLimit
 	return c
 }
 
+func withWorkerLetRetained(c store.WorkerExprLimits, n int64) store.WorkerExprLimits {
+	c.LetRetainedBytes = n
+	return c
+}
+
 func mustTask(t *testing.T, st *fake.Store, id string) store.Task {
 	t.Helper()
 	task, err := st.GetTask(t.Context(), id)
@@ -824,4 +902,161 @@ func mustTask(t *testing.T, st *fake.Store, id string) store.Task {
 		t.Fatalf("GetTask %s: %v", id, err)
 	}
 	return task
+}
+
+// ── EXPR sub-project E4d, whole-branch review: the heuristic and the order ──
+
+// houdiniEXPRCacheJSON is the documentation's own false-positive example: a
+// BASE-SPEC template — no extensions key at all — whose environment declares a
+// variable named HOUDINI_EXPR_CACHE. It contains the four bytes EXPR and
+// nothing else about the extension.
+const houdiniEXPRCacheJSON = `{
+  "specificationVersion": "jobtemplate-2023-09",
+  "name": "j",
+  "jobEnvironments": [
+    {
+      "name": "houdini",
+      "variables": { "HOUDINI_EXPR_CACHE": "/tmp/cache" }
+    }
+  ],
+  "steps": [
+    {
+      "name": "render",
+      "script": { "actions": { "onRun": { "command": "render" } } }
+    }
+  ]
+}`
+
+// TestJobMayUseEXPR_RequiresAnExtensionDeclaration is the narrowing the wave's
+// final review asked for. The byte scan's false positive is LIVE — unlike its
+// false negative, which needs an EXPR template and cannot be submitted while
+// the extension is StatusInProgress — and its consequence is not cosmetic: on a
+// farm whose workers are short (reachable through documented configuration,
+// since "raise the workers first" is guidance and not enforcement) the job's
+// tasks sit `ready` forever with no capable worker, flagged with a reason
+// naming limits the template does not use.
+//
+// The check stays a byte scan, and stays conservative in the safe direction: a
+// false positive only withholds work, a false negative re-opens design spec §2.
+func TestJobMayUseEXPR_RequiresAnExtensionDeclaration(t *testing.T) {
+	tests := []struct {
+		name string
+		raw  string
+		want bool
+	}{
+		{"declares the extension", exprTemplateJSON, true},
+		{"base-spec template with no mention at all", minimalRenderJSON, false},
+		{
+			name: "base-spec template mentioning EXPR in a variable name",
+			raw:  houdiniEXPRCacheJSON,
+			want: false,
+		},
+		{
+			name: "base-spec template mentioning EXPR in a comment",
+			raw:  "# Job.Name requires the EXPR extension.\nname: j\n",
+			want: false,
+		},
+		{
+			name: "declares some other extension and does not mention EXPR",
+			raw:  `{"extensions":["TASK_CHUNKING"],"name":"j"}`,
+			want: false,
+		},
+		{
+			// The residual, kept deliberately: this errs toward withholding.
+			name: "declares another extension AND mentions EXPR elsewhere",
+			raw:  `{"extensions":["TASK_CHUNKING"],"name":"j","description":"no EXPR here"}`,
+			want: true,
+		},
+		{"yaml block sequence form", "extensions:\n  - EXPR\nname: j\n", true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := jobMayUseEXPR(store.Job{RawTemplate: tc.raw}); got != tc.want {
+				t.Fatalf("jobMayUseEXPR = %v, want %v for:\n%s", got, tc.want, tc.raw)
+			}
+		})
+	}
+}
+
+// TestExprCaps_BaseSpecJobMentioningEXPRIsStillDispatched is the same
+// narrowing at the level that matters: not what the predicate returns, but
+// whether a base-spec job is withheld from a short worker. Before the
+// narrowing this leased 0 assignments, and with no capable worker in the queue
+// the task waited `ready` indefinitely.
+func TestExprCaps_BaseSpecJobMentioningEXPRIsStillDispatched(t *testing.T) {
+	st := fake.New()
+	w, taskID := seedExprLeaseFixture(t, st, houdiniEXPRCacheJSON, store.WorkerExprLimits{
+		OperationLimit:          fmtres.MinExprOperationLimit,
+		MemoryLimit:             fmtres.MinExprMemoryLimit,
+		AssignmentPositions:     fmtres.MinExprAssignmentPositions,
+		AssignmentRetainedBytes: fmtres.MinExprAssignmentRetainedBytes,
+		LetRetainedBytes:        fmtres.MinExprLetRetainedBytes,
+	})
+	// A server tightened nowhere and raised nowhere: the worker is short in
+	// every dimension purely by its own configuration.
+	s := schedulerWithExprLimits(st, openjd.DefaultExprLimits())
+
+	if leased := leaseOnce(t, s, w); leased != 1 {
+		t.Fatalf("leased %d assignments for a BASE-SPEC job whose only relation to EXPR is an "+
+			"environment variable named HOUDINI_EXPR_CACHE; want 1", leased)
+	}
+	s.reconcileTaskSchedulability(t.Context(), mustTask(t, st, taskID), []store.Worker{w})
+	if got := mustTask(t, st, taskID).UnschedulableReason; got != "" {
+		t.Fatalf("UnschedulableReason = %q; a base-spec job must not be flagged with EXPR "+
+			"limits it does not use", got)
+	}
+}
+
+// TestEvaluateSchedulability_GenuineIneligibilityOutranksEXPR pins the order of
+// the two tests in evaluateSchedulability. The worker here is BOTH short on
+// EXPR caps and ineligible for an ordinary reason (queue affinity). Reporting
+// the EXPR shortfall would tell the operator to reconfigure two expression
+// limits when the actual problem is that no worker serves the job's queue --
+// and on a farm where every worker is short, the EXPR text overwrote the real
+// reason for every one of them.
+func TestEvaluateSchedulability_GenuineIneligibilityOutranksEXPR(t *testing.T) {
+	st := fake.New()
+	w, taskID := seedExprLeaseFixture(t, st, exprTemplateJSON, store.WorkerExprLimits{
+		OperationLimit:          fmtres.MinExprOperationLimit,
+		MemoryLimit:             fmtres.MinExprMemoryLimit,
+		AssignmentPositions:     fmtres.MinExprAssignmentPositions,
+		AssignmentRetainedBytes: fmtres.MinExprAssignmentRetainedBytes,
+		LetRetainedBytes:        fmtres.MinExprLetRetainedBytes,
+	})
+	w.QueueID = "some-other-queue" // ordinary ineligibility, nothing to do with EXPR
+	s := schedulerWithExprLimits(st, openjd.DefaultExprLimits())
+
+	s.reconcileTaskSchedulability(t.Context(), mustTask(t, st, taskID), []store.Worker{w})
+	got := mustTask(t, st, taskID).UnschedulableReason
+	if !strings.Contains(got, "queue affinity") {
+		t.Fatalf("UnschedulableReason = %q, want the ordinary ineligibility reason "+
+			"(%q): a worker that could never have run this job must not be reported as "+
+			"blocked by EXPR limits", got, "queue affinity")
+	}
+	if strings.Contains(got, "expr.") {
+		t.Fatalf("UnschedulableReason = %q names EXPR config keys for a worker that is "+
+			"ineligible for an unrelated reason", got)
+	}
+}
+
+// TestEvaluateSchedulability_EXPRStillReportedForAnOtherwiseEligibleWorker is
+// the other half of that order: reordering must not silence the EXPR reason for
+// the worker the operator actually needs to fix.
+func TestEvaluateSchedulability_EXPRStillReportedForAnOtherwiseEligibleWorker(t *testing.T) {
+	st := fake.New()
+	w, taskID := seedExprLeaseFixture(t, st, exprTemplateJSON, store.WorkerExprLimits{
+		OperationLimit:          fmtres.MinExprOperationLimit,
+		MemoryLimit:             fmtres.MinExprMemoryLimit,
+		AssignmentPositions:     fmtres.MinExprAssignmentPositions,
+		AssignmentRetainedBytes: fmtres.MinExprAssignmentRetainedBytes,
+		LetRetainedBytes:        fmtres.MinExprLetRetainedBytes,
+	})
+	s := schedulerWithExprLimits(st, openjd.DefaultExprLimits())
+
+	s.reconcileTaskSchedulability(t.Context(), mustTask(t, st, taskID), []store.Worker{w})
+	got := mustTask(t, st, taskID).UnschedulableReason
+	if !strings.Contains(got, "expr.assignment_positions") {
+		t.Fatalf("UnschedulableReason = %q, want the EXPR shortfall: an eligible-but-short "+
+			"worker is exactly what this reason exists to explain", got)
+	}
 }

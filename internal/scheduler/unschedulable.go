@@ -113,20 +113,32 @@ func (s *Scheduler) evaluateSchedulability(ctx context.Context, task store.Task,
 
 	var lastReason string
 	for _, w := range workers {
-		// The lease gate refuses to dispatch an EXPR job to a worker whose
-		// advertised EXPR caps are below this server's; without the same test
-		// here the task would sit ready forever while the sweep reported it
-		// schedulable. exprcaps.go's reason is deliberately the operator-facing
-		// one — it names both config keys and both numbers.
-		if reason := exprCapsBlock(s.workerExprShortfall(w), job); reason != "" {
+		// ORDER IS LOAD-BEARING, and it is ordinary eligibility FIRST.
+		//
+		// Both tests must run: the lease gate refuses to dispatch an EXPR job
+		// to a worker whose advertised EXPR caps are below this server's, and
+		// without the same test here the task would sit ready forever while the
+		// sweep reported it schedulable.
+		//
+		// But a worker that is ineligible for a plain reason -- wrong queue,
+		// wrong compute location, a tag it does not carry -- is ineligible for
+		// THAT reason, and it is the reason an operator can act on. Testing the
+		// EXPR caps first made the EXPR text the last reason written for every
+		// worker on a farm whose workers are short, overwriting the real one on
+		// tasks that could never have run there anyway. Only a worker that
+		// would OTHERWISE have been eligible is reported as blocked by EXPR
+		// limits. exprcaps.go's reason is deliberately the operator-facing one
+		// — it names both config keys and both numbers.
+		reason, ok := WorkerEligibleWithReason(w, job, step, pools, activeCounts)
+		if !ok {
 			lastReason = reason
 			continue
 		}
-		reason, ok := WorkerEligibleWithReason(w, job, step, pools, activeCounts)
-		if ok {
-			return "" // at least one eligible worker — schedulable
+		if exprReason := exprCapsBlock(s.workerExprShortfall(w), job); exprReason != "" {
+			lastReason = exprReason
+			continue
 		}
-		lastReason = reason
+		return "" // at least one eligible worker — schedulable
 	}
 	return "no eligible online worker: " + lastReason
 }

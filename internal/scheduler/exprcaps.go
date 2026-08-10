@@ -82,12 +82,13 @@ import (
 //
 // They are duplicated rather than imported because internal/scheduler is server
 // code: it has no business linking the worker's evaluator into the server
-// binary for four integers.
+// binary for five integers.
 var legacyWorkerExprCaps = store.WorkerExprLimits{
 	OperationLimit:          1_000_000,
 	MemoryLimit:             20_000_000,
 	AssignmentPositions:     10_000,
 	AssignmentRetainedBytes: 20_000_000,
+	LetRetainedBytes:        10_000_000,
 }
 
 // workerExprCapsOrLegacy replaces every unadvertised (<= 0) cap with what such
@@ -109,6 +110,9 @@ func workerExprCapsOrLegacy(c store.WorkerExprLimits) store.WorkerExprLimits {
 	if c.AssignmentRetainedBytes <= 0 {
 		c.AssignmentRetainedBytes = legacyWorkerExprCaps.AssignmentRetainedBytes
 	}
+	if c.LetRetainedBytes <= 0 {
+		c.LetRetainedBytes = legacyWorkerExprCaps.LetRetainedBytes
+	}
 	return c
 }
 
@@ -128,17 +132,53 @@ func workerExprCapsOrLegacy(c store.WorkerExprLimits) store.WorkerExprLimits {
 //	openjd.expr_operation_limit          <= expr.operation_limit
 //	openjd.expr_memory_limit             <= expr.memory_limit
 //	openjd.expr_template_retained_bytes  <= expr.assignment_retained_bytes
+//	openjd.expr_template_retained_bytes  <= expr.let_retained_bytes
 //
 // The first is a true subset relation: an assignment resolves a subset of the
-// template's positions, and a position is a position on both sides. The other
-// three relate budgets over the same quantity at different scopes (one
-// evaluation, one assignment, one template walk), where the worker's value is
-// additionally inflated by concrete data — so they are necessary conditions,
-// not guarantees. See the file header.
+// template's positions, and a position is a position on both sides. The others
+// relate budgets over the same quantity at different scopes (one evaluation,
+// one symbol table, one assignment, one template walk), where the worker's
+// value is additionally inflated by concrete data — so they are necessary
+// conditions, not guarantees. See the file header.
 //
-// expr.let_retained_bytes has no server counterpart and is deliberately not
-// compared: it bounds ONE symbol table, a scope the server's walk does not
-// meter separately.
+// THE FIFTH IS THE ONE THAT WAS MISSING, and why the server's TEMPLATE-wide
+// budget is what it is compared against. expr.let_retained_bytes bounds ONE
+// phase-3 symbol table; the server meters no such scope, so there is no exact
+// counterpart to pair it with. What there is, is a bound on the same VALUES at
+// a WIDER scope: openjd.expr_template_retained_bytes is the cumulative size of
+// every let: binding the whole walk retains, so for any template this server
+// ACCEPTS, the bindings landing in any ONE of its tables are a subset of that
+// sum and therefore fit under it. A wider scope is a valid upper bound; the
+// comparison is conservative, never optimistic.
+//
+// It is DELIBERATELY CONSERVATIVE in one direction: a template that spreads the
+// template-wide budget across many steps needs far less than that in any one
+// table, so a worker can be blocked over a budget no single table of the jobs
+// it would actually be given ever wanted. That is the same over-strictness the
+// assignment_retained_bytes row above already carries (an assignment's tables
+// are likewise a subset of a template's), and it is the safe direction: the
+// cost is a visible refusal naming both keys, against an invisible per-task
+// failure after acceptance.
+//
+// THE ALTERNATIVE THAT LOOKS RIGHT AND IS NOT: comparing against
+// openjd.expr_memory_limit, the largest single value one evaluation may hold.
+// It is unsound because a table ACCUMULATES. At the shipped defaults (memory
+// 1,000,000; template retained 10,000,000) a worker at the
+// expr.let_retained_bytes floor of 1,000,000 would PASS that comparison, while
+// a let: block of eight bindings at 1,000,000 bytes each is accepted by this
+// server (8,000,000 <= 10,000,000) and rejected on that worker at the second
+// binding. Section 3.6 allows 50 bindings per block, so the SUFFICIENT form of
+// that comparison is 50 x openjd.expr_memory_limit -- 500,000,000 at the
+// server's own ceiling, which exceeds fmtres.MaxExprLetRetainedBytes
+// (100,000,000) and would therefore be unsatisfiable by any legal worker
+// configuration. The template-wide budget is both satisfiable (both ceilings
+// are 100,000,000) and sound.
+//
+// WHAT IT STILL DOES NOT PROMISE, for the same reason as the other three: the
+// worker measures the WHOLE table, parameters included, and phase 3 binds
+// concrete values phase 2 only had placeholders for. A job whose own parameters
+// are large, or whose bindings grow once resolved, can still exceed a worker
+// that passes this comparison.
 func exprCapShortfall(caps store.WorkerExprLimits, srv openjd.ExprLimits) string {
 	c := workerExprCapsOrLegacy(caps)
 
@@ -172,6 +212,14 @@ func exprCapShortfall(caps store.WorkerExprLimits, srv openjd.ExprLimits) string
 			c.AssignmentRetainedBytes, srv.TemplateRetainedBytes,
 		))
 	}
+	if c.LetRetainedBytes < srv.TemplateRetainedBytes {
+		short = append(short, fmt.Sprintf(
+			"lets one symbol table hold %d live bytes but this server accepts templates whose "+
+				"let: bindings retain up to %d (expr.let_retained_bytes vs "+
+				"openjd.expr_template_retained_bytes)",
+			c.LetRetainedBytes, srv.TemplateRetainedBytes,
+		))
+	}
 	if len(short) == 0 {
 		return ""
 	}
@@ -182,26 +230,45 @@ func exprCapShortfall(caps store.WorkerExprLimits, srv openjd.ExprLimits) string
 
 // jobMayUseEXPR is a HEURISTIC, not a decision procedure, and the difference
 // matters in both directions. It reports whether job's raw template contains
-// the bytes "EXPR" anywhere.
+// BOTH the bytes "EXPR" and the bytes "extensions" -- the key any declaration
+// of it must sit under.
 //
 // WHAT IT GETS RIGHT: a declared extension is spelled literally
 // (`extensions: [EXPR]` / `"extensions":["EXPR"]`) by everything that writes
-// one -- 207 of the 209 vendored EXPR conformance fixtures contain the bytes,
-// and the two that do not are the two that deliberately omit the declaration
-// (3.6--let-requires-expr.invalid.yaml, expr-extension-missing.invalid.yaml).
-// So a real EXPR template matches.
+// one. Measured over the vendored conformance corpus: 201 of the 209 EXPR
+// fixtures contain both byte sequences, and every one of the 8 that do not is a
+// fixture that deliberately does NOT declare the extension -- 2 omit the bytes
+// EXPR entirely (3.6--let-requires-expr.invalid.yaml,
+// expr-extension-missing.invalid.yaml) and 6 `*requires-expr.invalid.yaml`
+// mention EXPR only in a leading comment about the declaration they omit. So
+// this matches every fixture that really declares it and none that does not,
+// and across the 462 base and TASK_CHUNKING fixtures it matches nothing at all.
 //
-// ITS FALSE POSITIVE IS LIVE TODAY, unlike the false negative below. A
-// base-spec template containing those four bytes anywhere -- a comment, an
-// environment variable named HOUDINI_EXPR_CACHE -- is treated as EXPR-capable.
-// On a correctly-configured farm that costs nothing (the shortfall is empty and
-// this function is never called). On a farm whose workers are tighter than the
-// server it is a REAL, REACHABLE misdiagnosis: those workers refuse the job and
-// the task is flagged with a reason about EXPR limits it has nothing to do
-// with. It errs in the safe direction -- work is withheld, never wrongly
-// dispatched -- but the operator sees a message naming a feature they may not
-// use. No shipped preset trips it today (presets/sqi/houdini-rop-render.yaml
-// matches only lowercase `expr`), and that is luck rather than design.
+// WHY BOTH, AND WHY NOT SOMETHING NARROWER. The conjunction is what removes the
+// live false positive this function shipped with: a BASE-SPEC template
+// containing those four bytes in a comment or in an environment variable named
+// HOUDINI_EXPR_CACHE (this repository's own operator documentation used it as
+// the example) declares no extensions at all, so it no longer matches, and is
+// no longer withheld from every short worker and flagged with a reason naming
+// limits it does not use. On a correctly-configured farm that misdiagnosis cost
+// nothing -- the shortfall is empty and this function is never called -- but on
+// a farm whose workers are tighter than the server, with no capable worker in
+// the queue, the job's tasks sit `ready` indefinitely, and with
+// scheduler.unschedulable_grace <= 0 they sit with nothing written on them at
+// all. It was reachable through documented configuration ("raise the workers
+// first" is guidance, not enforcement), which is what made it worth narrowing.
+//
+// A LINE-SCOPED check ("EXPR" and "extensions" on the SAME line) was measured
+// and rejected: it matches 0 of the 209 EXPR fixtures, because the block
+// sequence form puts the value on its own line. It would have turned a
+// tolerable false positive into the false negative below, which is the
+// direction that re-opens design spec §2.
+//
+// The residual false positive is now a template that declares SOME OTHER
+// extension and separately mentions EXPR. No fixture and no shipped preset does
+// (presets/sqi/houdini-rop-render.yaml matches only lowercase `expr`), and the
+// behavior when it happens is unchanged: work is withheld, never wrongly
+// dispatched.
 //
 // WHAT IT GETS WRONG, stated plainly because an earlier revision of this
 // comment claimed the opposite ("a template whose bytes do not contain EXPR
@@ -211,7 +278,10 @@ func exprCapShortfall(caps store.WorkerExprLimits, srv openjd.ExprLimits) string
 // store.Job.RawTemplate, so this function returns false for a template that
 // genuinely declares the extension. The gate then passes, the job dispatches to
 // a tight worker, and its tasks fail at run time — the design spec §2 incident
-// this file exists to prevent.
+// this file exists to prevent. Requiring "extensions" as well widens that
+// escape by one spelling -- obfuscating the KEY now works too -- which is the
+// same class, reachable only by deliberately obfuscating a declaration, and
+// bounded by the same two reasons below.
 //
 // WHY IT SHIPS ANYWAY, and what would replace it:
 //
@@ -238,8 +308,15 @@ func exprCapShortfall(caps store.WorkerExprLimits, srv openjd.ExprLimits) string
 // the lease path, and it needs this heuristic only as the fallback for rows
 // written before that column existed.
 func jobMayUseEXPR(job store.Job) bool {
-	return strings.Contains(job.RawTemplate, openjd.ExtensionEXPR)
+	return strings.Contains(job.RawTemplate, openjd.ExtensionEXPR) &&
+		strings.Contains(job.RawTemplate, extensionsKey)
 }
+
+// extensionsKey is the top-level template key every extension declaration sits
+// under -- the one internal/openjd's parse.go reads (`getStringSlice(raw,
+// "extensions")`). A literal, because what this file matches is bytes in the
+// RAW document, not a decoded field.
+const extensionsKey = "extensions"
 
 // exprCapsBlock returns "" when a worker whose shortfall is workerShortfall may
 // be given job, or the operator-facing reason it may not.
@@ -248,9 +325,9 @@ func jobMayUseEXPR(job store.Job) bool {
 // rather than recomputed because it depends only on the worker and this
 // server's configuration — constant for a whole lease batch, while this
 // function is called once per candidate task. On the passing path that call
-// costs eight integer comparisons (four "was it advertised", four dimensions)
+// costs ten integer comparisons (five "was it advertised", five dimensions)
 // and allocates nothing; on a misconfigured farm
-// it formats up to four sentences, which is why [Scheduler.selectLeaseBatch]
+// it formats up to five sentences, which is why [Scheduler.selectLeaseBatch]
 // hoists it out of the candidate loop. The template scan below likewise only
 // ever runs on a farm that is already misconfigured.
 //

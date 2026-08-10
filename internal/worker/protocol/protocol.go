@@ -146,7 +146,7 @@ type RegisterMsg struct {
 	// configuration section).  The server compares them against its own
 	// openjd.expr_* limits and refuses to dispatch an EXPR job to a worker
 	// that is tighter — see [ExprLimits], which also names the two tests that
-	// keep this key and its four inner keys matching the server's duplicate.
+	// keep this key and its five inner keys matching the server's duplicate.
 	//
 	// Adding it here is deliberately a REGISTRATION-payload change and not a
 	// [ProtocolVersion] bump: the version gate is the worker's receiver-side
@@ -164,7 +164,7 @@ type RegisterMsg struct {
 // contract, the server carries the persistence model.  A renamed tag on either side silently decodes to zero, which
 // the server reads as "not advertised" rather than as an error, so TWO tests in
 // internal/scheduler keep them in step and neither subsumes the other:
-// TestWorkerExprLimits_WireKeysMatchTheProtocol covers the four keys INSIDE
+// TestWorkerExprLimits_WireKeysMatchTheProtocol covers the five keys INSIDE
 // this struct, and TestRegisterMsg_WireFieldsSurviveTheDuplication covers the
 // outer expr_limits key on [RegisterMsg] (and every other field of it) by
 // round-tripping a populated message into the server's duplicate struct.
@@ -185,6 +185,13 @@ type ExprLimits struct {
 	// AssignmentRetainedBytes is how many bytes let: bindings may retain
 	// across one assignment (expr.assignment_retained_bytes).
 	AssignmentRetainedBytes int64 `json:"assignment_retained_bytes,omitempty"`
+	// LetRetainedBytes is how many bytes ONE symbol table may hold live
+	// (expr.let_retained_bytes). Added after the other four: E4d Task 3
+	// excluded it on the grounds that the server has no per-table
+	// counterpart, and the wave's final review showed the exclusion was
+	// reachable through legal configuration — see
+	// internal/scheduler/exprcaps.go for the comparison it feeds.
+	LetRetainedBytes int64 `json:"let_retained_bytes,omitempty"`
 }
 
 // GPUInfo describes the GPU(s) available on a worker host.

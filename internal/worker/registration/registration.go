@@ -194,6 +194,7 @@ func (r *Registrar) Register(ctx context.Context) error {
 			MemoryLimit:             r.exprLimits.MemoryLimit,
 			AssignmentPositions:     r.exprLimits.AssignmentPositions,
 			AssignmentRetainedBytes: r.exprLimits.AssignmentRetainedBytes,
+			LetRetainedBytes:        r.exprLimits.LetRetainedBytes,
 		},
 	}
 

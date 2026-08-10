@@ -273,7 +273,7 @@ func TestRegister_StoresMessageInStream(t *testing.T) {
 // have to reach the server, or the server's dispatch gate has nothing to
 // compare against and silently falls back to assuming the defaults.
 //
-// The four values are deliberately distinct and none is a default: four
+// The five values are deliberately distinct and none is a default: five
 // same-typed int64 fields copied across two struct boundaries (config ->
 // fmtres.ExprLimits -> protocol.ExprLimits) is exactly the shape where a
 // transposition compiles, runs, and advertises the wrong bound.
@@ -286,7 +286,7 @@ func TestRegister_AdvertisesConfiguredExprLimits(t *testing.T) {
 		MemoryLimit:             2_222_222,
 		AssignmentPositions:     3_333,
 		AssignmentRetainedBytes: 4_444_444,
-		LetRetainedBytes:        5_555_555, // not advertised: no server counterpart
+		LetRetainedBytes:        5_555_555,
 	}
 	reg, err := registration.New(
 		nc, "worker-expr", minimalCfg(), want,
@@ -306,10 +306,12 @@ func TestRegister_AdvertisesConfiguredExprLimits(t *testing.T) {
 	if got.ExprLimits.OperationLimit != want.OperationLimit ||
 		got.ExprLimits.MemoryLimit != want.MemoryLimit ||
 		got.ExprLimits.AssignmentPositions != want.AssignmentPositions ||
-		got.ExprLimits.AssignmentRetainedBytes != want.AssignmentRetainedBytes {
-		t.Fatalf("advertised ExprLimits = %+v, want operations=%d memory=%d positions=%d retained=%d",
+		got.ExprLimits.AssignmentRetainedBytes != want.AssignmentRetainedBytes ||
+		got.ExprLimits.LetRetainedBytes != want.LetRetainedBytes {
+		t.Fatalf("advertised ExprLimits = %+v, want operations=%d memory=%d positions=%d "+
+			"retained=%d let_retained=%d",
 			got.ExprLimits, want.OperationLimit, want.MemoryLimit,
-			want.AssignmentPositions, want.AssignmentRetainedBytes)
+			want.AssignmentPositions, want.AssignmentRetainedBytes, want.LetRetainedBytes)
 	}
 }
 
@@ -333,7 +335,8 @@ func TestRegister_UnsetExprLimitsAdvertiseTheDefaults(t *testing.T) {
 	if got.ExprLimits.OperationLimit != d.OperationLimit ||
 		got.ExprLimits.MemoryLimit != d.MemoryLimit ||
 		got.ExprLimits.AssignmentPositions != d.AssignmentPositions ||
-		got.ExprLimits.AssignmentRetainedBytes != d.AssignmentRetainedBytes {
+		got.ExprLimits.AssignmentRetainedBytes != d.AssignmentRetainedBytes ||
+		got.ExprLimits.LetRetainedBytes != d.LetRetainedBytes {
 		t.Fatalf("advertised ExprLimits = %+v, want the fmtres defaults %+v", got.ExprLimits, d)
 	}
 }

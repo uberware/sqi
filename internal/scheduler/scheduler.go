@@ -748,7 +748,7 @@ type RegisterMsg struct {
 	// ExprLimits are the OpenJD EXPR evaluation caps the worker will enforce.
 	// Decoded straight into the store type: the json tags on
 	// protocol.ExprLimits and store.WorkerExprLimits are identical.
-	// TestWorkerExprLimits_WireKeysMatchTheProtocol covers the FOUR INNER keys;
+	// TestWorkerExprLimits_WireKeysMatchTheProtocol covers the FIVE INNER keys;
 	// the outer expr_limits key is covered by
 	// TestRegisterMsg_WireFieldsSurviveTheDuplication (see the type comment) --
 	// two separate tests because a rename of either is independently silent.
