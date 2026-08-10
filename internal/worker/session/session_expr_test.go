@@ -354,3 +354,53 @@ func TestSession_ExitEnvironments_EXPR_StepEnvironmentSeesStepTemplateLet(t *tes
 		t.Errorf("exited.txt = %q; want %q", got, "teardown")
 	}
 }
+
+// TestSession_ExitEnvironments_EXPR_VariablesCannotSeeEnvLet is the EXIT-path
+// twin of TestManagerCreate_EnterEnvironment_EXPR_VariablesCannotSeeEnvLet.
+// resolveEnvAction builds its own fresh table and orders Variables against
+// ApplyEnvLet independently of resolveEnvEntry, so reversing those two lines
+// on the exit path alone would otherwise go unnoticed. The environment is
+// entered with variables that resolve cleanly (Param.Scene) and torn down
+// with one that references the environment's own let name, which §3.6.2 row 4
+// does not grant to Variables.
+func TestSession_ExitEnvironments_EXPR_VariablesCannotSeeEnvLet(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("test uses POSIX shell commands")
+	}
+
+	dataDir := t.TempDir()
+	mgr := NewManager(filepath.Join(dataDir, "sessions"), false, isolation.NewFake(nil), workerconfig.IsolationConfig{}, nopLogger())
+
+	msg := &protocol.AssignMsg{
+		JobID:             "j",
+		EXPR:              true,
+		JobParameters:     map[string]string{"Scene": "world"},
+		JobParameterTypes: map[string]string{"Scene": "STRING"},
+		Environments: []protocol.AssignEnvironment{
+			{
+				Name:      "env-a",
+				Let:       []string{`envlet = Param.Scene + "-suffix"`},
+				OnEnter:   &protocol.Action{Command: "sh", Args: []string{"-c", "echo entered"}},
+				OnExit:    &protocol.Action{Command: "sh", Args: []string{"-c", "echo exiting"}},
+				Variables: map[string]string{"MY_VAR": "{{Param.Scene}}"},
+			},
+		},
+	}
+
+	s, err := mgr.Create(context.Background(), msg)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	// Swap in the offending variable for teardown only: entry must succeed so
+	// that ExitEnvironments has an entered environment to tear down.
+	s.msg.Environments[0].Variables["MY_VAR"] = "{{envlet}}"
+
+	err = s.ExitEnvironments(context.Background(), nopLogger())
+	if err == nil {
+		t.Fatal("ExitEnvironments: want an unknown-symbol error for a variable referencing the environment's own let binding; got success")
+	}
+	if !strings.Contains(err.Error(), `unknown symbol "envlet"`) {
+		t.Errorf("error = %v; want it to report unknown symbol \"envlet\"", err)
+	}
+}

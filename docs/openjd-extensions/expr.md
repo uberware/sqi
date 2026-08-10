@@ -13,9 +13,9 @@ symbol's text verbatim. EXPR (RFC 0005/0006) extends that to a small
 Python-subset expression language: arithmetic, comparisons, string/list
 operations, comprehensions, `let:` bindings, path manipulation
 (`Session.WorkingDirectory / 'frames'`), path mapping
-(`apply_path_mapping(...)`), and an 80-function standard library (plus the
-path *properties*, which are not registry entries), all evaluatable inside
-`{{ ... }}`. A template declares it with `extensions: [EXPR]`.
+(`apply_path_mapping(...)`), and an 80-name standard library — 74 callable
+functions plus the six path properties — all evaluatable inside `{{ ... }}`.
+A template declares it with `extensions: [EXPR]`.
 
 ## Current status
 
@@ -37,8 +37,10 @@ Despite that gate, most of the extension is implemented and tested:
   comprehensions, call syntax — `internal/openjd/expr` (package doc:
   `internal/openjd/expr/doc.go`).
 - **The standard library** — conversions, math, string, regex, path, and
-  `apply_path_mapping`: 80 registered functions plus the path properties —
-  `internal/openjd/expr`'s function tables.
+  `apply_path_mapping`: **80 registry entries**, being 74 callable functions
+  and the six path properties (`__property_name__` and friends), which are
+  registered in the same table — `internal/openjd/expr`'s `functionShapes`,
+  whose count `funcs_internal_test.go` pins at 80.
 - **Bounded evaluation** — per-`Eval` memory and operation limits
   (`internal/openjd/expr/limits.go`, `meter.go`), plus a per-symbol-table
   retained-bytes bound on the worker's `let:` evaluator

@@ -518,13 +518,35 @@ const maxLetBindings = 50
 // PER-TABLE limit for free: the step-template block's results are merged into
 // the same table the step-script block then measures, and EnvSymbols' merged
 // step-template names are in the table ApplyEnvLet measures. Nothing has to
-// remember to pass a budget along.
+// remember to pass a budget along. The table measured is always the one the
+// bindings LAND in, never the narrower one a block may resolve against --
+// see evalLetBindings' mergeTarget, and fix round 3's note there for the
+// measurement that showed why the distinction is load-bearing.
 //
 // 10 MB is the number: generous for any legitimate block (bindings are
 // derived from parameters and path text, and phase 2 type-checks the whole
 // block inside a 1 MB per-Eval budget), while making the worst case an
 // operator can be handed 10 MB retained plus at most one in-flight
 // evaluation's workerMemoryLimit -- 30 MB per table, not 2 GB.
+//
+// TWO ROUGH EDGES, both for E4d (operator configuration) rather than for a
+// hardcoded constant to solve, recorded so the next reader does not mistake
+// either for an oversight:
+//
+//  1. 10,000,000 is EXACTLY limits.go's maxStringBytes, so the largest single
+//     string the evaluator can produce at all can never be bound, even into
+//     an otherwise empty table. That is a coincidence of two independently
+//     chosen round numbers, not a designed relationship; the day the limit
+//     becomes configurable it should not default to sitting exactly on
+//     another bound.
+//  2. Because the accounting measures the whole table (tableRetainedBytes),
+//     a job whose own parameters are already large -- a big LIST[PATH], a
+//     multi-megabyte STRING -- spends budget its let: block never asked for,
+//     and fails at EXECUTION with no phase-2 counterpart to warn the
+//     submitter. Metering only let-bound names would trade that for the
+//     opposite defect (a table could then hold parameters plus a full budget
+//     of bindings), so the whole-table measurement is the right one here;
+//     what it needs is a knob, not a different formula.
 const workerLetRetainedLimit int64 = 10_000_000
 
 // splitLetBinding splits one raw "<name> = <expression>" binding into its
@@ -566,33 +588,59 @@ func splitLetBinding(raw string) (name, exprSrc string, err error) {
 // truncated) block is included alongside it, so a block with more than one
 // failure names each one distinctly rather than repeating the same label.
 //
-// outer is an ADDITIONAL table consulted by the shadow check only -- never
-// read for symbol resolution, never written. It is the table this block's
-// results will be merged into when that is a WIDER table than syms itself,
-// which is the case for exactly one caller: [applyStepTemplateLet], which
-// evaluates against a ScopeStepTemplate projection and merges into the full
-// phase-3 table. Pass nil when syms is itself the merge target. See this
-// section's doc comment (fix round 2) for the defect that made this
-// parameter necessary.
+// mergeTarget is the table this block's results will ultimately land in,
+// when that is a WIDER table than the syms the block RESOLVES against. That
+// is the case for exactly one caller, [applyStepTemplateLet], which resolves
+// against a ScopeStepTemplate projection and merges into the full phase-3
+// table; every other caller passes nil, because syms is itself the target.
+//
+// It is used for two things, and both must key off the target rather than
+// the projection or they are wrong in the same way:
+//
+//   - the SHADOW CHECK, or a binding named for a spec symbol the projection
+//     drops passes the check and then overwrites the real symbol on merge;
+//   - the RETAINED-BYTES accounting, or the budget is measured against a
+//     table smaller than the one the bytes end up in, and the stated
+//     invariant ("no phase-3 symbol table retains more than
+//     workerLetRetainedLimit bytes") is simply false.
+//
+// FIX ROUND 3 (re-review): fix round 2 introduced mergeTarget for the shadow
+// half only and left the byte accounting on syms, which is the identical
+// defect one instance further on. Measured: a task table holding a 3 MB
+// STRING task parameter starts at 6.00 MB; the step-template block measured
+// only the 0.00 MB projection, admitted a 9 MB binding, and merged it, so the
+// table held 15.00 MB against a 10 MB limit. The real ceiling was
+// "workerLetRetainedLimit plus whatever the projection excludes", which is
+// not a bound at all -- Task.Param./Task.RawParam./Task.File./Session./
+// Env.File. are all outside the projection.
 //
 // Every error encountered is collected rather than stopping the block, and
 // errors.Join'd into one returned error -- nil when every binding in the
 // (possibly truncated) block evaluated successfully. The one exception is
 // the retained-bytes bound, which stops the block; see workerLetRetainedLimit.
-func evalLetBindings(label string, lets []string, syms, outer expr.MapSymbols, opts []expr.Option) error {
+func evalLetBindings(label string, lets []string, syms, mergeTarget expr.MapSymbols, opts []expr.Option) error {
 	if len(lets) > maxLetBindings {
 		lets = lets[:maxLetBindings]
+	}
+
+	// The projection's keys are a strict subset of the target's, holding the
+	// identical Values (stepTemplateLetScope filters the target rather than
+	// re-deriving anything), so measuring the target alone counts every live
+	// value exactly once -- no double counting, nothing missed.
+	budgeted := syms
+	if mergeTarget != nil {
+		budgeted = mergeTarget
 	}
 
 	taken := func(name string) bool {
 		if _, ok := syms[name]; ok {
 			return true
 		}
-		_, ok := outer[name]
+		_, ok := budgeted[name]
 		return ok
 	}
 
-	retained := tableRetainedBytes(syms)
+	retained := tableRetainedBytes(budgeted)
 	var errs []error
 	for i, raw := range lets {
 		name, src, err := splitLetBinding(raw)
@@ -645,9 +693,16 @@ func evalLetBindings(label string, lets []string, syms, outer expr.MapSymbols, o
 //
 // It measures the WHOLE table, not just let-bound names: the invariant being
 // maintained is "one phase-3 symbol table never retains more than
-// workerLetRetainedLimit bytes", and a table's spec symbols (a PATH
-// parameter's value, an embedded file's path) are retained bytes too. Cost is
-// O(len(syms)) once per let: block -- a few dozen entries.
+// workerLetRetainedLimit bytes", and a table's spec symbols (a big STRING or
+// PATH parameter's value, an embedded file's path) are retained bytes too.
+// Callers must therefore hand it the table the bindings will land in -- see
+// evalLetBindings' mergeTarget. Cost is O(len(syms)) once per let: block --
+// a few dozen entries.
+//
+// Note the consequence, which is deliberate and belongs to E4d: a job whose
+// own parameters are already large consumes budget its let: block never asked
+// for, and can fail at execution with no phase-2 counterpart. Operator
+// configuration of the limit is where that gets a knob.
 func tableRetainedBytes(syms expr.MapSymbols) int64 {
 	var total int64
 	for _, v := range syms {

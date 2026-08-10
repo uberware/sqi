@@ -1661,3 +1661,45 @@ func TestApplyTaskLet_StepTemplateLetCannotOverwriteSpecSymbols(t *testing.T) {
 		t.Errorf("args = %v; want the REAL session directory and task parameter, not the let bindings' values", action.Args)
 	}
 }
+
+// TestApplyTaskLet_RetainedBytesCountsNonProjectedSymbols is fix round 3's
+// regression, and it is Important 3's defect one instance further on: the
+// step-template block RESOLVES against a ScopeStepTemplate projection but
+// MERGES into the full table, so metering the projection measures a table
+// that excludes Task.Param.*, Task.RawParam.*, Task.File.*, Session.* and
+// Env.File.* -- everything the projection drops -- and then lets the bytes
+// land in the full one anyway.
+//
+// Measured before the fix, with this exact fixture: the table started at
+// 6.00 MB, the projection measured 0.00 MB, the 9 MB binding was admitted and
+// merged, and the table held 15.00 MB against a 10 MB limit. The step-script
+// block then correctly refused to add more, so the real ceiling was
+// "workerLetRetainedLimit plus whatever the projection excludes" -- not a
+// bound. After the fix the table stays at 6.00 MB and both blocks refuse.
+func TestApplyTaskLet_RetainedBytesCountsNonProjectedSymbols(t *testing.T) {
+	// A 3 MB STRING task parameter: bound twice (Task.Param./Task.RawParam.),
+	// and BOTH keys are outside stepTemplateLetScope's projection.
+	msg := &protocol.AssignMsg{
+		EXPR:            true,
+		Parameters:      map[string]string{"Big": strings.Repeat("z", 3_000_000)},
+		ParameterTypes:  map[string]string{"Big": "STRING"},
+		StepTemplateLet: []string{`a0 = "x" * 9000000`},
+	}
+	syms, err := fmtres.TaskSymbols(msg, "/work", "", false)
+	if err != nil {
+		t.Fatalf("TaskSymbols: %v", err)
+	}
+	if start := tableBytes(syms); start < 6_000_000 {
+		t.Fatalf("fixture is broken: table starts at %d bytes, want at least 6,000,000 outside the projection", start)
+	}
+
+	if err := fmtres.ApplyTaskLet(msg, syms, nil); err == nil {
+		t.Fatal("ApplyTaskLet: want a retained-bytes error; the step-template block metered the projection, not the merge target")
+	}
+	if _, ok := syms.Lookup("a0"); ok {
+		t.Error(`"a0" should NOT be bound -- 6 MB of task parameters plus 9 MB is over the limit`)
+	}
+	if got := tableBytes(syms); got > 10_000_000 {
+		t.Errorf("table retains %d bytes, over the 10,000,000-byte limit -- the stated per-table invariant does not hold", got)
+	}
+}
