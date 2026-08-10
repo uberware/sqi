@@ -314,9 +314,34 @@ func TestResolveParameterSpaceParams_WholeFieldListExpression(t *testing.T) {
 			want: []string{"1", "2", "3"},
 		},
 		{
-			name: "INT range_expr result",
+			// NOT a range_expr-typed value: range() (funcslist.go) returns
+			// list[int] DIRECTLY, so this case exercises the same list[int]
+			// coercion path "INT list expression" above does, just reached via
+			// a function call instead of a literal. A GENUINE range_expr value
+			// (from range_expr(), which the language's own list(range_expr)
+			// conversion and this package's evalRangeExprList both handle via
+			// coerce.go's range_expr -> list[int] rule) is what section 2.1's
+			// trap is actually about, and it is NOT exercised by this table at
+			// all — see TestResolveParameterSpaceParams_RangeExprKeepsExpressionPolicy,
+			// below, which pins policy-divergent range_expr shapes this rename
+			// exists to stop misrepresenting.
+			name: "INT list[int] result (range() returns list[int] directly)",
 			typ:  "INT", rangeExpr: "{{ range(1, 4) }}",
 			want: []string{"1", "2", "3"},
+		},
+		{
+			name: "PATH list expression",
+			typ:  "PATH", rangeExpr: `{{ ["a//b", "c/./d", "e\\f"] }}`,
+			// POSIX is expr.Eval's default path_format (see resolve.go's
+			// package-level discipline: a server-side template must expand
+			// identically whatever submitted it, never the host's native
+			// flavor), and a string -> path coercion (coerceScalar's CodePath
+			// case) is a bare re-tag with no normalization at all — so each
+			// entry survives byte for byte: no "//" collapsing, no "."
+			// resolution, and the backslash stays a literal character rather
+			// than becoming a POSIX separator. Confirmed empirically before
+			// writing this case.
+			want: []string{"a//b", "c/./d", "e\\f"},
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -355,6 +380,200 @@ func TestResolveParameterSpaceParams_WholeFieldListExpression(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestResolveParameterSpaceParams_RangeExprKeepsExpressionPolicy is the
+// design spec's section 2.1 trap, pinned directly rather than argued in
+// prose: a GENUINE range_expr-typed value (from range_expr(), which — unlike
+// range(), the "INT list[int] result" case above — really does produce
+// expr.CodeRangeExpr) must expand under internal/openjd/expr's OWN policy
+// (the zero intrange.Policy: start may exceed end, a step may be negative,
+// and section 3.4.1.1.1's own worked table orders the result), never
+// internal/openjd's stricter one (Policy{PositiveStepOnly, AscendingOnly},
+// range.go's openjdRangePolicy) — see evalRangeExprList's doc comment for the
+// full argument.
+//
+// All three rows discriminate the two policies: each is a case
+// internal/openjd's own parseIntRangeExpr rejects or reorders differently —
+// see the sibling test below,
+// TestResolveParameterSpaceParams_LiteralIntRangeKeepsOpenJDPolicy, which
+// pins the SAME three range texts, written as literal <IntRangeExpr>
+// strings, still doing exactly that. If this function's production code were
+// ever "simplified" to render the evaluated value with .String() and hand
+// the resulting <IntRangeExpr> text back through RangeExpr — the exact
+// mistake section 2.1 exists to prevent — every OTHER test in this file
+// keeps passing (range(1,4)'s literal round-trip, "1-3", expands to [1,2,3]
+// either way), but this test starts failing: "5-1" would be rejected instead
+// of expanding to [5], "10-1:-2" would be rejected instead of expanding to
+// [2,4,6,8,10], and "10-15:2,1-5" would come back first-seen
+// ([10,12,14,1,2,3,4,5]) instead of increasing ([1,2,3,4,5,10,12,14].
+// Verified by performing exactly that mutation against this task's own code,
+// confirming this test fails, and reverting — see task-1-report.md's "Fix
+// round 1" section.
+func TestResolveParameterSpaceParams_RangeExprKeepsExpressionPolicy(t *testing.T) {
+	for _, tc := range []struct {
+		name, call string
+		want       []string
+	}{
+		{
+			name: "start > end: legal under expr's policy, [start] per section 3.4.1.1.1",
+			call: `range_expr("5-1")`,
+			want: []string{"5"},
+		},
+		{
+			name: "negative step: legal under expr's policy",
+			call: `range_expr("10-1:-2")`,
+			want: []string{"2", "4", "6", "8", "10"},
+		},
+		{
+			name: "overlapping sub-ranges: expr's policy orders INCREASING",
+			call: `range_expr("10-15:2,1-5")`,
+			want: []string{"1", "2", "3", "4", "5", "10", "12", "14"},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			tmpl := &openjd.JobTemplate{Extensions: []string{"EXPR"}}
+			ps := &openjd.StepParameterSpace{
+				TaskParameterDefinitions: []openjd.TaskParamDefinition{
+					{
+						Name:      "P",
+						Type:      openjd.TaskParamTypeInt,
+						RangeExpr: ptr("{{ " + tc.call + " }}"),
+					},
+				},
+			}
+
+			got, errs := openjd.ResolveParameterSpaceParams(tmpl, ps, nil)
+			if len(errs) != 0 {
+				t.Fatalf("unexpected errors: %v", errs)
+			}
+			def := got.TaskParameterDefinitions[0]
+			if def.RangeExpr != nil {
+				t.Errorf("RangeExpr = %q, want nil", *def.RangeExpr)
+			}
+			if len(def.RangeList) != len(tc.want) {
+				t.Fatalf("RangeList = %v, want %v", def.RangeList, tc.want)
+			}
+			for i, want := range tc.want {
+				if def.RangeList[i] != want {
+					t.Errorf("RangeList[%d] = %q, want %q", i, def.RangeList[i], want)
+				}
+			}
+		})
+	}
+}
+
+// TestResolveParameterSpaceParams_LiteralIntRangeKeepsOpenJDPolicy is
+// TestResolveParameterSpaceParams_RangeExprKeepsExpressionPolicy's sibling:
+// the SAME three range texts, written as LITERAL <IntRangeExpr> strings (no
+// {{...}} at all, so resolveRangeExprField's base-spec branch runs even
+// though EXPR is declared on tmpl) must keep failing or reordering under
+// internal/openjd's OWN stricter policy (range.go's parseIntRangeExpr,
+// invoked from expand.go's expandTaskParam — NOT from this package's
+// resolve.go, which never parses a literal range's semantics, only
+// substitutes {{...}} references in its text). This is the proof that the
+// two policies are genuinely two different code paths reached by two
+// genuinely different inputs, not the same code path merely described twice.
+func TestResolveParameterSpaceParams_LiteralIntRangeKeepsOpenJDPolicy(t *testing.T) {
+	tmpl := &openjd.JobTemplate{Extensions: []string{"EXPR"}}
+
+	for _, tc := range []struct {
+		name, literal, wantErr string
+		want                   []string
+	}{
+		{name: "start > end", literal: "5-1", wantErr: "must be ≤ end"},
+		{name: "negative step", literal: "10-1:-2", wantErr: "must be a positive integer"},
+		{
+			name:    "overlapping sub-ranges: openjd orders FIRST-SEEN",
+			literal: "10-15:2,1-5",
+			want:    []string{"10", "12", "14", "1", "2", "3", "4", "5"},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ps := &openjd.StepParameterSpace{
+				TaskParameterDefinitions: []openjd.TaskParamDefinition{
+					{Name: "P", Type: openjd.TaskParamTypeInt, RangeExpr: ptr(tc.literal)},
+				},
+			}
+
+			resolved, errs := openjd.ResolveParameterSpaceParams(tmpl, ps, nil)
+			if len(errs) != 0 {
+				t.Fatalf("unexpected resolve errors: %v", errs)
+			}
+			// The literal text must pass through resolve.go untouched — proof
+			// EXPR being declared did not reroute it: RangeExpr still set to
+			// the exact literal, RangeList still empty. The policy divergence
+			// itself is enforced downstream, in ExpandParameterSpace.
+			def := resolved.TaskParameterDefinitions[0]
+			if def.RangeExpr == nil || *def.RangeExpr != tc.literal {
+				t.Fatalf("RangeExpr = %v, want %q (a literal range must pass through resolve.go unresolved)", def.RangeExpr, tc.literal)
+			}
+			if len(def.RangeList) != 0 {
+				t.Fatalf("RangeList = %v, want empty", def.RangeList)
+			}
+
+			rows, err := openjd.ExpandParameterSpace(resolved)
+			if tc.wantErr != "" {
+				if err == nil {
+					t.Fatalf("ExpandParameterSpace succeeded, want error containing %q", tc.wantErr)
+				}
+				if !strings.Contains(err.Error(), tc.wantErr) {
+					t.Errorf("error = %q, want it to contain %q", err.Error(), tc.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("ExpandParameterSpace: %v", err)
+			}
+			got := make([]string, len(rows))
+			for i, row := range rows {
+				got[i] = row["P"]
+			}
+			if len(got) != len(tc.want) {
+				t.Fatalf("expanded values = %v, want %v", got, tc.want)
+			}
+			for i, want := range tc.want {
+				if got[i] != want {
+					t.Errorf("expanded[%d] = %q, want %q", i, got[i], want)
+				}
+			}
+		})
+	}
+}
+
+// TestResolveParameterSpaceParams_WholeFieldExpressionMetered proves a
+// whole-field range expression is evaluated under the same submission-time
+// budget (submissionLimits(), exprcheck.go) as every other submit-time
+// expression position, not expr.Eval's own looser unconfigured defaults.
+// Dropping the metering options from evalRangeExprList's expr.Eval call
+// leaves every OTHER test in this file passing (none of them evaluates
+// anything expensive enough to trip a 10,000-operation/1MB budget) — this is
+// the one test that would catch it, the same gap EXPR sub-project E3's own
+// review found and fixed for checkLetBindings. Verified by dropping
+// submissionLimits()... from the call, confirming this test fails, and
+// restoring it — see task-1-report.md's "Fix round 1" section.
+func TestResolveParameterSpaceParams_WholeFieldExpressionMetered(t *testing.T) {
+	tmpl := &openjd.JobTemplate{Extensions: []string{"EXPR"}}
+	ps := &openjd.StepParameterSpace{
+		TaskParameterDefinitions: []openjd.TaskParamDefinition{
+			{
+				Name:      "P",
+				Type:      openjd.TaskParamTypeInt,
+				RangeExpr: ptr("{{ [x * 2 for x in range(1, 20000)] }}"),
+			},
+		},
+	}
+
+	got, errs := openjd.ResolveParameterSpaceParams(tmpl, ps, nil)
+	if got != nil {
+		t.Errorf("expected nil output on error, got %v", got)
+	}
+	if len(errs) != 1 {
+		t.Fatalf("expected 1 error, got %d: %v", len(errs), errs)
+	}
+	if !strings.Contains(errs[0].Message, "operation limit exceeded") {
+		t.Errorf("errs[0].Message = %q, want it to contain %q", errs[0].Message, "operation limit exceeded")
 	}
 }
 
@@ -479,5 +698,8 @@ func TestResolveParameterSpaceParams_WholeFieldExpressionError(t *testing.T) {
 	}
 	if !strings.Contains(errs[0].Pointer, "/parameterSpace/taskParameterDefinitions/0/range") {
 		t.Errorf("errs[0].Pointer = %q, want it to contain the range pointer", errs[0].Pointer)
+	}
+	if !strings.Contains(errs[0].Message, `"Param.Missing"`) {
+		t.Errorf("errs[0].Message = %q, want it to name the unknown symbol %q", errs[0].Message, "Param.Missing")
 	}
 }

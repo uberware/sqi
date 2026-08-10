@@ -102,9 +102,18 @@ func ResolveParameterSpaceParams(tmpl *JobTemplate, ps *StepParameterSpace, jobP
 				newDef.RangeExpr = newRangeExpr
 				newDef.RangeList = newRangeList
 			}
-		}
-
-		if len(def.RangeList) > 0 {
+		} else if len(def.RangeList) > 0 {
+			// else if, not a second independent if: the parser guarantees
+			// exactly one of RangeExpr/RangeList is set per definition (see
+			// TaskParamDefinition's own doc comment), so this branch is
+			// unreachable when the RangeExpr branch above ran — but if that
+			// invariant were ever violated, a plain "if" here would silently
+			// overwrite whatever the RangeExpr branch just wrote into
+			// newDef.RangeList using the ORIGINAL def.RangeList, while leaving
+			// RangeExpr cleared (nil) from the branch above: a corrupted
+			// parameter space (list AND nil range field) with no error raised.
+			// else if makes that combination structurally impossible instead
+			// of merely unlikely.
 			newList := make([]string, len(def.RangeList))
 			for j, entry := range def.RangeList {
 				eptr := fmt.Sprintf("/parameterSpace/taskParameterDefinitions/%d/range/%d", i, j)
