@@ -211,8 +211,24 @@ var convFuncs = map[string][]Shape{
 	// representation. Confirmed: list(range_expr("1-100")) measures 102 on the
 	// reference — range_expr("1-100") alone is 1, so list()'s own share is
 	// 101 = 1 (call) + 100 (the 100 produced elements).
+	//
+	// FnCtx, not Fn, and the count is RESERVED before rangeExprValues expands
+	// anything: the ResultElements charge lands after the list exists, which
+	// priced list(range_expr("1-10000000")) at 10,000,002 operations against a
+	// 10,000 limit only after allocating 1.6 GB (132 ms measured). The
+	// reserved figure comes from rangeExprCount, which is arithmetic for a
+	// single sub-range rather than an expansion -- charging the cost of
+	// counting must not repeat the work being charged for (elementCount,
+	// ops.go).
 	"list": {
-		{Params: []Type{TRangeExpr}, Ret: ListOf(TInt), Cost: Cost{ResultElements: true}, Fn: func(args []Value) (Value, error) {
+		{Params: []Type{TRangeExpr}, Ret: ListOf(TInt), Cost: Cost{ResultElements: true}, FnCtx: func(ec evalCtx, args []Value) (Value, error) {
+			n, err := rangeExprCount(args[0])
+			if err != nil {
+				return Value{}, err
+			}
+			if err := ec.m.reserveElements(n); err != nil {
+				return Value{}, err
+			}
 			vals, err := rangeExprValues(args[0])
 			if err != nil {
 				return Value{}, err

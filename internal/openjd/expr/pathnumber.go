@@ -208,8 +208,11 @@ func printfReplacement(candidate string, n int64) (string, error) {
 // bare "%d" row (no padding) and the "overflow never truncates" rule (a
 // number wider than its padding) both fall out of the SAME call rather than
 // needing their own cases here.
+// The context passed to zfillString is deliberately UNMETERED (meter.go's
+// unmeteredCtx): width is bounded to maxNumberPadding (32) two frames up, and
+// this formatting is not part of any expression's section 1.3.10 accounting.
 func paddedNumber(n int64, width int) (string, error) {
-	v, err := zfillString(strconv.FormatInt(n, 10), int64(width))
+	v, err := zfillString(unmeteredCtx(), strconv.FormatInt(n, 10), int64(width))
 	if err != nil {
 		return "", err
 	}

@@ -42,6 +42,14 @@ func shapeBinary(f func(l, r Value) (Value, error)) func(args []Value) (Value, e
 	return func(args []Value) (Value, error) { return f(args[0], args[1]) }
 }
 
+// shapeBinaryCtx is shapeBinary for an implementation that needs the evaluation
+// context -- specifically, one that must RESERVE its result's section 1.3.10
+// cost against ec.m before allocating it (meter.reserve). It adapts to FnCtx
+// rather than Fn, so a row using it sets FnCtx, not Fn.
+func shapeBinaryCtx(f func(ec evalCtx, l, r Value) (Value, error)) func(ec evalCtx, args []Value) (Value, error) {
+	return func(ec evalCtx, args []Value) (Value, error) { return f(ec, args[0], args[1]) }
+}
+
 // shapeUnary adapts a one-operand implementation to a Shape's argument slice.
 func shapeUnary(f func(v Value) (Value, error)) func(args []Value) (Value, error) {
 	return func(args []Value) (Value, error) { return f(args[0]) }
@@ -230,13 +238,20 @@ var binaryShapes = map[Op][]Shape{
 		// the pre-repetition length, undercounting by a factor of n), and
 		// matches the reference exactly — see TestOperationCount_Operators's
 		// "[1,2] * 3" case (1 call + 6 produced elements = 7).
-		{Params: []Type{ListOf(varT), TInt}, Ret: ListOf(varT), Cost: Cost{ResultElements: true}, Fn: shapeBinary(repeatList)},
+		//
+		// FnCtx, not Fn: the ResultElements charge above is levied by
+		// chargeResult AFTER the repeated list exists, which is a report and
+		// not a bound (meter.reserve). repeatList therefore takes ec and
+		// reserves its arithmetic total before allocating.
+		{Params: []Type{ListOf(varT), TInt}, Ret: ListOf(varT), Cost: Cost{ResultElements: true}, FnCtx: shapeBinaryCtx(repeatList)},
 		// Rule 3 names string repetition by name. ResultBytes for the same
 		// reason ResultElements is right for list repetition just above: the
 		// produced length is len(operand)*n, and the spec's own worked
 		// example (ceilDiv256's doc comment) confirms ceil(PRODUCED length /
 		// 256) is the formula, not a per-operand charge.
-		{Params: []Type{TString, TInt}, Ret: TString, Promote: promoteNoRangeText, Cost: Cost{ResultBytes: true}, Fn: shapeBinary(repeatString)},
+		// FnCtx for the same reason as the row above: repeatString reserves
+		// ceil(produced length / 256) before strings.Repeat allocates it.
+		{Params: []Type{TString, TInt}, Ret: TString, Promote: promoteNoRangeText, Cost: Cost{ResultBytes: true}, FnCtx: shapeBinaryCtx(repeatString)},
 	},
 	// Dividing two ints yields a float — the spec's __truediv__(int, int) -> float.
 	OpDiv: {
@@ -1311,7 +1326,12 @@ func concatRanges(l, r Value) (Value, error) {
 
 // repeatList implements section 2.1.3's list repetition. A non-positive count
 // gives an empty list, as in Python.
-func repeatList(l, r Value) (Value, error) {
+//
+// It takes ec so it can RESERVE the section 1.3.10 cost of the list it is about
+// to build before building it -- see meter.reserve. The row's
+// Cost{ResultElements: true} still levies the actual charge afterwards; this
+// only refuses, and refuses on exactly the arithmetic the charge would report.
+func repeatList(ec evalCtx, l, r Value) (Value, error) {
 	elem, _ := listElem(l.Type)
 	elems := l.AsList()
 	n := r.AsInt()
@@ -1333,6 +1353,12 @@ func repeatList(l, r Value) (Value, error) {
 	if err != nil {
 		return Value{}, err
 	}
+	// BEFORE make() and the loop, not after: chargeResult's ResultElements
+	// charge cannot stop this allocation, only bill for it once it has
+	// happened.
+	if err := ec.m.reserve(total); err != nil {
+		return Value{}, err
+	}
 	out := make([]Value, 0, total)
 	for range n {
 		out = append(out, elems...)
@@ -1342,7 +1368,10 @@ func repeatList(l, r Value) (Value, error) {
 
 // repeatString implements section 2.1.2's string repetition, bounded by length
 // rather than by element count.
-func repeatString(l, r Value) (Value, error) {
+//
+// It takes ec for the same reason repeatList does: to reserve rule 3's
+// ceil(length / 256) on the string it is about to build, before it exists.
+func repeatString(ec evalCtx, l, r Value) (Value, error) {
 	s := l.AsStr()
 	n := r.AsInt()
 	if n <= 0 || s == "" {
@@ -1351,7 +1380,11 @@ func repeatString(l, r Value) (Value, error) {
 	// See repeatList's comment: checkRepeat's division-first bound is what
 	// makes this multiplication-free of the overflow that let the previous,
 	// multiply-then-check version through.
-	if _, err := checkRepeat(len(s), n, maxStringBytes); err != nil {
+	total, err := checkRepeat(len(s), n, maxStringBytes)
+	if err != nil {
+		return Value{}, err
+	}
+	if err := ec.m.reserveBytes(total); err != nil {
 		return Value{}, err
 	}
 	return String(strings.Repeat(s, int(n))), nil

@@ -24,15 +24,20 @@ var listFuncs = map[string][]Shape{
 	// list). Confirmed against the reference: range(10) and range(0,10) both
 	// measure 11 (1 call + 10 elements); range(0,10,2) measures 6
 	// (1 call + 5 elements, for 0,2,4,6,8).
+	//
+	// All three rows use FnCtx rather than Fn so rangeList can RESERVE that
+	// produced count against the meter before allocating it: the
+	// ResultElements charge is levied by chargeResult once the list exists,
+	// which reports the overshoot rather than preventing it (meter.reserve).
 	"range": {
-		{Params: []Type{TInt}, Ret: ListOf(TInt), Cost: Cost{ResultElements: true}, Fn: func(args []Value) (Value, error) {
-			return rangeList(0, args[0].AsInt(), 1)
+		{Params: []Type{TInt}, Ret: ListOf(TInt), Cost: Cost{ResultElements: true}, FnCtx: func(ec evalCtx, args []Value) (Value, error) {
+			return rangeList(ec, 0, args[0].AsInt(), 1)
 		}},
-		{Params: []Type{TInt, TInt}, Ret: ListOf(TInt), Cost: Cost{ResultElements: true}, Fn: func(args []Value) (Value, error) {
-			return rangeList(args[0].AsInt(), args[1].AsInt(), 1)
+		{Params: []Type{TInt, TInt}, Ret: ListOf(TInt), Cost: Cost{ResultElements: true}, FnCtx: func(ec evalCtx, args []Value) (Value, error) {
+			return rangeList(ec, args[0].AsInt(), args[1].AsInt(), 1)
 		}},
-		{Params: []Type{TInt, TInt, TInt}, Ret: ListOf(TInt), Cost: Cost{ResultElements: true}, Fn: func(args []Value) (Value, error) {
-			return rangeList(args[0].AsInt(), args[1].AsInt(), args[2].AsInt())
+		{Params: []Type{TInt, TInt, TInt}, Ret: ListOf(TInt), Cost: Cost{ResultElements: true}, FnCtx: func(ec evalCtx, args []Value) (Value, error) {
+			return rangeList(ec, args[0].AsInt(), args[1].AsInt(), args[2].AsInt())
 		}},
 	},
 	// ORDER IS LOAD-BEARING HERE, and this is the first table in the package
@@ -228,12 +233,21 @@ var listFuncs = map[string][]Shape{
 // checkElementCount exists in limits.go. The arithmetic itself is
 // rangeCount's job, not this function's — see its doc comment for why it
 // works in uint64 rather than int64.
-func rangeList(start, stop, step int64) (Value, error) {
+//
+// The same count is also RESERVED against the evaluation's operation budget
+// here, one line below the fixed-floor check and for the same reason: the
+// row's Cost{ResultElements: true} is levied only once the list exists, so on
+// its own it prices "range(0, 10000000)" at 10,000,001 operations AFTER
+// materializing 1.1 GB of them (61 ms measured). See meter.reserve.
+func rangeList(ec evalCtx, start, stop, step int64) (Value, error) {
 	if step == 0 {
 		return Value{}, errors.New("range() requires a non-zero step")
 	}
 	count := rangeCount(start, stop, step)
 	if err := checkElementCount(count); err != nil {
+		return Value{}, err
+	}
+	if err := ec.m.reserveElements(count); err != nil {
 		return Value{}, err
 	}
 	if count == 0 {

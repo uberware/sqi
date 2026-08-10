@@ -50,18 +50,18 @@ import (
 // that case specifically.
 var strPadFuncs = map[string][]Shape{
 	"ljust": {
-		{Params: []Type{TString, TInt}, Ret: TString, Cost: Cost{ResultBytes: true}, Fn: func(args []Value) (Value, error) {
-			return padString(args[0].AsStr(), args[1].AsInt(), padRight)
+		{Params: []Type{TString, TInt}, Ret: TString, Cost: Cost{ResultBytes: true}, FnCtx: func(ec evalCtx, args []Value) (Value, error) {
+			return padString(ec, args[0].AsStr(), args[1].AsInt(), padRight)
 		}},
 	},
 	"rjust": {
-		{Params: []Type{TString, TInt}, Ret: TString, Cost: Cost{ResultBytes: true}, Fn: func(args []Value) (Value, error) {
-			return padString(args[0].AsStr(), args[1].AsInt(), padLeft)
+		{Params: []Type{TString, TInt}, Ret: TString, Cost: Cost{ResultBytes: true}, FnCtx: func(ec evalCtx, args []Value) (Value, error) {
+			return padString(ec, args[0].AsStr(), args[1].AsInt(), padLeft)
 		}},
 	},
 	"center": {
-		{Params: []Type{TString, TInt}, Ret: TString, Cost: Cost{ResultBytes: true}, Fn: func(args []Value) (Value, error) {
-			return padString(args[0].AsStr(), args[1].AsInt(), padCenter)
+		{Params: []Type{TString, TInt}, Ret: TString, Cost: Cost{ResultBytes: true}, FnCtx: func(ec evalCtx, args []Value) (Value, error) {
+			return padString(ec, args[0].AsStr(), args[1].AsInt(), padCenter)
 		}},
 	},
 	// RFC 0006 gives zfill three rows, one per first-argument type, because a
@@ -72,14 +72,14 @@ var strPadFuncs = map[string][]Shape{
 	// The float row is also why "(42).zfill(5)" needs its parentheses: RFC 0006
 	// notes the Python grammar reads "42." as the start of a float literal.
 	"zfill": {
-		{Params: []Type{TString, TInt}, Ret: TString, Cost: Cost{ResultBytes: true}, Fn: func(args []Value) (Value, error) {
-			return zfillString(args[0].AsStr(), args[1].AsInt())
+		{Params: []Type{TString, TInt}, Ret: TString, Cost: Cost{ResultBytes: true}, FnCtx: func(ec evalCtx, args []Value) (Value, error) {
+			return zfillString(ec, args[0].AsStr(), args[1].AsInt())
 		}},
-		{Params: []Type{TInt, TInt}, Ret: TString, Cost: Cost{ResultBytes: true}, Fn: func(args []Value) (Value, error) {
-			return zfillString(strconv.FormatInt(args[0].AsInt(), 10), args[1].AsInt())
+		{Params: []Type{TInt, TInt}, Ret: TString, Cost: Cost{ResultBytes: true}, FnCtx: func(ec evalCtx, args []Value) (Value, error) {
+			return zfillString(ec, strconv.FormatInt(args[0].AsInt(), 10), args[1].AsInt())
 		}},
-		{Params: []Type{TFloat, TInt}, Ret: TString, Cost: Cost{ResultBytes: true}, Fn: func(args []Value) (Value, error) {
-			return zfillString(args[0].String(), args[1].AsInt())
+		{Params: []Type{TFloat, TInt}, Ret: TString, Cost: Cost{ResultBytes: true}, FnCtx: func(ec evalCtx, args []Value) (Value, error) {
+			return zfillString(ec, args[0].String(), args[1].AsInt())
 		}},
 	},
 }
@@ -108,13 +108,22 @@ const (
 // width is an arbitrary int64 straight from the expression, so at MaxInt64 the
 // naive sum wraps negative and would sail past any comparison on it. checkRepeat
 // never forms the product — its own doc comment carries the argument.
-func padWidth(s string, width int64) (padLen int, need bool, err error) {
+func padWidth(ec evalCtx, s string, width int64) (padLen int, need bool, err error) {
 	cur := int64(utf8.RuneCountInString(s))
 	if width <= cur {
 		return 0, false, nil
 	}
 	n := width - cur
 	if _, err := checkRepeat(1, n, maxStringBytes-len(s)); err != nil {
+		return 0, false, err
+	}
+	// RESERVE rule 3's charge on the PADDED length before any of it is
+	// allocated. The rows' Cost{ResultBytes: true} is levied by chargeResult
+	// once the padded string exists, which reported 39,064 operations against
+	// a 10,000 limit only after building 10 MB ("".ljust(10000000), measured).
+	// The pad is a rune count and the fill is one byte per rune, so
+	// len(s)+n is the produced byte length exactly. See meter.reserve.
+	if err := ec.m.reserveBytes(int64(len(s)) + n); err != nil {
 		return 0, false, err
 	}
 	return int(n), true, nil
@@ -127,8 +136,8 @@ func padWidth(s string, width int64) (padLen int, need bool, err error) {
 // "marg & width & 1" and answers "   ab  " — and the reference implementation
 // does not. We follow the reference, which is also the simpler rule; matching
 // CPython here would create an oracle divergence for no reason.
-func padString(s string, width int64, side padSide) (Value, error) {
-	n, need, err := padWidth(s, width)
+func padString(ec evalCtx, s string, width int64, side padSide) (Value, error) {
+	n, need, err := padWidth(ec, s, width)
 	if err != nil {
 		return Value{}, err
 	}
@@ -151,8 +160,8 @@ func padString(s string, width int64, side padSide) (Value, error) {
 // RFC 0006 states the sign rule for all three rows: zfill("-10", 4) is "-010"
 // and zfill(-1, 3) is "-01", not "0-10" and "0-1". The sign is counted toward
 // the width, so zfill("-", 4) is "-000" — three zeros, four characters.
-func zfillString(s string, width int64) (Value, error) {
-	n, need, err := padWidth(s, width)
+func zfillString(ec evalCtx, s string, width int64) (Value, error) {
+	n, need, err := padWidth(ec, s, width)
 	if err != nil {
 		return Value{}, err
 	}

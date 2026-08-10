@@ -5,6 +5,7 @@ package expr
 import (
 	"errors"
 	"fmt"
+	"math"
 )
 
 // The specification's recommended limits (sections 1.3.9 and 1.3.10), which are
@@ -106,6 +107,73 @@ func (m *meter) chargeElements(n int) error { return m.charge(int64(n)) }
 // chargeBytes applies section 1.3.10 rule 3: processing a string or path value
 // adds its length divided by 256, rounded up.
 func (m *meter) chargeBytes(s string) error { return m.charge(ceilDiv256(len(s))) }
+
+// reserve reports whether n MORE operations would breach the bound, WITHOUT
+// adding them to the running total.
+//
+// It exists because [meter.charge] is inherently a report AFTER the fact, and
+// for a BULK operation that is not a bound at all. The charge for a produced
+// collection (Cost.ResultElements, Cost.ResultBytes -- chargeResult in ops.go)
+// necessarily runs once the value exists, so "[0] * 10000000" under a
+// 10,000-operation limit used to materialize ten million elements (1.1 GB, 108
+// ms measured) and only THEN report 10,000,001 operations against a limit of
+// 10,000 -- a thousandfold overshoot of the very number the error names. The
+// only thing that actually stopped it was limits.go's fixed maxElements floor,
+// three orders of magnitude higher.
+//
+// The distinction from charge is deliberate and is what keeps this invisible to
+// every SUCCESSFUL evaluation: reserve(n) fails exactly when a later charge(n)
+// would have failed, and adds nothing of its own, so an evaluation that
+// completes is charged precisely what it was charged before this existed. That
+// is what makes the differential oracle (test/oracle) the instrument for this
+// change -- its operation counts are compared only on cases whose values agree,
+// i.e. only on evaluations that succeeded, and not one of them may move.
+//
+// Call it at a site that has an ARITHMETIC count in hand and has not yet
+// allocated -- the same discipline limits.go's checkElementCount already
+// follows, and usually the very next line after it. See repeatList (ops.go),
+// rangeList (funcslist.go), the list(range_expr) row (funcsconv.go), padWidth
+// (funcsstrpad.go) and evalComprehension's source expansion (comp.go).
+func (m *meter) reserve(n int64) error {
+	if n <= 0 {
+		return nil
+	}
+	if m.ops+n > m.opLimit {
+		return fmt.Errorf("%w: %d operations exceeds the limit of %d",
+			errOperationLimit, m.ops+n, m.opLimit)
+	}
+	return nil
+}
+
+// reserveElements is [meter.reserve] for a rule-2 element count that is known
+// before the elements are built.
+func (m *meter) reserveElements(n int) error { return m.reserve(int64(n)) }
+
+// reserveBytes is [meter.reserve] for a rule-3 byte length that is known before
+// the string is built. It takes the LENGTH rather than the string itself --
+// which is the whole point, since the string does not exist yet.
+func (m *meter) reserveBytes(n int64) error {
+	if n <= 0 {
+		return nil
+	}
+	return m.reserve((n + 255) / 256)
+}
+
+// unmeteredCtx returns an evalCtx whose meter can refuse nothing.
+//
+// It exists for exactly ONE caller -- paddedNumber (pathnumber.go), which
+// renders with_number's zero padding through zfillString from outside any
+// evaluation's own budget, and whose width is already bounded to
+// maxNumberPadding (32) characters by the caller above it, so there is
+// nothing here for a budget to bound.
+//
+// Do not reach for it anywhere else. A zero-value evalCtx would carry a NIL
+// meter and panic on the first charge, which is why this returns a real one;
+// but a real evaluation path routed through this context is unbounded by
+// construction, which is the state sub-project E1 exists to have ended.
+func unmeteredCtx() evalCtx {
+	return evalCtx{m: newMeter(math.MaxInt64, math.MaxInt64)}
+}
 
 // ceilDiv256 is rule 3's ceil(len / 256).
 //

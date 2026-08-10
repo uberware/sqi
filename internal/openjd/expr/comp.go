@@ -133,6 +133,21 @@ func evalListComp(n *ListComp, ec evalCtx, target Type, depth int) (Value, error
 		return out, nil
 	}
 
+	// RESERVE rule 2's per-element charge before iterItems expands anything.
+	// runComp charges it below, but only once the items exist, and for a
+	// range_expr iterable "exist" means a full expansion: [x for x in
+	// range_expr("1-10000000")] materialized 1.6 GB in 97 ms and only then
+	// reported 10,000,001 operations against a limit of 10,000. elementCount
+	// answers arithmetically for a range_expr (rangeExprCount) and is exactly
+	// what runComp will charge, so an evaluation that survives this is charged
+	// the same total it always was -- see meter.reserve.
+	count, err := elementCount(iter)
+	if err != nil {
+		return Value{}, wrapAt(ec.src, n.Iter.Pos(), err)
+	}
+	if err := ec.m.reserveElements(count); err != nil {
+		return Value{}, err
+	}
 	items, err := iterItems(iter)
 	if err != nil {
 		return Value{}, wrapAt(ec.src, n.Iter.Pos(), err)
