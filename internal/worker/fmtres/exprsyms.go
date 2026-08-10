@@ -358,10 +358,27 @@ func bindFileSymbols(syms expr.MapSymbols, prefix string, files []protocol.Embed
 // block. Section 3.6's shadowing rule -- "a let binding may not shadow a
 // previous binding in the same let block or any enclosing scope" -- is
 // enforced the identical way checkLetBindings enforces it: a name already
-// present as a KEY in syms, checked by lookup, not by a parallel name list,
-// so it equally catches a collision with a spec symbol (unreachable in
-// practice only because section 3.6.1's lowercase-first <UserIdentifier>
-// rule keeps the two namespaces disjoint, not because this code assumes it).
+// present as a KEY, checked by lookup rather than against a parallel name
+// list, so it equally catches a collision with a spec symbol (unreachable
+// from a submitted template only because section 3.6.1's lowercase-first
+// <UserIdentifier> grammar keeps the two namespaces disjoint, and
+// splitLetBinding deliberately does not re-check that grammar on wire data).
+//
+// FIX ROUND 2 (whole-branch review, Important 3): the lookup is against the
+// table the results are MERGED INTO, which for the step-template block is
+// NOT the (narrowed) table the block is evaluated against. Fix round 1 added
+// the ScopeStepTemplate narrowing and left the shadow check keyed off the
+// narrowed view, which re-opened a hole a previous reviewer had verified
+// closed: a binding named for a spec symbol OUTSIDE the projection --
+// "Session.WorkingDirectory = \"/pwned\"", "Task.Param.N = 999" -- passed the
+// check (the projection does not hold those keys) and then OVERWROTE the real
+// symbol on merge, so an onRun rendered "/pwned" and "999" with no error at
+// all. Only "Step.Name", which the projection does hold, was reported.
+// evalLetBindings therefore takes the merge target separately, as outer.
+// No privilege boundary moved -- a submitted template cannot reach this,
+// parseLetBinding rejecting a dotted name at submit -- but the invariant
+// "a let binding never silently replaces a spec symbol" is not one to hold
+// only by accident of which table was handy.
 //
 // Three deliberate differences from checkLetBindings, all because phase 3 is
 // an EXECUTION phase with no author to hand a JSON-pointer-keyed diagnostic
@@ -513,12 +530,30 @@ func splitLetBinding(raw string) (name, exprSrc string, err error) {
 // truncated) block is included alongside it, so a block with more than one
 // failure names each one distinctly rather than repeating the same label.
 //
+// outer is an ADDITIONAL table consulted by the shadow check only -- never
+// read for symbol resolution, never written. It is the table this block's
+// results will be merged into when that is a WIDER table than syms itself,
+// which is the case for exactly one caller: [applyStepTemplateLet], which
+// evaluates against a ScopeStepTemplate projection and merges into the full
+// phase-3 table. Pass nil when syms is itself the merge target. See this
+// section's doc comment (fix round 2) for the defect that made this
+// parameter necessary.
+//
 // Every error encountered is collected rather than stopping the block, and
 // errors.Join'd into one returned error -- nil when every binding in the
-// (possibly truncated) block evaluated successfully.
-func evalLetBindings(label string, lets []string, syms expr.MapSymbols, opts []expr.Option) error {
+// (possibly truncated) block evaluated successfully. The one exception is
+// the retained-bytes bound, which stops the block; see workerLetRetainedLimit.
+func evalLetBindings(label string, lets []string, syms, outer expr.MapSymbols, opts []expr.Option) error {
 	if len(lets) > maxLetBindings {
 		lets = lets[:maxLetBindings]
+	}
+
+	taken := func(name string) bool {
+		if _, ok := syms[name]; ok {
+			return true
+		}
+		_, ok := outer[name]
+		return ok
 	}
 
 	retained := tableRetainedBytes(syms)
@@ -530,7 +565,7 @@ func evalLetBindings(label string, lets []string, syms expr.MapSymbols, opts []e
 			continue
 		}
 
-		if _, taken := syms[name]; taken {
+		if taken(name) {
 			errs = append(errs, fmt.Errorf(
 				"%s[%d]: let binding %q shadows a name already in scope", label, i, name,
 			))
@@ -614,6 +649,12 @@ func tableRetainedBytes(syms expr.MapSymbols) int64 {
 // StepTemplateLet binding sees, just gated to the narrower key set, with no
 // second, independently maintained construction that could drift from
 // TaskSymbols' own.
+//
+// FIX ROUND 2 (whole-branch review, Important 3): the table returned here is
+// what the block RESOLVES against, and nothing more. It is NOT what the
+// block's shadow check consults -- that must be the merge target, or a
+// binding named for a spec symbol this projection drops passes the check and
+// then overwrites the real symbol. [applyStepTemplateLet] passes both.
 func stepTemplateLetScope(full expr.MapSymbols) expr.MapSymbols {
 	out := expr.MapSymbols{}
 	for k, v := range full {
@@ -680,7 +721,7 @@ func stepTemplateLetScope(full expr.MapSymbols) expr.MapSymbols {
 func ApplyTaskLet(msg *protocol.AssignMsg, syms expr.MapSymbols, pathMap []protocol.PathMapRule) error {
 	opts := ExprEvalOptions(pathMap)
 	tmplErr := applyStepTemplateLet(msg.StepTemplateLet, syms, opts)
-	scriptErr := evalLetBindings("step script let", msg.StepScriptLet, syms, opts)
+	scriptErr := evalLetBindings("step script let", msg.StepScriptLet, syms, nil, opts)
 	return errors.Join(tmplErr, scriptErr)
 }
 
@@ -703,7 +744,7 @@ func applyStepTemplateLet(lets []string, syms expr.MapSymbols, opts []expr.Optio
 	for k := range tmplScope {
 		preLetKeys[k] = struct{}{}
 	}
-	err := evalLetBindings("step template let", lets, tmplScope, opts)
+	err := evalLetBindings("step template let", lets, tmplScope, syms, opts)
 	for k, v := range tmplScope {
 		if _, existed := preLetKeys[k]; !existed {
 			syms[k] = v
@@ -739,5 +780,5 @@ func ApplyEnvLet(env *protocol.AssignEnvironment, syms expr.MapSymbols, pathMap 
 	if env == nil {
 		return nil
 	}
-	return evalLetBindings("environment let", env.Let, syms, ExprEvalOptions(pathMap))
+	return evalLetBindings("environment let", env.Let, syms, nil, ExprEvalOptions(pathMap))
 }

@@ -1604,3 +1604,56 @@ func TestApplyTaskLet_RetainedBytesAllowsOrdinaryBlocks(t *testing.T) {
 		t.Error(`"a49" (the 50th ordinary binding) should be bound`)
 	}
 }
+
+// TestApplyTaskLet_StepTemplateLetCannotOverwriteSpecSymbols is the
+// whole-branch review's Important 3 regression. The step-template block is
+// evaluated against a ScopeStepTemplate PROJECTION of the table but merged
+// into the FULL one, so a shadow check keyed off the projection lets a
+// binding named for any spec symbol outside it -- Session.*, Task.* --
+// through, and the merge then silently replaces the real symbol. Measured at
+// the time: the error named only "Step.Name", and onRun rendered
+// "[/pwned 999]" with err = nil.
+//
+// Not reachable from a submitted template (§3.6.1's <UserIdentifier> grammar
+// rejects a dotted name at submit, and splitLetBinding deliberately does not
+// re-check it on wire data), so this guards an invariant, not a privilege
+// boundary.
+func TestApplyTaskLet_StepTemplateLetCannotOverwriteSpecSymbols(t *testing.T) {
+	msg := &protocol.AssignMsg{
+		EXPR:           true,
+		StepName:       "S",
+		Parameters:     map[string]string{"N": "5"},
+		ParameterTypes: map[string]string{"N": "INT"},
+		StepTemplateLet: []string{
+			`Session.WorkingDirectory = "/pwned"`,
+			`Task.Param.N = 999`,
+			`Step.Name = "nope"`,
+		},
+		OnRun: &protocol.Action{
+			Command: "echo",
+			Args:    []string{"{{ Session.WorkingDirectory }}", "{{ Task.Param.N }}"},
+		},
+	}
+	syms, err := fmtres.TaskSymbols(msg, "/work", "", false)
+	if err != nil {
+		t.Fatalf("TaskSymbols: %v", err)
+	}
+
+	lerr := fmtres.ApplyTaskLet(msg, syms, nil)
+	if lerr == nil {
+		t.Fatal("ApplyTaskLet: want shadow rejections for all three bindings, got nil")
+	}
+	for _, name := range []string{"Session.WorkingDirectory", "Task.Param.N", "Step.Name"} {
+		if !strings.Contains(lerr.Error(), fmt.Sprintf("%q shadows", name)) {
+			t.Errorf("error does not reject %q as shadowing: %v", name, lerr)
+		}
+	}
+
+	action, aerr := fmtres.ResolveActionExpr(msg.OnRun, syms, nil)
+	if aerr != nil {
+		t.Fatalf("ResolveActionExpr: %v", aerr)
+	}
+	if len(action.Args) != 2 || action.Args[0] != filepath.FromSlash("/work") || action.Args[1] != "5" {
+		t.Errorf("args = %v; want the REAL session directory and task parameter, not the let bindings' values", action.Args)
+	}
+}
