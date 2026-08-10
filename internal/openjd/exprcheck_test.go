@@ -664,6 +664,23 @@ func TestCheckTemplateExpressions_RangeExprListValuedAccepted(t *testing.T) {
 // per the design spec's own note ("the per-entry RangeList positions already
 // use TargetString, which is not right for FLOAT, INT or PATH entries").
 //
+// wholeReject is entryReject's whole-field counterpart, present for every
+// type except STRING: a LIST whose elements are the wrong scalar type --
+// not merely a bare scalar, which "whole-field rejected (wrong shape)" above
+// already covers and which every list-shaped target rejects identically
+// regardless of its element type. Review finding (Task 3 review, item 1):
+// before this row existed, mutating rangeExprFieldType to return
+// expr.ListOf(expr.TString) unconditionally -- discarding the declared
+// type's element entirely, keeping only "it's a list" -- left this whole
+// test, and the rest of the package, green. wholeAccept's own list literals
+// ({{ [1,2,3] }}, {{ [1.0,2.5] }}, {{ [path('/a'),path('/b')] }}) all coerce
+// to list[string] as readily as to their own element type (section 1.2.3's
+// scalar->string catch-all applies elementwise), so nothing in the table
+// distinguished "a list" from "THIS type's list" until wholeReject did.
+// STRING again has none: a list[string] literal is what list[string]
+// (STRING's own target) already accepts, so there is no wrong-element-type
+// list left to construct.
+//
 // Neither reject expression references an unbound symbol, so a failure here
 // can only be the target-type coercion this task adds -- not the
 // pre-existing scope check TestCheckTemplateExpressions_RangeEntries/
@@ -673,12 +690,21 @@ func TestCheckParameterSpaceExpressions_RangeTargetTypes(t *testing.T) {
 		name        string
 		typ         TaskParamType
 		wholeAccept string
+		wholeReject string // "" when there is no wrong-ELEMENT-type list to build (STRING)
 		entryAccept string
 		entryReject string // "" when there is no type-mismatch (as opposed to shape-mismatch) case
 	}{
 		{
 			name: "INT", typ: TaskParamTypeInt,
 			wholeAccept: "{{ [1, 2, 3] }}", entryAccept: "{{ 5 }}",
+			// A list of strings: string->int coercion needs a value that
+			// parses as an int, and "a" does not -- so this is rejected on
+			// the VALUE, not merely the type (list[string] -> list[int] is
+			// type-level coercible, per scalarCoercible's string->int rule).
+			// Still a live discriminator: expr.ListOf(expr.TString) accepts
+			// it outright (no conversion attempted), so it still catches the
+			// mutation.
+			wholeReject: "{{ ['a'] }}",
 			// 2.5 is not integral: TargetString would render it "2.5"
 			// unchanged, but TInt performs the real float->int narrowing and
 			// rejects a non-exact value (design spec §3's own INT/Scale=2.5
@@ -689,11 +715,16 @@ func TestCheckParameterSpaceExpressions_RangeTargetTypes(t *testing.T) {
 		{
 			name: "CHUNK[INT]", typ: TaskParamTypeChunkInt,
 			wholeAccept: "{{ [1, 2, 3] }}", entryAccept: "{{ 5 }}",
+			wholeReject: "{{ ['a'] }}",
 			entryReject: "{{ 2.5 }}",
 		},
 		{
 			name: "FLOAT", typ: TaskParamTypeFloat,
 			wholeAccept: "{{ [1.0, 2.5] }}", entryAccept: "{{ 2.5 }}",
+			// "abc" does not parse as a float -- rejected on the value,
+			// exactly as expand.go's validateFloatList would reject it
+			// downstream, but here at submit and at the field's own pointer.
+			wholeReject: "{{ ['abc'] }}",
 			// A bool coerces to string unconditionally (section 1.2.3's
 			// catch-all) but has no bool->float rule at all.
 			entryReject: "{{ true }}",
@@ -705,6 +736,11 @@ func TestCheckParameterSpaceExpressions_RangeTargetTypes(t *testing.T) {
 		{
 			name: "PATH", typ: TaskParamTypePath,
 			wholeAccept: "{{ [path('/a'), path('/b')] }}", entryAccept: "{{ path('/a') }}",
+			// An int coerces to string unconditionally but only a string
+			// coerces to path (section 1.2.3: path <- string only) -- so a
+			// list[int] is rejected by list[path] on the TYPE, not the
+			// value, unlike the INT/FLOAT rows above.
+			wholeReject: "{{ [1, 2] }}",
 			// An int coerces to string unconditionally but only a string
 			// coerces to path (section 1.2.3: path <- string only).
 			entryReject: "{{ 5 }}",
@@ -727,6 +763,13 @@ func TestCheckParameterSpaceExpressions_RangeTargetTypes(t *testing.T) {
 				wantPtr := "/steps/0/parameterSpace/taskParameterDefinitions/0/range"
 				assertRejectedAt(t, errs, wantPtr, tc.entryAccept)
 			})
+			if tc.wholeReject != "" {
+				t.Run("whole-field rejected (wrong element type)", func(t *testing.T) {
+					errs := checkRangeField(tc.typ, tc.wholeReject)
+					wantPtr := "/steps/0/parameterSpace/taskParameterDefinitions/0/range"
+					assertRejectedAt(t, errs, wantPtr, tc.wholeReject)
+				})
+			}
 			t.Run("entry accepted", func(t *testing.T) {
 				errs := checkRangeEntry(tc.typ, tc.entryAccept)
 				if len(errs) != 0 {

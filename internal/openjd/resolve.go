@@ -321,10 +321,12 @@ func resolveRangeListEntry(exprEnabled bool, entry string, typ TaskParamType, sy
 }
 
 // resolveFormatStringExpr resolves one EXPR-aware format-string field —
-// either a RangeList entry (loneTarget TargetString) or a whole-field
-// RangeString that is not a lone reference (loneTarget expr.TAny, since
-// resolveRangeExprField's caller already special-cased and consumed the lone
-// case before this function ever runs for that position) — against syms.
+// either a RangeList entry (loneTarget rangeExprElemType(typ): TInt, TFloat,
+// TString or TPath, per the entry's own declared task-parameter type — see
+// resolveRangeListEntry's own doc comment) or a whole-field RangeString that
+// is not a lone reference (loneTarget expr.TAny, since resolveRangeExprField's
+// caller already special-cased and consumed the lone case before this
+// function ever runs for that position) — against syms.
 //
 // This mirrors internal/worker/fmtres/expres.go's resolveFormatStringExpr
 // and internal/openjd/exprcheck.go's checkFormatString exactly, per section
