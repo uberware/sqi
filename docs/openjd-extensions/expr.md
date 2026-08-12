@@ -298,9 +298,13 @@ itself, which is what the worker's receiver-side check keys off:
 **The server builds every assignment** (`internal/scheduler/assign.go`), and
 populates these fields only for a template that declares EXPR — every
 other message (`RegisterMsg`, `HeartbeatMsg`, `TaskStatusMsg`,
-`LogChunkMsg`) is unaffected, and version enforcement is currently
-**receiver-side on the worker only**: the server does not yet check
-`Version` on the messages it receives.
+`LogChunkMsg`) is unaffected by the added fields. Version enforcement is
+**both-directional**: the worker checks the `AssignMsg` it receives, and the
+server checks the `RegisterMsg`, `HeartbeatMsg` and `TaskStatusMsg` it
+receives (`scheduler.discardOnVersionMismatch`), discarding a mismatched
+message rather than half-reading it. `LogChunkMsg` and `DeregisterMsg` are
+deliberately not gated — a mismatched worker is already fenced out by the
+registration gate, so neither can carry work-affecting state on its own.
 
 ## Worker behavior
 
@@ -784,15 +788,16 @@ recorded in that function's own comment as later work.
   lease loop rejects any `AssignMsg` whose `Version` does not match its own,
   so a `"2"` worker talking to a `"1"` server rejects every assignment it is
   offered and the tasks churn through reclaim until the server is upgraded.
-  The reverse order is the safe one: a `"1"` worker against a `"2"` server
-  also rejects, but the server can still hand that work to upgraded workers.
-  Nothing enforces or detects the ordering today.
-- **Only the worker's lease-loop receiver enforces `Version`.** The other
-  worker→server message types decode without a version check today, so a
-  version mismatch on those channels is silent. `heartbeat` and
-  `registration` decode into local server-side structs with no `Version`
-  field at all — a mismatch drops unrecognized fields regardless of
-  version; `TaskStatusMsg` decodes into the real wire type but the
-  consumer never reads `.Version`. Also later work.
+  The reverse order is the safe one: a `"1"` worker against a `"2"` server is
+  now refused at registration, so it is never offered work at all — it does
+  not appear in the workers list, and the server logs the mismatch with both
+  versions. Nothing enforces the ordering, but neither direction is silent.
+- **The gate covers four of six channels.** `AssignMsg` (worker-side, since
+  `"2"`), plus `RegisterMsg`, `HeartbeatMsg` and `TaskStatusMsg`
+  (server-side). A discarded task status is the one that costs something:
+  the server never learns the task finished, so it is reclaimed and retried.
+  That is deliberate — it is the message carrying the outcome, and a wrong
+  outcome written to a task that actually succeeded is worse than a re-run.
+  `LogChunkMsg` and `DeregisterMsg` remain ungated by design.
 - **`EXPR`'s registry `Status` stays `StatusInProgress`** until the gaps
   above (and the job-parameter types section 1.2.2 requires) are closed.

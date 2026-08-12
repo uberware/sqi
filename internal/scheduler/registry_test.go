@@ -21,6 +21,7 @@ import (
 	"github.com/uberware/sqi/internal/bus"
 	"github.com/uberware/sqi/internal/store"
 	"github.com/uberware/sqi/internal/store/fake"
+	"github.com/uberware/sqi/internal/worker/protocol"
 )
 
 // workerMsgJSON marshals any value to JSON bytes for a fakeJSMsg payload.
@@ -41,7 +42,8 @@ func TestHandleWorkerRegister_Valid(t *testing.T) {
 
 	msg := &fakeJSMsg{
 		subject: bus.SubjectWorkerRegister,
-		data: workerMsgJSON(t, RegisterMsg{
+		data: workerMsgJSON(t, protocol.RegisterMsg{
+			Version: protocol.ProtocolVersion, Type: protocol.TypeRegister,
 			WorkerID: "w-1", FarmID: "farm-1", Name: "worker-2", Hostname: "node-1", OS: "linux",
 			WorkerVersion: "v0.1.0",
 		}),
@@ -87,7 +89,7 @@ func TestHandleWorkerRegister_MissingWorkerID_Acked(t *testing.T) {
 
 	msg := &fakeJSMsg{
 		subject: bus.SubjectWorkerRegister,
-		data:    workerMsgJSON(t, RegisterMsg{WorkerID: "", FarmID: "farm-1"}),
+		data:    workerMsgJSON(t, protocol.RegisterMsg{Version: protocol.ProtocolVersion, WorkerID: "", FarmID: "farm-1"}),
 	}
 	s.handleWorkerMessage(msg)
 
@@ -111,7 +113,7 @@ func TestHandleWorkerRegister_StoreError_Nacked(t *testing.T) {
 
 	msg := &fakeJSMsg{
 		subject: bus.SubjectWorkerRegister,
-		data:    workerMsgJSON(t, RegisterMsg{WorkerID: "w-1", FarmID: "farm-1"}),
+		data:    workerMsgJSON(t, protocol.RegisterMsg{Version: protocol.ProtocolVersion, WorkerID: "w-1", FarmID: "farm-1"}),
 	}
 	s.handleWorkerMessage(msg)
 
@@ -139,7 +141,7 @@ func TestHandleWorkerHeartbeat_Valid(t *testing.T) {
 	hbAt := now.Add(5 * time.Second)
 	msg := &fakeJSMsg{
 		subject: bus.SubjectWorkerHeartbeat,
-		data:    workerMsgJSON(t, HeartbeatMsg{WorkerID: "w-1", At: hbAt}),
+		data:    workerMsgJSON(t, protocol.HeartbeatMsg{Version: protocol.ProtocolVersion, WorkerID: "w-1", At: hbAt}),
 	}
 	s.handleWorkerMessage(msg)
 
@@ -169,7 +171,7 @@ func TestHandleWorkerHeartbeat_ZeroAt_UsesServerTime(t *testing.T) {
 
 	msg := &fakeJSMsg{
 		subject: bus.SubjectWorkerHeartbeat,
-		data:    workerMsgJSON(t, HeartbeatMsg{WorkerID: "w-1"}), // zero At
+		data:    workerMsgJSON(t, protocol.HeartbeatMsg{Version: protocol.ProtocolVersion, WorkerID: "w-1"}), // zero At
 	}
 	s.handleWorkerMessage(msg)
 
@@ -188,7 +190,7 @@ func TestHandleWorkerHeartbeat_UnknownWorker_Nacked(t *testing.T) {
 
 	msg := &fakeJSMsg{
 		subject: bus.SubjectWorkerHeartbeat,
-		data:    workerMsgJSON(t, HeartbeatMsg{WorkerID: "ghost", At: time.Now()}),
+		data:    workerMsgJSON(t, protocol.HeartbeatMsg{Version: protocol.ProtocolVersion, WorkerID: "ghost", At: time.Now()}),
 	}
 	s.handleWorkerMessage(msg)
 
@@ -205,7 +207,7 @@ func TestHandleWorkerHeartbeat_MalformedAndMissingID_Acked(t *testing.T) {
 		{"malformed", []byte("{bad")},
 		{"missing id", nil}, // filled below
 	}
-	tests[1].data = workerMsgJSON(t, HeartbeatMsg{WorkerID: ""})
+	tests[1].data = workerMsgJSON(t, protocol.HeartbeatMsg{Version: protocol.ProtocolVersion, WorkerID: ""})
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -371,7 +373,8 @@ func TestRegistration_AutoRegistersComputeLocation(t *testing.T) {
 	// handleWorkerMessage; assert the entity is created in the store.
 	msg := &fakeJSMsg{
 		subject: bus.SubjectWorkerRegister,
-		data: workerMsgJSON(t, RegisterMsg{
+		data: workerMsgJSON(t, protocol.RegisterMsg{
+			Version: protocol.ProtocolVersion, Type: protocol.TypeRegister,
 			WorkerID: "w-loc-1", FarmID: "farm-1", Hostname: "n1", OS: "linux",
 			ComputeLocation: "render-hall",
 		}),
@@ -427,7 +430,8 @@ func TestRegistration_EnsureComputeLocation_StoreError(t *testing.T) {
 
 	msg := &fakeJSMsg{
 		subject: bus.SubjectWorkerRegister,
-		data: workerMsgJSON(t, RegisterMsg{
+		data: workerMsgJSON(t, protocol.RegisterMsg{
+			Version: protocol.ProtocolVersion, Type: protocol.TypeRegister,
 			WorkerID: "w-loc-err", FarmID: "farm-1", Hostname: "n1", OS: "linux",
 			ComputeLocation: "render-hall",
 		}),
@@ -479,7 +483,8 @@ func TestRegistration_EnsureComputeLocation_LookupError(t *testing.T) {
 
 	msg := &fakeJSMsg{
 		subject: bus.SubjectWorkerRegister,
-		data: workerMsgJSON(t, RegisterMsg{
+		data: workerMsgJSON(t, protocol.RegisterMsg{
+			Version: protocol.ProtocolVersion, Type: protocol.TypeRegister,
 			WorkerID: "w-loc-err2", FarmID: "farm-1", Hostname: "n1", OS: "linux",
 			ComputeLocation: "render-hall",
 		}),
@@ -518,7 +523,7 @@ func TestHandleWorkerMessage_RegisterID(t *testing.T) {
 
 	msg := &fakeJSMsg{
 		subject: bus.SubjectWorkerRegister,
-		data:    workerMsgJSON(t, RegisterMsg{WorkerID: id, FarmID: "farm-1"}),
+		data:    workerMsgJSON(t, protocol.RegisterMsg{Version: protocol.ProtocolVersion, WorkerID: id, FarmID: "farm-1"}),
 	}
 	s.handleWorkerMessage(msg)
 

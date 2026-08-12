@@ -86,6 +86,7 @@ import (
 	"github.com/uberware/sqi/internal/metrics"
 	"github.com/uberware/sqi/internal/openjd"
 	"github.com/uberware/sqi/internal/store"
+	"github.com/uberware/sqi/internal/worker/protocol"
 	"github.com/uberware/sqi/internal/ws"
 )
 
@@ -682,86 +683,66 @@ func (s *Scheduler) handleWorkerMessage(msg jetstream.Msg) {
 	}
 }
 
-// RegisterMsg is the JSON payload workers publish to worker.register.
-// It carries the worker's self-reported identity and capability data.
-// A later protocol revision may add formal versioning; this struct matches
-// the minimal information the server needs for task matching.
+// discardOnVersionMismatch reports whether msg carries a wire-protocol version
+// this server does not speak and, if so, logs it and acks the message away.
 //
-// IT IS A HAND-MAINTAINED DUPLICATE of [protocol.RegisterMsg], which the server
-// deliberately does not import, and NOTHING BUT A TEST RELATES THE TWO. A json
-// tag that differs on either side does not fail to compile: the field simply
-// decodes to its zero value on every registration, forever, silently.
-// TestRegisterMsg_WireFieldsSurviveTheDuplication marshals a fully-populated
-// protocol.RegisterMsg, decodes it into THIS struct, and asserts every field
-// arrives -- outer keys included. It was added after a reviewer renamed the
-// expr_limits key on the protocol side and watched the entire test suite, the
-// integration suite and make ci stay green while every worker in the farm
-// reported as "not advertised".
-type RegisterMsg struct {
-	// WorkerID is the stable unique identifier for this worker instance.
-	// Workers MUST use the same ID across restarts so that re-registration
-	// updates the existing record rather than creating a duplicate.
-	WorkerID string `json:"worker_id"`
-
-	// FarmID is the farm this worker belongs to. Required.
-	FarmID string `json:"farm_id"`
-
-	// QueueID restricts the worker to a single queue if non-empty.
-	// An empty value means the worker accepts tasks from any queue in FarmID.
-	QueueID string `json:"queue_id,omitempty"`
-
-	// Name is the worker's human-readable display label. Persisted so the UI
-	// can distinguish multiple workers running on a single host.
-	Name string `json:"name,omitempty"`
-
-	// Hostname and IPAddress are the worker's network identity.
-	Hostname  string `json:"hostname"`
-	IPAddress string `json:"ip_address,omitempty"`
-
-	// ComputeLocation is the named compute location this worker belongs to
-	// (e.g. "onprem_linux", "cloud_aws_us_east"). Used for path translation
-	// and task affinity.
-	ComputeLocation string `json:"compute_location,omitempty"`
-
-	// OS and OSVersion are the worker's operating system identity, used for
-	// capability matching.
-	OS        string `json:"os"`
-	OSVersion string `json:"os_version,omitempty"`
-
-	// WorkerVersion is the sqi-worker build version the worker self-reports,
-	// distinct from the protocol Version field above.
-	WorkerVersion string `json:"worker_version,omitempty"`
-
-	// CPUCount and RAMMb are the worker's hardware capacity, used for
-	// resource-aware scheduling in future phases.
-	CPUCount int `json:"cpu_count,omitempty"`
-	RAMMb    int `json:"ram_mb,omitempty"`
-
-	// GPUInfo describes any GPU(s) installed on the worker host.
-	// omitempty is omitted intentionally: it has no effect on struct fields.
-	GPUInfo store.GPUInfo `json:"gpu_info"`
-
-	// Tags holds arbitrary key/value capability tags the worker self-reports.
-	// Job requirements reference these tags when specifying worker constraints.
-	Tags map[string]string `json:"tags,omitempty"`
-
-	// ExprLimits are the OpenJD EXPR evaluation caps the worker will enforce.
-	// Decoded straight into the store type: the json tags on
-	// protocol.ExprLimits and store.WorkerExprLimits are identical.
-	// TestWorkerExprLimits_WireKeysMatchTheProtocol covers the FIVE INNER keys;
-	// the outer expr_limits key is covered by
-	// TestRegisterMsg_WireFieldsSurviveTheDuplication (see the type comment) --
-	// two separate tests because a rename of either is independently silent.
-	// Absent (a worker older than EXPR sub-project E4d Task 3) leaves it zero,
-	// which exprcaps.go reads as the compiled-in defaults.
-	ExprLimits store.WorkerExprLimits `json:"expr_limits,omitzero"`
+// WHY THE SERVER CHECKS AT ALL. encoding/json silently drops every field the
+// receiving struct does not declare, so a message that merely decodes is not
+// evidence that the sender and this server agree on its shape: a worker built
+// against a different revision hands over a half-understood payload and the
+// server acts on it as though nothing were missing. The worker has applied the
+// mirror-image check to the assignments it receives since ProtocolVersion "2"
+// ([protocol.ProtocolVersion], internal/worker/lease.decodeAssignment); this
+// closes the other three directions.
+//
+// Rejection is by exact equality, including the empty string — a payload with
+// no envelope is a sender this server cannot identify, not a sender it may
+// assume is current.
+//
+// ACK, NEVER NAK. A version does not change on redelivery, so nacking would
+// wedge the consumer replaying one unreadable message forever. Discarding is
+// self-healing at the farm level instead: a worker whose registration is
+// discarded is absent from the store, and [Scheduler.handleLeaseRequest]
+// replies empty for a worker it cannot look up, so it is offered no work at
+// all rather than one assignment at a time that it rejects locally. A worker
+// that registered before this server started, and whose heartbeats are now
+// discarded, goes stale and is retired by the heartbeat sweep, which reclaims
+// its in-flight tasks — so no explicit mark-offline path is needed here.
+//
+// level is the caller's, because the three channels differ in rate rather than
+// in importance: registration happens once per connect and reconnect, and a
+// task status once per in-flight task, but a heartbeat repeats every
+// worker.heartbeat_interval (15s by default) for as long as the mismatched
+// worker runs. Logging that one at warn level would evict every other server
+// record from the bounded diagnostics ring buffer (internal/diag), so the
+// heartbeat call site passes debug and relies on the registration warning,
+// which a worker cannot avoid emitting: a protocol version changes only with a
+// new server build, and restarting the server drops every worker's NATS
+// connection, whose reconnect hook re-registers.
+func (s *Scheduler) discardOnVersionMismatch(
+	ctx context.Context, msg jetstream.Msg, level slog.Level, version, workerID, impact string,
+) bool {
+	if version == protocol.ProtocolVersion {
+		return false
+	}
+	s.logger.Log(
+		ctx, level, "scheduler: discarding worker message — wire protocol version mismatch",
+		slog.String("subject", msg.Subject()),
+		slog.String("worker_id", workerID),
+		slog.String("message_version", version),
+		slog.String("server_version", protocol.ProtocolVersion),
+		slog.String("impact", impact),
+		slog.String("remediation", "upgrade the worker to match this server (server first, then workers)"),
+	)
+	s.ackMsg(ctx, msg)
+	return true
 }
 
 // handleWorkerRegister processes a worker.register message:
 // decodes the payload, upserts the worker in the store, and refreshes the
 // WorkersTotal Prometheus gauge.
 func (s *Scheduler) handleWorkerRegister(ctx context.Context, msg jetstream.Msg) {
-	var m RegisterMsg
+	var m protocol.RegisterMsg
 	if err := json.Unmarshal(msg.Data(), &m); err != nil {
 		s.logger.WarnContext(
 			ctx, "scheduler: malformed worker.register message",
@@ -770,12 +751,26 @@ func (s *Scheduler) handleWorkerRegister(ctx context.Context, msg jetstream.Msg)
 		s.ackMsg(ctx, msg) // ack to discard; re-delivery cannot fix a bad payload
 		return
 	}
+	if s.discardOnVersionMismatch(ctx, msg, slog.LevelWarn, m.Version, m.WorkerID,
+		"this worker is not registered and will be offered no work at all") {
+		return
+	}
 	if m.WorkerID == "" {
 		s.logger.WarnContext(ctx, "scheduler: worker.register missing worker_id")
 		s.ackMsg(ctx, msg)
 		return
 	}
 
+	// The two struct conversions below (GPUInfo, ExprLimits) are what replaced
+	// a hand-maintained duplicate of protocol.RegisterMsg that used to live in
+	// this file, related to the real one by nothing but matching json tags: a
+	// rename on either side decoded to the zero value on every registration,
+	// silently and forever, which is exactly what happened to expr_limits once.
+	// A Go struct conversion is compile-checked on field name, type AND
+	// declaration order, so the same drift is now a build failure. The
+	// top-level copy is still by hand, which is what
+	// TestHandleWorkerRegister_EveryWireFieldReachesTheStore and its field
+	// counts guard.
 	now := time.Now().UTC()
 	w := store.Worker{
 		ID:              m.WorkerID,
@@ -790,9 +785,9 @@ func (s *Scheduler) handleWorkerRegister(ctx context.Context, msg jetstream.Msg)
 		Version:         m.WorkerVersion,
 		CPUCount:        m.CPUCount,
 		RAMMb:           m.RAMMb,
-		GPUInfo:         m.GPUInfo,
+		GPUInfo:         store.GPUInfo(m.GPUInfo),
 		Tags:            m.Tags,
-		ExprLimits:      m.ExprLimits,
+		ExprLimits:      store.WorkerExprLimits(m.ExprLimits),
 		Status:          store.WorkerStatusOnline,
 		LastHeartbeatAt: &now,
 	}
@@ -842,8 +837,8 @@ func (s *Scheduler) handleWorkerRegister(ctx context.Context, msg jetstream.Msg)
 // otherwise accumulate a warning per reconnect about work it never runs. The
 // key is the shortfall text itself, so a CHANGE (either side reconfigured) is
 // reported again; the map is per-process, so a server restart also re-reports.
-func (s *Scheduler) warnOnExprCapShortfall(ctx context.Context, m RegisterMsg) {
-	short := exprCapShortfall(m.ExprLimits, s.cfg.ExprLimits)
+func (s *Scheduler) warnOnExprCapShortfall(ctx context.Context, m protocol.RegisterMsg) {
+	short := exprCapShortfall(store.WorkerExprLimits(m.ExprLimits), s.cfg.ExprLimits)
 	if short == "" {
 		s.exprCapWarned.Delete(m.WorkerID) // recovered: report again if it recurs
 		return
@@ -963,24 +958,31 @@ func (s *Scheduler) handleWorkerDeregister(ctx context.Context, msg jetstream.Ms
 
 // ── Heartbeat handler and sweep ──────────────────────────────────────
 
-// HeartbeatMsg is the JSON payload workers publish to worker.heartbeat.
-type HeartbeatMsg struct {
-	WorkerID string    `json:"worker_id"`
-	At       time.Time `json:"at"`
-}
-
 // handleWorkerHeartbeat processes a worker.heartbeat message by recording the
 // current time as the worker's LastHeartbeatAt. If At is zero the server
 // timestamp is used so clock skew on the worker side cannot cause false
 // timeouts.
+//
+// Only WorkerID and At are read, but the whole [protocol.HeartbeatMsg] is
+// decoded: the fields this handler ignores (active task IDs and counts, uptime,
+// last-assignment time) are a liveness payload the server may grow into, and
+// decoding into a narrower local struct is how the version gate below stops
+// meaning anything — every field outside the local set drops regardless of what
+// version says.
 func (s *Scheduler) handleWorkerHeartbeat(ctx context.Context, msg jetstream.Msg) {
-	var m HeartbeatMsg
+	var m protocol.HeartbeatMsg
 	if err := json.Unmarshal(msg.Data(), &m); err != nil {
 		s.logger.WarnContext(
 			ctx, "scheduler: malformed worker.heartbeat message",
 			slog.Any("error", err),
 		)
 		s.ackMsg(ctx, msg)
+		return
+	}
+	// Debug, not warn: see discardOnVersionMismatch on why this one channel is
+	// quiet. The registration warning is the operator-facing signal.
+	if s.discardOnVersionMismatch(ctx, msg, slog.LevelDebug, m.Version, m.WorkerID,
+		"this worker's liveness signal is not recorded; the heartbeat sweep will retire it") {
 		return
 	}
 	if m.WorkerID == "" {

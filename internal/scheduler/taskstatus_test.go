@@ -165,6 +165,7 @@ func TestHandleTaskStatusMessage_MissingTaskID(t *testing.T) {
 
 	msg := &fakeJSMsg{
 		data: taskStatusMsgJSON(t, protocol.TaskStatusMsg{
+			Version:   protocol.ProtocolVersion,
 			TaskID:    "",
 			AttemptID: uuid.NewString(),
 			Status:    "running",
@@ -184,6 +185,7 @@ func TestHandleTaskStatusMessage_UnknownAttemptID(t *testing.T) {
 
 	msg := &fakeJSMsg{
 		data: taskStatusMsgJSON(t, protocol.TaskStatusMsg{
+			Version:   protocol.ProtocolVersion,
 			TaskID:    uuid.NewString(),
 			AttemptID: "no-such-attempt",
 			Status:    "running",
@@ -208,6 +210,7 @@ func TestProcessTaskStatus_Running(t *testing.T) {
 	sessionID := "openjd-session-abc"
 	msg := &fakeJSMsg{
 		data: taskStatusMsgJSON(t, protocol.TaskStatusMsg{
+			Version:   protocol.ProtocolVersion,
 			TaskID:    task.ID,
 			AttemptID: attempt.ID,
 			Status:    "running",
@@ -250,6 +253,7 @@ func TestProcessTaskStatus_Running_PromotesPendingJob(t *testing.T) {
 
 	msg := &fakeJSMsg{
 		data: taskStatusMsgJSON(t, protocol.TaskStatusMsg{
+			Version:   protocol.ProtocolVersion,
 			TaskID:    task.ID,
 			AttemptID: attempt.ID,
 			Status:    "running",
@@ -286,6 +290,7 @@ func TestProcessTaskStatus_Running_DoesNotUnpauseJob(t *testing.T) {
 
 	msg := &fakeJSMsg{
 		data: taskStatusMsgJSON(t, protocol.TaskStatusMsg{
+			Version:   protocol.ProtocolVersion,
 			TaskID:    task.ID,
 			AttemptID: attempt.ID,
 			Status:    "running",
@@ -314,6 +319,7 @@ func TestProcessTaskStatus_Succeeded(t *testing.T) {
 
 	msg := &fakeJSMsg{
 		data: taskStatusMsgJSON(t, protocol.TaskStatusMsg{
+			Version:   protocol.ProtocolVersion,
 			TaskID:    task.ID,
 			AttemptID: attempt.ID,
 			Status:    "succeeded",
@@ -345,6 +351,7 @@ func TestProcessTaskStatus_Failed(t *testing.T) {
 
 	msg := &fakeJSMsg{
 		data: taskStatusMsgJSON(t, protocol.TaskStatusMsg{
+			Version:   protocol.ProtocolVersion,
 			TaskID:    task.ID,
 			AttemptID: attempt.ID,
 			Status:    "failed",
@@ -372,6 +379,7 @@ func TestProcessTaskStatus_Canceled(t *testing.T) {
 
 	msg := &fakeJSMsg{
 		data: taskStatusMsgJSON(t, protocol.TaskStatusMsg{
+			Version:   protocol.ProtocolVersion,
 			TaskID:    task.ID,
 			AttemptID: attempt.ID,
 			Status:    "canceled",
@@ -402,6 +410,7 @@ func TestProcessTaskStatus_Canceled_PersistsMessageAndReason(t *testing.T) {
 
 	msg := &fakeJSMsg{
 		data: taskStatusMsgJSON(t, protocol.TaskStatusMsg{
+			Version:   protocol.ProtocolVersion,
 			TaskID:    task.ID,
 			AttemptID: attempt.ID,
 			Status:    "canceled",
@@ -456,6 +465,7 @@ func TestProcessTaskStatus_Canceled_EmptyWorkerEchoPreservesServerReason(t *test
 	// The killed worker's terminal echo always carries an empty Message.
 	msg := &fakeJSMsg{
 		data: taskStatusMsgJSON(t, protocol.TaskStatusMsg{
+			Version:   protocol.ProtocolVersion,
 			TaskID:    task.ID,
 			AttemptID: attempt.ID,
 			Status:    "canceled",
@@ -496,6 +506,7 @@ func TestProcessTaskStatus_AllTasksSucceeded_StepAndJobComplete(t *testing.T) {
 	exitCode := 0
 	msg := &fakeJSMsg{
 		data: taskStatusMsgJSON(t, protocol.TaskStatusMsg{
+			Version:   protocol.ProtocolVersion,
 			TaskID:    task.ID,
 			AttemptID: attempt.ID,
 			Status:    "succeeded",
@@ -537,6 +548,7 @@ func TestProcessTaskStatus_TaskFailed_JobFails(t *testing.T) {
 	exitCode := 1
 	msg := &fakeJSMsg{
 		data: taskStatusMsgJSON(t, protocol.TaskStatusMsg{
+			Version:   protocol.ProtocolVersion,
 			TaskID:    task.ID,
 			AttemptID: attempt.ID,
 			Status:    "failed",
@@ -632,6 +644,7 @@ func TestProcessTaskStatus_SucceededStep_UnblocksDependentStep(t *testing.T) {
 	exitCode := 0
 	msg := &fakeJSMsg{
 		data: taskStatusMsgJSON(t, protocol.TaskStatusMsg{
+			Version:   protocol.ProtocolVersion,
 			TaskID:    task1.ID,
 			AttemptID: attempt1.ID,
 			Status:    "succeeded",
@@ -695,6 +708,7 @@ func TestProcessTaskStatus_FailedStep_CascadeCancelsDependentAndCompletesJob(t *
 	exitCode := 1
 	msg := &fakeJSMsg{
 		data: taskStatusMsgJSON(t, protocol.TaskStatusMsg{
+			Version:   protocol.ProtocolVersion,
 			TaskID:    task1.ID,
 			AttemptID: attempt1.ID,
 			Status:    "failed",
@@ -755,6 +769,7 @@ func TestProcessTaskStatus_CascadeCancel_NotifiesCanceledTasks(t *testing.T) {
 	exitCode := 1
 	msg := &fakeJSMsg{
 		data: taskStatusMsgJSON(t, protocol.TaskStatusMsg{
+			Version:   protocol.ProtocolVersion,
 			TaskID:    task1.ID,
 			AttemptID: attempt1.ID,
 			Status:    "failed",
@@ -797,6 +812,7 @@ func TestProcessTaskStatus_CascadeCancel_StoreError_Nacked(t *testing.T) {
 	exitCode := 1
 	msg := &fakeJSMsg{
 		data: taskStatusMsgJSON(t, protocol.TaskStatusMsg{
+			Version:   protocol.ProtocolVersion,
 			TaskID:    task1.ID,
 			AttemptID: attempt1.ID,
 			Status:    "failed",
@@ -833,6 +849,7 @@ func TestProcessTaskStatus_UpdateAttemptError_Nacked(t *testing.T) {
 	exitCode := 0
 	msg := &fakeJSMsg{
 		data: taskStatusMsgJSON(t, protocol.TaskStatusMsg{
+			Version:   protocol.ProtocolVersion,
 			TaskID:    task.ID,
 			AttemptID: attempt.ID,
 			Status:    "succeeded",

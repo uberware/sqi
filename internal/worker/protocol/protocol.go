@@ -15,16 +15,27 @@
 //
 // # Versioning
 //
-// Every message carries a [Version] field set to [ProtocolVersion].  As of
-// [ProtocolVersion] "2", the worker's lease loop rejects an [AssignMsg] whose
-// Version does not match this worker's ProtocolVersion instead of decoding it
-// anyway and silently ignoring fields it does not recognize (see
-// internal/worker/lease.decodeAssignment).  This is a receiver-side check on
-// the worker only: nothing yet enforces Version on the messages the server
-// receives (RegisterMsg, HeartbeatMsg, TaskStatusMsg, LogChunkMsg), so a
-// version mismatch on those channels still decodes silently.  This simple
-// major-version gate is sufficient for Phase 1; a more nuanced compatibility
-// matrix can be added when a breaking change is required.
+// Every message carries a [Version] field set to [ProtocolVersion], and the
+// receiver rejects a message whose Version is not exactly its own instead of
+// decoding it anyway and silently ignoring the fields it does not recognize.
+// Four of the six channels are gated:
+//
+//	AssignMsg      server → worker   internal/worker/lease.decodeAssignment
+//	RegisterMsg    worker → server   scheduler.handleWorkerRegister
+//	HeartbeatMsg   worker → server   scheduler.handleWorkerHeartbeat
+//	TaskStatusMsg  worker → server   scheduler.handleTaskStatusMessage
+//
+// A rejected message is discarded, never redelivered — its version cannot
+// change on a retry.  See scheduler.discardOnVersionMismatch for what that
+// costs and why it is self-healing.
+//
+// LogChunkMsg and DeregisterMsg are NOT gated: a mismatched worker is already
+// fenced out by the registration gate, so neither channel can carry work-
+// affecting state on its own — the worst case is a log line persisted or a
+// worker marked offline slightly early.
+//
+// This simple major-version gate is sufficient for Phase 1; a more nuanced
+// compatibility matrix can be added when a breaking change is required.
 //
 // # Encoding
 //
@@ -148,11 +159,15 @@ type RegisterMsg struct {
 	// that is tighter — see [ExprLimits], which also names the two tests that
 	// keep this key and its five inner keys matching the server's duplicate.
 	//
-	// Adding it here is deliberately a REGISTRATION-payload change and not a
-	// [ProtocolVersion] bump: the version gate is the worker's receiver-side
-	// check on AssignMsg, and nothing about an assignment changes.  A server
-	// that does not know this field ignores it; a worker that does not send
-	// it reports zeroes, which the server reads as "not advertised".
+	// Adding it was deliberately a REGISTRATION-payload change and not a
+	// [ProtocolVersion] bump: nothing about an assignment changed, and at the
+	// time the only version gate was the worker's own check on AssignMsg.  A
+	// server that does not know this field ignores it; a worker that does not
+	// send it reports zeroes, which the server reads as "not advertised".
+	// Note that the same move is no longer available in the same way now that
+	// the server gates registrations too — an additive field is still fine,
+	// but a RENAMED one must bump the version, because old and new workers
+	// would otherwise disagree about the key with nothing to notice it.
 	ExprLimits ExprLimits `json:"expr_limits,omitzero"`
 }
 

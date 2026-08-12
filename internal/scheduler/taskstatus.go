@@ -68,6 +68,18 @@ func (s *Scheduler) handleTaskStatusMessage(msg jetstream.Msg) {
 		s.ackMsg(ctx, msg) // discard; re-delivery cannot fix a bad payload
 		return
 	}
+	// This is the costly half of the version gate and the deliberate one: a
+	// discarded terminal status means the server never learns the task
+	// finished, so it sits until reapStaleAssignedTasks returns it to the
+	// queue and it runs again somewhere else. That is preferred to the
+	// alternative, because this is the message that carries the OUTCOME --
+	// exit code, session, timestamps -- and acting on a payload whose shape
+	// this server cannot vouch for writes a wrong result to a task that is
+	// otherwise finished and correct.
+	if s.discardOnVersionMismatch(ctx, msg, slog.LevelWarn, m.Version, m.WorkerID,
+		"this task's reported state is not recorded; it will be reclaimed and retried") {
+		return
+	}
 	if m.TaskID == "" || m.AttemptID == "" {
 		s.logger.WarnContext(
 			ctx, "scheduler: task.status missing task_id or attempt_id — discarding",

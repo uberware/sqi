@@ -4,7 +4,6 @@ package scheduler
 
 import (
 	"context"
-	"encoding/json"
 	"log/slog"
 	"reflect"
 	"strings"
@@ -530,8 +529,8 @@ func TestExprCaps_RelationIsSatisfiableAtEveryLegalServerSetting(t *testing.T) {
 // for.
 //
 // It also drives the message through handleWorkerMessage rather than calling
-// the handler directly, so the JSON tag on the scheduler's own RegisterMsg is
-// exercised end to end.
+// the handler directly, so the whole decode-and-convert hop is exercised end
+// to end.
 func TestHandleWorkerRegister_PersistsAdvertisedExprCaps(t *testing.T) {
 	st := fake.New()
 	s := newMetricsScheduler(st, &recordBus{}, "")
@@ -544,9 +543,10 @@ func TestHandleWorkerRegister_PersistsAdvertisedExprCaps(t *testing.T) {
 	}
 	msg := &fakeJSMsg{
 		subject: bus.SubjectWorkerRegister,
-		data: workerMsgJSON(t, RegisterMsg{
+		data: workerMsgJSON(t, protocol.RegisterMsg{
+			Version: protocol.ProtocolVersion, Type: protocol.TypeRegister,
 			WorkerID: "w-1", FarmID: "farm-1", Hostname: "node-1", OS: "linux",
-			ExprLimits: want,
+			ExprLimits: protocol.ExprLimits(want),
 		}),
 	}
 	s.handleWorkerMessage(msg)
@@ -576,9 +576,10 @@ func TestHandleWorkerRegister_ExprCapWarningIsDeDuplicated(t *testing.T) {
 	register := func(positions int64) {
 		s.handleWorkerMessage(&fakeJSMsg{
 			subject: bus.SubjectWorkerRegister,
-			data: workerMsgJSON(t, RegisterMsg{
+			data: workerMsgJSON(t, protocol.RegisterMsg{
+				Version: protocol.ProtocolVersion, Type: protocol.TypeRegister,
 				WorkerID: "w-1", FarmID: "farm-1", Hostname: "node-1", OS: "linux",
-				ExprLimits: store.WorkerExprLimits{
+				ExprLimits: protocol.ExprLimits{
 					OperationLimit:          fmtres.DefaultExprLimits().OperationLimit,
 					MemoryLimit:             fmtres.DefaultExprLimits().MemoryLimit,
 					AssignmentPositions:     positions,
@@ -671,76 +672,40 @@ func TestNew_NormalizesExprLimits(t *testing.T) {
 	}
 }
 
-// TestWorkerExprLimits_WireKeysMatchTheProtocol pins that the JSON the worker
-// sends decodes into the store type the server persists. The two structs live
-// in different packages on purpose (no production file in the worker imports
-// internal/store); nothing but this test and its outer-key companion,
-// TestRegisterMsg_WireFieldsSurviveTheDuplication, relates their field names.
-func TestWorkerExprLimits_WireKeysMatchTheProtocol(t *testing.T) {
-	// Five distinct values: five same-typed int64 fields crossing a package
-	// boundary is exactly the shape where a transposition compiles and runs.
-	sent := protocol.ExprLimits{
-		OperationLimit:          11,
-		MemoryLimit:             22,
-		AssignmentPositions:     33,
-		AssignmentRetainedBytes: 44,
-		LetRetainedBytes:        55,
-	}
-	raw, err := json.Marshal(sent)
-	if err != nil {
-		t.Fatalf("marshal: %v", err)
-	}
-	var got store.WorkerExprLimits
-	if err := json.Unmarshal(raw, &got); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
-	want := store.WorkerExprLimits{
-		OperationLimit:          sent.OperationLimit,
-		MemoryLimit:             sent.MemoryLimit,
-		AssignmentPositions:     sent.AssignmentPositions,
-		AssignmentRetainedBytes: sent.AssignmentRetainedBytes,
-		LetRetainedBytes:        sent.LetRetainedBytes,
-	}
-	if got != want {
-		t.Fatalf("protocol JSON %s decoded to %+v, want %+v -- a renamed json tag on either "+
-			"side silently drops the cap to zero, which reads as 'unadvertised'", raw, got, want)
-	}
-
-	// The comparison above is only as complete as the literal that feeds it: a
-	// SIXTH dimension added to both structs and left out of `sent` would leave
-	// both sides zero and this test green. Count the fields so that cannot
-	// happen -- the same reason the outer-key test counts RegisterMsg's.
-	const dimensions = 5
-	if n := reflect.TypeOf(sent).NumField(); n != dimensions {
-		t.Errorf("protocol.ExprLimits has %d fields, this test populates %d: a dimension that "+
-			"is not in the literal above is not covered by it", n, dimensions)
-	}
-	if n := reflect.TypeOf(got).NumField(); n != dimensions {
-		t.Errorf("store.WorkerExprLimits has %d fields, this test compares %d", n, dimensions)
-	}
-}
-
-// TestRegisterMsg_WireFieldsSurviveTheDuplication marshals a fully-populated
-// [protocol.RegisterMsg] -- the struct the worker actually publishes -- and
-// decodes it into this package's hand-maintained duplicate, asserting EVERY
-// field arrives.
+// TestHandleWorkerRegister_EveryWireFieldReachesTheStore drives a
+// fully-populated [protocol.RegisterMsg] through the real handler as real JSON
+// bytes and asserts every field arrives on the persisted [store.Worker].
 //
-// WHY IT EXISTS: TestWorkerExprLimits_WireKeysMatchTheProtocol covers the four
-// INNER keys of the caps object and nothing covered the OUTER expr_limits key.
-// A reviewer renamed it to worker_expr_limits on the protocol side and every
-// unit test, the integration suite and make ci stayed green -- while every
-// worker in the farm reported as "not advertised", workerExprCapsOrLegacy
-// substituted the legacy defaults, and a genuinely tight worker would have been
-// handed EXPR work it cannot run. That is the design spec §2 incident, silently,
-// with CI green.
+// WHY IT EXISTS. It replaces two tests that guarded a hand-maintained
+// duplicate of protocol.RegisterMsg that used to live in scheduler.go: the two
+// structs were related by nothing but matching json tags, so a rename on
+// either side decoded to the zero value on every registration, silently and
+// forever. That is not hypothetical -- a reviewer renamed the outer
+// expr_limits key on the protocol side and watched the entire unit suite, the
+// integration suite and make ci stay green while every worker in the farm
+// reported as "not advertised", workerExprCapsOrLegacy substituted the legacy
+// defaults, and a genuinely tight worker would have been handed EXPR work it
+// cannot run.
 //
-// It is deliberately NOT limited to ExprLimits. The duplication is structural:
-// every field of these two structs is related by nothing but a matching string
-// literal, and any of them can be renamed on one side without a compile error.
-// Adding a field to protocol.RegisterMsg that the server needs and forgetting
-// it here produces the same silence, so the last sub-test fails if the two
-// structs stop having the same number of fields.
-func TestRegisterMsg_WireFieldsSurviveTheDuplication(t *testing.T) {
+// The duplicate is gone: the handler decodes the shared protocol type and
+// converts the two nested structs with Go conversions, which the compiler
+// checks on field name, type AND declaration order. What is NOT compiler-
+// checked is the field-by-field copy into store.Worker, which is why this test
+// drives the real handler rather than a struct-to-struct decode, and why the
+// field-count guard at the end still earns its place: a field added to
+// protocol.RegisterMsg that the server should persist is otherwise just
+// unread.
+//
+// One residual the version gate now covers rather than this test: renaming a
+// json tag on the shared type still breaks OLD workers, which send the old key
+// and decode to zero. That is a cross-version disagreement, and a tag rename
+// is precisely the breaking change [protocol.ProtocolVersion] must be bumped
+// for -- at which point discardOnVersionMismatch refuses the message instead
+// of half-reading it.
+func TestHandleWorkerRegister_EveryWireFieldReachesTheStore(t *testing.T) {
+	st := fake.New()
+	s := newMetricsScheduler(st, &recordBus{}, "")
+
 	sent := protocol.RegisterMsg{
 		Version:            protocol.ProtocolVersion,
 		Type:               protocol.TypeRegister,
@@ -759,98 +724,116 @@ func TestRegisterMsg_WireFieldsSurviveTheDuplication(t *testing.T) {
 		GPUInfo:            protocol.GPUInfo{Vendor: "NVIDIA", Model: "RTX4090", VRAMMb: 24576, Count: 2},
 		MaxConcurrentTasks: 4,
 		Tags:               map[string]string{"env": "prod"},
+		// Five distinct values: five same-typed int64 fields crossing a package
+		// boundary is exactly the shape where a transposition survives review.
 		ExprLimits: protocol.ExprLimits{
 			OperationLimit:          11_111,
 			MemoryLimit:             2_222_222,
 			AssignmentPositions:     3_333,
 			AssignmentRetainedBytes: 4_444_444,
+			LetRetainedBytes:        5_555_555,
 		},
 	}
-	raw, err := json.Marshal(sent)
+
+	msg := &fakeJSMsg{subject: bus.SubjectWorkerRegister, data: workerMsgJSON(t, sent)}
+	s.handleWorkerMessage(msg)
+
+	w, err := st.GetWorker(t.Context(), sent.WorkerID)
 	if err != nil {
-		t.Fatalf("marshal: %v", err)
-	}
-	var got RegisterMsg
-	if err := json.Unmarshal(raw, &got); err != nil {
-		t.Fatalf("unmarshal: %v", err)
+		t.Fatalf("GetWorker: %v", err)
 	}
 
-	// One row per field the server reads. A mismatched json tag shows up here
-	// as a zero value, which is exactly how it shows up in production.
+	// One row per field the server persists. A field the handler forgets to
+	// copy shows up here as a zero value, which is exactly how it shows up in
+	// production.
 	fields := []struct {
 		name      string
 		got, want any
 	}{
-		{"worker_id", got.WorkerID, sent.WorkerID},
-		{"farm_id", got.FarmID, sent.FarmID},
-		{"queue_id", got.QueueID, sent.QueueID},
-		{"name", got.Name, sent.Name},
-		{"hostname", got.Hostname, sent.Hostname},
-		{"ip_address", got.IPAddress, sent.IPAddress},
-		{"compute_location", got.ComputeLocation, sent.ComputeLocation},
-		{"os", got.OS, sent.OS},
-		{"os_version", got.OSVersion, sent.OSVersion},
-		{"worker_version", got.WorkerVersion, sent.WorkerVersion},
-		{"cpu_count", got.CPUCount, sent.CPUCount},
-		{"ram_mb", got.RAMMb, sent.RAMMb},
-		{"gpu_info.vendor", got.GPUInfo.Vendor, sent.GPUInfo.Vendor},
-		{"gpu_info.model", got.GPUInfo.Model, sent.GPUInfo.Model},
-		{"gpu_info.vram_mb", got.GPUInfo.VRAMMb, sent.GPUInfo.VRAMMb},
-		{"gpu_info.count", got.GPUInfo.Count, sent.GPUInfo.Count},
-		{"tags", got.Tags["env"], sent.Tags["env"]},
-		{"expr_limits.operation_limit", got.ExprLimits.OperationLimit, sent.ExprLimits.OperationLimit},
-		{"expr_limits.memory_limit", got.ExprLimits.MemoryLimit, sent.ExprLimits.MemoryLimit},
-		{"expr_limits.assignment_positions", got.ExprLimits.AssignmentPositions, sent.ExprLimits.AssignmentPositions},
+		{"worker_id", w.ID, sent.WorkerID},
+		{"farm_id", w.FarmID, sent.FarmID},
+		{"queue_id", w.QueueID, sent.QueueID},
+		{"name", w.Name, sent.Name},
+		{"hostname", w.Hostname, sent.Hostname},
+		{"ip_address", w.IPAddress, sent.IPAddress},
+		{"compute_location", w.ComputeLocation, sent.ComputeLocation},
+		{"os", w.OS, sent.OS},
+		{"os_version", w.OSVersion, sent.OSVersion},
+		{"worker_version", w.Version, sent.WorkerVersion},
+		{"cpu_count", w.CPUCount, sent.CPUCount},
+		{"ram_mb", w.RAMMb, sent.RAMMb},
+		{"gpu_info.vendor", w.GPUInfo.Vendor, sent.GPUInfo.Vendor},
+		{"gpu_info.model", w.GPUInfo.Model, sent.GPUInfo.Model},
+		{"gpu_info.vram_mb", w.GPUInfo.VRAMMb, sent.GPUInfo.VRAMMb},
+		{"gpu_info.count", w.GPUInfo.Count, sent.GPUInfo.Count},
+		{"tags", w.Tags["env"], sent.Tags["env"]},
+		{"expr_limits.operation_limit", w.ExprLimits.OperationLimit, sent.ExprLimits.OperationLimit},
+		{"expr_limits.memory_limit", w.ExprLimits.MemoryLimit, sent.ExprLimits.MemoryLimit},
+		{"expr_limits.assignment_positions", w.ExprLimits.AssignmentPositions, sent.ExprLimits.AssignmentPositions},
 		{
 			"expr_limits.assignment_retained_bytes",
-			got.ExprLimits.AssignmentRetainedBytes, sent.ExprLimits.AssignmentRetainedBytes,
+			w.ExprLimits.AssignmentRetainedBytes, sent.ExprLimits.AssignmentRetainedBytes,
 		},
 		{
 			"expr_limits.let_retained_bytes",
-			got.ExprLimits.LetRetainedBytes, sent.ExprLimits.LetRetainedBytes,
+			w.ExprLimits.LetRetainedBytes, sent.ExprLimits.LetRetainedBytes,
 		},
 	}
 	for _, f := range fields {
 		t.Run(f.name, func(t *testing.T) {
 			if f.got != f.want {
-				t.Fatalf("%s = %v after the protocol -> scheduler round trip, want %v.\n"+
-					"The two RegisterMsg structs are related by nothing but matching json "+
-					"tags; a rename on either side decodes to the zero value on every "+
-					"registration, silently and forever.", f.name, f.got, f.want)
+				t.Fatalf("%s = %v on the persisted worker, want %v -- the registration hop "+
+					"from protocol.RegisterMsg to store.Worker is a hand-written field copy; "+
+					"a field it misses is not a compile error, it is a permanent zero.",
+					f.name, f.got, f.want)
 			}
 		})
 	}
 
-	// protocol.RegisterMsg carries three fields this struct deliberately does
-	// not (Version and Type, which the subject already identifies, and
-	// MaxConcurrentTasks, which Phase 1 does not persist). The two count checks
-	// below are what make a NEW field visible here rather than silently unread,
-	// and they are deliberately separate: the first catches a field added to
-	// ONE side, the second catches one added to BOTH -- which satisfies the
-	// first and would otherwise leave the new tag unguarded, the exact residual
-	// that let the outer expr_limits key go uncovered in the first place.
+	// protocol.RegisterMsg carries three fields the server deliberately does
+	// not persist: Version and Type (the envelope -- read by the version gate
+	// and the subject respectively, not stored), and MaxConcurrentTasks, which
+	// Phase 1 does not persist because the worker enforces its own concurrency
+	// locally. The counts below are what make a NEW protocol field visible
+	// here rather than silently unread, and they are deliberately separate:
+	// the first catches a field added to the wire and never persisted, the
+	// second catches one added to both and left out of the table above --
+	// which satisfies the first and would otherwise leave the new field
+	// unchecked, the exact residual that let the outer expr_limits key go
+	// uncovered in the first place.
 	t.Run("field counts", func(t *testing.T) {
+		const unpersisted = 3 // version, type, max_concurrent_tasks
 		sentFields := reflect.TypeFor[protocol.RegisterMsg]().NumField()
-		gotFields := reflect.TypeFor[RegisterMsg]().NumField()
-		if sentFields != gotFields+3 {
-			t.Fatalf("protocol.RegisterMsg has %d fields and scheduler.RegisterMsg %d; the "+
-				"known gap is 3 (version, type, max_concurrent_tasks). A field added to "+
-				"one side must be added here, to the table above, or to this comment "+
-				"with a reason the server does not need it.", sentFields, gotFields)
+		if want := len(persistedRegisterFields) + unpersisted; sentFields != want {
+			t.Fatalf("protocol.RegisterMsg has %d fields; this test accounts for %d persisted "+
+				"plus %d deliberately unpersisted. A field added to the wire must be "+
+				"persisted and given a row above, or added to this comment with a reason "+
+				"the server does not need it.", sentFields, len(persistedRegisterFields), unpersisted)
 		}
 
-		// One row per field of scheduler.RegisterMsg, except that gpu_info and
-		// expr_limits each contribute several rows instead of one (their inner
-		// keys are what actually carry the values).
-		const nestedExtraRows = 3 + 4 // gpu_info: 4 rows for 1 field; expr_limits: 5
-		if want := gotFields + nestedExtraRows; len(fields) != want {
-			t.Fatalf("the table covers %d fields but scheduler.RegisterMsg has %d (%d rows "+
-				"expected with gpu_info and expr_limits expanded). Every field must have a "+
-				"row: a json tag with no row is a tag nothing checks, which is how the outer "+
+		// One row per persisted field, except that gpu_info and expr_limits
+		// each contribute several rows instead of one (their inner keys are
+		// what actually carry the values).
+		const nestedExtraRows = 3 + 4 // gpu_info: 4 rows for 1 field; expr_limits: 5 for 1
+		if want := len(persistedRegisterFields) + nestedExtraRows; len(fields) != want {
+			t.Fatalf("the table covers %d fields but %d are persisted (%d rows expected with "+
+				"gpu_info and expr_limits expanded). Every persisted field needs a row: a "+
+				"field with no row is a field nothing checks, which is how the outer "+
 				"expr_limits key went unguarded until a reviewer renamed it and watched CI "+
-				"stay green.", len(fields), gotFields, want)
+				"stay green.", len(fields), len(persistedRegisterFields), want)
 		}
 	})
+}
+
+// persistedRegisterFields names the protocol.RegisterMsg fields the register
+// handler copies onto a store.Worker. It exists so the count guard above reads
+// as a list rather than a magic number -- adding a field to the wire and
+// persisting it means adding its name here, which is the moment to notice it
+// also needs a row in the table.
+var persistedRegisterFields = []string{
+	"WorkerID", "FarmID", "QueueID", "Name", "Hostname", "IPAddress",
+	"ComputeLocation", "OS", "OSVersion", "WorkerVersion", "CPUCount", "RAMMb",
+	"GPUInfo", "Tags", "ExprLimits",
 }
 
 // ── small helpers, one per dimension, so a row reads as its own mutation ──
