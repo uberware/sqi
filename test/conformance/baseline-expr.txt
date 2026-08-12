@@ -307,29 +307,99 @@
 # are gone from the list below); (ii) and (iii) are unaffected by this
 # correction — discounting the gate never changes their outcome, since their
 # OTHER error stands on its own regardless of the gate.
-EXPR/job_templates/2--type-case-insensitive.yaml
-EXPR/job_templates/2.10--range-expr-param.yaml
-EXPR/job_templates/2.11--list-string-param.yaml
-EXPR/job_templates/2.12--list-path-param.yaml
-EXPR/job_templates/2.13--list-int-param.yaml
-EXPR/job_templates/2.14--list-float-param.yaml
-EXPR/job_templates/2.15--list-bool-param.yaml
-EXPR/job_templates/2.16--list-list-int-param.yaml
-EXPR/job_templates/2.9--bool-param.yaml
+#
+# 2026-08-11, sub-project F1 (extended job parameter types, RFC 0007): entries
+# are being removed one at a time as each wave's task clears them, rather than
+# in a single pass at the end of the sub-project. The plan called for one
+# batched burn-down, and that was wrong for a mechanical reason: this file
+# fails the suite in three directions, so a cleared-but-still-listed fixture
+# turns `make test-conformance` red for every task that follows it, and a red
+# suite cannot distinguish a NEW regression from the known-stale entry. The
+# collective accounting -- which fixture cleared for which reason, and which of
+# the sixteen F-attributed fixtures did NOT clear and why -- is written in one
+# piece at the end of F1, below this note. Each removal before then is
+# mechanical.
+#
+#   - 2.9--bool-param.yaml, removed when the BOOL type landed. It was blocked
+#     by reason (ii) alone (BOOL not implemented, validate-time). Note its
+#     userInterface control: CHECK_BOX passes for a reason that is currently
+#     accidental -- controlsByType has no BOOL entry, so validateUserInterface
+#     returns before the base spec's "CHECK_BOX requires exactly two
+#     allowedValues" rule can fire on a type RFC 0007 forbids allowedValues on.
+#     TestValidateBool_CheckBoxControlIsValid pins that outcome so the task
+#     that adds BOOL to controlsByType cannot regress this fixture silently.
+#
+#   - 2.10--range-expr-param.yaml, removed when the RANGE_EXPR type landed.
+#     Also reason (ii) alone. Its defaults include "10-1:-1" and "-1--10:-1",
+#     which internal/openjd's own openjdRangePolicy REJECTS (start > end, and a
+#     negative step) -- so this fixture is unpassable unless a RANGE_EXPR
+#     default is parsed with the spec's permissive policy instead. It is, and
+#     validateRangeExprParamConstraints' doc comment carries the full argument;
+#     the short version is that E4b already ruled the lone whole-field
+#     range: "{{Param.X}}" form evaluates as a VALUE through range_expr's own
+#     coercion, which uses the same permissive parse. Literal base-spec range
+#     text keeps the strict policy, unchanged.
+#
+#   - 2--type-case-insensitive.yaml, 2.11--list-string-param.yaml,
+#     2.12--list-path-param.yaml, 2.15--list-bool-param.yaml and
+#     2.16--list-list-int-param.yaml, removed when the six LIST[*] types
+#     landed. All reason (ii). Two notes worth keeping:
+#
+#     2.12 needed more than the list types themselves. objectType, dataFlow,
+#     fileFilters and fileFilterDefault were gated on `p.Type == PATH`, so a
+#     LIST[PATH] declaring them was rejected with "may only be set on PATH
+#     parameters" even after LIST[PATH] validated. RFC 0007's
+#     <JobListPathParameterDefinition> declares all four, so the gates now
+#     admit LIST[PATH] and the two messages name both types.
+#
+#     2.13--list-int-param.yaml and 2.14--list-float-param.yaml did NOT clear
+#     with their siblings, and the reason is the third-blocker risk this
+#     sub-project's design spec (section 10) warned could be hiding behind the
+#     two visible ones: both declare userInterface.singleStepDelta with the
+#     SPIN_BOX_LIST control, and validateSingleStepDelta accepts it only with
+#     the scalar SPIN_BOX. That is the userInterface task's to fix, not the
+#     list-type task's, and it is recorded here rather than discovered later.
+#
+#   - 2.13--list-int-param.yaml and 2.14--list-float-param.yaml, removed when
+#     the userInterface controls landed -- the third blocker named directly
+#     above. Two rules written against the scalar spin box had to learn its
+#     list counterpart: singleStepDelta now accepts SPIN_BOX_LIST as well as
+#     SPIN_BOX, and decimals now accepts SPIN_BOX_LIST on a LIST[FLOAT] as
+#     well as SPIN_BOX on a FLOAT.
+#
+#     The same change added BOOL to controlsByType, which is the regression
+#     2.9--bool-param.yaml was exposed to (see its note above). It did not
+#     regress: validateUserInterfaceControl now skips the base spec's
+#     "CHECK_BOX requires exactly two allowedValues" rule for a BOOL, because
+#     that rule exists to tell a two-valued STRING which value is which and
+#     RFC 0007's BOOL forbids allowedValues outright. Without that carve-out
+#     the two rules contradict each other.
+#
+#   - The eleven expr1.1--* / expr1.1.3 / expr1.1.4 fixtures, removed when the
+#     <ArgString> control-character amendment landed. These were reason (iii)
+#     in the intro above ("also (iii)'s to fix, same missing bridge") and had
+#     been orphaned: E was assigned them and shipped without them.
+#
+#     THE FIRST IMPLEMENTATION OF THIS WAS WRONG, and the record is kept
+#     because the wrong version looked like the careful one. The relaxation was
+#     first built to split each argument with fmtstring.Segments and exempt
+#     only the insides of a {{ }}, on the reading that EXPR "relaxes the rule
+#     for multi-line expressions". It cleared exactly ONE fixture
+#     (expr1.1--multiline-expr) and left ten failing identically, which is what
+#     exposed it: those ten are multi-line PYTHON SCRIPTS carrying single-line
+#     expressions, so every newline in them sits in literal text.
+#
+#     The specification is a TYPE amendment, not a carve-out: "The ArgString
+#     type is amended to allow CR (U+000D), LF (U+000A), and TAB (U+0009)
+#     characters to support multi-line expressions in YAML literal block
+#     scalars" (Expression Language, "When EXPR is enabled", item 3). Whole
+#     value, three characters, every other Cc still rejected -- and
+#     <CommandString> is a separate type in the same schema (Template Schemas
+#     5.1 and 5.2) which the extension does NOT amend, so a command keeps the
+#     base-spec rule even under EXPR.
 EXPR/job_templates/3.6--let-bindings.yaml
 EXPR/job_templates/3.6--let-host-context-symbols.yaml
 EXPR/job_templates/7.3.1--job-step-name-in-step-let.yaml
-EXPR/job_templates/expr1.1--arithmetic-expr.yaml
-EXPR/job_templates/expr1.1--comparison-expr.yaml
-EXPR/job_templates/expr1.1--conditional-expr.yaml
-EXPR/job_templates/expr1.1--function-call-expr.yaml
-EXPR/job_templates/expr1.1--list-comprehension-expr.yaml
-EXPR/job_templates/expr1.1--list-literal-expr.yaml
-EXPR/job_templates/expr1.1--method-call-expr.yaml
-EXPR/job_templates/expr1.1--multiline-expr.yaml
-EXPR/job_templates/expr1.1--slice-expr.yaml
-EXPR/job_templates/expr1.1.3--contextual-keywords.yaml
-EXPR/job_templates/expr1.1.4--json-yaml-aliases.yaml
 
 # 2026-08-08, sub-project E2 (Task 9): checkTemplateExpressions is now wired
 # into ValidateWithOptions (via validate.go, gated on tmpl.hasExtension("EXPR")

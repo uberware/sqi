@@ -3,6 +3,8 @@
 package expr
 
 import (
+	"encoding/json"
+	"fmt"
 	"strconv"
 	"strings"
 )
@@ -99,14 +101,19 @@ func TaskParamType(declared string) Type {
 //     STRING and PATH always go concrete — every string parses as either.
 //
 //  2. BY CONSTRUCTION, for a type this function never makes concrete at
-//     all. Bool and list have no case here and reach the default branch for
-//     EVERY input, valid or not — they stay unresolved regardless of phase.
-//     BOOL and LIST[*] are sub-project F's job/task-parameter types and a
-//     template cannot declare one yet (the EXPR extension that defines them
-//     is not StatusSupported). F MUST add its cases here when that lands,
-//     or its own parameters will silently never resolve past a placeholder
-//     in phase 3 — this is the one place that mapping lives now that
-//     phase 2 and phase 3 share it (see JobParamTypes' doc comment).
+//     all. As of EXPR sub-project F1 there is NO SUCH TYPE LEFT. Bool and
+//     list were the two: this paragraph used to read "F MUST add its cases
+//     here when that lands, or its own parameters will silently never
+//     resolve past a placeholder in phase 3", and F1 added them. The
+//     instruction is kept rather than deleted because the hazard it names
+//     is real and permanent for any type added later — an unhandled type
+//     reaches the default branch and returns Unresolved(t), which is a
+//     LEGITIMATE phase-1 result, so nothing errors and nothing logs; the
+//     parameter simply never resolves. TestValueFromText_ResolvesTheF1Types
+//     guards it by asserting CONCRETENESS rather than correctness, and any
+//     future type must join that table.
+//     This is the one place the mapping lives now that phase 2 and phase 3
+//     share it (see JobParamTypes' doc comment).
 //
 // range_expr (CodeRangeExpr) IS made concrete, via RangeExpr(raw) with the
 // same parse-failure-falls-back-to-Unresolved rule as INT/FLOAT.
@@ -161,7 +168,110 @@ func ValueFromText(t Type, raw string, pathFlavor PathFormat) Value {
 			return Unresolved(t)
 		}
 		return v
+	case CodeBool:
+		b, ok := parseBoolText(raw)
+		if !ok {
+			return Unresolved(t)
+		}
+		return Bool(b)
+	case CodeList:
+		v, err := listFromJSON(t, raw, pathFlavor)
+		if err != nil {
+			return Unresolved(t)
+		}
+		return v
 	default:
 		return Unresolved(t)
 	}
+}
+
+// parseBoolText interprets a BOOL parameter's submitted text per RFC 0007's
+// accepted-values table.
+//
+// It MUST accept exactly what internal/openjd's parseBoolParamValue accepts.
+// That function validates a template's declared default; this one converts a
+// submitted value, and a spelling the validator admits but this rejects would
+// pass submission and then resolve to nothing on the host. The two cannot
+// share code -- the worker binary must never import internal/openjd, which is
+// why the section 1.2.2 mapping lives in this package at all -- so
+// TestValueFromText_BoolRejectsUnknownSpelling and its counterpart
+// TestParseBoolParamValue are what keep them in step.
+func parseBoolText(raw string) (value, ok bool) {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "true", "yes", "on", "1", "1.0":
+		return true, true
+	case "false", "no", "off", "0", "0.0":
+		return false, true
+	}
+	return false, false
+}
+
+// listFromJSON converts canonical JSON list text into a List value of type t.
+//
+// The encoding is the one internal/openjd/paramjson.go defines: that file owns
+// the encode half, this is the decode half, and they live apart for the same
+// dependency reason as parseBoolText above. Any element that does not convert
+// makes the WHOLE value unresolved rather than binding a list with a
+// wrong-typed hole in it -- a partially-correct list is harder to diagnose
+// than an unresolved one, and validation upstream has already reported the
+// real defect.
+func listFromJSON(t Type, raw string, pathFlavor PathFormat) (Value, error) {
+	var items []json.RawMessage
+	if err := json.Unmarshal([]byte(raw), &items); err != nil {
+		return Value{}, err
+	}
+	// A list type carries its element type as its single parameter; there is
+	// no Elem() accessor. A CodeList without one is malformed.
+	if len(t.Params) != 1 {
+		return Value{}, fmt.Errorf("list type %s has no element type", t)
+	}
+	elemType := t.Params[0]
+
+	out := make([]Value, 0, len(items))
+	for _, item := range items {
+		v, err := valueFromJSONElem(elemType, item, pathFlavor)
+		if err != nil {
+			return Value{}, err
+		}
+		out = append(out, v)
+	}
+	// NOTE the argument order: List takes (elem, vals).
+	return List(elemType, out), nil
+}
+
+// valueFromJSONElem converts one JSON element to a Value of type elemType,
+// recursing for a nested list.
+func valueFromJSONElem(elemType Type, item json.RawMessage, pathFlavor PathFormat) (Value, error) {
+	if elemType.Code == CodeList {
+		return listFromJSON(elemType, string(item), pathFlavor)
+	}
+
+	var scalar any
+	if err := json.Unmarshal(item, &scalar); err != nil {
+		return Value{}, err
+	}
+	text, ok := scalarJSONText(scalar)
+	if !ok {
+		return Value{}, fmt.Errorf("element %s is not a scalar", item)
+	}
+	v := ValueFromText(elemType, text, pathFlavor)
+	if v.Type.Code == CodeUnresolved {
+		return Value{}, fmt.Errorf("element %s is not a %s", item, elemType)
+	}
+	return v, nil
+}
+
+// scalarJSONText renders a JSON-decoded scalar losslessly. encoding/json
+// produces float64 for every number, so an integral value must format without
+// an exponent or a trailing ".0" -- 1 has to stay "1" so an INT element parses.
+func scalarJSONText(v any) (string, bool) {
+	switch x := v.(type) {
+	case string:
+		return x, true
+	case bool:
+		return strconv.FormatBool(x), true
+	case float64:
+		return strconv.FormatFloat(x, 'f', -1, 64), true
+	}
+	return "", false
 }

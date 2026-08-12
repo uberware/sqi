@@ -82,12 +82,22 @@ fix. The middle one is a **known defect** that is merely not fixed *here* —
 it is listed alongside them so a reader auditing this section against the spec
 does not mistake it for intended behavior:
 
-- **`EXPR`** (the OpenJD Expression Language extension) — new value types
-  (`BOOL`, `RANGE_EXPR`, `LIST[...]`) and the `*_LIST` `userInterface.control`
-  variants belong to `EXPR` and are not implemented. A template that declares
-  `extensions: [EXPR]` is rejected with a `422` at `/extensions/0` —
-  unconditionally, the same as any other unregistered extension name,
-  regardless of anything else the template does.
+- **`EXPR`** (the OpenJD Expression Language extension) — a template that
+  declares `extensions: [EXPR]` is rejected with a `422` at `/extensions/0`,
+  unconditionally, regardless of anything else the template does.
+
+  **CORRECTION (sub-project F1, extended parameter types):** this bullet used
+  to say the new parameter types (`BOOL`, `RANGE_EXPR`, `LIST[...]`) and the
+  `*_LIST` `userInterface.control` variants "are not implemented". That is no
+  longer true. `internal/openjd` parses and validates all eight types with
+  their nested `item:` constraints, case-insensitive type names, and every
+  control RFC 0007 defines; `internal/openjd/expr` resolves their values in
+  both evaluation phases. What remains true is the sentence above it: none of
+  it is reachable in production, because `EXPR`'s status gate rejects the
+  template before any of it runs. The types are real, tested code, reachable
+  today only through the conformance suite's direct calls to `openjd.Parse` /
+  `openjd.ValidateWithOptions` — the same standing as `let`, described
+  immediately below.
 
   **CORRECTION (sub-project E3, `80d69b1..fa3267d`, plus this docs correction):** this bullet used to
   also list `let` on step templates as unimplemented. That is no longer true.
@@ -301,7 +311,8 @@ production behavior — nothing, yet, because `EXPR`'s own status gate still
 rejects every `EXPR`-declaring template first. `EXPR/job_templates` moved
 **175/209 (34 baselined) → 186/209 (23 baselined)** across three tasks (+3,
 +2, +6), each confirmed individually and recorded in `baseline-expr.txt`'s own
-dated notes. `baseline-expr.txt` carries *four* E3-dated notes, one more than
+dated notes. (Sub-project F1 later took it to **206/209, 3 baselined** — see
+[Extended parameter types](#extended-parameter-types-rfc-0007) below.) `baseline-expr.txt` carries *four* E3-dated notes, one more than
 the number of tasks that moved the score: Task 11's note clears nothing, it
 surveys the disposition of every remaining `let` fixture. Do not read the note
 count as a score-moving-task count:
@@ -372,6 +383,51 @@ Both remaining classes of gap are elsewhere:
   template-validation fixture in the suite, valid and invalid alike, now scores
   correctly. `test/conformance/baseline.txt` is empty, and CI fails if any entry
   is added without being fixed.
+
+### Extended parameter types (RFC 0007)
+
+Sub-project F1 implemented [RFC 0007][rfc0007] — the EXPR extension's extended
+parameter types — on the template side. `EXPR/job_templates` moved **186/209
+(23 baselined) → 206/209 (3 baselined)**: twenty fixtures, measured, not
+predicted.
+
+[rfc0007]: ../third_party/openjd-specifications/rfcs/0007-extend-parameter-types.md
+
+What landed:
+
+- **Case-insensitive type names** for every type, job and task, including
+  compound ones (`list[list[int]]`). Gated on `extensions: [EXPR]`: without it
+  `type: int` is still rejected exactly as before, because RFC 0007 is an
+  extension specification and accepting lowercase unconditionally would widen
+  what the base spec admits.
+- **`BOOL`**, with the RFC's accepted-values table (`true`/`1`/`1.0`/`yes`/
+  `on` and their negatives) and its explicit prohibition on `allowedValues`.
+- **`RANGE_EXPR`**, validated against the `<IntRangeExpr>` grammar under the
+  **specification's permissive policy** rather than `internal/openjd`'s
+  stricter one. That divergence is deliberate and documented on
+  `validateRangeExprParamConstraints`: the fixture declares `"10-1:-1"` and
+  `"-1--10:-1"`, which the strict policy rejects, and the permissive policy is
+  what the value meets downstream anyway. Literal base-spec range text keeps
+  the strict policy, unchanged.
+- **Six `LIST[*]` types** with nested `item:` constraints, one level deep.
+  A list default is stored as canonical JSON in the existing `Default` field;
+  element checking is by JSON **type**, which is what the RFC's `<string>` /
+  `<integer>` schemas actually constrain.
+- **The `*_LIST` controls**, plus the two rules written against the scalar spin
+  box that had to learn its list form (`singleStepDelta`, `decimals`).
+- **The `<ArgString>` control-character amendment** — CR, LF and TAB become
+  legal in an argument when `EXPR` is declared, "to support multi-line
+  expressions in YAML literal block scalars". `<CommandString>` is a separate
+  type and is **not** amended, so a command keeps the base-spec rule.
+
+**Three fixtures remain baselined, and none of them are F1's.**
+`3.6--let-bindings.yaml`, `3.6--let-host-context-symbols.yaml` and
+`7.3.1--job-step-name-in-step-let.yaml` are each blocked by the unregistered
+`FEATURE_BUNDLE_1` extension and an unmodeled `bash:` action type.
+`3.6--let-bindings.yaml` is the one worth naming: it was on F1's own list of
+sixteen because a `LIST[INT]` parameter blocked it at parse time, that blocker
+is gone, and it still does not pass. Fifteen of the sixteen cleared; the
+sixteenth had a third cause behind the two that were visible.
 
 ### A second, independent check on EXPR: the reference-implementation oracle
 
@@ -445,7 +501,7 @@ measured results, not assertions:
 | `base/job_templates` | **449 / 449 pass** |
 | `base/env_templates` | not applicable — standalone environment templates unsupported (39 tests) |
 | `TASK_CHUNKING/job_templates` | **11 / 11 pass** |
-| `EXPR/job_templates` | not applicable to the template path (209 tests) — scored separately, see [below](#expr-a-temporary-second-scoring-path): **186 / 209 pass, 23 baselined** |
+| `EXPR/job_templates` | not applicable to the template path (209 tests) — scored separately, see [below](#expr-a-temporary-second-scoring-path): **206 / 209 pass, 3 baselined** |
 | `EXPR/env_templates` | not applicable — extension not registered (6 tests) |
 | `FEATURE_BUNDLE_1/job_templates` | not applicable — extension not registered (41 tests) |
 | `FEATURE_BUNDLE_1/env_templates` | not applicable — extension not registered (4 tests) |

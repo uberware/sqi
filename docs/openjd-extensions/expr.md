@@ -23,13 +23,16 @@ A template declares it with `extensions: [EXPR]`.
 registry entry carries `Status: StatusInProgress`, and
 `internal/openjd/validate.go` rejects `extensions: [EXPR]` at submission —
 `TestConformance_EXPRNotSupported` fails the build the instant that flips.
-The reason is section 1.2.2: the extension's own contract includes the
-`BOOL`, `RANGE_EXPR` and `LIST[*]` job-parameter types, which are not
-implemented yet (tracked separately), so accepting an EXPR template today
-would ship a partial implementation the extension's own contract forbids.
 Flipping the status to `StatusSupported` is a distinct, later unit of work
 (sequenced in this program's tracker) — this document describes what is
 built, not what is reachable from a submitted job today.
+
+**CORRECTION:** the reason given here used to be section 1.2.2's `BOOL`,
+`RANGE_EXPR` and `LIST[*]` job-parameter types, "which are not implemented yet
+(tracked separately)". Sub-project F1 implemented them, so that is no longer
+what holds the gate shut — see [Extended parameter types](#extended-parameter-types)
+below. The gate stays closed for the reasons the tracker sequences after this
+point, not for that one.
 
 Despite that gate, most of the extension is implemented and tested:
 
@@ -70,6 +73,57 @@ Despite that gate, most of the extension is implemented and tested:
   separate sub-projects (E2, E3, E4b) each independently found — and each
   fixed only locally — an unbounded cumulative cost none of the per-`Eval`
   bounds above ever reached.
+
+## Extended parameter types
+
+RFC 0007 extends the job-parameter type system, and sub-project F1 implemented
+it on the template side. Conformance `EXPR/job_templates` moved **186/209 (23
+baselined) → 206/209 (3 baselined)**.
+
+**Case-insensitive type names.** Every type name, job and task, including
+compound ones: `int`, `Path`, `List[Int]`, `list[list[int]]`. Gated on
+`extensions: [EXPR]` — a base-spec template writing `type: int` is still
+rejected exactly as before, because RFC 0007 is an extension specification and
+accepting lowercase unconditionally would widen what the base spec admits.
+
+**Eight new job-parameter types.**
+
+| Type | Default | Notes |
+| --- | --- | --- |
+| `BOOL` | `true`, `1`, `1.0`, `"yes"`, `"on"` and negatives | `allowedValues` is **rejected**: restricting a two-valued type to one value constrains nothing (the RFC says so explicitly). Its control is `CHECK_BOX`, without the base spec's two-`allowedValues` requirement. |
+| `RANGE_EXPR` | an `<IntRangeExpr>` string | `minLength`/`maxLength` bound the expression's **string length**, default max 1024. |
+| `LIST[STRING]`, `LIST[PATH]`, `LIST[INT]`, `LIST[FLOAT]`, `LIST[BOOL]` | a YAML sequence | Stored as canonical JSON in `JobParameter.Default`. `LIST[PATH]` also carries `objectType`, `dataFlow`, `fileFilters` and `fileFilterDefault`. |
+| `LIST[LIST[INT]]` | a sequence of sequences | One level of nesting, the RFC's own limit. No control but `HIDDEN` — its use case is programmatic. |
+
+Element constraints use a nested `item:` block mirroring the type nesting, so
+each level reuses the scalar names (`minLength`/`maxLength` for string-like,
+`minValue`/`maxValue` for numeric). Element type checking is by JSON **type**,
+which is what the RFC's `<string>` / `<integer>` schemas constrain — `LIST[BOOL]`
+is the deliberate exception, because the RFC gives its items the same
+accepted-values table as a scalar `BOOL`.
+
+**`RANGE_EXPR` uses the specification's permissive range policy**, not
+`internal/openjd`'s stricter one. The two differ on purpose (see this repo's
+`CLAUDE.md`): `internal/openjd` rejects `start > end` and a negative step for
+literal base-spec range text. A `RANGE_EXPR` **parameter** does not, because the
+conformance fixture declares `"10-1:-1"` and `"-1--10:-1"`, and because a lone
+whole-field `range: "{{Param.FrameRange}}"` evaluates as a *value* through
+`range_expr`'s own coercion — which uses the permissive parse anyway. Literal
+range text keeps the strict policy, unchanged.
+
+**The `<ArgString>` control-character amendment.** When `EXPR` is declared, CR,
+LF and TAB become legal anywhere in an argument, "to support multi-line
+expressions in YAML literal block scalars" (Expression Language, "When EXPR is
+enabled", item 3). Every other Cc character is still rejected, and
+`<CommandString>` — a separate type in the same schema (Template Schemas §5.1
+and §5.2) — is **not** amended, so a command keeps the base-spec rule.
+
+**Both evaluation phases resolve the new types.** `expr.JobParamTypes` already
+mapped them (B1/B2 built the types); F1 added the missing value decode to
+`expr.ValueFromText`, which sub-project E4a had flagged by name as F's to do.
+That function lives in the leaf package both phases import, so phase 2 and
+phase 3 gained the types together — `TestPhase2Phase3Agreement` covers all
+eight.
 
 ## Task-parameter range field extensions (section 1.3.12)
 
@@ -747,6 +801,21 @@ recorded in that function's own comment as later work.
 
 ## Known gaps
 
+- **The extended parameter types are template-side only.** Sub-project F1
+  implemented RFC 0007's parsing, validation and both-phase value resolution
+  (see "Extended parameter types" above), but a list-valued parameter cannot
+  yet be *submitted*: the store, the REST surface, `BindJobParameters` and the
+  worker assignment all carry parameters as `map[string]string`, and nothing
+  yet writes a list value into them. F2 is that work. The canonical JSON
+  encoding F1 defined (`internal/openjd/paramjson.go`) is deliberately the form
+  those maps will carry, so F2 inherits it rather than choosing again.
+- **The 141 `EXPR/jobs/` conformance fixtures are scored by nothing.**
+  `test/conformance/suite_test.go` walks only `job_templates` and
+  `env_templates`, and returns early for a job test — so the runtime half of
+  the extension (submitted parameter values, `Param.<name>[i]`,
+  `list(Param.FrameRange)`) has no external scoreboard in any sub-project. F1's
+  template half is measured; F2's runtime half will have to be measured by
+  sqi's own tests.
 - **A cumulative, template-wide budget now exists** (EXPR sub-project E4c;
   see "Template-wide expression budget" above) — bounding what one
   submission's checker walk, one submission's resolver walk, and one

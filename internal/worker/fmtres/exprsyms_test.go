@@ -104,20 +104,32 @@ func TestTaskSymbols_JobParamTypes(t *testing.T) {
 		t.Errorf("RawParam.Scene = %+v, want string", rawScene)
 	}
 
-	// LIST[PATH] is typed correctly (list[path]/list[string] per section
-	// 1.2.2) but is one of the codes expr.ValueFromText never makes
-	// concrete "by construction" -- lists are sub-project F's job-parameter
-	// types and sqi's template model cannot declare one yet, so this stays
-	// Unresolved even in phase 3, identically to how phase 2's
-	// concreteJobParamValue already treats it (see that function's doc
-	// comment). The TYPE is still exactly what section 3's table promises.
+	// LIST[PATH] RESOLVES CONCRETELY as of EXPR sub-project F1.
+	//
+	// This assertion used to require Unresolved, and said so for a reason
+	// that has now been discharged rather than disproved: expr.ValueFromText
+	// had no list case, so a list parameter stayed a placeholder even in
+	// phase 3, and sqi's template model could not declare one anyway. F1
+	// added both halves -- the LIST[*] job-parameter types and
+	// ValueFromText's list decode -- so the value is now real. The TYPE
+	// assertion is unchanged, because the type was never the thing that was
+	// missing.
 	locs, ok := syms.Lookup("Param.Locs")
-	if !ok || !locs.IsUnresolved() || len(locs.Type.Params) != 1 || !locs.Type.Params[0].Equal(expr.ListOf(expr.TPath)) {
-		t.Errorf("Param.Locs = %+v, want unresolved[list[path]]", locs)
+	if !ok || !locs.Type.Equal(expr.ListOf(expr.TPath)) {
+		t.Errorf("Param.Locs = %+v, want list[path]", locs)
 	}
+	if locs.IsUnresolved() {
+		t.Error("Param.Locs is still Unresolved; F1 added expr.ValueFromText's " +
+			"list case precisely so a list parameter resolves in phase 3")
+	}
+	// RawParam is list[string] for a LIST[PATH]: path mapping applies per
+	// element, so the raw form drops to the unmapped strings.
 	rawLocs, ok := syms.Lookup("RawParam.Locs")
-	if !ok || !rawLocs.IsUnresolved() || len(rawLocs.Type.Params) != 1 || !rawLocs.Type.Params[0].Equal(expr.ListOf(expr.TString)) {
-		t.Errorf("RawParam.Locs = %+v, want unresolved[list[string]]", rawLocs)
+	if !ok || !rawLocs.Type.Equal(expr.ListOf(expr.TString)) {
+		t.Errorf("RawParam.Locs = %+v, want list[string]", rawLocs)
+	}
+	if rawLocs.IsUnresolved() {
+		t.Error("RawParam.Locs is still Unresolved")
 	}
 
 	// RawParam is NOT uniformly string: for a non-PATH declared type,
@@ -582,6 +594,34 @@ parameterDefinitions:
   - name: JPath
     type: PATH
     default: "/x"
+  # RFC 0007's types (EXPR sub-project F1). Every one is here because the
+  # section 1.2.2 mapping and the value decode both live in
+  # internal/openjd/expr, shared by phase 2 and phase 3 -- so a type that
+  # resolves in one and not the other is a drift this test exists to catch.
+  - name: JBool
+    type: BOOL
+    default: true
+  - name: JRange
+    type: RANGE_EXPR
+    default: "1-10"
+  - name: JListStr
+    type: LIST[STRING]
+    default: ["a", "b"]
+  - name: JListInt
+    type: LIST[INT]
+    default: [1, 2]
+  - name: JListFloat
+    type: LIST[FLOAT]
+    default: [1.5]
+  - name: JListBool
+    type: LIST[BOOL]
+    default: [true]
+  - name: JListPath
+    type: LIST[PATH]
+    default: ["/a"]
+  - name: JListListInt
+    type: LIST[LIST[INT]]
+    default: [[1, 2]]
 steps:
   - name: S
     parameterSpace:
@@ -700,6 +740,10 @@ func buildAgreementMsg(jobParams map[string]string) *protocol.AssignMsg {
 		JobParameters: jobParams,
 		JobParameterTypes: map[string]string{
 			"JStr": "STRING", "JInt": "INT", "JFloat": "FLOAT", "JPath": "PATH",
+			"JBool": "BOOL", "JRange": "RANGE_EXPR",
+			"JListStr": "LIST[STRING]", "JListInt": "LIST[INT]",
+			"JListFloat": "LIST[FLOAT]", "JListBool": "LIST[BOOL]",
+			"JListPath": "LIST[PATH]", "JListListInt": "LIST[LIST[INT]]",
 		},
 		Parameters: map[string]string{
 			"TStr": "a", "TInt": "5", "TFloat": "1.0", "TPath": "/y", "TChunk": "1-5",
@@ -725,8 +769,13 @@ func TestPhase2Phase3Agreement(t *testing.T) {
 	}
 	stepEnv := &step.StepEnvironments[0]
 
+	// List values are the canonical JSON internal/openjd/paramjson.go
+	// produces; that encoding is exactly what expr.ValueFromText decodes.
 	jobParams := map[string]string{
 		"JStr": "hello", "JInt": "3", "JFloat": "2.500", "JPath": "/projects/shot.ma",
+		"JBool": "true", "JRange": "1-10",
+		"JListStr": `["a","b"]`, "JListInt": "[1,2]", "JListFloat": "[1.5]",
+		"JListBool": "[true]", "JListPath": `["/a"]`, "JListListInt": "[[1,2]]",
 	}
 	const workDir = "/work"
 	const pathMapFile = "/work/path_mapping.json"
@@ -781,8 +830,13 @@ func TestPhase2Phase3Agreement_NoPathMappingOmitsRulesFile(t *testing.T) {
 		t.Fatalf("parse: %v", err)
 	}
 	step := &tmpl.Steps[0]
+	// List values are the canonical JSON internal/openjd/paramjson.go
+	// produces; that encoding is exactly what expr.ValueFromText decodes.
 	jobParams := map[string]string{
 		"JStr": "hello", "JInt": "3", "JFloat": "2.500", "JPath": "/projects/shot.ma",
+		"JBool": "true", "JRange": "1-10",
+		"JListStr": `["a","b"]`, "JListInt": "[1,2]", "JListFloat": "[1.5]",
+		"JListBool": "[true]", "JListPath": `["/a"]`, "JListListInt": "[[1,2]]",
 	}
 
 	phase2 := openjd.SymbolsFor(tmpl, step, nil, openjd.ScopeStepScript, jobParams)
@@ -1205,8 +1259,13 @@ func TestPhase2Phase3Agreement_LetBindings(t *testing.T) {
 		t.Fatal("exprAgreementYAML must declare a step script let: block for this test to exercise")
 	}
 
+	// List values are the canonical JSON internal/openjd/paramjson.go
+	// produces; that encoding is exactly what expr.ValueFromText decodes.
 	jobParams := map[string]string{
 		"JStr": "hello", "JInt": "3", "JFloat": "2.500", "JPath": "/projects/shot.ma",
+		"JBool": "true", "JRange": "1-10",
+		"JListStr": `["a","b"]`, "JListInt": "[1,2]", "JListFloat": "[1.5]",
+		"JListBool": "[true]", "JListPath": `["/a"]`, "JListListInt": "[[1,2]]",
 	}
 
 	// Phase 2: SymbolsFor's own (pre-let) table, then replay

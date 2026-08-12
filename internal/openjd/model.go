@@ -64,6 +64,44 @@ const (
 	JobParamTypeString JobParamType = "STRING"
 	// JobParamTypePath is a filesystem or S3 path parameter.
 	JobParamTypePath JobParamType = "PATH"
+
+	// The types below are added by the EXPR extension (RFC 0007, Extended
+	// Parameter Types) and are accepted ONLY when the template declares
+	// extensions: [EXPR]. Without it the decoder leaves the author's spelling
+	// verbatim and validation rejects it as an unknown type, exactly as before
+	// this extension existed -- see parseJobParamType and decodeJobParameter.
+
+	// JobParamTypeBool is a boolean parameter. Unlike every other type it
+	// forbids allowedValues: restricting a two-valued domain to one value
+	// carries no meaning (RFC 0007, <JobBoolParameterDefinition>).
+	JobParamTypeBool JobParamType = "BOOL"
+	// JobParamTypeRangeExpr is an <IntRangeExpr> string parameter, e.g.
+	// "1-100:2,200". Its default is validated with the SPEC's permissive range
+	// policy, not internal/openjd's stricter one -- see
+	// validateRangeExprParamConstraints for why the two differ here.
+	JobParamTypeRangeExpr JobParamType = "RANGE_EXPR"
+
+	// JobParamTypeListString is a list of strings. Like every list type its
+	// default is stored as canonical JSON in [JobParameter.Default]; see
+	// paramjson.go for that encoding and for why a list value does not get a
+	// typed field of its own.
+	JobParamTypeListString JobParamType = "LIST[STRING]"
+	// JobParamTypeListPath is a list of paths. It is the only list type whose
+	// RawParam form differs from its Param form (list[string] rather than
+	// list[path]), because path mapping applies per element.
+	JobParamTypeListPath JobParamType = "LIST[PATH]"
+	// JobParamTypeListInt is a list of 64-bit integers.
+	JobParamTypeListInt JobParamType = "LIST[INT]"
+	// JobParamTypeListFloat is a list of decimals.
+	JobParamTypeListFloat JobParamType = "LIST[FLOAT]"
+	// JobParamTypeListBool is a list of booleans, each accepting the same
+	// spellings as [JobParamTypeBool].
+	JobParamTypeListBool JobParamType = "LIST[BOOL]"
+	// JobParamTypeListListInt is a list of lists of integers -- the deepest
+	// nesting RFC 0007 allows. Its identified use case is programmatic (graph
+	// adjacency lists), which is why the RFC gives it no user-interface
+	// control of its own beyond HIDDEN.
+	JobParamTypeListListInt JobParamType = "LIST[LIST[INT]]"
 )
 
 // PathObjectType is the objectType discriminator for a PATH [JobParameter].
@@ -140,6 +178,47 @@ type JobParameter struct {
 	// FileFilterDefault is the filter selected when the dialog opens.
 	// Only valid on PATH parameters. Nil when absent.
 	FileFilterDefault *PathFileFilter
+	// Item constrains the ELEMENTS of a LIST[*] parameter. Nil for a scalar
+	// type, or when the template declares no item: block.
+	Item *ItemConstraint
+}
+
+// ItemConstraint constrains the ELEMENTS of a LIST[*] job parameter, and — one
+// level deeper, through its own Item field — the elements of the inner lists of
+// a LIST[LIST[INT]].
+//
+// It mirrors the type nesting so each level reuses the same property names as
+// the equivalent scalar type: MinLength/MaxLength for string-like items,
+// MinValue/MaxValue for numeric ones (RFC 0007, "Nested Item Constraints",
+// which records that the rejected alternative was flat names like
+// minItemValue — abandoned because LIST[LIST[INT]] would have needed
+// minItemIntValue).
+//
+// Which fields are LEGAL at a given level depends on the element type and is
+// enforced by validation, not here: the decoder's job is to record what the
+// template said so that an error can name it.
+//
+// Nesting is capped at one level, matching the RFC's own limit of
+// list[list[T]] and no deeper.
+type ItemConstraint struct {
+	// AllowedValues enumerates the only acceptable element values.
+	AllowedValues []string
+	// AllowedValuesSet records whether the key was PRESENT, for the same
+	// reason [JobParameter.AllowedValuesSet] does: a declared list must hold
+	// at least one value, but omitting it entirely is legal, and both decode
+	// to an empty slice.
+	AllowedValuesSet bool
+	// MinValue and MaxValue bound a numeric element. Stored as strings for
+	// lossless round-tripping, as on [JobParameter].
+	MinValue *string
+	MaxValue *string
+	// MinLength and MaxLength bound a string-like element's length or — when
+	// this constraint describes an inner LIST — that list's element count.
+	MinLength *int
+	MaxLength *int
+	// Item constrains the elements of an inner list. Non-nil only for
+	// LIST[LIST[INT]]; nil at the innermost level.
+	Item *ItemConstraint
 }
 
 // PathFileFilter is one named file type offered by an input or output file
@@ -176,6 +255,24 @@ const (
 	ControlChooseOutputFile ControlType = "CHOOSE_OUTPUT_FILE"
 	// ControlChooseDirectory is a browse-for-a-directory dialog; PATH only.
 	ControlChooseDirectory ControlType = "CHOOSE_DIRECTORY"
+
+	// The controls below are added by the EXPR extension (RFC 0007) for the
+	// list parameter types. LIST[LIST[INT]] deliberately gets none of its own:
+	// the RFC identifies its use case as programmatic (graph adjacency lists),
+	// so HIDDEN -- legal on every type -- is all it accepts.
+
+	// ControlLineEditList edits a list of free-text values; LIST[STRING] only.
+	ControlLineEditList ControlType = "LINE_EDIT_LIST"
+	// ControlSpinBoxList edits a list of numbers; LIST[INT] and LIST[FLOAT].
+	ControlSpinBoxList ControlType = "SPIN_BOX_LIST"
+	// ControlCheckBoxList edits a list of booleans; LIST[BOOL] only.
+	ControlCheckBoxList ControlType = "CHECK_BOX_LIST"
+	// ControlChooseInputFileList browses for existing files; LIST[PATH] only.
+	ControlChooseInputFileList ControlType = "CHOOSE_INPUT_FILE_LIST"
+	// ControlChooseOutputFileList browses for output files; LIST[PATH] only.
+	ControlChooseOutputFileList ControlType = "CHOOSE_OUTPUT_FILE_LIST"
+	// ControlChooseDirectoryList browses for directories; LIST[PATH] only.
+	ControlChooseDirectoryList ControlType = "CHOOSE_DIRECTORY_LIST"
 )
 
 // ParameterUserInterface is the OpenJD base-spec userInterface hint object on a

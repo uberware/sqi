@@ -568,7 +568,7 @@ func ValidateWithOptions(t *JobTemplate, opts ValidateOptions) ValidationErrors 
 	// @optional, but a declared list must hold at least one parameter.
 	errs = append(errs, requireNonEmptyIfSet(t.ParameterDefinitionsSet, len(t.ParameterDefinitions),
 		"/parameterDefinitions", "parameter")...)
-	errs = append(errs, validateJobParams(t.ParameterDefinitions)...)
+	errs = append(errs, validateJobParams(t.ParameterDefinitions, exprDeclared)...)
 
 	// ── jobEnvironments ───────────────────────────────────────────────────
 	errs = append(errs, validateEnvironments(t.JobEnvironments, "/jobEnvironments", ScopeJobEnvironment, exprDeclared)...)
@@ -1638,8 +1638,12 @@ func validatePathFileFilterLimits(f PathFileFilter, ptr string) ValidationErrors
 // vocabulary across types: LINE_EDIT is valid on STRING and invalid on PATH,
 // which needs a CHOOSE_* dialog instead. Read-only after initialization.
 //
-// The *_LIST control variants belong to the EXPR extension and are deliberately
-// absent -- sqi does not implement EXPR.
+// The EXPR extension's own types and its *_LIST control variants are included
+// (RFC 0007). An earlier revision of this comment said they were "deliberately
+// absent -- sqi does not implement EXPR"; that was true until sub-project F1
+// and is corrected rather than quietly rewritten. Their presence here is not a
+// gate: validateEXPRParamType rejects an EXPR type on a template that does not
+// declare the extension before any control is looked at.
 var controlsByType = map[JobParamType]map[ControlType]struct{}{
 	JobParamTypeString: {
 		ControlLineEdit:      {},
@@ -1664,6 +1668,45 @@ var controlsByType = map[JobParamType]map[ControlType]struct{}{
 		ControlSpinBox:      {},
 		ControlDropdownList: {},
 		ControlHidden:       {},
+	},
+
+	// RFC 0007's types. Each accepts exactly the controls the RFC lists for
+	// it, plus HIDDEN, which every type accepts.
+	JobParamTypeBool: {
+		ControlCheckBox: {},
+		ControlHidden:   {},
+	},
+	JobParamTypeRangeExpr: {
+		ControlLineEdit: {},
+		ControlHidden:   {},
+	},
+	JobParamTypeListString: {
+		ControlLineEditList: {},
+		ControlHidden:       {},
+	},
+	JobParamTypeListPath: {
+		ControlChooseInputFileList:  {},
+		ControlChooseOutputFileList: {},
+		ControlChooseDirectoryList:  {},
+		ControlHidden:               {},
+	},
+	JobParamTypeListInt: {
+		ControlSpinBoxList: {},
+		ControlHidden:      {},
+	},
+	JobParamTypeListFloat: {
+		ControlSpinBoxList: {},
+		ControlHidden:      {},
+	},
+	JobParamTypeListBool: {
+		ControlCheckBoxList: {},
+		ControlHidden:       {},
+	},
+	// LIST[LIST[INT]] has no control of its own: RFC 0007 gives it none,
+	// because the use case it was added for (graph adjacency lists) is
+	// programmatic. HIDDEN is the only thing it accepts.
+	JobParamTypeListListInt: {
+		ControlHidden: {},
 	},
 }
 
@@ -1693,7 +1736,15 @@ func validateUserInterfaceControl(ui *ParameterUserInterface, p JobParameter, ct
 			errs = append(errs, ValidationError{Pointer: ctrlPtr, Message: "DROPDOWN_LIST requires allowedValues"})
 		}
 	case ControlCheckBox:
-		errs = append(errs, validateCheckBoxValues(p, ctrlPtr)...)
+		// A BOOL parameter is the one case where CHECK_BOX carries no
+		// allowedValues: the base spec's CHECK_BOX means "a STRING restricted
+		// to a true/false pair", and needs the pair to know which is which,
+		// but RFC 0007's BOOL is already two-valued and FORBIDS allowedValues
+		// outright. Requiring the pair here would make the two rules
+		// contradict each other and reject 2.9--bool-param.yaml.
+		if p.Type != JobParamTypeBool {
+			errs = append(errs, validateCheckBoxValues(p, ctrlPtr)...)
+		}
 	case ControlLineEdit, ControlMultilineEdit, ControlSpinBox:
 		// DROPDOWN_LIST is the control for a fixed value set; a free-entry or
 		// numeric-stepper control paired with allowedValues is contradictory.
@@ -1908,6 +1959,43 @@ func validateNoControlChars(v, ptr string) ValidationErrors {
 	return nil
 }
 
+// validateArgStringChars checks an <ArgString> under the EXPR extension.
+//
+// The EXPR specification amends the ArgString TYPE: "The ArgString type is
+// amended to allow CR (U+000D), LF (U+000A), and TAB (U+0009) characters to
+// support multi-line expressions in YAML literal block scalars"
+// (wiki/2026-02-Expression-Language.md, "When EXPR is enabled", item 3).
+//
+// That is a whole-value amendment, not a carve-out for the inside of a {{ }}.
+// An earlier implementation of this relaxation split the argument with
+// fmtstring.Segments and exempted only the expression bodies, which read as
+// the more conservative choice and was simply wrong: the conformance fixtures
+// it was meant to clear (expr1.1--arithmetic-expr and its nine siblings) are
+// multi-line PYTHON SCRIPTS with single-line {{ }} expressions embedded, so
+// every newline in them is in literal text. Ten fixtures failing identically
+// is what surfaced it.
+//
+// Every OTHER Cc character stays rejected, and <CommandString> -- a separate
+// type in the same schema (Template Schemas §5.1 and §5.2) -- is NOT amended,
+// so a command keeps the base-spec rule even under EXPR.
+func validateArgStringChars(v, ptr string) ValidationErrors {
+	for _, r := range v {
+		if r == '\n' || r == '\r' || r == '\t' {
+			continue
+		}
+		if unicode.IsControl(r) {
+			return ValidationErrors{{
+				Pointer: ptr,
+				Message: fmt.Sprintf(
+					"must not contain control characters other than newline, carriage return, or tab (found U+%04X)",
+					r,
+				),
+			}}
+		}
+	}
+	return nil
+}
+
 // validateDescriptionText checks a <Description> (spec §7.2): at most 2048
 // characters, and no Cc control characters EXCEPT newline, carriage return, and
 // horizontal tab, which a description is explicitly allowed to contain.
@@ -1957,10 +2045,18 @@ func validateSingleStepDelta(p JobParameter, ui *ParameterUserInterface, ptr str
 		return nil
 	}
 	v := *ui.SingleStepDelta
-	if ui.Control != ControlSpinBox {
+	// SPIN_BOX_LIST is the list counterpart of SPIN_BOX and carries the same
+	// stepper semantics per element, so RFC 0007 gives it singleStepDelta too
+	// (2.13--list-int-param.yaml and 2.14--list-float-param.yaml both declare
+	// it). Accepting only the scalar control here is what held both fixtures
+	// back after the list TYPES already validated.
+	if ui.Control != ControlSpinBox && ui.Control != ControlSpinBoxList {
 		return ValidationErrors{{
 			Pointer: ptr,
-			Message: fmt.Sprintf("singleStepDelta is valid only with the SPIN_BOX control (got %q)", ui.Control),
+			Message: fmt.Sprintf(
+				"singleStepDelta is valid only with the SPIN_BOX or SPIN_BOX_LIST control (got %q)",
+				ui.Control,
+			),
 		}}
 	}
 	if strings.Contains(v, "{{") {
@@ -2139,10 +2235,16 @@ func validateUserInterface(p JobParameter, ptr string) ValidationErrors {
 		errs = append(errs, validateUserInterfaceControl(ui, p, ctrlPtr)...)
 	}
 
-	if ui.Decimals != nil && (ui.Control != ControlSpinBox || p.Type != JobParamTypeFloat) {
+	// decimals pairs a float stepper with its precision. RFC 0007 extends the
+	// same pairing to the list form, which 2.14--list-float-param.yaml
+	// declares: SPIN_BOX_LIST on a LIST[FLOAT].
+	decimalsOK := (ui.Control == ControlSpinBox && p.Type == JobParamTypeFloat) ||
+		(ui.Control == ControlSpinBoxList && p.Type == JobParamTypeListFloat)
+	if ui.Decimals != nil && !decimalsOK {
 		errs = append(errs, ValidationError{
 			Pointer: ptr + "/userInterface/decimals",
-			Message: "decimals is valid only with SPIN_BOX on a FLOAT parameter",
+			Message: "decimals is valid only with SPIN_BOX on a FLOAT parameter, " +
+				"or SPIN_BOX_LIST on a LIST[FLOAT] parameter",
 		})
 	}
 	return errs
@@ -2150,7 +2252,7 @@ func validateUserInterface(p JobParameter, ptr string) ValidationErrors {
 
 // ─── job parameter validation ─────────────────────────────────────────────────
 
-func validateJobParams(params []JobParameter) ValidationErrors {
+func validateJobParams(params []JobParameter, exprDeclared bool) ValidationErrors {
 	var errs ValidationErrors
 	seen := make(map[string]struct{}, len(params))
 	for i, p := range params {
@@ -2179,12 +2281,16 @@ func validateJobParams(params []JobParameter) ValidationErrors {
 			errs = append(errs, validateFloatParamConstraints(p, ptr)...)
 		case JobParamTypeString, JobParamTypePath:
 			errs = append(errs, validateStringParamConstraints(p, ptr)...)
+		case JobParamTypeBool, JobParamTypeRangeExpr,
+			JobParamTypeListString, JobParamTypeListPath, JobParamTypeListInt,
+			JobParamTypeListFloat, JobParamTypeListBool, JobParamTypeListListInt:
+			errs = append(errs, validateEXPRParamType(p, ptr, exprDeclared)...)
 		case "":
 			errs = append(errs, ValidationError{Pointer: ptr + "/type", Message: "required"})
 		default:
 			errs = append(errs, ValidationError{
 				Pointer: ptr + "/type",
-				Message: fmt.Sprintf("unknown type %q; must be INT, FLOAT, STRING, or PATH", p.Type),
+				Message: unknownJobTypeMessage(p.Type, exprDeclared),
 			})
 		}
 
@@ -2343,7 +2449,12 @@ func validateStringParamConstraints(p JobParameter, ptr string) ValidationErrors
 // legal values and only appear on PATH-typed parameters.  These are structural
 // correctness checks; they are always enforced regardless of EnforceLimits.
 func validatePathOnlyFields(p JobParameter, ptr string) ValidationErrors {
-	isPath := p.Type == JobParamTypePath
+	// LIST[PATH] carries objectType and dataFlow for exactly the same reason
+	// PATH does -- RFC 0007's <JobListPathParameterDefinition> declares both,
+	// with the same FILE/DIRECTORY and IN/OUT/INOUT/NONE meanings applied per
+	// element. Restricting them to the scalar type would reject
+	// 2.12--list-path-param.yaml, which sets them on a list.
+	isPath := p.Type == JobParamTypePath || p.Type == JobParamTypeListPath
 	var errs ValidationErrors
 	errs = append(errs, validatePathOnlyField(
 		p.ObjectType, ptr+"/objectType", "objectType", isPath,
@@ -2374,7 +2485,7 @@ func validatePathOnlyField[T ~string](value T, ptr, field string, isPath bool, v
 	if !isPath {
 		errs = append(errs, ValidationError{
 			Pointer: ptr,
-			Message: field + " may only be set on PATH parameters",
+			Message: field + " may only be set on PATH or LIST[PATH] parameters",
 		})
 	}
 	return errs
@@ -2408,10 +2519,13 @@ func validateFileFilters(p JobParameter, ptr string) ValidationErrors {
 	if len(p.FileFilters) > 0 {
 		field = "fileFilters"
 	}
-	if p.Type != JobParamTypePath {
+	// LIST[PATH] carries fileFilters and fileFilterDefault too: RFC 0007's
+	// <JobListPathParameterDefinition> declares both, for the same
+	// CHOOSE_*_FILE_LIST dialogs the scalar type's filters serve.
+	if p.Type != JobParamTypePath && p.Type != JobParamTypeListPath {
 		errs = append(errs, ValidationError{
 			Pointer: ptr + "/" + field,
-			Message: "fileFilters and fileFilterDefault are valid only on PATH parameters",
+			Message: "fileFilters and fileFilterDefault are valid only on PATH or LIST[PATH] parameters",
 		})
 		return errs
 	}
@@ -2479,11 +2593,20 @@ func validateAction(a Action, ptr string, scope Scope, files map[string]struct{}
 		}}
 	}
 	// A command or argument carrying a tab or line break cannot survive the
-	// round trip to an OS process argv intact. (The EXPR extension relaxes this
-	// for multi-line expressions; sqi does not implement EXPR.)
+	// round trip to an OS process argv intact. The EXPR extension relaxes that
+	// for multi-line EXPRESSIONS -- an expression body is evaluated away before
+	// argv is built -- but not for the literal text around them, which is why
+	// the EXPR arm splits the string rather than skipping the check.
+	// The command keeps the base-spec rule unconditionally: EXPR amends
+	// <ArgString>, not <CommandString>, and the two are separate types with
+	// separate rules (Template Schemas §5.1, §5.2).
 	errs := validateNoControlChars(a.Command, ptr+"/command")
+	checkArg := validateNoControlChars
+	if exprDeclared {
+		checkArg = validateArgStringChars
+	}
 	for i, arg := range a.Args {
-		errs = append(errs, validateNoControlChars(arg, fmt.Sprintf("%s/args/%d", ptr, i))...)
+		errs = append(errs, checkArg(arg, fmt.Sprintf("%s/args/%d", ptr, i))...)
 	}
 	if !exprDeclared {
 		errs = append(errs, validateActionRefs(a, ptr, scope, files)...)
