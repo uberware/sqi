@@ -352,6 +352,72 @@ steps:
 	}
 }
 
+// TestProductParameters_ExposesItemConstraints pins that a LIST[*] parameter's
+// per-element constraints reach the client. The web form validates an element
+// against them, and cannot do so if they are not serialized — before this,
+// productParameterResponse carried only the list-LEVEL bounds.
+func TestProductParameters_ExposesItemConstraints(t *testing.T) {
+	p := openjd.JobParameter{
+		Name: "Counts",
+		Type: openjd.JobParamTypeListInt,
+		Item: &openjd.ItemConstraint{
+			MinValue:         new("1"),
+			MaxValue:         new("10"),
+			AllowedValues:    []string{"1", "2"},
+			AllowedValuesSet: true,
+		},
+	}
+
+	got := toProductParameterResponse(p)
+
+	if got.Item == nil {
+		t.Fatal("item constraints were not serialized; the web form validates elements against them")
+	}
+	if got.Item.MinValue == nil || *got.Item.MinValue != "1" {
+		t.Errorf("item.min_value = %v, want \"1\"", got.Item.MinValue)
+	}
+	if got.Item.MaxValue == nil || *got.Item.MaxValue != "10" {
+		t.Errorf("item.max_value = %v, want \"10\"", got.Item.MaxValue)
+	}
+	if len(got.Item.AllowedValues) != 2 {
+		t.Errorf("item.allowed_values = %v, want two entries", got.Item.AllowedValues)
+	}
+}
+
+// TestProductParameters_NestedItemConstraints covers LIST[LIST[INT]], the one
+// type with a second item level.
+func TestProductParameters_NestedItemConstraints(t *testing.T) {
+	p := openjd.JobParameter{
+		Name: "Adj",
+		Type: openjd.JobParamTypeListListInt,
+		Item: &openjd.ItemConstraint{
+			MinLength: new(1),
+			Item:      &openjd.ItemConstraint{MinValue: new("0")},
+		},
+	}
+
+	got := toProductParameterResponse(p)
+
+	if got.Item == nil || got.Item.Item == nil {
+		t.Fatal("the second item level was not serialized")
+	}
+	if got.Item.Item.MinValue == nil || *got.Item.Item.MinValue != "0" {
+		t.Errorf("item.item.min_value = %v, want \"0\"", got.Item.Item.MinValue)
+	}
+}
+
+// TestProductParameters_NoItemIsNull pins that a scalar parameter serializes
+// item as null rather than an empty object, so the client can distinguish
+// "no constraints" from "constraints, all empty".
+func TestProductParameters_NoItemIsNull(t *testing.T) {
+	got := toProductParameterResponse(openjd.JobParameter{
+		Name: "Scene", Type: openjd.JobParamTypePath,
+	})
+	if got.Item != nil {
+		t.Errorf("item = %+v, want nil for a scalar parameter", got.Item)
+	}
+}
+
 func TestProducts_ParametersUnknownIs404(t *testing.T) {
 	srv := newProductTestServer(t)
 	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/api/v1/products/nope/parameters", nil)

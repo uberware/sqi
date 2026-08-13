@@ -86,6 +86,35 @@ type pathFileFilterResponse struct {
 	Patterns []string `json:"patterns"`
 }
 
+// itemConstraintResponse mirrors [openjd.ItemConstraint] for the wire. Item
+// recurses exactly once: RFC 0007 caps list nesting at list[list[T]], so a
+// third level cannot describe anything.
+type itemConstraintResponse struct {
+	AllowedValues []string                `json:"allowed_values"`
+	MinValue      *string                 `json:"min_value"`
+	MaxValue      *string                 `json:"max_value"`
+	MinLength     *int                    `json:"min_length"`
+	MaxLength     *int                    `json:"max_length"`
+	Item          *itemConstraintResponse `json:"item"`
+}
+
+// toItemConstraintResponse converts one item: level, recursing into the inner
+// one. Returns nil for a nil input so a scalar parameter serializes item as
+// null rather than an empty object.
+func toItemConstraintResponse(c *openjd.ItemConstraint) *itemConstraintResponse {
+	if c == nil {
+		return nil
+	}
+	return &itemConstraintResponse{
+		AllowedValues: c.AllowedValues,
+		MinValue:      c.MinValue,
+		MaxValue:      c.MaxValue,
+		MinLength:     c.MinLength,
+		MaxLength:     c.MaxLength,
+		Item:          toItemConstraintResponse(c.Item),
+	}
+}
+
 // productParameterResponse is one parsed job parameter, including userInterface
 // hints, returned by GET /products/{name}/parameters.
 type productParameterResponse struct {
@@ -103,6 +132,11 @@ type productParameterResponse struct {
 	UserInterface     *parameterUserInterfaceResponse `json:"user_interface"`
 	FileFilters       []pathFileFilterResponse        `json:"file_filters"`
 	FileFilterDefault *pathFileFilterResponse         `json:"file_filter_default"`
+	// Item carries a LIST[*] parameter's per-element constraints (RFC 0007's
+	// nested item: block). Nil for a scalar parameter. The web form validates
+	// each element against these, so omitting them would leave half the
+	// constraint model unenforceable client-side.
+	Item *itemConstraintResponse `json:"item"`
 }
 
 func toProductParameterResponse(p openjd.JobParameter) productParameterResponse {
@@ -118,6 +152,7 @@ func toProductParameterResponse(p openjd.JobParameter) productParameterResponse 
 		MaxLength:     p.MaxLength,
 		ObjectType:    string(p.ObjectType),
 		DataFlow:      string(p.DataFlow),
+		Item:          toItemConstraintResponse(p.Item),
 	}
 	if p.UserInterface != nil {
 		out.UserInterface = &parameterUserInterfaceResponse{

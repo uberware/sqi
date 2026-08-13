@@ -1451,6 +1451,26 @@ components:
           properties:
             label: { type: string }
             patterns: { type: array, items: { type: string } }
+        item:
+          nullable: true
+          description: >-
+            Per-element constraints for a LIST[*] parameter (RFC 0007's nested
+            item: block). Null for a scalar parameter. The inner item recurses
+            exactly once, for LIST[LIST[INT]].
+          allOf: [{ $ref: '#/components/schemas/ItemConstraint' }]
+
+    ItemConstraint:
+      type: object
+      properties:
+        allowed_values: { type: array, items: { type: string }, nullable: true }
+        min_value: { type: string, nullable: true }
+        max_value: { type: string, nullable: true }
+        min_length: { type: integer, nullable: true }
+        max_length: { type: integer, nullable: true }
+        item:
+          nullable: true
+          description: The inner level, present only for LIST[LIST[INT]].
+          allOf: [{ $ref: '#/components/schemas/ItemConstraint' }]
 
     # ── Usage pools ───────────────────────────────────────────────────────────
     UsagePool:
