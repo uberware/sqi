@@ -476,6 +476,16 @@ func (s *Submitter) expandStepTaskParams(
 	// prepareTemplate's (fix round 1, Critical 1) for why the two must not be
 	// the same budget.
 	resolvedPS, resolveErrs := ResolveParameterSpaceParams(tmpl, &stepTmpl, stepTmpl.ParameterSpace, boundParams, resolverBudget)
+	// Checked BEFORE resolveErrs, and never wrapped in a SubmitValidationError:
+	// a wall-clock stop is not the submitter's fault, and the resolver reports
+	// it through the shared budget rather than as a ValidationError precisely
+	// so it cannot be mistaken for one. Without this check the resolver's
+	// (nil, nil) return -- what a deadline produces -- would fall through to
+	// ExpandParameterSpace(nil) and create a job whose steps quietly lost their
+	// parameter space. See templateBudget.deadline.
+	if err := resolverBudget.deadline(); err != nil {
+		return nil, fmt.Errorf("openjd: submit: resolve step %q parameter space: %w", stepTmpl.Name, err)
+	}
 	if len(resolveErrs) > 0 {
 		stepPrefix := fmt.Sprintf("/steps/%d", stepIdx)
 		for k := range resolveErrs {
@@ -550,7 +560,23 @@ func (s *Submitter) expandStepTaskParams(
 // call sites that omit it (as every pre-Task-4 test does) get a fresh,
 // throwaway allowance instead -- see [templateBudgetOrFresh].
 func checkExpressionsAtSubmit(tmpl *JobTemplate, boundParams map[string]string, budget ...*templateBudget) error {
-	if errs := checkTemplateExpressions(tmpl, boundParams, budget...); len(errs) > 0 {
+	errs := checkTemplateExpressions(tmpl, boundParams, budget...)
+
+	// The deadline first, and NOT as a SubmitValidationError. That type is the
+	// client-fault channel -- it becomes a 4xx -- and a wall-clock stop is the
+	// server giving up on a template that might well be fine. It is also
+	// checked BEFORE errs, because a deadline makes errs incomplete by
+	// definition: the walk stopped early, so reporting whatever it happened to
+	// collect as the reason would be a smaller and different claim than the
+	// truth. Returned raw so a caller can match it with errors.Is against
+	// [expr.ErrDeadlineExceeded].
+	if len(budget) > 0 {
+		if derr := budget[0].deadline(); derr != nil {
+			return fmt.Errorf("openjd: submit: expression re-check with concrete parameters: %w", derr)
+		}
+	}
+
+	if len(errs) > 0 {
 		return &SubmitValidationError{
 			Cause: fmt.Errorf("openjd: submit: expression re-check with concrete parameters: %w", errs),
 		}

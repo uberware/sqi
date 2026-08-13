@@ -161,7 +161,7 @@ func ResolveParameterSpaceParams(
 	// is not declared, which is the point — see resolveRangeExprField.
 	var syms expr.MapSymbols
 	if exprEnabled {
-		stepLet, letErrs := stepLetSymbols(tmpl, step, jobParams, "", b.limits)
+		stepLet, letErrs := stepLetSymbols(b, tmpl, step, jobParams, "")
 		errs = append(errs, letErrs...)
 
 		// Charged exactly like checkStepExpressions charges the identical
@@ -209,6 +209,17 @@ func ResolveParameterSpaceParams(
 	}
 
 	errs = append(errs, b.errs()...)
+
+	// A wall-clock deadline stopped the walk. It is deliberately NOT a
+	// ValidationError (templateBudget.recordDeadline), so errs may well be
+	// empty -- and newDefs is then partly zero-valued, because the loop above
+	// broke on !b.ok(). Returning that space would look exactly like a
+	// successful resolution of a parameter space this function never finished.
+	// Return none instead; the caller reads b.deadline() and reports the
+	// server-side stop.
+	if b.deadline() != nil {
+		return nil, errs
+	}
 
 	if len(errs) > 0 {
 		return nil, errs

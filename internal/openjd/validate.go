@@ -11,6 +11,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 	"unicode"
 	"unicode/utf8"
 
@@ -445,6 +446,23 @@ type ValidateOptions struct {
 	// [templateBudget]; see [ExprLimits] for what each of the four bounds and
 	// for which of them an operator may move how far.
 	ExprLimits ExprLimits
+
+	// Deadline, when non-zero, is an absolute wall-clock time after which the
+	// expression walk stops and [ValidateWithBudget] returns a non-nil error
+	// wrapping [expr.ErrDeadlineExceeded].
+	//
+	// It is a BACKSTOP, not a budget. The deterministic limits in ExprLimits
+	// decide whether a template is VALID; this decides only whether this
+	// server keeps working on it, and the same template would validate on an
+	// idle machine. That is why it cannot be reported as a ValidationError,
+	// and why reading it needs [ValidateWithBudget]: [ValidateWithOptions]
+	// discards the channel it arrives on, so setting this field there stops
+	// the walk without telling the caller why.
+	//
+	// Zero -- the default, and what every caller but the submission path uses
+	// -- means no deadline and costs nothing: the meter short-circuits before
+	// reading any clock.
+	Deadline time.Time
 }
 
 // exprExpressionWalkEnabled reports whether [checkTemplateExpressions] should
@@ -523,7 +541,38 @@ func Validate(t *JobTemplate) ValidationErrors {
 // Existing callers should continue to use [Validate]; this entry point is for
 // the submission pipeline where the operator may disable limit enforcement via
 // config.
+//
+// It is [ValidateWithBudget] with the deadline channel discarded, and that is
+// safe by construction: without [ValidateOptions.Deadline] set, that error is
+// always nil. Every caller that does not set a deadline — which is every caller
+// but the submission path — keeps its exact previous behavior. A caller that
+// DOES set one gets a walk that stops but no way to learn that it did, so use
+// ValidateWithBudget instead.
 func ValidateWithOptions(t *JobTemplate, opts ValidateOptions) ValidationErrors {
+	errs, _ := ValidateWithBudget(t, opts) //nolint:errcheck // nil unless opts.Deadline is set
+	return errs
+}
+
+// ValidateWithBudget is [ValidateWithOptions] plus a wall-clock backstop.
+//
+// It returns the same ValidationErrors, plus an error that is non-nil ONLY when
+// opts.Deadline passed mid-walk, in which case it wraps
+// [expr.ErrDeadlineExceeded]. That second channel exists because the two
+// outcomes mean different things to a caller: ValidationErrors say the template
+// is INVALID and become a 422, while a deadline says this server gave up and
+// becomes a 5xx. A deadline is non-deterministic — the same body would validate
+// on an idle machine — so reporting it as a validation error would make
+// acceptance depend on machine load.
+//
+// When the error is non-nil the ValidationErrors are INCOMPLETE by definition:
+// the walk stopped early, so a position that would have failed may not have
+// been reached. Callers must not present them as a verdict.
+//
+// Everything after the expression walk still runs when the deadline passed. The
+// remaining checks are deterministic, expression-free and bounded by template
+// size, so finishing them costs no meaningful time and leaves the caller a more
+// complete (though still incomplete) picture if it wants to log one.
+func ValidateWithBudget(t *JobTemplate, opts ValidateOptions) (ValidationErrors, error) {
 	var errs ValidationErrors
 
 	// exprDeclared gates which format-string checker runs at every position
@@ -678,6 +727,12 @@ func ValidateWithOptions(t *JobTemplate, opts ValidateOptions) ValidationErrors 
 	// exprWalkApplies, not exprExpressionWalkEnabled alone: the template's own
 	// extensions: key has to be consulted BEFORE parameterSpaceOverCaps, or
 	// the guard runs on templates whose walk is a no-op. See that function.
+	//
+	// walkBudget is hoisted out of the branch below because it is what carries
+	// a deadline breach back out: checkTemplateExpressions reports one through
+	// the budget (templateBudget.recordDeadline) rather than as a
+	// ValidationError, so this function has to hold the pointer to read it.
+	var walkBudget *templateBudget
 	if exprWalkApplies(t, opts.CheckEXPRExpressionsWhileUnsupported) && !parameterSpaceOverCaps(t) {
 		// A budget is passed EXPLICITLY (rather than letting
 		// checkTemplateExpressions allocate its own) for one reason: the
@@ -686,7 +741,14 @@ func ValidateWithOptions(t *JobTemplate, opts ValidateOptions) ValidationErrors 
 		// is precisely the "knob read but not used" failure E4d must not
 		// ship. Behaviourally this is identical to the old no-argument call
 		// whenever opts.ExprLimits is the zero value.
-		errs = append(errs, checkTemplateExpressions(t, nil, newTemplateBudget(opts.ExprLimits))...)
+		//
+		// opts.Deadline rides in on the same ExprLimits the four configured
+		// numbers do -- see that field's comment for why a per-request value
+		// travels with operator configuration.
+		lim := opts.ExprLimits
+		lim.Deadline = opts.Deadline
+		walkBudget = newTemplateBudget(lim)
+		errs = append(errs, checkTemplateExpressions(t, nil, walkBudget)...)
 	}
 
 	// ── quantitative limits (gated) ───────────────────────────────────────
@@ -695,7 +757,7 @@ func ValidateWithOptions(t *JobTemplate, opts ValidateOptions) ValidationErrors 
 		errs = append(errs, validateLimits(t)...)
 	}
 
-	return errs
+	return errs, walkBudget.deadline()
 }
 
 // ─── reserved-name tables ─────────────────────────────────────────────────────

@@ -14,7 +14,7 @@ import (
 func TestCheckLetBindings_SequentialTypePropagation(t *testing.T) {
 	syms := expr.MapSymbols{"Param.Count": expr.Unresolved(expr.TInt)}
 	errs := checkLetBindings(
-		[]string{"x = Param.Count", "y = x + 1", "z = string(y)"},
+		nil, []string{"x = Param.Count", "y = x + 1", "z = string(y)"},
 		"/steps/0/let", ScopeStepTemplate, syms,
 	)
 	if len(errs) != 0 {
@@ -53,7 +53,7 @@ func TestCheckLetBindings_SequentialTypePropagation(t *testing.T) {
 func TestCheckLetBindings_TypeErrorReportsAtItsOwnPointer(t *testing.T) {
 	syms := expr.MapSymbols{"Param.Count": expr.Unresolved(expr.TInt)}
 	errs := checkLetBindings(
-		[]string{"x = Param.Count", "bad = x + 'hello'", "after = 1"},
+		nil, []string{"x = Param.Count", "bad = x + 'hello'", "after = 1"},
 		"/steps/0/let", ScopeStepTemplate, syms,
 	)
 	if len(errs) != 1 {
@@ -72,7 +72,7 @@ func TestCheckLetBindings_TypeErrorReportsAtItsOwnPointer(t *testing.T) {
 
 func TestCheckLetBindings_SelfReferenceIsAnUnknownName(t *testing.T) {
 	syms := expr.MapSymbols{}
-	errs := checkLetBindings([]string{"x = x + 1"}, "/steps/0/let", ScopeStepTemplate, syms)
+	errs := checkLetBindings(nil, []string{"x = x + 1"}, "/steps/0/let", ScopeStepTemplate, syms)
 	if len(errs) != 1 {
 		t.Fatalf("checkLetBindings = %v, want exactly one error", errs)
 	}
@@ -90,7 +90,7 @@ func TestCheckLetBindings_SelfReferenceIsAnUnknownName(t *testing.T) {
 
 func TestCheckLetBindings_MalformedBindingReportsAtItsIndex(t *testing.T) {
 	syms := expr.MapSymbols{}
-	errs := checkLetBindings([]string{"a = 1", "Foo = 2"}, "/steps/0/let", ScopeStepTemplate, syms)
+	errs := checkLetBindings(nil, []string{"a = 1", "Foo = 2"}, "/steps/0/let", ScopeStepTemplate, syms)
 	if len(errs) != 1 || errs[0].Pointer != "/steps/0/let/1" {
 		t.Fatalf("checkLetBindings = %v, want one error at /steps/0/let/1", errs)
 	}
@@ -99,7 +99,7 @@ func TestCheckLetBindings_MalformedBindingReportsAtItsIndex(t *testing.T) {
 func TestCheckLetBindings_HostOnlyFunctionRejectedInNonHostScope(t *testing.T) {
 	syms := expr.MapSymbols{"Param.P": expr.Unresolved(expr.TPath)}
 	errs := checkLetBindings(
-		[]string{"p = apply_path_mapping(Param.P)"},
+		nil, []string{"p = apply_path_mapping(Param.P)"},
 		"/steps/0/let", ScopeStepTemplate, syms,
 	)
 	if len(errs) != 1 {
@@ -138,7 +138,7 @@ const overBudgetLetBinding = "a = max([len(('y' * 900000).upper()) for i in rang
 func TestCheckLetBindings_OverBudgetEvalIsRejectedAtSubmissionLimit(t *testing.T) {
 	syms := expr.MapSymbols{}
 	errs := checkLetBindings(
-		[]string{overBudgetLetBinding},
+		nil, []string{overBudgetLetBinding},
 		"/steps/0/let", ScopeStepTemplate, syms, DefaultExprLimits().evalOptions()...,
 	)
 	if len(errs) != 1 {
@@ -236,7 +236,7 @@ steps:
 
 func TestCheckLetBindings_RejectsDuplicateInSameBlock(t *testing.T) {
 	syms := expr.MapSymbols{}
-	errs := checkLetBindings([]string{"x = 1", "x = 2"}, "/steps/0/let", ScopeStepTemplate, syms)
+	errs := checkLetBindings(nil, []string{"x = 1", "x = 2"}, "/steps/0/let", ScopeStepTemplate, syms)
 	if len(errs) != 1 || errs[0].Pointer != "/steps/0/let/1" {
 		t.Fatalf("checkLetBindings = %v, want one error at /steps/0/let/1", errs)
 	}
@@ -256,10 +256,10 @@ func TestCheckLetBindings_RejectsShadowingAnEnclosingBlock(t *testing.T) {
 	// The enclosing block's names are already in syms -- that is what makes
 	// "same block" and "any enclosing scope" one check rather than two.
 	syms := expr.MapSymbols{}
-	if errs := checkLetBindings([]string{"x = 1"}, "/steps/0/let", ScopeStepTemplate, syms); len(errs) != 0 {
+	if errs := checkLetBindings(nil, []string{"x = 1"}, "/steps/0/let", ScopeStepTemplate, syms); len(errs) != 0 {
 		t.Fatalf("outer block: %v", errs)
 	}
-	errs := checkLetBindings([]string{"x = 2"}, "/steps/0/script/let", ScopeStepScript, syms)
+	errs := checkLetBindings(nil, []string{"x = 2"}, "/steps/0/script/let", ScopeStepScript, syms)
 	if len(errs) != 1 || errs[0].Pointer != "/steps/0/script/let/0" {
 		t.Fatalf("checkLetBindings = %v, want one error at /steps/0/script/let/0", errs)
 	}
@@ -287,7 +287,7 @@ func TestCheckLetBindings_RejectsShadowingAnEnclosingBlock(t *testing.T) {
 // that rejects it.
 func TestCheckLetBindings_RejectsShadowingAPreexistingTableEntry(t *testing.T) {
 	syms := expr.MapSymbols{"thing": expr.Unresolved(expr.TString)}
-	errs := checkLetBindings([]string{"thing = 1"}, "/steps/0/let", ScopeStepTemplate, syms)
+	errs := checkLetBindings(nil, []string{"thing = 1"}, "/steps/0/let", ScopeStepTemplate, syms)
 	if len(errs) != 1 || errs[0].Pointer != "/steps/0/let/0" {
 		t.Fatalf("checkLetBindings = %v, want one error at /steps/0/let/0", errs)
 	}
@@ -534,7 +534,7 @@ steps:
 // SCRIPT's own let: binds must not become visible in hostRequirements or
 // parameterSpace. Without the clone, `syms := stepLet` would alias the same
 // map checkStepExpressions later copies into jobSyms, so
-// checkLetBindings(s.Script.Let, ...) mutating syms would mutate stepLet
+// checkLetBindings(nil, s.Script.Let, ...) mutating syms would mutate stepLet
 // itself, and "derived" would leak forward into jobSyms right alongside it.
 func TestCheckTemplateExpressions_StepScriptLetDoesNotLeakIntoHostRequirements(t *testing.T) {
 	tmpl := mustParseEXPR(t, `specificationVersion: jobtemplate-2023-09
@@ -995,7 +995,7 @@ func TestCheckLetBindings_StopsAtMaxLetBindings(t *testing.T) {
 	var before, after runtime.MemStats
 	runtime.GC()
 	runtime.ReadMemStats(&before)
-	errs := checkLetBindings(lets, "/steps/0/let", ScopeStepTemplate, syms)
+	errs := checkLetBindings(nil, lets, "/steps/0/let", ScopeStepTemplate, syms)
 	runtime.ReadMemStats(&after)
 
 	if len(errs) != 0 {

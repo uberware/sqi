@@ -238,16 +238,16 @@ func TestCheckFormatString(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			syms := symbolsFor(tmpl, nil, nil, tc.scope, nil)
-			errs := checkFormatString(tc.src, "/p", tc.scope, syms, TargetString)
+			errs := checkFormatString(nil, tc.src, "/p", tc.scope, syms, TargetString)
 			if tc.wantErr && len(errs) == 0 {
-				t.Fatalf("checkFormatString(%q) accepted it; want a rejection", tc.src)
+				t.Fatalf("checkFormatString(nil, %q) accepted it; want a rejection", tc.src)
 			}
 			if !tc.wantErr && len(errs) != 0 {
-				t.Fatalf("checkFormatString(%q) rejected it: %v", tc.src, errs)
+				t.Fatalf("checkFormatString(nil, %q) rejected it: %v", tc.src, errs)
 			}
 			if tc.wantSub != "" {
 				if len(errs) == 0 {
-					t.Fatalf("checkFormatString(%q): no errors, but wanted message containing %q", tc.src, tc.wantSub)
+					t.Fatalf("checkFormatString(nil, %q): no errors, but wanted message containing %q", tc.src, tc.wantSub)
 				}
 				if !strings.Contains(errs[0].Message, tc.wantSub) {
 					t.Errorf("message %q does not mention %q", errs[0].Message, tc.wantSub)
@@ -281,11 +281,11 @@ func TestCheckFormatString_LoneRefInheritsTheTarget(t *testing.T) {
 	}
 	syms := symbolsFor(tmpl, nil, nil, ScopeJob, nil)
 
-	if errs := checkFormatString("{{ Param.S }}", "/p", ScopeJob, syms, TargetInt); len(errs) == 0 {
+	if errs := checkFormatString(nil, "{{ Param.S }}", "/p", ScopeJob, syms, TargetInt); len(errs) == 0 {
 		t.Error("a path parameter was accepted for an int field; the lone reference " +
 			"must inherit the field's target type")
 	}
-	if errs := checkFormatString("x{{ Param.S }}", "/p", ScopeJob, syms, TargetInt); len(errs) != 0 {
+	if errs := checkFormatString(nil, "x{{ Param.S }}", "/p", ScopeJob, syms, TargetInt); len(errs) != 0 {
 		t.Errorf("an EMBEDDED reference must be converted to a string and accepted: %v", errs)
 	}
 }
@@ -303,7 +303,7 @@ func TestCheckFormatString_HostOnlyFunctionPlacement(t *testing.T) {
 	const src = "{{ apply_path_mapping(RawParam.P) }}"
 
 	syms := symbolsFor(tmpl, nil, nil, ScopeJob, nil)
-	errs := checkFormatString(src, "/name", ScopeJob, syms, TargetString)
+	errs := checkFormatString(nil, src, "/name", ScopeJob, syms, TargetString)
 	if len(errs) == 0 {
 		t.Fatal("apply_path_mapping was accepted in a submission-time scope")
 	}
@@ -312,7 +312,7 @@ func TestCheckFormatString_HostOnlyFunctionPlacement(t *testing.T) {
 	}
 
 	syms = symbolsFor(tmpl, nil, nil, ScopeStepScript, nil)
-	if errs := checkFormatString(src, "/p", ScopeStepScript, syms, TargetString); len(errs) != 0 {
+	if errs := checkFormatString(nil, src, "/p", ScopeStepScript, syms, TargetString); len(errs) != 0 {
 		t.Errorf("apply_path_mapping must be allowed in a host context: %v", errs)
 	}
 }
@@ -339,7 +339,7 @@ func TestCheckFormatString_HostOnlyFunctionPlacement_EmbeddedAndMethodForm(t *te
 
 	t.Run("embedded segment", func(t *testing.T) {
 		const src = "prefix {{ apply_path_mapping(RawParam.P) }} suffix"
-		errs := checkFormatString(src, "/p", ScopeJob, syms, TargetString)
+		errs := checkFormatString(nil, src, "/p", ScopeJob, syms, TargetString)
 		if len(errs) == 0 {
 			t.Fatal("apply_path_mapping was accepted in a submission-time scope")
 		}
@@ -350,7 +350,7 @@ func TestCheckFormatString_HostOnlyFunctionPlacement_EmbeddedAndMethodForm(t *te
 
 	t.Run("method-call form", func(t *testing.T) {
 		const src = "{{ RawParam.P.apply_path_mapping() }}"
-		errs := checkFormatString(src, "/p", ScopeJob, syms, TargetString)
+		errs := checkFormatString(nil, src, "/p", ScopeJob, syms, TargetString)
 		if len(errs) == 0 {
 			t.Fatal("apply_path_mapping() written as a method call was accepted in a submission-time scope")
 		}
@@ -428,12 +428,12 @@ func TestCheckFormatString_ArgItemShapes(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			errs := checkFormatString(tc.src, "/p", ScopeStepScript, syms, TargetArgItem)
+			errs := checkFormatString(nil, tc.src, "/p", ScopeStepScript, syms, TargetArgItem)
 			if tc.wantErr && len(errs) == 0 {
-				t.Fatalf("checkFormatString(%q) accepted it; want a rejection", tc.src)
+				t.Fatalf("checkFormatString(nil, %q) accepted it; want a rejection", tc.src)
 			}
 			if !tc.wantErr && len(errs) != 0 {
-				t.Fatalf("checkFormatString(%q) rejected it: %v", tc.src, errs)
+				t.Fatalf("checkFormatString(nil, %q) rejected it: %v", tc.src, errs)
 			}
 		})
 	}
@@ -461,12 +461,12 @@ func TestCheckFormatString_TimeoutTarget(t *testing.T) {
 	}
 	syms := symbolsFor(tmpl, nil, nil, ScopeStepScript, nil)
 
-	if errs := checkFormatString("{{ [Param.S] }}", "/p", ScopeStepScript, syms, TargetInt); len(errs) == 0 {
+	if errs := checkFormatString(nil, "{{ [Param.S] }}", "/p", ScopeStepScript, syms, TargetInt); len(errs) == 0 {
 		t.Error("a list value was accepted against an int timeout target")
 	}
 	// What a real, already-decoded timeout looks like today: a plain decimal
 	// string with no "{{" reference. Must stay accepted.
-	if errs := checkFormatString("30", "/p", ScopeStepScript, syms, TargetInt); len(errs) != 0 {
+	if errs := checkFormatString(nil, "30", "/p", ScopeStepScript, syms, TargetInt); len(errs) != 0 {
 		t.Errorf("a plain decoded timeout value must not be rejected: %v", errs)
 	}
 }

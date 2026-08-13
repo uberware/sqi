@@ -3,6 +3,7 @@
 package openjd
 
 import (
+	"errors"
 	"fmt"
 	"maps"
 	"slices"
@@ -318,8 +319,17 @@ func checkHostOnlyFunctions(e *expr.Expression, scope Scope, ptr string) Validat
 // checkFormatString directly pass no opts, which is fine: the package
 // defaults apply, and no committed test's expression does enough real work to
 // approach even the much tighter budget [ExprLimits.evalOptions] supplies.
+//
+// b is the walk's [templateBudget], and this function needs it for ONE reason:
+// to divert a wall-clock deadline breach away from the ValidationErrors it
+// returns and onto the budget, where it stops the rest of the walk and reaches
+// [ValidateWithBudget] as an error. See [templateBudget.recordDeadline] for why
+// that distinction is not cosmetic. It may be nil -- direct unit-test callers
+// pass nil -- in which case nothing is diverted and every evaluation failure is
+// reported as it was before H1.
 func checkFormatString(
-	s, ptr string, scope Scope, syms expr.MapSymbols, target expr.Type, opts ...expr.Option,
+	b *templateBudget, s, ptr string, scope Scope, syms expr.MapSymbols, target expr.Type,
+	opts ...expr.Option,
 ) ValidationErrors {
 	if body, ok := fmtstring.LoneRef(s); ok {
 		e, err := expr.Parse(body)
@@ -330,6 +340,9 @@ func checkFormatString(
 			return errs
 		}
 		if _, err := e.Eval(syms, target, opts...); err != nil {
+			if b.recordDeadline(err) {
+				return nil
+			}
 			return ValidationErrors{{Pointer: ptr, Message: err.Error()}}
 		}
 		return nil
@@ -355,6 +368,12 @@ func checkFormatString(
 			continue
 		}
 		if _, err := e.Eval(syms, expr.TAny, opts...); err != nil {
+			if b.recordDeadline(err) {
+				// Stop, rather than reporting and moving to the next segment:
+				// the remaining segments would each evaluate past a deadline
+				// that has already passed.
+				return errs
+			}
 			errs = append(errs, ValidationError{Pointer: ptr, Message: err.Error()})
 		}
 	}
@@ -450,8 +469,16 @@ func checkFormatString(
 // every let binding -- the one position where budgets ACCUMULATE. One opts
 // tail per evaluator, so E4 has one place to thread rather than two to
 // remember.
+//
+// b is the walk's [templateBudget], nil-able, and carries a wall-clock deadline
+// breach out of this function exactly as it does out of [checkFormatString] --
+// with one difference that makes it matter more here. This function's failure
+// path APPENDS AND CONTINUES on purpose, so that one malformed binding does not
+// hide the rest of the block; for a deadline that is precisely wrong, and the
+// loop returns instead. See [templateBudget.recordDeadline].
 func checkLetBindings(
-	lets []string, base string, scope Scope, syms expr.MapSymbols, opts ...expr.Option,
+	b *templateBudget, lets []string, base string, scope Scope, syms expr.MapSymbols,
+	opts ...expr.Option,
 ) ValidationErrors {
 	if len(lets) > maxLetBindings {
 		lets = lets[:maxLetBindings]
@@ -490,6 +517,12 @@ func checkLetBindings(
 
 		v, err := e.Eval(syms, expr.TAny, opts...)
 		if err != nil {
+			if b.recordDeadline(err) {
+				// NOT continue: past the deadline there is no more time to
+				// spend on the remaining bindings, and the breach is reported
+				// through b rather than as a per-binding ValidationError.
+				return errs
+			}
 			errs = append(errs, ValidationError{Pointer: ptr, Message: err.Error()})
 			continue
 		}
@@ -913,6 +946,10 @@ type templateBudget struct {
 	retained  int64
 	limits    ExprLimits
 	err       *ValidationError
+	// deadlineErr holds the FIRST [expr.ErrDeadlineExceeded] any evaluation in
+	// this walk returned, and it is deliberately an error rather than a
+	// *ValidationError. See [templateBudget.recordDeadline].
+	deadlineErr error
 }
 
 // newTemplateBudget returns a fresh budget bounded by lim, with every unset
@@ -960,8 +997,65 @@ func templateBudgetOrFresh(budget []*templateBudget) *templateBudget {
 	return newTemplateBudget(ExprLimits{})
 }
 
-// ok reports whether the budget has not yet been exhausted.
-func (b *templateBudget) ok() bool { return b.err == nil }
+// ok reports whether the walk may still do real work: neither per-walk
+// dimension has tripped AND no evaluation has hit the wall-clock deadline.
+//
+// A nil budget is ok. Only this package's unit tests pass one (the leaf
+// checkers take a *templateBudget that production always supplies and a direct
+// caller may leave nil -- see [checkFormatString]), and a test that supplies no
+// budget is asking for the unbounded pre-H1 behavior it always had.
+func (b *templateBudget) ok() bool { return b == nil || (b.err == nil && b.deadlineErr == nil) }
+
+// deadline returns the wall-clock breach this walk recorded, or nil. It is
+// nil-safe so a caller holding an optional budget can ask without a guard.
+//
+// EVERY POINT THAT CAN OBSERVE A BUDGET MUST CONSULT IT, and that is not a
+// style rule. A recorded deadline stops the walk WITHOUT adding a
+// ValidationError, so a caller that only tests len(errs) sees an empty error
+// slice and reads it as "nothing wrong" -- a partial result reported as a
+// complete success. [ValidateWithBudget], [checkExpressionsAtSubmit] and
+// [ResolveParameterSpaceParams]' caller each check it for exactly that reason.
+func (b *templateBudget) deadline() error {
+	if b == nil {
+		return nil
+	}
+	return b.deadlineErr
+}
+
+// recordDeadline reports whether err is a wall-clock deadline breach and, if
+// it is, records it on the budget so the rest of the walk stops.
+//
+// IT IS THE ONE PLACE THE 503/422 DISTINCTION IS DRAWN, and the reason it
+// exists at all. Every other evaluation failure in this checker is turned into
+// a ValidationError -- a verdict that the template is INVALID, which a caller
+// reports as a 422 and a submitter reads as "retrying is pointless". A deadline
+// is not that: it says this server ran out of time, the same body would
+// validate on an idle machine, and the honest answer is a 503. Converting it to
+// a ValidationError would make acceptance depend on machine load.
+//
+// It is also what STOPS the walk. Recording it makes [templateBudget.ok] false,
+// and every caller in this file already gates further work on ok() -- which is
+// why this is the right carrier and a local return at each conversion site
+// would not have been enough. [checkLetBindings] is the case that proves it:
+// its failure path appends and CONTINUES to the next binding, so without a
+// shared carrier a deadline there would keep evaluating the rest of the block,
+// which is the exact opposite of what a backstop is for.
+//
+// The FIRST deadline error wins; later ones cannot say anything new. A nil
+// budget records nothing and reports false, so a direct unit-test caller keeps
+// seeing the error as a ValidationError exactly as it did before H1.
+func (b *templateBudget) recordDeadline(err error) bool {
+	if !errors.Is(err, expr.ErrDeadlineExceeded) {
+		return false
+	}
+	if b == nil {
+		return false
+	}
+	if b.deadlineErr == nil {
+		b.deadlineErr = err
+	}
+	return true
+}
 
 // chargePositions charges n additional walk positions, naming ptr as the
 // position that exhausted the budget if this call is the one that does. It
@@ -969,7 +1063,10 @@ func (b *templateBudget) ok() bool { return b.err == nil }
 // represent -- false either because this call itself tripped the budget or
 // because an earlier call (either dimension) already had.
 func (b *templateBudget) chargePositions(n int64, ptr string) bool {
-	if b.err != nil {
+	// !b.ok() rather than b.err != nil: since H1 the budget also carries a
+	// wall-clock deadline breach, which must stop the walk exactly as an
+	// exhausted dimension does even though it is not a ValidationError.
+	if !b.ok() {
 		return false
 	}
 	b.positions += n
@@ -994,7 +1091,7 @@ func (b *templateBudget) chargePositions(n int64, ptr string) bool {
 // still reports the budget's current state, matching chargePositions' own
 // contract.
 func (b *templateBudget) chargeRetainedBytes(n int64, ptr string) bool {
-	if b.err != nil {
+	if !b.ok() {
 		return false
 	}
 	if n <= 0 {
@@ -1142,7 +1239,7 @@ func checkTemplateExpressions(tmpl *JobTemplate, params map[string]string, budge
 
 	if b.chargePositions(1, "/name") {
 		errs = append(errs, checkFormatString(
-			tmpl.Name, "/name", ScopeJob, symbolsFor(tmpl, nil, nil, ScopeJob, params), TargetString,
+			b, tmpl.Name, "/name", ScopeJob, symbolsFor(tmpl, nil, nil, ScopeJob, params), TargetString,
 			b.limits.evalOptions()...,
 		)...)
 	}
@@ -1189,7 +1286,7 @@ func checkStepExpressions(b *templateBudget, tmpl *JobTemplate, s StepTemplate, 
 	// is already exactly the diff stepLetSymbols computed (its own doc
 	// comment), so templateExprRetainedBytes(stepLet) is the net bytes this
 	// block added with no before/after subtraction needed.
-	stepLet, letErrs := stepLetSymbols(tmpl, &s, params, base, b.limits)
+	stepLet, letErrs := stepLetSymbols(b, tmpl, &s, params, base)
 	errs = append(errs, letErrs...)
 	b.chargePositions(letPositions(len(s.Let)), base+"/let")
 	b.chargeRetainedBytes(templateExprRetainedBytes(stepLet), base+"/let")
@@ -1210,7 +1307,9 @@ func checkStepExpressions(b *templateBudget, tmpl *JobTemplate, s StepTemplate, 
 		// delta of the WHOLE table's retained bytes is exactly this block's
 		// own net contribution, with the baseline canceling out.
 		before := templateExprRetainedBytes(syms)
-		errs = append(errs, checkLetBindings(s.Script.Let, base+"/script/let", ScopeStepScript, syms, b.limits.evalOptions()...)...)
+		errs = append(errs, checkLetBindings(
+			b, s.Script.Let, base+"/script/let", ScopeStepScript, syms, b.limits.evalOptions()...,
+		)...)
 		b.chargePositions(letPositions(len(s.Script.Let)), base+"/script/let")
 		b.chargeRetainedBytes(templateExprRetainedBytes(syms)-before, base+"/script/let")
 
@@ -1312,11 +1411,13 @@ func checkStepExpressions(b *templateBudget, tmpl *JobTemplate, s StepTemplate, 
 // function means the two tables cannot drift again without the compiler
 // noticing.
 //
-// lim is the walk's operator-configured [ExprLimits]; both callers pass their
-// budget's own (b.limits), which is what keeps this shared helper metered
-// identically to every other position in the same walk.
+// b is the walk's [templateBudget]. It used to be that budget's [ExprLimits]
+// alone; it is the whole budget since H1, because checkLetBindings now reports
+// a wall-clock deadline breach THROUGH it rather than as a ValidationError, and
+// a helper handed only the numbers could not carry that back. Both callers
+// already had one in hand.
 func stepLetSymbols(
-	tmpl *JobTemplate, s *StepTemplate, params map[string]string, base string, lim ExprLimits,
+	b *templateBudget, tmpl *JobTemplate, s *StepTemplate, params map[string]string, base string,
 ) (expr.MapSymbols, ValidationErrors) {
 	stepLet := expr.MapSymbols{}
 	if s == nil {
@@ -1328,7 +1429,9 @@ func stepLetSymbols(
 	for k := range stepTemplateSyms {
 		preLetKeys[k] = struct{}{}
 	}
-	errs := checkLetBindings(s.Let, base+"/let", ScopeStepTemplate, stepTemplateSyms, lim.evalOptions()...)
+	errs := checkLetBindings(
+		b, s.Let, base+"/let", ScopeStepTemplate, stepTemplateSyms, b.limits.evalOptions()...,
+	)
 	for k, v := range stepTemplateSyms {
 		if _, existed := preLetKeys[k]; !existed {
 			stepLet[k] = v
@@ -1419,7 +1522,7 @@ func checkEnvironmentExpressions(
 				break
 			}
 			errs = append(errs, checkFormatString(
-				e.Variables[k], varPtr, scope, baseSyms, TargetString, b.limits.evalOptions()...,
+				b, e.Variables[k], varPtr, scope, baseSyms, TargetString, b.limits.evalOptions()...,
 			)...)
 		}
 
@@ -1448,7 +1551,9 @@ func checkEnvironmentExpressions(
 			// diff, and checkLetBindings can only ADD keys, so the baseline
 			// cancels out of the subtraction.
 			before := templateExprRetainedBytes(scriptSyms)
-			errs = append(errs, checkLetBindings(e.Script.Let, ptr+"/script/let", scope, scriptSyms, b.limits.evalOptions()...)...)
+			errs = append(errs, checkLetBindings(
+				b, e.Script.Let, ptr+"/script/let", scope, scriptSyms, b.limits.evalOptions()...,
+			)...)
 			b.chargePositions(letPositions(len(e.Script.Let)), ptr+"/script/let")
 			b.chargeRetainedBytes(templateExprRetainedBytes(scriptSyms)-before, ptr+"/script/let")
 		}
@@ -1489,7 +1594,7 @@ func checkScriptRefExpressions(
 			break
 		}
 		errs = append(errs, checkFormatString(
-			f.Data, ptr, scope, syms, TargetString,
+			b, f.Data, ptr, scope, syms, TargetString,
 			b.limits.evalOptions()...,
 		)...)
 	}
@@ -1536,7 +1641,7 @@ func checkActionExpressions(b *templateBudget, a Action, ptr string, scope Scope
 	cmdPtr := ptr + "/command"
 	if b.chargePositions(1, cmdPtr) {
 		errs = append(errs, checkFormatString(
-			a.Command, cmdPtr, scope, syms, TargetString, b.limits.evalOptions()...,
+			b, a.Command, cmdPtr, scope, syms, TargetString, b.limits.evalOptions()...,
 		)...)
 	}
 	for i, arg := range a.Args {
@@ -1548,14 +1653,15 @@ func checkActionExpressions(b *templateBudget, a Action, ptr string, scope Scope
 			break
 		}
 		errs = append(errs, checkFormatString(
-			arg, argPtr, scope, syms, TargetArgItem, b.limits.evalOptions()...,
+			b, arg, argPtr, scope, syms, TargetArgItem, b.limits.evalOptions()...,
 		)...)
 	}
 	if a.TimeoutSet && b.ok() {
 		timeoutPtr := ptr + "/timeout"
 		if b.chargePositions(1, timeoutPtr) {
 			errs = append(errs, checkFormatString(
-				strconv.Itoa(a.TimeoutSeconds), timeoutPtr, scope, syms, TargetInt, b.limits.evalOptions()...,
+				b, strconv.Itoa(a.TimeoutSeconds), timeoutPtr, scope, syms, TargetInt,
+				b.limits.evalOptions()...,
 			)...)
 		}
 	}
@@ -1595,7 +1701,7 @@ func checkHostRequirementAmount(b *templateBudget, a AmountRequirement, amtPtr s
 		minPtr := amtPtr + "/min"
 		if b.chargePositions(1, minPtr) {
 			errs = append(errs, checkFormatString(
-				*a.Min, minPtr, ScopeJob, syms, TargetString, b.limits.evalOptions()...,
+				b, *a.Min, minPtr, ScopeJob, syms, TargetString, b.limits.evalOptions()...,
 			)...)
 		}
 	}
@@ -1603,7 +1709,7 @@ func checkHostRequirementAmount(b *templateBudget, a AmountRequirement, amtPtr s
 		maxPtr := amtPtr + "/max"
 		if b.chargePositions(1, maxPtr) {
 			errs = append(errs, checkFormatString(
-				*a.Max, maxPtr, ScopeJob, syms, TargetString, b.limits.evalOptions()...,
+				b, *a.Max, maxPtr, ScopeJob, syms, TargetString, b.limits.evalOptions()...,
 			)...)
 		}
 	}
@@ -1621,7 +1727,7 @@ func checkHostRequirementAttribute(b *templateBudget, a AttributeRequirement, at
 		p := fmt.Sprintf("%s/anyOf/%d", attrPtr, k)
 		if b.chargePositions(1, p) {
 			errs = append(errs, checkFormatString(
-				v, p, ScopeJob, syms, TargetString, b.limits.evalOptions()...,
+				b, v, p, ScopeJob, syms, TargetString, b.limits.evalOptions()...,
 			)...)
 		}
 	}
@@ -1632,7 +1738,7 @@ func checkHostRequirementAttribute(b *templateBudget, a AttributeRequirement, at
 		p := fmt.Sprintf("%s/allOf/%d", attrPtr, k)
 		if b.chargePositions(1, p) {
 			errs = append(errs, checkFormatString(
-				v, p, ScopeJob, syms, TargetString, b.limits.evalOptions()...,
+				b, v, p, ScopeJob, syms, TargetString, b.limits.evalOptions()...,
 			)...)
 		}
 	}
@@ -1689,7 +1795,7 @@ func checkParameterSpaceExpressions(b *templateBudget, ps StepParameterSpace, ba
 				break
 			}
 			errs = append(errs, checkFormatString(
-				v, p, ScopeJob, syms, elemType,
+				b, v, p, ScopeJob, syms, elemType,
 				b.limits.evalOptions()...,
 			)...)
 		}
@@ -1697,7 +1803,7 @@ func checkParameterSpaceExpressions(b *templateBudget, ps StepParameterSpace, ba
 			p := ptr + "/range"
 			if b.chargePositions(1, p) {
 				errs = append(errs, checkFormatString(
-					*tp.RangeExpr, p, ScopeJob, syms, rangeExprFieldType(tp.Type),
+					b, *tp.RangeExpr, p, ScopeJob, syms, rangeExprFieldType(tp.Type),
 					b.limits.evalOptions()...,
 				)...)
 			}

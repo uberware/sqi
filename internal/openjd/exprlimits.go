@@ -2,7 +2,11 @@
 
 package openjd
 
-import "github.com/uberware/sqi/internal/openjd/expr"
+import (
+	"time"
+
+	"github.com/uberware/sqi/internal/openjd/expr"
+)
 
 // ─── operator-configurable expression limits ────────────────────────────────
 
@@ -123,6 +127,25 @@ type ExprLimits struct {
 	// either direction, and internal/config gives it a wide but finite range
 	// rather than a ceiling tied to a measurement.
 	TemplateRetainedBytes int64
+
+	// Deadline, when non-zero, is an absolute wall-clock time after which
+	// evaluation stops with [expr.ErrDeadlineExceeded].
+	//
+	// IT IS NOT ONE OF THE FOUR. Unlike every other field here it is
+	// per-REQUEST rather than operator configuration -- it is computed at the
+	// top of one submission from the configured duration, so two requests
+	// arriving a second apart carry different values. It is also not a
+	// VALIDITY bound: the four numbers above decide whether a template is
+	// INVALID (a 422), while this decides only whether this server keeps
+	// working on it (a 503). See [ValidateWithBudget].
+	//
+	// It lives on this struct because this struct is already the budget bundle
+	// threaded to every evaluation, and adding a parameter to
+	// [ExprLimits.evalOptions] would touch its ~25 call sites to no benefit.
+	// It is deliberately EXEMPT from [ExprLimits.orDefaults]' "<= 0 means
+	// unset, use the default" rule, which has no meaning for a time: the zero
+	// time means NO deadline, and that is the default.
+	Deadline time.Time
 }
 
 // The range an operator may configure each of the four to. Out-of-range
@@ -262,6 +285,14 @@ func (l ExprLimits) Normalized() ExprLimits { return l.orDefaults() }
 
 // orDefaults returns l with every unset (<= 0) field replaced by its default.
 //
+// It PATCHES A COPY of l (a value receiver, mutated in place and returned)
+// rather than building a fresh ExprLimits field by field, and that is
+// load-bearing rather than incidental: [ExprLimits.Deadline] has no default and
+// is not a number, so a rebuild-style normalization would silently drop it and
+// leave every deadline test passing against templates that happen to finish
+// quickly. Any field added here inherits the same pass-through for free; a
+// field that needs a default must be added to the list below explicitly.
+//
 // Applied ONCE, at [newTemplateBudget], so the budget every consumption point
 // reads through is already normalized and no call site has to remember to do
 // it. A field is treated as unset rather than as "unlimited" because the zero
@@ -293,9 +324,18 @@ func (l ExprLimits) orDefaults() ExprLimits {
 // the values now come from THIS walk's budget rather than from a constant. It
 // stays a function rather than a package-level slice so each call gets its own
 // slice header.
+//
+// Since H1 it also carries [ExprLimits.Deadline] when one is set, which is why
+// that field lives on this struct at all: this method is the single point every
+// walk position gets its options from, so a per-request backstop threaded here
+// reaches all ~25 of them without a signature change.
 func (l ExprLimits) evalOptions() []expr.Option {
-	return []expr.Option{
+	opts := []expr.Option{
 		expr.WithOperationLimit(l.SubmissionOperations),
 		expr.WithMemoryLimit(l.SubmissionMemoryBytes),
 	}
+	if !l.Deadline.IsZero() {
+		opts = append(opts, expr.WithDeadline(l.Deadline))
+	}
+	return opts
 }
