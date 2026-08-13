@@ -434,6 +434,13 @@ export type ControlType =
   | 'CHOOSE_INPUT_FILE'
   | 'CHOOSE_OUTPUT_FILE'
   | 'CHOOSE_DIRECTORY'
+  // Added by the EXPR extension (RFC 0007) for the list parameter types.
+  | 'LINE_EDIT_LIST'
+  | 'SPIN_BOX_LIST'
+  | 'CHECK_BOX_LIST'
+  | 'CHOOSE_INPUT_FILE_LIST'
+  | 'CHOOSE_OUTPUT_FILE_LIST'
+  | 'CHOOSE_DIRECTORY_LIST'
 
 /** OpenJD base-spec userInterface hints on a job parameter. */
 export interface ParameterUserInterface {
@@ -449,10 +456,37 @@ export interface PathFileFilter {
   patterns: string[]
 }
 
+/** Per-element constraints on a LIST[*] parameter (RFC 0007's nested item:
+ * block). `item` recurses exactly once, for LIST[LIST[INT]]. */
+export interface ItemConstraint {
+  allowed_values: string[] | null
+  min_value: string | null
+  max_value: string | null
+  min_length: number | null
+  max_length: number | null
+  item: ItemConstraint | null
+}
+
+/** Declared type of a job parameter. The eight beyond the base spec's four are
+ * added by the EXPR extension (RFC 0007). */
+export type ParameterType =
+  | 'INT'
+  | 'FLOAT'
+  | 'STRING'
+  | 'PATH'
+  | 'BOOL'
+  | 'RANGE_EXPR'
+  | 'LIST[STRING]'
+  | 'LIST[PATH]'
+  | 'LIST[INT]'
+  | 'LIST[FLOAT]'
+  | 'LIST[BOOL]'
+  | 'LIST[LIST[INT]]'
+
 /** Parsed job parameter from GET /products/{name}/parameters. */
 export interface ProductParameter {
   name: string
-  type: 'INT' | 'FLOAT' | 'STRING' | 'PATH'
+  type: ParameterType
   description: string
   default: string | null
   allowed_values: string[] | null
@@ -465,6 +499,7 @@ export interface ProductParameter {
   user_interface: ParameterUserInterface | null
   file_filters: PathFileFilter[] | null
   file_filter_default: PathFileFilter | null
+  item: ItemConstraint | null
 }
 
 /** Input for the submitProductJob mutation. */
