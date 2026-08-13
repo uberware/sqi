@@ -117,7 +117,7 @@ func TestSubmitProductJob_DeadlineIsA503NotA422(t *testing.T) {
 		t.Fatalf("CreateProduct: %v", err)
 	}
 	sub := &stubSubmitter{err: deadlineErr()}
-	h := newProductHandler(product.NewCatalog(st), sub, nil, st, newTestLogger(), false, 5*time.Second)
+	h := newProductHandler(product.NewCatalog(st), sub, nil, st, newTestLogger(), false, 5*time.Second, openjd.ExprLimits{})
 	r := chi.NewRouter()
 	r.Post("/api/v1/products/{name}/jobs", h.submitProductJob)
 
@@ -273,6 +273,121 @@ func TestNewRouter_SubmissionDeadlineReachesBothHandlers(t *testing.T) {
 					"(a different duration reached the handler)", got, configured)
 			}
 		})
+	}
+}
+
+// ── the product create/update route ─────────────────────────────────────────
+
+// TestProductTemplateValidation_DeadlineIsA503 covers the THIRD route that
+// accepts an arbitrary client-supplied OpenJD template, alongside the two
+// submission routes: POST /api/v1/products and PUT /api/v1/products/{name}.
+//
+// Before EXPR sub-project H1's task 5 it reached the full validator with no
+// operator limits and no time bound at all — anonymously, since auth is off by
+// default. The mapping is asserted on the shared helper rather than through the
+// route because the real validator cannot produce a deadline today (EXPR is
+// StatusInProgress, so the walk never runs); internal/product's
+// TestValidateParsed_DeadlineSurvivesAsTheSentinel is the other half, proving
+// the error this helper matches is the error that path really returns.
+func TestProductTemplateValidation_DeadlineIsA503(t *testing.T) {
+	st := fake.New()
+	h := newProductHandler(product.NewCatalog(st), &stubSubmitter{}, nil, st,
+		newTestLogger(), false, 5*time.Second, openjd.ExprLimits{})
+
+	rr := httptest.NewRecorder()
+	h.writeTemplateProblem(rr, newReq(t, http.MethodPost, "/api/v1/products", strings.NewReader("{}")),
+		fmt.Errorf("product: template validation: %w", expr.ErrDeadlineExceeded))
+
+	if rr.Code == http.StatusBadRequest {
+		t.Fatalf("a wall-clock deadline was reported as 400 (bad template); the same body "+
+			"would validate on an idle machine — body: %s", rr.Body)
+	}
+	if rr.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want %d — body: %s", rr.Code, http.StatusServiceUnavailable, rr.Body)
+	}
+}
+
+// TestProductTemplateValidation_BadTemplateStaysA400 is the other half: the 503
+// branch must be narrow, and an invalid template is still the client's fault.
+func TestProductTemplateValidation_BadTemplateStaysA400(t *testing.T) {
+	st := fake.New()
+	h := newProductHandler(product.NewCatalog(st), &stubSubmitter{}, nil, st,
+		newTestLogger(), false, 5*time.Second, openjd.ExprLimits{})
+
+	rr := httptest.NewRecorder()
+	h.writeTemplateProblem(rr, newReq(t, http.MethodPost, "/api/v1/products", strings.NewReader("{}")),
+		errors.New("product: template validation: /steps: at least one step is required"))
+
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d — body: %s", rr.Code, http.StatusBadRequest, rr.Body)
+	}
+}
+
+// TestProductTemplateValidation_OptionsCarryLimitsAndDeadline pins what bounds
+// one validation of a client-supplied product template.
+//
+// The limits half is the defect the design spec named: this route never went
+// through a Submitter, so it silently validated on openjd.DefaultExprLimits()
+// however the operator had configured openjd.expr_*. The deadline half is the
+// scope addition — it is the only bound on elapsed time this route has.
+func TestProductTemplateValidation_OptionsCarryLimitsAndDeadline(t *testing.T) {
+	const configured = 5 * time.Second
+	limits := openjd.ExprLimits{
+		SubmissionOperations:  4321,
+		SubmissionMemoryBytes: 654_321,
+		TemplatePositions:     321,
+		TemplateRetainedBytes: 21_000,
+	}
+	st := fake.New()
+	h := newProductHandler(product.NewCatalog(st), &stubSubmitter{}, nil, st,
+		newTestLogger(), false, configured, limits)
+
+	before := time.Now()
+	got := h.templateValidateOptions()
+
+	if !got.EnforceLimits {
+		t.Error("EnforceLimits = false; this route has always enforced them")
+	}
+	if got.ExprLimits != limits {
+		t.Errorf("ExprLimits = %+v, want the operator's %+v", got.ExprLimits, limits)
+	}
+	if got.Deadline.Before(before.Add(configured)) || got.Deadline.After(time.Now().Add(configured)) {
+		t.Fatalf("deadline = %v, want an instant the configured %s into this request's future",
+			got.Deadline, configured)
+	}
+}
+
+// TestProductHandlerFor_CarriesTheConfiguredBounds covers the last hop of both
+// EXPR bounds, api.Config -> the handler [NewRouter] builds.
+//
+// Every other test here constructs the handler directly, so they would all
+// still pass with cfg.ExprLimits dropped from router.go — product template
+// validation would simply run on openjd's defaults, which is the exact defect
+// this task exists to fix and which no behavior can reveal while the expression
+// walk is gated. [productHandlerFor] exists to make that call site reachable;
+// NewRouter's single use of it is what this test stands in for.
+func TestProductHandlerFor_CarriesTheConfiguredBounds(t *testing.T) {
+	const configured = 37 * time.Second // non-default, so a stale default cannot pass
+	want := openjd.ExprLimits{
+		SubmissionOperations:  4321,
+		SubmissionMemoryBytes: 654_321,
+		TemplatePositions:     321,
+		TemplateRetainedBytes: 21_000,
+	}
+	st := fake.New()
+
+	h := productHandlerFor(
+		Config{ExprLimits: want, ExprSubmissionDeadline: configured},
+		Deps{Store: st, Submitter: &stubSubmitter{}, Products: product.NewCatalog(st)},
+		newTestLogger(),
+	)
+
+	if got := h.templateValidateOptions().ExprLimits; got != want {
+		t.Errorf("ExprLimits = %+v, want the operator's %+v -- product template validation "+
+			"would run on the defaults whatever openjd.expr_* said", got, want)
+	}
+	if h.exprDeadline != configured {
+		t.Errorf("exprDeadline = %s, want the configured %s", h.exprDeadline, configured)
 	}
 }
 

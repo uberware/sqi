@@ -616,6 +616,15 @@ because `POST /api/v1/jobs` accepts a template of up to 4 MiB and, with auth
 off (the default), accepts it anonymously — so the cost of checking a
 template is attacker-chosen work on a synchronous request path.
 
+**Three routes accept a template, not one.** Besides `POST /api/v1/jobs`,
+`POST /api/v1/products` and `PUT /api/v1/products/{name}` take an arbitrary
+template body when a custom product is installed or edited, and they validate
+it the same way. All three are bounded by these four keys and by
+[`openjd.expr_submission_deadline`](#openjdexpr_submission_deadline).
+(`POST /api/v1/products/{name}/jobs` submits a template the operator already
+installed, but the *parameters* are the client's and every expression is
+re-evaluated with them bound, so it is bounded too.)
+
 Unlike `enforce_limits`, these are **always on**: they are
 resource-exhaustion guards, not OpenJD quantitative limits, and no setting
 turns them off. `0` is not "unlimited" — it is out of range and fails
@@ -968,8 +977,14 @@ the submitter is told so — `422 Unprocessable Entity`, and retrying is
 pointless. This one is wall clock, so the same body would be accepted on an
 idle host and refused on a loaded one. A breach therefore reports that *this
 server gave up* — `503 Service Unavailable`, and a retry may well succeed.
-Persistent 503s from `POST /api/v1/jobs` or `POST /api/v1/products/{name}/jobs`
-mean either a genuinely expensive template or a deadline set too low.
+Persistent 503s mean either a genuinely expensive template or a deadline set
+too low.
+
+Four routes can answer `503` for this reason: `POST /api/v1/jobs` and
+`POST /api/v1/products/{name}/jobs` (which otherwise answer `422` for an
+invalid template), and `POST /api/v1/products` and
+`PUT /api/v1/products/{name}` (which otherwise answer `400`). The split is the
+same on all four — the 4xx is a verdict on the template, the 503 is not.
 
 It exists because **none of the other four bounds time** (caveat 1). Section
 1.3.10 prices 256 bytes at one operation, so byte-heavy work is nearly free in

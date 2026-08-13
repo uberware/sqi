@@ -32,5 +32,6 @@ func routerConfig(cfg Config, workerOfflineThreshold time.Duration) api.Config {
 		AuthEnabled:            cfg.AuthEnabled,
 		ValidateJobOwner:       cfg.AuthValidateJobOwner,
 		ExprSubmissionDeadline: cfg.OpenJDExprSubmissionDeadline,
+		ExprLimits:             cfg.OpenJDExprLimits,
 	}
 }

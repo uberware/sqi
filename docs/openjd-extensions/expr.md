@@ -721,27 +721,58 @@ cost to evaluate, not how many *tasks* a parameter space may expand to. A
 template whose steps each declare a large `range` (e.g. `"1-1000000"`)
 validates cheaply and quickly and then multiplies.
 
-**At the production default (`enforce_limits: true`) this is already 10⁸
-`CreateTask` inserts from one `POST`** — `maxSteps` (100) × `maxTasksPerStep`
-(1,000,000) — and **no operator opt-out is required to reach it**. An
-earlier revision of this page said the gap "requires a deliberate operator
-opt-out (`enforce_limits: false`)" in the same sentence as its own
-parenthetical conceding that `maxSteps` "does not close it even when
-`enforce_limits` is true". Both cannot hold; the opt-out framing was the
-wrong one and is withdrawn here.
+**SUPERSEDED by EXPR sub-project H1 (task 4); the analysis is kept because
+it is what justifies the constant that closed it.** What follows described
+the state up to H1.
 
-What the opt-out changes is only how much *further* it goes: `maxSteps` is
-gated by `openjd.enforce_limits` like the package's other bare
-structural-count caps, so with `openjd.enforce_limits: false` the step count
-is unbounded and the product has no ceiling at all. See `maxSteps`'s own
-"RESIDUAL, PRE-EXISTING, NOT INTRODUCED HERE" paragraph
-(`internal/openjd/validate.go`) for the exact mechanism.
+> **At the production default (`enforce_limits: true`) this is already 10⁸
+> `CreateTask` inserts from one `POST`** — `maxSteps` (100) ×
+> `maxTasksPerStep` (1,000,000) — and **no operator opt-out is required to
+> reach it**. An earlier revision of this page said the gap "requires a
+> deliberate operator opt-out (`enforce_limits: false`)" in the same sentence
+> as its own parenthetical conceding that `maxSteps` "does not close it even
+> when `enforce_limits` is true". Both cannot hold; the opt-out framing was
+> the wrong one and is withdrawn here.
+>
+> What the opt-out changes is only how much *further* it goes: `maxSteps` is
+> gated by `openjd.enforce_limits` like the package's other bare
+> structural-count caps, so with `openjd.enforce_limits: false` the step
+> count is unbounded and the product has no ceiling at all.
+>
+> The gap is pre-existing — it predates `maxSteps` — and is not attempted by
+> this wave. Closing it needs an always-on, catastrophically-generous bound
+> on **total tasks per job**, analogous to `maxTasksPerStep`
+> (`internal/openjd/expand.go`) but summed across steps — tracked as later
+> work.
 
-The gap is pre-existing — it predates `maxSteps` — and is not attempted by
-this wave. Closing it needs an always-on, catastrophically-generous bound on
-**total tasks per job**, analogous to `maxTasksPerStep`
-(`internal/openjd/expand.go`) but summed across steps — tracked as later
-work.
+**What actually landed is exactly that bound.** `maxTasksPerJob`
+(`internal/openjd/expand.go`) caps the tasks a whole job may produce, summed
+across steps, at **1,000,000** — the same figure as `maxTasksPerStep`, on the
+principle that a job may not produce more tasks than a single step may. It
+cuts the worst case from 10⁸ rows to 10⁶.
+
+Three properties matter:
+
+- **It is always-on**, not gated by `openjd.enforce_limits`, for the reason
+  the withdrawn text above gives against itself: with the flag off the step
+  count is unbounded, so a gated cap would leave the worse case uncovered. A
+  caller that relaxes quantitative limits does not thereby acquire the right
+  to insert a hundred million rows.
+- **It is a real acceptance change, and not an EXPR-specific one.** A job of
+  two 600,000-task steps was legal before H1 and is not now, whether or not
+  it declares `extensions: [EXPR]`. It is a compiled constant, like its
+  sibling — tune it if legitimate jobs need larger totals.
+- **A breach still leaves the earlier steps' rows behind.** The cap is
+  charged per step during expansion and `Submit` is not transactional, so a
+  two-step job of 600,000 + 600,000 commits step 1's rows and then rejects.
+  The orphan shape is pre-existing (a per-step breach on step 2 already
+  produced it); what H1 changed is that a class of submission which used to
+  succeed now fails at the point of maximum accumulated durable state.
+  Making `Submit` transactional is tracked separately.
+
+See `maxSteps`'s own "CLOSED by EXPR sub-project H1 (task 4)" paragraph
+(`internal/openjd/validate.go`) for the exact mechanism and for why the bound
+could not live beside `maxSteps`.
 
 ## Operator configuration (EXPR sub-project E4d)
 
@@ -756,6 +787,14 @@ bound, is in the two configuration guides — this section is the map:
 | positions, one walk / one assignment | [`openjd.expr_template_positions`](../configuration.md#openjdexpr_template_positions) | [`expr.assignment_positions`](../worker-configuration.md#exprassignment_positions) |
 | retained bytes, one walk / one assignment | [`openjd.expr_template_retained_bytes`](../configuration.md#openjdexpr_template_retained_bytes) | [`expr.assignment_retained_bytes`](../worker-configuration.md#exprassignment_retained_bytes) |
 | retained bytes, one symbol table | [`openjd.expr_template_retained_bytes`](../configuration.md#openjdexpr_template_retained_bytes) *(the walk-wide bound that upper-bounds one table)* | [`expr.let_retained_bytes`](../worker-configuration.md#exprlet_retained_bytes) |
+
+A **tenth** key was added by sub-project H1 and is deliberately not in that
+table: [`openjd.expr_submission_deadline`](../configuration.md#openjdexpr_submission_deadline)
+is a wall-clock backstop, not a budget. It decides only whether this server
+keeps working on a request (`503`), never whether a template is valid, so
+none of the four properties below applies to it — it has no worker
+counterpart, and no cross-binary gate. See "Known gaps" for what it does and
+does not close.
 
 Four properties of that surface are worth stating here rather than only in
 the configuration guides:
@@ -864,21 +903,43 @@ recorded in that function's own comment as later work.
   this section used to describe as the only ones. What it still does not
   reach: the worker has no `validateLetElementCounts`-equivalent to
   *report* an over-cap `let:` block; it silently truncates at 50, relying
-  on phase 2 having already rejected the template. Also open: an always-on,
-  catastrophically-generous bound on total tasks per job (a distinct,
-  task-count dimension — see "Template-wide expression budget" above).
-- **No budget is denominated in time.** The position and byte budgets bound
-  *count* and *memory*, and that is all they claim. The wall-clock worst case
-  at the default limits is now measured at roughly **17–24 minutes** of server
-  CPU for one request with every budget respected, and about **40 hours** at
-  the two configurable maxima. **That figure has now been measured too low
-  three times** — 9.5 minutes was the previous revision's, from a construction
-  that does not maximize cost per operation — so treat it as a floor on the
-  worst case, not a proof of it. Making these
-  limits operator configuration (E4d) did not change this; it made it
-  adjustable in the wrong direction as well as the right one, which is why
-  every operator-facing surface now says so. Closing it needs a deadline or
-  a work-clock, not a counter — a different mechanism, and later work.
+  on phase 2 having already rejected the template. (This bullet also used to
+  close with "Also open: an always-on, catastrophically-generous bound on
+  total tasks per job." **That is no longer open** — H1 landed
+  `maxTasksPerJob`; see "Template-wide expression budget" above.)
+- **SUPERSEDED by EXPR sub-project H1 — a budget denominated in time now
+  exists.** `openjd.expr_submission_deadline` (default 5s, range 1s–60s)
+  gives one submission a fixed wall-clock allowance for its expression
+  evaluation and stops it when that passes, on all three routes that accept a
+  template. It bounds elapsed time *directly*, so it holds whatever the
+  operation pricing turns out to permit — which is the property none of the
+  counters have.
+
+  A breach is reported as **`503`, never `4xx`**. The counters are
+  deterministic, so a template that breaches one breaches it everywhere and
+  the submitter is told the template is invalid; a wall-clock stop is
+  load-dependent, the same body would be accepted on an idle host, and
+  reporting it as an invalid template would make acceptance depend on machine
+  load. It is matched structurally on `expr.ErrDeadlineExceeded`, never by
+  reading a message.
+
+  What remains true, and is why the backstop was needed: **the counters still
+  cannot bound time on their own.** §1.3.10 prices 256 bytes at one
+  operation, so byte-heavy work is nearly free in budget terms; the wall-clock
+  worst case at the default limits is measured at roughly **17–24 minutes** of
+  server CPU for one request with every budget respected, and about **40
+  hours** at the two configurable maxima. **That figure has been measured too
+  low three times** — 9.5 minutes was an earlier revision's, from a
+  construction that does not maximize cost per operation — so treat it as a
+  floor on the worst case, not a proof of it. The deadline is valuable
+  precisely because it does not depend on that measurement being right. Note
+  also that a request refused at the deadline still *spent* that time, and
+  that concurrent requests each get their own allowance: the deadline bounds
+  one request, not a host.
+
+  **Inert in production today.** No submission reaches an expression
+  evaluation while the registry status is `StatusInProgress`, so none of
+  those 503s can occur yet; the bound is landed ahead of the flip on purpose.
 - **The cross-binary gate is necessary, not sufficient.** A worker at parity
   with the server can still exhaust its own budget on a concrete value phase
   2 only had a placeholder for, and the per-table dimension is compared

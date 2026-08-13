@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/uberware/sqi/internal/config"
+	"github.com/uberware/sqi/internal/openjd"
 )
 
 // TestRouterConfig_CarriesTheSubmissionDeadline covers the SECOND of the three
@@ -44,6 +45,41 @@ func TestRouterConfig_DefaultCarriesTheConfigDefault(t *testing.T) {
 	}
 	if got <= 0 {
 		t.Fatal("a default server must not disable the backstop")
+	}
+}
+
+// TestRouterConfig_CarriesTheExprLimits covers the same hop for the OTHER EXPR
+// bound the HTTP layer needs: the operator's four openjd.expr_* numbers.
+//
+// POST/PUT /api/v1/products validate a client-supplied template without going
+// through the Submitter, so they are the one production path that does not get
+// these limits from it. Dropped here, that route silently falls back to
+// openjd.DefaultExprLimits() — an operator who tightened the knobs would find
+// one of the three template-accepting routes ignoring them, and nothing would
+// fail while EXPR is StatusInProgress and the expression walk never runs.
+func TestRouterConfig_CarriesTheExprLimits(t *testing.T) {
+	want := openjd.ExprLimits{
+		SubmissionOperations:  4321, // all non-default, so a stale default cannot pass
+		SubmissionMemoryBytes: 654_321,
+		TemplatePositions:     321,
+		TemplateRetainedBytes: 21_000,
+	}
+	cfg := DefaultConfig()
+	cfg.OpenJDExprLimits = want
+
+	if got := routerConfig(cfg, time.Minute).ExprLimits; got != want {
+		t.Fatalf("api.Config.ExprLimits = %+v, want the configured %+v -- product template "+
+			"validation would run on the defaults instead", got, want)
+	}
+}
+
+// TestRouterConfig_DefaultCarriesTheExprLimitDefaults pins the other direction:
+// a server left alone hands the HTTP layer the same limits its Submitter uses,
+// so the three template-accepting routes agree by default.
+func TestRouterConfig_DefaultCarriesTheExprLimitDefaults(t *testing.T) {
+	got := routerConfig(DefaultConfig(), time.Minute).ExprLimits
+	if want := openjd.DefaultExprLimits(); got != want {
+		t.Fatalf("at defaults api.Config.ExprLimits = %+v, want %+v", got, want)
 	}
 }
 

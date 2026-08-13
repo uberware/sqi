@@ -52,7 +52,7 @@ func TestTestingPresets(t *testing.T) {
 			if p.Category != "Testing" {
 				t.Errorf("category = %q, want Testing", p.Category)
 			}
-			if err := ValidateTemplate(p.Template, p.Format, true); err != nil {
+			if err := ValidateTemplate(p.Template, p.Format, ValidateOptions{EnforceLimits: true}); err != nil {
 				t.Fatalf("ValidateTemplate: %v", err)
 			}
 			params, ok := want[name]

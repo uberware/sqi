@@ -54,6 +54,7 @@ import (
 	"github.com/uberware/sqi/internal/health"
 	"github.com/uberware/sqi/internal/metrics"
 	"github.com/uberware/sqi/internal/middleware"
+	"github.com/uberware/sqi/internal/openjd"
 	"github.com/uberware/sqi/internal/product"
 	"github.com/uberware/sqi/internal/scheduler"
 	"github.com/uberware/sqi/internal/store"
@@ -107,6 +108,15 @@ type Config struct {
 	// it — every test in this package — gets, and it reproduces the
 	// pre-H1 behavior exactly.
 	ExprSubmissionDeadline time.Duration
+
+	// ExprLimits mirrors the operator's four openjd.expr_* settings, for the
+	// ONE route that validates a client-supplied OpenJD template without going
+	// through the Submitter: POST/PUT /api/v1/products. Every other production
+	// path reads these off the Submitter built at boot.
+	//
+	// The zero value means openjd's defaults, so a router built without it
+	// behaves exactly as it did before EXPR sub-project H1.
+	ExprLimits openjd.ExprLimits
 }
 
 // Deps holds the application-layer dependencies injected into the REST
@@ -361,8 +371,7 @@ func NewRouter(cfg Config, deps Deps, logger *slog.Logger, m *metrics.Metrics, h
 	storageLocs := newStorageLocationHandler(deps.Store, logger)
 	computeLocs := newComputeLocationHandler(deps.Store, logger)
 	usagePools := newUsagePoolHandler(deps.Store, logger)
-	products := newProductHandler(deps.Products, deps.Submitter, deps.Scheduler, deps.Store, logger,
-		cfg.ValidateJobOwner, cfg.ExprSubmissionDeadline)
+	products := productHandlerFor(cfg, deps, logger)
 	presets := newPresetHandler(deps.PresetLib, deps.Products, deps.Store, logger)
 	diagnostics := newDiagnosticsHandler(deps.DiagReader, logger)
 	versionH := newVersionHandler(deps.Version)

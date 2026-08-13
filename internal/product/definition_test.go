@@ -21,10 +21,10 @@ steps:
           args: ["hi"]`
 
 func TestValidateTemplate(t *testing.T) {
-	if err := product.ValidateTemplate(goodTemplate, store.TemplateFormatYAML, true); err != nil {
+	if err := product.ValidateTemplate(goodTemplate, store.TemplateFormatYAML, product.ValidateOptions{EnforceLimits: true}); err != nil {
 		t.Fatalf("good template rejected: %v", err)
 	}
-	if err := product.ValidateTemplate("specificationVersion: wrong\nsteps: []", store.TemplateFormatYAML, true); err == nil {
+	if err := product.ValidateTemplate("specificationVersion: wrong\nsteps: []", store.TemplateFormatYAML, product.ValidateOptions{EnforceLimits: true}); err == nil {
 		t.Fatal("malformed template accepted")
 	}
 }
@@ -60,7 +60,7 @@ template:
 		t.Fatalf("template not captured: %q", p.Template)
 	}
 	// The captured template must itself validate.
-	if err := product.ValidateTemplate(p.Template, p.Format, true); err != nil {
+	if err := product.ValidateTemplate(p.Template, p.Format, product.ValidateOptions{EnforceLimits: true}); err != nil {
 		t.Fatalf("captured template invalid: %v", err)
 	}
 }

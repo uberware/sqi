@@ -1856,6 +1856,21 @@ components:
           schema:
             $ref: "#/components/schemas/ProblemDetail"
 
+    TemplateDeadlineExceeded:
+      description: |
+        The server gave up evaluating the submitted template's expressions
+        before finishing (openjd.expr_submission_deadline).
+
+        This is NOT a verdict on the template: the deterministic expression
+        budgets decide validity and report it as a 4xx, while this outcome
+        depends on how busy this server was, so the same body may well be
+        accepted on a retry. Persistent 503s here mean either a genuinely
+        expensive template or a deadline the operator has set too low.
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/ProblemDetail"
+
 # ── Paths ─────────────────────────────────────────────────────────────────────
 
 paths:
@@ -3159,6 +3174,8 @@ paths:
           $ref: "#/components/responses/Conflict"
         "500":
           $ref: "#/components/responses/InternalServerError"
+        "503":
+          $ref: "#/components/responses/TemplateDeadlineExceeded"
 
     get:
       operationId: listProducts
@@ -3230,6 +3247,8 @@ paths:
           $ref: "#/components/responses/NotFound"
         "500":
           $ref: "#/components/responses/InternalServerError"
+        "503":
+          $ref: "#/components/responses/TemplateDeadlineExceeded"
 
     delete:
       operationId: deleteProduct

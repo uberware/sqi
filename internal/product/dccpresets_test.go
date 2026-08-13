@@ -46,7 +46,7 @@ func TestDCCReferencePresets(t *testing.T) {
 			if p.Category != "Rendering" {
 				t.Errorf("category = %q, want Rendering", p.Category)
 			}
-			if err := ValidateTemplate(p.Template, p.Format, true); err != nil {
+			if err := ValidateTemplate(p.Template, p.Format, ValidateOptions{EnforceLimits: true}); err != nil {
 				t.Fatalf("ValidateTemplate: %v", err)
 			}
 			for _, param := range want[name] {

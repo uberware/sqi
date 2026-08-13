@@ -144,6 +144,110 @@ func TestExpand_JobWideTaskCapAllowsTheLimit(t *testing.T) {
 	}
 }
 
+// threeStepJobTemplate is a job of three cheap steps covering all three shapes
+// [expandParameterSpace] can return rows through: no parameterSpace at all
+// (1 task), and two ordinary ranges (3 and 5 tasks). Nine tasks in total.
+const threeStepJobTemplate = `
+specificationVersion: jobtemplate-2023-09
+name: ThreeStepJob
+steps:
+  - name: Bare
+    script:
+      actions:
+        onRun:
+          command: echo
+  - name: Three
+    parameterSpace:
+      taskParameterDefinitions:
+        - name: A
+          type: INT
+          range: "1-3"
+    script:
+      actions:
+        onRun:
+          command: echo
+  - name: Five
+    parameterSpace:
+      taskParameterDefinitions:
+        - name: B
+          type: INT
+          range: "1-5"
+    script:
+      actions:
+        onRun:
+          command: echo
+`
+
+// TestJobTaskBudget_ChargeEqualsRowsProduced pins the invariant the two cap
+// tests above do not: that what the budget is CHARGED equals what expansion
+// actually produces.
+//
+// Both of those sit at cap+1 or pre-load the budget directly, so neither would
+// fail if a refactor charged one step twice (halving the real allowance) or
+// added a fourth row-producing return to expandParameterSpace without a charge
+// (leaving rows the cap cannot see). This walks all three of its current
+// row-producing paths -- nil parameter space, empty combination expression, and
+// the materialized product -- against ONE shared budget, exactly as a job's
+// steps do.
+func TestJobTaskBudget_ChargeEqualsRowsProduced(t *testing.T) {
+	three, five := "1-3", "1-5"
+	spaces := []*StepParameterSpace{
+		nil, // the nil-ps return: one task
+		{TaskParameterDefinitions: []TaskParamDefinition{
+			{Name: "A", Type: TaskParamTypeInt, RangeExpr: &three},
+		}},
+		{TaskParameterDefinitions: []TaskParamDefinition{
+			{Name: "B", Type: TaskParamTypeInt, RangeExpr: &five},
+		}},
+		{}, // no definitions: the empty-expression return, one task
+	}
+
+	budget := &jobTaskBudget{}
+	produced := 0
+	for i, ps := range spaces {
+		rows, err := expandParameterSpace(ps, budget)
+		if err != nil {
+			t.Fatalf("step %d: expandParameterSpace: %v", i, err)
+		}
+		produced += len(rows)
+	}
+
+	if budget.total != produced {
+		t.Fatalf("the job budget was charged %d tasks but expansion produced %d rows.\n"+
+			"Charging MORE than is produced shrinks the real allowance below maxTasksPerJob "+
+			"(%d) and rejects jobs that fit; charging LESS leaves rows the cap cannot see, "+
+			"which is the exposure the cap exists to close.",
+			budget.total, produced, maxTasksPerJob)
+	}
+}
+
+// TestSubmit_ChargesEveryStepExactlyOnce is the same invariant one level up,
+// where the budget is created: Submit walks the steps itself, so a step
+// expanded twice would be charged twice.
+//
+// The budget is not observable after Submit returns -- it is a local, and
+// deliberately so, since it must be per-submission. What IS observable is the
+// rows it charged for, and a step expanded twice produces its tasks twice. Read
+// with the test above, which pins charge == rows inside one expansion, that
+// closes the loop.
+func TestSubmit_ChargesEveryStepExactlyOnce(t *testing.T) {
+	st := fake.New()
+	farmID, queueID := seedJobCapPrereqs(t, st)
+
+	result, err := NewSubmitter(st).Submit(t.Context(), threeStepJobTemplate, store.TemplateFormatYAML,
+		SubmitOptions{FarmID: farmID, QueueID: queueID, Owner: "alice"})
+	if err != nil {
+		t.Fatalf("Submit: %v", err)
+	}
+
+	const want = 1 + 3 + 5
+	if len(result.Tasks) != want {
+		t.Fatalf("Submit created %d tasks, want %d (1 + 3 + 5): a step expanded more than once "+
+			"is charged more than once, so the job-wide cap would bound half the tasks it claims to",
+			len(result.Tasks), want)
+	}
+}
+
 // TestExpand_JobWideTaskCapAppliesWithoutEnforceLimits pins that the cap is
 // always-on, matching maxTasksPerStep's stance: a caller that relaxes the
 // quantitative POLICY limits does not thereby acquire the right to insert a
