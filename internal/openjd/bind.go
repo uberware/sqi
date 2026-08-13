@@ -103,6 +103,9 @@ func validateParamValue(p JobParameter, value string) ValidationErrors {
 		// see checkParamValueAgainstType on why there is only one copy.
 		return checkParamValueAgainstType(p, value, ptr)
 	}
+	if isListParamType(p.Type) {
+		return checkParamValueAgainstType(p, value, ptr)
+	}
 	return nil
 }
 
