@@ -7,6 +7,7 @@ import {
   defaultJobName,
   initialValue,
   listElementType,
+  isBoolTruthy,
 } from './productForm'
 import type { ProductParameter } from '@/api/types'
 
@@ -219,5 +220,28 @@ describe('listElementType', () => {
     expect(listElementType('STRING')).toBeNull()
     expect(listElementType('BOOL')).toBeNull()
     expect(listElementType('RANGE_EXPR')).toBeNull()
+  })
+})
+
+describe('isBoolTruthy', () => {
+  it('recognises every spelling parseBoolParamValue accepts as true', () => {
+    // internal/openjd/validate_paramtypes.go's parseBoolParamValue, case-
+    // insensitive and trimmed.
+    for (const v of [true, 1, '1', '1.0', 'true', 'TRUE', ' yes ', 'On', 'YES']) {
+      expect(isBoolTruthy(v)).toBe(true)
+    }
+  })
+
+  it('recognises every spelling parseBoolParamValue accepts as false', () => {
+    for (const v of [false, 0, '0', '0.0', 'false', 'no', 'Off', '']) {
+      expect(isBoolTruthy(v)).toBe(false)
+    }
+  })
+
+  it('treats anything outside the accepted table as false', () => {
+    expect(isBoolTruthy(2)).toBe(false)
+    expect(isBoolTruthy('y')).toBe(false)
+    expect(isBoolTruthy(null)).toBe(false)
+    expect(isBoolTruthy(undefined)).toBe(false)
   })
 })

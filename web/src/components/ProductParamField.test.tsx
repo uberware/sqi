@@ -115,4 +115,45 @@ describe('ProductParamField', () => {
     )
     expect(screen.getByRole('alert')).toHaveTextContent('must have at least 2 items')
   })
+
+  it('associates the list widget label with its group via aria-labelledby, not htmlFor', () => {
+    // A <label htmlFor> pointing at nothing focuses nothing on click and has
+    // no programmatic association; a role="group" isn't a labelable element
+    // in the first place, so the association has to run the other way.
+    const { container } = render(
+      <ProductParamField
+        param={param({ name: 'Cameras', type: 'LIST[STRING]' })}
+        value='["main"]'
+        onChange={vi.fn()}
+      />,
+    )
+    const label = container.querySelector('label')
+    const group = screen.getByRole('group')
+    expect(label).not.toHaveAttribute('for')
+    expect(label?.id).toBeTruthy()
+    expect(group).toHaveAttribute('aria-labelledby', label?.id)
+  })
+
+  it('checks the BOOL checkbox for accepted truthy spellings beyond the literal "true"', () => {
+    // parseBoolParamValue (internal/openjd/validate_paramtypes.go) also
+    // accepts 1, 1.0, yes and on -- checked={value === on} only recognised
+    // the on/off pair itself.
+    const { rerender } = render(
+      <ProductParamField
+        param={param({ name: 'UseGpu', type: 'BOOL' })}
+        value="1"
+        onChange={vi.fn()}
+      />,
+    )
+    expect(screen.getByRole('checkbox')).toBeChecked()
+
+    rerender(
+      <ProductParamField
+        param={param({ name: 'UseGpu', type: 'BOOL' })}
+        value="yes"
+        onChange={vi.fn()}
+      />,
+    )
+    expect(screen.getByRole('checkbox')).toBeChecked()
+  })
 })

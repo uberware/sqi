@@ -59,14 +59,15 @@ function validateListValue(
     return 'must be a list'
   }
   if (!Array.isArray(parsed)) return 'must be a list'
+  const arr = parsed as unknown[]
 
-  if (p.min_length !== null && parsed.length < p.min_length)
+  if (p.min_length !== null && arr.length < p.min_length)
     return `must have at least ${p.min_length} items`
-  if (p.max_length !== null && parsed.length > p.max_length)
+  if (p.max_length !== null && arr.length > p.max_length)
     return `must have at most ${p.max_length} items`
 
-  for (let i = 0; i < parsed.length; i++) {
-    const err = validateElement(parsed[i], elementType, p.item)
+  for (let i = 0; i < arr.length; i++) {
+    const err = validateElement(arr[i], elementType, p.item)
     if (err) return `item ${i + 1} ${err}`
   }
   return null

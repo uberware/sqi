@@ -198,17 +198,29 @@ value doesn't parse as a JSON array (a malformed stored default, say), so a
 bad value never blocks the form from rendering.
 
 **The row editor's serialisation must match `internal/openjd/paramjson.go`'s
-canonical JSON form byte-for-byte.** `ListParamField` encodes with plain
-`JSON.stringify` — no inserted whitespace, each element written as its own
-JSON type (number, boolean, or string) — because the server decodes a
-submitted list value with `encoding/json` and checks each element by its
-*JSON type* against the parameter's declared element type. Anything that
-changes those bytes (added whitespace, a number stringified as text, and so
-on) produces a value that looks fine in the browser and fails server-side
-validation. Nothing mechanical keeps the two encoders in agreement — they
-match only because both sides' tests assert the same literal strings, Go's
-`TestEncodeListDefault` mirrored into the TypeScript suite. If you touch
-either encoder, update both.
+canonical JSON form on *type*, not necessarily on byte-for-byte form.**
+`ListParamField` encodes with plain `JSON.stringify` — no inserted
+whitespace, each element written as its own JSON type (number, boolean, or
+string) — because the server decodes a submitted list value with
+`encoding/json` and checks each element by its *JSON type* against the
+parameter's declared element type. What actually matters is that fidelity: a
+number must arrive as a JSON number, not a string, and so on for booleans.
+Byte equality is not itself the requirement — `BindJobParameters`
+(`internal/openjd/bind.go`) stores a submitted value verbatim and nothing
+ever compares it against the canonical default — but the two encoders do
+agree on every byte form the editor can actually produce: `JSON.stringify`
+and `marshalCanonical` agree on separators, string escaping including
+`< > &`, and float formatting, and diverge only on two inputs neither side's
+editor emits — Go escapes U+2028/U+2029 and lone surrogates unconditionally
+— each harmless because both sides decode the other's output identically.
+Nothing mechanical keeps the two encoders in agreement — they match only
+because both sides' tests assert the same literal strings, Go's
+`TestEncodeListDefault` table mirrored into the TypeScript suite for every
+element type the row editor itself renders (strings, ints, floats, bools,
+paths, and the empty-list case; `TestEncodeListDefault`'s two
+`LIST[LIST[INT]]` rows are out of scope here, since that type is
+deliberately excluded from the row editor and falls to the raw-JSON field —
+see above). If you touch either encoder, update both.
 
 ---
 

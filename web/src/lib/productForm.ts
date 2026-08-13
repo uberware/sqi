@@ -75,6 +75,35 @@ export function paramLabel(p: ProductParameter): string {
   return p.user_interface?.label || p.name
 }
 
+/** Display-only truthiness for a BOOL value, recognising the same spellings
+ * the server's parseBoolParamValue accepts (internal/openjd/validate_paramtypes.go):
+ * the booleans true/false, the numbers 1/1.0 and 0/0.0, and the
+ * case-insensitive strings true/yes/on/1/1.0 and false/no/off/0/0.0.
+ *
+ * This is deliberately NOT validation. Sub-project G's design refused to
+ * duplicate the accepted-values table for validation -- the server owns
+ * that, and a second copy is a drift hazard. But a checkbox that cannot
+ * render the correct state for a value the server accepts is a different
+ * problem: this copy is display-only and never decides whether a value is
+ * accepted. */
+export function isBoolTruthy(v: unknown): boolean {
+  if (typeof v === 'boolean') return v
+  if (typeof v === 'number') return v === 1
+  if (typeof v === 'string') {
+    switch (v.trim().toLowerCase()) {
+      case 'true':
+      case 'yes':
+      case 'on':
+      case '1':
+      case '1.0':
+        return true
+      default:
+        return false
+    }
+  }
+  return false
+}
+
 export function isRequired(p: ProductParameter): boolean {
   return p.default === null
 }
