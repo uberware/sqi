@@ -47,6 +47,26 @@ type SubmitterOptions struct {
 	// The zero value means "use the defaults" ([ExprLimits.orDefaults]), so
 	// [NewSubmitter] and every existing SubmitterOptions literal keep the
 	// pre-E4d behavior unchanged.
+	//
+	// DO NOT SET [ExprLimits.Deadline] HERE. It is the one field of ExprLimits
+	// that is per-REQUEST rather than operator configuration -- an ABSOLUTE
+	// time, not a duration -- and this struct is read exactly once, by
+	// [NewSubmitterWithOptions] at server boot, into a Submitter that is reused
+	// for the process's whole life. Both phase-2 budgets are built from that
+	// stored copy (prepareTemplate's checkerBudget and resolverBudget), so a
+	// deadline set here would be one absolute instant computed at boot: every
+	// submission arriving after it would fail with expr.ErrDeadlineExceeded
+	// forever, and every submission before it would get a budget shrinking
+	// toward zero. It is also the shortest-looking way to satisfy H1's Task 3,
+	// which is why this warning is here rather than left to be discovered.
+	//
+	// The deadline belongs on the per-call path instead: a Deadline field on
+	// [SubmitOptions], or a parameter threaded through
+	// [Submitter.prepareTemplate] and [Submitter.Submit], computed from the
+	// configured DURATION at the top of each request and copied onto the
+	// ExprLimits each budget is built from -- which is also where phase 1 has
+	// to switch from [ValidateWithOptions] to [ValidateWithBudget], since the
+	// former discards the channel the breach arrives on.
 	ExprLimits ExprLimits
 }
 

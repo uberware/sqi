@@ -35,6 +35,16 @@ steps:
 // is the one position whose failure path APPENDS and CONTINUES rather than
 // returning -- see checkLetBindings. A deadline recorded there must stop the
 // block, not run every remaining binding past an expired deadline.
+//
+// THE LATER BINDINGS ARE SYNTACTICALLY BROKEN ON PURPOSE, and that is what makes
+// the test's assertion able to tell "stopped" from "kept going quietly". A
+// binding whose expression fails to PARSE appends a ValidationError before any
+// evaluation happens, so recordDeadline never sees it and cannot swallow it: if
+// checkLetBindings continued past the deadline instead of returning, bindings 1
+// and 2 would each report at /steps/0/let/N. With three heavy-but-valid
+// bindings -- the shape this fixture had before -- every later binding would
+// trip the deadline again, be swallowed, and report nothing, so the assertion
+// held either way and proved nothing.
 const exprDeadlineLetTemplate = `
 specificationVersion: jobtemplate-2023-09
 extensions:
@@ -44,8 +54,8 @@ steps:
 - name: S
   let:
   - "a = [x * 2 for x in range(100000)]"
-  - "b = [x * 2 for x in range(100000)]"
-  - "c = [x * 2 for x in range(100000)]"
+  - "b = 1 +"
+  - "c = 1 +"
   script:
     actions:
       onRun:
@@ -57,6 +67,13 @@ steps:
 // surrounding text, which is the checker's other format-string shape and its
 // own conversion site: fmtstring.LoneRef is false, so checkFormatString walks
 // segments and evaluates each reference in a loop rather than once.
+//
+// The SECOND reference is a syntax error for the same reason the let fixture's
+// later bindings are: a parse failure is appended before any evaluation, so it
+// is the one thing a swallowed deadline cannot hide. With a single reference --
+// the shape this fixture had before -- checkFormatString's "return errs" and a
+// "continue" were indistinguishable, because there was no later segment to keep
+// going to.
 const exprDeadlineSegmentTemplate = `
 specificationVersion: jobtemplate-2023-09
 extensions:
@@ -68,7 +85,7 @@ steps:
     actions:
       onRun:
         command: echo
-        args: ["pre {{ [x * 2 for x in range(100000)] }} post"]
+        args: ["pre {{ [x * 2 for x in range(100000)] }} mid {{ 1 + }} post"]
 `
 
 // exprDeadlineResolveTemplate is the phase-2 RESOLVER's fixture: a step with
@@ -88,6 +105,71 @@ steps:
     - name: F
       type: INT
       range: "1-3"
+  script:
+    actions:
+      onRun:
+        command: echo
+        args: ["hi"]
+`
+
+// exprDeadlineResolveRangeExprTemplate is the resolver fixture that reaches
+// resolveTaskParamDefinition, and it deliberately has NO let: block.
+//
+// exprDeadlineResolveTemplate (above) gives its step a let: block, so the
+// walk trips inside stepLetSymbols and ResolveParameterSpaceParams' definition
+// loop breaks before resolveTaskParamDefinition is ever entered. That fixture
+// therefore proves nothing about the resolver's OWN two conversion sites. This
+// one has no let: at all and a whole-field expression range, so the FIRST
+// evaluation of the whole call happens inside resolveRangeExprField.
+//
+// The second definition's range is a syntax error on purpose: it is what makes
+// "stopped" distinguishable from "kept going quietly". Reached, it appends a
+// parse ValidationError at /parameterSpace/taskParameterDefinitions/1/range;
+// not reached, it appends nothing.
+const exprDeadlineResolveRangeExprTemplate = `
+specificationVersion: jobtemplate-2023-09
+extensions:
+- EXPR
+name: T
+steps:
+- name: S
+  parameterSpace:
+    taskParameterDefinitions:
+    - name: F
+      type: INT
+      range: "{{ range(1, 4) }}"
+    - name: G
+      type: INT
+      range: "{{ 1 + }}"
+  script:
+    actions:
+      onRun:
+        command: echo
+        args: ["hi"]
+`
+
+// exprDeadlineResolveRangeListTemplate reaches the resolver's OTHER conversion
+// site, resolveRangeListDefinition's per-entry append, which
+// exprDeadlineResolveRangeExprTemplate cannot: a whole-field RangeExpr and a
+// RangeList are separate branches of resolveTaskParamDefinition.
+//
+// The second entry is a syntax error for the same reason, one level down: it
+// distinguishes a loop that stopped at the deadline from one that kept
+// evaluating entries past it.
+const exprDeadlineResolveRangeListTemplate = `
+specificationVersion: jobtemplate-2023-09
+extensions:
+- EXPR
+name: T
+steps:
+- name: S
+  parameterSpace:
+    taskParameterDefinitions:
+    - name: F
+      type: INT
+      range:
+      - "{{ 1 + 1 }}"
+      - "{{ 1 + }}"
   script:
     actions:
       onRun:
@@ -139,6 +221,10 @@ func TestValidateWithBudget_DeadlineIsNotAValidationError(t *testing.T) {
 // same diversion for the same reason [checkLetBindings] does. A test that only
 // exercised the lone-reference shape would leave this site free to convert a
 // deadline into a 422.
+//
+// It also asserts that the segment loop STOPPED, not merely that it stopped
+// reporting -- see exprDeadlineSegmentTemplate for how its second, deliberately
+// unparseable reference makes the difference observable.
 func TestValidateWithBudget_DeadlineInEmbeddedSegmentIsNotAValidationError(t *testing.T) {
 	tmpl, err := Parse([]byte(exprDeadlineSegmentTemplate), FormatYAML)
 	if err != nil {
@@ -162,6 +248,10 @@ func TestValidateWithBudget_DeadlineInEmbeddedSegmentIsNotAValidationError(t *te
 		if strings.Contains(strings.ToLower(e.Message), "deadline") {
 			t.Errorf("deadline reported as a ValidationError at %s: %s", e.Pointer, e.Message)
 		}
+		if strings.Contains(e.Pointer, "/args/") {
+			t.Errorf("a later segment was evaluated past the deadline (%s: %s); "+
+				"checkFormatString's segment loop must return, not continue", e.Pointer, e.Message)
+		}
 	}
 }
 
@@ -175,6 +265,13 @@ func TestValidateWithBudget_DeadlineInEmbeddedSegmentIsNotAValidationError(t *te
 // bindings past an expired deadline spends the time the deadline said had run
 // out. So the block must yield the deadline through the budget and produce no
 // per-binding validation errors at all.
+//
+// The "no /steps/0/let error" assertion below is only load-bearing because of
+// how exprDeadlineLetTemplate is built -- bindings 1 and 2 fail to PARSE, which
+// is reported before any evaluation and so cannot be swallowed by
+// recordDeadline. Read that fixture's comment before changing it: with heavy but
+// valid later bindings this assertion holds whether checkLetBindings returns or
+// continues, and the test silently stops testing its own name.
 func TestValidateWithBudget_DeadlineInLetBindingsStopsTheBlock(t *testing.T) {
 	tmpl, err := Parse([]byte(exprDeadlineLetTemplate), FormatYAML)
 	if err != nil {
@@ -318,6 +415,109 @@ func TestResolveParameterSpaceParams_DeadlineYieldsNoParameterSpace(t *testing.T
 		if strings.Contains(strings.ToLower(e.Message), "deadline") {
 			t.Errorf("deadline reported as a ValidationError at %s: %s", e.Pointer, e.Message)
 		}
+	}
+}
+
+// TestResolveParameterSpaceParams_DeadlineAtRangeExprPosition covers the
+// resolver's whole-field conversion site (resolveTaskParamDefinition), which
+// TestResolveParameterSpaceParams_DeadlineYieldsNoParameterSpace does not reach:
+// its fixture's let: block trips the deadline first, so the definition loop
+// breaks before that site runs at all.
+//
+// Two things must hold. The deadline must not become a ValidationError — the
+// whole 503-not-422 contract — and the walk must STOP, which the second
+// definition's deliberate syntax error makes observable: converted-and-continued,
+// it reports a parse error at definition 1.
+func TestResolveParameterSpaceParams_DeadlineAtRangeExprPosition(t *testing.T) {
+	tmpl, err := Parse([]byte(exprDeadlineResolveRangeExprTemplate), FormatYAML)
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	step := tmpl.Steps[0]
+	if len(step.Let) != 0 {
+		t.Fatal("fixture has a let: block; it must not, or the walk trips before " +
+			"resolveTaskParamDefinition is entered")
+	}
+
+	budget := newTemplateBudget(ExprLimits{Deadline: time.Now().Add(-time.Second)})
+	ps, errs := ResolveParameterSpaceParams(tmpl, &step, step.ParameterSpace, nil, budget)
+
+	if !errors.Is(budget.deadline(), expr.ErrDeadlineExceeded) {
+		t.Fatalf("budget deadline = %v, want expr.ErrDeadlineExceeded: the resolver's "+
+			"whole-field conversion site is not diverting it", budget.deadline())
+	}
+	if ps != nil {
+		t.Errorf("resolved parameter space = %+v, want nil: the walk stopped early", ps)
+	}
+	for _, e := range errs {
+		if strings.Contains(strings.ToLower(e.Message), "deadline") {
+			t.Errorf("deadline reported as a ValidationError at %s: %s", e.Pointer, e.Message)
+		}
+		if strings.HasPrefix(e.Pointer, "/parameterSpace/taskParameterDefinitions/1") {
+			t.Errorf("definition 1 was resolved past the deadline (%s: %s); the backstop "+
+				"must stop the walk, not merely stop reporting", e.Pointer, e.Message)
+		}
+	}
+}
+
+// TestResolveParameterSpaceParams_DeadlineAtRangeListPosition covers the
+// resolver's per-entry conversion site (resolveRangeListDefinition), the other
+// branch of resolveTaskParamDefinition, with the same two assertions.
+func TestResolveParameterSpaceParams_DeadlineAtRangeListPosition(t *testing.T) {
+	tmpl, err := Parse([]byte(exprDeadlineResolveRangeListTemplate), FormatYAML)
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	step := tmpl.Steps[0]
+	if n := len(step.ParameterSpace.TaskParameterDefinitions[0].RangeList); n != 2 {
+		t.Fatalf("fixture definition 0 has %d range list entries, want 2", n)
+	}
+
+	budget := newTemplateBudget(ExprLimits{Deadline: time.Now().Add(-time.Second)})
+	ps, errs := ResolveParameterSpaceParams(tmpl, &step, step.ParameterSpace, nil, budget)
+
+	if !errors.Is(budget.deadline(), expr.ErrDeadlineExceeded) {
+		t.Fatalf("budget deadline = %v, want expr.ErrDeadlineExceeded: the resolver's "+
+			"per-entry conversion site is not diverting it", budget.deadline())
+	}
+	if ps != nil {
+		t.Errorf("resolved parameter space = %+v, want nil: the walk stopped early", ps)
+	}
+	for _, e := range errs {
+		if strings.Contains(strings.ToLower(e.Message), "deadline") {
+			t.Errorf("deadline reported as a ValidationError at %s: %s", e.Pointer, e.Message)
+		}
+		if strings.HasPrefix(e.Pointer, "/parameterSpace/taskParameterDefinitions/0/range/1") {
+			t.Errorf("range entry 1 was resolved past the deadline (%s: %s); the backstop "+
+				"must stop the loop, not merely stop reporting", e.Pointer, e.Message)
+		}
+	}
+}
+
+// TestStepLetSymbols_NilBudget pins the nil contract H1 made non-uniform.
+//
+// checkFormatString and checkLetBindings both document their new *templateBudget
+// first parameter as nil-able and handle it. stepLetSymbols took the
+// same-shaped parameter in the same change and read b.limits unconditionally,
+// so stepLetSymbols(nil, ...) panicked. No production caller passes nil -- which
+// is exactly why nothing caught it -- so this test is the only thing standing
+// between the three siblings and three different unwritten nil contracts.
+func TestStepLetSymbols_NilBudget(t *testing.T) {
+	tmpl, err := Parse([]byte(exprDeadlineLetTemplate), FormatYAML)
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	step := tmpl.Steps[0]
+
+	syms, errs := stepLetSymbols(nil, tmpl, &step, nil, "")
+	if syms == nil {
+		t.Error("stepLetSymbols(nil, ...) returned a nil symbol table")
+	}
+	// One error per binding: binding 0 exceeds the default operation limit, and
+	// bindings 1 and 2 do not parse. A nil budget diverts nothing, so the block
+	// runs to the end and reports all three exactly as it did before H1.
+	if len(errs) != 3 {
+		t.Errorf("stepLetSymbols(nil, ...) returned %d errors, want 3: %v", len(errs), errs)
 	}
 }
 

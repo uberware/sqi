@@ -145,6 +145,13 @@ type ExprLimits struct {
 	// It is deliberately EXEMPT from [ExprLimits.orDefaults]' "<= 0 means
 	// unset, use the default" rule, which has no meaning for a time: the zero
 	// time means NO deadline, and that is the default.
+	//
+	// BEING PER-REQUEST, IT MUST NEVER BE SET ON A LONG-LIVED ExprLimits.
+	// [SubmitterOptions.ExprLimits] is the trap: it is read once at server boot
+	// into a [Submitter] reused for every subsequent submission, so a deadline
+	// stored there is a single absolute instant that every later request is
+	// measured against -- accepting nothing at all once it passes. See that
+	// field's own comment for what the submission path needs instead.
 	Deadline time.Time
 }
 

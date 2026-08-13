@@ -1022,6 +1022,23 @@ func (b *templateBudget) deadline() error {
 	return b.deadlineErr
 }
 
+// limitsOrDefaults returns the budget's [ExprLimits], or the package defaults
+// when b is nil.
+//
+// Reading b.limits directly is the ONE thing a nil-able *templateBudget cannot
+// do, and it is easy to write by accident because every other budget method
+// here is nil-safe. [stepLetSymbols] did exactly that and would have panicked on
+// the nil its two siblings ([checkFormatString], [checkLetBindings]) document as
+// legal -- caught in review, not by a caller, because no production caller
+// passes nil. This exists so the nil contract is uniform across the three
+// rather than uniform-except-one.
+func (b *templateBudget) limitsOrDefaults() ExprLimits {
+	if b == nil {
+		return ExprLimits{}.orDefaults()
+	}
+	return b.limits
+}
+
 // recordDeadline reports whether err is a wall-clock deadline breach and, if
 // it is, records it on the budget so the rest of the walk stops.
 //
@@ -1416,6 +1433,15 @@ func checkStepExpressions(b *templateBudget, tmpl *JobTemplate, s StepTemplate, 
 // a wall-clock deadline breach THROUGH it rather than as a ValidationError, and
 // a helper handed only the numbers could not carry that back. Both callers
 // already had one in hand.
+//
+// It is NIL-ABLE, matching [checkFormatString] and [checkLetBindings] -- the two
+// siblings that took the same new parameter in the same change -- so that the
+// three cannot disagree about what a nil budget means. A nil b gives the
+// DEFAULT limits ([ExprLimits.orDefaults] via limitsOrDefaults) and diverts
+// nothing, which is exactly the unbounded pre-H1 behavior a direct unit-test
+// caller is asking for. No production caller passes nil; this exists so that
+// one does not have to read three functions to find out that only two of them
+// tolerate it.
 func stepLetSymbols(
 	b *templateBudget, tmpl *JobTemplate, s *StepTemplate, params map[string]string, base string,
 ) (expr.MapSymbols, ValidationErrors) {
@@ -1430,7 +1456,7 @@ func stepLetSymbols(
 		preLetKeys[k] = struct{}{}
 	}
 	errs := checkLetBindings(
-		b, s.Let, base+"/let", ScopeStepTemplate, stepTemplateSyms, b.limits.evalOptions()...,
+		b, s.Let, base+"/let", ScopeStepTemplate, stepTemplateSyms, b.limitsOrDefaults().evalOptions()...,
 	)
 	for k, v := range stepTemplateSyms {
 		if _, existed := preLetKeys[k]; !existed {

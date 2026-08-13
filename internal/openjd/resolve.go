@@ -73,6 +73,17 @@ import (
 // range expression that referenced the failed binding fail with a misleading
 // "unknown symbol" instead.
 //
+// A WALL-CLOCK DEADLINE ([ExprLimits.Deadline], carried on budget) is the one
+// evaluation failure that is NOT reported that way. It is recorded on the budget
+// instead ([templateBudget.recordDeadline]), which stops the walk and is read
+// back by the caller through [templateBudget.deadline]; this function then
+// returns a nil parameter space, because a partly-resolved one is
+// indistinguishable from a complete one. Every one of this function's
+// evaluation sites -- step's let: block, the whole-field range, and each
+// RangeList entry -- routes through recordDeadline before converting anything,
+// so there is no position at which "the server gave up" can reach the API as
+// "your template is invalid".
+//
 // All task-parameter definitions are inspected before returning so callers
 // receive a complete error list in one round-trip UNLESS the template-wide
 // budget (below) trips first, in which case the walk stops early -- see that
@@ -247,6 +258,21 @@ func ResolveParameterSpaceParams(
 // produced. On a budget-exhausted charge, the copy is returned unresolved and
 // with no errors of its own -- the caller's own b.errs() call, once the whole
 // walk stops, is what turns that into a reported failure.
+//
+// A WALL-CLOCK DEADLINE IS THE SECOND SUCH CASE, and it is one of the reasons
+// this function takes the whole budget rather than just b.limits. Both of its
+// evaluation
+// failure paths -- the whole-field one here and resolveRangeListDefinition's
+// per-entry one -- route the error through [templateBudget.recordDeadline]
+// FIRST, so a deadline is diverted onto the budget instead of becoming a
+// ValidationError. Without that, the two ValidationErrors below are the last
+// conversion sites in this package that still turn "the server gave up" (a 503)
+// into "your template is invalid" (a 422), and -- because nothing would be
+// recorded -- b.ok() would stay true and the caller's loop would walk every
+// remaining definition past an expired deadline, emitting one deadline-worded
+// error per position. See TestResolveParameterSpaceParams_DeadlineAtRangeExprPosition
+// and its RangeList sibling, whose fixtures deliberately carry NO let: block:
+// the fixture that does routes around both sites entirely.
 func resolveTaskParamDefinition(
 	b *templateBudget, exprEnabled bool, i int, def TaskParamDefinition, syms expr.MapSymbols, scope fmtstring.Scope,
 ) (TaskParamDefinition, ValidationErrors) {
@@ -259,6 +285,16 @@ func resolveTaskParamDefinition(
 		}
 		newRangeExpr, newRangeList, rerr := resolveRangeExprField(exprEnabled, *def.RangeExpr, def.Type, syms, scope, b.limits)
 		if rerr != nil {
+			if b.recordDeadline(rerr) {
+				// A wall-clock stop, NOT a verdict on this definition: diverted
+				// onto the budget so it reaches the caller as an error (a 503)
+				// instead of a ValidationError (a 422), and so
+				// ResolveParameterSpaceParams' own !b.ok() guard breaks out of
+				// the definition loop rather than evaluating every remaining
+				// definition past a deadline that has already passed. See
+				// [templateBudget.recordDeadline].
+				return newDef, nil
+			}
 			// Do not assign newDef.RangeExpr/RangeList on error -- returning
 			// the untouched copy alongside the error is what lets the
 			// CALLER'S loop keep accumulating every other definition's
@@ -293,6 +329,11 @@ func resolveTaskParamDefinition(
 // resolveRangeListDefinition resolves every entry of one task-parameter
 // definition's RangeList -- split out of resolveTaskParamDefinition for the
 // same complexity-budget reason that function's own doc comment gives.
+//
+// It shares that function's deadline diversion, and needs it more: this loop's
+// normal behavior is to collect one ValidationError per bad entry and keep
+// going, which for a wall-clock stop would both mis-report it as a 422 and
+// spend the very time the deadline said had run out.
 func resolveRangeListDefinition(
 	b *templateBudget, exprEnabled bool, i int, def TaskParamDefinition, syms expr.MapSymbols, scope fmtstring.Scope,
 ) ([]string, ValidationErrors) {
@@ -308,6 +349,16 @@ func resolveRangeListDefinition(
 		}
 		resolved, err := resolveRangeListEntry(exprEnabled, entry, def.Type, syms, scope, b.limits)
 		if err != nil {
+			if b.recordDeadline(err) {
+				// Diverted onto the budget for the same reason
+				// resolveTaskParamDefinition's whole-field site diverts it, and
+				// STOPPED rather than reported-and-continued: this loop's normal
+				// failure mode is to collect one error per bad entry, which for
+				// a deadline would spend the very time the deadline said had run
+				// out. Returning (rather than relying on the !b.ok() guard at the
+				// top of the next iteration) keeps that stop local and visible.
+				return newList, errs
+			}
 			errs = append(errs, ValidationError{Pointer: eptr, Message: err.Error()})
 			newList[j] = entry // placeholder; result discarded on error
 		} else {
