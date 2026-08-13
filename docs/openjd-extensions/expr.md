@@ -911,9 +911,21 @@ recorded in that function's own comment as later work.
   `LogChunkMsg` and `DeregisterMsg` remain ungated by design.
 - **`EXPR`'s registry `Status` stays `StatusInProgress`** until the gaps
   above (and the job-parameter types section 1.2.2 requires) are closed.
-- **`web/src/api/types.ts` still declares the pre-EXPR `type`/`control`
-  unions**, narrower than the OpenAPI spec they are required to mirror (see
-  this repo's CLAUDE.md web-wire-types convention). F2's runtime work did not
-  touch it, on purpose: sub-project G's scope is not only the web widgets for
-  the eight RFC 0007 types, it also includes bringing these wire types up to
-  date with what the server now accepts and returns.
+- **SUPERSEDED by sub-project G — `web/src/api/types.ts` now mirrors the
+  eight RFC 0007 types and the six `*_LIST` `userInterface` controls.** This
+  bullet used to say the file still declared the pre-EXPR, narrower unions
+  that F2's runtime work left untouched on purpose. G closed that: the
+  product-parameters API gained a per-element `item` constraint
+  (`internal/api/products.go`), and the web form now renders every RFC 0007
+  parameter type — a `list` widget (`web/src/lib/productForm.ts`,
+  `web/src/components/ListParamField.tsx`) for the six `*_LIST` controls and
+  the five list types, client-side shape/element/bounds validation
+  (`web/src/lib/productValidation.ts`), all serialising to
+  `internal/openjd/paramjson.go`'s canonical JSON — see
+  `docs/web-development.md`'s "Product parameter widgets" section for the
+  widget table and the encoding contract. What remains true, and does not
+  change until sub-project H: **no `extensions: [EXPR]` template can be
+  submitted through `POST /api/v1/jobs`** while the registry status is
+  `StatusInProgress` (see "Current status" above), so the form can render
+  these parameters for a product but no job actually exercising EXPR can be
+  created through the API today.
