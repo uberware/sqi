@@ -414,6 +414,48 @@ func detectPathFormat(p string) string {
 	return "POSIX"
 }
 
+// resolveLocURIsInParamValue concretizes loc:// URIs in one job-parameter
+// value, dispatching on the parameter's DECLARED type.
+//
+// A scalar is resolved by substring replacement, unchanged from before
+// sub-project F2. A LIST[*] value is canonical JSON, and substring replacement
+// on it splices the resolved path INSIDE a JSON string literal -- which
+// survives by luck for a POSIX path and corrupts a Windows one, whose
+// backslashes are not legal JSON escapes and make the value stop decoding
+// entirely. So a list is decoded, resolved element by element, and re-encoded
+// through the same codec that produced it.
+func resolveLocURIsInParamValue(
+	value, declaredType string, resolve func(name, relPath string) (string, error),
+) (string, error) {
+	if !openjd.IsListParamTypeName(declaredType) {
+		return openjd.ResolveLocURIs(value, resolve)
+	}
+
+	elems, err := openjd.DecodeListParamValue(value)
+	if err != nil {
+		return "", fmt.Errorf("list parameter value: %w", err)
+	}
+	changed := false
+	for i, e := range elems {
+		s, ok := e.(string)
+		if !ok {
+			continue // a non-string element cannot carry a loc:// URI
+		}
+		resolved, err := openjd.ResolveLocURIs(s, resolve)
+		if err != nil {
+			return "", err
+		}
+		if resolved != s {
+			elems[i] = resolved
+			changed = true
+		}
+	}
+	if !changed {
+		return value, nil
+	}
+	return openjd.EncodeListParamValue(elems)
+}
+
 // resolveLocURIsInMsg rewrites all loc:// URI references inside msg in-place.
 // It covers the OnRun action command/args, all environment variables and
 // embedded-file data in every AssignEnvironment, and all task parameter values.
@@ -445,7 +487,7 @@ func resolveLocURIsInMsg(
 	// the worker would splice the raw URI into a {{Param.*}} expansion. The map
 	// is a clone (see buildJobParameters), so this in-place rewrite is safe.
 	for k, v := range msg.JobParameters {
-		resolved, err := openjd.ResolveLocURIs(v, resolve)
+		resolved, err := resolveLocURIsInParamValue(v, msg.JobParameterTypes[k], resolve)
 		if err != nil {
 			return fmt.Errorf("job parameter %q: %w", k, err)
 		}

@@ -134,6 +134,33 @@ func decodeListDefault(s string, t JobParamType) ([]any, error) {
 	return out, nil
 }
 
+// IsListParamTypeName reports whether a declared type NAME is one of RFC 0007's
+// list types. It takes a string rather than a JobParamType because callers
+// outside this package hold the type as the text the assignment carries.
+func IsListParamTypeName(declared string) bool {
+	return isListParamType(JobParamType(declared))
+}
+
+// DecodeListParamValue parses a canonical list parameter value into its
+// elements. Exported for callers that must operate on a list value's elements
+// -- resolving loc:// URIs, building a staging manifest -- without reaching
+// into this package's encoding.
+func DecodeListParamValue(value string) ([]any, error) {
+	var out []any
+	if err := json.Unmarshal([]byte(value), &out); err != nil {
+		return nil, fmt.Errorf("openjd: decode list parameter value: %w", err)
+	}
+	return out, nil
+}
+
+// EncodeListParamValue is DecodeListParamValue's inverse, producing the same
+// canonical form encodeListDefault does -- HTML escaping off, no trailing
+// newline -- so a decoded-and-re-encoded value is byte-identical to one that
+// was never touched.
+func EncodeListParamValue(elems []any) (string, error) {
+	return marshalCanonical(elems, "")
+}
+
 // isScalarValue reports whether v is a YAML scalar (string, number, or
 // boolean) as opposed to a sequence or mapping.
 //
