@@ -125,6 +125,34 @@ That function lives in the leaf package both phases import, so phase 2 and
 phase 3 gained the types together — `TestPhase2Phase3Agreement` covers all
 eight.
 
+**Two defects F2 found and fixed while wiring the runtime half.** Neither is
+template-side — both are in code F1 could not have exercised, because before
+F2 nothing ever wrote a list value into the `map[string]string` those code
+paths read.
+
+- **`loc://` resolution used to splice into the JSON, not the path.**
+  `resolveLocURIsInMsg` resolved every job-parameter value by whole-string
+  substring replacement. A `LIST[*]` value is canonical JSON
+  (`internal/openjd/paramjson.go`), so substring replacement spliced the
+  resolved path *inside* a JSON string literal — which happened to survive for
+  a POSIX path, but corrupted a Windows one (backslashes are not legal JSON
+  escapes) and left the value undecodable. Fixed by decoding the list,
+  resolving `loc://` element by element, and re-encoding through the same
+  codec that produced it (`resolveLocURIsInParamValue`,
+  `internal/scheduler/assign.go`).
+- **`LIST[PATH]` resolved unmapped.** `paramValueForBinding`
+  (`internal/worker/fmtres/exprsyms.go`) matched a job parameter's
+  path-mapping branch on `t.Equal(expr.TPath)` only. Before F1 that was
+  correct — sqi's template model could not yet decode a concrete `LIST[PATH]`
+  value, so the branch was unreachable for lists and the comment said so.
+  F1's `expr.ValueFromText` list decoding falsified that premise without
+  anyone revisiting the branch: a `LIST[PATH]` job parameter's elements
+  silently resolved `Unresolved` rather than through path mapping, short of
+  RFC 0007's own requirement that `Param.<name>` for a list of paths "Returns
+  a `list[path]` type value with path mapping applied." Fixed by
+  `mapListPathParamValue`, which runs each element through the same
+  `mapPathParamValue` the scalar case uses.
+
 ## Task-parameter range field extensions (section 1.3.12)
 
 Base-spec `range` (Template Schemas §3.4.1, `<TaskParameterDefinition>` and
@@ -801,14 +829,27 @@ recorded in that function's own comment as later work.
 
 ## Known gaps
 
-- **The extended parameter types are template-side only.** Sub-project F1
-  implemented RFC 0007's parsing, validation and both-phase value resolution
-  (see "Extended parameter types" above), but a list-valued parameter cannot
-  yet be *submitted*: the store, the REST surface, `BindJobParameters` and the
-  worker assignment all carry parameters as `map[string]string`, and nothing
-  yet writes a list value into them. F2 is that work. The canonical JSON
-  encoding F1 defined (`internal/openjd/paramjson.go`) is deliberately the form
-  those maps will carry, so F2 inherits it rather than choosing again.
+- **SUPERSEDED by sub-project F2 — the extended parameter types are no
+  longer template-side only.** This bullet used to say a list-valued
+  parameter "cannot yet be *submitted*." F2 falsified that: a submitted
+  list-parameter value is now validated against its declared type (the
+  shared value-checking core in `internal/openjd/bind.go`), `loc://` URIs
+  are resolved element-wise inside a list value rather than by whole-string
+  substring replacement, and a `LIST[PATH]` parameter's elements are staged
+  and path-mapped individually, the same as a scalar `PATH` parameter — see
+  "Extended parameter types" above for the two defects F2 found and fixed
+  along the way. What F2 did **not**, and could not, reach: a real
+  `extensions: [EXPR]` job still cannot be submitted through
+  `POST /api/v1/jobs`, because `validateExtensions` rejects the extension at
+  `/extensions/0` while its registry status is `StatusInProgress` (see
+  "Current status" above). F2's own coverage therefore calls
+  `openjd.Parse`/`openjd.BindJobParameters` directly
+  (`test/integration/expr_paramtypes_test.go`), the same standing
+  sub-project E4a's phase-3 evaluation has had since it shipped. Closing
+  that gate is sub-project H's job, which must add a real
+  `extensions: [EXPR]` job to that test package and to
+  `scripts/smoke.sh` — merged with E4a's identical, older obligation to do
+  the same thing.
 - **The 141 `EXPR/jobs/` conformance fixtures are scored by nothing.**
   `test/conformance/suite_test.go` walks only `job_templates` and
   `env_templates`, and returns early for a job test — so the runtime half of

@@ -429,6 +429,14 @@ sixteen because a `LIST[INT]` parameter blocked it at parse time, that blocker
 is gone, and it still does not pass. Fifteen of the sixteen cleared; the
 sixteenth had a third cause behind the two that were visible.
 
+**Sub-project F2 completed the runtime half** — submitted-value validation,
+element-wise `loc://` resolution, and per-element staging and path mapping for
+`LIST[PATH]` — with the `EXPR/job_templates` score unchanged **by design**:
+F2 touched no template-level parse or validate behavior, only code paths a
+conformance fixture (parse-and-validate only, never expand or submit) cannot
+see. `206/209, 3 baselined` is F1's number, still current; a reader should not
+look here for movement F2 was never going to produce.
+
 ### A second, independent check on EXPR: the reference-implementation oracle
 
 The fixture suite scores whether `sqi` reaches the right verdict on the

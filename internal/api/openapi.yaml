@@ -1408,14 +1408,16 @@ components:
           description: >-
             Key/value pairs matching the product template's parameterDefinitions.
             Missing keys with defaults are filled automatically; missing required
-            keys return 422.
+            keys return 422. A value for a LIST[*] parameter is the JSON encoding
+            of the list, as a string — for example "[\"main\",\"closeup\"]" — because
+            job-parameter values travel as strings on every submission surface.
 
     ProductParameter:
       type: object
       required: [name, type]
       properties:
         name: { type: string }
-        type: { type: string, enum: [INT, FLOAT, STRING, PATH] }
+        type: { type: string, enum: [INT, FLOAT, STRING, PATH, BOOL, RANGE_EXPR, "LIST[STRING]", "LIST[PATH]", "LIST[INT]", "LIST[FLOAT]", "LIST[BOOL]", "LIST[LIST[INT]]"] }
         description: { type: string }
         default: { type: string, nullable: true }
         allowed_values: { type: array, items: { type: string }, nullable: true }
@@ -1429,7 +1431,7 @@ components:
           nullable: true
           type: object
           properties:
-            control: { type: string, enum: [LINE_EDIT, MULTILINE_EDIT, DROPDOWN_LIST, CHECK_BOX, HIDDEN, SPIN_BOX, CHOOSE_INPUT_FILE, CHOOSE_OUTPUT_FILE, CHOOSE_DIRECTORY] }
+            control: { type: string, enum: [LINE_EDIT, MULTILINE_EDIT, DROPDOWN_LIST, CHECK_BOX, HIDDEN, SPIN_BOX, CHOOSE_INPUT_FILE, CHOOSE_OUTPUT_FILE, CHOOSE_DIRECTORY, LINE_EDIT_LIST, SPIN_BOX_LIST, CHECK_BOX_LIST, CHOOSE_INPUT_FILE_LIST, CHOOSE_OUTPUT_FILE_LIST, CHOOSE_DIRECTORY_LIST] }
             label: { type: string }
             group_label: { type: string }
             decimals: { type: integer, nullable: true }
