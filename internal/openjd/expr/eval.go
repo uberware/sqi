@@ -3,8 +3,10 @@
 package expr
 
 import (
+	"errors"
 	"fmt"
 	"runtime"
+	"time"
 )
 
 // Symbols resolves the dotted names an expression references — Param.Frame,
@@ -197,6 +199,39 @@ func WithOperationLimit(ops int64) Option {
 		}
 		ec.m.opLimit = ops
 	}
+}
+
+// ErrDeadlineExceeded reports that an evaluation stopped because its
+// wall-clock deadline passed.
+//
+// It is EXPORTED and distinct from every budget error on purpose. A budget
+// error means the template asked for more than it is allowed and is therefore
+// invalid; this means the server gave up, and the same template might well
+// succeed on an idle machine. Callers that turn errors into HTTP status codes
+// must be able to tell those apart structurally rather than by reading a
+// message — see internal/api's submission handler, which maps this to 503 and
+// every budget error to 422.
+var ErrDeadlineExceeded = errors.New("expr: evaluation deadline exceeded")
+
+// WithDeadline sets an absolute wall-clock deadline for this evaluation.
+//
+// The zero time — the default — means no deadline, and costs nothing: the
+// meter short-circuits before reading any clock.
+//
+// It is deliberately ABSOLUTE rather than a duration, so one deadline can span
+// a whole request. An accepted template's expressions are walked twice (phase 1
+// in ValidateWithOptions, phase 2 in checkExpressionsAtSubmit) across many
+// evaluations, and a per-evaluation duration would let each one spend the full
+// allowance.
+func WithDeadline(t time.Time) Option {
+	return func(ec *evalCtx) { ec.m.deadline = t }
+}
+
+// WithClock replaces the clock the deadline check reads. It exists for tests,
+// which advance a fake clock rather than sleeping. Production never calls it;
+// nil means time.Now.
+func WithClock(now func() time.Time) Option {
+	return func(ec *evalCtx) { ec.m.now = now }
 }
 
 // evalCtx is the state one evaluation threads through every node.

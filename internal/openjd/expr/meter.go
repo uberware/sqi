@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"time"
 )
 
 // The specification's recommended limits (sections 1.3.9 and 1.3.10), which are
@@ -57,6 +58,16 @@ type meter struct {
 	memLimit int64
 	ops      int64
 	opLimit  int64
+	// deadline, when non-zero, is an absolute time after which evaluation
+	// stops. It is a BACKSTOP, not a budget: it exists because section
+	// 1.3.10 prices 256 bytes at one operation, so byte-heavy work is nearly
+	// free in operations and expensive in seconds. Nothing else in this
+	// package measures time.
+	deadline time.Time
+	// now is the clock, injectable for tests. Nil means time.Now.
+	now func() time.Time
+	// sinceCheck counts charges since the last clock read.
+	sinceCheck int64
 }
 
 func newMeter(memLimit, opLimit int64) *meter {
@@ -90,12 +101,74 @@ func (m *meter) release(v Value) {
 	}
 }
 
-// charge adds n operations and checks the bound (section 1.3.10).
+// deadlineCheckInterval is how many charges pass between clock reads.
+//
+// Reading the clock on every charge would tax the hot path of every expression
+// for no benefit; 1024 charges is far below any budget worth interrupting and
+// far above the cost of a time.Now(). It counts charge CALLS, not the
+// operations those calls charge for -- see checkDeadline, where that
+// distinction turns out to be the whole reason the first charge is sampled too.
+const deadlineCheckInterval = 1024
+
+// charge adds n operations and checks the bound (section 1.3.10), plus the
+// wall-clock backstop when one is set.
 func (m *meter) charge(n int64) error {
 	m.ops += n
 	if m.ops > m.opLimit {
 		return fmt.Errorf("%w: %d operations exceeds the limit of %d",
 			errOperationLimit, m.ops, m.opLimit)
+	}
+	return m.checkDeadline()
+}
+
+// checkDeadline reports ErrDeadlineExceeded once the wall-clock backstop has
+// passed, sampling the clock every deadlineCheckInterval charges.
+//
+// The zero deadline short-circuits before any counter work, so an evaluation
+// with no deadline set pays one comparison per charge and never reads a clock.
+//
+// The FIRST charge is checked as well as every interval thereafter, and that is
+// not an off-by-one nicety -- MEASURED, the interval on its own is blind to
+// exactly the workload this backstop exists for. Section 1.3.10 prices 256
+// bytes at one operation, so byte-heavy work is charged in a HANDFUL OF BULK
+// CALLS rather than in many small ones, and this counter counts CALLS.
+// '("x" * 900000).title()' -- the ~57 ms, ~7,000-operation case the backstop
+// was designed against -- made fewer than deadlineCheckInterval charge calls
+// and so never read the clock at all. Neither did "1 + 1", "len([1,2,3])" or a
+// 50-element comprehension.
+//
+// Checking at sinceCheck == 1 makes an expired deadline stop the very NEXT
+// evaluation whatever its size. That is what makes this a bound on a REQUEST
+// rather than on one large expression: a template is walked position by
+// position, each position a separate evaluation with a FRESH meter, so without
+// the first-charge check a template built entirely from small expressions could
+// run arbitrarily far past an expired deadline while every meter sat below the
+// interval forever.
+//
+// What it still does NOT do, stated so the guarantee is not read as broader
+// than it is: it cannot interrupt a bulk operation already in flight. One
+// oversized string build runs to completion and is caught on the charge that
+// follows it. Per-evaluation granularity is the most a charge-counting sampler
+// can offer; bounding a single operation would need a bound on the operation.
+func (m *meter) checkDeadline() error {
+	if m.deadline.IsZero() {
+		return nil
+	}
+	m.sinceCheck++
+	if m.sinceCheck != 1 && m.sinceCheck < deadlineCheckInterval {
+		return nil
+	}
+	if m.sinceCheck >= deadlineCheckInterval {
+		m.sinceCheck = 0
+	}
+
+	now := time.Now
+	if m.now != nil {
+		now = m.now
+	}
+	if now().After(m.deadline) {
+		return fmt.Errorf("%w: evaluation exceeded its wall-clock deadline",
+			ErrDeadlineExceeded)
 	}
 	return nil
 }
