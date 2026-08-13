@@ -64,6 +64,7 @@ package fmtres
 // form the rule itself declares, not on a re-rendered value.
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"maps"
@@ -341,20 +342,82 @@ func bindTaskParamSymbols(msg *protocol.AssignMsg, syms expr.MapSymbols, lim Exp
 // by each caller above) deliberately does not get.
 //
 // t.Equal(expr.TPath) rather than t.Code == expr.CodePath is deliberate:
-// LIST[PATH] job parameters stay expr.Unresolved regardless (sqi's template
-// model cannot declare a concrete list value yet -- expr.ValueFromText's own
-// list-of-anything case; see exprsyms_test.go's
-// TestTaskSymbols_JobParamTypes), so there is no concrete LIST[PATH] value
-// for path mapping to ever run against today. Equal, not Code alone, so a
-// bare path[T]-shaped union or unresolved wrapper (neither reachable here in
-// practice) does not accidentally match a scalar-only branch.
+// Equal, not Code alone, so a bare path[T]-shaped union or unresolved wrapper
+// does not accidentally match a scalar-only branch.
+//
+// This comment used to continue: "LIST[PATH] job parameters stay
+// expr.Unresolved regardless (sqi's template model cannot declare a concrete
+// list value yet), so there is no concrete LIST[PATH] value for path mapping
+// to ever run against today." That was true when written and was falsified by
+// EXPR sub-project F1, which taught expr.ValueFromText to decode lists. The
+// consequence was a real defect -- a LIST[PATH] resolved UNMAPPED, silently,
+// against RFC 0007 -- and mapListPathParamValue below is the fix. Kept rather
+// than deleted because it is the record of a correct claim outliving its
+// premise.
 func paramValueForBinding(
 	t expr.Type, raw string, lim ExprLimits, pathMap []protocol.PathMapRule,
 ) (expr.Value, error) {
 	if t.Equal(expr.TPath) {
 		return mapPathParamValue(raw, lim, pathMap)
 	}
+	if t.Equal(expr.ListOf(expr.TPath)) {
+		return mapListPathParamValue(raw, lim, pathMap)
+	}
 	return expr.ValueFromText(t, raw, pathFlavor), nil
+}
+
+// mapListPathParamValue applies path mapping to every element of a LIST[PATH]
+// value, per RFC 0007: Param.<name> for a list of paths "Returns a list[path]
+// type value with path mapping applied".
+//
+// Each element goes through mapPathParamValue, so each is matched against the
+// rules in the form the rule itself declares -- on the untouched submitted
+// text, before any flavor-specific rendering -- for exactly the reason this
+// file's header gives for the scalar case. It also means each element's
+// mapping is metered by the same operator-configured per-evaluation limits,
+// rather than one budget covering the whole list.
+//
+// A value that does not decode returns Unresolved rather than an error, the
+// same fallback expr.ValueFromText uses for a scalar that fails to parse: this
+// function binds symbols, and validation upstream is what rejects a bad value.
+func mapListPathParamValue(
+	raw string, lim ExprLimits, pathMap []protocol.PathMapRule,
+) (expr.Value, error) {
+	elems, err := openjdDecodeList(raw)
+	if err != nil {
+		//nolint:nilerr // deliberate: an undecodable value falls back to
+		// Unresolved, not an error -- this function binds symbols, and
+		// validation upstream is what rejects a bad value (see the doc
+		// comment above).
+		return expr.Unresolved(expr.ListOf(expr.TPath)), nil
+	}
+	out := make([]expr.Value, 0, len(elems))
+	for _, e := range elems {
+		s, ok := e.(string)
+		if !ok {
+			return expr.Unresolved(expr.ListOf(expr.TPath)), nil
+		}
+		v, err := mapPathParamValue(s, lim, pathMap)
+		if err != nil {
+			return expr.Value{}, err
+		}
+		out = append(out, v)
+	}
+	return expr.List(expr.TPath, out), nil
+}
+
+// openjdDecodeList parses a canonical list parameter value.
+//
+// It duplicates internal/openjd.DecodeListParamValue on purpose: no production
+// file under internal/worker may import internal/openjd, which pulls in
+// internal/store. The encoding is plain JSON, so the duplication is one
+// json.Unmarshal rather than a second definition of the format.
+func openjdDecodeList(raw string) ([]any, error) {
+	var out []any
+	if err := json.Unmarshal([]byte(raw), &out); err != nil {
+		return nil, err
+	}
+	return out, nil
 }
 
 // bindSessionSymbols binds the three fixed Session.* symbols shared by
