@@ -68,7 +68,7 @@ describe('ListParamField', () => {
   it('encodes numbers as numbers, not strings', () => {
     const onChange = vi.fn()
     render(<ListParamField param={param({ type: 'LIST[INT]' })} value="[1]" onChange={onChange} />)
-    fireEvent.change(screen.getByRole('spinbutton'), { target: { value: '2' } })
+    fireEvent.change(screen.getByLabelText('P item 1'), { target: { value: '2' } })
     expect(onChange).toHaveBeenCalledWith('[2]')
   })
 
@@ -86,7 +86,7 @@ describe('ListParamField', () => {
     // discarding it would fight the person typing.
     const onChange = vi.fn()
     render(<ListParamField param={param({ type: 'LIST[INT]' })} value="[1]" onChange={onChange} />)
-    fireEvent.change(screen.getByRole('spinbutton'), { target: { value: '-' } })
+    fireEvent.change(screen.getByLabelText('P item 1'), { target: { value: '-' } })
     expect(onChange).toHaveBeenCalledWith('["-"]')
   })
 

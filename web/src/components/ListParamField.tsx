@@ -97,17 +97,21 @@ export default function ListParamField({ param, value, onChange }: Props) {
             />
           ) : (
             <input
-              // A native type="number" input sanitizes its DOM value to "" for
-              // an in-progress entry like "-" or "1e" (the HTML value
-              // sanitization algorithm applies even to a value set
-              // programmatically), so a controlled component can never read
-              // back what was actually typed. text + inputMode keeps the
-              // numeric keyboard on mobile without losing the draft; the
-              // explicit role keeps the same accessible semantics a
-              // type="number" input would have had.
+              // Deliberately type="text", not type="number": the HTML value
+              // sanitization algorithm zeroes a type="number" input's DOM
+              // value to "" for any in-progress entry that isn't yet a valid
+              // number ("-", "1e"), and it does this on every set — including
+              // a controlled component's own re-render — not just on blur. A
+              // controlled numeric field built on type="number" can
+              // therefore never read back a mid-typing draft; it would
+              // silently coerce or drop it. inputMode keeps the numeric
+              // keyboard on mobile without that loss. This is a genuine text
+              // field (see toElement below), so it keeps the default
+              // textbox role rather than overriding to spinbutton, which
+              // would need aria-valuenow/min/max and arrow-key stepping to
+              // be a correct override — see docs/web-accessibility.md.
               type="text"
               inputMode={elementType === 'INT' || elementType === 'FLOAT' ? 'decimal' : 'text'}
-              role={elementType === 'INT' || elementType === 'FLOAT' ? 'spinbutton' : undefined}
               value={String(element)}
               aria-label={`${param.name} item ${index + 1}`}
               onChange={(e) => replace(index, toElement(e.target.value, elementType))}
