@@ -32,15 +32,18 @@ func validateName(name string) error {
 	return nil
 }
 
-// ValidateOptions bounds one [ValidateTemplate] call.
+// ValidateOptions bounds one [ValidateTemplate] or [ParseDefinition] call.
 //
-// It exists because a product template is validated from two very different
-// places. [ParseDefinition] reads operator-supplied definition files and the
-// built-ins compiled into this binary; POST /api/v1/products and
+// It exists because a product template is validated from places with very
+// different trust and configuration properties. POST /api/v1/products and
 // PUT /api/v1/products/{name} accept an ARBITRARY client-supplied body,
-// anonymously when auth is off (the default). The second caller needs the
-// operator's configured EXPR limits and a wall-clock backstop; the first has
-// neither available, and does not need them.
+// anonymously when auth is off (the default), and need both the operator's
+// configured EXPR limits and a wall-clock backstop. The preset routes
+// (GET /api/v1/presets/{name}, POST /api/v1/presets/{name}/install) validate a
+// sha256-pinned body from an operator-configured index -- not client-chosen
+// content, but still one anonymous, repeatable request per validation, so they
+// take both too. The built-in loader runs from package init, where no
+// configuration exists at all, and can take neither.
 //
 // The zero value reproduces the pre-H1 behavior exactly: limit enforcement off,
 // default EXPR limits, no deadline.
@@ -58,6 +61,14 @@ type ValidateOptions struct {
 	// four knobs found product template validation still running on the
 	// defaults -- invisible while the walk is gated on EXPR being
 	// StatusSupported, and live the moment H2 flips it.
+	//
+	// EVERY ROUTE THAT REACHES THIS PACKAGE FROM AN HTTP REQUEST MUST SET IT.
+	// H1's own whole-branch review found the preset install path still on the
+	// defaults after the create/update route was fixed -- two routes behind the
+	// same permission (policy.ProductsManage), both ending in a catalog write,
+	// behaving differently. The limits question is not about who supplies the
+	// content: an operator who tightened a knob asked for it to be enforced
+	// wherever validation happens.
 	ExprLimits openjd.ExprLimits
 
 	// Deadline, when non-zero, is an absolute wall-clock instant after which
@@ -145,9 +156,22 @@ type definitionFile struct {
 
 // ParseDefinition parses a YAML product definition file (metadata + inline
 // template) into a store.Product. Source is left empty for the caller to set.
-// The inline template is re-serialized to YAML and validated; a malformed
-// template is an error.
-func ParseDefinition(data []byte) (store.Product, error) {
+// The inline template is re-serialized to YAML and validated under opts; a
+// malformed template is an error, and so is a breach of opts.Deadline (wrapping
+// [expr.ErrDeadlineExceeded] -- see [ValidateTemplate] for why the two must be
+// told apart).
+//
+// opts is a REQUIRED argument rather than an implicit default because the
+// callers differ in what they can and must supply, and an implicit default is
+// how the preset routes silently kept validating on openjd.DefaultExprLimits()
+// after the create/update route was fixed:
+//
+//   - [LoadBuiltins], from package init, has no configuration to offer and
+//     passes only EnforceLimits. That one is a genuine exemption.
+//   - internal/presetlib, reached from GET /api/v1/presets/{name} and
+//     POST /api/v1/presets/{name}/install, passes the operator's limits and a
+//     per-request deadline.
+func ParseDefinition(data []byte, opts ValidateOptions) (store.Product, error) {
 	var df definitionFile
 	if err := yaml.Unmarshal(data, &df); err != nil {
 		return store.Product{}, fmt.Errorf("product: definition parse: %w", err)
@@ -165,16 +189,7 @@ func ParseDefinition(data []byte) (store.Product, error) {
 	if err != nil {
 		return store.Product{}, fmt.Errorf("product: re-serialize template: %w", err)
 	}
-	// No ExprLimits and no deadline, deliberately. This path validates
-	// OPERATOR-supplied content -- the built-ins embedded in this binary (loaded
-	// from package init, where no configuration exists yet), definition files on
-	// disk, and sha256-pinned definitions fetched from an operator-configured
-	// preset library. None of it is an anonymous request, and the built-in
-	// loader in particular runs before any config has been parsed. The
-	// client-supplied route, POST/PUT /api/v1/products, calls ValidateTemplate
-	// directly and passes both.
-	if err := ValidateTemplate(string(rawTemplate), store.TemplateFormatYAML,
-		ValidateOptions{EnforceLimits: true}); err != nil {
+	if err := ValidateTemplate(string(rawTemplate), store.TemplateFormatYAML, opts); err != nil {
 		return store.Product{}, err
 	}
 	return store.Product{

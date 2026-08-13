@@ -171,18 +171,60 @@ func TestConformance_EXPRNotSupported(t *testing.T) {
 			"of docs/openjd-conformance.md; then let TestConformance_Templates score\n" +
 			"EXPR/job_templates end to end via plain RunCase.\n" +
 			"\n" +
-			"AND, BEFORE the flip, not after: land sub-project E4's template-wide\n" +
-			"expression budget. While EXPR is unsupported, ValidateWithOptions\n" +
-			"skips the expression walk entirely (openjd.ValidateOptions.\n" +
-			"CheckEXPRExpressionsWhileUnsupported), which is the only thing\n" +
-			"currently bounding it: the walk's budgets are PER POSITION, nothing\n" +
-			"caps the number of positions, and Task 10 makes an ACCEPTED template\n" +
-			"walk twice (phase 1 in ValidateWithOptions, phase 2 in\n" +
-			"checkExpressionsAtSubmit). Measured before the gate existed, an 84 KB\n" +
-			"template cost 11.3s of CPU; POST /api/v1/jobs takes a 4 MiB body,\n" +
-			"anonymously when auth is off. Flipping the status without a cumulative\n" +
-			"budget hands that cost straight back, and this time the template is\n" +
-			"ACCEPTED, so there is no early rejection to fall back on.")
+			"WHY THIS MESSAGE CARRIES A CHECKLIST: while EXPR is unsupported,\n" +
+			"ValidateWithOptions skips the expression walk entirely (gated on\n" +
+			"openjd.ValidateOptions.CheckEXPRExpressionsWhileUnsupported), and the\n" +
+			"flip removes that gate. Measured before it existed, an 84 KB template\n" +
+			"cost 11.3s of CPU per request; POST /api/v1/jobs takes a 4 MiB body,\n" +
+			"anonymously when auth is off, and an ACCEPTED template is walked TWICE\n" +
+			"(phase 1 in ValidateWithOptions, phase 2 in checkExpressionsAtSubmit),\n" +
+			"so after the flip there is no early rejection to fall back on.\n" +
+			"\n" +
+			"ALREADY LANDED, so do not re-derive it (an earlier revision of this\n" +
+			"message still demanded the first item as future work):\n" +
+			"  - E4c: the cumulative, template-wide expression budget (positions\n" +
+			"    and retained bytes), which the per-position budgets did not give.\n" +
+			"  - E4d: all nine limits as validated operator configuration, plus the\n" +
+			"    scheduler gate that withholds EXPR work from an undercutting worker.\n" +
+			"  - H1: a WALL-CLOCK backstop (openjd.expr_submission_deadline, default\n" +
+			"    5s, range 1s-60s) checked inside expr.meter.charge, because the\n" +
+			"    operation budget cannot bound seconds -- section 1.3.10 prices 256\n" +
+			"    bytes at one operation. A breach is a 503, NEVER a 4xx.\n" +
+			"  - H1: maxTasksPerJob (internal/openjd/expand.go), always-on, so one\n" +
+			"    POST can no longer reach maxSteps x maxTasksPerStep = 10^8 rows.\n" +
+			"  - H1: the operator's ExprLimits (and a per-request deadline) reaching\n" +
+			"    EVERY route that validates a template -- the two job routes, the\n" +
+			"    product create/update routes, and the preset routes.\n" +
+			"\n" +
+			"WHAT H2 STILL OWES, none of which any test can enforce before the flip:\n" +
+			"  1. Deleting CheckEXPRExpressionsWhileUnsupported is no longer a\n" +
+			"     one-line change. Its dependents are internal/openjd's\n" +
+			"     deadline_test.go, exprlimits_test.go, validate_limits_test.go,\n" +
+			"     validate_exprgate_test.go and validate_expr_wiring_test.go,\n" +
+			"     internal/product/exprbounds_internal_test.go,\n" +
+			"     internal/worker/fmtres/exprsyms_test.go, and this suite. Several\n" +
+			"     of those force the walk on only because production cannot reach\n" +
+			"     it today; after the flip they should drive the real path instead\n" +
+			"     of being deleted with the field. internal/product/definition.go's\n" +
+			"     validateParsed seam exists for exactly that reason.\n" +
+			"  2. An END-TO-END test that a real submission breaching the deadline\n" +
+			"     answers 503. It cannot exist today: no request can reach an\n" +
+			"     evaluation while EXPR is StatusInProgress, so internal/api's\n" +
+			"     deadline tests drive a stub returning a HAND-COPIED error shape\n" +
+			"     (internal/api/submitdeadline_test.go) and the real-pipeline half\n" +
+			"     is proved separately in internal/openjd/deadline_test.go. The\n" +
+			"     bridge between them is a copied string until H2 writes this test.\n" +
+			"  3. MEASURE a large-but-legitimate EXPR template against the 5s\n" +
+			"     default. The deterministic budgets nominally permit ~17 minutes\n" +
+			"     (10,000 positions x 10,000 operations) while the deadline ceiling\n" +
+			"     is 60s, so the two are NOT co-sized; 5s is a guess at where the\n" +
+			"     acceptance boundary falls, never validated against a real\n" +
+			"     template. The six reference presets cost <=15 positions and <=1\n" +
+			"     operation, so they prove nothing about the boundary.\n" +
+			"  4. api.Config.ExprSubmissionDeadline's ZERO value means NO backstop.\n" +
+			"     internal/config rejects a zero or negative duration at load and\n" +
+			"     internal/server's routerConfig is pinned by a test, so this bites\n" +
+			"     an embedder building an api.Config directly, not an operator.")
 	}
 }
 

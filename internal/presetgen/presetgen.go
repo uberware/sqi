@@ -56,7 +56,11 @@ func Build(presetsDir, definitionDir string) ([]Generated, error) {
 		if err != nil {
 			return nil, fmt.Errorf("read %s: %w", p, err)
 		}
-		def, err := product.ParseDefinition(data)
+		// Default EXPR limits and no deadline: this is an offline build tool
+		// run by a preset-library publisher over their own files, not a
+		// request. There is no operator configuration here and no elapsed time
+		// to bound.
+		def, err := product.ParseDefinition(data, product.ValidateOptions{EnforceLimits: true})
 		if err != nil {
 			return nil, fmt.Errorf("invalid preset %s: %w", p, err)
 		}

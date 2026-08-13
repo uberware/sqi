@@ -44,7 +44,13 @@ func loadBuiltins() ([]store.Product, map[string]store.Product, error) {
 		if readErr != nil {
 			return nil, nil, readErr
 		}
-		p, parseErr := ParseDefinition(data)
+		// Default EXPR limits and no deadline, and this is the ONE caller for
+		// which that is not a defect: loadBuiltins runs from this package's
+		// init, before any configuration has been parsed, over templates
+		// compiled into the binary. There is no operator configuration to
+		// consult and no request to bound. Every caller reachable from an HTTP
+		// request passes both -- see [ParseDefinition].
+		p, parseErr := ParseDefinition(data, ValidateOptions{EnforceLimits: true})
 		if parseErr != nil {
 			return nil, nil, fmt.Errorf("builtins/%s: %w", e.Name(), parseErr)
 		}

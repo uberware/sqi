@@ -41,6 +41,16 @@ type productHandler struct {
 	// does not go through a Submitter at all, so before H1 it silently
 	// validated on openjd.DefaultExprLimits() whatever the operator had
 	// configured. The zero value still means "the defaults".
+	//
+	// NEVER SET [openjd.ExprLimits.Deadline] ON THIS FIELD. It is built once by
+	// productHandlerFor and reused for every request, so a deadline stored here
+	// would be a single absolute instant that refuses everything once it
+	// passed — the same trap [openjd.SubmitterOptions] carries, and the reason
+	// exprDeadline above is a DURATION. It is inert today only because
+	// [openjd.ValidateWithBudget] overwrites the field from
+	// ValidateOptions.Deadline, which is a property of that call site rather
+	// than a guarantee. templateValidateOptions computes the instant per
+	// request.
 	exprLimits openjd.ExprLimits
 }
 

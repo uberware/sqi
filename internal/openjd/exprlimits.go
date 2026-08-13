@@ -10,17 +10,26 @@ import (
 
 // ─── operator-configurable expression limits ────────────────────────────────
 
-// ExprLimits is the server side of EXPR sub-project E4d: the four numbers that
-// bound what one submitted template may spend inside the EXPR expression
-// checker, lifted out of package constants so an operator can size them.
+// ExprLimits bounds what one submitted template may spend inside the EXPR
+// expression checker: the four operator-configurable numbers of sub-project
+// E4d, lifted out of package constants so an operator can size them, plus
+// sub-project H1's per-request [ExprLimits.Deadline].
 //
-// The four split into two per-EVALUATION bounds (SubmissionOperations,
+// The four numbers split into two per-EVALUATION bounds (SubmissionOperations,
 // SubmissionMemoryBytes -- what ONE expression position may cost, section
 // 1.3.10 and section 1.3.9 respectively) and two per-WALK bounds
 // (TemplatePositions, TemplateRetainedBytes -- what the WHOLE template may
 // cost across one checkTemplateExpressions call). See each field's own
 // comment, and the long rationale blocks in exprcheck.go that each field's
 // DEFAULT still carries.
+//
+// The fifth field is none of those things and is documented as such on itself:
+// it is per-REQUEST rather than operator configuration, it measures TIME rather
+// than counting anything, and it decides whether this server keeps working
+// (503) rather than whether the template is valid (422). It rides on this
+// struct because this struct is the bundle already threaded to every
+// evaluation. Phrases like "the four" below mean the four numbers, and
+// deliberately exclude it.
 //
 // A ZERO field means "unset, use the default" -- see [ExprLimits.orDefaults].
 // That is deliberate and it is what keeps every existing
@@ -54,10 +63,22 @@ type ExprLimits struct {
 	// (re_findall) 3,519 for ~50 ms, a case mapping (.title()) 7,034 for
 	// ~57 ms, and that same regex twice inside a comprehension 7,048 for
 	// ~103 ms; an earlier revision gave ~3,500 operations for the first two
-	// alike. Doubling this number roughly doubles that floor. Nothing in this package measures
-	// TIME, so the only lever on the worst case is this count and the position
-	// count -- which is why internal/config caps it at one order of magnitude
-	// above the default rather than leaving it open-ended.
+	// alike. Doubling this number roughly doubles that floor, which is why
+	// internal/config caps it at one order of magnitude above the default
+	// rather than leaving it open-ended.
+	//
+	// SUPERSEDED BY EXPR SUB-PROJECT H1 -- an earlier revision of the sentence
+	// above closed with "Nothing in this package measures TIME, so the only
+	// lever on the worst case is this count and the position count." The first
+	// half stopped being true 90 lines below, where [ExprLimits.Deadline] now
+	// sits, and the second half was the structural reason H1 had to exist at
+	// all. A wall-clock backstop (openjd.expr_submission_deadline, default 5s)
+	// now stops an evaluation directly, so RAISING THIS NUMBER IS FAR LESS OF A
+	// LEVER ON ELAPSED TIME THAN IT LOOKS: at the default deadline a request is
+	// cut off at 5s whatever the ~17-minute figure permits. Raise it because a
+	// template's expressions genuinely need more operations, not to buy time --
+	// and read the deadline's own limits before concluding the ceiling here is
+	// what bounds the worst case.
 	SubmissionOperations int64
 
 	// SubmissionMemoryBytes is the section 1.3.9 live-byte budget for ONE
@@ -186,11 +207,20 @@ const (
 	// Ceiling: exactly one order of magnitude above the default. The
 	// worst-case single request measured with this dimension at 10,000 is
 	// ~17 minutes of server CPU (~24 if a position spends its whole budget at
-	// the worst measured rate), and nothing in this package measures time, so
-	// the only honest statement about a raised value is that it lengthens
-	// that floor proportionally -- at both maxima the same construction
-	// measures ~40 hours. Ten times is a deliberate limit on how much worse
-	// an operator can make the worst request the farm can be asked to serve.
+	// the worst measured rate), and no COUNTER can see that, so the only
+	// honest statement about a raised value is that it lengthens that floor
+	// proportionally -- at both maxima the same construction measures ~40
+	// hours. Ten times is a deliberate limit on how much worse an operator can
+	// make the worst request the farm can be asked to serve.
+	//
+	// Those figures predate EXPR sub-project H1 and are kept because they are
+	// what this ceiling was chosen against. What H1 changed is that they are no
+	// longer the wall-clock outcome: [ExprLimits.Deadline] stops an evaluation
+	// at openjd.expr_submission_deadline (default 5s, ceiling 60s) whatever
+	// they permit. The two are NOT co-sized -- 10,000 positions x 10,000
+	// operations nominally permits ~17 minutes against a 60s ceiling -- so at
+	// any legal configuration the deadline, not this number, is what a request
+	// actually stops at.
 	//
 	// Floor: THREE orders of magnitude above what a reference preset's
 	// expressions actually spend, and one order of magnitude below the

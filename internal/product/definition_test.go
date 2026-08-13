@@ -46,7 +46,7 @@ template:
             command: python3
             args: ["-c", "print(1)"]`
 
-	p, err := product.ParseDefinition([]byte(def))
+	p, err := product.ParseDefinition([]byte(def), product.ValidateOptions{EnforceLimits: true})
 	if err != nil {
 		t.Fatalf("parse: %v", err)
 	}
@@ -74,7 +74,7 @@ func TestParseDefinition_Errors(t *testing.T) {
 	}
 	for label, def := range cases {
 		t.Run(label, func(t *testing.T) {
-			if _, err := product.ParseDefinition([]byte(def)); err == nil {
+			if _, err := product.ParseDefinition([]byte(def), product.ValidateOptions{EnforceLimits: true}); err == nil {
 				t.Fatalf("%s: expected error, got nil", label)
 			}
 		})

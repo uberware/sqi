@@ -3399,7 +3399,12 @@ paths:
         "502":
           description: Failed to fetch the preset library index.
         "503":
-          description: Preset library not configured.
+          description: >-
+            Preset library not configured, or the definition's expression
+            evaluation exceeded openjd.expr_submission_deadline (EXPR
+            sub-project H1's wall-clock backstop). The second is not a verdict
+            on the definition -- the same body would validate on an idle
+            server -- so a retry may succeed.
 
   /presets/{name}/install:
     parameters:
@@ -3439,7 +3444,12 @@ paths:
         "502":
           description: Failed to fetch the preset library index.
         "503":
-          description: Preset library not configured.
+          description: >-
+            Preset library not configured, or the definition's expression
+            evaluation exceeded openjd.expr_submission_deadline (EXPR
+            sub-project H1's wall-clock backstop). The second is not a verdict
+            on the definition -- the same body would validate on an idle
+            server -- so a retry may succeed.
 
   # ── Usage pools ────────────────────────────────────────────────────────────
 

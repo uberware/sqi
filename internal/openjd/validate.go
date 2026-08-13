@@ -420,19 +420,32 @@ type ValidateOptions struct {
 	// suite would stop exercising the checker entirely.
 	//
 	// TEMPORARY SHAPE. This field exists only for the window in which EXPR is
-	// registered but not yet supported. Sub-project H flips the registry entry
+	// registered but not yet supported. Sub-project H2 flips the registry entry
 	// to StatusSupported, at which point [exprExpressionWalkEnabled] returns
-	// true unconditionally, this field never changes an outcome, and H must
-	// DELETE it along with the conformance harness's use of it — the walk
-	// becomes unconditional again.
+	// true unconditionally and this field never changes an outcome.
 	//
-	// H MUST NOT flip the status before sub-project E4's template-wide
-	// expression budget exists. This gate is currently the ONLY thing bounding
-	// the walk; after the flip the walk is unconditional, an accepted template
-	// walks TWICE (phase 1 here, phase 2 in submit.go's
-	// checkExpressionsAtSubmit), and there is no early rejection left to fall
-	// back on. See TestConformance_EXPRNotSupported's failure message, which
-	// carries H's checklist.
+	// DELETING IT IS NO LONGER A ONE-LINE CHANGE. An earlier revision of this
+	// comment said H must delete it "along with the conformance harness's use
+	// of it", which was true when the harness was the only user. Sub-project H1
+	// added dependents that force the walk on for a different reason -- they
+	// test bounds (the wall-clock deadline, the operator's ExprLimits) that
+	// production cannot exercise at all while the status gate rejects every
+	// EXPR template before an expression is evaluated:
+	// internal/openjd/deadline_test.go (x4),
+	// internal/product/exprbounds_internal_test.go, and the validateParsed seam
+	// in internal/product/definition.go, which exists ONLY so a test can set
+	// this field. After the flip those should drive the real path rather than
+	// disappear with the field.
+	//
+	// WHAT MUST PRECEDE THE FLIP IS NO LONGER "sub-project E4's template-wide
+	// budget", and this gate is no longer "the ONLY thing bounding the walk" --
+	// both claims are superseded and were stale by four waves. E4c landed the
+	// cumulative budget, E4d made all nine limits operator-configurable, and H1
+	// landed the two bounds that survived them: a wall-clock backstop
+	// ([ValidateOptions.Deadline], because no counter can bound seconds) and
+	// maxTasksPerJob. TestConformance_EXPRNotSupported's failure message
+	// carries the current H2 checklist, including the obligations no test can
+	// enforce before the flip.
 	CheckEXPRExpressionsWhileUnsupported bool
 
 	// ExprLimits is the operator-configured bound on what this template's EXPR

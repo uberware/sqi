@@ -616,14 +616,26 @@ because `POST /api/v1/jobs` accepts a template of up to 4 MiB and, with auth
 off (the default), accepts it anonymously — so the cost of checking a
 template is attacker-chosen work on a synchronous request path.
 
-**Three routes accept a template, not one.** Besides `POST /api/v1/jobs`,
-`POST /api/v1/products` and `PUT /api/v1/products/{name}` take an arbitrary
-template body when a custom product is installed or edited, and they validate
-it the same way. All three are bounded by these four keys and by
-[`openjd.expr_submission_deadline`](#openjdexpr_submission_deadline).
-(`POST /api/v1/products/{name}/jobs` submits a template the operator already
-installed, but the *parameters* are the client's and every expression is
-re-evaluated with them bound, so it is bounded too.)
+**Four routes are bounded by these keys, not one.** Three of them accept an
+arbitrary client-supplied template body: `POST /api/v1/jobs`,
+`POST /api/v1/products` and `PUT /api/v1/products/{name}` (the last two when a
+custom product is installed or edited). The fourth,
+`POST /api/v1/products/{name}/jobs`, submits a template the operator already
+installed — but the *parameters* are the client's and every expression is
+re-evaluated with them bound, so it is bounded on the same terms. All four are
+bounded by these four keys and by
+[`openjd.expr_submission_deadline`](#openjdexpr_submission_deadline), and all
+four can answer `503` for a deadline.
+
+The preset routes — `GET /api/v1/presets/{name}` and
+`POST /api/v1/presets/{name}/install` — validate a definition too. Its body is
+sha256-pinned against the index at `products.preset_library_url`, so it is
+operator-vouched rather than client-chosen; since EXPR sub-project H1's
+whole-branch review they nevertheless run under these four keys and under the
+deadline, because the limits are operator configuration (an operator who
+tightened a knob asked for it to be enforced wherever validation happens) and
+because the install route sits behind the *same* permission as
+`POST /api/v1/products`, which grants everyone access while auth is off.
 
 Unlike `enforce_limits`, these are **always on**: they are
 resource-exhaustion guards, not OpenJD quantitative limits, and no setting
@@ -980,13 +992,16 @@ server gave up* — `503 Service Unavailable`, and a retry may well succeed.
 Persistent 503s mean either a genuinely expensive template or a deadline set
 too low.
 
-Four routes can answer `503` for this reason: `POST /api/v1/jobs` and
+Six routes can answer `503` for this reason: `POST /api/v1/jobs` and
 `POST /api/v1/products/{name}/jobs` (which otherwise answer `422` for an
-invalid template), and `POST /api/v1/products` and
-`PUT /api/v1/products/{name}` (which otherwise answer `400`). The split is the
-same on all four — the 4xx is a verdict on the template, the 503 is not.
+invalid template), `POST /api/v1/products` and `PUT /api/v1/products/{name}`
+(which otherwise answer `400`), and the two preset routes
+`GET /api/v1/presets/{name}` and `POST /api/v1/presets/{name}/install` (which
+otherwise answer `422`, and which also answer `503` when no preset library is
+configured — an unrelated meaning of the same code). The split is the same
+everywhere — the 4xx is a verdict on the template, the 503 is not.
 
-It exists because **none of the other four bounds time** (caveat 1). Section
+It exists because **none of the other four bounds time** (caveat 2). Section
 1.3.10 prices 256 bytes at one operation, so byte-heavy work is nearly free in
 operations and expensive in seconds; the worst single request measured on this
 branch is ~17 minutes of server CPU with every budget respected. This is the
@@ -998,6 +1013,20 @@ backstop that rejects valid work is worse than the exposure it guards. The
 ceiling is `60s` because the key exists to bound that ~17-minute figure; a
 ceiling near it would bound nothing.
 
+> **The default is a guess, and it is not co-sized with the counters.** The
+> deterministic budgets nominally permit ~17 minutes (`expr_template_positions`
+> × `expr_operation_limit`, both at 10,000) while this key's own ceiling is
+> `60s`, so at every legal setting the clock — not the counters — is what a
+> request actually stops at. `5s` was chosen as three orders of magnitude below
+> the measured exposure, **not** by measuring where legitimate templates fall:
+> the six reference presets cost at most 15 expression positions and at most 1
+> operation each, so they say nothing about the boundary. Nothing has yet
+> measured a large-but-legitimate `EXPR` template against it. Until something
+> does — it is tracked as work for the sub-project that makes `EXPR`
+> submittable — treat persistent 503s on a template you believe is reasonable
+> as evidence about this default rather than about your template, and raise it
+> toward the ceiling.
+
 Unlike the four limits, it has **no worker counterpart**: the worker's own
 phase-3 evaluation is work this server already accepted, not an anonymous
 request, so caveat 4 does not apply to this key.
@@ -1006,6 +1035,17 @@ request, so caveat 4 does not apply to this key.
 openjd:
   expr_submission_deadline: 5s
 ```
+
+> **A malformed duration in the config *file* is ignored, not rejected.**
+> `5 sec`, `5000` or `5 s` leaves the default `5s` in place and the server
+> starts. This is how every duration key in the file layer behaves — the value
+> is parsed with Go's `time.ParseDuration` and an unparseable one is skipped —
+> but it is worth stating here because the other four `openjd.expr_*` keys are
+> integers, so a typo in one of *those* fails YAML unmarshalling loudly. The
+> environment variable **does** report a parse error, so
+> `SQI_OPENJD_EXPR_SUBMISSION_DEADLINE=5 sec` fails at startup. Check the
+> effective value rather than assuming the file was read: an out-of-range value
+> is a startup failure, but an unparseable one is silence.
 
 ---
 

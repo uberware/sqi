@@ -148,3 +148,44 @@ steps: []`), openjd.FormatYAML)
 		t.Fatalf("error = %v, want NOT the deadline sentinel", verr)
 	}
 }
+
+// TestParseDefinition_PassesOptionsThrough pins that [ParseDefinition]'s opts
+// argument actually reaches the validator.
+//
+// It exists because that argument was added by H1's whole-wave review, after
+// the preset install path (internal/presetlib, reached from
+// POST /api/v1/presets/{name}/install) was found still validating on
+// openjd.DefaultExprLimits() with no deadline while the sibling product route
+// had been fixed. An opts parameter that compiled but was dropped on the way to
+// ValidateTemplate would reproduce that defect exactly, and nothing else here
+// would notice: the EXPR limits and the deadline are both unobservable while the
+// expression walk is gated on EXPR being StatusSupported.
+//
+// EnforceLimits is the field used to detect the pass-through because it is the
+// one option with an observable effect TODAY. A template whose job name exceeds
+// the 128-character limit is rejected only when limits are enforced, so the two
+// calls below must disagree.
+func TestParseDefinition_PassesOptionsThrough(t *testing.T) {
+	def := "name: studio/over-long\ntitle: Over Long\ntemplate:\n" +
+		"  specificationVersion: jobtemplate-2023-09\n" +
+		"  name: " + strings.Repeat("x", 200) + "\n" +
+		"  steps:\n" +
+		"    - name: Run\n" +
+		"      script:\n" +
+		"        actions:\n" +
+		"          onRun:\n" +
+		"            command: echo\n"
+
+	if _, err := ParseDefinition([]byte(def), ValidateOptions{EnforceLimits: false}); err != nil {
+		t.Fatalf("ParseDefinition with limits off: %v (the fixture is meant to breach "+
+			"only a GATED limit, so this call must succeed)", err)
+	}
+	_, err := ParseDefinition([]byte(def), ValidateOptions{EnforceLimits: true})
+	if err == nil {
+		t.Fatal("ParseDefinition accepted a 200-character job name with EnforceLimits set; " +
+			"the opts argument is not reaching ValidateTemplate")
+	}
+	if !strings.Contains(err.Error(), "128 characters") {
+		t.Errorf("error = %q, want the job-name length limit", err)
+	}
+}

@@ -72,7 +72,7 @@ func TestPresetInstall_RoundTrip(t *testing.T) {
 		t.Fatal("FetchIndex: got 0 entries, want 1")
 	}
 
-	def, err := lib.FetchDefinition(ctx, entries[0])
+	def, err := lib.FetchDefinition(ctx, entries[0], product.ValidateOptions{EnforceLimits: true})
 	if err != nil {
 		t.Fatalf("FetchDefinition: %v", err)
 	}

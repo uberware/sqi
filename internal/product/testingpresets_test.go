@@ -42,7 +42,7 @@ func TestTestingPresets(t *testing.T) {
 			if err != nil {
 				t.Fatalf("read: %v", err)
 			}
-			p, err := ParseDefinition(data)
+			p, err := ParseDefinition(data, ValidateOptions{EnforceLimits: true})
 			if err != nil {
 				t.Fatalf("ParseDefinition: %v", err)
 			}

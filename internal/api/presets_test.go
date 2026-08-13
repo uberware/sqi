@@ -7,12 +7,17 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 
+	"github.com/uberware/sqi/internal/openjd"
+	"github.com/uberware/sqi/internal/openjd/expr"
 	"github.com/uberware/sqi/internal/presetlib"
 	"github.com/uberware/sqi/internal/product"
 	"github.com/uberware/sqi/internal/store"
@@ -25,6 +30,10 @@ type fakeLib struct {
 	entries    []presetlib.IndexEntry
 	defs       map[string]store.Product // keyed by entry.Name
 	defErr     error
+	// lastOpts records the ValidateOptions of the most recent FetchDefinition
+	// call, so a test can assert the operator's EXPR limits and this request's
+	// deadline actually reach the validator rather than being dropped.
+	lastOpts product.ValidateOptions
 }
 
 func (f *fakeLib) Configured() bool { return f.configured }
@@ -36,7 +45,10 @@ func (f *fakeLib) FetchIndex(_ context.Context, _ bool) ([]presetlib.IndexEntry,
 	return f.entries, nil
 }
 
-func (f *fakeLib) FetchDefinition(_ context.Context, e presetlib.IndexEntry) (store.Product, error) {
+func (f *fakeLib) FetchDefinition(
+	_ context.Context, e presetlib.IndexEntry, opts product.ValidateOptions,
+) (store.Product, error) {
+	f.lastOpts = opts
 	if f.defErr != nil {
 		return store.Product{}, f.defErr
 	}
@@ -59,9 +71,19 @@ type presetTestSrv struct {
 // Pass nil for lib to simulate a deployment where no preset library is configured.
 func newPresetTestServer(t *testing.T, lib PresetLibrary) *presetTestSrv {
 	t.Helper()
+	return newPresetTestServerWith(t, lib, openjd.ExprLimits{}, 0)
+}
+
+// newPresetTestServerWith is [newPresetTestServer] with the operator's EXPR
+// budget and wall-clock allowance spelled out, for the tests that assert those
+// reach the validator.
+func newPresetTestServerWith(
+	t *testing.T, lib PresetLibrary, limits openjd.ExprLimits, deadline time.Duration,
+) *presetTestSrv {
+	t.Helper()
 	st := fake.New()
 	catalog := product.NewCatalog(st)
-	h := newPresetHandler(lib, catalog, st, newTestLogger())
+	h := newPresetHandler(lib, catalog, st, newTestLogger(), limits, deadline)
 	r := chi.NewRouter()
 	r.Get("/api/v1/presets", h.listPresets)
 	r.Get("/api/v1/presets/{name}", h.getPreset)
@@ -503,5 +525,132 @@ func TestPresets_InstallConflict(t *testing.T) {
 	srv.ServeHTTP(rec, req)
 	if rec.Code != http.StatusConflict {
 		t.Errorf("status = %d, want 409", rec.Code)
+	}
+}
+
+// ── EXPR bounds on the preset routes (sub-project H1, whole-wave review) ─────
+
+// TestPresets_ValidationCarriesOperatorLimitsAndDeadline pins that a preset
+// definition is validated under the OPERATOR's EXPR budget and this request's
+// wall-clock allowance, not openjd.DefaultExprLimits() with no deadline.
+//
+// H1 fixed POST/PUT /api/v1/products and left these routes on the defaults, on
+// the argument that a preset body is sha256-pinned against an operator's index
+// and therefore not attacker-chosen. That argument covers the DEADLINE at best:
+// the limits are operator configuration, and an operator who tightened a knob
+// asked for it to be enforced wherever a template is validated. Both routes sit
+// behind the same permission as POST /api/v1/products (policy.ProductsManage),
+// which policy.Can grants to everyone while auth is off.
+//
+// Asserting on the options the handler passes — rather than on an observable
+// verdict — is deliberate: while EXPR is StatusInProgress the walk never runs,
+// so no limit and no deadline can change any response body. There is nothing
+// else to observe until sub-project H2 flips the status.
+func TestPresets_ValidationCarriesOperatorLimitsAndDeadline(t *testing.T) {
+	limits := openjd.ExprLimits{
+		SubmissionOperations:  1_234,
+		SubmissionMemoryBytes: 5_678,
+		TemplatePositions:     91,
+		TemplateRetainedBytes: 234_567,
+	}
+	lib := &fakeLib{
+		configured: true,
+		entries:    sampleEntries(),
+		defs:       map[string]store.Product{"maya-render": sampleDef("maya-render")},
+	}
+	srv := newPresetTestServerWith(t, lib, limits, 7*time.Second)
+
+	for _, tt := range []struct {
+		name   string
+		method string
+		path   string
+	}{
+		{"get", http.MethodGet, "/api/v1/presets/maya-render"},
+		{"install", http.MethodPost, "/api/v1/presets/maya-render/install"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			lib.lastOpts = product.ValidateOptions{}
+			before := time.Now()
+			req := httptest.NewRequestWithContext(t.Context(), tt.method, tt.path, nil)
+			srv.ServeHTTP(httptest.NewRecorder(), req)
+
+			got := lib.lastOpts
+			if got.ExprLimits != limits {
+				t.Errorf("ExprLimits = %+v, want %+v (the operator's configuration "+
+					"is not reaching preset validation)", got.ExprLimits, limits)
+			}
+			if got.Deadline.IsZero() {
+				t.Fatal("Deadline is zero; the configured wall-clock allowance is " +
+					"not reaching preset validation")
+			}
+			if got.Deadline.Before(before) || got.Deadline.After(before.Add(8*time.Second)) {
+				t.Errorf("Deadline = %v, want ~7s after %v: it must be computed per "+
+					"request from the configured DURATION, never stored", got.Deadline, before)
+			}
+			if !got.EnforceLimits {
+				t.Error("EnforceLimits = false; preset validation must keep enforcing " +
+					"OpenJD's quantitative limits")
+			}
+		})
+	}
+}
+
+// TestPresets_DeadlineIsA503NotA422 pins the same 503-vs-4xx split H1 applied
+// to every other route that validates a template: a wall-clock stop means this
+// server gave up on a body that would validate on an idle machine, so it must
+// not be reported as an unprocessable definition.
+//
+// The fingerprint-mismatch tests above pin the other direction — a genuine
+// definition fault stays 422 — so the mapping cannot be satisfied by answering
+// 503 for everything.
+func TestPresets_DeadlineIsA503NotA422(t *testing.T) {
+	for _, tt := range []struct {
+		name   string
+		method string
+		path   string
+	}{
+		{"get", http.MethodGet, "/api/v1/presets/maya-render"},
+		{"install", http.MethodPost, "/api/v1/presets/maya-render/install"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			lib := &fakeLib{
+				configured: true,
+				entries:    sampleEntries(),
+				defs:       map[string]store.Product{},
+				defErr: fmt.Errorf("presetlib: product: template validation: %w",
+					expr.ErrDeadlineExceeded),
+			}
+			srv := newPresetTestServerWith(t, lib, openjd.ExprLimits{}, 5*time.Second)
+
+			req := httptest.NewRequestWithContext(t.Context(), tt.method, tt.path, nil)
+			rec := httptest.NewRecorder()
+			srv.ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusServiceUnavailable {
+				t.Errorf("status = %d, want 503", rec.Code)
+			}
+			if rec.Code == http.StatusUnprocessableEntity {
+				t.Error("a wall-clock stop was reported as an invalid definition")
+			}
+		})
+	}
+}
+
+// TestPresets_DeadlineErrorMatchesTheRealSentinel guards the hand-copied error
+// shape the two tests above depend on.
+//
+// They synthesize what the pipeline returns rather than driving a real
+// evaluation, because no preset definition can reach an expression evaluation
+// while EXPR is StatusInProgress. errors.Is is what the handler uses, so the
+// wrapping in defErr must actually satisfy it — if a future refactor stopped
+// wrapping the sentinel, both tests above would go on passing against a shape
+// production no longer produces.
+func TestPresets_DeadlineErrorMatchesTheRealSentinel(t *testing.T) {
+	err := fmt.Errorf("presetlib: product: template validation: %w", expr.ErrDeadlineExceeded)
+	if !errors.Is(err, expr.ErrDeadlineExceeded) {
+		t.Fatal("the synthesized deadline error does not match the sentinel")
+	}
+	if !isSubmitDeadlineError(err) {
+		t.Fatal("isSubmitDeadlineError does not recognize the synthesized deadline error")
 	}
 }

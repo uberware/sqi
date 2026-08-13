@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/uberware/sqi/internal/presetlib"
+	"github.com/uberware/sqi/internal/product"
 )
 
 const validDef = `name: studio/maya
@@ -92,7 +93,7 @@ func TestFetchDefinition_VerifiesFingerprint(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	p, err := s.FetchDefinition(context.Background(), entries[0])
+	p, err := s.FetchDefinition(context.Background(), entries[0], product.ValidateOptions{EnforceLimits: true})
 	if err != nil {
 		t.Fatalf("valid definition: %v", err)
 	}
@@ -108,7 +109,7 @@ func TestFetchDefinition_FingerprintMismatch(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = s.FetchDefinition(context.Background(), entries[0])
+	_, err = s.FetchDefinition(context.Background(), entries[0], product.ValidateOptions{EnforceLimits: true})
 	if !errors.Is(err, presetlib.ErrFingerprintMismatch) {
 		t.Fatalf("want ErrFingerprintMismatch, got %v", err)
 	}

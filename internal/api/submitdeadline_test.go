@@ -42,7 +42,20 @@ import (
 // openjd.Submitter really returns expr.ErrDeadlineExceeded, unwrapped by any
 // SubmitValidationError — is TestSubmit_DeadlineIsNotASubmitValidationError in
 // internal/openjd, which flips the registry entry the way that package's other
-// submit tests do. What is tested HERE is the half that lives here: which
+// submit tests do.
+//
+// AN OBLIGATION FOR SUB-PROJECT H2, which is the first wave that can discharge
+// it: the bridge between those two halves is a HAND-COPIED error shape
+// (deadlineErr below). Nothing proves that a real submission breaching a real
+// deadline produces a 503 end to end — only that the pipeline produces the
+// sentinel, and that this handler maps the sentinel to 503. If the pipeline
+// ever wrapped the breach in a *SubmitValidationError, both halves would keep
+// passing and every deadline would become a 422. That test cannot be written
+// today (no request can reach an evaluation while EXPR is StatusInProgress);
+// the moment H2 flips the status it can be, and it should be. It is listed in
+// TestConformance_EXPRNotSupported's H2 checklist as item 2.
+//
+// What is tested HERE is the half that lives here: which
 // status code that error becomes.
 type stubSubmitter struct {
 	err  error

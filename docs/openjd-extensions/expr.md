@@ -51,11 +51,20 @@ Despite that gate, most of the extension is implemented and tested:
   individual evaluations and one task's or one environment's retained
   bindings — and, since EXPR sub-project E4c, a cumulative budget bounds the
   WHOLE template and the WHOLE assignment on top of them; see "Template-wide
-  expression budget" below.
+  expression budget" below. Since **H1** two further bounds close what no
+  counter can see: a **wall-clock deadline**
+  (`openjd.expr_submission_deadline`, default 5s, checked inside
+  `meter.charge`), because §1.3.10 prices 256 bytes at one operation and so
+  an operation budget cannot bound seconds; and **`maxTasksPerJob`**
+  (`internal/openjd/expand.go`), an always-on cap on the tasks one job may
+  produce summed across steps. A deadline breach is a **503**, never a 4xx —
+  it is not a verdict on the template.
 - **Operator configuration of all nine limits** — since EXPR sub-project
   E4d, every one of the bounds above is a config key rather than a compiled
   constant, on both binaries, with a validated range and a cross-binary
-  dispatch gate; see "Operator configuration" below.
+  dispatch gate; see "Operator configuration" below. H1's deadline is a tenth
+  key on the same pattern, and `maxTasksPerJob` is deliberately a constant,
+  like its per-step sibling.
 - **The scope model and phase-2 checker** — `internal/openjd/scope.go` and
   `internal/openjd/exprcheck.go` type-check every format string and `let:`
   block against the template's declared parameters at submission time, so a
@@ -910,10 +919,20 @@ recorded in that function's own comment as later work.
 - **SUPERSEDED by EXPR sub-project H1 — a budget denominated in time now
   exists.** `openjd.expr_submission_deadline` (default 5s, range 1s–60s)
   gives one submission a fixed wall-clock allowance for its expression
-  evaluation and stops it when that passes, on all three routes that accept a
-  template. It bounds elapsed time *directly*, so it holds whatever the
-  operation pricing turns out to permit — which is the property none of the
-  counters have.
+  evaluation and stops it when that passes, on **every route that validates a
+  template**: the two job routes, the two product create/update routes, and —
+  since H1's whole-branch review — the two preset routes.
+  ([`docs/configuration.md`](../configuration.md#openjdexpr_submission_deadline)
+  enumerates them and what each answers for an invalid template.) It bounds
+  elapsed time *directly*, so it holds whatever the operation pricing turns
+  out to permit — which is the property none of the counters have.
+
+  **It is not co-sized with the counters, and 5s is unvalidated.** The
+  deterministic budgets nominally permit ~17 minutes while this key's ceiling
+  is 60s, and no large-but-legitimate `EXPR` template has been measured
+  against the default — the six reference presets cost ≤15 positions and ≤1
+  operation, so they cannot locate the acceptance boundary. Measuring it is
+  work for the sub-project that makes `EXPR` submittable.
 
   A breach is reported as **`503`, never `4xx`**. The counters are
   deterministic, so a template that breaches one breaches it everywhere and

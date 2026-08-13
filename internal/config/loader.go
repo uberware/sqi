@@ -426,6 +426,13 @@ func mergeOpenJDFile(cfg *Config, fc fileConfig) {
 	// default is in range, so an unparseable value cannot turn into a startup
 	// failure here -- the env layer, which reports its own parse errors, is
 	// where a typo is caught.
+	//
+	// This is the only one of the ten EXPR keys where that is reachable: the
+	// other nine are ints, so a typo fails YAML unmarshalling loudly. Kept for
+	// consistency with the loader's other durations rather than made an error
+	// here, and documented as an operator-visible quirk in docs/configuration.md
+	// under openjd.expr_submission_deadline -- changing it means changing every
+	// duration key at once, not this one.
 	if fc.OpenJD.ExprSubmissionDeadline != nil {
 		if d, err := time.ParseDuration(*fc.OpenJD.ExprSubmissionDeadline); err == nil {
 			cfg.OpenJD.ExprSubmissionDeadline = d

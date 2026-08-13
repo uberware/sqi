@@ -102,8 +102,18 @@ func (s *Service) FetchIndex(ctx context.Context, forceRefresh bool) ([]IndexEnt
 }
 
 // FetchDefinition downloads the entry's definition (resolved relative to the
-// index URL), verifies its sha256, and parses it into a store.Product.
-func (s *Service) FetchDefinition(ctx context.Context, entry IndexEntry) (store.Product, error) {
+// index URL), verifies its sha256, and parses it into a store.Product under
+// opts.
+//
+// opts carries the operator's EXPR limits and this request's wall-clock
+// backstop, because both preset routes that call this are reachable from an
+// anonymous HTTP request when auth is off. The sha256 pinning bounds WHAT is
+// validated -- the body is vouched for by the operator's index, not chosen by
+// the caller -- but it does not bound how often, or for how long, this server
+// is asked to validate it. See [product.ValidateOptions].
+func (s *Service) FetchDefinition(
+	ctx context.Context, entry IndexEntry, opts product.ValidateOptions,
+) (store.Product, error) {
 	if !s.Configured() {
 		return store.Product{}, ErrNotConfigured
 	}
@@ -119,7 +129,7 @@ func (s *Service) FetchDefinition(ctx context.Context, entry IndexEntry) (store.
 	if got := hex.EncodeToString(sum[:]); got != entry.Sha256 {
 		return store.Product{}, fmt.Errorf("%w: index=%s got=%s", ErrFingerprintMismatch, entry.Sha256, got)
 	}
-	p, err := product.ParseDefinition(body)
+	p, err := product.ParseDefinition(body, opts)
 	if err != nil {
 		return store.Product{}, fmt.Errorf("presetlib: %w", err)
 	}

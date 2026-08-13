@@ -110,12 +110,24 @@ type Config struct {
 	ExprSubmissionDeadline time.Duration
 
 	// ExprLimits mirrors the operator's four openjd.expr_* settings, for the
-	// ONE route that validates a client-supplied OpenJD template without going
-	// through the Submitter: POST/PUT /api/v1/products. Every other production
+	// routes that validate an OpenJD template without going through the
+	// Submitter: POST/PUT /api/v1/products (a client-supplied body) and
+	// GET /api/v1/presets/{name} + POST /api/v1/presets/{name}/install (a
+	// sha256-pinned body from the operator's index). Every other production
 	// path reads these off the Submitter built at boot.
 	//
 	// The zero value means openjd's defaults, so a router built without it
 	// behaves exactly as it did before EXPR sub-project H1.
+	//
+	// NEVER SET [openjd.ExprLimits.Deadline] ON THIS FIELD. It is exported and
+	// embedder-settable, and a Config is built once per server: a deadline
+	// stored here would be one absolute instant that every later request is
+	// measured against, refusing everything once it passed. It is inert today
+	// only because [openjd.ValidateWithBudget] overwrites the field from
+	// ValidateOptions.Deadline at every call site that matters — a property of
+	// those call sites, not a guarantee this type makes. Both handlers that
+	// read this field turn the configured DURATION
+	// (ExprSubmissionDeadline) into an instant per request instead.
 	ExprLimits openjd.ExprLimits
 }
 
@@ -372,7 +384,8 @@ func NewRouter(cfg Config, deps Deps, logger *slog.Logger, m *metrics.Metrics, h
 	computeLocs := newComputeLocationHandler(deps.Store, logger)
 	usagePools := newUsagePoolHandler(deps.Store, logger)
 	products := productHandlerFor(cfg, deps, logger)
-	presets := newPresetHandler(deps.PresetLib, deps.Products, deps.Store, logger)
+	presets := newPresetHandler(deps.PresetLib, deps.Products, deps.Store, logger,
+		cfg.ExprLimits, cfg.ExprSubmissionDeadline)
 	diagnostics := newDiagnosticsHandler(deps.DiagReader, logger)
 	versionH := newVersionHandler(deps.Version)
 	authH := newAuthHandler(authHandlerDeps{

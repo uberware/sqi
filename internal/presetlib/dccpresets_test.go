@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/uberware/sqi/internal/fsutil"
+	"github.com/uberware/sqi/internal/product"
 )
 
 // The DCC reference presets must round-trip through the real library install
@@ -68,7 +69,7 @@ func TestDCCReferencePresetsInstallLoop(t *testing.T) {
 		t.Fatalf("index entries = %d, want %d", len(got), len(paths))
 	}
 	for _, entry := range got {
-		if _, err := svc.FetchDefinition(context.Background(), entry); err != nil {
+		if _, err := svc.FetchDefinition(context.Background(), entry, product.ValidateOptions{EnforceLimits: true}); err != nil {
 			t.Errorf("FetchDefinition(%s): %v", entry.Name, err)
 		}
 	}
