@@ -2,6 +2,7 @@
 import { useId } from 'react'
 import type { ProductParameter } from '@/api/types'
 import { selectWidget, paramLabel, isRequired } from '@/lib/productForm'
+import ListParamField from '@/components/ListParamField'
 import styles from './ProductParamField.module.css'
 
 interface Props {
@@ -48,6 +49,8 @@ export default function ProductParamField({ param, value, error, onChange }: Pro
         return (
           <input id={id} type="number" value={value} onChange={(e) => onChange(e.target.value)} />
         )
+      case 'list':
+        return <ListParamField param={param} value={value} onChange={onChange} />
       default:
         return (
           <input id={id} type="text" value={value} onChange={(e) => onChange(e.target.value)} />

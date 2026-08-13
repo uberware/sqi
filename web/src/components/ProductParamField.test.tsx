@@ -74,4 +74,45 @@ describe('ProductParamField', () => {
     )
     expect(screen.getByText('Scene is required')).toBeInTheDocument()
   })
+
+  it('renders a list parameter through the row editor', () => {
+    render(
+      <ProductParamField
+        param={param({ name: 'Cameras', type: 'LIST[STRING]' })}
+        value='["main"]'
+        onChange={vi.fn()}
+      />,
+    )
+    expect(screen.getByRole('button', { name: /add item/i })).toBeInTheDocument()
+    expect(screen.getByLabelText('Cameras item 1')).toHaveValue('main')
+  })
+
+  it('renders a BOOL parameter as a checkbox writing true/false', () => {
+    // RFC 0007 forbids allowedValues on a BOOL, so the checkbox branch's
+    // `allowed_values ?? ['false', 'true']` fallback is what supplies the pair.
+    // Both spellings are ones the server's parseBoolParamValue accepts. This
+    // asserts the fallback rather than assuming it.
+    const onChange = vi.fn()
+    render(
+      <ProductParamField
+        param={param({ name: 'UseGpu', type: 'BOOL', allowed_values: null })}
+        value="false"
+        onChange={onChange}
+      />,
+    )
+    fireEvent.click(screen.getByRole('checkbox'))
+    expect(onChange).toHaveBeenCalledWith('true')
+  })
+
+  it('still labels a list parameter and shows its error', () => {
+    render(
+      <ProductParamField
+        param={param({ name: 'Cameras', type: 'LIST[STRING]' })}
+        value='["main"]'
+        error="must have at least 2 items"
+        onChange={vi.fn()}
+      />,
+    )
+    expect(screen.getByRole('alert')).toHaveTextContent('must have at least 2 items')
+  })
 })
