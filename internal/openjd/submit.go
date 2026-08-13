@@ -408,8 +408,12 @@ func (s *Submitter) Submit(
 	// Each step is handled by a helper to keep Submit's cyclomatic complexity
 	// within bounds.
 	deriveBounds := tmpl.hasExtension("SQI_CHUNK_BOUNDS")
+	// ONE task budget for the whole job, so every step's expansion is summed
+	// into the same allowance ([maxTasksPerJob]). A per-step budget would be
+	// [maxTasksPerStep] again and bound nothing new.
+	jobTasks := &jobTaskBudget{}
 	for i, stepTmpl := range tmpl.Steps {
-		steps, tasks, err := s.createStepWithTasks(ctx, tmpl, job, stepTmpl, i, boundParams, deriveBounds, blocked, now, resolverBudget)
+		steps, tasks, err := s.createStepWithTasks(ctx, tmpl, job, stepTmpl, i, boundParams, deriveBounds, blocked, now, resolverBudget, jobTasks)
 		if err != nil {
 			return nil, err
 		}
@@ -468,6 +472,7 @@ func (s *Submitter) createStepWithTasks(
 	holdPending bool,
 	now time.Time,
 	resolverBudget *templateBudget,
+	jobTasks *jobTaskBudget,
 ) (steps []store.Step, tasks []store.Task, err error) {
 	// Collect dependency names from the template.
 	dependsOn := make([]string, 0, len(stepTmpl.Dependencies))
@@ -509,7 +514,7 @@ func (s *Submitter) createStepWithTasks(
 	}
 
 	// ── Expand parameter space ──────────────────────────────────────────────
-	taskParamList, err := s.expandStepTaskParams(tmpl, stepTmpl, stepIdx, boundParams, deriveBounds, resolverBudget)
+	taskParamList, err := s.expandStepTaskParams(tmpl, stepTmpl, stepIdx, boundParams, deriveBounds, resolverBudget, jobTasks)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -552,6 +557,10 @@ func (s *Submitter) createStepWithTasks(
 // limits, expands it into one parameter set per task, and derives chunk
 // bounds when requested. It is extracted from [Submitter.createStepWithTasks]
 // to keep that function's cyclomatic complexity within bounds.
+//
+// jobTasks is the ONE [jobTaskBudget] of this submission, shared by every
+// step, so the always-on [maxTasksPerJob] cap sees the whole job's task count
+// rather than each step's in isolation.
 func (s *Submitter) expandStepTaskParams(
 	tmpl *JobTemplate,
 	stepTmpl StepTemplate,
@@ -559,6 +568,7 @@ func (s *Submitter) expandStepTaskParams(
 	boundParams map[string]string,
 	deriveBounds bool,
 	resolverBudget *templateBudget,
+	jobTasks *jobTaskBudget,
 ) ([]TaskParams, error) {
 	// Resolve {{Param.*}} / {{RawParam.*}} in the parameter space first. tmpl
 	// carries the EXPR declaration and the job-parameter definitions, and
@@ -608,7 +618,10 @@ func (s *Submitter) expandStepTaskParams(
 		}
 	}
 
-	taskParamList, err := ExpandParameterSpace(resolvedPS)
+	// expandParameterSpace, not the exported ExpandParameterSpace: this call is
+	// one step of a job, so its task count is charged against the job-wide
+	// allowance ([maxTasksPerJob]) shared by every step of THIS submission.
+	taskParamList, err := expandParameterSpace(resolvedPS, jobTasks)
 	if err != nil {
 		return nil, &SubmitValidationError{
 			Cause: fmt.Errorf("openjd: submit: expand step %q: %w", stepTmpl.Name, err),

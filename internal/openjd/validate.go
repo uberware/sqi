@@ -973,19 +973,23 @@ const (
 	// would risk breaking the exact templates EnforceLimits: false exists to
 	// keep working.
 	//
-	// RESIDUAL, PRE-EXISTING, NOT INTRODUCED HERE: nothing bounds a job's
-	// TOTAL task count, only its per-step one. At the PRODUCTION DEFAULT
-	// (EnforceLimits: true) that already permits maxSteps x maxTasksPerStep
-	// = 100 x 1,000,000 = 10^8 task rows to be attempted from one
-	// submission, with NO operator opt-out required -- stated explicitly
-	// because docs/openjd-extensions/expr.md once described this gap as
-	// needing enforce_limits: false, which understated it. With
+	// CLOSED by EXPR sub-project H1 (task 4), and left here because the
+	// reasoning is what justifies the constant that closed it: nothing used
+	// to bound a job's TOTAL task count, only its per-step one. At the
+	// PRODUCTION DEFAULT (EnforceLimits: true) that permitted maxSteps x
+	// maxTasksPerStep = 100 x 1,000,000 = 10^8 task rows to be attempted
+	// from one submission, with NO operator opt-out required -- stated
+	// explicitly because docs/openjd-extensions/expr.md once described this
+	// gap as needing enforce_limits: false, which understated it. With
 	// EnforceLimits: false the step count is unbounded too, so the product
-	// has no ceiling at all. Either way it is a catastrophe-class exposure,
-	// not a policy one, that predates this constant and is not in this
-	// cap's scope to close. Tracked as a follow-up: an always-on,
-	// catastrophically-generous bound on TOTAL tasks per job, analogous to
-	// maxTasksPerStep but summed across steps.
+	// had no ceiling at all -- which is why the bound that closed it had to
+	// be always-on rather than gated here beside maxSteps. It was a
+	// catastrophe-class exposure, not a policy one, that predated this
+	// constant and was not in this cap's scope to close. It is now closed
+	// by [maxTasksPerJob] (expand.go): an always-on, catastrophically
+	// generous bound on TOTAL tasks per job, analogous to maxTasksPerStep
+	// but summed across steps and charged during expansion, where the
+	// resolved per-step counts are finally known.
 	maxSteps = 100
 
 	// maxJobParameterDefinitions caps parameterDefinitions. The spec range is
