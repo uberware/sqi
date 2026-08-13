@@ -76,7 +76,7 @@ func encodeListDefault(v any, t JobParamType) (string, error) {
 		out = append(out, item)
 	}
 
-	return marshalCanonical(out, t)
+	return marshalCanonical(out, fmt.Sprintf("default for %s", t))
 }
 
 // encodeInnerList validates and returns one inner list of a LIST[LIST[INT]]
@@ -110,12 +110,12 @@ func encodeInnerList(item any, i int, t JobParamType) ([]any, error) {
 // json.Encoder terminates every value with a newline, which json.Marshal does
 // not; it is trimmed so a stored default compares equal to the same list
 // written by hand.
-func marshalCanonical(v any, t JobParamType) (string, error) {
+func marshalCanonical(v any, context string) (string, error) {
 	var buf bytes.Buffer
 	enc := json.NewEncoder(&buf)
 	enc.SetEscapeHTML(false)
 	if err := enc.Encode(v); err != nil {
-		return "", fmt.Errorf("openjd: encode default for %s: %w", t, err)
+		return "", fmt.Errorf("openjd: encode %s: %w", context, err)
 	}
 	return strings.TrimSuffix(buf.String(), "\n"), nil
 }
@@ -155,10 +155,18 @@ func DecodeListParamValue(value string) ([]any, error) {
 
 // EncodeListParamValue is DecodeListParamValue's inverse, producing the same
 // canonical form encodeListDefault does -- HTML escaping off, no trailing
-// newline -- so a decoded-and-re-encoded value is byte-identical to one that
-// was never touched.
+// newline.
+//
+// The round trip is CANONICAL-IN, CANONICAL-OUT, not universally
+// byte-identical: encoding what DecodeListParamValue just decoded from an
+// already-canonical value reproduces the same bytes, but a JSON round trip
+// normalizes whitespace, number spelling (1.0 -> 1), and \u escapes. A
+// SUBMITTED value is exactly the case where that matters -- BindJobParameters
+// carries it verbatim, never canonicalizing it -- so decoding and re-encoding
+// a non-canonical submitted value (e.g. to splice in a resolved loc:// URI)
+// can change its bytes even though every element's value is unchanged.
 func EncodeListParamValue(elems []any) (string, error) {
-	return marshalCanonical(elems, "")
+	return marshalCanonical(elems, "list parameter value")
 }
 
 // isScalarValue reports whether v is a YAML scalar (string, number, or

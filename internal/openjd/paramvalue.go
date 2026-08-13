@@ -28,11 +28,16 @@ import (
 // with the caller. Running a legality check per submitted value would report
 // the same declaration error once per submission.
 //
-// A value containing "{{" is skipped: it is a format string whose value is
-// not known until it resolves, so checking it against its declared type here
-// would reject a template that is correct.
-func checkParamValueAgainstType(p JobParameter, value, ptr string) ValidationErrors {
-	if strings.Contains(value, "{{") {
+// allowFormatString distinguishes the two callers' sources. A declared
+// default may legitimately be an unresolved format string -- its value is not
+// known until submission, so checking it against the declared type here would
+// reject a template that is correct; that caller passes true, and a value
+// containing "{{" is skipped. A submitted value is never a format string:
+// nothing resolves "{{ }}" inside a bound parameter value, so a "{{"
+// containing submission is exactly as wrong as any other malformed value and
+// must be checked, not skipped -- that caller passes false.
+func checkParamValueAgainstType(p JobParameter, value, ptr string, allowFormatString bool) ValidationErrors {
+	if allowFormatString && strings.Contains(value, "{{") {
 		return nil
 	}
 
@@ -46,9 +51,13 @@ func checkParamValueAgainstType(p JobParameter, value, ptr string) ValidationErr
 	default:
 		// INT, FLOAT, STRING, PATH: the base-spec value rules already have a
 		// single shared implementation (validateParamValueConstraints's
-		// per-value half), predating RFC 0007 and untouched by it. Routing
-		// through it here means every parameter type -- base and extended --
-		// answers through this one entry point.
+		// per-value half), predating RFC 0007 and untouched by it. In
+		// practice this arm is not exercised by either real caller --
+		// validate_paramtypes.go calls in only for BOOL/RANGE_EXPR/LIST[*], and
+		// bind.go's validateParamValue dispatches INT/FLOAT/STRING/PATH to their
+		// own validators before ever reaching this function -- so this arm is
+		// reachable only from a test that calls checkParamValueAgainstType
+		// directly with a base type.
 		return validateParamValueInBounds(p, value, ptr)
 	}
 }

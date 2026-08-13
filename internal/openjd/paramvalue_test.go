@@ -52,7 +52,7 @@ func TestCheckParamValueAgainstType(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			errs := checkParamValueAgainstType(tt.p, tt.value, "/p")
+			errs := checkParamValueAgainstType(tt.p, tt.value, "/p", true)
 			if tt.wantErr && len(errs) == 0 {
 				t.Fatalf("value %q accepted for %s", tt.value, tt.p.Type)
 			}
@@ -69,11 +69,49 @@ func TestCheckParamValueAgainstType(t *testing.T) {
 }
 
 // TestCheckParamValueAgainstType_SkipsFormatStrings mirrors the scalar rule: a
-// value containing "{{" is not known until it is resolved, so checking it
-// against its declared type here would reject a valid template.
+// DECLARED DEFAULT containing "{{" is not known until it is resolved, so
+// checking it against its declared type here would reject a valid template.
+// This pins the allowFormatString=true (validate_paramtypes.go) path.
 func TestCheckParamValueAgainstType_SkipsFormatStrings(t *testing.T) {
 	p := JobParameter{Type: JobParamTypeListInt, MinLength: new(9)}
-	if errs := checkParamValueAgainstType(p, "{{Param.Other}}", "/p"); len(errs) != 0 {
+	if errs := checkParamValueAgainstType(p, "{{Param.Other}}", "/p", true); len(errs) != 0 {
 		t.Errorf("a format-string value was validated as a literal: %v", errs)
+	}
+}
+
+// TestCheckParamValueAgainstType_RejectsFormatStringsWhenSubmitted covers the
+// bind.go path (allowFormatString=false): a SUBMITTED value is never a format
+// string -- nothing resolves "{{ }}" inside a bound parameter value -- so a
+// "{{"-containing submission must be checked like any other value, not
+// skipped. This is IMPORTANT finding 1 from the F2 whole-branch review: before
+// the fix, a submitted "{{x}}" was silently accepted for every one of the
+// eight RFC 0007 types, then failed at runtime on the worker instead of at
+// submission.
+func TestCheckParamValueAgainstType_RejectsFormatStringsWhenSubmitted(t *testing.T) {
+	tests := []struct {
+		name  string
+		p     JobParameter
+		value string
+	}{
+		{"bool", JobParameter{Type: JobParamTypeBool}, "{{Param.Other}}"},
+		{"range expr", JobParameter{Type: JobParamTypeRangeExpr}, "{{Param.Other}}"},
+		// A "{{"-containing element that fails the declared element type --
+		// the old top-level skip hid this by never decoding the list at all.
+		{"list of ints, bad element", JobParameter{Type: JobParamTypeListInt}, `[1, "{{Param.Other}}"]`},
+		// A "{{"-containing value that is well-formed JSON but violates a
+		// list-level constraint -- the old skip hid the minLength violation.
+		{
+			"list of strings, below minLength",
+			JobParameter{Type: JobParamTypeListString, MinLength: new(5)},
+			`["{{Param.Other}}"]`,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			errs := checkParamValueAgainstType(tt.p, tt.value, "/p", false)
+			if len(errs) == 0 {
+				t.Errorf("a submitted format-string value %q was accepted for %s", tt.value, tt.p.Type)
+			}
+		})
 	}
 }

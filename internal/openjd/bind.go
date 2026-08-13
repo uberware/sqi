@@ -101,10 +101,10 @@ func validateParamValue(p JobParameter, value string) ValidationErrors {
 	case JobParamTypeBool, JobParamTypeRangeExpr:
 		// The rules are the same ones the declared default is checked against;
 		// see checkParamValueAgainstType on why there is only one copy.
-		return checkParamValueAgainstType(p, value, ptr)
+		return checkParamValueAgainstType(p, value, ptr, false)
 	}
 	if isListParamType(p.Type) {
-		return checkParamValueAgainstType(p, value, ptr)
+		return checkParamValueAgainstType(p, value, ptr, false)
 	}
 	return nil
 }

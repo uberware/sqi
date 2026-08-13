@@ -911,3 +911,9 @@ recorded in that function's own comment as later work.
   `LogChunkMsg` and `DeregisterMsg` remain ungated by design.
 - **`EXPR`'s registry `Status` stays `StatusInProgress`** until the gaps
   above (and the job-parameter types section 1.2.2 requires) are closed.
+- **`web/src/api/types.ts` still declares the pre-EXPR `type`/`control`
+  unions**, narrower than the OpenAPI spec they are required to mirror (see
+  this repo's CLAUDE.md web-wire-types convention). F2's runtime work did not
+  touch it, on purpose: sub-project G's scope is not only the web widgets for
+  the eight RFC 0007 types, it also includes bringing these wire types up to
+  date with what the server now accepts and returns.

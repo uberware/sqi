@@ -1875,9 +1875,17 @@ paths:
         - Parameters omitted from the request use their `default` if the
           template declares one; otherwise a **422** is returned (required
           parameter missing).
-        - Values are validated against the parameter type (`INT`, `FLOAT`,
-          `STRING`, `PATH`) and any `minValue`, `maxValue`, `minLength`,
-          `maxLength`, or `allowedValues` constraints declared in the template.
+        - Values are validated against the declared parameter type (`INT`,
+          `FLOAT`, `STRING`, `PATH`, `BOOL`, `RANGE_EXPR`, or one of the six
+          `LIST[*]` types — the latter four are the EXPR extension's Extended
+          Parameter Types, RFC 0007) and any `minValue`, `maxValue`,
+          `minLength`, `maxLength`, `allowedValues`, or `item` constraints
+          declared in the template.
+        - A value for a `LIST[*]` parameter is the JSON encoding of the list,
+          URL-encoded into the query string — for example
+          `param.Shots=%5B%22main%22%2C%22closeup%22%5D` decodes to
+          `param.Shots=["main","closeup"]` — because job-parameter values
+          travel as strings on every submission surface, including this one.
       parameters:
         - name: farm_id
           in: query

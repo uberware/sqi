@@ -17,6 +17,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/uberware/sqi/internal/openjd"
 	"github.com/uberware/sqi/internal/store"
 	"github.com/uberware/sqi/internal/store/fake"
 	"github.com/uberware/sqi/internal/worker/protocol"
@@ -756,6 +757,113 @@ steps:
 	}
 	if got["/projects/shot.ma"] != "IN" || got["/projects/out"] != "OUT" {
 		t.Fatalf("Staging directions = %+v", got)
+	}
+}
+
+// TestBuildAssignPayload_ListPathParamLocURIsStagedThroughFullSeam is the
+// F2 whole-branch review's IMPORTANT-2 composition-seam test. Every other
+// test of the LIST[*] loc:// and staging behavior calls
+// resolveLocURIsInParamValue/buildStagingManifest directly, passing the
+// declared type by hand — nothing exercises the actual wiring:
+// populateEXPRFields must have populated msg.JobParameterTypes from the EXPR
+// template BEFORE resolveLocURIsInMsg reads it, or LIST[PATH] silently falls
+// back to whole-string substitution, which corrupts a Windows destination
+// root (backslashes are not legal JSON escapes, so the re-decoded value stops
+// parsing entirely). This test goes through buildAssignPayload end to end —
+// template parse, EXPR field population, loc:// resolution, and staging
+// manifest construction — with a real Windows compute-location root, so a
+// regression in any of those three wiring points fails it.
+func TestBuildAssignPayload_ListPathParamLocURIsStagedThroughFullSeam(t *testing.T) {
+	tmpl := `
+specificationVersion: jobtemplate-2023-09
+name: ListPathJob
+extensions: [EXPR, SQI_PATH_TRANSLATION]
+SQI_PATH_TRANSLATION:
+  deliveries: [stage_locally]
+parameterDefinitions:
+  - name: Scenes
+    type: LIST[PATH]
+    dataFlow: IN
+    objectType: FILE
+steps:
+  - name: S
+    script:
+      actions:
+        onRun:
+          command: render
+`
+	st := fake.New()
+	// A storage location with a WINDOWS compute-location root — the case
+	// that corrupts under whole-string substitution (backslashes inside a
+	// JSON string literal) but survives element-wise decode/resolve/re-encode.
+	if _, err := st.CreateStorageLocation(t.Context(), store.StorageLocation{
+		ID:   uuid.NewString(),
+		Name: "nas_shows",
+		Type: "filesystem",
+		Roots: map[string]string{
+			"default": "/mnt/nas/shows",
+			"winfarm": `Z:\nas\shows`,
+		},
+	}); err != nil {
+		t.Fatalf("CreateStorageLocation: %v", err)
+	}
+
+	task, worker, job, step, queue := buildFixture(t, tmpl, store.TemplateFormatYAML, "S")
+	worker.ComputeLocation = "winfarm"
+	job.Parameters = map[string]string{
+		"Scenes": `["loc://nas_shows/scenes/a.hip","loc://nas_shows/scenes/b.hip"]`,
+	}
+
+	data, err := buildAssignPayload(t.Context(), task, worker, job, step, queue, uuid.NewString(), st)
+	if err != nil {
+		t.Fatalf("buildAssignPayload: %v", err)
+	}
+
+	var msg protocol.AssignMsg
+	if err := json.Unmarshal(data, &msg); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+
+	// (a) JobParameters["Scenes"] still decodes as JSON. Whole-string
+	// substitution on a Windows destination would splice unescaped
+	// backslashes into the JSON string literal and break exactly this
+	// decode.
+	elems, err := openjd.DecodeListParamValue(msg.JobParameters["Scenes"])
+	if err != nil {
+		t.Fatalf("JobParameters[Scenes] = %q does not decode as a list: %v", msg.JobParameters["Scenes"], err)
+	}
+	if len(elems) != 2 {
+		t.Fatalf("decoded %d elements, want 2: %v", len(elems), elems)
+	}
+	for i, e := range elems {
+		s, ok := e.(string)
+		if !ok {
+			t.Fatalf("element %d = %v (%T), want string", i, e, e)
+		}
+		if strings.HasPrefix(s, "loc://") {
+			t.Errorf("element %d = %q, loc:// URI was not resolved", i, s)
+		}
+		if !strings.HasPrefix(s, `Z:\nas\shows\`) {
+			t.Errorf("element %d = %q, want a resolved Windows path under Z:\\nas\\shows\\", i, s)
+		}
+	}
+
+	// (b) msg.Staging has one entry per element — proof the staging manifest
+	// was built from the same element-wise resolved values, not a whole-list
+	// string that a scalar-shaped stagedPaths would treat as a single path.
+	if len(msg.Staging) != 2 {
+		t.Fatalf("Staging = %+v, want 2 entries (one per list element)", msg.Staging)
+	}
+	for i, e := range msg.Staging {
+		if e.Direction != "IN" {
+			t.Errorf("Staging[%d].Direction = %q, want IN", i, e.Direction)
+		}
+		if e.ObjectType != "FILE" {
+			t.Errorf("Staging[%d].ObjectType = %q, want FILE", i, e.ObjectType)
+		}
+		if !strings.HasPrefix(e.Path, `Z:\nas\shows\`) {
+			t.Errorf("Staging[%d].Path = %q, want a resolved Windows path", i, e.Path)
+		}
 	}
 }
 

@@ -99,7 +99,7 @@ func validateBoolParamConstraints(p JobParameter, ptr string) ValidationErrors {
 
 	if p.Default != nil {
 		errs = append(errs, prefixPointers(
-			checkParamValueAgainstType(p, *p.Default, ptr), ptr, "/default",
+			checkParamValueAgainstType(p, *p.Default, ptr, true), ptr, "/default",
 		)...)
 	}
 
@@ -151,7 +151,7 @@ func validateRangeExprParamConstraints(p JobParameter, ptr string) ValidationErr
 	}
 
 	return append(errs, prefixPointers(
-		checkParamValueAgainstType(p, *p.Default, ptr), ptr, "/default",
+		checkParamValueAgainstType(p, *p.Default, ptr, true), ptr, "/default",
 	)...)
 }
 
@@ -231,7 +231,7 @@ func validateListParamConstraints(p JobParameter, ptr string) ValidationErrors {
 	}
 
 	return append(errs, prefixPointers(
-		checkParamValueAgainstType(p, *p.Default, ptr), ptr, "/default",
+		checkParamValueAgainstType(p, *p.Default, ptr, true), ptr, "/default",
 	)...)
 }
 
