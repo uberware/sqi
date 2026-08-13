@@ -9,8 +9,6 @@ import (
 	"strconv"
 	"strings"
 	"unicode/utf8"
-
-	"github.com/uberware/sqi/internal/openjd/intrange"
 )
 
 // This file validates the job-parameter types RFC 0007 (the EXPR extension's
@@ -99,16 +97,10 @@ func validateBoolParamConstraints(p JobParameter, ptr string) ValidationErrors {
 		field{p.Item != nil, "item"},
 	)...)
 
-	if p.Default != nil && !strings.Contains(*p.Default, "{{") {
-		if _, ok := parseBoolParamValue(*p.Default); !ok {
-			errs = append(errs, ValidationError{
-				Pointer: ptr + "/default",
-				Message: fmt.Sprintf(
-					"%q is not a boolean; use true/false, 1/0, 1.0/0.0, yes/no, or on/off",
-					*p.Default,
-				),
-			})
-		}
+	if p.Default != nil {
+		errs = append(errs, prefixPointers(
+			checkParamValueAgainstType(p, *p.Default, ptr), ptr, "/default",
+		)...)
 	}
 
 	return errs
@@ -154,30 +146,30 @@ func validateRangeExprParamConstraints(p JobParameter, ptr string) ValidationErr
 		field{p.Item != nil, "item"},
 	)
 
-	if p.Default == nil || strings.Contains(*p.Default, "{{") {
+	if p.Default == nil {
 		return errs
 	}
 
-	if _, err := intrange.Parse(*p.Default); err != nil {
-		return append(errs, ValidationError{
-			Pointer: ptr + "/default",
-			Message: fmt.Sprintf("not a valid range expression: %v", err),
-		})
-	}
-
-	return append(errs, validateRangeExprLength(*p.Default, p, ptr)...)
+	return append(errs, prefixPointers(
+		checkParamValueAgainstType(p, *p.Default, ptr), ptr, "/default",
+	)...)
 }
 
 // validateRangeExprLength applies minLength and maxLength to a RANGE_EXPR
-// default's string length, substituting RFC 0007's 1024 default when the
+// value's string length, substituting RFC 0007's 1024 default when the
 // template declares no maximum.
+//
+// ptr is reported as-is, with no field segment of its own appended: its only
+// caller, checkRangeExprValue, is always invoked with the parameter's own
+// pointer, and the caller of THAT (validateRangeExprParamConstraints, for the
+// declared default) attaches "/default" afterward via prefixPointers.
 func validateRangeExprLength(def string, p JobParameter, ptr string) ValidationErrors {
 	var errs ValidationErrors
 	n := utf8.RuneCountInString(def)
 
 	if p.MinLength != nil && n < *p.MinLength {
 		errs = append(errs, ValidationError{
-			Pointer: ptr + "/default",
+			Pointer: ptr,
 			Message: fmt.Sprintf("length %d is below minLength %d", n, *p.MinLength),
 		})
 	}
@@ -188,7 +180,7 @@ func validateRangeExprLength(def string, p JobParameter, ptr string) ValidationE
 	}
 	if n > maxLen {
 		errs = append(errs, ValidationError{
-			Pointer: ptr + "/default",
+			Pointer: ptr,
 			Message: fmt.Sprintf("length %d exceeds maxLength %d", n, maxLen),
 		})
 	}
@@ -232,38 +224,35 @@ func validateListParamConstraints(p JobParameter, ptr string) ValidationErrors {
 
 	// A default containing a format string is not known until submission, so
 	// it cannot be checked against the declared type here. Same rule the
-	// scalar types use (validateParamValueConstraints).
-	if p.Default == nil || strings.Contains(*p.Default, "{{") {
+	// scalar types use (validateParamValueConstraints), enforced by
+	// checkParamValueAgainstType itself.
+	if p.Default == nil {
 		return errs
 	}
 
-	items, err := decodeListDefault(*p.Default, p.Type)
-	if err != nil {
-		return ValidationErrors{{Pointer: ptr + "/default", Message: err.Error()}}
-	}
-
-	errs = append(errs, validateListLength(len(items), p, ptr)...)
-	for i, item := range items {
-		errs = append(errs, validateListElement(
-			item, elem, p.Item, fmt.Sprintf("%s/default/%d", ptr, i),
-		)...)
-	}
-	return errs
+	return append(errs, prefixPointers(
+		checkParamValueAgainstType(p, *p.Default, ptr), ptr, "/default",
+	)...)
 }
 
 // validateListLength applies the list's own minLength/maxLength, which bound
 // the ELEMENT COUNT (RFC 0007) rather than any element's own length.
+//
+// ptr is reported as-is, with no field segment of its own appended: its only
+// caller, checkListValue, is always invoked with the parameter's own pointer,
+// and the caller of THAT (validateListParamConstraints, for the declared
+// default) attaches "/default" afterward via prefixPointers.
 func validateListLength(n int, p JobParameter, ptr string) ValidationErrors {
 	var errs ValidationErrors
 	if p.MinLength != nil && n < *p.MinLength {
 		errs = append(errs, ValidationError{
-			Pointer: ptr + "/default",
+			Pointer: ptr,
 			Message: fmt.Sprintf("has %d items, below minLength %d", n, *p.MinLength),
 		})
 	}
 	if p.MaxLength != nil && n > *p.MaxLength {
 		errs = append(errs, ValidationError{
-			Pointer: ptr + "/default",
+			Pointer: ptr,
 			Message: fmt.Sprintf("has %d items, above maxLength %d", n, *p.MaxLength),
 		})
 	}
