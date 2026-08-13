@@ -17,7 +17,7 @@ import (
 
 type productHandler struct {
 	catalog   *product.Catalog
-	submitter jobSubmitter
+	submitter JobSubmitter
 	sched     *scheduler.Scheduler
 	store     store.Store
 	logger    *slog.Logger
@@ -42,7 +42,7 @@ type productHandler struct {
 // evaluation; zero disables the backstop.
 func newProductHandler(
 	catalog *product.Catalog,
-	submitter jobSubmitter,
+	submitter JobSubmitter,
 	sched *scheduler.Scheduler,
 	st store.Store,
 	logger *slog.Logger,
@@ -379,7 +379,11 @@ func (h *productHandler) submitProductJob(w http.ResponseWriter, r *http.Request
 		// The wall-clock backstop first, as a 503 — see submitJob for why this
 		// outcome must not be reported as an invalid template.
 		if isSubmitDeadlineError(err) {
-			h.logger.ErrorContext(ctx, "products: submit exceeded its expression deadline",
+			// Warn, not error, and for the reasons submitJob's branch spells
+			// out: nothing is broken, the client is told to retry, and an
+			// error record here would evict real ones from the bounded
+			// diagnostics ring buffer.
+			h.logger.WarnContext(ctx, "products: submit exceeded its expression deadline",
 				slog.Duration("deadline", h.exprDeadline), slog.Any("error", err))
 			writeProblem(w, r, http.StatusServiceUnavailable,
 				"template validation exceeded its time budget on this server; retry, "+

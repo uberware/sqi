@@ -54,7 +54,6 @@ import (
 	"github.com/uberware/sqi/internal/health"
 	"github.com/uberware/sqi/internal/metrics"
 	"github.com/uberware/sqi/internal/middleware"
-	"github.com/uberware/sqi/internal/openjd"
 	"github.com/uberware/sqi/internal/product"
 	"github.com/uberware/sqi/internal/scheduler"
 	"github.com/uberware/sqi/internal/store"
@@ -118,8 +117,10 @@ type Deps struct {
 	Store store.Store
 
 	// Submitter handles the full OpenJD parse → validate → persist pipeline
-	// used by POST /api/v1/jobs.
-	Submitter *openjd.Submitter
+	// used by POST /api/v1/jobs. Production always supplies an
+	// *openjd.Submitter; it is typed as the interface so a test can substitute
+	// a recording stub — see [JobSubmitter] for why that matters.
+	Submitter JobSubmitter
 
 	// Scheduler is the running scheduler instance. It is called by
 	// DELETE /api/v1/jobs/{id} to propagate cancellation to workers

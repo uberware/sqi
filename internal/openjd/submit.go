@@ -316,8 +316,24 @@ func (s *Submitter) prepareTemplate(
 // step's initial status.
 //
 // Submit does not run in a database transaction. If it fails partway through,
-// orphaned rows may remain; the REST layer or a cleanup sweep should handle
-// such cases by checking job.Status == pending with no tasks.
+// orphaned rows may remain: a job row in status pending with some or none of
+// its steps and no tasks.
+//
+// NOTHING REAPS THOSE ROWS TODAY. This comment used to say the REST layer or a
+// cleanup sweep "should handle" them; neither does. Verified while reviewing
+// H1's deadline: the two Submit call sites (internal/api's submitJob and
+// submitProductJob) issue no compensating delete and do not even hold the job
+// ID, since Submit returns nil on error; and no sweep selects such a row --
+// job retention deletes only completed/canceled/failed, demoteStalledJobs
+// requires status running WITH live tasks, and every other sweep starts from
+// the tasks or workers table. The orphan is listed forever as a pending job
+// with all-zero task counts until an operator deletes it by hand.
+//
+// This matters more now that a submission can fail on a WALL-CLOCK deadline,
+// whose 503 invites exactly the retry that produces another one. It is a known
+// gap, deliberately left for its own change rather than fixed in passing:
+// making Submit transactional, or compensating in the handler, is a
+// correctness change to the whole submission path and not part of H1.
 func (s *Submitter) Submit(
 	ctx context.Context,
 	rawTemplate string,

@@ -429,15 +429,7 @@ func (s *Server) start(ctx context.Context) error {
 	deps.CookieName = s.cfg.AuthCookieName
 	deps.CookieSecure = s.cfg.AuthCookieSecure
 	router := api.NewRouter(
-		api.Config{
-			CORSOrigins:            s.cfg.CORSOrigins,
-			EnablePprof:            s.cfg.EnablePprof,
-			DisableRateLimit:       s.cfg.DisableRateLimit,
-			WorkerOfflineThreshold: s.sched.WorkerTimeout(),
-			AuthEnabled:            s.cfg.AuthEnabled,
-			ValidateJobOwner:       s.cfg.AuthValidateJobOwner,
-			ExprSubmissionDeadline: s.cfg.OpenJDExprSubmissionDeadline,
-		},
+		routerConfig(s.cfg, s.sched.WorkerTimeout()),
 		deps,
 		s.logger,
 		s.metrics,

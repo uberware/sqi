@@ -953,6 +953,14 @@ openjd:
 How long this server keeps evaluating **one submission's** expressions before
 giving up on it.
 
+> **`EXPR` is not accepted yet.** This key is configured, validated at startup
+> and wired end to end today, but nothing spends it: the extension's registry
+> status is *in-progress*, so a template declaring `extensions: [EXPR]` is
+> rejected at submission before a single expression is evaluated. No submission
+> reaches this deadline — and so **none of the 503s described below can occur
+> yet** — until that status flips. See
+> [`docs/openjd-extensions/expr.md`](openjd-extensions/expr.md).
+
 **This is not a fifth limit, and it does not decide whether a template is
 valid.** The four above are deterministic: a template that breaches one
 breaches it on every machine, so the breach is a property of the template and

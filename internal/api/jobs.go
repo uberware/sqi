@@ -48,14 +48,22 @@ type jobCanceler interface {
 	ReconcileDependents(ctx context.Context, upstreamJobID string) error
 }
 
-// jobSubmitter is the subset of [openjd.Submitter] the submission handlers
-// use. Keeping it an interface — the same reason [jobCanceler] is one — lets
-// the handlers' error mapping be tested without driving the whole OpenJD
-// pipeline, which matters most for the one error it cannot currently produce:
-// a wall-clock deadline breach is unreachable end to end while the EXPR
+// JobSubmitter is the subset of [openjd.Submitter] the submission handlers
+// use. Keeping it an interface — the same reason [jobCanceler] is one, and the
+// same reason [Deps.Store] is store.Store rather than *sqlite.Store — lets the
+// handlers' error mapping be tested without driving the whole OpenJD pipeline,
+// which matters most for the one error it cannot currently produce: a
+// wall-clock deadline breach is unreachable end to end while the EXPR
 // extension is StatusInProgress, since an EXPR template is rejected before any
 // expression is evaluated.
-type jobSubmitter interface {
+//
+// It is EXPORTED, and [Deps.Submitter] is typed as it rather than as
+// *openjd.Submitter, so that a test can drive a router built by [NewRouter]
+// with a recording stub. Without that, nothing could observe the
+// Config → handler hop that carries the submission deadline: the value would
+// reach a real Submitter and vanish into a pipeline that cannot currently
+// spend it.
+type JobSubmitter interface {
 	Submit(
 		ctx context.Context, rawTemplate string, format store.TemplateFormat, opts openjd.SubmitOptions,
 	) (*openjd.SubmitResult, error)
@@ -64,7 +72,7 @@ type jobSubmitter interface {
 // jobHandler handles all job-related REST endpoints.
 type jobHandler struct {
 	store     store.Store
-	submitter jobSubmitter
+	submitter JobSubmitter
 	sched     jobCanceler
 	// notifier pushes a removed event when a job is deleted so other connected
 	// clients drop it live. May be nil (no push).
@@ -236,7 +244,7 @@ type patchJobRequest struct {
 // expression evaluation; zero disables the backstop.
 func newJobHandler(
 	st store.Store,
-	sub jobSubmitter,
+	sub JobSubmitter,
 	sched jobCanceler,
 	notifier ws.Notifier,
 	logger *slog.Logger,
@@ -335,7 +343,18 @@ func (h *jobHandler) submitJob(w http.ResponseWriter, r *http.Request) {
 		// outcome as the submitter's fault would make acceptance depend on
 		// machine load, which no client can reason about or retry sensibly.
 		if isSubmitDeadlineError(err) {
-			h.logger.ErrorContext(ctx, "jobs: submit exceeded its expression deadline",
+			// WARN, NOT ERROR. Nothing is broken: the server met a bound it was
+			// configured to meet, on a request the client is explicitly told to
+			// retry. Error is also the wrong level for a CLIENT-PROVOKABLE,
+			// LOAD-DEPENDENT event on an anonymous path — every occurrence
+			// takes a slot in the bounded diagnostics ring buffer
+			// (internal/diag), so a run of deadlines would evict the genuine
+			// server errors an operator opened that buffer to find. The
+			// scheduler's protocol-version gate logs repeating heartbeat
+			// mismatches at debug for exactly this reason; see
+			// discardOnVersionMismatch. The neighboring 422 branch logs
+			// nothing at all, on the same reasoning taken one step further.
+			h.logger.WarnContext(ctx, "jobs: submit exceeded its expression deadline",
 				slog.String("farm_id", farmID), slog.String("queue_id", queueID),
 				slog.Duration("deadline", h.exprDeadline), slog.Any("error", err))
 			writeProblem(w, r, http.StatusServiceUnavailable,

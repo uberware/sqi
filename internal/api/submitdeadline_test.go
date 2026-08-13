@@ -19,6 +19,8 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
+	"github.com/uberware/sqi/internal/health"
+	"github.com/uberware/sqi/internal/metrics"
 	"github.com/uberware/sqi/internal/openjd"
 	"github.com/uberware/sqi/internal/openjd/expr"
 	"github.com/uberware/sqi/internal/product"
@@ -29,7 +31,7 @@ import (
 
 // ── stubSubmitter ───────────────────────────────────────────────────────────
 
-// stubSubmitter implements [jobSubmitter] so these tests can drive the
+// stubSubmitter implements [JobSubmitter] so these tests can drive the
 // handlers' error mapping and their deadline arithmetic directly.
 //
 // A stub is used rather than the real pipeline because the real pipeline
@@ -195,6 +197,82 @@ func TestSubmitJob_DeadlineIsComputedPerRequest(t *testing.T) {
 	if !second.After(first) {
 		t.Fatalf("two submissions produced deadlines %v and %v; the second must be later, "+
 			"or the instant is being computed once rather than per request", first, second)
+	}
+}
+
+// TestNewRouter_SubmissionDeadlineReachesBothHandlers covers the THIRD and last
+// hop that carries the operator's deadline to where it is spent:
+// api.Config -> the two submission handlers, inside [NewRouter].
+//
+// The tests above build handlers directly, so they would all still pass with
+// cfg.ExprSubmissionDeadline dropped from either constructor call in router.go
+// — the handlers would simply be built with a zero duration and every
+// submission would run unbounded. Nothing else in this repository looks at that
+// wiring, so this is the only place it can fail.
+//
+// Both routes are checked in one test because they are two independent call
+// sites of the same value, and the product route was added second: a fix that
+// wires one and forgets the other is the realistic mistake.
+func TestNewRouter_SubmissionDeadlineReachesBothHandlers(t *testing.T) {
+	const configured = 37 * time.Second // non-default; a stale default cannot pass
+
+	st := fake.New()
+	if _, err := st.CreateProduct(t.Context(), store.Product{
+		Name:     "p",
+		Title:    "P",
+		Template: minimalOpenJDJSON("RouterDeadlineTest"),
+		Format:   store.TemplateFormatJSON,
+	}); err != nil {
+		t.Fatalf("CreateProduct: %v", err)
+	}
+	sub := &stubSubmitter{err: errors.New("stop after recording the options")}
+	r := NewRouter(
+		Config{DisableRateLimit: true, ExprSubmissionDeadline: configured},
+		Deps{Store: st, Submitter: sub, Products: product.NewCatalog(st)},
+		newTestLogger(), metrics.New(), health.NewRegistry(),
+	)
+
+	routes := []struct {
+		name        string
+		target      string
+		body        string
+		contentType string
+	}{
+		{
+			name:        "POST /api/v1/jobs",
+			target:      "/api/v1/jobs?farm_id=farm-1&queue_id=queue-1",
+			body:        minimalOpenJDJSON("RouterDeadlineTest"),
+			contentType: "application/json",
+		},
+		{
+			name:        "POST /api/v1/products/{name}/jobs",
+			target:      "/api/v1/products/p/jobs",
+			body:        `{"farm_id":"farm-1","queue_id":"queue-1"}`,
+			contentType: "application/json",
+		},
+	}
+	for _, tc := range routes {
+		t.Run(tc.name, func(t *testing.T) {
+			sub.seen, sub.opts = false, openjd.SubmitOptions{}
+
+			before := time.Now()
+			req := newReq(t, http.MethodPost, tc.target, strings.NewReader(tc.body))
+			req.Header.Set("Content-Type", tc.contentType)
+			r.ServeHTTP(httptest.NewRecorder(), req)
+
+			if !sub.seen {
+				t.Fatal("the submitter was never called; this test cannot see the wiring it exists to check")
+			}
+			got := sub.opts.Deadline
+			if got.IsZero() {
+				t.Fatal("the submitter got the zero deadline: Config.ExprSubmissionDeadline is not " +
+					"reaching this handler, so submissions on this route run with no wall-clock bound")
+			}
+			if got.Before(before.Add(configured)) || got.After(time.Now().Add(configured)) {
+				t.Fatalf("deadline = %v, want an instant the configured %s into this request's future "+
+					"(a different duration reached the handler)", got, configured)
+			}
+		})
 	}
 }
 

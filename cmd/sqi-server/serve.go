@@ -147,7 +147,25 @@ func runServe(cmd *cobra.Command, _ []string) error {
 	schedCfg.RetryDelay = cfg.Scheduler.RetryDelay
 	schedCfg.DefaultFailureLimit = cfg.Scheduler.DefaultFailureLimit
 
-	srv := server.New(server.Config{
+	srv := server.New(serverConfig(cfg, schedCfg), logger, diagBuf)
+	if err := srv.Run(ctx); err != nil {
+		logger.ErrorContext(ctx, "sqi-server exited with error", slog.Any("error", err))
+		return err
+	}
+	return nil
+}
+
+// serverConfig maps the layered [config.Config] the CLI loaded onto the
+// [server.Config] the server actually runs with.
+//
+// Split out of runServe so the mapping can be tested: runServe boots NATS,
+// SQLite and a listening socket and then blocks on signals, so nothing could
+// observe this literal in a test while it lived inside it. Every field here is
+// a hand-written assignment between two structs with matching field types,
+// which is exactly where a dropped or transposed line compiles and starts —
+// see TestServerConfig_CarriesTheExprCostBounds.
+func serverConfig(cfg config.Config, schedCfg scheduler.Config) server.Config {
+	return server.Config{
 		HTTPAddr:                     cfg.HTTP.Addr,
 		CORSOrigins:                  cfg.HTTP.CORSOrigins,
 		NATSAddr:                     cfg.NATS.Addr,
@@ -175,10 +193,5 @@ func runServe(cmd *cobra.Command, _ []string) error {
 		// Phase 1: always seed. Replace with cfg.Store.SeedDefaults when
 		// internal/config grows a setting for it.
 		SeedDefaults: true,
-	}, logger, diagBuf)
-	if err := srv.Run(ctx); err != nil {
-		logger.ErrorContext(ctx, "sqi-server exited with error", slog.Any("error", err))
-		return err
 	}
-	return nil
 }
