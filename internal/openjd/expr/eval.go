@@ -211,6 +211,12 @@ func WithOperationLimit(ops int64) Option {
 // must be able to tell those apart structurally rather than by reading a
 // message — see internal/api's submission handler, which maps this to 503 and
 // every budget error to 422.
+//
+// The wrapped message adds HOW FAR PAST the deadline the check landed and
+// nothing else ("... exceeded by 1.2s"). It must keep adding information rather
+// than restating this sentence: %w concatenates the two, and an earlier
+// revision rendered as "expr: evaluation deadline exceeded: evaluation exceeded
+// its wall-clock deadline", which a 503 body would have shown verbatim.
 var ErrDeadlineExceeded = errors.New("expr: evaluation deadline exceeded")
 
 // WithDeadline sets an absolute wall-clock deadline for this evaluation.

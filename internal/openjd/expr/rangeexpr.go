@@ -3,6 +3,7 @@
 package expr
 
 import (
+	"errors"
 	"fmt"
 	"slices"
 	"strconv"
@@ -276,8 +277,20 @@ func reserveRangeExprExpansion(ec evalCtx, v Value) error {
 	if err != nil {
 		return err
 	}
-	if err := ec.m.reserveElements(high); err == nil {
+	rerr := ec.m.reserveElements(high)
+	if rerr == nil {
 		return nil // case 1
+	}
+	if errors.Is(rerr, ErrDeadlineExceeded) {
+		// meter.reserve reports the wall-clock backstop as well as the
+		// operation bound, and case 1 reads a reserve failure as a verdict
+		// about SIZE -- which a deadline error is not. Today the fall-through
+		// would still surface it, because reserve checks the deadline even for
+		// a zero count and case 2 would return the same error; this is here so
+		// that the refusal does not DEPEND on that, since a lower bound of zero
+		// otherwise lands in case 3 -- expanding, which is the one thing every
+		// branch here exists to avoid.
+		return rerr
 	}
 	if err := ec.m.reserveElements(low); err != nil {
 		return err // case 2

@@ -112,20 +112,43 @@ const deadlineCheckInterval = 1024
 
 // charge adds n operations and checks the bound (section 1.3.10), plus the
 // wall-clock backstop when one is set.
+//
+// THE OPERATION CHECK RUNS FIRST, AND THE ORDER IS DELIBERATE. A charge that
+// breaches both bounds reports the OPERATION limit, because that verdict is
+// deterministic -- the same template on the same input breaches it every time,
+// so it is a property of the template and callers may report it as one (422).
+// A deadline breach depends on how loaded the machine was and says only that
+// the server gave up (503). Reporting the deterministic failure in preference
+// to the non-deterministic one is what keeps an invalid template from being
+// reported as a transient server condition on a busy host.
+//
+// The zero-deadline short-circuit is INLINE here rather than left to
+// checkDeadline, so the no-deadline path really does cost one comparison:
+// checkDeadline holds an fmt.Errorf and an indirect call and does not inline,
+// so tail-calling it would make every charge in the package pay for a frame it
+// has no use for.
 func (m *meter) charge(n int64) error {
 	m.ops += n
 	if m.ops > m.opLimit {
 		return fmt.Errorf("%w: %d operations exceeds the limit of %d",
 			errOperationLimit, m.ops, m.opLimit)
 	}
+	if m.deadline.IsZero() {
+		return nil
+	}
 	return m.checkDeadline()
 }
 
 // checkDeadline reports ErrDeadlineExceeded once the wall-clock backstop has
-// passed, sampling the clock every deadlineCheckInterval charges.
+// passed, SAMPLING the clock on the first charge and every
+// deadlineCheckInterval charges thereafter.
 //
-// The zero deadline short-circuits before any counter work, so an evaluation
-// with no deadline set pays one comparison per charge and never reads a clock.
+// The sampling is the point, not an optimization to be tidied away: charge is
+// the hottest function in the package, and a time.Now() on every call taxes
+// every expression whether or not it is anywhere near a deadline. It is pinned
+// by TestDeadline_ClockIsSampledNotReadOnEveryCharge, which exists precisely
+// so a "simplification" to an unconditional read fails a test instead of
+// passing one.
 //
 // The FIRST charge is checked as well as every interval thereafter, and that is
 // not an off-by-one nicety -- MEASURED, the interval on its own is blind to
@@ -145,11 +168,22 @@ func (m *meter) charge(n int64) error {
 // run arbitrarily far past an expired deadline while every meter sat below the
 // interval forever.
 //
-// What it still does NOT do, stated so the guarantee is not read as broader
-// than it is: it cannot interrupt a bulk operation already in flight. One
-// oversized string build runs to completion and is caught on the charge that
-// follows it. Per-evaluation granularity is the most a charge-counting sampler
-// can offer; bounding a single operation would need a bound on the operation.
+// WHAT THE SAMPLING WINDOW ACTUALLY COSTS, stated exactly because an earlier
+// revision of this comment understated it as "one oversized string build". A
+// sampled check cannot interrupt work already in flight, and the unchecked
+// window is not one bulk operation but up to deadlineCheckInterval-1 = 1023
+// charge calls, EACH of which may itself be a bulk operation. The honest
+// guarantee is therefore "the deadline plus at most one evaluation's remaining
+// OPERATION budget" -- the call count cannot outrun that budget in practice,
+// because a charge that prices bulk work adds at least one operation to it (a
+// dispatched call is charged rule 1 by callShape before its work begins).
+// At the server's SubmissionOperations default that is <= 10,000
+// charges, and at MaxExprSubmissionOperations <= 100,000 (see
+// internal/openjd/exprlimits.go). meter.reserve narrows the worst of that
+// window: it is called with a count in hand immediately before every LARGE
+// materialization, and checks the deadline unconditionally there, so the
+// biggest single construction in the window never starts rather than being
+// caught after it finishes.
 func (m *meter) checkDeadline() error {
 	if m.deadline.IsZero() {
 		return nil
@@ -159,16 +193,29 @@ func (m *meter) checkDeadline() error {
 		return nil
 	}
 	if m.sinceCheck >= deadlineCheckInterval {
-		m.sinceCheck = 0
+		// Reset to 1, not 0: at 0 the next charge would increment to 1 and
+		// re-enter through the first-charge branch, reading the clock on two
+		// consecutive charges every interval. Harmless, but it would make this
+		// comment's "every deadlineCheckInterval charges" untrue.
+		m.sinceCheck = 1
 	}
+	return m.deadlinePassed()
+}
 
+// deadlinePassed reads the clock -- through m.now when a test injected one --
+// and reports ErrDeadlineExceeded if the deadline is behind it.
+//
+// The message names the bound that was breached and by how much. It must not
+// restate ErrDeadlineExceeded's own text: the two are concatenated by %w, and
+// this is surfaced verbatim in an HTTP response body.
+func (m *meter) deadlinePassed() error {
 	now := time.Now
 	if m.now != nil {
 		now = m.now
 	}
-	if now().After(m.deadline) {
-		return fmt.Errorf("%w: evaluation exceeded its wall-clock deadline",
-			ErrDeadlineExceeded)
+	t := now()
+	if t.After(m.deadline) {
+		return fmt.Errorf("%w by %s", ErrDeadlineExceeded, t.Sub(m.deadline))
 	}
 	return nil
 }
@@ -218,15 +265,36 @@ func (m *meter) chargeBytes(s string) error { return m.charge(ceilDiv256(len(s))
 // that 687 MB was unaffordable, and on the success path expanded twice.
 // A reservation whose own input does the work it exists to avert is not a
 // reservation. Use rangeExprCountBounds (rangeexpr.go) for that value.
+//
+// IT ALSO CHECKS THE WALL-CLOCK DEADLINE, UNCONDITIONALLY -- no sampling, no
+// counter, just the zero-deadline short-circuit that costs an evaluation with
+// no deadline one comparison. That is affordable precisely because of what
+// this function is for: it is called only where a large materialization is
+// about to begin, with the count already in hand, and MEASURED it fires orders
+// of magnitude less often than charge does -- 2 calls against 100,003 charges
+// for '[x * 2 for x in range(100000)]', 1 against 4 for
+// '("x" * 900000).title()', 1 against 6 for
+// 'sorted([1] + range_expr("1-100000"))', and 0 for "1 + 1" or "len([1,2,3])".
+// Nothing measured reached double figures. Checking here converts "the largest
+// construction in the sampling window runs to completion and is caught on the
+// charge after it" into "it never starts", which is exactly the workload the
+// backstop exists for -- see checkDeadline for what the window still costs.
+//
+// A CALLER THAT READS THIS ERROR AS A VERDICT ABOUT SIZE must now separate the
+// two: reserveRangeExprExpansion (rangeexpr.go) treats a reserve failure as
+// "the count does not fit" and falls through to a cheaper probe, which for a
+// deadline error would be both wrong and, when the fallback reserves zero,
+// silently non-refusing. It checks errors.Is(err, ErrDeadlineExceeded) for
+// exactly that reason. It is the only such caller; every other one propagates.
 func (m *meter) reserve(n int64) error {
-	if n <= 0 {
-		return nil
-	}
-	if m.ops+n > m.opLimit {
+	if n > 0 && m.ops+n > m.opLimit {
 		return fmt.Errorf("%w: %d operations exceeds the limit of %d",
 			errOperationLimit, m.ops+n, m.opLimit)
 	}
-	return nil
+	if m.deadline.IsZero() {
+		return nil
+	}
+	return m.deadlinePassed()
 }
 
 // reserveElements is [meter.reserve] for a rule-2 element count that is known

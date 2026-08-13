@@ -1036,6 +1036,64 @@
 //     cumulative per-template budget, if one turns out to be needed, is
 //     sub-project E2's or E4's question.
 //
+//     A FIFTH BOUND, DIFFERENTLY SHAPED: THE WALL-CLOCK DEADLINE
+//     (WithDeadline, sub-project H1). Everything above bounds WORK — bytes
+//     held, operations performed, elements built, nesting depth. None of
+//     them bounds TIME, and they cannot: section 1.3.10 prices 256 bytes at
+//     one operation, so '("x" * 900000).title()' spends ~7,000 of a 10,000
+//     operation budget while costing ~57 ms of CPU, and a request that stays
+//     inside every budget above still measures in minutes. WithDeadline(t)
+//     sets an absolute wall-clock instant after which evaluation stops. The
+//     zero time — the default — means no deadline and reads no clock.
+//
+//     THREE WAYS IT DIFFERS FROM EVERY OTHER BOUND HERE, and each one
+//     matters to a caller:
+//
+//     (1) IT IS WALL-CLOCK, therefore NON-DETERMINISTIC. The same template
+//     on the same input breaches it on a loaded host and not on an idle one.
+//     Every other bound in this section is a function of the expression
+//     alone.
+//
+//     (2) IT IS PER-REQUEST, NOT PER-Eval. The option takes an absolute
+//     time rather than a duration precisely so that one deadline spans the
+//     many evaluations a template walk performs — a per-evaluation duration
+//     would let each of hundreds of positions spend the whole allowance,
+//     which is the opposite of a bound. That is also why meter.charge checks
+//     it on the FIRST charge of every evaluation and not only on the
+//     interval: a template built entirely from cheap expressions must still
+//     stop, and each of those expressions gets a fresh meter.
+//
+//     (3) A BREACH MEANS THE SERVER GAVE UP, NOT THAT THE TEMPLATE IS
+//     INVALID. Every other bound here is a verdict about the expression, and
+//     a caller is right to reject the submission (422). ErrDeadlineExceeded
+//     is exported, and distinct from every budget error, so that a caller can
+//     tell the two apart STRUCTURALLY (errors.Is) rather than by reading a
+//     message, and report it as a transient server condition (503).
+//
+//     PRECEDENCE, WHEN A SINGLE CHARGE BREACHES BOTH: the operation limit
+//     wins. meter.charge checks it first, deliberately — the deterministic
+//     verdict is the more useful and the more honest one, and reporting an
+//     over-budget template as a transient server condition would invite a
+//     client to retry something that can never succeed
+//     (TestDeadline_OperationLimitBeatsTheDeadline). meter.reserve orders
+//     the two the same way.
+//
+//     IT IS A BACKSTOP, NOT A BUDGET, AND ITS GRANULARITY IS COARSE. The
+//     clock is SAMPLED — on the first charge and every deadlineCheckInterval
+//     (1024) charges thereafter — because charge is the hot path of every
+//     expression and a time.Now() on each call taxes evaluations that are
+//     nowhere near a deadline. So the guarantee is "the deadline plus at most
+//     one evaluation's remaining operation budget", not "the deadline":
+//     up to 1023 further charge calls may run, each of them potentially a
+//     bulk operation, and the call count is held to the operation budget
+//     only because a charge that prices bulk work adds at least one
+//     operation to it. meter.reserve narrows the worst of that window by
+//     checking unconditionally, with the count in hand, immediately before
+//     each large materialization — so the single biggest construction inside
+//     the window never starts rather than being caught after it completes.
+//     What remains is not closed here and should not be described as if it
+//     were.
+//
 //   - A union target that names a value's own type exactly now admits it
 //     unchanged, list types included: Eval("[1.0, 2.0]", nil,
 //     expr.UnionOf(expr.ListOf(expr.TFloat), expr.ListOf(expr.TInt)))
