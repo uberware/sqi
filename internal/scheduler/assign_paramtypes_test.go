@@ -120,3 +120,71 @@ func TestResolveLocURIsInParamValue_MalformedListIsAnError(t *testing.T) {
 		t.Errorf("error %q does not say the value was a list", err)
 	}
 }
+
+// TestBuildStagingManifest_ListPath pins that a LIST[PATH] with a dataFlow
+// direction produces one StageEntry PER ELEMENT. Skipping it entirely — which
+// is what a PATH-only check does — means a job declaring its inputs as a list
+// stages none of them, silently.
+func TestBuildStagingManifest_ListPath(t *testing.T) {
+	tmpl := &openjd.JobTemplate{
+		ParameterDefinitions: []openjd.JobParameter{
+			{
+				Name: "Scene", Type: openjd.JobParamTypePath,
+				DataFlow: openjd.PathDataFlowIn, ObjectType: openjd.PathObjectTypeFile,
+			},
+			{
+				Name: "Textures", Type: openjd.JobParamTypeListPath,
+				DataFlow: openjd.PathDataFlowIn, ObjectType: openjd.PathObjectTypeFile,
+			},
+			{
+				Name: "Ignored", Type: openjd.JobParamTypeListPath,
+				DataFlow: openjd.PathDataFlowNone,
+			},
+			{Name: "Count", Type: openjd.JobParamTypeInt},
+		},
+	}
+	params := map[string]string{
+		"Scene":    "/proj/shot.ma",
+		"Textures": `["/proj/tex/a.exr","/proj/tex/b.exr"]`,
+		"Ignored":  `["/proj/skip.exr"]`,
+		"Count":    "7",
+	}
+
+	got := buildStagingManifest(tmpl, params)
+
+	want := []struct{ path, dir, objType string }{
+		{"/proj/shot.ma", "IN", "FILE"},
+		{"/proj/tex/a.exr", "IN", "FILE"},
+		{"/proj/tex/b.exr", "IN", "FILE"},
+	}
+	if len(got) != len(want) {
+		t.Fatalf("got %d entries, want %d: %+v", len(got), len(want), got)
+	}
+	for i, w := range want {
+		if got[i].Path != w.path || got[i].Direction != w.dir || got[i].ObjectType != w.objType {
+			t.Errorf("entry %d = %+v, want path=%q dir=%q objType=%q",
+				i, got[i], w.path, w.dir, w.objType)
+		}
+	}
+}
+
+// TestBuildStagingManifest_ListPathEmptyAndMalformed pins the two degenerate
+// cases: an empty list contributes nothing, and a malformed value is skipped
+// rather than crashing the whole assignment — it was validated at submission,
+// so reaching here malformed is a bug elsewhere, and failing the dispatch of
+// every other parameter is a worse outcome than staging one fewer file.
+func TestBuildStagingManifest_ListPathEmptyAndMalformed(t *testing.T) {
+	tmpl := &openjd.JobTemplate{
+		ParameterDefinitions: []openjd.JobParameter{
+			{Name: "Empty", Type: openjd.JobParamTypeListPath, DataFlow: openjd.PathDataFlowIn},
+			{Name: "Bad", Type: openjd.JobParamTypeListPath, DataFlow: openjd.PathDataFlowIn},
+		},
+	}
+	got := buildStagingManifest(tmpl, map[string]string{
+		"Empty": "[]",
+		"Bad":   `["a"`,
+	})
+	if len(got) != 0 {
+		t.Errorf("got %d entries, want 0: %+v", len(got), got)
+	}
+}

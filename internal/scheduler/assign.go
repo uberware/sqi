@@ -559,7 +559,9 @@ func hasDelivery(ds []protocol.PathDelivery, kind string) bool {
 func buildStagingManifest(tmpl *openjd.JobTemplate, jobParams map[string]string) []protocol.StageEntry {
 	var out []protocol.StageEntry
 	for _, p := range tmpl.ParameterDefinitions {
-		if p.Type != openjd.JobParamTypePath {
+		isPath := p.Type == openjd.JobParamTypePath
+		isListPath := p.Type == openjd.JobParamTypeListPath
+		if !isPath && !isListPath {
 			continue
 		}
 		dir := string(p.DataFlow)
@@ -570,11 +572,39 @@ func buildStagingManifest(tmpl *openjd.JobTemplate, jobParams map[string]string)
 		if !ok || val == "" {
 			continue
 		}
-		out = append(out, protocol.StageEntry{
-			Path:       val,
-			Direction:  dir,
-			ObjectType: string(p.ObjectType),
-		})
+
+		for _, path := range stagedPaths(val, isListPath) {
+			out = append(out, protocol.StageEntry{
+				Path:       path,
+				Direction:  dir,
+				ObjectType: string(p.ObjectType),
+			})
+		}
+	}
+	return out
+}
+
+// stagedPaths returns the concrete paths one parameter value contributes: the
+// value itself for a scalar PATH, or one per element for a LIST[PATH].
+//
+// A list value that does not decode contributes nothing rather than failing the
+// whole assignment: it was validated at submission, so reaching here malformed
+// means something upstream is wrong, and dropping the dispatch of every other
+// parameter is a worse outcome than staging one fewer file. A non-string
+// element is skipped for the same reason.
+func stagedPaths(value string, isList bool) []string {
+	if !isList {
+		return []string{value}
+	}
+	elems, err := openjd.DecodeListParamValue(value)
+	if err != nil {
+		return nil
+	}
+	out := make([]string, 0, len(elems))
+	for _, e := range elems {
+		if s, ok := e.(string); ok && s != "" {
+			out = append(out, s)
+		}
 	}
 	return out
 }
