@@ -2017,6 +2017,21 @@ paths:
           $ref: "#/components/responses/TooManyRequests"
         "500":
           $ref: "#/components/responses/InternalServerError"
+        "503":
+          description: |
+            The server gave up evaluating the template's expressions before
+            finishing (openjd.expr_submission_deadline).
+
+            This is NOT a verdict on the template: the deterministic
+            expression budgets decide validity and report it as 422, while
+            this outcome depends on how busy this server was, so the same body
+            may well be accepted on a retry. Persistent 503s here mean either
+            a genuinely expensive template or a deadline the operator has set
+            too low.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
 
     get:
       operationId: listJobs
@@ -3275,6 +3290,16 @@ paths:
           $ref: "#/components/responses/UnprocessableEntity"
         "500":
           $ref: "#/components/responses/InternalServerError"
+        "503":
+          description: |
+            The server gave up evaluating the product template's expressions
+            before finishing (openjd.expr_submission_deadline). Same meaning
+            as on POST /jobs: a load-dependent outcome, not a verdict on the
+            template or the submitted parameters, and a retry may succeed.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
 
   /products/{name}/parameters:
     get:

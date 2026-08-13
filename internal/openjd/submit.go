@@ -60,13 +60,17 @@ type SubmitterOptions struct {
 	// toward zero. It is also the shortest-looking way to satisfy H1's Task 3,
 	// which is why this warning is here rather than left to be discovered.
 	//
-	// The deadline belongs on the per-call path instead: a Deadline field on
-	// [SubmitOptions], or a parameter threaded through
-	// [Submitter.prepareTemplate] and [Submitter.Submit], computed from the
-	// configured DURATION at the top of each request and copied onto the
-	// ExprLimits each budget is built from -- which is also where phase 1 has
-	// to switch from [ValidateWithOptions] to [ValidateWithBudget], since the
-	// former discards the channel the breach arrives on.
+	// The deadline lives on the per-call path instead, and already does:
+	// [SubmitOptions.Deadline], threaded through [Submitter.prepareTemplate]
+	// and copied onto the ExprLimits behind phase 1's [ValidateWithBudget]
+	// call and behind both phase-2 budgets. internal/api computes it from the
+	// configured DURATION at the top of each request.
+	//
+	// As the code stands a Deadline set here is INERT rather than harmful --
+	// every one of those three copies overwrites the field with the request's
+	// own value, zero included -- but that is a property of three call sites,
+	// not a guarantee, and the failure it would cause if one of them stopped
+	// overwriting is silent and total. Leave it zero.
 	ExprLimits ExprLimits
 }
 
@@ -119,6 +123,28 @@ type SubmitOptions struct {
 	MaxAttempts       *int
 	RetryDelaySeconds *int
 	FailureLimit      *int
+	// Deadline, when non-zero, is an absolute wall-clock time after which this
+	// submission's expression evaluation stops and [Submitter.Submit] returns
+	// an error wrapping [expr.ErrDeadlineExceeded] -- EXPR sub-project H1's
+	// backstop.
+	//
+	// It lives HERE, on the per-call options, and not on
+	// [SubmitterOptions.ExprLimits], because it is an ABSOLUTE instant and a
+	// Submitter is built once at server boot: a deadline stored there would be
+	// one instant computed at boot, failing every submission that arrived
+	// after it, forever. Compute it per request from the operator's configured
+	// DURATION (config's openjd.expr_submission_deadline) at the top of the
+	// handler -- internal/api does exactly that.
+	//
+	// The zero value -- what every caller but a submission handler passes --
+	// means no deadline and costs the evaluator nothing.
+	//
+	// A breach is NOT a *SubmitValidationError. That type is the client-fault
+	// channel; a wall-clock stop is this server giving up on a template that
+	// might be perfectly valid, so the two must stay tellable apart by
+	// errors.Is/errors.As at the HTTP boundary (503, not 422).
+	Deadline time.Time
+
 	// DependsOn lists the IDs of upstream jobs this job must wait for (whole-job
 	// cross-job dependencies). Each must already exist and be in the same farm;
 	// none may already be failed or canceled. When any is not yet completed, the
@@ -183,8 +209,16 @@ type SubmitResult struct {
 // nothing to do with the budget, and returning it only on success avoids
 // tempting a future caller into spending against a budget that already
 // reflects a failed, partial walk.
+//
+// deadline is [SubmitOptions.Deadline]: an absolute instant, zero for none. It
+// is a PARAMETER rather than a Submitter field for the reason that field's own
+// comment gives -- a Submitter outlives every request, an absolute time does
+// not. It is copied onto the ExprLimits behind all three of this function's
+// evaluation paths: phase 1's ValidateWithBudget, phase 2's checkerBudget, and
+// the resolverBudget returned for Submit's step loop.
 func (s *Submitter) prepareTemplate(
 	ctx context.Context, rawTemplate string, format store.TemplateFormat, params map[string]string,
+	deadline time.Time,
 ) (tmpl *JobTemplate, boundParams map[string]string, resolverBudget *templateBudget, err error) {
 	// ── 1. Parse ──────────────────────────────────────────────────────────
 	parseFormat := FormatYAML
@@ -198,11 +232,30 @@ func (s *Submitter) prepareTemplate(
 	}
 
 	// ── 2. Validate ───────────────────────────────────────────────────────
-	if errs := ValidateWithOptions(tmpl, ValidateOptions{
+	// ValidateWithBudget, not ValidateWithOptions: the latter DISCARDS the
+	// second return value, which is the only channel a deadline breach travels
+	// on. Called through the wrapper, an expired deadline would stop this walk
+	// silently and the submission would proceed past a phase-1 check nobody
+	// finished -- reported as a clean validation, which is the one failure mode
+	// this whole sub-project exists to prevent.
+	validateErrs, deadlineErr := ValidateWithBudget(tmpl, ValidateOptions{
 		EnforceLimits: s.enforceLimits,
 		ExprLimits:    s.exprLimits,
-	}); len(errs) > 0 {
-		return nil, nil, nil, &SubmitValidationError{Cause: fmt.Errorf("openjd: submit: validation: %w", errs)}
+		Deadline:      deadline,
+	})
+	// Checked BEFORE validateErrs, and never wrapped in a SubmitValidationError
+	// -- the same ordering and the same reasoning as checkExpressionsAtSubmit's
+	// (phase 2, below). A deadline makes the ValidationErrors INCOMPLETE by
+	// definition: the walk stopped early, so reporting whatever it collected
+	// would be a different, smaller claim than the truth, and reporting it as
+	// the client's fault would make acceptance depend on machine load.
+	if deadlineErr != nil {
+		return nil, nil, nil, fmt.Errorf("openjd: submit: validation: %w", deadlineErr)
+	}
+	if len(validateErrs) > 0 {
+		return nil, nil, nil, &SubmitValidationError{
+			Cause: fmt.Errorf("openjd: submit: validation: %w", validateErrs),
+		}
 	}
 
 	// ── 2b. Validate named storage location coverage ────────────
@@ -233,12 +286,19 @@ func (s *Submitter) prepareTemplate(
 	// resolverBudget (below) is a genuinely separate object; see this
 	// function's own doc comment (fix round 1, Critical 1) for why they must
 	// not be the same budget.
-	checkerBudget := newTemplateBudget(s.exprLimits)
+	// Both phase-2 budgets carry the request's deadline. They are separate
+	// allowances by design (see this function's doc comment) but share one
+	// backstop: the deadline bounds the REQUEST, not any single walk, so
+	// giving each its own would let each spend the whole allowance.
+	phase2Limits := s.exprLimits
+	phase2Limits.Deadline = deadline
+
+	checkerBudget := newTemplateBudget(phase2Limits)
 	if err := checkExpressionsAtSubmit(tmpl, boundParams, checkerBudget); err != nil {
 		return nil, nil, nil, err
 	}
 
-	resolverBudget = newTemplateBudget(s.exprLimits)
+	resolverBudget = newTemplateBudget(phase2Limits)
 	return tmpl, boundParams, resolverBudget, nil
 }
 
@@ -265,7 +325,9 @@ func (s *Submitter) Submit(
 	opts SubmitOptions,
 ) (*SubmitResult, error) {
 	// ── 1-2d. Parse, validate, bind parameters, re-check expressions ──────
-	tmpl, boundParams, resolverBudget, err := s.prepareTemplate(ctx, rawTemplate, format, opts.Parameters)
+	tmpl, boundParams, resolverBudget, err := s.prepareTemplate(
+		ctx, rawTemplate, format, opts.Parameters, opts.Deadline,
+	)
 	if err != nil {
 		return nil, err
 	}

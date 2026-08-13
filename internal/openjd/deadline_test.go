@@ -8,7 +8,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
+
 	"github.com/uberware/sqi/internal/openjd/expr"
+	"github.com/uberware/sqi/internal/store"
+	"github.com/uberware/sqi/internal/store/fake"
 )
 
 // exprDeadlineTemplate declares EXPR and enough expression work for the
@@ -491,6 +495,162 @@ func TestResolveParameterSpaceParams_DeadlineAtRangeListPosition(t *testing.T) {
 			t.Errorf("range entry 1 was resolved past the deadline (%s: %s); the backstop "+
 				"must stop the loop, not merely stop reporting", e.Pointer, e.Message)
 		}
+	}
+}
+
+// exprDeadlineSubmitTemplate is the fixture for the Submit-level tests: a
+// valid EXPR template whose one expression is a CALL.
+//
+// The call matters. A bare literal such as "{{ [1, 2, 3] }}" performs no
+// meter.charge at all, so the first-charge clock sample never fires and the
+// position resolves successfully however long ago the deadline passed -- a
+// fixture built on one proves nothing while looking like it proves everything.
+const exprDeadlineSubmitTemplate = `
+specificationVersion: jobtemplate-2023-09
+extensions:
+- EXPR
+name: DeadlineSubmitJob
+steps:
+- name: S
+  script:
+    actions:
+      onRun:
+        command: echo
+        args: ["{{ len([1, 2, 3]) }}"]
+`
+
+// TestSubmit_DeadlineIsNotASubmitValidationError drives H1's contract through
+// the public [Submitter.Submit] API, which is the only place the whole chain is
+// observable: the configured instant reaching both phase-2 budgets, phase 1
+// calling [ValidateWithBudget] rather than [ValidateWithOptions], and the
+// breach coming back as a plain error rather than as the client-fault type.
+//
+// It flips the EXPR registry entry to StatusSupported for the duration of the
+// test, exactly as TestSubmit_PhaseDistinction_ThroughRealSubmit does and for
+// the same reason: while EXPR is StatusInProgress, validateExtensions rejects
+// every EXPR-declaring template before a single expression is evaluated, so no
+// submission can reach the meter at all. That is also why H1's deadline is
+// INERT in production today -- it becomes live when sub-project H2 flips that
+// status, which is the whole point of landing the bound first.
+//
+// The message assertion is the load-bearing half. Both phase 1 and phase 2 walk
+// the same positions, so a deadline trips in whichever runs first: if phase 1
+// still called ValidateWithOptions -- discarding the channel the breach arrives
+// on -- the walk would stop SILENTLY, phase 1 would report success, and phase 2
+// would then produce a deadline error of its own. The test would still see an
+// ErrDeadlineExceeded and pass while the exact defect it exists to catch was
+// present. The phase-1 wording is what distinguishes them.
+func TestSubmit_DeadlineIsNotASubmitValidationError(t *testing.T) {
+	prevEXPR := registry["EXPR"]
+	supported := prevEXPR
+	supported.Status = StatusSupported
+	registry["EXPR"] = supported
+	t.Cleanup(func() { registry["EXPR"] = prevEXPR })
+
+	ctx := t.Context()
+	st := fake.New()
+	farm, err := st.CreateFarm(ctx, store.Farm{ID: uuid.NewString(), Name: "h1-farm"})
+	if err != nil {
+		t.Fatalf("CreateFarm: %v", err)
+	}
+	queue, err := st.CreateQueue(ctx, store.Queue{ID: uuid.NewString(), FarmID: farm.ID, Name: "h1-queue"})
+	if err != nil {
+		t.Fatalf("CreateQueue: %v", err)
+	}
+
+	sub := NewSubmitter(st)
+	_, err = sub.Submit(ctx, exprDeadlineSubmitTemplate, store.TemplateFormatYAML, SubmitOptions{
+		FarmID:   farm.ID,
+		QueueID:  queue.ID,
+		Deadline: time.Now().Add(-time.Second), // already expired
+	})
+
+	if err == nil {
+		t.Fatal("Submit accepted a template with an already-expired deadline; " +
+			"SubmitOptions.Deadline is probably not reaching either budget")
+	}
+	if !errors.Is(err, expr.ErrDeadlineExceeded) {
+		t.Fatalf("error = %v, want it to wrap expr.ErrDeadlineExceeded", err)
+	}
+	var sve *SubmitValidationError
+	if errors.As(err, &sve) {
+		t.Errorf("error = %v, want NOT a *SubmitValidationError: a wall-clock stop is "+
+			"the server giving up, not the submitter's fault, and that type is what "+
+			"internal/api turns into a 4xx", err)
+	}
+	if !strings.Contains(err.Error(), "openjd: submit: validation:") {
+		t.Errorf("error = %q, want phase 1's wording: the breach must surface from "+
+			"prepareTemplate's ValidateWithBudget call, not from the phase-2 re-check "+
+			"that runs only because phase 1 discarded it", err)
+	}
+}
+
+// TestSubmit_NoDeadlineIsUnchanged pins the other direction at the same level:
+// with SubmitOptions.Deadline left zero -- every caller in this repo that is
+// not a submission handler -- the pipeline behaves exactly as it did before H1.
+func TestSubmit_NoDeadlineIsUnchanged(t *testing.T) {
+	prevEXPR := registry["EXPR"]
+	supported := prevEXPR
+	supported.Status = StatusSupported
+	registry["EXPR"] = supported
+	t.Cleanup(func() { registry["EXPR"] = prevEXPR })
+
+	ctx := t.Context()
+	st := fake.New()
+	farm, err := st.CreateFarm(ctx, store.Farm{ID: uuid.NewString(), Name: "h1-farm"})
+	if err != nil {
+		t.Fatalf("CreateFarm: %v", err)
+	}
+	queue, err := st.CreateQueue(ctx, store.Queue{ID: uuid.NewString(), FarmID: farm.ID, Name: "h1-queue"})
+	if err != nil {
+		t.Fatalf("CreateQueue: %v", err)
+	}
+
+	sub := NewSubmitter(st)
+	res, err := sub.Submit(ctx, exprDeadlineSubmitTemplate, store.TemplateFormatYAML, SubmitOptions{
+		FarmID: farm.ID, QueueID: queue.ID,
+	})
+	if err != nil {
+		t.Fatalf("Submit with no deadline: %v", err)
+	}
+	if res == nil || res.Job.ID == "" {
+		t.Fatal("Submit with no deadline returned no job")
+	}
+}
+
+// TestPrepareTemplate_DeadlineReachesTheResolverBudget covers the budget the
+// Submit-level test above cannot observe.
+//
+// Phase 1 trips first for an EXPR template, so nothing downstream of it is
+// exercised there. The resolver budget is handed to every step's
+// ResolveParameterSpaceParams call in Submit's step loop, where a deadline is
+// the difference between stopping and resolving a parameter space nobody
+// finished checking (see TestResolveParameterSpaceParams_DeadlineYieldsNoParameterSpace).
+// prepareTemplate returns it, so the copy can be asserted directly with a
+// deadline that is nowhere near expiring.
+func TestPrepareTemplate_DeadlineReachesTheResolverBudget(t *testing.T) {
+	const plainTemplate = `
+specificationVersion: jobtemplate-2023-09
+name: PlainJob
+steps:
+- name: S
+  script:
+    actions:
+      onRun:
+        command: echo
+        args: ["hi"]
+`
+	want := time.Now().Add(time.Hour)
+	sub := NewSubmitter(fake.New())
+	_, _, resolverBudget, err := sub.prepareTemplate(
+		t.Context(), plainTemplate, store.TemplateFormatYAML, nil, want,
+	)
+	if err != nil {
+		t.Fatalf("prepareTemplate: %v", err)
+	}
+	if !resolverBudget.limits.Deadline.Equal(want) {
+		t.Fatalf("the resolver budget carries deadline %v, want %v",
+			resolverBudget.limits.Deadline, want)
 	}
 }
 

@@ -593,6 +593,28 @@ type OpenJDConfig struct {
 	// Range: [MinOpenJDExprTemplateRetainedBytes, MaxOpenJDExprTemplateRetainedBytes].
 	// Env: SQI_OPENJD_EXPR_TEMPLATE_RETAINED_BYTES
 	ExprTemplateRetainedBytes int64 `yaml:"expr_template_retained_bytes"`
+
+	// ExprSubmissionDeadline is how long this server will keep evaluating one
+	// submission's expressions before giving up on it.
+	//
+	// IT IS NOT ONE OF THE FOUR ABOVE, and the difference is the reason it
+	// exists. Those four are DETERMINISTIC: a template that breaches one
+	// breaches it on every machine, every time, so the breach is a property of
+	// the template and the submitter is told their template is invalid (a 422
+	// no retry can fix). This one is WALL CLOCK, so the same body would be
+	// accepted on an idle host and rejected on a loaded one. A breach here
+	// therefore reports that this server gave up (a 503 a retry may clear),
+	// never that the template is wrong.
+	//
+	// It exists because none of the four bounds TIME. Specification section
+	// 1.3.10 prices 256 bytes at one operation, so byte-heavy work is nearly
+	// free in operations and expensive in seconds; the worst single request
+	// measured on this branch is ~17 minutes of server CPU with every budget
+	// respected. This is the only bound that does not depend on that
+	// measurement being right.
+	// Range: [MinOpenJDExprSubmissionDeadline, MaxOpenJDExprSubmissionDeadline].
+	// Env: SQI_OPENJD_EXPR_SUBMISSION_DEADLINE
+	ExprSubmissionDeadline time.Duration `yaml:"expr_submission_deadline"`
 }
 
 // The defaults and the operator-configurable range for [OpenJDConfig]'s four
@@ -626,6 +648,40 @@ const (
 	DefaultOpenJDExprTemplateRetainedBytes int64 = 10_000_000
 	MinOpenJDExprTemplateRetainedBytes     int64 = 65_536
 	MaxOpenJDExprTemplateRetainedBytes     int64 = 100_000_000
+)
+
+// The default and the operator-configurable range for
+// [OpenJDConfig.ExprSubmissionDeadline], EXPR sub-project H1's wall-clock
+// backstop.
+//
+// Unlike the four above, these are NOT duplicated from internal/openjd: the
+// deadline is a per-request absolute instant computed here from this duration,
+// so internal/openjd holds no constant to keep in step with. Nothing in this
+// package imports internal/openjd, and nothing needs to.
+const (
+	// DefaultOpenJDExprSubmissionDeadline is deliberately about three orders
+	// of magnitude below the measured ~17-minute worst case rather than
+	// derived from a template that needs it: no legitimate submission
+	// observed on this branch spends anything close to five seconds in the
+	// expression checker, and the point of the number is the distance from
+	// the exposure, not that any particular second is special.
+	DefaultOpenJDExprSubmissionDeadline = 5 * time.Second
+
+	// MinOpenJDExprSubmissionDeadline is the floor because below a second a
+	// legitimate large template -- a body near the 4 MiB request cap, on a
+	// busy or slow host -- could plausibly fail, and a backstop that rejects
+	// valid work is worse than the exposure it guards. It is the point past
+	// which this setting stops being a backstop and becomes a load-dependent
+	// admission policy.
+	MinOpenJDExprSubmissionDeadline = time.Second
+
+	// MaxOpenJDExprSubmissionDeadline is the ceiling because the key exists to
+	// bound that ~17-minute figure. A ceiling anywhere near it would bound
+	// nothing an operator could not already reach, and this repository's own
+	// history records that the worst case has been under-reported three
+	// separate times -- so the ceiling is set against what a submission should
+	// ever need, not against what has been measured to be possible.
+	MaxOpenJDExprSubmissionDeadline = 60 * time.Second
 )
 
 // DefaultConfig returns a [Config] with sensible defaults suitable for local
@@ -671,6 +727,7 @@ func DefaultConfig() Config {
 			ExprMemoryLimit:           DefaultOpenJDExprMemoryLimit,
 			ExprTemplatePositions:     DefaultOpenJDExprTemplatePositions,
 			ExprTemplateRetainedBytes: DefaultOpenJDExprTemplateRetainedBytes,
+			ExprSubmissionDeadline:    DefaultOpenJDExprSubmissionDeadline,
 		},
 		Diagnostics: DiagnosticsConfig{
 			BufferSize: 1000,

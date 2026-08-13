@@ -125,6 +125,20 @@ type Config struct {
 	// behaves exactly as it did before this field existed.
 	OpenJDExprLimits openjd.ExprLimits
 
+	// OpenJDExprSubmissionDeadline is how long the expression checker may work
+	// on ONE submission before this server gives up on it and answers 503 —
+	// EXPR sub-project H1's wall-clock backstop. Mirror of
+	// config.OpenJDConfig.ExprSubmissionDeadline, mapped in cmd/sqi-server.
+	//
+	// A DURATION, never an instant: the API layer turns it into an absolute
+	// deadline per request. See openjd.SubmitOptions.Deadline for what goes
+	// wrong if that conversion is hoisted anywhere that runs once.
+	//
+	// The ZERO VALUE means no backstop, so a Config built without it (every
+	// test in this repo that constructs a server.Config literal) behaves
+	// exactly as it did before this field existed.
+	OpenJDExprSubmissionDeadline time.Duration
+
 	// PresetLibraryURL is the URL of the community preset library index JSON.
 	// When empty the /api/v1/presets endpoints respond 503.
 	// Mirror of config.PresetLibraryConfig.URL.
@@ -195,7 +209,14 @@ func DefaultConfig() Config {
 		DiscoveryInstanceName: "sqi-server",
 		EnforceOpenJDLimits:   true,
 		OpenJDExprLimits:      openjd.DefaultExprLimits(),
-		SeedDefaults:          true,
+		// Taken from internal/config's constant rather than restated, so this
+		// default cannot drift from the one an operator's config file is
+		// validated against. This package may import internal/config (it
+		// already does, for the LDAP and OIDC blocks); internal/config may not
+		// import internal/openjd, which is why the four expr_* LIMITS are
+		// duplicated there and this is not.
+		OpenJDExprSubmissionDeadline: config.DefaultOpenJDExprSubmissionDeadline,
+		SeedDefaults:                 true,
 	}
 }
 
@@ -415,6 +436,7 @@ func (s *Server) start(ctx context.Context) error {
 			WorkerOfflineThreshold: s.sched.WorkerTimeout(),
 			AuthEnabled:            s.cfg.AuthEnabled,
 			ValidateJobOwner:       s.cfg.AuthValidateJobOwner,
+			ExprSubmissionDeadline: s.cfg.OpenJDExprSubmissionDeadline,
 		},
 		deps,
 		s.logger,

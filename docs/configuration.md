@@ -634,6 +634,13 @@ Every one of these has a counterpart on the worker
 that meters the same thing one phase later. Four caveats apply to all four
 keys, and none of them is obvious from the numbers themselves.
 
+A **fifth** key sits alongside them and is deliberately not one of them:
+[`openjd.expr_submission_deadline`](#openjdexpr_submission_deadline) is a
+wall-clock backstop, so it decides only whether this server keeps working on a
+request (503), never whether a template is valid (422). It has no worker
+counterpart and none of the four caveats below applies to it — read its own
+section.
+
 #### 1. The cumulative operation ceiling is a product, not a measurement
 
 Nothing in sqi counts operations across a whole template. The template-wide
@@ -708,6 +715,16 @@ asked to serve, roughly in proportion.** There is no value of these settings
 that makes a slow request impossible. If `POST /api/v1/jobs` is reachable
 without authentication, size your request timeouts and front-end concurrency
 against that, not against the position cap.
+
+**What does bound the time is a separate key**, added because none of these
+four can:
+[`openjd.expr_submission_deadline`](#openjdexpr_submission_deadline) stops one
+submission's expression evaluation after a fixed wall-clock allowance (5s by
+default) and answers `503`. It bounds elapsed time directly, so it holds
+whatever the operation pricing turns out to permit and does not depend on the
+figures above being right. It does **not** make the numbers above safe to
+raise freely: a request refused at the deadline still spent that time, and
+concurrent requests each get their own allowance.
 
 #### 3. The byte dimension is cumulative allocation, not peak live retention
 
@@ -922,6 +939,49 @@ That per-block ceiling moves with `expr_memory_limit`, not with this key.
 ```yaml
 openjd:
   expr_template_retained_bytes: 10000000
+```
+
+### `openjd.expr_submission_deadline`
+
+| | |
+|---|---|
+| **Type** | `duration` |
+| **Default** | `5s` |
+| **Range** | `1s` – `60s` |
+| **Env var** | `SQI_OPENJD_EXPR_SUBMISSION_DEADLINE` |
+
+How long this server keeps evaluating **one submission's** expressions before
+giving up on it.
+
+**This is not a fifth limit, and it does not decide whether a template is
+valid.** The four above are deterministic: a template that breaches one
+breaches it on every machine, so the breach is a property of the template and
+the submitter is told so — `422 Unprocessable Entity`, and retrying is
+pointless. This one is wall clock, so the same body would be accepted on an
+idle host and refused on a loaded one. A breach therefore reports that *this
+server gave up* — `503 Service Unavailable`, and a retry may well succeed.
+Persistent 503s from `POST /api/v1/jobs` or `POST /api/v1/products/{name}/jobs`
+mean either a genuinely expensive template or a deadline set too low.
+
+It exists because **none of the other four bounds time** (caveat 1). Section
+1.3.10 prices 256 bytes at one operation, so byte-heavy work is nearly free in
+operations and expensive in seconds; the worst single request measured on this
+branch is ~17 minutes of server CPU with every budget respected. This is the
+only bound here that does not depend on that measurement being right.
+
+The floor is `1s` because below it a legitimate large template — a body near
+the 4 MiB request cap, on a busy host — could plausibly be refused, and a
+backstop that rejects valid work is worse than the exposure it guards. The
+ceiling is `60s` because the key exists to bound that ~17-minute figure; a
+ceiling near it would bound nothing.
+
+Unlike the four limits, it has **no worker counterpart**: the worker's own
+phase-3 evaluation is work this server already accepted, not an anonymous
+request, so caveat 4 does not apply to this key.
+
+```yaml
+openjd:
+  expr_submission_deadline: 5s
 ```
 
 ---
@@ -1606,6 +1666,7 @@ for the detector schema reference.
 | `openjd.expr_memory_limit` | int | `1000000` | `SQI_OPENJD_EXPR_MEMORY_LIMIT` | — |
 | `openjd.expr_template_positions` | int | `10000` | `SQI_OPENJD_EXPR_TEMPLATE_POSITIONS` | — |
 | `openjd.expr_template_retained_bytes` | int | `10000000` | `SQI_OPENJD_EXPR_TEMPLATE_RETAINED_BYTES` | — |
+| `openjd.expr_submission_deadline` | duration | `5s` | `SQI_OPENJD_EXPR_SUBMISSION_DEADLINE` | — |
 | `diagnostics.buffer_size` | int | `1000` | `SQI_DIAGNOSTICS_BUFFER_SIZE` | — |
 | `preset_library.url` | string | `https://uberware.github.io/sqi-presets/index.json` | `SQI_PRESET_LIBRARY_URL` | — |
 | `auth.enabled` | bool | `false` | `SQI_AUTH_ENABLED` | `--auth-enabled` |

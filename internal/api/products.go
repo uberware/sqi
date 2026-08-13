@@ -7,6 +7,7 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"time"
 
 	"github.com/uberware/sqi/internal/openjd"
 	"github.com/uberware/sqi/internal/product"
@@ -16,30 +17,53 @@ import (
 
 type productHandler struct {
 	catalog   *product.Catalog
-	submitter *openjd.Submitter
+	submitter jobSubmitter
 	sched     *scheduler.Scheduler
 	store     store.Store
 	logger    *slog.Logger
 	// ownerLookup validates a submit-as owner override against known users.
 	// Nil disables validation (auth.validate_job_owner = false).
 	ownerLookup ownerLookup
+	// exprDeadline is the wall-clock allowance for one submission's expression
+	// evaluation (config openjd.expr_submission_deadline); zero disables it.
+	//
+	// This route submits an operator-installed template rather than a
+	// client-supplied one, so the 4 MiB arbitrary-template exposure POST
+	// /api/v1/jobs carries is not the same here — but the PARAMETERS are the
+	// client's, and phase 2 re-evaluates every expression with them bound. The
+	// backstop therefore applies to both routes, on the same terms.
+	exprDeadline time.Duration
 }
 
 // newProductHandler returns a productHandler wired to the given catalog,
 // submitter, scheduler, and store. validateOwner controls whether a submit-as
 // owner override is checked against known users (config.AuthConfig.ValidateJobOwner).
+// exprDeadline is the wall-clock allowance for one submission's expression
+// evaluation; zero disables the backstop.
 func newProductHandler(
 	catalog *product.Catalog,
-	submitter *openjd.Submitter,
+	submitter jobSubmitter,
 	sched *scheduler.Scheduler,
 	st store.Store,
 	logger *slog.Logger,
 	validateOwner bool,
+	exprDeadline time.Duration,
 ) *productHandler {
 	return &productHandler{
 		catalog: catalog, submitter: submitter, sched: sched, store: st, logger: logger,
-		ownerLookup: newOwnerLookup(st, validateOwner),
+		ownerLookup:  newOwnerLookup(st, validateOwner),
+		exprDeadline: exprDeadline,
 	}
+}
+
+// submitDeadline is [jobHandler.submitDeadline] for this route: an absolute
+// instant taken per request from the configured duration, zero when none is
+// configured. See that method for why the conversion is per call.
+func (h *productHandler) submitDeadline() time.Time {
+	if h.exprDeadline <= 0 {
+		return time.Time{}
+	}
+	return time.Now().Add(h.exprDeadline)
 }
 
 type productResponse struct {
@@ -349,8 +373,19 @@ func (h *productHandler) submitProductJob(w http.ResponseWriter, r *http.Request
 		RetryDelaySeconds: req.RetryDelaySeconds,
 		FailureLimit:      req.FailureLimit,
 		DependsOn:         req.DependsOn,
+		Deadline:          h.submitDeadline(),
 	})
 	if err != nil {
+		// The wall-clock backstop first, as a 503 — see submitJob for why this
+		// outcome must not be reported as an invalid template.
+		if isSubmitDeadlineError(err) {
+			h.logger.ErrorContext(ctx, "products: submit exceeded its expression deadline",
+				slog.Duration("deadline", h.exprDeadline), slog.Any("error", err))
+			writeProblem(w, r, http.StatusServiceUnavailable,
+				"template validation exceeded its time budget on this server; retry, "+
+					"or ask the operator about openjd.expr_submission_deadline")
+			return
+		}
 		if isSubmitValidationError(err) {
 			writeProblem(w, r, http.StatusUnprocessableEntity, err.Error())
 			return

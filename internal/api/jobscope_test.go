@@ -83,7 +83,7 @@ func TestListJobsScopedOverridesClientOwnerParam(t *testing.T) {
 	seedOwnedJob(t, st, "job-bob", "bob")
 
 	h := newJobHandler(st, openjd.NewSubmitter(st), nil, ws.NoopNotifier{},
-		newTestLogger(), testRetryDefaults, false)
+		newTestLogger(), testRetryDefaults, false, 0)
 
 	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/jobs?owner=bob", nil)
 	req = req.WithContext(auth.NewContext(req.Context(), auth.Principal{
@@ -116,7 +116,7 @@ func TestListJobsNoPrincipalReturnsEmpty(t *testing.T) {
 	seedOwnedJob(t, st, "job-bob", "bob")
 
 	h := newJobHandler(st, openjd.NewSubmitter(st), nil, ws.NoopNotifier{},
-		newTestLogger(), testRetryDefaults, false)
+		newTestLogger(), testRetryDefaults, false, 0)
 
 	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/jobs", nil)
 	rec := httptest.NewRecorder()
@@ -150,7 +150,7 @@ func TestListJobsUnscopedSeesAll(t *testing.T) {
 	seedOwnedJob(t, st, "job-bob", "bob")
 
 	h := newJobHandler(st, openjd.NewSubmitter(st), nil, ws.NoopNotifier{},
-		newTestLogger(), testRetryDefaults, false)
+		newTestLogger(), testRetryDefaults, false, 0)
 
 	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/jobs", nil)
 	req = req.WithContext(auth.NewContext(req.Context(), auth.Principal{

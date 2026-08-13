@@ -28,6 +28,7 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"github.com/uberware/sqi/internal/openjd"
+	"github.com/uberware/sqi/internal/openjd/expr"
 	"github.com/uberware/sqi/internal/scheduler"
 	"github.com/uberware/sqi/internal/store"
 	"github.com/uberware/sqi/internal/ws"
@@ -47,10 +48,23 @@ type jobCanceler interface {
 	ReconcileDependents(ctx context.Context, upstreamJobID string) error
 }
 
+// jobSubmitter is the subset of [openjd.Submitter] the submission handlers
+// use. Keeping it an interface — the same reason [jobCanceler] is one — lets
+// the handlers' error mapping be tested without driving the whole OpenJD
+// pipeline, which matters most for the one error it cannot currently produce:
+// a wall-clock deadline breach is unreachable end to end while the EXPR
+// extension is StatusInProgress, since an EXPR template is rejected before any
+// expression is evaluated.
+type jobSubmitter interface {
+	Submit(
+		ctx context.Context, rawTemplate string, format store.TemplateFormat, opts openjd.SubmitOptions,
+	) (*openjd.SubmitResult, error)
+}
+
 // jobHandler handles all job-related REST endpoints.
 type jobHandler struct {
 	store     store.Store
-	submitter *openjd.Submitter
+	submitter jobSubmitter
 	sched     jobCanceler
 	// notifier pushes a removed event when a job is deleted so other connected
 	// clients drop it live. May be nil (no push).
@@ -63,6 +77,30 @@ type jobHandler struct {
 	// ownerLookup validates a submit-as owner override against known users.
 	// Nil disables validation (auth.validate_job_owner = false).
 	ownerLookup ownerLookup
+	// exprDeadline is how long the OpenJD expression checker may work on ONE
+	// submission before this server gives up on it
+	// (config openjd.expr_submission_deadline). Zero disables the backstop.
+	//
+	// Stored as a DURATION and turned into an absolute instant per request by
+	// [submitDeadline]; see that function for why the conversion cannot be
+	// hoisted anywhere that runs once.
+	exprDeadline time.Duration
+}
+
+// submitDeadline returns the absolute wall-clock instant this request's
+// expression evaluation must stop at, or the zero time when no backstop is
+// configured.
+//
+// Called once per submission, on purpose. The configured value is a duration;
+// what the pipeline needs is an instant. Computing that instant anywhere that
+// runs once — at server boot, on the shared Submitter — would give every
+// request the same deadline, so every submission arriving after it would fail
+// forever while every one before it got a shrinking allowance.
+func (h *jobHandler) submitDeadline() time.Time {
+	if h.exprDeadline <= 0 {
+		return time.Time{}
+	}
+	return time.Now().Add(h.exprDeadline)
 }
 
 // ── Wire-format types ─────────────────────────────────────────────────────────
@@ -194,14 +232,17 @@ type patchJobRequest struct {
 // newJobHandler returns a jobHandler wired to the given store, submitter,
 // scheduler, and optional notifier. validateOwner controls whether a submit-as
 // owner override is checked against known users (config.AuthConfig.ValidateJobOwner).
+// exprDeadline is the configured wall-clock allowance for one submission's
+// expression evaluation; zero disables the backstop.
 func newJobHandler(
 	st store.Store,
-	sub *openjd.Submitter,
+	sub jobSubmitter,
 	sched jobCanceler,
 	notifier ws.Notifier,
 	logger *slog.Logger,
 	retryDefaults scheduler.RetryPolicy,
 	validateOwner bool,
+	exprDeadline time.Duration,
 ) *jobHandler {
 	return &jobHandler{
 		store:         st,
@@ -211,6 +252,7 @@ func newJobHandler(
 		logger:        logger,
 		retryDefaults: retryDefaults,
 		ownerLookup:   newOwnerLookup(st, validateOwner),
+		exprDeadline:  exprDeadline,
 	}
 }
 
@@ -280,10 +322,27 @@ func (h *jobHandler) submitJob(w http.ResponseWriter, r *http.Request) {
 		RetryDelaySeconds: retryDelaySeconds,
 		FailureLimit:      failureLimit,
 		DependsOn:         r.URL.Query()["depends_on"],
+		Deadline:          h.submitDeadline(),
 	}
 
 	result, err := h.submitter.Submit(ctx, string(body), storeFormat, opts)
 	if err != nil {
+		// The wall-clock backstop FIRST, and as a 503. It is checked ahead of
+		// the validation branch because the two claims are different: 422 says
+		// the template is wrong and retrying is pointless, while this says the
+		// server gave up on a template that might be perfectly valid — the
+		// same body would validate on an idle host. Reporting a load-dependent
+		// outcome as the submitter's fault would make acceptance depend on
+		// machine load, which no client can reason about or retry sensibly.
+		if isSubmitDeadlineError(err) {
+			h.logger.ErrorContext(ctx, "jobs: submit exceeded its expression deadline",
+				slog.String("farm_id", farmID), slog.String("queue_id", queueID),
+				slog.Duration("deadline", h.exprDeadline), slog.Any("error", err))
+			writeProblem(w, r, http.StatusServiceUnavailable,
+				"template validation exceeded its time budget on this server; retry, "+
+					"or ask the operator about openjd.expr_submission_deadline")
+			return
+		}
 		// Distinguish parse/validation errors (client fault) from storage errors.
 		if isSubmitValidationError(err) {
 			writeProblem(w, r, http.StatusUnprocessableEntity, err.Error())
@@ -1021,6 +1080,20 @@ func parseIntQuery(s string, fallback int) int {
 func isSubmitValidationError(err error) bool {
 	var ve *openjd.SubmitValidationError
 	return errors.As(err, &ve)
+}
+
+// isSubmitDeadlineError reports whether err is the submission pipeline's
+// wall-clock backstop tripping (EXPR sub-project H1) rather than any verdict
+// about the template.
+//
+// Matched STRUCTURALLY, on the exported sentinel, never by reading a message:
+// a budget breach and a deadline travel the same return path, and the whole
+// point of the sentinel is that the two are tellable apart without string
+// matching. The pipeline never wraps a deadline in a
+// [openjd.SubmitValidationError], so this and [isSubmitValidationError] cannot
+// both be true.
+func isSubmitDeadlineError(err error) bool {
+	return errors.Is(err, expr.ErrDeadlineExceeded)
 }
 
 // parseParamQueryParams extracts job-parameter values from query parameters

@@ -232,6 +232,25 @@ openjd:
   # Type: int   Range: 65536-100000000   Env: SQI_OPENJD_EXPR_TEMPLATE_RETAINED_BYTES
   expr_template_retained_bytes: 10000000
 
+  # ── EXPR wall-clock backstop ───────────────────────────────────────────────
+  # How long this server keeps evaluating ONE submission's expressions before
+  # giving up on it.
+  #
+  # This is NOT a fifth limit. The four above decide whether a template is
+  # VALID: a breach is deterministic, so the submitter is told their template
+  # is wrong (HTTP 422) and retrying is pointless. This one decides only
+  # whether THIS SERVER, on THIS request, keeps working -- the same template
+  # would be accepted on an idle host -- so a breach reports that the server
+  # gave up (HTTP 503) and a retry may well succeed.
+  #
+  # It exists because none of the four bounds TIME: specification section
+  # 1.3.10 prices 256 bytes at one operation, so byte-heavy work is nearly
+  # free in operations and expensive in seconds. Lower it if you would rather
+  # shed load than serve a slow submission; raise it only if legitimate
+  # templates are being refused with a 503.
+  # Type: duration   Range: 1s-60s   Env: SQI_OPENJD_EXPR_SUBMISSION_DEADLINE
+  expr_submission_deadline: 5s
+
 # ── Diagnostics (in-memory log ring buffer) ──────────────────────────────────
 diagnostics:
   # Maximum diagnostic-log records retained per component (the server plus each

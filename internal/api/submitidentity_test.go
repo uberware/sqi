@@ -272,7 +272,7 @@ func TestSubmitJobOperatorSubmitAsCanonicalizesOwnerCasing(t *testing.T) {
 	}
 
 	sub := openjd.NewSubmitter(st)
-	h := newJobHandler(st, sub, &fakeScheduler{}, ws.NoopNotifier{}, newTestLogger(), testRetryDefaults, true)
+	h := newJobHandler(st, sub, &fakeScheduler{}, ws.NoopNotifier{}, newTestLogger(), testRetryDefaults, true, 0)
 	r := chi.NewRouter()
 	r.Post("/api/v1/jobs", h.submitJob)
 

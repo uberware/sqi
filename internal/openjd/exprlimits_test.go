@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 	"gopkg.in/yaml.v3"
@@ -736,7 +737,7 @@ steps:
 		}
 		sub := NewSubmitterWithOptions(fake.New(), SubmitterOptions{EnforceLimits: true, ExprLimits: want})
 		_, _, resolverBudget, err := sub.prepareTemplate(
-			context.Background(), tmplYAML, store.TemplateFormatYAML, map[string]string{"S": "small"},
+			context.Background(), tmplYAML, store.TemplateFormatYAML, map[string]string{"S": "small"}, time.Time{},
 		)
 		if err != nil {
 			t.Fatalf("prepareTemplate: %v", err)
@@ -749,7 +750,7 @@ steps:
 	t.Run("NewSubmitter defaults", func(t *testing.T) {
 		sub := NewSubmitter(fake.New())
 		_, _, resolverBudget, err := sub.prepareTemplate(
-			context.Background(), tmplYAML, store.TemplateFormatYAML, map[string]string{"S": "small"},
+			context.Background(), tmplYAML, store.TemplateFormatYAML, map[string]string{"S": "small"}, time.Time{},
 		)
 		if err != nil {
 			t.Fatalf("prepareTemplate: %v", err)

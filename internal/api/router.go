@@ -97,6 +97,17 @@ type Config struct {
 	// a submit-as owner override on POST /jobs and POST /products/{name}/jobs
 	// must name a known user, else 400. Default true.
 	ValidateJobOwner bool
+
+	// ExprSubmissionDeadline mirrors config.OpenJDConfig.ExprSubmissionDeadline:
+	// how long the OpenJD expression checker may work on ONE submission before
+	// this server gives up and answers 503 (EXPR sub-project H1's wall-clock
+	// backstop). The submission handlers turn it into an absolute instant per
+	// request.
+	//
+	// The zero value means no backstop, which is what a router built without
+	// it — every test in this package — gets, and it reproduces the
+	// pre-H1 behavior exactly.
+	ExprSubmissionDeadline time.Duration
 }
 
 // Deps holds the application-layer dependencies injected into the REST
@@ -340,7 +351,8 @@ func NewRouter(cfg Config, deps Deps, logger *slog.Logger, m *metrics.Metrics, h
 	if deps.Scheduler != nil {
 		retryDefaults = deps.Scheduler.RetryDefaults()
 	}
-	jobs := newJobHandler(deps.Store, deps.Submitter, deps.Scheduler, notifier, logger, retryDefaults, cfg.ValidateJobOwner)
+	jobs := newJobHandler(deps.Store, deps.Submitter, deps.Scheduler, notifier, logger, retryDefaults,
+		cfg.ValidateJobOwner, cfg.ExprSubmissionDeadline)
 	tasks := newTaskHandler(deps.Store, deps.Scheduler, logger)
 	workers := newWorkerHandler(deps.Store, notifier, cfg.WorkerOfflineThreshold, logger)
 	farms := newFarmHandler(deps.Store, logger)
@@ -348,7 +360,8 @@ func NewRouter(cfg Config, deps Deps, logger *slog.Logger, m *metrics.Metrics, h
 	storageLocs := newStorageLocationHandler(deps.Store, logger)
 	computeLocs := newComputeLocationHandler(deps.Store, logger)
 	usagePools := newUsagePoolHandler(deps.Store, logger)
-	products := newProductHandler(deps.Products, deps.Submitter, deps.Scheduler, deps.Store, logger, cfg.ValidateJobOwner)
+	products := newProductHandler(deps.Products, deps.Submitter, deps.Scheduler, deps.Store, logger,
+		cfg.ValidateJobOwner, cfg.ExprSubmissionDeadline)
 	presets := newPresetHandler(deps.PresetLib, deps.Products, deps.Store, logger)
 	diagnostics := newDiagnosticsHandler(deps.DiagReader, logger)
 	versionH := newVersionHandler(deps.Version)

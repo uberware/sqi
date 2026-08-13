@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/uberware/sqi/internal/config"
 )
@@ -249,6 +250,155 @@ func TestLoad_ExprLimitMalformedEnvIsAnError(t *testing.T) {
 	t.Setenv("SQI_OPENJD_EXPR_TEMPLATE_POSITIONS", "lots")
 	if _, err := config.Load("", config.FlagOverrides{}); err == nil {
 		t.Fatal("a non-numeric SQI_OPENJD_EXPR_TEMPLATE_POSITIONS must be a load error, not a silent default")
+	}
+}
+
+// ── openjd.expr_submission_deadline ─────────────────────────────────────────
+
+// TestDefaultConfig_ExprSubmissionDeadline pins the shipped default of EXPR
+// sub-project H1's wall-clock backstop.
+//
+// It is deliberately NOT one of the four limits above, and the difference is
+// the whole point of the key: those four decide whether a template is VALID (a
+// 422 that no retry can fix), while this one decides only how long this server
+// is willing to work on one submission before giving up (a 503 that a retry
+// may well clear).
+func TestDefaultConfig_ExprSubmissionDeadline(t *testing.T) {
+	if got, want := config.DefaultConfig().OpenJD.ExprSubmissionDeadline, 5*time.Second; got != want {
+		t.Errorf("openjd.expr_submission_deadline = %s, want %s", got, want)
+	}
+}
+
+// TestValidate_ExprSubmissionDeadline walks every boundary of the new key's
+// range, matching how the four int64 limits above are covered.
+//
+// The floor exists so an operator cannot set a deadline so short that every
+// legitimate template fails; the ceiling exists because the key's whole purpose
+// is to bound a measured ~17-minute worst case, and a value near that bounds
+// nothing. Zero and negative are rejected rather than read as "no deadline":
+// the backstop is not optional, and an operator who wants a long one has the
+// ceiling to reach for.
+func TestValidate_ExprSubmissionDeadline(t *testing.T) {
+	const (
+		field = "openjd.expr_submission_deadline"
+		env   = "SQI_OPENJD_EXPR_SUBMISSION_DEADLINE"
+	)
+	cases := []struct {
+		name   string
+		value  time.Duration
+		reject bool
+	}{
+		{"negative", -time.Second, true},
+		{"zero", 0, true},
+		{"below floor", config.MinOpenJDExprSubmissionDeadline - time.Millisecond, true},
+		{"at floor", config.MinOpenJDExprSubmissionDeadline, false},
+		{"at the default", config.DefaultOpenJDExprSubmissionDeadline, false},
+		{"at ceiling", config.MaxOpenJDExprSubmissionDeadline, false},
+		{"above ceiling", config.MaxOpenJDExprSubmissionDeadline + time.Second, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := config.DefaultConfig()
+			cfg.OpenJD.ExprSubmissionDeadline = tc.value
+
+			var found *config.ValidationError
+			errs := config.Validate(cfg)
+			for i := range errs {
+				if errs[i].Field == field {
+					found = &errs[i]
+					break
+				}
+			}
+			switch {
+			case tc.reject && found == nil:
+				t.Fatalf("%s = %s must be rejected", field, tc.value)
+			case !tc.reject && found != nil:
+				t.Fatalf("%s = %s must be accepted, got %v", field, tc.value, *found)
+			case !tc.reject:
+				return
+			}
+
+			// Actionable message: the bounds, the value seen, and both ways an
+			// operator could have set it.
+			for _, want := range []string{
+				config.MinOpenJDExprSubmissionDeadline.String(),
+				config.MaxOpenJDExprSubmissionDeadline.String(),
+				tc.value.String(),
+				env,
+				field,
+			} {
+				if !strings.Contains(found.Message, want) {
+					t.Errorf("%s message %q does not mention %q", field, found.Message, want)
+				}
+			}
+		})
+	}
+}
+
+// TestValidate_ExprSubmissionDeadlineIsIndependent proves the new key does not
+// share a comparison with the four int64 limits: one out-of-range value
+// produces exactly one error, naming itself.
+func TestValidate_ExprSubmissionDeadlineIsIndependent(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.OpenJD.ExprSubmissionDeadline = time.Millisecond
+	var fields []string
+	for _, e := range config.Validate(cfg) {
+		fields = append(fields, e.Field)
+	}
+	if len(fields) != 1 || fields[0] != "openjd.expr_submission_deadline" {
+		t.Fatalf("one out-of-range deadline must produce exactly one error naming "+
+			"openjd.expr_submission_deadline, got %v", fields)
+	}
+}
+
+func TestLoad_ExprSubmissionDeadlineFromEnv(t *testing.T) {
+	t.Setenv("SQI_OPENJD_EXPR_SUBMISSION_DEADLINE", "12s")
+
+	cfg, err := config.Load("", config.FlagOverrides{})
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if got, want := cfg.OpenJD.ExprSubmissionDeadline, 12*time.Second; got != want {
+		t.Errorf("expr_submission_deadline = %s, want %s", got, want)
+	}
+}
+
+func TestLoad_ExprSubmissionDeadlineFromFile(t *testing.T) {
+	path := t.TempDir() + "/sqi.yaml"
+	if err := os.WriteFile(path, []byte("openjd:\n  expr_submission_deadline: 30s\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := config.Load(path, config.FlagOverrides{})
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if got, want := cfg.OpenJD.ExprSubmissionDeadline, 30*time.Second; got != want {
+		t.Errorf("expr_submission_deadline = %s, want %s", got, want)
+	}
+}
+
+// TestLoad_ExprSubmissionDeadlineOmittedKeepsDefault is the "a fresh install
+// changes nothing" assertion for the new key: a config file that mentions
+// openjd but not this key must leave it at its default, not at zero — which
+// Validate rejects, so a dropped default would be a startup failure.
+func TestLoad_ExprSubmissionDeadlineOmittedKeepsDefault(t *testing.T) {
+	path := t.TempDir() + "/sqi.yaml"
+	if err := os.WriteFile(path, []byte("openjd:\n  enforce_limits: false\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := config.Load(path, config.FlagOverrides{})
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if got, want := cfg.OpenJD.ExprSubmissionDeadline, config.DefaultOpenJDExprSubmissionDeadline; got != want {
+		t.Fatalf("an omitted expr_submission_deadline must keep the default %s, got %s", want, got)
+	}
+}
+
+func TestLoad_ExprSubmissionDeadlineMalformedEnvIsAnError(t *testing.T) {
+	t.Setenv("SQI_OPENJD_EXPR_SUBMISSION_DEADLINE", "soon")
+	if _, err := config.Load("", config.FlagOverrides{}); err == nil {
+		t.Fatal("a non-duration SQI_OPENJD_EXPR_SUBMISSION_DEADLINE must be a load error, not a silent default")
 	}
 }
 

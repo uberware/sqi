@@ -153,11 +153,12 @@ type fileConfig struct {
 	} `yaml:"discovery"`
 
 	OpenJD *struct {
-		EnforceLimits             *bool  `yaml:"enforce_limits"`
-		ExprOperationLimit        *int64 `yaml:"expr_operation_limit"`
-		ExprMemoryLimit           *int64 `yaml:"expr_memory_limit"`
-		ExprTemplatePositions     *int64 `yaml:"expr_template_positions"`
-		ExprTemplateRetainedBytes *int64 `yaml:"expr_template_retained_bytes"`
+		EnforceLimits             *bool   `yaml:"enforce_limits"`
+		ExprOperationLimit        *int64  `yaml:"expr_operation_limit"`
+		ExprMemoryLimit           *int64  `yaml:"expr_memory_limit"`
+		ExprTemplatePositions     *int64  `yaml:"expr_template_positions"`
+		ExprTemplateRetainedBytes *int64  `yaml:"expr_template_retained_bytes"`
+		ExprSubmissionDeadline    *string `yaml:"expr_submission_deadline"`
 	} `yaml:"openjd"`
 
 	Diagnostics *struct {
@@ -420,6 +421,16 @@ func mergeOpenJDFile(cfg *Config, fc fileConfig) {
 	if fc.OpenJD.ExprTemplateRetainedBytes != nil {
 		cfg.OpenJD.ExprTemplateRetainedBytes = *fc.OpenJD.ExprTemplateRetainedBytes
 	}
+	// A malformed duration leaves the default in place, matching every other
+	// duration this loader reads from a file (see mergeSchedulerFile). The
+	// default is in range, so an unparseable value cannot turn into a startup
+	// failure here -- the env layer, which reports its own parse errors, is
+	// where a typo is caught.
+	if fc.OpenJD.ExprSubmissionDeadline != nil {
+		if d, err := time.ParseDuration(*fc.OpenJD.ExprSubmissionDeadline); err == nil {
+			cfg.OpenJD.ExprSubmissionDeadline = d
+		}
+	}
 }
 
 func mergeDiagnosticsFile(cfg *Config, fc fileConfig) {
@@ -649,6 +660,7 @@ func applyEnv(cfg *Config) error {
 	collect(setInt64(&cfg.OpenJD.ExprMemoryLimit, "SQI_OPENJD_EXPR_MEMORY_LIMIT"))
 	collect(setInt64(&cfg.OpenJD.ExprTemplatePositions, "SQI_OPENJD_EXPR_TEMPLATE_POSITIONS"))
 	collect(setInt64(&cfg.OpenJD.ExprTemplateRetainedBytes, "SQI_OPENJD_EXPR_TEMPLATE_RETAINED_BYTES"))
+	collect(setDuration(&cfg.OpenJD.ExprSubmissionDeadline, "SQI_OPENJD_EXPR_SUBMISSION_DEADLINE"))
 
 	collect(setInt(&cfg.Diagnostics.BufferSize, "SQI_DIAGNOSTICS_BUFFER_SIZE"))
 

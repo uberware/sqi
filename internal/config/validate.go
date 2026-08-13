@@ -282,7 +282,8 @@ func validateDiagnostics(cfg DiagnosticsConfig) []ValidationError {
 	return nil
 }
 
-// validateOpenJD validates the four EXPR expression limits.
+// validateOpenJD validates the four EXPR expression limits and the wall-clock
+// submission deadline.
 //
 // These bound what an UNAUTHENTICATED job submission may spend inside the
 // expression checker, so an out-of-range value is a hard startup failure
@@ -334,6 +335,28 @@ func validateOpenJD(cfg OpenJDConfig) []ValidationError {
 				),
 			})
 		}
+	}
+
+	// The wall-clock backstop is checked separately rather than folded into
+	// the table above: it is a time.Duration, and the durations in this
+	// package are validated in their own comparisons (see validateScheduler's
+	// heartbeat_timeout and unschedulable_grace) so the message can print
+	// "5s" rather than a nanosecond count no operator typed.
+	//
+	// Zero is rejected like the four are, and for a stronger reason: for those
+	// it would mean "unlimited", while here it would mean "give up
+	// immediately". Neither is a setting anyone wants by accident, and an
+	// operator who wants a long deadline has the ceiling to reach for.
+	if d := cfg.ExprSubmissionDeadline; d < MinOpenJDExprSubmissionDeadline ||
+		d > MaxOpenJDExprSubmissionDeadline {
+		errs = append(errs, ValidationError{
+			Field: "openjd.expr_submission_deadline",
+			Message: fmt.Sprintf(
+				"must be between %s and %s, got %s; set %s or %s",
+				MinOpenJDExprSubmissionDeadline, MaxOpenJDExprSubmissionDeadline, d,
+				"SQI_OPENJD_EXPR_SUBMISSION_DEADLINE", "openjd.expr_submission_deadline",
+			),
+		})
 	}
 	return errs
 }
