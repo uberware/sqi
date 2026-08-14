@@ -36,6 +36,8 @@ import (
 	"github.com/uberware/sqi/internal/openjd/expr"
 	"github.com/uberware/sqi/internal/worker/fmtres"
 	"github.com/uberware/sqi/internal/worker/protocol"
+
+	"github.com/uberware/sqi/internal/fsutil"
 )
 
 // TestExprLimits_DefaultsMatchPreE4dConstants pins every default to the
@@ -554,7 +556,7 @@ func resolvePresetErrors(msg *protocol.AssignMsg, workDir string, lim fmtres.Exp
 // presetFiles lists the reference presets this repo ships.
 func presetFiles(t *testing.T) []string {
 	t.Helper()
-	paths, err := filepath.Glob(filepath.Join("..", "..", "..", "presets", "sqi", "*.yaml"))
+	paths, err := fsutil.Glob(filepath.Join("..", "..", "..", "presets", "sqi", "*.yaml"))
 	if err != nil || len(paths) == 0 {
 		t.Fatalf("no reference presets found (glob err=%v): the floors are sized against them", err)
 	}

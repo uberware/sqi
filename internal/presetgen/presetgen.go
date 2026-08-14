@@ -45,6 +45,8 @@ type Index struct {
 // root used for the index's definition field and the published file location.
 // The sha256 is computed over the raw file bytes so the served file always
 // matches the fingerprint the index vouches for.
+//
+// macOS AppleDouble sidecars ("._name") are skipped -- see [fsutil.Glob].
 func Build(presetsDir, definitionDir string) ([]Generated, error) {
 	matches, err := fsutil.Glob(filepath.Join(presetsDir, "*.yaml"))
 	if err != nil {

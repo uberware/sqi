@@ -15,6 +15,7 @@ import (
 	"github.com/google/uuid"
 	"gopkg.in/yaml.v3"
 
+	"github.com/uberware/sqi/internal/fsutil"
 	"github.com/uberware/sqi/internal/store"
 	"github.com/uberware/sqi/internal/store/fake"
 )
@@ -138,7 +139,7 @@ func TestExprLimits_OrDefaults(t *testing.T) {
 // that EXPR's checker does not accept), which is exactly why the baseline is a
 // diff rather than "expect zero errors".
 func TestExprLimits_FloorsAcceptReferencePresets(t *testing.T) {
-	paths, err := filepath.Glob(filepath.Join("..", "..", "presets", "sqi", "*.yaml"))
+	paths, err := fsutil.Glob(filepath.Join("..", "..", "presets", "sqi", "*.yaml"))
 	if err != nil {
 		t.Fatalf("glob presets: %v", err)
 	}
