@@ -158,10 +158,13 @@ type JobStore interface {
 	//
 	// It exists because creating those rows through separate calls left two
 	// defects with no cure at the call site: a failed submission stranded a
-	// pending job that no sweep reaps, and a submission that failed after some
-	// steps were written produced a job whose missing steps made
-	// checkJobCompletion report it completed. Both are properties of partial
-	// creation, so both end here.
+	// pending job that no sweep reaps, and a submission whose write failed
+	// after some steps were persisted produced a job whose missing steps made
+	// checkJobCompletion — which derives job status from the steps that exist —
+	// report it completed. The second needs a STORE failure specifically: an
+	// expansion failure left the step row too, because the old code wrote it
+	// before expanding its tasks, so that case hung pending rather than
+	// completing. Both are properties of partial creation, so both end here.
 	//
 	// The returned JobSubmission carries the rows as stored, the way
 	// [JobStore.CreateJob], [StepStore.CreateStep] and [TaskStore.CreateTask]

@@ -27,9 +27,21 @@ func TestTestingPresets(t *testing.T) {
 		"test-steps-bash":        sharedParams,
 		"test-steps-powershell":  sharedParams,
 	}
-	paths, err := filepath.Glob(filepath.Join("..", "..", "presets", "testing", "*.yaml"))
+	matches, err := filepath.Glob(filepath.Join("..", "..", "presets", "testing", "*.yaml"))
 	if err != nil {
 		t.Fatalf("glob: %v", err)
+	}
+	// Drop macOS AppleDouble sidecars ("._name"), which match *.yaml. They
+	// appear on non-APFS volumes whenever a checkout rewrites a preset, and
+	// counting one as a preset fails this test for a reason that has nothing
+	// to do with the presets. internal/presetgen filters them for the same
+	// reason -- see isAppleDouble there.
+	paths := make([]string, 0, len(matches))
+	for _, p := range matches {
+		if strings.HasPrefix(filepath.Base(p), "._") {
+			continue
+		}
+		paths = append(paths, p)
 	}
 	if len(paths) != len(want) {
 		t.Fatalf("expected %d testing presets, found %d: %v", len(want), len(paths), paths)
