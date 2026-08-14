@@ -767,23 +767,55 @@ func TestEvalCompare_UnknownLink(t *testing.T) {
 // catch. Both inputs were verified to do exactly that, at 600,000 operators,
 // before maxEvalDepth existed. The depths used here are just past the bound, so
 // the test measures the guard rather than the stack.
+//
+// IT NO LONGER GOES THROUGH Parse, AND THAT IS A REAL CHANGE IN WHAT IS
+// REACHABLE, not a test convenience. maxSourceBytes (limits.go, 10,000 bytes)
+// bounds one expression's SOURCE, and the cheapest chain source can express
+// costs two bytes an operator, so the deepest tree any PARSEABLE expression
+// can now produce is about 5,000 — half of maxEvalDepth. Every case below
+// used to be written as source and each is now built as a tree directly,
+// which exercises the identical evalNode guard on the identical shape.
+//
+// maxEvalDepth is kept rather than deleted, for two reasons. It is the floor
+// that catches a deep tree however it arrives, and Parse is not the only way
+// a tree can be built (this test is itself the proof). And deleting a guard
+// because a newer, outer guard happens to hide it today is how the original
+// hazard comes back the moment the outer one moves.
 func TestEval_RecursionDepthIsBounded(t *testing.T) {
+	// deepChain builds a left-deep tree of n operators, the shape a flat
+	// left-associative run parses into.
+	deepChain := func(n int, mk func(l, r Node) Node, leaf func() Node) Node {
+		root := leaf()
+		for range n {
+			root = mk(root, leaf())
+		}
+		return root
+	}
+	boolLeaf := func() Node { return &BoolLit{Val: true} }
+	intLeaf := func() Node { return &IntLit{Val: 1} }
+	logical := func(op Op) func(l, r Node) Node {
+		return func(l, r Node) Node { return &Logical{Op: op, L: l, R: r} }
+	}
+	add := func(l, r Node) Node { return &Binary{Op: OpAdd, L: l, R: r} }
+
+	const depth = maxEvalDepth + 10
 	tests := []struct {
 		name string
-		src  string
+		root Node
 	}{
-		{"or chain", "true" + strings.Repeat(" or true", maxEvalDepth+10)},
-		{"and chain", "true" + strings.Repeat(" and true", maxEvalDepth+10)},
-		{"addition chain", "1" + strings.Repeat(" + 1", maxEvalDepth+10)},
-		{"comparison operands", "1" + strings.Repeat(" + 1", maxEvalDepth+10) + " < 2"},
+		{"or chain", deepChain(depth, logical(OpOr), boolLeaf)},
+		{"and chain", deepChain(depth, logical(OpAnd), boolLeaf)},
+		{"addition chain", deepChain(depth, add, intLeaf)},
+		{"comparison operands", &Compare{
+			Ops:       []Op{OpLt},
+			Operands:  []Node{deepChain(depth, add, intLeaf), &IntLit{Val: 2}},
+			OpOffsets: []int{0},
+		}},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			e, err := Parse(tc.src)
-			if err != nil {
-				t.Fatalf("Parse of a %d-deep %s = %v, want it to parse: the parser builds this iteratively", maxEvalDepth+10, tc.name, err)
-			}
-			_, err = e.Eval(nil, TAny)
+			e := &Expression{src: "<built directly, past maxSourceBytes as source>", root: tc.root}
+			_, err := e.Eval(nil, TAny)
 			if err == nil {
 				t.Fatalf("Eval of a %d-deep %s = nil error, want a depth error", maxEvalDepth+10, tc.name)
 			}

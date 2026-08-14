@@ -73,7 +73,15 @@ The extension is implemented and tested as follows:
   an operation budget cannot bound seconds; and **`maxTasksPerJob`**
   (`internal/openjd/expand.go`), an always-on cap on the tasks one job may
   produce summed across steps. A deadline breach is a **503**, never a 4xx —
-  it is not a verdict on the template.
+  it is not a verdict on the template. **H2 adds a third**, and it is the only
+  bound of any kind that applies *before* evaluation: **`maxSourceBytes`**
+  (`internal/openjd/expr/limits.go`), an always-on cap of **10,000 bytes on the
+  source of one expression**, checked at the top of `Parse` before the source is
+  tokenized. Everything else above is metered from inside an evaluation, so
+  until it existed a single 4 MB expression could parse successfully — measured
+  at 427.6 MB of live heap and 544 ms, with every configured budget and even an
+  already-expired deadline untouched. It is not configurable, and an oversized
+  expression is a **422**: too long is a deterministic property of the template.
 - **Operator configuration of all nine limits** — since EXPR sub-project
   E4d, every one of the bounds above is a config key rather than a compiled
   constant, on both binaries, with a validated range and a cross-binary

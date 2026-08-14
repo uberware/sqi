@@ -35,8 +35,11 @@ const maxElements = 10_000_000
 // with errTooLarge regardless of what WithMemoryLimit allows.
 const maxStringBytes = 10_000_000
 
-// maxParseDepth is the third bound, and the only one that applies before any
-// value exists: how deep the recursive-descent parser (parser.go) may nest.
+// maxParseDepth is the third bound, and the first of the two that apply before
+// any value exists: how deep the recursive-descent parser (parser.go) may nest.
+// (maxSourceBytes below is the other, and applies earlier still — before a
+// single token is read. This paragraph said "the only one" until that bound
+// existed.)
 //
 // The two bounds above cap what one operation ALLOCATES. This one caps the Go
 // STACK the parser itself consumes, which is a strictly worse failure mode:
@@ -80,7 +83,81 @@ const maxParseDepth = 500
 // operators in one expression can reach it at all), and forty times below the
 // lowest measured crash point, which leaves room for a platform with a smaller
 // stack or a deeper frame than the one measured.
+//
+// NO PARSEABLE EXPRESSION REACHES IT ANY MORE, since maxSourceBytes below
+// landed: a flat chain costs at least two source bytes an operator, so 10,000
+// bytes buys about 5,000 levels — half of this. It is deliberately kept rather
+// than deleted or retuned. It is the floor that catches a deep tree however it
+// arrives, and Parse is not the only way one can be built (this package's own
+// TestEval_RecursionDepthIsBounded now constructs the tree directly, which is
+// what keeps the guard tested at all); and removing a guard because a newer,
+// outer guard currently hides it is how the original hazard returns the moment
+// the outer bound moves.
 const maxEvalDepth = 10_000
+
+// maxSourceBytes is the fifth bound, and the only one of the five that applies
+// before the parser has read a single token: how many bytes of source text ONE
+// expression may be.
+//
+// It closes a gap the other four left wide open. maxElements and
+// maxStringBytes bound what one EVALUATION allocates; the specification's own
+// configurable limits (meter.go's memory and operation budgets, sub-project
+// E1), the template-wide cumulative budget (E4c) and the wall-clock deadline
+// (H1) are all metered from inside an evaluation too — meter.charge and
+// meter.reserve are the only places any of them is consulted. Parsing happens
+// strictly BEFORE all of that: tokenize builds the whole token slice and the
+// parser the whole tree, and nothing in that path ever asked how much it was
+// spending. maxParseDepth does not help, because it bounds recursive-descent
+// STACK FRAMES: a flat left-associative chain such as "1+1+1+…" is read by
+// parseBinaryLevel in a LOOP, consumes no recursion at all, and sails past it
+// — maxEvalDepth's own comment above says as much about the tree that chain
+// produces.
+//
+// Measured on the machine this was written on, before this bound existed: a
+// single 4,000,001-byte "1+1+1+…" expression parsed SUCCESSFULLY through
+// Parse in 544 ms, holding 427.6 MB of live heap and churning 1,403.3 MB in
+// total. Through the whole submission path a 4 MiB request body — which is
+// exactly what POST /api/v1/jobs accepts, anonymously when auth is off — cost
+// roughly 765 MB of peak heap per in-flight request, and six concurrent
+// requests reached 4,582 MB. An already-expired deadline did not help: the
+// parse ran to completion before anything looked at the clock.
+//
+// THE BOUND IS ON SOURCE LENGTH RATHER THAN ON NODE COUNT, which is the
+// weaker of the two candidates in precision and the stronger in every other
+// respect. A node-count bound would be more exact — it would charge a nested
+// list literal more than the same bytes of whitespace — but it has to be
+// threaded through the lexer and every parse production to be checked as the
+// tree grows, and a bound the tokenizer itself can still outrun (the token
+// slice for 4 MB of "+1" is already 200 MB before one node exists) is not the
+// bound this hazard needs. A length check is O(1), reads no input, is
+// shape-independent, and fires before a single byte is allocated. It bounds
+// PEAK memory directly because expressions are parsed one at a time and
+// discarded: E3's let: retains VALUES, not trees, so the peak tree a template
+// can hold is one expression's worth. At this limit that peak is ~1.1 MB and
+// the transient churn ~3.9 MB (measured: parsing 10,001 bytes of the same flat
+// chain allocated 3.2 MB, and the worst shape tried, a 10,001-byte list
+// literal, 3.7 MB) — an amplification of roughly 110x retained and 390x
+// transient, applied to 10 KB instead of to the whole 4 MiB body.
+//
+// It ALWAYS applies and is not configurable, for the same reason as the four
+// bounds above: it is a safety property rather than a conformance one, and
+// nothing an operator can set in openjd.expr_* raises or lowers it. It sits
+// underneath all of them.
+//
+// The value is 10,000 bytes, which is over 100x the largest expression that
+// exists in any template sqi has ever seen. Every {{ }} body and every let:
+// binding in the vendored conformance fixtures, the official samples and
+// sqi's own reference presets was measured — 1,401 expressions — and the
+// longest is 99 bytes, a four-line comprehension. See
+// TestParse_AcceptsTheLargestRealisticExpressions, which parses the five
+// largest of them verbatim and asserts the headroom, so a later attempt to
+// tighten this toward real-world sizes fails a test rather than a submission.
+//
+// ONE KNOCK-ON, RECORDED HERE AS WELL AS AT maxEvalDepth: at this value no
+// PARSEABLE expression can build a tree deep enough to reach that bound, since
+// a chain costs at least two source bytes a level. maxEvalDepth stays anyway,
+// for the reasons its own comment gives.
+const maxSourceBytes = 10_000
 
 // errTooLarge is wrapped by every bound failure so callers can match it.
 var errTooLarge = errors.New("the result is too large")
@@ -94,6 +171,17 @@ var errTooLarge = errors.New("the result is too large")
 func checkElementCount(n int) error {
 	if n < 0 || n > maxElements {
 		return fmt.Errorf("%w: %d elements exceeds the limit of %d", errTooLarge, n, maxElements)
+	}
+	return nil
+}
+
+// checkSourceBytes is checkElementCount for an expression's SOURCE length, in
+// bytes, and it is the one bound in this file that is checked before any input
+// is read rather than before an allocation is made. See maxSourceBytes.
+func checkSourceBytes(n int) error {
+	if n > maxSourceBytes {
+		return fmt.Errorf("%w: the expression is %d bytes of source, which exceeds the limit of %d",
+			errTooLarge, n, maxSourceBytes)
 	}
 	return nil
 }

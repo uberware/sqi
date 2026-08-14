@@ -811,9 +811,10 @@
 //     reported by Eval (verified directly: WithMemoryLimit(0) and
 //     WithOperationLimit(-1) both fail with "... must be positive, got ...").
 //
-//     THE FLOOR RELATIONSHIP. limits.go's four hard, non-configurable bounds
-//     — maxElements, maxStringBytes, maxParseDepth, maxEvalDepth, all
-//     described above — sit UNDERNEATH these two configurable ones and are
+//     THE FLOOR RELATIONSHIP. limits.go's five hard, non-configurable bounds
+//     — maxElements, maxStringBytes, maxParseDepth, maxEvalDepth and
+//     maxSourceBytes, all described above — sit UNDERNEATH these two
+//     configurable ones and are
 //     not raised by them: raising WithMemoryLimit does not raise what one
 //     operation may allocate. Evaluating "'a' * 20000000" under
 //     WithMemoryLimit(1_000_000_000) — a budget ten times the string it
@@ -1030,16 +1031,44 @@
 //     TestUnique_IsBoundedByTheOperationLimit, all passing. Three things
 //     this does NOT mean: the fixed floor (limits.go) still bounds what a
 //     single operation may allocate, unchanged by either configurable
-//     limit; maxParseDepth still guards PARSING, a phase no evaluation-time
-//     budget can reach at all, so a hostile expression can still be
-//     arbitrarily deep before a single operation charge exists to stop it;
+//     limit; maxParseDepth and maxSourceBytes still guard PARSING, a phase
+//     no evaluation-time budget can reach at all, so what a hostile
+//     expression may spend before a single operation charge exists to stop
+//     it is whatever those two hard bounds allow and nothing narrower;
 //     and limits are per-Eval, so a template with many expressions gets
 //     many independent budgets, one per expression evaluated — a
 //     cumulative per-template budget, if one turns out to be needed, is
 //     sub-project E2's or E4's question.
 //
-//     A FIFTH BOUND, DIFFERENTLY SHAPED: THE WALL-CLOCK DEADLINE
-//     (WithDeadline, sub-project H1). Everything above bounds WORK — bytes
+//     NONE OF IT BOUNDS PARSING, AND FOR A LONG TIME NOTHING DID. Every
+//     limit named in this bullet — the two configurable ones, the floor
+//     beneath them, the template-wide budget internal/openjd layers on top
+//     (E4c) and the deadline below — is consulted from exactly two places,
+//     meter.charge and meter.reserve, and both of those run during
+//     EVALUATION. Parse ran first and unwatched: tokenize built the entire
+//     token slice and the parser the entire tree before any of the above
+//     existed to be spent. maxParseDepth was no help, because it bounds
+//     recursive-descent STACK FRAMES and a flat left-associative chain is
+//     read in a loop. Measured, with EXPR supported and the walk live: one
+//     4,000,001-byte "1+1+1+…" expression parsed SUCCESSFULLY in 544 ms,
+//     holding 427.6 MB of live heap and churning 1,403.3 MB; through the
+//     submission path a 4 MiB request body — what POST /api/v1/jobs accepts,
+//     anonymously when auth is off — cost ~765 MB of peak heap per in-flight
+//     request, and six concurrent requests reached 4,582 MB. An
+//     already-expired deadline changed nothing: the parse finished before
+//     anything read the clock. maxSourceBytes (limits.go, 10,000 bytes,
+//     checked at the top of Parse before tokenize) is what closes it — the
+//     one bound in this package that applies BEFORE evaluation begins, and
+//     therefore the only one that can. It is a 4xx verdict, not a 503: a
+//     source that is too long is a deterministic property of the template,
+//     so it reaches a caller as an ordinary parse error (a ValidationError
+//     through internal/openjd) rather than through ErrDeadlineExceeded.
+//
+//     THE WALL-CLOCK DEADLINE, A BOUND OF A DIFFERENT SHAPE ENTIRELY
+//     (WithDeadline, sub-project H1). This paragraph used to open "A FIFTH
+//     BOUND"; the ordinal is dropped rather than corrected to a sixth,
+//     because it counted limits.go's floor, which has since grown by one and
+//     may again. Everything above bounds WORK — bytes
 //     held, operations performed, elements built, nesting depth. None of
 //     them bounds TIME, and they cannot: section 1.3.10 prices 256 bytes at
 //     one operation, so '("x" * 900000).title()' spends ~7,000 of a 10,000
@@ -1151,17 +1180,30 @@
 //     is, while the left-deep tree it produces is then walked recursively by
 //     evalNode — which overflowed the stack for real between 400,000 and
 //     500,000 operators.
-//     None of the four is the spec's own configurable memory and operation
+//     A FIFTH bound, maxSourceBytes (10,000 bytes), applies EARLIER THAN ANY
+//     of them — at the top of Parse, before tokenize reads a byte — because
+//     the four above between them still left the whole PARSE unmetered: a
+//     single 4 MB flat chain parsed successfully in 544 ms while holding
+//     427.6 MB of live heap, passing maxParseDepth untouched for the reason
+//     the fourth bound's paragraph just gave, and reaching maxEvalDepth only
+//     after every one of those bytes had been tokenized and turned into
+//     nodes. It bounds source LENGTH rather than node count on purpose; see
+//     limits.go for why, and for the headroom over real templates (the
+//     largest expression in any vendored fixture, sample or preset is 99
+//     bytes).
+//     None of the five is the spec's own configurable memory and operation
 //     limits (sections 1.3.9 and 1.3.10) — those are a SEPARATE mechanism,
 //     covered in the BOUNDED EVALUATION bullet below, and this paragraph's
 //     historical claim that this package must not be handed untrusted
 //     expressions before they exist is corrected there rather than restated
 //     here: sub-project E1 delivered them, on by default, and that fence is
 //     now lifted, with a residual stated precisely in that bullet rather
-//     than the problem being declared gone outright. What the four bounds
+//     than the problem being declared gone outright. What the five bounds
 //     here still do, unchanged: stop one operation from allocating unbounded
-//     memory and stop the parser and the evaluator from overflowing the
-//     stack — a narrower job than the configurable limits below, which stop
+//     memory, stop the parser and the evaluator from overflowing the
+//     stack, and stop one expression's SOURCE from being large enough that
+//     merely reading it costs hundreds of megabytes — a narrower job than
+//     the configurable limits below, which stop
 //     a pathological expression from doing unbounded TOTAL work across many
 //     operations. The one remaining walk over a
 //     parsed tree — ast.go's walk, which Expression.Names uses — needs no bound

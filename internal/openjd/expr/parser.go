@@ -21,7 +21,17 @@ type Expression struct {
 // section 1.1's exclusion list — is rejected. That direction is deliberate: a
 // reader borrowed from a full Python parser would silently ACCEPT syntax this
 // package cannot evaluate, whereas anything unimplemented here fails to parse.
+// The FIRST thing it does is bound the source's length (limits.go's
+// maxSourceBytes). That check has to come before tokenize, not after it and
+// not inside the parser: every other bound this package and its callers have
+// — the section 1.3.9/1.3.10 budgets, the template-wide budget, the operator
+// limits, the wall-clock deadline — is metered during EVALUATION, so until
+// this check runs nothing at all is watching. See maxSourceBytes for what one
+// unbounded parse measured.
 func Parse(src string) (*Expression, error) {
+	if err := checkSourceBytes(len(src)); err != nil {
+		return nil, wrapAt(src, 0, err)
+	}
 	toks, err := tokenize(src)
 	if err != nil {
 		return nil, err
