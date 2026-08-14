@@ -34,29 +34,18 @@ import (
 // stubSubmitter implements [JobSubmitter] so these tests can drive the
 // handlers' error mapping and their deadline arithmetic directly.
 //
-// A stub is used rather than the real pipeline because the real pipeline
-// cannot produce a deadline breach today: EXPR is StatusInProgress, so
-// validateExtensions rejects every EXPR-declaring template before any
-// expression is evaluated, and a template that declares no extensions never
-// touches the meter the deadline lives in. The end-to-end proof — that
-// openjd.Submitter really returns expr.ErrDeadlineExceeded, unwrapped by any
-// SubmitValidationError — is TestSubmit_DeadlineIsNotASubmitValidationError in
-// internal/openjd, which flips the registry entry the way that package's other
-// submit tests do.
+// It is no longer the only proof. Sub-project H2 made EXPR StatusSupported, so
+// a request really can reach an expression evaluation, and the end-to-end tests
+// at the bottom of this file drive the REAL openjd.Submitter through these same
+// handlers with a deadline that really expires. The stub tests are kept as the
+// narrow unit-level guard on one link: given an error of that shape, which
+// status code does this handler produce. Keeping both is what localizes a
+// failure — both failing means the mapping broke, only the end-to-end failing
+// means the pipeline stopped producing the sentinel.
 //
-// AN OBLIGATION FOR SUB-PROJECT H2, which is the first wave that can discharge
-// it: the bridge between those two halves is a HAND-COPIED error shape
-// (deadlineErr below). Nothing proves that a real submission breaching a real
-// deadline produces a 503 end to end — only that the pipeline produces the
-// sentinel, and that this handler maps the sentinel to 503. If the pipeline
-// ever wrapped the breach in a *SubmitValidationError, both halves would keep
-// passing and every deadline would become a 422. That test cannot be written
-// today (no request can reach an evaluation while EXPR is StatusInProgress);
-// the moment H2 flips the status it can be, and it should be. It is listed in
-// TestConformance_EXPRNotSupported's H2 checklist as item 2.
-//
-// What is tested HERE is the half that lives here: which
-// status code that error becomes.
+// The stub also remains the only way to inject error shapes the real pipeline
+// cannot be made to produce on demand, which is what the deadline-arithmetic
+// tests below need: a submitter that records its options and stops.
 type stubSubmitter struct {
 	err  error
 	opts openjd.SubmitOptions // the options of the most recent call
@@ -297,11 +286,11 @@ func TestNewRouter_SubmissionDeadlineReachesBothHandlers(t *testing.T) {
 //
 // Before EXPR sub-project H1's task 5 it reached the full validator with no
 // operator limits and no time bound at all — anonymously, since auth is off by
-// default. The mapping is asserted on the shared helper rather than through the
-// route because the real validator cannot produce a deadline today (EXPR is
-// StatusInProgress, so the walk never runs); internal/product's
-// TestValidateParsed_DeadlineSurvivesAsTheSentinel is the other half, proving
-// the error this helper matches is the error that path really returns.
+// default. The mapping is asserted on the shared helper here, which keeps the
+// unit-level guard on the status choice alone;
+// TestCreateProduct_RealValidationDeadlineIsA503NotA400 below drives the same
+// mapping through the route with the real validator, which it can now that EXPR
+// is StatusSupported.
 func TestProductTemplateValidation_DeadlineIsA503(t *testing.T) {
 	st := fake.New()
 	h := newProductHandler(product.NewCatalog(st), &stubSubmitter{}, nil, st,
@@ -425,5 +414,210 @@ func TestSubmitJob_NoConfiguredDeadlineMeansNoDeadline(t *testing.T) {
 	}
 	if !sub.opts.Deadline.IsZero() {
 		t.Fatalf("deadline = %v, want the zero time when none is configured", sub.opts.Deadline)
+	}
+}
+
+// ── end to end: a real pipeline, a real deadline, a real 503 ────────────────
+//
+// Everything above this line stops at one link of the chain. These tests are
+// the bridge sub-project H1 could not build: while EXPR was StatusInProgress
+// validateExtensions rejected every EXPR-declaring template before a single
+// expression was evaluated, so no HTTP request could reach the meter the
+// deadline lives in, and the two halves of the proof — "the pipeline returns
+// the sentinel" (internal/openjd) and "this handler maps the sentinel to 503"
+// (above) — were joined only by a hand-copied error string. H2 flipped the
+// status, so the whole chain is now reachable from a request.
+
+// exprDeadlineE2ETemplate is a valid EXPR job template whose one expression is
+// a CALL.
+//
+// THE CALL IS THE POINT, and it is the trap H1 documented. A bare literal such
+// as "{{ [1, 2, 3] }}" performs no meter.charge at all, so the meter never
+// samples the clock, the position resolves however long ago the deadline
+// passed, and a test built on one submits happily and proves nothing while
+// looking like it proves everything. len() charges, and the meter checks the
+// deadline on the very first charge (see expr/meter.go's checkDeadline).
+//
+// Every test below pairs the expired-deadline run with a generous-deadline
+// control that must be ACCEPTED. That pairing is what makes the fixture's
+// meter-tripping observable rather than assumed: a fixture that never charged
+// would be accepted in both runs, and the control would still pass while the
+// real assertion silently stopped testing anything.
+const exprDeadlineE2ETemplate = `
+specificationVersion: jobtemplate-2023-09
+extensions:
+- EXPR
+name: ExprDeadlineEndToEnd
+steps:
+- name: S
+  script:
+    actions:
+      onRun:
+        command: echo
+        args: ["{{ len([1, 2, 3]) }}"]
+`
+
+// expiredDeadline is the configured duration used to force a breach.
+//
+// It is a duration, not an instant, because that is all an operator configures:
+// the handlers turn it into an absolute time at the top of each request
+// (see TestSubmitJob_DeadlineIsComputedPerRequest), so a test cannot hand them
+// one already in the past. A single nanosecond is spent many times over by the
+// YAML parse that runs before the first charge, so the breach is not a race:
+// the alternative would need the whole parse and walk to complete inside one
+// nanosecond.
+const expiredDeadline = time.Nanosecond
+
+// generousDeadline is the control's configured duration: far more than the
+// fixture needs, so the only difference between the two runs is the clock.
+const generousDeadline = time.Minute
+
+// seedExprSubmitPrereqs inserts the farm and queue an EXPR submission needs,
+// under the fixed IDs the requests below use.
+func seedExprSubmitPrereqs(t *testing.T, st *fake.Store) {
+	t.Helper()
+	ctx := t.Context()
+	if _, err := st.CreateFarm(ctx, store.Farm{ID: "farm-1", Name: "expr-farm"}); err != nil {
+		t.Fatalf("CreateFarm: %v", err)
+	}
+	if _, err := st.CreateQueue(ctx, store.Queue{ID: "queue-1", FarmID: "farm-1", Name: "expr-queue"}); err != nil {
+		t.Fatalf("CreateQueue: %v", err)
+	}
+}
+
+// TestSubmitJob_RealSubmitterDeadlineIsA503NotA422 drives POST /api/v1/jobs
+// with the real [openjd.Submitter] and an EXPR template that really reaches the
+// meter.
+//
+// This is the assertion the stub cannot make. If the pipeline ever wrapped a
+// deadline breach in a *SubmitValidationError — the client-fault type — the
+// stub test and internal/openjd's would both keep passing and every deadline
+// would quietly become a 422, telling submitters their perfectly valid template
+// is wrong because the server happened to be busy.
+func TestSubmitJob_RealSubmitterDeadlineIsA503NotA422(t *testing.T) {
+	submit := func(t *testing.T, deadline time.Duration) *httptest.ResponseRecorder {
+		t.Helper()
+		st := fake.New()
+		seedExprSubmitPrereqs(t, st)
+		h := newJobHandler(st, openjd.NewSubmitter(st), &fakeScheduler{}, ws.NoopNotifier{},
+			newTestLogger(), testRetryDefaults, false, deadline)
+
+		req := newReq(t, http.MethodPost,
+			"/api/v1/jobs?farm_id=farm-1&queue_id=queue-1", strings.NewReader(exprDeadlineE2ETemplate))
+		req.Header.Set("Content-Type", "application/yaml")
+		rr := httptest.NewRecorder()
+		h.submitJob(rr, req)
+		return rr
+	}
+
+	if rr := submit(t, generousDeadline); rr.Code != http.StatusCreated {
+		t.Fatalf("the control submission was not accepted: status = %d, want %d — body: %s.\n"+
+			"The expired-deadline assertion below is only meaningful if this fixture is "+
+			"otherwise submittable; a template rejected for its own reasons would produce "+
+			"a failure whatever the clock said", rr.Code, http.StatusCreated, rr.Body)
+	}
+
+	rr := submit(t, expiredDeadline)
+	if rr.Code == http.StatusCreated {
+		t.Fatalf("an expired deadline still accepted the submission; the fixture's expression "+
+			"is probably not charging the meter (a literal charges nothing) — body: %s", rr.Body)
+	}
+	if rr.Code == http.StatusUnprocessableEntity {
+		t.Fatalf("a real wall-clock deadline was reported as 422 (invalid template); the same "+
+			"body was accepted moments ago with a longer deadline — body: %s", rr.Body)
+	}
+	if rr.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want %d (service unavailable) — body: %s",
+			rr.Code, http.StatusServiceUnavailable, rr.Body)
+	}
+}
+
+// TestSubmitProductJob_RealSubmitterDeadlineIsA503NotA422 is the same proof on
+// the other submission route, whose 503 branch is a separate copy of the same
+// mapping in a different handler.
+func TestSubmitProductJob_RealSubmitterDeadlineIsA503NotA422(t *testing.T) {
+	submit := func(t *testing.T, deadline time.Duration) *httptest.ResponseRecorder {
+		t.Helper()
+		st := fake.New()
+		seedExprSubmitPrereqs(t, st)
+		if _, err := st.CreateProduct(t.Context(), store.Product{
+			Name:     "expr-product",
+			Title:    "EXPR Product",
+			Template: exprDeadlineE2ETemplate,
+			Format:   store.TemplateFormatYAML,
+		}); err != nil {
+			t.Fatalf("CreateProduct: %v", err)
+		}
+		h := newProductHandler(product.NewCatalog(st), openjd.NewSubmitter(st), nil, st,
+			newTestLogger(), false, deadline, openjd.ExprLimits{})
+		r := chi.NewRouter()
+		r.Post("/api/v1/products/{name}/jobs", h.submitProductJob)
+
+		req := newReq(t, http.MethodPost, "/api/v1/products/expr-product/jobs",
+			strings.NewReader(`{"farm_id":"farm-1","queue_id":"queue-1"}`))
+		req.Header.Set("Content-Type", "application/json")
+		rr := httptest.NewRecorder()
+		r.ServeHTTP(rr, req)
+		return rr
+	}
+
+	if rr := submit(t, generousDeadline); rr.Code != http.StatusCreated {
+		t.Fatalf("the control submission was not accepted: status = %d, want %d — body: %s",
+			rr.Code, http.StatusCreated, rr.Body)
+	}
+
+	rr := submit(t, expiredDeadline)
+	if rr.Code == http.StatusCreated {
+		t.Fatalf("an expired deadline still accepted the submission — body: %s", rr.Body)
+	}
+	if rr.Code == http.StatusUnprocessableEntity {
+		t.Fatalf("a real wall-clock deadline was reported as 422 — body: %s", rr.Body)
+	}
+	if rr.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want %d — body: %s", rr.Code, http.StatusServiceUnavailable, rr.Body)
+	}
+}
+
+// TestCreateProduct_RealValidationDeadlineIsA503NotA400 covers the third route
+// that walks a client-supplied template, POST /api/v1/products.
+//
+// It does not go through a Submitter at all — [product.ValidateTemplate] runs
+// the walk directly — so its 503 is a third, independent copy of the mapping,
+// and its non-deadline answer is 400 rather than 422. The stub-level half is
+// TestProductTemplateValidation_DeadlineIsA503 above.
+func TestCreateProduct_RealValidationDeadlineIsA503NotA400(t *testing.T) {
+	create := func(t *testing.T, deadline time.Duration) *httptest.ResponseRecorder {
+		t.Helper()
+		st := fake.New()
+		h := newProductHandler(product.NewCatalog(st), openjd.NewSubmitter(st), nil, st,
+			newTestLogger(), false, deadline, openjd.ExprLimits{})
+		r := chi.NewRouter()
+		r.Post("/api/v1/products", h.createProduct)
+
+		req := newReq(t, http.MethodPost, "/api/v1/products", jsonBody(t, map[string]any{
+			"name": "expr-product", "title": "EXPR Product", "version": "1.0.0",
+			"template": exprDeadlineE2ETemplate, "format": "yaml",
+		}))
+		req.Header.Set("Content-Type", "application/json")
+		rr := httptest.NewRecorder()
+		r.ServeHTTP(rr, req)
+		return rr
+	}
+
+	if rr := create(t, generousDeadline); rr.Code != http.StatusCreated {
+		t.Fatalf("the control create was not accepted: status = %d, want %d — body: %s",
+			rr.Code, http.StatusCreated, rr.Body)
+	}
+
+	rr := create(t, expiredDeadline)
+	if rr.Code == http.StatusCreated {
+		t.Fatalf("an expired deadline still accepted the template — body: %s", rr.Body)
+	}
+	if rr.Code == http.StatusBadRequest {
+		t.Fatalf("a real wall-clock deadline was reported as 400 (bad template); the same "+
+			"body was accepted moments ago with a longer deadline — body: %s", rr.Body)
+	}
+	if rr.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want %d — body: %s", rr.Code, http.StatusServiceUnavailable, rr.Body)
 	}
 }
