@@ -57,15 +57,21 @@ func (s *Store) CreateJobSubmission(_ context.Context, sub store.JobSubmission) 
 		s.jobDependencies[job.ID] = existing
 	}
 
+	// Each step and task is stamped with its own time.Now(), mirroring the
+	// SQLite implementation, where tasks within a step sharing one created_at
+	// would silently disable the ready-task ordering tiebreaker and destabilize
+	// ListTasks paging (see insertTasksTx in sqlite/job.go).
 	for _, step := range sub.Steps {
+		rowNow := time.Now().UTC()
 		step.DependsOn = copySlice(step.DependsOn)
-		step.CreatedAt, step.UpdatedAt = now, now
+		step.CreatedAt, step.UpdatedAt = rowNow, rowNow
 		s.steps[step.ID] = step
 		out.Steps = append(out.Steps, step)
 	}
 	for _, task := range sub.Tasks {
+		rowNow := time.Now().UTC()
 		task.Parameters = copyMap(task.Parameters)
-		task.CreatedAt, task.UpdatedAt = now, now
+		task.CreatedAt, task.UpdatedAt = rowNow, rowNow
 		s.tasks[task.ID] = task
 		out.Tasks = append(out.Tasks, task)
 	}
@@ -73,18 +79,69 @@ func (s *Store) CreateJobSubmission(_ context.Context, sub store.JobSubmission) 
 	return out, nil
 }
 
-// validateSubmission rejects a submission that either backend's constraints
-// would reject, before any mutation happens. Callers must hold s.mu.
+// validateSubmission runs, before any mutation happens, the checks that make
+// the fake reject what SQLite's schema would reject. Callers must hold s.mu.
+//
+// It mirrors exactly three constraints: the jobs primary key, the
+// steps_job_name_unique UNIQUE (job_id, name) constraint, and the steps and
+// tasks primary keys — each checked both within the submission and against
+// what is already stored. Without the primary-key checks the fake does not
+// merely accept a duplicate ID, it silently LOSES the row (the map assignment
+// overwrites) and still reports success, so a Submit regression that reused an
+// ID would be green through every fake-backed test and ErrConflict only in
+// production.
+//
+// It does NOT mirror SQLite's foreign keys: a submission naming a nonexistent
+// farm, queue or step is accepted here. That gap is pre-existing in CreateJob,
+// CreateStep and CreateTask and is deliberately left alone rather than closed
+// only on this one path. (job_dependencies.depends_on_job_id carries no FK at
+// all, so accepting an edge to a nonexistent upstream job is correct parity.)
 func (s *Store) validateSubmission(sub store.JobSubmission) error {
 	if _, exists := s.jobs[sub.Job.ID]; exists {
 		return store.ErrConflict
 	}
-	seen := make(map[string]struct{}, len(sub.Steps))
-	for _, step := range sub.Steps {
-		if _, dup := seen[step.Name]; dup {
+	if err := s.validateSubmissionSteps(sub.Steps); err != nil {
+		return err
+	}
+	return s.validateSubmissionTasks(sub.Tasks)
+}
+
+// validateSubmissionTasks rejects a task ID that collides within the
+// submission or with a stored task. Callers must hold s.mu.
+func (s *Store) validateSubmissionTasks(tasks []store.Task) error {
+	ids := make(map[string]struct{}, len(tasks))
+	for _, task := range tasks {
+		if _, dup := ids[task.ID]; dup {
 			return store.ErrConflict
 		}
-		seen[step.Name] = struct{}{}
+		if _, exists := s.tasks[task.ID]; exists {
+			return store.ErrConflict
+		}
+		ids[task.ID] = struct{}{}
+	}
+	return nil
+}
+
+// validateSubmissionSteps rejects a step ID or a (job_id, name) pair that
+// collides within the submission or with a stored step. Callers must hold
+// s.mu.
+func (s *Store) validateSubmissionSteps(steps []store.Step) error {
+	ids := make(map[string]struct{}, len(steps))
+	names := make(map[string]struct{}, len(steps))
+	for _, step := range steps {
+		if _, dup := ids[step.ID]; dup {
+			return store.ErrConflict
+		}
+		if _, exists := s.steps[step.ID]; exists {
+			return store.ErrConflict
+		}
+		ids[step.ID] = struct{}{}
+
+		key := step.JobID + "\x00" + step.Name
+		if _, dup := names[key]; dup {
+			return store.ErrConflict
+		}
+		names[key] = struct{}{}
 		for _, existing := range s.steps {
 			if existing.JobID == step.JobID && existing.Name == step.Name {
 				return store.ErrConflict

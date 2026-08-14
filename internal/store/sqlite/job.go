@@ -6,6 +6,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -225,6 +226,10 @@ func (s *Store) CreateJob(ctx context.Context, job store.Job) (store.Job, error)
 // creators use: a statement bound into a transaction with tx.StmtContext must
 // itself be closed, and the other transactional writers here take the same
 // approach (see UpdateTaskStatus in task.go).
+//
+// Each step and task row is stamped with its OWN time.Now(), exactly as
+// CreateStep and CreateTask do — see insertTasksTx for why sharing one
+// timestamp across the batch would be a behavior change, not an optimization.
 func (s *Store) CreateJobSubmission(ctx context.Context, sub store.JobSubmission) (store.JobSubmission, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -234,7 +239,9 @@ func (s *Store) CreateJobSubmission(ctx context.Context, sub store.JobSubmission
 
 	now := timeToText(time.Now().UTC())
 
-	out := store.JobSubmission{DependsOn: sub.DependsOn}
+	// DependsOn is cloned rather than aliased so a caller mutating the returned
+	// slice cannot reach back into its own input, matching the fake.
+	out := store.JobSubmission{DependsOn: slices.Clone(sub.DependsOn)}
 	if out.Job, err = insertJobTx(ctx, tx, sub.Job, now); err != nil {
 		return store.JobSubmission{}, err
 	}
@@ -243,10 +250,10 @@ func (s *Store) CreateJobSubmission(ctx context.Context, sub store.JobSubmission
 			return store.JobSubmission{}, fmt.Errorf("sqlite: create job dependency %s->%s: %w", sub.Job.ID, up, mapErr(err))
 		}
 	}
-	if out.Steps, err = insertStepsTx(ctx, tx, sub.Steps, now); err != nil {
+	if out.Steps, err = insertStepsTx(ctx, tx, sub.Steps); err != nil {
 		return store.JobSubmission{}, err
 	}
-	if out.Tasks, err = insertTasksTx(ctx, tx, sub.Tasks, now); err != nil {
+	if out.Tasks, err = insertTasksTx(ctx, tx, sub.Tasks); err != nil {
 		return store.JobSubmission{}, err
 	}
 
@@ -276,8 +283,8 @@ func insertJobTx(ctx context.Context, tx *sql.Tx, job store.Job, now string) (st
 }
 
 // insertStepsTx inserts every step inside tx, mirroring CreateStep's argument
-// order exactly.
-func insertStepsTx(ctx context.Context, tx *sql.Tx, steps []store.Step, now string) ([]store.Step, error) {
+// order exactly — including its per-row time.Now() (see insertTasksTx).
+func insertStepsTx(ctx context.Context, tx *sql.Tx, steps []store.Step) ([]store.Step, error) {
 	out := make([]store.Step, 0, len(steps))
 	for _, step := range steps {
 		dependsOnJSON, err := marshalJSON(step.DependsOn)
@@ -288,6 +295,7 @@ func insertStepsTx(ctx context.Context, tx *sql.Tx, steps []store.Step, now stri
 		if err != nil {
 			return nil, err
 		}
+		now := timeToText(time.Now().UTC())
 		row := tx.QueryRowContext(ctx, sqlInsertStep,
 			step.ID, step.JobID, step.Name, dependsOnJSON,
 			step.StepOrder, string(step.Status),
@@ -303,8 +311,25 @@ func insertStepsTx(ctx context.Context, tx *sql.Tx, steps []store.Step, now stri
 }
 
 // insertTasksTx inserts every task inside tx, mirroring CreateTask's argument
-// order exactly.
-func insertTasksTx(ctx context.Context, tx *sql.Tx, tasks []store.Task, now string) ([]store.Task, error) {
+// order exactly — including its per-row time.Now().
+//
+// The per-row stamp is load-bearing, not incidental. Two consumers depend on
+// tasks within one step having DISTINCT created_at values:
+//
+//   - sqlListReadyTasks (task.go) ends its ORDER BY with "t.created_at ASC",
+//     documented there as the stable tiebreaker within a step. One shared
+//     timestamp makes that clause inert and frames dispatch in query-planner
+//     order rather than expansion order.
+//   - ListTasks (task.go) orders by a single column with LIMIT/OFFSET and no
+//     secondary key. SQLite's ORDER BY with LIMIT is a partial sort, so equal
+//     keys make page boundaries unstable: the same task can appear on two
+//     pages while another is omitted.
+//
+// A UUID tiebreaker in the SQL would be deterministic but would order frames
+// randomly rather than in expansion order, which is a different behavior
+// change wearing the same clothes. Stamping per row is what preserves today's
+// behavior, since CreateTask calls time.Now() per row.
+func insertTasksTx(ctx context.Context, tx *sql.Tx, tasks []store.Task) ([]store.Task, error) {
 	out := make([]store.Task, 0, len(tasks))
 	for _, task := range tasks {
 		paramsJSON, err := marshalJSON(task.Parameters)
@@ -315,6 +340,7 @@ func insertTasksTx(ctx context.Context, tx *sql.Tx, tasks []store.Task, now stri
 		if task.RequiredCores != nil {
 			reqCores = sql.NullInt64{Int64: int64(*task.RequiredCores), Valid: true}
 		}
+		now := timeToText(time.Now().UTC())
 		row := tx.QueryRowContext(ctx, sqlInsertTask,
 			task.ID, task.JobID, task.StepID, task.Name, paramsJSON, string(task.Status),
 			nullString(task.AssignedWorkerID), nullTimeToText(task.AssignedAt), now, now, reqCores,

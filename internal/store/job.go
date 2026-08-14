@@ -148,7 +148,11 @@ type JobStore interface {
 	//
 	// The returned JobSubmission carries the rows as stored, the way
 	// [JobStore.CreateJob], [StepStore.CreateStep] and [TaskStore.CreateTask]
-	// each return theirs.
+	// each return theirs. Read the edges back from its DependsOn field, not
+	// from its Job.DependsOn: the returned [Job] is scanned straight from the
+	// insert, which does not join the edge table, so Job.DependsOn is
+	// backend-dependent and must not be relied on. Only [JobStore.GetJob]
+	// populates it.
 	CreateJobSubmission(ctx context.Context, sub JobSubmission) (JobSubmission, error)
 
 	// GetJob returns the job with the given ID, or [ErrNotFound].
