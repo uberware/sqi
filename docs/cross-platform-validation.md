@@ -64,10 +64,15 @@ make smoke
 `scripts/smoke.sh` against them. Expected tail:
 
 ```
-[smoke] REST assertion: PASSED
-[smoke] WS assertion:   PASSED
-[smoke] OK
+[smoke] SMOKE TEST PASSED
+[smoke]   REST log assertion: PASSED
+[smoke]   WS   log assertion: PASSED
+[smoke]   EXPR phase-3 assertion: PASSED
 ```
+
+The EXPR line is the newest leg: a second job declaring `extensions: [EXPR]`
+whose `onRun` args the worker resolves at phase 3, asserted on the resolved text
+rather than on the job completing.
 
 Exit code `0` = pass. On failure the script prints the server log tail and exits
 non-zero.
@@ -102,8 +107,8 @@ SQI_SERVER_BIN=bin/sqi-server.exe SQI_WORKER_BIN=bin/sqi-worker.exe \
 
 > **Windows note:** this exercises the worker's Windows process-termination path
 > (`taskkill`/`TerminateProcess`) when the job's `echo` process is reaped — the
-> code path that only has unit coverage elsewhere. A clean `[smoke] OK` confirms
-> it works end to end on Windows.
+> code path that only has unit coverage elsewhere. A clean
+> `[smoke] SMOKE TEST PASSED` confirms it works end to end on Windows.
 
 ### A.3 What "pass" means
 
