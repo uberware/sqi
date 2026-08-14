@@ -121,6 +121,17 @@ warn_unused_configs = true
 module = ["anyio.*"]
 follow_imports = "skip"
 
+# websockets joined anyio in the same situation as of 17.0.1, which uses 3.10+
+# `match` statements. Unlike anyio it is a DIRECT dependency (the `ws` extra and
+# the dev set), so `mypy src` follows it while parsing at the 3.9 floor and fails
+# on its syntax rather than on anything we wrote. The dependency is deliberately
+# unpinned — pinning it to dodge a type-checker grammar mismatch would constrain
+# every consumer of the SDK for our convenience. Drop this when the floor is
+# 3.10+.
+[[tool.mypy.overrides]]
+module = ["websockets.*"]
+follow_imports = "skip"
+
 # ── Pytest + coverage ─────────────────────────────────────────────────────────
 
 [tool.pytest.ini_options]
