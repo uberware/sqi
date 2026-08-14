@@ -179,9 +179,12 @@ func (s *Submitter) Submit(
 	if opts.Name != "" {
 		jobName = opts.Name
 	}
-	// The job row is always created pending, even when it will ultimately be
-	// blocked on cross-job dependencies. See the comment below (after steps and
-	// tasks are created) for why blocked is the LAST status transition.
+	// A job with an unsatisfied cross-job dependency is created blocked, in the
+	// same write as the dependency edges that justify it — see step 6.
+	jobStatus := store.JobStatusPending
+	if blocked {
+		jobStatus = store.JobStatusBlocked
+	}
 	job := store.Job{
 		ID:             uuid.NewString(),
 		FarmID:         opts.FarmID,
@@ -190,7 +193,7 @@ func (s *Submitter) Submit(
 		Owner:          opts.Owner,
 		Submitter:      opts.Submitter,
 		Priority:       priority,
-		Status:         store.JobStatusPending,
+		Status:         jobStatus,
 		Project:        opts.Project,
 		RawTemplate:    rawTemplate,
 		TemplateFormat: format,
@@ -223,6 +226,28 @@ func (s *Submitter) Submit(
 	}
 
 	// ── 6. Persist the whole submission in one atomic write ───────────────
+	//
+	// The blocked status travels with the dependency edges, deliberately.
+	//
+	// It used to be written last, by a separate UpdateJobStatus after
+	// everything else was durable, because Submit was not transactional and the
+	// heartbeat sweep (scheduler.sweepBlockedJobs) scans for status=blocked jobs
+	// and releases any whose edges are all satisfied. Creating the job
+	// already-blocked let a sweep tick land in the window after the job row
+	// existed but before its edges were written, see a blocked job with ZERO
+	// edges, read that as "nothing left to wait on", and release it to pending.
+	// Submit would then write the edges and pending tasks anyway, leaving a job
+	// that is neither blocked nor scheduled — the sweep never revisits a
+	// non-blocked job, so it hung forever.
+	//
+	// That window cannot exist now: the job row and its edges commit together,
+	// so no sweep can observe one without the other, and the status write that
+	// used to close the window is gone. It had a failure mode of its own —
+	// succeeding here and then failing left the job stranded in pending with
+	// pending tasks, which reconcileBlockedJob skips (it early-returns unless
+	// the status is blocked) and the scheduler never leases.
+	//
+	// Splitting this back into separate writes recreates one hang or the other.
 	out, err := s.st.CreateJobSubmission(ctx, store.JobSubmission{
 		Job:       job,
 		DependsOn: opts.DependsOn,
@@ -233,48 +258,12 @@ func (s *Submitter) Submit(
 		return nil, fmt.Errorf("openjd: submit: create job: %w", err)
 	}
 
-	result := &SubmitResult{
+	return &SubmitResult{
 		Job:             out.Job,
 		Steps:           out.Steps,
 		Tasks:           out.Tasks,
 		BoundParameters: boundParams,
-	}
-
-	// ── 7. Flip to blocked LAST ────────────────────────────────────────────
-	if err := s.finalizeBlockedStatus(ctx, out.Job, blocked, result); err != nil {
-		return nil, err
-	}
-
-	return result, nil
-}
-
-// finalizeBlockedStatus marks job blocked, but only after everything it
-// depends on (edges, steps, tasks) is already durable — i.e. called as the
-// LAST write in [Submitter.Submit]. It is extracted from Submit to keep that
-// function's cyclomatic complexity within bounds.
-//
-// This ordering closes a permanent-hang race: Submit is not transactional,
-// and the heartbeat sweep (sweepBlockedJobs) scans for status=blocked jobs
-// and releases any whose dependency edges are all satisfied. If the job were
-// created already-blocked (as it used to be, up front), a sweep tick landing
-// in the window after the job row exists but before CreateJobDependencies ran
-// would see a blocked job with ZERO edges, read that as "nothing left to wait
-// on", and release it to pending. Submit would then go on to write the edges
-// and pending tasks anyway, leaving a job that is neither blocked nor
-// scheduled to run — the sweep never revisits a non-blocked job, so it hangs
-// forever. Flipping status to blocked only after everything it needs is
-// durable means a sweep racing in that window instead sees a plain pending
-// job and skips it.
-func (s *Submitter) finalizeBlockedStatus(ctx context.Context, job store.Job, blocked bool, result *SubmitResult) error {
-	if !blocked {
-		return nil
-	}
-	if err := s.st.UpdateJobStatus(ctx, job.ID, store.JobStatusBlocked); err != nil {
-		return fmt.Errorf("openjd: submit: mark job blocked: %w", err)
-	}
-	job.Status = store.JobStatusBlocked
-	result.Job.Status = store.JobStatusBlocked
-	return nil
+	}, nil
 }
 
 // buildStepWithTasks builds one [store.Step] value and all of its [store.Task]

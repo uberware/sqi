@@ -4,6 +4,7 @@ package openjd_test
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 
@@ -33,6 +34,17 @@ type submitSpy struct {
 	writes int
 	// submissions counts CreateJobSubmission calls specifically.
 	submissions int
+	// lastSubmission is the argument of the most recent CreateJobSubmission
+	// call. It is how a test inspects what Submit asked the store to write, as
+	// opposed to what the store then made of it.
+	lastSubmission store.JobSubmission
+	// statusUpdates counts UpdateJobStatus calls. A submission must make none:
+	// every status a submission decides is part of the one atomic write.
+	statusUpdates int
+	// failStatusUpdate, when non-nil, is returned by UpdateJobStatus instead of
+	// delegating. It injects the failure of the write that used to run after
+	// the atomic one.
+	failStatusUpdate error
 }
 
 func (s *submitSpy) CreateJob(ctx context.Context, job store.Job) (store.Job, error) {
@@ -69,7 +81,16 @@ func (s *submitSpy) CreateJobSubmission(ctx context.Context, sub store.JobSubmis
 	s.jobIDs = append(s.jobIDs, sub.Job.ID)
 	s.writes++
 	s.submissions++
+	s.lastSubmission = sub
 	return s.Store.CreateJobSubmission(ctx, sub)
+}
+
+func (s *submitSpy) UpdateJobStatus(ctx context.Context, id string, status store.JobStatus) error {
+	s.statusUpdates++
+	if s.failStatusUpdate != nil {
+		return s.failStatusUpdate
+	}
+	return s.Store.UpdateJobStatus(ctx, id, status)
 }
 
 // twoStepsSecondOverTaskCap returns a two-step template whose SECOND step
@@ -235,5 +256,165 @@ func TestSubmit_PersistsInASingleCall(t *testing.T) {
 	}
 	if result.Tasks[0].StepID != result.Steps[0].ID {
 		t.Errorf("task.StepID = %q, want the step's ID %q", result.Tasks[0].StepID, result.Steps[0].ID)
+	}
+}
+
+// ── blocked submissions ───────────────────────────────────────────────────────
+
+// newBlockedSubmitFixture returns a spy-wrapped fake store, a submitter over it,
+// the farm and queue to submit into, and the ID of an upstream job left pending
+// so that anything depending on it is created blocked.
+func newBlockedSubmitFixture(t *testing.T) (st *submitSpy, sub *openjd.Submitter, farmID, queueID, upstreamID string) {
+	t.Helper()
+	inner := fake.New()
+	farmID, queueID = seedSubmitPrereqs(t, inner)
+	st = &submitSpy{Store: inner}
+	sub = openjd.NewSubmitter(st)
+
+	up, err := sub.Submit(t.Context(), minimalJSON("UpstreamJob"), store.TemplateFormatJSON, openjd.SubmitOptions{
+		FarmID:  farmID,
+		QueueID: queueID,
+	})
+	if err != nil {
+		t.Fatalf("Submit(upstream): %v", err)
+	}
+	return st, sub, farmID, queueID, up.Job.ID
+}
+
+// TestSubmit_BlockedStatusIsPartOfTheAtomicWrite pins where the blocked status
+// is decided: inside the single [store.JobStore.CreateJobSubmission] call, next
+// to the dependency edges that justify it.
+//
+// It used to be a separate UpdateJobStatus issued after that call, so the two
+// halves of one decision — "this job is blocked" and "here is what it is
+// blocked on" — committed independently. Asserting that Submit issues no status
+// update at all is what makes the coupling structural rather than incidental: a
+// change that reintroduces the second write fails here even if it happens to
+// leave the end state correct.
+func TestSubmit_BlockedStatusIsPartOfTheAtomicWrite(t *testing.T) {
+	st, sub, farmID, queueID, upstreamID := newBlockedSubmitFixture(t)
+
+	result, err := sub.Submit(t.Context(), minimalJSON("BlockedJob"), store.TemplateFormatJSON, openjd.SubmitOptions{
+		FarmID:    farmID,
+		QueueID:   queueID,
+		DependsOn: []string{upstreamID},
+	})
+	if err != nil {
+		t.Fatalf("Submit: %v", err)
+	}
+
+	if got := st.lastSubmission.Job.Status; got != store.JobStatusBlocked {
+		t.Errorf("the submission handed to the store carried status %q, want blocked", got)
+	}
+	if got := st.lastSubmission.DependsOn; len(got) != 1 || got[0] != upstreamID {
+		t.Errorf("the submission handed to the store carried DependsOn %v, want [%s]", got, upstreamID)
+	}
+	if st.statusUpdates != 0 {
+		t.Errorf("Submit issued %d UpdateJobStatus calls, want 0 (the status belongs to the atomic write)", st.statusUpdates)
+	}
+	if result.Job.Status != store.JobStatusBlocked {
+		t.Errorf("result job status = %q, want blocked", result.Job.Status)
+	}
+}
+
+// TestSubmit_BlockedStatusIsAtomicWithTheRows is the failure-mode test, and the
+// reason folding the status write in was mandatory rather than tidy.
+//
+// While the status was written separately, a failure of that write left the
+// job, its edges, its steps and its tasks all durable with the job stranded in
+// pending — and stranded is literal. buildStepWithTasks creates every task
+// pending whenever the job is held, so nothing runs; reconcileBlockedJob
+// (internal/scheduler/jobdeps.go) early-returns unless status is blocked, so
+// neither sweepBlockedJobs nor ReconcileDependents ever revisits the row; and
+// the scheduler leases only ready tasks. The job hangs until an operator
+// intervenes.
+//
+// That is why the assertion here is that NO row for the job exists. A test
+// written to the failure mode this one was first thought to have — "assert the
+// tasks are not ready" — passes without the fix, because they were never ready.
+//
+// The injected failure is on UpdateJobStatus, the write being removed. Once it
+// is gone Submit never calls it, so the submission succeeds and must be
+// complete; while it is there the submission fails and must have left nothing.
+// Either branch is atomic; a job row surviving in the wrong status is not.
+func TestSubmit_BlockedStatusIsAtomicWithTheRows(t *testing.T) {
+	st, sub, farmID, queueID, upstreamID := newBlockedSubmitFixture(t)
+	st.failStatusUpdate = errors.New("status write failed")
+
+	result, err := sub.Submit(t.Context(), minimalJSON("BlockedJob"), store.TemplateFormatJSON, openjd.SubmitOptions{
+		FarmID:    farmID,
+		QueueID:   queueID,
+		DependsOn: []string{upstreamID},
+	})
+
+	// The job ID is taken from the spy rather than the result, because a failed
+	// Submit returns nil and the caller never learns which row to look for --
+	// which is exactly why a stranded row could not be cleaned up.
+	jobID := st.lastSubmission.Job.ID
+	if jobID == "" {
+		t.Fatal("Submit never reached the store; the test cannot observe what it left behind")
+	}
+
+	if err != nil {
+		if _, gerr := st.GetJob(t.Context(), jobID); !errors.Is(gerr, store.ErrNotFound) {
+			t.Fatalf("a job row survived a failed submission (GetJob(%s) = %v), want ErrNotFound", jobID, gerr)
+		}
+		return
+	}
+
+	// The status write is gone, so the submission succeeded: it must be whole.
+	job, gerr := st.GetJob(t.Context(), jobID)
+	if gerr != nil {
+		t.Fatalf("GetJob(%s): %v", jobID, gerr)
+	}
+	if job.Status != store.JobStatusBlocked {
+		t.Errorf("persisted job status = %q, want blocked", job.Status)
+	}
+	if result.Job.Status != store.JobStatusBlocked {
+		t.Errorf("result job status = %q, want blocked", result.Job.Status)
+	}
+}
+
+// TestSubmit_BlockedJobIsNeverObservableWithoutItsEdges pins the end state that
+// the old ordering existed to protect.
+//
+// Creating a job already-blocked used to let a sweepBlockedJobs tick land after
+// the job row existed but before its edges were written, see a blocked job with
+// ZERO edges, read that as "nothing left to wait on", and release it — leaving a
+// job neither blocked nor scheduled, which the sweep never revisits. Writing the
+// status last is how that was avoided; writing status and edges in one
+// transaction is how it is avoided now.
+//
+// The window itself is not observable from a single-threaded test. What is
+// observable, and what this asserts, is that the two always arrive together:
+// a persisted blocked job has its edges.
+func TestSubmit_BlockedJobIsNeverObservableWithoutItsEdges(t *testing.T) {
+	st, sub, farmID, queueID, upstreamID := newBlockedSubmitFixture(t)
+
+	result, err := sub.Submit(t.Context(), minimalJSON("BlockedJob"), store.TemplateFormatJSON, openjd.SubmitOptions{
+		FarmID:    farmID,
+		QueueID:   queueID,
+		DependsOn: []string{upstreamID},
+	})
+	if err != nil {
+		t.Fatalf("Submit: %v", err)
+	}
+
+	blocked, err := st.ListBlockedJobs(t.Context())
+	if err != nil {
+		t.Fatalf("ListBlockedJobs: %v", err)
+	}
+	if len(blocked) != 1 || blocked[0].ID != result.Job.ID {
+		t.Fatalf("ListBlockedJobs = %d jobs, want just %s", len(blocked), result.Job.ID)
+	}
+
+	// This is the read sweepBlockedJobs makes of every job it finds blocked.
+	// Zero edges here is what it would misread as "nothing left to wait on".
+	ids, err := st.ListJobDependencyIDs(t.Context(), blocked[0].ID)
+	if err != nil {
+		t.Fatalf("ListJobDependencyIDs: %v", err)
+	}
+	if len(ids) != 1 || ids[0] != upstreamID {
+		t.Fatalf("a blocked job's dependency edges = %v, want [%s]", ids, upstreamID)
 	}
 }
