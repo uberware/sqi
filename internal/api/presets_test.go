@@ -543,9 +543,14 @@ func TestPresets_InstallConflict(t *testing.T) {
 // which policy.Can grants to everyone while auth is off.
 //
 // Asserting on the options the handler passes — rather than on an observable
-// verdict — is deliberate: while EXPR is StatusInProgress the walk never runs,
-// so no limit and no deadline can change any response body. There is nothing
-// else to observe until sub-project H2 flips the status.
+// verdict — was originally forced: while EXPR was StatusInProgress the walk
+// never ran, so no limit and no deadline could change any response body, and
+// there was nothing else to observe. Sub-project H2 flipped the status, so an
+// observable-verdict test is now possible for these two routes (it would need
+// a fake preset library serving an EXPR definition expensive enough to breach
+// a limit). This test is kept as-is regardless: it pins the hop that carries
+// the operator's configuration, which a verdict test would only cover
+// incidentally.
 func TestPresets_ValidationCarriesOperatorLimitsAndDeadline(t *testing.T) {
 	limits := openjd.ExprLimits{
 		SubmissionOperations:  1_234,
@@ -640,8 +645,10 @@ func TestPresets_DeadlineIsA503NotA422(t *testing.T) {
 // shape the two tests above depend on.
 //
 // They synthesize what the pipeline returns rather than driving a real
-// evaluation, because no preset definition can reach an expression evaluation
-// while EXPR is StatusInProgress. errors.Is is what the handler uses, so the
+// evaluation, which was forced while EXPR was StatusInProgress (no preset
+// definition could reach an expression evaluation) and is now a choice: the
+// two routes reach a real walk since sub-project H2, but driving one needs a
+// fake preset library. errors.Is is what the handler uses, so the
 // wrapping in defErr must actually satisfy it — if a future refactor stopped
 // wrapping the sentinel, both tests above would go on passing against a shape
 // production no longer produces.

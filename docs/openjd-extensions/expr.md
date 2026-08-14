@@ -3,7 +3,7 @@
 # EXPR
 
 - Origin: official
-- Status: in-progress
+- Status: supported
 - Summary: Python-subset expression language in format strings.
 
 ## Motivation
@@ -19,22 +19,37 @@ A template declares it with `extensions: [EXPR]`.
 
 ## Current status
 
-**EXPR is registered but not yet accepted.** `internal/openjd/extension.go`'s
-registry entry carries `Status: StatusInProgress`, and
-`internal/openjd/validate.go` rejects `extensions: [EXPR]` at submission —
-`TestConformance_EXPRNotSupported` fails the build the instant that flips.
-Flipping the status to `StatusSupported` is a distinct, later unit of work
-(sequenced in this program's tracker) — this document describes what is
-built, not what is reachable from a submitted job today.
+**EXPR is a supported extension.** `internal/openjd/extension.go`'s registry
+entry carries `Status: StatusSupported`, so `internal/openjd/validate.go`
+accepts `extensions: [EXPR]` and every EXPR template is submittable through
+`POST /api/v1/jobs`, judged on its own merits like any other template. EXPR
+jobs are dispatched to workers and executed, and `test/integration` and
+`scripts/smoke.sh` each run one through the real binaries end to end,
+asserting on a value the **worker** resolves at phase 3.
 
-**CORRECTION:** the reason given here used to be section 1.2.2's `BOOL`,
-`RANGE_EXPR` and `LIST[*]` job-parameter types, "which are not implemented yet
-(tracked separately)". Sub-project F1 implemented them, so that is no longer
-what holds the gate shut — see [Extended parameter types](#extended-parameter-types)
-below. The gate stays closed for the reasons the tracker sequences after this
-point, not for that one.
+**SUPERSEDED — what this section used to say.** Up to EXPR sub-project H2 it
+read "EXPR is registered but not yet accepted": the registry entry carried
+`Status: StatusInProgress`, `validateExtensions` rejected every EXPR template
+at `/extensions/0`, and a test named `TestConformance_EXPRNotSupported` failed
+the build the instant that flipped. H2 flipped it and deleted that test. The
+statement is kept because a great deal of this page's history — and several
+tests' comments — only make sense against it. Anywhere below that a claim is
+qualified with "while the registry status is `StatusInProgress`", read it as
+past tense.
 
-Despite that gate, most of the extension is implemented and tested:
+**CORRECTION, from before that flip:** the reason the gate stayed shut used to
+be given as section 1.2.2's `BOOL`, `RANGE_EXPR` and `LIST[*]` job-parameter
+types, "which are not implemented yet (tracked separately)". Sub-project F1
+implemented them — see [Extended parameter types](#extended-parameter-types)
+below — and the gate then stayed shut only for the cost bounds sub-project H1
+went on to add, which is what made H2's flip safe rather than merely possible.
+
+Conformance against the vendored fixtures, on the ordinary template path that
+scores every other suite: **`EXPR/job_templates` 206/209 with 3 baselined**,
+alongside `base` 449/449 and `TASK_CHUNKING` 11/11. The three shortfalls are
+not EXPR shortfalls — see [Known gaps](#known-gaps).
+
+The extension is implemented and tested as follows:
 
 - **Expression core** — the full type system, coercion, operators,
   comprehensions, call syntax — `internal/openjd/expr` (package doc:
@@ -886,18 +901,25 @@ recorded in that function's own comment as later work.
   substring replacement, and a `LIST[PATH]` parameter's elements are staged
   and path-mapped individually, the same as a scalar `PATH` parameter — see
   "Extended parameter types" above for the two defects F2 found and fixed
-  along the way. What F2 did **not**, and could not, reach: a real
-  `extensions: [EXPR]` job still cannot be submitted through
-  `POST /api/v1/jobs`, because `validateExtensions` rejects the extension at
-  `/extensions/0` while its registry status is `StatusInProgress` (see
-  "Current status" above). F2's own coverage therefore calls
+  along the way. What F2 did **not**, and could not, reach was the extension
+  status gate: a real `extensions: [EXPR]` job could not be submitted through
+  `POST /api/v1/jobs` at all, so F2's own coverage calls
   `openjd.Parse`/`openjd.BindJobParameters` directly
-  (`test/integration/expr_paramtypes_test.go`), the same standing
-  sub-project E4a's phase-3 evaluation has had since it shipped. Closing
-  that gate is sub-project H's job, which must add a real
-  `extensions: [EXPR]` job to that test package and to
-  `scripts/smoke.sh` — merged with E4a's identical, older obligation to do
-  the same thing.
+  (`test/integration/expr_paramtypes_test.go`), the same standing sub-project
+  E4a's phase-3 evaluation had since it shipped.
+
+  **SUPERSEDED by sub-project H2 — that gate is open and the standing
+  obligation is discharged.** `test/integration/expr_realworker_test.go`
+  (`TestEXPRJobEndToEnd`) submits an `extensions: [EXPR]` job to a real server
+  and runs it on a real worker, and `scripts/smoke.sh` submits a second one
+  against the shipped binaries. Both assert on a value only the **worker** can
+  produce — the integration job on
+  `{{ upper(Param.Shot) + '.' + zfill(Task.Param.Frame * 3, 4) }}`, whose
+  `Task.Param.Frame` the server cannot resolve, plus an
+  `is_absolute(Session.WorkingDirectory)` that forces the path engine to run
+  against the worker's own session directory. Neither is coverage in the broad
+  sense; each is one job, deliberately, proving the whole path works against
+  real binaries.
 - **The 141 `EXPR/jobs/` conformance fixtures are scored by nothing.**
   `test/conformance/suite_test.go` walks only `job_templates` and
   `env_templates`, and returns early for a job test — so the runtime half of
@@ -927,12 +949,36 @@ recorded in that function's own comment as later work.
   elapsed time *directly*, so it holds whatever the operation pricing turns
   out to permit — which is the property none of the counters have.
 
-  **It is not co-sized with the counters, and 5s is unvalidated.** The
-  deterministic budgets nominally permit ~17 minutes while this key's ceiling
-  is 60s, and no large-but-legitimate `EXPR` template has been measured
-  against the default — the six reference presets cost ≤15 positions and ≤1
-  operation, so they cannot locate the acceptance boundary. Measuring it is
-  work for the sub-project that makes `EXPR` submittable.
+  **It is not co-sized with the counters, and the headroom against real work
+  is ~6x.** This paragraph used to close "5s is unvalidated … measuring it is
+  work for the sub-project that makes `EXPR` submittable"; H2 measured it. A
+  generated multi-layer VFX shot-render job (12 `let:` bindings per step,
+  comprehensions over real frame ranges, `RANGE_EXPR`/`LIST[STRING]`/`PATH`
+  parameters) driven through the real `Submitter.Submit`, at the default
+  limits:
+
+  | Shape | Wall clock | Positions | Operations | Verdict |
+  |---|---|---|---|---|
+  | 40 steps / 1,000 frames | 253 ms | 1,973 | 540,621 | accepted |
+  | 100 steps / 1,000 frames | **831 ms** | 5,013 | 1,661,261 | accepted — worst |
+  | 100 steps / 2,000 frames | 1.108 s | — | 2,120,268 | `422`, retained bytes |
+  | 100 steps / 60 args | 702 ms | 10,001 | 1,109,586 | `422`, positions |
+
+  So: **0.83 s is the worst legitimate job this server still accepts, ~6x
+  under the 5s default** — not the three orders of magnitude the original
+  sizing implied, which came from an adversarial case. A production host 2–3x
+  slower puts that job at 1.7–2.5 s. **At the defaults the counters always
+  bind first and the clock never does**, and the binding dimension is
+  *retained bytes*, not positions. At the *legal maximum* limits it inverts:
+  100 steps × 10,000 frames takes 7.5 s and correctly produces
+  `503 … deadline exceeded`, which is why raising the four limits without
+  raising this key converts legitimate acceptances into 503s
+  ([`docs/configuration.md`](../configuration.md#2-none-of-these-limits-bounds-wall-clock-time)).
+
+  Phase 2 is ~98% of that cost (15 ms phase 1 against a 727 ms phase-2
+  checker): `Param.*` is unresolved at phase 1, so the identical template
+  charges 4,519 operations there against 363,467 at phase 2. Measuring only
+  phase 1 understates the figure ~50x.
 
   A breach is reported as **`503`, never `4xx`**. The counters are
   deterministic, so a template that breaches one breaches it everywhere and
@@ -956,9 +1002,22 @@ recorded in that function's own comment as later work.
   that concurrent requests each get their own allowance: the deadline bounds
   one request, not a host.
 
-  **Inert in production today.** No submission reaches an expression
-  evaluation while the registry status is `StatusInProgress`, so none of
-  those 503s can occur yet; the bound is landed ahead of the flip on purpose.
+  **SUPERSEDED — this bullet used to close "inert in production today",** on
+  the grounds that no submission reached an expression evaluation while the
+  registry status was `StatusInProgress`, so none of those 503s could occur;
+  the bound was landed ahead of the flip on purpose. H2 flipped it, and
+  `internal/api`'s deadline tests now drive a real `Submitter` through the
+  handler and assert a real `503` on all three template-accepting routes.
+
+  **The ~17-minute figure above is not superseded by the ~1.1 s one, and must
+  not be read as unreachable.** The two describe different template *shapes*.
+  An adversarial template does op-cheap, byte-heavy work across many positions
+  and **discards** every result, so it never approaches the retained-bytes cap
+  and this deadline is the only thing bounding it. A legitimate template leans
+  on `let:`, which retains, so it hits retained bytes first — at ~1.1 s.
+  **~1.1 s is the ceiling for realistic `let:`-using templates; the
+  adversarial ceiling is far higher, which is why the wall-clock backstop
+  exists at all.**
 - **The cross-binary gate is necessary, not sufficient.** A worker at parity
   with the server can still exhaust its own budget on a concrete value phase
   2 only had a placeholder for, and the per-table dimension is compared
@@ -966,10 +1025,12 @@ recorded in that function's own comment as later work.
   directions (it ignores the worker's whole-table accounting of job
   parameters, and over-counts a template that spreads its budget across many
   steps). That residual is what the worker's generous defaults exist for; do
-  not read the gate as a guarantee that an accepted job runs. It is also
-  **inert for genuine EXPR jobs** until the registry status flips, since no
-  EXPR template can be submitted today — the byte-scan false positive above
-  is the one live path.
+  not read the gate as a guarantee that an accepted job runs. (This bullet
+  used to end by calling the gate "inert for genuine EXPR jobs until the
+  registry status flips", with the byte-scan false positive as its one live
+  path. **It is fully live now** — genuine EXPR jobs are submitted and
+  dispatched, so the gate withholds real work from a short worker rather than
+  only mis-flagging a base-spec template.)
 - **A worker's advertised caps are not surfaced in the API or the web UI.**
   They are persisted on the worker row, but an operator diagnosing "why is
   this host getting no EXPR work" reads the registration warning or the
@@ -989,8 +1050,22 @@ recorded in that function's own comment as later work.
   That is deliberate — it is the message carrying the outcome, and a wrong
   outcome written to a task that actually succeeded is worse than a re-run.
   `LogChunkMsg` and `DeregisterMsg` remain ungated by design.
-- **`EXPR`'s registry `Status` stays `StatusInProgress`** until the gaps
-  above (and the job-parameter types section 1.2.2 requires) are closed.
+- **SUPERSEDED by sub-project H2 — `EXPR`'s registry `Status` is
+  `StatusSupported`.** This bullet used to say the status "stays
+  `StatusInProgress` until the gaps above (and the job-parameter types section
+  1.2.2 requires) are closed". Section 1.2.2's types landed in sub-project F,
+  the cost bounds the flip depended on landed in H1, and H2 flipped the entry.
+- **Three `EXPR/job_templates` fixtures are still baselined, and none of them
+  is an EXPR shortfall.** `3.6--let-bindings.yaml`,
+  `3.6--let-host-context-symbols.yaml` and
+  `7.3.1--job-step-name-in-step-let.yaml` are valid templates that sqi
+  rejects, but all three declare **`FEATURE_BUNDLE_1`** (RFC 0004) alongside
+  `EXPR` and use that extension's `bash:` `SimpleAction` in place of
+  `script:`. sqi does not register `FEATURE_BUNDLE_1`, so `validateExtensions`
+  refuses the template at its *other* extension and their `let:` subject
+  matter is never reached. Registering RFC 0004 is not part of the EXPR
+  program; until something does, these three stay baselined with that reason
+  recorded in `test/conformance/baseline.txt`.
 - **SUPERSEDED by sub-project G — `web/src/api/types.ts` now mirrors the
   eight RFC 0007 types and the six `*_LIST` `userInterface` controls.** This
   bullet used to say the file still declared the pre-EXPR, narrower unions
@@ -1003,9 +1078,10 @@ recorded in that function's own comment as later work.
   (`web/src/lib/productValidation.ts`), all serialising to
   `internal/openjd/paramjson.go`'s canonical JSON — see
   `docs/web-development.md`'s "Product parameter widgets" section for the
-  widget table and the encoding contract. What remains true, and does not
-  change until sub-project H: **no `extensions: [EXPR]` template can be
-  submitted through `POST /api/v1/jobs`** while the registry status is
-  `StatusInProgress` (see "Current status" above), so the form can render
-  these parameters for a product but no job actually exercising EXPR can be
-  created through the API today.
+  widget table and the encoding contract. This bullet used to close with the
+  one thing G could not change — that no `extensions: [EXPR]` template could
+  be submitted through `POST /api/v1/jobs` while the registry status was
+  `StatusInProgress`, so the form could render these parameters for a product
+  but no job actually exercising EXPR could be created through the API.
+  **Sub-project H2 closed that too**; a product whose template declares EXPR
+  is now submittable from the web form like any other.

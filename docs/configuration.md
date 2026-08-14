@@ -651,12 +651,12 @@ resource-exhaustion guards, not OpenJD quantitative limits, and no setting
 turns them off. `0` is not "unlimited" — it is out of range and fails
 startup. **An out-of-range value is a startup failure, not a clamp.**
 
-> **`EXPR` is not accepted yet.** The extension's registry status is
-> *in-progress*, so a template declaring `extensions: [EXPR]` is rejected at
-> submission today regardless of these settings — they are wired end to end
-> and validated at startup, but no submitted job reaches them until the
-> status flips. The one exception is caveat 4's dispatch gate, whose EXPR
-> detection is a byte scan and *is* live. See
+> **These keys are live.** Earlier revisions of this section carried a
+> "`EXPR` is not accepted yet" callout here: the extension's registry status
+> was *in-progress* and a template declaring `extensions: [EXPR]` was rejected
+> at submission before any of these limits could be spent. **That is no longer
+> true** — `EXPR` is a supported extension, every EXPR template is accepted on
+> its merits, and each of these keys now decides real submissions. See
 > [`docs/openjd-extensions/expr.md`](openjd-extensions/expr.md).
 
 Every one of these has a counterpart on the worker
@@ -755,6 +755,27 @@ whatever the operation pricing turns out to permit and does not depend on the
 figures above being right. It does **not** make the numbers above safe to
 raise freely: a request refused at the deadline still spent that time, and
 concurrent requests each get their own allowance.
+
+**Raising these four keys without also raising the deadline turns legitimate
+acceptances into 503s.** This coupling is the one realistic way a real
+pipeline sees a 503 it does not deserve, and it is not visible from either
+side on its own. Measured on this branch with a generated multi-layer VFX
+shot-render job — 12 `let:` bindings per step, comprehensions over real frame
+ranges, `RANGE_EXPR`/`LIST[STRING]`/`PATH` parameters — driven through the
+real submission path:
+
+| Limits | Shape | Wall clock | Verdict |
+|---|---|---|---|
+| defaults | 100 steps x 1,000 frames | 0.83 s | accepted |
+| defaults | 100 steps x 2,000 frames | 1.11 s | `422`, retained bytes |
+| legal maxima | 100 steps x 10,000 frames | 7.5 s | **`503`, deadline** |
+
+At the defaults the deterministic budgets always bind first and the clock
+never does; the binding dimension is **retained bytes**, not positions. At the
+maxima that inverts, and a template the counters would have accepted is
+stopped by a 5s clock instead. If you raise these four, raise
+[`openjd.expr_submission_deadline`](#openjdexpr_submission_deadline) with
+them.
 
 #### 3. The byte dimension is cumulative allocation, not peak live retention
 
@@ -983,12 +1004,11 @@ openjd:
 How long this server keeps evaluating **one submission's** expressions before
 giving up on it.
 
-> **`EXPR` is not accepted yet.** This key is configured, validated at startup
-> and wired end to end today, but nothing spends it: the extension's registry
-> status is *in-progress*, so a template declaring `extensions: [EXPR]` is
-> rejected at submission before a single expression is evaluated. No submission
-> reaches this deadline — and so **none of the 503s described below can occur
-> yet** — until that status flips. See
+> **This key is live.** Earlier revisions carried a "`EXPR` is not accepted
+> yet" callout here — the extension's registry status was *in-progress*, so no
+> submission ever reached this deadline and none of the 503s described below
+> could occur. **That is no longer true**: `EXPR` is a supported extension, and
+> every route listed below can now answer `503` for a real submission. See
 > [`docs/openjd-extensions/expr.md`](openjd-extensions/expr.md).
 
 **This is not a fifth limit, and it does not decide whether a template is
@@ -1022,19 +1042,37 @@ backstop that rejects valid work is worse than the exposure it guards. The
 ceiling is `60s` because the key exists to bound that ~17-minute figure; a
 ceiling near it would bound nothing.
 
-> **The default is a guess, and it is not co-sized with the counters.** The
-> deterministic budgets nominally permit ~17 minutes (`expr_template_positions`
-> × `expr_operation_limit`, both at 10,000) while this key's own ceiling is
-> `60s`, so at every legal setting the clock — not the counters — is what a
-> request actually stops at. `5s` was chosen as three orders of magnitude below
-> the measured exposure, **not** by measuring where legitimate templates fall:
-> the six reference presets cost at most 15 expression positions and at most 1
-> operation each, so they say nothing about the boundary. Nothing has yet
-> measured a large-but-legitimate `EXPR` template against it. Until something
-> does — it is tracked as work for the sub-project that makes `EXPR`
-> submittable — treat persistent 503s on a template you believe is reasonable
-> as evidence about this default rather than about your template, and raise it
-> toward the ceiling.
+> **The headroom against real work is ~6x, not three orders of magnitude.**
+> `5s` was originally chosen against an *adversarial* worst case, and an
+> earlier revision of this callout said so and conceded that no
+> large-but-legitimate template had ever been measured against it. One has now
+> been: a generated multi-layer VFX shot-render job (12 `let:` bindings per
+> step, comprehensions over real frame ranges, `RANGE_EXPR`/`LIST[STRING]`/
+> `PATH` parameters) driven through the real submission path. **The worst
+> shape this server still accepts costs 0.83 s** — 100 steps over 1,000
+> frames, 5,013 positions, 1.66M operations — against a 5s default. A
+> production server 2–3x slower than the measuring host puts that same job at
+> 1.7–2.5 s. Still safe, but thinner than "three orders of magnitude"
+> advertised, and worth knowing before you tighten this key.
+>
+> Two things that measurement settled. **At the defaults the counters always
+> bind before the clock**, and the dimension that binds is *retained bytes*,
+> not positions — 100 steps over 2,000 frames is refused at 1.11 s with a
+> `422`, never reaching this deadline. And the clock and the counters are
+> **not co-sized**: at the legal maximum limits the same job shape at 10,000
+> frames runs 7.5 s and is correctly stopped here with a `503`. Raising the
+> four limits without raising this key converts legitimate acceptances into
+> 503s — see caveat 2 above.
+>
+> **None of that makes the ~17-minute figure unreachable**, and it must not be
+> read that way. The two numbers describe different template *shapes*: an
+> adversarial template does op-cheap, byte-heavy work across many positions and
+> **discards** each result, so it never approaches the retained-bytes cap and
+> this clock is the only thing bounding it, while a legitimate template leans
+> on `let:` and therefore hits retained bytes first, at ~1.1 s. The honest
+> statement is that **~1.1 s is the ceiling for realistic `let:`-using
+> templates, and the adversarial ceiling is far higher — which is why this
+> wall-clock backstop exists at all.**
 
 Unlike the four limits, it has **no worker counterpart**: the worker's own
 phase-3 evaluation is work this server already accepted, not an anonymous

@@ -300,8 +300,10 @@ func TestCheckLetBindings_RejectsShadowingAPreexistingTableEntry(t *testing.T) {
 
 // mustParseEXPR parses yaml and fails the test immediately on error. It does
 // NOT call Validate: these tests exercise checkTemplateExpressions directly,
-// and Validate would stop at the EXPR extension's status gate (StatusInProgress)
-// before checkTemplateExpressions is ever reached.
+// with a template built to reach it and nothing else. (Before sub-project H2
+// there was a second reason -- Validate stopped at the EXPR extension's status
+// gate, then StatusInProgress, before checkTemplateExpressions was ever
+// reached. That reason is gone; the first one still holds.)
 func mustParseEXPR(t *testing.T, yaml string) *JobTemplate {
 	t.Helper()
 	tmpl, err := Parse([]byte(yaml), FormatYAML)

@@ -51,11 +51,13 @@ type jobCanceler interface {
 // JobSubmitter is the subset of [openjd.Submitter] the submission handlers
 // use. Keeping it an interface — the same reason [jobCanceler] is one, and the
 // same reason [Deps.Store] is store.Store rather than *sqlite.Store — lets the
-// handlers' error mapping be tested without driving the whole OpenJD pipeline,
-// which matters most for the one error it cannot currently produce: a
-// wall-clock deadline breach is unreachable end to end while the EXPR
-// extension is StatusInProgress, since an EXPR template is rejected before any
-// expression is evaluated.
+// handlers' error mapping be tested without driving the whole OpenJD pipeline.
+// That mattered most for the one error the pipeline could not produce: while
+// the EXPR extension was StatusInProgress an EXPR template was rejected before
+// any expression was evaluated, so a wall-clock deadline breach was unreachable
+// end to end. Sub-project H2 flipped the status and the real path is now
+// covered directly (submitdeadline_test.go's end-to-end cases); the stub
+// remains the cheap way to pin the status mapping alone.
 //
 // It is EXPORTED, and [Deps.Submitter] is typed as it rather than as
 // *openjd.Submitter, so that a test can drive a router built by [NewRouter]

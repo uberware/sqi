@@ -788,11 +788,12 @@ to each host's real memory.
 These are **always on**. `0` is not "unlimited" — it is out of range, and an
 out-of-range value is a **startup failure, not a clamp**.
 
-> **`EXPR` is not accepted yet.** The extension's registry status is
-> *in-progress*, so no template declaring `extensions: [EXPR]` can be
-> submitted today and no assignment reaches these limits. They are wired end
-> to end, validated at startup, and advertised to the server at registration —
-> that last part is live. See
+> **These keys are live.** Earlier revisions carried a "`EXPR` is not accepted
+> yet" callout here: the extension's registry status was *in-progress*, so no
+> template declaring `extensions: [EXPR]` could be submitted and no assignment
+> ever reached these limits. **That is no longer true** — `EXPR` is a supported
+> extension, EXPR jobs are submitted, dispatched and executed, and every one of
+> these keys now meters real work on this host. See
 > [`docs/openjd-extensions/expr.md`](openjd-extensions/expr.md).
 
 ### Four caveats before you change any of them

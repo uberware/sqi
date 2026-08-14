@@ -911,9 +911,11 @@ const houdiniEXPRCacheJSON = `{
 }`
 
 // TestJobMayUseEXPR_RequiresAnExtensionDeclaration is the narrowing the wave's
-// final review asked for. The byte scan's false positive is LIVE — unlike its
-// false negative, which needs an EXPR template and cannot be submitted while
-// the extension is StatusInProgress — and its consequence is not cosmetic: on a
+// final review asked for. The byte scan's false positive is LIVE — its false
+// negative was unreachable while the extension was StatusInProgress, because it
+// needs an EXPR template and none could be submitted, but sub-project H2 made
+// EXPR submittable and only deliberate obfuscation bounds it now (see
+// jobMayUseEXPR's own comment) — and its consequence is not cosmetic: on a
 // farm whose workers are short (reachable through documented configuration,
 // since "raise the workers first" is guidance and not enforcement) the job's
 // tasks sit `ready` forever with no capable worker, flagged with a reason

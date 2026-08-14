@@ -58,7 +58,10 @@ type Extension struct {
 //   - SQI_CHUNK_BOUNDS: derives Task.Param.<name>.Start/.End for CHUNK[INT]
 //     parameters; implemented in expand.go (DeriveChunkBounds) and wired in
 //     submit.go.
-//   - EXPR: registered but StatusInProgress — see that entry's own comment.
+//   - EXPR: the OpenJD expression language; implemented across internal/openjd
+//     (scope model, checker, resolver), internal/openjd/expr and
+//     internal/worker/fmtres. Supported since sub-project H2 — see that entry's
+//     own comment.
 //
 // Read-only after initialisation; never modified at runtime.
 var registry = map[string]Extension{

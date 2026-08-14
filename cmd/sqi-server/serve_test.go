@@ -21,9 +21,9 @@ import (
 // renamed line in this literal leaves a server that starts cleanly, reports the
 // operator's configuration on `sqi-server config print`, and enforces NOTHING.
 // The deadline is the acute case: it is EXPR sub-project H1's only bound on
-// wall-clock time, and while the EXPR extension is StatusInProgress no
-// submission exercises it, so its absence would surface as an outage rather
-// than as a test failure — after H2 flips the status, not before.
+// wall-clock time. While the EXPR extension was StatusInProgress no submission
+// exercised it at all; since H2 flipped the status every EXPR submission does,
+// so its absence would now surface as an outage rather than as a test failure.
 func TestServerConfig_CarriesTheExprCostBounds(t *testing.T) {
 	// Deliberately distinct, non-default values: these are same-typed fields
 	// crossing a struct boundary, where a transposition compiles and starts.

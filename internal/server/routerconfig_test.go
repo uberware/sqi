@@ -18,10 +18,10 @@ import (
 // without this one the whole production path could be severed and the suite
 // would stay green: internal/config would still validate the range at startup,
 // internal/api would still map the error to a 503, and the server would still
-// boot -- with no deadline in force. That failure is invisible today (EXPR is
-// StatusInProgress, so no submission reaches an expression evaluation) and
-// becomes an unbounded request the moment sub-project H2 flips the status,
-// which is exactly the wrong time to discover a dropped assignment.
+// boot -- with no deadline in force. That failure used to be invisible (while
+// EXPR was StatusInProgress no submission reached an expression evaluation);
+// since sub-project H2 flipped the status it is an unbounded request on a live
+// route, which is exactly the wrong way to discover a dropped assignment.
 func TestRouterConfig_CarriesTheSubmissionDeadline(t *testing.T) {
 	const want = 37 * time.Second // non-default, so a stale default cannot pass
 	cfg := DefaultConfig()
@@ -55,8 +55,9 @@ func TestRouterConfig_DefaultCarriesTheConfigDefault(t *testing.T) {
 // through the Submitter, so they are the one production path that does not get
 // these limits from it. Dropped here, that route silently falls back to
 // openjd.DefaultExprLimits() — an operator who tightened the knobs would find
-// one of the three template-accepting routes ignoring them, and nothing would
-// fail while EXPR is StatusInProgress and the expression walk never runs.
+// one of the three template-accepting routes ignoring them. While EXPR was
+// StatusInProgress the walk never ran, so nothing else could fail either; since
+// sub-project H2 the walk is live and this test guards a limit in real force.
 func TestRouterConfig_CarriesTheExprLimits(t *testing.T) {
 	want := openjd.ExprLimits{
 		SubmissionOperations:  4321, // all non-default, so a stale default cannot pass

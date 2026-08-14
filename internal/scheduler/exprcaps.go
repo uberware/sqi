@@ -299,10 +299,12 @@ func exprCapShortfall(caps store.WorkerExprLimits, srv openjd.ExprLimits) string
 //
 // WHY IT SHIPS ANYWAY, and what would replace it:
 //
-//  1. THE FALSE NEGATIVE is unreachable today -- and only the false negative;
-//     see the live false positive above. Reaching it needs a template that
-//     declares EXPR, and EXPR is StatusInProgress, so no such template can be
-//     submitted at all until sub-project H.
+//  1. THE FALSE NEGATIVE IS NOW REACHABLE. This item used to say it was
+//     unreachable, on the grounds that reaching it needs a template declaring
+//     EXPR and EXPR was StatusInProgress, so no such template could be
+//     submitted at all. Sub-project H2 flipped the status: EXPR templates are
+//     submitted, and an obfuscated declaration would now escape this scan. The
+//     unreachability argument is withdrawn; only item 2 still bounds it.
 //  2. Reaching it requires deliberately obfuscating an extension declaration,
 //     which no authoring tool does and which gains the submitter nothing: the
 //     only consequence is that their own job's tasks fail.
@@ -316,7 +318,7 @@ func exprCapShortfall(caps store.WorkerExprLimits, srv openjd.ExprLimits) string
 //     createAttemptAndClaimUsage, so it would need a revert that leaves an
 //     orphaned attempt row behind on every retry.
 //
-// H HANDOFF — the clean fix is neither of those two: persist the declared
+// STILL OPEN AFTER H2 — the clean fix is neither of those two: persist the declared
 // extension list on the job row at submission (where internal/openjd has
 // already parsed and validated it) and read a column here. Exact, no parse on
 // the lease path, and it needs this heuristic only as the fallback for rows
