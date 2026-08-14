@@ -74,6 +74,7 @@ nav:
           - Spec Conformance: openjd-conformance.md
           - Extensions Overview: openjd-extensions.md
           - Extension Details:
+              - Expressions (EXPR): openjd-extensions/expr.md
               - Task Chunking: openjd-extensions/task-chunking.md
               - Chunk Bounds: openjd-extensions/sqi-chunk-bounds.md
               - Path Translation: openjd-extensions/path-translation.md

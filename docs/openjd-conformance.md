@@ -242,7 +242,7 @@ because `conformance.Result` blanks `Reason` the moment a fixture passes.
 `TestConformance_E3ProtectedFixtures` goes further than the rest, asserting each
 fixture's exact validation-error text by re-running the pipeline on the side.
 
-[rfc0004]: ../third_party/openjd-specifications/rfcs/0004-enhanced-limits-and-capabilities.md
+[rfc0004]: https://github.com/OpenJobDescription/openjd-specifications/blob/mainline/rfcs/0004-enhanced-limits-and-capabilities.md
 
 This is also why the portability claim in `README.md` and `ROADMAP.md` carries an
 explicit caveat rather than being dropped. The measured position is narrower and
@@ -268,7 +268,7 @@ parameter types — on the template side. `EXPR/job_templates` moved **186/209
 (23 baselined) → 206/209 (3 baselined)**: twenty fixtures, measured, not
 predicted.
 
-[rfc0007]: ../third_party/openjd-specifications/rfcs/0007-extend-parameter-types.md
+[rfc0007]: https://github.com/OpenJobDescription/openjd-specifications/blob/mainline/rfcs/0007-extend-parameter-types.md
 
 What landed:
 
