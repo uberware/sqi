@@ -125,9 +125,16 @@ type SubmitResult struct {
 // with dependencies start in [store.StepStatusPending].  Tasks inherit their
 // step's initial status.
 //
-// Submit does not run in a database transaction. If it fails partway through,
-// orphaned rows may remain; the REST layer or a cleanup sweep should handle
-// such cases by checking job.Status == pending with no tasks.
+// Everything one submission creates — the job row, its cross-job dependency
+// edges, every step and every task — is written by a single
+// [store.JobStore.CreateJobSubmission] call, which is atomic on both store
+// backends. A failure at any point therefore leaves nothing behind: there is no
+// orphaned pending job for a sweep to reap, and no job missing the steps that
+// failed to write (which checkJobCompletion, deriving job status from the steps
+// that exist, would have reported completed).
+//
+// Expansion runs to completion before that write, so a template that cannot
+// expand never reaches the store at all.
 func (s *Submitter) Submit(
 	ctx context.Context,
 	rawTemplate string,
@@ -173,15 +180,18 @@ func (s *Submitter) Submit(
 		priority = 50
 	}
 
-	// ── 4. Create Job row (verbatim template stored as-is) ────────────────
+	// ── 4. Build the Job row (verbatim template stored as-is) ─────────────
 	now := time.Now().UTC()
 	jobName := tmpl.Name
 	if opts.Name != "" {
 		jobName = opts.Name
 	}
-	// The job row is always created pending, even when it will ultimately be
-	// blocked on cross-job dependencies. See the comment below (after steps and
-	// tasks are created) for why blocked is the LAST status transition.
+	// A job with an unsatisfied cross-job dependency is created blocked, in the
+	// same write as the dependency edges that justify it — see step 6.
+	jobStatus := store.JobStatusPending
+	if blocked {
+		jobStatus = store.JobStatusBlocked
+	}
 	job := store.Job{
 		ID:             uuid.NewString(),
 		FarmID:         opts.FarmID,
@@ -190,7 +200,7 @@ func (s *Submitter) Submit(
 		Owner:          opts.Owner,
 		Submitter:      opts.Submitter,
 		Priority:       priority,
-		Status:         store.JobStatusPending,
+		Status:         jobStatus,
 		Project:        opts.Project,
 		RawTemplate:    rawTemplate,
 		TemplateFormat: format,
@@ -204,74 +214,74 @@ func (s *Submitter) Submit(
 		UpdatedAt:         now,
 	}
 
-	job, err = s.st.CreateJob(ctx, job)
+	// ── 5. Expand every step and task into memory ─────────────────────────
+	// Nothing is written yet. Expansion runs to completion first so that a
+	// template which cannot expand never reaches the store at all, and so that
+	// everything this submission creates can be handed to a single write.
+	// Each step is handled by a helper to keep Submit's cyclomatic complexity
+	// within bounds.
+	deriveBounds := tmpl.hasExtension("SQI_CHUNK_BOUNDS")
+	steps := make([]store.Step, 0, len(tmpl.Steps))
+	var tasks []store.Task
+	for i, stepTmpl := range tmpl.Steps {
+		step, stepTasks, err := s.buildStepWithTasks(job, stepTmpl, i, boundParams, deriveBounds, blocked, now)
+		if err != nil {
+			return nil, err
+		}
+		steps = append(steps, step)
+		tasks = append(tasks, stepTasks...)
+	}
+
+	// ── 6. Persist the whole submission in one atomic write ───────────────
+	//
+	// The blocked status travels with the dependency edges, deliberately.
+	//
+	// It used to be written last, by a separate UpdateJobStatus after
+	// everything else was durable, because Submit was not transactional and the
+	// heartbeat sweep (scheduler.sweepBlockedJobs) scans for status=blocked jobs
+	// and releases any whose edges are all satisfied. Creating the job
+	// already-blocked let a sweep tick land in the window after the job row
+	// existed but before its edges were written, see a blocked job with ZERO
+	// edges, read that as "nothing left to wait on", and release it to pending.
+	// Submit would then write the edges and pending tasks anyway, leaving a job
+	// that is neither blocked nor scheduled — the sweep never revisits a
+	// non-blocked job, so it hung forever.
+	//
+	// That window cannot exist now: the job row and its edges commit together,
+	// so no sweep can observe one without the other, and the status write that
+	// used to close the window is gone. It had a failure mode of its own —
+	// succeeding here and then failing left the job stranded in pending with
+	// pending tasks, which reconcileBlockedJob skips (it early-returns unless
+	// the status is blocked) and the scheduler never leases.
+	//
+	// Splitting this back into separate writes recreates one hang or the other.
+	out, err := s.st.CreateJobSubmission(ctx, store.JobSubmission{
+		Job:       job,
+		DependsOn: opts.DependsOn,
+		Steps:     steps,
+		Tasks:     tasks,
+	})
 	if err != nil {
 		return nil, fmt.Errorf("openjd: submit: create job: %w", err)
 	}
 
-	if len(opts.DependsOn) > 0 {
-		if err := s.st.CreateJobDependencies(ctx, job.ID, opts.DependsOn); err != nil {
-			return nil, fmt.Errorf("openjd: submit: create job dependencies: %w", err)
-		}
-	}
-
-	result := &SubmitResult{Job: job, BoundParameters: boundParams}
-
-	// ── 5. Create Step and Task rows ──────────────────────────────────────
-	// Each step is handled by a helper to keep Submit's cyclomatic complexity
-	// within bounds.
-	deriveBounds := tmpl.hasExtension("SQI_CHUNK_BOUNDS")
-	for i, stepTmpl := range tmpl.Steps {
-		steps, tasks, err := s.createStepWithTasks(ctx, job, stepTmpl, i, boundParams, deriveBounds, blocked, now)
-		if err != nil {
-			return nil, err
-		}
-		result.Steps = append(result.Steps, steps...)
-		result.Tasks = append(result.Tasks, tasks...)
-	}
-
-	// ── 6. Flip to blocked LAST ────────────────────────────────────────────
-	if err := s.finalizeBlockedStatus(ctx, job, blocked, result); err != nil {
-		return nil, err
-	}
-
-	return result, nil
+	return &SubmitResult{
+		Job:             out.Job,
+		Steps:           out.Steps,
+		Tasks:           out.Tasks,
+		BoundParameters: boundParams,
+	}, nil
 }
 
-// finalizeBlockedStatus marks job blocked, but only after everything it
-// depends on (edges, steps, tasks) is already durable — i.e. called as the
-// LAST write in [Submitter.Submit]. It is extracted from Submit to keep that
-// function's cyclomatic complexity within bounds.
+// buildStepWithTasks builds one [store.Step] value and all of its [store.Task]
+// values for a single step template. It performs NO store writes: everything
+// one submission creates is written by a single
+// [store.JobStore.CreateJobSubmission] call in [Submitter.Submit], so a failure
+// anywhere — including in this function's expansion — leaves nothing behind.
 //
-// This ordering closes a permanent-hang race: Submit is not transactional,
-// and the heartbeat sweep (sweepBlockedJobs) scans for status=blocked jobs
-// and releases any whose dependency edges are all satisfied. If the job were
-// created already-blocked (as it used to be, up front), a sweep tick landing
-// in the window after the job row exists but before CreateJobDependencies ran
-// would see a blocked job with ZERO edges, read that as "nothing left to wait
-// on", and release it to pending. Submit would then go on to write the edges
-// and pending tasks anyway, leaving a job that is neither blocked nor
-// scheduled to run — the sweep never revisits a non-blocked job, so it hangs
-// forever. Flipping status to blocked only after everything it needs is
-// durable means a sweep racing in that window instead sees a plain pending
-// job and skips it.
-func (s *Submitter) finalizeBlockedStatus(ctx context.Context, job store.Job, blocked bool, result *SubmitResult) error {
-	if !blocked {
-		return nil
-	}
-	if err := s.st.UpdateJobStatus(ctx, job.ID, store.JobStatusBlocked); err != nil {
-		return fmt.Errorf("openjd: submit: mark job blocked: %w", err)
-	}
-	job.Status = store.JobStatusBlocked
-	result.Job.Status = store.JobStatusBlocked
-	return nil
-}
-
-// createStepWithTasks creates one [store.Step] row and all of its [store.Task]
-// rows for a single step template. It is extracted from [Submit] to reduce
-// that function's cyclomatic complexity.
-func (s *Submitter) createStepWithTasks(
-	ctx context.Context,
+// It is extracted from [Submitter.Submit] to reduce that function's cyclomatic
+// complexity.
+func (s *Submitter) buildStepWithTasks(
 	job store.Job,
 	stepTmpl StepTemplate,
 	stepIdx int,
@@ -279,7 +289,7 @@ func (s *Submitter) createStepWithTasks(
 	deriveBounds bool,
 	holdPending bool,
 	now time.Time,
-) (steps []store.Step, tasks []store.Task, err error) {
+) (step store.Step, tasks []store.Task, err error) {
 	// Collect dependency names from the template.
 	dependsOn := make([]string, 0, len(stepTmpl.Dependencies))
 	for _, dep := range stepTmpl.Dependencies {
@@ -295,7 +305,7 @@ func (s *Submitter) createStepWithTasks(
 
 	hostReqs, computeLoc := toStoreHostRequirements(stepTmpl.HostRequirements)
 
-	step := store.Step{
+	step = store.Step{
 		ID:               uuid.NewString(),
 		JobID:            job.ID,
 		Name:             stepTmpl.Name,
@@ -308,11 +318,6 @@ func (s *Submitter) createStepWithTasks(
 		UpdatedAt:        now,
 	}
 
-	step, err = s.st.CreateStep(ctx, step)
-	if err != nil {
-		return nil, nil, fmt.Errorf("openjd: submit: create step %q: %w", stepTmpl.Name, err)
-	}
-
 	// Task status mirrors the step's initial status.
 	taskStatus := store.TaskStatusReady
 	if stepStatus == store.StepStatusPending {
@@ -322,17 +327,18 @@ func (s *Submitter) createStepWithTasks(
 	// ── Expand parameter space ──────────────────────────────────────────────
 	taskParamList, err := s.expandStepTaskParams(stepTmpl, stepIdx, boundParams, deriveBounds)
 	if err != nil {
-		return nil, nil, err
+		return store.Step{}, nil, err
 	}
 
-	// ── Create one Task row per parameter combination ───────────────────────
+	// ── Build one Task row per parameter combination ────────────────────────
 	var reqCores *int
 	if hostReqs != nil {
 		reqCores = requiredCoresFromAmounts(hostReqs.Amounts)
 	}
 
+	tasks = make([]store.Task, 0, len(taskParamList))
 	for j, params := range taskParamList {
-		task := store.Task{
+		tasks = append(tasks, store.Task{
 			ID:            uuid.NewString(),
 			JobID:         job.ID,
 			StepID:        step.ID,
@@ -342,26 +348,16 @@ func (s *Submitter) createStepWithTasks(
 			RequiredCores: reqCores,
 			CreatedAt:     now,
 			UpdatedAt:     now,
-		}
-
-		task, err = s.st.CreateTask(ctx, task)
-		if err != nil {
-			return nil, nil, fmt.Errorf(
-				"openjd: submit: create task %d of step %q: %w",
-				j, stepTmpl.Name, err,
-			)
-		}
-
-		tasks = append(tasks, task)
+		})
 	}
 
-	return []store.Step{step}, tasks, nil
+	return step, tasks, nil
 }
 
 // expandStepTaskParams resolves {{Param.*}} / {{RawParam.*}} references in the
 // step's parameter space, re-validates the resolved space's quantitative
 // limits, expands it into one parameter set per task, and derives chunk
-// bounds when requested. It is extracted from [Submitter.createStepWithTasks]
+// bounds when requested. It is extracted from [Submitter.buildStepWithTasks]
 // to keep that function's cyclomatic complexity within bounds.
 func (s *Submitter) expandStepTaskParams(
 	stepTmpl StepTemplate,

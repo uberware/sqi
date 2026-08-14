@@ -21,6 +21,136 @@ func (s *Store) CreateJob(_ context.Context, job store.Job) (store.Job, error) {
 	return job, nil
 }
 
+// CreateJobSubmission implements [store.JobStore]. It validates the whole
+// submission before mutating anything, so a rejected submission leaves the
+// store untouched — the in-memory equivalent of the SQLite implementation's
+// transaction.
+func (s *Store) CreateJobSubmission(_ context.Context, sub store.JobSubmission) (store.JobSubmission, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if err := s.validateSubmission(sub); err != nil {
+		return store.JobSubmission{}, err
+	}
+
+	now := time.Now().UTC()
+	out := store.JobSubmission{
+		DependsOn: copySlice(sub.DependsOn),
+		Steps:     make([]store.Step, 0, len(sub.Steps)),
+		Tasks:     make([]store.Task, 0, len(sub.Tasks)),
+	}
+
+	job := sub.Job
+	job.Parameters = copyMap(job.Parameters)
+	job.CreatedAt, job.UpdatedAt = now, now
+	s.jobs[job.ID] = job
+	out.Job = job
+
+	existing := s.jobDependencies[job.ID]
+	for _, up := range sub.DependsOn {
+		if slices.Contains(existing, up) {
+			continue
+		}
+		existing = append(existing, up)
+	}
+	if len(existing) > 0 {
+		s.jobDependencies[job.ID] = existing
+	}
+
+	// Each step and task is stamped with its own time.Now(), mirroring the
+	// SQLite implementation, where tasks within a step sharing one created_at
+	// would silently disable the ready-task ordering tiebreaker and destabilize
+	// ListTasks paging (see insertTasksTx in sqlite/job.go).
+	for _, step := range sub.Steps {
+		rowNow := time.Now().UTC()
+		step.DependsOn = copySlice(step.DependsOn)
+		step.CreatedAt, step.UpdatedAt = rowNow, rowNow
+		s.steps[step.ID] = step
+		out.Steps = append(out.Steps, step)
+	}
+	for _, task := range sub.Tasks {
+		rowNow := time.Now().UTC()
+		task.Parameters = copyMap(task.Parameters)
+		task.CreatedAt, task.UpdatedAt = rowNow, rowNow
+		s.tasks[task.ID] = task
+		out.Tasks = append(out.Tasks, task)
+	}
+
+	return out, nil
+}
+
+// validateSubmission runs, before any mutation happens, the checks that make
+// the fake reject what SQLite's schema would reject. Callers must hold s.mu.
+//
+// It mirrors exactly three constraints: the jobs primary key, the
+// steps_job_name_unique UNIQUE (job_id, name) constraint, and the steps and
+// tasks primary keys — each checked both within the submission and against
+// what is already stored. Without the primary-key checks the fake does not
+// merely accept a duplicate ID, it silently LOSES the row (the map assignment
+// overwrites) and still reports success, so a Submit regression that reused an
+// ID would be green through every fake-backed test and ErrConflict only in
+// production.
+//
+// It does NOT mirror SQLite's foreign keys: a submission naming a nonexistent
+// farm, queue or step is accepted here. That gap is pre-existing in CreateJob,
+// CreateStep and CreateTask and is deliberately left alone rather than closed
+// only on this one path. (job_dependencies.depends_on_job_id carries no FK at
+// all, so accepting an edge to a nonexistent upstream job is correct parity.)
+func (s *Store) validateSubmission(sub store.JobSubmission) error {
+	if _, exists := s.jobs[sub.Job.ID]; exists {
+		return store.ErrConflict
+	}
+	if err := s.validateSubmissionSteps(sub.Steps); err != nil {
+		return err
+	}
+	return s.validateSubmissionTasks(sub.Tasks)
+}
+
+// validateSubmissionTasks rejects a task ID that collides within the
+// submission or with a stored task. Callers must hold s.mu.
+func (s *Store) validateSubmissionTasks(tasks []store.Task) error {
+	ids := make(map[string]struct{}, len(tasks))
+	for _, task := range tasks {
+		if _, dup := ids[task.ID]; dup {
+			return store.ErrConflict
+		}
+		if _, exists := s.tasks[task.ID]; exists {
+			return store.ErrConflict
+		}
+		ids[task.ID] = struct{}{}
+	}
+	return nil
+}
+
+// validateSubmissionSteps rejects a step ID or a (job_id, name) pair that
+// collides within the submission or with a stored step. Callers must hold
+// s.mu.
+func (s *Store) validateSubmissionSteps(steps []store.Step) error {
+	ids := make(map[string]struct{}, len(steps))
+	names := make(map[string]struct{}, len(steps))
+	for _, step := range steps {
+		if _, dup := ids[step.ID]; dup {
+			return store.ErrConflict
+		}
+		if _, exists := s.steps[step.ID]; exists {
+			return store.ErrConflict
+		}
+		ids[step.ID] = struct{}{}
+
+		key := step.JobID + "\x00" + step.Name
+		if _, dup := names[key]; dup {
+			return store.ErrConflict
+		}
+		names[key] = struct{}{}
+		for _, existing := range s.steps {
+			if existing.JobID == step.JobID && existing.Name == step.Name {
+				return store.ErrConflict
+			}
+		}
+	}
+	return nil
+}
+
 // GetJob returns the job with the given ID, or [store.ErrNotFound].
 func (s *Store) GetJob(_ context.Context, id string) (store.Job, error) {
 	s.mu.Lock()
