@@ -21,6 +21,79 @@ func (s *Store) CreateJob(_ context.Context, job store.Job) (store.Job, error) {
 	return job, nil
 }
 
+// CreateJobSubmission implements [store.JobStore]. It validates the whole
+// submission before mutating anything, so a rejected submission leaves the
+// store untouched — the in-memory equivalent of the SQLite implementation's
+// transaction.
+func (s *Store) CreateJobSubmission(_ context.Context, sub store.JobSubmission) (store.JobSubmission, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if err := s.validateSubmission(sub); err != nil {
+		return store.JobSubmission{}, err
+	}
+
+	now := time.Now().UTC()
+	out := store.JobSubmission{
+		DependsOn: copySlice(sub.DependsOn),
+		Steps:     make([]store.Step, 0, len(sub.Steps)),
+		Tasks:     make([]store.Task, 0, len(sub.Tasks)),
+	}
+
+	job := sub.Job
+	job.Parameters = copyMap(job.Parameters)
+	job.CreatedAt, job.UpdatedAt = now, now
+	s.jobs[job.ID] = job
+	out.Job = job
+
+	existing := s.jobDependencies[job.ID]
+	for _, up := range sub.DependsOn {
+		if slices.Contains(existing, up) {
+			continue
+		}
+		existing = append(existing, up)
+	}
+	if len(existing) > 0 {
+		s.jobDependencies[job.ID] = existing
+	}
+
+	for _, step := range sub.Steps {
+		step.DependsOn = copySlice(step.DependsOn)
+		step.CreatedAt, step.UpdatedAt = now, now
+		s.steps[step.ID] = step
+		out.Steps = append(out.Steps, step)
+	}
+	for _, task := range sub.Tasks {
+		task.Parameters = copyMap(task.Parameters)
+		task.CreatedAt, task.UpdatedAt = now, now
+		s.tasks[task.ID] = task
+		out.Tasks = append(out.Tasks, task)
+	}
+
+	return out, nil
+}
+
+// validateSubmission rejects a submission that either backend's constraints
+// would reject, before any mutation happens. Callers must hold s.mu.
+func (s *Store) validateSubmission(sub store.JobSubmission) error {
+	if _, exists := s.jobs[sub.Job.ID]; exists {
+		return store.ErrConflict
+	}
+	seen := make(map[string]struct{}, len(sub.Steps))
+	for _, step := range sub.Steps {
+		if _, dup := seen[step.Name]; dup {
+			return store.ErrConflict
+		}
+		seen[step.Name] = struct{}{}
+		for _, existing := range s.steps {
+			if existing.JobID == step.JobID && existing.Name == step.Name {
+				return store.ErrConflict
+			}
+		}
+	}
+	return nil
+}
+
 // GetJob returns the job with the given ID, or [store.ErrNotFound].
 func (s *Store) GetJob(_ context.Context, id string) (store.Job, error) {
 	s.mu.Lock()

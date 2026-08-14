@@ -215,6 +215,119 @@ func (s *Store) CreateJob(ctx context.Context, job store.Job) (store.Job, error)
 	return out, mapErr(err)
 }
 
+// CreateJobSubmission implements [store.JobStore]. Every row one submission
+// creates — the job, its dependency edges, its steps and its tasks — is
+// written in a single transaction, so a failure at any point leaves nothing
+// behind.
+//
+// Rows are inserted in foreign-key order (job, edges, steps, tasks) and each
+// insert uses raw SQL via tx rather than the prepared statements the per-row
+// creators use: a statement bound into a transaction with tx.StmtContext must
+// itself be closed, and the other transactional writers here take the same
+// approach (see UpdateTaskStatus in task.go).
+func (s *Store) CreateJobSubmission(ctx context.Context, sub store.JobSubmission) (store.JobSubmission, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return store.JobSubmission{}, mapErr(err)
+	}
+	defer func() { _ = tx.Rollback() }() //nolint:errcheck // rollback after commit is a no-op
+
+	now := timeToText(time.Now().UTC())
+
+	out := store.JobSubmission{DependsOn: sub.DependsOn}
+	if out.Job, err = insertJobTx(ctx, tx, sub.Job, now); err != nil {
+		return store.JobSubmission{}, err
+	}
+	for _, up := range sub.DependsOn {
+		if _, err := tx.ExecContext(ctx, sqlInsertJobDependency, sub.Job.ID, up, now); err != nil {
+			return store.JobSubmission{}, fmt.Errorf("sqlite: create job dependency %s->%s: %w", sub.Job.ID, up, mapErr(err))
+		}
+	}
+	if out.Steps, err = insertStepsTx(ctx, tx, sub.Steps, now); err != nil {
+		return store.JobSubmission{}, err
+	}
+	if out.Tasks, err = insertTasksTx(ctx, tx, sub.Tasks, now); err != nil {
+		return store.JobSubmission{}, err
+	}
+
+	if err := tx.Commit(); err != nil {
+		return store.JobSubmission{}, mapErr(err)
+	}
+	return out, nil
+}
+
+// insertJobTx inserts one job row inside tx, mirroring CreateJob's argument
+// order exactly.
+func insertJobTx(ctx context.Context, tx *sql.Tx, job store.Job, now string) (store.Job, error) {
+	paramsJSON, err := marshalJSON(job.Parameters)
+	if err != nil {
+		return store.Job{}, err
+	}
+	row := tx.QueryRowContext(ctx, sqlInsertJob,
+		job.ID, job.FarmID, job.QueueID, job.Name, job.Owner, job.Submitter,
+		job.Priority, string(job.Status), job.Project,
+		job.RawTemplate, string(job.TemplateFormat), paramsJSON,
+		now, now,
+		nullTimeToText(job.StartedAt), nullTimeToText(job.CompletedAt),
+		job.FailedAttempts, nullInt(job.MaxAttempts), nullInt(job.RetryDelaySeconds), nullInt(job.FailureLimit),
+		job.ParkReason)
+	out, err := scanJob(row)
+	return out, mapErr(err)
+}
+
+// insertStepsTx inserts every step inside tx, mirroring CreateStep's argument
+// order exactly.
+func insertStepsTx(ctx context.Context, tx *sql.Tx, steps []store.Step, now string) ([]store.Step, error) {
+	out := make([]store.Step, 0, len(steps))
+	for _, step := range steps {
+		dependsOnJSON, err := marshalJSON(step.DependsOn)
+		if err != nil {
+			return nil, err
+		}
+		hostReqJSON, err := marshalJSON(step.HostRequirements)
+		if err != nil {
+			return nil, err
+		}
+		row := tx.QueryRowContext(ctx, sqlInsertStep,
+			step.ID, step.JobID, step.Name, dependsOnJSON,
+			step.StepOrder, string(step.Status),
+			hostReqJSON, step.ComputeLocation,
+			now, now)
+		stored, err := scanStep(row)
+		if err != nil {
+			return nil, mapErr(err)
+		}
+		out = append(out, stored)
+	}
+	return out, nil
+}
+
+// insertTasksTx inserts every task inside tx, mirroring CreateTask's argument
+// order exactly.
+func insertTasksTx(ctx context.Context, tx *sql.Tx, tasks []store.Task, now string) ([]store.Task, error) {
+	out := make([]store.Task, 0, len(tasks))
+	for _, task := range tasks {
+		paramsJSON, err := marshalJSON(task.Parameters)
+		if err != nil {
+			return nil, err
+		}
+		var reqCores sql.NullInt64
+		if task.RequiredCores != nil {
+			reqCores = sql.NullInt64{Int64: int64(*task.RequiredCores), Valid: true}
+		}
+		row := tx.QueryRowContext(ctx, sqlInsertTask,
+			task.ID, task.JobID, task.StepID, task.Name, paramsJSON, string(task.Status),
+			nullString(task.AssignedWorkerID), nullTimeToText(task.AssignedAt), now, now, reqCores,
+			task.UnschedulableReason, task.FailedAttempts, nullTimeToText(task.RetryAfter), task.FailureReason)
+		stored, err := scanTask(row)
+		if err != nil {
+			return nil, mapErr(err)
+		}
+		out = append(out, stored)
+	}
+	return out, nil
+}
+
 // GetJob implements [store.JobStore].
 func (s *Store) GetJob(ctx context.Context, id string) (store.Job, error) {
 	row := s.stmtGetJob.QueryRowContext(ctx, id)

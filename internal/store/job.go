@@ -120,10 +120,36 @@ type DeletedJob struct {
 	QueueID string
 }
 
+// JobSubmission is everything one job submission creates.
+//
+// It exists so a job, its dependency edges, its steps and its tasks are
+// created together or not at all — see [JobStore.CreateJobSubmission].
+type JobSubmission struct {
+	Job       Job
+	DependsOn []string
+	Steps     []Step
+	Tasks     []Task
+}
+
 // JobStore is the persistence interface for [Job] records.
 type JobStore interface {
 	// CreateJob inserts a new job with all fields populated by the caller.
 	CreateJob(ctx context.Context, job Job) (Job, error)
+
+	// CreateJobSubmission atomically creates a job, its dependency edges, its
+	// steps and its tasks. On ANY error nothing is written.
+	//
+	// It exists because creating those rows through separate calls left two
+	// defects with no cure at the call site: a failed submission stranded a
+	// pending job that no sweep reaps, and a submission that failed after some
+	// steps were written produced a job whose missing steps made
+	// checkJobCompletion report it completed. Both are properties of partial
+	// creation, so both end here.
+	//
+	// The returned JobSubmission carries the rows as stored, the way
+	// [JobStore.CreateJob], [StepStore.CreateStep] and [TaskStore.CreateTask]
+	// each return theirs.
+	CreateJobSubmission(ctx context.Context, sub JobSubmission) (JobSubmission, error)
 
 	// GetJob returns the job with the given ID, or [ErrNotFound].
 	GetJob(ctx context.Context, id string) (Job, error)
