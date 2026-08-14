@@ -5,11 +5,8 @@
 package conformance_test
 
 import (
-	"fmt"
 	"os"
 	"path/filepath"
-	"strconv"
-	"strings"
 	"testing"
 
 	"github.com/uberware/sqi/internal/openjd"
@@ -124,348 +121,48 @@ func TestConformance_Templates(t *testing.T) {
 	}
 }
 
-// exprSuiteDir is the fixture directory scored by the expression-level path.
-const exprSuiteDir = "EXPR/job_templates"
-
-// exprBaselinePath lists EXPR fixtures whose expressions do not yet parse. It
-// is separate from baselinePath because the same fixture IDs appear in both
-// scoring paths, and an EXPR entry in baseline.txt would be reported as
-// orphaned forever — the template path never scores EXPR at all.
-const exprBaselinePath = "baseline-expr.txt"
-
-// minExpectedExprFixtures guards against a truncated submodule, exactly as
-// minExpectedTests does for the template path.
-const minExpectedExprFixtures = 200
-
-// TestConformance_EXPRNotSupported is the drift guard for the
-// expression-level scoring path.
+// protectedFixtureResults scores every fixture named in protected through the
+// same real parse-and-validate path TestConformance_Templates uses, and returns
+// the results keyed by fixture path.
 //
-// That path (conformance.RunExprCase) exists only because internal/openjd
-// rejects EXPR templates outright, which makes the template path unable to
-// score EXPR fixtures without reporting 180 false passes. EXPR is registered
-// (status "in-progress") so the conformance harness can drive it through the
-// real parse and validate path, but the moment production marks it
-// StatusSupported, the workaround becomes not merely unnecessary but actively
-// misleading — two paths scoring the same fixtures by different rules.
-// Failing here forces its removal rather than letting it rot.
-func TestConformance_EXPRNotSupported(t *testing.T) {
-	ext, ok := openjd.LookupExtension("EXPR")
-	if !ok {
-		t.Fatal("EXPR is no longer in the extension registry.\n" +
-			"Sub-project E2 registers it with status \"in-progress\" so this\n" +
-			"suite can score EXPR fixtures through the real template path.\n" +
-			"Removing the entry breaks that scoring path.")
-	}
-	if ext.Status == openjd.StatusSupported {
-		t.Fatal("internal/openjd now SUPPORTS EXPR.\n" +
-			"The expression-level conformance path is obsolete: delete\n" +
-			"test/conformance/exprcase.go, exprcase_test.go, baseline-expr.txt,\n" +
-			"TestConformance_Expressions, collectEXPRFixtures, this test, and the\n" +
-			"exprSuiteDir, exprBaselinePath, minExpectedExprFixtures and\n" +
-			"minExpectedPasses constants; also delete runEXPRCase,\n" +
-			"discountEXPRGateErrors, isEXPRGateError and\n" +
-			"TestEXPRGateFilter_MatchesRealValidateExtensionsOutput (sub-project E2\n" +
-			"Task 2's status-gate discount — once EXPR is StatusSupported it always\n" +
-			"discounts zero errors, so it becomes dead weight, not a correctness\n" +
-			"requirement) and the \"EXPR: a temporary, second scoring path\" section\n" +
-			"of docs/openjd-conformance.md; then let TestConformance_Templates score\n" +
-			"EXPR/job_templates end to end via plain RunCase.\n" +
-			"\n" +
-			"WHY THIS MESSAGE CARRIES A CHECKLIST: while EXPR is unsupported,\n" +
-			"ValidateWithOptions skips the expression walk entirely (gated on\n" +
-			"openjd.ValidateOptions.CheckEXPRExpressionsWhileUnsupported), and the\n" +
-			"flip removes that gate. Measured before it existed, an 84 KB template\n" +
-			"cost 11.3s of CPU per request; POST /api/v1/jobs takes a 4 MiB body,\n" +
-			"anonymously when auth is off, and an ACCEPTED template is walked TWICE\n" +
-			"(phase 1 in ValidateWithOptions, phase 2 in checkExpressionsAtSubmit),\n" +
-			"so after the flip there is no early rejection to fall back on.\n" +
-			"\n" +
-			"ALREADY LANDED, so do not re-derive it (an earlier revision of this\n" +
-			"message still demanded the first item as future work):\n" +
-			"  - E4c: the cumulative, template-wide expression budget (positions\n" +
-			"    and retained bytes), which the per-position budgets did not give.\n" +
-			"  - E4d: all nine limits as validated operator configuration, plus the\n" +
-			"    scheduler gate that withholds EXPR work from an undercutting worker.\n" +
-			"  - H1: a WALL-CLOCK backstop (openjd.expr_submission_deadline, default\n" +
-			"    5s, range 1s-60s) checked inside expr.meter.charge, because the\n" +
-			"    operation budget cannot bound seconds -- section 1.3.10 prices 256\n" +
-			"    bytes at one operation. A breach is a 503, NEVER a 4xx.\n" +
-			"  - H1: maxTasksPerJob (internal/openjd/expand.go), always-on, so one\n" +
-			"    POST can no longer reach maxSteps x maxTasksPerStep = 10^8 rows.\n" +
-			"  - H1: the operator's ExprLimits (and a per-request deadline) reaching\n" +
-			"    EVERY route that validates a template -- the two job routes, the\n" +
-			"    product create/update routes, and the preset routes.\n" +
-			"\n" +
-			"WHAT H2 STILL OWES, none of which any test can enforce before the flip:\n" +
-			"  1. Deleting CheckEXPRExpressionsWhileUnsupported is no longer a\n" +
-			"     one-line change. Its dependents are internal/openjd's\n" +
-			"     deadline_test.go, exprlimits_test.go, validate_limits_test.go,\n" +
-			"     validate_exprgate_test.go and validate_expr_wiring_test.go,\n" +
-			"     internal/product/exprbounds_internal_test.go,\n" +
-			"     internal/worker/fmtres/exprsyms_test.go, and this suite. Several\n" +
-			"     of those force the walk on only because production cannot reach\n" +
-			"     it today; after the flip they should drive the real path instead\n" +
-			"     of being deleted with the field. internal/product/definition.go's\n" +
-			"     validateParsed seam exists for exactly that reason.\n" +
-			"  2. An END-TO-END test that a real submission breaching the deadline\n" +
-			"     answers 503. It cannot exist today: no request can reach an\n" +
-			"     evaluation while EXPR is StatusInProgress, so internal/api's\n" +
-			"     deadline tests drive a stub returning a HAND-COPIED error shape\n" +
-			"     (internal/api/submitdeadline_test.go) and the real-pipeline half\n" +
-			"     is proved separately in internal/openjd/deadline_test.go. The\n" +
-			"     bridge between them is a copied string until H2 writes this test.\n" +
-			"  3. MEASURE a large-but-legitimate EXPR template against the 5s\n" +
-			"     default. The deterministic budgets nominally permit ~17 minutes\n" +
-			"     (10,000 positions x 10,000 operations) while the deadline ceiling\n" +
-			"     is 60s, so the two are NOT co-sized; 5s is a guess at where the\n" +
-			"     acceptance boundary falls, never validated against a real\n" +
-			"     template. The six reference presets cost <=15 positions and <=1\n" +
-			"     operation, so they prove nothing about the boundary.\n" +
-			"  4. api.Config.ExprSubmissionDeadline's ZERO value means NO backstop.\n" +
-			"     internal/config rejects a zero or negative duration at load and\n" +
-			"     internal/server's routerConfig is pinned by a test, so this bites\n" +
-			"     an embedder building an api.Config directly, not an operator.")
-	}
-}
-
-// collectEXPRFixtures returns every EXPR job-template fixture, relative to
-// SuiteRoot. Job-execution tests (".test.yaml") are excluded, as in the
-// template path.
-func collectEXPRFixtures(t *testing.T) []conformance.TestCase {
+// It exists because every TestConformance_*ProtectedFixtures test below needs
+// the same thing: a handful of named fixtures scored individually, so one
+// regressing cannot be hidden by another starting to pass for an unrelated
+// reason — the swap the aggregate score structurally cannot see.
+//
+// Before sub-project H2 flipped EXPR to StatusSupported these tests could not
+// use the plain path. They ran through conformance.RunExprCase (an
+// expression-only reader that never called openjd.Parse at all) or, for the E2
+// and E3 sets, through a local runEXPRCase wrapper that first discounted the
+// EXPR extension's own registered-but-unsupported status-gate error, since that
+// error alone rejected every EXPR-declaring template and would have scored all
+// 180 ".invalid" fixtures as passes whatever else was wrong with them. EXPR is
+// supported now, so that gate never fires, both scoring paths are deleted, and
+// these fixtures go through conformance.RunCase like every other directory's.
+//
+// The StateLive assertion is not decoration: conformance.Result.Passed is
+// always false for a StateNotApplicable fixture, so a misclassified entry would
+// fail every caller below with a confusing message instead of naming the cause.
+func protectedFixtureResults(t *testing.T, protected map[string]string) map[string]conformance.Result {
 	t.Helper()
 
-	dir := filepath.Join(SuiteRoot, exprSuiteDir)
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		t.Fatalf("read %s: %v\nRun: git submodule update --init --recursive", dir, err)
-	}
-
-	var cases []conformance.TestCase
-	for _, entry := range entries {
-		if entry.IsDir() || !conformance.IsFixtureFile(entry.Name()) {
+	results := make(map[string]conformance.Result, len(protected))
+	for _, tc := range collectTemplateFixtures(t) {
+		if _, want := protected[tc.Path]; !want {
 			continue
 		}
-		tc := conformance.ParseTestCase(exprSuiteDir + "/" + entry.Name())
-		if tc.IsJobTest {
-			continue
-		}
-		cases = append(cases, tc)
-	}
-	return cases
-}
-
-// runEXPRCase scores one EXPR fixture through the real parse-and-validate
-// path (like conformance.RunCase), but discounts the EXPR extension's own
-// not-yet-supported rejection first, so a fixture is judged on whatever
-// OTHER validation errors sqi finds.
-//
-// Why this exists: EXPR is registered but StatusInProgress (Task 1), so
-// validateExtensions unconditionally rejects every EXPR-declaring template
-// with an "/extensions/<i>: extension \"EXPR\" is registered but not yet
-// supported" error, regardless of the template's own content. Scoring EXPR
-// fixtures through conformance.RunCase unfiltered therefore makes REJECTION
-// trivially easy: every one of the 180 fixtures marked ".invalid" would
-// "pass" whether or not sqi actually detects the defect the fixture exists
-// to test, because the gate error alone already satisfies "must be
-// rejected." That is exactly the false-pass mode RunExprCase's own doc
-// comment warns naive pass/fail classification into ("would report 180
-// passes... for the wrong reason") — this wrapper exists to keep the real
-// path from silently reintroducing that failure mode now that EXPR
-// fixtures reach RunCase's machinery at all. (Caught in review of sub-project
-// E2 Task 2, before the resulting 177/209 score was reported as final —
-// see baseline-expr.txt's 2026-08-08 note.)
-//
-// Deliberately local to the EXPR scoring loop, not a change to RunCase
-// itself: every other suite directory depends on RunCase's current,
-// unfiltered semantics, and production must keep reporting the gate error
-// verbatim (see TestConformance_EXPRNotSupported). Sub-project H's checklist
-// (see TestConformance_EXPRNotSupported's failure message) must delete this
-// function alongside RunExprCase, exprcase.go and baseline-expr.txt once EXPR
-// becomes StatusSupported — at that point discountEXPRGateErrors always
-// removes zero errors and TestConformance_Templates scores EXPR/job_templates
-// through plain RunCase like every other directory.
-func runEXPRCase(tc conformance.TestCase, data []byte) conformance.Result {
-	res := conformance.Result{Case: tc, State: conformance.StateLive}
-
-	tmpl, err := openjd.Parse(data, openjd.FormatYAML)
-	switch {
-	case err != nil:
-		res.Reason = fmt.Sprintf("parse rejected: %v", err)
-	default:
-		// CheckEXPRExpressionsWhileUnsupported is the counterpart of the
-		// discount below: production skips the expression walk entirely while
-		// EXPR is StatusInProgress (the walk cannot change a verdict the status
-		// gate has already decided, and it is expensive), so the suite has to
-		// ask for it explicitly or it would score every EXPR fixture on the
-		// status-gate error alone -- which this wrapper then discounts, leaving
-		// nothing. Sub-project H deletes both when it flips the status.
-		errs := openjd.ValidateWithOptions(tmpl, openjd.ValidateOptions{
-			EnforceLimits:                        true,
-			CheckEXPRExpressionsWhileUnsupported: true,
-		})
-		errs = discountEXPRGateErrors(errs, tmpl.Extensions)
-		if len(errs) > 0 {
-			res.Reason = fmt.Sprintf("validation rejected: %v", errs)
-		} else {
-			res.Accepted = true
-		}
-	}
-
-	res.Passed = res.Accepted != tc.Invalid
-	if res.Passed {
-		res.Reason = ""
-	} else if res.Accepted {
-		res.Reason = "accepted, but fixture is marked .invalid"
-	}
-	return res
-}
-
-// discountEXPRGateErrors removes every ValidationError produced by
-// validateExtensions' registered-but-unsupported branch (Task 1's status
-// gate) from errs, given the template's own declared extensions list in
-// parse order. Every other error — including a genuinely unsupported or
-// unregistered extension, and every non-extension validation failure — is
-// left untouched; only the specific gate condition is discounted.
-func discountEXPRGateErrors(errs openjd.ValidationErrors, extensions []string) openjd.ValidationErrors {
-	out := make(openjd.ValidationErrors, 0, len(errs))
-	for _, e := range errs {
-		if isEXPRGateError(e, extensions) {
-			continue
-		}
-		out = append(out, e)
-	}
-	return out
-}
-
-// isEXPRGateError reports whether e is validateExtensions' registered-but-
-// unsupported rejection for one of the template's own declared extensions.
-//
-// Matching is structural, keyed off the error's Pointer plus
-// openjd.LookupExtension's Status field — NOT message text, so a wording
-// change to the gate's message does not silently stop working here.
-// TestEXPRGateFilter_MatchesRealValidateExtensionsOutput drives the real
-// validateExtensions code path and pins the pointer format
-// ("/extensions/<index>", no further nesting) this depends on; if that
-// format ever changes, that test fails loudly instead of the EXPR score
-// silently drifting because the filter stopped matching.
-func isEXPRGateError(e openjd.ValidationError, extensions []string) bool {
-	const prefix = "/extensions/"
-	if !strings.HasPrefix(e.Pointer, prefix) {
-		return false
-	}
-	idx, err := strconv.Atoi(e.Pointer[len(prefix):])
-	if err != nil || idx < 0 || idx >= len(extensions) {
-		return false
-	}
-	entry, known := openjd.LookupExtension(extensions[idx])
-	return known && entry.Status != openjd.StatusSupported
-}
-
-// TestEXPRGateFilter_MatchesRealValidateExtensionsOutput pins the assumption
-// isEXPRGateError depends on against the REAL validateExtensions output (not
-// a synthetic ValidationError): that a registered-but-unsupported extension
-// is reported at pointer "/extensions/<index>" with no further nesting, and
-// that discountEXPRGateErrors removes exactly that error and nothing else
-// for a minimal EXPR-only template. If validateExtensions' pointer format or
-// gating condition ever changes, this test fails here rather than the EXPR
-// score silently drifting.
-func TestEXPRGateFilter_MatchesRealValidateExtensionsOutput(t *testing.T) {
-	data := []byte(`specificationVersion: jobtemplate-2023-09
-name: TestJob
-extensions:
-- EXPR
-steps:
-- name: Step1
-  script:
-    actions:
-      onRun:
-        command: echo
-`)
-
-	tmpl, err := openjd.Parse(data, openjd.FormatYAML)
-	if err != nil {
-		t.Fatalf("parse: %v", err)
-	}
-	errs := openjd.ValidateWithOptions(tmpl, openjd.ValidateOptions{EnforceLimits: true})
-	if len(errs) != 1 {
-		t.Fatalf("want exactly 1 validation error (the EXPR gate) for this minimal fixture, got %d: %v",
-			len(errs), errs)
-	}
-	if !isEXPRGateError(errs[0], tmpl.Extensions) {
-		t.Fatalf("isEXPRGateError did not recognize validateExtensions' real output: %+v", errs[0])
-	}
-	if filtered := discountEXPRGateErrors(errs, tmpl.Extensions); len(filtered) != 0 {
-		t.Fatalf("discountEXPRGateErrors left %d errors, want 0: %v", len(filtered), filtered)
-	}
-}
-
-// TestConformance_Expressions scores every EXPR job-template fixture.
-//
-// Sub-project E2 routed this to the real parse-and-validate path
-// TestConformance_Templates uses (conformance.RunCase), instead of the old
-// expression-level RunExprCase — see runEXPRCase's doc comment for why a
-// thin wrapper around RunCase, not RunCase itself, is called below. It
-// remains a separate test function (not folded into TestConformance_Templates)
-// because it scores its own directory against its own baseline file,
-// exprBaselinePath, rather than baseline.txt.
-func TestConformance_Expressions(t *testing.T) {
-	cases := collectEXPRFixtures(t)
-	if len(cases) < minExpectedExprFixtures {
-		t.Fatalf("collected %d EXPR fixtures, want >= %d — suite looks truncated; "+
-			"an empty run must never pass", len(cases), minExpectedExprFixtures)
-	}
-
-	results := make([]conformance.Result, 0, len(cases))
-	for _, tc := range cases {
 		data, err := os.ReadFile(filepath.Join(SuiteRoot, tc.Path))
 		if err != nil {
 			t.Fatalf("read fixture %s: %v", tc.Path, err)
 		}
-		results = append(results, runEXPRCase(tc, data))
-	}
-
-	t.Logf("template-level scoring (parse and validate)\n%s",
-		conformance.FormatRollup(conformance.Rollup(results)))
-
-	// A run in which almost nothing passes means the reader is broken, not
-	// that the fixtures are hard: the suite's 29 expr1.1--reject-* fixtures
-	// plus the unclosed, syntax-error and leading-zeros cases are rejected by
-	// grammar alone, and the arithmetic, contextual-keyword and JSON-alias
-	// fixtures parse. The comparison and conditional fixtures each also
-	// contain a list literal, which now parses and evaluates too, so both
-	// fixtures pass outright rather than being baselined.
-	passed := 0
-	for _, r := range results {
-		if r.Passed {
-			passed++
+		state := conformance.Classify(conformance.ExtensionFor(tc.Path), conformance.KindFor(tc.Path))
+		if state != conformance.StateLive {
+			t.Fatalf("%s is classified %v, not live — a fixture that is never scored "+
+				"cannot protect anything", tc.Path, state)
 		}
+		results[tc.Path] = conformance.RunCase(tc, state, data)
 	}
-	const minExpectedPasses = 25
-	if passed < minExpectedPasses {
-		t.Errorf("only %d/%d EXPR fixtures pass, want >= %d — the expression "+
-			"reader is likely broken rather than the fixtures being hard",
-			passed, len(results), minExpectedPasses)
-	}
-
-	baseline, err := conformance.LoadBaseline(exprBaselinePath)
-	if err != nil {
-		t.Fatalf("load baseline: %v", err)
-	}
-	regressions, stale, orphaned := conformance.DiffBaseline(results, baseline)
-
-	byID := map[string]conformance.Result{}
-	for _, r := range results {
-		byID[r.ID()] = r
-	}
-	for _, id := range regressions {
-		t.Errorf("REGRESSION %s\n    %s", id, byID[id].Reason)
-	}
-	for _, id := range stale {
-		t.Errorf("STALE BASELINE %s now passes — remove it from %s", id, exprBaselinePath)
-	}
-	for _, id := range orphaned {
-		t.Errorf("ORPHANED BASELINE %s matches no live result — remove it from %s", id, exprBaselinePath)
-	}
+	return results
 }
 
 // TestConformance_B3ProtectedFixtures asserts by NAME that the fixtures
@@ -477,14 +174,32 @@ func TestConformance_Expressions(t *testing.T) {
 // a real reason once they do. The aggregate score cannot see a swap — ten
 // regressing while ten others start passing leaves it unchanged — so these are
 // checked individually.
+//
+// MEASURED AGAIN when sub-project H2 moved this test onto the real template
+// path (conformance.RunCase), because the mechanism changed under four of the
+// ten. Until then these ran through the expression-only reader, which never
+// called openjd.Parse, so the four `let-comprehension-shadows` fixtures below
+// were rejected by comp.go's bare-expression shadow check while the real
+// template path was rejecting them at PARSE time for their LIST[INT] job
+// parameter — a wrong-reason pass recorded at the time in baseline-expr.txt.
+// Sub-project F implemented LIST[INT], so on the real path all four are now
+// rejected by section 1.3.7's rule for real, at the position that carries it
+// (measured: `col 8: the loop variable "x" shadows an existing binding`).
+// The fifth is not; its entry says so.
 func TestConformance_B3ProtectedFixtures(t *testing.T) {
 	protected := map[string]string{
 		// Rejected by the comprehension shadowing check (section 1.3.7).
-		"EXPR/job_templates/3.6--let-comprehension-shadows.invalid.yaml":               "shadowing check",
-		"EXPR/job_templates/3.6--let-comprehension-shadows-env.invalid.yaml":           "shadowing check",
-		"EXPR/job_templates/3.6--let-comprehension-shadows-step-let.invalid.yaml":      "shadowing check",
-		"EXPR/job_templates/3.6--let-comprehension-shadows-script-let.invalid.yaml":    "shadowing check",
-		"EXPR/job_templates/3.6--let-comprehension-shadows-simple-action.invalid.yaml": "shadowing check",
+		"EXPR/job_templates/3.6--let-comprehension-shadows.invalid.yaml":            "shadowing check",
+		"EXPR/job_templates/3.6--let-comprehension-shadows-env.invalid.yaml":        "shadowing check",
+		"EXPR/job_templates/3.6--let-comprehension-shadows-step-let.invalid.yaml":   "shadowing check",
+		"EXPR/job_templates/3.6--let-comprehension-shadows-script-let.invalid.yaml": "shadowing check",
+		// NOT the shadowing check: this one puts its `let:` on a `bash:`
+		// SimpleAction, an unmodeled FEATURE_BUNDLE_1 element, so it is rejected
+		// on `/extensions/1: unsupported extension "FEATURE_BUNDLE_1"` and
+		// `/steps/0/script: required` before any expression is checked. It stays
+		// listed as a rejection floor, with its real reason stated so it is not
+		// miscredited to B3.
+		"EXPR/job_templates/3.6--let-comprehension-shadows-simple-action.invalid.yaml": "unregistered FEATURE_BUNDLE_1 extension, not the shadowing check",
 		// Rejected by the parser or the lexer: unsupported comprehension forms.
 		"EXPR/job_templates/expr1.1--reject-dict-comp.invalid.yaml":       "lexer, no brace token",
 		"EXPR/job_templates/expr1.1--reject-set-comp.invalid.yaml":        "lexer, no brace token",
@@ -493,17 +208,7 @@ func TestConformance_B3ProtectedFixtures(t *testing.T) {
 		"EXPR/job_templates/expr1.1--reject-multi-if-comp.invalid.yaml":   "parser, one if filter",
 	}
 
-	results := make(map[string]conformance.Result)
-	for _, tc := range collectEXPRFixtures(t) {
-		if _, want := protected[tc.Path]; !want {
-			continue
-		}
-		data, err := os.ReadFile(filepath.Join(SuiteRoot, tc.Path))
-		if err != nil {
-			t.Fatalf("read fixture %s: %v", tc.Path, err)
-		}
-		results[tc.Path] = conformance.RunExprCase(tc, data)
-	}
+	results := protectedFixtureResults(t, protected)
 
 	for path, why := range protected {
 		t.Run(path, func(t *testing.T) {
@@ -557,17 +262,7 @@ func TestConformance_C1ProtectedFixtures(t *testing.T) {
 		"EXPR/job_templates/expr2.2.2--min-empty-list.invalid.yaml": "min() rejects an empty list",
 	}
 
-	results := make(map[string]conformance.Result)
-	for _, tc := range collectEXPRFixtures(t) {
-		if _, want := protected[tc.Path]; !want {
-			continue
-		}
-		data, err := os.ReadFile(filepath.Join(SuiteRoot, tc.Path))
-		if err != nil {
-			t.Fatalf("read fixture %s: %v", tc.Path, err)
-		}
-		results[tc.Path] = conformance.RunExprCase(tc, data)
-	}
+	results := protectedFixtureResults(t, protected)
 
 	for path, why := range protected {
 		t.Run(path, func(t *testing.T) {
@@ -608,17 +303,7 @@ func TestConformance_C2ProtectedFixtures(t *testing.T) {
 		"EXPR/job_templates/expr2.2.4--rindex-not-found.invalid.yaml": "rindex() rejects a missing substring",
 	}
 
-	results := make(map[string]conformance.Result)
-	for _, tc := range collectEXPRFixtures(t) {
-		if _, want := protected[tc.Path]; !want {
-			continue
-		}
-		data, err := os.ReadFile(filepath.Join(SuiteRoot, tc.Path))
-		if err != nil {
-			t.Fatalf("read fixture %s: %v", tc.Path, err)
-		}
-		results[tc.Path] = conformance.RunExprCase(tc, data)
-	}
+	results := protectedFixtureResults(t, protected)
 
 	for path, why := range protected {
 		t.Run(path, func(t *testing.T) {
@@ -646,8 +331,8 @@ func TestConformance_C2ProtectedFixtures(t *testing.T) {
 // WHAT THIS TEST ACTUALLY GUARANTEES, and what it does not: it asserts
 // res.Passed, i.e. that the fixture is STILL rejected overall. It cannot
 // assert WHICH mechanism rejected it, because conformance.Result blanks
-// Reason on a pass (exprcase.go; pinned by exprcase_test.go's "Reason = ""
-// want it empty on a pass" case) — there is no reason string available here
+// Reason on a pass (runcase.go; pinned by runcase_test.go) — there is no
+// reason string available here
 // to assert against for a passing .invalid fixture. So for any entry where a
 // SECOND, independent mechanism also rejects the same input, deleting the
 // purpose-built check that entry names would NOT turn this test red.
@@ -725,17 +410,7 @@ func TestConformance_C3ProtectedFixtures(t *testing.T) {
 		"EXPR/job_templates/expr2.2.5--re-sub-dollar-brace-group-ref.invalid.yaml": "re_sub rejects ${1}",
 	}
 
-	results := make(map[string]conformance.Result)
-	for _, tc := range collectEXPRFixtures(t) {
-		if _, want := protected[tc.Path]; !want {
-			continue
-		}
-		data, err := os.ReadFile(filepath.Join(SuiteRoot, tc.Path))
-		if err != nil {
-			t.Fatalf("read fixture %s: %v", tc.Path, err)
-		}
-		results[tc.Path] = conformance.RunExprCase(tc, data)
-	}
+	results := protectedFixtureResults(t, protected)
 
 	for path, why := range protected {
 		t.Run(path, func(t *testing.T) {
@@ -769,7 +444,7 @@ func TestConformance_C3ProtectedFixtures(t *testing.T) {
 // C3's docstring had to be given after the fact, applied here up front. It
 // asserts res.Passed, i.e. that the fixture is STILL rejected overall; it
 // cannot assert WHICH mechanism rejected it, because conformance.Result blanks
-// Reason on a pass (exprcase.go, pinned by exprcase_test.go). So an entry pins
+// Reason on a pass (runcase.go, pinned by runcase_test.go). So an entry pins
 // a specific check only where no second, independent mechanism rejects the
 // same input. Unlike C3's list, ALL FOUR entries here were verified to have no
 // such second mechanism: each named check was weakened on its own, this test
@@ -821,17 +496,7 @@ func TestConformance_C4ProtectedFixtures(t *testing.T) {
 		"EXPR/job_templates/expr2.2.1--bool-from-path.invalid.yaml": "bool() rejects a path",
 	}
 
-	results := make(map[string]conformance.Result)
-	for _, tc := range collectEXPRFixtures(t) {
-		if _, want := protected[tc.Path]; !want {
-			continue
-		}
-		data, err := os.ReadFile(filepath.Join(SuiteRoot, tc.Path))
-		if err != nil {
-			t.Fatalf("read fixture %s: %v", tc.Path, err)
-		}
-		results[tc.Path] = conformance.RunExprCase(tc, data)
-	}
+	results := protectedFixtureResults(t, protected)
 
 	for path, why := range protected {
 		t.Run(path, func(t *testing.T) {
@@ -850,28 +515,30 @@ func TestConformance_C4ProtectedFixtures(t *testing.T) {
 // TestConformance_E2ProtectedFixtures asserts by NAME that every EXPR fixture
 // sub-project E2 cleared still passes.
 //
-// E2 changed a path every EXPR template flows through: Task 2 moved
-// TestConformance_Expressions off the old expression-only conformance.RunExprCase
-// and onto runEXPRCase, a thin wrapper around the REAL parse-and-validate path
-// (conformance.RunCase's machinery: openjd.Parse + openjd.ValidateWithOptions)
-// that discounts only the EXPR extension's own registered-but-unsupported
-// status-gate error (see runEXPRCase's doc comment above). Tasks 3-9 then
-// built the scope model itself — a declared-scope symbol table, host-context
-// gating, format-string routing through the real expression checker, and
-// phase-2 re-checking with concrete parameters — reached for the first time
-// once routing made EXPR fixtures hit real validation instead of a synthetic
-// "unknown function" or "not a valid dotted identifier" rejection.
+// E2 changed a path every EXPR template flows through: its Task 2 moved the
+// EXPR score off an expression-only reader and onto the REAL parse-and-validate
+// path (conformance.RunCase's machinery: openjd.Parse +
+// openjd.ValidateWithOptions), discounting only the EXPR extension's own
+// registered-but-unsupported status-gate error. Tasks 3-9 then built the scope
+// model itself — a declared-scope symbol table, host-context gating,
+// format-string routing through the real expression checker, and phase-2
+// re-checking with concrete parameters — reached for the first time once
+// routing made EXPR fixtures hit real validation instead of a synthetic
+// "unknown function" or "not a valid dotted identifier" rejection. (Sub-project
+// H2 removed the discount along with the status gate: EXPR is StatusSupported,
+// so these fixtures now go through conformance.RunCase unmodified.)
 //
-// Comparing baseline-expr.txt at 111b0b2 (E2's start) against HEAD gives the
-// fixture list below: every EXPR/job_templates fixture that was baselined
-// (failing) before E2 and is NOT baselined (i.e. genuinely passes) after —
-// derived with `comm -23` between the two commits' baselined-fixture sets, 53
-// entries. (The reverse direction — 23 fixtures that passed on the OLD
-// expression-only path but are now correctly baselined as failing — is not
-// this test's concern: those are corrected classifications, recorded in
-// baseline-expr.txt's own Task 2 and Task 9 notes, not something E2 "cleared."
-// 11 fixtures were baselined before and remain baselined after; those aren't
-// here either.)
+// Comparing the then-separate baseline-expr.txt at 111b0b2 (E2's start) against
+// E2's end gives the fixture list below: every EXPR/job_templates fixture that
+// was baselined (failing) before E2 and is NOT baselined (i.e. genuinely
+// passes) after — derived with `comm -23` between the two commits'
+// baselined-fixture sets, 53 entries. (The reverse direction — 23 fixtures that
+// passed on the OLD expression-only path but were then correctly baselined as
+// failing — is not this test's concern: those are corrected classifications,
+// recorded in that file's own Task 2 and Task 9 notes, not something E2
+// "cleared." 11 fixtures were baselined before and remained baselined after;
+// those aren't here either. baseline-expr.txt itself was deleted by H2 with the
+// scoring path it belonged to; its history is in git.)
 //
 // The aggregate score cannot see one of these 53 regressing while another
 // starts passing for an unrelated reason — same motivation as every other
@@ -915,9 +582,9 @@ func TestConformance_C4ProtectedFixtures(t *testing.T) {
 //     is that EXPR fixtures now reach that validation at all, instead of
 //     being scored by an expression-only reader that never ran a template's
 //     parameter schema. They are listed here because Task 2's routing change
-//     is exactly what put them at risk: reverting runEXPRCase to call
-//     conformance.RunExprCase instead of the real validate path would regress
-//     every one of them silently, the same swap this test exists to catch.
+//     is exactly what put them at risk: routing EXPR fixtures back off the real
+//     validate path would regress every one of them silently, the same swap
+//     this test exists to catch.
 func TestConformance_E2ProtectedFixtures(t *testing.T) {
 	protected := map[string]string{
 		// --- Scope model (Tasks 6-9): host-context gating and submission-time
@@ -990,17 +657,7 @@ func TestConformance_E2ProtectedFixtures(t *testing.T) {
 		"EXPR/job_templates/2.16--list-list-int-too-short.invalid.yaml":                 "LIST[LIST[INT]] outer list is below the parameter's minLength",
 	}
 
-	results := make(map[string]conformance.Result)
-	for _, tc := range collectEXPRFixtures(t) {
-		if _, want := protected[tc.Path]; !want {
-			continue
-		}
-		data, err := os.ReadFile(filepath.Join(SuiteRoot, tc.Path))
-		if err != nil {
-			t.Fatalf("read fixture %s: %v", tc.Path, err)
-		}
-		results[tc.Path] = runEXPRCase(tc, data)
-	}
+	results := protectedFixtureResults(t, protected)
 
 	if len(protected) != 53 {
 		t.Fatalf("protected has %d entries, want 53 — update this count alongside the map", len(protected))
@@ -1021,28 +678,30 @@ func TestConformance_E2ProtectedFixtures(t *testing.T) {
 }
 
 // e3ProtectedReason re-derives, directly and WITHOUT going through
-// conformance.Result, the exact discounted validation-error text runEXPRCase
+// conformance.Result, the exact validation-error text conformance.RunCase
 // would compute for path, given the fixture's own raw bytes.
 //
-// It exists because conformance.Result — and therefore runEXPRCase's own
-// return value — blanks Reason to "" the instant Passed is true (see
-// RunCase's and runEXPRCase's own doc comments). For an .invalid fixture
-// that is correctly rejected, Passed IS true, so a result pulled from the
-// results map below can never expose WHICH rule rejected it; that string is
-// UNOBSERVABLE through conformance.Result alone, full stop. This function
-// re-runs the identical Parse + ValidateWithOptions(...,
-// CheckEXPRExpressionsWhileUnsupported: true) + discountEXPRGateErrors
-// pipeline on the side, purely to read the error text back out before
-// anything blanks it.
+// It exists because conformance.Result blanks Reason to "" the instant Passed
+// is true (see RunCase's own doc comment). For an .invalid fixture that is
+// correctly rejected, Passed IS true, so a result pulled from the results map
+// below can never expose WHICH rule rejected it; that string is UNOBSERVABLE
+// through conformance.Result alone, full stop. This function re-runs the
+// identical Parse + ValidateWithOptions pipeline on the side, purely to read
+// the error text back out before anything blanks it.
 //
-// It requires the discounted error set to contain EXACTLY one entry and
-// returns that entry's Error() string; a fixture whose real defect now
-// produces zero, or more than one, simultaneous errors fails loudly here
-// instead of silently degrading to a substring match against an ambiguous
-// message. All eleven TestConformance_E3ProtectedFixtures entries satisfy
-// this today (confirmed individually by running each one), so every entry
-// gets an exact-match reason, not merely a "some error fired" check — this
-// docstring makes no claim beyond what was actually confirmed.
+// Until sub-project H2 flipped EXPR to StatusSupported, this pipeline also had
+// to ask for the expression walk explicitly and then discount the extension's
+// own registered-but-unsupported status-gate error, which fired on every one of
+// these fixtures. It now runs exactly what production runs.
+//
+// It requires the error set to contain EXACTLY one entry and returns that
+// entry's Error() string; a fixture whose real defect now produces zero, or
+// more than one, simultaneous errors fails loudly here instead of silently
+// degrading to a substring match against an ambiguous message. All eleven
+// TestConformance_E3ProtectedFixtures entries satisfy this today (confirmed
+// individually by running each one), so every entry gets an exact-match
+// reason, not merely a "some error fired" check — this docstring makes no
+// claim beyond what was actually confirmed.
 func e3ProtectedReason(t *testing.T, path string) string {
 	t.Helper()
 	data, err := os.ReadFile(filepath.Join(SuiteRoot, path))
@@ -1051,24 +710,20 @@ func e3ProtectedReason(t *testing.T, path string) string {
 	}
 	tmpl, perr := openjd.Parse(data, openjd.FormatYAML)
 	if perr != nil {
-		t.Fatalf("%s: expected a single discounted validation error, got a parse failure instead: %v", path, perr)
+		t.Fatalf("%s: expected a single validation error, got a parse failure instead: %v", path, perr)
 	}
-	errs := openjd.ValidateWithOptions(tmpl, openjd.ValidateOptions{
-		EnforceLimits:                        true,
-		CheckEXPRExpressionsWhileUnsupported: true,
-	})
-	filtered := discountEXPRGateErrors(errs, tmpl.Extensions)
-	if len(filtered) != 1 {
-		t.Fatalf("%s: want exactly 1 discounted validation error, got %d: %v", path, len(filtered), filtered)
+	errs := openjd.ValidateWithOptions(tmpl, openjd.ValidateOptions{EnforceLimits: true})
+	if len(errs) != 1 {
+		t.Fatalf("%s: want exactly 1 validation error, got %d: %v", path, len(errs), errs)
 	}
-	return filtered[0].Error()
+	return errs[0].Error()
 }
 
 // TestConformance_E3ProtectedFixtures asserts by NAME every EXPR fixture
-// sub-project E3 cleared: comparing baseline-expr.txt at E3's base commit
-// (80d69b1) against HEAD with `comm -23` between the two commits' baselined-
-// fixture sets — the same method E2's Task 12 used, at E3's smaller scale —
-// gives exactly 11 entries. (The reverse direction, `comm -13`, is empty: E3
+// sub-project E3 cleared: comparing the then-separate baseline-expr.txt at
+// E3's base commit (80d69b1) against E3's end with `comm -23` between the two
+// commits' baselined-fixture sets — the same method E2's Task 12 used, at E3's
+// smaller scale — gives exactly 11 entries. (The reverse direction, `comm -13`, is empty: E3
 // only ever shrinks the EXPR baseline, it never adds an entry, so there is no
 // "corrected classification" set to exclude here the way E2 had one.)
 //
@@ -1079,12 +734,11 @@ func e3ProtectedReason(t *testing.T, path string) string {
 // rule this fixture exists to test" from "rejected by something else that
 // also happens to be true." This test goes further. For every entry — all
 // eleven are .invalid — it also calls e3ProtectedReason, which independently
-// re-runs the Parse + ValidateWithOptions + discountEXPRGateErrors pipeline
-// runEXPRCase uses and reads the raw discounted error text back out, then
-// asserts it against the map's value with EXACT equality, not a substring
-// match. That second call is not optional decoration: it is the only way
-// this test can name the mechanism at all, because runEXPRCase's own return
-// value — via conformance.Result — blanks Reason to "" the moment Passed is
+// re-runs the Parse + ValidateWithOptions pipeline conformance.RunCase uses
+// and reads the raw error text back out, then asserts it against the map's
+// value with EXACT equality, not a substring match. That second call is not
+// optional decoration: it is the only way this test can name the mechanism at
+// all, because conformance.Result blanks Reason to "" the moment Passed is
 // true (see e3ProtectedReason's doc comment), which is always the case for a
 // correctly-rejected .invalid fixture. res.Reason from the results map below
 // is therefore never asserted against for content, only res.Passed is; this
@@ -1092,13 +746,13 @@ func e3ProtectedReason(t *testing.T, path string) string {
 // together and look like more coverage than they are.
 //
 // Both checks are pinned against the byte-for-byte, human-read error strings
-// already recorded in baseline-expr.txt's own Task 2/4/8 notes for these
-// eleven fixtures (each confirmed there "by running each fixture and reading
+// recorded for these eleven fixtures in the (now deleted) baseline-expr.txt's
+// Task 2/4/8 notes (each confirmed there "by running each fixture and reading
 // the resulting error, not inferred from the filename"): a wording change to
 // the rule that rejects a fixture, or a change in WHICH rule rejects it, both
 // fail this test, by design — the same design C4's per-entry exclusivity
 // proof used, scoped down to an exact-string check because these eleven
-// fixtures each produce exactly one discounted error rather than needing one
+// fixtures each produce exactly one validation error rather than needing one
 // check per weakened mechanism.
 func TestConformance_E3ProtectedFixtures(t *testing.T) {
 	protected := map[string]string{
@@ -1125,17 +779,7 @@ func TestConformance_E3ProtectedFixtures(t *testing.T) {
 		t.Fatalf("protected has %d entries, want 11 — update this count alongside the map", len(protected))
 	}
 
-	results := make(map[string]conformance.Result)
-	for _, tc := range collectEXPRFixtures(t) {
-		if _, want := protected[tc.Path]; !want {
-			continue
-		}
-		data, err := os.ReadFile(filepath.Join(SuiteRoot, tc.Path))
-		if err != nil {
-			t.Fatalf("read fixture %s: %v", tc.Path, err)
-		}
-		results[tc.Path] = runEXPRCase(tc, data)
-	}
+	results := protectedFixtureResults(t, protected)
 
 	for path, wantReason := range protected {
 		t.Run(path, func(t *testing.T) {

@@ -148,7 +148,8 @@ func TestMapPath(t *testing.T) {
 
 func TestApplyPathMapping_PassthroughWithoutRules(t *testing.T) {
 	// No WithPathMapping option: nil rules, so the input passes through as a path.
-	// This is the behavior RunExprCase relies on (design doc §6).
+	// This is the behavior the EXPR-only conformance scoring path relied on
+	// (design doc §6); that path is gone, but passthrough is still the contract.
 	v, err := Eval(`apply_path_mapping('/mnt/share')`, MapSymbols{}, TAny)
 	if err != nil {
 		t.Fatalf("Eval failed: %v", err)

@@ -60,13 +60,14 @@ var (
 // or Task.Param symbols.
 //
 // The type-mapping rules (PATH, LIST[PATH], CHUNK[INT], and the ParseType
-// floor) are copied from test/conformance/exprcase.go's DeclaredSymbols, which
-// implements the same section 1.2.2 tables for the conformance harness. The
-// two copies are deliberately parallel: DeclaredSymbols works from an
-// unparsed YAML document and is scope-blind (it binds every family
-// regardless of position), while this one works from the parsed model and is
-// scope-aware. They stay separate until sub-project H deletes the harness
-// copy, at which point DeclaredSymbols is retired in favor of this path.
+// floor) were originally written twice: once here, from the parsed model and
+// scope-aware, and once in the conformance harness's own DeclaredSymbols, from
+// an unparsed YAML document and scope-blind. The harness copy existed only
+// while EXPR was unsupported and the suite needed a scoring path that did not
+// go through this one; sub-project H2 deleted it (test/conformance/exprcase.go)
+// when EXPR became supported, exactly as that arrangement always said it
+// would. This is now the only copy on the server side — see jobParamTypes for
+// the one on the worker side, which cannot import this package.
 func symbolsFor(
 	tmpl *JobTemplate, step *StepTemplate, env *Environment, scope Scope, params map[string]string,
 ) expr.MapSymbols {
@@ -159,9 +160,9 @@ func bindJobParamSymbols(tmpl *JobTemplate, params map[string]string, syms expr.
 // keeps phase 2 and phase 3 from typing the same declared parameter two
 // different ways.
 //
-// (test/conformance/exprcase.go keeps its OWN separate copy, deliberately --
-// see symbolsFor's doc comment for why that third copy is not folded in
-// here too.)
+// (test/conformance/exprcase.go used to keep a THIRD, deliberately separate
+// copy for the conformance harness; sub-project H2 deleted it along with the
+// EXPR-only scoring path it served. See symbolsFor's doc comment.)
 func jobParamTypes(declared string) (paramType, rawType expr.Type) {
 	return expr.JobParamTypes(declared)
 }

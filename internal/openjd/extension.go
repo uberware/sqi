@@ -91,15 +91,17 @@ var registry = map[string]Extension{
 		DocPath: "docs/openjd-extensions/sqi-chunk-bounds.md",
 	},
 	// EXPR is the OpenJD expression language extension, delivered across the
-	// EXPR program's sub-projects A0 and A-I. It is registered but NOT
-	// supported: section 1.2.2 makes the BOOL, RANGE_EXPR and LIST[*] job
-	// parameter types part of this extension, and those are sub-project F's,
-	// so accepting an EXPR template today would ship a partial implementation
-	// the extension's own contract forbids. Sub-project H flips the status.
+	// EXPR program's sub-projects A0 and A-I. It was registered but NOT
+	// supported until sub-project H2 flipped it here: section 1.2.2 makes the
+	// BOOL, RANGE_EXPR and LIST[*] job parameter types part of this extension,
+	// and those were sub-project F's, so accepting an EXPR template before F
+	// landed would have shipped a partial implementation the extension's own
+	// contract forbids. F shipped, so the whole extension is now accepted and
+	// every EXPR template is submittable.
 	ExtensionEXPR: {
 		Name:    ExtensionEXPR,
 		Origin:  OriginOfficial,
-		Status:  StatusInProgress,
+		Status:  StatusSupported,
 		Summary: "Python-subset expression language in format strings.",
 		DocPath: "docs/openjd-extensions/expr.md",
 	},

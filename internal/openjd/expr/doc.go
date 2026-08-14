@@ -788,8 +788,9 @@
 //     its -in-timeout sibling from passing to failing (conformance 145 ->
 //     143), because both were only ever rejected by "unknown function" and
 //     not by the placement rule they actually violate. Both are baselined in
-//     test/conformance/baseline-expr.txt with that reason, and burn down when
-//     E can reject them for the right one.
+//     test/conformance/baseline-expr.txt with that reason (that file was
+//     deleted by sub-project H2; read it in git), and burn down when E can
+//     reject them for the right one.
 //
 //   - BOUNDED EVALUATION (sub-project E1) delivers the specification's two
 //     configurable resource limits — section 1.3.9's memory-bounded
@@ -802,9 +803,10 @@
 //     number of section 1.3.10 operations one evaluation may perform; it
 //     defaults to 10,000,000 (eval.go). Both apply with NO option passed at
 //     all — a caller that forgets the option is not left unbounded, which
-//     matters because conformance.RunExprCase evaluates with no options, and
-//     the two expr1.3.10 conformance fixtures below only burn down if a
-//     no-option evaluation is already bounded. There is no unlimited escape
+//     mattered because the conformance harness's EXPR-only scoring path
+//     (conformance.RunExprCase, since deleted by sub-project H2) evaluated with
+//     no options, and the two expr1.3.10 conformance fixtures below only burn
+//     down if a no-option evaluation is already bounded. There is no unlimited escape
 //     hatch: a non-positive value to either option is a caller error,
 //     reported by Eval (verified directly: WithMemoryLimit(0) and
 //     WithOperationLimit(-1) both fail with "... must be positive, got ...").
@@ -1293,7 +1295,7 @@
 //     reversal or a same-composition round trip.
 //     test/conformance/baseline-expr.txt's own header records this history
 //     in full, including the note that predicted the E1 outcome before it
-//     landed. D therefore has NO protected-fixtures test of the
+//     landed (the file was deleted by sub-project H2; read it in git). D therefore has NO protected-fixtures test of the
 //     kind every wave below has, because it is the mirror image of one: those
 //     tests exist where registering a family turned accidental
 //     "unknown function" passes into real rejections that must not silently

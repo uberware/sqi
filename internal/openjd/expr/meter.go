@@ -16,9 +16,12 @@ import (
 // They are DEFAULTS, applied when a caller passes no option, rather than an
 // opt-in. Two reasons, both load-bearing. Unlimited evaluation is the state this
 // sub-project exists to end, and an opt-in limit leaves every caller that forgets
-// the option exactly where the package was. And conformance.RunExprCase evaluates
-// with no options at all, so the two expr1.3.10 fixtures only burn down if a
-// no-option evaluation is bounded.
+// the option exactly where the package was. And the conformance harness's
+// EXPR-only scoring path (conformance.RunExprCase, deleted by sub-project H2
+// with the rest of that path) evaluated with no options at all, so the two
+// expr1.3.10 fixtures only burned down because a no-option evaluation is
+// bounded. Every caller today passes options; the defaults still stand as the
+// backstop for the one that forgets.
 const (
 	defaultMemoryLimit    int64 = 100_000_000
 	defaultOperationLimit int64 = 10_000_000

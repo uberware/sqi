@@ -81,11 +81,27 @@ func TestRegistryVendorNamespacing(t *testing.T) {
 // extension may be present in the registry while still being rejected, which is
 // what lets the conformance harness reach the real validation path for a
 // partially-implemented extension without production accepting it.
+//
+// EXPR was the standing example until sub-project H2 marked it supported, and
+// with it went the registry's last StatusInProgress entry. The gate is still
+// live production machinery, so rather than delete the test with the example,
+// it registers a temporary in-progress entry of its own. That keeps the branch
+// covered for the next partially-implemented extension, which is exactly the
+// situation the split status was invented for.
 func TestValidateExtensions_RegisteredButNotSupported(t *testing.T) {
+	const name = "TEST_IN_PROGRESS"
+	registry[name] = Extension{
+		Name:    name,
+		Origin:  OriginOfficial,
+		Status:  StatusInProgress,
+		Summary: "Test-only entry for the registered-but-unsupported branch.",
+	}
+	t.Cleanup(func() { delete(registry, name) })
+
 	tmpl := &JobTemplate{
 		SpecificationVersion: "jobtemplate-2023-09",
 		Name:                 "T",
-		Extensions:           []string{"EXPR"},
+		Extensions:           []string{name},
 	}
 	errs := validateExtensions(tmpl)
 	if len(errs) == 0 {
@@ -97,7 +113,7 @@ func TestValidateExtensions_RegisteredButNotSupported(t *testing.T) {
 	}
 	if strings.Contains(msg, "unsupported extension") {
 		t.Errorf("message = %q, want it NOT to reuse the unknown-name wording: "+
-			"EXPR IS known, and saying otherwise misleads", msg)
+			"the extension IS known, and saying otherwise misleads", msg)
 	}
 }
 
@@ -105,7 +121,7 @@ func TestValidateExtensions_RegisteredButNotSupported(t *testing.T) {
 // check runs on the one path every extension flows through.
 func TestValidateExtensions_SupportedStillPass(t *testing.T) {
 	for _, name := range []string{
-		"TASK_CHUNKING", "REDACTED_ENV_VARS", "SQI_PATH_TRANSLATION", "SQI_CHUNK_BOUNDS",
+		"TASK_CHUNKING", "REDACTED_ENV_VARS", "SQI_PATH_TRANSLATION", "SQI_CHUNK_BOUNDS", "EXPR",
 	} {
 		t.Run(name, func(t *testing.T) {
 			tmpl := &JobTemplate{
@@ -122,14 +138,11 @@ func TestValidateExtensions_SupportedStillPass(t *testing.T) {
 
 // TestRegistry_EverySupportedStatusIsTheConstant stops a typo'd status string
 // silently disabling a shipped extension.
+//
+// Every shipped entry is StatusSupported since sub-project H2 flipped EXPR,
+// which was the sole exception this test used to carve out.
 func TestRegistry_EverySupportedStatusIsTheConstant(t *testing.T) {
 	for name, ext := range registry {
-		if name == "EXPR" {
-			if ext.Status != StatusInProgress {
-				t.Errorf("EXPR status = %q, want %q", ext.Status, StatusInProgress)
-			}
-			continue
-		}
 		if ext.Status != StatusSupported {
 			t.Errorf("%s status = %q, want %q", name, ext.Status, StatusSupported)
 		}

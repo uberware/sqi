@@ -57,6 +57,7 @@ top-level `extensions: [...]` array. `sqi` validates that array unconditionally
 |---|---|---|
 | `TASK_CHUNKING` | official | Chunked integer task parameters (`CHUNK[INT]`). See [`docs/openjd-extensions/task-chunking.md`](openjd-extensions/task-chunking.md). |
 | `REDACTED_ENV_VARS` | official | The `openjd_redacted_env` stdout directive that redacts a variable's value from logs. See [`docs/openjd-extensions/redacted-env-vars.md`](openjd-extensions/redacted-env-vars.md). |
+| `EXPR` | official | The expression language: a Python subset in format strings, `let` bindings, the RFC 0006 function library, and the RFC 0007 parameter types. Supported since sub-project H2 — see [EXPR](#expr) below and [`docs/openjd-extensions/expr.md`](openjd-extensions/expr.md). |
 | `SQI_PATH_TRANSLATION` | vendor | Per-product path-delivery checklist (`swap_in_place`/`translation_file`/`command_flags`/`environment`/`stage_locally`). See [`docs/openjd-extensions/path-translation.md`](openjd-extensions/path-translation.md). |
 | `SQI_CHUNK_BOUNDS` | vendor | Exposes a `CHUNK[INT]` chunk's first/last integer as `Task.Param.<name>.Start`/`.End`. See [`docs/openjd-extensions/sqi-chunk-bounds.md`](openjd-extensions/sqi-chunk-bounds.md). |
 
@@ -77,50 +78,24 @@ feature it gates are checked together.
 
 ## What `sqi` deliberately does not implement
 
-Three things. The first and last are **out of scope by design**, not bugs to
-fix. The middle one is a **known defect** that is merely not fixed *here* —
-it is listed alongside them so a reader auditing this section against the spec
-does not mistake it for intended behavior:
+Two entries. Standalone `environment-2023-09` templates are **out of scope by
+design**, not a bug to fix. The other is a **known defect** that is merely not
+fixed *here* — it is listed alongside so a reader auditing this section against
+the spec does not mistake it for intended behavior:
 
-- **`EXPR`** (the OpenJD Expression Language extension) — a template that
-  declares `extensions: [EXPR]` is rejected with a `422` at `/extensions/0`,
-  unconditionally, regardless of anything else the template does.
+**CORRECTION (sub-project H2, 2026-08-14): `EXPR` used to head this list and no
+longer belongs on it.** Every earlier revision of this section said a template
+declaring `extensions: [EXPR]` was rejected with a `422` at `/extensions/0`
+"unconditionally, regardless of anything else the template does", and carried
+two corrections narrowing that claim as sub-projects F1 (the RFC 0007 parameter
+types) and E3 (`let` bindings) landed the pieces without making any of them
+reachable. H2 flipped `EXPR` to `StatusSupported` in
+`internal/openjd/extension.go`. The extension is **accepted in production**: an
+`EXPR` template is parsed, validated, scope-checked, expression-checked at
+submission with concrete parameters, and resolved on the worker at run time.
+Nothing about EXPR is "reachable only through the conformance suite" any more.
+See [EXPR](#expr) below.
 
-  **CORRECTION (sub-project F1, extended parameter types):** this bullet used
-  to say the new parameter types (`BOOL`, `RANGE_EXPR`, `LIST[...]`) and the
-  `*_LIST` `userInterface.control` variants "are not implemented". That is no
-  longer true. `internal/openjd` parses and validates all eight types with
-  their nested `item:` constraints, case-insensitive type names, and every
-  control RFC 0007 defines; `internal/openjd/expr` resolves their values in
-  both evaluation phases. What remains true is the sentence above it: none of
-  it is reachable in production, because `EXPR`'s status gate rejects the
-  template before any of it runs. The types are real, tested code, reachable
-  today only through the conformance suite's direct calls to `openjd.Parse` /
-  `openjd.ValidateWithOptions` — the same standing as `let`, described
-  immediately below.
-
-  **CORRECTION (sub-project E3, `80d69b1..fa3267d`, plus this docs correction):** this bullet used to
-  also list `let` on step templates as unimplemented. That is no longer true.
-  `internal/openjd` models, parses, and validates `let:` at the three
-  locations it can reach today — `<StepTemplate>.let`, `<StepScript>.let`,
-  `<EnvironmentScript>.let` — enforcing section 3.6's own rules: duplicate-name
-  and shadow-enclosing rejection, the `<UserIdentifier> = <expr>` grammar,
-  self-reference rejection, the lowercase-first-letter name rule, and the 1-50
-  element-count bound. The fourth location, `<SimpleAction>.let`, is still
-  out of reach: `SimpleAction` itself is an unmodeled `FEATURE_BUNDLE_1`
-  element (see the not-applicable rows below). This changed **base-spec**
-  behavior too, not only EXPR's: a template carrying a `let:` block without
-  declaring `EXPR` used to be silently *accepted*, `let:` ignored outright; it
-  is now rejected with `"let" requires the EXPR extension to be declared` at
-  the block's own pointer — a real conformance gap closed, not a new
-  restriction invented. None of this makes `let` usable in production,
-  though: a template that DOES declare `EXPR` is still rejected outright at
-  `/extensions/0` before any of `let`'s validation runs, because `EXPR`'s own
-  status gate (`StatusInProgress`) rejects every `EXPR`-declaring template
-  unconditionally regardless of what else about it is correct. `let` is real,
-  tested code, reachable today only through the conformance suite's direct
-  calls to `openjd.Parse`/`openjd.ValidateWithOptions` — see
-  [below](#expr-a-temporary-second-scoring-path).
 - **`Job.Name` / `Step.Name` in `hostRequirements` and `parameterSpace`** — a
   **known gap against section 7.3.1**, present since sub-project E2 and *not*
   closed by E3. `checkStepExpressions` evaluates both of those positions at
@@ -146,6 +121,9 @@ does not mistake it for intended behavior:
   Closing it means splitting `scopeFixed(ScopeJob)` or adding a distinct scope
   for these two positions — a change that can move conformance scoring, so it
   belongs to sub-project E4 or a dedicated follow-up, not to a closing fix wave.
+  **Sub-project H2 raised its severity without changing its content:** EXPR is
+  now supported, so a submitted template hitting this gap gets a `422` a real
+  user sees, where before the extension's own status gate rejected it first.
 - **Standalone `environment-2023-09` templates** — see [Spec version](#spec-version)
   above.
 
@@ -161,214 +139,110 @@ mandate rejection of an unimplemented extension either way; `sqi` chooses to
 reject because a loud `422` at submission time is a better failure mode than a
 silent misinterpretation at run time.
 
-### EXPR: a temporary, second scoring path
+### EXPR
 
-**CORRECTION (sub-project E2, 2026-08-08):** this section's title and much of
-its body describe an arrangement E2 replaced. When written, `EXPR/job_templates`
-was scored through a genuinely separate path — `test/conformance/exprcase.go`'s
-`RunExprCase`, which parsed and evaluated a fixture's embedded `{{ ... }}`
-expressions directly and never touched `openjd.Parse` or
-`openjd.ValidateWithOptions` at all. That is no longer how scoring works.
-Sub-project E2's Task 2 moved `TestConformance_Expressions` onto `runEXPRCase`
-(`test/conformance/suite_test.go`), a thin wrapper around the **same real
-parse-and-validate path** `TestConformance_Templates` uses for every other
-suite directory (`conformance.RunCase`'s machinery), which additionally
-discounts only the EXPR extension's own registered-but-unsupported status-gate
-error before deciding pass/fail — see `runEXPRCase`'s own doc comment for why
-that discount exists and is temporary. `RunExprCase` and `exprcase.go` still
-exist in the tree, and **are still called**: five `TestConformance_*ProtectedFixtures`
-tests (`B3`, `C1`, `C2`, `C3`, `C4`) call `RunExprCase` directly, predating this
-change. **Deleting it today would break those five tests.** What changed is
-narrower: `TestConformance_Expressions` itself — the test that produces the
-headline EXPR score — no longer goes through it, so `RunExprCase` no longer
-contributes to the score. It goes when sub-project H deletes it alongside
-`exprcase.go`, `exprcase_test.go` and `baseline-expr.txt`, per
-`TestConformance_EXPRNotSupported`'s own checklist, which is also when those
-five tests are rewritten onto the real path.
+`EXPR` is a **supported** extension as of sub-project H2 (2026-08-14): a
+template declaring `extensions: [EXPR]` is accepted, and `EXPR/job_templates`
+is scored by `TestConformance_Templates` through the same
+`openjd.Parse` + `openjd.ValidateWithOptions` path as every other live
+directory. It scores **206 / 209 pass, 3 baselined**.
 
-The paragraphs below this note describe the pre-E2 arrangement and are kept
-for history, not because they are still accurate — read them as "how EXPR
-scoring used to work," not as current behavior. Two concrete facts they get
-wrong today: `EXPR` **is** in the registry (`Status: StatusInProgress`, added
-by E2's own Task 1, `111b0b2`), so the "not in the registry"
-claim in the next paragraph is stale; and the score they cite (143/209 pass,
-66 baselined) is likewise a pre-E2 snapshot. As of E2 (commit range
-`0519aee..1966cb5`), `EXPR/job_templates` scores **175/209 pass, 34
-baselined** — see `test/conformance/baseline-expr.txt`'s own 2026-08-08 notes
-for the full accounting of what moved and why, and
-`TestConformance_E2ProtectedFixtures` for the 53 fixtures E2's routing and
-scope-model changes put at risk of a silent regression-plus-compensating-pass
-swap.
+**This section used to be titled "EXPR: a temporary, second scoring path" and
+described the arrangement that made scoring possible before the flip.** That
+arrangement is gone, and the summary of it is kept short here rather than
+deleted outright, because two long-lived test files still refer to it:
 
-`EXPR` was **not** in the registry when this paragraph was written, so the
-production behavior above was unchanged: a template declaring
-`extensions: [EXPR]` was rejected with a `422` at `/extensions/0`,
-unconditionally, the same as any other unregistered extension name. (As the
-correction above states, this is no longer true: `EXPR` is registered, status
-`StatusInProgress` — still rejected in production because it is not yet
-`StatusSupported`, but for a different, more specific reason than "unknown
-extension name.")
+- `EXPR` was in the registry with `Status: StatusInProgress` from sub-project E2
+  (`111b0b2`) until H2. Production rejected every `EXPR`-declaring template on
+  that status alone, at `/extensions/{i}`.
+- Because that one error rejected the template whatever else was in it, and 180
+  of the 209 fixtures are marked `.invalid`, scoring the directory through the
+  ordinary path would have reported 180 passes for the wrong reason. So the
+  suite scored it separately: `test/conformance/exprcase.go`'s `RunExprCase`
+  (originally an expression-only reader that never called `openjd.Parse` at
+  all), `TestConformance_Expressions`, and a baseline file of its own,
+  `baseline-expr.txt`. E2's Task 2 moved the score onto the real path behind a
+  wrapper that discounted only the status-gate error; H2 deleted all of it —
+  `exprcase.go`, `exprcase_test.go`, `baseline-expr.txt`,
+  `TestConformance_Expressions`, `TestConformance_EXPRNotSupported` and the
+  discount — because with `EXPR` supported the discount always discounts zero
+  errors. The history of what moved the score, fixture by fixture and wave by
+  wave, is in `baseline-expr.txt`'s own dated notes; read them in git.
+- The score did **not** move when the paths were swapped: 206/209 on both,
+  measured before and after.
 
-What has changed is that `internal/openjd/expr` now exists as a self-contained
-reader and evaluator implementing the spec's real type system — nested types,
-coercion, and static type checking via placeholders for values that don't
-exist yet — for the EXPR expression language. `internal/openjd` does not call
-it yet, so it has no effect on template validation. Building it ahead of
-registration made it possible to start measuring conformance against the
-suite's 209 `EXPR/job_templates` fixtures, which `TestConformance_Templates`
-cannot do: every one of them declares `extensions: [EXPR]`, so the template path
-rejects all 209 for the extension-gating reason alone, and 180 of them are
-marked `.invalid` — scoring that rejection as a pass would report 180 false
-greens before a single line of EXPR semantics existed.
+**The three baselined fixtures are not EXPR failures.** All three are valid
+templates that `sqi` rejects, and all three do it for the same reason:
+they declare `FEATURE_BUNDLE_1` — a separate official OpenJD extension
+([RFC 0004][rfc0004]) `sqi` does not register — and use that extension's `bash:`
+`SimpleAction` in place of `script:`, so each reports both an unsupported
+extension name and a missing required `script`. They are
+`3.6--let-bindings.yaml`, `3.6--let-host-context-symbols.yaml` and
+`7.3.1--job-step-name-in-step-let.yaml`; per-fixture measured errors are in
+`test/conformance/baseline.txt`. They come off the list when `sqi` implements
+`FEATURE_BUNDLE_1`, or not at all. `<SimpleAction>.let` — the fourth `let`
+location — is unreachable for the same reason; the other three
+(`<StepTemplate>.let`, `<StepScript>.let`, `<EnvironmentScript>.let`) are
+implemented and enforce section 3.6's rules.
 
-So the suite scores `EXPR/job_templates` through a **second, temporary path**
-(`test/conformance/exprcase.go`, `TestConformance_Expressions`) that parses AND
-evaluates the `{{ ... }}` expressions a fixture embeds, instead of validating
-the template as a whole. Evaluation runs against a symbol table built from the
-fixture's own declared parameter types: every symbol section 1.2.2 defines is
-bound as an unresolved placeholder of its declared type, so a type error, an
-int64 overflow, a division by zero, or an unknown symbol is caught without any
-parameter value ever existing — the same static type checking `internal/openjd/expr`
-performs everywhere else. A name introduced by a `let:` block binds untyped,
-since this path does not track `let` scoping or evaluate a binding's
-right-hand side to learn its real type. As of this measurement it scores
-**143 / 209 pass, 66 baselined** in `test/conformance/baseline-expr.txt`. A
-fixture that is invalid for a reason this path cannot see — a runtime-only
-condition, or a `let` binding whose real type would have caught it — still
-parses and evaluates fine, is accepted, and therefore fails and is baselined
-— that is deliberate reporting, the same principle as the not-applicable rows
-below, not a defect to chase down here. One fixture that is NOT on the
-baseline list — it currently passes — is worth calling out, because it passes
-for a reason narrower than the rule it exists to test; two more are worth
-calling out for having passed that way until sub-project D took the reason
-away.
+**A correction the flip forced, worth stating because the old claim is repeated
+in several places:** `3.6--let-bindings.yaml` was described until now as blocked
+*first* by its `LIST[INT]` job parameter, rejected at parse time before
+validation ran. Sub-project F implemented the RFC 0007 parameter types, so that
+is no longer true — it parses, and only the `FEATURE_BUNDLE_1` gap remains. The
+same correction applies to the five `3.6--let-comprehension-shadows*.invalid.yaml`
+fixtures, which are **not** baselined because they pass: four of them used to
+pass for the wrong reason (rejected at parse time for `LIST[INT]`), and now pass
+because section 1.3.7's real loop-variable-shadowing rule rejects them, at the
+position that carries it. The fifth uses a `bash:` `SimpleAction` and is still a
+`FEATURE_BUNDLE_1` rejection. `TestConformance_B3ProtectedFixtures` records
+which is which.
+
+**Two other fixtures pass for a reason narrower than the rule they name**, both
+recorded here because the aggregate score cannot show it:
 
 `expr1.3.9--memory-limit-exceeded` (`{{ 'a' * 100000000 }}`) passes, but not
 because section 1.3.9's memory limit rejected it. That limit *is* implemented
-and is now operator configuration
+and is operator configuration
 ([`openjd.expr_memory_limit`](configuration.md#openjdexpr_memory_limit),
-default 1,000,000 bytes) — but this fixture never reaches it: measured on this
-branch, the expression is refused with the same error at the submission
-defaults and with no limit options at all. It passes because
-`internal/openjd/expr` carries a hard, non-configurable safety bound
-(`limits.go`'s `maxStringBytes`, 10,000,000 bytes, applied by `checkRepeat`),
-and that bound rejects the expression. **String repetition is implemented** and
-has been since sub-project B2 — `ops.go`'s `OpMul` table registers
-`{TString, TInt} -> repeatString`, and `'a' * 3` evaluates to `"aaa"`. An
-earlier revision of this paragraph said the fixture passed because
-`__mul__(string, int)` was unimplemented and predicted the entry would start
-failing once repetition shipped; repetition shipped, the entry kept passing,
-and the stated mechanism was wrong. The conclusion is unchanged: this is not a
-section 1.3.9 pass, because a hard per-operation ceiling is not a memory
-budget — an expression that stays just under it repeatedly still allocates
-without bound.
+default 1,000,000 bytes) — but this fixture never reaches it: measured, the
+expression is refused with the same error at the submission defaults and with
+no limit options at all. It passes because `internal/openjd/expr` carries a
+hard, non-configurable safety bound (`limits.go`'s `maxStringBytes`, 10,000,000
+bytes, applied by `checkRepeat`), and that bound rejects the expression.
+**String repetition is implemented** and has been since sub-project B2 —
+`ops.go`'s `OpMul` table registers `{TString, TInt} -> repeatString`, and
+`'a' * 3` evaluates to `"aaa"`. An earlier revision of this paragraph said the
+fixture passed because `__mul__(string, int)` was unimplemented and predicted
+the entry would start failing once repetition shipped; repetition shipped, the
+entry kept passing, and the stated mechanism was wrong. The conclusion is
+unchanged: this is not a section 1.3.9 pass, because a hard per-operation
+ceiling is not a memory budget.
 
-`7.3--apply-path-mapping-in-job-name.invalid.yaml` and
-`7.3--apply-path-mapping-in-timeout.invalid.yaml` **used to** pass, because
-`apply_path_mapping` was an **unknown function** — not because either
-fixture's actual rule, that the function is available in host context only, was
-checked. Sub-project D registered the function (it was the last name missing
-from the RFC 0006 library), so both expressions now evaluate cleanly and both
-`.invalid` fixtures flip to failing: the score moved **145 → 143** and the
-baseline **64 → 66**. Both are now listed in
-`test/conformance/baseline-expr.txt` with that reason. They are burn-down
-entries, not permanent ones: sub-project E is the layer with a scope model, and
-when its scope-aware evaluation can reject the two expressions for the rule they
-actually violate, both come off the list and the score goes back up. See that
-file's header, which records the whole sequence.
+`7.3--apply-path-mapping-in-timeout.invalid.yaml` is rejected by `decodeAction`
+(`internal/openjd/parse.go`), which decodes `timeout` with a strict integer
+parse, so `openjd.Parse` fails with `openjd: timeout must be an integer` before
+validation — and therefore before the scope model — runs at all.
+`checkActionExpressions` does carry a timeout position, but it is
+wired-and-unreachable for any real template; see the standing comment above that
+function in `internal/openjd/exprcheck.go`. Its sibling
+`7.3--apply-path-mapping-in-job-name.invalid.yaml` *is* the scope model's doing:
+`apply_path_mapping` is host-context-only and the job name field is not a host
+context. Both were predicted to clear together when sub-project E landed a scope
+model; only one did, and this paragraph exists so the other is not miscredited.
 
-**CORRECTION (sub-project E2):** this prediction was fulfilled for **one** of
-the two fixtures, not both. Both are off `baseline-expr.txt` and both count
-toward the 175/209 pass score cited above, but for different reasons, and only
-one is the scope model's doing:
+**Protected-fixture tests.** The score is an aggregate, and an aggregate cannot
+see one fixture regressing while another starts passing for an unrelated reason.
+Seven tests in `test/conformance/suite_test.go` pin fixtures by name against
+exactly that swap: `TestConformance_{B3,C1,C2,C3,C4,E2,E3}ProtectedFixtures`.
+Each entry carries a "why" string naming the rule it depends on, and each test's
+doc comment states plainly how much its entries actually pin — several are
+rejection *floors* rather than proofs that a named mechanism still fires,
+because `conformance.Result` blanks `Reason` the moment a fixture passes.
+`TestConformance_E3ProtectedFixtures` goes further than the rest, asserting each
+fixture's exact validation-error text by re-running the pipeline on the side.
 
-- `7.3--apply-path-mapping-in-job-name.invalid.yaml` — **the prediction, met.**
-  E2's scope model rejects the call for its real rule: `apply_path_mapping` is
-  host-context-only and the job name field is not a host context.
-- `7.3--apply-path-mapping-in-timeout.invalid.yaml` — **still incidental.** It
-  is rejected by `decodeAction` (`internal/openjd/parse.go`), which decodes
-  `timeout` with a strict integer parse, so `openjd.Parse` fails with
-  `openjd: timeout must be an integer` before validation — and therefore before
-  the scope model — runs at all. `checkActionExpressions` does carry a timeout
-  position, but it is wired-and-unreachable for any real template; see the
-  standing comment above that function in `internal/openjd/exprcheck.go`.
-  Making the rule actually fire there requires teaching `decodeAction` to
-  accept a format-string body for `timeout`, which changes every existing
-  template's timeout, base-spec included. That remains open.
-
-Both are asserted by name in `TestConformance_E2ProtectedFixtures`
-(`test/conformance/suite_test.go`), with each entry's "why" stating which of
-the two mechanisms applies, so a future regression that silently swaps them
-back to passing for the wrong reason (or fails them outright) is caught.
-
-**Sub-project E3 (`80d69b1..fa3267d`, plus this docs correction) — `let` bindings.** `let` is now real at
-the three locations `internal/openjd/model.go` can reach (`<StepTemplate>.let`,
-`<StepScript>.let`, `<EnvironmentScript>.let`; the fourth, `<SimpleAction>.let`,
-needs `SimpleAction` itself, an unmodeled `FEATURE_BUNDLE_1` element). See the
-correction above under [What `sqi` deliberately does not
-implement](#what-sqi-deliberately-does-not-implement) for what that means for
-production behavior — nothing, yet, because `EXPR`'s own status gate still
-rejects every `EXPR`-declaring template first. `EXPR/job_templates` moved
-**175/209 (34 baselined) → 186/209 (23 baselined)** across three tasks (+3,
-+2, +6), each confirmed individually and recorded in `baseline-expr.txt`'s own
-dated notes. (Sub-project F1 later took it to **206/209, 3 baselined** — see
-[Extended parameter types](#extended-parameter-types-rfc-0007) below.) `baseline-expr.txt` carries *four* E3-dated notes, one more than
-the number of tasks that moved the score: Task 11's note clears nothing, it
-surveys the disposition of every remaining `let` fixture. Do not read the note
-count as a score-moving-task count:
-
-- Task 2: `validateLetExtension` rejects any `let:` block on a template that
-  does not declare `EXPR` — three fixtures clear (the `*-requires-expr` set).
-- Task 4: `validateLetElementCounts` enforces section 3.6's "at least one,
-  at most 50" element-count bound — two fixtures clear.
-- Task 8: `checkLetBindings` (built by Tasks 6-7) is wired into all three real
-  `let:` locations for the first time, so its duplicate-name/shadow-enclosing
-  rejection, the `<UserIdentifier> = <expr>` grammar check, and
-  self-reference-as-unknown-symbol all run for real — six fixtures clear,
-  including `expr1.3.7--loop-var-shadows-binding.invalid.yaml`, whose
-  rejection (a comprehension loop variable shadowing a `let` name, section
-  1.3.7) was already implemented in `internal/openjd/expr/comp.go` since
-  sub-project B3 and needed no new evaluator code, only a symbol table that
-  finally contains `let` names for it to shadow.
-
-`TestConformance_E3ProtectedFixtures` (`test/conformance/suite_test.go`) pins
-all 11 by name — and, going further than `TestConformance_E2ProtectedFixtures`
-does, by the *exact* discounted validation-error text each one produces, not
-merely `res.Passed`. Asserting only pass/fail is exactly the gap that let E2
-credit a fixture to the scope model when the YAML decoder was doing the work
-instead; see that test's own doc comment for why `res.Reason` on
-`conformance.Result` cannot answer this by itself (it is blanked to `""` the
-moment a fixture passes) and how the test works around it by re-running the
-validation pipeline directly.
-
-Three `let` fixtures remain baselined, blocked on `FEATURE_BUNDLE_1` — a
-separate, unregistered RFC 0004 extension (see [Supported extensions and the
-vendor-prefix rule](#supported-extensions-and-the-vendor-prefix-rule)) —
-rather than on anything E3 left undone: `3.6--let-host-context-symbols.yaml`,
-`7.3.1--job-step-name-in-step-let.yaml`, and `3.6--let-bindings.yaml`, which
-is additionally — and more proximately, since it fires first — blocked by an
-unrelated `LIST[INT]` job parameter (sub-project F). Five more,
-`3.6--let-comprehension-shadows*.invalid.yaml`, already pass, but not for the
-rule they exist to test: each declares a `LIST[INT]` job parameter, which
-`internal/openjd`'s parameter parsing rejects at PARSE time, before `let:` or
-the comprehension-shadow rule is ever reached. E3 *does* implement that rule;
-the conformance score structurally cannot see it land (E3 could implement
-none of it and the score would not move), so
-`internal/openjd/exprcheck_let_test.go` pins it with hand-authored tests
-instead, transcribing each of the five fixtures' intent with an `INT`,
-`STRING`, or `PATH` parameter standing in for the unsupported `LIST[INT]` —
-the same technique sub-project D used for `apply_path_mapping`'s 31
-expectations when no oracle could see them either. See `baseline-expr.txt`'s
-own Task 11 note for the full, per-fixture accounting.
-
-The path is deleted the moment EXPR is supported for real: as of sub-project E2,
-EXPR is registered (status `"in-progress"`) so this suite can score EXPR fixtures
-through the real parse and validate path, but production still rejects an EXPR
-template because it is not yet `StatusSupported`. `TestConformance_EXPRNotSupported`
-fails the build the moment `internal/openjd` marks EXPR `StatusSupported`, forcing
-`test/conformance/exprcase.go`, `exprcase_test.go`, `baseline-expr.txt`,
-`TestConformance_Expressions` and that guard itself to be deleted in favor of
-letting `TestConformance_Templates` score `EXPR/job_templates` end to end.
+[rfc0004]: ../third_party/openjd-specifications/rfcs/0004-enhanced-limits-and-capabilities.md
 
 This is also why the portability claim in `README.md` and `ROADMAP.md` carries an
 explicit caveat rather than being dropped. The measured position is narrower and
@@ -377,12 +251,15 @@ template in the conformance suite** — no conforming job template is turned awa
 Both remaining classes of gap are elsewhere:
 
 - **Unimplemented extensions**, rejected by name at submission time, as argued
-  above. A template hits this only by opting in explicitly.
+  above. A template hits this only by opting in explicitly. This is what the
+  three baselined `EXPR/job_templates` fixtures are: valid templates turned away
+  because they *also* declare `FEATURE_BUNDLE_1`.
 - **Over-permissiveness** — templates the spec says are *invalid* that `sqi`
   nonetheless accepts. As of the measurement below there are **none**: every
-  template-validation fixture in the suite, valid and invalid alike, now scores
-  correctly. `test/conformance/baseline.txt` is empty, and CI fails if any entry
-  is added without being fixed.
+  `.invalid` template-validation fixture in the suite is correctly rejected.
+  `test/conformance/baseline.txt` holds only the three under-permissive
+  `FEATURE_BUNDLE_1` cases above, and CI fails if any entry is added without
+  being fixed, removed once it starts passing, or left matching nothing.
 
 ### Extended parameter types (RFC 0007)
 
@@ -509,24 +386,26 @@ measured results, not assertions:
 | `base/job_templates` | **449 / 449 pass** |
 | `base/env_templates` | not applicable — standalone environment templates unsupported (39 tests) |
 | `TASK_CHUNKING/job_templates` | **11 / 11 pass** |
-| `EXPR/job_templates` | not applicable to the template path (209 tests) — scored separately, see [below](#expr-a-temporary-second-scoring-path): **206 / 209 pass, 3 baselined** |
-| `EXPR/env_templates` | not applicable — extension not registered (6 tests) |
+| `EXPR/job_templates` | **206 / 209 pass, 3 baselined** — see [EXPR](#expr) |
+| `EXPR/env_templates` | not applicable — standalone environment templates unsupported (6 tests) |
 | `FEATURE_BUNDLE_1/job_templates` | not applicable — extension not registered (41 tests) |
 | `FEATURE_BUNDLE_1/env_templates` | not applicable — extension not registered (4 tests) |
 | `WRAP_ACTIONS/env_templates` | not applicable — extension not registered (9 tests) |
 
-**CORRECTION:** the `EXPR/job_templates` row above went uncorrected through
-the whole of sub-project E2 — it still carried the pre-E2 figure (143/209
-pass, 66 baselined) that predates even the routing change onto `runEXPRCase`,
-while the actual score had already moved to 175/209 (34 baselined) with E2
-and then, across the three E3 tasks that moved it, to today's 186/209 (23
-baselined). It is now
-current as of sub-project E3 (`80d69b1..fa3267d`, plus this docs correction); see [EXPR: a temporary,
-second scoring path](#expr-a-temporary-second-scoring-path) for the full
-accounting of both moves.
+**CORRECTIONS to the `EXPR` rows, kept because both were wrong for a while.**
+The `job_templates` row went uncorrected through the whole of sub-project E2,
+still carrying a pre-E2 figure (143/209 pass, 66 baselined) while the real score
+had moved to 175/209 with E2 and then 186/209 across E3; F1 took it to 206/209.
+Sub-project H2 changed how it is scored, not what it scores: `EXPR` is a
+supported extension, so the row is now **live** on the same template path as
+`base` — measured identical, 206/209 — instead of "not applicable, scored
+separately". The `env_templates` row said "extension not registered", which was
+never the operative reason and is now plainly wrong: those six fixtures are
+`environment-2023-09` documents, a top-level format `sqi` does not implement at
+all, so they would be not-applicable no matter which extension they declared.
 
-768 fixtures collected in total: 460 live passes, 0 baselined failures, 308
-not applicable — **every live template-validation fixture passes.**
+768 fixtures collected in total: 666 live passes, 3 baselined failures, 99
+not applicable.
 
 **Scope.** Only template-validation tests run today. The suite's job-execution
 tests require a live session runtime and are not yet wired in.

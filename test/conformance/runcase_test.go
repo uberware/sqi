@@ -91,6 +91,29 @@ func TestRunCase(t *testing.T) {
 	}
 }
 
+// TestRunCase_BlanksReasonOnAPass pins the property several
+// TestConformance_*ProtectedFixtures doc comments in suite_test.go depend on:
+// Result.Reason is EMPTY once Passed is true, so a correctly-rejected
+// ".invalid" fixture carries no record of WHICH rule rejected it. That is why
+// those tests can assert only res.Passed, and why
+// TestConformance_E3ProtectedFixtures has to re-run the validation pipeline on
+// the side (e3ProtectedReason) to name a mechanism at all.
+//
+// It was pinned by exprcase_test.go until sub-project H2 deleted the
+// expression-level scoring path; the assertion moves here rather than being
+// lost with it.
+func TestRunCase_BlanksReasonOnAPass(t *testing.T) {
+	tc := conformance.ParseTestCase("base/job_templates/2.1--missing-name.invalid.yaml")
+	got := conformance.RunCase(tc, conformance.StateLive, []byte(invalidTemplate))
+
+	if !got.Passed {
+		t.Fatalf("want a passing .invalid fixture to set up the assertion; got Passed=false (%s)", got.Reason)
+	}
+	if got.Reason != "" {
+		t.Errorf("Reason = %q; want it empty on a pass", got.Reason)
+	}
+}
+
 // TestRunCase_NotApplicableNeverPasses is the false-green guard. An ".invalid"
 // fixture for an unregistered extension is rejected by sqi because the
 // extension is unknown, NOT because sqi detected the fixture's actual defect.

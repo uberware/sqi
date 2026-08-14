@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 #
 # Accepted divergences between sqi's Go evaluator and the OpenJD reference
-# implementation, in the same spirit as test/conformance/baseline-expr.txt: a
+# implementation, in the same spirit as test/conformance/baseline.txt: a
 # case listed here is known to disagree, and the disagreement has been
 # adjudicated rather than ignored.
 #

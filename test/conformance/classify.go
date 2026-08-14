@@ -75,15 +75,17 @@ func KindFor(path string) string {
 //
 // kind is checked first and unconditionally: sqi does not implement
 // standalone environment-2023-09 templates at all, so every env_templates
-// fixture — regardless of extension, including "base" — is not applicable.
-// Only once kind clears that gate does extension matter: "base" is always
-// live, and any other extension is live only when it is registered in
+// fixture — regardless of extension, including "base" and EXPR — is not
+// applicable. Only once kind clears that gate does extension matter: "base" is
+// always live, and any other extension is live only when it is registered in
 // internal/openjd's extension registry AND marked openjd.StatusSupported.
-// Registered-but-in-progress (EXPR, since sub-project E2) does not count as
-// live here: validateExtensions still rejects every such template, so scoring
-// its fixtures through this path would report 209 false failures instead of
-// the honest "not applicable" — that suite is RunExprCase's until the
-// extension's status flips.
+// A registered-but-in-progress extension does not count as live: validateExtensions
+// rejects every such template on the status gate alone, so scoring its fixtures
+// through this path would report a false failure for every valid one and a
+// false pass for every ".invalid" one, instead of the honest "not applicable".
+// EXPR was exactly that case until sub-project H2 marked it supported; it is
+// live now, and EXPR/job_templates is scored by TestConformance_Templates like
+// every other live directory.
 func Classify(extension, kind string) State {
 	if kind == "env_templates" {
 		return StateNotApplicable

@@ -25,8 +25,10 @@ func compSyms(t *testing.T) MapSymbols {
 		"x":            Int(99),
 		// Mystery, LetFlag and NotBoolFlag are bare (not Param.*) because they
 		// stand in for a "let" binding, matching how the conformance harness's
-		// DeclaredSymbols binds one (test/conformance/exprcase.go): untyped,
-		// as expr.TAny.
+		// DeclaredSymbols bound one (test/conformance/exprcase.go, deleted by
+		// sub-project H2): untyped, as expr.TAny. internal/openjd's own checker
+		// binds a let name to its evaluated type, so TAny here is the weaker,
+		// harder case, which is the one worth pinning.
 		"Mystery":     Unresolved(TInt),
 		"LetFlag":     Unresolved(TAny),
 		"NotBoolFlag": Unresolved(TString),
@@ -300,7 +302,7 @@ func TestEvalListComp_ElemTypeIsThreadedNotRederived(t *testing.T) {
 // TestEvalListComp_FilterAcceptsAnyTypedPlaceholder pins the fix for a filter
 // bound to an untyped ("any") placeholder — exactly what a "let" binding is
 // bound as by the conformance harness's DeclaredSymbols
-// (test/conformance/exprcase.go's letSymbols) — being wrongly rejected as
+// (test/conformance/exprcase.go's letSymbols, deleted by sub-project H2) — being wrongly rejected as
 // "not a bool" when it COULD, at runtime, turn out to be one. It must defer,
 // like evalCond does for the identical question about its own condition, not
 // reject outright. A placeholder that could never be a bool must still be

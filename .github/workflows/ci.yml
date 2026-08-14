@@ -936,8 +936,16 @@ jobs:
   #
   # IMPORTANT: the assertion step below is not redundant. `make test-conformance`
   # would report success if the walker collected zero fixtures, so this job does
-  # not trust the exit code alone — it requires all four test names in the
-  # output, the same guard ldap-integration and isolation-integration use.
+  # not trust the exit code alone — it requires the test names in the output,
+  # the same guard ldap-integration and isolation-integration use.
+  #
+  # It listed four names until sub-project H2 made EXPR a supported extension:
+  # TestConformance_Expressions (the second, EXPR-only scoring path) and
+  # TestConformance_EXPRNotSupported (its drift guard) were both deleted with
+  # that path, and TestConformance_Templates now scores EXPR/job_templates
+  # itself. TestConformance_E3ProtectedFixtures takes the fourth slot — it is
+  # the one that asserts named EXPR fixtures by their exact rejection message,
+  # so requiring it keeps a zero-fixture run from looking green.
   conformance:
     name: OpenJD conformance
     runs-on: ubuntu-latest
@@ -962,8 +970,7 @@ jobs:
         run: |
           grep -q -- '--- PASS: TestConformance_SuitePresent' /tmp/conformance.log
           grep -q -- '--- PASS: TestConformance_Templates' /tmp/conformance.log
-          grep -q -- '--- PASS: TestConformance_Expressions' /tmp/conformance.log
-          grep -q -- '--- PASS: TestConformance_EXPRNotSupported' /tmp/conformance.log
+          grep -q -- '--- PASS: TestConformance_E3ProtectedFixtures' /tmp/conformance.log
 
   # Differential-tests internal/openjd/expr against the implementation the EXPR
   # specification names as its reference — the openjd.expr namespace of

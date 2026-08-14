@@ -1048,25 +1048,30 @@ func TestSubmit_DependsOn_Rejections(t *testing.T) {
 // such a test was "impossible today"; a review disproved that by writing it,
 // and that claim is withdrawn (see the report's "Fix round 1" section).
 //
-// The two tests below still earn their place as package-openjd_test
-// (external API) coverage of what Submit does WITHOUT that temporary flip --
-// i.e. under the real, current registry state: that an EXPR template still
-// surfaces as a SubmitValidationError (unchanged, pre-existing behavior, for
-// the extension-registration reason specifically) and that the new call site
-// is inert -- no false rejection -- for the common EXPR-off case, even when a
-// job parameter used in a format string is submitted as "0".
+// SUB-PROJECT H2 MADE THAT TEMPORARY FLIP UNNECESSARY: EXPR is StatusSupported
+// in the real registry, so the external-API tests below drive the production
+// path with no registry surgery at all.
+//
+// The two tests below cover what Submit does for an EXPR template and for the
+// common EXPR-off case: that the phase-2 re-check with concrete parameters
+// surfaces as a SubmitValidationError, and that the same call site is inert --
+// no false rejection -- without the extension declared, even when a job
+// parameter used in a format string is submitted as "0".
 
-// TestSubmitter_Submit_EXPRTemplateRejectedForUnsupportedExtension pins
-// today's actual, observable behavior for an EXPR-declaring template under
-// the real (unflipped) registry: Submit returns a *SubmitValidationError
-// whose message names the extension-registration reason. It does NOT observe
-// -- and its name no longer claims to observe -- whether parameter binding
-// ran; ValidateWithOptions's own early return means it did not, but nothing
-// in this test depends on or checks that. This is a regression guard, not a
-// proof of Task 10's wiring (see the header comment above); it exists so
-// that a change unblocking EXPR at some later date is required to touch
-// (and re-examine) this test.
-func TestSubmitter_Submit_EXPRTemplateRejectedForUnsupportedExtension(t *testing.T) {
+// TestSubmitter_Submit_EXPRTemplateRejectedByPhase2Recheck drives the brief's
+// own division-by-zero template through the public Submit API and asserts the
+// rejection comes from the submit-time expression re-check with concrete
+// parameters -- Param.N bound to "0", which only phase 2 can see.
+//
+// It asserted the exact opposite until sub-project H2. Under the unflipped
+// registry the same template was rejected at /extensions/0 for the
+// extension-registration reason, before parameter binding ran at all, and this
+// test pinned that message so "a change unblocking EXPR at some later date is
+// required to touch (and re-examine) this test." That change is H2, this is
+// that re-examination, and the test is strictly stronger for it: it now proves
+// the phase-2 wiring end to end through the public API, which is what the
+// header above says only a white-box test with a temporary flip could do.
+func TestSubmitter_Submit_EXPRTemplateRejectedByPhase2Recheck(t *testing.T) {
 	st := fake.New()
 	farmID, queueID := seedSubmitPrereqs(t, st)
 	sub := openjd.NewSubmitter(st)
@@ -1094,14 +1099,18 @@ steps:
 		Parameters: map[string]string{"N": "0"},
 	})
 	if err == nil {
-		t.Fatal("expected an error for an EXPR-declaring template, got nil")
+		t.Fatal("expected an error for an EXPR template dividing by a zero-valued parameter, got nil")
 	}
 	var ve *openjd.SubmitValidationError
 	if !errors.As(err, &ve) {
 		t.Fatalf("expected SubmitValidationError, got %T: %v", err, err)
 	}
-	if !strings.Contains(err.Error(), "not yet supported") {
-		t.Fatalf("expected the extension-registration message (today's actual rejection reason); got: %v", err)
+	if !strings.Contains(err.Error(), "division by zero") {
+		t.Fatalf("expected the phase-2 division-by-zero rejection; got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "expression re-check with concrete parameters") {
+		t.Fatalf("expected the rejection to come from the submit-time re-check, "+
+			"not from phase 1 (which cannot see Param.N's value); got: %v", err)
 	}
 }
 
