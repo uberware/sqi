@@ -42,13 +42,24 @@ type Shape struct {
 	// settings rather than only their arguments.
 	//
 	// The rule for which rows use it is not a tally, it is a question: does
-	// this row have to CHOOSE a flavor at construction time? All three of
-	// path()'s rows do — path(string), path(list[string]) and
-	// path(list[nulltype]) — because constructing a path is the only
-	// operation that ever has to decide one; every other path operation reads
-	// the flavor off its receiver. Adding a parameter to Fn instead would have
-	// changed every OTHER row, which does not need it; RetOf is the existing
-	// precedent for an optional alternative field.
+	// this row need something the evaluation holds that its arguments cannot
+	// give it? Two answers so far, and they are unrelated to each other.
+	//
+	// The first is the path FLAVOR. All three of path()'s rows must choose one
+	// at construction time — path(string), path(list[string]) and
+	// path(list[nulltype]) — because constructing a path is the only operation
+	// that ever has to decide; every other path operation reads the flavor off
+	// its receiver.
+	//
+	// The second is the COMPILED-PATTERN CACHE (recache.go), which every
+	// re_ row that compiles a pattern reaches through ec.re. That one is a
+	// speed property and nothing else: the cache changes no result, no error
+	// and no section 1.3.10 charge, since callShape applies every charge around
+	// the call before Fn or FnCtx runs.
+	//
+	// Adding a parameter to Fn instead would have changed every OTHER row,
+	// which needs neither; RetOf is the existing precedent for an optional
+	// alternative field.
 	//
 	// A Shape sets Fn or FnCtx, never both.
 	FnCtx func(ec evalCtx, args []Value) (Value, error)

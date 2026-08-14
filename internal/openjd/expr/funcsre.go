@@ -24,6 +24,12 @@ var errGroupReference = errors.New("group references in a replacement string are
 // INTERSECTION of those two. See translatePattern's comment for the three
 // directions in which they differ.
 //
+// CACHING: every row that compiles a pattern takes FnCtx rather than Fn, so it
+// can reach this evaluation's compiled-pattern cache (recache.go). That is a
+// speed property only — section 1.3.10's charges are applied by callShape
+// (ops.go) around the whole call, so a cached compile costs exactly what an
+// uncached one costs.
+//
 // COST (sub-project E1, Task 8): section 1.3.10 rule 3 names "regex functions"
 // outright, so every row here declares Cost{ArgBytes: []int{0}} on the SUBJECT
 // string (the value being matched against), never the pattern or the
@@ -40,13 +46,13 @@ var reFuncs = map[string][]Shape{
 	// re_match and re_search differ only in anchoring. Both return the full
 	// match at index 0 followed by the capture groups, or null.
 	"re_match": {
-		{Params: []Type{TString, TString}, Ret: UnionOf(ListOf(TString), TNull), Cost: Cost{ArgBytes: []int{0}}, Fn: func(args []Value) (Value, error) {
-			return reFind(args[0].AsStr(), args[1].AsStr(), true)
+		{Params: []Type{TString, TString}, Ret: UnionOf(ListOf(TString), TNull), Cost: Cost{ArgBytes: []int{0}}, FnCtx: func(ec evalCtx, args []Value) (Value, error) {
+			return reFind(ec, args[0].AsStr(), args[1].AsStr(), true)
 		}},
 	},
 	"re_search": {
-		{Params: []Type{TString, TString}, Ret: UnionOf(ListOf(TString), TNull), Cost: Cost{ArgBytes: []int{0}}, Fn: func(args []Value) (Value, error) {
-			return reFind(args[0].AsStr(), args[1].AsStr(), false)
+		{Params: []Type{TString, TString}, Ret: UnionOf(ListOf(TString), TNull), Cost: Cost{ArgBytes: []int{0}}, FnCtx: func(ec evalCtx, args []Value) (Value, error) {
+			return reFind(ec, args[0].AsStr(), args[1].AsStr(), false)
 		}},
 	},
 	// re_findall's RESULT SHAPE depends on the pattern's group count, which is
@@ -60,13 +66,13 @@ var reFuncs = map[string][]Shape{
 	// which discriminates an element-count charge from a byte charge, and the
 	// reference's count tracks the SUBJECT'S BYTE LENGTH, not the match count.
 	"re_findall": {
-		{Params: []Type{TString, TString}, Ret: UnionOf(ListOf(TString), ListOf(ListOf(TString))), Cost: Cost{ArgBytes: []int{0}}, Fn: func(args []Value) (Value, error) {
-			return reFindAll(args[0].AsStr(), args[1].AsStr())
+		{Params: []Type{TString, TString}, Ret: UnionOf(ListOf(TString), ListOf(ListOf(TString))), Cost: Cost{ArgBytes: []int{0}}, FnCtx: func(ec evalCtx, args []Value) (Value, error) {
+			return reFindAll(ec, args[0].AsStr(), args[1].AsStr())
 		}},
 	},
 	"re_sub": {
-		{Params: []Type{TString, TString, TString}, Ret: TString, Cost: Cost{ArgBytes: []int{0}}, Fn: func(args []Value) (Value, error) {
-			return reSub(args[0].AsStr(), args[1].AsStr(), args[2].AsStr())
+		{Params: []Type{TString, TString, TString}, Ret: TString, Cost: Cost{ArgBytes: []int{0}}, FnCtx: func(ec evalCtx, args []Value) (Value, error) {
+			return reSub(ec, args[0].AsStr(), args[1].AsStr(), args[2].AsStr())
 		}},
 	},
 	"re_escape": {
@@ -82,11 +88,11 @@ var reFuncs = map[string][]Shape{
 	// confirmed by splitting subjects of different byte lengths at a fixed
 	// split density, in both the 2-arg (unlimited) and 3-arg (maxsplit) forms.
 	"re_split": {
-		{Params: []Type{TString, TString}, Ret: ListOf(TString), Cost: Cost{ArgBytes: []int{0}}, Fn: func(args []Value) (Value, error) {
-			return reSplit(args[0].AsStr(), args[1].AsStr(), reSplitUnlimited)
+		{Params: []Type{TString, TString}, Ret: ListOf(TString), Cost: Cost{ArgBytes: []int{0}}, FnCtx: func(ec evalCtx, args []Value) (Value, error) {
+			return reSplit(ec, args[0].AsStr(), args[1].AsStr(), reSplitUnlimited)
 		}},
-		{Params: []Type{TString, TString, TInt}, Ret: ListOf(TString), Cost: Cost{ArgBytes: []int{0}}, Fn: func(args []Value) (Value, error) {
-			return reSplit(args[0].AsStr(), args[1].AsStr(), args[2].AsInt())
+		{Params: []Type{TString, TString, TInt}, Ret: ListOf(TString), Cost: Cost{ArgBytes: []int{0}}, FnCtx: func(ec evalCtx, args []Value) (Value, error) {
+			return reSplit(ec, args[0].AsStr(), args[1].AsStr(), args[2].AsInt())
 		}},
 	},
 }
@@ -133,6 +139,11 @@ const reSplitUnlimited int64 = math.MaxInt64
 
 // compilePattern translates and compiles, so no caller ever hands Go a raw
 // spec-dialect pattern.
+//
+// It is the UNCACHED primitive. Every function below reaches it through
+// evalCtx.re.compile (recache.go) instead, so a pattern repeated within one
+// evaluation — the comprehension case — is translated and compiled once. Call
+// this directly only from a context that has no cache to consult.
 func compilePattern(pattern string) (*regexp.Regexp, error) {
 	translated, err := translatePattern(pattern)
 	if err != nil {
@@ -147,8 +158,8 @@ func compilePattern(pattern string) (*regexp.Regexp, error) {
 
 // reFind backs re_match and re_search. anchored restricts the match to the
 // START of the string, which is re_match's whole difference from re_search.
-func reFind(s, pattern string, anchored bool) (Value, error) {
-	re, err := compilePattern(pattern)
+func reFind(ec evalCtx, s, pattern string, anchored bool) (Value, error) {
+	re, err := ec.re.compile(pattern)
 	if err != nil {
 		return Value{}, err
 	}
@@ -181,8 +192,8 @@ func reFind(s, pattern string, anchored bool) (Value, error) {
 }
 
 // reFindAll backs re_findall, whose result shape depends on the group count.
-func reFindAll(s, pattern string) (Value, error) {
-	re, err := compilePattern(pattern)
+func reFindAll(ec evalCtx, s, pattern string) (Value, error) {
+	re, err := ec.re.compile(pattern)
 	if err != nil {
 		return Value{}, err
 	}
@@ -242,11 +253,11 @@ func reFindAll(s, pattern string) (Value, error) {
 // gigabytes before a check on the RESULT could ever run. That is the same
 // hazard replaceAll (funcsstrfind.go) already guards against for plain
 // string replacement.
-func reSub(s, pattern, repl string) (Value, error) {
+func reSub(ec evalCtx, s, pattern, repl string) (Value, error) {
 	if err := rejectGroupReferences(repl); err != nil {
 		return Value{}, err
 	}
-	re, err := compilePattern(pattern)
+	re, err := ec.re.compile(pattern)
 	if err != nil {
 		return Value{}, err
 	}
@@ -309,8 +320,8 @@ func isDigitByte(b byte) bool { return b >= '0' && b <= '9' }
 // rule for the same-shaped argument. The reference discards the string
 // entirely for a negative re_split maxsplit ("[]"), which is wrong under any
 // reading of the spec text and is baselined as the reference's own bug.
-func reSplit(s, pattern string, maxsplit int64) (Value, error) {
-	re, err := compilePattern(pattern)
+func reSplit(ec evalCtx, s, pattern string, maxsplit int64) (Value, error) {
+	re, err := ec.re.compile(pattern)
 	if err != nil {
 		return Value{}, err
 	}

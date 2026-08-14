@@ -268,6 +268,12 @@ type evalCtx struct {
 	// evalCtx is copied at every call boundary -- see meter's doc comment.
 	// newEvalCtx always sets it, so it is never nil during evaluation.
 	m *meter
+	// re caches the regular expressions this evaluation compiles, for the same
+	// reason and by the same mechanism as m: a POINTER, so a hit recorded deep
+	// in a comprehension is visible to the next element. newEvalCtx always sets
+	// it; a hand-built context that leaves it nil compiles uncached rather than
+	// panicking. See reCache.
+	re *reCache
 	// limitErr records a caller error in the limit options, reported by Eval
 	// rather than by panicking inside an Option closure.
 	limitErr error
@@ -279,6 +285,7 @@ func newEvalCtx(src string, syms Symbols, opts []Option) evalCtx {
 	}
 	ec := evalCtx{src: src, syms: syms, pathFormat: PathPOSIX}
 	ec.m = newMeter(defaultMemoryLimit, defaultOperationLimit)
+	ec.re = &reCache{}
 	for _, o := range opts {
 		o(&ec)
 	}

@@ -1296,6 +1296,37 @@
 // so a target reaching into an argument would let the CALLER'S context change
 // which overload the callee resolves to.
 //
+//   - COMPILED REGULAR EXPRESSIONS ARE CACHED FOR THE LIFETIME OF ONE
+//     EVALUATION, and for that lifetime only (recache.go). Before it, every
+//     re_match/re_search/re_findall/re_sub/re_split invocation ran
+//     translatePattern's full byte scan and regexp.Compile again, so a pattern
+//     inside a comprehension was compiled once PER ELEMENT while section
+//     1.3.10 charged it roughly one operation plus ceil(len/256) — under-priced
+//     by about three orders of magnitude, and on the WORKER there is no
+//     wall-clock deadline to backstop it at all. Measured on the machine this
+//     was written on, '[s for s in Param.Files if re_match(s, r"shot\d+\.exr")
+//     != null]' over 10,000 elements: 30.4 ms and 48.6 MB before, 12.0 ms and
+//     13.1 MB after (380,097 allocations against 70,062).
+//
+//     IT CHANGES NO RESULT AND NO COUNT. Section 1.3.10's charges are applied
+//     by callShape (ops.go) around the whole call, before Fn or FnCtx runs, so
+//     a cached compile is charged exactly what an uncached one is — the
+//     differential oracle's operation-count dimension is unmoved. A failing
+//     pattern is cached too, and its error value is returned unchanged on
+//     every hit, so an invalid pattern in a comprehension is rejected once
+//     with the message it always had.
+//
+//     IT IS CAPPED AT maxCachedPatterns ENTRIES, and the cap is the load-
+//     bearing part rather than a tidy-up. A pattern is an arbitrary string
+//     from a submitted template, not necessarily a literal, so
+//     "[re_match(s, s) for s in Param.Files]" presents one DISTINCT pattern
+//     per element; an uncapped map would retain one compiled program per
+//     element and turn a comprehension into a memory amplifier. Past the cap
+//     the cache stops storing — nothing is evicted and the map never grows
+//     again — so what it retains is a constant, not a function of the input.
+//     Being per-evaluation is what makes that bound hold across requests, and
+//     is also why the cache needs no eviction policy and no lock.
+//
 //   - This package imports internal/openjd/intrange for range_expr's own
 //     grammar, section 3.4.1.1.1's <IntRangeExpr>. internal/openjd expands
 //     the identical grammar for a different purpose — a step's task parameter

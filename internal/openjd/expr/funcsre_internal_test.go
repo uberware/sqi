@@ -178,7 +178,7 @@ func TestReSub_BoundsBeforeAllocating(t *testing.T) {
 	var err error
 	go func() {
 		defer close(done)
-		v, err = reSub(s, `x*`, repl)
+		v, err = reSub(newEvalCtx("", nil, nil), s, `x*`, repl)
 	}()
 
 	select {
