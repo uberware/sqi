@@ -118,6 +118,10 @@ type StepAttributeRequirement struct {
 type StepStore interface {
 	// CreateStep inserts a new step. The (JobID, Name) pair must be unique
 	// within the job; returns [ErrConflict] if violated.
+	//
+	// It has no production callers — submission writes steps through
+	// [JobStore.CreateJobSubmission]. See [JobStore.CreateJob] for what that
+	// means for anyone changing this method or building fixtures with it.
 	CreateStep(ctx context.Context, step Step) (Step, error)
 
 	// GetStep returns the step with the given ID, or [ErrNotFound].

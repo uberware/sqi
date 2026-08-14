@@ -129,18 +129,63 @@ client
 REST handler (internal/api/jobs.go)
   │
   ├─ Parse body → raw template bytes + detected content-type
-  ├─ openjd.Parse(template)          → structured JobTemplate
-  ├─ openjd.Validate(template)       → []ValidationError (reject if non-empty)
-  ├─ openjd.ExpandParameterSpace(...) → []TaskParams (one per parameter combination)
   │
-  ├─ store.CreateJob(template, steps, tasks)
-  │     Writes in a single transaction:
-  │       jobs row (status=pending, template verbatim)
-  │       steps rows (one per step)
-  │       tasks rows (one per expanded task, status=pending or ready)
+  ├─ openjd.Submitter.Submit(...)
+  │     openjd.Parse(template)           → structured JobTemplate
+  │     openjd.Validate(template)        → []ValidationError (reject if non-empty)
+  │     openjd.ExpandParameterSpace(...) → []TaskParams (one per parameter combination)
+  │       Expansion runs to completion in memory first: a template that cannot
+  │       expand never reaches the store.
+  │
+  │     store.CreateJobSubmission(job, dependsOn, steps, tasks)
+  │       Writes in a single transaction:
+  │         jobs row (status=pending or blocked, template verbatim)
+  │         job_dependencies rows (one per cross-job dependency edge)
+  │         steps rows (one per step)
+  │         tasks rows (one per expanded task, status=pending or ready)
   │
   └─ HTTP 201 Created  { id, name, status, step_count, task_count }
 ```
+
+That single write is **load-bearing, not incidental**. Submission used to write
+those rows through separate store calls, which left two defects: a failure
+partway through stranded a `pending` job that nothing reaps, and a *store*
+failure on a later step left the earlier steps persisted while that step's row
+was lost entirely — producing a job that `checkJobCompletion`, which derives job
+status from the steps that *exist*, would later mark `completed` having silently
+lost work. (An *expansion* failure produced only the first: the step row was
+written before its tasks were expanded, so the job kept all its steps and simply
+hung `pending`.) Both are properties of partial creation, so splitting the write
+back up reintroduces both.
+
+**It also stalls every other database user for its full duration, and a large
+submission can fail the readiness probe.** The SQLite pool is
+`SetMaxOpenConns(1)` (`internal/store/sqlite/store.go`), so one submission holds
+the only connection from `BeginTx` to `Commit`. Lease replies, sweeps and REST
+reads no longer interleave between per-row inserts; they queue in Go's
+`database/sql` pool, which is not `SQLITE_BUSY` and which `busy_timeout` does not
+affect — nothing surfaces it as a lock error, it simply stalls. `GET /readyz`
+queues with them: its `sqlite` checker is `Store.Ping`, and `internal/health`
+gives all checkers a **5 s** budget per request, so a submission holding the
+connection longer than that returns HTTP 503 `degraded` — endpoint removal under
+an orchestrator. Measured on an M-series Mac (single step, one
+`CreateJobSubmission` call, `/readyz` issued 50 ms in):
+
+| tasks | transaction | `/readyz` |
+|---|---|---|
+| 1,000 | 57 ms | ok |
+| 10,000 | 683 ms | ok |
+| 25,000 | 1.73 s | ok |
+| 50,000 | 3.53 s | ok |
+| 75,000 | 5.40 s | **503** (`context deadline exceeded`) |
+
+So an ordinary large render — ~65k tasks is 6.5% of one step's legal maximum —
+reads as an outage to an orchestrator. `GET /healthz` (liveness) registers no
+checkers and is unaffected, so this does not become a restart loop. The stall is
+not *new* cost for the inserts themselves — batching them is faster than the
+per-row path (measured 7.4 s versus 8.8 s for 100,000 tasks) — but the window
+during which everything else waits is now one contiguous transaction instead of
+N gaps.
 
 **Cross-job dependencies (`depends_on`).** A submission — raw `POST /api/v1/jobs`
 or `POST /api/v1/products/{name}/jobs`, from the REST API, the web UI, or the
@@ -180,9 +225,12 @@ reached `succeeded`. A `blocked` job's steps and tasks skip this evaluation at
 submit time and are all held `pending` regardless of step dependencies, until
 the job is released and this same evaluation runs (see above).
 
-This evaluation runs inside the `CreateJob` transaction for the initial set,
-and again via the scheduler's `handleTaskTerminal` → `propagateStepDependencies`
-path whenever a task reaches a terminal state.
+For the initial set this evaluation happens **before** the write, not inside it:
+`buildStepWithTasks` decides each step's and task's starting status while
+expanding the template in memory, and the `CreateJobSubmission` transaction only
+persists the statuses it already chose. It runs again via the scheduler's
+`handleTaskTerminal` → `propagateStepDependencies` path whenever a task reaches a
+terminal state.
 
 ### 3. Assignment (lease-on-request)
 
