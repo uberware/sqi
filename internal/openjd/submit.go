@@ -173,7 +173,7 @@ func (s *Submitter) Submit(
 		priority = 50
 	}
 
-	// ── 4. Create Job row (verbatim template stored as-is) ────────────────
+	// ── 4. Build the Job row (verbatim template stored as-is) ─────────────
 	now := time.Now().UTC()
 	jobName := tmpl.Name
 	if opts.Name != "" {
@@ -204,34 +204,44 @@ func (s *Submitter) Submit(
 		UpdatedAt:         now,
 	}
 
-	job, err = s.st.CreateJob(ctx, job)
+	// ── 5. Expand every step and task into memory ─────────────────────────
+	// Nothing is written yet. Expansion runs to completion first so that a
+	// template which cannot expand never reaches the store at all, and so that
+	// everything this submission creates can be handed to a single write.
+	// Each step is handled by a helper to keep Submit's cyclomatic complexity
+	// within bounds.
+	deriveBounds := tmpl.hasExtension("SQI_CHUNK_BOUNDS")
+	steps := make([]store.Step, 0, len(tmpl.Steps))
+	var tasks []store.Task
+	for i, stepTmpl := range tmpl.Steps {
+		step, stepTasks, err := s.buildStepWithTasks(job, stepTmpl, i, boundParams, deriveBounds, blocked, now)
+		if err != nil {
+			return nil, err
+		}
+		steps = append(steps, step)
+		tasks = append(tasks, stepTasks...)
+	}
+
+	// ── 6. Persist the whole submission in one atomic write ───────────────
+	out, err := s.st.CreateJobSubmission(ctx, store.JobSubmission{
+		Job:       job,
+		DependsOn: opts.DependsOn,
+		Steps:     steps,
+		Tasks:     tasks,
+	})
 	if err != nil {
 		return nil, fmt.Errorf("openjd: submit: create job: %w", err)
 	}
 
-	if len(opts.DependsOn) > 0 {
-		if err := s.st.CreateJobDependencies(ctx, job.ID, opts.DependsOn); err != nil {
-			return nil, fmt.Errorf("openjd: submit: create job dependencies: %w", err)
-		}
+	result := &SubmitResult{
+		Job:             out.Job,
+		Steps:           out.Steps,
+		Tasks:           out.Tasks,
+		BoundParameters: boundParams,
 	}
 
-	result := &SubmitResult{Job: job, BoundParameters: boundParams}
-
-	// ── 5. Create Step and Task rows ──────────────────────────────────────
-	// Each step is handled by a helper to keep Submit's cyclomatic complexity
-	// within bounds.
-	deriveBounds := tmpl.hasExtension("SQI_CHUNK_BOUNDS")
-	for i, stepTmpl := range tmpl.Steps {
-		steps, tasks, err := s.createStepWithTasks(ctx, job, stepTmpl, i, boundParams, deriveBounds, blocked, now)
-		if err != nil {
-			return nil, err
-		}
-		result.Steps = append(result.Steps, steps...)
-		result.Tasks = append(result.Tasks, tasks...)
-	}
-
-	// ── 6. Flip to blocked LAST ────────────────────────────────────────────
-	if err := s.finalizeBlockedStatus(ctx, job, blocked, result); err != nil {
+	// ── 7. Flip to blocked LAST ────────────────────────────────────────────
+	if err := s.finalizeBlockedStatus(ctx, out.Job, blocked, result); err != nil {
 		return nil, err
 	}
 
@@ -267,11 +277,15 @@ func (s *Submitter) finalizeBlockedStatus(ctx context.Context, job store.Job, bl
 	return nil
 }
 
-// createStepWithTasks creates one [store.Step] row and all of its [store.Task]
-// rows for a single step template. It is extracted from [Submit] to reduce
-// that function's cyclomatic complexity.
-func (s *Submitter) createStepWithTasks(
-	ctx context.Context,
+// buildStepWithTasks builds one [store.Step] value and all of its [store.Task]
+// values for a single step template. It performs NO store writes: everything
+// one submission creates is written by a single
+// [store.JobStore.CreateJobSubmission] call in [Submitter.Submit], so a failure
+// anywhere — including in this function's expansion — leaves nothing behind.
+//
+// It is extracted from [Submitter.Submit] to reduce that function's cyclomatic
+// complexity.
+func (s *Submitter) buildStepWithTasks(
 	job store.Job,
 	stepTmpl StepTemplate,
 	stepIdx int,
@@ -279,7 +293,7 @@ func (s *Submitter) createStepWithTasks(
 	deriveBounds bool,
 	holdPending bool,
 	now time.Time,
-) (steps []store.Step, tasks []store.Task, err error) {
+) (step store.Step, tasks []store.Task, err error) {
 	// Collect dependency names from the template.
 	dependsOn := make([]string, 0, len(stepTmpl.Dependencies))
 	for _, dep := range stepTmpl.Dependencies {
@@ -295,7 +309,7 @@ func (s *Submitter) createStepWithTasks(
 
 	hostReqs, computeLoc := toStoreHostRequirements(stepTmpl.HostRequirements)
 
-	step := store.Step{
+	step = store.Step{
 		ID:               uuid.NewString(),
 		JobID:            job.ID,
 		Name:             stepTmpl.Name,
@@ -308,11 +322,6 @@ func (s *Submitter) createStepWithTasks(
 		UpdatedAt:        now,
 	}
 
-	step, err = s.st.CreateStep(ctx, step)
-	if err != nil {
-		return nil, nil, fmt.Errorf("openjd: submit: create step %q: %w", stepTmpl.Name, err)
-	}
-
 	// Task status mirrors the step's initial status.
 	taskStatus := store.TaskStatusReady
 	if stepStatus == store.StepStatusPending {
@@ -322,17 +331,18 @@ func (s *Submitter) createStepWithTasks(
 	// ── Expand parameter space ──────────────────────────────────────────────
 	taskParamList, err := s.expandStepTaskParams(stepTmpl, stepIdx, boundParams, deriveBounds)
 	if err != nil {
-		return nil, nil, err
+		return store.Step{}, nil, err
 	}
 
-	// ── Create one Task row per parameter combination ───────────────────────
+	// ── Build one Task row per parameter combination ────────────────────────
 	var reqCores *int
 	if hostReqs != nil {
 		reqCores = requiredCoresFromAmounts(hostReqs.Amounts)
 	}
 
+	tasks = make([]store.Task, 0, len(taskParamList))
 	for j, params := range taskParamList {
-		task := store.Task{
+		tasks = append(tasks, store.Task{
 			ID:            uuid.NewString(),
 			JobID:         job.ID,
 			StepID:        step.ID,
@@ -342,26 +352,16 @@ func (s *Submitter) createStepWithTasks(
 			RequiredCores: reqCores,
 			CreatedAt:     now,
 			UpdatedAt:     now,
-		}
-
-		task, err = s.st.CreateTask(ctx, task)
-		if err != nil {
-			return nil, nil, fmt.Errorf(
-				"openjd: submit: create task %d of step %q: %w",
-				j, stepTmpl.Name, err,
-			)
-		}
-
-		tasks = append(tasks, task)
+		})
 	}
 
-	return []store.Step{step}, tasks, nil
+	return step, tasks, nil
 }
 
 // expandStepTaskParams resolves {{Param.*}} / {{RawParam.*}} references in the
 // step's parameter space, re-validates the resolved space's quantitative
 // limits, expands it into one parameter set per task, and derives chunk
-// bounds when requested. It is extracted from [Submitter.createStepWithTasks]
+// bounds when requested. It is extracted from [Submitter.buildStepWithTasks]
 // to keep that function's cyclomatic complexity within bounds.
 func (s *Submitter) expandStepTaskParams(
 	stepTmpl StepTemplate,
