@@ -125,9 +125,16 @@ type SubmitResult struct {
 // with dependencies start in [store.StepStatusPending].  Tasks inherit their
 // step's initial status.
 //
-// Submit does not run in a database transaction. If it fails partway through,
-// orphaned rows may remain; the REST layer or a cleanup sweep should handle
-// such cases by checking job.Status == pending with no tasks.
+// Everything one submission creates — the job row, its cross-job dependency
+// edges, every step and every task — is written by a single
+// [store.JobStore.CreateJobSubmission] call, which is atomic on both store
+// backends. A failure at any point therefore leaves nothing behind: there is no
+// orphaned pending job for a sweep to reap, and no job missing the steps that
+// failed to write (which checkJobCompletion, deriving job status from the steps
+// that exist, would have reported completed).
+//
+// Expansion runs to completion before that write, so a template that cannot
+// expand never reaches the store at all.
 func (s *Submitter) Submit(
 	ctx context.Context,
 	rawTemplate string,

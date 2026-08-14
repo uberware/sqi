@@ -129,18 +129,31 @@ client
 REST handler (internal/api/jobs.go)
   │
   ├─ Parse body → raw template bytes + detected content-type
-  ├─ openjd.Parse(template)          → structured JobTemplate
-  ├─ openjd.Validate(template)       → []ValidationError (reject if non-empty)
-  ├─ openjd.ExpandParameterSpace(...) → []TaskParams (one per parameter combination)
   │
-  ├─ store.CreateJob(template, steps, tasks)
-  │     Writes in a single transaction:
-  │       jobs row (status=pending, template verbatim)
-  │       steps rows (one per step)
-  │       tasks rows (one per expanded task, status=pending or ready)
+  ├─ openjd.Submitter.Submit(...)
+  │     openjd.Parse(template)           → structured JobTemplate
+  │     openjd.Validate(template)        → []ValidationError (reject if non-empty)
+  │     openjd.ExpandParameterSpace(...) → []TaskParams (one per parameter combination)
+  │       Expansion runs to completion in memory first: a template that cannot
+  │       expand never reaches the store.
+  │
+  │     store.CreateJobSubmission(job, dependsOn, steps, tasks)
+  │       Writes in a single transaction:
+  │         jobs row (status=pending or blocked, template verbatim)
+  │         job_dependencies rows (one per cross-job dependency edge)
+  │         steps rows (one per step)
+  │         tasks rows (one per expanded task, status=pending or ready)
   │
   └─ HTTP 201 Created  { id, name, status, step_count, task_count }
 ```
+
+That single write is **load-bearing, not incidental**. Submission used to write
+those rows through separate store calls, which left two defects: a failure
+partway through stranded a `pending` job that nothing reaps, and a failure on a
+later step left the earlier steps persisted — producing a job that
+`checkJobCompletion`, which derives job status from the steps that *exist*,
+would later mark `completed` having silently lost work. Both are properties of
+partial creation, so splitting the write back up reintroduces both.
 
 **Cross-job dependencies (`depends_on`).** A submission — raw `POST /api/v1/jobs`
 or `POST /api/v1/products/{name}/jobs`, from the REST API, the web UI, or the
@@ -180,7 +193,7 @@ reached `succeeded`. A `blocked` job's steps and tasks skip this evaluation at
 submit time and are all held `pending` regardless of step dependencies, until
 the job is released and this same evaluation runs (see above).
 
-This evaluation runs inside the `CreateJob` transaction for the initial set,
+This evaluation runs inside the `CreateJobSubmission` transaction for the initial set,
 and again via the scheduler's `handleTaskTerminal` → `propagateStepDependencies`
 path whenever a task reaches a terminal state.
 
