@@ -118,6 +118,10 @@ const (
 type TaskStore interface {
 	// CreateTask inserts a new task. The caller must populate all fields
 	// including a unique ID.
+	//
+	// It has no production callers — submission writes tasks through
+	// [JobStore.CreateJobSubmission]. See [JobStore.CreateJob] for what that
+	// means for anyone changing this method or building fixtures with it.
 	CreateTask(ctx context.Context, task Task) (Task, error)
 
 	// GetTask returns the task with the given ID, or [ErrNotFound].

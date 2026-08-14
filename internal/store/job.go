@@ -120,17 +120,71 @@ type DeletedJob struct {
 	QueueID string
 }
 
+// JobSubmission is everything one job submission creates.
+//
+// It exists so a job, its dependency edges, its steps and its tasks are
+// created together or not at all — see [JobStore.CreateJobSubmission].
+type JobSubmission struct {
+	Job       Job
+	DependsOn []string
+	Steps     []Step
+	Tasks     []Task
+}
+
 // JobStore is the persistence interface for [Job] records.
 type JobStore interface {
 	// CreateJob inserts a new job with all fields populated by the caller.
+	//
+	// It has NO production callers. Submission was its only one and now goes
+	// through [JobStore.CreateJobSubmission]; the same is true of
+	// [JobStore.CreateJobDependencies], [StepStore.CreateStep] and
+	// [TaskStore.CreateTask]. All four are test-only API surface kept for
+	// fixture construction, with two consequences worth knowing:
+	//
+	//   - No production test exercises them, so they can drift from the path
+	//     production actually takes without anything going red. The fake's
+	//     CreateStep and CreateTask already differ: they do not stamp
+	//     CreatedAt/UpdatedAt, while its CreateJobSubmission does (per row, so
+	//     tasks within a step get distinct created_at values — SQLite relies on
+	//     that for the ready-task ordering tiebreaker and ListTasks paging).
+	//     A fixture built from these creators therefore has zero timestamps
+	//     where a real submission has meaningful ones.
+	//   - A behavior change made here does not reach production. Change
+	//     CreateJobSubmission too, or the change is cosmetic.
 	CreateJob(ctx context.Context, job Job) (Job, error)
+
+	// CreateJobSubmission atomically creates a job, its dependency edges, its
+	// steps and its tasks. On ANY error nothing is written.
+	//
+	// It exists because creating those rows through separate calls left two
+	// defects with no cure at the call site: a failed submission stranded a
+	// pending job that no sweep reaps, and a submission whose write failed
+	// after some steps were persisted produced a job whose missing steps made
+	// checkJobCompletion — which derives job status from the steps that exist —
+	// report it completed. The second needs a STORE failure specifically: an
+	// expansion failure left the step row too, because the old code wrote it
+	// before expanding its tasks, so that case hung pending rather than
+	// completing. Both are properties of partial creation, so both end here.
+	//
+	// The returned JobSubmission carries the rows as stored, the way
+	// [JobStore.CreateJob], [StepStore.CreateStep] and [TaskStore.CreateTask]
+	// each return theirs. Read the edges back from its DependsOn field, not
+	// from its Job.DependsOn: the returned [Job] is scanned straight from the
+	// insert, which does not join the edge table, so Job.DependsOn is
+	// backend-dependent and must not be relied on. Only [JobStore.GetJob]
+	// populates it.
+	CreateJobSubmission(ctx context.Context, sub JobSubmission) (JobSubmission, error)
 
 	// GetJob returns the job with the given ID, or [ErrNotFound].
 	GetJob(ctx context.Context, id string) (Job, error)
 
 	// CreateJobDependencies records that jobID waits on each ID in upstreamIDs
-	// (whole-job cross-job dependencies). Duplicate edges are ignored. Called
-	// right after CreateJob during submission.
+	// (whole-job cross-job dependencies). Duplicate edges are ignored.
+	//
+	// Submission no longer calls this: the edges are written by
+	// [JobStore.CreateJobSubmission], in the same transaction as the job row
+	// whose blocked status they justify. See [JobStore.CreateJob] on what that
+	// leaves this method.
 	CreateJobDependencies(ctx context.Context, jobID string, upstreamIDs []string) error
 
 	// ListJobDependencyIDs returns the IDs of the upstream jobs jobID waits on,
