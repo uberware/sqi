@@ -17,12 +17,31 @@
 //
 // # Concurrency
 //
-// The underlying sql.DB is opened with [sql.DB.SetMaxOpenConns](1) which
-// serializes all reads and writes through a single SQLite connection. This is
-// the correct setting for SQLite in WAL mode when used from a single process:
-// it prevents write-write conflicts and avoids the overhead of connection
-// negotiation while still allowing the WAL reader snapshot semantics to
-// function correctly within a single connection.
+// The store keeps two connection pools over the same database file.
+//
+// Writes go through a pool opened with [sql.DB.SetMaxOpenConns](1), which
+// serializes every write through a single SQLite connection. That prevents
+// write-write conflicts and avoids SQLITE_BUSY between concurrent goroutines.
+//
+// Reads go through a second pool of up to [readPoolMaxConns] connections. WAL
+// mode lets readers proceed concurrently with a writer, so a read need not
+// queue behind one — and must not: a single large [Store.CreateJobSubmission]
+// holds the write connection for as long as it takes to insert every task,
+// which at job sizes this server accepts is measured in seconds. With one
+// shared pool that stalls every other database user in the process, including
+// the health checker, so an ordinary large render job reads as an outage.
+//
+// The split is by statement, not by call site: anything whose SQL begins with
+// SELECT is a read, everything else is a write. Several writes here are
+// INSERT/UPDATE/DELETE ... RETURNING issued through QueryRow, so classifying by
+// Go method would be wrong. Misclassifying a read as a write merely serializes
+// it; misclassifying a write as a read puts it on a multi-connection pool, so
+// anything ambiguous (a CTE, say) stays on the write pool.
+//
+// Transactions always run on the write pool.
+//
+// An in-memory or temporary database gets one pool for both roles: a second
+// [sql.Open] on ":memory:" would open a different, empty database.
 //
 // # Migrations
 //
@@ -37,12 +56,28 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/pressly/goose/v3"
 	_ "modernc.org/sqlite" // register the "sqlite" driver
 
 	"github.com/uberware/sqi/internal/store"
 	"github.com/uberware/sqi/internal/store/migrations"
+)
+
+const (
+	// readPoolMaxConns bounds the read pool. Four is enough to keep the health
+	// check, the web UI's list views and the scheduler's lookups off each
+	// other's critical path during a long write, while staying small enough
+	// that a burst of API traffic cannot multiply SQLite's per-connection page
+	// cache or the process's file-descriptor use without limit. Reads are
+	// short; queuing briefly behind three of them is not the problem this
+	// pool exists to solve.
+	readPoolMaxConns = 4
+
+	// busyTimeoutMS is the per-connection SQLITE_BUSY retry window, applied to
+	// both pools.
+	busyTimeoutMS = 5000
 )
 
 // Compile-time interface compliance check.
@@ -68,7 +103,13 @@ func DefaultOptions() Options {
 // Store is a SQLite-backed implementation of [store.Store].
 // Create one with [Open]; close it with [Close] when done.
 type Store struct {
-	db    *sql.DB
+	// db is the write pool: exactly one connection, so writes never conflict.
+	// Every transaction, and every statement that is not a SELECT, uses it.
+	db *sql.DB
+	// rdb is the read pool: up to readPoolMaxConns connections over the same
+	// file, so a SELECT does not queue behind a long write. For an in-memory
+	// or temporary database it aliases db — see [Open].
+	rdb   *sql.DB
 	stmts []*sql.Stmt // all prepared statements; closed by Close
 
 	// ── farms ────────────────────────────────────────────────────────────
@@ -223,16 +264,17 @@ func Open(ctx context.Context, path string, opts Options) (*Store, error) {
 		return nil, fmt.Errorf("sqlite: open %q: %w", path, err)
 	}
 
-	// Serialize all access through one connection. This is correct for
-	// SQLite: WAL allows concurrent readers on a single connection and
-	// serializing writes prevents SQLITE_BUSY under concurrent goroutines.
+	// Serialize every write through one connection: that is what prevents
+	// write-write conflicts and SQLITE_BUSY between goroutines. Reads get
+	// their own pool below; WAL lets them run alongside a writer.
 	db.SetMaxOpenConns(1)
 
-	// Apply pragmas before any other operations.
+	// Apply pragmas before any other operations. journal_mode is persistent in
+	// the file, so the read pool inherits WAL without re-applying it.
 	for _, pragma := range []string{
 		"PRAGMA journal_mode=WAL",
 		"PRAGMA foreign_keys=ON",
-		"PRAGMA busy_timeout=5000",
+		fmt.Sprintf("PRAGMA busy_timeout=%d", busyTimeoutMS),
 	} {
 		if _, err = db.ExecContext(ctx, pragma); err != nil {
 			_ = db.Close()
@@ -252,7 +294,13 @@ func Open(ctx context.Context, path string, opts Options) (*Store, error) {
 		}
 	}
 
+	// The read pool is opened only after migrations have run, so it can never
+	// prepare a statement against a half-migrated schema.
 	s := &Store{db: db}
+	if s.rdb, err = openReadPool(path, db); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
 	if err = s.prepareAll(ctx); err != nil {
 		_ = s.Close()
 		return nil, err
@@ -260,17 +308,77 @@ func Open(ctx context.Context, path string, opts Options) (*Store, error) {
 	return s, nil
 }
 
-// Ping verifies the database connection is still alive. Used by health checks.
-func (s *Store) Ping(ctx context.Context) error {
-	return s.db.PingContext(ctx)
+// openReadPool opens the second, multi-connection pool over the same database
+// file. It returns write (the caller's write pool) unchanged when path names a
+// database a second [sql.Open] could not reach — an in-memory or temporary
+// database is private to the connection that created it, so a second pool
+// would silently be a second, empty database.
+func openReadPool(path string, write *sql.DB) (*sql.DB, error) {
+	if !isSharedPath(path) {
+		return write, nil
+	}
+
+	// busy_timeout is per-connection, so a one-off PRAGMA after sql.Open would
+	// apply to whichever connection happened to serve it and to no other. The
+	// DSN parameter is applied by the driver to every connection it opens.
+	// Nothing else needs re-applying: journal_mode=WAL is persistent in the
+	// file, and foreign_keys only constrains writes.
+	sep := "?"
+	if strings.Contains(path, "?") {
+		sep = "&"
+	}
+	dsn := fmt.Sprintf("%s%s_pragma=busy_timeout(%d)", path, sep, busyTimeoutMS)
+
+	rdb, err := sql.Open("sqlite", dsn)
+	if err != nil {
+		return nil, fmt.Errorf("sqlite: open read pool %q: %w", dsn, err)
+	}
+	rdb.SetMaxOpenConns(readPoolMaxConns)
+	// Match idle to open so a steady read load does not churn connections:
+	// the default idle limit is 2, which would tear down and rebuild the other
+	// two on every burst.
+	rdb.SetMaxIdleConns(readPoolMaxConns)
+	return rdb, nil
 }
 
-// Close closes all prepared statements and the underlying database connection.
+// isSharedPath reports whether path names a database file that a second
+// connection pool would see as the same database. In-memory databases
+// (":memory:", "file::memory:", "mode=memory") and the anonymous temporary
+// database (an empty path) are private per connection, so they are not.
+//
+// "mode=memory&cache=shared" is technically reachable from a second pool, but
+// only while some connection stays open; it is treated as private rather than
+// relying on that.
+func isSharedPath(path string) bool {
+	if path == "" || strings.Contains(path, ":memory:") {
+		return false
+	}
+	return !strings.Contains(strings.ToLower(path), "mode=memory")
+}
+
+// Ping verifies the database connection is still alive. Used by health checks.
+//
+// It deliberately pings the READ pool, not the write pool. Readiness must
+// report whether the database is reachable, and a large job submission holds
+// the sole write connection for seconds at a time; pinging through it would
+// turn a normal write into a failed health check. This is not an oversight —
+// the health checker is not meant to observe write-pool queuing.
+func (s *Store) Ping(ctx context.Context) error {
+	return s.rdb.PingContext(ctx)
+}
+
+// Close closes all prepared statements and both connection pools.
 // It is safe to call Close more than once.
 func (s *Store) Close() error {
 	var errs []error
 	for _, stmt := range s.stmts {
 		if err := stmt.Close(); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	// rdb aliases db for in-memory databases; closing it twice would error.
+	if s.rdb != nil && s.rdb != s.db {
+		if err := s.rdb.Close(); err != nil {
 			errs = append(errs, err)
 		}
 	}
@@ -280,11 +388,73 @@ func (s *Store) Close() error {
 	return errors.Join(errs...)
 }
 
-// prepare compiles sql into a prepared statement, tracks it for Close, and
-// returns it. On failure it returns an error that includes the first 60 chars
-// of the SQL for context.
+// poolFor returns the pool a statement belongs on: the read pool for a SELECT,
+// the write pool for everything else.
+func (s *Store) poolFor(query string) *sql.DB {
+	if isReadStatement(query) {
+		return s.rdb
+	}
+	return s.db
+}
+
+// isReadStatement reports whether query is a plain SELECT, ignoring leading
+// whitespace and SQL comments.
+//
+// It fails safe: anything it cannot positively identify as a SELECT — a CTE
+// (WITH ... may wrap an INSERT or UPDATE just as easily as a SELECT), a
+// PRAGMA, an unterminated comment — is treated as a write. Sending a read to
+// the write pool only serializes it, which is what every statement did before
+// the read pool existed; sending a write to the read pool would put it on a
+// multi-connection pool and risk write-write conflicts.
+func isReadStatement(query string) bool {
+	const sel = "select"
+	s := trimSQLLeader(query)
+	if len(s) < len(sel) || !strings.EqualFold(s[:len(sel)], sel) {
+		return false
+	}
+	if len(s) == len(sel) {
+		return true
+	}
+	// Reject identifiers that merely start with "select" (SELECTED, ...).
+	switch s[len(sel)] {
+	case ' ', '\t', '\n', '\r', '\f', '\v', '(':
+		return true
+	default:
+		return false
+	}
+}
+
+// trimSQLLeader strips leading whitespace and SQL comments from query, so the
+// first token of the statement itself is at the front of the result. An
+// unterminated block comment consumes the rest of the string, which leaves
+// isReadStatement with nothing to match — the safe answer.
+func trimSQLLeader(query string) string {
+	for {
+		query = strings.TrimLeft(query, " \t\n\r\f\v")
+		switch {
+		case strings.HasPrefix(query, "--"):
+			nl := strings.IndexByte(query, '\n')
+			if nl < 0 {
+				return ""
+			}
+			query = query[nl+1:]
+		case strings.HasPrefix(query, "/*"):
+			end := strings.Index(query[2:], "*/")
+			if end < 0 {
+				return ""
+			}
+			query = query[2+end+2:]
+		default:
+			return query
+		}
+	}
+}
+
+// prepare compiles sql into a prepared statement on the pool [Store.poolFor]
+// selects, tracks it for Close, and returns it. On failure it returns an error
+// that includes the first 60 chars of the SQL for context.
 func (s *Store) prepare(ctx context.Context, query string) (*sql.Stmt, error) {
-	stmt, err := s.db.PrepareContext(ctx, query)
+	stmt, err := s.poolFor(query).PrepareContext(ctx, query)
 	if err != nil {
 		preview := query
 		if len(preview) > 60 {

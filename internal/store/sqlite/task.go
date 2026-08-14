@@ -393,7 +393,7 @@ func (s *Store) ListTasks(ctx context.Context, opts store.ListTasksOptions) (sto
 	}
 
 	var total int
-	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM tasks`+where, args...).Scan(&total); err != nil {
+	if err := s.rdb.QueryRowContext(ctx, `SELECT COUNT(*) FROM tasks`+where, args...).Scan(&total); err != nil {
 		return store.Page[store.Task]{}, mapErr(err)
 	}
 
@@ -408,7 +408,7 @@ func (s *Store) ListTasks(ctx context.Context, opts store.ListTasksOptions) (sto
 	q := `SELECT ` + taskCols + ` FROM tasks` + where + //nolint:gosec // see comment above
 		` ORDER BY ` + col + ` ` + dir +
 		` LIMIT ? OFFSET ?`
-	rows, err := s.db.QueryContext(ctx, q, append(args, opts.Pagination.Limit, opts.Pagination.Offset)...)
+	rows, err := s.rdb.QueryContext(ctx, q, append(args, opts.Pagination.Limit, opts.Pagination.Offset)...)
 	if err != nil {
 		return store.Page[store.Task]{}, mapErr(err)
 	}
@@ -826,7 +826,7 @@ func (s *Store) CountUnschedulableTasksByJob(ctx context.Context, jobID string) 
 
 // FailureReasonSummary implements [store.TaskStore].
 func (s *Store) FailureReasonSummary(ctx context.Context, jobID string) (store.FailureSummary, error) {
-	rows, err := s.db.QueryContext(ctx, sqlFailureReasonSummary, jobID)
+	rows, err := s.rdb.QueryContext(ctx, sqlFailureReasonSummary, jobID)
 	if err != nil {
 		return store.FailureSummary{}, mapErr(err)
 	}
@@ -851,7 +851,7 @@ func (s *Store) FailureReasonSummary(ctx context.Context, jobID string) (store.F
 // CommittedCores implements [store.TaskStore].
 func (s *Store) CommittedCores(ctx context.Context, workerID string, fullMachineCost int) (int, error) {
 	var n int
-	err := s.db.QueryRowContext(ctx, sqlCommittedCores, fullMachineCost, workerID).Scan(&n)
+	err := s.rdb.QueryRowContext(ctx, sqlCommittedCores, fullMachineCost, workerID).Scan(&n)
 	return n, mapErr(err)
 }
 

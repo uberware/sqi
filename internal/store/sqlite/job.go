@@ -409,7 +409,7 @@ func (s *Store) ListDependents(ctx context.Context, upstreamJobID string) ([]str
 // ListBlockedJobs implements [store.JobStore]. It returns every job currently
 // in [store.JobStatusBlocked].
 func (s *Store) ListBlockedJobs(ctx context.Context) ([]store.Job, error) {
-	rows, err := s.db.QueryContext(ctx, sqlListBlockedJobs)
+	rows, err := s.rdb.QueryContext(ctx, sqlListBlockedJobs)
 	if err != nil {
 		return nil, fmt.Errorf("sqlite: list blocked jobs: %w", mapErr(err))
 	}
@@ -428,7 +428,7 @@ func (s *Store) ListBlockedJobs(ctx context.Context) ([]store.Job, error) {
 
 // queryIDs runs a single-column string query and returns the values.
 func (s *Store) queryIDs(ctx context.Context, query string, args ...any) ([]string, error) {
-	rows, err := s.db.QueryContext(ctx, query, args...)
+	rows, err := s.rdb.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("sqlite: query ids: %w", mapErr(err))
 	}
@@ -494,7 +494,7 @@ func (s *Store) ListJobs(ctx context.Context, opts store.ListJobsOptions) (store
 
 	// COUNT total matching rows (same WHERE, no ORDER/LIMIT).
 	var total int
-	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM jobs`+where, args...).Scan(&total); err != nil {
+	if err := s.rdb.QueryRowContext(ctx, `SELECT COUNT(*) FROM jobs`+where, args...).Scan(&total); err != nil {
 		return store.Page[store.Job]{}, mapErr(err)
 	}
 
@@ -510,7 +510,7 @@ func (s *Store) ListJobs(ctx context.Context, opts store.ListJobsOptions) (store
 	q := `SELECT ` + jobCols + ` FROM jobs` + where + //nolint:gosec // see comment above
 		` ORDER BY ` + col + ` ` + dir +
 		` LIMIT ? OFFSET ?`
-	rows, err := s.db.QueryContext(ctx, q, append(args, opts.Pagination.Limit, opts.Pagination.Offset)...)
+	rows, err := s.rdb.QueryContext(ctx, q, append(args, opts.Pagination.Limit, opts.Pagination.Offset)...)
 	if err != nil {
 		return store.Page[store.Job]{}, mapErr(err)
 	}

@@ -12,12 +12,15 @@ import (
 	"github.com/uberware/sqi/internal/store"
 )
 
-// openTestStoreWB opens an in-memory SQLite store for white-box tests that
-// need access to unexported fields (e.g. st.db). The store is closed via
-// t.Cleanup; callers must not close it themselves.
+// openTestStoreWB opens a SQLite store for white-box tests that need access to
+// unexported fields (e.g. st.db). The store is closed via t.Cleanup; callers
+// must not close it themselves.
+//
+// File-backed, not ":memory:", for the reason openTestStore documents: only a
+// file-backed store gets the separate read pool.
 func openTestStoreWB(t *testing.T) *Store {
 	t.Helper()
-	s, err := Open(context.Background(), ":memory:", DefaultOptions())
+	s, err := Open(context.Background(), t.TempDir()+"/test.db", DefaultOptions())
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}

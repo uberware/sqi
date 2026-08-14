@@ -13,10 +13,16 @@ import (
 // the WAL to zero bytes. It returns the number of WAL log pages and the
 // number successfully checkpointed.
 //
-// TRUNCATE mode is appropriate for the periodic background case: because the
-// store uses a single connection (SetMaxOpenConns(1)), there are no concurrent
-// readers that could block the checkpoint, so all frames will always be
-// transferred in one call.
+// TRUNCATE mode is appropriate for the periodic background case, but it is not
+// guaranteed to complete in one call: reads run on their own connection pool
+// (see the Concurrency section of the package doc), and a reader holding a WAL
+// snapshot blocks the truncation. When that happens SQLite reports busy = 1 and
+// transfers fewer frames; reads here are short and the checkpointer runs on a
+// timer, so the next tick clears the rest. The busy flag is deliberately not
+// surfaced as an error — a checkpoint that had to wait is not a failure.
+//
+// The checkpoint itself runs on the write pool, which is still a single
+// connection, so two checkpoints can never overlap.
 func (s *Store) Checkpoint(ctx context.Context) (walPages, checkpointed int, err error) {
 	row := s.db.QueryRowContext(ctx, "PRAGMA wal_checkpoint(TRUNCATE)")
 	var busy, wal, done int
