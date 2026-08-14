@@ -59,13 +59,13 @@ func resolveName(n *Name, syms Symbols) (resolved, bool) {
 // the sentinel that tells the three apart; anything else is wrapped with its
 // real cause preserved, matching evalCall's own wrapAt treatment of a
 // callFunction error.
-func evalProperty(recv Value, attr string, ec evalCtx, offset, depth int) (Value, error) { //nolint:revive // depth: not yet consumed here, kept for the signature evalCall and evalDispatch already call through
+func evalProperty(recv Value, attr string, ec evalCtx, offset int) (Value, error) {
 	if isDunder(attr) {
 		return Value{}, errorAt(ec.src, offset,
 			"%q is a specification naming convention and is not directly callable", attr)
 	}
 	// Section 1.3.3: the property p is the function __property_p__.
-	v, err := callFunction(ec, "__property_"+attr+"__", []Value{recv}, true)
+	v, err := callFunction(ec, propertyFuncName(attr), []Value{recv}, true)
 	if err != nil {
 		if errors.Is(err, errUnknownFunction) {
 			return Value{}, errorAt(ec.src, offset, "unknown property %q on %s", attr, recv.Type)
@@ -83,15 +83,57 @@ func evalProperty(recv Value, attr string, ec evalCtx, offset, depth int) (Value
 // every resolved segment but the last) are the same loop over a different
 // slice of the same resolved.Rest, and were duplicated before this helper
 // existed.
-func evalProperties(v Value, attrs []string, ec evalCtx, offset, depth int) (Value, error) {
+func evalProperties(v Value, attrs []string, ec evalCtx, offset int) (Value, error) {
 	for _, attr := range attrs {
 		var err error
-		v, err = evalProperty(v, attr, ec, offset, depth)
+		v, err = evalProperty(v, attr, ec, offset)
 		if err != nil {
 			return Value{}, err
 		}
 	}
 	return v, nil
+}
+
+// propertyFuncNames maps a property's bare attribute name to the
+// "__property_p__" registry key section 1.3.3 defines it as, interned once at
+// package initialization from the registry itself rather than concatenated per
+// access.
+//
+// The concatenation it replaces was on a hot path: every property access built
+// a fresh string, and a comprehension applies one per element --
+// "[p.stem for p in Param.Files]" allocated a key per file. Deriving the table
+// from functionShapes rather than writing it out keeps it from drifting: a
+// property registered without an entry here still resolves, through the
+// fallback in propertyFuncName, at the old cost and with the old behavior.
+var propertyFuncNames = internPropertyFuncNames()
+
+func internPropertyFuncNames() map[string]string {
+	out := make(map[string]string)
+	for name := range functionShapes {
+		attr, ok := strings.CutPrefix(name, "__property_")
+		if !ok {
+			continue
+		}
+		if attr, ok = strings.CutSuffix(attr, "__"); ok && attr != "" {
+			out[attr] = name
+		}
+	}
+	return out
+}
+
+// propertyFuncName is the registry key for property attr.
+//
+// The fallback is not dead weight: functionShapes is a package-level map that
+// tests add rows to after initialization (withTestFunction, call.go's tests),
+// so a name absent from the interned table must still resolve to exactly the
+// key it would have before -- and a genuinely unregistered property must still
+// reach callFunction and come back as errUnknownFunction, which is what
+// evalProperty rewords into "unknown property".
+func propertyFuncName(attr string) string {
+	if name, ok := propertyFuncNames[attr]; ok {
+		return name
+	}
+	return "__property_" + attr + "__"
 }
 
 // isDunder reports whether a name is a __double_underscore__ name. Section

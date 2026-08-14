@@ -37,42 +37,10 @@ import (
 // with len() on the identical input pinned flat at 1 as the control (see
 // TestOperationCount_ClassificationFunctionsAreNotLenExempt).
 var strCaseFuncs = map[string][]Shape{
-	"upper": {
-		{Params: []Type{TString}, Ret: TString, Cost: Cost{ArgBytes: []int{0}}, Fn: func(args []Value) (Value, error) {
-			s := args[0].AsStr()
-			if err := checkCaseInputBytes(len(s)); err != nil {
-				return Value{}, err
-			}
-			return boundedString(upperString(s))
-		}},
-	},
-	"lower": {
-		{Params: []Type{TString}, Ret: TString, Cost: Cost{ArgBytes: []int{0}}, Fn: func(args []Value) (Value, error) {
-			s := args[0].AsStr()
-			if err := checkCaseInputBytes(len(s)); err != nil {
-				return Value{}, err
-			}
-			return boundedString(lowerString(s))
-		}},
-	},
-	"capitalize": {
-		{Params: []Type{TString}, Ret: TString, Cost: Cost{ArgBytes: []int{0}}, Fn: func(args []Value) (Value, error) {
-			s := args[0].AsStr()
-			if err := checkCaseInputBytes(len(s)); err != nil {
-				return Value{}, err
-			}
-			return boundedString(capitalizeString(s))
-		}},
-	},
-	"title": {
-		{Params: []Type{TString}, Ret: TString, Cost: Cost{ArgBytes: []int{0}}, Fn: func(args []Value) (Value, error) {
-			s := args[0].AsStr()
-			if err := checkCaseInputBytes(len(s)); err != nil {
-				return Value{}, err
-			}
-			return boundedString(titleString(s))
-		}},
-	},
+	"upper":      {caseShape(upperString)},
+	"lower":      {caseShape(lowerString)},
+	"capitalize": {caseShape(capitalizeString)},
+	"title":      {caseShape(titleString)},
 	// RFC 0006 says only "True if all characters are digits and string is
 	// non-empty", so the digit set is undefined by the specification and every
 	// candidate answers differently: Python's isdigit is Unicode ('²' is a
@@ -83,16 +51,8 @@ var strCaseFuncs = map[string][]Shape{
 	// obvious idiom. Under a Unicode definition isdigit('٣') is true while
 	// int('٣') still fails, so guarding a conversion with isdigit would
 	// silently stop working on exactly the inputs the guard exists for.
-	"isdigit": {
-		{Params: []Type{TString}, Ret: TBool, Cost: Cost{ArgBytes: []int{0}}, Fn: func(args []Value) (Value, error) {
-			return Bool(allRunes(args[0].AsStr(), func(r rune) bool { return r >= '0' && r <= '9' })), nil
-		}},
-	},
-	"isalpha": {
-		{Params: []Type{TString}, Ret: TBool, Cost: Cost{ArgBytes: []int{0}}, Fn: func(args []Value) (Value, error) {
-			return Bool(allRunes(args[0].AsStr(), unicode.IsLetter)), nil
-		}},
-	},
+	"isdigit": {runePredShape(allRunes, func(r rune) bool { return r >= '0' && r <= '9' })},
+	"isalpha": {runePredShape(allRunes, unicode.IsLetter)},
 	// isalnum COMPOSES from isalpha and isdigit, and that is a deliberate
 	// divergence from the reference implementation, which answers
 	// isalnum('٣') true while answering both isdigit('٣') and isalpha('٣')
@@ -101,31 +61,15 @@ var strCaseFuncs = map[string][]Shape{
 	// reading to take: a family that composes is defensible, one that does not
 	// is a bug. Will be baselined in test/oracle/baseline.txt with that reason
 	// when the oracle corpus lands.
-	"isalnum": {
-		{Params: []Type{TString}, Ret: TBool, Cost: Cost{ArgBytes: []int{0}}, Fn: func(args []Value) (Value, error) {
-			return Bool(allRunes(args[0].AsStr(), isAlnumRune)), nil
-		}},
-	},
-	"isspace": {
-		{Params: []Type{TString}, Ret: TBool, Cost: Cost{ArgBytes: []int{0}}, Fn: func(args []Value) (Value, error) {
-			return Bool(allRunes(args[0].AsStr(), unicode.IsSpace)), nil
-		}},
-	},
+	"isalnum": {runePredShape(allRunes, isAlnumRune)},
+	"isspace": {runePredShape(allRunes, unicode.IsSpace)},
 	// isupper and islower are NOT allRunes over IsUpper/IsLower. RFC 0006
 	// defines them over CASED characters — "all cased characters are uppercase
 	// and there is at least one cased character" — so an uncased rune neither
 	// satisfies nor breaks the test. isupper("ABC1") is true because a digit is
 	// uncased; isupper("1") is false because nothing in it is cased at all.
-	"isupper": {
-		{Params: []Type{TString}, Ret: TBool, Cost: Cost{ArgBytes: []int{0}}, Fn: func(args []Value) (Value, error) {
-			return Bool(allCased(args[0].AsStr(), unicode.IsUpper)), nil
-		}},
-	},
-	"islower": {
-		{Params: []Type{TString}, Ret: TBool, Cost: Cost{ArgBytes: []int{0}}, Fn: func(args []Value) (Value, error) {
-			return Bool(allCased(args[0].AsStr(), unicode.IsLower)), nil
-		}},
-	},
+	"isupper": {runePredShape(allCased, unicode.IsUpper)},
+	"islower": {runePredShape(allCased, unicode.IsLower)},
 	// isascii is the ONE predicate RFC 0006 declares true on the empty string:
 	// "all characters are ASCII (U+0000-U+007F), OR string is empty". The other
 	// six require non-empty. That asymmetry is the specification's, not a slip.
@@ -139,6 +83,47 @@ var strCaseFuncs = map[string][]Shape{
 			return Bool(true), nil
 		}},
 	},
+}
+
+// caseShape builds the single row of one string -> string case transform.
+//
+// The pre-check is IN THE CONSTRUCTOR, and that is the whole reason this exists
+// rather than four hand-written rows: checkCaseInputBytes is not decoration but
+// a measured bound (upper() on a 10 MB string of U+0390 allocated 172 MB to
+// build a result it then refused -- see its own doc comment), and it is exactly
+// the line a fifth transform written out longhand would forget. Here a fifth
+// transform is one call and cannot omit it. Cost is likewise declared once: see
+// this file's own COST comment for why every row charges the RECEIVER's bytes
+// rather than the produced result's.
+func caseShape(f func(string) string) Shape {
+	return Shape{
+		Params: []Type{TString}, Ret: TString, Cost: Cost{ArgBytes: []int{0}},
+		Fn: func(args []Value) (Value, error) {
+			s := args[0].AsStr()
+			if err := checkCaseInputBytes(len(s)); err != nil {
+				return Value{}, err
+			}
+			return boundedString(f(s))
+		},
+	}
+}
+
+// runePredShape builds the single row of one string -> bool classification
+// predicate: scan is the rune-scanning rule the specification gives that
+// predicate -- allRunes for the four defined over every character, allCased for
+// the two defined over cased characters only -- and pred is what each rune is
+// tested against.
+//
+// isascii keeps a row of its own rather than coming through here. It is the one
+// predicate whose scan admits the empty string, and writing that out is what
+// keeps the asymmetry visible where the specification puts it.
+func runePredShape(scan func(string, func(rune) bool) bool, pred func(rune) bool) Shape {
+	return Shape{
+		Params: []Type{TString}, Ret: TBool, Cost: Cost{ArgBytes: []int{0}},
+		Fn: func(args []Value) (Value, error) {
+			return Bool(scan(args[0].AsStr(), pred)), nil
+		},
+	}
 }
 
 // upperString and lowerString apply FULL Unicode case mapping, not Go's

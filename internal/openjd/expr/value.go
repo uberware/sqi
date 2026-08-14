@@ -280,10 +280,14 @@ func (v Value) String() string {
 			}
 		}
 		return "[" + strings.Join(parts, ", ") + "]"
-	case CodeUnresolved:
-		// A placeholder has no value to render, so name what is known instead.
-		return "<" + v.Type.String() + ">"
 	}
+	// A placeholder has no value to render, so name what is known instead:
+	// "<unresolved[int]>". CodeUnresolved had a case of its own above returning
+	// this same expression byte for byte -- Type.String() is a pure function of
+	// the type, so the two could not differ for any value -- and it was removed
+	// as a duplicate rather than as a change of behavior. Every other Code that
+	// reaches here (any, noreturn, the type variables) names a type no VALUE
+	// ever carries, so the same rendering is the right answer for those too.
 	return "<" + v.Type.String() + ">"
 }
 

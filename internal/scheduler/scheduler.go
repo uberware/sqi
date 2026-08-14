@@ -804,7 +804,7 @@ func (s *Scheduler) handleWorkerRegister(ctx context.Context, msg jetstream.Msg)
 
 	s.ensureComputeLocation(ctx, m.ComputeLocation)
 
-	s.warnOnExprCapShortfall(ctx, m)
+	s.warnOnExprCapShortfall(ctx, w)
 
 	s.logger.InfoContext(
 		ctx, "scheduler: worker registered",
@@ -837,20 +837,25 @@ func (s *Scheduler) handleWorkerRegister(ctx context.Context, msg jetstream.Msg)
 // otherwise accumulate a warning per reconnect about work it never runs. The
 // key is the shortfall text itself, so a CHANGE (either side reconfigured) is
 // reported again; the map is per-process, so a server restart also re-reports.
-func (s *Scheduler) warnOnExprCapShortfall(ctx context.Context, m protocol.RegisterMsg) {
-	short := exprCapShortfall(store.WorkerExprLimits(m.ExprLimits), s.cfg.ExprLimits)
+//
+// It takes the [store.Worker] the caller has already built rather than the
+// registration message, so the comparison goes through the same
+// [Scheduler.workerExprShortfall] accessor the two gate call sites use — one
+// conversion of the advertised caps, made once, at the top of the handler.
+func (s *Scheduler) warnOnExprCapShortfall(ctx context.Context, w store.Worker) {
+	short := s.workerExprShortfall(w)
 	if short == "" {
-		s.exprCapWarned.Delete(m.WorkerID) // recovered: report again if it recurs
+		s.exprCapWarned.Delete(w.ID) // recovered: report again if it recurs
 		return
 	}
-	if prev, ok := s.exprCapWarned.Load(m.WorkerID); ok && prev == short {
+	if prev, ok := s.exprCapWarned.Load(w.ID); ok && prev == short {
 		return
 	}
-	s.exprCapWarned.Store(m.WorkerID, short)
+	s.exprCapWarned.Store(w.ID, short)
 	s.logger.WarnContext(
 		ctx, "scheduler: worker registered with EXPR limits tighter than this server's",
-		slog.String("worker_id", m.WorkerID),
-		slog.String("hostname", m.Hostname),
+		slog.String("worker_id", w.ID),
+		slog.String("hostname", w.Hostname),
 		slog.String("detail", short),
 		slog.String("impact", "this worker is not offered EXPR jobs; it still runs everything else, "+
 			"and a farm that submits no EXPR templates is unaffected"),

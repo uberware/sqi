@@ -188,6 +188,50 @@ func (e *Expression) CalledFunctions() []string {
 	return out
 }
 
+// CallsAny reports whether the expression calls any of the named functions or
+// methods — the MEMBERSHIP question CalledFunctions is otherwise used to answer,
+// without building the answer.
+//
+// It applies exactly CalledFunctions's collection rule, node for node: the same
+// callee positions, the same trailing-segment rule for a dotted callee, the same
+// Access arm for a parenthesized receiver, and the same narrow section 1.3.7
+// exclusion of a single-segment callee a comprehension binds. Read that doc
+// comment for the adjudication of each; this one restates none of it, precisely
+// so the two cannot drift apart in the telling. CalledFunctions is the
+// enumeration, this is the predicate, and they agree by construction — which is
+// pinned by TestCalledFunctions, whose every case asserts both.
+//
+// It exists because the only consumer is a predicate. internal/openjd's checker
+// asks "does this call a host-only function?" once per expression on the
+// submission path, against a set with a single member (apply_path_mapping), and
+// CalledFunctions answered it by walking the whole tree into a de-duplicating
+// map, allocating a slice, and sorting it. This walks with early termination —
+// it stops at the first match — and allocates nothing but the walk stack.
+//
+// An empty or nil set is false without walking anything.
+func (e *Expression) CallsAny(names map[string]struct{}) bool {
+	if len(names) == 0 {
+		return false
+	}
+	return walkUntil(e.root, func(n Node, ctx walkCtx) bool {
+		if !ctx.callee {
+			return false
+		}
+		switch c := n.(type) {
+		case *Name:
+			if len(c.Parts) == 1 && ctx.scope.binds(c.Parts[0]) {
+				return false
+			}
+			_, ok := names[c.Parts[len(c.Parts)-1]]
+			return ok
+		case *Access:
+			_, ok := names[c.Attr]
+			return ok
+		}
+		return false
+	})
+}
+
 // parser turns a token slice into a tree. One method per grammar production,
 // named for it, so the code can be diffed against the BNF in spec section 1.1.
 type parser struct {

@@ -1340,8 +1340,8 @@ func concatLists(l, r Value) (Value, error) {
 // read on the path where nothing executes, so it must still answer something,
 // and the pre-RetOf answer is the conservative one.
 func concatRet(b bindings) Type {
-	left, leftOK := b[CodeVarT]
-	right, rightOK := b[CodeVarT1]
+	left, leftOK := b.get(CodeVarT)
+	right, rightOK := b.get(CodeVarT1)
 	if !leftOK || !rightOK {
 		return ListOf(left)
 	}

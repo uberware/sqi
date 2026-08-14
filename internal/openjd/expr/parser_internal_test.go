@@ -409,6 +409,28 @@ func TestCalledFunctions(t *testing.T) {
 					t.Fatalf("CalledFunctions() = %v, want %v", got, tc.want)
 				}
 			}
+			// CallsAny is the predicate form of the same collection rule, and
+			// the two agreeing is the whole basis for using it in place of a
+			// membership test over this set. Assert it on every case here
+			// rather than in a table of its own: a divergence between them can
+			// only come from the collection rule, which is exactly what these
+			// cases exercise.
+			if e.CallsAny(nil) {
+				t.Error("CallsAny(nil) = true, want false")
+			}
+			if e.CallsAny(map[string]struct{}{"nosuchfunction": {}}) {
+				t.Error(`CallsAny({"nosuchfunction"}) = true, want false`)
+			}
+			all := make(map[string]struct{}, len(tc.want))
+			for _, name := range tc.want {
+				all[name] = struct{}{}
+				if !e.CallsAny(map[string]struct{}{name: {}}) {
+					t.Errorf("CallsAny({%q}) = false, want true", name)
+				}
+			}
+			if got := e.CallsAny(all); got != (len(tc.want) > 0) {
+				t.Errorf("CallsAny(%v) = %v, want %v", tc.want, got, len(tc.want) > 0)
+			}
 		})
 	}
 }

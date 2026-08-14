@@ -157,6 +157,12 @@ func splitSep(s, sep string, maxsplit int64, fromRight bool) (Value, error) {
 // replaceAll's growth does: len(sep) * (n-1) is exactly the quantity being
 // bounded, and a list at maxElements with a long separator overflows that
 // product before any comparison on it could run.
+//
+// C3's shell repr_* list rows (funcsreprshell.go) share it, passing a quoting
+// function as text. They had a byte-for-byte copy of this routine of their own
+// — same signature, same bounding, same argument, differing only in assembling
+// the parts with strings.Join instead of a pre-Grown Builder, which produces
+// the same string — until it was folded back into this one.
 func joinValues(vals []Value, sep string, text func(Value) string) (Value, error) {
 	if len(vals) == 0 {
 		return String(""), nil

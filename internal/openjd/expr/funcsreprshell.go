@@ -37,10 +37,10 @@ var reprShellFuncs = map[string][]Shape{
 			return boundedString(shellQuote(pathText(args[0])))
 		}},
 		{Params: []Type{ListOf(TString)}, Ret: TString, Cost: Cost{ArgElements: []int{0}}, Fn: func(args []Value) (Value, error) {
-			return joinRendered(args[0].AsList(), " ", func(v Value) string { return shellQuote(v.AsStr()) })
+			return joinValues(args[0].AsList(), " ", func(v Value) string { return shellQuote(v.AsStr()) })
 		}},
 		{Params: []Type{ListOf(TPath)}, Ret: TString, Cost: Cost{ArgElements: []int{0}}, Fn: func(args []Value) (Value, error) {
-			return joinRendered(args[0].AsList(), " ", func(v Value) string { return shellQuote(pathText(v)) })
+			return joinValues(args[0].AsList(), " ", func(v Value) string { return shellQuote(pathText(v)) })
 		}},
 	},
 	"repr_cmd": {
@@ -49,7 +49,7 @@ var reprShellFuncs = map[string][]Shape{
 		}},
 		// DIVERGENCE from the reference: see this var block's own COST comment.
 		{Params: []Type{ListOf(TString)}, Ret: TString, Cost: Cost{ArgElements: []int{0}}, Fn: func(args []Value) (Value, error) {
-			return joinRendered(args[0].AsList(), " ", func(v Value) string { return cmdQuote(v.AsStr()) })
+			return joinValues(args[0].AsList(), " ", func(v Value) string { return cmdQuote(v.AsStr()) })
 		}},
 	},
 	"repr_pwsh": {
@@ -83,7 +83,7 @@ var reprShellFuncs = map[string][]Shape{
 		}},
 		// DIVERGENCE from the reference: see this var block's own COST comment.
 		{Params: []Type{ListOf(varT)}, Ret: TString, Cost: Cost{ArgElements: []int{0}}, Fn: func(args []Value) (Value, error) {
-			body, err := joinRendered(args[0].AsList(), ", ", pwshElement)
+			body, err := joinValues(args[0].AsList(), ", ", pwshElement)
 			if err != nil {
 				return Value{}, err
 			}
@@ -172,29 +172,4 @@ func pwshElement(v Value) string {
 	default:
 		return pwshQuote(v.String())
 	}
-}
-
-// joinRendered renders each value and joins with sep, bounding the result
-// before building it.
-//
-// The separator contribution goes through checkRepeat for the same reason C2's
-// join does: len(sep) * (n-1) is exactly the quantity being bounded, and
-// forming that product first is not a check at all.
-func joinRendered(vals []Value, sep string, render func(Value) string) (Value, error) {
-	if len(vals) == 0 {
-		return String(""), nil
-	}
-	total, err := checkRepeat(len(sep), int64(len(vals)-1), maxStringBytes)
-	if err != nil {
-		return Value{}, err
-	}
-	parts := make([]string, len(vals))
-	for i, v := range vals {
-		parts[i] = render(v)
-		total += int64(len(parts[i]))
-		if err := checkStringBytes(int(total)); err != nil {
-			return Value{}, err
-		}
-	}
-	return String(strings.Join(parts, sep)), nil
 }

@@ -106,7 +106,7 @@ func (h *productHandler) templateValidateOptions() product.ValidateOptions {
 	return product.ValidateOptions{
 		EnforceLimits: true,
 		ExprLimits:    h.exprLimits,
-		Deadline:      h.submitDeadline(),
+		Deadline:      exprDeadlineAt(h.exprDeadline),
 	}
 }
 
@@ -119,27 +119,12 @@ func (h *productHandler) templateValidateOptions() product.ValidateOptions {
 // load. The status differs from the submission routes' 422 only because this
 // endpoint has always answered 400 for a bad template.
 func (h *productHandler) writeTemplateProblem(w http.ResponseWriter, r *http.Request, err error) {
-	if isSubmitDeadlineError(err) {
-		// Warn, not error: nothing is broken, and an error record here would
-		// evict real ones from the bounded diagnostics ring buffer.
-		h.logger.WarnContext(r.Context(), "products: template validation exceeded its expression deadline",
-			slog.Duration("deadline", h.exprDeadline), slog.Any("error", err))
-		writeProblem(w, r, http.StatusServiceUnavailable,
-			"template validation exceeded its time budget on this server; retry, "+
-				"or ask the operator about openjd.expr_submission_deadline")
+	if writeExprDeadlineProblem(w, r, h.logger, err,
+		"products: template validation exceeded its expression deadline",
+		exprDeadlineProblemDetail, h.exprDeadline) {
 		return
 	}
 	writeProblem(w, r, http.StatusBadRequest, err.Error())
-}
-
-// submitDeadline is [jobHandler.submitDeadline] for this route: an absolute
-// instant taken per request from the configured duration, zero when none is
-// configured. See that method for why the conversion is per call.
-func (h *productHandler) submitDeadline() time.Time {
-	if h.exprDeadline <= 0 {
-		return time.Time{}
-	}
-	return time.Now().Add(h.exprDeadline)
 }
 
 type productResponse struct {
@@ -449,21 +434,15 @@ func (h *productHandler) submitProductJob(w http.ResponseWriter, r *http.Request
 		RetryDelaySeconds: req.RetryDelaySeconds,
 		FailureLimit:      req.FailureLimit,
 		DependsOn:         req.DependsOn,
-		Deadline:          h.submitDeadline(),
+		Deadline:          exprDeadlineAt(h.exprDeadline),
 	})
 	if err != nil {
-		// The wall-clock backstop first, as a 503 — see submitJob for why this
-		// outcome must not be reported as an invalid template.
-		if isSubmitDeadlineError(err) {
-			// Warn, not error, and for the reasons submitJob's branch spells
-			// out: nothing is broken, the client is told to retry, and an
-			// error record here would evict real ones from the bounded
-			// diagnostics ring buffer.
-			h.logger.WarnContext(ctx, "products: submit exceeded its expression deadline",
-				slog.Duration("deadline", h.exprDeadline), slog.Any("error", err))
-			writeProblem(w, r, http.StatusServiceUnavailable,
-				"template validation exceeded its time budget on this server; retry, "+
-					"or ask the operator about openjd.expr_submission_deadline")
+		// The wall-clock backstop first, as a 503 — see
+		// writeExprDeadlineProblem for why this outcome must not be reported as
+		// an invalid template.
+		if writeExprDeadlineProblem(w, r, h.logger, err,
+			"products: submit exceeded its expression deadline",
+			exprDeadlineProblemDetail, h.exprDeadline) {
 			return
 		}
 		if isSubmitValidationError(err) {

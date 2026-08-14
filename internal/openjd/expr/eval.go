@@ -353,7 +353,7 @@ func evalDispatch(n Node, ec evalCtx, target Type, depth int) (Value, error) {
 	}
 	switch v := n.(type) {
 	case *Name:
-		return evalName(v, ec, depth)
+		return evalName(v, ec)
 	case *Unary:
 		return evalUnary(v, ec, depth)
 	case *Binary:
@@ -395,7 +395,7 @@ func evalAccess(v *Access, ec evalCtx, depth int) (Value, error) {
 	if err != nil {
 		return Value{}, err
 	}
-	out, err := evalProperty(recv, v.Attr, ec, v.Offset, depth)
+	out, err := evalProperty(recv, v.Attr, ec, v.Offset)
 	if err != nil {
 		return Value{}, err
 	}
@@ -424,14 +424,14 @@ func evalLiteral(n Node) (v Value, ok bool) {
 // evalName evaluates a dotted name: a symbol, optionally followed by property
 // accesses. See resolveName for why the split happens here rather than in the
 // parser.
-func evalName(n *Name, ec evalCtx, depth int) (Value, error) {
+func evalName(n *Name, ec evalCtx) (Value, error) {
 	r, ok := resolveName(n, ec.syms)
 	if !ok {
 		// Name the longest candidate: it is what the author wrote, and a
 		// shorter prefix would misreport which part is unknown.
 		return Value{}, errorAt(ec.src, n.Offset, "unknown symbol %q", n.String())
 	}
-	return evalProperties(r.Val, r.Rest, ec, n.Offset, depth)
+	return evalProperties(r.Val, r.Rest, ec, n.Offset)
 }
 
 func evalUnary(n *Unary, ec evalCtx, depth int) (Value, error) {

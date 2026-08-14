@@ -64,15 +64,15 @@ func newPresetHandler(
 }
 
 // validateOptions bounds ONE preset definition's validation: the operator's
-// EXPR budget, plus this request's share of wall-clock time computed here and
-// never stored (see [openjd.ExprLimits]' Deadline field for what storing one on
-// a long-lived value does).
+// EXPR budget, plus this request's share of wall-clock time taken per call via
+// [exprDeadlineAt] and never stored (see [openjd.ExprLimits]' Deadline field
+// for what storing one on a long-lived value does).
 func (h *presetHandler) validateOptions() product.ValidateOptions {
-	opts := product.ValidateOptions{EnforceLimits: true, ExprLimits: h.exprLimits}
-	if h.exprDeadline > 0 {
-		opts.Deadline = time.Now().Add(h.exprDeadline)
+	return product.ValidateOptions{
+		EnforceLimits: true,
+		ExprLimits:    h.exprLimits,
+		Deadline:      exprDeadlineAt(h.exprDeadline),
 	}
-	return opts
 }
 
 // writeDefinitionProblem reports a [PresetLibrary.FetchDefinition] failure.
@@ -83,14 +83,15 @@ func (h *presetHandler) validateOptions() product.ValidateOptions {
 // and reporting that as an unprocessable definition would make acceptance
 // depend on machine load.
 func (h *presetHandler) writeDefinitionProblem(w http.ResponseWriter, r *http.Request, err error) {
-	if isSubmitDeadlineError(err) {
-		// Warn, not error: nothing is broken, and an error record here would
-		// evict real ones from the bounded diagnostics ring buffer.
-		h.logger.WarnContext(r.Context(), "presets: definition validation exceeded its expression deadline",
-			slog.Duration("deadline", h.exprDeadline), slog.Any("error", err))
-		writeProblem(w, r, http.StatusServiceUnavailable,
-			"preset definition validation exceeded its time budget on this server; retry, "+
-				"or ask the operator about openjd.expr_submission_deadline")
+	// The detail differs from [exprDeadlineProblemDetail] on purpose: what the
+	// caller asked this server to load is a preset definition, not a template
+	// it supplied, so naming a template would misdescribe the thing that ran
+	// out of time.
+	const detail = "preset definition validation exceeded its time budget on this server; retry, " +
+		"or ask the operator about openjd.expr_submission_deadline"
+	if writeExprDeadlineProblem(w, r, h.logger, err,
+		"presets: definition validation exceeded its expression deadline",
+		detail, h.exprDeadline) {
 		return
 	}
 	writeProblem(w, r, http.StatusUnprocessableEntity, "failed to load preset definition: "+err.Error())

@@ -145,7 +145,9 @@ func TestMatchShapes_AnyParamAcceptsAnything(t *testing.T) {
 }
 
 func TestSubstitute(t *testing.T) {
-	b := bindings{CodeVarT: TInt, CodeVarT1: TString}
+	var b bindings
+	b.bind(CodeVarT, TInt)
+	b.bind(CodeVarT1, TString)
 	tests := []struct {
 		name string
 		in   Type
@@ -406,8 +408,8 @@ func TestArgCostList_EmptyListScoring(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			b := bindings{}
-			got, ok := argCost(tc.param, ListOf(TNull), b, promoteDefault)
+			var b bindings
+			got, ok := argCost(tc.param, ListOf(TNull), &b, promoteDefault)
 			if !ok {
 				t.Fatalf("argCost(%s, list[nulltype]) was inadmissible", tc.param)
 			}
@@ -423,8 +425,9 @@ func TestArgCostList_EmptyListScoring(t *testing.T) {
 // not being bound here, so the empty list is reaching a concrete type after
 // substitution and pays the widening.
 func TestArgCostList_BoundVariableStillWidens(t *testing.T) {
-	b := bindings{CodeVarT: TInt}
-	got, ok := argCost(ListOf(varT), ListOf(TNull), b, promoteDefault)
+	var b bindings
+	b.bind(CodeVarT, TInt)
+	got, ok := argCost(ListOf(varT), ListOf(TNull), &b, promoteDefault)
 	if !ok {
 		t.Fatal("argCost(list[T], list[nulltype]) with T bound was inadmissible")
 	}

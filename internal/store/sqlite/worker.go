@@ -138,16 +138,28 @@ func scanWorker(row scanner) (store.Worker, error) {
 	return w, nil
 }
 
+// workerJSONCols marshals the worker columns stored as JSON TEXT, in the order
+// they appear in [workerCols].
+//
+// One function, not one copy per write path: every caller that persists a
+// worker needs all of them, so a new JSON column added to only one copy would
+// still compile and would silently drop that column on the paths it was not
+// added to.
+func workerJSONCols(w store.Worker) (gpuJSON, tagsJSON, exprJSON string, err error) {
+	if gpuJSON, err = marshalJSON(w.GPUInfo); err != nil {
+		return "", "", "", err
+	}
+	if tagsJSON, err = marshalJSON(w.Tags); err != nil {
+		return "", "", "", err
+	}
+	if exprJSON, err = marshalJSON(w.ExprLimits); err != nil {
+		return "", "", "", err
+	}
+	return gpuJSON, tagsJSON, exprJSON, nil
+}
+
 func workerBindArgs(w store.Worker, now string) ([]any, error) {
-	gpuJSON, err := marshalJSON(w.GPUInfo)
-	if err != nil {
-		return nil, err
-	}
-	tagsJSON, err := marshalJSON(w.Tags)
-	if err != nil {
-		return nil, err
-	}
-	exprJSON, err := marshalJSON(w.ExprLimits)
+	gpuJSON, tagsJSON, exprJSON, err := workerJSONCols(w)
 	if err != nil {
 		return nil, err
 	}
@@ -263,15 +275,7 @@ func (s *Store) ListWorkers(ctx context.Context, opts store.ListWorkersOptions) 
 
 // UpdateWorker implements [store.WorkerStore].
 func (s *Store) UpdateWorker(ctx context.Context, worker store.Worker) (store.Worker, error) {
-	gpuJSON, err := marshalJSON(worker.GPUInfo)
-	if err != nil {
-		return store.Worker{}, err
-	}
-	tagsJSON, err := marshalJSON(worker.Tags)
-	if err != nil {
-		return store.Worker{}, err
-	}
-	exprJSON, err := marshalJSON(worker.ExprLimits)
+	gpuJSON, tagsJSON, exprJSON, err := workerJSONCols(worker)
 	if err != nil {
 		return store.Worker{}, err
 	}

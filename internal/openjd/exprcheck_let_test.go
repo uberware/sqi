@@ -121,25 +121,27 @@ func TestCheckLetBindings_HostOnlyFunctionRejectedInNonHostScope(t *testing.T) {
 const overBudgetLetBinding = "a = max([len(('y' * 900000).upper()) for i in range(200)])"
 
 // TestCheckLetBindings_OverBudgetEvalIsRejectedAtSubmissionLimit pins that
-// checkLetBindings meters its Eval call with the opts its caller hands it,
-// rather than falling back to expr.Eval's much looser execution-time defaults.
-// Without that, an unmetered evaluation on the synchronous POST /api/v1/jobs
-// path is the same class of Critical E2's whole-branch review already found
-// once (~9 minutes of server CPU per request).
+// checkLetBindings meters its Eval call at the submission limits, rather than
+// falling back to expr.Eval's much looser execution-time defaults. Without that,
+// an unmetered evaluation on the synchronous POST /api/v1/jobs path is the same
+// class of Critical E2's whole-branch review already found once (~9 minutes of
+// server CPU per request).
 //
-// This is the LEAF half of the pin, and on its own it is not enough: since
-// checkLetBindings takes limits from the caller (an opts tail, matching
-// checkFormatString, so sub-project E4 has one place to thread its
-// configurable section 1.3.9/1.3.10 budget rather than two), a test that
-// passes DefaultExprLimits().evalOptions() explicitly cannot detect a CALL SITE that stops
-// passing them.
-// TestCheckTemplateExpressions_LetCallSitesPassSubmissionLimits below is the
-// other half, and it covers all three call sites through the real walk.
+// It passes a NIL budget, which is [templateBudget.evalOptions]' documented
+// "use the package defaults" case -- the same numbers DefaultExprLimits carries,
+// which is why the assertion below can name 10,000. The limits used to arrive
+// as an explicit opts tail here (DefaultExprLimits().evalOptions()...), removed
+// with the tail itself.
+//
+// This is the LEAF half of the pin, and on its own it is not enough: a leaf that
+// reads its limits off the budget cannot fail if a CALL SITE passes the wrong
+// budget. TestCheckTemplateExpressions_LetCallSitesPassSubmissionLimits below is
+// the other half, and it covers all three call sites through the real walk.
 func TestCheckLetBindings_OverBudgetEvalIsRejectedAtSubmissionLimit(t *testing.T) {
 	syms := expr.MapSymbols{}
 	errs := checkLetBindings(
 		nil, []string{overBudgetLetBinding},
-		"/steps/0/let", ScopeStepTemplate, syms, DefaultExprLimits().evalOptions()...,
+		"/steps/0/let", ScopeStepTemplate, syms,
 	)
 	if len(errs) != 1 {
 		t.Fatalf("checkLetBindings = %v, want exactly one error", errs)
@@ -157,12 +159,13 @@ func TestCheckLetBindings_OverBudgetEvalIsRejectedAtSubmissionLimit(t *testing.T
 // the walk's configured limits, by driving the real walk (checkTemplateExpressions) rather
 // than the leaf.
 //
-// It exists because checkLetBindings now takes its limits from the caller. The
-// leaf test above proves the leaf honors what it is given; only this one
-// proves the walk gives it the tight budget at each site. Nothing else in the
-// repo can: no conformance fixture or oracle case is expensive enough to
-// distinguish the walk's tighter limits from expr.Eval's defaults, so a call site that
-// dropped DefaultExprLimits().evalOptions() would keep the whole suite green.
+// It exists because checkLetBindings takes its limits from the budget the walk
+// hands it. The leaf test above proves the leaf honors what it is given; only
+// this one proves the walk gives it the tight budget at each site. Nothing else
+// in the repo can: no conformance fixture or oracle case is expensive enough to
+// distinguish the walk's tighter limits from expr.Eval's defaults, so a call
+// site that handed the leaf an unbudgeted evaluation would keep the whole suite
+// green.
 func TestCheckTemplateExpressions_LetCallSitesPassSubmissionLimits(t *testing.T) {
 	const header = `specificationVersion: jobtemplate-2023-09
 extensions: [EXPR]
@@ -228,7 +231,7 @@ steps:
 			}
 			if !strings.Contains(errs[0].Message, "limit of 10000") {
 				t.Errorf("message %q does not name the submission operation limit (10000); "+
-					"this call site is not passing DefaultExprLimits().evalOptions()", errs[0].Message)
+					"this call site is not evaluating under the walk's own budget", errs[0].Message)
 			}
 		})
 	}

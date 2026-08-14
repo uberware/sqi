@@ -412,27 +412,30 @@ func TestTemplateBudget_WorkerCapIsNotTighter(t *testing.T) {
 // -- 15 ms on a 200,000-sub-range INT parameter, ~40 ms at the body cap --
 // and it breaks design spec §6's floor that such a template "should cost
 // exactly what it costs today". The call site in ValidateWithOptions is
-// "exprWalkApplies(t) && !parameterSpaceOverCaps(t)", and Go's &&
-// short-circuits, so asserting exprWalkApplies is false for a base-spec
-// template IS the assertion that the guard never runs.
+// "exprDeclared && !parameterSpaceOverCaps(t)", and Go's && short-circuits, so
+// asserting the declaration term is false for a base-spec template IS the
+// assertion that the guard never runs.
 //
-// This is now the WHOLE of exprWalkApplies. It used to take a second argument,
-// the since-deleted ValidateOptions.CheckEXPRExpressionsWhileUnsupported, and
-// this test passed it as TRUE deliberately: the short-circuit had to hold even
-// for the caller that had explicitly asked for expressions to be checked while
-// EXPR was unsupported, and -- more importantly -- it had to keep holding after
+// The declaration is now the WHOLE of that term, and it is a direct
+// hasExtension call rather than a helper. It used to be exprWalkApplies, a
+// two-argument function whose second argument was the since-deleted
+// ValidateOptions.CheckEXPRExpressionsWhileUnsupported, and this test passed
+// that as TRUE deliberately: the short-circuit had to hold even for the caller
+// that had explicitly asked for expressions to be checked while EXPR was
+// unsupported, and -- more importantly -- it had to keep holding after
 // sub-project H2 flipped the extension to StatusSupported and the status term
-// became permanently true. It did, and the declaration term is all that is
-// left.
+// became permanently true. It did, the helper's remaining half was the same
+// hasExtension call ValidateWithBudget already had in hand as exprDeclared, and
+// this test now asserts on that call directly.
 func TestExprWalkApplies_BaseSpecTemplateShortCircuitsTheCostGuard(t *testing.T) {
 	base := &JobTemplate{Name: "T"} // no Extensions
-	if exprWalkApplies(base) {
+	if base.hasExtension("EXPR") {
 		t.Error("a template with no extensions: [EXPR] must short-circuit before " +
 			"parameterSpaceOverCaps -- see design spec §6's base-spec cost floor")
 	}
 
 	withExpr := &JobTemplate{Name: "T", Extensions: []string{"EXPR"}}
-	if !exprWalkApplies(withExpr) {
+	if !withExpr.hasExtension("EXPR") {
 		t.Error("an EXPR-declaring template must reach the walk; the extension term " +
 			"must narrow the gate, not close it")
 	}

@@ -425,34 +425,6 @@ type ValidateOptions struct {
 	Deadline time.Time
 }
 
-// exprWalkApplies reports whether [ValidateWithOptions] should do ANY phase-1
-// expression work for t -- both the walk itself and the pre-walk cost guard
-// that decides whether to skip it.
-//
-// It is the template declaring the extension, and nothing else. Until
-// sub-project H2 this function also consulted a registry-status gate
-// ([ValidateOptions]' since-deleted CheckEXPRExpressionsWhileUnsupported and
-// its exprExpressionWalkEnabled helper), which skipped the walk entirely while
-// EXPR was [StatusInProgress] and every EXPR template was rejected by
-// [validateExtensions] anyway. EXPR is StatusSupported now, so that term is
-// permanently true and the declaration is the whole condition.
-//
-// The declaration term is load-bearing on its own, which is why this function
-// survives its other half: the call site's remaining term,
-// parameterSpaceOverCaps, is not free -- it walks every step's task-parameter
-// definitions and counts every INT sub-range, measured at 15 ms on a
-// 200,000-sub-range parameter and ~40 ms at the body cap. Spending that to
-// decide whether to skip a walk that would do nothing anyway breaks design
-// spec §6's floor, that a template without extensions: [EXPR] "should cost
-// exactly what it costs today". checkTemplateExpressions checks the
-// extension again on its own; this is not a duplicate of that check but a
-// short-circuit in front of the guard, and Go's && guarantees it as one.
-//
-// Added by fix round 2 (whole-branch review, MINOR 1).
-func exprWalkApplies(t *JobTemplate) bool {
-	return t.hasExtension("EXPR")
-}
-
 // ─── Validate ─────────────────────────────────────────────────────────────────
 
 // Validate performs semantic validation of a parsed [JobTemplate] and returns
@@ -613,7 +585,7 @@ func ValidateWithBudget(t *JobTemplate, opts ValidateOptions) (ValidationErrors,
 	// phase-2 caller with concrete parameters). It no-ops for a template that
 	// does not declare EXPR -- see its own doc comment.
 	//
-	// Gated on the template's own declaration alone (exprWalkApplies). Until
+	// Gated on the template's own declaration alone (exprDeclared). Until
 	// sub-project H2 it was ALSO gated on the EXPR registry entry's status,
 	// because while EXPR was StatusInProgress validateExtensions (above) had
 	// already rejected the template unconditionally, so the walk could not
@@ -672,16 +644,34 @@ func ValidateWithBudget(t *JobTemplate, opts ValidateOptions) (ValidationErrors,
 	// UNBOUNDED at phase 2 after this task -- gating checkExpressionsAtSubmit
 	// itself is explicitly out of this task's scope and is a later E4c
 	// task's job.
-	// exprWalkApplies comes FIRST: the template's own extensions: key has to be
+	// exprDeclared comes FIRST: the template's own extensions: key has to be
 	// consulted before parameterSpaceOverCaps, or the guard runs on templates
-	// whose walk is a no-op. See that function.
+	// whose walk is a no-op. Until sub-project H2 this term was a function
+	// (exprWalkApplies) because it also consulted a registry-status gate
+	// ([ValidateOptions]' since-deleted CheckEXPRExpressionsWhileUnsupported and
+	// its exprExpressionWalkEnabled helper), which skipped the walk entirely
+	// while EXPR was [StatusInProgress] and every EXPR template was rejected by
+	// [validateExtensions] anyway. EXPR is StatusSupported now, so that term is
+	// permanently true and the declaration -- already computed at the top of
+	// this function -- is the whole condition.
+	//
+	// The declaration term is load-bearing on its own, which is why it survives
+	// its other half: the remaining term, parameterSpaceOverCaps, is not free --
+	// it walks every step's task-parameter definitions and counts every INT
+	// sub-range, measured at 15 ms on a 200,000-sub-range parameter and ~40 ms
+	// at the body cap. Spending that to decide whether to skip a walk that would
+	// do nothing anyway breaks design spec §6's floor, that a template without
+	// extensions: [EXPR] "should cost exactly what it costs today".
+	// checkTemplateExpressions checks the extension again on its own; this is
+	// not a duplicate of that check but a short-circuit in front of the guard,
+	// and Go's && guarantees it as one.
 	//
 	// walkBudget is hoisted out of the branch below because it is what carries
 	// a deadline breach back out: checkTemplateExpressions reports one through
 	// the budget (templateBudget.recordDeadline) rather than as a
 	// ValidationError, so this function has to hold the pointer to read it.
 	var walkBudget *templateBudget
-	if exprWalkApplies(t) && !parameterSpaceOverCaps(t) {
+	if exprDeclared && !parameterSpaceOverCaps(t) {
 		// A budget is passed EXPLICITLY (rather than letting
 		// checkTemplateExpressions allocate its own) for one reason: the
 		// budget is what carries opts.ExprLimits to every metered position.
@@ -1076,8 +1066,8 @@ func validateEnvNameLimits(envs []Environment, base string) ValidationErrors {
 // while the call site gated it on a registry-status check ALONE -- which
 // consults the extension registry, not the template -- so it in fact ran on
 // every template, base-spec ones included. Fix round 2 (whole-branch review,
-// MINOR 1) added the hasExtension("EXPR") term ([exprWalkApplies]) that makes
-// the sentence true.
+// MINOR 1) added the hasExtension("EXPR") term -- the exprDeclared half of the
+// call site's condition -- that makes the sentence true.
 // [validateParameterSpaceLimits] also runs [intRangeHasOverlap], an O(n^2)
 // pairwise scan over an INT range's sub-ranges (range.go) with no early exit
 // once a count cap has already fired -- reusing it wholesale here was tried
@@ -1958,20 +1948,54 @@ func requireNonEmptyIfSet(set bool, n int, ptr, noun string) ValidationErrors {
 	}}
 }
 
-// validateNoControlChars rejects Unicode Cc control characters in a name-like
-// string. The category covers both C0 (U+0000-U+001F, U+007F) and C1
-// (U+0080-U+009F), so it catches the whole range the spec excludes. A control
-// character in a name corrupts logs, terminal output, and any UI rendering it.
-func validateNoControlChars(v, ptr string) ValidationErrors {
+// checkControlChars is the one Unicode Cc scan this package performs, in both
+// of the two variants it needs: the STRICT one (allowLineBreaks false), which
+// rejects every control character, and the RELAXED one (allowLineBreaks true),
+// which permits LF, CR and TAB and rejects the rest.
+//
+// The two variants also carry the two DIFFERENT messages, which is half the
+// reason they are one function. Before this was extracted the relaxed scan
+// existed twice, character for character, under
+// [validateArgStringChars] and [validateDescriptionText] -- so the EXPR
+// specification's amendment to <ArgString> was encoded in two places, and a
+// reader who found one of the two identical messages in a test could not tell
+// which scan had produced it.
+//
+// The Cc category covers both C0 (U+0000-U+001F, U+007F) and C1
+// (U+0080-U+009F), so either variant catches the whole range the spec excludes.
+// Only the FIRST offending rune is reported: one control character in a value
+// is a rejection, not a list.
+func checkControlChars(v, ptr string, allowLineBreaks bool) ValidationErrors {
 	for _, r := range v {
-		if unicode.IsControl(r) {
+		if allowLineBreaks && (r == '\n' || r == '\r' || r == '\t') {
+			continue
+		}
+		if !unicode.IsControl(r) {
+			continue
+		}
+		if allowLineBreaks {
 			return ValidationErrors{{
 				Pointer: ptr,
-				Message: fmt.Sprintf("must not contain control characters (found U+%04X)", r),
+				Message: fmt.Sprintf(
+					"must not contain control characters other than newline, carriage return, or tab (found U+%04X)",
+					r,
+				),
 			}}
 		}
+		return ValidationErrors{{
+			Pointer: ptr,
+			Message: fmt.Sprintf("must not contain control characters (found U+%04X)", r),
+		}}
 	}
 	return nil
+}
+
+// validateNoControlChars rejects Unicode Cc control characters in a name-like
+// string -- the STRICT variant of [checkControlChars], with no line-break
+// exemption. A control character in a name corrupts logs, terminal output, and
+// any UI rendering it.
+func validateNoControlChars(v, ptr string) ValidationErrors {
+	return checkControlChars(v, ptr, false)
 }
 
 // validateArgStringChars checks an <ArgString> under the EXPR extension.
@@ -1993,27 +2017,20 @@ func validateNoControlChars(v, ptr string) ValidationErrors {
 // Every OTHER Cc character stays rejected, and <CommandString> -- a separate
 // type in the same schema (Template Schemas §5.1 and §5.2) -- is NOT amended,
 // so a command keeps the base-spec rule even under EXPR.
+//
+// The scan itself is [checkControlChars]' relaxed variant, shared with
+// [validateDescriptionText]: the amendment above and §7.2's description rule
+// permit exactly the same three characters, and encoding that twice is what this
+// function used to do.
 func validateArgStringChars(v, ptr string) ValidationErrors {
-	for _, r := range v {
-		if r == '\n' || r == '\r' || r == '\t' {
-			continue
-		}
-		if unicode.IsControl(r) {
-			return ValidationErrors{{
-				Pointer: ptr,
-				Message: fmt.Sprintf(
-					"must not contain control characters other than newline, carriage return, or tab (found U+%04X)",
-					r,
-				),
-			}}
-		}
-	}
-	return nil
+	return checkControlChars(v, ptr, true)
 }
 
 // validateDescriptionText checks a <Description> (spec §7.2): at most 2048
 // characters, and no Cc control characters EXCEPT newline, carriage return, and
-// horizontal tab, which a description is explicitly allowed to contain.
+// horizontal tab, which a description is explicitly allowed to contain. The
+// character half is [checkControlChars]' relaxed variant, shared with
+// [validateArgStringChars]; the length cap is this function's own.
 func validateDescriptionText(v, ptr string) ValidationErrors {
 	if v == "" {
 		return nil
@@ -2024,18 +2041,7 @@ func validateDescriptionText(v, ptr string) ValidationErrors {
 			Message: fmt.Sprintf("must be at most %d characters (got %d)", maxDescriptionLen, n),
 		}}
 	}
-	for _, r := range v {
-		if r == '\n' || r == '\r' || r == '\t' {
-			continue
-		}
-		if unicode.IsControl(r) {
-			return ValidationErrors{{
-				Pointer: ptr,
-				Message: fmt.Sprintf("must not contain control characters other than newline, carriage return, or tab (found U+%04X)", r),
-			}}
-		}
-	}
-	return nil
+	return checkControlChars(v, ptr, true)
 }
 
 // validateIdentifierLen caps an <Identifier> at [maxIdentifierLen] characters.

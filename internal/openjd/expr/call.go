@@ -86,7 +86,7 @@ func (n *Call) target(ec evalCtx, depth int) (name string, recv Value, methodSty
 		}
 		return callee.Attr, v, true, nil
 	case *Name:
-		return n.nameTarget(callee, ec, depth)
+		return n.nameTarget(callee, ec)
 	}
 	// Every other callee — a literal, a subscript, a conditional — is a value,
 	// and no value in this language is callable.
@@ -107,7 +107,7 @@ func (n *Call) target(ec evalCtx, depth int) (name string, recv Value, methodSty
 
 // nameTarget resolves a call whose callee is a dotted name. Four outcomes, one
 // per shape the resolver can report.
-func (*Call) nameTarget(callee *Name, ec evalCtx, depth int) (name string, recv Value, methodStyle bool, err error) {
+func (*Call) nameTarget(callee *Name, ec evalCtx) (name string, recv Value, methodStyle bool, err error) {
 	r, ok := resolveName(callee, ec.syms)
 	if !ok {
 		if len(callee.Parts) == 1 {
@@ -128,7 +128,7 @@ func (*Call) nameTarget(callee *Name, ec evalCtx, depth int) (name string, recv 
 			"%s is not a function", r.Prefix)
 	}
 	// Every segment but the last is a property; the last is the method.
-	cur, err := evalProperties(r.Val, r.Rest[:len(r.Rest)-1], ec, callee.Offset, depth)
+	cur, err := evalProperties(r.Val, r.Rest[:len(r.Rest)-1], ec, callee.Offset)
 	if err != nil {
 		return "", Value{}, false, err
 	}

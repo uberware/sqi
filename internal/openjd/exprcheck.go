@@ -277,6 +277,15 @@ func checkHostOnlyFunctions(e *expr.Expression, scope Scope, ptr string) Validat
 	if scope.IsHostContext() {
 		return nil
 	}
+	// Fast path. This runs on EVERY expression of every non-host position, so
+	// the common answer -- no host-only function anywhere -- must be cheap.
+	// CallsAny walks with early termination and allocates nothing but its
+	// stack; CalledFunctions builds a map, a slice and a sorted result. Only
+	// when there is something to report do we pay for the names, which the
+	// error message needs one of per offending call.
+	if !e.CallsAny(hostOnlyFunctions) {
+		return nil
+	}
 	var errs ValidationErrors
 	for _, name := range e.CalledFunctions() {
 		if _, ok := hostOnlyFunctions[name]; !ok {
@@ -311,27 +320,29 @@ func checkHostOnlyFunctions(e *expr.Expression, scope Scope, ptr string) Validat
 // and eval: a host-only call is rejected before it is ever executed, in a
 // scope where the state it would read does not exist.
 //
-// opts is forwarded verbatim to every Eval call. It is how a caller supplies
-// section 1.3.9/1.3.10 limits (expr.WithMemoryLimit, expr.WithOperationLimit);
-// checkTemplateExpressions's callers pass [ExprLimits.evalOptions] --
-// deliberately tighter than expr.Eval's own execution-time defaults, because
-// this function runs at TEMPLATE VALIDATION time, reachable synchronously from
-// POST /api/v1/jobs once the EXPR extension is registered. Tests that call
-// checkFormatString directly pass no opts, which is fine: the package
-// defaults apply, and no committed test's expression does enough real work to
-// approach even the much tighter budget [ExprLimits.evalOptions] supplies.
+// Every Eval call runs under [templateBudget.evalOptions] -- the section
+// 1.3.9/1.3.10 limits (expr.WithMemoryLimit, expr.WithOperationLimit) plus H1's
+// deadline -- taken from b rather than from a parameter, deliberately tighter
+// than expr.Eval's own execution-time defaults, because this function runs at
+// TEMPLATE VALIDATION time, reachable synchronously from POST /api/v1/jobs once
+// the EXPR extension is registered. This used to be an `opts ...expr.Option`
+// tail every call site hand-wrote from the very budget already being passed;
+// see [templateBudget.evalOptions] for why a variadic tail was the wrong shape
+// for it.
 //
-// b is the walk's [templateBudget], and this function needs it for ONE reason:
-// to divert a wall-clock deadline breach away from the ValidationErrors it
-// returns and onto the budget, where it stops the rest of the walk and reaches
-// [ValidateWithBudget] as an error. See [templateBudget.recordDeadline] for why
-// that distinction is not cosmetic. It may be nil -- direct unit-test callers
-// pass nil -- in which case nothing is diverted and every evaluation failure is
-// reported as it was before H1.
+// b is the walk's [templateBudget], and this function needs it for TWO reasons.
+// The first is those limits. The second is to divert a wall-clock deadline
+// breach away from the ValidationErrors it returns and onto the budget, where it
+// stops the rest of the walk and reaches [ValidateWithBudget] as an error -- see
+// [templateBudget.recordDeadline] for why that distinction is not cosmetic. It
+// may be nil -- direct unit-test callers pass nil -- in which case nothing is
+// diverted and the DEFAULT submission limits apply; no committed test's
+// expression does enough real work to notice the difference between those and
+// expr.Eval's own.
 func checkFormatString(
 	b *templateBudget, s, ptr string, scope Scope, syms expr.MapSymbols, target expr.Type,
-	opts ...expr.Option,
 ) ValidationErrors {
+	opts := b.evalOptions()
 	if body, ok := fmtstring.LoneRef(s); ok {
 		e, err := expr.Parse(body)
 		if err != nil {
@@ -457,18 +468,19 @@ func checkFormatString(
 // in the template reported in the same pass, alongside the count error, so
 // one over-long let: block does not hide the rest of the template's faults.
 //
-// opts is forwarded verbatim to every Eval call, exactly as
-// [checkFormatString]'s identically-named tail is: it is how a caller supplies
-// section 1.3.9/1.3.10 limits, and all three walk call sites pass
-// [ExprLimits.evalOptions]. checkLetBindings used to build those options
-// internally instead of taking them, which was behaviorally identical but a
-// trap for sub-project E4, which owns the specification's CONFIGURABLE
-// limits: threading an
-// operator-supplied budget through checkTemplateExpressions reaches every
-// format-string position via checkFormatString and would have silently missed
-// every let binding -- the one position where budgets ACCUMULATE. One opts
-// tail per evaluator, so E4 has one place to thread rather than two to
-// remember.
+// Every Eval call runs under [templateBudget.evalOptions], exactly as
+// [checkFormatString]'s do: that is where section 1.3.9/1.3.10's limits come
+// from, and taking them from the budget rather than from the caller is what
+// keeps the two evaluators in this file impossible to configure differently.
+// The options used to arrive as an `opts ...expr.Option` tail, which itself
+// replaced building them internally -- the tail existed so sub-project E4, which
+// owns the specification's CONFIGURABLE limits, had ONE place to thread an
+// operator-supplied budget rather than two to remember: reaching every
+// format-string position through checkFormatString would otherwise have silently
+// missed every let binding, the one position where budgets ACCUMULATE. Reading
+// them off the budget both evaluators already receive keeps that single point
+// and removes the tail a call site could forget; see
+// [templateBudget.evalOptions].
 //
 // b is the walk's [templateBudget], nil-able, and carries a wall-clock deadline
 // breach out of this function exactly as it does out of [checkFormatString] --
@@ -478,11 +490,11 @@ func checkFormatString(
 // loop returns instead. See [templateBudget.recordDeadline].
 func checkLetBindings(
 	b *templateBudget, lets []string, base string, scope Scope, syms expr.MapSymbols,
-	opts ...expr.Option,
 ) ValidationErrors {
 	if len(lets) > maxLetBindings {
 		lets = lets[:maxLetBindings]
 	}
+	opts := b.evalOptions()
 
 	var errs ValidationErrors
 	for i, raw := range lets {
@@ -609,7 +621,7 @@ func checkLetBindings(
 //     The same budget also catches a large CONCRETE parameter value at phase
 //     2, per the measurement above -- one limit, enforced identically at both
 //     phases because both go through the same checkFormatString call, under
-//     the same [ExprLimits.evalOptions] tail.
+//     the same [templateBudget.evalOptions].
 //
 // A template whose expressions need more than this to type-check against
 // UNRESOLVED placeholders (phase 1) or to evaluate against submitted values
@@ -939,13 +951,32 @@ const (
 // carrier because it is already threaded to every point that needs one: the
 // two per-walk dimensions are its own counters, and `b` is in scope at every
 // call site that used to call the package-level submissionLimits() -- see
-// [ExprLimits.evalOptions], the method that replaced it. limits is normalized by
-// [newTemplateBudget] and is never the zero value on a live budget.
+// [ExprLimits.evalOptions], the method that replaced it, and
+// [templateBudget.evalOptions], which is how every position in the walk now
+// reaches it. limits is normalized by [newTemplateBudget] and is never the zero
+// value on a live budget.
 type templateBudget struct {
 	positions int64
 	retained  int64
 	limits    ExprLimits
-	err       *ValidationError
+	// evalOpts is limits.evalOptions() built ONCE, at [newTemplateBudget], and
+	// read back through [templateBudget.evalOptions] at every metered position.
+	//
+	// It is safe to cache because limits is fixed for the walk's whole life:
+	// every constructor (validate.go's ValidateWithBudget, submit.go's
+	// prepareTemplate for both phase-2 budgets) finishes assembling its
+	// ExprLimits -- [ExprLimits.Deadline] included, which is per-REQUEST and is
+	// therefore the one field that could have made this unsafe -- BEFORE calling
+	// newTemplateBudget, and nothing writes limits afterwards. Anything that
+	// starts mutating limits mid-walk must rebuild this field with it.
+	//
+	// It is safe to SHARE because expr treats an option slice as read-only: the
+	// options are applied to a fresh evalCtx per evaluation and the slice is
+	// never appended to. Before this was cached, ~18 per-position call sites
+	// each built their own slice plus two or three closures, several of them
+	// inside per-entry loops.
+	evalOpts []expr.Option
+	err      *ValidationError
 	// deadlineErr holds the FIRST [expr.ErrDeadlineExceeded] any evaluation in
 	// this walk returned, and it is deliberately an error rather than a
 	// *ValidationError. See [templateBudget.recordDeadline].
@@ -957,7 +988,8 @@ type templateBudget struct {
 // newTemplateBudget(ExprLimits{}) is exactly the allowance this package
 // enforced before E4d made the four numbers configurable.
 func newTemplateBudget(lim ExprLimits) *templateBudget {
-	return &templateBudget{limits: lim.orDefaults()}
+	lim = lim.orDefaults()
+	return &templateBudget{limits: lim, evalOpts: lim.evalOptions()}
 }
 
 // templateBudgetOrFresh returns budget[0] when the caller supplied one
@@ -1037,6 +1069,42 @@ func (b *templateBudget) limitsOrDefaults() ExprLimits {
 		return ExprLimits{}.orDefaults()
 	}
 	return b.limits
+}
+
+// evalOptions returns the [expr.Option] tail every evaluation in this walk runs
+// under: the section 1.3.9/1.3.10 limits this budget carries, plus H1's
+// wall-clock deadline when one is set.
+//
+// THE THREE LEAF CHECKERS CALL THIS INSTEAD OF TAKING AN opts TAIL, and that is
+// the point of it. checkFormatString, checkLetBindings and stepLetSymbols each
+// used to take `opts ...expr.Option` ALONGSIDE the budget those options were
+// derived from, so all ~16 production call sites hand-wrote
+// `b.limits.evalOptions()...`. A variadic tail compiles, lints and tests clean
+// when a caller passes NOTHING -- silently swapping the operator-configured
+// budget for expr.Eval's own much looser package defaults and dropping the
+// deadline with it, since [ExprLimits.Deadline] rides on the same slice. The
+// worker's identical shape (internal/worker/fmtres) closed this trap the same
+// way; the server side kept the tail, and it had already drifted -- one call
+// site passed limitsOrDefaults' options while the other fifteen read b.limits
+// directly, which panics on the nil budget those leaves document as legal.
+//
+// A nil budget -- legal at all three leaves, and only ever passed by this
+// package's own unit tests -- gets the DEFAULT submission options rather than
+// no options at all, which is the same answer [templateBudget.limitsOrDefaults]
+// gives for the numbers alone. That is tighter than the pre-existing "pass
+// nothing, get expr.Eval's defaults" behavior a direct test caller used to see,
+// and it is what limitsOrDefaults' nil contract already promised.
+//
+// A non-nil budget returns the slice [newTemplateBudget] cached; see the
+// evalOpts field for why caching and sharing it are safe. The evalOpts == nil
+// arm covers a budget built as a bare struct literal rather than through the
+// constructor -- there is none today, and this makes one behave like a nil
+// budget instead of like an unmetered evaluation.
+func (b *templateBudget) evalOptions() []expr.Option {
+	if b == nil || b.evalOpts == nil {
+		return b.limitsOrDefaults().evalOptions()
+	}
+	return b.evalOpts
 }
 
 // recordDeadline reports whether err is a wall-clock deadline breach and, if
@@ -1259,7 +1327,6 @@ func checkTemplateExpressions(tmpl *JobTemplate, params map[string]string, budge
 	if b.chargePositions(1, "/name") {
 		errs = append(errs, checkFormatString(
 			b, tmpl.Name, "/name", ScopeJob, symbolsFor(tmpl, nil, nil, ScopeJob, params), TargetString,
-			b.limits.evalOptions()...,
 		)...)
 	}
 
@@ -1327,7 +1394,7 @@ func checkStepExpressions(b *templateBudget, tmpl *JobTemplate, s StepTemplate, 
 		// own net contribution, with the baseline canceling out.
 		before := templateExprRetainedBytes(syms)
 		errs = append(errs, checkLetBindings(
-			b, s.Script.Let, base+"/script/let", ScopeStepScript, syms, b.limits.evalOptions()...,
+			b, s.Script.Let, base+"/script/let", ScopeStepScript, syms,
 		)...)
 		b.chargePositions(letPositions(len(s.Script.Let)), base+"/script/let")
 		b.chargeRetainedBytes(templateExprRetainedBytes(syms)-before, base+"/script/let")
@@ -1439,11 +1506,14 @@ func checkStepExpressions(b *templateBudget, tmpl *JobTemplate, s StepTemplate, 
 // It is NIL-ABLE, matching [checkFormatString] and [checkLetBindings] -- the two
 // siblings that took the same new parameter in the same change -- so that the
 // three cannot disagree about what a nil budget means. A nil b gives the
-// DEFAULT limits ([ExprLimits.orDefaults] via limitsOrDefaults) and diverts
-// nothing, which is exactly the unbounded pre-H1 behavior a direct unit-test
-// caller is asking for. No production caller passes nil; this exists so that
-// one does not have to read three functions to find out that only two of them
-// tolerate it.
+// DEFAULT limits ([templateBudget.evalOptions], which is nil-safe through
+// limitsOrDefaults) and diverts nothing, which is what a direct unit-test caller
+// is asking for. No production caller passes nil; this exists so that one does
+// not have to read three functions to find out that only two of them tolerate
+// it. It is also why this function no longer builds an option tail of its own:
+// it was the one of the three that reached for limitsOrDefaults while the other
+// two read b.limits directly, and that split is what [templateBudget.evalOptions]
+// exists to make unrepeatable.
 func stepLetSymbols(
 	b *templateBudget, tmpl *JobTemplate, s *StepTemplate, params map[string]string, base string,
 ) (expr.MapSymbols, ValidationErrors) {
@@ -1458,7 +1528,7 @@ func stepLetSymbols(
 		preLetKeys[k] = struct{}{}
 	}
 	errs := checkLetBindings(
-		b, s.Let, base+"/let", ScopeStepTemplate, stepTemplateSyms, b.limitsOrDefaults().evalOptions()...,
+		b, s.Let, base+"/let", ScopeStepTemplate, stepTemplateSyms,
 	)
 	for k, v := range stepTemplateSyms {
 		if _, existed := preLetKeys[k]; !existed {
@@ -1550,7 +1620,7 @@ func checkEnvironmentExpressions(
 				break
 			}
 			errs = append(errs, checkFormatString(
-				b, e.Variables[k], varPtr, scope, baseSyms, TargetString, b.limits.evalOptions()...,
+				b, e.Variables[k], varPtr, scope, baseSyms, TargetString,
 			)...)
 		}
 
@@ -1580,7 +1650,7 @@ func checkEnvironmentExpressions(
 			// cancels out of the subtraction.
 			before := templateExprRetainedBytes(scriptSyms)
 			errs = append(errs, checkLetBindings(
-				b, e.Script.Let, ptr+"/script/let", scope, scriptSyms, b.limits.evalOptions()...,
+				b, e.Script.Let, ptr+"/script/let", scope, scriptSyms,
 			)...)
 			b.chargePositions(letPositions(len(e.Script.Let)), ptr+"/script/let")
 			b.chargeRetainedBytes(templateExprRetainedBytes(scriptSyms)-before, ptr+"/script/let")
@@ -1623,7 +1693,6 @@ func checkScriptRefExpressions(
 		}
 		errs = append(errs, checkFormatString(
 			b, f.Data, ptr, scope, syms, TargetString,
-			b.limits.evalOptions()...,
 		)...)
 	}
 	return errs
@@ -1669,7 +1738,7 @@ func checkActionExpressions(b *templateBudget, a Action, ptr string, scope Scope
 	cmdPtr := ptr + "/command"
 	if b.chargePositions(1, cmdPtr) {
 		errs = append(errs, checkFormatString(
-			b, a.Command, cmdPtr, scope, syms, TargetString, b.limits.evalOptions()...,
+			b, a.Command, cmdPtr, scope, syms, TargetString,
 		)...)
 	}
 	for i, arg := range a.Args {
@@ -1681,7 +1750,7 @@ func checkActionExpressions(b *templateBudget, a Action, ptr string, scope Scope
 			break
 		}
 		errs = append(errs, checkFormatString(
-			b, arg, argPtr, scope, syms, TargetArgItem, b.limits.evalOptions()...,
+			b, arg, argPtr, scope, syms, TargetArgItem,
 		)...)
 	}
 	if a.TimeoutSet && b.ok() {
@@ -1689,7 +1758,6 @@ func checkActionExpressions(b *templateBudget, a Action, ptr string, scope Scope
 		if b.chargePositions(1, timeoutPtr) {
 			errs = append(errs, checkFormatString(
 				b, strconv.Itoa(a.TimeoutSeconds), timeoutPtr, scope, syms, TargetInt,
-				b.limits.evalOptions()...,
 			)...)
 		}
 	}
@@ -1729,7 +1797,7 @@ func checkHostRequirementAmount(b *templateBudget, a AmountRequirement, amtPtr s
 		minPtr := amtPtr + "/min"
 		if b.chargePositions(1, minPtr) {
 			errs = append(errs, checkFormatString(
-				b, *a.Min, minPtr, ScopeJob, syms, TargetString, b.limits.evalOptions()...,
+				b, *a.Min, minPtr, ScopeJob, syms, TargetString,
 			)...)
 		}
 	}
@@ -1737,7 +1805,7 @@ func checkHostRequirementAmount(b *templateBudget, a AmountRequirement, amtPtr s
 		maxPtr := amtPtr + "/max"
 		if b.chargePositions(1, maxPtr) {
 			errs = append(errs, checkFormatString(
-				b, *a.Max, maxPtr, ScopeJob, syms, TargetString, b.limits.evalOptions()...,
+				b, *a.Max, maxPtr, ScopeJob, syms, TargetString,
 			)...)
 		}
 	}
@@ -1755,7 +1823,7 @@ func checkHostRequirementAttribute(b *templateBudget, a AttributeRequirement, at
 		p := fmt.Sprintf("%s/anyOf/%d", attrPtr, k)
 		if b.chargePositions(1, p) {
 			errs = append(errs, checkFormatString(
-				b, v, p, ScopeJob, syms, TargetString, b.limits.evalOptions()...,
+				b, v, p, ScopeJob, syms, TargetString,
 			)...)
 		}
 	}
@@ -1766,7 +1834,7 @@ func checkHostRequirementAttribute(b *templateBudget, a AttributeRequirement, at
 		p := fmt.Sprintf("%s/allOf/%d", attrPtr, k)
 		if b.chargePositions(1, p) {
 			errs = append(errs, checkFormatString(
-				b, v, p, ScopeJob, syms, TargetString, b.limits.evalOptions()...,
+				b, v, p, ScopeJob, syms, TargetString,
 			)...)
 		}
 	}
@@ -1824,7 +1892,6 @@ func checkParameterSpaceExpressions(b *templateBudget, ps StepParameterSpace, ba
 			}
 			errs = append(errs, checkFormatString(
 				b, v, p, ScopeJob, syms, elemType,
-				b.limits.evalOptions()...,
 			)...)
 		}
 		if tp.RangeExpr != nil && b.ok() {
@@ -1832,7 +1899,6 @@ func checkParameterSpaceExpressions(b *templateBudget, ps StepParameterSpace, ba
 			if b.chargePositions(1, p) {
 				errs = append(errs, checkFormatString(
 					b, *tp.RangeExpr, p, ScopeJob, syms, rangeExprFieldType(tp.Type),
-					b.limits.evalOptions()...,
 				)...)
 			}
 		}

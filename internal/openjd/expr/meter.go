@@ -187,10 +187,15 @@ func (m *meter) charge(n int64) error {
 // materialization, and checks the deadline unconditionally there, so the
 // biggest single construction in the window never starts rather than being
 // caught after it finishes.
+//
+// PRECONDITION: A DEADLINE IS SET. charge is the only caller and short-circuits
+// on m.deadline.IsZero() itself -- deliberately, see its own doc comment on why
+// that test is inlined there rather than delegated here -- and reserve bypasses
+// this function entirely, calling deadlinePassed directly. A second IsZero test
+// stood at the top of this function and could not be reached from either path;
+// it was deleted rather than left to read as though this were safe to call
+// without one. A NEW caller restores the guard, it does not assume it.
 func (m *meter) checkDeadline() error {
-	if m.deadline.IsZero() {
-		return nil
-	}
 	m.sinceCheck++
 	if m.sinceCheck != 1 && m.sinceCheck < deadlineCheckInterval {
 		return nil

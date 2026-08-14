@@ -123,7 +123,7 @@ type Session struct {
 	// msg is the assignment that created this session (the first, and today
 	// the only, task ever dispatched into it -- Phase 1 defers session reuse
 	// across tasks, see this file's package comment). enterOne and
-	// resolveEnvAction (EXPR sub-project E4a, Task 6) read msg.EXPR to select
+	// resolveEnvParts (EXPR sub-project E4a, Task 6) read msg.EXPR to select
 	// between the pre-EXPR fmtres.EnvScope/ResolveAction path and the
 	// phase-3 fmtres.EnvSymbols/ResolveActionExpr path, and read msg.PathMap
 	// for the EXPR path's metering/path-mapping options. Never mutated after
@@ -132,9 +132,9 @@ type Session struct {
 	//
 	// ALWAYS NON-NIL for a Session that exists: Manager.Create dereferences
 	// msg (msg.Isolation) before it ever builds one, so a nil assignment
-	// panics there, not here. resolveEnvEntry/resolveEnvAction therefore read
-	// s.msg unguarded on purpose -- a nil check would be dead code suggesting
-	// a state the type cannot be in.
+	// panics there, not here. resolveEnvParts therefore reads s.msg unguarded
+	// on purpose -- a nil check would be dead code suggesting a state the type
+	// cannot be in.
 	msg *protocol.AssignMsg
 
 	// exprBudget is EXPR sub-project E4c's Task 4 addition: the ONE
@@ -886,66 +886,101 @@ func (s *Session) envScope(files []protocol.EmbeddedFile) (fmtstring.MapScope, e
 	return scope, nil
 }
 
-// resolveEnvEntry resolves everything enterOne needs for one environment
-// entry — the onEnter action, the variable values, and the embedded files'
-// own data — against ONE environment-action scope/table.
+// envFileResolver resolves an environment's embedded-file DATA against the ONE
+// scope (base spec) or symbol table (EXPR) that [Session.resolveEnvParts]
+// already built for that environment's action and variable values.
+//
+// It is returned as a closure rather than performed inline because only ONE of
+// resolveEnvParts' two callers wants it: entry materializes files, teardown
+// does not (see [Session.resolveEnvAction]). Handing the caller the resolution
+// — rather than a bool plus a fourth return value — is also what keeps the two
+// callers' different error wrapping ("resolve embedded file data: %w" versus
+// "resolve environment: %w") at the call sites where it belongs.
+type envFileResolver func([]protocol.EmbeddedFile) ([]protocol.EmbeddedFile, error)
+
+// resolveEnvParts is the ONE implementation of environment resolution, shared
+// by [Session.resolveEnvEntry] (onEnter, at Create) and
+// [Session.resolveEnvAction] (onExit, at teardown). It resolves the action and
+// the variable values against ONE environment-action scope/table and returns a
+// closure that resolves embedded-file data against that same scope/table.
+//
+// THE TWO PATHS ARE ONE FUNCTION ON PURPOSE. They were two, and they drifted:
+// [fmtres.EnvSymbols]' own doc comment records the step-template let: fold
+// being added at entry and missed at teardown, so an onExit referencing a
+// step-template binding failed as an unknown symbol — and teardown is the path
+// whose failures [Session.ExitEnvironments] logs as a warning and swallows, so
+// the divergence was quiet. Any future §3.6.2 ordering constraint now lands in
+// exactly one place.
 //
 // s.msg.EXPR selects the resolution family (EXPR sub-project E4a, Task 6): a
 // base-spec assignment (EXPR false, the zero value) takes exactly the
 // fmtres.EnvScope/ResolveAction/ResolveVars/ResolveEmbeddedFiles path this
-// method has always taken, byte for byte — mirroring
+// package has always taken, byte for byte — mirroring
 // [resolveAssignmentBaseSpec] in internal/worker/executor's identical split.
 // Only when EXPR is true does it build the phase-3 symbol table
 // (fmtres.EnvSymbols), evaluate env's own let: block into it EXACTLY ONCE
 // (fmtres.ApplyEnvLet — see that function's own doc comment: calling it a
-// second time over the same table makes every binding fail the shadow
-// check), and then resolve onEnter, Variables, and EmbeddedFiles against
-// that ONE table via ResolveActionExpr/ResolveVarsExpr/
-// ResolveEmbeddedFilesExpr.
+// second time over the same table makes every binding fail the shadow check),
+// and then resolve the action, the Variables, and (via the returned closure)
+// the EmbeddedFiles against that ONE table via ResolveActionExpr/
+// ResolveVarsExpr/ResolveEmbeddedFilesExpr.
 //
-// Returns the resolved action copy (nil when env.OnEnter is nil), the
-// resolved variable map, and the resolved embedded files, or an error
-// naming the offending reference/file.
-func (s *Session) resolveEnvEntry(env protocol.AssignEnvironment) (*protocol.Action, map[string]string, []protocol.EmbeddedFile, error) {
+// budget is a FUNCTION, not a value, and that is the one difference between
+// the two callers that must survive being unified: entry passes a func
+// returning the SHARED s.exprBudget, teardown passes [Session.teardownBudget],
+// which returns a FRESH budget per call. Both are called once per fmtres call
+// below, so teardown keeps its own throwaway ledger per evaluation exactly as
+// it did when this was two functions — see resolveEnvAction and teardownBudget
+// for why sharing one across a teardown is a silently skipped onExit. It is
+// never called on the base-spec path, which meters nothing.
+//
+// Errors are returned UNWRAPPED (the let: block's are wrapped once, as
+// "let bindings: %w", because both callers do that identically); each caller
+// adds its own context.
+func (s *Session) resolveEnvParts(
+	env protocol.AssignEnvironment,
+	action *protocol.Action,
+	vars map[string]string,
+	budget func() *fmtres.AssignmentBudget,
+) (*protocol.Action, map[string]string, envFileResolver, error) {
 	if !s.msg.EXPR {
 		// Build the environment-action scope (Param.*, RawParam.*,
 		// Session.WorkingDirectory and Env.File.<name> for this environment's
 		// embedded files — NOT Task.Param.*).  The File paths are computed first
-		// so they are available before the onEnter action, the variable values,
-		// and the embedded-file data are resolved against the same scope.
+		// so they are available before the action, the variable values, and the
+		// embedded-file data are resolved against the same scope.
 		scope, err := s.envScope(env.EmbeddedFiles)
 		if err != nil {
-			return nil, nil, nil, fmt.Errorf("resolve environment: %w", err)
+			return nil, nil, nil, err
 		}
 
-		// Resolve {{...}} format strings in the onEnter action and the
-		// environment variable values.  A bad reference fails the environment
-		// cleanly before any side effects.
-		resolvedEnter, err := fmtres.ResolveAction(env.OnEnter, scope)
+		// Resolve {{...}} format strings in the action and the environment
+		// variable values.  A bad reference fails the environment cleanly
+		// before any side effects.
+		resolvedAction, err := fmtres.ResolveAction(action, scope)
 		if err != nil {
-			return nil, nil, nil, fmt.Errorf("resolve environment: %w", err)
+			return nil, nil, nil, err
 		}
-		resolvedVars, err := fmtres.ResolveVars(env.Variables, scope)
+		resolvedVars, err := fmtres.ResolveVars(vars, scope)
 		if err != nil {
-			return nil, nil, nil, fmt.Errorf("resolve environment: %w", err)
+			return nil, nil, nil, err
 		}
-
-		// Resolve {{...}} references inside each embedded file's data against
-		// the same environment scope before materializing it (so file data may
-		// reference Param.*, Session.*, or another Env.File.* path).
-		resolvedFiles, err := fmtres.ResolveEmbeddedFiles(env.EmbeddedFiles, scope)
-		if err != nil {
-			return nil, nil, nil, fmt.Errorf("resolve embedded file data: %w", err)
-		}
-		return resolvedEnter, resolvedVars, resolvedFiles, nil
+		// Embedded-file data resolves against the SAME environment scope (so
+		// file data may reference Param.*, Session.*, or another Env.File.*
+		// path), for the caller that asks for it.
+		return resolvedAction, resolvedVars, func(files []protocol.EmbeddedFile) ([]protocol.EmbeddedFile, error) {
+			return fmtres.ResolveEmbeddedFiles(files, scope)
+		}, nil
 	}
 
 	// EnvSymbols also folds in the enclosing step template's let-bound names
 	// for a step environment (Template Schemas §3.6.2 row 1) — see its own doc
-	// comment; this method does not apply that block itself.
-	syms, err := fmtres.EnvSymbols(s.msg, &env, s.WorkDir, s.pathMapFile, s.hasPathMap, s.exprBudget)
+	// comment; this function does not apply that block itself. Without it,
+	// teardown fails the same way entry did: an onExit action referencing a
+	// step-template binding is an unknown symbol.
+	syms, err := fmtres.EnvSymbols(s.msg, &env, s.WorkDir, s.pathMapFile, s.hasPathMap, budget())
 	if err != nil {
-		return nil, nil, nil, fmt.Errorf("resolve environment: %w", err)
+		return nil, nil, nil, err
 	}
 	// Variables FIRST, before this environment's own let: block is bound —
 	// §3.6.2 row 4 grants those names to the script's children (actions,
@@ -953,20 +988,44 @@ func (s *Session) resolveEnvEntry(env protocol.AssignEnvironment) (*protocol.Act
 	// Phase 2 checks Variables against the pre-let table for exactly this
 	// reason (checkEnvironmentExpressions, exprcheck.go); resolving them here
 	// is how phase 3 matches it. See fmtres.ApplyEnvLet's doc comment.
-	resolvedVars, err := fmtres.ResolveVarsExpr(env.Variables, syms, s.msg.PathMap, s.exprBudget)
+	resolvedVars, err := fmtres.ResolveVarsExpr(vars, syms, s.msg.PathMap, budget())
 	if err != nil {
-		return nil, nil, nil, fmt.Errorf("resolve environment: %w", err)
+		return nil, nil, nil, err
 	}
 	// Exactly one call over this table — see fmtres.ApplyEnvLet's doc comment.
-	// Both resolutions below (onEnter, then EmbeddedFiles) reuse this same syms.
-	if err := fmtres.ApplyEnvLet(&env, syms, s.msg.PathMap, s.exprBudget); err != nil {
-		return nil, nil, nil, fmt.Errorf("resolve environment: let bindings: %w", err)
+	// Both resolutions below (the action, then EmbeddedFiles) reuse this same
+	// syms.
+	if err := fmtres.ApplyEnvLet(&env, syms, s.msg.PathMap, budget()); err != nil {
+		return nil, nil, nil, fmt.Errorf("let bindings: %w", err)
 	}
-	resolvedEnter, err := fmtres.ResolveActionExpr(env.OnEnter, syms, s.msg.PathMap, s.exprBudget)
+	resolvedAction, err := fmtres.ResolveActionExpr(action, syms, s.msg.PathMap, budget())
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	return resolvedAction, resolvedVars, func(files []protocol.EmbeddedFile) ([]protocol.EmbeddedFile, error) {
+		return fmtres.ResolveEmbeddedFilesExpr(files, syms, s.msg.PathMap, budget())
+	}, nil
+}
+
+// resolveEnvEntry resolves everything enterOne needs for one environment
+// entry — the onEnter action, the variable values, and the embedded files'
+// own data — against ONE environment-action scope/table. The resolution
+// itself is [Session.resolveEnvParts]; this method supplies the entry-side
+// budget (the SHARED s.exprBudget, charged across every table this assignment
+// builds) and the entry-side error wrapping.
+//
+// Returns the resolved action copy (nil when env.OnEnter is nil), the
+// resolved variable map, and the resolved embedded files, or an error
+// naming the offending reference/file.
+func (s *Session) resolveEnvEntry(env protocol.AssignEnvironment) (*protocol.Action, map[string]string, []protocol.EmbeddedFile, error) {
+	resolvedEnter, resolvedVars, resolveFiles, err := s.resolveEnvParts(
+		env, env.OnEnter, env.Variables,
+		func() *fmtres.AssignmentBudget { return s.exprBudget },
+	)
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("resolve environment: %w", err)
 	}
-	resolvedFiles, err := fmtres.ResolveEmbeddedFilesExpr(env.EmbeddedFiles, syms, s.msg.PathMap, s.exprBudget)
+	resolvedFiles, err := resolveFiles(env.EmbeddedFiles)
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("resolve embedded file data: %w", err)
 	}
@@ -975,11 +1034,12 @@ func (s *Session) resolveEnvEntry(env protocol.AssignEnvironment) (*protocol.Act
 
 // resolveEnvAction resolves an environment's action (onEnter or onExit) and its
 // variable values against the environment-action format-string scope/table
-// built from env — see [Session.resolveEnvEntry] for the EXPR-selection
-// rule this method shares. Unlike resolveEnvEntry it never resolves embedded
+// built from env — see [Session.resolveEnvParts], which it shares with
+// [Session.resolveEnvEntry]. Unlike resolveEnvEntry it never resolves embedded
 // file data: its only caller, [Session.ExitEnvironments], does not
 // re-materialize files on exit, and needs the scope/table only so onExit and
-// Variables may reference an Env.File.* path.
+// Variables may reference an Env.File.* path (so it discards resolveEnvParts'
+// file-resolving closure rather than calling it).
 //
 // It returns the resolved action copy (nil when action is nil) and the resolved
 // variable map (nil when vars is nil), or an error naming the offending
@@ -1020,47 +1080,15 @@ func (s *Session) resolveEnvEntry(env protocol.AssignEnvironment) (*protocol.Act
 // ExitEnvironments logs a resolve failure and CONTINUES, so the onExit was
 // silently skipped. Before Task 2 each call got its own throwaway ledger,
 // which is the behavior teardownBudget restores.
-func (s *Session) resolveEnvAction(env protocol.AssignEnvironment, action *protocol.Action, vars map[string]string) (*protocol.Action, map[string]string, error) {
-	if !s.msg.EXPR {
-		scope, err := s.envScope(env.EmbeddedFiles)
-		if err != nil {
-			return nil, nil, err
-		}
-		resolvedAction, err := fmtres.ResolveAction(action, scope)
-		if err != nil {
-			return nil, nil, err
-		}
-		resolvedVars, err := fmtres.ResolveVars(vars, scope)
-		if err != nil {
-			return nil, nil, err
-		}
-		return resolvedAction, resolvedVars, nil
-	}
-
-	// EnvSymbols also folds in the enclosing step template's let-bound names
-	// for a step environment (Template Schemas §3.6.2 row 1) — see its own doc
-	// comment. Without it, teardown fails the same way entry did: an onExit
-	// action referencing a step-template binding is an unknown symbol.
-	//
-	// EVERY CALL BELOW GETS ITS OWN budget FROM [Session.teardownBudget], and
-	// the "own" is the load-bearing word. See that method for why sharing one
-	// across the four is a silently-skipped onExit.
-	syms, err := fmtres.EnvSymbols(s.msg, &env, s.WorkDir, s.pathMapFile, s.hasPathMap, s.teardownBudget())
-	if err != nil {
-		return nil, nil, err
-	}
-	// Variables FIRST, before this environment's own let: block is bound —
-	// see [Session.resolveEnvEntry]'s identical comment and
-	// fmtres.ApplyEnvLet's doc comment for why the order is load-bearing.
-	resolvedVars, err := fmtres.ResolveVarsExpr(vars, syms, s.msg.PathMap, s.teardownBudget())
-	if err != nil {
-		return nil, nil, err
-	}
-	// Exactly one call over this table — see fmtres.ApplyEnvLet's doc comment.
-	if err := fmtres.ApplyEnvLet(&env, syms, s.msg.PathMap, s.teardownBudget()); err != nil {
-		return nil, nil, fmt.Errorf("let bindings: %w", err)
-	}
-	resolvedAction, err := fmtres.ResolveActionExpr(action, syms, s.msg.PathMap, s.teardownBudget())
+//
+// PASSING THE METHOD VALUE [Session.teardownBudget] -- rather than one budget
+// it produced -- is what carries both of the paragraphs above through
+// resolveEnvParts: that function calls it once per evaluation, so every
+// evaluation on this path still gets its OWN fresh ledger.
+func (s *Session) resolveEnvAction(
+	env protocol.AssignEnvironment, action *protocol.Action, vars map[string]string,
+) (*protocol.Action, map[string]string, error) {
+	resolvedAction, resolvedVars, _, err := s.resolveEnvParts(env, action, vars, s.teardownBudget)
 	if err != nil {
 		return nil, nil, err
 	}

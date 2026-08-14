@@ -29,6 +29,14 @@ type Segment struct {
 // it via parse's validName check -- that judgment is deliberately left to the
 // caller, per the package doc comment.
 func Segments(input string) ([]Segment, error) {
+	if !hasRef(input) {
+		// One literal run, or -- for the empty string, which has no run at all
+		// -- nothing, exactly as the general path below reports them.
+		if input == "" {
+			return nil, nil
+		}
+		return []Segment{{Literal: input}}, nil
+	}
 	refs, trailing, err := parseRaw(input)
 	if err != nil {
 		return nil, err

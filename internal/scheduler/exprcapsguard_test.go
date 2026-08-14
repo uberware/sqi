@@ -61,21 +61,20 @@ func TestDispatchHasOneGatedPath(t *testing.T) {
 	// Post-review the lease path hoists it out of the candidate loop, so the
 	// two gate call sites reach it by different routes -- selectLeaseBatch
 	// computes it once per batch and passes it down, evaluateSchedulability
-	// computes it per worker. Both must still go through THIS function.
-	// (handleWorkerRegister computes a shortfall too, for its diagnostic
-	// warning, but reaches exprCapShortfall directly rather than through
-	// workerExprShortfall -- it holds a RegisterMsg, not a store.Worker. That is
-	// why the two assertions below name different call-site sets.)
-	if short := productionCallersOf(t, "workerExprShortfall"); len(short) != 2 ||
-		!slices.Contains(short, "selectLeaseBatch") || !slices.Contains(short, "evaluateSchedulability") {
+	// computes it per worker. warnOnExprCapShortfall is the third caller: it
+	// computes a shortfall for its diagnostic warning only, not as a bound.
+	// All three must still go through THIS accessor.
+	if short := productionCallersOf(t, "workerExprShortfall"); len(short) != 3 ||
+		!slices.Contains(short, "selectLeaseBatch") || !slices.Contains(short, "evaluateSchedulability") ||
+		!slices.Contains(short, "warnOnExprCapShortfall") {
 		t.Fatalf("workerExprShortfall is called from %v; want exactly [selectLeaseBatch "+
-			"evaluateSchedulability] -- a gate call site that computes its own comparison "+
-			"instead is a second implementation waiting to drift", short)
+			"evaluateSchedulability warnOnExprCapShortfall] -- a call site that computes its own "+
+			"comparison instead is a second implementation waiting to drift", short)
 	}
-	if raw := productionCallersOf(t, "exprCapShortfall"); len(raw) != 2 ||
-		!slices.Contains(raw, "workerExprShortfall") || !slices.Contains(raw, "warnOnExprCapShortfall") {
-		t.Fatalf("exprCapShortfall is called from %v; want exactly [workerExprShortfall "+
-			"warnOnExprCapShortfall]", raw)
+	if raw := productionCallersOf(t, "exprCapShortfall"); len(raw) != 1 ||
+		!slices.Contains(raw, "workerExprShortfall") {
+		t.Fatalf("exprCapShortfall is called from %v; want exactly [workerExprShortfall] -- "+
+			"every caller reaches the comparison through that accessor", raw)
 	}
 }
 

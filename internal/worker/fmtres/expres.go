@@ -262,19 +262,58 @@ func convertPathMapSourceFormat(s string) expr.PathMapSourceFormat {
 //
 // raw is bound as a plain string SYMBOL rather than interpolated into the
 // expression source, so arbitrary path text -- quotes, backslashes,
-// non-ASCII -- can never be misparsed as expression syntax. ExprEvalOptions
-// is reused for the options (metering, expr.PathNative, the converted
-// rules), the SAME options every other phase-3 evaluation in this package
-// gets -- this is exactly the "one place all four settings are assembled"
-// ExprEvalOptions' own doc comment already claims, now also true for
-// symbol construction, not just rendering.
-func mapPathParamValue(raw string, lim ExprLimits, pathMap []protocol.PathMapRule) (expr.Value, error) {
+// non-ASCII -- can never be misparsed as expression syntax. opts comes from
+// [ExprEvalOptions] (metering, expr.PathNative, the converted rules), the SAME
+// options every other phase-3 evaluation in this package gets -- this is
+// exactly the "one place all four settings are assembled" ExprEvalOptions' own
+// doc comment already claims, now also true for symbol construction, not just
+// rendering. It is taken PRE-BUILT, rather than built here from lim and
+// pathMap, so a caller binding many parameters -- or many elements of one
+// LIST[PATH] -- assembles them once instead of once per value; every caller
+// still reaches them only through ExprEvalOptions, so there is still no
+// spelling that skips metering.
+func mapPathParamValue(raw string, opts []expr.Option) (expr.Value, error) {
 	syms := expr.MapSymbols{"src": expr.String(raw)}
-	v, err := expr.Eval("apply_path_mapping(src)", syms, expr.TPath, ExprEvalOptions(lim, pathMap)...)
+	v, err := applyPathMappingExpr.Eval(syms, expr.TPath, opts...)
 	if err != nil {
 		return expr.Value{}, fmt.Errorf("mapping %q: %w", raw, err)
 	}
 	return v, nil
+}
+
+// applyPathMappingExprSrc is the constant expression [mapPathParamValue]
+// evaluates, and applyPathMappingExpr is its ONE parsed form.
+//
+// Parsed once, at package init, rather than per call: expr.Eval's own doc
+// comment says to ("Prefer Parse plus Expression.Eval when the same expression
+// is evaluated more than once"), and a LIST[PATH] parameter binds one value per
+// element, so the per-call spelling lexed and parsed this same literal once per
+// staged input file.
+//
+// Reusing the parsed expression across calls -- and across goroutines, since
+// two task slots may build symbol tables concurrently -- is safe because
+// [expr.Expression.Eval] builds a FRESH evaluation context per call and treats
+// the parsed tree as read-only: nothing below it writes to the node graph, so
+// there is no state to carry from one evaluation into the next. The per-Eval
+// metering is likewise per call, not per Expression.
+//
+// The panic is unreachable: the source is a compile-time constant this
+// package's own tests evaluate on every run, so a parse failure would mean the
+// grammar had changed under a literal that no longer parses -- a build-time
+// fact, which is when this fires.
+const applyPathMappingExprSrc = "apply_path_mapping(src)"
+
+var applyPathMappingExpr = mustParseExpr(applyPathMappingExprSrc)
+
+// mustParseExpr parses a constant expression at package initialization,
+// panicking if it does not parse. See [applyPathMappingExpr] for why that is
+// the right failure mode for a literal the package itself authors.
+func mustParseExpr(src string) *expr.Expression {
+	e, err := expr.Parse(src)
+	if err != nil {
+		panic(fmt.Sprintf("fmtres: constant expression %q does not parse: %v", src, err))
+	}
+	return e
 }
 
 // errUnresolvedValue reports that a phase-3 evaluation produced a

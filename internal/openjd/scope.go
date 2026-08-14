@@ -117,6 +117,39 @@ type symbolFamily struct {
 	EXPROnly bool
 }
 
+// numScopes is one past the highest [Scope] constant: the size of the
+// precomputed tables below, and therefore the range of scopes they answer for.
+// A scope outside it falls through to the compute function, which is what keeps
+// the tables an optimization rather than a behavior change.
+const numScopes = int(ScopeStepTemplate) + 1
+
+// The three scope-derived answers, precomputed once per Scope at package init.
+//
+// Each is a pure function of a Scope, of which there are numScopes compile-time
+// constants, but every one of them was recomputed PER CALL -- and
+// derivedPrefixes is called once per format-string position on every submission,
+// EXPR or not (validateFormatString). Building the same handful of slices again
+// at each position is the whole reason these exist.
+//
+// THE SHARED SLICES ARE READ-ONLY. Nothing in this package appends to or writes
+// through what scopeFixed, scopeFamilies or derivedPrefixes return -- callers
+// range over them, join them, or prefix-match against them -- and a caller that
+// started appending would now be writing into every other caller's copy.
+var (
+	scopeFixedTable    [numScopes][]fixedSymbol
+	scopeFamiliesTable [numScopes][]symbolFamily
+	derivedPrefixTable [numScopes][]string
+)
+
+func init() {
+	for i := range numScopes {
+		s := Scope(i)
+		scopeFixedTable[i] = computeScopeFixed(s)
+		scopeFamiliesTable[i] = computeScopeFamilies(s)
+		derivedPrefixTable[i] = computeDerivedPrefixes(s)
+	}
+}
+
 // scopeFixed returns the fixed symbols a scope exposes, in declaration order.
 //
 // Every entry here is EXPR-only. Section 1.2.2 defines Job.Name, Step.Name and
@@ -124,7 +157,19 @@ type symbolFamily struct {
 // none of them appears in any pre-E2 prefix list -- which is exactly why
 // 7.3.1--job-name-requires-expr and 7.3.1--step-name-requires-expr are invalid
 // without the extension.
+//
+// The result is the SHARED slice built at init; see the table declaration above
+// for why no caller may modify it.
 func scopeFixed(s Scope) []fixedSymbol {
+	if s >= 0 && int(s) < len(scopeFixedTable) {
+		return scopeFixedTable[s]
+	}
+	return computeScopeFixed(s)
+}
+
+// computeScopeFixed is [scopeFixed]'s declaration of the mapping, called once
+// per scope at init rather than once per lookup.
+func computeScopeFixed(s Scope) []fixedSymbol {
 	jobName := fixedSymbol{Name: "Job.Name", Type: expr.TString, EXPROnly: true}
 	session := []fixedSymbol{
 		jobName,
@@ -154,7 +199,19 @@ func scopeFixed(s Scope) []fixedSymbol {
 // IN THE ORDER the pre-E2 prefix literals used. Order is load-bearing:
 // derivedPrefixes feeds validateFormatString's "allowed: ..." message, and
 // reordering it would change text users read.
+//
+// The result is the SHARED slice built at init; see the table declaration above
+// for why no caller may modify it.
 func scopeFamilies(s Scope) []symbolFamily {
+	if s >= 0 && int(s) < len(scopeFamiliesTable) {
+		return scopeFamiliesTable[s]
+	}
+	return computeScopeFamilies(s)
+}
+
+// computeScopeFamilies is [scopeFamilies]' declaration of the mapping, called
+// once per scope at init rather than once per lookup.
+func computeScopeFamilies(s Scope) []symbolFamily {
 	base := []symbolFamily{{Prefix: "Param."}, {Prefix: "RawParam."}}
 	switch s {
 	case ScopeJob, ScopeStepTemplate:
@@ -196,12 +253,28 @@ func scopeFamilies(s Scope) []symbolFamily {
 // 1 grants a step template no Session symbols at all (2.1 of the design
 // spec). Returning nil here says plainly that this scope is out of scope for
 // the base-spec path.
+//
+// The result is the SHARED slice built at init; see the table declaration above
+// for why no caller may modify it. This is the hottest of the three -- one
+// lookup per format-string position on every submission -- and the reason the
+// tables exist.
 func derivedPrefixes(s Scope) []string {
+	if s >= 0 && int(s) < len(derivedPrefixTable) {
+		return derivedPrefixTable[s]
+	}
+	return computeDerivedPrefixes(s)
+}
+
+// computeDerivedPrefixes is [derivedPrefixes]' declaration of the mapping,
+// called once per scope at init rather than once per lookup. It consults
+// computeScopeFamilies rather than [scopeFamilies] so it has no dependency on
+// which table is populated first.
+func computeDerivedPrefixes(s Scope) []string {
 	if s == ScopeStepTemplate {
 		return nil
 	}
 	out := make([]string, 0, 6)
-	for _, f := range scopeFamilies(s) {
+	for _, f := range computeScopeFamilies(s) {
 		if !f.EXPROnly {
 			out = append(out, f.Prefix)
 		}

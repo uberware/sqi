@@ -2,8 +2,6 @@
 
 package expr
 
-import "maps"
-
 // Shape is one accepted signature of an operator or function: the types it
 // takes, the type it gives back, and the code that computes it.
 //
@@ -217,8 +215,74 @@ func promotableUnder(pr promotion, from, to Type) bool {
 	return false
 }
 
+// numTypeVars is how many type-variable codes the language has. They are
+// contiguous, CodeVarT through CodeVarT3, which is what lets a Code index a
+// bindings slot directly.
+const numTypeVars = int(CodeVarT3-CodeVarT) + 1
+
 // bindings records what each type variable in a signature bound to.
-type bindings map[Code]Type
+//
+// It is a fixed-slot VALUE rather than a map, and that is a hot-path decision
+// rather than a style one. Every binary operator, unary operator, function call
+// and property access funnels through matchShapesExactFirst, which scores each
+// candidate row against its own fresh bindings — binaryShapes[OpAdd] alone has
+// six rows, of which at most one survives — and a union parameter took two more
+// per member for its scratch copies. As a map every one of those was a heap
+// allocation, on an evaluator whose meter has counted 1.66M operations for a
+// single large submission. Four slots and a set-mask answer the same three
+// questions (bound?, to what, bind it) with no allocation at all: a scratch
+// copy becomes a struct assignment and the whole match runs in the caller's
+// frame.
+//
+// The mutating half of the matcher therefore takes *bindings; everything that
+// only READS one (substitute, unresolvedResult, Shape.RetOf) still takes it by
+// value, which is also what makes the returned match impossible to alias — the
+// caller gets a copy, not a buffer the matcher may reuse.
+//
+// A FIFTH type-variable code means a fifth slot here. varIndex is the one place
+// a Code becomes a slot and isTypeVar is defined in terms of it, so a code
+// without one is simply not a type variable: it stops binding, visibly, rather
+// than silently sharing another variable's slot.
+type bindings struct {
+	// set is a bit per slot, marking which variables are bound. A zero Type is
+	// a legitimate binding (nulltype), so the slot alone cannot say.
+	set  uint8
+	vars [numTypeVars]Type
+}
+
+// varIndex is c's slot in a bindings, or -1 when c is not a type variable.
+func varIndex(c Code) int {
+	if c < CodeVarT || c > CodeVarT3 {
+		return -1
+	}
+	return int(c - CodeVarT)
+}
+
+// get reports what the type variable c is bound to, and whether it is bound at
+// all — the map index expression this replaced, with the same two results.
+//
+// The receiver is a pointer only to match bind's, which must be one; get
+// mutates nothing. Every caller's bindings is addressable, including the
+// by-value parameters of substitute and Shape.RetOf.
+func (b *bindings) get(c Code) (Type, bool) {
+	i := varIndex(c)
+	if i < 0 || b.set&(1<<i) == 0 {
+		return Type{}, false
+	}
+	return b.vars[i], true
+}
+
+// bind records c's binding, replacing any previous one. A code that is not a
+// type variable is ignored: every caller has already established that it is one
+// (isTypeVar), and there is no slot to record it in.
+func (b *bindings) bind(c Code, t Type) {
+	i := varIndex(c)
+	if i < 0 {
+		return
+	}
+	b.set |= 1 << i
+	b.vars[i] = t
+}
 
 // Argument costs. A candidate's cost is the sum over its parameters, and the
 // cheapest admissible candidate wins.
@@ -274,8 +338,11 @@ func matchShapesExactFirst(shapes []Shape, args []Type, exactFirst bool) (Shape,
 		if len(s.Params) != len(args) {
 			continue
 		}
-		b := bindings{}
-		cost, ok := shapeCostExactFirst(s, args, b, exactFirst)
+		// A fresh zero value per candidate, in this frame: a losing candidate's
+		// bindings must not be visible to the next one, and bestBindings takes a
+		// COPY, so nothing the loop reuses can reach the caller.
+		var b bindings
+		cost, ok := shapeCostExactFirst(s, args, &b, exactFirst)
 		if !ok {
 			continue
 		}
@@ -285,7 +352,7 @@ func matchShapesExactFirst(shapes []Shape, args []Type, exactFirst bool) (Shape,
 		}
 	}
 	if best < 0 {
-		return Shape{}, nil, false
+		return Shape{}, bindings{}, false
 	}
 	return bestShape, bestBindings, true
 }
@@ -298,7 +365,7 @@ func matchShapesExactFirst(shapes []Shape, args []Type, exactFirst bool) (Shape,
 // variable scores costExact, so identity(x) works on any receiver, while a
 // (string, string) signature refuses a path receiver because path -> string
 // scores costWiden.
-func shapeCostExactFirst(s Shape, args []Type, b bindings, exactFirst bool) (int, bool) {
+func shapeCostExactFirst(s Shape, args []Type, b *bindings, exactFirst bool) (int, bool) {
 	total := 0
 	for i := range s.Params {
 		cost, ok := argCost(s.Params[i], args[i], b, s.Promote)
@@ -316,7 +383,7 @@ func shapeCostExactFirst(s Shape, args []Type, b bindings, exactFirst bool) (int
 // argCost reports what it costs to pass an argument of type arg to a parameter
 // declared as param, and whether it is admissible at all. pr narrows which
 // conversions the enclosing shape accepts — see promotion.
-func argCost(param, arg Type, b bindings, pr promotion) (int, bool) {
+func argCost(param, arg Type, b *bindings, pr promotion) (int, bool) {
 	// A placeholder is matched on its constraint. Its lack of a value is
 	// irrelevant to selecting a signature — which is what lets an expression be
 	// type-checked before any parameter value exists.
@@ -393,10 +460,10 @@ func argCost(param, arg Type, b bindings, pr promotion) (int, bool) {
 // callShape then coerces each operand to it before compareLists runs. Nothing
 // downstream has to learn about cross-type element comparison, because by the
 // time it runs there is no longer a cross-type pair.
-func typeVarCost(code Code, arg Type, b bindings, pr promotion) (int, bool) {
-	bound, ok := b[code]
+func typeVarCost(code Code, arg Type, b *bindings, pr promotion) (int, bool) {
+	bound, ok := b.get(code)
 	if !ok {
-		b[code] = arg
+		b.bind(code, arg)
 		return costExact, true
 	}
 	if bound.Equal(arg) {
@@ -410,14 +477,14 @@ func typeVarCost(code Code, arg Type, b bindings, pr promotion) (int, bool) {
 	// rebinding to it would throw the real element type away and pin the
 	// variable to nulltype, which is what the first branch exists to undo.
 	if emptyListBinding(bound, arg) {
-		b[code] = arg
+		b.bind(code, arg)
 		return costWiden, true
 	}
 	if emptyListBinding(arg, bound) {
 		return costWiden, true
 	}
 	if unified, ok := orderingUnified(pr, bound, arg); ok {
-		b[code] = unified
+		b.bind(code, unified)
 		return costWiden, true
 	}
 	return 0, false
@@ -486,7 +553,7 @@ func emptyListBinding(bound, arg Type) bool {
 // argCostList scores a list[T]-shaped argument against a list[T]-shaped
 // parameter, both already confirmed single-parameter list types by argCost's
 // caller. Split out to keep argCost itself under the repo's complexity cap.
-func argCostList(param, arg Type, b bindings, pr promotion) (int, bool) {
+func argCostList(param, arg Type, b *bindings, pr promotion) (int, bool) {
 	// list[nulltype] is the empty-list literal's type (section 1.2.3) and is
 	// compatible with any list type — promotable's own list branch already
 	// says so — but descending elementwise below would instead ask whether
@@ -524,8 +591,8 @@ func argCostList(param, arg Type, b bindings, pr promotion) (int, bool) {
 		// and a concrete element type reaches this branch at all — both
 		// score costWiden below rather than through a recursive call.
 		if elem := param.Params[0]; isTypeVar(elem.Code) {
-			if _, bound := b[elem.Code]; !bound {
-				b[elem.Code] = TNull
+			if _, bound := b.get(elem.Code); !bound {
+				b.bind(elem.Code, TNull)
 				// costExact, not costWiden, and the difference is only
 				// observable in METHOD position. matchShapesExactFirst
 				// implements section 1.2.4 by requiring argument 0 to score
@@ -563,31 +630,34 @@ func argCostList(param, arg Type, b bindings, pr promotion) (int, bool) {
 // is no single binding that is correct regardless of which member shows up
 // at runtime, so the whole argument is inadmissible rather than picking one
 // arbitrarily. Bindings the members agree on are merged back into b.
-func unionArgValueCost(param, arg Type, b bindings, pr promotion) (int, bool) {
+func unionArgValueCost(param, arg Type, b *bindings, pr promotion) (int, bool) {
 	worst := 0
-	merged := make(bindings, len(b))
-	maps.Copy(merged, b)
+	merged := *b
 	for _, member := range arg.Params {
-		scratch := make(bindings, len(b))
-		maps.Copy(scratch, b)
-		cost, ok := argCost(param, member, scratch, pr)
+		scratch := *b
+		cost, ok := argCost(param, member, &scratch, pr)
 		if !ok {
 			return 0, false
 		}
 		if cost > worst {
 			worst = cost
 		}
-		for code, t := range scratch {
-			if existing, seen := merged[code]; seen {
+		for i := range numTypeVars {
+			code := CodeVarT + Code(i)
+			t, bound := scratch.get(code)
+			if !bound {
+				continue
+			}
+			if existing, seen := merged.get(code); seen {
 				if !existing.Equal(t) {
 					return 0, false
 				}
 				continue
 			}
-			merged[code] = t
+			merged.bind(code, t)
 		}
 	}
-	maps.Copy(b, merged)
+	*b = merged
 	return worst, true
 }
 
@@ -600,13 +670,12 @@ func unionArgValueCost(param, arg Type, b bindings, pr promotion) (int, bool) {
 // see a variable binding left behind by a failed or losing attempt at member
 // one. Only the winning member's bindings are folded back into b, so a type
 // variable never ends up bound to a type from a member that did not win.
-func unionArgCost(param, arg Type, b bindings, pr promotion) (int, bool) {
+func unionArgCost(param, arg Type, b *bindings, pr promotion) (int, bool) {
 	best := -1
 	var bestBindings bindings
 	for _, member := range param.Params {
-		scratch := make(bindings, len(b))
-		maps.Copy(scratch, b)
-		cost, ok := argCost(member, arg, scratch, pr)
+		scratch := *b
+		cost, ok := argCost(member, arg, &scratch, pr)
 		if !ok {
 			continue
 		}
@@ -617,26 +686,20 @@ func unionArgCost(param, arg Type, b bindings, pr promotion) (int, bool) {
 	if best < 0 {
 		return 0, false
 	}
-	maps.Copy(b, bestBindings)
+	*b = bestBindings
 	return best, true
 }
 
 // isTypeVar reports whether c is one of the type-variable codes, which appear
 // only in signatures and never as the type of a value.
-func isTypeVar(c Code) bool {
-	switch c {
-	case CodeVarT, CodeVarT1, CodeVarT2, CodeVarT3:
-		return true
-	}
-	return false
-}
+func isTypeVar(c Code) bool { return varIndex(c) >= 0 }
 
 // substitute replaces every bound type variable in t with the type it bound to,
 // rebuilding through the constructors so the result stays normalized. An unbound
 // variable is left as it is.
 func substitute(t Type, b bindings) Type {
 	if isTypeVar(t.Code) {
-		if bound, ok := b[t.Code]; ok {
+		if bound, ok := b.get(t.Code); ok {
 			return bound
 		}
 		return t

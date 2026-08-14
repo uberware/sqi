@@ -339,12 +339,32 @@ func budgetOrDefault(b *AssignmentBudget) *AssignmentBudget {
 	return NewAssignmentBudget(ExprLimits{})
 }
 
-// ChargePositions charges n additional format-string positions, naming where
-// as the position that exhausted the budget if this call is the one that
-// does. It returns a non-nil error -- the SAME error on every call once the
-// budget is spent, either dimension -- when the caller may not do the work
-// those positions represent.
-func (b *AssignmentBudget) ChargePositions(n int64, where string) error {
+// The two exceeded-message templates [AssignmentBudget.charge] formats, one per
+// dimension. Each takes the LIMIT, the count REACHED, and the position that
+// reached it, in that order -- charge is the only caller and passes exactly
+// those three.
+const (
+	positionsExceededFormat = "assignment-wide expression budget exceeded: at most %d expression positions may be " +
+		"resolved for one assignment (reached %d at %s)"
+	retainedBytesExceededFormat = "assignment-wide expression budget exceeded: let bindings may retain at most %d " +
+		"bytes across one assignment (reached %d at %s)"
+)
+
+// charge is the shared body of [AssignmentBudget.ChargePositions] and
+// [AssignmentBudget.ChargeRetainedBytes]: the two differ only in which counter
+// they add to, which limit they compare against, and which message they name
+// the breach with, so the STICKY-ERROR CONTRACT they share is implemented once,
+// here, beside the prose that states it.
+//
+// That contract: b.err is set EXACTLY ONCE, by whichever charge in whichever
+// dimension first exceeds its limit, and every later charge -- in either
+// dimension -- is a cheap no-op returning that same error. n <= 0 is a no-op
+// that still reports the budget's current state (nil, since an already-tripped
+// budget returned above).
+//
+// counter must point into b, and the caller must NOT hold b.mu: this method
+// takes it.
+func (b *AssignmentBudget) charge(counter *int64, limit, n int64, format, where string) error {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	if b.err != nil {
@@ -353,15 +373,20 @@ func (b *AssignmentBudget) ChargePositions(n int64, where string) error {
 	if n <= 0 {
 		return nil
 	}
-	b.positions += n
-	if b.positions > b.limits.AssignmentPositions {
-		b.err = fmt.Errorf(
-			"assignment-wide expression budget exceeded: at most %d expression positions may be "+
-				"resolved for one assignment (reached %d at %s)",
-			b.limits.AssignmentPositions, b.positions, where,
-		)
+	*counter += n
+	if *counter > limit {
+		b.err = fmt.Errorf(format, limit, *counter, where)
 	}
 	return b.err
+}
+
+// ChargePositions charges n additional format-string positions, naming where
+// as the position that exhausted the budget if this call is the one that
+// does. It returns a non-nil error -- the SAME error on every call once the
+// budget is spent, either dimension -- when the caller may not do the work
+// those positions represent.
+func (b *AssignmentBudget) ChargePositions(n int64, where string) error {
+	return b.charge(&b.positions, b.limits.AssignmentPositions, n, positionsExceededFormat, where)
 }
 
 // ChargeRetainedBytes charges n additional retained bytes -- one let:
@@ -370,23 +395,7 @@ func (b *AssignmentBudget) ChargePositions(n int64, where string) error {
 // reports the budget's current state, matching [ChargePositions]'s own
 // contract.
 func (b *AssignmentBudget) ChargeRetainedBytes(n int64, where string) error {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	if b.err != nil {
-		return b.err
-	}
-	if n <= 0 {
-		return nil
-	}
-	b.retained += n
-	if b.retained > b.limits.AssignmentRetainedBytes {
-		b.err = fmt.Errorf(
-			"assignment-wide expression budget exceeded: let bindings may retain at most %d bytes "+
-				"across one assignment (reached %d at %s)",
-			b.limits.AssignmentRetainedBytes, b.retained, where,
-		)
-	}
-	return b.err
+	return b.charge(&b.retained, b.limits.AssignmentRetainedBytes, n, retainedBytesExceededFormat, where)
 }
 
 // Err returns the ONE error recording why the budget tripped, or nil if it

@@ -145,12 +145,12 @@ const pathFlavor = expr.PathNative
 func TaskSymbols(
 	msg *protocol.AssignMsg, workDir, pathMapFile string, hasPathMap bool, budget *AssignmentBudget,
 ) (expr.MapSymbols, error) {
-	lim := budgetOrDefault(budget).Limits()
+	opts := ExprEvalOptions(budgetOrDefault(budget).Limits(), msg.PathMap)
 	syms := expr.MapSymbols{}
-	if err := bindJobParamSymbols(msg, syms, lim); err != nil {
+	if err := bindJobParamSymbols(msg, syms, opts); err != nil {
 		return nil, err
 	}
-	if err := bindTaskParamSymbols(msg, syms, lim); err != nil {
+	if err := bindTaskParamSymbols(msg, syms, opts); err != nil {
 		return nil, err
 	}
 	bindSessionSymbols(syms, workDir, pathMapFile, hasPathMap)
@@ -235,9 +235,9 @@ func EnvSymbols(
 	msg *protocol.AssignMsg, env *protocol.AssignEnvironment, workDir, pathMapFile string, hasPathMap bool,
 	budget *AssignmentBudget,
 ) (expr.MapSymbols, error) {
-	lim := budgetOrDefault(budget).Limits()
+	opts := ExprEvalOptions(budgetOrDefault(budget).Limits(), msg.PathMap)
 	syms := expr.MapSymbols{}
-	if err := bindJobParamSymbols(msg, syms, lim); err != nil {
+	if err := bindJobParamSymbols(msg, syms, opts); err != nil {
 		return nil, err
 	}
 	bindSessionSymbols(syms, workDir, pathMapFile, hasPathMap)
@@ -252,9 +252,7 @@ func EnvSymbols(
 		return nil, err
 	}
 	if env.StepEnvironment {
-		if err := applyStepTemplateLet(
-			msg.StepTemplateLet, syms, ExprEvalOptions(lim, msg.PathMap), budget,
-		); err != nil {
+		if err := applyStepTemplateLet(msg.StepTemplateLet, syms, opts, budget); err != nil {
 			return nil, err
 		}
 	}
@@ -285,22 +283,11 @@ func EnvSymbols(
 // An error is returned only when mapping a PATH parameter's value fails --
 // see [mapPathParamValue]; ordinary INT/FLOAT/STRING parsing failures still
 // fall back to expr.Unresolved exactly as before, unchanged.
-func bindJobParamSymbols(msg *protocol.AssignMsg, syms expr.MapSymbols, lim ExprLimits) error {
-	// Sorted, because the loop returns on the FIRST failure: iterating the
-	// map directly makes an assignment with two bad PATH parameters report a
-	// different one run to run, which is not something an operator reading a
-	// task failure should have to notice.
-	for _, name := range slices.Sorted(maps.Keys(msg.JobParameters)) {
-		raw := msg.JobParameters[name]
-		paramType, rawType := expr.JobParamTypes(msg.JobParameterTypes[name])
-		v, err := paramValueForBinding(paramType, raw, lim, msg.PathMap)
-		if err != nil {
-			return fmt.Errorf("job parameter %q: %w", name, err)
-		}
-		syms["Param."+name] = v
-		syms["RawParam."+name] = expr.ValueFromText(rawType, raw, pathFlavor)
-	}
-	return nil
+func bindJobParamSymbols(msg *protocol.AssignMsg, syms expr.MapSymbols, opts []expr.Option) error {
+	return bindParamSymbols(
+		syms, "job", "Param.", "RawParam.",
+		msg.JobParameters, msg.JobParameterTypes, expr.JobParamTypes, opts,
+	)
 }
 
 // bindTaskParamSymbols binds Task.Param.<name> and Task.RawParam.<name> for
@@ -318,17 +305,60 @@ func bindJobParamSymbols(msg *protocol.AssignMsg, syms expr.MapSymbols, lim Expr
 // [paramValueForBinding] (mapped when t is TPath), Task.RawParam.<name>
 // stays built straight from raw (unmapped), even when both share the exact
 // same declared TYPE.
-func bindTaskParamSymbols(msg *protocol.AssignMsg, syms expr.MapSymbols, lim ExprLimits) error {
-	// Sorted for the same reason as bindJobParamSymbols, above.
-	for _, name := range slices.Sorted(maps.Keys(msg.Parameters)) {
-		raw := msg.Parameters[name]
-		t := expr.TaskParamType(msg.ParameterTypes[name])
-		v, err := paramValueForBinding(t, raw, lim, msg.PathMap)
+//
+// That last sentence is the ONLY thing separating this function from
+// [bindJobParamSymbols], and the types func it passes to [bindParamSymbols] is
+// where it is now written down: returning expr.TaskParamType's one type TWICE
+// renders §1.2.2's "a task parameter's RawParam keeps the declared type; a
+// job parameter's degrades to string" as one visible line, rather than as a
+// difference a reader has to spot between two loops.
+func bindTaskParamSymbols(msg *protocol.AssignMsg, syms expr.MapSymbols, opts []expr.Option) error {
+	return bindParamSymbols(
+		syms, "task", "Task.Param.", "Task.RawParam.",
+		msg.Parameters, msg.ParameterTypes,
+		func(declared string) (paramType, rawType expr.Type) {
+			t := expr.TaskParamType(declared)
+			return t, t
+		},
+		opts,
+	)
+}
+
+// bindParamSymbols is the ONE implementation of §1.2.2's parameter binding,
+// shared by [bindJobParamSymbols] and [bindTaskParamSymbols]: the sorted walk,
+// the [paramValueForBinding] call for the mapped Param twin, the
+// expr.ValueFromText call for the unmapped Raw twin, and the error wrapping are
+// identical for both families.
+//
+// It is one function because the two were both WRONG IN THE SAME WAY and had to
+// be fixed twice -- this file's FIX ROUND 1 note records binding both twins
+// from identical unmapped text in each of them.
+//
+// values maps a parameter name to its raw submitted text; declaredTypes maps
+// the same names to their declared type spellings; types turns one spelling
+// into the (Param, RawParam) type pair, which is the single line the two
+// families genuinely differ on. kind ("job"/"task") names the family in an
+// error; paramPrefix/rawPrefix are the symbol prefixes.
+func bindParamSymbols(
+	syms expr.MapSymbols,
+	kind, paramPrefix, rawPrefix string,
+	values, declaredTypes map[string]string,
+	types func(declared string) (paramType, rawType expr.Type),
+	opts []expr.Option,
+) error {
+	// Sorted, because the loop returns on the FIRST failure: iterating the
+	// map directly makes an assignment with two bad PATH parameters report a
+	// different one run to run, which is not something an operator reading a
+	// task failure should have to notice.
+	for _, name := range slices.Sorted(maps.Keys(values)) {
+		raw := values[name]
+		paramType, rawType := types(declaredTypes[name])
+		v, err := paramValueForBinding(paramType, raw, opts)
 		if err != nil {
-			return fmt.Errorf("task parameter %q: %w", name, err)
+			return fmt.Errorf("%s parameter %q: %w", kind, name, err)
 		}
-		syms["Task.Param."+name] = v
-		syms["Task.RawParam."+name] = expr.ValueFromText(t, raw, pathFlavor)
+		syms[paramPrefix+name] = v
+		syms[rawPrefix+name] = expr.ValueFromText(rawType, raw, pathFlavor)
 	}
 	return nil
 }
@@ -354,14 +384,15 @@ func bindTaskParamSymbols(msg *protocol.AssignMsg, syms expr.MapSymbols, lim Exp
 // against RFC 0007 -- and mapListPathParamValue below is the fix. Kept rather
 // than deleted because it is the record of a correct claim outliving its
 // premise.
-func paramValueForBinding(
-	t expr.Type, raw string, lim ExprLimits, pathMap []protocol.PathMapRule,
-) (expr.Value, error) {
+//
+// opts is the pre-built [ExprEvalOptions] slice for this table -- see
+// [mapPathParamValue] for why it is passed down rather than rebuilt per value.
+func paramValueForBinding(t expr.Type, raw string, opts []expr.Option) (expr.Value, error) {
 	if t.Equal(expr.TPath) {
-		return mapPathParamValue(raw, lim, pathMap)
+		return mapPathParamValue(raw, opts)
 	}
 	if t.Equal(expr.ListOf(expr.TPath)) {
-		return mapListPathParamValue(raw, lim, pathMap)
+		return mapListPathParamValue(raw, opts)
 	}
 	return expr.ValueFromText(t, raw, pathFlavor), nil
 }
@@ -375,14 +406,16 @@ func paramValueForBinding(
 // text, before any flavor-specific rendering -- for exactly the reason this
 // file's header gives for the scalar case. It also means each element's
 // mapping is metered by the same operator-configured per-evaluation limits,
-// rather than one budget covering the whole list.
+// rather than one budget covering the whole list: opts is shared across the
+// elements, but an expr.Option is pure CONFIGURATION applied to a fresh
+// evaluation context per Eval, so sharing the slice shares the numbers, never a
+// ledger. What sharing it does avoid is re-assembling the closures and
+// re-copying the whole rules slice (ConvertPathMapRules) once per staged file.
 //
 // A value that does not decode returns Unresolved rather than an error, the
 // same fallback expr.ValueFromText uses for a scalar that fails to parse: this
 // function binds symbols, and validation upstream is what rejects a bad value.
-func mapListPathParamValue(
-	raw string, lim ExprLimits, pathMap []protocol.PathMapRule,
-) (expr.Value, error) {
+func mapListPathParamValue(raw string, opts []expr.Option) (expr.Value, error) {
 	elems, err := openjdDecodeList(raw)
 	if err != nil {
 		//nolint:nilerr // deliberate: an undecodable value falls back to
@@ -397,7 +430,7 @@ func mapListPathParamValue(
 		if !ok {
 			return expr.Unresolved(expr.ListOf(expr.TPath)), nil
 		}
-		v, err := mapPathParamValue(s, lim, pathMap)
+		v, err := mapPathParamValue(s, opts)
 		if err != nil {
 			return expr.Value{}, err
 		}

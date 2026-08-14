@@ -352,6 +352,10 @@ type walkCtx struct {
 	callee bool
 }
 
+// initialWalkStack is the walk stack's starting capacity: deep enough that a
+// typical template expression never reallocates, small enough to be free.
+const initialWalkStack = 16
+
 // walkFrame pairs a node with the context it was reached in.
 type walkFrame struct {
 	n   Node
@@ -386,91 +390,103 @@ type walkFrame struct {
 // sorts its result), which is exactly why it is stated here rather than left
 // to be rediscovered.
 func walk(n Node, fn func(Node, walkCtx)) {
+	walkUntil(n, func(n Node, ctx walkCtx) bool {
+		fn(n, ctx)
+		return false
+	})
+}
+
+// walkUntil is walk with EARLY TERMINATION: it stops the moment fn returns
+// true, and reports whether that happened. walk is the never-true case of it,
+// expressed that way so the two cannot drift on visit order or on the walkCtx a
+// position carries -- there is one traversal in this package, not two.
+//
+// It exists for a MEMBERSHIP question, which is what the template checker
+// actually asks of an expression ("does this call a host-only function?").
+// Answering it by collecting Expression.CalledFunctions()'s whole sorted,
+// de-duplicated set walks every node regardless, allocates a map and a slice,
+// and sorts -- once per expression, on the submission path. See CallsAny.
+func walkUntil(n Node, fn func(Node, walkCtx) bool) bool {
 	if n == nil {
-		return
+		return false
 	}
-	stack := []walkFrame{{n: n}}
+	// Capacity up front rather than growing from one: the stack is filled by
+	// append, and starting at a single frame made even a small tree pay three
+	// reallocations to reach a depth almost no expression exceeds.
+	stack := make([]walkFrame, 1, initialWalkStack)
+	stack[0] = walkFrame{n: n}
 	for len(stack) > 0 {
 		cur := stack[len(stack)-1]
 		stack = stack[:len(stack)-1]
-		fn(cur.n, cur.ctx)
+		if fn(cur.n, cur.ctx) {
+			return true
+		}
 		stack = pushChildren(stack, cur)
 	}
+	return false
 }
 
-// pushChildren appends f's child frames to a walk stack in REVERSE order, so
-// that popping them yields the leftmost child first. A nil child — an absent
-// slice component, which section 1.3.8 distinguishes from an explicit zero — is
-// skipped rather than pushed, since the caller's fn must never be handed one.
+// pushChildren appends f's child frames to a walk stack in REVERSE source
+// order, so that popping them yields the leftmost child first. A nil child — an
+// absent slice component, which section 1.3.8 distinguishes from an explicit
+// zero — is skipped rather than pushed, since the caller's fn must never be
+// handed one.
+//
+// Each node kind names its own children, and the two whose children do NOT all
+// share the parent's context — ListComp and Call — say why inline. A child is
+// never itself a callee unless its parent is a Call, so the flag is dropped
+// here and re-set only on a Call's callee.
+//
+// It appends STRAIGHT ONTO THE STACK. An earlier form built a per-node slice of
+// child frames and reversed that, which was one heap allocation for EVERY node
+// visited on a walk the checker runs over every expression in a template.
 func pushChildren(stack []walkFrame, f walkFrame) []walkFrame {
-	for _, child := range slices.Backward(childFrames(f)) {
-		if child.n != nil {
-			stack = append(stack, child)
-		}
+	here := walkCtx{scope: f.ctx.scope}
+	switch v := f.n.(type) {
+	case *Unary:
+		return pushRev(stack, here, v.X)
+	case *Binary:
+		return pushRev(stack, here, v.L, v.R)
+	case *Logical:
+		return pushRev(stack, here, v.L, v.R)
+	case *Cond:
+		return pushRev(stack, here, v.Then, v.If, v.Else)
+	case *Compare:
+		return pushRev(stack, here, v.Operands...)
+	case *ListLit:
+		return pushRev(stack, here, v.Elems...)
+	case *Index:
+		return pushRev(stack, here, v.X, v.Idx)
+	case *Slice:
+		return pushRev(stack, here, v.X, v.Start, v.Stop, v.Step)
+	case *ListComp:
+		// The loop variable is bound in the element expression and in the
+		// filter, and NOT in the iterable, which section 1.3.7 evaluates before
+		// the variable exists. Pushed last-child-first: Cond, Iter, Elem.
+		inner := walkCtx{scope: &loopScope{name: v.Var, parent: f.ctx.scope}}
+		stack = pushRev(stack, inner, v.Cond)
+		stack = pushRev(stack, here, v.Iter)
+		return pushRev(stack, inner, v.Elem)
+	case *Access:
+		return pushRev(stack, here, v.X)
+	case *Call:
+		// The callee's trailing segment is a function or method name rather
+		// than part of a symbol (section 1.3.3); the arguments are ordinary
+		// sub-expressions. Pushed last-child-first: the arguments, then the
+		// callee.
+		stack = pushRev(stack, here, v.Args...)
+		return pushRev(stack, walkCtx{scope: f.ctx.scope, callee: true}, v.Callee)
 	}
 	return stack
 }
 
-// childFrames returns f's children in source order, each with the context its
-// own position gives it. ListComp and Call are the only two nodes whose
-// children do not all share the parent's context, and each has its own helper
-// saying why.
-func childFrames(f walkFrame) []walkFrame {
-	// A child is never itself a callee unless its parent is a Call, so the flag
-	// is dropped here and re-set only by callFrames.
-	here := walkCtx{scope: f.ctx.scope}
-	at := func(nodes ...Node) []walkFrame {
-		out := make([]walkFrame, len(nodes))
-		for i, n := range nodes {
-			out[i] = walkFrame{n: n, ctx: here}
+// pushRev appends nodes to a walk stack in reverse order, each in ctx, skipping
+// nils.
+func pushRev(stack []walkFrame, ctx walkCtx, nodes ...Node) []walkFrame {
+	for _, n := range slices.Backward(nodes) {
+		if n != nil {
+			stack = append(stack, walkFrame{n: n, ctx: ctx})
 		}
-		return out
 	}
-	switch v := f.n.(type) {
-	case *Unary:
-		return at(v.X)
-	case *Binary:
-		return at(v.L, v.R)
-	case *Logical:
-		return at(v.L, v.R)
-	case *Cond:
-		return at(v.Then, v.If, v.Else)
-	case *Compare:
-		return at(v.Operands...)
-	case *ListLit:
-		return at(v.Elems...)
-	case *Index:
-		return at(v.X, v.Idx)
-	case *Slice:
-		return at(v.X, v.Start, v.Stop, v.Step)
-	case *ListComp:
-		return compFrames(v, f.ctx.scope)
-	case *Access:
-		return at(v.X)
-	case *Call:
-		return callFrames(v, f.ctx.scope)
-	}
-	return nil
-}
-
-// compFrames places a comprehension's three children in their real scopes: the
-// loop variable is bound in the element expression and in the filter, and NOT
-// in the iterable, which section 1.3.7 evaluates before the variable exists.
-func compFrames(n *ListComp, scope *loopScope) []walkFrame {
-	inner := walkCtx{scope: &loopScope{name: n.Var, parent: scope}}
-	outer := walkCtx{scope: scope}
-	return []walkFrame{{n: n.Elem, ctx: inner}, {n: n.Iter, ctx: outer}, {n: n.Cond, ctx: inner}}
-}
-
-// callFrames marks the callee, whose trailing segment is a function or method
-// name rather than part of a symbol (section 1.3.3). Arguments are ordinary
-// sub-expressions.
-func callFrames(n *Call, scope *loopScope) []walkFrame {
-	here := walkCtx{scope: scope}
-	out := make([]walkFrame, 0, len(n.Args)+1)
-	out = append(out, walkFrame{n: n.Callee, ctx: walkCtx{scope: scope, callee: true}})
-	for _, a := range n.Args {
-		out = append(out, walkFrame{n: a, ctx: here})
-	}
-	return out
+	return stack
 }
