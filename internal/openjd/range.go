@@ -5,9 +5,9 @@ package openjd
 import (
 	"errors"
 	"fmt"
-	"math"
-	"strconv"
 	"strings"
+
+	"github.com/uberware/sqi/internal/openjd/intrange"
 )
 
 // maxRangeValues is a hard resource-exhaustion safety bound on the number of
@@ -20,47 +20,25 @@ const maxRangeValues = 10_000_000
 
 // errRangeTooLarge is returned (wrapped) when a range expression's arithmetic
 // value count exceeds maxRangeValues, before any slice is allocated.
-var errRangeTooLarge = errors.New("openjd: range expression expands to too many values")
+//
+// Its text carries NO "openjd: " prefix and does not name the range expression
+// again: both call sites wrap it in "openjd: range expression %q: " already, so
+// a prefix here produced "openjd: range expression \"1-2000000000\": openjd:
+// range expression expands to too many values". Every other error reaching those
+// same call sites (from internal/openjd/intrange) is likewise a bare phrase.
+var errRangeTooLarge = errors.New("expands to too many values")
 
-// intRange represents a contiguous, stepped sequence of integers [Start, End]
-// with the given Step.  Step is always ≥ 1.
-type intRange struct {
-	Start int
-	End   int
-	Step  int
-}
+// intRange is the shared range element type. internal/openjd is STRICTER than
+// the base specification about what it accepts — see openjdRangePolicy — and
+// that strictness is preserved deliberately: relaxing it would start accepting
+// templates this package rejects today.
+type intRange = intrange.Range
 
-// count returns the number of integers the range yields, computed
-// arithmetically without allocating. It is the allocation-free equivalent of
-// len(r.iterate()). Returns 0 for an empty range. If the span overflows int it
-// saturates to [math.MaxInt] (which always exceeds [maxRangeValues]).
-func (r intRange) count() int {
-	if r.Step <= 0 {
-		r.Step = 1
-	}
-	if r.Start > r.End {
-		return 0
-	}
-	span := r.End - r.Start
-	if span < 0 {
-		// Subtraction overflowed (Start very negative, End very positive); the
-		// range is far larger than any allowed bound.
-		return math.MaxInt
-	}
-	return span/r.Step + 1
-}
-
-// iterate yields every integer in the range.
-func (r intRange) iterate() []int {
-	if r.Step <= 0 {
-		r.Step = 1
-	}
-	var out []int
-	for v := r.Start; v <= r.End; v += r.Step {
-		out = append(out, v)
-	}
-	return out
-}
+// openjdRangePolicy is this package's long-standing acceptance rule, now stated
+// explicitly rather than baked into the parser: a step must be positive and a
+// range must not run backwards. The specification permits both; see the
+// intrange package doc.
+var openjdRangePolicy = intrange.Policy{PositiveStepOnly: true, AscendingOnly: true}
 
 // parseIntRangeExpr parses an OpenJD integer range expression string.
 //
@@ -92,7 +70,7 @@ func parseIntRangeExpr(expr string) ([]int, error) {
 	seen := make(map[int]struct{}, total)
 	result := make([]int, 0, total)
 	for _, r := range ranges {
-		for _, v := range r.iterate() {
+		for _, v := range r.Iterate() {
 			if _, dup := seen[v]; !dup {
 				seen[v] = struct{}{}
 				result = append(result, v)
@@ -127,7 +105,7 @@ func intRangeExprCount(expr string) (count int, ok bool) {
 // allocation-free guard shared by expansion, counting, and validation.
 func sumRangeCounts(ranges []intRange) (total int, ok bool) {
 	for _, r := range ranges {
-		c := r.count()
+		c := r.Count()
 		if c > maxRangeValues {
 			return 0, false
 		}
@@ -273,105 +251,27 @@ func extGCD(a, b int) (g, x, y int) {
 }
 
 // parseIntRangeElements parses an INT range expression into its sub-ranges
-// WITHOUT materializing the integers. Empty comma-separated parts are skipped.
+// WITHOUT materializing the integers, applying openjdRangePolicy. Empty
+// comma-separated parts are skipped.
+//
+// Two special cases preserve error strings that predate intrange and are
+// pinned by TestParseAndValidateIntRangeExpr_ErrorStringsUnchanged: a wholly
+// empty (or whitespace-only) expression reports "range expression is empty"
+// directly, and an expression that is non-empty but whose parts are ALL empty
+// (e.g. ",,") reports no error here at all — intrange.ParseWithPolicy
+// collapses both cases to the same "range expression is empty" error, but
+// this package's callers (parseIntRangeExpr, validateIntRangeExpr) tell the
+// two apart themselves, reporting "produced no values" for the latter.
 func parseIntRangeElements(expr string) ([]intRange, error) {
 	if strings.TrimSpace(expr) == "" {
 		return nil, errors.New("openjd: range expression is empty")
 	}
-
-	var ranges []intRange
-	for part := range strings.SplitSeq(expr, ",") {
-		part = strings.TrimSpace(part)
-		if part == "" {
-			continue
+	ranges, err := intrange.ParseWithPolicy(expr, openjdRangePolicy)
+	if err != nil {
+		if err.Error() == "range expression is empty" {
+			return nil, nil
 		}
-		r, err := parseRangeElementBounds(part)
-		if err != nil {
-			return nil, fmt.Errorf("openjd: range expression %q: %w", expr, err)
-		}
-		ranges = append(ranges, r)
+		return nil, fmt.Errorf("openjd: range expression %q: %w", expr, err)
 	}
 	return ranges, nil
-}
-
-// parseRangeElementBounds parses one comma-separated element of a range
-// expression into its (Start, End, Step) bounds without materializing values.
-func parseRangeElementBounds(s string) (intRange, error) {
-	// Check for a step suffix: "start-end:step"
-	var stepPart string
-	if idx := strings.LastIndex(s, ":"); idx >= 0 {
-		stepPart = s[idx+1:]
-		s = s[:idx]
-	}
-
-	// Check for a hyphen indicating a range (handle negative numbers carefully).
-	// Strategy: find the last '-' that is not at position 0 (sign of start).
-	start, end, isRange, err := splitRange(s)
-	if err != nil {
-		return intRange{}, err
-	}
-
-	if !isRange {
-		// Single value.
-		if stepPart != "" {
-			return intRange{}, fmt.Errorf("step (%s) requires a range, not a single value", stepPart)
-		}
-		return intRange{Start: start, End: start, Step: 1}, nil
-	}
-
-	step := 1
-	if stepPart != "" {
-		step, err = strconv.Atoi(strings.TrimSpace(stepPart))
-		if err != nil || step <= 0 {
-			return intRange{}, fmt.Errorf("invalid step %q: must be a positive integer", stepPart)
-		}
-	}
-
-	if start > end {
-		return intRange{}, fmt.Errorf("range start (%d) must be ≤ end (%d)", start, end)
-	}
-
-	return intRange{Start: start, End: end, Step: step}, nil
-}
-
-// splitRange splits "start-end" (possibly with negative numbers) into (start, end, true, nil).
-// Returns (start, 0, false, nil) for a bare number.
-func splitRange(s string) (start, end int, isRange bool, err error) {
-	s = strings.TrimSpace(s)
-	if s == "" {
-		return 0, 0, false, errors.New("empty value in range expression")
-	}
-
-	// Find the hyphen that acts as the range separator.
-	// We skip position 0 (could be a leading minus) and look for the next '-'.
-	sepIdx := -1
-	for i := 1; i < len(s); i++ {
-		if s[i] == '-' {
-			sepIdx = i
-			break
-		}
-	}
-
-	if sepIdx < 0 {
-		// No separator: single number.
-		n, parseErr := strconv.Atoi(s)
-		if parseErr != nil {
-			return 0, 0, false, fmt.Errorf("invalid integer %q", s)
-		}
-		return n, 0, false, nil
-	}
-
-	startStr := s[:sepIdx]
-	endStr := s[sepIdx+1:]
-
-	st, parseErr := strconv.Atoi(strings.TrimSpace(startStr))
-	if parseErr != nil {
-		return 0, 0, false, fmt.Errorf("invalid range start %q", startStr)
-	}
-	en, parseErr := strconv.Atoi(strings.TrimSpace(endStr))
-	if parseErr != nil {
-		return 0, 0, false, fmt.Errorf("invalid range end %q", endStr)
-	}
-
-	return st, en, true, nil
 }

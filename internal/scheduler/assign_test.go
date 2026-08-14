@@ -10,11 +10,14 @@ package scheduler
 
 import (
 	"encoding/json"
+	"slices"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
 
+	"github.com/uberware/sqi/internal/openjd"
 	"github.com/uberware/sqi/internal/store"
 	"github.com/uberware/sqi/internal/store/fake"
 	"github.com/uberware/sqi/internal/worker/protocol"
@@ -232,6 +235,171 @@ func TestBuildAssignPayload_StepNotFound(t *testing.T) {
 	_, err := buildAssignPayload(t.Context(), task, worker, job, step, queue, uuid.NewString(), st)
 	if err == nil {
 		t.Fatal("expected error for step not found in template, got nil")
+	}
+}
+
+// ── EXPR extension: flag, let blocks, and declared parameter types ─────────────
+
+// exprJobYAML declares the EXPR extension and exercises all three additions
+// this test file is here to cover: a job-level and task-level parameter of
+// each declared type, a step-template let block, a distinct step-script let
+// block that references the step-template's binding, and a step-environment
+// let block.
+const exprJobYAML = `
+specificationVersion: jobtemplate-2023-09
+name: ExprJob
+extensions: [EXPR]
+parameterDefinitions:
+  - name: Scene
+    type: PATH
+  - name: Count
+    type: INT
+    default: "3"
+steps:
+  - name: S
+    let:
+      - a = 1
+      - b = a + 1
+    parameterSpace:
+      taskParameterDefinitions:
+        - name: Frame
+          type: INT
+          range: "1-10"
+        - name: Note
+          type: STRING
+    script:
+      let:
+        - c = b + 1
+      actions:
+        onRun:
+          command: render
+          args: ["--frame", "{{Task.Param.Frame}}"]
+    stepEnvironments:
+      - name: StepEnv
+        script:
+          let:
+            - d = 1
+          actions:
+            onEnter:
+              command: setup
+`
+
+func TestBuildAssignPayload_EXPRFields(t *testing.T) {
+	msg := buildAssignForTemplate(t, exprJobYAML, map[string]string{"Scene": "/projects/shot.ma", "Count": "3"})
+
+	if !msg.EXPR {
+		t.Error("EXPR = false, want true for a template declaring extensions: [EXPR]")
+	}
+
+	// The step-template and step-script let blocks are ordered and distinct.
+	wantStepTemplateLet := []string{"a = 1", "b = a + 1"}
+	if !slices.Equal(msg.StepTemplateLet, wantStepTemplateLet) {
+		t.Errorf("StepTemplateLet = %v, want %v", msg.StepTemplateLet, wantStepTemplateLet)
+	}
+	wantStepScriptLet := []string{"c = b + 1"}
+	if !slices.Equal(msg.StepScriptLet, wantStepScriptLet) {
+		t.Errorf("StepScriptLet = %v, want %v", msg.StepScriptLet, wantStepScriptLet)
+	}
+	if slices.Contains(msg.StepTemplateLet, "c = b + 1") {
+		t.Error("step-script binding leaked into StepTemplateLet")
+	}
+
+	// The step environment's own let block travels with it, not merged into
+	// the step-level blocks.
+	if len(msg.Environments) != 1 {
+		t.Fatalf("Environments = %+v, want 1 entry", msg.Environments)
+	}
+	wantEnvLet := []string{"d = 1"}
+	if !slices.Equal(msg.Environments[0].Let, wantEnvLet) {
+		t.Errorf("Environments[0].Let = %v, want %v", msg.Environments[0].Let, wantEnvLet)
+	}
+
+	// This environment came from the step's stepEnvironments, not the
+	// job's jobEnvironments, so StepEnvironment must be true -- the bit
+	// that lets the worker's EnvSymbols grant Step.Name here.
+	if !msg.Environments[0].StepEnvironment {
+		t.Error("Environments[0].StepEnvironment = false, want true for a step environment")
+	}
+
+	// Declared parameter types, not inferred from value text.
+	if got := msg.JobParameterTypes["Scene"]; got != "PATH" {
+		t.Errorf("JobParameterTypes[Scene] = %q, want PATH", got)
+	}
+	if got := msg.JobParameterTypes["Count"]; got != "INT" {
+		t.Errorf("JobParameterTypes[Count] = %q, want INT", got)
+	}
+	if got := msg.ParameterTypes["Frame"]; got != "INT" {
+		t.Errorf("ParameterTypes[Frame] = %q, want INT", got)
+	}
+	if got := msg.ParameterTypes["Note"]; got != "STRING" {
+		t.Errorf("ParameterTypes[Note] = %q, want STRING", got)
+	}
+
+	// The job's and step's own declared names — distinct from TaskName,
+	// which decorates the step name with task-parameter values (see
+	// buildTaskName): this step declares task parameters, so TaskName and
+	// StepName must differ.
+	// buildFixture sets store.Job.Name to "TestJob" regardless of the
+	// template's own "name" field — JobName carries the STORE record's
+	// name, which is what submission persisted, not the raw template text.
+	if msg.JobName != "TestJob" {
+		t.Errorf("JobName = %q, want TestJob", msg.JobName)
+	}
+	if msg.StepName != "S" {
+		t.Errorf("StepName = %q, want S", msg.StepName)
+	}
+	if msg.TaskName == msg.StepName {
+		t.Errorf("TaskName (%q) unexpectedly equals bare StepName (%q); this step has task "+
+			"parameters so TaskName should be decorated", msg.TaskName, msg.StepName)
+	}
+}
+
+// TestBuildAssignPayload_BaseSpecWireBytesUnchanged proves, rather than
+// assumes, that a base-spec template (no extensions: [EXPR]) produces an
+// assignment with none of the nine new EXPR-phase-3 fields anywhere on the
+// wire — the requirement that motivates marking every one of them omitempty.
+func TestBuildAssignPayload_BaseSpecWireBytesUnchanged(t *testing.T) {
+	st := fake.New()
+	task, worker, job, step, queue := buildFixture(t, minimalJobJSON, store.TemplateFormatJSON, "Render")
+
+	data, err := buildAssignPayload(t.Context(), task, worker, job, step, queue, uuid.NewString(), st)
+	if err != nil {
+		t.Fatalf("buildAssignPayload: %v", err)
+	}
+
+	forbidden := []string{
+		`"expr"`,
+		`"step_template_let"`,
+		`"step_script_let"`,
+		`"parameter_types"`,
+		`"job_parameter_types"`,
+		`"let"`,
+		`"job_name"`,
+		`"step_name"`,
+		`"step_environment"`,
+	}
+	s := string(data)
+	for _, key := range forbidden {
+		if strings.Contains(s, key) {
+			t.Errorf("base-spec assignment unexpectedly contains %s: %s", key, s)
+		}
+	}
+
+	var msg protocol.AssignMsg
+	if err := json.Unmarshal(data, &msg); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if msg.EXPR {
+		t.Error("EXPR = true for a base-spec template")
+	}
+	if msg.StepTemplateLet != nil || msg.StepScriptLet != nil {
+		t.Errorf("StepTemplateLet/StepScriptLet = %v/%v, want nil/nil", msg.StepTemplateLet, msg.StepScriptLet)
+	}
+	if msg.ParameterTypes != nil || msg.JobParameterTypes != nil {
+		t.Errorf("ParameterTypes/JobParameterTypes = %v/%v, want nil/nil", msg.ParameterTypes, msg.JobParameterTypes)
+	}
+	if msg.JobName != "" || msg.StepName != "" {
+		t.Errorf("JobName/StepName = %q/%q, want empty/empty", msg.JobName, msg.StepName)
 	}
 }
 
@@ -589,6 +757,113 @@ steps:
 	}
 	if got["/projects/shot.ma"] != "IN" || got["/projects/out"] != "OUT" {
 		t.Fatalf("Staging directions = %+v", got)
+	}
+}
+
+// TestBuildAssignPayload_ListPathParamLocURIsStagedThroughFullSeam is the
+// F2 whole-branch review's IMPORTANT-2 composition-seam test. Every other
+// test of the LIST[*] loc:// and staging behavior calls
+// resolveLocURIsInParamValue/buildStagingManifest directly, passing the
+// declared type by hand — nothing exercises the actual wiring:
+// populateEXPRFields must have populated msg.JobParameterTypes from the EXPR
+// template BEFORE resolveLocURIsInMsg reads it, or LIST[PATH] silently falls
+// back to whole-string substitution, which corrupts a Windows destination
+// root (backslashes are not legal JSON escapes, so the re-decoded value stops
+// parsing entirely). This test goes through buildAssignPayload end to end —
+// template parse, EXPR field population, loc:// resolution, and staging
+// manifest construction — with a real Windows compute-location root, so a
+// regression in any of those three wiring points fails it.
+func TestBuildAssignPayload_ListPathParamLocURIsStagedThroughFullSeam(t *testing.T) {
+	tmpl := `
+specificationVersion: jobtemplate-2023-09
+name: ListPathJob
+extensions: [EXPR, SQI_PATH_TRANSLATION]
+SQI_PATH_TRANSLATION:
+  deliveries: [stage_locally]
+parameterDefinitions:
+  - name: Scenes
+    type: LIST[PATH]
+    dataFlow: IN
+    objectType: FILE
+steps:
+  - name: S
+    script:
+      actions:
+        onRun:
+          command: render
+`
+	st := fake.New()
+	// A storage location with a WINDOWS compute-location root — the case
+	// that corrupts under whole-string substitution (backslashes inside a
+	// JSON string literal) but survives element-wise decode/resolve/re-encode.
+	if _, err := st.CreateStorageLocation(t.Context(), store.StorageLocation{
+		ID:   uuid.NewString(),
+		Name: "nas_shows",
+		Type: "filesystem",
+		Roots: map[string]string{
+			"default": "/mnt/nas/shows",
+			"winfarm": `Z:\nas\shows`,
+		},
+	}); err != nil {
+		t.Fatalf("CreateStorageLocation: %v", err)
+	}
+
+	task, worker, job, step, queue := buildFixture(t, tmpl, store.TemplateFormatYAML, "S")
+	worker.ComputeLocation = "winfarm"
+	job.Parameters = map[string]string{
+		"Scenes": `["loc://nas_shows/scenes/a.hip","loc://nas_shows/scenes/b.hip"]`,
+	}
+
+	data, err := buildAssignPayload(t.Context(), task, worker, job, step, queue, uuid.NewString(), st)
+	if err != nil {
+		t.Fatalf("buildAssignPayload: %v", err)
+	}
+
+	var msg protocol.AssignMsg
+	if err := json.Unmarshal(data, &msg); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+
+	// (a) JobParameters["Scenes"] still decodes as JSON. Whole-string
+	// substitution on a Windows destination would splice unescaped
+	// backslashes into the JSON string literal and break exactly this
+	// decode.
+	elems, err := openjd.DecodeListParamValue(msg.JobParameters["Scenes"])
+	if err != nil {
+		t.Fatalf("JobParameters[Scenes] = %q does not decode as a list: %v", msg.JobParameters["Scenes"], err)
+	}
+	if len(elems) != 2 {
+		t.Fatalf("decoded %d elements, want 2: %v", len(elems), elems)
+	}
+	for i, e := range elems {
+		s, ok := e.(string)
+		if !ok {
+			t.Fatalf("element %d = %v (%T), want string", i, e, e)
+		}
+		if strings.HasPrefix(s, "loc://") {
+			t.Errorf("element %d = %q, loc:// URI was not resolved", i, s)
+		}
+		if !strings.HasPrefix(s, `Z:\nas\shows\`) {
+			t.Errorf("element %d = %q, want a resolved Windows path under Z:\\nas\\shows\\", i, s)
+		}
+	}
+
+	// (b) msg.Staging has one entry per element — proof the staging manifest
+	// was built from the same element-wise resolved values, not a whole-list
+	// string that a scalar-shaped stagedPaths would treat as a single path.
+	if len(msg.Staging) != 2 {
+		t.Fatalf("Staging = %+v, want 2 entries (one per list element)", msg.Staging)
+	}
+	for i, e := range msg.Staging {
+		if e.Direction != "IN" {
+			t.Errorf("Staging[%d].Direction = %q, want IN", i, e.Direction)
+		}
+		if e.ObjectType != "FILE" {
+			t.Errorf("Staging[%d].ObjectType = %q, want FILE", i, e.ObjectType)
+		}
+		if !strings.HasPrefix(e.Path, `Z:\nas\shows\`) {
+			t.Errorf("Staging[%d].Path = %q, want a resolved Windows path", i, e.Path)
+		}
 	}
 }
 

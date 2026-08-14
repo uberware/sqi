@@ -63,6 +63,7 @@ import (
 	"github.com/uberware/sqi/internal/version"
 	"github.com/uberware/sqi/internal/worker/capabilities"
 	workerconfig "github.com/uberware/sqi/internal/worker/config"
+	"github.com/uberware/sqi/internal/worker/fmtres"
 	"github.com/uberware/sqi/internal/worker/protocol"
 )
 
@@ -93,8 +94,16 @@ type Registrar struct {
 
 	workerID string
 	cfg      workerconfig.WorkerSettings
-	caps     capabilities.Capabilities
-	logger   *slog.Logger
+
+	// exprLimits are the EXPR evaluation caps this worker enforces, advertised
+	// in every RegisterMsg so the server can refuse to send it work it cannot
+	// run (see [protocol.ExprLimits]). Normalized at construction so a zero
+	// value advertises the defaults it would actually enforce rather than
+	// "unadvertised".
+	exprLimits fmtres.ExprLimits
+
+	caps   capabilities.Capabilities
+	logger *slog.Logger
 
 	// lastRegisteredAt records the Unix nanosecond timestamp of the most
 	// recent successful Register call. Stored atomically so the heartbeat
@@ -106,11 +115,19 @@ type Registrar struct {
 // already have manual tags merged in (via
 // [capabilities.Capabilities.MergeManualTags]) before being passed here.
 //
+// exprLimits must be THE SAME value the worker's session manager enforces
+// with, not a second mapping of the same configuration: what this worker
+// advertises to the server is what the server assumes it will enforce, and a
+// transposition between the two would make the server's dispatch gate compare
+// against a number no evaluation ever uses. cmd/sqi-worker passes
+// exprLimitsFromConfig(cfg.Expr) to both.
+//
 // It returns an error only if a JetStream context cannot be derived from nc.
 func New(
 	nc *nats.Conn,
 	workerID string,
 	cfg workerconfig.WorkerSettings,
+	exprLimits fmtres.ExprLimits,
 	caps capabilities.Capabilities,
 	logger *slog.Logger,
 ) (*Registrar, error) {
@@ -119,12 +136,13 @@ func New(
 		return nil, fmt.Errorf("registration: jetstream context: %w", err)
 	}
 	return &Registrar{
-		nc:       nc,
-		js:       js,
-		workerID: workerID,
-		cfg:      cfg,
-		caps:     caps,
-		logger:   logger,
+		nc:         nc,
+		js:         js,
+		workerID:   workerID,
+		cfg:        cfg,
+		exprLimits: exprLimits.Normalized(),
+		caps:       caps,
+		logger:     logger,
 	}, nil
 }
 
@@ -171,6 +189,13 @@ func (r *Registrar) Register(ctx context.Context) error {
 			Count:  r.caps.GPU.Count,
 		},
 		Tags: r.caps.Tags,
+		ExprLimits: protocol.ExprLimits{
+			OperationLimit:          r.exprLimits.OperationLimit,
+			MemoryLimit:             r.exprLimits.MemoryLimit,
+			AssignmentPositions:     r.exprLimits.AssignmentPositions,
+			AssignmentRetainedBytes: r.exprLimits.AssignmentRetainedBytes,
+			LetRetainedBytes:        r.exprLimits.LetRetainedBytes,
+		},
 	}
 
 	data, err := json.Marshal(msg)

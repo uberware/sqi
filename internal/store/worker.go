@@ -39,6 +39,61 @@ type GPUInfo struct {
 	Count  int `json:"count,omitempty"`
 }
 
+// WorkerExprLimits holds the OpenJD EXPR evaluation caps a worker self-reports
+// at registration -- its expr.* worker-configuration section, which EXPR
+// sub-project E4d Task 2 added and Task 3 (this type) taught it to advertise.
+// The server persists them so the scheduler can refuse to dispatch an EXPR job
+// to a worker that cannot run what the server accepted.
+//
+// WHY THE SERVER NEEDS THEM. Expressions in an EXPR template are metered twice:
+// against the server's openjd.expr_* limits when the template is submitted, and
+// again against the worker's expr.* limits when a task runs. If a worker's cap
+// is TIGHTER than the server's, a job is accepted, created and persisted and
+// then every task of it fails on that host, after submission, naming a budget
+// the submitter never saw. That failure was measured (EXPR design spec §2:
+// server 10,000 positions, worker 5,000). Both sides became operator
+// configuration in E4d, so the relation "worker cap >= server cap" can now be
+// broken by a YAML file; these fields are what let the server see it.
+//
+// Every value is SELF-REPORTED, exactly like CPUCount, RAMMb and Tags. It is a
+// statement of what that worker will enforce, not a promise the server can
+// verify.
+//
+// A zero field means "not advertised": a worker built from E4d Task 3 onward
+// always reports a real value (its config layer rejects 0), so silence means an
+// older binary. The scheduler reads that as the compiled-in defaults, which is
+// exact for a pre-Task-2 binary and a documented guess for one built between
+// Tasks 2 and 3 — see internal/scheduler's legacyWorkerExprCaps.
+//
+// All FIVE of the worker's expr.* keys are carried. The fifth,
+// LetRetainedBytes, was excluded when this type was written -- on the grounds
+// that the server has no PER-TABLE counterpart to compare it against, which is
+// true -- and the wave's final review showed the exclusion was reachable
+// through legal configuration: a worker at that key's floor rejects, once per
+// task, a let: block the server accepted under a raised
+// openjd.expr_template_retained_bytes. What the server does have is a bound on
+// the same VALUES at a wider scope, and a wider scope is a valid upper bound;
+// see internal/scheduler's exprCapShortfall for the comparison and for what it
+// still cannot promise.
+type WorkerExprLimits struct {
+	// OperationLimit is the worker's §1.3.10 operation budget for ONE
+	// expression evaluation (expr.operation_limit).
+	OperationLimit int64 `json:"operation_limit,omitempty"`
+	// MemoryLimit is the worker's §1.3.9 live-byte budget for ONE expression
+	// evaluation (expr.memory_limit).
+	MemoryLimit int64 `json:"memory_limit,omitempty"`
+	// AssignmentPositions is how many expression positions the worker will
+	// resolve for ONE assignment (expr.assignment_positions).
+	AssignmentPositions int64 `json:"assignment_positions,omitempty"`
+	// AssignmentRetainedBytes is how many bytes let: bindings may retain
+	// across one assignment (expr.assignment_retained_bytes).
+	AssignmentRetainedBytes int64 `json:"assignment_retained_bytes,omitempty"`
+	// LetRetainedBytes is how many bytes ONE phase-3 symbol table may hold
+	// live (expr.let_retained_bytes), measured across the whole table rather
+	// than only its let-bound names.
+	LetRetainedBytes int64 `json:"let_retained_bytes,omitempty"`
+}
+
 // Worker represents a registered sqi-worker agent. Workers self-report their
 // capabilities at registration; the server persists the reported values and
 // uses them for task matching.
@@ -59,11 +114,15 @@ type Worker struct {
 	// Version is the sqi-worker build version the worker self-reports at
 	// registration (the worker binary's internal/version.Version). May be empty
 	// for workers registered before this field existed.
-	Version         string
-	CPUCount        int
-	RAMMb           int
-	GPUInfo         GPUInfo
-	Tags            map[string]string // arbitrary capability tags
+	Version  string
+	CPUCount int
+	RAMMb    int
+	GPUInfo  GPUInfo
+	Tags     map[string]string // arbitrary capability tags
+	// ExprLimits holds the worker's self-reported OpenJD EXPR evaluation caps.
+	// Zero-valued for workers registered before this field existed; see
+	// [WorkerExprLimits] for what the server does with them.
+	ExprLimits      WorkerExprLimits
 	Status          WorkerStatus
 	LastHeartbeatAt *time.Time
 	RegisteredAt    time.Time

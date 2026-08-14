@@ -19,6 +19,8 @@ run:
   # for the untagged packages.
   build-tags:
     - integration
+    - conformance
+    - oracle
 
 # ── Linters ───────────────────────────────────────────────────────────────────
 linters:

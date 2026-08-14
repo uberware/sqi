@@ -371,7 +371,27 @@ func (e *Executor) runTask(ctx context.Context, msg *protocol.AssignMsg, sess *s
 // It returns the resolved action copy, the resolved environment-variable map,
 // and the step embedded files with their data resolved, or a descriptive error
 // naming the offending reference.
+//
+// msg.EXPR selects the resolution family (EXPR sub-project E4a, Task 6): a
+// base-spec assignment (EXPR false, the zero value) takes exactly the
+// fmtstring.Resolve-backed path this function has always taken, byte for
+// byte -- see resolveAssignmentBaseSpec. Only when EXPR is true does this
+// function build the phase-3 symbol table (fmtres.TaskSymbols) and resolve
+// through the EXPR-aware evaluator (fmtres.ResolveActionExpr /
+// ResolveEmbeddedFilesExpr) -- see resolveAssignmentExpr.
 func resolveAssignment(msg *protocol.AssignMsg, sess *session.Session) (*protocol.Action, map[string]string, []protocol.EmbeddedFile, error) {
+	if !msg.EXPR {
+		return resolveAssignmentBaseSpec(msg, sess)
+	}
+	return resolveAssignmentExpr(msg, sess)
+}
+
+// resolveAssignmentBaseSpec is resolveAssignment's pre-EXPR implementation,
+// UNCHANGED from before Task 6: plain "{{...}}" substitution via
+// fmtstring.Resolve (through fmtres.TaskScope/ResolveAction/
+// ResolveEmbeddedFiles). This is the code path every base-spec assignment
+// must keep taking byte for byte -- see resolveAssignment's own doc comment.
+func resolveAssignmentBaseSpec(msg *protocol.AssignMsg, sess *session.Session) (*protocol.Action, map[string]string, []protocol.EmbeddedFile, error) {
 	workDir := sess.WorkDir
 	pathMapFile := sess.PathMappingRulesFile()
 	hasPathMap := sess.HasPathMappingRules()
@@ -398,6 +418,68 @@ func resolveAssignment(msg *protocol.AssignMsg, sess *session.Session) (*protoco
 	// all-environments scope would both duplicate the work and risk resolving a
 	// same-named Env.File.* reference to a different file (last-wins across
 	// environments). The session is the single source of truth.
+	resolvedEnvVars := sess.StaticEnv()
+	return resolvedRun, resolvedEnvVars, resolvedFiles, nil
+}
+
+// resolveAssignmentExpr is resolveAssignment's EXPR-aware implementation
+// (EXPR sub-project E4a, Task 6): it builds the phase-3 symbol table
+// (fmtres.TaskSymbols), evaluates the task's let: bindings into it EXACTLY
+// ONCE (fmtres.ApplyTaskLet -- see that function's own doc comment: calling
+// it a second time over the same table makes every binding fail the shadow
+// check), and then resolves OnRun and the step embedded files against that
+// ONE table via ResolveActionExpr/ResolveEmbeddedFilesExpr. This is the first
+// point in the whole EXPR program where an expression's value reaches a real
+// command line.
+func resolveAssignmentExpr(msg *protocol.AssignMsg, sess *session.Session) (*protocol.Action, map[string]string, []protocol.EmbeddedFile, error) {
+	workDir := sess.WorkDir
+	pathMapFile := sess.PathMappingRulesFile()
+	hasPathMap := sess.HasPathMappingRules()
+
+	// budget is EXPR sub-project E4c's Task 4 addition: sess.ExprBudget() is
+	// the ONE fmtres.AssignmentBudget this whole assignment shares -- every
+	// environment table this session already entered (session.go's enterOne)
+	// charged the SAME object, and this task's own table now does too, so
+	// the assignment's total resolved-position and retained-byte spend,
+	// across every table it builds, is bounded together. See
+	// fmtres.AssignmentBudget's own doc comment.
+	budget := sess.ExprBudget()
+
+	// NOT "step embedded files": the base-spec path uses that label because it
+	// wraps AddFileVars alone, but TaskSymbols also fails from job- and
+	// task-parameter binding (mapPathParamValue, via bindJobParamSymbols /
+	// bindTaskParamSymbols). Inheriting the narrower label would send an
+	// operator to look at embeddedFiles for a PATH-parameter fault.
+	//
+	// budget is passed here for its LIMITS, not to charge it (E4d Task 2):
+	// binding a PATH parameter runs a real apply_path_mapping evaluation, and
+	// it must be metered by the same operator-configured numbers as every
+	// other evaluation below. Building the table BEFORE obtaining the budget
+	// -- which is what this function did until Task 2 -- left that one
+	// evaluation on the compiled-in defaults on a host configured otherwise.
+	syms, err := fmtres.TaskSymbols(msg, workDir, pathMapFile, hasPathMap, budget)
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("build expression symbols: %w", err)
+	}
+
+	// Exactly one call over this table -- see fmtres.ApplyTaskLet's doc
+	// comment. Every resolution below (OnRun, then the embedded files) reuses
+	// this same syms.
+	if err := fmtres.ApplyTaskLet(msg, syms, msg.PathMap, budget); err != nil {
+		return nil, nil, nil, fmt.Errorf("let bindings: %w", err)
+	}
+	resolvedRun, err := fmtres.ResolveActionExpr(msg.OnRun, syms, msg.PathMap, budget)
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("resolve command: %w", err)
+	}
+	resolvedFiles, err := fmtres.ResolveEmbeddedFilesExpr(msg.EmbeddedFiles, syms, msg.PathMap, budget)
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("resolve embedded file data: %w", err)
+	}
+
+	// Reuse the static environment that session.Create already resolved at
+	// enter time -- see resolveAssignmentBaseSpec's identical comment; the
+	// same reasoning applies unchanged to the EXPR path.
 	resolvedEnvVars := sess.StaticEnv()
 	return resolvedRun, resolvedEnvVars, resolvedFiles, nil
 }

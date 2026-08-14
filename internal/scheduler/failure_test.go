@@ -178,6 +178,7 @@ func (h *failureHarness) reportFailedWithMessage(taskID, message string) {
 	}
 	exitCode := 1
 	msg := protocol.TaskStatusMsg{
+		Version:   protocol.ProtocolVersion,
 		TaskID:    taskID,
 		AttemptID: attempt.ID,
 		Status:    "failed",
@@ -350,6 +351,7 @@ func TestHandleTaskFailed_RedeliveryCountsOnce(t *testing.T) {
 
 	exit := 1
 	msg := protocol.TaskStatusMsg{
+		Version:   protocol.ProtocolVersion,
 		TaskID:    "t1",
 		AttemptID: h.current["t1"].ID,
 		Status:    "failed",
@@ -479,7 +481,9 @@ func TestLeaseGatesPass_SkipsPausedJob(t *testing.T) {
 		t.Fatalf("CreateTask: %v", err)
 	}
 
-	_, pass, err := h.s.leaseGatesPass(ctx, task, worker)
+	// "" = no EXPR cap shortfall for this worker; the paused-job gate under
+	// test is unrelated to it.
+	_, pass, err := h.s.leaseGatesPass(ctx, task, worker, "")
 	if err != nil {
 		t.Fatalf("leaseGatesPass: unexpected error: %v", err)
 	}
@@ -605,6 +609,7 @@ func TestHandleTaskFailed_SupersededAttempt_LeavesReleasedTaskAlone(t *testing.T
 	// Worker A reconnects: its buffered "failed" for the stale attempt lands.
 	exitCode := 1
 	msg := protocol.TaskStatusMsg{
+		Version:   protocol.ProtocolVersion,
 		TaskID:    "t1",
 		AttemptID: stale.ID,
 		Status:    "failed",

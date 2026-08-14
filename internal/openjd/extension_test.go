@@ -4,6 +4,7 @@ package openjd
 
 import (
 	"regexp"
+	"strings"
 	"testing"
 )
 
@@ -72,6 +73,78 @@ func TestRegistryVendorNamespacing(t *testing.T) {
 		}
 		if ext.Origin == OriginVendor && (len(ext.Name) < 4 || ext.Name[:4] != "SQI_") {
 			t.Errorf("vendor extension %q must be prefixed SQI_", ext.Name)
+		}
+	}
+}
+
+// TestValidateExtensions_RegisteredButNotSupported pins the two-part gate. An
+// extension may be present in the registry while still being rejected, which is
+// what lets the conformance harness reach the real validation path for a
+// partially-implemented extension without production accepting it.
+//
+// EXPR was the standing example until sub-project H2 marked it supported, and
+// with it went the registry's last StatusInProgress entry. The gate is still
+// live production machinery, so rather than delete the test with the example,
+// it registers a temporary in-progress entry of its own. That keeps the branch
+// covered for the next partially-implemented extension, which is exactly the
+// situation the split status was invented for.
+func TestValidateExtensions_RegisteredButNotSupported(t *testing.T) {
+	const name = "TEST_IN_PROGRESS"
+	registry[name] = Extension{
+		Name:    name,
+		Origin:  OriginOfficial,
+		Status:  StatusInProgress,
+		Summary: "Test-only entry for the registered-but-unsupported branch.",
+	}
+	t.Cleanup(func() { delete(registry, name) })
+
+	tmpl := &JobTemplate{
+		SpecificationVersion: "jobtemplate-2023-09",
+		Name:                 "T",
+		Extensions:           []string{name},
+	}
+	errs := validateExtensions(tmpl)
+	if len(errs) == 0 {
+		t.Fatal("an in-progress extension was accepted; want a rejection")
+	}
+	msg := errs[0].Message
+	if !strings.Contains(msg, "in-progress") {
+		t.Errorf("message = %q, want it to name the status", msg)
+	}
+	if strings.Contains(msg, "unsupported extension") {
+		t.Errorf("message = %q, want it NOT to reuse the unknown-name wording: "+
+			"the extension IS known, and saying otherwise misleads", msg)
+	}
+}
+
+// TestValidateExtensions_SupportedStillPass guards the blast radius: the status
+// check runs on the one path every extension flows through.
+func TestValidateExtensions_SupportedStillPass(t *testing.T) {
+	for _, name := range []string{
+		"TASK_CHUNKING", "REDACTED_ENV_VARS", "SQI_PATH_TRANSLATION", "SQI_CHUNK_BOUNDS", "EXPR",
+	} {
+		t.Run(name, func(t *testing.T) {
+			tmpl := &JobTemplate{
+				SpecificationVersion: "jobtemplate-2023-09",
+				Name:                 "T",
+				Extensions:           []string{name},
+			}
+			if errs := validateExtensions(tmpl); len(errs) != 0 {
+				t.Errorf("supported extension %q was rejected: %v", name, errs)
+			}
+		})
+	}
+}
+
+// TestRegistry_EverySupportedStatusIsTheConstant stops a typo'd status string
+// silently disabling a shipped extension.
+//
+// Every shipped entry is StatusSupported since sub-project H2 flipped EXPR,
+// which was the sole exception this test used to carve out.
+func TestRegistry_EverySupportedStatusIsTheConstant(t *testing.T) {
+	for name, ext := range registry {
+		if ext.Status != StatusSupported {
+			t.Errorf("%s status = %q, want %q", name, ext.Status, StatusSupported)
 		}
 	}
 }

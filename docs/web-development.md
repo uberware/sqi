@@ -163,6 +163,65 @@ Router.
 Use the `@/` path alias (configured in both `vite.config.ts` and
 `tsconfig.app.json`) for imports instead of relative `../../` paths.
 
+### Product parameter widgets (`selectWidget`, `ProductParamField`)
+
+`ProductSubmit`'s form is generated from a product's parameters
+(`GET /products/{name}/parameters`), not hand-coded per product.
+`web/src/lib/productForm.ts`'s `selectWidget(p: ProductParameter): Widget`
+picks the input for one parameter — an explicit `user_interface.control`
+first, else a fallback by declared `type` — and `ProductParamField`
+(`web/src/components/ProductParamField.tsx`) renders whichever `Widget` comes
+back:
+
+| Widget | Rendered as |
+|---|---|
+| `text` | `<input type="text">` |
+| `textarea` | `<textarea>` |
+| `select` | `<select>`, options from `allowed_values` |
+| `checkbox` | `<input type="checkbox">` |
+| `number` | `<input type="number">` |
+| `hidden` | nothing — `ProductParamField` returns `null` |
+| `list` | `ListParamField` (`web/src/components/ListParamField.tsx`) — one row per element, with Add item / Remove buttons |
+
+`list` is selected by any of RFC 0007's six `*_LIST` `userInterface`
+controls — `LINE_EDIT_LIST`, `SPIN_BOX_LIST`, `CHECK_BOX_LIST`, and the three
+`CHOOSE_*_LIST` file-picker controls, which map to the row editor rather than
+a file dialog because no file-picker widget exists yet, the same interim
+already accepted for their scalar `CHOOSE_*` counterparts (plain text) — or,
+absent an explicit control, by a bare `LIST[STRING]` / `LIST[PATH]` /
+`LIST[INT]` / `LIST[FLOAT]` / `LIST[BOOL]` type. **`LIST[LIST[INT]]` is
+deliberately excluded from that type-based fallback**: RFC 0007 gives it no
+control but `HIDDEN` and describes its use case as programmatic, so it falls
+through to a raw JSON text field instead of a doubly-nested row editor.
+`ListParamField` falls back to that same raw-JSON field whenever the incoming
+value doesn't parse as a JSON array (a malformed stored default, say), so a
+bad value never blocks the form from rendering.
+
+**The row editor's serialisation must match `internal/openjd/paramjson.go`'s
+canonical JSON form on *type*, not necessarily on byte-for-byte form.**
+`ListParamField` encodes with plain `JSON.stringify` — no inserted
+whitespace, each element written as its own JSON type (number, boolean, or
+string) — because the server decodes a submitted list value with
+`encoding/json` and checks each element by its *JSON type* against the
+parameter's declared element type. What actually matters is that fidelity: a
+number must arrive as a JSON number, not a string, and so on for booleans.
+Byte equality is not itself the requirement — `BindJobParameters`
+(`internal/openjd/bind.go`) stores a submitted value verbatim and nothing
+ever compares it against the canonical default — but the two encoders do
+agree on every byte form the editor can actually produce: `JSON.stringify`
+and `marshalCanonical` agree on separators, string escaping including
+`< > &`, and float formatting, and diverge only on two inputs neither side's
+editor emits — Go escapes U+2028/U+2029 and lone surrogates unconditionally
+— each harmless because both sides decode the other's output identically.
+Nothing mechanical keeps the two encoders in agreement — they match only
+because both sides' tests assert the same literal strings, Go's
+`TestEncodeListDefault` table mirrored into the TypeScript suite for every
+element type the row editor itself renders (strings, ints, floats, bools,
+paths, and the empty-list case; `TestEncodeListDefault`'s two
+`LIST[LIST[INT]]` rows are out of scope here, since that type is
+deliberately excluded from the row editor and falls to the raw-JSON field —
+see above). If you touch either encoder, update both.
+
 ---
 
 ## Authentication (login route, `AuthProvider`, `useAuth`)

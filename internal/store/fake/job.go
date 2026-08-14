@@ -17,8 +17,32 @@ func (s *Store) CreateJob(_ context.Context, job store.Job) (store.Job, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	job = normalizeDeclaredExtensions(job)
 	s.jobs[job.ID] = job
 	return job, nil
+}
+
+// normalizeDeclaredExtensions mirrors what a round trip through the SQLite
+// declared_extensions column does to the pair of fields carrying a job's
+// declared OpenJD extensions.
+//
+// The tri-state must survive identically on both backends, because the
+// scheduler branches on all three: NOT RECORDED falls back to scanning the raw
+// template, RECORDED-EMPTY does not, and RECORDED-NON-EMPTY answers outright.
+// SQLite stores ” for the first and '[]' for the second and reads a recorded
+// row back as a non-nil slice; without this, the fake would hand back a nil
+// slice where SQLite hands back an empty one, and a nil-vs-empty assumption
+// could pass every fake-backed test and fail in production.
+func normalizeDeclaredExtensions(job store.Job) store.Job {
+	if !job.ExtensionsRecorded {
+		job.DeclaredExtensions = nil
+		return job
+	}
+	job.DeclaredExtensions = copySlice(job.DeclaredExtensions)
+	if job.DeclaredExtensions == nil {
+		job.DeclaredExtensions = []string{}
+	}
+	return job
 }
 
 // CreateJobSubmission implements [store.JobStore]. It validates the whole
@@ -40,7 +64,7 @@ func (s *Store) CreateJobSubmission(_ context.Context, sub store.JobSubmission) 
 		Tasks:     make([]store.Task, 0, len(sub.Tasks)),
 	}
 
-	job := sub.Job
+	job := normalizeDeclaredExtensions(sub.Job)
 	job.Parameters = copyMap(job.Parameters)
 	job.CreatedAt, job.UpdatedAt = now, now
 	s.jobs[job.ID] = job
@@ -272,6 +296,10 @@ func (s *Store) UpdateJob(_ context.Context, job store.Job) (store.Job, error) {
 	job.CompletedAt = existing.CompletedAt
 	job.CreatedAt = existing.CreatedAt
 	job.Parameters = existing.Parameters // persisted at submit; not mutable via UpdateJob (parity with SQLite)
+	// Same reason: declared_extensions is derived from the template at
+	// submission and is not on sqlUpdateJob's SET list.
+	job.DeclaredExtensions = copySlice(existing.DeclaredExtensions)
+	job.ExtensionsRecorded = existing.ExtensionsRecorded
 	job.UpdatedAt = time.Now()
 	s.jobs[job.ID] = job
 	return job, nil

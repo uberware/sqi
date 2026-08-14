@@ -68,6 +68,8 @@ Run `make` (no arguments) to see all available targets with descriptions.
 | `make test-ldap` | Run the LDAP tests against a real OpenLDAP directory in a container (needs Docker; **skips** without it) |
 | `make test-oidc` | Run the SSO tests against a real Keycloak in a container (needs Docker; **skips** without it) |
 | `make test-isolation` | Run run-as-user task-isolation tests as real root against real OS accounts in a container (needs Docker; **skips** without it) |
+| `make test-expr-oracle` | Differential-test the EXPR evaluator against the OpenJD reference implementation (needs `python3`; **skips** without it) |
+| `make expr-oracle-venv` | Create `.venv-oracle/` with the pinned reference implementation (`make test-expr-oracle` does this on demand) |
 | `make smoke` | End-to-end smoke test against the real binaries (REST + WebSocket) |
 | `make bench` | Run benchmarks |
 | `make lint` | Run `golangci-lint` |
@@ -230,6 +232,74 @@ load-bearing: the test scrapes Keycloak's own login and logout-confirmation
 markup. It appears in two places that must stay in step — `keycloakImage` in
 `test/integration/oidc_test.go` and the `docker pull` in
 `.github/workflows/ci.yml`.
+
+---
+
+### Differential-testing EXPR against the reference implementation
+
+`make test-expr-oracle` evaluates a corpus of expressions with **both** sqi's Go
+evaluator (`internal/openjd/expr`) and the implementation the EXPR spec names as
+its reference, then compares the results.
+
+This catches a class of defect no single-implementation test can reach: a
+misreading of the spec applied *consistently*, which looks correct from the
+inside because every test encodes the same misreading. It is not a conformance
+check — `make test-conformance` is, and it runs the official fixture suite. The
+oracle is supplementary: it explains *why* a fixture disagrees, and it reaches
+expressions no fixture happens to contain.
+
+```sh
+make test-expr-oracle        # creates .venv-oracle/ on first run, then compares
+make expr-oracle-venv        # (re)create the venv explicitly
+SQI_EXPR_ORACLE_PYTHON=/path/to/python3 make test-expr-oracle
+```
+
+Moving parts:
+
+| Path | Role |
+|---|---|
+| `test/oracle/corpus.txt` | The cases. One per line, `TARGET-TYPE<TAB>EXPRESSION`. |
+| `test/oracle/baseline.txt` | Accepted divergences, each with the reasoning above it. |
+| `scripts/expr-oracle.py` | Feeds the corpus to the reference over JSON lines. |
+| `test/oracle/oracle_test.go` | Runs both sides and compares (build tag `oracle`). |
+
+**The reference is not the authority.** Despite living in the `openjd.expr`
+Python namespace, it is a thin re-export layer over a compiled Rust crate
+(`openjd-expr`, in `OpenJobDescription/openjd-rs`), and that crate is **Beta** —
+on the 0.x line, where breaking changes are permitted in minor bumps. The
+specification outranks it. When the two disagree, read
+`third_party/openjd-specifications/` and decide; do not change sqi to match the
+reference. **Most** baselined entries are cases where **the reference is
+wrong** — the corpus currently scores 891/1052 agreeing with 161 baselined
+divergences, and each one's reasoning is argued in `test/oracle/baseline.txt`,
+which is the authority on any individual ruling (an earlier revision of this
+paragraph said "three of the five", a count that went stale several waves ago
+and is corrected here rather than re-pinned). Two have been reported upstream:
+[openjd-rs#291](https://github.com/OpenJobDescription/openjd-rs/issues/291) (a
+`target_type` inherited by operands that must not have it, including the
+operand `and`/`or` discards per section 2.1.6) and
+[#290 item 6](https://github.com/OpenJobDescription/openjd-rs/issues/290#issuecomment-5125365894)
+(a `path` as the **left** operand of an ordering operator inverts the
+comparison).
+
+**The oracle cannot see the Windows path flavor at all.** The reference's path
+family is POSIX-only — it accepts a backslash in a replacement name and never
+switches on a drive letter — so `test/oracle/corpus.txt` carries no
+Windows-flavor case, and every Windows expectation in `internal/openjd/expr` is
+pinned by that package's own unit tests against CPython's `PureWindowsPath`
+instead. URI behavior *is* oracle-measurable, because a URI is detected under
+the reference's POSIX format too.
+
+`OPENJD_MODEL_VERSION` in the `Makefile` pins the reference. It is pinned
+deliberately: unpinned, an upstream release could turn this red with no sqi
+commit behind it, and a divergence report means little without knowing which
+build produced it.
+
+**A skip proves nothing.** The target exits 0 when no interpreter has the
+package importable, and the test skips — exactly as `make test-isolation` does
+without Docker. Confirm it actually ran by looking for
+`--- PASS: TestExprOracle_MatchesReferenceImplementation`. CI (`expr-oracle`)
+asserts that line by name for this reason.
 
 ---
 

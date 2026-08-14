@@ -19,6 +19,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/uberware/sqi/internal/fsutil"
 	"github.com/uberware/sqi/internal/presetlib"
 	"github.com/uberware/sqi/internal/product"
 )
@@ -45,22 +46,23 @@ type Index struct {
 // The sha256 is computed over the raw file bytes so the served file always
 // matches the fingerprint the index vouches for.
 //
-// macOS AppleDouble sidecars ("._name") are skipped -- see [isAppleDouble].
+// macOS AppleDouble sidecars ("._name") are skipped -- see [fsutil.Glob].
 func Build(presetsDir, definitionDir string) ([]Generated, error) {
-	matches, err := filepath.Glob(filepath.Join(presetsDir, "*.yaml"))
+	matches, err := fsutil.Glob(filepath.Join(presetsDir, "*.yaml"))
 	if err != nil {
 		return nil, fmt.Errorf("glob presets: %w", err)
 	}
 	out := make([]Generated, 0, len(matches))
 	for _, p := range matches {
-		if isAppleDouble(p) {
-			continue
-		}
 		data, err := os.ReadFile(p)
 		if err != nil {
 			return nil, fmt.Errorf("read %s: %w", p, err)
 		}
-		def, err := product.ParseDefinition(data)
+		// Default EXPR limits and no deadline: this is an offline build tool
+		// run by a preset-library publisher over their own files, not a
+		// request. There is no operator configuration here and no elapsed time
+		// to bound.
+		def, err := product.ParseDefinition(data, product.ValidateOptions{EnforceLimits: true})
 		if err != nil {
 			return nil, fmt.Errorf("invalid preset %s: %w", p, err)
 		}
@@ -150,18 +152,4 @@ func Publish(presetsDir, outDir, definitionDir string) error {
 		return fmt.Errorf("write index: %w", err)
 	}
 	return nil
-}
-
-// isAppleDouble reports whether p is a macOS AppleDouble sidecar ("._name").
-//
-// macOS writes one alongside a file whenever extended attributes cannot be
-// stored natively, which is the case on non-APFS volumes. A plain `git
-// checkout` that rewrites a preset is enough to create one: the rewritten file
-// picks up a com.apple.provenance xattr and the xattr lands in the sidecar.
-//
-// It matters here because a sidecar matches *.yaml, so without this it is read
-// as a preset, fails to parse, and turns a release-time publish into a hard
-// error for a reason unrelated to the presets themselves.
-func isAppleDouble(p string) bool {
-	return strings.HasPrefix(filepath.Base(p), "._")
 }

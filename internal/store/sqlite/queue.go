@@ -117,7 +117,7 @@ func (s *Store) ListQueues(ctx context.Context, opts store.ListQueuesOptions) (s
 	}
 
 	var total int
-	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM queues`+where, args...).Scan(&total); err != nil {
+	if err := s.rdb.QueryRowContext(ctx, `SELECT COUNT(*) FROM queues`+where, args...).Scan(&total); err != nil {
 		return store.Page[store.Queue]{}, mapErr(err)
 	}
 
@@ -132,7 +132,7 @@ func (s *Store) ListQueues(ctx context.Context, opts store.ListQueuesOptions) (s
 	q := `SELECT ` + queueCols + ` FROM queues` + where + //nolint:gosec // see comment above
 		` ORDER BY ` + col + ` ` + dir +
 		` LIMIT ? OFFSET ?`
-	rows, err := s.db.QueryContext(ctx, q, append(args, opts.Pagination.Limit, opts.Pagination.Offset)...)
+	rows, err := s.rdb.QueryContext(ctx, q, append(args, opts.Pagination.Limit, opts.Pagination.Offset)...)
 	if err != nil {
 		return store.Page[store.Queue]{}, mapErr(err)
 	}

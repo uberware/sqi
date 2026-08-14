@@ -1408,14 +1408,16 @@ components:
           description: >-
             Key/value pairs matching the product template's parameterDefinitions.
             Missing keys with defaults are filled automatically; missing required
-            keys return 422.
+            keys return 422. A value for a LIST[*] parameter is the JSON encoding
+            of the list, as a string — for example "[\"main\",\"closeup\"]" — because
+            job-parameter values travel as strings on every submission surface.
 
     ProductParameter:
       type: object
       required: [name, type]
       properties:
         name: { type: string }
-        type: { type: string, enum: [INT, FLOAT, STRING, PATH] }
+        type: { type: string, enum: [INT, FLOAT, STRING, PATH, BOOL, RANGE_EXPR, "LIST[STRING]", "LIST[PATH]", "LIST[INT]", "LIST[FLOAT]", "LIST[BOOL]", "LIST[LIST[INT]]"] }
         description: { type: string }
         default: { type: string, nullable: true }
         allowed_values: { type: array, items: { type: string }, nullable: true }
@@ -1429,7 +1431,7 @@ components:
           nullable: true
           type: object
           properties:
-            control: { type: string, enum: [LINE_EDIT, MULTILINE_EDIT, DROPDOWN_LIST, CHECK_BOX, HIDDEN, SPIN_BOX, CHOOSE_INPUT_FILE, CHOOSE_OUTPUT_FILE, CHOOSE_DIRECTORY] }
+            control: { type: string, enum: [LINE_EDIT, MULTILINE_EDIT, DROPDOWN_LIST, CHECK_BOX, HIDDEN, SPIN_BOX, CHOOSE_INPUT_FILE, CHOOSE_OUTPUT_FILE, CHOOSE_DIRECTORY, LINE_EDIT_LIST, SPIN_BOX_LIST, CHECK_BOX_LIST, CHOOSE_INPUT_FILE_LIST, CHOOSE_OUTPUT_FILE_LIST, CHOOSE_DIRECTORY_LIST] }
             label: { type: string }
             group_label: { type: string }
             decimals: { type: integer, nullable: true }
@@ -1449,6 +1451,26 @@ components:
           properties:
             label: { type: string }
             patterns: { type: array, items: { type: string } }
+        item:
+          nullable: true
+          description: >-
+            Per-element constraints for a LIST[*] parameter (RFC 0007's nested
+            item: block). Null for a scalar parameter. The inner item recurses
+            exactly once, for LIST[LIST[INT]].
+          allOf: [{ $ref: '#/components/schemas/ItemConstraint' }]
+
+    ItemConstraint:
+      type: object
+      properties:
+        allowed_values: { type: array, items: { type: string }, nullable: true }
+        min_value: { type: string, nullable: true }
+        max_value: { type: string, nullable: true }
+        min_length: { type: integer, nullable: true }
+        max_length: { type: integer, nullable: true }
+        item:
+          nullable: true
+          description: The inner level, present only for LIST[LIST[INT]].
+          allOf: [{ $ref: '#/components/schemas/ItemConstraint' }]
 
     # ── Usage pools ───────────────────────────────────────────────────────────
     UsagePool:
@@ -1834,6 +1856,21 @@ components:
           schema:
             $ref: "#/components/schemas/ProblemDetail"
 
+    TemplateDeadlineExceeded:
+      description: |
+        The server gave up evaluating the submitted template's expressions
+        before finishing (openjd.expr_submission_deadline).
+
+        This is NOT a verdict on the template: the deterministic expression
+        budgets decide validity and report it as a 4xx, while this outcome
+        depends on how busy this server was, so the same body may well be
+        accepted on a retry. Persistent 503s here mean either a genuinely
+        expensive template or a deadline the operator has set too low.
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/ProblemDetail"
+
 # ── Paths ─────────────────────────────────────────────────────────────────────
 
 paths:
@@ -1873,9 +1910,17 @@ paths:
         - Parameters omitted from the request use their `default` if the
           template declares one; otherwise a **422** is returned (required
           parameter missing).
-        - Values are validated against the parameter type (`INT`, `FLOAT`,
-          `STRING`, `PATH`) and any `minValue`, `maxValue`, `minLength`,
-          `maxLength`, or `allowedValues` constraints declared in the template.
+        - Values are validated against the declared parameter type (`INT`,
+          `FLOAT`, `STRING`, `PATH`, `BOOL`, `RANGE_EXPR`, or one of the six
+          `LIST[*]` types — the latter four are the EXPR extension's Extended
+          Parameter Types, RFC 0007) and any `minValue`, `maxValue`,
+          `minLength`, `maxLength`, `allowedValues`, or `item` constraints
+          declared in the template.
+        - A value for a `LIST[*]` parameter is the JSON encoding of the list,
+          URL-encoded into the query string — for example
+          `param.Shots=%5B%22main%22%2C%22closeup%22%5D` decodes to
+          `param.Shots=["main","closeup"]` — because job-parameter values
+          travel as strings on every submission surface, including this one.
       parameters:
         - name: farm_id
           in: query
@@ -1987,6 +2032,21 @@ paths:
           $ref: "#/components/responses/TooManyRequests"
         "500":
           $ref: "#/components/responses/InternalServerError"
+        "503":
+          description: |
+            The server gave up evaluating the template's expressions before
+            finishing (openjd.expr_submission_deadline).
+
+            This is NOT a verdict on the template: the deterministic
+            expression budgets decide validity and report it as 422, while
+            this outcome depends on how busy this server was, so the same body
+            may well be accepted on a retry. Persistent 503s here mean either
+            a genuinely expensive template or a deadline the operator has set
+            too low.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
 
     get:
       operationId: listJobs
@@ -3114,6 +3174,8 @@ paths:
           $ref: "#/components/responses/Conflict"
         "500":
           $ref: "#/components/responses/InternalServerError"
+        "503":
+          $ref: "#/components/responses/TemplateDeadlineExceeded"
 
     get:
       operationId: listProducts
@@ -3185,6 +3247,8 @@ paths:
           $ref: "#/components/responses/NotFound"
         "500":
           $ref: "#/components/responses/InternalServerError"
+        "503":
+          $ref: "#/components/responses/TemplateDeadlineExceeded"
 
     delete:
       operationId: deleteProduct
@@ -3245,6 +3309,16 @@ paths:
           $ref: "#/components/responses/UnprocessableEntity"
         "500":
           $ref: "#/components/responses/InternalServerError"
+        "503":
+          description: |
+            The server gave up evaluating the product template's expressions
+            before finishing (openjd.expr_submission_deadline). Same meaning
+            as on POST /jobs: a load-dependent outcome, not a verdict on the
+            template or the submitted parameters, and a retry may succeed.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
 
   /products/{name}/parameters:
     get:
@@ -3325,7 +3399,12 @@ paths:
         "502":
           description: Failed to fetch the preset library index.
         "503":
-          description: Preset library not configured.
+          description: >-
+            Preset library not configured, or the definition's expression
+            evaluation exceeded openjd.expr_submission_deadline (EXPR
+            sub-project H1's wall-clock backstop). The second is not a verdict
+            on the definition -- the same body would validate on an idle
+            server -- so a retry may succeed.
 
   /presets/{name}/install:
     parameters:
@@ -3365,7 +3444,12 @@ paths:
         "502":
           description: Failed to fetch the preset library index.
         "503":
-          description: Preset library not configured.
+          description: >-
+            Preset library not configured, or the definition's expression
+            evaluation exceeded openjd.expr_submission_deadline (EXPR
+            sub-project H1's wall-clock backstop). The second is not a verdict
+            on the definition -- the same body would validate on an idle
+            server -- so a retry may succeed.
 
   # ── Usage pools ────────────────────────────────────────────────────────────
 

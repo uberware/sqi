@@ -29,6 +29,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"maps"
+	"slices"
 	"strings"
 	"time"
 
@@ -112,6 +113,18 @@ func buildAssignPayload(
 		msg.Isolation = spec
 	}
 
+	// ── Expression evaluation (EXPR extension) ──────────────────────────────
+	// internal/openjd's validateLetExtension rejects any let: block unless
+	// the template declares EXPR, so a template that reaches here without
+	// EXPR cannot have a populated Let anywhere in it; the hasEXPR gate in
+	// populateEXPRFields is nonetheless what keeps ParameterTypes and
+	// JobParameterTypes (which base-spec templates *do* populate, since
+	// typed parameterDefinitions are base-spec, not EXPR-only) off the wire
+	// for a base-spec assignment. A template without EXPR declared must
+	// produce byte-for-byte the same assignment shape it produced before
+	// this section existed — see [protocol.AssignMsg.EXPR].
+	hasEXPR := populateEXPRFields(&msg, tmpl, stepTmpl, job.Name, step.Name)
+
 	// ── OnRun action and step-level embedded files ─────────────────────────
 	if stepTmpl.Script != nil {
 		onRun := stepTmpl.Script.Actions.OnRun
@@ -123,10 +136,10 @@ func buildAssignPayload(
 	envs := make([]protocol.AssignEnvironment, 0,
 		len(tmpl.JobEnvironments)+len(stepTmpl.StepEnvironments))
 	for _, e := range tmpl.JobEnvironments {
-		envs = append(envs, convertEnvironment(e))
+		envs = append(envs, convertEnvironment(e, hasEXPR, false))
 	}
 	for _, e := range stepTmpl.StepEnvironments {
-		envs = append(envs, convertEnvironment(e))
+		envs = append(envs, convertEnvironment(e, hasEXPR, true))
 	}
 	msg.Environments = envs
 
@@ -241,8 +254,10 @@ func convertEmbeddedFiles(files []openjd.EmbeddedFile) []protocol.EmbeddedFile {
 }
 
 // convertEnvironment converts an [openjd.Environment] to the protocol
-// representation, merging its script embedded files and actions.
-func convertEnvironment(e openjd.Environment) protocol.AssignEnvironment {
+// representation, merging its script embedded files and actions. hasEXPR
+// gates copying the environment's let: block onto the wire — see
+// [protocol.AssignEnvironment.Let].
+func convertEnvironment(e openjd.Environment, hasEXPR, isStepEnvironment bool) protocol.AssignEnvironment {
 	ae := protocol.AssignEnvironment{
 		Name:      e.Name,
 		Variables: e.Variables,
@@ -251,8 +266,87 @@ func convertEnvironment(e openjd.Environment) protocol.AssignEnvironment {
 		ae.OnEnter = convertAction(e.Script.Actions.OnEnter)
 		ae.OnExit = convertAction(e.Script.Actions.OnExit)
 		ae.EmbeddedFiles = convertEmbeddedFiles(e.Script.EmbeddedFiles)
+		if hasEXPR {
+			ae.Let = e.Script.Let
+		}
 	}
+	// StepEnvironment distinguishes a step-level environment from a
+	// job-level one -- see protocol.AssignEnvironment.StepEnvironment's doc
+	// comment for why the worker's phase-3 symbol-table builder needs this
+	// bit (Step.Name is legal in a step environment's script, per Template
+	// Schemas §3.6.2, but not in a job environment's). Gated on hasEXPR
+	// like every other EXPR-only field, so a base-spec assignment's wire
+	// bytes are unaffected -- the caller already computed isStepEnvironment
+	// for free (this function is called once from the job-environment loop
+	// with false, once from the step-environment loop with true).
+	ae.StepEnvironment = hasEXPR && isStepEnvironment
 	return ae
+}
+
+// populateEXPRFields sets msg's EXPR flag and, only when the template
+// declares the EXPR extension, its step-level let blocks, declared
+// parameter-type maps, and the job's/step's own declared names (jobName,
+// stepName — store.Job.Name and store.Step.Name at the caller, threaded
+// through rather than re-derived here since buildAssignPayload already has
+// both records). Returns hasEXPR so the caller can gate the EXPR-only
+// environment let blocks it assembles afterward without re-deriving the same
+// flag.
+func populateEXPRFields(
+	msg *protocol.AssignMsg, tmpl *openjd.JobTemplate, stepTmpl *openjd.StepTemplate, jobName, stepName string,
+) bool {
+	hasEXPR := declaresEXPR(tmpl)
+	msg.EXPR = hasEXPR
+	if !hasEXPR {
+		return false
+	}
+	msg.StepTemplateLet = stepTmpl.Let
+	if stepTmpl.Script != nil {
+		msg.StepScriptLet = stepTmpl.Script.Let
+	}
+	msg.ParameterTypes = buildParameterTypes(stepTmpl)
+	msg.JobParameterTypes = buildJobParameterTypes(tmpl)
+	msg.JobName = jobName
+	msg.StepName = stepName
+	return true
+}
+
+// declaresEXPR reports whether tmpl declares the EXPR extension
+// (extensions: [EXPR]). Mirrors internal/openjd's own gate for the identical
+// question — exprcheck.go's checkTemplateExpressions tests
+// tmpl.hasExtension("EXPR"), which is unexported and therefore not callable
+// from this package; JobTemplate.Extensions is exported, so the check is
+// duplicated here rather than exported solely for this one caller.
+func declaresEXPR(tmpl *openjd.JobTemplate) bool {
+	return slices.Contains(tmpl.Extensions, "EXPR")
+}
+
+// buildJobParameterTypes returns the declared OpenJD type of each job
+// parameter from tmpl's parameterDefinitions, keyed by parameter name. See
+// [protocol.AssignMsg.JobParameterTypes].
+func buildJobParameterTypes(tmpl *openjd.JobTemplate) map[string]string {
+	if len(tmpl.ParameterDefinitions) == 0 {
+		return nil
+	}
+	types := make(map[string]string, len(tmpl.ParameterDefinitions))
+	for _, p := range tmpl.ParameterDefinitions {
+		types[p.Name] = string(p.Type)
+	}
+	return types
+}
+
+// buildParameterTypes returns the declared OpenJD type of each task
+// parameter from the step's taskParameterDefinitions, keyed by parameter
+// name. See [protocol.AssignMsg.ParameterTypes].
+func buildParameterTypes(stepTmpl *openjd.StepTemplate) map[string]string {
+	if stepTmpl.ParameterSpace == nil || len(stepTmpl.ParameterSpace.TaskParameterDefinitions) == 0 {
+		return nil
+	}
+	defs := stepTmpl.ParameterSpace.TaskParameterDefinitions
+	types := make(map[string]string, len(defs))
+	for _, p := range defs {
+		types[p.Name] = string(p.Type)
+	}
+	return types
 }
 
 // buildPathMap builds the ordered list of OpenJD path-mapping rules from all
@@ -320,6 +414,48 @@ func detectPathFormat(p string) string {
 	return "POSIX"
 }
 
+// resolveLocURIsInParamValue concretizes loc:// URIs in one job-parameter
+// value, dispatching on the parameter's DECLARED type.
+//
+// A scalar is resolved by substring replacement, unchanged from before
+// sub-project F2. A LIST[*] value is canonical JSON, and substring replacement
+// on it splices the resolved path INSIDE a JSON string literal -- which
+// survives by luck for a POSIX path and corrupts a Windows one, whose
+// backslashes are not legal JSON escapes and make the value stop decoding
+// entirely. So a list is decoded, resolved element by element, and re-encoded
+// through the same codec that produced it.
+func resolveLocURIsInParamValue(
+	value, declaredType string, resolve func(name, relPath string) (string, error),
+) (string, error) {
+	if !openjd.IsListParamTypeName(declaredType) {
+		return openjd.ResolveLocURIs(value, resolve)
+	}
+
+	elems, err := openjd.DecodeListParamValue(value)
+	if err != nil {
+		return "", fmt.Errorf("list parameter value: %w", err)
+	}
+	changed := false
+	for i, e := range elems {
+		s, ok := e.(string)
+		if !ok {
+			continue // a non-string element cannot carry a loc:// URI
+		}
+		resolved, err := openjd.ResolveLocURIs(s, resolve)
+		if err != nil {
+			return "", err
+		}
+		if resolved != s {
+			elems[i] = resolved
+			changed = true
+		}
+	}
+	if !changed {
+		return value, nil
+	}
+	return openjd.EncodeListParamValue(elems)
+}
+
 // resolveLocURIsInMsg rewrites all loc:// URI references inside msg in-place.
 // It covers the OnRun action command/args, all environment variables and
 // embedded-file data in every AssignEnvironment, and all task parameter values.
@@ -351,7 +487,7 @@ func resolveLocURIsInMsg(
 	// the worker would splice the raw URI into a {{Param.*}} expansion. The map
 	// is a clone (see buildJobParameters), so this in-place rewrite is safe.
 	for k, v := range msg.JobParameters {
-		resolved, err := openjd.ResolveLocURIs(v, resolve)
+		resolved, err := resolveLocURIsInParamValue(v, msg.JobParameterTypes[k], resolve)
 		if err != nil {
 			return fmt.Errorf("job parameter %q: %w", k, err)
 		}
@@ -423,7 +559,9 @@ func hasDelivery(ds []protocol.PathDelivery, kind string) bool {
 func buildStagingManifest(tmpl *openjd.JobTemplate, jobParams map[string]string) []protocol.StageEntry {
 	var out []protocol.StageEntry
 	for _, p := range tmpl.ParameterDefinitions {
-		if p.Type != openjd.JobParamTypePath {
+		isPath := p.Type == openjd.JobParamTypePath
+		isListPath := p.Type == openjd.JobParamTypeListPath
+		if !isPath && !isListPath {
 			continue
 		}
 		dir := string(p.DataFlow)
@@ -434,11 +572,39 @@ func buildStagingManifest(tmpl *openjd.JobTemplate, jobParams map[string]string)
 		if !ok || val == "" {
 			continue
 		}
-		out = append(out, protocol.StageEntry{
-			Path:       val,
-			Direction:  dir,
-			ObjectType: string(p.ObjectType),
-		})
+
+		for _, path := range stagedPaths(val, isListPath) {
+			out = append(out, protocol.StageEntry{
+				Path:       path,
+				Direction:  dir,
+				ObjectType: string(p.ObjectType),
+			})
+		}
+	}
+	return out
+}
+
+// stagedPaths returns the concrete paths one parameter value contributes: the
+// value itself for a scalar PATH, or one per element for a LIST[PATH].
+//
+// A list value that does not decode contributes nothing rather than failing the
+// whole assignment: it was validated at submission, so reaching here malformed
+// means something upstream is wrong, and dropping the dispatch of every other
+// parameter is a worse outcome than staging one fewer file. A non-string
+// element is skipped for the same reason.
+func stagedPaths(value string, isList bool) []string {
+	if !isList {
+		return []string{value}
+	}
+	elems, err := openjd.DecodeListParamValue(value)
+	if err != nil {
+		return nil
+	}
+	out := make([]string, 0, len(elems))
+	for _, e := range elems {
+		if s, ok := e.(string); ok && s != "" {
+			out = append(out, s)
+		}
 	}
 	return out
 }

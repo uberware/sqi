@@ -1,0 +1,903 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
+package expr
+
+import (
+	"sort"
+	"strings"
+)
+
+// Expression is a parsed expression, ready to evaluate.
+type Expression struct {
+	src  string
+	root Node
+}
+
+// Parse reads an expression and returns its tree, or an *Error naming the
+// position at which the source stopped making sense.
+//
+// The grammar implemented here is EXPR's, not Python's. Anything outside it —
+// bitwise operators, dict and set literals, assignment, and the rest of
+// section 1.1's exclusion list — is rejected. That direction is deliberate: a
+// reader borrowed from a full Python parser would silently ACCEPT syntax this
+// package cannot evaluate, whereas anything unimplemented here fails to parse.
+// The FIRST thing it does is bound the source's length (limits.go's
+// maxSourceBytes). That check has to come before tokenize, not after it and
+// not inside the parser: every other bound this package and its callers have
+// — the section 1.3.9/1.3.10 budgets, the template-wide budget, the operator
+// limits, the wall-clock deadline — is metered during EVALUATION, so until
+// this check runs nothing at all is watching. See maxSourceBytes for what one
+// unbounded parse measured.
+func Parse(src string) (*Expression, error) {
+	if err := checkSourceBytes(len(src)); err != nil {
+		return nil, wrapAt(src, 0, err)
+	}
+	toks, err := tokenize(src)
+	if err != nil {
+		return nil, err
+	}
+	p := &parser{src: src, toks: toks}
+	if p.peek().kind == tokEOF {
+		return nil, errorAt(src, 0, "empty expression")
+	}
+	root, err := p.parseExpr()
+	if err != nil {
+		return nil, err
+	}
+	if tok := p.peek(); tok.kind != tokEOF {
+		return nil, p.errorAtTok(tok, "unexpected %s after expression", tok.kind)
+	}
+	return &Expression{src: src, root: root}, nil
+}
+
+// Source returns the text this expression was parsed from.
+func (e *Expression) Source() string { return e.src }
+
+// Root returns the tree's root node.
+func (e *Expression) Root() Node { return e.root }
+
+// Names returns every EXTERNAL dotted value reference the expression makes —
+// for example {"Param.Frame", "Task.Param.Chunk"} — sorted and deduplicated.
+//
+// This is the spec's accessed_symbols set, which the Recommended Library
+// Interface defines as "the external symbols referenced by the expression as
+// full dotted paths including properties" — so "Param.File.stem" is collected
+// whole, trailing property and all. Callers use it to decide which symbols an
+// expression needs before evaluating it; sub-project E uses it to scope-check a
+// template's expressions without binding values.
+//
+// Two kinds of identifier are therefore NOT names, and are excluded rather than
+// reported:
+//
+//   - A FUNCTION OR METHOD NAME. The spec keeps those in a separate
+//     called_functions set, so the trailing segment of a call's callee is
+//     dropped: "len(Param.Items)" collects {"Param.Items"} and
+//     "Param.Name.upper()" collects {"Param.Name"}, not {"len"} and
+//     {"Param.Name.upper"}. The spec's called_functions set is CalledFunctions
+//     below, added by sub-project D; it collects exactly the segment this one
+//     drops.
+//   - A COMPREHENSION LOOP VARIABLE, and anything rooted at one. Section
+//     1.3.7 binds it inside the comprehension, so it is not external:
+//     "[x for x in Param.Items]" collects {"Param.Items"} and
+//     "[x.stem for x in Param.Files]" collects {"Param.Files"}. The binding
+//     covers the element expression and the filter but NOT the iterable, which
+//     is evaluated before the variable exists — "[x for x in x]" does collect
+//     the iterable's own external {"x"}.
+//
+// Both exclusions matter to the only consumer this set has: a scope check of
+// the form "every name here must be in scope" would otherwise reject every
+// comprehension and every plain function call in the language. Every case
+// above was verified against the reference implementation, which answers
+// identically.
+//
+// It does NOT answer identically once the binding ends. A loop variable is
+// bound to its own comprehension and no further, so a later mention is external
+// again: "[x for x in Param.A] + [x]" collects {"Param.A", "x"}, where the
+// reference collects {"Param.A"} alone, as if the name were removed from the
+// whole expression. The spec is on this side — section 1.3.7 binds the variable
+// inside the comprehension, and the Recommended Library Interface asks for the
+// EXTERNAL symbols — so the divergence is deliberate. It is also the safer
+// direction: a scope check sees the free "x" here and would miss it under the
+// reference's answer.
+//
+// One narrowing remains, and it is safe in that direction: a property chain
+// whose receiver is not a bare name — "(Param.File).stem", where the
+// parentheses make the parser build an Access rather than one Name — collects
+// the receiver "Param.File" alone, where the reference collects
+// "Param.File.stem". A scope check sees a name that IS in scope either way.
+func (e *Expression) Names() []string {
+	seen := map[string]bool{}
+	var out []string
+	walk(e.root, func(n Node, ctx walkCtx) {
+		name, ok := n.(*Name)
+		if !ok {
+			return
+		}
+		parts := name.Parts
+		if ctx.callee {
+			// The last segment is the function or method being called; what
+			// precedes it, if anything, is the receiver symbol. "len(x)" leaves
+			// nothing, "Param.Name.upper()" leaves "Param.Name".
+			parts = parts[:len(parts)-1]
+		}
+		if len(parts) == 0 || ctx.scope.binds(parts[0]) {
+			return
+		}
+		if s := strings.Join(parts, "."); !seen[s] {
+			seen[s] = true
+			out = append(out, s)
+		}
+	})
+	sort.Strings(out)
+	return out
+}
+
+// CalledFunctions returns the external set of function and method names this
+// expression calls, sorted and de-duplicated. It is the counterpart to Names:
+// where Names collects the SYMBOL a callee's leading segments name, this
+// collects the trailing segment that names the function or method itself
+// (section 1.3.3). "len(x)" yields "len"; "Param.Name.upper()" yields "upper";
+// "s.apply_path_mapping()" yields "apply_path_mapping".
+//
+// It is EXTERNAL in the same sense Names is, and for the same reason: a
+// comprehension loop variable called directly is bound by section 1.3.7, not by
+// the function registry, so "[x() for x in Param.L]" yields the empty set
+// rather than {"x"}. The exclusion is deliberately NARROW — it applies only to
+// a SINGLE-SEGMENT callee, where the called name IS the bound identifier. In
+// "[x.foo() for x in Param.L]" the called name is the method "foo", which the
+// loop variable x does not shadow, so "foo" is reported; and the binding ends
+// with its comprehension, so "[x for x in Param.L] + [x()]" reports {"x"}
+// again. (Names diverges from the reference implementation on that last point
+// and explains why above; the same reading applies here.)
+//
+// Its stated use is sub-project E's: spotting a host-context call (notably
+// apply_path_mapping) in a submission-time scope, which E rejects. This package
+// enforces no such rule itself — see pathMappingFuncs.
+func (e *Expression) CalledFunctions() []string {
+	seen := map[string]bool{}
+	var out []string
+	add := func(name string) {
+		if name != "" && !seen[name] {
+			seen[name] = true
+			out = append(out, name)
+		}
+	}
+	walk(e.root, func(n Node, ctx walkCtx) {
+		if !ctx.callee {
+			return
+		}
+		switch c := n.(type) {
+		case *Name:
+			// A bare callee that a comprehension binds is a loop variable being
+			// called, not an external function — mirroring the exclusion in
+			// Names. Only the single-segment case can be shadowed: in
+			// "x.foo()" the called name is "foo", which no loop variable named
+			// x binds.
+			if len(c.Parts) == 1 && ctx.scope.binds(c.Parts[0]) {
+				return
+			}
+			// The trailing segment is the function or method being called.
+			add(c.Parts[len(c.Parts)-1])
+		case *Access:
+			// A callee whose receiver is not a bare dotted name — "(expr).method()"
+			// — parses as an Access; its Attr is the method name.
+			add(c.Attr)
+		}
+	})
+	sort.Strings(out)
+	return out
+}
+
+// CallsAny reports whether the expression calls any of the named functions or
+// methods — the MEMBERSHIP question CalledFunctions is otherwise used to answer,
+// without building the answer.
+//
+// It applies exactly CalledFunctions's collection rule, node for node: the same
+// callee positions, the same trailing-segment rule for a dotted callee, the same
+// Access arm for a parenthesized receiver, and the same narrow section 1.3.7
+// exclusion of a single-segment callee a comprehension binds. Read that doc
+// comment for the adjudication of each; this one restates none of it, precisely
+// so the two cannot drift apart in the telling. CalledFunctions is the
+// enumeration, this is the predicate, and they agree by construction — which is
+// pinned by TestCalledFunctions, whose every case asserts both.
+//
+// It exists because the only consumer is a predicate. internal/openjd's checker
+// asks "does this call a host-only function?" once per expression on the
+// submission path, against a set with a single member (apply_path_mapping), and
+// CalledFunctions answered it by walking the whole tree into a de-duplicating
+// map, allocating a slice, and sorting it. This walks with early termination —
+// it stops at the first match — and allocates nothing but the walk stack.
+//
+// An empty or nil set is false without walking anything.
+func (e *Expression) CallsAny(names map[string]struct{}) bool {
+	if len(names) == 0 {
+		return false
+	}
+	return walkUntil(e.root, func(n Node, ctx walkCtx) bool {
+		if !ctx.callee {
+			return false
+		}
+		switch c := n.(type) {
+		case *Name:
+			if len(c.Parts) == 1 && ctx.scope.binds(c.Parts[0]) {
+				return false
+			}
+			_, ok := names[c.Parts[len(c.Parts)-1]]
+			return ok
+		case *Access:
+			_, ok := names[c.Attr]
+			return ok
+		}
+		return false
+	})
+}
+
+// parser turns a token slice into a tree. One method per grammar production,
+// named for it, so the code can be diffed against the BNF in spec section 1.1.
+type parser struct {
+	src  string
+	toks []token
+	pos  int
+	// depth is how many grammar-descent frames are currently on the stack, so
+	// that unbounded nesting is reported instead of overflowing it. See enter.
+	depth int
+}
+
+// enter accounts for one level of recursive descent and returns the matching
+// leave, so a production guards itself with a single deferred line.
+//
+// Every function that takes part in a recursion CYCLE must call it, not just
+// the outermost production. The cycles, enumerated from parser.go's call graph:
+//
+//   - Every path that re-enters the grammar from inside a construct — a
+//     parenthesis, a list element, a subscript, a slice component, a call
+//     argument — goes through parseExpr and so through parseConditional, which
+//     is guarded.
+//   - parseConditional recurses into ITSELF for the right-associative else
+//     branch, without leaving the production.
+//   - parseNot and parseUnary each recurse into themselves (a stack of "not"
+//     keywords, or of unary minus signs) without passing through parseExpr at
+//     all. Both are guarded on the branch that recurses.
+//   - parsePower and parseUnary recurse into EACH OTHER: parsePower reads its
+//     exponent with parseUnary (which is what makes "**" right-associative),
+//     and parseUnary falls through to parsePower whenever the next token is not
+//     a sign. Neither of the two guards above closes that loop — parseUnary's
+//     sits on the sign branch, which this cycle never takes — so "2**2**2**…"
+//     was unbounded until parsePower was guarded too, and killed the process
+//     with a stack overflow at a million operators. parsePostfix's guard does
+//     not help either: its defer has already run by the time parsePower reads
+//     the "**".
+//   - parsePostfix is guarded as well, which closes no cycle of its own — its
+//     trailer group is a LOOP, and parseSubscript and parseCall both re-enter
+//     through parseExpr, already counted — but it is the natural place for the
+//     guard if that loop is ever turned into recursion, and one more counted
+//     frame per level costs nothing.
+//
+// The remaining productions (parseOr, parseAnd, parseLogicalLevel, parseCompare,
+// parseAdd, parseMul, parseBinaryLevel) form a strictly descending precedence
+// chain with no back edge, so they take part in no cycle except through
+// parseExpr, and need no guard of their own.
+//
+// The limit is reported as an ordinary *Error carrying a position, which is the
+// whole point: a stack overflow is a runtime.throw that recover() cannot catch,
+// so it has to be turned into a value before it happens, not handled after.
+func (p *parser) enter(tok token) (func(), error) {
+	if p.depth >= maxParseDepth {
+		return nil, p.errorAtTok(tok, "this expression is nested too deeply")
+	}
+	p.depth++
+	return func() { p.depth-- }, nil
+}
+
+func (p *parser) peek() token { return p.toks[p.pos] }
+
+func (p *parser) advance() token {
+	tok := p.toks[p.pos]
+	if tok.kind != tokEOF {
+		p.pos++
+	}
+	return tok
+}
+
+func (p *parser) accept(kind tokenKind) (token, bool) {
+	if tok := p.peek(); tok.kind == kind {
+		return p.advance(), true
+	}
+	return token{}, false
+}
+
+func (p *parser) expect(kind tokenKind) (token, error) {
+	tok := p.peek()
+	if tok.kind != kind {
+		if tok.kind == tokEOF {
+			// Running out of input reads better as "unexpected end of
+			// expression" than "expected X, found end of expression" — the
+			// same wording parsePrimary already uses for a bare EOF.
+			return token{}, p.errorAtTok(tok, "unexpected %s", tok.kind)
+		}
+		return token{}, p.errorAtTok(tok, "expected %s, found %s", kind, tok.kind)
+	}
+	return p.advance(), nil
+}
+
+func (p *parser) errorAtTok(tok token, format string, args ...any) *Error {
+	return errorAt(p.src, tok.offset, format, args...)
+}
+
+// primaryKeywords may not start a primary expression. True/False/None and
+// their aliases are handled before this check, since they are literals.
+var primaryKeywords = map[string]bool{
+	"if": true, "else": true, "and": true, "or": true,
+	"not": true, "for": true, "in": true,
+}
+
+// parseExpr is the entry production: the full <StringInterpExpr>.
+func (p *parser) parseExpr() (Node, error) { return p.parseConditional() }
+
+// keyword reports whether tok is the contextual keyword word. Section 1.1.3
+// makes keywords contextual: the lexer emits every identifier as tokIdent and
+// the parser decides, by position, whether a given one is a keyword. That is
+// what keeps "Param.if" a valid attribute reference.
+func keyword(tok token, word string) bool {
+	return tok.kind == tokIdent && tok.text == word
+}
+
+// parseConditional implements
+// <ConditionalExpr> ::= <OrExpr> ("if" <OrExpr> "else" <ConditionalExpr>)?.
+// The else branch recurses into parseConditional, making the form
+// right-associative: "a if p else b if q else c" groups as
+// "a if p else (b if q else c)".
+func (p *parser) parseConditional() (Node, error) {
+	leave, err := p.enter(p.peek())
+	if err != nil {
+		return nil, err
+	}
+	defer leave()
+
+	then, err := p.parseOr()
+	if err != nil {
+		return nil, err
+	}
+	tok := p.peek()
+	if !keyword(tok, "if") {
+		return then, nil
+	}
+	p.advance()
+
+	cond, err := p.parseOr()
+	if err != nil {
+		return nil, err
+	}
+	if elseTok := p.peek(); !keyword(elseTok, "else") {
+		return nil, p.errorAtTok(elseTok,
+			`expected "else" to complete the conditional expression, found %s`, elseTok.kind)
+	}
+	p.advance()
+
+	otherwise, err := p.parseConditional()
+	if err != nil {
+		return nil, err
+	}
+	return &Cond{Offset: tok.offset, Then: then, If: cond, Else: otherwise}, nil
+}
+
+// parseOr implements <OrExpr> ::= <AndExpr> ("or" <AndExpr>)*.
+func (p *parser) parseOr() (Node, error) {
+	return p.parseLogicalLevel("or", OpOr, p.parseAnd)
+}
+
+// parseAnd implements <AndExpr> ::= <NotExpr> ("and" <NotExpr>)*.
+func (p *parser) parseAnd() (Node, error) {
+	return p.parseLogicalLevel("and", OpAnd, p.parseNot)
+}
+
+// parseLogicalLevel parses one left-associative run of a keyword operator.
+// These build Logical rather than Binary nodes: section 2.1.6 makes "and" and
+// "or" short-circuiting and value-returning, so they never reach the operand
+// dispatch table.
+func (p *parser) parseLogicalLevel(word string, op Op, next func() (Node, error)) (Node, error) {
+	left, err := next()
+	if err != nil {
+		return nil, err
+	}
+	for {
+		tok := p.peek()
+		if !keyword(tok, word) {
+			return left, nil
+		}
+		p.advance()
+		right, err := next()
+		if err != nil {
+			return nil, err
+		}
+		left = &Logical{Offset: tok.offset, Op: op, L: left, R: right}
+	}
+}
+
+// parseNot implements <NotExpr> ::= "not" <NotExpr> | <CompareExpr>.
+func (p *parser) parseNot() (Node, error) {
+	tok := p.peek()
+	if !keyword(tok, "not") {
+		return p.parseCompare()
+	}
+	leave, err := p.enter(tok)
+	if err != nil {
+		return nil, err
+	}
+	defer leave()
+
+	p.advance()
+	x, err := p.parseNot()
+	if err != nil {
+		return nil, err
+	}
+	return &Unary{Offset: tok.offset, Op: OpNot, X: x}, nil
+}
+
+var compareOps = map[tokenKind]Op{
+	tokLt: OpLt, tokGt: OpGt, tokLe: OpLe, tokGe: OpGe, tokEq: OpEq, tokNe: OpNe,
+}
+
+// parseCompare implements <CompareExpr> ::= <AddExpr> ((...) <AddExpr>)*.
+//
+// A run of comparisons collapses into a single Compare node rather than
+// nested Binary nodes: section 1.3.6 says "1 < 2 < 3" means "1 < 2 and 2 < 3"
+// with each intermediate value evaluated exactly once, which nesting cannot
+// express.
+func (p *parser) parseCompare() (Node, error) {
+	first, err := p.parseAdd()
+	if err != nil {
+		return nil, err
+	}
+	cmp := &Compare{Offset: first.Pos(), Operands: []Node{first}}
+	for {
+		tok := p.peek()
+		op, ok := p.compareOperator(tok)
+		if !ok {
+			if len(cmp.Ops) == 0 {
+				return first, nil
+			}
+			return cmp, nil
+		}
+		operand, err := p.parseAdd()
+		if err != nil {
+			return nil, err
+		}
+		cmp.Ops = append(cmp.Ops, op)
+		cmp.Operands = append(cmp.Operands, operand)
+		cmp.OpOffsets = append(cmp.OpOffsets, tok.offset)
+		if len(cmp.Ops) == 1 {
+			cmp.Offset = tok.offset
+		}
+	}
+}
+
+// compareOperator consumes a comparison operator if one is next and reports
+// which it was. It handles the two-word "not in" form, which is why the caller
+// cannot simply look the token up in compareOps.
+func (p *parser) compareOperator(tok token) (Op, bool) {
+	if op, ok := compareOps[tok.kind]; ok {
+		p.advance()
+		return op, true
+	}
+	if keyword(tok, "in") {
+		p.advance()
+		return OpIn, true
+	}
+	if keyword(tok, "not") && p.pos+1 < len(p.toks) && keyword(p.toks[p.pos+1], "in") {
+		p.advance()
+		p.advance()
+		return OpNotIn, true
+	}
+	return 0, false
+}
+
+var (
+	addOps = map[tokenKind]Op{tokPlus: OpAdd, tokMinus: OpSub}
+	mulOps = map[tokenKind]Op{
+		tokStar: OpMul, tokSlash: OpDiv, tokDoubleSlash: OpFloorDiv, tokPercent: OpMod,
+	}
+)
+
+// parseAdd implements <AddExpr> ::= <MulExpr> (("+" | "-") <MulExpr>)*.
+func (p *parser) parseAdd() (Node, error) { return p.parseBinaryLevel(addOps, p.parseMul) }
+
+// parseMul implements <MulExpr> ::= <UnaryExpr> (("*" | "/" | "//" | "%") <UnaryExpr>)*.
+func (p *parser) parseMul() (Node, error) { return p.parseBinaryLevel(mulOps, p.parseUnary) }
+
+// parseBinaryLevel parses one left-associative precedence level: next, then
+// any number of (operator, next) pairs drawn from ops.
+func (p *parser) parseBinaryLevel(ops map[tokenKind]Op, next func() (Node, error)) (Node, error) {
+	left, err := next()
+	if err != nil {
+		return nil, err
+	}
+	for {
+		tok := p.peek()
+		op, ok := ops[tok.kind]
+		if !ok {
+			return left, nil
+		}
+		p.advance()
+		right, err := next()
+		if err != nil {
+			return nil, err
+		}
+		left = &Binary{Offset: tok.offset, Op: op, L: left, R: right}
+	}
+}
+
+// parseUnary implements <UnaryExpr> ::= ("-" | "+") <UnaryExpr> | <PowerExpr>.
+func (p *parser) parseUnary() (Node, error) {
+	tok := p.peek()
+	var op Op
+	switch tok.kind {
+	case tokMinus:
+		op = OpNeg
+	case tokPlus:
+		op = OpPos
+	default:
+		return p.parsePower()
+	}
+	leave, err := p.enter(tok)
+	if err != nil {
+		return nil, err
+	}
+	defer leave()
+
+	p.advance()
+	x, err := p.parseUnary()
+	if err != nil {
+		return nil, err
+	}
+	return &Unary{Offset: tok.offset, Op: op, X: x}, nil
+}
+
+// parsePower implements <PowerExpr> ::= <PostfixExpr> ("**" <UnaryExpr>)?.
+// The right operand is a UnaryExpr, which makes ** right-associative and lets
+// "2 ** -1" parse while leaving "-2 ** 2" as -(2 ** 2).
+//
+// That right operand is also a recursion cycle — parseUnary falls straight back
+// through to parsePower — so this production takes the depth guard, which is
+// what keeps "2**2**2**…" a parse error rather than a stack overflow. See enter.
+func (p *parser) parsePower() (Node, error) {
+	leave, err := p.enter(p.peek())
+	if err != nil {
+		return nil, err
+	}
+	defer leave()
+
+	base, err := p.parsePostfix()
+	if err != nil {
+		return nil, err
+	}
+	tok, ok := p.accept(tokDoubleStar)
+	if !ok {
+		return base, nil
+	}
+	exp, err := p.parseUnary()
+	if err != nil {
+		return nil, err
+	}
+	return &Binary{Offset: tok.offset, Op: OpPow, L: base, R: exp}, nil
+}
+
+// parsePostfix implements <PostfixExpr> ::= <PrimaryExpr> (<Subscript> |
+// <Call> | "." <Identifier>)*.
+//
+// It is a LOOP because the grammar's trailer group repeats: "x[0][1]" is a
+// subscript of a subscript. Sub-project B3 attaches <Call> and the property
+// trailer to the same loop.
+func (p *parser) parsePostfix() (Node, error) {
+	leave, err := p.enter(p.peek())
+	if err != nil {
+		return nil, err
+	}
+	defer leave()
+
+	x, err := p.parsePrimary()
+	if err != nil {
+		return nil, err
+	}
+	for {
+		switch tok := p.peek(); tok.kind {
+		case tokLBracket:
+			x, err = p.parseSubscript(x)
+			if err != nil {
+				return nil, err
+			}
+		case tokLParen:
+			x, err = p.parseCall(x)
+			if err != nil {
+				return nil, err
+			}
+		case tokDot:
+			// A Name consumes its own dots, so a dot reaching here follows a
+			// literal, a parenthesized expression or a trailer — "[1,2].len"
+			// or "(x).y". A dotted name's own properties stay inside the Name
+			// until resolution splits them.
+			x, err = p.parseAccess(x)
+			if err != nil {
+				return nil, err
+			}
+		default:
+			return x, nil
+		}
+	}
+}
+
+// parseSubscript implements <Subscript> ::= "[" <SliceExpr> "]" where
+// <SliceExpr> ::= <ConditionalExpr> | <Slice>.
+//
+// The two are told apart by a ":" at this bracket's own level: with one it is
+// a slice, without one an index.
+func (p *parser) parseSubscript(x Node) (Node, error) {
+	open := p.advance()
+	// "[:...]" — a slice whose start is absent.
+	if _, ok := p.accept(tokColon); ok {
+		return p.parseSliceRest(open.offset, x, nil)
+	}
+	first, err := p.parseExpr()
+	if err != nil {
+		return nil, err
+	}
+	if _, ok := p.accept(tokColon); ok {
+		return p.parseSliceRest(open.offset, x, first)
+	}
+	if _, err := p.expect(tokRBracket); err != nil {
+		return nil, err
+	}
+	return &Index{Offset: open.offset, X: x, Idx: first}, nil
+}
+
+// parseSliceRest reads a slice's remaining components, the first ":" already
+// consumed. An omitted component stays nil, which is NOT the same as a zero:
+// its default depends on the sign of the step (spec section 1.3.8).
+func (p *parser) parseSliceRest(offset int, x, start Node) (Node, error) {
+	s := &Slice{Offset: offset, X: x, Start: start}
+	if _, ok := p.accept(tokRBracket); ok {
+		return s, nil
+	}
+	if p.peek().kind != tokColon {
+		stop, err := p.parseExpr()
+		if err != nil {
+			return nil, err
+		}
+		s.Stop = stop
+		if _, ok := p.accept(tokRBracket); ok {
+			return s, nil
+		}
+	}
+	if _, err := p.expect(tokColon); err != nil {
+		return nil, err
+	}
+	if _, ok := p.accept(tokRBracket); ok {
+		return s, nil
+	}
+	step, err := p.parseExpr()
+	if err != nil {
+		return nil, err
+	}
+	s.Step = step
+	if _, err := p.expect(tokRBracket); err != nil {
+		return nil, err
+	}
+	return s, nil
+}
+
+// parseCall implements <Call> ::= "(" <ArgList>? ")" (spec section 1.1.2).
+func (p *parser) parseCall(callee Node) (Node, error) {
+	open := p.advance()
+	call := &Call{Offset: open.offset, Callee: callee}
+	if _, ok := p.accept(tokRParen); ok {
+		return call, nil
+	}
+	for {
+		arg, err := p.parseExpr()
+		if err != nil {
+			return nil, err
+		}
+		call.Args = append(call.Args, arg)
+		if _, ok := p.accept(tokComma); !ok {
+			break
+		}
+	}
+	if _, err := p.expect(tokRParen); err != nil {
+		return nil, err
+	}
+	return call, nil
+}
+
+// parseAccess implements a property trailer, "X.attr" (spec section 1.3.3).
+func (p *parser) parseAccess(x Node) (Node, error) {
+	dot := p.advance()
+	attr, err := p.expect(tokIdent)
+	if err != nil {
+		return nil, err
+	}
+	return &Access{Offset: dot.offset, X: x, Attr: attr.text}, nil
+}
+
+// parsePrimary implements <PrimaryExpr> ::= <ValueReference> | <Literal>
+// | <ListExpr> | <ListComp> | "(" <ConditionalExpr> ")".
+func (p *parser) parsePrimary() (Node, error) {
+	tok := p.peek()
+	switch tok.kind {
+	case tokInt:
+		p.advance()
+		return &IntLit{Offset: tok.offset, Val: tok.i}, nil
+	case tokFloat:
+		p.advance()
+		return &FloatLit{Offset: tok.offset, Val: tok.f}, nil
+	case tokString:
+		p.advance()
+		return &StringLit{Offset: tok.offset, Val: tok.s}, nil
+	case tokIdent:
+		return p.parseIdentPrimary()
+	case tokLParen:
+		p.advance()
+		inner, err := p.parseExpr()
+		if err != nil {
+			return nil, err
+		}
+		if tok := p.peek(); keyword(tok, "for") {
+			return nil, p.errorAtTok(tok, "generator expressions are not supported")
+		}
+		if _, err := p.expect(tokRParen); err != nil {
+			return nil, err
+		}
+		return inner, nil
+	case tokLBracket:
+		return p.parseListLiteral()
+	}
+	return nil, p.errorAtTok(tok, "unexpected %s", tok.kind)
+}
+
+// parseListLiteral implements <ListExpr> ::= "[" (<ConditionalExpr> (","
+// <ConditionalExpr>)* ","?)? "]" (spec section 1.1.2).
+//
+// <ListComp> shares the opening bracket and is detected here — on the first
+// element only, since "[a, b for x in y]" is not a comprehension — rather than
+// left to fall out as a syntax error at "for", because a bare "unexpected
+// name" would send a reader hunting for a typo instead of pointing at the
+// actual problem.
+func (p *parser) parseListLiteral() (Node, error) {
+	open := p.advance()
+	lit := &ListLit{Offset: open.offset}
+	if _, ok := p.accept(tokRBracket); ok {
+		return lit, nil
+	}
+	for {
+		elem, err := p.parseExpr()
+		if err != nil {
+			return nil, err
+		}
+		lit.Elems = append(lit.Elems, elem)
+		if tok := p.peek(); keyword(tok, "for") {
+			if len(lit.Elems) != 1 {
+				return nil, p.errorAtTok(tok, "a list comprehension takes a single element expression")
+			}
+			return p.parseComprehensionRest(open.offset, elem)
+		}
+		if _, ok := p.accept(tokComma); !ok {
+			break
+		}
+		// A trailing comma ends the list rather than starting an element.
+		if _, ok := p.accept(tokRBracket); ok {
+			return lit, nil
+		}
+	}
+	if _, err := p.expect(tokRBracket); err != nil {
+		return nil, err
+	}
+	return lit, nil
+}
+
+// parseComprehensionRest reads a comprehension after its element expression and
+// the "for" keyword have been seen, through the closing bracket. Implements
+// <ListComp> (spec section 1.1.2) with the semantics of section 1.3.7.
+//
+// The ITERABLE and the FILTER are parsed with parseOr, not parseExpr, and that
+// is load-bearing rather than a shortcut. Section 1.1.2 writes both as
+// <ConditionalExpr>, which is ambiguous against the optional ("if"
+// <ConditionalExpr>) filter: parseConditional consumes an "if" and then demands
+// an "else", so "[x for x in y if c]" would fail at the "]" looking for one.
+// Python resolves the same ambiguity the same way — comp_for and comp_if both
+// take an or_test — so a conditional in either position needs parentheses.
+func (p *parser) parseComprehensionRest(offset int, elem Node) (Node, error) {
+	p.advance() // the "for"
+	comp := &ListComp{Offset: offset, Elem: elem}
+
+	name, err := p.expect(tokIdent)
+	if err != nil {
+		return nil, err
+	}
+	if !isUserIdentifier(name.text) {
+		return nil, p.errorAtTok(name,
+			"a comprehension loop variable must start with a lowercase letter or underscore, found %q", name.text)
+	}
+	comp.Var, comp.VarOffset = name.text, name.offset
+
+	if tok := p.peek(); !keyword(tok, "in") {
+		return nil, p.errorAtTok(tok, `expected "in", found %s`, tok.kind)
+	}
+	p.advance()
+
+	iter, err := p.parseOr()
+	if err != nil {
+		return nil, err
+	}
+	comp.Iter = iter
+
+	if tok := p.peek(); keyword(tok, "if") {
+		p.advance()
+		cond, err := p.parseOr()
+		if err != nil {
+			return nil, err
+		}
+		comp.Cond = cond
+		if tok := p.peek(); keyword(tok, "if") {
+			return nil, p.errorAtTok(tok, `a list comprehension takes only one "if" filter`)
+		}
+	}
+	if tok := p.peek(); keyword(tok, "for") {
+		return nil, p.errorAtTok(tok,
+			`a list comprehension takes only one "for" clause; Python's multi-generator form is not supported`)
+	}
+	if _, err := p.expect(tokRBracket); err != nil {
+		return nil, err
+	}
+	return comp, nil
+}
+
+// isUserIdentifier reports whether s is a <UserIdentifier> (spec section
+// 1.3.7): a lowercase letter or underscore, then letters, digits or
+// underscores. The casing rule is what makes it impossible for a loop variable
+// to shadow a spec-defined symbol like Param or Task.
+func isUserIdentifier(s string) bool {
+	if s == "" {
+		return false
+	}
+	if c := s[0]; (c < 'a' || c > 'z') && c != '_' {
+		return false
+	}
+	for i := 1; i < len(s); i++ {
+		c := s[i]
+		switch {
+		case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z', c >= '0' && c <= '9', c == '_':
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+// parseIdentPrimary reads a literal keyword or a dotted <Name>.
+func (p *parser) parseIdentPrimary() (Node, error) {
+	tok := p.advance()
+	switch tok.text {
+	case "True", "true":
+		return &BoolLit{Offset: tok.offset, Val: true}, nil
+	case "False", "false":
+		return &BoolLit{Offset: tok.offset, Val: false}, nil
+	case "None", "null":
+		return &NullLit{Offset: tok.offset}, nil
+	}
+	if primaryKeywords[tok.text] {
+		return nil, p.errorAtTok(tok, "unexpected keyword %q", tok.text)
+	}
+
+	name := &Name{Offset: tok.offset, Parts: []string{tok.text}}
+	for {
+		if _, ok := p.accept(tokDot); !ok {
+			return name, nil
+		}
+		attr, err := p.expect(tokIdent)
+		if err != nil {
+			return nil, err
+		}
+		// No keyword check here, deliberately: section 1.1.3 makes keywords
+		// contextual, so Param.if and Param.True are ordinary attributes.
+		name.Parts = append(name.Parts, attr.text)
+	}
+}

@@ -22,6 +22,13 @@ type JobTemplate struct {
 	// Extensions is the optional list of named OpenJD feature extensions to
 	// enable (e.g. "feature-bundle-1").
 	Extensions []string
+	// ExtensionsSet records whether the key was present, so a declared but
+	// empty list is distinguishable from an omitted one.
+	ExtensionsSet bool
+	// UnknownFields are top-level keys the schema does not define. Carried from
+	// the decoder so validation can reject them; the spec's job template is a
+	// closed object.
+	UnknownFields []string
 
 	// PathTranslation is the parsed SQI_PATH_TRANSLATION extension block, or nil
 	// when the extension is not declared.
@@ -30,6 +37,9 @@ type JobTemplate struct {
 	// ParameterDefinitions declares the job-level parameters that submitters
 	// must or may provide.  Parameter names must be unique.
 	ParameterDefinitions []JobParameter
+	// ParameterDefinitionsSet records whether the key was present, so a
+	// declared but empty list is distinguishable from an omitted one.
+	ParameterDefinitionsSet bool
 
 	// JobEnvironments are environments that wrap every session in this job.
 	// They are entered in order and exited in reverse order.
@@ -54,6 +64,44 @@ const (
 	JobParamTypeString JobParamType = "STRING"
 	// JobParamTypePath is a filesystem or S3 path parameter.
 	JobParamTypePath JobParamType = "PATH"
+
+	// The types below are added by the EXPR extension (RFC 0007, Extended
+	// Parameter Types) and are accepted ONLY when the template declares
+	// extensions: [EXPR]. Without it the decoder leaves the author's spelling
+	// verbatim and validation rejects it as an unknown type, exactly as before
+	// this extension existed -- see parseJobParamType and decodeJobParameter.
+
+	// JobParamTypeBool is a boolean parameter. Unlike every other type it
+	// forbids allowedValues: restricting a two-valued domain to one value
+	// carries no meaning (RFC 0007, <JobBoolParameterDefinition>).
+	JobParamTypeBool JobParamType = "BOOL"
+	// JobParamTypeRangeExpr is an <IntRangeExpr> string parameter, e.g.
+	// "1-100:2,200". Its default is validated with the SPEC's permissive range
+	// policy, not internal/openjd's stricter one -- see
+	// validateRangeExprParamConstraints for why the two differ here.
+	JobParamTypeRangeExpr JobParamType = "RANGE_EXPR"
+
+	// JobParamTypeListString is a list of strings. Like every list type its
+	// default is stored as canonical JSON in [JobParameter.Default]; see
+	// paramjson.go for that encoding and for why a list value does not get a
+	// typed field of its own.
+	JobParamTypeListString JobParamType = "LIST[STRING]"
+	// JobParamTypeListPath is a list of paths. It is the only list type whose
+	// RawParam form differs from its Param form (list[string] rather than
+	// list[path]), because path mapping applies per element.
+	JobParamTypeListPath JobParamType = "LIST[PATH]"
+	// JobParamTypeListInt is a list of 64-bit integers.
+	JobParamTypeListInt JobParamType = "LIST[INT]"
+	// JobParamTypeListFloat is a list of decimals.
+	JobParamTypeListFloat JobParamType = "LIST[FLOAT]"
+	// JobParamTypeListBool is a list of booleans, each accepting the same
+	// spellings as [JobParamTypeBool].
+	JobParamTypeListBool JobParamType = "LIST[BOOL]"
+	// JobParamTypeListListInt is a list of lists of integers -- the deepest
+	// nesting RFC 0007 allows. Its identified use case is programmatic (graph
+	// adjacency lists), which is why the RFC gives it no user-interface
+	// control of its own beyond HIDDEN.
+	JobParamTypeListListInt JobParamType = "LIST[LIST[INT]]"
 )
 
 // PathObjectType is the objectType discriminator for a PATH [JobParameter].
@@ -100,6 +148,12 @@ type JobParameter struct {
 	Default *string
 	// AllowedValues, when non-nil, enumerates the only acceptable values.
 	AllowedValues []string
+	// AllowedValuesSet records whether the key was PRESENT in the template.
+	// "allowedValues: null" and "allowedValues: []" both decode to an empty
+	// slice, which is indistinguishable from the key being absent — but the
+	// spec allows omitting the list entirely while requiring a declared one to
+	// hold at least one value.
+	AllowedValuesSet bool
 	// MinValue / MaxValue constrain INT and FLOAT parameters.
 	// Stored as strings for lossless round-tripping.
 	MinValue *string
@@ -124,6 +178,47 @@ type JobParameter struct {
 	// FileFilterDefault is the filter selected when the dialog opens.
 	// Only valid on PATH parameters. Nil when absent.
 	FileFilterDefault *PathFileFilter
+	// Item constrains the ELEMENTS of a LIST[*] parameter. Nil for a scalar
+	// type, or when the template declares no item: block.
+	Item *ItemConstraint
+}
+
+// ItemConstraint constrains the ELEMENTS of a LIST[*] job parameter, and — one
+// level deeper, through its own Item field — the elements of the inner lists of
+// a LIST[LIST[INT]].
+//
+// It mirrors the type nesting so each level reuses the same property names as
+// the equivalent scalar type: MinLength/MaxLength for string-like items,
+// MinValue/MaxValue for numeric ones (RFC 0007, "Nested Item Constraints",
+// which records that the rejected alternative was flat names like
+// minItemValue — abandoned because LIST[LIST[INT]] would have needed
+// minItemIntValue).
+//
+// Which fields are LEGAL at a given level depends on the element type and is
+// enforced by validation, not here: the decoder's job is to record what the
+// template said so that an error can name it.
+//
+// Nesting is capped at one level, matching the RFC's own limit of
+// list[list[T]] and no deeper.
+type ItemConstraint struct {
+	// AllowedValues enumerates the only acceptable element values.
+	AllowedValues []string
+	// AllowedValuesSet records whether the key was PRESENT, for the same
+	// reason [JobParameter.AllowedValuesSet] does: a declared list must hold
+	// at least one value, but omitting it entirely is legal, and both decode
+	// to an empty slice.
+	AllowedValuesSet bool
+	// MinValue and MaxValue bound a numeric element. Stored as strings for
+	// lossless round-tripping, as on [JobParameter].
+	MinValue *string
+	MaxValue *string
+	// MinLength and MaxLength bound a string-like element's length or — when
+	// this constraint describes an inner LIST — that list's element count.
+	MinLength *int
+	MaxLength *int
+	// Item constrains the elements of an inner list. Non-nil only for
+	// LIST[LIST[INT]]; nil at the innermost level.
+	Item *ItemConstraint
 }
 
 // PathFileFilter is one named file type offered by an input or output file
@@ -160,6 +255,24 @@ const (
 	ControlChooseOutputFile ControlType = "CHOOSE_OUTPUT_FILE"
 	// ControlChooseDirectory is a browse-for-a-directory dialog; PATH only.
 	ControlChooseDirectory ControlType = "CHOOSE_DIRECTORY"
+
+	// The controls below are added by the EXPR extension (RFC 0007) for the
+	// list parameter types. LIST[LIST[INT]] deliberately gets none of its own:
+	// the RFC identifies its use case as programmatic (graph adjacency lists),
+	// so HIDDEN -- legal on every type -- is all it accepts.
+
+	// ControlLineEditList edits a list of free-text values; LIST[STRING] only.
+	ControlLineEditList ControlType = "LINE_EDIT_LIST"
+	// ControlSpinBoxList edits a list of numbers; LIST[INT] and LIST[FLOAT].
+	ControlSpinBoxList ControlType = "SPIN_BOX_LIST"
+	// ControlCheckBoxList edits a list of booleans; LIST[BOOL] only.
+	ControlCheckBoxList ControlType = "CHECK_BOX_LIST"
+	// ControlChooseInputFileList browses for existing files; LIST[PATH] only.
+	ControlChooseInputFileList ControlType = "CHOOSE_INPUT_FILE_LIST"
+	// ControlChooseOutputFileList browses for output files; LIST[PATH] only.
+	ControlChooseOutputFileList ControlType = "CHOOSE_OUTPUT_FILE_LIST"
+	// ControlChooseDirectoryList browses for directories; LIST[PATH] only.
+	ControlChooseDirectoryList ControlType = "CHOOSE_DIRECTORY_LIST"
 )
 
 // ParameterUserInterface is the OpenJD base-spec userInterface hint object on a
@@ -174,6 +287,16 @@ type ParameterUserInterface struct {
 	GroupLabel string
 	// Decimals sets the precision for a SPIN_BOX on a FLOAT parameter.
 	Decimals *int
+	// SingleStepDelta is the increment a SPIN_BOX applies per step. Held as a
+	// string so validation can tell an integer from a float: an INT parameter's
+	// delta must itself be an integer.
+	SingleStepDelta *string
+	// LabelSet and GroupLabelSet record whether the key was PRESENT in the
+	// template, as opposed to merely empty. Both fields are optional, but an
+	// explicitly empty one is invalid, and the string alone cannot tell the two
+	// apart.
+	LabelSet      bool
+	GroupLabelSet bool
 }
 
 // ─── Environments ────────────────────────────────────────────────────────────
@@ -195,6 +318,19 @@ type Environment struct {
 type EnvironmentScript struct {
 	// EmbeddedFiles are plain-text files materialized before actions run.
 	EmbeddedFiles []EmbeddedFile
+	// EmbeddedFilesSet records whether the key was present, so a declared but
+	// empty list is distinguishable from an omitted one.
+	EmbeddedFilesSet bool
+	// Let holds the raw <LetBinding> strings of this element's let: block
+	// (Template Schemas 3.6). The "name = expression" text is parsed during
+	// validation, not here, so a malformed binding reports as a
+	// ValidationError with a JSON pointer rather than a decode error without
+	// one.
+	Let []string
+	// LetSet records whether the key was present, so a declared but empty
+	// list is distinguishable from an omitted one -- 3.6 constrains a
+	// DEFINED let: block to at least one element.
+	LetSet bool
 	// Actions holds the onEnter and onExit lifecycle hooks.
 	Actions EnvironmentActions
 }
@@ -218,6 +354,9 @@ type StepTemplate struct {
 	Script *StepScript
 	// StepEnvironments are per-step environments entered after job environments.
 	StepEnvironments []Environment
+	// StepEnvironmentsSet records whether the key was present, so a declared
+	// but empty list is distinguishable from an omitted one.
+	StepEnvironmentsSet bool
 	// ParameterSpace defines the task parameter combinations for this step.
 	// Nil means the step produces exactly one task with no parameters.
 	ParameterSpace *StepParameterSpace
@@ -225,12 +364,38 @@ type StepTemplate struct {
 	HostRequirements *HostRequirements
 	// Dependencies lists the steps that must complete before this one starts.
 	Dependencies []StepDependency
+	// DependenciesSet records whether the key was present, so a declared but
+	// empty list is distinguishable from an omitted one.
+	DependenciesSet bool
+	// Let holds the raw <LetBinding> strings of this element's let: block
+	// (Template Schemas 3.6). The "name = expression" text is parsed during
+	// validation, not here, so a malformed binding reports as a
+	// ValidationError with a JSON pointer rather than a decode error without
+	// one.
+	Let []string
+	// LetSet records whether the key was present, so a declared but empty
+	// list is distinguishable from an omitted one -- 3.6 constrains a
+	// DEFINED let: block to at least one element.
+	LetSet bool
 }
 
 // StepScript is the executable definition attached to a [StepTemplate].
 type StepScript struct {
 	// EmbeddedFiles are plain-text files written to disk before each action.
 	EmbeddedFiles []EmbeddedFile
+	// EmbeddedFilesSet records whether the key was present, so a declared but
+	// empty list is distinguishable from an omitted one.
+	EmbeddedFilesSet bool
+	// Let holds the raw <LetBinding> strings of this element's let: block
+	// (Template Schemas 3.6). The "name = expression" text is parsed during
+	// validation, not here, so a malformed binding reports as a
+	// ValidationError with a JSON pointer rather than a decode error without
+	// one.
+	Let []string
+	// LetSet records whether the key was present, so a declared but empty
+	// list is distinguishable from an omitted one -- 3.6 constrains a
+	// DEFINED let: block to at least one element.
+	LetSet bool
 	// Actions holds the task lifecycle hooks.
 	Actions StepActions
 }
@@ -319,6 +484,15 @@ type TaskParamDefinition struct {
 	// RangeExpr holds the raw range string for INT and CHUNK[INT] parameters
 	// when the template uses range expression syntax (e.g. "1-100:2").
 	// Exactly one of RangeExpr or RangeList is set for each definition.
+	//
+	// Under the EXPR extension, section 1.3.12 extends this field for EVERY
+	// type (not only INT/CHUNK[INT]): a whole-field `range: "{{ <expr> }}"`
+	// decodes here the same way for any type — parse.go's decoder does not
+	// distinguish by type — so a STRING or FLOAT definition can carry a
+	// non-nil RangeExpr too, holding a lone expression that evaluates to a
+	// list. ResolveParameterSpaceParams (resolve.go) is what converts that
+	// case into RangeList, clearing RangeExpr, before expand.go ever sees it
+	// — expandTaskParam only ever consults RangeExpr for INT/CHUNK[INT].
 	RangeExpr *string
 	// RangeList holds the explicit value list for all other types, and also for
 	// INT/CHUNK[INT] when the template provides an array of values.
@@ -361,6 +535,9 @@ type EmbeddedFile struct {
 	Name string
 	// Filename is the on-disk name; if empty the worker generates one.
 	Filename string
+	// FilenameSet records whether the key was present, so an explicitly empty
+	// filename is distinguishable from an omitted one.
+	FilenameSet bool
 	// Data is the file content (may contain format-string references).
 	Data string
 	// Type is the file-type discriminator.  In jobtemplate-2023-09 the only
@@ -381,8 +558,14 @@ type Action struct {
 	Command string
 	// Args is the optional argument list (each entry may be a format string).
 	Args []string
+	// ArgsSet records whether the key was present, so a declared but empty
+	// list is distinguishable from an omitted one.
+	ArgsSet bool
 	// TimeoutSeconds, when > 0, limits how long the action may run.
 	TimeoutSeconds int
+	// TimeoutSet records whether the key was present, so an explicit
+	// "timeout: 0" (illegal) is distinguishable from an omitted one (legal).
+	TimeoutSet bool
 	// Cancelation describes how to stop a running action.
 	Cancelation *CancelationMethod
 }
@@ -406,6 +589,9 @@ type CancelationMethod struct {
 	// [CancelModeNotifyThenTerminate].  0 means use the spec default (120s for
 	// onRun actions, 30s for others).
 	NotifyPeriodSeconds int
+	// NotifyPeriodSet records whether the key was present, so an explicit zero
+	// is distinguishable from an omitted field.
+	NotifyPeriodSet bool
 }
 
 // ─── Expanded task parameters ─────────────────────────────────────────────────

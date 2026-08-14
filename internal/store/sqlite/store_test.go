@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 // Package sqlite_test provides table-driven integration tests for every
-// [Store] method against an in-memory SQLite instance.
+// [Store] method against a real, file-backed SQLite instance.
 package sqlite_test
 
 import (
@@ -18,11 +18,17 @@ import (
 
 // ── test helpers ──────────────────────────────────────────────────────────────
 
-// openTestStore creates a new in-memory SQLite store with auto-migration
-// enabled. It registers t.Cleanup to close the store when the test ends.
+// openTestStore creates a new SQLite store with auto-migration enabled. It
+// registers t.Cleanup to close the store when the test ends.
+//
+// It uses a file in t.TempDir() rather than ":memory:" so the store under test
+// is configured the way a real server configures it — most importantly, with a
+// separate read connection pool. An in-memory database shares one pool for
+// reads and writes (see the Concurrency section of the package doc), so a
+// statement routed to the wrong pool would be invisible here.
 func openTestStore(t *testing.T) *sqlite.Store {
 	t.Helper()
-	s, err := sqlite.Open(context.Background(), ":memory:", sqlite.DefaultOptions())
+	s, err := sqlite.Open(context.Background(), t.TempDir()+"/test.db", sqlite.DefaultOptions())
 	if err != nil {
 		t.Fatalf("sqlite.Open: %v", err)
 	}

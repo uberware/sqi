@@ -199,10 +199,19 @@ store:
 | **Default** | `"5m"` |
 | **Env var** | `SQI_STORE_CHECKPOINT_INTERVAL` |
 
-How often the background goroutine runs `PRAGMA wal_checkpoint(TRUNCATE)` to
+How often the background goroutine runs `PRAGMA wal_checkpoint(PASSIVE)` to
 fold committed WAL frames back into the main database file. Without periodic
 checkpointing the WAL grows unboundedly under write load. A final checkpoint
-always runs on clean shutdown regardless of this setting.
+always runs on clean shutdown regardless of this setting, and that one uses
+`TRUNCATE` so the WAL is left at zero bytes.
+
+The periodic checkpoint is deliberately `PASSIVE` rather than `TRUNCATE`.
+Reads are served from a separate connection pool, so a reader holding a WAL
+snapshot blocks a truncating checkpoint — which waits out the whole 5s
+`busy_timeout` on the single write connection and then still fails to
+truncate, stalling job submission and task-status writes for five seconds on
+every tick. `PASSIVE` never waits: it moves what it can and the next tick
+takes the rest. Shutdown can afford to wait once; a timer cannot.
 
 Set to a large value (e.g. `"24h"`) to disable periodic checkpointing while
 keeping the shutdown checkpoint. Must be `> 0`.
@@ -576,15 +585,517 @@ discovery:
 
 When `true`, submitted job templates are checked against the OpenJD quantitative
 limits — maximum name lengths, parameter-definition counts, per-parameter value
-counts, and host-requirement counts. Set to `false` only in operator
-environments that predate strict limit enforcement and cannot yet update all
-templates; resource-exhaustion guards (the per-range value cap and the per-step
+counts, and host-requirement counts — **plus one sqi-defined limit the OpenJD
+specification does not itself set: a maximum of 100 steps per job template**.
+A template exceeding 100 steps is rejected with an error at `/steps`. Set to
+`false` only in operator environments that predate strict limit enforcement
+and cannot yet update all templates — including templates with more than 100
+steps; resource-exhaustion guards (the per-range value cap and the per-step
 task-count cap) always apply regardless of this setting.
+
+**The step-count relief above does not carry over to `EXPR` templates.** A
+template declaring `extensions: [EXPR]` is *also* subject to the
+template-wide expression budget ([`openjd.expr_template_positions`](#openjdexpr_template_positions),
+default 10,000), which is **always on** — a resource-exhaustion guard, not a
+quantitative limit, so `enforce_limits: false` does not lift it. That budget
+counts **expression positions**, not steps, so the relief is partial rather
+than absent: a many-step `EXPR` template is accepted only while its *total*
+positions stay under the configured position limit. At the
+~70-positions-per-step shape the default was sized against, the crossover is
+around 143 steps — so a 300-step `EXPR` template of any realistic content is
+rejected whichever way this flag is set, while a 300-step template whose steps
+carry almost no expressions still passes. Only a base-spec template gets the
+unqualified relief this flag promises. See
+[`docs/openjd-extensions/expr.md`](openjd-extensions/expr.md) for what the
+budget bounds.
 
 ```yaml
 openjd:
   enforce_limits: true
 ```
+
+---
+
+### EXPR expression limits — read this before changing any of them
+
+Four keys bound what **one submitted job template** may spend inside the
+OpenJD expression-language checker (the `EXPR` extension —
+[`docs/openjd-extensions/expr.md`](openjd-extensions/expr.md)). They exist
+because `POST /api/v1/jobs` accepts a template of up to 4 MiB and, with auth
+off (the default), accepts it anonymously — so the cost of checking a
+template is attacker-chosen work on a synchronous request path.
+
+**Four routes are bounded by these keys, not one.** Three of them accept an
+arbitrary client-supplied template body: `POST /api/v1/jobs`,
+`POST /api/v1/products` and `PUT /api/v1/products/{name}` (the last two when a
+custom product is installed or edited). The fourth,
+`POST /api/v1/products/{name}/jobs`, submits a template the operator already
+installed — but the *parameters* are the client's and every expression is
+re-evaluated with them bound, so it is bounded on the same terms. All four are
+bounded by these four keys and by
+[`openjd.expr_submission_deadline`](#openjdexpr_submission_deadline), and all
+four can answer `503` for a deadline.
+
+The preset routes — `GET /api/v1/presets/{name}` and
+`POST /api/v1/presets/{name}/install` — validate a definition too. Its body is
+sha256-pinned against the index at `products.preset_library_url`, so it is
+operator-vouched rather than client-chosen; since EXPR sub-project H1's
+whole-branch review they nevertheless run under these four keys and under the
+deadline, because the limits are operator configuration (an operator who
+tightened a knob asked for it to be enforced wherever validation happens) and
+because the install route sits behind the *same* permission as
+`POST /api/v1/products`, which grants everyone access while auth is off.
+
+Unlike `enforce_limits`, these are **always on**: they are
+resource-exhaustion guards, not OpenJD quantitative limits, and no setting
+turns them off. `0` is not "unlimited" — it is out of range and fails
+startup. **An out-of-range value is a startup failure, not a clamp.**
+
+> **These keys are live.** Earlier revisions of this section carried a
+> "`EXPR` is not accepted yet" callout here: the extension's registry status
+> was *in-progress* and a template declaring `extensions: [EXPR]` was rejected
+> at submission before any of these limits could be spent. **That is no longer
+> true** — `EXPR` is a supported extension, every EXPR template is accepted on
+> its merits, and each of these keys now decides real submissions. See
+> [`docs/openjd-extensions/expr.md`](openjd-extensions/expr.md).
+
+Every one of these has a counterpart on the worker
+([Worker configuration → `expr`](worker-configuration.md#expr--expr-expression-limits))
+that meters the same thing one phase later. Four caveats apply to all four
+keys, and none of them is obvious from the numbers themselves.
+
+A **fifth** key sits alongside them and is deliberately not one of them:
+[`openjd.expr_submission_deadline`](#openjdexpr_submission_deadline) is a
+wall-clock backstop, so it decides only whether this server keeps working on a
+request (503), never whether a template is valid (422). It has no worker
+counterpart and none of the four caveats below applies to it — read its own
+section.
+
+#### 1. The cumulative operation ceiling is a product, not a measurement
+
+Nothing in sqi counts operations across a whole template. The template-wide
+budget counts **positions** — one per format string or `let:` binding
+walked — and each position is separately capped at
+`openjd.expr_operation_limit` operations. The cumulative ceiling an operator
+is really setting is therefore the **product**:
+
+```
+openjd.expr_template_positions  x  openjd.expr_operation_limit
+          10,000                x          10,000              = 10^8 (default)
+```
+
+Raising either multiplies that ceiling; raising both multiplies it twice.
+At the two maxima (100,000 x 100,000) it is 10¹⁰ — **100x the default**.
+Nothing measures the sum, so nothing will report that you crossed it; the
+product is a derived upper bound on what the per-position limit, applied
+that many times, could in principle cost.
+
+`openjd.expr_memory_limit` is **not** a third multiplier here. It decides how
+large a value one evaluation may hold, not what an operation costs: the worst
+construction measured under a 100,000-operation budget costs **the same 1.43 s
+at the default 1,000,000-byte memory limit as at the 10,000,000 maximum**,
+because it never holds more than one intermediate value live. Raise it because
+a template needs to build a large value, not to bound time.
+
+#### 2. None of these limits bounds wall-clock time
+
+An operation's real cost is not uniform. Specification section 1.3.10 rule 3
+(`third_party/openjd-specifications/wiki/2026-02-Expression-Language.md:1090`)
+prices a string operation at *the value's length divided by 256* — so
+byte-heavy work is charged almost nothing. Measured in this repository, all
+four of these expressions stay inside a single position's default
+10,000-operation budget:
+
+| Expression | Operations charged | CPU | per operation |
+|---|---|---|---|
+| `("x" * 900000).upper()` | 7,034 | ~6 ms | 0.9 µs |
+| `("x" * 900000).title()` | 7,034 | ~58 ms | 8.2 µs |
+| `re_findall("x", "x" * 900000)` | 3,519 | ~51 ms | 14.5 µs |
+| `max([len(re_findall("x", "x" * 900000)) for i in range(2)])` | 7,048 | ~103 ms | 14.6 µs |
+
+The first two are charged **identically** and differ by 9x in time; the third
+is charged **half** as much as either yet costs nearly as much time. **The
+per-operation cost varies by ~17x**, which is why no operation budget bounds
+time.
+
+The fourth row is the one to size against. Ten thousand positions of it — a
+template body of roughly 650 KB, well inside the 4 MiB limit — cost about
+**1,030 seconds** (~17 minutes) of server CPU on one synchronous request, with
+every budget respected the entire way; a position that spent its whole
+10,000-operation allowance at that rate would cost ~146 ms, putting the same
+template near **24 minutes**. At the
+two maxima the same construction reaches 98,646 operations in **1.43 s**, and
+100,000 such positions are roughly **40 hours**.
+
+Caveat 1's 100x is the honest scaling factor between those two settings: the
+worst per-operation rate measured is the same (~14.6 µs) at both, so ten times
+the positions times ten times the operations is a hundred times the time.
+Dividing the two measurements above gives ~139x only because the default-side
+construction leaves ~30% of its 10,000-operation budget unspent while the
+maxima-side one uses 98.6% of its 100,000.
+
+**This figure has now been measured too low three times**, each time by a
+construction nobody had run — the previous revision of this table gave 571
+seconds, from `.title()`, which does not maximize the cost per operation. The
+expression package's own note calls it **"a floor on the worst case, not a
+proof of it"**. Treat the order of magnitude as the claim, never the digit.
+
+**So: raising these limits lengthens the worst request your farm can be
+asked to serve, roughly in proportion.** There is no value of these settings
+that makes a slow request impossible. If `POST /api/v1/jobs` is reachable
+without authentication, size your request timeouts and front-end concurrency
+against that, not against the position cap.
+
+**What does bound the time is a separate key**, added because none of these
+four can:
+[`openjd.expr_submission_deadline`](#openjdexpr_submission_deadline) stops one
+submission's expression evaluation after a fixed wall-clock allowance (5s by
+default) and answers `503`. It bounds elapsed time directly, so it holds
+whatever the operation pricing turns out to permit and does not depend on the
+figures above being right. It does **not** make the numbers above safe to
+raise freely: a request refused at the deadline still spent that time, and
+concurrent requests each get their own allowance.
+
+**Raising these four keys without also raising the deadline turns legitimate
+acceptances into 503s.** This coupling is the one realistic way a real
+pipeline sees a 503 it does not deserve, and it is not visible from either
+side on its own. Measured on this branch with a generated multi-layer VFX
+shot-render job — 12 `let:` bindings per step, comprehensions over real frame
+ranges, `RANGE_EXPR`/`LIST[STRING]`/`PATH` parameters — driven through the
+real submission path:
+
+| Limits | Shape | Wall clock | Verdict |
+|---|---|---|---|
+| defaults | 100 steps x 1,000 frames | 0.83 s | accepted |
+| defaults | 100 steps x 2,000 frames | 1.11 s | `422`, retained bytes |
+| legal maxima | 100 steps x 10,000 frames | 7.5 s | **`503`, deadline** |
+
+At the defaults the deterministic budgets always bind first and the clock
+never does; the binding dimension is **retained bytes**, not positions. At the
+maxima that inverts, and a template the counters would have accepted is
+stopped by a 5s clock instead. If you raise these four, raise
+[`openjd.expr_submission_deadline`](#openjdexpr_submission_deadline) with
+them.
+
+#### 3. The byte dimension is cumulative allocation, not peak live retention
+
+`openjd.expr_template_retained_bytes` sums what every `let:` block in the
+template retains, **in evaluation order, across the whole walk**. It does not
+model when Go's garbage collector reclaims an earlier block's values. A
+template that never holds more than 2.7 MB live at any one instant is still
+charged 10.8 MB if it retains that much across four sequential `let:` blocks,
+and is rejected exactly as a template that held all of it at once would be.
+
+Two consequences, in both directions:
+
+- **Sizing a host's RAM against this number over-provisions** — the template
+  never needs that much at once.
+- **Sizing this number against an observed RSS under-bounds it** — you will
+  reject templates that were never going to use that memory.
+
+#### 4. Every worker must be at least as generous as this server
+
+All five worker keys meter the same values one phase later, on the host,
+*after* the job has already been accepted. A worker that is **tighter** than
+this server can be handed work this server accepted and fail it there:
+
+| This server accepts templates under… | …so every worker needs at least |
+|---|---|
+| `openjd.expr_operation_limit` | `expr.operation_limit` |
+| `openjd.expr_memory_limit` | `expr.memory_limit` |
+| `openjd.expr_template_positions` | `expr.assignment_positions` |
+| `openjd.expr_template_retained_bytes` | `expr.assignment_retained_bytes` |
+| `openjd.expr_template_retained_bytes` | `expr.let_retained_bytes` |
+
+sqi does not leave that to chance. Every worker advertises all five values
+when it registers, and **the scheduler refuses to dispatch an EXPR job to a
+worker whose values are short** — the job is withheld, never accepted and
+then failed per task on the host. What an operator sees:
+
+- a `WARN` diagnostic when the short worker registers, naming the worker and
+  every short dimension with both numbers and both config keys. **It is the
+  *server* that logs this, so it appears under Admin → Server log — not on
+  that worker's detail page**, which shows only what the worker itself
+  published;
+- `unschedulable_reason` on any `ready` task no capable worker exists for,
+  carrying the same text, plus a WebSocket event —
+  **but only while the unschedulable sweep is on.** With
+  [`scheduler.unschedulable_grace`](#schedulerunschedulable_grace) set to `0`
+  or negative, the sweep is disabled and such a task simply waits `ready`
+  with nothing written on it; the registration `WARN` — which fires once, and
+  may well predate the job — becomes the only signal.
+
+A short worker keeps running **everything else**; only EXPR work is withheld
+from it. So **raise the workers first, then the server.**
+
+The last row pairs one key with two: `expr.let_retained_bytes` bounds a single
+symbol table, a scope this server does not meter separately, so it is compared
+against the template-wide budget that upper-bounds it. That comparison is
+deliberately conservative, and its floor is a tenth of this key's default —
+**a worker whose `expr.let_retained_bytes` is below your
+`openjd.expr_template_retained_bytes` gets no EXPR work**, even though the
+value it holds may be ample for the templates you actually submit. Lower this
+key or raise that one; both are visible, and neither fails a task after
+acceptance.
+
+**None of the five is a guarantee.** They are necessary conditions: phase 3
+binds concrete values this server only had placeholders for, so an accepted
+job can still exhaust a worker that satisfies every row above.
+
+> **The gate spots an EXPR job by reading the extension list recorded on the
+> job row at submission**, so for every job submitted since the upgrade the
+> test is exact: a job flagged with this reason really does declare `EXPR`.
+>
+> Job rows written before that column existed record no list, and those alone
+> fall back to the previous heuristic — a scan of the raw template for the
+> bytes `EXPR` *and* the bytes `extensions`. A **base-spec** template that
+> declares some other extension and mentions the string incidentally (a
+> comment, or an environment variable such as `HOUDINI_EXPR_CACHE`) matches
+> that scan, and such a job is withheld from every short worker and flagged
+> with a reason naming EXPR limits it does not use. If you see that message on
+> an older job that uses no expressions, this is why; the fix is the same
+> either way — raise the workers, or lower the server. The fallback only ever
+> errs toward withholding work, never toward dispatching it wrongly.
+
+---
+
+### `openjd.expr_operation_limit`
+
+| | |
+|---|---|
+| **Type** | `int` |
+| **Default** | `10000` |
+| **Range** | `1000` – `100000` |
+| **Env var** | `SQI_OPENJD_EXPR_OPERATION_LIMIT` |
+
+Operations (specification section 1.3.10 —
+`wiki/2026-02-Expression-Language.md:1071`) that **one** expression
+evaluation may spend. An expression exceeding it is rejected with an
+operation-limit error naming the configured number, and the template is
+refused at `POST /api/v1/jobs`. Deliberately far below the specification's
+own *recommended* default of 10 million: sqi checks attacker-supplied
+templates synchronously, which the recommendation does not assume.
+
+Multiplies with `expr_template_positions` — see caveat 1 above.
+
+```yaml
+openjd:
+  expr_operation_limit: 10000
+```
+
+### `openjd.expr_memory_limit`
+
+| | |
+|---|---|
+| **Type** | `int` |
+| **Default** | `1000000` |
+| **Range** | `4096` – `10000000` |
+| **Env var** | `SQI_OPENJD_EXPR_MEMORY_LIMIT` |
+
+Live bytes (specification section 1.3.9 —
+`wiki/2026-02-Expression-Language.md:1060`) that **one** expression
+evaluation may hold. Exceeding it fails that evaluation with a
+memory-limit error naming the configured number. Again far below the
+specification's recommended 100 million, for the same reason.
+
+This is the value that decides how large a string or list a single
+expression can build, so it is also what sets the "~900 KB" in caveat 2's
+measurements.
+
+**What raising it really permits is 50x this number.** The template-wide
+retained-bytes counter is charged once per `let:` **block**, after that block
+finishes, so a single block can transiently hold up to
+`50 x openjd.expr_memory_limit` before anything sees it — 50 MB at this
+default, and **500 MB at the 10000000 maximum**, per concurrent request, on a
+path that is unauthenticated by default. Size the server's RAM against that
+product, not against this number. (50 is the specification's per-block binding
+cap: Template Schemas §3.6.) The same ceiling is stated from the other end
+under [`openjd.expr_template_retained_bytes`](#openjdexpr_template_retained_bytes).
+
+It is **not** a multiplier on wall-clock time — see caveat 1.
+
+```yaml
+openjd:
+  expr_memory_limit: 1000000
+```
+
+### `openjd.expr_template_positions`
+
+| | |
+|---|---|
+| **Type** | `int` |
+| **Default** | `10000` |
+| **Range** | `256` – `100000` |
+| **Env var** | `SQI_OPENJD_EXPR_TEMPLATE_POSITIONS` |
+
+Expression **positions** one template may contain, summed across a whole
+validation pass — one charge per format string checked and one per `let:`
+binding evaluated. Exceeding it rejects the template with a template-wide
+budget error.
+
+The default was sized from a worked count of ~70 positions for a generous
+real step, times the 100-step cap: ~7,040, with headroom. A template of
+~21 positions per step (a command, 15 args, 3 environment variables, 2
+embedded files, no `let:`) uses about 2,100.
+
+Each phase gets its own fresh allowance: template upload, submit-time
+re-checking, and the parameter-space resolver each walk under a separate
+budget rather than sharing one pool.
+
+**This is the key most likely to strand work if you raise it alone** — see
+caveat 4. Raise every worker's `expr.assignment_positions` to at least this
+value first.
+
+```yaml
+openjd:
+  expr_template_positions: 10000
+```
+
+### `openjd.expr_template_retained_bytes`
+
+| | |
+|---|---|
+| **Type** | `int` |
+| **Default** | `10000000` |
+| **Range** | `65536` – `100000000` |
+| **Env var** | `SQI_OPENJD_EXPR_TEMPLATE_RETAINED_BYTES` |
+
+Bytes a template's `let:` bindings may **cumulatively retain** across one
+walk. `let:` is the only construct in the walk that keeps a value — every
+other position renders a result and discards it — so it is the only thing
+that charges this counter.
+
+Cumulative allocation, not peak live retention — see caveat 3.
+
+> **This key cannot be raised without touching every worker.** It is compared
+> against **two** worker keys (caveat 4): `expr.assignment_retained_bytes`,
+> whose default of `20000000` leaves 2× headroom, and
+> `expr.let_retained_bytes`, whose default is `10000000` — **exactly this
+> default**. So any increase at all puts every default-configured worker below
+> this server and withholds EXPR work from all of them. Raise
+> `expr.let_retained_bytes` on every worker first, to at least the value you
+> intend to set here. Lowering this key is always safe.
+
+Even with both worker keys satisfied, this bound does not cover everything the
+worker meters: it charges only what a `let:` block **adds**, while the worker
+measures the whole symbol table the bindings land in — a job's own large
+`STRING`/`PATH` parameters included. A worker sized exactly at this value can
+still fail an accepted job whose parameters are large. See
+[`expr.let_retained_bytes`](worker-configuration.md#exprlet_retained_bytes).
+
+Note what this does *not* bound: the charge lands once per `let:` **block**,
+after that block finishes evaluating, so a single block can transiently
+retain up to 50 x `openjd.expr_memory_limit` — 50 MB at both defaults —
+before this counter ever sees it. (50 is the per-block binding cap the
+specification sets: Template Schemas §3.6, "Maximum number of items: 50".)
+That per-block ceiling moves with `expr_memory_limit`, not with this key.
+
+```yaml
+openjd:
+  expr_template_retained_bytes: 10000000
+```
+
+### `openjd.expr_submission_deadline`
+
+| | |
+|---|---|
+| **Type** | `duration` |
+| **Default** | `5s` |
+| **Range** | `1s` – `60s` |
+| **Env var** | `SQI_OPENJD_EXPR_SUBMISSION_DEADLINE` |
+
+How long this server keeps evaluating **one submission's** expressions before
+giving up on it.
+
+> **This key is live.** Earlier revisions carried a "`EXPR` is not accepted
+> yet" callout here — the extension's registry status was *in-progress*, so no
+> submission ever reached this deadline and none of the 503s described below
+> could occur. **That is no longer true**: `EXPR` is a supported extension, and
+> every route listed below can now answer `503` for a real submission. See
+> [`docs/openjd-extensions/expr.md`](openjd-extensions/expr.md).
+
+**This is not a fifth limit, and it does not decide whether a template is
+valid.** The four above are deterministic: a template that breaches one
+breaches it on every machine, so the breach is a property of the template and
+the submitter is told so — `422 Unprocessable Entity`, and retrying is
+pointless. This one is wall clock, so the same body would be accepted on an
+idle host and refused on a loaded one. A breach therefore reports that *this
+server gave up* — `503 Service Unavailable`, and a retry may well succeed.
+Persistent 503s mean either a genuinely expensive template or a deadline set
+too low.
+
+Six routes can answer `503` for this reason: `POST /api/v1/jobs` and
+`POST /api/v1/products/{name}/jobs` (which otherwise answer `422` for an
+invalid template), `POST /api/v1/products` and `PUT /api/v1/products/{name}`
+(which otherwise answer `400`), and the two preset routes
+`GET /api/v1/presets/{name}` and `POST /api/v1/presets/{name}/install` (which
+otherwise answer `422`, and which also answer `503` when no preset library is
+configured — an unrelated meaning of the same code). The split is the same
+everywhere — the 4xx is a verdict on the template, the 503 is not.
+
+It exists because **none of the other four bounds time** (caveat 2). Section
+1.3.10 prices 256 bytes at one operation, so byte-heavy work is nearly free in
+operations and expensive in seconds; the worst single request measured on this
+branch is ~17 minutes of server CPU with every budget respected. This is the
+only bound here that does not depend on that measurement being right.
+
+The floor is `1s` because below it a legitimate large template — a body near
+the 4 MiB request cap, on a busy host — could plausibly be refused, and a
+backstop that rejects valid work is worse than the exposure it guards. The
+ceiling is `60s` because the key exists to bound that ~17-minute figure; a
+ceiling near it would bound nothing.
+
+> **The headroom against real work is ~6x, not three orders of magnitude.**
+> `5s` was originally chosen against an *adversarial* worst case, and an
+> earlier revision of this callout said so and conceded that no
+> large-but-legitimate template had ever been measured against it. One has now
+> been: a generated multi-layer VFX shot-render job (12 `let:` bindings per
+> step, comprehensions over real frame ranges, `RANGE_EXPR`/`LIST[STRING]`/
+> `PATH` parameters) driven through the real submission path. **The worst
+> shape this server still accepts costs 0.83 s** — 100 steps over 1,000
+> frames, 5,013 positions, 1.66M operations — against a 5s default. A
+> production server 2–3x slower than the measuring host puts that same job at
+> 1.7–2.5 s. Still safe, but thinner than "three orders of magnitude"
+> advertised, and worth knowing before you tighten this key.
+>
+> Two things that measurement settled. **At the defaults the counters always
+> bind before the clock**, and the dimension that binds is *retained bytes*,
+> not positions — 100 steps over 2,000 frames is refused at 1.11 s with a
+> `422`, never reaching this deadline. And the clock and the counters are
+> **not co-sized**: at the legal maximum limits the same job shape at 10,000
+> frames runs 7.5 s and is correctly stopped here with a `503`. Raising the
+> four limits without raising this key converts legitimate acceptances into
+> 503s — see caveat 2 above.
+>
+> **None of that makes the ~17-minute figure unreachable**, and it must not be
+> read that way. The two numbers describe different template *shapes*: an
+> adversarial template does op-cheap, byte-heavy work across many positions and
+> **discards** each result, so it never approaches the retained-bytes cap and
+> this clock is the only thing bounding it, while a legitimate template leans
+> on `let:` and therefore hits retained bytes first, at ~1.1 s. The honest
+> statement is that **~1.1 s is the ceiling for realistic `let:`-using
+> templates, and the adversarial ceiling is far higher — which is why this
+> wall-clock backstop exists at all.**
+
+Unlike the four limits, it has **no worker counterpart**: the worker's own
+phase-3 evaluation is work this server already accepted, not an anonymous
+request, so caveat 4 does not apply to this key.
+
+```yaml
+openjd:
+  expr_submission_deadline: 5s
+```
+
+> **A malformed duration in the config *file* is ignored, not rejected.**
+> `5 sec`, `5000` or `5 s` leaves the default `5s` in place and the server
+> starts. This is how every duration key in the file layer behaves — the value
+> is parsed with Go's `time.ParseDuration` and an unparseable one is skipped —
+> but it is worth stating here because the other four `openjd.expr_*` keys are
+> integers, so a typo in one of *those* fails YAML unmarshalling loudly. The
+> environment variable **does** report a parse error, so
+> `SQI_OPENJD_EXPR_SUBMISSION_DEADLINE=5 sec` fails at startup. Check the
+> effective value rather than assuming the file was read: an out-of-range value
+> is a startup failure, but an unparseable one is silence.
 
 ---
 
@@ -1193,6 +1704,17 @@ diagnostics:
 
 See [`docs/observability.md`](observability.md) for the full diagnostics guide.
 
+### EXPR expression limits (`expr.*`)
+
+The worker's own five `expr.*` keys bound what one *assignment* may spend
+evaluating EXPR expressions on the host, at task-execution time. Four of them
+must be **at least** as generous as this server's `openjd.expr_*` counterparts
+or the scheduler withholds EXPR work from that worker — see
+[EXPR expression limits, caveat 4](#4-every-worker-must-be-at-least-as-generous-as-this-server)
+above for the pairings and what an operator sees, and
+[Worker configuration → `expr`](worker-configuration.md#expr--expr-expression-limits)
+for the keys themselves.
+
 ### Capability auto-detection (`capabilities.detect` / `capabilities.disable`)
 
 Controls the worker's software capability auto-detection: built-in detectors
@@ -1253,6 +1775,11 @@ for the detector schema reference.
 | `discovery.enabled` | bool | `true` | `SQI_DISCOVERY_ENABLED` | — |
 | `discovery.instance_name` | string | `sqi-server` | `SQI_DISCOVERY_INSTANCE_NAME` | — |
 | `openjd.enforce_limits` | bool | `true` | `SQI_OPENJD_ENFORCE_LIMITS` | `--openjd-enforce-limits` |
+| `openjd.expr_operation_limit` | int | `10000` | `SQI_OPENJD_EXPR_OPERATION_LIMIT` | — |
+| `openjd.expr_memory_limit` | int | `1000000` | `SQI_OPENJD_EXPR_MEMORY_LIMIT` | — |
+| `openjd.expr_template_positions` | int | `10000` | `SQI_OPENJD_EXPR_TEMPLATE_POSITIONS` | — |
+| `openjd.expr_template_retained_bytes` | int | `10000000` | `SQI_OPENJD_EXPR_TEMPLATE_RETAINED_BYTES` | — |
+| `openjd.expr_submission_deadline` | duration | `5s` | `SQI_OPENJD_EXPR_SUBMISSION_DEADLINE` | — |
 | `diagnostics.buffer_size` | int | `1000` | `SQI_DIAGNOSTICS_BUFFER_SIZE` | — |
 | `preset_library.url` | string | `https://uberware.github.io/sqi-presets/index.json` | `SQI_PRESET_LIBRARY_URL` | — |
 | `auth.enabled` | bool | `false` | `SQI_AUTH_ENABLED` | `--auth-enabled` |

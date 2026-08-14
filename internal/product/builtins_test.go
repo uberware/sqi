@@ -18,7 +18,7 @@ func TestBuiltins_LoadValidateAndStamp(t *testing.T) {
 		if p.Source != store.SourceBuiltin {
 			t.Errorf("%s: source = %q, want builtin", p.Name, p.Source)
 		}
-		if err := product.ValidateTemplate(p.Template, p.Format, true); err != nil {
+		if err := product.ValidateTemplate(p.Template, p.Format, product.ValidateOptions{EnforceLimits: true}); err != nil {
 			t.Errorf("%s: template invalid: %v", p.Name, err)
 		}
 	}

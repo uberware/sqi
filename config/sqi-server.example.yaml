@@ -174,6 +174,90 @@ openjd:
   # Type: bool   Env: SQI_OPENJD_ENFORCE_LIMITS   Flag: --openjd-enforce-limits
   enforce_limits: true
 
+  # ── EXPR expression limits ─────────────────────────────────────────────────
+  # These four bound what ONE submitted job template may spend inside the
+  # OpenJD expression-language checker. They matter because POST /api/v1/jobs
+  # accepts a template of up to 4 MiB and, with auth off (the default), accepts
+  # it anonymously.
+  #
+  # Read this before raising any of them:
+  #   * None of these bounds WALL CLOCK. An operation's real cost varies by
+  #     orders of magnitude between arithmetic and a regex over a large string,
+  #     so raising a limit lengthens the worst request your farm can be asked
+  #     to serve, roughly in proportion. There is no value of these settings
+  #     that makes a slow request impossible.
+  #   * expr_operation_limit and expr_template_positions MULTIPLY. The
+  #     cumulative operation ceiling for one request is their product; raising
+  #     both raises it twice over (at the maxima, 100x the default ceiling).
+  #   * WORKER LIMITS. Each of these has a counterpart in every worker's own
+  #     expr.* configuration, metering the same thing one phase later, and a
+  #     worker must not be TIGHTER than this server:
+  #         expr_operation_limit         <= worker expr.operation_limit
+  #         expr_memory_limit            <= worker expr.memory_limit
+  #         expr_template_positions      <= worker expr.assignment_positions
+  #         expr_template_retained_bytes <= worker expr.assignment_retained_bytes
+  #     Workers advertise their values at registration, and this server REFUSES
+  #     TO DISPATCH an EXPR job to a worker that is tighter -- it does not
+  #     accept the job and then fail it on the host. If you raise a limit here
+  #     above a worker's counterpart, that worker stops being offered EXPR work
+  #     (only EXPR work; it keeps running everything else), the reason is logged
+  #     when it registers, and any task with no capable worker is flagged
+  #     unschedulable with the two numbers named -- unless you have turned that
+  #     sweep off (scheduler.unschedulable_grace <= 0), in which case such a
+  #     task simply waits, with the registration log line as the only signal.
+  #     Raise the workers first.
+  #   * expr_template_retained_bytes counts cumulative ALLOCATION, not peak
+  #     live retention. A template that never holds more than a few MB at once
+  #     is still charged the sum of every let: block, so sizing a host's RAM
+  #     against this number over-provisions, and sizing this number against an
+  #     observed RSS under-bounds it.
+  #
+  # An out-of-range value is a startup failure, not a clamp.
+
+  # Operations (specification section 1.3.10) one expression may spend.
+  # Type: int   Range: 1000-100000   Env: SQI_OPENJD_EXPR_OPERATION_LIMIT
+  expr_operation_limit: 10000
+
+  # Live bytes (specification section 1.3.9) one expression may hold.
+  # Type: int   Range: 4096-10000000   Env: SQI_OPENJD_EXPR_MEMORY_LIMIT
+  expr_memory_limit: 1000000
+
+  # Expression positions one template may contain, across the whole validation
+  # pass. NOTE: your workers' own per-assignment position cap must not be
+  # LOWER than this (see "worker limits" below).
+  # Type: int   Range: 256-100000   Env: SQI_OPENJD_EXPR_TEMPLATE_POSITIONS
+  expr_template_positions: 10000
+
+  # Bytes a template's let: bindings may cumulatively retain in one pass.
+  # Type: int   Range: 65536-100000000   Env: SQI_OPENJD_EXPR_TEMPLATE_RETAINED_BYTES
+  expr_template_retained_bytes: 10000000
+
+  # ── EXPR wall-clock backstop ───────────────────────────────────────────────
+  # How long this server keeps evaluating ONE submission's expressions before
+  # giving up on it.
+  #
+  # NOT IN EFFECT YET, like the four limits above: the EXPR extension's
+  # registry status is "in-progress", so a template declaring
+  # extensions: [EXPR] is rejected at submission before any expression is
+  # evaluated. Set it now -- it is validated at startup and wired end to end
+  # -- but no submission reaches it, and none of the 503s below can occur,
+  # until that status flips.
+  #
+  # This is NOT a fifth limit. The four above decide whether a template is
+  # VALID: a breach is deterministic, so the submitter is told their template
+  # is wrong (HTTP 422) and retrying is pointless. This one decides only
+  # whether THIS SERVER, on THIS request, keeps working -- the same template
+  # would be accepted on an idle host -- so a breach reports that the server
+  # gave up (HTTP 503) and a retry may well succeed.
+  #
+  # It exists because none of the four bounds TIME: specification section
+  # 1.3.10 prices 256 bytes at one operation, so byte-heavy work is nearly
+  # free in operations and expensive in seconds. Lower it if you would rather
+  # shed load than serve a slow submission; raise it only if legitimate
+  # templates are being refused with a 503.
+  # Type: duration   Range: 1s-60s   Env: SQI_OPENJD_EXPR_SUBMISSION_DEADLINE
+  expr_submission_deadline: 5s
+
 # ── Diagnostics (in-memory log ring buffer) ──────────────────────────────────
 diagnostics:
   # Maximum diagnostic-log records retained per component (the server plus each

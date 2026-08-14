@@ -10,6 +10,8 @@ package openjd_test
 import (
 	"context"
 	"errors"
+	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -1033,5 +1035,216 @@ func TestSubmit_DependsOn_Rejections(t *testing.T) {
 	})
 	if !errors.As(err, &ve) {
 		t.Fatalf("failed upstream: got %v, want validation error", err)
+	}
+}
+
+// ── Sub-project E2's Task 10: submit-time expression re-check ───────────────
+//
+// The real, end-to-end proof that Submit's phase-2 wiring works -- driving
+// the brief's own division-by-zero template through the public Submit API,
+// with the EXPR extension's registry entry temporarily flipped to
+// StatusSupported -- lives in submit_exprcheck_test.go's package-openjd
+// (white-box) tests, because only that file can reach the unexported
+// registry var to perform the flip. A first draft of this file asserted that
+// such a test was "impossible today"; a review disproved that by writing it,
+// and that claim is withdrawn (see the report's "Fix round 1" section).
+//
+// SUB-PROJECT H2 MADE THAT TEMPORARY FLIP UNNECESSARY: EXPR is StatusSupported
+// in the real registry, so the external-API tests below drive the production
+// path with no registry surgery at all.
+//
+// The two tests below cover what Submit does for an EXPR template and for the
+// common EXPR-off case: that the phase-2 re-check with concrete parameters
+// surfaces as a SubmitValidationError, and that the same call site is inert --
+// no false rejection -- without the extension declared, even when a job
+// parameter used in a format string is submitted as "0".
+
+// TestSubmitter_Submit_EXPRTemplateRejectedByPhase2Recheck drives the brief's
+// own division-by-zero template through the public Submit API and asserts the
+// rejection comes from the submit-time expression re-check with concrete
+// parameters -- Param.N bound to "0", which only phase 2 can see.
+//
+// It asserted the exact opposite until sub-project H2. Under the unflipped
+// registry the same template was rejected at /extensions/0 for the
+// extension-registration reason, before parameter binding ran at all, and this
+// test pinned that message so "a change unblocking EXPR at some later date is
+// required to touch (and re-examine) this test." That change is H2, this is
+// that re-examination, and the test is strictly stronger for it: it now proves
+// the phase-2 wiring end to end through the public API, which is what the
+// header above says only a white-box test with a temporary flip could do.
+func TestSubmitter_Submit_EXPRTemplateRejectedByPhase2Recheck(t *testing.T) {
+	st := fake.New()
+	farmID, queueID := seedSubmitPrereqs(t, st)
+	sub := openjd.NewSubmitter(st)
+
+	const tmpl = `
+specificationVersion: jobtemplate-2023-09
+extensions:
+- EXPR
+name: ExprTestJob
+parameterDefinitions:
+- name: N
+  type: INT
+steps:
+- name: Step1
+  script:
+    actions:
+      onRun:
+        command: echo
+        args:
+        - "{{ 10 / Param.N }}"
+`
+	_, err := sub.Submit(t.Context(), tmpl, store.TemplateFormatYAML, openjd.SubmitOptions{
+		FarmID:     farmID,
+		QueueID:    queueID,
+		Parameters: map[string]string{"N": "0"},
+	})
+	if err == nil {
+		t.Fatal("expected an error for an EXPR template dividing by a zero-valued parameter, got nil")
+	}
+	var ve *openjd.SubmitValidationError
+	if !errors.As(err, &ve) {
+		t.Fatalf("expected SubmitValidationError, got %T: %v", err, err)
+	}
+	if !strings.Contains(err.Error(), "division by zero") {
+		t.Fatalf("expected the phase-2 division-by-zero rejection; got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "expression re-check with concrete parameters") {
+		t.Fatalf("expected the rejection to come from the submit-time re-check, "+
+			"not from phase 1 (which cannot see Param.N's value); got: %v", err)
+	}
+}
+
+// TestSubmitter_Submit_ParamZeroWithoutEXPRUnaffected confirms the new
+// checkExpressionsAtSubmit call site does not change behavior for a template
+// that does not declare EXPR: a job parameter referenced in a base-spec
+// format string and submitted as "0" -- the same value that trips the
+// division-by-zero check under EXPR -- must submit normally, because
+// checkTemplateExpressions no-ops without the EXPR extension declared.
+func TestSubmitter_Submit_ParamZeroWithoutEXPRUnaffected(t *testing.T) {
+	st := fake.New()
+	farmID, queueID := seedSubmitPrereqs(t, st)
+	sub := openjd.NewSubmitter(st)
+
+	const tmpl = `{
+  "specificationVersion": "jobtemplate-2023-09",
+  "name": "NoExprTestJob",
+  "parameterDefinitions": [
+    {"name": "N", "type": "INT"}
+  ],
+  "steps": [
+    {
+      "name": "Step1",
+      "script": {
+        "actions": {
+          "onRun": {"command": "echo", "args": ["{{Param.N}}"]}
+        }
+      }
+    }
+  ]
+}`
+	result, err := sub.Submit(t.Context(), tmpl, store.TemplateFormatJSON, openjd.SubmitOptions{
+		FarmID:     farmID,
+		QueueID:    queueID,
+		Parameters: map[string]string{"N": "0"},
+	})
+	if err != nil {
+		t.Fatalf("Submit: %v", err)
+	}
+	if result.BoundParameters["N"] != "0" {
+		t.Errorf("BoundParameters[N] = %q, want %q", result.BoundParameters["N"], "0")
+	}
+}
+
+// ── Declared extensions persisted on the job row (migration 00027) ───────────
+
+// TestSubmit_RecordsDeclaredExtensions pins that submission writes the parsed
+// extension list onto the job row. This is the only place in the system where
+// the list is known EXACTLY: internal/openjd has already decoded the document
+// and validated every name against the registry, so a declaration spelled with
+// a JSON escape is the same value here as a plain one.
+//
+// The scheduler reads it per candidate task per lease request to decide whether
+// a job needs a worker capable of phase-3 expression evaluation. Before this it
+// scanned the raw template for the bytes "EXPR" -- wrong in both directions,
+// which is what makes writing the field at submission worth a column.
+func TestSubmit_RecordsDeclaredExtensions(t *testing.T) {
+	tests := []struct {
+		name string
+		tmpl string
+		want []string
+	}{
+		{
+			name: "no extensions declared is RECORDED, not absent",
+			tmpl: minimalJSON("NoExtensions"),
+			want: []string{},
+		},
+		{
+			name: "EXPR declared",
+			tmpl: `{
+  "specificationVersion": "jobtemplate-2023-09",
+  "extensions": ["EXPR"],
+  "name": "DeclaresEXPR",
+  "steps": [
+    {"name": "Step1", "script": {"actions": {"onRun": {"command": "echo"}}}}
+  ]
+}`,
+			want: []string{"EXPR"},
+		},
+		{
+			name: "an escaped declaration the raw bytes do not contain",
+			tmpl: `{
+  "specificationVersion": "jobtemplate-2023-09",
+  "extensions": ["\u0045XPR"],
+  "name": "EscapedEXPR",
+  "steps": [
+    {"name": "Step1", "script": {"actions": {"onRun": {"command": "echo"}}}}
+  ]
+}`,
+			want: []string{"EXPR"},
+		},
+		{
+			name: "another extension, and the bytes EXPR elsewhere",
+			tmpl: `{
+  "specificationVersion": "jobtemplate-2023-09",
+  "extensions": ["TASK_CHUNKING"],
+  "name": "ChunkingOnly",
+  "description": "writes to HOUDINI_EXPR_CACHE",
+  "steps": [
+    {"name": "Step1", "script": {"actions": {"onRun": {"command": "echo"}}}}
+  ]
+}`,
+			want: []string{"TASK_CHUNKING"},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			st := fake.New()
+			farmID, queueID := seedSubmitPrereqs(t, st)
+			res, err := openjd.NewSubmitter(st).Submit(
+				t.Context(), tc.tmpl, store.TemplateFormatJSON,
+				openjd.SubmitOptions{FarmID: farmID, QueueID: queueID, Owner: "alice"},
+			)
+			if err != nil {
+				t.Fatalf("Submit: %v", err)
+			}
+
+			stored, err := st.GetJob(t.Context(), res.Job.ID)
+			if err != nil {
+				t.Fatalf("GetJob: %v", err)
+			}
+			for label, job := range map[string]store.Job{"SubmitResult": res.Job, "GetJob": stored} {
+				if !job.ExtensionsRecorded {
+					t.Fatalf("%s: ExtensionsRecorded = false; a submitted job always knows "+
+						"what it declared, and 'not recorded' is reserved for rows written "+
+						"before the column existed", label)
+				}
+				if !slices.Equal(job.DeclaredExtensions, tc.want) {
+					t.Fatalf("%s: DeclaredExtensions = %#v, want %#v",
+						label, job.DeclaredExtensions, tc.want)
+				}
+			}
+		})
 	}
 }

@@ -11,14 +11,23 @@ import (
 
 // pathParamTemplate builds a template with one PATH job parameter carrying the
 // given userInterface control.
+//
+// objectType tracks the control: a CHOOSE_*_FILE control requires FILE and
+// CHOOSE_DIRECTORY requires DIRECTORY (see validateChooseControl). This test is
+// about which controls are legal on a PATH parameter, so the objectType must
+// agree rather than accidentally testing the coherence rule.
 func pathParamTemplate(control string) string {
+	objectType := "DIRECTORY"
+	if control == "CHOOSE_INPUT_FILE" || control == "CHOOSE_OUTPUT_FILE" {
+		objectType = "FILE"
+	}
 	return `
 specificationVersion: jobtemplate-2023-09
 name: PathControlJob
 parameterDefinitions:
   - name: ScenePath
     type: PATH
-    objectType: FILE
+    objectType: ` + objectType + `
     dataFlow: IN
     userInterface: { control: ` + control + `, label: Scene }
 steps:
@@ -77,12 +86,21 @@ func TestValidate_ControlsScopedToParameterType(t *testing.T) {
 		{"FLOAT", "CHIP_INPUT", false},
 	} {
 		t.Run(tc.paramType+"/"+tc.control, func(t *testing.T) {
+			// A PATH parameter's objectType must agree with a CHOOSE_* control
+			// (validateChooseControl); it defaults to DIRECTORY. Declare FILE
+			// for the file choosers so this test measures control-to-parameter
+			// -type scoping rather than the coherence rule.
+			objectType := ""
+			if tc.paramType == "PATH" &&
+				(tc.control == "CHOOSE_INPUT_FILE" || tc.control == "CHOOSE_OUTPUT_FILE") {
+				objectType = "\n    objectType: FILE"
+			}
 			yaml := `
 specificationVersion: jobtemplate-2023-09
 name: ScopedControlJob
 parameterDefinitions:
   - name: P
-    type: ` + tc.paramType + `
+    type: ` + tc.paramType + objectType + `
     userInterface: { control: ` + tc.control + `, label: P }
 steps:
   - name: Step1
@@ -103,18 +121,20 @@ steps:
 }
 
 func TestValidate_LabelLengthBounds(t *testing.T) {
-	// No minimum-length case: getString (parse.go:693-697) returns "" for both
-	// an absent key and an explicitly empty one, and Label is a plain string, so
-	// `label: ""` and no label at all are the same state after parsing -- and the
-	// absent case is legal (label is @optional; the spec prescribes falling back
-	// to the parameter name). There is no representable "present but empty" to
-	// reject. Ruled 2026-07-24: enforce the maximum only.
+	// The 2026-07-24 ruling here ("enforce the maximum only") rested on `label: ""`
+	// and an absent label being the same state after parsing, leaving no
+	// representable "present but empty" to reject. That premise no longer holds:
+	// the decoder now records LabelSet separately, so the two are distinguishable.
+	// Spec §2.6 gives <UserInterfaceLabelStringValue> a minimum length of 1, and
+	// conformance fixture 2.1--label-empty.invalid.yaml requires rejecting the
+	// empty case, so the minimum is enforced too. An absent label remains legal —
+	// it is @optional and falls back to the parameter name.
 	for _, tc := range []struct {
 		name  string
 		label string
 		valid bool
 	}{
-		{"empty is indistinguishable from absent, so valid", "", true},
+		{"explicitly empty is rejected", "", false},
 		{"one char", "S", true},
 		{"exactly 64", strings.Repeat("a", 64), true},
 		{"65 is too long", strings.Repeat("a", 65), false},

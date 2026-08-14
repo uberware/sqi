@@ -1,6 +1,14 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 import { describe, it, expect } from 'vitest'
-import { selectWidget, paramLabel, isRequired, defaultJobName, initialValue } from './productForm'
+import {
+  selectWidget,
+  paramLabel,
+  isRequired,
+  defaultJobName,
+  initialValue,
+  listElementType,
+  isBoolTruthy,
+} from './productForm'
 import type { ProductParameter } from '@/api/types'
 
 function param(over: Partial<ProductParameter>): ProductParameter {
@@ -19,6 +27,7 @@ function param(over: Partial<ProductParameter>): ProductParameter {
     user_interface: null,
     file_filters: [],
     file_filter_default: null,
+    item: null,
     ...over,
   }
 }
@@ -150,5 +159,89 @@ describe('helpers', () => {
     const name = defaultJobName('Blender', new Date('2026-06-28T14:32:00Z'))
     expect(name.startsWith('Blender ')).toBe(true)
     expect(name.length).toBeGreaterThan('Blender '.length)
+  })
+})
+
+describe('selectWidget — RFC 0007 types and controls', () => {
+  it('maps every *_LIST control to the list widget', () => {
+    const controls = [
+      'LINE_EDIT_LIST',
+      'SPIN_BOX_LIST',
+      'CHECK_BOX_LIST',
+      'CHOOSE_INPUT_FILE_LIST',
+      'CHOOSE_OUTPUT_FILE_LIST',
+      'CHOOSE_DIRECTORY_LIST',
+    ] as const
+    for (const control of controls) {
+      const p = param({
+        type: 'LIST[STRING]',
+        user_interface: { control, label: '', group_label: '', decimals: null },
+      })
+      expect(selectWidget(p)).toBe('list')
+    }
+  })
+
+  it('falls back by type when no control is declared', () => {
+    expect(selectWidget(param({ type: 'BOOL' }))).toBe('checkbox')
+    expect(selectWidget(param({ type: 'RANGE_EXPR' }))).toBe('text')
+    expect(selectWidget(param({ type: 'LIST[STRING]' }))).toBe('list')
+    expect(selectWidget(param({ type: 'LIST[PATH]' }))).toBe('list')
+    expect(selectWidget(param({ type: 'LIST[INT]' }))).toBe('list')
+    expect(selectWidget(param({ type: 'LIST[FLOAT]' }))).toBe('list')
+    expect(selectWidget(param({ type: 'LIST[BOOL]' }))).toBe('list')
+  })
+
+  it('renders LIST[LIST[INT]] as raw text, not a nested row editor', () => {
+    // RFC 0007 gives this type no control but HIDDEN and describes its use
+    // case as programmatic, so a nested editor is not worth building.
+    expect(selectWidget(param({ type: 'LIST[LIST[INT]]' }))).toBe('text')
+  })
+
+  it('still honours HIDDEN on a list type', () => {
+    const p = param({
+      type: 'LIST[STRING]',
+      user_interface: { control: 'HIDDEN', label: '', group_label: '', decimals: null },
+    })
+    expect(selectWidget(p)).toBe('hidden')
+  })
+})
+
+describe('listElementType', () => {
+  it('returns the element type of each list type', () => {
+    expect(listElementType('LIST[STRING]')).toBe('STRING')
+    expect(listElementType('LIST[PATH]')).toBe('PATH')
+    expect(listElementType('LIST[INT]')).toBe('INT')
+    expect(listElementType('LIST[FLOAT]')).toBe('FLOAT')
+    expect(listElementType('LIST[BOOL]')).toBe('BOOL')
+    expect(listElementType('LIST[LIST[INT]]')).toBe('LIST[INT]')
+  })
+
+  it('returns null for a scalar type', () => {
+    expect(listElementType('STRING')).toBeNull()
+    expect(listElementType('BOOL')).toBeNull()
+    expect(listElementType('RANGE_EXPR')).toBeNull()
+  })
+})
+
+describe('isBoolTruthy', () => {
+  it('recognises every spelling parseBoolParamValue accepts as true', () => {
+    // internal/openjd/validate_paramtypes.go's parseBoolParamValue, case-
+    // insensitive and trimmed.
+    for (const v of [true, 1, '1', '1.0', 'true', 'TRUE', ' yes ', 'On', 'YES']) {
+      expect(isBoolTruthy(v)).toBe(true)
+    }
+  })
+
+  it('recognises every spelling parseBoolParamValue accepts as false', () => {
+    for (const v of [false, 0, '0', '0.0', 'false', 'no', 'Off', '']) {
+      expect(isBoolTruthy(v)).toBe(false)
+    }
+  })
+
+  it('treats anything outside the accepted table as false', () => {
+    expect(isBoolTruthy(2)).toBe(false)
+    expect(isBoolTruthy('y')).toBe(false)
+    expect(isBoolTruthy(null)).toBe(false)
+    expect(isBoolTruthy(undefined)).toBe(false)
   })
 })

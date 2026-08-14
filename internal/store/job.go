@@ -4,6 +4,7 @@ package store
 
 import (
 	"context"
+	"slices"
 	"time"
 )
 
@@ -75,6 +76,25 @@ type Job struct {
 	// the parameters-persistence migration (back-compat: scheduler falls back
 	// to template defaults).
 	Parameters map[string]string
+	// DeclaredExtensions holds the OpenJD extension names the template declared
+	// (its top-level `extensions:` list), as internal/openjd decoded and
+	// validated them at submission. Meaningless unless ExtensionsRecorded is
+	// true — a nil slice with the flag false says NOTHING about the template.
+	DeclaredExtensions []string
+	// ExtensionsRecorded reports whether DeclaredExtensions is an answer at
+	// all. It is false for every job row written before migration 00027 added
+	// the column, and true for everything submission writes since.
+	//
+	// THE FLAG IS SEPARATE FROM THE SLICE ON PURPOSE. Three states have to be
+	// distinguishable by the scheduler — not recorded, recorded-empty,
+	// recorded-non-empty — and "not recorded" is NOT "declares nothing": for
+	// the first it must fall back to scanning the raw template, and for the
+	// second it must not. Leaning on nil-versus-empty to carry that difference
+	// puts the whole distinction on a property Go erases at every len() check,
+	// every append and every clone; a *[]string carries it but makes every read
+	// site dereference. A bool is checked explicitly or the compiler does not
+	// care, which is the property wanted here.
+	ExtensionsRecorded bool
 	// DependsOn holds the IDs of the upstream jobs this job waits on (whole-job
 	// cross-job dependencies). Populated by GetJob; ListJobs leaves it nil to
 	// avoid N+1 queries. Empty for jobs with no cross-job dependencies.
@@ -93,6 +113,24 @@ type Job struct {
 	UpdatedAt   time.Time
 	StartedAt   *time.Time
 	CompletedAt *time.Time
+}
+
+// DeclaresExtension reports whether the job's template declares the OpenJD
+// extension name, and — in recorded — whether that answer is known at all.
+//
+// A caller MUST branch on recorded before believing declared: recorded == false
+// means the row predates migration 00027 and carries no extension list, for
+// which declared is always false and means nothing. Reading it as "declares
+// nothing" is the mistake the two-value return exists to make hard.
+//
+// The comparison is exact, not case-folded: extension names are validated
+// against internal/openjd's registry at submission, so a stored name is one of
+// the spellings that registry accepts.
+func (j Job) DeclaresExtension(name string) (declared, recorded bool) {
+	if !j.ExtensionsRecorded {
+		return false, false
+	}
+	return slices.Contains(j.DeclaredExtensions, name), true
 }
 
 // JobSortField is a column by which [JobStore.ListJobs] results can be ordered.

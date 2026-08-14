@@ -13,6 +13,7 @@ import (
 	"testing"
 
 	workerconfig "github.com/uberware/sqi/internal/worker/config"
+	"github.com/uberware/sqi/internal/worker/fmtres"
 	"github.com/uberware/sqi/internal/worker/isolation"
 	"github.com/uberware/sqi/internal/worker/openjd"
 	"github.com/uberware/sqi/internal/worker/protocol"
@@ -131,7 +132,7 @@ func newTestSessionWithCredential(t *testing.T, applied *recordingApplier) *Sess
 	name := testAccountName()
 	account := isolation.FakeAccount{UID: testUID(), GID: testGID()}
 	provider := isolation.NewFake(map[string]isolation.FakeAccount{name: account})
-	mgr := NewManager(filepath.Join(dataDir, "sessions"), false, provider, workerconfig.IsolationConfig{}, nopLogger())
+	mgr := NewManager(filepath.Join(dataDir, "sessions"), false, provider, workerconfig.IsolationConfig{}, fmtres.ExprLimits{}, nopLogger())
 
 	msg := &protocol.AssignMsg{
 		JobID:     "job-iso",
@@ -191,7 +192,7 @@ func newTestSessionWithoutCredential(t *testing.T) *Session {
 	t.Helper()
 
 	dataDir := t.TempDir()
-	mgr := NewManager(filepath.Join(dataDir, "sessions"), false, isolation.NewFake(nil), workerconfig.IsolationConfig{}, nopLogger())
+	mgr := NewManager(filepath.Join(dataDir, "sessions"), false, isolation.NewFake(nil), workerconfig.IsolationConfig{}, fmtres.ExprLimits{}, nopLogger())
 	s, err := mgr.Create(context.Background(), &protocol.AssignMsg{JobID: "job-plain"})
 	if err != nil {
 		t.Fatalf("Create: %v", err)
@@ -342,7 +343,7 @@ func TestManagerCreate_SessionRootModeDefaultsTo0711(t *testing.T) {
 
 	dataDir := t.TempDir()
 	sessionRoot := filepath.Join(dataDir, "sessions")
-	mgr := NewManager(sessionRoot, false, isolation.NewFake(nil), workerconfig.IsolationConfig{}, nopLogger())
+	mgr := NewManager(sessionRoot, false, isolation.NewFake(nil), workerconfig.IsolationConfig{}, fmtres.ExprLimits{}, nopLogger())
 	msg := &protocol.AssignMsg{JobID: "job-default-mode"}
 	sess, err := mgr.Create(context.Background(), msg)
 	if err != nil {
@@ -368,7 +369,7 @@ func TestManagerCreate_SessionRootModeHonorsOption(t *testing.T) {
 
 	dataDir := t.TempDir()
 	sessionRoot := filepath.Join(dataDir, "sessions")
-	mgr := NewManager(sessionRoot, false, isolation.NewFake(nil), workerconfig.IsolationConfig{}, nopLogger(), WithSessionRootMode(0o750))
+	mgr := NewManager(sessionRoot, false, isolation.NewFake(nil), workerconfig.IsolationConfig{}, fmtres.ExprLimits{}, nopLogger(), WithSessionRootMode(0o750))
 	msg := &protocol.AssignMsg{JobID: "job-explicit-mode"}
 	sess, err := mgr.Create(context.Background(), msg)
 	if err != nil {
@@ -413,7 +414,7 @@ func TestManagerCreate_IsolatedAssignmentFailsOnNonTraversableSessionRoot(t *tes
 
 	account := isolation.FakeAccount{UID: testUID(), GID: testGID()}
 	provider := isolation.NewFake(map[string]isolation.FakeAccount{"render": account})
-	mgr := NewManager(sessionRoot, false, provider, workerconfig.IsolationConfig{}, nopLogger())
+	mgr := NewManager(sessionRoot, false, provider, workerconfig.IsolationConfig{}, fmtres.ExprLimits{}, nopLogger())
 
 	msg := &protocol.AssignMsg{JobID: "job-narrow", Isolation: &protocol.IsolationSpec{User: "render"}}
 	_, err := mgr.Create(context.Background(), msg)
@@ -441,7 +442,7 @@ func TestManagerCreate_NonIsolatedAssignmentSkipsAncestorValidation(t *testing.T
 	}
 	sessionRoot := filepath.Join(narrow, "sessions")
 
-	mgr := NewManager(sessionRoot, false, isolation.NewFake(nil), workerconfig.IsolationConfig{}, nopLogger())
+	mgr := NewManager(sessionRoot, false, isolation.NewFake(nil), workerconfig.IsolationConfig{}, fmtres.ExprLimits{}, nopLogger())
 	msg := &protocol.AssignMsg{JobID: "job-narrow-noiso"}
 	sess, err := mgr.Create(context.Background(), msg)
 	if err != nil {
@@ -459,7 +460,7 @@ func TestManagerCreate_NonIsolatedAssignmentSkipsAncestorValidation(t *testing.T
 func TestManagerCreate_CredentialResolutionFailureNeverFallsBackToDaemon(t *testing.T) {
 	dataDir := t.TempDir()
 	provider := isolation.NewFake(nil) // no accounts configured
-	mgr := NewManager(filepath.Join(dataDir, "sessions"), false, provider, workerconfig.IsolationConfig{}, nopLogger())
+	mgr := NewManager(filepath.Join(dataDir, "sessions"), false, provider, workerconfig.IsolationConfig{}, fmtres.ExprLimits{}, nopLogger())
 
 	msg := &protocol.AssignMsg{
 		JobID:     "job-bad-account",

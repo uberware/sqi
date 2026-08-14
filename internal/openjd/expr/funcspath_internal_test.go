@@ -1,0 +1,794 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
+package expr
+
+import (
+	"errors"
+	"fmt"
+	"strings"
+	"testing"
+)
+
+func TestPathConstructor(t *testing.T) {
+	tests := []struct{ src, want, wantType string }{
+		{`path('/a/b')`, "/a/b", "path"},
+		{`path('a//b')`, "a/b", "path"},
+		{`path('s3://bucket/a//b')`, "s3://bucket/a//b", "path"},
+		{`path(['/', 'a', 'b'])`, "/a/b", "path"},
+		{`path(['a', 'b'])`, "a/b", "path"},
+		{`path([])`, ".", "path"},
+		{`as_posix(path('/a/b'))`, "/a/b", "string"},
+		{`is_absolute(path('/a/b'))`, "true", "bool"},
+		{`is_absolute(path('a/b'))`, "false", "bool"},
+		{`is_absolute(path('s3://b/x'))`, "true", "bool"},
+		{`path('/a/b').as_posix()`, "/a/b", "string"},
+		{`path('/a/b').is_absolute()`, "true", "bool"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.src, func(t *testing.T) {
+			v, err := Eval(tc.src, MapSymbols{}, TAny)
+			if err != nil {
+				t.Fatalf("Eval(%q) failed: %v", tc.src, err)
+			}
+			if got := v.String(); got != tc.want {
+				t.Errorf("Eval(%q) = %q, want %q", tc.src, got, tc.want)
+			}
+			if got := v.Type.String(); got != tc.wantType {
+				t.Errorf("Eval(%q) typed %s, want %s", tc.src, got, tc.wantType)
+			}
+		})
+	}
+}
+
+// TestPathConstructor_HonoursTheOption is the only place the path_format option
+// is observable end to end, and therefore the only thing that proves the
+// plumbing from Task 1 actually reaches a function.
+func TestPathConstructor_HonoursTheOption(t *testing.T) {
+	v, err := Eval(`path('C:/a/b')`, MapSymbols{}, TAny, WithPathFormat(PathWindows))
+	if err != nil {
+		t.Fatalf("Eval failed: %v", err)
+	}
+	if got := v.String(); got != `C:\a\b` {
+		t.Errorf("under PathWindows, path('C:/a/b') = %q, want %q", got, `C:\a\b`)
+	}
+	d, err := Eval(`path('C:/a/b')`, MapSymbols{}, TAny)
+	if err != nil {
+		t.Fatalf("Eval failed: %v", err)
+	}
+	if got := d.String(); got != "C:/a/b" {
+		t.Errorf("under the POSIX default, path('C:/a/b') = %q, want %q", got, "C:/a/b")
+	}
+}
+
+// TestAsPosix_ConvertsWindowsSeparators is as_posix's whole reason to exist.
+func TestAsPosix_ConvertsWindowsSeparators(t *testing.T) {
+	v, err := Eval(`path('C:/renders/project').as_posix()`, MapSymbols{}, TAny, WithPathFormat(PathWindows))
+	if err != nil {
+		t.Fatalf("Eval failed: %v", err)
+	}
+	if got := v.String(); got != "C:/renders/project" {
+		t.Errorf("as_posix = %q, want %q", got, "C:/renders/project")
+	}
+}
+
+// TestAsPosix_IsFlavorAware pins the final fix wave's ruling: as_posix replaces
+// THE FLAVOR'S OWN separator with "/", so it is the IDENTITY under POSIX and
+// on a URI, and a "\" -> "/" rewrite only under Windows.
+//
+// The original implementation rewrote every backslash unconditionally, and the
+// decisive argument against it is sqi's own internal contradiction rather than
+// a preference: under POSIX a backslash is an ordinary filename character, so
+// path('/a/\b/c').parts is ["/", "a", `\b`, "c"] and .name is "c" — and
+// as_posix() answered "/a/b/c", a path with different parts and a different
+// name. One value cannot be both. The same rewrite silently renamed an S3
+// object key, which contradicts this package's own "a URI NORMALIZES NOTHING"
+// ruling.
+//
+// CPython settles the direction: PurePath.as_posix() is
+// str(self).replace(self.parser.sep, '/') — the FLAVOR's separator — so it is
+// the identity for PurePosixPath (measured: PurePosixPath('/a\\b/c').as_posix()
+// is "/a\b/c"). RFC 0006 line 857 names as_posix among the functions that
+// "match Python's pathlib API", which is the same clause baseline.txt already
+// cites to rule against the reference for stem/suffix. The RFC table row
+// "return string with forward slashes" summarizes the Windows case, which is
+// the only case where a separator has to change at all.
+//
+// THE REFERENCE DISAGREES (measured at openjd-model 0.11.1: as_posix on
+// path('/a/\b') answers "/a//b"), so this is a baselined oracle divergence —
+// while the reference's OWN parts for that same path keep the backslash as an
+// ordinary component, which is the identical contradiction, in the reference.
+func TestAsPosix_IsFlavorAware(t *testing.T) {
+	tests := []struct {
+		src    string
+		flavor PathFormat
+		want   string
+	}{
+		// POSIX: a backslash is an ordinary filename character and survives.
+		{`path('/renders/shot_a\\b.exr').as_posix()`, PathPOSIX, `/renders/shot_a\b.exr`},
+		{`path('/a/\\b/c').as_posix()`, PathPOSIX, `/a/\b/c`},
+		{`path('/a/b').as_posix()`, PathPOSIX, "/a/b"},
+		// The contradiction the ruling closes: as_posix must agree with the
+		// parts and the name of the very same value.
+		{`join(path('/a/\\b/c').parts, '|')`, PathPOSIX, `/|a|\b|c`},
+		{`path('/a/\\b/c').name`, PathPOSIX, "c"},
+		// A URI is identity under EVERY flavor: its component text is an
+		// opaque object key, and "a\b" and "a/b" are different objects.
+		{`path('s3://bucket/a\\b').as_posix()`, PathPOSIX, `s3://bucket/a\b`},
+		{`path('s3://bucket/a\\b').as_posix()`, PathWindows, `s3://bucket/a\b`},
+		{`path('s3://bucket/a/b').as_posix()`, PathWindows, "s3://bucket/a/b"},
+		// Windows is the one flavor where a separator genuinely changes,
+		// because "\" is what String() renders there.
+		{`path('C:/renders/project').as_posix()`, PathWindows, "C:/renders/project"},
+		{`path('C:\\a\\b').as_posix()`, PathWindows, "C:/a/b"},
+		{`path('\\\\srv\\share\\x').as_posix()`, PathWindows, "//srv/share/x"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.src, func(t *testing.T) {
+			v, err := Eval(tc.src, MapSymbols{}, TAny, WithPathFormat(tc.flavor))
+			if err != nil {
+				t.Fatalf("Eval(%q) failed: %v", tc.src, err)
+			}
+			if got := v.String(); got != tc.want {
+				t.Errorf("Eval(%q) under %v = %q, want %q", tc.src, tc.flavor, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestPathRoundTrip_PartsProperty is fix-round 1's property test: RFC 0006
+// states path(p.parts) == p, and the review that found the "C:" + "a" bug did
+// so with a generated corpus, not a single table row, because a second
+// formula beside parsedPath.String() agreed with the first on almost every
+// input and disagreed on exactly one shape. A single regression row proves
+// that ONE shape is fixed; it does not prove no OTHER shape still disagrees.
+//
+// The corpus is built by taking a raw path TEXT, parsing it once to get the
+// canonical parsedPath p, taking p.parts(), handing those parts BACK through
+// path() exactly as the specification's equation does, and comparing p's own
+// canonical rendering to what came back. This is exercised through Eval and
+// the real "path" registry entry — not by calling pathFromParts directly —
+// so the property covers the whole path from FnCtx dispatch down, not just
+// the helper in isolation.
+//
+// Three shapes, matching the fix-round report's "all three flavors":
+//   - POSIX roots ("", "/", "//") crossed with bodies covering plain
+//     components, ".", "..", and doubled separators.
+//   - Windows roots covering every anchor shape pathval.go names by name:
+//     none, a bare drive ("C:", the exact shape the bug was in), a
+//     drive-with-root ("C:\"), a root with no drive ("\"), and a UNC root
+//     both with and without its own trailing separator (the
+//     synthesizeUNCRoot case) — crossed with bodies including one
+//     ("a:b") that looks like a second drive to make sure only the head is
+//     ever classified as a root.
+//   - URI roots (several schemes, including one exercising the full
+//     scheme-byte grammar) crossed with bodies that reintroduce EMPTY
+//     components ("a//b", "//a") — URIs keep those, filesystem paths do
+//     not, and this is what the brief called out by name — run under BOTH
+//     PathPOSIX and PathWindows to confirm URI opacity does not depend on
+//     the chosen flavor.
+func TestPathRoundTrip_PartsProperty(t *testing.T) {
+	type kase struct {
+		text   string
+		flavor PathFormat
+	}
+	var corpus []kase
+
+	posixRoots := []string{"", "/", "//"}
+	posixBodies := []string{
+		"", "a", "a/b", "a/b/c", "a/./b", "a//b", "a/b/",
+		"..", "a/../b", "x/y/z/w/v", "a/b/c/d/e", ".",
+	}
+	for _, root := range posixRoots {
+		for _, body := range posixBodies {
+			corpus = append(corpus, kase{root + body, PathPOSIX})
+		}
+	}
+
+	// windowsText joins a root and a body the way a real Windows path text
+	// would: most roots already end in a separator (or are empty, or are a
+	// bare drive that attaches with NONE by design — the exact case the bug
+	// was in), so those concatenate directly; the one root pathval.go's
+	// synthesizeUNCRoot documents as lacking its own trailing separator
+	// needs one inserted to stay a valid two-component UNC share rather than
+	// merging into the body.
+	windowsText := func(root, body string) string {
+		switch {
+		case root == "" || body == "":
+			return root + body
+		case strings.HasSuffix(root, `\`):
+			return root + body
+		case root == "C:":
+			return root + body
+		default:
+			return root + `\` + body
+		}
+	}
+	windowsRoots := []string{
+		"", "C:", `C:\`, `\`, `\\srv\share\`, `\\srv\share`,
+	}
+	windowsBodies := []string{
+		"", "a", `a\b`, `a\b\c`, `a\.\b`, "a:b", `a\b\`,
+		"..", `a\..\b`, `x\y\z`,
+	}
+	for _, root := range windowsRoots {
+		for _, body := range windowsBodies {
+			corpus = append(corpus, kase{windowsText(root, body), PathWindows})
+		}
+	}
+
+	uriText := func(root, body string) string {
+		if body == "" {
+			return root
+		}
+		return root + "/" + body
+	}
+	uriRoots := []string{
+		"s3://bucket", "s3://bucket:1234", "file://host", "x+y-z.1://auth", "s3://",
+	}
+	uriBodies := []string{
+		"", "a", "a/b", "a//b", "//a", "a/", "a//", "a/b//c", ".", "..", "a/./b",
+	}
+	for _, root := range uriRoots {
+		for _, body := range uriBodies {
+			text := uriText(root, body)
+			corpus = append(corpus, kase{text, PathPOSIX}, kase{text, PathWindows})
+		}
+	}
+
+	failures := 0
+	for _, c := range corpus {
+		orig := parsePath(c.text, c.flavor)
+		want := orig.String()
+
+		partStrs := orig.parts()
+		elems := make([]Value, len(partStrs))
+		for i, s := range partStrs {
+			elems[i] = String(s)
+		}
+		syms := MapSymbols{"Param.Parts": List(TString, elems)}
+		got, err := Eval("path(Param.Parts)", syms, TAny, WithPathFormat(c.flavor))
+		if err != nil {
+			t.Errorf("path(parts of %q under flavor %v) failed: %v", c.text, c.flavor, err)
+			failures++
+			continue
+		}
+		if got.String() != want {
+			t.Errorf("path(p.parts) != p for text %q (flavor %v): parts=%v, got %q, want %q",
+				c.text, c.flavor, partStrs, got.String(), want)
+			failures++
+		}
+	}
+
+	t.Logf("path(p.parts) == p round-trip property: %d cases, %d failures", len(corpus), failures)
+}
+
+// TestPathProperties pins Python's pathlib semantics, including the cases that
+// surprise people. Every expectation came from running python3 during design.
+//
+// ".hidden" has NO suffix — a leading dot is not an extension. "a." has stem
+// "a" and suffix "." , which is where the reference implementation disagrees
+// with Python; RFC 0006 says these properties match pathlib, so Python wins and
+// the difference is baselined in test/oracle/baseline.txt.
+func TestPathProperties(t *testing.T) {
+	tests := []struct{ src, want string }{
+		{`path('/projects/shot01/render.exr').name`, "render.exr"},
+		{`path('/projects/shot01/render.exr').stem`, "render"},
+		{`path('/projects/shot01/render.exr').suffix`, ".exr"},
+		{`path('/projects/shot01/render.exr').parent`, "/projects/shot01"},
+		{`path('/data/backup.tar.gz').suffix`, ".gz"},
+		{`path('/data/backup.tar.gz').stem`, "backup.tar"},
+		{`path('.hidden').name`, ".hidden"},
+		{`path('.hidden').stem`, ".hidden"},
+		{`path('.hidden').suffix`, ""},
+		{`path('a.').stem`, "a"},
+		{`path('a.').suffix`, "."},
+		{`path('..').suffix`, ""},
+		{`path('noext').suffix`, ""},
+		{`path('/a/b').parent`, "/a"},
+		{`path('/a').parent`, "/"},
+		{`path('/').parent`, "/"},
+		{`path('a').parent`, "."},
+		{`path('s3://bucket/dir/file.obj').name`, "file.obj"},
+		{`path('s3://bucket/dir/file.obj').parent`, "s3://bucket/dir"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.src, func(t *testing.T) {
+			v, err := Eval(tc.src, MapSymbols{}, TAny)
+			if err != nil {
+				t.Fatalf("Eval(%q) failed: %v", tc.src, err)
+			}
+			if got := v.String(); got != tc.want {
+				t.Errorf("Eval(%q) = %q, want %q", tc.src, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestPathListProperties(t *testing.T) {
+	tests := []struct{ src, want string }{
+		{`join(path('/data/backup.tar.gz').suffixes, '|')`, ".tar|.gz"},
+		{`len(path('/data/backup.tar.gz').suffixes)`, "2"},
+		{`len(path('/a/b').suffixes)`, "0"},
+		{`join(path('/a/b').parts, '|')`, "/|a|b"},
+		{`join(path('a/b').parts, '|')`, "a|b"},
+		{`len(path('.').parts)`, "0"},
+		{`join(path('s3://bucket/dir/file.obj').parts, '|')`, "s3://bucket|dir|file.obj"},
+		{`join(path('s3://bucket/a//b/c').parts, '|')`, "s3://bucket|a||b|c"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.src, func(t *testing.T) {
+			v, err := Eval(tc.src, MapSymbols{}, TAny)
+			if err != nil {
+				t.Fatalf("Eval(%q) failed: %v", tc.src, err)
+			}
+			if got := v.String(); got != tc.want {
+				t.Errorf("Eval(%q) = %q, want %q", tc.src, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestPathParts_Roundtrip pins the specification's own claim that
+// path(p.parts) == p, over the same generated corpus the engine differential
+// uses — so it is a property over many inputs, not three hand-picked ones.
+//
+// DEVIATION 1 from the brief's literal test body: the brief calls a helper
+// named joinParts(parts, flavor) that does not exist in this codebase.
+// task-5's fix round DELETED joinParts outright — it was a second formula for
+// "how does a root join its components" that disagreed with
+// parsedPath.String() on a bare Windows drive ("C:" + "a"; see
+// funcspath.go's pathFromParts doc comment) — and replaced every caller with
+// pathFromParts, which defers to String() instead of re-deriving the rule.
+// Writing a fresh joinParts here to satisfy the brief literally would be
+// exactly the second copy of that formula the fix round removed. This test
+// therefore calls pathFromParts(parts, flavor).String() in joinParts's place;
+// the expected VALUES (parts, roundtrip equality) are unchanged from the
+// brief, only the helper name is current.
+//
+// DEVIATION 2: this stays POSIX-only (pathCorpusPOSIX, matching the brief)
+// rather than also folding in pathCorpusWindows. That corpus was built for a
+// DIFFERENT property (TestParsePath_WindowsMatchesPython's parse/render/
+// is_absolute differential) and several of its deliberately adversarial
+// leads — "./c:", ".\a:b" — produce a component whose text is itself
+// drive-shaped ("c:.", "a:b") only because a separator hid it from
+// splitRootWindows on the ORIGINAL parse. Feeding that component back through
+// parts() and pathFromParts reparses it in ISOLATION, where the same text now
+// reads as a real drive, and the round trip genuinely does not hold — not a
+// bug here, since python3 was run to confirm PureWindowsPath itself fails
+// the identical way: W(*W("./c:.").parts) renders "c:", not ".\c:.". C4 Task
+// 7 (with_* and relative_to) or a later fix round is where any additional
+// classification would need to be reconsidered, not this task, and reusing
+// pathCorpusWindows here would pin an equality RFC 0006 does not actually
+// hold. Three-flavor coverage of the property THAT DOES hold is already
+// delivered by TestPathRoundTrip_PartsProperty above (206 cases spanning
+// POSIX, Windows and URI, curated to avoid this exact known limitation) —
+// this test adds POSIX-differential-corpus breadth on top, per the brief.
+func TestPathParts_Roundtrip(t *testing.T) {
+	for _, in := range pathCorpusPOSIX() {
+		p := parsePath(in, PathPOSIX)
+		rebuilt := parsePath(pathFromParts(p.parts(), PathPOSIX).String(), PathPOSIX)
+		if rebuilt.String() != p.String() {
+			t.Errorf("roundtrip %q: parts %q rebuilt to %q, want %q",
+				in, p.parts(), rebuilt.String(), p.String())
+		}
+	}
+}
+
+// TestBoundedPath_EnforcesTheByteBound pins the ONLY enforcement point the
+// whole path family has for limits.go's maxStringBytes — and it was completely
+// untested until the final fix wave: deleting the checkStringBytes call from
+// boundedPath left this package's tests, the conformance suite and the oracle
+// all green. Every path-producing operation in funcspath.go and ops.go routes
+// its result through this one function, so an unenforced bound there is an
+// unbounded path value everywhere.
+//
+// The gap matters more than its size suggests because this program has already
+// shipped an after-the-fact bound once, on C3's reSub, for the same reason: a
+// limit nothing exercises is a limit nobody notices the absence of.
+//
+// The bound is checked AT the limit and one past it, matching
+// TestWithNumber_PaddingCap's rule that a bound tested "near" its value is not
+// tested at all, and then once more through a REAL path-producing expression,
+// so the enforcement is pinned where a caller can reach it and not only in
+// isolation.
+func TestBoundedPath_EnforcesTheByteBound(t *testing.T) {
+	if _, err := boundedPath(strings.Repeat("a", maxStringBytes), PathPOSIX); err != nil {
+		t.Errorf("a path text of exactly maxStringBytes must be accepted: %v", err)
+	}
+	_, err := boundedPath(strings.Repeat("a", maxStringBytes+1), PathPOSIX)
+	if err == nil {
+		t.Fatal("boundedPath accepted a path text one byte past maxStringBytes")
+	}
+	if !errors.Is(err, errTooLarge) {
+		t.Errorf("boundedPath over the bound = %v, want it to wrap errTooLarge", err)
+	}
+
+	// Through the "/" operator: both operands are individually legal (the
+	// repetition lands exactly on maxStringBytes), and only the JOINED text
+	// crosses the bound — which is the shape that makes boundedPath the right
+	// place for the check rather than the constructor alone.
+	src := fmt.Sprintf(`path('/a') / ('b' * %d)`, maxStringBytes)
+	if _, err := Eval(src, MapSymbols{}, TAny); err == nil {
+		t.Error("a join whose result exceeds maxStringBytes succeeded; the bound is not enforced")
+	} else if !errors.Is(err, errTooLarge) {
+		t.Errorf("the oversized join failed with %v, want it to wrap errTooLarge", err)
+	}
+}
+
+// TestPathFromParts_HeadIsARootOnlyWhenItIsNOTHINGElse pins the second half of
+// pathFromParts's head classification, which nothing exercised: a head token is
+// treated as a root only when parsing it alone yields a non-empty root AND NO
+// leftover components.
+//
+// Dropping the "&& len(probe.comps) == 0" clause stays green everywhere except
+// here, and it silently DROPS a component: path(['/a', 'b']) parses "/a" to
+// root "/" plus component "a", credits the whole token as the root, and answers
+// "/b" — the "a" gone, with no error. The list handed to path() is not
+// guaranteed to have come from parts(), so a head that is a root PLUS something
+// else must be treated as ordinary components, exactly as a plain "a" is.
+func TestPathFromParts_HeadIsARootOnlyWhenItIsNOTHINGElse(t *testing.T) {
+	tests := []struct {
+		src    string
+		flavor PathFormat
+		want   string
+	}{
+		// The regression case: a head that is a root AND a component.
+		{`path(['/a', 'b'])`, PathPOSIX, "/a/b"},
+		{`path(['/a/b', 'c'])`, PathPOSIX, "/a/b/c"},
+		{`path(['//a', 'b'])`, PathPOSIX, "//a/b"},
+		// The half that must keep working: a head that is a root and NOTHING
+		// else really is the root.
+		{`path(['/', 'a', 'b'])`, PathPOSIX, "/a/b"},
+		{`path(['//', 'a'])`, PathPOSIX, "//a"},
+		// A head that is no root at all stays an ordinary component.
+		{`path(['a', 'b'])`, PathPOSIX, "a/b"},
+		// The same distinction under Windows, where a bare drive is a root
+		// with no separator and a drive-plus-component is not.
+		{`path(['C:', 'a'])`, PathWindows, `C:a`},
+		// A drive PLUS a component in the head is not a root, so both tokens
+		// stay ordinary components — and String()'s middle branch then
+		// prepends "." because the first component is itself drive-shaped,
+		// which is what keeps the text re-parsing to the same value. The
+		// answer is not "C:\a\b", and it is not the "C:\b" the missing guard
+		// produces either; it is the third thing, and only the guard gets
+		// there.
+		{`path(['C:\\a', 'b'])`, PathWindows, `.\C:\a\b`},
+	}
+	for _, tc := range tests {
+		t.Run(tc.src, func(t *testing.T) {
+			v, err := Eval(tc.src, MapSymbols{}, TAny, WithPathFormat(tc.flavor))
+			if err != nil {
+				t.Fatalf("Eval(%q) failed: %v", tc.src, err)
+			}
+			if got := v.String(); got != tc.want {
+				t.Errorf("Eval(%q) under %v = %q, want %q", tc.src, tc.flavor, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestPathProperty_ReceiverIsNotCoerced pins section 1.2.4 for a PROPERTY: a
+// string receiver must not silently become a path.
+func TestPathProperty_ReceiverIsNotCoerced(t *testing.T) {
+	_, err := Eval(`'/a/b.txt'.stem`, MapSymbols{}, TAny)
+	if err == nil {
+		t.Fatal("'/a/b.txt'.stem succeeded; a string receiver must not coerce to path")
+	}
+}
+
+func TestPathWithFunctions(t *testing.T) {
+	tests := []struct{ src, want string }{
+		{`path('/projects/shot01/render.exr').with_name('output.png')`, "/projects/shot01/output.png"},
+		{`path('/projects/shot01/render.exr').with_stem('final')`, "/projects/shot01/final.exr"},
+		{`path('/projects/shot01/render.exr').with_suffix('.png')`, "/projects/shot01/render.png"},
+		{`path('/projects/shot01/render.exr').with_suffix('')`, "/projects/shot01/render"},
+		{`path('/a/b').relative_to(path('/a'))`, "b"},
+		{`path('/a/b/c').relative_to(path('/a'))`, "b/c"},
+		{`path('/a/b').is_relative_to(path('/a'))`, "true"},
+		{`path('/a/b').is_relative_to(path('/x'))`, "false"},
+		{`path('s3://b/x/y').is_relative_to(path('s3://b/x'))`, "true"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.src, func(t *testing.T) {
+			v, err := Eval(tc.src, MapSymbols{}, TAny)
+			if err != nil {
+				t.Fatalf("Eval(%q) failed: %v", tc.src, err)
+			}
+			if got := v.String(); got != tc.want {
+				t.Errorf("Eval(%q) = %q, want %q", tc.src, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestPathRelativeTo_AnchorlessOther pins is_relative_to and relative_to
+// against a receiver-less "." — the one shape where a plain prefix test over
+// parts() gives the wrong answer.
+//
+// path('.') has NO parts at all, so an unguarded prefix test says every path is
+// relative to it, including an absolute one. CPython disagrees, and so does the
+// reference implementation: PurePosixPath('/a/b').is_relative_to('.') is False,
+// because is_relative_to is "other == self or other in self.parents" and an
+// absolute path's parents run down to "/", never to ".". The Expression-Language
+// specification names that function outright ("matching uses
+// PurePath.is_relative_to()", section on path mapping rules), and relative_to
+// inherited the same defect in a louder form: it answered path('/a/b') for
+// path('/a/b').relative_to(path('.')) — a "relative" result that is absolute.
+//
+// The rows where BOTH paths are anchorless stay true, which is CPython's answer
+// and the reason the guard tests the anchors rather than simply rejecting an
+// empty other. The reference says false for those too; it is wrong there, and
+// that disagreement is baselined in test/oracle/baseline.txt.
+func TestPathRelativeTo_AnchorlessOther(t *testing.T) {
+	tests := []struct{ src, want string }{
+		{`path('/a/b').is_relative_to(path('.'))`, "false"},
+		{`path('/').is_relative_to(path('.'))`, "false"},
+		{`path('//a').is_relative_to(path('.'))`, "false"},
+		{`path('s3://b/d').is_relative_to(path('.'))`, "false"},
+		{`path('a/b').is_relative_to(path('.'))`, "true"},
+		{`path('a/b').is_relative_to(path(''))`, "true"},
+		{`path('.').is_relative_to(path('.'))`, "true"},
+		{`path('a/b').relative_to(path('.'))`, "a/b"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.src, func(t *testing.T) {
+			v, err := Eval(tc.src, MapSymbols{}, TAny)
+			if err != nil {
+				t.Fatalf("Eval(%q) failed: %v", tc.src, err)
+			}
+			if got := v.String(); got != tc.want {
+				t.Errorf("Eval(%q) = %q, want %q", tc.src, got, tc.want)
+			}
+		})
+	}
+	for _, src := range []string{
+		`path('/a/b').relative_to(path('.'))`,
+		`path('s3://b/d').relative_to(path('.'))`,
+	} {
+		t.Run(src, func(t *testing.T) {
+			if _, err := Eval(src, MapSymbols{}, TAny); !errors.Is(err, errNotRelative) {
+				t.Errorf("Eval(%q) error = %v, want %v", src, err, errNotRelative)
+			}
+		})
+	}
+}
+
+// TestPathRelativeTo_URIBoundarySlash pins the separator run that sits at the
+// boundary between a URI base and the part of a path that follows it.
+//
+// A base is an operand of the same kind section 2.1.5 already rules on for "/":
+// "a trailing slash on the left operand is consumed by the join (matching
+// pathlib behavior)". RFC 0006 states the URI case of these two functions
+// directly — "For URIs, checks prefix match on the full URI" and, for
+// relative_to, "strips the matching prefix" — so a base written the way an
+// operator writes a prefix, "s3://renders/", has to match the objects under it.
+//
+// That has to hold at the same time as the OTHER specification rule, which the
+// URI parse fix in this same task established: a URI's path portion is
+// preserved verbatim, so an empty component IS a component and
+// path("s3://b/").parts is ["s3://b", ""]. The two only conflict if the prefix
+// test treats the boundary's own separators as significant. It does not, on
+// either side of the boundary:
+//
+//   - the base's TRAILING empty components are consumed, which is what makes
+//     path("s3://b/") and path("s3://b") the same base;
+//   - the remainder's LEADING empty components are consumed, which is what
+//     keeps the result a RELATIVE path. Without it path("s3://b//d")
+//     .relative_to(path("s3://b")) answers "/d" and path("s3://b//")
+//     .relative_to(path("s3://b")) answers "/" — absolute results from a
+//     function whose whole job is to remove an anchor, which then silently
+//     discard whatever base they are later joined onto. That is the same
+//     defect shape as the anchorless-"." one above, reached through a URI.
+//
+// Every expectation below is the reference implementation's own answer except
+// the last two, which are baselined in test/oracle/baseline.txt with the
+// reasoning: the reference reaches its prefix decision textually, so it calls
+// path("s3://b") NOT relative to the base "s3://b/" even though it consumes
+// that same trailing slash everywhere else, and it treats the empty authority
+// "s3://" as a prefix of every s3 authority, which the opaque-prefix rule
+// forbids.
+func TestPathRelativeTo_URIBoundarySlash(t *testing.T) {
+	tests := []struct{ src, want string }{
+		{`path('s3://b/d').is_relative_to(path('s3://b/'))`, "true"},
+		{`path('s3://b/d').relative_to(path('s3://b/'))`, "d"},
+		{`path('s3://b/d/f').relative_to(path('s3://b/'))`, "d/f"},
+		{`path('s3://b/d/f').relative_to(path('s3://b/d/'))`, "f"},
+		{`path('s3://b/').relative_to(path('s3://b'))`, "."},
+		{`path('s3://b//').relative_to(path('s3://b'))`, "."},
+		{`path('s3://b//').relative_to(path('s3://b/'))`, "."},
+		{`path('s3://b/d//').relative_to(path('s3://b/d'))`, "."},
+		{`path('s3://b//d').relative_to(path('s3://b'))`, "d"},
+		{`path('s3://b//d').relative_to(path('s3://b/'))`, "d"},
+		// The point of consuming the remainder's leading empties, stated as a
+		// property rather than as a rendering: a relative_to result is never
+		// absolute.
+		{`is_absolute(path('s3://b//').relative_to(path('s3://b')))`, "false"},
+		{`is_absolute(path('s3://b//d').relative_to(path('s3://b')))`, "false"},
+		// RUNS OF THREE OR MORE, on both sides of the boundary, because a
+		// two-separator case cannot tell a RUN trim from a ONE-STEP trim. A
+		// mutation trimming a single empty component instead of the run leaves
+		// every two-slash row above green and still answers "/d" here, which is
+		// the very defect this rule exists to close. Both directions are
+		// covered: a long run in the receiver (the remainder side) and a long
+		// run terminating the base.
+		{`path('s3://b///d').relative_to(path('s3://b'))`, "d"},
+		{`is_absolute(path('s3://b///d').relative_to(path('s3://b')))`, "false"},
+		{`path('s3://b////d/e').relative_to(path('s3://b'))`, "d/e"},
+		{`is_absolute(path('s3://b////d/e').relative_to(path('s3://b')))`, "false"},
+		{`path('s3://b///').relative_to(path('s3://b'))`, "."},
+		{`is_absolute(path('s3://b///').relative_to(path('s3://b')))`, "false"},
+		{`path('s3://b//d').relative_to(path('s3://b//'))`, "d"},
+		{`path('s3://b/d').relative_to(path('s3://b///'))`, "d"},
+		{`path('s3://b/d/e').relative_to(path('s3://b/d//'))`, "e"},
+		{`path('s3://b/d/e').relative_to(path('s3://b/d///'))`, "e"},
+		{`path('s3://b/d').is_relative_to(path('s3://b//'))`, "true"},
+		// The coherence artifact the ruling produces, recorded rather than
+		// left to be rediscovered: two URI values that are NOT equal are each
+		// relative to the other, and relative_to answers "." both ways. That
+		// follows directly from the boundary rule — the separators between
+		// them are the boundary and belong to neither — and it is not a
+		// contradiction, because equality compares the values while
+		// is_relative_to compares them ACROSS a boundary that consumes exactly
+		// those separators. The reference agrees on the first two rows.
+		{`path('s3://b//') == path('s3://b')`, "false"},
+		{`path('s3://b//').is_relative_to(path('s3://b'))`, "true"},
+		{`path('s3://b').is_relative_to(path('s3://b//'))`, "true"},
+		{`path('s3://b//').relative_to(path('s3://b'))`, "."},
+		{`path('s3://b').relative_to(path('s3://b//'))`, "."},
+		// Consuming the boundary must not degrade the prefix test into a
+		// TEXTUAL one: a longer authority and a longer component are still not
+		// matches.
+		{`path('s3://bb/d').is_relative_to(path('s3://b'))`, "false"},
+		{`path('s3://b/dd').is_relative_to(path('s3://b/d'))`, "false"},
+		// The two rows where sqi and the reference part company; see the doc
+		// comment and baseline.txt.
+		{`path('s3://b').is_relative_to(path('s3://b/'))`, "true"},
+		{`path('s3://b/d').is_relative_to(path('s3://'))`, "false"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.src, func(t *testing.T) {
+			v, err := Eval(tc.src, MapSymbols{}, TAny)
+			if err != nil {
+				t.Fatalf("Eval(%q) failed: %v", tc.src, err)
+			}
+			if got := v.String(); got != tc.want {
+				t.Errorf("Eval(%q) = %q, want %q", tc.src, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestPathWithFunctions_Reject pins the three error conditions. All three
+// behave the same way in Python and in the reference — measured during design —
+// so any divergence here is a bug rather than an adjudication.
+func TestPathWithFunctions_Reject(t *testing.T) {
+	tests := []struct {
+		src     string
+		wantErr error
+	}{
+		{`path('/').with_name('x')`, errEmptyName},
+		{`path('/').with_stem('x')`, errEmptyName},
+		{`path('/a/b.txt').with_suffix('png')`, errInvalidSuffix},
+		{`path('/a/b').relative_to(path('/x'))`, errNotRelative},
+		// with_number's path row runs its result through the SAME withName
+		// as with_name and with_stem, so a receiver with no final component
+		// fails the ordinary errEmptyName rather than a second check — even
+		// though withNumber itself never inspects the receiver at all.
+		// Measured against the reference during design.
+		{`path('/').with_number(3)`, errEmptyName},
+	}
+	for _, tc := range tests {
+		t.Run(tc.src, func(t *testing.T) {
+			_, err := Eval(tc.src, MapSymbols{}, TAny)
+			if err == nil {
+				t.Fatalf("Eval(%q) succeeded; want %v", tc.src, tc.wantErr)
+			}
+			if !errors.Is(err, tc.wantErr) {
+				t.Errorf("Eval(%q) = %v, want it to wrap %v", tc.src, err, tc.wantErr)
+			}
+		})
+	}
+}
+
+// TestPathWithFunctions_ArgumentValidation is fix round 1: with_name,
+// with_stem and with_suffix originally accepted ANY replacement text,
+// including one containing a separator, fabricating a path component that
+// did not exist in the input. Every expectation here is the reference's
+// actual output at openjd-model 0.11.1, measured by the reviewer during fix
+// round 1 — not adjudicated, not derived from Python alone.
+func TestPathWithFunctions_ArgumentValidation(t *testing.T) {
+	tests := []struct{ src, want string }{
+		// CRITICAL 1: with_name validates its argument, but ".." is legal —
+		// only exact equality to "." is rejected, not a leading dot run.
+		{`path('/a/b.txt').with_name('..')`, "/a/.."},
+		// CRITICAL 2 (positive branch): with_stem on a receiver whose own
+		// suffix is EMPTY is exactly with_name — no suffix to preserve.
+		{`path('/data/backup.tar.gz').with_stem('x')`, "/data/x.gz"},
+		// Separators are flavor-dependent: backslash is not a POSIX
+		// separator, so it survives untouched under the default (POSIX)
+		// flavor — including when the receiver happens to look
+		// drive-rooted, because POSIX parsing never treats ':' specially,
+		// so the drive does not switch the flavor. Measured directly
+		// against the reference.
+		{`path('a/b').with_name('c\\d')`, `a/c\d`},
+		{`path('C:/a/b').with_name('c\\d')`, `C:/a/c\d`},
+		// Cross-validation extras (reasoned from the rule, not the
+		// reference): a leading-dot-RUN replacement is legal, a
+		// multi-extension replacement name is ordinary, and a non-ASCII
+		// replacement round-trips untouched.
+		{`path('/a/b.txt').with_name('..hidden')`, "/a/..hidden"},
+		{`path('/a/b.txt').with_name('archive.tar.gz')`, "/a/archive.tar.gz"},
+		{`path('/a/b.txt').with_name('café')`, "/a/café"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.src, func(t *testing.T) {
+			v, err := Eval(tc.src, MapSymbols{}, TAny)
+			if err != nil {
+				t.Fatalf("Eval(%q) failed: %v", tc.src, err)
+			}
+			if got := v.String(); got != tc.want {
+				t.Errorf("Eval(%q) = %q, want %q", tc.src, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestPathWithFunctions_ArgumentValidation_Reject is fix round 1's error
+// side, including the two ordering cases the review's Important finding
+// raised and the reference then REFUTED: suffix-format validation runs
+// BEFORE the receiver's empty-name check, opposite of Python 3.14, and that
+// is deliberate — see the ordering comment on the with_suffix registration.
+func TestPathWithFunctions_ArgumentValidation_Reject(t *testing.T) {
+	tests := []struct {
+		src     string
+		wantErr error
+	}{
+		// CRITICAL 1.
+		{`path('/a/b.txt').with_name('a/b')`, errInvalidName},
+		{`path('/a/b.txt').with_name('')`, errInvalidName},
+		{`path('/a/b.txt').with_name('.')`, errInvalidName},
+		// CRITICAL 2.
+		{`path('/a/b').with_stem('')`, errInvalidName},
+		{`path('/a/b').with_stem('.')`, errInvalidName},
+		{`path('/a/b.txt').with_stem('')`, errEmptyStemHasSuffix},
+		{`path('/a/b.txt').with_stem('a/b')`, errInvalidName},
+		// CRITICAL 3.
+		{`path('/a/b.txt').with_suffix('.')`, errInvalidSuffix},
+		{`path('/a/b.txt').with_suffix('.a/b')`, errInvalidSuffix},
+		// Ordering, refuted by the reference: suffix format wins over the
+		// receiver's empty name, not the other way around.
+		{`path('/').with_suffix('png')`, errInvalidSuffix},
+		{`path('/').with_suffix('.png')`, errEmptyName},
+		// Cross-validation extra: a replacement that is only separators.
+		{`path('/a/b.txt').with_name('/')`, errInvalidName},
+		{`path('/a/b.txt').with_name('//')`, errInvalidName},
+	}
+	for _, tc := range tests {
+		t.Run(tc.src, func(t *testing.T) {
+			_, err := Eval(tc.src, MapSymbols{}, TAny)
+			if err == nil {
+				t.Fatalf("Eval(%q) succeeded; want %v", tc.src, tc.wantErr)
+			}
+			if !errors.Is(err, tc.wantErr) {
+				t.Errorf("Eval(%q) = %v, want it to wrap %v", tc.src, err, tc.wantErr)
+			}
+		})
+	}
+}
+
+// TestPathWithFunctions_WindowsSeparator has NO reference answer — the
+// reference is POSIX-only for these functions (measured: it accepts a
+// backslash outright, see TestPathWithFunctions_ArgumentValidation above).
+// Under the Windows flavor this package parses BOTH "/" and "\" as
+// separators (parseWindows itself normalizes "/" to "\" before splitting on
+// it), so a replacement name containing either must be rejected there even
+// though the identical text is legal under POSIX.
+func TestPathWithFunctions_WindowsSeparator(t *testing.T) {
+	_, err := Eval(`path('a/b').with_name('c\\d')`, MapSymbols{}, TAny, WithPathFormat(PathWindows))
+	if err == nil {
+		t.Fatal(`with_name('c\d') under the Windows flavor succeeded; want errInvalidName`)
+	}
+	if !errors.Is(err, errInvalidName) {
+		t.Errorf(`with_name('c\d') under the Windows flavor = %v, want it to wrap errInvalidName`, err)
+	}
+}

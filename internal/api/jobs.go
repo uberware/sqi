@@ -28,6 +28,7 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"github.com/uberware/sqi/internal/openjd"
+	"github.com/uberware/sqi/internal/openjd/expr"
 	"github.com/uberware/sqi/internal/scheduler"
 	"github.com/uberware/sqi/internal/store"
 	"github.com/uberware/sqi/internal/ws"
@@ -47,10 +48,33 @@ type jobCanceler interface {
 	ReconcileDependents(ctx context.Context, upstreamJobID string) error
 }
 
+// JobSubmitter is the subset of [openjd.Submitter] the submission handlers
+// use. Keeping it an interface — the same reason [jobCanceler] is one, and the
+// same reason [Deps.Store] is store.Store rather than *sqlite.Store — lets the
+// handlers' error mapping be tested without driving the whole OpenJD pipeline.
+// That mattered most for the one error the pipeline could not produce: while
+// the EXPR extension was StatusInProgress an EXPR template was rejected before
+// any expression was evaluated, so a wall-clock deadline breach was unreachable
+// end to end. Sub-project H2 flipped the status and the real path is now
+// covered directly (submitdeadline_test.go's end-to-end cases); the stub
+// remains the cheap way to pin the status mapping alone.
+//
+// It is EXPORTED, and [Deps.Submitter] is typed as it rather than as
+// *openjd.Submitter, so that a test can drive a router built by [NewRouter]
+// with a recording stub. Without that, nothing could observe the
+// Config → handler hop that carries the submission deadline: the value would
+// reach a real Submitter and vanish into a pipeline that cannot currently
+// spend it.
+type JobSubmitter interface {
+	Submit(
+		ctx context.Context, rawTemplate string, format store.TemplateFormat, opts openjd.SubmitOptions,
+	) (*openjd.SubmitResult, error)
+}
+
 // jobHandler handles all job-related REST endpoints.
 type jobHandler struct {
 	store     store.Store
-	submitter *openjd.Submitter
+	submitter JobSubmitter
 	sched     jobCanceler
 	// notifier pushes a removed event when a job is deleted so other connected
 	// clients drop it live. May be nil (no push).
@@ -63,6 +87,14 @@ type jobHandler struct {
 	// ownerLookup validates a submit-as owner override against known users.
 	// Nil disables validation (auth.validate_job_owner = false).
 	ownerLookup ownerLookup
+	// exprDeadline is how long the OpenJD expression checker may work on ONE
+	// submission before this server gives up on it
+	// (config openjd.expr_submission_deadline). Zero disables the backstop.
+	//
+	// Stored as a DURATION and turned into an absolute instant per request by
+	// [exprDeadlineAt]; see that function for why the conversion cannot be
+	// hoisted anywhere that runs once.
+	exprDeadline time.Duration
 }
 
 // ── Wire-format types ─────────────────────────────────────────────────────────
@@ -194,14 +226,17 @@ type patchJobRequest struct {
 // newJobHandler returns a jobHandler wired to the given store, submitter,
 // scheduler, and optional notifier. validateOwner controls whether a submit-as
 // owner override is checked against known users (config.AuthConfig.ValidateJobOwner).
+// exprDeadline is the configured wall-clock allowance for one submission's
+// expression evaluation; zero disables the backstop.
 func newJobHandler(
 	st store.Store,
-	sub *openjd.Submitter,
+	sub JobSubmitter,
 	sched jobCanceler,
 	notifier ws.Notifier,
 	logger *slog.Logger,
 	retryDefaults scheduler.RetryPolicy,
 	validateOwner bool,
+	exprDeadline time.Duration,
 ) *jobHandler {
 	return &jobHandler{
 		store:         st,
@@ -211,6 +246,7 @@ func newJobHandler(
 		logger:        logger,
 		retryDefaults: retryDefaults,
 		ownerLookup:   newOwnerLookup(st, validateOwner),
+		exprDeadline:  exprDeadline,
 	}
 }
 
@@ -280,10 +316,23 @@ func (h *jobHandler) submitJob(w http.ResponseWriter, r *http.Request) {
 		RetryDelaySeconds: retryDelaySeconds,
 		FailureLimit:      failureLimit,
 		DependsOn:         r.URL.Query()["depends_on"],
+		Deadline:          exprDeadlineAt(h.exprDeadline),
 	}
 
 	result, err := h.submitter.Submit(ctx, string(body), storeFormat, opts)
 	if err != nil {
+		// The wall-clock backstop FIRST, and as a 503. It is checked ahead of
+		// the validation branch because the two claims are different: 422 says
+		// the template is wrong and retrying is pointless, while this says the
+		// server gave up on a template that might be perfectly valid — the
+		// same body would validate on an idle host. Reporting a load-dependent
+		// outcome as the submitter's fault would make acceptance depend on
+		// machine load, which no client can reason about or retry sensibly.
+		if writeExprDeadlineProblem(w, r, h.logger, err,
+			"jobs: submit exceeded its expression deadline", exprDeadlineProblemDetail, h.exprDeadline,
+			slog.String("farm_id", farmID), slog.String("queue_id", queueID)) {
+			return
+		}
 		// Distinguish parse/validation errors (client fault) from storage errors.
 		if isSubmitValidationError(err) {
 			writeProblem(w, r, http.StatusUnprocessableEntity, err.Error())
@@ -1021,6 +1070,90 @@ func parseIntQuery(s string, fallback int) int {
 func isSubmitValidationError(err error) bool {
 	var ve *openjd.SubmitValidationError
 	return errors.As(err, &ve)
+}
+
+// isSubmitDeadlineError reports whether err is the submission pipeline's
+// wall-clock backstop tripping (EXPR sub-project H1) rather than any verdict
+// about the template.
+//
+// Matched STRUCTURALLY, on the exported sentinel, never by reading a message:
+// a budget breach and a deadline travel the same return path, and the whole
+// point of the sentinel is that the two are tellable apart without string
+// matching. The pipeline never wraps a deadline in a
+// [openjd.SubmitValidationError], so this and [isSubmitValidationError] cannot
+// both be true.
+func isSubmitDeadlineError(err error) bool {
+	return errors.Is(err, expr.ErrDeadlineExceeded)
+}
+
+// exprDeadlineProblemDetail is the 503 body every route that walks a
+// client-supplied OpenJD TEMPLATE returns when the wall-clock backstop trips.
+// It names the configuration key deliberately: nothing about the submitted body
+// is wrong, so the only actions available are retrying or asking the operator
+// to widen the budget. (The preset route sends its own wording because what the
+// caller asked this server to load is a preset definition, not a template.)
+const exprDeadlineProblemDetail = "template validation exceeded its time budget on this server; retry, " +
+	"or ask the operator about openjd.expr_submission_deadline"
+
+// exprDeadlineAt returns the absolute wall-clock instant one request's
+// expression evaluation must stop at, given the configured duration (config
+// openjd.expr_submission_deadline). A non-positive duration means no backstop
+// is configured and yields the zero time.
+//
+// Called once per request, on purpose. The configured value is a duration; what
+// the pipeline needs is an instant. Computing that instant anywhere that runs
+// once — at server boot, on the shared Submitter — would give every request the
+// same deadline, so every submission arriving after it would fail forever while
+// every one before it got a shrinking allowance.
+func exprDeadlineAt(d time.Duration) time.Time {
+	if d <= 0 {
+		return time.Time{}
+	}
+	return time.Now().Add(d)
+}
+
+// writeExprDeadlineProblem reports err as a 503 when it is the submission
+// pipeline's wall-clock backstop tripping, and reports whether it did. A false
+// return means err is something else entirely and the caller's own mapping
+// applies unchanged.
+//
+// It is one function because the 503-vs-4xx split is a single contract shared by
+// every route that walks a client-supplied template, and four copies of it had
+// already begun to drift. Callers keep their own guard ordering: the deadline
+// must be tested BEFORE any validation branch, since a breach and a verdict
+// travel the same return path.
+//
+// 503, NEVER a 4xx. A 4xx says the body is wrong and retrying is pointless,
+// while this says the server gave up on a body that might be perfectly valid —
+// the same bytes would validate on an idle host. Reporting a load-dependent
+// outcome as the caller's fault would make acceptance depend on machine load,
+// which no client can reason about or retry sensibly.
+//
+// WARN, NOT ERROR. Nothing is broken: the server met a bound it was configured
+// to meet, on a request the client is explicitly told to retry. Error is also
+// the wrong level for a CLIENT-PROVOKABLE, LOAD-DEPENDENT event on an anonymous
+// path — every occurrence takes a slot in the bounded diagnostics ring buffer
+// (internal/diag), so a run of deadlines would evict the genuine server errors
+// an operator opened that buffer to find. The scheduler's protocol-version gate
+// logs repeating heartbeat mismatches at debug for exactly this reason; see
+// discardOnVersionMismatch. The neighboring validation branches log nothing at
+// all, on the same reasoning taken one step further.
+//
+// logMsg names the route, detail is the client-facing body (see
+// [exprDeadlineProblemDetail]), and extra carries any route-specific log
+// attributes — logged ahead of the deadline and the error, so each call site
+// keeps the attribute order it had.
+func writeExprDeadlineProblem(
+	w http.ResponseWriter, r *http.Request, logger *slog.Logger,
+	err error, logMsg, detail string, deadline time.Duration, extra ...any,
+) bool {
+	if !isSubmitDeadlineError(err) {
+		return false
+	}
+	logger.WarnContext(r.Context(), logMsg,
+		append(extra, slog.Duration("deadline", deadline), slog.Any("error", err))...)
+	writeProblem(w, r, http.StatusServiceUnavailable, detail)
+	return true
 }
 
 // parseParamQueryParams extracts job-parameter values from query parameters

@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/uberware/sqi/internal/fsutil"
 )
 
 // The six DCC reference presets (presets/sqi/) are authored in this repo and
@@ -20,21 +22,9 @@ func TestDCCReferencePresets(t *testing.T) {
 		"nuke-script-render":   {"SceneFile", "Frames"},
 		"blender-batch-render": {"SceneFile", "Frames", "OutputPath"},
 	}
-	matches, err := filepath.Glob(filepath.Join("..", "..", "presets", "sqi", "*.yaml"))
+	paths, err := fsutil.Glob(filepath.Join("..", "..", "presets", "sqi", "*.yaml"))
 	if err != nil {
 		t.Fatalf("glob: %v", err)
-	}
-	// Drop macOS AppleDouble sidecars ("._name"), which match *.yaml. They
-	// appear on non-APFS volumes whenever a checkout rewrites a preset, and
-	// counting one as a preset fails this test for a reason that has nothing
-	// to do with the presets. internal/presetgen filters them for the same
-	// reason -- see isAppleDouble there.
-	paths := make([]string, 0, len(matches))
-	for _, p := range matches {
-		if strings.HasPrefix(filepath.Base(p), "._") {
-			continue
-		}
-		paths = append(paths, p)
 	}
 	if len(paths) != len(want) {
 		t.Fatalf("expected %d presets, found %d: %v", len(want), len(paths), paths)
@@ -46,7 +36,7 @@ func TestDCCReferencePresets(t *testing.T) {
 			if err != nil {
 				t.Fatalf("read: %v", err)
 			}
-			p, err := ParseDefinition(data)
+			p, err := ParseDefinition(data, ValidateOptions{EnforceLimits: true})
 			if err != nil {
 				t.Fatalf("ParseDefinition: %v", err)
 			}
@@ -56,7 +46,7 @@ func TestDCCReferencePresets(t *testing.T) {
 			if p.Category != "Rendering" {
 				t.Errorf("category = %q, want Rendering", p.Category)
 			}
-			if err := ValidateTemplate(p.Template, p.Format, true); err != nil {
+			if err := ValidateTemplate(p.Template, p.Format, ValidateOptions{EnforceLimits: true}); err != nil {
 				t.Fatalf("ValidateTemplate: %v", err)
 			}
 			for _, param := range want[name] {

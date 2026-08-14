@@ -107,3 +107,7 @@ Desktop.ini
 
 # Python docs virtualenv
 .venv-docs/
+
+# The pinned OpenJD reference implementation used by `make test-expr-oracle`.
+# A development convenience only — never a build or test dependency.
+.venv-oracle/

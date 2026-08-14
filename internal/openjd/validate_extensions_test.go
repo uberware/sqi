@@ -82,17 +82,19 @@ func TestValidateExtensions_RedactedEnvVars_OK(t *testing.T) {
 	}
 }
 
-// TestValidateExtensions_EXPR_Error confirms that the EXPR extension (not
-// implemented by sqi) is rejected.
-func TestValidateExtensions_EXPR_Error(t *testing.T) {
+// TestValidateExtensions_EXPR_OK confirms that declaring the EXPR extension is
+// accepted.
+//
+// This test asserted the OPPOSITE until sub-project H2: EXPR was registered but
+// StatusInProgress, so every EXPR-declaring template was rejected at
+// /extensions/0 with a message naming that status. H2 marked it supported, and
+// this is the single most direct statement of what that changed.
+func TestValidateExtensions_EXPR_OK(t *testing.T) {
 	tmpl := mustParse(t, minimalValidYAML())
 	tmpl.Extensions = []string{"EXPR"}
 	errs := openjd.Validate(tmpl)
-	if !containsPointer(errs, "/extensions/0") {
-		t.Errorf("expected /extensions/0 error for unsupported EXPR; got: %v", errs)
-	}
-	if !containsMessage(errs, `unsupported extension`) {
-		t.Errorf("expected 'unsupported extension' message; got: %v", errs)
+	if len(errs) != 0 {
+		t.Errorf("expected no errors for EXPR; got: %v", errs)
 	}
 }
 
@@ -136,7 +138,10 @@ func TestValidateExtensions_NoExtensions_NoChunk_OK(t *testing.T) {
 // the extensions list produces its own error at the correct pointer.
 func TestValidateExtensions_MultipleErrors(t *testing.T) {
 	tmpl := mustParse(t, minimalValidYAML())
-	tmpl.Extensions = []string{"FUTURE_THING", "EXPR", "TASK_CHUNKING"}
+	// Two unregistered names, then a supported one. The second slot held EXPR
+	// until sub-project H2 made it supported; any unregistered name serves the
+	// purpose, which is that the pointer index tracks the list position.
+	tmpl.Extensions = []string{"FUTURE_THING", "ANOTHER_FUTURE_THING", "TASK_CHUNKING"}
 	errs := openjd.Validate(tmpl)
 	if !containsPointer(errs, "/extensions/0") {
 		t.Errorf("expected /extensions/0 error; got: %v", errs)
@@ -152,16 +157,19 @@ func TestValidateExtensions_MultipleErrors(t *testing.T) {
 
 // ── Unconditional: EnforceLimits=false does NOT suppress extension errors ─────
 
-// TestValidateExtensions_Unconditional_EXPR confirms that even with
+// TestValidateExtensions_Unconditional_Unknown confirms that even with
 // EnforceLimits=false the unsupported-extension check still fires. The
 // extension gate is structural correctness, not a quantitative limit.
-func TestValidateExtensions_Unconditional_EXPR(t *testing.T) {
+//
+// It used EXPR as its example until sub-project H2 made EXPR supported; the
+// property under test is about the gate, not about any one extension name.
+func TestValidateExtensions_Unconditional_Unknown(t *testing.T) {
 	tmpl := mustParse(t, minimalValidYAML())
-	tmpl.Extensions = []string{"EXPR"}
+	tmpl.Extensions = []string{"FUTURE_THING"}
 
 	errs := openjd.ValidateWithOptions(tmpl, openjd.ValidateOptions{EnforceLimits: false})
 	if !containsPointer(errs, "/extensions/0") {
-		t.Errorf("EnforceLimits=false: expected /extensions/0 error for EXPR; got: %v", errs)
+		t.Errorf("EnforceLimits=false: expected /extensions/0 error for FUTURE_THING; got: %v", errs)
 	}
 }
 
@@ -221,11 +229,13 @@ func TestValidateExtensions_FormatError_Empty(t *testing.T) {
 }
 
 // TestValidateExtensions_FormatOK_UnsupportedName confirms that a well-formed
-// but unsupported extension name (like "EXPR") still gets the "unsupported"
-// error, not a format error.
+// but unregistered extension name (like "UNSUPPORTED") still gets the
+// "unsupported" error, not a format error. EXPR no longer serves as this
+// example: it IS registered (status in-progress), so its rejection message
+// names that status instead — see TestValidateExtensions_EXPR_Error.
 func TestValidateExtensions_FormatOK_UnsupportedName(t *testing.T) {
 	tmpl := mustParse(t, minimalValidYAML())
-	tmpl.Extensions = []string{"EXPR"}
+	tmpl.Extensions = []string{"UNSUPPORTED"}
 	errs := openjd.Validate(tmpl)
 	if !containsPointer(errs, "/extensions/0") {
 		t.Errorf("expected /extensions/0 error; got: %v", errs)

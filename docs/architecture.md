@@ -158,34 +158,41 @@ written before its tasks were expanded, so the job kept all its steps and simply
 hung `pending`.) Both are properties of partial creation, so splitting the write
 back up reintroduces both.
 
-**It also stalls every other database user for its full duration, and a large
-submission can fail the readiness probe.** The SQLite pool is
-`SetMaxOpenConns(1)` (`internal/store/sqlite/store.go`), so one submission holds
-the only connection from `BeginTx` to `Commit`. Lease replies, sweeps and REST
-reads no longer interleave between per-row inserts; they queue in Go's
-`database/sql` pool, which is not `SQLITE_BUSY` and which `busy_timeout` does not
-affect — nothing surfaces it as a lock error, it simply stalls. `GET /readyz`
-queues with them: its `sqlite` checker is `Store.Ping`, and `internal/health`
-gives all checkers a **5 s** budget per request, so a submission holding the
-connection longer than that returns HTTP 503 `degraded` — endpoint removal under
-an orchestrator. Measured on an M-series Mac (single step, one
-`CreateJobSubmission` call, `/readyz` issued 50 ms in):
+**It holds the write connection for its full duration — which is why reads run
+on a second connection pool.** The write pool is `SetMaxOpenConns(1)`
+(`internal/store/sqlite/store.go`), so one submission owns it from `BeginTx` to
+`Commit`. Anything queuing behind it queues in Go's `database/sql` pool, which
+is not `SQLITE_BUSY` and which `busy_timeout` does not affect — nothing surfaces
+it as a lock error, it simply stalls. When reads shared that pool, `GET /readyz`
+stalled with them: its `sqlite` checker is `Store.Ping`, and `internal/health`
+gives all checkers a **5 s** budget per request, so a submission over that
+budget returned HTTP 503 `degraded` — endpoint removal under an orchestrator, at
+~65k tasks, which is 6.5% of one step's legal maximum. Measured on an M-series
+Mac (single step, one `CreateJobSubmission` call, `/readyz` issued 50 ms in):
 
-| tasks | transaction | `/readyz` |
-|---|---|---|
-| 1,000 | 57 ms | ok |
-| 10,000 | 683 ms | ok |
-| 25,000 | 1.73 s | ok |
-| 50,000 | 3.53 s | ok |
-| 75,000 | 5.40 s | **503** (`context deadline exceeded`) |
+| tasks | transaction | `/readyz`, shared pool | `/readyz`, split pools |
+|---|---|---|---|
+| 1,000 | 57 ms | ok | ok |
+| 10,000 | 683 ms | ok | ok |
+| 25,000 | 1.73 s | ok | ok |
+| 50,000 | 3.53 s | ok | ok |
+| 75,000 | 5.40 s | **503** (`context deadline exceeded`) | ok |
 
-So an ordinary large render — ~65k tasks is 6.5% of one step's legal maximum —
-reads as an outage to an orchestrator. `GET /healthz` (liveness) registers no
-checkers and is unaffected, so this does not become a restart loop. The stall is
-not *new* cost for the inserts themselves — batching them is faster than the
-per-row path (measured 7.4 s versus 8.8 s for 100,000 tasks) — but the window
-during which everything else waits is now one contiguous transaction instead of
-N gaps.
+WAL mode lets readers proceed alongside a writer, so `Store` now opens a second
+pool over the same file for `SELECT`s only, and `Store.Ping` — the readiness
+checker — deliberately uses it. Measured the same way, `Ping` returns in **tens
+of microseconds** while a 75,000- or 100,000-task submission is mid-flight. See
+the Concurrency section of `internal/store/sqlite`'s package doc for how a
+statement is routed and why the classification is by SQL verb rather than by Go
+method.
+
+**Other writes still queue**, by design: lease transitions, task-status writes
+and the sweeps all go through the one write connection, and a long submission
+delays them exactly as before. Only reads were freed. The stall is also not
+*new* cost for the inserts themselves — batching them is faster than the per-row
+path (measured 7.4 s versus 8.8 s for 100,000 tasks) — but the window during
+which other writers wait is one contiguous transaction instead of N gaps.
+`GET /healthz` (liveness) registers no checkers and was never affected.
 
 **Cross-job dependencies (`depends_on`).** A submission — raw `POST /api/v1/jobs`
 or `POST /api/v1/products/{name}/jobs`, from the REST API, the web UI, or the

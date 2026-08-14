@@ -51,6 +51,23 @@ func makeAmounts(n int) []openjd.AmountRequirement {
 	return out
 }
 
+// makeSteps returns n valid, uniquely-named steps, each with a minimal
+// runnable script -- the same shape [minimalValidYAML]'s single step has.
+func makeSteps(n int) []openjd.StepTemplate {
+	out := make([]openjd.StepTemplate, n)
+	for i := range out {
+		out[i] = openjd.StepTemplate{
+			Name: fmt.Sprintf("Step%d", i),
+			Script: &openjd.StepScript{
+				Actions: openjd.StepActions{
+					OnRun: openjd.Action{Command: "echo", Args: []string{"hello"}, ArgsSet: true},
+				},
+			},
+		}
+	}
+	return out
+}
+
 // TestValidate_Limits_Gated is the canonical table covering every quantitative
 // limit at its boundary. Each case mutates a valid base template and asserts
 // that with EnforceLimits=true the expected pointer error appears (or, for "ok"
@@ -77,6 +94,17 @@ func TestValidate_Limits_Gated(t *testing.T) {
 			name:    "job params 51 error",
 			mutate:  func(t *openjd.JobTemplate) { t.ParameterDefinitions = makeJobParams(51) },
 			wantPtr: "/parameterDefinitions",
+		},
+
+		// ── steps count: upper bound 100 (sqi's own cap; the spec defines none) ──
+		{
+			name:   "steps 100 ok",
+			mutate: func(t *openjd.JobTemplate) { t.Steps = makeSteps(100) },
+		},
+		{
+			name:    "steps 101 error",
+			mutate:  func(t *openjd.JobTemplate) { t.Steps = makeSteps(101) },
+			wantPtr: "/steps",
 		},
 
 		// ── job name length: <= 128 ──
@@ -428,4 +456,209 @@ func TestValidate_HugeRange_NoOOM(t *testing.T) {
 			})
 		}
 	}
+}
+
+// ─── E4c Task 1: the parameter-space caps must gate the expression walk ──────
+//
+// The expression walk (checkTemplateExpressions) is the more expensive of the
+// two walks the checker runs over a step's parameter space -- validated
+// directly: one step at exactly maxTaskParameterDefinitions x
+// 1024 entries of `{{ ("x" * 900000).upper() }}` cost ~97s of
+// CPU in this walk alone before this task, unbounded by anything but the 4
+// MiB request body. These tests assert the PROPERTY the fix establishes --
+// the cap error is present and a walk-only error is absent -- rather than a
+// wall-clock threshold, which flakes on shared CI.
+
+// exprEnabledYAML is minimalValidYAML with the EXPR extension declared, so
+// checkTemplateExpressions actually walks the template instead of no-oping
+// (it returns nil immediately for a template that does not declare EXPR --
+// see its own doc comment in exprcheck.go).
+func exprEnabledYAML() string {
+	return `
+specificationVersion: jobtemplate-2023-09
+name: TestJob
+extensions: [EXPR]
+steps:
+  - name: Step1
+    script:
+      actions:
+        onRun:
+          command: echo
+          args: ["hello"]
+`
+}
+
+// walkOnlySyntaxError is a `{{ ... }}` expression with a syntax error. Only
+// the expression walk (checkTemplateExpressions -> checkParameterSpaceExpressions
+// -> checkFormatString) can ever report it: the parameter-space cap checks
+// (validateParameterSpaceLimits) never look inside a RangeList entry's text,
+// only at counts. Its presence or absence at a RangeList entry's pointer is
+// therefore a clean proxy for whether the walk ran over that position.
+const walkOnlySyntaxError = "{{ 1 + }}"
+
+// makeStringTaskParams returns n STRING task-parameter definitions with
+// unique names, each carrying a single-entry RangeList of "ok" -- except
+// index badIdx, whose entry is walkOnlySyntaxError.
+func makeStringTaskParams(n, badIdx int) []openjd.TaskParamDefinition {
+	out := make([]openjd.TaskParamDefinition, n)
+	for i := range out {
+		v := "ok"
+		if i == badIdx {
+			v = walkOnlySyntaxError
+		}
+		out[i] = openjd.TaskParamDefinition{
+			Name:      fmt.Sprintf("S%d", i),
+			Type:      openjd.TaskParamTypeString,
+			RangeList: []string{v},
+		}
+	}
+	return out
+}
+
+// walkOnlyErrorPtr is the pointer at which a RangeList entry's own
+// (in-)validity is reported (exprcheck.go's checkParameterSpaceExpressions:
+// "%s/taskParameterDefinitions/%d/range/%d"). No cap check ever produces an
+// error at this shape -- the count cap stops at ".../range" with no trailing
+// list index -- so the two pointer shapes never collide.
+func walkOnlyErrorPtr(defIdx, entryIdx int) string {
+	return fmt.Sprintf("/steps/0/parameterSpace/taskParameterDefinitions/%d/range/%d", defIdx, entryIdx)
+}
+
+func TestValidate_OverCapParameterSpace_SkipsExpressionWalk(t *testing.T) {
+	const defCountCapPtr = "/steps/0/parameterSpace/taskParameterDefinitions"
+
+	t.Run("baseline: at the cap, the walk runs and catches the bad expression", func(t *testing.T) {
+		tmpl := mustParse(t, exprEnabledYAML())
+		tmpl.Steps[0].ParameterSpace = &openjd.StepParameterSpace{
+			TaskParameterDefinitions: makeStringTaskParams(16, 15),
+		}
+		errs := openjd.ValidateWithOptions(tmpl, openjd.ValidateOptions{
+			EnforceLimits: true,
+		})
+		if containsPointer(errs, defCountCapPtr) {
+			t.Fatalf("16 definitions must not trip the count cap, got %v", errs)
+		}
+		if !containsPointer(errs, walkOnlyErrorPtr(15, 0)) {
+			t.Fatalf("expected the walk to report the syntax error at %q, got %v", walkOnlyErrorPtr(15, 0), errs)
+		}
+	})
+
+	t.Run("baseline: value dimension at the cap (1024), the walk runs", func(t *testing.T) {
+		// Pins the OTHER boundary: a future ">=" typo in the value-count half
+		// of parameterSpaceOverCaps would silently stop checking expressions
+		// for the largest legal parameter lists, with nothing else in the
+		// suite failing (the definition-count baseline above only exercises
+		// 1 value per definition).
+		vals := make([]string, 1024)
+		for i := range vals {
+			vals[i] = "ok"
+		}
+		vals[1024-1] = walkOnlySyntaxError
+		tmpl := mustParse(t, exprEnabledYAML())
+		tmpl.Steps[0].ParameterSpace = &openjd.StepParameterSpace{
+			TaskParameterDefinitions: []openjd.TaskParamDefinition{
+				{Name: "S", Type: openjd.TaskParamTypeString, RangeList: vals},
+			},
+		}
+		valueCountCapPtr := "/steps/0/parameterSpace/taskParameterDefinitions/0/range"
+		errs := openjd.ValidateWithOptions(tmpl, openjd.ValidateOptions{
+			EnforceLimits: true,
+		})
+		if containsPointer(errs, valueCountCapPtr) {
+			t.Fatalf("%d values must not trip the value-count cap, got %v", 1024, errs)
+		}
+		if !containsPointer(errs, walkOnlyErrorPtr(0, 1024-1)) {
+			t.Fatalf("expected the walk to report the syntax error at %q, got %v",
+				walkOnlyErrorPtr(0, 1024-1), errs)
+		}
+	})
+
+	t.Run("over the definition-count cap, EnforceLimits=true", func(t *testing.T) {
+		tmpl := mustParse(t, exprEnabledYAML())
+		tmpl.Steps[0].ParameterSpace = &openjd.StepParameterSpace{
+			TaskParameterDefinitions: makeStringTaskParams(17, 16),
+		}
+		errs := openjd.ValidateWithOptions(tmpl, openjd.ValidateOptions{
+			EnforceLimits: true,
+		})
+		if !containsPointer(errs, defCountCapPtr) {
+			t.Fatalf("expected the definition-count cap error at %q, got %v", defCountCapPtr, errs)
+		}
+		if containsPointer(errs, walkOnlyErrorPtr(16, 0)) {
+			t.Fatalf("walk-only error must be ABSENT -- the walk must not have run over an over-cap parameter space, got %v", errs)
+		}
+	})
+
+	t.Run("over the definition-count cap, EnforceLimits=false", func(t *testing.T) {
+		// The submit pipeline runs with EnforceLimits: false. The cap
+		// ValidationError itself stays gated off (unchanged from before this
+		// task), but the walk must STILL be skipped -- gating the walk on
+		// EnforceLimits would leave exactly the pipeline that matters
+		// unprotected, which is the entire point of this task.
+		tmpl := mustParse(t, exprEnabledYAML())
+		tmpl.Steps[0].ParameterSpace = &openjd.StepParameterSpace{
+			TaskParameterDefinitions: makeStringTaskParams(17, 16),
+		}
+		errs := openjd.ValidateWithOptions(tmpl, openjd.ValidateOptions{
+			EnforceLimits: false,
+		})
+		if containsPointer(errs, defCountCapPtr) {
+			t.Fatalf("EnforceLimits=false: cap error must stay gated off, got %v", errs)
+		}
+		if containsPointer(errs, walkOnlyErrorPtr(16, 0)) {
+			t.Fatalf("walk-only error must be ABSENT even with EnforceLimits=false, got %v", errs)
+		}
+	})
+
+	t.Run("over the per-parameter value-count cap, EnforceLimits=true", func(t *testing.T) {
+		vals := make([]string, 1025)
+		for i := range vals {
+			vals[i] = "ok"
+		}
+		vals[1024] = walkOnlySyntaxError
+		tmpl := mustParse(t, exprEnabledYAML())
+		tmpl.Steps[0].ParameterSpace = &openjd.StepParameterSpace{
+			TaskParameterDefinitions: []openjd.TaskParamDefinition{
+				{Name: "S", Type: openjd.TaskParamTypeString, RangeList: vals},
+			},
+		}
+		valueCountCapPtr := "/steps/0/parameterSpace/taskParameterDefinitions/0/range"
+		errs := openjd.ValidateWithOptions(tmpl, openjd.ValidateOptions{
+			EnforceLimits: true,
+		})
+		if !containsPointer(errs, valueCountCapPtr) {
+			t.Fatalf("expected the value-count cap error at %q, got %v", valueCountCapPtr, errs)
+		}
+		if containsPointer(errs, walkOnlyErrorPtr(0, 1024)) {
+			t.Fatalf("walk-only error must be ABSENT -- the walk must not have run over an over-cap parameter space, got %v", errs)
+		}
+	})
+
+	t.Run("an overlap-only violation (no count problem) does not silence the walk", func(t *testing.T) {
+		// "1-5,3-8" overlaps but is nowhere near either count cap -- 1
+		// definition, 8 values. parameterSpaceOverCaps must not treat this
+		// as over-cap (it checks only maxTaskParameterDefinitions and
+		// 1024, not INT range overlap -- see its own doc
+		// comment), so a second, unrelated task-parameter definition's
+		// walk-only syntax error in the SAME step must still be reported.
+		overlapping := "1-5,3-8"
+		tmpl := mustParse(t, exprEnabledYAML())
+		tmpl.Steps[0].ParameterSpace = &openjd.StepParameterSpace{
+			TaskParameterDefinitions: []openjd.TaskParamDefinition{
+				{Name: "F", Type: openjd.TaskParamTypeInt, RangeExpr: &overlapping},
+				{Name: "S0", Type: openjd.TaskParamTypeString, RangeList: []string{walkOnlySyntaxError}},
+			},
+		}
+		overlapCapPtr := "/steps/0/parameterSpace/taskParameterDefinitions/0/range"
+		errs := openjd.ValidateWithOptions(tmpl, openjd.ValidateOptions{
+			EnforceLimits: true,
+		})
+		if !containsPointer(errs, overlapCapPtr) {
+			t.Fatalf("expected the overlap error at %q, got %v", overlapCapPtr, errs)
+		}
+		if !containsPointer(errs, walkOnlyErrorPtr(1, 0)) {
+			t.Fatalf("an overlap-only violation must not silence the walk over the rest of the step; "+
+				"expected the walk-only error at %q, got %v", walkOnlyErrorPtr(1, 0), errs)
+		}
+	})
 }

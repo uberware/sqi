@@ -24,8 +24,27 @@ import (
 //     All parameters in a group must have the same range length.
 //
 // If no combination expression is provided, all parameters are joined with *.
+//
+// This entry point charges no job-wide budget ([maxTasksPerJob]): it expands
+// ONE step, and a single step is already bounded by [maxTasksPerStep], which
+// is the same number. The submission pipeline calls [expandParameterSpace]
+// with a per-job budget instead, because only a caller that walks a whole
+// template can see the sum.
 func ExpandParameterSpace(ps *StepParameterSpace) ([]TaskParams, error) {
+	return expandParameterSpace(ps, nil)
+}
+
+// expandParameterSpace is [ExpandParameterSpace] with an optional job-wide
+// task budget. jobBudget may be nil, which means "this step is not part of a
+// job being expanded" and skips the [maxTasksPerJob] check entirely.
+//
+// Both caps are charged BEFORE materialization, from countCombNode's
+// arithmetic, so an over-cap step never allocates its rows.
+func expandParameterSpace(ps *StepParameterSpace, jobBudget *jobTaskBudget) ([]TaskParams, error) {
 	if ps == nil {
+		if err := jobBudget.charge(1); err != nil {
+			return nil, err
+		}
 		return []TaskParams{{}}, nil
 	}
 
@@ -54,6 +73,9 @@ func ExpandParameterSpace(ps *StepParameterSpace) ([]TaskParams, error) {
 
 	// Handle the degenerate case of a single parameter with no operator.
 	if expr == "" {
+		if err := jobBudget.charge(1); err != nil {
+			return nil, err
+		}
 		return []TaskParams{{}}, nil
 	}
 
@@ -67,10 +89,17 @@ func ExpandParameterSpace(ps *StepParameterSpace) ([]TaskParams, error) {
 	// the result allocation and the number of per-task DB inserts a single
 	// submission can trigger. Like the per-range maxRangeValues cap it ALWAYS
 	// applies, independent of EnforceLimits.
-	if count, ok := countCombNode(tree, paramValues); !ok || count > maxTasksPerStep {
+	count, ok := countCombNode(tree, paramValues)
+	if !ok || count > maxTasksPerStep {
 		return nil, fmt.Errorf(
 			"openjd: parameter space expands to too many tasks (limit %d)", maxTasksPerStep,
 		)
+	}
+	// The same count, charged against the whole job's allowance. Also before
+	// materialization: a step that fits on its own but does not fit in what the
+	// job has left must not build its rows either.
+	if err := jobBudget.charge(count); err != nil {
+		return nil, err
 	}
 
 	rows, err := evalCombNode(tree, paramValues)
@@ -88,6 +117,65 @@ func ExpandParameterSpace(ps *StepParameterSpace) ([]TaskParams, error) {
 // Cartesian product already yield ~1M tasks). It is deliberately generous; tune
 // it if legitimate jobs need larger steps.
 const maxTasksPerStep = 1_000_000
+
+// maxTasksPerJob caps the tasks a whole job may produce, SUMMED across its
+// steps. It is the bound [maxSteps]' own doc comment (validate.go) records as
+// missing, and this constant is that follow-up.
+//
+// It exists because maxSteps (100) multiplies straight through
+// [maxTasksPerStep]: without it, one POST /api/v1/jobs can reach 100 x
+// 1,000,000 = 10^8 task rows with every other limit respected — exactly the
+// unbounded per-task DB insert count maxTasksPerStep's own comment says it
+// guards against, only spread over steps instead of concentrated in one.
+//
+// It equals maxTasksPerStep deliberately: a job may not produce more tasks
+// than a single step may. That needs no second number justified from nothing,
+// it states in one sentence, and it cuts the worst case by 100x. It IS an
+// acceptance change — a job of two 600,000-task steps was legal before this
+// constant existed — accepted because the per-step figure is already
+// "deliberately generous" above; tune it if legitimate jobs need larger
+// totals.
+//
+// Always-on, even when EnforceLimits is false, for the same reason its sibling
+// is: a caller that relaxes quantitative POLICY limits does not thereby
+// acquire the right to insert a hundred million rows. That matters more here
+// than for the per-step cap, because with EnforceLimits false maxSteps is not
+// enforced either, so before this constant the product had no ceiling at all.
+const maxTasksPerJob = maxTasksPerStep
+
+// jobTaskBudget is the running total of tasks one job's steps have produced so
+// far, so [maxTasksPerJob] can be enforced across them. [Submitter.Submit]
+// creates exactly one per submission and threads it through every step's
+// expansion.
+//
+// A nil *jobTaskBudget is valid and charges nothing — that is what the
+// exported [ExpandParameterSpace] passes, since a lone step has no job to be
+// summed into.
+type jobTaskBudget struct {
+	// total is the number of tasks charged so far by this job's steps.
+	total int
+}
+
+// charge adds count to the running total, reporting an error once the job
+// passes [maxTasksPerJob]. Callers charge BEFORE materializing rows, so the
+// bound is on what would be built, not on what already was.
+//
+// The total cannot overflow: every caller has already rejected a count above
+// maxTasksPerStep, and charge returns an error as soon as the total passes
+// maxTasksPerJob, so total never exceeds 2 x maxTasksPerStep.
+func (b *jobTaskBudget) charge(count int) error {
+	if b == nil {
+		return nil
+	}
+	b.total += count
+	if b.total > maxTasksPerJob {
+		return fmt.Errorf(
+			"openjd: job expands to too many tasks across all steps (%d, limit %d)",
+			b.total, maxTasksPerJob,
+		)
+	}
+	return nil
+}
 
 // countCombNode computes, arithmetically, the number of [TaskParams] rows that
 // [evalCombNode] would produce for tree, WITHOUT materializing them. ok is false

@@ -97,6 +97,38 @@ type Config struct {
 	// a submit-as owner override on POST /jobs and POST /products/{name}/jobs
 	// must name a known user, else 400. Default true.
 	ValidateJobOwner bool
+
+	// ExprSubmissionDeadline mirrors config.OpenJDConfig.ExprSubmissionDeadline:
+	// how long the OpenJD expression checker may work on ONE submission before
+	// this server gives up and answers 503 (EXPR sub-project H1's wall-clock
+	// backstop). The submission handlers turn it into an absolute instant per
+	// request.
+	//
+	// The zero value means no backstop, which is what a router built without
+	// it — every test in this package — gets, and it reproduces the
+	// pre-H1 behavior exactly.
+	ExprSubmissionDeadline time.Duration
+
+	// ExprLimits mirrors the operator's four openjd.expr_* settings, for the
+	// routes that validate an OpenJD template without going through the
+	// Submitter: POST/PUT /api/v1/products (a client-supplied body) and
+	// GET /api/v1/presets/{name} + POST /api/v1/presets/{name}/install (a
+	// sha256-pinned body from the operator's index). Every other production
+	// path reads these off the Submitter built at boot.
+	//
+	// The zero value means openjd's defaults, so a router built without it
+	// behaves exactly as it did before EXPR sub-project H1.
+	//
+	// NEVER SET [openjd.ExprLimits.Deadline] ON THIS FIELD. It is exported and
+	// embedder-settable, and a Config is built once per server: a deadline
+	// stored here would be one absolute instant that every later request is
+	// measured against, refusing everything once it passed. It is inert today
+	// only because [openjd.ValidateWithBudget] overwrites the field from
+	// ValidateOptions.Deadline at every call site that matters — a property of
+	// those call sites, not a guarantee this type makes. Both handlers that
+	// read this field turn the configured DURATION
+	// (ExprSubmissionDeadline) into an instant per request instead.
+	ExprLimits openjd.ExprLimits
 }
 
 // Deps holds the application-layer dependencies injected into the REST
@@ -107,8 +139,10 @@ type Deps struct {
 	Store store.Store
 
 	// Submitter handles the full OpenJD parse → validate → persist pipeline
-	// used by POST /api/v1/jobs.
-	Submitter *openjd.Submitter
+	// used by POST /api/v1/jobs. Production always supplies an
+	// *openjd.Submitter; it is typed as the interface so a test can substitute
+	// a recording stub — see [JobSubmitter] for why that matters.
+	Submitter JobSubmitter
 
 	// Scheduler is the running scheduler instance. It is called by
 	// DELETE /api/v1/jobs/{id} to propagate cancellation to workers
@@ -340,7 +374,8 @@ func NewRouter(cfg Config, deps Deps, logger *slog.Logger, m *metrics.Metrics, h
 	if deps.Scheduler != nil {
 		retryDefaults = deps.Scheduler.RetryDefaults()
 	}
-	jobs := newJobHandler(deps.Store, deps.Submitter, deps.Scheduler, notifier, logger, retryDefaults, cfg.ValidateJobOwner)
+	jobs := newJobHandler(deps.Store, deps.Submitter, deps.Scheduler, notifier, logger, retryDefaults,
+		cfg.ValidateJobOwner, cfg.ExprSubmissionDeadline)
 	tasks := newTaskHandler(deps.Store, deps.Scheduler, logger)
 	workers := newWorkerHandler(deps.Store, notifier, cfg.WorkerOfflineThreshold, logger)
 	farms := newFarmHandler(deps.Store, logger)
@@ -348,8 +383,9 @@ func NewRouter(cfg Config, deps Deps, logger *slog.Logger, m *metrics.Metrics, h
 	storageLocs := newStorageLocationHandler(deps.Store, logger)
 	computeLocs := newComputeLocationHandler(deps.Store, logger)
 	usagePools := newUsagePoolHandler(deps.Store, logger)
-	products := newProductHandler(deps.Products, deps.Submitter, deps.Scheduler, deps.Store, logger, cfg.ValidateJobOwner)
-	presets := newPresetHandler(deps.PresetLib, deps.Products, deps.Store, logger)
+	products := productHandlerFor(cfg, deps, logger)
+	presets := newPresetHandler(deps.PresetLib, deps.Products, deps.Store, logger,
+		cfg.ExprLimits, cfg.ExprSubmissionDeadline)
 	diagnostics := newDiagnosticsHandler(deps.DiagReader, logger)
 	versionH := newVersionHandler(deps.Version)
 	authH := newAuthHandler(authHandlerDeps{

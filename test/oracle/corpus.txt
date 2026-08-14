@@ -1,0 +1,1453 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+#
+# Differential-test corpus for `make test-expr-oracle`. Each case is evaluated
+# by BOTH sqi's Go evaluator and the OpenJD reference implementation, and the
+# two results are compared.
+#
+# Format: one case per line, a TARGET TYPE and an EXPRESSION separated by a
+# single TAB. Blank lines and lines starting with "#" are ignored. A tab is the
+# separator because every other candidate appears inside real cases: spaces are
+# everywhere, and "|" is a union in the target type ("int | string").
+#
+# SCOPE: expressions that sub-projects A, B1, B2, B3, C1, C2, C3 and C4
+# actually implement — scalar operators, the coercion matrix, comparison
+# chains, conditionals, and/or, list literals and their type inference, list
+# operators, subscripts, slices, list comprehensions, C1's general,
+# validation, math and list functions, C2's 31 string functions, C3's
+# regular-expression and repr_* families, and C4's path engine: path()
+# construction, the six properties, every path function, and the "/" and "+"
+# operators.
+#
+# NO WINDOWS PATH CASE BELONGS HERE. The reference implementation evaluates
+# the path family under ITS OWN path_format, which is POSIX, so a Windows case
+# would diverge because of the flavor rather than because of anything under
+# test. The Windows flavor is pinned instead by the CPython differentials in
+# internal/openjd/expr/pathval_internal_test.go and by
+# TestPathOperators_Windows. A URI is NOT a flavor — it is detected from the
+# text under any path_format — so URI cases below are genuinely measured.
+#
+# TARGET TYPES MUST BE UNIONS FOR ANY CASE CONTAINING A CALL, A SUBSCRIPT OR A
+# SLICE, and this is not a style preference. The reference implementation
+# applies the supplied target_type to a construct's OPERANDS as well as to its
+# result — reported upstream as openjd-rs#291, and observed here on call
+# arguments, subscript receivers and indices, slice bounds, and the operand
+# and/or discards. So "floor(3.7)" with the target "int" fails there, because
+# the target lands on the 3.7. Give the target a member for every operand and
+# the pushdown becomes harmless:
+#
+#   floor(3.7)               int | float
+#   sum([1,2,3])             int | list[int]
+#   range(5)                 list[int] | int
+#   'hello'[1:3]             string | int | nulltype
+#
+# A case written with the obvious single target produces a divergence that
+# looks real and is not. If you add a case and it diverges, check the target
+# before reaching for baseline.txt.
+#
+# A handful of cases are in deliberately and are expected to diverge. They earn
+# their place by DOCUMENTING a gap or a disagreement rather than leaving it
+# implicit, and each is listed in baseline.txt with the reason. Do not delete a
+# case to make the target green.
+
+# ── Arithmetic, same type (spec section 2.1.1) ───────────────────────────────
+int	1 + 2
+int	10 - 4
+int	6 * 7
+float	1.5 + 2.25
+float	10.0 - 0.5
+float	1.5 * 2.0
+int	-5 + 3
+int	0 - 0
+
+# Division is the spec's counterintuitive pair: "/" on two ints is a FLOAT and
+# "//" on two floats is an INT. Both directions are checked because a shape's
+# declared return type is what drives static type checking.
+float	7 / 2
+float	1 / 3
+int	7 // 2
+int	-7 // 2
+float	7.0 / 2.0
+int	7.0 // 2.0
+int	7 % 3
+int	-7 % 3
+float	7.5 % 2.0
+
+# Exponentiation returns a union when the exponent's sign is not statically
+# known, which is why it is the operator that first exercised union handling.
+int	2 ** 3
+float	2 ** -1
+float	2.0 ** 0.5
+int	0 ** 0
+
+# ── Numeric limits and precision ─────────────────────────────────────────────
+# Integers above 2^53 are where a float-based comparison silently loses.
+int	9007199254740993 + 0
+bool	9007199254740993 == 9007199254740992
+int	9223372036854775807 - 1
+
+# Float rendering: Go's formatFloat reproduces Python's repr on purpose, so
+# these compare the two renderings directly. 1e16 and 1e-5 sit outside the
+# window where Python prints fixed notation.
+float	1e10 * 1.0
+float	1e15 * 1.0
+float	1e16 * 1.0
+float	0.0001 * 1.0
+float	0.00001 * 1.0
+float	1.0 / 3.0
+float	0.1 + 0.2
+float	-0.0 + 0.0
+
+# ── Comparison and chained comparison (section 1.3.6) ────────────────────────
+bool	1 < 2
+bool	2 <= 2
+bool	3 > 4
+bool	1 < 2 < 3
+bool	1 < 2 > 5
+bool	3 >= 2 >= 1
+bool	'a' < 'b'
+bool	'abc' <= 'abd'
+
+# ── Equality, including the cross-type rules (section 1.2.5) ─────────────────
+bool	5 == 5.0
+bool	5 != 5.0
+bool	'5' == 5
+bool	true == 1
+bool	null == null
+bool	null == false
+bool	'a' == 'a'
+bool	1 == 1
+
+# ── Booleans and unary operators ─────────────────────────────────────────────
+bool	not true
+bool	not false
+bool	true and false
+bool	true or false
+bool	not (1 < 2)
+int	-(2 + 3)
+int	--5
+float	-1.5
+
+# and/or are VALUE-returning (section 2.1.6): they return an operand, not a
+# bool, and only null/false are falsy. "true and 0" is the case where the
+# reference and sqi disagree — see baseline.txt.
+int	true and 0
+string	false or 'fallback'
+int	null or 7
+string	'' or 'unused'
+int	0 or 99
+
+# ── Conditional expressions (section 1.3.5) ──────────────────────────────────
+int	1 if true else 2
+int	1 if false else 2
+string	'yes' if 1 < 2 else 'no'
+float	1.5 if false else 2.5
+
+# ── Target-type coercion at the boundary (section 1.3.1) ─────────────────────
+string	1 + 2
+string	1.5 + 0.0
+string	true and true
+string	7 / 2
+float	1 + 2
+string	'already'
+string	null
+
+# ── String operators ─────────────────────────────────────────────────────────
+string	'a' + 'b'
+string	'' + ''
+bool	'a' < 'a'
+# String repetition is in the spec's operator table (__mul__(string, int)).
+string	'a' * 3
+
+# ── Errors: both sides must REFUSE these ─────────────────────────────────────
+int	1 / 0
+int	1 // 0
+int	1 % 0
+int	'a' + 1
+int	true + 1
+bool	1 if 5 else 2
+int	1 +
+int	(1 + 2
+
+# ── List literals and inference (spec sections 1.1.2, 1.2.6) ─────────────────
+# Concrete list[T] targets, not "any", wherever a concrete target still
+# exercises the same inference: the reference cannot handle an explicit "any"
+# target at all (see baseline.txt), so a case that only agrees under "any"
+# buys no differential coverage. Two cases stay on "any" on purpose — see
+# baseline.txt for why a concrete target would test something else entirely.
+list[int]	[1, 2, 3]
+list[nulltype]	[]
+list[int]	[42]
+list[int]	[1, 2, 3,]
+list[string]	['a', 'b']
+list[bool]	[true, false]
+any	[1, 2.0, 3]
+list[list[int]]	[[1, 2], [3, 4]]
+any	[[1], [2.0]]
+list[int]	[1 + 1, 2 * 2]
+list[float]	[1, 2]
+list[string]	[1, 2]
+list[int]	[]
+list[list[float]]	[[1], [2]]
+
+# ── List operators (spec section 2.1.3) ──────────────────────────────────────
+list[int]	[1, 2] + [3, 4]
+list[float]	[1] + [2.0]
+list[int]	[] + [1]
+list[int]	[0] * 3
+list[int]	[1, 2] * 2
+list[int]	[1] * 0
+bool	2 in [1, 2, 3]
+bool	9 in [1, 2, 3]
+bool	9 not in [1, 2, 3]
+bool	2.0 in [1, 2, 3]
+
+# ── String repetition (spec section 2.1.2) ───────────────────────────────────
+string	'ab' * 3
+string	'x' * 0
+
+# ── Subscripts (spec section 2.1.7) ──────────────────────────────────────────
+any	[10, 20, 30][0]
+any	[10, 20, 30][2]
+any	[10, 20, 30][-1]
+any	[10, 20, 30][-3]
+any	[[1, 2], [3, 4]][1][0]
+string	'hello'[0]
+string	'hello'[-1]
+
+# ── Slices (spec sections 1.3.8, 2.1.8) ──────────────────────────────────────
+any	[10, 20, 30, 40, 50][1:4]
+any	[10, 20, 30, 40, 50][:3]
+any	[10, 20, 30, 40, 50][2:]
+any	[10, 20, 30, 40, 50][:]
+any	[10, 20, 30, 40, 50][::2]
+any	[10, 20, 30, 40, 50][::-1]
+any	[10, 20, 30, 40, 50][0:5:2]
+any	[10, 20, 30, 40, 50][-3:]
+any	[10, 20, 30, 40, 50][:-2]
+any	[10, 20, 30, 40, 50][1:99]
+any	[10, 20, 30, 40, 50][99:]
+any	[10, 20, 30, 40, 50][3:1]
+string	'hello'[1:3]
+string	'hello'[::-1]
+string	'hello'[1:99]
+
+# ── List equality and ordering (spec section 1.2.5) ──────────────────────────
+bool	[1, 2] == [1, 2]
+bool	[1, 2] == [1, 3]
+bool	[1, 2] == [1]
+bool	[1] == 1
+bool	[1, 2] < [1, 3]
+bool	[1, 2] < [1, 2, 0]
+bool	['a'] < ['b']
+#
+# The EMPTY list on either side of an ordering operator. Section 1.2.5 says the
+# shorter list is less when all compared elements are equal, and section 1.2.6
+# rule 6 makes list[nulltype] convertible to list[T] for any T — so both orders
+# must answer, and sqi's did not: "[] < [1]" was a type error while "[1] < []"
+# was false, because the empty literal PINNED the shared element-type variable
+# to nulltype when it came first. The reference agrees with the fixed behavior
+# on every line here, including the last, where the empty list is nested one
+# level deeper than the other operand and there is no conversion at all.
+#
+# BOTH ORDERS of every nesting depth, which is the part this section originally
+# missed: the nested case was pinned in one direction only ("[[]] < [[1]]"), and
+# "[[1]] < [[]]" was still a type error for want of the mirror-image rule, with
+# nothing here to notice. A corpus row that exists in one direction only cannot
+# see an asymmetric fix.
+bool	[] < [1]
+bool	[1] < []
+bool	[] <= [1]
+bool	[] < []
+bool	[] <= []
+bool	[[]] < [[1]]
+bool	[[1]] < [[]]
+bool	[[1]] > [[]]
+bool	[[]] <= [[1]]
+bool	[[]] < [1]
+#
+# Section 2.1.4's compatible pairs (int/float, string/path) applied
+# ELEMENTWISE, which list ordering rejected outright until this wave: sqi
+# answered "unsupported operand types" for every row here, on the reading that
+# section 1.2.5's elementwise rule required an exact element-type match. It does
+# not say that, and 2.1.4 says operands "may differ for compatible pairs" — so
+# these now order rather than erroring, and every row agrees with the reference.
+# The string/path half cannot be written here (path has no literal syntax and
+# the corpus supplies no symbol table); it is covered by
+# TestListOrdering_CompatiblePairs, where the reference DISAGREES on the mixed
+# path/string rows by answering false in both directions.
+bool	[1] < [1.0]
+bool	[1.0] < [1]
+bool	[1] <= [1.0]
+bool	[1] >= [1.0]
+bool	[1, 2] < [1.0, 3.0]
+bool	[[1]] < [[1.0]]
+#
+# The fence: a pair that is NOT one of section 2.1.4's compatible pairs is
+# still an error on both sides, at either nesting depth.
+bool	['a'] < [1]
+bool	[1] < ['a']
+bool	[1] < [[]]
+
+# ── List comprehensions (spec section 1.3.7) ─────────────────────────────────
+list[int]	[x for x in [1, 2, 3]]
+list[int]	[x * 2 for x in [1, 2, 3]]
+list[int]	[x + 1 for x in [10, 20]]
+list[int]	[x for x in [1, 2, 3] if x > 1]
+list[int]	[x for x in [1, 2, 3] if x > 99]
+list[int]	[x for x in []]
+list[int]	[_i for _i in [4, 5]]
+list[float]	[x * 1.5 for x in [2, 4]]
+list[string]	[s for s in ['a', 'b']]
+list[list[int]]	[[x] for x in [1, 2]]
+list[list[int]]	[[y for y in [1, 2]] for x in ['a', 'b']]
+
+# ── sub-project C1: general conversions ──────────────────────────────────────
+int | list[int]	len([1, 2, 3])
+int | list[nulltype]	len([])
+int | string	len("hello")
+int | string	len("héllo")
+int | string	len("")
+int | list[nulltype]	[].len()
+int | list[int]	[1, 2, 3].len()
+bool	bool(true)
+bool | nulltype	bool(null)
+bool | int	bool(0)
+bool | int	bool(3)
+bool | float	bool(0.0)
+bool | float	bool(0.5)
+bool | string	bool("1")
+bool | string	bool("true")
+bool | string	bool("on")
+bool | string	bool("yes")
+bool | string	bool("0")
+bool | string	bool("false")
+bool | string	bool("off")
+bool | string	bool("no")
+bool | string	bool("YES")
+bool | string	bool("False")
+string | bool	string(true)
+string | nulltype	string(null)
+string | int	string(42)
+string | float	string(1.5)
+string | float	string(2.0)
+string	string("hi")
+string | list[int]	string([1, 2])
+string | list[string]	string(["a", "b"])
+string | list[nulltype]	string([])
+string | list[list[int]]	string([[1], [2]])
+string | list[bool]	string([true, false])
+int | float	int(5.0)
+int | string	int("42")
+int | string	int("-42")
+int	int(5)
+float | int	float(5)
+float	float(1.5)
+float | string	float("1.5")
+float | string	float("2")
+range_expr | string	range_expr("1-3")
+range_expr | string	range_expr("1,3,5-7")
+range_expr | string	range_expr("1-10:2")
+range_expr | list[int]	range_expr([1, 2, 3])
+range_expr | list[int]	range_expr([1, 3, 5])
+range_expr | list[int]	range_expr([5, 1, 2])
+range_expr | list[int]	range_expr([7])
+range_expr | list[int]	range_expr([1, 2, 4, 5])
+range_expr | list[int]	range_expr([1, 2, 3, 7, 9, 11])
+range_expr | list[int]	range_expr([-3, -2, -1])
+list[int] | string | range_expr	list(range_expr("1-5"))
+list[int] | string | range_expr	list(range_expr("1-10:3"))
+list[int] | string | range_expr	list(range_expr("1,5,9"))
+int | string | range_expr	len(range_expr("1-10"))
+string | range_expr	string(range_expr("1-5:2"))
+
+# Membership against a range_expr, and a range_expr subscript. Both are here
+# for OPERATION-COUNT coverage the corpus previously lacked entirely: sqi
+# expands the range in full for each (containsRangeInt's and indexValue's own
+# rangeInts calls), so both charge rule 2 on the range while the reference
+# stays flat -- see baseline-ops.txt. Their VALUES agree.
+bool | int | string | range_expr	1 in range_expr("3-9")
+bool | int | string | range_expr	5 in range_expr("3-9")
+bool | int | string | range_expr	1 not in range_expr("3-9")
+int | string | range_expr	range_expr("3-9")[0]
+int | string | range_expr	range_expr("3-9")[-1]
+
+# range_expr -> string is a NON-DESTRUCTIVE coercion (section 1.2.3) that the
+# spec says "produces canonical form like '1-5'" (2026-02
+# Expression-Language.md line 843), and section 2.1.2's __add__(range_expr,
+# string) row says the same thing explicitly: "range_expr converted to
+# canonical string form" (line 1189). Unlike the bare range_expr VALUE cases
+# above (whose target admits range_expr, so no coercion occurs and the text
+# is genuinely unspecified — see baseline.txt), these three force the
+# coercion by excluding range_expr from the target or by using the string
+# operator, so the spec's "canonical form" wording is in force. sqi does not
+# canonicalize here; see baseline.txt for the known-gap entry.
+string | range_expr	string(range_expr("1-10:2"))
+string | range_expr	range_expr("1-10:2") + "!"
+string | range_expr	"!" + range_expr("1-10:2")
+
+# ── sub-project C1: math ─────────────────────────────────────────────────────
+int	abs(-5)
+int	abs(5)
+int	abs(0)
+float	abs(-2.5)
+float	abs(2.5)
+int	floor(3)
+int | float	floor(3.7)
+int | float	floor(-3.2)
+int | float	floor(3.0)
+int	ceil(3)
+int | float	ceil(3.2)
+int | float	ceil(-3.7)
+int | float	round(0.5)
+int | float	round(1.5)
+int | float	round(2.5)
+int | float	round(2.4)
+int | float	round(-1.5)
+float | int	round(3.14159, 2)
+float | int	round(3.5, 2)
+int | float	round(1234.5, -1)
+
+# The float->int narrowing boundary class (C1 review, CRITICAL 1/2, IMPORTANT
+# 3): a magnitude outside int64's representable range must error rather than
+# return whatever a raw "int64(f)" conversion happens to produce, which is
+# architecture-dependent on the exact same input (math.MaxInt64 on arm64,
+# math.MinInt64 on amd64, measured on this source before the fix).
+int | float	floor(1e30)
+int | float	ceil(1e30)
+int | float	round(1e30)
+int | float	floor(9223372036854775807.0)
+int | float	floor(9223372036854775808.0)
+int | float	floor(-9223372036854775808.0)
+int | float	ceil(-9223372036854775808.0)
+int	round(9223372036854775807, -1)
+int	round(9223372036854775806, -1)
+
+# roundToDigits's negative-ndigits branch used to compute its scale via
+# math.Pow(10, 400), which overflows to +Inf; f/Inf gives 0 and 0*Inf gives
+# NaN, whose narrowing to int64 was 0 on arm64 but math.MinInt64 on amd64 for
+# this exact expression. sqi's own contract (RFC 0006: round(x, ndigits <= 0)
+# -> int) diverges from the reference here the same way round(1234.5, -1)
+# above already does — see baseline.txt.
+int | float	round(3.5, -400)
+
+# roundToDigits's POSITIVE-ndigits branch had the mirror-image defect, found
+# after the negative one was fixed and left unguarded for a whole sub-project:
+# math.Pow(10, ndigits) is +Inf from 309 up, and below that f*scale can still
+# overflow on its own for a large enough f, so the unusable window depends on
+# f's magnitude rather than on ndigits alone. Both windows produced a spurious
+# ERROR (errNotANumber and errInfinite respectively) for a rounding whose
+# answer is simply f: no float64 carries enough precision for a rounding at
+# 1e-308 resolution to change it. There was no corpus case in either window,
+# which is why it survived.
+int | float	round(2.0, 309)
+int | float	round(2.0, 308)
+int | float	round(1e300, 300)
+
+# roundIntToDigits had the same shape of over-strictness: it bailed out with an
+# integer overflow as soon as the accumulated scale passed MaxInt64, even where
+# the answer is 0 and representable. The last two straddle the tie at half of
+# 10^19, which is exact in int64 and not in float64.
+int	round(1234, -19)
+int	round(5000000000000000000, -19)
+int	round(5000000000000000001, -19)
+
+int	min(3, 7)
+float	min(3.5, 7.5)
+float | int	min(1, 2.0)
+int	min(5, 3, 7)
+int | list[int]	min([3, 1, 2])
+float | list[float]	min([3.0, 1.0])
+int	max(3, 7)
+int	max(5, 3, 7)
+int | list[int]	max([3, 1, 2])
+float | list[float]	max([3.0, 1.0])
+int | list[nulltype]	sum([])
+int | list[int]	sum([1, 2, 3])
+float | list[float]	sum([1.5, 2.5])
+int | string | range_expr	min(range_expr("3-9"))
+int | string | range_expr	max(range_expr("3-9"))
+int | string | range_expr	sum(range_expr("1-4"))
+
+# ── sub-project C1: list functions ───────────────────────────────────────────
+list[int] | int	range(5)
+list[int] | int	range(0)
+list[int] | int	range(1, 5)
+list[int] | int	range(0, 10, 2)
+list[int] | int	range(5, 0, -1)
+list[int] | list[list[int]]	flatten([[1, 2], [3]])
+list[int] | list[list[int]]	flatten([[1], [], [2]])
+list[int]	flatten([1, 2])
+list[nulltype]	flatten([])
+list[string] | list[list[string]]	flatten([["a"], ["b"]])
+list[int]	sorted([3, 1, 2])
+list[string]	sorted(["b", "a", "c"])
+list[float]	sorted([3.5, 1.5])
+list[bool]	sorted([true, false])
+list[int]	reversed([1, 2, 3])
+list[nulltype]	reversed([])
+list[int]	unique([2, 1, 2, 3, 1])
+list[string]	unique(["a", "b", "a"])
+list[nulltype]	unique([])
+bool | list[bool]	any([false, true])
+bool | list[bool]	any([false, false])
+bool | list[nulltype]	any([])
+bool | list[bool]	all([true, true])
+bool | list[bool]	all([true, false])
+bool | list[nulltype]	all([])
+
+# ── sub-project C1: validation and composition ───────────────────────────────
+int | bool	5 if 1 > 0 else fail("unreachable")
+string | list[string] | list[list[string]]	string(flatten([["-e", "A=1"], ["-e", "B=2"]]))
+int | list[int]	min([len("abcd"), 3])
+list[int] | int	sorted(range(5, 0, -1))
+
+# ── coverage recovered from the openjd-rs#291 target pushdown ────────────────
+#
+# Each case below is a TWIN of an entry in baseline.txt. The baselined original
+# keeps its narrow target and stays baselined: it is the evidence for the
+# upstream defect, and it is designed to fail loudly the day that defect is
+# fixed. The twin supplies the union target the rule above describes, which
+# makes the pushdown harmless and turns the case into live differential
+# coverage — coverage sub-project B2 recorded as unobtainable.
+#
+# Do not "consolidate" the two. Deleting an original orphans its baseline
+# entry, which is a hard error, and loses the record of why these targets look
+# strange.
+
+# Subscript twins (baseline target was "any" — unusable on its own, see
+# baseline.txt's shared explanation for the subscript/slice section; the
+# reference also cannot evaluate against a bare "any" target at all, a
+# separate, unrelated limitation documented next to the list-literal cases
+# above). Each twin's target is the actual result type unioned with the
+# receiver's type and int, per the subscript rule.
+int | list[int]	[10, 20, 30][0]
+int | list[int]	[10, 20, 30][2]
+int | list[int]	[10, 20, 30][-1]
+int | list[int]	[10, 20, 30][-3]
+int | list[list[int]] | list[int]	[[1, 2], [3, 4]][1][0]
+string | int	'hello'[0]
+string | int	'hello'[-1]
+
+# Slice twins, same reasoning: receiver type, int and nulltype (an omitted
+# bound is null) join the result type.
+list[int] | int | nulltype	[10, 20, 30, 40, 50][1:4]
+list[int] | int | nulltype	[10, 20, 30, 40, 50][:3]
+list[int] | int | nulltype	[10, 20, 30, 40, 50][2:]
+list[int] | int | nulltype	[10, 20, 30, 40, 50][:]
+list[int] | int | nulltype	[10, 20, 30, 40, 50][::2]
+list[int] | int | nulltype	[10, 20, 30, 40, 50][::-1]
+list[int] | int | nulltype	[10, 20, 30, 40, 50][0:5:2]
+list[int] | int | nulltype	[10, 20, 30, 40, 50][-3:]
+list[int] | int | nulltype	[10, 20, 30, 40, 50][:-2]
+list[int] | int | nulltype	[10, 20, 30, 40, 50][1:99]
+list[int] | int | nulltype	[10, 20, 30, 40, 50][99:]
+list[int] | int | nulltype	[10, 20, 30, 40, 50][3:1]
+string | int | nulltype	'hello'[1:3]
+string | int | nulltype	'hello'[::-1]
+string | int | nulltype	'hello'[1:99]
+
+# and/or twins: add the type of the operand the operator discards.
+int | bool	true and 0
+string | bool	false or 'fallback'
+int | nulltype	null or 7
+
+# Comprehension twins: add the element type and the iterable's type. The
+# second case is doubly nested — the outer body is itself a comprehension, so
+# its element type (list[int]) and its iterable's type (list[string]) join
+# the inner comprehension's own element type (int); the inner iterable
+# (list[int]) is already covered by the outer body's element type.
+list[list[int]] | list[int] | int	[[x] for x in [1, 2]]
+list[list[int]] | list[int] | list[string] | int	[[y for y in [1, 2]] for x in ['a', 'b']]
+
+# ── C2: string case transforms (spec section 2.2.4) ──────────────────────────
+string	upper('hello')
+string	lower('HeLLo')
+string	upper('straße')
+string	upper('ﬁ')
+string	lower('İ')
+string	upper('ǳ')
+string	capitalize('hELLO')
+string	capitalize('')
+string	capitalize('ﬁne day')
+string	capitalize('éA')
+string	title('hello world')
+string	title("they're ok")
+string	title('a1b c')
+string	title('1st place')
+string	title('a_b c')
+string	title('3d-max shot')
+string	title('HELLO WORLD')
+string	title('mcDONALD')
+string	title('²x y')
+string	'hello world'.title()
+
+# ── C2: string classification ────────────────────────────────────────────────
+bool | string	isdigit('123')
+bool | string	isdigit('²')
+bool | string	isdigit('٣')
+bool | string	isdigit('12a')
+bool | string	isdigit('')
+bool | string	isalpha('abc')
+bool | string	isalpha('é')
+bool | string	isalpha('a1')
+bool | string	isalnum('a1')
+bool | string	isalnum('٣')
+bool | string	isalnum('a_b')
+bool | string	isspace('  ')
+bool | string	isspace(' a ')
+bool | string	isspace('')
+bool | string	isupper('ABC')
+bool | string	isupper('ABC1')
+bool | string	isupper('1')
+bool | string	isupper('ǲ')
+bool | string	islower('abc1')
+bool | string	islower('ǳ')
+bool | string	isascii('a b')
+bool | string	isascii('é')
+bool | string	isascii('')
+
+# ── C2: trim and affix ───────────────────────────────────────────────────────
+string	strip('  a  ')
+string	strip('   ')
+string	lstrip('  a  ')
+string	rstrip('  a  ')
+string	strip('xxayx', 'xy')
+string	lstrip('xxayx', 'xy')
+string	rstrip('xxayx', 'xy')
+string	strip('abc', '')
+string	removeprefix('abcdef', 'abc')
+string	removeprefix('abcdef', 'z')
+string	removeprefix('abc', '')
+string	removesuffix('abcdef', 'def')
+string	removesuffix('abcdef', 'z')
+string	'  a  '.strip()
+
+# ── C2: search and replace ───────────────────────────────────────────────────
+bool | string	startswith('abcdef', 'abc')
+bool | string	startswith('abcdef', 'z')
+bool | string	startswith('abc', '')
+bool | string	endswith('abcdef', 'def')
+bool | string	endswith('abcdef', 'z')
+bool | string	endswith('abc', '')
+int | string	count('banana', 'a')
+int | string	count('aaaa', 'aa')
+int | string	count('abc', 'z')
+int | string	count('', 'a')
+int | string	find('hello', 'l')
+int | string	find('abc', 'z')
+int | string	find('', 'a')
+int | string	find('héllo', 'l')
+int | string	rfind('hello', 'l')
+int | string	rfind('naïve', 'e')
+int | string	index('hello', 'l')
+int | string	rindex('abcabc', 'b')
+int | string	count('abc', '')
+int | string	find('abc', '')
+int | string	index('abc', 'z')
+int | string	rindex('abc', 'z')
+string	replace('aaa', 'a', 'b')
+string	replace('aaa', 'a', 'bb')
+string	replace('aaa', 'a', '')
+string	replace('abc', 'z', 'y')
+string	replace('a.b.c', '.', '/')
+string	replace('hello', '', 'x')
+
+# ── C2: split, rsplit and join ───────────────────────────────────────────────
+list[string] | string	split('a b c')
+list[string] | string	split('a b  c')
+list[string] | string	split('  a b  ')
+list[string] | string	split('   ')
+list[string] | string	split('a,b,c', ',')
+list[string] | string	split('a,b,,c', ',')
+list[string] | string	split('', ',')
+list[string] | string | int	split('a,b,c', ',', 1)
+list[string] | string | int	split('a,b,c', ',', 0)
+list[string] | string | int	split('a,b,c', ',', -1)
+list[string] | string | int	split('a,b,c', ',', 100)
+list[string] | string	rsplit('  a b  ')
+list[string] | string	rsplit('a,b,c', ',')
+list[string] | string | int	rsplit('a b c', ' ', 1)
+list[string] | string | int	rsplit('a b c', ' ', -1)
+list[string] | string	split('a,b', '')
+string | list[string]	join(['a', 'b', 'c'], ',')
+string | list[string]	join(['a', 'b'], '')
+string | list[string]	join(['a'], ',')
+string | list[string]	join(split('a;b;c', ';'), ',')
+
+# The list-returning split()/rsplit() cases above are baselined for the known
+# list-of-strings rendering gap (Value.String() prints unquoted elements; see
+# baseline.txt). These verify the same semantics through a result type the
+# rendering gap cannot touch — int or plain string — so split()/rsplit() still
+# get real differential coverage rather than 12 green-by-baseline no-ops.
+int | list[string] | string	len(split('', ','))
+int | list[string] | string	len(split('   '))
+int | list[string] | string	len(split('a,b,,c', ','))
+string | list[string]	join(split('a,b,,c', ','), '|')
+string | list[string]	join(split('  a b  '), '|')
+string | list[string] | int	join(split('a,b,c', ',', 1), '|')
+string | list[string] | int	join(rsplit('a b c', ' ', 1), '|')
+string | list[string]	join(rsplit('a,b,c', ','), '|')
+string | list[string] | int	join(split('a,b,c', ',', 9223372036854775807), '|')
+
+# ── C2: padding ──────────────────────────────────────────────────────────────
+string | int	ljust('ab', 5)
+string | int	rjust('ab', 5)
+string | int	center('ab', 7)
+string | int	center('abc', 4)
+string | int	center('é', 5)
+string | int	ljust('abcd', 2)
+string | int	ljust('ab', 2)
+string | int	ljust('ab', -3)
+string | int	center('ab', -3)
+string | int	zfill('ab', -3)
+string | int	zfill('42', 5)
+string | int	zfill('é', 3)
+string | int	zfill('-10', 4)
+string | int	zfill('+7', 5)
+string | int	zfill('-', 4)
+string | int	zfill('', 3)
+string | int	zfill(42, 5)
+string | int	zfill(-1, 3)
+string | float | int	zfill(1.5, 6)
+string | float | int	zfill(-1.5, 7)
+string | float | int	zfill(2.0, 6)
+string | int	'42'.zfill(5)
+string | int	(42).zfill(5)
+string | int	ljust('a', 100000000)
+
+# ── C3: regular expressions (spec section 2.2.5) ─────────────────────────────
+list[string] | string | nulltype	re_search('asset_v042_final.abc', '_v(\d+)')
+list[string] | string | nulltype	re_search('hello123', '\d+')
+list[string] | string | nulltype	re_search('abc', 'z')
+list[string] | string | nulltype	re_search('٣', '\d')
+list[string] | string | nulltype	re_search('shot010_v003', 'shot(\d+)_v(\d+)')
+list[string] | string | nulltype	re_match('v042_final', 'v(\d+)')
+list[string] | string | nulltype	re_match('asset_v042', 'v(\d+)')
+list[string] | string	re_findall('shot010_shot020_shot035', 'shot(\d+)')
+list[string] | string	re_findall('shot010_shot020_shot035', 'shot\d+')
+list[list[string]] | list[string] | string	re_findall('v1.2 and v4.5', 'v(\d+)\.(\d+)')
+string	re_sub('frame_001', '\d+', '002')
+string	re_sub('abc', '\d', 'x')
+string	re_escape('file[1].txt')
+string	re_escape('a.b*c')
+string	re_escape('a-z')
+list[string] | string | nulltype	re_search('b', '[' + re_escape('a-z') + ']')
+list[string] | string	re_split('a1b2c', '\d')
+list[string] | string | int	re_split('a1b2c', '\d', 1)
+list[string] | string | int	re_split('a1b2c', '\d', -1)
+
+# Rendering-immune companions. Every case above that returns list[string] hits
+# the pre-existing list-of-strings rendering gap and is baselined for it, which
+# would leave the regex semantics untested. These return an int or a plain
+# string, so the gap cannot mask them.
+int | list[string] | string	len(re_findall('shot010_shot020_shot035', 'shot(\d+)'))
+int | list[string] | string	len(re_findall('abc', '\d'))
+int | list[string] | string	len(re_split('a1b2c', '\d'))
+string | list[string]	join(re_findall('shot010_shot020', 'shot(\d+)'), '|')
+string | list[string]	join(re_split('a1b2c', '\d'), '|')
+string | list[string] | int	join(re_split('a1b2c', '\d', 1), '|')
+string | list[string] | nulltype	join(re_search('asset_v042', '_v(\d+)'), '|')
+
+# Patterns the scanner refuses. Both sides error on most of these, and agree()
+# treats two failures as agreement without comparing messages.
+list[string] | string | nulltype	re_search('abc', '')
+list[string] | string | nulltype	re_search('hello', r'llo\z')
+list[string] | string | nulltype	re_search('foobar', r'foo(?=bar)')
+list[string] | string | nulltype	re_search('foobar', r'(?<=foo)bar')
+list[string] | string | nulltype	re_search('abc', r'(?P<n>a)(?P=n)')
+list[string] | string	re_split('hello', '')
+string	re_sub('hello', '', 'x')
+string	re_sub('frame_001', '\d+', '$1')
+string	re_sub('frame_001', '\d+', r'\1')
+string	re_sub('frame_001', '\d+', r'\g<1>')
+
+# Constructs sqi refuses under the intersection RULE and the reference accepts.
+list[string] | string | nulltype	re_search('3', r'\p{Nd}')
+list[string] | string | nulltype	re_search('ab', r'(?<n>a)b')
+list[string] | string | nulltype	re_search('a', r'[[:alpha:]]')
+list[string] | string | nulltype	re_search('a', r'[^[:alpha:]]')
+list[string] | string | nulltype	re_search('a', r'[a[:alpha:]]')
+list[string] | string | nulltype	re_search('aa', r'(a)\1')
+list[string] | string | nulltype	re_search('a!', r'[^\Wa]')
+
+# Constructs sqi accepts and BOTH Python's re and the reference refuse to
+# parse: \w's expansion holds a bare literal character ("_"), and neither
+# engine will let a shorthand class sit next to a "-" without an explicit
+# escape. sqi's translation places "_" where it can never abut the source's
+# own "-", so the pattern compiles and matches the union its text implies.
+list[string] | string | nulltype	re_search('`', r'[\w-a]')
+list[string] | string | nulltype	re_search('a', r'[\w-a]')
+
+# The mirror direction — a literal immediately before \w — where sqi and the
+# reference still AGREE, both failing: sqi via Go's own compile-time
+# rejection of "-\p{...}" as an invalid range start, reached through
+# compilePattern rather than the scanner itself. agree() treats two failures
+# as agreement without comparing messages.
+list[string] | string | nulltype	re_search('a', r'[a-\w]')
+
+# Rendering-immune companions for \w next to a dash in positions where sqi
+# and the reference already agreed even before the fix (trailing dash,
+# escaped dash, and an ordinary range untouched by \w): wrapped in join() so
+# the pre-existing list-of-strings rendering gap above cannot mask them.
+string | list[string] | nulltype	join(re_search('-', r'[\w-]'), '|')
+string | list[string] | nulltype	join(re_search('-', r'[\w\-a]'), '|')
+string | list[string] | nulltype	join(re_search('b', r'[\wa-c]'), '|')
+
+# Constructs sqi accepts and BOTH Python's re and the reference refuse to
+# parse: the same shape as \w above, but for \W/\S once scanClass has lifted
+# them into an alternation. Dropping the lifted shorthand from a positive
+# class used to SPLICE its former neighbours into a character range the
+# source never wrote — "[a\W-c]" translated to a Go range a..c that silently
+# MATCHED "b", and "[0\W-9]" matched "5" the same way, even though neither
+# character is in any reading of the source (code-review finding). The fix
+# escapes the "-" that becomes newly adjacent once the shorthand between it
+# and its other neighbour is dropped, so the class reads as the union the
+# source text implies — {not-a-word-char} ∪ {a} ∪ {-} ∪ {c} — instead.
+list[string] | string | nulltype	re_search('b', r'[a\W-c]')
+list[string] | string | nulltype	re_search('a', r'[a\W-c]')
+list[string] | string | nulltype	re_search('5', r'[0\W-9]')
+list[string] | string | nulltype	re_search('0', r'[0\W-9]')
+
+# Rendering-immune companions for \W/\S next to a dash in positions where sqi
+# and the reference already agree (a trailing dash, legal in both engines,
+# and a class with no dash at all): wrapped in join() so the pre-existing
+# list-of-strings rendering gap above cannot mask them.
+string | list[string] | nulltype	join(re_search('-', r'[\W-]'), '|')
+string | list[string] | nulltype	join(re_search('-', r'[a\W-]'), '|')
+string | list[string] | nulltype	join(re_search('c', r'[a\Wc]'), '|')
+
+# ── C3: shell quoting (spec section 2.2.6) ───────────────────────────────────
+string	repr_sh('hello')
+string	repr_sh('a/b_c-d.e')
+string	repr_sh('')
+string	repr_sh('hello world')
+string	repr_sh('plain $HOME')
+string	repr_sh('a;b')
+string	repr_sh("it's")
+string	repr_sh('café')
+string | list[string]	repr_sh(['echo', 'hello world'])
+string	repr_cmd('hello')
+string	repr_cmd('a & b')
+string	repr_cmd('a ^ b')
+string	repr_cmd('100%')
+string	repr_cmd('hello!')
+string | list[string]	repr_cmd(['echo', 'hello & world'])
+string	repr_pwsh('hello')
+string | int	repr_pwsh(42)
+string | int	repr_pwsh(-1)
+string | float	repr_pwsh(1.5)
+string | bool	repr_pwsh(true)
+string | bool	repr_pwsh(false)
+string | list[string]	repr_pwsh(['a', 'b'])
+string | list[int]	repr_pwsh([1, 2])
+
+# ── C3: serialization (spec section 2.2.6) ───────────────────────────────────
+string	repr_py('abc')
+string	repr_py("it's")
+string	repr_py('café')
+string | nulltype	repr_py(null)
+string | bool	repr_py(true)
+string | bool	repr_py(false)
+string | int	repr_py(42)
+string | float	repr_py(1.5)
+string | float	repr_py(1.0)
+string | list[string]	repr_py(['a', 'b'])
+string | list[int]	repr_py([1, 2])
+string	repr_json('abc')
+string	repr_json('café')
+string	repr_json('a<b>c&d')
+string | nulltype	repr_json(null)
+string | bool	repr_json(true)
+string | int	repr_json(42)
+string | float	repr_json(1.5)
+string | list[string]	repr_json(['a', 'b'])
+string | list[int]	repr_json([1, 2])
+
+# The C1 defect Task 8 fixed: Go's json.Marshal HTML-escapes these, nothing
+# else does. This case would have caught it.
+string | list[string]	string(['a<b>c&d'])
+
+# ── C4: path() construction, POSIX text (spec section 2.1.5, RFC 0006) ───────
+#
+# EVERY case below is POSIX-evaluable. The reference implementation's path
+# family runs under ITS OWN path_format, which is POSIX, so a Windows-flavored
+# case would diverge because of the flavor rather than because of anything
+# under test. Windows is pinned by the CPython differential in
+# internal/openjd/expr/pathval_internal_test.go and by
+# TestPathOperators_Windows instead, and is deliberately absent here. A URI is
+# NOT a flavor — it is detected from the text under any path_format — so URI
+# cases below are genuinely measured against the reference.
+path | string	path('/a/b/c')
+path | string	path('a/b/c')
+path | string	path('')
+path | string	path('.')
+path | string	path('..')
+path | string	path('/')
+path | string	path('//')
+path | string	path('///')
+path | string	path('////')
+path | string	path('//a')
+path | string	path('//a/b')
+path | string	path('///a')
+path | string	path('/a//b')
+path | string	path('/a/./b')
+path | string	path('/a/../b')
+path | string	path('/a/b/')
+path | string	path('/a/b//')
+path | string	path('./a/b')
+path | string	path('../a')
+path | string	path('.hidden')
+path | string	path('a.tar.gz')
+path | string	path('/a b/c d')
+path | string	path('/á/ß/日本')
+path | string	path('C:/a/b')
+path | string	path('a:b')
+path | string	path('\\a\\b')
+path | string	path('/a/\\b')
+path | string	path('...')
+path | string	path('/./.')
+path | string	path('/..')
+
+# path()'s list row, which is what makes the specification's stated roundtrip
+# path(p.parts) == p work. The head element is CLASSIFIED as a root or as an
+# ordinary component, so both shapes are exercised.
+path | list[string]	path(['a', 'b'])
+path | list[string]	path(['/', 'a', 'b'])
+path | list[string]	path(['//', 'a'])
+path | list[string]	path(['s3://bucket', 'd', 'f'])
+path | list[string]	path([''])
+path | list[string]	path(['a'])
+path | list[string]	path(['/'])
+path | list[nulltype]	path([])
+bool | path | list[string] | string	path(path('/a/b/c').parts) == path('/a/b/c')
+bool | path | list[string] | string	path(path('a/b').parts) == path('a/b')
+bool | path | list[string] | string	path(path('//a/b').parts) == path('//a/b')
+bool | path | list[string] | string	path(path('s3://b/d/f').parts) == path('s3://b/d/f')
+
+# URI text. Everything after the authority is opaque: repeated separators, "."
+# and ".." segments and a trailing slash all survive, which is the exact
+# opposite of the filesystem flavors.
+path | string	path('s3://bucket/dir/file.exr')
+path | string	path('s3://bucket')
+path | string	path('s3://bucket/')
+path | string	path('s3://bucket//')
+path | string	path('s3://bucket/') + 'key'
+path | string	path('s3://bucket') + 'key'
+path | string	path('s3://bucket/') / 'key'
+string | path	path('s3://bucket/').name
+path | string	path('s3://bucket/').parent
+string | list[string] | path	join(path('s3://bucket/').parts, '|')
+int | list[string] | path	len(path('s3://bucket/').parts)
+string | list[string] | path	join(path('s3://bucket//').parts, '|')
+bool | path | list[string] | string	path(path('s3://bucket/').parts) == path('s3://bucket/')
+bool | path | string	path('s3://bucket/') == path('s3://bucket')
+path | string	path('s3://bucket/dir/')
+path | string	path('s3://b/d//x')
+path | string	path('s3://b/./d')
+path | string	path('s3://b/../d')
+path | string	path('file:///a/b')
+path | string	path('http://host/p')
+path | string	path('s3+v2://b/d')
+path | string	path('S3://B/D')
+path | string	path('x://b/d')
+path | string	path('1s://b/d')
+path | string	path('mailto:x@y')
+path | string	path('s3:/b/d')
+path | string	path('s3://')
+
+# ── C4: the six path properties (RFC 0006) ───────────────────────────────────
+string | path	path('/a/b/c.tar.gz').name
+string | path	path('/a/b/c.tar.gz').stem
+string | path	path('/a/b/c.tar.gz').suffix
+string | path	path('/a/b/c.txt').name
+string | path	path('/a/b/c.txt').stem
+string | path	path('/a/b/c.txt').suffix
+string | path	path('/').name
+string | path	path('/').stem
+string | path	path('/').suffix
+string | path	path('//').name
+string | path	path('.').name
+string | path	path('a').name
+string | path	path('a').stem
+string | path	path('a').suffix
+string | path	path('/a/.hidden').name
+string | path	path('/a/.hidden').stem
+string | path	path('/a/.hidden').suffix
+string | path	path('/a/..').name
+string | path	path('/a/..').stem
+string | path	path('/a/..').suffix
+string | path	path('/a/...').stem
+string | path	path('/a/...').suffix
+string | path	path('/a/..b').stem
+string | path	path('/a/..b').suffix
+string | path	path('/a/..b.c').stem
+string | path	path('/a/..b.c').suffix
+string | path	path('/a/b.').stem
+string | path	path('/a/b.').suffix
+string | path	path('/a/.').name
+string | path	path('s3://b/d/f.txt').name
+string | path	path('s3://b/d/f.txt').stem
+string | path	path('s3://b/d/f.txt').suffix
+string | path	path('s3://b/d/').name
+string | path	path('s3://b').name
+path | string	path('/a/b/c').parent
+path | string	path('/a/b/c').parent.parent
+path | string	path('/a/b/c').parent.parent.parent
+path | string	path('/').parent
+path | string	path('//').parent
+path | string	path('.').parent
+path | string	path('a').parent
+path | string	path('a/b').parent
+path | string	path('..').parent
+path | string	path('//a/b').parent
+path | string	path('s3://b/d/f').parent
+path | string	path('s3://b/d/').parent
+path | string	path('s3://b').parent
+string | path	path('/a/b/c.txt').parent.name
+
+# parts and suffixes return list[string], which hits the known list-of-strings
+# rendering gap already baselined for list literals, flatten(), sorted(),
+# split() and the C3 regex family. Each is paired with a RENDERING-IMMUNE
+# companion — join(..., '|') or len(...) — whose result is a plain string or
+# an int, and it is those companions that actually verify the underlying
+# values, order and count.
+list[string] | path	path('/a/b/c').parts
+list[string] | path	path('s3://b/d/f').parts
+list[string] | path	path('c.tar.gz').suffixes
+list[string] | path	path('a').suffixes
+string | list[string] | path	join(path('/a/b/c').parts, '|')
+string | list[string] | path	join(path('a/b').parts, '|')
+string | list[string] | path	join(path('/').parts, '|')
+string | list[string] | path	join(path('//').parts, '|')
+string | list[string] | path	join(path('.').parts, '|')
+string | list[string] | path	join(path('').parts, '|')
+string | list[string] | path	join(path('//a/b').parts, '|')
+string | list[string] | path	join(path('///a/b').parts, '|')
+string | list[string] | path	join(path('/a/b/').parts, '|')
+string | list[string] | path	join(path('/a/../b').parts, '|')
+string | list[string] | path	join(path('/a/./b').parts, '|')
+string | list[string] | path	join(path('s3://b/d/f').parts, '|')
+string | list[string] | path	join(path('s3://b/d/').parts, '|')
+string | list[string] | path	join(path('s3://b').parts, '|')
+string | list[string] | path	join(path('s3://b/d//x').parts, '|')
+string | list[string] | path	join(path('c.tar.gz').suffixes, '|')
+string | list[string] | path	join(path('.hidden').suffixes, '|')
+string | list[string] | path	join(path('a').suffixes, '|')
+string | list[string] | path	join(path('a.').suffixes, '|')
+string | list[string] | path	join(path('..a.b').suffixes, '|')
+string | list[string] | path	join(path('...').suffixes, '|')
+string | list[string] | path	join(path('/').suffixes, '|')
+string | list[string] | path	join(path('s3://b/d/f.tar.gz').suffixes, '|')
+int | list[string] | path	len(path('/a/b/c').parts)
+int | list[string] | path	len(path('a/b/c').parts)
+int | list[string] | path	len(path('/').parts)
+int | list[string] | path	len(path('.').parts)
+int | list[string] | path	len(path('s3://b/d/f').parts)
+int | list[string] | path	len(path('c.tar.gz').suffixes)
+int | list[string] | path	len(path('a').suffixes)
+int | list[string] | path	len(path('.hidden').suffixes)
+
+# ── C4: as_posix and is_absolute ─────────────────────────────────────────────
+string | path	as_posix(path('/a/b'))
+string | path	path('/a/b').as_posix()
+string | path	as_posix(path('a/b'))
+string | path	as_posix(path('s3://b/d'))
+string | path	as_posix(path('//a/b'))
+string | path	as_posix(path('.'))
+# The two backslash rows are as_posix's flavor-awareness, and they are here
+# BECAUSE they diverge: sqi replaces the FLAVOR'S separator (so as_posix is the
+# identity under POSIX and on a URI), the reference replaces every backslash
+# unconditionally. See baseline.txt for the ruling.
+string | path	as_posix(path('/a/\\b'))
+string | path	as_posix(path('s3://b/a\\b'))
+# is_absolute needs the target bool | path: with a bare bool — or bool |
+# string — openjd-rs#291's pushdown poisons the path() call inside and every
+# case fails with "No matching signature for is_absolute(string)".
+bool | path	is_absolute(path('/a'))
+bool | path	is_absolute(path('a'))
+bool | path	is_absolute(path('.'))
+bool | path	is_absolute(path(''))
+bool | path	is_absolute(path('..'))
+bool | path	is_absolute(path('/'))
+bool | path	is_absolute(path('//'))
+bool | path	is_absolute(path('//a'))
+bool | path	is_absolute(path('///a'))
+bool | path	is_absolute(path('//a/b'))
+bool | path	is_absolute(path('s3://b/d'))
+bool | path	is_absolute(path('s3://b'))
+bool | path	is_absolute(path('C:/a'))
+bool | path	path('/a').is_absolute()
+bool | path	path('a').is_absolute()
+
+# ── C4: with_name, with_stem, with_suffix ────────────────────────────────────
+path | string	path('/a/b.txt').with_name('c.png')
+path | string	path('/a/b.txt').with_name('c')
+path | string	path('a').with_name('b')
+path | string	path('/a/b.txt').with_name('..')
+path | string	path('/a/b.txt').with_name('.c')
+path | string	path('/a/b.txt').with_name('C:')
+path | string	path('/').with_name('c')
+path | string	path('.').with_name('c')
+path | string	path('/a/b.txt').with_name('')
+path | string	path('/a/b.txt').with_name('.')
+path | string	path('/a/b.txt').with_name('c/d')
+path | string	path('/a/b.txt').with_name('c\\d')
+path | string	path('s3://b/d/f.txt').with_name('g.png')
+path | string	path('s3://b').with_name('g')
+path | string	with_name(path('/a/b.txt'), 'c.png')
+path | string	path('/a/b.tar.gz').with_stem('c')
+path | string	path('/a/b.txt').with_stem('c')
+path | string	path('/a/b').with_stem('c')
+path | string	path('/a/b.txt').with_stem('')
+path | string	path('/a/b').with_stem('')
+path | string	path('/a/.hidden').with_stem('x')
+path | string	path('/a/b.txt').with_stem('c.d')
+path | string	path('/').with_stem('c')
+path | string	path('s3://b/d/f.txt').with_stem('g')
+path | string	path('/a/b.txt').with_suffix('.png')
+path | string	path('/a/b.txt').with_suffix('')
+path | string	path('/a/b').with_suffix('.png')
+path | string	path('/a/b.tar.gz').with_suffix('.zip')
+path | string	path('/a/.hidden').with_suffix('.txt')
+path | string	path('/a/b.txt').with_suffix('png')
+path | string	path('/a/b.txt').with_suffix('.')
+path | string	path('/a/b.txt').with_suffix('.a/b')
+path | string	path('/a/b.txt').with_suffix('..a')
+path | string	path('/').with_suffix('png')
+path | string	path('/').with_suffix('.png')
+path | string	path('/').with_suffix('')
+path | string	path('s3://b/d/f.txt').with_suffix('.exr')
+
+# ── C4: with_number, both rows (RFC 0006 "Frame Number Substitution") ────────
+string | int	with_number('file_003.exr', 7)
+string | int	with_number('file_003.exr', 72)
+string | int	with_number('file', 7)
+string | int	with_number('file.exr', 7)
+string | int	with_number('shot01_####.exr', 72)
+string | int	with_number('file_%04d.exr', 72)
+string | int	with_number('file_%d.exr', 0)
+string | int	with_number('a.tar.gz', 72)
+string | int	with_number('file.001', 72)
+string | int	with_number('file.v2.003.exr', 72)
+string | int	with_number('f_%d_abc_###.exr', 42)
+string | int	with_number('file_%04d_003.exr', 72)
+string | int	with_number('a12_b34.exr', 7)
+string | int	with_number('file_003.exr', -1)
+string | int	with_number('...', 3)
+# The hash-then-digit family: sqi replaces the LAST MATCH, the reference lets
+# a hash run swallow the rest of the stem. The rows that AGREE are here too,
+# deliberately, so a later change that overcorrects toward the reference fails
+# on those as well instead of silently trading one set for the other.
+string | int	with_number('###003', 7)
+string | int	with_number('#003', 7)
+string | int	with_number('##003', 7)
+string | int	with_number('####003', 7)
+string | int	with_number('##a3', 7)
+string | int	with_number('a###5', 9)
+string | int	with_number('12##34', 7)
+string | int	with_number('##b##', 7)
+string | int	with_number('3###', 7)
+string | int	with_number('#3#', 7)
+string | int	with_number('%04d3', 7)
+string | int	with_number('##%04d', 7)
+string | int	with_number('##a', 7)
+# Padding width, at the cap and past it in both notations.
+string | int	with_number('f_%032d.exr', 1)
+string | int	with_number('f_%033d.exr', 1)
+string | int	with_number('f_%099d.exr', 1)
+string | int	with_number('f_%0999999999999999999999d.exr', 1)
+path | string | int	path('/r/f_003.exr').with_number(72)
+path | string | int	path('/r/shot_003').with_number(72)
+path | string | int	path('/r/a.tar.gz').with_number(72)
+path | string | int	path('/r/f_%04d.exr').with_number(7)
+path | string | int	path('/r/f_####.exr').with_number(7)
+path | string | int	path('/r/f_%d.exr').with_number(0)
+path | string | int	path('/r/f_003.exr').with_number(-1)
+path | string | int	path('/r/file.001').with_number(72)
+path | string | int	path('/r/...').with_number(3)
+path | string | int	path('/').with_number(3)
+path | string | int	path('/r/f_%032d.exr').with_number(1)
+path | string | int	path('/r/f_%033d.exr').with_number(1)
+path | string | int	path('s3://b/d/f_003.exr').with_number(72)
+path | string | int	with_number(path('/r/f_003.exr'), 72)
+
+# ── C4: is_relative_to and relative_to ───────────────────────────────────────
+bool | path | string	path('/a/b/c').is_relative_to(path('/a'))
+bool | path | string	path('/a/b/c').is_relative_to(path('/a/b'))
+bool | path | string	path('/a/b/c').is_relative_to(path('/a/b/c'))
+bool | path | string	path('/a/b/c').is_relative_to(path('/x'))
+bool | path | string	path('/a/b').is_relative_to(path('/a/b/c'))
+bool | path | string	path('/a/b').is_relative_to(path('/'))
+bool | path | string	path('/ab/c').is_relative_to(path('/a'))
+bool | path | string	path('a/b').is_relative_to(path('a'))
+bool | path | string	path('/a/b').is_relative_to(path('a'))
+bool | path | string	path('a/b').is_relative_to(path('/a'))
+bool | path | string	path('/a/b').is_relative_to(path('.'))
+bool | path | string	path('/').is_relative_to(path('.'))
+bool | path | string	path('a/b').is_relative_to(path('.'))
+bool | path | string	path('a/b').is_relative_to(path(''))
+bool | path | string	path('.').is_relative_to(path('.'))
+bool | path | string	path('s3://b/d').is_relative_to(path('.'))
+bool | path | string	path('//a/b').is_relative_to(path('//a'))
+bool | path | string	path('//a/b').is_relative_to(path('/a'))
+bool | path | string	path('s3://b/d/f').is_relative_to(path('s3://b/d'))
+bool | path | string	path('s3://b/d/f').is_relative_to(path('s3://c/d'))
+bool | path | string	path('s3://b/d/f').is_relative_to(path('s3://b'))
+bool | path | string	is_relative_to(path('/a/b'), path('/a'))
+path | string	path('/a/b/c').relative_to(path('/a'))
+path | string	path('/a/b/c').relative_to(path('/a/b'))
+path | string	path('/a/b/c').relative_to(path('/a/b/c'))
+path | string	path('/a/b/c').relative_to(path('/'))
+path | string	path('/a/b/c').relative_to(path('/x'))
+path | string	path('a/b/c').relative_to(path('a'))
+path | string	path('/a/b').relative_to(path('a'))
+path | string	path('//a/b/c').relative_to(path('//a'))
+path | string	path('s3://b/d/f').relative_to(path('s3://b'))
+path | string	path('s3://b/d/f').relative_to(path('s3://b/d'))
+path | string	path('/a/b').relative_to(path('.'))
+path | string	path('a/b').relative_to(path('.'))
+path | string	path('s3://b/d').relative_to(path('.'))
+path | string	relative_to(path('/a/b'), path('/a'))
+string | path	path('/a/b/c').relative_to(path('/a')).name
+
+# ── C4: the / and + path operators (spec section 2.1.5) ──────────────────────
+path | string	path('/a/b') / 'c'
+path | string	path('/a/b') / path('c')
+path | string	path('/a/b') / '/c'
+path | string	path('/a/b/') / 'c'
+path | string	path('/a/b') / 'c/d'
+path | string	path('/a') / 'b' / 'c'
+path | string	path('a/b') / 'c'
+path | string	path('..') / 'c'
+path | string	path('/a/b') / '..'
+path | string	path('/a') / '//b'
+path | string	path('/a') / '///b'
+path | string	path('/a/b') / ''
+path | string	path('/a/b') / '.'
+path | string	path('/a/b') / 'c/'
+path | string	path('/a/b') / 'd/./e'
+path | string	path('/a/b') / 'd//e'
+path | string	path('') / 'b'
+path | string	path('.') / 'b'
+path | string	path('//') / 'x'
+path | string	path('/') / 'x'
+path | string	path('///') / 'x'
+path | string	path('/a') / '.hidden'
+path | string	path('/a') / 'b c'
+path | string	path('s3://bucket/dir/') / 'file'
+path | string	path('s3://b/d') / 'f'
+path | string	path('s3://b/d//') / 'f'
+path | string	path('s3://b/d///') / 'f'
+path | string	path('s3://b') / 'f'
+path | string	path('s3://b/') / 'f'
+path | string	path('/a/b') / 's3://x/y'
+path | string	path('/a/b') / path('s3://x/y')
+path | string	path('s3://b/d') / '/abs'
+path | string	path('s3://b/d/') / 'a/'
+path | string	path('s3://b/d/') / 'a//b'
+path | string	path('/a/b') + 'x'
+path | string	path('/a') / 'b' + '_c.png'
+path | string	path('/a/b') + ''
+path | string	path('/a/b') + '/c'
+path | string	path('/') + 'x'
+path | string	path('/a/b') + 'x' + 'y'
+path | string	path('/a') + '/'
+path | string	path('/a') + '.txt'
+path | string	path('.') + 'x'
+path | string	path('s3://b/d/') + 'x'
+path | string	path('s3://b/d') + '/x'
+path | string	path('/a/b') + path('c')
+string | path	'x' + path('/a')
+path | string	'/a' / path('b')
+path | string | int	path('a') / 1
+path | string | int	path('a') + 1
+int | path | string	1 / path('a')
+
+# Chained: an operator result feeding a property, a function and a comparison.
+string | path	(path('/a/b') / 'c.txt').name
+string | path	(path('/a/b') / 'c.txt').suffix
+string | path	(path('/a/b') / 'c.txt').stem
+path | string	(path('/a/b') / 'c.txt').parent
+path | string	(path('/a/b') / 'c.txt').with_suffix('.exr')
+path | string | int	(path('/a/b') / 'f_003.exr').with_number(7)
+string | list[string] | path	join((path('s3://b/d/') / 'f').parts, '|')
+string | list[string] | path	join((path('/a/b') / 'c').parts, '|')
+string | list[string] | path	join((path('s3://b/d/') / 'a/').parts, '|')
+bool | path | string	is_absolute(path('/a') / 'b')
+bool | path | string	is_absolute(path('a') / 'b')
+bool | path | string	(path('/a') / 'b').is_relative_to(path('/a'))
+path | string	(path('/a') / 'b').relative_to(path('/a'))
+string | path	as_posix(path('/a') / 'b')
+
+# Paths against the rest of the language: comparison, coercion to string, len,
+# and a path inside a list.
+bool | path | string	(path('/a') / 'b') == path('/a/b')
+bool | path | string	path('/a/b') == '/a/b'
+bool | path | string	path('/a/b') != path('/a/c')
+bool | path | string	path('/a/b') == path('/a/b/')
+bool | path | string	path('/A') == path('/a')
+bool | path | string	path('/a') < path('/b')
+bool | path | string	path('/b') > path('/a')
+bool | string | path	'/a' < path('/b')
+string | path	string(path('/a/b'))
+string | path	string(path('s3://b/d/'))
+int | path	len(path('/a/b'))
+int | path	len(path('.'))
+string | list[path] | path	join([path('/a'), path('/b')], ',')
+string | list[path] | path	join([path('/a') / 'x'], ',')
+string | path	upper(path('/a/b'))
+string | path	'prefix ' + path('/a/b')
+
+# ── C4: the boundary separator between a base and what follows it ────────────
+#
+# is_relative_to and relative_to take a BASE, and section 2.1.5 already rules
+# that a trailing slash on an operand of that kind is consumed ("a trailing
+# slash on the left operand is consumed by the join, matching pathlib
+# behavior"). RFC 0006 states the URI half of these two functions outright —
+# "For URIs, checks prefix match on the full URI", and for relative_to "strips
+# the matching prefix" — so an operator-written prefix such as "s3://renders/"
+# has to match the objects under it, WITHOUT weakening the parse rule that
+# keeps a URI's empty components (path('s3://b/').parts is ["s3://b", ""]).
+#
+# Both sides of the boundary are covered because both were broken: the base's
+# trailing empties decide whether the prefix matches at all, and the
+# remainder's LEADING empties decide whether the result is even relative —
+# path('s3://b//d').relative_to(path('s3://b')) answered "/d" before this
+# task, an absolute path out of the one function whose job is to remove an
+# anchor. The is_absolute() rows below pin that as a property rather than as a
+# rendering.
+bool | path | string	path('s3://b/d').is_relative_to(path('s3://b/'))
+path | string	path('s3://b/d').relative_to(path('s3://b/'))
+bool | path | string	path('s3://b/d/f').is_relative_to(path('s3://b/'))
+path | string	path('s3://b/d/f').relative_to(path('s3://b/'))
+bool | path | string	path('s3://b/d/f').is_relative_to(path('s3://b/d/'))
+path | string	path('s3://b/d/f').relative_to(path('s3://b/d/'))
+bool | path | string	path('s3://b/').is_relative_to(path('s3://b'))
+path | string	path('s3://b/').relative_to(path('s3://b'))
+bool | path | string	path('s3://b/').is_relative_to(path('s3://b/'))
+path | string	path('s3://b/').relative_to(path('s3://b/'))
+bool | path | string	path('s3://b').is_relative_to(path('s3://b/'))
+path | string	path('s3://b').relative_to(path('s3://b/'))
+bool | path | string	path('s3://b//').is_relative_to(path('s3://b'))
+path | string	path('s3://b//').relative_to(path('s3://b'))
+bool | path | string	path('s3://b//').is_relative_to(path('s3://b/'))
+path | string	path('s3://b//').relative_to(path('s3://b/'))
+bool | path | string	path('s3://b//d').is_relative_to(path('s3://b'))
+path | string	path('s3://b//d').relative_to(path('s3://b'))
+bool | path | string	path('s3://b//d').is_relative_to(path('s3://b/'))
+path | string	path('s3://b//d').relative_to(path('s3://b/'))
+bool | path | string	path('s3://b/d//').is_relative_to(path('s3://b/d'))
+path | string	path('s3://b/d//').relative_to(path('s3://b/d'))
+bool | path | string	path('s3://b/d/').is_relative_to(path('s3://b'))
+path | string	path('s3://b/d/').relative_to(path('s3://b'))
+bool | path | string	is_absolute(path('s3://b//').relative_to(path('s3://b')))
+bool | path | string	is_absolute(path('s3://b//d').relative_to(path('s3://b')))
+bool | path | string	is_absolute(path('s3://b/d').relative_to(path('s3://b/')))
+# Consuming the boundary must not degrade the prefix test into a TEXTUAL one:
+# a longer authority and a longer component are still not matches, on both
+# sides.
+bool | path | string	path('s3://bb/d').is_relative_to(path('s3://b'))
+bool | path | string	path('s3://bb/d').is_relative_to(path('s3://b/'))
+bool | path | string	path('s3://b/dd').is_relative_to(path('s3://b/d'))
+bool | path | string	path('s3://b/dd').is_relative_to(path('s3://b/d/'))
+bool | path | string	path('s3://b/d').is_relative_to(path('s3://c/'))
+# A bare "scheme://" base: an EMPTY authority, which the opaque-prefix rule
+# makes a different authority from every non-empty one.
+bool | path | string	path('s3://b/d').is_relative_to(path('s3://'))
+path | string	path('s3://b/d').relative_to(path('s3://'))
+bool | path | string	path('s3://b').is_relative_to(path('s3://'))
+path | string	path('s3://b').relative_to(path('s3://'))
+bool | path | string	path('s3://').is_relative_to(path('s3://'))
+path | string	path('s3://').relative_to(path('s3://'))
+# The filesystem flavors reach the same rule trivially, because their parsers
+# drop a trailing separator before parts() ever sees it.
+bool | path | string	path('/a/b').is_relative_to(path('/a/'))
+path | string	path('/a/b').relative_to(path('/a/'))
+path | string	path('/a/b/').relative_to(path('/a'))
+
+# ── C4: the with_* half of the stem/suffix rule ──────────────────────────────
+#
+# The PROPERTY surface of the pathlib-3.14 leading-dot-run rule is pinned
+# above; this is the FUNCTION surface, which reaches the same splitStemSuffix
+# through with_stem, with_suffix and with_number and diverges from the
+# reference for the same reason and in the same direction.
+path | string	path('/a/..b').with_stem('x')
+path | string	path('/a/..b').with_suffix('.x')
+path | string	path('/a/..b').with_suffix('')
+path | string	path('/a/..b').with_stem('')
+path | string | int	path('/a/..b').with_number(7)
+path | string	path('/a/b.').with_stem('x')
+path | string	path('/a/b.').with_suffix('.x')
+path | string	path('/a/b.').with_suffix('')
+path | string	path('/a/b.').with_stem('')
+path | string | int	path('/a/b.').with_number(7)
+path | string	path('/a/...').with_stem('x')
+path | string	path('/a/...').with_suffix('.x')
+path | string	path('/a/...').with_suffix('')
+path | string | int	path('/a/...').with_number(7)
+path | string	path('/a/..b.c').with_stem('x')
+path | string	path('/a/..b.c').with_suffix('.x')
+path | string	path('/a/..b.c').with_suffix('')
+path | string | int	path('/a/..b.c').with_number(7)
+path | string	path('/a/..').with_stem('x')
+path | string	path('/a/..').with_suffix('.x')
+path | string	path('/a/..').with_suffix('')
+path | string	path('/a/.hidden').with_suffix('')
+path | string | int	path('/a/.hidden').with_number(7)
+string | int	with_number('..b', 7)
+string | int	with_number('b.', 7)
+string | int	with_number('..b.c', 7)
+path | string	path('a.').with_suffix('.x')
+path | string	path('a.').with_stem('x')
+path | string	path('..b').with_suffix('.x')
+path | string	path('/a/..b').with_name('x')
+path | string	path('/a/b.').with_name('x')
+path | string	path('s3://b/..c').with_suffix('.x')
+path | string	path('s3://b/d.').with_suffix('')
+path | string | int	path('/a/..').with_number(7)
+string | int	with_number('...', 7)
+string | int	with_number('.hidden', 7)
+string | list[string] | path	join(path('..b').suffixes, '|')
+string | list[string] | path	join(path('b.').suffixes, '|')
+string | list[string] | path	join(path('..b.c').suffixes, '|')
+string | list[string] | path	join(path('.hidden.tar.gz').suffixes, '|')
+string | path	path('/a/.hidden.tar.gz').stem
+string | path	path('/a/.hidden.tar.gz').suffix
+
+# ── C4: the boundary rule for RUNS, on both sides ────────────────────────────
+#
+# A two-separator case cannot distinguish trimming the RUN from trimming ONE
+# component, and the difference is the whole defect: a one-step trim leaves
+# every two-slash row green and still answers "/d" for the three-slash one.
+# Both sides of the boundary get a 3-or-more run, and the is_absolute() rows
+# state the property directly rather than through a rendering.
+path | string	path('s3://b///d').relative_to(path('s3://b'))
+bool | path | string	is_absolute(path('s3://b///d').relative_to(path('s3://b')))
+path | string	path('s3://b////d/e').relative_to(path('s3://b'))
+bool | path | string	is_absolute(path('s3://b////d/e').relative_to(path('s3://b')))
+path | string	path('s3://b///').relative_to(path('s3://b'))
+bool | path | string	is_absolute(path('s3://b///').relative_to(path('s3://b')))
+bool | path | string	path('s3://b///d').is_relative_to(path('s3://b'))
+path | string	path('s3://b///d').relative_to(path('s3://b/'))
+# A base TERMINATED by a run. Round 1 changed behavior for this whole class
+# and covered none of it — every base in the round-1 grid ended in at most one
+# separator, so a one-step trim of the base stayed green everywhere.
+bool | path | string	path('s3://b//d').is_relative_to(path('s3://b//'))
+path | string	path('s3://b//d').relative_to(path('s3://b//'))
+bool | path | string	path('s3://b//').is_relative_to(path('s3://b//'))
+path | string	path('s3://b//').relative_to(path('s3://b//'))
+bool | path | string	path('s3://b///d').is_relative_to(path('s3://b//'))
+path | string	path('s3://b///d').relative_to(path('s3://b//'))
+bool | path | string	path('s3://b/d').is_relative_to(path('s3://b//'))
+path | string	path('s3://b/d').relative_to(path('s3://b//'))
+bool | path | string	path('s3://b').is_relative_to(path('s3://b//'))
+path | string	path('s3://b').relative_to(path('s3://b//'))
+bool | path | string	path('s3://b/d/e').is_relative_to(path('s3://b/d//'))
+path | string	path('s3://b/d/e').relative_to(path('s3://b/d//'))
+bool | path | string	path('s3://b/d/e').is_relative_to(path('s3://b/d///'))
+path | string	path('s3://b/d/e').relative_to(path('s3://b/d///'))
+path | string	path('s3://b/d').relative_to(path('s3://b///'))
+# The coherence artifact the ruling produces, pinned rather than left to be
+# rediscovered: these two values are NOT equal, and each is relative to the
+# other with relative_to answering "." both ways.
+bool | path | string	path('s3://b//') == path('s3://b')

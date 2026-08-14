@@ -9,6 +9,7 @@ package lease
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"time"
 
@@ -100,14 +101,39 @@ func (l *Loop) runQueue(ctx context.Context, queueID string) {
 			continue
 		}
 		for _, raw := range rep.Assignments {
-			var m protocol.AssignMsg
-			if err := json.Unmarshal(raw, &m); err != nil {
+			m, err := decodeAssignment(raw)
+			if err != nil {
 				l.logger.WarnContext(ctx, "lease: malformed assignment", slog.Any("error", err))
 				continue
 			}
-			if err := l.dispatch.Dispatch(ctx, &m); err != nil {
+			if err := l.dispatch.Dispatch(ctx, m); err != nil {
 				l.logger.WarnContext(ctx, "lease: dispatch failed", slog.String("task_id", m.TaskID), slog.Any("error", err))
 			}
 		}
 	}
+}
+
+// decodeAssignment unmarshals one assignment from a lease reply and verifies
+// its protocol version matches this worker's. encoding/json silently ignores
+// fields it does not recognize, so an unmarshal that merely "succeeds" is not
+// proof the sender and receiver agree on the message shape — a newer server
+// sending fields an older worker's protocol.AssignMsg has never heard of
+// would decode cleanly and just drop them, quietly running the task as if
+// those fields were absent. Rejecting on a version mismatch turns that into a
+// loud, diagnosable failure instead of a silently wrong command line.
+//
+// A version mismatch means a partially upgraded farm (this worker's build is
+// out of step with the server that leased it work), so the error is written
+// for the operator who will read it, not just the caller: it names both the
+// version the message carried and the version this worker expects.
+func decodeAssignment(raw json.RawMessage) (*protocol.AssignMsg, error) {
+	var m protocol.AssignMsg
+	if err := json.Unmarshal(raw, &m); err != nil {
+		return nil, fmt.Errorf("lease: malformed assignment: %w", err)
+	}
+	if m.Version != protocol.ProtocolVersion {
+		return nil, fmt.Errorf("lease: assignment %s has protocol version %q, this worker expects %q (server and worker are out of sync — upgrade one to match)",
+			m.TaskID, m.Version, protocol.ProtocolVersion)
+	}
+	return &m, nil
 }

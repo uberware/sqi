@@ -131,12 +131,18 @@ func (s *Scheduler) selectLeaseBatch(ctx context.Context, worker store.Worker) (
 		return nil, fmt.Errorf("lease: list ready tasks: %w", err)
 	}
 
+	// Hoisted out of the candidate loop: this worker's EXPR shortfall depends
+	// only on the worker and this server's configuration, so it is constant for
+	// the whole batch, and on a misconfigured farm computing it per candidate
+	// would rebuild the same four-sentence reason 50 times.
+	exprShortfall := s.workerExprShortfall(worker)
+
 	var batch [][]byte
 	for _, task := range candidates {
 		if free <= 0 {
 			break
 		}
-		payload, cost, ok, err := s.tryLeaseTask(ctx, task, worker, free)
+		payload, cost, ok, err := s.tryLeaseTask(ctx, task, worker, free, exprShortfall)
 		if err != nil {
 			return nil, err
 		}
@@ -157,6 +163,7 @@ func (s *Scheduler) leaseGatesPass(
 	ctx context.Context,
 	task store.Task,
 	worker store.Worker,
+	exprShortfall string,
 ) (leaseGateData, bool, error) {
 	var d leaseGateData
 
@@ -168,6 +175,18 @@ func (s *Scheduler) leaseGatesPass(
 
 	if job.Status == store.JobStatusPaused || job.Status.IsTerminal() {
 		return d, false, nil // paused/terminal job: skip (defends the ready-list→lease window)
+	}
+
+	// Cross-binary EXPR limits: never hand an EXPR job to a worker whose
+	// advertised caps are tighter than the ones this template was accepted
+	// under. Skipping leaves the task ready for a capable worker; if none
+	// exists, the unschedulable sweep writes the same reason onto the task --
+	// but only while that sweep is enabled (Config.UnschedulableGrace > 0, the
+	// default; <= 0 is a legitimate "off" setting, and with it off such a task
+	// waits with nothing written on it). See exprcaps.go for why this is a skip
+	// and not a submit-time rejection.
+	if exprCapsBlock(exprShortfall, job) != "" {
+		return d, false, nil
 	}
 
 	step, err := s.store.GetStep(ctx, task.StepID)
@@ -216,6 +235,7 @@ func (s *Scheduler) tryLeaseTask(
 	task store.Task,
 	worker store.Worker,
 	free int,
+	exprShortfall string,
 ) (payload []byte, cost int, ok bool, err error) {
 	// Log once when a task's declared core requirement exceeds the worker's total
 	// capacity — it can never run here regardless of current load. Best-effort
@@ -231,7 +251,7 @@ func (s *Scheduler) tryLeaseTask(
 		return nil, 0, false, nil
 	}
 
-	gd, pass, err := s.leaseGatesPass(ctx, task, worker)
+	gd, pass, err := s.leaseGatesPass(ctx, task, worker, exprShortfall)
 	if err != nil {
 		return nil, 0, false, err
 	}

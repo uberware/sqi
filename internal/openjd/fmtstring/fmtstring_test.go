@@ -221,6 +221,59 @@ func TestResolveMalformed(t *testing.T) {
 	}
 }
 
+// TestResolveMalformedPrecedence pins that the single-pass scanner reports the
+// FIRST malformed reference in the input, whichever kind it is. A bad
+// identifier followed by an unclosed reference must report the bad
+// identifier -- not scan past it into the later syntax error -- matching the
+// ordering this package had before parse and parseRaw shared one scanner.
+func TestResolveMalformedPrecedence(t *testing.T) {
+	t.Parallel()
+
+	scope := fmtstring.MapScope{"Param.X": "1"}
+
+	const input = "{{Param.1bad}} {{Param.X"
+	_, err := fmtstring.Resolve(input, scope)
+	if err == nil {
+		t.Fatalf("Resolve(%q) returned no error", input)
+	}
+
+	var malformed *fmtstring.MalformedError
+	if !errors.As(err, &malformed) {
+		t.Fatalf("Resolve(%q) error is not *MalformedError: %T (%v)", input, err, err)
+	}
+	if malformed.Reason != "not a valid dotted identifier" {
+		t.Errorf("Reason = %q, want %q (the bad identifier, not the later unclosed reference)",
+			malformed.Reason, "not a valid dotted identifier")
+	}
+	if malformed.Ref != "{{Param.1bad}}" {
+		t.Errorf("Ref = %q, want %q", malformed.Ref, "{{Param.1bad}}")
+	}
+}
+
+// TestResolveMalformedRefPreservesInteriorWhitespace pins that
+// MalformedError.Ref reports the offending reference's original text
+// byte-for-byte, interior whitespace included, rather than a reconstruction
+// from the trimmed name.
+func TestResolveMalformedRefPreservesInteriorWhitespace(t *testing.T) {
+	t.Parallel()
+
+	scope := fmtstring.MapScope{}
+
+	const input = "{{   Param.1bad   }}"
+	_, err := fmtstring.Resolve(input, scope)
+	if err == nil {
+		t.Fatalf("Resolve(%q) returned no error", input)
+	}
+
+	var malformed *fmtstring.MalformedError
+	if !errors.As(err, &malformed) {
+		t.Fatalf("Resolve(%q) error is not *MalformedError: %T (%v)", input, err, err)
+	}
+	if malformed.Ref != input {
+		t.Errorf("Ref = %q, want %q (byte-identical to the original reference)", malformed.Ref, input)
+	}
+}
+
 func TestReferences(t *testing.T) {
 	t.Parallel()
 

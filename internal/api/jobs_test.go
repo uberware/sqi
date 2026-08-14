@@ -134,7 +134,7 @@ func newUnscopedJobsReq(t *testing.T, target string) *http.Request {
 // owners they use as real store users.
 func newJobRouter(st store.Store, sched jobCanceler) chi.Router {
 	sub := openjd.NewSubmitter(st)
-	h := newJobHandler(st, sub, sched, ws.NoopNotifier{}, newTestLogger(), testRetryDefaults, false)
+	h := newJobHandler(st, sub, sched, ws.NoopNotifier{}, newTestLogger(), testRetryDefaults, false, 0)
 	r := chi.NewRouter()
 	r.Post("/api/v1/jobs", h.submitJob)
 	r.Get("/api/v1/jobs", h.listJobs)
@@ -1304,7 +1304,7 @@ func TestJobHandler_DeleteJob_NotifiesWithOwner(t *testing.T) {
 
 	notifier := &recordingJobNotifier{}
 	sub := openjd.NewSubmitter(st)
-	h := newJobHandler(st, sub, &fakeScheduler{}, notifier, newTestLogger(), testRetryDefaults, false)
+	h := newJobHandler(st, sub, &fakeScheduler{}, notifier, newTestLogger(), testRetryDefaults, false, 0)
 	r := chi.NewRouter()
 	r.Delete("/api/v1/jobs/{id}", h.deleteJob)
 

@@ -12,7 +12,7 @@ import (
 
 const workerCols = `
 	id, farm_id, queue_id, name, hostname, ip_address, compute_location,
-	os, os_version, version, cpu_count, ram_mb, gpu_info, tags, status,
+	os, os_version, version, cpu_count, ram_mb, gpu_info, tags, expr_limits, status,
 	last_heartbeat_at, registered_at, updated_at`
 
 const (
@@ -20,9 +20,9 @@ const (
 	sqlUpsertWorker = `
 INSERT INTO workers (
 	id, farm_id, queue_id, name, hostname, ip_address, compute_location,
-	os, os_version, version, cpu_count, ram_mb, gpu_info, tags, status,
+	os, os_version, version, cpu_count, ram_mb, gpu_info, tags, expr_limits, status,
 	last_heartbeat_at, registered_at, updated_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT (id) DO UPDATE SET
 	farm_id           = excluded.farm_id,
 	queue_id          = excluded.queue_id,
@@ -37,6 +37,7 @@ ON CONFLICT (id) DO UPDATE SET
 	ram_mb            = excluded.ram_mb,
 	gpu_info          = excluded.gpu_info,
 	tags              = excluded.tags,
+	expr_limits       = excluded.expr_limits,
 	status            = excluded.status,
 	last_heartbeat_at = excluded.last_heartbeat_at,
 	updated_at        = excluded.updated_at
@@ -48,7 +49,7 @@ RETURNING ` + workerCols
 UPDATE workers
 SET farm_id = ?, queue_id = ?, name = ?, hostname = ?, ip_address = ?, compute_location = ?,
 	os = ?, os_version = ?, version = ?, cpu_count = ?, ram_mb = ?, gpu_info = ?, tags = ?,
-	status = ?, last_heartbeat_at = ?, updated_at = ?
+	expr_limits = ?, status = ?, last_heartbeat_at = ?, updated_at = ?
 WHERE id = ?
 RETURNING ` + workerCols
 
@@ -98,12 +99,12 @@ RETURNING ` + workerCols
 func scanWorker(row scanner) (store.Worker, error) {
 	var w store.Worker
 	var farmID, queueID, lastHeartbeat sql.NullString
-	var gpuJSON, tagsJSON, status string
+	var gpuJSON, tagsJSON, exprJSON, status string
 	var registeredAt, updatedAt string
 
 	if err := row.Scan(
 		&w.ID, &farmID, &queueID, &w.Name, &w.Hostname, &w.IPAddress, &w.ComputeLocation,
-		&w.OS, &w.OSVersion, &w.Version, &w.CPUCount, &w.RAMMb, &gpuJSON, &tagsJSON, &status,
+		&w.OS, &w.OSVersion, &w.Version, &w.CPUCount, &w.RAMMb, &gpuJSON, &tagsJSON, &exprJSON, &status,
 		&lastHeartbeat, &registeredAt, &updatedAt,
 	); err != nil {
 		return store.Worker{}, err
@@ -128,21 +129,43 @@ func scanWorker(row scanner) (store.Worker, error) {
 	}
 	w.Tags = tags
 
+	exprLimits, err := unmarshalJSON(exprJSON, store.WorkerExprLimits{})
+	if err != nil {
+		return store.Worker{}, err
+	}
+	w.ExprLimits = exprLimits
+
 	return w, nil
 }
 
-func workerBindArgs(w store.Worker, now string) ([]any, error) {
-	gpuJSON, err := marshalJSON(w.GPUInfo)
-	if err != nil {
-		return nil, err
+// workerJSONCols marshals the worker columns stored as JSON TEXT, in the order
+// they appear in [workerCols].
+//
+// One function, not one copy per write path: every caller that persists a
+// worker needs all of them, so a new JSON column added to only one copy would
+// still compile and would silently drop that column on the paths it was not
+// added to.
+func workerJSONCols(w store.Worker) (gpuJSON, tagsJSON, exprJSON string, err error) {
+	if gpuJSON, err = marshalJSON(w.GPUInfo); err != nil {
+		return "", "", "", err
 	}
-	tagsJSON, err := marshalJSON(w.Tags)
+	if tagsJSON, err = marshalJSON(w.Tags); err != nil {
+		return "", "", "", err
+	}
+	if exprJSON, err = marshalJSON(w.ExprLimits); err != nil {
+		return "", "", "", err
+	}
+	return gpuJSON, tagsJSON, exprJSON, nil
+}
+
+func workerBindArgs(w store.Worker, now string) ([]any, error) {
+	gpuJSON, tagsJSON, exprJSON, err := workerJSONCols(w)
 	if err != nil {
 		return nil, err
 	}
 	return []any{
 		w.ID, nullString(w.FarmID), nullString(w.QueueID), w.Name, w.Hostname, w.IPAddress, w.ComputeLocation,
-		w.OS, w.OSVersion, w.Version, w.CPUCount, w.RAMMb, gpuJSON, tagsJSON, string(w.Status),
+		w.OS, w.OSVersion, w.Version, w.CPUCount, w.RAMMb, gpuJSON, tagsJSON, exprJSON, string(w.Status),
 		nullTimeToText(w.LastHeartbeatAt), now, now,
 	}, nil
 }
@@ -210,7 +233,7 @@ func (s *Store) ListWorkers(ctx context.Context, opts store.ListWorkersOptions) 
 	}
 
 	var total int
-	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM workers`+where, args...).Scan(&total); err != nil {
+	if err := s.rdb.QueryRowContext(ctx, `SELECT COUNT(*) FROM workers`+where, args...).Scan(&total); err != nil {
 		return store.Page[store.Worker]{}, mapErr(err)
 	}
 
@@ -225,7 +248,7 @@ func (s *Store) ListWorkers(ctx context.Context, opts store.ListWorkersOptions) 
 	q := `SELECT ` + workerCols + ` FROM workers` + where + //nolint:gosec // see comment above
 		` ORDER BY ` + col + ` ` + dir +
 		` LIMIT ? OFFSET ?`
-	rows, err := s.db.QueryContext(ctx, q, append(args, opts.Pagination.Limit, opts.Pagination.Offset)...)
+	rows, err := s.rdb.QueryContext(ctx, q, append(args, opts.Pagination.Limit, opts.Pagination.Offset)...)
 	if err != nil {
 		return store.Page[store.Worker]{}, mapErr(err)
 	}
@@ -252,11 +275,7 @@ func (s *Store) ListWorkers(ctx context.Context, opts store.ListWorkersOptions) 
 
 // UpdateWorker implements [store.WorkerStore].
 func (s *Store) UpdateWorker(ctx context.Context, worker store.Worker) (store.Worker, error) {
-	gpuJSON, err := marshalJSON(worker.GPUInfo)
-	if err != nil {
-		return store.Worker{}, err
-	}
-	tagsJSON, err := marshalJSON(worker.Tags)
+	gpuJSON, tagsJSON, exprJSON, err := workerJSONCols(worker)
 	if err != nil {
 		return store.Worker{}, err
 	}
@@ -264,7 +283,7 @@ func (s *Store) UpdateWorker(ctx context.Context, worker store.Worker) (store.Wo
 	row := s.stmtUpdateWorker.QueryRowContext(ctx,
 		nullString(worker.FarmID), nullString(worker.QueueID), worker.Name, worker.Hostname, worker.IPAddress,
 		worker.ComputeLocation, worker.OS, worker.OSVersion, worker.Version, worker.CPUCount, worker.RAMMb,
-		gpuJSON, tagsJSON, string(worker.Status), nullTimeToText(worker.LastHeartbeatAt),
+		gpuJSON, tagsJSON, exprJSON, string(worker.Status), nullTimeToText(worker.LastHeartbeatAt),
 		now, worker.ID)
 	out, err := scanWorker(row)
 	return out, mapErr(err)

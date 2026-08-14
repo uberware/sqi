@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 import type { ProductParameter } from '@/api/types'
 
-export type Widget = 'text' | 'textarea' | 'select' | 'checkbox' | 'number' | 'hidden'
+export type Widget = 'text' | 'textarea' | 'select' | 'checkbox' | 'number' | 'hidden' | 'list'
 
 const CONTROL_WIDGET: Record<string, Widget> = {
   LINE_EDIT: 'text',
@@ -15,6 +15,35 @@ const CONTROL_WIDGET: Record<string, Widget> = {
   CHOOSE_INPUT_FILE: 'text',
   CHOOSE_OUTPUT_FILE: 'text',
   CHOOSE_DIRECTORY: 'text',
+  // RFC 0007's list controls. The three CHOOSE_*_LIST variants map to the same
+  // row editor as the others rather than to a file dialog, following the
+  // precedent set by their scalar counterparts three lines above.
+  LINE_EDIT_LIST: 'list',
+  SPIN_BOX_LIST: 'list',
+  CHECK_BOX_LIST: 'list',
+  CHOOSE_INPUT_FILE_LIST: 'list',
+  CHOOSE_OUTPUT_FILE_LIST: 'list',
+  CHOOSE_DIRECTORY_LIST: 'list',
+}
+
+/** Element type of a LIST[*] type, or null for a scalar type. */
+export function listElementType(t: ProductParameter['type']): ProductParameter['type'] | null {
+  switch (t) {
+    case 'LIST[STRING]':
+      return 'STRING'
+    case 'LIST[PATH]':
+      return 'PATH'
+    case 'LIST[INT]':
+      return 'INT'
+    case 'LIST[FLOAT]':
+      return 'FLOAT'
+    case 'LIST[BOOL]':
+      return 'BOOL'
+    case 'LIST[LIST[INT]]':
+      return 'LIST[INT]'
+    default:
+      return null
+  }
 }
 
 /** Choose a form widget for a parameter: explicit userInterface control first,
@@ -25,12 +54,54 @@ export function selectWidget(p: ProductParameter): Widget {
     return CONTROL_WIDGET[control] as Widget
   }
   if (p.allowed_values && p.allowed_values.length > 0) return 'select'
+  // LIST[LIST[INT]] is deliberately absent: RFC 0007 gives it no control but
+  // HIDDEN and describes its use case as programmatic, so it falls through to
+  // a raw JSON text field rather than a doubly-nested row editor.
+  if (
+    p.type === 'LIST[STRING]' ||
+    p.type === 'LIST[PATH]' ||
+    p.type === 'LIST[INT]' ||
+    p.type === 'LIST[FLOAT]' ||
+    p.type === 'LIST[BOOL]'
+  ) {
+    return 'list'
+  }
+  if (p.type === 'BOOL') return 'checkbox'
   if (p.type === 'INT' || p.type === 'FLOAT') return 'number'
   return 'text'
 }
 
 export function paramLabel(p: ProductParameter): string {
   return p.user_interface?.label || p.name
+}
+
+/** Display-only truthiness for a BOOL value, recognising the same spellings
+ * the server's parseBoolParamValue accepts (internal/openjd/validate_paramtypes.go):
+ * the booleans true/false, the numbers 1/1.0 and 0/0.0, and the
+ * case-insensitive strings true/yes/on/1/1.0 and false/no/off/0/0.0.
+ *
+ * This is deliberately NOT validation. Sub-project G's design refused to
+ * duplicate the accepted-values table for validation -- the server owns
+ * that, and a second copy is a drift hazard. But a checkbox that cannot
+ * render the correct state for a value the server accepts is a different
+ * problem: this copy is display-only and never decides whether a value is
+ * accepted. */
+export function isBoolTruthy(v: unknown): boolean {
+  if (typeof v === 'boolean') return v
+  if (typeof v === 'number') return v === 1
+  if (typeof v === 'string') {
+    switch (v.trim().toLowerCase()) {
+      case 'true':
+      case 'yes':
+      case 'on':
+      case '1':
+      case '1.0':
+        return true
+      default:
+        return false
+    }
+  }
+  return false
 }
 
 export function isRequired(p: ProductParameter): boolean {

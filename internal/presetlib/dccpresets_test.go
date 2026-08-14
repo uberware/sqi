@@ -14,29 +14,17 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/uberware/sqi/internal/fsutil"
+	"github.com/uberware/sqi/internal/product"
 )
 
 // The DCC reference presets must round-trip through the real library install
 // path (index → fetch → fingerprint verify → parsed product).
 func TestDCCReferencePresetsInstallLoop(t *testing.T) {
-	matches, err := filepath.Glob(filepath.Join("..", "..", "presets", "sqi", "*.yaml"))
-	if err != nil {
-		t.Fatalf("glob presets/sqi: %v", err)
-	}
-	// Drop macOS AppleDouble sidecars ("._name"), which match *.yaml. They
-	// appear on non-APFS volumes whenever a checkout rewrites a preset, and
-	// serving one as a preset definition fails this test for a reason that
-	// has nothing to do with the presets. internal/presetgen filters them in
-	// production code for the same reason -- see isAppleDouble there.
-	paths := make([]string, 0, len(matches))
-	for _, p := range matches {
-		if strings.HasPrefix(filepath.Base(p), "._") {
-			continue
-		}
-		paths = append(paths, p)
-	}
-	if len(paths) == 0 {
-		t.Fatalf("glob presets/sqi matched no presets (%d before filtering)", len(matches))
+	paths, err := fsutil.Glob(filepath.Join("..", "..", "presets", "sqi", "*.yaml"))
+	if err != nil || len(paths) == 0 {
+		t.Fatalf("glob presets/sqi: %v (%d files)", err, len(paths))
 	}
 	files := map[string][]byte{}
 	var entries []IndexEntry
@@ -81,7 +69,7 @@ func TestDCCReferencePresetsInstallLoop(t *testing.T) {
 		t.Fatalf("index entries = %d, want %d", len(got), len(paths))
 	}
 	for _, entry := range got {
-		if _, err := svc.FetchDefinition(context.Background(), entry); err != nil {
+		if _, err := svc.FetchDefinition(context.Background(), entry, product.ValidateOptions{EnforceLimits: true}); err != nil {
 			t.Errorf("FetchDefinition(%s): %v", entry.Name, err)
 		}
 	}

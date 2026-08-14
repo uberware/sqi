@@ -10,6 +10,10 @@
 # (/api/v1/ws, subject tasks/{id}/logs). This exercises the actual bin/ artifacts
 # with default config, complementing the in-process Go integration tests.
 #
+# It then submits a second job declaring the OpenJD EXPR extension and asserts on
+# the VALUE its expressions resolved to — see the "EXPR job" section below for
+# why that value can only have been produced by the worker at phase 3.
+#
 # Usage:
 #   bash scripts/smoke.sh         # builds binaries if missing, runs the flow
 #   make smoke                    # same, via the Makefile
@@ -463,6 +467,106 @@ else
   fi
 fi
 
+# ── EXPR job: an expression the WORKER resolves at phase 3 ────────────────────
+#
+# The job above is base-spec OpenJD. This one declares extensions: [EXPR], which
+# the server accepted for the first time in EXPR sub-project H2 — before that the
+# submission was rejected outright, so no EXPR template had ever been executed by
+# these binaries at all.
+#
+# The assertion is on the RESOLVED TEXT, not on the job completing, and the text
+# is built from two things the server cannot substitute before dispatch:
+#
+#   * Task.Param.Frame — the assignment carries the task's parameter values and
+#     the RAW, unresolved action; the worker builds the concrete symbol table and
+#     evaluates "Param.Tag + '-frame' + zfill(Task.Param.Frame * 3, 4)" itself.
+#   * Session.WorkingDirectory — a host fact that does not exist in any form at
+#     submission time. It is wrapped in a lone list reference, which the OpenJD
+#     list-item rule flattens into TWO command-line arguments; echo rejoins them
+#     with a space.
+#
+# Expected echoed line: "<sentinel>-frame0021 abs true".
+
+EXPR_SENTINEL="sqi-smoke-expr-$$-${RANDOM}"
+EXPR_EXPECTED="${EXPR_SENTINEL}-frame0021 abs true"
+
+EXPR_JOB_YAML="$(cat <<YAML
+specificationVersion: "jobtemplate-2023-09"
+extensions:
+  - EXPR
+name: sqi smoke expr job
+parameterDefinitions:
+  - name: Tag
+    type: STRING
+    default: "${EXPR_SENTINEL}"
+steps:
+  - name: Run
+    parameterSpace:
+      taskParameterDefinitions:
+        - name: Frame
+          type: INT
+          range: "7"
+    script:
+      actions:
+        onRun:
+          command: echo
+          args:
+            - "{{ Param.Tag + '-frame' + zfill(Task.Param.Frame * 3, 4) }}"
+            - "{{ ['abs', string(is_absolute(Session.WorkingDirectory))] }}"
+YAML
+)"
+
+expr_job_json="$(curl -s -X POST "$submit_url" \
+  -H 'Content-Type: application/x-yaml' \
+  --data-binary "$EXPR_JOB_YAML")"
+EXPR_JOB_ID="$(json_get "$expr_job_json" id)"
+[ -n "$EXPR_JOB_ID" ] || {
+  log_tail "server log" "$SERVER_LOG"
+  fail "could not submit EXPR job (response: ${expr_job_json})"
+}
+log "submitted EXPR job ${EXPR_JOB_ID} (sentinel: ${EXPR_SENTINEL})"
+
+EXPR_TASK_ID=""
+for _ in $(seq 1 100); do
+  expr_tasks_json="$(curl -s "${BASE_URL}/api/v1/jobs/${EXPR_JOB_ID}/tasks" 2>/dev/null || true)"
+  EXPR_TASK_ID="$(first_task_id "$expr_tasks_json")"
+  [ -n "$EXPR_TASK_ID" ] && break
+  sleep 0.2
+done
+[ -n "$EXPR_TASK_ID" ] || fail "EXPR job ${EXPR_JOB_ID} produced no tasks"
+log "EXPR task ${EXPR_TASK_ID}"
+
+EXPR_JOB_STATUS=""
+for _ in $(seq 1 200); do
+  expr_job_json="$(curl -s "${BASE_URL}/api/v1/jobs/${EXPR_JOB_ID}" 2>/dev/null || true)"
+  EXPR_JOB_STATUS="$(json_get "$expr_job_json" status)"
+  case "$EXPR_JOB_STATUS" in
+    completed|failed|canceled) break ;;
+  esac
+  sleep 0.2
+done
+[ "$EXPR_JOB_STATUS" = "completed" ] || {
+  log_tail "server log" "$SERVER_LOG"
+  log_tail "worker log" "$WORKER_LOG"
+  fail "EXPR job ${EXPR_JOB_ID} did not reach 'completed' (last status: '${EXPR_JOB_STATUS:-unknown}')"
+}
+log "EXPR job completed"
+
+EXPR_OK=0
+for _ in $(seq 1 75); do
+  expr_logs_json="$(curl -s "${BASE_URL}/api/v1/tasks/${EXPR_TASK_ID}/logs" 2>/dev/null || true)"
+  if logs_contain "$expr_logs_json" "$EXPR_EXPECTED"; then
+    EXPR_OK=1
+    break
+  fi
+  sleep 0.2
+done
+[ "$EXPR_OK" -eq 1 ] || {
+  log_tail "worker log" "$WORKER_LOG"
+  fail "EXPR assertion: resolved text '${EXPR_EXPECTED}' not found in task logs"
+}
+log "EXPR assertion PASSED: phase-3 resolved text found in task logs"
+
 # ── Summary ───────────────────────────────────────────────────────────────────
 
 log "=============================================="
@@ -472,5 +576,6 @@ case "$WS_OK" in
   pass) log "  WS   log assertion: PASSED" ;;
   skip) log "  WS   log assertion: SKIPPED (no websockets python)" ;;
 esac
+log "  EXPR phase-3 assertion: PASSED"
 log "=============================================="
 exit 0

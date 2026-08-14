@@ -44,6 +44,7 @@ func Validate(cfg Config) []ValidationError {
 	errs = append(errs, validateScheduler(cfg.Scheduler)...)
 	errs = append(errs, validateDiscovery(cfg.Discovery)...)
 	errs = append(errs, validateDiagnostics(cfg.Diagnostics)...)
+	errs = append(errs, validateOpenJD(cfg.OpenJD)...)
 	errs = append(errs, validateAuth(cfg.Auth)...)
 	return errs
 }
@@ -279,6 +280,85 @@ func validateDiagnostics(cfg DiagnosticsConfig) []ValidationError {
 		}}
 	}
 	return nil
+}
+
+// validateOpenJD validates the four EXPR expression limits and the wall-clock
+// submission deadline.
+//
+// These bound what an UNAUTHENTICATED job submission may spend inside the
+// expression checker, so an out-of-range value is a hard startup failure
+// rather than a silently clamped one: an operator who typed 10000000 where
+// they meant 10000 must find out at boot, not by serving a request that pins a
+// core for minutes.
+//
+// Each message names the bound, the value observed, and both the environment
+// variable and the YAML key — the shape [validateDiagnostics] established.
+func validateOpenJD(cfg OpenJDConfig) []ValidationError {
+	limits := []struct {
+		field   string
+		env     string
+		yamlKey string
+		got     int64
+		min     int64
+		max     int64
+	}{
+		{
+			field: "openjd.expr_operation_limit", env: "SQI_OPENJD_EXPR_OPERATION_LIMIT",
+			yamlKey: "openjd.expr_operation_limit", got: cfg.ExprOperationLimit,
+			min: MinOpenJDExprOperationLimit, max: MaxOpenJDExprOperationLimit,
+		},
+		{
+			field: "openjd.expr_memory_limit", env: "SQI_OPENJD_EXPR_MEMORY_LIMIT",
+			yamlKey: "openjd.expr_memory_limit", got: cfg.ExprMemoryLimit,
+			min: MinOpenJDExprMemoryLimit, max: MaxOpenJDExprMemoryLimit,
+		},
+		{
+			field: "openjd.expr_template_positions", env: "SQI_OPENJD_EXPR_TEMPLATE_POSITIONS",
+			yamlKey: "openjd.expr_template_positions", got: cfg.ExprTemplatePositions,
+			min: MinOpenJDExprTemplatePositions, max: MaxOpenJDExprTemplatePositions,
+		},
+		{
+			field: "openjd.expr_template_retained_bytes", env: "SQI_OPENJD_EXPR_TEMPLATE_RETAINED_BYTES",
+			yamlKey: "openjd.expr_template_retained_bytes", got: cfg.ExprTemplateRetainedBytes,
+			min: MinOpenJDExprTemplateRetainedBytes, max: MaxOpenJDExprTemplateRetainedBytes,
+		},
+	}
+
+	var errs []ValidationError
+	for _, l := range limits {
+		if l.got < l.min || l.got > l.max {
+			errs = append(errs, ValidationError{
+				Field: l.field,
+				Message: fmt.Sprintf(
+					"must be between %d and %d, got %d; set %s or %s",
+					l.min, l.max, l.got, l.env, l.yamlKey,
+				),
+			})
+		}
+	}
+
+	// The wall-clock backstop is checked separately rather than folded into
+	// the table above: it is a time.Duration, and the durations in this
+	// package are validated in their own comparisons (see validateScheduler's
+	// heartbeat_timeout and unschedulable_grace) so the message can print
+	// "5s" rather than a nanosecond count no operator typed.
+	//
+	// Zero is rejected like the four are, and for a stronger reason: for those
+	// it would mean "unlimited", while here it would mean "give up
+	// immediately". Neither is a setting anyone wants by accident, and an
+	// operator who wants a long deadline has the ceiling to reach for.
+	if d := cfg.ExprSubmissionDeadline; d < MinOpenJDExprSubmissionDeadline ||
+		d > MaxOpenJDExprSubmissionDeadline {
+		errs = append(errs, ValidationError{
+			Field: "openjd.expr_submission_deadline",
+			Message: fmt.Sprintf(
+				"must be between %s and %s, got %s; set %s or %s",
+				MinOpenJDExprSubmissionDeadline, MaxOpenJDExprSubmissionDeadline, d,
+				"SQI_OPENJD_EXPR_SUBMISSION_DEADLINE", "openjd.expr_submission_deadline",
+			),
+		})
+	}
+	return errs
 }
 
 // validateAuth validates the auth config. Rules only apply when auth is

@@ -116,6 +116,29 @@ type Config struct {
 	// job submission.  Default true.  Mirror of config.OpenJDConfig.EnforceLimits.
 	EnforceOpenJDLimits bool
 
+	// OpenJDExprLimits bounds what one submitted template may spend inside the
+	// EXPR expression checker — EXPR sub-project E4d. Mirror of
+	// config.OpenJDConfig's four expr_* keys, mapped in cmd/sqi-server.
+	//
+	// The ZERO VALUE means "use openjd's defaults", so a Config built without
+	// it (every test in this repo that constructs a server.Config literal)
+	// behaves exactly as it did before this field existed.
+	OpenJDExprLimits openjd.ExprLimits
+
+	// OpenJDExprSubmissionDeadline is how long the expression checker may work
+	// on ONE submission before this server gives up on it and answers 503 —
+	// EXPR sub-project H1's wall-clock backstop. Mirror of
+	// config.OpenJDConfig.ExprSubmissionDeadline, mapped in cmd/sqi-server.
+	//
+	// A DURATION, never an instant: the API layer turns it into an absolute
+	// deadline per request. See openjd.SubmitOptions.Deadline for what goes
+	// wrong if that conversion is hoisted anywhere that runs once.
+	//
+	// The ZERO VALUE means no backstop, so a Config built without it (every
+	// test in this repo that constructs a server.Config literal) behaves
+	// exactly as it did before this field existed.
+	OpenJDExprSubmissionDeadline time.Duration
+
 	// PresetLibraryURL is the URL of the community preset library index JSON.
 	// When empty the /api/v1/presets endpoints respond 503.
 	// Mirror of config.PresetLibraryConfig.URL.
@@ -185,7 +208,15 @@ func DefaultConfig() Config {
 		DiscoveryEnabled:      true,
 		DiscoveryInstanceName: "sqi-server",
 		EnforceOpenJDLimits:   true,
-		SeedDefaults:          true,
+		OpenJDExprLimits:      openjd.DefaultExprLimits(),
+		// Taken from internal/config's constant rather than restated, so this
+		// default cannot drift from the one an operator's config file is
+		// validated against. This package may import internal/config (it
+		// already does, for the LDAP and OIDC blocks); internal/config may not
+		// import internal/openjd, which is why the four expr_* LIMITS are
+		// duplicated there and this is not.
+		OpenJDExprSubmissionDeadline: config.DefaultOpenJDExprSubmissionDeadline,
+		SeedDefaults:                 true,
 	}
 }
 
@@ -357,7 +388,7 @@ func (s *Server) start(ctx context.Context) error {
 	// consumer), and heartbeat timeout sweep.
 	// The hub is passed as the notifier so live events are
 	// pushed to subscribed WebSocket clients after each state change.
-	s.sched = scheduler.New(s.cfg.Scheduler, s.store, s.busClient, s.metrics, s.logger, s.wsHub, s.diagBuf)
+	s.sched = scheduler.New(schedulerConfig(s.cfg), s.store, s.busClient, s.metrics, s.logger, s.wsHub, s.diagBuf)
 	go func() {
 		if err := s.sched.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
 			s.logger.ErrorContext(ctx, "scheduler: exited with error", slog.Any("error", err))
@@ -372,6 +403,7 @@ func (s *Server) start(ctx context.Context) error {
 		Store: s.store,
 		Submitter: openjd.NewSubmitterWithOptions(s.store, openjd.SubmitterOptions{
 			EnforceLimits: s.cfg.EnforceOpenJDLimits,
+			ExprLimits:    s.cfg.OpenJDExprLimits,
 		}),
 		Products:  product.NewCatalog(s.store),
 		Scheduler: s.sched,
@@ -397,14 +429,7 @@ func (s *Server) start(ctx context.Context) error {
 	deps.CookieName = s.cfg.AuthCookieName
 	deps.CookieSecure = s.cfg.AuthCookieSecure
 	router := api.NewRouter(
-		api.Config{
-			CORSOrigins:            s.cfg.CORSOrigins,
-			EnablePprof:            s.cfg.EnablePprof,
-			DisableRateLimit:       s.cfg.DisableRateLimit,
-			WorkerOfflineThreshold: s.sched.WorkerTimeout(),
-			AuthEnabled:            s.cfg.AuthEnabled,
-			ValidateJobOwner:       s.cfg.AuthValidateJobOwner,
-		},
+		routerConfig(s.cfg, s.sched.WorkerTimeout()),
 		deps,
 		s.logger,
 		s.metrics,

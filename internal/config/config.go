@@ -544,7 +544,145 @@ type OpenJDConfig struct {
 	// predate the strict limits and cannot yet be updated.
 	// Env: SQI_OPENJD_ENFORCE_LIMITS
 	EnforceLimits bool `yaml:"enforce_limits"`
+
+	// ExprOperationLimit is how many OpenJD expression-language operations
+	// (specification section 1.3.10) ONE expression in a submitted template may
+	// spend at validation time.
+	//
+	// Raising it lengthens the worst request this server can be asked to
+	// serve, roughly in proportion: nothing meters wall clock, and an
+	// operation's real cost varies by orders of magnitude between arithmetic
+	// and a regex over a large string.
+	// Range: [MinOpenJDExprOperationLimit, MaxOpenJDExprOperationLimit].
+	// Env: SQI_OPENJD_EXPR_OPERATION_LIMIT
+	ExprOperationLimit int64 `yaml:"expr_operation_limit"`
+
+	// ExprMemoryLimit is how many live bytes (specification section 1.3.9) ONE
+	// expression in a submitted template may hold at validation time.
+	//
+	// Raising it permits proportionally more memory per evaluation on an
+	// unauthenticated request path; the ceiling is one order of magnitude above
+	// the default for that reason. (An earlier revision of this comment claimed
+	// a fixed internal guard made a larger value inert. It does not -- that was
+	// measured and disproved. Treat the ceiling as a deliberate policy limit,
+	// not as a point beyond which the setting stops working.)
+	// Range: [MinOpenJDExprMemoryLimit, MaxOpenJDExprMemoryLimit].
+	// Env: SQI_OPENJD_EXPR_MEMORY_LIMIT
+	ExprMemoryLimit int64 `yaml:"expr_memory_limit"`
+
+	// ExprTemplatePositions is how many expression positions ONE template may
+	// contain — cumulative across the whole validation pass, not per field.
+	//
+	// This and ExprOperationLimit MULTIPLY: the cumulative operation ceiling
+	// for one request is their product, and raising both raises it twice over.
+	//
+	// It also has a farm-wide consequence the server cannot check alone: a
+	// worker's own per-assignment position cap must not be lower, or a job
+	// this server ACCEPTS fails on every task at run time instead of failing
+	// the one request that could have reported it.
+	// Range: [MinOpenJDExprTemplatePositions, MaxOpenJDExprTemplatePositions].
+	// Env: SQI_OPENJD_EXPR_TEMPLATE_POSITIONS
+	ExprTemplatePositions int64 `yaml:"expr_template_positions"`
+
+	// ExprTemplateRetainedBytes is how many bytes a template's `let:` bindings
+	// may cumulatively retain across one validation pass.
+	//
+	// Counted as cumulative ALLOCATION, not peak live retention: a template
+	// that never holds more than a few MB at once is still charged the sum of
+	// every block. Sizing a host's RAM against this number will over-provision.
+	// Range: [MinOpenJDExprTemplateRetainedBytes, MaxOpenJDExprTemplateRetainedBytes].
+	// Env: SQI_OPENJD_EXPR_TEMPLATE_RETAINED_BYTES
+	ExprTemplateRetainedBytes int64 `yaml:"expr_template_retained_bytes"`
+
+	// ExprSubmissionDeadline is how long this server will keep evaluating one
+	// submission's expressions before giving up on it.
+	//
+	// IT IS NOT ONE OF THE FOUR ABOVE, and the difference is the reason it
+	// exists. Those four are DETERMINISTIC: a template that breaches one
+	// breaches it on every machine, every time, so the breach is a property of
+	// the template and the submitter is told their template is invalid (a 422
+	// no retry can fix). This one is WALL CLOCK, so the same body would be
+	// accepted on an idle host and rejected on a loaded one. A breach here
+	// therefore reports that this server gave up (a 503 a retry may clear),
+	// never that the template is wrong.
+	//
+	// It exists because none of the four bounds TIME. Specification section
+	// 1.3.10 prices 256 bytes at one operation, so byte-heavy work is nearly
+	// free in operations and expensive in seconds; the worst single request
+	// measured on this branch is ~17 minutes of server CPU with every budget
+	// respected. This is the only bound that does not depend on that
+	// measurement being right.
+	// Range: [MinOpenJDExprSubmissionDeadline, MaxOpenJDExprSubmissionDeadline].
+	// Env: SQI_OPENJD_EXPR_SUBMISSION_DEADLINE
+	ExprSubmissionDeadline time.Duration `yaml:"expr_submission_deadline"`
 }
+
+// The defaults and the operator-configurable range for [OpenJDConfig]'s four
+// EXPR expression limits.
+//
+// These duplicate internal/openjd's DefaultExprLimits and Min/MaxExpr*
+// constants ON PURPOSE: internal/config must not import internal/openjd (that
+// would be a cross-import between two same-level internal packages, and
+// internal/openjd pulls in internal/store). The duplication is pinned by
+// TestExprLimits_ConfigMatchesOpenJD in internal/server -- the one package that
+// may import both -- which fails the build if either side moves without the
+// other.
+//
+// The rationale for each number — which bounds are catastrophe bounds with a
+// ceiling no operator may raise past, which is a policy bound, and what the
+// floors were measured against — lives on internal/openjd's ExprLimits and its
+// Min/Max constants, next to the code the numbers govern.
+const (
+	DefaultOpenJDExprOperationLimit int64 = 10_000
+	MinOpenJDExprOperationLimit     int64 = 1_000
+	MaxOpenJDExprOperationLimit     int64 = 100_000
+
+	DefaultOpenJDExprMemoryLimit int64 = 1_000_000
+	MinOpenJDExprMemoryLimit     int64 = 4_096
+	MaxOpenJDExprMemoryLimit     int64 = 10_000_000
+
+	DefaultOpenJDExprTemplatePositions int64 = 10_000
+	MinOpenJDExprTemplatePositions     int64 = 256
+	MaxOpenJDExprTemplatePositions     int64 = 100_000
+
+	DefaultOpenJDExprTemplateRetainedBytes int64 = 10_000_000
+	MinOpenJDExprTemplateRetainedBytes     int64 = 65_536
+	MaxOpenJDExprTemplateRetainedBytes     int64 = 100_000_000
+)
+
+// The default and the operator-configurable range for
+// [OpenJDConfig.ExprSubmissionDeadline], EXPR sub-project H1's wall-clock
+// backstop.
+//
+// Unlike the four above, these are NOT duplicated from internal/openjd: the
+// deadline is a per-request absolute instant computed here from this duration,
+// so internal/openjd holds no constant to keep in step with. Nothing in this
+// package imports internal/openjd, and nothing needs to.
+const (
+	// DefaultOpenJDExprSubmissionDeadline is deliberately about three orders
+	// of magnitude below the measured ~17-minute worst case rather than
+	// derived from a template that needs it: no legitimate submission
+	// observed on this branch spends anything close to five seconds in the
+	// expression checker, and the point of the number is the distance from
+	// the exposure, not that any particular second is special.
+	DefaultOpenJDExprSubmissionDeadline = 5 * time.Second
+
+	// MinOpenJDExprSubmissionDeadline is the floor because below a second a
+	// legitimate large template -- a body near the 4 MiB request cap, on a
+	// busy or slow host -- could plausibly fail, and a backstop that rejects
+	// valid work is worse than the exposure it guards. It is the point past
+	// which this setting stops being a backstop and becomes a load-dependent
+	// admission policy.
+	MinOpenJDExprSubmissionDeadline = time.Second
+
+	// MaxOpenJDExprSubmissionDeadline is the ceiling because the key exists to
+	// bound that ~17-minute figure. A ceiling anywhere near it would bound
+	// nothing an operator could not already reach, and this repository's own
+	// history records that the worst case has been under-reported three
+	// separate times -- so the ceiling is set against what a submission should
+	// ever need, not against what has been measured to be possible.
+	MaxOpenJDExprSubmissionDeadline = 60 * time.Second
+)
 
 // DefaultConfig returns a [Config] with sensible defaults suitable for local
 // development. Production deployments should override fields via a config file
@@ -584,7 +722,12 @@ func DefaultConfig() Config {
 			InstanceName: "sqi-server",
 		},
 		OpenJD: OpenJDConfig{
-			EnforceLimits: true,
+			EnforceLimits:             true,
+			ExprOperationLimit:        DefaultOpenJDExprOperationLimit,
+			ExprMemoryLimit:           DefaultOpenJDExprMemoryLimit,
+			ExprTemplatePositions:     DefaultOpenJDExprTemplatePositions,
+			ExprTemplateRetainedBytes: DefaultOpenJDExprTemplateRetainedBytes,
+			ExprSubmissionDeadline:    DefaultOpenJDExprSubmissionDeadline,
 		},
 		Diagnostics: DiagnosticsConfig{
 			BufferSize: 1000,

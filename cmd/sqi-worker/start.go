@@ -220,7 +220,9 @@ func runStart(cmd *cobra.Command, _ []string) error {
 	// Build the registrar with the merged capability set. Register() is called
 	// once at boot; SetupReconnectHook() ensures the registration is re-sent
 	// on any subsequent NATS reconnect so the server always has a live record.
-	reg, err := registration.New(nc, workerID, cfg.Worker, caps, logger)
+	// The SAME exprLimitsFromConfig call the session manager is built with
+	// (below): what this worker advertises has to be what it enforces.
+	reg, err := registration.New(nc, workerID, cfg.Worker, exprLimitsFromConfig(cfg.Expr), caps, logger)
 	if err != nil {
 		return fmt.Errorf("build registrar: %w", err)
 	}
@@ -273,8 +275,14 @@ func runStart(cmd *cobra.Command, _ []string) error {
 	// sessionRootMode (see effectiveSessionRoot) is 0711 when sessionRoot was
 	// resolved to a location that must be traversable by another identity, or
 	// 0750 (the pre-split mode) for the non-root fallback under DataDir.
+	// cfg.Expr is this host's operator-configured phase-3 expression budget
+	// (EXPR sub-project E4d, Task 2). It reaches every phase-3 evaluation
+	// through the AssignmentBudget the Manager builds per session — this call
+	// is the only wiring point, so an omission here would silently meter the
+	// whole worker against the built-in defaults.
 	sessionMgr := session.NewManager(
-		sessionRoot, cfg.Worker.KeepFailedSessions, isolationProvider, cfg.Isolation, logger,
+		sessionRoot, cfg.Worker.KeepFailedSessions, isolationProvider, cfg.Isolation,
+		exprLimitsFromConfig(cfg.Expr), logger,
 		session.WithSessionRootMode(sessionRootMode),
 	)
 

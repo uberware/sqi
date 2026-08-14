@@ -775,6 +775,233 @@ isolation:
 
 ---
 
+## `expr` — EXPR expression limits
+
+Five keys bound what **one assignment** may spend evaluating OpenJD `EXPR`
+expressions **on this host**, at task-execution time — after the server has
+already accepted the job. They are separate from the server's own
+submission-time limits
+([`openjd.expr_*`](configuration.md#expr-expression-limits--read-this-before-changing-any-of-them)):
+each worker reads its own, which is what lets a heterogeneous farm size them
+to each host's real memory.
+
+These are **always on**. `0` is not "unlimited" — it is out of range, and an
+out-of-range value is a **startup failure, not a clamp**.
+
+> **These keys are live.** Earlier revisions carried a "`EXPR` is not accepted
+> yet" callout here: the extension's registry status was *in-progress*, so no
+> template declaring `extensions: [EXPR]` could be submitted and no assignment
+> ever reached these limits. **That is no longer true** — `EXPR` is a supported
+> extension, EXPR jobs are submitted, dispatched and executed, and every one of
+> these keys now meters real work on this host. See
+> [`docs/openjd-extensions/expr.md`](openjd-extensions/expr.md).
+
+### Four caveats before you change any of them
+
+**1. Tightening is not free here the way it is on the server.** Every one of
+these five is compared against a server-side limit metering the same values
+one phase earlier, and this worker must not be **tighter** than the server it
+reports to:
+
+| This worker's key | must be ≥ the server's |
+|---|---|
+| `expr.operation_limit` | `openjd.expr_operation_limit` |
+| `expr.memory_limit` | `openjd.expr_memory_limit` |
+| `expr.assignment_positions` | `openjd.expr_template_positions` |
+| `expr.assignment_retained_bytes` | `openjd.expr_template_retained_bytes` |
+| `expr.let_retained_bytes` | `openjd.expr_template_retained_bytes` |
+
+The last row pairs a **per-table** limit with a **template-wide** one, because
+the server meters no per-table scope. A whole template's retained bytes is a
+valid upper bound on any one of its tables, so the comparison is conservative
+— see [`expr.let_retained_bytes`](#exprlet_retained_bytes), which is where the
+consequence of this key's low floor is spelled out.
+
+This worker advertises all five when it registers, and the server **refuses
+to dispatch EXPR jobs to it while any of them is short** — it does not accept
+the job and then fail it here, once per task, naming a budget the submitter
+never saw. So the cost of tightening past the server is that this host stops
+being offered EXPR work; it keeps running **everything else**. The server logs
+the reason when this worker registers, and flags any task no capable worker
+exists for — the latter only while the server's unschedulable sweep is on
+(`scheduler.unschedulable_grace > 0`, the default). With that sweep off, such
+a task simply waits `ready` with nothing written on it, and the one-off
+registration log line is the only signal — and because the *server* emits it,
+it lands in the server's own log (Admin → Server log, component `server`), not
+in this worker's diagnostics.
+
+The relation is **necessary, not sufficient.** Phase 3 evaluates concrete
+values where the server had placeholders, so the same expression can
+legitimately cost more here than it did at submit — which is exactly why the
+shipped defaults are 100x the server's operation budget and 20x its memory
+budget rather than equal to them. Matching the server is the floor, not a
+guarantee: an accepted job can still exhaust a worker that passes every
+comparison, and no configuration on either side makes that impossible.
+
+**2. `operation_limit` and `assignment_positions` multiply.** The cumulative
+operation ceiling for one assignment is their product — 10¹⁰ at the defaults
+(1,000,000 x 10,000), and 10¹² if both are raised to their maxima
+(10,000,000 x 100,000), **100x**. Nothing counts operations cumulatively; the
+product is a derived upper bound, not a measurement. `memory_limit` is not a
+third multiplier on it: raising that lets one evaluation hold a larger value,
+and measured on this branch it does **not** change what an operation costs in
+time.
+
+**3. None of these bounds wall-clock time.** Specification section 1.3.10
+rule 3 prices a string operation at the value's length divided by 256, so
+byte-heavy work is charged almost nothing:
+`("x" * 900000).upper()` and `("x" * 900000).title()` are charged **the same
+7,034 operations** and differ by 9x in CPU (~6 ms vs ~58 ms), and a
+regex over the same string is charged **half** as much for nearly the slowest
+time — a ~17x spread in cost per operation. Raising a limit lengthens the
+worst assignment this host can be asked to resolve, roughly in proportion, and
+no value makes a slow one impossible. Unlike the server's, this cost is
+charged to the task slot the assignment already occupies; see
+[the server's caveat 2](configuration.md#2-none-of-these-limits-bounds-wall-clock-time)
+for the measured numbers, which apply per position here too.
+
+**4. The byte dimensions count cumulative allocation, not peak live
+retention.** A session that never holds more than a few MB live at once is
+still charged the sum of every environment it enters. Sizing host RAM against
+`assignment_retained_bytes` **over-provisions**; sizing that key against an
+observed RSS **under-bounds** it. For real RAM, the number that matters is
+`50 x memory_limit` — the structural ceiling of a single `let:` block, 1 GB at
+the default — per concurrently-resolving task slot, not `memory_limit` itself.
+
+### `expr.operation_limit`
+
+| | |
+|---|---|
+| **Type** | `int` |
+| **Default** | `1000000` |
+| **Range** | `10000` – `10000000` |
+| **Env var** | `SQI_WORKER_EXPR_OPERATION_LIMIT` |
+
+Operations (specification section 1.3.10) **one** host-side expression
+evaluation may spend. The floor is the server's own *default* per-evaluation
+operation budget: below that, this worker would reject at execution what the
+server type-checked at submit.
+
+```yaml
+expr:
+  operation_limit: 1000000
+```
+
+### `expr.memory_limit`
+
+| | |
+|---|---|
+| **Type** | `int` |
+| **Default** | `20000000` |
+| **Range** | `1000000` – `200000000` |
+| **Env var** | `SQI_WORKER_EXPR_MEMORY_LIMIT` |
+
+Live bytes (specification section 1.3.9) **one** host-side expression
+evaluation may hold. See caveat 4: the per-`let:`-block structural ceiling is
+50x this number, so size RAM against that product, not against this value.
+
+```yaml
+expr:
+  memory_limit: 20000000
+```
+
+### `expr.assignment_positions`
+
+| | |
+|---|---|
+| **Type** | `int` |
+| **Default** | `10000` |
+| **Range** | `2000` – `100000` |
+| **Env var** | `SQI_WORKER_EXPR_ASSIGNMENT_POSITIONS` |
+
+Expression **positions** (the command, one args entry, one embedded file, one
+variable value) one assignment may resolve, summed across the task's own
+symbol table and every environment the session enters. Charged at environment
+**entry** only — teardown gets a fresh allowance per evaluation so a budget
+that cannot avert the memory it charges for can never silently skip an
+`onExit` (license check-ins, unmounts).
+
+**Must not be lower than the server's `openjd.expr_template_positions`.** An
+assignment's positions are a subset of its template's, so a lower value here
+cannot run a job the server accepted; the server sees that from this worker's
+registration and withholds EXPR work rather than failing it here. The floor of
+2,000 sits just above a worked count of 1,841 positions for a generous session
+(one task action plus 50 entered environments).
+
+```yaml
+expr:
+  assignment_positions: 10000
+```
+
+### `expr.assignment_retained_bytes`
+
+| | |
+|---|---|
+| **Type** | `int` |
+| **Default** | `20000000` |
+| **Range** | `2000000` – `200000000` |
+| **Env var** | `SQI_WORKER_EXPR_ASSIGNMENT_RETAINED_BYTES` |
+
+Bytes every `let:` block in one assignment may **cumulatively** retain, summed
+across the task's symbol table and every environment's. The default is exactly
+2x `expr.let_retained_bytes` — sized for a task plus one environment, each
+near its own per-table ceiling.
+
+Cumulative allocation, not peak live retention — see caveat 4.
+
+```yaml
+expr:
+  assignment_retained_bytes: 20000000
+```
+
+### `expr.let_retained_bytes`
+
+| | |
+|---|---|
+| **Type** | `int` |
+| **Default** | `10000000` |
+| **Range** | `1000000` – `100000000` |
+| **Env var** | `SQI_WORKER_EXPR_LET_RETAINED_BYTES` |
+
+Bytes **one** symbol table may hold live. Measured across the *whole* table,
+not just its `let:` bindings — so a job whose own parameters are large spends
+budget its `let:` block never asked for. A block that would push the table
+past this stops there with an error rather than spending a fresh evaluation
+budget per remaining binding.
+
+It bounds **one table**, a scope the server's template-wide walk does not
+meter separately — but it is advertised and compared all the same, against
+`openjd.expr_template_retained_bytes` (caveat 1's last row). A whole
+template's retained bytes is a valid upper bound on any one of its tables, so
+the comparison is conservative in one direction only: it can withhold EXPR
+work from a worker whose per-table limit was never going to be the binding
+constraint. It is **not** sufficient in the other — see below.
+
+> **Read this before lowering it.** The floor of `1000000` is a **tenth** of
+> `openjd.expr_template_retained_bytes`' default. A worker set anywhere below
+> the server's value for that key is offered **no EXPR work at all** until one
+> of the two moves. That is the intended outcome, and it is the visible one —
+> a registration `WARN` and an `unschedulable_reason` naming both keys. What
+> it replaced is the invisible one: before this comparison existed, such a
+> worker accepted the assignment and failed **every task of the job**, once
+> per task, over a `let:` block the server had already accepted.
+
+Even with the comparison satisfied, this key can still reject an accepted
+job — the accounting measures the *whole table*, and phase 3 binds concrete
+values the server only had placeholders for (`"x" * Task.Param.N` costs
+nothing at submit). Sizing it at exactly the server's value is the floor, not
+a guarantee.
+
+It may legally be set higher than `expr.assignment_retained_bytes`; the
+tighter of the two simply becomes the effective one.
+
+```yaml
+expr:
+  let_retained_bytes: 10000000
+```
+
+---
+
 ## `capabilities` — Software auto-detection
 
 Configures the built-in DCC detectors (Maya, Nuke, Houdini, Blender) that run
@@ -1224,6 +1451,11 @@ log_streamer:
 | `isolation.required` | bool | `false` | `SQI_WORKER_ISOLATION_REQUIRED` | — |
 | `isolation.provider` | string | `logon_user` | `SQI_WORKER_ISOLATION_PROVIDER` | — |
 | `isolation.env_passthrough` | []string | `[]` | `SQI_WORKER_ISOLATION_ENV_PASSTHROUGH` | — |
+| `expr.operation_limit` | int | `1000000` | `SQI_WORKER_EXPR_OPERATION_LIMIT` | — |
+| `expr.memory_limit` | int | `20000000` | `SQI_WORKER_EXPR_MEMORY_LIMIT` | — |
+| `expr.assignment_positions` | int | `10000` | `SQI_WORKER_EXPR_ASSIGNMENT_POSITIONS` | — |
+| `expr.assignment_retained_bytes` | int | `20000000` | `SQI_WORKER_EXPR_ASSIGNMENT_RETAINED_BYTES` | — |
+| `expr.let_retained_bytes` | int | `10000000` | `SQI_WORKER_EXPR_LET_RETAINED_BYTES` | — |
 | `capabilities.detect` | `[]Detector` | `[]` | — (config file only) | — |
 | `capabilities.disable` | `[]string` | `[]` | `SQI_WORKER_CAPABILITIES_DISABLE` | — |
 | `staging.scratch_dir` | string | `""` | — (config file only) | — |

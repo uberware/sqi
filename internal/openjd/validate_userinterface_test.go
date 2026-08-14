@@ -35,14 +35,11 @@ func TestValidateUserInterface(t *testing.T) {
 			},
 			wantPointer: "/parameterDefinitions/0/userInterface/control",
 		},
-		{
-			name: "empty control",
-			param: JobParameter{
-				Name: "Q", Type: JobParamTypeString,
-				UserInterface: &ParameterUserInterface{Control: ""},
-			},
-			wantPointer: "/parameterDefinitions/0/userInterface/control",
-		},
+		// NOTE: there is deliberately no "empty control" case here. This table
+		// once asserted that an absent control was an error, which codified a
+		// bug: the schema marks userInterface.control "@optional" on every
+		// parameter type. The spec-correct behavior is covered by
+		// TestValidateUserInterface_ControlIsOptional below.
 		{
 			name: "dropdown without allowedValues",
 			param: JobParameter{
@@ -254,4 +251,63 @@ func TestValidateUILabelRuneCounting(t *testing.T) {
 	if !found {
 		t.Errorf("%d-rune multibyte label was not flagged at expected pointer; got %v", maxUILabelLen+1, errs)
 	}
+}
+
+// userInterface.control is OPTIONAL. The 2023-09 Template Schemas mark it
+// "# @optional" on every parameter type's userInterface block, so a template
+// may supply only a label or groupLabel and leave the control to the
+// submitting application's judgement.
+//
+// sqi required it, rejecting conforming templates outright. Surfaced by the
+// official conformance suite fixtures 2.1--string-ui-label-without-control,
+// 2.1--string-ui-grouplabel-without-control, 2.2--path-ui-label-without-control,
+// 2.3--int-ui-label-without-control, and 2.4--float-ui-label-without-control.
+func TestValidateUserInterface_ControlIsOptional(t *testing.T) {
+	uiTemplate := func(typ JobParamType, ui *ParameterUserInterface) *JobTemplate {
+		return &JobTemplate{
+			SpecificationVersion: SpecVersion,
+			Name:                 "x",
+			ParameterDefinitions: []JobParameter{{Name: "Q", Type: typ, UserInterface: ui}},
+			Steps: []StepTemplate{{
+				Name: "A",
+				Script: &StepScript{
+					Actions: StepActions{OnRun: Action{Command: "echo", Args: []string{"hi"}}},
+				},
+			}},
+		}
+	}
+	decimals := 2
+
+	t.Run("label without control is accepted on every parameter type", func(t *testing.T) {
+		for _, typ := range []JobParamType{
+			JobParamTypeString, JobParamTypePath, JobParamTypeInt, JobParamTypeFloat,
+		} {
+			errs := Validate(uiTemplate(typ, &ParameterUserInterface{Label: "My Label"}))
+			if len(errs) != 0 {
+				t.Errorf("%s: expected no errors, got %v", typ, errs)
+			}
+		}
+	})
+
+	t.Run("groupLabel without control is accepted", func(t *testing.T) {
+		errs := Validate(uiTemplate(JobParamTypeString, &ParameterUserInterface{GroupLabel: "My Group"}))
+		if len(errs) != 0 {
+			t.Errorf("expected no errors, got %v", errs)
+		}
+	})
+
+	// Making control optional must not disable the checks that depend on it.
+	t.Run("decimals without a control is still rejected", func(t *testing.T) {
+		errs := Validate(uiTemplate(JobParamTypeFloat, &ParameterUserInterface{Decimals: &decimals}))
+		if !strings.Contains(errs.Error(), "decimals") {
+			t.Errorf("expected a decimals error, got %v", errs)
+		}
+	})
+
+	t.Run("an unknown control is still rejected", func(t *testing.T) {
+		errs := Validate(uiTemplate(JobParamTypeString, &ParameterUserInterface{Control: "WAT"}))
+		if len(errs) == 0 {
+			t.Error("expected an error for an unknown control, got none")
+		}
+	})
 }

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-import type { ProductParameter } from '@/api/types'
-import { isRequired, selectWidget } from './productForm'
+import type { ItemConstraint, ProductParameter } from '@/api/types'
+import { isRequired, listElementType, selectWidget } from './productForm'
 
 /** Validate one parameter value; returns an error message or null. HIDDEN
  * params are never validated here (omitted from the form; server fills them). */
@@ -25,11 +25,82 @@ export function validateParam(p: ProductParameter, value: string): string | null
     return null
   }
 
-  // STRING / PATH length constraints.
+  const elementType = listElementType(p.type)
+  if (elementType !== null) {
+    return validateListValue(p, value, elementType)
+  }
+
+  // STRING / PATH length constraints. RANGE_EXPR's grammar and BOOL's
+  // accepted spellings are the server's to enforce (see validateListValue's
+  // doc comment for why a second copy would be a drift hazard); RANGE_EXPR's
+  // min_length/max_length bound its string length exactly as the server
+  // does, and BOOL declares neither, so both correctly fall through here.
   if (p.min_length !== null && value.length < p.min_length)
     return `must be at least ${p.min_length} characters`
   if (p.max_length !== null && value.length > p.max_length)
     return `must be at most ${p.max_length} characters`
+  return null
+}
+
+/** Validate a LIST[*] value: it must be a JSON array, of an allowed length,
+ * whose every element satisfies its declared type and the item: constraints.
+ *
+ * Errors name the offending row ("item 3"), which is why the editor renders
+ * one input per element rather than a single textarea. */
+function validateListValue(
+  p: ProductParameter,
+  value: string,
+  elementType: ProductParameter['type'],
+): string | null {
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(value)
+  } catch {
+    return 'must be a list'
+  }
+  if (!Array.isArray(parsed)) return 'must be a list'
+  const arr = parsed as unknown[]
+
+  if (p.min_length !== null && arr.length < p.min_length)
+    return `must have at least ${p.min_length} items`
+  if (p.max_length !== null && arr.length > p.max_length)
+    return `must have at most ${p.max_length} items`
+
+  for (let i = 0; i < arr.length; i++) {
+    const err = validateElement(arr[i], elementType, p.item)
+    if (err) return `item ${i + 1} ${err}`
+  }
+  return null
+}
+
+/** Validate one element against its declared type and the item: constraints
+ * for its level. Deliberately shallow for BOOL — the server owns the accepted
+ * spellings — and for an inner list, whose own elements the raw-JSON fallback
+ * leaves to the server. */
+function validateElement(
+  element: unknown,
+  elementType: ProductParameter['type'],
+  item: ItemConstraint | null,
+): string | null {
+  if (elementType === 'INT' || elementType === 'FLOAT') {
+    if (typeof element !== 'number') return `must be a number`
+    if (elementType === 'INT' && !Number.isInteger(element)) return `must be a whole number`
+    if (item?.min_value != null && element < Number(item.min_value))
+      return `must be at least ${item.min_value}`
+    if (item?.max_value != null && element > Number(item.max_value))
+      return `must be at most ${item.max_value}`
+  } else if (elementType === 'STRING' || elementType === 'PATH') {
+    if (typeof element !== 'string') return `must be text`
+    if (item?.min_length != null && element.length < item.min_length)
+      return `must be at least ${item.min_length} characters`
+    if (item?.max_length != null && element.length > item.max_length)
+      return `must be at most ${item.max_length} characters`
+  }
+
+  if (item?.allowed_values && item.allowed_values.length > 0) {
+    if (!item.allowed_values.includes(String(element)))
+      return `must be one of: ${item.allowed_values.join(', ')}`
+  }
   return null
 }
 

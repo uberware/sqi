@@ -34,13 +34,16 @@ func TestValidate_ReservedNames_AlwaysEnforced(t *testing.T) {
 			},
 		},
 		{
-			name: "amount.worker.vcpu min 0 error (below reserved minimum 1)",
+			// min is <nonnegativefloat>, so 0 is valid even on a reserved
+			// capability. The spec's per-capability "Minimum Value" table is
+			// the default used when min is OMITTED, not a floor on an explicit
+			// value. Conformance: 3.3.1--amount-min-zero-valid.yaml.
+			name: "amount.worker.vcpu min 0 ok (explicit zero is non-negative)",
 			mutate: func(t *openjd.JobTemplate) {
 				t.Steps[0].HostRequirements = &openjd.HostRequirements{
 					Amounts: []openjd.AmountRequirement{{Name: "amount.worker.vcpu", Min: new("0")}},
 				}
 			},
-			wantPtr: "/steps/0/hostRequirements/amounts/0/min",
 		},
 		{
 			name: "amount.worker.vcpu min 4 ok (above reserved minimum 1)",
@@ -96,20 +99,24 @@ func TestValidate_ReservedNames_AlwaysEnforced(t *testing.T) {
 
 		// Non-reserved names are unconstrained — any value is accepted.
 		{
-			name: "non-reserved amount.worker.custom min 0 ok (unconstrained)",
+			// A CUSTOM scope is unconstrained. "amount.worker.custom" is not a
+			// valid stand-in: "worker" is a reserved scope, so an undefined name
+			// under it is rejected by validateReservedScope — see
+			// TestValidate_ReservedCapabilityScope.
+			name: "non-reserved amount.custom.thing min 0 ok (unconstrained)",
 			mutate: func(t *openjd.JobTemplate) {
 				t.Steps[0].HostRequirements = &openjd.HostRequirements{
-					Amounts: []openjd.AmountRequirement{{Name: "amount.worker.custom", Min: new("0")}},
+					Amounts: []openjd.AmountRequirement{{Name: "amount.custom.thing", Min: new("0")}},
 				}
 			},
 		},
 
 		// Reserved names are matched case-insensitively.
 		{
-			name: "reserved name case-insensitive Amount.Worker.VCPU min 0 error",
+			name: "reserved name case-insensitive Amount.Worker.VCPU min -1 error",
 			mutate: func(t *openjd.JobTemplate) {
 				t.Steps[0].HostRequirements = &openjd.HostRequirements{
-					Amounts: []openjd.AmountRequirement{{Name: "Amount.Worker.VCPU", Min: new("0")}},
+					Amounts: []openjd.AmountRequirement{{Name: "Amount.Worker.VCPU", Min: new("-1")}},
 				}
 			},
 			wantPtr: "/steps/0/hostRequirements/amounts/0/min",
@@ -234,10 +241,11 @@ func TestValidate_ReservedNames_AlwaysEnforced(t *testing.T) {
 
 		// Non-reserved attribute names are unconstrained — any value is accepted.
 		{
-			name: "non-reserved attr.worker.custom any value ok",
+			// As above: a custom scope, not the reserved "worker" one.
+			name: "non-reserved attr.custom.thing any value ok",
 			mutate: func(t *openjd.JobTemplate) {
 				t.Steps[0].HostRequirements = &openjd.HostRequirements{
-					Attributes: []openjd.AttributeRequirement{{Name: "attr.worker.custom", AnyOf: []string{"anything"}}},
+					Attributes: []openjd.AttributeRequirement{{Name: "attr.custom.thing", AnyOf: []string{"anything"}}},
 				}
 			},
 		},
@@ -303,12 +311,16 @@ func TestValidate_ReservedNames_AlwaysEnforced(t *testing.T) {
 		// ── Reserved amount with neither min nor max ───────────────────────────
 
 		{
-			name: "amount.worker.vcpu with neither min nor max ok (no reserved constraint)",
+			// The spec requires at least one of min or max on every amount
+			// ("Subject to the constraint that at least one of min or max must
+			// be provided"). Conformance: 3.3.1--neither-min-nor-max.invalid.yaml.
+			name: "amount with neither min nor max is an error",
 			mutate: func(t *openjd.JobTemplate) {
 				t.Steps[0].HostRequirements = &openjd.HostRequirements{
 					Amounts: []openjd.AmountRequirement{{Name: "amount.worker.vcpu"}},
 				}
 			},
+			wantPtr: "/steps/0/hostRequirements/amounts/0",
 		},
 	}
 

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
+	"sort"
 	"strconv"
 
 	"gopkg.in/yaml.v3"
@@ -62,6 +63,15 @@ func decodeJobTemplate(raw map[string]any) (*JobTemplate, error) {
 	t.Name = getString(raw, "name")
 	t.Description = getString(raw, "description")
 	t.Extensions = getStringSlice(raw, "extensions")
+	_, t.ExtensionsSet = raw["extensions"]
+	t.UnknownFields = unknownTopLevelFields(raw)
+
+	// RFC 0007's case-insensitive type names and its new parameter types are
+	// an EXPR-extension feature, so every parameter decoder below needs to
+	// know whether this template declares it. Extensions are decoded above
+	// this point already -- naming the fact here is all that is required, no
+	// reordering.
+	exprDeclared := t.hasExtension("EXPR")
 
 	pt, err := maybeDecodePathTranslation(raw)
 	if err != nil {
@@ -71,12 +81,13 @@ func decodeJobTemplate(raw map[string]any) (*JobTemplate, error) {
 
 	// parameterDefinitions
 	if defs, ok := raw["parameterDefinitions"]; ok {
+		t.ParameterDefinitionsSet = true
 		items, err := toSliceOfMaps(defs, "parameterDefinitions")
 		if err != nil {
 			return nil, err
 		}
 		for _, item := range items {
-			p, err := decodeJobParameter(item)
+			p, err := decodeJobParameter(item, exprDeclared)
 			if err != nil {
 				return nil, err
 			}
@@ -106,7 +117,7 @@ func decodeJobTemplate(raw map[string]any) (*JobTemplate, error) {
 			return nil, err
 		}
 		for _, item := range items {
-			s, err := decodeStepTemplate(item)
+			s, err := decodeStepTemplate(item, exprDeclared)
 			if err != nil {
 				return nil, err
 			}
@@ -117,20 +128,54 @@ func decodeJobTemplate(raw map[string]any) (*JobTemplate, error) {
 	return t, nil
 }
 
+// knownTopLevelFields are the keys the job template schema defines. Extension
+// blocks are permitted separately: a template that declares an extension may
+// carry a block named for it (e.g. SQI_PATH_TRANSLATION).
+var knownTopLevelFields = map[string]struct{}{
+	"specificationVersion": {}, "name": {}, "description": {}, "extensions": {},
+	"parameterDefinitions": {}, "jobEnvironments": {}, "steps": {},
+	// $schema is permitted so editors can attach a schema URL; the spec
+	// ignores it (conformance fixtures 1.1--schema-field{,-ignored}.yaml).
+	"$schema": {},
+}
+
+// unknownTopLevelFields returns the sorted top-level keys the schema does not
+// define and that do not name a SUPPORTED extension.
+//
+// The status check matches validateExtensions' two-part gate rather than bare
+// registry presence. Presence alone would let a stray top-level "EXPR:" key
+// through on a template that does not even declare the extension -- silently
+// accepted for the whole window in which EXPR is registered but
+// StatusInProgress, where before EXPR was registered at all the same key was
+// an error. A registry entry is a scoring and gating device, not a license to
+// carry the name as a top-level field.
+func unknownTopLevelFields(raw map[string]any) []string {
+	var out []string
+	for k := range raw {
+		if _, known := knownTopLevelFields[k]; known {
+			continue
+		}
+		if ext, isExt := LookupExtension(k); isExt && ext.Status == StatusSupported {
+			continue
+		}
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
+}
+
 // ─── job parameter decoder ───────────────────────────────────────────────────
 
-func decodeJobParameter(raw map[string]any) (JobParameter, error) {
+func decodeJobParameter(raw map[string]any, exprDeclared bool) (JobParameter, error) {
 	p := JobParameter{
 		Name:        getString(raw, "name"),
-		Type:        JobParamType(getString(raw, "type")),
+		Type:        canonicalJobParamType(getString(raw, "type"), exprDeclared),
 		Description: getString(raw, "description"),
 	}
 
 	// default
-	if s, ok, err := scalarFieldStrict(raw, "default", "default"); err != nil {
+	if err := decodeJobParamDefault(raw, &p, exprDeclared); err != nil {
 		return p, err
-	} else if ok {
-		p.Default = &s
 	}
 
 	// Constraint fields (allowedValues, minValue/maxValue, minLength/maxLength)
@@ -168,10 +213,68 @@ func decodeJobParameter(raw map[string]any) (JobParameter, error) {
 	return p, nil
 }
 
+// decodeJobParamDefault reads a parameter's default: a YAML sequence stored as
+// canonical JSON for a list type (paramjson.go), and the strict scalar reader
+// -- unchanged -- for every other type.
+//
+// exprDeclared is part of the condition, NOT redundant with the type check.
+// Canonicalization leaves an unrecognized spelling verbatim, and "LIST[STRING]"
+// written in a base-spec template is verbatim ALREADY EQUAL to the
+// JobParamTypeListString constant -- so a type-only dispatch would run the list
+// reader for a template that never declared the extension, turning what is
+// today a parse error into a validation error. The template is rejected either
+// way, but a base-spec template's behavior must be byte-for-byte unchanged,
+// diagnostics included. TestListDefault_ListTypeWithoutEXPRStillRejected pins
+// it; it caught this exact leak.
+func decodeJobParamDefault(raw map[string]any, p *JobParameter, exprDeclared bool) error {
+	if exprDeclared && isListParamType(p.Type) {
+		v, ok := raw["default"]
+		if !ok || v == nil {
+			return nil
+		}
+		s, err := encodeListDefault(v, p.Type)
+		if err != nil {
+			return err
+		}
+		p.Default = &s
+		return nil
+	}
+
+	s, ok, err := scalarFieldStrict(raw, "default", "default")
+	if err != nil {
+		return err
+	}
+	if ok {
+		p.Default = &s
+	}
+	return nil
+}
+
 // decodeJobParamFileFilters populates the fileFilters and fileFilterDefault
 // fields of p from the raw decoded map.
+//
+// Both live under `userInterface`, not at the parameter root — see the
+// <JobPathParameterDefinition> schema (§2.2), where fileFilters and
+// fileFilterDefault are members of the userInterface block alongside control
+// and label. sqi previously read them from the parameter root, so a conforming
+// template's filters were silently never decoded and every validation rule for
+// them (label required, pattern grammar, count cap) was dead code.
+// The parameter root is also accepted, as a deliberate back-compat allowance:
+// that is where sqi previously required them, so products already stored by an
+// older sqi carry that shape and would silently lose their filters otherwise.
+// userInterface wins when both are present. No conformance fixture asserts that
+// root-level filters must be REJECTED, so accepting them costs no conformance;
+// deprecating the root location is a follow-up.
 func decodeJobParamFileFilters(raw map[string]any, p *JobParameter) error {
-	if filters, ok := raw["fileFilters"].([]any); ok {
+	src := raw
+	if ui, ok := raw["userInterface"].(map[string]any); ok {
+		if _, hasFilters := ui["fileFilters"]; hasFilters {
+			src = ui
+		} else if _, hasDefault := ui["fileFilterDefault"]; hasDefault {
+			src = ui
+		}
+	}
+	if filters, ok := src["fileFilters"].([]any); ok {
 		for i, v := range filters {
 			f, err := decodePathFileFilter(v, fmt.Sprintf("parameterDefinition.fileFilters[%d]", i))
 			if err != nil {
@@ -180,7 +283,7 @@ func decodeJobParamFileFilters(raw map[string]any, p *JobParameter) error {
 			p.FileFilters = append(p.FileFilters, f)
 		}
 	}
-	if v, ok := raw["fileFilterDefault"]; ok && v != nil {
+	if v, ok := src["fileFilterDefault"]; ok && v != nil {
 		f, err := decodePathFileFilter(v, "parameterDefinition.fileFilterDefault")
 		if err != nil {
 			return err
@@ -208,11 +311,15 @@ func decodePathFileFilter(v any, ctx string) (PathFileFilter, error) {
 // decodeJobParamConstraints populates the allowedValues, minValue/maxValue, and
 // minLength/maxLength fields of p from the raw decoded map.
 func decodeJobParamConstraints(raw map[string]any, p *JobParameter) error {
-	// allowedValues
-	if v, ok := raw["allowedValues"]; ok && v != nil {
-		items, _ := toAnySlice(v)
-		for _, item := range items {
-			p.AllowedValues = append(p.AllowedValues, anyToString(item))
+	// allowedValues. Presence is tracked separately from content: a declared
+	// list must hold at least one value, but omitting it entirely is legal.
+	if v, ok := raw["allowedValues"]; ok {
+		p.AllowedValuesSet = true
+		if v != nil {
+			items, _ := toAnySlice(v)
+			for _, item := range items {
+				p.AllowedValues = append(p.AllowedValues, anyToString(item))
+			}
 		}
 	}
 
@@ -240,6 +347,106 @@ func decodeJobParamConstraints(raw map[string]any, p *JobParameter) error {
 		p.MaxLength = &n
 	}
 
+	// item: (LIST[*] element constraints). Decoded for every parameter, not
+	// only a list-typed one: the EXPR gate lives on the TYPE, so a base-spec
+	// template cannot declare a list type at all and its item: block is
+	// unreachable from validation. Gating here too would add a conditional
+	// with nothing behind it.
+	if v, ok := raw["item"]; ok && v != nil {
+		it, err := decodeItemConstraint(v, "item", 0)
+		if err != nil {
+			return err
+		}
+		p.Item = it
+	}
+
+	return nil
+}
+
+// maxItemDepth is how many nested item: levels are meaningful. RFC 0007 allows
+// list[list[T]] and no deeper, so exactly two ItemConstraint levels can ever
+// apply to anything: the outer list's elements, and the inner list's.
+const maxItemDepth = 1
+
+// decodeItemConstraint decodes one level of a LIST[*] item: block.
+//
+// depth is the current nesting level. A block nested deeper than maxItemDepth
+// describes a list that cannot exist, so it is an error rather than a silently
+// ignored key: a constraint nothing ever applies is worse than no constraint,
+// because the template author believes it is in force.
+func decodeItemConstraint(v any, field string, depth int) (*ItemConstraint, error) {
+	m, ok := v.(map[string]any)
+	if !ok {
+		return nil, fmt.Errorf("openjd: %s must be a mapping", field)
+	}
+
+	it := &ItemConstraint{}
+	decodeItemValueConstraints(m, it)
+	if err := decodeItemLengthConstraints(m, field, it); err != nil {
+		return nil, err
+	}
+	if err := decodeNestedItemConstraint(m, field, depth, it); err != nil {
+		return nil, err
+	}
+	return it, nil
+}
+
+// decodeItemValueConstraints reads the value-shaped keys of an item: block --
+// allowedValues, minValue, maxValue. None can fail here: each is stored as
+// written and type-checked later against the declared element type, which the
+// decoder does not know.
+func decodeItemValueConstraints(m map[string]any, it *ItemConstraint) {
+	if av, ok := m["allowedValues"]; ok {
+		it.AllowedValuesSet = true
+		if av != nil {
+			items, _ := toAnySlice(av)
+			for _, item := range items {
+				it.AllowedValues = append(it.AllowedValues, anyToString(item))
+			}
+		}
+	}
+	if mv, ok := m["minValue"]; ok && mv != nil {
+		s := anyToString(mv)
+		it.MinValue = &s
+	}
+	if mv, ok := m["maxValue"]; ok && mv != nil {
+		s := anyToString(mv)
+		it.MaxValue = &s
+	}
+}
+
+// decodeItemLengthConstraints reads minLength and maxLength, which -- unlike
+// the value keys -- must be integers at decode time and so can fail.
+func decodeItemLengthConstraints(m map[string]any, field string, it *ItemConstraint) error {
+	if n, ok, err := intFieldStrict(m, "minLength", field+".minLength"); err != nil {
+		return err
+	} else if ok {
+		it.MinLength = &n
+	}
+	if n, ok, err := intFieldStrict(m, "maxLength", field+".maxLength"); err != nil {
+		return err
+	} else if ok {
+		it.MaxLength = &n
+	}
+	return nil
+}
+
+// decodeNestedItemConstraint reads an inner item: block, enforcing the depth
+// cap that keeps a constraint from describing a list the type system cannot
+// express.
+func decodeNestedItemConstraint(m map[string]any, field string, depth int, it *ItemConstraint) error {
+	inner, ok := m["item"]
+	if !ok || inner == nil {
+		return nil
+	}
+	if depth >= maxItemDepth {
+		return fmt.Errorf("openjd: %s.item nests deeper than list[list[T]] allows", field)
+	}
+	nested, err := decodeItemConstraint(inner, field+".item", depth+1)
+	if err != nil {
+		return err
+	}
+	it.Item = nested
 	return nil
 }
 
@@ -251,15 +458,23 @@ func decodeParameterUserInterface(v any) (*ParameterUserInterface, error) {
 	if err != nil {
 		return nil, err
 	}
+	_, labelSet := m["label"]
+	_, groupLabelSet := m["groupLabel"]
 	ui := &ParameterUserInterface{
-		Control:    ControlType(getString(m, "control")),
-		Label:      getString(m, "label"),
-		GroupLabel: getString(m, "groupLabel"),
+		Control:       ControlType(getString(m, "control")),
+		Label:         getString(m, "label"),
+		GroupLabel:    getString(m, "groupLabel"),
+		LabelSet:      labelSet,
+		GroupLabelSet: groupLabelSet,
 	}
 	if n, ok, err := intFieldStrict(m, "decimals", "userInterface.decimals"); err != nil {
 		return nil, err
 	} else if ok {
 		ui.Decimals = &n
+	}
+	if v, ok := m["singleStepDelta"]; ok && v != nil {
+		s := anyToString(v)
+		ui.SingleStepDelta = &s
 	}
 	return ui, nil
 }
@@ -322,12 +537,28 @@ func decodeEnvVars(v any, envName string) (map[string]string, error) {
 func decodeEnvironmentScript(raw map[string]any) (EnvironmentScript, error) {
 	s := EnvironmentScript{}
 
-	if ef, ok := raw["embeddedFiles"]; ok && ef != nil {
+	if ef, ok := raw["embeddedFiles"]; ok {
+		s.EmbeddedFilesSet = true
+		if ef == nil {
+			ef = []any{}
+		}
 		files, err := decodeEmbeddedFiles(ef)
 		if err != nil {
 			return s, err
 		}
 		s.EmbeddedFiles = files
+	}
+
+	if v, ok := raw["let"]; ok {
+		s.LetSet = true
+		if v == nil {
+			v = []any{}
+		}
+		lets, err := strictStringSlice(v, "let")
+		if err != nil {
+			return s, err
+		}
+		s.Let = lets
 	}
 
 	// actions (required)
@@ -375,27 +606,40 @@ func decodeEnvironmentActions(raw map[string]any) (EnvironmentActions, error) {
 
 // ─── step template decoder ───────────────────────────────────────────────────
 
-func decodeStepTemplate(raw map[string]any) (StepTemplate, error) {
+// decodeStepTemplateScript decodes a step's optional script: key, returning
+// (nil, nil) when the key is absent or null.
+func decodeStepTemplateScript(raw map[string]any) (*StepScript, error) {
+	v, ok := raw["script"]
+	if !ok || v == nil {
+		return nil, nil
+	}
+	m, err := toMap(v, "step.script")
+	if err != nil {
+		return nil, err
+	}
+	script, err := decodeStepScript(m)
+	if err != nil {
+		return nil, err
+	}
+	return &script, nil
+}
+
+func decodeStepTemplate(raw map[string]any, exprDeclared bool) (StepTemplate, error) {
 	s := StepTemplate{
 		Name:        getString(raw, "name"),
 		Description: getString(raw, "description"),
 	}
 
 	// script
-	if v, ok := raw["script"]; ok && v != nil {
-		m, err := toMap(v, "step.script")
-		if err != nil {
-			return s, err
-		}
-		script, err := decodeStepScript(m)
-		if err != nil {
-			return s, err
-		}
-		s.Script = &script
+	script, err := decodeStepTemplateScript(raw)
+	if err != nil {
+		return s, err
 	}
+	s.Script = script
 
 	// stepEnvironments
-	envs, err := decodeStepEnvironmentList(raw)
+	envs, envsSet, err := decodeStepEnvironmentList(raw)
+	s.StepEnvironmentsSet = envsSet
 	if err != nil {
 		return s, err
 	}
@@ -407,7 +651,7 @@ func decodeStepTemplate(raw map[string]any) (StepTemplate, error) {
 		if err != nil {
 			return s, err
 		}
-		ps, err := decodeStepParameterSpace(m)
+		ps, err := decodeStepParameterSpace(m, exprDeclared)
 		if err != nil {
 			return s, err
 		}
@@ -428,60 +672,111 @@ func decodeStepTemplate(raw map[string]any) (StepTemplate, error) {
 	}
 
 	// dependencies
-	deps, err := decodeStepDependencyList(raw)
+	deps, depsSet, err := decodeStepDependencyList(raw)
+	s.DependenciesSet = depsSet
 	if err != nil {
 		return s, err
 	}
 	s.Dependencies = deps
 
+	// let
+	lets, letSet, err := decodeStepLet(raw)
+	s.LetSet = letSet
+	if err != nil {
+		return s, err
+	}
+	s.Let = lets
+
 	return s, nil
 }
 
-func decodeStepEnvironmentList(raw map[string]any) ([]Environment, error) {
+// decodeStepLet returns a step's let: block, following the same
+// (value, present, error) shape as [decodeStepDependencyList] and
+// [decodeStepEnvironmentList]: absent yields (nil, false, nil), present-but-
+// empty yields (nil, true, nil), so a declared but empty list is
+// distinguishable from an omitted one.
+func decodeStepLet(raw map[string]any) (lets []string, set bool, err error) {
+	v, ok := raw["let"]
+	if !ok {
+		return nil, false, nil
+	}
+	if v == nil {
+		return nil, true, nil
+	}
+	lets, err = strictStringSlice(v, "let")
+	if err != nil {
+		return nil, true, err
+	}
+	return lets, true, nil
+}
+
+func decodeStepEnvironmentList(raw map[string]any) ([]Environment, bool, error) {
 	v, ok := raw["stepEnvironments"]
-	if !ok || v == nil {
-		return nil, nil
+	if !ok {
+		return nil, false, nil
+	}
+	if v == nil {
+		return nil, true, nil
 	}
 	items, err := toSliceOfMaps(v, "stepEnvironments")
 	if err != nil {
-		return nil, err
+		return nil, true, err
 	}
 	envs := make([]Environment, 0, len(items))
 	for _, item := range items {
 		e, err := decodeEnvironment(item)
 		if err != nil {
-			return nil, err
+			return nil, true, err
 		}
 		envs = append(envs, e)
 	}
-	return envs, nil
+	return envs, true, nil
 }
 
-func decodeStepDependencyList(raw map[string]any) ([]StepDependency, error) {
+func decodeStepDependencyList(raw map[string]any) ([]StepDependency, bool, error) {
 	v, ok := raw["dependencies"]
-	if !ok || v == nil {
-		return nil, nil
+	if !ok {
+		return nil, false, nil
+	}
+	if v == nil {
+		return nil, true, nil
 	}
 	items, err := toSliceOfMaps(v, "dependencies")
 	if err != nil {
-		return nil, err
+		return nil, true, err
 	}
 	deps := make([]StepDependency, 0, len(items))
 	for _, item := range items {
 		deps = append(deps, StepDependency{DependsOn: getString(item, "dependsOn")})
 	}
-	return deps, nil
+	return deps, true, nil
 }
 
 func decodeStepScript(raw map[string]any) (StepScript, error) {
 	s := StepScript{}
 
-	if v, ok := raw["embeddedFiles"]; ok && v != nil {
+	if v, ok := raw["embeddedFiles"]; ok {
+		s.EmbeddedFilesSet = true
+		if v == nil {
+			v = []any{}
+		}
 		files, err := decodeEmbeddedFiles(v)
 		if err != nil {
 			return s, err
 		}
 		s.EmbeddedFiles = files
+	}
+
+	if v, ok := raw["let"]; ok {
+		s.LetSet = true
+		if v == nil {
+			v = []any{}
+		}
+		lets, err := strictStringSlice(v, "let")
+		if err != nil {
+			return s, err
+		}
+		s.Let = lets
 	}
 
 	// actions (required)
@@ -564,7 +859,7 @@ func decodeHostRequirements(raw map[string]any) (HostRequirements, error) {
 
 // ─── parameter space decoder ─────────────────────────────────────────────────
 
-func decodeStepParameterSpace(raw map[string]any) (StepParameterSpace, error) {
+func decodeStepParameterSpace(raw map[string]any, exprDeclared bool) (StepParameterSpace, error) {
 	ps := StepParameterSpace{}
 
 	if v, ok := raw["combination"]; ok && v != nil {
@@ -578,7 +873,7 @@ func decodeStepParameterSpace(raw map[string]any) (StepParameterSpace, error) {
 			return ps, err
 		}
 		for _, item := range items {
-			tp, err := decodeTaskParamDefinition(item)
+			tp, err := decodeTaskParamDefinition(item, exprDeclared)
 			if err != nil {
 				return ps, err
 			}
@@ -589,10 +884,10 @@ func decodeStepParameterSpace(raw map[string]any) (StepParameterSpace, error) {
 	return ps, nil
 }
 
-func decodeTaskParamDefinition(raw map[string]any) (TaskParamDefinition, error) {
+func decodeTaskParamDefinition(raw map[string]any, exprDeclared bool) (TaskParamDefinition, error) {
 	tp := TaskParamDefinition{
 		Name: getString(raw, "name"),
-		Type: TaskParamType(getString(raw, "type")),
+		Type: canonicalTaskParamType(getString(raw, "type"), exprDeclared),
 	}
 
 	// range field — either a string expression (INT) or a list of values
@@ -678,11 +973,12 @@ func decodeEmbeddedFile(raw map[string]any, idx int) (EmbeddedFile, error) {
 		return EmbeddedFile{}, err
 	}
 	ef := EmbeddedFile{
-		Name:      getString(raw, "name"),
-		Filename:  getString(raw, "filename"),
-		Data:      data,
-		Type:      EmbeddedFileType(getString(raw, "type")),
-		EndOfLine: getString(raw, "endOfLine"),
+		Name:        getString(raw, "name"),
+		Filename:    getString(raw, "filename"),
+		FilenameSet: func() bool { _, ok := raw["filename"]; return ok }(),
+		Data:        data,
+		Type:        EmbeddedFileType(getString(raw, "type")),
+		EndOfLine:   getString(raw, "endOfLine"),
 	}
 	if v, ok := raw["runnable"]; ok {
 		if b, ok := v.(bool); ok {
@@ -699,7 +995,11 @@ func decodeAction(raw map[string]any) (Action, error) {
 		Command: getString(raw, "command"),
 	}
 
-	if v, ok := raw["args"]; ok && v != nil {
+	if v, ok := raw["args"]; ok {
+		a.ArgsSet = true
+		if v == nil {
+			v = []any{}
+		}
 		args, err := strictStringSlice(v, "args")
 		if err != nil {
 			return a, err
@@ -711,6 +1011,7 @@ func decodeAction(raw map[string]any) (Action, error) {
 		return a, err
 	} else if ok {
 		a.TimeoutSeconds = n
+		a.TimeoutSet = true
 	}
 
 	if v, ok := raw["cancelation"]; ok && v != nil {
@@ -722,6 +1023,7 @@ func decodeAction(raw map[string]any) (Action, error) {
 				return a, err
 			} else if ok {
 				cm.NotifyPeriodSeconds = n
+				cm.NotifyPeriodSet = true
 			}
 			a.Cancelation = cm
 		}

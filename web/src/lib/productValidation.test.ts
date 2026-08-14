@@ -19,6 +19,7 @@ function param(over: Partial<ProductParameter>): ProductParameter {
     user_interface: null,
     file_filters: [],
     file_filter_default: null,
+    item: null,
     ...over,
   }
 }
@@ -53,5 +54,82 @@ describe('validateAll', () => {
     const errs = validateAll(params, { A: '', B: 'ok' })
     expect(errs).toHaveProperty('A')
     expect(errs).not.toHaveProperty('B')
+  })
+})
+
+describe('validateParam — RFC 0007 types', () => {
+  it('accepts a well-formed list', () => {
+    expect(validateParam(param({ type: 'LIST[STRING]' }), '["a","b"]')).toBeNull()
+    expect(validateParam(param({ type: 'LIST[INT]' }), '[1,2]')).toBeNull()
+    expect(validateParam(param({ type: 'LIST[BOOL]' }), '[true]')).toBeNull()
+  })
+
+  it('rejects a value that is not a JSON array', () => {
+    expect(validateParam(param({ type: 'LIST[STRING]' }), 'notalist')).toMatch(/list/i)
+    expect(validateParam(param({ type: 'LIST[STRING]' }), '{"k":1}')).toMatch(/list/i)
+  })
+
+  it('enforces the element count', () => {
+    const p = param({ type: 'LIST[STRING]', min_length: 2, max_length: 3 })
+    expect(validateParam(p, '["a"]')).toMatch(/at least 2/)
+    expect(validateParam(p, '["a","b","c","d"]')).toMatch(/at most 3/)
+    expect(validateParam(p, '["a","b"]')).toBeNull()
+  })
+
+  it('enforces the element type', () => {
+    expect(validateParam(param({ type: 'LIST[INT]' }), '["a"]')).toMatch(/item 1/)
+    expect(validateParam(param({ type: 'LIST[INT]' }), '[1.5]')).toMatch(/item 1/)
+    expect(validateParam(param({ type: 'LIST[FLOAT]' }), '["a"]')).toMatch(/item 1/)
+  })
+
+  it('names the offending row', () => {
+    expect(validateParam(param({ type: 'LIST[INT]' }), '[1,2,"x"]')).toMatch(/item 3/)
+  })
+
+  it('enforces item bounds', () => {
+    const p = param({
+      type: 'LIST[INT]',
+      item: {
+        allowed_values: null,
+        min_value: '2',
+        max_value: '9',
+        min_length: null,
+        max_length: null,
+        item: null,
+      },
+    })
+    expect(validateParam(p, '[1]')).toMatch(/item 1/)
+    expect(validateParam(p, '[10]')).toMatch(/item 1/)
+    expect(validateParam(p, '[5]')).toBeNull()
+  })
+
+  it('enforces item allowed values', () => {
+    const p = param({
+      type: 'LIST[STRING]',
+      item: {
+        allowed_values: ['a', 'b'],
+        min_value: null,
+        max_value: null,
+        min_length: null,
+        max_length: null,
+        item: null,
+      },
+    })
+    expect(validateParam(p, '["z"]')).toMatch(/item 1/)
+    expect(validateParam(p, '["a"]')).toBeNull()
+  })
+
+  it('requires a RANGE_EXPR to be non-empty but does not parse it', () => {
+    // The <IntRangeExpr> grammar is the server's to enforce; duplicating it
+    // here would be a second copy of a spec table in a language the Go tests
+    // cannot check.
+    expect(validateParam(param({ type: 'RANGE_EXPR', default: '' }), '')).toBeNull()
+    expect(validateParam(param({ type: 'RANGE_EXPR' }), '1-10:2')).toBeNull()
+    expect(validateParam(param({ type: 'RANGE_EXPR' }), 'not a range')).toBeNull()
+  })
+
+  it('does not second-guess a BOOL spelling', () => {
+    expect(validateParam(param({ type: 'BOOL' }), 'yes')).toBeNull()
+    expect(validateParam(param({ type: 'BOOL' }), 'true')).toBeNull()
   })
 })

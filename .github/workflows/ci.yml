@@ -136,6 +136,20 @@ jobs:
         with:
           args: --timeout=5m ./cmd/... ./internal/... ./pkg/... ./test/... ./web
 
+      # The internal/openjd/expr path-engine differentials shell out to python3
+      # and compare against pathlib. sqi implements CPython 3.13 path semantics
+      # (PureWindowsPath.is_absolute() delegating to ntpath.isabs, and stem/suffix
+      # no longer treating a name's leading/trailing dot run as an extension), so
+      # those tests requirePython313 and SKIP on anything older — including the
+      # ubuntu-latest system python, which is 3.12. Pin >= 3.13 here so the
+      # differential actually ASSERTS rather than silently skipping. This is the
+      # normal test suite only; the oracle job keeps its own 3.12 pin, which is
+      # about the openjd-model venv, not pathlib.
+      - name: Set up Python (>= 3.13 for the expr path differentials)
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+
       # Run the full test suite with the race detector enabled and enforce
       # the minimum line-coverage threshold.
       # `make test-cover` enables -race via RACE=on (the Makefile default),
@@ -915,6 +929,90 @@ jobs:
             echo "Confirmed all ${#expected[@]}/16 named isolation tests passed."
           fi
           exit $missing
+
+  # Runs the official OpenJD conformance suite (a pinned submodule under
+  # third_party/) against internal/openjd. Tagged `conformance`, so it does not
+  # run in the default `make test`.
+  #
+  # IMPORTANT: the assertion step below is not redundant. `make test-conformance`
+  # would report success if the walker collected zero fixtures, so this job does
+  # not trust the exit code alone — it requires the test names in the output,
+  # the same guard ldap-integration and isolation-integration use.
+  #
+  # It listed four names until sub-project H2 made EXPR a supported extension:
+  # TestConformance_Expressions (the second, EXPR-only scoring path) and
+  # TestConformance_EXPRNotSupported (its drift guard) were both deleted with
+  # that path, and TestConformance_Templates now scores EXPR/job_templates
+  # itself. TestConformance_E3ProtectedFixtures takes the fourth slot — it is
+  # the one that asserts named EXPR fixtures by their exact rejection message,
+  # so requiring it keeps a zero-fixture run from looking green.
+  conformance:
+    name: OpenJD conformance
+    runs-on: ubuntu-latest
+    needs: test
+
+    steps:
+      - name: Check out the repository and the conformance suite
+        uses: actions/checkout@v7
+        with:
+          submodules: true
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+
+      - name: Run the official OpenJD conformance suite
+        shell: bash
+        run: make test-conformance 2>&1 | tee /tmp/conformance.log
+
+      - name: Assert the suite actually ran
+        run: |
+          grep -q -- '--- PASS: TestConformance_SuitePresent' /tmp/conformance.log
+          grep -q -- '--- PASS: TestConformance_Templates' /tmp/conformance.log
+          grep -q -- '--- PASS: TestConformance_E3ProtectedFixtures' /tmp/conformance.log
+
+  # Differential-tests internal/openjd/expr against the implementation the EXPR
+  # specification names as its reference — the openjd.expr namespace of
+  # openjd-model, which is a thin re-export layer over a compiled Rust crate
+  # rather than a Python implementation. Tagged `oracle`, so it does not run in
+  # the default `make test`.
+  #
+  # IMPORTANT: the assertion step below is not redundant. `make test-expr-oracle`
+  # exits 0 when no interpreter has the package importable, and the test itself
+  # SKIPS in that case — so a green job would otherwise prove nothing at all.
+  # Requiring the PASS line is the same guard conformance, ldap-integration and
+  # isolation-integration use.
+  #
+  # One arch: the corpus exercises expression semantics, and no arch divergence
+  # is plausible for either side (Go's evaluator is pure Go; the reference ships
+  # as an abi3 wheel built per-arch by upstream).
+  expr-oracle:
+    name: EXPR reference-implementation oracle
+    runs-on: ubuntu-latest
+    needs: test
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Run the differential test against the OpenJD reference
+        shell: bash
+        run: make test-expr-oracle 2>&1 | tee /tmp/expr-oracle.log
+
+      - name: Assert the oracle actually ran
+        run: |
+          grep -q -- '--- PASS: TestExprOracle_MatchesReferenceImplementation' /tmp/expr-oracle.log
 
   # ── Python client: lint + type-check ─────────────────────────────────────────
   # ruff and mypy are driven by config/target versions (mypy targets the 3.9

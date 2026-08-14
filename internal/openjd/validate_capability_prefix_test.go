@@ -109,3 +109,185 @@ func TestValidate_CapabilityNamePrefix_Structural(t *testing.T) {
 		})
 	}
 }
+
+// A capability name may carry an optional vendor-specific prefix. The spec
+// (2023-09 Template Schemas §3.3.1.1 and §3.3.2.1) defines the format as
+// "[<Identifier>:]amount.<Identifier>[.<Identifier>]*" — the bracketed
+// "<Identifier>:" is an optional vendor namespace, and the same shape applies
+// to attributes with "attr.".
+//
+// sqi rejected every vendor-prefixed name outright, so a studio could not
+// namespace its own capabilities and conforming templates from other OpenJD
+// tools were refused. Surfaced by the official conformance suite fixtures
+// 3.3--vendor-prefix-amount.yaml and 3.3--vendor-prefix-attribute.yaml.
+func TestValidate_CapabilityNameVendorPrefix(t *testing.T) {
+	cases := []struct {
+		name    string
+		mutate  func(*openjd.JobTemplate)
+		wantPtr string // "" => valid; no prefix error expected
+	}{
+		{
+			name: "vendor-prefixed amount accepted",
+			mutate: func(tp *openjd.JobTemplate) {
+				tp.Steps[0].HostRequirements = &openjd.HostRequirements{
+					Amounts: []openjd.AmountRequirement{{Name: "mycompany:amount.licenses", Min: ptr("1")}},
+				}
+			},
+		},
+		{
+			name: "vendor-prefixed attribute accepted",
+			mutate: func(tp *openjd.JobTemplate) {
+				tp.Steps[0].HostRequirements = &openjd.HostRequirements{
+					Attributes: []openjd.AttributeRequirement{{
+						Name: "mycompany:attr.software", AnyOf: []string{"maya"},
+					}},
+				}
+			},
+		},
+		{
+			name: "vendor prefix with underscore accepted",
+			mutate: func(tp *openjd.JobTemplate) {
+				tp.Steps[0].HostRequirements = &openjd.HostRequirements{
+					Amounts: []openjd.AmountRequirement{{Name: "_my_co:amount.licenses", Min: ptr("1")}},
+				}
+			},
+		},
+		{
+			name: "vendor prefix is case-insensitive like the rest of the name",
+			mutate: func(tp *openjd.JobTemplate) {
+				tp.Steps[0].HostRequirements = &openjd.HostRequirements{
+					Amounts: []openjd.AmountRequirement{{Name: "MyCompany:AMOUNT.Licenses", Min: ptr("1")}},
+				}
+			},
+		},
+		{
+			name: "vendor prefix does not excuse a missing namespace",
+			mutate: func(tp *openjd.JobTemplate) {
+				tp.Steps[0].HostRequirements = &openjd.HostRequirements{
+					Amounts: []openjd.AmountRequirement{{Name: "mycompany:worker.vcpu", Min: ptr("1")}},
+				}
+			},
+			wantPtr: "/steps/0/hostRequirements/amounts/0/name",
+		},
+		{
+			name: "vendor prefix does not excuse the wrong namespace",
+			mutate: func(tp *openjd.JobTemplate) {
+				tp.Steps[0].HostRequirements = &openjd.HostRequirements{
+					Amounts: []openjd.AmountRequirement{{Name: "mycompany:attr.software", Min: ptr("1")}},
+				}
+			},
+			wantPtr: "/steps/0/hostRequirements/amounts/0/name",
+		},
+		{
+			name: "malformed vendor identifier rejected",
+			mutate: func(tp *openjd.JobTemplate) {
+				tp.Steps[0].HostRequirements = &openjd.HostRequirements{
+					Amounts: []openjd.AmountRequirement{{Name: "123bad:amount.licenses", Min: ptr("1")}},
+				}
+			},
+			wantPtr: "/steps/0/hostRequirements/amounts/0/name",
+		},
+		{
+			name: "only one vendor prefix is permitted",
+			mutate: func(tp *openjd.JobTemplate) {
+				tp.Steps[0].HostRequirements = &openjd.HostRequirements{
+					Amounts: []openjd.AmountRequirement{{Name: "a:b:amount.licenses", Min: ptr("1")}},
+				}
+			},
+			wantPtr: "/steps/0/hostRequirements/amounts/0/name",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			tmpl := mustParse(t, minimalValidYAML())
+			tc.mutate(tmpl)
+			errs := openjd.ValidateWithOptions(tmpl, openjd.ValidateOptions{EnforceLimits: true})
+
+			if tc.wantPtr == "" {
+				if len(errs) != 0 {
+					t.Fatalf("expected no errors, got %v", errs)
+				}
+				return
+			}
+			if !containsPointer(errs, tc.wantPtr) {
+				t.Fatalf("expected pointer %q, got %v", tc.wantPtr, errs)
+			}
+		})
+	}
+}
+
+// The spec reserves "worker", "job", "step", and "task" as the first identifier
+// after a capability namespace (§3.3.1.1) — a name under one of those scopes
+// must be a capability the spec actually defines. sqi accepted anything,
+// so "amount.worker.custom" passed. Surfaced by the conformance fixtures
+// 3.3--reserved-scope-{worker,job,step,task}.invalid.yaml and
+// 3.3.2--both-anyof-allof.invalid.yaml (attr.worker.capabilities).
+//
+// sqi permits a small set of its own names under the reserved worker scope —
+// see sqiReservedScopeNames — because worker tags, usage pools, and compute
+// locations predate this check and every shipped preset depends on them.
+func TestValidate_ReservedCapabilityScope(t *testing.T) {
+	amount := func(name string) func(*openjd.JobTemplate) {
+		return func(tp *openjd.JobTemplate) {
+			tp.Steps[0].HostRequirements = &openjd.HostRequirements{
+				Amounts: []openjd.AmountRequirement{{Name: name, Min: ptr("1")}},
+			}
+		}
+	}
+	attribute := func(name string) func(*openjd.JobTemplate) {
+		return func(tp *openjd.JobTemplate) {
+			tp.Steps[0].HostRequirements = &openjd.HostRequirements{
+				// "linux" is the one value valid for attr.worker.os.family; the
+				// other names under test accept any value, so it works throughout.
+				Attributes: []openjd.AttributeRequirement{{Name: name, AnyOf: []string{"linux"}}},
+			}
+		}
+	}
+
+	cases := []struct {
+		name    string
+		mutate  func(*openjd.JobTemplate)
+		wantPtr string // "" => valid
+	}{
+		// Reserved scope, undefined name → rejected.
+		{"undefined name under worker scope", amount("amount.worker.custom"), "/steps/0/hostRequirements/amounts/0/name"},
+		{"undefined name under step scope", amount("amount.step.custom"), "/steps/0/hostRequirements/amounts/0/name"},
+		{"undefined attribute under job scope", attribute("attr.job.custom"), "/steps/0/hostRequirements/attributes/0/name"},
+		{"undefined attribute under task scope", attribute("attr.task.custom"), "/steps/0/hostRequirements/attributes/0/name"},
+		{"undefined attribute under worker scope", attribute("attr.worker.capabilities"), "/steps/0/hostRequirements/attributes/0/name"},
+
+		// Spec-defined names under the reserved scope → accepted.
+		{"spec-defined amount", amount("amount.worker.vcpu"), ""},
+		{"spec-defined amount is case-insensitive", amount("Amount.Worker.VCPU"), ""},
+		{"spec-defined attribute", attribute("attr.worker.os.family"), ""},
+
+		// sqi's own names under the reserved scope → accepted (known divergence).
+		{"sqi worker tag", attribute("attr.worker.tag.nuke"), ""},
+		{"sqi usage pool", amount("amount.worker.usagepool.arnold"), ""},
+		{"sqi compute location", attribute("attr.worker.computelocation"), ""},
+		{"sqi os version", attribute("attr.worker.os.version"), ""},
+
+		// A custom scope is unconstrained, and a vendor prefix is exempt.
+		{"custom scope", amount("amount.custom.gpumemory"), ""},
+		{"vendor prefix exempts the reserved scope", amount("mycompany:amount.worker.custom"), ""},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			tmpl := mustParse(t, minimalValidYAML())
+			tc.mutate(tmpl)
+			errs := openjd.ValidateWithOptions(tmpl, openjd.ValidateOptions{EnforceLimits: true})
+
+			if tc.wantPtr == "" {
+				if len(errs) != 0 {
+					t.Fatalf("expected no errors, got %v", errs)
+				}
+				return
+			}
+			if !containsPointer(errs, tc.wantPtr) {
+				t.Fatalf("expected pointer %q, got %v", tc.wantPtr, errs)
+			}
+		})
+	}
+}

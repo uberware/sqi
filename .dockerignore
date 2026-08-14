@@ -10,6 +10,7 @@ coverage.out
 # Version control
 .git/
 .github/
+third_party/
 
 # Editor and OS noise
 .DS_Store

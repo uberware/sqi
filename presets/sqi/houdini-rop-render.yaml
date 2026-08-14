@@ -39,8 +39,12 @@ template:
               rangeConstraint: CONTIGUOUS
       script:
         embeddedFiles:
-          - name: render_chunk.py
+          # name is an <Identifier> (spec 6.1) and is the key Task.File
+          # references resolve against, so it cannot contain a dot. The
+          # on-disk basename goes in filename instead.
+          - name: render_chunk
             type: TEXT
+            filename: render_chunk.py
             data: |
               import sys
               import hou
@@ -58,7 +62,7 @@ template:
           onRun:
             command: hython
             args:
-              - render_chunk.py
+              - "{{Task.File.render_chunk}}"
               - "{{Param.SceneFile}}"
               - "{{Param.RopPath}}"
               - "{{Task.Param.Frames}}"

@@ -1,0 +1,45 @@
+-- SPDX-License-Identifier: AGPL-3.0-or-later
+-- OpenJD extensions a job's template declares, recorded at submission.
+--
+-- The scheduler must know whether a job uses the EXPR extension: it refuses to
+-- dispatch an EXPR job to a worker whose advertised expression caps are tighter
+-- than this server's (see internal/scheduler/exprcaps.go). It used to decide by
+-- SCANNING the raw template for the bytes "EXPR" -- a heuristic wrong in both
+-- directions, once per candidate task per lease request. internal/openjd has
+-- already parsed and validated the declaration at submission time, so this
+-- column carries that exact answer to the lease path, where reading it costs
+-- nothing: it rides along on the SELECT that already fetches the job.
+--
+-- Stored as a JSON list of extension names, the same shape as steps.depends_on.
+--
+-- '' AND '[]' ARE DIFFERENT VALUES AND THE DIFFERENCE IS THE POINT.
+--
+--   ''   = NOT RECORDED. No answer exists for this row. It is the default, and
+--          therefore what every job written before this migration holds. The
+--          scheduler falls back to the raw-template byte scan for these.
+--   '[]' = RECORDED, and the template declares no extensions at all. The
+--          scheduler trusts it and does NOT scan.
+--
+-- Defaulting to '[]' would be the natural-looking choice and would be a silent
+-- regression: every pre-existing row would claim to declare nothing, so an EXPR
+-- job already in the queue at upgrade time would lose its worker-caps gate and
+-- dispatch to a worker that cannot run it -- exactly the failure the gate
+-- exists to prevent, reintroduced by an upgrade and visible only as tasks
+-- failing at runtime.
+--
+-- NOT NULL DEFAULT '' matches the convention 00026 established for
+-- workers.expr_limits: scanJob reads this column into a plain string, so a NULL
+-- would be a scan error rather than an empty value.
+--
+-- The Down migration's ALTER TABLE ... DROP COLUMN requires SQLite >= 3.35.0
+-- (the same note 00002, 00008, 00013 and 00026 carry). Deliberately no CHECK
+-- constraint and no index on the column: SQLite refuses DROP COLUMN on a column
+-- either references, which would make the Down impossible without a full table
+-- rebuild. An index would buy nothing anyway -- the column is only ever read
+-- alongside a row already being fetched by primary key.
+
+-- +goose Up
+ALTER TABLE jobs ADD COLUMN declared_extensions TEXT NOT NULL DEFAULT '';
+
+-- +goose Down
+ALTER TABLE jobs DROP COLUMN declared_extensions;

@@ -213,6 +213,7 @@ func (h *jobDepsHarness) completeJob(t *testing.T, jobID string) {
 	exitCode := 0
 	msg := &fakeJSMsg{
 		data: taskStatusMsgJSON(t, protocol.TaskStatusMsg{
+			Version:   protocol.ProtocolVersion,
 			TaskID:    h.task.ID,
 			AttemptID: h.attempt.ID,
 			Status:    "succeeded",

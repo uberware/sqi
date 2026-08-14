@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 import { useId } from 'react'
 import type { ProductParameter } from '@/api/types'
-import { selectWidget, paramLabel, isRequired } from '@/lib/productForm'
+import { selectWidget, paramLabel, isRequired, isBoolTruthy } from '@/lib/productForm'
+import ListParamField from '@/components/ListParamField'
 import styles from './ProductParamField.module.css'
 
 interface Props {
@@ -37,7 +38,7 @@ export default function ProductParamField({ param, value, error, onChange }: Pro
           <input
             id={id}
             type="checkbox"
-            checked={value === on}
+            checked={isBoolTruthy(value)}
             onChange={(e) => onChange(e.target.checked ? (on ?? 'true') : (off ?? 'false'))}
           />
         )
@@ -48,6 +49,8 @@ export default function ProductParamField({ param, value, error, onChange }: Pro
         return (
           <input id={id} type="number" value={value} onChange={(e) => onChange(e.target.value)} />
         )
+      case 'list':
+        return <ListParamField param={param} id={id} value={value} onChange={onChange} />
       default:
         return (
           <input id={id} type="text" value={value} onChange={(e) => onChange(e.target.value)} />
@@ -55,9 +58,15 @@ export default function ProductParamField({ param, value, error, onChange }: Pro
     }
   }
 
+  // The 'list' widget is a role="group" of rows, not a single labelable
+  // control, so its label is associated by id + aria-labelledby
+  // (ListParamField) rather than htmlFor -- a group is not a labelable
+  // element and htmlFor on it would point at nothing.
+  const labelAssociation = widget === 'list' ? { id } : { htmlFor: id }
+
   return (
     <div className={styles.field}>
-      <label className={styles.label} htmlFor={id}>
+      <label className={styles.label} {...labelAssociation}>
         {label}
         {required && (
           <span className={styles.required} aria-hidden="true">

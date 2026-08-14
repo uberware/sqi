@@ -21,10 +21,10 @@ steps:
           args: ["hi"]`
 
 func TestValidateTemplate(t *testing.T) {
-	if err := product.ValidateTemplate(goodTemplate, store.TemplateFormatYAML, true); err != nil {
+	if err := product.ValidateTemplate(goodTemplate, store.TemplateFormatYAML, product.ValidateOptions{EnforceLimits: true}); err != nil {
 		t.Fatalf("good template rejected: %v", err)
 	}
-	if err := product.ValidateTemplate("specificationVersion: wrong\nsteps: []", store.TemplateFormatYAML, true); err == nil {
+	if err := product.ValidateTemplate("specificationVersion: wrong\nsteps: []", store.TemplateFormatYAML, product.ValidateOptions{EnforceLimits: true}); err == nil {
 		t.Fatal("malformed template accepted")
 	}
 }
@@ -46,7 +46,7 @@ template:
             command: python3
             args: ["-c", "print(1)"]`
 
-	p, err := product.ParseDefinition([]byte(def))
+	p, err := product.ParseDefinition([]byte(def), product.ValidateOptions{EnforceLimits: true})
 	if err != nil {
 		t.Fatalf("parse: %v", err)
 	}
@@ -60,7 +60,7 @@ template:
 		t.Fatalf("template not captured: %q", p.Template)
 	}
 	// The captured template must itself validate.
-	if err := product.ValidateTemplate(p.Template, p.Format, true); err != nil {
+	if err := product.ValidateTemplate(p.Template, p.Format, product.ValidateOptions{EnforceLimits: true}); err != nil {
 		t.Fatalf("captured template invalid: %v", err)
 	}
 }
@@ -74,7 +74,7 @@ func TestParseDefinition_Errors(t *testing.T) {
 	}
 	for label, def := range cases {
 		t.Run(label, func(t *testing.T) {
-			if _, err := product.ParseDefinition([]byte(def)); err == nil {
+			if _, err := product.ParseDefinition([]byte(def), product.ValidateOptions{EnforceLimits: true}); err == nil {
 				t.Fatalf("%s: expected error, got nil", label)
 			}
 		})

@@ -1,0 +1,68 @@
+# Known-failing OpenJD conformance tests.
+#
+# Each line is a fixture path relative to the 2023-09 suite root, and every
+# entry MUST carry a reason. An entry without one is a hard error in review:
+# a bare path records that something fails without recording what, which is how
+# a burn-down list decays into an ignore-list.
+#
+# This is a burn-down list, not an ignore-list. CI fails in THREE directions: a
+# test that fails without being listed here is a regression, a listed test that
+# starts passing is a stale entry that must be removed, and an entry matching no
+# live result at all is orphaned. Fixing conformance defects therefore shows up
+# as deletions from this file.
+#
+# base/env_templates/* : not listed here. sqi does not implement standalone
+# environment-2023-09 templates at all, so every fixture under any
+# env_templates/ directory is StateNotApplicable (see classify.go) and is
+# never scored — it cannot regress or go stale, so it has no baseline entry.
+#
+# 2026-08-14, sub-project H2: this file was EMPTY until now, and the three
+# entries below are its first. They arrived not because anything regressed but
+# because EXPR became a supported extension: EXPR/job_templates used to be
+# scored by a second, temporary path with a baseline file of its own
+# (baseline-expr.txt, deleted with that path), and these three came across
+# unchanged when TestConformance_Templates took the directory over. The score
+# is identical on both paths — 206/209 pass, 3 baselined.
+#
+# ALL THREE FAIL FOR THE SAME UNDERLYING REASON, AND IT IS NOT EXPR'S: each
+# declares FEATURE_BUNDLE_1, a separate official OpenJD extension (RFC 0004)
+# that sqi does not register, so validateExtensions rejects the template on the
+# extension name alone. Each also USES that extension's `bash:` SimpleAction in
+# place of `script:` — the element FEATURE_BUNDLE_1 defines and sqi does not
+# model — so the same fixtures additionally report a missing required `script`.
+# Both errors are one gap, counted twice. All three fixtures are VALID (no
+# ".invalid" suffix): the spec says accept them, sqi rejects them, so they fail.
+# They come off this list when sqi implements FEATURE_BUNDLE_1, or not at all.
+#
+# The per-fixture errors below were MEASURED on this branch through
+# openjd.Parse + openjd.ValidateWithOptions(EnforceLimits: true), not inferred
+# from the filenames.
+#
+# NOTE, because the record used to say otherwise: 3.6--let-bindings.yaml was
+# previously described as blocked first by its LIST[INT] job parameter, which
+# openjd.Parse rejected before validation ran. Sub-project F implemented the
+# RFC 0007 parameter types, so that is no longer true — it now parses, and only
+# the FEATURE_BUNDLE_1 gap remains. (Same correction applies to the five
+# 3.6--let-comprehension-shadows*.invalid.yaml fixtures, which are NOT
+# baselined: four of them are now rejected by section 1.3.7's real
+# loop-variable-shadowing rule instead of at parse time. See
+# TestConformance_B3ProtectedFixtures.)
+
+# Rejected on `/extensions/1: unsupported extension "FEATURE_BUNDLE_1"` and
+# `/steps/2/script: required` — its third step, StepWithSimpleAction, is a
+# `bash:` SimpleAction. Nothing to do with `let`: the fixture's own subject,
+# let bindings at all four scoping levels, is implemented and exercised by the
+# eleven fixtures TestConformance_E3ProtectedFixtures pins.
+EXPR/job_templates/3.6--let-bindings.yaml
+
+# Rejected on `/extensions/1: unsupported extension "FEATURE_BUNDLE_1"` plus
+# `/steps/1/script: required` and `/steps/2/script: required` — two of its three
+# steps (SimpleActionLet, EnvLet) use `bash:`. The host-context symbols it
+# exists to test (Session.*, Task.Param.*, Task.File.*) are never reached.
+EXPR/job_templates/3.6--let-host-context-symbols.yaml
+
+# Rejected on `/extensions/1: unsupported extension "FEATURE_BUNDLE_1"` and
+# `/steps/1/script: required` — its second step, Package, uses `bash:`. Its
+# first step, which references Job.Name and Step.Name from <StepTemplate>.let
+# and <StepScript>.let, is accepted; only the SimpleAction half is unreachable.
+EXPR/job_templates/7.3.1--job-step-name-in-step-let.yaml
