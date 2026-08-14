@@ -8,18 +8,18 @@ package openjd
 // Evaluation model, via the checkExpressionsAtSubmit helper in submit.go.
 //
 // This is a package-openjd (white-box) file, not an addition to
-// submit_test.go's package-openjd_test suite, for two reasons:
+// submit_test.go's package-openjd_test suite, because
+// TestCheckExpressionsAtSubmit_PhaseDistinction and
+// TestCheckExpressionsAtSubmit_NoOpWithoutEXPR call checkExpressionsAtSubmit
+// directly -- an unexported function.
 //
-//  1. TestCheckExpressionsAtSubmit_PhaseDistinction and
-//     TestCheckExpressionsAtSubmit_NoOpWithoutEXPR call checkExpressionsAtSubmit
-//     directly -- an unexported function.
-//  2. TestSubmit_PhaseDistinction_ThroughRealSubmit needs to reach the
-//     unexported registry var (extension.go) to temporarily flip the EXPR
-//     extension to StatusSupported, because Submit's own phase 1 call
-//     (ValidateWithOptions) otherwise rejects every EXPR-declaring template
-//     outright before parameter binding is ever reached -- the extension is
-//     registered but not yet StatusSupported, and validateExtensions
-//     enforces that unconditionally.
+// There was a SECOND reason until sub-project H2:
+// TestSubmit_PhaseDistinction_ThroughRealSubmit had to reach the unexported
+// registry var (extension.go) and temporarily flip the EXPR extension to
+// StatusSupported, because Submit's own phase 1 call (ValidateWithOptions)
+// otherwise rejected every EXPR-declaring template outright, before parameter
+// binding was ever reached. H2 flipped that status for real, so the flip and
+// its t.Cleanup are gone and the test drives the production path.
 //
 // An earlier version of this file claimed a Submit()-level proof of the
 // phase-1/phase-2 distinction was "impossible today" because of that gate.
@@ -27,10 +27,6 @@ package openjd
 // below; that claim is withdrawn. See the report's "Fix round 1" section for
 // the mutation-test evidence (deleting the checkExpressionsAtSubmit call
 // from prepareTemplate makes that test fail).
-//
-// The registry flip is still a genuinely separate, temporary gate --
-// unrelated to whether Task 10's wiring itself is correct -- so it stays
-// isolated to this one test rather than becoming a standing test fixture.
 
 import (
 	"context"
@@ -124,11 +120,11 @@ func TestCheckExpressionsAtSubmit_NoOpWithoutEXPR(t *testing.T) {
 // Task 10's wiring works when driven through the public Submitter.Submit API
 // -- not merely that checkExpressionsAtSubmit behaves correctly in isolation
 // (TestCheckExpressionsAtSubmit_PhaseDistinction, above, already covers
-// that). It temporarily flips the EXPR extension's registry entry
-// (extension.go) to StatusSupported so the brief's own division-by-zero
-// template can clear ValidateWithOptions's phase 1 call and reach parameter
-// binding, then restores the entry via t.Cleanup so no other test in this
-// package observes the flip.
+// that). Until sub-project H2 it had to flip the EXPR extension's registry
+// entry (extension.go) to StatusSupported for the duration of the test, so the
+// brief's own division-by-zero template could clear ValidateWithOptions's
+// phase 1 call and reach parameter binding; EXPR is StatusSupported for real
+// now, so the template clears phase 1 exactly as a submitted one does.
 //
 // Submitting with N="0" must fail at the new phase 2 call with a
 // division-by-zero *SubmitValidationError; submitting the same template with
@@ -138,12 +134,6 @@ func TestCheckExpressionsAtSubmit_NoOpWithoutEXPR(t *testing.T) {
 // call makes it pass again. See the report's "Fix round 1" section for both
 // observations.
 func TestSubmit_PhaseDistinction_ThroughRealSubmit(t *testing.T) {
-	prevEXPR := registry["EXPR"]
-	supported := prevEXPR
-	supported.Status = StatusSupported
-	registry["EXPR"] = supported
-	t.Cleanup(func() { registry["EXPR"] = prevEXPR })
-
 	ctx := context.Background()
 	st := fake.New()
 	farm, err := st.CreateFarm(ctx, store.Farm{ID: uuid.NewString(), Name: "t10-farm"})

@@ -533,8 +533,7 @@ func TestValidate_OverCapParameterSpace_SkipsExpressionWalk(t *testing.T) {
 			TaskParameterDefinitions: makeStringTaskParams(16, 15),
 		}
 		errs := openjd.ValidateWithOptions(tmpl, openjd.ValidateOptions{
-			EnforceLimits:                        true,
-			CheckEXPRExpressionsWhileUnsupported: true,
+			EnforceLimits: true,
 		})
 		if containsPointer(errs, defCountCapPtr) {
 			t.Fatalf("16 definitions must not trip the count cap, got %v", errs)
@@ -563,8 +562,7 @@ func TestValidate_OverCapParameterSpace_SkipsExpressionWalk(t *testing.T) {
 		}
 		valueCountCapPtr := "/steps/0/parameterSpace/taskParameterDefinitions/0/range"
 		errs := openjd.ValidateWithOptions(tmpl, openjd.ValidateOptions{
-			EnforceLimits:                        true,
-			CheckEXPRExpressionsWhileUnsupported: true,
+			EnforceLimits: true,
 		})
 		if containsPointer(errs, valueCountCapPtr) {
 			t.Fatalf("%d values must not trip the value-count cap, got %v", 1024, errs)
@@ -581,8 +579,7 @@ func TestValidate_OverCapParameterSpace_SkipsExpressionWalk(t *testing.T) {
 			TaskParameterDefinitions: makeStringTaskParams(17, 16),
 		}
 		errs := openjd.ValidateWithOptions(tmpl, openjd.ValidateOptions{
-			EnforceLimits:                        true,
-			CheckEXPRExpressionsWhileUnsupported: true,
+			EnforceLimits: true,
 		})
 		if !containsPointer(errs, defCountCapPtr) {
 			t.Fatalf("expected the definition-count cap error at %q, got %v", defCountCapPtr, errs)
@@ -603,8 +600,7 @@ func TestValidate_OverCapParameterSpace_SkipsExpressionWalk(t *testing.T) {
 			TaskParameterDefinitions: makeStringTaskParams(17, 16),
 		}
 		errs := openjd.ValidateWithOptions(tmpl, openjd.ValidateOptions{
-			EnforceLimits:                        false,
-			CheckEXPRExpressionsWhileUnsupported: true,
+			EnforceLimits: false,
 		})
 		if containsPointer(errs, defCountCapPtr) {
 			t.Fatalf("EnforceLimits=false: cap error must stay gated off, got %v", errs)
@@ -628,8 +624,7 @@ func TestValidate_OverCapParameterSpace_SkipsExpressionWalk(t *testing.T) {
 		}
 		valueCountCapPtr := "/steps/0/parameterSpace/taskParameterDefinitions/0/range"
 		errs := openjd.ValidateWithOptions(tmpl, openjd.ValidateOptions{
-			EnforceLimits:                        true,
-			CheckEXPRExpressionsWhileUnsupported: true,
+			EnforceLimits: true,
 		})
 		if !containsPointer(errs, valueCountCapPtr) {
 			t.Fatalf("expected the value-count cap error at %q, got %v", valueCountCapPtr, errs)
@@ -656,8 +651,7 @@ func TestValidate_OverCapParameterSpace_SkipsExpressionWalk(t *testing.T) {
 		}
 		overlapCapPtr := "/steps/0/parameterSpace/taskParameterDefinitions/0/range"
 		errs := openjd.ValidateWithOptions(tmpl, openjd.ValidateOptions{
-			EnforceLimits:                        true,
-			CheckEXPRExpressionsWhileUnsupported: true,
+			EnforceLimits: true,
 		})
 		if !containsPointer(errs, overlapCapPtr) {
 			t.Fatalf("expected the overlap error at %q, got %v", overlapCapPtr, errs)

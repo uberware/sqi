@@ -195,9 +195,8 @@ func TestValidateWithBudget_DeadlineIsNotAValidationError(t *testing.T) {
 	}
 
 	errs, ferr := ValidateWithBudget(tmpl, ValidateOptions{
-		EnforceLimits:                        true,
-		CheckEXPRExpressionsWhileUnsupported: true,
-		Deadline:                             time.Now().Add(-time.Second), // expired
+		EnforceLimits: true,
+		Deadline:      time.Now().Add(-time.Second), // expired
 	})
 
 	if ferr == nil {
@@ -236,9 +235,8 @@ func TestValidateWithBudget_DeadlineInEmbeddedSegmentIsNotAValidationError(t *te
 	}
 
 	errs, ferr := ValidateWithBudget(tmpl, ValidateOptions{
-		EnforceLimits:                        true,
-		CheckEXPRExpressionsWhileUnsupported: true,
-		Deadline:                             time.Now().Add(-time.Second), // expired
+		EnforceLimits: true,
+		Deadline:      time.Now().Add(-time.Second), // expired
 	})
 
 	if ferr == nil {
@@ -283,9 +281,8 @@ func TestValidateWithBudget_DeadlineInLetBindingsStopsTheBlock(t *testing.T) {
 	}
 
 	errs, ferr := ValidateWithBudget(tmpl, ValidateOptions{
-		EnforceLimits:                        true,
-		CheckEXPRExpressionsWhileUnsupported: true,
-		Deadline:                             time.Now().Add(-time.Second), // expired
+		EnforceLimits: true,
+		Deadline:      time.Now().Add(-time.Second), // expired
 	})
 
 	if ferr == nil {
@@ -337,22 +334,47 @@ steps:
 // TestValidateWithOptions_UnchangedByBudget pins that the existing entry point
 // keeps behaving exactly as before, since every caller but the submission path
 // still uses it.
+//
+// THE ASSERTION GOT SHARPER AT SUB-PROJECT H2. While EXPR was
+// StatusInProgress this fixture was rejected by the extension status gate, so
+// all the test could say was "some error came back, not a panic or a hang" --
+// a bar the status-gate error cleared on its own, whether or not the walk ran.
+// EXPR is StatusSupported now, so the ONLY thing that can reject this fixture
+// is the walk itself, and the error it must produce is nameable: the fixture
+// is 100,000 comprehension iterations against a 10,000-operation budget, so
+// the verdict is the DETERMINISTIC operation limit and specifically not the
+// wall-clock backstop, which is what "unchanged by the budget plumbing" means
+// for a caller that sets no deadline.
 func TestValidateWithOptions_UnchangedByBudget(t *testing.T) {
 	tmpl, err := Parse([]byte(exprDeadlineTemplate), FormatYAML)
 	if err != nil {
 		t.Fatalf("Parse: %v", err)
 	}
 	// No deadline set, so this must behave exactly as it did before H1.
-	errs := ValidateWithOptions(tmpl, ValidateOptions{
-		EnforceLimits:                        true,
-		CheckEXPRExpressionsWhileUnsupported: true,
-	})
-	// The template declares EXPR, which is StatusInProgress, so it is rejected
-	// by the status gate — the point is that it returns errors, not a panic or
-	// a hang.
+	errs := ValidateWithOptions(tmpl, ValidateOptions{EnforceLimits: true})
 	if len(errs) == 0 {
-		t.Fatal("an EXPR template was accepted while the extension is StatusInProgress")
+		t.Fatal("the walk did not run: an over-budget EXPR template was accepted")
 	}
+	for _, e := range errs {
+		if strings.Contains(strings.ToLower(e.Message), "deadline") {
+			t.Errorf("deadline reported at %s with no deadline set: %s", e.Pointer, e.Message)
+		}
+	}
+	if !containsMessageSubstring(errs, "operation limit exceeded") {
+		t.Errorf("errs = %v, want the deterministic operation-limit verdict: with the "+
+			"status gate gone, the walk is the only thing that can reject this fixture", errs)
+	}
+}
+
+// containsMessageSubstring reports whether any of errs carries want in its
+// message.
+func containsMessageSubstring(errs ValidationErrors, want string) bool {
+	for _, e := range errs {
+		if strings.Contains(e.Message, want) {
+			return true
+		}
+	}
+	return false
 }
 
 // TestCheckExpressionsAtSubmit_DeadlineIsNotASubmitValidationError covers
@@ -525,13 +547,12 @@ steps:
 // calling [ValidateWithBudget] rather than [ValidateWithOptions], and the
 // breach coming back as a plain error rather than as the client-fault type.
 //
-// It flips the EXPR registry entry to StatusSupported for the duration of the
-// test, exactly as TestSubmit_PhaseDistinction_ThroughRealSubmit does and for
-// the same reason: while EXPR is StatusInProgress, validateExtensions rejects
-// every EXPR-declaring template before a single expression is evaluated, so no
-// submission can reach the meter at all. That is also why H1's deadline is
-// INERT in production today -- it becomes live when sub-project H2 flips that
-// status, which is the whole point of landing the bound first.
+// It used to flip the EXPR registry entry to StatusSupported for the duration
+// of the test, because while EXPR was StatusInProgress validateExtensions
+// rejected every EXPR-declaring template before a single expression was
+// evaluated and no submission could reach the meter at all -- which is also why
+// H1's deadline was INERT in production. Sub-project H2 flipped that status for
+// real, so the test now drives the production path with no scaffolding.
 //
 // The message assertion is the load-bearing half. Both phase 1 and phase 2 walk
 // the same positions, so a deadline trips in whichever runs first: if phase 1
@@ -541,12 +562,6 @@ steps:
 // ErrDeadlineExceeded and pass while the exact defect it exists to catch was
 // present. The phase-1 wording is what distinguishes them.
 func TestSubmit_DeadlineIsNotASubmitValidationError(t *testing.T) {
-	prevEXPR := registry["EXPR"]
-	supported := prevEXPR
-	supported.Status = StatusSupported
-	registry["EXPR"] = supported
-	t.Cleanup(func() { registry["EXPR"] = prevEXPR })
-
 	ctx := t.Context()
 	st := fake.New()
 	farm, err := st.CreateFarm(ctx, store.Farm{ID: uuid.NewString(), Name: "h1-farm"})
@@ -589,12 +604,6 @@ func TestSubmit_DeadlineIsNotASubmitValidationError(t *testing.T) {
 // with SubmitOptions.Deadline left zero -- every caller in this repo that is
 // not a submission handler -- the pipeline behaves exactly as it did before H1.
 func TestSubmit_NoDeadlineIsUnchanged(t *testing.T) {
-	prevEXPR := registry["EXPR"]
-	supported := prevEXPR
-	supported.Status = StatusSupported
-	registry["EXPR"] = supported
-	t.Cleanup(func() { registry["EXPR"] = prevEXPR })
-
 	ctx := t.Context()
 	st := fake.New()
 	farm, err := st.CreateFarm(ctx, store.Farm{ID: uuid.NewString(), Name: "h1-farm"})

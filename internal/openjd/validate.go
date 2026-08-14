@@ -395,59 +395,6 @@ type ValidateOptions struct {
 	// both functions' doc comments.
 	EnforceLimits bool
 
-	// CheckEXPRExpressionsWhileUnsupported runs the EXPR extension's
-	// format-string expression walk ([checkTemplateExpressions]) even though
-	// the EXPR registry entry is not [StatusSupported].
-	//
-	// Default (false) is production's setting, and it is the SAFE one. While
-	// EXPR is StatusInProgress, [validateExtensions] rejects every
-	// EXPR-declaring template outright, so the walk's result cannot change the
-	// verdict — it can only burn CPU. And the walk is expensive: its
-	// operation and byte budgets are PER EXPRESSION POSITION with no
-	// template-wide cap and no bound on the number of positions, so a template
-	// of N expression positions costs N budgets. Measured before this gate
-	// existed, an 84 KB template of ~2,000 args entries took 11.3 s of CPU and
-	// returned exactly one error — the status-gate rejection it would have
-	// returned for free. Since POST /api/v1/jobs accepts a 4 MiB body and (with
-	// auth off, the default) accepts it anonymously, that is a cheap way to buy
-	// minutes of server CPU per request. Gating the walk on the registry status
-	// restores the pre-E2 cost: a template production always rejects is
-	// rejected without evaluating anything.
-	//
-	// Set to true ONLY by test/conformance's EXPR scoring path, which
-	// deliberately discounts the status-gate error so a fixture is judged on
-	// whatever OTHER errors sqi finds; without this field the conformance
-	// suite would stop exercising the checker entirely.
-	//
-	// TEMPORARY SHAPE. This field exists only for the window in which EXPR is
-	// registered but not yet supported. Sub-project H2 flips the registry entry
-	// to StatusSupported, at which point [exprExpressionWalkEnabled] returns
-	// true unconditionally and this field never changes an outcome.
-	//
-	// DELETING IT IS NO LONGER A ONE-LINE CHANGE. An earlier revision of this
-	// comment said H must delete it "along with the conformance harness's use
-	// of it", which was true when the harness was the only user. Sub-project H1
-	// added dependents that force the walk on for a different reason -- they
-	// test bounds (the wall-clock deadline, the operator's ExprLimits) that
-	// production cannot exercise at all while the status gate rejects every
-	// EXPR template before an expression is evaluated:
-	// internal/openjd/deadline_test.go (x4),
-	// internal/product/exprbounds_internal_test.go, and the validateParsed seam
-	// in internal/product/definition.go, which exists ONLY so a test can set
-	// this field. After the flip those should drive the real path rather than
-	// disappear with the field.
-	//
-	// WHAT MUST PRECEDE THE FLIP IS NO LONGER "sub-project E4's template-wide
-	// budget", and this gate is no longer "the ONLY thing bounding the walk" --
-	// both claims are superseded and were stale by four waves. E4c landed the
-	// cumulative budget, E4d made all nine limits operator-configurable, and H1
-	// landed the two bounds that survived them: a wall-clock backstop
-	// ([ValidateOptions.Deadline], because no counter can bound seconds) and
-	// maxTasksPerJob. TestConformance_EXPRNotSupported's failure message
-	// carries the current H2 checklist, including the obligations no test can
-	// enforce before the flip.
-	CheckEXPRExpressionsWhileUnsupported bool
-
 	// ExprLimits is the operator-configured bound on what this template's EXPR
 	// expression walk may spend — EXPR sub-project E4d. The zero value means
 	// "use the defaults", so every caller that has no operator configuration
@@ -478,37 +425,21 @@ type ValidateOptions struct {
 	Deadline time.Time
 }
 
-// exprExpressionWalkEnabled reports whether [checkTemplateExpressions] should
-// run at all, given the EXPR registry entry's status and the caller's opt-in.
-//
-// The walk runs when EXPR is [StatusSupported] — the post-sub-project-H steady
-// state, where an EXPR template is accepted and its expressions therefore
-// decide the verdict — or when the caller explicitly opted in via
-// [ValidateOptions.CheckEXPRExpressionsWhileUnsupported].
-//
-// This is NOT the extension status gate. That gate is [validateExtensions]',
-// it is unconditional, and it is untouched by this function: an EXPR template
-// is still rejected with the same error at the same pointer whether or not the
-// walk runs. This only decides whether sqi spends CPU computing errors that
-// cannot change that rejection.
-func exprExpressionWalkEnabled(optIn bool) bool {
-	if entry, ok := LookupExtension("EXPR"); ok && entry.Status == StatusSupported {
-		return true
-	}
-	return optIn
-}
-
 // exprWalkApplies reports whether [ValidateWithOptions] should do ANY phase-1
 // expression work for t -- both the walk itself and the pre-walk cost guard
 // that decides whether to skip it.
 //
-// It is [exprExpressionWalkEnabled] AND the template actually declaring the
-// extension, and the second term is the whole reason this function exists.
-// exprExpressionWalkEnabled consults only the registry's status and the
-// caller's opt-in; it never looks at the template. After sub-project H flips
-// EXPR to [StatusSupported] it therefore returns true for EVERY template,
-// base-spec ones included -- and the call site's other term,
-// parameterSpaceOverCaps, is not free: it walks every step's task-parameter
+// It is the template declaring the extension, and nothing else. Until
+// sub-project H2 this function also consulted a registry-status gate
+// ([ValidateOptions]' since-deleted CheckEXPRExpressionsWhileUnsupported and
+// its exprExpressionWalkEnabled helper), which skipped the walk entirely while
+// EXPR was [StatusInProgress] and every EXPR template was rejected by
+// [validateExtensions] anyway. EXPR is StatusSupported now, so that term is
+// permanently true and the declaration is the whole condition.
+//
+// The declaration term is load-bearing on its own, which is why this function
+// survives its other half: the call site's remaining term,
+// parameterSpaceOverCaps, is not free -- it walks every step's task-parameter
 // definitions and counts every INT sub-range, measured at 15 ms on a
 // 200,000-sub-range parameter and ~40 ms at the body cap. Spending that to
 // decide whether to skip a walk that would do nothing anyway breaks design
@@ -518,8 +449,8 @@ func exprExpressionWalkEnabled(optIn bool) bool {
 // short-circuit in front of the guard, and Go's && guarantees it as one.
 //
 // Added by fix round 2 (whole-branch review, MINOR 1).
-func exprWalkApplies(t *JobTemplate, optIn bool) bool {
-	return exprExpressionWalkEnabled(optIn) && t.hasExtension("EXPR")
+func exprWalkApplies(t *JobTemplate) bool {
+	return t.hasExtension("EXPR")
 }
 
 // ─── Validate ─────────────────────────────────────────────────────────────────
@@ -682,12 +613,16 @@ func ValidateWithBudget(t *JobTemplate, opts ValidateOptions) (ValidationErrors,
 	// phase-2 caller with concrete parameters). It no-ops for a template that
 	// does not declare EXPR -- see its own doc comment.
 	//
-	// Gated on the EXPR registry entry's STATUS, not on the template's own
-	// declaration: while EXPR is StatusInProgress, validateExtensions (above)
-	// has already rejected this template unconditionally, so the walk cannot
-	// change the verdict and its per-position budgets are pure attack surface.
-	// See [ValidateOptions.CheckEXPRExpressionsWhileUnsupported] for the cost
-	// measurement and for why sub-project H deletes this gate.
+	// Gated on the template's own declaration alone (exprWalkApplies). Until
+	// sub-project H2 it was ALSO gated on the EXPR registry entry's status,
+	// because while EXPR was StatusInProgress validateExtensions (above) had
+	// already rejected the template unconditionally, so the walk could not
+	// change the verdict and its per-position budgets were pure attack
+	// surface. EXPR is StatusSupported now: an EXPR template is accepted, so
+	// its expressions decide the verdict and the walk has to run. What bounds
+	// its cost is no longer that gate but E4c's template-wide budget
+	// (positions and retained bytes) and H1's wall-clock submission deadline,
+	// both carried by walkBudget below.
 	//
 	// ALSO gated on parameterSpaceOverCaps(t): maxTaskParameterDefinitions
 	// (16) and maxTaskParamValues (1024) -- the two COUNT caps
@@ -737,16 +672,16 @@ func ValidateWithBudget(t *JobTemplate, opts ValidateOptions) (ValidationErrors,
 	// UNBOUNDED at phase 2 after this task -- gating checkExpressionsAtSubmit
 	// itself is explicitly out of this task's scope and is a later E4c
 	// task's job.
-	// exprWalkApplies, not exprExpressionWalkEnabled alone: the template's own
-	// extensions: key has to be consulted BEFORE parameterSpaceOverCaps, or
-	// the guard runs on templates whose walk is a no-op. See that function.
+	// exprWalkApplies comes FIRST: the template's own extensions: key has to be
+	// consulted before parameterSpaceOverCaps, or the guard runs on templates
+	// whose walk is a no-op. See that function.
 	//
 	// walkBudget is hoisted out of the branch below because it is what carries
 	// a deadline breach back out: checkTemplateExpressions reports one through
 	// the budget (templateBudget.recordDeadline) rather than as a
 	// ValidationError, so this function has to hold the pointer to read it.
 	var walkBudget *templateBudget
-	if exprWalkApplies(t, opts.CheckEXPRExpressionsWhileUnsupported) && !parameterSpaceOverCaps(t) {
+	if exprWalkApplies(t) && !parameterSpaceOverCaps(t) {
 		// A budget is passed EXPLICITLY (rather than letting
 		// checkTemplateExpressions allocate its own) for one reason: the
 		// budget is what carries opts.ExprLimits to every metered position.
@@ -1138,10 +1073,11 @@ func validateEnvNameLimits(envs []Environment, base string) ValidationErrors {
 // site), so an expensive check here would defeat its own purpose by
 // importing cost onto the very path it exists to protect. An earlier
 // revision of this sentence said it runs "on EVERY EXPR-declaring template"
-// while the call site gated it on exprExpressionWalkEnabled ALONE -- which
-// consults the registry status, not the template -- so it in fact ran on
+// while the call site gated it on a registry-status check ALONE -- which
+// consults the extension registry, not the template -- so it in fact ran on
 // every template, base-spec ones included. Fix round 2 (whole-branch review,
-// MINOR 1) added the hasExtension("EXPR") term that makes the sentence true.
+// MINOR 1) added the hasExtension("EXPR") term ([exprWalkApplies]) that makes
+// the sentence true.
 // [validateParameterSpaceLimits] also runs [intRangeHasOverlap], an O(n^2)
 // pairwise scan over an INT range's sub-ranges (range.go) with no early exit
 // once a count cap has already fired -- reusing it wholesale here was tried

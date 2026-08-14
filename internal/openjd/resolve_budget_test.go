@@ -422,19 +422,13 @@ func letBytesTemplateYAML(name string, bindingCount, bytesEach int) string {
 // under the 10,000-position cap must now SUCCEED, not fail, because
 // prepareTemplate gives them two separate budgets instead of one shared one.
 //
-// Mirrors TestSubmit_PhaseDistinction_ThroughRealSubmit's registry-flip
-// pattern (submit_exprcheck_test.go): the EXPR extension is registered but
-// not yet StatusSupported, so ValidateWithOptions (phase 1) rejects every
-// EXPR-declaring template before parameter binding is ever reached in
-// production; this test temporarily flips the registry entry so the
-// construction can reach phase 2, then restores it via t.Cleanup.
+// It used to mirror TestSubmit_PhaseDistinction_ThroughRealSubmit's
+// registry-flip pattern (submit_exprcheck_test.go), because while the EXPR
+// extension was registered but not yet StatusSupported ValidateWithOptions
+// (phase 1) rejected every EXPR-declaring template before parameter binding was
+// reached. Sub-project H2 made EXPR StatusSupported, so the flip is gone and
+// the construction reaches phase 2 the way a submitted template does.
 func TestSubmit_PhaseTwoBudget_ChecksAndResolverEachGetOwnAllowance(t *testing.T) {
-	prevEXPR := registry["EXPR"]
-	supported := prevEXPR
-	supported.Status = StatusSupported
-	registry["EXPR"] = supported
-	t.Cleanup(func() { registry["EXPR"] = prevEXPR })
-
 	ctx := context.Background()
 	st := fake.New()
 	farm, err := st.CreateFarm(ctx, store.Farm{ID: uuid.NewString(), Name: "t4-farm"})
@@ -485,12 +479,6 @@ func TestSubmit_PhaseTwoBudget_ChecksAndResolverEachGetOwnAllowance(t *testing.T
 // own, separately allocated checkerBudget (phase 2) are genuinely two
 // different [templateBudget] objects, not one threaded too far.
 func TestSubmit_Phase1SpendDoesNotCarryIntoPhase2(t *testing.T) {
-	prevEXPR := registry["EXPR"]
-	supported := prevEXPR
-	supported.Status = StatusSupported
-	registry["EXPR"] = supported
-	t.Cleanup(func() { registry["EXPR"] = prevEXPR })
-
 	ctx := context.Background()
 	st := fake.New()
 	farm, err := st.CreateFarm(ctx, store.Farm{ID: uuid.NewString(), Name: "t4-indep-farm"})
@@ -554,12 +542,6 @@ func TestSubmit_Phase1SpendDoesNotCarryIntoPhase2(t *testing.T) {
 // pass/fail the way TestPhase2Budget_CheckerAndResolverHaveIndependentBudgets
 // checks it at the lower level.
 func TestSubmit_ValidateAcceptsMustNotRejectOnBudgetAlone(t *testing.T) {
-	prevEXPR := registry["EXPR"]
-	supported := prevEXPR
-	supported.Status = StatusSupported
-	registry["EXPR"] = supported
-	t.Cleanup(func() { registry["EXPR"] = prevEXPR })
-
 	ctx := context.Background()
 	st := fake.New()
 	farm, err := st.CreateFarm(ctx, store.Farm{ID: uuid.NewString(), Name: "t4-property-farm"})

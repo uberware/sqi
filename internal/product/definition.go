@@ -88,8 +88,8 @@ type ValidateOptions struct {
 // ExprLimitsFromConfig is a named function: a struct literal copying one
 // options type into another is the shape where a field can be dropped, renamed
 // or pointed at the wrong member and still compile, start and serve. Left
-// inline it would also be unreachable from a test, because nothing this mapping
-// controls is observable while the expression walk is gated.
+// inline it would also be unreachable from a test asserting on the mapping
+// itself, field by field, rather than on one downstream consequence at a time.
 func (o ValidateOptions) openjdOptions() openjd.ValidateOptions {
 	return openjd.ValidateOptions{
 		EnforceLimits: o.EnforceLimits,
@@ -124,12 +124,15 @@ func ValidateTemplate(rawTemplate string, format store.TemplateFormat, opts Vali
 // validateParsed runs the validation tail shared by [ValidateTemplate] and its
 // tests.
 //
-// It is split out so a test can drive it with the expression walk force-enabled
-// (openjd.ValidateOptions' CheckEXPRExpressionsWhileUnsupported). Production
-// never sets that field, and while EXPR is StatusInProgress the walk never runs
-// -- so without this seam the deadline plumbing below would have no test that
-// can reach it, and "the deadline is wired" would be indistinguishable from
-// "the deadline is dropped on the floor".
+// It was split out as a seam so a test could drive the validation tail with an
+// already-parsed template while the expression walk was still gated off in
+// production (openjd.ValidateOptions' since-deleted
+// CheckEXPRExpressionsWhileUnsupported). Sub-project H2 made EXPR
+// StatusSupported, so [ValidateTemplate] now reaches the same walk on its own
+// and the tests that needed the override drive the exported entry point
+// instead. The seam is kept because it is still the cheapest way to assert on
+// the tail alone, with a template a test built rather than a string it had to
+// serialize.
 func validateParsed(tmpl *openjd.JobTemplate, o openjd.ValidateOptions) error {
 	errs, ferr := openjd.ValidateWithBudget(tmpl, o)
 	if ferr != nil {

@@ -423,9 +423,8 @@ func checkFormatString(
 //
 // The guard lives here rather than as a short-circuit in ValidateWithOptions
 // because this function is the only place the cost is actually incurred, so
-// bounding it here is independent of upstream ordering, of EnforceLimits, and
-// of exprExpressionWalkEnabled's status gate -- and it also covers the unit
-// tests that call this leaf directly.
+// bounding it here is independent of upstream ordering and of EnforceLimits --
+// and it also covers the unit tests that call this leaf directly.
 //
 // An earlier revision of this comment justified the placement by claiming
 // phase 2 (checkExpressionsAtSubmit, submit.go) reaches checkTemplateExpressions
@@ -1185,16 +1184,18 @@ func templateExprRetainedBytes(syms expr.MapSymbols) int64 {
 // worst.
 //
 // The EXPR declaration is a necessary but NOT a sufficient condition for the
-// walk to happen: ValidateWithOptions additionally gates this call on the EXPR
-// registry entry's status (exprExpressionWalkEnabled), because while EXPR is
-// StatusInProgress the template has already been rejected by
-// validateExtensions and this walk -- whose operation and byte budgets are per
-// expression position, with no template-wide cap and no bound on the number of
-// positions -- would only burn CPU on a verdict it cannot change. Callers that
-// need the walk regardless (test/conformance's EXPR scoring) opt in via
-// ValidateOptions.CheckEXPRExpressionsWhileUnsupported. Calling this function
-// directly, as the unit tests in exprcheck_test.go do, bypasses that gate on
-// purpose: it tests the checker, not the decision to invoke it.
+// walk to happen: ValidateWithOptions additionally skips this call for a
+// parameter space over parameterSpaceOverCaps' two count caps, a
+// cost guard whose verdict phase 2 does not inherit (see that call site).
+// Until sub-project H2 there was a second gate, on the EXPR registry entry's
+// status: while EXPR was StatusInProgress the template had already been
+// rejected by validateExtensions, and this walk -- whose operation and byte
+// budgets are per expression position -- would only have burned CPU on a
+// verdict it could not change. EXPR is StatusSupported now, so that gate is
+// gone along with the ValidateOptions field that let a caller override it.
+// Calling this function directly, as the unit tests in exprcheck_test.go do,
+// bypasses the cost guard on purpose: it tests the checker, not the decision
+// to invoke it.
 //
 // params is nil for phase 1 (every job-parameter symbol unresolved, called
 // from ValidateWithOptions) and holds concrete values for phase 2 (called

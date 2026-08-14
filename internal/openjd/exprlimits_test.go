@@ -118,9 +118,9 @@ func TestExprLimits_OrDefaults(t *testing.T) {
 // internal/product/dccpresets_test.go validates), so no floor may be tight
 // enough to reject one of them.
 //
-// The presets do not declare EXPR -- the extension is still StatusInProgress
-// -- so the walk is forced on by adding the declaration to the parsed
-// template. That measures the right thing anyway: the cost is a property of
+// The presets do not declare EXPR, so the walk is switched on by adding the
+// declaration to the parsed template. That measures the right thing anyway:
+// the cost is a property of
 // the template's SHAPE (how many format-string-bearing fields it has and what
 // they evaluate), not of which extension it declares.
 //
@@ -548,9 +548,11 @@ func TestExprLimits_KnobsAreIndependent(t *testing.T) {
 // see the task report -- and this is the test that fails if it stops threading
 // the value through.
 //
-// CheckEXPRExpressionsWhileUnsupported is required because EXPR is
-// StatusInProgress: without it the walk does not run at all, and this test
-// would pass on a completely unwired knob.
+// It used to need ValidateOptions.CheckEXPRExpressionsWhileUnsupported to force
+// the walk on, because EXPR was StatusInProgress and without the override the
+// walk did not run at all -- so the test would have passed on a completely
+// unwired knob. Sub-project H2 made EXPR StatusSupported, so this now drives
+// the same production path an operator's configuration reaches.
 func TestValidateWithOptions_ExprLimitsReachTheWalk(t *testing.T) {
 	const args = 300
 	const cost = args + 2
@@ -569,9 +571,8 @@ func TestValidateWithOptions_ExprLimitsReachTheWalk(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			errs := ValidateWithOptions(tmpl, ValidateOptions{
-				EnforceLimits:                        true,
-				CheckEXPRExpressionsWhileUnsupported: true,
-				ExprLimits:                           tc.limits,
+				EnforceLimits: true,
+				ExprLimits:    tc.limits,
 			})
 			_, tripped := budgetError(errs)
 			if tripped != tc.reject {
@@ -593,9 +594,10 @@ func TestValidateWithOptions_ExprLimitsReachTheWalk(t *testing.T) {
 // in submit.go to newTemplateBudget(ExprLimits{}) -- or dropping ExprLimits
 // from the phase-1 ValidateOptions -- left it green. The report described it
 // as pinning something it did not pin. It also claimed a real end-to-end test
-// was impossible while EXPR is StatusInProgress; that is false, and
-// TestSubmit_PhaseDistinction_ThroughRealSubmit had already shown the way --
-// temporarily flip the registry entry to StatusSupported, exactly as it does.
+// was impossible while EXPR was StatusInProgress; that was false even then --
+// TestSubmit_PhaseDistinction_ThroughRealSubmit had already shown the way, by
+// temporarily flipping the registry entry to StatusSupported. Sub-project H2
+// flipped it for real, so no test in this file flips anything any more.
 //
 // The three wiring points and what covers each:
 //
@@ -624,12 +626,6 @@ func TestValidateWithOptions_ExprLimitsReachTheWalk(t *testing.T) {
 //     the returned budget is the strongest available observation, and it does
 //     fail if submit.go stops passing s.exprLimits there.
 func TestSubmit_ExprLimitsAreEnforcedThroughTheSubmitter(t *testing.T) {
-	prevEXPR := registry["EXPR"]
-	supported := prevEXPR
-	supported.Status = StatusSupported
-	registry["EXPR"] = supported
-	t.Cleanup(func() { registry["EXPR"] = prevEXPR })
-
 	const tmplYAML = `
 specificationVersion: jobtemplate-2023-09
 extensions:

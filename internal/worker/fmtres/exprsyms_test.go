@@ -1437,10 +1437,14 @@ func TestApplyEnvLet_ShadowsStepTemplateLetRejected(t *testing.T) {
 // TestPhase2Phase3Agreement_StepEnvironmentLet is Critical 1's agreement
 // proof, run against the REAL phase-2 checker: the same template that phase 2
 // accepts with zero expression errors must resolve at phase 3 with none
-// either. openjd.ValidateWithOptions is called with
-// CheckEXPRExpressionsWhileUnsupported so the expression walk actually runs
-// (EXPR is StatusInProgress, so the status-gate error below is expected and
-// is the ONLY error tolerated).
+// either.
+//
+// It used to pass openjd.ValidateWithOptions the since-deleted
+// CheckEXPRExpressionsWhileUnsupported so the expression walk would run at all,
+// and had to tolerate one error -- the EXPR status gate's, at /extensions/0.
+// Sub-project H2 made EXPR StatusSupported, so the walk runs on the default
+// options and NO error is tolerated: the fixture must be phase-2 clean, full
+// stop.
 func TestPhase2Phase3Agreement_StepEnvironmentLet(t *testing.T) {
 	const yaml = `specificationVersion: jobtemplate-2023-09
 extensions: [EXPR]
@@ -1470,12 +1474,7 @@ steps:
 	if err != nil {
 		t.Fatalf("parse: %v", err)
 	}
-	for _, ve := range openjd.ValidateWithOptions(
-		tmpl, openjd.ValidateOptions{CheckEXPRExpressionsWhileUnsupported: true},
-	) {
-		if ve.Pointer == "/extensions/0" {
-			continue // the StatusInProgress gate, not an expression error
-		}
+	for _, ve := range openjd.ValidateWithOptions(tmpl, openjd.ValidateOptions{}) {
 		t.Errorf("phase 2 reports %s: %s -- the fixture must be phase-2 clean", ve.Pointer, ve.Message)
 	}
 

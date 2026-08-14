@@ -412,26 +412,28 @@ func TestTemplateBudget_WorkerCapIsNotTighter(t *testing.T) {
 // -- 15 ms on a 200,000-sub-range INT parameter, ~40 ms at the body cap --
 // and it breaks design spec §6's floor that such a template "should cost
 // exactly what it costs today". The call site in ValidateWithOptions is
-// "exprWalkApplies(t, ...) && !parameterSpaceOverCaps(t)", and Go's &&
+// "exprWalkApplies(t) && !parameterSpaceOverCaps(t)", and Go's &&
 // short-circuits, so asserting exprWalkApplies is false for a base-spec
 // template IS the assertion that the guard never runs.
 //
-// The opt-in is passed as TRUE deliberately: this must hold even for the
-// caller that has explicitly asked for expressions to be checked while EXPR
-// is unsupported, and -- more importantly -- it must keep holding after
-// sub-project H flips the extension to StatusSupported, at which point
-// exprExpressionWalkEnabled returns true unconditionally and this term is the
-// only one left.
+// This is now the WHOLE of exprWalkApplies. It used to take a second argument,
+// the since-deleted ValidateOptions.CheckEXPRExpressionsWhileUnsupported, and
+// this test passed it as TRUE deliberately: the short-circuit had to hold even
+// for the caller that had explicitly asked for expressions to be checked while
+// EXPR was unsupported, and -- more importantly -- it had to keep holding after
+// sub-project H2 flipped the extension to StatusSupported and the status term
+// became permanently true. It did, and the declaration term is all that is
+// left.
 func TestExprWalkApplies_BaseSpecTemplateShortCircuitsTheCostGuard(t *testing.T) {
 	base := &JobTemplate{Name: "T"} // no Extensions
-	if exprWalkApplies(base, true) {
+	if exprWalkApplies(base) {
 		t.Error("a template with no extensions: [EXPR] must short-circuit before " +
 			"parameterSpaceOverCaps -- see design spec §6's base-spec cost floor")
 	}
 
 	withExpr := &JobTemplate{Name: "T", Extensions: []string{"EXPR"}}
-	if !exprWalkApplies(withExpr, true) {
-		t.Error("an EXPR-declaring template with the opt-in set must still reach the walk; " +
-			"the extension term must narrow the gate, not close it")
+	if !exprWalkApplies(withExpr) {
+		t.Error("an EXPR-declaring template must reach the walk; the extension term " +
+			"must narrow the gate, not close it")
 	}
 }
