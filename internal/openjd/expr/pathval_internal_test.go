@@ -4,7 +4,6 @@ package expr
 
 import (
 	"os/exec"
-	"strconv"
 	"strings"
 	"testing"
 )
@@ -209,7 +208,7 @@ func pathCorpusPOSIX() []string {
 // previous task in this wave had to fix for exactly this failure shape (two
 // formulas that agree on most inputs and diverge on one).
 func TestPathName_StemSuffixMatchesPython(t *testing.T) {
-	requirePython313(t)
+	requirePythonPathSemantics(t)
 	corpus := pathNameCorpus()
 	script := `
 import sys
@@ -304,44 +303,66 @@ func runPython(t *testing.T, script, stdin string) string {
 	return strings.ReplaceAll(string(out), "\r\n", "\n")
 }
 
-// requirePython313 skips a differential unless the python3 on PATH is CPython
-// 3.13 or newer.
+// requirePythonPathSemantics skips a differential unless the python3 on PATH
+// actually implements the two pathlib behaviors sqi targets.
 //
-// CPython 3.13 changed two pathlib behaviors these differentials exercise, and
-// sqi implements the 3.13 side of BOTH deliberately (pinned by TestPathProperties
-// and by isAbsolute's own doc comment):
-//   - PureWindowsPath.is_absolute() now delegates to ntpath.isabs, so a
-//     driveless-but-colon-rooted path like "\:\a" is absolute (3.12 answered
-//     false, using bool(drive and root));
-//   - stem/suffix/suffixes stopped treating a name's leading OR trailing dot
-//     run as an extension, so "a." is all stem and "..a" keeps both dots (3.12
-//     split them, e.g. "..a" -> stem ".", suffix ".a").
+// It PROBES THE BEHAVIOR rather than the version number, and that distinction
+// is the whole point. The two behaviors are:
+//   - PureWindowsPath.is_absolute() delegating to ntpath.isabs, so a
+//     driveless-but-colon-rooted path like "\:\a" is absolute (older CPython
+//     answered false, using bool(drive and root));
+//   - stem/suffix not treating a name's TRAILING dot run as an extension, so
+//     "a." has suffix ".".
 //
-// Run against an older interpreter, the oracle would report sqi diverging from
-// semantics sqi deliberately does not implement — a false mismatch, not a
-// defect. A skip here is honest for the same reason runPython's missing-python3
-// skip is: the differential verifies nothing it can trust, so it must not
-// assert. The version-STABLE POSIX differential does not call this; the CRLF
+// WHY NOT A VERSION CHECK: this used to skip unless python3 was >= 3.13, on the
+// stated assumption that 3.13 fixed both and every later release kept them.
+// That assumption is false, and CI proved it. CPython changed trailing-dot
+// stem/suffix handling BETWEEN PATCH RELEASES: 3.14.6 reports
+// PurePosixPath("a.").suffix == "." (what sqi implements) and 3.14.7 reports
+// "" with the dot folded into the stem. Both satisfy ">= 3.13", so the gate let
+// 3.14.7 through and the differential reported 30-odd false mismatches against
+// semantics sqi deliberately implements — on a green working tree, from a
+// runner image bump alone.
+//
+// A version range would only move the problem: the next release to change this
+// re-breaks it, and the gate would again be asserting a version number as a
+// proxy for a behavior it can simply ask about. So it asks.
+//
+// UNRESOLVED, AND DELIBERATELY NOT RESOLVED HERE: which side is correct is a
+// specification question, not a CI question. sqi's behavior is pinned by
+// TestPathProperties and by isAbsolute's own doc comment, and changing it would
+// move conformance numbers. This gate makes the differential honest — it
+// verifies nothing it cannot trust, exactly as runPython's missing-python3 skip
+// does — and leaves the adjudication to be done against
+// third_party/openjd-specifications rather than against whichever interpreter
+// the CI image happens to ship.
+//
+// The version-STABLE POSIX differential does not call this; the CRLF
 // normalization in runPython is all it needed to pass on any interpreter.
-func requirePython313(t *testing.T) {
+func requirePythonPathSemantics(t *testing.T) {
 	t.Helper()
 	if _, err := exec.LookPath("python3"); err != nil {
 		t.Skip("python3 unavailable — this differential verifies NOTHING when skipped")
 	}
-	out, err := exec.CommandContext(t.Context(), "python3", "-c",
-		"import sys; print('%d %d' % sys.version_info[:2])").Output()
+	const probe = `
+from pathlib import PurePosixPath as P, PureWindowsPath as W
+print(P("a.").suffix == "." and W("\\:\\a").is_absolute())
+`
+	out, err := exec.CommandContext(t.Context(), "python3", "-c", probe).Output()
 	if err != nil {
-		t.Fatalf("python3 version probe failed: %v", err)
+		t.Fatalf("python3 pathlib probe failed: %v", err)
 	}
-	majS, minS, ok := strings.Cut(strings.TrimSpace(string(out)), " ")
-	maj, errMaj := strconv.Atoi(majS)
-	minor, errMin := strconv.Atoi(minS)
-	if !ok || errMaj != nil || errMin != nil {
-		t.Fatalf("could not parse python3 version %q", strings.TrimSpace(string(out)))
-	}
-	if maj < 3 || (maj == 3 && minor < 13) {
-		t.Skipf("python3 is %d.%d; this differential needs >= 3.13 "+
-			"(sqi implements 3.13 pathlib path semantics — see requirePython313)", maj, minor)
+	if strings.TrimSpace(string(out)) != "True" {
+		// The version is for the skip message only; if this probe fails too,
+		// an empty string in the message is not worth failing the test over.
+		ver, verErr := exec.CommandContext(t.Context(), "python3", "-c",
+			"import sys; print('.'.join(map(str, sys.version_info[:3])))").Output()
+		if verErr != nil {
+			ver = []byte("version unknown")
+		}
+		t.Skipf("this python3 (%s) does not implement the pathlib semantics sqi "+
+			"targets, so a mismatch here would be a false positive — see "+
+			"requirePythonPathSemantics", strings.TrimSpace(string(ver)))
 	}
 }
 
@@ -388,7 +409,7 @@ func TestParsePath_Windows(t *testing.T) {
 // so this differential is the ONLY automated check on Windows semantics, and it
 // runs on Linux against Python rather than on Windows against anything.
 func TestParsePath_WindowsMatchesPython(t *testing.T) {
-	requirePython313(t)
+	requirePythonPathSemantics(t)
 	corpus := pathCorpusWindows()
 	// Unlike an earlier draft of this script, blank input lines are NOT
 	// skipped: pathCorpusWindows's "" lead produces exactly one blank line,

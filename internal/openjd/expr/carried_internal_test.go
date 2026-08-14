@@ -52,6 +52,15 @@ func TestLenRangeExpr_SmallCasesUnchanged(t *testing.T) {
 // unique's scan is O(n^2) in valuesEqual calls. This asserts that a large input
 // fails with errOperationLimit in bounded time rather than hanging. The deadline
 // is what makes it a real test: without it, a hang looks like a slow pass.
+//
+// THE DEADLINE IS DELIBERATELY GENEROUS, and was raised from 30s after CI
+// failed on it. What the test distinguishes is "bounded" from "hangs forever",
+// and a hang is unbounded — so any finite deadline serves, while a tight one
+// only adds a way to fail for reasons that have nothing to do with the bound.
+// The operation limit lets ~10 million valuesEqual calls run before it fires;
+// that is ~2s locally under -race and was over 30s on a loaded CI runner. Do
+// not tighten this back down to "make the test faster": it does not run long
+// unless something is already wrong, because the limit stops it either way.
 func TestUnique_IsBoundedByTheOperationLimit(t *testing.T) {
 	done := make(chan error, 1)
 	go func() {
@@ -66,8 +75,8 @@ func TestUnique_IsBoundedByTheOperationLimit(t *testing.T) {
 		if !errors.Is(err, errOperationLimit) {
 			t.Fatalf("unique over 20000 elements = %v; want errOperationLimit", err)
 		}
-	case <-time.After(30 * time.Second):
-		t.Fatal("unique over 20000 elements did not return within 30s: the operation limit " +
+	case <-time.After(2 * time.Minute):
+		t.Fatal("unique over 20000 elements did not return within 2m: the operation limit " +
 			"is not counting the quadratic work, only the linear input")
 	}
 }
