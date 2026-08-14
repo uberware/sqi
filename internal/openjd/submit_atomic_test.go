@@ -47,11 +47,20 @@ func (s *submitSpy) CreateJobDependencies(ctx context.Context, jobID string, dep
 }
 
 func (s *submitSpy) CreateStep(ctx context.Context, step store.Step) (store.Step, error) {
+	// Record the job ID here too, not just in CreateJob/CreateJobSubmission.
+	//
+	// Without this, a regression that writes steps per-step and never reaches
+	// the bulk call leaves jobIDs EMPTY, so the surviving-step-rows loop in
+	// TestSubmit_FailedSubmissionLeavesNoRows never executes and the test
+	// passes while a step row genuinely survives -- defect 2 exactly. That was
+	// demonstrated by sabotage during review, not theorized.
+	s.jobIDs = append(s.jobIDs, step.JobID)
 	s.writes++
 	return s.Store.CreateStep(ctx, step)
 }
 
 func (s *submitSpy) CreateTask(ctx context.Context, task store.Task) (store.Task, error) {
+	s.jobIDs = append(s.jobIDs, task.JobID)
 	s.writes++
 	return s.Store.CreateTask(ctx, task)
 }
