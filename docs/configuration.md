@@ -199,10 +199,19 @@ store:
 | **Default** | `"5m"` |
 | **Env var** | `SQI_STORE_CHECKPOINT_INTERVAL` |
 
-How often the background goroutine runs `PRAGMA wal_checkpoint(TRUNCATE)` to
+How often the background goroutine runs `PRAGMA wal_checkpoint(PASSIVE)` to
 fold committed WAL frames back into the main database file. Without periodic
 checkpointing the WAL grows unboundedly under write load. A final checkpoint
-always runs on clean shutdown regardless of this setting.
+always runs on clean shutdown regardless of this setting, and that one uses
+`TRUNCATE` so the WAL is left at zero bytes.
+
+The periodic checkpoint is deliberately `PASSIVE` rather than `TRUNCATE`.
+Reads are served from a separate connection pool, so a reader holding a WAL
+snapshot blocks a truncating checkpoint — which waits out the whole 5s
+`busy_timeout` on the single write connection and then still fails to
+truncate, stalling job submission and task-status writes for five seconds on
+every tick. `PASSIVE` never waits: it moves what it can and the next tick
+takes the rest. Shutdown can afford to wait once; a timer cannot.
 
 Set to a large value (e.g. `"24h"`) to disable periodic checkpointing while
 keeping the shutdown checkpoint. Must be `> 0`.
