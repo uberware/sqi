@@ -137,13 +137,20 @@ advertised `expr.*` caps undercut the limits this server accepts templates
 under, and it names both numbers and both config keys. Two things are worth
 knowing before chasing it:
 
-- **You may see it on a job that uses no expressions.** The gate spots an EXPR
-  job by scanning the raw template for the four bytes `EXPR`, so a base-spec
-  template containing them incidentally — a comment, or an environment
-  variable such as `HOUDINI_EXPR_CACHE` — is withheld from every short worker
-  and flagged with this reason. The fix is the same either way: raise the
-  workers' `expr.*` keys, or lower the server's `openjd.expr_*` keys. See
+- **On a job submitted since the upgrade, the answer is exact.** The gate reads
+  the extension list recorded on the job row at submission, so a job flagged
+  with this reason really does declare `EXPR`. The fix is to raise the workers'
+  `expr.*` keys, or lower the server's `openjd.expr_*` keys. See
   [Server → EXPR expression limits](configuration.md#4-every-worker-must-be-at-least-as-generous-as-this-server).
+- **On a job that predates the upgrade, you may still see it on a job that uses
+  no expressions.** Rows written before the `jobs.declared_extensions` column
+  existed carry no list, and for those alone the gate falls back to scanning
+  the raw template for the bytes `EXPR` *and* `extensions`. A base-spec
+  template that declares some other extension and mentions the string
+  incidentally — a comment, or an environment variable such as
+  `HOUDINI_EXPR_CACHE` — is withheld from every short worker and flagged with
+  this reason. It resolves on its own as those jobs age out; the fix meanwhile
+  is the same either way.
 - **With the sweep disabled (`scheduler.unschedulable_grace` ≤ `0`) this
   reason is never written at all.** A withheld task simply sits `ready` with
   nothing on it, and the one-off `WARN` the server logs when the short worker

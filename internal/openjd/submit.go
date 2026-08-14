@@ -170,6 +170,19 @@ type SubmitResult struct {
 	BoundParameters map[string]string
 }
 
+// declaredExtensions returns the OpenJD extension names tmpl declares, always
+// non-nil so a job row's recorded list and its "was it recorded" flag never
+// disagree: an empty list means the template declares nothing, which is a
+// different fact from having no list at all (see [store.Job.DeclaresExtension]).
+//
+// The slice is copied because it is about to be persisted and the caller's
+// template is not the store's to alias.
+func declaredExtensions(tmpl *JobTemplate) []string {
+	out := make([]string, len(tmpl.Extensions))
+	copy(out, tmpl.Extensions)
+	return out
+}
+
 // ── prepareTemplate ─────────────────────────────────────────────────────────
 
 // prepareTemplate runs Submit's parse-through-parameter-binding steps: parse,
@@ -377,6 +390,15 @@ func (s *Submitter) Submit(
 		Project:        opts.Project,
 		RawTemplate:    rawTemplate,
 		TemplateFormat: format,
+		// Record what the template DECLARES, decoded and registry-validated,
+		// rather than leaving the scheduler to scan rawTemplate for the bytes
+		// of an extension name. This is the only place the answer is exact: a
+		// declaration spelled "\u0045XPR" is EXPR here and is not EXPR to any
+		// byte scan. See
+		// internal/scheduler/exprcaps.go, which reads it per candidate task,
+		// and migration 00027 for why the "recorded" flag is separate.
+		DeclaredExtensions: declaredExtensions(tmpl),
+		ExtensionsRecorded: true,
 		// Persist the fully-bound parameter values so the scheduler can carry
 		// them to the worker without re-deriving from the raw template.
 		Parameters:        boundParams,

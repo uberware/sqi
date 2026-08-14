@@ -882,21 +882,26 @@ the configuration guides:
    against the sufficient `50 x` form would exceed the worker key's own legal
    maximum. `internal/scheduler/exprcaps.go` carries the arithmetic.
 
-**The gate identifies an EXPR job by scanning the raw template, not by parsing
-it** (`jobMayUseEXPR`, `internal/scheduler/exprcaps.go`): it requires both the
-bytes `EXPR` and the bytes `extensions`, the key any declaration sits under.
-That is still a deliberate superset. It no longer matches a **base-spec**
-template that merely mentions the string — a comment, or an environment
-variable such as `HOUDINI_EXPR_CACHE` — which previously meant an operator
-could have a job withheld from every short worker, and its tasks left `ready`
-indefinitely, without using EXPR at all. What still matches is a template that
-declares some *other* extension and mentions `EXPR` elsewhere; no conformance
-fixture and no shipped preset does. A line-scoped check was measured and
-rejected: it matches none of the 209 EXPR fixtures, because the block-sequence
-form puts the value on its own line, and a false negative is the direction that
-re-opens the incident. The exact fix — persisting the declared extension list
-on the job row at submission and reading a column on the lease path — is
-recorded in that function's own comment as later work.
+**The gate identifies an EXPR job by reading the extension list persisted on
+the job row** (`jobUsesEXPR`, `internal/scheduler/exprcaps.go`). Migration
+`00027` added `jobs.declared_extensions`, which `internal/openjd` fills at
+submission from the parsed and registry-validated declaration, so the test is
+exact — including for a declaration spelled with an escape (`"\u0045XPR"`),
+which decodes to `EXPR`, is accepted, and is stored verbatim in the raw
+template. Reading it costs no extra query: the column is on the same `SELECT`
+the lease path already issues for each candidate task.
+
+The column is `TEXT NOT NULL DEFAULT ''`, and `''` (**not recorded**) is a
+different value from `'[]'` (**recorded, declares nothing**). Every job row
+written before the migration holds `''`, and for those alone the gate falls
+back to the previous byte scan (`jobMayUseEXPR`): the raw template must contain
+both the bytes `EXPR` and the bytes `extensions`. That fallback is a deliberate
+superset — a template declaring some *other* extension and mentioning `EXPR`
+elsewhere still matches, and an obfuscated declaration still escapes it — but
+it is now bounded to the finite set of jobs a deployment already held when it
+upgraded. Defaulting the column to `'[]'` instead would have read every one of
+those rows as declaring nothing and silently ungated them, which is the
+incident arriving as a cleanup.
 
 ## Known gaps
 
@@ -1038,7 +1043,9 @@ recorded in that function's own comment as later work.
   registry status flips", with the byte-scan false positive as its one live
   path. **It is fully live now** — genuine EXPR jobs are submitted and
   dispatched, so the gate withholds real work from a short worker rather than
-  only mis-flagging a base-spec template.)
+  only mis-flagging a base-spec template. The byte scan itself is no longer
+  how an EXPR job is identified; it survives only as the fallback for job rows
+  written before migration `00027`.)
 - **A worker's advertised caps are not surfaced in the API or the web UI.**
   They are persisted on the worker row, but an operator diagnosing "why is
   this host getting no EXPR work" reads the registration warning or the

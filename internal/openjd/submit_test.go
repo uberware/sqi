@@ -10,6 +10,7 @@ package openjd_test
 import (
 	"context"
 	"errors"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -1152,5 +1153,98 @@ func TestSubmitter_Submit_ParamZeroWithoutEXPRUnaffected(t *testing.T) {
 	}
 	if result.BoundParameters["N"] != "0" {
 		t.Errorf("BoundParameters[N] = %q, want %q", result.BoundParameters["N"], "0")
+	}
+}
+
+// ── Declared extensions persisted on the job row (migration 00027) ───────────
+
+// TestSubmit_RecordsDeclaredExtensions pins that submission writes the parsed
+// extension list onto the job row. This is the only place in the system where
+// the list is known EXACTLY: internal/openjd has already decoded the document
+// and validated every name against the registry, so a declaration spelled with
+// a JSON escape is the same value here as a plain one.
+//
+// The scheduler reads it per candidate task per lease request to decide whether
+// a job needs a worker capable of phase-3 expression evaluation. Before this it
+// scanned the raw template for the bytes "EXPR" -- wrong in both directions,
+// which is what makes writing the field at submission worth a column.
+func TestSubmit_RecordsDeclaredExtensions(t *testing.T) {
+	tests := []struct {
+		name string
+		tmpl string
+		want []string
+	}{
+		{
+			name: "no extensions declared is RECORDED, not absent",
+			tmpl: minimalJSON("NoExtensions"),
+			want: []string{},
+		},
+		{
+			name: "EXPR declared",
+			tmpl: `{
+  "specificationVersion": "jobtemplate-2023-09",
+  "extensions": ["EXPR"],
+  "name": "DeclaresEXPR",
+  "steps": [
+    {"name": "Step1", "script": {"actions": {"onRun": {"command": "echo"}}}}
+  ]
+}`,
+			want: []string{"EXPR"},
+		},
+		{
+			name: "an escaped declaration the raw bytes do not contain",
+			tmpl: `{
+  "specificationVersion": "jobtemplate-2023-09",
+  "extensions": ["\u0045XPR"],
+  "name": "EscapedEXPR",
+  "steps": [
+    {"name": "Step1", "script": {"actions": {"onRun": {"command": "echo"}}}}
+  ]
+}`,
+			want: []string{"EXPR"},
+		},
+		{
+			name: "another extension, and the bytes EXPR elsewhere",
+			tmpl: `{
+  "specificationVersion": "jobtemplate-2023-09",
+  "extensions": ["TASK_CHUNKING"],
+  "name": "ChunkingOnly",
+  "description": "writes to HOUDINI_EXPR_CACHE",
+  "steps": [
+    {"name": "Step1", "script": {"actions": {"onRun": {"command": "echo"}}}}
+  ]
+}`,
+			want: []string{"TASK_CHUNKING"},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			st := fake.New()
+			farmID, queueID := seedSubmitPrereqs(t, st)
+			res, err := openjd.NewSubmitter(st).Submit(
+				t.Context(), tc.tmpl, store.TemplateFormatJSON,
+				openjd.SubmitOptions{FarmID: farmID, QueueID: queueID, Owner: "alice"},
+			)
+			if err != nil {
+				t.Fatalf("Submit: %v", err)
+			}
+
+			stored, err := st.GetJob(t.Context(), res.Job.ID)
+			if err != nil {
+				t.Fatalf("GetJob: %v", err)
+			}
+			for label, job := range map[string]store.Job{"SubmitResult": res.Job, "GetJob": stored} {
+				if !job.ExtensionsRecorded {
+					t.Fatalf("%s: ExtensionsRecorded = false; a submitted job always knows "+
+						"what it declared, and 'not recorded' is reserved for rows written "+
+						"before the column existed", label)
+				}
+				if !slices.Equal(job.DeclaredExtensions, tc.want) {
+					t.Fatalf("%s: DeclaredExtensions = %#v, want %#v",
+						label, job.DeclaredExtensions, tc.want)
+				}
+			}
+		})
 	}
 }

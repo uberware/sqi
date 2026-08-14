@@ -198,6 +198,99 @@ func TestMigrations_00026_WorkerExprLimitsDownUp(t *testing.T) {
 	}
 }
 
+// TestMigrations_00027_JobDeclaredExtensionsDownUp pins 00027 in both
+// directions, and pins the DEFAULT, which is the part of this migration that
+// carries the meaning.
+//
+// A row that predates the column must read back as ” -- "not recorded" -- and
+// NOT as '[]', which means "recorded, and declares nothing". The scheduler
+// falls back to its raw-template byte scan for the first and skips the scan
+// entirely for the second, so a default of '[]' would silently ungate every
+// EXPR job submitted before the upgrade. That is the whole reason the column is
+// TEXT with an empty-string default rather than a JSON list.
+//
+// Down is pinned for the same reason 00026's is: SQLite refuses ALTER TABLE
+// DROP COLUMN on a column referenced by a CHECK constraint or an index, so a
+// later revision that adds either makes the Down un-runnable.
+func TestMigrations_00027_JobDeclaredExtensionsDownUp(t *testing.T) {
+	dbPath := t.TempDir() + "/test.db"
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("sql.Open: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	goose.SetBaseFS(migrations.FS)
+	if err := goose.SetDialect("sqlite3"); err != nil {
+		t.Fatalf("SetDialect: %v", err)
+	}
+	if err := goose.Up(db, "."); err != nil {
+		t.Fatalf("goose.Up: %v", err)
+	}
+	if !hasColumn(t, db, "jobs", "declared_extensions") {
+		t.Fatal("declared_extensions column missing after Up")
+	}
+
+	seedJobRowWithoutExtensions(t, db)
+
+	if err := goose.DownTo(db, ".", 26); err != nil {
+		t.Fatalf("goose.DownTo(26): %v", err)
+	}
+	if hasColumn(t, db, "jobs", "declared_extensions") {
+		t.Fatal("declared_extensions column still present after Down")
+	}
+
+	if err := goose.Up(db, "."); err != nil {
+		t.Fatalf("goose.Up (re-apply): %v", err)
+	}
+	if !hasColumn(t, db, "jobs", "declared_extensions") {
+		t.Fatal("declared_extensions column missing after re-Up")
+	}
+
+	var declared string
+	if err := db.QueryRowContext(t.Context(),
+		`SELECT declared_extensions FROM jobs WHERE id = 'j-1'`).Scan(&declared); err != nil {
+		t.Fatalf("select declared_extensions after re-Up: %v (a NULL here is a scanJob "+
+			"failure for every pre-existing job row)", err)
+	}
+	if declared != "" {
+		t.Errorf("declared_extensions = %q for a row that predates the column, want %q "+
+			"(\"not recorded\"); %q would mean \"recorded, declares nothing\" and would "+
+			"ungate every EXPR job submitted before the upgrade", declared, "", "[]")
+	}
+}
+
+// seedJobRowWithoutExtensions inserts the farm, queue and job a pre-migration
+// deployment would already hold, using raw SQL so no Go-side default can creep
+// in and mask what the schema actually stores.
+func seedJobRowWithoutExtensions(t *testing.T, db *sql.DB) {
+	t.Helper()
+	const ts = "2026-01-01T00:00:00Z"
+	for _, stmt := range []struct {
+		sql  string
+		args []any
+	}{
+		{
+			`INSERT INTO farms (id, name, created_at, updated_at) VALUES (?, ?, ?, ?)`,
+			[]any{"f-1", "farm", ts, ts},
+		},
+		{
+			`INSERT INTO queues (id, farm_id, name, created_at, updated_at) VALUES (?, ?, ?, ?, ?)`,
+			[]any{"q-1", "f-1", "queue", ts, ts},
+		},
+		{
+			`INSERT INTO jobs (id, farm_id, queue_id, name, status, raw_template, template_format,
+			created_at, updated_at)
+		  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			[]any{"j-1", "f-1", "q-1", "job", "pending", "{}", "json", ts, ts},
+		},
+	} {
+		if _, err := db.ExecContext(t.Context(), stmt.sql, stmt.args...); err != nil {
+			t.Fatalf("seed row (%s): %v", stmt.sql, err)
+		}
+	}
+}
+
 // hasColumn reports whether table has a column named column.
 func hasColumn(t *testing.T, db *sql.DB, table, column string) bool {
 	t.Helper()

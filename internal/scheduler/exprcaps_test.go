@@ -75,6 +75,21 @@ func seedExprLeaseFixture(
 	workerCaps store.WorkerExprLimits,
 ) (store.Worker, string) {
 	t.Helper()
+	return seedExprLeaseFixtureJob(t, st, store.Job{RawTemplate: rawTemplate}, workerCaps)
+}
+
+// seedExprLeaseFixtureJob is [seedExprLeaseFixture] for a caller that needs to
+// control more of the job row than its raw template -- specifically whether the
+// declared-extension list was recorded at all, which is the one thing a job
+// written before migration 00027 cannot have. Only ID, FarmID, QueueID, Name
+// and the lifecycle columns are supplied here; everything else comes from seed.
+func seedExprLeaseFixtureJob(
+	t *testing.T,
+	st *fake.Store,
+	seed store.Job,
+	workerCaps store.WorkerExprLimits,
+) (store.Worker, string) {
+	t.Helper()
 	ctx := t.Context()
 	now := time.Now().UTC()
 	if _, err := st.CreateFarm(ctx, store.Farm{ID: "f1", Name: "F1"}); err != nil {
@@ -91,12 +106,10 @@ func seedExprLeaseFixture(
 	if err != nil {
 		t.Fatal(err)
 	}
-	job, err := st.CreateJob(ctx, store.Job{
-		ID: uuid.NewString(), FarmID: "f1", QueueID: "q1", Name: "j",
-		Status: store.JobStatusRunning, TemplateFormat: store.TemplateFormatJSON,
-		RawTemplate: rawTemplate,
-		CreatedAt:   now, UpdatedAt: now,
-	})
+	seed.ID, seed.FarmID, seed.QueueID, seed.Name = uuid.NewString(), "f1", "q1", "j"
+	seed.Status, seed.TemplateFormat = store.JobStatusRunning, store.TemplateFormatJSON
+	seed.CreatedAt, seed.UpdatedAt = now, now
+	job, err := st.CreateJob(ctx, seed)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -878,6 +891,15 @@ func withWorkerLetRetained(c store.WorkerExprLimits, n int64) store.WorkerExprLi
 	return c
 }
 
+func mustJob(t *testing.T, st *fake.Store, id string) store.Job {
+	t.Helper()
+	job, err := st.GetJob(t.Context(), id)
+	if err != nil {
+		t.Fatalf("GetJob %s: %v", id, err)
+	}
+	return job
+}
+
 func mustTask(t *testing.T, st *fake.Store, id string) store.Task {
 	t.Helper()
 	task, err := st.GetTask(t.Context(), id)
@@ -1043,5 +1065,274 @@ func TestEvaluateSchedulability_EXPRStillReportedForAnOtherwiseEligibleWorker(t 
 	if !strings.Contains(got, "expr.assignment_positions") {
 		t.Fatalf("UnschedulableReason = %q, want the EXPR shortfall: an eligible-but-short "+
 			"worker is exactly what this reason exists to explain", got)
+	}
+}
+
+// ── The declared-extension column: exact where the byte scan guessed ─────────
+//
+// jobMayUseEXPR's own comment named the fix it was waiting for: persist the
+// declared extension list on the job row at submission, where internal/openjd
+// has already parsed and validated it, and read a column on the lease path.
+// These tests are that fix, at the level that matters -- whether work is
+// withheld -- and they fence in the state the column cannot represent: a row
+// written before it existed, which must still go through the byte scan.
+
+// taskChunkingWithEXPRCacheJSON is the byte scan's LIVE false positive, in the
+// only shape that still triggers it after E4d's narrowing: a template that
+// declares SOME OTHER extension (so the bytes "extensions" are present) and
+// separately mentions the four bytes EXPR in an environment variable name.
+// It declares nothing of the sort, and every phase-3 evaluation it will ever
+// ask a worker for is none.
+const taskChunkingWithEXPRCacheJSON = `{
+  "specificationVersion": "jobtemplate-2023-09",
+  "extensions": ["TASK_CHUNKING"],
+  "name": "j",
+  "jobEnvironments": [
+    {
+      "name": "houdini",
+      "variables": { "HOUDINI_EXPR_CACHE": "/tmp/cache" }
+    }
+  ],
+  "steps": [
+    {
+      "name": "render",
+      "script": { "actions": { "onRun": { "command": "render" } } }
+    }
+  ]
+}`
+
+// minWorkerExprCaps is a worker short in every dimension: the configuration
+// that makes exprCapShortfall non-empty, and therefore the only configuration
+// under which the EXPR/not-EXPR decision has any consequence at all.
+func minWorkerExprCaps() store.WorkerExprLimits {
+	return store.WorkerExprLimits{
+		OperationLimit:          fmtres.MinExprOperationLimit,
+		MemoryLimit:             fmtres.MinExprMemoryLimit,
+		AssignmentPositions:     fmtres.MinExprAssignmentPositions,
+		AssignmentRetainedBytes: fmtres.MinExprAssignmentRetainedBytes,
+		LetRetainedBytes:        fmtres.MinExprLetRetainedBytes,
+	}
+}
+
+// seedSubmittedExprLeaseFixture is seedExprLeaseFixture through the REAL
+// submission path: openjd.Submitter parses and validates rawTemplate and
+// persists the job, so the declared-extension column holds whatever
+// internal/openjd actually decoded rather than whatever a test literal claims.
+// That is the whole point -- a fixture that sets the field by hand cannot show
+// that submission records it.
+func seedSubmittedExprLeaseFixture(
+	t *testing.T,
+	st *fake.Store,
+	rawTemplate string,
+	workerCaps store.WorkerExprLimits,
+) (store.Worker, string) {
+	t.Helper()
+	ctx := t.Context()
+	now := time.Now().UTC()
+	if _, err := st.CreateFarm(ctx, store.Farm{ID: "f1", Name: "F1"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.CreateQueue(ctx, store.Queue{ID: "q1", FarmID: "f1", Name: "Q1"}); err != nil {
+		t.Fatal(err)
+	}
+	w, err := st.RegisterWorker(ctx, store.Worker{
+		ID: "w1", FarmID: "f1", Hostname: "h1", Status: store.WorkerStatusOnline,
+		CPUCount: 4, LastHeartbeatAt: &now, Tags: map[string]string{},
+		ExprLimits: workerCaps,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := openjd.NewSubmitter(st).Submit(ctx, rawTemplate, store.TemplateFormatJSON, openjd.SubmitOptions{
+		FarmID: "f1", QueueID: "q1", Owner: "alice",
+	})
+	if err != nil {
+		t.Fatalf("Submit: %v", err)
+	}
+	if len(res.Tasks) == 0 {
+		t.Fatal("Submit produced no tasks")
+	}
+	return w, res.Tasks[0].ID
+}
+
+// TestExprCaps_SubmittedBaseSpecJobMentioningEXPRIsDispatched is the false
+// positive the byte scan still has, closed. The template declares
+// TASK_CHUNKING and names an environment variable HOUDINI_EXPR_CACHE, so
+// jobMayUseEXPR answers true (the residual its own comment documents and
+// deliberately kept). With the declared list persisted at submission, the
+// answer comes from what internal/openjd decoded -- ["TASK_CHUNKING"] -- and
+// the job is dispatched to a worker that is short on EXPR limits it does not
+// use.
+func TestExprCaps_SubmittedBaseSpecJobMentioningEXPRIsDispatched(t *testing.T) {
+	st := fake.New()
+	w, taskID := seedSubmittedExprLeaseFixture(t, st, taskChunkingWithEXPRCacheJSON, minWorkerExprCaps())
+
+	// The premise: the byte scan really does get this one wrong, so the test
+	// below is testing the fix and not an easier case.
+	job := mustJob(t, st, mustTask(t, st, taskID).JobID)
+	if !jobMayUseEXPR(job) {
+		t.Fatal("premise broken: the byte scan no longer matches this template, so this " +
+			"test would pass without reading the declared-extension column")
+	}
+	if declared, recorded := job.DeclaresExtension(openjd.ExtensionEXPR); !recorded || declared {
+		t.Fatalf("submission recorded declared=%v recorded=%v; want recorded with EXPR absent",
+			declared, recorded)
+	}
+
+	s := schedulerWithExprLimits(st, openjd.DefaultExprLimits())
+	if leased := leaseOnce(t, s, w); leased != 1 {
+		t.Fatalf("leased %d assignments for a job whose recorded extensions are %v; want 1",
+			leased, job.DeclaredExtensions)
+	}
+	s.reconcileTaskSchedulability(t.Context(), mustTask(t, st, taskID), []store.Worker{w})
+	if got := mustTask(t, st, taskID).UnschedulableReason; got != "" {
+		t.Fatalf("UnschedulableReason = %q; a job declaring only TASK_CHUNKING must not be "+
+			"flagged with EXPR limits it does not use", got)
+	}
+}
+
+// TestExprCaps_SubmittedEXPRJobIsStillWithheld is the other direction through
+// the same real path: replacing a heuristic that says "maybe" with a column
+// that says "no" must not stop saying "yes" when the template really does
+// declare the extension. This is design spec §2's incident.
+func TestExprCaps_SubmittedEXPRJobIsStillWithheld(t *testing.T) {
+	st := fake.New()
+	w, taskID := seedSubmittedExprLeaseFixture(t, st, exprTemplateJSON, minWorkerExprCaps())
+
+	job := mustJob(t, st, mustTask(t, st, taskID).JobID)
+	if declared, recorded := job.DeclaresExtension(openjd.ExtensionEXPR); !recorded || !declared {
+		t.Fatalf("submission recorded declared=%v recorded=%v; want recorded with EXPR present",
+			declared, recorded)
+	}
+
+	s := schedulerWithExprLimits(st, openjd.DefaultExprLimits())
+	if leased := leaseOnce(t, s, w); leased != 0 {
+		t.Fatalf("leased %d assignments of an EXPR job to a worker short in every dimension; want 0", leased)
+	}
+	s.reconcileTaskSchedulability(t.Context(), mustTask(t, st, taskID), []store.Worker{w})
+	if got := mustTask(t, st, taskID).UnschedulableReason; !strings.Contains(got, "expr.assignment_positions") {
+		t.Fatalf("UnschedulableReason = %q, want the EXPR shortfall naming both config keys", got)
+	}
+}
+
+// TestExprCaps_LegacyRowFallsBackToTheByteScan is what protects deployments
+// that upgrade: every job row written before migration 00027 reads as "not
+// recorded", and for those the byte scan is still the only evidence there is.
+// Defaulting the column to '[]' instead of ” would make every one of them
+// look like a job that declares nothing -- an EXPR job already in the queue
+// would silently lose the gate, which is a REGRESSION against the heuristic
+// this change replaces, and an invisible one.
+func TestExprCaps_LegacyRowFallsBackToTheByteScan(t *testing.T) {
+	st := fake.New()
+	// seedExprLeaseFixture writes the job row directly, recording nothing --
+	// exactly the shape a pre-migration row has after the column is added.
+	w, taskID := seedExprLeaseFixture(t, st, exprTemplateJSON, minWorkerExprCaps())
+
+	job := mustJob(t, st, mustTask(t, st, taskID).JobID)
+	if _, recorded := job.DeclaresExtension(openjd.ExtensionEXPR); recorded {
+		t.Fatal("premise broken: the fixture recorded a declared-extension list, so this " +
+			"test is not exercising the legacy path")
+	}
+
+	s := schedulerWithExprLimits(st, openjd.DefaultExprLimits())
+	if leased := leaseOnce(t, s, w); leased != 0 {
+		t.Fatalf("leased %d assignments of a PRE-MIGRATION EXPR job to a worker short in "+
+			"every dimension; want 0 -- a legacy row must still be gated by the byte scan", leased)
+	}
+	s.reconcileTaskSchedulability(t.Context(), mustTask(t, st, taskID), []store.Worker{w})
+	if got := mustTask(t, st, taskID).UnschedulableReason; !strings.Contains(got, "expr.assignment_positions") {
+		t.Fatalf("UnschedulableReason = %q, want the EXPR shortfall for a legacy row", got)
+	}
+}
+
+// TestExprCaps_RecordedEmptyIsNotUnrecorded is the distinction the column's ”
+// default exists to make. A job that was recorded and declares NOTHING must
+// skip the byte scan entirely -- so a raw template whose bytes would match is
+// dispatched anyway. If the two states were conflated, this job would be
+// withheld on evidence the row already contradicts.
+func TestExprCaps_RecordedEmptyIsNotUnrecorded(t *testing.T) {
+	st := fake.New()
+	w, taskID := seedExprLeaseFixtureJob(t, st, store.Job{
+		// Bytes that the scan matches, and a recorded list that says otherwise.
+		RawTemplate:        exprTemplateJSON,
+		DeclaredExtensions: []string{},
+		ExtensionsRecorded: true,
+	}, minWorkerExprCaps())
+
+	s := schedulerWithExprLimits(st, openjd.DefaultExprLimits())
+	if leased := leaseOnce(t, s, w); leased != 1 {
+		t.Fatalf("leased %d assignments for a job RECORDED as declaring no extensions; want 1 "+
+			"-- recorded-empty must not fall back to the byte scan", leased)
+	}
+	s.reconcileTaskSchedulability(t.Context(), mustTask(t, st, taskID), []store.Worker{w})
+	if got := mustTask(t, st, taskID).UnschedulableReason; got != "" {
+		t.Fatalf("UnschedulableReason = %q for a job recorded as declaring no extensions", got)
+	}
+}
+
+// TestJobUsesEXPR_ThreeStates tabulates the predicate the gate now asks,
+// including the case no byte scan can ever get right: a declaration spelled
+// with an escape (JSON's "\u0045XPR" decodes to EXPR, parses, and is stored
+// verbatim in RawTemplate). Recording the DECODED list at submission is what makes that
+// case exact rather than a documented escape hatch.
+func TestJobUsesEXPR_ThreeStates(t *testing.T) {
+	tests := []struct {
+		name string
+		job  store.Job
+		want bool
+	}{
+		{
+			name: "not recorded, bytes match: the legacy byte scan decides",
+			job:  store.Job{RawTemplate: exprTemplateJSON},
+			want: true,
+		},
+		{
+			name: "not recorded, bytes do not match: the legacy byte scan decides",
+			job:  store.Job{RawTemplate: houdiniEXPRCacheJSON},
+			want: false,
+		},
+		{
+			name: "recorded with EXPR: the column decides",
+			job: store.Job{
+				RawTemplate:        houdiniEXPRCacheJSON, // bytes say no
+				DeclaredExtensions: []string{"EXPR"},
+				ExtensionsRecorded: true,
+			},
+			want: true,
+		},
+		{
+			name: "recorded without EXPR: the column decides",
+			job: store.Job{
+				RawTemplate:        exprTemplateJSON, // bytes say yes
+				DeclaredExtensions: []string{"TASK_CHUNKING"},
+				ExtensionsRecorded: true,
+			},
+			want: false,
+		},
+		{
+			name: "recorded empty: the column decides, and the scan is not consulted",
+			job: store.Job{
+				RawTemplate:        exprTemplateJSON, // bytes say yes
+				DeclaredExtensions: []string{},
+				ExtensionsRecorded: true,
+			},
+			want: false,
+		},
+		{
+			name: "an escaped declaration the byte scan cannot see",
+			job: store.Job{
+				RawTemplate:        `{"extensions":["\u0045XPR"],"name":"j"}`,
+				DeclaredExtensions: []string{"EXPR"},
+				ExtensionsRecorded: true,
+			},
+			want: true,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := jobUsesEXPR(tc.job); got != tc.want {
+				t.Fatalf("jobUsesEXPR = %v, want %v", got, tc.want)
+			}
+		})
 	}
 }

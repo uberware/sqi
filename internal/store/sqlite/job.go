@@ -13,18 +13,25 @@ import (
 	"github.com/uberware/sqi/internal/store"
 )
 
+// jobCols is every column scanJob reads, in scan order. declared_extensions is
+// on it deliberately: the scheduler's lease path reads a job's declared OpenJD
+// extensions once per candidate task, and it must ride along on the SELECT that
+// already fetches the row rather than becoming a second query (see
+// internal/scheduler/exprcaps.go).
 const jobCols = `
 	id, farm_id, queue_id, name, owner, submitter, priority, status, project,
 	raw_template, template_format, parameters, created_at, updated_at, started_at, completed_at,
-	failed_attempts, max_attempts, retry_delay_seconds, failure_limit, park_reason`
+	failed_attempts, max_attempts, retry_delay_seconds, failure_limit, park_reason,
+	declared_extensions`
 
 const (
 	sqlInsertJob = `
 INSERT INTO jobs (
 	id, farm_id, queue_id, name, owner, submitter, priority, status, project,
 	raw_template, template_format, parameters, created_at, updated_at, started_at, completed_at,
-	failed_attempts, max_attempts, retry_delay_seconds, failure_limit, park_reason)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	failed_attempts, max_attempts, retry_delay_seconds, failure_limit, park_reason,
+	declared_extensions)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 RETURNING ` + jobCols
 
 	sqlGetJob = `SELECT ` + jobCols + ` FROM jobs WHERE id = ?`
@@ -37,6 +44,13 @@ RETURNING ` + jobCols
 	// likewise lifecycle-managed (by the scheduler's failure-limit sweep) and
 	// are excluded for the same reason; max_attempts, retry_delay_seconds,
 	// and failure_limit are the user-settable retry-policy overrides.
+	//
+	// declared_extensions is likewise excluded: it is derived from the template
+	// at submission and is not user-settable. raw_template is on the SET list
+	// only historically — the sole production caller (internal/api's PATCH
+	// handler) round-trips the value it just read — so the pair cannot drift
+	// today. A future caller that genuinely REWRITES raw_template here would
+	// have to write the extension list with it.
 	sqlUpdateJob = `
 UPDATE jobs
 SET farm_id = ?, queue_id = ?, name = ?, owner = ?, submitter = ?, priority = ?,
@@ -163,12 +177,48 @@ SET status = 'pending', updated_at = ?,
 WHERE id = ? AND status = 'paused'`
 )
 
+// encodeDeclaredExtensions renders a job's declared-extension list for the
+// declared_extensions column, preserving the distinction the column exists for:
+// "" means NOT RECORDED (the schema default, and what every row written before
+// migration 00027 holds), while "[]" means recorded and declaring nothing. A
+// recorded nil slice is normalized to "[]" so the not-recorded sentinel has
+// exactly one spelling in the database.
+func encodeDeclaredExtensions(job store.Job) (string, error) {
+	if !job.ExtensionsRecorded {
+		return "", nil
+	}
+	if job.DeclaredExtensions == nil {
+		return "[]", nil
+	}
+	return marshalJSON(job.DeclaredExtensions)
+}
+
+// decodeDeclaredExtensions is the inverse of [encodeDeclaredExtensions]. A
+// recorded row always yields a non-nil slice, so the nil-ness of the field
+// never carries meaning on its own.
+func decodeDeclaredExtensions(raw string, job *store.Job) error {
+	if raw == "" {
+		job.ExtensionsRecorded, job.DeclaredExtensions = false, nil
+		return nil
+	}
+	exts, err := unmarshalJSON(raw, []string{})
+	if err != nil {
+		return err
+	}
+	if exts == nil {
+		exts = []string{}
+	}
+	job.ExtensionsRecorded, job.DeclaredExtensions = true, exts
+	return nil
+}
+
 func scanJob(row scanner) (store.Job, error) {
 	var j store.Job
 	var status, templateFormat, paramsJSON string
 	var createdAt, updatedAt string
 	var startedAt, completedAt sql.NullString
 	var maxAtt, delay, failLim sql.NullInt64
+	var declaredExts string
 
 	if err := row.Scan(
 		&j.ID, &j.FarmID, &j.QueueID, &j.Name, &j.Owner, &j.Submitter,
@@ -176,7 +226,12 @@ func scanJob(row scanner) (store.Job, error) {
 		&j.RawTemplate, &templateFormat, &paramsJSON,
 		&createdAt, &updatedAt, &startedAt, &completedAt,
 		&j.FailedAttempts, &maxAtt, &delay, &failLim, &j.ParkReason,
+		&declaredExts,
 	); err != nil {
+		return store.Job{}, err
+	}
+
+	if err := decodeDeclaredExtensions(declaredExts, &j); err != nil {
 		return store.Job{}, err
 	}
 
@@ -203,6 +258,10 @@ func (s *Store) CreateJob(ctx context.Context, job store.Job) (store.Job, error)
 	if err != nil {
 		return store.Job{}, err
 	}
+	declaredExts, err := encodeDeclaredExtensions(job)
+	if err != nil {
+		return store.Job{}, err
+	}
 	now := timeToText(time.Now().UTC())
 	row := s.stmtInsertJob.QueryRowContext(ctx,
 		job.ID, job.FarmID, job.QueueID, job.Name, job.Owner, job.Submitter,
@@ -211,7 +270,7 @@ func (s *Store) CreateJob(ctx context.Context, job store.Job) (store.Job, error)
 		now, now,
 		nullTimeToText(job.StartedAt), nullTimeToText(job.CompletedAt),
 		job.FailedAttempts, nullInt(job.MaxAttempts), nullInt(job.RetryDelaySeconds), nullInt(job.FailureLimit),
-		job.ParkReason)
+		job.ParkReason, declaredExts)
 	out, err := scanJob(row)
 	return out, mapErr(err)
 }
@@ -270,6 +329,10 @@ func insertJobTx(ctx context.Context, tx *sql.Tx, job store.Job, now string) (st
 	if err != nil {
 		return store.Job{}, err
 	}
+	declaredExts, err := encodeDeclaredExtensions(job)
+	if err != nil {
+		return store.Job{}, err
+	}
 	row := tx.QueryRowContext(ctx, sqlInsertJob,
 		job.ID, job.FarmID, job.QueueID, job.Name, job.Owner, job.Submitter,
 		job.Priority, string(job.Status), job.Project,
@@ -277,7 +340,7 @@ func insertJobTx(ctx context.Context, tx *sql.Tx, job store.Job, now string) (st
 		now, now,
 		nullTimeToText(job.StartedAt), nullTimeToText(job.CompletedAt),
 		job.FailedAttempts, nullInt(job.MaxAttempts), nullInt(job.RetryDelaySeconds), nullInt(job.FailureLimit),
-		job.ParkReason)
+		job.ParkReason, declaredExts)
 	out, err := scanJob(row)
 	return out, mapErr(err)
 }

@@ -114,11 +114,12 @@ var registry = map[string]Extension{
 // extension.
 //
 // Exported for internal/scheduler, which decides per lease request whether a
-// job might need a worker capable of phase-3 expression evaluation. It does so
-// by SCANNING THE RAW TEMPLATE for this name rather than parsing it -- a
-// deliberate heuristic, with both of its error directions written out in that
-// package's exprcaps.go. Do not read this constant's use there as an exact
-// test of what a template declares.
+// job needs a worker capable of phase-3 expression evaluation. It compares this
+// name against the extension list [Submitter.Submit] persisted on the job row,
+// so the test is EXACT for every job submitted since migration 00027. Rows
+// older than that column record no list, and for those alone the scheduler
+// falls back to scanning the raw template for these bytes -- a heuristic whose
+// two error directions are written out in that package's exprcaps.go.
 const ExtensionEXPR = "EXPR"
 
 // LookupExtension returns the registry entry for name and whether it exists.

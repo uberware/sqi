@@ -242,10 +242,39 @@ func exprCapShortfall(caps store.WorkerExprLimits, srv openjd.ExprLimits) string
 		"so it is not offered EXPR work"
 }
 
-// jobMayUseEXPR is a HEURISTIC, not a decision procedure, and the difference
-// matters in both directions. It reports whether job's raw template contains
-// BOTH the bytes "EXPR" and the bytes "extensions" -- the key any declaration
-// of it must sit under.
+// jobUsesEXPR reports whether job declares the OpenJD EXPR extension, and it is
+// EXACT for every job submitted since migration 00027 added
+// jobs.declared_extensions: internal/openjd parses and registry-validates the
+// declaration at submission and the answer is persisted on the job row, so this
+// reads a decoded list rather than guessing from bytes.
+//
+// It costs no extra query. The column is on jobCols, so the GetJob the lease
+// path already issues for each candidate task carries it -- which is what made
+// this the fix worth making, against a per-candidate document parse (see item 3
+// under [jobMayUseEXPR]).
+//
+// THE FALLBACK IS NOT DEAD CODE AND MUST NOT BE DELETED. Every job row written
+// before that migration reads as NOT RECORDED, and for those the byte scan
+// remains the only evidence there is. That is exactly why the column defaults
+// to ” rather than to '[]': '[]' would say "this template declares nothing",
+// silently ungating every EXPR job already in the queue at upgrade time.
+// Recorded-and-empty is a different state, and it does NOT fall through here.
+func jobUsesEXPR(job store.Job) bool {
+	if declared, recorded := job.DeclaresExtension(openjd.ExtensionEXPR); recorded {
+		return declared
+	}
+	return jobMayUseEXPR(job)
+}
+
+// jobMayUseEXPR is the LEGACY PATH, reached only for a job row that predates
+// migration 00027 and therefore records no declared-extension list.
+// [jobUsesEXPR] is the primary, and it is exact; everything below describes
+// what this one can and cannot do for the rows the primary cannot answer for.
+//
+// It is a HEURISTIC, not a decision procedure, and the difference matters in
+// both directions. It reports whether job's raw template contains BOTH the
+// bytes "EXPR" and the bytes "extensions" -- the key any declaration of it must
+// sit under.
 //
 // WHAT IT GETS RIGHT: a declared extension is spelled literally
 // (`extensions: [EXPR]` / `"extensions":["EXPR"]`) by everything that writes
@@ -297,32 +326,28 @@ func exprCapShortfall(caps store.WorkerExprLimits, srv openjd.ExprLimits) string
 // same class, reachable only by deliberately obfuscating a declaration, and
 // bounded by the same two reasons below.
 //
-// WHY IT SHIPS ANYWAY, and what would replace it:
+// WHY IT IS STILL HERE, now that it is not the primary:
 //
-//  1. THE FALSE NEGATIVE IS NOW REACHABLE. This item used to say it was
-//     unreachable, on the grounds that reaching it needs a template declaring
-//     EXPR and EXPR was StatusInProgress, so no such template could be
-//     submitted at all. Sub-project H2 flipped the status: EXPR templates are
-//     submitted, and an obfuscated declaration would now escape this scan. The
-//     unreachability argument is withdrawn; only item 2 still bounds it.
-//  2. Reaching it requires deliberately obfuscating an extension declaration,
-//     which no authoring tool does and which gains the submitter nothing: the
-//     only consequence is that their own job's tasks fail.
-//  3. The exact check is a document parse, and the cheap placements for it do
-//     not exist. Doing it here costs a parse per CANDIDATE TASK per lease
-//     request (AssignBatchSize defaults to 50; internal/api/jobs.go accepts a
-//     4 MiB request body) on
-//     any misconfigured farm — an availability problem strictly worse than the
-//     one it closes. Doing it in buildAssignPayload, where the template is
-//     already parsed for the winner only, is after LeaseReadyTask and
-//     createAttemptAndClaimUsage, so it would need a revert that leaves an
-//     orphaned attempt row behind on every retry.
+//  1. Both error directions are BOUNDED TO PRE-00027 ROWS. Every job submitted
+//     since carries the decoded list, and [jobUsesEXPR] never consults this
+//     function for those. What is left is the finite, draining set of rows a
+//     deployment already held when it upgraded.
+//  2. For those rows there is no better evidence. The raw template is all that
+//     was persisted, so the alternatives are this scan, a document parse per
+//     CANDIDATE TASK per lease request (AssignBatchSize defaults to 50;
+//     internal/api/jobs.go accepts a 4 MiB request body) on any misconfigured
+//     farm -- an availability problem strictly worse than the one it closes --
+//     or a backfill, which would have to re-parse and re-validate every stored
+//     template against a registry that has changed since they were accepted.
+//  3. Its remaining false negative needs a DELIBERATELY OBFUSCATED declaration
+//     in a job submitted before the upgrade, which no authoring tool produces
+//     and which gains the submitter nothing: the only consequence is that their
+//     own job's tasks fail.
 //
-// STILL OPEN AFTER H2 — the clean fix is neither of those two: persist the declared
-// extension list on the job row at submission (where internal/openjd has
-// already parsed and validated it) and read a column here. Exact, no parse on
-// the lease path, and it needs this heuristic only as the fallback for rows
-// written before that column existed.
+// Deleting it and treating an unrecorded row as "declares nothing" is the one
+// change that must not be made: it silently ungates every EXPR job that
+// survived the upgrade, which is design spec §2's incident arriving as a
+// no-op-looking cleanup.
 func jobMayUseEXPR(job store.Job) bool {
 	return strings.Contains(job.RawTemplate, openjd.ExtensionEXPR) &&
 		strings.Contains(job.RawTemplate, extensionsKey)
@@ -354,7 +379,7 @@ const extensionsKey = "extensions"
 // explanation with no bound is the warning-nobody-reads this program has
 // repeatedly found is not a bound at all.
 func exprCapsBlock(workerShortfall string, job store.Job) string {
-	if workerShortfall == "" || !jobMayUseEXPR(job) {
+	if workerShortfall == "" || !jobUsesEXPR(job) {
 		return ""
 	}
 	return workerShortfall

@@ -842,17 +842,20 @@ acceptance.
 binds concrete values this server only had placeholders for, so an accepted
 job can still exhaust a worker that satisfies every row above.
 
-> **The gate spots an EXPR job by scanning the raw template, not by parsing
-> it.** It looks for the bytes `EXPR` *and* the bytes `extensions`, so a
-> **base-spec** template that merely mentions the string — a comment, or an
-> environment variable such as `HOUDINI_EXPR_CACHE` — no longer matches, and
-> is dispatched normally. What still matches without using expressions is a
-> template that declares some *other* extension and mentions `EXPR`
-> elsewhere; such a job is withheld from every short worker and flagged with
-> a reason naming EXPR limits it does not use. If you see that message on a
-> job that uses no expressions, this is why, and the fix is the same either
-> way — raise the workers, or lower the server. The heuristic only ever errs
-> toward withholding work, never toward dispatching it wrongly.
+> **The gate spots an EXPR job by reading the extension list recorded on the
+> job row at submission**, so for every job submitted since the upgrade the
+> test is exact: a job flagged with this reason really does declare `EXPR`.
+>
+> Job rows written before that column existed record no list, and those alone
+> fall back to the previous heuristic — a scan of the raw template for the
+> bytes `EXPR` *and* the bytes `extensions`. A **base-spec** template that
+> declares some other extension and mentions the string incidentally (a
+> comment, or an environment variable such as `HOUDINI_EXPR_CACHE`) matches
+> that scan, and such a job is withheld from every short worker and flagged
+> with a reason naming EXPR limits it does not use. If you see that message on
+> an older job that uses no expressions, this is why; the fix is the same
+> either way — raise the workers, or lower the server. The fallback only ever
+> errs toward withholding work, never toward dispatching it wrongly.
 
 ---
 
