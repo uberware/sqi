@@ -66,6 +66,13 @@ func TestSQIReferencePresets(t *testing.T) {
 			params:     []string{"SceneFile", "Frames", "OutputPath"},
 			extensions: []string{"TASK_CHUNKING"},
 		},
+		"ffmpeg-transcode": {
+			category: "Transcoding",
+			params:   []string{"SourceFile", "OutputFile", "VideoCodec", "Quality", "AudioCodec"},
+			// No extensions on purpose: this is the one converter that runs on
+			// a worker whose expr.* caps undercut the server's.
+			extensions: nil,
+		},
 	}
 	paths, err := fsutil.Glob(filepath.Join("..", "..", "presets", "sqi", "*.yaml"))
 	if err != nil {

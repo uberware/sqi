@@ -1,0 +1,62 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+name: ffmpeg-transcode
+title: FFmpeg Transcode
+description: >-
+  Converts one video file on one worker, start to finish. Base-spec OpenJD with
+  no extensions, so it runs on any worker tagged ffmpeg=true whatever that
+  worker's EXPR limits are. Use a segment variant instead to spread a long
+  source across the farm. Requires ffmpeg on PATH. A starting point - duplicate
+  to customize for your pipeline.
+category: Transcoding
+version: 1.0.0
+template:
+  specificationVersion: jobtemplate-2023-09
+  name: FFmpeg Transcode
+  parameterDefinitions:
+    - name: SourceFile
+      type: PATH
+      objectType: FILE
+      dataFlow: IN
+      userInterface: { control: CHOOSE_INPUT_FILE, label: Source File }
+    - name: OutputFile
+      type: PATH
+      objectType: FILE
+      dataFlow: OUT
+      userInterface: { control: CHOOSE_OUTPUT_FILE, label: Output File }
+    - name: VideoCodec
+      type: STRING
+      default: libx264
+      allowedValues: [libx264, libx265, copy]
+      userInterface: { control: DROPDOWN_LIST, label: Video Codec }
+    - name: Quality
+      type: INT
+      default: 20
+      minValue: 0
+      maxValue: 51
+      userInterface: { control: SPIN_BOX, label: Quality (CRF, lower is better) }
+    - name: AudioCodec
+      type: STRING
+      default: aac
+      allowedValues: [aac, copy]
+      userInterface: { control: DROPDOWN_LIST, label: Audio Codec }
+  steps:
+    - name: Transcode
+      hostRequirements:
+        attributes:
+          - name: attr.worker.tag.ffmpeg
+            anyOf: ["true"]
+      script:
+        actions:
+          onRun:
+            command: ffmpeg
+            args:
+              - "-y"
+              - "-i"
+              - "{{Param.SourceFile}}"
+              - "-c:v"
+              - "{{Param.VideoCodec}}"
+              - "-crf"
+              - "{{Param.Quality}}"
+              - "-c:a"
+              - "{{Param.AudioCodec}}"
+              - "{{Param.OutputFile}}"
