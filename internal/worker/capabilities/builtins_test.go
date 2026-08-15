@@ -77,3 +77,30 @@ func TestBuiltinDetectors_CoverPresets(t *testing.T) {
 		t.Errorf("reference presets require tags with no built-in detector: %v", missing)
 	}
 }
+
+// TestBuiltinDetectors_FFmpeg pins the ffmpeg detector's shape. It is a PATH
+// tool on every platform, so unlike the DCC detectors it carries no
+// install-location glob and no registry probe -- if a later change adds one,
+// this test should be the thing that asks why.
+func TestBuiltinDetectors_FFmpeg(t *testing.T) {
+	ds, err := BuiltinDetectors()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var found bool
+	for _, d := range ds {
+		if d.Tag != "ffmpeg" {
+			continue
+		}
+		found = true
+		if len(d.Checks) != 1 {
+			t.Fatalf("ffmpeg detector has %d checks, want 1 (exe only)", len(d.Checks))
+		}
+		if d.Checks[0].Exe != "ffmpeg" {
+			t.Errorf("ffmpeg detector check = %+v, want exe: ffmpeg", d.Checks[0])
+		}
+	}
+	if !found {
+		t.Fatal("no built-in detector emits the ffmpeg tag")
+	}
+}
