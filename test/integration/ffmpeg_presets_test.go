@@ -40,7 +40,9 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
+	"sort"
 	"strconv"
 	"strings"
 	"testing"
@@ -94,18 +96,27 @@ func runFFmpeg(t *testing.T, name string, args ...string) string {
 	return string(out)
 }
 
-// makeSourceVideo writes a synthetic H.264+AAC source into dir and returns its
-// path. Generating it with ffmpeg keeps binary fixtures out of the repository.
+// makeSourceVideo writes a synthetic H.264+AAC source of the default length
+// into dir and returns its path.
 func makeSourceVideo(t *testing.T, dir string) string {
 	t.Helper()
-	path := filepath.Join(dir, "source.mp4")
+	return makeSourceVideoOfLength(t, dir, ffmpegSourceSeconds)
+}
+
+// makeSourceVideoOfLength is [makeSourceVideo] with an explicit duration, for
+// the cases below that choose a source length to make a specific arithmetic
+// mistake visible. Generating it with ffmpeg keeps binary fixtures out of the
+// repository.
+func makeSourceVideoOfLength(t *testing.T, dir string, seconds int) string {
+	t.Helper()
+	path := filepath.Join(dir, fmt.Sprintf("source%ds.mp4", seconds))
 	runFFmpeg(
 		t, "ffmpeg",
 		"-y", "-loglevel", "error",
 		"-f", "lavfi", "-i",
-		fmt.Sprintf("testsrc=size=160x120:rate=10:duration=%d", ffmpegSourceSeconds),
+		fmt.Sprintf("testsrc=size=160x120:rate=10:duration=%d", seconds),
 		"-f", "lavfi", "-i",
-		fmt.Sprintf("sine=frequency=440:duration=%d", ffmpegSourceSeconds),
+		fmt.Sprintf("sine=frequency=440:duration=%d", seconds),
 		"-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", "-shortest",
 		path,
 	)
@@ -209,6 +220,44 @@ func submitPreset(t *testing.T, ts *testServer, farmID, queueID, name string, pa
 	}
 	t.Logf("submitted preset %s as job %s", name, resp.ID)
 	return resp.ID
+}
+
+// submitPresetExpecting submits a preset's template expecting a non-2xx status,
+// and returns the RFC 7807 detail string the server answered with.
+//
+// Separate from [submitPreset] because that helper asserts 201 and returns a
+// job ID; the rejection cases below have neither.
+func submitPresetExpecting(
+	t *testing.T, ts *testServer, farmID, queueID, name string,
+	params map[string]string, wantStatus int,
+) string {
+	t.Helper()
+
+	data, err := os.ReadFile(presetPath(t, name))
+	if err != nil {
+		t.Fatalf("read preset %s: %v", name, err)
+	}
+	p, err := product.ParseDefinition(data, product.ValidateOptions{EnforceLimits: true})
+	if err != nil {
+		t.Fatalf("ParseDefinition(%s): %v", name, err)
+	}
+
+	q := url.Values{}
+	q.Set("farm_id", farmID)
+	q.Set("queue_id", queueID)
+	q.Set("owner", "ffmpeg-preset-test")
+	for k, v := range params {
+		q.Set("param."+k, v)
+	}
+
+	var problem struct {
+		Status int    `json:"status"`
+		Detail string `json:"detail"`
+	}
+	mustDoJSON(t, http.MethodPost,
+		"http://"+ts.HTTPAddr+"/api/v1/jobs?"+q.Encode(),
+		[]byte(p.Template), "application/x-yaml", wantStatus, &problem)
+	return problem.Detail
 }
 
 // taskLogs fetches a task's log without asserting on its contents.
@@ -405,6 +454,184 @@ func TestFFmpegPreset_PowerShellSegmentTranscodeJoins(t *testing.T) {
 		t.Skipf("ffmpeg-segment-transcode-powershell requires a windows worker; GOOS=%s", runtime.GOOS)
 	}
 	runSegmentPreset(t, "ffmpeg-segment-transcode-powershell", false)
+}
+
+// ── Slice arithmetic ──────────────────────────────────────────────────────────
+//
+// The three cases below exist because the fixture geometry the tests above
+// share — 6 seconds cut into 2-second slices — is a WHOLE MULTIPLE, and a whole
+// multiple hides two mistakes that the segmented presets are specifically at
+// risk of. Both are properties of the EXPR expressions rather than of ffmpeg,
+// and neither is visible to the schema tests in internal/product.
+
+// TestFFmpegPreset_SegmentCountUsesCeilingNotTruncation pins the slice-count
+// expression, `ceil(Param.DurationSeconds / Param.SegmentSeconds)`.
+//
+// 6/2 divides exactly, so the tests above pass identically whether that
+// expression ceils, floors, or truncates — the arithmetic the entire EXPR
+// extension was built to enable is, at that geometry, unpinned. 5 seconds in
+// 2-second slices needs ceil(2.5) = 3; truncation yields 2, which transcodes
+// only the first 4 seconds and loses the tail. The duration assertion catches
+// that: 4s against an expected 5s is ten times the tolerance.
+//
+// It runs the portable variant because that is the one that executes on every
+// platform, so this arithmetic is covered wherever the suite runs.
+func TestFFmpegPreset_SegmentCountUsesCeilingNotTruncation(t *testing.T) {
+	requireFFmpeg(t)
+
+	const (
+		sourceSeconds  = 5
+		segmentSeconds = 2
+		wantSlices     = 3 // ceil(5/2); truncation would give 2
+	)
+
+	ts := startServer(t)
+	farmID, queueID := seedFarmAndQueue(t, ts)
+	startRealWorkerAnyOS(t, ts, farmID, queueID)
+
+	dir := t.TempDir()
+	source := makeSourceVideoOfLength(t, dir, sourceSeconds)
+	output := filepath.Join(dir, "joined.mp4")
+
+	runPresetJob(t, ts, farmID, queueID, "ffmpeg-segment-transcode-expr", map[string]string{
+		"SourceFile":      source,
+		"OutputFile":      output,
+		"DurationSeconds": strconv.Itoa(sourceSeconds),
+		"SegmentSeconds":  strconv.Itoa(segmentSeconds),
+	})
+
+	assertDuration(t, output, sourceSeconds)
+
+	// The slice count is asserted separately from the duration because the two
+	// fail for different reasons: a wrong count means the range expression is
+	// wrong, while a right count with a short duration means the join dropped
+	// something. The final slice covers [4s, 6s) against a 5s source, so it is
+	// the short-tail case as well — ffmpeg stops at EOF and writes ~1s.
+	if slices := sliceFiles(t, output); len(slices) != wantSlices {
+		t.Errorf("slices = %d %v, want %d — the task range should be "+
+			"ceil(%d/%d)-1, so a truncating division would produce %d",
+			len(slices), slices, wantSlices, sourceSeconds, segmentSeconds, wantSlices-1)
+	}
+}
+
+// sliceIndexRe matches the zero-padded index in a slice filename built by
+// `zfill(<index>, 5)`.
+var sliceIndexRe = regexp.MustCompile(`_seg_(\d{5})\.`)
+
+// TestFFmpegPreset_SliceNamesAreZeroPadded pins the `zfill(..., 5)` in the
+// slice-path expression, which the tests above cannot see.
+//
+// Padding exists so that LEXICAL order is NUMERIC order. That matters because
+// the bash and PowerShell variants build their concat list by globbing the
+// directory and sorting by name — with unpadded indices, `_seg_10` sorts
+// between `_seg_1` and `_seg_2`, and those two variants would join the slices
+// out of order. Fewer than ten slices cannot distinguish the two orderings at
+// all, and every other case in this file uses three.
+//
+// A duration assertion would NOT catch it: a mis-ordered join still contains
+// every slice and still runs the full length. So this asserts the filenames the
+// glob actually sorts, which is the property the ordering rests on.
+func TestFFmpegPreset_SliceNamesAreZeroPadded(t *testing.T) {
+	requireFFmpeg(t)
+
+	const (
+		sourceSeconds  = 11
+		segmentSeconds = 1
+		wantSlices     = 11 // two digits, so padding is load-bearing
+	)
+
+	ts := startServer(t)
+	farmID, queueID := seedFarmAndQueue(t, ts)
+	startRealWorkerAnyOS(t, ts, farmID, queueID)
+
+	dir := t.TempDir()
+	source := makeSourceVideoOfLength(t, dir, sourceSeconds)
+	output := filepath.Join(dir, "padded.mp4")
+
+	runPresetJob(t, ts, farmID, queueID, "ffmpeg-segment-transcode-expr", map[string]string{
+		"SourceFile":      source,
+		"OutputFile":      output,
+		"DurationSeconds": strconv.Itoa(sourceSeconds),
+		"SegmentSeconds":  strconv.Itoa(segmentSeconds),
+	})
+
+	assertDuration(t, output, sourceSeconds)
+
+	slices := sliceFiles(t, output)
+	if len(slices) != wantSlices {
+		t.Fatalf("slices = %d %v, want %d", len(slices), slices, wantSlices)
+	}
+
+	seen := map[int]bool{}
+	for _, path := range slices {
+		m := sliceIndexRe.FindStringSubmatch(filepath.Base(path))
+		if m == nil {
+			t.Errorf("slice %q has no five-digit index: zfill(index, 5) is what "+
+				"makes lexical order numeric, and the bash and PowerShell joins "+
+				"sort these names to order their concat list",
+				filepath.Base(path))
+			continue
+		}
+		n, err := strconv.Atoi(m[1])
+		if err != nil {
+			t.Errorf("slice %q: parse index %q: %v", filepath.Base(path), m[1], err)
+			continue
+		}
+		seen[n] = true
+	}
+	for i := range wantSlices {
+		if !seen[i] {
+			t.Errorf("no slice with index %d; got %v", i, slices)
+		}
+	}
+
+	// sliceFiles globs, and Glob returns sorted names — so on a correct run the
+	// lexical order the shell joins depend on is already the numeric order.
+	if !sort.StringsAreSorted(slices) {
+		t.Errorf("glob output is not sorted: %v", slices)
+	}
+	if got := sliceIndexRe.FindStringSubmatch(filepath.Base(slices[0])); got != nil && got[1] != "00000" {
+		t.Errorf("first slice by name is index %q, want 00000 — slices are "+
+			"joined in this order", got[1])
+	}
+}
+
+// TestFFmpegPreset_PortableRejectsBeyondItsCostCeiling asserts the HTTP contract
+// a user actually meets when they ask the portable variant for more slices than
+// its submission budget allows.
+//
+// internal/product/exprpresetcost_test.go already pins the ceiling at the
+// submitter, but it asserts on a Go error value. What a pipeline sees is a
+// status code, and the distinction matters: a 422 says the request is wrong and
+// retrying is pointless, while the 503 this must NOT be says the server gave up
+// under load and a retry may work. Nothing else asserts that mapping for a
+// shipped preset, and no worker is needed to prove it.
+func TestFFmpegPreset_PortableRejectsBeyondItsCostCeiling(t *testing.T) {
+	requireFFmpeg(t)
+
+	ts := startServer(t)
+	farmID, queueID := seedFarmAndQueue(t, ts)
+
+	// Far past the documented 400-slice ceiling, so this stays true if the
+	// per-slice cost is tuned. 60-second slices keeps the count equal to the
+	// minutes asked for.
+	const wildlyTooManySlices = 4000
+
+	detail := submitPresetExpecting(t, ts, farmID, queueID,
+		"ffmpeg-segment-transcode-expr", map[string]string{
+			"SourceFile":      filepath.Join(t.TempDir(), "unused.mp4"),
+			"OutputFile":      filepath.Join(t.TempDir(), "unused-out.mp4"),
+			"DurationSeconds": strconv.Itoa(wildlyTooManySlices * 60),
+			"SegmentSeconds":  "60",
+		}, http.StatusUnprocessableEntity)
+
+	// The status alone is not enough: a typo in a parameter name would also be
+	// a 422. This must be the cost meter refusing, not the parser.
+	if !strings.Contains(detail, "operation limit") {
+		t.Errorf("rejection detail = %q, want it to name the operation limit — "+
+			"a 422 for any other reason means this test no longer covers the "+
+			"cost ceiling", detail)
+	}
 }
 
 // ── Sequence encode ───────────────────────────────────────────────────────────
