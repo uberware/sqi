@@ -1,0 +1,132 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+name: ffmpeg-segment-transcode-bash
+title: FFmpeg Segment Transcode (Bash)
+description: >-
+  Splits a video into fixed-length slices, converts each on a different worker,
+  then joins them back into one file. Enter the source's length in seconds -
+  nothing can measure it before the job is submitted, and a value that is too
+  small silently drops the tail. The join step runs a bash script, so this
+  variant needs Linux or macOS workers; use the Portable variant on Windows or
+  a mixed farm. Slice files are written beside the output and removed once the
+  join succeeds. Requires ffmpeg on PATH. A starting point - duplicate to
+  customize for your pipeline.
+category: Transcoding
+version: 1.0.0
+template:
+  specificationVersion: jobtemplate-2023-09
+  name: FFmpeg Segment Transcode
+  extensions: [EXPR]
+  parameterDefinitions:
+    - name: SourceFile
+      type: PATH
+      objectType: FILE
+      dataFlow: IN
+      userInterface: { control: CHOOSE_INPUT_FILE, label: Source File }
+    - name: OutputFile
+      type: PATH
+      objectType: FILE
+      dataFlow: OUT
+      userInterface: { control: CHOOSE_OUTPUT_FILE, label: Output File }
+    - name: DurationSeconds
+      type: INT
+      minValue: 1
+      default: 600
+      userInterface: { control: SPIN_BOX, label: Source Duration (seconds) }
+    - name: SegmentSeconds
+      type: INT
+      minValue: 1
+      default: 60
+      userInterface: { control: SPIN_BOX, label: Slice Length (seconds) }
+    - name: VideoCodec
+      type: STRING
+      default: libx264
+      allowedValues: [libx264, libx265]
+      userInterface: { control: DROPDOWN_LIST, label: Video Codec }
+    - name: Quality
+      type: INT
+      default: 20
+      minValue: 0
+      maxValue: 51
+      userInterface: { control: SPIN_BOX, label: Quality (CRF, lower is better) }
+    - name: AudioCodec
+      type: STRING
+      default: aac
+      allowedValues: [aac, copy]
+      userInterface: { control: DROPDOWN_LIST, label: Audio Codec }
+  steps:
+    - name: Transcode
+      hostRequirements:
+        attributes:
+          - name: attr.worker.tag.ffmpeg
+            anyOf: ["true"]
+          - name: attr.worker.os.family
+            anyOf: ["linux", "macos"]
+      parameterSpace:
+        taskParameterDefinitions:
+          - name: Segment
+            type: INT
+            range: "0-{{ ceil(Param.DurationSeconds / Param.SegmentSeconds) - 1 }}"
+      script:
+        actions:
+          onRun:
+            command: ffmpeg
+            args:
+              - "-y"
+              - "-ss"
+              - "{{ Task.Param.Segment * Param.SegmentSeconds }}"
+              - "-t"
+              - "{{ Param.SegmentSeconds }}"
+              - "-i"
+              - "{{ Param.SourceFile }}"
+              - "-c:v"
+              - "{{ Param.VideoCodec }}"
+              - "-crf"
+              - "{{ Param.Quality }}"
+              - "-c:a"
+              - "{{ Param.AudioCodec }}"
+              - "{{ Param.OutputFile.parent / (Param.OutputFile.stem + '_seg_' + zfill(Task.Param.Segment, 5) + Param.OutputFile.suffix) }}"
+    - name: Join
+      dependencies:
+        - dependsOn: Transcode
+      hostRequirements:
+        attributes:
+          - name: attr.worker.tag.ffmpeg
+            anyOf: ["true"]
+          - name: attr.worker.os.family
+            anyOf: ["linux", "macos"]
+      script:
+        embeddedFiles:
+          - name: join
+            type: TEXT
+            runnable: true
+            data: |
+              #!/usr/bin/env bash
+              set -euo pipefail
+
+              out="$1"
+              dir="$(dirname "$out")"
+              base="$(basename "$out")"
+              stem="${base%.*}"
+              ext="${base##*.}"
+
+              shopt -s nullglob
+              segs=("${dir}/${stem}_seg_"*".${ext}")
+              if [ ${#segs[@]} -eq 0 ]; then
+                echo "no slices found matching ${dir}/${stem}_seg_*.${ext}" >&2
+                exit 1
+              fi
+
+              # Zero-padded slice numbers make lexical order numeric order, so
+              # the glob above is already in the right sequence.
+              list="$(mktemp)"
+              trap 'rm -f "$list"' EXIT
+              for s in "${segs[@]}"; do
+                printf "file '%s'\n" "$s" >> "$list"
+              done
+
+              ffmpeg -y -f concat -safe 0 -i "$list" -c copy "$out"
+              rm -f "${segs[@]}"
+        actions:
+          onRun:
+            command: "{{Task.File.join}}"
+            args: ["{{Param.OutputFile}}"]

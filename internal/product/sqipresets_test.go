@@ -78,6 +78,11 @@ func TestSQIReferencePresets(t *testing.T) {
 			params:     []string{"SourcePattern", "StartFrame", "EndFrame", "FrameRate", "OutputDir"},
 			extensions: []string{"EXPR"},
 		},
+		"ffmpeg-segment-transcode-bash": {
+			category:   "Transcoding",
+			params:     []string{"SourceFile", "OutputFile", "DurationSeconds", "SegmentSeconds"},
+			extensions: []string{"EXPR"},
+		},
 	}
 	paths, err := fsutil.Glob(filepath.Join("..", "..", "presets", "sqi", "*.yaml"))
 	if err != nil {
