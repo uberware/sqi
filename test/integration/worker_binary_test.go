@@ -135,8 +135,30 @@ func startRealWorker(t *testing.T, ts *testServer, farmID, queueID string) strin
 // non-default worker configuration such as local staging.
 func startRealWorkerWithOptions(t *testing.T, ts *testServer, farmID, queueID string, extraArgs, extraEnv []string) string {
 	t.Helper()
+	return startRealWorkerCore(t, ts, farmID, queueID, extraArgs, extraEnv, false)
+}
 
-	if runtime.GOOS == "windows" {
+// startRealWorkerAnyOS is [startRealWorker] for callers whose job commands are
+// genuinely cross-platform, so the Windows skip below does not apply to them.
+//
+// The skip guards the job COMMANDS, not the worker: sqi-worker itself runs on
+// Windows (scripts/smoke.sh drives it there), but every caller above submits a
+// template whose onRun is a POSIX command such as `echo`, which has no
+// executable equivalent on a Windows worker. A caller whose command is a real
+// cross-platform binary — ffmpeg — is not subject to that limitation, and
+// skipping it on Windows would silently drop the only automated coverage of the
+// PowerShell-gated preset, which by construction cannot run anywhere else.
+func startRealWorkerAnyOS(t *testing.T, ts *testServer, farmID, queueID string) string {
+	t.Helper()
+	return startRealWorkerCore(t, ts, farmID, queueID, nil, nil, true)
+}
+
+// startRealWorkerCore implements the three helpers above. allowWindows selects
+// whether the POSIX-command skip applies; everything else is identical.
+func startRealWorkerCore(t *testing.T, ts *testServer, farmID, queueID string, extraArgs, extraEnv []string, allowWindows bool) string {
+	t.Helper()
+
+	if runtime.GOOS == "windows" && !allowWindows {
 		t.Skip("real-worker integration test requires a POSIX shell; skipping on Windows")
 	}
 
