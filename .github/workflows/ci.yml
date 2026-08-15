@@ -36,6 +36,7 @@ jobs:
     outputs:
       python: ${{ steps.filter.outputs.python }}
       submitter: ${{ steps.filter.outputs.submitter }}
+      presets: ${{ steps.filter.outputs.presets }}
       workflows: ${{ steps.filter.outputs.workflows }}
     steps:
       - name: Checkout
@@ -52,6 +53,19 @@ jobs:
             submitter:
               - 'clients/submitter/**'
               - 'presets/sqi/**'
+              - '.github/workflows/ci.yml'
+            # Gates the native Windows ffmpeg job below. Scoped to the presets
+            # themselves and the code that executes them, deliberately NOT to
+            # internal/worker or internal/openjd: a filter wide enough to catch
+            # every possible influence would fire on nearly every PR, which is
+            # the runner cost this job was carved out to control. The tradeoff
+            # is that a change to the worker's format-string resolution can
+            # break the PowerShell join without this firing — that lands on the
+            # push-to-main run instead.
+            presets:
+              - 'presets/**'
+              - 'test/integration/ffmpeg_presets_test.go'
+              - 'test/integration/worker_binary_test.go'
               - '.github/workflows/ci.yml'
             workflows:
               - '.github/workflows/**'
@@ -978,6 +992,129 @@ jobs:
   # rather than a Python implementation. Tagged `oracle`, so it does not run in
   # the default `make test`.
   #
+  # ── ffmpeg reference presets: execute them ───────────────────────────────────
+  # The shipped ffmpeg presets (presets/sqi/ffmpeg-*.yaml) are covered three
+  # ways: internal/product validates them against the schema, exprpresetcost
+  # pins the portable variant's submission cost, and test/integration runs them
+  # through a real server and worker and probes the video they produce. Only the
+  # third can see a command line that parses perfectly and transcodes nothing —
+  # the class of bug that produced two fixes on the branch that introduced these
+  # presets (a BOM'd concat list, and an embedded join script with no .ps1
+  # filename), both found by reading rather than by testing.
+  #
+  # This job exists because that third layer SKIPS without ffmpeg and ffprobe on
+  # PATH, and nothing installs them: inside `make test-cover` those tests would
+  # skip silently and the `test` job would stay green having executed no ffmpeg
+  # at all. Installing the binaries and then requiring each PASS line by name is
+  # the same guard conformance, expr-oracle, ldap-integration and
+  # isolation-integration use.
+  #
+  # Linux only. The bash-joined variant gates on a linux worker and can run
+  # NOWHERE else; the Windows-gated variant has its own job below
+  # (ffmpeg-presets-windows), because it can run nowhere but a Windows runner.
+  ffmpeg-presets:
+    name: ffmpeg reference presets (execution)
+    runs-on: ubuntu-latest
+    needs: test
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+
+      # Explicit rather than relying on the runner image: ffmpeg being present
+      # by accident is an undeclared dependency that disappears on an image
+      # bump, and its absence is silent here by construction.
+      - name: Install ffmpeg
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends ffmpeg
+          ffmpeg -version | head -1
+          ffprobe -version | head -1
+
+      - name: Execute the ffmpeg presets end to end
+        shell: bash
+        run: |
+          go test -run TestFFmpegPreset -v -timeout 900s ./test/integration/ 2>&1 \
+            | tee /tmp/ffmpeg-presets.log
+
+      # Each case is named individually so that a preset losing its coverage --
+      # by being skipped, renamed, or deleted -- fails here rather than
+      # shrinking the suite quietly. The two PowerShell-gated and
+      # Windows-skipped cases are deliberately absent.
+      - name: Assert every linux-runnable case actually ran
+        run: |
+          for name in \
+            TestFFmpegPreset_TranscodeProducesPlayableOutput \
+            TestFFmpegPreset_PortableSegmentTranscodeJoins \
+            TestFFmpegPreset_BashSegmentTranscodeJoins \
+            TestFFmpegPreset_SegmentCountUsesCeilingNotTruncation \
+            TestFFmpegPreset_SliceNamesAreZeroPadded \
+            TestFFmpegPreset_PortableRejectsBeyondItsCostCeiling \
+            TestFFmpegPreset_SequenceEncodeNamesOutputAfterPattern \
+          ; do
+            grep -q -- "--- PASS: ${name}" /tmp/ffmpeg-presets.log \
+              || { echo "::error::${name} did not run to a PASS"; exit 1; }
+          done
+
+  # ── ffmpeg reference presets: the Windows-gated variant ──────────────────────
+  # ffmpeg-segment-transcode-powershell gates on attr.worker.os.family = windows,
+  # so a Windows runner is the ONLY place its join script can execute at all —
+  # every other job in this workflow skips it by construction. That script has
+  # already shipped two bugs a real run would have caught immediately and review
+  # by reading did not: a BOM'd concat list the demuxer rejects, and an embedded
+  # file with no .ps1 extension, which `powershell -File` refuses outright.
+  #
+  # Its own job rather than a step on cross-platform-runtime, for two reasons:
+  # that job is a REST/WebSocket smoke test with a different purpose, and it is a
+  # macOS+Windows matrix — a preset-only PR would pay for a macOS leg that skips
+  # every case here.
+  #
+  # Runs on every push, and on pull requests only when the presets filter fires.
+  # isolation-integration-windows already runs a windows-latest job on every PR
+  # unconditionally, so a filtered one costs strictly less than the precedent.
+  ffmpeg-presets-windows:
+    name: ffmpeg reference presets (execution, windows)
+    runs-on: windows-latest
+    needs: [test, changes]
+    if: ${{ github.event_name != 'pull_request' || needs.changes.outputs.presets == 'true' }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+
+      - name: Install ffmpeg
+        run: choco install ffmpeg --yes --no-progress
+
+      # bash (Git Bash, present on every windows runner) so the pipeline and the
+      # grep assertion below are the same shell as the Linux job's.
+      - name: Execute the ffmpeg presets end to end
+        shell: bash
+        run: |
+          ffmpeg -version | head -1
+          go test -run TestFFmpegPreset -v -timeout 900s ./test/integration/ 2>&1 \
+            | tee /tmp/ffmpeg-presets-windows.log
+
+      # Only the PowerShell case is required by name. The rest either skip here
+      # (the bash variant gates on linux) or are already required by name on the
+      # Linux job, and duplicating them would make this job fail for reasons
+      # that have nothing to do with Windows.
+      - name: Assert the PowerShell join actually ran
+        shell: bash
+        run: |
+          grep -q -- '--- PASS: TestFFmpegPreset_PowerShellSegmentTranscodeJoins' \
+            /tmp/ffmpeg-presets-windows.log \
+            || { echo "::error::the PowerShell-joined preset did not run to a PASS"; exit 1; }
+
   # IMPORTANT: the assertion step below is not redundant. `make test-expr-oracle`
   # exits 0 when no interpreter has the package importable, and the test itself
   # SKIPS in that case — so a green job would otherwise prove nothing at all.
