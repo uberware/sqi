@@ -8,11 +8,11 @@ description: >-
   small silently drops the tail. Needs no shell at all: the join step's file
   list is written by the template itself, so this variant runs on Linux, macOS
   and Windows workers alike. The cost of writing that list is charged at
-  submission and grows with the slice count, so it suits jobs up to roughly
-  DESCRIPTION-SLICE-CEILING slices; past that use the Bash or PowerShell
-  variant, whose cost does not grow. Slice files are left beside the output for
-  you to remove. Requires ffmpeg on PATH. A starting point - duplicate to
-  customize for your pipeline.
+  submission and grows with the slice count, so it suits jobs of up to 400
+  slices - a longer source needs a longer slice to stay under that. Past 400,
+  use the Bash or PowerShell variant, whose cost does not grow. Slice files are
+  left beside the output for you to remove. Requires ffmpeg on PATH. A starting
+  point - duplicate to customize for your pipeline.
 category: Transcoding
 version: 1.0.0
 template:
