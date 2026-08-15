@@ -1,0 +1,78 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+name: ffmpeg-sequence-encode
+title: FFmpeg Sequence Encode
+description: >-
+  Turns a rendered image sequence into a movie on one worker - the step that
+  follows a render job. Point Source Pattern at the sequence using ffmpeg's
+  printf-style numbering (for example render_%04d.exr); the movie is named
+  after it, so render_%04d.exr produces render.mp4 in the output directory.
+  Requires ffmpeg on PATH. A starting point - duplicate to customize for your
+  pipeline.
+category: Transcoding
+version: 1.0.0
+template:
+  specificationVersion: jobtemplate-2023-09
+  name: FFmpeg Sequence Encode
+  extensions: [EXPR]
+  parameterDefinitions:
+    - name: SourcePattern
+      type: PATH
+      objectType: FILE
+      dataFlow: IN
+      userInterface: { control: CHOOSE_INPUT_FILE, label: Source Pattern }
+    - name: StartFrame
+      type: INT
+      default: 1
+      userInterface: { control: SPIN_BOX, label: First Frame }
+    - name: EndFrame
+      type: INT
+      default: 100
+      userInterface: { control: SPIN_BOX, label: Last Frame }
+    - name: FrameRate
+      type: INT
+      default: 24
+      minValue: 1
+      userInterface: { control: SPIN_BOX, label: Frame Rate }
+    - name: OutputDir
+      type: PATH
+      objectType: DIRECTORY
+      dataFlow: OUT
+      userInterface: { control: CHOOSE_DIRECTORY, label: Output Directory }
+    - name: VideoCodec
+      type: STRING
+      default: libx264
+      allowedValues: [libx264, libx265]
+      userInterface: { control: DROPDOWN_LIST, label: Video Codec }
+    - name: Quality
+      type: INT
+      default: 20
+      minValue: 0
+      maxValue: 51
+      userInterface: { control: SPIN_BOX, label: Quality (CRF, lower is better) }
+  steps:
+    - name: Encode
+      hostRequirements:
+        attributes:
+          - name: attr.worker.tag.ffmpeg
+            anyOf: ["true"]
+      script:
+        actions:
+          onRun:
+            command: ffmpeg
+            args:
+              - "-y"
+              - "-framerate"
+              - "{{Param.FrameRate}}"
+              - "-start_number"
+              - "{{Param.StartFrame}}"
+              - "-i"
+              - "{{Param.SourcePattern}}"
+              - "-frames:v"
+              - "{{ Param.EndFrame - Param.StartFrame + 1 }}"
+              - "-c:v"
+              - "{{Param.VideoCodec}}"
+              - "-crf"
+              - "{{Param.Quality}}"
+              - "-pix_fmt"
+              - "yuv420p"
+              - "{{ Param.OutputDir / (rstrip(split(Param.SourcePattern.stem, '%')[0], '_-.') + '.mp4') }}"

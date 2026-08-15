@@ -73,6 +73,11 @@ func TestSQIReferencePresets(t *testing.T) {
 			// a worker whose expr.* caps undercut the server's.
 			extensions: nil,
 		},
+		"ffmpeg-sequence-encode": {
+			category:   "Transcoding",
+			params:     []string{"SourcePattern", "StartFrame", "EndFrame", "FrameRate", "OutputDir"},
+			extensions: []string{"EXPR"},
+		},
 	}
 	paths, err := fsutil.Glob(filepath.Join("..", "..", "presets", "sqi", "*.yaml"))
 	if err != nil {
