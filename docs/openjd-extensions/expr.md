@@ -17,6 +17,23 @@ operations, comprehensions, `let:` bindings, path manipulation
 functions plus the six path properties — all evaluatable inside `{{ ... }}`.
 A template declares it with `extensions: [EXPR]`.
 
+## Worked examples
+
+`presets/sqi/ffmpeg-segment-transcode-*.yaml` are the shipped worked
+examples of this extension: three variants of the same segmented ffmpeg
+transcode, all three of which declare `extensions: [EXPR]`. One,
+`ffmpeg-segment-transcode-expr` ("Portable"), builds its ffmpeg concat file
+list from an EXPR comprehension instead of a join-time shell script, so it
+runs on Linux, macOS, and Windows workers alike with no shell at all. That
+list-building expression references only job parameters, so it is fully
+resolved at **submission** (phase 2, not phase 3) and its cost is charged
+against the *server's* [`openjd.expr_operation_limit`](../configuration.md#openjdexpr_operation_limit)
+(default 10,000) — the worker's far roomier `expr.operation_limit` never
+enters into it. Measured cost is linear at ~24.15 operations per slice, so
+the preset documents a ceiling of 400 slices under stock server limits; see
+that file's `description` and `internal/product/exprpresetcost_test.go`,
+which pins the ceiling as a regression guard.
+
 ## Current status
 
 **EXPR is a supported extension.** `internal/openjd/extension.go`'s registry

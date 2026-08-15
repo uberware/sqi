@@ -113,16 +113,28 @@ func TestExprLimits_OrDefaults(t *testing.T) {
 // asking the reader to trust a comment.
 //
 // A limit set absurdly low does not fail safe: it rejects legitimate templates
-// at submit. The cheapest available definition of "legitimate" is the six
+// at submit. The cheapest available definition of "legitimate" is the eleven
 // reference presets this repo itself ships (presets/sqi/*.yaml, the same files
-// internal/product/dccpresets_test.go validates), so no floor may be tight
+// internal/product/sqipresets_test.go validates), so no floor may be tight
 // enough to reject one of them.
 //
-// The presets do not declare EXPR, so the walk is switched on by adding the
-// declaration to the parsed template. That measures the right thing anyway:
-// the cost is a property of
-// the template's SHAPE (how many format-string-bearing fields it has and what
-// they evaluate), not of which extension it declares.
+// This walks each preset AS AUTHORED -- default job-parameter values, not a
+// submission with concrete parameters -- so it measures shape, not scale. The
+// five ffmpeg presets' slice arithmetic is linear in a slice count that a real
+// submission controls (DurationSeconds / SegmentSeconds), and at its
+// documented 400-slice ceiling one of them costs ~9,662 operations against
+// this package's own defaults; at the default 600s/60s parameters used here it
+// costs a low double digit. That much higher, parameter-driven cost is
+// deliberately NOT this test's concern -- it is pinned separately, against
+// concrete phase-2 parameters, by internal/product/exprpresetcost_test.go.
+//
+// Most presets do not declare EXPR, so the walk is switched on by adding the
+// declaration to the parsed template; ffmpeg-segment-transcode-expr.yaml
+// already declares it, and appending again is a harmless duplicate (Extensions
+// carries no dedup requirement, and LookupExtension is idempotent). That
+// measures the right thing anyway: the cost is a property of the template's
+// SHAPE (how many format-string-bearing fields it has and what they
+// evaluate), not of which extension it declares.
 //
 // HOW IT ASSERTS, and why it changed in fix round 1: the first version looked
 // for the string "template-wide expression budget exceeded", which only two of

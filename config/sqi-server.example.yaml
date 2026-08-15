@@ -236,12 +236,13 @@ openjd:
   # How long this server keeps evaluating ONE submission's expressions before
   # giving up on it.
   #
-  # NOT IN EFFECT YET, like the four limits above: the EXPR extension's
-  # registry status is "in-progress", so a template declaring
-  # extensions: [EXPR] is rejected at submission before any expression is
-  # evaluated. Set it now -- it is validated at startup and wired end to end
-  # -- but no submission reaches it, and none of the 503s below can occur,
-  # until that status flips.
+  # THIS IS LIVE, like the four limits above. Earlier revisions carried a "not
+  # in effect yet" note here: the EXPR extension's registry status was
+  # "in-progress", so a template declaring extensions: [EXPR] was rejected at
+  # submission before any expression was evaluated. That is no longer true --
+  # EXPR is a supported extension, every EXPR template is evaluated on its
+  # merits, and this deadline governs real submissions, including the 503s
+  # described below.
   #
   # This is NOT a fifth limit. The four above decide whether a template is
   # VALID: a breach is deterministic, so the submitter is told their template

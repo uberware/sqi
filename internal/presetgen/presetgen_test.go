@@ -21,12 +21,15 @@ func TestBuild(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Build: %v", err)
 	}
-	if len(got) != 6 {
-		t.Fatalf("got %d presets, want 6", len(got))
+	if len(got) != 11 {
+		t.Fatalf("got %d presets, want 11", len(got))
 	}
 	// Sorted by name.
 	want := []string{
-		"blender-batch-render", "houdini-rop-render", "maya-layer-render",
+		"blender-batch-render", "ffmpeg-segment-transcode-bash",
+		"ffmpeg-segment-transcode-expr",
+		"ffmpeg-segment-transcode-powershell", "ffmpeg-sequence-encode",
+		"ffmpeg-transcode", "houdini-rop-render", "maya-layer-render",
 		"maya-scene-render", "nuke-script-render", "nuke-write-render",
 	}
 	for i, w := range want {

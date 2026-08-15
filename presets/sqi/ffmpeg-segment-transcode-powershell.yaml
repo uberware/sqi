@@ -1,0 +1,136 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+name: ffmpeg-segment-transcode-powershell
+title: FFmpeg Segment Transcode (PowerShell)
+description: >-
+  Splits a video into fixed-length slices, converts each on a different worker,
+  then joins them back into one file. Enter the source's length in seconds -
+  nothing can measure it before the job is submitted; a value that is too
+  small silently drops the tail, and a value that is too large wastes a task
+  transcoding an empty tail slice. The join step runs a PowerShell script, so
+  this variant needs Windows workers; use the Portable variant on a mixed farm.
+  Slice files are written beside the output and removed once the join succeeds.
+  Requires ffmpeg on PATH. A starting point - duplicate to customize for your
+  pipeline.
+category: Transcoding
+version: 1.0.0
+template:
+  specificationVersion: jobtemplate-2023-09
+  name: FFmpeg Segment Transcode
+  extensions: [EXPR]
+  parameterDefinitions:
+    - name: SourceFile
+      type: PATH
+      objectType: FILE
+      dataFlow: IN
+      userInterface: { control: CHOOSE_INPUT_FILE, label: Source File }
+    - name: OutputFile
+      type: PATH
+      objectType: FILE
+      dataFlow: OUT
+      userInterface: { control: CHOOSE_OUTPUT_FILE, label: Output File }
+    - name: DurationSeconds
+      type: INT
+      minValue: 1
+      default: 600
+      userInterface: { control: SPIN_BOX, label: Source Duration (seconds) }
+    - name: SegmentSeconds
+      type: INT
+      minValue: 1
+      default: 60
+      userInterface: { control: SPIN_BOX, label: Slice Length (seconds) }
+    - name: VideoCodec
+      type: STRING
+      default: libx264
+      allowedValues: [libx264, libx265]
+      userInterface: { control: DROPDOWN_LIST, label: Video Codec }
+    - name: Quality
+      type: INT
+      default: 20
+      minValue: 0
+      maxValue: 51
+      userInterface: { control: SPIN_BOX, label: Quality (CRF, lower is better) }
+    - name: AudioCodec
+      type: STRING
+      default: aac
+      allowedValues: [aac, copy]
+      userInterface: { control: DROPDOWN_LIST, label: Audio Codec }
+  steps:
+    - name: Transcode
+      hostRequirements:
+        attributes:
+          - name: attr.worker.tag.ffmpeg
+            anyOf: ["true"]
+          - name: attr.worker.os.family
+            anyOf: ["windows"]
+      parameterSpace:
+        taskParameterDefinitions:
+          - name: Segment
+            type: INT
+            range: "0-{{ ceil(Param.DurationSeconds / Param.SegmentSeconds) - 1 }}"
+      script:
+        actions:
+          onRun:
+            command: ffmpeg
+            args:
+              - "-y"
+              - "-ss"
+              - "{{ Task.Param.Segment * Param.SegmentSeconds }}"
+              - "-t"
+              - "{{ Param.SegmentSeconds }}"
+              - "-i"
+              - "{{ Param.SourceFile }}"
+              - "-c:v"
+              - "{{ Param.VideoCodec }}"
+              - "-crf"
+              - "{{ Param.Quality }}"
+              - "-c:a"
+              - "{{ Param.AudioCodec }}"
+              - "{{ Param.OutputFile.parent / (Param.OutputFile.stem + '_seg_' + zfill(Task.Param.Segment, 5) + Param.OutputFile.suffix) }}"
+    - name: Join
+      dependencies:
+        - dependsOn: Transcode
+      hostRequirements:
+        attributes:
+          - name: attr.worker.tag.ffmpeg
+            anyOf: ["true"]
+          - name: attr.worker.os.family
+            anyOf: ["windows"]
+      script:
+        embeddedFiles:
+          - name: join
+            filename: join.ps1
+            type: TEXT
+            runnable: true
+            data: |
+              $ErrorActionPreference = 'Stop'
+
+              $out = $args[0]
+              $dir = Split-Path -Parent $out
+              $stem = [System.IO.Path]::GetFileNameWithoutExtension($out)
+              $ext = [System.IO.Path]::GetExtension($out)
+
+              # Zero-padded slice numbers make lexical order numeric order.
+              $segs = Get-ChildItem -Path $dir -Filter "$stem`_seg_*$ext" | Sort-Object Name
+              if ($segs.Count -eq 0) {
+                Write-Error "no slices found matching $dir\$stem`_seg_*$ext"
+                exit 1
+              }
+
+              $list = [System.IO.Path]::GetTempFileName()
+              try {
+                $lines = $segs | ForEach-Object { "file '" + $_.FullName + "'" }
+                # Encoding is explicit and deliberate: ASCII (Set-Content's implicit
+                # choice) silently mangles non-ASCII slice paths, and -Encoding UTF8
+                # writes a BOM on Windows PowerShell 5.1 that breaks the concat
+                # demuxer's parse of the first "file" line. BOM-less UTF-8 avoids both.
+                [System.IO.File]::WriteAllLines($list, $lines, (New-Object System.Text.UTF8Encoding $false))
+                ffmpeg -y -f concat -safe 0 -i $list -c copy $out
+                if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+                $segs | Remove-Item -Force
+              } finally {
+                Remove-Item -Force $list -ErrorAction SilentlyContinue
+              }
+        actions:
+          onRun:
+            command: powershell
+            args: ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "{{Task.File.join}}", "{{Param.OutputFile}}"]

@@ -183,6 +183,18 @@ additive-only naming convention — duplicate one and keep the parameter names
 to keep submitter pre-fill working. Full reference:
 [`docs/dcc-submitters.md`](dcc-submitters.md).
 
+The library also ships five `Transcoding`-category ffmpeg presets
+(`ffmpeg-transcode`, `ffmpeg-sequence-encode`,
+`ffmpeg-segment-transcode-bash`, `ffmpeg-segment-transcode-powershell`,
+`ffmpeg-segment-transcode-expr`). Unlike the DCC presets above, these are not
+submitted from a host application and declare no scene-file parameters for
+submitter pre-fill to bind — install and submit them directly from the web
+UI or REST API. Each gates on the `attr.worker.tag.ffmpeg = "true"`
+capability tag; the three segmented variants split a source into slices
+across the farm and differ only in how they join the slices back together
+(bash, PowerShell, or a shell-free EXPR template). Full reference:
+[`docs/preset-library.md`](preset-library.md#transcoding-reference-presets).
+
 Key points about installed products:
 
 - **Read-only.** `PUT /api/v1/products/{name}` returns 403. The template is updated
