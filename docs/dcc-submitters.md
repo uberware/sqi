@@ -230,11 +230,14 @@ enforcement point, and the submitter must not break against an older server.
 
 ## Reference presets
 
-sqi ships six reference products under `presets/sqi/`, published through the
-[preset library](preset-library.md) so `sqi-submitter` has something real to submit
-to out of the box. Install them from **Admin → Preset Library** in the web
-UI, or by hand via `POST /api/v1/products` (or **Admin → Products** in the
-web UI) if you're not using a preset index. All use the product `category`
+sqi ships six DCC reference products under `presets/sqi/`, published through
+the [preset library](preset-library.md) so `sqi-submitter` has something real
+to submit to out of the box (the directory holds eleven products in total —
+the other five are `Transcoding`-category ffmpeg presets; see [Transcoding
+reference presets](preset-library.md#transcoding-reference-presets)). Install
+them from **Admin → Preset Library** in the web UI, or by hand via `POST
+/api/v1/products` (or **Admin → Products** in the web UI) if you're not using
+a preset index. All use the product `category`
 `Rendering` and declare `TASK_CHUNKING` for frame distribution; the Maya and
 Blender presets additionally declare `SQI_CHUNK_BOUNDS` to expose each chunk's
 start/end frame (see [OpenJD extensions](openjd-extensions.md)).

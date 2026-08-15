@@ -4,8 +4,9 @@ title: FFmpeg Segment Transcode (PowerShell)
 description: >-
   Splits a video into fixed-length slices, converts each on a different worker,
   then joins them back into one file. Enter the source's length in seconds -
-  nothing can measure it before the job is submitted, and a value that is too
-  small silently drops the tail. The join step runs a PowerShell script, so
+  nothing can measure it before the job is submitted; a value that is too
+  small silently drops the tail, and a value that is too large wastes a task
+  transcoding an empty tail slice. The join step runs a PowerShell script, so
   this variant needs Windows workers; use the Portable variant on a mixed farm.
   Slice files are written beside the output and removed once the join succeeds.
   Requires ffmpeg on PATH. A starting point - duplicate to customize for your
@@ -97,6 +98,7 @@ template:
       script:
         embeddedFiles:
           - name: join
+            filename: join.ps1
             type: TEXT
             runnable: true
             data: |
@@ -131,4 +133,4 @@ template:
         actions:
           onRun:
             command: powershell
-            args: ["-ExecutionPolicy", "Bypass", "-File", "{{Task.File.join}}", "{{Param.OutputFile}}"]
+            args: ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "{{Task.File.join}}", "{{Param.OutputFile}}"]

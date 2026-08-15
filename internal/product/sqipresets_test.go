@@ -26,6 +26,14 @@ type presetExpectation struct {
 	category   string
 	params     []string
 	extensions []string
+	// noExtensions asserts the template declares no `extensions:` key at all,
+	// by byte-scan -- the same technique the scheduler's own EXPR-withholding
+	// gate uses. extensions: nil on its own only skips the (zero-iteration)
+	// positive-extensions loop below; it does not prove the key is absent, so
+	// ffmpeg-transcode's entire reason for existing (a template that is never
+	// withheld from a worker whose EXPR limits undercut the server's) would
+	// otherwise go unenforced.
+	noExtensions bool
 }
 
 // The reference presets (presets/sqi/) are authored in this repo and published
@@ -71,7 +79,8 @@ func TestSQIReferencePresets(t *testing.T) {
 			params:   []string{"SourceFile", "OutputFile", "VideoCodec", "Quality", "AudioCodec"},
 			// No extensions on purpose: this is the one converter that runs on
 			// a worker whose expr.* caps undercut the server's.
-			extensions: nil,
+			extensions:   nil,
+			noExtensions: true,
 		},
 		"ffmpeg-sequence-encode": {
 			category:   "Transcoding",
@@ -134,6 +143,9 @@ func TestSQIReferencePresets(t *testing.T) {
 				if !strings.Contains(p.Template, ext) {
 					t.Errorf("template does not declare %q", ext)
 				}
+			}
+			if exp.noExtensions && strings.Contains(p.Template, "extensions:") {
+				t.Errorf("template declares %q but must declare no extensions at all", "extensions:")
 			}
 		})
 	}
