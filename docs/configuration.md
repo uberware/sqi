@@ -878,6 +878,12 @@ templates synchronously, which the recommendation does not assume.
 
 Multiplies with `expr_template_positions` — see caveat 1 above.
 
+Lowering this toward its floor has a concrete, shipped consequence: the
+`ffmpeg-segment-transcode-expr` reference preset's join-list expression costs
+~24.15 operations per slice and documents a 400-slice ceiling measured
+against the **default** of 10,000 — at the floor of 1,000 that ceiling drops
+to roughly 41 slices, with no warning surfaced anywhere else.
+
 ```yaml
 openjd:
   expr_operation_limit: 10000

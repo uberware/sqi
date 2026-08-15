@@ -418,8 +418,10 @@ steps:
           anyOf: ["true"]
 ```
 
-This is the real syntax the six reference presets under `presets/sqi/` use
-— see [`docs/dcc-submitters.md`](dcc-submitters.md#reference-presets).
+This is the real syntax the six DCC reference products under `presets/sqi/`
+use — see [`docs/dcc-submitters.md`](dcc-submitters.md#reference-presets).
+(`presets/sqi/` also ships `Transcoding`-category ffmpeg presets that gate on
+`attr.worker.tag.ffmpeg` instead — see [`docs/preset-library.md`](preset-library.md#transcoding-reference-presets).)
 
 The server's scheduler matches the required attribute against registered
 workers' `Tags` map and routes each task only to workers that satisfy every
