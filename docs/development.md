@@ -1047,8 +1047,12 @@ clients/submitter/
     qt/                      Qt only, imported lazily (PySide6, falls back to PySide2)
     hosts/{maya,houdini,nuke,blender}/   adapter + launch glue per host
   tests/                     pytest; tests/integration/ is env-gated (see below)
-presets/sqi/                 the six reference preset YAML fixtures, validated by
-                              internal/product/dccpresets_test.go
+presets/sqi/                 the eleven reference preset YAML fixtures (six DCC render
+                              presets, five ffmpeg transcode presets), validated by
+                              internal/product/sqipresets_test.go against a per-preset
+                              `want` map of expected category/params/extensions —
+                              not a blanket rule, since not every preset is
+                              `Rendering` or declares `TASK_CHUNKING`
 presets/testing/             the four test/QA preset fixtures (test-render, test-steps;
                               bash + PowerShell), validated by
                               internal/product/testingpresets_test.go
