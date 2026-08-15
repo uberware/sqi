@@ -117,7 +117,11 @@ template:
               $list = [System.IO.Path]::GetTempFileName()
               try {
                 $lines = $segs | ForEach-Object { "file '" + $_.FullName + "'" }
-                Set-Content -Path $list -Value $lines -Encoding ASCII
+                # Encoding is explicit and deliberate: ASCII (Set-Content's implicit
+                # choice) silently mangles non-ASCII slice paths, and -Encoding UTF8
+                # writes a BOM on Windows PowerShell 5.1 that breaks the concat
+                # demuxer's parse of the first "file" line. BOM-less UTF-8 avoids both.
+                [System.IO.File]::WriteAllLines($list, $lines, (New-Object System.Text.UTF8Encoding $false))
                 ffmpeg -y -f concat -safe 0 -i $list -c copy $out
                 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
                 $segs | Remove-Item -Force
