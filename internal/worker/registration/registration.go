@@ -178,6 +178,7 @@ func (r *Registrar) Register(ctx context.Context) error {
 		IPAddress:       ip,
 		ComputeLocation: r.cfg.ComputeLocation,
 		OS:              r.caps.OS,
+		Arch:            r.caps.Arch,
 		OSVersion:       r.caps.OSVersion,
 		WorkerVersion:   version.Version,
 		CPUCount:        r.caps.CPUCount,

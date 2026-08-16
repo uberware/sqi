@@ -130,6 +130,17 @@ type RegisterMsg struct {
 	OS        string `json:"os"`
 	OSVersion string `json:"os_version,omitempty"`
 
+	// Arch is the worker's CPU architecture as runtime.GOARCH spells it
+	// ("amd64", "arm64"). The server translates it onto OpenJD's
+	// attr.worker.cpu.arch tokens ("x86_64", "arm64") when matching.
+	//
+	// A registration-payload addition, deliberately NOT a ProtocolVersion bump,
+	// for the reason ExprLimits below gives: nothing about an assignment
+	// changed. An older server ignores the field; an older worker omits it and
+	// the server stores "", which matches no arch requirement until that worker
+	// is upgraded and restarts.
+	Arch string `json:"arch,omitempty"`
+
 	// WorkerVersion is the sqi-worker build version (internal/version.Version),
 	// distinct from the protocol Version above. Reported so the UI can show
 	// which worker build is running.

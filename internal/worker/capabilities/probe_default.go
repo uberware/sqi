@@ -19,6 +19,12 @@ func (*defaultProbe) OS() string {
 	return runtime.GOOS
 }
 
+// Arch returns runtime.GOARCH ("amd64", "arm64", ...). Reported verbatim; the
+// server maps it onto OpenJD's attr.worker.cpu.arch vocabulary.
+func (*defaultProbe) Arch() string {
+	return runtime.GOARCH
+}
+
 // CPUCount returns runtime.NumCPU(), the number of logical CPUs usable by the
 // current process.
 func (*defaultProbe) CPUCount() int {

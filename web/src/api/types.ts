@@ -251,6 +251,13 @@ export interface Worker {
   compute_location?: string
   os?: string
   os_version?: string
+  /**
+   * CPU architecture as the worker reports it (Go's GOARCH: 'amd64', 'arm64').
+   * An OpenJD `attr.worker.cpu.arch` requirement uses the spec's tokens
+   * ('x86_64', 'arm64') instead; the scheduler translates. Absent for workers
+   * that predate the field.
+   */
+  arch?: string
   /** sqi-worker build version the worker self-reports; empty/absent if unknown. */
   version?: string
   cpu_count?: number

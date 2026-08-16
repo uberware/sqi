@@ -44,6 +44,14 @@ type Capabilities struct {
 	// Ubuntu or "14.5" on macOS.  Empty if detection fails.
 	OSVersion string
 
+	// Arch is the CPU architecture as reported by runtime.GOARCH: "amd64",
+	// "arm64", and so on. Advertised at registration so the scheduler can
+	// satisfy OpenJD's reserved attr.worker.cpu.arch host requirement, whose
+	// values are the SPECIFICATION's tokens ("x86_64", "arm64") rather than
+	// Go's — the server translates, the worker reports GOARCH verbatim, the
+	// same division of labor as OS/os.family.
+	Arch string
+
 	// CPUCount is the number of logical (hardware-thread) CPUs available.
 	CPUCount int
 
@@ -72,6 +80,8 @@ type Capabilities struct {
 type Probe interface {
 	// OS returns the operating system identifier (runtime.GOOS equivalent).
 	OS() string
+	// Arch returns the CPU architecture identifier (runtime.GOARCH equivalent).
+	Arch() string
 	// OSVersion returns a human-readable OS release string. Returns an empty
 	// string when version detection is not supported or fails.
 	OSVersion() string
@@ -93,6 +103,7 @@ func Detect(p Probe) Capabilities {
 	}
 	c := Capabilities{
 		OS:        p.OS(),
+		Arch:      p.Arch(),
 		OSVersion: p.OSVersion(),
 		CPUCount:  p.CPUCount(),
 		RAMMb:     p.RAMMb(),

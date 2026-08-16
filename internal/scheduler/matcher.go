@@ -27,6 +27,7 @@ package scheduler
 //
 //	attr.worker.os.family         → osFamily(worker.OS)  ("darwin" → "macos")
 //	attr.worker.os.version        → worker.OSVersion
+//	attr.worker.cpu.arch          → cpuArch(worker.Arch)  ("amd64" → "x86_64")
 //	attr.worker.computelocation   → worker.ComputeLocation
 //	attr.worker.tag.<key>         → worker.Tags[key]  (empty if absent)
 //
@@ -236,6 +237,8 @@ func workerAttributeValue(worker store.Worker, name string) string {
 		return osFamily(worker.OS)
 	case "attr.worker.os.version":
 		return worker.OSVersion
+	case "attr.worker.cpu.arch":
+		return cpuArch(worker.Arch)
 	case "attr.worker.computelocation":
 		return worker.ComputeLocation
 	default:
@@ -277,6 +280,35 @@ func osFamily(workerOS string) string {
 		return "macos"
 	}
 	return family
+}
+
+// cpuArch translates a worker's self-reported CPU architecture into the token
+// OpenJD's reserved attr.worker.cpu.arch attribute is spelled with.
+//
+// Exactly the shape of [osFamily], and it was broken worse. The worker reports
+// runtime.GOARCH, which says "amd64" where the specification says "x86_64" and
+// agrees on "arm64". But until this landed the switch above had NO case for
+// attr.worker.cpu.arch at all: the name fell through to the tag lookup,
+// resolved to "", and could never match on any platform — and the worker did
+// not report its architecture in the first place, so there was nothing to
+// compare even if it had. internal/openjd validates the attribute (its enum is
+// {x86_64, arm64}), so a template gating on it was accepted and then waited for
+// a worker that could not exist. Found 2026-08-15 while fixing the os.family
+// version of the same mistake.
+//
+// An UNREPORTED architecture stays "" and matches nothing. That is the safe
+// direction: the alternative — treating unknown as universally acceptable —
+// would dispatch x86_64 work to an arm64 host. A worker upgraded past this
+// change reports its architecture as soon as it restarts and re-registers.
+//
+// One-way, for [osFamily]'s reason: this attribute carries the specification's
+// vocabulary, so Go's "amd64" must not match it either.
+func cpuArch(workerArch string) string {
+	arch := strings.ToLower(workerArch)
+	if arch == "amd64" {
+		return "x86_64"
+	}
+	return arch
 }
 
 // tagValueFold returns the value of the worker tag whose key matches key

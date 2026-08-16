@@ -399,17 +399,30 @@ list of acceptable string values. A custom worker tag is addressed as
 `attr.worker.tag.<key>`, matched case-insensitively against
 `Capabilities.Tags[<key>]` (see [`internal/scheduler/matcher.go`](https://github.com/uberware/sqi/blob/main/internal/scheduler/matcher.go)).
 Any attribute name outside the well-known set (`attr.worker.os.family`,
-`attr.worker.os.version`, `attr.worker.computelocation`) and the
-`attr.worker.tag.<key>` namespace always resolves to `""` and can never
-match.
+`attr.worker.os.version`, `attr.worker.cpu.arch`,
+`attr.worker.computelocation`) and the `attr.worker.tag.<key>` namespace
+always resolves to `""` and can never match.
 
-**`attr.worker.os.family` takes OpenJD's tokens, not Go's.** Its only accepted
-values are `linux`, `windows` and `macos` — the template validator rejects
-anything else — and a macOS worker satisfies `macos` even though it reports
-its OS as `darwin` everywhere else in sqi (the REST API, the web UI, and
-`sqi-worker capabilities` all show `darwin`, and so does the automatic `os`
-capability tag). If you want the Go spelling, gate on `attr.worker.tag.os`
-instead.
+**`attr.worker.os.family` and `attr.worker.cpu.arch` take OpenJD's tokens, not
+Go's.** The validator accepts only `linux`, `windows`, `macos` for the first
+and `x86_64`, `arm64` for the second, and rejects anything else. Two of those
+disagree with what the worker reports about itself:
+
+| Requirement value | Worker reports | Shown in the API, UI and `sqi-worker capabilities` |
+| --- | --- | --- |
+| `macos` | `darwin` | `darwin` |
+| `x86_64` | `amd64` | `amd64` |
+
+The scheduler translates when it matches, so a Mac satisfies `macos` and an
+Intel host satisfies `x86_64` — you never write `darwin` or `amd64` in a
+template, and doing so is rejected. If you specifically want the Go spelling,
+gate on the `attr.worker.tag.os` tag instead.
+
+A worker running a build older than the one that added architecture reporting
+sends no architecture at all, and an empty value matches **no**
+`attr.worker.cpu.arch` requirement — deliberately, since assuming otherwise
+would send `x86_64` work to an `arm64` host. Such a worker starts reporting as
+soon as it is upgraded and restarts.
 
 To gate a step on a worker tagged `maya=true` — auto-detected on any worker
 with a standard Maya install (see [Capability

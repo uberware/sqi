@@ -98,6 +98,7 @@ type workerResponse struct {
 	ComputeLocation string            `json:"compute_location,omitempty"`
 	OS              string            `json:"os,omitempty"`
 	OSVersion       string            `json:"os_version,omitempty"`
+	Arch            string            `json:"arch,omitempty"`
 	Version         string            `json:"version,omitempty"`
 	CPUCount        int               `json:"cpu_count,omitempty"`
 	RAMMb           int               `json:"ram_mb,omitempty"`
@@ -421,6 +422,7 @@ func buildWorkerResponse(wk store.Worker) workerResponse {
 		ComputeLocation: wk.ComputeLocation,
 		OS:              wk.OS,
 		OSVersion:       wk.OSVersion,
+		Arch:            wk.Arch,
 		Version:         wk.Version,
 		CPUCount:        wk.CPUCount,
 		RAMMb:           wk.RAMMb,
