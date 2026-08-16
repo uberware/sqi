@@ -25,7 +25,7 @@ package scheduler
 //
 // Attribute requirements (categorical, compared as strings):
 //
-//	attr.worker.os.family         → strings.ToLower(worker.OS)
+//	attr.worker.os.family         → osFamily(worker.OS)  ("darwin" → "macos")
 //	attr.worker.os.version        → worker.OSVersion
 //	attr.worker.computelocation   → worker.ComputeLocation
 //	attr.worker.tag.<key>         → worker.Tags[key]  (empty if absent)
@@ -233,7 +233,7 @@ func satisfiesAmount(req store.StepAmountRequirement, workerVal int) bool {
 func workerAttributeValue(worker store.Worker, name string) string {
 	switch strings.ToLower(name) {
 	case "attr.worker.os.family":
-		return strings.ToLower(worker.OS)
+		return osFamily(worker.OS)
 	case "attr.worker.os.version":
 		return worker.OSVersion
 	case "attr.worker.computelocation":
@@ -244,6 +244,39 @@ func workerAttributeValue(worker store.Worker, name string) string {
 		}
 		return ""
 	}
+}
+
+// osFamily translates a worker's self-reported OS into the token OpenJD's
+// reserved attr.worker.os.family attribute is spelled with.
+//
+// The worker reports runtime.GOOS (internal/worker/capabilities, probe.OS), and
+// GOOS agrees with the specification on "linux" and "windows" but not on macOS,
+// where GOOS says "darwin" and the specification says "macos". The template
+// validator enforces the specification's set — internal/openjd's
+// reservedAttributeAllowed accepts only {linux, windows, macos} — so "macos" is
+// the ONLY spelling a template can legally carry for a Mac, and comparing it
+// against a raw "darwin" made every such requirement unsatisfiable: the job
+// validated, was accepted, and its tasks then waited for a worker that could
+// not exist. Found 2026-08-15; nothing had caught it because the matcher's
+// tests exercised only linux and windows.
+//
+// The mapping is deliberately ONE-WAY. This attribute carries the
+// specification's family, not the Go runtime's, so "darwin" must not match
+// either — accepting both would leave the same two spellings disagreeing, just
+// in the other direction. A template that genuinely wants the GOOS spelling has
+// attr.worker.tag.os, which capabilities.Detect populates verbatim.
+//
+// Normalizing HERE, and not at registration, is also deliberate: store.Worker.OS
+// is surfaced raw in the REST API, the web UI and `sqi-worker capabilities`, and
+// is copied into the "os" capability tag. Rewriting it at the source would
+// change all four, and would leave rows written by earlier workers still saying
+// "darwin". Matching is the only place the specification's vocabulary applies.
+func osFamily(workerOS string) string {
+	family := strings.ToLower(workerOS)
+	if family == "darwin" {
+		return "macos"
+	}
+	return family
 }
 
 // tagValueFold returns the value of the worker tag whose key matches key

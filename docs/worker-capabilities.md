@@ -403,6 +403,14 @@ Any attribute name outside the well-known set (`attr.worker.os.family`,
 `attr.worker.tag.<key>` namespace always resolves to `""` and can never
 match.
 
+**`attr.worker.os.family` takes OpenJD's tokens, not Go's.** Its only accepted
+values are `linux`, `windows` and `macos` — the template validator rejects
+anything else — and a macOS worker satisfies `macos` even though it reports
+its OS as `darwin` everywhere else in sqi (the REST API, the web UI, and
+`sqi-worker capabilities` all show `darwin`, and so does the automatic `os`
+capability tag). If you want the Go spelling, gate on `attr.worker.tag.os`
+instead.
+
 To gate a step on a worker tagged `maya=true` — auto-detected on any worker
 with a standard Maya install (see [Capability
 auto-detection](#capability-auto-detection-built-in-dcc-detectors) above), or

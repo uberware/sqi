@@ -8,8 +8,7 @@ description: >-
   small silently drops the tail, and a value that is too large wastes a task
   transcoding an empty tail slice. The join step runs a bash script, so this
   variant needs Linux or macOS workers; use the Portable variant on Windows or
-  a mixed farm. macOS workers are not currently matchable in sqi, so this
-  effectively runs on Linux today. Slice files are written beside the output
+  a mixed farm. Slice files are written beside the output
   and removed once the join succeeds. Requires ffmpeg on PATH. A starting
   point - duplicate to customize for your pipeline.
 category: Transcoding
