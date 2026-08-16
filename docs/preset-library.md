@@ -193,9 +193,7 @@ of that:
   file. All three need Source Duration entered by hand, since nothing can
   measure it before submission. Pick one based on your farm:
   - `ffmpeg-segment-transcode-bash` — joins with a bash script; needs Linux
-    or macOS workers (macOS workers are not currently matchable in sqi, so
-    this effectively runs on Linux only today). Removes its slice files once
-    the join succeeds.
+    or macOS workers. Removes its slice files once the join succeeds.
   - `ffmpeg-segment-transcode-powershell` — joins with a PowerShell script;
     needs Windows workers. Removes its slice files once the join succeeds.
   - `ffmpeg-segment-transcode-expr` ("Portable") — needs no shell at all, so

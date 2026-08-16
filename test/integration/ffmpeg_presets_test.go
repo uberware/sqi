@@ -432,15 +432,19 @@ func TestFFmpegPreset_PortableSegmentTranscodeJoins(t *testing.T) {
 	runSegmentPreset(t, "ffmpeg-segment-transcode-expr", true)
 }
 
-// TestFFmpegPreset_BashSegmentTranscodeJoins runs the bash-joined variant.
+// TestFFmpegPreset_BashSegmentTranscodeJoins runs the bash-joined variant,
+// whose template gates on attr.worker.os.family anyOf [linux, macos].
 //
-// The gate is linux only, though the template's host requirement also lists
-// macos: per docs/preset-library.md a macOS worker is not currently matchable
-// in sqi, so darwin would submit a job no worker can take and time out here
-// rather than fail for a reason worth reporting.
+// It runs on darwin as well as linux, and that is load-bearing rather than
+// incidental: until scheduler.osFamily landed, a Mac worker reported GOOS
+// "darwin" against a requirement that can only legally say "macos", so this
+// preset validated, submitted, and then waited forever for a worker that could
+// not exist. An earlier revision of this test skipped darwin FOR THAT REASON.
+// Running here is the end-to-end proof that a Mac can now take the work — a
+// regression would show up as this test timing out rather than failing fast.
 func TestFFmpegPreset_BashSegmentTranscodeJoins(t *testing.T) {
-	if runtime.GOOS != "linux" {
-		t.Skipf("ffmpeg-segment-transcode-bash requires a linux worker; GOOS=%s", runtime.GOOS)
+	if runtime.GOOS != "linux" && runtime.GOOS != "darwin" {
+		t.Skipf("ffmpeg-segment-transcode-bash requires a linux or macos worker; GOOS=%s", runtime.GOOS)
 	}
 	runSegmentPreset(t, "ffmpeg-segment-transcode-bash", false)
 }

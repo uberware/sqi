@@ -281,6 +281,81 @@ func TestEligible_AttrOSFamily_AnyOf_Match(t *testing.T) {
 	}
 }
 
+// A macOS worker self-reports runtime.GOOS, which is "darwin", but OpenJD's
+// reserved attr.worker.os.family takes the token "macos" — and the template
+// validator (internal/openjd, reservedAttributeAllowed) accepts ONLY
+// {linux, windows, macos}, rejecting "darwin" outright. So "macos" is the sole
+// spelling a template can legally use for a Mac, and it is the one that has to
+// match here. Before this was fixed, no valid template could ever schedule on a
+// Mac: the job was accepted and its tasks then waited forever.
+func TestEligible_AttrOSFamily_DarwinSatisfiesMacos_AnyOf(t *testing.T) {
+	w := baseWorker()
+	w.OS = "darwin"
+	s := baseStep()
+	s.HostRequirements = &store.StepHostRequirements{
+		Attributes: []store.StepAttributeRequirement{
+			{Name: "attr.worker.os.family", AnyOf: []string{"macos", "windows"}},
+		},
+	}
+	if !scheduler.WorkerEligible(w, baseJob(), s, nil, nil) {
+		t.Error("a darwin worker should satisfy anyOf [macos, windows]")
+	}
+}
+
+func TestEligible_AttrOSFamily_DarwinSatisfiesMacos_AllOf(t *testing.T) {
+	w := baseWorker()
+	w.OS = "Darwin" // case-insensitive, as every other value here is
+	s := baseStep()
+	s.HostRequirements = &store.StepHostRequirements{
+		Attributes: []store.StepAttributeRequirement{
+			{Name: "attr.worker.os.family", AllOf: []string{"macos"}},
+		},
+	}
+	if !scheduler.WorkerEligible(w, baseJob(), s, nil, nil) {
+		t.Error("a darwin worker should satisfy allOf [macos]")
+	}
+}
+
+// The mapping is one-way on purpose: this attribute carries the SPEC's os
+// family, not the Go runtime's. "darwin" is not a legal value for it — the
+// validator rejects a template containing it — so a worker must not match it
+// either, or the two halves disagree again in the opposite direction. A
+// template that genuinely wants the Go spelling has attr.worker.tag.os, which
+// capabilities.Detect populates with runtime.GOOS verbatim.
+func TestEligible_AttrOSFamily_DarwinDoesNotSatisfyDarwin(t *testing.T) {
+	w := baseWorker()
+	w.OS = "darwin"
+	s := baseStep()
+	s.HostRequirements = &store.StepHostRequirements{
+		Attributes: []store.StepAttributeRequirement{
+			{Name: "attr.worker.os.family", AnyOf: []string{"darwin"}},
+		},
+	}
+	if scheduler.WorkerEligible(w, baseJob(), s, nil, nil) {
+		t.Error("attr.worker.os.family should carry the spec token, not runtime.GOOS")
+	}
+}
+
+// Linux and Windows need no mapping — GOOS already spells them the spec's way.
+// Pinned so a future normalization cannot quietly rewrite them too.
+func TestEligible_AttrOSFamily_NonDarwinPassThrough(t *testing.T) {
+	for _, goos := range []string{"linux", "windows"} {
+		t.Run(goos, func(t *testing.T) {
+			w := baseWorker()
+			w.OS = goos
+			s := baseStep()
+			s.HostRequirements = &store.StepHostRequirements{
+				Attributes: []store.StepAttributeRequirement{
+					{Name: "attr.worker.os.family", AnyOf: []string{goos}},
+				},
+			}
+			if !scheduler.WorkerEligible(w, baseJob(), s, nil, nil) {
+				t.Errorf("a %s worker should satisfy anyOf [%s]", goos, goos)
+			}
+		})
+	}
+}
+
 func TestEligible_AttrOSFamily_AnyOf_Mismatch(t *testing.T) {
 	w := baseWorker()
 	w.OS = "darwin"

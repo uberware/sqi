@@ -62,7 +62,8 @@ type Step struct {
 // Capability names follow the conventions established in the OpenJD spec and
 // documented in [matcher.go]:
 //
-//   - "attr.worker.os.family"        → worker OS family ("linux", "windows", "darwin")
+//   - "attr.worker.os.family"        → worker OS family ("linux", "windows", "macos";
+//     a worker reporting GOOS "darwin" matches "macos" — see scheduler.osFamily)
 //   - "attr.worker.os.version"       → worker OS version string
 //   - "attr.worker.computelocation"  → worker compute location name
 //   - "attr.worker.tag.<key>"        → arbitrary worker tag value
