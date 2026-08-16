@@ -731,6 +731,7 @@ func TestHandleWorkerRegister_EveryWireFieldReachesTheStore(t *testing.T) {
 		ComputeLocation:    "onprem_linux",
 		OS:                 "linux",
 		OSVersion:          "6.1",
+		Arch:               "arm64",
 		WorkerVersion:      "v0.9.9",
 		CPUCount:           16,
 		RAMMb:              32768,
@@ -772,6 +773,7 @@ func TestHandleWorkerRegister_EveryWireFieldReachesTheStore(t *testing.T) {
 		{"compute_location", w.ComputeLocation, sent.ComputeLocation},
 		{"os", w.OS, sent.OS},
 		{"os_version", w.OSVersion, sent.OSVersion},
+		{"arch", w.Arch, sent.Arch},
 		{"worker_version", w.Version, sent.WorkerVersion},
 		{"cpu_count", w.CPUCount, sent.CPUCount},
 		{"ram_mb", w.RAMMb, sent.RAMMb},
@@ -845,7 +847,7 @@ func TestHandleWorkerRegister_EveryWireFieldReachesTheStore(t *testing.T) {
 // also needs a row in the table.
 var persistedRegisterFields = []string{
 	"WorkerID", "FarmID", "QueueID", "Name", "Hostname", "IPAddress",
-	"ComputeLocation", "OS", "OSVersion", "WorkerVersion", "CPUCount", "RAMMb",
+	"ComputeLocation", "OS", "OSVersion", "Arch", "WorkerVersion", "CPUCount", "RAMMb",
 	"GPUInfo", "Tags", "ExprLimits",
 }
 

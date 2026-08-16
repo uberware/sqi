@@ -711,6 +711,13 @@ components:
           type: string
         os_version:
           type: string
+        arch:
+          type: string
+          description: >-
+            CPU architecture as the worker reports it (runtime.GOARCH: "amd64",
+            "arm64"). An OpenJD attr.worker.cpu.arch host requirement is spelled
+            with the specification's tokens instead ("x86_64", "arm64"); the
+            scheduler translates. Empty for workers that predate the field.
         version:
           type: string
           description: sqi-worker build version the worker self-reports; empty if unknown.

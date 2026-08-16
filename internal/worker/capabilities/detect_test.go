@@ -12,12 +12,14 @@ import (
 type fakeProbe struct {
 	os        string
 	osVersion string
+	arch      string
 	cpuCount  int
 	ramMb     int
 	gpuInfo   GPUInfo
 }
 
 func (f *fakeProbe) OS() string        { return f.os }
+func (f *fakeProbe) Arch() string      { return f.arch }
 func (f *fakeProbe) OSVersion() string { return f.osVersion }
 func (f *fakeProbe) CPUCount() int     { return f.cpuCount }
 func (f *fakeProbe) RAMMb() int        { return f.ramMb }

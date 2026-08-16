@@ -356,6 +356,91 @@ func TestEligible_AttrOSFamily_NonDarwinPassThrough(t *testing.T) {
 	}
 }
 
+// ── attr.worker.cpu.arch ──────────────────────────────────────────────────────
+//
+// Same shape as the os.family bug above, and worse while it lasted: cpu.arch is
+// a reserved attribute the template validator accepts (with the enum
+// {x86_64, arm64}), but the scheduler had no case for it at all, so it resolved
+// to "" and could never match on ANY platform — the worker did not even report
+// its architecture. A template gating on it validated, submitted, and then
+// waited forever.
+
+func TestEligible_AttrCPUArch_Amd64SatisfiesX86_64(t *testing.T) {
+	w := baseWorker()
+	w.Arch = "amd64" // runtime.GOARCH
+	s := baseStep()
+	s.HostRequirements = &store.StepHostRequirements{
+		Attributes: []store.StepAttributeRequirement{
+			{Name: "attr.worker.cpu.arch", AnyOf: []string{"x86_64"}},
+		},
+	}
+	if !scheduler.WorkerEligible(w, baseJob(), s, nil, nil) {
+		t.Error("an amd64 worker should satisfy anyOf [x86_64]: GOARCH says amd64, OpenJD says x86_64")
+	}
+}
+
+func TestEligible_AttrCPUArch_Arm64PassesThrough(t *testing.T) {
+	w := baseWorker()
+	w.Arch = "arm64" // GOARCH and the specification agree here
+	s := baseStep()
+	s.HostRequirements = &store.StepHostRequirements{
+		Attributes: []store.StepAttributeRequirement{
+			{Name: "attr.worker.cpu.arch", AllOf: []string{"arm64"}},
+		},
+	}
+	if !scheduler.WorkerEligible(w, baseJob(), s, nil, nil) {
+		t.Error("an arm64 worker should satisfy allOf [arm64]")
+	}
+}
+
+func TestEligible_AttrCPUArch_Mismatch(t *testing.T) {
+	w := baseWorker()
+	w.Arch = "arm64"
+	s := baseStep()
+	s.HostRequirements = &store.StepHostRequirements{
+		Attributes: []store.StepAttributeRequirement{
+			{Name: "attr.worker.cpu.arch", AnyOf: []string{"x86_64"}},
+		},
+	}
+	if scheduler.WorkerEligible(w, baseJob(), s, nil, nil) {
+		t.Error("an arm64 worker must not satisfy anyOf [x86_64]")
+	}
+}
+
+// A worker that predates the arch field reports nothing, and "" must not match
+// anything — the alternative, treating unknown as universally acceptable, would
+// dispatch x86_64 work to an arm64 host. Such a worker starts reporting as soon
+// as it restarts.
+func TestEligible_AttrCPUArch_UnreportedNeverMatches(t *testing.T) {
+	w := baseWorker()
+	w.Arch = ""
+	s := baseStep()
+	s.HostRequirements = &store.StepHostRequirements{
+		Attributes: []store.StepAttributeRequirement{
+			{Name: "attr.worker.cpu.arch", AnyOf: []string{"x86_64", "arm64"}},
+		},
+	}
+	if scheduler.WorkerEligible(w, baseJob(), s, nil, nil) {
+		t.Error("a worker that has not reported its architecture must not match any arch requirement")
+	}
+}
+
+// The mapping is one-way, exactly as os.family's is: "amd64" is Go's spelling,
+// the validator rejects it in a template, so a worker must not match it either.
+func TestEligible_AttrCPUArch_DoesNotSatisfyGoSpelling(t *testing.T) {
+	w := baseWorker()
+	w.Arch = "amd64"
+	s := baseStep()
+	s.HostRequirements = &store.StepHostRequirements{
+		Attributes: []store.StepAttributeRequirement{
+			{Name: "attr.worker.cpu.arch", AnyOf: []string{"amd64"}},
+		},
+	}
+	if scheduler.WorkerEligible(w, baseJob(), s, nil, nil) {
+		t.Error("attr.worker.cpu.arch should carry the spec token, not runtime.GOARCH")
+	}
+}
+
 func TestEligible_AttrOSFamily_AnyOf_Mismatch(t *testing.T) {
 	w := baseWorker()
 	w.OS = "darwin"

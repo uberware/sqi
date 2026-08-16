@@ -782,6 +782,7 @@ func (s *Scheduler) handleWorkerRegister(ctx context.Context, msg jetstream.Msg)
 		ComputeLocation: m.ComputeLocation,
 		OS:              m.OS,
 		OSVersion:       m.OSVersion,
+		Arch:            m.Arch,
 		Version:         m.WorkerVersion,
 		CPUCount:        m.CPUCount,
 		RAMMb:           m.RAMMb,

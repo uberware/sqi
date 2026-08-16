@@ -111,6 +111,18 @@ type Worker struct {
 	ComputeLocation string
 	OS              string
 	OSVersion       string
+	// Arch is the worker's CPU architecture as the worker reports it, which is
+	// runtime.GOARCH ("amd64", "arm64", ...). It backs the reserved OpenJD
+	// attr.worker.cpu.arch host requirement, whose accepted values are the
+	// SPECIFICATION's tokens ("x86_64", "arm64") rather than Go's — see
+	// scheduler.cpuArch for the translation, which is the same shape as the
+	// os.family darwin/macos one.
+	//
+	// Empty for workers registered before this field existed, and for any
+	// worker running an older binary that does not send it. An empty value can
+	// never satisfy an attr.worker.cpu.arch requirement; such a worker starts
+	// reporting its architecture as soon as it restarts and re-registers.
+	Arch string
 	// Version is the sqi-worker build version the worker self-reports at
 	// registration (the worker binary's internal/version.Version). May be empty
 	// for workers registered before this field existed.
