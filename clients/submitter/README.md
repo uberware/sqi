@@ -15,12 +15,22 @@ pip install sqi-submitter              # core (requires sqi-sdk)
 pip install 'sqi-submitter[qt]'        # + PySide6 for standalone UI
 ```
 
-For development:
+For development (run from `clients/submitter/`):
 
 ```sh
-pip install -e '.[dev]'                # with test & lint tools
-pip install -e ../python               # resolve sqi-sdk from local checkout
+pip install -e ../python -e '.[dev]'   # local sqi-sdk + submitter with test & lint tools
 ```
+
+The same checks CI runs (split there across three jobs), as one local chain —
+every stage must pass before a PR:
+
+```sh
+ruff format --check . && ruff check . && mypy src && mypy --python-version=3.13 tests && pytest -q
+```
+
+`mypy --python-version=3.13 tests` is not optional: `pyproject.toml` scopes
+mypy to `src`, so running `mypy src` alone misses type errors in test files
+that will still fail the PR.
 
 ## Authentication
 
@@ -36,7 +46,18 @@ forwarded to `SqiClient` as the Bearer token. Issue a key for yourself via
 
 ## Quick start
 
-Use the `fake_host_module` fixture in tests to inject mock DCC modules:
+Open the standalone dialog (needs the `qt` extra, or a DCC-bundled PySide):
+
+```sh
+sqi-submit --server http://localhost:8080
+```
+
+Inside a DCC, wire the host's launch glue per
+[`docs/dcc-submitters.md`](../../docs/dcc-submitters.md#installation-per-host).
+
+## Testing
+
+Use the `fake_host_module` fixture to inject mock DCC modules:
 
 ```python
 def test_with_maya(fake_host_module):

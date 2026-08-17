@@ -1,7 +1,8 @@
 # Products
 
-A **product** is a named, versioned wrapper around a verbatim OpenJD template.
-It gives the template a stable identity (`name`), human-readable metadata
+A **product** is a named, versioned wrapper around an OpenJD template, stored
+unmodified apart from YAML re-serialization when it comes from a definition
+file. It gives the template a stable identity (`name`), human-readable metadata
 (`title`, `description`, `category`, `version`), and a home in the catalog so
 clients can list and submit jobs without ever handling a raw template file.
 
@@ -20,7 +21,7 @@ layer adds only the catalog envelope on top.
               │   name · title · description · category    │
               │   version · source                         │
               │   ┌──────────────────────────────────────┐ │
-              │   │      OpenJD template (verbatim)      │ │
+              │   │           OpenJD template            │ │
               │   │  parameters · steps · requirements   │ │
               │   └──────────────────────────────────────┘ │
               └────────────────────────────────────────────┘
@@ -33,8 +34,10 @@ contains a **snapshot** of the template at submission time, so later edits to th
 product do not affect running or queued jobs.
 
 A product submission also accepts the same optional per-job overrides as a raw
-`POST /api/v1/jobs`: `owner`, `submitter`, `priority`, `project`, and the retry
-policy `max_attempts`, `retry_delay_seconds`, `failure_limit`. Each is optional;
+`POST /api/v1/jobs`: `owner`, `submitter`, `priority`, `project`, `depends_on`
+(IDs of upstream jobs in the same farm; the job starts blocked until they
+complete), and the retry policy `max_attempts`, `retry_delay_seconds`,
+`failure_limit`. Each is optional;
 an omitted field inherits the queue → farm → server default. See
 `internal/api/openapi.yaml` (`SubmitProductJobRequest`) for the authoritative
 wire contract.
@@ -71,13 +74,17 @@ template:
     - name: Run
       script:
         embeddedFiles:
-          - name: script.py
+          # name is an OpenJD <Identifier> and is the key Task.File
+          # references resolve against, so it cannot contain a dot. The
+          # on-disk basename goes in filename.
+          - name: script
             type: TEXT
+            filename: script.py
             data: "{{Param.Script}}"
         actions:
           onRun:
             command: "{{Param.Interpreter}}"
-            args: ["script.py"]
+            args: ["{{Task.File.script}}"]
 ```
 
 ### Metadata fields
@@ -94,8 +101,17 @@ template:
 
 The `name` slug constrains to `^[a-z0-9][a-z0-9_-]*(/[a-z0-9][a-z0-9_-]*)?$`.
 The inline template is re-serialized and fully validated (via `openjd.Parse` +
-`openjd.ValidateWithOptions`) when the definition is parsed — a malformed
-template is rejected at load time.
+`openjd.ValidateWithBudget`) when the definition is parsed — a malformed
+template is rejected at load time. Validation is bounded: `ParseDefinition` and
+`ValidateTemplate` take a **required** `product.ValidateOptions` carrying the
+operator's configured EXPR limits (`openjd.expr_*`) and a per-request wall-clock
+deadline (`openjd.expr_submission_deadline`). Every HTTP route that reaches this
+package sets both. Two callers pass `EnforceLimits` alone, and neither is a
+request path: the built-in loader (`internal/product/builtins.go`), which runs
+from package init before any configuration exists, and `internal/presetgen`,
+the offline index-build tool. A template that breaches
+the deadline is a `503`, not a `400` — the same body would validate on an idle
+server.
 
 ### Writing a `readme`
 
@@ -168,7 +184,7 @@ Demonstrates the minimal product shape: one `STRING` parameter with a
 ### `python` — Run a Python Script
 
 Demonstrates two parameters (`Interpreter` and `Script`), an OpenJD
-`embeddedFiles` block that materialises the script body as a file named
+`embeddedFiles` block that materializes the script body as a file named
 `script.py`, and a configurable interpreter path defaulting to `python3`.
 
 ### `container` — Run a Docker Image
@@ -186,7 +202,7 @@ Boutique/VR/Workflows — see
 way: a `hostRequirements.attributes` entry requiring `attr.worker.tag.<app>`
 with `anyOf: ["true"]`. `sqi-worker` auto-detects a standard install of each
 of those applications and advertises the matching tag (e.g. `maya`) with
-value `"true"` with no configuration — see [Capability
+value `"true"` and no configuration — see [Capability
 auto-detection](worker-capabilities.md#capability-auto-detection-built-in-dcc-detectors)
 — which satisfies the `anyOf: ["true"]` match above directly, so a worker with
 a standard install matches these built-in gates with zero per-worker
@@ -222,14 +238,17 @@ with `source: installed`.
 See [`docs/preset-library.md`](preset-library.md) for the full guide, including the
 index format, configuration, and the browse → preview → install flow.
 
-The official library's `Rendering`-category DCC presets (`maya-layer-render`,
-`maya-scene-render`, `houdini-rop-render`, `nuke-write-render`,
-`nuke-script-render`, `blender-batch-render`) exist to give the
-[`sqi-submitter`](dcc-submitters.md) in-application submitters something real to
-target. They declare their
-parameters (`SceneFile`, `Frames`, `OutputDir`, plus per-host extras like
-`Renderer`/`RopPath`/`WriteNode`) following a documented, versioned,
-additive-only naming convention — duplicate one and keep the parameter names
+The official library ships nine `Rendering`-category presets. Six of them —
+`maya-layer-render`, `maya-scene-render`, `houdini-rop-render`,
+`nuke-write-render`, `nuke-script-render`, `blender-batch-render` — exist to give
+the [`sqi-submitter`](dcc-submitters.md) in-application submitters something real
+to target. The other three, `mistika-boutique-render`, `mistika-vr-render` and
+`mistika-workflows-render`, have no in-application submitter and are submitted
+from the web UI or the API. They name their parameters from a documented,
+versioned, additive-only convention — `SceneFile` and `Frames` on all nine, an
+output parameter only where the command takes one (`OutputDir` on the Maya
+presets, `OutputPath` on Blender), plus per-host extras like
+`Renderer`/`RopPath`/`WriteNode` — duplicate one and keep the parameter names
 to keep submitter pre-fill working. Full reference:
 [`docs/dcc-submitters.md`](dcc-submitters.md).
 
@@ -240,9 +259,12 @@ The library also ships five `Transcoding`-category ffmpeg presets
 submitted from a host application and declare no scene-file parameters for
 submitter pre-fill to bind — install and submit them directly from the web
 UI or REST API. Each gates on the `attr.worker.tag.ffmpeg = "true"`
-capability tag; the three segmented variants split a source into slices
-across the farm and differ only in how they join the slices back together
-(bash, PowerShell, or a shell-free EXPR template). Full reference:
+capability tag, which `sqi-worker` sets automatically on any worker with
+`ffmpeg` on `PATH` (see [worker capability
+tags](worker-capabilities.md)); the three segmented variants split a source
+into slices across the farm and differ in how they join the slices back
+together (bash, PowerShell, or a shell-free EXPR template), which OS they can
+run on, and whether they delete the slice files afterwards. Full reference:
 [`docs/preset-library.md`](preset-library.md#transcoding-reference-presets).
 
 Key points about installed products:
@@ -262,7 +284,7 @@ Key points about installed products:
 `name` is the stable identity of a product across its lifetime. The `version`
 string (e.g. `1.0.0`) is stored alongside the template and is available for
 future tooling to detect when an installed product's template has been
-superseded by a newer release. No automatic update behaviour is implemented in
+superseded by a newer release. No automatic update behavior is implemented in
 Phase 2; `version` is a label only.
 
 ---
@@ -298,7 +320,10 @@ Request body:
 
 `format` is `"yaml"` (default) or `"json"`.
 
-Responses: `201 Created` (product), `400 Bad Request`, `409 Conflict`.
+Responses: `201 Created` (product), `400 Bad Request`, `403 Forbidden` (auth on,
+missing `products.manage`), `409 Conflict`, `503 Service Unavailable` (template
+validation exceeded `openjd.expr_submission_deadline` — retry; the same body may
+validate on an idle server).
 
 ### `GET /api/v1/products/{name}`
 
@@ -315,7 +340,7 @@ Replaces the mutable fields of a stored product. Built-ins return
 Request body: same shape as `POST /api/v1/products` (name in path takes
 precedence over name in body).
 
-Responses: `200 OK`, `400`, `403`, `404`.
+Responses: `200 OK`, `400`, `403`, `404`, `503` (validation deadline exceeded).
 
 ### `DELETE /api/v1/products/{name}`
 
@@ -351,14 +376,22 @@ Response: `200 OK`, array of `ProductParameter` objects in template order:
       "label": "Interpreter",
       "group_label": "",
       "decimals": null
-    }
+    },
+    "file_filters": null,
+    "file_filter_default": null,
+    "item": null
   }
 ]
 ```
 
-Responses: `200 OK` (array), `404 Not Found` (product not found),
-`422 Unprocessable Entity` (product's stored template cannot be parsed — the
-template is stored verbatim and its validity is only checked on this call).
+`file_filters` / `file_filter_default` carry a PATH parameter's file-dialog
+filters (the Mistika presets use them to offer `*.rnd`); `item` carries a
+`LIST[*]` parameter's per-element constraints and is `null` for a scalar.
+
+Responses: `200 OK` (array), `403 Forbidden`, `404 Not Found` (product not
+found), `422 Unprocessable Entity` (the product's stored template cannot be
+parsed; templates are validated at create/update time, so this normally only
+appears for a row written by an older or external path).
 
 ### `POST /api/v1/products/{name}/jobs`
 
@@ -389,10 +422,15 @@ Request body:
 overrides the job name from the product's template; when omitted, the template's
 own name is used. The web submission form defaults it to
 `"<product title> <timestamp>"`. `parameters` is a flat `string→string` map;
-keys must match the parameter names declared in the product's template.
+keys must match the parameter names declared in the product's template. A
+`LIST[*]` parameter's value is the JSON encoding of the list, still as a string
+— for example `"[\"main\",\"closeup\"]"`. Missing keys with defaults are filled
+automatically; a missing required key returns 422.
 
 Responses: `201 Created` (`Job` object, same shape as `POST /api/v1/jobs`),
-`400`, `404`, `422 Unprocessable Entity` (template/parameter validation failure).
+`400`, `403`, `404`, `422 Unprocessable Entity` (template/parameter validation
+failure), `503` (expression evaluation exceeded
+`openjd.expr_submission_deadline`).
 
 ---
 

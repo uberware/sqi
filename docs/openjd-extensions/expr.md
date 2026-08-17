@@ -21,9 +21,10 @@ A template declares it with `extensions: [EXPR]`.
 
 `presets/sqi/ffmpeg-segment-transcode-*.yaml` are the shipped worked
 examples of this extension: three variants of the same segmented ffmpeg
-transcode, all three of which declare `extensions: [EXPR]`. One,
-`ffmpeg-segment-transcode-expr` ("Portable"), builds its ffmpeg concat file
-list from an EXPR comprehension instead of a join-time shell script, so it
+transcode, all three of which declare `extensions: [EXPR]`
+(`presets/sqi/ffmpeg-sequence-encode.yaml` declares it too, more modestly).
+One, `ffmpeg-segment-transcode-expr` ("Portable"), builds its ffmpeg concat
+file list from an EXPR comprehension instead of a join-time shell script, so it
 runs on Linux, macOS, and Windows workers alike with no shell at all. That
 list-building expression references only job parameters, so it is fully
 resolved at **submission** (phase 2, not phase 3) and its cost is charged
@@ -76,6 +77,18 @@ The extension is implemented and tested as follows:
   and the six path properties (`__property_name__` and friends), which are
   registered in the same table — `internal/openjd/expr`'s `functionShapes`,
   whose count `funcs_internal_test.go` pins at 80.
+- **`apply_path_mapping` is host-context-only.** It is registered FLAT in
+  `functionShapes` — the evaluator itself imposes no scope restriction — and
+  the rule is enforced one layer up, by the phase-2 checker: `hostOnlyFunctions`
+  (`internal/openjd/exprcheck.go`) walks `Expression.CalledFunctions()` at every
+  position whose `Scope.IsHostContext()` is false and rejects the call there.
+  `IsHostContext` is a positive list of exactly three scopes —
+  `ScopeJobEnvironment`, `ScopeStepEnvironment`, `ScopeStepScript`
+  (`internal/openjd/scope.go`) — so the function is refused in the job `name`
+  field, in `hostRequirements`, in `parameterSpace` and in a
+  `<StepTemplate>.let` block, all of which are evaluated at submission before
+  any session exists. The list is positive rather than a negation so that a
+  scope added later fails CLOSED.
 - **Bounded evaluation** — per-`Eval` memory and operation limits
   (`internal/openjd/expr/limits.go`, `meter.go`), plus a per-symbol-table
   retained-bytes bound on the worker's `let:` evaluator
@@ -856,7 +869,13 @@ the configuration guides:
    differently on purpose. On the **server**, tightening only rejects work at
    submit, on the one request that can report it, so the floors are sized
    against this repository's own reference presets (`presets/sqi/*.yaml`) —
-   whose worst case costs 15 positions — with wide headroom. On the
+   whose worst case costs 31 positions template-wide, and 390 live bytes with
+   15 operations in any single evaluation — those three all set by
+   `ffmpeg-segment-transcode-expr`, and re-measured on every run by
+   `TestExprLimits_FloorsAcceptReferencePresets`. Retained bytes are
+   effectively zero for all fourteen (the binary search floors that dimension
+   at 1, so a reported "1" means "nothing measurable"). Headroom is wide
+   throughout (8x to 65536x). On the
    **worker**, tightening rejects work *after* the job was accepted, so the
    floors are sized well above what a preset happens to cost: the server's own
    **defaults** for the two per-evaluation dimensions, and 2,000 positions

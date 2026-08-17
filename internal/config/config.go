@@ -90,8 +90,10 @@ type StoreConfig struct {
 	SQLitePath string `yaml:"sqlite_path"`
 
 	// CheckpointInterval is how often the background goroutine runs a WAL
-	// checkpoint (PRAGMA wal_checkpoint(TRUNCATE)) to fold committed WAL frames
+	// checkpoint (PRAGMA wal_checkpoint(PASSIVE)) to fold committed WAL frames
 	// back into the main database file and keep the WAL from growing unboundedly.
+	// The periodic checkpoint is PASSIVE so it never waits on a reader; the
+	// TRUNCATE checkpoint runs only on clean shutdown.
 	// Must be > 0. Set to a large value (e.g. "24h") to effectively disable
 	// periodic checkpointing (a final checkpoint always runs on shutdown).
 	// Env: SQI_STORE_CHECKPOINT_INTERVAL

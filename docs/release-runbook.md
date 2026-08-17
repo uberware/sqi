@@ -4,8 +4,9 @@ This runbook captures the complete maintainer procedure for cutting a versioned
 `sqi` release. Follow the steps in order. Each external action has a **Verify:**
 line — do not proceed past a step until verification passes.
 
-This document covers Steps 2–9 of the release plan. Step 1 (writing this file)
-is already done. Step 10 (committing the runbook) closes the loop.
+The step numbering below is historical (it follows the original release-plan
+task order) and starts at Step 2. Steps 2, 3, 3b, 6b and 7 are one-time setup;
+Steps 4-9 are the per-release procedure.
 
 ---
 
@@ -179,9 +180,10 @@ GOVERSION=$(go version | awk '{print $3}') \
 ```
 
 **Expected:** the snapshot build completes successfully. Both `sqi-server` and
-`sqi-worker` are produced for all target platforms (`linux/amd64`, `linux/arm64`,
-`darwin/amd64`, `darwin/arm64`, `windows/amd64`). All four Docker image variants
-build (`-amd64`/`-arm64` per image, plus the manifest tags).
+`sqi-worker` are produced for all six target platforms (`linux/amd64`,
+`linux/arm64`, `darwin/amd64`, `darwin/arm64`, `windows/amd64`,
+`windows/arm64`). All four Docker image variants build (`-amd64`/`-arm64` per
+image, plus the manifest tags).
 
 ---
 
@@ -339,11 +341,11 @@ Also verify `sqi-submitter` (once its version has been bumped past the
 `.dev0` placeholder per Step 6):
 
 ```bash
-python -m pip install --no-cache-dir "sqi-submitter==<version>"
+python -m pip install --no-cache-dir "sqi-submitter==$VERSION"
 python -c "import sqi_submitter; print(sqi_submitter.__version__)"
 ```
 
-Expected output: `<version>` matching the tag.
+Expected output: `$VERSION`.
 
 ---
 

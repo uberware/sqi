@@ -292,6 +292,14 @@ file forwarding — see [Out-of-band wiring](#out-of-band-wiring)).
 > **Buffer lifetime:** the ring buffer is **in-memory only** and is lost on
 > server restart. If you need durable operational logs beyond `buffer_size`
 > records per component, ship them out-of-band as well.
+>
+> **Component ceiling:** the buffer also caps the number of distinct component
+> rings it retains — **512** by default (`internal/diag`'s
+> `defaultMaxComponents`, not currently an operator setting). When the ceiling
+> is exceeded the component whose most-recent record is oldest is evicted
+> wholesale (LRU by latest activity); the `server` component is never evicted.
+> Worst-case buffer memory is therefore `512 × buffer_size` records, and a farm
+> with more than 512 workers will see the quietest workers' panels go empty.
 
 ---
 
@@ -415,7 +423,7 @@ enabled records to all `diagnostics` subscribers.
 | `DEBUG` | Verbose internals — scheduler tick details, NATS message counts. Not emitted at the default `info` level. |
 | `INFO` | Normal operational events — worker registration, task assignment, startup. |
 | `WARN` | Recoverable problems — missed heartbeat, executor warning, retried operation. |
-| `ERROR` | Failures that required operator attention — database errors, NATS disconnection. |
+| `ERROR` | Failures that require operator attention — database errors, NATS disconnection. |
 
 ### Correlation keys
 
@@ -526,7 +534,7 @@ docker logs -f sqi-server
 docker logs sqi-server 2>&1 | jq 'select(.level == "WARN" or .level == "ERROR")'
 ```
 
-For centralised collection, use the `fluentd` or `gelf` driver:
+For centralized collection, use the `fluentd` or `gelf` driver:
 
 ```sh
 docker run -d --name sqi-server \
@@ -658,9 +666,11 @@ Operators should still follow standard practices:
 
 - Do not set `SQI_LOG_LEVEL=debug` in production unless actively diagnosing a
   problem. Debug output is more verbose and may log additional internal state.
-- The `GET /api/v1/diagnostics/logs` endpoint sits under the same authorization
-  as all other sqi read endpoints. Restrict network access to the sqi-server
-  port accordingly.
+- `GET /api/v1/diagnostics/logs` requires the dedicated `diagnostics.read`
+  permission (`internal/auth/policy`), not the generic read grant, and the
+  WebSocket `diagnostics` subject is gated by the same permission at
+  subscribe time. When auth is disabled both are open to any caller that can
+  reach the port, so restrict network access to the sqi-server port accordingly.
 - If you forward diagnostic logs to a third-party log aggregator, ensure that
   aggregator's access controls are appropriate for operational metadata.
 

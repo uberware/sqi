@@ -158,14 +158,14 @@ worker:
   # Type: bool   Env: SQI_WORKER_KEEP_FAILED_SESSIONS
   keep_failed_sessions: false
 
-  # Restrict this worker to serving specific queue IDs. When empty (the
-  # default) the worker accepts assignments from all queues via a wildcard
-  # JetStream consumer. Set this on heterogeneous farms where some workers
-  # specialise in a subset of queues, e.g. separate GPU and CPU queues.
-  #
-  # IMPORTANT: Do not mix wildcard (empty queue_ids) and per-queue workers on
-  # the same SQI_WORK JetStream stream — both consumer types would race on
-  # overlapping messages. Choose one strategy for your farm.
+  # Restrict this worker to serving specific queue IDs. The worker keeps one
+  # outstanding lease request per listed queue (work.lease.<queueID>). When
+  # empty (the default) it issues a single lease request on the reserved
+  # core-NATS subject work.lease._any — the server selects tasks farm-wide for
+  # that token and gates by worker eligibility, so a queue-unaffiliated worker
+  # is matched to any queue's ready work. Set this on heterogeneous farms where
+  # some workers specialise in a subset of queues, e.g. separate GPU and CPU
+  # queues.
   #
   # Type: []string   Env: SQI_WORKER_QUEUE_IDS (comma-separated)
   queue_ids: []
@@ -174,20 +174,20 @@ worker:
   #     - gpu-renders
   #     - cpu-preview
 
-  # Wait duration between pull attempts when the work queue is empty. Prevents
-  # tight polling loops on idle queues. Resets to zero immediately when a task
-  # is received. Increase if many idle workers are generating NATS traffic;
-  # decrease if you need lower task start latency on bursty queues.
-  # Must be > 0.
+  # DEPRECATED. Accepted by the config loader for backwards compatibility, but
+  # it has NO EFFECT in the current lease-based worker — changing it tunes
+  # nothing. Idle backoff is no longer needed: the worker's lease request
+  # long-polls on the server (~30 s hold) and re-issues immediately on return,
+  # so there is no tight polling loop to throttle. Only a negative value is
+  # still rejected at load.
   # Type: duration   Env: SQI_WORKER_PULL_IDLE_BACKOFF
   pull_idle_backoff: "2s"
 
-  # Redelivery delay applied to an assignment when pre-execution validation
-  # fails (e.g., compute location mismatch, protocol version incompatibility).
-  # The delay gives other workers a window to claim the assignment before NATS
-  # redelivers it to this worker. Set higher if transient failures are frequent
-  # and you want to reduce retry churn.
-  # Must be > 0.
+  # DEPRECATED. Accepted by the config loader for backwards compatibility, but
+  # it has NO EFFECT in the current lease-based worker — changing it tunes
+  # nothing. Pre-execution NACKs no longer apply: the server validates
+  # eligibility before leasing, so the worker runs what it is given. Only a
+  # negative value is still rejected at load.
   # Type: duration   Env: SQI_WORKER_PULL_NACK_DELAY
   pull_nack_delay: "5s"
 
@@ -390,15 +390,20 @@ diagnostics:
 #     the sum of every environment it enters, so sizing host RAM against
 #     assignment_retained_bytes over-provisions, and sizing it against an
 #     observed RSS under-bounds it.
-#   * TIGHTENING IS NOT FREE HERE THE WAY IT IS ON THE SERVER. Four of these
-#     five have a server-side counterpart that meters the same thing one phase
+#   * TIGHTENING IS NOT FREE HERE THE WAY IT IS ON THE SERVER. Every one of
+#     these five has a server-side limit metering the same values one phase
 #     earlier, and this worker must not be TIGHTER than the server it reports
 #     to:
 #         operation_limit           >= server openjd.expr_operation_limit
 #         memory_limit              >= server openjd.expr_memory_limit
 #         assignment_positions      >= server openjd.expr_template_positions
 #         assignment_retained_bytes >= server openjd.expr_template_retained_bytes
-#     This worker advertises all four at registration and the server REFUSES TO
+#         let_retained_bytes        >= server openjd.expr_template_retained_bytes
+#     The last row pairs a per-table limit with a template-wide one, because the
+#     server meters no per-table scope; a whole template's retained bytes is a
+#     valid upper bound on any one of its tables, so the comparison is
+#     conservative.
+#     This worker advertises all five at registration and the server REFUSES TO
 #     DISPATCH EXPR jobs to it while any of them is short — it does not accept
 #     the job and then fail it here, once per task. The cost of tightening past
 #     the server is therefore that this host stops being offered EXPR work
@@ -407,7 +412,6 @@ diagnostics:
 #     exists for — the latter only while the server's unschedulable sweep is on
 #     (its scheduler.unschedulable_grace > 0, the default); with the sweep off,
 #     such a task waits with nothing written on it.
-#     let_retained_bytes has no server counterpart and is not advertised.
 #
 # An out-of-range value is a startup failure, not a clamp.
 expr:

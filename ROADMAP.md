@@ -88,7 +88,7 @@ Configuration cascades: farm defaults → queue overrides, with retry policy (ma
     reservation; omitting it reserves the whole machine (one task per worker).
     The server tracks committed cores in the database; the ledger rebuilds
     instantly on restart.
-  - *Deferred:* worker drain/headroom signal, head-of-line reservation for
+ - *Deferred:* worker drain/headroom signal, head-of-line reservation for
     large tasks, `amount.worker.vcpu.max`, memory/GPU dimensions.
 
 ---
@@ -98,7 +98,7 @@ Configuration cascades: farm defaults → queue overrides, with retry policy (ma
 `sqi` adopts the [Open Job Description](https://github.com/OpenJobDescription/openjd-specifications) (OpenJD) format as its native job execution format.
 
 **Benefits:**
-- Studios authoring jobs for other OpenJD-compatible systems can submit to `sqi` unchanged, provided the template does not opt into an extension `sqi` has not implemented (e.g. `EXPR`) — those are rejected by design rather than accepted and misinterpreted — `sqi` accepts every valid base-spec template in the official conformance suite, though it is still more permissive than the spec about rejecting *invalid* ones (tracked in `test/conformance/baseline.txt`, measured in [`docs/openjd-conformance.md`](docs/openjd-conformance.md))
+- Studios authoring jobs for other OpenJD-compatible systems can submit to `sqi` unchanged, provided the template does not opt into an extension `sqi` has not implemented — those are rejected by design rather than accepted and misinterpreted (the official `EXPR` expression-language extension **is** implemented and supported) — `sqi` accepts every valid base-spec template in the official conformance suite, though it is still more permissive than the spec about rejecting *invalid* ones (tracked in `test/conformance/baseline.txt`, measured in [`docs/openjd-conformance.md`](docs/openjd-conformance.md))
 - Standardized path mapping, parameter spaces, and execution semantics
 - Clear separation between job description and job authoring (the product system)
 
@@ -245,7 +245,7 @@ NATS can run embedded within `sqi-server` (simple mode) or as a separate cluster
 - S3-compatible storage support (thin layer: derived type, root validation, path staging via operator sync tool)
 - DCC submitter framework — in-application submitters for Maya, Houdini, Nuke, and Blender (the `sqi-submitter` Python package), built on the Python client
 - Compute location registry and step-level affinity (native OpenJD `attr.worker.computelocation`)
-- Chunk bounds (`SQI_CHUNK_BOUNDS` vendor extension) — expose each task chunk's frame start/end to the command line, used by the Maya and Blender reference presets
+- Chunk bounds (`SQI_CHUNK_BOUNDS` vendor extension) — expose each task chunk's frame start/end to the command line, used by the Maya, Blender and Mistika reference presets
 - Auto-retry and failure limits — per-task retry policy (max attempts, retry delay) and a job-level failure ceiling that auto-parks a job, resolved over four tiers (server → farm → queue → job) with per-task attempt history
 - Cross-job dependencies — a submission may declare `depends_on` upstream jobs (same farm, across queues); dependents are held `blocked` until every upstream completes, then released (or canceled if an upstream fails)
 - Testing job presets — ready-to-run `test-render`/`test-steps` presets (bash and PowerShell) published to the preset library for smoke-testing a farm
@@ -270,6 +270,23 @@ before Phase 3. See [docs/auth.md](docs/auth.md) for the model and setup.
   [docs/auth.md](docs/auth.md) and
   [docs/worker-configuration.md](docs/worker-configuration.md) for the model,
   setup, and known gaps.
+
+### Post-Phase-3, pre-v0.3: OpenJD `EXPR` and expanded reference presets — complete, unreleased
+
+- **OpenJD `EXPR` extension** — the official expression-language extension is
+  fully implemented and `StatusSupported`: expression core, type system,
+  collections, comprehensions, the ~100-function standard library, path
+  mapping, template integration (scopes, `let` bindings, bounded evaluation
+  with operator-configurable limits), RFC 0007 extended parameter types, and
+  the web `*_LIST` widgets. EXPR templates are accepted, submitted, dispatched
+  and executed, with expressions resolved on the worker at phase 3. See
+  [`docs/openjd-extensions/expr.md`](docs/openjd-extensions/expr.md).
+- **ffmpeg reference presets** — transcode, sequence-encode, and
+  segment-transcode (bash/PowerShell/EXPR) added to `presets/sqi/`; the
+  segment-transcode EXPR variant is the first shipped preset to declare
+  `extensions: [EXPR]`.
+- **Mistika reference presets** — Boutique, VR, and Workflows render presets
+  added to `presets/sqi/`, each using the `SQI_CHUNK_BOUNDS` extension.
 
 ### Phase 4: Production Hardening (v0.4 — beta)
 

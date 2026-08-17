@@ -18,6 +18,7 @@ A task parameter may use the `CHUNK[INT]` type. The template must declare
 - Declaring `CHUNK[INT]` without `TASK_CHUNKING` in `extensions` is rejected
   (`/steps/{i}/parameterSpace`).
 - `TASK_CHUNKING` may be declared without using `CHUNK[INT]`.
+
 See `internal/openjd/validate.go` (`validateExtensions`).
 
 ## Worker behavior

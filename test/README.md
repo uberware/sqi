@@ -2,12 +2,14 @@
 
 Cross-cutting test assets that do not belong next to a single Go package:
 
-- `test/integration/` — end-to-end harness that boots the server with a temp SQLite + embedded NATS, registers a mock worker, and runs a real OpenJD job
-- `test/load/` — scheduler throughput and assignment-latency benchmarks
-- `test/fixtures/openjd/` — corpus of valid and invalid OpenJD templates used by parser tests and fuzzers
-- `test/smoke/` — end-to-end smoke script for the release verification step
+- `test/integration/` — end-to-end harness that boots the server with a temp SQLite + embedded NATS, registers a mock worker, and runs a real OpenJD job; also holds the real-directory (LDAP), real-provider (OIDC) and real-root (run-as-user isolation) suites
+- `test/conformance/` — the official OpenJD conformance suite run against the vendored `third_party/` fixtures (build tag `conformance`; `make test-conformance`)
+- `test/oracle/` — the EXPR differential test against the OpenJD reference implementation, plus its corpus and adjudicated baseline (build tag `oracle`; `make test-expr-oracle`)
 
 Unit tests live next to the code they cover (`_test.go` files), not here.
+
+The end-to-end smoke script used by release verification is `scripts/smoke.sh`
+(run it via `make smoke`), not a directory under `test/`.
 
 ## Build tags
 

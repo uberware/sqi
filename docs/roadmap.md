@@ -88,7 +88,7 @@ Configuration cascades: farm defaults → queue overrides, with retry policy (ma
     reservation; omitting it reserves the whole machine (one task per worker).
     The server tracks committed cores in the database; the ledger rebuilds
     instantly on restart.
-  - *Deferred:* worker drain/headroom signal, head-of-line reservation for
+ - *Deferred:* worker drain/headroom signal, head-of-line reservation for
     large tasks, `amount.worker.vcpu.max`, memory/GPU dimensions.
 
 ---
@@ -98,7 +98,7 @@ Configuration cascades: farm defaults → queue overrides, with retry policy (ma
 `sqi` adopts the [Open Job Description](https://github.com/OpenJobDescription/openjd-specifications) (OpenJD) format as its native job execution format.
 
 **Benefits:**
-- Studios authoring jobs for other OpenJD-compatible systems can submit to `sqi` unchanged
+- Studios authoring jobs for other OpenJD-compatible systems can submit to `sqi` unchanged, provided the template does not opt into an extension `sqi` has not implemented — those are rejected by design rather than accepted and misinterpreted (the official `EXPR` expression-language extension **is** implemented and supported) — `sqi` accepts every valid base-spec template in the official conformance suite, though it is still more permissive than the spec about rejecting *invalid* ones (tracked in `test/conformance/baseline.txt`, measured in [`docs/openjd-conformance.md`](openjd-conformance.md))
 - Standardized path mapping, parameter spaces, and execution semantics
 - Clear separation between job description and job authoring (the product system)
 
@@ -161,11 +161,31 @@ S3-compatible store reachable by the operator's chosen sync tool.
 
 ### Path Translation Modes
 
-- **OpenJD** (preferred): Standard path mapping file written into each Session. Applications that support OpenJD natively consume it directly.
-- **Resolved**: All paths resolved to concrete paths before command construction. Universal for applications with no path mapping support.
-- **Command arg**: Path pairs passed as explicit arguments (e.g., Maya workspace remapping).
-- **Environment**: Path mappings via environment variables.
-- **Staged**: Pre-job staging to worker-local storage for cloud workers without direct access to source storage.
+Path translation rides the `SQI_PATH_TRANSLATION` extension and offers five
+delivery mechanisms (deliveries execute in fixed order and are mutually
+compatible — a product can declare all five):
+
+- **`translation_file`** (preferred): Native OpenJD `pathmapping-1.0` file
+  written into each Session, served via `{{Session.PathMappingRulesFile}}`.
+  Applications that support OpenJD path mapping natively consume it directly.
+- **`swap_in_place`**: String substitution of path parameters in the template.
+  Universal for applications with no path-mapping support. sqi convenience,
+  not in the OpenJD spec.
+- **`command_flags`**: Individual `src`/`dest` pairs appended as command-line
+  flags (e.g., Maya workspace remapping).
+- **`environment`**: Path mappings delivered via an environment variable.
+- **`stage_locally`**: Job-level PATH parameters staged to worker-local
+  scratch before the run and copied back after, for cloud workers without
+  direct access to source storage. Works with no worker configuration — an
+  unconfigured worker falls back to a TEMP scratch directory and sqi's own
+  built-in copy — but a farm spanning multiple compute locations needs an
+  explicit `staging.scratch_dir` and `staging.sync_command`
+  (`rsync`/`aws-cli`/etc.) for real remote transfer.
+
+`swap_in_place` and `translation_file` are the default when no
+`SQI_PATH_TRANSLATION` extension is declared. Full reference:
+[`products.md`](products.md#path-translation) and
+[`openjd-extensions/path-translation.md`](openjd-extensions/path-translation.md).
 
 ### What `sqi` does not do
 
@@ -221,7 +241,7 @@ NATS can run embedded within `sqi-server` (simple mode) or as a separate cluster
 - Product/preset definition system (YAML/JSON) — a thin catalog over OpenJD templates, with embedded Script/Python/Container built-ins
 - Preset library integration — static JSON index at a configurable URL (default: official community library on GitHub Pages); browse presets in the Admin hub with per-preset status (not installed / installed / update available); preview the definition and install as a product (`source: installed`) in one click; SHA-256 integrity and update-detection check on install; read-only installed products, uninstallable, with Duplicate-to-custom available on every product
 - Web UI product management editor and a product-driven submission form (parameter form generated from the selected product)
-- Additional path translation modes (resolved, command-arg, environment, staged) as the `SQI_PATH_TRANSLATION` vendor extension
+- Path translation deliveries (`swap_in_place`, `translation_file`, `command_flags`, `environment`, `stage_locally`) as the `SQI_PATH_TRANSLATION` vendor extension
 - S3-compatible storage support (thin layer: derived type, root validation, path staging via operator sync tool)
 - DCC submitter framework — in-application submitters for Maya, Houdini, Nuke, and Blender (the `sqi-submitter` Python package), built on the Python client
 - Compute location registry and step-level affinity (native OpenJD `attr.worker.computelocation`)
@@ -250,6 +270,23 @@ before Phase 3. See [docs/auth.md](auth.md) for the model and setup.
   [docs/auth.md](auth.md) and
   [docs/worker-configuration.md](worker-configuration.md) for the model,
   setup, and known gaps.
+
+### Post-Phase-3, pre-v0.3: OpenJD `EXPR` and expanded reference presets — complete, unreleased
+
+- **OpenJD `EXPR` extension** — the official expression-language extension is
+  fully implemented and `StatusSupported`: expression core, type system,
+  collections, comprehensions, the ~100-function standard library, path
+  mapping, template integration (scopes, `let` bindings, bounded evaluation
+  with operator-configurable limits), RFC 0007 extended parameter types, and
+  the web `*_LIST` widgets. EXPR templates are accepted, submitted, dispatched
+  and executed, with expressions resolved on the worker at phase 3. See
+  [`docs/openjd-extensions/expr.md`](openjd-extensions/expr.md).
+- **ffmpeg reference presets** — transcode, sequence-encode, and
+  segment-transcode (bash/PowerShell/EXPR) added to `presets/sqi/`; the
+  segment-transcode EXPR variant is the first shipped preset to declare
+  `extensions: [EXPR]`.
+- **Mistika reference presets** — Boutique, VR, and Workflows render presets
+  added to `presets/sqi/`, each using the `SQI_CHUNK_BOUNDS` extension.
 
 ### Phase 4: Production Hardening (v0.4 — beta)
 

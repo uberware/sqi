@@ -16,8 +16,9 @@ var rootCmd = &cobra.Command{
 	Long: `sqi-worker is the worker agent for the sqi distributed task management platform.
 
 It discovers and connects to a running sqi-server, registers itself with its
-capability tags and compute location, pulls task assignments over NATS
-JetStream, and executes bare-metal OS processes inside OpenJD sessions.
+capability tags and compute location, leases task assignments over core NATS
+(work.lease.<queueID>), and executes bare-metal OS processes inside OpenJD
+sessions.
 
 Use "sqi-worker start" to start the worker agent.
 Use "sqi-worker --help" for a list of available subcommands.`,

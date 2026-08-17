@@ -168,7 +168,7 @@ jobs:
       # the minimum line-coverage threshold.
       # `make test-cover` enables -race via RACE=on (the Makefile default),
       # writes coverage.out, and exits non-zero if coverage < COVERAGE_MIN.
-      # COVERAGE_MIN defaults to 60 in the Makefile — that is the single
+      # COVERAGE_MIN defaults to 70 in the Makefile — that is the single
       # source of truth; raise it there as coverage grows.
       - name: Test (race detector + coverage gate)
         run: make test-cover
@@ -226,7 +226,7 @@ jobs:
         run: npm run typecheck
 
       # Vitest run with V8 coverage; exits non-zero if thresholds are not met.
-      # The threshold is defined in vite.config.ts (60 % — matches Go's minimum).
+      # The thresholds are defined in vite.config.ts (85 % lines / 82 % functions).
       - name: Test with coverage gate (Vitest)
         working-directory: web
         run: npm run test:coverage

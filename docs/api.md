@@ -15,7 +15,7 @@ You can browse it with any OpenAPI viewer (e.g. Swagger UI, Redoc, or
 
 ## Base URL
 
-All REST endpoints share the prefix `/api/v1`. A locally-running server
+All REST endpoints share the prefix `/api/v1`. A locally running server
 listens on `http://localhost:8080` by default.
 
 ```
@@ -47,7 +47,7 @@ problem-details format with `Content-Type: application/problem+json`:
 ```
 
 The `instance` field contains the request ID, which also appears in the
-`X-Request-Id` response header — useful when correlating with server logs.
+`X-Request-ID` response header — useful when correlating with server logs.
 
 ### Rate limiting
 
@@ -66,8 +66,9 @@ Clients should back off for at least the advertised duration before retrying.
 
 ### Pagination
 
-List endpoints accept `limit` (default 50, max 1000) and `offset`
-(zero-based) query parameters and return a wrapper object:
+Jobs, tasks, queues, and workers are paginated: those list endpoints accept
+`limit` (default 50, max 1000) and `offset` (zero-based) query parameters and
+return a wrapper object:
 
 ```json
 {
@@ -77,6 +78,10 @@ List endpoints accept `limit` (default 50, max 1000) and `offset`
   "offset": 0
 }
 ```
+
+Other list endpoints are **not** paginated — including farms, storage
+locations, compute locations, usage pools, products, presets, users, and API
+keys. Those ignore `limit`/`offset` and return a bare JSON array.
 
 ### Versioning
 
@@ -100,6 +105,54 @@ deprecation headers:
 
 Clients should warn when they see a `Deprecation` header or an
 `X-API-Version` major newer than the one they were written against.
+
+---
+
+## Authentication
+
+Authentication is **off by default** (`auth.enabled=false`), in which case every
+request is an anonymous superuser and no credential is needed — every example
+below works as written. See [`docs/auth.md`](auth.md) for the full model.
+
+When `auth.enabled=true`, send an API key as a bearer token:
+
+```sh
+curl -s -H "Authorization: Bearer $SQI_API_KEY" "$BASE/jobs" | jq .
+```
+
+Browser clients use the session cookie minted by `POST /api/v1/auth/login`
+instead. Three endpoints are always public because gating them would be
+circular: `GET /api/v1/openapi.yaml`, `POST /api/v1/auth/login`, and
+`GET /api/v1/auth/providers` (plus `GET /api/v1/auth/oidc/login` and
+`GET /api/v1/auth/oidc/callback` when SSO is configured).
+
+Every other `/api/v1` REST endpoint requires a permission (`/healthz`,
+`/readyz` and `/metrics` sit outside the API prefix and are never gated; the
+`/ws` upgrade authenticates the same way but gates per-subject — see
+[WebSocket subscriptions](#websocket-subscriptions)):
+
+| Endpoint group | Permission |
+|---|---|
+| `GET /jobs`, `GET /jobs/{id}`, `GET /jobs/{id}/tasks`, `GET /tasks/{id}`, `GET /tasks/{id}/logs`, `GET /tasks/{id}/attempts` | `jobs.read` |
+| `POST /jobs`, `POST /products/{name}/jobs`, `PATCH/DELETE /jobs/{id}`, `POST /jobs/{id}/cancel`, `POST /jobs/{id}/retry`, `POST /tasks/{id}/retry`, `POST /tasks/{id}/cancel` | `jobs.write` |
+| `GET /workers`, `GET /workers/{id}` | `workers.read` |
+| `POST /workers/{id}/disable`, `POST /workers/{id}/enable`, `DELETE /workers/{id}` | `workers.manage` |
+| `GET` on farms, queues, storage-locations, compute-locations, usage-pools | `infra.read` |
+| `POST`/`PUT`/`DELETE` on farms, queues, storage-locations, compute-locations, usage-pools | `infra.manage` |
+| `GET /products`, `GET /products/{name}`, `GET /products/{name}/parameters`, `GET /presets`, `GET /presets/{name}` | `products.read` |
+| `POST /products`, `PUT /products/{name}`, `DELETE /products/{name}`, `POST /presets/{name}/install` | `products.manage` |
+| `GET /diagnostics/logs`, WebSocket subject `diagnostics` | `diagnostics.read` |
+| `GET /users`, `GET /users/{id}` | `users.read` |
+| `POST /users`, `PATCH /users/{id}`, `PUT /users/{id}/password`, `DELETE /users/{id}` | `users.manage` |
+| `POST/GET /api-keys`, `DELETE /api-keys/{id}` | `apikeys.self` |
+| `GET /users/{id}/api-keys`, `DELETE /users/{id}/api-keys/{keyId}` | `apikeys.admin` |
+| `POST /auth/logout`, `GET/PATCH /auth/me`, `PUT /auth/password`, `GET /version` | any authenticated principal |
+
+Object routes (`/jobs/{id}…`, `/tasks/{id}…`) are additionally owner-scoped: a
+principal without `jobs.read.all` sees and acts on only its own jobs — the one
+permission governs both read and write scoping. A missing or rejected
+credential returns `401`; a valid credential without the permission returns
+`403`, as does an owner-scoped principal reaching another user's job.
 
 ---
 
@@ -130,8 +183,8 @@ Optional query parameters: `owner`, `submitter`, `priority` (default 50, higher 
 `retry_delay_seconds` (≥ 0), and `failure_limit` (≥ 0; the job-level failure
 ceiling that auto-parks the job, 0 disables an inherited limit) — each omitted
 means inherit the queue → farm → server default, and an out-of-range value is
-rejected with 400. Also `depends_on` (repeatable) — IDs of upstream jobs, in the same
-farm, this job must wait for; if any is not yet `completed` the job is created
+rejected with 400. Finally, `depends_on` (repeatable) — IDs of upstream jobs, in
+the same farm, this job must wait for; if any is not yet `completed` the job is created
 `blocked` instead of `pending` and its tasks are held until every dependency
 completes (see [`docs/architecture.md`](architecture.md#job-lifecycle-data-flow)).
 The same `depends_on` field is accepted in the JSON body when submitting from
@@ -162,7 +215,8 @@ Successful response — `201 Created`:
   "status": "pending",
   "template_format": "yaml",
   "created_at": "2026-01-15T10:00:00Z",
-  "updated_at": "2026-01-15T10:00:00Z"
+  "updated_at": "2026-01-15T10:00:00Z",
+  "failed_attempts": 0
 }
 ```
 
@@ -177,6 +231,22 @@ Validation failure — `422 Unprocessable Entity`:
   "instance": "a1b2c3d4e5f60708"
 }
 ```
+
+Server gave up evaluating the template's expressions — `503 Service Unavailable`:
+
+```json
+{
+  "type": "about:blank",
+  "title": "Service Unavailable",
+  "status": 503,
+  "detail": "template validation exceeded its time budget on this server; retry, or ask the operator about openjd.expr_submission_deadline",
+  "instance": "a1b2c3d4e5f60708"
+}
+```
+
+This is **not** a verdict on the template: the deterministic expression budgets
+report an invalid template as `422`, while this outcome depends on how busy the
+server was, so the same body may well be accepted on a retry.
 
 ---
 
@@ -196,9 +266,8 @@ The `name` field overrides the template's job name; when omitted the template's
 own name is used. `farm_id` and `queue_id` are required. `parameters` is a flat
 string→string map matching the template's `parameterDefinitions`. `depends_on`
 is an optional array of upstream job IDs, same semantics as the raw-submit
-query parameter above. The
-`/parameters` endpoint returns each parameter's type, default, allowed values,
-and `user_interface` hints.
+query parameter above. The `/parameters` endpoint returns each parameter's
+type, default, allowed values, and `user_interface` hints.
 
 ---
 
@@ -215,6 +284,7 @@ Filter parameters (all optional):
 | `farm_id` | UUID | Filter by farm |
 | `owner` | string | Filter by owner |
 | `project` | string | Filter by project |
+| `search` | string | Case-insensitive substring over name, id, owner, project. Whitespace-separated words are matched as independent terms, ANDed and order-independent (e.g. `night alice` matches a job named "Nightly" owned by "alice") |
 | `sort_by` | `created_at`, `priority`, `status`, `updated_at`, `name` | Sort field (default: `created_at`) |
 | `sort_dir` | `asc`, `desc` | Sort direction (default: `asc`) |
 | `limit` | 1–1000 | Page size (default: 50) |
@@ -240,6 +310,10 @@ carries `effective_retry` — the resolved retry policy for this job
 server → farm → queue → job cascade — plus `failed_attempts` and, when the job
 has been auto-parked, a `park_reason`.
 
+`task_counts.unschedulable` counts `ready` tasks that currently carry a
+non-empty unschedulable reason — a subset of `ready`, not an additional status,
+so it is not included in `total` a second time.
+
 ```sh
 JOB_ID=018f1a2b-3c4d-7e5f-a6b7-c8d9e0f12345
 
@@ -258,7 +332,8 @@ curl -s "$BASE/jobs/$JOB_ID" | jq '{name, status, task_counts}'
     "running": 5,
     "succeeded": 80,
     "failed": 0,
-    "canceled": 0
+    "canceled": 0,
+    "unschedulable": 0
   }
 }
 ```
@@ -279,11 +354,57 @@ curl -s "$BASE/jobs/$JOB_ID/tasks?status=failed" | jq .items[]
 
 ---
 
+### Get a task
+
+`GET /api/v1/tasks/{id}`
+
+Returns a single task. Returns `404` if no task with that ID exists.
+
+```sh
+TASK_ID=<task-uuid>
+
+curl -s "$BASE/tasks/$TASK_ID" | jq .
+```
+
+```json
+{
+  "id": "...",
+  "job_id": "...",
+  "step_id": "...",
+  "name": "Render-1",
+  "parameters": { "Frame": "1" },
+  "status": "failed",
+  "assigned_worker_id": "worker-abc",
+  "assigned_at": "2026-01-15T10:05:40.000Z",
+  "created_at": "2026-01-15T10:00:00Z",
+  "updated_at": "2026-01-15T10:05:45.000Z",
+  "failure_reason": "openjd_fail: step action returned non-zero",
+  "failed_attempts": 1
+}
+```
+
+The worker that took the task is `assigned_worker_id`. The bare name
+`worker_id` means the same thing elsewhere — on the WebSocket
+`jobs/{job-id}/tasks` push payload and on each entry of
+`GET /tasks/{id}/attempts` — but never on this response.
+`unschedulable_reason` is non-empty only while a `ready` task cannot be
+satisfied by any online worker. `failure_reason` is the task-level reason for a
+terminal non-success and is **cleared on retry** — the per-attempt `message`
+from `GET /tasks/{id}/attempts` is the durable record. `retry_after`, when set
+and in the future, holds a `ready` task as a retry backoff. `parameters`,
+`assigned_worker_id`, `assigned_at`, `unschedulable_reason`, `failure_reason`,
+and `retry_after` are omitted when empty.
+
+---
+
 ### Cancel a job
 
 `POST /api/v1/jobs/{id}/cancel`
 
 Cancels the job and propagates cancel signals to all assigned workers.
+Idempotent: an already-canceled job returns `204`. Returns `404` if the job
+does not exist, and `409` if the job has already reached `completed` or
+`failed`.
 
 ```sh
 curl -s -X POST "$BASE/jobs/$JOB_ID/cancel"
@@ -348,13 +469,20 @@ curl -s -X PATCH "$BASE/jobs/$JOB_ID" \
 curl -s -X PATCH "$BASE/jobs/$JOB_ID" \
   -H "Content-Type: application/json" \
   -d '{"max_attempts": 5, "retry_delay_seconds": 60, "failure_limit": 10}'
+
+# Move the job to a different queue
+curl -s -X PATCH "$BASE/jobs/$JOB_ID" \
+  -H "Content-Type: application/json" \
+  -d '{"queue_id": "<other-queue-uuid>"}'
 ```
 
-The same endpoint sets the per-job retry-policy overrides (`max_attempts`,
-`retry_delay_seconds`, `failure_limit`); omitting a field (or sending `null`)
-leaves it unchanged — a job-level override cannot be cleared back to "inherit"
-this way. Resuming an auto-parked job (`action: resume`) also clears
-`park_reason` and resets `failed_attempts` to zero, re-arming its failure limit.
+The same endpoint moves a job between queues (`queue_id`; a queue that does not
+exist is rejected with `400`) and sets the per-job retry-policy overrides
+(`max_attempts`, `retry_delay_seconds`, `failure_limit`); omitting a field (or
+sending `null`) leaves it unchanged — a job-level override cannot be cleared
+back to "inherit" this way. Resuming an auto-parked job (`action: resume`) also
+clears `park_reason` and resets `failed_attempts` to zero, re-arming its failure
+limit.
 
 ---
 
@@ -367,8 +495,9 @@ cursor using `after_nats_seq` from each response.
 
 | Parameter | Default | Description |
 |---|---|---|
-| `limit` | 100 | Chunks per page |
+| `limit` | 100 | Chunks per page (1–1000) |
 | `after_nats_seq` | 0 | Return only chunks with NATS sequence > this value |
+| `tail` | `false` | When `true`, stream chunks live as newline-delimited JSON (`Content-Type: application/x-ndjson`) instead of returning a page. Streaming stops when the task reaches a terminal state and all buffered chunks have been delivered, or when the client disconnects. |
 
 ```sh
 TASK_ID=<task-uuid>
@@ -418,7 +547,7 @@ Quick example using [`websocat`](https://github.com/vi/websocat):
 TASK_ID=<task-uuid>
 
 websocat ws://localhost:8080/api/v1/ws <<EOF
-{"type":"subscribe","subject":"tasks/$TASK_ID/logs","since_seq":0}
+{"type":"subscribe","subject":"tasks/$TASK_ID/logs","payload":{"since_seq":0},"seq":1}
 EOF
 ```
 
@@ -527,6 +656,7 @@ Each resource supports `GET /` (list), `POST /` (create), `GET /{id}`,
 /api/v1/farms
 /api/v1/queues
 /api/v1/storage-locations
+/api/v1/compute-locations
 /api/v1/usage-pools
 ```
 
@@ -538,6 +668,10 @@ body returns `400 Bad Request`. Set the roots; sqi infers the type.
 
 Each `s3://` root is validated as a well-formed `s3://bucket[/prefix]` URI.
 See [`docs/storage-s3.md`](storage-s3.md) for the full S3 setup guide.
+
+Compute locations name the physical/logical sites workers run in (`on-prem`,
+`aws-us-east-1`, …) and are the keys a storage location's `roots` map is keyed
+on. See [`docs/compute-locations.md`](compute-locations.md).
 
 Example — create a farm, then a queue inside it:
 
@@ -617,14 +751,25 @@ rejected; treat it like an `error` frame.
 
 | Subject | Description | `push` payload fields |
 |---|---|---|
-| `jobs` | Aggregate job summary changes | `job_id, name, owner, queue_id, status, updated_at` |
-| `jobs/{job-id}/tasks` | Task-level state transitions for the given job | `job_id, task_id, name, status, worker_id, updated_at` |
+| `jobs` | Aggregate job summary changes | `job_id, task_id, name, owner, queue_id, status, updated_at` |
+| `jobs/{job-id}/tasks` | Task-level state transitions for the given job | `job_id, task_id, name, status, worker_id, unschedulable_reason, updated_at` |
 | `tasks/{task-id}/logs` | Live log chunks for the given task attempt | `task_id, attempt_id, seq_num, stream, data, at` |
-| `workers` | Worker registration and heartbeat events | `worker_id, hostname, farm_id, status` |
+| `workers` | Worker registration and heartbeat events | `worker_id, name, hostname, farm_id, status` |
+| `diagnostics` | Diagnostic (operational) log records from the server and every worker | `component, level, msg, attrs, at` |
 
 A `tasks/{task-id}/logs` push carries a `seq_num` and the chunk content but —
 unlike the REST `GET /tasks/{id}/logs` chunks — omits `id`, `nats_seq`, and
 `received_at`.
+
+Subscribing to `diagnostics` requires the `diagnostics.read` permission; a
+principal without it gets a rejected `ack` carrying
+`forbidden: diagnostics requires diagnostics.read`. `component` is `server` or
+`worker:<worker-id>`, and `attrs` is omitted when the record carries no
+structured attributes.
+
+On both the `jobs` and `workers` subjects a `status` of `removed` is a
+synthetic value (not a persisted job/worker status) meaning the row was
+hard-deleted — drop it from your view rather than updating it in place.
 
 Example `push` frame:
 

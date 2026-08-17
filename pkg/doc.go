@@ -2,12 +2,12 @@
 
 // Package pkg is the root of the sqi public Go API surface.
 //
-// # Phase 1 status
+// # Status
 //
-// This package tree is intentionally empty in Phase 1.  All sqi-server
-// internals live under internal/ and are not importable by external code.
-// The pkg/ tree will be populated as surfaces stabilize and are ready to
-// carry a compatibility commitment.
+// No public packages have been promoted here yet.  All sqi-server internals
+// live under internal/ and are not importable by external code.  The pkg/
+// tree will be populated as surfaces stabilize and are ready to carry a
+// compatibility commitment.
 //
 // # Planned packages
 //

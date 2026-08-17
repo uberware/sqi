@@ -335,6 +335,7 @@ docker build \
   --build-arg VERSION=dev \
   --build-arg COMMIT=$(git rev-parse --short HEAD) \
   --build-arg BUILD_DATE=$(date -u +%Y-%m-%dT%H:%M:%SZ) \
+  --build-arg GOVERSION=$(go version | awk '{print $3}') \
   -t sqi-worker:dev \
   .
 ```

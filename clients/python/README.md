@@ -28,8 +28,8 @@ pip install 'sqi-sdk[yaml]'    # + PyYAML (for your own YAML handling; not neede
 pip install 'sqi-sdk[ws]'      # + websockets for live event streaming
 ```
 
-Until the package is published to PyPI, install the wheel attached to a
-[GitHub release](https://github.com/uberware/sqi/releases):
+For offline installs or a specific pre-release build, the wheel is also attached
+to each [GitHub release](https://github.com/uberware/sqi/releases):
 
 ```sh
 pip install https://github.com/uberware/sqi/releases/download/vX.Y.Z/sqi_sdk-X.Y.Z-py3-none-any.whl
@@ -117,7 +117,8 @@ user — without it the server responds 403.
 ## Products
 
 Products are named, versioned wrappers around OpenJD templates that live in the
-server's catalog. The SDK exposes seven methods for working with them:
+server's catalog. The SDK exposes eight methods for working with them
+(`iter_products()` is the iterator companion to `list_products()`):
 
 ```python
 with SqiClient("http://localhost:8080") as sqi:

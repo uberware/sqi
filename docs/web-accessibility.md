@@ -7,8 +7,10 @@ further is welcome.
 
 The audience is operators using a keyboard-and-screen-reader workflow or working
 in varied lighting on varied displays, not a formal WCAG 2.1 AA certification
-effort. The UI has no auth flows or modal-heavy interactions today, so the
-baseline is correspondingly focused.
+effort. The UI now has a login flow (rendered in place of the app shell when the
+server has `auth.enabled: true` and no session is present) and a small number of
+confirmation dialogs, both of which are in scope for the keyboard and
+text-alternative commitments below.
 
 ---
 

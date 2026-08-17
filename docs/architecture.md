@@ -30,8 +30,9 @@ through scheduling, worker execution, and final state.
 │             │           embedded NATS (JetStream + core NATS)            │ │
 │             │                                                            │ │
 │             │  work.lease.<queue>    task.status.<job>                   │ │
-│             │  task.logs.<task>      worker.heartbeat                    │ │
-│             │  worker.register                                           │ │
+│             │  task.logs.<task>      task.cancel.<task>                  │ │
+│             │  worker.register       worker.heartbeat                    │ │
+│             │  worker.deregister     worker.diag.<workerID>              │ │
 │             └────────┬────────────────────────────────────────────────┬─┘ │
 │                      │                                                │    │
 │          ┌───────────▼──────────┐                   ┌────────────────▼──┐ │
@@ -60,6 +61,9 @@ through scheduling, worker execution, and final state.
 | Scheduler | `internal/scheduler` | Assignment loop, worker registry, heartbeat sweep, usage pool gating |
 | NATS bus | `internal/bus` | Typed JetStream client wrapper; stream, subject, and consumer definitions |
 | Store | `internal/store` | `Store` interface + SQLite implementation; migrations |
+| Diagnostics | `internal/diag` | Bounded, per-component in-memory ring buffer of server + worker operational log records; backs `GET /api/v1/diagnostics/logs` and the `diagnostics` WebSocket subject (see [`docs/observability.md`](observability.md)) |
+| Logging | `internal/log` | `slog` setup plus the fan-out `Handler`/`Sink` (`NewWithSink`) that tees every record to stderr *and* to a sink — the diag buffer on the server, the `worker.diag.<workerID>` publisher on a worker |
+| Products | `internal/product` | Product/preset catalog above OpenJD: embedded built-ins overlaid on stored `custom`/`installed` products |
 | OpenJD | `internal/openjd` | Template parser, validator, parameter-space expansion |
 | Worker protocol | `internal/worker/protocol` | Shared worker wire-protocol types (the rest of `internal/worker` is the sqi-worker binary; the server-side status/log ingestion lives in `internal/scheduler`) |
 | Config | `internal/config` | Typed config struct, layered loader (defaults → file → env → flags) |
@@ -80,32 +84,41 @@ main()
   └─ cobra: serve subcommand
        1. Load and validate configuration (config.Load + config.Validate)
        2. Initialize slog structured logger
-       3. Open SQLite, run pending migrations
-       4. Start embedded NATS JetStream server
-       5. Create in-process NATS client (internal/bus)
-       6. Create Store (internal/store/sqlite)
-       7. Create Scheduler (internal/scheduler) — starts goroutine pool
-       8. Create WebSocket hub (internal/ws)
-       9. Wire auth (internal/server wireAuthDeps) — skipped to the anonymous
+       3. Open SQLite, run pending migrations (internal/store/sqlite) and
+          register it as the "sqlite" readiness checker (Store.Ping, read pool)
+       4. Start the background WAL checkpointer (store.checkpoint_interval)
+       5. Start the expired-session sweeper (no-op when auth is disabled)
+       6. Seed a default farm + queue on first start (no-op once any farm exists)
+       7. Start embedded NATS JetStream server, provision streams, and register
+          it as the "nats" readiness checker
+       8. Create in-process NATS client (internal/bus)
+       9. Create WebSocket hub (internal/ws) — before the scheduler, so it can be
+          passed in as the notifier — then wire the diagnostic buffer's notify
+          callback to it
+      10. Create and run Scheduler (internal/scheduler). Scheduler.Run is what
+          registers every NATS consumer: worker registration/heartbeat/deregister,
+          task status, task logs, the core-NATS worker.diag.> subscriber, and the
+          core-NATS work.lease.> request/reply subscriber; it also starts the
+          heartbeat sweep
+      11. Wire auth (internal/server wireAuthDeps) — skipped to the anonymous
           superuser when auth.enabled is false, so auth-off boot is unchanged:
             a. Bootstrap the first admin account (no-op once any user exists)
             b. Select the authenticator chain (API key → session cookie)
             c. Build the LDAP verifier    (if auth.ldap.enabled)
             d. Build the OIDC provider    (if auth.oidc.enabled; issuer
                discovery is lazy — a brief provider outage must not block boot)
-      10. Build chi router, mount middleware and route handlers
-      11. Register NATS consumers (worker registration, heartbeat, status, logs)
-      12. Start mDNS responder (if discovery.enabled)
+      12. Build chi router, mount middleware and route handlers
       13. Start HTTP server
-      14. Block on SIGINT / SIGTERM
-      15. Graceful shutdown:
-            a. Stop accepting new HTTP connections
-            b. Drain in-flight HTTP requests
+      14. Start mDNS responder (if discovery.enabled)
+      15. Block on SIGINT / SIGTERM
+      16. Graceful shutdown (30 s deadline, server.ShutdownTimeout):
+            a. Stop the mDNS responder (goodbye packets first)
+            b. Stop accepting new HTTP connections and drain in-flight requests
             c. Stop Scheduler
             d. Drain NATS in-flight messages, flush JetStream
             e. Close NATS server
-            f. Run final SQLite WAL checkpoint
-            g. Close SQLite
+            f. Final WAL checkpoint in TRUNCATE mode (checkpointer goroutine, on
+               context cancel) then close both SQLite pools
 ```
 
 ---
@@ -248,11 +261,13 @@ request/reply). When a request arrives the server:
 ```
 handleLeaseRequest(queueID, workerID)
   │
-  ├─ store.CommittedCores(workerID)   → committed (Σ required_cores of assigned+running tasks)
+  ├─ store.CommittedCores(workerID, worker.CPUCount) → committed (Σ required_cores of assigned+running tasks)
   ├─ free = worker.CPUCount − committed
   │     If free ≤ 0: park request in the per-queue waiter registry (~30 s hold)
   │
-  ├─ store.ListReadyTasks(queue, …)   → candidates (priority-ordered)
+  ├─ store.ListReadyTasks(farmID, now, batchSize) → candidates, farm-wide, ordered
+  │     job priority DESC, job created_at ASC, step order ASC, task created_at ASC
+  │     (queue affinity is applied per-candidate by WorkerEligible, not by this query)
   │
   │  First-fit walk over candidates:
   ├─ WorkerEligible(task, worker)     → bool (capability/queue/farm/location/amounts match)
@@ -265,8 +280,12 @@ handleLeaseRequest(queueID, workerID)
   │     Decrement free; add to batch
   │
   └─ bus.Reply(batch []AssignMsg)
-         Each AssignMsg includes: resolved command, args, env, path map, session_id,
-         isolation identity (username only — see docs/auth.md#task-isolation)
+         Each AssignMsg includes: task/job/step/attempt IDs, resolved OnRun action
+         (command, args, timeout), embedded files, ordered environments, job and
+         task parameters, path map + path deliveries, compute location, and the
+         isolation identity (username only — see docs/auth.md#task-isolation).
+         It does NOT carry a session_id: the session is created worker-side and
+         travels back on the task-status message.
 ```
 
 A parked request is woken when new work becomes available for that queue (job
@@ -320,7 +339,7 @@ NATS consumer (internal/scheduler/taskstatus.go)
   ├─ Receive task.status message   { …, message }  ← worker's human-readable reason, if any
   ├─ store.UpdateTaskAttempt(attempt_id, status, exit_code, end_time, message)
   ├─ If terminal (succeeded/failed/canceled):
-  │     store.TransitionTask(task_id, status)
+  │     store.UpdateTaskStatus(task_id, status)   ← state-machine guarded
   │     If failed/canceled: store.SetTaskFailureReason(task_id, reason)  ← see below
   │     usagePool.ReleaseClaim(claim_id)
   │     checkStepCompletion → propagateStepDependencies   ← marks successor tasks ready
@@ -401,9 +420,10 @@ operator-facing view.
 ```
 NATS consumer (internal/scheduler/logingest.go)
   │
-  ├─ Receive task.logs message (chunk: seq, timestamp, data)
-  ├─ store.InsertLogChunk(attempt_id, seq, timestamp, data)
-  └─ notifier.NotifyLog(task_id, chunk)   ← triggers WebSocket fanout for live tail
+  ├─ Receive task.logs message on a JetStream push-consumer over SQI_LOGS
+  ├─ store.CreateTaskLog(store.TaskLog{…})   ← the NATS stream sequence is
+  │     persisted as the chunk's pagination cursor for the logs REST endpoint
+  └─ notifier.NotifyLog(task_id, chunk)      ← triggers WebSocket fanout for live tail
 ```
 
 ### 7. Real-time delivery to clients
@@ -458,6 +478,26 @@ heartbeat-sweep tick that handles offline-worker cleanup, controlled by
                └──────────┘ └──────────┘  └──────────────┘
 ```
 
+The diagram shows the happy path only. The complete permitted set
+(`internal/store/statemachine.go`) is:
+
+| From | To | When |
+|---|---|---|
+| `pending` | `ready` | dependency resolution: all dependency steps completed |
+| `pending` | `canceled` | job canceled before step dependencies were satisfied |
+| `ready` | `assigned` | scheduler leases the task to a worker |
+| `ready` | `canceled` | task canceled while waiting for a worker |
+| `assigned` | `running` | worker confirms execution started |
+| `assigned` | `ready` | reclaim: assigned worker disconnected or the stale-assigned reaper fired |
+| `assigned` | `canceled` | task canceled after assignment, before confirmation |
+| `assigned` | `succeeded` / `failed` | the worker's `running` publish was lost (see below) |
+| `running` | `succeeded` | worker reports clean exit (exit code 0) |
+| `running` | `failed` | worker reports non-zero exit or a fatal error |
+| `running` | `ready` | reclaim (worker unreachable) or auto-retry re-queue |
+| `running` | `canceled` | task canceled while executing |
+
+`succeeded`, `failed`, and `canceled` are terminal — no outgoing transitions.
+
 Transitions are validated by `store.ValidateTaskTransition`
 (`internal/store/statemachine.go`) and enforced by `UpdateTaskStatus` in both
 store implementations: the SQLite store reads the current status and writes the
@@ -465,6 +505,16 @@ new one inside a single transaction, so the check cannot race a concurrent
 writer, and the in-memory fake does the same under its mutex. A transition
 outside the permitted set returns `store.ErrInvalidTransition` and leaves the
 row unchanged.
+
+**There are two state machines, in two packages, with two sentinel errors.**
+The **task** machine is `store.ValidateTaskTransition` /
+`store.ErrInvalidTransition` (`internal/store/statemachine.go`), enforced by
+`UpdateTaskStatus` on every write. The **step** machine is
+`openjd.ValidateStepTransition` / `openjd.ErrInvalidTransition`
+(`internal/openjd/statemachine.go`). The task machine lives in `store` and not
+in `openjd` for a hard reason: `openjd` imports `store`, so `store` can never
+import `openjd` back. Do not merge the two sentinels — `errors.Is` against the
+wrong one silently stops matching.
 
 Two rules keep enforcement safe given that task status arrives over JetStream
 (at-least-once delivery):
@@ -578,11 +628,16 @@ in the first place.
 | Subject pattern | Transport | Direction | Purpose |
 |---|---|---|---|
 | `work.lease.<queue>` | Core NATS request/reply | worker → server (request); server → worker (reply) | Worker requests a batch of tasks; server replies with assignments or empty on timeout |
-| `task.status.<job_id>` | JetStream (`TASK_STATUS`) | worker → server | Terminal and intermediate status updates |
-| `task.logs.<task_id>` | JetStream (`TASK_LOGS`) | worker → server | Log chunk delivery |
-| `worker.heartbeat` | JetStream (`WORKER_HB`) | worker → server | Liveness heartbeat |
-| `worker.register` | JetStream (`WORKER_REG`) | worker → server | Registration at startup |
+| `task.status.<job_id>` | JetStream (`SQI_TASK`, MaxAge 24 h) | worker → server | Terminal and intermediate status updates |
+| `task.logs.<task_id>` | JetStream (`SQI_LOGS`, MaxAge 96 h) | worker → server | Log chunk delivery |
+| `task.cancel.<task_id>` | JetStream (`SQI_CANCEL`, MaxAge 5 min) | server → worker | Cancellation signal; the worker holding the task interrupts the process |
+| `worker.register` | JetStream (`SQI_WORKER`, MaxAge 2 min) | worker → server | Registration at startup and on reconnect |
+| `worker.heartbeat` | JetStream (`SQI_WORKER`, MaxAge 2 min) | worker → server | Liveness heartbeat |
+| `worker.deregister` | JetStream (`SQI_WORKER`, MaxAge 2 min) | worker → server | Graceful departure; marks the worker offline without waiting for heartbeat timeout |
 | `worker.diag.<workerID>` | Core NATS (best-effort) | worker → server | Diagnostic log records |
+
+A queue-unaffiliated worker leases on the reserved leaf `work.lease._any`
+(`bus.WildcardQueueToken`).
 
 JetStream streams use file-backed storage with configurable size limits.
 `work.lease.<queue>` uses core NATS request/reply — no stream is created for

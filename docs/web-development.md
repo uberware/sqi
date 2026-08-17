@@ -25,7 +25,7 @@ field of `web/package.json`. From the repo root:
 ```sh
 nvm use            # selects the Node version from .nvmrc
 cd web
-npm install        # install dependencies (run once, and after dependency changes)
+npm ci             # install dependencies exactly as locked (run once, and after dependency changes)
 ```
 
 ---
@@ -44,8 +44,10 @@ repo root unless noted.
 make run
 # or, after `make build`: ./bin/sqi-server serve
 
-# Terminal 2 — a worker, so submitted jobs actually run
-./bin/sqi-worker --server http://localhost:8080
+# Terminal 2 — a worker, so submitted jobs actually run.
+# On a LAN it finds the server via mDNS; point it explicitly with the NATS URL
+# if discovery is off or the server is elsewhere.
+SQI_WORKER_NATS_URL=nats://127.0.0.1:4222 ./bin/sqi-worker start
 # (build it first with `make build` if needed)
 
 # Terminal 3 — the Vite dev server (from web/)

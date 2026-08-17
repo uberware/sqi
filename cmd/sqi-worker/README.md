@@ -1,8 +1,9 @@
 # sqi-worker
 
 `sqi-worker` is the distributed task-execution agent for the sqi render farm. It
-connects to a running `sqi-server`, registers its hardware capabilities, and pulls
-task assignments from NATS JetStream, executing them as bare-metal OS processes.
+connects to a running `sqi-server`, registers its hardware capabilities, and
+requests task assignments over core-NATS work leases (`work.lease.<queueID>`),
+executing them as bare-metal OS processes.
 
 ---
 
@@ -13,8 +14,10 @@ task assignments from NATS JetStream, executing them as bare-metal OS processes.
 - **Registers** its capabilities at startup — OS, CPU count, RAM, GPU (where
   detectable), plus any manual tags from configuration such as `maya-2025` or
   `arnold-7`.
-- **Pulls** task assignments over NATS JetStream and executes them concurrently;
-  the server gates concurrency via CPU-core accounting.
+- **Leases** task assignments over core NATS (a long-polling request/reply on
+  `work.lease.<queueID>`) and executes them concurrently; the server gates
+  concurrency via CPU-core accounting. Task status, logs, heartbeats and
+  registration travel the other way over JetStream.
 - **Streams** task stdout and stderr back to `sqi-server` in real time so the
   web UI log viewer feels live.
 - **Interprets** OpenJD progress directives (`openjd_progress`,
@@ -142,7 +145,13 @@ curl -s http://localhost:8080/api/v1/workers | jq '.[].name'
 | `sqi-worker start --dry-run` | Validate config and capabilities without connecting |
 | `sqi-worker start --nats-insecure-skip-verify` | Skip TLS cert verification (dev only) |
 | `sqi-worker config print` | Print the effective merged configuration |
+| `sqi-worker capabilities` | Print every tag this worker would advertise, with its source |
+| `sqi-worker isolation set-credential <user>` | Store a run-as-user account's password (Windows; reads the secret from stdin) |
 | `sqi-worker version` | Print version, commit, build date, and Go version |
+
+Three flags are available on **every** subcommand: `--config`/`-c` (config file
+path), `--log-level`, and `--log-format`. `--dry-run` and
+`--nats-insecure-skip-verify` belong to `start` only.
 
 ---
 

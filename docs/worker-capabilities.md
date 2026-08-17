@@ -113,15 +113,14 @@ GPU-capable on macOS or Windows.
 In addition to the hardware/OS tags above, `sqi-worker` runs a second,
 declarative detection engine (`internal/worker/capabilities`) that looks for
 installed creative applications — Maya, Nuke, Houdini, Blender, Mistika
-(Boutique/Ultima, VR, Workflows) and ffmpeg — and
-advertises a tag with value `"true"` automatically, with no per-worker
-configuration. This makes the software actually installed on a worker visible
-without hand-editing its config, and it's enough on its own to satisfy the
-`anyOf: ["true"]` gate the shipped reference presets declare — a standard
-install matches those presets with zero configuration. Run
-`sqi-worker capabilities` any time to see what was found. See
-[`docs/dcc-submitters.md`](dcc-submitters.md#reference-presets) for how these
-auto-detected tags relate to the reference presets.
+(Boutique/Ultima, VR, Workflows) and ffmpeg — and advertises a tag with value
+`"true"` automatically, with no per-worker configuration. This makes the
+software actually installed on a worker visible without hand-editing its
+config, and it's enough on its own to satisfy the `anyOf: ["true"]` gate the
+shipped reference presets declare — a standard install matches those presets
+with zero configuration. Run `sqi-worker capabilities` any time to see what
+was found. See [`docs/dcc-submitters.md`](dcc-submitters.md#reference-presets)
+for how these auto-detected tags relate to the reference presets.
 
 ### How it runs
 
@@ -179,8 +178,7 @@ a path-based check also matches on that host.
 
 Every software tag a shipped reference preset requires
 (`presets/sqi/*.yaml`'s `attr.worker.tag.<name>`) must be emitted by some
-built-in detector — enforced by
-`TestBuiltinDetectors_CoverPresets` in
+built-in detector — enforced by `TestBuiltinDetectors_CoverPresets` in
 [`internal/worker/capabilities/builtins_test.go`](https://github.com/uberware/sqi/blob/main/internal/worker/capabilities/builtins_test.go),
 so a new default preset cannot ship without a matching detector (see
 [Adding a new auto-detected tag](development.md#adding-a-new-capability-tag-to-auto-detection)
@@ -239,13 +237,13 @@ os_version 22.04   auto
 
 The `VALUE` column is the tag's advertised value (bare tags resolve to `true`;
 hardware tags like `os`/`os_version` carry their detected string). The `SOURCE`
-column is one of `auto` (the hardware probe's own `Tags` entries
-— just `os` and, when detected, `os_version`), `builtin:<tag>`, `custom`, or
-`manual`. This is the first thing to run
-when a worker isn't picking up jobs you'd expect it to — it answers "why
-isn't my worker getting Maya jobs?" without needing to connect to a server or
-inspect logs. `sqi-worker start --dry-run` includes the same detected
-capabilities as part of its larger config-and-capabilities summary.
+column is one of `auto` (the hardware probe's own `Tags` entries — just `os`
+and, when detected, `os_version`), `builtin:<tag>`, `custom`, or `manual`.
+This is the first thing to run when a worker isn't picking up jobs you'd
+expect it to — it answers "why isn't my worker getting Maya jobs?" without
+needing to connect to a server or inspect logs. `sqi-worker start --dry-run`
+includes the same detected capabilities as part of its larger
+config-and-capabilities summary.
 
 ---
 

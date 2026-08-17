@@ -9,7 +9,7 @@ Deployment artifacts for `sqi`:
 - `deploy/config/` — pointer to the canonical example configs under `config/`.
 
 Kubernetes manifests / a Helm chart for production-mode deployments are planned
-for a later phase and are not part of v0.1.0.
+for a later phase and are not shipped yet.
 
 Goreleaser configuration lives at the repo root as `.goreleaser.yaml` to match
 tool convention.

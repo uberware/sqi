@@ -68,16 +68,24 @@ Run `make` (no arguments) to see all available targets with descriptions.
 | `make test-ldap` | Run the LDAP tests against a real OpenLDAP directory in a container (needs Docker; **skips** without it) |
 | `make test-oidc` | Run the SSO tests against a real Keycloak in a container (needs Docker; **skips** without it) |
 | `make test-isolation` | Run run-as-user task-isolation tests as real root against real OS accounts in a container (needs Docker; **skips** without it) |
+| `make test-isolation-windows` | Run the Windows run-as-user isolation tests against real local accounts — must be run from an **elevated** shell on a real Windows host (no container); exits 0 with a message when not elevated |
+| `make test-conformance` | Run the official OpenJD conformance suite against the vendored `third_party/` fixtures (build tag `conformance`) |
 | `make test-expr-oracle` | Differential-test the EXPR evaluator against the OpenJD reference implementation (needs `python3`; **skips** without it) |
 | `make test-preset-library` | Validate the **published** preset library against the validator in your tree (needs network; **skips** when the library is unreachable, **fails** when it is reachable but invalid) |
 | `make expr-oracle-venv` | Create `.venv-oracle/` with the pinned reference implementation (`make test-expr-oracle` does this on demand) |
 | `make smoke` | End-to-end smoke test against the real binaries (REST + WebSocket) |
+| `make auth-demo` | Run the auth-surface demo against a live local farm (`KEEP=1` leaves it running) |
 | `make bench` | Run benchmarks |
 | `make lint` | Run `golangci-lint` |
 | `make lint-fix` | Run `golangci-lint --fix` |
+| `make lint-actions` | Lint the GitHub Actions workflows with `actionlint` (via `go run`; no install needed) |
 | `make fmt` | Format all Go files with `gofumpt` and `goimports` |
-| `make vet` | Run `go vet ./...` |
+| `make fmt-check` | Check formatting without modifying files (the `make ci` gate) |
+| `make vet` | Run `go vet` over the filtered package list (excludes `web/node_modules/`) |
 | `make docs` | Serve Go package docs at `localhost:8080` via `pkgsite` |
+| `make docs-site-install` | Create `.venv-docs/` and install the pinned MkDocs dependencies |
+| `make docs-site` | Build the MkDocs documentation site with `--strict` (the CI gate) |
+| `make docs-site-serve` | Serve the documentation site locally with live reload |
 | `make changelog` | Regenerate `CHANGELOG.md` from Conventional Commits via `git-cliff` (`VERSION=x.y.z` tags the pending release) |
 | `make hooks` | Install git hooks via `lefthook` |
 | `make clean` | Remove build artifacts and `coverage.out` |
@@ -271,7 +279,7 @@ on the 0.x line, where breaking changes are permitted in minor bumps. The
 specification outranks it. When the two disagree, read
 `third_party/openjd-specifications/` and decide; do not change sqi to match the
 reference. **Most** baselined entries are cases where **the reference is
-wrong** — the corpus currently scores 891/1052 agreeing with 161 baselined
+wrong** — the corpus currently scores 930/1063 agreeing with 133 baselined
 divergences, and each one's reasoning is argued in `test/oracle/baseline.txt`,
 which is the authority on any individual ruling (an earlier revision of this
 paragraph said "three of the five", a count that went stale several waves ago
@@ -313,14 +321,18 @@ sqi/
 │   └── sqi-worker/        Worker entry point
 ├── internal/
 │   ├── api/               HTTP router, REST handlers, WebSocket upgrade, OpenAPI spec
+│   ├── auth/              Auth gate, accounts, sessions, API keys, RBAC policy, LDAP, OIDC
 │   ├── bus/               Typed NATS JetStream client wrapper
 │   ├── config/            Typed config struct, layered loader
+│   ├── diag/              In-memory diagnostic-log ring buffer
 │   ├── discovery/         mDNS _sqi._tcp responder
 │   ├── health/            /healthz and /readyz handlers
 │   ├── log/               slog helpers
 │   ├── metrics/           Prometheus metric definitions
-│   ├── middleware/         HTTP middleware (logging, metrics, versioning)
+│   ├── middleware/        HTTP middleware (logging, metrics, versioning)
 │   ├── openjd/            OpenJD parser, validator, parameter-space expansion
+│   ├── presetgen/         Generates the preset-library index.json + definition files
+│   ├── product/           Products/presets — the catalog layer over OpenJD templates
 │   ├── scheduler/         Assignment loop, worker registry, heartbeat sweep
 │   ├── server/            Process boot, graceful shutdown orchestration
 │   ├── store/             Store interface + SQLite implementation + migrations
@@ -330,6 +342,9 @@ sqi/
 │   └── ws/                WebSocket hub, subscription management, scheduler-driven fanout
 ├── pkg/                   Public Go API (currently empty; see pkg/doc.go)
 ├── api/                   Source-of-truth specs: OpenAPI 3.1, JSON schemas
+├── clients/               Python packages: clients/python (sqi-sdk), clients/submitter (sqi-submitter)
+├── presets/               Reference (presets/sqi) and test (presets/testing) preset YAML
+├── third_party/           Vendored OpenJD specifications submodule (specs, RFCs, and conformance fixtures)
 ├── web/                   Frontend source; web/dist is embedded
 ├── config/                Example config files
 ├── deploy/                Docker and infrastructure manifests
@@ -340,12 +355,16 @@ sqi/
 
 ### Key conventions
 
-**No cross-imports between internal packages at the same level.** The
-dependency direction is:
+**Imports run one way down the dependency direction.** Composition flows:
 `cmd` → `internal/server` → `internal/api`, `internal/scheduler` → `internal/store`, `internal/bus`
+Higher-level packages import lower-level ones — `internal/api`, for instance,
+imports `internal/auth`, `internal/openjd`, `internal/scheduler`, `internal/store`,
+`internal/ws` and more — but never the reverse: nothing a package depends on may
+depend back on it.
 
-**Interfaces over concrete types at package boundaries.** Handlers receive the
-`store.Store` interface, not `*sqlite.Store`, so tests can inject a fake.
+**Interfaces over concrete types at package boundaries.** Handlers and the
+scheduler receive the `store.Store` interface, never `*sqlite.Store`, so tests
+can inject a fake.
 
 **One file per route group.** `internal/api/jobs.go`, `internal/api/tasks.go`,
 `internal/api/workers.go`, etc. Each file owns its handler struct, wire-format
@@ -485,6 +504,24 @@ statement, and add a corresponding stub to the in-memory fake in
 > `SetTaskFailureReason` only when your path is authoritative. See
 > [the durable-failure-reason table](architecture.md#5-status-ingestion) for
 > every existing path and its reason string.
+
+### Step 3b — Gate it with a permission (if the route is not public)
+
+A new permission lands in **two** places or it silently half-works:
+
+1. **Server** — add the permission constant and its role grants to
+   `internal/auth/policy/policy.go`, then mount the route behind the matching
+   authorization middleware in `internal/api/router.go`.
+2. **Web** — add the same string to the `Permission` union **and** the
+   `PERMISSION_SET` literal in `web/src/auth/policy.ts`. The
+   `Record<Permission, true>` type on `PERMISSION_SET` makes an omission a
+   typecheck failure, and `web/src/auth/policy.test.ts` mirrors the server
+   grants against `ALL_PERMISSIONS`, so a server-only permission fails a test
+   rather than shipping with no client-side gate.
+
+Then gate the UI affordance itself with `can(principal, '<permission>')` and,
+for a whole route, wrap it in `<RequireRole permission="…">` — see
+[`web-development.md`](web-development.md#role-gating-can-requirerole-navcard-filtering).
 
 ### Step 4 — Update the OpenAPI spec
 
@@ -1063,7 +1100,7 @@ Gate command line (from `clients/submitter`, with `sqi-sdk` resolvable —
 `pip install -e ../python` first if not already installed):
 
 ```sh
-ruff format --check . && ruff check . && mypy src && pytest -q
+ruff format --check . && ruff check . && mypy src && mypy --python-version=3.13 tests && pytest -q
 ```
 
 `tests/integration/` is skipped unless `SQI_TEST_SERVER_URL` points at a live

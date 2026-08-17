@@ -11,11 +11,12 @@ The single switch is `auth.enabled` (config file `auth.enabled`, env
 
 As of component A1, the gate is live: flipping `auth.enabled` to `true` and
 restarting actually locks the server down. Every REST request and the
-WebSocket upgrade now require a valid session (see below); there is no more
-"scaffolding only" caveat. See [Local accounts](#local-accounts) and
-[Login & sessions](#login--sessions) for what that means in practice, and
-[First-admin bootstrap](#first-admin-bootstrap) for how to get your first
-credential.
+WebSocket upgrade now require a valid credential — a session cookie or a
+Bearer API key (`auth.Chain(apikey, session)`); there is no more
+"scaffolding only" caveat. See [Local accounts](#local-accounts),
+[Login & sessions](#login--sessions) and [API keys](#api-keys) for what that
+means in practice, and [First-admin bootstrap](#first-admin-bootstrap) for
+how to get your first credential.
 
 ## Model
 
@@ -53,6 +54,22 @@ The REST resource routes are gated by the auth middleware; the WebSocket
 upgrade is gated by its own hook; the health/readiness/metrics probes and the
 OpenAPI spec are always public.
 
+**`auth.enabled` does not gate `/debug/pprof/`.** The Go runtime profiling
+endpoints are mounted on the root router, outside `/api/v1` entirely
+(`internal/api/router.go`), so the auth middleware, the CSRF guard and the
+rate limiter all miss them whether auth is on or off. They are opt-in
+(`http.enable_pprof`, default `false`) and the server logs a `WARN` at boot
+when they are enabled. Treat that warning as literal. A pprof profile does not
+dump memory contents — it will not hand out session tokens, the LDAP bind
+password or the OIDC client secret — but it does expose internal code paths,
+allocation sites, live goroutine stacks, build and module metadata, and the
+process command line to anyone who can reach the port. Worse, because these
+routes sit outside the rate limiter, `/debug/pprof/profile?seconds=N` and
+`/debug/pprof/trace?seconds=N` accept an arbitrary duration from an
+unauthenticated caller, which is a straightforward availability lever. Enable
+pprof only on a network you would already trust with an auth-off deployment,
+or put a reverse proxy in front of `/debug/`.
+
 ## Local accounts
 
 A local account (`internal/store` `User`) has a username (case-insensitive
@@ -80,7 +97,8 @@ bad password. Deleting a user cascades to its sessions — see
 
 ## Roles & permissions
 
-As of component B1, roles are enforced on every route. There are four
+As of component B1, every mutating route and several read routes are gated by a
+role→permission policy. There are four
 built-in roles (no custom-role builder — YAGNI):
 
 - **admin** — full access, including user management, API-key management for
@@ -88,8 +106,11 @@ built-in roles (no custom-role builder — YAGNI):
 - **operator** — runs the farm: all jobs, workers, farm infrastructure
   (farms/queues/storage/compute/usage-pools), products/presets, and
   diagnostics (server log).
-- **user** — submit and control jobs; manage their own API keys; read-only on
-  infrastructure.
+- **user** — submit and control **their own** jobs; manage their own API
+  keys; read-only on infrastructure. This is the only role without
+  `jobs.read.all`, so it neither sees nor may mutate a job owned by someone
+  else — note the counter-intuitive consequence that `read-only` sees every
+  job while `user` sees only its own.
 - **read-only** — reads the operational surface; no mutations anywhere;
   cannot see diagnostics or the user list — but *can* manage its own API
   keys.
@@ -137,7 +158,7 @@ sidebar identity control.
 
 | Route | Effect |
 |---|---|
-| `PATCH /api/v1/auth/me` | Sets `display_name`. Returns the same principal shape as `GET /auth/me`. |
+| `PATCH /api/v1/auth/me` | Sets `display_name`. Returns the same principal shape as `GET /auth/me`. A body omitting `display_name` is a successful no-op returning the caller's identity unchanged, not an error. |
 | `PUT /api/v1/auth/password` | Verifies the current password, then sets the new one. |
 
 Three choices worth knowing:
@@ -181,7 +202,10 @@ An owner naming no known user is rejected with 400 when
 WebSocket delivery is scoped the same way as REST. Per-job subjects
 (`jobs/{id}/tasks`, `tasks/{id}/logs`) are authorized once at subscribe time;
 the global `jobs` subject is filtered per event. A client that cannot resolve a
-job's owner receives nothing for it rather than everything.
+job's owner receives nothing for it rather than everything. The `diagnostics`
+subject is gated separately at subscribe time on `diagnostics.read`, so a
+`read-only` or `user` principal is refused the server-log feed on the socket
+exactly as it is on `GET /api/v1/diagnostics/logs`.
 
 ## Task isolation
 
@@ -262,8 +286,15 @@ Independent of, and in addition to, the supplementary-group stripping below,
 silently narrowing them:
 
 - **`run_as_user` naming a known-privileged account** — `root`,
-  `Administrator`, `SYSTEM`, and similar — by name, and any account whose
-  **uid is 0**, regardless of name.
+  `Administrator`, `Administrators`, `SYSTEM`, `LocalSystem`,
+  `NETWORK SERVICE`, and `LOCAL SERVICE` — by name, and any account whose
+  **uid is 0**, regardless of name. Name matching is case-insensitive and
+  first strips a `DOMAIN\` / `HOST\` / `.\` qualifier and a trailing
+  `@domain` UPN suffix, so `.\Administrator`, `CORP\Administrator` and
+  `Administrator@corp.example.com` are all the same refused name. The list
+  is not configurable: an operator-overridable version would defeat the
+  point, since the whole risk is a queue pointing at an account more
+  privileged than the daemon.
 - **`run_as_group` naming a known-privileged group** — `root`, `wheel`,
   `admin`, `sudo`, `sudoers`, `adm`, `docker`, `disk`, `shadow`, `staff`,
   `administrators` — by name. This is a check against the group **you

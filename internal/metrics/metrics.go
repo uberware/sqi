@@ -152,7 +152,7 @@ func New() *Metrics {
 				Namespace: "sqi",
 				Subsystem: "scheduler",
 				Name:      "queue_depth",
-				Help:      "Current number of ready tasks waiting for assignment, partitioned by queue name.",
+				Help:      "Current number of ready tasks waiting for assignment, partitioned by queue name. Excludes tasks in retry backoff, tasks on a paused queue, and tasks under a paused, parked or terminal job.",
 			},
 			[]string{"queue"},
 		),
