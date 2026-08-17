@@ -1,0 +1,16 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+#
+# From the FindExecutable* defaults in Smedge's MistikaWorkflows.json (the same
+# roots/bases/exe triple the .psx products spell in a [FindLatestExecutable]
+# section); see mistika.yaml for why the search is <Root>/<Base>*/<Exe>.
+#
+# As with mistikavr, there is deliberately no `exe: workflows` check: a bare
+# "workflows" on PATH is far too generic to treat as evidence of Mistika.
+tag: mistikaworkflows
+checks:
+  - path_glob: "/home/mistika/SGO Apps/Mistika Workflows*/bin/workflows"                     # linux
+  - path_glob: "/Applications/SGO Apps/Mistika Workflows.app*/Contents/MacOS/workflows"      # macOS
+  - path_glob: 'C:\Program Files\SGO Apps\Mistika Workflows*\bin\workflows.exe'              # windows
+    os: windows
+version:
+  from: "Mistika Workflows ?(?P<v>[0-9]+\\.[0-9]+)"

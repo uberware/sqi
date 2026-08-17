@@ -1,0 +1,56 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+name: mistika-vr-render
+title: Mistika VR Render
+description: >-
+  Renders a saved Mistika VR .rnd job with the vr binary, in frame chunks.
+  Requires workers tagged mistikavr=true with vr on PATH. For a single movie
+  file, submit Frames "1". A starting point - duplicate to customize for your
+  pipeline.
+category: Rendering
+version: 1.0.0
+template:
+  specificationVersion: jobtemplate-2023-09
+  name: Mistika VR Render
+  extensions: [TASK_CHUNKING, SQI_CHUNK_BOUNDS]
+  parameterDefinitions:
+    - name: SceneFile
+      type: PATH
+      objectType: FILE
+      dataFlow: IN
+      userInterface:
+        control: CHOOSE_INPUT_FILE
+        label: Scene File
+        fileFilters:
+          - label: Mistika render jobs
+            patterns: ["*.rnd"]
+        fileFilterDefault:
+          label: Mistika render jobs
+          patterns: ["*.rnd"]
+    - name: Frames
+      type: STRING
+      userInterface: { control: LINE_EDIT, label: Frame Range }
+  steps:
+    - name: Render
+      hostRequirements:
+        attributes:
+          - name: attr.worker.tag.mistikavr
+            anyOf: ["true"]
+      parameterSpace:
+        taskParameterDefinitions:
+          - name: Frame
+            type: CHUNK[INT]
+            range: "{{Param.Frames}}"
+            chunks:
+              defaultTaskCount: 10
+              rangeConstraint: CONTIGUOUS
+      script:
+        actions:
+          onRun:
+            command: vr
+            args:
+              - "-r"
+              - "{{Param.SceneFile}}"
+              - "-s"
+              - "{{Task.Param.Frame.Start}}"
+              - "-e"
+              - "{{Task.Param.Frame.End}}"

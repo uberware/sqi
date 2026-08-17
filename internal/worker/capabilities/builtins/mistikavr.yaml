@@ -1,0 +1,17 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+#
+# From Smedge's MistikaVR.psx [FindLatestExecutable] block; see mistika.yaml for
+# why the search is <Root>/<Base>*/<Exe> and why macOS reads "Contents/MacOS".
+#
+# There is deliberately no `exe: vr` check. The preset invokes the bare `vr`
+# command, but "vr" is generic enough that a PATH probe would tag workers with
+# no Mistika installed, and a falsely tagged worker is handed render work it
+# cannot do.
+tag: mistikavr
+checks:
+  - path_glob: "/home/mistika/SGO Apps/Mistika VR*/bin/vr"                    # linux
+  - path_glob: "/Applications/SGO Apps/Mistika VR.app*/Contents/MacOS/vr"     # macOS
+  - path_glob: 'C:\Program Files\SGO Apps\Mistika VR*\bin\vr.exe'             # windows
+    os: windows
+version:
+  from: "Mistika VR ?(?P<v>[0-9]+\\.[0-9]+)"

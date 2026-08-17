@@ -230,17 +230,21 @@ enforcement point, and the submitter must not break against an older server.
 
 ## Reference presets
 
-sqi ships six DCC reference products under `presets/sqi/`, published through
+sqi ships nine DCC reference products under `presets/sqi/`, published through
 the [preset library](preset-library.md) so `sqi-submitter` has something real
-to submit to out of the box (the directory holds eleven products in total —
+to submit to out of the box (the directory holds fourteen products in total —
 the other five are `Transcoding`-category ffmpeg presets; see [Transcoding
 reference presets](preset-library.md#transcoding-reference-presets)). Install
 them from **Admin → Preset Library** in the web UI, or by hand via `POST
 /api/v1/products` (or **Admin → Products** in the web UI) if you're not using
 a preset index. All use the product `category`
-`Rendering` and declare `TASK_CHUNKING` for frame distribution; the Maya and
-Blender presets additionally declare `SQI_CHUNK_BOUNDS` to expose each chunk's
-start/end frame (see [OpenJD extensions](openjd-extensions.md)).
+`Rendering` and declare `TASK_CHUNKING` for frame distribution; the Maya,
+Blender and Mistika presets additionally declare `SQI_CHUNK_BOUNDS` to expose
+each chunk's start/end frame (see [OpenJD extensions](openjd-extensions.md)).
+
+Six of the nine have a matching `sqi-submitter` host (Maya, Houdini, Nuke,
+Blender). The three Mistika presets do not — Mistika has no in-DCC submitter,
+so they are submitted from the web UI or the API like any other product.
 
 | Product | Command | Chunking | Parameters | Worker tag |
 |---|---|---|---|---|
@@ -250,6 +254,9 @@ start/end frame (see [OpenJD extensions](openjd-extensions.md)).
 | `nuke-write-render` | `nuke -x -X <writeNode> -F <range> <script>` | chunks of 10 | `SceneFile`, `Frames`, `WriteNode` | `attr.worker.tag.nuke = "true"` |
 | `nuke-script-render` | `nuke -x -F <range> <script>` (no `-X`; all enabled Write nodes) | chunks of 10 | `SceneFile`, `Frames` | `attr.worker.tag.nuke = "true"` |
 | `blender-batch-render` | `blender -b <file> -o <output> -s/-e <frame range> -a` | one frame per task by default (raise the chunk size to batch) | `SceneFile`, `Frames`, `OutputPath` (optional; blank = scene setting) | `attr.worker.tag.blender = "true"` |
+| `mistika-boutique-render` | `mistika -r <scene> -s/-e <frame range>` | chunks of 10 | `SceneFile` (`*.rnd`), `Frames` | `attr.worker.tag.mistika = "true"` |
+| `mistika-vr-render` | `vr -r <scene> -s/-e <frame range>` | chunks of 10 | `SceneFile` (`*.rnd`), `Frames` | `attr.worker.tag.mistikavr = "true"` |
+| `mistika-workflows-render` | `workflows -r <scene> -s/-e <frame range>` | chunks of 10 | `SceneFile` (`*.rnd`), `Frames` | `attr.worker.tag.mistikaworkflows = "true"` |
 
 Maya and Nuke each ship two variants: a **single-target** product (`-rl <layer>` /
 `-X <writeNode>`) and a **whole-scene** product that omits that flag — Maya's
@@ -265,17 +272,32 @@ Nuke instead get multi-frame chunks (10 by default) natively, because both the
 embedded `hython` script and `nuke -F` accept a frame range per invocation, so a
 chunk amortizes DCC startup cost across several frames.
 
+The three Mistika presets use `SQI_CHUNK_BOUNDS` the same way Maya and Blender
+do, but batch by default (chunks of 10): every Mistika renderer takes `-s
+START -e END`, so a chunk maps directly onto one invocation. All three render
+`.rnd` job files. For a single movie-file render, submit `Frames` as `1`.
+
 Each preset's `hostRequirements` gates it to workers advertising the matching
 `attr.worker.tag.<name>` capability tag. `sqi-worker` auto-detects a standard
-Maya/Nuke/Houdini/Blender install on `PATH`/in its usual install location and
-advertises the matching tag (`maya`, plus a version variant like `maya-2025`)
-with value `"true"` automatically at startup, with no configuration — see
-[Capability
+Maya/Nuke/Houdini/Blender/Mistika install on `PATH`/in its usual install
+location and advertises the matching tag (`maya`, plus a version variant like
+`maya-2025`) with value `"true"` automatically at startup, with no
+configuration — see [Capability
 auto-detection](worker-capabilities.md#capability-auto-detection-built-in-dcc-detectors).
-That satisfies the `anyOf: ["true"]` requirement each of the six presets above
+That satisfies the `anyOf: ["true"]` requirement each of the nine presets above
 declares, so a worker with a standard DCC install matches these presets with
 **zero per-worker configuration**. Run `sqi-worker capabilities` (or
 `start --dry-run`) to confirm at a glance which DCCs were actually found.
+
+**The Mistika detectors probe install locations only, never `PATH`.** The
+binaries are named `mistika`, `vr` and `workflows`; the last two are generic
+enough that a `PATH` probe would tag workers with no Mistika installed, and a
+falsely tagged worker is handed render work it cannot run. The trade-off is
+that detection and execution use different evidence: a worker is tagged
+because Mistika is *installed* under the SGO layout, but the preset invokes
+the bare command, so the binary must also be on the worker's `PATH`. If your
+SGO install is not on `PATH`, either add it or duplicate the preset and give
+`command:` an absolute path.
 
 Manual tags are only needed when a DCC lives at a nonstandard install path (or
 under a name/location the built-in detectors don't check) or for in-house

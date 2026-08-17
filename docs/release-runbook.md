@@ -247,9 +247,10 @@ VERSION=0.2.0
 
 ## Step 6b: Publish reference and testing presets to the preset library
 
-The presets authored in this repo — the eleven `presets/sqi/*.yaml` reference
-presets (Maya layer + scene, Nuke write + script, Houdini ROP, Blender batch;
-ffmpeg transcode, sequence-encode, and segment-transcode bash/PowerShell/EXPR)
+The presets authored in this repo — the fourteen `presets/sqi/*.yaml` reference
+presets (Maya layer + scene, Nuke write + script, Houdini ROP, Blender batch,
+Mistika Boutique + VR + Workflows; ffmpeg transcode, sequence-encode, and
+segment-transcode bash/PowerShell/EXPR)
 and the four `presets/testing/*.yaml` smoke-test presets (test-render and
 test-steps, each in bash + PowerShell) — are not distributed as part of the
 GitHub release or PyPI packages; they are published to the separate
@@ -294,7 +295,7 @@ go run ./cmd/presetgen -presets presets/testing -subdir testing -out /path/to/sq
 
 **Verify:**
 - The published index (`https://uberware.github.io/sqi-presets/index.json`)
-  lists all eleven presets under `sqi/` and the four test presets under `testing/`
+  lists all fourteen presets under `sqi/` and the four test presets under `testing/`
   with the correct `sha256`.
 - In the sqi web UI's Preset Library page, each preset installs successfully
   and its checksum verifies (no 422).
