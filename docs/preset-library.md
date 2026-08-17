@@ -164,7 +164,10 @@ copies show the **Update available** badge.
 The official library ships `Rendering`-category presets — `maya-layer-render`,
 `maya-scene-render`, `houdini-rop-render`, `nuke-write-render`,
 `nuke-script-render`, `blender-batch-render` — as ready targets for the
-[`sqi-submitter`](dcc-submitters.md) in-application submitters.
+[`sqi-submitter`](dcc-submitters.md) in-application submitters, plus
+`mistika-boutique-render`, `mistika-vr-render` and `mistika-workflows-render`,
+which have no in-application submitter and are submitted from the web UI or
+the API.
 Each declares its parameters using the [parameter convention
 contract](dcc-submitters.md#the-parameter-convention-contract) (`SceneFile`,
 `Frames`, `OutputDir`, plus per-host extras) so submitter pre-fill works out of

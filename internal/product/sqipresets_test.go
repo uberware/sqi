@@ -74,6 +74,24 @@ func TestSQIReferencePresets(t *testing.T) {
 			params:     []string{"SceneFile", "Frames", "OutputPath"},
 			extensions: []string{"TASK_CHUNKING"},
 		},
+		// The three Mistika presets are the only shipped presets that declare
+		// SQI_CHUNK_BOUNDS: they invoke the renderer as `-s START -e END`, so
+		// they need a chunk's bounds rather than the chunk itself.
+		"mistika-boutique-render": {
+			category:   "Rendering",
+			params:     []string{"SceneFile", "Frames"},
+			extensions: []string{"TASK_CHUNKING", "SQI_CHUNK_BOUNDS"},
+		},
+		"mistika-vr-render": {
+			category:   "Rendering",
+			params:     []string{"SceneFile", "Frames"},
+			extensions: []string{"TASK_CHUNKING", "SQI_CHUNK_BOUNDS"},
+		},
+		"mistika-workflows-render": {
+			category:   "Rendering",
+			params:     []string{"SceneFile", "Frames"},
+			extensions: []string{"TASK_CHUNKING", "SQI_CHUNK_BOUNDS"},
+		},
 		"ffmpeg-transcode": {
 			category: "Transcoding",
 			params:   []string{"SourceFile", "OutputFile", "VideoCodec", "Quality", "AudioCodec"},

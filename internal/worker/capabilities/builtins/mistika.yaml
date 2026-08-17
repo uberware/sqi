@@ -1,0 +1,21 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+#
+# Roots/bases/executables are the SGO install layout, taken from Smedge's own
+# Mistika_Ultima_And_Boutique.psx [FindLatestExecutable] block. Smedge searches
+# <Root>/<Base>*/<Exe> (ProcessJob.cpp _FindInRoot appends the trailing "*" when
+# the base carries no glob), so each glob below is that pattern spelled for
+# filepath.Glob. Ultima is the Linux product and Boutique the Windows/macOS one,
+# which is why the base differs by platform.
+#
+# The bundle directory is "Contents/MacOS", not the "Contents/MACOS" the .psx
+# writes: Smedge gets away with the latter only because macOS volumes are
+# case-insensitive by default, while filepath.Match is case-sensitive and would
+# never match a real bundle.
+tag: mistika
+checks:
+  - path_glob: "/home/mistika/SGO Apps/Mistika Ultima*/bin/mistika"                    # linux
+  - path_glob: "/Applications/SGO Apps/Mistika Boutique.app*/Contents/MacOS/mistika"   # macOS
+  - path_glob: 'C:\Program Files\SGO Apps\Mistika Boutique*\bin\mistika.exe'           # windows
+    os: windows
+version:
+  from: "Mistika (?:Ultima|Boutique) ?(?P<v>[0-9]+\\.[0-9]+)"

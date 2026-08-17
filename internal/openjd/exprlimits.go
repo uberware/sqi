@@ -191,13 +191,16 @@ type ExprLimits struct {
 // guard firing first, which is a derivation this file offered once and had to
 // withdraw (see [ExprLimits.SubmissionMemoryBytes]).
 //
-// The FLOORS all come from measurement, not from taste. The six reference
-// presets in presets/sqi/ -- the templates this repo itself ships -- were
-// measured per dimension by binary search: they cost at most 15 expression
-// positions, retain 0 let bytes, need at most 64 live bytes and at most 1
-// operation in any single evaluation. Every floor below leaves at least 4x
-// headroom over the worst of them (17x to 65536x in practice), so no operator
-// can tighten a knob to a value that rejects sqi's own templates.
+// The FLOORS all come from measurement, not from taste. The fourteen reference
+// presets in presets/sqi/ -- the templates this repo itself ships -- are
+// measured per dimension by binary search on every run, by
+// TestExprLimits_FloorsAcceptReferencePresets: at most 31 expression positions,
+// 1 retained byte, 390 live bytes and 15 operations in any single evaluation.
+// Every one of those maxima is set by ffmpeg-segment-transcode-expr, the only
+// preset doing real slice arithmetic; the render presets cost an order of
+// magnitude less. Every floor below leaves at least 4x headroom over the worst
+// of them (8x to 65536x in practice), so no operator can tighten a knob to a
+// value that rejects sqi's own templates.
 // TestExprLimits_FloorsAcceptReferencePresets re-measures that on every run
 // rather than trusting this paragraph.
 const (

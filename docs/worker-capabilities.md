@@ -112,11 +112,12 @@ GPU-capable on macOS or Windows.
 
 In addition to the hardware/OS tags above, `sqi-worker` runs a second,
 declarative detection engine (`internal/worker/capabilities`) that looks for
-installed creative applications — Maya, Nuke, Houdini, Blender — and
+installed creative applications — Maya, Nuke, Houdini, Blender, Mistika
+(Boutique/Ultima, VR, Workflows) and ffmpeg — and
 advertises a tag with value `"true"` automatically, with no per-worker
 configuration. This makes the software actually installed on a worker visible
 without hand-editing its config, and it's enough on its own to satisfy the
-`anyOf: ["true"]` gate the six shipped reference presets declare — a standard
+`anyOf: ["true"]` gate the shipped reference presets declare — a standard
 install matches those presets with zero configuration. Run
 `sqi-worker capabilities` any time to see what was found. See
 [`docs/dcc-submitters.md`](dcc-submitters.md#reference-presets) for how these
@@ -145,7 +146,7 @@ running worker is only picked up on the next restart.
 
 ### Built-in detectors
 
-Four built-ins ship embedded in the worker binary, one YAML file per
+Eight built-ins ship embedded in the worker binary, one YAML file per
 application under
 [`internal/worker/capabilities/builtins/`](https://github.com/uberware/sqi/tree/main/internal/worker/capabilities/builtins):
 
@@ -155,6 +156,20 @@ application under
 | `houdini` | `exe hython` (any OS, if on `PATH`); Linux `path_glob /opt/hfs*/bin/houdini`; macOS `path_glob /Applications/Houdini/Houdini*/Frameworks/Houdini.framework`; Windows `registry HKLM\SOFTWARE\Side Effects Software\Houdini` | `(?:hfs\|Houdini)(?P<v>[0-9]+\.[0-9]+)` against the matched path |
 | `nuke` | Linux `path_glob /usr/local/Nuke*/Nuke*`; macOS `path_glob /Applications/Nuke*/Nuke*.app`; Windows `registry HKLM\SOFTWARE\The Foundry\Nuke` | `Nuke([0-9]+\.[0-9]+)` against the matched path |
 | `blender` | `exe blender` (any OS, if on `PATH`); macOS `path_glob /Applications/Blender.app`; Windows `registry HKLM\SOFTWARE\BlenderFoundation\Blender` | none (presence only — no `-<version>` tags) |
+| `ffmpeg` | `exe ffmpeg` (any OS, if on `PATH`) — a PATH tool everywhere, so no install glob and no registry probe | none (presence only) |
+| `mistika` | Linux `path_glob /home/mistika/SGO Apps/Mistika Ultima*/bin/mistika`; macOS `path_glob /Applications/SGO Apps/Mistika Boutique.app*/Contents/MacOS/mistika`; Windows `path_glob C:\Program Files\SGO Apps\Mistika Boutique*\bin\mistika.exe` | `Mistika (?:Ultima\|Boutique) ?(?P<v>[0-9]+\.[0-9]+)` against the matched path |
+| `mistikavr` | Linux `path_glob /home/mistika/SGO Apps/Mistika VR*/bin/vr`; macOS `path_glob /Applications/SGO Apps/Mistika VR.app*/Contents/MacOS/vr`; Windows `path_glob C:\Program Files\SGO Apps\Mistika VR*\bin\vr.exe` | `Mistika VR ?(?P<v>[0-9]+\.[0-9]+)` against the matched path |
+| `mistikaworkflows` | Linux `path_glob /home/mistika/SGO Apps/Mistika Workflows*/bin/workflows`; macOS `path_glob /Applications/SGO Apps/Mistika Workflows.app*/Contents/MacOS/workflows`; Windows `path_glob C:\Program Files\SGO Apps\Mistika Workflows*\bin\workflows.exe` | `Mistika Workflows ?(?P<v>[0-9]+\.[0-9]+)` against the matched path |
+
+The three Mistika detectors are the only built-ins that probe Windows with a
+`path_glob` rather than a `registry` key — SGO installs under a versioned
+directory and registers no well-known key. They also deliberately carry **no
+`exe` check**: their binaries are `mistika`, `vr` and `workflows`, and a bare
+`PATH` probe for the last two would tag workers that have no Mistika at all.
+Detection is therefore by install location only, while the presets still
+invoke the bare command — so the binary must also be on the worker's `PATH`
+for the job to run. The install layouts are taken from the corresponding
+Smedge product definitions.
 
 A `path_glob`/`exe` check's matched signal is a filesystem path, so version
 extraction works there. A `registry` check's signal is the registry key
@@ -439,7 +454,7 @@ steps:
           anyOf: ["true"]
 ```
 
-This is the real syntax the six DCC reference products under `presets/sqi/`
+This is the real syntax the nine DCC reference products under `presets/sqi/`
 use — see [`docs/dcc-submitters.md`](dcc-submitters.md#reference-presets).
 (`presets/sqi/` also ships `Transcoding`-category ffmpeg presets that gate on
 `attr.worker.tag.ffmpeg` instead — see [`docs/preset-library.md`](preset-library.md#transcoding-reference-presets).)

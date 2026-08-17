@@ -21,8 +21,8 @@ func TestBuild(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Build: %v", err)
 	}
-	if len(got) != 11 {
-		t.Fatalf("got %d presets, want 11", len(got))
+	if len(got) != 14 {
+		t.Fatalf("got %d presets, want 14", len(got))
 	}
 	// Sorted by name.
 	want := []string{
@@ -30,7 +30,8 @@ func TestBuild(t *testing.T) {
 		"ffmpeg-segment-transcode-expr",
 		"ffmpeg-segment-transcode-powershell", "ffmpeg-sequence-encode",
 		"ffmpeg-transcode", "houdini-rop-render", "maya-layer-render",
-		"maya-scene-render", "nuke-script-render", "nuke-write-render",
+		"maya-scene-render", "mistika-boutique-render", "mistika-vr-render",
+		"mistika-workflows-render", "nuke-script-render", "nuke-write-render",
 	}
 	for i, w := range want {
 		if got[i].Entry.Name != w {

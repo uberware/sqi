@@ -113,7 +113,7 @@ func TestExprLimits_OrDefaults(t *testing.T) {
 // asking the reader to trust a comment.
 //
 // A limit set absurdly low does not fail safe: it rejects legitimate templates
-// at submit. The cheapest available definition of "legitimate" is the eleven
+// at submit. The cheapest available definition of "legitimate" is the fourteen
 // reference presets this repo itself ships (presets/sqi/*.yaml, the same files
 // internal/product/sqipresets_test.go validates), so no floor may be tight
 // enough to reject one of them.
