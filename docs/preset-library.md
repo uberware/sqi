@@ -53,6 +53,11 @@ promised) and **update detection** (if the hash in the index changes, the instal
 product is shown as having an update available). It is not a cryptographic authorship
 signature — the trust boundary is the configured index URL itself.
 
+The index carries `description` but **not** `readme`. `description` is there
+because the preset list page searches it; `readme` is not searched, so shipping
+it in the index would grow every client's cached index for nothing. A preset's
+readme arrives with its definition when the detail page is opened.
+
 ---
 
 ## Configuration
