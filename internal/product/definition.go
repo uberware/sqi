@@ -26,6 +26,9 @@ func validateName(name string) error {
 	if name == "" {
 		return errors.New("product: name is required")
 	}
+	if err := checkLen("name", name, MaxNameLen); err != nil {
+		return err
+	}
 	if !slugPattern.MatchString(name) {
 		return fmt.Errorf("product: name %q is not a valid slug (lowercase, digits, '-', '_', one optional '/')", name)
 	}
@@ -193,17 +196,21 @@ func ParseDefinition(data []byte, opts ValidateOptions) (store.Product, error) {
 	if err != nil {
 		return store.Product{}, fmt.Errorf("product: re-serialize template: %w", err)
 	}
-	if err := ValidateTemplate(string(rawTemplate), store.TemplateFormatYAML, opts); err != nil {
-		return store.Product{}, err
-	}
-	return store.Product{
+	p := store.Product{
 		Name:        df.Name,
 		Title:       df.Title,
 		Description: df.Description,
 		Readme:      df.Readme,
 		Category:    df.Category,
 		Version:     df.Version,
-		Template:    string(rawTemplate),
 		Format:      store.TemplateFormatYAML,
-	}, nil
+	}
+	if err := ValidateMetadata(p); err != nil {
+		return store.Product{}, err
+	}
+	if err := ValidateTemplate(string(rawTemplate), store.TemplateFormatYAML, opts); err != nil {
+		return store.Product{}, err
+	}
+	p.Template = string(rawTemplate)
+	return p, nil
 }
