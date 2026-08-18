@@ -1282,10 +1282,13 @@ components:
           properties:
             readme:
               type: string
+              maxLength: 8000
               description: >-
                 Long-form documentation in a restricted Markdown subset
                 (paragraphs, lists, fenced code, ATX headings, bold, italic,
-                inline code, links). Rendered on the preset detail page only.
+                inline code, links). Rendered on detail pages only. Unlike
+                `description` it is NOT searched, and it is not carried in the
+                preset library index.
             template:
               type: string
             format:
