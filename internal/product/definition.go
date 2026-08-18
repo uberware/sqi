@@ -152,6 +152,7 @@ type definitionFile struct {
 	Name        string    `yaml:"name"`
 	Title       string    `yaml:"title"`
 	Description string    `yaml:"description"`
+	Readme      string    `yaml:"readme"`
 	Category    string    `yaml:"category"`
 	Version     string    `yaml:"version"`
 	Template    yaml.Node `yaml:"template"`
@@ -199,6 +200,7 @@ func ParseDefinition(data []byte, opts ValidateOptions) (store.Product, error) {
 		Name:        df.Name,
 		Title:       df.Title,
 		Description: df.Description,
+		Readme:      df.Readme,
 		Category:    df.Category,
 		Version:     df.Version,
 		Template:    string(rawTemplate),
