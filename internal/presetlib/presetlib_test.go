@@ -9,6 +9,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -161,5 +162,21 @@ func TestFetchIndex_StaleCache_OnFailedRefresh(t *testing.T) {
 	}
 	if len(got) > 0 && got[0].Name != entries[0].Name {
 		t.Fatalf("stale cache entry mismatch: want %q, got %q", entries[0].Name, got[0].Name)
+	}
+}
+
+// IndexEntry deliberately carries NO readme. The readme reaches PresetDetail
+// from the fetched DEFINITION, not from the index -- presetDetailResponse is
+// built from def, and only entry.Name and the install status come from the
+// index. Description is in the index solely because the preset LIST page
+// searches it; readme is not searched, so putting it in the index would grow
+// every client's cached index for nothing and change the remote index format.
+//
+// This test exists so that adding it later is a deliberate decision rather than
+// drift while implementing "make readme searchable".
+func TestIndexEntry_HasNoReadmeField(t *testing.T) {
+	t.Parallel()
+	if _, ok := reflect.TypeFor[presetlib.IndexEntry]().FieldByName("Readme"); ok {
+		t.Fatal("IndexEntry gained a Readme field; read this test's comment before removing it")
 	}
 }

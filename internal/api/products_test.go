@@ -577,6 +577,76 @@ func TestProducts_SubmitWithDependsOn_MissingUpstreamIs422(t *testing.T) {
 
 // TestProducts_SubmitRejectsInvalidRetryOverrides asserts the product submit
 // endpoint applies the same retry-override bounds as direct job submission.
+// TestCreateProduct_ReadmeRoundTrips verifies readme is accepted on create,
+// distinct from description, and comes back on both the create response and
+// a subsequent GET.
+func TestCreateProduct_ReadmeRoundTrips(t *testing.T) {
+	srv := newProductRouter(fake.New())
+	req := newReq(t, http.MethodPost, "/api/v1/products", jsonBody(t, map[string]any{
+		"name": "readme-probe", "title": "Readme Probe", "description": "blurb",
+		"readme":   "# Docs\n\nBody.\n",
+		"template": validTemplate, "format": "yaml",
+	}))
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want 201: %s", rec.Code, rec.Body.String())
+	}
+	var got struct {
+		Readme      string `json:"readme"`
+		Description string `json:"description"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if got.Readme != "# Docs\n\nBody.\n" {
+		t.Errorf("readme = %q, want the markdown body", got.Readme)
+	}
+	if got.Description != "blurb" {
+		t.Errorf("description = %q, want %q", got.Description, "blurb")
+	}
+
+	rec = httptest.NewRecorder()
+	srv.ServeHTTP(rec, newReq(t, http.MethodGet, "/api/v1/products/readme-probe", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("get status = %d, want 200", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), `"readme"`) {
+		t.Error("GET response has no readme field")
+	}
+}
+
+// TestCreateProduct_RejectsOverlongMetadata verifies decodeProductBody enforces
+// product.ValidateMetadata's length caps with a 400, naming the offending field.
+func TestCreateProduct_RejectsOverlongMetadata(t *testing.T) {
+	tests := []struct {
+		field string
+		size  int
+	}{
+		{"description", product.MaxDescriptionLen + 1},
+		{"readme", product.MaxReadmeLen + 1},
+		{"title", product.MaxTitleLen + 1},
+	}
+	for _, tt := range tests {
+		t.Run(tt.field, func(t *testing.T) {
+			srv := newProductRouter(fake.New())
+			payload := map[string]string{
+				"name": "cap-probe", "title": "Cap Probe",
+				"template": validTemplate, "format": "yaml",
+			}
+			payload[tt.field] = strings.Repeat("a", tt.size)
+			rec := httptest.NewRecorder()
+			srv.ServeHTTP(rec, newReq(t, http.MethodPost, "/api/v1/products", jsonBody(t, payload)))
+			if rec.Code != http.StatusBadRequest {
+				t.Fatalf("status = %d, want 400: %s", rec.Code, rec.Body.String())
+			}
+			if !strings.Contains(rec.Body.String(), tt.field) {
+				t.Errorf("problem body %q does not name the field %q", rec.Body.String(), tt.field)
+			}
+		})
+	}
+}
+
 func TestProducts_SubmitRejectsInvalidRetryOverrides(t *testing.T) {
 	srv := newProductTestServer(t)
 	farmID, queueID := seedProductSubmitPrereqs(t, srv)
