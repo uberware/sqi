@@ -488,5 +488,5 @@ sqi-server config print --config /etc/sqi/sqi-server.yaml
 
 ```sh
 sqi-server version
-# sqi-server v0.2.0 (commit abc1234, built 2026-07-09, go1.26.3)
+# sqi-server v0.3.0 (commit abc1234, built 2026-07-09, go1.26.3)
 ```

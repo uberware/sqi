@@ -17,10 +17,10 @@ ghcr.io/uberware/sqi/sqi-worker:<tag>
 | Tag | Description |
 |---|---|
 | `latest` | Rolling build of the `main` branch — republished on every push to `main` (may be ahead of the last tagged release) |
-| `v0.2.0` | A specific tagged release |
+| `v0.3.0` | A specific tagged release |
 | `v0` | Rolling major-version tag — the newest `v0.x` release |
 
-For production, pin a specific release tag (`v0.2.0`) for reproducibility.
+For production, pin a specific release tag (`v0.3.0`) for reproducibility.
 There is no `main` tag; the `latest` tag tracks the `main` branch.
 
 Pull the image:

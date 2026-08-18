@@ -33,7 +33,7 @@ http://localhost:8080.
 ## Option B — Docker Compose
 
 ```sh
-curl -LO https://raw.githubusercontent.com/uberware/sqi/v0.2.0/deploy/docker-compose.yml
+curl -LO https://raw.githubusercontent.com/uberware/sqi/v0.3.0/deploy/docker-compose.yml
 docker compose -f docker-compose.yml up -d
 ```
 

@@ -190,10 +190,10 @@ image, plus the manifest tags).
 ## Step 6: Cut the real release
 
 Set the target version once and reuse it throughout this section (examples below
-use `0.2.0`):
+use `0.3.0`):
 
 ```bash
-VERSION=0.2.0
+VERSION=0.3.0
 ```
 
 **Procedure:**
