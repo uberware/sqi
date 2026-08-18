@@ -3,6 +3,7 @@
 import { useCallback } from 'react'
 import { Link, useNavigate, useParams } from 'react-router'
 import PageHeader from '@/components/PageHeader'
+import Markdown from '@/components/Markdown'
 import { useToast } from '@/components/Toast'
 import { useProduct } from '@/api/queries'
 import { useDeleteProduct } from '@/api/mutations'
@@ -40,6 +41,7 @@ export default function ProductDetail() {
         name: '',
         title: product.title,
         description: product.description,
+        readme: product.readme,
         category: product.category,
         version: product.version,
         template: product.template,
@@ -98,6 +100,7 @@ export default function ProductDetail() {
       <div className={styles.nameArea}>
         <h2 className={styles.productName}>{product.title}</h2>
         {product.description && <p className={styles.productDescription}>{product.description}</p>}
+        {product.readme && <Markdown source={product.readme} />}
       </div>
 
       <dl className={styles.meta}>

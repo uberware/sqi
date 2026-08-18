@@ -24,6 +24,10 @@
   composes: input from './entityForm.module.css';
 }
 
+.textarea {
+  composes: textarea from './entityForm.module.css';
+}
+
 .footer {
   composes: footer from './entityForm.module.css';
 }

@@ -69,6 +69,7 @@ function makePreset(over: Partial<PresetDetailType> = {}): PresetDetailType {
     name: 'nuke-comp',
     title: 'Nuke Composite',
     description: 'Renders a Nuke composite',
+    readme: '',
     category: 'Compositing',
     version: '1.0.0',
     status: 'not_installed',
@@ -83,6 +84,7 @@ function makeProduct(over: Partial<Product> = {}): Product {
     name: 'nuke-comp',
     title: 'Nuke Composite',
     description: 'Renders a Nuke composite',
+    readme: '',
     category: 'Compositing',
     version: '1.0.0',
     source: 'installed',
@@ -168,6 +170,21 @@ describe('PresetDetail', () => {
     await waitFor(() =>
       expect(screen.getByTestId('location')).toHaveTextContent('/products/nuke-comp'),
     )
+  })
+
+  it('renders the readme as markdown', async () => {
+    fetchMock.mockResolvedValueOnce(ok(makePreset({ readme: '# Usage\n\nRun it with **care**.' })))
+    renderDetail('/presets/nuke-comp')
+    expect(await screen.findByText('Usage')).toBeInTheDocument()
+    expect(screen.getByText('Usage').tagName).toBe('H3')
+    expect(screen.getByText('care').tagName).toBe('STRONG')
+  })
+
+  it('renders nothing for an absent readme', async () => {
+    fetchMock.mockResolvedValueOnce(ok(makePreset({ readme: '' })))
+    renderDetail('/presets/nuke-comp')
+    await screen.findByText('Nuke Composite')
+    expect(screen.queryByRole('heading', { level: 3 })).not.toBeInTheDocument()
   })
 
   describe('role gating (products.manage)', () => {

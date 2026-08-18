@@ -3,6 +3,7 @@
 import { useCallback } from 'react'
 import { useNavigate, useParams } from 'react-router'
 import PageHeader from '@/components/PageHeader'
+import Markdown from '@/components/Markdown'
 import { useToast } from '@/components/Toast'
 import { usePreset } from '@/api/queries'
 import { useInstallPreset } from '@/api/mutations'
@@ -66,6 +67,7 @@ export default function PresetDetail() {
       <div className={styles.nameArea}>
         <h2 className={styles.presetTitle}>{preset.title}</h2>
         {preset.description && <p className={styles.presetDescription}>{preset.description}</p>}
+        {preset.readme && <Markdown source={preset.readme} />}
       </div>
 
       <dl className={styles.meta}>

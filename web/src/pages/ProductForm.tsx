@@ -11,6 +11,7 @@ import type { ProductInput } from '@/api/mutations'
 import { ApiError } from '@/api/client'
 import { detectFormat } from '@/lib/format'
 import { parsePathDeliveries, serializePathDeliveries } from '@/lib/pathDelivery'
+import { PRODUCT_LIMITS } from '@/lib/productLimits'
 import type { PathTranslation } from '@/api/types'
 import { ProductPathDelivery } from '@/pages/ProductPathDelivery'
 import styles from './ProductForm.module.css'
@@ -23,6 +24,7 @@ interface Defaults {
   name: string
   title: string
   description: string
+  readme: string
   category: string
   version: string
   template: string
@@ -40,6 +42,7 @@ const EMPTY_DEFAULTS: Defaults = {
   name: '',
   title: '',
   description: '',
+  readme: '',
   category: '',
   version: '',
   template: '',
@@ -59,6 +62,7 @@ function ProductFormInner({ mode, defaults }: InnerProps) {
   const [name, setName] = useState(defaults.name)
   const [title, setTitle] = useState(defaults.title)
   const [description, setDescription] = useState(defaults.description)
+  const [readme, setReadme] = useState(defaults.readme)
   const [category, setCategory] = useState(defaults.category)
   const [version, setVersion] = useState(defaults.version)
   const [template, setTemplate] = useState(defaults.template)
@@ -101,6 +105,7 @@ function ProductFormInner({ mode, defaults }: InnerProps) {
       name: trimmedName,
       title: title.trim(),
       description: description.trim(),
+      readme: readme.trim(),
       category: category.trim(),
       version: version.trim(),
       template,
@@ -187,7 +192,27 @@ function ProductFormInner({ mode, defaults }: InnerProps) {
             className={styles.input}
             value={description}
             onChange={(e) => setDescription(e.target.value)}
+            maxLength={PRODUCT_LIMITS.description}
           />
+        </div>
+
+        <div className={styles.field}>
+          <label htmlFor="pf-readme" className={styles.label}>
+            Readme (optional, Markdown)
+          </label>
+          <textarea
+            id="pf-readme"
+            className={styles.textarea}
+            rows={10}
+            maxLength={PRODUCT_LIMITS.readme}
+            value={readme}
+            onChange={(e) => setReadme(e.target.value)}
+            aria-describedby="pf-readme-help"
+          />
+          <p id="pf-readme-help" className={styles.hint}>
+            Long-form documentation, shown on this product&apos;s detail page. Supports paragraphs,
+            lists, fenced code, headings, bold, italic, inline code and links.
+          </p>
         </div>
 
         <div className={styles.row}>
@@ -273,6 +298,7 @@ export default function ProductForm({ mode }: Props) {
           name: data.name,
           title: data.title,
           description: data.description,
+          readme: data.readme,
           category: data.category,
           version: data.version,
           template: data.template,

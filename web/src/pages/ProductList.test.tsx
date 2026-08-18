@@ -69,6 +69,7 @@ function makeProduct(over: Partial<Product> = {}): Product {
     name: 'my-render',
     title: 'My Render',
     description: '',
+    readme: '',
     category: 'Rendering',
     version: '1.0.0',
     source: 'custom',
@@ -166,6 +167,19 @@ describe('ProductList', () => {
     renderList('/products?search=rendering')
     expect(await screen.findByRole('link', { name: 'a' })).toBeInTheDocument()
     expect(screen.queryByRole('link', { name: 'b' })).not.toBeInTheDocument()
+  })
+
+  // readme is deliberately NOT part of the search haystack. Keeping it out is
+  // what lets sqi skip a markdown stripper in both TypeScript and Python, and
+  // keeps the remote preset index unchanged. Read the spec before changing this.
+  it('does not match a term that appears only in the readme', async () => {
+    fetchMock.mockResolvedValueOnce(
+      ok([makeProduct({ name: 'alpha', title: 'Alpha', description: '', readme: 'zzunique' })]),
+    )
+    renderList()
+    await screen.findByText('Alpha')
+    await userEvent.type(screen.getByRole('searchbox'), 'zzunique')
+    await waitFor(() => expect(screen.queryByText('Alpha')).not.toBeInTheDocument())
   })
 
   it('shows a no-match row distinct from the onboarding empty state', async () => {

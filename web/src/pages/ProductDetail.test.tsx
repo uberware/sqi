@@ -69,6 +69,7 @@ function makeProduct(over: Partial<Product> = {}): Product {
     name: 'my-render',
     title: 'My Render',
     description: 'desc',
+    readme: '',
     category: 'Rendering',
     version: '1.0.0',
     source: 'custom',
@@ -198,6 +199,21 @@ describe('ProductDetail', () => {
     renderDetail('/products/studio%2Fmaya')
     await screen.findByText('name: my-template') // wait for product to load
     expect(fetchMock.mock.calls[0]?.[0]).toBe('/api/v1/products/studio%2Fmaya')
+  })
+
+  it('renders the readme as markdown', async () => {
+    fetchMock.mockResolvedValueOnce(ok(makeProduct({ readme: '# Usage\n\nRun it with **care**.' })))
+    renderDetail('/products/my-render')
+    expect(await screen.findByText('Usage')).toBeInTheDocument()
+    expect(screen.getByText('Usage').tagName).toBe('H3')
+    expect(screen.getByText('care').tagName).toBe('STRONG')
+  })
+
+  it('renders nothing for an absent readme', async () => {
+    fetchMock.mockResolvedValueOnce(ok(makeProduct({ readme: '' })))
+    renderDetail('/products/my-render')
+    await screen.findByText('My Render')
+    expect(screen.queryByRole('heading', { level: 3 })).not.toBeInTheDocument()
   })
 
   describe('role gating (products.manage)', () => {
