@@ -134,6 +134,7 @@ with SqiClient("http://localhost:8080") as sqi:
         template="specificationVersion: jobtemplate-2023-09\nname: My Renderer\nsteps: []\n",
         format="yaml",
         description="Render a frame range.",
+        readme="# My Renderer\n\nLonger usage notes in Markdown go here.\n",
         category="Rendering",
         version="1.0.0",
     )
@@ -165,6 +166,17 @@ with SqiClient("http://localhost:8080") as sqi:
     )
     print("submitted job", job.id)
 ```
+
+A product has two independent text fields: `description` is a short
+(max 500 character) plain-text blurb -- not Markdown, since it reaches
+consumers that cannot render markup, such as the Blender addon's tooltip --
+and it is the field product search matches on. `readme` is long-form Markdown
+(max 8000 characters), rendered only on the product's detail page in the web
+UI; it is never searched. Both caps are enforced server-side (HTTP 400 on
+create/update) and are not validated client-side.
+
+`update_product` is a full PUT replacement: any field omitted from the call,
+including `readme`, is cleared on the server rather than left unchanged.
 
 `get_product_parameters` raises `NotFoundError` when the product does not exist
 and `ValidationError` when the stored template cannot be parsed (HTTP 422).

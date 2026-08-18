@@ -1326,6 +1326,12 @@ class Product:
     name: str
     title: str = ""
     description: str = ""
+    """Short plain-text catalog blurb (max 500 characters). Not Markdown — it
+    reaches consumers that cannot render markup, such as the Blender addon's
+    tooltip. It is also the field product search matches on."""
+    readme: str = ""
+    """Long-form Markdown documentation (max 8000 characters), rendered on the
+    product's detail page in the web UI. It is NOT searched."""
     category: str = ""
     version: str = ""
     source: str = ""
@@ -1344,6 +1350,7 @@ class Product:
             name=_as_str(data.get("name")),
             title=_as_str(data.get("title")),
             description=_as_str(data.get("description")),
+            readme=_as_str(data.get("readme")),
             category=_as_str(data.get("category")),
             version=_as_str(data.get("version")),
             source=_as_str(data.get("source")),

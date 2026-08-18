@@ -658,6 +658,27 @@ def test_product_from_dict() -> None:
     assert p.format == "yaml"
 
 
+def test_product_parses_readme() -> None:
+    from sqi_client.models import Product
+
+    p = Product.from_dict({"name": "probe", "readme": "# Docs\n\nBody.\n"})
+    assert p.readme == "# Docs\n\nBody.\n"
+
+
+def test_product_readme_defaults_empty() -> None:
+    from sqi_client.models import Product
+
+    assert Product.from_dict({"name": "probe"}).readme == ""
+
+
+def test_product_readme_tolerates_mistyped_value() -> None:
+    # Matches the module's tolerant-parsing contract: a mistyped field falls
+    # back to a type-appropriate default rather than raising.
+    from sqi_client.models import Product
+
+    assert Product.from_dict({"name": "probe", "readme": 17}).readme == ""
+
+
 def test_product_parameter_from_dict_with_user_interface() -> None:
     from sqi_client.models import ProductParameter
 

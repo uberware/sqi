@@ -1490,6 +1490,7 @@ class SqiClient:
         format: str,
         title: str | None = None,
         description: str | None = None,
+        readme: str | None = None,
         category: str | None = None,
         version: str | None = None,
     ) -> Product:
@@ -1499,10 +1500,26 @@ class SqiClient:
             name: Stable product name (slug).
             template: Raw OpenJD template text.
             format: ``yaml`` or ``json``.
-            title, description, category, version: Optional metadata.
+            title, category, version: Optional metadata.
+            description: Short plain-text catalog blurb (max 500 characters).
+                Plain text, not Markdown -- it reaches consumers that cannot
+                render markup, such as the Blender addon's tooltip. It is also
+                the field product search matches on.
+            readme: Long-form Markdown documentation (max 8000 characters),
+                rendered on the product's detail page in the web UI. It is NOT
+                searched.
         """
         return self._products.create(
-            _product_body(name, title, description, category, version, template, format)
+            _product_body(
+                name,
+                template,
+                format,
+                title=title,
+                description=description,
+                readme=readme,
+                category=category,
+                version=version,
+            )
         )
 
     def update_product(
@@ -1513,12 +1530,27 @@ class SqiClient:
         format: str,
         title: str | None = None,
         description: str | None = None,
+        readme: str | None = None,
         category: str | None = None,
         version: str | None = None,
     ) -> Product:
-        """Replace a custom product's fields (PUT, full replacement) and return it."""
+        """Replace a custom product's fields (PUT, full replacement) and return it.
+
+        Full replace: an omitted ``readme`` is CLEARED, not preserved, exactly
+        as ``description`` already behaves.
+        """
         return self._products.update(
-            name, _product_body(name, title, description, category, version, template, format)
+            name,
+            _product_body(
+                name,
+                template,
+                format,
+                title=title,
+                description=description,
+                readme=readme,
+                category=category,
+                version=version,
+            ),
         )
 
     def delete_product(self, name: str) -> None:
@@ -1932,18 +1964,26 @@ def _compute_location_body(
 
 def _product_body(
     name: str,
-    title: str | None,
-    description: str | None,
-    category: str | None,
-    version: str | None,
     template: str,
     template_format: str,
+    *,
+    title: str | None = None,
+    description: str | None = None,
+    readme: str | None = None,
+    category: str | None = None,
+    version: str | None = None,
 ) -> dict[str, Any]:
+    # description and readme are both str | None: with positional arguments a
+    # transposition of the two would pass mypy silently and ship a bug, so
+    # every optional field beyond the first three positional ones is
+    # keyword-only.
     body: dict[str, Any] = {"name": name, "template": template, "format": template_format}
     if title is not None:
         body["title"] = title
     if description is not None:
         body["description"] = description
+    if readme is not None:
+        body["readme"] = readme
     if category is not None:
         body["category"] = category
     if version is not None:
