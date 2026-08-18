@@ -1,6 +1,6 @@
 # `sqi` Roadmap and Technical Architecture
 
-> **Status:** v0.2.0 (Phase 2) released. Phase 3 (auth and multi-user) — including task isolation (run-as-user) — is complete and merged on `main`, unreleased ahead of the v0.3 release. Details may change with requests, feedback, and discoveries as development progresses.
+> **Status:** v0.3.0 (Phase 3) released — opt-in authentication and multi-user support, including task isolation (run-as-user), plus the official OpenJD `EXPR` extension and expanded ffmpeg and Mistika reference presets. **Phase 4** (production hardening) is next. Details may change with requests, feedback, and discoveries as development progresses.
 
 This document provides technical detail on `sqi`'s architecture, core concepts, and development roadmap. For the vision and feature overview, see [README.md](index.md).
 
@@ -250,7 +250,7 @@ NATS can run embedded within `sqi-server` (simple mode) or as a separate cluster
 - Cross-job dependencies — a submission may declare `depends_on` upstream jobs (same farm, across queues); dependents are held `blocked` until every upstream completes, then released (or canceled if an upstream fails)
 - Testing job presets — ready-to-run `test-render`/`test-steps` presets (bash and PowerShell) published to the preset library for smoke-testing a farm
 
-### Phase 3: Auth and Multi-User (v0.3) — complete, unreleased
+### Phase 3: Auth and Multi-User (v0.3) ✅ Released
 
 Authentication is **opt-in and off by default** — an unconfigured server behaves exactly as it did
 before Phase 3. See [docs/auth.md](auth.md) for the model and setup.
@@ -271,7 +271,7 @@ before Phase 3. See [docs/auth.md](auth.md) for the model and setup.
   [docs/worker-configuration.md](worker-configuration.md) for the model,
   setup, and known gaps.
 
-### Post-Phase-3, pre-v0.3: OpenJD `EXPR` and expanded reference presets — complete, unreleased
+### Also in v0.3: OpenJD `EXPR` and expanded reference presets ✅ Released
 
 - **OpenJD `EXPR` extension** — the official expression-language extension is
   fully implemented and `StatusSupported`: expression core, type system,

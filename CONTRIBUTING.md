@@ -214,7 +214,7 @@ The [ROADMAP.md](ROADMAP.md) document outlines development phases. Current prior
 
 - **Phase 1** (v0.1 — released): Core scheduler, pull-based workers, basic web UI, OpenJD execution
 - **Phase 2** (v0.2 — released): Product system, preset library, DCC submitters
-- **Phase 3** (complete, unreleased): Auth (local accounts, API keys, RBAC, LDAP/AD, OAuth2/OIDC SSO), multi-user role model, and run-as-user task isolation
+- **Phase 3** (v0.3 — released): Auth (local accounts, API keys, RBAC, LDAP/AD, OAuth2/OIDC SSO), multi-user role model, and run-as-user task isolation; v0.3 also ships the OpenJD `EXPR` extension and expanded ffmpeg and Mistika reference presets
 - **Phase 4** (next): Production hardening, PostgreSQL, HA, auto-scaling
 
 Code contributions aligned with the current phase are most likely to be accepted quickly. Contributions targeting later phases are welcome but may take longer to review if they require design discussion.
