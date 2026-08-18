@@ -161,6 +161,21 @@ export default function Markdown({ source }: { source: string }): ReactElement {
       flushList()
       continue
     }
+    // Lazy continuation (CommonMark): a plain text line while a list is open
+    // and no paragraph is in progress belongs to the item above it, not to a
+    // new paragraph. Without this, a bullet wrapped across source lines --
+    // which every shipped preset readme does -- silently splits into a
+    // one-item list plus an orphaned paragraph, and a wrapped ordered item
+    // splits its list too, so the next numbered line starts a fresh <ol> and
+    // renders "1." again instead of continuing the count.
+    if (list !== null && para.length === 0) {
+      const lastIndex = list.items.length - 1
+      const lastItem = list.items[lastIndex]
+      if (lastItem !== undefined) {
+        list.items[lastIndex] = `${lastItem} ${line.trim()}`
+        continue
+      }
+    }
     flushList()
     para.push(line)
   }

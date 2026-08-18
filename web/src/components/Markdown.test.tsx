@@ -28,6 +28,35 @@ describe('Markdown', () => {
     expect(screen.getAllByRole('listitem')).toHaveLength(2)
   })
 
+  // CommonMark lazy continuation: a plain text line right after a list item,
+  // with no blank line between them, belongs to that item -- not a new
+  // paragraph. This is the shape every shipped preset readme uses (bullets
+  // wrapped across source lines).
+  it('folds a wrapped bullet continuation into the same list item', () => {
+    render(<Markdown source={'- one\ncontinued text'} />)
+    const items = screen.getAllByRole('listitem')
+    expect(items).toHaveLength(1)
+    expect(items[0]).toHaveTextContent('one continued text')
+  })
+
+  it('keeps a wrapped ordered list as one <ol> with correctly numbered items', () => {
+    const { container } = render(<Markdown source={'1. first\ncontinued\n2. second'} />)
+    const lists = container.querySelectorAll('ol')
+    expect(lists).toHaveLength(1)
+    const items = screen.getAllByRole('listitem')
+    expect(items).toHaveLength(2)
+    expect(items[0]).toHaveTextContent('first continued')
+    expect(items[1]).toHaveTextContent('second')
+  })
+
+  it('still ends a list on a blank line, not folding the following text', () => {
+    render(<Markdown source={'- a\n\nplain'} />)
+    const items = screen.getAllByRole('listitem')
+    expect(items).toHaveLength(1)
+    expect(items[0]).toHaveTextContent('a')
+    expect(screen.getByText('plain').tagName).toBe('P')
+  })
+
   it('renders fenced code blocks verbatim, without inline parsing', () => {
     render(<Markdown source={'```\nnot **bold** here\n```'} />)
     expect(screen.getByText(/not \*\*bold\*\* here/)).toBeInTheDocument()
