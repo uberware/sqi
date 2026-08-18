@@ -7,19 +7,25 @@ import styles from './Markdown.module.css'
  * readmes come from a remote index, so this allowlist is the only control. */
 const SAFE_SCHEMES = ['http:', 'https:', 'mailto:']
 
-/** True when href's scheme is allowlisted. Whitespace and control characters
- * are stripped before matching: `java\tscript:` is a spelling browsers have
+/** Returns href with its control and whitespace characters stripped when the
+ * scheme is allowlisted, or null when it is not. Lowercasing is applied only
+ * to the extracted scheme for the allowlist comparison, never to the
+ * returned string -- the caller renders this return value directly, so the
+ * string that is checked and the string that reaches the DOM are the same
+ * value, not merely argued-equivalent. Whitespace and control characters are
+ * stripped before matching: `java\tscript:` is a spelling browsers have
  * historically accepted, and a naive prefix test would miss it. */
-function isSafeHref(href: string): boolean {
+function safeHref(href: string): string | null {
   // Strips every character at or below U+0020 -- space, tab, newline and
   // the C0 controls. A class such as /[ -]/ would strip spaces and hyphens
   // but leave the tab in `java\tscript:` intact, which is the case the
   // security test covers.
   // eslint-disable-next-line no-control-regex -- intentional: strip C0 controls, see comment above
-  const cleaned = href.replace(/[\u0000-\u0020]/g, '').toLowerCase()
-  const colon = cleaned.indexOf(':')
-  if (colon === -1) return false
-  return SAFE_SCHEMES.includes(cleaned.slice(0, colon + 1))
+  const stripped = href.replace(/[\u0000-\u0020]/g, '')
+  const colon = stripped.indexOf(':')
+  if (colon === -1) return null
+  const scheme = stripped.slice(0, colon + 1).toLowerCase()
+  return SAFE_SCHEMES.includes(scheme) ? stripped : null
 }
 
 const INLINE = /(\*\*[^*]+\*\*|\*[^*]+\*|_[^_]+_|`[^`]+`|\[[^\]]*\]\([^)\s]*\))/g
@@ -48,11 +54,10 @@ function inline(text: string, keyPrefix: string): ReactNode[] {
       // emitted as text, so emitting the token as text too degrades the whole
       // construct to literal characters rather than to a link labelled `alt`.
       const isImage = match.index > 0 && text[match.index - 1] === '!'
-      if (isImage) {
-        out.push(token)
-      } else if (isSafeHref(href)) {
+      const safe = isImage ? null : safeHref(href)
+      if (safe !== null) {
         out.push(
-          <a key={key} href={href} target="_blank" rel="noopener noreferrer">
+          <a key={key} href={safe} target="_blank" rel="noopener noreferrer">
             {label}
           </a>,
         )

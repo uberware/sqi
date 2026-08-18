@@ -59,6 +59,19 @@ describe('Markdown', () => {
     expect(screen.getByRole('link', { name: 'docs' })).toHaveAttribute('rel', 'noopener noreferrer')
   })
 
+  // Regression guard for a real defect: safeHref must render the exact
+  // string it validated, not a case-folded copy used only for the scheme
+  // check. A `href={cleaned}` implementation lowercases the whole href and
+  // would turn this into a dead link ("mydoc.pdf" 404s where "MyDoc.pdf"
+  // exists), so this must fail against that implementation.
+  it('preserves path case in a safe href exactly as checked', () => {
+    render(<Markdown source={'[docs](https://example.com/MyDoc.pdf)'} />)
+    expect(screen.getByRole('link', { name: 'docs' })).toHaveAttribute(
+      'href',
+      'https://example.com/MyDoc.pdf',
+    )
+  })
+
   it('degrades unsupported syntax to literal text', () => {
     render(<Markdown source={'| a | b |'} />)
     expect(screen.getByText(/\| a \| b \|/)).toBeInTheDocument()
@@ -77,6 +90,39 @@ describe('Markdown', () => {
       render(<Markdown source={`[click](${href})`} />)
       expect(screen.queryByRole('link')).not.toBeInTheDocument()
       expect(screen.getByText(/click/)).toBeInTheDocument()
+    })
+
+    // \s-class whitespace (space, tab, newline, CR, FF, vertical tab) never
+    // reaches safeHref at all: the INLINE token regex's own href group
+    // (`[^)\s]*`) excludes it, so a leading space or an embedded tab breaks
+    // the link match structurally and the whole "[label](href)" construct
+    // degrades to literal text before safeHref ever runs. These two pin that
+    // -- the safety net two layers deep, not just at safeHref.
+    it('degrades a leading-whitespace href to literal text, never a link', () => {
+      const { container } = render(<Markdown source={'[x](  https://example.com)'} />)
+      expect(screen.queryByRole('link')).not.toBeInTheDocument()
+      // getByText normalizes whitespace, which would hide the very thing
+      // being pinned here, so assert on textContent directly.
+      expect(container.textContent).toBe('[x](  https://example.com)')
+    })
+
+    it('degrades a tab-embedded href to literal text, never a link', () => {
+      render(<Markdown source={'[x](https://example.com/a\tb)'} />)
+      expect(screen.queryByRole('link')).not.toBeInTheDocument()
+    })
+
+    // A C0 control byte outside the \s class (U+0001 here) is NOT excluded
+    // by INLINE's href group, so unlike the two cases above it DOES reach
+    // safeHref. This is the reachable version of the "checked string must
+    // equal rendered string" property: safeHref strips it from the value
+    // that reaches the DOM, and -- per the case-preservation guard above --
+    // does so without touching the case of the rest of the path.
+    it('strips a reachable control byte from a safe href while preserving case', () => {
+      render(<Markdown source={'[x](https://example.com/My\x01Path)'} />)
+      expect(screen.getByRole('link', { name: 'x' })).toHaveAttribute(
+        'href',
+        'https://example.com/MyPath',
+      )
     })
 
     it('renders raw HTML as visible text', () => {
