@@ -34,13 +34,11 @@ readme: |
     name the intermediate slice files the join step globs for.
   - **DurationSeconds** - the source's length in seconds. Type it in: nothing
     in the job template can measure a source file before the job is
-    submitted. Getting it wrong has two different failure shapes:
-    - **Too small** silently drops the tail of the source - the last
-      slice(s) are never scheduled.
-    - **Too large** schedules an extra task past the real end of the source.
-      `ffmpeg` transcodes silence or a frozen frame for that slice, wasting a
-      task; the join step still globs it up, joins it in, and deletes it
-      same as every other slice.
+    submitted. Too small silently drops the tail of the source - the last
+    slice(s) are never scheduled. Too large schedules an extra task past the
+    real end of the source: `ffmpeg` transcodes silence or a frozen frame for
+    that slice, wasting a task, but the join step still globs it up, joins
+    it in, and deletes it same as every other slice.
   - **SegmentSeconds** - the length of each slice, and so the number of
     tasks.
   - **VideoCodec**, **Quality** (CRF, lower is better), **AudioCodec** -
