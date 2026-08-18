@@ -149,6 +149,7 @@ function ProductFormInner({ mode, defaults }: InnerProps) {
               aria-invalid={nameInvalid || undefined}
               required
               aria-required="true"
+              maxLength={PRODUCT_LIMITS.name}
             />
             {(nameFocused || nameInvalid) && (
               <div className={styles.nameHelp}>
@@ -180,6 +181,7 @@ function ProductFormInner({ mode, defaults }: InnerProps) {
             onChange={(e) => setTitle(e.target.value)}
             required
             aria-required="true"
+            maxLength={PRODUCT_LIMITS.title}
           />
         </div>
 
@@ -225,6 +227,7 @@ function ProductFormInner({ mode, defaults }: InnerProps) {
               className={styles.input}
               value={category}
               onChange={(e) => setCategory(e.target.value)}
+              maxLength={PRODUCT_LIMITS.category}
             />
           </div>
           <div className={styles.field}>
@@ -236,6 +239,7 @@ function ProductFormInner({ mode, defaults }: InnerProps) {
               className={styles.input}
               value={version}
               onChange={(e) => setVersion(e.target.value)}
+              maxLength={PRODUCT_LIMITS.version}
             />
           </div>
         </div>

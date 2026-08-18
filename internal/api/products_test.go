@@ -575,8 +575,6 @@ func TestProducts_SubmitWithDependsOn_MissingUpstreamIs422(t *testing.T) {
 	}
 }
 
-// TestProducts_SubmitRejectsInvalidRetryOverrides asserts the product submit
-// endpoint applies the same retry-override bounds as direct job submission.
 // TestCreateProduct_ReadmeRoundTrips verifies readme is accepted on create,
 // distinct from description, and comes back on both the create response and
 // a subsequent GET.
@@ -647,6 +645,8 @@ func TestCreateProduct_RejectsOverlongMetadata(t *testing.T) {
 	}
 }
 
+// TestProducts_SubmitRejectsInvalidRetryOverrides asserts the product submit
+// endpoint applies the same retry-override bounds as direct job submission.
 func TestProducts_SubmitRejectsInvalidRetryOverrides(t *testing.T) {
 	srv := newProductTestServer(t)
 	farmID, queueID := seedProductSubmitPrereqs(t, srv)

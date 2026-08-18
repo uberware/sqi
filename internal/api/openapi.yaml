@@ -1267,6 +1267,7 @@ components:
           type: string
         description:
           type: string
+          maxLength: 500
         category:
           type: string
         version:
