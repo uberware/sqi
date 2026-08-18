@@ -83,3 +83,23 @@ func TestFakeProduct_OriginRoundTrip(t *testing.T) {
 		t.Fatalf("fake dropped origin: %+v", got)
 	}
 }
+
+// The fake stores the whole store.Product value, so Readme needs no explicit
+// handling. This test exists so a future refactor to field-by-field copying
+// cannot silently drop it.
+func TestFakeProduct_ReadmeRoundTrips(t *testing.T) {
+	st := fake.New()
+	ctx := context.Background()
+	if _, err := st.CreateProduct(ctx, store.Product{
+		ID: "p1", Name: "readme-probe", Title: "Readme Probe", Readme: "# Docs\n",
+	}); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	got, err := st.GetProductByName(ctx, "readme-probe")
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if got.Readme != "# Docs\n" {
+		t.Errorf("readme = %q, want %q", got.Readme, "# Docs\n")
+	}
+}
