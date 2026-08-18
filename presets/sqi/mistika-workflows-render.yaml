@@ -4,8 +4,7 @@ title: Mistika Workflows Render
 description: >-
   Renders a saved Mistika Workflows .rnd job with the workflows binary, in frame
   chunks. Requires workers tagged mistikaworkflows=true with workflows on PATH.
-  For a single movie file, submit Frames "1". A starting point - duplicate to
-  customize for your pipeline.
+  For a single movie file, submit Frames "1".
 category: Rendering
 version: 1.0.0
 template:

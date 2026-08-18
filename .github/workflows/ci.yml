@@ -1009,9 +1009,12 @@ jobs:
   # the same guard conformance, expr-oracle, ldap-integration and
   # isolation-integration use.
   #
-  # Linux only. The bash-joined variant gates on a linux worker and can run
-  # NOWHERE else; the Windows-gated variant has its own job below
-  # (ffmpeg-presets-windows), because it can run nowhere but a Windows runner.
+  # Linux is where the bash-joined variant's coverage is REQUIRED by name below.
+  # That variant no longer gates on an OS -- bash is not POSIX-only, git-bash
+  # puts it on Windows too -- so it also runs on the Windows job, but only
+  # opportunistically there (see that job's own note). The PowerShell-gated
+  # variant has its own job below (ffmpeg-presets-windows), because it can run
+  # nowhere but a Windows runner.
   ffmpeg-presets:
     name: ffmpeg reference presets (execution)
     runs-on: ubuntu-latest
@@ -1104,10 +1107,20 @@ jobs:
           go test -run TestFFmpegPreset -v -timeout 900s ./test/integration/ 2>&1 \
             | tee /tmp/ffmpeg-presets-windows.log
 
-      # Only the PowerShell case is required by name. The rest either skip here
-      # (the bash variant gates on linux) or are already required by name on the
-      # Linux job, and duplicating them would make this job fail for reasons
-      # that have nothing to do with Windows.
+      # Only the PowerShell case is required by name. The rest are already
+      # required by name on the Linux job, and duplicating them would make this
+      # job fail for reasons that have nothing to do with Windows.
+      #
+      # TestFFmpegPreset_BashSegmentTranscodeJoins is the interesting omission.
+      # Its preset dropped its linux/macos gate (git-bash means bash is not
+      # POSIX-only), so it no longer skips here by construction -- it runs, and
+      # if its join fails on Windows the `go test` step above goes red, which is
+      # exactly the coverage that change needs. It is NOT required by name yet
+      # because it skips when `bash.exe` is not resolvable by Windows PATH
+      # lookup from the worker process, and that has not been observed on this
+      # runner image: requiring it now would turn the job red for an
+      # environmental reason rather than a real one. Promote it to the list once
+      # a run here is seen to PASS rather than SKIP.
       - name: Assert the PowerShell join actually ran
         shell: bash
         run: |

@@ -263,8 +263,9 @@ capability tag, which `sqi-worker` sets automatically on any worker with
 `ffmpeg` on `PATH` (see [worker capability
 tags](worker-capabilities.md)); the three segmented variants split a source
 into slices across the farm and differ in how they join the slices back
-together (bash, PowerShell, or a shell-free EXPR template), which OS they can
-run on, and whether they delete the slice files afterwards. Full reference:
+together (bash, PowerShell, or a shell-free EXPR template), what that join
+requires of the worker — only the PowerShell variant is gated to a single OS —
+and whether they delete the slice files afterwards. Full reference:
 [`docs/preset-library.md`](preset-library.md#transcoding-reference-presets).
 
 Key points about installed products:

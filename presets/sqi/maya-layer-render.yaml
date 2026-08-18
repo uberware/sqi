@@ -5,8 +5,7 @@ description: >-
   Renders one render layer of a saved Maya scene with the Render batch
   command, one frame per task by default; raise the task chunk size to batch
   multiple frames per Render launch. Requires workers tagged maya=true with
-  Render on PATH. For all renderable layers use maya-scene-render. A starting
-  point - duplicate to customize for your pipeline.
+  Render on PATH. For all renderable layers use maya-scene-render.
 category: Rendering
 version: 1.0.0
 template:

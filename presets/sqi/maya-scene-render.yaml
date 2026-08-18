@@ -6,8 +6,7 @@ description: >-
   settings mark renderable), one frame per task by default; raise the task
   chunk size to batch multiple frames per Render launch. Requires workers
   tagged maya=true with Render on PATH. For a single render layer use
-  maya-layer-render. A starting point - duplicate to customize for your
-  pipeline.
+  maya-layer-render.
 category: Rendering
 version: 1.0.0
 template:

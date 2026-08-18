@@ -3,8 +3,7 @@ name: nuke-write-render
 title: Nuke Write Render
 description: >-
   Renders one Write node from a saved Nuke script in frame chunks. Requires
-  workers tagged nuke=true with nuke on PATH. A starting point - duplicate
-  to customize for your pipeline.
+  workers tagged nuke=true with nuke on PATH.
 category: Rendering
 version: 1.0.0
 template:

@@ -3,8 +3,7 @@ name: houdini-rop-render
 title: Houdini ROP Render
 description: >-
   Renders a ROP from a saved hip file with hython, in frame chunks. Requires
-  workers tagged houdini=true with hython on PATH. A starting point -
-  duplicate to customize for your pipeline.
+  workers tagged houdini=true with hython on PATH.
 category: Rendering
 version: 1.0.0
 template:

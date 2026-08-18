@@ -2,12 +2,8 @@
 name: ffmpeg-sequence-encode
 title: FFmpeg Sequence Encode
 description: >-
-  Turns a rendered image sequence into a movie on one worker - the step that
-  follows a render job. Point Source Pattern at the sequence using ffmpeg's
-  printf-style numbering (for example render_%04d.exr); the movie is named
-  after it, so render_%04d.exr produces render.mp4 in the output directory.
-  Requires ffmpeg on PATH. A starting point - duplicate to customize for your
-  pipeline.
+  Turns a rendered image sequence into a movie on one worker, named after the
+  sequence's printf-style pattern - render_%04d.exr produces render.mp4.
 category: Transcoding
 version: 1.0.0
 template:

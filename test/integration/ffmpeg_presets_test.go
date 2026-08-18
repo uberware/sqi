@@ -433,18 +433,29 @@ func TestFFmpegPreset_PortableSegmentTranscodeJoins(t *testing.T) {
 }
 
 // TestFFmpegPreset_BashSegmentTranscodeJoins runs the bash-joined variant,
-// whose template gates on attr.worker.os.family anyOf [linux, macos].
+// whose template gates on attr.worker.tag.ffmpeg ALONE — it carries no
+// attr.worker.os.family requirement, because bash is not a POSIX-only
+// interpreter: git-bash puts it on Windows too. The skip below therefore keys
+// on bash being on PATH rather than on GOOS, which is the preset's actual
+// requirement restated.
 //
 // It runs on darwin as well as linux, and that is load-bearing rather than
 // incidental: until scheduler.osFamily landed, a Mac worker reported GOOS
-// "darwin" against a requirement that can only legally say "macos", so this
+// "darwin" against a requirement that could only legally say "macos", so this
 // preset validated, submitted, and then waited forever for a worker that could
 // not exist. An earlier revision of this test skipped darwin FOR THAT REASON.
-// Running here is the end-to-end proof that a Mac can now take the work — a
+// Running here is the end-to-end proof that a Mac can take the work — a
 // regression would show up as this test timing out rather than failing fast.
+//
+// The template invokes "command: bash" with the script as an argument rather
+// than exec'ing the shebang script directly, since direct shebang execution is
+// a POSIX kernel feature (binfmt_script) Windows has no equivalent of. On a
+// Windows host this case is the only automated coverage of that invocation and
+// of the script's backslash folding; it has NOT been run on a real Windows
+// host, so treat a green run here as covering the POSIX half only.
 func TestFFmpegPreset_BashSegmentTranscodeJoins(t *testing.T) {
-	if runtime.GOOS != "linux" && runtime.GOOS != "darwin" {
-		t.Skipf("ffmpeg-segment-transcode-bash requires a linux or macos worker; GOOS=%s", runtime.GOOS)
+	if _, err := exec.LookPath("bash"); err != nil {
+		t.Skipf("ffmpeg-segment-transcode-bash requires bash on PATH: %v", err)
 	}
 	runSegmentPreset(t, "ffmpeg-segment-transcode-bash", false)
 }

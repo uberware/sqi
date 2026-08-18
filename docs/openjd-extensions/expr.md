@@ -25,15 +25,17 @@ transcode, all three of which declare `extensions: [EXPR]`
 (`presets/sqi/ffmpeg-sequence-encode.yaml` declares it too, more modestly).
 One, `ffmpeg-segment-transcode-expr` ("Portable"), builds its ffmpeg concat
 file list from an EXPR comprehension instead of a join-time shell script, so it
-runs on Linux, macOS, and Windows workers alike with no shell at all. That
+needs no shell on the worker at all — not even `bash`, which the bash-joined
+variant needs but is likewise not gated to any one OS. That
 list-building expression references only job parameters, so it is fully
 resolved at **submission** (phase 2, not phase 3) and its cost is charged
 against the *server's* [`openjd.expr_operation_limit`](../configuration.md#openjdexpr_operation_limit)
 (default 10,000) — the worker's far roomier `expr.operation_limit` never
 enters into it. Measured cost is linear at ~24.15 operations per slice, so
 the preset documents a ceiling of 400 slices under stock server limits; see
-that file's `description` and `internal/product/exprpresetcost_test.go`,
-which pins the ceiling as a regression guard.
+that file's `description`, [`docs/preset-library.md`](../preset-library.md#transcoding-reference-presets),
+and `internal/product/exprpresetcost_test.go`, which pins the ceiling as a
+regression guard.
 
 ## Current status
 

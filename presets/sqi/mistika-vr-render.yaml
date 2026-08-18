@@ -4,8 +4,7 @@ title: Mistika VR Render
 description: >-
   Renders a saved Mistika VR .rnd job with the vr binary, in frame chunks.
   Requires workers tagged mistikavr=true with vr on PATH. For a single movie
-  file, submit Frames "1". A starting point - duplicate to customize for your
-  pipeline.
+  file, submit Frames "1".
 category: Rendering
 version: 1.0.0
 template:

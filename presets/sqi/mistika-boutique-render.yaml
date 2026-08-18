@@ -4,8 +4,7 @@ title: Mistika Ultima & Boutique Render
 description: >-
   Renders a saved Mistika .rnd job with the mistika binary, in frame chunks.
   Requires workers tagged mistika=true with mistika on PATH. For a single movie
-  file, submit Frames "1". A starting point - duplicate to customize for your
-  pipeline.
+  file, submit Frames "1".
 category: Rendering
 version: 1.0.0
 template:

@@ -53,9 +53,11 @@ readme: |
   ## Requirements
 
   `ffmpeg` and `bash` must be on `PATH` for every worker that runs this job,
-  and workers must be tagged `attr.worker.tag.ffmpeg = true` with
-  `attr.worker.os.family` in `linux` or `macos`. This is a starting point -
-  duplicate it to customize for your own pipeline.
+  and workers must be tagged `attr.worker.tag.ffmpeg = true`. There is
+  deliberately no `attr.worker.os.family` requirement: what this variant needs
+  is a working `bash`, not a particular operating system, and tagging the
+  workers that have one says so directly. This is a starting point - duplicate
+  it to customize for your own pipeline.
 category: Transcoding
 version: 1.0.0
 template:
@@ -105,8 +107,6 @@ template:
         attributes:
           - name: attr.worker.tag.ffmpeg
             anyOf: ["true"]
-          - name: attr.worker.os.family
-            anyOf: ["linux", "macos"]
       parameterSpace:
         taskParameterDefinitions:
           - name: Segment
@@ -138,8 +138,6 @@ template:
         attributes:
           - name: attr.worker.tag.ffmpeg
             anyOf: ["true"]
-          - name: attr.worker.os.family
-            anyOf: ["linux", "macos"]
       script:
         embeddedFiles:
           - name: join

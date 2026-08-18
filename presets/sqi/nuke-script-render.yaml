@@ -4,8 +4,7 @@ title: Nuke Script Render
 description: >-
   Renders all enabled Write nodes of a saved Nuke script in frame chunks.
   Requires workers tagged nuke=true with nuke on PATH. For a single Write node
-  use nuke-write-render. A starting point - duplicate to customize for your
-  pipeline.
+  use nuke-write-render.
 category: Rendering
 version: 1.0.0
 template:
