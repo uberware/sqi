@@ -2,15 +2,63 @@
 name: ffmpeg-segment-transcode-powershell
 title: FFmpeg Segment Transcode (PowerShell)
 description: >-
-  Splits a video into fixed-length slices, converts each on a different worker,
-  then joins them back into one file. Enter the source's length in seconds -
-  nothing can measure it before the job is submitted; a value that is too
-  small silently drops the tail, and a value that is too large wastes a task
-  transcoding an empty tail slice. The join step runs a PowerShell script, so
-  this variant needs Windows workers; use the Portable variant on a mixed farm.
-  Slice files are written beside the output and removed once the join succeeds.
-  Requires ffmpeg on PATH. A starting point - duplicate to customize for your
-  pipeline.
+  Splits a video into fixed-length slices, transcodes each on a different
+  worker, then joins them with a PowerShell script, so it needs Windows
+  workers.
+readme: |
+  # FFmpeg Segment Transcode (PowerShell)
+
+  Splits one source video into fixed-length slices, transcodes each slice on
+  a different worker, then joins the finished slices back into a single
+  output file. The join step is a PowerShell script, so this variant needs
+  Windows workers - use the Portable variant on a mixed farm.
+
+  ## Steps
+
+  1. **Transcode** - fans out into one task per slice. Each task runs:
+     `ffmpeg -ss <offset> -t <SegmentSeconds> -i SourceFile ...` and writes
+     `<OutputFile stem>_seg_<00001>.<OutputFile suffix>` beside `OutputFile`.
+     The number of tasks is `ceil(DurationSeconds / SegmentSeconds)`.
+  2. **Join** - depends on every Transcode task, and runs an embedded
+     PowerShell script on the worker. The script lists
+     `<dir>\<stem>_seg_*<ext>` next to `OutputFile` with `Get-ChildItem`,
+     sorted by name - zero-padded slice numbers make that the same as
+     numeric order - writes the matches to a BOM-less UTF-8 concat file list
+     (a BOM breaks the concat demuxer's parse of the first line), then runs
+     `ffmpeg -f concat -safe 0` to copy the streams into `OutputFile` with no
+     re-encode. On success it deletes the slice files it just joined.
+
+  ## Parameters
+
+  - **SourceFile** - the video to split.
+  - **OutputFile** - the joined result. Its parent directory and stem also
+    name the intermediate slice files the join step lists.
+  - **DurationSeconds** - the source's length in seconds. Type it in: nothing
+    in the job template can measure a source file before the job is
+    submitted. Getting it wrong has two different failure shapes:
+    - **Too small** silently drops the tail of the source - the last
+      slice(s) are never scheduled.
+    - **Too large** schedules an extra task past the real end of the source.
+      `ffmpeg` transcodes silence or a frozen frame for that slice, wasting a
+      task; the join step still lists it, joins it in, and deletes it same
+      as every other slice.
+  - **SegmentSeconds** - the length of each slice, and so the number of
+    tasks.
+  - **VideoCodec**, **Quality** (CRF, lower is better), **AudioCodec** -
+    passed straight to `ffmpeg` for every slice.
+
+  ## Cleanup
+
+  The join script removes every slice file it listed once the concat
+  succeeds. If the join fails, the slice files are left on disk for you to
+  inspect or remove by hand.
+
+  ## Requirements
+
+  `ffmpeg` and `powershell` must be on `PATH` for every worker that runs this
+  job, and workers must be tagged `attr.worker.tag.ffmpeg = true` with
+  `attr.worker.os.family` set to `windows`. This is a starting point -
+  duplicate it to customize for your own pipeline.
 category: Transcoding
 version: 1.0.0
 template:
