@@ -214,3 +214,31 @@ describe('ProductList', () => {
     })
   })
 })
+
+describe('ProductList readme button', () => {
+  it('links to the product detail page with the readme tab open', async () => {
+    fetchMock.mockResolvedValue(ok([makeProduct({ name: 'alpha', readme: '# Docs' })]))
+    renderList()
+    const link = await screen.findByRole('link', { name: /view readme for alpha/i })
+    expect(link).toHaveAttribute('href', '/products/alpha?tab=readme')
+  })
+
+  it('is disabled with an explanatory title when the product has no readme', async () => {
+    fetchMock.mockResolvedValue(ok([makeProduct({ name: 'alpha', readme: '' })]))
+    renderList()
+    const btn = await screen.findByRole('button', { name: /view readme for alpha/i })
+    expect(btn).toBeDisabled()
+    expect(btn).toHaveAttribute('title', 'No readme')
+  })
+
+  // Reading documentation is a read action, so the control is not gated on
+  // products.manage and appears for built-ins, which have no delete button.
+  it('shows the readme button for a builtin product', async () => {
+    fetchMock.mockResolvedValue(
+      ok([makeProduct({ name: 'script', source: 'builtin', readme: '# D' })]),
+    )
+    renderList()
+    expect(await screen.findByRole('link', { name: /view readme for script/i })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /delete product script/i })).not.toBeInTheDocument()
+  })
+})

@@ -15,6 +15,7 @@ vi.mock('@/api/queries', async (orig) => ({
         title: 'My Tool',
         category: 'misc',
         description: 'An internal utility',
+        readme: '# My Tool\n\nDocs.',
         version: '1',
         source: 'custom',
         template: '',
@@ -25,6 +26,7 @@ vi.mock('@/api/queries', async (orig) => ({
         title: 'Blender',
         category: 'render',
         description: '',
+        readme: '',
         version: '1',
         source: 'builtin',
         template: '',
@@ -111,5 +113,29 @@ describe('ProductPicker', () => {
     renderPage('/submit?search=zzz')
     expect(screen.getByText(/No products match/)).toBeInTheDocument()
     expect(screen.getByRole('link', { name: /raw OpenJD/i })).toHaveAttribute('href', '/submit/raw')
+  })
+})
+
+describe('ProductPicker readme button', () => {
+  it('links to the product readme in a new tab', () => {
+    renderPage()
+    const link = screen.getByRole('link', { name: /view readme for my-tool/i })
+    expect(link).toHaveAttribute('href', '/products/my-tool?tab=readme')
+    // A same-tab navigation here would abandon the job the user is starting.
+    expect(link).toHaveAttribute('target', '_blank')
+    expect(link).toHaveAttribute('rel', 'noopener noreferrer')
+  })
+
+  it('keeps the card itself pointing at the submit step', () => {
+    renderPage()
+    expect(screen.getByRole('link', { name: /my tool/i })).toHaveAttribute(
+      'href',
+      '/submit/product/my-tool',
+    )
+  })
+
+  it('disables the readme button when the product has no readme', () => {
+    renderPage()
+    expect(screen.getByRole('button', { name: /view readme for blender/i })).toBeDisabled()
   })
 })

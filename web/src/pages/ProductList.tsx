@@ -4,6 +4,7 @@ import { useCallback, useState } from 'react'
 import { Link } from 'react-router'
 import PageHeader from '@/components/PageHeader'
 import IconButton from '@/components/IconButton'
+import ReadmeButton from '@/components/ReadmeButton'
 import { Trash } from '@/components/icons'
 import { useToast } from '@/components/Toast'
 import { useProducts } from '@/api/queries'
@@ -145,7 +146,13 @@ export default function ProductList() {
                     {product.source}
                   </span>
                 </td>
-                <td>
+                <td className={styles.actions}>
+                  <ReadmeButton
+                    to={`/products/${encodeURIComponent(product.name)}?tab=readme`}
+                    label={`View readme for ${product.name}`}
+                    hasReadme={Boolean(product.readme)}
+                    className={styles.readmeBtn}
+                  />
                   {canManage && product.source !== 'builtin' && (
                     <IconButton
                       icon={<Trash />}

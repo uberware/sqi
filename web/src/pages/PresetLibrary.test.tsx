@@ -159,3 +159,24 @@ describe('PresetLibrary', () => {
     expect(screen.queryByRole('searchbox')).not.toBeInTheDocument()
   })
 })
+
+describe('PresetLibrary readme button', () => {
+  it('links to the preset detail page with the readme tab open', async () => {
+    fetchMock.mockResolvedValue(ok([makePreset({ name: 'nuke-comp' })]))
+    renderPage()
+    const link = await screen.findByRole('link', { name: /view readme for nuke-comp/i })
+    expect(link).toHaveAttribute('href', '/presets/nuke-comp?tab=readme')
+  })
+
+  // The remote library index deliberately carries no readme field, so a list
+  // row cannot know whether one exists. The button is therefore always
+  // enabled and the detail page shows whatever is actually there. If this ever
+  // becomes a disabled-state test, the index format changed — read the spec.
+  it('is enabled even though the index carries no readme', async () => {
+    fetchMock.mockResolvedValue(ok([makePreset({ name: 'nuke-comp' })]))
+    renderPage()
+    const link = await screen.findByRole('link', { name: /view readme for nuke-comp/i })
+    expect(link).not.toHaveAttribute('aria-disabled', 'true')
+    expect(screen.queryByRole('button', { name: /view readme for nuke-comp/i })).toBeNull()
+  })
+})
