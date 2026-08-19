@@ -1,0 +1,81 @@
+# SPDX-FileCopyrightText: 2026 Uberware Inc. <https://uberware.net>
+# SPDX-License-Identifier: AGPL-3.0-or-later
+
+name: Preset library
+
+# Validates the PUBLISHED preset library against the validator on this branch.
+#
+# Why this exists: a validator change can silently invalidate content that is
+# already published. Commit 2cdef4f tightened parameter-control validation to
+# match the base spec and corrected every preset in this repo in the same
+# change -- but the copy at uberware.github.io/sqi-presets is only regenerated
+# by the release workflow, so from that commit until the next release every
+# published preset failed to load. Nothing reported it: the list page renders
+# from the index, which needs no validation, and only the detail page parses.
+# The first signal was a user clicking a preset and getting an error.
+#
+# Deliberately NOT part of ci.yml. It reaches the network, so putting it on
+# every pull request would make unrelated work hostage to an outage. Instead it
+# runs where it is actually informative:
+#
+#   - on a schedule, so drift is found within a day rather than by a user;
+#   - when the presets or the validator change, which is exactly when
+#     already-published content can become invalid;
+#   - on demand.
+on:
+  schedule:
+    # 07:00 UTC daily. Drift here is never urgent-to-the-minute; it just must
+    # not wait for someone to click a preset.
+    - cron: "0 7 * * *"
+  push:
+    branches: [main]
+    paths:
+      - "presets/**"
+      - "internal/openjd/**"
+      - "internal/product/**"
+      - "internal/presetlib/**"
+      - "test/presetlib/**"
+      - ".github/workflows/preset-library.yml"
+  pull_request:
+    paths:
+      - "presets/**"
+      - "internal/openjd/**"
+      - "internal/product/**"
+      - "internal/presetlib/**"
+      - "test/presetlib/**"
+      - ".github/workflows/preset-library.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  published-presets:
+    name: Published presets validate against this tree
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+
+      - name: Validate the published preset library
+        shell: bash
+        run: make test-preset-library 2>&1 | tee /tmp/preset-library.log
+
+      # The target exits 0 when the library is unreachable, because an offline
+      # runner is not evidence that the content is bad. That means a green step
+      # alone proves nothing -- assert the test actually ran and passed. A SKIP
+      # fails here on purpose: it means this check verified nothing, and the
+      # cause (network, or a repointed URL) needs a human.
+      - name: Assert the check actually ran
+        run: |
+          grep -q -- '--- PASS: TestPublishedPresets_ValidateAgainstThisTree' /tmp/preset-library.log
