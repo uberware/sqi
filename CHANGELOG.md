@@ -10,7 +10,7 @@ Format follows [Conventional Commits](https://www.conventionalcommits.org/) and
 > `docs/development.md`). It is refreshed during release prep and again by the
 > release workflow, which bundles it into the release archives.
 
-## [0.3.0] — 2026-08-18
+## [0.3.0] — 2026-08-19
 
 
 ### Bug Fixes
@@ -23,16 +23,10 @@ Format follows [Conventional Commits](https://www.conventionalcommits.org/) and
 - **scheduler:** Resolve attr.worker.cpu.arch against a worker-reporte… ([#117](https://github.com/uberware/sqi/issues/117)) ([874c85f](https://github.com/uberware/sqi/commit/874c85fa29e22afd89a3eb447e1c18f97bc5aea3))
 
 
-### Build
-
-- Replace deprecated goreleaser archives keys so goreleaser check passes ([c5d75de](https://github.com/uberware/sqi/commit/c5d75de68e8bc7df23c5fd0c11e8e8529731d6c4))
-
-
 ### Documentation
 
 - Correct project status and documentation drift ([#98](https://github.com/uberware/sqi/issues/98)) ([9026e68](https://github.com/uberware/sqi/commit/9026e68cba99bbb3cad386440c642d3b22e463af))
-- Correct inaccurate and stale documentation across the repo ([5ac8fc4](https://github.com/uberware/sqi/commit/5ac8fc4a7aefd236ce52c8e7c22cd2c14ed27a18))
-- Mark phase 3 and the EXPR extension as released in v0.3.0 ([8d6c278](https://github.com/uberware/sqi/commit/8d6c2782cc6b35ad6e003db6a9e641fbf664d263))
+- Update documentation and product descriptions and readme data ([#122](https://github.com/uberware/sqi/issues/122)) ([edb436b](https://github.com/uberware/sqi/commit/edb436bbca28266a156db437d691a97e4728fd3f))
 
 
 ### Features
@@ -50,6 +44,7 @@ Format follows [Conventional Commits](https://www.conventionalcommits.org/) and
 - Support the OpenJD EXPR extension ([#114](https://github.com/uberware/sqi/issues/114)) ([0682598](https://github.com/uberware/sqi/commit/068259857ae4c3557f47ebade8b17da11b33f402))
 - Ffmpeg presets ([#115](https://github.com/uberware/sqi/issues/115)) ([91bb943](https://github.com/uberware/sqi/commit/91bb943281a5cc04c78220fc91819330e2eec364))
 - Mistika render presets ([#118](https://github.com/uberware/sqi/issues/118)) ([fe14c99](https://github.com/uberware/sqi/commit/fe14c99ead5acc63e93bb29b9e59f20b19ba7b99))
+- Product readme markdown documentation ([#121](https://github.com/uberware/sqi/issues/121)) ([f434293](https://github.com/uberware/sqi/commit/f434293660dc417aad60022df8d86ae1f77383f3))
 
 ## [0.2.0] — 2026-07-13
 
