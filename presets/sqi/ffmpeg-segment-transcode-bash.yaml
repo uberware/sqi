@@ -141,11 +141,27 @@ template:
           - name: join
             type: TEXT
             runnable: true
+            # LF is explicit, not incidental. This script may run under git-bash
+            # on Windows, where a CRLF body fails at the first line with
+            # "$'\r': command not found" rather than anything diagnosable.
+            endOfLine: LF
             data: |
               #!/usr/bin/env bash
               set -euo pipefail
 
               out="$1"
+
+              # Windows (git-bash): a drive-letter or UNC path arrives with
+              # backslashes, which are not separators to dirname/basename or to
+              # the glob below, so every path operation here would silently
+              # produce garbage. Fold them to forward slashes, which bash, the
+              # glob, and ffmpeg.exe all accept on Windows. Guarded on the
+              # Windows path prefixes so a POSIX path that legitimately contains
+              # a backslash is left untouched.
+              case "$out" in
+                [A-Za-z]:[\\/]* | \\\\*) out="${out//\\//}" ;;
+              esac
+
               dir="$(dirname "$out")"
               base="$(basename "$out")"
               stem="${base%.*}"
@@ -160,8 +176,16 @@ template:
 
               # Zero-padded slice numbers make lexical order numeric order, so
               # the glob above is already in the right sequence.
-              list="$(mktemp)"
+              #
+              # The list is written beside the output rather than in $TMPDIR
+              # because ffmpeg is a native binary: under git-bash an mktemp path
+              # like /tmp/tmp.XXXX reaches ffmpeg.exe through MSYS argument
+              # conversion, and the name below is already host-native. It cannot
+              # collide with the glob above, which requires "_seg_" and the
+              # output's own extension.
+              list="${dir}/${stem}_concat.txt"
               trap 'rm -f "$list"' EXIT
+              : > "$list"
               for s in "${segs[@]}"; do
                 printf "file '%s'\n" "$s" >> "$list"
               done
@@ -170,5 +194,10 @@ template:
               rm -f "${segs[@]}"
         actions:
           onRun:
-            command: "{{Task.File.join}}"
-            args: ["{{Param.OutputFile}}"]
+            # bash is invoked explicitly rather than relying on the shebang:
+            # executing a shebang script directly is a POSIX kernel feature
+            # (binfmt_script) with no Windows equivalent, so "command: bash"
+            # is what lets this variant run under git-bash on Windows as well
+            # as on Linux and macOS.
+            command: bash
+            args: ["{{Task.File.join}}", "{{Param.OutputFile}}"]
