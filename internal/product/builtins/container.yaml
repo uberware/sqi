@@ -2,6 +2,35 @@
 name: container
 title: Run a Docker Image
 description: Run a command inside a Docker image.
+readme: |
+  # Run a Docker Image
+
+  Runs a container image to completion on a worker, with `docker run --rm`. Use it
+  when the work already ships as an image and you want the farm to schedule it
+  rather than reproduce its dependencies on every host.
+
+  ## Parameters
+
+  - **Image** — the image reference to run, for example `alpine:3.20` or
+    `registry.example.com/team/tool:1.4.2`.
+
+  ## Example
+
+  ```sh
+  docker run --rm registry.example.com/team/nuke:15.1
+  ```
+
+  ## Notes
+
+  The step declares `attr.worker.tag.docker`, so it will only ever be scheduled
+  onto workers tagged as having Docker. A worker without that tag is not a
+  candidate, and a job whose queue has no such worker stays unscheduled rather
+  than failing — check the queue's unschedulable reason if a job sits idle.
+
+  The image is run with **no arguments and no volumes**. Anything the container
+  needs from the host has to be baked into the image or fetched by its own
+  entrypoint. Copy this product to a custom one if you need to mount storage or
+  pass a command.
 category: General
 version: 1.0.0
 template:

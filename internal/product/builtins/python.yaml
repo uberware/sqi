@@ -2,6 +2,35 @@
 name: python
 title: Run a Python Script
 description: Run a Python script with a chosen interpreter.
+readme: |
+  # Run a Python Script
+
+  Runs a Python script on a worker. The script is written to a file next to the
+  task and executed with the interpreter you name, so it needs no quoting
+  gymnastics and can be as long as you like.
+
+  ## Parameters
+
+  - **Interpreter** — the Python to run, `python3` by default. Give an absolute
+    path to pin a specific install, for example `/opt/rez/python/3.11/bin/python`.
+  - **Python Script** — the script body itself.
+
+  ## Example
+
+  ```python
+  import sys
+  print("running on", sys.platform)
+  ```
+
+  ## Notes
+
+  The script is delivered as an OpenJD embedded file, so it reaches the worker as
+  a real `script.py` on disk rather than as a command-line argument. That is why
+  multi-line scripts, quotes and backslashes all survive intact.
+
+  Nothing installs the interpreter for you. If a worker has no `python3` on its
+  `PATH` the task fails at launch, so pin the path or gate the step with a
+  `hostRequirements` tag when your fleet is mixed.
 category: General
 version: 1.0.0
 template:
