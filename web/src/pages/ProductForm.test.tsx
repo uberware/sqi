@@ -57,6 +57,7 @@ function makeProduct(over: Partial<Product> = {}): Product {
     name: 'my-render',
     title: 'My Render',
     description: 'desc',
+    readme: '',
     category: 'Rendering',
     version: '1.0.0',
     source: 'custom',
@@ -132,6 +133,20 @@ describe('ProductForm (create)', () => {
     })
   })
 
+  it('submits the readme on create', async () => {
+    fetchMock.mockResolvedValueOnce(ok(makeProduct(), 201))
+    renderForm(['/products/new'])
+
+    await userEvent.type(screen.getByLabelText(/^name$/i), 'my-render')
+    await userEvent.type(screen.getByLabelText(/^title$/i), 'My Render')
+    await userEvent.type(screen.getByLabelText(/^readme/i), '# Docs')
+    await userEvent.type(screen.getByTestId('template-editor'), 'name: x')
+    await userEvent.click(screen.getByRole('button', { name: /create product/i }))
+
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit]
+    expect(JSON.parse(init.body as string)).toMatchObject({ readme: '# Docs' })
+  })
+
   it('surfaces a server validation error in the error block', async () => {
     fetchMock.mockResolvedValueOnce(problem(400, 'openjd: validate: step "main" has no script'))
     renderForm(['/products/new'])
@@ -150,6 +165,7 @@ describe('ProductForm (create)', () => {
         name: '',
         title: 'My Render',
         description: 'desc',
+        readme: '',
         category: 'Rendering',
         version: '1.0.0',
         template: 'name: copied',

@@ -6,6 +6,7 @@ import PageHeader from '@/components/PageHeader'
 import { useToast } from '@/components/Toast'
 import DebouncedSearchInput from '@/components/DebouncedSearchInput'
 import ErrorBanner from '@/components/ErrorBanner'
+import ReadmeButton from '@/components/ReadmeButton'
 import { useSearchParam } from '@/hooks/useSearchParam'
 import { filterBySearch } from '@/utils/filterBySearch'
 import { usePresets, queryKeys, fetchPresets } from '@/api/queries'
@@ -113,6 +114,7 @@ export default function PresetLibrary() {
                         <th>Title</th>
                         <th>Version</th>
                         <th>Status</th>
+                        <th aria-label="Actions" />
                       </tr>
                     </thead>
                     <tbody>
@@ -131,6 +133,14 @@ export default function PresetLibrary() {
                             <span className={styles.badge} data-status={p.status}>
                               {STATUS_LABEL[p.status] ?? p.status}
                             </span>
+                          </td>
+                          <td className={styles.actions}>
+                            <ReadmeButton
+                              to={`/presets/${encodeURIComponent(p.name)}?tab=readme`}
+                              label={`View readme for ${p.name}`}
+                              hasReadme
+                              className={styles.readmeBtn}
+                            />
                           </td>
                         </tr>
                       ))}

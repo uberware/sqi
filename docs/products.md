@@ -86,7 +86,8 @@ template:
 |---|---|---|
 | `name` | yes | Stable slug identity. Lowercase letters, digits, `_` and `-`, with at most one `/` namespace separator (e.g. `studio/maya-render`). |
 | `title` | yes | Human-readable display name. |
-| `description` | no | Short summary shown in the catalog. |
+| `description` | no | Short plain-text catalog blurb, max 500 runes (a Unicode character count, not a byte count). Shown in cards and in DCC submitter dropdowns, and matched by product search. **Plain text, not Markdown** — it reaches consumers that cannot render markup, such as the Blender addon's tooltip. |
+| `readme` | no | Long-form Markdown documentation, max 8000 runes. Rendered on the product's detail page in the web UI. **Not searched**, and not carried in the preset library index. |
 | `category` | no | Free-form group label (e.g. `General`, `Rendering`). |
 | `version` | no | Semver string used for future update-detection. |
 | `template` | yes | Inline OpenJD job template (`specificationVersion: jobtemplate-2023-09`). |
@@ -95,6 +96,54 @@ The `name` slug constrains to `^[a-z0-9][a-z0-9_-]*(/[a-z0-9][a-z0-9_-]*)?$`.
 The inline template is re-serialized and fully validated (via `openjd.Parse` +
 `openjd.ValidateWithOptions`) when the definition is parsed — a malformed
 template is rejected at load time.
+
+### Writing a `readme`
+
+`readme` must use a YAML **literal** block (`|`), not the folded block (`>-`)
+that `description` uses. A folded scalar collapses newlines, which silently
+destroys paragraph breaks and list structure — the result is one run-on
+paragraph, with no error to tell you:
+
+```yaml
+description: >-
+  Splits a video into segments and transcodes them in parallel.
+readme: |
+  # FFmpeg Segment Transcode
+
+  Splits the source into fixed-length segments, transcodes each on its own
+  worker, then concatenates the results.
+
+  ## When to use it
+
+  - Long sources where a single-worker transcode would take hours.
+  - Codecs that tolerate segment boundaries.
+
+  Set `SegmentSeconds` to trade parallelism against concat overhead.
+```
+
+`readme` is inline content, not a path — `readme: ./README.md` renders the
+literal text `./README.md`.
+
+`description` is plain text and is what product search matches. `readme` is
+Markdown, rendered only on the detail page, and is **not** searched.
+
+**Supported Markdown:** paragraphs, unordered and ordered lists, fenced code
+blocks, ATX headings (`#` renders as `<h3>`, nested under the page's existing
+heading structure, clamped at `<h6>`), `**bold**`, `*italic*`, `` `code` ``
+and `[links](https://example.com)` using `http:`, `https:` or `mailto:` only.
+
+**Lists are single-level only — nesting is not supported.** The renderer
+(`web/src/components/Markdown.tsx`) matches list items with a regular
+expression anchored at column 0. An item indented under another list item
+does not become a nested list; it silently renders as an ordinary paragraph
+with a stray leading `-` or `1.`, with no error or warning. This has already
+caught one author on this branch — write every list flat, with no indented
+sub-items.
+
+**Not supported,** and rendered as literal text: images, tables, blockquotes,
+reference links, raw HTML, and nesting of any kind. Images are excluded
+deliberately — a remote image in a preset readme is an IP beacon firing for
+every viewer.
 
 ### `userInterface` parameter hints
 

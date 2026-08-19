@@ -69,6 +69,7 @@ Run `make` (no arguments) to see all available targets with descriptions.
 | `make test-oidc` | Run the SSO tests against a real Keycloak in a container (needs Docker; **skips** without it) |
 | `make test-isolation` | Run run-as-user task-isolation tests as real root against real OS accounts in a container (needs Docker; **skips** without it) |
 | `make test-expr-oracle` | Differential-test the EXPR evaluator against the OpenJD reference implementation (needs `python3`; **skips** without it) |
+| `make test-preset-library` | Validate the **published** preset library against the validator in your tree (needs network; **skips** when the library is unreachable, **fails** when it is reachable but invalid) |
 | `make expr-oracle-venv` | Create `.venv-oracle/` with the pinned reference implementation (`make test-expr-oracle` does this on demand) |
 | `make smoke` | End-to-end smoke test against the real binaries (REST + WebSocket) |
 | `make bench` | Run benchmarks |

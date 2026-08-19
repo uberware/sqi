@@ -63,6 +63,7 @@ describe('product mutations', () => {
     name: 'my-render',
     title: 'My Render',
     description: '',
+    readme: '',
     category: '',
     version: '',
     template: 'name: x',

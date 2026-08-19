@@ -5,6 +5,7 @@ import DebouncedSearchInput from '@/components/DebouncedSearchInput'
 import { useSearchParam } from '@/hooks/useSearchParam'
 import { filterBySearch } from '@/utils/filterBySearch'
 import { useProducts } from '@/api/queries'
+import ReadmeButton from '@/components/ReadmeButton'
 import type { Product, ProductSource } from '@/api/types'
 import styles from './ProductPicker.module.css'
 
@@ -18,10 +19,19 @@ const GROUPS: { source: ProductSource; label: string }[] = [
 
 function ProductCard({ product }: { product: Product }) {
   return (
-    <Link className={styles.card} to={`/submit/product/${encodeURIComponent(product.name)}`}>
-      <strong>{product.title || product.name}</strong>
-      {product.description && <p>{product.description}</p>}
-    </Link>
+    <div className={styles.card}>
+      <Link className={styles.cardLink} to={`/submit/product/${encodeURIComponent(product.name)}`}>
+        <strong>{product.title || product.name}</strong>
+        {product.description && <p>{product.description}</p>}
+      </Link>
+      <ReadmeButton
+        to={`/products/${encodeURIComponent(product.name)}?tab=readme`}
+        label={`View readme for ${product.name}`}
+        hasReadme={Boolean(product.readme)}
+        newTab
+        className={styles.readmeBtn}
+      />
+    </div>
   )
 }
 

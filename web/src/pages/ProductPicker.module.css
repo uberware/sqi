@@ -45,12 +45,44 @@
 }
 
 .card {
-  display: block;
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-2);
   padding: var(--space-3);
   border: 1px solid var(--color-border);
   border-radius: var(--radius-md);
+}
+
+/* The card's clickable body. It takes the remaining width so the whole card
+   area still selects the product, with the readme control beside it. */
+.cardLink {
+  flex: 1;
+  min-width: 0;
   text-decoration: none;
   color: inherit;
+}
+
+.readmeBtn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  padding: var(--space-1);
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--color-border);
+  background: transparent;
+  color: var(--color-text-secondary);
+  cursor: pointer;
+}
+
+.readmeBtn:hover:not(:disabled) {
+  background: var(--color-surface-raised);
+  color: var(--color-text-primary);
+}
+
+.readmeBtn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
 }
 
 .advanced {

@@ -98,6 +98,41 @@ tr:hover .deleteBtn {
   cursor: not-allowed;
 }
 
+.rowAction {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--space-1);
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--color-border);
+  background: transparent;
+  color: var(--color-text-secondary);
+  cursor: pointer;
+  opacity: 0;
+  transition:
+    opacity var(--transition-fast),
+    background var(--transition-fast);
+}
+
+tr:hover .rowAction,
+.rowAction:focus-visible {
+  opacity: 1;
+}
+
+.rowAction:hover:not(:disabled) {
+  background: var(--color-surface-raised);
+  color: var(--color-text-primary);
+}
+
+.rowAction:disabled {
+  opacity: 0;
+  cursor: not-allowed;
+}
+
+tr:hover .rowAction:disabled {
+  opacity: 0.4;
+}
+
 /* ── Header action ───────────────────────────────────────────────────────────── */
 
 .newBtn {

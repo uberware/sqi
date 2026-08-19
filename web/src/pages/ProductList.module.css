@@ -26,6 +26,10 @@
   composes: deleteBtn from './entityList.module.css';
 }
 
+.readmeBtn {
+  composes: rowAction from './entityList.module.css';
+}
+
 .newBtn {
   composes: newBtn from './entityList.module.css';
 }
@@ -60,4 +64,10 @@
 .badge[data-source='installed'] {
   color: var(--color-success);
   border-color: var(--color-success);
+}
+
+.actions {
+  display: flex;
+  gap: var(--space-1);
+  justify-content: flex-end;
 }

@@ -595,6 +595,7 @@ export interface ProductInput {
   name: string
   title: string
   description: string
+  readme: string
   category: string
   version: string
   template: string

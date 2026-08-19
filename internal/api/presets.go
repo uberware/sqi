@@ -109,6 +109,7 @@ type presetResponse struct {
 type presetDetailResponse struct {
 	presetResponse
 
+	Readme   string `json:"readme"`
 	Template string `json:"template"`
 	Format   string `json:"format"`
 }
@@ -217,6 +218,7 @@ func (h *presetHandler) getPreset(w http.ResponseWriter, r *http.Request) {
 			Name: entry.Name, Title: def.Title, Description: def.Description,
 			Category: def.Category, Version: def.Version, Status: installStatus(entry, byRef),
 		},
+		Readme:   def.Readme,
 		Template: def.Template,
 		Format:   string(def.Format),
 	})

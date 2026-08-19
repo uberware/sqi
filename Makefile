@@ -239,6 +239,23 @@ test-expr-oracle: ## Differential-test the EXPR evaluator against the OpenJD ref
 	fi
 	go test $(TEST_FLAGS) -tags oracle -run 'TestExprOracle' -v -timeout 5m ./test/oracle/
 
+# Validates the PUBLISHED preset library against the validator in this working
+# tree. It exists because a validator change can silently invalidate content
+# already published: 2cdef4f tightened parameter-control validation and fixed
+# every preset in this repo, but the copy at uberware.github.io/sqi-presets is
+# only refreshed on release, so every preset there failed to load in between --
+# with no signal until a user clicked one.
+#
+# Needs the network. SKIPS when the library is unreachable and FAILS when it is
+# reachable but invalid, so an offline runner never masks a real breakage. A
+# SKIP VERIFIES NOTHING -- look for the "--- PASS: TestPublishedPresets" line.
+# CI asserts it by name for that reason.
+#
+# SQI_TEST_PRESET_LIBRARY_URL points it at a staging index instead.
+.PHONY: test-preset-library
+test-preset-library: ## Validate the published preset library against this tree (needs network)
+	go test $(TEST_FLAGS) -tags presetlib -run 'TestPublishedPresets' -v -timeout 5m ./test/presetlib/
+
 .PHONY: test-ldap
 test-ldap: ## Run the LDAP tests against a real directory in a container (needs Docker)
 	go test $(TEST_FLAGS) -tags integration -run 'TestLDAP_' -v -timeout 15m ./test/integration/

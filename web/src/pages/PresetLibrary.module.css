@@ -127,3 +127,13 @@
 .refreshBtn:hover {
   background: var(--color-surface);
 }
+
+.readmeBtn {
+  composes: rowAction from './entityList.module.css';
+}
+
+.actions {
+  display: flex;
+  gap: var(--space-1);
+  justify-content: flex-end;
+}

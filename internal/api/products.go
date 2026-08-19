@@ -131,6 +131,7 @@ type productResponse struct {
 	Name        string `json:"name"`
 	Title       string `json:"title"`
 	Description string `json:"description"`
+	Readme      string `json:"readme"`
 	Category    string `json:"category"`
 	Version     string `json:"version"`
 	Source      string `json:"source"`
@@ -142,6 +143,7 @@ type createProductRequest struct {
 	Name        string `json:"name"`
 	Title       string `json:"title"`
 	Description string `json:"description"`
+	Readme      string `json:"readme"`
 	Category    string `json:"category"`
 	Version     string `json:"version"`
 	Template    string `json:"template"`
@@ -150,7 +152,7 @@ type createProductRequest struct {
 
 func toProductResponse(p store.Product) productResponse {
 	return productResponse{
-		Name: p.Name, Title: p.Title, Description: p.Description,
+		Name: p.Name, Title: p.Title, Description: p.Description, Readme: p.Readme,
 		Category: p.Category, Version: p.Version, Source: string(p.Source),
 		Template: p.Template, Format: string(p.Format),
 	}
@@ -494,13 +496,31 @@ func (h *productHandler) decodeProductBody(w http.ResponseWriter, r *http.Reques
 		writeProblem(w, r, http.StatusBadRequest, "template is required")
 		return store.Product{}, false
 	}
-	if err := product.ValidateTemplate(req.Template, format, h.templateValidateOptions()); err != nil {
-		h.writeTemplateProblem(w, r, err)
-		return store.Product{}, false
-	}
-	return store.Product{
-		Name: name, Title: req.Title, Description: req.Description,
+	p := store.Product{
+		Name: name, Title: req.Title, Description: req.Description, Readme: req.Readme,
 		Category: req.Category, Version: req.Version,
 		Template: req.Template, Format: format,
-	}, true
+	}
+	if !h.validateProductBody(w, r, p, format) {
+		return store.Product{}, false
+	}
+	return p, true
+}
+
+// validateProductBody enforces the metadata length caps (checked first, since
+// it is cheap) and then the OpenJD template itself (the expensive check) on a
+// product built from a decoded request body. It writes the problem response
+// and returns false on either failure.
+func (h *productHandler) validateProductBody(
+	w http.ResponseWriter, r *http.Request, p store.Product, format store.TemplateFormat,
+) bool {
+	if err := product.ValidateMetadata(p); err != nil {
+		writeProblem(w, r, http.StatusBadRequest, err.Error())
+		return false
+	}
+	if err := product.ValidateTemplate(p.Template, format, h.templateValidateOptions()); err != nil {
+		h.writeTemplateProblem(w, r, err)
+		return false
+	}
+	return true
 }

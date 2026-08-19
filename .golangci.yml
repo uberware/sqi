@@ -21,6 +21,7 @@ run:
     - integration
     - conformance
     - oracle
+    - presetlib
 
 # ── Linters ───────────────────────────────────────────────────────────────────
 linters:

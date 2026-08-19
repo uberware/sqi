@@ -47,6 +47,28 @@ def test_create_product(make_client: ClientFactory) -> None:
 
 
 @respx.mock
+def test_create_product_sends_readme(make_client: ClientFactory) -> None:
+    route = respx.post(f"{API}/products").mock(
+        return_value=httpx.Response(201, json={"name": "custom", "source": "custom"})
+    )
+    client = make_client()
+    client.create_product(name="custom", template="t", format="yaml", readme="# Docs")
+    sent = json.loads(route.calls.last.request.content)
+    assert sent["readme"] == "# Docs"
+
+
+@respx.mock
+def test_create_product_omits_readme_when_unset(make_client: ClientFactory) -> None:
+    route = respx.post(f"{API}/products").mock(
+        return_value=httpx.Response(201, json={"name": "custom", "source": "custom"})
+    )
+    client = make_client()
+    client.create_product(name="custom", template="t", format="yaml")
+    sent = json.loads(route.calls.last.request.content)
+    assert "readme" not in sent
+
+
+@respx.mock
 def test_update_product(make_client: ClientFactory) -> None:
     respx.put(f"{API}/products/custom").mock(
         return_value=httpx.Response(200, json={"name": "custom", "title": "New"})

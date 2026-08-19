@@ -80,3 +80,65 @@ func TestParseDefinition_Errors(t *testing.T) {
 		})
 	}
 }
+
+func TestParseDefinition_Readme(t *testing.T) {
+	t.Parallel()
+	const def = `
+name: readme-probe
+title: Readme Probe
+description: A short blurb.
+readme: |
+  # Readme Probe
+
+  Does a thing.
+category: General
+version: 1.0.0
+template:
+  specificationVersion: jobtemplate-2023-09
+  name: Readme Probe
+  steps:
+    - name: Step
+      script:
+        actions:
+          onRun:
+            command: echo
+            args: ["hi"]
+`
+	p, err := product.ParseDefinition([]byte(def), product.ValidateOptions{EnforceLimits: true})
+	if err != nil {
+		t.Fatalf("ParseDefinition: %v", err)
+	}
+	want := "# Readme Probe\n\nDoes a thing.\n"
+	if p.Readme != want {
+		t.Errorf("Readme = %q, want %q", p.Readme, want)
+	}
+	if p.Description != "A short blurb." {
+		t.Errorf("Description = %q, want the blurb unchanged", p.Description)
+	}
+}
+
+// A definition with no readme yields the empty string, not an error.
+func TestParseDefinition_ReadmeOptional(t *testing.T) {
+	t.Parallel()
+	const def = `
+name: no-readme
+title: No Readme
+template:
+  specificationVersion: jobtemplate-2023-09
+  name: No Readme
+  steps:
+    - name: Step
+      script:
+        actions:
+          onRun:
+            command: echo
+            args: ["hi"]
+`
+	p, err := product.ParseDefinition([]byte(def), product.ValidateOptions{EnforceLimits: true})
+	if err != nil {
+		t.Fatalf("ParseDefinition: %v", err)
+	}
+	if p.Readme != "" {
+		t.Errorf("Readme = %q, want empty", p.Readme)
+	}
+}

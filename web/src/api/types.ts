@@ -413,6 +413,7 @@ export interface PresetListItem {
 
 /** Wire shape returned by GET /api/v1/presets/{name} (detail). */
 export interface PresetDetail extends PresetListItem {
+  readme: string
   template: string
   format: string
 }
@@ -424,6 +425,7 @@ export interface Product {
   name: string
   title: string
   description: string
+  readme: string
   category: string
   version: string
   source: ProductSource

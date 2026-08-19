@@ -11,23 +11,23 @@ import (
 
 const (
 	sqlInsertProduct = `
-INSERT INTO products (id, name, title, description, category, version, source, template, format, origin_ref, origin_fingerprint, created_at, updated_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-RETURNING id, name, title, description, category, version, source, template, format, origin_ref, origin_fingerprint, created_at, updated_at`
+INSERT INTO products (id, name, title, description, readme, category, version, source, template, format, origin_ref, origin_fingerprint, created_at, updated_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+RETURNING id, name, title, description, readme, category, version, source, template, format, origin_ref, origin_fingerprint, created_at, updated_at`
 
 	sqlGetProductByName = `
-SELECT id, name, title, description, category, version, source, template, format, origin_ref, origin_fingerprint, created_at, updated_at
+SELECT id, name, title, description, readme, category, version, source, template, format, origin_ref, origin_fingerprint, created_at, updated_at
 FROM products WHERE name = ?`
 
 	sqlListProducts = `
-SELECT id, name, title, description, category, version, source, template, format, origin_ref, origin_fingerprint, created_at, updated_at
+SELECT id, name, title, description, readme, category, version, source, template, format, origin_ref, origin_fingerprint, created_at, updated_at
 FROM products ORDER BY name`
 
 	sqlUpdateProduct = `
 UPDATE products
-SET title = ?, description = ?, category = ?, version = ?, template = ?, format = ?, origin_ref = ?, origin_fingerprint = ?, updated_at = ?
+SET title = ?, description = ?, readme = ?, category = ?, version = ?, template = ?, format = ?, origin_ref = ?, origin_fingerprint = ?, updated_at = ?
 WHERE name = ?
-RETURNING id, name, title, description, category, version, source, template, format, origin_ref, origin_fingerprint, created_at, updated_at`
+RETURNING id, name, title, description, readme, category, version, source, template, format, origin_ref, origin_fingerprint, created_at, updated_at`
 
 	sqlDeleteProduct = `DELETE FROM products WHERE name = ?`
 )
@@ -36,7 +36,7 @@ func scanProduct(row scanner) (store.Product, error) {
 	var p store.Product
 	var source, format, createdAt, updatedAt string
 	if err := row.Scan(
-		&p.ID, &p.Name, &p.Title, &p.Description, &p.Category, &p.Version,
+		&p.ID, &p.Name, &p.Title, &p.Description, &p.Readme, &p.Category, &p.Version,
 		&source, &p.Template, &format, &p.OriginRef, &p.OriginFingerprint, &createdAt, &updatedAt,
 	); err != nil {
 		return store.Product{}, err
@@ -52,7 +52,7 @@ func scanProduct(row scanner) (store.Product, error) {
 func (s *Store) CreateProduct(ctx context.Context, p store.Product) (store.Product, error) {
 	now := timeToText(time.Now().UTC())
 	row := s.stmtInsertProduct.QueryRowContext(ctx,
-		p.ID, p.Name, p.Title, p.Description, p.Category, p.Version,
+		p.ID, p.Name, p.Title, p.Description, p.Readme, p.Category, p.Version,
 		string(p.Source), p.Template, string(p.Format), p.OriginRef, p.OriginFingerprint, now, now)
 	out, err := scanProduct(row)
 	return out, mapErr(err)
@@ -87,7 +87,7 @@ func (s *Store) ListProducts(ctx context.Context) ([]store.Product, error) {
 func (s *Store) UpdateProduct(ctx context.Context, p store.Product) (store.Product, error) {
 	now := timeToText(time.Now().UTC())
 	row := s.stmtUpdateProduct.QueryRowContext(ctx,
-		p.Title, p.Description, p.Category, p.Version,
+		p.Title, p.Description, p.Readme, p.Category, p.Version,
 		p.Template, string(p.Format), p.OriginRef, p.OriginFingerprint, now, p.Name)
 	out, err := scanProduct(row)
 	return out, mapErr(err)

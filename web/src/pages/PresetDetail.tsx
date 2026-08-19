@@ -3,12 +3,19 @@
 import { useCallback } from 'react'
 import { useNavigate, useParams } from 'react-router'
 import PageHeader from '@/components/PageHeader'
+import Markdown from '@/components/Markdown'
+import Tabs from '@/components/Tabs'
+import { useTabParam } from '@/hooks/useTabParam'
 import { useToast } from '@/components/Toast'
 import { usePreset } from '@/api/queries'
+import { ApiError } from '@/api/client'
+import ErrorBanner from '@/components/ErrorBanner'
 import { useInstallPreset } from '@/api/mutations'
 import { useAuth } from '@/auth/context'
 import { can } from '@/auth/policy'
 import styles from './PresetDetail.module.css'
+
+const TAB_IDS = ['readme', 'template'] as const
 
 export default function PresetDetail() {
   const params = useParams<{ name: string }>()
@@ -17,7 +24,11 @@ export default function PresetDetail() {
   const { showToast } = useToast()
   const { principal } = useAuth()
   const canManage = can(principal, 'products.manage')
-  const { data: preset, isLoading, isError } = usePreset(name)
+  const { data: preset, isLoading, isError, error } = usePreset(name)
+  // Default to the readme when there is one, else the template. Computed from
+  // the loaded preset, so the hook runs unconditionally and re-derives once
+  // the fetch resolves.
+  const { tab, setTab } = useTabParam(TAB_IDS, preset?.readme ? 'readme' : 'template')
   const install = useInstallPreset()
 
   const handleInstall = useCallback(async () => {
@@ -32,7 +43,15 @@ export default function PresetDetail() {
 
   if (isLoading || !preset) {
     return (
-      <div className={styles.page}>{isError ? <p>Failed to load preset.</p> : <p>Loading…</p>}</div>
+      <div className={styles.page}>
+        {isError ? (
+          <ErrorBanner>
+            {error instanceof ApiError && error.detail ? error.detail : 'Failed to load preset.'}
+          </ErrorBanner>
+        ) : (
+          <p>Loading…</p>
+        )}
+      </div>
     )
   }
 
@@ -79,10 +98,23 @@ export default function PresetDetail() {
         <dd>{preset.status}</dd>
       </dl>
 
-      <h2 className={styles.sectionTitle}>OpenJD Template</h2>
-      <pre className={styles.template} aria-label="OpenJD template">
-        {preset.template}
-      </pre>
+      <Tabs
+        tabs={[
+          { id: 'readme', label: 'Readme', disabled: !preset.readme },
+          { id: 'template', label: 'OpenJD Template' },
+        ]}
+        active={tab}
+        onChange={setTab}
+        label="Preset sections"
+      >
+        {tab === 'readme' ? (
+          <Markdown source={preset.readme} />
+        ) : (
+          <pre className={styles.template} aria-label="OpenJD template">
+            {preset.template}
+          </pre>
+        )}
+      </Tabs>
     </div>
   )
 }

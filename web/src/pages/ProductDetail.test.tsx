@@ -69,6 +69,7 @@ function makeProduct(over: Partial<Product> = {}): Product {
     name: 'my-render',
     title: 'My Render',
     description: 'desc',
+    readme: '',
     category: 'Rendering',
     version: '1.0.0',
     source: 'custom',
@@ -200,6 +201,21 @@ describe('ProductDetail', () => {
     expect(fetchMock.mock.calls[0]?.[0]).toBe('/api/v1/products/studio%2Fmaya')
   })
 
+  it('renders the readme as markdown', async () => {
+    fetchMock.mockResolvedValueOnce(ok(makeProduct({ readme: '# Usage\n\nRun it with **care**.' })))
+    renderDetail('/products/my-render')
+    expect(await screen.findByText('Usage')).toBeInTheDocument()
+    expect(screen.getByText('Usage').tagName).toBe('H3')
+    expect(screen.getByText('care').tagName).toBe('STRONG')
+  })
+
+  it('renders nothing for an absent readme', async () => {
+    fetchMock.mockResolvedValueOnce(ok(makeProduct({ readme: '' })))
+    renderDetail('/products/my-render')
+    await screen.findByText('My Render')
+    expect(screen.queryByRole('heading', { level: 3 })).not.toBeInTheDocument()
+  })
+
   describe('role gating (products.manage)', () => {
     it('hides Duplicate, Edit, and Delete controls for a read-only principal', async () => {
       setPrincipal(READONLY_PRINCIPAL)
@@ -224,5 +240,77 @@ describe('ProductDetail', () => {
       expect(screen.getByRole('link', { name: /edit/i })).toBeInTheDocument()
       expect(screen.getByRole('button', { name: /^delete$/i })).toBeInTheDocument()
     })
+  })
+})
+
+describe('ProductDetail readme/template tabs', () => {
+  it('presents the readme and template as tabs', async () => {
+    fetchMock.mockResolvedValueOnce(ok(makeProduct({ readme: '# Usage' })))
+    renderDetail('/products/my-render')
+    await screen.findByRole('tablist', { name: /product sections/i })
+    expect(screen.getByRole('tab', { name: 'Readme' })).toBeInTheDocument()
+    expect(screen.getByRole('tab', { name: 'OpenJD Template' })).toBeInTheDocument()
+  })
+
+  it('opens on the readme tab when the product has one', async () => {
+    fetchMock.mockResolvedValueOnce(ok(makeProduct({ readme: '# Usage' })))
+    renderDetail('/products/my-render')
+    expect(await screen.findByRole('tab', { name: 'Readme' })).toHaveAttribute(
+      'aria-selected',
+      'true',
+    )
+    expect(screen.getByText('Usage')).toBeInTheDocument()
+    // Only one panel is mounted, so the template must not be on the page.
+    expect(screen.queryByText('name: my-template')).not.toBeInTheDocument()
+  })
+
+  it('opens on the template tab when the product has no readme', async () => {
+    fetchMock.mockResolvedValueOnce(ok(makeProduct({ readme: '' })))
+    renderDetail('/products/my-render')
+    expect(await screen.findByRole('tab', { name: 'OpenJD Template' })).toHaveAttribute(
+      'aria-selected',
+      'true',
+    )
+    expect(screen.getByText('name: my-template')).toBeInTheDocument()
+  })
+
+  it('disables the readme tab when the product has no readme', async () => {
+    fetchMock.mockResolvedValueOnce(ok(makeProduct({ readme: '' })))
+    renderDetail('/products/my-render')
+    expect(await screen.findByRole('tab', { name: 'Readme' })).toBeDisabled()
+  })
+
+  // The list-row readme button deep-links to ?tab=readme, so the param has to
+  // win over the page's own default.
+  it('honours ?tab=template over the readme default', async () => {
+    fetchMock.mockResolvedValueOnce(ok(makeProduct({ readme: '# Usage' })))
+    renderDetail('/products/my-render?tab=template')
+    expect(await screen.findByRole('tab', { name: 'OpenJD Template' })).toHaveAttribute(
+      'aria-selected',
+      'true',
+    )
+    expect(screen.getByText('name: my-template')).toBeInTheDocument()
+    expect(screen.queryByText('Usage')).not.toBeInTheDocument()
+  })
+
+  it('swaps the panel when another tab is clicked', async () => {
+    const user = userEvent.setup()
+    fetchMock.mockResolvedValueOnce(ok(makeProduct({ readme: '# Usage' })))
+    renderDetail('/products/my-render')
+    await screen.findByText('Usage')
+    await user.click(screen.getByRole('tab', { name: 'OpenJD Template' }))
+    expect(screen.getByText('name: my-template')).toBeInTheDocument()
+    expect(screen.queryByText('Usage')).not.toBeInTheDocument()
+  })
+
+  // The description is page-level context, not tab content — it stays put so a
+  // reader sees what the product is regardless of which tab is open.
+  it('keeps the description visible on both tabs', async () => {
+    const user = userEvent.setup()
+    fetchMock.mockResolvedValueOnce(ok(makeProduct({ readme: '# Usage' })))
+    renderDetail('/products/my-render')
+    expect(await screen.findByText('desc')).toBeInTheDocument()
+    await user.click(screen.getByRole('tab', { name: 'OpenJD Template' }))
+    expect(screen.getByText('desc')).toBeInTheDocument()
   })
 })

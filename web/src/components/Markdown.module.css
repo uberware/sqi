@@ -1,0 +1,26 @@
+/* SPDX-License-Identifier: AGPL-3.0-or-later */
+.markdown {
+  color: var(--color-text-secondary);
+  font-size: var(--font-size-sm);
+}
+
+.markdown p,
+.markdown ul,
+.markdown ol,
+.markdown pre {
+  margin: 0 0 var(--space-3) 0;
+}
+
+.markdown h3,
+.markdown h4,
+.markdown h5,
+.markdown h6 {
+  color: var(--color-text-primary);
+  margin: var(--space-4) 0 var(--space-2) 0;
+}
+
+.markdown pre {
+  overflow-x: auto;
+  padding: var(--space-3);
+  border-radius: var(--radius-sm);
+}

@@ -1267,6 +1267,7 @@ components:
           type: string
         description:
           type: string
+          maxLength: 500
         category:
           type: string
         version:
@@ -1280,6 +1281,15 @@ components:
         - $ref: "#/components/schemas/Preset"
         - type: object
           properties:
+            readme:
+              type: string
+              maxLength: 8000
+              description: >-
+                Long-form documentation in a restricted Markdown subset
+                (paragraphs, lists, fenced code, ATX headings, bold, italic,
+                inline code, links). Rendered on detail pages only. Unlike
+                `description` it is NOT searched, and it is not carried in the
+                preset library index.
             template:
               type: string
             format:
@@ -1297,6 +1307,21 @@ components:
           type: string
         description:
           type: string
+          maxLength: 500
+          description: >-
+            Short plain-text catalog blurb, shown in cards and in DCC
+            submitter dropdowns. Plain text, not Markdown -- it reaches
+            consumers that cannot render markup, such as the Blender addon's
+            tooltip.
+        readme:
+          type: string
+          maxLength: 8000
+          description: >-
+            Long-form documentation in a restricted Markdown subset
+            (paragraphs, lists, fenced code, ATX headings, bold, italic,
+            inline code, links). Rendered on detail pages only. Unlike
+            `description` it is NOT searched, and it is not carried in the
+            preset library index.
         category:
           type: string
         version:
@@ -1324,6 +1349,21 @@ components:
           type: string
         description:
           type: string
+          maxLength: 500
+          description: >-
+            Short plain-text catalog blurb, shown in cards and in DCC
+            submitter dropdowns. Plain text, not Markdown -- it reaches
+            consumers that cannot render markup, such as the Blender addon's
+            tooltip.
+        readme:
+          type: string
+          maxLength: 8000
+          description: >-
+            Long-form documentation in a restricted Markdown subset
+            (paragraphs, lists, fenced code, ATX headings, bold, italic,
+            inline code, links). Rendered on detail pages only. Unlike
+            `description` it is NOT searched, and it is not carried in the
+            preset library index.
         category:
           type: string
         version:
@@ -1344,6 +1384,21 @@ components:
           type: string
         description:
           type: string
+          maxLength: 500
+          description: >-
+            Short plain-text catalog blurb, shown in cards and in DCC
+            submitter dropdowns. Plain text, not Markdown -- it reaches
+            consumers that cannot render markup, such as the Blender addon's
+            tooltip.
+        readme:
+          type: string
+          maxLength: 8000
+          description: >-
+            Long-form documentation in a restricted Markdown subset
+            (paragraphs, lists, fenced code, ATX headings, bold, italic,
+            inline code, links). Rendered on detail pages only. Unlike
+            `description` it is NOT searched, and it is not carried in the
+            preset library index.
         category:
           type: string
         version:

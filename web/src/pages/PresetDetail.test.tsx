@@ -69,6 +69,7 @@ function makePreset(over: Partial<PresetDetailType> = {}): PresetDetailType {
     name: 'nuke-comp',
     title: 'Nuke Composite',
     description: 'Renders a Nuke composite',
+    readme: '',
     category: 'Compositing',
     version: '1.0.0',
     status: 'not_installed',
@@ -83,6 +84,7 @@ function makeProduct(over: Partial<Product> = {}): Product {
     name: 'nuke-comp',
     title: 'Nuke Composite',
     description: 'Renders a Nuke composite',
+    readme: '',
     category: 'Compositing',
     version: '1.0.0',
     source: 'installed',
@@ -170,6 +172,21 @@ describe('PresetDetail', () => {
     )
   })
 
+  it('renders the readme as markdown', async () => {
+    fetchMock.mockResolvedValueOnce(ok(makePreset({ readme: '# Usage\n\nRun it with **care**.' })))
+    renderDetail('/presets/nuke-comp')
+    expect(await screen.findByText('Usage')).toBeInTheDocument()
+    expect(screen.getByText('Usage').tagName).toBe('H3')
+    expect(screen.getByText('care').tagName).toBe('STRONG')
+  })
+
+  it('renders nothing for an absent readme', async () => {
+    fetchMock.mockResolvedValueOnce(ok(makePreset({ readme: '' })))
+    renderDetail('/presets/nuke-comp')
+    await screen.findByText('Nuke Composite')
+    expect(screen.queryByRole('heading', { level: 3 })).not.toBeInTheDocument()
+  })
+
   describe('role gating (products.manage)', () => {
     it('hides the Install control for a read-only principal', async () => {
       setPrincipal(READONLY_PRINCIPAL)
@@ -187,5 +204,103 @@ describe('PresetDetail', () => {
 
       expect(await screen.findByRole('button', { name: 'Install' })).toBeInTheDocument()
     })
+  })
+})
+
+describe('PresetDetail readme/template tabs', () => {
+  it('presents the readme and template as tabs', async () => {
+    fetchMock.mockResolvedValueOnce(ok(makePreset({ readme: '# Usage' })))
+    renderDetail('/presets/nuke-comp')
+    await screen.findByRole('tablist', { name: /preset sections/i })
+    expect(screen.getByRole('tab', { name: 'Readme' })).toBeInTheDocument()
+    expect(screen.getByRole('tab', { name: 'OpenJD Template' })).toBeInTheDocument()
+  })
+
+  it('opens on the readme tab when the preset has one', async () => {
+    fetchMock.mockResolvedValueOnce(ok(makePreset({ readme: '# Usage' })))
+    renderDetail('/presets/nuke-comp')
+    expect(await screen.findByRole('tab', { name: 'Readme' })).toHaveAttribute(
+      'aria-selected',
+      'true',
+    )
+    expect(screen.getByText('Usage')).toBeInTheDocument()
+    expect(screen.queryByText('name: nuke-template')).not.toBeInTheDocument()
+  })
+
+  it('opens on the template tab when the preset has no readme', async () => {
+    fetchMock.mockResolvedValueOnce(ok(makePreset({ readme: '' })))
+    renderDetail('/presets/nuke-comp')
+    expect(await screen.findByRole('tab', { name: 'OpenJD Template' })).toHaveAttribute(
+      'aria-selected',
+      'true',
+    )
+    expect(screen.getByText('name: nuke-template')).toBeInTheDocument()
+  })
+
+  it('disables the readme tab when the preset has no readme', async () => {
+    fetchMock.mockResolvedValueOnce(ok(makePreset({ readme: '' })))
+    renderDetail('/presets/nuke-comp')
+    expect(await screen.findByRole('tab', { name: 'Readme' })).toBeDisabled()
+  })
+
+  it('honours ?tab=template over the readme default', async () => {
+    fetchMock.mockResolvedValueOnce(ok(makePreset({ readme: '# Usage' })))
+    renderDetail('/presets/nuke-comp?tab=template')
+    expect(await screen.findByRole('tab', { name: 'OpenJD Template' })).toHaveAttribute(
+      'aria-selected',
+      'true',
+    )
+    expect(screen.queryByText('Usage')).not.toBeInTheDocument()
+  })
+
+  it('swaps the panel when another tab is clicked', async () => {
+    const user = userEvent.setup()
+    fetchMock.mockResolvedValueOnce(ok(makePreset({ readme: '# Usage' })))
+    renderDetail('/presets/nuke-comp')
+    await screen.findByText('Usage')
+    await user.click(screen.getByRole('tab', { name: 'OpenJD Template' }))
+    expect(screen.getByText('name: nuke-template')).toBeInTheDocument()
+    expect(screen.queryByText('Usage')).not.toBeInTheDocument()
+  })
+})
+
+describe('PresetDetail error reporting', () => {
+  function problem(status: number, detail: string): Response {
+    return new Response(
+      JSON.stringify({ type: 'about:blank', title: 'Unprocessable Entity', status, detail }),
+      { status, headers: { 'Content-Type': 'application/problem+json' } },
+    )
+  }
+
+  // A stale published library fails validation with a precise, actionable
+  // message naming the offending field. Swallowing it behind "Failed to load
+  // preset" turns a five-second diagnosis into a debugging session.
+  it('shows the server’s explanation when the definition fails validation', async () => {
+    fetchMock.mockResolvedValueOnce(
+      problem(
+        422,
+        'failed to load preset definition: control "LINE_EDIT" is not valid on a PATH parameter',
+      ),
+    )
+    renderDetail('/presets/nuke-comp')
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      /control "LINE_EDIT" is not valid on a PATH parameter/,
+    )
+  })
+
+  it('still explains itself when the library is not configured', async () => {
+    fetchMock.mockResolvedValueOnce(problem(503, 'preset library not configured'))
+    renderDetail('/presets/nuke-comp')
+    expect(await screen.findByRole('alert')).toHaveTextContent(/preset library not configured/)
+  })
+
+  // A transport failure has no problem document, so the generic line remains
+  // the honest fallback rather than rendering "undefined".
+  it('falls back to a generic message when there is no problem detail', async () => {
+    fetchMock.mockRejectedValueOnce(new Error('network down'))
+    renderDetail('/presets/nuke-comp')
+    const alert = await screen.findByRole('alert')
+    expect(alert).toHaveTextContent(/failed to load preset/i)
+    expect(alert).not.toHaveTextContent(/undefined/)
   })
 })

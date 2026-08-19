@@ -27,11 +27,15 @@ type Product struct {
 	Name        string // stable identity, e.g. "script", "studio/maya-render"
 	Title       string
 	Description string
-	Category    string
-	Version     string
-	Source      Source
-	Template    string // verbatim OpenJD template
-	Format      TemplateFormat
+	// Readme is long-form markdown documentation, rendered on detail pages
+	// only. Unlike Description it is never searched and never reaches a
+	// plain-text consumer; see the field table in docs/products.md.
+	Readme   string
+	Category string
+	Version  string
+	Source   Source
+	Template string // verbatim OpenJD template
+	Format   TemplateFormat
 	// OriginRef is the preset-library index entry name this product was
 	// installed from; empty for builtin/custom products.
 	OriginRef string

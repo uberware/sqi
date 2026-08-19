@@ -95,3 +95,17 @@ These are not regressions to file against; they are deliberately deferred:
 See [`web-development.md`](web-development.md) for the development workflow and the
 `CONTRIBUTING.md` "Web UI contributions" section for the component and testing
 conventions these checks fit into.
+
+---
+
+## Headings in rendered Markdown
+
+Product and preset readmes render through `src/components/Markdown.tsx`, which
+offsets heading levels rather than emitting them verbatim: `#` becomes `<h3>`,
+`##` becomes `<h4>`, and so on, clamped at `<h6>`. Both detail pages already
+nest `<h2>` (the product or preset title) under `<h1>` (PageHeader), so an
+un-offset `#` would put a second `<h1>` mid-document and break the outline.
+
+Real headings are used rather than visually-styled paragraphs: a bold paragraph
+looks like a heading to sighted users and is invisible as structure to a screen
+reader.

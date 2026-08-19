@@ -148,3 +148,70 @@ func TestProduct_UpdateOriginRoundTrip(t *testing.T) {
 		t.Fatalf("persisted origin wrong: ref=%q fp=%q", fetched.OriginRef, fetched.OriginFingerprint)
 	}
 }
+
+func TestProduct_ReadmeRoundTrips(t *testing.T) {
+	st := newProductStore(t)
+	ctx := context.Background()
+
+	const readme = "# Heading\n\nBody with code.\n"
+	created, err := st.CreateProduct(ctx, store.Product{
+		ID: "p1", Name: "readme-probe", Title: "Readme Probe",
+		Description: "short blurb", Readme: readme,
+		Source: store.SourceCustom, Template: "specificationVersion: jobtemplate-2023-09\nname: X\nsteps: []", Format: store.TemplateFormatYAML,
+	})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if created.Readme != readme {
+		t.Errorf("create returned readme %q, want %q", created.Readme, readme)
+	}
+
+	got, err := st.GetProductByName(ctx, "readme-probe")
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if got.Readme != readme {
+		t.Errorf("get returned readme %q, want %q", got.Readme, readme)
+	}
+
+	list, err := st.ListProducts(ctx)
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(list) != 1 || list[0].Readme != readme {
+		t.Errorf("list returned %+v, want one row carrying the readme", list)
+	}
+
+	updated, err := st.UpdateProduct(ctx, store.Product{
+		Name: "readme-probe", Title: "Readme Probe", Description: "short blurb",
+		Readme: "replaced", Template: "specificationVersion: jobtemplate-2023-09\nname: X\nsteps: []", Format: store.TemplateFormatYAML,
+	})
+	if err != nil {
+		t.Fatalf("update: %v", err)
+	}
+	if updated.Readme != "replaced" {
+		t.Errorf("update returned readme %q, want %q", updated.Readme, "replaced")
+	}
+}
+
+// A product created without a readme reads back as "" rather than failing the
+// scan. That is what the migration's empty-string default buys for
+// pre-existing rows.
+func TestProduct_ReadmeDefaultsEmpty(t *testing.T) {
+	st := newProductStore(t)
+	ctx := context.Background()
+
+	if _, err := st.CreateProduct(ctx, store.Product{
+		ID: "p2", Name: "no-readme", Title: "No Readme",
+		Source: store.SourceCustom, Template: "specificationVersion: jobtemplate-2023-09\nname: Y\nsteps: []", Format: store.TemplateFormatYAML,
+	}); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	got, err := st.GetProductByName(ctx, "no-readme")
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if got.Readme != "" {
+		t.Errorf("readme = %q, want empty", got.Readme)
+	}
+}

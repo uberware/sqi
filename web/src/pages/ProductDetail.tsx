@@ -3,6 +3,9 @@
 import { useCallback } from 'react'
 import { Link, useNavigate, useParams } from 'react-router'
 import PageHeader from '@/components/PageHeader'
+import Markdown from '@/components/Markdown'
+import Tabs from '@/components/Tabs'
+import { useTabParam } from '@/hooks/useTabParam'
 import { useToast } from '@/components/Toast'
 import { useProduct } from '@/api/queries'
 import { useDeleteProduct } from '@/api/mutations'
@@ -10,6 +13,8 @@ import { useAuth } from '@/auth/context'
 import { can } from '@/auth/policy'
 import type { ProductDuplicateState } from './ProductForm'
 import styles from './ProductDetail.module.css'
+
+const TAB_IDS = ['readme', 'template'] as const
 
 export default function ProductDetail() {
   const params = useParams<{ name: string }>()
@@ -20,6 +25,10 @@ export default function ProductDetail() {
   const canManage = can(principal, 'products.manage')
   const { data: product, isLoading, isError } = useProduct(name)
   const deleteProduct = useDeleteProduct()
+  // Default to the readme when there is one, else the template. Computed from
+  // the loaded product, so the hook runs unconditionally and simply re-derives
+  // once the fetch resolves.
+  const { tab, setTab } = useTabParam(TAB_IDS, product?.readme ? 'readme' : 'template')
 
   const handleDelete = useCallback(async () => {
     if (!product) return
@@ -40,6 +49,7 @@ export default function ProductDetail() {
         name: '',
         title: product.title,
         description: product.description,
+        readme: product.readme,
         category: product.category,
         version: product.version,
         template: product.template,
@@ -115,10 +125,23 @@ export default function ProductDetail() {
         </dd>
       </dl>
 
-      <h2 className={styles.sectionTitle}>OpenJD Template</h2>
-      <pre className={styles.template} aria-label="OpenJD template">
-        {product.template}
-      </pre>
+      <Tabs
+        tabs={[
+          { id: 'readme', label: 'Readme', disabled: !product.readme },
+          { id: 'template', label: 'OpenJD Template' },
+        ]}
+        active={tab}
+        onChange={setTab}
+        label="Product sections"
+      >
+        {tab === 'readme' ? (
+          <Markdown source={product.readme} />
+        ) : (
+          <pre className={styles.template} aria-label="OpenJD template">
+            {product.template}
+          </pre>
+        )}
+      </Tabs>
     </div>
   )
 }
