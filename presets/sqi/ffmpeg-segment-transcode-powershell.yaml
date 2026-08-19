@@ -13,21 +13,6 @@ readme: |
   output file. The join step is a PowerShell script, so this variant needs
   Windows workers - use the Portable variant on a mixed farm.
 
-  ## Steps
-
-  1. **Transcode** - fans out into one task per slice. Each task runs:
-     `ffmpeg -ss <offset> -t <SegmentSeconds> -i SourceFile ...` and writes
-     `<OutputFile stem>_seg_<00001>.<OutputFile suffix>` beside `OutputFile`.
-     The number of tasks is `ceil(DurationSeconds / SegmentSeconds)`.
-  2. **Join** - depends on every Transcode task, and runs an embedded
-     PowerShell script on the worker. The script lists
-     `<dir>\<stem>_seg_*<ext>` next to `OutputFile` with `Get-ChildItem`,
-     sorted by name - zero-padded slice numbers make that the same as
-     numeric order - writes the matches to a BOM-less UTF-8 concat file list
-     (a BOM breaks the concat demuxer's parse of the first line), then runs
-     `ffmpeg -f concat -safe 0` to copy the streams into `OutputFile` with no
-     re-encode. On success it deletes the slice files it just joined.
-
   ## Parameters
 
   - **SourceFile** - the video to split.
@@ -45,7 +30,20 @@ readme: |
   - **VideoCodec**, **Quality** (CRF, lower is better), **AudioCodec** -
     passed straight to `ffmpeg` for every slice.
 
-  ## Cleanup
+  ## How work is divided
+
+  1. **Transcode** - fans out into one task per slice. Each task runs:
+     `ffmpeg -ss <offset> -t <SegmentSeconds> -i SourceFile ...` and writes
+     `<OutputFile stem>_seg_<00001>.<OutputFile suffix>` beside `OutputFile`.
+     The number of tasks is `ceil(DurationSeconds / SegmentSeconds)`.
+  2. **Join** - depends on every Transcode task, and runs an embedded
+     PowerShell script on the worker. The script lists
+     `<dir>\<stem>_seg_*<ext>` next to `OutputFile` with `Get-ChildItem`,
+     sorted by name - zero-padded slice numbers make that the same as
+     numeric order - writes the matches to a BOM-less UTF-8 concat file list
+     (a BOM breaks the concat demuxer's parse of the first line), then runs
+     `ffmpeg -f concat -safe 0` to copy the streams into `OutputFile` with no
+     re-encode. On success it deletes the slice files it just joined.
 
   The join script removes every slice file it listed once the concat
   succeeds. If the join fails, the slice files are left on disk for you to

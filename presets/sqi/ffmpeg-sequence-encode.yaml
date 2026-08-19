@@ -2,8 +2,39 @@
 name: ffmpeg-sequence-encode
 title: FFmpeg Sequence Encode
 description: >-
-  Turns a rendered image sequence into a movie on one worker, named after the
-  sequence's printf-style pattern - render_%04d.exr produces render.mp4.
+  Encodes a numbered image sequence into a single video file on one worker.
+readme: |
+  # FFmpeg Sequence Encode
+
+  Encodes a numbered image sequence - the frames a render produces - into one
+  video file. A single `ffmpeg` invocation on one worker reads the sequence and
+  writes the movie.
+
+  ## Parameters
+
+  - **Source Pattern** - the image sequence to read, as an ffmpeg pattern such as
+    `render.%04d.exr`. It must be reachable from the worker that runs the job.
+  - **Start Frame** - the first frame number to read, passed as `-start_number`.
+  - **End Frame** - the last frame number to read. Together with the start frame
+    it decides how many frames are encoded.
+  - **Frame Rate** - frames per second of the resulting video.
+  - **Output Directory** - where the encoded video is written.
+  - **Video Codec** - `libx264` or `libx265`.
+  - **Quality** - the constant rate factor passed as `-crf`. Lower is better
+    quality and a larger file.
+
+  ## How work is divided
+
+  It is not. This product defines one step with one task: encoding a sequence
+  into a single container is inherently sequential.
+
+  The frame count handed to ffmpeg is computed from the start and end frames by
+  an expression, which is why the template declares the `EXPR` extension.
+
+  ## Requirements
+
+  - Workers tagged `attr.worker.tag.ffmpeg = true`
+  - `ffmpeg` on the worker's `PATH`
 category: Transcoding
 version: 1.0.0
 template:

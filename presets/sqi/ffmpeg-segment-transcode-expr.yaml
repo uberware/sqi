@@ -15,18 +15,6 @@ readme: |
   extension, so the same template runs unchanged on Linux, macOS and Windows
   workers.
 
-  ## Steps
-
-  1. **Transcode** - fans out into one task per slice. Each task runs:
-     `ffmpeg -ss <offset> -t <SegmentSeconds> -i SourceFile ...` and writes
-     `<OutputFile stem>_seg_<00001>.<OutputFile suffix>` beside `OutputFile`.
-     The number of tasks is `ceil(DurationSeconds / SegmentSeconds)`.
-  2. **Join** - depends on every Transcode task. An embedded file lists every
-     slice path as `file '<path>'`, one per line, built with an `EXPR`
-     `join()` expression over a `range()` comprehension - no script, no loop
-     on the worker. `ffmpeg -f concat -safe 0` reads that list and copies the
-     streams into `OutputFile` with no re-encode.
-
   ## Parameters
 
   - **SourceFile** - the video to split.
@@ -44,7 +32,17 @@ readme: |
   - **VideoCodec**, **Quality** (CRF, lower is better), **AudioCodec** -
     passed straight to `ffmpeg` for every slice.
 
-  ## Scaling
+  ## How work is divided
+
+  1. **Transcode** - fans out into one task per slice. Each task runs:
+     `ffmpeg -ss <offset> -t <SegmentSeconds> -i SourceFile ...` and writes
+     `<OutputFile stem>_seg_<00001>.<OutputFile suffix>` beside `OutputFile`.
+     The number of tasks is `ceil(DurationSeconds / SegmentSeconds)`.
+  2. **Join** - depends on every Transcode task. An embedded file lists every
+     slice path as `file '<path>'`, one per line, built with an `EXPR`
+     `join()` expression over a `range()` comprehension - no script, no loop
+     on the worker. `ffmpeg -f concat -safe 0` reads that list and copies the
+     streams into `OutputFile` with no re-encode.
 
   Building the join step's file list is charged against this template's
   `EXPR` evaluation budget at submission time, and that cost grows with the
@@ -53,8 +51,6 @@ readme: |
   the Bash or PowerShell variant instead, whose join step costs the same
   regardless of slice count (it lists slices with a directory glob at run
   time, not at submission time).
-
-  ## Cleanup
 
   Unlike the Bash and PowerShell variants, this template does not remove the
   per-slice files after a successful join - there is no shell step to do it

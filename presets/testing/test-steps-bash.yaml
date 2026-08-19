@@ -2,9 +2,47 @@
 name: test-steps-bash
 title: Test Steps (Bash)
 description: >-
-  Multi-step no-op job (render then publish then notify) that exercises step
-  dependency gating: publish waits for all render tasks; notify waits for both
-  render and publish. Runs bash scripts. A test/QA job, not a real renderer.
+  Simulates a three-step pipeline - render, publish, notify - so step
+  dependencies and ordering can be exercised without a renderer.
+readme: |
+  # Test Steps (bash)
+
+  A no-op multi-step job for exercising step dependencies. It defines three
+  steps - render, publish and notify - that run in order, each waiting for the
+  one before it to finish completely.
+
+  Use it to check that dependent steps stay blocked until their upstream step
+  completes, that a failure partway through stops the steps below it, and that
+  the job graph renders correctly in the web UI.
+
+  ## Parameters
+
+  - **Frame Range** - the frames to simulate, in OpenJD range syntax. One task per
+    frame.
+  - **Sleep Seconds** - how long each frame pretends to work before succeeding.
+  - **Emit Progress** - whether each task prints OpenJD progress messages, so the
+    progress bar in the web UI has something to show.
+  - **Fail Frames** - a range of frames that exit non-zero instead of succeeding,
+    for exercising retries and failure reporting. Empty means none fail.
+  - **Hang Frames** - a range of frames that stop responding instead of finishing,
+    for exercising task timeouts and cancellation. Empty means none hang.
+  - **Hang Seconds** - how long a hung frame stays hung before giving up.
+  - **Output Directory** - where each frame writes its placeholder file. Left
+    empty, nothing is written.
+
+  ## How work is divided
+
+  The render step runs one task per frame. The publish and notify steps each run
+  a single task, gated on the step before. The template declares `SQI_PATH_TRANSLATION`, so the output directory is
+  translated per worker platform - which makes this preset useful for checking
+  path mapping on a mixed farm.
+
+  ## Requirements
+
+  No capability tag and no renderer: that is the point. These presets exist to
+  exercise the farm itself, so they run on any worker that can execute their
+  script. This is the bash variant, for Linux and macOS
+  workers; use the PowerShell variant on Windows.
 category: Testing
 version: 1.0.0
 template:

@@ -2,10 +2,39 @@
 name: blender-batch-render
 title: Blender Batch Render
 description: >-
-  Renders a saved .blend file headless, one frame per task by default; raise
-  the task chunk size to batch a frame range per Blender launch. Requires
-  workers tagged blender=true with blender on PATH. Leave Output Path blank to
-  use the scene's own output setting, or set it to override.
+  Renders a saved .blend file headless with Blender's batch mode, one frame
+  per task by default.
+readme: |
+  # Blender Batch Render
+
+  Renders a saved `.blend` file with `blender -b`, writing image files to the
+  output path you choose. Each task renders a contiguous slice of the frame
+  range, one frame per task by default.
+
+  ## Parameters
+
+  - **Scene File** - the `.blend` file to render. It must be reachable from every
+    worker that runs the job.
+  - **Frames** - the frame range, in OpenJD range syntax, e.g. `1-100` or
+    `1-100:2` for every second frame.
+  - **Output Path** - the output path passed to Blender as `-o`. Blender treats
+    it as a prefix and appends the frame number and extension. Left empty, the
+    path saved in the blend file is used.
+
+  ## How work is divided
+
+  The frame range expands into tasks through OpenJD task chunking. The
+  `SQI_CHUNK_BOUNDS` extension gives each task the first and last frame of its
+  own slice, which is what lets the command pass a start and an end rather than
+  a frame list.
+
+  One frame per task is the default. Raise the chunk size to batch a frame range
+  into a single Blender launch, which trades parallelism for fewer scene loads.
+
+  ## Requirements
+
+  - Workers tagged `attr.worker.tag.blender = true`
+  - `blender` on the worker's `PATH`
 category: Rendering
 version: 1.0.0
 template:

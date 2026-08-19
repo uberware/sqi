@@ -2,7 +2,39 @@
 name: ffmpeg-transcode
 title: FFmpeg Transcode
 description: >-
-  Converts one video file on one worker, start to finish.
+  Converts one video file to another format on a single worker, start to
+  finish.
+readme: |
+  # FFmpeg Transcode
+
+  Transcodes one video file into another with a single `ffmpeg` invocation on one
+  worker. The whole file is converted by one task, so the job finishes no faster
+  than one machine can encode it.
+
+  Use FFmpeg Segment Transcode instead to split a long source across the farm.
+
+  ## Parameters
+
+  - **Source File** - the video to convert. It must be reachable from the worker
+    that runs the job.
+  - **Output File** - where the converted video is written. Its extension decides
+    the container format.
+  - **Video Codec** - `libx264`, `libx265`, or `copy` to pass the video through
+    without re-encoding.
+  - **Quality** - the constant rate factor passed as `-crf`. Lower is better
+    quality and a larger file; 20 is a reasonable default.
+  - **Audio Codec** - `aac`, or `copy` to pass the audio through untouched.
+
+  ## How work is divided
+
+  It is not. This product defines one step with one task and declares no OpenJD
+  extensions, which also means it is never withheld from a worker on expression
+  limits.
+
+  ## Requirements
+
+  - Workers tagged `attr.worker.tag.ffmpeg = true`
+  - `ffmpeg` on the worker's `PATH`
 category: Transcoding
 version: 1.0.0
 template:

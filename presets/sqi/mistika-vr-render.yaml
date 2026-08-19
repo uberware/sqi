@@ -2,9 +2,34 @@
 name: mistika-vr-render
 title: Mistika VR Render
 description: >-
-  Renders a saved Mistika VR .rnd job with the vr binary, in frame chunks.
-  Requires workers tagged mistikavr=true with vr on PATH. For a single movie
-  file, submit Frames "1".
+  Renders a saved Mistika VR project on the command line, in frame chunks.
+readme: |
+  # Mistika VR Render
+
+  Renders a saved Mistika VR project by invoking `vr` in render mode. Each task
+  renders a contiguous slice of the frame range.
+
+  ## Parameters
+
+  - **Scene File** - the Mistika VR project to render. It must be reachable from
+    every worker that runs the job.
+  - **Frames** - the frame range, in OpenJD range syntax, e.g. `1-100` or
+    `1-100:2` for every second frame.
+
+  ## How work is divided
+
+  The frame range expands into tasks through OpenJD task chunking, ten frames per
+  task by default. The `SQI_CHUNK_BOUNDS` extension gives each task the first and
+  last frame of its own slice, which is what lets the command pass `-s` and `-e`
+  rather than a frame list.
+
+  There is no in-application submitter for this product: build the job from the
+  sqi web UI or the Python client rather than from inside the application.
+
+  ## Requirements
+
+  - Workers tagged `attr.worker.tag.mistikavr = true`
+  - `vr` on the worker's `PATH`
 category: Rendering
 version: 1.0.0
 template:

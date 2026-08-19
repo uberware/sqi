@@ -22,7 +22,7 @@ readme: |
   print("running on", sys.platform)
   ```
 
-  ## Notes
+  ## Requirements
 
   The script is delivered as an OpenJD embedded file, so it reaches the worker as
   a real `script.py` on disk rather than as a command-line argument. That is why

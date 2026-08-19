@@ -20,7 +20,7 @@ readme: |
   docker run --rm registry.example.com/team/nuke:15.1
   ```
 
-  ## Notes
+  ## Requirements
 
   The step declares `attr.worker.tag.docker`, so it will only ever be scheduled
   onto workers tagged as having Docker. A worker without that tag is not a
