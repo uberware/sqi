@@ -19,6 +19,13 @@ import styles from './ProductSubmit.module.css'
 
 const QUEUE_STORAGE_KEY = 'sqi:submit:last-queue-id'
 
+/** Message for a failed load: the server's explanation when it sent one,
+ * otherwise the caller's generic line. A transport failure carries no problem
+ * document, so it must not render as "undefined". */
+function loadFailureMessage(generic: string, err: unknown): string {
+  return err instanceof ApiError && err.detail ? `${generic} ${err.detail}` : generic
+}
+
 export default function ProductSubmit() {
   const { name = '' } = useParams()
   const navigate = useNavigate()
@@ -78,8 +85,19 @@ export default function ProductSubmit() {
   const productData = product.data
   const paramList = params.data
 
-  if (product.error || params.error || !productData || !paramList) {
-    return <p role="alert">Failed to load this product.</p>
+  if (product.error || !productData) {
+    return (
+      <p role="alert" className={styles.formError}>
+        {loadFailureMessage('Failed to load this product.', product.error)}
+      </p>
+    )
+  }
+  if (params.error || !paramList) {
+    return (
+      <p role="alert" className={styles.formError}>
+        {loadFailureMessage("Failed to load this product's parameters.", params.error)}
+      </p>
+    )
   }
 
   // Fall back to the first available queue when none is stored (mirrors Submit.tsx).

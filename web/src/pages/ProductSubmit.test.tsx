@@ -8,6 +8,7 @@ import type { ReactElement } from 'react'
 import { ToastProvider } from '@/components/Toast'
 import type { Principal } from '@/api/types'
 import ProductSubmit from './ProductSubmit'
+import { ApiError } from '@/api/client'
 
 // ── Auth mock ─────────────────────────────────────────────────────────────────
 // ProductSubmit reads useAuth() to gate the Owner field behind 'jobs.submit_as'.
@@ -95,7 +96,12 @@ const h = vi.hoisted(() => {
     internalParam,
     defaultParams,
     makeJob,
-    state: { params: defaultParams(), jobs: [makeJob()] },
+    state: {
+      params: defaultParams(),
+      jobs: [makeJob()],
+      productError: null as unknown,
+      paramsError: null as unknown,
+    },
   }
 })
 
@@ -118,12 +124,12 @@ vi.mock('@/api/queries', async (orig) => ({
       format: 'yaml' as const,
     },
     isLoading: false,
-    error: null,
+    error: h.state.productError,
   }),
   useProductParameters: () => ({
-    data: h.state.params,
+    data: h.state.paramsError === null ? h.state.params : undefined,
     isLoading: false,
-    error: null,
+    error: h.state.paramsError,
   }),
   // Bug #2 corrected: use real FarmWithQueues shape { farm, queues } not { id, name, queues }
   useFarmsWithQueues: () => ({
@@ -166,6 +172,8 @@ vi.mock('@/api/mutations', async (orig) => ({
 }))
 
 beforeEach(() => {
+  h.state.productError = null
+  h.state.paramsError = null
   submitMock.mockClear()
   navigateMock.mockClear()
   // Default every test to an operator principal (holds jobs.submit_as) so
@@ -347,5 +355,42 @@ describe('owner field permission gating', () => {
     const arg = submitMock.mock.calls[0]?.[0] as Record<string, unknown>
     expect(arg).not.toHaveProperty('owner')
     expect(arg).toMatchObject({ maySubmitAs: false })
+  })
+})
+
+describe('ProductSubmit load errors', () => {
+  function apiError(status: number, detail: string): ApiError {
+    return new ApiError({ type: 'about:blank', title: 'Error', status, detail })
+  }
+
+  it("shows the server's reason when the product cannot be loaded", () => {
+    h.state.productError = apiError(404, 'product not found')
+    renderPage()
+    expect(screen.getByRole('alert')).toHaveTextContent(/product not found/)
+  })
+
+  // The two requests fail for different reasons and send you to different
+  // places, so the message must say which one broke.
+  it('names the parameters request when that is what failed', () => {
+    h.state.paramsError = apiError(422, 'product template is invalid: yaml: line 3: bad indent')
+    renderPage()
+    const alert = screen.getByRole('alert')
+    expect(alert).toHaveTextContent(/parameters/i)
+    expect(alert).toHaveTextContent(/product template is invalid: yaml: line 3: bad indent/)
+  })
+
+  it('names the product request when that is what failed', () => {
+    h.state.productError = apiError(500, 'failed to get product')
+    renderPage()
+    expect(screen.getByRole('alert')).toHaveTextContent(/product/i)
+    expect(screen.getByRole('alert')).toHaveTextContent(/failed to get product/)
+  })
+
+  it('falls back to a generic message when the failure carries no detail', () => {
+    h.state.productError = new Error('network down')
+    renderPage()
+    const alert = screen.getByRole('alert')
+    expect(alert).toHaveTextContent(/failed to load/i)
+    expect(alert).not.toHaveTextContent(/undefined/)
   })
 })
