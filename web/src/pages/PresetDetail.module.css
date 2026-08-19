@@ -62,13 +62,6 @@
   color: var(--color-text-primary);
 }
 
-.sectionTitle {
-  font-size: var(--font-size-sm);
-  font-weight: var(--font-weight-semibold);
-  color: var(--color-text-secondary);
-  margin: 0;
-}
-
 .template {
   margin: 0;
   padding: var(--space-4);

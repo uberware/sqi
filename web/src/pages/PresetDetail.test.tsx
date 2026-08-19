@@ -206,3 +206,60 @@ describe('PresetDetail', () => {
     })
   })
 })
+
+describe('PresetDetail readme/template tabs', () => {
+  it('presents the readme and template as tabs', async () => {
+    fetchMock.mockResolvedValueOnce(ok(makePreset({ readme: '# Usage' })))
+    renderDetail('/presets/nuke-comp')
+    await screen.findByRole('tablist', { name: /preset sections/i })
+    expect(screen.getByRole('tab', { name: 'Readme' })).toBeInTheDocument()
+    expect(screen.getByRole('tab', { name: 'OpenJD Template' })).toBeInTheDocument()
+  })
+
+  it('opens on the readme tab when the preset has one', async () => {
+    fetchMock.mockResolvedValueOnce(ok(makePreset({ readme: '# Usage' })))
+    renderDetail('/presets/nuke-comp')
+    expect(await screen.findByRole('tab', { name: 'Readme' })).toHaveAttribute(
+      'aria-selected',
+      'true',
+    )
+    expect(screen.getByText('Usage')).toBeInTheDocument()
+    expect(screen.queryByText('name: nuke-template')).not.toBeInTheDocument()
+  })
+
+  it('opens on the template tab when the preset has no readme', async () => {
+    fetchMock.mockResolvedValueOnce(ok(makePreset({ readme: '' })))
+    renderDetail('/presets/nuke-comp')
+    expect(await screen.findByRole('tab', { name: 'OpenJD Template' })).toHaveAttribute(
+      'aria-selected',
+      'true',
+    )
+    expect(screen.getByText('name: nuke-template')).toBeInTheDocument()
+  })
+
+  it('disables the readme tab when the preset has no readme', async () => {
+    fetchMock.mockResolvedValueOnce(ok(makePreset({ readme: '' })))
+    renderDetail('/presets/nuke-comp')
+    expect(await screen.findByRole('tab', { name: 'Readme' })).toBeDisabled()
+  })
+
+  it('honours ?tab=template over the readme default', async () => {
+    fetchMock.mockResolvedValueOnce(ok(makePreset({ readme: '# Usage' })))
+    renderDetail('/presets/nuke-comp?tab=template')
+    expect(await screen.findByRole('tab', { name: 'OpenJD Template' })).toHaveAttribute(
+      'aria-selected',
+      'true',
+    )
+    expect(screen.queryByText('Usage')).not.toBeInTheDocument()
+  })
+
+  it('swaps the panel when another tab is clicked', async () => {
+    const user = userEvent.setup()
+    fetchMock.mockResolvedValueOnce(ok(makePreset({ readme: '# Usage' })))
+    renderDetail('/presets/nuke-comp')
+    await screen.findByText('Usage')
+    await user.click(screen.getByRole('tab', { name: 'OpenJD Template' }))
+    expect(screen.getByText('name: nuke-template')).toBeInTheDocument()
+    expect(screen.queryByText('Usage')).not.toBeInTheDocument()
+  })
+})

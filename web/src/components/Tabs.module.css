@@ -1,0 +1,51 @@
+/* SPDX-License-Identifier: AGPL-3.0-or-later */
+
+.tabs {
+  display: flex;
+  flex-direction: column;
+}
+
+.tablist {
+  display: flex;
+  gap: var(--space-1);
+  border-bottom: 1px solid var(--color-border);
+}
+
+.tab {
+  padding: var(--space-2) var(--space-4);
+  border: none;
+  border-bottom: 2px solid transparent;
+  background: none;
+  color: var(--color-text-secondary);
+  font-size: var(--font-size-base);
+  font-weight: var(--font-weight-medium);
+  cursor: pointer;
+  /* Keeps the row from reflowing when the selected tab gains weight. */
+  margin-bottom: -1px;
+}
+
+.tab:hover:not(:disabled) {
+  color: var(--color-text-primary);
+}
+
+.tab[aria-selected='true'] {
+  color: var(--color-text-primary);
+  border-bottom-color: var(--color-accent);
+}
+
+.tab:disabled {
+  color: var(--color-text-muted);
+  cursor: default;
+}
+
+.panel {
+  padding-top: var(--space-4);
+}
+
+/* The panel is focusable so keyboard users can reach its content directly from
+   the tab, but it is not an interactive control -- no focus ring styling of its
+   own beyond the browser default. */
+.panel:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 2px;
+}
