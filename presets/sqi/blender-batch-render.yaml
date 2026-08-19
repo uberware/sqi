@@ -18,8 +18,9 @@ readme: |
   - **Frames** - the frame range, in OpenJD range syntax, e.g. `1-100` or
     `1-100:2` for every second frame.
   - **Output Path** - the output path passed to Blender as `-o`. Blender treats
-    it as a prefix and appends the frame number and extension. Left empty, the
-    path saved in the blend file is used.
+    it as a prefix and appends the frame number and extension. The flag is
+    always passed, so an empty value reaches Blender as an empty path rather
+    than being omitted; set it explicitly.
 
   ## How work is divided
 
