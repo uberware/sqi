@@ -8,6 +8,8 @@ import Tabs from '@/components/Tabs'
 import { useTabParam } from '@/hooks/useTabParam'
 import { useToast } from '@/components/Toast'
 import { usePreset } from '@/api/queries'
+import { ApiError } from '@/api/client'
+import ErrorBanner from '@/components/ErrorBanner'
 import { useInstallPreset } from '@/api/mutations'
 import { useAuth } from '@/auth/context'
 import { can } from '@/auth/policy'
@@ -22,7 +24,7 @@ export default function PresetDetail() {
   const { showToast } = useToast()
   const { principal } = useAuth()
   const canManage = can(principal, 'products.manage')
-  const { data: preset, isLoading, isError } = usePreset(name)
+  const { data: preset, isLoading, isError, error } = usePreset(name)
   // Default to the readme when there is one, else the template. Computed from
   // the loaded preset, so the hook runs unconditionally and re-derives once
   // the fetch resolves.
@@ -41,7 +43,15 @@ export default function PresetDetail() {
 
   if (isLoading || !preset) {
     return (
-      <div className={styles.page}>{isError ? <p>Failed to load preset.</p> : <p>Loading…</p>}</div>
+      <div className={styles.page}>
+        {isError ? (
+          <ErrorBanner>
+            {error instanceof ApiError && error.detail ? error.detail : 'Failed to load preset.'}
+          </ErrorBanner>
+        ) : (
+          <p>Loading…</p>
+        )}
+      </div>
     )
   }
 

@@ -263,3 +263,44 @@ describe('PresetDetail readme/template tabs', () => {
     expect(screen.queryByText('Usage')).not.toBeInTheDocument()
   })
 })
+
+describe('PresetDetail error reporting', () => {
+  function problem(status: number, detail: string): Response {
+    return new Response(
+      JSON.stringify({ type: 'about:blank', title: 'Unprocessable Entity', status, detail }),
+      { status, headers: { 'Content-Type': 'application/problem+json' } },
+    )
+  }
+
+  // A stale published library fails validation with a precise, actionable
+  // message naming the offending field. Swallowing it behind "Failed to load
+  // preset" turns a five-second diagnosis into a debugging session.
+  it('shows the server’s explanation when the definition fails validation', async () => {
+    fetchMock.mockResolvedValueOnce(
+      problem(
+        422,
+        'failed to load preset definition: control "LINE_EDIT" is not valid on a PATH parameter',
+      ),
+    )
+    renderDetail('/presets/nuke-comp')
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      /control "LINE_EDIT" is not valid on a PATH parameter/,
+    )
+  })
+
+  it('still explains itself when the library is not configured', async () => {
+    fetchMock.mockResolvedValueOnce(problem(503, 'preset library not configured'))
+    renderDetail('/presets/nuke-comp')
+    expect(await screen.findByRole('alert')).toHaveTextContent(/preset library not configured/)
+  })
+
+  // A transport failure has no problem document, so the generic line remains
+  // the honest fallback rather than rendering "undefined".
+  it('falls back to a generic message when there is no problem detail', async () => {
+    fetchMock.mockRejectedValueOnce(new Error('network down'))
+    renderDetail('/presets/nuke-comp')
+    const alert = await screen.findByRole('alert')
+    expect(alert).toHaveTextContent(/failed to load preset/i)
+    expect(alert).not.toHaveTextContent(/undefined/)
+  })
+})
