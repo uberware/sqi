@@ -37,7 +37,7 @@ The auto-registration is:
   database error or a create that races another registration) is logged and
   silently ignored; it never blocks or fails the worker registration itself.
 
-This behaviour is implemented in `ensureComputeLocation` in
+This behavior is implemented in `ensureComputeLocation` in
 `internal/scheduler/scheduler.go`, called on every successful worker
 registration.
 

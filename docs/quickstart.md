@@ -33,7 +33,7 @@ http://localhost:8080.
 ## Option B — Docker Compose
 
 ```sh
-curl -LO https://raw.githubusercontent.com/uberware/sqi/v0.2.0/deploy/docker-compose.yml
+curl -LO https://raw.githubusercontent.com/uberware/sqi/v0.3.0/deploy/docker-compose.yml
 docker compose -f docker-compose.yml up -d
 ```
 
@@ -79,7 +79,7 @@ Rather than the web UI, artists can submit directly from the DCC they're
 already working in. The [`sqi-submitter`](dcc-submitters.md) Python package
 adds an in-application submit dialog (native panel for Blender) to Maya,
 Houdini, Nuke, and Blender, driven by the same product catalog — including
-six ready-to-install reference render presets — with scene path, frame
+nine ready-to-install reference render presets — with scene path, frame
 range, and render-target pre-fill. See [DCC submitters](dcc-submitters.md) for
 installation per host.
 

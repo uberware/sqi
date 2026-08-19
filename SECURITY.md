@@ -19,7 +19,7 @@ Once stable releases begin, this table will be updated to reflect which release 
 
 Use GitHub's built-in private reporting to submit a vulnerability report confidentially:
 
-1. Go to the [sqi Security Advisories page](../../security/advisories/new)
+1. Go to the [sqi Security Advisories page](https://github.com/uberware/sqi/security/advisories/new)
 2. Click **Report a vulnerability**
 3. Fill in the details — affected component, reproduction steps, potential impact, and any suggested mitigations you have in mind
 
@@ -65,8 +65,9 @@ The following are in scope for security reports:
 
 - `sqi-server` — scheduler, REST API, WebSocket, embedded NATS, SQLite state management
 - `sqi-worker` — task executor and worker agent
-- The Python client library (`sqi-sdk`)
-- The authentication and authorization implementation (once shipped — Phase 3+)
+- The Python client library (`sqi-sdk`) and the DCC submitter package (`sqi-submitter`)
+- The authentication and authorization implementation (`internal/auth/`) — the auth gate, local accounts, sessions, API keys, RBAC, LDAP/AD, and OAuth2/OIDC SSO
+- Run-as-user task isolation (`internal/worker/isolation/`) — privilege separation between task processes and the worker service account
 - Dependency vulnerabilities in the Go module graph or npm packages
 
 The following are **out of scope**:

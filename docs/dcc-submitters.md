@@ -39,7 +39,7 @@ lets the artist pick one, fetches its parameters (`GET
 exactly what the web `/submit` page does. Everything DCC-specific is
 scene/context extraction (a scene path, a frame range, which render target is
 selected) that pre-fills matching parameters by **name**, never by which
-product was chosen. See [Reference presets](#reference-presets) for the six
+product was chosen. See [Reference presets](#reference-presets) for the nine
 products this repo ships to give the framework something real to target, and
 [The parameter convention contract](#the-parameter-convention-contract) for
 exactly how pre-fill works.
@@ -311,11 +311,11 @@ worker:
     - maya=true
 ```
 
-(substitute `houdini=true`, `nuke=true`, or `blender=true` for the other
-three presets), or add a [custom
-detector](worker-capabilities.md#writing-custom-detectors) instead. A job
-submitted against one of these products sits `ready` forever if no worker
-ends up advertising the tag (auto-detected or manual).
+(substitute `houdini=true`, `nuke=true`, `blender=true`, `mistika=true`,
+`mistikavr=true`, or `mistikaworkflows=true` for the other seven presets), or
+add a [custom detector](worker-capabilities.md#writing-custom-detectors)
+instead. A job submitted against one of these products sits `ready` forever if
+no worker ends up advertising the tag (auto-detected or manual).
 
 ---
 
@@ -564,8 +564,8 @@ for the four existing examples):
 Real-DCC verification (Maya, Houdini, Nuke) is manual — there's no CI runner
 for licensed software. Blender is covered by an automated integration smoke
 test (see `clients/submitter/tests/integration/test_e2e.py`,
-`SQI_TEST_BLENDER=1`) since it's freely installable, but should still be spot
--checked manually after any change to its adapter/add-on.
+`SQI_TEST_BLENDER=1`) since it's freely installable, but should still be
+spot-checked manually after any change to its adapter/add-on.
 
 For each host, after installing per [Installation per host](#installation-per-host):
 
@@ -619,7 +619,7 @@ treat it, not this doc, as the source of truth if they ever disagree. The same
 applies: a JS submitter that wants "pre-fill from the host app" pre-fills by
 matching the same parameter names, with the same case/separator-insensitive
 rules and the same additive-only guarantee. No Qt, no Python, and none of
-`sqi-submitter`'s packaging is required to build a fully-functional submitter
+`sqi-submitter`'s packaging is required to build a fully functional submitter
 against this contract — only an HTTP client.
 
 ---

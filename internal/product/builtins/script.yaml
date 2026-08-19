@@ -20,7 +20,7 @@ readme: |
   ffmpeg -i input.mov -c:v libx264 output.mp4
   ```
 
-  ## Notes
+  ## Requirements
 
   The command runs on whichever worker picks up the task, as the account that
   worker runs under, in a session directory the worker creates. Nothing is

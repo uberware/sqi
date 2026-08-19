@@ -47,12 +47,12 @@ func TestSQIReferencePresets(t *testing.T) {
 		"maya-layer-render": {
 			category:   "Rendering",
 			params:     []string{"SceneFile", "Frames", "OutputDir", "Renderer", "RenderLayer"},
-			extensions: []string{"TASK_CHUNKING"},
+			extensions: []string{"TASK_CHUNKING", "SQI_CHUNK_BOUNDS"},
 		},
 		"maya-scene-render": {
 			category:   "Rendering",
 			params:     []string{"SceneFile", "Frames", "OutputDir", "Renderer"},
-			extensions: []string{"TASK_CHUNKING"},
+			extensions: []string{"TASK_CHUNKING", "SQI_CHUNK_BOUNDS"},
 		},
 		"houdini-rop-render": {
 			category:   "Rendering",
@@ -72,11 +72,14 @@ func TestSQIReferencePresets(t *testing.T) {
 		"blender-batch-render": {
 			category:   "Rendering",
 			params:     []string{"SceneFile", "Frames", "OutputPath"},
-			extensions: []string{"TASK_CHUNKING"},
+			extensions: []string{"TASK_CHUNKING", "SQI_CHUNK_BOUNDS"},
 		},
-		// The three Mistika presets are the only shipped presets that declare
-		// SQI_CHUNK_BOUNDS: they invoke the renderer as `-s START -e END`, so
-		// they need a chunk's bounds rather than the chunk itself.
+		// The three Mistika presets invoke the renderer as `-s START -e END`,
+		// so they need a chunk's bounds rather than the chunk itself. They are
+		// not alone in that: the two Maya presets and blender-batch-render
+		// declare SQI_CHUNK_BOUNDS for the same reason, so six of the nine
+		// render presets use it. Only Houdini and the two Nuke presets take a
+		// frame list directly and can do without it.
 		"mistika-boutique-render": {
 			category:   "Rendering",
 			params:     []string{"SceneFile", "Frames"},

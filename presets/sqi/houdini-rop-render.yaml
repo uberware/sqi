@@ -2,9 +2,36 @@
 name: houdini-rop-render
 title: Houdini ROP Render
 description: >-
-  Renders a ROP from a saved hip file with hython, in frame chunks. Requires
-  workers tagged houdini=true with hython on PATH. A starting point -
-  duplicate to customize for your pipeline.
+  Renders a ROP from a saved Houdini hip file with hython, in frame chunks.
+readme: |
+  # Houdini ROP Render
+
+  Renders one render operator (ROP) from a saved Houdini `.hip` file. Each task
+  runs `hython` against a short Python script the template carries as an embedded
+  file, which opens the hip, finds the ROP and renders the frames it was given.
+
+  Each task renders a contiguous chunk of frames, ten per task by default.
+
+  ## Parameters
+
+  - **Scene File** - the `.hip` file to render. It must be reachable from every
+    worker that runs the job.
+  - **Frames** - the frame range, in OpenJD range syntax, e.g. `1-100` or
+    `1-100:2` for every second frame.
+  - **ROP Path** - the full node path of the ROP to render, for example
+    `/out/mantra1`.
+
+  ## How work is divided
+
+  The frame range expands into tasks through OpenJD task chunking, ten frames per
+  task by default. Each task receives its own frames as a list and passes them
+  straight to the embedded script, so this preset needs no chunk-bounds
+  extension.
+
+  ## Requirements
+
+  - Workers tagged `attr.worker.tag.houdini = true`
+  - `hython` on the worker's `PATH`
 category: Rendering
 version: 1.0.0
 template:

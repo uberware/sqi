@@ -32,6 +32,7 @@ contract is the OpenAPI spec described in [`api.md`](./api.md).
 - [Tasks and logs](#tasks-and-logs)
 - [Workers](#workers)
 - [Farm, queue, and resource CRUD](#farm-queue-and-resource-crud)
+- [Products](#products)
 - [Live events (WebSocket, `ws` extra)](#live-events-websocket-ws-extra)
 - [Conveniences](#conveniences)
 
@@ -102,6 +103,7 @@ SqiError
 ├── SqiTimeoutError         # request timed out / wait_for_job deadline
 └── APIError                # any non-2xx response
     ├── BadRequestError     # 400
+    ├── SqiAuthError        # 401 / 403 (missing or rejected credential)
     ├── NotFoundError       # 404
     ├── ConflictError       # 409
     ├── ValidationError     # 422
@@ -110,7 +112,7 @@ SqiError
 ```
 
 `APIError` carries `status`, `title`, `detail`, and `request_id` (parsed from the
-RFC 7807 `application/problem+json` body or the `X-Request-Id` header). `str(exc)`
+RFC 7807 `application/problem+json` body or the `X-Request-ID` header). `str(exc)`
 includes the status, detail, and request ID so failures are diagnosable in logs.
 
 ```python
@@ -148,9 +150,10 @@ Status filters accept either the enum or its wire string:
 `sqi.list_jobs(status=JobStatus.RUNNING)` and `sqi.list_jobs(status="running")`
 are equivalent. `None` filters are omitted from the request entirely.
 
-> **Note:** farms, storage locations, and usage pools are returned by the
-> server as bare arrays (no pagination), so their `list_*` methods return a plain
-> `list[T]`. Only queues, jobs, tasks, and workers are paginated.
+> **Note:** farms, storage locations, compute locations, usage pools, and
+> products are returned by the server as bare arrays (no pagination), so their
+> `list_*` methods return a plain `list[T]`. Only queues, jobs, tasks, and
+> workers are paginated.
 
 ## Submitting jobs
 
@@ -264,6 +267,7 @@ for chunk in sqi.tail_task_logs(task_id, follow=True):
 | `get_worker(worker_id) -> Worker` | Worker detail, including `current_tasks`. |
 | `disable_worker(worker_id) -> WorkerAction \| None` | Drain and stop new assignments. |
 | `enable_worker(worker_id) -> WorkerAction \| None` | Re-enable a disabled worker. |
+| `remove_worker(worker_id) -> None` | Hard-delete a worker record; `204` → `None`. Only offline workers, or disabled workers whose last heartbeat is older than the heartbeat-timeout window, are removable — an online or live-disabled worker raises `ConflictError`. |
 
 ```python
 for worker in sqi.iter_workers(status="online"):
@@ -287,6 +291,7 @@ reset, so pass every field you want to keep.
 | Farms | `create_farm(*, name, description=None, max_concurrent_tasks=0, max_attempts=None, retry_delay_seconds=None, failure_limit=None)` | `list_farms() -> list[Farm]`, `iter_farms()` | `get_farm`, `update_farm`, `delete_farm` |
 | Queues | `create_queue(*, farm_id, name, description=None, priority=0, max_concurrent_tasks=0, paused=False, max_attempts=None, retry_delay_seconds=None, failure_limit=None)` | `list_queues(*, farm_id, paused, sort_by, sort_dir, limit, offset) -> Page[Queue]`, `iter_queues(...)` | `get_queue`, `update_queue`, `delete_queue` |
 | Storage locations | `create_storage_location(*, name, description=None, roots=None)` | `list_storage_locations() -> list[StorageLocation]`, `iter_storage_locations()` | `get_storage_location`, `update_storage_location`, `delete_storage_location` |
+| Compute locations | `create_compute_location(*, name, description=None)` | `list_compute_locations() -> list[ComputeLocation]`, `iter_compute_locations()` | `get_compute_location`, `update_compute_location`, `delete_compute_location` |
 | Usage pools | `create_usage_pool(*, name, max_concurrent, server_hint=None)` | `list_usage_pools() -> list[UsagePool]`, `iter_usage_pools()` | `get_usage_pool`, `update_usage_pool`, `delete_usage_pool` |
 
 ```python
@@ -302,6 +307,40 @@ pool = sqi.create_usage_pool(name="arnold-pool", max_concurrent=10)
 client-side (raising `ValueError`) before sending. Every `UsagePool` response
 also carries read-only, server-computed `in_use` (active claims) and
 `available` (`max(max_concurrent - in_use, 0)`) fields for live utilization.
+
+## Products
+
+Products are named, versioned wrappers around OpenJD templates stored in the
+server's catalog. Eight methods cover them:
+
+| Method | Description |
+|---|---|
+| `list_products() -> list[Product]` | Every product (built-ins + custom); bare array, no pagination. |
+| `iter_products() -> Iterator[Product]` | Iterator companion. |
+| `get_product(name) -> Product` | One product by name; 404 → `NotFoundError`. |
+| `create_product(*, name, template, format, title=None, description=None, category=None, version=None) -> Product` | Create a custom product from a raw OpenJD template. |
+| `update_product(name, *, template, format, title=None, description=None, category=None, version=None) -> Product` | Full PUT replacement of a custom product. |
+| `delete_product(name) -> None` | Delete a custom product; a built-in raises `SqiAuthError` (403). |
+| `get_product_parameters(name) -> list[ProductParameter]` | The parsed job parameters — type, default, allowed values, and `user_interface` hints. 404 → `NotFoundError`; an unparseable stored template → `ValidationError` (422). |
+| `submit_product_job(name, *, farm_id, queue_id, job_name=None, owner=None, submitter=None, priority=None, project=None, parameters=None, max_attempts=None, retry_delay_seconds=None, failure_limit=None, depends_on=None) -> Job` | Submit a job from a product. |
+
+```python
+products = sqi.list_products()
+params = sqi.get_product_parameters("python")
+for p in params:
+    print(p.name, p.type, p.default)
+
+job = sqi.submit_product_job(
+    "python",
+    farm_id=farm_id, queue_id=queue_id,
+    job_name="My Script Run",
+    parameters={"Script": "print('hello')", "Interpreter": "python3"},
+)
+```
+
+`submit_product_job` uses the keyword `job_name=` (not `name=`) so it does not
+shadow the positional product `name`; the wire field sent to the server is
+`"name"`.
 
 ## Live events (WebSocket, `ws` extra)
 
@@ -319,9 +358,10 @@ with sqi.events() as stream:
         print(event.subject, event.seq, event.payload)
 ```
 
-Subjects: `jobs`, `jobs/{job-id}/tasks`, `tasks/{task-id}/logs`, `workers`
-(see [`api.md`](./api.md#available-subjects) for payload shapes). A failed
-subscription or server `error` frame is raised as `SqiError`.
+Subjects: `jobs`, `jobs/{job-id}/tasks`, `tasks/{task-id}/logs`, `workers`, and
+`diagnostics` (see [`api.md`](./api.md#available-subjects) for payload shapes).
+Subscribing to `diagnostics` requires the `diagnostics.read` permission. A
+failed subscription or server `error` frame is raised as `SqiError`.
 
 `tail_task_logs_live(task_id, from_seq=0) -> Iterator[LogChunk]` is the
 WebSocket-backed counterpart to `tail_task_logs`:
@@ -331,8 +371,10 @@ for chunk in sqi.tail_task_logs_live(task_id):
     print(chunk.data, end="")
 ```
 
-Calling `events()`/`tail_task_logs_live` without the `ws` extra installed raises
-`ImportError` naming the exact remedy (`pip install 'sqi-sdk[ws]'`). The live
+Without the `ws` extra installed, `events()` itself succeeds — the `websockets`
+import is deferred to `connect()`, so the `ImportError` naming the exact remedy
+(`pip install 'sqi-sdk[ws]'`) is raised when the stream is entered as a context
+manager, and on the first iteration of `tail_task_logs_live`. The live
 `tasks/{id}/logs` payload omits `id`/`nats_seq`/`received_at`, so those are
 zero-valued on the yielded `LogChunk`; `seq_num` and the content fields are set.
 
@@ -358,3 +400,13 @@ job = sqi.submit_and_wait(
 if job.status != JobStatus.COMPLETED:   # compare by value, not identity
     raise SystemExit(f"job {job.id} ended as {job.status}")
 ```
+
+`me() -> Principal` returns the authenticated principal — `subject`,
+`display_name`, `roles`, `permissions`, `kind`, and (for local accounts)
+`username` — from `GET /api/v1/auth/me`. Gate on `permissions`, not `roles`:
+check for `"jobs.submit_as"` before setting a job `owner` other than your own
+user; without it the server responds `403`. With auth disabled the anonymous
+superuser principal is returned.
+
+`server_version() -> ServerVersion` returns the server's build metadata from
+`GET /api/v1/version`.

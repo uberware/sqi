@@ -26,7 +26,7 @@ web/
     ├── routes.tsx      # React Router route table
     ├── api/            # Typed REST client, domain types, TanStack Query hooks
     ├── ws/             # WebSocket client, React context, typed event payloads
-    ├── components/     # Reusable UI components (DataTable, StatusBadge, …)
+    ├── components/     # Reusable UI components (StatusBadge, Pagination, LogViewer, …)
     ├── pages/          # Top-level views (Dashboard, JobList, Submit, …)
     ├── hooks/          # Shared hooks (useDebounce, usePaginatedList, …)
     ├── styles/         # Design tokens and global CSS
@@ -45,7 +45,7 @@ mirrors the REST wire format (kept in sync with `GET /api/v1/openapi.yaml`), and
 Install dependencies once:
 
 ```sh
-npm install
+npm ci
 ```
 
 ## Local development

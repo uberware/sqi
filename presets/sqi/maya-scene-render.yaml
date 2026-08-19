@@ -2,12 +2,43 @@
 name: maya-scene-render
 title: Maya Scene Render
 description: >-
-  Renders a saved Maya scene's renderable layers (whatever the scene's render
-  settings mark renderable), one frame per task by default; raise the task
-  chunk size to batch multiple frames per Render launch. Requires workers
-  tagged maya=true with Render on PATH. For a single render layer use
-  maya-layer-render. A starting point - duplicate to customize for your
-  pipeline.
+  Renders every renderable layer of a saved Maya scene with the Render batch
+  command, one frame per task by default.
+readme: |
+  # Maya Scene Render
+
+  Renders a saved Maya scene with Maya's `Render` batch command, writing image
+  files to a directory you choose. Every layer the scene marks renderable is
+  rendered; use Maya Layer Render instead to render one named layer.
+
+  Each task renders a contiguous slice of the frame range, one frame per task by
+  default.
+
+  ## Parameters
+
+  - **Scene File** - the `.ma` or `.mb` file to render. It must be reachable from
+    every worker that runs the job.
+  - **Frames** - the frame range, in OpenJD range syntax, e.g. `1-100` or
+    `1-100:2` for every second frame.
+  - **Output Directory** - where rendered images are written, passed to Maya as
+    `-rd`.
+  - **Renderer** - the Maya renderer token passed as `-r`. `file` uses the
+    renderer stored in the scene.
+
+  ## How work is divided
+
+  The frame range expands into tasks through OpenJD task chunking, one frame per
+  task by default. Raise the chunk size to batch several frames into a single
+  Maya launch, which trades parallelism for fewer scene loads.
+
+  The `SQI_CHUNK_BOUNDS` extension gives each task the first and last frame of
+  its own slice, which is what lets the command pass `-s` and `-e` rather than a
+  frame list.
+
+  ## Requirements
+
+  - Workers tagged `attr.worker.tag.maya = true`
+  - `Render` on the worker's `PATH`
 category: Rendering
 version: 1.0.0
 template:

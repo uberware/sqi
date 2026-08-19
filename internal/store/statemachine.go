@@ -80,8 +80,11 @@ var validTaskTransitions = map[TaskStatus]map[TaskStatus]struct{}{
 //
 // This lives in package store rather than package openjd because the store is
 // what enforces it on every write; openjd imports store, so the store cannot
-// import openjd. [github.com/uberware/sqi/internal/openjd.ValidateTaskTransition]
-// delegates here.
+// import openjd. There is no openjd counterpart to call instead: package openjd
+// owns only the STEP machine ([github.com/uberware/sqi/internal/openjd.ValidateStepTransition]),
+// with its own separate [ErrInvalidTransition] sentinel — match errors against
+// the sentinel from the same package as the machine you called, or errors.Is
+// silently stops matching.
 func ValidateTaskTransition(from, to TaskStatus) error {
 	targets, known := validTaskTransitions[from]
 	if !known {

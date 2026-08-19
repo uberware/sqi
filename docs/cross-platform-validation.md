@@ -5,10 +5,10 @@ This guide is the manual procedure for confirming `sqi` works on **Linux, macOS,
 and Windows**. It closes the Phase 1 verification items that CI cannot fully
 prove on its own:
 
-- **Cross-platform runtime** (`phase1-tests.md` §3): the cross-compiled binaries
-  actually *start and register*, not just compile.
-- **Cross-browser web UI** (`phase1-tests.md` §4): the embedded UI works in
-  Chromium, Firefox, and WebKit.
+- **Cross-platform runtime:** the cross-compiled binaries actually *start and
+  register*, not just compile.
+- **Cross-browser web UI:** the embedded UI works in Chromium, Firefox, and
+  WebKit.
 
 CI on the default Linux runner already exercises the unit suites, the Docker
 smoke test, and (where wired) the Playwright suite. The steps below are what you
@@ -145,7 +145,7 @@ npx playwright test --project=firefox
 npx playwright test --project=webkit
 ```
 
-Expected: `6 passed` (2 specs × 3 engines). An HTML report lands in
+Expected: `6 passed` (2 tests × 3 engines). An HTML report lands in
 `web/playwright-report/` (open with `npx playwright show-report`).
 
 The suite's global setup builds the binaries if `bin/sqi-server`/`bin/sqi-worker`
@@ -164,8 +164,8 @@ manage process lifecycle.
 # Git Bash — terminal 1: start the server (serves the embedded UI on :8080)
 bin/sqi-server.exe serve
 
-# terminal 2: start a worker (auto-discovers the server via mDNS, or pass --nats-url)
-bin/sqi-worker.exe start --allow-root   # --allow-root only if running elevated
+# terminal 2: start a worker (auto-discovers the server via mDNS, or set SQI_WORKER_NATS_URL)
+bin/sqi-worker.exe start   # no allow-root needed on Windows — the root check is POSIX-only
 
 # terminal 3: run Playwright against the running server
 cd web
@@ -192,11 +192,11 @@ npx playwright install-deps
 
 ## C. Manual cross-browser walk-through (sign-off)
 
-For the human cross-browser sign-off (`phase1-tests.md` §4), in **each** of
+For the human cross-browser sign-off, in **each** of
 Chrome/Edge, Firefox, and Safari (Safari on macOS only):
 
 1. Start the stack: `make run-server` (terminal 1) and
-   `bin/sqi-worker start` (terminal 2). Open `http://localhost:8080/`.
+   `./bin/sqi-worker start` (terminal 2, after `make build-worker`). Open `http://localhost:8080/`.
 2. **Dashboard** loads; the connection badge is green (WebSocket connected); the
    seeded/started worker shows online.
 3. **Submit** (`/submit`): pick a queue, use **Load example → single-step shell
@@ -226,9 +226,10 @@ Chrome/Edge, Firefox, and Safari (Safari on macOS only):
 - **macOS AppleDouble files.** On non-APFS volumes macOS writes `._*` sidecars;
   the tooling already filters them (Playwright `testIgnore`, Vitest exclude, the
   embed filter). Harmless on Linux/Windows.
-- **`--allow-root`.** The worker refuses to run as root unless `--allow-root`
-  (or `SQI_WORKER_ALLOW_ROOT=true`) is set — relevant when validating in a
-  container or as Administrator/root in a VM.
+- **Running as root/Administrator.** The worker refuses to run as root on
+  Linux/macOS unless `worker.allow_root: true` is set in the worker config or
+  `SQI_WORKER_ALLOW_ROOT=true` is exported. There is no `--allow-root` flag —
+  relevant when validating in a container or as root in a VM.
 
 ---
 

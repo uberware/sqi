@@ -43,6 +43,7 @@ Example:
 - Every `CHUNK[INT]` parameter must be `CONTIGUOUS` (the default). A
   `NONCONTIGUOUS` chunk is rejected, because `.Start`/`.End` are undefined across
   the gaps of a non-contiguous set.
+
 See `internal/openjd/validate.go` (`validateChunkBounds`).
 
 Note: `.Start`/`.End` describe the enclosing span of the chunk, so a stepped

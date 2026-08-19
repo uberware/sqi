@@ -386,6 +386,7 @@ measured results, not assertions:
 | `base/job_templates` | **449 / 449 pass** |
 | `base/env_templates` | not applicable — standalone environment templates unsupported (39 tests) |
 | `TASK_CHUNKING/job_templates` | **11 / 11 pass** |
+| `REDACTED_ENV_VARS` | no template fixtures — the suite ships only `jobs/` (8 job-execution tests), which are out of scope; see **Scope** below |
 | `EXPR/job_templates` | **206 / 209 pass, 3 baselined** — see [EXPR](#expr) |
 | `EXPR/env_templates` | not applicable — standalone environment templates unsupported (6 tests) |
 | `FEATURE_BUNDLE_1/job_templates` | not applicable — extension not registered (41 tests) |

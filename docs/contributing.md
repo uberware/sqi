@@ -17,18 +17,21 @@ We maintain a [roadmap and architecture guide](roadmap.md) organized by developm
 git clone https://github.com/Uberware/sqi.git
 cd sqi
 
-# Go development (server and workers)
-cd cmd/sqi-server
-go mod download
-go build
+# Install the git hooks (gofumpt, goimports, go vet, golangci-lint, and the
+# Conventional Commits check). Requires gofumpt, goimports and golangci-lint
+# on your PATH — see docs/development.md for install commands.
+make hooks
 
-# Python development (client SDK and DCC submitters)
-cd clients/python
-pip install -e .
+# Go development (server and workers) — builds the web UI bundle first and
+# writes both binaries into ./bin/
+make build
+
+# Python development (client SDK)
+make py-install
 
 # Web UI development (TypeScript + React)
 cd web
-npm install
+npm ci
 npm run dev
 ```
 
@@ -43,7 +46,8 @@ npm run dev
 - **Go**: Follow [Effective Go](https://golang.org/doc/effective_go). Run `make fmt` (gofumpt + goimports) and `make lint` (golangci-lint) before submitting
 - **Python**: Follow [PEP 8](https://www.python.org/dev/peps/pep-0008/). Use type hints for all function signatures. Format and lint with ruff: `ruff format && ruff check --fix` — this handles style consistency automatically
 - **TypeScript/React**: Use ESLint and Prettier with the project configuration. Functional components and hooks preferred
-- **Commit messages**: Be clear and specific. Reference issue numbers where relevant (e.g., "Fix scheduler race condition in Phase 1 (#42)")
+- **SPDX header**: every source file (Go, TypeScript, YAML, Python, shell) must carry `SPDX-License-Identifier: AGPL-3.0-or-later` before any `package`/`import`/module declaration, in the file's own comment syntax. See [`docs/spdx-header.md`](spdx-header.md) for the exact template.
+- **Commit messages**: [Conventional Commits](https://www.conventionalcommits.org) format — `type(scope)?: description` — is **enforced** by the `commit-msg` git hook installed by `make hooks`. Valid types: `feat fix docs style refactor test chore build ci perf revert`. Reference issue numbers in the description where relevant (e.g. `fix(scheduler): correct heartbeat timeout calculation (#42)`). `CHANGELOG.md` is generated from these messages by git-cliff, so a non-conforming commit never reaches the changelog.
 
 **Testing:**
 
@@ -95,8 +99,8 @@ Conventions:
 - Mock at the network boundary (the `apiFetch`/query layer), not at the component
   internals, so tests exercise real component wiring.
 - New components and hooks ship with tests; coverage is enforced against the
-  threshold in `web/vite.config.ts`. See the existing `DataTable.test.tsx`,
-  `StatusBadge.test.tsx`, and the `src/api` / `src/hooks` tests for the patterns.
+  threshold in `web/vite.config.ts`. See the existing `StatusBadge.test.tsx`,
+  `Pagination.test.tsx`, and the `src/api` / `src/hooks` tests for the patterns.
 
 **API client pattern.** All server access goes through `src/api/` — never call
 `fetch` directly from a component.
@@ -210,8 +214,8 @@ The [ROADMAP.md](roadmap.md) document outlines development phases. Current prior
 
 - **Phase 1** (v0.1 — released): Core scheduler, pull-based workers, basic web UI, OpenJD execution
 - **Phase 2** (v0.2 — released): Product system, preset library, DCC submitters
-- **Phase 3** (next): Auth (LDAP, OAuth2), multi-user role model
-- **Phase 4** (planned): Production hardening, PostgreSQL, HA, auto-scaling
+- **Phase 3** (v0.3 — released): Auth (local accounts, API keys, RBAC, LDAP/AD, OAuth2/OIDC SSO), multi-user role model, and run-as-user task isolation; v0.3 also ships the OpenJD `EXPR` extension and expanded ffmpeg and Mistika reference presets
+- **Phase 4** (next): Production hardening, PostgreSQL, HA, auto-scaling
 
 Code contributions aligned with the current phase are most likely to be accepted quickly. Contributions targeting later phases are welcome but may take longer to review if they require design discussion.
 

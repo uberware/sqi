@@ -2,11 +2,45 @@
 name: maya-layer-render
 title: Maya Layer Render
 description: >-
-  Renders one render layer of a saved Maya scene with the Render batch
-  command, one frame per task by default; raise the task chunk size to batch
-  multiple frames per Render launch. Requires workers tagged maya=true with
-  Render on PATH. For all renderable layers use maya-scene-render. A starting
-  point - duplicate to customize for your pipeline.
+  Renders one named render layer of a saved Maya scene with the Render batch
+  command, one frame per task by default.
+readme: |
+  # Maya Layer Render
+
+  Renders a single named layer of a saved Maya scene with Maya's `Render` batch
+  command, writing image files to a directory you choose. Use Maya Scene Render
+  instead to render every layer the scene marks renderable.
+
+  Each task renders a contiguous slice of the frame range, one frame per task by
+  default.
+
+  ## Parameters
+
+  - **Scene File** - the `.ma` or `.mb` file to render. It must be reachable from
+    every worker that runs the job.
+  - **Frames** - the frame range, in OpenJD range syntax, e.g. `1-100` or
+    `1-100:2` for every second frame.
+  - **Output Directory** - where rendered images are written, passed to Maya as
+    `-rd`.
+  - **Renderer** - the Maya renderer token passed as `-r`. `file` uses the
+    renderer stored in the scene.
+  - **Render Layer** - the layer to render, passed as `-rl`. Defaults to
+    `masterLayer`.
+
+  ## How work is divided
+
+  The frame range expands into tasks through OpenJD task chunking. The
+  `SQI_CHUNK_BOUNDS` extension gives each task the first and last frame of its
+  own slice, which is what lets the command pass a start and an end rather than
+  a frame list.
+
+  One frame per task is the default. Raise the chunk size to batch several frames
+  into a single Maya launch, which trades parallelism for fewer scene loads.
+
+  ## Requirements
+
+  - Workers tagged `attr.worker.tag.maya = true`
+  - `Render` on the worker's `PATH`
 category: Rendering
 version: 1.0.0
 template:

@@ -12,7 +12,9 @@ layers overriding earlier ones:
    `SQI_DIAGNOSTICS_ENABLED` and `staging.defaults` uses
    `SQI_STAGING_DEFAULTS`, both with no `WORKER` infix — see the
    `diagnostics` and `staging` sections.)
-4. **CLI flags** — highest priority; available on the `start` subcommand.
+4. **CLI flags** — highest priority. `--config`/`-c`, `--log-level` and
+   `--log-format` are root flags available on every subcommand; `--dry-run` and
+   `--nats-insecure-skip-verify` belong to `start` only.
 
 Print the effective merged configuration at any time with:
 
@@ -209,7 +211,8 @@ worker:
 | **Default** | `~/.sqi/worker` (Linux/macOS); `%USERPROFILE%\.sqi\worker` (Windows) |
 | **Env var** | `SQI_WORKER_DATA_DIR` |
 
-Directory used to persist the worker ID file (`worker.id`) ONLY. Created
+Directory used to persist the worker ID file (`worker.id`), and on Windows the
+DPAPI-encrypted run-as-user credential store (`<data_dir>\isolation\`). Created
 automatically on first start, and never widened for run-as-user traversal —
 it stays private (0700) for as long as the worker exists.
 
@@ -221,9 +224,12 @@ Each worker instance needs its own `data_dir`: two workers sharing one would
 load the same `worker.id` and collide on the server. This is the key setting
 when [running multiple workers on one host](#running-multiple-workers-on-one-host).
 
-Session working directories are a SEPARATE location — see
-[`worker.session_dir`](#workersession_dir) below — not a child of `data_dir`
-as they were before run-as-user isolation existed.
+Session working directories have their own setting — see
+[`worker.session_dir`](#workersession_dir) below. They are moved out from under
+`data_dir` for any worker that could actually use run-as-user isolation (a root
+POSIX worker, or any Windows worker); a non-root POSIX worker with
+`session_dir` unset still keeps them at `<data_dir>/sessions`, the pre-split
+location, because isolation cannot function there anyway.
 
 ```yaml
 worker:
@@ -249,7 +255,7 @@ traversable by whichever run-as-user identity a session resolves to, while
 
 Left unset, the effective value is resolved at startup:
 
-- **Running as root** — `/var/lib/sqi-worker-sessions`, created traversable
+- **Running as root (POSIX)** — `/var/lib/sqi-worker-sessions`, created traversable
   (`0711`) from birth. Deliberately a SIBLING of, never a descendant of,
   `data_dir`'s own HOME-unset fallback (`/var/lib/sqi-worker`): nesting the
   two would make `LoadOrCreateWorkerID`'s own `0700` `data_dir` an ancestor
@@ -257,11 +263,17 @@ Left unset, the effective value is resolved at startup:
   refuse to start over a directory sqi itself just created. Its ancestors
   (`/var`, `/var/lib`) are `0755` on every real Linux/macOS installation, so
   nothing needs to be created or widened specifically for this.
-- **Otherwise** — `<data_dir>/sessions`, created at `0750` (the location and
-  mode used before this split existed). Real run-as-user isolation cannot
-  function without root regardless of directory permissions, so there is
-  nothing to protect by moving it, or widening it, for a worker that can
-  never use it anyway.
+- **Windows (any account)** — `%ProgramData%\sqi\worker\sessions`, chosen
+  regardless of privilege: a worker running as LocalSystem resolves its data
+  directory under `System32\config\systemprofile`, which is the wrong place for
+  render scratch. Directory modes are inert on Windows; a session directory's
+  real protection is the protected NTFS DACL applied beneath this root (see
+  [Windows](#windows) below).
+- **Otherwise (non-root POSIX)** — `<data_dir>/sessions`, created at `0750`
+  (the location and mode used before this split existed). Real run-as-user
+  isolation cannot function without root regardless of directory permissions,
+  so there is nothing to protect by moving it, or widening it, for a worker
+  that can never use it anyway.
 
 ```yaml
 worker:
@@ -468,9 +480,12 @@ worker:
 
 Restrict this worker to serving specific queue IDs. The worker keeps one
 outstanding lease request per listed queue (`work.lease.<queueID>`). When
-empty (the default), the worker issues a single lease request using an empty
-queue ID, which the server treats as a wildcard. Set this on heterogeneous
-farms where some workers specialise in a subset of queues.
+empty (the default), the worker issues a single lease request on the reserved
+subject `work.lease._any` — an empty leaf would produce the invalid subject
+`work.lease.` with no responders. The server selects tasks farm-wide for that
+token and gates by worker eligibility, so a queue-unaffiliated worker is
+matched to any queue's ready work. Set this on heterogeneous farms where some
+workers specialise in a subset of queues.
 
 ```yaml
 worker:
@@ -574,7 +589,7 @@ worker:
 |---|---|
 | **Type** | `string` |
 | **Default** | `"logon_user"` |
-| **Accepted values** | `logon_user`, `s4u` |
+| **Accepted values** | `logon_user` (`s4u` is recognised and refused; any other value fails Windows provider construction) |
 | **Env var** | `SQI_WORKER_ISOLATION_PROVIDER` |
 
 Selects the Windows credential mechanism. **Ignored on POSIX** — setting it
@@ -838,6 +853,17 @@ budget rather than equal to them. Matching the server is the floor, not a
 guarantee: an accepted job can still exhaust a worker that passes every
 comparison, and no configuration on either side makes that impossible.
 
+**Two of the five defaults have zero headroom against the server's, so raise
+the workers first.** `expr.assignment_positions` (10,000) is exactly the
+server's `openjd.expr_template_positions` default, and `expr.let_retained_bytes`
+(10,000,000) is exactly its `openjd.expr_template_retained_bytes` default.
+Raising either of those two server keys by any amount therefore withholds EXPR
+work from *every* worker still on the shipped defaults, immediately and
+farm-wide. The other three ship with real headroom (100x the server's operation
+budget, 20x its memory budget, 2x its template-retained-bytes budget for
+`expr.assignment_retained_bytes`). Roll the worker value out first, confirm the
+registration `WARN` is gone, then raise the server.
+
 **2. `operation_limit` and `assignment_positions` multiply.** The cumulative
 operation ceiling for one assignment is their product — 10¹⁰ at the defaults
 (1,000,000 x 10,000), and 10¹² if both are raised to their maxima
@@ -1004,10 +1030,11 @@ expr:
 
 ## `capabilities` — Software auto-detection
 
-Configures the built-in DCC detectors (Maya, Nuke, Houdini, Blender) that run
-automatically at startup and advertise a `key=true` tag with no per-worker
-configuration, plus any custom detectors for in-house tools. Full reference,
-including the detector schema and the tag/version model:
+Configures the eight built-in software detectors (Maya, Nuke, Houdini,
+Blender, Mistika Boutique/Ultima, Mistika VR, Mistika Workflows, and ffmpeg)
+that run automatically at startup and advertise a `key=true` tag with no
+per-worker configuration, plus any custom detectors for in-house tools. Full
+reference, including the detector schema and the tag/version model:
 [`docs/worker-capabilities.md`](worker-capabilities.md#capability-auto-detection-built-in-dcc-detectors).
 
 ### `capabilities.detect`
@@ -1045,9 +1072,10 @@ capabilities:
 | **Env var** | `SQI_WORKER_CAPABILITIES_DISABLE` (comma-separated, appended to any config-file entries) |
 
 Built-in tag names to turn off, by exact tag (`maya`, `nuke`, `houdini`,
-`blender`). Use this when a built-in misfires on a nonstandard host layout —
-typically paired with a `capabilities.detect` entry for the same tag that
-supplies more specific checks.
+`blender`, `ffmpeg`, `mistika`, `mistikavr`, `mistikaworkflows`). Use this
+when a built-in misfires on a nonstandard host layout — typically paired with
+a `capabilities.detect` entry for the same tag that supplies more specific
+checks.
 
 ```yaml
 capabilities:

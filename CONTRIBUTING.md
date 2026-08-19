@@ -17,18 +17,21 @@ We maintain a [roadmap and architecture guide](ROADMAP.md) organized by developm
 git clone https://github.com/Uberware/sqi.git
 cd sqi
 
-# Go development (server and workers)
-cd cmd/sqi-server
-go mod download
-go build
+# Install the git hooks (gofumpt, goimports, go vet, golangci-lint, and the
+# Conventional Commits check). Requires gofumpt, goimports and golangci-lint
+# on your PATH — see docs/development.md for install commands.
+make hooks
 
-# Python development (client SDK and DCC submitters)
-cd clients/python
-pip install -e .
+# Go development (server and workers) — builds the web UI bundle first and
+# writes both binaries into ./bin/
+make build
+
+# Python development (client SDK)
+make py-install
 
 # Web UI development (TypeScript + React)
 cd web
-npm install
+npm ci
 npm run dev
 ```
 
@@ -43,13 +46,17 @@ npm run dev
 - **Go**: Follow [Effective Go](https://golang.org/doc/effective_go). Run `make fmt` (gofumpt + goimports) and `make lint` (golangci-lint) before submitting
 - **Python**: Follow [PEP 8](https://www.python.org/dev/peps/pep-0008/). Use type hints for all function signatures. Format and lint with ruff: `ruff format && ruff check --fix` — this handles style consistency automatically
 - **TypeScript/React**: Use ESLint and Prettier with the project configuration. Functional components and hooks preferred
-- **Commit messages**: Be clear and specific. Reference issue numbers where relevant (e.g., "Fix scheduler race condition in Phase 1 (#42)")
+- **SPDX header**: every source file (Go, TypeScript, YAML, Python, shell) must carry `SPDX-License-Identifier: AGPL-3.0-or-later` before any `package`/`import`/module declaration, in the file's own comment syntax. See [`docs/spdx-header.md`](docs/spdx-header.md) for the exact template.
+- **Commit messages**: [Conventional Commits](https://www.conventionalcommits.org) format — `type(scope)?: description` — is **enforced** by the `commit-msg` git hook installed by `make hooks`. Valid types: `feat fix docs style refactor test chore build ci perf revert`. Reference issue numbers in the description where relevant (e.g. `fix(scheduler): correct heartbeat timeout calculation (#42)`). `CHANGELOG.md` is generated from these messages by git-cliff, so a non-conforming commit never reaches the changelog.
 
 **Testing:**
 
 - Unit tests are required for code changes. The enforced coverage floor is 70% (`COVERAGE_MIN` in the Makefile); aim higher on new code
-- Integration tests are encouraged for complex features
+- Integration tests are encouraged for complex features. They live in `test/integration/`; those behind the `integration` build tag need `make test-integration`, because they depend on something the default suite should not require (a built binary, or an external service)
 - Run `make test` (or `make ci`) before submitting a PR — do not run bare `go test ./...` from the repo root, since `web/node_modules/` contains third-party Go files the Makefile filters out
+- **Changing LDAP code?** Run `make test-ldap`. It drives the login path against a real OpenLDAP server in a throwaway container, which is the only thing that catches a mistake in how sqi talks to a directory *on the wire*
+- **Changing OIDC/SSO code?** Run `make test-oidc`. It drives the whole browser flow against a real Keycloak in a throwaway container, which is the only thing that catches what a real provider *omits* — most importantly a missing group claim, which validates fine and silently drops every user to `default_role`
+- Both need Docker and **skip** without it — and a skip verifies nothing, so confirm the tests actually ran rather than trusting the exit code. Details in [`docs/development.md`](docs/development.md#testing-against-a-real-directory-or-identity-provider)
 
 **Submitting a PR:**
 
@@ -92,8 +99,8 @@ Conventions:
 - Mock at the network boundary (the `apiFetch`/query layer), not at the component
   internals, so tests exercise real component wiring.
 - New components and hooks ship with tests; coverage is enforced against the
-  threshold in `web/vite.config.ts`. See the existing `DataTable.test.tsx`,
-  `StatusBadge.test.tsx`, and the `src/api` / `src/hooks` tests for the patterns.
+  threshold in `web/vite.config.ts`. See the existing `StatusBadge.test.tsx`,
+  `Pagination.test.tsx`, and the `src/api` / `src/hooks` tests for the patterns.
 
 **API client pattern.** All server access goes through `src/api/` — never call
 `fetch` directly from a component.
@@ -207,8 +214,8 @@ The [ROADMAP.md](ROADMAP.md) document outlines development phases. Current prior
 
 - **Phase 1** (v0.1 — released): Core scheduler, pull-based workers, basic web UI, OpenJD execution
 - **Phase 2** (v0.2 — released): Product system, preset library, DCC submitters
-- **Phase 3** (next): Auth (LDAP, OAuth2), multi-user role model
-- **Phase 4** (planned): Production hardening, PostgreSQL, HA, auto-scaling
+- **Phase 3** (v0.3 — released): Auth (local accounts, API keys, RBAC, LDAP/AD, OAuth2/OIDC SSO), multi-user role model, and run-as-user task isolation; v0.3 also ships the OpenJD `EXPR` extension and expanded ffmpeg and Mistika reference presets
+- **Phase 4** (next): Production hardening, PostgreSQL, HA, auto-scaling
 
 Code contributions aligned with the current phase are most likely to be accepted quickly. Contributions targeting later phases are welcome but may take longer to review if they require design discussion.
 

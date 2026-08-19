@@ -108,7 +108,7 @@ builds:
 
 archives:
   - id: sqi
-    builds:
+    ids:
       - sqi-server
       - sqi-worker
     name_template: >-
@@ -118,7 +118,7 @@ archives:
       {{- else }}{{ .Arch }}{{ end }}
     format_overrides:
       - goos: windows
-        format: zip
+        formats: [zip]
     files:
       - LICENSE
       - README.md

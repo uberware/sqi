@@ -44,7 +44,7 @@ info:
     not unauthenticated either: it runs its own upgrade hook (a valid
     principal is still required) plus a subject-level `diagnostics.read`
     check before allowing a subscription to the diagnostics feed.
-  version: "0.2.0"
+  version: "0.3.0"
   license:
     name: AGPL-3.0-or-later
     url: https://www.gnu.org/licenses/agpl-3.0.html
@@ -3660,17 +3660,19 @@ paths:
 
         | `type`   | Description |
         |----------|-------------|
-        | `push`   | Event for a subscribed subject. `seq` is the per-connection push counter. |
+        | `push`   | Event for a subscribed subject. `seq` is the per-subject, hub-assigned push counter. |
         | `ack`    | Acknowledges a client message. Payload: `{ "client_seq": N, "error": "" }`. |
         | `error`  | Protocol-level error. Payload: `{ "code": "...", "message": "..." }`. |
         | `pong`   | Reply to `ping`. No payload; `seq` is 0. |
 
         ## Sequence numbers and resumable subscriptions
 
-        Server push messages carry a `seq` that increments monotonically per
-        connection starting at 1.  On reconnect, send `since_seq` in the
-        `subscribe` payload to replay any buffered events with `seq > since_seq`.
-        A `since_seq` of 0 (default) requests only live events.
+        Server push messages carry a `seq` assigned per subject by the hub,
+        starting at 1 and increasing globally across connections (not per
+        connection).  Store the last `seq` you received and, on reconnect, send
+        it as `since_seq` in the `subscribe` payload to replay buffered events
+        with `seq > since_seq`.  A `since_seq` of 0 (the default) replays every
+        buffered event for the subject, because hub sequences start at 1.
 
         ## Subject formats
 
@@ -3680,11 +3682,19 @@ paths:
         | `jobs/{job_id}/tasks`      | Task-level updates for the given job |
         | `workers`                  | Worker status changes |
         | `tasks/{task_id}/logs`     | Log chunks for the given task attempt |
+        | `diagnostics`              | Diagnostic log records from the server and every worker (requires `diagnostics.read`) |
 
-        ## Phase 1 note
+        ## Authentication and per-subject authorization
 
-        Authentication is not required in Phase 1. The `Authorization` header
-        hook is present but not enforced. This will change in Phase 3.
+        When `auth.enabled` is true the upgrade is authenticated exactly like a
+        REST request (session cookie or `Authorization: Bearer`), and a failure
+        is answered with an RFC-7807 `401` before the handshake.  Subscribing to
+        `diagnostics` additionally requires the `diagnostics.read` permission,
+        and subscribing to `jobs/{job_id}/tasks` or `tasks/{task_id}/logs`
+        requires access to that job; a refusal is returned as a non-empty
+        `error` in the `ack` rather than as a connection close.  With auth
+        disabled every connection is the anonymous superuser and nothing is
+        gated.
       parameters:
         - name: Upgrade
           in: header

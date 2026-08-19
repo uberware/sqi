@@ -2,10 +2,35 @@
 name: mistika-boutique-render
 title: Mistika Ultima & Boutique Render
 description: >-
-  Renders a saved Mistika .rnd job with the mistika binary, in frame chunks.
-  Requires workers tagged mistika=true with mistika on PATH. For a single movie
-  file, submit Frames "1". A starting point - duplicate to customize for your
-  pipeline.
+  Renders a saved Mistika Boutique project on the command line, in frame
+  chunks.
+readme: |
+  # Mistika Boutique Render
+
+  Renders a saved Mistika Boutique project by invoking `mistika` in render mode.
+  Each task renders a contiguous slice of the frame range.
+
+  ## Parameters
+
+  - **Scene File** - the Mistika project to render. It must be reachable from
+    every worker that runs the job.
+  - **Frames** - the frame range, in OpenJD range syntax, e.g. `1-100` or
+    `1-100:2` for every second frame.
+
+  ## How work is divided
+
+  The frame range expands into tasks through OpenJD task chunking, ten frames per
+  task by default. The `SQI_CHUNK_BOUNDS` extension gives each task the first and
+  last frame of its own slice, which is what lets the command pass `-s` and `-e`
+  rather than a frame list.
+
+  There is no in-application submitter for this product: build the job from the
+  sqi web UI or the Python client rather than from inside the application.
+
+  ## Requirements
+
+  - Workers tagged `attr.worker.tag.mistika = true`
+  - `mistika` on the worker's `PATH`
 category: Rendering
 version: 1.0.0
 template:

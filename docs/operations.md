@@ -196,11 +196,11 @@ sqi-server migrate down --config /etc/sqi/sqi-server.yaml
 sudo systemctl start sqi-server
 ```
 
-Always take a backup before upgrading (see [Backup and Restore](#backup-and-restore)).
+Always take a backup before upgrading (see [Backup and restore](#backup-and-restore)).
 
 ---
 
-## Backup and Restore
+## Backup and restore
 
 ### Online backup with `sqi-server backup`
 
@@ -278,7 +278,7 @@ worked examples for wiring sqi logs to journald, Docker, Loki, and ELK.
 
 ### Output format
 
-By default `sqi-server` writes structured JSON logs to stdout:
+By default `sqi-server` writes structured JSON logs to **stderr**:
 
 ```json
 {"time":"2026-01-15T10:00:00.000Z","level":"INFO","msg":"server started","addr":"0.0.0.0:8080"}
@@ -314,17 +314,17 @@ journalctl -u sqi-server -f
 journalctl -u sqi-server -n 1000 -o json
 ```
 
-To write to a file instead, redirect stdout in the service unit or use a
+To write to a file instead, redirect stderr in the service unit or use a
 log-forwarding agent (Fluentd, Vector, Promtail) reading from journald.
 
 ### Log rotation
 
-Because `sqi-server` writes to stdout rather than a file, log rotation is
+Because `sqi-server` writes to stderr rather than a file, log rotation is
 handled outside the process:
 
 - **journald** rotates automatically; tune retention with `journald.conf`
   (`SystemMaxUse`, `MaxRetentionSec`).
-- **File-based logging**: if you redirect stdout to a file, use `logrotate`
+- **File-based logging**: if you redirect stderr to a file, use `logrotate`
   with `copytruncate` (no signal needed — the server does not hold a file
   descriptor to a log file):
   ```
@@ -347,21 +347,30 @@ handled outside the process:
 
 ### Available metrics
 
-| Metric | Type | Description |
-|---|---|---|
-| `sqi_http_requests_total` | counter | HTTP requests by method, path, and status |
-| `sqi_http_request_duration_seconds` | histogram | HTTP request latency |
-| `sqi_scheduler_queue_depth` | gauge | Leasable ready tasks waiting for assignment, by queue (excludes tasks in retry backoff and tasks under paused/parked jobs) |
-| `sqi_scheduler_tasks_total` | counter | Tasks processed by final status |
-| `sqi_scheduler_assignment_duration_seconds` | histogram | Time from ready → assigned |
-| `sqi_scheduler_idle_workers` | gauge | Workers online but not assigned a task |
-| `sqi_workers_total` | gauge | Registered workers by status |
-| `sqi_nats_published_total` | counter | NATS messages published by subject |
-| `sqi_nats_consumed_total` | counter | NATS messages consumed by subject |
-| `sqi_db_query_duration_seconds` | histogram | SQLite query latency by operation |
-| `sqi_usage_active_claims` | gauge | Active usage-pool claims by pool |
-| `sqi_scheduler_task_retries_total` | counter | Tasks re-queued by automatic retry, by queue |
-| `sqi_scheduler_jobs_autoparked_total` | counter | Jobs auto-parked at their failure limit, by queue |
+| Metric | Type | Labels | Description |
+|---|---|---|---|
+| `sqi_http_requests_total` | counter | `method`, `path`, `status_code` | HTTP requests by method, path, and status |
+| `sqi_http_request_duration_seconds` | histogram | `method`, `path` | HTTP request latency |
+| `sqi_scheduler_queue_depth` | gauge | `queue` | Leasable ready tasks waiting for assignment, by queue (excludes tasks in retry backoff and tasks under paused/parked jobs) |
+| `sqi_scheduler_tasks_total` | counter | `queue`, `status` | Tasks processed by final status |
+| `sqi_scheduler_assignment_duration_seconds` | histogram | `result` | Wall-clock time for a single task-assignment attempt, by `result` (`assigned`, `deferred`, `error`) — not queue residency |
+| `sqi_scheduler_idle_workers` | gauge | `farm` | Workers online but not assigned a task |
+| `sqi_workers_total` | gauge | `status` | Registered workers by status |
+| `sqi_nats_published_total` | counter | `subject` | NATS messages published by subject |
+| `sqi_nats_consumed_total` | counter | `subject` | NATS messages consumed by subject |
+| `sqi_db_query_duration_seconds` | histogram | `operation` | SQLite query latency by operation |
+| `sqi_usage_active_claims` | gauge | `pool` | Active usage-pool claims by pool |
+| `sqi_scheduler_task_retries_total` | counter | `queue` | Tasks re-queued by automatic retry, by queue |
+| `sqi_scheduler_jobs_autoparked_total` | counter | `queue` | Jobs auto-parked at their failure limit, by queue |
+
+> **Five of these are registered but not yet populated**, so they emit no
+> samples at all — a Prometheus `*Vec` with no children produces no series, and
+> an alert written against one will sit silent rather than fire:
+> `sqi_scheduler_tasks_total`, `sqi_scheduler_assignment_duration_seconds`,
+> `sqi_nats_published_total`, `sqi_nats_consumed_total`, and
+> `sqi_db_query_duration_seconds`. (The worker exports its own
+> `sqi_worker_nats_published_total` / `sqi_worker_nats_consumed_total` on its
+> metrics port; those are different metrics and are populated.)
 
 ### Prometheus scrape config
 
@@ -413,17 +422,23 @@ groups:
 
 `sqi-server` handles `SIGINT` and `SIGTERM` with a graceful shutdown sequence:
 
-1. Stop accepting new HTTP and WebSocket connections.
-2. Wait for in-flight HTTP requests to complete.
-3. Drain and flush the embedded NATS JetStream (in-flight messages are
-   acknowledged or requeued).
-4. Run a final WAL checkpoint on the SQLite database.
-5. Close all open database connections.
-6. Exit with code 0.
+1. Stop the mDNS responder (goodbye packets first, so discoverers drop the
+   service immediately instead of waiting for the record to expire).
+2. Stop accepting new HTTP and WebSocket connections.
+3. Wait for in-flight HTTP requests to complete.
+4. Stop the scheduler.
+5. Drain and flush the embedded NATS JetStream (in-flight messages are
+   acknowledged or requeued), then shut down the broker.
+6. Run a final WAL checkpoint in TRUNCATE mode on the SQLite database.
+7. Close both SQLite connection pools (write and read).
+8. Exit with code 0.
 
-Under systemd the `TimeoutStopSec=60s` in the example unit file gives the
-server 60 seconds to drain. Increase this if you have long-running HTTP
-streams or large NATS queues.
+The server imposes its own **30 s** internal drain deadline
+(`server.ShutdownTimeout`, a compile-time constant — not a config key); past
+that it logs `graceful shutdown timed out after 30s` and exits. The example
+unit's `TimeoutStopSec=60s` is deliberate headroom over that 30 s so systemd
+never SIGKILLs mid-drain; raising it further has no effect on how long the
+server actually waits.
 
 ---
 
@@ -473,5 +488,5 @@ sqi-server config print --config /etc/sqi/sqi-server.yaml
 
 ```sh
 sqi-server version
-# sqi-server v0.2.0 (commit abc1234, built 2026-07-09, go1.26.3)
+# sqi-server v0.3.0 (commit abc1234, built 2026-07-09, go1.26.3)
 ```

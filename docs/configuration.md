@@ -4,11 +4,18 @@
 layers overriding earlier ones:
 
 1. **Built-in defaults** — sensible values for local development.
-2. **Config file** — YAML or JSON; searched in `./config/sqi-server.yaml`,
-   `~/.sqi/sqi-server.yaml`, and `/etc/sqi/sqi-server.yaml` by default. Pass
-   an explicit path with `--config /path/to/file`.
+2. **Config file** — YAML or JSON. With no `--config`, six paths are tried in
+   order and the **first that exists** is the only one read:
+   `./config/sqi-server.yaml`, `./config/sqi-server.json`,
+   `~/.sqi/sqi-server.yaml`, `~/.sqi/sqi-server.json`,
+   `/etc/sqi/sqi-server.yaml`, `/etc/sqi/sqi-server.json`. Pass an explicit
+   path with `--config /path/to/file` (a path that does not exist is an
+   error, unlike the search).
 3. **Environment variables** — prefixed `SQI_`, e.g. `SQI_HTTP_ADDR`.
-4. **CLI flags** — highest priority; available on the `serve` subcommand.
+4. **CLI flags** — highest priority. `--config`, `--log-level` and
+   `--log-format` are available on every subcommand; the remaining flags
+   (`--http-addr`, `--http-cors-origins`, `--openjd-enforce-limits`,
+   `--auth-enabled`, `--auth-validate-job-owner`) are on `serve`.
 
 Print the effective merged configuration at any time with:
 
@@ -16,8 +23,10 @@ Print the effective merged configuration at any time with:
 sqi-server config print
 ```
 
-A fully commented example file is at
-[`config/sqi-server.example.yaml`](https://github.com/uberware/sqi/blob/main/config/sqi-server.example.yaml).
+A commented example file is at
+[`config/sqi-server.example.yaml`](https://github.com/uberware/sqi/blob/main/config/sqi-server.example.yaml)
+(it does not yet include the `auth` block or `http.cors_origins` — see those
+sections below).
 
 Duration values use Go syntax: `30s`, `1m30s`, `500ms`, `2h`, etc.
 
@@ -36,6 +45,11 @@ Duration values use Go syntax: `30s`, `1m30s`, `500ms`, `2h`, etc.
 
 TCP address the HTTP server listens on. Use `127.0.0.1:8080` to restrict to
 loopback only.
+
+Must be `host:port`. A host given as a name rather than an IP literal is
+resolved at startup, so an unresolvable hostname fails config validation and
+the server does not start; `0.0.0.0`, `::` and an empty host are accepted
+without resolution. The same rule applies to [`nats.addr`](#natsaddr).
 
 ```yaml
 http:
@@ -79,14 +93,19 @@ Browser origins the CORS middleware allows. Only relevant to a
 same-origin deployment (where `sqi-server` serves the embedded UI itself)
 needs none of this.
 
-Each entry must be `scheme://host[:port]`, or the wildcard `"*"`. A trailing
-slash, a path, a query, a fragment, or embedded whitespace is rejected at
-startup with an `http.cors_origins` validation error — go-chi/cors could
-never match such a value, so a typo fails loudly at boot rather than
-silently at request time.
+Each entry must be `scheme://host[:port]`, or the bare wildcard `"*"`. A
+trailing slash, a path, a query, a fragment, or embedded whitespace is
+rejected at startup with an `http.cors_origins` validation error — go-chi/cors
+could never match such a value, so a typo fails loudly at boot rather than
+silently at request time. **A wildcard *pattern* is rejected too**
+(`https://*.example.com`, `https://app.example.com*`): go-chi/cors would honor
+any embedded `*` as a prefix/suffix match — with credentials, once auth is
+enabled — so only the bare `"*"` is supported. Name explicit origins.
 
-**With `auth.enabled=true` a wildcard is dropped at startup** (and an error
-is logged): browsers reject `Access-Control-Allow-Credentials` combined with
+**With `auth.enabled=true` a wildcard is dropped at startup** (and a warning is
+logged — or, when the wildcard came from the empty-list default rather than
+explicit config, an informational line): browsers reject
+`Access-Control-Allow-Credentials` combined with
 `*`. An empty list defaults to `["*"]` and so is dropped too — meaning a
 separately-hosted UI must name its origin explicitly here for credentialed
 cross-origin requests to work at all. See
@@ -188,6 +207,12 @@ path on a local SSD.
 store:
   sqlite_path: "/var/lib/sqi/sqi.db"
 ```
+
+> **The `migrate` and `backup` subcommands do not read this key.** Their
+> `--db` flag defaults to `$SQI_SQLITE_PATH` (note: *not*
+> `SQI_STORE_SQLITE_PATH`), falling back to `sqi.db` in the working
+> directory. Pass `--db` explicitly, or export both variables, so schema
+> migrations and backups operate on the database the server actually uses.
 
 ---
 
@@ -638,7 +663,7 @@ four can answer `503` for a deadline.
 
 The preset routes — `GET /api/v1/presets/{name}` and
 `POST /api/v1/presets/{name}/install` — validate a definition too. Its body is
-sha256-pinned against the index at `products.preset_library_url`, so it is
+sha256-pinned against the index at `preset_library.url`, so it is
 operator-vouched rather than client-chosen; since EXPR sub-project H1's
 whole-branch review they nevertheless run under these four keys and under the
 deadline, because the limits are operator configuration (an operator who
@@ -1187,8 +1212,9 @@ superuser.
 As of component A1, this is a live gate: setting it to `true` requires every
 REST request and the WebSocket upgrade to carry a valid session, backed by
 local accounts (see below and [`docs/auth.md`](auth.md)). Role-based
-authorization is not enforced yet (component B1) — see the interim gap
-documented in [`docs/auth.md`](auth.md#local-accounts).
+authorization is enforced as of component B1: every mutating route and several
+read routes are gated by a role→permission policy — see
+[`docs/auth.md`](auth.md).
 
 ```yaml
 auth:
@@ -1321,8 +1347,7 @@ auth:
 ```
 
 See [`docs/auth.md`](auth.md) for the full authentication model, the local
-account model, and the interim authorization gap before role enforcement
-(component B1).
+account model, and the role/permission matrix enforced on every route.
 
 ---
 
@@ -1724,8 +1749,9 @@ for the keys themselves.
 ### Capability auto-detection (`capabilities.detect` / `capabilities.disable`)
 
 Controls the worker's software capability auto-detection: built-in detectors
-for Maya, Nuke, Houdini, and Blender run automatically at startup and
-advertise a tag (e.g. `maya`, plus `maya-2025`) with value `"true"`, with no
+for Maya, Nuke, Houdini, Blender, FFmpeg and SGO Mistika (Boutique/Ultima, VR
+and Workflows) run automatically at startup and advertise a tag (e.g. `maya`,
+plus `maya-2025`) with value `"true"`, with no
 per-worker configuration — enough on its own to satisfy the reference DCC
 products/presets' `key=true` requirement. See
 [`docs/products.md`](products.md) and
@@ -1865,8 +1891,10 @@ discovery:
 
 ## See also
 
-- [`config/sqi-server.example.yaml`](https://github.com/uberware/sqi/blob/main/config/sqi-server.example.yaml) — Fully
-  commented example with every option.
+- [`config/sqi-server.example.yaml`](https://github.com/uberware/sqi/blob/main/config/sqi-server.example.yaml) —
+  Commented example covering the HTTP, NATS, store, log, scheduler, discovery,
+  OpenJD, diagnostics and preset-library sections. The `http.cors_origins` key
+  and the whole `auth` block are documented in this reference only.
 - [`docs/architecture.md`](architecture.md) — Component layout and how configuration values are consumed.
 - [`docs/operations.md`](operations.md) — Install, upgrade, backup, and log rotation.
 - [`docs/observability.md`](observability.md) — In-UI diagnostics, REST/WS log API, and external log wiring.

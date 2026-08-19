@@ -2,10 +2,36 @@
 name: nuke-script-render
 title: Nuke Script Render
 description: >-
-  Renders all enabled Write nodes of a saved Nuke script in frame chunks.
-  Requires workers tagged nuke=true with nuke on PATH. For a single Write node
-  use nuke-write-render. A starting point - duplicate to customize for your
-  pipeline.
+  Renders every enabled Write node of a saved Nuke script, in frame chunks.
+readme: |
+  # Nuke Script Render
+
+  Renders a saved Nuke script with `nuke -x`, executing every Write node the
+  script leaves enabled. Use Nuke Write Render instead to render one named Write
+  node.
+
+  Each task renders a contiguous chunk of frames, ten per task by default.
+
+  ## Parameters
+
+  - **Scene File** - the `.nk` script to render. It must be reachable from every
+    worker that runs the job.
+  - **Frames** - the frame range, in OpenJD range syntax, e.g. `1-100` or
+    `1-100:2` for every second frame.
+
+  ## How work is divided
+
+  The frame range expands into tasks through OpenJD task chunking, ten frames per
+  task by default. Each task receives its own frames as a list and passes them to
+  Nuke's `-F` flag directly, so this preset needs no chunk-bounds extension.
+
+  Raise or lower the chunk size to trade parallelism against the cost of loading
+  the script once per task.
+
+  ## Requirements
+
+  - Workers tagged `attr.worker.tag.nuke = true`
+  - `nuke` on the worker's `PATH`
 category: Rendering
 version: 1.0.0
 template:

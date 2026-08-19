@@ -194,11 +194,13 @@ type ExprLimits struct {
 // The FLOORS all come from measurement, not from taste. The fourteen reference
 // presets in presets/sqi/ -- the templates this repo itself ships -- are
 // measured per dimension by binary search on every run, by
-// TestExprLimits_FloorsAcceptReferencePresets: at most 31 expression positions,
-// 1 retained byte, 390 live bytes and 15 operations in any single evaluation.
-// Every one of those maxima is set by ffmpeg-segment-transcode-expr, the only
-// preset doing real slice arithmetic; the render presets cost an order of
-// magnitude less. Every floor below leaves at least 4x headroom over the worst
+// TestExprLimits_FloorsAcceptReferencePresets: at most 31 expression positions
+// template-wide, and 390 live bytes with 15 operations in any single
+// evaluation. Those three maxima are set by ffmpeg-segment-transcode-expr, the
+// only preset doing real slice arithmetic; the render presets cost an order of
+// magnitude less. Retained bytes are effectively zero for all fourteen -- the
+// binary search floors that dimension at 1, so a reported "1" means "nothing
+// measurable", not a real cost. Every floor below leaves at least 4x headroom over the worst
 // of them (8x to 65536x in practice), so no operator can tighten a knob to a
 // value that rejects sqi's own templates.
 // TestExprLimits_FloorsAcceptReferencePresets re-measures that on every run
@@ -225,14 +227,16 @@ const (
 	// any legal configuration the deadline, not this number, is what a request
 	// actually stops at.
 	//
-	// Floor: THREE orders of magnitude above what a reference preset's
-	// expressions actually spend, and one order of magnitude below the
-	// default so tightening remains meaningful. The measurement, re-run by
+	// Floor: one order of magnitude below the default so tightening remains
+	// meaningful, and ~67x above what a reference preset's expressions
+	// actually spend. The measurement, re-run by
 	// TestExprLimits_FloorsAcceptReferencePresets on every test run, is that
-	// the most expensive single evaluation in any of the six presets costs
-	// exactly 1 operation -- so the headroom is 1000x. An earlier revision of
-	// this sentence said "two orders of magnitude above the handful of
-	// operations"; there is no handful, and the ratio was understated.
+	// the most expensive single evaluation in any of the fourteen presets
+	// costs 15 operations. Earlier revisions of this sentence said "two orders
+	// of magnitude above the handful of operations" and then "exactly 1
+	// operation -- so the headroom is 1000x"; both were measured against a
+	// smaller preset set, and the ratio moves as presets are added. Trust the
+	// floors paragraph at the top of this file, which the test re-measures.
 	MinExprSubmissionOperations int64 = 1_000
 	MaxExprSubmissionOperations int64 = 100_000
 
@@ -265,15 +269,15 @@ const (
 	// re-derive this ceiling from maxStringBytes; if the argument for 10x ever
 	// changes, this number is free to move with it.
 	//
-	// Floor: 4 KB, 64x the live bytes a reference preset's largest expression
-	// produces. That measurement -- 64 bytes, re-run by
+	// Floor: 4 KB, ~10x the live bytes a reference preset's largest expression
+	// produces. That measurement -- 390 bytes, re-run by
 	// TestExprLimits_FloorsAcceptReferencePresets, and stated correctly in
 	// this file's own floors paragraph above -- is what the number is sized
-	// from. An earlier revision of this sentence said "three orders of
-	// magnitude above the few hundred live bytes": both halves were wrong
-	// (the cost is 64 bytes, not a few hundred, and the ratio is ~1.8 orders,
-	// not 3), and it survived the fix round that added the correct paragraph
-	// three screens up.
+	// from. Earlier revisions of this sentence said "three orders of magnitude
+	// above the few hundred live bytes" and then "64 bytes ... ~1.8 orders";
+	// both were measured against a smaller preset set, and the figure moves as
+	// presets are added. Trust the floors paragraph three screens up, which
+	// the test re-measures.
 	MinExprSubmissionMemoryBytes int64 = 4_096
 	MaxExprSubmissionMemoryBytes int64 = 10_000_000
 
@@ -286,7 +290,7 @@ const (
 	// multiplies that derived number by 100 (10^8 -> 10^10). Documentation
 	// must say so in those words; see design spec §4 caveat 1.
 	//
-	// Floor: 256, roughly 17x the largest reference preset's measured 15
+	// Floor: 256, roughly 8x the largest reference preset's measured 31
 	// positions, and still ~40x below the default so an operator running only
 	// small templates can tighten hard.
 	MinExprTemplatePositions int64 = 256

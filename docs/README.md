@@ -6,6 +6,7 @@ Long-form documentation for `sqi-server` operators and contributors.
 
 - `quickstart.md` — end-to-end first run (binary or Docker Compose): farm, queue, first job
 - `index.md` — overview / landing page (mirrors the repo-root `README.md` for the docs site)
+- `examples/` — runnable sample job payloads (e.g. `hello.json`, used by the release runbook)
 
 **Architecture & API**
 
@@ -14,6 +15,7 @@ Long-form documentation for `sqi-server` operators and contributors.
 - `python-client.md` — `sqi-sdk` Python library reference (construction, every method, examples)
 - `openjd-submission.md` — minimal, parameter-space, and multi-step OpenJD examples
 - `openjd-extensions.md` — the OpenJD extension registry and how to add one (subdocs under `openjd-extensions/`)
+- `openjd-conformance.md` — the official OpenJD conformance suite results, current pass rate, and known gaps
 
 **Products, presets & submitters** (Phase 2)
 
@@ -53,4 +55,4 @@ Long-form documentation for `sqi-server` operators and contributors.
 - `roadmap.md` — technical-architecture and roadmap reference (mirrors the repo-root `ROADMAP.md`)
 - `spdx-header.md` — the SPDX license-header convention for source files
 
-The canonical product/vision docs (`README.md`, `ROADMAP.md`, `CONTRIBUTING.md`) live at the repo root; `docs/index.md`, `docs/roadmap.md`, and `docs/contributing.md` are docs-site copies with site-relative links. `ROADMAP.md` is the technical-architecture and roadmap reference these docs point to for design rationale.
+The canonical product/vision docs (`README.md`, `ROADMAP.md`, `CONTRIBUTING.md`) live at the repo root; `docs/index.md`, `docs/roadmap.md`, and `docs/contributing.md` are docs-site copies whose **only** intended difference is site-relative links. Any edit to a root copy must be mirrored into its `docs/` twin in the same commit — the two roadmap copies have already drifted apart in both directions.

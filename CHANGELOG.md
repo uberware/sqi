@@ -10,6 +10,47 @@ Format follows [Conventional Commits](https://www.conventionalcommits.org/) and
 > `docs/development.md`). It is refreshed during release prep and again by the
 > release workflow, which bundles it into the release archives.
 
+## [0.3.0] — 2026-08-18
+
+
+### Bug Fixes
+
+- Duplicate websocket push on subscribe ([#87](https://github.com/uberware/sqi/issues/87)) ([19b0607](https://github.com/uberware/sqi/commit/19b060770ff25a67dc94b2172e4b570a3353e008))
+- Enforce task state machine on task status writes ([#97](https://github.com/uberware/sqi/issues/97)) ([9c386d4](https://github.com/uberware/sqi/commit/9c386d42c6f28a6ab9250a53916063fc1242b4c9))
+- **web:** Upgrade react-router to 8.3.0 for GHSA-qwww-vcr4-c8h2 ([#101](https://github.com/uberware/sqi/issues/101)) ([09b3ac6](https://github.com/uberware/sqi/commit/09b3ac636b22f0d15674ee557157a9c8bdfef0c6))
+- Atomic job submission ([#113](https://github.com/uberware/sqi/issues/113)) ([b1aa609](https://github.com/uberware/sqi/commit/b1aa609273526d11c92cd516934fbb6b6cf7b3fc))
+- **scheduler:** Match attr.worker.os.family macos against a darwin worker ([#116](https://github.com/uberware/sqi/issues/116)) ([cdf0815](https://github.com/uberware/sqi/commit/cdf0815ef964a250d426d170855e566ba64f4f0a))
+- **scheduler:** Resolve attr.worker.cpu.arch against a worker-reporte… ([#117](https://github.com/uberware/sqi/issues/117)) ([874c85f](https://github.com/uberware/sqi/commit/874c85fa29e22afd89a3eb447e1c18f97bc5aea3))
+
+
+### Build
+
+- Replace deprecated goreleaser archives keys so goreleaser check passes ([c5d75de](https://github.com/uberware/sqi/commit/c5d75de68e8bc7df23c5fd0c11e8e8529731d6c4))
+
+
+### Documentation
+
+- Correct project status and documentation drift ([#98](https://github.com/uberware/sqi/issues/98)) ([9026e68](https://github.com/uberware/sqi/commit/9026e68cba99bbb3cad386440c642d3b22e463af))
+- Correct inaccurate and stale documentation across the repo ([5ac8fc4](https://github.com/uberware/sqi/commit/5ac8fc4a7aefd236ce52c8e7c22cd2c14ed27a18))
+- Mark phase 3 and the EXPR extension as released in v0.3.0 ([8d6c278](https://github.com/uberware/sqi/commit/8d6c2782cc6b35ad6e003db6a9e641fbf664d263))
+
+
+### Features
+
+- Authentication infrastructure ([#80](https://github.com/uberware/sqi/issues/80)) ([15e72b6](https://github.com/uberware/sqi/commit/15e72b66037dca9c38fe108eeb91fe499d1bf7ae))
+- Local accounts, login sessions, auth shell ([#81](https://github.com/uberware/sqi/issues/81)) ([a55e203](https://github.com/uberware/sqi/commit/a55e203cb3852c4f849d918853cc2bfb45b258e1))
+- Api keys ([#82](https://github.com/uberware/sqi/issues/82)) ([7dcb0e0](https://github.com/uberware/sqi/commit/7dcb0e0dc49c043c517e09c81b699084f529aa7e))
+- Role-based access control ([#83](https://github.com/uberware/sqi/issues/83)) ([3190510](https://github.com/uberware/sqi/commit/3190510f14c6055d5759ed33dd2de7b5f5058918))
+- Job owner binding ([#84](https://github.com/uberware/sqi/issues/84)) ([8d7cf58](https://github.com/uberware/sqi/commit/8d7cf58c5c2b603eb31e2d9b6b4afb1b7167b387))
+- Auth admin and testing ([#85](https://github.com/uberware/sqi/issues/85)) ([e1003da](https://github.com/uberware/sqi/commit/e1003daa5cdaf98acd8c4db12b1400894e1b52f4))
+- LDAP and AD integration ([#86](https://github.com/uberware/sqi/issues/86)) ([4339e31](https://github.com/uberware/sqi/commit/4339e31bd086d0fcd3451dc38917b00662b5dc19))
+- OIDC compatible SSO and standardization with LDAP support ([#95](https://github.com/uberware/sqi/issues/95)) ([842e198](https://github.com/uberware/sqi/commit/842e198031515da35df286bb5c7e4f860394a977))
+- Task isolation run as user ([#99](https://github.com/uberware/sqi/issues/99)) ([785034d](https://github.com/uberware/sqi/commit/785034d7ece38ef23398f88cc05796c91c1cc839))
+- Improved openJD conformance ([#100](https://github.com/uberware/sqi/issues/100)) ([2cdef4f](https://github.com/uberware/sqi/commit/2cdef4f78618cfdabad999d7559180c4a31ba585))
+- Support the OpenJD EXPR extension ([#114](https://github.com/uberware/sqi/issues/114)) ([0682598](https://github.com/uberware/sqi/commit/068259857ae4c3557f47ebade8b17da11b33f402))
+- Ffmpeg presets ([#115](https://github.com/uberware/sqi/issues/115)) ([91bb943](https://github.com/uberware/sqi/commit/91bb943281a5cc04c78220fc91819330e2eec364))
+- Mistika render presets ([#118](https://github.com/uberware/sqi/issues/118)) ([fe14c99](https://github.com/uberware/sqi/commit/fe14c99ead5acc63e93bb29b9e59f20b19ba7b99))
+
 ## [0.2.0] — 2026-07-13
 
 

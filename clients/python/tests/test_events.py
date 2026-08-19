@@ -14,6 +14,7 @@ import contextlib
 import json
 import sys
 import threading
+import time
 from collections.abc import Callable, Iterator
 from typing import Any
 
@@ -271,7 +272,22 @@ def test_reconnect_storm_is_throttled(monkeypatch: pytest.MonkeyPatch) -> None:
     class _Stop(Exception):
         pass
 
+    real_sleep = time.sleep
+
     def fake_sleep(seconds: float) -> None:
+        # setattr on "sqi_client.events.time.sleep" patches the stdlib time
+        # module object itself, so EVERY time.sleep in the process lands here --
+        # including websockets' own server.shutdown(), which sleeps
+        # SHUTDOWN_POLLING_INTERVAL while waiting for the serving thread to
+        # stop. Raising unconditionally therefore threw _Stop out of the
+        # run_ws_server teardown, outside the pytest.raises block, in roughly
+        # 8% of runs (5/60 locally) -- and appended a stray 0.1 to sleeps.
+        #
+        # Hijack only the first call, which is the throttle this test is about,
+        # and let every later sleep behave normally.
+        if sleeps:
+            real_sleep(seconds)
+            return
         sleeps.append(seconds)
         raise _Stop  # break the otherwise-endless flap loop after one throttle
 

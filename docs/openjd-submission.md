@@ -40,13 +40,19 @@ steps:                          # at least one required
       taskParameterDefinitions:
         - name: <Name>
           type: INT | FLOAT | STRING | PATH
-          range: <range-expression>
+          range: <range-expression> | [<value>, ...]   # string form is INT/CHUNK[INT] only
       combination: <expr>       # optional; default is Cartesian product of all params
     dependencies:                # optional; list of step dependencies
       - dependsOn: <Name>        # name of a step that must complete first
     stepEnvironments: [...]     # optional; per-step environment blocks
 jobEnvironments: [...]          # optional; applied to every step
 ```
+
+The type lists above are the base spec's. Declaring `extensions: [TASK_CHUNKING]`
+adds the `CHUNK[INT]` task-parameter type, and `extensions: [EXPR]` adds RFC 0007's
+`BOOL`, `RANGE_EXPR` and six `LIST[*]` job-parameter types along with
+case-insensitive type names — see
+[`docs/openjd-extensions.md`](openjd-extensions.md).
 
 ---
 
@@ -220,12 +226,18 @@ parameterSpace:
   taskParameterDefinitions:
     - name: InputChunk
       type: PATH
-      range: "chunk_001.dat chunk_002.dat chunk_003.dat"
+      range: ["chunk_001.dat", "chunk_002.dat", "chunk_003.dat"]
     - name: OutputChunk
       type: PATH
-      range: "out_001.dat  out_002.dat  out_003.dat"
+      range: ["out_001.dat", "out_002.dat", "out_003.dat"]
   combination: "(InputChunk, OutputChunk)"   # 3 tasks, not 9
 ```
+
+A STRING, PATH or FLOAT `range` **must** be a YAML list. The succinct
+`<IntRangeExpr>` string form (`"1-100:2"`) exists only for INT and
+`CHUNK[INT]`; a bare string given to a STRING, PATH or FLOAT parameter is
+decoded into `RangeExpr`, which `expand.go` never reads for those types, so the
+template validates and then fails at submission with `range list is empty`.
 
 ### 2d. Mixed combination
 
@@ -462,8 +474,19 @@ double-brace syntax to reference values:
 
 | Expression | Resolves to |
 |---|---|
-| `{{Param.Name}}` | Job-level parameter value |
+| `{{Param.Name}}` | Job-level parameter value (a `PATH` parameter arrives path-mapped) |
+| `{{RawParam.Name}}` | The same job-level parameter, *without* path mapping applied |
 | `{{Task.Param.Name}}` | Task-level parameter value (from `parameterSpace`) |
+| `{{Task.RawParam.Name}}` | The same task-level parameter, without path mapping applied |
+| `{{Task.File.Name}}` | Path of an embedded file materialized for the task (step script scope only) |
+| `{{Session.WorkingDirectory}}` | The session's working directory on the worker |
+| `{{Session.PathMappingRulesFile}}` | Path of the OpenJD `pathmapping-1.0` rules file, when the session has rules |
+| `{{Session.HasPathMappingRules}}` | Whether the session has any path-mapping rules |
+
+`Session.*` is unavailable in job-level positions (the job `name`, a step's
+`hostRequirements` and its `parameterSpace`), which are evaluated at
+submission before any session exists. `Task.*` is available only inside a
+step's `script`.
 
 ---
 

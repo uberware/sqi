@@ -118,13 +118,16 @@ A first install returns HTTP 201; an update or reinstall returns HTTP 200.
 
 ## REST endpoints
 
-All endpoints return 503 when `preset_library.url` is empty.
+All endpoints return 503 when `preset_library.url` is empty. A 503 also means
+the definition's validation exceeded `openjd.expr_submission_deadline` on this
+server (retry; it is not a rejection of the preset). An unreachable or
+unparseable **index** is 502.
 
 | Method | Path | Description |
 |---|---|---|
-| `GET` | `/api/v1/presets` | List all presets with per-preset status. `?refresh=true` forces a re-fetch of the index. |
-| `GET` | `/api/v1/presets/{name}` | Preview a preset — metadata, template, and status. 404 if not in the index. 422 if the definition cannot be fetched or parsed. |
-| `POST` | `/api/v1/presets/{name}/install` | Install or update the named preset. 201 on first install, 200 on update or reinstall. 404 if not in the index. 409 if a built-in or custom product already uses that name. 422 on SHA-256 mismatch or validation failure. |
+| `GET` | `/api/v1/presets` | List all presets with per-preset status. `?refresh=true` forces a re-fetch of the index. 502 if the index cannot be fetched. |
+| `GET` | `/api/v1/presets/{name}` | Preview a preset — metadata, template, and status. 404 if not in the index. 502 if the index cannot be fetched. 422 if the definition cannot be fetched, verified or parsed. |
+| `POST` | `/api/v1/presets/{name}/install` | Install or update the named preset. 201 on first install, 200 on update or reinstall. 404 if not in the index. 409 if a built-in or custom product already uses that name. 422 on SHA-256 mismatch or validation failure. 502 if the index cannot be fetched. |
 
 To uninstall, use `DELETE /api/v1/products/{name}`.
 
@@ -172,23 +175,31 @@ The official library ships `Rendering`-category presets — `maya-layer-render`,
 [`sqi-submitter`](dcc-submitters.md) in-application submitters, plus
 `mistika-boutique-render`, `mistika-vr-render` and `mistika-workflows-render`,
 which have no in-application submitter and are submitted from the web UI or
-the API.
-Each declares its parameters using the [parameter convention
-contract](dcc-submitters.md#the-parameter-convention-contract) (`SceneFile`,
-`Frames`, `OutputDir`, plus per-host extras) so submitter pre-fill works out of
-the box, and each gates on an operator-configured worker capability tag (see
-[worker capability tags](worker-capabilities.md)). See
-[`docs/dcc-submitters.md`](dcc-submitters.md) for the full reference,
-including the chunking behavior and worker requirements per preset.
+the API. Each names its parameters from the [parameter convention
+contract](dcc-submitters.md#the-parameter-convention-contract) so submitter
+pre-fill works out of the box — all nine declare `SceneFile` and `Frames`; an
+output parameter is declared only where the command takes one (`OutputDir` on
+the two Maya presets, `OutputPath` on Blender), alongside per-host extras such
+as `Renderer`, `RenderLayer`, `RopPath` and `WriteNode`. Each gates on a worker
+capability tag that `sqi-worker` auto-detects from a standard install with no
+per-worker configuration — manual tags are needed only for nonstandard
+install paths (see [capability
+auto-detection](worker-capabilities.md#capability-auto-detection-built-in-dcc-detectors)).
+See [`docs/dcc-submitters.md`](dcc-submitters.md) for the full reference,
+including the chunking behavior and worker requirements per preset. Every
+software tag a shipped preset requires must be emitted by a built-in detector —
+enforced by `TestBuiltinDetectors_CoverPresets`, so a new reference preset
+cannot ship without one.
 
 ## Transcoding reference presets
 
 The official library also ships five `Transcoding`-category presets under
 `presets/sqi/*.yaml` — plain ffmpeg jobs meant to be submitted directly rather
 than through a DCC submitter. Each gates on the `attr.worker.tag.ffmpeg =
-"true"` capability tag (see [worker capability
-tags](worker-capabilities.md)); the segmented variants add an OS gate on top
-of that:
+"true"` capability tag, which `sqi-worker` sets automatically on any worker
+with `ffmpeg` on `PATH` (see [worker capability
+tags](worker-capabilities.md)); only the PowerShell-joined segmented variant
+adds an OS gate on top of that:
 
 - `ffmpeg-transcode` — converts one video file on one worker, start to
   finish. Base-spec OpenJD (declares no extensions), so it runs on any
@@ -200,13 +211,21 @@ of that:
   scheduler may also reuse one — then join the slices back into a single
   file. All three need Source Duration entered by hand, since nothing can
   measure it before submission. Pick one based on your farm:
-  - `ffmpeg-segment-transcode-bash` — joins with a bash script; needs Linux
-    or macOS workers. Removes its slice files once the join succeeds.
+  - `ffmpeg-segment-transcode-bash` — joins with a bash script. Carries no OS
+    gate: bash is not POSIX-only, since git-bash puts it on Windows too, so
+    this variant runs on any `ffmpeg=true` worker with `bash` on `PATH`. It
+    invokes `bash` explicitly with the script as an argument rather than
+    exec'ing the script directly, because executing a `#!` script is a POSIX
+    kernel feature Windows has no equivalent of, and the script folds
+    backslashes in the output path to forward slashes so its `dirname`,
+    `basename`, and glob work on a Windows path. Removes its slice files once
+    the join succeeds.
   - `ffmpeg-segment-transcode-powershell` — joins with a PowerShell script;
     needs Windows workers. Removes its slice files once the join succeeds.
   - `ffmpeg-segment-transcode-expr` ("Portable") — needs no shell at all, so
-    it runs on Linux, macOS, and Windows workers alike; its join file list is
-    generated by the template itself. That list-building cost is charged at
+    it runs on any `ffmpeg=true` worker without even requiring `bash`; its join
+    file list is generated by the template itself. That list-building cost is
+    charged at
     submission and grows with the slice count, so it suits jobs of up to 400
     slices — past that, use the Bash or PowerShell variant, whose cost does
     not grow with slice count. Unlike the two shell variants, it leaves its

@@ -266,7 +266,7 @@ use `stage_locally`. The workflow is:
 4. Configure each cloud worker with `staging.scratch_dir` and
    `staging.sync_command`.
 
-Outputs are copied back after each task automatically by the same sync command
+Outputs are automatically copied back after each task by the same sync command
 (direction reversed: `dest` ← `src`).
 
 See [`docs/openjd-extensions/path-translation.md`](openjd-extensions/path-translation.md)

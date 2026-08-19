@@ -16,14 +16,14 @@ interact with it over HTTP and WebSocket.
 | **WebSocket gateway** | `/api/v1/ws` endpoint for real-time push of job, task, worker, and log events to subscribed clients. |
 | **Embedded NATS** | In-process JetStream broker used for work assignment, status reporting, log streaming, and worker heartbeats. |
 | **SQLite store** | Single-file database holding all durable state — jobs, tasks, workers, farms, queues, usage pools, and audit log. |
-| **Web UI host** | Serves the embedded SPA at `/ui/` and the OpenAPI spec at `/api/v1/openapi.yaml`. |
+| **Web UI host** | Serves the embedded SPA at the root (`/`, with SPA fallback for extensionless paths; the legacy `/ui/*` prefix still resolves) and the OpenAPI spec at `/api/v1/openapi.yaml`. |
 | **mDNS responder** | Advertises `_sqi._tcp` on the local network so workers and the CLI can discover the server without manual address configuration. |
 
 ---
 
 ## Build
 
-**Prerequisites:** Go 1.23 or newer (version is pinned in `go.mod`).
+**Prerequisites:** Go 1.26 or newer (the `go` directive in `go.mod` pins 1.26.3).
 
 ```sh
 # Build just the server binary into ./bin/
@@ -97,7 +97,11 @@ curl -sf http://localhost:8080/readyz    # expects: {"status":"ok","checks":{"na
 **3. Submit a minimal OpenJD job**
 
 ```sh
-JOB_ID=$(curl -sf -X POST http://localhost:8080/api/v1/jobs \
+FARM=$(curl -sf http://localhost:8080/api/v1/farms | jq -r '.[0].id')
+QUEUE=$(curl -sf "http://localhost:8080/api/v1/queues?farm_id=$FARM" | jq -r '.items[0].id')
+
+JOB_ID=$(curl -sf -X POST \
+  "http://localhost:8080/api/v1/jobs?farm_id=$FARM&queue_id=$QUEUE&owner=smoke" \
   -H 'Content-Type: application/yaml' \
   --data-binary '
 specificationVersion: "jobtemplate-2023-09"
@@ -123,7 +127,7 @@ curl -sf http://localhost:8080/api/v1/jobs/$JOB_ID | jq '{id, name, status}'
 **5. List tasks**
 
 ```sh
-curl -sf http://localhost:8080/api/v1/jobs/$JOB_ID/tasks | jq '[.[] | {id, status}]'
+curl -sf http://localhost:8080/api/v1/jobs/$JOB_ID/tasks | jq '[.items[] | {id, status}]'
 ```
 
 **6. Check Prometheus metrics**
@@ -180,11 +184,11 @@ internal/
 ├── health/            /healthz and /readyz handlers.
 ├── log/               slog-based structured logger and request-scoped middleware.
 ├── metrics/           Prometheus metric definitions and the /metrics handler.
-├── middleware/         HTTP middleware (recovery, CORS, request ID, gzip, logger).
-├── openjd/            OpenJD v2025-09 parser, validator, parameter-space expansion.
-├── scheduler/         Assignment loop, worker registry, task state machine.
+├── middleware/        HTTP middleware (recovery, CORS, request ID, gzip, logger).
+├── openjd/            OpenJD (jobtemplate-2023-09) parser, validator, parameter-space expansion.
+├── scheduler/         Assignment loop, worker registry, heartbeat sweep, retry/failure policy.
 ├── server/            HTTP server wiring — router, middleware stack, boot sequence.
-├── store/             Store interface, SQLite implementation, migration runner.
+├── store/             Store interface, SQLite implementation, migration runner, task state machine.
 ├── ui/                Embedded web/dist assets, SPA fallback handler.
 ├── version/           Build metadata (version, commit, build date, Go version).
 ├── worker/            Worker wire protocol handlers and log ingestion.
