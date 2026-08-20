@@ -131,11 +131,20 @@ func padWidth(ec evalCtx, s string, width int64) (padLen int, need bool, err err
 
 // padString implements ljust, rjust and center over a space fill.
 //
-// center splits by FLOOR division and leaves the remainder on the right, so
-// center("ab", 7) is "  ab   ". CPython disagrees — it biases the split with
-// "marg & width & 1" and answers "   ab  " — and the reference implementation
-// does not. We follow the reference, which is also the simpler rule; matching
-// CPython here would create an oracle divergence for no reason.
+// center follows CPython: the padding is split by floor division and then
+// biased by "marg & width & 1", so center("ab", 7) is "   ab  " — three spaces
+// left, two right — and not the plain floor split's "  ab   ". The bias only
+// fires when the padding and the width are both odd.
+//
+// CHANGED 2026-08-19, and the reason it changed is the reason it was ever the
+// other way. sqi used the plain floor split because the REFERENCE did, and this
+// comment said so: "matching CPython here would create an oracle divergence for
+// no reason." openjd-expr 0.3.0 (openjd-model 0.11.3+) moved center to
+// CPython's rule, so the plain split became the divergence — caught by the
+// oracle on the 0.11.4 pin bump, as a NEW value divergence on center('ab', 7).
+// RFC 0006 says only "Center, pad with spaces to width" and does not settle the
+// tie, so with the spec silent the tie-break follows the library the function
+// is modeled on, which is now what the reference does too.
 func padString(ec evalCtx, s string, width int64, side padSide) (Value, error) {
 	n, need, err := padWidth(ec, s, width)
 	if err != nil {
@@ -148,7 +157,9 @@ func padString(ec evalCtx, s string, width int64, side padSide) (Value, error) {
 	case padLeft:
 		return String(strings.Repeat(" ", n) + s), nil
 	case padCenter:
-		left := n / 2
+		// CPython's str.center bias: floor split, plus one on the left when the
+		// padding and the width are both odd.
+		left := n/2 + int(int64(n)&width&1)
 		return String(strings.Repeat(" ", left) + s + strings.Repeat(" ", n-left)), nil
 	default:
 		return String(s + strings.Repeat(" ", n)), nil

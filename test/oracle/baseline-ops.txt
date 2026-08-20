@@ -234,13 +234,13 @@ int :: 0 or 99
 string :: true and true
 
 # and/or is evaluated directly per RFC 0005 rule 6, not as a call (see section header).
-int | bool :: true and 0
+int :: true and 0
 
 # and/or is evaluated directly per RFC 0005 rule 6, not as a call (see section header).
-string | bool :: false or 'fallback'
+string :: false or 'fallback'
 
 # and/or is evaluated directly per RFC 0005 rule 6, not as a call (see section header).
-int | nulltype :: null or 7
+int :: null or 7
 
 # The conditional expression is evaluated directly, not as a call (see section header).
 int :: 1 if true else 2
@@ -338,6 +338,14 @@ bool | int | string | range_expr :: 5 in range_expr("3-9")
 # "not in" over a range_expr charges its full expansion; the reference does not scale (see section header).
 bool | int | string | range_expr :: 1 not in range_expr("3-9")
 
+# ARRIVED ON THE 0.11.4 PIN BUMP, and only as an operation-count case: until
+# openjd-expr 0.3.0 this expression diverged on VALUE (the reference rejected a
+# float against a list[int] container; openjd-rs#276 made int/float comparison
+# exact), so its count was never compared. The count divergence it turns out to
+# have is the same flat +1 as the three entries above.
+# "in"/"not in" reference over-count on top of an agreeing container-length charge (see section header).
+bool :: 2.0 in [1, 2, 3]
+
 # ── sqi is right: unary negation of a non-literal or float operand ──────────
 #
 # RFC 0005 rule 2 transforms USub into a __neg__ call, so rule 1's flat
@@ -415,16 +423,16 @@ string | float | int :: zfill(-1.5, 7)
 # above is sound. No corpus case subscripts a range_expr.
 
 # List-subscript reference over-count (see section header above).
-int | list[int] :: [10, 20, 30][0]
+any :: [10, 20, 30][0]
 
 # List-subscript reference over-count (see section header above).
-int | list[int] :: [10, 20, 30][2]
+any :: [10, 20, 30][2]
 
 # List-subscript reference over-count (see section header above).
-int | list[int] :: [10, 20, 30][-1]
+any :: [10, 20, 30][-1]
 
 # List-subscript reference over-count (see section header above).
-int | list[int] :: [10, 20, 30][-3]
+any :: [10, 20, 30][-3]
 
 # ADDED by the final whole-branch review, sub-project E1, and in the OPPOSITE
 # direction from the four list entries above: on a RANGE_EXPR receiver sqi
@@ -452,7 +460,7 @@ int | string | range_expr :: range_expr("3-9")[-1]
 # over-count documented in the section above; the diff is exactly double.
 
 # Two chained subscripts, each paying the subscript over-count once (see section header).
-int | list[list[int]] | list[int] :: [[1, 2], [3, 4]][1][0]
+any :: [[1, 2], [3, 4]][1][0]
 
 # ── sqi is right: slice's receiver-dependent charge; reference = 2 + len(result) ──
 #
@@ -470,49 +478,49 @@ int | list[list[int]] | list[int] :: [[1, 2], [3, 4]][1][0]
 # finding its own count is exactly "2 + len(result)" throughout.
 
 # Slice reference over-count relative to sqi's receiver-dependent charge (see section header).
-list[int] | int | nulltype :: [10, 20, 30, 40, 50][1:4]
+any :: [10, 20, 30, 40, 50][1:4]
 
 # Slice reference over-count relative to sqi's receiver-dependent charge (see section header).
-list[int] | int | nulltype :: [10, 20, 30, 40, 50][:3]
+any :: [10, 20, 30, 40, 50][:3]
 
 # Slice reference over-count relative to sqi's receiver-dependent charge (see section header).
-list[int] | int | nulltype :: [10, 20, 30, 40, 50][2:]
+any :: [10, 20, 30, 40, 50][2:]
 
 # Slice reference over-count relative to sqi's receiver-dependent charge (see section header).
-list[int] | int | nulltype :: [10, 20, 30, 40, 50][:]
+any :: [10, 20, 30, 40, 50][:]
 
 # Slice reference over-count relative to sqi's receiver-dependent charge (see section header).
-list[int] | int | nulltype :: [10, 20, 30, 40, 50][::2]
+any :: [10, 20, 30, 40, 50][::2]
 
 # Slice reference over-count relative to sqi's receiver-dependent charge (see section header).
-list[int] | int | nulltype :: [10, 20, 30, 40, 50][::-1]
+any :: [10, 20, 30, 40, 50][::-1]
 
 # Slice reference over-count relative to sqi's receiver-dependent charge (see section header).
-list[int] | int | nulltype :: [10, 20, 30, 40, 50][0:5:2]
+any :: [10, 20, 30, 40, 50][0:5:2]
 
 # Slice reference over-count relative to sqi's receiver-dependent charge (see section header).
-list[int] | int | nulltype :: [10, 20, 30, 40, 50][-3:]
+any :: [10, 20, 30, 40, 50][-3:]
 
 # Slice reference over-count relative to sqi's receiver-dependent charge (see section header).
-list[int] | int | nulltype :: [10, 20, 30, 40, 50][:-2]
+any :: [10, 20, 30, 40, 50][:-2]
 
 # Slice reference over-count relative to sqi's receiver-dependent charge (see section header).
-list[int] | int | nulltype :: [10, 20, 30, 40, 50][1:99]
+any :: [10, 20, 30, 40, 50][1:99]
 
 # Slice reference over-count relative to sqi's receiver-dependent charge (see section header).
-list[int] | int | nulltype :: [10, 20, 30, 40, 50][99:]
+any :: [10, 20, 30, 40, 50][99:]
 
 # Slice reference over-count relative to sqi's receiver-dependent charge (see section header).
-list[int] | int | nulltype :: [10, 20, 30, 40, 50][3:1]
+any :: [10, 20, 30, 40, 50][3:1]
 
 # Slice reference over-count relative to sqi's receiver-dependent charge (see section header).
-string | int | nulltype :: 'hello'[1:3]
+string :: 'hello'[1:3]
 
 # Slice reference over-count relative to sqi's receiver-dependent charge (see section header).
-string | int | nulltype :: 'hello'[::-1]
+string :: 'hello'[::-1]
 
 # Slice reference over-count relative to sqi's receiver-dependent charge (see section header).
-string | int | nulltype :: 'hello'[1:99]
+string :: 'hello'[1:99]
 
 # ── sqi is right: list/range equality scales with element count; reference is flat 2 ──
 #
@@ -532,148 +540,6 @@ bool :: [1, 2] == [1, 3]
 
 # List-equality reference over-count for a non-empty list (see section header).
 bool :: [1, 2] == [1]
-
-# ── sqi is right: join() charges rule 2 AND rule 3; reference omits rule 3 ──
-#
-# Section 1.3.10 names join() under BOTH rule 2 ("iterate lists") and rule
-# 3 ("process ... a string ... such as ... join()"), so sqi charges
-# ArgElements (the input list's length) and ResultBytes (the joined
-# string's length /256, rounded up) -- ResultBytes is also the only shape
-# the Cost mechanism supports, since chargeArgs reads args[i].s and cannot
-# express a per-element byte sum. The reference charges rule 2 but omits
-# rule 3's byte charge entirely, despite the spec naming join() under it by
-# name. Every entry below is exactly sqi's extra ResultBytes unit (the
-# joined output never exceeds 256 bytes in this corpus, so the charge is
-# always ceil(len/256) = 1).
-
-# join()'s ResultBytes charge; the reference omits rule 3 for join() entirely (see section header).
-string | list[string] :: join(['a', 'b', 'c'], ',')
-
-# join()'s ResultBytes charge; the reference omits rule 3 for join() entirely (see section header).
-string | list[string] :: join(['a', 'b'], '')
-
-# join()'s ResultBytes charge; the reference omits rule 3 for join() entirely (see section header).
-string | list[string] :: join(['a'], ',')
-
-# join()'s ResultBytes charge; the reference omits rule 3 for join() entirely (see section header).
-string | list[string] :: join(split('a;b;c', ';'), ',')
-
-# join()'s ResultBytes charge; the reference omits rule 3 for join() entirely (see section header).
-string | list[string] :: join(split('a,b,,c', ','), '|')
-
-# join()'s ResultBytes charge; the reference omits rule 3 for join() entirely (see section header).
-string | list[string] :: join(split('  a b  '), '|')
-
-# join()'s ResultBytes charge; the reference omits rule 3 for join() entirely (see section header).
-string | list[string] | int :: join(split('a,b,c', ',', 1), '|')
-
-# join()'s ResultBytes charge; the reference omits rule 3 for join() entirely (see section header).
-string | list[string] | int :: join(rsplit('a b c', ' ', 1), '|')
-
-# join()'s ResultBytes charge; the reference omits rule 3 for join() entirely (see section header).
-string | list[string] :: join(rsplit('a,b,c', ','), '|')
-
-# join()'s ResultBytes charge; the reference omits rule 3 for join() entirely (see section header).
-string | list[string] | int :: join(split('a,b,c', ',', 9223372036854775807), '|')
-
-# join()'s ResultBytes charge; the reference omits rule 3 for join() entirely (see section header).
-string | list[string] :: join(re_findall('shot010_shot020', 'shot(\d+)'), '|')
-
-# join()'s ResultBytes charge; the reference omits rule 3 for join() entirely (see section header).
-string | list[string] :: join(re_split('a1b2c', '\d'), '|')
-
-# join()'s ResultBytes charge; the reference omits rule 3 for join() entirely (see section header).
-string | list[string] | int :: join(re_split('a1b2c', '\d', 1), '|')
-
-# join()'s ResultBytes charge; the reference omits rule 3 for join() entirely (see section header).
-string | list[string] | nulltype :: join(re_search('asset_v042', '_v(\d+)'), '|')
-
-# join()'s ResultBytes charge; the reference omits rule 3 for join() entirely (see section header).
-string | list[string] | nulltype :: join(re_search('-', r'[\w-]'), '|')
-
-# join()'s ResultBytes charge; the reference omits rule 3 for join() entirely (see section header).
-string | list[string] | nulltype :: join(re_search('-', r'[\w\-a]'), '|')
-
-# join()'s ResultBytes charge; the reference omits rule 3 for join() entirely (see section header).
-string | list[string] | nulltype :: join(re_search('b', r'[\wa-c]'), '|')
-
-# join()'s ResultBytes charge; the reference omits rule 3 for join() entirely (see section header).
-string | list[string] | nulltype :: join(re_search('-', r'[\W-]'), '|')
-
-# join()'s ResultBytes charge; the reference omits rule 3 for join() entirely (see section header).
-string | list[string] | nulltype :: join(re_search('-', r'[a\W-]'), '|')
-
-# join()'s ResultBytes charge; the reference omits rule 3 for join() entirely (see section header).
-string | list[string] | nulltype :: join(re_search('c', r'[a\Wc]'), '|')
-
-# join()'s ResultBytes charge; the reference omits rule 3 for join() entirely (see section header).
-string | list[string] | path :: join(path('s3://bucket//').parts, '|')
-
-# join()'s ResultBytes charge; the reference omits rule 3 for join() entirely (see section header).
-string | list[string] | path :: join(path('/a/b/c').parts, '|')
-
-# join()'s ResultBytes charge; the reference omits rule 3 for join() entirely (see section header).
-string | list[string] | path :: join(path('a/b').parts, '|')
-
-# join()'s ResultBytes charge; the reference omits rule 3 for join() entirely (see section header).
-string | list[string] | path :: join(path('/').parts, '|')
-
-# join()'s ResultBytes charge; the reference omits rule 3 for join() entirely (see section header).
-string | list[string] | path :: join(path('//').parts, '|')
-
-# join()'s ResultBytes charge; the reference omits rule 3 for join() entirely (see section header).
-string | list[string] | path :: join(path('//a/b').parts, '|')
-
-# join()'s ResultBytes charge; the reference omits rule 3 for join() entirely (see section header).
-string | list[string] | path :: join(path('///a/b').parts, '|')
-
-# join()'s ResultBytes charge; the reference omits rule 3 for join() entirely (see section header).
-string | list[string] | path :: join(path('/a/b/').parts, '|')
-
-# join()'s ResultBytes charge; the reference omits rule 3 for join() entirely (see section header).
-string | list[string] | path :: join(path('/a/../b').parts, '|')
-
-# join()'s ResultBytes charge; the reference omits rule 3 for join() entirely (see section header).
-string | list[string] | path :: join(path('/a/./b').parts, '|')
-
-# join()'s ResultBytes charge; the reference omits rule 3 for join() entirely (see section header).
-string | list[string] | path :: join(path('s3://b/d/f').parts, '|')
-
-# join()'s ResultBytes charge; the reference omits rule 3 for join() entirely (see section header).
-string | list[string] | path :: join(path('s3://b/d/').parts, '|')
-
-# join()'s ResultBytes charge; the reference omits rule 3 for join() entirely (see section header).
-string | list[string] | path :: join(path('s3://b').parts, '|')
-
-# join()'s ResultBytes charge; the reference omits rule 3 for join() entirely (see section header).
-string | list[string] | path :: join(path('s3://b/d//x').parts, '|')
-
-# join()'s ResultBytes charge; the reference omits rule 3 for join() entirely (see section header).
-string | list[string] | path :: join(path('c.tar.gz').suffixes, '|')
-
-# join()'s ResultBytes charge; the reference omits rule 3 for join() entirely (see section header).
-string | list[string] | path :: join(path('..a.b').suffixes, '|')
-
-# join()'s ResultBytes charge; the reference omits rule 3 for join() entirely (see section header).
-string | list[string] | path :: join(path('s3://b/d/f.tar.gz').suffixes, '|')
-
-# join()'s ResultBytes charge; the reference omits rule 3 for join() entirely (see section header).
-string | list[string] | path :: join((path('s3://b/d/') / 'f').parts, '|')
-
-# join()'s ResultBytes charge; the reference omits rule 3 for join() entirely (see section header).
-string | list[string] | path :: join((path('/a/b') / 'c').parts, '|')
-
-# join()'s ResultBytes charge; the reference omits rule 3 for join() entirely (see section header).
-string | list[path] | path :: join([path('/a'), path('/b')], ',')
-
-# join()'s ResultBytes charge; the reference omits rule 3 for join() entirely (see section header).
-string | list[path] | path :: join([path('/a') / 'x'], ',')
-
-# join()'s ResultBytes charge; the reference omits rule 3 for join() entirely (see section header).
-string | list[string] | path :: join(path('..b.c').suffixes, '|')
-
-# join()'s ResultBytes charge; the reference omits rule 3 for join() entirely (see section header).
-string | list[string] | path :: join(path('.hidden.tar.gz').suffixes, '|')
 
 # ── sqi is right: is_relative_to/relative_to sum both operands' bytes; reference uses max ──
 #
@@ -958,51 +824,108 @@ string | list[string] | list[list[string]] :: string(flatten([["-e", "A=1"], ["-
 # string(list)'s per-element ArgElements charge; reference is flat 1 (see section header).
 string | list[string] :: string(['a<b>c&d'])
 
-# ── sqi is right: the repr_* family's list rows charge per element; reference is flat 1 ──
+# ── the repr_* family: sqi charges its ARGUMENT, the reference its RESULT ───
 #
-# Rule 2 names all five repr_*() functions EXPLICITLY (repr_sh, repr_py,
-# repr_json, repr_pwsh, repr_cmd) -- the strongest textual basis of any
-# entry in this file, since there is no "such as" ambiguity to resolve.
-# sqi charges rule 1 (1) plus ArgElements for a list-typed argument on each;
-# the reference never charges more than a flat 1 regardless of list size.
+# REWRITTEN 2026-08-19 on the 0.11.4 pin bump, because the claim this section
+# used to make went false without a single entry going stale -- the failure
+# mode this file has no automatic check for. It read "sqi charges rule 1 plus
+# ArgElements for a list-typed argument; the reference never charges more than
+# a flat 1 regardless of list size", and the seven list rows below measured
+# go=3 ref=1. On openjd-expr 0.3.0 they measure go=3 ref=4. Still diverging,
+# still by one, in the OPPOSITE direction and for a different reason. A reason
+# that has quietly inverted is worse than a missing one, hence a rewrite.
+#
+# What each side charges now:
+#
+#   sqi        1 (rule 1) + ArgElements on a list-typed argument (rule 2)
+#   reference  the same, plus one unit for the string it BUILDS
+#
+# Rule 2 names all five repr_* functions explicitly (repr_sh, repr_py,
+# repr_json, repr_pwsh, repr_cmd), so the per-element charge is common ground
+# and is not what these entries record.
+#
+# Rule 3 names exactly ONE of the five, repr_sh, and charges "the length of the
+# value" -- the value the function processes, which is its argument. On that
+# reading repr_sh('') charges 0 for an empty argument, and every scalar row
+# charges 0 because there is no string argument at all: repr_py(42) processes
+# an int. sqi's 1 is rule 1 alone. The reference's extra unit is the length of
+# what it PRODUCED -- a value rule 3 does not name -- and it charges it for the
+# four functions rule 3 never mentions as readily as for repr_sh.
+#
+# This is new upstream behavior, not a long-standing disagreement, and it is
+# worth reporting: see docs/superpowers/specs/openjd-upstream-tracker.md.
 
-# repr_*()'s per-element ArgElements charge on a list argument; reference is flat 1 (see section header).
+# repr_*() on a list: sqi's per-element rule-2 charge, plus the reference's new result-string unit (see section header).
 string | list[string] :: repr_cmd(['echo', 'hello & world'])
 
-# repr_*()'s per-element ArgElements charge on a list argument; reference is flat 1 (see section header).
+# repr_*() on a list: sqi's per-element rule-2 charge, plus the reference's new result-string unit (see section header).
 string | list[string] :: repr_pwsh(['a', 'b'])
 
-# repr_*()'s per-element ArgElements charge on a list argument; reference is flat 1 (see section header).
+# repr_*() on a list: sqi's per-element rule-2 charge, plus the reference's new result-string unit (see section header).
 string | list[int] :: repr_pwsh([1, 2])
 
-# repr_*()'s per-element ArgElements charge on a list argument; reference is flat 1 (see section header).
+# repr_*() on a list: sqi's per-element rule-2 charge, plus the reference's new result-string unit (see section header).
 string | list[string] :: repr_py(['a', 'b'])
 
-# repr_*()'s per-element ArgElements charge on a list argument; reference is flat 1 (see section header).
+# repr_*() on a list: sqi's per-element rule-2 charge, plus the reference's new result-string unit (see section header).
 string | list[int] :: repr_py([1, 2])
 
-# repr_*()'s per-element ArgElements charge on a list argument; reference is flat 1 (see section header).
+# repr_*() on a list: sqi's per-element rule-2 charge, plus the reference's new result-string unit (see section header).
 string | list[string] :: repr_json(['a', 'b'])
 
-# repr_*()'s per-element ArgElements charge on a list argument; reference is flat 1 (see section header).
+# repr_*() on a list: sqi's per-element rule-2 charge, plus the reference's new result-string unit (see section header).
 string | list[int] :: repr_json([1, 2])
 
-# ── sqi is right: zfill charges ResultBytes; the reference's own count does not track it ──
-#
-# zfill's Cost is Cost{ResultBytes: true} on all three overloads (string,
-# int, float receiver), matching rule 3's "processing a string ... such
-# as ... similar" -- zfill pads a string to a target width, real work
-# proportional to the result's length. Probed directly against the
-# reference: a non-empty base string ("a".zfill(N) for N in 3, 300, 1000)
-# charges a flat 2 regardless of width, matching sqi exactly when the
-# result stays under 256 bytes (call 1 + ResultBytes 1 = 2) -- so most
-# zfill cases in this corpus do NOT diverge at all. The one entry below is
-# the exception: zfilling an EMPTY base string, where the reference's own
-# count drops to 1 instead of its usual 2, an implementation-specific edge
-# case sqi's principled ResultBytes charge has no reason to reproduce.
+# repr_*() on a scalar: sqi charges rule 1 alone, the reference adds a unit for the result string it builds (see section header).
+string :: repr_sh('')
 
-# zfill on an empty base string: the reference's own count drops below its usual charge (see section header).
-string | int :: zfill('', 3)
+# repr_*() on a list: sqi's per-element rule-2 charge, plus the reference's new result-string unit (see section header).
+string | list[string] :: repr_sh(['echo', 'hello world'])
+
+# repr_*() on a scalar: sqi charges rule 1 alone, the reference adds a unit for the result string it builds (see section header).
+string | int :: repr_pwsh(42)
+
+# repr_*() on a scalar: sqi charges rule 1 alone, the reference adds a unit for the result string it builds (see section header).
+string | int :: repr_pwsh(-1)
+
+# repr_*() on a scalar: sqi charges rule 1 alone, the reference adds a unit for the result string it builds (see section header).
+string | float :: repr_pwsh(1.5)
+
+# repr_*() on a scalar: sqi charges rule 1 alone, the reference adds a unit for the result string it builds (see section header).
+string | bool :: repr_pwsh(true)
+
+# repr_*() on a scalar: sqi charges rule 1 alone, the reference adds a unit for the result string it builds (see section header).
+string | bool :: repr_pwsh(false)
+
+# repr_*() on a scalar: sqi charges rule 1 alone, the reference adds a unit for the result string it builds (see section header).
+string | nulltype :: repr_py(null)
+
+# repr_*() on a scalar: sqi charges rule 1 alone, the reference adds a unit for the result string it builds (see section header).
+string | bool :: repr_py(true)
+
+# repr_*() on a scalar: sqi charges rule 1 alone, the reference adds a unit for the result string it builds (see section header).
+string | bool :: repr_py(false)
+
+# repr_*() on a scalar: sqi charges rule 1 alone, the reference adds a unit for the result string it builds (see section header).
+string | int :: repr_py(42)
+
+# repr_*() on a scalar: sqi charges rule 1 alone, the reference adds a unit for the result string it builds (see section header).
+string | float :: repr_py(1.5)
+
+# repr_*() on a scalar: sqi charges rule 1 alone, the reference adds a unit for the result string it builds (see section header).
+string | float :: repr_py(1.0)
+
+# repr_*() on a scalar: sqi charges rule 1 alone, the reference adds a unit for the result string it builds (see section header).
+string | nulltype :: repr_json(null)
+
+# repr_*() on a scalar: sqi charges rule 1 alone, the reference adds a unit for the result string it builds (see section header).
+string | bool :: repr_json(true)
+
+# repr_*() on a scalar: sqi charges rule 1 alone, the reference adds a unit for the result string it builds (see section header).
+string | int :: repr_json(42)
+
+# repr_*() on a scalar: sqi charges rule 1 alone, the reference adds a unit for the result string it builds (see section header).
+string | float :: repr_json(1.5)
 
 # ── sqi is right: min/max's fixed 2- and 3-arg rows charge nothing; reference charges 1+N ──
 #
@@ -1117,7 +1040,6 @@ list[int] :: unique([2, 1, 2, 3, 1])
 # divergence, not a new question.
 list[string] :: unique(["a", "b", "a"])
 
-
 # round(2.0, 309) joins the positive-ndigits count family already recorded
 # above: the reference charges ceil(ndigits/256) on top of the call, tracking
 # the length of the RENDERED decimal string. That string lives on Value.fs, a
@@ -1127,3 +1049,88 @@ list[string] :: unique(["a", "b", "a"])
 # header for round above; this case is new only because the corpus had no
 # large-ndigits round case until the positive-branch overflow fix added one.
 int | float :: round(2.0, 309)
+
+# ── sqi is right: padding charges ONE length term; the reference now charges two ──
+#
+# NEW WITH openjd-expr 0.3.0 (openjd-model 0.11.3+), found on the 0.11.4 pin
+# bump. It REPLACES the "zfill charges ResultBytes; the reference's own count
+# does not track it" section this file used to carry: that section's single
+# entry, zfill('', 3), stopped diverging and was removed on the same run that
+# turned these fifteen long-agreeing cases red. The old section's claim -- "a
+# non-empty base string charges a flat 2 regardless of width, matching sqi
+# exactly, so most zfill cases in this corpus do NOT diverge at all" -- is
+# simply no longer true of the reference.
+#
+# Section 1.3.10 rule 3 charges "the length OF THE VALUE divided by 256
+# (rounded up)": one value per call. sqi charges the value these functions
+# PRODUCE -- Cost{ResultBytes: true} on ljust/rjust/center and on all three
+# zfill overloads -- so its count is 1 + ceil(len(result)/256).
+#
+# The reference now charges TWO length terms. Probed directly against
+# openjd-model 0.11.4, one call per probe:
+#
+#   ljust(<300-byte literal>, 5)   3 = 1 + ceil(300/256) + ceil(0/256)
+#   ljust('a', 256)                3 = 1 + ceil(1/256)   + ceil(255/256)
+#   ljust('a', 257)                3 = 1 + ceil(1/256)   + ceil(256/256)
+#   ljust('a', 300)                4 = 1 + ceil(1/256)   + ceil(299/256)
+#   ljust('a', 600)                5 = 1 + ceil(1/256)   + ceil(599/256)
+#
+# -- the argument's length, PLUS the length of the padding it adds. Each term
+# is individually rule-3-shaped, which is what makes this a two-value reading
+# of a rule that names one value, rather than an arbitrary flat +1.
+#
+# The two counts CONVERGE on large inputs, because the padding added is then
+# empty: ljust(<600-byte literal>, 5) is 4 on both sides. Every entry below is
+# therefore a small-string case, where the argument and the padding each round
+# up to a unit of their own and the reference's second term is visible.
+
+# This row only became count-comparable on the 0.11.4 bump: its VALUE diverged
+# until center's tie-break was changed to CPython's bias in the same commit
+# (funcsstrpad.go), so the count behind it had never been compared.
+# Padding: the reference charges the argument's length AND the added padding's; rule 3 names one value (see section header).
+string | int :: center('ab', 7)
+
+# Padding: the reference charges the argument's length AND the added padding's; rule 3 names one value (see section header).
+string | int :: ljust('ab', 5)
+
+# Padding: the reference charges the argument's length AND the added padding's; rule 3 names one value (see section header).
+string | int :: rjust('ab', 5)
+
+# Padding: the reference charges the argument's length AND the added padding's; rule 3 names one value (see section header).
+string | int :: center('abc', 4)
+
+# Padding: the reference charges the argument's length AND the added padding's; rule 3 names one value (see section header).
+string | int :: center('é', 5)
+
+# Padding: the reference charges the argument's length AND the added padding's; rule 3 names one value (see section header).
+string | int :: zfill('42', 5)
+
+# Padding: the reference charges the argument's length AND the added padding's; rule 3 names one value (see section header).
+string | int :: zfill('é', 3)
+
+# Padding: the reference charges the argument's length AND the added padding's; rule 3 names one value (see section header).
+string | int :: zfill('-10', 4)
+
+# Padding: the reference charges the argument's length AND the added padding's; rule 3 names one value (see section header).
+string | int :: zfill('+7', 5)
+
+# Padding: the reference charges the argument's length AND the added padding's; rule 3 names one value (see section header).
+string | int :: zfill('-', 4)
+
+# Padding: the reference charges the argument's length AND the added padding's; rule 3 names one value (see section header).
+string | int :: zfill(42, 5)
+
+# Padding: the reference charges the argument's length AND the added padding's; rule 3 names one value (see section header).
+string | int :: zfill(-1, 3)
+
+# Padding: the reference charges the argument's length AND the added padding's; rule 3 names one value (see section header).
+string | float | int :: zfill(1.5, 6)
+
+# Padding: the reference charges the argument's length AND the added padding's; rule 3 names one value (see section header).
+string | float | int :: zfill(2.0, 6)
+
+# Padding: the reference charges the argument's length AND the added padding's; rule 3 names one value (see section header).
+string | int :: '42'.zfill(5)
+
+# Padding: the reference charges the argument's length AND the added padding's; rule 3 names one value (see section header).
+string | int :: (42).zfill(5)
