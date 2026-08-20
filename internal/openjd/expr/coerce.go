@@ -5,19 +5,40 @@ package expr
 import (
 	"errors"
 	"fmt"
+	"sort"
 	"strconv"
 )
 
-// This file implements section 1.2.3, implicit type coercion.
+// This file implements section 1.2.3, implicit type coercion, as RFC 0005
+// restated it in openjd-specifications#175 (merged 2026-08-19).
 //
-// The spec's rules are phrased against what the TARGET does not include — "int
-// to float when the target types do not include int" — so every rule below asks
-// includes() about the target rather than examining the source alone.
+// TWO STEPS, IN ORDER. Satisfaction asks whether the result's type already
+// satisfies the target, and if so the value is used UNCHANGED and nothing is
+// converted (satisfies). Otherwise conversion walks the target's DESTINATIONS
+// in an order fixed by the result's own type, first success wins, and a
+// destination that fails is not an error so long as a later one succeeds
+// (scalarDestinations, orderedListDestinations). Non-list destinations precede
+// list ones, always.
 //
-// Two entry points, because two callers need different things. Shape matching
-// (shape.go) asks only whether a type COULD reach a declared parameter type: it
-// must not convert anything before a shape is chosen, and on the unresolved path
-// there is no value to convert. coerce() performs the conversion afterward.
+// The older reading is still visible in this file's shape and should not be
+// mistaken for the current one: it phrased every rule against what the target
+// does NOT include ("int to float when the target types do not include int"),
+// which is how a satisfaction check looks when it is spelled out one rule at a
+// time. It also had no answer when a target offered two candidates of the same
+// kind, and gave up rather than choosing -- singleScalarTarget, still used by
+// the promotion path below, is that giving-up.
+//
+// THREE PREDICATES, NOT TWO, and the difference matters:
+//
+//   - coerce()            converts a VALUE against a target type.
+//   - coercibleToTarget() is coerce()'s type-level twin, for the unresolved
+//     path where there is no value to convert.
+//   - coercible()         belongs to a DIFFERENT MECHANISM: the coercion that
+//     resolves a function call and promotes 1 to 1.0 in "1 + 2.0" (promotable,
+//     shape.go). RFC 0005 says in as many words that #175 does not touch it,
+//     so it keeps the older rules deliberately. Routing call dispatch through
+//     the destination table would make it depend on a target the caller never
+//     supplied.
 
 // includes reports whether target admits a value whose type code is c, looking
 // through union members and through an unresolved constraint.
@@ -40,8 +61,17 @@ func includes(target Type, c Code) bool {
 }
 
 // coercible reports whether a value of type from can be implicitly converted to
-// the target type to, per section 1.2.3. It answers at the type level only, and
-// performs nothing.
+// the type to, under the rules RFC 0005 applies while RESOLVING A FUNCTION CALL
+// -- the mechanism that promotes 1 to 1.0 in "1 + 2.0". It answers at the type
+// level only, and performs nothing.
+//
+// It is NOT the predicate behind target-type coercion; that is
+// coercibleToTarget, and since openjd-specifications#175 the two genuinely
+// differ. The clearest case: coercible(int, "float | int") is FALSE, because
+// nothing needs converting, while coercibleToTarget says TRUE because the
+// target admits an int outright. Both answers are right for their own question.
+// Its only callers are promotable() and shape matching; do not reach for it
+// from a target-type path.
 func coercible(from, to Type) bool {
 	if from.Equal(to) || to.Code == CodeAny {
 		return true
@@ -243,6 +273,392 @@ func scalarCoercible(from, to Code) bool {
 	return false
 }
 
+// satisfies reports whether a result of type from already SATISFIES target, in
+// RFC 0005's sense: the value is used unchanged and no conversion is attempted.
+//
+// The relation is DIRECTIONAL and the specification says so explicitly: an int
+// satisfies any, and any does not satisfy an int. It is deliberately not the
+// symmetric matching that binds type variables during signature matching, which
+// would accept a list[T1] target by binding T1 and then discarding the binding.
+// Keep the two apart; shape.go owns the symmetric one.
+func satisfies(from, to Type) bool {
+	switch to.Code {
+	case CodeAny:
+		return true
+	case CodeUnresolved:
+		c, ok := unresolvedConstraint(to)
+		return ok && satisfies(from, c)
+	case CodeUnion:
+		for _, m := range to.Params {
+			if satisfies(from, m) {
+				return true
+			}
+		}
+		return false
+	}
+	if fromElem, ok := listParam(from); ok {
+		if toElem, ok := listParam(to); ok {
+			return satisfies(fromElem, toElem)
+		}
+		return false
+	}
+	return from.Equal(to)
+}
+
+// listParam returns t's element type when t is literally a list, without
+// looking through unions or unresolved constraints.
+//
+// listElem() does look through both, and answers a different question: "which
+// single list type does this TARGET offer". Satisfaction needs the plain one --
+// a union is decomposed by satisfies() itself, one member at a time, so a
+// union-aware accessor here would answer for the wrong type.
+func listParam(t Type) (Type, bool) {
+	if t.Code == CodeList && len(t.Params) == 1 {
+		return t.Params[0], true
+	}
+	return Type{}, false
+}
+
+// scalarDestinations is RFC 0005's destination-order table, restated by
+// openjd-specifications#175. Two principles fix the order, and both matter:
+// a value stays within its own kind before it becomes text, and a conversion
+// that CAN FAIL is attempted before one that always succeeds -- a universal
+// fallback tried first would make every destination after it unreachable.
+//
+// The range_expr row's list[int] destination is not here: non-list destinations
+// come before list ones, so it is attempted by coerce() after this table is
+// exhausted, which is why a target offering both string and list[int] gets the
+// string.
+func scalarDestinations(from Code) []Code {
+	switch from {
+	case CodeBool:
+		return []Code{CodeString}
+	case CodeInt:
+		return []Code{CodeFloat, CodeString}
+	case CodeFloat:
+		return []Code{CodeInt, CodeString}
+	case CodeString:
+		// int before float because every string that parses as an int also
+		// parses as a float; bool and range_expr are selective parses; path
+		// last because every string is a valid path.
+		return []Code{CodeInt, CodeFloat, CodeBool, CodeRangeExpr, CodePath}
+	case CodePath:
+		return []Code{CodeString}
+	case CodeRangeExpr:
+		return []Code{CodeString}
+	}
+	return nil
+}
+
+// convertScalar performs one destination's conversion, or reports that this
+// destination does not take the value. A failure here is not fatal: coerce()
+// tries the next destination, and only an exhausted list is an error.
+func convertScalar(v Value, to Code) (Value, error) {
+	switch to {
+	case CodeString:
+		return String(v.String()), nil
+	case CodePath:
+		return Value{Type: TPath, s: v.AsStr()}, nil
+	case CodeInt:
+		return toInt(v)
+	case CodeFloat:
+		return toFloat(v)
+	case CodeBool:
+		if v.Type.Code != CodeString {
+			return Value{}, fmt.Errorf("%s %w to bool", v.Type, errNotCoercible)
+		}
+		return boolFromString(v.AsStr())
+	case CodeRangeExpr:
+		if v.Type.Code != CodeString {
+			return Value{}, fmt.Errorf("%s %w to range_expr", v.Type, errNotCoercible)
+		}
+		return RangeExpr(v.AsStr())
+	}
+	return Value{}, fmt.Errorf("%s %w to %s", v.Type, errNotCoercible, to)
+}
+
+// coerceByDestination runs step 2 of RFC 0005's coercion on a scalar result:
+// each destination the target offers, in the table's order, first success wins.
+// A destination that fails is not an error so long as a later one succeeds.
+//
+// The three results are distinct and the caller needs all three. ok reports a
+// conversion; a nil error with ok false means the target offered this value no
+// scalar destination at all, so another rule (the list ones) may still apply; a
+// non-nil error means every offered destination was attempted and failed, and
+// that error is the LAST one's, which is the most specific thing there is to
+// say. Returning a generic "cannot be coerced" there would throw away
+// boolFromString's own message for a string that is not a bool spelling.
+func coerceByDestination(v Value, target Type) (Value, bool, error) {
+	var lastErr error
+	for _, to := range scalarDestinations(v.Type.Code) {
+		// nulltype, type variables, noreturn and unresolved contribute no
+		// destination; includes() answers this for the scalar codes in the
+		// table because none of them carries type parameters.
+		if !includes(target, to) {
+			continue
+		}
+		out, err := convertScalar(v, to)
+		if err == nil {
+			return out, true, nil
+		}
+		lastErr = err
+	}
+	return Value{}, false, lastErr
+}
+
+// coercibleToTarget is the TYPE-level twin of coerce(): it answers whether a
+// result of type from could reach target under RFC 0005's two steps, without
+// converting anything and without a value to convert.
+//
+// It is deliberately NOT coercible(). The specification keeps two mechanisms
+// apart and #175 changed only one of them: target-type coercion (this one, the
+// one a template FIELD applies to an expression's result) versus the coercion
+// that resolves a function call and promotes 1 to 1.0 in "1 + 2.0" (coercible,
+// promotable, shape.go). Routing call promotion through the destination table
+// would make dispatch depend on a target the caller never supplied, so the two
+// predicates stay separate even though they overlap heavily.
+func coercibleToTarget(from, to Type) bool {
+	if satisfies(from, to) {
+		return true
+	}
+	// Unresolved is transparent on both sides: what a placeholder can reach is
+	// decided by its constraint, and a target that is itself unresolved
+	// constrains no more tightly than its constraint does.
+	if c, ok := unresolvedConstraint(from); ok {
+		return coercibleToTarget(c, to)
+	}
+	if c, ok := unresolvedConstraint(to); ok {
+		return coercibleToTarget(from, c)
+	}
+	// A union SOURCE is usable only where every member would be: it is some one
+	// of its members, decided at runtime, so a target that would reject any one
+	// of them cannot safely receive it.
+	if from.Code == CodeUnion {
+		for _, m := range from.Params {
+			if !coercibleToTarget(m, to) {
+				return false
+			}
+		}
+		return true
+	}
+	// null reaches only a target that already admits it; no conversion produces
+	// null, so nulltype is never a destination.
+	if from.Code == CodeNull {
+		return includes(to, CodeNull)
+	}
+	for _, d := range scalarDestinations(from.Code) {
+		if includes(to, d) {
+			return true
+		}
+	}
+	return hasListDestination(from, to)
+}
+
+// hasListDestination is coercibleToTarget's list half, split out to keep each
+// function inside the complexity budget. It answers the same question one level
+// down: does the target offer a list destination this type could reach?
+func hasListDestination(from, to Type) bool {
+	// range_expr -> list[int] is accepted exactly when a list[int] value would
+	// satisfy the destination, and it is the only list destination a non-list
+	// source has.
+	if from.Code == CodeRangeExpr {
+		for _, elem := range listDestinations(to) {
+			if satisfies(TInt, elem) {
+				return true
+			}
+		}
+		return false
+	}
+	srcElem, ok := listParam(from)
+	if !ok {
+		return false
+	}
+	for _, elem := range listDestinations(to) {
+		// list[nulltype] -> list[T] for any T: the empty list literal has no
+		// element that could fail, so every list destination takes it.
+		if srcElem.Code == CodeNull || coercibleToTarget(srcElem, elem) {
+			return true
+		}
+	}
+	return false
+}
+
+// narrowedUnionConstraint is narrowedConstraint's existential half: each member
+// that can reach the target contributes what it would become, and the ones that
+// cannot are discarded rather than failing the whole coercion. Coercing
+// unresolved[int | string] to an int target therefore yields unresolved[int].
+func narrowedUnionConstraint(from, target Type) (Type, bool) {
+	var out []Type
+	for _, m := range from.Params {
+		if satisfies(m, target) {
+			out = append(out, m)
+			continue
+		}
+		if n, ok := narrowedConstraint(m, target); ok {
+			out = append(out, n)
+		}
+	}
+	if len(out) == 0 {
+		return Type{}, false
+	}
+	return UnionOf(out...), true
+}
+
+// narrowedConstraint is the type-level half of RFC 0005's "Coercion of
+// Unresolved Values": what a PLACEHOLDER's constraint becomes when it is
+// coerced, given that there is no payload to decide which destination wins.
+//
+// It narrows to the UNION of every destination with a type-level rule rather
+// than betting on one, because the invariant the specification states has two
+// halves and a guess breaks the second: the narrowed constraint must satisfy
+// the target, AND the concrete result's type must satisfy the narrowed
+// constraint. unresolved[float] against "int | string" narrows to
+// unresolved[int | string] -- a 3.0 payload takes float->int and a 3.5 payload
+// fails it and falls through to string, and both outcomes lie inside that.
+//
+// A union CONSTRAINT is existential, and this is the one place where a union on
+// the source side does not mean "every member must clear the bar": a constraint
+// is a set of possibilities, not a value, so members that cannot coerce are
+// discarded rather than failing the whole thing. coercibleToTarget's own
+// union-source rule is the opposite for the opposite reason -- a union-typed
+// VALUE is some one of its members, chosen at runtime, so a target that would
+// reject any one of them cannot safely receive it.
+func narrowedConstraint(from, target Type) (Type, bool) {
+	if from.Code == CodeUnion {
+		return narrowedUnionConstraint(from, target)
+	}
+	var dests []Type
+	for _, d := range scalarDestinations(from.Code) {
+		if includes(target, d) {
+			dests = append(dests, Type{Code: d})
+		}
+	}
+	if from.Code == CodeRangeExpr {
+		for _, elem := range listDestinations(target) {
+			if satisfies(TInt, elem) {
+				// Materializing a range only ever produces a list[int], so the
+				// constraint narrows to that and not to the destination.
+				dests = append(dests, ListOf(TInt))
+				break
+			}
+		}
+	}
+	if srcElem, ok := listParam(from); ok {
+		for _, elem := range orderedListDestinations(srcElem, target) {
+			if srcElem.Code == CodeNull || coercibleToTarget(srcElem, elem) {
+				dests = append(dests, ListOf(elem))
+			}
+		}
+	}
+	if len(dests) == 0 {
+		return Type{}, false
+	}
+	return UnionOf(dests...), true
+}
+
+// listDestinations returns the element type of every list the target offers, in
+// the target's own normalized member order -- which RFC 0005 defines (type
+// parameters sorted alphabetically, nulltype last), so it is a stated order and
+// not this function's choice.
+func listDestinations(target Type) []Type {
+	switch target.Code {
+	case CodeUnresolved:
+		if c, ok := unresolvedConstraint(target); ok {
+			return listDestinations(c)
+		}
+	case CodeUnion:
+		var out []Type
+		for _, m := range target.Params {
+			out = append(out, listDestinations(m)...)
+		}
+		return out
+	case CodeList:
+		if len(target.Params) == 1 {
+			return []Type{target.Params[0]}
+		}
+	}
+	return nil
+}
+
+// orderedListDestinations is the list[S] row of RFC 0005's destination table:
+// "list destinations in S's order, applied to their element types", so
+// list[float] against "list[int] | list[string]" attempts list[int] first.
+//
+// The sort is STABLE and unranked destinations keep their normalized position,
+// which is what makes the empty list work without a second rule: list[nulltype]
+// has no destination order of its own (scalarDestinations(nulltype) is empty),
+// so every candidate is unranked and the union's normalized member order stands
+// -- exactly what the specification says the empty list's nominal element type
+// follows.
+func orderedListDestinations(srcElem, target Type) []Type {
+	cands := listDestinations(target)
+	order := scalarDestinations(srcElem.Code)
+	rank := func(t Type) int {
+		for i, c := range order {
+			if t.Code == c {
+				return i
+			}
+		}
+		return len(order)
+	}
+	sort.SliceStable(cands, func(i, j int) bool { return rank(cands[i]) < rank(cands[j]) })
+	return cands
+}
+
+// convertListTo performs one list destination's elementwise conversion. A
+// failure is that destination's, not the coercion's: the caller tries the next.
+func convertListTo(v Value, elem Type) (Value, error) {
+	elems := v.AsList()
+	if err := checkElementCount(len(elems)); err != nil {
+		return Value{}, err
+	}
+	out := make([]Value, len(elems))
+	for i, e := range elems {
+		converted, err := coerce(e, elem)
+		if err != nil {
+			return Value{}, fmt.Errorf("element %d: %w", i, err)
+		}
+		out[i] = converted
+	}
+	return List(elem, out), nil
+}
+
+// coerceByListDestination runs the list destinations, after every scalar one has
+// been tried and failed. The three results mean what coerceByDestination's do.
+func coerceByListDestination(v Value, target Type) (Value, bool, error) {
+	// range_expr -> list[int] is the one list conversion from a non-list source,
+	// and it is accepted exactly when a list[int] value would satisfy the
+	// destination: list[int], list[any] and list[int | string], but not
+	// list[float] or list[string]. Implicit rules do not chain, so the
+	// materialized list is not widened element-wise afterwards.
+	if v.Type.Code == CodeRangeExpr {
+		for _, elem := range listDestinations(target) {
+			if !satisfies(TInt, elem) {
+				continue
+			}
+			ints, err := rangeInts(v)
+			if err != nil {
+				return Value{}, false, err
+			}
+			return List(TInt, intValues(ints)), true, nil
+		}
+		return Value{}, false, nil
+	}
+	srcElem, ok := listParam(v.Type)
+	if !ok {
+		return Value{}, false, nil
+	}
+	var lastErr error
+	for _, elem := range orderedListDestinations(srcElem, target) {
+		out, err := convertListTo(v, elem)
+		if err == nil {
+			return out, true, nil
+		}
+		lastErr = err
+	}
+	return Value{}, false, lastErr
+}
+
 // errNotCoercible is the sentinel behind every "cannot be coerced" report, so a
 // caller can distinguish an inapplicable conversion from a conversion that
 // applied and then failed on the value.
@@ -285,11 +701,18 @@ func Coerce(v Value, target Type) (Value, error) { return coerce(v, target) }
 // plain error and the evaluator attaches the offset of the construct that
 // failed.
 func coerce(v Value, target Type) (Value, error) {
-	if v.Type.Equal(target) || target.Code == CodeAny {
-		return v, nil
-	}
 	if v.IsUnresolved() {
 		return coerceUnresolved(v, target)
+	}
+	// Step 1, satisfaction: a result whose type the target already admits is
+	// used UNCHANGED, and step 2 is never reached for it. This subsumes three
+	// carve-outs the older reading needed separately -- the Equal/any early
+	// return, directUnionMember, and coerceList's "the target admits the list
+	// without naming an element type" branch -- and it fixes what they got
+	// wrong between them: a list[int] against a list[any] target kept its own
+	// list[int] type here only by accident of which branch caught it first.
+	if satisfies(v.Type, target) {
+		return v, nil
 	}
 	if c, ok := unresolvedConstraint(target); ok {
 		return coerce(v, c)
@@ -312,189 +735,72 @@ func coerce(v Value, target Type) (Value, error) {
 	// and listElem reports a union naming two DIFFERENT list types as not
 	// list-shaped at all, which is why "[1.0, 2.0]" was rejected by the target
 	// "list[float] | list[int]" that literally names its type.
-	if directUnionMember(target, v.Type) {
-		return v, nil
+	// Step 2, conversion, for a scalar result: the destination table, in order.
+	// It runs before the list branch because RFC 0005 puts every non-list
+	// destination ahead of every list one -- which is what makes a range_expr
+	// against a target offering both string and list[int] become the string,
+	// and the list[int] destination unreachable there.
+	out, ok, convErr := coerceByDestination(v, target)
+	if ok {
+		return out, nil
 	}
-	// The three list rules of section 1.2.3: elementwise conversion, the empty
-	// list, and range_expr -> list[int].
-	//
-	// The gate is on the SOURCE, not on either side. A list-shaped TARGET alone
-	// is not enough: a plain scalar reaching a target that merely CONTAINS a list
-	// type — "T? | list[T]", which section 1.3.2 makes the target of every
-	// template "args" item, so it is the first shape a caller will construct —
-	// has no list conversion to perform at all and belongs on the scalar path
-	// below. Sending it here instead reached coerceList's AsList() and PANICKED.
-	// range_expr is the one non-list source with a list conversion, and only when
-	// the target really is list-shaped; a range_expr against a string target is
-	// section 1.2.3's range_expr -> string rule, which is the scalar path's.
-	_, srcIsList := listElem(v.Type)
-	dstElem, dstIsList := listElem(target)
-	if srcIsList || (v.Type.Code == CodeRangeExpr && dstIsList) {
-		if !coercible(v.Type, target) {
-			return Value{}, fmt.Errorf("%s %w to %s", v.Type, errNotCoercible, target)
-		}
-		return coerceList(v, target, dstElem, dstIsList)
+	if convErr != nil {
+		return Value{}, convErr
 	}
-	// The general applicability check, with a direct-membership carve-out:
-	// coercible alone is too strict here because it deliberately reports false
-	// for a scalar that is already a direct (if ambiguous) member of a union
-	// target — that case needs no conversion at all, which is exactly why
-	// coercible refuses it. targetScalarCode alone is too permissive: its
-	// final catch-all resolves "which code to become" without ever asking
-	// whether that direction is legal, which let bool/int/float -> path reach
-	// AsStr() and panic. This keeps every real conversion validated by the
-	// already-vetted coercible/scalarCoercible pair.
-	if !includes(target, v.Type.Code) && !coercible(v.Type, target) {
-		return Value{}, fmt.Errorf("%s %w to %s", v.Type, errNotCoercible, target)
+	// The list destinations, attempted only after every scalar one, because
+	// RFC 0005 puts the whole non-list group first. The gate is on the SOURCE:
+	// a plain scalar reaching a target that merely CONTAINS a list type --
+	// "T? | list[T]", which section 1.3.2 makes the target of every template
+	// "args" item -- has no list conversion to perform, and sending it here
+	// used to reach AsList() and PANIC. range_expr is the one non-list source
+	// with a list destination.
+	out, ok, listErr := coerceByListDestination(v, target)
+	if ok {
+		return out, nil
 	}
-	return coerceScalar(v, target)
+	if listErr != nil {
+		return Value{}, listErr
+	}
+	return Value{}, fmt.Errorf("%s %w to %s", v.Type, errNotCoercible, target)
 }
 
 // coerceUnresolved coerces a PLACEHOLDER, which has no value to convert.
 // Coercing one narrows its constraint and it stays a placeholder — which is
 // what lets a type check proceed through a coercion boundary.
 func coerceUnresolved(v Value, target Type) (Value, error) {
-	// The direct-membership carve-out, the exact counterpart of coerce()'s own
-	// (directUnionMember, below), and missing here until EXPR sub-project
-	// E4b's whole-branch review. coercible answers "does a CONVERSION apply"
-	// and is pinned false for a type a union target already admits unchanged,
-	// so asking it alone made a PLACEHOLDER strictly harder to coerce than a
-	// concrete value of the very same type: coerce() reaches
-	// directUnionMember before it ever consults coercible, and a concrete
-	// string against "int | list[int] | range_expr | string" therefore passed
-	// while unresolved[string] against the identical target was rejected.
+	// Step 1 applies to a PLACEHOLDER too, and RFC 0005 says what it leaves
+	// behind: "Satisfaction leaves the value alone, so its constraint keeps the
+	// source type" -- an unresolved[list[int]] against a list[any] target stays
+	// unresolved[list[int]] rather than widening, matching the concrete
+	// list[int] that would be returned unchanged.
 	//
-	// Phase 1 is exactly where that asymmetry bites: every job parameter is an
-	// unresolved placeholder at template-upload time (symbolsFor, exprcheck.go),
-	// so section 1.3.12's four-member INT range union — the first target in
-	// this codebase with more than one scalar member — rejected
-	// range: "{{Param.Frames}}" at upload and then accepted the identical
-	// expression at submit once Frames was bound. Reported at review as
-	// "declaring EXPR removes base-spec capability at this field".
-	//
-	// Narrowing to the whole union (below) rather than to the member is the
-	// same thing every other success here does: a placeholder carries a
-	// constraint, not a decision.
-	if c, ok := unresolvedConstraint(v.Type); ok && directUnionMember(target, c) {
-		return Unresolved(target), nil
-	}
-	if !coercible(v.Type, target) {
-		return Value{}, fmt.Errorf("%s %w to %s", v.Type, errNotCoercible, target)
+	// This subsumes the directUnionMember carve-out that stood here, and it is
+	// the same asymmetry that carve-out was added (in E4b's whole-branch review)
+	// to close: coerce() reaches satisfaction before it ever consults coercible,
+	// so asking coercible alone made a placeholder strictly harder to coerce
+	// than a concrete value of the very same type. Phase 1 is where that bites,
+	// because every job parameter is a placeholder at template-upload time, and
+	// section 1.3.12's four-member INT range union is the first target here with
+	// more than one scalar member: range: "{{Param.Frames}}" was rejected at
+	// upload and the identical expression accepted at submit.
+	if c, ok := unresolvedConstraint(v.Type); ok && satisfies(c, target) {
+		return v, nil
 	}
 	if target.Code == CodeUnresolved {
+		if !coercibleToTarget(v.Type, target) {
+			return Value{}, fmt.Errorf("%s %w to %s", v.Type, errNotCoercible, target)
+		}
 		return Value{Type: target}, nil
 	}
-	return Unresolved(target), nil
-}
-
-// directUnionMember reports whether target is a union that names t exactly as
-// one of its own members, looking through an unresolved constraint.
-//
-// This is deliberately NOT coercible's question. coercible answers "does a
-// conversion apply", and its own tests pin it to false for a type the target
-// already admits unchanged — coercible(int, "float | int") is false precisely
-// because nothing needs converting. That is the answer coerce() needs here too,
-// with the opposite consequence: nothing to convert means pass the value
-// through, not refuse it.
-func directUnionMember(target, t Type) bool {
-	if c, ok := unresolvedConstraint(target); ok {
-		return directUnionMember(c, t)
-	}
-	return target.Code == CodeUnion && containsType(target.Params, t)
-}
-
-// coerceScalar performs a scalar conversion whose applicability coercible has
-// already confirmed. It resolves which scalar code to aim for, then converts.
-func coerceScalar(v Value, target Type) (Value, error) {
-	to, ok := targetScalarCode(v, target)
+	c, ok := unresolvedConstraint(v.Type)
 	if !ok {
 		return Value{}, fmt.Errorf("%s %w to %s", v.Type, errNotCoercible, target)
 	}
-	if to == v.Type.Code {
-		return v, nil
-	}
-	switch to {
-	case CodeString:
-		return String(v.String()), nil
-	case CodePath:
-		return Value{Type: TPath, s: v.AsStr()}, nil
-	case CodeInt:
-		return toInt(v)
-	case CodeFloat:
-		return toFloat(v)
-	}
-	return Value{}, fmt.Errorf("%s %w to %s", v.Type, errNotCoercible, target)
-}
-
-// coerceList performs the list conversions of section 1.2.3, having already
-// confirmed with coercible that the conversion is legal.
-//
-// dstElem/dstIsList are passed in rather than recomputed: the caller needed them
-// to decide this branch applied at all.
-func coerceList(v Value, target, dstElem Type, dstIsList bool) (Value, error) {
-	// The invariant this function is written against, stated where it is relied
-	// upon: only a list source or a range_expr source has a list conversion, and
-	// the AsList() below is unchecked precisely because of it. A scalar arriving
-	// here used to panic there rather than being reported, so the guard is an
-	// error and not an assertion.
-	if _, ok := listElem(v.Type); !ok && v.Type.Code != CodeRangeExpr {
+	narrowed, ok := narrowedConstraint(c, target)
+	if !ok {
 		return Value{}, fmt.Errorf("%s %w to %s", v.Type, errNotCoercible, target)
 	}
-	// range_expr -> list[int]: expand, then convert elementwise in case the
-	// target's element type is not int (list[float], say).
-	if v.Type.Code == CodeRangeExpr {
-		ints, err := rangeInts(v)
-		if err != nil {
-			return Value{}, err
-		}
-		return coerceList(List(TInt, intValues(ints)), target, dstElem, dstIsList)
-	}
-	// A list value whose type already satisfies the target needs no conversion.
-	// listElem's element-aware comparison is what makes this safe where the
-	// scalar path's code-only includes() would not be: it cannot confuse a
-	// list[string] with a list[int] inside a union target.
-	if !dstIsList {
-		// The target admits the list without naming an element type — TAny, or
-		// a union in which the list is a direct member.
-		return v, nil
-	}
-	elems := v.AsList()
-	if err := checkElementCount(len(elems)); err != nil {
-		return Value{}, err
-	}
-	out := make([]Value, len(elems))
-	for i, elem := range elems {
-		converted, err := coerce(elem, dstElem)
-		if err != nil {
-			return Value{}, fmt.Errorf("element %d: %w", i, err)
-		}
-		out[i] = converted
-	}
-	return List(dstElem, out), nil
-}
-
-// targetScalarCode picks the scalar code v should become. The conditional rules
-// of section 1.2.3 win over the single-scalar catch-all where they apply, in the
-// same order coercibleConditional checks them.
-func targetScalarCode(v Value, target Type) (Code, bool) {
-	switch v.Type.Code {
-	case CodeInt:
-		if includes(target, CodeFloat) && !includes(target, CodeInt) {
-			return CodeFloat, true
-		}
-	case CodePath:
-		if includes(target, CodeString) && !includes(target, CodePath) {
-			return CodeString, true
-		}
-	case CodeRangeExpr:
-		if includes(target, CodeString) && !includes(target, CodeRangeExpr) {
-			return CodeString, true
-		}
-	}
-	if includes(target, v.Type.Code) {
-		return v.Type.Code, true
-	}
-	return singleScalarTarget(target)
+	return Unresolved(narrowed), nil
 }
 
 // toInt implements float/string -> int, which section 1.2.3 requires to be

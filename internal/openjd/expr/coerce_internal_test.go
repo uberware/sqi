@@ -34,6 +34,15 @@ func TestIncludes(t *testing.T) {
 	}
 }
 
+// TestCoercible covers the CALL-RESOLUTION predicate, not target-type coercion.
+//
+// The distinction is new with openjd-specifications#175 and the table below
+// reads oddly without it: "int stays int when the target admits int" expects
+// FALSE, which is the right answer to "does a conversion apply" and the wrong
+// answer to "can an int reach this target" (it can -- by satisfying it, which
+// is TestCoerceDestinationOrder's first case). coercible() answers the former
+// for promotable()/shape.go, and RFC 0005 explicitly leaves that mechanism
+// alone; coercibleToTarget() answers the latter.
 func TestCoercible(t *testing.T) {
 	tests := []struct {
 		name string
@@ -272,7 +281,12 @@ func TestCoerce_Rejected(t *testing.T) {
 		{"non-numeric string to float", String("nothing"), "float", "cannot be parsed"},
 		// Not coercible at all.
 		{"int to bool", Int(1), "bool", "cannot be coerced"},
-		{"string to bool", String("true"), "bool", "cannot be coerced"},
+		// MOVED by openjd-specifications#175: string -> bool is now one of the
+		// destination table's conversions, taking the same case-insensitive
+		// spellings as the explicit bool() of RFC 0006, so String("true") is no
+		// longer rejected -- see TestCoerceDestinationOrder. What is still
+		// rejected is a string that is not one of those spellings.
+		{"an unspellable string to bool", String("maybe"), "bool", "cannot convert"},
 		{"null to a scalar", Null(), "int", "cannot be coerced"},
 		{"int to a list", Int(1), "list[int]", "cannot be coerced"},
 		// Regression: coerceScalar's switch has a case CodePath that calls
@@ -500,10 +514,15 @@ func TestCoercibleMatchesCoerce(t *testing.T) {
 				// element-aware one: it is what admits a list value that IS one
 				// of a union target's members, which includes() above cannot
 				// answer for exactly the reason the paragraph above gives.
-				canDo := coercible(v.Type, target) || v.Type.Equal(target) ||
-					target.Code == CodeAny ||
-					(v.Type.Code != CodeList && includes(target, v.Type.Code)) ||
-					directUnionMember(target, v.Type)
+				// UPDATED for openjd-specifications#175: the predicate this
+				// invariant is stated against is coercibleToTarget, the
+				// type-level twin of coerce(), and the pile of carve-outs that
+				// stood here -- Equal, any, includes-by-code, directUnionMember
+				// -- were the old reading's way of spelling SATISFACTION. They
+				// are one call now, and coercible() is no longer part of this
+				// invariant at all: it belongs to call-argument promotion, a
+				// separate mechanism #175 explicitly does not touch.
+				canDo := coercibleToTarget(v.Type, target)
 				got, coerceErr := coerce(v, target)
 				switch {
 				case canDo && coerceErr != nil:
@@ -567,36 +586,77 @@ func resultTypeAdmitted(got Value, target Type) bool {
 // scalar target AND a list element type, so asking the scalar question first
 // would answer for a list value with the wrong rule — "is a list a string or a
 // float", trivially no — and shadow the list rule coerce actually applied.
-func valueMayNotFit(v Value, target Type) bool {
-	if _, srcIsList := listElem(v.Type); !srcIsList {
-		if to, ok := singleScalarTarget(target); ok {
-			switch to {
-			case CodeInt, CodeFloat:
-				return v.Type.Code == CodeString || v.Type.Code == CodeFloat
-			}
-		}
+// fallibleDestination reports whether converting from a value of type from to
+// destination d can fail on the VALUE rather than on the types -- "3.75" to int,
+// "maybe" to bool. Everything reaches string, and every string reaches path, so
+// those two never fail.
+func fallibleDestination(from, d Code) bool {
+	switch d {
+	case CodeString:
 		return false
-	}
-	// Section 1.2.3's list rule, "list[T] -> list[U] when each element T can be
-	// coerced to U", performs the very same per-element scalar conversion the
-	// bare-scalar case above already covers — so a list conversion can fail on
-	// a value for exactly the reason a scalar one can: an element that is a
-	// string/float landing in a list[int]/list[float] target may not fit
-	// (float 1.5 -> int, string "a" -> int/float), even though coercible
-	// correctly permits the type-level list[T] -> list[U] conversion. This is
-	// the same exception as the scalar case, just applied elementwise; it is
-	// not a new kind of failure.
-	if elemFrom, srcOK := listElem(v.Type); srcOK {
-		if elemTo, dstOK := listElem(target); dstOK {
-			if to, ok := singleScalarTarget(elemTo); ok {
-				switch to {
-				case CodeInt, CodeFloat:
-					return elemFrom.Code == CodeString || elemFrom.Code == CodeFloat
-				}
-			}
-		}
+	case CodePath:
+		return false
+	case CodeInt:
+		return from == CodeString || from == CodeFloat
+	case CodeFloat, CodeBool, CodeRangeExpr:
+		return from == CodeString
 	}
 	return false
+}
+
+func valueMayNotFit(v Value, target Type) bool {
+	if _, srcIsList := listElem(v.Type); !srcIsList {
+		// RESTATED for openjd-specifications#175. coerce() now walks the
+		// destination table and fails only when EVERY destination the target
+		// offers has failed, so the type-level predicate and the value-level
+		// one can disagree only when every offered destination is a fallible
+		// conversion. One infallible destination anywhere in the list (any
+		// value reaches string; any string reaches path) means coerce() had a
+		// way through and a failure is a real disagreement.
+		//
+		// The old form asked singleScalarTarget, which is the wrong question
+		// now: it gives up when a union offers two scalars, which is precisely
+		// the case #175 made coercible.
+		offered := 0
+		for _, d := range scalarDestinations(v.Type.Code) {
+			if !includes(target, d) {
+				continue
+			}
+			offered++
+			if !fallibleDestination(v.Type.Code, d) {
+				return false
+			}
+		}
+		return offered > 0
+	}
+	// The list rule performs the very same per-element conversion the bare-scalar
+	// case above already covers, so a list conversion fails on a value for
+	// exactly the reason a scalar one does -- and, since #175, over exactly the
+	// same set of destinations: every list destination the target offers, each
+	// judged by its ELEMENT type. One list destination whose elements convert
+	// infallibly (list[string] takes anything) means coerce() had a way through.
+	elemFrom, srcOK := listParam(v.Type)
+	if !srcOK {
+		return false
+	}
+	// The empty list literal has no element that could fail, so no list
+	// destination can reject it on a value.
+	if elemFrom.Code == CodeNull {
+		return false
+	}
+	offered := 0
+	for _, elemTo := range listDestinations(target) {
+		for _, d := range scalarDestinations(elemFrom.Code) {
+			if !includes(elemTo, d) {
+				continue
+			}
+			offered++
+			if !fallibleDestination(elemFrom.Code, d) {
+				return false
+			}
+		}
+	}
+	return offered > 0
 }
 
 // TestCoerceUnresolved_DirectUnionMember pins the carve-out coerceUnresolved
@@ -626,11 +686,17 @@ func TestCoerceUnresolved_DirectUnionMember(t *testing.T) {
 		{"int constraint, 4-member range union", TInt, rangeField, true},
 		{"range_expr constraint, 4-member range union", TRangeExpr, rangeField, true},
 		{"list[int] constraint, 4-member range union", ListOf(TInt), rangeField, true},
-		// Not a member and not coercible into one: bool has no conversion to
-		// int, string is ambiguous with two scalar members present, and there
-		// is no bool rule at all.
-		{"bool constraint, 4-member range union", TBool, rangeField, false},
-		{"float constraint, 4-member range union", TFloat, rangeField, false},
+		// CHANGED by openjd-specifications#175. These two used to be errors,
+		// for a reason that was true of the old wording and is not of the new:
+		// "string is ambiguous with two scalar members present". Ambiguity is
+		// exactly what the destination table resolves -- bool's only
+		// destination is string, and float's are int then string, all of which
+		// this union offers -- so both now coerce, and a template field typed
+		// like section 1.3.12's INT range accepts a placeholder of either.
+		// This is acceptance-widening only: no target that used to take a
+		// placeholder stops taking one.
+		{"bool constraint, 4-member range union", TBool, rangeField, true},
+		{"float constraint, 4-member range union", TFloat, rangeField, true},
 		// The narrower, single-scalar unions that already worked keep working
 		// through coercible's own catch-all, not through the new carve-out.
 		{"string constraint, string? | list[string]", TString, UnionOf(OptionalOf(TString), ListOf(TString)), true},

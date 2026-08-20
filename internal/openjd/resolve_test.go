@@ -1367,3 +1367,49 @@ func TestResolveParameterSpaceParams_NonLoneRangeExprEmbeddedRangeExprValue(t *t
 		})
 	}
 }
+
+// TestResolveParameterSpaceParams_NonRangeTextIsRejectedAtResolve pins where a
+// scalar that COERCES into an INT range field but does not spell a range is
+// caught.
+//
+// openjd-specifications#175 moved that boundary. The whole-field target for an
+// INT parameter is "int | string | range_expr | list[int]", and under the old
+// coercion rules a bool reached none of those members, so "{{ true }}" was
+// rejected by the expression CHECKER at upload. Under the merged rules bool's
+// destination is string, the target offers string, and the checker now accepts
+// it -- exactly as it has always accepted "{{ 'abc' }}", which is equally not a
+// range.
+//
+// So the rejection has to still happen further along. It does, and NOT where
+// the first draft of this test looked: ResolveParameterSpaceParams substitutes
+// the expression and leaves the TEXT in RangeExpr without parsing it -- it
+// accepts "{{ true }}" and "{{ 'abc' }}" alike, and always has for the string.
+// The parse is ExpandParameterSpace's, through range.go's parseIntRangeExpr.
+// So the layering is: the checker rules on the TYPE, resolve substitutes the
+// TEXT, and expansion is the only place that reads it. This test asserts the
+// last of those, for both scalars, so the boundary #175 moved stays covered.
+func TestExpandParameterSpace_NonRangeTextIsRejected(t *testing.T) {
+	for _, tc := range []struct {
+		name, body string
+	}{
+		{"a bool, which #175 made the checker accept", "{{ true }}"},
+		{"a string, which the checker has always accepted", "{{ 'abc' }}"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			tmpl := &openjd.JobTemplate{Extensions: []string{"EXPR"}}
+			ps := &openjd.StepParameterSpace{
+				TaskParameterDefinitions: []openjd.TaskParamDefinition{
+					{Name: "P", Type: openjd.TaskParamTypeInt, RangeExpr: ptr(tc.body)},
+				},
+			}
+			resolved, errs := openjd.ResolveParameterSpaceParams(tmpl, nil, ps, nil)
+			if len(errs) != 0 {
+				t.Fatalf("ResolveParameterSpaceParams(%q) = %v; want it to substitute and defer", tc.body, errs)
+			}
+			tasks, err := openjd.ExpandParameterSpace(resolved)
+			if err == nil {
+				t.Fatalf("ExpandParameterSpace(%q) = %v with no error; want the text rejected", tc.body, tasks)
+			}
+		})
+	}
+}
