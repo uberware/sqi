@@ -98,12 +98,16 @@ func TestConformance_Templates(t *testing.T) {
 		results = append(results, conformance.RunCase(tc, state, data))
 	}
 
-	t.Logf("\n%s", conformance.FormatRollup(conformance.Rollup(results)))
-
+	// The baseline is loaded BEFORE the rollup is printed, because the rollup
+	// needs it: without it the summary cannot tell an adjudicated failure from
+	// a regression, and it used to call both "baselined".
 	baseline, err := conformance.LoadBaseline(baselinePath)
 	if err != nil {
 		t.Fatalf("load baseline: %v", err)
 	}
+
+	t.Logf("\n%s", conformance.FormatRollup(conformance.Rollup(results, baseline)))
+
 	regressions, stale, orphaned := conformance.DiffBaseline(results, baseline)
 
 	byID := map[string]conformance.Result{}
