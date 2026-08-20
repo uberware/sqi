@@ -243,12 +243,12 @@ func bindEmbeddedFileSymbols(files []EmbeddedFile, prefix string, syms expr.MapS
 // The restriction itself is the SPECIFICATION's: the wiki's FunctionLibrary
 // entry for with_host_context() is a library "with host-only functions like
 // apply_path_mapping() enabled"
-// (third_party/openjd-specifications/wiki/2026-02-Expression-Language.md:514).
+// (third_party/openjd-specifications/wiki/2026-02-Expression-Language.md:527).
 //
 // That "like" is the whole reason this is a SET rather than a name
 // comparison, and the specification is the only source needed for it. RFC
 // 0005's "Host-Context Function Availability" section
-// (third_party/openjd-specifications/rfcs/0005-expression-language.md:1022)
+// (third_party/openjd-specifications/rfcs/0005-expression-language.md:1163)
 // says the same thing at more length -- "Certain functions ... For example,
 // apply_path_mapping()" -- but that section exists ONLY in the RFC, which is
 // the proposal behind the specification and not the specification itself; do

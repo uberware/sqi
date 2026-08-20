@@ -66,3 +66,32 @@ EXPR/job_templates/3.6--let-host-context-symbols.yaml
 # first step, which references Job.Name and Step.Name from <StepTemplate>.let
 # and <StepScript>.let, is accepted; only the SimpleAction half is unreachable.
 EXPR/job_templates/7.3.1--job-step-name-in-step-let.yaml
+
+# 2026-08-19, submodule bump 42a1fb6 -> be0aefb: this fixture is NEW upstream,
+# added by openjd-specifications PR #172 ("do not cap <IntRangeExpr> expansion
+# at the list-form limit"), which also rewrote 3.4--max-range-items.yaml and
+# 3.4--too-many-range-items.invalid.yaml to use explicit LISTS of 1024 / 1025
+# values (both still pass here — only the new range-EXPRESSION case fails).
+#
+# The change is a base-spec acceptance widening: §3.4's "at most 1024 values"
+# now bounds the LIST form only, so `range: "1-5000"` — one <IntRangeExpr>
+# naming 5000 values — is valid where it previously was not. The bump also
+# added the normative sentence behind it, at
+# wiki/2023-09-Template-Schemas.md:1155: the number of values an <IntRangeExpr>
+# expands to "is not constrained by this specification", and an implementation
+# needing to bound Step size "is expected to do so with its own limit on the
+# Task count, not by constraining this expression". sqi already HAS those
+# count limits — maxTasksPerStep and maxTasksPerJob — which is what makes the
+# fix tractable, and also what makes it a policy decision rather than a typo. sqi applies the
+# cap to BOTH forms: taskParamValueCount (validate.go) counts a RangeExpr
+# arithmetically and hands the same maxTaskParamValues (1024) gate the count,
+# so the fixture is rejected on
+# `/steps/0/parameterSpace/taskParameterDefinitions/0/range: at most 1024
+# values are allowed per task parameter (got 5000)` — MEASURED, not inferred.
+#
+# Deliberately NOT fixed in passing. Lifting the cap for the expression form is
+# an acceptance change in internal/openjd — templates rejected today would start
+# producing tasks — and it lands on the same policy surface as maxTasksPerStep
+# and maxTasksPerJob, which is exactly the reasoning CLAUDE.md records for the
+# three intrange divergences. It wants its own decision, not a drive-by.
+base/job_templates/3.4--wide-int-range-expression.yaml
