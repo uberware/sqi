@@ -201,7 +201,7 @@ test-cover-html: test-cover ## Open HTML coverage report in the browser
 
 .PHONY: test-integration
 test-integration: ## Run integration tests (tagged 'integration')
-	go test $(TEST_FLAGS) -tags integration ./test/...
+	go test $(TEST_FLAGS) -tags integration -v ./test/...
 
 .PHONY: test-conformance
 test-conformance: ## Run the official OpenJD conformance suite (needs the pinned submodule)

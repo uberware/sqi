@@ -960,28 +960,39 @@ jobs:
           fi
           exit $missing
 
-  # ── Broker authentication integration ────────────────────────────────────────
-  # Runs the three broker-authentication integration tests: the default-config
-  # regression (a server and worker started with NO broker-auth configuration
-  # still register, lease, run a task to completion, and enroll nothing — the
-  # whole component must cost nothing when unused), and the two end-to-end
-  # proofs that the opt-in capability itself works (revocation disconnects and
-  # reclaims synchronously; a worker enrolled via a join token connects to an
-  # already-running broker with no restart). None of the three need Docker or
-  # any external service — they boot a real embedded server and, for the
-  # default-config regression, a real sqi-worker subprocess, entirely
-  # in-process, the same shape as the untagged tests `test` already runs.
-  # They are gated behind the `integration` build tag anyway (matching every
-  # other file in test/integration this suite shares a harness with), so
-  # nothing here runs as part of `make test-cover`.
+  # ── Integration suite (whole package) ────────────────────────────────────────
+  # Runs every file under test/integration/ via `make test-integration`, rather
+  # than naming individual tests in a -run regex the way the LDAP, OIDC, and
+  # isolation jobs below do. Those three name their tests because each needs
+  # its own runner matrix or container prerequisites; everything else in the
+  # package — broker auth, EXPR parameter binding and end-to-end execution,
+  # failure-reason propagation (both in-process and against a real worker
+  # binary), retry/auto-park behavior, and product retry-override submission —
+  # shares no such prerequisite, so a single whole-package run covers a new
+  # test the moment it is added instead of only if someone also remembers to
+  # list it in a job. `go build`s a real sqi-worker binary along the way (see
+  # worker_binary_test.go); no other tooling is required beyond Go itself.
   #
-  # IMPORTANT: a green `go test` here proves nothing on its own if the -run
-  # regex ever stops matching (a rename, a typo) — it would exit 0 having run
-  # zero tests. This job does not trust the exit code alone: it requires all
-  # three tests confirmed PASS by name, the same guard ldap-integration and
-  # isolation-integration use.
-  broker-auth-integration:
-    name: Broker auth integration
+  # LDAP, OIDC, and isolation tests live in this same package and this job
+  # exercises them too, but ubuntu-latest ships Docker so they are expected to
+  # run rather than skip; the LDAP and Keycloak images are pulled explicitly
+  # first so a registry hiccup fails here with a clear message instead of
+  # inside the test as a cold-pull timeout that would read as a skip. The
+  # isolation tests, in contrast, require running as root (see
+  # isolation-integration below) and are expected to skip on this ordinary
+  # runner — that is fine, and this job asserts nothing about them by name.
+  #
+  # IMPORTANT: a green `go test` here proves nothing on its own if the whole
+  # suite silently collected zero tests (a build-tag regression, a stray
+  # -run filter). This job does not trust the exit code alone: it requires a
+  # test named from every file in the package that has no dedicated CI job of
+  # its own — one exception is authfixture_test.go, which holds only helpers
+  # shared by ldap_test.go and oidc_test.go and declares no test function of
+  # its own to name. A confirmed-skip line for LDAP/OIDC/isolation does not
+  # fail the job; only a missing PASS among the required names, or a nonzero
+  # exit, does.
+  integration-tests:
+    name: Integration suite
     runs-on: ubuntu-latest
     needs: test
 
@@ -994,32 +1005,50 @@ jobs:
         with:
           go-version-file: go.mod
 
-      - name: Run broker auth integration tests
+      # Pulled explicitly for the same reason ldap-integration and
+      # oidc-integration below pull them: a registry problem fails here with a
+      # clear message rather than surfacing inside the test as a cold-pull
+      # timeout, which the test's own Docker-unavailable handling would read
+      # as an ordinary skip.
+      - name: Pull OpenLDAP image
+        run: docker pull osixia/openldap:1.5.0
+
+      - name: Pull Keycloak image
+        run: docker pull quay.io/keycloak/keycloak:26.0.7
+
+      - name: Run the integration suite
         run: |
           set +e
-          go test -tags integration -race -run \
-            'TestDefaultConfig_NoBrokerAuth|TestRevocation_DisconnectsAndReclaims|TestEnrollment_ConnectsToRunningBrokerWithoutRestart' \
-            -v -timeout 5m ./test/integration/ 2>&1 | tee broker-auth-output.log
+          make test-integration 2>&1 | tee integration-output.log
           status=${PIPESTATUS[0]}
           set -e
 
+          # One name from each file in test/integration/ that has no dedicated
+          # CI job of its own, so a build-tag or filter regression that let the
+          # suite silently collect zero tests cannot pass this job.
           expected=(
             TestDefaultConfig_NoBrokerAuth
             TestRevocation_DisconnectsAndReclaims
             TestEnrollment_ConnectsToRunningBrokerWithoutRestart
+            TestEXPRParamTypes_BindAndCarry
+            TestEXPRJobEndToEnd
+            TestTaskFailureReason_VisibleEndToEnd
+            TestWorkerBinaryStagingFailureReason
+            TestProductSubmit_RetryOverrides
+            TestAutoRetry_RetryThenSucceed
           )
           missing=0
           for name in "${expected[@]}"; do
-            if ! grep -q -- "--- PASS: $name" broker-auth-output.log; then
+            if ! grep -q -- "--- PASS: $name" integration-output.log; then
               echo "::error::$name did not pass"
               missing=1
             fi
           done
           if [ "$status" -ne 0 ] || [ "$missing" -ne 0 ]; then
-            echo "::error::broker auth integration tests did not all pass (exit=$status)."
+            echo "::error::the integration suite did not all pass (exit=$status)."
             exit 1
           fi
-          echo "Confirmed all ${#expected[@]}/3 named broker auth integration tests passed."
+          echo "Confirmed all ${#expected[@]} named integration tests passed, and the whole suite exited 0."
 
   # Runs the official OpenJD conformance suite (a pinned submodule under
   # third_party/) against internal/openjd. Tagged `conformance`, so it does not
