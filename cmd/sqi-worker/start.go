@@ -26,6 +26,7 @@ import (
 	workerconfig "github.com/uberware/sqi/internal/worker/config"
 	"github.com/uberware/sqi/internal/worker/diaglog"
 	workerdiscovery "github.com/uberware/sqi/internal/worker/discovery"
+	"github.com/uberware/sqi/internal/worker/enroll"
 	"github.com/uberware/sqi/internal/worker/executor"
 	"github.com/uberware/sqi/internal/worker/heartbeat"
 	"github.com/uberware/sqi/internal/worker/lease"
@@ -146,15 +147,14 @@ func runStart(cmd *cobra.Command, _ []string) error {
 	// all downstream log statements use the concrete URL.
 	cfg.NATS.URL = natsURL
 
-	// ── NATS connection ─────────────────────────────────────────
+	// ── Broker credential + NATS connection ──────────────────────
 	//
 	// Connect failure at boot is fatal. closedCh is closed by the
 	// NATS ClosedHandler when the connection permanently closes so we can
 	// detect unexpected disconnects after the initial handshake.
-	nc, natsClosed, err := natsclient.Connect(ctx, cfg.NATS, logger)
+	nc, natsClosed, err := connectToBroker(ctx, cfg, workerID, logger)
 	if err != nil {
-		// Boot-time connect failure is a fatal error.
-		return fmt.Errorf("nats connect: %w", err)
+		return err
 	}
 
 	// ── Diagnostic-log sink ─────────────────────────────────────
@@ -465,6 +465,51 @@ func checkRootAndLoadWorkerID(cfg workerconfig.WorkerConfig, logger *slog.Logger
 		return "", fmt.Errorf("load worker id: %w", err)
 	}
 	return workerID, nil
+}
+
+// connectToBroker loads or obtains this worker's nkey broker credential and
+// dials the broker with it. Extracted from [runStart] to keep that
+// function's cyclomatic complexity within the project limit.
+//
+// A missing credential (enroll.ErrNoCredential) is NOT immediately fatal:
+// this may be a farm that does not require worker authentication at all, in
+// which case the connect attempt below proceeds with no credential exactly
+// as it does today. Only when the broker actually refuses that connection is
+// authentication known to be required, and the operator gets a message
+// naming both remediations (obtain a token, or pre-provision a key) instead
+// of natsclient's generic rejection message, which assumes a credential
+// existed to be rejected in the first place.
+func connectToBroker(
+	ctx context.Context,
+	cfg workerconfig.WorkerConfig,
+	workerID string,
+	logger *slog.Logger,
+) (*nats.Conn, <-chan struct{}, error) {
+	seed, publicKey, err := enroll.EnsureCredential(ctx, enroll.Config{
+		WorkerID:       workerID,
+		CredentialFile: cfg.NATS.CredentialFile,
+		JoinToken:      cfg.NATS.JoinToken,
+		JoinTokenFile:  cfg.NATS.JoinTokenFile,
+		ServerURL:      cfg.NATS.ServerURL,
+	}, logger)
+	noCredential := errors.Is(err, enroll.ErrNoCredential)
+	if err != nil && !noCredential {
+		return nil, nil, fmt.Errorf("worker credential: %w", err)
+	}
+
+	nc, natsClosed, err := natsclient.Connect(ctx, cfg.NATS, seed, publicKey, logger)
+	if err != nil {
+		if noCredential && (errors.Is(err, nats.ErrAuthorization) || errors.Is(err, nats.ErrAuthExpired)) {
+			//nolint:staticcheck // ST1005: two-sentence operator-facing message, wording is pinned by the task spec
+			return nil, nil, fmt.Errorf(
+				"sqi-worker: this server requires worker authentication, but no credential was found at %s and no join token is configured.\n"+
+					"Obtain a token from an operator (`sqi-server worker token issue`) and set worker nats.join_token_file, or pre-provision a key with `sqi-worker keygen`.",
+				cfg.NATS.CredentialFile,
+			)
+		}
+		return nil, nil, fmt.Errorf("nats connect: %w", err)
+	}
+	return nc, natsClosed, nil
 }
 
 // loadAndValidateConfig resolves CLI flag overrides, loads the layered

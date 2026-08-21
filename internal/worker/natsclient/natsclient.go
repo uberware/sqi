@@ -15,7 +15,7 @@
 //
 // Typical usage:
 //
-//	nc, closedCh, err := natsclient.Connect(ctx, cfg.NATS, logger)
+//	nc, closedCh, err := natsclient.Connect(ctx, cfg.NATS, seed, publicKey, logger)
 //	if err != nil {
 //	    return fmt.Errorf("nats connect: %w", err)
 //	}
@@ -35,6 +35,7 @@ import (
 	"time"
 
 	nats "github.com/nats-io/nats.go"
+	"github.com/nats-io/nkeys"
 
 	workerconfig "github.com/uberware/sqi/internal/worker/config"
 )
@@ -66,18 +67,35 @@ const (
 //
 // Callers should select on closedCh to detect permanent disconnects that occur
 // outside of a planned shutdown sequence.
-func Connect(ctx context.Context, cfg workerconfig.NATSConfig, logger *slog.Logger) (*nats.Conn, <-chan struct{}, error) {
+//
+// seed and publicKey are the worker's nkey broker credential, obtained
+// separately (see internal/worker/enroll). They are taken as parameters
+// rather than folded into cfg so that a seed never sits in a config struct
+// that might get logged elsewhere. An empty seed connects with no
+// credential, which is correct on a farm that does not require worker
+// authentication; see buildOptions for how that case is distinguished from a
+// broker that actively rejects the connection.
+func Connect(ctx context.Context, cfg workerconfig.NATSConfig, seed []byte, publicKey string, logger *slog.Logger) (*nats.Conn, <-chan struct{}, error) {
 	// closedCh is closed by the ClosedHandler callback when the NATS connection
 	// permanently closes (MaxReconnects exhausted or explicit nc.Close() call).
 	closedCh := make(chan struct{})
 
-	opts, err := buildOptions(ctx, cfg, logger, closedCh)
+	opts, err := buildOptions(ctx, cfg, seed, publicKey, logger, closedCh)
 	if err != nil {
 		return nil, nil, fmt.Errorf("natsclient: build options: %w", err)
 	}
 
 	nc, err := nats.Connect(cfg.URL, opts...)
 	if err != nil {
+		// An authorization failure is FATAL and must never enter the
+		// reconnect-backoff loop: retrying a rejected credential produces a
+		// worker that never appears, with the reason buried in backoff. An
+		// unreachable server is the opposite — that is what backoff is for.
+		if errors.Is(err, nats.ErrAuthorization) || errors.Is(err, nats.ErrAuthExpired) {
+			return nil, nil, fmt.Errorf(
+				"natsclient: the broker rejected this worker's credential — it may have been revoked; re-enroll with a new join token: %w", err,
+			)
+		}
 		return nil, nil, fmt.Errorf("natsclient: connect %q: %w", cfg.URL, err)
 	}
 
@@ -119,8 +137,17 @@ func Drain(nc *nats.Conn, gracePeriod time.Duration, logger *slog.Logger) {
 
 // buildOptions assembles the nats.Option slice from WorkerNATSConfig.
 // closedCh is closed by the ClosedHandler when the connection permanently
-// closes so callers can detect unexpected disconnects.
-func buildOptions(ctx context.Context, cfg workerconfig.NATSConfig, logger *slog.Logger, closedCh chan struct{}) ([]nats.Option, error) {
+// closes so callers can detect unexpected disconnects. seed and publicKey,
+// when non-empty, add an nkey signing option so the connection authenticates
+// as this worker's broker credential.
+func buildOptions(
+	ctx context.Context,
+	cfg workerconfig.NATSConfig,
+	seed []byte,
+	publicKey string,
+	logger *slog.Logger,
+	closedCh chan struct{},
+) ([]nats.Option, error) {
 	opts := []nats.Option{
 		nats.MaxReconnects(cfg.MaxReconnectAttempts),
 
@@ -167,6 +194,26 @@ func buildOptions(ctx context.Context, cfg workerconfig.NATSConfig, logger *slog
 		return nil, err
 	}
 	opts = append(opts, tlsOpts...)
+
+	// ── Broker credential ────────────────────────────────────────
+	//
+	// A non-empty seed authenticates this connection as the worker's
+	// enrolled nkey. An empty seed adds no option at all, which is correct
+	// on a farm that does not require worker authentication — the broker
+	// accepts the anonymous connection exactly as it does today. When the
+	// broker DOES require authentication, connecting with no credential (or
+	// a rejected one) fails at nats.Connect above with nats.ErrAuthorization
+	// or nats.ErrAuthExpired, which is classified as fatal rather than
+	// retried.
+	if len(seed) > 0 {
+		opts = append(opts, nats.Nkey(publicKey, func(nonce []byte) ([]byte, error) {
+			kp, err := nkeys.FromSeed(seed)
+			if err != nil {
+				return nil, err
+			}
+			return kp.Sign(nonce)
+		}))
+	}
 
 	return opts, nil
 }

@@ -376,8 +376,8 @@ type AssignMsg struct {
 	// user, which is the pre-isolation behavior.
 	//
 	// This carries a USERNAME ONLY and never a credential. Worker↔server
-	// transport authentication does not exist yet (deferred to Phase 4), so
-	// nothing secret may travel on this channel.
+	// transport authentication is opt-in (nats.auth.enabled) and off by
+	// default, so nothing secret may travel on this channel regardless.
 	Isolation *IsolationSpec `json:"isolation,omitempty"`
 
 	// ── Parameter space ───────────────────────────────────────────────────
