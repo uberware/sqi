@@ -458,6 +458,7 @@ func TestWorkerCmd_DBPath_ExplicitFlagBeatsConfig(t *testing.T) {
 // (store.sqlite_path), not the built-in "sqi.db" default.
 func TestWorkerCmd_DBPath_ConfigFileHonoredWhenFlagOmitted(t *testing.T) {
 	withFlagUnchanged(t, workerCmd.PersistentFlags(), "db")
+	unsetStoreSQLitePathEnv(t)
 	configuredPath := filepath.Join(t.TempDir(), "from-config.db")
 	createTestDB(t, configuredPath)
 	withConfigFile(t, writeStoreConfigFile(t, configuredPath))

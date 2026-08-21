@@ -112,7 +112,7 @@ func init() {
 	migrateCmd.PersistentFlags().StringVar(
 		&migrateDBPath,
 		"db", "sqi.db",
-		"path to SQLite database file (defaults to store.sqlite_path from config, or SQI_SQLITE_PATH)",
+		"path to SQLite database file (defaults to store.sqlite_path from config, then the deprecated SQI_SQLITE_PATH, then \"sqi.db\")",
 	)
 
 	migrateCmd.AddCommand(migrateUpCmd, migrateDownCmd, migrateStatusCmd)

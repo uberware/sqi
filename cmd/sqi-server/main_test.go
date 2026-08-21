@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
 )
 
@@ -85,15 +86,35 @@ func withFlagUnchanged(t *testing.T, fs *pflag.FlagSet, name string) {
 	if f == nil {
 		t.Fatalf("no such flag: %q", name)
 	}
-	orig := f.Changed
 	f.Changed = false
-	t.Cleanup(func() { f.Changed = orig })
+	// Reset to false, not the saved original: restoring a stale true would
+	// leave exactly the leftover this helper exists to prevent, for
+	// whichever test runs next.
+	t.Cleanup(func() { f.Changed = false })
+}
+
+// resetFlagsChanged clears pflag.Flag.Changed for every flag in cmd's own
+// FlagSet and PersistentFlags, and recurses into every subcommand. Called
+// from prepareRoot before every Execute() so a stale Changed=true left by an
+// earlier test's cobra parse — Changed is sticky, pflag never resets it, and
+// every command in this binary is a package-level singleton reused across
+// the whole test process — cannot leak into a later test that means "this
+// flag was not passed". This is the general form of withFlagUnchanged: every
+// flag in the tree, before every Execute(), so no individual test needs to
+// know which flags an earlier one touched.
+func resetFlagsChanged(cmd *cobra.Command) {
+	cmd.Flags().VisitAll(func(f *pflag.Flag) { f.Changed = false })
+	cmd.PersistentFlags().VisitAll(func(f *pflag.Flag) { f.Changed = false })
+	for _, c := range cmd.Commands() {
+		resetFlagsChanged(c)
+	}
 }
 
 // prepareRoot sets the args that rootCmd will parse on the next Execute() call
 // and redirects cobra's own output writers (help, usage, error messages) to a
 // discard buffer so test output stays clean.
 func prepareRoot(args []string) {
+	resetFlagsChanged(rootCmd)
 	rootCmd.SetArgs(args)
 	var sink bytes.Buffer
 	rootCmd.SetOut(&sink)
@@ -387,6 +408,7 @@ func TestMigrateCmd_DBPath_ExplicitFlagBeatsConfig(t *testing.T) {
 // migrate — unlike backup and worker — creates it there.
 func TestMigrateCmd_DBPath_ConfigFileHonoredWhenFlagOmitted(t *testing.T) {
 	withFlagUnchanged(t, migrateCmd.PersistentFlags(), "db")
+	unsetStoreSQLitePathEnv(t)
 	configuredPath := filepath.Join(t.TempDir(), "from-config-migrate.db")
 	withConfigFile(t, writeStoreConfigFile(t, configuredPath))
 
@@ -456,6 +478,7 @@ func TestBackupCmd_ErrorPaths(t *testing.T) {
 // (store.sqlite_path) rather than the built-in "sqi.db" default.
 func TestBackupCmd_DBPath_ConfigFileHonoredWhenFlagOmitted(t *testing.T) {
 	withFlagUnchanged(t, backupCmd.Flags(), "db")
+	unsetStoreSQLitePathEnv(t)
 	configuredPath := filepath.Join(t.TempDir(), "from-config-backup.db")
 	createTestDB(t, configuredPath)
 	withConfigFile(t, writeStoreConfigFile(t, configuredPath))

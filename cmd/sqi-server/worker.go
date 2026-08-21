@@ -132,7 +132,7 @@ func init() {
 	workerCmd.PersistentFlags().StringVar(
 		&workerFlags.DBPath,
 		"db", "sqi.db",
-		"path to SQLite database file (defaults to store.sqlite_path from config, or SQI_SQLITE_PATH)",
+		"path to SQLite database file (defaults to store.sqlite_path from config, then the deprecated SQI_SQLITE_PATH, then \"sqi.db\")",
 	)
 
 	workerTokenIssueCmd.Flags().DurationVar(
@@ -174,6 +174,9 @@ func openWorkerStore(ctx context.Context, cmd *cobra.Command) (*sqlite.Store, er
 		return nil, errors.New("database path is empty; use --db, set store.sqlite_path, or set SQI_STORE_SQLITE_PATH")
 	}
 	if err := requireExistingDB(dbPath); err != nil {
+		return nil, err
+	}
+	if err := requireMigratedDB(dbPath); err != nil {
 		return nil, err
 	}
 

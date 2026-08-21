@@ -46,7 +46,7 @@ func init() {
 	backupCmd.Flags().StringVar(
 		&backupFlags.DBPath,
 		"db", "sqi.db",
-		"path to source SQLite database file (defaults to store.sqlite_path from config, or SQI_SQLITE_PATH)",
+		"path to source SQLite database file (defaults to store.sqlite_path from config, then the deprecated SQI_SQLITE_PATH, then \"sqi.db\")",
 	)
 	backupCmd.Flags().StringVar(
 		&backupFlags.OutPath,
@@ -71,6 +71,9 @@ func runBackup(cmd *cobra.Command, _ []string) error {
 		return errors.New("source database path is empty; use --db, set store.sqlite_path, or set SQI_STORE_SQLITE_PATH")
 	}
 	if err := requireExistingDB(dbPath); err != nil {
+		return err
+	}
+	if err := requireMigratedDB(dbPath); err != nil {
 		return err
 	}
 
