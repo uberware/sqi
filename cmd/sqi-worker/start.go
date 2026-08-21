@@ -497,10 +497,10 @@ func connectToBroker(
 		return nil, nil, fmt.Errorf("worker credential: %w", err)
 	}
 
-	nc, natsClosed, err := natsclient.Connect(ctx, cfg.NATS, seed, publicKey, logger)
+	nc, natsClosed, err := natsclient.Connect(ctx, cfg.NATS, workerID, seed, publicKey, logger)
 	if err != nil {
 		if noCredential && (errors.Is(err, nats.ErrAuthorization) || errors.Is(err, nats.ErrAuthExpired)) {
-			//nolint:staticcheck // ST1005: two-sentence operator-facing message, wording is pinned by the task spec
+			//nolint:staticcheck // ST1005: wording is deliberately two sentences so the operator sees cause and remediation separately
 			return nil, nil, fmt.Errorf(
 				"sqi-worker: this server requires worker authentication, but no credential was found at %s and no join token is configured.\n"+
 					"Obtain a token from an operator (`sqi-server worker token issue`) and set worker nats.join_token_file, or pre-provision a key with `sqi-worker keygen`.",

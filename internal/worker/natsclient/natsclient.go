@@ -15,7 +15,7 @@
 //
 // Typical usage:
 //
-//	nc, closedCh, err := natsclient.Connect(ctx, cfg.NATS, seed, publicKey, logger)
+//	nc, closedCh, err := natsclient.Connect(ctx, cfg.NATS, workerID, seed, publicKey, logger)
 //	if err != nil {
 //	    return fmt.Errorf("nats connect: %w", err)
 //	}
@@ -37,6 +37,7 @@ import (
 	nats "github.com/nats-io/nats.go"
 	"github.com/nats-io/nkeys"
 
+	"github.com/uberware/sqi/internal/brokerauth"
 	workerconfig "github.com/uberware/sqi/internal/worker/config"
 )
 
@@ -75,12 +76,17 @@ const (
 // credential, which is correct on a farm that does not require worker
 // authentication; see buildOptions for how that case is distinguished from a
 // broker that actively rejects the connection.
-func Connect(ctx context.Context, cfg workerconfig.NATSConfig, seed []byte, publicKey string, logger *slog.Logger) (*nats.Conn, <-chan struct{}, error) {
+//
+// workerID scopes this connection's reply inboxes to a per-worker prefix
+// (see [brokerauth.InboxPrefix]). It is required whether or not a credential
+// is present, so the connect path is identical in both modes, and it must be
+// a single NATS subject token.
+func Connect(ctx context.Context, cfg workerconfig.NATSConfig, workerID string, seed []byte, publicKey string, logger *slog.Logger) (*nats.Conn, <-chan struct{}, error) {
 	// closedCh is closed by the ClosedHandler callback when the NATS connection
 	// permanently closes (MaxReconnects exhausted or explicit nc.Close() call).
 	closedCh := make(chan struct{})
 
-	opts, err := buildOptions(ctx, cfg, seed, publicKey, logger, closedCh)
+	opts, err := buildOptions(ctx, cfg, workerID, seed, publicKey, logger, closedCh)
 	if err != nil {
 		return nil, nil, fmt.Errorf("natsclient: build options: %w", err)
 	}
@@ -158,10 +164,12 @@ func Drain(nc *nats.Conn, gracePeriod time.Duration, logger *slog.Logger) {
 // closedCh is closed by the ClosedHandler when the connection permanently
 // closes so callers can detect unexpected disconnects. seed and publicKey,
 // when non-empty, add an nkey signing option so the connection authenticates
-// as this worker's broker credential.
+// as this worker's broker credential. workerID scopes the connection's reply
+// inboxes to this worker's own prefix and is required.
 func buildOptions(
 	ctx context.Context,
 	cfg workerconfig.NATSConfig,
+	workerID string,
 	seed []byte,
 	publicKey string,
 	logger *slog.Logger,
@@ -219,6 +227,29 @@ func buildOptions(
 			logger.ErrorContext(ctx, "natsclient: async error", slog.Any("error", err))
 		}),
 	}
+
+	// ── Per-worker reply inbox ───────────────────────────────────
+	//
+	// Without this the connection takes nats.go's process-global "_INBOX"
+	// prefix, and the only permission that could then cover a lease reply
+	// is "_INBOX.>" — which covers every OTHER client's reply inbox on the
+	// same broker too, handing any enrolled worker the assignment batches
+	// of work it never leased. See [brokerauth.InboxPrefix].
+	//
+	// Applied whether or not a credential is present, so the connect path
+	// does not diverge between the auth-on and auth-off modes. An absent
+	// worker ID, or one that is not a single subject token, would leave the
+	// connection on the shared prefix or silently widen the subtree the
+	// matching grant covers — so it is rejected rather than trusted:
+	// LoadOrCreateWorkerID writes a UUID, but the file it writes is one an
+	// operator can edit.
+	if !brokerauth.ValidWorkerIDToken(workerID) {
+		return nil, fmt.Errorf(
+			"natsclient: worker id %q is not a valid NATS subject token — it must be non-empty and must not contain '.', whitespace, '*' or '>'",
+			workerID,
+		)
+	}
+	opts = append(opts, nats.CustomInboxPrefix(brokerauth.InboxPrefix(workerID)))
 
 	// ── TLS ──────────────────────────────────────────────────────
 	tlsOpts, err := buildTLSOptions(cfg)

@@ -91,4 +91,45 @@ func TestWorkerPermissions_ConfinesToOwnSubtree(t *testing.T) {
 	if !subjectAllowed(p.Subscribe, "task.cancel.task-1") {
 		t.Error("a worker must be able to subscribe to task.cancel.<taskID>")
 	}
+
+	// Reply inboxes. A worker needs its own, because a work lease is
+	// core-NATS request/reply — and must not have anyone else's, because the
+	// lease reply carries the whole assignment batch.
+	if !subjectAllowed(p.Subscribe, brokerauth.InboxPrefix(me)+".x.1") {
+		t.Error("a worker must be able to subscribe to its own reply inbox")
+	}
+	if subjectAllowed(p.Subscribe, brokerauth.InboxPrefix(other)+".x.1") {
+		t.Error("a worker must NOT be able to subscribe to another worker's reply inbox")
+	}
+	if subjectAllowed(p.Subscribe, "_INBOX.x.1") {
+		t.Error("a worker must NOT be able to subscribe to the process-global _INBOX subtree")
+	}
+}
+
+func TestValidWorkerIDToken(t *testing.T) {
+	valid := []string{
+		"0f1d2c3b-4a59-6879-8a9b-0c1d2e3f4a5b", // what LoadOrCreateWorkerID writes
+		"worker-a",
+		"render_01",
+	}
+	for _, s := range valid {
+		if !brokerauth.ValidWorkerIDToken(s) {
+			t.Errorf("ValidWorkerIDToken(%q) = false, want true", s)
+		}
+	}
+
+	invalid := []string{
+		"",             // no token at all
+		"a.b",          // two tokens: widens every grant built from it
+		"a b",          // whitespace is not legal in a subject
+		"*",            // single-token wildcard
+		">",            // multi-token wildcard
+		"worker.>",     // both of the above
+		"worker\tname", // other whitespace
+	}
+	for _, s := range invalid {
+		if brokerauth.ValidWorkerIDToken(s) {
+			t.Errorf("ValidWorkerIDToken(%q) = true, want false", s)
+		}
+	}
 }

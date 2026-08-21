@@ -89,7 +89,7 @@ func TestConnect_DialErrorIsReturned(t *testing.T) {
 		MaxReconnectAttempts: 0,
 		ReconnectWait:        10 * time.Millisecond,
 	}
-	_, _, err := Connect(context.Background(), cfg, nil, "", logger)
+	_, _, err := Connect(context.Background(), cfg, "worker-a", nil, "", logger)
 	if err == nil {
 		t.Fatal("Connect to dead port: want error, got nil")
 	}
@@ -102,7 +102,7 @@ func TestBuildOptions_AddsNkeyOptionWhenSeedPresent(t *testing.T) {
 		t.Fatalf("GenerateSeed: %v", err)
 	}
 
-	opts, err := buildOptions(context.Background(), workerconfig.NATSConfig{}, seed, pub, logger, make(chan struct{}))
+	opts, err := buildOptions(context.Background(), workerconfig.NATSConfig{}, "worker-a", seed, pub, logger, make(chan struct{}))
 	if err != nil {
 		t.Fatalf("buildOptions: %v", err)
 	}
@@ -138,7 +138,7 @@ func TestBuildOptions_AddsNkeyOptionWhenSeedPresent(t *testing.T) {
 
 func TestBuildOptions_NoNkeyOptionWhenSeedEmpty(t *testing.T) {
 	logger := slog.New(slog.DiscardHandler)
-	opts, err := buildOptions(context.Background(), workerconfig.NATSConfig{}, nil, "", logger, make(chan struct{}))
+	opts, err := buildOptions(context.Background(), workerconfig.NATSConfig{}, "worker-a", nil, "", logger, make(chan struct{}))
 	if err != nil {
 		t.Fatalf("buildOptions: %v", err)
 	}
@@ -226,7 +226,7 @@ func TestConnect_ClassifiesRejectedCredentialAsFatal(t *testing.T) {
 		ReconnectWait:        10 * time.Millisecond,
 	}
 	logger := slog.New(slog.DiscardHandler)
-	_, _, connErr := Connect(context.Background(), cfg, strangerSeed, strangerPub, logger)
+	_, _, connErr := Connect(context.Background(), cfg, "worker-a", strangerSeed, strangerPub, logger)
 	if connErr == nil {
 		t.Fatal("Connect with an unenrolled nkey: want error, got nil")
 	}
@@ -254,7 +254,7 @@ func TestConnect_AuthOffFarmConnectsWithNoCredential(t *testing.T) {
 		ReconnectWait:        10 * time.Millisecond,
 	}
 	logger := slog.New(slog.DiscardHandler)
-	nc, _, err := Connect(context.Background(), cfg, nil, "", logger)
+	nc, _, err := Connect(context.Background(), cfg, "worker-a", nil, "", logger)
 	if err != nil {
 		t.Fatalf("Connect with no credential against an auth-off broker: %v", err)
 	}
@@ -299,7 +299,7 @@ func TestConnect_LiveRevocationNamesCauseAndRemediation(t *testing.T) {
 		MaxReconnectAttempts: -1,
 		ReconnectWait:        5 * time.Millisecond,
 	}
-	nc, closedCh, err := Connect(context.Background(), cfg, enrolledSeed, enrolledPub, logger)
+	nc, closedCh, err := Connect(context.Background(), cfg, "worker-a", enrolledSeed, enrolledPub, logger)
 	if err != nil {
 		t.Fatalf("Connect with an enrolled credential: %v", err)
 	}
@@ -324,5 +324,44 @@ func TestConnect_LiveRevocationNamesCauseAndRemediation(t *testing.T) {
 	}
 	if !strings.Contains(logs, "re-enroll with a new join token") {
 		t.Errorf("logs do not name the remediation; got:\n%s", logs)
+	}
+}
+
+// TestBuildOptions_SetsPerWorkerInboxPrefix pins the option that keeps a
+// worker's lease replies out of every other worker's reach: without it the
+// connection takes nats.go's process-global "_INBOX", and the only grant
+// that could cover a reply would also cover every other client's inbox on
+// the same broker. The matching permission is asserted in
+// internal/brokerauth; the end-to-end consequence in internal/bus.
+func TestBuildOptions_SetsPerWorkerInboxPrefix(t *testing.T) {
+	logger := slog.New(slog.DiscardHandler)
+	const workerID = "0f1d2c3b-4a59-6879-8a9b-0c1d2e3f4a5b"
+
+	opts, err := buildOptions(context.Background(), workerconfig.NATSConfig{}, workerID, nil, "", logger, make(chan struct{}))
+	if err != nil {
+		t.Fatalf("buildOptions: %v", err)
+	}
+	applied := &nats.Options{}
+	for _, opt := range opts {
+		if err := opt(applied); err != nil {
+			t.Fatalf("apply option: %v", err)
+		}
+	}
+	if want := brokerauth.InboxPrefix(workerID); applied.InboxPrefix != want {
+		t.Errorf("Options.InboxPrefix = %q, want %q", applied.InboxPrefix, want)
+	}
+}
+
+// TestBuildOptions_RejectsWorkerIDThatIsNotASubjectToken covers the
+// defensive check: worker.id holds a UUID, but it is a file an operator can
+// edit. An absent ID would leave the connection on nats.go's shared "_INBOX"
+// prefix, and one carrying a "." or a wildcard would widen the subtree the
+// broker grant built from it covers.
+func TestBuildOptions_RejectsWorkerIDThatIsNotASubjectToken(t *testing.T) {
+	logger := slog.New(slog.DiscardHandler)
+	for _, workerID := range []string{"", "a.b", "a b", "*", ">"} {
+		if _, err := buildOptions(context.Background(), workerconfig.NATSConfig{}, workerID, nil, "", logger, make(chan struct{})); err == nil {
+			t.Errorf("buildOptions with worker id %q: want error, got nil", workerID)
+		}
 	}
 }

@@ -262,6 +262,13 @@ func pollTaskStatus(t *testing.T, ts *testServer, taskID string, targets []strin
 // so a revoked worker's disconnect is observed directly rather than masked
 // by nats.go retrying (and getting the same auth error) for some time first,
 // mirroring internal/bus's own revocation tests.
+//
+// The per-worker inbox prefix is not optional decoration: an enrolled
+// worker is granted "_INBOX_<id>.>" and nothing wider, so a connection left
+// on nats.go's process-global "_INBOX" cannot even subscribe to its own
+// reply inbox — every JetStream publish then fails waiting for a PubAck it
+// is not allowed to hear. internal/worker/natsclient sets the same option
+// on every real worker connection.
 func newMockWorkerWithNkey(t *testing.T, natsURL, workerID, farmID, queueID string, seed []byte, pub string, extraOpts ...nats.Option) *mockWorker {
 	t.Helper()
 
@@ -273,6 +280,7 @@ func newMockWorkerWithNkey(t *testing.T, natsURL, workerID, farmID, queueID stri
 			}
 			return kp.Sign(nonce)
 		}),
+		nats.CustomInboxPrefix(brokerauth.InboxPrefix(workerID)),
 		nats.NoReconnect(),
 	}, extraOpts...)
 

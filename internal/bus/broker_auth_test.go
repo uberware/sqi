@@ -280,3 +280,90 @@ func TestBrokerReloadCredentials_ConcurrentWithShutdown(t *testing.T) {
 	// A second Shutdown (this one via t.Cleanup) must still be a safe no-op
 	// after the concurrent one above already ran.
 }
+
+// TestBrokerAuth_WorkerCannotSeeAnotherWorkersLeaseReply pins the property
+// the per-worker reply-inbox prefix exists for: an enrolled worker must not
+// be able to read another worker's lease reply, which carries that worker's
+// whole assignment batch.
+//
+// The reply travels over core-NATS request/reply (msg.Respond, lease.go), so
+// its subject is the requester's own reply inbox and nothing else guards it
+// but the subscribe permission. With a process-global "_INBOX" prefix and an
+// "_INBOX.>" grant, any enrolled worker could subscribe to every other
+// client's inbox on the broker and collect the OnRun command lines, embedded
+// files, parameters, environment and isolation account of work it never
+// leased. Each worker therefore gets its own prefix
+// ([brokerauth.InboxPrefix]) and is granted only that subtree.
+func TestBrokerAuth_WorkerCannotSeeAnotherWorkersLeaseReply(t *testing.T) {
+	refA, seedA := enrolledWorker(t, "worker-a")
+	refB, seedB := enrolledWorker(t, "worker-b")
+	b := startBrokerAuth(t, BrokerAuthConfig{
+		Enabled:     true,
+		Credentials: []WorkerCredentialRef{refA, refB},
+	})
+
+	// Stands in for an AssignMsg batch: whatever A can read here, it could
+	// read of a real assignment.
+	const assignment = "SECRET-ASSIGNMENT-PAYLOAD"
+
+	// The server side of the lease, on the server's own credential and the
+	// real SubscribeLease path.
+	srv, err := b.NewClient()
+	if err != nil {
+		t.Fatalf("broker NewClient: %v", err)
+	}
+	defer srv.Close()
+	leaseSub, err := srv.SubscribeLease(func(string, string, []byte) []byte { return []byte(assignment) })
+	if err != nil {
+		t.Fatalf("SubscribeLease: %v", err)
+	}
+	defer leaseSub.Unsubscribe() //nolint:errcheck // best-effort test cleanup
+
+	// Worker A, the eavesdropper, camps on both the process-global inbox
+	// subtree nats.go uses by default and B's own per-worker one. Neither
+	// subscription may be granted, so the Flush is expected to fail; the
+	// subscriptions are kept regardless so the assertion at the end holds
+	// even if a future nats.go stops reporting the violation here.
+	ncA, err := nats.Connect(b.ClientURL(), nkeyOption(t, seedA, refA.PublicKey))
+	if err != nil {
+		t.Fatalf("connect as A: %v", err)
+	}
+	defer ncA.Close()
+	var spies []*nats.Subscription
+	for _, subject := range []string{"_INBOX.>", brokerauth.InboxPrefix(refB.WorkerID) + ".>"} {
+		spy, err := ncA.SubscribeSync(subject)
+		if err != nil {
+			t.Fatalf("A SubscribeSync %q: %v", subject, err)
+		}
+		spies = append(spies, spy)
+	}
+	if err := ncA.Flush(); err != nil && !errors.Is(err, nats.ErrPermissionViolation) {
+		t.Fatalf("A Flush: unexpected error: %v", err)
+	}
+
+	// Worker B leases work over its own connection, with the per-worker
+	// inbox prefix internal/worker/natsclient gives every real worker.
+	clientB, err := NewClient(b.ClientURL(), slog.New(slog.DiscardHandler),
+		nkeyOption(t, seedB, refB.PublicKey),
+		nats.CustomInboxPrefix(brokerauth.InboxPrefix(refB.WorkerID)))
+	if err != nil {
+		t.Fatalf("connect as B: %v", err)
+	}
+	defer clientB.Close()
+
+	reply, err := clientB.RequestLease(context.Background(), refB.WorkerID, "queue-1", nil, 5*time.Second)
+	if err != nil {
+		t.Fatalf("B RequestLease: %v", err)
+	}
+	if string(reply) != assignment {
+		t.Fatalf("B's lease reply = %q, want %q — the test cannot prove anything if B never got the payload", reply, assignment)
+	}
+
+	for i, spy := range spies {
+		if msg, err := spy.NextMsg(time.Second); err == nil {
+			t.Fatalf("worker A read worker B's lease reply on spy %d (%s): %q", i, spy.Subject, msg.Data)
+		} else if !errors.Is(err, nats.ErrTimeout) && !errors.Is(err, nats.ErrPermissionViolation) {
+			t.Fatalf("spy %d (%s): unexpected error: %v", i, spy.Subject, err)
+		}
+	}
+}
