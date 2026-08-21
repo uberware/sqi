@@ -132,9 +132,10 @@ func WorkLeaseSubject(workerID, queueID string) string {
 // empty for the three worker-lifecycle subjects, which have no trailing token).
 //
 // ok is false for anything that is not one of the six worker → server subject
-// shapes, including subjects with an empty worker or trailing token. A message
-// whose subject does not carry an identity is one the server cannot attribute
-// to a worker, and callers must reject it rather than act on a partial parse.
+// shapes, including subjects with an empty token and subjects whose worker or
+// trailing token carries a NATS wildcard. A message whose subject does not
+// carry one concrete identity is one the server cannot attribute to a worker,
+// and callers must reject it rather than act on a partial parse.
 func ParseWorkerSubject(subject string) (workerID, leaf string, ok bool) {
 	tokens := strings.Split(subject, ".")
 	if len(tokens) < 3 || len(tokens) > 4 {
@@ -145,7 +146,7 @@ func ParseWorkerSubject(subject string) (workerID, leaf string, ok bool) {
 	if len(tokens) == 3 {
 		switch prefix {
 		case SubjectWorkerRegisterPrefix, SubjectWorkerHeartbeatPrefix, SubjectWorkerDeregisterPrefix:
-			if tokens[2] == "" {
+			if !concreteToken(tokens[2]) {
 				return "", "", false
 			}
 			return tokens[2], "", true
@@ -156,11 +157,23 @@ func ParseWorkerSubject(subject string) (workerID, leaf string, ok bool) {
 
 	switch prefix {
 	case SubjectTaskStatusPrefix, SubjectTaskLogsPrefix, SubjectWorkLeasePrefix:
-		if tokens[2] == "" || tokens[3] == "" {
+		if !concreteToken(tokens[2]) || !concreteToken(tokens[3]) {
 			return "", "", false
 		}
 		return tokens[2], tokens[3], true
 	default:
 		return "", "", false
 	}
+}
+
+// concreteToken reports whether tok is a single, literal subject token: not
+// empty, and free of the NATS wildcards "*" and ">".
+//
+// A wildcard names a set of workers rather than one, so a subject carrying one
+// identifies nobody. nats-server refuses to publish on a wildcard subject, but
+// a parser that hands back "*" as a worker ID is relying on that refusal for
+// its own soundness — and callers treat this return value as an authorization
+// input, which must not depend on a check happening somewhere else.
+func concreteToken(tok string) bool {
+	return tok != "" && !strings.ContainsAny(tok, "*>")
 }

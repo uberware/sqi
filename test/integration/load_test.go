@@ -190,7 +190,7 @@ type loadWorker struct {
 }
 
 // newLoadWorker dials NATS and returns a load worker that requests work leases
-// on work.lease.<queue>.  Multiple load workers request independently; the
+// on work.lease.<workerID>.<queue>.  Multiple load workers request independently; the
 // server's atomic LeaseReadyTask distributes ready tasks among them.
 func newLoadWorker(tb testing.TB, natsURL, workerID, farmID, queueID string) *loadWorker {
 	tb.Helper()
@@ -333,7 +333,7 @@ func (w *loadWorker) drainLoop(ctx context.Context, wg *sync.WaitGroup, assigned
 	}
 }
 
-// publishStatus publishes a TaskStatusMsg to task.status.<jobID>.
+// publishStatus publishes a TaskStatusMsg to task.status.<workerID>.<jobID>.
 func (w *loadWorker) publishStatus(assign protocol.AssignMsg, status string, exitCode *int) {
 	msg := protocol.TaskStatusMsg{
 		Version:   protocol.ProtocolVersion,

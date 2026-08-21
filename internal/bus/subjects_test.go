@@ -80,6 +80,21 @@ func TestParseWorkerSubject(t *testing.T) {
 		{"task.status.w1.", "", "", false},
 		{"worker.register.", "", "", false},
 		{"", "", "", false},
+
+		// A wildcard token names a set of workers, not one, so it identifies
+		// nobody. Callers feed this worker ID to an authorization decision, so
+		// the parser must reject it here rather than lean on the broker's
+		// refusal to publish on a wildcard subject.
+		{"task.status.*.j1", "", "", false},
+		{"task.status.w1.*", "", "", false},
+		{"task.status.>.j1", "", "", false},
+		{"task.status.w1.>", "", "", false},
+		{"worker.register.*", "", "", false},
+		{"worker.heartbeat.>", "", "", false},
+		{"work.lease.*.q1", "", "", false},
+		{"work.lease.w1.>", "", "", false},
+		{"task.logs.w*1.t1", "", "", false},
+		{"worker.deregister.w>1", "", "", false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.subject, func(t *testing.T) {

@@ -269,7 +269,7 @@ func newMockWorker(t *testing.T, natsURL, workerID, farmID, queueID string) *moc
 	}
 }
 
-// register publishes a [protocol.RegisterMsg] to worker.register so the
+// register publishes a [protocol.RegisterMsg] to worker.register.<workerID> so the
 // server records this worker as online and eligible for task assignment.
 func (w *mockWorker) register() {
 	w.t.Helper()
@@ -339,7 +339,7 @@ func (w *mockWorker) startHeartbeat(interval time.Duration) {
 	}()
 }
 
-// pullAssignment requests a work lease on work.lease.<queue> and blocks until
+// pullAssignment requests a work lease on work.lease.<workerID>.<queue> and blocks until
 // the server returns a non-empty batch or timeout expires.  It returns the
 // first decoded [protocol.AssignMsg] in the reply.  The request timeout exceeds
 // the server's long-poll hold so a parked request is never abandoned (which
@@ -385,7 +385,7 @@ func (w *mockWorker) pullAssignment(timeout time.Duration) protocol.AssignMsg {
 	return protocol.AssignMsg{} // unreachable
 }
 
-// publishStatus publishes a [protocol.TaskStatusMsg] to task.status.<jobID>.
+// publishStatus publishes a [protocol.TaskStatusMsg] to task.status.<workerID>.<jobID>.
 func (w *mockWorker) publishStatus(assign protocol.AssignMsg, status string, exitCode *int) {
 	w.t.Helper()
 
@@ -412,7 +412,7 @@ func (w *mockWorker) publishStatus(assign protocol.AssignMsg, status string, exi
 	}
 }
 
-// publishLogChunk publishes a [protocol.LogChunkMsg] to task.logs.<taskID>.
+// publishLogChunk publishes a [protocol.LogChunkMsg] to task.logs.<workerID>.<taskID>.
 func (w *mockWorker) publishLogChunk(assign protocol.AssignMsg, seqNum int64, data string) {
 	w.t.Helper()
 
