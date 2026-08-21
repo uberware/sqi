@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/spf13/pflag"
 )
 
 // captureStdout redirects os.Stdout to a pipe for the duration of fn, then
@@ -37,6 +39,26 @@ func captureStdout(t *testing.T, fn func()) string {
 	}
 	r.Close()
 	return buf.String()
+}
+
+// withFlagUnchanged resets a flag's Changed state to false for the duration
+// of the test, then restores it.
+//
+// pflag.Flag.Changed is sticky: it flips to true the first time a flag is
+// parsed from the command line and the library never resets it. Flag
+// objects in this binary are package-level singletons registered once in
+// init(), so within a single test process a later test asserting "the flag
+// was omitted" would otherwise observe a stale true left by an earlier test
+// that passed it explicitly, purely as an artifact of test ordering.
+func withFlagUnchanged(t *testing.T, fs *pflag.FlagSet, name string) {
+	t.Helper()
+	f := fs.Lookup(name)
+	if f == nil {
+		t.Fatalf("no such flag: %q", name)
+	}
+	orig := f.Changed
+	f.Changed = false
+	t.Cleanup(func() { f.Changed = orig })
 }
 
 // prepareRoot sets the args that rootCmd will parse on the next Execute() call

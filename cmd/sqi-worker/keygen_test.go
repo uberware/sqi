@@ -14,6 +14,18 @@ import (
 	workerconfig "github.com/uberware/sqi/internal/worker/config"
 )
 
+// writeWorkerConfigFile writes a minimal sqi-worker config file setting
+// worker.data_dir and returns its path.
+func writeWorkerConfigFile(t *testing.T, dataDir string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "sqi-worker.yaml")
+	content := "worker:\n  data_dir: " + dataDir + "\n"
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatalf("write config file: %v", err)
+	}
+	return path
+}
+
 // captureStderr redirects os.Stderr to a pipe for the duration of fn, then
 // returns everything written to it. keygen's overwrite warning is
 // deliberately written to stderr (see runKeygen), so asserting on it needs
@@ -176,17 +188,102 @@ func TestKeygenCmd_RefusesToOverwriteWithoutForce(t *testing.T) {
 	}
 }
 
-// TestKeygenCmd_EmptyDataDir verifies the validation guard fires directly.
+// TestKeygenCmd_EmptyDataDir verifies that an explicitly-passed empty
+// --data-dir (as opposed to the flag simply being omitted, which falls
+// through to worker.data_dir) is rejected with a descriptive error. Routed
+// through Execute() rather than calling runKeygen directly: with no cobra
+// command, --data-dir cannot be told apart from "omitted", which would fall
+// through to the real, config-resolved worker.data_dir instead of the empty
+// value this test means to exercise.
 func TestKeygenCmd_EmptyDataDir(t *testing.T) {
-	origDir := keygenFlags.DataDir
-	t.Cleanup(func() { keygenFlags.DataDir = origDir })
-
-	keygenFlags.DataDir = ""
-	err := runKeygen(nil, nil)
-	if err == nil {
+	prepareRoot([]string{"keygen", "--data-dir", ""})
+	var runErr error
+	_ = captureStdout(t, func() {
+		runErr = Execute()
+	})
+	if runErr == nil {
 		t.Fatal("expected an error for an empty --data-dir, got nil")
 	}
-	if !strings.Contains(err.Error(), "empty") {
-		t.Errorf("error should mention 'empty'; got: %v", err)
+	if !strings.Contains(runErr.Error(), "empty") {
+		t.Errorf("error should mention 'empty'; got: %v", runErr)
+	}
+}
+
+// TestKeygenCmd_DataDir_ExplicitFlagBeatsConfig verifies that --data-dir
+// wins even when a config file names a different worker.data_dir.
+func TestKeygenCmd_DataDir_ExplicitFlagBeatsConfig(t *testing.T) {
+	explicitDir := filepath.Join(t.TempDir(), "explicit-data")
+	configuredDir := filepath.Join(t.TempDir(), "configured-data")
+	cfgPath := writeWorkerConfigFile(t, configuredDir)
+	t.Cleanup(func() { persistentFlags.ConfigFile = "" })
+
+	prepareRoot([]string{"keygen", "--config", cfgPath, "--data-dir", explicitDir})
+	_ = captureStdout(t, func() {
+		if err := Execute(); err != nil {
+			t.Fatalf("keygen: unexpected error: %v", err)
+		}
+	})
+
+	if _, err := os.Stat(filepath.Join(explicitDir, "worker.nk")); err != nil {
+		t.Errorf("expected a seed under the explicit --data-dir %s: %v", explicitDir, err)
+	}
+	if _, err := os.Stat(configuredDir); err == nil {
+		t.Errorf("keygen wrote under the configured worker.data_dir %s despite an explicit --data-dir", configuredDir)
+	}
+}
+
+// TestKeygenCmd_DataDir_ConfigFileHonoredWhenFlagOmitted verifies that
+// omitting --data-dir resolves worker.data_dir through the config layer
+// rather than the platform default under the real home directory.
+func TestKeygenCmd_DataDir_ConfigFileHonoredWhenFlagOmitted(t *testing.T) {
+	withFlagUnchanged(t, keygenCmd.Flags(), "data-dir")
+
+	configuredDir := filepath.Join(t.TempDir(), "configured-data")
+	cfgPath := writeWorkerConfigFile(t, configuredDir)
+	t.Cleanup(func() { persistentFlags.ConfigFile = "" })
+
+	prepareRoot([]string{"keygen", "--config", cfgPath})
+	_ = captureStdout(t, func() {
+		if err := Execute(); err != nil {
+			t.Fatalf("keygen: unexpected error: %v", err)
+		}
+	})
+
+	if _, err := os.Stat(filepath.Join(configuredDir, "worker.nk")); err != nil {
+		t.Errorf("expected a seed under the configured worker.data_dir %s: %v", configuredDir, err)
+	}
+}
+
+// TestKeygenCmd_ReportsNewVsExistingWorkerID verifies that keygen states
+// plainly whether the worker ID it printed was loaded from an existing
+// worker.id file or freshly generated — the one signal an operator rotating
+// a key has that --data-dir/worker.data_dir points at the wrong directory.
+func TestKeygenCmd_ReportsNewVsExistingWorkerID(t *testing.T) {
+	dataDir := filepath.Join(t.TempDir(), "worker-data")
+
+	prepareRoot([]string{"keygen", "--data-dir", dataDir})
+	firstOut := captureStdout(t, func() {
+		if err := Execute(); err != nil {
+			t.Fatalf("first keygen: unexpected error: %v", err)
+		}
+	})
+	if !strings.Contains(firstOut, "newly generated") {
+		t.Errorf("first run against an empty data dir should report a newly generated worker id; got:\n%s", firstOut)
+	}
+	if strings.Contains(firstOut, "existing, loaded from") {
+		t.Errorf("first run must not claim an existing worker id; got:\n%s", firstOut)
+	}
+
+	prepareRoot([]string{"keygen", "--data-dir", dataDir, "--force"})
+	secondOut := captureStdout(t, func() {
+		if err := Execute(); err != nil {
+			t.Fatalf("second keygen: unexpected error: %v", err)
+		}
+	})
+	if !strings.Contains(secondOut, "existing, loaded from") {
+		t.Errorf("second run against the same data dir should report the existing worker id; got:\n%s", secondOut)
+	}
+	if strings.Contains(secondOut, "newly generated") {
+		t.Errorf("second run must not claim a newly generated worker id; got:\n%s", secondOut)
 	}
 }
