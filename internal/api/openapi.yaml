@@ -29,9 +29,9 @@ info:
 
     Every route under `/api/v1` except `POST /auth/login`, `POST
     /auth/logout`, `GET /auth/me`, `GET /auth/providers`, `GET
-    /auth/oidc/login`, `GET /auth/oidc/callback`, `GET /version`, and `GET
-    /openapi.yaml` is gated on the caller's role holding a specific permission (`jobs.read`,
-    `jobs.write`, `workers.read`, `workers.manage`, `infra.read`,
+    /auth/oidc/login`, `GET /auth/oidc/callback`, `GET /version`, `GET
+    /openapi.yaml`, and `POST /workers/enroll` is gated on the caller's role holding a specific permission (`jobs.read`,
+    `jobs.write`, `workers.read`, `workers.manage`, `workers.enroll`, `infra.read`,
     `infra.manage`, `products.read`, `products.manage`, `diagnostics.read`,
     `users.read`, `users.manage`, `apikeys.self`, `apikeys.admin`) — see the
     `read-only`/`user`/`operator`/`admin` role matrix. A request from an
@@ -44,6 +44,22 @@ info:
     not unauthenticated either: it runs its own upgrade hook (a valid
     principal is still required) plus a subject-level `diagnostics.read`
     check before allowing a subscription to the diagnostics feed.
+
+    `POST /workers/enroll` is unauthenticated for a different reason than the
+    login-related routes above: the join token in its request body is itself
+    the credential that authorizes the call, so requiring a session or API
+    key would be circular — a worker enrolling for the first time has
+    neither. It is also the only route in this API mounted conditionally on
+    server configuration rather than always-present-but-gated: it exists
+    only when broker authentication (`nats.auth.enabled`) is on and the
+    operator has left `nats.auth.enrollment_endpoint_enabled` at its
+    default. When either is off, the route is not registered at all and
+    returns `404 Not Found`. `POST /workers/join-tokens`, which mints the
+    tokens this endpoint consumes, is permission-gated as normal
+    (`workers.enroll`) but is itself mounted only when `auth.enabled` — with
+    auth off, every request is the anonymous superuser described above, and
+    minting a join token attaches arbitrary compute, a materially larger
+    blast radius than every other superuser-bypassed action.
   version: "0.3.0"
   license:
     name: AGPL-3.0-or-later
@@ -810,6 +826,85 @@ components:
         status:
           type: string
           enum: [online, offline, disabled]
+
+    # ── Worker enrollment & broker credentials ───────────────────────────────
+    WorkerEnrollRequest:
+      type: object
+      required: [join_token, worker_id, public_key]
+      properties:
+        join_token:
+          type: string
+          description: >-
+            The raw join token minted by POST /workers/join-tokens (or
+            `sqi-server worker token issue`). This IS the credential that
+            authorizes the call — there is no other authentication on this
+            route.
+        worker_id:
+          type: string
+          description: >-
+            The worker's stable ID. Rejected with 409 if it already has an
+            active credential bound to a different public key.
+        public_key:
+          type: string
+          description: The worker's nkey public key, starting with "U".
+        name:
+          type: string
+          description: Optional human-readable label for the credential.
+
+    WorkerCredential:
+      type: object
+      required: [id, worker_id, public_key, enrolled_at]
+      properties:
+        id:
+          type: string
+        worker_id:
+          type: string
+        public_key:
+          type: string
+        name:
+          type: string
+        enrolled_at:
+          type: string
+          format: date-time
+        last_seen_at:
+          type: string
+          format: date-time
+          nullable: true
+        revoked_at:
+          type: string
+          format: date-time
+          nullable: true
+
+    WorkerJoinTokenCreate:
+      type: object
+      properties:
+        name:
+          type: string
+          description: Optional human-readable label for the token.
+
+    WorkerJoinTokenCreated:
+      type: object
+      required: [id, token, prefix, expires_at, created_at]
+      properties:
+        id:
+          type: string
+        token:
+          type: string
+          description: >-
+            The raw join token. Shown once, at creation, and never returned
+            again — only its hash is stored. Pass it as `join_token` to
+            POST /workers/enroll.
+        prefix:
+          type: string
+          description: Leading characters of the raw token, for identification in a list. Never enough to reconstruct the token.
+        name:
+          type: string
+        expires_at:
+          type: string
+          format: date-time
+        created_at:
+          type: string
+          format: date-time
 
     # ── Diagnostics ───────────────────────────────────────────────────────────
     DiagnosticRecord:
@@ -2669,6 +2764,146 @@ paths:
           $ref: "#/components/responses/Forbidden"
         "404":
           $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  /workers/enroll:
+    post:
+      operationId: enrollWorker
+      summary: Enroll a worker with a join token
+      tags: [workers]
+      description: |
+        Exchanges a valid join token for a broker credential. Unauthenticated
+        by design — the join token in the request body is itself the
+        credential that authorizes this call, so no session or API key is
+        required or accepted.
+
+        Mounted only when broker authentication (`nats.auth.enabled`) is on
+        and `nats.auth.enrollment_endpoint_enabled` has not been turned off;
+        otherwise this path does not exist and returns `404`.
+
+        An unknown join token, an expired one, and (when single-use tokens
+        are configured) an already-used one all return the same `401` with
+        the same body: this route is unauthenticated and may be reachable
+        from an untrusted network, so distinguishing those cases would let a
+        caller enumerate which tokens exist or whether one has been claimed.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/WorkerEnrollRequest"
+      responses:
+        "201":
+          description: Worker enrolled; the credential now exists.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WorkerCredential"
+        "400":
+          description: Malformed request body, missing fields, or an invalid public key.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        "401":
+          description: The join token is unknown, expired, or already used.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        "404":
+          description: The enrollment endpoint is not mounted (see the operation description).
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        "409":
+          description: >-
+            The worker ID already has an active credential, or the public
+            key is already enrolled to another worker.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  /workers/join-tokens:
+    post:
+      operationId: createWorkerJoinToken
+      summary: Mint a worker join token
+      tags: [workers]
+      description: |
+        Mints a new join token for self-service worker enrollment over
+        POST /workers/enroll. The raw token is returned exactly once, in
+        this response; only its hash is stored, so it cannot be recovered or
+        displayed again.
+
+        Requires `workers.enroll`, a permission deliberately separate from
+        `workers.manage`: minting a join token attaches arbitrary compute
+        that receives and executes job code, a different privilege in kind
+        from enabling, disabling, or deleting an existing worker. This route
+        is additionally mounted only when `auth.enabled` — see the
+        Authorization section above.
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/WorkerJoinTokenCreate"
+      responses:
+        "201":
+          description: Join token created.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WorkerJoinTokenCreated"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  /workers/{id}/credential:
+    parameters:
+      - $ref: "#/components/parameters/id"
+
+    delete:
+      operationId: revokeWorkerCredential
+      summary: Revoke a worker's broker credential
+      tags: [workers]
+      description: |
+        Soft-revokes the active broker credential for the worker named by
+        `id`. Requires `workers.enroll` (see POST /workers/join-tokens).
+
+        A worker that was never enrolled and a worker whose credential is
+        already revoked are indistinguishable at the store layer, so both
+        return `404` with a body that says so rather than claiming the
+        worker does not exist.
+
+        This call writes the revocation to the database. It does not by
+        itself guarantee an already-connected worker is disconnected
+        immediately — that depends on how revocation reaches the running
+        broker, which is outside this route's scope.
+      responses:
+        "204":
+          description: Credential revoked.
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          description: >-
+            No active credential for this worker — it may never have been
+            enrolled, or its credential may already be revoked.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
         "500":
           $ref: "#/components/responses/InternalServerError"
 

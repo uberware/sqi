@@ -62,6 +62,12 @@ const (
 	// from InfraManage — which operator holds — because it is an escalation
 	// surface, not ordinary queue configuration.
 	IsolationManage Permission = "isolation.manage"
+	// WorkersEnroll grants issuing worker join tokens — that is, attaching
+	// arbitrary compute that receives and executes job code. It is kept
+	// separate from WorkersManage (enable/disable/delete an existing worker)
+	// for the same reason IsolationManage is: the privilege is different in
+	// kind, not merely in degree.
+	WorkersEnroll Permission = "workers.enroll"
 )
 
 // grants maps each built-in role to the set of permissions it holds. A role
@@ -86,7 +92,7 @@ var grants = map[string]map[Permission]bool{
 		WorkersRead: true, WorkersManage: true,
 		InfraRead: true, InfraManage: true, ProductsRead: true, ProductsManage: true,
 		DiagnosticsRead: true, UsersRead: true, UsersManage: true,
-		APIKeysSelf: true, APIKeysAdmin: true, IsolationManage: true,
+		APIKeysSelf: true, APIKeysAdmin: true, IsolationManage: true, WorkersEnroll: true,
 	},
 }
 
@@ -97,7 +103,7 @@ var All = []Permission{
 	JobsRead, JobsReadAll, JobsWrite, JobsSubmitAs, WorkersRead, WorkersManage,
 	InfraRead, InfraManage, ProductsRead, ProductsManage,
 	DiagnosticsRead, UsersRead, UsersManage,
-	APIKeysSelf, APIKeysAdmin, IsolationManage,
+	APIKeysSelf, APIKeysAdmin, IsolationManage, WorkersEnroll,
 }
 
 // Roles returns a read-only snapshot of the role → permission grants matrix,

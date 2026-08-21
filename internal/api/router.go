@@ -214,6 +214,29 @@ type Deps struct {
 	// cheaper than a key to configure, distribute, and rotate. Only read when
 	// OIDCProvider is non-nil.
 	OIDCStateKey []byte
+
+	// NATSAuthEnabled mirrors config.NATSAuthConfig.Enabled: the broker
+	// requires a per-worker nkey credential. POST /api/v1/workers/enroll is
+	// mounted only when this AND NATSAuthEnrollmentEndpointEnabled are both
+	// true — with broker auth off there is no credential for it to issue, and
+	// an operator who wants no self-service enrollment surface at all can
+	// turn EnrollmentEndpointEnabled off independently.
+	NATSAuthEnabled bool
+
+	// NATSAuthEnrollmentEndpointEnabled mirrors
+	// config.NATSAuthConfig.EnrollmentEndpointEnabled. See NATSAuthEnabled.
+	NATSAuthEnrollmentEndpointEnabled bool
+
+	// JoinTokenTTL is how long a join token minted by
+	// POST /api/v1/workers/join-tokens remains valid. Mirrors
+	// config.NATSAuthConfig.JoinTokenTTL, which is bounds-checked at config
+	// load — this handler does not re-validate it.
+	JoinTokenTTL time.Duration
+
+	// JoinTokenSingleUse consumes a join token on its first successful
+	// enrollment, rejecting a second attempt with the same token. Mirrors
+	// config.NATSAuthConfig.JoinTokenSingleUse.
+	JoinTokenSingleUse bool
 }
 
 // resolveCORSOrigins returns the CORS allow-list to configure, dropping the
@@ -407,6 +430,7 @@ func NewRouter(cfg Config, deps Deps, logger *slog.Logger, m *metrics.Metrics, h
 	}
 	usersH := newUsersHandler(deps.Store, logger, deps.LDAPConfig.RoleSource, deps.OIDCConfig.RoleSource)
 	apiKeysH := newAPIKeysHandler(deps.Store, logger)
+	workerEnroll := newWorkerEnrollHandler(deps.Store, logger, deps.JoinTokenSingleUse, deps.JoinTokenTTL)
 	az := newAuthz(deps.Store, logger)
 
 	wsH := newWSHandler(logger, deps.Hub, deps.Store, deps.Auth, wsOriginConfig{
@@ -462,6 +486,19 @@ func NewRouter(cfg Config, deps Deps, logger *slog.Logger, m *metrics.Metrics, h
 		if deps.OIDCProvider != nil && len(deps.OIDCStateKey) > 0 {
 			api.Get("/auth/oidc/login", authH.oidcLogin)
 			api.Get("/auth/oidc/callback", authH.oidcCallback)
+		}
+
+		// Public, unauthenticated by design: the join token carried in the
+		// request body is itself the credential that authorizes an
+		// enrollment, so gating this route on a session or API key would be
+		// circular — a worker enrolling for the first time has neither.
+		// Mounted only when broker authentication is on (otherwise there is
+		// no credential for it to issue) and the operator has left the
+		// enrollment endpoint enabled (some sites provision every credential
+		// by hand via "sqi-server worker enroll" and want no self-service
+		// surface at all).
+		if deps.NATSAuthEnabled && deps.NATSAuthEnrollmentEndpointEnabled {
+			api.Post("/workers/enroll", workerEnroll.enroll)
 		}
 
 		// REST resource routes — gated by the auth middleware.
@@ -558,6 +595,35 @@ func NewRouter(cfg Config, deps Deps, logger *slog.Logger, m *metrics.Metrics, h
 				g.Post("/workers/{id}/disable", workers.disableWorker)
 				g.Post("/workers/{id}/enable", workers.enableWorker)
 				g.Delete("/workers/{id}", workers.removeWorker)
+			})
+
+			// workers.enroll — deliberately separate from workers.manage:
+			// minting a join token attaches arbitrary compute that receives
+			// and executes job code, a different privilege in kind from
+			// enabling, disabling, or deleting an existing worker.
+			//
+			// Join-token minting is additionally mounted only when
+			// auth.enabled. Every other permission-gated route in this file
+			// stays mounted with auth off, because the anonymous Superuser
+			// principal middleware.Auth installs in that case is granted
+			// everything by design (auth-off behavior must be unchanged from
+			// pre-auth sqi). That equivalence is the wrong default here: with
+			// no RBAC actually enforced, anyone who can reach this server
+			// would be able to mint a credential for arbitrary compute, which
+			// is a materially different blast radius than every other
+			// Superuser-bypassed action. Revoking an existing worker's
+			// credential carries no such risk — it only removes access
+			// already granted — so it stays mounted unconditionally like
+			// every other permission-gated route.
+			if cfg.AuthEnabled {
+				rest.Group(func(g chi.Router) {
+					g.Use(az.require(policy.WorkersEnroll))
+					g.Post("/workers/join-tokens", workerEnroll.createJoinToken)
+				})
+			}
+			rest.Group(func(g chi.Router) {
+				g.Use(az.require(policy.WorkersEnroll))
+				g.Delete("/workers/{id}/credential", workerEnroll.revokeCredential)
 			})
 
 			// infra.read / infra.manage (farms, queues, storage, compute, usage-pools)
