@@ -236,8 +236,12 @@ if [ "$mode" = "brokerauth" ]; then
   log "creating the SQLite database (worker subcommands never create one themselves)"
   "$SERVER_BIN" migrate up --db "${TMP_DIR}/sqi.db" >/dev/null || fail "sqi-server migrate up failed"
 
+  # Resolve via SQI_STORE_SQLITE_PATH rather than --db here, so this run
+  # exercises the config-layer resolution path (the one an operator who set
+  # up their deployment through the environment actually uses) rather than
+  # only the explicit-flag path already covered above.
   log "minting a worker join token (broker auth mode)"
-  JOIN_TOKEN="$("$SERVER_BIN" worker token issue --db "${TMP_DIR}/sqi.db" --name smoke-brokerauth)"
+  JOIN_TOKEN="$(SQI_STORE_SQLITE_PATH="${TMP_DIR}/sqi.db" "$SERVER_BIN" worker token issue --name smoke-brokerauth)"
   [ -n "$JOIN_TOKEN" ] || fail "sqi-server worker token issue produced no token"
   JOIN_TOKEN_FILE="${TMP_DIR}/join-token"
   printf '%s' "$JOIN_TOKEN" >"$JOIN_TOKEN_FILE"
