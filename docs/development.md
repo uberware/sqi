@@ -480,8 +480,24 @@ ListStepsForJob(ctx context.Context, jobID string) ([]Step, error)
 ```
 
 Then implement it in `internal/store/sqlite/step.go` using a prepared
-statement, and add a corresponding stub to the in-memory fake in
-`internal/store/fake/store.go` so existing tests keep compiling.
+statement.
+
+**A wholly new aggregate — a new table, not just a new method on an
+existing one — needs a migration.** Add a numbered SQL file to
+`internal/store/migrations/` (e.g. `00031_my_feature.sql`, continuing the
+existing sequence), with `+goose Up`/`+goose Down` sections following the
+pattern of the surrounding files. A new column or index on an existing
+table needs one too. A new method on an *existing* table (like
+`ListStepsForJob` above, assuming `steps` already exists) needs no schema
+change at all.
+
+Finally, add a corresponding stub to the in-memory fake. The fake is split
+per aggregate, mirroring `internal/store/sqlite/`, not one
+`internal/store/fake/store.go` file — a `step.go` under `internal/store/fake/`
+for the `StepStore` methods above, or a new file named for a wholly new
+aggregate (see `internal/store/fake/workercredential.go` for what a new
+aggregate's fake looks like end to end). Stub it so existing tests keep
+compiling.
 
 > **Not every new store method is REST-triggered.** The auto-retry +
 > failure-limit feature added `RecordTaskFailure`, `RequeueTaskForRetry`
