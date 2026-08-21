@@ -16,7 +16,7 @@ and follow different flows.
 |---|---|---|
 | **What** | stdout/stderr of a task process running under a worker | sqi-server's and sqi-worker's own structured `slog` output |
 | **Who writes** | The task's child process | The sqi binaries themselves |
-| **Transport** | NATS JetStream `task.logs.<taskID>` | Core NATS `worker.diag.<workerID>` (best-effort); server logs go in-process |
+| **Transport** | NATS JetStream `task.logs.<workerID>.<taskID>` | Core NATS `worker.diag.<workerID>` (best-effort); server logs go in-process |
 | **Persistence** | Durable; retained ~96 h in JetStream, also written to SQLite | In-memory ring buffer on the server; lost on server restart |
 | **Where to read** | Task detail → log tab in the web UI | Worker detail panel, Admin → Server log, or REST/WS API |
 | **Disable** | Not configurable (always streamed for running tasks) | Server: `SQI_DIAGNOSTICS_BUFFER_SIZE=0`; worker: `SQI_DIAGNOSTICS_ENABLED=false` |
@@ -25,7 +25,7 @@ and follow different flows.
 
 When a worker executes a task it captures the process's stdout and stderr
 through a `logstreamer` and publishes them in chunks to the JetStream subject
-`task.logs.<taskID>`. The server's consumer writes each chunk to SQLite and
+`task.logs.<workerID>.<taskID>`. The server's consumer writes each chunk to SQLite and
 fans it out over WebSocket so the task log page updates live. Because JetStream
 retains messages, you can reload the log page and still see all output.
 

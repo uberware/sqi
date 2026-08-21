@@ -293,7 +293,7 @@ func (w *mockWorker) register() {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	if _, err := w.js.Publish(ctx, bus.SubjectWorkerRegister, data); err != nil {
+	if _, err := w.js.Publish(ctx, bus.WorkerRegisterSubject(w.id), data); err != nil {
 		w.t.Fatalf("mockWorker.register: publish: %v", err)
 	}
 }
@@ -329,7 +329,7 @@ func (w *mockWorker) startHeartbeat(interval time.Duration) {
 				pubCtx, pubCancel := context.WithTimeout(ctx, 2*time.Second)
 				// Ignore publish errors in the heartbeat loop — the connection
 				// may be closing during test cleanup.
-				if _, pubErr := w.js.Publish(pubCtx, bus.SubjectWorkerHeartbeat, data); pubErr != nil {
+				if _, pubErr := w.js.Publish(pubCtx, bus.WorkerHeartbeatSubject(w.id), data); pubErr != nil {
 					pubCancel()
 					return
 				}
@@ -358,7 +358,7 @@ func (w *mockWorker) pullAssignment(timeout time.Duration) protocol.AssignMsg {
 	for time.Now().Before(deadline) {
 		reqTimeout := min(time.Until(deadline), 35*time.Second)
 		reqCtx, cancel := context.WithTimeout(context.Background(), reqTimeout)
-		msg, reqErr := w.nc.RequestWithContext(reqCtx, bus.WorkLeaseSubject(w.queueID), reqBytes)
+		msg, reqErr := w.nc.RequestWithContext(reqCtx, bus.WorkLeaseSubject(w.id, w.queueID), reqBytes)
 		cancel()
 		if reqErr != nil {
 			if !errors.Is(reqErr, context.DeadlineExceeded) && !errors.Is(reqErr, nats.ErrTimeout) {
@@ -407,7 +407,7 @@ func (w *mockWorker) publishStatus(assign protocol.AssignMsg, status string, exi
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	if _, err := w.js.Publish(ctx, bus.TaskStatusSubject(assign.JobID), data); err != nil {
+	if _, err := w.js.Publish(ctx, bus.TaskStatusSubject(w.id, assign.JobID), data); err != nil {
 		w.t.Fatalf("mockWorker.publishStatus(%s): publish: %v", status, err)
 	}
 }
@@ -433,7 +433,7 @@ func (w *mockWorker) publishLogChunk(assign protocol.AssignMsg, seqNum int64, da
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	if _, err := w.js.Publish(ctx, bus.TaskLogsSubject(assign.TaskID), raw); err != nil {
+	if _, err := w.js.Publish(ctx, bus.TaskLogsSubject(w.id, assign.TaskID), raw); err != nil {
 		w.t.Fatalf("mockWorker.publishLogChunk: publish: %v", err)
 	}
 }

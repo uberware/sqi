@@ -88,31 +88,34 @@ func NewClient(url string, logger *slog.Logger, extraOpts ...nats.Option) (*Clie
 // ── Publish methods ──────────────────────────────────────────────────────────
 
 // PublishTaskStatus publishes a task-status transition to the
-// task.status.<jobID> subject.  Workers call this when a task transitions
-// to running, succeeded, failed, or canceled.
-func (c *Client) PublishTaskStatus(ctx context.Context, jobID string, data []byte) error {
-	return c.publish(ctx, TaskStatusSubject(jobID), data)
+// task.status.<workerID>.<jobID> subject.  Workers call this when a task
+// transitions to running, succeeded, failed, or canceled.
+func (c *Client) PublishTaskStatus(ctx context.Context, workerID, jobID string, data []byte) error {
+	return c.publish(ctx, TaskStatusSubject(workerID, jobID), data)
 }
 
-// PublishTaskLog publishes a log chunk to the task.logs.<taskID> subject.
-// Workers call this continuously as a task produces output; the server retains
-// chunks in JetStream for later retrieval via the REST and WebSocket APIs.
-func (c *Client) PublishTaskLog(ctx context.Context, taskID string, data []byte) error {
-	return c.publish(ctx, TaskLogsSubject(taskID), data)
+// PublishTaskLog publishes a log chunk to the task.logs.<workerID>.<taskID>
+// subject.  Workers call this continuously as a task produces output; the
+// server retains chunks in JetStream for later retrieval via the REST and
+// WebSocket APIs.
+func (c *Client) PublishTaskLog(ctx context.Context, workerID, taskID string, data []byte) error {
+	return c.publish(ctx, TaskLogsSubject(workerID, taskID), data)
 }
 
-// PublishWorkerHeartbeat publishes a heartbeat ping on the worker.heartbeat
-// subject.  Workers call this on a regular interval; the server-side heartbeat
-// sweep marks workers offline when pings stop.
-func (c *Client) PublishWorkerHeartbeat(ctx context.Context, data []byte) error {
-	return c.publish(ctx, SubjectWorkerHeartbeat, data)
+// PublishWorkerHeartbeat publishes a heartbeat ping on the
+// worker.heartbeat.<workerID> subject.  Workers call this on a regular
+// interval; the server-side heartbeat sweep marks workers offline when pings
+// stop.
+func (c *Client) PublishWorkerHeartbeat(ctx context.Context, workerID string, data []byte) error {
+	return c.publish(ctx, WorkerHeartbeatSubject(workerID), data)
 }
 
 // PublishWorkerRegister publishes a capability advertisement on the
-// worker.register subject.  Workers call this on first connect and after any
-// reconnect so the server always has a current view of their capabilities.
-func (c *Client) PublishWorkerRegister(ctx context.Context, data []byte) error {
-	return c.publish(ctx, SubjectWorkerRegister, data)
+// worker.register.<workerID> subject.  Workers call this on first connect and
+// after any reconnect so the server always has a current view of their
+// capabilities.
+func (c *Client) PublishWorkerRegister(ctx context.Context, workerID string, data []byte) error {
+	return c.publish(ctx, WorkerRegisterSubject(workerID), data)
 }
 
 // PublishTaskCancel publishes a task-cancellation signal to the

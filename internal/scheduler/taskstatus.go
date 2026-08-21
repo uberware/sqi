@@ -7,7 +7,7 @@ package scheduler
 //
 // This file implements the task-status consumer — the counterpart of the
 // worker-register and worker-heartbeat consumers already in scheduler.go.
-// When a worker publishes a protocol.TaskStatusMsg to task.status.<job>,
+// When a worker publishes a protocol.TaskStatusMsg to task.status.<worker>.<job>,
 // handleTaskStatusMessage updates the store, closes the attempt record,
 // releases usage pool slots, and drives step/job completion logic.
 //
@@ -55,7 +55,7 @@ func (s *Scheduler) startTaskStatusConsumer(ctx context.Context) error {
 }
 
 // handleTaskStatusMessage is the JetStream message handler for
-// task.status.<job> messages published by workers.
+// task.status.<worker>.<job> messages published by workers.
 func (s *Scheduler) handleTaskStatusMessage(msg jetstream.Msg) {
 	ctx := s.ctx
 

@@ -117,7 +117,7 @@ func publishStatusWithMessage(t *testing.T, w *mockWorker, assign protocol.Assig
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	if _, err := w.js.Publish(ctx, bus.TaskStatusSubject(assign.JobID), data); err != nil {
+	if _, err := w.js.Publish(ctx, bus.TaskStatusSubject(w.id, assign.JobID), data); err != nil {
 		t.Fatalf("publishStatusWithMessage(%s): publish: %v", status, err)
 	}
 }

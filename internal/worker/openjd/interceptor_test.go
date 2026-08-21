@@ -188,7 +188,7 @@ func TestStatusDirectivePublishesNATS(t *testing.T) {
 	if len(msgs) != 1 {
 		t.Fatalf("expected 1 NATS message, got %d", len(msgs))
 	}
-	wantSubj := bus.TaskStatusSubject("job-1")
+	wantSubj := bus.TaskStatusSubject("test-worker", "job-1")
 	if msgs[0].subject != wantSubj {
 		t.Errorf("NATS subject = %q, want %q", msgs[0].subject, wantSubj)
 	}

@@ -41,7 +41,7 @@ func TestHandleWorkerRegister_Valid(t *testing.T) {
 	s := newMetricsScheduler(st, &recordBus{}, "")
 
 	msg := &fakeJSMsg{
-		subject: bus.SubjectWorkerRegister,
+		subject: bus.WorkerRegisterSubject("w-1"),
 		data: workerMsgJSON(t, protocol.RegisterMsg{
 			Version: protocol.ProtocolVersion, Type: protocol.TypeRegister,
 			WorkerID: "w-1", FarmID: "farm-1", Name: "worker-2", Hostname: "node-1", OS: "linux",
@@ -75,7 +75,7 @@ func TestHandleWorkerRegister_MalformedJSON_Acked(t *testing.T) {
 	st := fake.New()
 	s := newMetricsScheduler(st, &recordBus{}, "")
 
-	msg := &fakeJSMsg{subject: bus.SubjectWorkerRegister, data: []byte("{bad")}
+	msg := &fakeJSMsg{subject: bus.WorkerRegisterSubject("w-1"), data: []byte("{bad")}
 	s.handleWorkerMessage(msg)
 
 	if !msg.acked {
@@ -88,7 +88,7 @@ func TestHandleWorkerRegister_MissingWorkerID_Acked(t *testing.T) {
 	s := newMetricsScheduler(st, &recordBus{}, "")
 
 	msg := &fakeJSMsg{
-		subject: bus.SubjectWorkerRegister,
+		subject: bus.WorkerRegisterSubject("w-1"),
 		data:    workerMsgJSON(t, protocol.RegisterMsg{Version: protocol.ProtocolVersion, WorkerID: "", FarmID: "farm-1"}),
 	}
 	s.handleWorkerMessage(msg)
@@ -112,7 +112,7 @@ func TestHandleWorkerRegister_StoreError_Nacked(t *testing.T) {
 	s := newMetricsScheduler(st, &recordBus{}, "")
 
 	msg := &fakeJSMsg{
-		subject: bus.SubjectWorkerRegister,
+		subject: bus.WorkerRegisterSubject("w-1"),
 		data:    workerMsgJSON(t, protocol.RegisterMsg{Version: protocol.ProtocolVersion, WorkerID: "w-1", FarmID: "farm-1"}),
 	}
 	s.handleWorkerMessage(msg)
@@ -140,7 +140,7 @@ func TestHandleWorkerHeartbeat_Valid(t *testing.T) {
 
 	hbAt := now.Add(5 * time.Second)
 	msg := &fakeJSMsg{
-		subject: bus.SubjectWorkerHeartbeat,
+		subject: bus.WorkerHeartbeatSubject("w-1"),
 		data:    workerMsgJSON(t, protocol.HeartbeatMsg{Version: protocol.ProtocolVersion, WorkerID: "w-1", At: hbAt}),
 	}
 	s.handleWorkerMessage(msg)
@@ -170,7 +170,7 @@ func TestHandleWorkerHeartbeat_ZeroAt_UsesServerTime(t *testing.T) {
 	}
 
 	msg := &fakeJSMsg{
-		subject: bus.SubjectWorkerHeartbeat,
+		subject: bus.WorkerHeartbeatSubject("w-1"),
 		data:    workerMsgJSON(t, protocol.HeartbeatMsg{Version: protocol.ProtocolVersion, WorkerID: "w-1"}), // zero At
 	}
 	s.handleWorkerMessage(msg)
@@ -189,7 +189,7 @@ func TestHandleWorkerHeartbeat_UnknownWorker_Nacked(t *testing.T) {
 	s := newMetricsScheduler(st, &recordBus{}, "")
 
 	msg := &fakeJSMsg{
-		subject: bus.SubjectWorkerHeartbeat,
+		subject: bus.WorkerHeartbeatSubject("ghost"),
 		data:    workerMsgJSON(t, protocol.HeartbeatMsg{Version: protocol.ProtocolVersion, WorkerID: "ghost", At: time.Now()}),
 	}
 	s.handleWorkerMessage(msg)
@@ -213,7 +213,7 @@ func TestHandleWorkerHeartbeat_MalformedAndMissingID_Acked(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			st := fake.New()
 			s := newMetricsScheduler(st, &recordBus{}, "")
-			msg := &fakeJSMsg{subject: bus.SubjectWorkerHeartbeat, data: tt.data}
+			msg := &fakeJSMsg{subject: bus.WorkerHeartbeatSubject("w-1"), data: tt.data}
 			s.handleWorkerMessage(msg)
 			if !msg.acked {
 				t.Errorf("%s heartbeat should be acked (discarded)", tt.name)
@@ -236,7 +236,7 @@ func TestHandleWorkerDeregister_Valid(t *testing.T) {
 	}
 
 	msg := &fakeJSMsg{
-		subject: bus.SubjectWorkerDeregister,
+		subject: bus.WorkerDeregisterSubject("w-1"),
 		data:    workerMsgJSON(t, map[string]string{"worker_id": "w-1", "reason": "shutdown"}),
 	}
 	s.handleWorkerMessage(msg)
@@ -302,7 +302,7 @@ func TestHandleWorkerDeregister_ReclaimsInFlightTasks(t *testing.T) {
 	}
 
 	msg := &fakeJSMsg{
-		subject: bus.SubjectWorkerDeregister,
+		subject: bus.WorkerDeregisterSubject(workerID),
 		data:    workerMsgJSON(t, map[string]string{"worker_id": workerID, "reason": "shutdown"}),
 	}
 	s.handleWorkerMessage(msg)
@@ -331,7 +331,7 @@ func TestHandleWorkerDeregister_UnknownWorker_Acked(t *testing.T) {
 	s := newMetricsScheduler(st, &recordBus{}, "")
 
 	msg := &fakeJSMsg{
-		subject: bus.SubjectWorkerDeregister,
+		subject: bus.WorkerDeregisterSubject("ghost"),
 		data:    workerMsgJSON(t, map[string]string{"worker_id": "ghost"}),
 	}
 	s.handleWorkerMessage(msg)
@@ -353,7 +353,7 @@ func TestHandleWorkerDeregister_MalformedAndMissingID_Acked(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			st := fake.New()
 			s := newMetricsScheduler(st, &recordBus{}, "")
-			msg := &fakeJSMsg{subject: bus.SubjectWorkerDeregister, data: tt.data}
+			msg := &fakeJSMsg{subject: bus.WorkerDeregisterSubject("w-1"), data: tt.data}
 			s.handleWorkerMessage(msg)
 			if !msg.acked {
 				t.Errorf("%s deregister should be acked", tt.name)
@@ -372,7 +372,7 @@ func TestRegistration_AutoRegistersComputeLocation(t *testing.T) {
 	// Case 1: end-to-end — register a worker with a new location via
 	// handleWorkerMessage; assert the entity is created in the store.
 	msg := &fakeJSMsg{
-		subject: bus.SubjectWorkerRegister,
+		subject: bus.WorkerRegisterSubject("w-loc-1"),
 		data: workerMsgJSON(t, protocol.RegisterMsg{
 			Version: protocol.ProtocolVersion, Type: protocol.TypeRegister,
 			WorkerID: "w-loc-1", FarmID: "farm-1", Hostname: "n1", OS: "linux",
@@ -429,7 +429,7 @@ func TestRegistration_EnsureComputeLocation_StoreError(t *testing.T) {
 	s := newMetricsScheduler(st, &recordBus{}, "")
 
 	msg := &fakeJSMsg{
-		subject: bus.SubjectWorkerRegister,
+		subject: bus.WorkerRegisterSubject("w-loc-err"),
 		data: workerMsgJSON(t, protocol.RegisterMsg{
 			Version: protocol.ProtocolVersion, Type: protocol.TypeRegister,
 			WorkerID: "w-loc-err", FarmID: "farm-1", Hostname: "n1", OS: "linux",
@@ -482,7 +482,7 @@ func TestRegistration_EnsureComputeLocation_LookupError(t *testing.T) {
 	s := newMetricsScheduler(st, &recordBus{}, "")
 
 	msg := &fakeJSMsg{
-		subject: bus.SubjectWorkerRegister,
+		subject: bus.WorkerRegisterSubject("w-loc-err2"),
 		data: workerMsgJSON(t, protocol.RegisterMsg{
 			Version: protocol.ProtocolVersion, Type: protocol.TypeRegister,
 			WorkerID: "w-loc-err2", FarmID: "farm-1", Hostname: "n1", OS: "linux",
@@ -522,7 +522,7 @@ func TestHandleWorkerMessage_RegisterID(t *testing.T) {
 	id := uuid.NewString()
 
 	msg := &fakeJSMsg{
-		subject: bus.SubjectWorkerRegister,
+		subject: bus.WorkerRegisterSubject(id),
 		data:    workerMsgJSON(t, protocol.RegisterMsg{Version: protocol.ProtocolVersion, WorkerID: id, FarmID: "farm-1"}),
 	}
 	s.handleWorkerMessage(msg)

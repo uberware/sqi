@@ -4,7 +4,7 @@ package scheduler
 
 // Tests for the receiver-side wire-protocol version gate on the three worker →
 // server message types the server ACTS ON: worker.register, worker.heartbeat
-// and task.status.<job>.
+// and task.status.
 //
 // WHY A GATE AT ALL. encoding/json silently drops every field the receiving
 // struct does not declare, so a message that merely decodes is not evidence
@@ -40,7 +40,7 @@ import (
 // sender). The empty case matters most — it is the one a reader assumes is
 // handled and the one an `if version != "" && version != current` gate lets
 // through.
-var mismatchedVersions = []string{"1", "3", ""}
+var mismatchedVersions = []string{"2", "4", ""}
 
 // ── worker.register ───────────────────────────────────────────────────────────
 
@@ -57,7 +57,7 @@ func TestHandleWorkerRegister_VersionMismatch_Discarded(t *testing.T) {
 			s := newMetricsScheduler(st, &recordBus{}, "")
 
 			msg := &fakeJSMsg{
-				subject: bus.SubjectWorkerRegister,
+				subject: bus.WorkerRegisterSubject("w-1"),
 				data: workerMsgJSON(t, protocol.RegisterMsg{
 					Version:  v,
 					Type:     protocol.TypeRegister,
@@ -110,7 +110,7 @@ func TestHandleWorkerHeartbeat_VersionMismatch_Discarded(t *testing.T) {
 			}
 
 			msg := &fakeJSMsg{
-				subject: bus.SubjectWorkerHeartbeat,
+				subject: bus.WorkerHeartbeatSubject("w-1"),
 				data: workerMsgJSON(t, protocol.HeartbeatMsg{
 					Version:  v,
 					Type:     protocol.TypeHeartbeat,
@@ -139,7 +139,7 @@ func TestHandleWorkerHeartbeat_VersionMismatch_Discarded(t *testing.T) {
 	}
 }
 
-// ── task.status.<job> ─────────────────────────────────────────────────────────
+// ── task.status.<worker>.<job> ────────────────────────────────────────────────
 
 // TestHandleTaskStatusMessage_VersionMismatch_Discarded is the one with a
 // cost: a terminal status discarded here means the server never learns the
@@ -155,7 +155,7 @@ func TestHandleTaskStatusMessage_VersionMismatch_Discarded(t *testing.T) {
 			job, _, task, attempt := seedStatusFixture(t, st, store.TaskStatusAssigned)
 
 			msg := &fakeJSMsg{
-				subject: "task.status." + job.ID,
+				subject: bus.TaskStatusSubject("w-1", job.ID),
 				data: taskStatusMsgJSON(t, protocol.TaskStatusMsg{
 					Version:   v,
 					Type:      protocol.TypeTaskStatus,

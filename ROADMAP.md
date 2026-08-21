@@ -79,7 +79,7 @@ Configuration cascades: farm defaults → queue overrides, with retry policy (ma
 
 **Scheduling considers:** job priority, task dependencies, queue and farm policy (concurrency limits, scheduling mode), compute location affinity, worker capability tags (OS, GPU, installed software), and usage pool availability.
  - *Design:* ready tasks remain `ready` until a worker sends a core-NATS
-    request to `work.lease.<queue>`. The server computes free cores
+    request to `work.lease.<worker>.<queue>`. The server computes free cores
     (`CPUCount − Σ committed`), selects a priority-ordered batch that fits,
     atomically transitions the batch `ready → assigned` (stamping `assigned_at`
     only now), and replies. The `SQI_WORK` JetStream stream, `work.assign.<queue>`
@@ -212,7 +212,7 @@ NATS JetStream handles:
 - Heartbeats and worker registration
 
 Work leases use **core NATS** request/reply (not JetStream): the worker requests
-work on `work.lease.<queue>` and the server replies with a batch it is
+work on `work.lease.<worker>.<queue>` and the server replies with a batch it is
 authorized to run (pull-based). Real-time UI updates reach web clients over
 WebSocket, fanned out by the server after it ingests the JetStream messages.
 

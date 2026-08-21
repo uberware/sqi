@@ -33,10 +33,20 @@ type leaseReply struct {
 // handleLeaseRequest decodes a lease request, leases a fitting batch, and on an
 // empty result parks the request in the waiter registry until new work appears
 // or leaseHoldTimeout elapses, then replies once more.
-func (s *Scheduler) handleLeaseRequest(queueID string, data []byte) []byte {
+//
+// workerID is the identity carried by the request's subject; queueID is the
+// queue the worker asked about.
+func (s *Scheduler) handleLeaseRequest(workerID, queueID string, data []byte) []byte {
 	ctx := s.ctx
 	var req leaseRequest
 	if err := json.Unmarshal(data, &req); err != nil || req.WorkerID == "" {
+		// The subject is the only identity left once the body will not decode.
+		// Debug, not warn: an unauthenticated broker lets anything publish here,
+		// so a warn would be a log-flood vector.
+		s.logger.DebugContext(
+			ctx, "scheduler: malformed lease request",
+			slog.String("subject_worker_id", workerID),
+		)
 		return marshalLeaseReply(nil)
 	}
 

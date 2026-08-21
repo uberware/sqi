@@ -17,8 +17,11 @@ func TestLeaseQueueIDs(t *testing.T) {
 		if len(got) != 1 || got[0] != bus.WildcardQueueToken {
 			t.Fatalf("leaseQueueIDs(nil) = %v, want [%q]", got, bus.WildcardQueueToken)
 		}
-		// The resulting subject must be valid (non-empty leaf).
-		if subj := bus.WorkLeaseSubject(got[0]); subj == bus.SubjectWorkLeasePrefix+"." {
+		// The resulting subject must be valid: a parseable worker → server
+		// lease subject with a non-empty queue token.
+		subj := bus.WorkLeaseSubject("w-1", got[0])
+		workerID, queueID, ok := bus.ParseWorkerSubject(subj)
+		if !ok || workerID != "w-1" || queueID != bus.WildcardQueueToken {
 			t.Fatalf("wildcard produced invalid subject %q", subj)
 		}
 	})

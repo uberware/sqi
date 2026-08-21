@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/uberware/sqi/internal/bus"
 	"github.com/uberware/sqi/internal/worker/protocol"
 )
 
@@ -125,8 +126,9 @@ func TestPublish_CorrectFields(t *testing.T) {
 	p := New(nc, workerID, maxTasks, 15*time.Second, NoopStateSource{}, reg, discardLogger())
 	p.publish(context.Background())
 
-	if publishedSubj != "worker.heartbeat" {
-		t.Errorf("published to subject %q, want %q", publishedSubj, "worker.heartbeat")
+	wantSubj := bus.WorkerHeartbeatSubject(workerID)
+	if publishedSubj != wantSubj {
+		t.Errorf("published to subject %q, want %q", publishedSubj, wantSubj)
 	}
 
 	var msg protocol.HeartbeatMsg

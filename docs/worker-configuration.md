@@ -560,10 +560,10 @@ worker:
 | **Env var** | `SQI_WORKER_QUEUE_IDS` (comma-separated) |
 
 Restrict this worker to serving specific queue IDs. The worker keeps one
-outstanding lease request per listed queue (`work.lease.<queueID>`). When
+outstanding lease request per listed queue (`work.lease.<workerID>.<queueID>`). When
 empty (the default), the worker issues a single lease request on the reserved
-subject `work.lease._any` — an empty leaf would produce the invalid subject
-`work.lease.` with no responders. The server selects tasks farm-wide for that
+subject `work.lease.<workerID>._any` — an empty queue token would produce an
+unroutable subject with no responders. The server selects tasks farm-wide for that
 token and gates by worker eligibility, so a queue-unaffiliated worker is
 matched to any queue's ready work. Set this on heterogeneous farms where some
 workers specialise in a subset of queues.

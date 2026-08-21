@@ -18,7 +18,7 @@ package scheduler
 // parameters to concrete local paths (resolved mode).
 //
 // Lease semantics:
-// Workers request work via the core-NATS work.lease.<queue> request/reply
+// Workers request work via the core-NATS work.lease.<worker>.<queue> request/reply
 // protocol ([handleLeaseRequest]). The scheduler selects an eligible, fitting
 // batch of ready tasks, leases each atomically, and returns the marshaled
 // payloads built here in the reply. The server never pushes assignments to a

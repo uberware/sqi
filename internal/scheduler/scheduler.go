@@ -14,7 +14,7 @@
 //     payloads. When no work is available the request parks in the waiter
 //     registry until new work appears or the hold elapses, then replies.
 //
-//  2. Worker registry: a NATS push-consumer for worker.register messages that
+//  2. Worker registry: a NATS push-consumer for worker.register.<worker> messages that
 //     persists capability data via [store.WorkerStore.RegisterWorker] and keeps
 //     the WorkersTotal Prometheus gauge current.
 //
@@ -45,10 +45,10 @@
 //
 // Status and log ingestion. A push-consumer on the SQI_TASK stream
 // ([handleTaskStatusMessage]) decodes [protocol.TaskStatusMsg] from
-// task.status.<job>, updates the task/attempt, releases held usage pool slots, and
+// task.status.<worker>.<job>, updates the task/attempt, releases held usage pool slots, and
 // drives step/job completion including [openjd.ResolveDependencies] for
 // multi-step jobs. A push-consumer on SQI_LOGS ([handleLogChunk]) persists each
-// task.logs.<task> chunk as a [store.TaskLog] row, recording both the
+// task.logs.<worker>.<task> chunk as a [store.TaskLog] row, recording both the
 // worker-assigned sequence number and the NATS stream sequence that serves as
 // the log-tail pagination cursor.
 //
@@ -213,7 +213,7 @@ type busClient interface {
 	ConsumeTaskLogs(ctx context.Context, handler jetstream.MessageHandler) (jetstream.ConsumeContext, error)
 	PublishTaskCancel(ctx context.Context, taskID string, data []byte) error
 	SubscribeWorkerDiag(handler func(subject string, data []byte)) (*nats.Subscription, error)
-	SubscribeLease(handler func(queueID string, data []byte) []byte) (*nats.Subscription, error)
+	SubscribeLease(handler func(workerID, queueID string, data []byte) []byte) (*nats.Subscription, error)
 }
 
 // Scheduler owns the assignment loop, worker registry, and heartbeat sweep.
@@ -367,8 +367,8 @@ func (s *Scheduler) Run(ctx context.Context) error {
 	)
 
 	// ── Worker NATS consumer ────────────────────────────────
-	// A single JetStream push-consumer delivers both worker.register and
-	// worker.heartbeat messages. The handler dispatches by subject.
+	// A single JetStream push-consumer delivers the worker register,
+	// heartbeat and deregister messages. The handler dispatches by subject.
 	_, err := s.bus.ConsumeWorker(ctx, s.handleWorkerMessage)
 	if err != nil {
 		return fmt.Errorf("scheduler: start worker consumer: %w", err)
@@ -376,7 +376,7 @@ func (s *Scheduler) Run(ctx context.Context) error {
 	s.logger.InfoContext(ctx, "scheduler: worker consumer started")
 
 	// ── Task-status NATS consumer ────────────────────────────────
-	// A JetStream push-consumer on SQI_TASK delivers task.status.<job>
+	// A JetStream push-consumer on SQI_TASK delivers task.status.<worker>.<job>
 	// messages from workers. handleTaskStatusMessage updates the store,
 	// closes attempt records, releases usage pool slots, and drives step/job
 	// completion.
@@ -386,7 +386,7 @@ func (s *Scheduler) Run(ctx context.Context) error {
 	s.logger.InfoContext(ctx, "scheduler: task-status consumer started")
 
 	// ── Task-logs NATS consumer ──────────────────────────────────
-	// A JetStream push-consumer on SQI_LOGS delivers task.logs.<task>
+	// A JetStream push-consumer on SQI_LOGS delivers task.logs.<worker>.<task>
 	// messages from workers. handleLogChunk persists each chunk to the
 	// task_logs table with NATS sequence as the pagination cursor.
 	if err := s.startTaskLogsConsumer(ctx); err != nil {
@@ -660,20 +660,34 @@ func (s *Scheduler) ReleaseTaskUsage(ctx context.Context, attemptID string) erro
 
 // ── Worker NATS consumer ─────────────────────────────────────────────
 
-// handleWorkerMessage is the JetStream message handler for both
-// worker.register and worker.heartbeat subjects (both flow through the
+// handleWorkerMessage is the JetStream message handler for the worker
+// register, heartbeat and deregister subjects (all three flow through the
 // SQI_WORKER stream and its single durable consumer).
+//
+// Each subject carries the publishing worker's ID as its last token, so the
+// routing below recovers that identity before dispatching to the per-message
+// handler.
 func (s *Scheduler) handleWorkerMessage(msg jetstream.Msg) {
 	ctx := s.ctx
 	subject := msg.Subject()
 
-	switch subject {
-	case bus.SubjectWorkerRegister:
-		s.handleWorkerRegister(ctx, msg)
-	case bus.SubjectWorkerHeartbeat:
-		s.handleWorkerHeartbeat(ctx, msg)
-	case bus.SubjectWorkerDeregister:
-		s.handleWorkerDeregister(ctx, msg)
+	workerID, _, ok := bus.ParseWorkerSubject(subject)
+	if !ok {
+		s.logger.WarnContext(
+			ctx, "scheduler: unexpected worker subject",
+			slog.String("subject", subject),
+		)
+		s.ackMsg(ctx, msg)
+		return
+	}
+
+	switch {
+	case strings.HasPrefix(subject, bus.SubjectWorkerRegisterPrefix+"."):
+		s.handleWorkerRegister(ctx, msg, workerID)
+	case strings.HasPrefix(subject, bus.SubjectWorkerHeartbeatPrefix+"."):
+		s.handleWorkerHeartbeat(ctx, msg, workerID)
+	case strings.HasPrefix(subject, bus.SubjectWorkerDeregisterPrefix+"."):
+		s.handleWorkerDeregister(ctx, msg, workerID)
 	default:
 		s.logger.WarnContext(
 			ctx, "scheduler: unexpected worker subject",
@@ -741,11 +755,15 @@ func (s *Scheduler) discardOnVersionMismatch(
 // handleWorkerRegister processes a worker.register message:
 // decodes the payload, upserts the worker in the store, and refreshes the
 // WorkersTotal Prometheus gauge.
-func (s *Scheduler) handleWorkerRegister(ctx context.Context, msg jetstream.Msg) {
+//
+// subjectWorkerID is the worker the message's subject attributes it to.
+func (s *Scheduler) handleWorkerRegister(ctx context.Context, msg jetstream.Msg, subjectWorkerID string) {
 	var m protocol.RegisterMsg
 	if err := json.Unmarshal(msg.Data(), &m); err != nil {
+		// The subject is the only identity left once the body will not decode.
 		s.logger.WarnContext(
 			ctx, "scheduler: malformed worker.register message",
+			slog.String("subject_worker_id", subjectWorkerID),
 			slog.Any("error", err),
 		)
 		s.ackMsg(ctx, msg) // ack to discard; re-delivery cannot fix a bad payload
@@ -898,7 +916,8 @@ func (s *Scheduler) ensureComputeLocation(ctx context.Context, name string) {
 // worker on graceful shutdown. It marks the worker offline immediately so the
 // scheduler stops dispatching new assignments to it rather than waiting for
 // the heartbeat-timeout sweep.
-func (s *Scheduler) handleWorkerDeregister(ctx context.Context, msg jetstream.Msg) {
+// subjectWorkerID is the worker the message's subject attributes it to.
+func (s *Scheduler) handleWorkerDeregister(ctx context.Context, msg jetstream.Msg, subjectWorkerID string) {
 	// DeregisterMsg mirrors protocol.DeregisterMsg; we decode only the
 	// fields the server needs without importing the worker protocol package.
 	var m struct {
@@ -906,8 +925,10 @@ func (s *Scheduler) handleWorkerDeregister(ctx context.Context, msg jetstream.Ms
 		Reason   string `json:"reason,omitempty"`
 	}
 	if err := json.Unmarshal(msg.Data(), &m); err != nil {
+		// The subject is the only identity left once the body will not decode.
 		s.logger.WarnContext(
 			ctx, "scheduler: malformed worker.deregister message",
+			slog.String("subject_worker_id", subjectWorkerID),
 			slog.Any("error", err),
 		)
 		s.ackMsg(ctx, msg)
@@ -975,11 +996,14 @@ func (s *Scheduler) handleWorkerDeregister(ctx context.Context, msg jetstream.Ms
 // decoding into a narrower local struct is how the version gate below stops
 // meaning anything — every field outside the local set drops regardless of what
 // version says.
-func (s *Scheduler) handleWorkerHeartbeat(ctx context.Context, msg jetstream.Msg) {
+// subjectWorkerID is the worker the message's subject attributes it to.
+func (s *Scheduler) handleWorkerHeartbeat(ctx context.Context, msg jetstream.Msg, subjectWorkerID string) {
 	var m protocol.HeartbeatMsg
 	if err := json.Unmarshal(msg.Data(), &m); err != nil {
+		// The subject is the only identity left once the body will not decode.
 		s.logger.WarnContext(
 			ctx, "scheduler: malformed worker.heartbeat message",
+			slog.String("subject_worker_id", subjectWorkerID),
 			slog.Any("error", err),
 		)
 		s.ackMsg(ctx, msg)

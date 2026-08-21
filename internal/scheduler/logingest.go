@@ -5,7 +5,7 @@ package scheduler
 // Structured log ingestion that timestamps and persists log chunks
 // with monotonic sequence numbers per task attempt.
 //
-// Workers publish [protocol.LogChunkMsg] values to task.logs.<taskID> as their
+// Workers publish [protocol.LogChunkMsg] values to task.logs.<workerID>.<taskID> as their
 // task produces stdout/stderr output.  The server-side consumer here:
 //
 //  1. Decodes each [protocol.LogChunkMsg].
@@ -46,7 +46,7 @@ func (s *Scheduler) startTaskLogsConsumer(ctx context.Context) error {
 	return err
 }
 
-// handleLogChunk is the JetStream message handler for task.logs.<task> messages
+// handleLogChunk is the JetStream message handler for task.logs.<worker>.<task> messages
 // published by workers.
 func (s *Scheduler) handleLogChunk(msg jetstream.Msg) {
 	ctx := s.ctx

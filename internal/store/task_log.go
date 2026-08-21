@@ -19,7 +19,7 @@ const (
 
 // TaskLog is one chunk of output produced by a running task.
 //
-// Workers publish log chunks to task.logs.<taskID> as output is produced.
+// Workers publish log chunks to task.logs.<workerID>.<taskID> as output is produced.
 // The server persists each chunk here with:
 //   - A monotonic worker-side sequence number (SeqNum) per attempt, starting
 //     at 1 and incrementing by 1.  This allows the REST log-tail endpoint to

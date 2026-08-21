@@ -7,7 +7,7 @@ import "time"
 // DiagLogMsg is a single diagnostic (operational) log record published by
 // sqi-worker to the core-NATS subject worker.diag.<workerID>.  It carries the
 // worker's own slog output — distinct from task process output, which flows via
-// LogChunkMsg on task.logs.<taskID>.
+// LogChunkMsg on task.logs.<workerID>.<taskID>.
 //
 // Published with core NATS (not JetStream): delivery is best-effort and nothing
 // is retained on the broker.  The server holds a bounded in-memory ring buffer.

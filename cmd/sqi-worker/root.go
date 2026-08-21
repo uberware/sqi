@@ -17,7 +17,7 @@ var rootCmd = &cobra.Command{
 
 It discovers and connects to a running sqi-server, registers itself with its
 capability tags and compute location, leases task assignments over core NATS
-(work.lease.<queueID>), and executes bare-metal OS processes inside OpenJD
+(work.lease.<workerID>.<queueID>), and executes bare-metal OS processes inside OpenJD
 sessions.
 
 Use "sqi-worker start" to start the worker agent.

@@ -24,8 +24,10 @@ type Config struct {
 }
 
 // Transport sends a lease request and returns the server's reply bytes.
+// workerID identifies the requesting worker; it is a token of the subject the
+// request travels on, which is how the server attributes the request.
 type Transport interface {
-	RequestLease(ctx context.Context, queueID string, data []byte, timeout time.Duration) ([]byte, error)
+	RequestLease(ctx context.Context, workerID, queueID string, data []byte, timeout time.Duration) ([]byte, error)
 }
 
 // Dispatcher executes one assignment.
@@ -85,7 +87,7 @@ func (l *Loop) runQueue(ctx context.Context, queueID string) {
 		if ctx.Err() != nil {
 			return
 		}
-		data, err := l.transport.RequestLease(ctx, queueID, reqBytes, l.cfg.RequestTimeout)
+		data, err := l.transport.RequestLease(ctx, l.cfg.WorkerID, queueID, reqBytes, l.cfg.RequestTimeout)
 		if err != nil {
 			// No server / timeout / transient: brief backoff, then re-request.
 			select {

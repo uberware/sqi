@@ -29,10 +29,10 @@ through scheduling, worker execution, and final state.
 │             ┌─────────────────────────────▼──────────────────────────────┐ │
 │             │           embedded NATS (JetStream + core NATS)            │ │
 │             │                                                            │ │
-│             │  work.lease.<queue>    task.status.<job>                   │ │
-│             │  task.logs.<task>      task.cancel.<task>                  │ │
-│             │  worker.register       worker.heartbeat                    │ │
-│             │  worker.deregister     worker.diag.<workerID>              │ │
+│             │  work.lease.<worker>.<queue>   task.status.<worker>.<job>  │ │
+│             │  task.logs.<worker>.<task>     task.cancel.<task>          │ │
+│             │  worker.register.<worker>      worker.heartbeat.<worker>   │ │
+│             │  worker.deregister.<worker>    worker.diag.<worker>        │ │
 │             └────────┬────────────────────────────────────────────────┬─┘ │
 │                      │                                                │    │
 │          ┌───────────▼──────────┐                   ┌────────────────▼──┐ │
@@ -255,11 +255,11 @@ terminal state.
 ### 3. Assignment (lease-on-request)
 
 Ready tasks stay `ready` until a worker asks for work. Workers keep exactly one
-outstanding lease request per queue on `work.lease.<queue>` (core-NATS
+outstanding lease request per queue on `work.lease.<worker>.<queue>` (core-NATS
 request/reply). When a request arrives the server:
 
 ```
-handleLeaseRequest(queueID, workerID)
+handleLeaseRequest(workerID, queueID)
   │
   ├─ store.CommittedCores(workerID, worker.CPUCount) → committed (Σ required_cores of assigned+running tasks)
   ├─ free = worker.CPUCount − committed
@@ -322,12 +322,12 @@ for the config knob.
 ```
 sqi-worker
   │
-  ├─ Keeps one outstanding lease request per queue (work.lease.<queue>)
+  ├─ Keeps one outstanding lease request per queue (work.lease.<worker>.<queue>)
   │     Long-poll (~35 s timeout); re-issues immediately on return
   ├─ Receives batch of AssignMsgs from server
   ├─ Executes each task (spawns child process, manages lifecycle)
-  ├─ Streams log chunks → NATS task.logs.<task_id>
-  └─ Reports status changes → NATS task.status.<job_id>
+  ├─ Streams log chunks → NATS task.logs.<worker_id>.<task_id>
+  └─ Reports status changes → NATS task.status.<worker_id>.<job_id>
          { task_id, attempt_id, status, exit_code, timestamp }
 ```
 
@@ -627,20 +627,26 @@ in the first place.
 
 | Subject pattern | Transport | Direction | Purpose |
 |---|---|---|---|
-| `work.lease.<queue>` | Core NATS request/reply | worker → server (request); server → worker (reply) | Worker requests a batch of tasks; server replies with assignments or empty on timeout |
-| `task.status.<job_id>` | JetStream (`SQI_TASK`, MaxAge 24 h) | worker → server | Terminal and intermediate status updates |
-| `task.logs.<task_id>` | JetStream (`SQI_LOGS`, MaxAge 96 h) | worker → server | Log chunk delivery |
+| `work.lease.<worker_id>.<queue>` | Core NATS request/reply | worker → server (request); server → worker (reply) | Worker requests a batch of tasks; server replies with assignments or empty on timeout |
+| `task.status.<worker_id>.<job_id>` | JetStream (`SQI_TASK`, MaxAge 24 h) | worker → server | Terminal and intermediate status updates |
+| `task.logs.<worker_id>.<task_id>` | JetStream (`SQI_LOGS`, MaxAge 96 h) | worker → server | Log chunk delivery |
 | `task.cancel.<task_id>` | JetStream (`SQI_CANCEL`, MaxAge 5 min) | server → worker | Cancellation signal; the worker holding the task interrupts the process |
-| `worker.register` | JetStream (`SQI_WORKER`, MaxAge 2 min) | worker → server | Registration at startup and on reconnect |
-| `worker.heartbeat` | JetStream (`SQI_WORKER`, MaxAge 2 min) | worker → server | Liveness heartbeat |
-| `worker.deregister` | JetStream (`SQI_WORKER`, MaxAge 2 min) | worker → server | Graceful departure; marks the worker offline without waiting for heartbeat timeout |
+| `worker.register.<worker_id>` | JetStream (`SQI_WORKER`, MaxAge 2 min) | worker → server | Registration at startup and on reconnect |
+| `worker.heartbeat.<worker_id>` | JetStream (`SQI_WORKER`, MaxAge 2 min) | worker → server | Liveness heartbeat |
+| `worker.deregister.<worker_id>` | JetStream (`SQI_WORKER`, MaxAge 2 min) | worker → server | Graceful departure; marks the worker offline without waiting for heartbeat timeout |
 | `worker.diag.<workerID>` | Core NATS (best-effort) | worker → server | Diagnostic log records |
 
-A queue-unaffiliated worker leases on the reserved leaf `work.lease._any`
-(`bus.WildcardQueueToken`).
+Every worker → server subject carries the publishing worker's ID directly after
+its class prefix. NATS permissions are static per credential and JetStream does
+not stamp publisher identity onto a message, so this placement is what lets the
+broker restrict a worker to its own traffic, and what lets the server recover
+who published a message it received (`bus.ParseWorkerSubject`).
+
+A queue-unaffiliated worker leases on the reserved queue token
+`work.lease.<worker_id>._any` (`bus.WildcardQueueToken`).
 
 JetStream streams use file-backed storage with configurable size limits.
-`work.lease.<queue>` uses core NATS request/reply — no stream is created for
+`work.lease.<worker_id>.<queue>` uses core NATS request/reply — no stream is created for
 it. The server holds an unfulfillable request in memory for up to 30 s before
 replying with an empty batch; the worker re-requests immediately.
 

@@ -185,9 +185,9 @@ worker:
   keep_failed_sessions: false
 
   # Restrict this worker to serving specific queue IDs. The worker keeps one
-  # outstanding lease request per listed queue (work.lease.<queueID>). When
+  # outstanding lease request per listed queue (work.lease.<workerID>.<queueID>). When
   # empty (the default) it issues a single lease request on the reserved
-  # core-NATS subject work.lease._any — the server selects tasks farm-wide for
+  # core-NATS subject work.lease.<workerID>._any — the server selects tasks farm-wide for
   # that token and gates by worker eligibility, so a queue-unaffiliated worker
   # is matched to any queue's ready work. Set this on heterogeneous farms where
   # some workers specialise in a subset of queues, e.g. separate GPU and CPU

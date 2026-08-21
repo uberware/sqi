@@ -6,9 +6,9 @@
 //
 // A [Registrar] is created once at worker startup, after the NATS connection
 // is established. Its [Registrar.Register] method publishes a [protocol.RegisterMsg]
-// to the worker.register JetStream subject. On graceful shutdown,
+// to its own worker.register.<worker> JetStream subject. On graceful shutdown,
 // [Registrar.Deregister] publishes a [protocol.DeregisterMsg] to
-// worker.deregister so the server marks the worker offline immediately.
+// worker.deregister.<worker> so the server marks the worker offline immediately.
 //
 // # Re-registration
 //
@@ -23,7 +23,7 @@
 // returns only once the SQI_WORKER stream has durably stored the message. A
 // plain core-NATS publish would be silently discarded when no stream is behind
 // the subject — which strands the worker permanently, since the server only
-// learns of it via worker.register and NAKs the heartbeats of workers it has no
+// learns of it via worker.register.<worker> and NAKs the heartbeats of workers it has no
 // record of.
 //
 // That "no stream yet" window is real and routinely hit: a worker started
@@ -33,7 +33,7 @@
 // absent, up to [RetryBudget] or the caller's context deadline, whichever is
 // sooner.
 //
-// The server processes worker.register via a JetStream push consumer and does
+// The server processes worker.register.<worker> via a JetStream push consumer and does
 // not send a reply of its own; the stream ack is the acknowledgment. Explicit
 // application-level accept/reject is a planned protocol enhancement.
 //
@@ -146,7 +146,7 @@ func New(
 	}, nil
 }
 
-// Register publishes a RegisterMsg to worker.register and returns once the
+// Register publishes a RegisterMsg to worker.register.<worker> and returns once the
 // stream has acked it. It is safe to call multiple times (at boot and on NATS
 // reconnect).
 //
@@ -229,8 +229,9 @@ func (r *Registrar) Register(ctx context.Context) error {
 	return nil
 }
 
-// publishRegister publishes data to worker.register and waits for the stream to
-// ack it, retrying while the SQI_WORKER stream does not exist yet.
+// publishRegister publishes data to this worker's worker.register subject and
+// waits for the stream to ack it, retrying while the SQI_WORKER stream does not
+// exist yet.
 //
 // Only a missing stream is retried. Every other failure (a closed connection,
 // say) is returned immediately: it will not resolve by waiting.
@@ -238,14 +239,15 @@ func (r *Registrar) publishRegister(ctx context.Context, data []byte) error {
 	ctx, cancel := context.WithTimeout(ctx, RetryBudget)
 	defer cancel()
 
+	subj := bus.WorkerRegisterSubject(r.workerID)
 	backoff := retryInitial
 	for attempt := 1; ; attempt++ {
-		_, err := r.js.Publish(ctx, bus.SubjectWorkerRegister, data)
+		_, err := r.js.Publish(ctx, subj, data)
 		if err == nil {
 			return nil
 		}
 		if !errors.Is(err, jetstream.ErrNoStreamResponse) {
-			return fmt.Errorf("registration: publish to %s: %w", bus.SubjectWorkerRegister, err)
+			return fmt.Errorf("registration: publish to %s: %w", subj, err)
 		}
 
 		r.logger.DebugContext(
@@ -259,7 +261,7 @@ func (r *Registrar) publishRegister(ctx context.Context, data []byte) error {
 		case <-ctx.Done():
 			return fmt.Errorf(
 				"registration: publish to %s: no stream after %d attempts (is the server provisioning JetStream?): %w",
-				bus.SubjectWorkerRegister, attempt, ctx.Err(),
+				subj, attempt, ctx.Err(),
 			)
 		case <-time.After(backoff):
 		}
@@ -267,7 +269,7 @@ func (r *Registrar) publishRegister(ctx context.Context, data []byte) error {
 	}
 }
 
-// Deregister publishes a DeregisterMsg to worker.deregister on graceful
+// Deregister publishes a DeregisterMsg to worker.deregister.<worker> on graceful
 // shutdown so the server marks this worker offline immediately rather than
 // waiting for the heartbeat timeout sweep.
 //
@@ -292,7 +294,7 @@ func (r *Registrar) Deregister(reason string) {
 		return
 	}
 
-	if err := r.nc.Publish(bus.SubjectWorkerDeregister, data); err != nil {
+	if err := r.nc.Publish(bus.WorkerDeregisterSubject(r.workerID), data); err != nil {
 		r.logger.WarnContext(ctx, "registration: deregister publish failed — server will detect absence via heartbeat timeout",
 			slog.String("worker_id", r.workerID),
 			slog.Any("error", err))

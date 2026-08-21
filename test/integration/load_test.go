@@ -246,7 +246,7 @@ func (w *loadWorker) register(tb testing.TB) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	if _, err := w.js.Publish(ctx, bus.SubjectWorkerRegister, data); err != nil {
+	if _, err := w.js.Publish(ctx, bus.WorkerRegisterSubject(w.id), data); err != nil {
 		tb.Fatalf("loadWorker.register %s: publish: %v", w.id, err)
 	}
 }
@@ -273,7 +273,7 @@ func (w *loadWorker) heartbeatLoop(ctx context.Context, interval time.Duration, 
 				return
 			}
 			pubCtx, pubCancel := context.WithTimeout(ctx, 2*time.Second)
-			if _, pubErr := w.js.Publish(pubCtx, bus.SubjectWorkerHeartbeat, data); pubErr != nil {
+			if _, pubErr := w.js.Publish(pubCtx, bus.WorkerHeartbeatSubject(w.id), data); pubErr != nil {
 				pubCancel()
 				return
 			}
@@ -303,7 +303,7 @@ func (w *loadWorker) drainLoop(ctx context.Context, wg *sync.WaitGroup, assigned
 			return
 		}
 		reqCtx, cancel := context.WithTimeout(ctx, 35*time.Second)
-		msg, reqErr := w.nc.RequestWithContext(reqCtx, bus.WorkLeaseSubject(w.queueID), reqBytes)
+		msg, reqErr := w.nc.RequestWithContext(reqCtx, bus.WorkLeaseSubject(w.id, w.queueID), reqBytes)
 		cancel()
 		if reqErr != nil {
 			if ctx.Err() != nil {
@@ -352,7 +352,7 @@ func (w *loadWorker) publishStatus(assign protocol.AssignMsg, status string, exi
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
-	if _, err := w.js.Publish(ctx, bus.TaskStatusSubject(assign.JobID), data); err != nil {
+	if _, err := w.js.Publish(ctx, bus.TaskStatusSubject(w.id, assign.JobID), data); err != nil {
 		// Best-effort in load loops; callers detect missed completions via
 		// the waitAllJobsTerminal timeout.
 		_ = err
