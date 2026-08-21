@@ -61,6 +61,7 @@ type Store interface {
 	UserStore
 	SessionStore
 	APIKeyStore
+	WorkerCredentialStore
 	io.Closer
 }
 
