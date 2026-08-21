@@ -26,6 +26,49 @@ func writeWorkerConfigFile(t *testing.T, dataDir string) string {
 	return path
 }
 
+// hermeticKeygenEnv makes a keygen test hermetic against the developer
+// machine it happens to run on, and returns a config file path every test
+// must pass via --config.
+//
+// runKeygen calls workerconfig.LoadWithSources, which applies SQI_WORKER_*
+// environment variables on top of the config file and, when --config is
+// empty, SEARCHES $HOME/.sqi/sqi-worker.yaml and /etc/sqi/sqi-worker.yaml.
+// A developer running a local worker is exactly who is likely to have
+// SQI_WORKER_NATS_CREDENTIAL_FILE exported or a real ~/.sqi/sqi-worker.yaml
+// in place — and if either names a real credential path, keygen writes
+// genuine Ed25519 key material there instead of under the test's
+// t.TempDir(), independent of what --data-dir says (an explicitly
+// configured nats.credential_file is deliberately left untouched by
+// --data-dir; see resolveKeygenPaths). t.Setenv to "" is treated as unset by
+// workerconfig's applyEnv (every branch is "if v := os.Getenv(key); v !=
+// \"\" { ... }"), so it neutralizes each variable for the duration of the
+// test without needing to know or restore its ambient value.
+func hermeticKeygenEnv(t *testing.T) (configPath string) {
+	t.Helper()
+	for _, v := range []string{
+		"SQI_WORKER_DATA_DIR",
+		"SQI_WORKER_NATS_CREDENTIAL_FILE",
+		"SQI_WORKER_NATS_URL",
+		"SQI_WORKER_NATS_JOIN_TOKEN",
+		"SQI_WORKER_NATS_JOIN_TOKEN_FILE",
+	} {
+		t.Setenv(v, "")
+	}
+	// Every keygen test in this file passes --config explicitly (this
+	// function's return value, or its own), so persistentFlags.ConfigFile
+	// always points at a real path while the test runs — but that path
+	// lives under this test's t.TempDir() and is gone once it returns.
+	// Reset the package-level var so a later test that means to search the
+	// default paths (empty ConfigFile) does not inherit a now-deleted path.
+	t.Cleanup(func() { persistentFlags.ConfigFile = "" })
+
+	path := filepath.Join(t.TempDir(), "empty-sqi-worker.yaml")
+	if err := os.WriteFile(path, []byte("{}\n"), 0o600); err != nil {
+		t.Fatalf("write empty config file: %v", err)
+	}
+	return path
+}
+
 // captureStderr redirects os.Stderr to a pipe for the duration of fn, then
 // returns everything written to it. keygen's overwrite warning is
 // deliberately written to stderr (see runKeygen), so asserting on it needs
@@ -60,9 +103,10 @@ func captureStderr(t *testing.T, fn func()) string {
 // writes a 0600 seed file, prints the public key, and prints the exact
 // "sqi-server worker enroll" command to run — but never prints the seed.
 func TestKeygenCmd_WritesSeedAndPrintsEnrollCommand(t *testing.T) {
+	cfgPath := hermeticKeygenEnv(t)
 	dataDir := filepath.Join(t.TempDir(), "worker-data")
 
-	prepareRoot([]string{"keygen", "--data-dir", dataDir})
+	prepareRoot([]string{"keygen", "--config", cfgPath, "--data-dir", dataDir})
 	out := captureStdout(t, func() {
 		if err := Execute(); err != nil {
 			t.Fatalf("Execute(keygen) error = %v", err)
@@ -110,9 +154,10 @@ func TestKeygenCmd_WritesSeedAndPrintsEnrollCommand(t *testing.T) {
 // keygen invocation against the same data directory fails without --force,
 // and succeeds (overwriting the seed) with it.
 func TestKeygenCmd_RefusesToOverwriteWithoutForce(t *testing.T) {
+	cfgPath := hermeticKeygenEnv(t)
 	dataDir := filepath.Join(t.TempDir(), "worker-data")
 
-	prepareRoot([]string{"keygen", "--data-dir", dataDir})
+	prepareRoot([]string{"keygen", "--config", cfgPath, "--data-dir", dataDir})
 	_ = captureStdout(t, func() {
 		if err := Execute(); err != nil {
 			t.Fatalf("first keygen: unexpected error: %v", err)
@@ -125,7 +170,7 @@ func TestKeygenCmd_RefusesToOverwriteWithoutForce(t *testing.T) {
 		t.Fatalf("read seed after first keygen: %v", err)
 	}
 
-	prepareRoot([]string{"keygen", "--data-dir", dataDir})
+	prepareRoot([]string{"keygen", "--config", cfgPath, "--data-dir", dataDir})
 	var secondErr error
 	_ = captureStdout(t, func() {
 		secondErr = Execute()
@@ -142,7 +187,7 @@ func TestKeygenCmd_RefusesToOverwriteWithoutForce(t *testing.T) {
 		t.Error("seed file changed despite the overwrite being refused")
 	}
 
-	prepareRoot([]string{"keygen", "--data-dir", dataDir, "--force"})
+	prepareRoot([]string{"keygen", "--config", cfgPath, "--data-dir", dataDir, "--force"})
 	var out string
 	errOut := captureStderr(t, func() {
 		out = captureStdout(t, func() {
@@ -196,7 +241,8 @@ func TestKeygenCmd_RefusesToOverwriteWithoutForce(t *testing.T) {
 // through to the real, config-resolved worker.data_dir instead of the empty
 // value this test means to exercise.
 func TestKeygenCmd_EmptyDataDir(t *testing.T) {
-	prepareRoot([]string{"keygen", "--data-dir", ""})
+	cfgPath := hermeticKeygenEnv(t)
+	prepareRoot([]string{"keygen", "--config", cfgPath, "--data-dir", ""})
 	var runErr error
 	_ = captureStdout(t, func() {
 		runErr = Execute()
@@ -212,6 +258,7 @@ func TestKeygenCmd_EmptyDataDir(t *testing.T) {
 // TestKeygenCmd_DataDir_ExplicitFlagBeatsConfig verifies that --data-dir
 // wins even when a config file names a different worker.data_dir.
 func TestKeygenCmd_DataDir_ExplicitFlagBeatsConfig(t *testing.T) {
+	hermeticKeygenEnv(t)
 	explicitDir := filepath.Join(t.TempDir(), "explicit-data")
 	configuredDir := filepath.Join(t.TempDir(), "configured-data")
 	cfgPath := writeWorkerConfigFile(t, configuredDir)
@@ -237,6 +284,7 @@ func TestKeygenCmd_DataDir_ExplicitFlagBeatsConfig(t *testing.T) {
 // rather than the platform default under the real home directory.
 func TestKeygenCmd_DataDir_ConfigFileHonoredWhenFlagOmitted(t *testing.T) {
 	withFlagUnchanged(t, keygenCmd.Flags(), "data-dir")
+	hermeticKeygenEnv(t)
 
 	configuredDir := filepath.Join(t.TempDir(), "configured-data")
 	cfgPath := writeWorkerConfigFile(t, configuredDir)
@@ -259,9 +307,10 @@ func TestKeygenCmd_DataDir_ConfigFileHonoredWhenFlagOmitted(t *testing.T) {
 // worker.id file or freshly generated — the one signal an operator rotating
 // a key has that --data-dir/worker.data_dir points at the wrong directory.
 func TestKeygenCmd_ReportsNewVsExistingWorkerID(t *testing.T) {
+	cfgPath := hermeticKeygenEnv(t)
 	dataDir := filepath.Join(t.TempDir(), "worker-data")
 
-	prepareRoot([]string{"keygen", "--data-dir", dataDir})
+	prepareRoot([]string{"keygen", "--config", cfgPath, "--data-dir", dataDir})
 	firstOut := captureStdout(t, func() {
 		if err := Execute(); err != nil {
 			t.Fatalf("first keygen: unexpected error: %v", err)
@@ -274,7 +323,7 @@ func TestKeygenCmd_ReportsNewVsExistingWorkerID(t *testing.T) {
 		t.Errorf("first run must not claim an existing worker id; got:\n%s", firstOut)
 	}
 
-	prepareRoot([]string{"keygen", "--data-dir", dataDir, "--force"})
+	prepareRoot([]string{"keygen", "--config", cfgPath, "--data-dir", dataDir, "--force"})
 	secondOut := captureStdout(t, func() {
 		if err := Execute(); err != nil {
 			t.Fatalf("second keygen: unexpected error: %v", err)

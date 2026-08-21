@@ -60,12 +60,12 @@ func init() {
 }
 
 func runKeygen(cmd *cobra.Command, _ []string) error {
-	cfg, err := workerconfig.Load(persistentFlags.ConfigFile, flagOverrides())
+	cfg, src, err := workerconfig.LoadWithSources(persistentFlags.ConfigFile, flagOverrides())
 	if err != nil {
 		return fmt.Errorf("load config: %w", err)
 	}
 
-	dataDir, seedPath := resolveKeygenPaths(cmd, cfg)
+	dataDir, seedPath := resolveKeygenPaths(cmd, cfg, src)
 	if dataDir == "" {
 		return errors.New("worker data directory is empty; use --data-dir or set worker.data_dir")
 	}
@@ -148,13 +148,18 @@ func runKeygen(cmd *cobra.Command, _ []string) error {
 // path to use, applying --data-dir as an explicit override of the loaded
 // cfg.Worker.DataDir.
 //
-// When --data-dir is passed and nats.credential_file was left at its
-// config-derived default (rather than set explicitly, directly or via
-// SQI_WORKER_NATS_CREDENTIAL_FILE), the seed path is re-derived under the
-// overridden directory too, so it still lands at <data-dir>/worker.nk
-// instead of the pre-override location. An explicitly configured
-// nats.credential_file is left untouched.
-func resolveKeygenPaths(cmd *cobra.Command, cfg workerconfig.WorkerConfig) (dataDir, seedPath string) {
+// When --data-dir is passed and src.CredentialFile is false — meaning
+// nats.credential_file was NOT explicitly set by the config file or
+// SQI_WORKER_NATS_CREDENTIAL_FILE, so cfg.NATS.CredentialFile is only
+// [workerconfig.Load]'s own config-derived fill-in — the seed path is
+// re-derived under the overridden directory too, so it still lands at
+// <data-dir>/worker.nk instead of the pre-override location. This is a
+// provenance check, not a value comparison: comparing seedPath against
+// DefaultCredentialFile(dataDir) would wrongly treat an explicitly
+// configured nats.credential_file that happens to equal that computed
+// default as "unset" and relocate it anyway. An explicitly configured
+// nats.credential_file is always left untouched.
+func resolveKeygenPaths(cmd *cobra.Command, cfg workerconfig.WorkerConfig, src workerconfig.Sources) (dataDir, seedPath string) {
 	dataDir = cfg.Worker.DataDir
 	seedPath = cfg.NATS.CredentialFile
 
@@ -162,7 +167,7 @@ func resolveKeygenPaths(cmd *cobra.Command, cfg workerconfig.WorkerConfig) (data
 		return dataDir, seedPath
 	}
 
-	if seedPath == workerconfig.DefaultCredentialFile(dataDir) {
+	if !src.CredentialFile {
 		seedPath = workerconfig.DefaultCredentialFile(keygenFlags.DataDir)
 	}
 	dataDir = keygenFlags.DataDir
