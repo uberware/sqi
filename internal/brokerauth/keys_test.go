@@ -106,7 +106,7 @@ func TestSaveSeed_LeavesNoTempFileBehind(t *testing.T) {
 	}
 }
 
-func TestSaveSeed_NoTempFileSurvivesRenameFailure(t *testing.T) {
+func TestSaveSeed_NoTempFileSurvivesCreateFailure(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("POSIX permission semantics")
 	}

@@ -80,6 +80,12 @@ func PublicKeyFromSeed(seed []byte) (string, error) {
 // was there — including a more permissive leftover from key rotation, an
 // earlier bug, or an operator who chmod'd it to look at it — with a file
 // that was never observable under any mode but 0600.
+//
+// Because the write goes through a temporary file created in the same
+// directory as path, the caller needs write permission on that CONTAINING
+// DIRECTORY, not just on the seed file itself: a directory an operator locked
+// down to 0500 while leaving an owner-writable seed inside it will fail here
+// even though a direct write to the existing file would have succeeded.
 func SaveSeed(path string, seed []byte) error {
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0o700); err != nil {

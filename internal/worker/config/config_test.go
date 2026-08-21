@@ -466,7 +466,19 @@ func TestValidate_QueueIDRejectsEachInvalidShape(t *testing.T) {
 				t.Fatalf("expected worker.queue_ids[0] error for %q, got %v", tt.id, errs)
 			}
 			for _, e := range errs {
-				if e.Field == "worker.queue_ids[0]" && !strings.Contains(e.Message, tt.id) {
+				if e.Field != "worker.queue_ids[0]" {
+					continue
+				}
+				if tt.id == "" {
+					// tt.id is "" here, so strings.Contains(e.Message, tt.id)
+					// would hold against any message and verify nothing; the
+					// message must instead say the entry is empty.
+					if !strings.Contains(e.Message, "non-empty") {
+						t.Errorf("error message %q does not say the entry must be non-empty", e.Message)
+					}
+					continue
+				}
+				if !strings.Contains(e.Message, tt.id) {
 					t.Errorf("error message %q does not name the offending value %q", e.Message, tt.id)
 				}
 			}
