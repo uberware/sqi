@@ -233,6 +233,9 @@ BASE_URL="http://${HTTP_ADDR}"
 # through a file, never an argv or an env var visible in a process listing.
 JOIN_TOKEN_FILE=""
 if [ "$mode" = "brokerauth" ]; then
+  log "creating the SQLite database (worker subcommands never create one themselves)"
+  "$SERVER_BIN" migrate up --db "${TMP_DIR}/sqi.db" >/dev/null || fail "sqi-server migrate up failed"
+
   log "minting a worker join token (broker auth mode)"
   JOIN_TOKEN="$("$SERVER_BIN" worker token issue --db "${TMP_DIR}/sqi.db" --name smoke-brokerauth)"
   [ -n "$JOIN_TOKEN" ] || fail "sqi-server worker token issue produced no token"
