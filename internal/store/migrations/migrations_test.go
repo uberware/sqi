@@ -41,8 +41,7 @@ func TestFS_OpenAppleDoubleIsHidden(t *testing.T) {
 	if err == nil {
 		t.Fatal("Open of AppleDouble file: want error, got nil")
 	}
-	var perr *fs.PathError
-	if !errors.As(err, &perr) {
+	if _, ok := errors.AsType[*fs.PathError](err); !ok {
 		t.Fatalf("want *fs.PathError, got %T", err)
 	}
 }

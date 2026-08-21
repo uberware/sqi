@@ -78,6 +78,7 @@ func TestExprOracle_MatchesReferenceImplementation(t *testing.T) {
 
 	version, refs := runOracle(t, root, python, cases)
 	t.Logf("reference implementation: openjd-model %s (%d cases)", version, len(cases))
+	assertPinnedVersion(t, version)
 
 	var diverged, expected int
 	var compared, opsDiverged, opsExpected int
@@ -204,6 +205,34 @@ func evalGo(c exprCase) caseResult {
 		return caseResult{err: err.Error()}
 	}
 	return caseResult{ok: true, value: v.String(), typ: v.Type.String(), ops: ops}
+}
+
+// assertPinnedVersion fails when the reference implementation that actually
+// answered is not the one the Makefile pins.
+//
+// It exists because the pin was, until 2026-08-19, advisory in exactly the case
+// that matters: test-expr-oracle creates .venv-oracle only when it is MISSING,
+// so raising OPENJD_MODEL_VERSION against an existing venv changed nothing and
+// the suite went on grading sqi against the old reference. Nothing failed. The
+// version was already logged, which is how the mismatch was eventually noticed
+// — by reading the log, not by a red test, which is the wrong way round for a
+// harness whose whole purpose is to be exact about which build produced a
+// divergence.
+//
+// The expectation is supplied by the Makefile rather than duplicated here, so
+// there is one pin, not two. Unset means "no expectation" — a bare
+// `go test -tags oracle`, or a run against SQI_EXPR_ORACLE_PYTHON, still works.
+func assertPinnedVersion(t *testing.T, version string) {
+	t.Helper()
+	want := os.Getenv("SQI_EXPR_ORACLE_EXPECT_VERSION")
+	if want == "" || version == want {
+		return
+	}
+	t.Fatalf("reference implementation is openjd-model %s, but the pin is %s: "+
+		"the venv predates the pin bump. Recreate it with "+
+		"`rm -rf .venv-oracle && make expr-oracle-venv`, or clear "+
+		"SQI_EXPR_ORACLE_EXPECT_VERSION to grade against whatever is installed.",
+		version, want)
 }
 
 // mustTarget parses c's target type for EvalForBalanceCheck, which needs a

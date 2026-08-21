@@ -241,8 +241,7 @@ func TestSubmitter_Submit_BadYAML(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for bad YAML, got nil")
 	}
-	var ve *openjd.SubmitValidationError
-	if !errors.As(err, &ve) {
+	if _, ok := errors.AsType[*openjd.SubmitValidationError](err); !ok {
 		t.Errorf("expected SubmitValidationError, got %T: %v", err, err)
 	}
 }
@@ -268,8 +267,7 @@ func TestSubmitter_Submit_ValidationError(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected validation error, got nil")
 	}
-	var ve *openjd.SubmitValidationError
-	if !errors.As(err, &ve) {
+	if _, ok := errors.AsType[*openjd.SubmitValidationError](err); !ok {
 		t.Errorf("expected SubmitValidationError, got %T: %v", err, err)
 	}
 }
@@ -305,8 +303,7 @@ func TestSubmitter_Submit_UnregisteredStorageLocation(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for unregistered storage location, got nil")
 	}
-	var ve *openjd.SubmitValidationError
-	if !errors.As(err, &ve) {
+	if _, ok := errors.AsType[*openjd.SubmitValidationError](err); !ok {
 		t.Errorf("expected SubmitValidationError, got %T: %v", err, err)
 	}
 }
@@ -381,8 +378,7 @@ func TestSubmitter_Submit_JobEnvMissingDefaultRoot(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error: job-level ref to a location with no default root")
 	}
-	var ve *openjd.SubmitValidationError
-	if !errors.As(err, &ve) {
+	if _, ok := errors.AsType[*openjd.SubmitValidationError](err); !ok {
 		t.Errorf("expected SubmitValidationError, got %T: %v", err, err)
 	}
 }
@@ -424,8 +420,7 @@ func TestSubmitter_Submit_JobParamDefaultMissingDefaultRoot(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error: job-param-default ref to a location with no default root")
 	}
-	var ve *openjd.SubmitValidationError
-	if !errors.As(err, &ve) {
+	if _, ok := errors.AsType[*openjd.SubmitValidationError](err); !ok {
 		t.Errorf("expected SubmitValidationError, got %T: %v", err, err)
 	}
 }
@@ -570,8 +565,7 @@ func TestSubmitter_Submit_MissingRequiredParam(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for missing required parameter, got nil")
 	}
-	var ve *openjd.SubmitValidationError
-	if !errors.As(err, &ve) {
+	if _, ok := errors.AsType[*openjd.SubmitValidationError](err); !ok {
 		t.Errorf("expected SubmitValidationError, got %T: %v", err, err)
 	}
 }
@@ -593,8 +587,7 @@ func TestSubmitter_Submit_InvalidParamValue(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for invalid INT value, got nil")
 	}
-	var ve *openjd.SubmitValidationError
-	if !errors.As(err, &ve) {
+	if _, ok := errors.AsType[*openjd.SubmitValidationError](err); !ok {
 		t.Errorf("expected SubmitValidationError, got %T: %v", err, err)
 	}
 }
@@ -617,8 +610,7 @@ func TestSubmitter_Submit_UnknownParam(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for unknown parameter, got nil")
 	}
-	var ve *openjd.SubmitValidationError
-	if !errors.As(err, &ve) {
+	if _, ok := errors.AsType[*openjd.SubmitValidationError](err); !ok {
 		t.Errorf("expected SubmitValidationError, got %T: %v", err, err)
 	}
 }
@@ -797,8 +789,7 @@ func TestSubmitter_Submit_ParamInRangeExpr_ExceedsValueLimit(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected SubmitValidationError for resolved range exceeding the value limit, got nil")
 	}
-	var ve *openjd.SubmitValidationError
-	if !errors.As(err, &ve) {
+	if _, ok := errors.AsType[*openjd.SubmitValidationError](err); !ok {
 		t.Errorf("expected SubmitValidationError, got %T: %v", err, err)
 	}
 }
@@ -833,8 +824,7 @@ func TestSubmitter_Submit_ParamInRangeExpr_UnknownParam(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected SubmitValidationError for unknown {{Param.Missing}}, got nil")
 	}
-	var ve *openjd.SubmitValidationError
-	if !errors.As(err, &ve) {
+	if _, ok := errors.AsType[*openjd.SubmitValidationError](err); !ok {
 		t.Errorf("expected SubmitValidationError, got %T: %v", err, err)
 	}
 }
@@ -1102,8 +1092,7 @@ steps:
 	if err == nil {
 		t.Fatal("expected an error for an EXPR template dividing by a zero-valued parameter, got nil")
 	}
-	var ve *openjd.SubmitValidationError
-	if !errors.As(err, &ve) {
+	if _, ok := errors.AsType[*openjd.SubmitValidationError](err); !ok {
 		t.Fatalf("expected SubmitValidationError, got %T: %v", err, err)
 	}
 	if !strings.Contains(err.Error(), "division by zero") {

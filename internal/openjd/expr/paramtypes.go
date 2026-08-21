@@ -20,7 +20,7 @@ import (
 // declared type binds Param and RawParam to the SAME type. That rule is
 // stated in as many words by Template Schemas §7.3.1's value-reference
 // table — "This is the same as RawParam.<ParamName> for all parameter types
-// except PATH" (wiki/2023-09-Template-Schemas.md:1991) — NOT by
+// except PATH" (wiki/2023-09-Template-Schemas.md:1993) — NOT by
 // Expression-Language §1.2.2, which an earlier revision of this comment cited
 // for it; the substance was right and the citation was wrong. §1.2.2's own
 // contribution is the type table above plus the PATH prose ("Param.<name>
@@ -70,7 +70,7 @@ func JobParamTypes(declared string) (paramType, rawType Type) {
 // the parameter with relevant path mapping rules applied to it" and
 // Task.RawParam.<name> as "the value of the parameter as it was defined,
 // with no path mapping rules applied"
-// (wiki/2023-09-Template-Schemas.md:1246-1247). An earlier revision of this
+// (wiki/2023-09-Template-Schemas.md:1248-1249). An earlier revision of this
 // comment attributed those two quotes to §1.2.2, which does not contain
 // them. It is a VALUE difference, not a type difference; both remain path.
 //

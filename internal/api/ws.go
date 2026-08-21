@@ -381,8 +381,7 @@ func (wc *wsConn) readLoop(ctx context.Context) {
 
 // logReadError logs a WebSocket read error at the appropriate level.
 func (wc *wsConn) logReadError(ctx context.Context, err error) {
-	var closeErr websocket.CloseError
-	if errors.As(err, &closeErr) {
+	if closeErr, ok := errors.AsType[websocket.CloseError](err); ok {
 		wc.logger.DebugContext(
 			ctx, "ws: client closed connection",
 			slog.Int("code", int(closeErr.Code)),

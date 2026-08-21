@@ -697,9 +697,22 @@ func TestCheckParameterSpaceExpressions_RangeTargetTypes(t *testing.T) {
 		// INT/CHUNK[INT] must name their own: section 1.3.12's RangeString
 		// note makes an int and a string LEGAL at that position (they are
 		// range TEXT -- see rangeExprFieldType), so those two rows need a
-		// scalar that is neither, and a bool is the one scalar with no
-		// conversion into any member of "int | string | range_expr |
-		// list[int]".
+		// scalar that is neither.
+		//
+		// It used to be "{{ true }}", on the ground that "a bool is the one
+		// scalar with no conversion into any member". openjd-specifications#175
+		// ended that: bool's destination is string, the target offers string,
+		// so a bool now becomes the range TEXT "true" -- which is not a valid
+		// <IntRangeExpr> and is rejected by EXPANSION, exactly as "{{ 'abc' }}"
+		// always has been (resolve substitutes the text without parsing it;
+		// ExpandParameterSpace is the only layer that reads it -- pinned by
+		// TestExpandParameterSpace_NonRangeTextIsRejected). The checker's job
+		// at this position is the type, not the text.
+		//
+		// null is what is left, and it is left for a stated reason rather than
+		// by elimination: no conversion produces null, so nulltype is never a
+		// destination, and a target that does not name nulltype cannot receive
+		// one.
 		wholeShapeReject string
 		entryAccept      string
 		entryReject      string // "" when there is no type-mismatch (as opposed to shape-mismatch) case
@@ -707,7 +720,7 @@ func TestCheckParameterSpaceExpressions_RangeTargetTypes(t *testing.T) {
 		{
 			name: "INT", typ: TaskParamTypeInt,
 			wholeAccept: "{{ [1, 2, 3] }}", entryAccept: "{{ 5 }}",
-			wholeShapeReject: "{{ true }}",
+			wholeShapeReject: "{{ null }}",
 			// A list of strings: string->int coercion needs a value that
 			// parses as an int, and "a" does not -- so this is rejected on
 			// the VALUE, not merely the type (list[string] -> list[int] is
@@ -726,7 +739,7 @@ func TestCheckParameterSpaceExpressions_RangeTargetTypes(t *testing.T) {
 		{
 			name: "CHUNK[INT]", typ: TaskParamTypeChunkInt,
 			wholeAccept: "{{ [1, 2, 3] }}", entryAccept: "{{ 5 }}",
-			wholeShapeReject: "{{ true }}",
+			wholeShapeReject: "{{ null }}",
 			wholeReject:      "{{ ['a'] }}",
 			entryReject:      "{{ 2.5 }}",
 		},

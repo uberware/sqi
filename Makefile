@@ -214,7 +214,7 @@ test-conformance: ## Run the official OpenJD conformance suite (needs the pinned
 # unpinned upgrade could turn the differential test red without a single sqi
 # commit — and because a divergence report is meaningless without knowing
 # which build of the reference produced it.
-OPENJD_MODEL_VERSION ?= 0.11.1
+OPENJD_MODEL_VERSION ?= 0.11.4
 ORACLE_VENV := .venv-oracle
 
 .PHONY: expr-oracle-venv
@@ -237,7 +237,24 @@ test-expr-oracle: ## Differential-test the EXPR evaluator against the OpenJD ref
 	  $(MAKE) --no-print-directory expr-oracle-venv || \
 	    { echo "could not install the reference implementation — skipping the expression oracle"; exit 0; }; \
 	fi
-	go test $(TEST_FLAGS) -tags oracle -run 'TestExprOracle' -v -timeout 5m ./test/oracle/
+# An EXISTING venv is not evidence of the RIGHT venv: the guard above only
+# creates one when it is missing, so before this check a raised
+# OPENJD_MODEL_VERSION left the suite grading against the previous reference
+# with nothing red to say so. Reinstall on mismatch, and let the test itself
+# assert the version it actually spoke to (SQI_EXPR_ORACLE_EXPECT_VERSION) so
+# the guarantee survives a hand-run `go test` too. Skipped entirely when
+# SQI_EXPR_ORACLE_PYTHON points the harness at an interpreter we do not own.
+	@if [ -x "$(ORACLE_VENV)/bin/python3" ] && [ -z "$$SQI_EXPR_ORACLE_PYTHON" ]; then \
+	  have=$$($(ORACLE_VENV)/bin/python3 -c \
+	    'import importlib.metadata as m; print(m.version("openjd-model"))' 2>/dev/null); \
+	  if [ "$$have" != "$(OPENJD_MODEL_VERSION)" ]; then \
+	    echo "$(ORACLE_VENV) has openjd-model $$have, pin is $(OPENJD_MODEL_VERSION) — reinstalling"; \
+	    $(MAKE) --no-print-directory expr-oracle-venv || \
+	      { echo "could not install the pinned reference implementation"; exit 1; }; \
+	  fi; \
+	fi
+	SQI_EXPR_ORACLE_EXPECT_VERSION=$$([ -n "$$SQI_EXPR_ORACLE_PYTHON" ] || echo $(OPENJD_MODEL_VERSION)) \
+	  go test $(TEST_FLAGS) -tags oracle -run 'TestExprOracle' -v -timeout 5m ./test/oracle/
 
 # Validates the PUBLISHED preset library against the validator in this working
 # tree. It exists because a validator change can silently invalidate content

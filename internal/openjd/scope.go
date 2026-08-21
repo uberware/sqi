@@ -65,7 +65,7 @@ func (s Scope) String() string {
 // It gates the host-context-only functions. The specification does NOT commit
 // to a single such function: its FunctionLibrary.with_host_context() enables
 // "host-only functions like apply_path_mapping()" (wiki
-// 2026-02-Expression-Language.md:514). apply_path_mapping is the only one in
+// 2026-02-Expression-Language.md:527). apply_path_mapping is the only one in
 // sqi's registry today because it is the only function that reads session
 // state; the gate is a set (hostOnlyFunctions, exprcheck.go) rather than a
 // name comparison so a second entrant costs one edit. (RFC 0005's

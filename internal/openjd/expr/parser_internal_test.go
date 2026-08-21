@@ -483,8 +483,7 @@ func TestParse_RejectsPythonBeyondEXPR(t *testing.T) {
 			if err == nil {
 				t.Fatalf("Parse(%q) accepted the expression (root %T); want a syntax error", tt.src, e.Root())
 			}
-			var pe *Error
-			if !errors.As(err, &pe) {
+			if _, ok := errors.AsType[*Error](err); !ok {
 				t.Errorf("error is %T; want *Error carrying a position", err)
 			}
 		})
@@ -766,8 +765,7 @@ func TestParse_NestingDepthIsBounded(t *testing.T) {
 				t.Fatalf("Parse of %d-deep %q error = %q, want it to mention nesting depth",
 					tc.depth, tc.name, err.Error())
 			}
-			var e *Error
-			if !errors.As(err, &e) {
+			if _, ok := errors.AsType[*Error](err); !ok {
 				t.Fatalf("Parse of %d-deep %q returned %T, want an *Error carrying a position",
 					tc.depth, tc.name, err)
 			}

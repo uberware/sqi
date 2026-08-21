@@ -213,8 +213,7 @@ func TestResolveMalformed(t *testing.T) {
 			if err == nil {
 				t.Fatalf("Resolve(%q) returned no error", tc.input)
 			}
-			var malformed *fmtstring.MalformedError
-			if !errors.As(err, &malformed) {
+			if _, ok := errors.AsType[*fmtstring.MalformedError](err); !ok {
 				t.Fatalf("Resolve(%q) error is not *MalformedError: %T (%v)", tc.input, err, err)
 			}
 		})
@@ -331,8 +330,7 @@ func TestReferencesMalformed(t *testing.T) {
 		if err == nil {
 			t.Errorf("References(%q) returned no error", input)
 		}
-		var malformed *fmtstring.MalformedError
-		if !errors.As(err, &malformed) {
+		if _, ok := errors.AsType[*fmtstring.MalformedError](err); !ok {
 			t.Errorf("References(%q) error is not *MalformedError: %T (%v)", input, err, err)
 		}
 	}

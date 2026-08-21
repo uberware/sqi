@@ -14,13 +14,21 @@ guides for extending the worker.
 | Node.js ≥ 24 with npm ≥ 11 (see `.nvmrc` and `web/package.json` `engines`) | Build the web UI bundle embedded in `sqi-server` (`make build` runs it) | [nodejs.org](https://nodejs.org/) or `nvm use` |
 | `gofumpt` | Stricter formatter (superset of `gofmt`) | `go install mvdan.cc/gofumpt@latest` |
 | `goimports` | Import organizer | `go install golang.org/x/tools/cmd/goimports@latest` |
-| `golangci-lint` | Linter suite | [golangci-lint.run/usage/install](https://golangci-lint.run/usage/install/) |
+| `golangci-lint` ≥ 2.13.1 (CI pins this exact version; see below) | Linter suite | [golangci-lint.run/usage/install](https://golangci-lint.run/usage/install/) |
 | `lefthook` | Git hook runner | `go install github.com/evilmartians/lefthook@latest` |
 | `pkgsite` | Local pkg.go.dev docs server | `go install golang.org/x/pkgsite/cmd/pkgsite@latest` |
 | Docker (optional) | Build and run the container image; also runs the real-directory LDAP tests (`make test-ldap`), the real-provider SSO tests (`make test-oidc`), and the real-root run-as-user isolation tests (`make test-isolation`), all of which skip cleanly without it | [docs.docker.com](https://docs.docker.com/get-docker/), or `brew install colima docker && colima start` |
 
 `gofumpt`, `goimports`, and `golangci-lint` are required at commit time via
 pre-commit hooks. Install them before running `make hooks`.
+
+**`golangci-lint` 2.13.1 is a hard floor, not a suggestion.** `.golangci.yml`
+excludes `errors.AsType` from `errcheck` by function name, and `errcheck` before
+2.13.1 cannot resolve a *generic* function's name — it reports `Error return
+value is not checked` with no name at all, so the exclusion never matches and
+every `errors.AsType` call site in the repo is reported. On an older
+golangci-lint `make lint` fails on code CI considers clean. CI pins the same
+version in `.github/workflows/ci.yml`; keep the two in step when bumping.
 
 ---
 
@@ -714,6 +722,10 @@ db := t.TempDir() + "/test.db"
 **`golangci-lint` not found** — install it following the
 [official instructions](https://golangci-lint.run/usage/install/). The
 `go install golangci-lint` method is not supported by the project.
+
+**`make lint` reports `Error return value is not checked` on `errors.AsType`**
+— your `golangci-lint` predates 2.13.1. Check with `golangci-lint version` and
+upgrade; see the version floor noted under [Prerequisites](#prerequisites).
 
 **`gofumpt` or `goimports` not found after installing** — ensure `$(go env GOPATH)/bin`
 is on your `$PATH`:

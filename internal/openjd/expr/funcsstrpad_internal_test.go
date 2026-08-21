@@ -10,11 +10,14 @@ import (
 // TestPaddingFunctions covers ljust, rjust, center and zfill.
 //
 // Two rows are easy to get wrong in opposite directions:
-//   - center splits the padding by FLOOR division and puts the remainder on the
-//     right, so center('ab',7) is '  ab   '. CPython answers '   ab  ' — it
-//     biases the split with marg & width & 1 — and the reference does not.
-//     Do not "correct" this toward Python; it would manufacture an oracle
-//     divergence out of nothing.
+//   - center biases the split with CPython's "marg & width & 1", so
+//     center('ab',7) is '   ab  ' — three spaces left, two right — rather than
+//     the floor split's '  ab   '. It only shows up when the padding and the
+//     width are both odd; center('abc',4) and center('é',5) are the same under
+//     either rule. sqi used the floor split until 2026-08-19 for one reason
+//     only, recorded in funcsstrpad.go: the reference did, and matching CPython
+//     would have manufactured an oracle divergence. openjd-expr 0.3.0 moved to
+//     CPython's rule, so that reason now argues the other way.
 //   - a width at or below the current length returns the input UNCHANGED, which
 //     is what makes a negative width a harmless no-op. The reference panics on
 //     a negative width instead.
@@ -26,7 +29,7 @@ func TestPaddingFunctions(t *testing.T) {
 	}{
 		{"ljust pads on the right", `ljust('ab', 5)`, "ab   "},
 		{"rjust pads on the left", `rjust('ab', 5)`, "   ab"},
-		{"center splits by floor, remainder right", `center('ab', 7)`, "  ab   "},
+		{"center biases the odd space left, as CPython does", `center('ab', 7)`, "   ab  "},
 		{"center with one to spare", `center('abc', 4)`, "abc "},
 		{"center counts codepoints", `center('é', 5)`, "  é  "},
 		{"ljust below the width is unchanged", `ljust('abcd', 2)`, "abcd"},
