@@ -113,6 +113,19 @@ linters:
     errcheck:
       check-type-assertions: true   # catch unchecked x.(T)
       check-blank: true
+      exclude-functions:
+        # errors.AsType[E](err) returns (E, bool). The first result is the
+        # extracted error value, not a failure signal — the bool is. Discarding
+        # it as `_, ok := errors.AsType[...](err)` is the idiomatic form when
+        # only the match matters, but check-blank sees a blank-assigned error
+        # and reports it. Exclude the function rather than turning check-blank
+        # off, so a genuine `_ = f()` is still caught.
+        #
+        # Requires golangci-lint >= 2.13.1: earlier errcheck cannot resolve a
+        # generic function's name (it reports "Error return value is not
+        # checked" with no name), so this entry never matches and every
+        # errors.AsType call site is flagged.
+        - errors.AsType
 
     # gosec: suppress a few low-signal rules
     gosec:

@@ -140,14 +140,29 @@ jobs:
         run: make vet
 
       # Uses the official golangci-lint GitHub Action, which handles binary
-      # download, caching, and version resolution automatically.
-      # Configuration is read from .golangci.yml at the repo root.
+      # download and caching. Configuration is read from .golangci.yml at the
+      # repo root.
+      #
+      # version is PINNED on purpose. Left unset the action resolves "latest",
+      # so every new golangci-lint release lands on unrelated PRs as a red CI
+      # run: v2.13.1 enabled the modernize/errorsastype analyzer and broke a
+      # branch that had touched none of the reported code. Bump this
+      # deliberately, in its own commit, with the fallout fixed alongside it.
+      #
+      # 2.13.1 is also a FLOOR, not just a pin: .golangci.yml excludes
+      # errors.AsType from errcheck by function name, and errcheck before
+      # 2.13.1 cannot resolve a generic function's name, so on an older
+      # golangci-lint that exclusion silently fails to match and every
+      # errors.AsType call site is reported. Keep docs/development.md's
+      # required-version note in step with this value.
+      #
       # Explicit path patterns mirror the Makefile LINT_PKGS variable: they
       # exclude web/node_modules/ (third-party JS packages that happen to
       # contain Go code and are not part of the sqi codebase).
       - name: golangci-lint
         uses: golangci/golangci-lint-action@v9
         with:
+          version: v2.13.1
           args: --timeout=5m ./cmd/... ./internal/... ./pkg/... ./test/... ./web
 
       # The internal/openjd/expr path-engine differentials shell out to python3

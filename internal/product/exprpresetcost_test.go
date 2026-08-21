@@ -123,8 +123,7 @@ func TestExprPresetSubmitsAtCeiling(t *testing.T) {
 		if errors.Is(err, expr.ErrDeadlineExceeded) {
 			t.Fatalf("failed on the wall-clock deadline, not the operation limit: %v", err)
 		}
-		var verr *openjd.SubmitValidationError
-		if !errors.As(err, &verr) {
+		if _, ok := errors.AsType[*openjd.SubmitValidationError](err); !ok {
 			t.Fatalf("want a *openjd.SubmitValidationError (the client-fault channel), got %T: %v", err, err)
 		}
 		if !strings.Contains(err.Error(), "operation limit exceeded") {

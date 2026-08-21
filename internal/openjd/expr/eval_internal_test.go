@@ -822,8 +822,7 @@ func TestEval_RecursionDepthIsBounded(t *testing.T) {
 			if !strings.Contains(err.Error(), "nested too deeply") {
 				t.Fatalf("Eval of a %d-deep %s error = %q, want it to mention nesting depth", maxEvalDepth+10, tc.name, err.Error())
 			}
-			var e2 *Error
-			if !errors.As(err, &e2) {
+			if _, ok := errors.AsType[*Error](err); !ok {
 				t.Fatalf("Eval of a %d-deep %s returned %T, want an *Error carrying a position", maxEvalDepth+10, tc.name, err)
 			}
 		})

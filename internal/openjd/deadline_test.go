@@ -401,8 +401,7 @@ func TestCheckExpressionsAtSubmit_DeadlineIsNotASubmitValidationError(t *testing
 	if !errors.Is(serr, expr.ErrDeadlineExceeded) {
 		t.Fatalf("error = %v, want it to wrap expr.ErrDeadlineExceeded", serr)
 	}
-	var sve *SubmitValidationError
-	if errors.As(serr, &sve) {
+	if _, ok := errors.AsType[*SubmitValidationError](serr); ok {
 		t.Errorf("error = %v, want NOT a *SubmitValidationError: a wall-clock stop "+
 			"is not the submitter's fault", serr)
 	}
@@ -587,8 +586,7 @@ func TestSubmit_DeadlineIsNotASubmitValidationError(t *testing.T) {
 	if !errors.Is(err, expr.ErrDeadlineExceeded) {
 		t.Fatalf("error = %v, want it to wrap expr.ErrDeadlineExceeded", err)
 	}
-	var sve *SubmitValidationError
-	if errors.As(err, &sve) {
+	if _, ok := errors.AsType[*SubmitValidationError](err); ok {
 		t.Errorf("error = %v, want NOT a *SubmitValidationError: a wall-clock stop is "+
 			"the server giving up, not the submitter's fault, and that type is what "+
 			"internal/api turns into a 4xx", err)
