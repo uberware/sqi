@@ -327,8 +327,11 @@ func (s *Scheduler) handleTaskTerminal(
 		}
 	}
 	// The attempt is now terminal (closed above, or already closed by
-	// RecordTaskFailure for the failed path) and can never receive another
-	// log chunk, so its cached ownership entry is no longer needed.
+	// RecordTaskFailure for the failed path), so no further log chunks will
+	// be produced for it and its cached ownership entry is no longer needed.
+	// SQI_LOGS and SQI_STATUS are separate streams, so a chunk published just
+	// before this status can still be consumed after it — that is harmless,
+	// since a cache miss falls back to the store and re-reads correctly.
 	s.attemptCache.evict(attempt.ID)
 
 	// ── Transition the task ───────────────────────────────────────────────

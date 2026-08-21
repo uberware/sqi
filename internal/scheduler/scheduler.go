@@ -532,6 +532,10 @@ func (s *Scheduler) createAttemptAndClaimUsage(
 
 	if err := s.store.TryClaimSlots(ctx, attempt.ID, claims, now); err != nil {
 		s.revertTaskToReady(ctx, task.ID, "usage claim error")
+		// The attempt row survives this failure with no terminal status ever
+		// coming for it, so nothing else would evict its cache entry. Drop it
+		// now rather than let it sit as a stale, never-reused hit.
+		s.attemptCache.evict(attempt.ID)
 		if errors.Is(err, store.ErrUsageAtCapacity) {
 			s.logger.DebugContext(
 				ctx, "scheduler: usage pool at capacity — deferring assignment",
