@@ -782,11 +782,9 @@ func (s *Scheduler) handleWorkerRegister(ctx context.Context, msg jetstream.Msg,
 		s.ackMsg(ctx, msg)
 		return
 	}
-	if m.WorkerID == "" {
-		s.logger.WarnContext(ctx, "scheduler: worker.register missing worker_id")
-		s.ackMsg(ctx, msg)
-		return
-	}
+	// No separate "missing worker_id" check: subjectWorkerID is always
+	// non-empty (bus.ParseWorkerSubject guarantees it), so an empty
+	// m.WorkerID already failed the mismatch check above.
 
 	// The two struct conversions below (GPUInfo, ExprLimits) are what replaced
 	// a hand-maintained duplicate of protocol.RegisterMsg that used to live in
@@ -952,11 +950,9 @@ func (s *Scheduler) handleWorkerDeregister(ctx context.Context, msg jetstream.Ms
 		s.ackMsg(ctx, msg)
 		return
 	}
-	if m.WorkerID == "" {
-		s.logger.WarnContext(ctx, "scheduler: worker.deregister missing worker_id")
-		s.ackMsg(ctx, msg)
-		return
-	}
+	// No separate "missing worker_id" check: subjectWorkerID is always
+	// non-empty (bus.ParseWorkerSubject guarantees it), so an empty
+	// m.WorkerID already failed the mismatch check above.
 
 	if err := s.store.UpdateWorkerStatus(ctx, m.WorkerID, store.WorkerStatusOffline); err != nil {
 		if errors.Is(err, store.ErrNotFound) {
@@ -1042,10 +1038,9 @@ func (s *Scheduler) handleWorkerHeartbeat(ctx context.Context, msg jetstream.Msg
 		s.ackMsg(ctx, msg)
 		return
 	}
-	if m.WorkerID == "" {
-		s.ackMsg(ctx, msg)
-		return
-	}
+	// No separate "missing worker_id" check: subjectWorkerID is always
+	// non-empty (bus.ParseWorkerSubject guarantees it), so an empty
+	// m.WorkerID already failed the mismatch check above.
 
 	at := m.At
 	if at.IsZero() {

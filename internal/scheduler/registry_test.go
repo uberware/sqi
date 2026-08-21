@@ -83,7 +83,13 @@ func TestHandleWorkerRegister_MalformedJSON_Acked(t *testing.T) {
 	}
 }
 
-func TestHandleWorkerRegister_MissingWorkerID_Acked(t *testing.T) {
+// TestHandleWorkerRegister_EmptyPayloadWorkerID_Acked drives a payload with no
+// worker_id at all against a real subject. There is no separate "missing
+// worker_id" code path any more: bus.ParseWorkerSubject guarantees the
+// subject's worker token is never empty, so an empty m.WorkerID always fails
+// the subject/payload mismatch check first and is discarded through that
+// branch.
+func TestHandleWorkerRegister_EmptyPayloadWorkerID_Acked(t *testing.T) {
 	st := fake.New()
 	s := newMetricsScheduler(st, &recordBus{}, "")
 
@@ -94,7 +100,10 @@ func TestHandleWorkerRegister_MissingWorkerID_Acked(t *testing.T) {
 	s.handleWorkerMessage(msg)
 
 	if !msg.acked {
-		t.Error("register missing worker_id should be acked")
+		t.Error("register with an empty payload worker_id should be acked (mismatch)")
+	}
+	if _, err := st.GetWorker(t.Context(), "w-1"); err == nil {
+		t.Error("no worker should have been registered from a mismatched payload")
 	}
 }
 
@@ -199,13 +208,18 @@ func TestHandleWorkerHeartbeat_UnknownWorker_Nacked(t *testing.T) {
 	}
 }
 
-func TestHandleWorkerHeartbeat_MalformedAndMissingID_Acked(t *testing.T) {
+// TestHandleWorkerHeartbeat_MalformedAndEmptyPayloadID_Acked covers a
+// malformed body and a body with an empty worker_id. The latter has no
+// separate "missing worker_id" code path any more: bus.ParseWorkerSubject
+// guarantees the subject's worker token is never empty, so an empty
+// m.WorkerID always fails the subject/payload mismatch check first.
+func TestHandleWorkerHeartbeat_MalformedAndEmptyPayloadID_Acked(t *testing.T) {
 	tests := []struct {
 		name string
 		data []byte
 	}{
 		{"malformed", []byte("{bad")},
-		{"missing id", nil}, // filled below
+		{"empty payload id (mismatch)", nil}, // filled below
 	}
 	tests[1].data = workerMsgJSON(t, protocol.HeartbeatMsg{Version: protocol.ProtocolVersion, WorkerID: ""})
 
@@ -341,13 +355,18 @@ func TestHandleWorkerDeregister_UnknownWorker_Acked(t *testing.T) {
 	}
 }
 
-func TestHandleWorkerDeregister_MalformedAndMissingID_Acked(t *testing.T) {
+// TestHandleWorkerDeregister_MalformedAndEmptyPayloadID_Acked covers a
+// malformed body and a body with an empty worker_id. The latter has no
+// separate "missing worker_id" code path any more: bus.ParseWorkerSubject
+// guarantees the subject's worker token is never empty, so an empty
+// m.WorkerID always fails the subject/payload mismatch check first.
+func TestHandleWorkerDeregister_MalformedAndEmptyPayloadID_Acked(t *testing.T) {
 	tests := []struct {
 		name string
 		data []byte
 	}{
 		{"malformed", []byte("{bad")},
-		{"missing id", workerMsgJSON(t, map[string]string{"worker_id": ""})},
+		{"empty payload id (mismatch)", workerMsgJSON(t, map[string]string{"worker_id": ""})},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

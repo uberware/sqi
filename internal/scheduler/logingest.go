@@ -52,9 +52,12 @@ func (s *Scheduler) startTaskLogsConsumer(ctx context.Context) error {
 // published by workers.
 //
 // [protocol.LogChunkMsg] carries no worker-identity field of its own, so the
-// subject is the ONLY identity available: it is compared against the
-// attempt's recorded owner before a chunk is persisted, so a worker cannot
-// inject log content into another worker's task.
+// subject is the ONLY identity available: it is resolved to an attempt, and
+// that attempt's recorded WorkerID and TaskID are both checked before a
+// chunk is persisted or fanned out — the worker check alone would let a
+// worker holding a live attempt of its own pair that attempt with a
+// different task in the payload and inject log content there. See the
+// auth-off note on [Scheduler.handleTaskStatusMessage]: it applies here too.
 func (s *Scheduler) handleLogChunk(msg jetstream.Msg) {
 	ctx := s.ctx
 
@@ -111,6 +114,21 @@ func (s *Scheduler) handleLogChunk(msg jetstream.Msg) {
 			slog.Any("error", err),
 		)
 		s.nakMsg(ctx, msg)
+		return
+	}
+	// The attempt is real, but is it for the task this chunk claims? Without
+	// this, a worker holding a live attempt of its own could pair that
+	// attempt's ID with a different task's ID in the payload — the worker-ID
+	// check below would pass (the attempt really is the subject worker's),
+	// but the log would land against a task that worker was never assigned.
+	if attempt.TaskID != m.TaskID {
+		s.logger.WarnContext(
+			ctx, "scheduler: task.logs attempt task_id mismatch — discarding",
+			slog.String("attempt_id", m.AttemptID),
+			slog.String("msg_task_id", m.TaskID),
+			slog.String("attempt_task_id", attempt.TaskID),
+		)
+		s.ackMsg(ctx, msg)
 		return
 	}
 	// The subject's worker ID was enforced by NATS when broker auth is on;

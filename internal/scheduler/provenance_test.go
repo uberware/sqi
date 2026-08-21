@@ -46,16 +46,20 @@ func newFakeJetStreamMsg(_ *testing.T, subject string, data []byte) *fakeJSMsg {
 // seedRunnableTask creates a farm, queue, an online worker registered as
 // workerID, a running job/step, and a task assigned to and running on that
 // worker. Returns the job, step, and task.
+//
+// Farm/queue names are derived from workerID (fake.Store.CreateFarm rejects a
+// duplicate Name) so a test that needs two independent workers — each with
+// its own task — can call this twice without a spurious ErrConflict.
 func seedRunnableTask(t *testing.T, st *fake.Store, workerID string) (store.Job, store.Step, store.Task) {
 	t.Helper()
 	ctx := t.Context()
 	now := time.Now().UTC()
 
-	farm, err := st.CreateFarm(ctx, store.Farm{ID: uuid.NewString(), Name: "f"})
+	farm, err := st.CreateFarm(ctx, store.Farm{ID: uuid.NewString(), Name: "f-" + workerID})
 	if err != nil {
 		t.Fatalf("CreateFarm: %v", err)
 	}
-	queue, err := st.CreateQueue(ctx, store.Queue{ID: uuid.NewString(), FarmID: farm.ID, Name: "q"})
+	queue, err := st.CreateQueue(ctx, store.Queue{ID: uuid.NewString(), FarmID: farm.ID, Name: "q-" + workerID})
 	if err != nil {
 		t.Fatalf("CreateQueue: %v", err)
 	}
@@ -116,7 +120,7 @@ func TestProvenance_StatusFromWrongWorker(t *testing.T) {
 
 	// Two workers, a task held by B, and a live attempt for it.
 	const workerA, workerB = "worker-a", "worker-b"
-	job, step, task := seedRunnableTask(t, st, workerB) // helper above
+	job, _, task := seedRunnableTask(t, st, workerB) // helper above
 	attempt, err := st.CreateTaskAttempt(ctx, store.TaskAttempt{
 		ID:        uuid.NewString(),
 		TaskID:    task.ID,
@@ -165,7 +169,6 @@ func TestProvenance_StatusFromWrongWorker(t *testing.T) {
 	if !msg.acked {
 		t.Error("forged message was not acked; it will redeliver in a loop")
 	}
-	_ = step
 }
 
 // ── task.logs ──────────────────────────────────────────────────────────────
@@ -221,6 +224,165 @@ func TestProvenance_LogsFromWrongWorker(t *testing.T) {
 	}
 	if len(logs) != 0 {
 		t.Fatalf("forged log chunk was persisted: %d rows, want 0", len(logs))
+	}
+	if !msg.acked {
+		t.Error("forged message was not acked; it will redeliver in a loop")
+	}
+}
+
+// TestProvenance_LogsForAnotherWorkersTask proves that a worker holding a
+// live attempt of its own cannot pair that attempt with a DIFFERENT task in
+// the payload to inject log content there. This is distinct from
+// TestProvenance_LogsFromWrongWorker: here the subject and the attempt's
+// WorkerID genuinely agree (worker A really does hold attemptA), so the
+// worker-ID check alone would let it through. The broker grant is
+// task.logs.<workerID>.* — any trailing leaf is a valid subject for worker A
+// to publish on — so the leaf cannot be relied on either; only comparing the
+// attempt's own TaskID against the payload's TaskID catches this.
+func TestProvenance_LogsForAnotherWorkersTask(t *testing.T) {
+	st := fake.New()
+	ctx := t.Context()
+
+	const workerA, workerB = "worker-a", "worker-b"
+	_, _, taskA := seedRunnableTask(t, st, workerA)
+	attemptA, err := st.CreateTaskAttempt(ctx, store.TaskAttempt{
+		ID:        uuid.NewString(),
+		TaskID:    taskA.ID,
+		WorkerID:  workerA,
+		StartedAt: time.Now().UTC(),
+	})
+	if err != nil {
+		t.Fatalf("CreateTaskAttempt(A): %v", err)
+	}
+	// Worker B's own task — uninvolved in the publish below except as the
+	// target the forged payload names.
+	_, _, taskB := seedRunnableTask(t, st, workerB)
+
+	s := newTestScheduler(st, &stubBus{})
+	s.ctx = ctx
+
+	forged := protocol.LogChunkMsg{
+		TaskID:    taskB.ID,    // names worker B's task…
+		AttemptID: attemptA.ID, // …paired with worker A's own, genuinely-held attempt
+		SeqNum:    1,
+		At:        time.Now().UTC(),
+		Stream:    "stdout",
+		Data:      "injected into B's task via A's own attempt",
+	}
+	msg := newFakeJetStreamMsg(
+		t,
+		bus.TaskLogsSubject(workerA, "anything"), // any leaf is a valid subject for A
+		mustMarshal(t, forged),
+	)
+
+	s.handleLogChunk(msg)
+
+	logs, err := st.ListTaskLogs(ctx, attemptA.ID, -1, 100)
+	if err != nil {
+		t.Fatalf("ListTaskLogs: %v", err)
+	}
+	if len(logs) != 0 {
+		t.Fatalf("forged log chunk was persisted against another worker's task: %d rows, want 0", len(logs))
+	}
+	if !msg.acked {
+		t.Error("forged message was not acked; it will redeliver in a loop")
+	}
+}
+
+// ── worker.register ────────────────────────────────────────────────────────
+
+// TestProvenance_RegisterOfAnotherWorker proves that worker A cannot
+// overwrite worker B's row — CPU count, tags, EXPR caps and all — by
+// publishing a registration on its own subject with B's ID in the payload.
+func TestProvenance_RegisterOfAnotherWorker(t *testing.T) {
+	st := fake.New()
+	ctx := t.Context()
+
+	const workerA, workerB = "worker-a", "worker-b"
+	now := time.Now().UTC()
+	if _, err := st.RegisterWorker(ctx, store.Worker{
+		ID: workerB, FarmID: "farm-1", Hostname: "real-host", CPUCount: 8,
+		Status: store.WorkerStatusOnline, LastHeartbeatAt: &now,
+		Tags: map[string]string{"gpu": "true"},
+	}); err != nil {
+		t.Fatalf("RegisterWorker(B): %v", err)
+	}
+
+	s := newMetricsScheduler(st, &recordBus{}, "")
+
+	forged := protocol.RegisterMsg{
+		Version:  protocol.ProtocolVersion,
+		Type:     protocol.TypeRegister,
+		WorkerID: workerB, // the payload lies; the subject does not
+		FarmID:   "farm-1",
+		Hostname: "forged-host",
+		OS:       "linux",
+		CPUCount: 1,
+	}
+	msg := newFakeJetStreamMsg(
+		t,
+		bus.WorkerRegisterSubject(workerA),
+		mustMarshal(t, forged),
+	)
+
+	s.handleWorkerMessage(msg)
+
+	w, err := st.GetWorker(ctx, workerB)
+	if err != nil {
+		t.Fatalf("GetWorker(B): %v", err)
+	}
+	if w.Hostname != "real-host" || w.CPUCount != 8 {
+		t.Fatalf("worker B's row was overwritten by worker A's forged registration: hostname=%q cpu=%d",
+			w.Hostname, w.CPUCount)
+	}
+	if _, err := st.GetWorker(ctx, workerA); err == nil {
+		t.Error("worker A should not have been registered from a mismatched payload either")
+	}
+	if !msg.acked {
+		t.Error("forged message was not acked; it will redeliver in a loop")
+	}
+}
+
+// ── worker.heartbeat ───────────────────────────────────────────────────────
+
+// TestProvenance_HeartbeatOfAnotherWorker proves that worker A cannot keep
+// worker B looking alive — and therefore un-reclaimed — by publishing a
+// heartbeat on its own subject with B's ID in the payload.
+func TestProvenance_HeartbeatOfAnotherWorker(t *testing.T) {
+	st := fake.New()
+	ctx := t.Context()
+
+	const workerA, workerB = "worker-a", "worker-b"
+	stale := time.Now().UTC().Add(-time.Hour)
+	if _, err := st.RegisterWorker(ctx, store.Worker{
+		ID: workerB, FarmID: "farm-1", Status: store.WorkerStatusOnline, LastHeartbeatAt: &stale,
+	}); err != nil {
+		t.Fatalf("RegisterWorker(B): %v", err)
+	}
+
+	s := newMetricsScheduler(st, &recordBus{}, "")
+
+	forged := protocol.HeartbeatMsg{
+		Version:  protocol.ProtocolVersion,
+		Type:     protocol.TypeHeartbeat,
+		WorkerID: workerB, // the payload lies; the subject does not
+		At:       time.Now().UTC(),
+	}
+	msg := newFakeJetStreamMsg(
+		t,
+		bus.WorkerHeartbeatSubject(workerA),
+		mustMarshal(t, forged),
+	)
+
+	s.handleWorkerMessage(msg)
+
+	w, err := st.GetWorker(ctx, workerB)
+	if err != nil {
+		t.Fatalf("GetWorker(B): %v", err)
+	}
+	if w.LastHeartbeatAt == nil || !w.LastHeartbeatAt.Equal(stale) {
+		t.Fatalf("worker B's heartbeat was refreshed by worker A's forged heartbeat: LastHeartbeatAt = %v, want unchanged %v",
+			w.LastHeartbeatAt, stale)
 	}
 	if !msg.acked {
 		t.Error("forged message was not acked; it will redeliver in a loop")
@@ -286,16 +448,28 @@ func TestProvenance_LeaseAsAnotherWorker(t *testing.T) {
 	st := fake.New()
 	one := 1
 	// seedLeaseFixture (lease_test.go) registers a real, eligible worker "w1"
-	// with a ready task that WOULD be leased to it if the provenance check
-	// did not intervene first — workerB below is that real worker, the one
-	// being impersonated; workerA is the actual (unregistered) publisher, and
-	// its absence from the store must not matter, since the mismatch check
-	// has to fire before any worker lookup happens.
+	// with a ready task — workerB below is that real worker, the one being
+	// impersonated.
 	_, taskIDs := seedLeaseFixture(t, st, []*int{&one})
+
+	const workerA, workerB = "worker-a", "w1"
+
+	// Worker A is ALSO real, eligible and in the same farm/queue, so an
+	// unforged request from it would legitimately be offered this same ready
+	// task. That is what pins the assertion below to the check: if the reply
+	// were empty merely because worker A didn't exist or wasn't eligible,
+	// removing the check wouldn't turn this test red.
+	now := time.Now().UTC()
+	if _, err := st.RegisterWorker(t.Context(), store.Worker{
+		ID: workerA, FarmID: "f1", Hostname: workerA,
+		Status: store.WorkerStatusOnline, CPUCount: 4, LastHeartbeatAt: &now,
+		Tags: map[string]string{},
+	}); err != nil {
+		t.Fatalf("RegisterWorker(A): %v", err)
+	}
 
 	s := newMetricsScheduler(st, &recordBus{}, "f1")
 
-	const workerA, workerB = "worker-a", "w1"
 	req, err := json.Marshal(leaseRequest{WorkerID: workerB})
 	if err != nil {
 		t.Fatalf("marshal lease request: %v", err)
@@ -316,8 +490,8 @@ func TestProvenance_LeaseAsAnotherWorker(t *testing.T) {
 		if err != nil {
 			t.Fatalf("GetTask(%s): %v", id, err)
 		}
-		if task.AssignedWorkerID == workerB {
-			t.Fatalf("task %s was assigned to impersonated worker %q", id, workerB)
+		if task.AssignedWorkerID != "" {
+			t.Fatalf("task %s was assigned to %q by a refused lease request, want unassigned", id, task.AssignedWorkerID)
 		}
 	}
 }

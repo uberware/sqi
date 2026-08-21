@@ -52,8 +52,9 @@ func (s *Scheduler) handleLeaseRequest(workerID, queueID string, data []byte) []
 
 	// The subject is authoritative. A payload that names a different worker
 	// is either a stale client or an attempt to have tasks assigned to
-	// another worker while this connection receives the job code.
-	if req.WorkerID != "" && req.WorkerID != workerID {
+	// another worker while this connection receives the job code. No
+	// req.WorkerID == "" guard here: that case already returned above.
+	if req.WorkerID != workerID {
 		s.logger.WarnContext(
 			ctx, "scheduler: lease request whose payload identity differs from its subject — refusing",
 			slog.String("subject_worker_id", workerID),
