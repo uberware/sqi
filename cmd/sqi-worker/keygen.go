@@ -6,18 +6,12 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"path/filepath"
 
 	"github.com/spf13/cobra"
 
 	"github.com/uberware/sqi/internal/brokerauth"
 	workerconfig "github.com/uberware/sqi/internal/worker/config"
 )
-
-// workerCredentialFilename is the seed filename under the worker data
-// directory, matching internal/worker/config's default for
-// NATS.CredentialFile (<worker.data_dir>/worker.nk).
-const workerCredentialFilename = "worker.nk"
 
 var keygenFlags struct {
 	DataDir string
@@ -62,7 +56,7 @@ func runKeygen(_ *cobra.Command, _ []string) error {
 	if dataDir == "" {
 		return errors.New("data directory is empty; use --data-dir")
 	}
-	seedPath := filepath.Join(dataDir, workerCredentialFilename)
+	seedPath := workerconfig.DefaultCredentialFile(dataDir)
 
 	_, statErr := os.Stat(seedPath)
 	switch {

@@ -713,6 +713,14 @@ func TestValidate_RejectsBadDetector(t *testing.T) {
 	}
 }
 
+func TestDefaultCredentialFile(t *testing.T) {
+	got := DefaultCredentialFile("/tmp/sqi-worker-data")
+	want := filepath.Join("/tmp/sqi-worker-data", "worker.nk")
+	if got != want {
+		t.Errorf("DefaultCredentialFile = %q, want %q", got, want)
+	}
+}
+
 func TestLoad_NATSCredentialFileDefaultsUnderDataDir(t *testing.T) {
 	t.Setenv("SQI_WORKER_NATS_URL", "nats://x:4222") // satisfy validation
 	t.Setenv("SQI_WORKER_DATA_DIR", "/tmp/sqi-worker-data")

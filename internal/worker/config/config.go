@@ -553,6 +553,15 @@ func defaultDataDir() string {
 	return filepath.Join(home, ".sqi", "worker")
 }
 
+// DefaultCredentialFile returns the default nkey seed path under dataDir,
+// used whenever NATS.CredentialFile is left unset in [Load]'s resolution
+// below. Exported so other worker-side entry points that write or look for
+// the seed file — the "sqi-worker keygen" CLI, notably — derive the same
+// path from the data directory rather than each hardcoding it.
+func DefaultCredentialFile(dataDir string) string {
+	return filepath.Join(dataDir, "worker.nk")
+}
+
 // Load returns the effective WorkerConfig by merging layers in override order:
 // built-in defaults → YAML/JSON file → SQI_WORKER_* env vars → CLI flags.
 //
@@ -593,7 +602,7 @@ func Load(configFile string, flags FlagOverrides) (WorkerConfig, error) {
 	// three layers above may have changed, so it is resolved last rather
 	// than at struct-literal time in Default.
 	if cfg.NATS.CredentialFile == "" {
-		cfg.NATS.CredentialFile = filepath.Join(cfg.Worker.DataDir, "worker.nk")
+		cfg.NATS.CredentialFile = DefaultCredentialFile(cfg.Worker.DataDir)
 	}
 
 	return cfg, nil
