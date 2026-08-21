@@ -51,15 +51,23 @@ func TestAttemptOwnerCache_BoundedUnderContinuousGrowth(t *testing.T) {
 	}
 }
 
-func TestAttemptOwnerCache_ConcurrentAccess(_ *testing.T) {
+// TestAttemptOwnerCache_ConcurrentAccess drives put/get/evict concurrently
+// under -race, then checks a real final invariant rather than just surviving
+// without a panic or a race report: every id gets its own unique key (no two
+// goroutines contend for the same entry), so the final state is fully
+// determined by each goroutine's own i%3==0 evict decision. That lets the
+// assertion also catch a put/get keying mistake — e.g. get reading back a
+// neighboring entry's taskID — which a mere "did it panic" check cannot.
+func TestAttemptOwnerCache_ConcurrentAccess(t *testing.T) {
 	c := newAttemptOwnerCache()
+	const n = 50
 	var wg sync.WaitGroup
-	for i := range 50 {
+	for i := range n {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			id := strconv.Itoa(i % 10)
-			c.put(id, "worker-1", "task-1")
+			id := strconv.Itoa(i)
+			c.put(id, "worker-1", "task-"+id)
 			c.get(id)
 			if i%3 == 0 {
 				c.evict(id)
@@ -67,4 +75,23 @@ func TestAttemptOwnerCache_ConcurrentAccess(_ *testing.T) {
 		}(i)
 	}
 	wg.Wait()
+
+	for i := range n {
+		id := strconv.Itoa(i)
+		got, ok := c.get(id)
+		if i%3 == 0 {
+			if ok {
+				t.Errorf("id %s: expected evict to have removed the entry, got %+v", id, got)
+			}
+			continue
+		}
+		if !ok {
+			t.Errorf("id %s: expected entry to remain present", id)
+			continue
+		}
+		wantTaskID := "task-" + id
+		if got.taskID != wantTaskID {
+			t.Errorf("id %s: taskID = %q, want %q (own key, not a neighbor's)", id, got.taskID, wantTaskID)
+		}
+	}
 }

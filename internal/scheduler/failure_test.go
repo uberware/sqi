@@ -339,6 +339,28 @@ func TestHandleTaskFailed_RetriesUntilCeiling(t *testing.T) {
 	}
 }
 
+// TestHandleTaskFailed_Retry_EvictsAttemptCache proves the RETRY branch of
+// handleTaskFailed evicts the attempt-owner cache entry itself. That branch
+// returns from retryTaskAfterFailure without ever reaching handleTaskTerminal,
+// so the terminal path's own evict call cannot cover it — deleting
+// handleTaskFailed's evict would leave every other test in this file green.
+func TestHandleTaskFailed_Retry_EvictsAttemptCache(t *testing.T) {
+	h := newFailureHarness(t, RetryPolicy{MaxAttempts: 2, RetryDelay: 0, FailureLimit: 0})
+	h.seedRunningTask("j1", "t1", "w1")
+
+	attempt := h.current["t1"]
+	h.s.attemptCache.put(attempt.ID, attempt.WorkerID, attempt.TaskID)
+
+	h.reportFailed("t1") // first failure: RETRY, not EXHAUSTED (ceiling is 2)
+
+	if got := h.taskStatus("t1"); got != store.TaskStatusReady {
+		t.Fatalf("expected retry to requeue the task, got %s", got)
+	}
+	if _, ok := h.s.attemptCache.get(attempt.ID); ok {
+		t.Error("expected attempt-owner cache entry to be evicted on the retry branch")
+	}
+}
+
 // TestHandleTaskFailed_RedeliveryCountsOnce is the IMP-1 regression at the
 // scheduler layer. The task-status JetStream consumer is at-least-once, so the
 // same "failed" message can be delivered more than once (NAK, AckWait expiry,

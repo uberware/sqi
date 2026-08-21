@@ -13,6 +13,8 @@ package scheduler
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"log/slog"
 	"testing"
 	"time"
@@ -488,3 +490,148 @@ func (*logIngestErrSt) CreateTaskLog(_ context.Context, _ store.TaskLog) (store.
 }
 
 var errInjectedLog = context.DeadlineExceeded
+
+// ── attemptOwnerCache: stale hit on a deleted attempt ─────────────────────
+
+// fkEnforcingLogStore wraps a store.Store and makes CreateTaskLog fail
+// exactly as the SQLite backend does when a log row's AttemptID no longer
+// names an existing task_attempts row: a FOREIGN KEY constraint failure,
+// which mapErr turns into store.ErrConflict. The fake store enforces no such
+// constraint (internal/store/fake/task_log.go appends unconditionally), so a
+// test exercising this path needs this wrapper.
+type fkEnforcingLogStore struct {
+	store.Store
+}
+
+func (s *fkEnforcingLogStore) CreateTaskLog(ctx context.Context, log store.TaskLog) (store.TaskLog, error) {
+	if _, err := s.GetTaskAttempt(ctx, log.AttemptID); errors.Is(err, store.ErrNotFound) {
+		return store.TaskLog{}, fmt.Errorf("%w: FOREIGN KEY constraint failed", store.ErrConflict)
+	} else if err != nil {
+		return store.TaskLog{}, err
+	}
+	return s.Store.CreateTaskLog(ctx, log)
+}
+
+// TestHandleLogChunk_CacheHit_DeletedAttempt_SelfHeals is the regression test
+// for the hazard on the cache-HIT path: a cache hit against an attempt whose
+// row has been deleted out from under it — e.g. DELETE /api/v1/jobs/{id} on
+// an ACTIVE job cancels its tasks and then runs DeleteJob, which removes the
+// task_attempts row, while a worker is still publishing chunks for the
+// window before its process notices — must not turn into a NAK loop.
+//
+// The first chunk populates the cache. Deleting the job removes the attempt
+// row underneath it, but nothing evicts the cache entry on that path (it is
+// a bulk write, not a terminal task-status message). The next chunk hits the
+// stale-but-identity-matching cache entry, so both ownership checks pass and
+// the write is attempted — and must fail. That failure has to evict the
+// entry so the redelivery takes the store path and discards the chunk
+// cleanly, rather than hitting the same stale entry and failing forever.
+func TestHandleLogChunk_CacheHit_DeletedAttempt_SelfHeals(t *testing.T) {
+	base := fake.New()
+	st := &fkEnforcingLogStore{Store: base}
+	s := newLogTestScheduler(st)
+	s.ctx = t.Context()
+
+	ctx := t.Context()
+	now := time.Now().UTC()
+
+	if _, err := base.CreateFarm(ctx, store.Farm{ID: "farm-1", Name: "farm-1"}); err != nil {
+		t.Fatalf("CreateFarm: %v", err)
+	}
+	if _, err := base.CreateQueue(ctx, store.Queue{ID: "queue-1", FarmID: "farm-1", Name: "queue-1"}); err != nil {
+		t.Fatalf("CreateQueue: %v", err)
+	}
+	job, err := base.CreateJob(ctx, store.Job{
+		ID: uuid.NewString(), FarmID: "farm-1", QueueID: "queue-1", Name: "job",
+		Status: store.JobStatusRunning, TemplateFormat: store.TemplateFormatJSON,
+		CreatedAt: now, UpdatedAt: now,
+	})
+	if err != nil {
+		t.Fatalf("CreateJob: %v", err)
+	}
+	step, err := base.CreateStep(ctx, store.Step{
+		ID: uuid.NewString(), JobID: job.ID, Name: "s1",
+		Status: store.StepStatusRunning, CreatedAt: now, UpdatedAt: now,
+	})
+	if err != nil {
+		t.Fatalf("CreateStep: %v", err)
+	}
+	task, err := base.CreateTask(ctx, store.Task{
+		ID: uuid.NewString(), JobID: job.ID, StepID: step.ID, Name: "t1",
+		Status: store.TaskStatusRunning, AssignedWorkerID: logTestWorkerID,
+		CreatedAt: now, UpdatedAt: now,
+	})
+	if err != nil {
+		t.Fatalf("CreateTask: %v", err)
+	}
+	attempt, err := base.CreateTaskAttempt(ctx, store.TaskAttempt{
+		ID: uuid.NewString(), TaskID: task.ID, WorkerID: logTestWorkerID,
+		AttemptNumber: 1, Status: store.AttemptStatusRunning, StartedAt: now, CreatedAt: now,
+	})
+	if err != nil {
+		t.Fatalf("CreateTaskAttempt: %v", err)
+	}
+
+	newChunk := func(seq int64) *fakeJSMsg {
+		return &fakeJSMsg{
+			subject: bus.TaskLogsSubject(logTestWorkerID, task.ID),
+			natsSeq: uint64(seq), // test data, small positive constant
+			data: msgJSON(t, protocol.LogChunkMsg{
+				TaskID:    task.ID,
+				AttemptID: attempt.ID,
+				SeqNum:    seq,
+				At:        now,
+				Stream:    "stdout",
+				Data:      "line",
+			}),
+		}
+	}
+
+	// First chunk: cache miss, store read succeeds, cache is populated.
+	first := newChunk(1)
+	s.handleLogChunk(first)
+	if !first.acked {
+		t.Fatal("expected first chunk to be acked")
+	}
+	if _, ok := s.attemptCache.get(attempt.ID); !ok {
+		t.Fatal("expected first chunk to populate the attempt-owner cache")
+	}
+
+	// The operator deletes the active job: tasks are canceled and DeleteJob
+	// removes the attempt row along with everything else. Nothing on this
+	// path evicts the cache entry, so it survives untouched.
+	if err := base.DeleteJob(ctx, job.ID); err != nil {
+		t.Fatalf("DeleteJob: %v", err)
+	}
+	if _, ok := s.attemptCache.get(attempt.ID); !ok {
+		t.Fatal("test setup invariant broken: cache entry should still be present after DeleteJob")
+	}
+
+	// Second chunk: a cache HIT against the now-stale entry. Both identity
+	// checks pass (they check the cached, historical values), so the write
+	// is attempted and fails with the FK-style error.
+	second := newChunk(2)
+	s.handleLogChunk(second)
+	if !second.nacked {
+		t.Fatal("expected the write against a deleted attempt to nak for redelivery")
+	}
+	if second.acked {
+		t.Error("second chunk should not be acked when the write fails")
+	}
+	if _, ok := s.attemptCache.get(attempt.ID); ok {
+		t.Fatal("expected the failed write to evict the stale cache entry")
+	}
+
+	// Redelivery: the cache is now empty, so this takes the store path,
+	// which correctly discards (acks) a chunk for a vanished attempt —
+	// self-healing, exactly like the pre-cache behavior, instead of nacking
+	// again and looping.
+	redelivery := newChunk(2)
+	s.handleLogChunk(redelivery)
+	if !redelivery.acked {
+		t.Error("expected the redelivery to be acked (discarded) once the cache entry is gone")
+	}
+	if redelivery.nacked {
+		t.Error("redelivery should not nak again — that would loop forever")
+	}
+}

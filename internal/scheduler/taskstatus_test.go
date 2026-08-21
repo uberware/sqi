@@ -360,6 +360,37 @@ func TestProcessTaskStatus_Succeeded(t *testing.T) {
 	}
 }
 
+// TestProcessTaskStatus_Succeeded_EvictsAttemptCache proves handleTaskTerminal
+// evicts the attempt-owner cache entry on a terminal status, not just the
+// store row. Every other test in this file only asserts on the store, so a
+// deleted evict call in handleTaskTerminal would leave them all green.
+func TestProcessTaskStatus_Succeeded_EvictsAttemptCache(t *testing.T) {
+	st := fake.New()
+	s := newStatusTestScheduler(st)
+	s.ctx = t.Context()
+
+	_, _, task, attempt := seedStatusFixture(t, st, store.TaskStatusRunning)
+	s.attemptCache.put(attempt.ID, attempt.WorkerID, task.ID)
+	exitCode := 0
+
+	msg := &fakeJSMsg{
+		subject: statusTestSubject,
+		data: taskStatusMsgJSON(t, protocol.TaskStatusMsg{
+			Version:   protocol.ProtocolVersion,
+			TaskID:    task.ID,
+			AttemptID: attempt.ID,
+			Status:    "succeeded",
+			ExitCode:  &exitCode,
+			At:        time.Now().UTC(),
+		}),
+	}
+	s.handleTaskStatusMessage(msg)
+
+	if _, ok := s.attemptCache.get(attempt.ID); ok {
+		t.Error("expected attempt-owner cache entry to be evicted on terminal status")
+	}
+}
+
 func TestProcessTaskStatus_Failed(t *testing.T) {
 	st := fake.New()
 	s := newStatusTestScheduler(st)
