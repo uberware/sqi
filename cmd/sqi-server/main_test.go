@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/spf13/pflag"
 )
 
 // captureStdout redirects os.Stdout to a pipe for the duration of fn, then
@@ -37,6 +39,55 @@ func captureStdout(t *testing.T, fn func()) string {
 	}
 	r.Close()
 	return buf.String()
+}
+
+// captureStderr redirects os.Stderr to a pipe for the duration of fn, then
+// returns everything written to it. Needed alongside captureStdout for
+// commands (backup's resolveDBPath deprecation notice, keygen's warnings)
+// that deliberately separate their stderr diagnostics from stdout output.
+//
+// Must NOT be called from parallel sub-tests — the redirect is process-wide,
+// same caveat as captureStdout.
+func captureStderr(t *testing.T, fn func()) string {
+	t.Helper()
+	old := os.Stderr
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("os.Pipe: %v", err)
+	}
+	os.Stderr = w
+
+	fn()
+
+	w.Close()
+	os.Stderr = old
+
+	var buf bytes.Buffer
+	if _, err := io.Copy(&buf, r); err != nil {
+		t.Fatalf("io.Copy from stderr pipe: %v", err)
+	}
+	r.Close()
+	return buf.String()
+}
+
+// withFlagUnchanged resets a flag's Changed state to false for the duration
+// of the test, then restores it.
+//
+// pflag.Flag.Changed is sticky: it flips to true the first time a flag is
+// parsed from the command line and the library never resets it. Flag
+// objects in this binary are package-level singletons registered once in
+// init(), so within a single test process a later test asserting "the flag
+// was omitted" would otherwise observe a stale true left by an earlier test
+// that passed it explicitly, purely as an artifact of test ordering.
+func withFlagUnchanged(t *testing.T, fs *pflag.FlagSet, name string) {
+	t.Helper()
+	f := fs.Lookup(name)
+	if f == nil {
+		t.Fatalf("no such flag: %q", name)
+	}
+	orig := f.Changed
+	f.Changed = false
+	t.Cleanup(func() { f.Changed = orig })
 }
 
 // prepareRoot sets the args that rootCmd will parse on the next Execute() call
@@ -308,50 +359,116 @@ func TestMigrateCmd_WithTempDB(t *testing.T) {
 	})
 }
 
-// TestRunBackup_ErrorPaths tests the early-return validation guards in
-// runBackup directly (without invoking cobra) to avoid the required --out
-// flag check that cobra enforces when routing through the command tree.
-func TestRunBackup_ErrorPaths(t *testing.T) {
-	// Save and restore the package-global backupFlags so other tests are
-	// not affected.
-	origDB := backupFlags.DBPath
-	origOut := backupFlags.OutPath
-	t.Cleanup(func() {
-		backupFlags.DBPath = origDB
-		backupFlags.OutPath = origOut
+// TestMigrateCmd_DBPath_ExplicitFlagBeatsConfig verifies that --db wins even
+// when a config file names a different database, proving migrate consults
+// cmd.Flags().Changed("db") rather than always preferring the config layer.
+func TestMigrateCmd_DBPath_ExplicitFlagBeatsConfig(t *testing.T) {
+	explicitPath := filepath.Join(t.TempDir(), "explicit-migrate.db")
+	configuredPath := filepath.Join(t.TempDir(), "from-config-migrate.db")
+	withConfigFile(t, writeStoreConfigFile(t, configuredPath))
+
+	prepareRoot([]string{"migrate", "up", "--db", explicitPath})
+	_ = captureStdout(t, func() {
+		if err := Execute(); err != nil {
+			t.Fatalf("migrate up: unexpected error: %v", err)
+		}
 	})
 
-	tests := []struct {
-		name        string
-		dbPath      string
-		outPath     string
-		errContains string
-	}{
-		{
-			name:        "empty db path returns descriptive error",
-			dbPath:      "",
-			outPath:     "somewhere.db",
-			errContains: "empty",
-		},
-		{
-			name:        "empty out path returns descriptive error",
-			dbPath:      "sqi.db",
-			outPath:     "",
-			errContains: "empty",
-		},
+	if _, err := os.Stat(explicitPath); err != nil {
+		t.Errorf("expected migrate to create the explicit --db path %q: %v", explicitPath, err)
 	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			backupFlags.DBPath = tt.dbPath
-			backupFlags.OutPath = tt.outPath
+	if _, err := os.Stat(configuredPath); err == nil {
+		t.Errorf("migrate created a database at the configured path %q despite an explicit --db", configuredPath)
+	}
+}
 
-			err := runBackup(nil, nil)
-			if err == nil {
-				t.Fatal("expected error, got nil")
-			}
-			if !strings.Contains(err.Error(), tt.errContains) {
-				t.Errorf("error should contain %q; got: %v", tt.errContains, err)
+// TestMigrateCmd_DBPath_ConfigFileHonoredWhenFlagOmitted verifies that
+// omitting --db resolves the database through the config layer, and that
+// migrate — unlike backup and worker — creates it there.
+func TestMigrateCmd_DBPath_ConfigFileHonoredWhenFlagOmitted(t *testing.T) {
+	withFlagUnchanged(t, migrateCmd.PersistentFlags(), "db")
+	configuredPath := filepath.Join(t.TempDir(), "from-config-migrate.db")
+	withConfigFile(t, writeStoreConfigFile(t, configuredPath))
+
+	prepareRoot([]string{"migrate", "up"})
+	_ = captureStdout(t, func() {
+		if err := Execute(); err != nil {
+			t.Fatalf("migrate up: unexpected error: %v", err)
+		}
+	})
+
+	if _, err := os.Stat(configuredPath); err != nil {
+		t.Errorf("expected migrate to create the configured store.sqlite_path %q: %v", configuredPath, err)
+	}
+}
+
+// TestBackupCmd_ErrorPaths exercises backup's validation guards through the
+// real command tree, so cobra's own --out requirement and resolveDBPath's
+// flag-changed detection (which needs a live *cobra.Command, not a nil one)
+// are both in play.
+func TestBackupCmd_ErrorPaths(t *testing.T) {
+	t.Run("missing --out is rejected by cobra", func(t *testing.T) {
+		prepareRoot([]string{"backup", "--db", "sqi.db"})
+		_ = captureStdout(t, func() {
+			if err := Execute(); err == nil {
+				t.Fatal("expected an error for a missing required --out flag, got nil")
 			}
 		})
+	})
+
+	t.Run("explicit empty --db returns a descriptive error", func(t *testing.T) {
+		outPath := filepath.Join(t.TempDir(), "out.db")
+		prepareRoot([]string{"backup", "--db", "", "--out", outPath})
+		var runErr error
+		_ = captureStdout(t, func() {
+			runErr = Execute()
+		})
+		if runErr == nil {
+			t.Fatal("expected an error for an explicitly empty --db, got nil")
+		}
+		if !strings.Contains(runErr.Error(), "empty") {
+			t.Errorf("error should mention 'empty'; got: %v", runErr)
+		}
+	})
+
+	t.Run("missing source database is an error, not a fresh empty backup", func(t *testing.T) {
+		dbPath := filepath.Join(t.TempDir(), "does-not-exist.db")
+		outPath := filepath.Join(t.TempDir(), "out.db")
+		prepareRoot([]string{"backup", "--db", dbPath, "--out", outPath})
+		var runErr error
+		_ = captureStdout(t, func() {
+			runErr = Execute()
+		})
+		if runErr == nil {
+			t.Fatal("expected an error for a missing source database, got nil")
+		}
+		if !strings.Contains(runErr.Error(), dbPath) {
+			t.Errorf("error should name the resolved path %q; got: %v", dbPath, runErr)
+		}
+		if _, statErr := os.Stat(outPath); statErr == nil {
+			t.Error("backup should not have produced an output file when the source database is missing")
+		}
+	})
+}
+
+// TestBackupCmd_DBPath_ConfigFileHonoredWhenFlagOmitted verifies that
+// omitting --db resolves the source database through the config layer
+// (store.sqlite_path) rather than the built-in "sqi.db" default.
+func TestBackupCmd_DBPath_ConfigFileHonoredWhenFlagOmitted(t *testing.T) {
+	withFlagUnchanged(t, backupCmd.Flags(), "db")
+	configuredPath := filepath.Join(t.TempDir(), "from-config-backup.db")
+	createTestDB(t, configuredPath)
+	withConfigFile(t, writeStoreConfigFile(t, configuredPath))
+
+	outPath := filepath.Join(t.TempDir(), "out.db")
+	prepareRoot([]string{"backup", "--out", outPath})
+	_ = captureStdout(t, func() {
+		if err := Execute(); err != nil {
+			t.Fatalf("backup: unexpected error: %v", err)
+		}
+	})
+
+	if _, err := os.Stat(outPath); err != nil {
+		t.Errorf("expected a backup file at %q: %v", outPath, err)
 	}
 }

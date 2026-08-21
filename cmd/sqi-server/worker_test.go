@@ -4,6 +4,7 @@ package main
 
 import (
 	"context"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -13,10 +14,27 @@ import (
 	"github.com/uberware/sqi/internal/store/sqlite"
 )
 
+// createTestDB creates and migrates a SQLite database at path. The worker
+// subcommands never create a database themselves (see [openWorkerStore]), so
+// any test exercising a code path that reaches the store needs one to
+// already exist first — exactly as an operator would run "sqi-server migrate
+// up" before "sqi-server worker ...".
+func createTestDB(t *testing.T, path string) {
+	t.Helper()
+	st, err := sqlite.Open(context.Background(), path, sqlite.DefaultOptions())
+	if err != nil {
+		t.Fatalf("create test database at %s: %v", path, err)
+	}
+	if err := st.Close(); err != nil {
+		t.Fatalf("close test database at %s: %v", path, err)
+	}
+}
+
 // TestWorkerCmd_TokenIssue verifies that "worker token issue" prints the raw
 // token to stdout exactly once and that only its hash is ever stored.
 func TestWorkerCmd_TokenIssue(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "test.db")
+	createTestDB(t, dbPath)
 
 	prepareRoot([]string{"worker", "token", "issue", "--db", dbPath, "--name", "ci-runner"})
 	out := captureStdout(t, func() {
@@ -109,6 +127,7 @@ func TestWorkerCmd_Enroll_InvalidPublicKey(t *testing.T) {
 // the mirror-image warning; both must keep saying so.
 func TestWorkerCmd_Enroll_WarnsThatARunningServerNeedsARestart(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "test.db")
+	createTestDB(t, dbPath)
 	_, pub, err := brokerauth.GenerateSeed()
 	if err != nil {
 		t.Fatalf("GenerateSeed: %v", err)
@@ -148,6 +167,7 @@ func TestWorkerCmd_Enroll_LongHelpWarnsAboutARunningServer(t *testing.T) {
 // same worker ID twice with two different keys fails the second time.
 func TestWorkerCmd_Enroll_DuplicateWorkerIDFails(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "test.db")
+	createTestDB(t, dbPath)
 
 	_, pub1, err := brokerauth.GenerateSeed()
 	if err != nil {
@@ -186,6 +206,7 @@ func TestWorkerCmd_Enroll_DuplicateWorkerIDFails(t *testing.T) {
 // revocation is a one-way door and the worker ID can never be used again.
 func TestWorkerCmd_RotationAfterRevoke(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "test.db")
+	createTestDB(t, dbPath)
 
 	_, pub1, err := brokerauth.GenerateSeed()
 	if err != nil {
@@ -251,6 +272,7 @@ func TestWorkerCmd_RotationAfterRevoke(t *testing.T) {
 // covers "already revoked".
 func TestWorkerCmd_Revoke_UnknownWorkerFails(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "test.db")
+	createTestDB(t, dbPath)
 
 	prepareRoot([]string{"worker", "revoke", "does-not-exist", "--db", dbPath})
 	var runErr error
@@ -273,6 +295,7 @@ func TestWorkerCmd_Revoke_UnknownWorkerFails(t *testing.T) {
 // revoked" into the same not-found outcome.
 func TestWorkerCmd_Revoke_TwiceFailsTheSecondTime(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "test.db")
+	createTestDB(t, dbPath)
 
 	_, pub, err := brokerauth.GenerateSeed()
 	if err != nil {
@@ -307,6 +330,7 @@ func TestWorkerCmd_Revoke_TwiceFailsTheSecondTime(t *testing.T) {
 // active credentials).
 func TestWorkerCmd_List(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "test.db")
+	createTestDB(t, dbPath)
 
 	_, pub, err := brokerauth.GenerateSeed()
 	if err != nil {
@@ -347,20 +371,103 @@ func TestWorkerCmd_List(t *testing.T) {
 	}
 }
 
-// TestWorkerCmd_OpenWorkerStore_EmptyDBPath verifies the validation guard
-// fires without needing a cobra round-trip.
-func TestWorkerCmd_OpenWorkerStore_EmptyDBPath(t *testing.T) {
+// TestWorkerCmd_OpenWorkerStore_NilCommandDoesNotPanic verifies the
+// (cmd *cobra.Command) parameter is safe to omit for direct, non-cobra
+// callers: it is treated the same as "the --db flag was not passed",
+// falling through to config-layer resolution rather than panicking on a nil
+// flag set.
+func TestWorkerCmd_OpenWorkerStore_NilCommandDoesNotPanic(t *testing.T) {
 	origDB := workerFlags.DBPath
 	t.Cleanup(func() { workerFlags.DBPath = origDB })
 
-	workerFlags.DBPath = ""
-	_, err := openWorkerStore(context.Background())
+	workerFlags.DBPath = filepath.Join(t.TempDir(), "does-not-exist.db")
+	_, err := openWorkerStore(context.Background(), nil)
 	if err == nil {
-		t.Fatal("expected an error for an empty --db path, got nil")
+		t.Fatal("expected an error for a database that does not exist, got nil")
 	}
-	if !strings.Contains(err.Error(), "empty") {
-		t.Errorf("error should mention 'empty'; got: %v", err)
+}
+
+// TestWorkerCmd_ExplicitEmptyDBPath verifies that an explicitly-passed empty
+// --db (as opposed to the flag simply being omitted) is reported as a clear
+// validation error rather than silently falling through to config
+// resolution.
+func TestWorkerCmd_ExplicitEmptyDBPath(t *testing.T) {
+	prepareRoot([]string{"worker", "list", "--db", ""})
+	var runErr error
+	_ = captureStdout(t, func() {
+		runErr = Execute()
+	})
+	if runErr == nil {
+		t.Fatal("expected an error for an explicitly empty --db, got nil")
 	}
+	if !strings.Contains(runErr.Error(), "empty") {
+		t.Errorf("error should mention 'empty'; got: %v", runErr)
+	}
+}
+
+// TestWorkerCmd_MissingDatabaseIsErrorNotCreation verifies that pointing a
+// worker subcommand at a database file that does not exist fails with an
+// actionable error and does not create one — unlike migrate, which is
+// expected to create a fresh database.
+func TestWorkerCmd_MissingDatabaseIsErrorNotCreation(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "does-not-exist.db")
+
+	prepareRoot([]string{"worker", "list", "--db", dbPath})
+	var runErr error
+	_ = captureStdout(t, func() {
+		runErr = Execute()
+	})
+	if runErr == nil {
+		t.Fatal("expected an error for a missing database, got nil")
+	}
+	if !strings.Contains(runErr.Error(), dbPath) {
+		t.Errorf("error should name the resolved path %q; got: %v", dbPath, runErr)
+	}
+	if !strings.Contains(runErr.Error(), "migrate up") {
+		t.Errorf("error should point at \"migrate up\" as the remediation; got: %v", runErr)
+	}
+	if _, statErr := os.Stat(dbPath); statErr == nil {
+		t.Error("worker subcommand must not create a database file")
+	}
+}
+
+// TestWorkerCmd_DBPath_ExplicitFlagBeatsConfig verifies that --db wins even
+// when a config file names a different (nonexistent) database — proving the
+// flag is actually consulted via cmd.Flags().Changed("db") rather than
+// config always winning once loaded.
+func TestWorkerCmd_DBPath_ExplicitFlagBeatsConfig(t *testing.T) {
+	explicitPath := filepath.Join(t.TempDir(), "explicit.db")
+	createTestDB(t, explicitPath)
+
+	configuredPath := filepath.Join(t.TempDir(), "from-config.db")
+	// Deliberately never created — if the flag were ignored in favor of the
+	// config layer, this run would fail with "no database at" the
+	// configured path instead of succeeding against the explicit one.
+	withConfigFile(t, writeStoreConfigFile(t, configuredPath))
+
+	prepareRoot([]string{"worker", "list", "--db", explicitPath})
+	_ = captureStdout(t, func() {
+		if err := Execute(); err != nil {
+			t.Fatalf("worker list: unexpected error: %v", err)
+		}
+	})
+}
+
+// TestWorkerCmd_DBPath_ConfigFileHonoredWhenFlagOmitted verifies that
+// omitting --db entirely resolves the database through the config layer
+// (store.sqlite_path), not the built-in "sqi.db" default.
+func TestWorkerCmd_DBPath_ConfigFileHonoredWhenFlagOmitted(t *testing.T) {
+	withFlagUnchanged(t, workerCmd.PersistentFlags(), "db")
+	configuredPath := filepath.Join(t.TempDir(), "from-config.db")
+	createTestDB(t, configuredPath)
+	withConfigFile(t, writeStoreConfigFile(t, configuredPath))
+
+	prepareRoot([]string{"worker", "list"})
+	_ = captureStdout(t, func() {
+		if err := Execute(); err != nil {
+			t.Fatalf("worker list: unexpected error: %v", err)
+		}
+	})
 }
 
 // TestWorkerCmd_Enroll_InvalidWorkerID rejects a worker ID that is not a
@@ -387,6 +494,7 @@ func TestWorkerCmd_Enroll_InvalidWorkerID(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			dbPath := filepath.Join(t.TempDir(), "test.db")
+			createTestDB(t, dbPath)
 			_, pub, err := brokerauth.GenerateSeed()
 			if err != nil {
 				t.Fatalf("GenerateSeed: %v", err)

@@ -17,7 +17,7 @@ import (
 )
 
 // migrateDBPath is the SQLite file path used by all migrate subcommands.
-// It is set via --db or falls back to the same default as server.DefaultConfig.
+// It is set via --db, or resolved from configuration — see [resolveDBPath].
 var migrateDBPath string
 
 // migrateCmd groups SQLite schema migration subcommands.
@@ -31,10 +31,13 @@ Subcommands:
   down    Roll back the most recently applied migration.
   status  Show applied and pending migrations.
 
-The --db flag (or SQI_SQLITE_PATH env var) controls which SQLite file is
-operated on. It defaults to the same path the server uses ("sqi.db" in the
-working directory), so running "migrate up" before "serve" is the standard
-deployment initialization step.`,
+The database path defaults to store.sqlite_path from the resolved
+configuration (the root -c/--config file and SQI_STORE_SQLITE_PATH), falling
+back to the legacy SQI_SQLITE_PATH environment variable and then to "sqi.db"
+in the working directory — the same path the server uses, so running
+"migrate up" before "serve" is the standard deployment initialization step.
+Pass --db to override it explicitly. Unlike backup and worker, migrate
+creates the database file when it does not already exist — that is its job.`,
 	// No RunE — bare "migrate" prints usage.
 }
 
@@ -42,8 +45,12 @@ var migrateUpCmd = &cobra.Command{
 	Use:   "up",
 	Short: "Apply all pending migrations",
 	Long:  `Apply every migration that has not yet been run against the target database.`,
-	RunE: func(_ *cobra.Command, _ []string) error {
-		db, err := openMigrateDB(migrateDBPath)
+	RunE: func(cmd *cobra.Command, _ []string) error {
+		path, err := resolveDBPath(migrateDBPath, cmd.Flags().Changed("db"))
+		if err != nil {
+			return err
+		}
+		db, err := openMigrateDB(path)
 		if err != nil {
 			return err
 		}
@@ -60,8 +67,12 @@ var migrateDownCmd = &cobra.Command{
 	Use:   "down",
 	Short: "Roll back the last applied migration",
 	Long:  `Roll back exactly one migration — the most recently applied one.`,
-	RunE: func(_ *cobra.Command, _ []string) error {
-		db, err := openMigrateDB(migrateDBPath)
+	RunE: func(cmd *cobra.Command, _ []string) error {
+		path, err := resolveDBPath(migrateDBPath, cmd.Flags().Changed("db"))
+		if err != nil {
+			return err
+		}
+		db, err := openMigrateDB(path)
 		if err != nil {
 			return err
 		}
@@ -78,8 +89,12 @@ var migrateStatusCmd = &cobra.Command{
 	Use:   "status",
 	Short: "Show applied and pending migrations",
 	Long:  `List every migration file with its current state: applied (✓) or pending (○).`,
-	RunE: func(_ *cobra.Command, _ []string) error {
-		db, err := openMigrateDB(migrateDBPath)
+	RunE: func(cmd *cobra.Command, _ []string) error {
+		path, err := resolveDBPath(migrateDBPath, cmd.Flags().Changed("db"))
+		if err != nil {
+			return err
+		}
+		db, err := openMigrateDB(path)
 		if err != nil {
 			return err
 		}
@@ -96,8 +111,8 @@ func init() {
 	// --db flag on the parent so all three subcommands inherit it.
 	migrateCmd.PersistentFlags().StringVar(
 		&migrateDBPath,
-		"db", envOr("SQI_SQLITE_PATH", "sqi.db"),
-		"path to SQLite database file",
+		"db", "sqi.db",
+		"path to SQLite database file (defaults to store.sqlite_path from config, or SQI_SQLITE_PATH)",
 	)
 
 	migrateCmd.AddCommand(migrateUpCmd, migrateDownCmd, migrateStatusCmd)
@@ -107,7 +122,7 @@ func init() {
 // foreign-key enforcement, and wires goose to use the embedded migration FS.
 func openMigrateDB(path string) (*sql.DB, error) {
 	if path == "" {
-		return nil, errors.New("database path is empty; use --db or set SQI_SQLITE_PATH")
+		return nil, errors.New("database path is empty; use --db, set store.sqlite_path, or set SQI_STORE_SQLITE_PATH")
 	}
 
 	db, err := sql.Open("sqlite", path)

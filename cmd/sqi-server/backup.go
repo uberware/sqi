@@ -31,6 +31,12 @@ The backup is produced using SQLite's VACUUM INTO statement, which snapshots
 the live database without taking an exclusive lock. The server may be running
 or stopped — either works. The destination file must not already exist.
 
+The source database path defaults to store.sqlite_path from the resolved
+configuration (the root -c/--config file and SQI_STORE_SQLITE_PATH), falling
+back to the legacy SQI_SQLITE_PATH environment variable and then to "sqi.db".
+Pass --db to override it explicitly. The source database must already exist —
+this command never creates one.
+
 Example:
   sqi-server backup --db sqi.db --out sqi-backup-$(date +%Y%m%d).db`,
 	RunE: runBackup,
@@ -39,8 +45,8 @@ Example:
 func init() {
 	backupCmd.Flags().StringVar(
 		&backupFlags.DBPath,
-		"db", envOr("SQI_SQLITE_PATH", "sqi.db"),
-		"path to source SQLite database file",
+		"db", "sqi.db",
+		"path to source SQLite database file (defaults to store.sqlite_path from config, or SQI_SQLITE_PATH)",
 	)
 	backupCmd.Flags().StringVar(
 		&backupFlags.OutPath,
@@ -52,20 +58,28 @@ func init() {
 	}
 }
 
-func runBackup(_ *cobra.Command, _ []string) error {
-	if backupFlags.DBPath == "" {
-		return errors.New("source database path is empty; use --db or set SQI_SQLITE_PATH")
-	}
+func runBackup(cmd *cobra.Command, _ []string) error {
 	if backupFlags.OutPath == "" {
 		return errors.New("destination path is empty; use --out")
+	}
+
+	dbPath, err := resolveDBPath(backupFlags.DBPath, cmd != nil && cmd.Flags().Changed("db"))
+	if err != nil {
+		return err
+	}
+	if dbPath == "" {
+		return errors.New("source database path is empty; use --db, set store.sqlite_path, or set SQI_STORE_SQLITE_PATH")
+	}
+	if err := requireExistingDB(dbPath); err != nil {
+		return err
 	}
 
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
 
 	ctx := context.Background()
 
-	logger.InfoContext(ctx, "backup: opening source database", slog.String("path", backupFlags.DBPath))
-	st, err := sqlite.Open(ctx, backupFlags.DBPath, sqlite.Options{AutoMigrate: false})
+	logger.InfoContext(ctx, "backup: opening source database", slog.String("path", dbPath))
+	st, err := sqlite.Open(ctx, dbPath, sqlite.Options{AutoMigrate: false})
 	if err != nil {
 		return fmt.Errorf("open source database: %w", err)
 	}
@@ -74,7 +88,7 @@ func runBackup(_ *cobra.Command, _ []string) error {
 	start := time.Now()
 	logger.InfoContext(
 		ctx, "backup: starting",
-		slog.String("src", backupFlags.DBPath),
+		slog.String("src", dbPath),
 		slog.String("dst", backupFlags.OutPath),
 	)
 

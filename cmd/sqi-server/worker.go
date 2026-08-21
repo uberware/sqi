@@ -45,6 +45,12 @@ These subcommands operate directly on the SQLite database file and do not
 require sqi-server to be running, and work regardless of whether
 auth.enabled (the separate, user-facing auth gate) is on.
 
+The database path defaults to store.sqlite_path from the resolved
+configuration (the root -c/--config file and SQI_STORE_SQLITE_PATH), falling
+back to the legacy SQI_SQLITE_PATH environment variable and then to "sqi.db".
+Pass --db to override it explicitly. The database must already exist — these
+subcommands never create one; run "sqi-server migrate up" first.
+
 Subcommands:
   token issue   Issue a one-time join token for self-service enrollment.
   enroll        Directly register a worker's credential by ID and public key
@@ -125,8 +131,8 @@ var workerListCmd = &cobra.Command{
 func init() {
 	workerCmd.PersistentFlags().StringVar(
 		&workerFlags.DBPath,
-		"db", envOr("SQI_SQLITE_PATH", "sqi.db"),
-		"path to SQLite database file",
+		"db", "sqi.db",
+		"path to SQLite database file (defaults to store.sqlite_path from config, or SQI_SQLITE_PATH)",
 	)
 
 	workerTokenIssueCmd.Flags().DurationVar(
@@ -154,23 +160,31 @@ func init() {
 	workerCmd.AddCommand(workerTokenCmd, workerEnrollCmd, workerRevokeCmd, workerListCmd)
 }
 
-// openWorkerStore opens the SQLite database used by the worker subcommands,
-// applying pending migrations if needed — unlike backup, these commands
-// write new rows, so an operator running "sqi-server worker token issue"
-// against a freshly created database file should not need a separate
-// "migrate up" step first.
-func openWorkerStore(ctx context.Context) (*sqlite.Store, error) {
-	if workerFlags.DBPath == "" {
-		return nil, errors.New("database path is empty; use --db or set SQI_SQLITE_PATH")
+// openWorkerStore resolves the database path (see [resolveDBPath]) and opens
+// it without applying migrations. These commands write rows into an existing
+// schema; they never create or migrate the database — a worker subcommand
+// pointed at the wrong file must fail with an actionable error, not conjure
+// an empty one. Run "sqi-server migrate up" first against a fresh database.
+func openWorkerStore(ctx context.Context, cmd *cobra.Command) (*sqlite.Store, error) {
+	dbPath, err := resolveDBPath(workerFlags.DBPath, cmd != nil && cmd.Flags().Changed("db"))
+	if err != nil {
+		return nil, err
 	}
-	st, err := sqlite.Open(ctx, workerFlags.DBPath, sqlite.DefaultOptions())
+	if dbPath == "" {
+		return nil, errors.New("database path is empty; use --db, set store.sqlite_path, or set SQI_STORE_SQLITE_PATH")
+	}
+	if err := requireExistingDB(dbPath); err != nil {
+		return nil, err
+	}
+
+	st, err := sqlite.Open(ctx, dbPath, sqlite.Options{AutoMigrate: false})
 	if err != nil {
 		return nil, fmt.Errorf("open database: %w", err)
 	}
 	return st, nil
 }
 
-func runWorkerTokenIssue(_ *cobra.Command, _ []string) error {
+func runWorkerTokenIssue(cmd *cobra.Command, _ []string) error {
 	ttl := workerTokenIssueFlags.TTL
 	if ttl < config.MinNATSAuthJoinTokenTTL || ttl > config.MaxNATSAuthJoinTokenTTL {
 		return fmt.Errorf("--ttl must be between %s and %s, got %s",
@@ -178,7 +192,7 @@ func runWorkerTokenIssue(_ *cobra.Command, _ []string) error {
 	}
 
 	ctx := context.Background()
-	st, err := openWorkerStore(ctx)
+	st, err := openWorkerStore(ctx, cmd)
 	if err != nil {
 		return err
 	}
@@ -210,7 +224,7 @@ func runWorkerTokenIssue(_ *cobra.Command, _ []string) error {
 	return nil
 }
 
-func runWorkerEnroll(_ *cobra.Command, _ []string) error {
+func runWorkerEnroll(cmd *cobra.Command, _ []string) error {
 	if err := brokerauth.ValidatePublicKey(workerEnrollFlags.PublicKey); err != nil {
 		return err
 	}
@@ -228,7 +242,7 @@ func runWorkerEnroll(_ *cobra.Command, _ []string) error {
 	}
 
 	ctx := context.Background()
-	st, err := openWorkerStore(ctx)
+	st, err := openWorkerStore(ctx, cmd)
 	if err != nil {
 		return err
 	}
@@ -263,11 +277,11 @@ func runWorkerEnroll(_ *cobra.Command, _ []string) error {
 	return nil
 }
 
-func runWorkerRevoke(_ *cobra.Command, args []string) error {
+func runWorkerRevoke(cmd *cobra.Command, args []string) error {
 	workerID := args[0]
 
 	ctx := context.Background()
-	st, err := openWorkerStore(ctx)
+	st, err := openWorkerStore(ctx, cmd)
 	if err != nil {
 		return err
 	}
@@ -292,9 +306,9 @@ func runWorkerRevoke(_ *cobra.Command, args []string) error {
 	return nil
 }
 
-func runWorkerList(_ *cobra.Command, _ []string) error {
+func runWorkerList(cmd *cobra.Command, _ []string) error {
 	ctx := context.Background()
-	st, err := openWorkerStore(ctx)
+	st, err := openWorkerStore(ctx, cmd)
 	if err != nil {
 		return err
 	}
