@@ -319,7 +319,10 @@ type NATSConfig struct {
 	// "http://sqi-server.example:8080". Enrollment runs over REST, not over
 	// NATS: the broker's job is to reject unauthenticated connections, so it
 	// cannot also be the channel a worker gets its first credential over.
-	// When empty, the URL is derived from mDNS discovery.
+	// Required whenever a join token is configured — it is NOT derived from
+	// mDNS discovery; a worker relying on mDNS with no explicit server_url
+	// fails enrollment with an actionable error naming this field rather
+	// than attempting a request with no host.
 	// Env: SQI_WORKER_NATS_SERVER_URL
 	ServerURL string `yaml:"server_url"`
 }

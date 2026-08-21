@@ -203,6 +203,32 @@ func TestEnsureCredential_409MentionsWorkerIDAlreadyEnrolledAndLeavesNoSeed(t *t
 	}
 }
 
+func TestEnsureCredential_TokenConfiguredButNoServerURLFailsBeforeHTTP(t *testing.T) {
+	dir := t.TempDir()
+	credFile := filepath.Join(dir, "worker.nk")
+
+	cfg := enroll.Config{
+		WorkerID:       "worker-a",
+		CredentialFile: credFile,
+		JoinToken:      "tok-123",
+		ServerURL:      "", // not derived from mDNS — must fail before any HTTP attempt
+	}
+	_, _, err := enroll.EnsureCredential(context.Background(), cfg, discardLogger())
+	if err == nil {
+		t.Fatal("EnsureCredential: want error for a join token with no server_url, got nil")
+	}
+	if !strings.Contains(err.Error(), "nats.server_url") {
+		t.Errorf("error %q does not name the nats.server_url config key", err.Error())
+	}
+	if !strings.Contains(err.Error(), "SQI_WORKER_NATS_SERVER_URL") {
+		t.Errorf("error %q does not name the SQI_WORKER_NATS_SERVER_URL env var", err.Error())
+	}
+
+	if _, statErr := os.Stat(credFile); !errors.Is(statErr, os.ErrNotExist) {
+		t.Errorf("Stat(credFile) error = %v, want os.ErrNotExist", statErr)
+	}
+}
+
 func TestEnsureCredential_JoinTokenFileTakesPrecedenceOverJoinToken(t *testing.T) {
 	dir := t.TempDir()
 	credFile := filepath.Join(dir, "worker.nk")

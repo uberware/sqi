@@ -91,10 +91,8 @@ func Connect(ctx context.Context, cfg workerconfig.NATSConfig, seed []byte, publ
 		// reconnect-backoff loop: retrying a rejected credential produces a
 		// worker that never appears, with the reason buried in backoff. An
 		// unreachable server is the opposite — that is what backoff is for.
-		if errors.Is(err, nats.ErrAuthorization) || errors.Is(err, nats.ErrAuthExpired) {
-			return nil, nil, fmt.Errorf(
-				"natsclient: the broker rejected this worker's credential — it may have been revoked; re-enroll with a new join token: %w", err,
-			)
+		if wrapped, ok := credentialRejectedError(err); ok {
+			return nil, nil, wrapped
 		}
 		return nil, nil, fmt.Errorf("natsclient: connect %q: %w", cfg.URL, err)
 	}
@@ -106,6 +104,27 @@ func Connect(ctx context.Context, cfg workerconfig.NATSConfig, seed []byte, publ
 	)
 
 	return nc, closedCh, nil
+}
+
+// credentialRejectedError reports whether err is the broker rejecting this
+// connection's nkey credential — nats.ErrAuthorization (unknown or wrong
+// key) or nats.ErrAuthExpired (a key the broker no longer accepts, notably
+// after a live revocation: internal/bus.Broker.ReloadCredentials drops the
+// key and synchronously disconnects any client using it). When it is, the
+// second return is true and the first is the single crafted message every
+// credential-rejection path uses — the initial dial in [Connect] and a later
+// live revocation observed via [nats.Conn.LastError] in the ClosedHandler
+// below both call this, so the two paths cannot drift apart.
+func credentialRejectedError(err error) (error, bool) {
+	if err == nil {
+		return nil, false
+	}
+	if !errors.Is(err, nats.ErrAuthorization) && !errors.Is(err, nats.ErrAuthExpired) {
+		return nil, false
+	}
+	return fmt.Errorf(
+		"natsclient: the broker rejected this worker's credential — it may have been revoked; re-enroll with a new join token: %w", err,
+	), true
 }
 
 // Drain gracefully closes nc by draining in-flight subscriptions and flushing
@@ -179,8 +198,21 @@ func buildOptions(
 		// state: either MaxReconnects was exhausted or the connection was
 		// explicitly closed. Closing closedCh signals any goroutine that is
 		// watching for unexpected permanent disconnects.
-		nats.ClosedHandler(func(_ *nats.Conn) {
-			logger.InfoContext(ctx, "natsclient: connection closed")
+		//
+		// A live credential revocation (internal/bus.Broker.ReloadCredentials
+		// disconnects the client synchronously via authViolation) lands here,
+		// not at the initial dial in [Connect] — the connection was already
+		// established when the credential stopped being valid. nats.Conn's
+		// own doc for LastError says it "can be used reliably within
+		// ClosedCB in order to find out reason why connection was closed",
+		// so this is the one place that case can be classified and named,
+		// rather than surfacing only as a generic closure to the operator.
+		nats.ClosedHandler(func(nc *nats.Conn) {
+			if wrapped, ok := credentialRejectedError(nc.LastError()); ok {
+				logger.ErrorContext(ctx, "natsclient: connection closed", slog.Any("error", wrapped))
+			} else {
+				logger.InfoContext(ctx, "natsclient: connection closed")
+			}
 			close(closedCh)
 		}),
 		nats.ErrorHandler(func(_ *nats.Conn, _ *nats.Subscription, err error) {

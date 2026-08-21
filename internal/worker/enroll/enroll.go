@@ -106,6 +106,16 @@ func EnsureCredential(ctx context.Context, cfg Config, logger *slog.Logger) (see
 	if token == "" {
 		return nil, "", ErrNoCredential
 	}
+	// ServerURL is never derived from mDNS discovery — enrollment needs an
+	// HTTP base URL, and mDNS discovery here only ever resolves a NATS URL
+	// (see internal/worker/discovery). Fail before any HTTP attempt so the
+	// operator sees a config key to fix rather than a raw
+	// "unsupported protocol scheme" error.
+	if cfg.ServerURL == "" {
+		return nil, "", errors.New(
+			"worker: enrollment requires nats.server_url (env SQI_WORKER_NATS_SERVER_URL) to be set; it is not derived from mDNS discovery",
+		)
+	}
 
 	seed, publicKey, err = brokerauth.GenerateSeed()
 	if err != nil {

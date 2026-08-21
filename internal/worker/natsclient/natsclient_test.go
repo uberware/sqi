@@ -3,10 +3,12 @@
 package natsclient
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"log/slog"
 	"net"
+	"strings"
 	"testing"
 	"time"
 
@@ -259,5 +261,68 @@ func TestConnect_AuthOffFarmConnectsWithNoCredential(t *testing.T) {
 	defer nc.Close()
 	if !nc.IsConnected() {
 		t.Error("connection is not in the connected state")
+	}
+}
+
+// TestConnect_LiveRevocationNamesCauseAndRemediation covers the common
+// revocation shape in this project, not just a rejected initial dial:
+// internal/bus.Broker.ReloadCredentials drops an enrolled key and
+// synchronously disconnects the client that was using it (authViolation on
+// the server side). The worker is already connected when this happens, so
+// the classification has to happen in the ClosedHandler, not at the initial
+// nats.Connect call — this test drives that path against a real broker and
+// asserts the SAME crafted cause+remediation text reaches the logger, not a
+// generic "connection closed" line.
+func TestConnect_LiveRevocationNamesCauseAndRemediation(t *testing.T) {
+	enrolledSeed, enrolledPub, err := brokerauth.GenerateSeed()
+	if err != nil {
+		t.Fatalf("GenerateSeed: %v", err)
+	}
+	b := startTestBroker(t, bus.WorkerCredentialRef{WorkerID: "worker-a", PublicKey: enrolledPub})
+
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+
+	cfg := workerconfig.NATSConfig{
+		URL: b.ClientURL(),
+		// Reconnect enabled (unlimited, a short wait) deliberately —
+		// matching a real worker's config, NOT nats.NoReconnect(). nats.go
+		// only lands nats.ErrAuthorization in nc.LastError() by way of the
+		// RECONNECT handshake itself hitting the same rejected credential
+		// twice (see nats.go's processConnectInit / nc.ar): the very first
+		// disconnect races an async "-ERR authorization violation" against
+		// the raw TCP close, and that race's loser is whichever error
+		// happened to land in nc.err last — with reconnect enabled, that
+		// race is irrelevant because a fresh CONNECT attempt reproduces the
+		// auth error deterministically, which is what makes this
+		// classification reliable in production rather than a coin flip.
+		MaxReconnectAttempts: -1,
+		ReconnectWait:        5 * time.Millisecond,
+	}
+	nc, closedCh, err := Connect(context.Background(), cfg, enrolledSeed, enrolledPub, logger)
+	if err != nil {
+		t.Fatalf("Connect with an enrolled credential: %v", err)
+	}
+	defer nc.Close()
+
+	// Revoke the only enrolled credential. Revocation is synchronous on the
+	// broker side; the deadline below tolerates client-side scheduling
+	// jitter in observing the resulting close, not a slow revocation.
+	if err := b.ReloadCredentials(nil); err != nil {
+		t.Fatalf("ReloadCredentials: %v", err)
+	}
+
+	select {
+	case <-closedCh:
+	case <-time.After(5 * time.Second):
+		t.Fatal("connection was not closed after credential revocation")
+	}
+
+	logs := buf.String()
+	if !strings.Contains(logs, "the broker rejected this worker's credential") {
+		t.Errorf("logs do not name the cause; got:\n%s", logs)
+	}
+	if !strings.Contains(logs, "re-enroll with a new join token") {
+		t.Errorf("logs do not name the remediation; got:\n%s", logs)
 	}
 }

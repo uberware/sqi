@@ -226,14 +226,19 @@ nats:
 | | |
 |---|---|
 | **Type** | `string` |
-| **Default** | `""` (derived from mDNS discovery) |
+| **Default** | `""` |
 | **Env var** | `SQI_WORKER_NATS_SERVER_URL` |
 
 `sqi-server` HTTP base URL used for enrollment, e.g.
 `"http://sqi-server.example:8080"`. Enrollment runs over REST, not NATS: the
 broker's job is to reject unauthenticated connections, so it cannot also be
-the channel a worker gets its first credential over. When empty, the URL is
-derived from mDNS discovery.
+the channel a worker gets its first credential over.
+
+This is **not** derived from mDNS discovery — it must be set explicitly
+whenever [`nats.join_token`](#natsjoin_token) or
+[`nats.join_token_file`](#natsjoin_token_file) is configured. A worker that
+needs to enroll with no `server_url` set fails fast with an actionable error
+naming this field, rather than attempting a request with no host.
 
 ```yaml
 nats:
