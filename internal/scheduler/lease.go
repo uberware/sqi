@@ -40,7 +40,10 @@ func (s *Scheduler) handleLeaseRequest(workerID, queueID string, data []byte) []
 	ctx := s.ctx
 	var req leaseRequest
 	if err := json.Unmarshal(data, &req); err != nil || req.WorkerID == "" {
-		// The subject is the only identity left once the body will not decode.
+		// Two cases, both refused the same way: a body this server cannot
+		// decode at all, and one that decodes but carries no identity to
+		// check against the subject. In neither is there anything to
+		// authorize, so the subject ID is all that is left to log.
 		// Debug, not warn: an unauthenticated broker lets anything publish here,
 		// so a warn would be a log-flood vector.
 		s.logger.DebugContext(

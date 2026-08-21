@@ -48,8 +48,8 @@ func TestNATSAuthDeps_CopiesAllFourSettings(t *testing.T) {
 // TestNATSAuthDeps_DoesNotDisturbFieldsItDoesNotOwn confirms natsAuthDeps
 // only ever writes its own four fields, mirroring wireAuthDeps's contract:
 // deps is built incrementally across several steps in start, so a mapping
-// function that clobbers a sibling's field is exactly the kind of regression
-// this branch's own review process has repeatedly caught in adjacent code.
+// function that clobbers a sibling's field fails silently — the field it
+// overwrote simply reverts to its zero value and the server boots anyway.
 func TestNATSAuthDeps_DoesNotDisturbFieldsItDoesNotOwn(t *testing.T) {
 	deps := api.Deps{CookieName: "sqi_session", SessionTTL: time.Hour}
 	natsAuthDeps(Config{}, &deps)
@@ -78,18 +78,14 @@ func routeMounted(t *testing.T, r chi.Router, method, pattern string) bool {
 	return found
 }
 
-// TestNATSAuthDeps_EndToEnd_EnrollRouteMountedWhenConfigured is the THIRD hop
-// and the test the fix-round review specifically asked for: build the exact
-// api.Deps a real boot would produce from a Config with broker auth and the
-// enrollment endpoint both on, hand it to the real api.NewRouter, and confirm
-// POST /api/v1/workers/enroll is actually live.
+// TestNATSAuthDeps_EndToEnd_EnrollRouteMountedWhenConfigured is the THIRD
+// hop: build the exact api.Deps a real boot would produce from a Config with
+// broker auth and the enrollment endpoint both on, hand it to the real
+// api.NewRouter, and confirm POST /api/v1/workers/enroll is actually live.
 //
-// This is the test that would have caught the original defect: the four
-// fields existed on api.Deps and were read by router.go, but nothing in
-// internal/server ever copied a live Config's values onto them, so every
-// real server ran with all four at their zero value regardless of
-// nats.auth.* configuration — the route never mounted no matter what an
-// operator wrote in their config file.
+// Nothing else fails when this hop breaks: the server still boots, `config
+// print` still echoes the operator's values, and the route simply never
+// mounts.
 func TestNATSAuthDeps_EndToEnd_EnrollRouteMountedWhenConfigured(t *testing.T) {
 	cfg := Config{
 		NATSAuthEnabled:                   true,

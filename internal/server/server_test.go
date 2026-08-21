@@ -40,6 +40,9 @@ func TestWarnIfBrokerUnauthenticated(t *testing.T) {
 		wantWarn    bool
 	}{
 		{"non-loopback, auth off", "0.0.0.0:4222", false, true},
+		// An empty host means "all interfaces", exactly as 0.0.0.0 does —
+		// isLoopbackHost("") returning false is what makes both warn.
+		{"empty host, auth off", ":4222", false, true},
 		{"specific LAN ip, auth off", "192.168.1.10:4222", false, true},
 		{"ipv6 any, auth off", "[::]:4222", false, true},
 		{"loopback v4, auth off", "127.0.0.1:4222", false, false},

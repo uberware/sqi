@@ -45,13 +45,13 @@ func routerConfig(cfg Config, workerOfflineThreshold time.Duration) api.Config {
 //
 // Split out for the same reason routerConfig is (see its doc comment): a
 // struct-field assignment inline in start can only be reached by booting a
-// whole server, so nothing would have caught a dropped or transposed line —
-// which is exactly what happened here the first time these four fields were
-// added: they were declared on api.Deps and consumed by the router, but
-// nothing ever copied a live Config's values onto them, so every deployed
-// server ran with all four at their zero value regardless of nats.auth.*
-// configuration. The enrollment endpoint never mounted and a minted token
-// would have carried a zero TTL.
+// whole server, so nothing would catch a dropped or transposed line.
+//
+// Nothing else fails when this hop breaks: the server still boots, `config
+// print` still echoes the operator's values, and the route simply never
+// mounts — a deployed server would run with all four at their zero value
+// regardless of nats.auth.* configuration, the enrollment endpoint never
+// mounted and a minted token carrying a zero TTL.
 func natsAuthDeps(cfg Config, deps *api.Deps) {
 	deps.NATSAuthEnabled = cfg.NATSAuthEnabled
 	deps.NATSAuthEnrollmentEndpointEnabled = cfg.NATSAuthEnrollmentEndpointEnabled

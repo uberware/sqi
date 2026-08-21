@@ -3,7 +3,7 @@
 package scheduler
 
 // Provenance tests: the subject a worker publishes on is the only identity
-// NATS itself can vouch for, and these four tests prove the server actually
+// NATS itself can vouch for, and these seven tests prove the server actually
 // enforces it rather than trusting the payload's own WorkerID field.
 //
 // Each test has worker A publish on its OWN subject (the only one NATS would

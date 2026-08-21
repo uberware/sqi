@@ -353,8 +353,8 @@ func TestRevokeWorker_ConcurrentRevocationsOfDifferentWorkers_BothStayRevoked(t 
 
 	// ...and, the property this test exists to pin, neither can connect to
 	// the broker: a fresh connection attempt with either's key must be
-	// refused. The defect this fixes would let B's stale reintroduction
-	// succeed here even though the store already shows it revoked.
+	// refused. An unserialized read-then-reload would let B's stale reload
+	// reintroduce it here even though the store already shows it revoked.
 	if nc, err := nats.Connect(broker.ClientURL(), nkeyOption(t, seedA, refA.PublicKey), nats.NoReconnect()); err == nil {
 		nc.Close()
 		t.Error("worker A connected to the broker after concurrent revocation — its credential was reintroduced")

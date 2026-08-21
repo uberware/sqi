@@ -82,7 +82,7 @@ type Broker struct {
 	// revocation, see internal/server) concurrently with Shutdown on the
 	// process's exit path — a combination that did not exist before that
 	// caller, since previously only Start (single-threaded, before the
-	// broker is handed to anything else) and tests touched these fields.
+	// broker is handed to anything else) touched these fields.
 	// Without it, Shutdown nilling ns/nc while ReloadCredentials or Check
 	// reads them is a data race and a nil-pointer hazard, not just a
 	// theoretical one.
@@ -236,8 +236,8 @@ func (b *Broker) Start(ctx context.Context) error {
 // Shutdown more than once; subsequent calls are no-ops.
 //
 // It is also safe to call concurrently with [Broker.ReloadCredentials],
-// [Broker.Check], [Broker.ClientURL], [Broker.NewClient], and
-// [Broker.ServerSeed]: the fields those methods read are captured under mu
+// [Broker.Check], [Broker.ClientURL] and [Broker.NewClient]: the fields
+// those methods read are captured under mu
 // and nilled here under the same lock, so a concurrent reader always sees
 // either the pre-shutdown values or nil, never a torn or dangling pointer.
 // The (possibly slow) nats-server calls below run after the lock is
@@ -382,13 +382,4 @@ func (b *Broker) ReloadCredentials(creds []WorkerCredentialRef) error {
 		return fmt.Errorf("bus: reload broker credentials: %w", err)
 	}
 	return nil
-}
-
-// ServerSeed returns the broker's own in-memory nkey seed so that in-process
-// clients (the scheduler's bus.Client) can authenticate. Empty when auth is
-// disabled.
-func (b *Broker) ServerSeed() []byte {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	return b.serverSeed
 }

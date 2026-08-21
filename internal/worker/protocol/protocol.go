@@ -9,7 +9,7 @@
 //
 //	RegisterMsg    worker → server   (worker.register.<worker>)
 //	HeartbeatMsg   worker → server   (worker.heartbeat.<worker>)
-//	AssignMsg      server → worker   (work.assign.<queue>)
+//	AssignMsg      server → worker   (reply to work.lease.<worker>.<queue>)
 //	TaskStatusMsg  worker → server   (task.status.<worker>.<job>)
 //	LogChunkMsg    worker → server   (task.logs.<worker>.<task>)
 //
