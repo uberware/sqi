@@ -15,7 +15,6 @@ import (
 	natsserver "github.com/nats-io/nats-server/v2/server"
 	nats "github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
-	"github.com/nats-io/nkeys"
 
 	"github.com/uberware/sqi/internal/brokerauth"
 )
@@ -376,15 +375,7 @@ func (b *Broker) adminOptions() []nats.Option {
 	b.mu.Lock()
 	pub, seed := b.serverPub, b.serverSeed
 	b.mu.Unlock()
-	return []nats.Option{
-		nats.Nkey(pub, func(nonce []byte) ([]byte, error) {
-			kp, err := nkeys.FromSeed(seed)
-			if err != nil {
-				return nil, err
-			}
-			return kp.Sign(nonce)
-		}),
-	}
+	return []nats.Option{brokerauth.NkeyOption(pub, seed)}
 }
 
 // ReloadCredentials replaces the enrolled worker set on a running broker.

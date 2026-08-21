@@ -35,7 +35,6 @@ import (
 	"time"
 
 	nats "github.com/nats-io/nats.go"
-	"github.com/nats-io/nkeys"
 
 	"github.com/uberware/sqi/internal/brokerauth"
 	workerconfig "github.com/uberware/sqi/internal/worker/config"
@@ -269,13 +268,7 @@ func buildOptions(
 	// or nats.ErrAuthExpired, which is classified as fatal rather than
 	// retried.
 	if len(seed) > 0 {
-		opts = append(opts, nats.Nkey(publicKey, func(nonce []byte) ([]byte, error) {
-			kp, err := nkeys.FromSeed(seed)
-			if err != nil {
-				return nil, err
-			}
-			return kp.Sign(nonce)
-		}))
+		opts = append(opts, brokerauth.NkeyOption(publicKey, seed))
 	}
 
 	return opts, nil
