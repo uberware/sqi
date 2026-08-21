@@ -356,13 +356,30 @@ func (h *workerHandler) setWorkerStatus(w http.ResponseWriter, r *http.Request, 
 // workers return 409 Conflict. Offline workers already had their in-flight tasks
 // reclaimed when they went offline, so no reclaim is needed here.
 //
-// Deleting the worker row also revokes its broker credential, if it has one,
-// through the injected [WorkerRevoker] — the same path DELETE
-// /api/v1/workers/{id}/credential uses. Without this, decommissioning a
-// machine from the farm would leave it able to connect to the broker, lease
-// work and execute job code: WorkersManage (which this route requires) does
-// not imply WorkersEnroll, so an operator who can delete a worker is not
-// otherwise able to revoke what it can still do.
+// Revokes the worker's broker credential, if it has one, through the
+// injected [WorkerRevoker] — the same path DELETE
+// /api/v1/workers/{id}/credential uses — BEFORE deleting the worker row.
+// Without this, decommissioning a machine from the farm would leave it able
+// to connect to the broker, lease work and execute job code: WorkersManage
+// (which this route requires) does not imply WorkersEnroll, so an operator
+// who can delete a worker is not otherwise able to revoke what it can still
+// do.
+//
+// Revoke-then-delete, not the reverse: store.DeleteWorker never returns
+// ErrConflict in either backend (removability was already decided above via
+// GetWorker + workerRemovable), so revoking first can never waste a
+// revocation on a delete that was going to be legitimately rejected. A
+// revoke failure then means nothing happened at all — worker row intact, a
+// clean 500, safely retryable. Deleting first would instead let a failure
+// of the revoke's own store write (not just a broker-reload failure — a
+// documented, recoverable degraded mode) leave the worker row gone, the
+// credential never revoked, and nothing left to reap it: the caller who
+// holds WorkersManage without WorkersEnroll has no other way to revoke it,
+// and would be told 204 while the machine kept live broker access
+// permanently. A delete failure after a successful revoke leaves access cut
+// and the row present — the safe direction — and a retried removeWorker
+// re-invokes RevokeWorker, which is a correct no-op the second time via
+// ErrNotFound.
 func (h *workerHandler) removeWorker(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	id := chi.URLParam(r, "id")
@@ -385,6 +402,18 @@ func (h *workerHandler) removeWorker(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// store.ErrNotFound covers both "never enrolled" (the normal shape with
+	// broker auth off) and "already revoked", neither of which is an error
+	// here. Any other error means the credential is not known to be
+	// revoked — see the doc comment above for why this must block the
+	// delete rather than merely being logged.
+	if err := h.revoker.RevokeWorker(ctx, id); err != nil && !errors.Is(err, store.ErrNotFound) {
+		h.logger.ErrorContext(ctx, "workers: revoke credential before delete failed",
+			slog.String("id", id), slog.Any("error", err))
+		writeProblem(w, r, http.StatusInternalServerError, "failed to remove worker")
+		return
+	}
+
 	if err := h.store.DeleteWorker(ctx, id); err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			writeProblem(w, r, http.StatusNotFound, "worker not found")
@@ -394,22 +423,6 @@ func (h *workerHandler) removeWorker(w http.ResponseWriter, r *http.Request) {
 			slog.String("id", id), slog.Any("error", err))
 		writeProblem(w, r, http.StatusInternalServerError, "failed to remove worker")
 		return
-	}
-
-	// The worker row is now gone. Revoke whatever broker credential it had —
-	// store.ErrNotFound covers both "never enrolled" (the normal shape with
-	// broker auth off) and "already revoked", neither of which is an error
-	// here. A non-ErrNotFound failure is deliberately NOT turned into a
-	// failed response: the worker row cannot be un-deleted from this
-	// handler, so a 500 here would tell the caller the delete itself failed
-	// when it did not, and the DELETE is not safely retryable once the row
-	// is gone (a retry sees 404). It is logged at error rather than
-	// swallowed quietly, because the failure direction is the unsafe one —
-	// a machine the operator just removed can keep live broker access — and
-	// that belongs in the operator-visible diagnostic log, not silence.
-	if err := h.revoker.RevokeWorker(ctx, id); err != nil && !errors.Is(err, store.ErrNotFound) {
-		h.logger.ErrorContext(ctx, "workers: revoke credential after delete failed",
-			slog.String("id", id), slog.Any("error", err))
 	}
 
 	if h.notifier != nil {

@@ -745,20 +745,24 @@ func TestRemoveWorker(t *testing.T) {
 		}
 	})
 
-	t.Run("revoker failure does not fail the delete", func(t *testing.T) {
+	t.Run("revoker failure blocks the delete", func(t *testing.T) {
+		// The worker row must survive a revoke failure: revoking runs
+		// BEFORE deleting specifically so that a failure here never leaves
+		// a deleted worker whose credential nothing revoked and nothing
+		// will ever reap.
 		st := fake.New()
-		rev := &recordingRevoker{err: errors.New("broker reload failed")}
+		rev := &recordingRevoker{err: errors.New("store write failed")}
 		r := newWorkerRouterWithRevoker(st, rev)
 		w := seedWorker(t, st, store.WorkerStatusOffline)
 
 		req := newReq(t, http.MethodDelete, "/api/v1/workers/"+w.ID, nil)
 		rr := httptest.NewRecorder()
 		r.ServeHTTP(rr, req)
-		if rr.Code != http.StatusNoContent {
-			t.Fatalf("expected 204, got %d — body: %s", rr.Code, rr.Body)
+		if rr.Code != http.StatusInternalServerError {
+			t.Fatalf("expected 500, got %d — body: %s", rr.Code, rr.Body)
 		}
-		if _, err := st.GetWorker(t.Context(), w.ID); err == nil {
-			t.Error("worker should still be deleted even when the revoke fails")
+		if _, err := st.GetWorker(t.Context(), w.ID); err != nil {
+			t.Errorf("worker should NOT be deleted when the revoke fails: GetWorker: %v", err)
 		}
 	})
 }

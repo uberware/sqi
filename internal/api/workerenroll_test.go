@@ -780,9 +780,9 @@ func TestWorkerEnroll_MalformedPublicKey_TokenNotSpent(t *testing.T) {
 	}
 }
 
-// TestWorkerEnroll_ConflictingEnrollment_TokenSurvives is FOLLOW-UP 4's
-// test: a single-use token presented against a request that conflicts (here,
-// a worker ID that already has an active credential) must NOT be burned.
+// TestWorkerEnroll_ConflictingEnrollment_TokenSurvives proves that a
+// single-use token presented against a request that conflicts (here, a
+// worker ID that already has an active credential) must NOT be burned.
 // The claim and the credential creation are one transaction
 // (store.RedeemWorkerJoinToken), so a conflict rolls the claim back along
 // with the credential write — the opposite of the token being spent

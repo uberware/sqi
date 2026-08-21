@@ -2713,13 +2713,16 @@ paths:
         referencing the worker is preserved by ID. A removed worker that
         reconnects simply re-registers.
 
-        Also revokes the worker's broker credential, if it has one, so a
-        decommissioned machine loses broker access along with its worker
-        record rather than keeping the ability to connect, lease work and
-        execute job code. A worker with no credential (broker authentication
-        disabled, or never enrolled) is removed exactly as before. This does
-        not require the `workers.enroll` permission that
-        `DELETE /workers/{id}/credential` needs on its own.
+        Also revokes the worker's broker credential, if it has one, BEFORE
+        the worker record is deleted, so a decommissioned machine loses
+        broker access along with its worker record rather than keeping the
+        ability to connect, lease work and execute job code. A worker with
+        no credential (broker authentication disabled, or never enrolled) is
+        removed exactly as before. This does not require the
+        `workers.enroll` permission that `DELETE /workers/{id}/credential`
+        needs on its own. If the revoke fails, the worker record is NOT
+        deleted and this answers `500` — safe to retry, since nothing has
+        happened yet.
       responses:
         "204":
           description: Worker removed.

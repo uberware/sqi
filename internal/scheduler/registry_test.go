@@ -151,9 +151,9 @@ func (s *touchRecordingStore) TouchWorkerCredential(ctx context.Context, workerI
 	return s.Store.TouchWorkerCredential(ctx, workerID, at)
 }
 
-// TestHandleWorkerRegister_TouchesActiveCredential_WhenAuthEnabled is
-// FOLLOW-UP 3's test: registering a worker with an active broker credential
-// sets LastSeenAt, and only when broker authentication is enabled.
+// TestHandleWorkerRegister_TouchesActiveCredential_WhenAuthEnabled proves
+// that registering a worker with an active broker credential sets
+// LastSeenAt, and only when broker authentication is enabled.
 func TestHandleWorkerRegister_TouchesActiveCredential_WhenAuthEnabled(t *testing.T) {
 	fk := fake.New()
 	if _, err := fk.CreateWorkerCredential(t.Context(), store.WorkerCredential{

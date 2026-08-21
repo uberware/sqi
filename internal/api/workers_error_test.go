@@ -9,6 +9,7 @@ package api
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -22,14 +23,15 @@ import (
 
 // ── workerErrStore: thin wrapper for worker store errors ──────────────────────
 
-// workerErrStore wraps a store.Store to inject errors into ListWorkers and
-// GetWorker. We use a separate type to avoid conflicts with storeErr's method
-// set for other store methods.
+// workerErrStore wraps a store.Store to inject errors into ListWorkers,
+// GetWorker, and DeleteWorker. We use a separate type to avoid conflicts
+// with storeErr's method set for other store methods.
 type workerErrStore struct {
 	store.Store
 
-	listWorkersErr error
-	getWorkerErr   error
+	listWorkersErr  error
+	getWorkerErr    error
+	deleteWorkerErr error
 }
 
 func (e *workerErrStore) ListWorkers(ctx context.Context, opts store.ListWorkersOptions) (store.Page[store.Worker], error) {
@@ -44,6 +46,13 @@ func (e *workerErrStore) GetWorker(ctx context.Context, id string) (store.Worker
 		return store.Worker{}, e.getWorkerErr
 	}
 	return e.Store.GetWorker(ctx, id)
+}
+
+func (e *workerErrStore) DeleteWorker(ctx context.Context, id string) error {
+	if e.deleteWorkerErr != nil {
+		return e.deleteWorkerErr
+	}
+	return e.Store.DeleteWorker(ctx, id)
 }
 
 // ── listWorkers: additional filter and error paths ────────────────────────────
@@ -118,4 +127,42 @@ func TestGetWorker_StoreError(t *testing.T) {
 			t.Fatalf("expected 500, got %d — body: %s", rr.Code, rr.Body)
 		}
 	})
+}
+
+// ── removeWorker: a delete failure AFTER a successful revoke ──────────────────
+
+// TestRemoveWorker_DeleteFailsAfterSuccessfulRevoke proves the safe half of
+// removeWorker's revoke-then-delete ordering: when the credential revoke
+// succeeds but the subsequent store delete fails, the worker row survives
+// (the request answers 500, safe to retry) but its broker access is already
+// cut. newWorkerRouter wires the injected WorkerRevoker to the SAME
+// underlying fake store as the handler's own store.Store (storeRevoker
+// wraps whatever is passed in), so wrapping only DeleteWorker with an error
+// here is enough to reach this case: RevokeWorkerCredential runs for real
+// against the shared fake, unaffected by the wrapper.
+func TestRemoveWorker_DeleteFailsAfterSuccessfulRevoke(t *testing.T) {
+	inner := fake.New()
+	w := seedWorker(t, inner, store.WorkerStatusOffline)
+	if _, err := inner.CreateWorkerCredential(t.Context(), store.WorkerCredential{
+		ID: uuid.NewString(), WorkerID: w.ID, PublicKey: genPublicKey(t), EnrolledAt: time.Now().UTC(),
+	}); err != nil {
+		t.Fatalf("seed CreateWorkerCredential: %v", err)
+	}
+
+	est := &workerErrStore{Store: inner, deleteWorkerErr: errInjected}
+	r := newWorkerRouter(est)
+
+	req := newReq(t, http.MethodDelete, "/api/v1/workers/"+w.ID, nil)
+	rr := httptest.NewRecorder()
+	r.ServeHTTP(rr, req)
+	if rr.Code != http.StatusInternalServerError {
+		t.Fatalf("expected 500, got %d — body: %s", rr.Code, rr.Body)
+	}
+
+	if _, err := inner.GetWorker(t.Context(), w.ID); err != nil {
+		t.Errorf("worker row should survive a failed delete: GetWorker: %v", err)
+	}
+	if _, err := inner.GetActiveWorkerCredentialByWorkerID(t.Context(), w.ID); !errors.Is(err, store.ErrNotFound) {
+		t.Errorf("credential should already be revoked even though the delete failed: got %v, want store.ErrNotFound", err)
+	}
 }

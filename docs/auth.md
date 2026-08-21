@@ -106,19 +106,29 @@ it, or as part of a startup script.
 
 `DELETE /api/v1/workers/{id}` — removing the worker record itself — revokes
 its credential too, through the same synchronous path as the first bullet
-above. This exists because `workers.manage` (what deleting a worker
-requires) does not imply `workers.enroll` (what revoking a credential
-directly requires) — the split is deliberate, so that the ability to delete
-a worker never doubles as the ability to mint join tokens — and without the
-cascade, an operator who can decommission a machine would have no way at all
-to cut its broker access. A worker with no credential (broker authentication
-disabled, or a worker that was never enrolled) is deleted exactly as before;
-a credential that is already revoked is treated the same way. If the revoke
-or reload fails after the worker row is already gone, the delete still
-succeeds — the row cannot be un-deleted from that handler — and the failure
-is logged at error level rather than silently dropped, because it leaves the
-broker *more* permissive than the store, which is the direction that must
-not go unnoticed.
+above, and does so **before** deleting the worker row, not after. This
+exists because `workers.manage` (what deleting a worker requires) does not
+imply `workers.enroll` (what revoking a credential directly requires) — the
+split is deliberate, so that the ability to delete a worker never doubles as
+the ability to mint join tokens — and without the cascade, an operator who
+can decommission a machine would have no way at all to cut its broker
+access. A worker with no credential (broker authentication disabled, or a
+worker that was never enrolled) is deleted exactly as before; a credential
+that is already revoked is treated the same way.
+
+The ordering matters: `store.DeleteWorker` never rejects with a conflict —
+removability was already decided by an earlier check — so revoking first
+never wastes a revocation on a delete that was always going to be refused.
+If the revoke fails, nothing has happened yet: the worker row is intact, the
+request answers 500, and it is safe to retry. If the delete then fails after
+a successful revoke, the worker row survives but its broker access is
+already cut — the safe direction to fail in — and retrying `DELETE
+/workers/{id}` simply re-revokes (a no-op the second time) and tries the
+delete again. Deleting first and revoking after was tried and rejected: a
+failure in the revoke's own store write, not just a broker-reload failure,
+would leave the worker row gone, the credential never revoked, and nothing
+left to reap it — the operator would be told 204 while the machine kept live
+broker access permanently, with no other permission available to fix it.
 
 ### Key rotation and re-enrollment
 
