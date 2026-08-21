@@ -140,6 +140,19 @@ nats:
   max_reconnect_attempts: -1
 ```
 
+> **`0` weakens a diagnostic message, not just reconnect behavior.** When
+> broker authentication is on and the server rejects this worker's
+> credential mid-run (most often after `sqi-server worker revoke` or
+> `DELETE /api/v1/workers/{id}/credential`), the worker names the cause and
+> the remediation — but doing so relies on at least one reconnect attempt
+> completing its handshake with the broker, which is where the specific
+> rejection reason is confirmed. With `max_reconnect_attempts: 0`, no
+> reconnect is attempted at all: the connection simply closes, and the
+> operator sees only a generic "connection closed" with no named cause. The
+> default of `-1` does not have this problem — reconnect indefinitely and
+> the crafted diagnostic message is always reached before the worker exits.
+> If you must cap reconnect attempts, keep it above `0`.
+
 ---
 
 ### `nats.reconnect_wait`

@@ -250,8 +250,14 @@ func (h *workerEnrollHandler) enroll(w http.ResponseWriter, r *http.Request) {
 // leaves the broker too PERMISSIVE (still trusting a credential the store
 // says is gone), which its caller needs to know about; an enroll failing to
 // reload leaves the broker too STRICT (a valid worker just can't connect
-// yet), which is safe, self-correcting at the next successful reload or
-// restart, and recoverable by the worker simply retrying — see
+// yet), which is safe but not self-correcting — there is no background
+// reconciliation, so recovery depends on some later enroll or revoke
+// triggering another reload, and on an idle farm the new worker stays
+// unable to connect until the server restarts. It is not recoverable by the
+// worker simply retrying, either: a credential the broker rejects is fatal
+// in the worker (it exits rather than looping on reconnect), so getting it
+// connected after this failure relies on an external process supervisor
+// restarting it, or an operator restarting sqi-server — see
 // [BrokerCredentialReloader].
 func (h *workerEnrollHandler) finishEnrollment(ctx context.Context, token store.WorkerJoinToken, workerID string, now time.Time) {
 	// Mark the token used only after the credential exists: a conflict

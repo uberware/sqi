@@ -391,9 +391,11 @@ assert_eq "PATCH /auth/me ignored role escalation" "user" \
 
 step "start sqi-worker — note it is given NO credentials"
 
-# Worker<->server transport auth is deliberately out of scope for Phase 3
-# (deferred to Phase 4 hardening). The worker connects to the embedded NATS
-# broker unauthenticated; enabling auth changes the REST/UI surface only.
+# Broker authentication (nats.auth.enabled) is a separate, opt-in gate from
+# the auth.enabled this demo exercises — see docs/auth.md's transport
+# section. This demo leaves it off (the default), so the worker connects to
+# the embedded NATS broker with no credential; auth.enabled changes the
+# REST/UI surface only, not the worker transport.
 SQI_WORKER_NATS_URL="nats://${NATS_ADDR}" \
 SQI_WORKER_DISCOVERY_ENABLE_MDNS="false" \
 SQI_WORKER_FARM_ID="$FARM_ID" \

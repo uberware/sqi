@@ -100,6 +100,130 @@ available option.
 
 ---
 
+## Broker authentication
+
+Broker authentication (`nats.auth.enabled` on the server) is opt-in and off
+by default; if the server you are joining does not have it enabled, skip
+this section and connect as shown above with no credential. If it does, the
+worker needs a credential before it can connect at all — see
+[`docs/auth.md`](auth.md#broker-authentication-transport) for the full model
+(what it protects, revocation, key rotation). This section walks the two
+ways to obtain one.
+
+**Both paths need `nats.server_url` set on the worker to the server's HTTP
+base URL** (e.g. `http://sqi-server.example:8080`). Enrollment always runs
+over REST, never over NATS — the broker's whole job is to refuse
+unauthenticated connections, so it cannot also hand out the first
+credential. `nats.server_url` is **not** derived from mDNS discovery even
+when `discovery.enable_mdns` is on for locating the NATS broker itself; a
+worker with a join token configured and no `server_url` set fails fast,
+naming the field, rather than guessing a host.
+
+### Path A — self-service enrollment with a join token
+
+1. On the server host, mint a token:
+
+   ```sh
+   sqi-server worker token issue --ttl 1h
+   ```
+
+   The raw token prints to stdout exactly once — capture it
+   (`TOKEN=$(sqi-server worker token issue)`) or store it securely; only its
+   hash is kept in the database and it cannot be displayed again. If
+   `auth.enabled` is also on, an operator can mint one over REST instead —
+   `POST /api/v1/workers/join-tokens`, gated on the `workers.enroll`
+   permission — but the CLI command above always works, whether or not
+   `auth.enabled` is on.
+
+2. Hand the token to the worker via a file (preferred — a token in the
+   config file itself is a secret at rest) and set the server URL:
+
+   ```yaml
+   nats:
+     join_token_file: "/run/secrets/sqi-join-token"
+     server_url: "http://sqi-server.example:8080"
+   ```
+
+3. Start the worker normally. On first boot, finding no credential file at
+   `nats.credential_file` (default `<worker.data_dir>/worker.nk`), it
+   generates an nkey keypair locally, calls `POST /api/v1/workers/enroll`
+   with the token, its worker ID and its new public key, and writes the
+   returned credential to `worker.nk` (mode `0600`) before connecting. The
+   token is single-use by default, so a second worker needs its own token.
+
+Every failure past this point is fatal and explicit — an expired, unknown or
+already-used token, or a worker ID already bound to a different key — the
+worker logs the cause and exits rather than looping in the background with
+no visible reason. An unreachable *server* is different: that still falls
+back to the ordinary reconnect-with-backoff behavior once a credential
+exists.
+
+### Path B — manual pre-provisioning
+
+For a worker that cannot reach the server's REST API (air-gapped hosts), or
+a site that wants no self-service enrollment endpoint at all
+(`nats.auth.enrollment_endpoint_enabled: false` on the server):
+
+1. On the worker host, generate a keypair without connecting anywhere:
+
+   ```sh
+   sqi-worker keygen --data-dir /var/lib/sqi-worker
+   ```
+
+   This writes `/var/lib/sqi-worker/worker.nk` (mode `0600`) and prints the
+   worker's public key and the exact command to run next:
+
+   ```
+   Public key: UABC...XYZ
+   On the server, run:
+     sqi-server worker enroll --worker-id 3f2a...  --public-key UABC...XYZ
+   ```
+
+2. Copy that command to the server host (out of band — SSH, a console, a
+   provisioning script) and run it there:
+
+   ```sh
+   sqi-server worker enroll --worker-id 3f2a... --public-key UABC...XYZ
+   ```
+
+3. Start the worker. It finds the seed already on disk, skips enrollment
+   entirely, and connects directly with the credential.
+
+No join token and no REST call are involved in this path at any point.
+
+### Revoking a worker's credential
+
+- **Immediately**, against a running server: `DELETE
+  /api/v1/workers/{id}/credential`. This disconnects the worker inside the
+  call — its in-flight leases reclaim through the normal heartbeat-sweep
+  path.
+- **Offline**, without a running server (or as part of a maintenance
+  script): `sqi-server worker revoke <worker-id>`. This writes the database
+  directly and takes effect the next time `sqi-server` starts, not before.
+
+### Rotating a compromised or lost key
+
+1. Revoke the current credential — `sqi-server worker revoke <worker-id>`,
+   or the REST path above for an immediate disconnect.
+2. `sqi-worker keygen --force --data-dir <data-dir>` on the worker host.
+   This overwrites `worker.nk` with a new keypair and prints the new
+   public key and the `sqi-server worker enroll` command for step 3 — it
+   must run *after* step 1, since the worker ID stays bound to the old
+   public key on the server until that credential is revoked.
+3. `sqi-server worker enroll --worker-id <worker-id> --public-key <new-key>`
+   on the server host, using the key `keygen` printed.
+4. Restart the worker. It finds the new seed `keygen` already wrote and
+   connects directly — no join token or REST enrollment call is needed on
+   this path.
+
+The worker ID can be reused once its old credential is revoked; the old
+public key itself can never be enrolled again, on this worker ID or any
+other. To rotate via a fresh join token instead of `keygen`, remove
+`worker.nk` before restarting so the worker re-enrolls as it did on first
+boot (Path A above).
+
+---
+
 ## Linux — systemd
 
 ### 1. Create a dedicated user
@@ -481,6 +605,7 @@ accordingly.
 ## See also
 
 - [`docs/worker-configuration.md`](worker-configuration.md) — Every configuration option.
+- [`docs/auth.md`](auth.md#broker-authentication-transport) — The broker authentication model in full: threat model, revocation, key rotation, and the auth-off asymmetry.
 - [`docs/worker-capabilities.md`](worker-capabilities.md) — Capability tag reference.
 - [`docs/worker-docker.md`](worker-docker.md) — Docker deployment details.
 - [`docs/observability.md`](observability.md) — In-UI diagnostic panels, REST/WS log API, and log forwarding to journald, Docker, Loki, and ELK.
