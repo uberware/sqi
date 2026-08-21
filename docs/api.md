@@ -124,9 +124,16 @@ Browser clients use the session cookie minted by `POST /api/v1/auth/login`
 instead. Three endpoints are always public because gating them would be
 circular: `GET /api/v1/openapi.yaml`, `POST /api/v1/auth/login`, and
 `GET /api/v1/auth/providers` (plus `GET /api/v1/auth/oidc/login` and
-`GET /api/v1/auth/oidc/callback` when SSO is configured).
+`GET /api/v1/auth/oidc/callback` when SSO is configured). A fourth,
+`POST /api/v1/workers/enroll`, is unauthenticated for the same reason — the
+join token in its body is itself the credential — but it is not always
+present: it is mounted only when the server's `nats.auth.enabled` and
+`nats.auth.enrollment_endpoint_enabled` are both true. See
+[Broker authentication](auth.md#broker-authentication-transport) for that
+model in full.
 
-Every other `/api/v1` REST endpoint requires a permission (`/healthz`,
+Every other `/api/v1` REST endpoint requires a permission, with the one
+exception of `POST /api/v1/workers/enroll` noted above (`/healthz`,
 `/readyz` and `/metrics` sit outside the API prefix and are never gated; the
 `/ws` upgrade authenticates the same way but gates per-subject — see
 [WebSocket subscriptions](#websocket-subscriptions)):
@@ -137,6 +144,7 @@ Every other `/api/v1` REST endpoint requires a permission (`/healthz`,
 | `POST /jobs`, `POST /products/{name}/jobs`, `PATCH/DELETE /jobs/{id}`, `POST /jobs/{id}/cancel`, `POST /jobs/{id}/retry`, `POST /tasks/{id}/retry`, `POST /tasks/{id}/cancel` | `jobs.write` |
 | `GET /workers`, `GET /workers/{id}` | `workers.read` |
 | `POST /workers/{id}/disable`, `POST /workers/{id}/enable`, `DELETE /workers/{id}` | `workers.manage` |
+| `POST /workers/join-tokens`, `DELETE /workers/{id}/credential` | `workers.enroll` |
 | `GET` on farms, queues, storage-locations, compute-locations, usage-pools | `infra.read` |
 | `POST`/`PUT`/`DELETE` on farms, queues, storage-locations, compute-locations, usage-pools | `infra.manage` |
 | `GET /products`, `GET /products/{name}`, `GET /products/{name}/parameters`, `GET /presets`, `GET /presets/{name}` | `products.read` |
@@ -147,6 +155,17 @@ Every other `/api/v1` REST endpoint requires a permission (`/healthz`,
 | `POST/GET /api-keys`, `DELETE /api-keys/{id}` | `apikeys.self` |
 | `GET /users/{id}/api-keys`, `DELETE /users/{id}/api-keys/{keyId}` | `apikeys.admin` |
 | `POST /auth/logout`, `GET/PATCH /auth/me`, `PUT /auth/password`, `GET /version` | any authenticated principal |
+
+`workers.enroll` is deliberately separate from `workers.manage`: minting a
+join token or revoking a broker credential attaches or detaches arbitrary
+compute, a different privilege in kind from enabling, disabling or deleting
+a worker record. `POST /workers/join-tokens` is additionally mounted only
+when `auth.enabled` — with authentication off there is no RBAC in front of
+it to gate. `DELETE /workers/{id}` — removing the worker record itself —
+also cascades a credential revoke through the same synchronous path as
+`DELETE /workers/{id}/credential`, before deleting the worker row, so that
+deleting a worker never leaves its broker access live with no permission
+able to cut it.
 
 Object routes (`/jobs/{id}…`, `/tasks/{id}…`) are additionally owner-scoped: a
 principal without `jobs.read.all` sees and acts on only its own jobs — the one

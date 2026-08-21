@@ -851,7 +851,11 @@ components:
             this value becomes a subject pattern in the credential's broker
             grants, so a wildcard would authorize publishing as any worker.
             Rejected with 400 if it is not; rejected with 409 if it already
-            has an active credential bound to a different public key.
+            has an active credential (re-enrolling the same worker ID with
+            the same public key also conflicts — worker ID uniqueness is
+            enforced among active credentials regardless of which key is
+            given), or if the public key is already enrolled to another
+            worker.
         public_key:
           type: string
           description: The worker's nkey public key, starting with "U".
@@ -878,6 +882,11 @@ components:
           type: string
           format: date-time
           nullable: true
+          description: >-
+            Set on worker registration (startup and reconnect) only — never
+            updated by heartbeats. Do not read this as a liveness signal for
+            a currently-connected worker; it answers "when did this worker
+            last (re)connect", not "is it up right now".
         revoked_at:
           type: string
           format: date-time
@@ -2833,7 +2842,16 @@ paths:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
         "401":
-          description: The join token is unknown, expired, or already used.
+          description: >-
+            The join token is unknown, expired, or already used — or, when
+            single-use tokens are configured, the store failed while
+            claiming the token. That last case is deliberately folded into
+            this same 401 rather than answered as a 500: this route is
+            unauthenticated and reachable from an untrusted network, so
+            distinguishing "invalid token" from "transient server-side
+            failure" would let a caller probe which is which. A client
+            should treat 401 here as "get a new token from an operator", not
+            as "retry the same request" — this route never answers 500.
           content:
             application/problem+json:
               schema:
@@ -2858,8 +2876,6 @@ paths:
             application/problem+json:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
-        "500":
-          $ref: "#/components/responses/InternalServerError"
 
   /workers/join-tokens:
     post:
