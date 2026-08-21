@@ -211,28 +211,29 @@ func (h *workerEnrollHandler) enroll(w http.ResponseWriter, r *http.Request) {
 	}
 
 	now := time.Now().UTC()
-	if err := h.claimJoinToken(ctx, brokerauth.HashJoinToken(req.JoinToken), now); err != nil {
-		// Unknown, expired, already claimed, and a store failure all deny
-		// identically — see errInvalidJoinToken.
-		writeProblem(w, r, http.StatusUnauthorized, errInvalidJoinToken)
-		return
-	}
-
-	created, err := h.store.CreateWorkerCredential(ctx, store.WorkerCredential{
+	cred := store.WorkerCredential{
 		ID:         uuid.NewString(),
 		WorkerID:   req.WorkerID,
 		PublicKey:  req.PublicKey,
 		Name:       req.Name,
 		EnrolledAt: now,
-	})
+	}
+
+	var created store.WorkerCredential
+	if h.singleUse {
+		created, err = h.redeemSingleUse(ctx, brokerauth.HashJoinToken(req.JoinToken), now, cred)
+	} else {
+		created, err = h.redeemReusable(ctx, brokerauth.HashJoinToken(req.JoinToken), now, cred)
+	}
 	if err != nil {
 		if errors.Is(err, store.ErrConflict) {
 			writeProblem(w, r, http.StatusConflict,
 				"worker already has an active credential, or this public key is already enrolled to another worker")
 			return
 		}
-		h.logger.ErrorContext(ctx, "workerenroll: create credential failed", slog.Any("error", err))
-		writeProblem(w, r, http.StatusInternalServerError, "failed to enroll worker")
+		// Unknown, expired, already claimed, and a store failure all deny
+		// identically — see errInvalidJoinToken.
+		writeProblem(w, r, http.StatusUnauthorized, errInvalidJoinToken)
 		return
 	}
 
@@ -241,51 +242,62 @@ func (h *workerEnrollHandler) enroll(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, toWorkerCredentialResponse(created))
 }
 
-// claimJoinToken authorizes this enrollment against the join token hashed to
-// hash and, when tokens are single-use, redeems it in the same operation.
+// redeemSingleUse claims the join token hashed to hash and creates cred, in
+// ONE transaction ([store.WorkerCredentialStore.RedeemWorkerJoinToken]).
 //
-// The single-use path is deliberately ONE store statement
-// ([store.ConsumeWorkerJoinToken]): reading the token, inspecting UsedAt and
-// marking it used separately is a check-then-act race in which two
-// simultaneous enrollments with one token both succeed.
+// The token claim and the credential creation must be atomic together, not
+// merely atomic individually: claiming the token first and creating the
+// credential second — as two separate store calls — would burn a single-use
+// token on a request that fails afterwards with a conflicting worker ID or
+// public key, leaving the caller with nothing and the operator issuing a
+// new token for no reason. A single transaction makes that failure roll
+// back the claim too, so the token survives a rejected enrollment attempt
+// and remains redeemable by a later, non-conflicting one.
 //
-// The price is that the token is spent BEFORE the credential row is created,
-// so an enrollment that then fails on a conflicting worker ID or public key
-// burns it and the operator issues a new one. That is the unavoidable side
-// of an atomic claim, and it is the safe side: the alternative spends the
-// token only on success and therefore cannot be atomic at all. The cases
-// that cost nothing — a malformed body, a missing field, a malformed public
-// key — are all rejected before this is called.
-//
-// With single-use disabled the token stays redeemable by design, so there is
-// nothing to claim atomically: UsedAt becomes a "last redeemed" marker whose
-// write failure is logged and ignored rather than denying an enrollment the
-// token does authorize.
-func (h *workerEnrollHandler) claimJoinToken(ctx context.Context, hash string, now time.Time) error {
-	if h.singleUse {
-		_, err := h.store.ConsumeWorkerJoinToken(ctx, hash, now)
-		if err != nil && !errors.Is(err, store.ErrNotFound) {
-			h.logger.ErrorContext(ctx, "workerenroll: join token claim failed", slog.Any("error", err))
-		}
-		return err
+// [store.ErrConflict] is returned to the caller as-is, distinct from every
+// other failure, so enroll can answer 409 rather than folding it into
+// errInvalidJoinToken's 401 — the same distinction CreateWorkerCredential's
+// own conflict used to draw when this was two separate calls.
+func (h *workerEnrollHandler) redeemSingleUse(ctx context.Context, hash string, now time.Time, cred store.WorkerCredential) (store.WorkerCredential, error) {
+	created, err := h.store.RedeemWorkerJoinToken(ctx, hash, now, cred)
+	if err != nil && !errors.Is(err, store.ErrNotFound) && !errors.Is(err, store.ErrConflict) {
+		h.logger.ErrorContext(ctx, "workerenroll: redeem join token failed", slog.Any("error", err))
 	}
+	return created, err
+}
 
+// redeemReusable authorizes this enrollment against a non-single-use join
+// token and then creates cred as a separate call. With single-use disabled
+// the token stays redeemable by design — UsedAt is only a "last redeemed"
+// marker, not a claim — so there is nothing that needs the two writes to be
+// one transaction: a failure creating the credential leaves the token
+// exactly as redeemable as it already was, which is the correct outcome for
+// a token whose whole point is to be used more than once.
+func (h *workerEnrollHandler) redeemReusable(ctx context.Context, hash string, now time.Time, cred store.WorkerCredential) (store.WorkerCredential, error) {
 	token, err := h.store.GetWorkerJoinTokenByHash(ctx, hash)
 	if err != nil {
 		if !errors.Is(err, store.ErrNotFound) {
 			h.logger.ErrorContext(ctx, "workerenroll: join token lookup failed", slog.Any("error", err))
 		}
-		return err
+		return store.WorkerCredential{}, err
 	}
-	// Strictly after, matching ConsumeWorkerJoinToken's "expires_at > ?".
+	// Strictly after, matching RedeemWorkerJoinToken's "expires_at > ?".
 	if !token.ExpiresAt.After(now) {
-		return store.ErrNotFound
+		return store.WorkerCredential{}, store.ErrNotFound
 	}
 	if err := h.store.MarkWorkerJoinTokenUsed(ctx, token.ID, now); err != nil {
 		h.logger.ErrorContext(ctx, "workerenroll: mark join token used failed",
 			slog.String("token_id", token.ID), slog.Any("error", err))
 	}
-	return nil
+
+	created, err := h.store.CreateWorkerCredential(ctx, cred)
+	if err != nil {
+		if !errors.Is(err, store.ErrConflict) {
+			h.logger.ErrorContext(ctx, "workerenroll: create credential failed", slog.Any("error", err))
+		}
+		return store.WorkerCredential{}, err
+	}
+	return created, nil
 }
 
 // finishEnrollment performs the side effect that follows a successful

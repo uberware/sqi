@@ -82,6 +82,25 @@ func (s *Store) RevokeWorkerCredential(_ context.Context, workerID string, at ti
 	return store.ErrNotFound
 }
 
+// TouchWorkerCredential implements [store.WorkerCredentialStore].
+func (s *Store) TouchWorkerCredential(_ context.Context, workerID string, at time.Time) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	// Scan the whole map rather than stopping at the first match, for the
+	// same reason RevokeWorkerCredential does: a worker can have both a
+	// revoked row and an active one after a key rotation, and map iteration
+	// order is randomized.
+	for id, c := range s.workerCredentials {
+		if c.WorkerID != workerID || c.RevokedAt != nil {
+			continue
+		}
+		c.LastSeenAt = &at
+		s.workerCredentials[id] = c
+		return nil
+	}
+	return store.ErrNotFound
+}
+
 // CreateWorkerJoinToken implements [store.WorkerCredentialStore].
 func (s *Store) CreateWorkerJoinToken(_ context.Context, t store.WorkerJoinToken) (store.WorkerJoinToken, error) {
 	s.mu.Lock()
@@ -123,16 +142,21 @@ func (s *Store) MarkWorkerJoinTokenUsed(_ context.Context, id string, at time.Ti
 	return nil
 }
 
-// ConsumeWorkerJoinToken implements [store.WorkerCredentialStore].
+// RedeemWorkerJoinToken implements [store.WorkerCredentialStore].
 //
-// Mirrors SQLite's single "UPDATE ... WHERE token_hash = ? AND used_at IS
-// NULL AND expires_at > ? RETURNING ...": the scan and the write happen
-// under one hold of the mutex, so two concurrent callers cannot both claim
-// the same token, and an unknown, expired or already-claimed token is the
-// same store.ErrNotFound.
-func (s *Store) ConsumeWorkerJoinToken(_ context.Context, hash string, now time.Time) (store.WorkerJoinToken, error) {
+// Mirrors SQLite's transaction: the token claim and the credential creation
+// happen under ONE hold of the mutex, so a caller never observes the token
+// consumed without the credential existing, or the reverse. An unknown,
+// expired or already-claimed token is store.ErrNotFound with cred left
+// uncreated; a cred that collides with an existing worker_id or public_key
+// is store.ErrConflict with the token left unclaimed — mirroring SQLite's
+// rollback, since nothing here is written until both checks pass.
+func (s *Store) RedeemWorkerJoinToken(_ context.Context, hash string, now time.Time, cred store.WorkerCredential) (store.WorkerCredential, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+
+	var tokID string
+	found := false
 	for id, t := range s.workerJoinTokens {
 		if t.TokenHash != hash || t.UsedAt != nil {
 			continue
@@ -142,10 +166,34 @@ func (s *Store) ConsumeWorkerJoinToken(_ context.Context, hash string, now time.
 		if !t.ExpiresAt.After(now) {
 			continue
 		}
-		at := now
-		t.UsedAt = &at
-		s.workerJoinTokens[id] = t
-		return t, nil
+		tokID = id
+		found = true
+		break
 	}
-	return store.WorkerJoinToken{}, store.ErrNotFound
+	if !found {
+		return store.WorkerCredential{}, store.ErrNotFound
+	}
+
+	// Same conflict rules as CreateWorkerCredential, inlined rather than
+	// called: that method takes s.mu itself, and this method already holds
+	// it for the whole claim-and-create span.
+	if _, ok := s.workerCredentials[cred.ID]; ok {
+		return store.WorkerCredential{}, store.ErrConflict
+	}
+	for _, ex := range s.workerCredentials {
+		if ex.PublicKey == cred.PublicKey {
+			return store.WorkerCredential{}, store.ErrConflict
+		}
+		if ex.WorkerID == cred.WorkerID && ex.RevokedAt == nil {
+			return store.WorkerCredential{}, store.ErrConflict
+		}
+	}
+
+	tok := s.workerJoinTokens[tokID]
+	at := now
+	tok.UsedAt = &at
+	s.workerJoinTokens[tokID] = tok
+
+	s.workerCredentials[cred.ID] = cred
+	return cred, nil
 }

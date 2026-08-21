@@ -13,15 +13,18 @@ package scheduler
 import (
 	"context"
 	"encoding/json"
+	"log/slog"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
 
 	"github.com/uberware/sqi/internal/bus"
+	"github.com/uberware/sqi/internal/metrics"
 	"github.com/uberware/sqi/internal/store"
 	"github.com/uberware/sqi/internal/store/fake"
 	"github.com/uberware/sqi/internal/worker/protocol"
+	"github.com/uberware/sqi/internal/ws"
 )
 
 // workerMsgJSON marshals any value to JSON bytes for a fakeJSMsg payload.
@@ -131,6 +134,112 @@ func TestHandleWorkerRegister_StoreError_Nacked(t *testing.T) {
 	}
 	if msg.acked {
 		t.Error("message should not be acked when register fails")
+	}
+}
+
+// touchRecordingStore wraps a real store and records every
+// TouchWorkerCredential call, so a test can prove registration does or does
+// not reach it without depending on timing.
+type touchRecordingStore struct {
+	store.Store
+
+	touched []string
+}
+
+func (s *touchRecordingStore) TouchWorkerCredential(ctx context.Context, workerID string, at time.Time) error {
+	s.touched = append(s.touched, workerID)
+	return s.Store.TouchWorkerCredential(ctx, workerID, at)
+}
+
+// TestHandleWorkerRegister_TouchesActiveCredential_WhenAuthEnabled is
+// FOLLOW-UP 3's test: registering a worker with an active broker credential
+// sets LastSeenAt, and only when broker authentication is enabled.
+func TestHandleWorkerRegister_TouchesActiveCredential_WhenAuthEnabled(t *testing.T) {
+	fk := fake.New()
+	if _, err := fk.CreateWorkerCredential(t.Context(), store.WorkerCredential{
+		ID: uuid.NewString(), WorkerID: "w-1", PublicKey: "pub1", EnrolledAt: time.Now().UTC(),
+	}); err != nil {
+		t.Fatalf("seed CreateWorkerCredential: %v", err)
+	}
+	st := &touchRecordingStore{Store: fk}
+
+	cfg := DefaultConfig()
+	cfg.NATSAuthEnabled = true
+	s := New(cfg, st, &recordBus{}, metrics.New(), slog.New(slog.DiscardHandler), ws.NoopNotifier{}, nil)
+	s.ctx = context.Background()
+
+	msg := &fakeJSMsg{
+		subject: bus.WorkerRegisterSubject("w-1"),
+		data: workerMsgJSON(t, protocol.RegisterMsg{
+			Version: protocol.ProtocolVersion, Type: protocol.TypeRegister,
+			WorkerID: "w-1", FarmID: "farm-1", Hostname: "node-1", OS: "linux",
+		}),
+	}
+	s.handleWorkerMessage(msg)
+
+	if !msg.acked {
+		t.Error("valid register should be acked")
+	}
+	if len(st.touched) != 1 || st.touched[0] != "w-1" {
+		t.Errorf("touched = %v, want exactly one call for w-1", st.touched)
+	}
+	cred, err := fk.GetActiveWorkerCredentialByWorkerID(t.Context(), "w-1")
+	if err != nil {
+		t.Fatalf("GetActiveWorkerCredentialByWorkerID: %v", err)
+	}
+	if cred.LastSeenAt == nil {
+		t.Error("expected LastSeenAt to be set after registration")
+	}
+}
+
+// TestHandleWorkerRegister_NoTouchCall_WhenAuthDisabled asserts the
+// auth-off default path does no extra store work: no credential rows exist
+// on an auth-off farm, and the touch call must not even be attempted.
+func TestHandleWorkerRegister_NoTouchCall_WhenAuthDisabled(t *testing.T) {
+	st := &touchRecordingStore{Store: fake.New()}
+	s := newMetricsScheduler(st, &recordBus{}, "") // DefaultConfig: NATSAuthEnabled false
+
+	msg := &fakeJSMsg{
+		subject: bus.WorkerRegisterSubject("w-1"),
+		data: workerMsgJSON(t, protocol.RegisterMsg{
+			Version: protocol.ProtocolVersion, Type: protocol.TypeRegister,
+			WorkerID: "w-1", FarmID: "farm-1", Hostname: "node-1", OS: "linux",
+		}),
+	}
+	s.handleWorkerMessage(msg)
+
+	if !msg.acked {
+		t.Error("valid register should be acked")
+	}
+	if len(st.touched) != 0 {
+		t.Errorf("touched = %v, want no calls with broker auth disabled", st.touched)
+	}
+}
+
+// TestHandleWorkerRegister_NoActiveCredential_StillAcked proves a missing
+// credential (store.ErrNotFound) never fails registration: the message is
+// still acked and the worker is still registered.
+func TestHandleWorkerRegister_NoActiveCredential_StillAcked(t *testing.T) {
+	st := fake.New()
+	cfg := DefaultConfig()
+	cfg.NATSAuthEnabled = true
+	s := New(cfg, st, &recordBus{}, metrics.New(), slog.New(slog.DiscardHandler), ws.NoopNotifier{}, nil)
+	s.ctx = context.Background()
+
+	msg := &fakeJSMsg{
+		subject: bus.WorkerRegisterSubject("w-1"),
+		data: workerMsgJSON(t, protocol.RegisterMsg{
+			Version: protocol.ProtocolVersion, Type: protocol.TypeRegister,
+			WorkerID: "w-1", FarmID: "farm-1", Hostname: "node-1", OS: "linux",
+		}),
+	}
+	s.handleWorkerMessage(msg)
+
+	if !msg.acked {
+		t.Error("register should be acked even with no active credential to touch")
+	}
+	if _, err := st.GetWorker(t.Context(), "w-1"); err != nil {
+		t.Errorf("worker should still be registered: %v", err)
 	}
 }
 

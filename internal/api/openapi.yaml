@@ -2846,7 +2846,11 @@ paths:
         "409":
           description: >-
             The worker ID already has an active credential, or the public
-            key is already enrolled to another worker.
+            key is already enrolled to another worker. The join token
+            supplied in the request is NOT consumed by this response: the
+            claim and the credential write happen in one transaction, so a
+            conflict here rolls the claim back and the same token remains
+            redeemable for a request that does not conflict.
           content:
             application/problem+json:
               schema:

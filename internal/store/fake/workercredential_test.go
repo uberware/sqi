@@ -138,6 +138,69 @@ func TestWorkerCredential_GetActive_RevokedOnlyReturnsNotFound(t *testing.T) {
 	}
 }
 
+// TestWorkerCredential_Touch mirrors sqlite_test.TestWorkerCredential_Touch:
+// touching a worker's active credential sets LastSeenAt.
+func TestWorkerCredential_Touch(t *testing.T) {
+	s := fake.New()
+	defer s.Close()
+	ctx := context.Background()
+	enrolledAt := time.Now().UTC()
+
+	if _, err := s.CreateWorkerCredential(ctx, store.WorkerCredential{
+		ID: "wc1", WorkerID: "w1", PublicKey: "pub1", EnrolledAt: enrolledAt,
+	}); err != nil {
+		t.Fatalf("CreateWorkerCredential: %v", err)
+	}
+
+	seenAt := enrolledAt.Add(time.Hour)
+	if err := s.TouchWorkerCredential(ctx, "w1", seenAt); err != nil {
+		t.Fatalf("TouchWorkerCredential: %v", err)
+	}
+
+	got, err := s.GetActiveWorkerCredentialByWorkerID(ctx, "w1")
+	if err != nil {
+		t.Fatalf("GetActiveWorkerCredentialByWorkerID: %v", err)
+	}
+	if got.LastSeenAt == nil || !got.LastSeenAt.Equal(seenAt) {
+		t.Errorf("LastSeenAt = %v, want %v", got.LastSeenAt, seenAt)
+	}
+}
+
+// TestWorkerCredential_TouchNotFound mirrors
+// sqlite_test.TestWorkerCredential_TouchNotFound.
+func TestWorkerCredential_TouchNotFound(t *testing.T) {
+	s := fake.New()
+	defer s.Close()
+	err := s.TouchWorkerCredential(context.Background(), "nope", time.Now().UTC())
+	if !errors.Is(err, store.ErrNotFound) {
+		t.Errorf("expected ErrNotFound, got %v", err)
+	}
+}
+
+// TestWorkerCredential_TouchOnlyMatchesActiveRow mirrors
+// sqlite_test.TestWorkerCredential_TouchOnlyMatchesActiveRow: a worker with
+// only a revoked credential must not be touchable through that stale row.
+func TestWorkerCredential_TouchOnlyMatchesActiveRow(t *testing.T) {
+	s := fake.New()
+	defer s.Close()
+	ctx := context.Background()
+	now := time.Now().UTC()
+
+	if _, err := s.CreateWorkerCredential(ctx, store.WorkerCredential{
+		ID: "wc1", WorkerID: "w1", PublicKey: "pub1", EnrolledAt: now,
+	}); err != nil {
+		t.Fatalf("CreateWorkerCredential: %v", err)
+	}
+	if err := s.RevokeWorkerCredential(ctx, "w1", now); err != nil {
+		t.Fatalf("RevokeWorkerCredential: %v", err)
+	}
+
+	err := s.TouchWorkerCredential(ctx, "w1", now.Add(time.Hour))
+	if !errors.Is(err, store.ErrNotFound) {
+		t.Errorf("expected ErrNotFound for a worker with only a revoked credential, got %v", err)
+	}
+}
+
 // TestWorkerCredential_DuplicateWorkerID mirrors
 // sqlite_test.TestWorkerCredential_DuplicateWorkerID: a worker ID with an
 // existing ACTIVE credential cannot be double-enrolled. It exercises
@@ -262,15 +325,15 @@ func TestWorkerCredential_ListActiveAfterRotationHasExactlyOneRow(t *testing.T) 
 	}
 }
 
-// ── ConsumeWorkerJoinToken ──────────────────────────────────────────────────
+// ── RedeemWorkerJoinToken ────────────────────────────────────────────────────
 //
-// Mirrors sqlite_test's ConsumeWorkerJoinToken cases. The fake is what every
-// internal/api test runs against, so a fake whose claim is not atomic — or
-// whose expiry boundary differs from SQLite's "expires_at > ?" — would let
-// the handler's concurrency test pass over a store that does not behave like
-// the real one.
+// Mirrors sqlite_test's RedeemWorkerJoinToken cases. The fake is what every
+// internal/api test runs against, so a fake whose claim is not atomic with
+// the credential creation — or whose expiry boundary differs from SQLite's
+// "expires_at > ?" — would let the handler's concurrency and rollback tests
+// pass over a store that does not behave like the real one.
 
-func TestWorkerJoinToken_Consume(t *testing.T) {
+func TestWorkerJoinToken_Redeem(t *testing.T) {
 	s := fake.New()
 	defer s.Close()
 	ctx := context.Background()
@@ -284,31 +347,40 @@ func TestWorkerJoinToken_Consume(t *testing.T) {
 	}
 
 	claimedAt := now.Add(time.Minute)
-	got, err := s.ConsumeWorkerJoinToken(ctx, "hash1", claimedAt)
+	got, err := s.RedeemWorkerJoinToken(ctx, "hash1", claimedAt, store.WorkerCredential{
+		ID: "wc1", WorkerID: "w1", PublicKey: "pub1", EnrolledAt: claimedAt,
+	})
 	if err != nil {
-		t.Fatalf("ConsumeWorkerJoinToken: %v", err)
+		t.Fatalf("RedeemWorkerJoinToken: %v", err)
 	}
-	if got.ID != "jt1" {
-		t.Errorf("ID: got %q, want %q", got.ID, "jt1")
-	}
-	if got.UsedAt == nil || !got.UsedAt.Equal(claimedAt) {
-		t.Errorf("UsedAt: got %v, want %v", got.UsedAt, claimedAt)
+	if got.ID != "wc1" || got.WorkerID != "w1" {
+		t.Errorf("got %+v, want the created credential for w1", got)
 	}
 
 	stored, err := s.GetWorkerJoinTokenByHash(ctx, "hash1")
 	if err != nil {
 		t.Fatalf("GetWorkerJoinTokenByHash: %v", err)
 	}
-	if stored.UsedAt == nil {
-		t.Error("the claim was not persisted")
+	if stored.UsedAt == nil || !stored.UsedAt.Equal(claimedAt) {
+		t.Errorf("UsedAt: got %v, want %v", stored.UsedAt, claimedAt)
 	}
 
-	if _, err := s.ConsumeWorkerJoinToken(ctx, "hash1", claimedAt.Add(time.Second)); !errors.Is(err, store.ErrNotFound) {
-		t.Errorf("second ConsumeWorkerJoinToken: got %v, want store.ErrNotFound", err)
+	storedCred, err := s.GetActiveWorkerCredentialByWorkerID(ctx, "w1")
+	if err != nil {
+		t.Fatalf("GetActiveWorkerCredentialByWorkerID: %v", err)
+	}
+	if storedCred.PublicKey != "pub1" {
+		t.Errorf("PublicKey: got %q, want %q", storedCred.PublicKey, "pub1")
+	}
+
+	if _, err := s.RedeemWorkerJoinToken(ctx, "hash1", claimedAt.Add(time.Second), store.WorkerCredential{
+		ID: "wc2", WorkerID: "w2", PublicKey: "pub2", EnrolledAt: claimedAt,
+	}); !errors.Is(err, store.ErrNotFound) {
+		t.Errorf("second RedeemWorkerJoinToken: got %v, want store.ErrNotFound", err)
 	}
 }
 
-func TestWorkerJoinToken_ConsumeExpired(t *testing.T) {
+func TestWorkerJoinToken_RedeemExpired(t *testing.T) {
 	s := fake.New()
 	defer s.Close()
 	ctx := context.Background()
@@ -320,13 +392,14 @@ func TestWorkerJoinToken_ConsumeExpired(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("CreateWorkerJoinToken: %v", err)
 	}
+	cred := store.WorkerCredential{ID: "wc1", WorkerID: "w1", PublicKey: "pub1", EnrolledAt: now}
 
 	// Exactly at expiry counts as expired, matching SQLite's expires_at > ?.
-	if _, err := s.ConsumeWorkerJoinToken(ctx, "hash1", now); !errors.Is(err, store.ErrNotFound) {
-		t.Errorf("ConsumeWorkerJoinToken at the expiry instant: got %v, want store.ErrNotFound", err)
+	if _, err := s.RedeemWorkerJoinToken(ctx, "hash1", now, cred); !errors.Is(err, store.ErrNotFound) {
+		t.Errorf("RedeemWorkerJoinToken at the expiry instant: got %v, want store.ErrNotFound", err)
 	}
-	if _, err := s.ConsumeWorkerJoinToken(ctx, "hash1", now.Add(time.Hour)); !errors.Is(err, store.ErrNotFound) {
-		t.Errorf("ConsumeWorkerJoinToken after expiry: got %v, want store.ErrNotFound", err)
+	if _, err := s.RedeemWorkerJoinToken(ctx, "hash1", now.Add(time.Hour), cred); !errors.Is(err, store.ErrNotFound) {
+		t.Errorf("RedeemWorkerJoinToken after expiry: got %v, want store.ErrNotFound", err)
 	}
 
 	stored, err := s.GetWorkerJoinTokenByHash(ctx, "hash1")
@@ -336,21 +409,73 @@ func TestWorkerJoinToken_ConsumeExpired(t *testing.T) {
 	if stored.UsedAt != nil {
 		t.Error("a refused claim marked the token used")
 	}
+	if _, err := s.GetActiveWorkerCredentialByWorkerID(ctx, "w1"); !errors.Is(err, store.ErrNotFound) {
+		t.Errorf("expected no credential to have been created, got %v", err)
+	}
 }
 
-func TestWorkerJoinToken_ConsumeUnknown(t *testing.T) {
+func TestWorkerJoinToken_RedeemUnknown(t *testing.T) {
 	s := fake.New()
 	defer s.Close()
-	if _, err := s.ConsumeWorkerJoinToken(context.Background(), "nope", time.Now().UTC()); !errors.Is(err, store.ErrNotFound) {
+	cred := store.WorkerCredential{ID: "wc1", WorkerID: "w1", PublicKey: "pub1", EnrolledAt: time.Now().UTC()}
+	if _, err := s.RedeemWorkerJoinToken(context.Background(), "nope", time.Now().UTC(), cred); !errors.Is(err, store.ErrNotFound) {
 		t.Errorf("expected ErrNotFound, got %v", err)
 	}
 }
 
-// TestWorkerJoinToken_ConsumeIsAtomic is the fake's half of the invariant
-// SQLite gets from a single UPDATE ... WHERE: concurrent claims of one
-// single-use token must yield exactly one winner. Repeated rounds, because a
+// TestWorkerJoinToken_RedeemConflictRollsBackClaim mirrors
+// sqlite_test.TestWorkerJoinToken_RedeemConflictRollsBackClaim: a credential
+// conflict must roll back the token claim too.
+func TestWorkerJoinToken_RedeemConflictRollsBackClaim(t *testing.T) {
+	s := fake.New()
+	defer s.Close()
+	ctx := context.Background()
+	now := time.Now().UTC()
+
+	if _, err := s.CreateWorkerJoinToken(ctx, store.WorkerJoinToken{
+		ID: "jt1", TokenHash: "hash1", Prefix: "sqiwjt_abcd",
+		ExpiresAt: now.Add(time.Hour), CreatedAt: now,
+	}); err != nil {
+		t.Fatalf("CreateWorkerJoinToken: %v", err)
+	}
+	if _, err := s.CreateWorkerCredential(ctx, store.WorkerCredential{
+		ID: "wc-existing", WorkerID: "w1", PublicKey: "pub-existing", EnrolledAt: now,
+	}); err != nil {
+		t.Fatalf("seed CreateWorkerCredential: %v", err)
+	}
+
+	_, err := s.RedeemWorkerJoinToken(ctx, "hash1", now.Add(time.Minute), store.WorkerCredential{
+		ID: "wc1", WorkerID: "w1", PublicKey: "pub1", EnrolledAt: now,
+	})
+	if !errors.Is(err, store.ErrConflict) {
+		t.Fatalf("RedeemWorkerJoinToken: got %v, want store.ErrConflict", err)
+	}
+
+	stored, err := s.GetWorkerJoinTokenByHash(ctx, "hash1")
+	if err != nil {
+		t.Fatalf("GetWorkerJoinTokenByHash: %v", err)
+	}
+	if stored.UsedAt != nil {
+		t.Error("a conflicting redemption spent the token; it must roll back")
+	}
+
+	got, err := s.RedeemWorkerJoinToken(ctx, "hash1", now.Add(time.Minute), store.WorkerCredential{
+		ID: "wc2", WorkerID: "w3", PublicKey: "pub3", EnrolledAt: now,
+	})
+	if err != nil {
+		t.Fatalf("re-redemption after conflict: %v", err)
+	}
+	if got.WorkerID != "w3" {
+		t.Errorf("WorkerID = %q, want w3", got.WorkerID)
+	}
+}
+
+// TestWorkerJoinToken_RedeemIsAtomic is the fake's half of the invariant
+// SQLite gets from one transaction: concurrent redemptions of one
+// single-use token, each for a distinct (non-conflicting) worker ID and
+// public key, must yield exactly one winner. Repeated rounds, because a
 // single burst can serialize by chance.
-func TestWorkerJoinToken_ConsumeIsAtomic(t *testing.T) {
+func TestWorkerJoinToken_RedeemIsAtomic(t *testing.T) {
 	const rounds = 50
 	const attempts = 8
 
@@ -375,7 +500,10 @@ func TestWorkerJoinToken_ConsumeIsAtomic(t *testing.T) {
 				defer done.Done()
 				ready.Done()
 				<-start
-				_, errs[i] = s.ConsumeWorkerJoinToken(ctx, "hash1", now.Add(time.Minute))
+				_, errs[i] = s.RedeemWorkerJoinToken(ctx, "hash1", now.Add(time.Minute), store.WorkerCredential{
+					ID: fmt.Sprintf("wc%d", i), WorkerID: fmt.Sprintf("w%d", i),
+					PublicKey: fmt.Sprintf("pub%d", i), EnrolledAt: now,
+				})
 			}()
 		}
 		ready.Wait()
@@ -393,7 +521,7 @@ func TestWorkerJoinToken_ConsumeIsAtomic(t *testing.T) {
 			}
 		}
 		if won != 1 {
-			t.Fatalf("round %d: %d of %d concurrent claims succeeded, want exactly 1", round, won, attempts)
+			t.Fatalf("round %d: %d of %d concurrent redemptions succeeded, want exactly 1", round, won, attempts)
 		}
 		s.Close()
 	}

@@ -253,10 +253,10 @@ type Store struct {
 	stmtGetActiveWorkerCredentialByWorkerID *sql.Stmt
 	stmtListActiveWorkerCredentials         *sql.Stmt
 	stmtRevokeWorkerCredential              *sql.Stmt
+	stmtTouchWorkerCredential               *sql.Stmt
 	stmtInsertWorkerJoinToken               *sql.Stmt
 	stmtGetWorkerJoinTokenByHash            *sql.Stmt
 	stmtMarkWorkerJoinTokenUsed             *sql.Stmt
-	stmtConsumeWorkerJoinToken              *sql.Stmt
 }
 
 // Open opens (or creates) the SQLite database at path, applies connection
@@ -836,6 +836,9 @@ func (s *Store) prepareAll(ctx context.Context) error {
 	if s.stmtRevokeWorkerCredential, err = s.prepare(ctx, sqlRevokeWorkerCredential); err != nil {
 		return err
 	}
+	if s.stmtTouchWorkerCredential, err = s.prepare(ctx, sqlTouchWorkerCredential); err != nil {
+		return err
+	}
 	if s.stmtInsertWorkerJoinToken, err = s.prepare(ctx, sqlInsertWorkerJoinToken); err != nil {
 		return err
 	}
@@ -845,9 +848,9 @@ func (s *Store) prepareAll(ctx context.Context) error {
 	if s.stmtMarkWorkerJoinTokenUsed, err = s.prepare(ctx, sqlMarkWorkerJoinTokenUsed); err != nil {
 		return err
 	}
-	if s.stmtConsumeWorkerJoinToken, err = s.prepare(ctx, sqlConsumeWorkerJoinToken); err != nil {
-		return err
-	}
+	// sqlConsumeWorkerJoinToken has no prepared statement of its own: it is
+	// used only as raw SQL text inside RedeemWorkerJoinToken's transaction
+	// (workercredential.go), matching CreateJobSubmission's idiom.
 
 	return nil
 }

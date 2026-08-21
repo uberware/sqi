@@ -58,6 +58,11 @@ type WorkerCredentialStore interface {
 	// RevokeWorkerCredential soft-revokes the credential for workerID.
 	// Returns [ErrNotFound] if no such worker has a credential.
 	RevokeWorkerCredential(ctx context.Context, workerID string, at time.Time) error
+	// TouchWorkerCredential sets LastSeenAt on workerID's ACTIVE credential.
+	// Returns [ErrNotFound] if the worker has no active credential. Callers
+	// that treat "seen" as best-effort bookkeeping (registration, not a
+	// security decision) should not fail on that error.
+	TouchWorkerCredential(ctx context.Context, workerID string, at time.Time) error
 	// CreateWorkerJoinToken inserts a new join token. Returns [ErrConflict]
 	// on a token-hash or id collision.
 	CreateWorkerJoinToken(ctx context.Context, t WorkerJoinToken) (WorkerJoinToken, error)
@@ -67,17 +72,24 @@ type WorkerCredentialStore interface {
 	// MarkWorkerJoinTokenUsed sets UsedAt. Returns [ErrNotFound] if id is
 	// unknown.
 	MarkWorkerJoinTokenUsed(ctx context.Context, id string, at time.Time) error
-	// ConsumeWorkerJoinToken atomically claims the single-use join token
-	// identified by hash, returning it with UsedAt set to now. It succeeds
+	// RedeemWorkerJoinToken atomically claims the single-use join token
+	// identified by hash AND creates cred, in one transaction. It succeeds
 	// only for a token that exists, has not been redeemed, and has not
 	// expired at now; every other case — including a token another request
-	// claimed a moment earlier — returns [ErrNotFound].
+	// claimed a moment earlier — returns [ErrNotFound], and cred is not
+	// created. Returns [ErrConflict] if cred cannot be created (a worker ID
+	// already bound to an active credential, or a public key already
+	// enrolled to any worker); in that case the whole transaction rolls
+	// back, so the token is NOT consumed and remains redeemable.
 	//
-	// Check and claim must be ONE statement. Reading the token, inspecting
-	// UsedAt and marking it used separately is a check-then-act race: two
-	// concurrent enrollments presenting the same single-use token both
-	// observe UsedAt as nil and both succeed, and a failure of the later
-	// write leaves the token redeemable until it expires while the caller
-	// was already told it succeeded.
-	ConsumeWorkerJoinToken(ctx context.Context, hash string, now time.Time) (WorkerJoinToken, error)
+	// The token claim and the credential creation must be ONE transaction.
+	// Committing the claim before the credential is known to be creatable
+	// would burn a single-use token on a request that was always going to
+	// be rejected as a conflict — the caller gets nothing for it, and the
+	// operator has to issue a new one. Within the claim itself, check and
+	// set must still be a single statement: reading the token, inspecting
+	// UsedAt and marking it used separately is a check-then-act race, where
+	// two concurrent enrollments presenting the same single-use token both
+	// observe UsedAt as nil and both succeed.
+	RedeemWorkerJoinToken(ctx context.Context, hash string, now time.Time, cred WorkerCredential) (WorkerCredential, error)
 }

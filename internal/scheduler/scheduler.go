@@ -203,6 +203,14 @@ type Config struct {
 	//
 	// Zero fields normalize to the defaults in [New].
 	ExprLimits openjd.ExprLimits
+
+	// NATSAuthEnabled mirrors config.NATSAuthConfig.Enabled (server.Config's
+	// NATSAuthEnabled). It gates one thing here: whether worker registration
+	// touches the worker's broker-credential LastSeenAt. With broker
+	// authentication off there are no credential rows at all, and the
+	// default no-config path must do no extra store work — see
+	// handleWorkerRegister.
+	NATSAuthEnabled bool
 }
 
 // busClient is the subset of [bus.Client] used by the Scheduler. Defined as
@@ -837,6 +845,15 @@ func (s *Scheduler) handleWorkerRegister(ctx context.Context, msg jetstream.Msg,
 
 	s.ensureComputeLocation(ctx, m.ComputeLocation)
 
+	// Registration is "last seen" — connect and reconnect both go through
+	// here, and it is low-frequency, unlike heartbeat. Only touched when
+	// broker authentication is enabled: with it off there are no credential
+	// rows at all, and the default no-config path must do no extra store
+	// work.
+	if s.cfg.NATSAuthEnabled {
+		s.touchWorkerCredential(ctx, m.WorkerID, now)
+	}
+
 	s.warnOnExprCapShortfall(ctx, w)
 
 	s.logger.InfoContext(
@@ -923,6 +940,30 @@ func (s *Scheduler) ensureComputeLocation(ctx context.Context, name string) {
 	if err != nil && !errors.Is(err, store.ErrConflict) {
 		s.logger.WarnContext(ctx, "scheduler: auto-register compute location failed",
 			slog.String("compute_location", name), slog.Any("error", err))
+	}
+}
+
+// touchWorkerCredential sets LastSeenAt on workerID's active broker
+// credential to at. Best-effort, exactly like ensureComputeLocation: a
+// credential bookkeeping write must never stop a worker coming online.
+// [store.ErrNotFound] — no active credential for this worker — is not
+// unusual enough to warrant more than a debug log: it is the normal shape
+// for a worker that enrolled with broker auth off and was seen once auth
+// was later turned on, or any other legitimate mismatch between "workers
+// that exist" and "workers with a credential". Any other error is logged at
+// warn, matching ensureComputeLocation's posture toward its own store
+// writes.
+func (s *Scheduler) touchWorkerCredential(ctx context.Context, workerID string, at time.Time) {
+	err := s.store.TouchWorkerCredential(ctx, workerID, at)
+	switch {
+	case err == nil:
+		return
+	case errors.Is(err, store.ErrNotFound):
+		s.logger.DebugContext(ctx, "scheduler: no active broker credential to touch on registration",
+			slog.String("worker_id", workerID))
+	default:
+		s.logger.WarnContext(ctx, "scheduler: touch worker credential last-seen failed",
+			slog.String("worker_id", workerID), slog.Any("error", err))
 	}
 }
 

@@ -386,8 +386,8 @@ func (joinTokenLookupErrStore) GetWorkerJoinTokenByHash(context.Context, string)
 	return store.WorkerJoinToken{}, errors.New("simulated store outage")
 }
 
-func (joinTokenLookupErrStore) ConsumeWorkerJoinToken(context.Context, string, time.Time) (store.WorkerJoinToken, error) {
-	return store.WorkerJoinToken{}, errors.New("simulated store outage")
+func (joinTokenLookupErrStore) RedeemWorkerJoinToken(context.Context, string, time.Time, store.WorkerCredential) (store.WorkerCredential, error) {
+	return store.WorkerCredential{}, errors.New("simulated store outage")
 }
 
 func TestWorkerEnroll_TokenFailureModesAreIndistinguishable(t *testing.T) {
@@ -691,8 +691,9 @@ func TestWorkerCredentialRevoke_RevokerOtherError_InternalServerError(t *testing
 // inspecting UsedAt and marking it used as separate steps lets two
 // simultaneous enrollments with one single-use token BOTH observe UsedAt as
 // nil and both succeed — the token's whole purpose defeated by timing
-// alone. store.ConsumeWorkerJoinToken makes check and claim one statement,
-// so exactly one of these can win.
+// alone. store.RedeemWorkerJoinToken makes check and claim one statement
+// (inside one transaction with the credential creation), so exactly one of
+// these can win.
 func TestWorkerEnroll_ConcurrentRedemptionsOfOneSingleUseToken(t *testing.T) {
 	// Repeated rounds, not one: the handler is fast enough that a single
 	// burst can happen to serialize even under -race, so one round proves
@@ -753,21 +754,13 @@ func TestWorkerEnroll_ConcurrentRedemptionsOfOneSingleUseToken(t *testing.T) {
 	}
 }
 
-// TestWorkerEnroll_SingleUseTokenIsSpentBeforeTheCredentialIsCreated pins the
-// deliberate cost of that atomicity: the claim has to precede the credential
-// write, so an enrollment rejected for a conflicting worker ID has already
-// spent the token and the operator issues a new one. A malformed public key
-// costs nothing, because it is rejected before the claim.
-func TestWorkerEnroll_SingleUseTokenIsSpentBeforeTheCredentialIsCreated(t *testing.T) {
+// TestWorkerEnroll_MalformedPublicKey_TokenNotSpent pins that a request
+// rejected before the token is ever claimed costs nothing: a malformed
+// public key is caught by validation, ahead of any store call, so the token
+// stays exactly as redeemable as it was.
+func TestWorkerEnroll_MalformedPublicKey_TokenNotSpent(t *testing.T) {
 	st := fake.New()
 	r := newWorkerEnrollRouter(st, true, time.Hour)
-
-	// Seed an existing active credential so the enrollment below conflicts.
-	if _, err := st.CreateWorkerCredential(t.Context(), store.WorkerCredential{
-		ID: uuid.NewString(), WorkerID: "w1", PublicKey: genPublicKey(t), EnrolledAt: time.Now().UTC(),
-	}); err != nil {
-		t.Fatalf("seed CreateWorkerCredential: %v", err)
-	}
 
 	rawBadKey, badKeyTok := seedJoinToken(t, st, nil)
 	req := newReq(t, http.MethodPost, "/workers/enroll", jsonBody(t, workerEnrollRequest{
@@ -785,23 +778,61 @@ func TestWorkerEnroll_SingleUseTokenIsSpentBeforeTheCredentialIsCreated(t *testi
 	if stored.UsedAt != nil {
 		t.Error("a malformed public key spent the join token; it must be rejected before the token is claimed")
 	}
+}
 
-	rawConflict, conflictTok := seedJoinToken(t, st, nil)
+// TestWorkerEnroll_ConflictingEnrollment_TokenSurvives is FOLLOW-UP 4's
+// test: a single-use token presented against a request that conflicts (here,
+// a worker ID that already has an active credential) must NOT be burned.
+// The claim and the credential creation are one transaction
+// (store.RedeemWorkerJoinToken), so a conflict rolls the claim back along
+// with the credential write — the opposite of the token being spent
+// unconditionally ahead of the write, which this test would have caught as
+// a regression back to that shape. It proves survival the only way that
+// actually matters to an operator: the SAME token is still redeemable
+// afterwards, for a different worker ID.
+func TestWorkerEnroll_ConflictingEnrollment_TokenSurvives(t *testing.T) {
+	st := fake.New()
+	r := newWorkerEnrollRouter(st, true, time.Hour)
+	raw, _ := seedJoinToken(t, st, nil)
+
+	// First enrollment for w1 succeeds and consumes nothing it shouldn't —
+	// it is the LEGITIMATE use of this token.
+	req := newReq(t, http.MethodPost, "/workers/enroll", jsonBody(t, workerEnrollRequest{
+		JoinToken: raw, WorkerID: "w1", PublicKey: genPublicKey(t),
+	}))
+	rr := httptest.NewRecorder()
+	r.ServeHTTP(rr, req)
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("first enrollment: status = %d, want 201 — body: %s", rr.Code, rr.Body)
+	}
+
+	// A single-use token is spent by its first successful redemption, so a
+	// second attempt with the SAME token — even one that would also
+	// conflict on worker ID w1 — reports the generic invalid-token 401
+	// rather than a 409: the token itself is what "already used" refuses.
+	// The point under test is what happens when the credential write fails
+	// for a reason OTHER than the token already being spent — a worker ID
+	// bound to an active credential from a DIFFERENT token's redemption —
+	// so seed a second token for that attempt.
+	raw2, _ := seedJoinToken(t, st, nil)
 	req = newReq(t, http.MethodPost, "/workers/enroll", jsonBody(t, workerEnrollRequest{
-		JoinToken: rawConflict, WorkerID: "w1", PublicKey: genPublicKey(t),
+		JoinToken: raw2, WorkerID: "w1", PublicKey: genPublicKey(t),
 	}))
 	rr = httptest.NewRecorder()
 	r.ServeHTTP(rr, req)
 	if rr.Code != http.StatusConflict {
 		t.Fatalf("conflicting worker id: status = %d, want 409 — body: %s", rr.Code, rr.Body)
 	}
-	stored, err = st.GetWorkerJoinTokenByHash(t.Context(), conflictTok.TokenHash)
-	if err != nil {
-		t.Fatalf("GetWorkerJoinTokenByHash: %v", err)
-	}
-	if stored.UsedAt == nil {
-		t.Error("the join token was not spent by a conflicting enrollment — the claim must be atomic, " +
-			"which means it precedes the credential write and cannot be undone by its failure")
+
+	// raw2 must still be redeemable: the conflict rolled its claim back.
+	// Confirm by actually redeeming it, for a DIFFERENT worker ID.
+	req = newReq(t, http.MethodPost, "/workers/enroll", jsonBody(t, workerEnrollRequest{
+		JoinToken: raw2, WorkerID: "w3", PublicKey: genPublicKey(t),
+	}))
+	rr = httptest.NewRecorder()
+	r.ServeHTTP(rr, req)
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("re-redemption after a conflict: status = %d, want 201 — body: %s", rr.Code, rr.Body)
 	}
 }
 
