@@ -199,12 +199,11 @@ nats:
 | **Env var** | `SQI_NATS_AUTH_ENABLED` |
 
 Requires every NATS client to present a per-worker nkey credential. When
-`false`, the broker accepts any connection — see the warning under
-[`nats.addr`](#natsaddr) above. Deliberately independent of `auth.enabled`:
-that flag gates human users and API keys over the REST API, this one gates
-workers over the broker transport. **Configuration only in this release —
-nothing consumes this value yet**, so setting it to `true` has no effect
-until the broker actually enforces it.
+`true`, the broker refuses any connection that does not present one. When
+`false` (the default), the broker accepts any connection — see the warning
+under [`nats.addr`](#natsaddr) above. Deliberately independent of
+`auth.enabled`: that flag gates human users and API keys over the REST API,
+this one gates workers over the broker transport.
 
 ```yaml
 nats:

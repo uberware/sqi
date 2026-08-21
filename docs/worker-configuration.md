@@ -171,10 +171,10 @@ nats:
 
 Path to this worker's nkey seed file. Only meaningful when the server's
 `nats.auth.enabled` is `true` — see
-[`docs/configuration.md`](configuration.md#natsauthenabled). When left
-empty, it defaults to `<worker.data_dir>/worker.nk`. The file is created by
-enrollment or by `sqi-worker keygen` and must be mode `0600`.
-**Configuration only in this release — nothing consumes this value yet.**
+[`docs/configuration.md`](configuration.md#natsauthenabled). The worker
+presents the credential in this file to authenticate to the broker. When
+left empty, it defaults to `<worker.data_dir>/worker.nk`. The file is
+created by enrollment or by `sqi-worker keygen` and must be mode `0600`.
 
 ```yaml
 nats:
