@@ -194,13 +194,12 @@ file created alongside the target and then renamed into place, so a
 directory locked down to e.g. `0500` fails the write even if the seed file
 inside it is owner-writable.
 
-Set this field to a non-default path and neither enrollment path creates it
-for you: `sqi-worker keygen` always writes the *default*
-`<worker.data_dir>/worker.nk`, regardless of what `credential_file` is set
-to, and self-service enrollment writes wherever `credential_file` points but
-only as part of a live enrollment run. A custom path must already hold a
-valid seed by the time the worker starts — either populate it by running
-enrollment against that path, or move a seed there by hand.
+Set this field to a non-default path and both enrollment paths honor it:
+`sqi-worker keygen` loads the same layered configuration `sqi-worker start`
+does (the root `-c/--config` file, `SQI_WORKER_NATS_CREDENTIAL_FILE`, and
+this field's config-file value) and writes wherever `credential_file`
+resolves, and self-service enrollment writes to the same resolved path as
+part of a live enrollment run.
 
 ```yaml
 nats:

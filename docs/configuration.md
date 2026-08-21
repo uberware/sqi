@@ -295,19 +295,18 @@ store:
   sqlite_path: "/var/lib/sqi/sqi.db"
 ```
 
-> **The `migrate`, `backup`, and `worker` subcommands do not read this key.**
-> Their `--db` flag defaults to `$SQI_SQLITE_PATH` (note: *not*
-> `SQI_STORE_SQLITE_PATH`), falling back to `sqi.db` in the working
-> directory. Pass `--db` explicitly, or export both variables, so schema
-> migrations, backups, and worker broker-credential operations (`sqi-server
-> worker token issue|enroll|revoke|list` — see
-> [`docs/operations.md`](operations.md#worker-broker-credentials)) operate on
-> the database the server actually uses. The `worker` subcommands are the
-> least forgiving of the three: unlike `backup`, they create and migrate the
-> database at `--db` if it does not already exist, so pointing one at the
-> wrong path does not fail loudly — it silently creates a fresh, empty
-> database and prints a token or enrolls a worker the running server can
-> never see.
+> **The `migrate`, `backup`, and `worker` subcommands resolve their database
+> path the same way the server does.** Highest priority first: an explicit
+> `--db` flag; this key (the root `-c/--config` file and
+> `SQI_STORE_SQLITE_PATH`); the legacy `SQI_SQLITE_PATH` environment
+> variable, which still works but prints a deprecation notice to stderr when
+> it is what decided the path; and finally the built-in `"sqi.db"` default.
+> `migrate up` creates the database when it does not already exist — that is
+> its job. `backup` and `worker` (`sqi-server worker
+> token issue|enroll|revoke|list` — see
+> [`docs/operations.md`](operations.md#worker-broker-credentials)) never
+> create one: pointing either at a database that does not exist is a clear
+> error naming the resolved path, not a silently created empty database.
 
 ---
 

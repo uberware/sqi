@@ -44,15 +44,15 @@ means "the channel is private" — it does not.
 Each worker holds an Ed25519 **nkey** keypair. The worker generates it
 locally — only the public key ever leaves the machine — and the private seed
 is written to `nats.credential_file`, mode `0600`, which defaults to
-`<data_dir>/worker.nk` but can be pointed anywhere. Self-service enrollment
-over REST honors a custom path, writing the seed wherever `credential_file`
-resolves; `sqi-worker keygen` does not — it always writes the default
-`<data_dir>/worker.nk` regardless of `credential_file`, so a custom path must
-be populated by enrollment or by moving the seed there by hand before the
-worker starts. See
+`<data_dir>/worker.nk` but can be pointed anywhere. Both self-service
+enrollment over REST and `sqi-worker keygen` honor a custom path: `keygen`
+loads the worker's own configuration (the root `-c/--config` file,
+`SQI_WORKER_*` environment variables, and built-in defaults, the same as
+`sqi-worker start`) and writes the seed wherever `credential_file` resolves.
+See
 [`docs/worker-configuration.md`](worker-configuration.md#natscredential_file)
-for the full caveat. Connecting to the broker is challenge-response (the
-broker sends a nonce, the worker signs it with the seed), so nothing
+for the full field reference. Connecting to the broker is challenge-response
+(the broker sends a nonce, the worker signs it with the seed), so nothing
 replayable crosses the wire.
 
 ### Getting a credential
@@ -72,29 +72,28 @@ Two ways, both ultimately calling the same store write:
   `nats.auth.enrollment_endpoint_enabled` are both true. Tokens default to a
   1-hour TTL (bounded 1 minute to 24 hours) and are single-use by default
   (`nats.auth.join_token_single_use`).
-- **Manual pre-provisioning.** Run `sqi-worker keygen --data-dir <the
-  worker's worker.data_dir>` on the worker host — it writes the seed and
-  prints the public key and the exact `sqi-server worker enroll --worker-id
-  … --public-key … --db <path>` command to run on the server. No token, no
-  REST call, no `POST /api/v1/workers/enroll` route needs to exist at all.
-  This is the path for an air-gapped worker, or a site that sets
-  `nats.auth.enrollment_endpoint_enabled: false` and wants no self-service
-  enrollment surface whatsoever. `sqi-server worker enroll` is **offline**,
-  exactly like `sqi-server worker revoke`: it writes the database from a
-  process with no broker handle, so a **running** server keeps refusing the
-  new key until it restarts.
+- **Manual pre-provisioning.** Run `sqi-worker keygen` on the worker host,
+  with its normal config in place — it writes the seed and prints the
+  public key and the exact `sqi-server worker enroll --worker-id … --public-key
+  … --db <path>` command to run on the server. Pass `--data-dir` to override
+  `worker.data_dir` explicitly for a one-off run against a different
+  directory. No token, no REST call, no `POST /api/v1/workers/enroll` route
+  needs to exist at all. This is the path for an air-gapped worker, or a
+  site that sets `nats.auth.enrollment_endpoint_enabled: false` and wants no
+  self-service enrollment surface whatsoever. `sqi-server worker enroll` is
+  **offline**, exactly like `sqi-server worker revoke`: it writes the
+  database from a process with no broker handle, so a **running** server
+  keeps refusing the new key until it restarts.
 
-> **`sqi-server worker …` never reads the server's config file.** `--db`
-> defaults to `$SQI_SQLITE_PATH` (or `sqi.db` in the working directory), not
-> `store.sqlite_path`, and `token issue`/`enroll`/`revoke`/`list` all open
-> that path directly — creating and migrating it if it does not exist yet.
-> Run one of these commands with the wrong `--db` against a server using a
-> different path and it silently creates a fresh, empty database and prints
-> a token or enrolls a worker the running server can never see. Pass `--db`
-> explicitly, or export `SQI_SQLITE_PATH` to match your deployment — see
-> [`docs/operations.md`](operations.md#worker-broker-credentials) for the
-> full command reference and the same caveat as it applies to `migrate` and
-> `backup`.
+> **`sqi-server worker …` resolves its database path the same way `backup`
+> and `migrate` do.** Highest priority first: an explicit `--db`;
+> `store.sqlite_path` (the root `-c/--config` file and
+> `SQI_STORE_SQLITE_PATH`); the legacy `SQI_SQLITE_PATH` environment
+> variable; then `sqi.db`. Unlike `migrate`, these subcommands never create
+> or migrate the database — pointing one at a path with no database there is
+> a clear error naming the resolved path, not a silently created empty one.
+> See [`docs/operations.md`](operations.md#worker-broker-credentials) for
+> the full command reference.
 
 **Enroll every worker before flipping `nats.auth.enabled` on.** The enrolled
 credential set is loaded once, at server `Start`, and only when broker
@@ -173,15 +172,20 @@ again. To rotate a worker's key:
 
 1. `sqi-server worker revoke <worker-id>` (or the REST path, if the old
    credential should be disconnected immediately).
-2. `sqi-worker keygen --force --data-dir <the worker's worker.data_dir>` on
-   the worker host — this overwrites the seed with a new keypair and prints
-   the new public key, plus the exact `sqi-server worker enroll` command for
-   step 3. `keygen` reads no config file: it honors only the `--data-dir` and
-   `--force` flags, so a worker whose `worker.data_dir` is set anywhere other
-   than the built-in default must pass `--data-dir` explicitly — a bare
-   `keygen --force` writes the seed under the default data dir instead,
-   minting a new, unenrolled worker ID there rather than rotating the key of
-   the worker actually named in step 1.
+2. `sqi-worker keygen --force` on the worker host, with its normal config in
+   place — this overwrites the seed with a new keypair and prints the new
+   public key, plus the exact `sqi-server worker enroll` command for step 3.
+   `keygen` loads configuration the same way `sqi-worker start` does (the
+   root `-c/--config` file, `SQI_WORKER_*` environment variables, and
+   built-in defaults), so running it on the worker host with its own config
+   resolves `worker.data_dir` and `nats.credential_file` the same way the
+   worker itself does. `keygen` also states, in its output, whether the
+   worker ID it printed was loaded from an existing `worker.id` or freshly
+   generated — a freshly generated ID here means `--data-dir` or
+   `worker.data_dir` is pointed at the wrong directory, since it should be
+   rotating the key of the worker already named in step 1, not minting a
+   new one. Pass `--data-dir` to override the directory explicitly for a
+   one-off run.
 3. `sqi-server worker enroll --worker-id <worker-id> --public-key <new-key>`
    on the server host, using the public key `keygen` just printed.
 4. **Restart `sqi-server`.** Like `worker revoke`, `worker enroll` is an

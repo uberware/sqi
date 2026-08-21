@@ -173,11 +173,20 @@ a site that wants no self-service enrollment endpoint at all
    sqi-worker keygen --data-dir /var/lib/sqi-worker
    ```
 
+   `keygen` loads the worker's own configuration the same way `sqi-worker
+   start` does (the root `-c/--config` file, `SQI_WORKER_*` environment
+   variables, and built-in defaults), so `--data-dir` here is an explicit
+   override of `worker.data_dir` — pass it when generating a keypair before
+   the worker's own config is in place, or to target a different directory
+   for a one-off run. With the worker's normal config already set up, a bare
+   `sqi-worker keygen` resolves the same directory the worker itself uses.
+
    This writes `/var/lib/sqi-worker/worker.nk` (mode `0600`) and prints the
    worker's public key and the exact command to run next:
 
    ```
    Public key: UABC...XYZ
+   Worker ID: 3f2a... (newly generated; if you expected an existing worker id here, --data-dir/worker.data_dir is probably pointed at the wrong directory)
    On the server, run:
      sqi-server worker enroll --worker-id 3f2a... --public-key UABC...XYZ
    A RUNNING sqi-server will not accept this credential until it restarts; to enroll against a running server, use POST /api/v1/workers/enroll with a join token instead.
@@ -218,11 +227,16 @@ No join token and no REST call are involved in this path at any point.
 
 1. Revoke the current credential — `sqi-server worker revoke <worker-id>`,
    or the REST path above for an immediate disconnect.
-2. `sqi-worker keygen --force --data-dir <data-dir>` on the worker host.
-   This overwrites `worker.nk` with a new keypair and prints the new
-   public key and the `sqi-server worker enroll` command for step 3 — it
-   must run *after* step 1, since the worker ID stays bound to the old
-   public key on the server until that credential is revoked.
+2. `sqi-worker keygen --force` on the worker host, with the worker's normal
+   config in place (pass `--data-dir` to override `worker.data_dir`
+   explicitly for a one-off run against a different directory). This
+   overwrites `worker.nk` with a new keypair and prints the new public key,
+   whether the worker ID is the existing one or newly generated — a freshly
+   generated one here is the signal that the resolved data directory does
+   not match the worker being rotated — and the `sqi-server worker enroll`
+   command for step 3. It must run *after* step 1, since the worker ID stays
+   bound to the old public key on the server until that credential is
+   revoked.
 3. `sqi-server worker enroll --worker-id <worker-id> --public-key <new-key>`
    on the server host, using the key `keygen` printed.
 4. **Restart `sqi-server`**, for the reason given in Path B step 3: this

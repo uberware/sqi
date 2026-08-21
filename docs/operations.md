@@ -214,14 +214,17 @@ sqi-server backup \
   --out /backups/sqi/sqi-$(date +%Y%m%d-%H%M%S).db
 ```
 
-The `--db` flag defaults to `$SQI_SQLITE_PATH` (or `sqi.db` if that variable is
-unset). Note that this is a different environment variable from `SQI_STORE_SQLITE_PATH`
-used by the running server; set `--db` explicitly or export `SQI_SQLITE_PATH` to
-match your deployment.
+`--db` is optional: omitted, the source path resolves through the same
+config layer the server uses (the root `-c/--config` file and
+`SQI_STORE_SQLITE_PATH`, i.e. `store.sqlite_path`), falling back to the
+legacy `SQI_SQLITE_PATH` environment variable and then to `sqi.db` in the
+working directory. Passing `--db` explicitly, as in the example above,
+always wins.
 
 The command opens the source database read-only and writes an identical clean
-copy to the destination path. It exits non-zero if the destination file already
-exists — use a timestamped filename or a fresh directory each time.
+copy to the destination path. It exits non-zero if the source database does
+not exist (it never creates one) or if the destination file already exists —
+use a timestamped filename or a fresh directory each time.
 
 ### Automated daily backup (cron)
 
@@ -280,15 +283,14 @@ database file directly and do not start an HTTP server or NATS broker, so
 they work whether or not `sqi-server` is running — and, independently,
 whether or not the user-facing `auth.enabled` is on.
 
-> **These commands do not read the server's config file either, and unlike
-> `backup` they create and migrate the database if it doesn't already
-> exist.** `--db` defaults to `$SQI_SQLITE_PATH` (or `sqi.db` in the working
-> directory) — not `store.sqlite_path`, and not `SQI_STORE_SQLITE_PATH` — and
-> every `worker` subcommand applies pending migrations to whatever `--db`
-> resolves to before doing anything else. Point one at the wrong path and it
-> silently creates a fresh, empty database and prints a token or enrolls a
-> worker the running server can never see or validate. Pass `--db`
-> explicitly, or export `SQI_SQLITE_PATH` to match your deployment.
+> **These commands resolve the database path the same way `backup` and
+> `migrate` do** — an explicit `--db`, then `store.sqlite_path` (the root
+> `-c/--config` file and `SQI_STORE_SQLITE_PATH`), then the legacy
+> `SQI_SQLITE_PATH` environment variable, then `sqi.db`. Unlike `migrate`,
+> they never create or migrate the database: pointing one at a path with no
+> database there is a clear error naming the resolved path, not a silently
+> created empty one. Run `sqi-server migrate up` against the target database
+> first if it does not exist yet.
 
 ### Issue a join token
 
