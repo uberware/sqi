@@ -136,3 +136,124 @@ func TestWorkerCredential_GetActive_RevokedOnlyReturnsNotFound(t *testing.T) {
 		t.Errorf("expected ErrNotFound for a worker with only a revoked credential, got %v", err)
 	}
 }
+
+// TestWorkerCredential_DuplicateWorkerID mirrors
+// sqlite_test.TestWorkerCredential_DuplicateWorkerID: a worker ID with an
+// existing ACTIVE credential cannot be double-enrolled. The fake had no
+// direct test of CreateWorkerCredential's own conflict logic before this —
+// it was only ever exercised indirectly through the rotation tests above.
+func TestWorkerCredential_DuplicateWorkerID(t *testing.T) {
+	s := fake.New()
+	defer s.Close()
+	ctx := context.Background()
+	now := time.Now().UTC()
+
+	if _, err := s.CreateWorkerCredential(ctx, store.WorkerCredential{
+		ID: "wc1", WorkerID: "w1", PublicKey: "pub1", EnrolledAt: now,
+	}); err != nil {
+		t.Fatalf("CreateWorkerCredential: %v", err)
+	}
+	_, err := s.CreateWorkerCredential(ctx, store.WorkerCredential{
+		ID: "wc2", WorkerID: "w1", PublicKey: "pub2", EnrolledAt: now,
+	})
+	if !errors.Is(err, store.ErrConflict) {
+		t.Errorf("expected ErrConflict for duplicate active worker_id, got %v", err)
+	}
+}
+
+// TestWorkerCredential_DuplicatePublicKey mirrors
+// sqlite_test.TestWorkerCredential_DuplicatePublicKey: two different
+// workers can never share a public key, active-vs-active.
+func TestWorkerCredential_DuplicatePublicKey(t *testing.T) {
+	s := fake.New()
+	defer s.Close()
+	ctx := context.Background()
+	now := time.Now().UTC()
+
+	if _, err := s.CreateWorkerCredential(ctx, store.WorkerCredential{
+		ID: "wc1", WorkerID: "w1", PublicKey: "pub1", EnrolledAt: now,
+	}); err != nil {
+		t.Fatalf("CreateWorkerCredential: %v", err)
+	}
+	_, err := s.CreateWorkerCredential(ctx, store.WorkerCredential{
+		ID: "wc2", WorkerID: "w2", PublicKey: "pub1", EnrolledAt: now,
+	})
+	if !errors.Is(err, store.ErrConflict) {
+		t.Errorf("expected ErrConflict for duplicate public_key, got %v", err)
+	}
+}
+
+// TestWorkerCredential_RevokedPublicKeyStillUnique mirrors
+// sqlite_test.TestWorkerCredential_RevokedPublicKeyStillUnique. The whole
+// point of leaving public_key globally UNIQUE (not scoped to active rows the
+// way worker_id now is) is that a rotated-away key must never become usable
+// again — this pins that in the fake as well as SQLite, so a divergence
+// between the two backends (the exact class of bug round 2 found) cannot
+// hide here.
+func TestWorkerCredential_RevokedPublicKeyStillUnique(t *testing.T) {
+	s := fake.New()
+	defer s.Close()
+	ctx := context.Background()
+	now := time.Now().UTC()
+
+	if _, err := s.CreateWorkerCredential(ctx, store.WorkerCredential{
+		ID: "wc1", WorkerID: "w1", PublicKey: "pub1", EnrolledAt: now,
+	}); err != nil {
+		t.Fatalf("CreateWorkerCredential: %v", err)
+	}
+	if err := s.RevokeWorkerCredential(ctx, "w1", now); err != nil {
+		t.Fatalf("RevokeWorkerCredential: %v", err)
+	}
+
+	_, err := s.CreateWorkerCredential(ctx, store.WorkerCredential{
+		ID: "wc2", WorkerID: "w2", PublicKey: "pub1", EnrolledAt: now,
+	})
+	if !errors.Is(err, store.ErrConflict) {
+		t.Errorf("expected ErrConflict reusing a revoked credential's public_key, got %v", err)
+	}
+}
+
+// TestWorkerCredential_ListActiveAfterRotationHasExactlyOneRow mirrors
+// sqlite_test.TestWorkerCredential_ListActiveAfterRotationHasExactlyOneRow:
+// after enroll, revoke, re-enroll, ListActiveWorkerCredentials must return
+// exactly one row for the rotated worker — never zero (the rotation
+// silently failing) and never two (both keys accepted by the broker at
+// once, which is the partial index being wrong in the OTHER direction from
+// fix 1).
+func TestWorkerCredential_ListActiveAfterRotationHasExactlyOneRow(t *testing.T) {
+	s := fake.New()
+	defer s.Close()
+	ctx := context.Background()
+	now := time.Now().UTC()
+
+	if _, err := s.CreateWorkerCredential(ctx, store.WorkerCredential{
+		ID: "wc1", WorkerID: "w1", PublicKey: "pub1", EnrolledAt: now,
+	}); err != nil {
+		t.Fatalf("CreateWorkerCredential (first): %v", err)
+	}
+	if err := s.RevokeWorkerCredential(ctx, "w1", now); err != nil {
+		t.Fatalf("RevokeWorkerCredential: %v", err)
+	}
+	if _, err := s.CreateWorkerCredential(ctx, store.WorkerCredential{
+		ID: "wc2", WorkerID: "w1", PublicKey: "pub2", EnrolledAt: now,
+	}); err != nil {
+		t.Fatalf("CreateWorkerCredential (rotated): %v", err)
+	}
+
+	active, err := s.ListActiveWorkerCredentials(ctx)
+	if err != nil {
+		t.Fatalf("ListActiveWorkerCredentials: %v", err)
+	}
+	var forW1 []store.WorkerCredential
+	for _, c := range active {
+		if c.WorkerID == "w1" {
+			forW1 = append(forW1, c)
+		}
+	}
+	if len(forW1) != 1 {
+		t.Fatalf("want exactly 1 active credential for w1 after rotation, got %d", len(forW1))
+	}
+	if forW1[0].PublicKey != "pub2" {
+		t.Errorf("active credential PublicKey = %q, want %q (the rotated key)", forW1[0].PublicKey, "pub2")
+	}
+}
