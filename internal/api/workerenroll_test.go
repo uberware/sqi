@@ -11,6 +11,7 @@ package api
 //	DELETE /api/v1/workers/{id}/credential — revokeCredential
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -255,6 +256,113 @@ func TestWorkerEnroll_MissingFields_BadRequest(t *testing.T) {
 
 	if rr.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d, want 400 — body: %s", rr.Code, rr.Body)
+	}
+}
+
+// ── the non-negotiable: unknown/expired/used/store-failure are indistinguishable ──
+//
+// enroll is unauthenticated and may be internet-reachable, so every way a
+// join token can fail to authorize a call must answer with the identical
+// status AND body — never just the same status. TestWorkerEnroll_UnknownToken_
+// Unauthorized and friends above already prove each individual case returns
+// 401; this test is what actually pins the property those don't: that
+// nothing distinguishes them from each other. A later change that makes any
+// one path "more helpful" (e.g. naming which case it was) would pass every
+// existing per-case test and only fail here.
+
+// joinTokenLookupErrStore forces GetWorkerJoinTokenByHash to fail with a
+// non-ErrNotFound error, simulating a store outage during token lookup — the
+// fourth way enroll can fail to authorize a request, alongside unknown,
+// expired, and already-used.
+type joinTokenLookupErrStore struct {
+	store.Store
+}
+
+func (joinTokenLookupErrStore) GetWorkerJoinTokenByHash(context.Context, string) (store.WorkerJoinToken, error) {
+	return store.WorkerJoinToken{}, errors.New("simulated store outage")
+}
+
+func TestWorkerEnroll_TokenFailureModesAreIndistinguishable(t *testing.T) {
+	pub := genPublicKey(t)
+	usedAt := time.Now().UTC().Add(-time.Minute)
+
+	// dispatch builds a fresh router over st (singleUse always on, so the
+	// "already-used" case actually rejects) and returns the recorded
+	// response to one enroll attempt with joinToken.
+	dispatch := func(st store.Store, joinToken string) *httptest.ResponseRecorder {
+		r := newWorkerEnrollRouter(st, true, time.Hour)
+		req := newReq(t, http.MethodPost, "/workers/enroll", jsonBody(t, workerEnrollRequest{
+			JoinToken: joinToken, WorkerID: "w1", PublicKey: pub,
+		}))
+		rr := httptest.NewRecorder()
+		r.ServeHTTP(rr, req)
+		return rr
+	}
+
+	cases := []struct {
+		name string
+		run  func() *httptest.ResponseRecorder
+	}{
+		{
+			name: "unknown token",
+			run: func() *httptest.ResponseRecorder {
+				return dispatch(fake.New(), "sqiw_does-not-exist")
+			},
+		},
+		{
+			name: "expired token",
+			run: func() *httptest.ResponseRecorder {
+				st := fake.New()
+				raw, _ := seedJoinToken(t, st, func(tok *store.WorkerJoinToken) {
+					tok.ExpiresAt = time.Now().UTC().Add(-time.Minute)
+				})
+				return dispatch(st, raw)
+			},
+		},
+		{
+			name: "already-used single-use token",
+			run: func() *httptest.ResponseRecorder {
+				st := fake.New()
+				raw, _ := seedJoinToken(t, st, func(tok *store.WorkerJoinToken) {
+					tok.UsedAt = &usedAt
+				})
+				return dispatch(st, raw)
+			},
+		},
+		{
+			name: "store failure during lookup",
+			run: func() *httptest.ResponseRecorder {
+				return dispatch(joinTokenLookupErrStore{Store: fake.New()}, "sqiw_irrelevant-lookup-always-fails")
+			},
+		},
+	}
+
+	type outcome struct {
+		name string
+		code int
+		body string
+	}
+	var got []outcome
+	for _, tc := range cases {
+		rr := tc.run()
+		if rr.Code != http.StatusUnauthorized {
+			t.Errorf("%s: status = %d, want 401", tc.name, rr.Code)
+		}
+		got = append(got, outcome{name: tc.name, code: rr.Code, body: rr.Body.String()})
+	}
+
+	want := got[0]
+	for _, g := range got[1:] {
+		if g.code != want.code {
+			t.Errorf("%s: status = %d, want %d (same as %q) — a caller could distinguish "+
+				"join-token failure modes by status code, which the endpoint must never allow",
+				g.name, g.code, want.code, want.name)
+		}
+		if g.body != want.body {
+			t.Errorf("%s: body = %q, want %q (same as %q) — a caller could distinguish "+
+				"join-token failure modes by response body, which the endpoint must never allow",
+				g.name, g.body, want.body, want.name)
+		}
 	}
 }
 

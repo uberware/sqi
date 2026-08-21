@@ -53,9 +53,13 @@ info:
     server configuration rather than always-present-but-gated: it exists
     only when broker authentication (`nats.auth.enabled`) is on and the
     operator has left `nats.auth.enrollment_endpoint_enabled` at its
-    default. When either is off, the route is not registered at all and
-    returns `404 Not Found`. `POST /workers/join-tokens`, which mints the
-    tokens this endpoint consumes, is permission-gated as normal
+    default. When either is off, the route is not registered at all — but a
+    request to it does not receive `404`: `/workers/enroll` has the same
+    two-segment shape as `/workers/{id}` (`GET`/`DELETE /workers/{id}` are
+    always registered), so it is routed there with `id=enroll` and answers
+    `405 Method Not Allowed` instead — the path matches a registered
+    pattern, just not for `POST`. `POST /workers/join-tokens`, which mints
+    the tokens this endpoint consumes, is permission-gated as normal
     (`workers.enroll`) but is itself mounted only when `auth.enabled` — with
     auth off, every request is the anonymous superuser described above, and
     minting a join token attaches arbitrary compute, a materially larger
@@ -2779,8 +2783,13 @@ paths:
         required or accepted.
 
         Mounted only when broker authentication (`nats.auth.enabled`) is on
-        and `nats.auth.enrollment_endpoint_enabled` has not been turned off;
-        otherwise this path does not exist and returns `404`.
+        and `nats.auth.enrollment_endpoint_enabled` has not been turned off.
+        When not mounted, this does NOT return `404`: the path
+        "/workers/enroll" has the same two-segment shape as
+        "/workers/{id}", which is always registered (`GET`, `DELETE`), so
+        the request is routed there with `id=enroll` and answers `405
+        Method Not Allowed` instead — the pattern matches, just not for
+        `POST`.
 
         An unknown join token, an expired one, and (when single-use tokens
         are configured) an already-used one all return the same `401` with
@@ -2812,8 +2821,10 @@ paths:
             application/problem+json:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
-        "404":
-          description: The enrollment endpoint is not mounted (see the operation description).
+        "405":
+          description: >-
+            The enrollment endpoint is not mounted (see the operation
+            description for why this is 405, not 404).
           content:
             application/problem+json:
               schema:

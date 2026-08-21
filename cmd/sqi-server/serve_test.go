@@ -112,3 +112,62 @@ func TestServerConfig_CarriesTheRestOfTheConfig(t *testing.T) {
 		t.Error("SeedDefaults = false; this binary always seeds")
 	}
 }
+
+// TestServerConfig_CarriesTheBrokerAuthSettings covers the FIRST of the three
+// hops (config.Config -> server.Config -> api.Deps -> a mounted route) that
+// carry the nats.auth.* settings to the REST worker-enrollment surface. The
+// other two hops are pinned in internal/server (natsAuthDeps and the
+// router-mount tests) — this one guards the CLI's own mapping, the same shape
+// as TestServerConfig_CarriesTheExprCostBounds above.
+//
+// It matters for the same reason: nothing else fails when this hop breaks.
+// Config validation still runs, "config print" still echoes the operator's
+// values, and the server still boots — with POST /api/v1/workers/enroll never
+// mounted and, if it were, join tokens minted with a zero TTL (born expired).
+func TestServerConfig_CarriesTheBrokerAuthSettings(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.NATS.Auth.Enabled = true
+	cfg.NATS.Auth.EnrollmentEndpointEnabled = true
+	cfg.NATS.Auth.JoinTokenTTL = 42 * time.Minute
+	cfg.NATS.Auth.JoinTokenSingleUse = false
+
+	got := serverConfig(cfg, scheduler.Config{})
+
+	if !got.NATSAuthEnabled {
+		t.Error("NATSAuthEnabled = false, want the configured true")
+	}
+	if !got.NATSAuthEnrollmentEndpointEnabled {
+		t.Error("NATSAuthEnrollmentEndpointEnabled = false, want the configured true")
+	}
+	if want := 42 * time.Minute; got.NATSAuthJoinTokenTTL != want {
+		t.Errorf("NATSAuthJoinTokenTTL = %s, want %s", got.NATSAuthJoinTokenTTL, want)
+	}
+	if got.NATSAuthJoinTokenSingleUse {
+		t.Error("NATSAuthJoinTokenSingleUse = true, want the configured false")
+	}
+}
+
+// TestServerConfig_BrokerAuthDefaultsAreTheConfigDefaults mirrors
+// TestServerConfig_DefaultsAreTheConfigDefaults: a server started with no
+// configuration at all must run with internal/config's own defaults (broker
+// auth off, but the join-token TTL and single-use settings still sane if it
+// is ever turned on), not a zero value that would mean "born expired".
+func TestServerConfig_BrokerAuthDefaultsAreTheConfigDefaults(t *testing.T) {
+	def := config.DefaultConfig()
+	got := serverConfig(def, scheduler.Config{})
+
+	if got.NATSAuthEnabled {
+		t.Error("at defaults NATSAuthEnabled = true, want false")
+	}
+	if got.NATSAuthEnrollmentEndpointEnabled != def.NATS.Auth.EnrollmentEndpointEnabled {
+		t.Errorf("at defaults NATSAuthEnrollmentEndpointEnabled = %v, want %v",
+			got.NATSAuthEnrollmentEndpointEnabled, def.NATS.Auth.EnrollmentEndpointEnabled)
+	}
+	if got.NATSAuthJoinTokenTTL != def.NATS.Auth.JoinTokenTTL {
+		t.Errorf("at defaults NATSAuthJoinTokenTTL = %s, want %s", got.NATSAuthJoinTokenTTL, def.NATS.Auth.JoinTokenTTL)
+	}
+	if got.NATSAuthJoinTokenSingleUse != def.NATS.Auth.JoinTokenSingleUse {
+		t.Errorf("at defaults NATSAuthJoinTokenSingleUse = %v, want %v",
+			got.NATSAuthJoinTokenSingleUse, def.NATS.Auth.JoinTokenSingleUse)
+	}
+}

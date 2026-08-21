@@ -497,6 +497,13 @@ func NewRouter(cfg Config, deps Deps, logger *slog.Logger, m *metrics.Metrics, h
 		// enrollment endpoint enabled (some sites provision every credential
 		// by hand via "sqi-server worker enroll" and want no self-service
 		// surface at all).
+		//
+		// When NOT mounted, a request here does not 404: "/workers/enroll"
+		// has the same two-segment shape as "/workers/{id}" (GET and DELETE
+		// are always registered on that pattern, in the groups below), so
+		// chi routes it there with id="enroll" and answers 405 Method Not
+		// Allowed — the path matches a registered pattern, just not for
+		// POST. openapi.yaml documents 405 for this reason, not 404.
 		if deps.NATSAuthEnabled && deps.NATSAuthEnrollmentEndpointEnabled {
 			api.Post("/workers/enroll", workerEnroll.enroll)
 		}

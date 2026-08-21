@@ -124,8 +124,18 @@ type workerJoinTokenCreatedResponse struct {
 // that authorizes this call.
 func (h *workerEnrollHandler) enroll(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
+	// enroll is the only route on this branch reachable by an unauthenticated,
+	// potentially internet-facing caller: the per-IP rate limiter bounds
+	// request RATE, not per-request body SIZE, so an oversized join_token or
+	// public_key would otherwise be read fully into memory before any
+	// validation runs. Matches the jobs.go/queues.go precedent.
+	body, err := io.ReadAll(io.LimitReader(r.Body, 4<<20)) // 4 MiB cap
+	if err != nil {
+		writeProblem(w, r, http.StatusBadRequest, "failed to read request body")
+		return
+	}
 	var req workerEnrollRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := json.Unmarshal(body, &req); err != nil {
 		writeProblem(w, r, http.StatusBadRequest, "invalid JSON body")
 		return
 	}
@@ -201,10 +211,21 @@ func (h *workerEnrollHandler) enroll(w http.ResponseWriter, r *http.Request) {
 // returned exactly once, in this response; only its hash is ever stored.
 func (h *workerEnrollHandler) createJoinToken(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
-	var req workerJoinTokenCreateRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil && !errors.Is(err, io.EOF) {
-		writeProblem(w, r, http.StatusBadRequest, "invalid JSON body")
+	// Same body-size cap as enroll, for consistency across the two handlers
+	// on this route group — see enroll's comment for why it matters there.
+	body, err := io.ReadAll(io.LimitReader(r.Body, 4<<20)) // 4 MiB cap
+	if err != nil {
+		writeProblem(w, r, http.StatusBadRequest, "failed to read request body")
 		return
+	}
+	var req workerJoinTokenCreateRequest
+	// The body is optional (an empty POST mints an unnamed token), so an
+	// empty body is not itself an error — only malformed JSON is.
+	if len(body) > 0 {
+		if err := json.Unmarshal(body, &req); err != nil {
+			writeProblem(w, r, http.StatusBadRequest, "invalid JSON body")
+			return
+		}
 	}
 	req.Name = strings.TrimSpace(req.Name)
 

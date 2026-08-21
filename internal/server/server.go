@@ -80,8 +80,28 @@ type Config struct {
 
 	// NATSAuthEnabled reports whether the broker requires a per-worker
 	// credential. Used for the startup warning and to configure the broker
-	// itself, including which workers it authorizes.
+	// itself, including which workers it authorizes. Also gates, together
+	// with NATSAuthEnrollmentEndpointEnabled, whether POST
+	// /api/v1/workers/enroll is mounted at all.
 	NATSAuthEnabled bool
+
+	// NATSAuthEnrollmentEndpointEnabled mirrors
+	// config.NATSAuthConfig.EnrollmentEndpointEnabled: whether POST
+	// /api/v1/workers/enroll is mounted. Meaningful only when NATSAuthEnabled
+	// is true; a site that provisions every credential by hand (`sqi-server
+	// worker enroll`) can turn this off to remove the self-service surface
+	// entirely.
+	NATSAuthEnrollmentEndpointEnabled bool
+
+	// NATSAuthJoinTokenTTL mirrors config.NATSAuthConfig.JoinTokenTTL: how
+	// long a join token minted by POST /api/v1/workers/join-tokens remains
+	// valid. Already bounds-checked at config load.
+	NATSAuthJoinTokenTTL time.Duration
+
+	// NATSAuthJoinTokenSingleUse mirrors
+	// config.NATSAuthConfig.JoinTokenSingleUse: whether a join token is
+	// rejected on a second enrollment attempt after its first successful use.
+	NATSAuthJoinTokenSingleUse bool
 
 	// NATSDataDir is the directory used by JetStream for file-backed stream
 	// storage. It is created at startup if it does not exist.
@@ -518,6 +538,7 @@ func (s *Server) start(ctx context.Context) error {
 	deps.SessionTTL = s.cfg.AuthSessionTTL
 	deps.CookieName = s.cfg.AuthCookieName
 	deps.CookieSecure = s.cfg.AuthCookieSecure
+	natsAuthDeps(s.cfg, &deps)
 	router := api.NewRouter(
 		routerConfig(s.cfg, s.sched.WorkerTimeout()),
 		deps,
