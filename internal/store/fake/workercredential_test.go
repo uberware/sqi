@@ -187,9 +187,11 @@ func TestWorkerCredential_DuplicatePublicKey(t *testing.T) {
 // sqlite_test.TestWorkerCredential_RevokedPublicKeyStillUnique. The whole
 // point of leaving public_key globally UNIQUE (not scoped to active rows the
 // way worker_id now is) is that a rotated-away key must never become usable
-// again — this pins that in the fake as well as SQLite, so a divergence
-// between the two backends (the exact class of bug round 2 found) cannot
-// hide here.
+// again — this pins that in the fake as well as SQLite, so public_key
+// uniqueness can never silently regress to active-rows-only scoping without
+// a test failing in both backends. If it did regress, a revoked credential's
+// key would become available for reuse, defeating the reason rotation is
+// safe in the first place.
 func TestWorkerCredential_RevokedPublicKeyStillUnique(t *testing.T) {
 	s := fake.New()
 	defer s.Close()
@@ -217,9 +219,10 @@ func TestWorkerCredential_RevokedPublicKeyStillUnique(t *testing.T) {
 // sqlite_test.TestWorkerCredential_ListActiveAfterRotationHasExactlyOneRow:
 // after enroll, revoke, re-enroll, ListActiveWorkerCredentials must return
 // exactly one row for the rotated worker — never zero (the rotation
-// silently failing) and never two (both keys accepted by the broker at
-// once, which is the partial index being wrong in the OTHER direction from
-// fix 1).
+// silently failing) and never two. Two simultaneously-active rows for one
+// worker_id would mean the broker's authorized-key set (which this method
+// feeds) accepts both the old and the new key for that worker at once,
+// which is not a rotation at all.
 func TestWorkerCredential_ListActiveAfterRotationHasExactlyOneRow(t *testing.T) {
 	s := fake.New()
 	defer s.Close()
