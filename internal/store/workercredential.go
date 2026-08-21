@@ -50,6 +50,10 @@ type WorkerCredentialStore interface {
 	// worker can have both a revoked row and an active one, and this method
 	// exists specifically to resolve that ambiguity to the one row that
 	// matters for authentication.
+	//
+	// It has NO production callers — it is test-only API surface used to
+	// assert credential state directly, rather than through a code path that
+	// exercises it incidentally.
 	GetActiveWorkerCredentialByWorkerID(ctx context.Context, workerID string) (WorkerCredential, error)
 	// ListActiveWorkerCredentials returns every credential with a nil
 	// RevokedAt. It is what the broker's authorized-key set is rebuilt from,

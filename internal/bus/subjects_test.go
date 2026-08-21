@@ -2,7 +2,10 @@
 
 package bus
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestSubjectHelpers(t *testing.T) {
 	tests := []struct {
@@ -46,7 +49,8 @@ func TestSubjectPrefixConstants(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := tt.prefix + "."; len(tt.full) <= len(got) || tt.full[:len(got)] != got {
+			want := tt.prefix + "."
+			if !strings.HasPrefix(tt.full, want) || tt.full == want {
 				t.Fatalf("full subject %q does not compose from prefix %q", tt.full, tt.prefix)
 			}
 		})

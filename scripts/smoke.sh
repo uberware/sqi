@@ -178,7 +178,7 @@ fi
 # PIDs, and EXIT/INT/TERM trap, and means this function's own "exit 0" on
 # success only ends that one subshell, not the whole script.
 run_smoke_flow() {
-  mode="$1"
+  local mode="$1"
 
 # ── Temp workspace + teardown trap ────────────────────────────────────────────
 

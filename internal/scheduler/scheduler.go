@@ -971,6 +971,7 @@ func (s *Scheduler) touchWorkerCredential(ctx context.Context, workerID string, 
 // worker on graceful shutdown. It marks the worker offline immediately so the
 // scheduler stops dispatching new assignments to it rather than waiting for
 // the heartbeat-timeout sweep.
+//
 // subjectWorkerID is the worker the message's subject attributes it to.
 func (s *Scheduler) handleWorkerDeregister(ctx context.Context, msg jetstream.Msg, subjectWorkerID string) {
 	// DeregisterMsg mirrors protocol.DeregisterMsg; we decode only the
@@ -1058,6 +1059,7 @@ func (s *Scheduler) handleWorkerDeregister(ctx context.Context, msg jetstream.Ms
 // decoding into a narrower local struct is how the version gate below stops
 // meaning anything — every field outside the local set drops regardless of what
 // version says.
+//
 // subjectWorkerID is the worker the message's subject attributes it to.
 func (s *Scheduler) handleWorkerHeartbeat(ctx context.Context, msg jetstream.Msg, subjectWorkerID string) {
 	var m protocol.HeartbeatMsg

@@ -5,13 +5,18 @@
 //
 // # Message flow
 //
-// Each message type flows in a specific direction over NATS JetStream:
+// Each message type flows in a specific direction over NATS. Five of the six
+// ride JetStream streams for at-least-once delivery; AssignMsg is the
+// exception, carried as the reply half of a core-NATS request/reply exchange
+// with no stream behind it (see internal/bus for the full subject/stream
+// split):
 //
-//	RegisterMsg    worker → server   (worker.register.<worker>)
-//	HeartbeatMsg   worker → server   (worker.heartbeat.<worker>)
-//	AssignMsg      server → worker   (reply to work.lease.<worker>.<queue>)
-//	TaskStatusMsg  worker → server   (task.status.<worker>.<job>)
-//	LogChunkMsg    worker → server   (task.logs.<worker>.<task>)
+//	RegisterMsg    worker → server   JetStream    (worker.register.<worker>)
+//	DeregisterMsg  worker → server   JetStream    (worker.deregister.<worker>)
+//	HeartbeatMsg   worker → server   JetStream    (worker.heartbeat.<worker>)
+//	AssignMsg      server → worker   core NATS    (reply to work.lease.<worker>.<queue>)
+//	TaskStatusMsg  worker → server   JetStream    (task.status.<worker>.<job>)
+//	LogChunkMsg    worker → server   JetStream    (task.logs.<worker>.<task>)
 //
 // # Versioning
 //
