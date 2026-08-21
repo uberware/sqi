@@ -66,12 +66,14 @@ nats:
   # Path to this worker's nkey seed file. Only meaningful when the server's
   # nats.auth.enabled is true. When empty, defaults to
   # <worker.data_dir>/worker.nk, and that default path is created by
-  # enrollment or by `sqi-worker keygen`. A non-default path is NOT created
-  # for you by `sqi-worker keygen`, which always writes the default path
-  # regardless of this setting -- populate a custom path by running
-  # enrollment against it, or move a seed there by hand. Must be mode 0600;
-  # writing it requires write permission on the containing directory, not
-  # just the file, since the write goes through a temp file plus rename.
+  # enrollment or by `sqi-worker keygen`. Set this to a non-default path and
+  # both paths honor it: `sqi-worker keygen` loads the same layered
+  # configuration `sqi-worker start` does (this file, SQI_WORKER_NATS_CREDENTIAL_FILE,
+  # and the root -c/--config flag) and writes wherever this field resolves,
+  # and self-service enrollment writes to the same resolved path as part of
+  # a live enrollment run. Must be mode 0600; writing it requires write
+  # permission on the containing directory, not just the file, since the
+  # write goes through a temp file plus rename.
   # Type: string   Env: SQI_WORKER_NATS_CREDENTIAL_FILE
   credential_file: ""
 

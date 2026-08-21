@@ -60,7 +60,7 @@ replayable crosses the wire.
 Two ways, both ultimately calling the same store write:
 
 - **Join token (self-service).** An operator mints a TTL-bounded token —
-  `sqi-server worker token issue --db <path>` (see the `--db` caveat below),
+  `sqi-server worker token issue` (see the database-path resolution rule below),
   or `POST /api/v1/workers/join-tokens` when `auth.enabled` is on, gated on
   the `workers.enroll` permission (admin-only by default) — and hands it to
   the worker via `nats.join_token_file` (preferred) or `nats.join_token`. On
@@ -75,7 +75,7 @@ Two ways, both ultimately calling the same store write:
 - **Manual pre-provisioning.** Run `sqi-worker keygen` on the worker host,
   with its normal config in place — it writes the seed and prints the
   public key and the exact `sqi-server worker enroll --worker-id … --public-key
-  … --db <path>` command to run on the server. Pass `--data-dir` to override
+  …` command to run on the server. Pass `--data-dir` to override
   `worker.data_dir` explicitly for a one-off run against a different
   directory. No token, no REST call, no `POST /api/v1/workers/enroll` route
   needs to exist at all. This is the path for an air-gapped worker, or a

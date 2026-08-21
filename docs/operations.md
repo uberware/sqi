@@ -221,10 +221,12 @@ legacy `SQI_SQLITE_PATH` environment variable and then to `sqi.db` in the
 working directory. Passing `--db` explicitly, as in the example above,
 always wins.
 
-The command opens the source database read-only and writes an identical clean
-copy to the destination path. It exits non-zero if the source database does
-not exist (it never creates one) or if the destination file already exists —
-use a timestamped filename or a fresh directory each time.
+The command opens the source database without applying migrations (SQLite
+still opens it read-write and may create `-wal`/`-shm` sidecar files) and
+writes an identical clean copy to the destination path. It exits non-zero if
+the source database does not exist (it never creates one) or if the
+destination file already exists — use a timestamped filename or a fresh
+directory each time.
 
 ### Automated daily backup (cron)
 
