@@ -24,6 +24,7 @@ import (
 
 	"gopkg.in/yaml.v3"
 
+	"github.com/uberware/sqi/internal/brokerauth"
 	"github.com/uberware/sqi/internal/worker/capabilities"
 )
 
@@ -409,6 +410,17 @@ type WorkerSettings struct {
 	// list means the worker accepts assignments from all queues via a wildcard
 	// JetStream consumer.  Set this when running a heterogeneous farm where
 	// some workers specialise in a subset of queues.
+	//
+	// Each entry becomes a NATS subject token in the work-lease subject
+	// work.lease.<workerID>.<queueID>, so it must satisfy the same constraint
+	// as a worker ID (see brokerauth.ValidWorkerIDToken): non-empty, and free
+	// of '.', '*', '>' and whitespace. A queue ID that does not is rejected
+	// by [Validate] rather than silently producing a subject the broker will
+	// never route — with broker auth on, a queue ID containing a dot yields
+	// too many subject tokens for this worker's publish grant and every lease
+	// request for it is denied outright; with broker auth off it fails
+	// bus.ParseWorkerSubject on the server side and gets no reply either way,
+	// so the worker retries forever with nothing in its logs naming the cause.
 	// Env: SQI_WORKER_QUEUE_IDS (comma-separated)
 	QueueIDs []string `yaml:"queue_ids"`
 
@@ -791,7 +803,14 @@ func applyWorkerEnv(c *WorkerSettings) {
 // applyWorkerEnv to keep each function under the cyclomatic-complexity limit.
 func applyWorkerPullEnv(c *WorkerSettings) {
 	if v := os.Getenv("SQI_WORKER_QUEUE_IDS"); v != "" {
-		c.QueueIDs = splitTags(v)
+		// Deliberately NOT splitTags: splitTags silently drops empty entries
+		// (right for CapabilityTags/EnvPassthrough, which have no invalid
+		// shape), but a queue ID has one — see [Validate]'s validateQueueIDs.
+		// Splitting without filtering here means a blank entry from the env
+		// var is caught and reported the same way a blank entry in a YAML
+		// queue_ids list is, instead of being silently dropped on one path
+		// and rejected on the other.
+		c.QueueIDs = splitCSV(v)
 	}
 	if v := os.Getenv("SQI_WORKER_PULL_IDLE_BACKOFF"); v != "" {
 		if d, err := time.ParseDuration(v); err == nil {
@@ -852,7 +871,9 @@ func applyLogStreamerEnv(c *LogStreamerConfig) {
 	}
 }
 
-// splitTags splits a comma-separated tag list, trimming whitespace.
+// splitTags splits a comma-separated tag list, trimming whitespace and
+// dropping empty entries. Used for fields with no invalid shape of their
+// own, where a stray comma should just be ignored.
 func splitTags(s string) []string {
 	parts := strings.Split(s, ",")
 	out := make([]string, 0, len(parts))
@@ -860,6 +881,20 @@ func splitTags(s string) []string {
 		if t := strings.TrimSpace(p); t != "" {
 			out = append(out, t)
 		}
+	}
+	return out
+}
+
+// splitCSV splits a comma-separated list, trimming whitespace around each
+// entry but KEEPING empty entries — unlike splitTags. Used for fields whose
+// entries have their own validity check (queue IDs), so that a blank entry
+// surfaces as a validation error naming its position instead of being
+// silently discarded.
+func splitCSV(s string) []string {
+	parts := strings.Split(s, ",")
+	out := make([]string, len(parts))
+	for i, p := range parts {
+		out[i] = strings.TrimSpace(p)
 	}
 	return out
 }
@@ -945,6 +980,7 @@ func Validate(cfg WorkerConfig) []ValidationError {
 
 	errs = append(errs, validateIsolation(cfg)...)
 	errs = append(errs, validateExpr(cfg.Expr)...)
+	errs = append(errs, validateQueueIDs(cfg.Worker.QueueIDs)...)
 
 	return errs
 }
@@ -1040,6 +1076,34 @@ func validateIsolation(cfg WorkerConfig) []ValidationError {
 		}
 	}
 
+	return errs
+}
+
+// validateQueueIDs rejects any worker.queue_ids entry that cannot be used as
+// a single NATS subject token, at load time rather than at first lease
+// request. A queue ID becomes a token in the work-lease subject
+// work.lease.<workerID>.<queueID> (internal/bus/subjects.go); an entry
+// containing '.' splits it into extra tokens the server-side parser and this
+// worker's own broker-auth publish grant both reject, and the failure mode
+// is silent and total: the worker's lease requests are refused or simply go
+// unanswered, and nothing in its logs says why.
+//
+// brokerauth.ValidWorkerIDToken implements exactly this predicate for worker
+// IDs, which share the same constraint for the same reason; it is reused
+// here rather than duplicated.
+func validateQueueIDs(queueIDs []string) []ValidationError {
+	var errs []ValidationError
+	for i, q := range queueIDs {
+		if !brokerauth.ValidWorkerIDToken(q) {
+			errs = append(errs, ValidationError{
+				Field: fmt.Sprintf("worker.queue_ids[%d]", i),
+				Message: fmt.Sprintf(
+					"%q is not a valid NATS subject token: it must be non-empty and must not contain '.', whitespace, '*' or '>'",
+					q,
+				),
+			})
+		}
+	}
 	return errs
 }
 
