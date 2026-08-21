@@ -1,18 +1,18 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-package brokerauth_test
+package jointoken_test
 
 import (
 	"strings"
 	"testing"
 
-	"github.com/uberware/sqi/internal/brokerauth"
+	"github.com/uberware/sqi/internal/auth/jointoken"
 )
 
-func TestGenerateJoinToken(t *testing.T) {
-	tok, hash, prefix, err := brokerauth.GenerateJoinToken()
+func TestGenerate(t *testing.T) {
+	tok, hash, prefix, err := jointoken.Generate()
 	if err != nil {
-		t.Fatalf("GenerateJoinToken: %v", err)
+		t.Fatalf("Generate: %v", err)
 	}
 	if !strings.HasPrefix(tok, "sqiw_") {
 		t.Errorf("token %q lacks the sqiw_ prefix", tok)
@@ -23,17 +23,17 @@ func TestGenerateJoinToken(t *testing.T) {
 	if !strings.HasPrefix(tok, prefix) {
 		t.Errorf("prefix %q is not a prefix of token %q", prefix, tok)
 	}
-	if got := brokerauth.HashJoinToken(tok); got != hash {
-		t.Errorf("HashJoinToken = %q, want %q", got, hash)
+	if got := jointoken.Hash(tok); got != hash {
+		t.Errorf("Hash = %q, want %q", got, hash)
 	}
 }
 
-func TestGenerateJoinToken_Unique(t *testing.T) {
+func TestGenerate_Unique(t *testing.T) {
 	seen := make(map[string]bool, 100)
 	for range 100 {
-		tok, _, _, err := brokerauth.GenerateJoinToken()
+		tok, _, _, err := jointoken.Generate()
 		if err != nil {
-			t.Fatalf("GenerateJoinToken: %v", err)
+			t.Fatalf("Generate: %v", err)
 		}
 		if seen[tok] {
 			t.Fatalf("duplicate token %q", tok)

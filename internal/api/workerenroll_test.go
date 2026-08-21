@@ -26,6 +26,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/uberware/sqi/internal/auth"
+	"github.com/uberware/sqi/internal/auth/jointoken"
 	"github.com/uberware/sqi/internal/brokerauth"
 	"github.com/uberware/sqi/internal/health"
 	"github.com/uberware/sqi/internal/metrics"
@@ -93,9 +94,9 @@ func newWorkerEnrollRouterWith(st store.Store, revoker WorkerRevoker, reloader B
 // override ExpiresAt or UsedAt to exercise the reject paths.
 func seedJoinToken(t *testing.T, st store.Store, mutate func(*store.WorkerJoinToken)) (raw string, tok store.WorkerJoinToken) {
 	t.Helper()
-	raw, hash, prefix, err := brokerauth.GenerateJoinToken()
+	raw, hash, prefix, err := jointoken.Generate()
 	if err != nil {
-		t.Fatalf("GenerateJoinToken: %v", err)
+		t.Fatalf("jointoken.Generate: %v", err)
 	}
 	rec := store.WorkerJoinToken{
 		ID:        uuid.NewString(),
@@ -548,7 +549,7 @@ func TestWorkerJoinTokenCreate_Created(t *testing.T) {
 		t.Errorf("name = %q, want batch-1", resp.Name)
 	}
 
-	stored, err := st.GetWorkerJoinTokenByHash(t.Context(), brokerauth.HashJoinToken(resp.Token))
+	stored, err := st.GetWorkerJoinTokenByHash(t.Context(), jointoken.Hash(resp.Token))
 	if err != nil {
 		t.Fatalf("GetWorkerJoinTokenByHash: %v", err)
 	}

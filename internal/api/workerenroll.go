@@ -36,6 +36,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/uberware/sqi/internal/auth"
+	"github.com/uberware/sqi/internal/auth/jointoken"
 	"github.com/uberware/sqi/internal/brokerauth"
 	"github.com/uberware/sqi/internal/store"
 )
@@ -221,9 +222,9 @@ func (h *workerEnrollHandler) enroll(w http.ResponseWriter, r *http.Request) {
 
 	var created store.WorkerCredential
 	if h.singleUse {
-		created, err = h.redeemSingleUse(ctx, brokerauth.HashJoinToken(req.JoinToken), now, cred)
+		created, err = h.redeemSingleUse(ctx, jointoken.Hash(req.JoinToken), now, cred)
 	} else {
-		created, err = h.redeemReusable(ctx, brokerauth.HashJoinToken(req.JoinToken), now, cred)
+		created, err = h.redeemReusable(ctx, jointoken.Hash(req.JoinToken), now, cred)
 	}
 	if err != nil {
 		if errors.Is(err, store.ErrConflict) {
@@ -357,7 +358,7 @@ func (h *workerEnrollHandler) createJoinToken(w http.ResponseWriter, r *http.Req
 	}
 	req.Name = strings.TrimSpace(req.Name)
 
-	rawToken, hash, prefix, err := brokerauth.GenerateJoinToken()
+	rawToken, hash, prefix, err := jointoken.Generate()
 	if err != nil {
 		h.logger.ErrorContext(ctx, "workerenroll: generate join token failed", slog.Any("error", err))
 		writeProblem(w, r, http.StatusInternalServerError, "failed to create join token")

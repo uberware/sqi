@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/uberware/sqi/internal/auth/jointoken"
 	"github.com/uberware/sqi/internal/brokerauth"
 	"github.com/uberware/sqi/internal/store/sqlite"
 )
@@ -44,7 +45,7 @@ func TestWorkerCmd_TokenIssue(t *testing.T) {
 	}
 	defer st.Close()
 
-	hash := brokerauth.HashJoinToken(token)
+	hash := jointoken.Hash(token)
 	got, err := st.GetWorkerJoinTokenByHash(context.Background(), hash)
 	if err != nil {
 		t.Fatalf("GetWorkerJoinTokenByHash: %v", err)

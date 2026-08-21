@@ -35,6 +35,7 @@ import (
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/nats-io/nkeys"
 
+	"github.com/uberware/sqi/internal/auth/jointoken"
 	"github.com/uberware/sqi/internal/brokerauth"
 	"github.com/uberware/sqi/internal/config"
 	"github.com/uberware/sqi/internal/scheduler"
@@ -169,9 +170,9 @@ func seedWorkerCredential(t *testing.T, dbPath, workerID, publicKey string) {
 // rule as seedWorkerCredential.
 func seedJoinToken(t *testing.T, dbPath, name string) string {
 	t.Helper()
-	raw, hash, prefix, err := brokerauth.GenerateJoinToken()
+	raw, hash, prefix, err := jointoken.Generate()
 	if err != nil {
-		t.Fatalf("seedJoinToken: GenerateJoinToken: %v", err)
+		t.Fatalf("seedJoinToken: jointoken.Generate: %v", err)
 	}
 
 	ctx := context.Background()

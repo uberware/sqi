@@ -13,6 +13,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/spf13/cobra"
 
+	"github.com/uberware/sqi/internal/auth/jointoken"
 	"github.com/uberware/sqi/internal/brokerauth"
 	"github.com/uberware/sqi/internal/config"
 	"github.com/uberware/sqi/internal/store"
@@ -183,7 +184,7 @@ func runWorkerTokenIssue(_ *cobra.Command, _ []string) error {
 	}
 	defer st.Close()
 
-	token, hash, prefix, err := brokerauth.GenerateJoinToken()
+	token, hash, prefix, err := jointoken.Generate()
 	if err != nil {
 		return fmt.Errorf("generate join token: %w", err)
 	}
