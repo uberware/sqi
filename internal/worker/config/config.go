@@ -567,20 +567,44 @@ func DefaultCredentialFile(dataDir string) string {
 //
 // configFile may be empty, in which case Load searches the default paths.
 func Load(configFile string, flags FlagOverrides) (WorkerConfig, error) {
+	cfg, _, err := LoadWithSources(configFile, flags)
+	return cfg, err
+}
+
+// Sources reports, for a subset of settings, whether the config file or
+// environment layer explicitly decided the value before [Load]'s own
+// default-fill step ran — as opposed to it being left empty for that step to
+// fill in. Comparing the resolved value against the computed default (e.g.
+// [DefaultCredentialFile]) is not sound: an operator can explicitly
+// configure a value that happens to equal what the default-fill would have
+// produced anyway, in which case value comparison cannot tell "explicitly
+// configured" apart from "left unset". Sources answers from the file/env
+// layers themselves, so it is not fooled by that.
+type Sources struct {
+	// CredentialFile is true when nats.credential_file was set by the
+	// config file or by SQI_WORKER_NATS_CREDENTIAL_FILE, before [Load]
+	// resolves an empty value to DefaultCredentialFile(Worker.DataDir).
+	CredentialFile bool
+}
+
+// LoadWithSources is [Load], additionally reporting which of a subset of
+// settings (see [Sources]) were explicitly decided by the config file or
+// environment layer.
+func LoadWithSources(configFile string, flags FlagOverrides) (WorkerConfig, Sources, error) {
 	cfg := Default()
 
 	// ── Config file layer ─────────────────────────────────────────────────
 	path, err := resolveConfigFile(configFile)
 	if err != nil {
-		return WorkerConfig{}, fmt.Errorf("resolve config file: %w", err)
+		return WorkerConfig{}, Sources{}, fmt.Errorf("resolve config file: %w", err)
 	}
 	if path != "" {
 		data, err := os.ReadFile(path)
 		if err != nil {
-			return WorkerConfig{}, fmt.Errorf("read config file %s: %w", path, err)
+			return WorkerConfig{}, Sources{}, fmt.Errorf("read config file %s: %w", path, err)
 		}
 		if err := unmarshalConfig(data, &cfg); err != nil {
-			return WorkerConfig{}, fmt.Errorf("parse config file %s: %w", path, err)
+			return WorkerConfig{}, Sources{}, fmt.Errorf("parse config file %s: %w", path, err)
 		}
 	}
 
@@ -598,6 +622,9 @@ func Load(configFile string, flags FlagOverrides) (WorkerConfig, error) {
 		cfg.NATS.InsecureSkipVerify = true
 	}
 
+	var src Sources
+	src.CredentialFile = cfg.NATS.CredentialFile != ""
+
 	// CredentialFile defaults relative to Worker.DataDir, which any of the
 	// three layers above may have changed, so it is resolved last rather
 	// than at struct-literal time in Default.
@@ -605,7 +632,7 @@ func Load(configFile string, flags FlagOverrides) (WorkerConfig, error) {
 		cfg.NATS.CredentialFile = DefaultCredentialFile(cfg.Worker.DataDir)
 	}
 
-	return cfg, nil
+	return cfg, src, nil
 }
 
 // resolveConfigFile returns the config file path to use. If explicit is

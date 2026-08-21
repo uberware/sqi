@@ -81,22 +81,58 @@ func defaultSearchPaths() []string {
 //
 // A missing config file is not an error unless filePath was set explicitly.
 func Load(filePath string, flags FlagOverrides) (Config, error) {
+	cfg, _, err := LoadWithSources(filePath, flags)
+	return cfg, err
+}
+
+// Sources reports, for a subset of settings, whether the config file or
+// environment layer explicitly decided the value — as opposed to it being
+// the built-in default that nothing overrode.
+//
+// Comparing a resolved value against [DefaultConfig]'s is not a sound way to
+// answer this: an operator's config file (or the shipped
+// config/sqi-server.example.yaml) can restate a default value's exact text
+// while editing other keys, in which case value comparison cannot tell
+// "explicitly configured to the default" apart from "never touched, so it
+// is still the default". Sources is built from the file/env layers
+// themselves, before any default-fill happens, so it is not fooled by that.
+type Sources struct {
+	// StoreSQLitePath is true when store.sqlite_path was set by the config
+	// file or by SQI_STORE_SQLITE_PATH.
+	StoreSQLitePath bool
+}
+
+// LoadWithSources is [Load], additionally reporting which of a subset of
+// settings (see [Sources]) were explicitly decided by the config file or
+// environment layer.
+func LoadWithSources(filePath string, flags FlagOverrides) (Config, Sources, error) {
 	cfg := DefaultConfig()
+	var src Sources
 
 	// ── Layer 2: config file ──────────────────────────────────────────────
-	if err := applyFile(&cfg, filePath); err != nil {
-		return Config{}, err
+	fc, err := loadFileConfig(filePath)
+	if err != nil {
+		return Config{}, Sources{}, err
+	}
+	if fc != nil {
+		mergeFileConfig(&cfg, *fc)
+		if fc.Store != nil && fc.Store.SQLitePath != nil {
+			src.StoreSQLitePath = true
+		}
 	}
 
 	// ── Layer 3: environment variables ───────────────────────────────────
 	if err := applyEnv(&cfg); err != nil {
-		return Config{}, err
+		return Config{}, Sources{}, err
+	}
+	if os.Getenv("SQI_STORE_SQLITE_PATH") != "" {
+		src.StoreSQLitePath = true
 	}
 
 	// ── Layer 4: CLI flag overrides ───────────────────────────────────────
 	applyFlags(&cfg, flags)
 
-	return cfg, nil
+	return cfg, src, nil
 }
 
 // ── File layer ────────────────────────────────────────────────────────────────
@@ -228,27 +264,29 @@ type fileConfig struct {
 	} `yaml:"auth"`
 }
 
-func applyFile(cfg *Config, explicit string) error {
+// loadFileConfig resolves and parses the config file, returning a nil
+// *fileConfig (not an error) when none is found and filePath was not set
+// explicitly.
+func loadFileConfig(explicit string) (*fileConfig, error) {
 	path, err := resolveFilePath(explicit)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if path == "" {
-		return nil // no file found; not an error
+		return nil, nil
 	}
 
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return fmt.Errorf("read config file %q: %w", path, err)
+		return nil, fmt.Errorf("read config file %q: %w", path, err)
 	}
 
 	var fc fileConfig
 	if err := yaml.Unmarshal(data, &fc); err != nil {
-		return fmt.Errorf("parse config file %q: %w", path, err)
+		return nil, fmt.Errorf("parse config file %q: %w", path, err)
 	}
 
-	mergeFileConfig(cfg, fc)
-	return nil
+	return &fc, nil
 }
 
 // resolveFilePath returns the path to use for file loading.
