@@ -689,10 +689,13 @@ func (s *Scheduler) handleWorkerMessage(msg jetstream.Msg) {
 	case strings.HasPrefix(subject, bus.SubjectWorkerDeregisterPrefix+"."):
 		s.handleWorkerDeregister(ctx, msg, workerID)
 	default:
-		// Defense in depth, not dead code: ParseWorkerSubject accepts any
-		// three-token worker.* subject, so a fourth prefix added to the
-		// SQI_WORKER stream would reach here rather than being silently
-		// dropped by the parse.
+		// Defense in depth, not dead code: ParseWorkerSubject also accepts
+		// the four-token task.status/task.logs/work.lease shapes, so
+		// widening SQI_WORKER's subject filter to one of those would reach
+		// here rather than being mis-dispatched. A three-token worker.*
+		// subject with an unrecognized prefix cannot: ParseWorkerSubject
+		// whitelists the three it knows and rejects the rest, so that case
+		// is already handled by the !ok branch above.
 		s.logger.WarnContext(
 			ctx, "scheduler: unexpected worker subject",
 			slog.String("subject", subject),
