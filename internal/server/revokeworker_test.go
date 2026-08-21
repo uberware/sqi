@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"net"
+	"sync"
 	"testing"
 	"time"
 
@@ -87,6 +88,19 @@ func enrolledCredential(t *testing.T, st store.Store, workerID string) (bus.Work
 	return bus.WorkerCredentialRef{WorkerID: workerID, PublicKey: pub}, seed
 }
 
+// nkeyOption builds a nats.Option that authenticates as the nkey pair
+// identified by pub, signing server challenges with seed.
+func nkeyOption(t *testing.T, seed []byte, pub string) nats.Option {
+	t.Helper()
+	return nats.Nkey(pub, func(nonce []byte) ([]byte, error) {
+		kp, err := nkeys.FromSeed(seed)
+		if err != nil {
+			return nil, err
+		}
+		return kp.Sign(nonce)
+	})
+}
+
 // connectAsWorker dials b as the given nkey credential, with NoReconnect and
 // a ClosedHandler feeding the returned channel — the same pattern
 // internal/bus's own revocation tests use, so the disconnect assertion is
@@ -96,13 +110,7 @@ func connectAsWorker(t *testing.T, b *bus.Broker, seed []byte, pub string) (*nat
 	closedCh := make(chan struct{})
 	nc, err := nats.Connect(
 		b.ClientURL(),
-		nats.Nkey(pub, func(nonce []byte) ([]byte, error) {
-			kp, err := nkeys.FromSeed(seed)
-			if err != nil {
-				return nil, err
-			}
-			return kp.Sign(nonce)
-		}),
+		nkeyOption(t, seed, pub),
 		nats.NoReconnect(),
 		nats.ClosedHandler(func(*nats.Conn) { close(closedCh) }),
 	)
@@ -224,5 +232,135 @@ func TestRevokeWorker_ReloadFailure_StoreStaysRevoked(t *testing.T) {
 	// having taken effect yet.
 	if _, err := st.GetActiveWorkerCredentialByWorkerID(context.Background(), ref.WorkerID); !errors.Is(err, store.ErrNotFound) {
 		t.Errorf("credential still active after a reload failure: %v, want store.ErrNotFound", err)
+	}
+}
+
+// ── An unserialized read-then-reload span loses an update ──────────────────
+//
+// An unlocked "read the active credential set, then call ReloadCredentials"
+// sequence is vulnerable to a lost update. Two concurrent revocations of
+// DIFFERENT workers can interleave like this:
+//
+//  1. revoke(A) commits its store write.
+//  2. revoke(A) reads the active set — B is still active, so the set
+//     contains B.
+//  3. revoke(B) commits its store write.
+//  4. revoke(B) reads the active set — correctly excludes A and B — and
+//     reloads.
+//  5. revoke(A)'s reload, built from the STALE step-2 read, applies LAST
+//     and reintroduces B into the broker's trusted key set.
+//
+// raceMarkerKey and blockingListStore below reproduce this deterministically
+// instead of hoping many iterations happen to hit the right interleaving:
+// A's read is captured, then paused (holding s.brokerReloadMu) until the
+// test explicitly releases it — by which point B's own revoke has fully
+// run. This pins the exact scenario s.brokerReloadMu closes, not just "some
+// race somewhere."
+
+// raceMarkerKey tags a context so blockingListStore knows which caller's
+// ListActiveWorkerCredentials call to pause.
+type raceMarkerKey struct{}
+
+// blockingListStore wraps a store.Store and, only for the call whose
+// context carries blockFor, pauses AFTER reading the real result (so the
+// caller holds a real, but soon-to-be-stale, snapshot) until release is
+// closed. entered is closed the moment the pause begins, so the test knows
+// the blocked call has already captured its snapshot before letting the
+// other revoke proceed.
+type blockingListStore struct {
+	store.Store
+
+	blockFor string
+	entered  chan struct{}
+	release  chan struct{}
+}
+
+func (s *blockingListStore) ListActiveWorkerCredentials(ctx context.Context) ([]store.WorkerCredential, error) {
+	creds, err := s.Store.ListActiveWorkerCredentials(ctx)
+	if v, ok := ctx.Value(raceMarkerKey{}).(string); ok && v == s.blockFor {
+		close(s.entered)
+		<-s.release
+	}
+	return creds, err
+}
+
+// TestRevokeWorker_ConcurrentRevocationsOfDifferentWorkers_BothStayRevoked
+// deterministically forces the interleaving described above and asserts the
+// broker ends up trusting NEITHER worker — not just that the store shows
+// both revoked (the store was never the vulnerable part; the broker's
+// authorized-key set was).
+func TestRevokeWorker_ConcurrentRevocationsOfDifferentWorkers_BothStayRevoked(t *testing.T) {
+	st := fake.New()
+	refA, seedA := enrolledCredential(t, st, "worker-a")
+	refB, seedB := enrolledCredential(t, st, "worker-b")
+
+	broker := startTestBroker(t, []bus.WorkerCredentialRef{refA, refB})
+
+	wrapped := &blockingListStore{
+		Store:    st,
+		blockFor: "A",
+		entered:  make(chan struct{}),
+		release:  make(chan struct{}),
+	}
+	s := &Server{cfg: Config{NATSAuthEnabled: true}, store: wrapped, broker: broker, logger: testLogger()}
+
+	ctxA := context.WithValue(context.Background(), raceMarkerKey{}, "A")
+	ctxB := context.WithValue(context.Background(), raceMarkerKey{}, "B") // never matches blockFor; B is not paused
+
+	var wg sync.WaitGroup
+	var errA, errB error
+	wg.Go(func() {
+		errA = s.RevokeWorker(ctxA, refA.WorkerID)
+	})
+
+	// Wait until A has committed its store write, read the (still-stale,
+	// B-included) active set, and is now paused holding that snapshot.
+	<-wrapped.entered
+
+	// Run B's revoke to completion while A is paused. RevokeWorker's own
+	// call blocks trying to acquire s.brokerReloadMu (A is still inside the
+	// critical section) until A finishes — so this goroutine only returns
+	// after A's whole RevokeWorker call has completed. An unserialized
+	// implementation would instead let B run immediately and finish well
+	// before A resumes.
+	wg.Go(func() {
+		errB = s.RevokeWorker(ctxB, refB.WorkerID)
+	})
+
+	// Give B's goroutine a moment to either finish (unserialized) or block
+	// on the mutex (serialized) before releasing A — the property under
+	// test does not depend on this sleep's exact duration, only that B has
+	// had the chance to run to the point it would reach if it were going to.
+	time.Sleep(50 * time.Millisecond)
+	close(wrapped.release)
+
+	wg.Wait()
+
+	if errA != nil {
+		t.Errorf("RevokeWorker(A): %v", errA)
+	}
+	if errB != nil {
+		t.Errorf("RevokeWorker(B): %v", errB)
+	}
+
+	// Both must be gone from the store...
+	if _, err := st.GetActiveWorkerCredentialByWorkerID(context.Background(), refA.WorkerID); !errors.Is(err, store.ErrNotFound) {
+		t.Errorf("worker A still active in the store: %v, want store.ErrNotFound", err)
+	}
+	if _, err := st.GetActiveWorkerCredentialByWorkerID(context.Background(), refB.WorkerID); !errors.Is(err, store.ErrNotFound) {
+		t.Errorf("worker B still active in the store: %v, want store.ErrNotFound", err)
+	}
+
+	// ...and, the property this test exists to pin, neither can connect to
+	// the broker: a fresh connection attempt with either's key must be
+	// refused. The defect this fixes would let B's stale reintroduction
+	// succeed here even though the store already shows it revoked.
+	if nc, err := nats.Connect(broker.ClientURL(), nkeyOption(t, seedA, refA.PublicKey), nats.NoReconnect()); err == nil {
+		nc.Close()
+		t.Error("worker A connected to the broker after concurrent revocation — its credential was reintroduced")
+	}
+	if nc, err := nats.Connect(broker.ClientURL(), nkeyOption(t, seedB, refB.PublicKey), nats.NoReconnect()); err == nil {
+		nc.Close()
+		t.Error("worker B connected to the broker after concurrent revocation — its credential was reintroduced by a stale reload")
 	}
 }

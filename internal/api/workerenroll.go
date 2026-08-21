@@ -11,13 +11,15 @@ package api
 //	DELETE /api/v1/workers/{id}/credential     — workers.enroll
 //
 // The revoke handler delegates to an injected [WorkerRevoker] rather than
-// writing the store directly. internal/api never holds a live broker
-// handle — the process that does (internal/server) supplies an
-// implementation that revokes in the store and then reloads the broker's
-// authorized-key set, so a worker that loses its credential is disconnected
-// synchronously, inside the same request. This package depends only on the
-// narrow interface, never on internal/bus or internal/server, so it cannot
-// import either and stays testable without a live broker.
+// writing the store directly, and enroll delegates to an injected
+// [BrokerCredentialReloader] after it writes the credential. internal/api
+// never holds a live broker handle — the process that does (internal/server)
+// supplies implementations that write the store and then reload the
+// broker's authorized-key set, so a worker that loses (or gains) a
+// credential is disconnected (or made connectable) synchronously, inside
+// the same request. This package depends only on the two narrow interfaces,
+// never on internal/bus or internal/server, so it cannot import either and
+// stays testable without a live broker.
 
 import (
 	"context"
@@ -53,6 +55,21 @@ type WorkerRevoker interface {
 	RevokeWorker(ctx context.Context, workerID string) error
 }
 
+// BrokerCredentialReloader re-syncs a running broker's authorized-key set
+// with the store's active worker_credentials rows. Separate from
+// [WorkerRevoker] on purpose: it is the enrollment side of the same
+// underlying operation, triggered by a different event (a credential
+// created, not revoked) and with a different failure posture — see enroll's
+// use of it below. internal/api depends only on this interface, never on
+// internal/bus or internal/server, for the same reason WorkerRevoker does.
+type BrokerCredentialReloader interface {
+	// ReloadBrokerCredentials re-reads the active credential set from the
+	// store and reloads it into the broker's authorized-key set, so a
+	// worker just enrolled can connect to a RUNNING broker without an
+	// operator restarting it.
+	ReloadBrokerCredentials(ctx context.Context) error
+}
+
 // errInvalidJoinToken is returned for every way a join token can fail to
 // authorize an enrollment — unknown, expired, or already used when single-use
 // is on. The endpoint is unauthenticated and may be internet-reachable, so
@@ -62,9 +79,10 @@ const errInvalidJoinToken = "invalid or expired join token" //nolint:gosec // G1
 
 // workerEnrollHandler implements the worker broker-credential REST surface.
 type workerEnrollHandler struct {
-	store   store.Store
-	revoker WorkerRevoker
-	logger  *slog.Logger
+	store    store.Store
+	revoker  WorkerRevoker
+	reloader BrokerCredentialReloader
+	logger   *slog.Logger
 
 	// singleUse mirrors config.NATSAuthConfig.JoinTokenSingleUse: whether an
 	// already-used join token is rejected on a second enrollment attempt.
@@ -77,11 +95,12 @@ type workerEnrollHandler struct {
 }
 
 // newWorkerEnrollHandler returns a workerEnrollHandler wired to the given
-// store and revoker.
-func newWorkerEnrollHandler(st store.Store, revoker WorkerRevoker, logger *slog.Logger, singleUse bool, joinTokenTTL time.Duration) *workerEnrollHandler {
+// store, revoker, and reloader.
+func newWorkerEnrollHandler(st store.Store, revoker WorkerRevoker, reloader BrokerCredentialReloader, logger *slog.Logger, singleUse bool, joinTokenTTL time.Duration) *workerEnrollHandler {
 	return &workerEnrollHandler{
 		store:        st,
 		revoker:      revoker,
+		reloader:     reloader,
 		logger:       logger,
 		singleUse:    singleUse,
 		joinTokenTTL: joinTokenTTL,
@@ -211,17 +230,42 @@ func (h *workerEnrollHandler) enroll(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Mark the token used only after the credential exists: a conflict above
-	// means nothing was enrolled, so a single-use token that failed to enroll
-	// is not spent. A failure here is logged rather than turned into an error
-	// response — the worker already holds a real credential at this point,
-	// and telling it enrollment failed would be false.
+	h.finishEnrollment(ctx, token, req.WorkerID, now)
+
+	writeJSON(w, http.StatusCreated, toWorkerCredentialResponse(created))
+}
+
+// finishEnrollment performs the two side effects that follow a successful
+// credential creation: marking the join token used, and reloading the
+// broker's authorized-key set. Both failures are logged and swallowed
+// rather than turned into an error response — the credential itself is
+// already created and durable by the time this runs, so telling the caller
+// enrollment failed would be false. Split out of enroll to keep that
+// handler's own branching within this repo's complexity budget; the two
+// steps have no data dependency on each other and neither's failure
+// affects the other.
+//
+// The reload failure here is the opposite direction from a revoke's reload
+// failure (which IS surfaced to ITS caller): a revoke failing to reload
+// leaves the broker too PERMISSIVE (still trusting a credential the store
+// says is gone), which its caller needs to know about; an enroll failing to
+// reload leaves the broker too STRICT (a valid worker just can't connect
+// yet), which is safe, self-correcting at the next successful reload or
+// restart, and recoverable by the worker simply retrying — see
+// [BrokerCredentialReloader].
+func (h *workerEnrollHandler) finishEnrollment(ctx context.Context, token store.WorkerJoinToken, workerID string, now time.Time) {
+	// Mark the token used only after the credential exists: a conflict
+	// caught upstream means nothing was enrolled, so a single-use token
+	// that failed to enroll is not spent.
 	if err := h.store.MarkWorkerJoinTokenUsed(ctx, token.ID, now); err != nil {
 		h.logger.ErrorContext(ctx, "workerenroll: mark join token used failed",
 			slog.String("token_id", token.ID), slog.Any("error", err))
 	}
 
-	writeJSON(w, http.StatusCreated, toWorkerCredentialResponse(created))
+	if err := h.reloader.ReloadBrokerCredentials(ctx); err != nil {
+		h.logger.ErrorContext(ctx, "workerenroll: reload broker credentials failed after enrollment",
+			slog.String("worker_id", workerID), slog.Any("error", err))
+	}
 }
 
 // ── POST /api/v1/workers/join-tokens ────────────────────────────────────────

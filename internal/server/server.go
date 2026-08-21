@@ -20,6 +20,7 @@ import (
 	"net"
 	"net/http"
 	"slices"
+	"sync"
 	"time"
 
 	"github.com/uberware/sqi/internal/api"
@@ -266,6 +267,18 @@ type Server struct {
 	wsHub     *ws.Hub              // WebSocket fan-out hub
 	discovery *discovery.Responder // mDNS advertisement
 
+	// brokerReloadMu serializes every "read the active worker-credential set
+	// from the store, then reload it into the broker" span — see
+	// reloadBrokerCredentials. Both a revocation and an enrollment trigger
+	// that span, from different goroutines (different HTTP requests), and
+	// the span is not safe to interleave: a reload built from a read that
+	// started before another writer's store commit can still finish AFTER
+	// that writer's own reload, silently reintroducing whatever the other
+	// writer just removed (or omitting whatever it just added). Locking only
+	// the call into the broker, not the read that precedes it, would not
+	// close this — the stale READ is what makes the reload wrong.
+	brokerReloadMu sync.Mutex
+
 	// diagBuf is the in-memory diagnostic-log ring buffer. It is created in the
 	// serve command before the logger (so the server's own logs are captured
 	// from the first line) and threaded here. Nil when diagnostics are disabled.
@@ -401,32 +414,66 @@ func loadBrokerAuthConfig(ctx context.Context, st store.WorkerCredentialStore, e
 // failure is still returned to the caller — the synchronous guarantee this
 // method exists to provide was not met — but it never triggers a rollback of
 // the store write.
-//
-// The active credential set is re-read from the store for the reload rather
-// than derived from any cached slice, so a concurrent enrollment or
-// revocation is never clobbered by a reload racing to overwrite it with a
-// stale view.
 func (s *Server) RevokeWorker(ctx context.Context, workerID string) error {
 	if err := s.store.RevokeWorkerCredential(ctx, workerID, time.Now().UTC()); err != nil {
 		return err
 	}
+	return s.reloadBrokerCredentials(ctx)
+}
 
+// ReloadBrokerCredentials implements [api.BrokerCredentialReloader]. It is
+// called after a new worker credential is created (self-service REST
+// enrollment) so that worker can connect to THIS running broker without an
+// operator restarting it — loadBrokerAuthConfig otherwise only ever runs
+// once, at Start, so without this call a freshly-enrolled worker's
+// connection is refused by a broker whose Options.Nkeys was built before
+// that credential existed, and the worker exits fatally naming that
+// rejection.
+//
+// Unlike a revoke's reload failure — which the caller must hear about,
+// because it means the broker still trusts a credential the store says is
+// gone — a failure here means the opposite direction: the broker is
+// (temporarily) too STRICT, not too permissive. The credential the caller
+// asked to create is genuinely created and durable; the worker simply cannot
+// connect until the next successful reload or restart, and can retry then.
+// Telling the enrolling caller "enrollment failed" would be false, so the
+// REST handler logs this failure and still reports success — see
+// workerenroll.go's enroll.
+func (s *Server) ReloadBrokerCredentials(ctx context.Context) error {
+	return s.reloadBrokerCredentials(ctx)
+}
+
+// reloadBrokerCredentials re-reads the active worker-credential set from the
+// store and reloads it into the broker's authorized-key set. It backs both
+// RevokeWorker and ReloadBrokerCredentials, which is deliberate: the two
+// are the same operation ("make the broker's authorized-key set match the
+// store's active rows right now"), triggered by opposite events.
+//
+// The read-then-reload span is serialized by s.brokerReloadMu — see that
+// field's doc comment for why an unserialized version loses updates.
+// Locking only the call into the broker (not the read that precedes it)
+// would not close that race: the read is what goes stale.
+//
+// Returns nil immediately, without touching the store or the broker, when
+// broker authentication is disabled: there is no authorized-key set to
+// reload, and this keeps the auth-off path free of the extra store read.
+func (s *Server) reloadBrokerCredentials(ctx context.Context) error {
 	if !s.cfg.NATSAuthEnabled {
-		// No credential set is enforced on this broker, so there is nothing
-		// to reload — the store write above is the whole story on a farm
-		// running without broker authentication.
 		return nil
 	}
 	if s.broker == nil {
-		return errors.New("revoke worker: broker not started")
+		return errors.New("reload broker credentials: broker not started")
 	}
+
+	s.brokerReloadMu.Lock()
+	defer s.brokerReloadMu.Unlock()
 
 	brokerAuth, err := loadBrokerAuthConfig(ctx, s.store, true)
 	if err != nil {
-		return fmt.Errorf("revoke worker: reload active credential set: %w", err)
+		return fmt.Errorf("reload broker credentials: read active credential set: %w", err)
 	}
 	if err := s.broker.ReloadCredentials(brokerAuth.Credentials); err != nil {
-		return fmt.Errorf("revoke worker: reload broker credentials: %w", err)
+		return fmt.Errorf("reload broker credentials: %w", err)
 	}
 	return nil
 }
@@ -564,11 +611,12 @@ func (s *Server) start(ctx context.Context) error {
 			EnforceLimits: s.cfg.EnforceOpenJDLimits,
 			ExprLimits:    s.cfg.OpenJDExprLimits,
 		}),
-		Products:      product.NewCatalog(s.store),
-		Scheduler:     s.sched,
-		Hub:           s.wsHub,
-		Version:       version.Get(),
-		WorkerRevoker: s,
+		Products:                 product.NewCatalog(s.store),
+		Scheduler:                s.sched,
+		Hub:                      s.wsHub,
+		Version:                  version.Get(),
+		WorkerRevoker:            s,
+		BrokerCredentialReloader: s,
 	}
 	// Only expose the diagnostics reader when diagnostics are enabled. Leaving
 	// DiagReader as a nil interface (rather than a typed-nil *diag.Buffer) makes

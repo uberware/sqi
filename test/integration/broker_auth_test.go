@@ -23,6 +23,7 @@ package integration
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -86,10 +87,11 @@ func startBrokerAuthServer(t *testing.T, sqlitePath string, mutate func(*server.
 		},
 		DiscoveryEnabled: false,
 
-		// The enrollment endpoint is deliberately left unmounted: this
-		// suite enrolls by seeding the store directly before boot (see
-		// seedWorkerCredential) rather than through POST /workers/enroll,
-		// so nothing here needs it.
+		// The enrollment endpoint is off by default: most callers enroll by
+		// seeding the store directly before boot (see seedWorkerCredential)
+		// rather than through POST /workers/enroll. A caller that needs the
+		// real REST enrollment surface turns it on via mutate — see
+		// TestEnrollment_ConnectsToRunningBrokerWithoutRestart.
 		NATSAuthEnabled: true,
 	}
 	if mutate != nil {
@@ -133,16 +135,12 @@ func startBrokerAuthServer(t *testing.T, sqlitePath string, mutate func(*server.
 // row directly into the SQLite database at dbPath, mirroring what
 // "sqi-server worker enroll" (the offline CLI enrollment path) writes — a
 // direct store.CreateWorkerCredential call from a process holding no broker
-// handle. This is deliberate, not a shortcut around POST /workers/enroll:
-// enrollment through either the CLI or the REST endpoint only takes effect
-// in a running broker's authorized-key set at the broker's NEXT START
-// (loadBrokerAuthConfig reads the active credential set once, at Start) —
-// unlike revocation, nothing reloads a live broker's authorized-key set on
-// a new enrollment. So a worker this test wants connectable from the moment
-// the server boots must be enrolled in the store BEFORE startBrokerAuthServer
-// runs, exactly as an operator running the CLI before first start would do.
-// Must run before the server opens its own connection to the same file —
-// see startBrokerAuthServer.
+// handle, so (unlike POST /workers/enroll, see enrollWorker below) it never
+// reaches a running broker's authorized-key set on its own. Used by
+// TestRevocation_DisconnectsAndReclaims, which wants both its workers
+// connectable from the moment the server boots and has no other reason to
+// exercise the REST enrollment surface. Must run before the server opens
+// its own connection to the same file — see startBrokerAuthServer.
 func seedWorkerCredential(t *testing.T, dbPath, workerID, publicKey string) {
 	t.Helper()
 	ctx := context.Background()
@@ -162,7 +160,70 @@ func seedWorkerCredential(t *testing.T, dbPath, workerID, publicKey string) {
 	}
 }
 
-// ── REST helper for the synchronous revoke path under test ─────────────────
+// seedJoinToken inserts a join token row directly into the SQLite database
+// at dbPath and returns the raw token, bypassing POST /workers/join-tokens
+// (which requires session auth this suite does not otherwise need — minting
+// is not what either enrollment or revocation testing is about here). Must
+// run before the server opens its own connection to the same file, same
+// rule as seedWorkerCredential.
+func seedJoinToken(t *testing.T, dbPath, name string) string {
+	t.Helper()
+	raw, hash, prefix, err := brokerauth.GenerateJoinToken()
+	if err != nil {
+		t.Fatalf("seedJoinToken: GenerateJoinToken: %v", err)
+	}
+
+	ctx := context.Background()
+	st, err := sqlite.Open(ctx, dbPath, sqlite.DefaultOptions())
+	if err != nil {
+		t.Fatalf("seedJoinToken: sqlite.Open: %v", err)
+	}
+	defer func() { _ = st.Close() }()
+
+	now := time.Now().UTC()
+	if _, err := st.CreateWorkerJoinToken(ctx, store.WorkerJoinToken{
+		ID:        name + "-token",
+		TokenHash: hash,
+		Prefix:    prefix,
+		Name:      name,
+		ExpiresAt: now.Add(time.Hour),
+		CreatedAt: now,
+	}); err != nil {
+		t.Fatalf("seedJoinToken: CreateWorkerJoinToken: %v", err)
+	}
+	return raw
+}
+
+// ── REST helpers for the synchronous enroll and revoke paths under test ────
+
+// workerCredentialWireResp is the subset of POST /workers/enroll's response
+// this suite needs (mirrors internal/api/workerenroll.go's
+// workerCredentialResponse).
+type workerCredentialWireResp struct {
+	ID       string `json:"id"`
+	WorkerID string `json:"worker_id"`
+}
+
+// enrollWorker exchanges joinToken for a broker credential over the real,
+// unauthenticated POST /api/v1/workers/enroll wire protocol — the path that
+// reloads a RUNNING broker's authorized-key set rather than only taking
+// effect at the server's next start.
+func enrollWorker(t *testing.T, ts *testServer, joinToken, workerID, publicKey string) {
+	t.Helper()
+	body, err := json.Marshal(map[string]string{
+		"join_token": joinToken,
+		"worker_id":  workerID,
+		"public_key": publicKey,
+	})
+	if err != nil {
+		t.Fatalf("enrollWorker: marshal: %v", err)
+	}
+	var resp workerCredentialWireResp
+	mustDoJSON(t, http.MethodPost, apiURL(ts, "/api/v1/workers/enroll"), body, "application/json", http.StatusCreated, &resp)
+	if resp.WorkerID != workerID {
+		t.Fatalf("enrollWorker: response worker_id = %q, want %q", resp.WorkerID, workerID)
+	}
+}
 
 // revokeWorkerCredential calls the synchronous revocation endpoint under
 // test: DELETE /api/v1/workers/{id}/credential.
@@ -319,4 +380,47 @@ func TestRevocation_DisconnectsAndReclaims(t *testing.T) {
 	if !workerB.nc.IsConnected() {
 		t.Fatal("worker B's connection was disturbed by A's revocation")
 	}
+}
+
+// TestEnrollment_ConnectsToRunningBrokerWithoutRestart guards against the
+// broker's authorized-key set ever again going unreloaded after POST
+// /workers/enroll creates a credential. loadBrokerAuthConfig only ever runs
+// once, at Start, so without an explicit reload a worker enrolled against a
+// RUNNING server could not actually connect: nats-server would refuse it
+// with "Authorization Violation", and the real sqi-worker binary exits
+// fatally naming that rejection. This enrolls a worker over the real REST
+// wire protocol AFTER the server is already up, with no restart in between,
+// and asserts it connects and registers successfully.
+func TestEnrollment_ConnectsToRunningBrokerWithoutRestart(t *testing.T) {
+	sqlitePath := t.TempDir() + "/sqi-broker-auth-enroll.db"
+
+	rawToken := seedJoinToken(t, sqlitePath, "worker-c")
+
+	ts := startBrokerAuthServer(t, sqlitePath, func(cfg *server.Config) {
+		cfg.NATSAuthEnrollmentEndpointEnabled = true
+	})
+
+	farmID, queueID := seedFarmAndQueue(t, ts)
+
+	seedC, pubC, err := brokerauth.GenerateSeed()
+	if err != nil {
+		t.Fatalf("GenerateSeed(C): %v", err)
+	}
+
+	// Enroll AFTER the server has already booted and become ready — the
+	// broker's initial authorized-key set (built once, at Start) could not
+	// possibly contain this credential.
+	enrollWorker(t, ts, rawToken, "worker-c", pubC)
+
+	natsURL := "nats://" + ts.NATSAddr
+	workerC := newMockWorkerWithNkey(t, natsURL, "worker-c", farmID, queueID, seedC, pubC)
+	workerC.register()
+	workerC.startHeartbeat(200 * time.Millisecond)
+
+	// pollWorkerOnline itself has no generous fixed sleep baked in beyond its
+	// own timeout — a rejected connection here would mean register()'s
+	// underlying nats.Connect (inside newMockWorkerWithNkey) already failed
+	// the test outright with "Authorization Violation", so reaching this
+	// point at all already proves the enrolled worker could connect.
+	pollWorkerOnline(t, ts, "worker-c", 5*time.Second)
 }
