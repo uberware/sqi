@@ -413,3 +413,38 @@ func TestBrokerAuth_SkipsCredentialWithAnInvalidWorkerID(t *testing.T) {
 		})
 	}
 }
+
+// TestBrokerAuth_SkipsCredentialWithAnInvalidPublicKey is the public-key
+// counterpart of TestBrokerAuth_SkipsCredentialWithAnInvalidWorkerID.
+//
+// Both write paths validate the public key with brokerauth.ValidatePublicKey
+// before a credential is ever stored, so reaching buildNkeys with a
+// malformed one needs a hand-edited database or an older binary — but
+// without this guard the consequence is worse than a skipped worker: an
+// invalid key handed straight to natsserver.NkeyUser makes
+// natsserver.NewServer reject the options outright, which fails Start (and
+// every later ReloadCredentials) for the WHOLE broker, not just the one bad
+// row. One bad row must cost one worker, never the farm.
+func TestBrokerAuth_SkipsCredentialWithAnInvalidPublicKey(t *testing.T) {
+	good, goodSeed := enrolledWorker(t, "worker-a")
+	bad := WorkerCredentialRef{WorkerID: "worker-b", PublicKey: "not-an-nkey"}
+
+	b := startBrokerAuth(t, BrokerAuthConfig{
+		Enabled:     true,
+		Credentials: []WorkerCredentialRef{good, bad},
+	})
+
+	// The valid credential is unaffected — the broker booted (it would not
+	// have, with the malformed key installed) and still authorizes it.
+	nc, err := nats.Connect(b.ClientURL(), nkeyOption(t, goodSeed, good.PublicKey))
+	if err != nil {
+		t.Fatalf("the valid credential was refused after an invalid one was skipped: %v", err)
+	}
+	defer nc.Close()
+
+	// And a reload over the same set still succeeds rather than failing on
+	// the malformed key.
+	if err := b.ReloadCredentials([]WorkerCredentialRef{good, bad}); err != nil {
+		t.Errorf("ReloadCredentials with a skipped credential failed: %v", err)
+	}
+}
