@@ -33,12 +33,12 @@ func (s *Store) CreateWorkerCredential(_ context.Context, c store.WorkerCredenti
 	return c, nil
 }
 
-// GetWorkerCredentialByWorkerID implements [store.WorkerCredentialStore].
-func (s *Store) GetWorkerCredentialByWorkerID(_ context.Context, workerID string) (store.WorkerCredential, error) {
+// GetActiveWorkerCredentialByWorkerID implements [store.WorkerCredentialStore].
+func (s *Store) GetActiveWorkerCredentialByWorkerID(_ context.Context, workerID string) (store.WorkerCredential, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for _, c := range s.workerCredentials {
-		if c.WorkerID == workerID {
+		if c.WorkerID == workerID && c.RevokedAt == nil {
 			return c, nil
 		}
 	}
@@ -63,12 +63,17 @@ func (s *Store) ListActiveWorkerCredentials(_ context.Context) ([]store.WorkerCr
 func (s *Store) RevokeWorkerCredential(_ context.Context, workerID string, at time.Time) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	// Scan the WHOLE map before giving up. Go's map iteration order is
+	// randomized, and after a key rotation a worker can legitimately have
+	// both a revoked row and an active one for the same worker_id — mirror
+	// SQLite's "UPDATE ... WHERE worker_id = ? AND revoked_at IS NULL",
+	// which matches by predicate regardless of row count, rather than
+	// stopping at the first row this map happens to yield. Returning
+	// ErrNotFound on hitting a revoked row before the active one would make
+	// a legitimate revoke fail non-deterministically.
 	for id, c := range s.workerCredentials {
-		if c.WorkerID != workerID {
+		if c.WorkerID != workerID || c.RevokedAt != nil {
 			continue
-		}
-		if c.RevokedAt != nil {
-			return store.ErrNotFound
 		}
 		c.RevokedAt = &at
 		s.workerCredentials[id] = c

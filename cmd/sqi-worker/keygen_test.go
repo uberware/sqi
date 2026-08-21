@@ -3,12 +3,46 @@
 package main
 
 import (
+	"bytes"
+	"io"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
+
+	workerconfig "github.com/uberware/sqi/internal/worker/config"
 )
+
+// captureStderr redirects os.Stderr to a pipe for the duration of fn, then
+// returns everything written to it. keygen's overwrite warning is
+// deliberately written to stderr (see runKeygen), so asserting on it needs
+// this alongside captureStdout — both streams are written within the same
+// call and must be captured together, not sequentially.
+//
+// Must NOT be called from parallel sub-tests — the redirect is process-wide,
+// same caveat as captureStdout in main_test.go.
+func captureStderr(t *testing.T, fn func()) string {
+	t.Helper()
+	old := os.Stderr
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("os.Pipe: %v", err)
+	}
+	os.Stderr = w
+
+	fn()
+
+	w.Close()
+	os.Stderr = old
+
+	var buf bytes.Buffer
+	if _, err := io.Copy(&buf, r); err != nil {
+		t.Fatalf("io.Copy from stderr pipe: %v", err)
+	}
+	r.Close()
+	return buf.String()
+}
 
 // TestKeygenCmd_WritesSeedAndPrintsEnrollCommand verifies that "keygen"
 // writes a 0600 seed file, prints the public key, and prints the exact
@@ -91,13 +125,31 @@ func TestKeygenCmd_RefusesToOverwriteWithoutForce(t *testing.T) {
 	}
 
 	prepareRoot([]string{"keygen", "--data-dir", dataDir, "--force"})
-	out := captureStdout(t, func() {
-		if err := Execute(); err != nil {
-			t.Fatalf("forced keygen: unexpected error: %v", err)
-		}
+	var out string
+	errOut := captureStderr(t, func() {
+		out = captureStdout(t, func() {
+			if err := Execute(); err != nil {
+				t.Fatalf("forced keygen: unexpected error: %v", err)
+			}
+		})
 	})
 	if !strings.Contains(out, "Public key: U") {
 		t.Errorf("forced keygen output missing public key line; got:\n%s", out)
+	}
+
+	// The overwrite warning belongs where an operator who already passed
+	// --force will actually see it (stderr, on success) — not only in
+	// --help text or in the refusal message shown when --force is absent.
+	workerID, err := workerconfig.LoadOrCreateWorkerID(dataDir)
+	if err != nil {
+		t.Fatalf("LoadOrCreateWorkerID: %v", err)
+	}
+	if !strings.Contains(errOut, "Warning: this replaced an existing seed") {
+		t.Errorf("forced keygen stderr missing the overwrite warning; got:\n%s", errOut)
+	}
+	wantRevokeCmd := "sqi-server worker revoke " + workerID
+	if !strings.Contains(errOut, wantRevokeCmd) {
+		t.Errorf("forced keygen stderr missing the exact revoke command %q; got:\n%s", wantRevokeCmd, errOut)
 	}
 
 	forced, err := os.ReadFile(seedPath)

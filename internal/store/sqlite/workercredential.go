@@ -19,7 +19,7 @@ const (
 	// on the declaration's own line (where gosec attributes the finding), so
 	// these stay single-line rather than the multi-line style used
 	// elsewhere.
-	sqlGetWorkerCredentialByWorkerID = `SELECT id, worker_id, public_key, name, enrolled_at, last_seen_at, revoked_at FROM worker_credentials WHERE worker_id = ?` //nolint:gosec // G101: SQL text, not a credential
+	sqlGetActiveWorkerCredentialByWorkerID = `SELECT id, worker_id, public_key, name, enrolled_at, last_seen_at, revoked_at FROM worker_credentials WHERE worker_id = ? AND revoked_at IS NULL` //nolint:gosec // G101: SQL text, not a credential
 
 	sqlListActiveWorkerCredentials = `SELECT id, worker_id, public_key, name, enrolled_at, last_seen_at, revoked_at FROM worker_credentials WHERE revoked_at IS NULL ORDER BY enrolled_at` //nolint:gosec // G101: SQL text, not a credential
 
@@ -68,9 +68,9 @@ func (s *Store) CreateWorkerCredential(ctx context.Context, c store.WorkerCreden
 	return out, mapErr(err)
 }
 
-// GetWorkerCredentialByWorkerID implements [store.WorkerCredentialStore].
-func (s *Store) GetWorkerCredentialByWorkerID(ctx context.Context, workerID string) (store.WorkerCredential, error) {
-	row := s.stmtGetWorkerCredentialByWorkerID.QueryRowContext(ctx, workerID)
+// GetActiveWorkerCredentialByWorkerID implements [store.WorkerCredentialStore].
+func (s *Store) GetActiveWorkerCredentialByWorkerID(ctx context.Context, workerID string) (store.WorkerCredential, error) {
+	row := s.stmtGetActiveWorkerCredentialByWorkerID.QueryRowContext(ctx, workerID)
 	out, err := scanWorkerCredential(row)
 	return out, mapErr(err)
 }
