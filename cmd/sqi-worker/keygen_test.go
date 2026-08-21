@@ -66,6 +66,12 @@ func TestKeygenCmd_WritesSeedAndPrintsEnrollCommand(t *testing.T) {
 	if !strings.Contains(out, "--public-key U") {
 		t.Errorf("output missing --public-key flag; got:\n%s", out)
 	}
+	if !strings.Contains(out, "will not accept this credential until it restarts") {
+		t.Errorf("output missing the running-server restart note; got:\n%s", out)
+	}
+	if !strings.Contains(out, "POST /api/v1/workers/enroll") {
+		t.Errorf("output missing the join-token REST enrollment alternative; got:\n%s", out)
+	}
 
 	seedPath := filepath.Join(dataDir, "worker.nk")
 	info, err := os.Stat(seedPath)
