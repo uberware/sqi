@@ -391,6 +391,80 @@ func TestRevocation_DisconnectsAndReclaims(t *testing.T) {
 	}
 }
 
+// pollWorkerOffline polls GET /api/v1/workers until workerID is visible with
+// status "offline", or timeout elapses. Used to wait for the heartbeat-sweep
+// to notice a worker that has stopped heartbeating, without depending on the
+// sweep's exact timing.
+func pollWorkerOffline(t *testing.T, ts *testServer, workerID string, timeout time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		var resp workerListResp
+		mustDoJSON(t, http.MethodGet, apiURL(ts, "/api/v1/workers"), nil, "", http.StatusOK, &resp)
+		for _, w := range resp.Items {
+			if w.ID == workerID && w.Status == "offline" {
+				return
+			}
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+	t.Fatalf("pollWorkerOffline: worker %s did not go offline within %s", workerID, timeout)
+}
+
+// TestWorkerDeletion_RevokesCredentialAndDisconnects proves the cascade DELETE
+// /api/v1/workers/{id} is now expected to perform: removing a worker record
+// also revokes its broker credential, through the SAME synchronous
+// store-write-then-broker-reload path DELETE /workers/{id}/credential uses.
+// Without it, a machine an operator has just decommissioned from the farm
+// keeps live broker access — able to connect, lease work and execute job
+// code — because WorkersManage (what deleting a worker requires) does not
+// imply WorkersEnroll (what revoking a credential directly requires).
+//
+// worker-a never heartbeats after registering, so the heartbeat sweep marks
+// it offline on its own — the ONLY status DELETE /workers/{id} accepts
+// without an extra disable step — while its NATS connection stays live
+// (nothing here closes it). The test then deletes the worker over REST and
+// asserts the still-open connection is closed by the same
+// ReloadCredentials call TestRevocation_DisconnectsAndReclaims already
+// proves is synchronous for the dedicated credential-revoke endpoint.
+func TestWorkerDeletion_RevokesCredentialAndDisconnects(t *testing.T) {
+	sqlitePath := t.TempDir() + "/sqi-broker-auth-delete.db"
+
+	seedA, pubA, err := brokerauth.GenerateSeed()
+	if err != nil {
+		t.Fatalf("GenerateSeed(A): %v", err)
+	}
+	seedWorkerCredential(t, sqlitePath, "worker-a", pubA)
+
+	ts := startBrokerAuthServer(t, sqlitePath, nil)
+	farmID, queueID := seedFarmAndQueue(t, ts)
+	natsURL := "nats://" + ts.NATSAddr
+
+	closedA := make(chan struct{})
+	workerA := newMockWorkerWithNkey(t, natsURL, "worker-a", farmID, queueID, seedA, pubA,
+		nats.ClosedHandler(func(*nats.Conn) { close(closedA) }))
+	workerA.register()
+	// Deliberately no startHeartbeat: the worker must go offline in the
+	// store (the only status DELETE /workers/{id} accepts here) while its
+	// NATS connection stays open, so the disconnect this test asserts on
+	// can only be explained by the revoke-on-delete cascade, not by the
+	// worker's own connection dying of neglect.
+	pollWorkerOffline(t, ts, "worker-a", 5*time.Second)
+
+	mustDoJSON(t, http.MethodDelete, apiURL(ts, "/api/v1/workers/worker-a"), nil, "", http.StatusNoContent, nil)
+
+	// The credential revoke inside the delete handler must have disconnected
+	// worker A's still-open NATS connection, synchronously.
+	select {
+	case <-closedA:
+	case <-time.After(2 * time.Second):
+		t.Fatal("worker A's NATS connection was not closed by deleting its worker record")
+	}
+
+	// The worker row itself is gone.
+	mustDoJSON(t, http.MethodGet, apiURL(ts, "/api/v1/workers/worker-a"), nil, "", http.StatusNotFound, nil)
+}
+
 // TestEnrollment_ConnectsToRunningBrokerWithoutRestart guards against the
 // broker's authorized-key set ever again going unreloaded after POST
 // /workers/enroll creates a credential. loadBrokerAuthConfig only ever runs

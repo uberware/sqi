@@ -2712,6 +2712,14 @@ paths:
         live-disabled workers are rejected with `409`. Task and attempt history
         referencing the worker is preserved by ID. A removed worker that
         reconnects simply re-registers.
+
+        Also revokes the worker's broker credential, if it has one, so a
+        decommissioned machine loses broker access along with its worker
+        record rather than keeping the ability to connect, lease work and
+        execute job code. A worker with no credential (broker authentication
+        disabled, or never enrolled) is removed exactly as before. This does
+        not require the `workers.enroll` permission that
+        `DELETE /workers/{id}/credential` needs on its own.
       responses:
         "204":
           description: Worker removed.

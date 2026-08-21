@@ -13,6 +13,7 @@ package api
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -47,7 +48,15 @@ func newWorkerRouter(st store.Store) chi.Router {
 }
 
 func newWorkerRouterWithNotifier(st store.Store, notifier ws.Notifier) chi.Router {
-	h := newWorkerHandler(st, notifier, testOfflineThreshold, newTestLogger())
+	return newWorkerRouterWith(st, notifier, storeRevoker{store: st})
+}
+
+func newWorkerRouterWithRevoker(st store.Store, revoker WorkerRevoker) chi.Router {
+	return newWorkerRouterWith(st, nil, revoker)
+}
+
+func newWorkerRouterWith(st store.Store, notifier ws.Notifier, revoker WorkerRevoker) chi.Router {
+	h := newWorkerHandler(st, notifier, revoker, testOfflineThreshold, newTestLogger())
 	r := chi.NewRouter()
 	r.Get("/api/v1/workers", h.listWorkers)
 	r.Get("/api/v1/workers/{id}", h.getWorker)
@@ -674,6 +683,82 @@ func TestRemoveWorker(t *testing.T) {
 		r.ServeHTTP(rr, req)
 		if rr.Code != http.StatusNotFound {
 			t.Fatalf("expected 404, got %d", rr.Code)
+		}
+	})
+
+	t.Run("active credential is revoked", func(t *testing.T) {
+		st := fake.New()
+		r := newWorkerRouter(st)
+		w := seedWorker(t, st, store.WorkerStatusOffline)
+		if _, err := st.CreateWorkerCredential(t.Context(), store.WorkerCredential{
+			ID: uuid.NewString(), WorkerID: w.ID, PublicKey: genPublicKey(t), EnrolledAt: time.Now().UTC(),
+		}); err != nil {
+			t.Fatalf("seed CreateWorkerCredential: %v", err)
+		}
+
+		req := newReq(t, http.MethodDelete, "/api/v1/workers/"+w.ID, nil)
+		rr := httptest.NewRecorder()
+		r.ServeHTTP(rr, req)
+		if rr.Code != http.StatusNoContent {
+			t.Fatalf("expected 204, got %d — body: %s", rr.Code, rr.Body)
+		}
+		if _, err := st.GetActiveWorkerCredentialByWorkerID(t.Context(), w.ID); !errors.Is(err, store.ErrNotFound) {
+			t.Errorf("GetActiveWorkerCredentialByWorkerID after delete = %v, want store.ErrNotFound (credential revoked)", err)
+		}
+	})
+
+	t.Run("no credential still succeeds", func(t *testing.T) {
+		st := fake.New()
+		rev := &recordingRevoker{err: store.ErrNotFound}
+		r := newWorkerRouterWithRevoker(st, rev)
+		w := seedWorker(t, st, store.WorkerStatusOffline)
+
+		req := newReq(t, http.MethodDelete, "/api/v1/workers/"+w.ID, nil)
+		rr := httptest.NewRecorder()
+		r.ServeHTTP(rr, req)
+		if rr.Code != http.StatusNoContent {
+			t.Fatalf("expected 204, got %d — body: %s", rr.Code, rr.Body)
+		}
+		if rev.calledWith != w.ID {
+			t.Errorf("revoker called with %q, want %q — delete must still call through the revoker even when it has nothing to revoke", rev.calledWith, w.ID)
+		}
+	})
+
+	t.Run("already-revoked credential still succeeds", func(t *testing.T) {
+		st := fake.New()
+		r := newWorkerRouter(st)
+		w := seedWorker(t, st, store.WorkerStatusOffline)
+		if _, err := st.CreateWorkerCredential(t.Context(), store.WorkerCredential{
+			ID: uuid.NewString(), WorkerID: w.ID, PublicKey: genPublicKey(t), EnrolledAt: time.Now().UTC(),
+		}); err != nil {
+			t.Fatalf("seed CreateWorkerCredential: %v", err)
+		}
+		if err := st.RevokeWorkerCredential(t.Context(), w.ID, time.Now().UTC()); err != nil {
+			t.Fatalf("seed RevokeWorkerCredential: %v", err)
+		}
+
+		req := newReq(t, http.MethodDelete, "/api/v1/workers/"+w.ID, nil)
+		rr := httptest.NewRecorder()
+		r.ServeHTTP(rr, req)
+		if rr.Code != http.StatusNoContent {
+			t.Fatalf("expected 204, got %d — body: %s", rr.Code, rr.Body)
+		}
+	})
+
+	t.Run("revoker failure does not fail the delete", func(t *testing.T) {
+		st := fake.New()
+		rev := &recordingRevoker{err: errors.New("broker reload failed")}
+		r := newWorkerRouterWithRevoker(st, rev)
+		w := seedWorker(t, st, store.WorkerStatusOffline)
+
+		req := newReq(t, http.MethodDelete, "/api/v1/workers/"+w.ID, nil)
+		rr := httptest.NewRecorder()
+		r.ServeHTTP(rr, req)
+		if rr.Code != http.StatusNoContent {
+			t.Fatalf("expected 204, got %d — body: %s", rr.Code, rr.Body)
+		}
+		if _, err := st.GetWorker(t.Context(), w.ID); err == nil {
+			t.Error("worker should still be deleted even when the revoke fails")
 		}
 	})
 }

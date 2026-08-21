@@ -104,6 +104,22 @@ compromised host, a decommissioned machine). The CLI path is for offline
 maintenance — revoking a credential before a server has ever started with
 it, or as part of a startup script.
 
+`DELETE /api/v1/workers/{id}` — removing the worker record itself — revokes
+its credential too, through the same synchronous path as the first bullet
+above. This exists because `workers.manage` (what deleting a worker
+requires) does not imply `workers.enroll` (what revoking a credential
+directly requires) — the split is deliberate, so that the ability to delete
+a worker never doubles as the ability to mint join tokens — and without the
+cascade, an operator who can decommission a machine would have no way at all
+to cut its broker access. A worker with no credential (broker authentication
+disabled, or a worker that was never enrolled) is deleted exactly as before;
+a credential that is already revoked is treated the same way. If the revoke
+or reload fails after the worker row is already gone, the delete still
+succeeds — the row cannot be un-deleted from that handler — and the failure
+is logged at error level rather than silently dropped, because it leaves the
+broker *more* permissive than the store, which is the direction that must
+not go unnoticed.
+
 ### Key rotation and re-enrollment
 
 Worker-ID uniqueness applies only to **active** credentials: a revoked

@@ -30,6 +30,12 @@ type workerHandler struct {
 	// notifier pushes a removed event when a worker is deleted so other
 	// connected clients drop it live. May be nil (no push).
 	notifier ws.Notifier
+	// revoker revokes a deleted worker's broker credential, through the same
+	// serialized store-write-then-broker-reload path DELETE
+	// /api/v1/workers/{id}/credential uses. internal/api depends only on
+	// this interface — never on internal/bus or internal/server — the same
+	// seam workerEnrollHandler uses for the same reason.
+	revoker WorkerRevoker
 	// offlineThreshold is the heartbeat-timeout window used to decide whether a
 	// disabled worker is dead — and therefore removable — from its last
 	// heartbeat age. It mirrors the scheduler's WorkerTimeout.
@@ -39,10 +45,11 @@ type workerHandler struct {
 
 // newWorkerHandler returns a workerHandler wired to the given store. notifier
 // may be nil in tests that do not exercise WebSocket push.
-func newWorkerHandler(st store.Store, notifier ws.Notifier, offlineThreshold time.Duration, logger *slog.Logger) *workerHandler {
+func newWorkerHandler(st store.Store, notifier ws.Notifier, revoker WorkerRevoker, offlineThreshold time.Duration, logger *slog.Logger) *workerHandler {
 	return &workerHandler{
 		store:            st,
 		notifier:         notifier,
+		revoker:          revoker,
 		offlineThreshold: offlineThreshold,
 		logger:           logger,
 	}
@@ -348,6 +355,14 @@ func (h *workerHandler) setWorkerStatus(w http.ResponseWriter, r *http.Request, 
 // than the offline threshold (the machine is gone). Online and live-disabled
 // workers return 409 Conflict. Offline workers already had their in-flight tasks
 // reclaimed when they went offline, so no reclaim is needed here.
+//
+// Deleting the worker row also revokes its broker credential, if it has one,
+// through the injected [WorkerRevoker] — the same path DELETE
+// /api/v1/workers/{id}/credential uses. Without this, decommissioning a
+// machine from the farm would leave it able to connect to the broker, lease
+// work and execute job code: WorkersManage (which this route requires) does
+// not imply WorkersEnroll, so an operator who can delete a worker is not
+// otherwise able to revoke what it can still do.
 func (h *workerHandler) removeWorker(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	id := chi.URLParam(r, "id")
@@ -379,6 +394,22 @@ func (h *workerHandler) removeWorker(w http.ResponseWriter, r *http.Request) {
 			slog.String("id", id), slog.Any("error", err))
 		writeProblem(w, r, http.StatusInternalServerError, "failed to remove worker")
 		return
+	}
+
+	// The worker row is now gone. Revoke whatever broker credential it had —
+	// store.ErrNotFound covers both "never enrolled" (the normal shape with
+	// broker auth off) and "already revoked", neither of which is an error
+	// here. A non-ErrNotFound failure is deliberately NOT turned into a
+	// failed response: the worker row cannot be un-deleted from this
+	// handler, so a 500 here would tell the caller the delete itself failed
+	// when it did not, and the DELETE is not safely retryable once the row
+	// is gone (a retry sees 404). It is logged at error rather than
+	// swallowed quietly, because the failure direction is the unsafe one —
+	// a machine the operator just removed can keep live broker access — and
+	// that belongs in the operator-visible diagnostic log, not silence.
+	if err := h.revoker.RevokeWorker(ctx, id); err != nil && !errors.Is(err, store.ErrNotFound) {
+		h.logger.ErrorContext(ctx, "workers: revoke credential after delete failed",
+			slog.String("id", id), slog.Any("error", err))
 	}
 
 	if h.notifier != nil {
