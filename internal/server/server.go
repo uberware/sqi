@@ -79,8 +79,8 @@ type Config struct {
 	NATSAddr string // default "0.0.0.0:4222"
 
 	// NATSAuthEnabled reports whether the broker requires a per-worker
-	// credential. Used for the startup warning and, from Task 5, to
-	// configure the broker itself.
+	// credential. Used for the startup warning and to configure the broker
+	// itself, including which workers it authorizes.
 	NATSAuthEnabled bool
 
 	// NATSDataDir is the directory used by JetStream for file-backed stream
@@ -315,6 +315,53 @@ func isLoopbackHost(host string) bool {
 	return ip != nil && ip.IsLoopback()
 }
 
+// startBroker constructs and starts the embedded NATS broker, warning about
+// an unauthenticated broker exposed beyond this host and loading the
+// enrolled worker credential set when broker authentication is enabled.
+func (s *Server) startBroker(ctx context.Context) (*bus.Broker, error) {
+	warnIfBrokerUnauthenticated(ctx, s.cfg.NATSAddr, s.cfg.NATSAuthEnabled, s.logger)
+
+	brokerAuth, err := loadBrokerAuthConfig(ctx, s.store, s.cfg.NATSAuthEnabled)
+	if err != nil {
+		return nil, fmt.Errorf("load worker credentials: %w", err)
+	}
+
+	broker := bus.New(bus.BrokerConfig{
+		Addr:       s.cfg.NATSAddr,
+		DataDir:    s.cfg.NATSDataDir,
+		MaxStoreMB: s.cfg.NATSMaxStoreMB,
+		Auth:       brokerAuth,
+	}, s.logger)
+	if err := broker.Start(ctx); err != nil {
+		return nil, err
+	}
+	return broker, nil
+}
+
+// loadBrokerAuthConfig builds the broker's authorization configuration.
+//
+// It queries the store for the enrolled worker credential set only when
+// enabled is true, so that a server running with broker authentication off
+// never touches the credential table — the default startup path stays
+// byte-for-byte what it was before broker authentication existed.
+func loadBrokerAuthConfig(ctx context.Context, st store.WorkerCredentialStore, enabled bool) (bus.BrokerAuthConfig, error) {
+	if !enabled {
+		return bus.BrokerAuthConfig{}, nil
+	}
+	creds, err := st.ListActiveWorkerCredentials(ctx)
+	if err != nil {
+		return bus.BrokerAuthConfig{}, err
+	}
+	refs := make([]bus.WorkerCredentialRef, 0, len(creds))
+	for _, c := range creds {
+		refs = append(refs, bus.WorkerCredentialRef{
+			WorkerID:  c.WorkerID,
+			PublicKey: c.PublicKey,
+		})
+	}
+	return bus.BrokerAuthConfig{Enabled: true, Credentials: refs}, nil
+}
+
 // Health returns the [*health.Registry] owned by this server. Components
 // (store, bus) call Health().Register(...) during startup to participate in
 // readiness gating via GET /readyz.
@@ -385,13 +432,8 @@ func (s *Server) start(ctx context.Context) error {
 	// ── Message bus (NATS JetStream) ───────────────────────────────────────
 	// Embed NATS server, enable JetStream, provision streams.
 	// Typed client wrapper, consumers, reconnect, drain.
-	warnIfBrokerUnauthenticated(ctx, s.cfg.NATSAddr, s.cfg.NATSAuthEnabled, s.logger)
-	broker := bus.New(bus.BrokerConfig{
-		Addr:       s.cfg.NATSAddr,
-		DataDir:    s.cfg.NATSDataDir,
-		MaxStoreMB: s.cfg.NATSMaxStoreMB,
-	}, s.logger)
-	if err := broker.Start(ctx); err != nil {
+	broker, err := s.startBroker(ctx)
+	if err != nil {
 		return fmt.Errorf("start bus: %w", err)
 	}
 	s.broker = broker

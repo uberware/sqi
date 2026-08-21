@@ -39,18 +39,21 @@ type Client struct {
 // exponential backoff, so transient disruptions (e.g. a brief broker restart
 // during development) recover automatically.
 //
+// extraOpts are appended after the default options, so a caller can supply
+// authentication (e.g. an nkey credential) without disturbing the reconnect
+// behavior above.
+//
 // Prefer [Broker.NewClient] over calling NewClient directly; the Broker
 // supplies the correct loopback URL without the caller needing to know it.
-func NewClient(url string, logger *slog.Logger) (*Client, error) {
-	nc, err := nats.Connect(
-		url,
+func NewClient(url string, logger *slog.Logger, extraOpts ...nats.Option) (*Client, error) {
+	opts := []nats.Option{
 		// Reconnect indefinitely — this is an in-process loopback connection
 		// and should always come back up if the embedded broker restarts.
 		nats.MaxReconnects(-1),
 
 		// Wait 2 s between reconnect attempts.  The embedded broker is on
 		// loopback so it recovers quickly; a short fixed interval is sufficient.
-		nats.ReconnectWait(2*time.Second),
+		nats.ReconnectWait(2 * time.Second),
 
 		// Log reconnect events through the server's structured logger so
 		// operators can correlate them with other activity.
@@ -65,7 +68,10 @@ func NewClient(url string, logger *slog.Logger) (*Client, error) {
 		nats.ClosedHandler(func(_ *nats.Conn) {
 			logger.InfoContext(context.Background(), "bus: client connection closed")
 		}),
-	)
+	}
+	opts = append(opts, extraOpts...)
+
+	nc, err := nats.Connect(url, opts...)
 	if err != nil {
 		return nil, fmt.Errorf("bus: client connect %q: %w", url, err)
 	}

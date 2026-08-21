@@ -14,6 +14,9 @@ import (
 	natsserver "github.com/nats-io/nats-server/v2/server"
 	nats "github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
+	"github.com/nats-io/nkeys"
+
+	"github.com/uberware/sqi/internal/brokerauth"
 )
 
 // BrokerConfig holds the parameters needed to start the embedded NATS server.
@@ -38,6 +41,29 @@ type BrokerConfig struct {
 	// MaxStoreMB is the maximum disk space JetStream may use, in megabytes.
 	// A value of 0 means unlimited (not recommended for production).
 	MaxStoreMB int
+
+	// Auth configures per-worker nkey authorization on the broker. Zero value
+	// leaves authorization disabled.
+	Auth BrokerAuthConfig
+}
+
+// BrokerAuthConfig controls per-worker nkey authorization on the broker.
+type BrokerAuthConfig struct {
+	// Enabled requires every connection to present a credential for an
+	// enrolled nkey. When false, the broker accepts anonymous connections.
+	Enabled bool
+
+	// Credentials is the initial enrolled set, loaded from the store at boot.
+	Credentials []WorkerCredentialRef
+}
+
+// WorkerCredentialRef is bus's own minimal view of an enrolled worker
+// credential, carrying only what the broker needs to authorize a connection.
+// It exists so that internal/bus does not need to import internal/store;
+// callers map from store.WorkerCredential to WorkerCredentialRef themselves.
+type WorkerCredentialRef struct {
+	WorkerID  string
+	PublicKey string
 }
 
 // Broker wraps an in-process NATS server with JetStream enabled and manages
@@ -52,6 +78,18 @@ type Broker struct {
 
 	ns *natsserver.Server // embedded NATS server process
 	nc *nats.Conn         // admin connection used for stream provisioning
+
+	// serverSeed and serverPub are the broker's own nkey, generated at boot
+	// and held only in memory, so that the broker's own connections (stream
+	// provisioning, the scheduler's in-process client) can authenticate once
+	// authorization is enabled. Empty when authorization is disabled.
+	serverSeed []byte
+	serverPub  string
+
+	// bootOpts is a pristine copy of the options the server was started
+	// with, retained so ReloadCredentials can clone from it rather than
+	// reusing options nats-server has already consumed.
+	bootOpts *natsserver.Options
 }
 
 // New creates a [Broker] with the given configuration and logger.
@@ -100,6 +138,21 @@ func (b *Broker) Start(ctx context.Context) error {
 		NoLog: true,
 	}
 
+	if b.cfg.Auth.Enabled {
+		seed, pub, err := brokerauth.GenerateSeed()
+		if err != nil {
+			return fmt.Errorf("bus: generate server key: %w", err)
+		}
+		b.serverSeed, b.serverPub = seed, pub
+		opts.Nkeys = b.buildNkeys(b.cfg.Auth.Credentials)
+	}
+
+	// Retain a pristine copy of the boot options for ReloadCredentials:
+	// ReloadOptions documents that the Options passed to it must not be
+	// reused, so credential reloads clone from this copy rather than the one
+	// nats-server consumes below.
+	b.bootOpts = opts.Clone()
+
 	ns, err := natsserver.NewServer(opts)
 	if err != nil {
 		return fmt.Errorf("bus: create nats server: %w", err)
@@ -125,7 +178,7 @@ func (b *Broker) Start(ctx context.Context) error {
 	// Establish an admin connection used only for stream provisioning.
 	// This is a plain TCP connection to the loopback listener; the latency
 	// is negligible and avoids importing the server package into callers.
-	nc, err := nats.Connect(ns.ClientURL())
+	nc, err := nats.Connect(ns.ClientURL(), b.adminOptions()...)
 	if err != nil {
 		ns.Shutdown()
 		ns.WaitForShutdown()
@@ -205,5 +258,71 @@ func (b *Broker) NewClient() (*Client, error) {
 	if b.ns == nil {
 		return nil, errors.New("bus: broker not started")
 	}
-	return NewClient(b.ns.ClientURL(), b.logger)
+	return NewClient(b.ns.ClientURL(), b.logger, b.adminOptions()...)
 }
+
+// buildNkeys converts the enrolled credential set into NATS nkey users, plus
+// the server's own credential. The server key is generated at boot and lives
+// only in memory: nothing else needs it, and persisting it would create a
+// standing secret for no benefit.
+func (b *Broker) buildNkeys(creds []WorkerCredentialRef) []*natsserver.NkeyUser {
+	users := make([]*natsserver.NkeyUser, 0, len(creds)+1)
+	users = append(users, &natsserver.NkeyUser{
+		Nkey:        b.serverPub,
+		Permissions: brokerauth.ServerPermissions(),
+	})
+	for _, c := range creds {
+		users = append(users, &natsserver.NkeyUser{
+			Nkey:        c.PublicKey,
+			Permissions: brokerauth.WorkerPermissions(c.WorkerID),
+		})
+	}
+	return users
+}
+
+// adminOptions returns the connect options for the broker's own admin
+// connection, which provisions streams. Empty when auth is disabled.
+func (b *Broker) adminOptions() []nats.Option {
+	if !b.cfg.Auth.Enabled {
+		return nil
+	}
+	return []nats.Option{
+		nats.Nkey(b.serverPub, func(nonce []byte) ([]byte, error) {
+			kp, err := nkeys.FromSeed(b.serverSeed)
+			if err != nil {
+				return nil, err
+			}
+			return kp.Sign(nonce)
+		}),
+	}
+}
+
+// ReloadCredentials replaces the enrolled worker set on a running broker.
+//
+// Revocation is synchronous, not eventually-consistent: nats-server's
+// reloadAuthorization re-runs isClientAuthorized over every connected client
+// and calls authViolation() on any that no longer pass, so a worker removed
+// from creds is disconnected inside this call.
+//
+// ReloadOptions rejects changes to options that cannot be hot-swapped and
+// documents that the Options passed to it must not be reused, so this clones
+// the pristine boot options and mutates only Nkeys.
+func (b *Broker) ReloadCredentials(creds []WorkerCredentialRef) error {
+	if !b.cfg.Auth.Enabled {
+		return errors.New("bus: broker authentication is disabled")
+	}
+	if b.ns == nil || b.bootOpts == nil {
+		return errors.New("bus: broker not started")
+	}
+	opts := b.bootOpts.Clone()
+	opts.Nkeys = b.buildNkeys(creds)
+	if err := b.ns.ReloadOptions(opts); err != nil {
+		return fmt.Errorf("bus: reload broker credentials: %w", err)
+	}
+	return nil
+}
+
+// ServerSeed returns the broker's own in-memory nkey seed so that in-process
+// clients (the scheduler's bus.Client) can authenticate. Empty when auth is
+// disabled.
+func (b *Broker) ServerSeed() []byte { return b.serverSeed }
