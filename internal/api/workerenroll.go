@@ -10,14 +10,17 @@ package api
 //	POST   /api/v1/workers/join-tokens         — workers.enroll
 //	DELETE /api/v1/workers/{id}/credential     — workers.enroll
 //
-// The revoke handler here performs the store write only. It does not reach
-// the broker to disconnect a live worker — that requires an in-process handle
-// this package does not have — so revocation here takes effect at the
-// broker's next credential reload rather than synchronously. A synchronous,
-// in-process revoke path is exposed elsewhere for the case where one is
-// available.
+// The revoke handler delegates to an injected [WorkerRevoker] rather than
+// writing the store directly. internal/api never holds a live broker
+// handle — the process that does (internal/server) supplies an
+// implementation that revokes in the store and then reloads the broker's
+// authorized-key set, so a worker that loses its credential is disconnected
+// synchronously, inside the same request. This package depends only on the
+// narrow interface, never on internal/bus or internal/server, so it cannot
+// import either and stays testable without a live broker.
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -35,6 +38,21 @@ import (
 	"github.com/uberware/sqi/internal/store"
 )
 
+// WorkerRevoker revokes a worker's broker credential and, when the
+// implementation holds a live broker handle, disconnects it and lets the
+// existing heartbeat-sweep/reclaim path return its in-flight work to ready.
+// internal/api depends only on this interface so that DELETE
+// /api/v1/workers/{id}/credential can be synchronous where a broker handle
+// is available (internal/server, which runs in the same process) without
+// this package importing internal/bus or internal/server itself.
+type WorkerRevoker interface {
+	// RevokeWorker revokes workerID's active credential. It returns
+	// [store.ErrNotFound] if the worker has no active credential — never
+	// enrolled, or already revoked; those two cases are indistinguishable
+	// here for the same reason store.RevokeWorkerCredential collapses them.
+	RevokeWorker(ctx context.Context, workerID string) error
+}
+
 // errInvalidJoinToken is returned for every way a join token can fail to
 // authorize an enrollment — unknown, expired, or already used when single-use
 // is on. The endpoint is unauthenticated and may be internet-reachable, so
@@ -44,8 +62,9 @@ const errInvalidJoinToken = "invalid or expired join token" //nolint:gosec // G1
 
 // workerEnrollHandler implements the worker broker-credential REST surface.
 type workerEnrollHandler struct {
-	store  store.Store
-	logger *slog.Logger
+	store   store.Store
+	revoker WorkerRevoker
+	logger  *slog.Logger
 
 	// singleUse mirrors config.NATSAuthConfig.JoinTokenSingleUse: whether an
 	// already-used join token is rejected on a second enrollment attempt.
@@ -58,10 +77,11 @@ type workerEnrollHandler struct {
 }
 
 // newWorkerEnrollHandler returns a workerEnrollHandler wired to the given
-// store.
-func newWorkerEnrollHandler(st store.Store, logger *slog.Logger, singleUse bool, joinTokenTTL time.Duration) *workerEnrollHandler {
+// store and revoker.
+func newWorkerEnrollHandler(st store.Store, revoker WorkerRevoker, logger *slog.Logger, singleUse bool, joinTokenTTL time.Duration) *workerEnrollHandler {
 	return &workerEnrollHandler{
 		store:        st,
+		revoker:      revoker,
 		logger:       logger,
 		singleUse:    singleUse,
 		joinTokenTTL: joinTokenTTL,
@@ -268,14 +288,15 @@ func (h *workerEnrollHandler) createJoinToken(w http.ResponseWriter, r *http.Req
 // ── DELETE /api/v1/workers/{id}/credential ──────────────────────────────────
 
 // revokeCredential soft-revokes the active credential for the worker named by
-// {id}. RevokeWorkerCredential's underlying write only matches a row with a
-// nil RevokedAt, so a worker that was never enrolled and a worker whose
-// credential is already revoked are indistinguishable here — the response
-// says so rather than claiming the worker does not exist.
+// {id} and, via the injected [WorkerRevoker], disconnects it from the broker
+// where a live handle is available. The underlying store write only matches
+// a row with a nil RevokedAt, so a worker that was never enrolled and a
+// worker whose credential is already revoked are indistinguishable here —
+// the response says so rather than claiming the worker does not exist.
 func (h *workerEnrollHandler) revokeCredential(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	workerID := chi.URLParam(r, "id")
-	if err := h.store.RevokeWorkerCredential(ctx, workerID, time.Now().UTC()); err != nil {
+	if err := h.revoker.RevokeWorker(ctx, workerID); err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			writeProblem(w, r, http.StatusNotFound, fmt.Sprintf(
 				"no active credential for worker %q — it may never have been enrolled, or its credential may already be revoked",

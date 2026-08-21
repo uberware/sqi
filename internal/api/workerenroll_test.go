@@ -33,8 +33,26 @@ import (
 
 // ── router helper ────────────────────────────────────────────────────────────
 
+// storeRevoker adapts a store.Store directly to [WorkerRevoker] by writing
+// the credential row and nothing else — no broker reload. The real
+// broker-reload behavior belongs to *server.Server (internal/server cannot
+// be imported here: internal/server imports internal/api, not the other way
+// around) and is covered by test/integration's broker-auth suite. Every test
+// in this file that does not care about broker semantics gets this by
+// default via newWorkerEnrollRouter, matching the store-only behavior these
+// tests pinned before WorkerRevoker existed.
+type storeRevoker struct{ store store.WorkerCredentialStore }
+
+func (r storeRevoker) RevokeWorker(ctx context.Context, workerID string) error {
+	return r.store.RevokeWorkerCredential(ctx, workerID, time.Now().UTC())
+}
+
 func newWorkerEnrollRouter(st store.Store, singleUse bool, ttl time.Duration) chi.Router {
-	h := newWorkerEnrollHandler(st, newTestLogger(), singleUse, ttl)
+	return newWorkerEnrollRouterWithRevoker(st, storeRevoker{store: st}, singleUse, ttl)
+}
+
+func newWorkerEnrollRouterWithRevoker(st store.Store, revoker WorkerRevoker, singleUse bool, ttl time.Duration) chi.Router {
+	h := newWorkerEnrollHandler(st, revoker, newTestLogger(), singleUse, ttl)
 	r := chi.NewRouter()
 	r.Post("/workers/enroll", h.enroll)
 	r.Post("/workers/join-tokens", h.createJoinToken)
@@ -506,5 +524,72 @@ func TestWorkerCredentialRevoke_UnknownWorker_NotFound(t *testing.T) {
 	// indistinguishable from "already revoked" at the store layer.
 	if strings.Contains(rr.Body.String(), "does not exist") {
 		t.Error("response claims the worker does not exist, which the store cannot actually distinguish from already-revoked")
+	}
+}
+
+// ── revoke delegates to the injected WorkerRevoker ──────────────────────────
+
+// recordingRevoker is a [WorkerRevoker] stub that records the workerID it
+// was called with and returns a configurable error, so a test can prove the
+// handler actually calls through the injected interface — not the store
+// directly — and that it maps a non-[store.ErrNotFound] failure to 500
+// rather than leaking the underlying error text (which, in production, would
+// be a broker-internal detail like a reload failure).
+type recordingRevoker struct {
+	calledWith string
+	err        error
+}
+
+func (r *recordingRevoker) RevokeWorker(_ context.Context, workerID string) error {
+	r.calledWith = workerID
+	return r.err
+}
+
+func TestWorkerCredentialRevoke_DelegatesToInjectedRevoker(t *testing.T) {
+	st := fake.New()
+	rev := &recordingRevoker{}
+	r := newWorkerEnrollRouterWithRevoker(st, rev, true, time.Hour)
+
+	req := newReq(t, http.MethodDelete, "/workers/w1/credential", nil)
+	rr := httptest.NewRecorder()
+	r.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want 204 — body: %s", rr.Code, rr.Body)
+	}
+	if rev.calledWith != "w1" {
+		t.Errorf("revoker called with %q, want %q — the handler must delegate to the injected WorkerRevoker, not write the store directly",
+			rev.calledWith, "w1")
+	}
+}
+
+func TestWorkerCredentialRevoke_RevokerErrorNotFound_NotFound(t *testing.T) {
+	st := fake.New()
+	rev := &recordingRevoker{err: store.ErrNotFound}
+	r := newWorkerEnrollRouterWithRevoker(st, rev, true, time.Hour)
+
+	req := newReq(t, http.MethodDelete, "/workers/does-not-exist/credential", nil)
+	rr := httptest.NewRecorder()
+	r.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404 — body: %s", rr.Code, rr.Body)
+	}
+}
+
+func TestWorkerCredentialRevoke_RevokerOtherError_InternalServerError(t *testing.T) {
+	st := fake.New()
+	rev := &recordingRevoker{err: errors.New("broker reload failed")}
+	r := newWorkerEnrollRouterWithRevoker(st, rev, true, time.Hour)
+
+	req := newReq(t, http.MethodDelete, "/workers/w1/credential", nil)
+	rr := httptest.NewRecorder()
+	r.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500 — body: %s", rr.Code, rr.Body)
+	}
+	if strings.Contains(rr.Body.String(), "broker reload failed") {
+		t.Error("response leaks the underlying revoker error; expected the generic message")
 	}
 }

@@ -7,6 +7,7 @@ import (
 	"errors"
 	"log/slog"
 	"net"
+	"sync"
 	"testing"
 	"time"
 
@@ -232,4 +233,50 @@ func TestBrokerReloadCredentials(t *testing.T) {
 			t.Fatal("B's connection was disconnected by an unrelated revocation")
 		}
 	})
+}
+
+// TestBrokerReloadCredentials_ConcurrentWithShutdown exercises the hazard
+// that ReloadCredentials being reachable from an HTTP handler goroutine
+// (worker credential revocation) activates: nothing previously called
+// ReloadCredentials outside a test, so it never ran concurrently with
+// Shutdown, which nils ns/nc/bootOpts/serverSeed/serverPub. Run under
+// -race, this fails without Broker.mu guarding those fields — either as a
+// reported data race or as a nil-pointer panic when Shutdown wins the race
+// and ReloadCredentials dereferences a nil *natsserver.Server.
+//
+// This does not assert anything about which of the two operations "wins" —
+// either outcome (the reload completing before shutdown tears the server
+// down, or ReloadCredentials observing "broker not started" because
+// Shutdown got there first) is a correct, safe result. The property under
+// test is only that neither goroutine corrupts Broker's own state or
+// crashes the process while racing the other.
+func TestBrokerReloadCredentials_ConcurrentWithShutdown(t *testing.T) {
+	ref, _ := enrolledWorker(t, "worker-a")
+	b := startBrokerAuth(t, BrokerAuthConfig{
+		Enabled:     true,
+		Credentials: []WorkerCredentialRef{ref},
+	})
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+
+	go func() {
+		defer wg.Done()
+		for range 20 {
+			// Any outcome is acceptable here; "bus: broker not started" is
+			// expected once Shutdown has run. Only a panic or a race-detector
+			// report would fail this test.
+			_ = b.ReloadCredentials([]WorkerCredentialRef{ref}) //nolint:errcheck // outcome is intentionally unchecked; see comment above
+		}
+	}()
+
+	go func() {
+		defer wg.Done()
+		b.Shutdown()
+	}()
+
+	wg.Wait()
+
+	// A second Shutdown (this one via t.Cleanup) must still be a safe no-op
+	// after the concurrent one above already ran.
 }

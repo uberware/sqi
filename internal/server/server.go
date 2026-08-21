@@ -382,6 +382,55 @@ func loadBrokerAuthConfig(ctx context.Context, st store.WorkerCredentialStore, e
 	return bus.BrokerAuthConfig{Enabled: true, Credentials: refs}, nil
 }
 
+// RevokeWorker revokes workerID's active broker credential and, when broker
+// authentication is enabled, disconnects it and reclaims its in-flight work.
+// It implements [api.WorkerRevoker] and is what makes DELETE
+// /api/v1/workers/{id}/credential the synchronous revocation path: the
+// offline "sqi-server worker revoke" CLI command writes the same store row
+// from a separate process holding no broker handle, so it can only apply at
+// the broker's next start; this method runs inside the server process where
+// the broker handle lives, so it can act on a running broker immediately.
+//
+// The store is written FIRST and the broker reloaded SECOND, on purpose: a
+// reload failure after a successful store write leaves the worst-case state
+// "revoked in the store, still trusted by the running broker" — recoverable
+// at the broker's next start or next successful reload, and never worse than
+// what the offline CLI path already promises. The reverse ordering could
+// instead leave a credential trusted by neither the store nor a
+// findable-again authorized-key set, which nothing could repair. The reload
+// failure is still returned to the caller — the synchronous guarantee this
+// method exists to provide was not met — but it never triggers a rollback of
+// the store write.
+//
+// The active credential set is re-read from the store for the reload rather
+// than derived from any cached slice, so a concurrent enrollment or
+// revocation is never clobbered by a reload racing to overwrite it with a
+// stale view.
+func (s *Server) RevokeWorker(ctx context.Context, workerID string) error {
+	if err := s.store.RevokeWorkerCredential(ctx, workerID, time.Now().UTC()); err != nil {
+		return err
+	}
+
+	if !s.cfg.NATSAuthEnabled {
+		// No credential set is enforced on this broker, so there is nothing
+		// to reload — the store write above is the whole story on a farm
+		// running without broker authentication.
+		return nil
+	}
+	if s.broker == nil {
+		return errors.New("revoke worker: broker not started")
+	}
+
+	brokerAuth, err := loadBrokerAuthConfig(ctx, s.store, true)
+	if err != nil {
+		return fmt.Errorf("revoke worker: reload active credential set: %w", err)
+	}
+	if err := s.broker.ReloadCredentials(brokerAuth.Credentials); err != nil {
+		return fmt.Errorf("revoke worker: reload broker credentials: %w", err)
+	}
+	return nil
+}
+
 // Health returns the [*health.Registry] owned by this server. Components
 // (store, bus) call Health().Register(...) during startup to participate in
 // readiness gating via GET /readyz.
@@ -515,10 +564,11 @@ func (s *Server) start(ctx context.Context) error {
 			EnforceLimits: s.cfg.EnforceOpenJDLimits,
 			ExprLimits:    s.cfg.OpenJDExprLimits,
 		}),
-		Products:  product.NewCatalog(s.store),
-		Scheduler: s.sched,
-		Hub:       s.wsHub,
-		Version:   version.Get(),
+		Products:      product.NewCatalog(s.store),
+		Scheduler:     s.sched,
+		Hub:           s.wsHub,
+		Version:       version.Get(),
+		WorkerRevoker: s,
 	}
 	// Only expose the diagnostics reader when diagnostics are enabled. Leaving
 	// DiagReader as a nil interface (rather than a typed-nil *diag.Buffer) makes

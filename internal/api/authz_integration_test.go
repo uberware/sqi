@@ -233,12 +233,13 @@ type routeKey struct{ method, pattern string }
 // placeholder instead of panicking on a nil receiver.
 func authRouterWith(st store.Store, mutate func(*Deps)) chi.Router {
 	deps := Deps{
-		Store:        st,
-		Products:     product.NewCatalog(st),
-		Auth:         session.New(st, "sqi_session", nil),
-		SessionTTL:   time.Hour,
-		CookieName:   "sqi_session",
-		CookieSecure: "false",
+		Store:         st,
+		Products:      product.NewCatalog(st),
+		Auth:          session.New(st, "sqi_session", nil),
+		SessionTTL:    time.Hour,
+		CookieName:    "sqi_session",
+		CookieSecure:  "false",
+		WorkerRevoker: storeRevoker{store: st},
 	}
 	if mutate != nil {
 		mutate(&deps)
@@ -374,7 +375,7 @@ func TestAuthz_RouteSweep_DisabledAuthAllowsAll(t *testing.T) {
 	st := fake.New()
 	r := NewRouter(
 		Config{DisableRateLimit: true},
-		Deps{Store: st, Products: product.NewCatalog(st), Auth: auth.Anonymous(), CookieName: "sqi_session"},
+		Deps{Store: st, Products: product.NewCatalog(st), Auth: auth.Anonymous(), CookieName: "sqi_session", WorkerRevoker: storeRevoker{store: st}},
 		newTestLogger(), metrics.New(), health.NewRegistry(),
 	)
 	srv := httptest.NewServer(r)

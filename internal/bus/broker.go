@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net"
 	"strconv"
+	"sync"
 	"time"
 
 	natsserver "github.com/nats-io/nats-server/v2/server"
@@ -76,6 +77,17 @@ type Broker struct {
 	cfg    BrokerConfig
 	logger *slog.Logger
 
+	// mu guards every field below. It exists because ReloadCredentials can
+	// now be called from an HTTP handler goroutine (worker credential
+	// revocation, see internal/server) concurrently with Shutdown on the
+	// process's exit path — a combination that did not exist before that
+	// caller, since previously only Start (single-threaded, before the
+	// broker is handed to anything else) and tests touched these fields.
+	// Without it, Shutdown nilling ns/nc while ReloadCredentials or Check
+	// reads them is a data race and a nil-pointer hazard, not just a
+	// theoretical one.
+	mu sync.Mutex
+
 	ns *natsserver.Server // embedded NATS server process
 	nc *nats.Conn         // admin connection used for stream provisioning
 
@@ -138,20 +150,22 @@ func (b *Broker) Start(ctx context.Context) error {
 		NoLog: true,
 	}
 
+	var serverSeed []byte
+	var serverPub string
 	if b.cfg.Auth.Enabled {
 		seed, pub, err := brokerauth.GenerateSeed()
 		if err != nil {
 			return fmt.Errorf("bus: generate server key: %w", err)
 		}
-		b.serverSeed, b.serverPub = seed, pub
-		opts.Nkeys = b.buildNkeys(b.cfg.Auth.Credentials)
+		serverSeed, serverPub = seed, pub
+		opts.Nkeys = buildNkeys(serverPub, b.cfg.Auth.Credentials)
 	}
 
 	// Retain a pristine copy of the boot options for ReloadCredentials:
 	// ReloadOptions documents that the Options passed to it must not be
 	// reused, so credential reloads clone from this copy rather than the one
 	// nats-server consumes below.
-	b.bootOpts = opts.Clone()
+	bootOpts := opts.Clone()
 
 	ns, err := natsserver.NewServer(opts)
 	if err != nil {
@@ -167,7 +181,14 @@ func (b *Broker) Start(ctx context.Context) error {
 		return errors.New("bus: nats server did not become ready within 10s")
 	}
 
-	b.ns = ns
+	// Commit every field the other methods read, in one critical section, so
+	// no concurrent caller can observe ns non-nil while serverSeed/
+	// serverPub/bootOpts are still zero, or any other partially-updated
+	// combination.
+	b.mu.Lock()
+	b.serverSeed, b.serverPub, b.bootOpts, b.ns = serverSeed, serverPub, bootOpts, ns
+	b.mu.Unlock()
+
 	b.logger.InfoContext(
 		ctx, "bus: nats server started",
 		slog.String("addr", b.cfg.Addr),
@@ -184,7 +205,9 @@ func (b *Broker) Start(ctx context.Context) error {
 		ns.WaitForShutdown()
 		return fmt.Errorf("bus: admin connect: %w", err)
 	}
+	b.mu.Lock()
 	b.nc = nc
+	b.mu.Unlock()
 
 	js, err := jetstream.New(nc)
 	if err != nil {
@@ -211,15 +234,29 @@ func (b *Broker) Start(ctx context.Context) error {
 // Shutdown drains the admin connection and stops the embedded NATS server,
 // waiting until it has fully exited before returning.  It is safe to call
 // Shutdown more than once; subsequent calls are no-ops.
+//
+// It is also safe to call concurrently with [Broker.ReloadCredentials],
+// [Broker.Check], [Broker.ClientURL], [Broker.NewClient], and
+// [Broker.ServerSeed]: the fields those methods read are captured under mu
+// and nilled here under the same lock, so a concurrent reader always sees
+// either the pre-shutdown values or nil, never a torn or dangling pointer.
+// The (possibly slow) nats-server calls below run after the lock is
+// released, so Shutdown does not hold up an in-flight reload or health
+// check any longer than it takes to copy two pointers.
 func (b *Broker) Shutdown() {
-	if b.nc != nil {
-		b.nc.Close()
-		b.nc = nil
+	b.mu.Lock()
+	nc := b.nc
+	ns := b.ns
+	b.nc = nil
+	b.ns = nil
+	b.mu.Unlock()
+
+	if nc != nil {
+		nc.Close()
 	}
-	if b.ns != nil {
-		b.ns.Shutdown()
-		b.ns.WaitForShutdown()
-		b.ns = nil
+	if ns != nil {
+		ns.Shutdown()
+		ns.WaitForShutdown()
 		b.logger.InfoContext(context.Background(), "bus: nats server stopped")
 	}
 }
@@ -229,10 +266,13 @@ func (b *Broker) Shutdown() {
 // otherwise.  Registered with the health registry during server startup so
 // that GET /readyz reflects broker health.
 func (b *Broker) Check(_ context.Context) error {
-	if b.ns == nil || !b.ns.Running() {
+	b.mu.Lock()
+	ns, nc := b.ns, b.nc
+	b.mu.Unlock()
+	if ns == nil || !ns.Running() {
 		return errors.New("nats server not running")
 	}
-	if b.nc == nil || b.nc.IsClosed() {
+	if nc == nil || nc.IsClosed() {
 		return errors.New("nats admin connection closed")
 	}
 	return nil
@@ -241,10 +281,13 @@ func (b *Broker) Check(_ context.Context) error {
 // ClientURL returns the nats:// URL that in-process clients should connect to.
 // Returns an empty string if the broker has not been started yet.
 func (b *Broker) ClientURL() string {
-	if b.ns == nil {
+	b.mu.Lock()
+	ns := b.ns
+	b.mu.Unlock()
+	if ns == nil {
 		return ""
 	}
-	return b.ns.ClientURL()
+	return ns.ClientURL()
 }
 
 // NewClient dials the embedded NATS server and returns a connected [Client]
@@ -255,20 +298,26 @@ func (b *Broker) ClientURL() string {
 // component (or one shared instance for the whole server) rather than dialing
 // repeatedly.
 func (b *Broker) NewClient() (*Client, error) {
-	if b.ns == nil {
+	b.mu.Lock()
+	ns := b.ns
+	b.mu.Unlock()
+	if ns == nil {
 		return nil, errors.New("bus: broker not started")
 	}
-	return NewClient(b.ns.ClientURL(), b.logger, b.adminOptions()...)
+	return NewClient(ns.ClientURL(), b.logger, b.adminOptions()...)
 }
 
 // buildNkeys converts the enrolled credential set into NATS nkey users, plus
-// the server's own credential. The server key is generated at boot and lives
-// only in memory: nothing else needs it, and persisting it would create a
-// standing secret for no benefit.
-func (b *Broker) buildNkeys(creds []WorkerCredentialRef) []*natsserver.NkeyUser {
+// the server's own credential, identified by serverPub. It is a standalone
+// function of its arguments rather than a *Broker method reading b.serverPub
+// so that both Start (before it publishes serverPub to b) and
+// ReloadCredentials (which reads it under b.mu itself) can call it without
+// also needing to take the lock — and risk taking it twice on the same
+// goroutine.
+func buildNkeys(serverPub string, creds []WorkerCredentialRef) []*natsserver.NkeyUser {
 	users := make([]*natsserver.NkeyUser, 0, len(creds)+1)
 	users = append(users, &natsserver.NkeyUser{
-		Nkey:        b.serverPub,
+		Nkey:        serverPub,
 		Permissions: brokerauth.ServerPermissions(),
 	})
 	for _, c := range creds {
@@ -286,9 +335,12 @@ func (b *Broker) adminOptions() []nats.Option {
 	if !b.cfg.Auth.Enabled {
 		return nil
 	}
+	b.mu.Lock()
+	pub, seed := b.serverPub, b.serverSeed
+	b.mu.Unlock()
 	return []nats.Option{
-		nats.Nkey(b.serverPub, func(nonce []byte) ([]byte, error) {
-			kp, err := nkeys.FromSeed(b.serverSeed)
+		nats.Nkey(pub, func(nonce []byte) ([]byte, error) {
+			kp, err := nkeys.FromSeed(seed)
 			if err != nil {
 				return nil, err
 			}
@@ -307,16 +359,26 @@ func (b *Broker) adminOptions() []nats.Option {
 // ReloadOptions rejects changes to options that cannot be hot-swapped and
 // documents that the Options passed to it must not be reused, so this clones
 // the pristine boot options and mutates only Nkeys.
+//
+// Safe to call concurrently with [Broker.Shutdown] — see its doc comment.
+// nats-server's own ReloadOptions and Shutdown both take the embedded
+// server's internal lock, so once this method has read a live *ns off b, the
+// call into nats-server itself is safe even if Shutdown wins a concurrent
+// race to nil out b.ns first: that only means this call observes "broker not
+// started" instead, never a corrupted server.
 func (b *Broker) ReloadCredentials(creds []WorkerCredentialRef) error {
 	if !b.cfg.Auth.Enabled {
 		return errors.New("bus: broker authentication is disabled")
 	}
-	if b.ns == nil || b.bootOpts == nil {
+	b.mu.Lock()
+	ns, bootOpts, serverPub := b.ns, b.bootOpts, b.serverPub
+	b.mu.Unlock()
+	if ns == nil || bootOpts == nil {
 		return errors.New("bus: broker not started")
 	}
-	opts := b.bootOpts.Clone()
-	opts.Nkeys = b.buildNkeys(creds)
-	if err := b.ns.ReloadOptions(opts); err != nil {
+	opts := bootOpts.Clone()
+	opts.Nkeys = buildNkeys(serverPub, creds)
+	if err := ns.ReloadOptions(opts); err != nil {
 		return fmt.Errorf("bus: reload broker credentials: %w", err)
 	}
 	return nil
@@ -325,4 +387,8 @@ func (b *Broker) ReloadCredentials(creds []WorkerCredentialRef) error {
 // ServerSeed returns the broker's own in-memory nkey seed so that in-process
 // clients (the scheduler's bus.Client) can authenticate. Empty when auth is
 // disabled.
-func (b *Broker) ServerSeed() []byte { return b.serverSeed }
+func (b *Broker) ServerSeed() []byte {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.serverSeed
+}
