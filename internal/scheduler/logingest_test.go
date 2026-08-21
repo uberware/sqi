@@ -370,6 +370,113 @@ func TestHandleLogChunk_MetadataError_NATSSeqZero(t *testing.T) {
 	}
 }
 
+// ── attemptOwnerCache tests ───────────────────────────────────────────────────
+
+// countingAttemptStore wraps a store.Store and counts GetTaskAttempt calls,
+// so tests can prove the attempt-owner cache does (or does not) avoid a
+// store read.
+type countingAttemptStore struct {
+	store.Store
+
+	getTaskAttemptCalls int
+}
+
+func (s *countingAttemptStore) GetTaskAttempt(ctx context.Context, id string) (store.TaskAttempt, error) {
+	s.getTaskAttemptCalls++
+	return s.Store.GetTaskAttempt(ctx, id)
+}
+
+// TestHandleLogChunk_RepeatedChunk_CachedAfterFirstRead proves a second log
+// chunk for the same attempt does not re-read the store: the first chunk
+// misses the cache and reads through, the second hits.
+func TestHandleLogChunk_RepeatedChunk_CachedAfterFirstRead(t *testing.T) {
+	cst := &countingAttemptStore{Store: fake.New()}
+	s := newLogTestScheduler(cst)
+	s.ctx = t.Context()
+
+	attemptID := uuid.NewString()
+	taskID := uuid.NewString()
+	now := time.Now().UTC()
+	if _, err := cst.CreateTaskAttempt(t.Context(), store.TaskAttempt{
+		ID: attemptID, TaskID: taskID, WorkerID: logTestWorkerID,
+		AttemptNumber: 1, Status: store.AttemptStatusRunning, StartedAt: now,
+	}); err != nil {
+		t.Fatalf("CreateTaskAttempt: %v", err)
+	}
+
+	newChunk := func(seq int64) *fakeJSMsg {
+		return &fakeJSMsg{
+			subject: bus.TaskLogsSubject(logTestWorkerID, taskID),
+			natsSeq: uint64(seq), // test data, small positive constant
+			data: msgJSON(t, protocol.LogChunkMsg{
+				TaskID:    taskID,
+				AttemptID: attemptID,
+				SeqNum:    seq,
+				At:        now,
+				Stream:    "stdout",
+				Data:      "line",
+			}),
+		}
+	}
+
+	first := newChunk(1)
+	s.handleLogChunk(first)
+	if !first.acked {
+		t.Fatal("expected first chunk to be acked")
+	}
+	if cst.getTaskAttemptCalls != 1 {
+		t.Fatalf("getTaskAttemptCalls after first chunk = %d, want 1 (cache miss falls back to the store)", cst.getTaskAttemptCalls)
+	}
+
+	second := newChunk(2)
+	s.handleLogChunk(second)
+	if !second.acked {
+		t.Fatal("expected second chunk to be acked")
+	}
+	if cst.getTaskAttemptCalls != 1 {
+		t.Errorf("getTaskAttemptCalls after second chunk = %d, want still 1 (cache hit must not re-read the store)", cst.getTaskAttemptCalls)
+	}
+
+	logs, err := cst.ListTaskLogs(t.Context(), attemptID, 0, 100)
+	if err != nil {
+		t.Fatalf("ListTaskLogs: %v", err)
+	}
+	if len(logs) != 2 {
+		t.Fatalf("expected 2 log rows, got %d", len(logs))
+	}
+}
+
+// TestHandleLogChunk_CacheMiss_VanishedAttempt_StillDiscarded proves that on
+// a cache miss for an attempt the store has never heard of, handleLogChunk
+// still falls back to the store (rather than assuming ownership) and
+// discards the chunk exactly as it would with no cache at all.
+func TestHandleLogChunk_CacheMiss_VanishedAttempt_StillDiscarded(t *testing.T) {
+	cst := &countingAttemptStore{Store: fake.New()}
+	s := newLogTestScheduler(cst)
+	s.ctx = t.Context()
+
+	msg := &fakeJSMsg{
+		subject: bus.TaskLogsSubject(logTestWorkerID, uuid.NewString()),
+		data: msgJSON(t, protocol.LogChunkMsg{
+			TaskID:    uuid.NewString(),
+			AttemptID: uuid.NewString(), // never created — vanished/unknown
+			SeqNum:    1,
+			At:        time.Now().UTC(),
+			Stream:    "stdout",
+			Data:      "line",
+		}),
+	}
+
+	s.handleLogChunk(msg)
+
+	if !msg.acked {
+		t.Error("chunk for an unknown attempt should be acked (discarded)")
+	}
+	if cst.getTaskAttemptCalls != 1 {
+		t.Errorf("getTaskAttemptCalls = %d, want 1 (a cache miss must still consult the store)", cst.getTaskAttemptCalls)
+	}
+}
+
 // ── logIngestErrSt: store that fails CreateTaskLog ────────────────────────────
 
 type logIngestErrSt struct {

@@ -249,6 +249,11 @@ type Scheduler struct {
 	// waiters parks long-poll lease requests per queue; woken by wake triggers.
 	waiters *waiterRegistry
 
+	// attemptCache holds recently-seen task-attempt ownership (workerID,
+	// taskID), consulted by handleLogChunk before it reads the store. See
+	// [attemptOwnerCache].
+	attemptCache *attemptOwnerCache
+
 	// leaseLocks serializes lease selection per worker. Concurrent lease
 	// requests for the SAME worker (one outstanding request per queue it
 	// serves, plus retry overlap) must not both read the same committed-core
@@ -337,6 +342,7 @@ func New(cfg Config, st store.Store, busClient busClient, m *metrics.Metrics, lo
 		notifier:         n,
 		diagBuf:          diagBuf,
 		waiters:          newWaiterRegistry(),
+		attemptCache:     newAttemptOwnerCache(),
 		leaseHoldTimeout: 30 * time.Second,
 		retryWakeTimers:  make(map[*time.Timer]struct{}),
 		// ctx is overwritten with the derived cancellable context in Run.
@@ -512,6 +518,10 @@ func (s *Scheduler) createAttemptAndClaimUsage(
 		s.revertTaskToReady(ctx, task.ID, "attempt creation error")
 		return store.TaskAttempt{}, fmt.Errorf("create task attempt for task %s: %w", task.ID, err)
 	}
+	// The scheduler already knows both fields the log-ingest path needs, so
+	// populate the cache now rather than waiting for the first log chunk to
+	// pay for a store read.
+	s.attemptCache.put(attempt.ID, attempt.WorkerID, attempt.TaskID)
 
 	// Re-check pool availability and create claim rows inside a single DB
 	// transaction so no concurrent assignment can over-subscribe a pool.

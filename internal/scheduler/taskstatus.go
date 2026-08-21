@@ -330,6 +330,10 @@ func (s *Scheduler) handleTaskTerminal(
 			return err
 		}
 	}
+	// The attempt is now terminal (closed above, or already closed by
+	// RecordTaskFailure for the failed path) and can never receive another
+	// log chunk, so its cached ownership entry is no longer needed.
+	s.attemptCache.evict(attempt.ID)
 
 	// ── Transition the task ───────────────────────────────────────────────
 	if err := s.store.UpdateTaskStatus(ctx, m.TaskID, taskStatus); err != nil {

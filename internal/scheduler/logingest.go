@@ -94,39 +94,47 @@ func (s *Scheduler) handleLogChunk(msg jetstream.Msg) {
 	}
 
 	// Resolve the attempt this chunk claims to belong to so its recorded
-	// WorkerID can be checked against the subject below. A store failure here
-	// is transient (not "this attempt doesn't exist"), so it is Nak'ed for
-	// redelivery rather than discarded.
-	attempt, err := s.store.GetTaskAttempt(ctx, m.AttemptID)
-	if errors.Is(err, store.ErrNotFound) {
-		s.logger.WarnContext(
-			ctx, "scheduler: task.logs for unknown attempt — discarding",
-			slog.String("attempt_id", m.AttemptID),
-			slog.String("task_id", m.TaskID),
-		)
-		s.ackMsg(ctx, msg)
-		return
-	}
-	if err != nil {
-		s.logger.WarnContext(
-			ctx, "scheduler: task.logs: lookup attempt failed — will redeliver",
-			slog.String("attempt_id", m.AttemptID),
-			slog.Any("error", err),
-		)
-		s.nakMsg(ctx, msg)
-		return
+	// WorkerID and TaskID can be checked below. Both fields are immutable for
+	// the life of the attempt, so a cache hit is as good as a fresh store
+	// read; on a miss, fall back to the store exactly as before — including
+	// the transient-vs-permanent distinction below, since the store read
+	// also confirms the attempt still exists (a chunk for a vanished attempt
+	// must still be discarded, never assumed present).
+	owner, ok := s.attemptCache.get(m.AttemptID)
+	if !ok {
+		attempt, err := s.store.GetTaskAttempt(ctx, m.AttemptID)
+		if errors.Is(err, store.ErrNotFound) {
+			s.logger.WarnContext(
+				ctx, "scheduler: task.logs for unknown attempt — discarding",
+				slog.String("attempt_id", m.AttemptID),
+				slog.String("task_id", m.TaskID),
+			)
+			s.ackMsg(ctx, msg)
+			return
+		}
+		if err != nil {
+			s.logger.WarnContext(
+				ctx, "scheduler: task.logs: lookup attempt failed — will redeliver",
+				slog.String("attempt_id", m.AttemptID),
+				slog.Any("error", err),
+			)
+			s.nakMsg(ctx, msg)
+			return
+		}
+		owner = attemptOwner{workerID: attempt.WorkerID, taskID: attempt.TaskID}
+		s.attemptCache.put(m.AttemptID, owner.workerID, owner.taskID)
 	}
 	// The attempt is real, but is it for the task this chunk claims? Without
 	// this, a worker holding a live attempt of its own could pair that
 	// attempt's ID with a different task's ID in the payload — the worker-ID
 	// check below would pass (the attempt really is the subject worker's),
 	// but the log would land against a task that worker was never assigned.
-	if attempt.TaskID != m.TaskID {
+	if owner.taskID != m.TaskID {
 		s.logger.WarnContext(
 			ctx, "scheduler: task.logs attempt task_id mismatch — discarding",
 			slog.String("attempt_id", m.AttemptID),
 			slog.String("msg_task_id", m.TaskID),
-			slog.String("attempt_task_id", attempt.TaskID),
+			slog.String("attempt_task_id", owner.taskID),
 		)
 		s.ackMsg(ctx, msg)
 		return
@@ -135,13 +143,13 @@ func (s *Scheduler) handleLogChunk(msg jetstream.Msg) {
 	// with LogChunkMsg carrying no worker field of its own, it is the only
 	// identity this handler has to check at all. Treat a mismatch as
 	// permanent — redelivery cannot make a forged message legal.
-	if subjectWorkerID != attempt.WorkerID {
+	if subjectWorkerID != owner.workerID {
 		s.logger.WarnContext(
 			ctx, "scheduler: task.logs from a worker that does not hold this task — discarding",
 			slog.String("task_id", m.TaskID),
 			slog.String("attempt_id", m.AttemptID),
 			slog.String("subject_worker_id", subjectWorkerID),
-			slog.String("attempt_worker_id", attempt.WorkerID),
+			slog.String("attempt_worker_id", owner.workerID),
 		)
 		s.ackMsg(ctx, msg)
 		return
