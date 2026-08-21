@@ -99,6 +99,50 @@ func TestWorkerCmd_Enroll_InvalidPublicKey(t *testing.T) {
 	}
 }
 
+// TestWorkerCmd_Enroll_WarnsThatARunningServerNeedsARestart pins the one
+// thing an operator cannot discover from a successful enroll: the command
+// opens the SQLite file from a separate process, so it cannot reload a
+// running broker's authorized-key set (built once at Broker.Start). Without
+// this warning the sequence reads as a success followed by an unrelated
+// worker that exits on an authorization error. The revoke command carries
+// the mirror-image warning; both must keep saying so.
+func TestWorkerCmd_Enroll_WarnsThatARunningServerNeedsARestart(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "test.db")
+	_, pub, err := brokerauth.GenerateSeed()
+	if err != nil {
+		t.Fatalf("GenerateSeed: %v", err)
+	}
+
+	prepareRoot([]string{"worker", "enroll", "--db", dbPath, "--worker-id", "w1", "--public-key", pub})
+	out := captureStdout(t, func() {
+		if err := Execute(); err != nil {
+			t.Fatalf("enroll: unexpected error: %v", err)
+		}
+	})
+
+	for _, want := range []string{
+		"RUNNING sqi-server",
+		"restarts",
+		"/api/v1/workers/enroll",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("enroll output does not mention %q; got: %s", want, out)
+		}
+	}
+}
+
+// TestWorkerCmd_Enroll_LongHelpWarnsAboutARunningServer keeps the same
+// warning on the command's own help text, so an operator reading
+// "worker enroll --help" before running anything learns it too.
+func TestWorkerCmd_Enroll_LongHelpWarnsAboutARunningServer(t *testing.T) {
+	if !strings.Contains(workerEnrollCmd.Long, "RUNNING sqi-server") {
+		t.Errorf("workerEnrollCmd.Long does not warn that a running server will not see the credential; got:\n%s", workerEnrollCmd.Long)
+	}
+	if !strings.Contains(workerEnrollCmd.Long, "POST /api/v1/workers/enroll") {
+		t.Errorf("workerEnrollCmd.Long does not name the REST alternative; got:\n%s", workerEnrollCmd.Long)
+	}
+}
+
 // TestWorkerCmd_Enroll_DuplicateWorkerIDFails verifies that enrolling the
 // same worker ID twice with two different keys fails the second time.
 func TestWorkerCmd_Enroll_DuplicateWorkerIDFails(t *testing.T) {
@@ -130,15 +174,15 @@ func TestWorkerCmd_Enroll_DuplicateWorkerIDFails(t *testing.T) {
 	}
 }
 
-// TestWorkerCmd_RotationAfterRevoke walks the whole key-rotation flow this
-// fix restores: enroll -> (keygen --force, stood in for by generating a
-// second local keypair, exactly as sqi-worker keygen would produce) ->
-// re-enrolling that worker ID must fail while the old credential is still
-// active -> revoke -> re-enroll with the new key succeeds -> the new key,
-// not the old one, is what's active. This is the proof revocation is no
-// longer a one-way door: internal/store/migrations/00030_broker_auth.sql's
-// worker_id uniqueness must be scoped to active rows only, not the whole
-// table.
+// TestWorkerCmd_RotationAfterRevoke walks the whole key-rotation flow:
+// enroll -> (keygen --force, stood in for by generating a second local
+// keypair, exactly as sqi-worker keygen would produce) -> re-enrolling that
+// worker ID must fail while the old credential is still active -> revoke ->
+// re-enroll with the new key succeeds -> the new key, not the old one, is
+// what's active. It holds only because
+// internal/store/migrations/00030_broker_auth.sql scopes worker_id
+// uniqueness to active rows, not the whole table; scoped to the whole table,
+// revocation is a one-way door and the worker ID can never be used again.
 func TestWorkerCmd_RotationAfterRevoke(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "test.db")
 
@@ -177,8 +221,8 @@ func TestWorkerCmd_RotationAfterRevoke(t *testing.T) {
 		}
 	})
 
-	// This is the one-way-door fix: with the old credential revoked, the
-	// same worker ID must be free to enroll again with the new key.
+	// With the old credential revoked, the same worker ID must be free to
+	// enroll again with the new key.
 	prepareRoot([]string{"worker", "enroll", "--db", dbPath, "--worker-id", "w1", "--public-key", pub2})
 	_ = captureStdout(t, func() {
 		if err := Execute(); err != nil {

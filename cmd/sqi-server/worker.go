@@ -46,7 +46,8 @@ auth.enabled (the separate, user-facing auth gate) is on.
 
 Subcommands:
   token issue   Issue a one-time join token for self-service enrollment.
-  enroll        Directly register a worker's credential by ID and public key.
+  enroll        Directly register a worker's credential by ID and public key
+                (offline — see "enroll --help").
   revoke        Revoke a worker's credential (offline — see "revoke --help").
   list          List active worker credentials.`,
 }
@@ -91,7 +92,14 @@ This is the manual path for a worker that cannot reach sqi-server's REST API
 to self-enroll (an air-gapped host, or an operator who provisions credentials
 by hand): run "sqi-worker keygen" on the worker host to generate a keypair,
 then run this command on the server with the worker ID and public key it
-prints.`,
+prints.
+
+A RUNNING sqi-server does not see the new credential — it reads the enrolled
+set once, at startup, and this command writes the database from a separate
+process with no broker handle. The worker's connection is refused until
+sqi-server is restarted. To enroll against a running server instead, use the
+REST API with a join token:
+  POST /api/v1/workers/enroll`,
 	RunE: runWorkerEnroll,
 }
 
@@ -230,7 +238,15 @@ func runWorkerEnroll(_ *cobra.Command, _ []string) error {
 		return fmt.Errorf("store credential: %w", err)
 	}
 
-	fmt.Fprintf(os.Stdout, "Enrolled worker %q.\n", workerEnrollFlags.WorkerID)
+	// Symmetric with runWorkerRevoke's warning, and for the same reason: this
+	// command writes the database from a process with no broker handle, and
+	// the broker's authorized-key set is built once at Broker.Start. Without
+	// this line an operator who enrolls against a running server sees
+	// "Enrolled worker" and then a worker that exits fatally on
+	// nats.ErrAuthorization, with nothing connecting the two.
+	fmt.Fprintf(os.Stdout, "Enrolled worker %q. A RUNNING sqi-server will not accept this credential until it restarts;"+
+		" to enroll against a running server, use POST /api/v1/workers/enroll with a join token instead.\n",
+		workerEnrollFlags.WorkerID)
 	return nil
 }
 
