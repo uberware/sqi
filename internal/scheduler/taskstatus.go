@@ -107,11 +107,7 @@ func (s *Scheduler) handleTaskStatusMessage(msg jetstream.Msg) {
 	// attributed to anyone and is discarded rather than acted on.
 	subjectWorkerID, _, ok := bus.ParseWorkerSubject(msg.Subject())
 	if !ok {
-		s.logger.WarnContext(
-			ctx, "scheduler: task.status on unexpected subject — discarding",
-			slog.String("subject", msg.Subject()),
-		)
-		s.ackMsg(ctx, msg)
+		s.discardUnexpectedSubject(ctx, msg, "task.status")
 		return
 	}
 

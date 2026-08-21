@@ -691,11 +691,7 @@ func (s *Scheduler) handleWorkerMessage(msg jetstream.Msg) {
 
 	workerID, _, ok := bus.ParseWorkerSubject(subject)
 	if !ok {
-		s.logger.WarnContext(
-			ctx, "scheduler: unexpected worker subject",
-			slog.String("subject", subject),
-		)
-		s.ackMsg(ctx, msg)
+		s.discardUnexpectedSubject(ctx, msg, "worker")
 		return
 	}
 
@@ -714,11 +710,7 @@ func (s *Scheduler) handleWorkerMessage(msg jetstream.Msg) {
 		// subject with an unrecognized prefix cannot: ParseWorkerSubject
 		// whitelists the three it knows and rejects the rest, so that case
 		// is already handled by the !ok branch above.
-		s.logger.WarnContext(
-			ctx, "scheduler: unexpected worker subject",
-			slog.String("subject", subject),
-		)
-		s.ackMsg(ctx, msg)
+		s.discardUnexpectedSubject(ctx, msg, "worker")
 	}
 }
 
@@ -777,6 +769,45 @@ func (s *Scheduler) discardOnVersionMismatch(
 	return true
 }
 
+// discardUnexpectedSubject logs a "<noun> on unexpected subject —
+// discarding" warning naming msg's subject and acks it away. noun identifies
+// the calling consumer (e.g. "worker", "task.status", "task.logs") in the log
+// line. Shared by every consumer that gives up on a message because its
+// subject would not parse, or — for [Scheduler.handleWorkerMessage]'s
+// unreachable-in-practice default case — parsed into a shape that consumer's
+// dispatch does not recognize. A malformed or unrecognized subject cannot
+// become valid on redelivery, so this always acks, never naks.
+func (s *Scheduler) discardUnexpectedSubject(ctx context.Context, msg jetstream.Msg, noun string) {
+	s.logger.WarnContext(
+		ctx, "scheduler: "+noun+" on unexpected subject — discarding",
+		slog.String("subject", msg.Subject()),
+	)
+	s.ackMsg(ctx, msg)
+}
+
+// discardOnIdentityMismatch acks and discards msg if payloadWorkerID (from
+// the decoded message body) disagrees with subjectWorkerID (from the NATS
+// subject). The subject is the only identity NATS itself can enforce, so a
+// payload claiming a different worker is treated as permanent — redelivery
+// cannot make a forged or stale identity legal — the same reasoning as
+// [Scheduler.discardOnVersionMismatch].
+//
+// No separate "missing worker_id" check is needed: subjectWorkerID is always
+// non-empty ([bus.ParseWorkerSubject] guarantees it), so an empty
+// payloadWorkerID already fails this comparison.
+func (s *Scheduler) discardOnIdentityMismatch(ctx context.Context, msg jetstream.Msg, subjectWorkerID, payloadWorkerID string) bool {
+	if payloadWorkerID == subjectWorkerID {
+		return false
+	}
+	s.logger.WarnContext(
+		ctx, "scheduler: worker message whose payload identity differs from its subject — discarding",
+		slog.String("subject_worker_id", subjectWorkerID),
+		slog.String("payload_worker_id", payloadWorkerID),
+	)
+	s.ackMsg(ctx, msg)
+	return true
+}
+
 // handleWorkerRegister processes a worker.register message:
 // decodes the payload, upserts the worker in the store, and refreshes the
 // WorkersTotal Prometheus gauge.
@@ -798,18 +829,9 @@ func (s *Scheduler) handleWorkerRegister(ctx context.Context, msg jetstream.Msg,
 		"this worker is not registered and will be offered no work at all") {
 		return
 	}
-	if m.WorkerID != subjectWorkerID {
-		s.logger.WarnContext(
-			ctx, "scheduler: worker message whose payload identity differs from its subject — discarding",
-			slog.String("subject_worker_id", subjectWorkerID),
-			slog.String("payload_worker_id", m.WorkerID),
-		)
-		s.ackMsg(ctx, msg)
+	if s.discardOnIdentityMismatch(ctx, msg, subjectWorkerID, m.WorkerID) {
 		return
 	}
-	// No separate "missing worker_id" check: subjectWorkerID is always
-	// non-empty (bus.ParseWorkerSubject guarantees it), so an empty
-	// m.WorkerID already failed the mismatch check above.
 
 	// The two struct conversions below (GPUInfo, ExprLimits) are what replaced
 	// a hand-maintained duplicate of protocol.RegisterMsg that used to live in
@@ -1000,18 +1022,9 @@ func (s *Scheduler) handleWorkerDeregister(ctx context.Context, msg jetstream.Ms
 		s.ackMsg(ctx, msg)
 		return
 	}
-	if m.WorkerID != subjectWorkerID {
-		s.logger.WarnContext(
-			ctx, "scheduler: worker message whose payload identity differs from its subject — discarding",
-			slog.String("subject_worker_id", subjectWorkerID),
-			slog.String("payload_worker_id", m.WorkerID),
-		)
-		s.ackMsg(ctx, msg)
+	if s.discardOnIdentityMismatch(ctx, msg, subjectWorkerID, m.WorkerID) {
 		return
 	}
-	// No separate "missing worker_id" check: subjectWorkerID is always
-	// non-empty (bus.ParseWorkerSubject guarantees it), so an empty
-	// m.WorkerID already failed the mismatch check above.
 
 	if err := s.store.UpdateWorkerStatus(ctx, m.WorkerID, store.WorkerStatusOffline); err != nil {
 		if errors.Is(err, store.ErrNotFound) {
@@ -1089,18 +1102,9 @@ func (s *Scheduler) handleWorkerHeartbeat(ctx context.Context, msg jetstream.Msg
 		"this worker's liveness signal is not recorded; the heartbeat sweep will retire it") {
 		return
 	}
-	if m.WorkerID != subjectWorkerID {
-		s.logger.WarnContext(
-			ctx, "scheduler: worker message whose payload identity differs from its subject — discarding",
-			slog.String("subject_worker_id", subjectWorkerID),
-			slog.String("payload_worker_id", m.WorkerID),
-		)
-		s.ackMsg(ctx, msg)
+	if s.discardOnIdentityMismatch(ctx, msg, subjectWorkerID, m.WorkerID) {
 		return
 	}
-	// No separate "missing worker_id" check: subjectWorkerID is always
-	// non-empty (bus.ParseWorkerSubject guarantees it), so an empty
-	// m.WorkerID already failed the mismatch check above.
 
 	at := m.At
 	if at.IsZero() {
