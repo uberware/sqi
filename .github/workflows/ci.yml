@@ -1019,7 +1019,16 @@ jobs:
       - name: Run the integration suite
         run: |
           set +e
-          make test-integration 2>&1 | tee integration-output.log
+          # go test's own default (10m per package) leaves little headroom
+          # once the LDAP and Keycloak containers are in the run: up to ~90s
+          # for LDAP readiness plus up to ~180s for Keycloak, on top of the
+          # suite's own runtime, which is dominated by that container
+          # readiness rather than by the tests themselves. 15m is set
+          # explicitly here, through INTEGRATION_TEST_FLAGS, so a slow runner
+          # gets a clear failure instead of a default timeout landing close
+          # enough to the estimate to be a coin flip; local runs are
+          # unaffected since the Makefile leaves this empty by default.
+          make test-integration INTEGRATION_TEST_FLAGS="-timeout 15m" 2>&1 | tee integration-output.log
           status=${PIPESTATUS[0]}
           set -e
 

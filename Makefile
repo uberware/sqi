@@ -200,8 +200,12 @@ test-cover-html: test-cover ## Open HTML coverage report in the browser
 	go tool cover -html=$(COVERAGE_OUT)
 
 .PHONY: test-integration
+# INTEGRATION_TEST_FLAGS is empty by default so a local run gets go test's
+# ordinary defaults; CI sets it to add a timeout sized for the suite's own
+# LDAP/Keycloak containers without changing what a local run does.
+INTEGRATION_TEST_FLAGS ?=
 test-integration: ## Run integration tests (tagged 'integration')
-	go test $(TEST_FLAGS) -tags integration -v ./test/...
+	go test $(TEST_FLAGS) -tags integration -v $(INTEGRATION_TEST_FLAGS) ./test/...
 
 .PHONY: test-conformance
 test-conformance: ## Run the official OpenJD conformance suite (needs the pinned submodule)
