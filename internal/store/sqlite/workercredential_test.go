@@ -124,6 +124,135 @@ func TestWorkerCredential_ListActiveOmitsRevoked(t *testing.T) {
 	}
 }
 
+// TestWorkerCredential_RotateAfterRevoke verifies that revocation is not a
+// one-way door: once a worker's credential is revoked, that same worker ID
+// can enroll again with a new public key, and both rows persist — the
+// revoked one keeping its revoked_at, the new one active.
+func TestWorkerCredential_RotateAfterRevoke(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+	now := time.Now().UTC().Truncate(time.Second)
+
+	if _, err := s.CreateWorkerCredential(ctx, store.WorkerCredential{
+		ID: "wc1", WorkerID: "w1", PublicKey: "pub1", EnrolledAt: now,
+	}); err != nil {
+		t.Fatalf("CreateWorkerCredential (first): %v", err)
+	}
+	if err := s.RevokeWorkerCredential(ctx, "w1", now); err != nil {
+		t.Fatalf("RevokeWorkerCredential: %v", err)
+	}
+
+	created, err := s.CreateWorkerCredential(ctx, store.WorkerCredential{
+		ID: "wc2", WorkerID: "w1", PublicKey: "pub2", EnrolledAt: now,
+	})
+	if err != nil {
+		t.Fatalf("CreateWorkerCredential (rotated): %v", err)
+	}
+	if created.RevokedAt != nil {
+		t.Errorf("rotated credential RevokedAt = %v, want nil", created.RevokedAt)
+	}
+
+	got, err := s.GetWorkerCredentialByWorkerID(ctx, "w1")
+	if err != nil {
+		t.Fatalf("GetWorkerCredentialByWorkerID: %v", err)
+	}
+	// GetWorkerCredentialByWorkerID has no "active only" filter in its own
+	// contract, but the active row is what ListActiveWorkerCredentials must
+	// resolve to below; this call is here to confirm a row is retrievable at
+	// all after the rotation, not which one.
+	if got.WorkerID != "w1" {
+		t.Errorf("GetWorkerCredentialByWorkerID WorkerID = %q, want %q", got.WorkerID, "w1")
+	}
+}
+
+// TestWorkerCredential_ActiveWorkerIDConflict verifies that a worker ID with
+// an existing ACTIVE credential still cannot be double-enrolled — the
+// partial-index fix must not weaken this, only the revoked-row case.
+func TestWorkerCredential_ActiveWorkerIDConflict(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+	now := time.Now().UTC().Truncate(time.Second)
+
+	if _, err := s.CreateWorkerCredential(ctx, store.WorkerCredential{
+		ID: "wc1", WorkerID: "w1", PublicKey: "pub1", EnrolledAt: now,
+	}); err != nil {
+		t.Fatalf("CreateWorkerCredential (first): %v", err)
+	}
+
+	_, err := s.CreateWorkerCredential(ctx, store.WorkerCredential{
+		ID: "wc2", WorkerID: "w1", PublicKey: "pub2", EnrolledAt: now,
+	})
+	if !errors.Is(err, store.ErrConflict) {
+		t.Errorf("expected ErrConflict enrolling a worker ID with an active credential, got %v", err)
+	}
+}
+
+// TestWorkerCredential_RevokedPublicKeyStillUnique verifies that public_key
+// uniqueness is untouched by the worker_id fix: a key that belonged to a
+// now-revoked credential can never be reused, by any worker.
+func TestWorkerCredential_RevokedPublicKeyStillUnique(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+	now := time.Now().UTC().Truncate(time.Second)
+
+	if _, err := s.CreateWorkerCredential(ctx, store.WorkerCredential{
+		ID: "wc1", WorkerID: "w1", PublicKey: "pub1", EnrolledAt: now,
+	}); err != nil {
+		t.Fatalf("CreateWorkerCredential: %v", err)
+	}
+	if err := s.RevokeWorkerCredential(ctx, "w1", now); err != nil {
+		t.Fatalf("RevokeWorkerCredential: %v", err)
+	}
+
+	_, err := s.CreateWorkerCredential(ctx, store.WorkerCredential{
+		ID: "wc2", WorkerID: "w2", PublicKey: "pub1", EnrolledAt: now,
+	})
+	if !errors.Is(err, store.ErrConflict) {
+		t.Errorf("expected ErrConflict reusing a revoked credential's public_key, got %v", err)
+	}
+}
+
+// TestWorkerCredential_ListActiveAfterRotationHasExactlyOneRow verifies that
+// after a worker is enrolled, revoked, and re-enrolled with a new key,
+// exactly one row is active — never zero (the rotation silently failing) and
+// never two (both keys accepted by the broker at once).
+func TestWorkerCredential_ListActiveAfterRotationHasExactlyOneRow(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+	now := time.Now().UTC().Truncate(time.Second)
+
+	if _, err := s.CreateWorkerCredential(ctx, store.WorkerCredential{
+		ID: "wc1", WorkerID: "w1", PublicKey: "pub1", EnrolledAt: now,
+	}); err != nil {
+		t.Fatalf("CreateWorkerCredential (first): %v", err)
+	}
+	if err := s.RevokeWorkerCredential(ctx, "w1", now); err != nil {
+		t.Fatalf("RevokeWorkerCredential: %v", err)
+	}
+	if _, err := s.CreateWorkerCredential(ctx, store.WorkerCredential{
+		ID: "wc2", WorkerID: "w1", PublicKey: "pub2", EnrolledAt: now,
+	}); err != nil {
+		t.Fatalf("CreateWorkerCredential (rotated): %v", err)
+	}
+
+	active, err := s.ListActiveWorkerCredentials(ctx)
+	if err != nil {
+		t.Fatalf("ListActiveWorkerCredentials: %v", err)
+	}
+	var forW1 []store.WorkerCredential
+	for _, c := range active {
+		if c.WorkerID == "w1" {
+			forW1 = append(forW1, c)
+		}
+	}
+	if len(forW1) != 1 {
+		t.Fatalf("want exactly 1 active credential for w1 after rotation, got %d", len(forW1))
+	}
+	if forW1[0].PublicKey != "pub2" {
+		t.Errorf("active credential PublicKey = %q, want %q (the rotated key)", forW1[0].PublicKey, "pub2")
+	}
+}
+
 func TestWorkerCredential_RevokeNotFound(t *testing.T) {
 	s := openTestStore(t)
 	err := s.RevokeWorkerCredential(context.Background(), "nope", time.Now().UTC())

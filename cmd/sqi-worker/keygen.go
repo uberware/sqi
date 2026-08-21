@@ -64,16 +64,21 @@ func runKeygen(_ *cobra.Command, _ []string) error {
 	}
 	seedPath := filepath.Join(dataDir, workerCredentialFilename)
 
-	if !keygenFlags.Force {
-		if _, err := os.Stat(seedPath); err == nil {
+	_, statErr := os.Stat(seedPath)
+	switch {
+	case statErr == nil:
+		if !keygenFlags.Force {
 			return fmt.Errorf(
 				"a credential already exists at %s; use --force to overwrite it (this invalidates the existing enrollment)",
 				seedPath,
 			)
-		} else if !errors.Is(err, os.ErrNotExist) {
-			return fmt.Errorf("stat %s: %w", seedPath, err)
 		}
+	case errors.Is(statErr, os.ErrNotExist):
+		// No existing seed — nothing to warn about below.
+	default:
+		return fmt.Errorf("stat %s: %w", seedPath, statErr)
 	}
+	seedExisted := statErr == nil
 
 	seed, publicKey, err := brokerauth.GenerateSeed()
 	if err != nil {
@@ -92,5 +97,21 @@ func runKeygen(_ *cobra.Command, _ []string) error {
 	fmt.Fprintf(os.Stdout, "Public key: %s\n", publicKey)
 	fmt.Fprintln(os.Stdout, "On the server, run:")
 	fmt.Fprintf(os.Stdout, "  sqi-server worker enroll --worker-id %s --public-key %s\n", workerID, publicKey)
+
+	if seedExisted {
+		// --force just overwrote a seed that may still be the credential the
+		// server has enrolled. The new local key means nothing to the broker
+		// until the server side is updated too — and today the server still
+		// has the OLD public key on file, so it must be revoked before the
+		// enroll command above can succeed (worker_id stays unique among
+		// active credentials).
+		fmt.Fprintf(
+			os.Stderr,
+			"Warning: this replaced an existing seed. The previous credential for worker %s is likely still"+
+				" enrolled on the server; revoke it first or the enroll command above will fail:\n"+
+				"  sqi-server worker revoke %s\n",
+			workerID, workerID,
+		)
+	}
 	return nil
 }

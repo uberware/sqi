@@ -18,8 +18,14 @@ func (s *Store) CreateWorkerCredential(_ context.Context, c store.WorkerCredenti
 		return store.WorkerCredential{}, store.ErrConflict
 	}
 	for _, ex := range s.workerCredentials {
-		// Mirror SQLite's worker_id and public_key UNIQUE constraints.
-		if ex.WorkerID == c.WorkerID || ex.PublicKey == c.PublicKey {
+		// Mirror SQLite's constraints: public_key is UNIQUE across every row,
+		// active or revoked, but worker_id is only unique among ACTIVE rows
+		// (worker_credentials_active, a partial index) — a revoked row must
+		// never block the same worker ID from enrolling again with a new key.
+		if ex.PublicKey == c.PublicKey {
+			return store.WorkerCredential{}, store.ErrConflict
+		}
+		if ex.WorkerID == c.WorkerID && ex.RevokedAt == nil {
 			return store.WorkerCredential{}, store.ErrConflict
 		}
 	}

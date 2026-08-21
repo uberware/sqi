@@ -6,16 +6,23 @@
 -- public key. worker_id is deliberately NOT a foreign key to workers(id): a
 -- credential is issued before the worker has ever registered, and on
 -- auth-off farms worker rows exist with no credential at all.
+--
+-- worker_id is uniqued by a PARTIAL index over active rows only (below), not
+-- a column-level UNIQUE: a revoked row must not block the same worker ID
+-- from enrolling again with a new key, or revocation would be a one-way
+-- door and a worker with a lost or compromised seed could never recover its
+-- identity. public_key stays globally UNIQUE — a key must never be reused,
+-- even after the credential that held it is revoked.
 CREATE TABLE worker_credentials (
     id           TEXT PRIMARY KEY,
-    worker_id    TEXT NOT NULL UNIQUE,
+    worker_id    TEXT NOT NULL,
     public_key   TEXT NOT NULL UNIQUE,
     name         TEXT NOT NULL DEFAULT '',
     enrolled_at  TEXT NOT NULL,
     last_seen_at TEXT,
     revoked_at   TEXT
 );
-CREATE INDEX worker_credentials_active ON worker_credentials (worker_id) WHERE revoked_at IS NULL;
+CREATE UNIQUE INDEX worker_credentials_active ON worker_credentials (worker_id) WHERE revoked_at IS NULL;
 
 -- worker_join_tokens mirrors api_keys (00022): only the hash is stored, and
 -- the prefix exists so an operator can identify a token in a list without

@@ -130,6 +130,76 @@ func TestWorkerCmd_Enroll_DuplicateWorkerIDFails(t *testing.T) {
 	}
 }
 
+// TestWorkerCmd_RotationAfterRevoke walks the whole key-rotation flow this
+// fix restores: enroll -> (keygen --force, stood in for by generating a
+// second local keypair, exactly as sqi-worker keygen would produce) ->
+// re-enrolling that worker ID must fail while the old credential is still
+// active -> revoke -> re-enroll with the new key succeeds -> the new key,
+// not the old one, is what's active. This is the proof revocation is no
+// longer a one-way door: internal/store/migrations/00030_broker_auth.sql's
+// worker_id uniqueness must be scoped to active rows only, not the whole
+// table.
+func TestWorkerCmd_RotationAfterRevoke(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "test.db")
+
+	_, pub1, err := brokerauth.GenerateSeed()
+	if err != nil {
+		t.Fatalf("GenerateSeed (first key): %v", err)
+	}
+	_, pub2, err := brokerauth.GenerateSeed()
+	if err != nil {
+		t.Fatalf("GenerateSeed (rotated key): %v", err)
+	}
+
+	prepareRoot([]string{"worker", "enroll", "--db", dbPath, "--worker-id", "w1", "--public-key", pub1})
+	_ = captureStdout(t, func() {
+		if err := Execute(); err != nil {
+			t.Fatalf("initial enroll: unexpected error: %v", err)
+		}
+	})
+
+	// Rotating the key locally (what "sqi-worker keygen --force" does) does
+	// not by itself free up the worker ID on the server: the old credential
+	// is still active, so re-enrolling must still fail here.
+	prepareRoot([]string{"worker", "enroll", "--db", dbPath, "--worker-id", "w1", "--public-key", pub2})
+	var beforeRevokeErr error
+	_ = captureStdout(t, func() {
+		beforeRevokeErr = Execute()
+	})
+	if beforeRevokeErr == nil {
+		t.Fatal("expected re-enrolling an active worker ID with a new key to fail before revoking the old credential")
+	}
+
+	prepareRoot([]string{"worker", "revoke", "w1", "--db", dbPath})
+	_ = captureStdout(t, func() {
+		if err := Execute(); err != nil {
+			t.Fatalf("revoke: unexpected error: %v", err)
+		}
+	})
+
+	// This is the one-way-door fix: with the old credential revoked, the
+	// same worker ID must be free to enroll again with the new key.
+	prepareRoot([]string{"worker", "enroll", "--db", dbPath, "--worker-id", "w1", "--public-key", pub2})
+	_ = captureStdout(t, func() {
+		if err := Execute(); err != nil {
+			t.Fatalf("re-enroll after revoke: unexpected error: %v", err)
+		}
+	})
+
+	prepareRoot([]string{"worker", "list", "--db", dbPath})
+	out := captureStdout(t, func() {
+		if err := Execute(); err != nil {
+			t.Fatalf("list: unexpected error: %v", err)
+		}
+	})
+	if !strings.Contains(out, pub2) {
+		t.Errorf("list output missing the rotated (new) public key; got:\n%s", out)
+	}
+	if strings.Contains(out, pub1) {
+		t.Errorf("list output still shows the revoked (old) public key; got:\n%s", out)
+	}
+}
+
 // TestWorkerCmd_Revoke_UnknownWorkerFails verifies that revoking a worker
 // with no credential exits non-zero with an accurate message — one that
 // does not claim the worker itself doesn't exist, since the same error also
