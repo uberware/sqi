@@ -270,6 +270,79 @@ To restore from a backup:
 
 ---
 
+## Worker broker credentials
+
+`sqi-server worker` groups the offline CLI commands for NATS broker
+authentication (`nats.auth.*` — see
+[Broker authentication](auth.md#broker-authentication-transport) for the
+full model). Like `migrate` and `backup`, these subcommands open the SQLite
+database file directly and do not start an HTTP server or NATS broker, so
+they work whether or not `sqi-server` is running — and, independently,
+whether or not the user-facing `auth.enabled` is on.
+
+> **These commands do not read the server's config file either, and unlike
+> `backup` they create and migrate the database if it doesn't already
+> exist.** `--db` defaults to `$SQI_SQLITE_PATH` (or `sqi.db` in the working
+> directory) — not `store.sqlite_path`, and not `SQI_STORE_SQLITE_PATH` — and
+> every `worker` subcommand applies pending migrations to whatever `--db`
+> resolves to before doing anything else. Point one at the wrong path and it
+> silently creates a fresh, empty database and prints a token or enrolls a
+> worker the running server can never see or validate. Pass `--db`
+> explicitly, or export `SQI_SQLITE_PATH` to match your deployment.
+
+### Issue a join token
+
+```sh
+sqi-server worker token issue --db /data/sqi.db --ttl 1h
+```
+
+Prints the raw token to stdout exactly once — capture it
+(`TOKEN=$(sqi-server worker token issue --db /data/sqi.db)`) or store it
+securely; only its hash is kept in the database. `--ttl` defaults to `1h`
+and is bounded 1 minute to 24 hours. Hand the token to a worker via
+`nats.join_token_file` (preferred) or `nats.join_token`, or mint one over
+REST instead with `POST /api/v1/workers/join-tokens` when `auth.enabled` is
+also on.
+
+### Enroll a worker manually
+
+```sh
+sqi-server worker enroll --db /data/sqi.db \
+  --worker-id 3f2a... --public-key UABC...XYZ
+```
+
+Registers a worker's broker credential directly, by worker ID and public
+key — the offline counterpart to self-service enrollment over REST. Run
+`sqi-worker keygen` on the worker host first; it prints this exact command
+with the worker's own ID and public key filled in. A **running**
+`sqi-server` does not see the new credential until it restarts — the broker
+builds its authorized-key set once at startup, and this command writes the
+database from a separate process with no broker handle.
+
+### Revoke a worker's credential
+
+```sh
+sqi-server worker revoke --db /data/sqi.db <worker-id>
+```
+
+Revokes a worker credential in the database. Takes effect the next time
+`sqi-server` starts, not immediately — to disconnect a worker at once
+against a running server, use `DELETE /api/v1/workers/{id}/credential`
+instead.
+
+### List worker credentials
+
+```sh
+sqi-server worker list --db /data/sqi.db
+```
+
+Lists every worker credential that has not been revoked: worker ID, name,
+public key, enrollment time, and last-seen time. Last-seen is set on worker
+registration (startup and reconnect) only, never by heartbeat — it answers
+"when did this worker last (re)connect", not "is it up right now".
+
+---
+
 ## Log management
 
 See [`docs/observability.md`](observability.md) for the full observability
