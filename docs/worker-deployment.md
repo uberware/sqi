@@ -186,7 +186,16 @@ a site that wants no self-service enrollment endpoint at all
    sqi-server worker enroll --worker-id 3f2a... --public-key UABC...XYZ
    ```
 
-3. Start the worker. It finds the seed already on disk, skips enrollment
+3. **Restart `sqi-server`.** `sqi-server worker enroll` writes the database
+   from a separate process with no broker handle, and the broker builds its
+   authorized-key set once at startup — so a *running* server does not know
+   about the credential just written, and a worker presenting it is refused
+   with an authorization error (which the worker treats as fatal, by
+   design). If restarting the server is not acceptable, enroll over REST
+   with a join token instead (Path A), which reloads the running broker in
+   the same request.
+
+4. Start the worker. It finds the seed already on disk, skips enrollment
    entirely, and connects directly with the credential.
 
 No join token and no REST call are involved in this path at any point.
@@ -212,7 +221,12 @@ No join token and no REST call are involved in this path at any point.
    public key on the server until that credential is revoked.
 3. `sqi-server worker enroll --worker-id <worker-id> --public-key <new-key>`
    on the server host, using the key `keygen` printed.
-4. Restart the worker. It finds the new seed `keygen` already wrote and
+4. **Restart `sqi-server`**, for the reason given in Path B step 3: this
+   offline command cannot reload a running broker's authorized-key set, so
+   until the server restarts it still refuses the new key. To rotate
+   without a server restart, remove `worker.nk` and re-enroll over REST
+   with a fresh join token instead (see the note below).
+5. Restart the worker. It finds the new seed `keygen` already wrote and
    connects directly — no join token or REST enrollment call is needed on
    this path.
 

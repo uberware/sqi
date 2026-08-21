@@ -84,8 +84,10 @@ nats:
   # sqi-server HTTP base URL used for enrollment, e.g.
   # "http://sqi-server.example:8080". Enrollment runs over REST, not NATS:
   # the broker's job is to reject unauthenticated connections, so it cannot
-  # also be the channel a worker gets its first credential over. When empty,
-  # the URL is derived from mDNS discovery.
+  # also be the channel a worker gets its first credential over. REQUIRED
+  # whenever a join token is configured, and NOT derived from mDNS
+  # discovery: enrollment fails fast naming this field rather than
+  # attempting a request with no host.
   # Type: string   Env: SQI_WORKER_NATS_SERVER_URL
   server_url: ""
 

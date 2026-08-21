@@ -70,7 +70,10 @@ Two ways, both ultimately calling the same store write:
   No token, no REST call, no `POST /api/v1/workers/enroll` route needs to
   exist at all. This is the path for an air-gapped worker, or a site that
   sets `nats.auth.enrollment_endpoint_enabled: false` and wants no
-  self-service enrollment surface whatsoever.
+  self-service enrollment surface whatsoever. `sqi-server worker enroll` is
+  **offline**, exactly like `sqi-server worker revoke`: it writes the
+  database from a process with no broker handle, so a **running** server
+  keeps refusing the new key until it restarts.
 
 **Enrollment always runs over REST, never over NATS.** The broker's entire
 job is to refuse unauthenticated connections, so it cannot also be the
@@ -117,7 +120,11 @@ again. To rotate a worker's key:
    exact `sqi-server worker enroll` command for step 3.
 3. `sqi-server worker enroll --worker-id <worker-id> --public-key <new-key>`
    on the server host, using the public key `keygen` just printed.
-4. Restart `sqi-worker`. It finds the new seed already on disk (`keygen`
+4. **Restart `sqi-server`.** Like `worker revoke`, `worker enroll` is an
+   offline command: it writes the database from a process with no broker
+   handle, and the broker's authorized-key set is built once at startup. A
+   running server therefore still refuses the new key until it restarts.
+5. Restart `sqi-worker`. It finds the new seed already on disk (`keygen`
    wrote it directly) and connects with it — no REST enrollment call happens
    on this path, since a credential file already exists.
 
@@ -127,6 +134,31 @@ server until it is revoked, so the enroll command in step 3 fails until
 step 1 has run. To rotate via a fresh join token instead of `keygen`,
 remove `worker.nk` before restarting the worker — with no credential file
 present it re-enrolls exactly as it did on first boot.
+
+### What an enrolled worker's credential may do
+
+A worker's broker permissions are generated from the worker ID recorded at
+enrollment, and cover only that worker's own subtree:
+
+- **Publish:** `task.status.<id>.*`, `task.logs.<id>.*`,
+  `worker.register.<id>`, `worker.heartbeat.<id>`, `worker.deregister.<id>`,
+  `worker.diag.<id>`, `work.lease.<id>.*`.
+- **Subscribe:** `_INBOX_<id>.>` — this worker's own reply inboxes — and
+  `task.cancel.>`.
+
+Everything else is denied. A worker cannot subscribe to `task.status.>` or
+`task.logs.>`, so it cannot observe another worker's status or log traffic.
+
+The reply-inbox prefix is **per worker**, not nats.go's process-global
+`_INBOX`. That matters because a work lease is core-NATS request/reply: the
+assignment batch — command lines, embedded file contents, job and task
+parameters, environment variables, the path map and the run-as-user account
+— is delivered to the requester's reply inbox and nothing but the subscribe
+permission guards it. A single `_INBOX.>` grant would let any enrolled
+worker read every other worker's assignments (and `sqi-server`'s own
+JetStream API replies) without leasing a task itself. Each worker therefore
+connects with `nats.CustomInboxPrefix("_INBOX_<worker-id>")` and is granted
+only that subtree.
 
 ### The auth-off asymmetry
 
@@ -150,7 +182,8 @@ address and broker authentication is off, naming both remediations (turn on
 
 ### An accepted authorization gap: `task.cancel.>`
 
-Workers subscribe to `task.cancel.<taskID>` per-task, at the moment a task is
+This is the **only** subject a worker's credential can reach outside its own
+subtree. Workers subscribe to `task.cancel.<taskID>` per-task, at the moment a task is
 assigned, not for the lifetime of the connection. NATS permissions are
 static per credential, so a worker's subscribe permission cannot be
 narrower than the whole `task.cancel.>` subtree — there is no way to grant

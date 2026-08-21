@@ -638,10 +638,22 @@ func NewRouter(cfg Config, deps Deps, logger *slog.Logger, m *metrics.Metrics, h
 			// no RBAC actually enforced, anyone who can reach this server
 			// would be able to mint a credential for arbitrary compute, which
 			// is a materially different blast radius than every other
-			// Superuser-bypassed action. Revoking an existing worker's
-			// credential carries no such risk — it only removes access
-			// already granted — so it stays mounted unconditionally like
-			// every other permission-gated route.
+			// Superuser-bypassed action.
+			//
+			// Revoke stays mounted unconditionally, like every other
+			// permission-gated route, and that choice is NOT risk-free: with
+			// auth.enabled false and nats.auth.enabled true — a supported,
+			// documented combination — every caller is the anonymous
+			// Superuser, so an unauthenticated request can disconnect a
+			// worker, and repeated requests can take the whole farm off the
+			// broker one worker at a time. The risk it does not carry is
+			// escalation: revoke only removes access already granted, it
+			// cannot attach compute or obtain a credential. That is an
+			// AVAILABILITY exposure, deliberately accepted here because
+			// carving out this one route would break the rule that auth-off
+			// behavior matches pre-auth sqi, and because every other
+			// destructive worker route (disable, delete) is exposed exactly
+			// the same way in that configuration.
 			if cfg.AuthEnabled {
 				rest.Group(func(g chi.Router) {
 					g.Use(az.require(policy.WorkersEnroll))

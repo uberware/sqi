@@ -2896,13 +2896,30 @@ paths:
         return `404` with a body that says so rather than claiming the
         worker does not exist.
 
-        This call writes the revocation to the database. It does not by
-        itself guarantee an already-connected worker is disconnected
-        immediately — that depends on how revocation reaches the running
-        broker, which is outside this route's scope.
+        Revocation is **synchronous**: this call writes the revocation to
+        the database and then reloads the running broker's authorized-key
+        set, and nats-server re-authorizes every connected client inside
+        that reload. An already-connected worker is therefore disconnected
+        before the `204` is returned, and its in-flight leases reclaim
+        through the ordinary heartbeat-sweep path.
+
+        If the store write succeeds but the broker reload fails, the
+        response is `500`: the credential is gone from the store while the
+        broker may still be honoring it, which the caller has to know
+        about. Retry the request, or restart `sqi-server`.
+
+        With broker authentication off (`nats.auth.enabled: false`) there is
+        no authorized-key set to reload, so this only writes the store —
+        there is nothing to disconnect a worker from, because the broker
+        never authenticated it in the first place.
+
+        The offline CLI equivalent, `sqi-server worker revoke <id>`, has no
+        broker handle and does NOT disconnect a running worker — it takes
+        effect at the next server start.
       responses:
         "204":
-          description: Credential revoked.
+          description: >-
+            Credential revoked and the worker disconnected from the broker.
         "401":
           $ref: "#/components/responses/Unauthorized"
         "403":
@@ -2916,7 +2933,14 @@ paths:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
         "500":
-          $ref: "#/components/responses/InternalServerError"
+          description: >-
+            The store write or the broker reload failed. The credential may
+            be revoked in the store while the broker still honors it; retry,
+            or restart sqi-server.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
 
   # ── Diagnostics ────────────────────────────────────────────────────────────
 
