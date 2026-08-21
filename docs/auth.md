@@ -43,19 +43,27 @@ means "the channel is private" — it does not.
 
 Each worker holds an Ed25519 **nkey** keypair. The worker generates it
 locally — only the public key ever leaves the machine — and the private seed
-is written to `<data_dir>/worker.nk`, mode `0600`. Connecting to the broker
-is challenge-response (the broker sends a nonce, the worker signs it with the
-seed), so nothing replayable crosses the wire.
+is written to `nats.credential_file`, mode `0600`, which defaults to
+`<data_dir>/worker.nk` but can be pointed anywhere. Self-service enrollment
+over REST honors a custom path, writing the seed wherever `credential_file`
+resolves; `sqi-worker keygen` does not — it always writes the default
+`<data_dir>/worker.nk` regardless of `credential_file`, so a custom path must
+be populated by enrollment or by moving the seed there by hand before the
+worker starts. See
+[`docs/worker-configuration.md`](worker-configuration.md#natscredential_file)
+for the full caveat. Connecting to the broker is challenge-response (the
+broker sends a nonce, the worker signs it with the seed), so nothing
+replayable crosses the wire.
 
 ### Getting a credential
 
 Two ways, both ultimately calling the same store write:
 
 - **Join token (self-service).** An operator mints a TTL-bounded token —
-  `sqi-server worker token issue` always works, or `POST
-  /api/v1/workers/join-tokens` when `auth.enabled` is on, gated on the
-  `workers.enroll` permission (admin-only by default) — and hands it to the
-  worker via `nats.join_token_file` (preferred) or `nats.join_token`. On
+  `sqi-server worker token issue --db <path>` (see the `--db` caveat below),
+  or `POST /api/v1/workers/join-tokens` when `auth.enabled` is on, gated on
+  the `workers.enroll` permission (admin-only by default) — and hands it to
+  the worker via `nats.join_token_file` (preferred) or `nats.join_token`. On
   first boot with no credential file present, the worker generates its
   keypair and calls `POST /api/v1/workers/enroll` with the token, its worker
   ID and its public key. That endpoint is unauthenticated by design — the
@@ -64,16 +72,40 @@ Two ways, both ultimately calling the same store write:
   `nats.auth.enrollment_endpoint_enabled` are both true. Tokens default to a
   1-hour TTL (bounded 1 minute to 24 hours) and are single-use by default
   (`nats.auth.join_token_single_use`).
-- **Manual pre-provisioning.** Run `sqi-worker keygen` on the worker host —
-  it writes the seed and prints the public key and the exact `sqi-server
-  worker enroll --worker-id … --public-key …` command to run on the server.
-  No token, no REST call, no `POST /api/v1/workers/enroll` route needs to
-  exist at all. This is the path for an air-gapped worker, or a site that
-  sets `nats.auth.enrollment_endpoint_enabled: false` and wants no
-  self-service enrollment surface whatsoever. `sqi-server worker enroll` is
-  **offline**, exactly like `sqi-server worker revoke`: it writes the
-  database from a process with no broker handle, so a **running** server
-  keeps refusing the new key until it restarts.
+- **Manual pre-provisioning.** Run `sqi-worker keygen --data-dir <the
+  worker's worker.data_dir>` on the worker host — it writes the seed and
+  prints the public key and the exact `sqi-server worker enroll --worker-id
+  … --public-key … --db <path>` command to run on the server. No token, no
+  REST call, no `POST /api/v1/workers/enroll` route needs to exist at all.
+  This is the path for an air-gapped worker, or a site that sets
+  `nats.auth.enrollment_endpoint_enabled: false` and wants no self-service
+  enrollment surface whatsoever. `sqi-server worker enroll` is **offline**,
+  exactly like `sqi-server worker revoke`: it writes the database from a
+  process with no broker handle, so a **running** server keeps refusing the
+  new key until it restarts.
+
+> **`sqi-server worker …` never reads the server's config file.** `--db`
+> defaults to `$SQI_SQLITE_PATH` (or `sqi.db` in the working directory), not
+> `store.sqlite_path`, and `token issue`/`enroll`/`revoke`/`list` all open
+> that path directly — creating and migrating it if it does not exist yet.
+> Run one of these commands with the wrong `--db` against a server using a
+> different path and it silently creates a fresh, empty database and prints
+> a token or enrolls a worker the running server can never see. Pass `--db`
+> explicitly, or export `SQI_SQLITE_PATH` to match your deployment — see
+> [`docs/operations.md`](operations.md#worker-broker-credentials) for the
+> full command reference and the same caveat as it applies to `migrate` and
+> `backup`.
+
+**Enroll every worker before flipping `nats.auth.enabled` on.** The enrolled
+credential set is loaded once, at server `Start`, and only when broker
+authentication is enabled — so a farm that flips the switch with nothing
+enrolled yet does not fail closed gracefully, it takes every worker offline
+at its next restart or reconnect: a rejected credential is fatal in the
+worker, not a silent retry. A worker can hold a credential harmlessly while
+`nats.auth.enabled` is still `false` — the broker does not check it — so the
+safe order is: enroll every worker first (either path above), confirm each
+one has a credential (`sqi-server worker list`), and only then set
+`nats.auth.enabled: true` and restart the server.
 
 **Enrollment always runs over REST, never over NATS.** The broker's entire
 job is to refuse unauthenticated connections, so it cannot also be the
@@ -141,9 +173,15 @@ again. To rotate a worker's key:
 
 1. `sqi-server worker revoke <worker-id>` (or the REST path, if the old
    credential should be disconnected immediately).
-2. `sqi-worker keygen --force` on the worker host — this overwrites
-   `worker.nk` with a new keypair and prints the new public key, plus the
-   exact `sqi-server worker enroll` command for step 3.
+2. `sqi-worker keygen --force --data-dir <the worker's worker.data_dir>` on
+   the worker host — this overwrites the seed with a new keypair and prints
+   the new public key, plus the exact `sqi-server worker enroll` command for
+   step 3. `keygen` reads no config file: it honors only the `--data-dir` and
+   `--force` flags, so a worker whose `worker.data_dir` is set anywhere other
+   than the built-in default must pass `--data-dir` explicitly — a bare
+   `keygen --force` writes the seed under the default data dir instead,
+   minting a new, unenrolled worker ID there rather than rotating the key of
+   the worker actually named in step 1.
 3. `sqi-server worker enroll --worker-id <worker-id> --public-key <new-key>`
    on the server host, using the public key `keygen` just printed.
 4. **Restart `sqi-server`.** Like `worker revoke`, `worker enroll` is an
@@ -336,6 +374,7 @@ built-in roles (no custom-role builder — YAGNI):
 | apikeys.self (own keys) | ✅ | ✅ | ✅ | ✅ |
 | apikeys.admin (anyone's keys) | ❌ | ❌ | ❌ | ✅ |
 | `isolation.manage` — set a queue's `run_as_user`/`run_as_group` | ❌ | ❌ | ❌ | ✅ |
+| `workers.enroll` — mint worker join tokens; revoke a worker's broker credential | ❌ | ❌ | ❌ | ✅ |
 
 `apikeys.admin` is enforced by `GET /users/{id}/api-keys` and
 `DELETE /users/{id}/api-keys/{keyId}` — see [API keys](#api-keys).
@@ -1697,6 +1736,20 @@ provider](development.md#testing-against-a-real-directory-or-identity-provider) 
   already run as the daemon's own account — so isolation being enabled on
   Windows is precisely what makes this reachable. Not yet fixed; tracked for
   a follow-up before this is considered hardened.
+- **`DELETE /workers/{id}/credential` stays mounted with `auth.enabled=false`.**
+  Every other permission-gated route in this document is bypassed by the
+  anonymous superuser when `auth.enabled` is off — that is unchanged,
+  by-design behavior. This one route carries a real consequence from it:
+  with `auth.enabled=false` and `nats.auth.enabled=true` (a supported,
+  documented combination), an unauthenticated caller can revoke any worker's
+  broker credential, and repeated calls can take the whole farm off the
+  broker one worker at a time. It is an availability exposure, not an
+  escalation — revoke only removes access already granted, it cannot attach
+  new compute or obtain a credential — and every other destructive worker
+  route (`disable`, `DELETE /workers/{id}`) is exposed exactly the same way
+  in that configuration. Carving out this one route would break the rule
+  that auth-off behavior matches pre-auth sqi, so it is accepted rather than
+  special-cased.
 - **Per-user concurrent task caps.** A hard per-owner ceiling on running tasks was scoped for
   Phase 3 and deferred (2026-07-20) with no driver behind it. Nothing bounds a single user's
   farm consumption today: `max_concurrent_tasks` on farms and queues caps the container, not the

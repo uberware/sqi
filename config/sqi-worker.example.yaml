@@ -65,8 +65,13 @@ nats:
 
   # Path to this worker's nkey seed file. Only meaningful when the server's
   # nats.auth.enabled is true. When empty, defaults to
-  # <worker.data_dir>/worker.nk. Created by enrollment or `sqi-worker
-  # keygen`; must be mode 0600.
+  # <worker.data_dir>/worker.nk, and that default path is created by
+  # enrollment or by `sqi-worker keygen`. A non-default path is NOT created
+  # for you by `sqi-worker keygen`, which always writes the default path
+  # regardless of this setting -- populate a custom path by running
+  # enrollment against it, or move a seed there by hand. Must be mode 0600;
+  # writing it requires write permission on the containing directory, not
+  # just the file, since the write goes through a temp file plus rename.
   # Type: string   Env: SQI_WORKER_NATS_CREDENTIAL_FILE
   credential_file: ""
 
@@ -194,6 +199,12 @@ worker:
   # is matched to any queue's ready work. Set this on heterogeneous farms where
   # some workers specialise in a subset of queues, e.g. separate GPU and CPU
   # queues.
+  #
+  # Each entry becomes a literal token in that subject, so it must be usable
+  # as a single NATS subject token: an entry that is empty, or contains '.',
+  # whitespace, '*' or '>', is rejected at load (a startup failure) rather
+  # than producing lease requests the server silently refuses or never
+  # answers.
   #
   # Type: []string   Env: SQI_WORKER_QUEUE_IDS (comma-separated)
   queue_ids: []

@@ -186,8 +186,21 @@ Path to this worker's nkey seed file. Only meaningful when the server's
 `nats.auth.enabled` is `true` — see
 [`docs/configuration.md`](configuration.md#natsauthenabled). The worker
 presents the credential in this file to authenticate to the broker. When
-left empty, it defaults to `<worker.data_dir>/worker.nk`. The file is
-created by enrollment or by `sqi-worker keygen` and must be mode `0600`.
+left empty, it defaults to `<worker.data_dir>/worker.nk`, and that default
+path is created by enrollment or by `sqi-worker keygen`. The file must be
+mode `0600`, and `SaveSeed` requires **write permission on the containing
+directory**, not just the file itself — the write goes through a temporary
+file created alongside the target and then renamed into place, so a
+directory locked down to e.g. `0500` fails the write even if the seed file
+inside it is owner-writable.
+
+Set this field to a non-default path and neither enrollment path creates it
+for you: `sqi-worker keygen` always writes the *default*
+`<worker.data_dir>/worker.nk`, regardless of what `credential_file` is set
+to, and self-service enrollment writes wherever `credential_file` points but
+only as part of a live enrollment run. A custom path must already hold a
+valid seed by the time the worker starts — either populate it by running
+enrollment against that path, or move a seed there by hand.
 
 ```yaml
 nats:
@@ -585,6 +598,15 @@ unroutable subject with no responders. The server selects tasks farm-wide for th
 token and gates by worker eligibility, so a queue-unaffiliated worker is
 matched to any queue's ready work. Set this on heterogeneous farms where some
 workers specialise in a subset of queues.
+
+Each entry must be usable as a single NATS subject token, because it becomes
+one: `<queueID>` is a literal token in `work.lease.<workerID>.<queueID>`, so
+an entry containing `.` would silently split into extra tokens the
+server-side parser and this worker's own broker-auth publish grant both
+reject. An entry that is empty, or contains `.`, whitespace, `*` or `>`, is
+therefore **rejected at load**, naming the offending entry: the worker
+refuses to start rather than issuing lease requests that would be silently
+refused or simply go unanswered with nothing in its logs saying why.
 
 ```yaml
 worker:
@@ -1657,12 +1679,15 @@ long as three things differ per instance:
 
 | Setting | Env var | Why it must differ |
 |---|---|---|
-| [`worker.data_dir`](#workerdata_dir) | `SQI_WORKER_DATA_DIR` | Holds the persistent `worker.id` UUID; a shared dir means a duplicate identity on the server. |
+| [`worker.data_dir`](#workerdata_dir) | `SQI_WORKER_DATA_DIR` | Holds the persistent `worker.id` UUID and (when `nats.credential_file` is left at its default) the worker's nkey seed; a shared dir means a duplicate identity on the server, or two instances fighting over one credential. |
 | [`metrics.addr`](#metricsaddr) | `SQI_WORKER_METRICS_ADDR` | The local health/metrics HTTP server; a second instance on the same port fails to bind. |
 | [`worker.name`](#workername) | `SQI_WORKER_NAME` | Cosmetic only — defaults to the hostname, so instances would otherwise share a label in the web UI. |
 
 Everything else (NATS URL, discovery, capability tags) can be shared or vary
-as you like.
+as you like. If broker authentication is on and each instance enrolls with a
+join token, each also needs its own token: tokens are single-use by default
+(`nats.auth.join_token_single_use`), so the second instance to redeem a
+shared token fails enrollment.
 
 For local development the `make run-workers` target wires all of this up for
 you — see

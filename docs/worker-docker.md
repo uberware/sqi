@@ -76,7 +76,17 @@ Strongly recommended when mounting a data volume:
 
 | Variable | Description |
 |---|---|
-| `SQI_WORKER_DATA_DIR` | Set to the volume mount path (`/var/lib/sqi-worker`) so the worker ID is written to the persistent volume rather than the default `~/.sqi/worker` |
+| `SQI_WORKER_DATA_DIR` | Set to the volume mount path (`/var/lib/sqi-worker`) so the worker ID is written to the persistent volume rather than the default `~/.sqi/worker`. This **must** be a persistent volume once broker authentication is in use: the worker's nkey seed lives under this directory too (`<data_dir>/worker.nk` by default), and losing the volume does not just lose the identity — the worker's already-enrolled credential still blocks re-enrollment under the same worker ID until an operator revokes it. |
+
+Required in addition to `SQI_WORKER_NATS_URL` when the server has broker
+authentication on (`nats.auth.enabled`):
+
+| Variable | Description |
+|---|---|
+| `SQI_WORKER_NATS_SERVER_URL` | The server's HTTP base URL (e.g. `http://sqi-server:8080`), used for enrollment over REST. Required whenever a join token is configured — it is not derived from mDNS discovery. |
+| `SQI_WORKER_NATS_JOIN_TOKEN_FILE` | Path to a file containing a join token, mounted as a secret. Preferred over `SQI_WORKER_NATS_JOIN_TOKEN` — a token in an environment variable is visible via the container's inspect output. |
+| `SQI_WORKER_NATS_JOIN_TOKEN` | A join token supplied directly. Ignored once a credential file already exists at `SQI_WORKER_NATS_CREDENTIAL_FILE`. |
+| `SQI_WORKER_NATS_CREDENTIAL_FILE` | Path to the worker's nkey seed file. Defaults to `<data_dir>/worker.nk`; only meaningful under a mounted, persistent `SQI_WORKER_DATA_DIR`. |
 
 Useful optional variables for container deployments:
 
@@ -86,7 +96,7 @@ Useful optional variables for container deployments:
 | `SQI_WORKER_CAPABILITY_TAGS` | Comma-separated capability tags merged with auto-detected ones, e.g. `maya-2025,gpu` |
 | `SQI_WORKER_COMPUTE_LOCATION` | Compute-location name for multi-site farms (see [Compute locations](compute-locations.md)) |
 | `SQI_WORKER_FARM_ID` | Restrict the worker to a single farm (empty = accept tasks from any farm) |
-| `SQI_WORKER_QUEUE_IDS` | Comma-separated queue IDs the worker serves (empty = all queues) |
+| `SQI_WORKER_QUEUE_IDS` | Comma-separated queue IDs the worker serves (empty = all queues). Each ID becomes a token in the `work.lease.<workerID>.<queueID>` subject, so an entry that is empty or contains `.`, whitespace, `*` or `>` is rejected at startup. |
 | `SQI_WORKER_LOG_FORMAT` | `json` (default) or `text` |
 | `SQI_DIAGNOSTICS_ENABLED` | `true` (default) mirrors the worker's own logs to the server's diagnostics view; set `false` to disable |
 
@@ -161,11 +171,12 @@ config file (they have no environment-variable form).
 
 The worker container must be able to reach the **NATS port** of `sqi-server`
 (default `4222`). No inbound connections from the server to the worker are
-required — all communication is worker-initiated over NATS.
+required — all communication is worker-initiated.
 
 | Direction | Protocol | Port | Purpose |
 |---|---|---|---|
 | Worker → Server | TCP | `4222` | NATS — core-NATS work leases (task assignments) plus JetStream (task status, logs, heartbeat, registration) |
+| Worker → Server | TCP | `8080` (default `http.addr`) | REST — only when the server's `nats.auth.enabled` is on and a join token is configured: a one-time `POST /api/v1/workers/enroll` before the worker ever connects to NATS |
 | (optional) Prometheus → Worker | TCP | `9091` | Metrics scraping — only if metrics are exposed |
 
 ### Docker networking

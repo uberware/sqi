@@ -146,10 +146,13 @@ naming the field, rather than guessing a host.
 
 3. Start the worker normally. On first boot, finding no credential file at
    `nats.credential_file` (default `<worker.data_dir>/worker.nk`), it
-   generates an nkey keypair locally, calls `POST /api/v1/workers/enroll`
-   with the token, its worker ID and its new public key, and writes the
-   returned credential to `worker.nk` (mode `0600`) before connecting. The
-   token is single-use by default, so a second worker needs its own token.
+   generates an nkey keypair locally and calls `POST /api/v1/workers/enroll`
+   with the token, its worker ID and its new **public** key — the private
+   seed never leaves the machine, and nothing from the server's response is
+   persisted. Only after the server confirms enrollment does the worker
+   write the seed it generated itself to `worker.nk` (mode `0600`) and
+   connect with it. The token is single-use by default, so a second worker
+   needs its own token.
 
 Every failure past this point is fatal and explicit — an expired, unknown or
 already-used token, or a worker ID already bound to a different key — the
@@ -176,7 +179,8 @@ a site that wants no self-service enrollment endpoint at all
    ```
    Public key: UABC...XYZ
    On the server, run:
-     sqi-server worker enroll --worker-id 3f2a...  --public-key UABC...XYZ
+     sqi-server worker enroll --worker-id 3f2a... --public-key UABC...XYZ
+   A RUNNING sqi-server will not accept this credential until it restarts; to enroll against a running server, use POST /api/v1/workers/enroll with a join token instead.
    ```
 
 2. Copy that command to the server host (out of band — SSH, a console, a
