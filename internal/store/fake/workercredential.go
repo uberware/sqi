@@ -122,3 +122,30 @@ func (s *Store) MarkWorkerJoinTokenUsed(_ context.Context, id string, at time.Ti
 	s.workerJoinTokens[id] = t
 	return nil
 }
+
+// ConsumeWorkerJoinToken implements [store.WorkerCredentialStore].
+//
+// Mirrors SQLite's single "UPDATE ... WHERE token_hash = ? AND used_at IS
+// NULL AND expires_at > ? RETURNING ...": the scan and the write happen
+// under one hold of the mutex, so two concurrent callers cannot both claim
+// the same token, and an unknown, expired or already-claimed token is the
+// same store.ErrNotFound.
+func (s *Store) ConsumeWorkerJoinToken(_ context.Context, hash string, now time.Time) (store.WorkerJoinToken, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for id, t := range s.workerJoinTokens {
+		if t.TokenHash != hash || t.UsedAt != nil {
+			continue
+		}
+		// Strictly after, matching SQL's "expires_at > ?": a token whose
+		// expiry is exactly now is expired.
+		if !t.ExpiresAt.After(now) {
+			continue
+		}
+		at := now
+		t.UsedAt = &at
+		s.workerJoinTokens[id] = t
+		return t, nil
+	}
+	return store.WorkerJoinToken{}, store.ErrNotFound
+}

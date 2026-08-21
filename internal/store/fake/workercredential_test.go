@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sync"
 	"testing"
 	"time"
 
@@ -139,9 +140,9 @@ func TestWorkerCredential_GetActive_RevokedOnlyReturnsNotFound(t *testing.T) {
 
 // TestWorkerCredential_DuplicateWorkerID mirrors
 // sqlite_test.TestWorkerCredential_DuplicateWorkerID: a worker ID with an
-// existing ACTIVE credential cannot be double-enrolled. The fake had no
-// direct test of CreateWorkerCredential's own conflict logic before this —
-// it was only ever exercised indirectly through the rotation tests above.
+// existing ACTIVE credential cannot be double-enrolled. It exercises
+// CreateWorkerCredential's own conflict logic directly, rather than only
+// indirectly through the rotation tests above.
 func TestWorkerCredential_DuplicateWorkerID(t *testing.T) {
 	s := fake.New()
 	defer s.Close()
@@ -258,5 +259,142 @@ func TestWorkerCredential_ListActiveAfterRotationHasExactlyOneRow(t *testing.T) 
 	}
 	if forW1[0].PublicKey != "pub2" {
 		t.Errorf("active credential PublicKey = %q, want %q (the rotated key)", forW1[0].PublicKey, "pub2")
+	}
+}
+
+// ── ConsumeWorkerJoinToken ──────────────────────────────────────────────────
+//
+// Mirrors sqlite_test's ConsumeWorkerJoinToken cases. The fake is what every
+// internal/api test runs against, so a fake whose claim is not atomic — or
+// whose expiry boundary differs from SQLite's "expires_at > ?" — would let
+// the handler's concurrency test pass over a store that does not behave like
+// the real one.
+
+func TestWorkerJoinToken_Consume(t *testing.T) {
+	s := fake.New()
+	defer s.Close()
+	ctx := context.Background()
+	now := time.Now().UTC()
+
+	if _, err := s.CreateWorkerJoinToken(ctx, store.WorkerJoinToken{
+		ID: "jt1", TokenHash: "hash1", Prefix: "sqiwjt_abcd",
+		ExpiresAt: now.Add(time.Hour), CreatedAt: now,
+	}); err != nil {
+		t.Fatalf("CreateWorkerJoinToken: %v", err)
+	}
+
+	claimedAt := now.Add(time.Minute)
+	got, err := s.ConsumeWorkerJoinToken(ctx, "hash1", claimedAt)
+	if err != nil {
+		t.Fatalf("ConsumeWorkerJoinToken: %v", err)
+	}
+	if got.ID != "jt1" {
+		t.Errorf("ID: got %q, want %q", got.ID, "jt1")
+	}
+	if got.UsedAt == nil || !got.UsedAt.Equal(claimedAt) {
+		t.Errorf("UsedAt: got %v, want %v", got.UsedAt, claimedAt)
+	}
+
+	stored, err := s.GetWorkerJoinTokenByHash(ctx, "hash1")
+	if err != nil {
+		t.Fatalf("GetWorkerJoinTokenByHash: %v", err)
+	}
+	if stored.UsedAt == nil {
+		t.Error("the claim was not persisted")
+	}
+
+	if _, err := s.ConsumeWorkerJoinToken(ctx, "hash1", claimedAt.Add(time.Second)); !errors.Is(err, store.ErrNotFound) {
+		t.Errorf("second ConsumeWorkerJoinToken: got %v, want store.ErrNotFound", err)
+	}
+}
+
+func TestWorkerJoinToken_ConsumeExpired(t *testing.T) {
+	s := fake.New()
+	defer s.Close()
+	ctx := context.Background()
+	now := time.Now().UTC()
+
+	if _, err := s.CreateWorkerJoinToken(ctx, store.WorkerJoinToken{
+		ID: "jt1", TokenHash: "hash1", Prefix: "sqiwjt_abcd",
+		ExpiresAt: now, CreatedAt: now.Add(-time.Hour),
+	}); err != nil {
+		t.Fatalf("CreateWorkerJoinToken: %v", err)
+	}
+
+	// Exactly at expiry counts as expired, matching SQLite's expires_at > ?.
+	if _, err := s.ConsumeWorkerJoinToken(ctx, "hash1", now); !errors.Is(err, store.ErrNotFound) {
+		t.Errorf("ConsumeWorkerJoinToken at the expiry instant: got %v, want store.ErrNotFound", err)
+	}
+	if _, err := s.ConsumeWorkerJoinToken(ctx, "hash1", now.Add(time.Hour)); !errors.Is(err, store.ErrNotFound) {
+		t.Errorf("ConsumeWorkerJoinToken after expiry: got %v, want store.ErrNotFound", err)
+	}
+
+	stored, err := s.GetWorkerJoinTokenByHash(ctx, "hash1")
+	if err != nil {
+		t.Fatalf("GetWorkerJoinTokenByHash: %v", err)
+	}
+	if stored.UsedAt != nil {
+		t.Error("a refused claim marked the token used")
+	}
+}
+
+func TestWorkerJoinToken_ConsumeUnknown(t *testing.T) {
+	s := fake.New()
+	defer s.Close()
+	if _, err := s.ConsumeWorkerJoinToken(context.Background(), "nope", time.Now().UTC()); !errors.Is(err, store.ErrNotFound) {
+		t.Errorf("expected ErrNotFound, got %v", err)
+	}
+}
+
+// TestWorkerJoinToken_ConsumeIsAtomic is the fake's half of the invariant
+// SQLite gets from a single UPDATE ... WHERE: concurrent claims of one
+// single-use token must yield exactly one winner. Repeated rounds, because a
+// single burst can serialize by chance.
+func TestWorkerJoinToken_ConsumeIsAtomic(t *testing.T) {
+	const rounds = 50
+	const attempts = 8
+
+	for round := range rounds {
+		s := fake.New()
+		ctx := context.Background()
+		now := time.Now().UTC()
+		if _, err := s.CreateWorkerJoinToken(ctx, store.WorkerJoinToken{
+			ID: "jt1", TokenHash: "hash1", Prefix: "sqiwjt_abcd",
+			ExpiresAt: now.Add(time.Hour), CreatedAt: now,
+		}); err != nil {
+			t.Fatalf("CreateWorkerJoinToken: %v", err)
+		}
+
+		errs := make([]error, attempts)
+		var ready, done sync.WaitGroup
+		ready.Add(attempts)
+		done.Add(attempts)
+		start := make(chan struct{})
+		for i := range attempts {
+			go func() {
+				defer done.Done()
+				ready.Done()
+				<-start
+				_, errs[i] = s.ConsumeWorkerJoinToken(ctx, "hash1", now.Add(time.Minute))
+			}()
+		}
+		ready.Wait()
+		close(start)
+		done.Wait()
+
+		won := 0
+		for i, err := range errs {
+			switch {
+			case err == nil:
+				won++
+			case errors.Is(err, store.ErrNotFound):
+			default:
+				t.Fatalf("round %d attempt %d: unexpected error %v", round, i, err)
+			}
+		}
+		if won != 1 {
+			t.Fatalf("round %d: %d of %d concurrent claims succeeded, want exactly 1", round, won, attempts)
+		}
+		s.Close()
 	}
 }

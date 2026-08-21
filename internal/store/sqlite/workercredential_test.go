@@ -5,6 +5,7 @@ package sqlite_test
 import (
 	"context"
 	"errors"
+	"sync"
 	"testing"
 	"time"
 
@@ -348,5 +349,137 @@ func TestWorkerJoinToken_GetByHashNotFound(t *testing.T) {
 	_, err := s.GetWorkerJoinTokenByHash(context.Background(), "nope")
 	if !errors.Is(err, store.ErrNotFound) {
 		t.Errorf("expected ErrNotFound, got %v", err)
+	}
+}
+
+// ── ConsumeWorkerJoinToken ──────────────────────────────────────────────────
+//
+// The atomic single-use claim. Its semantics are mirrored by
+// fake.Store.ConsumeWorkerJoinToken; the same cases are asserted there.
+
+func TestWorkerJoinToken_Consume(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+	now := time.Now().UTC().Truncate(time.Second)
+
+	if _, err := s.CreateWorkerJoinToken(ctx, store.WorkerJoinToken{
+		ID: "jt1", TokenHash: "hash1", Prefix: "sqiwjt_abcd",
+		ExpiresAt: now.Add(time.Hour), CreatedAt: now,
+	}); err != nil {
+		t.Fatalf("CreateWorkerJoinToken: %v", err)
+	}
+
+	claimedAt := now.Add(time.Minute)
+	got, err := s.ConsumeWorkerJoinToken(ctx, "hash1", claimedAt)
+	if err != nil {
+		t.Fatalf("ConsumeWorkerJoinToken: %v", err)
+	}
+	if got.ID != "jt1" {
+		t.Errorf("ID: got %q, want %q", got.ID, "jt1")
+	}
+	if got.UsedAt == nil {
+		t.Fatal("UsedAt: got nil, want the claim time — the returned row must reflect the claim")
+	}
+	if !got.UsedAt.Equal(claimedAt) {
+		t.Errorf("UsedAt: got %v, want %v", *got.UsedAt, claimedAt)
+	}
+
+	stored, err := s.GetWorkerJoinTokenByHash(ctx, "hash1")
+	if err != nil {
+		t.Fatalf("GetWorkerJoinTokenByHash: %v", err)
+	}
+	if stored.UsedAt == nil {
+		t.Error("the claim was not persisted")
+	}
+
+	// A second claim of the same token matches nothing.
+	if _, err := s.ConsumeWorkerJoinToken(ctx, "hash1", claimedAt.Add(time.Second)); !errors.Is(err, store.ErrNotFound) {
+		t.Errorf("second ConsumeWorkerJoinToken: got %v, want store.ErrNotFound", err)
+	}
+}
+
+func TestWorkerJoinToken_ConsumeExpired(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+	now := time.Now().UTC().Truncate(time.Second)
+
+	if _, err := s.CreateWorkerJoinToken(ctx, store.WorkerJoinToken{
+		ID: "jt1", TokenHash: "hash1", Prefix: "sqiwjt_abcd",
+		ExpiresAt: now, CreatedAt: now.Add(-time.Hour),
+	}); err != nil {
+		t.Fatalf("CreateWorkerJoinToken: %v", err)
+	}
+
+	// Exactly at expiry counts as expired: the predicate is expires_at > now.
+	if _, err := s.ConsumeWorkerJoinToken(ctx, "hash1", now); !errors.Is(err, store.ErrNotFound) {
+		t.Errorf("ConsumeWorkerJoinToken at the expiry instant: got %v, want store.ErrNotFound", err)
+	}
+	if _, err := s.ConsumeWorkerJoinToken(ctx, "hash1", now.Add(time.Hour)); !errors.Is(err, store.ErrNotFound) {
+		t.Errorf("ConsumeWorkerJoinToken after expiry: got %v, want store.ErrNotFound", err)
+	}
+
+	// An expired token must not be marked used by the failed attempts.
+	stored, err := s.GetWorkerJoinTokenByHash(ctx, "hash1")
+	if err != nil {
+		t.Fatalf("GetWorkerJoinTokenByHash: %v", err)
+	}
+	if stored.UsedAt != nil {
+		t.Error("a refused claim marked the token used")
+	}
+}
+
+func TestWorkerJoinToken_ConsumeUnknown(t *testing.T) {
+	s := openTestStore(t)
+	if _, err := s.ConsumeWorkerJoinToken(context.Background(), "nope", time.Now().UTC()); !errors.Is(err, store.ErrNotFound) {
+		t.Errorf("expected ErrNotFound, got %v", err)
+	}
+}
+
+// TestWorkerJoinToken_ConsumeIsAtomic drives concurrent claims of one token
+// through the real database. Exactly one may win, whatever the interleaving:
+// the UPDATE's own WHERE clause is the check, so there is no window between
+// checking used_at and setting it.
+func TestWorkerJoinToken_ConsumeIsAtomic(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+	now := time.Now().UTC().Truncate(time.Second)
+
+	if _, err := s.CreateWorkerJoinToken(ctx, store.WorkerJoinToken{
+		ID: "jt1", TokenHash: "hash1", Prefix: "sqiwjt_abcd",
+		ExpiresAt: now.Add(time.Hour), CreatedAt: now,
+	}); err != nil {
+		t.Fatalf("CreateWorkerJoinToken: %v", err)
+	}
+
+	const attempts = 8
+	errs := make([]error, attempts)
+	var ready, done sync.WaitGroup
+	ready.Add(attempts)
+	done.Add(attempts)
+	start := make(chan struct{})
+	for i := range attempts {
+		go func() {
+			defer done.Done()
+			ready.Done()
+			<-start
+			_, errs[i] = s.ConsumeWorkerJoinToken(ctx, "hash1", now.Add(time.Minute))
+		}()
+	}
+	ready.Wait()
+	close(start)
+	done.Wait()
+
+	won := 0
+	for i, err := range errs {
+		switch {
+		case err == nil:
+			won++
+		case errors.Is(err, store.ErrNotFound):
+		default:
+			t.Errorf("attempt %d: unexpected error %v", i, err)
+		}
+	}
+	if won != 1 {
+		t.Errorf("%d of %d concurrent claims of one single-use token succeeded, want exactly 1", won, attempts)
 	}
 }

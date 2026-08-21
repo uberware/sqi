@@ -256,6 +256,7 @@ type Store struct {
 	stmtInsertWorkerJoinToken               *sql.Stmt
 	stmtGetWorkerJoinTokenByHash            *sql.Stmt
 	stmtMarkWorkerJoinTokenUsed             *sql.Stmt
+	stmtConsumeWorkerJoinToken              *sql.Stmt
 }
 
 // Open opens (or creates) the SQLite database at path, applies connection
@@ -842,6 +843,9 @@ func (s *Store) prepareAll(ctx context.Context) error {
 		return err
 	}
 	if s.stmtMarkWorkerJoinTokenUsed, err = s.prepare(ctx, sqlMarkWorkerJoinTokenUsed); err != nil {
+		return err
+	}
+	if s.stmtConsumeWorkerJoinToken, err = s.prepare(ctx, sqlConsumeWorkerJoinToken); err != nil {
 		return err
 	}
 

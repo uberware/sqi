@@ -163,7 +163,7 @@ type workerJoinTokenCreatedResponse struct {
 // that authorizes this call.
 func (h *workerEnrollHandler) enroll(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
-	// enroll is the only route on this branch reachable by an unauthenticated,
+	// enroll is the only route in this API reachable by an unauthenticated,
 	// potentially internet-facing caller: the per-IP rate limiter bounds
 	// request RATE, not per-request body SIZE, so an oversized join_token or
 	// public_key would otherwise be read fully into memory before any
@@ -187,28 +187,18 @@ func (h *workerEnrollHandler) enroll(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	token, err := h.store.GetWorkerJoinTokenByHash(ctx, brokerauth.HashJoinToken(req.JoinToken))
-	if err != nil {
-		if !errors.Is(err, store.ErrNotFound) {
-			h.logger.ErrorContext(ctx, "workerenroll: join token lookup failed", slog.Any("error", err))
-		}
-		// An unknown token and a lookup failure both deny identically — see
-		// errInvalidJoinToken.
-		writeProblem(w, r, http.StatusUnauthorized, errInvalidJoinToken)
-		return
-	}
-	now := time.Now().UTC()
-	if now.After(token.ExpiresAt) {
-		writeProblem(w, r, http.StatusUnauthorized, errInvalidJoinToken)
-		return
-	}
-	if h.singleUse && token.UsedAt != nil {
-		writeProblem(w, r, http.StatusUnauthorized, errInvalidJoinToken)
+	// Validate the key BEFORE the token is claimed, so a malformed
+	// public_key costs a 400 and not the operator's single-use token.
+	if err := brokerauth.ValidatePublicKey(req.PublicKey); err != nil {
+		writeProblem(w, r, http.StatusBadRequest, err.Error())
 		return
 	}
 
-	if err := brokerauth.ValidatePublicKey(req.PublicKey); err != nil {
-		writeProblem(w, r, http.StatusBadRequest, err.Error())
+	now := time.Now().UTC()
+	if err := h.claimJoinToken(ctx, brokerauth.HashJoinToken(req.JoinToken), now); err != nil {
+		// Unknown, expired, already claimed, and a store failure all deny
+		// identically — see errInvalidJoinToken.
+		writeProblem(w, r, http.StatusUnauthorized, errInvalidJoinToken)
 		return
 	}
 
@@ -230,20 +220,68 @@ func (h *workerEnrollHandler) enroll(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	h.finishEnrollment(ctx, token, req.WorkerID, now)
+	h.finishEnrollment(ctx, req.WorkerID)
 
 	writeJSON(w, http.StatusCreated, toWorkerCredentialResponse(created))
 }
 
-// finishEnrollment performs the two side effects that follow a successful
-// credential creation: marking the join token used, and reloading the
-// broker's authorized-key set. Both failures are logged and swallowed
-// rather than turned into an error response — the credential itself is
-// already created and durable by the time this runs, so telling the caller
-// enrollment failed would be false. Split out of enroll to keep that
-// handler's own branching within this repo's complexity budget; the two
-// steps have no data dependency on each other and neither's failure
-// affects the other.
+// claimJoinToken authorizes this enrollment against the join token hashed to
+// hash and, when tokens are single-use, redeems it in the same operation.
+//
+// The single-use path is deliberately ONE store statement
+// ([store.ConsumeWorkerJoinToken]): reading the token, inspecting UsedAt and
+// marking it used separately is a check-then-act race in which two
+// simultaneous enrollments with one token both succeed.
+//
+// The price is that the token is spent BEFORE the credential row is created,
+// so an enrollment that then fails on a conflicting worker ID or public key
+// burns it and the operator issues a new one. That is the unavoidable side
+// of an atomic claim, and it is the safe side: the alternative spends the
+// token only on success and therefore cannot be atomic at all. The cases
+// that cost nothing — a malformed body, a missing field, a malformed public
+// key — are all rejected before this is called.
+//
+// With single-use disabled the token stays redeemable by design, so there is
+// nothing to claim atomically: UsedAt becomes a "last redeemed" marker whose
+// write failure is logged and ignored rather than denying an enrollment the
+// token does authorize.
+func (h *workerEnrollHandler) claimJoinToken(ctx context.Context, hash string, now time.Time) error {
+	if h.singleUse {
+		_, err := h.store.ConsumeWorkerJoinToken(ctx, hash, now)
+		if err != nil && !errors.Is(err, store.ErrNotFound) {
+			h.logger.ErrorContext(ctx, "workerenroll: join token claim failed", slog.Any("error", err))
+		}
+		return err
+	}
+
+	token, err := h.store.GetWorkerJoinTokenByHash(ctx, hash)
+	if err != nil {
+		if !errors.Is(err, store.ErrNotFound) {
+			h.logger.ErrorContext(ctx, "workerenroll: join token lookup failed", slog.Any("error", err))
+		}
+		return err
+	}
+	// Strictly after, matching ConsumeWorkerJoinToken's "expires_at > ?".
+	if !token.ExpiresAt.After(now) {
+		return store.ErrNotFound
+	}
+	if err := h.store.MarkWorkerJoinTokenUsed(ctx, token.ID, now); err != nil {
+		h.logger.ErrorContext(ctx, "workerenroll: mark join token used failed",
+			slog.String("token_id", token.ID), slog.Any("error", err))
+	}
+	return nil
+}
+
+// finishEnrollment performs the side effect that follows a successful
+// credential creation: reloading the broker's authorized-key set. A failure
+// is logged and swallowed rather than turned into an error response — the
+// credential itself is already created and durable by the time this runs,
+// so telling the caller enrollment failed would be false. Split out of
+// enroll to keep that handler's own branching within this repo's complexity
+// budget.
+//
+// Redeeming the join token is NOT done here: it has to happen before the
+// credential is created, as one atomic claim — see [claimJoinToken].
 //
 // The reload failure here is the opposite direction from a revoke's reload
 // failure (which IS surfaced to ITS caller): a revoke failing to reload
@@ -259,15 +297,7 @@ func (h *workerEnrollHandler) enroll(w http.ResponseWriter, r *http.Request) {
 // connected after this failure relies on an external process supervisor
 // restarting it, or an operator restarting sqi-server — see
 // [BrokerCredentialReloader].
-func (h *workerEnrollHandler) finishEnrollment(ctx context.Context, token store.WorkerJoinToken, workerID string, now time.Time) {
-	// Mark the token used only after the credential exists: a conflict
-	// caught upstream means nothing was enrolled, so a single-use token
-	// that failed to enroll is not spent.
-	if err := h.store.MarkWorkerJoinTokenUsed(ctx, token.ID, now); err != nil {
-		h.logger.ErrorContext(ctx, "workerenroll: mark join token used failed",
-			slog.String("token_id", token.ID), slog.Any("error", err))
-	}
-
+func (h *workerEnrollHandler) finishEnrollment(ctx context.Context, workerID string) {
 	if err := h.reloader.ReloadBrokerCredentials(ctx); err != nil {
 		h.logger.ErrorContext(ctx, "workerenroll: reload broker credentials failed after enrollment",
 			slog.String("worker_id", workerID), slog.Any("error", err))

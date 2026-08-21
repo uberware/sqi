@@ -30,6 +30,14 @@ const (
 	sqlGetWorkerJoinTokenByHash = `SELECT id, token_hash, prefix, name, expires_at, used_at, created_by, created_at FROM worker_join_tokens WHERE token_hash = ?` //nolint:gosec // G101: SQL text, not a credential
 
 	sqlMarkWorkerJoinTokenUsed = `UPDATE worker_join_tokens SET used_at = ? WHERE id = ?`
+
+	// sqlConsumeWorkerJoinToken claims a single-use token in ONE statement:
+	// the used_at IS NULL and expires_at > ? predicates are the validity
+	// check, and the SET is the claim. Two concurrent enrollments presenting
+	// the same token therefore cannot both succeed — the second matches no
+	// row and gets store.ErrNotFound, indistinguishable from an unknown
+	// token, which is what the unauthenticated enroll endpoint needs.
+	sqlConsumeWorkerJoinToken = `UPDATE worker_join_tokens SET used_at = ? WHERE token_hash = ? AND used_at IS NULL AND expires_at > ? RETURNING id, token_hash, prefix, name, expires_at, used_at, created_by, created_at`
 )
 
 func scanWorkerCredential(row scanner) (store.WorkerCredential, error) {
@@ -124,4 +132,17 @@ func (s *Store) MarkWorkerJoinTokenUsed(ctx context.Context, id string, at time.
 		return mapErr(err)
 	}
 	return checkRowsAffected(res)
+}
+
+// ConsumeWorkerJoinToken implements [store.WorkerCredentialStore].
+//
+// A single UPDATE ... RETURNING carries both the validity check and the
+// claim, so an unknown token, an expired one, and one another request
+// claimed a moment earlier are all the same "matched no row" outcome —
+// mapped to [store.ErrNotFound] by the QueryRow's sql.ErrNoRows.
+func (s *Store) ConsumeWorkerJoinToken(ctx context.Context, hash string, now time.Time) (store.WorkerJoinToken, error) {
+	nowText := timeToText(now)
+	row := s.stmtConsumeWorkerJoinToken.QueryRowContext(ctx, nowText, hash, nowText)
+	out, err := scanWorkerJoinToken(row)
+	return out, mapErr(err)
 }

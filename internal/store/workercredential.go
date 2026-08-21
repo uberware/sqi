@@ -67,4 +67,17 @@ type WorkerCredentialStore interface {
 	// MarkWorkerJoinTokenUsed sets UsedAt. Returns [ErrNotFound] if id is
 	// unknown.
 	MarkWorkerJoinTokenUsed(ctx context.Context, id string, at time.Time) error
+	// ConsumeWorkerJoinToken atomically claims the single-use join token
+	// identified by hash, returning it with UsedAt set to now. It succeeds
+	// only for a token that exists, has not been redeemed, and has not
+	// expired at now; every other case — including a token another request
+	// claimed a moment earlier — returns [ErrNotFound].
+	//
+	// Check and claim must be ONE statement. Reading the token, inspecting
+	// UsedAt and marking it used separately is a check-then-act race: two
+	// concurrent enrollments presenting the same single-use token both
+	// observe UsedAt as nil and both succeed, and a failure of the later
+	// write leaves the token redeemable until it expires while the caller
+	// was already told it succeeded.
+	ConsumeWorkerJoinToken(ctx context.Context, hash string, now time.Time) (WorkerJoinToken, error)
 }
