@@ -122,6 +122,12 @@ type fileConfig struct {
 		Addr       *string `yaml:"addr"`
 		DataDir    *string `yaml:"data_dir"`
 		MaxStoreMB *int    `yaml:"max_store_mb"`
+		Auth       *struct {
+			Enabled                   *bool   `yaml:"enabled"`
+			JoinTokenTTL              *string `yaml:"join_token_ttl"`
+			JoinTokenSingleUse        *bool   `yaml:"join_token_single_use"`
+			EnrollmentEndpointEnabled *bool   `yaml:"enrollment_endpoint_enabled"`
+		} `yaml:"auth"`
 	} `yaml:"nats"`
 
 	Store *struct {
@@ -305,6 +311,36 @@ func mergeNATSFile(cfg *Config, fc fileConfig) {
 	}
 	if fc.NATS.MaxStoreMB != nil {
 		cfg.NATS.MaxStoreMB = *fc.NATS.MaxStoreMB
+	}
+	mergeNATSAuthFile(cfg, fc.NATS.Auth)
+}
+
+// mergeNATSAuthFile overlays the nats.auth sub-fields from fc onto cfg. Split
+// out of [mergeNATSFile] to keep its cyclomatic complexity under the lint
+// threshold.
+func mergeNATSAuthFile(cfg *Config, a *struct {
+	Enabled                   *bool   `yaml:"enabled"`
+	JoinTokenTTL              *string `yaml:"join_token_ttl"`
+	JoinTokenSingleUse        *bool   `yaml:"join_token_single_use"`
+	EnrollmentEndpointEnabled *bool   `yaml:"enrollment_endpoint_enabled"`
+},
+) {
+	if a == nil {
+		return
+	}
+	if a.Enabled != nil {
+		cfg.NATS.Auth.Enabled = *a.Enabled
+	}
+	if a.JoinTokenTTL != nil {
+		if d, err := time.ParseDuration(*a.JoinTokenTTL); err == nil {
+			cfg.NATS.Auth.JoinTokenTTL = d
+		}
+	}
+	if a.JoinTokenSingleUse != nil {
+		cfg.NATS.Auth.JoinTokenSingleUse = *a.JoinTokenSingleUse
+	}
+	if a.EnrollmentEndpointEnabled != nil {
+		cfg.NATS.Auth.EnrollmentEndpointEnabled = *a.EnrollmentEndpointEnabled
 	}
 }
 
@@ -641,6 +677,10 @@ func applyEnv(cfg *Config) error {
 	setString(&cfg.NATS.Addr, "SQI_NATS_ADDR")
 	setString(&cfg.NATS.DataDir, "SQI_NATS_DATA_DIR")
 	collect(setInt(&cfg.NATS.MaxStoreMB, "SQI_NATS_MAX_STORE_MB"))
+	collect(setBool(&cfg.NATS.Auth.Enabled, "SQI_NATS_AUTH_ENABLED"))
+	collect(setDuration(&cfg.NATS.Auth.JoinTokenTTL, "SQI_NATS_AUTH_JOIN_TOKEN_TTL"))
+	collect(setBool(&cfg.NATS.Auth.JoinTokenSingleUse, "SQI_NATS_AUTH_JOIN_TOKEN_SINGLE_USE"))
+	collect(setBool(&cfg.NATS.Auth.EnrollmentEndpointEnabled, "SQI_NATS_AUTH_ENROLLMENT_ENDPOINT_ENABLED"))
 
 	setString(&cfg.Store.SQLitePath, "SQI_STORE_SQLITE_PATH")
 	collect(setDuration(&cfg.Store.CheckpointInterval, "SQI_STORE_CHECKPOINT_INTERVAL"))

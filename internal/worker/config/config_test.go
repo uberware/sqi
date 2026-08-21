@@ -615,3 +615,29 @@ func TestValidate_RejectsBadDetector(t *testing.T) {
 		t.Errorf("expected validation error for detector with no checks")
 	}
 }
+
+func TestLoad_NATSCredentialFileDefaultsUnderDataDir(t *testing.T) {
+	t.Setenv("SQI_WORKER_NATS_URL", "nats://x:4222") // satisfy validation
+	t.Setenv("SQI_WORKER_DATA_DIR", "/tmp/sqi-worker-data")
+
+	cfg, err := Load("", FlagOverrides{})
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	want := filepath.Join("/tmp/sqi-worker-data", "worker.nk")
+	if cfg.NATS.CredentialFile != want {
+		t.Errorf("NATS.CredentialFile = %q, want %q", cfg.NATS.CredentialFile, want)
+	}
+}
+
+func TestLoad_NATSCredentialFileExplicitValuePreserved(t *testing.T) {
+	body := "nats:\n  credential_file: /etc/sqi/worker.nk\n"
+	f := writeTempFile(t, "worker.yaml", []byte(body))
+	cfg, err := Load(f, FlagOverrides{})
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.NATS.CredentialFile != "/etc/sqi/worker.nk" {
+		t.Errorf("NATS.CredentialFile = %q, want /etc/sqi/worker.nk", cfg.NATS.CredentialFile)
+	}
+}

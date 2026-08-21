@@ -2407,3 +2407,39 @@ func TestOIDCConfig_MarshalYAMLRedactsSecret(t *testing.T) {
 		t.Fatalf("client_secret leaked into YAML output:\n%s", out)
 	}
 }
+
+func TestValidate_NATSAuthJoinTokenTTL(t *testing.T) {
+	tests := []struct {
+		name    string
+		enabled bool
+		ttl     time.Duration
+		wantErr bool
+	}{
+		{"disabled block never errors", false, 0, false},
+		{"disabled block ignores absurd ttl", false, 400 * 24 * time.Hour, false},
+		{"below floor", true, config.MinNATSAuthJoinTokenTTL - time.Second, true},
+		{"at floor", true, config.MinNATSAuthJoinTokenTTL, false},
+		{"at ceiling", true, config.MaxNATSAuthJoinTokenTTL, false},
+		{"above ceiling", true, config.MaxNATSAuthJoinTokenTTL + time.Second, true},
+		{"zero when enabled", true, 0, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := config.DefaultConfig()
+			cfg.NATS.Auth.Enabled = tt.enabled
+			cfg.NATS.Auth.JoinTokenTTL = tt.ttl
+
+			errs := config.Validate(cfg)
+
+			var found bool
+			for _, e := range errs {
+				if e.Field == "nats.auth.join_token_ttl" {
+					found = true
+				}
+			}
+			if found != tt.wantErr {
+				t.Errorf("error on nats.auth.join_token_ttl = %v, want %v (errs: %v)", found, tt.wantErr, errs)
+			}
+		})
+	}
+}

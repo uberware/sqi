@@ -80,7 +80,51 @@ type NATSConfig struct {
 	// MaxStoreMB is the JetStream file-storage cap in megabytes.
 	// Env: SQI_NATS_MAX_STORE_MB
 	MaxStoreMB int `yaml:"max_store_mb"`
+
+	// Auth configures per-worker broker authentication. Off by default.
+	// Deliberately INDEPENDENT of the top-level auth block: the two protect
+	// different surfaces, and coupling them would force an operator who
+	// wants worker authentication into user accounts they did not ask for.
+	Auth NATSAuthConfig `yaml:"auth"`
 }
+
+// NATSAuthConfig configures broker authentication and worker enrollment.
+type NATSAuthConfig struct {
+	// Enabled requires every NATS client to present a per-worker nkey
+	// credential. When false the broker accepts any connection, which is the
+	// v0.3.0 behavior and the default.
+	// Env: SQI_NATS_AUTH_ENABLED
+	Enabled bool `yaml:"enabled"`
+
+	// JoinTokenTTL is how long a newly issued worker join token remains
+	// valid. Bounded by MinNATSAuthJoinTokenTTL and MaxNATSAuthJoinTokenTTL.
+	// Env: SQI_NATS_AUTH_JOIN_TOKEN_TTL
+	JoinTokenTTL time.Duration `yaml:"join_token_ttl"`
+
+	// JoinTokenSingleUse consumes a join token on first successful
+	// enrollment. Leaving it true is strongly recommended; false exists for
+	// image-baked fleets that enroll many identical machines from one token.
+	// Env: SQI_NATS_AUTH_JOIN_TOKEN_SINGLE_USE
+	JoinTokenSingleUse bool `yaml:"join_token_single_use"`
+
+	// EnrollmentEndpointEnabled mounts POST /api/v1/workers/enroll. Set it
+	// false at a site that provisions every credential by hand and wants no
+	// enrollment surface at all. Meaningful only when Enabled is true.
+	// Env: SQI_NATS_AUTH_ENROLLMENT_ENDPOINT_ENABLED
+	EnrollmentEndpointEnabled bool `yaml:"enrollment_endpoint_enabled"`
+}
+
+const (
+	// MinNATSAuthJoinTokenTTL is the floor: below a minute an operator
+	// cannot realistically get the token onto a machine and boot it.
+	MinNATSAuthJoinTokenTTL = 1 * time.Minute
+
+	// MaxNATSAuthJoinTokenTTL is the ceiling. A join token mints a worker
+	// credential, so it is a bootstrap secret whose whole value is a short
+	// blast radius; a token valid for weeks is a standing credential wearing
+	// a different name.
+	MaxNATSAuthJoinTokenTTL = 24 * time.Hour
+)
 
 // StoreConfig controls the embedded SQLite state store.
 type StoreConfig struct {
@@ -698,6 +742,12 @@ func DefaultConfig() Config {
 			Addr:       "0.0.0.0:4222",
 			DataDir:    "data/nats",
 			MaxStoreMB: 1024,
+			Auth: NATSAuthConfig{
+				Enabled:                   false,
+				JoinTokenTTL:              1 * time.Hour,
+				JoinTokenSingleUse:        true,
+				EnrollmentEndpointEnabled: true,
+			},
 		},
 		Store: StoreConfig{
 			SQLitePath:         "sqi.db",

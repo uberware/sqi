@@ -297,6 +297,31 @@ type NATSConfig struct {
 	// Actual wait uses exponential backoff with jitter.
 	// Env: SQI_WORKER_NATS_RECONNECT_WAIT
 	ReconnectWait time.Duration `yaml:"reconnect_wait"`
+
+	// CredentialFile is the path to this worker's nkey seed file. When empty
+	// it defaults to <worker.data_dir>/worker.nk. The file is created by
+	// enrollment or by `sqi-worker keygen` and must be mode 0600.
+	// Env: SQI_WORKER_NATS_CREDENTIAL_FILE
+	CredentialFile string `yaml:"credential_file"`
+
+	// JoinToken is a worker enrollment token. Used exactly once, on first
+	// start, to obtain a credential; ignored once CredentialFile exists.
+	// Prefer JoinTokenFile — a token in a config file is a secret at rest.
+	// Env: SQI_WORKER_NATS_JOIN_TOKEN
+	JoinToken string `yaml:"join_token"`
+
+	// JoinTokenFile is a path to a file containing a join token. Takes
+	// precedence over JoinToken.
+	// Env: SQI_WORKER_NATS_JOIN_TOKEN_FILE
+	JoinTokenFile string `yaml:"join_token_file"`
+
+	// ServerURL is the sqi-server HTTP base URL used for enrollment, e.g.
+	// "http://sqi-server.example:8080". Enrollment runs over REST, not over
+	// NATS: the broker's job is to reject unauthenticated connections, so it
+	// cannot also be the channel a worker gets its first credential over.
+	// When empty, the URL is derived from mDNS discovery.
+	// Env: SQI_WORKER_NATS_SERVER_URL
+	ServerURL string `yaml:"server_url"`
 }
 
 // WorkerSettings controls the worker's identity and runtime behavior.
@@ -549,6 +574,13 @@ func Load(configFile string, flags FlagOverrides) (WorkerConfig, error) {
 		cfg.NATS.InsecureSkipVerify = true
 	}
 
+	// CredentialFile defaults relative to Worker.DataDir, which any of the
+	// three layers above may have changed, so it is resolved last rather
+	// than at struct-literal time in Default.
+	if cfg.NATS.CredentialFile == "" {
+		cfg.NATS.CredentialFile = filepath.Join(cfg.Worker.DataDir, "worker.nk")
+	}
+
 	return cfg, nil
 }
 
@@ -699,6 +731,18 @@ func applyNATSEnv(c *NATSConfig) {
 		if d, err := time.ParseDuration(v); err == nil {
 			c.ReconnectWait = d
 		}
+	}
+	if v := os.Getenv("SQI_WORKER_NATS_CREDENTIAL_FILE"); v != "" {
+		c.CredentialFile = v
+	}
+	if v := os.Getenv("SQI_WORKER_NATS_JOIN_TOKEN"); v != "" {
+		c.JoinToken = v
+	}
+	if v := os.Getenv("SQI_WORKER_NATS_JOIN_TOKEN_FILE"); v != "" {
+		c.JoinTokenFile = v
+	}
+	if v := os.Getenv("SQI_WORKER_NATS_SERVER_URL"); v != "" {
+		c.ServerURL = v
 	}
 }
 

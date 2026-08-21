@@ -135,6 +135,22 @@ func validateNATS(cfg NATSConfig) []ValidationError {
 			Message: fmt.Sprintf("must be > 0, got %d; set SQI_NATS_MAX_STORE_MB or nats.max_store_mb", cfg.MaxStoreMB),
 		})
 	}
+	// A disabled auth block must never produce validation errors — the same
+	// rule validateAuth follows. Turning a feature off must not stop a
+	// server from starting because of a value nobody is reading.
+	if !cfg.Auth.Enabled {
+		return errs
+	}
+	if d := cfg.Auth.JoinTokenTTL; d < MinNATSAuthJoinTokenTTL || d > MaxNATSAuthJoinTokenTTL {
+		errs = append(errs, ValidationError{
+			Field: "nats.auth.join_token_ttl",
+			Message: fmt.Sprintf(
+				"must be between %s and %s, got %s; set %s or %s",
+				MinNATSAuthJoinTokenTTL, MaxNATSAuthJoinTokenTTL, d,
+				"SQI_NATS_AUTH_JOIN_TOKEN_TTL", "nats.auth.join_token_ttl",
+			),
+		})
+	}
 	return errs
 }
 

@@ -63,6 +63,32 @@ nats:
   # Type: duration   Env: SQI_WORKER_NATS_RECONNECT_WAIT
   reconnect_wait: "2s"
 
+  # Path to this worker's nkey seed file. Only meaningful when the server's
+  # nats.auth.enabled is true. When empty, defaults to
+  # <worker.data_dir>/worker.nk. Created by enrollment or `sqi-worker
+  # keygen`; must be mode 0600.
+  # Type: string   Env: SQI_WORKER_NATS_CREDENTIAL_FILE
+  credential_file: ""
+
+  # A worker enrollment token, used exactly once on first start to obtain a
+  # credential. Ignored once credential_file already exists. Prefer
+  # join_token_file over this field — a token in a config file is a secret
+  # at rest.
+  # Type: string   Env: SQI_WORKER_NATS_JOIN_TOKEN
+  join_token: ""
+
+  # Path to a file containing a join token. Takes precedence over join_token.
+  # Type: string   Env: SQI_WORKER_NATS_JOIN_TOKEN_FILE
+  join_token_file: ""
+
+  # sqi-server HTTP base URL used for enrollment, e.g.
+  # "http://sqi-server.example:8080". Enrollment runs over REST, not NATS:
+  # the broker's job is to reject unauthenticated connections, so it cannot
+  # also be the channel a worker gets its first credential over. When empty,
+  # the URL is derived from mDNS discovery.
+  # Type: string   Env: SQI_WORKER_NATS_SERVER_URL
+  server_url: ""
+
 # ── Worker identity and runtime behavior ─────────────────────────────────────
 worker:
   # Human-readable name for this worker shown in the sqi-server web UI and logs.

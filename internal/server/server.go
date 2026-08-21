@@ -78,6 +78,11 @@ type Config struct {
 	// a worker. warnIfBrokerUnauthenticated logs this at startup.
 	NATSAddr string // default "0.0.0.0:4222"
 
+	// NATSAuthEnabled reports whether the broker requires a per-worker
+	// credential. Used for the startup warning and, from Task 5, to
+	// configure the broker itself.
+	NATSAuthEnabled bool
+
 	// NATSDataDir is the directory used by JetStream for file-backed stream
 	// storage. It is created at startup if it does not exist.
 	NATSDataDir string // default "data/nats"
@@ -380,7 +385,7 @@ func (s *Server) start(ctx context.Context) error {
 	// ── Message bus (NATS JetStream) ───────────────────────────────────────
 	// Embed NATS server, enable JetStream, provision streams.
 	// Typed client wrapper, consumers, reconnect, drain.
-	warnIfBrokerUnauthenticated(ctx, s.cfg.NATSAddr, false, s.logger)
+	warnIfBrokerUnauthenticated(ctx, s.cfg.NATSAddr, s.cfg.NATSAuthEnabled, s.logger)
 	broker := bus.New(bus.BrokerConfig{
 		Addr:       s.cfg.NATSAddr,
 		DataDir:    s.cfg.NATSDataDir,

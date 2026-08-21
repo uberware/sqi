@@ -161,6 +161,87 @@ nats:
 
 ---
 
+### `nats.credential_file`
+
+| | |
+|---|---|
+| **Type** | `string` |
+| **Default** | `""` (resolves to `<worker.data_dir>/worker.nk`) |
+| **Env var** | `SQI_WORKER_NATS_CREDENTIAL_FILE` |
+
+Path to this worker's nkey seed file. Only meaningful when the server's
+`nats.auth.enabled` is `true` — see
+[`docs/configuration.md`](configuration.md#natsauthenabled). When left
+empty, it defaults to `<worker.data_dir>/worker.nk`. The file is created by
+enrollment or by `sqi-worker keygen` and must be mode `0600`.
+**Configuration only in this release — nothing consumes this value yet.**
+
+```yaml
+nats:
+  credential_file: "/var/lib/sqi-worker/worker.nk"
+```
+
+---
+
+### `nats.join_token`
+
+| | |
+|---|---|
+| **Type** | `string` |
+| **Default** | `""` |
+| **Env var** | `SQI_WORKER_NATS_JOIN_TOKEN` |
+
+A worker enrollment token, used exactly once on first start to obtain a
+credential. Ignored once `nats.credential_file` already exists. Prefer
+[`nats.join_token_file`](#natsjoin_token_file) over this field — a token in a
+config file is a secret at rest.
+
+```yaml
+nats:
+  join_token: ""
+```
+
+---
+
+### `nats.join_token_file`
+
+| | |
+|---|---|
+| **Type** | `string` |
+| **Default** | `""` |
+| **Env var** | `SQI_WORKER_NATS_JOIN_TOKEN_FILE` |
+
+Path to a file containing a join token. Takes precedence over
+[`nats.join_token`](#natsjoin_token).
+
+```yaml
+nats:
+  join_token_file: "/run/secrets/sqi-join-token"
+```
+
+---
+
+### `nats.server_url`
+
+| | |
+|---|---|
+| **Type** | `string` |
+| **Default** | `""` (derived from mDNS discovery) |
+| **Env var** | `SQI_WORKER_NATS_SERVER_URL` |
+
+`sqi-server` HTTP base URL used for enrollment, e.g.
+`"http://sqi-server.example:8080"`. Enrollment runs over REST, not NATS: the
+broker's job is to reject unauthenticated connections, so it cannot also be
+the channel a worker gets its first credential over. When empty, the URL is
+derived from mDNS discovery.
+
+```yaml
+nats:
+  server_url: "http://sqi-server.example:8080"
+```
+
+---
+
 ## `worker` — Identity and runtime behavior
 
 ### `worker.name`
@@ -1463,6 +1544,10 @@ log_streamer:
 | `nats.insecure_skip_verify` | bool | `false` | `SQI_WORKER_NATS_INSECURE_SKIP_VERIFY` | `--nats-insecure-skip-verify` |
 | `nats.max_reconnect_attempts` | int | `-1` | `SQI_WORKER_NATS_MAX_RECONNECT_ATTEMPTS` | — |
 | `nats.reconnect_wait` | duration | `2s` | `SQI_WORKER_NATS_RECONNECT_WAIT` | — |
+| `nats.credential_file` | string | `""` (`<worker.data_dir>/worker.nk`) | `SQI_WORKER_NATS_CREDENTIAL_FILE` | — |
+| `nats.join_token` | string | `""` | `SQI_WORKER_NATS_JOIN_TOKEN` | — |
+| `nats.join_token_file` | string | `""` | `SQI_WORKER_NATS_JOIN_TOKEN_FILE` | — |
+| `nats.server_url` | string | `""` | `SQI_WORKER_NATS_SERVER_URL` | — |
 | `worker.name` | string | hostname | `SQI_WORKER_NAME` | — |
 | `worker.farm_id` | string | `""` | `SQI_WORKER_FARM_ID` | — |
 | `worker.data_dir` | string | `~/.sqi/worker` (Linux/macOS); `%USERPROFILE%\.sqi\worker` (Windows) | `SQI_WORKER_DATA_DIR` | — |

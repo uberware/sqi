@@ -169,6 +169,7 @@ func serverConfig(cfg config.Config, schedCfg scheduler.Config) server.Config {
 		HTTPAddr:                     cfg.HTTP.Addr,
 		CORSOrigins:                  cfg.HTTP.CORSOrigins,
 		NATSAddr:                     cfg.NATS.Addr,
+		NATSAuthEnabled:              cfg.NATS.Auth.Enabled,
 		NATSDataDir:                  cfg.NATS.DataDir,
 		NATSMaxStoreMB:               cfg.NATS.MaxStoreMB,
 		SQLitePath:                   cfg.Store.SQLitePath,
