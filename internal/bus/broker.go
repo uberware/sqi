@@ -21,9 +21,14 @@ type BrokerConfig struct {
 	// Addr is the TCP address the embedded NATS server binds to, in
 	// "host:port" form.  Defaults to "0.0.0.0:4222" (all interfaces) so that
 	// workers which discover the server via mDNS can reach the broker at the
-	// advertised LAN host. Broker authentication does not exist: any host
-	// that can reach this port can register as a worker and receive
-	// assignments. Deferred to Phase 4 hardening.
+	// advertised LAN host.
+	//
+	// Broker authentication is OPT-IN and off by default. With it off, any
+	// host that can reach this port can register as a worker and receive
+	// assignments — including on a LAN, since the default binds all
+	// interfaces. sqi-server emits a startup WARN in exactly that case.
+	// Set nats.auth.enabled to require a per-worker credential, or bind this
+	// to 127.0.0.1:4222 for single-machine use. See docs/auth.md.
 	Addr string
 
 	// DataDir is the directory JetStream uses for file-backed stream storage.

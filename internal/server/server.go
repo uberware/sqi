@@ -72,9 +72,10 @@ type Config struct {
 
 	// NATSAddr is the TCP address the embedded NATS server listens on.
 	// It defaults to all interfaces so that workers discovering the server
-	// via mDNS can connect to NATS at the advertised LAN host. (Broker
-	// authentication does not exist: any host that can reach this port can
-	// register as a worker and receive assignments. Deferred to Phase 4.)
+	// via mDNS can connect to NATS at the advertised LAN host.
+	// Broker authentication is opt-in (nats.auth.enabled) and off by
+	// default; when off, any host that can reach this port can register as
+	// a worker. warnIfBrokerUnauthenticated logs this at startup.
 	NATSAddr string // default "0.0.0.0:4222"
 
 	// NATSDataDir is the directory used by JetStream for file-backed stream
@@ -268,6 +269,47 @@ func (s *Server) Metrics() *metrics.Metrics {
 	return s.metrics
 }
 
+// warnIfBrokerUnauthenticated emits a WARN when the NATS broker is reachable
+// from outside this machine and has no credential requirement.
+//
+// This is the highest-value line in the whole broker-auth component: broker
+// auth is opt-in and off by default, so this is the only thing that tells an
+// operator who turned on auth.enabled that their worker transport is still
+// wide open. It stays silent on loopback, where the exposure does not exist,
+// and silent on an unparseable address, where config validation has already
+// produced a better message.
+func warnIfBrokerUnauthenticated(ctx context.Context, natsAddr string, brokerAuthEnabled bool, logger *slog.Logger) {
+	if brokerAuthEnabled {
+		return
+	}
+	host, _, err := net.SplitHostPort(natsAddr)
+	if err != nil {
+		return
+	}
+	if isLoopbackHost(host) {
+		return
+	}
+	logger.WarnContext(
+		ctx, "the NATS broker is unauthenticated and reachable beyond this host",
+		slog.String("nats_addr", natsAddr),
+		slog.String("impact", "any host that can reach this port can register as a worker and execute submitted job code"),
+		slog.String("remediation", "set nats.auth.enabled: true and enroll your workers, or bind nats.addr to 127.0.0.1:4222 for single-machine use"),
+	)
+}
+
+// isLoopbackHost reports whether host names only this machine. An empty host
+// (from ":4222") means all interfaces, which is not loopback.
+func isLoopbackHost(host string) bool {
+	if host == "" {
+		return false
+	}
+	if host == "localhost" {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
+}
+
 // Health returns the [*health.Registry] owned by this server. Components
 // (store, bus) call Health().Register(...) during startup to participate in
 // readiness gating via GET /readyz.
@@ -338,6 +380,7 @@ func (s *Server) start(ctx context.Context) error {
 	// ── Message bus (NATS JetStream) ───────────────────────────────────────
 	// Embed NATS server, enable JetStream, provision streams.
 	// Typed client wrapper, consumers, reconnect, drain.
+	warnIfBrokerUnauthenticated(ctx, s.cfg.NATSAddr, false, s.logger)
 	broker := bus.New(bus.BrokerConfig{
 		Addr:       s.cfg.NATSAddr,
 		DataDir:    s.cfg.NATSDataDir,

@@ -1454,15 +1454,18 @@ provider](development.md#testing-against-a-real-directory-or-identity-provider) 
 
 ## Known gaps
 
-- **Broker authentication remains absent.** `auth.enabled` gates the HTTP REST
-  API and the WebSocket upgrade **only**. It does nothing to the worker
-  transport: any host that can reach the embedded NATS broker's port (`4222`
-  by default) can register as a worker and receive task assignments, exactly
-  as if auth were off. There is no plan to change this before Phase 4 — see
-  the comment on `bus.BrokerConfig.Addr` (`internal/bus/broker.go`). An
-  operator reading "I flipped `auth.enabled` to `true`, so the server is now
-  locked down" should read that as "the HTTP/WebSocket surface is now locked
-  down" — the worker-registration surface is unaffected either way.
+- **Broker authentication is a separate, opt-in gate from `auth.enabled`.**
+  `auth.enabled` gates the HTTP REST API and the WebSocket upgrade **only**.
+  It does nothing to the worker transport by itself: that transport is
+  gated independently by `nats.auth.enabled`, which is also off by default.
+  While `nats.auth.enabled` is off, any host that can reach the embedded
+  NATS broker's port (`4222` by default) can register as a worker and
+  receive task assignments — see the comment on `bus.BrokerConfig.Addr`
+  (`internal/bus/broker.go`). `sqi-server` emits a startup WARN when the
+  broker address is non-loopback and broker auth is off, precisely because
+  an operator reading "I flipped `auth.enabled` to `true`, so the server is
+  now locked down" should not assume that also locked down the worker
+  transport — the two flags are independent and both must be set.
 - **Task isolation is implemented and integration-tested on both platforms.**
   See [Task isolation](#task-isolation) above for the current state: a queue's
   `run_as_user` runs job code as a distinct OS user on Linux/macOS workers, and
