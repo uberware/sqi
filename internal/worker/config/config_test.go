@@ -442,6 +442,103 @@ func TestValidate_ValidEnvPassthroughGlobsAreFine(t *testing.T) {
 	}
 }
 
+// ── worker.queue_ids validation ──────────────────────────────────────────────
+
+func TestValidate_QueueIDRejectsEachInvalidShape(t *testing.T) {
+	tests := []struct {
+		name string
+		id   string
+	}{
+		{"empty", ""},
+		{"dot", "queue.one"},
+		{"star", "queue*"},
+		{"gt", "queue>"},
+		{"whitespace", "queue one"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := Default()
+			cfg.NATS.URL = "nats://localhost:4222"
+			cfg.Worker.QueueIDs = []string{tt.id}
+
+			errs := Validate(cfg)
+			if !containsField(errs, "worker.queue_ids[0]") {
+				t.Fatalf("expected worker.queue_ids[0] error for %q, got %v", tt.id, errs)
+			}
+			for _, e := range errs {
+				if e.Field != "worker.queue_ids[0]" {
+					continue
+				}
+				if tt.id == "" {
+					// tt.id is "" here, so strings.Contains(e.Message, tt.id)
+					// would hold against any message and verify nothing; the
+					// message must instead say the entry is empty.
+					if !strings.Contains(e.Message, "non-empty") {
+						t.Errorf("error message %q does not say the entry must be non-empty", e.Message)
+					}
+					continue
+				}
+				if !strings.Contains(e.Message, tt.id) {
+					t.Errorf("error message %q does not name the offending value %q", e.Message, tt.id)
+				}
+			}
+		})
+	}
+}
+
+func TestValidate_QueueIDAcceptsUUID(t *testing.T) {
+	cfg := Default()
+	cfg.NATS.URL = "nats://localhost:4222"
+	cfg.Worker.QueueIDs = []string{"3f2a9c9e-6b1a-4e2f-9c3d-8f1a2b3c4d5e"}
+
+	errs := Validate(cfg)
+	if containsField(errs, "worker.queue_ids[0]") {
+		t.Errorf("expected no queue_ids error for a valid UUID, got %v", errs)
+	}
+}
+
+func TestLoad_QueueIDsYAMLAndEnvAgreeOnEmptyEntries(t *testing.T) {
+	// A blank entry from a YAML list and a blank entry from a comma-separated
+	// env var must produce the same shape: preserved (not silently dropped)
+	// so Validate rejects it, naming its position, on both paths.
+	t.Run("yaml", func(t *testing.T) {
+		dir := t.TempDir()
+		path := filepath.Join(dir, "sqi-worker.yaml")
+		yamlContent := "worker:\n  queue_ids: [\"\", \"q1\"]\n"
+		if err := os.WriteFile(path, []byte(yamlContent), 0o600); err != nil {
+			t.Fatalf("write config: %v", err)
+		}
+		t.Setenv("SQI_WORKER_NATS_URL", "nats://x:4222")
+
+		cfg, err := Load(path, FlagOverrides{})
+		if err != nil {
+			t.Fatalf("Load: %v", err)
+		}
+		if len(cfg.Worker.QueueIDs) != 2 || cfg.Worker.QueueIDs[0] != "" || cfg.Worker.QueueIDs[1] != "q1" {
+			t.Fatalf("queue_ids = %v, want [\"\", \"q1\"] (unfiltered, so Validate can reject the empty entry)", cfg.Worker.QueueIDs)
+		}
+		if !containsField(Validate(cfg), "worker.queue_ids[0]") {
+			t.Errorf("expected worker.queue_ids[0] validation error for the blank YAML entry")
+		}
+	})
+
+	t.Run("env", func(t *testing.T) {
+		t.Setenv("SQI_WORKER_NATS_URL", "nats://x:4222")
+		t.Setenv("SQI_WORKER_QUEUE_IDS", ",q1")
+
+		cfg, err := Load("", FlagOverrides{})
+		if err != nil {
+			t.Fatalf("Load: %v", err)
+		}
+		if len(cfg.Worker.QueueIDs) != 2 || cfg.Worker.QueueIDs[0] != "" || cfg.Worker.QueueIDs[1] != "q1" {
+			t.Fatalf("queue_ids = %v, want [\"\", \"q1\"] (unfiltered, so Validate can reject the empty entry)", cfg.Worker.QueueIDs)
+		}
+		if !containsField(Validate(cfg), "worker.queue_ids[0]") {
+			t.Errorf("expected worker.queue_ids[0] validation error for the blank env entry")
+		}
+	})
+}
+
 // ── Diagnostics: defaults and env overrides ──────────────────────────────────
 
 func TestDefault_DiagnosticsEnabledByDefault(t *testing.T) {
@@ -613,5 +710,39 @@ func TestValidate_RejectsBadDetector(t *testing.T) {
 	cfg.Capabilities.Detect = []capabilities.Detector{{Tag: "x"}} // no checks
 	if errs := Validate(cfg); len(errs) == 0 {
 		t.Errorf("expected validation error for detector with no checks")
+	}
+}
+
+func TestDefaultCredentialFile(t *testing.T) {
+	got := DefaultCredentialFile("/tmp/sqi-worker-data")
+	want := filepath.Join("/tmp/sqi-worker-data", "worker.nk")
+	if got != want {
+		t.Errorf("DefaultCredentialFile = %q, want %q", got, want)
+	}
+}
+
+func TestLoad_NATSCredentialFileDefaultsUnderDataDir(t *testing.T) {
+	t.Setenv("SQI_WORKER_NATS_URL", "nats://x:4222") // satisfy validation
+	t.Setenv("SQI_WORKER_DATA_DIR", "/tmp/sqi-worker-data")
+
+	cfg, err := Load("", FlagOverrides{})
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	want := filepath.Join("/tmp/sqi-worker-data", "worker.nk")
+	if cfg.NATS.CredentialFile != want {
+		t.Errorf("NATS.CredentialFile = %q, want %q", cfg.NATS.CredentialFile, want)
+	}
+}
+
+func TestLoad_NATSCredentialFileExplicitValuePreserved(t *testing.T) {
+	body := "nats:\n  credential_file: /etc/sqi/worker.nk\n"
+	f := writeTempFile(t, "worker.yaml", []byte(body))
+	cfg, err := Load(f, FlagOverrides{})
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.NATS.CredentialFile != "/etc/sqi/worker.nk" {
+		t.Errorf("NATS.CredentialFile = %q, want /etc/sqi/worker.nk", cfg.NATS.CredentialFile)
 	}
 }

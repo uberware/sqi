@@ -6,7 +6,7 @@
 // # Overview
 //
 // A [Publisher] ticks on a configurable interval and publishes a
-// [protocol.HeartbeatMsg] to the [bus.SubjectWorkerHeartbeat] NATS subject.
+// [protocol.HeartbeatMsg] to this worker's [bus.WorkerHeartbeatSubject].
 // Each message carries the worker's current runtime state (active task count,
 // active task IDs, uptime, last assignment time) so the server can detect
 // stale assignments without additional store queries.
@@ -108,8 +108,8 @@ type Registrar interface {
 	LastRegisteredAt() time.Time
 }
 
-// Publisher periodically publishes [protocol.HeartbeatMsg] to
-// [bus.SubjectWorkerHeartbeat] and runs an internal watchdog goroutine that
+// Publisher periodically publishes [protocol.HeartbeatMsg] to this worker's
+// [bus.WorkerHeartbeatSubject] and runs an internal watchdog goroutine that
 // triggers re-registration when the NATS connection is restored after a drop
 // and the reconnect callback did not already succeed.
 //
@@ -225,7 +225,7 @@ func (p *Publisher) publish(ctx context.Context) {
 		return
 	}
 
-	if err := p.nc.Publish(bus.SubjectWorkerHeartbeat, data); err != nil {
+	if err := p.nc.Publish(bus.WorkerHeartbeatSubject(p.workerID), data); err != nil {
 		p.logger.WarnContext(
 			ctx, "heartbeat: publish failed",
 			slog.String("worker_id", p.workerID),

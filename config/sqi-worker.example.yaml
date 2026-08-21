@@ -63,6 +63,41 @@ nats:
   # Type: duration   Env: SQI_WORKER_NATS_RECONNECT_WAIT
   reconnect_wait: "2s"
 
+  # Path to this worker's nkey seed file. Only meaningful when the server's
+  # nats.auth.enabled is true. When empty, defaults to
+  # <worker.data_dir>/worker.nk, and that default path is created by
+  # enrollment or by `sqi-worker keygen`. Set this to a non-default path and
+  # both paths honor it: `sqi-worker keygen` loads the same layered
+  # configuration `sqi-worker start` does (this file, SQI_WORKER_NATS_CREDENTIAL_FILE,
+  # and the root -c/--config flag) and writes wherever this field resolves,
+  # and self-service enrollment writes to the same resolved path as part of
+  # a live enrollment run. Must be mode 0600; writing it requires write
+  # permission on the containing directory, not just the file, since the
+  # write goes through a temp file plus rename.
+  # Type: string   Env: SQI_WORKER_NATS_CREDENTIAL_FILE
+  credential_file: ""
+
+  # A worker enrollment token, used exactly once on first start to obtain a
+  # credential. Ignored once credential_file already exists. Prefer
+  # join_token_file over this field — a token in a config file is a secret
+  # at rest.
+  # Type: string   Env: SQI_WORKER_NATS_JOIN_TOKEN
+  join_token: ""
+
+  # Path to a file containing a join token. Takes precedence over join_token.
+  # Type: string   Env: SQI_WORKER_NATS_JOIN_TOKEN_FILE
+  join_token_file: ""
+
+  # sqi-server HTTP base URL used for enrollment, e.g.
+  # "http://sqi-server.example:8080". Enrollment runs over REST, not NATS:
+  # the broker's job is to reject unauthenticated connections, so it cannot
+  # also be the channel a worker gets its first credential over. REQUIRED
+  # whenever a join token is configured, and NOT derived from mDNS
+  # discovery: enrollment fails fast naming this field rather than
+  # attempting a request with no host.
+  # Type: string   Env: SQI_WORKER_NATS_SERVER_URL
+  server_url: ""
+
 # ── Worker identity and runtime behavior ─────────────────────────────────────
 worker:
   # Human-readable name for this worker shown in the sqi-server web UI and logs.
@@ -159,13 +194,19 @@ worker:
   keep_failed_sessions: false
 
   # Restrict this worker to serving specific queue IDs. The worker keeps one
-  # outstanding lease request per listed queue (work.lease.<queueID>). When
+  # outstanding lease request per listed queue (work.lease.<workerID>.<queueID>). When
   # empty (the default) it issues a single lease request on the reserved
-  # core-NATS subject work.lease._any — the server selects tasks farm-wide for
+  # core-NATS subject work.lease.<workerID>._any — the server selects tasks farm-wide for
   # that token and gates by worker eligibility, so a queue-unaffiliated worker
   # is matched to any queue's ready work. Set this on heterogeneous farms where
   # some workers specialise in a subset of queues, e.g. separate GPU and CPU
   # queues.
+  #
+  # Each entry becomes a literal token in that subject, so it must be usable
+  # as a single NATS subject token: an entry that is empty, or contains '.',
+  # whitespace, '*' or '>', is rejected at load (a startup failure) rather
+  # than producing lease requests the server silently refuses or never
+  # answers.
   #
   # Type: []string   Env: SQI_WORKER_QUEUE_IDS (comma-separated)
   queue_ids: []

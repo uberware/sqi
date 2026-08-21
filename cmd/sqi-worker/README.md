@@ -2,7 +2,7 @@
 
 `sqi-worker` is the distributed task-execution agent for the sqi render farm. It
 connects to a running `sqi-server`, registers its hardware capabilities, and
-requests task assignments over core-NATS work leases (`work.lease.<queueID>`),
+requests task assignments over core-NATS work leases (`work.lease.<workerID>.<queueID>`),
 executing them as bare-metal OS processes.
 
 ---
@@ -15,7 +15,7 @@ executing them as bare-metal OS processes.
   detectable), plus any manual tags from configuration such as `maya-2025` or
   `arnold-7`.
 - **Leases** task assignments over core NATS (a long-polling request/reply on
-  `work.lease.<queueID>`) and executes them concurrently; the server gates
+  `work.lease.<workerID>.<queueID>`) and executes them concurrently; the server gates
   concurrency via CPU-core accounting. Task status, logs, heartbeats and
   registration travel the other way over JetStream.
 - **Streams** task stdout and stderr back to `sqi-server` in real time so the

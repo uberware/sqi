@@ -26,6 +26,7 @@ import (
 	workerconfig "github.com/uberware/sqi/internal/worker/config"
 	"github.com/uberware/sqi/internal/worker/diaglog"
 	workerdiscovery "github.com/uberware/sqi/internal/worker/discovery"
+	"github.com/uberware/sqi/internal/worker/enroll"
 	"github.com/uberware/sqi/internal/worker/executor"
 	"github.com/uberware/sqi/internal/worker/heartbeat"
 	"github.com/uberware/sqi/internal/worker/lease"
@@ -146,15 +147,14 @@ func runStart(cmd *cobra.Command, _ []string) error {
 	// all downstream log statements use the concrete URL.
 	cfg.NATS.URL = natsURL
 
-	// ── NATS connection ─────────────────────────────────────────
+	// ── Broker credential + NATS connection ──────────────────────
 	//
 	// Connect failure at boot is fatal. closedCh is closed by the
 	// NATS ClosedHandler when the connection permanently closes so we can
 	// detect unexpected disconnects after the initial handshake.
-	nc, natsClosed, err := natsclient.Connect(ctx, cfg.NATS, logger)
+	nc, natsClosed, err := connectToBroker(ctx, cfg, workerID, logger)
 	if err != nil {
-		// Boot-time connect failure is a fatal error.
-		return fmt.Errorf("nats connect: %w", err)
+		return err
 	}
 
 	// ── Diagnostic-log sink ─────────────────────────────────────
@@ -295,7 +295,7 @@ func runStart(cmd *cobra.Command, _ []string) error {
 	// SYNC: logstreamer.Config and workerconfig.LogStreamerConfig have matching
 	// fields.  If a field is added to one, it must be added to both and mapped
 	// here.
-	logPub := logstreamer.New(nc, logstreamer.Config{
+	logPub := logstreamer.New(nc, workerID, logstreamer.Config{
 		MaxLinesPerChunk: cfg.LogStreamer.MaxLinesPerChunk,
 		MaxBytesPerChunk: cfg.LogStreamer.MaxBytesPerChunk,
 		FlushInterval:    cfg.LogStreamer.FlushInterval,
@@ -352,7 +352,7 @@ func runStart(cmd *cobra.Command, _ []string) error {
 	// ── Heartbeat ───────────────────────────────────────────────
 	//
 	// The heartbeat Publisher ticks on cfg.Worker.HeartbeatInterval and
-	// publishes liveness + runtime-state messages to worker.heartbeat.
+	// publishes liveness + runtime-state messages to worker.heartbeat.<worker>.
 	// The executor is wired in as the StateSource so each heartbeat carries
 	// the current active-task count, active task IDs, and last-assignment time.
 	//
@@ -372,7 +372,7 @@ func runStart(cmd *cobra.Command, _ []string) error {
 
 	// ── Work-lease loop ─────────────────────────────────────────
 	//
-	// The worker asks the server for work on work.lease.<queue> and dispatches
+	// The worker asks the server for work on work.lease.<worker>.<queue> and dispatches
 	// whatever the server leases it. The server gates capacity (CPU-core fit,
 	// policy, usage pools), so the worker simply runs what it is given.
 	leaseLoop := lease.New(
@@ -465,6 +465,51 @@ func checkRootAndLoadWorkerID(cfg workerconfig.WorkerConfig, logger *slog.Logger
 		return "", fmt.Errorf("load worker id: %w", err)
 	}
 	return workerID, nil
+}
+
+// connectToBroker loads or obtains this worker's nkey broker credential and
+// dials the broker with it. Extracted from [runStart] to keep that
+// function's cyclomatic complexity within the project limit.
+//
+// A missing credential (enroll.ErrNoCredential) is NOT immediately fatal:
+// this may be a farm that does not require worker authentication at all, in
+// which case the connect attempt below proceeds with no credential exactly
+// as it does today. Only when the broker actually refuses that connection is
+// authentication known to be required, and the operator gets a message
+// naming both remediations (obtain a token, or pre-provision a key) instead
+// of natsclient's generic rejection message, which assumes a credential
+// existed to be rejected in the first place.
+func connectToBroker(
+	ctx context.Context,
+	cfg workerconfig.WorkerConfig,
+	workerID string,
+	logger *slog.Logger,
+) (*nats.Conn, <-chan struct{}, error) {
+	seed, publicKey, err := enroll.EnsureCredential(ctx, enroll.Config{
+		WorkerID:       workerID,
+		CredentialFile: cfg.NATS.CredentialFile,
+		JoinToken:      cfg.NATS.JoinToken,
+		JoinTokenFile:  cfg.NATS.JoinTokenFile,
+		ServerURL:      cfg.NATS.ServerURL,
+	}, logger)
+	noCredential := errors.Is(err, enroll.ErrNoCredential)
+	if err != nil && !noCredential {
+		return nil, nil, fmt.Errorf("worker credential: %w", err)
+	}
+
+	nc, natsClosed, err := natsclient.Connect(ctx, cfg.NATS, workerID, seed, publicKey, logger)
+	if err != nil {
+		if noCredential && (errors.Is(err, nats.ErrAuthorization) || errors.Is(err, nats.ErrAuthExpired)) {
+			//nolint:staticcheck // ST1005: wording is deliberately two sentences so the operator sees cause and remediation separately
+			return nil, nil, fmt.Errorf(
+				"sqi-worker: this server requires worker authentication, but no credential was found at %s and no join token is configured.\n"+
+					"Obtain a token from an operator (`sqi-server worker token issue`) and set worker nats.join_token_file, or pre-provision a key with `sqi-worker keygen`.",
+				cfg.NATS.CredentialFile,
+			)
+		}
+		return nil, nil, fmt.Errorf("nats connect: %w", err)
+	}
+	return nc, natsClosed, nil
 }
 
 // loadAndValidateConfig resolves CLI flag overrides, loads the layered
@@ -609,7 +654,7 @@ func withDiagnosticSink(
 }
 
 // leaseTransport adapts a raw *nats.Conn to [lease.Transport], issuing
-// core-NATS request/reply work-lease requests on the work.lease.<queue>
+// core-NATS request/reply work-lease requests on the work.lease.<worker>.<queue>
 // subject. The worker connects via natsclient (which yields a *nats.Conn), so
 // this thin wrapper provides the same RequestLease behavior as
 // [bus.Client.RequestLease] without a second client connection.
@@ -617,13 +662,13 @@ type leaseTransport struct {
 	nc *nats.Conn
 }
 
-// RequestLease sends a work-lease request for queueID and waits up to timeout
-// for the server's reply. It returns the raw reply bytes (a marshaled
-// leaseReply) for the lease loop to decode.
-func (t leaseTransport) RequestLease(ctx context.Context, queueID string, data []byte, timeout time.Duration) ([]byte, error) {
+// RequestLease sends a work-lease request for queueID on behalf of workerID and
+// waits up to timeout for the server's reply. It returns the raw reply bytes (a
+// marshaled leaseReply) for the lease loop to decode.
+func (t leaseTransport) RequestLease(ctx context.Context, workerID, queueID string, data []byte, timeout time.Duration) ([]byte, error) {
 	reqCtx, cancelReq := context.WithTimeout(ctx, timeout)
 	defer cancelReq()
-	msg, err := t.nc.RequestWithContext(reqCtx, bus.WorkLeaseSubject(queueID), data)
+	msg, err := t.nc.RequestWithContext(reqCtx, bus.WorkLeaseSubject(workerID, queueID), data)
 	if err != nil {
 		return nil, fmt.Errorf("worker: request lease for queue %q: %w", queueID, err)
 	}
@@ -633,7 +678,7 @@ func (t leaseTransport) RequestLease(ctx context.Context, queueID string, data [
 // leaseQueueIDs maps the worker's configured queue list to the queues it
 // requests leases on. A worker with no configured queues serves any queue; it
 // must still request on a valid subject, so it uses [bus.WildcardQueueToken]
-// (work.lease._any) rather than an empty leaf (work.lease., which routes to no
+// (work.lease.<worker>._any) rather than an empty queue token, which routes to no
 // responder). The server selects tasks farm-wide and gates by eligibility, so a
 // queue-unaffiliated worker is matched to any queue's ready work.
 func leaseQueueIDs(configured []string) []string {

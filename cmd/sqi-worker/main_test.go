@@ -9,6 +9,9 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/spf13/cobra"
+	"github.com/spf13/pflag"
 )
 
 // captureStdout redirects os.Stdout to a pipe for the duration of fn, then
@@ -39,10 +42,50 @@ func captureStdout(t *testing.T, fn func()) string {
 	return buf.String()
 }
 
+// withFlagUnchanged resets a flag's Changed state to false for the duration
+// of the test, then restores it.
+//
+// pflag.Flag.Changed is sticky: it flips to true the first time a flag is
+// parsed from the command line and the library never resets it. Flag
+// objects in this binary are package-level singletons registered once in
+// init(), so within a single test process a later test asserting "the flag
+// was omitted" would otherwise observe a stale true left by an earlier test
+// that passed it explicitly, purely as an artifact of test ordering.
+func withFlagUnchanged(t *testing.T, fs *pflag.FlagSet, name string) {
+	t.Helper()
+	f := fs.Lookup(name)
+	if f == nil {
+		t.Fatalf("no such flag: %q", name)
+	}
+	f.Changed = false
+	// Reset to false, not the saved original: restoring a stale true would
+	// leave exactly the leftover this helper exists to prevent, for
+	// whichever test runs next.
+	t.Cleanup(func() { f.Changed = false })
+}
+
+// resetFlagsChanged clears pflag.Flag.Changed for every flag in cmd's own
+// FlagSet and PersistentFlags, and recurses into every subcommand. Called
+// from prepareRoot before every Execute() so a stale Changed=true left by an
+// earlier test's cobra parse — Changed is sticky, pflag never resets it, and
+// every command in this binary is a package-level singleton reused across
+// the whole test process — cannot leak into a later test that means "this
+// flag was not passed". This is the general form of withFlagUnchanged: every
+// flag in the tree, before every Execute(), so no individual test needs to
+// know which flags an earlier one touched.
+func resetFlagsChanged(cmd *cobra.Command) {
+	cmd.Flags().VisitAll(func(f *pflag.Flag) { f.Changed = false })
+	cmd.PersistentFlags().VisitAll(func(f *pflag.Flag) { f.Changed = false })
+	for _, c := range cmd.Commands() {
+		resetFlagsChanged(c)
+	}
+}
+
 // prepareRoot sets the args that rootCmd will parse on the next Execute() call
 // and redirects cobra's own output writers (help, usage, error messages) to a
 // discard buffer so test output stays clean.
 func prepareRoot(args []string) {
+	resetFlagsChanged(rootCmd)
 	rootCmd.SetArgs(args)
 	var sink bytes.Buffer
 	rootCmd.SetOut(&sink)

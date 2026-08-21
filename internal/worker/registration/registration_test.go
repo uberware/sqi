@@ -89,9 +89,9 @@ func createWorkerStream(url string) error {
 	if _, err := js.CreateStream(ctx, jetstream.StreamConfig{
 		Name: bus.StreamWorker,
 		Subjects: []string{
-			bus.SubjectWorkerRegister,
-			bus.SubjectWorkerHeartbeat,
-			bus.SubjectWorkerDeregister,
+			bus.SubjectWorkerRegisterPrefix + ".>",
+			bus.SubjectWorkerHeartbeatPrefix + ".>",
+			bus.SubjectWorkerDeregisterPrefix + ".>",
 		},
 		Retention: jetstream.WorkQueuePolicy,
 		Storage:   jetstream.MemoryStorage,

@@ -18,6 +18,251 @@ Bearer API key (`auth.Chain(apikey, session)`); there is no more
 means in practice, and [First-admin bootstrap](#first-admin-bootstrap) for
 how to get your first credential.
 
+## Broker authentication (transport)
+
+`auth.enabled` gates the HTTP REST API and the WebSocket upgrade. It does
+**nothing** to the worker transport. A second, independent switch —
+`nats.auth.enabled` (config file `nats.auth.enabled`, env
+`SQI_NATS_AUTH_ENABLED`; default `false`) — gates the embedded NATS broker
+that workers connect to. The two flags protect different surfaces and must
+each be turned on deliberately; flipping one does not flip the other.
+
+### What it protects, and what it does not
+
+Broker authentication addresses two things: an unauthorized host attaching to
+the broker and registering as a worker, and one enrolled worker forging
+traffic that claims to come from another. **It does not encrypt the
+transport.** Task payloads, assignment contents and log chunks all travel
+over the connection in cleartext whether broker authentication is on or off.
+Turning it on stops an attacker from attaching or impersonating another
+worker; it does not stop someone who can already read the network from
+reading what crosses it. Do not conclude "I turned on broker authentication"
+means "the channel is private" — it does not.
+
+### The credential: an nkey per worker
+
+Each worker holds an Ed25519 **nkey** keypair. The worker generates it
+locally — only the public key ever leaves the machine — and the private seed
+is written to `nats.credential_file`, mode `0600`, which defaults to
+`<data_dir>/worker.nk` but can be pointed anywhere. Both self-service
+enrollment over REST and `sqi-worker keygen` honor a custom path: `keygen`
+loads the worker's own configuration (the root `-c/--config` file,
+`SQI_WORKER_*` environment variables, and built-in defaults, the same as
+`sqi-worker start`) and writes the seed wherever `credential_file` resolves.
+See
+[`docs/worker-configuration.md`](worker-configuration.md#natscredential_file)
+for the full field reference. Connecting to the broker is challenge-response
+(the broker sends a nonce, the worker signs it with the seed), so nothing
+replayable crosses the wire.
+
+### Getting a credential
+
+Two ways, both ultimately calling the same store write:
+
+- **Join token (self-service).** An operator mints a TTL-bounded token —
+  `sqi-server worker token issue` (see the database-path resolution rule below),
+  or `POST /api/v1/workers/join-tokens` when `auth.enabled` is on, gated on
+  the `workers.enroll` permission (admin-only by default) — and hands it to
+  the worker via `nats.join_token_file` (preferred) or `nats.join_token`. On
+  first boot with no credential file present, the worker generates its
+  keypair and calls `POST /api/v1/workers/enroll` with the token, its worker
+  ID and its public key. That endpoint is unauthenticated by design — the
+  token itself is the credential, so gating it on a session or API key would
+  be circular — and exists only while `nats.auth.enabled` and
+  `nats.auth.enrollment_endpoint_enabled` are both true. Tokens default to a
+  1-hour TTL (bounded 1 minute to 24 hours) and are single-use by default
+  (`nats.auth.join_token_single_use`).
+- **Manual pre-provisioning.** Run `sqi-worker keygen` on the worker host,
+  with its normal config in place — it writes the seed and prints the
+  public key and the exact `sqi-server worker enroll --worker-id … --public-key
+  …` command to run on the server. Pass `--data-dir` to override
+  `worker.data_dir` explicitly for a one-off run against a different
+  directory. No token, no REST call, no `POST /api/v1/workers/enroll` route
+  needs to exist at all. This is the path for an air-gapped worker, or a
+  site that sets `nats.auth.enrollment_endpoint_enabled: false` and wants no
+  self-service enrollment surface whatsoever. `sqi-server worker enroll` is
+  **offline**, exactly like `sqi-server worker revoke`: it writes the
+  database from a process with no broker handle, so a **running** server
+  keeps refusing the new key until it restarts.
+
+> **`sqi-server worker …` resolves its database path the same way `backup`
+> and `migrate` do.** Highest priority first: an explicit `--db`;
+> `store.sqlite_path` (the root `-c/--config` file and
+> `SQI_STORE_SQLITE_PATH`); the legacy `SQI_SQLITE_PATH` environment
+> variable; then `sqi.db`. Unlike `migrate`, these subcommands never create
+> or migrate the database — pointing one at a path with no database there is
+> a clear error naming the resolved path, not a silently created empty one.
+> See [`docs/operations.md`](operations.md#worker-broker-credentials) for
+> the full command reference.
+
+**Enroll every worker before flipping `nats.auth.enabled` on.** The enrolled
+credential set is loaded once, at server `Start`, and only when broker
+authentication is enabled — so a farm that flips the switch with nothing
+enrolled yet does not fail closed gracefully, it takes every worker offline
+at its next restart or reconnect: a rejected credential is fatal in the
+worker, not a silent retry. A worker can hold a credential harmlessly while
+`nats.auth.enabled` is still `false` — the broker does not check it — so the
+safe order is: enroll every worker first (either path above), confirm each
+one has a credential (`sqi-server worker list`), and only then set
+`nats.auth.enabled: true` and restart the server.
+
+**Enrollment always runs over REST, never over NATS.** The broker's entire
+job is to refuse unauthenticated connections, so it cannot also be the
+channel a worker obtains its first credential over. This means
+`nats.server_url` (the server's HTTP base URL) **must be set explicitly on
+the worker** whenever a join token is configured — it is **not** derived
+from mDNS discovery. A worker relying on mDNS with no `server_url` set fails
+enrollment fast, naming that field, rather than attempting a request with no
+host.
+
+See [`docs/worker-deployment.md`](worker-deployment.md) for both paths
+walked end to end, and [`docs/worker-configuration.md`](worker-configuration.md)
+for every `nats.*` field.
+
+### Revocation: two paths, deliberately distinct
+
+- `DELETE /api/v1/workers/{id}/credential` runs inside the server process,
+  which holds the live broker handle: it writes the store and reloads the
+  broker's authorized-key set in the same call, so the worker is
+  disconnected before the request returns.
+- `sqi-server worker revoke <id>` is an **offline** CLI command — it opens
+  the SQLite file directly and writes the same row, but from a separate
+  process with no broker handle. It takes effect the next time `sqi-server`
+  starts, not immediately.
+
+Use the REST path when you need a worker off the farm right now (a
+compromised host, a decommissioned machine). The CLI path is for offline
+maintenance — revoking a credential before a server has ever started with
+it, or as part of a startup script.
+
+`DELETE /api/v1/workers/{id}` — removing the worker record itself — revokes
+its credential too, through the same synchronous path as the first bullet
+above, and does so **before** deleting the worker row, not after. This
+exists because `workers.manage` (what deleting a worker requires) does not
+imply `workers.enroll` (what revoking a credential directly requires) — the
+split is deliberate, so that the ability to delete a worker never doubles as
+the ability to mint join tokens — and without the cascade, an operator who
+can decommission a machine would have no way at all to cut its broker
+access. A worker with no credential (broker authentication disabled, or a
+worker that was never enrolled) is deleted exactly as before; a credential
+that is already revoked is treated the same way.
+
+The ordering matters: `store.DeleteWorker` never rejects with a conflict —
+removability was already decided by an earlier check — so revoking first
+never wastes a revocation on a delete that was always going to be refused.
+If the revoke fails, nothing has happened yet: the worker row is intact, the
+request answers 500, and it is safe to retry. If the delete then fails after
+a successful revoke, the worker row survives but its broker access is
+already cut — the safe direction to fail in — and retrying `DELETE
+/workers/{id}` simply re-revokes (a no-op the second time) and tries the
+delete again. Deleting first and revoking after was tried and rejected: a
+failure in the revoke's own store write, not just a broker-reload failure,
+would leave the worker row gone, the credential never revoked, and nothing
+left to reap it — the operator would be told 204 while the machine kept live
+broker access permanently, with no other permission available to fix it.
+
+### Key rotation and re-enrollment
+
+Worker-ID uniqueness applies only to **active** credentials: a revoked
+worker ID can be enrolled again with a brand-new key (`sqi-worker keygen
+--force`, then a fresh `sqi-server worker enroll` or join token). Public
+keys, by contrast, are **globally unique forever** — once a key has been
+enrolled, even to a since-revoked credential, it can never be enrolled
+again. To rotate a worker's key:
+
+1. `sqi-server worker revoke <worker-id>` (or the REST path, if the old
+   credential should be disconnected immediately).
+2. `sqi-worker keygen --force` on the worker host, with its normal config in
+   place — this overwrites the seed with a new keypair and prints the new
+   public key, plus the exact `sqi-server worker enroll` command for step 3.
+   `keygen` loads configuration the same way `sqi-worker start` does (the
+   root `-c/--config` file, `SQI_WORKER_*` environment variables, and
+   built-in defaults), so running it on the worker host with its own config
+   resolves `worker.data_dir` and `nats.credential_file` the same way the
+   worker itself does. `keygen` also states, in its output, whether the
+   worker ID it printed was loaded from an existing `worker.id` or freshly
+   generated — a freshly generated ID here means `--data-dir` or
+   `worker.data_dir` is pointed at the wrong directory, since it should be
+   rotating the key of the worker already named in step 1, not minting a
+   new one. Pass `--data-dir` to override the directory explicitly for a
+   one-off run.
+3. `sqi-server worker enroll --worker-id <worker-id> --public-key <new-key>`
+   on the server host, using the public key `keygen` just printed.
+4. **Restart `sqi-server`.** Like `worker revoke`, `worker enroll` is an
+   offline command: it writes the database from a process with no broker
+   handle, and the broker's authorized-key set is built once at startup. A
+   running server therefore still refuses the new key until it restarts.
+5. Restart `sqi-worker`. It finds the new seed already on disk (`keygen`
+   wrote it directly) and connects with it — no REST enrollment call happens
+   on this path, since a credential file already exists.
+
+Running `keygen --force` before revoking the old credential is safe but
+will not help: the worker ID stays bound to the *old* public key on the
+server until it is revoked, so the enroll command in step 3 fails until
+step 1 has run. To rotate via a fresh join token instead of `keygen`,
+remove `worker.nk` before restarting the worker — with no credential file
+present it re-enrolls exactly as it did on first boot.
+
+### What an enrolled worker's credential may do
+
+A worker's broker permissions are generated from the worker ID recorded at
+enrollment, and cover only that worker's own subtree:
+
+- **Publish:** `task.status.<id>.*`, `task.logs.<id>.*`,
+  `worker.register.<id>`, `worker.heartbeat.<id>`, `worker.deregister.<id>`,
+  `worker.diag.<id>`, `work.lease.<id>.*`.
+- **Subscribe:** `_INBOX_<id>.>` — this worker's own reply inboxes — and
+  `task.cancel.>`.
+
+Everything else is denied. A worker cannot subscribe to `task.status.>` or
+`task.logs.>`, so it cannot observe another worker's status or log traffic.
+
+The reply-inbox prefix is **per worker**, not nats.go's process-global
+`_INBOX`. That matters because a work lease is core-NATS request/reply: the
+assignment batch — command lines, embedded file contents, job and task
+parameters, environment variables, the path map and the run-as-user account
+— is delivered to the requester's reply inbox and nothing but the subscribe
+permission guards it. A single `_INBOX.>` grant would let any enrolled
+worker read every other worker's assignments (and `sqi-server`'s own
+JetStream API replies) without leasing a task itself. Each worker therefore
+connects with `nats.CustomInboxPrefix("_INBOX_<worker-id>")` and is granted
+only that subtree.
+
+### The auth-off asymmetry
+
+With broker authentication **off — the permanent default** — the worker ID
+is still present as a token in every worker-to-server subject (see
+[NATS subjects and streams](architecture.md#nats-subjects-and-streams)), but
+**nothing enforces it**. Any client that can reach the broker may publish
+under any worker ID it chooses. The scheduler still parses that ID out of
+the subject and compares it against the task attempt's recorded owner, and
+still discards a mismatch — but with authentication off, that check is not a
+security boundary. It catches **honest bugs**, not attackers: a stale
+worker, a version mismatch, a client publishing to the wrong subject by
+accident. Do not read those provenance checks as proof that cross-worker
+forgery is prevented in the default configuration — it is not. Only
+`nats.auth.enabled: true`, which authenticates the connection itself, closes
+that gap.
+
+`sqi-server` emits a startup `WARN` when `nats.addr` binds to a non-loopback
+address and broker authentication is off, naming both remediations (turn on
+`nats.auth.enabled`, or bind `nats.addr` to `127.0.0.1`).
+
+### An accepted authorization gap: `task.cancel.>`
+
+This is the **only** subject a worker's credential can reach outside its own
+subtree. Workers subscribe to `task.cancel.<taskID>` per-task, at the moment a task is
+assigned, not for the lifetime of the connection. NATS permissions are
+static per credential, so a worker's subscribe permission cannot be
+narrower than the whole `task.cancel.>` subtree — there is no way to grant
+"only the cancel subjects for tasks I currently hold" without a permission
+reload on every assignment, or a NATS auth callout. The practical effect:
+**any enrolled worker can observe the cancel signal for any task**, not only
+its own. This is accepted as low severity — a cancel message for a task the
+worker does not hold is simply inert, it triggers no action — but it is a
+real, deliberate gap rather than an oversight, and is recorded here rather
+than left to be rediscovered.
+
 ## Model
 
 Every request carries a `Principal` in its context. When auth is off, the
@@ -133,6 +378,7 @@ built-in roles (no custom-role builder — YAGNI):
 | apikeys.self (own keys) | ✅ | ✅ | ✅ | ✅ |
 | apikeys.admin (anyone's keys) | ❌ | ❌ | ❌ | ✅ |
 | `isolation.manage` — set a queue's `run_as_user`/`run_as_group` | ❌ | ❌ | ❌ | ✅ |
+| `workers.enroll` — mint worker join tokens; revoke a worker's broker credential | ❌ | ❌ | ❌ | ✅ |
 
 `apikeys.admin` is enforced by `GET /users/{id}/api-keys` and
 `DELETE /users/{id}/api-keys/{keyId}` — see [API keys](#api-keys).
@@ -1454,15 +1700,22 @@ provider](development.md#testing-against-a-real-directory-or-identity-provider) 
 
 ## Known gaps
 
-- **Broker authentication remains absent.** `auth.enabled` gates the HTTP REST
-  API and the WebSocket upgrade **only**. It does nothing to the worker
-  transport: any host that can reach the embedded NATS broker's port (`4222`
-  by default) can register as a worker and receive task assignments, exactly
-  as if auth were off. There is no plan to change this before Phase 4 — see
-  the comment on `bus.BrokerConfig.Addr` (`internal/bus/broker.go`). An
-  operator reading "I flipped `auth.enabled` to `true`, so the server is now
-  locked down" should read that as "the HTTP/WebSocket surface is now locked
-  down" — the worker-registration surface is unaffected either way.
+- **Broker authentication is off by default, and that default is permanent —
+  not a placeholder for a later phase.** See
+  [Broker authentication (transport)](#broker-authentication-transport)
+  above for the full model: the credential, both enrollment paths,
+  revocation, key rotation, and — stated plainly there — the asymmetry that
+  while `nats.auth.enabled` is off, the worker ID carried in every subject is
+  unenforced, so the scheduler's provenance checks catch bugs rather than
+  attackers, and any host that can reach the embedded NATS broker's port
+  (`4222` by default) can register as a worker and receive task assignments.
+  Turning broker authentication on does not encrypt the transport either —
+  task payloads, assignments and log chunks stay cleartext regardless.
+  `sqi-server` emits a startup WARN when the broker address is non-loopback
+  and broker auth is off, precisely because an operator reading "I flipped
+  `auth.enabled` to `true`, so the server is now locked down" should not
+  assume that also locked down the worker transport — the two flags are
+  independent and both must be set.
 - **Task isolation is implemented and integration-tested on both platforms.**
   See [Task isolation](#task-isolation) above for the current state: a queue's
   `run_as_user` runs job code as a distinct OS user on Linux/macOS workers, and
@@ -1487,6 +1740,20 @@ provider](development.md#testing-against-a-real-directory-or-identity-provider) 
   already run as the daemon's own account — so isolation being enabled on
   Windows is precisely what makes this reachable. Not yet fixed; tracked for
   a follow-up before this is considered hardened.
+- **`DELETE /workers/{id}/credential` stays mounted with `auth.enabled=false`.**
+  Every other permission-gated route in this document is bypassed by the
+  anonymous superuser when `auth.enabled` is off — that is unchanged,
+  by-design behavior. This one route carries a real consequence from it:
+  with `auth.enabled=false` and `nats.auth.enabled=true` (a supported,
+  documented combination), an unauthenticated caller can revoke any worker's
+  broker credential, and repeated calls can take the whole farm off the
+  broker one worker at a time. It is an availability exposure, not an
+  escalation — revoke only removes access already granted, it cannot attach
+  new compute or obtain a credential — and every other destructive worker
+  route (`disable`, `DELETE /workers/{id}`) is exposed exactly the same way
+  in that configuration. Carving out this one route would break the rule
+  that auth-off behavior matches pre-auth sqi, so it is accepted rather than
+  special-cased.
 - **Per-user concurrent task caps.** A hard per-owner ceiling on running tasks was scoped for
   Phase 3 and deferred (2026-07-20) with no driver behind it. Nothing bounds a single user's
   farm consumption today: `max_concurrent_tasks` on farms and queues caps the container, not the

@@ -5,7 +5,7 @@ package scheduler
 // Structured log ingestion that timestamps and persists log chunks
 // with monotonic sequence numbers per task attempt.
 //
-// Workers publish [protocol.LogChunkMsg] values to task.logs.<taskID> as their
+// Workers publish [protocol.LogChunkMsg] values to task.logs.<workerID>.<taskID> as their
 // task produces stdout/stderr output.  The server-side consumer here:
 //
 //  1. Decodes each [protocol.LogChunkMsg].
@@ -27,12 +27,14 @@ package scheduler
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/nats-io/nats.go/jetstream"
 
+	"github.com/uberware/sqi/internal/bus"
 	"github.com/uberware/sqi/internal/store"
 	"github.com/uberware/sqi/internal/worker/protocol"
 	"github.com/uberware/sqi/internal/ws"
@@ -46,8 +48,16 @@ func (s *Scheduler) startTaskLogsConsumer(ctx context.Context) error {
 	return err
 }
 
-// handleLogChunk is the JetStream message handler for task.logs.<task> messages
+// handleLogChunk is the JetStream message handler for task.logs.<worker>.<task> messages
 // published by workers.
+//
+// [protocol.LogChunkMsg] carries no worker-identity field of its own, so the
+// subject is the ONLY identity available: it is resolved to an attempt, and
+// that attempt's recorded WorkerID and TaskID are both checked before a
+// chunk is persisted or fanned out — the worker check alone would let a
+// worker holding a live attempt of its own pair that attempt with a
+// different task in the payload and inject log content there. See the
+// auth-off note on [Scheduler.handleTaskStatusMessage]: it applies here too.
 func (s *Scheduler) handleLogChunk(msg jetstream.Msg) {
 	ctx := s.ctx
 
@@ -65,6 +75,77 @@ func (s *Scheduler) handleLogChunk(msg jetstream.Msg) {
 			ctx, "scheduler: task.logs missing task_id or attempt_id — discarding",
 			slog.String("task_id", m.TaskID),
 			slog.String("attempt_id", m.AttemptID),
+		)
+		s.ackMsg(ctx, msg)
+		return
+	}
+
+	// The subject is the only identity NATS itself can vouch for; a message
+	// on a subject that does not carry one concrete worker ID cannot be
+	// attributed to anyone and is discarded rather than acted on.
+	subjectWorkerID, _, ok := bus.ParseWorkerSubject(msg.Subject())
+	if !ok {
+		s.discardUnexpectedSubject(ctx, msg, "task.logs")
+		return
+	}
+
+	// Resolve the attempt this chunk claims to belong to so its recorded
+	// WorkerID and TaskID can be checked below. Both fields are immutable for
+	// the life of the attempt, so a cache hit is as good as a fresh store
+	// read; on a miss, fall back to the store exactly as before — including
+	// the transient-vs-permanent distinction below, since the store read
+	// also confirms the attempt still exists (a chunk for a vanished attempt
+	// must still be discarded, never assumed present).
+	owner, ok := s.attemptCache.get(m.AttemptID)
+	if !ok {
+		attempt, err := s.store.GetTaskAttempt(ctx, m.AttemptID)
+		if errors.Is(err, store.ErrNotFound) {
+			s.logger.WarnContext(
+				ctx, "scheduler: task.logs for unknown attempt — discarding",
+				slog.String("attempt_id", m.AttemptID),
+				slog.String("task_id", m.TaskID),
+			)
+			s.ackMsg(ctx, msg)
+			return
+		}
+		if err != nil {
+			s.logger.WarnContext(
+				ctx, "scheduler: task.logs: lookup attempt failed — will redeliver",
+				slog.String("attempt_id", m.AttemptID),
+				slog.Any("error", err),
+			)
+			s.nakMsg(ctx, msg)
+			return
+		}
+		owner = attemptOwner{workerID: attempt.WorkerID, taskID: attempt.TaskID}
+		s.attemptCache.put(m.AttemptID, owner.workerID, owner.taskID)
+	}
+	// The attempt is real, but is it for the task this chunk claims? Without
+	// this, a worker holding a live attempt of its own could pair that
+	// attempt's ID with a different task's ID in the payload — the worker-ID
+	// check below would pass (the attempt really is the subject worker's),
+	// but the log would land against a task that worker was never assigned.
+	if owner.taskID != m.TaskID {
+		s.logger.WarnContext(
+			ctx, "scheduler: task.logs attempt task_id mismatch — discarding",
+			slog.String("attempt_id", m.AttemptID),
+			slog.String("msg_task_id", m.TaskID),
+			slog.String("attempt_task_id", owner.taskID),
+		)
+		s.ackMsg(ctx, msg)
+		return
+	}
+	// The subject's worker ID was enforced by NATS when broker auth is on;
+	// with LogChunkMsg carrying no worker field of its own, it is the only
+	// identity this handler has to check at all. Treat a mismatch as
+	// permanent — redelivery cannot make a forged message legal.
+	if subjectWorkerID != owner.workerID {
+		s.logger.WarnContext(
+			ctx, "scheduler: task.logs from a worker that does not hold this task — discarding",
+			slog.String("task_id", m.TaskID),
+			slog.String("attempt_id", m.AttemptID),
+			slog.String("subject_worker_id", subjectWorkerID),
+			slog.String("attempt_worker_id", owner.workerID),
 		)
 		s.ackMsg(ctx, msg)
 		return
@@ -101,6 +182,12 @@ func (s *Scheduler) handleLogChunk(msg jetstream.Msg) {
 	}
 
 	if _, err := s.store.CreateTaskLog(ctx, log); err != nil {
+		// The cached owner may be stale: the attempt row can be deleted along
+		// with its job while a chunk is in flight (e.g. DELETE /jobs/{id} on
+		// an active job). Dropping the entry sends the redelivery through the
+		// store path above, which discards the chunk instead of failing this
+		// write again.
+		s.attemptCache.evict(m.AttemptID)
 		s.logger.WarnContext(
 			ctx, "scheduler: persist log chunk failed — will redeliver",
 			slog.String("task_id", m.TaskID),

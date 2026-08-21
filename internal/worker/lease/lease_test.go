@@ -19,7 +19,7 @@ type fakeTransport struct {
 	calls   int
 }
 
-func (f *fakeTransport) RequestLease(_ context.Context, _ string, _ []byte, _ time.Duration) ([]byte, error) {
+func (f *fakeTransport) RequestLease(_ context.Context, _, _ string, _ []byte, _ time.Duration) ([]byte, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.calls++

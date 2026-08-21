@@ -555,7 +555,7 @@ func TestHandleWorkerRegister_PersistsAdvertisedExprCaps(t *testing.T) {
 		AssignmentRetainedBytes: 4_444_444,
 	}
 	msg := &fakeJSMsg{
-		subject: bus.SubjectWorkerRegister,
+		subject: bus.WorkerRegisterSubject("w-1"),
 		data: workerMsgJSON(t, protocol.RegisterMsg{
 			Version: protocol.ProtocolVersion, Type: protocol.TypeRegister,
 			WorkerID: "w-1", FarmID: "farm-1", Hostname: "node-1", OS: "linux",
@@ -588,7 +588,7 @@ func TestHandleWorkerRegister_ExprCapWarningIsDeDuplicated(t *testing.T) {
 
 	register := func(positions int64) {
 		s.handleWorkerMessage(&fakeJSMsg{
-			subject: bus.SubjectWorkerRegister,
+			subject: bus.WorkerRegisterSubject("w-1"),
 			data: workerMsgJSON(t, protocol.RegisterMsg{
 				Version: protocol.ProtocolVersion, Type: protocol.TypeRegister,
 				WorkerID: "w-1", FarmID: "farm-1", Hostname: "node-1", OS: "linux",
@@ -749,7 +749,7 @@ func TestHandleWorkerRegister_EveryWireFieldReachesTheStore(t *testing.T) {
 		},
 	}
 
-	msg := &fakeJSMsg{subject: bus.SubjectWorkerRegister, data: workerMsgJSON(t, sent)}
+	msg := &fakeJSMsg{subject: bus.WorkerRegisterSubject(sent.WorkerID), data: workerMsgJSON(t, sent)}
 	s.handleWorkerMessage(msg)
 
 	w, err := st.GetWorker(t.Context(), sent.WorkerID)

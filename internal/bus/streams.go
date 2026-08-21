@@ -42,7 +42,7 @@ const (
 func streamDefs() []jetstream.StreamConfig {
 	return []jetstream.StreamConfig{
 		{
-			// SQI_TASK — task.status.<job>
+			// SQI_TASK — task.status.<worker>.<job>
 			//
 			// Workers publish task-state transitions (running, succeeded, failed,
 			// canceled) to this stream keyed by job ID.  The server's status
@@ -58,7 +58,7 @@ func streamDefs() []jetstream.StreamConfig {
 			Replicas:    1,
 		},
 		{
-			// SQI_LOGS — task.logs.<task>
+			// SQI_LOGS — task.logs.<worker>.<task>
 			//
 			// Workers publish structured log chunks as tasks run.  LimitsPolicy
 			// retains all chunks so the REST and WebSocket log-tail endpoints can
@@ -78,7 +78,8 @@ func streamDefs() []jetstream.StreamConfig {
 			Replicas:    1,
 		},
 		{
-			// SQI_WORKER — worker.register, worker.heartbeat, worker.deregister
+			// SQI_WORKER — worker.register.<worker>, worker.heartbeat.<worker>,
+			// worker.deregister.<worker>
 			//
 			// Workers publish registration payloads on connect and reconnect,
 			// heartbeat pings on a configurable interval, and a departure message
@@ -93,12 +94,16 @@ func streamDefs() []jetstream.StreamConfig {
 			// once processed.
 			Name:        StreamWorker,
 			Description: "Worker registration and heartbeat messages.",
-			Subjects:    []string{SubjectWorkerRegister, SubjectWorkerHeartbeat, SubjectWorkerDeregister},
-			Retention:   jetstream.WorkQueuePolicy,
-			Storage:     jetstream.FileStorage,
-			MaxAge:      2 * time.Minute,
-			Discard:     jetstream.DiscardOld,
-			Replicas:    1,
+			Subjects: []string{
+				SubjectWorkerRegisterPrefix + ".>",
+				SubjectWorkerHeartbeatPrefix + ".>",
+				SubjectWorkerDeregisterPrefix + ".>",
+			},
+			Retention: jetstream.WorkQueuePolicy,
+			Storage:   jetstream.FileStorage,
+			MaxAge:    2 * time.Minute,
+			Discard:   jetstream.DiscardOld,
+			Replicas:  1,
 		},
 		{
 			// SQI_CANCEL — task.cancel.<taskID>

@@ -186,7 +186,7 @@ func (h *failureHarness) reportFailedWithMessage(taskID, message string) {
 		Message:   message,
 		At:        time.Now().UTC(),
 	}
-	if err := h.s.processTaskStatus(h.t.Context(), msg); err != nil {
+	if err := h.s.processTaskStatus(h.t.Context(), attempt.WorkerID, msg); err != nil {
 		h.t.Fatalf("processTaskStatus(failed): %v", err)
 	}
 }
@@ -339,6 +339,28 @@ func TestHandleTaskFailed_RetriesUntilCeiling(t *testing.T) {
 	}
 }
 
+// TestHandleTaskFailed_Retry_EvictsAttemptCache proves the RETRY branch of
+// handleTaskFailed evicts the attempt-owner cache entry itself. That branch
+// returns from retryTaskAfterFailure without ever reaching handleTaskTerminal,
+// so the terminal path's own evict call cannot cover it — deleting
+// handleTaskFailed's evict would leave every other test in this file green.
+func TestHandleTaskFailed_Retry_EvictsAttemptCache(t *testing.T) {
+	h := newFailureHarness(t, RetryPolicy{MaxAttempts: 2, RetryDelay: 0, FailureLimit: 0})
+	h.seedRunningTask("j1", "t1", "w1")
+
+	attempt := h.current["t1"]
+	h.s.attemptCache.put(attempt.ID, attempt.WorkerID, attempt.TaskID)
+
+	h.reportFailed("t1") // first failure: RETRY, not EXHAUSTED (ceiling is 2)
+
+	if got := h.taskStatus("t1"); got != store.TaskStatusReady {
+		t.Fatalf("expected retry to requeue the task, got %s", got)
+	}
+	if _, ok := h.s.attemptCache.get(attempt.ID); ok {
+		t.Error("expected attempt-owner cache entry to be evicted on the retry branch")
+	}
+}
+
 // TestHandleTaskFailed_RedeliveryCountsOnce is the IMP-1 regression at the
 // scheduler layer. The task-status JetStream consumer is at-least-once, so the
 // same "failed" message can be delivered more than once (NAK, AckWait expiry,
@@ -360,7 +382,7 @@ func TestHandleTaskFailed_RedeliveryCountsOnce(t *testing.T) {
 	}
 
 	// First delivery: one genuine failure → retry, task back to ready.
-	if err := h.s.processTaskStatus(t.Context(), msg); err != nil {
+	if err := h.s.processTaskStatus(t.Context(), h.current["t1"].WorkerID, msg); err != nil {
 		t.Fatalf("first delivery: %v", err)
 	}
 	if got := h.taskFailedAttempts("t1"); got != 1 {
@@ -377,7 +399,7 @@ func TestHandleTaskFailed_RedeliveryCountsOnce(t *testing.T) {
 	// failed, so RecordTaskFailure returns the current counts without
 	// re-incrementing, the retry decision is re-made identically, and the
 	// requeue is re-applied harmlessly.
-	if err := h.s.processTaskStatus(t.Context(), msg); err != nil {
+	if err := h.s.processTaskStatus(t.Context(), h.current["t1"].WorkerID, msg); err != nil {
 		t.Fatalf("redelivery: %v", err)
 	}
 	if got := h.taskFailedAttempts("t1"); got != 1 {
@@ -616,7 +638,7 @@ func TestHandleTaskFailed_SupersededAttempt_LeavesReleasedTaskAlone(t *testing.T
 		ExitCode:  &exitCode,
 		At:        time.Now().UTC(),
 	}
-	if err := h.s.processTaskStatus(ctx, msg); err != nil {
+	if err := h.s.processTaskStatus(ctx, stale.WorkerID, msg); err != nil {
 		t.Fatalf("processTaskStatus(stale failed): %v", err)
 	}
 

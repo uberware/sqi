@@ -61,6 +61,10 @@ func (s *Scheduler) handleTaskFailed(ctx context.Context, attempt store.TaskAtte
 	if err != nil {
 		return err
 	}
+	// RecordTaskFailure closes the attempt as failed whether or not this is
+	// the message that first closed it, so it can never receive another log
+	// chunk from here on — evict unconditionally, same as handleTaskTerminal.
+	s.attemptCache.evict(attempt.ID)
 
 	if !firstClose {
 		// The attempt was already terminal when this message arrived. That is

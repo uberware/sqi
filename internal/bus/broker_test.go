@@ -183,28 +183,28 @@ func TestPushConsumers(t *testing.T) {
 		{
 			name: "task status",
 			publish: func(c *Client, ctx context.Context, data []byte) error {
-				return c.PublishTaskStatus(ctx, "job-1", data)
+				return c.PublishTaskStatus(ctx, "w-1", "job-1", data)
 			},
 			consume: (*Client).ConsumeTaskStatus,
 		},
 		{
 			name: "task logs",
 			publish: func(c *Client, ctx context.Context, data []byte) error {
-				return c.PublishTaskLog(ctx, "task-1", data)
+				return c.PublishTaskLog(ctx, "w-1", "task-1", data)
 			},
 			consume: (*Client).ConsumeTaskLogs,
 		},
 		{
 			name: "worker heartbeat",
 			publish: func(c *Client, ctx context.Context, data []byte) error {
-				return c.PublishWorkerHeartbeat(ctx, data)
+				return c.PublishWorkerHeartbeat(ctx, "w-1", data)
 			},
 			consume: (*Client).ConsumeWorker,
 		},
 		{
 			name: "worker register",
 			publish: func(c *Client, ctx context.Context, data []byte) error {
-				return c.PublishWorkerRegister(ctx, data)
+				return c.PublishWorkerRegister(ctx, "w-1", data)
 			},
 			consume: (*Client).ConsumeWorker,
 		},
@@ -312,7 +312,7 @@ func TestClientDrain(t *testing.T) {
 		t.Fatalf("ConsumeTaskStatus: %v", err)
 	}
 
-	if err := c.PublishTaskStatus(ctx, "job-d", mustJSON(t, payload{ID: "t", Body: "x"})); err != nil {
+	if err := c.PublishTaskStatus(ctx, "w-1", "job-d", mustJSON(t, payload{ID: "t", Body: "x"})); err != nil {
 		t.Fatalf("PublishTaskStatus: %v", err)
 	}
 	select {
@@ -339,7 +339,7 @@ func TestClientDrain(t *testing.T) {
 	}
 
 	// Publishing on a closed connection must fail.
-	if err := c.PublishTaskStatus(context.Background(), "job-d", []byte("{}")); err == nil {
+	if err := c.PublishTaskStatus(context.Background(), "w-1", "job-d", []byte("{}")); err == nil {
 		t.Fatal("publish after Drain: want error, got nil")
 	}
 }

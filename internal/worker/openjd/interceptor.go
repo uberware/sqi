@@ -327,7 +327,7 @@ func (i *Interceptor) handleStatus(ctx context.Context, attemptID, line string) 
 	// Intermediate openjd_status publishes are best-effort: they are live UI
 	// updates, not terminal state transitions, so a single transient failure is
 	// logged and dropped rather than retried (unlike the status.Publisher path).
-	if err := i.nc.Publish(bus.TaskStatusSubject(st.jobID), data); err != nil {
+	if err := i.nc.Publish(bus.TaskStatusSubject(i.workerID, st.jobID), data); err != nil {
 		i.logger.WarnContext(
 			ctx, "openjd: publish status update failed",
 			slog.String("attempt_id", attemptID),

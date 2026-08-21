@@ -15,6 +15,15 @@ import (
 // workerIDFilename is the name of the file that persists the worker's UUID.
 const workerIDFilename = "worker.id"
 
+// WorkerIDFilePath returns the path [LoadOrCreateWorkerID] reads and writes
+// under dataDir. Exported so other worker-side entry points that need to
+// check for an existing worker ID without creating one — the "sqi-worker
+// keygen" CLI, notably — derive the same path from the data directory
+// rather than each hardcoding the filename.
+func WorkerIDFilePath(dataDir string) string {
+	return filepath.Join(dataDir, workerIDFilename)
+}
+
 // LoadOrCreateWorkerID returns the worker's persistent UUID.
 //
 // On the first call for a given dataDir the function:

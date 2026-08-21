@@ -33,7 +33,7 @@ func TestHandleLeaseRequest_QueuelessWorkerWildcardToken(t *testing.T) {
 	if err != nil {
 		t.Fatalf("marshal request: %v", err)
 	}
-	reply := s.handleLeaseRequest(bus.WildcardQueueToken, req)
+	reply := s.handleLeaseRequest(w.ID, bus.WildcardQueueToken, req)
 
 	var got leaseReply
 	if err := json.Unmarshal(reply, &got); err != nil {
@@ -242,7 +242,7 @@ func TestHandleLeaseRequest_ReturnsBatch(t *testing.T) {
 	if err != nil {
 		t.Fatalf("marshal request: %v", err)
 	}
-	reply := s.handleLeaseRequest("q1", req)
+	reply := s.handleLeaseRequest(w.ID, "q1", req)
 
 	var got leaseReply
 	if err := json.Unmarshal(reply, &got); err != nil {
@@ -276,7 +276,7 @@ func TestHandleLeaseRequest_ConcurrentSameWorkerDoesNotOverLease(t *testing.T) {
 	for range 2 {
 		go func() {
 			defer wg.Done()
-			_ = s.handleLeaseRequest("q1", req)
+			_ = s.handleLeaseRequest(w.ID, "q1", req)
 		}()
 	}
 	wg.Wait()
@@ -375,7 +375,7 @@ func TestHandleLeaseRequest_EmptyTimesOut(t *testing.T) {
 		t.Fatalf("marshal request: %v", err)
 	}
 	start := time.Now()
-	reply := s.handleLeaseRequest("q1", req)
+	reply := s.handleLeaseRequest("w1", "q1", req)
 	if elapsed := time.Since(start); elapsed < 30*time.Millisecond {
 		t.Errorf("returned too fast (%v); expected to park until timeout", elapsed)
 	}

@@ -13,15 +13,18 @@ package scheduler
 import (
 	"context"
 	"encoding/json"
+	"log/slog"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
 
 	"github.com/uberware/sqi/internal/bus"
+	"github.com/uberware/sqi/internal/metrics"
 	"github.com/uberware/sqi/internal/store"
 	"github.com/uberware/sqi/internal/store/fake"
 	"github.com/uberware/sqi/internal/worker/protocol"
+	"github.com/uberware/sqi/internal/ws"
 )
 
 // workerMsgJSON marshals any value to JSON bytes for a fakeJSMsg payload.
@@ -41,7 +44,7 @@ func TestHandleWorkerRegister_Valid(t *testing.T) {
 	s := newMetricsScheduler(st, &recordBus{}, "")
 
 	msg := &fakeJSMsg{
-		subject: bus.SubjectWorkerRegister,
+		subject: bus.WorkerRegisterSubject("w-1"),
 		data: workerMsgJSON(t, protocol.RegisterMsg{
 			Version: protocol.ProtocolVersion, Type: protocol.TypeRegister,
 			WorkerID: "w-1", FarmID: "farm-1", Name: "worker-2", Hostname: "node-1", OS: "linux",
@@ -75,7 +78,7 @@ func TestHandleWorkerRegister_MalformedJSON_Acked(t *testing.T) {
 	st := fake.New()
 	s := newMetricsScheduler(st, &recordBus{}, "")
 
-	msg := &fakeJSMsg{subject: bus.SubjectWorkerRegister, data: []byte("{bad")}
+	msg := &fakeJSMsg{subject: bus.WorkerRegisterSubject("w-1"), data: []byte("{bad")}
 	s.handleWorkerMessage(msg)
 
 	if !msg.acked {
@@ -83,18 +86,27 @@ func TestHandleWorkerRegister_MalformedJSON_Acked(t *testing.T) {
 	}
 }
 
-func TestHandleWorkerRegister_MissingWorkerID_Acked(t *testing.T) {
+// TestHandleWorkerRegister_EmptyPayloadWorkerID_Acked drives a payload with no
+// worker_id at all against a real subject. There is no separate "missing
+// worker_id" code path any more: bus.ParseWorkerSubject guarantees the
+// subject's worker token is never empty, so an empty m.WorkerID always fails
+// the subject/payload mismatch check first and is discarded through that
+// branch.
+func TestHandleWorkerRegister_EmptyPayloadWorkerID_Acked(t *testing.T) {
 	st := fake.New()
 	s := newMetricsScheduler(st, &recordBus{}, "")
 
 	msg := &fakeJSMsg{
-		subject: bus.SubjectWorkerRegister,
+		subject: bus.WorkerRegisterSubject("w-1"),
 		data:    workerMsgJSON(t, protocol.RegisterMsg{Version: protocol.ProtocolVersion, WorkerID: "", FarmID: "farm-1"}),
 	}
 	s.handleWorkerMessage(msg)
 
 	if !msg.acked {
-		t.Error("register missing worker_id should be acked")
+		t.Error("register with an empty payload worker_id should be acked (mismatch)")
+	}
+	if _, err := st.GetWorker(t.Context(), "w-1"); err == nil {
+		t.Error("no worker should have been registered from a mismatched payload")
 	}
 }
 
@@ -112,7 +124,7 @@ func TestHandleWorkerRegister_StoreError_Nacked(t *testing.T) {
 	s := newMetricsScheduler(st, &recordBus{}, "")
 
 	msg := &fakeJSMsg{
-		subject: bus.SubjectWorkerRegister,
+		subject: bus.WorkerRegisterSubject("w-1"),
 		data:    workerMsgJSON(t, protocol.RegisterMsg{Version: protocol.ProtocolVersion, WorkerID: "w-1", FarmID: "farm-1"}),
 	}
 	s.handleWorkerMessage(msg)
@@ -122,6 +134,112 @@ func TestHandleWorkerRegister_StoreError_Nacked(t *testing.T) {
 	}
 	if msg.acked {
 		t.Error("message should not be acked when register fails")
+	}
+}
+
+// touchRecordingStore wraps a real store and records every
+// TouchWorkerCredential call, so a test can prove registration does or does
+// not reach it without depending on timing.
+type touchRecordingStore struct {
+	store.Store
+
+	touched []string
+}
+
+func (s *touchRecordingStore) TouchWorkerCredential(ctx context.Context, workerID string, at time.Time) error {
+	s.touched = append(s.touched, workerID)
+	return s.Store.TouchWorkerCredential(ctx, workerID, at)
+}
+
+// TestHandleWorkerRegister_TouchesActiveCredential_WhenAuthEnabled proves
+// that registering a worker with an active broker credential sets
+// LastSeenAt, and only when broker authentication is enabled.
+func TestHandleWorkerRegister_TouchesActiveCredential_WhenAuthEnabled(t *testing.T) {
+	fk := fake.New()
+	if _, err := fk.CreateWorkerCredential(t.Context(), store.WorkerCredential{
+		ID: uuid.NewString(), WorkerID: "w-1", PublicKey: "pub1", EnrolledAt: time.Now().UTC(),
+	}); err != nil {
+		t.Fatalf("seed CreateWorkerCredential: %v", err)
+	}
+	st := &touchRecordingStore{Store: fk}
+
+	cfg := DefaultConfig()
+	cfg.NATSAuthEnabled = true
+	s := New(cfg, st, &recordBus{}, metrics.New(), slog.New(slog.DiscardHandler), ws.NoopNotifier{}, nil)
+	s.ctx = context.Background()
+
+	msg := &fakeJSMsg{
+		subject: bus.WorkerRegisterSubject("w-1"),
+		data: workerMsgJSON(t, protocol.RegisterMsg{
+			Version: protocol.ProtocolVersion, Type: protocol.TypeRegister,
+			WorkerID: "w-1", FarmID: "farm-1", Hostname: "node-1", OS: "linux",
+		}),
+	}
+	s.handleWorkerMessage(msg)
+
+	if !msg.acked {
+		t.Error("valid register should be acked")
+	}
+	if len(st.touched) != 1 || st.touched[0] != "w-1" {
+		t.Errorf("touched = %v, want exactly one call for w-1", st.touched)
+	}
+	cred, err := fk.GetActiveWorkerCredentialByWorkerID(t.Context(), "w-1")
+	if err != nil {
+		t.Fatalf("GetActiveWorkerCredentialByWorkerID: %v", err)
+	}
+	if cred.LastSeenAt == nil {
+		t.Error("expected LastSeenAt to be set after registration")
+	}
+}
+
+// TestHandleWorkerRegister_NoTouchCall_WhenAuthDisabled asserts the
+// auth-off default path does no extra store work: no credential rows exist
+// on an auth-off farm, and the touch call must not even be attempted.
+func TestHandleWorkerRegister_NoTouchCall_WhenAuthDisabled(t *testing.T) {
+	st := &touchRecordingStore{Store: fake.New()}
+	s := newMetricsScheduler(st, &recordBus{}, "") // DefaultConfig: NATSAuthEnabled false
+
+	msg := &fakeJSMsg{
+		subject: bus.WorkerRegisterSubject("w-1"),
+		data: workerMsgJSON(t, protocol.RegisterMsg{
+			Version: protocol.ProtocolVersion, Type: protocol.TypeRegister,
+			WorkerID: "w-1", FarmID: "farm-1", Hostname: "node-1", OS: "linux",
+		}),
+	}
+	s.handleWorkerMessage(msg)
+
+	if !msg.acked {
+		t.Error("valid register should be acked")
+	}
+	if len(st.touched) != 0 {
+		t.Errorf("touched = %v, want no calls with broker auth disabled", st.touched)
+	}
+}
+
+// TestHandleWorkerRegister_NoActiveCredential_StillAcked proves a missing
+// credential (store.ErrNotFound) never fails registration: the message is
+// still acked and the worker is still registered.
+func TestHandleWorkerRegister_NoActiveCredential_StillAcked(t *testing.T) {
+	st := fake.New()
+	cfg := DefaultConfig()
+	cfg.NATSAuthEnabled = true
+	s := New(cfg, st, &recordBus{}, metrics.New(), slog.New(slog.DiscardHandler), ws.NoopNotifier{}, nil)
+	s.ctx = context.Background()
+
+	msg := &fakeJSMsg{
+		subject: bus.WorkerRegisterSubject("w-1"),
+		data: workerMsgJSON(t, protocol.RegisterMsg{
+			Version: protocol.ProtocolVersion, Type: protocol.TypeRegister,
+			WorkerID: "w-1", FarmID: "farm-1", Hostname: "node-1", OS: "linux",
+		}),
+	}
+	s.handleWorkerMessage(msg)
+
+	if !msg.acked {
+		t.Error("register should be acked even with no active credential to touch")
+	}
+	if _, err := st.GetWorker(t.Context(), "w-1"); err != nil {
+		t.Errorf("worker should still be registered: %v", err)
 	}
 }
 
@@ -140,7 +258,7 @@ func TestHandleWorkerHeartbeat_Valid(t *testing.T) {
 
 	hbAt := now.Add(5 * time.Second)
 	msg := &fakeJSMsg{
-		subject: bus.SubjectWorkerHeartbeat,
+		subject: bus.WorkerHeartbeatSubject("w-1"),
 		data:    workerMsgJSON(t, protocol.HeartbeatMsg{Version: protocol.ProtocolVersion, WorkerID: "w-1", At: hbAt}),
 	}
 	s.handleWorkerMessage(msg)
@@ -170,7 +288,7 @@ func TestHandleWorkerHeartbeat_ZeroAt_UsesServerTime(t *testing.T) {
 	}
 
 	msg := &fakeJSMsg{
-		subject: bus.SubjectWorkerHeartbeat,
+		subject: bus.WorkerHeartbeatSubject("w-1"),
 		data:    workerMsgJSON(t, protocol.HeartbeatMsg{Version: protocol.ProtocolVersion, WorkerID: "w-1"}), // zero At
 	}
 	s.handleWorkerMessage(msg)
@@ -189,7 +307,7 @@ func TestHandleWorkerHeartbeat_UnknownWorker_Nacked(t *testing.T) {
 	s := newMetricsScheduler(st, &recordBus{}, "")
 
 	msg := &fakeJSMsg{
-		subject: bus.SubjectWorkerHeartbeat,
+		subject: bus.WorkerHeartbeatSubject("ghost"),
 		data:    workerMsgJSON(t, protocol.HeartbeatMsg{Version: protocol.ProtocolVersion, WorkerID: "ghost", At: time.Now()}),
 	}
 	s.handleWorkerMessage(msg)
@@ -199,13 +317,18 @@ func TestHandleWorkerHeartbeat_UnknownWorker_Nacked(t *testing.T) {
 	}
 }
 
-func TestHandleWorkerHeartbeat_MalformedAndMissingID_Acked(t *testing.T) {
+// TestHandleWorkerHeartbeat_MalformedAndEmptyPayloadID_Acked covers a
+// malformed body and a body with an empty worker_id. The latter has no
+// separate "missing worker_id" code path any more: bus.ParseWorkerSubject
+// guarantees the subject's worker token is never empty, so an empty
+// m.WorkerID always fails the subject/payload mismatch check first.
+func TestHandleWorkerHeartbeat_MalformedAndEmptyPayloadID_Acked(t *testing.T) {
 	tests := []struct {
 		name string
 		data []byte
 	}{
 		{"malformed", []byte("{bad")},
-		{"missing id", nil}, // filled below
+		{"empty payload id (mismatch)", nil}, // filled below
 	}
 	tests[1].data = workerMsgJSON(t, protocol.HeartbeatMsg{Version: protocol.ProtocolVersion, WorkerID: ""})
 
@@ -213,7 +336,7 @@ func TestHandleWorkerHeartbeat_MalformedAndMissingID_Acked(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			st := fake.New()
 			s := newMetricsScheduler(st, &recordBus{}, "")
-			msg := &fakeJSMsg{subject: bus.SubjectWorkerHeartbeat, data: tt.data}
+			msg := &fakeJSMsg{subject: bus.WorkerHeartbeatSubject("w-1"), data: tt.data}
 			s.handleWorkerMessage(msg)
 			if !msg.acked {
 				t.Errorf("%s heartbeat should be acked (discarded)", tt.name)
@@ -236,7 +359,7 @@ func TestHandleWorkerDeregister_Valid(t *testing.T) {
 	}
 
 	msg := &fakeJSMsg{
-		subject: bus.SubjectWorkerDeregister,
+		subject: bus.WorkerDeregisterSubject("w-1"),
 		data:    workerMsgJSON(t, map[string]string{"worker_id": "w-1", "reason": "shutdown"}),
 	}
 	s.handleWorkerMessage(msg)
@@ -302,7 +425,7 @@ func TestHandleWorkerDeregister_ReclaimsInFlightTasks(t *testing.T) {
 	}
 
 	msg := &fakeJSMsg{
-		subject: bus.SubjectWorkerDeregister,
+		subject: bus.WorkerDeregisterSubject(workerID),
 		data:    workerMsgJSON(t, map[string]string{"worker_id": workerID, "reason": "shutdown"}),
 	}
 	s.handleWorkerMessage(msg)
@@ -331,7 +454,7 @@ func TestHandleWorkerDeregister_UnknownWorker_Acked(t *testing.T) {
 	s := newMetricsScheduler(st, &recordBus{}, "")
 
 	msg := &fakeJSMsg{
-		subject: bus.SubjectWorkerDeregister,
+		subject: bus.WorkerDeregisterSubject("ghost"),
 		data:    workerMsgJSON(t, map[string]string{"worker_id": "ghost"}),
 	}
 	s.handleWorkerMessage(msg)
@@ -341,19 +464,24 @@ func TestHandleWorkerDeregister_UnknownWorker_Acked(t *testing.T) {
 	}
 }
 
-func TestHandleWorkerDeregister_MalformedAndMissingID_Acked(t *testing.T) {
+// TestHandleWorkerDeregister_MalformedAndEmptyPayloadID_Acked covers a
+// malformed body and a body with an empty worker_id. The latter has no
+// separate "missing worker_id" code path any more: bus.ParseWorkerSubject
+// guarantees the subject's worker token is never empty, so an empty
+// m.WorkerID always fails the subject/payload mismatch check first.
+func TestHandleWorkerDeregister_MalformedAndEmptyPayloadID_Acked(t *testing.T) {
 	tests := []struct {
 		name string
 		data []byte
 	}{
 		{"malformed", []byte("{bad")},
-		{"missing id", workerMsgJSON(t, map[string]string{"worker_id": ""})},
+		{"empty payload id (mismatch)", workerMsgJSON(t, map[string]string{"worker_id": ""})},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			st := fake.New()
 			s := newMetricsScheduler(st, &recordBus{}, "")
-			msg := &fakeJSMsg{subject: bus.SubjectWorkerDeregister, data: tt.data}
+			msg := &fakeJSMsg{subject: bus.WorkerDeregisterSubject("w-1"), data: tt.data}
 			s.handleWorkerMessage(msg)
 			if !msg.acked {
 				t.Errorf("%s deregister should be acked", tt.name)
@@ -372,7 +500,7 @@ func TestRegistration_AutoRegistersComputeLocation(t *testing.T) {
 	// Case 1: end-to-end — register a worker with a new location via
 	// handleWorkerMessage; assert the entity is created in the store.
 	msg := &fakeJSMsg{
-		subject: bus.SubjectWorkerRegister,
+		subject: bus.WorkerRegisterSubject("w-loc-1"),
 		data: workerMsgJSON(t, protocol.RegisterMsg{
 			Version: protocol.ProtocolVersion, Type: protocol.TypeRegister,
 			WorkerID: "w-loc-1", FarmID: "farm-1", Hostname: "n1", OS: "linux",
@@ -429,7 +557,7 @@ func TestRegistration_EnsureComputeLocation_StoreError(t *testing.T) {
 	s := newMetricsScheduler(st, &recordBus{}, "")
 
 	msg := &fakeJSMsg{
-		subject: bus.SubjectWorkerRegister,
+		subject: bus.WorkerRegisterSubject("w-loc-err"),
 		data: workerMsgJSON(t, protocol.RegisterMsg{
 			Version: protocol.ProtocolVersion, Type: protocol.TypeRegister,
 			WorkerID: "w-loc-err", FarmID: "farm-1", Hostname: "n1", OS: "linux",
@@ -482,7 +610,7 @@ func TestRegistration_EnsureComputeLocation_LookupError(t *testing.T) {
 	s := newMetricsScheduler(st, &recordBus{}, "")
 
 	msg := &fakeJSMsg{
-		subject: bus.SubjectWorkerRegister,
+		subject: bus.WorkerRegisterSubject("w-loc-err2"),
 		data: workerMsgJSON(t, protocol.RegisterMsg{
 			Version: protocol.ProtocolVersion, Type: protocol.TypeRegister,
 			WorkerID: "w-loc-err2", FarmID: "farm-1", Hostname: "n1", OS: "linux",
@@ -522,7 +650,7 @@ func TestHandleWorkerMessage_RegisterID(t *testing.T) {
 	id := uuid.NewString()
 
 	msg := &fakeJSMsg{
-		subject: bus.SubjectWorkerRegister,
+		subject: bus.WorkerRegisterSubject(id),
 		data:    workerMsgJSON(t, protocol.RegisterMsg{Version: protocol.ProtocolVersion, WorkerID: id, FarmID: "farm-1"}),
 	}
 	s.handleWorkerMessage(msg)

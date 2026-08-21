@@ -4,7 +4,7 @@
 //
 // It discovers and connects to a running sqi-server, registers itself with
 // its capability tags and compute location, leases task assignments over core
-// NATS (work.lease.<queueID>), and executes bare-metal OS processes inside
+// NATS (work.lease.<workerID>.<queueID>), and executes bare-metal OS processes inside
 // OpenJD sessions.
 //
 // Run "sqi-worker --help" for usage.

@@ -3,7 +3,7 @@
 // Package status implements the typed task-status publisher for sqi-worker.
 //
 // A [Publisher] publishes task state-transition messages to the
-// task.status.<job> NATS subject.  It covers the four transitions the worker
+// task.status.<workerID>.<job> NATS subject.  It covers the four transitions the worker
 // is responsible for: "running", "succeeded", "failed", and "canceled".
 //
 // # Fields
@@ -76,7 +76,7 @@ type Config struct {
 
 // ── Publisher ─────────────────────────────────────────────────────────────────
 
-// Publisher publishes typed task-status messages to task.status.<job>.
+// Publisher publishes typed task-status messages to task.status.<workerID>.<job>.
 //
 // It injects worker_id and last_progress into every message and
 // retries transient NATS publish failures with exponential backoff.
@@ -208,7 +208,7 @@ func (p *Publisher) ShutdownFailed(ctx context.Context, tasks []ShutdownTask) {
 
 // ── Internal helpers ──────────────────────────────────────────────────────────
 
-// publishWithRetry marshals msg and publishes it to task.status.<job> with up
+// publishWithRetry marshals msg and publishes it to task.status.<workerID>.<job> with up
 // to cfg.MaxRetries retries on failure, using exponential backoff.
 //
 // On a transient NATS failure the method waits cfg.RetryDelay (doubling each
@@ -229,7 +229,7 @@ func (p *Publisher) publishWithRetry(ctx context.Context, msg protocol.TaskStatu
 		return
 	}
 
-	subj := bus.TaskStatusSubject(msg.JobID)
+	subj := bus.TaskStatusSubject(p.cfg.WorkerID, msg.JobID)
 	delay := p.cfg.RetryDelay
 
 	for attempt := 0; attempt <= p.cfg.MaxRetries; attempt++ {

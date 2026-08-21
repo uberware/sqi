@@ -138,10 +138,11 @@ sqi-server serve --http-cors-origins=https://ui.example.com
 TCP address the embedded NATS server binds to. Defaults to all interfaces so
 that workers which discover the server over mDNS can connect to NATS at the
 advertised LAN host. Set this to `"127.0.0.1:4222"` to restrict NATS to loopback
-(single-machine only). **Broker authentication does not exist**: any host
-that can reach this port can register as a worker and receive task
-assignments, regardless of `auth.enabled` — see
-[Known gaps](auth.md#known-gaps). Deferred to Phase 4 hardening.
+(single-machine only). **Broker authentication is a separate, opt-in gate from
+`auth.enabled`** — see [`nats.auth.*`](#natsauthenabled) below. While
+`nats.auth.enabled` is off (the default), any host that can reach this port
+can register as a worker and receive task assignments, regardless of
+`auth.enabled` — see [Known gaps](auth.md#known-gaps).
 
 ```yaml
 nats:
@@ -189,6 +190,92 @@ nats:
 
 ---
 
+### `nats.auth.enabled`
+
+| | |
+|---|---|
+| **Type** | `bool` |
+| **Default** | `false` |
+| **Env var** | `SQI_NATS_AUTH_ENABLED` |
+
+Requires every NATS client to present a per-worker nkey credential. When
+`true`, the broker refuses any connection that does not present one. When
+`false` (the default), the broker accepts any connection — see the warning
+under [`nats.addr`](#natsaddr) above. Deliberately independent of
+`auth.enabled`: that flag gates human users and API keys over the REST API,
+this one gates workers over the broker transport.
+
+```yaml
+nats:
+  auth:
+    enabled: true
+```
+
+---
+
+### `nats.auth.join_token_ttl`
+
+| | |
+|---|---|
+| **Type** | `duration` |
+| **Default** | `1h` |
+| **Range** | `1m` – `24h` |
+| **Env var** | `SQI_NATS_AUTH_JOIN_TOKEN_TTL` |
+
+How long a newly issued worker join token remains valid. The floor exists
+because below a minute an operator cannot realistically get the token onto a
+machine and boot it; the ceiling exists because a join token mints a worker
+credential, so a token valid for weeks would be a standing secret wearing a
+different name. Ignored while `nats.auth.enabled` is `false`.
+
+```yaml
+nats:
+  auth:
+    join_token_ttl: 30m
+```
+
+---
+
+### `nats.auth.join_token_single_use`
+
+| | |
+|---|---|
+| **Type** | `bool` |
+| **Default** | `true` |
+| **Env var** | `SQI_NATS_AUTH_JOIN_TOKEN_SINGLE_USE` |
+
+Consumes a join token on first successful enrollment. Leaving this `true` is
+strongly recommended; set it `false` only for image-baked fleets that enroll
+many identical machines from one token.
+
+```yaml
+nats:
+  auth:
+    join_token_single_use: false
+```
+
+---
+
+### `nats.auth.enrollment_endpoint_enabled`
+
+| | |
+|---|---|
+| **Type** | `bool` |
+| **Default** | `true` |
+| **Env var** | `SQI_NATS_AUTH_ENROLLMENT_ENDPOINT_ENABLED` |
+
+Mounts `POST /api/v1/workers/enroll`. Meaningful only when
+`nats.auth.enabled` is `true`. Set `false` at a site that provisions every
+worker credential by hand and wants no enrollment surface at all.
+
+```yaml
+nats:
+  auth:
+    enrollment_endpoint_enabled: false
+```
+
+---
+
 ## `store` — SQLite state store
 
 ### `store.sqlite_path`
@@ -208,11 +295,18 @@ store:
   sqlite_path: "/var/lib/sqi/sqi.db"
 ```
 
-> **The `migrate` and `backup` subcommands do not read this key.** Their
-> `--db` flag defaults to `$SQI_SQLITE_PATH` (note: *not*
-> `SQI_STORE_SQLITE_PATH`), falling back to `sqi.db` in the working
-> directory. Pass `--db` explicitly, or export both variables, so schema
-> migrations and backups operate on the database the server actually uses.
+> **The `migrate`, `backup`, and `worker` subcommands resolve their database
+> path the same way the server does.** Highest priority first: an explicit
+> `--db` flag; this key (the root `-c/--config` file and
+> `SQI_STORE_SQLITE_PATH`); the legacy `SQI_SQLITE_PATH` environment
+> variable, which still works but prints a deprecation notice to stderr when
+> it is what decided the path; and finally the built-in `"sqi.db"` default.
+> `migrate up` creates the database when it does not already exist — that is
+> its job. `backup` and `worker` (`sqi-server worker
+> token issue|enroll|revoke|list` — see
+> [`docs/operations.md`](operations.md#worker-broker-credentials)) never
+> create one: pointing either at a database that does not exist is a clear
+> error naming the resolved path, not a silently created empty database.
 
 ---
 
@@ -1790,6 +1884,10 @@ for the detector schema reference.
 | `nats.addr` | string | `0.0.0.0:4222` | `SQI_NATS_ADDR` | — |
 | `nats.data_dir` | string | `data/nats` | `SQI_NATS_DATA_DIR` | — |
 | `nats.max_store_mb` | int | `1024` | `SQI_NATS_MAX_STORE_MB` | — |
+| `nats.auth.enabled` | bool | `false` | `SQI_NATS_AUTH_ENABLED` | — |
+| `nats.auth.join_token_ttl` | duration | `1h` | `SQI_NATS_AUTH_JOIN_TOKEN_TTL` | — |
+| `nats.auth.join_token_single_use` | bool | `true` | `SQI_NATS_AUTH_JOIN_TOKEN_SINGLE_USE` | — |
+| `nats.auth.enrollment_endpoint_enabled` | bool | `true` | `SQI_NATS_AUTH_ENROLLMENT_ENDPOINT_ENABLED` | — |
 | `store.sqlite_path` | string | `sqi.db` | `SQI_STORE_SQLITE_PATH` | — |
 | `store.checkpoint_interval` | duration | `5m` | `SQI_STORE_CHECKPOINT_INTERVAL` | — |
 | `log.level` | string | `info` | `SQI_LOG_LEVEL` | `--log-level` |

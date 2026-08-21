@@ -14,7 +14,7 @@
 //     payloads. When no work is available the request parks in the waiter
 //     registry until new work appears or the hold elapses, then replies.
 //
-//  2. Worker registry: a NATS push-consumer for worker.register messages that
+//  2. Worker registry: a NATS push-consumer for worker.register.<worker> messages that
 //     persists capability data via [store.WorkerStore.RegisterWorker] and keeps
 //     the WorkersTotal Prometheus gauge current.
 //
@@ -45,10 +45,10 @@
 //
 // Status and log ingestion. A push-consumer on the SQI_TASK stream
 // ([handleTaskStatusMessage]) decodes [protocol.TaskStatusMsg] from
-// task.status.<job>, updates the task/attempt, releases held usage pool slots, and
+// task.status.<worker>.<job>, updates the task/attempt, releases held usage pool slots, and
 // drives step/job completion including [openjd.ResolveDependencies] for
 // multi-step jobs. A push-consumer on SQI_LOGS ([handleLogChunk]) persists each
-// task.logs.<task> chunk as a [store.TaskLog] row, recording both the
+// task.logs.<worker>.<task> chunk as a [store.TaskLog] row, recording both the
 // worker-assigned sequence number and the NATS stream sequence that serves as
 // the log-tail pagination cursor.
 //
@@ -203,6 +203,14 @@ type Config struct {
 	//
 	// Zero fields normalize to the defaults in [New].
 	ExprLimits openjd.ExprLimits
+
+	// NATSAuthEnabled mirrors config.NATSAuthConfig.Enabled (server.Config's
+	// NATSAuthEnabled). It gates one thing here: whether worker registration
+	// touches the worker's broker-credential LastSeenAt. With broker
+	// authentication off there are no credential rows at all, and the
+	// default no-config path must do no extra store work — see
+	// handleWorkerRegister.
+	NATSAuthEnabled bool
 }
 
 // busClient is the subset of [bus.Client] used by the Scheduler. Defined as
@@ -213,7 +221,7 @@ type busClient interface {
 	ConsumeTaskLogs(ctx context.Context, handler jetstream.MessageHandler) (jetstream.ConsumeContext, error)
 	PublishTaskCancel(ctx context.Context, taskID string, data []byte) error
 	SubscribeWorkerDiag(handler func(subject string, data []byte)) (*nats.Subscription, error)
-	SubscribeLease(handler func(queueID string, data []byte) []byte) (*nats.Subscription, error)
+	SubscribeLease(handler func(workerID, queueID string, data []byte) []byte) (*nats.Subscription, error)
 }
 
 // Scheduler owns the assignment loop, worker registry, and heartbeat sweep.
@@ -240,6 +248,11 @@ type Scheduler struct {
 
 	// waiters parks long-poll lease requests per queue; woken by wake triggers.
 	waiters *waiterRegistry
+
+	// attemptCache holds recently-seen task-attempt ownership (workerID,
+	// taskID), consulted by handleLogChunk before it reads the store. See
+	// [attemptOwnerCache].
+	attemptCache *attemptOwnerCache
 
 	// leaseLocks serializes lease selection per worker. Concurrent lease
 	// requests for the SAME worker (one outstanding request per queue it
@@ -329,6 +342,7 @@ func New(cfg Config, st store.Store, busClient busClient, m *metrics.Metrics, lo
 		notifier:         n,
 		diagBuf:          diagBuf,
 		waiters:          newWaiterRegistry(),
+		attemptCache:     newAttemptOwnerCache(),
 		leaseHoldTimeout: 30 * time.Second,
 		retryWakeTimers:  make(map[*time.Timer]struct{}),
 		// ctx is overwritten with the derived cancellable context in Run.
@@ -367,8 +381,8 @@ func (s *Scheduler) Run(ctx context.Context) error {
 	)
 
 	// ── Worker NATS consumer ────────────────────────────────
-	// A single JetStream push-consumer delivers both worker.register and
-	// worker.heartbeat messages. The handler dispatches by subject.
+	// A single JetStream push-consumer delivers the worker register,
+	// heartbeat and deregister messages. The handler dispatches by subject.
 	_, err := s.bus.ConsumeWorker(ctx, s.handleWorkerMessage)
 	if err != nil {
 		return fmt.Errorf("scheduler: start worker consumer: %w", err)
@@ -376,7 +390,7 @@ func (s *Scheduler) Run(ctx context.Context) error {
 	s.logger.InfoContext(ctx, "scheduler: worker consumer started")
 
 	// ── Task-status NATS consumer ────────────────────────────────
-	// A JetStream push-consumer on SQI_TASK delivers task.status.<job>
+	// A JetStream push-consumer on SQI_TASK delivers task.status.<worker>.<job>
 	// messages from workers. handleTaskStatusMessage updates the store,
 	// closes attempt records, releases usage pool slots, and drives step/job
 	// completion.
@@ -386,7 +400,7 @@ func (s *Scheduler) Run(ctx context.Context) error {
 	s.logger.InfoContext(ctx, "scheduler: task-status consumer started")
 
 	// ── Task-logs NATS consumer ──────────────────────────────────
-	// A JetStream push-consumer on SQI_LOGS delivers task.logs.<task>
+	// A JetStream push-consumer on SQI_LOGS delivers task.logs.<worker>.<task>
 	// messages from workers. handleLogChunk persists each chunk to the
 	// task_logs table with NATS sequence as the pagination cursor.
 	if err := s.startTaskLogsConsumer(ctx); err != nil {
@@ -504,6 +518,10 @@ func (s *Scheduler) createAttemptAndClaimUsage(
 		s.revertTaskToReady(ctx, task.ID, "attempt creation error")
 		return store.TaskAttempt{}, fmt.Errorf("create task attempt for task %s: %w", task.ID, err)
 	}
+	// The scheduler already knows both fields the log-ingest path needs, so
+	// populate the cache now rather than waiting for the first log chunk to
+	// pay for a store read.
+	s.attemptCache.put(attempt.ID, attempt.WorkerID, attempt.TaskID)
 
 	// Re-check pool availability and create claim rows inside a single DB
 	// transaction so no concurrent assignment can over-subscribe a pool.
@@ -514,6 +532,10 @@ func (s *Scheduler) createAttemptAndClaimUsage(
 
 	if err := s.store.TryClaimSlots(ctx, attempt.ID, claims, now); err != nil {
 		s.revertTaskToReady(ctx, task.ID, "usage claim error")
+		// The attempt row survives this failure with no terminal status ever
+		// coming for it, so nothing else would evict its cache entry. Drop it
+		// now rather than let it sit as a stale, never-reused hit.
+		s.attemptCache.evict(attempt.ID)
 		if errors.Is(err, store.ErrUsageAtCapacity) {
 			s.logger.DebugContext(
 				ctx, "scheduler: usage pool at capacity — deferring assignment",
@@ -660,26 +682,39 @@ func (s *Scheduler) ReleaseTaskUsage(ctx context.Context, attemptID string) erro
 
 // ── Worker NATS consumer ─────────────────────────────────────────────
 
-// handleWorkerMessage is the JetStream message handler for both
-// worker.register and worker.heartbeat subjects (both flow through the
+// handleWorkerMessage is the JetStream message handler for the worker
+// register, heartbeat and deregister subjects (all three flow through the
 // SQI_WORKER stream and its single durable consumer).
+//
+// Each subject carries the publishing worker's ID as its last token, so the
+// routing below recovers that identity before dispatching to the per-message
+// handler.
 func (s *Scheduler) handleWorkerMessage(msg jetstream.Msg) {
 	ctx := s.ctx
 	subject := msg.Subject()
 
-	switch subject {
-	case bus.SubjectWorkerRegister:
-		s.handleWorkerRegister(ctx, msg)
-	case bus.SubjectWorkerHeartbeat:
-		s.handleWorkerHeartbeat(ctx, msg)
-	case bus.SubjectWorkerDeregister:
-		s.handleWorkerDeregister(ctx, msg)
+	workerID, _, ok := bus.ParseWorkerSubject(subject)
+	if !ok {
+		s.discardUnexpectedSubject(ctx, msg, "worker")
+		return
+	}
+
+	switch {
+	case strings.HasPrefix(subject, bus.SubjectWorkerRegisterPrefix+"."):
+		s.handleWorkerRegister(ctx, msg, workerID)
+	case strings.HasPrefix(subject, bus.SubjectWorkerHeartbeatPrefix+"."):
+		s.handleWorkerHeartbeat(ctx, msg, workerID)
+	case strings.HasPrefix(subject, bus.SubjectWorkerDeregisterPrefix+"."):
+		s.handleWorkerDeregister(ctx, msg, workerID)
 	default:
-		s.logger.WarnContext(
-			ctx, "scheduler: unexpected worker subject",
-			slog.String("subject", subject),
-		)
-		s.ackMsg(ctx, msg)
+		// Defense in depth, not dead code: ParseWorkerSubject also accepts
+		// the four-token task.status/task.logs/work.lease shapes, so
+		// widening SQI_WORKER's subject filter to one of those would reach
+		// here rather than being mis-dispatched. A three-token worker.*
+		// subject with an unrecognized prefix cannot: ParseWorkerSubject
+		// whitelists the three it knows and rejects the rest, so that case
+		// is already handled by the !ok branch above.
+		s.discardUnexpectedSubject(ctx, msg, "worker")
 	}
 }
 
@@ -738,14 +773,57 @@ func (s *Scheduler) discardOnVersionMismatch(
 	return true
 }
 
+// discardUnexpectedSubject logs a "<noun> on unexpected subject —
+// discarding" warning naming msg's subject and acks it away. noun identifies
+// the calling consumer (e.g. "worker", "task.status", "task.logs") in the log
+// line. Shared by every consumer that gives up on a message because its
+// subject would not parse, or — for [Scheduler.handleWorkerMessage]'s
+// unreachable-in-practice default case — parsed into a shape that consumer's
+// dispatch does not recognize. A malformed or unrecognized subject cannot
+// become valid on redelivery, so this always acks, never naks.
+func (s *Scheduler) discardUnexpectedSubject(ctx context.Context, msg jetstream.Msg, noun string) {
+	s.logger.WarnContext(
+		ctx, "scheduler: "+noun+" on unexpected subject — discarding",
+		slog.String("subject", msg.Subject()),
+	)
+	s.ackMsg(ctx, msg)
+}
+
+// discardOnIdentityMismatch acks and discards msg if payloadWorkerID (from
+// the decoded message body) disagrees with subjectWorkerID (from the NATS
+// subject). The subject is the only identity NATS itself can enforce, so a
+// payload claiming a different worker is treated as permanent — redelivery
+// cannot make a forged or stale identity legal — the same reasoning as
+// [Scheduler.discardOnVersionMismatch].
+//
+// No separate "missing worker_id" check is needed: subjectWorkerID is always
+// non-empty ([bus.ParseWorkerSubject] guarantees it), so an empty
+// payloadWorkerID already fails this comparison.
+func (s *Scheduler) discardOnIdentityMismatch(ctx context.Context, msg jetstream.Msg, subjectWorkerID, payloadWorkerID string) bool {
+	if payloadWorkerID == subjectWorkerID {
+		return false
+	}
+	s.logger.WarnContext(
+		ctx, "scheduler: worker message whose payload identity differs from its subject — discarding",
+		slog.String("subject_worker_id", subjectWorkerID),
+		slog.String("payload_worker_id", payloadWorkerID),
+	)
+	s.ackMsg(ctx, msg)
+	return true
+}
+
 // handleWorkerRegister processes a worker.register message:
 // decodes the payload, upserts the worker in the store, and refreshes the
 // WorkersTotal Prometheus gauge.
-func (s *Scheduler) handleWorkerRegister(ctx context.Context, msg jetstream.Msg) {
+//
+// subjectWorkerID is the worker the message's subject attributes it to.
+func (s *Scheduler) handleWorkerRegister(ctx context.Context, msg jetstream.Msg, subjectWorkerID string) {
 	var m protocol.RegisterMsg
 	if err := json.Unmarshal(msg.Data(), &m); err != nil {
+		// The subject is the only identity left once the body will not decode.
 		s.logger.WarnContext(
 			ctx, "scheduler: malformed worker.register message",
+			slog.String("subject_worker_id", subjectWorkerID),
 			slog.Any("error", err),
 		)
 		s.ackMsg(ctx, msg) // ack to discard; re-delivery cannot fix a bad payload
@@ -755,9 +833,7 @@ func (s *Scheduler) handleWorkerRegister(ctx context.Context, msg jetstream.Msg)
 		"this worker is not registered and will be offered no work at all") {
 		return
 	}
-	if m.WorkerID == "" {
-		s.logger.WarnContext(ctx, "scheduler: worker.register missing worker_id")
-		s.ackMsg(ctx, msg)
+	if s.discardOnIdentityMismatch(ctx, msg, subjectWorkerID, m.WorkerID) {
 		return
 	}
 
@@ -804,6 +880,15 @@ func (s *Scheduler) handleWorkerRegister(ctx context.Context, msg jetstream.Msg)
 	}
 
 	s.ensureComputeLocation(ctx, m.ComputeLocation)
+
+	// Registration is "last seen" — connect and reconnect both go through
+	// here, and it is low-frequency, unlike heartbeat. Only touched when
+	// broker authentication is enabled: with it off there are no credential
+	// rows at all, and the default no-config path must do no extra store
+	// work.
+	if s.cfg.NATSAuthEnabled {
+		s.touchWorkerCredential(ctx, m.WorkerID, now)
+	}
 
 	s.warnOnExprCapShortfall(ctx, w)
 
@@ -894,11 +979,37 @@ func (s *Scheduler) ensureComputeLocation(ctx context.Context, name string) {
 	}
 }
 
+// touchWorkerCredential sets LastSeenAt on workerID's active broker
+// credential to at. Best-effort, exactly like ensureComputeLocation: a
+// credential bookkeeping write must never stop a worker coming online.
+// [store.ErrNotFound] — no active credential for this worker — is not
+// unusual enough to warrant more than a debug log: it is the normal shape
+// for a worker that enrolled with broker auth off and was seen once auth
+// was later turned on, or any other legitimate mismatch between "workers
+// that exist" and "workers with a credential". Any other error is logged at
+// warn, matching ensureComputeLocation's posture toward its own store
+// writes.
+func (s *Scheduler) touchWorkerCredential(ctx context.Context, workerID string, at time.Time) {
+	err := s.store.TouchWorkerCredential(ctx, workerID, at)
+	switch {
+	case err == nil:
+		return
+	case errors.Is(err, store.ErrNotFound):
+		s.logger.DebugContext(ctx, "scheduler: no active broker credential to touch on registration",
+			slog.String("worker_id", workerID))
+	default:
+		s.logger.WarnContext(ctx, "scheduler: touch worker credential last-seen failed",
+			slog.String("worker_id", workerID), slog.Any("error", err))
+	}
+}
+
 // handleWorkerDeregister processes a worker.deregister message published by a
 // worker on graceful shutdown. It marks the worker offline immediately so the
 // scheduler stops dispatching new assignments to it rather than waiting for
 // the heartbeat-timeout sweep.
-func (s *Scheduler) handleWorkerDeregister(ctx context.Context, msg jetstream.Msg) {
+//
+// subjectWorkerID is the worker the message's subject attributes it to.
+func (s *Scheduler) handleWorkerDeregister(ctx context.Context, msg jetstream.Msg, subjectWorkerID string) {
 	// DeregisterMsg mirrors protocol.DeregisterMsg; we decode only the
 	// fields the server needs without importing the worker protocol package.
 	var m struct {
@@ -906,16 +1017,16 @@ func (s *Scheduler) handleWorkerDeregister(ctx context.Context, msg jetstream.Ms
 		Reason   string `json:"reason,omitempty"`
 	}
 	if err := json.Unmarshal(msg.Data(), &m); err != nil {
+		// The subject is the only identity left once the body will not decode.
 		s.logger.WarnContext(
 			ctx, "scheduler: malformed worker.deregister message",
+			slog.String("subject_worker_id", subjectWorkerID),
 			slog.Any("error", err),
 		)
 		s.ackMsg(ctx, msg)
 		return
 	}
-	if m.WorkerID == "" {
-		s.logger.WarnContext(ctx, "scheduler: worker.deregister missing worker_id")
-		s.ackMsg(ctx, msg)
+	if s.discardOnIdentityMismatch(ctx, msg, subjectWorkerID, m.WorkerID) {
 		return
 	}
 
@@ -975,11 +1086,15 @@ func (s *Scheduler) handleWorkerDeregister(ctx context.Context, msg jetstream.Ms
 // decoding into a narrower local struct is how the version gate below stops
 // meaning anything — every field outside the local set drops regardless of what
 // version says.
-func (s *Scheduler) handleWorkerHeartbeat(ctx context.Context, msg jetstream.Msg) {
+//
+// subjectWorkerID is the worker the message's subject attributes it to.
+func (s *Scheduler) handleWorkerHeartbeat(ctx context.Context, msg jetstream.Msg, subjectWorkerID string) {
 	var m protocol.HeartbeatMsg
 	if err := json.Unmarshal(msg.Data(), &m); err != nil {
+		// The subject is the only identity left once the body will not decode.
 		s.logger.WarnContext(
 			ctx, "scheduler: malformed worker.heartbeat message",
+			slog.String("subject_worker_id", subjectWorkerID),
 			slog.Any("error", err),
 		)
 		s.ackMsg(ctx, msg)
@@ -991,8 +1106,7 @@ func (s *Scheduler) handleWorkerHeartbeat(ctx context.Context, msg jetstream.Msg
 		"this worker's liveness signal is not recorded; the heartbeat sweep will retire it") {
 		return
 	}
-	if m.WorkerID == "" {
-		s.ackMsg(ctx, msg)
+	if s.discardOnIdentityMismatch(ctx, msg, subjectWorkerID, m.WorkerID) {
 		return
 	}
 

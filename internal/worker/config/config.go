@@ -24,6 +24,7 @@ import (
 
 	"gopkg.in/yaml.v3"
 
+	"github.com/uberware/sqi/internal/brokerauth"
 	"github.com/uberware/sqi/internal/worker/capabilities"
 )
 
@@ -297,6 +298,34 @@ type NATSConfig struct {
 	// Actual wait uses exponential backoff with jitter.
 	// Env: SQI_WORKER_NATS_RECONNECT_WAIT
 	ReconnectWait time.Duration `yaml:"reconnect_wait"`
+
+	// CredentialFile is the path to this worker's nkey seed file. When empty
+	// it defaults to <worker.data_dir>/worker.nk. The file is created by
+	// enrollment or by `sqi-worker keygen` and must be mode 0600.
+	// Env: SQI_WORKER_NATS_CREDENTIAL_FILE
+	CredentialFile string `yaml:"credential_file"`
+
+	// JoinToken is a worker enrollment token. Used exactly once, on first
+	// start, to obtain a credential; ignored once CredentialFile exists.
+	// Prefer JoinTokenFile — a token in a config file is a secret at rest.
+	// Env: SQI_WORKER_NATS_JOIN_TOKEN
+	JoinToken string `yaml:"join_token"`
+
+	// JoinTokenFile is a path to a file containing a join token. Takes
+	// precedence over JoinToken.
+	// Env: SQI_WORKER_NATS_JOIN_TOKEN_FILE
+	JoinTokenFile string `yaml:"join_token_file"`
+
+	// ServerURL is the sqi-server HTTP base URL used for enrollment, e.g.
+	// "http://sqi-server.example:8080". Enrollment runs over REST, not over
+	// NATS: the broker's job is to reject unauthenticated connections, so it
+	// cannot also be the channel a worker gets its first credential over.
+	// Required whenever a join token is configured — it is NOT derived from
+	// mDNS discovery; a worker relying on mDNS with no explicit server_url
+	// fails enrollment with an actionable error naming this field rather
+	// than attempting a request with no host.
+	// Env: SQI_WORKER_NATS_SERVER_URL
+	ServerURL string `yaml:"server_url"`
 }
 
 // WorkerSettings controls the worker's identity and runtime behavior.
@@ -381,6 +410,17 @@ type WorkerSettings struct {
 	// list means the worker accepts assignments from all queues via a wildcard
 	// JetStream consumer.  Set this when running a heterogeneous farm where
 	// some workers specialise in a subset of queues.
+	//
+	// Each entry becomes a NATS subject token in the work-lease subject
+	// work.lease.<workerID>.<queueID>, so it must satisfy the same constraint
+	// as a worker ID (see brokerauth.ValidWorkerIDToken): non-empty, and free
+	// of '.', '*', '>' and whitespace. A queue ID that does not is rejected
+	// by [Validate] rather than silently producing a subject the broker will
+	// never route — with broker auth on, a queue ID containing a dot yields
+	// too many subject tokens for this worker's publish grant and every lease
+	// request for it is denied outright; with broker auth off it fails
+	// bus.ParseWorkerSubject on the server side and gets no reply either way,
+	// so the worker retries forever with nothing in its logs naming the cause.
 	// Env: SQI_WORKER_QUEUE_IDS (comma-separated)
 	QueueIDs []string `yaml:"queue_ids"`
 
@@ -513,25 +553,58 @@ func defaultDataDir() string {
 	return filepath.Join(home, ".sqi", "worker")
 }
 
+// DefaultCredentialFile returns the default nkey seed path under dataDir,
+// used whenever NATS.CredentialFile is left unset in [Load]'s resolution
+// below. Exported so other worker-side entry points that write or look for
+// the seed file — the "sqi-worker keygen" CLI, notably — derive the same
+// path from the data directory rather than each hardcoding it.
+func DefaultCredentialFile(dataDir string) string {
+	return filepath.Join(dataDir, "worker.nk")
+}
+
 // Load returns the effective WorkerConfig by merging layers in override order:
 // built-in defaults → YAML/JSON file → SQI_WORKER_* env vars → CLI flags.
 //
 // configFile may be empty, in which case Load searches the default paths.
 func Load(configFile string, flags FlagOverrides) (WorkerConfig, error) {
+	cfg, _, err := LoadWithSources(configFile, flags)
+	return cfg, err
+}
+
+// Sources reports, for a subset of settings, whether the config file or
+// environment layer explicitly decided the value before [Load]'s own
+// default-fill step ran — as opposed to it being left empty for that step to
+// fill in. Comparing the resolved value against the computed default (e.g.
+// [DefaultCredentialFile]) is not sound: an operator can explicitly
+// configure a value that happens to equal what the default-fill would have
+// produced anyway, in which case value comparison cannot tell "explicitly
+// configured" apart from "left unset". Sources answers from the file/env
+// layers themselves, so it is not fooled by that.
+type Sources struct {
+	// CredentialFile is true when nats.credential_file was set by the
+	// config file or by SQI_WORKER_NATS_CREDENTIAL_FILE, before [Load]
+	// resolves an empty value to DefaultCredentialFile(Worker.DataDir).
+	CredentialFile bool
+}
+
+// LoadWithSources is [Load], additionally reporting which of a subset of
+// settings (see [Sources]) were explicitly decided by the config file or
+// environment layer.
+func LoadWithSources(configFile string, flags FlagOverrides) (WorkerConfig, Sources, error) {
 	cfg := Default()
 
 	// ── Config file layer ─────────────────────────────────────────────────
 	path, err := resolveConfigFile(configFile)
 	if err != nil {
-		return WorkerConfig{}, fmt.Errorf("resolve config file: %w", err)
+		return WorkerConfig{}, Sources{}, fmt.Errorf("resolve config file: %w", err)
 	}
 	if path != "" {
 		data, err := os.ReadFile(path)
 		if err != nil {
-			return WorkerConfig{}, fmt.Errorf("read config file %s: %w", path, err)
+			return WorkerConfig{}, Sources{}, fmt.Errorf("read config file %s: %w", path, err)
 		}
 		if err := unmarshalConfig(data, &cfg); err != nil {
-			return WorkerConfig{}, fmt.Errorf("parse config file %s: %w", path, err)
+			return WorkerConfig{}, Sources{}, fmt.Errorf("parse config file %s: %w", path, err)
 		}
 	}
 
@@ -549,7 +622,17 @@ func Load(configFile string, flags FlagOverrides) (WorkerConfig, error) {
 		cfg.NATS.InsecureSkipVerify = true
 	}
 
-	return cfg, nil
+	var src Sources
+	src.CredentialFile = cfg.NATS.CredentialFile != ""
+
+	// CredentialFile defaults relative to Worker.DataDir, which any of the
+	// three layers above may have changed, so it is resolved last rather
+	// than at struct-literal time in Default.
+	if cfg.NATS.CredentialFile == "" {
+		cfg.NATS.CredentialFile = DefaultCredentialFile(cfg.Worker.DataDir)
+	}
+
+	return cfg, src, nil
 }
 
 // resolveConfigFile returns the config file path to use. If explicit is
@@ -700,6 +783,18 @@ func applyNATSEnv(c *NATSConfig) {
 			c.ReconnectWait = d
 		}
 	}
+	if v := os.Getenv("SQI_WORKER_NATS_CREDENTIAL_FILE"); v != "" {
+		c.CredentialFile = v
+	}
+	if v := os.Getenv("SQI_WORKER_NATS_JOIN_TOKEN"); v != "" {
+		c.JoinToken = v
+	}
+	if v := os.Getenv("SQI_WORKER_NATS_JOIN_TOKEN_FILE"); v != "" {
+		c.JoinTokenFile = v
+	}
+	if v := os.Getenv("SQI_WORKER_NATS_SERVER_URL"); v != "" {
+		c.ServerURL = v
+	}
 }
 
 func applyWorkerEnv(c *WorkerSettings) {
@@ -744,7 +839,14 @@ func applyWorkerEnv(c *WorkerSettings) {
 // applyWorkerEnv to keep each function under the cyclomatic-complexity limit.
 func applyWorkerPullEnv(c *WorkerSettings) {
 	if v := os.Getenv("SQI_WORKER_QUEUE_IDS"); v != "" {
-		c.QueueIDs = splitTags(v)
+		// Deliberately NOT splitTags: splitTags silently drops empty entries
+		// (right for CapabilityTags/EnvPassthrough, which have no invalid
+		// shape), but a queue ID has one — see [Validate]'s validateQueueIDs.
+		// Splitting without filtering here means a blank entry from the env
+		// var is caught and reported the same way a blank entry in a YAML
+		// queue_ids list is, instead of being silently dropped on one path
+		// and rejected on the other.
+		c.QueueIDs = splitCSV(v)
 	}
 	if v := os.Getenv("SQI_WORKER_PULL_IDLE_BACKOFF"); v != "" {
 		if d, err := time.ParseDuration(v); err == nil {
@@ -805,7 +907,9 @@ func applyLogStreamerEnv(c *LogStreamerConfig) {
 	}
 }
 
-// splitTags splits a comma-separated tag list, trimming whitespace.
+// splitTags splits a comma-separated tag list, trimming whitespace and
+// dropping empty entries. Used for fields with no invalid shape of their
+// own, where a stray comma should just be ignored.
 func splitTags(s string) []string {
 	parts := strings.Split(s, ",")
 	out := make([]string, 0, len(parts))
@@ -813,6 +917,20 @@ func splitTags(s string) []string {
 		if t := strings.TrimSpace(p); t != "" {
 			out = append(out, t)
 		}
+	}
+	return out
+}
+
+// splitCSV splits a comma-separated list, trimming whitespace around each
+// entry but KEEPING empty entries — unlike splitTags. Used for fields whose
+// entries have their own validity check (queue IDs), so that a blank entry
+// surfaces as a validation error naming its position instead of being
+// silently discarded.
+func splitCSV(s string) []string {
+	parts := strings.Split(s, ",")
+	out := make([]string, len(parts))
+	for i, p := range parts {
+		out[i] = strings.TrimSpace(p)
 	}
 	return out
 }
@@ -898,6 +1016,7 @@ func Validate(cfg WorkerConfig) []ValidationError {
 
 	errs = append(errs, validateIsolation(cfg)...)
 	errs = append(errs, validateExpr(cfg.Expr)...)
+	errs = append(errs, validateQueueIDs(cfg.Worker.QueueIDs)...)
 
 	return errs
 }
@@ -993,6 +1112,34 @@ func validateIsolation(cfg WorkerConfig) []ValidationError {
 		}
 	}
 
+	return errs
+}
+
+// validateQueueIDs rejects any worker.queue_ids entry that cannot be used as
+// a single NATS subject token, at load time rather than at first lease
+// request. A queue ID becomes a token in the work-lease subject
+// work.lease.<workerID>.<queueID> (internal/bus/subjects.go); an entry
+// containing '.' splits it into extra tokens the server-side parser and this
+// worker's own broker-auth publish grant both reject, and the failure mode
+// is silent and total: the worker's lease requests are refused or simply go
+// unanswered, and nothing in its logs says why.
+//
+// brokerauth.ValidWorkerIDToken implements exactly this predicate for worker
+// IDs, which share the same constraint for the same reason; it is reused
+// here rather than duplicated.
+func validateQueueIDs(queueIDs []string) []ValidationError {
+	var errs []ValidationError
+	for i, q := range queueIDs {
+		if !brokerauth.ValidWorkerIDToken(q) {
+			errs = append(errs, ValidationError{
+				Field: fmt.Sprintf("worker.queue_ids[%d]", i),
+				Message: fmt.Sprintf(
+					"%q is not a valid NATS subject token: it must be non-empty and must not contain '.', whitespace, '*' or '>'",
+					q,
+				),
+			})
+		}
+	}
 	return errs
 }
 

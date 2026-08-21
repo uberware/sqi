@@ -47,5 +47,6 @@ func ExprLimitsFromConfig(c config.OpenJDConfig) openjd.ExprLimits {
 func schedulerConfig(cfg Config) scheduler.Config {
 	sched := cfg.Scheduler
 	sched.ExprLimits = cfg.OpenJDExprLimits
+	sched.NATSAuthEnabled = cfg.NATSAuthEnabled
 	return sched
 }

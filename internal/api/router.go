@@ -214,6 +214,49 @@ type Deps struct {
 	// cheaper than a key to configure, distribute, and rotate. Only read when
 	// OIDCProvider is non-nil.
 	OIDCStateKey []byte
+
+	// NATSAuthEnabled mirrors config.NATSAuthConfig.Enabled: the broker
+	// requires a per-worker nkey credential. POST /api/v1/workers/enroll is
+	// mounted only when this AND NATSAuthEnrollmentEndpointEnabled are both
+	// true — with broker auth off there is no credential for it to issue, and
+	// an operator who wants no self-service enrollment surface at all can
+	// turn EnrollmentEndpointEnabled off independently.
+	NATSAuthEnabled bool
+
+	// NATSAuthEnrollmentEndpointEnabled mirrors
+	// config.NATSAuthConfig.EnrollmentEndpointEnabled. See NATSAuthEnabled.
+	NATSAuthEnrollmentEndpointEnabled bool
+
+	// JoinTokenTTL is how long a join token minted by
+	// POST /api/v1/workers/join-tokens remains valid. Mirrors
+	// config.NATSAuthConfig.JoinTokenTTL, which is bounds-checked at config
+	// load — this handler does not re-validate it.
+	JoinTokenTTL time.Duration
+
+	// JoinTokenSingleUse consumes a join token on its first successful
+	// enrollment, rejecting a second attempt with the same token. Mirrors
+	// config.NATSAuthConfig.JoinTokenSingleUse.
+	JoinTokenSingleUse bool
+
+	// WorkerRevoker handles DELETE /api/v1/workers/{id}/credential. Required
+	// on any router that mounts REST resource routes — that route is always
+	// registered, regardless of NATSAuthEnabled — so a nil value panics the
+	// first time it is called, the same contract every other required Deps
+	// field carries. Production supplies *server.Server, which revokes in
+	// the store and then reloads the broker's authorized-key set; this
+	// package depends only on the [WorkerRevoker] interface, never on
+	// internal/bus or internal/server.
+	WorkerRevoker WorkerRevoker
+
+	// BrokerCredentialReloader handles the post-enrollment reload inside
+	// POST /api/v1/workers/enroll. Only actually invoked when that route is
+	// mounted (NATSAuthEnabled && NATSAuthEnrollmentEndpointEnabled both
+	// true), but production always supplies it unconditionally — same
+	// *server.Server as WorkerRevoker — so a nil value here indicates a
+	// wiring bug rather than an intentionally-disabled feature. See
+	// [BrokerCredentialReloader] (the interface) for why enroll's reload
+	// failure is handled differently from revoke's.
+	BrokerCredentialReloader BrokerCredentialReloader
 }
 
 // resolveCORSOrigins returns the CORS allow-list to configure, dropping the
@@ -377,7 +420,7 @@ func NewRouter(cfg Config, deps Deps, logger *slog.Logger, m *metrics.Metrics, h
 	jobs := newJobHandler(deps.Store, deps.Submitter, deps.Scheduler, notifier, logger, retryDefaults,
 		cfg.ValidateJobOwner, cfg.ExprSubmissionDeadline)
 	tasks := newTaskHandler(deps.Store, deps.Scheduler, logger)
-	workers := newWorkerHandler(deps.Store, notifier, cfg.WorkerOfflineThreshold, logger)
+	workers := newWorkerHandler(deps.Store, notifier, deps.WorkerRevoker, cfg.WorkerOfflineThreshold, logger)
 	farms := newFarmHandler(deps.Store, logger)
 	queues := newQueueHandler(deps.Store, logger)
 	storageLocs := newStorageLocationHandler(deps.Store, logger)
@@ -407,6 +450,7 @@ func NewRouter(cfg Config, deps Deps, logger *slog.Logger, m *metrics.Metrics, h
 	}
 	usersH := newUsersHandler(deps.Store, logger, deps.LDAPConfig.RoleSource, deps.OIDCConfig.RoleSource)
 	apiKeysH := newAPIKeysHandler(deps.Store, logger)
+	workerEnroll := newWorkerEnrollHandler(deps.Store, deps.WorkerRevoker, deps.BrokerCredentialReloader, logger, deps.JoinTokenSingleUse, deps.JoinTokenTTL)
 	az := newAuthz(deps.Store, logger)
 
 	wsH := newWSHandler(logger, deps.Hub, deps.Store, deps.Auth, wsOriginConfig{
@@ -462,6 +506,26 @@ func NewRouter(cfg Config, deps Deps, logger *slog.Logger, m *metrics.Metrics, h
 		if deps.OIDCProvider != nil && len(deps.OIDCStateKey) > 0 {
 			api.Get("/auth/oidc/login", authH.oidcLogin)
 			api.Get("/auth/oidc/callback", authH.oidcCallback)
+		}
+
+		// Public, unauthenticated by design: the join token carried in the
+		// request body is itself the credential that authorizes an
+		// enrollment, so gating this route on a session or API key would be
+		// circular — a worker enrolling for the first time has neither.
+		// Mounted only when broker authentication is on (otherwise there is
+		// no credential for it to issue) and the operator has left the
+		// enrollment endpoint enabled (some sites provision every credential
+		// by hand via "sqi-server worker enroll" and want no self-service
+		// surface at all).
+		//
+		// When NOT mounted, a request here does not 404: "/workers/enroll"
+		// has the same two-segment shape as "/workers/{id}" (GET and DELETE
+		// are always registered on that pattern, in the groups below), so
+		// chi routes it there with id="enroll" and answers 405 Method Not
+		// Allowed — the path matches a registered pattern, just not for
+		// POST. openapi.yaml documents 405 for this reason, not 404.
+		if deps.NATSAuthEnabled && deps.NATSAuthEnrollmentEndpointEnabled {
+			api.Post("/workers/enroll", workerEnroll.enroll)
 		}
 
 		// REST resource routes — gated by the auth middleware.
@@ -558,6 +622,47 @@ func NewRouter(cfg Config, deps Deps, logger *slog.Logger, m *metrics.Metrics, h
 				g.Post("/workers/{id}/disable", workers.disableWorker)
 				g.Post("/workers/{id}/enable", workers.enableWorker)
 				g.Delete("/workers/{id}", workers.removeWorker)
+			})
+
+			// workers.enroll — deliberately separate from workers.manage:
+			// minting a join token attaches arbitrary compute that receives
+			// and executes job code, a different privilege in kind from
+			// enabling, disabling, or deleting an existing worker.
+			//
+			// Join-token minting is additionally mounted only when
+			// auth.enabled. Every other permission-gated route in this file
+			// stays mounted with auth off, because the anonymous Superuser
+			// principal middleware.Auth installs in that case is granted
+			// everything by design (auth-off behavior must be unchanged from
+			// pre-auth sqi). That equivalence is the wrong default here: with
+			// no RBAC actually enforced, anyone who can reach this server
+			// would be able to mint a credential for arbitrary compute, which
+			// is a materially different blast radius than every other
+			// Superuser-bypassed action.
+			//
+			// Revoke stays mounted unconditionally, like every other
+			// permission-gated route, and that choice is NOT risk-free: with
+			// auth.enabled false and nats.auth.enabled true — a supported,
+			// documented combination — every caller is the anonymous
+			// Superuser, so an unauthenticated request can disconnect a
+			// worker, and repeated requests can take the whole farm off the
+			// broker one worker at a time. The risk it does not carry is
+			// escalation: revoke only removes access already granted, it
+			// cannot attach compute or obtain a credential. That is an
+			// AVAILABILITY exposure, deliberately accepted here because
+			// carving out this one route would break the rule that auth-off
+			// behavior matches pre-auth sqi, and because every other
+			// destructive worker route (disable, delete) is exposed exactly
+			// the same way in that configuration.
+			if cfg.AuthEnabled {
+				rest.Group(func(g chi.Router) {
+					g.Use(az.require(policy.WorkersEnroll))
+					g.Post("/workers/join-tokens", workerEnroll.createJoinToken)
+				})
+			}
+			rest.Group(func(g chi.Router) {
+				g.Use(az.require(policy.WorkersEnroll))
+				g.Delete("/workers/{id}/credential", workerEnroll.revokeCredential)
 			})
 
 			// infra.read / infra.manage (farms, queues, storage, compute, usage-pools)

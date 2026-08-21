@@ -75,6 +75,13 @@ type testServer struct {
 	// NATSAddr is the full "host:port" address the embedded NATS server
 	// is listening on.  Workers connect to "nats://" + NATSAddr.
 	NATSAddr string
+	// DBPath is the SQLite file this server was started against. Set by
+	// constructors that know it, empty otherwise. A caller that needs to
+	// inspect store state the REST API does not expose (e.g. confirming no
+	// row was ever written to a table) can open a second, independent
+	// connection to this same path — safe because the store runs in WAL
+	// mode, which allows a reader to run alongside the server's own writer.
+	DBPath string
 
 	cancel context.CancelFunc
 	done   chan error
@@ -160,6 +167,7 @@ func startServer(t *testing.T) *testServer {
 	ts := &testServer{
 		HTTPAddr: httpAddr,
 		NATSAddr: natsAddr,
+		DBPath:   sqlitePath,
 		cancel:   cancel,
 		done:     done,
 	}
@@ -269,7 +277,7 @@ func newMockWorker(t *testing.T, natsURL, workerID, farmID, queueID string) *moc
 	}
 }
 
-// register publishes a [protocol.RegisterMsg] to worker.register so the
+// register publishes a [protocol.RegisterMsg] to worker.register.<workerID> so the
 // server records this worker as online and eligible for task assignment.
 func (w *mockWorker) register() {
 	w.t.Helper()
@@ -293,7 +301,7 @@ func (w *mockWorker) register() {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	if _, err := w.js.Publish(ctx, bus.SubjectWorkerRegister, data); err != nil {
+	if _, err := w.js.Publish(ctx, bus.WorkerRegisterSubject(w.id), data); err != nil {
 		w.t.Fatalf("mockWorker.register: publish: %v", err)
 	}
 }
@@ -329,7 +337,7 @@ func (w *mockWorker) startHeartbeat(interval time.Duration) {
 				pubCtx, pubCancel := context.WithTimeout(ctx, 2*time.Second)
 				// Ignore publish errors in the heartbeat loop — the connection
 				// may be closing during test cleanup.
-				if _, pubErr := w.js.Publish(pubCtx, bus.SubjectWorkerHeartbeat, data); pubErr != nil {
+				if _, pubErr := w.js.Publish(pubCtx, bus.WorkerHeartbeatSubject(w.id), data); pubErr != nil {
 					pubCancel()
 					return
 				}
@@ -339,7 +347,7 @@ func (w *mockWorker) startHeartbeat(interval time.Duration) {
 	}()
 }
 
-// pullAssignment requests a work lease on work.lease.<queue> and blocks until
+// pullAssignment requests a work lease on work.lease.<workerID>.<queue> and blocks until
 // the server returns a non-empty batch or timeout expires.  It returns the
 // first decoded [protocol.AssignMsg] in the reply.  The request timeout exceeds
 // the server's long-poll hold so a parked request is never abandoned (which
@@ -358,7 +366,7 @@ func (w *mockWorker) pullAssignment(timeout time.Duration) protocol.AssignMsg {
 	for time.Now().Before(deadline) {
 		reqTimeout := min(time.Until(deadline), 35*time.Second)
 		reqCtx, cancel := context.WithTimeout(context.Background(), reqTimeout)
-		msg, reqErr := w.nc.RequestWithContext(reqCtx, bus.WorkLeaseSubject(w.queueID), reqBytes)
+		msg, reqErr := w.nc.RequestWithContext(reqCtx, bus.WorkLeaseSubject(w.id, w.queueID), reqBytes)
 		cancel()
 		if reqErr != nil {
 			if !errors.Is(reqErr, context.DeadlineExceeded) && !errors.Is(reqErr, nats.ErrTimeout) {
@@ -385,7 +393,7 @@ func (w *mockWorker) pullAssignment(timeout time.Duration) protocol.AssignMsg {
 	return protocol.AssignMsg{} // unreachable
 }
 
-// publishStatus publishes a [protocol.TaskStatusMsg] to task.status.<jobID>.
+// publishStatus publishes a [protocol.TaskStatusMsg] to task.status.<workerID>.<jobID>.
 func (w *mockWorker) publishStatus(assign protocol.AssignMsg, status string, exitCode *int) {
 	w.t.Helper()
 
@@ -407,12 +415,12 @@ func (w *mockWorker) publishStatus(assign protocol.AssignMsg, status string, exi
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	if _, err := w.js.Publish(ctx, bus.TaskStatusSubject(assign.JobID), data); err != nil {
+	if _, err := w.js.Publish(ctx, bus.TaskStatusSubject(w.id, assign.JobID), data); err != nil {
 		w.t.Fatalf("mockWorker.publishStatus(%s): publish: %v", status, err)
 	}
 }
 
-// publishLogChunk publishes a [protocol.LogChunkMsg] to task.logs.<taskID>.
+// publishLogChunk publishes a [protocol.LogChunkMsg] to task.logs.<workerID>.<taskID>.
 func (w *mockWorker) publishLogChunk(assign protocol.AssignMsg, seqNum int64, data string) {
 	w.t.Helper()
 
@@ -433,7 +441,7 @@ func (w *mockWorker) publishLogChunk(assign protocol.AssignMsg, seqNum int64, da
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	if _, err := w.js.Publish(ctx, bus.TaskLogsSubject(assign.TaskID), raw); err != nil {
+	if _, err := w.js.Publish(ctx, bus.TaskLogsSubject(w.id, assign.TaskID), raw); err != nil {
 		w.t.Fatalf("mockWorker.publishLogChunk: publish: %v", err)
 	}
 }

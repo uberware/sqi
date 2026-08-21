@@ -18,6 +18,10 @@ import (
 	"github.com/uberware/sqi/internal/worker/protocol"
 )
 
+// testWorkerID is the publishing worker identity every Publisher under test is
+// built with; it is a token of every subject those tests observe.
+const testWorkerID = "w-test"
+
 // ── Mock NATS ─────────────────────────────────────────────────────────────────
 
 // mockNATS captures published messages for assertion in tests.
@@ -104,7 +108,7 @@ func TestSequenceNumberMonotonicity(t *testing.T) {
 	nc := &mockNATS{}
 	// MaxLinesPerChunk=3 so every 3rd line triggers an immediate flush.
 	cfg := slowFlushCfg(3, 1<<20)
-	p := logstreamer.New(nc, cfg, discard())
+	p := logstreamer.New(nc, testWorkerID, cfg, discard())
 	ctx := context.Background()
 
 	const totalLines = 10
@@ -152,7 +156,7 @@ func TestChunkBoundaryLines(t *testing.T) {
 	nc := &mockNATS{}
 	const maxLines = 3
 	cfg := slowFlushCfg(maxLines, 1<<20)
-	p := logstreamer.New(nc, cfg, discard())
+	p := logstreamer.New(nc, testWorkerID, cfg, discard())
 	ctx := context.Background()
 
 	// Write exactly maxLines lines — should trigger one immediate flush.
@@ -192,7 +196,7 @@ func TestChunkBoundaryBytes(t *testing.T) {
 	// Each line is 10 chars; byte accounting = 10+1=11 per line.
 	// MaxBytesPerChunk=20: after line 2 (22 bytes), flush triggers.
 	cfg := slowFlushCfg(1000, 20)
-	p := logstreamer.New(nc, cfg, discard())
+	p := logstreamer.New(nc, testWorkerID, cfg, discard())
 	ctx := context.Background()
 
 	const line = "0123456789" // 10 bytes
@@ -233,7 +237,7 @@ func TestFlushBeforeTerminalStatus(t *testing.T) {
 	nc := &mockNATS{}
 	// Large thresholds so no immediate flush fires during HandleLine calls.
 	cfg := slowFlushCfg(1000, 1<<20)
-	p := logstreamer.New(nc, cfg, discard())
+	p := logstreamer.New(nc, testWorkerID, cfg, discard())
 	ctx := context.Background()
 
 	const nLines = 5
@@ -285,7 +289,7 @@ func TestFlushInterval(t *testing.T) {
 		MaxBytesPerChunk: 1 << 20,
 		FlushInterval:    interval,
 	}
-	p := logstreamer.New(nc, cfg, discard())
+	p := logstreamer.New(nc, testWorkerID, cfg, discard())
 	ctx := context.Background()
 
 	p.HandleLine(ctx, "task-tick", "attempt-tick", "sess", "stdout", "hello")
@@ -319,7 +323,7 @@ func TestFlushInterval(t *testing.T) {
 func TestStdoutStderrSeparateChunks(t *testing.T) {
 	nc := &mockNATS{}
 	cfg := slowFlushCfg(1000, 1<<20)
-	p := logstreamer.New(nc, cfg, discard())
+	p := logstreamer.New(nc, testWorkerID, cfg, discard())
 	ctx := context.Background()
 
 	p.HandleLine(ctx, "task-streams", "attempt-streams", "sess", "stdout", "out-line")
@@ -352,7 +356,7 @@ func TestStdoutStderrSeparateChunks(t *testing.T) {
 func TestMultipleAttemptsIndependentSequences(t *testing.T) {
 	nc := &mockNATS{}
 	cfg := slowFlushCfg(3, 1<<20)
-	p := logstreamer.New(nc, cfg, discard())
+	p := logstreamer.New(nc, testWorkerID, cfg, discard())
 	ctx := context.Background()
 
 	// Write 6 lines for attempt-A (triggers two immediate flushes).
@@ -408,7 +412,7 @@ func TestMultipleAttemptsIndependentSequences(t *testing.T) {
 func TestFlushLogsIdempotent(t *testing.T) {
 	nc := &mockNATS{}
 	cfg := slowFlushCfg(100, 1<<20)
-	p := logstreamer.New(nc, cfg, discard())
+	p := logstreamer.New(nc, testWorkerID, cfg, discard())
 	ctx := context.Background()
 
 	p.HandleLine(ctx, "task-idem", "attempt-idem", "sess", "stdout", "hello")
@@ -431,7 +435,7 @@ func TestFlushLogsIdempotent(t *testing.T) {
 // received any lines returns nil and publishes nothing.
 func TestFlushLogsNoLines(t *testing.T) {
 	nc := &mockNATS{}
-	p := logstreamer.New(nc, logstreamer.DefaultConfig(), discard())
+	p := logstreamer.New(nc, testWorkerID, logstreamer.DefaultConfig(), discard())
 	ctx := context.Background()
 
 	if err := p.FlushLogs(ctx, "task-empty", "attempt-empty"); err != nil {
@@ -443,11 +447,11 @@ func TestFlushLogsNoLines(t *testing.T) {
 }
 
 // TestNATSSubject verifies that log chunks are published to the correct
-// task.logs.<taskID> NATS subject.
+// task.logs.<workerID>.<taskID> NATS subject.
 func TestNATSSubject(t *testing.T) {
 	nc := &mockNATS{}
 	cfg := slowFlushCfg(1, 1<<20) // flush on the first line
-	p := logstreamer.New(nc, cfg, discard())
+	p := logstreamer.New(nc, testWorkerID, cfg, discard())
 	ctx := context.Background()
 
 	const taskID = "my-task-id"
@@ -457,7 +461,7 @@ func TestNATSSubject(t *testing.T) {
 	if len(msgs) == 0 {
 		t.Fatal("no messages published")
 	}
-	want := bus.TaskLogsSubject(taskID)
+	want := bus.TaskLogsSubject(testWorkerID, taskID)
 	for _, m := range msgs {
 		if m.subject != want {
 			t.Errorf("subject = %q, want %q", m.subject, want)
@@ -470,7 +474,7 @@ func TestNATSSubject(t *testing.T) {
 func TestPublishErrorDoesNotPanic(t *testing.T) {
 	nc := &mockNATS{pubErr: errors.New("nats: connection closed")}
 	cfg := slowFlushCfg(1, 1<<20) // flush on the first line
-	p := logstreamer.New(nc, cfg, discard())
+	p := logstreamer.New(nc, testWorkerID, cfg, discard())
 	ctx := context.Background()
 
 	// Should not panic even though NATS publish returns an error.

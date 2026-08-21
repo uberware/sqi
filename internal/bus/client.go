@@ -39,18 +39,21 @@ type Client struct {
 // exponential backoff, so transient disruptions (e.g. a brief broker restart
 // during development) recover automatically.
 //
+// extraOpts are appended after the default options, so a caller can supply
+// authentication (e.g. an nkey credential) without disturbing the reconnect
+// behavior above.
+//
 // Prefer [Broker.NewClient] over calling NewClient directly; the Broker
 // supplies the correct loopback URL without the caller needing to know it.
-func NewClient(url string, logger *slog.Logger) (*Client, error) {
-	nc, err := nats.Connect(
-		url,
+func NewClient(url string, logger *slog.Logger, extraOpts ...nats.Option) (*Client, error) {
+	opts := []nats.Option{
 		// Reconnect indefinitely — this is an in-process loopback connection
 		// and should always come back up if the embedded broker restarts.
 		nats.MaxReconnects(-1),
 
 		// Wait 2 s between reconnect attempts.  The embedded broker is on
 		// loopback so it recovers quickly; a short fixed interval is sufficient.
-		nats.ReconnectWait(2*time.Second),
+		nats.ReconnectWait(2 * time.Second),
 
 		// Log reconnect events through the server's structured logger so
 		// operators can correlate them with other activity.
@@ -65,7 +68,10 @@ func NewClient(url string, logger *slog.Logger) (*Client, error) {
 		nats.ClosedHandler(func(_ *nats.Conn) {
 			logger.InfoContext(context.Background(), "bus: client connection closed")
 		}),
-	)
+	}
+	opts = append(opts, extraOpts...)
+
+	nc, err := nats.Connect(url, opts...)
 	if err != nil {
 		return nil, fmt.Errorf("bus: client connect %q: %w", url, err)
 	}
@@ -82,31 +88,34 @@ func NewClient(url string, logger *slog.Logger) (*Client, error) {
 // ── Publish methods ──────────────────────────────────────────────────────────
 
 // PublishTaskStatus publishes a task-status transition to the
-// task.status.<jobID> subject.  Workers call this when a task transitions
-// to running, succeeded, failed, or canceled.
-func (c *Client) PublishTaskStatus(ctx context.Context, jobID string, data []byte) error {
-	return c.publish(ctx, TaskStatusSubject(jobID), data)
+// task.status.<workerID>.<jobID> subject.  Workers call this when a task
+// transitions to running, succeeded, failed, or canceled.
+func (c *Client) PublishTaskStatus(ctx context.Context, workerID, jobID string, data []byte) error {
+	return c.publish(ctx, TaskStatusSubject(workerID, jobID), data)
 }
 
-// PublishTaskLog publishes a log chunk to the task.logs.<taskID> subject.
-// Workers call this continuously as a task produces output; the server retains
-// chunks in JetStream for later retrieval via the REST and WebSocket APIs.
-func (c *Client) PublishTaskLog(ctx context.Context, taskID string, data []byte) error {
-	return c.publish(ctx, TaskLogsSubject(taskID), data)
+// PublishTaskLog publishes a log chunk to the task.logs.<workerID>.<taskID>
+// subject.  Workers call this continuously as a task produces output; the
+// server retains chunks in JetStream for later retrieval via the REST and
+// WebSocket APIs.
+func (c *Client) PublishTaskLog(ctx context.Context, workerID, taskID string, data []byte) error {
+	return c.publish(ctx, TaskLogsSubject(workerID, taskID), data)
 }
 
-// PublishWorkerHeartbeat publishes a heartbeat ping on the worker.heartbeat
-// subject.  Workers call this on a regular interval; the server-side heartbeat
-// sweep marks workers offline when pings stop.
-func (c *Client) PublishWorkerHeartbeat(ctx context.Context, data []byte) error {
-	return c.publish(ctx, SubjectWorkerHeartbeat, data)
+// PublishWorkerHeartbeat publishes a heartbeat ping on the
+// worker.heartbeat.<workerID> subject.  Workers call this on a regular
+// interval; the server-side heartbeat sweep marks workers offline when pings
+// stop.
+func (c *Client) PublishWorkerHeartbeat(ctx context.Context, workerID string, data []byte) error {
+	return c.publish(ctx, WorkerHeartbeatSubject(workerID), data)
 }
 
 // PublishWorkerRegister publishes a capability advertisement on the
-// worker.register subject.  Workers call this on first connect and after any
-// reconnect so the server always has a current view of their capabilities.
-func (c *Client) PublishWorkerRegister(ctx context.Context, data []byte) error {
-	return c.publish(ctx, SubjectWorkerRegister, data)
+// worker.register.<workerID> subject.  Workers call this on first connect and
+// after any reconnect so the server always has a current view of their
+// capabilities.
+func (c *Client) PublishWorkerRegister(ctx context.Context, workerID string, data []byte) error {
+	return c.publish(ctx, WorkerRegisterSubject(workerID), data)
 }
 
 // PublishTaskCancel publishes a task-cancellation signal to the

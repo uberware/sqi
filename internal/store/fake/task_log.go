@@ -9,7 +9,11 @@ import (
 	"github.com/uberware/sqi/internal/store"
 )
 
-// CreateTaskLog implements [store.TaskLogStore].
+// CreateTaskLog implements [store.TaskLogStore]. It does not enforce the
+// attempt_id foreign key that the SQLite backend does — a log row is
+// appended even when AttemptID names no existing task_attempts row. Tests
+// that exercise a log-ingest error path tied to a missing/deleted attempt
+// need the real SQLite store, or a wrapper around this one, to observe it.
 func (s *Store) CreateTaskLog(_ context.Context, log store.TaskLog) (store.TaskLog, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

@@ -74,12 +74,12 @@ func connectReconnect(tb testing.TB, url string) *nats.Conn {
 // ── Deregister ──────────────────────────────────────────────────────────────
 
 // TestDeregister_PublishesMessage asserts the worker publishes a well-formed
-// DeregisterMsg to worker.deregister.
+// DeregisterMsg to worker.deregister.<worker>.
 func TestDeregister_PublishesMessage(t *testing.T) {
 	url := startTestNATS(t)
 	nc := connectNATS(t, url)
 
-	sub, err := nc.SubscribeSync(bus.SubjectWorkerDeregister)
+	sub, err := nc.SubscribeSync(bus.WorkerDeregisterSubject("worker-bye"))
 	if err != nil {
 		t.Fatalf("SubscribeSync: %v", err)
 	}
@@ -151,7 +151,7 @@ func TestRegister_SingleQueueAndCapabilities(t *testing.T) {
 		Tags:      map[string]string{"role": "gpu"},
 	}
 
-	sub, err := nc.SubscribeSync(bus.SubjectWorkerRegister)
+	sub, err := nc.SubscribeSync(bus.WorkerRegisterSubject("worker-q"))
 	if err != nil {
 		t.Fatalf("SubscribeSync: %v", err)
 	}
@@ -225,7 +225,7 @@ func TestRegister_MultiQueue_LeavesQueueIDEmpty(t *testing.T) {
 	cfg := minimalCfg()
 	cfg.QueueIDs = []string{"q1", "q2"}
 
-	sub, err := nc.SubscribeSync(bus.SubjectWorkerRegister)
+	sub, err := nc.SubscribeSync(bus.WorkerRegisterSubject("worker-multi"))
 	if err != nil {
 		t.Fatalf("SubscribeSync: %v", err)
 	}
@@ -305,7 +305,7 @@ func TestSetupReconnectHook_ReregistersOnReconnect(t *testing.T) {
 	reg := newRegistrar(t, wnc, "worker-recon", minimalCfg(),
 		capabilities.Capabilities{OS: "linux", CPUCount: 8})
 
-	sub, err := wnc.SubscribeSync(bus.SubjectWorkerRegister)
+	sub, err := wnc.SubscribeSync(bus.WorkerRegisterSubject("worker-recon"))
 	if err != nil {
 		t.Fatalf("SubscribeSync: %v", err)
 	}

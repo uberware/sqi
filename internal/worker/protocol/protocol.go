@@ -5,13 +5,18 @@
 //
 // # Message flow
 //
-// Each message type flows in a specific direction over NATS JetStream:
+// Each message type flows in a specific direction over NATS. Five of the six
+// ride JetStream streams for at-least-once delivery; AssignMsg is the
+// exception, carried as the reply half of a core-NATS request/reply exchange
+// with no stream behind it (see internal/bus for the full subject/stream
+// split):
 //
-//	RegisterMsg    worker → server   (worker.register)
-//	HeartbeatMsg   worker → server   (worker.heartbeat)
-//	AssignMsg      server → worker   (work.assign.<queue>)
-//	TaskStatusMsg  worker → server   (task.status.<job>)
-//	LogChunkMsg    worker → server   (task.logs.<task>)
+//	RegisterMsg    worker → server   JetStream    (worker.register.<worker>)
+//	DeregisterMsg  worker → server   JetStream    (worker.deregister.<worker>)
+//	HeartbeatMsg   worker → server   JetStream    (worker.heartbeat.<worker>)
+//	AssignMsg      server → worker   core NATS    (reply to work.lease.<worker>.<queue>)
+//	TaskStatusMsg  worker → server   JetStream    (task.status.<worker>.<job>)
+//	LogChunkMsg    worker → server   JetStream    (task.logs.<worker>.<task>)
 //
 // # Versioning
 //
@@ -63,7 +68,15 @@ import "time"
 // (internal/worker/lease.decodeAssignment) keys off, and why workers must
 // be upgraded AFTER the server -- a "2" worker rejects every assignment a
 // "1" server offers it and the tasks churn through reclaim.
-const ProtocolVersion = "2"
+//
+// "3" moves the publishing worker's identity into every worker → server NATS
+// subject: task.status.<worker>.<job>, task.logs.<worker>.<task>,
+// work.lease.<worker>.<queue>, and worker.{register,heartbeat,deregister}.<worker>
+// (see the subject table in internal/bus).  No message body changes, but the
+// routing does: a worker publishing on the shorter subjects reaches no
+// consumer at all, so this bump is not merely advisory.  As with "2", upgrade
+// the server first.
+const ProtocolVersion = "3"
 
 // ── Message type constants ────────────────────────────────────────────────────
 
@@ -88,7 +101,7 @@ const (
 
 // ── RegisterMsg ───────────────────────────────────────────────────────────────
 
-// RegisterMsg is the JSON payload workers publish to worker.register.
+// RegisterMsg is the JSON payload workers publish to worker.register.<worker>.
 // Workers MUST publish this on first connect and on every reconnect so the
 // server always has a current view of their capabilities.
 //
@@ -233,7 +246,7 @@ type GPUInfo struct {
 
 // ── DeregisterMsg ─────────────────────────────────────────────────────────────
 
-// DeregisterMsg is the JSON payload workers publish to worker.deregister on
+// DeregisterMsg is the JSON payload workers publish to worker.deregister.<worker> on
 // graceful shutdown. The server marks the worker offline immediately upon
 // receipt, rather than waiting for the heartbeat timeout sweep.
 //
@@ -256,7 +269,7 @@ type DeregisterMsg struct {
 
 // ── HeartbeatMsg ─────────────────────────────────────────────────────────────
 
-// HeartbeatMsg is the JSON payload workers publish to worker.heartbeat on a
+// HeartbeatMsg is the JSON payload workers publish to worker.heartbeat.<worker> on a
 // regular interval.  The server uses these to track worker liveness; workers
 // that stop sending heartbeats are marked offline by the heartbeat sweep after
 // [scheduler.Config.WorkerTimeout] elapses.
@@ -368,8 +381,8 @@ type AssignMsg struct {
 	// user, which is the pre-isolation behavior.
 	//
 	// This carries a USERNAME ONLY and never a credential. Worker↔server
-	// transport authentication does not exist yet (deferred to Phase 4), so
-	// nothing secret may travel on this channel.
+	// transport authentication is opt-in (nats.auth.enabled) and off by
+	// default, so nothing secret may travel on this channel regardless.
 	Isolation *IsolationSpec `json:"isolation,omitempty"`
 
 	// ── Parameter space ───────────────────────────────────────────────────
@@ -593,7 +606,7 @@ type StageEntry struct {
 
 // ── TaskStatusMsg ─────────────────────────────────────────────────────────────
 
-// TaskStatusMsg is the JSON payload workers publish to task.status.<job>
+// TaskStatusMsg is the JSON payload workers publish to task.status.<worker>.<job>
 // to report a task-state transition.
 //
 // A worker MUST publish:
@@ -658,7 +671,7 @@ type TaskStatusMsg struct {
 
 // ── LogChunkMsg ───────────────────────────────────────────────────────────────
 
-// LogChunkMsg is the JSON payload workers publish to task.logs.<task> as a
+// LogChunkMsg is the JSON payload workers publish to task.logs.<worker>.<task> as a
 // running task emits output.
 //
 // Workers SHOULD publish log chunks continuously as output is produced rather

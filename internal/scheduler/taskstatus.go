@@ -7,7 +7,7 @@ package scheduler
 //
 // This file implements the task-status consumer — the counterpart of the
 // worker-register and worker-heartbeat consumers already in scheduler.go.
-// When a worker publishes a protocol.TaskStatusMsg to task.status.<job>,
+// When a worker publishes a protocol.TaskStatusMsg to task.status.<worker>.<job>,
 // handleTaskStatusMessage updates the store, closes the attempt record,
 // releases usage pool slots, and drives step/job completion logic.
 //
@@ -40,6 +40,7 @@ import (
 
 	"github.com/nats-io/nats.go/jetstream"
 
+	"github.com/uberware/sqi/internal/bus"
 	"github.com/uberware/sqi/internal/openjd"
 	"github.com/uberware/sqi/internal/store"
 	"github.com/uberware/sqi/internal/worker/protocol"
@@ -55,7 +56,18 @@ func (s *Scheduler) startTaskStatusConsumer(ctx context.Context) error {
 }
 
 // handleTaskStatusMessage is the JetStream message handler for
-// task.status.<job> messages published by workers.
+// task.status.<worker>.<job> messages published by workers.
+//
+// The subject's worker ID is authoritative: it is compared against the
+// attempt's recorded owner in [Scheduler.processTaskStatus], and a mismatch
+// discards the message rather than applying it — otherwise any worker could
+// report completion or failure for a task another worker holds.
+//
+// NOTE ON AUTH-OFF. With broker authentication disabled — the default — the
+// subject's worker ID is present but NOT enforced by NATS, so a hostile
+// client can publish under any ID. These checks then catch honest bugs, not
+// attackers. That is why sqi-server warns at startup when the broker is
+// unauthenticated and non-loopback.
 func (s *Scheduler) handleTaskStatusMessage(msg jetstream.Msg) {
 	ctx := s.ctx
 
@@ -90,7 +102,16 @@ func (s *Scheduler) handleTaskStatusMessage(msg jetstream.Msg) {
 		return
 	}
 
-	if err := s.processTaskStatus(ctx, m); err != nil {
+	// The subject is the only identity NATS itself can vouch for; a message
+	// on a subject that does not carry one concrete worker ID cannot be
+	// attributed to anyone and is discarded rather than acted on.
+	subjectWorkerID, _, ok := bus.ParseWorkerSubject(msg.Subject())
+	if !ok {
+		s.discardUnexpectedSubject(ctx, msg, "task.status")
+		return
+	}
+
+	if err := s.processTaskStatus(ctx, subjectWorkerID, m); err != nil {
 		// An illegal transition is permanent: the task has moved on (retried,
 		// canceled, already terminal) and this message describes a past state.
 		// Redelivering cannot make it legal, so discard it rather than Nak into
@@ -121,7 +142,13 @@ func (s *Scheduler) handleTaskStatusMessage(msg jetstream.Msg) {
 }
 
 // processTaskStatus applies a single [protocol.TaskStatusMsg] to the store.
-func (s *Scheduler) processTaskStatus(ctx context.Context, m protocol.TaskStatusMsg) error {
+//
+// subjectWorkerID is the worker the message's subject attributes it to — the
+// only identity NATS itself can vouch for. It is compared against the
+// attempt's recorded WorkerID below; m.WorkerID is not trusted for this
+// decision, since it is asserted by whoever sent the message rather than
+// enforced by the transport.
+func (s *Scheduler) processTaskStatus(ctx context.Context, subjectWorkerID string, m protocol.TaskStatusMsg) error {
 	// Verify the attempt still exists and is for the right task.
 	attempt, err := s.store.GetTaskAttempt(ctx, m.AttemptID)
 	if errors.Is(err, store.ErrNotFound) {
@@ -143,6 +170,22 @@ func (s *Scheduler) processTaskStatus(ctx context.Context, m protocol.TaskStatus
 			slog.String("attempt_id", m.AttemptID),
 			slog.String("msg_task_id", m.TaskID),
 			slog.String("attempt_task_id", attempt.TaskID),
+		)
+		return nil
+	}
+
+	// The subject's worker ID was enforced by NATS when broker auth is on;
+	// the payload's was asserted by whoever sent the message. Trust the
+	// subject, and treat a mismatch as permanent — redelivery cannot make a
+	// forged or stale message legal, so ack it away rather than Nak into a
+	// loop, the same reasoning as ErrInvalidTransition above.
+	if subjectWorkerID != attempt.WorkerID {
+		s.logger.WarnContext(
+			ctx, "scheduler: task.status from a worker that does not hold this task — discarding",
+			slog.String("task_id", m.TaskID),
+			slog.String("attempt_id", m.AttemptID),
+			slog.String("subject_worker_id", subjectWorkerID),
+			slog.String("attempt_worker_id", attempt.WorkerID),
 		)
 		return nil
 	}
@@ -283,6 +326,13 @@ func (s *Scheduler) handleTaskTerminal(
 			return err
 		}
 	}
+	// The attempt is now terminal (closed above, or already closed by
+	// RecordTaskFailure for the failed path), so no further log chunks will
+	// be produced for it and its cached ownership entry is no longer needed.
+	// SQI_LOGS and SQI_STATUS are separate streams, so a chunk published just
+	// before this status can still be consumed after it — that is harmless,
+	// since a cache miss falls back to the store and re-reads correctly.
+	s.attemptCache.evict(attempt.ID)
 
 	// ── Transition the task ───────────────────────────────────────────────
 	if err := s.store.UpdateTaskStatus(ctx, m.TaskID, taskStatus); err != nil {

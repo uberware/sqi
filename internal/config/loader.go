@@ -81,22 +81,58 @@ func defaultSearchPaths() []string {
 //
 // A missing config file is not an error unless filePath was set explicitly.
 func Load(filePath string, flags FlagOverrides) (Config, error) {
+	cfg, _, err := LoadWithSources(filePath, flags)
+	return cfg, err
+}
+
+// Sources reports, for a subset of settings, whether the config file or
+// environment layer explicitly decided the value — as opposed to it being
+// the built-in default that nothing overrode.
+//
+// Comparing a resolved value against [DefaultConfig]'s is not a sound way to
+// answer this: an operator's config file (or the shipped
+// config/sqi-server.example.yaml) can restate a default value's exact text
+// while editing other keys, in which case value comparison cannot tell
+// "explicitly configured to the default" apart from "never touched, so it
+// is still the default". Sources is built from the file/env layers
+// themselves, before any default-fill happens, so it is not fooled by that.
+type Sources struct {
+	// StoreSQLitePath is true when store.sqlite_path was set by the config
+	// file or by SQI_STORE_SQLITE_PATH.
+	StoreSQLitePath bool
+}
+
+// LoadWithSources is [Load], additionally reporting which of a subset of
+// settings (see [Sources]) were explicitly decided by the config file or
+// environment layer.
+func LoadWithSources(filePath string, flags FlagOverrides) (Config, Sources, error) {
 	cfg := DefaultConfig()
+	var src Sources
 
 	// ── Layer 2: config file ──────────────────────────────────────────────
-	if err := applyFile(&cfg, filePath); err != nil {
-		return Config{}, err
+	fc, err := loadFileConfig(filePath)
+	if err != nil {
+		return Config{}, Sources{}, err
+	}
+	if fc != nil {
+		mergeFileConfig(&cfg, *fc)
+		if fc.Store != nil && fc.Store.SQLitePath != nil {
+			src.StoreSQLitePath = true
+		}
 	}
 
 	// ── Layer 3: environment variables ───────────────────────────────────
 	if err := applyEnv(&cfg); err != nil {
-		return Config{}, err
+		return Config{}, Sources{}, err
+	}
+	if os.Getenv("SQI_STORE_SQLITE_PATH") != "" {
+		src.StoreSQLitePath = true
 	}
 
 	// ── Layer 4: CLI flag overrides ───────────────────────────────────────
 	applyFlags(&cfg, flags)
 
-	return cfg, nil
+	return cfg, src, nil
 }
 
 // ── File layer ────────────────────────────────────────────────────────────────
@@ -122,6 +158,12 @@ type fileConfig struct {
 		Addr       *string `yaml:"addr"`
 		DataDir    *string `yaml:"data_dir"`
 		MaxStoreMB *int    `yaml:"max_store_mb"`
+		Auth       *struct {
+			Enabled                   *bool   `yaml:"enabled"`
+			JoinTokenTTL              *string `yaml:"join_token_ttl"`
+			JoinTokenSingleUse        *bool   `yaml:"join_token_single_use"`
+			EnrollmentEndpointEnabled *bool   `yaml:"enrollment_endpoint_enabled"`
+		} `yaml:"auth"`
 	} `yaml:"nats"`
 
 	Store *struct {
@@ -222,27 +264,29 @@ type fileConfig struct {
 	} `yaml:"auth"`
 }
 
-func applyFile(cfg *Config, explicit string) error {
+// loadFileConfig resolves and parses the config file, returning a nil
+// *fileConfig (not an error) when none is found and filePath was not set
+// explicitly.
+func loadFileConfig(explicit string) (*fileConfig, error) {
 	path, err := resolveFilePath(explicit)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if path == "" {
-		return nil // no file found; not an error
+		return nil, nil
 	}
 
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return fmt.Errorf("read config file %q: %w", path, err)
+		return nil, fmt.Errorf("read config file %q: %w", path, err)
 	}
 
 	var fc fileConfig
 	if err := yaml.Unmarshal(data, &fc); err != nil {
-		return fmt.Errorf("parse config file %q: %w", path, err)
+		return nil, fmt.Errorf("parse config file %q: %w", path, err)
 	}
 
-	mergeFileConfig(cfg, fc)
-	return nil
+	return &fc, nil
 }
 
 // resolveFilePath returns the path to use for file loading.
@@ -305,6 +349,36 @@ func mergeNATSFile(cfg *Config, fc fileConfig) {
 	}
 	if fc.NATS.MaxStoreMB != nil {
 		cfg.NATS.MaxStoreMB = *fc.NATS.MaxStoreMB
+	}
+	mergeNATSAuthFile(cfg, fc.NATS.Auth)
+}
+
+// mergeNATSAuthFile overlays the nats.auth sub-fields from fc onto cfg. Split
+// out of [mergeNATSFile] to keep its cyclomatic complexity under the lint
+// threshold.
+func mergeNATSAuthFile(cfg *Config, a *struct {
+	Enabled                   *bool   `yaml:"enabled"`
+	JoinTokenTTL              *string `yaml:"join_token_ttl"`
+	JoinTokenSingleUse        *bool   `yaml:"join_token_single_use"`
+	EnrollmentEndpointEnabled *bool   `yaml:"enrollment_endpoint_enabled"`
+},
+) {
+	if a == nil {
+		return
+	}
+	if a.Enabled != nil {
+		cfg.NATS.Auth.Enabled = *a.Enabled
+	}
+	if a.JoinTokenTTL != nil {
+		if d, err := time.ParseDuration(*a.JoinTokenTTL); err == nil {
+			cfg.NATS.Auth.JoinTokenTTL = d
+		}
+	}
+	if a.JoinTokenSingleUse != nil {
+		cfg.NATS.Auth.JoinTokenSingleUse = *a.JoinTokenSingleUse
+	}
+	if a.EnrollmentEndpointEnabled != nil {
+		cfg.NATS.Auth.EnrollmentEndpointEnabled = *a.EnrollmentEndpointEnabled
 	}
 }
 
@@ -641,6 +715,10 @@ func applyEnv(cfg *Config) error {
 	setString(&cfg.NATS.Addr, "SQI_NATS_ADDR")
 	setString(&cfg.NATS.DataDir, "SQI_NATS_DATA_DIR")
 	collect(setInt(&cfg.NATS.MaxStoreMB, "SQI_NATS_MAX_STORE_MB"))
+	collect(setBool(&cfg.NATS.Auth.Enabled, "SQI_NATS_AUTH_ENABLED"))
+	collect(setDuration(&cfg.NATS.Auth.JoinTokenTTL, "SQI_NATS_AUTH_JOIN_TOKEN_TTL"))
+	collect(setBool(&cfg.NATS.Auth.JoinTokenSingleUse, "SQI_NATS_AUTH_JOIN_TOKEN_SINGLE_USE"))
+	collect(setBool(&cfg.NATS.Auth.EnrollmentEndpointEnabled, "SQI_NATS_AUTH_ENROLLMENT_ENDPOINT_ENABLED"))
 
 	setString(&cfg.Store.SQLitePath, "SQI_STORE_SQLITE_PATH")
 	collect(setDuration(&cfg.Store.CheckpointInterval, "SQI_STORE_CHECKPOINT_INTERVAL"))

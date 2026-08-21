@@ -38,7 +38,9 @@ body = """
 {% for commit in commits %}
 - {% if commit.scope %}**{{ commit.scope }}:** {% endif %}\
 {{ commit.message | upper_first }}\
-{% if commit.breaking %} ⚠️ BREAKING{% endif %} \
+{% if commit.breaking %} ⚠️ BREAKING\
+{% if commit.breaking_description and commit.breaking_description != commit.message %} — {{ commit.breaking_description }}{% endif %}\
+{% endif %} \
 ([{{ commit.id | truncate(length=7, end="") }}](https://github.com/uberware/sqi/commit/{{ commit.id }}))
 {%- endfor %}
 {% endfor %}\n

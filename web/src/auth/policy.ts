@@ -27,6 +27,7 @@ export type Permission =
   | 'apikeys.self'
   | 'apikeys.admin'
   | 'isolation.manage'
+  | 'workers.enroll'
 
 // PERMISSION_SET exists only for compile-time exhaustiveness and to give a
 // test something with a runtime representation to check: the Permission
@@ -55,6 +56,7 @@ const PERMISSION_SET: Record<Permission, true> = {
   'apikeys.self': true,
   'apikeys.admin': true,
   'isolation.manage': true,
+  'workers.enroll': true,
 }
 
 /** Every permission the server can grant, sorted. See PERMISSION_SET. */

@@ -4,7 +4,7 @@
 //
 // A [Publisher] implements [executor.OutputHandler] and accumulates process
 // output lines from stdout and stderr into [protocol.LogChunkMsg] batches,
-// publishing them to the task.logs.<taskID> NATS JetStream subject.
+// publishing them to the task.logs.<workerID>.<taskID> NATS JetStream subject.
 //
 // # Chunking
 //
@@ -167,19 +167,25 @@ type Publisher struct {
 	logger *slog.Logger
 	cfg    Config
 
+	// workerID is this worker's stable identity. It is a subject token on
+	// every chunk published, which is how the server attributes log output to
+	// the worker that produced it.
+	workerID string
+
 	// mu protects the attempts map.
 	mu       sync.Mutex
 	attempts map[string]*attemptBuf // keyed by attemptID
 }
 
-// New returns a ready-to-use Publisher.
+// New returns a ready-to-use Publisher publishing as workerID.
 // Any zero or negative fields in cfg are replaced with defaults before use.
-func New(nc natsPublisher, cfg Config, logger *slog.Logger) *Publisher {
+func New(nc natsPublisher, workerID string, cfg Config, logger *slog.Logger) *Publisher {
 	cfg.applyDefaults()
 	return &Publisher{
 		nc:       nc,
 		logger:   logger,
 		cfg:      cfg,
+		workerID: workerID,
 		attempts: make(map[string]*attemptBuf),
 	}
 }
@@ -322,7 +328,7 @@ func (p *Publisher) drainBuf(ctx context.Context, buf *attemptBuf, stream string
 }
 
 // publishChunk assigns the next sequence number, encodes a [protocol.LogChunkMsg],
-// and publishes it to the task.logs.<taskID> NATS subject.
+// and publishes it to the task.logs.<workerID>.<taskID> NATS subject.
 // It is a no-op if lines is empty.
 //
 // SeqNum assignment and NATS publish are not atomic.  When the flushLoop
@@ -363,7 +369,7 @@ func (p *Publisher) publishChunk(ctx context.Context, buf *attemptBuf, stream st
 		return
 	}
 
-	subj := bus.TaskLogsSubject(buf.taskID)
+	subj := bus.TaskLogsSubject(p.workerID, buf.taskID)
 	if err := p.nc.Publish(subj, data); err != nil {
 		p.logger.WarnContext(
 			ctx, "logstreamer: publish log chunk failed",

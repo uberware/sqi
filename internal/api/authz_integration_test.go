@@ -161,6 +161,14 @@ var expectedRoutes = []routeExpectation{
 	{method: http.MethodPost, pattern: "/api/v1/workers/{id}/enable", perm: policy.WorkersManage},
 	{method: http.MethodDelete, pattern: "/api/v1/workers/{id}", perm: policy.WorkersManage},
 
+	// workers.enroll. POST /api/v1/workers/enroll is NOT listed here: it is
+	// unauthenticated by design (the join token is the credential) and, in
+	// this suite's router, never even mounted — it requires
+	// Deps.NATSAuthEnabled, which authRouterWith does not set. See
+	// workerenroll_test.go for its own coverage.
+	{method: http.MethodPost, pattern: "/api/v1/workers/join-tokens", perm: policy.WorkersEnroll},
+	{method: http.MethodDelete, pattern: "/api/v1/workers/{id}/credential", perm: policy.WorkersEnroll},
+
 	// infra.read / infra.manage (farms, queues, storage-locations,
 	// compute-locations, usage-pools)
 	{method: http.MethodGet, pattern: "/api/v1/farms", perm: policy.InfraRead},
@@ -225,12 +233,13 @@ type routeKey struct{ method, pattern string }
 // placeholder instead of panicking on a nil receiver.
 func authRouterWith(st store.Store, mutate func(*Deps)) chi.Router {
 	deps := Deps{
-		Store:        st,
-		Products:     product.NewCatalog(st),
-		Auth:         session.New(st, "sqi_session", nil),
-		SessionTTL:   time.Hour,
-		CookieName:   "sqi_session",
-		CookieSecure: "false",
+		Store:         st,
+		Products:      product.NewCatalog(st),
+		Auth:          session.New(st, "sqi_session", nil),
+		SessionTTL:    time.Hour,
+		CookieName:    "sqi_session",
+		CookieSecure:  "false",
+		WorkerRevoker: storeRevoker{store: st},
 	}
 	if mutate != nil {
 		mutate(&deps)
@@ -366,7 +375,7 @@ func TestAuthz_RouteSweep_DisabledAuthAllowsAll(t *testing.T) {
 	st := fake.New()
 	r := NewRouter(
 		Config{DisableRateLimit: true},
-		Deps{Store: st, Products: product.NewCatalog(st), Auth: auth.Anonymous(), CookieName: "sqi_session"},
+		Deps{Store: st, Products: product.NewCatalog(st), Auth: auth.Anonymous(), CookieName: "sqi_session", WorkerRevoker: storeRevoker{store: st}},
 		newTestLogger(), metrics.New(), health.NewRegistry(),
 	)
 	srv := httptest.NewServer(r)

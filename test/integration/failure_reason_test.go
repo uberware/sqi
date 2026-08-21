@@ -90,7 +90,7 @@ func getTaskAttempts(t *testing.T, ts *testServer, taskID string) taskAttemptsRe
 }
 
 // publishStatusWithMessage publishes a [protocol.TaskStatusMsg] to
-// task.status.<jobID> carrying a Message, exercising the same field a real
+// task.status.<workerID>.<jobID> carrying a Message, exercising the same field a real
 // worker's failure report populates (see internal/worker's failPreExec /
 // process-exit reporting). The harness's publishStatus helper (used by the
 // auto-retry tests) never sets Message, so this test publishes directly
@@ -117,7 +117,7 @@ func publishStatusWithMessage(t *testing.T, w *mockWorker, assign protocol.Assig
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	if _, err := w.js.Publish(ctx, bus.TaskStatusSubject(assign.JobID), data); err != nil {
+	if _, err := w.js.Publish(ctx, bus.TaskStatusSubject(w.id, assign.JobID), data); err != nil {
 		t.Fatalf("publishStatusWithMessage(%s): publish: %v", status, err)
 	}
 }

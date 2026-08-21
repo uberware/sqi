@@ -32,7 +32,7 @@ expression leaves `internal/openjd/expr` and `internal/openjd/intrange` exist.
 |---|---|
 | `internal/api` | REST surface: chi router, handlers, request/response wire types, error shape |
 | `internal/auth` | Opt-in authentication and authorization: local passwords, sessions, API keys, RBAC policy, role mapping, LDAP/AD and OIDC/SSO |
-| `internal/bus` | Embedded NATS broker (JetStream streams for task status/logs/cancel and worker registration/heartbeat/deregister; plain core NATS for `work.lease.<queue>` request/reply and `worker.diag.<workerID>`) and the typed client wrapper over it |
+| `internal/bus` | Embedded NATS broker (JetStream streams for task status/logs/cancel and worker registration/heartbeat/deregister; plain core NATS for `work.lease.<worker>.<queue>` request/reply and `worker.diag.<workerID>`) and the typed client wrapper over it |
 | `internal/config` | Layered runtime configuration (defaults → file → env → flags) and validation |
 | `internal/diag` | Bounded in-memory ring buffer of diagnostic (operational) log records from the server and connected workers |
 | `internal/discovery` | mDNS responder that advertises the running server on the local network |

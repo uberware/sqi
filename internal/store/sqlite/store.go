@@ -247,6 +247,16 @@ type Store struct {
 	stmtListAPIKeysForUser       *sql.Stmt
 	stmtRevokeAPIKey             *sql.Stmt
 	stmtTouchAPIKeyLastUsed      *sql.Stmt
+
+	// ── worker credentials & join tokens ────────────────────────────────────
+	stmtInsertWorkerCredential              *sql.Stmt
+	stmtGetActiveWorkerCredentialByWorkerID *sql.Stmt
+	stmtListActiveWorkerCredentials         *sql.Stmt
+	stmtRevokeWorkerCredential              *sql.Stmt
+	stmtTouchWorkerCredential               *sql.Stmt
+	stmtInsertWorkerJoinToken               *sql.Stmt
+	stmtGetWorkerJoinTokenByHash            *sql.Stmt
+	stmtMarkWorkerJoinTokenUsed             *sql.Stmt
 }
 
 // Open opens (or creates) the SQLite database at path, applies connection
@@ -812,6 +822,35 @@ func (s *Store) prepareAll(ctx context.Context) error {
 	if s.stmtTouchAPIKeyLastUsed, err = s.prepare(ctx, sqlTouchAPIKeyLastUsed); err != nil {
 		return err
 	}
+
+	// ── worker credentials & join tokens ─────────────────────────────────────
+	if s.stmtInsertWorkerCredential, err = s.prepare(ctx, sqlInsertWorkerCredential); err != nil {
+		return err
+	}
+	if s.stmtGetActiveWorkerCredentialByWorkerID, err = s.prepare(ctx, sqlGetActiveWorkerCredentialByWorkerID); err != nil {
+		return err
+	}
+	if s.stmtListActiveWorkerCredentials, err = s.prepare(ctx, sqlListActiveWorkerCredentials); err != nil {
+		return err
+	}
+	if s.stmtRevokeWorkerCredential, err = s.prepare(ctx, sqlRevokeWorkerCredential); err != nil {
+		return err
+	}
+	if s.stmtTouchWorkerCredential, err = s.prepare(ctx, sqlTouchWorkerCredential); err != nil {
+		return err
+	}
+	if s.stmtInsertWorkerJoinToken, err = s.prepare(ctx, sqlInsertWorkerJoinToken); err != nil {
+		return err
+	}
+	if s.stmtGetWorkerJoinTokenByHash, err = s.prepare(ctx, sqlGetWorkerJoinTokenByHash); err != nil {
+		return err
+	}
+	if s.stmtMarkWorkerJoinTokenUsed, err = s.prepare(ctx, sqlMarkWorkerJoinTokenUsed); err != nil {
+		return err
+	}
+	// sqlConsumeWorkerJoinToken has no prepared statement of its own: it is
+	// used only as raw SQL text inside RedeemWorkerJoinToken's transaction
+	// (workercredential.go), matching CreateJobSubmission's idiom.
 
 	return nil
 }

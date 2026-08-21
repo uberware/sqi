@@ -14,8 +14,16 @@
 # the VALUE its expressions resolved to — see the "EXPR job" section below for
 # why that value can only have been produced by the worker at phase 3.
 #
+# The whole flow above runs TWICE, back to back: once with broker
+# authentication left off (the default an operator gets with no nats.auth
+# configuration at all — this run is untouched by the second), and once with
+# it turned on and the worker enrolling itself via a join token before it can
+# connect. The auth-off run always goes first, so a failure immediately says
+# which mode broke: a failure before the "MODE 2/2" banner is the default
+# path regressing, which is the more serious of the two by a wide margin.
+#
 # Usage:
-#   bash scripts/smoke.sh         # builds binaries if missing, runs the flow
+#   bash scripts/smoke.sh         # builds binaries if missing, runs both modes
 #   make smoke                    # same, via the Makefile
 #
 # Environment overrides:
@@ -23,8 +31,8 @@
 #   SQI_WORKER_BIN   path to a prebuilt sqi-worker (default: <repo>/bin/sqi-worker)
 #   SQI_SMOKE_PYTHON python interpreter for the WS check (auto-detected otherwise)
 #
-# Exit status: 0 only if every assertion passed; non-zero with a clear message
-# (and the relevant server/worker log tail) otherwise.
+# Exit status: 0 only if every assertion passed in both modes; non-zero with a
+# clear message (and the relevant server/worker log tail) otherwise.
 
 set -euo pipefail
 
@@ -156,6 +164,22 @@ else
   [ -x "$WORKER_BIN" ] || fail "worker binary not found after build: $WORKER_BIN"
 fi
 
+# ── The smoke flow, run once per broker-auth mode ─────────────────────────────
+#
+# run_smoke_flow MODE boots a fresh server+worker pair and drives the whole
+# assertion set described at the top of this file against it. MODE is
+# "noauth" (broker authentication left off — every env block below behaves
+# exactly as this script always has) or "brokerauth" (nats.auth.enabled=true,
+# with a join token minted before the server starts and handed to the worker
+# instead of nothing).
+#
+# Called as ( run_smoke_flow MODE ) — in a subshell — once per mode, from the
+# bottom of this file. That gives each run its own temp workspace, ports,
+# PIDs, and EXIT/INT/TERM trap, and means this function's own "exit 0" on
+# success only ends that one subshell, not the whole script.
+run_smoke_flow() {
+  local mode="$1"
+
 # ── Temp workspace + teardown trap ────────────────────────────────────────────
 
 TMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/sqi-smoke.XXXXXX")"
@@ -203,15 +227,48 @@ HTTP_ADDR="127.0.0.1:${HTTP_PORT}"
 NATS_ADDR="127.0.0.1:${NATS_PORT}"
 BASE_URL="http://${HTTP_ADDR}"
 
-log "starting sqi-server (http=${HTTP_ADDR}, nats=${NATS_ADDR})"
-SQI_HTTP_ADDR="$HTTP_ADDR" \
-SQI_NATS_ADDR="$NATS_ADDR" \
-SQI_NATS_DATA_DIR="${TMP_DIR}/nats" \
-SQI_STORE_SQLITE_PATH="${TMP_DIR}/sqi.db" \
-SQI_DISCOVERY_ENABLED="false" \
-SQI_SCHEDULER_TICK_INTERVAL="100ms" \
-SQI_LOG_LEVEL="warn" \
-  "$SERVER_BIN" serve >"$SERVER_LOG" 2>&1 &
+# In broker-auth mode, mint a join token BEFORE the server starts — the CLI
+# operates directly on the SQLite file (no running server required), exactly
+# the offline path an operator would use. The worker gets the raw token
+# through a file, never an argv or an env var visible in a process listing.
+JOIN_TOKEN_FILE=""
+if [ "$mode" = "brokerauth" ]; then
+  log "creating the SQLite database (worker subcommands never create one themselves)"
+  "$SERVER_BIN" migrate up --db "${TMP_DIR}/sqi.db" >/dev/null || fail "sqi-server migrate up failed"
+
+  # Resolve via SQI_STORE_SQLITE_PATH rather than --db here, so this run
+  # exercises the config-layer resolution path (the one an operator who set
+  # up their deployment through the environment actually uses) rather than
+  # only the explicit-flag path already covered above.
+  log "minting a worker join token (broker auth mode)"
+  JOIN_TOKEN="$(SQI_STORE_SQLITE_PATH="${TMP_DIR}/sqi.db" "$SERVER_BIN" worker token issue --name smoke-brokerauth)"
+  [ -n "$JOIN_TOKEN" ] || fail "sqi-server worker token issue produced no token"
+  JOIN_TOKEN_FILE="${TMP_DIR}/join-token"
+  printf '%s' "$JOIN_TOKEN" >"$JOIN_TOKEN_FILE"
+  chmod 600 "$JOIN_TOKEN_FILE"
+fi
+
+log "starting sqi-server (http=${HTTP_ADDR}, nats=${NATS_ADDR}, mode=${mode})"
+if [ "$mode" = "brokerauth" ]; then
+  SQI_HTTP_ADDR="$HTTP_ADDR" \
+  SQI_NATS_ADDR="$NATS_ADDR" \
+  SQI_NATS_DATA_DIR="${TMP_DIR}/nats" \
+  SQI_STORE_SQLITE_PATH="${TMP_DIR}/sqi.db" \
+  SQI_DISCOVERY_ENABLED="false" \
+  SQI_SCHEDULER_TICK_INTERVAL="100ms" \
+  SQI_LOG_LEVEL="warn" \
+  SQI_NATS_AUTH_ENABLED="true" \
+    "$SERVER_BIN" serve >"$SERVER_LOG" 2>&1 &
+else
+  SQI_HTTP_ADDR="$HTTP_ADDR" \
+  SQI_NATS_ADDR="$NATS_ADDR" \
+  SQI_NATS_DATA_DIR="${TMP_DIR}/nats" \
+  SQI_STORE_SQLITE_PATH="${TMP_DIR}/sqi.db" \
+  SQI_DISCOVERY_ENABLED="false" \
+  SQI_SCHEDULER_TICK_INTERVAL="100ms" \
+  SQI_LOG_LEVEL="warn" \
+    "$SERVER_BIN" serve >"$SERVER_LOG" 2>&1 &
+fi
 SERVER_PID=$!
 
 # Poll /readyz until 200 (bounded). Fail fast if the process exits early.
@@ -249,19 +306,39 @@ log "created queue ${QUEUE_ID}"
 
 # ── Start the worker ──────────────────────────────────────────────────────────
 
-log "starting sqi-worker (nats=nats://${NATS_ADDR}, farm=${FARM_ID}, queue=${QUEUE_ID})"
-SQI_WORKER_NATS_URL="nats://${NATS_ADDR}" \
-SQI_WORKER_DISCOVERY_ENABLE_MDNS="false" \
-SQI_WORKER_FARM_ID="$FARM_ID" \
-SQI_WORKER_QUEUE_IDS="$QUEUE_ID" \
-SQI_WORKER_DATA_DIR="${TMP_DIR}/worker-data" \
-SQI_WORKER_ALLOW_ROOT="true" \
-SQI_WORKER_LOG_LEVEL="warn" \
-SQI_WORKER_LOG_FORMAT="text" \
-SQI_WORKER_HEARTBEAT_INTERVAL="1s" \
-SQI_WORKER_PULL_IDLE_BACKOFF="300ms" \
-SQI_WORKER_METRICS_ADDR="127.0.0.1:$(free_port)" \
-  "$WORKER_BIN" start >"$WORKER_LOG" 2>&1 &
+log "starting sqi-worker (nats=nats://${NATS_ADDR}, farm=${FARM_ID}, queue=${QUEUE_ID}, mode=${mode})"
+if [ "$mode" = "brokerauth" ]; then
+  # No SQI_WORKER_NATS_CREDENTIAL_FILE: it defaults under
+  # SQI_WORKER_DATA_DIR, which is what makes this worker's enrolled
+  # credential land in its own fresh, per-run data directory.
+  SQI_WORKER_NATS_URL="nats://${NATS_ADDR}" \
+  SQI_WORKER_DISCOVERY_ENABLE_MDNS="false" \
+  SQI_WORKER_FARM_ID="$FARM_ID" \
+  SQI_WORKER_QUEUE_IDS="$QUEUE_ID" \
+  SQI_WORKER_DATA_DIR="${TMP_DIR}/worker-data" \
+  SQI_WORKER_ALLOW_ROOT="true" \
+  SQI_WORKER_LOG_LEVEL="warn" \
+  SQI_WORKER_LOG_FORMAT="text" \
+  SQI_WORKER_HEARTBEAT_INTERVAL="1s" \
+  SQI_WORKER_PULL_IDLE_BACKOFF="300ms" \
+  SQI_WORKER_METRICS_ADDR="127.0.0.1:$(free_port)" \
+  SQI_WORKER_NATS_JOIN_TOKEN_FILE="$JOIN_TOKEN_FILE" \
+  SQI_WORKER_NATS_SERVER_URL="$BASE_URL" \
+    "$WORKER_BIN" start >"$WORKER_LOG" 2>&1 &
+else
+  SQI_WORKER_NATS_URL="nats://${NATS_ADDR}" \
+  SQI_WORKER_DISCOVERY_ENABLE_MDNS="false" \
+  SQI_WORKER_FARM_ID="$FARM_ID" \
+  SQI_WORKER_QUEUE_IDS="$QUEUE_ID" \
+  SQI_WORKER_DATA_DIR="${TMP_DIR}/worker-data" \
+  SQI_WORKER_ALLOW_ROOT="true" \
+  SQI_WORKER_LOG_LEVEL="warn" \
+  SQI_WORKER_LOG_FORMAT="text" \
+  SQI_WORKER_HEARTBEAT_INTERVAL="1s" \
+  SQI_WORKER_PULL_IDLE_BACKOFF="300ms" \
+  SQI_WORKER_METRICS_ADDR="127.0.0.1:$(free_port)" \
+    "$WORKER_BIN" start >"$WORKER_LOG" 2>&1 &
+fi
 WORKER_PID=$!
 
 # Poll GET /api/v1/workers until our worker is online.
@@ -570,7 +647,7 @@ log "EXPR assertion PASSED: phase-3 resolved text found in task logs"
 # ── Summary ───────────────────────────────────────────────────────────────────
 
 log "=============================================="
-log "SMOKE TEST PASSED"
+log "SMOKE TEST PASSED (mode=${mode})"
 log "  REST log assertion: PASSED"
 case "$WS_OK" in
   pass) log "  WS   log assertion: PASSED" ;;
@@ -579,3 +656,25 @@ esac
 log "  EXPR phase-3 assertion: PASSED"
 log "=============================================="
 exit 0
+}
+
+# ── Run both modes ─────────────────────────────────────────────────────────────
+#
+# Each call runs in its own subshell so run_smoke_flow's internal "exit 0"
+# ends only that run, and its trap, PIDs, and temp workspace never leak into
+# the other. Auth-off goes first, unconditionally: if it fails, mode 2 never
+# starts, and the last banner printed is the one that broke.
+
+log "=================================================================="
+log "MODE 1/2: broker auth OFF -- the default path, unmodified"
+log "=================================================================="
+( run_smoke_flow noauth )
+
+log "=================================================================="
+log "MODE 2/2: broker auth ON, worker enrolled via a join token"
+log "=================================================================="
+( run_smoke_flow brokerauth )
+
+log "=================================================================="
+log "SMOKE TEST PASSED IN BOTH MODES"
+log "=================================================================="

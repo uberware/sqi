@@ -15,7 +15,7 @@
 //
 // Typical usage:
 //
-//	nc, closedCh, err := natsclient.Connect(ctx, cfg.NATS, logger)
+//	nc, closedCh, err := natsclient.Connect(ctx, cfg.NATS, workerID, seed, publicKey, logger)
 //	if err != nil {
 //	    return fmt.Errorf("nats connect: %w", err)
 //	}
@@ -36,6 +36,7 @@ import (
 
 	nats "github.com/nats-io/nats.go"
 
+	"github.com/uberware/sqi/internal/brokerauth"
 	workerconfig "github.com/uberware/sqi/internal/worker/config"
 )
 
@@ -66,18 +67,38 @@ const (
 //
 // Callers should select on closedCh to detect permanent disconnects that occur
 // outside of a planned shutdown sequence.
-func Connect(ctx context.Context, cfg workerconfig.NATSConfig, logger *slog.Logger) (*nats.Conn, <-chan struct{}, error) {
+//
+// seed and publicKey are the worker's nkey broker credential, obtained
+// separately (see internal/worker/enroll). They are taken as parameters
+// rather than folded into cfg so that a seed never sits in a config struct
+// that might get logged elsewhere. An empty seed connects with no
+// credential, which is correct on a farm that does not require worker
+// authentication; see buildOptions for how that case is distinguished from a
+// broker that actively rejects the connection.
+//
+// workerID scopes this connection's reply inboxes to a per-worker prefix
+// (see [brokerauth.InboxPrefix]). It is required whether or not a credential
+// is present, so the connect path is identical in both modes, and it must be
+// a single NATS subject token.
+func Connect(ctx context.Context, cfg workerconfig.NATSConfig, workerID string, seed []byte, publicKey string, logger *slog.Logger) (*nats.Conn, <-chan struct{}, error) {
 	// closedCh is closed by the ClosedHandler callback when the NATS connection
 	// permanently closes (MaxReconnects exhausted or explicit nc.Close() call).
 	closedCh := make(chan struct{})
 
-	opts, err := buildOptions(ctx, cfg, logger, closedCh)
+	opts, err := buildOptions(ctx, cfg, workerID, seed, publicKey, logger, closedCh)
 	if err != nil {
 		return nil, nil, fmt.Errorf("natsclient: build options: %w", err)
 	}
 
 	nc, err := nats.Connect(cfg.URL, opts...)
 	if err != nil {
+		// An authorization failure is FATAL and must never enter the
+		// reconnect-backoff loop: retrying a rejected credential produces a
+		// worker that never appears, with the reason buried in backoff. An
+		// unreachable server is the opposite — that is what backoff is for.
+		if wrapped, ok := credentialRejectedError(err); ok {
+			return nil, nil, wrapped
+		}
 		return nil, nil, fmt.Errorf("natsclient: connect %q: %w", cfg.URL, err)
 	}
 
@@ -88,6 +109,27 @@ func Connect(ctx context.Context, cfg workerconfig.NATSConfig, logger *slog.Logg
 	)
 
 	return nc, closedCh, nil
+}
+
+// credentialRejectedError reports whether err is the broker rejecting this
+// connection's nkey credential — nats.ErrAuthorization (unknown or wrong
+// key) or nats.ErrAuthExpired (a key the broker no longer accepts, notably
+// after a live revocation: internal/bus.Broker.ReloadCredentials drops the
+// key and synchronously disconnects any client using it). When it is, the
+// second return is true and the first is the single crafted message every
+// credential-rejection path uses — the initial dial in [Connect] and a later
+// live revocation observed via [nats.Conn.LastError] in the ClosedHandler
+// below both call this, so the two paths cannot drift apart.
+func credentialRejectedError(err error) (error, bool) {
+	if err == nil {
+		return nil, false
+	}
+	if !errors.Is(err, nats.ErrAuthorization) && !errors.Is(err, nats.ErrAuthExpired) {
+		return nil, false
+	}
+	return fmt.Errorf(
+		"natsclient: the broker rejected this worker's credential — it may have been revoked; re-enroll with a new join token: %w", err,
+	), true
 }
 
 // Drain gracefully closes nc by draining in-flight subscriptions and flushing
@@ -119,8 +161,19 @@ func Drain(nc *nats.Conn, gracePeriod time.Duration, logger *slog.Logger) {
 
 // buildOptions assembles the nats.Option slice from WorkerNATSConfig.
 // closedCh is closed by the ClosedHandler when the connection permanently
-// closes so callers can detect unexpected disconnects.
-func buildOptions(ctx context.Context, cfg workerconfig.NATSConfig, logger *slog.Logger, closedCh chan struct{}) ([]nats.Option, error) {
+// closes so callers can detect unexpected disconnects. seed and publicKey,
+// when non-empty, add an nkey signing option so the connection authenticates
+// as this worker's broker credential. workerID scopes the connection's reply
+// inboxes to this worker's own prefix and is required.
+func buildOptions(
+	ctx context.Context,
+	cfg workerconfig.NATSConfig,
+	workerID string,
+	seed []byte,
+	publicKey string,
+	logger *slog.Logger,
+	closedCh chan struct{},
+) ([]nats.Option, error) {
 	opts := []nats.Option{
 		nats.MaxReconnects(cfg.MaxReconnectAttempts),
 
@@ -152,8 +205,21 @@ func buildOptions(ctx context.Context, cfg workerconfig.NATSConfig, logger *slog
 		// state: either MaxReconnects was exhausted or the connection was
 		// explicitly closed. Closing closedCh signals any goroutine that is
 		// watching for unexpected permanent disconnects.
-		nats.ClosedHandler(func(_ *nats.Conn) {
-			logger.InfoContext(ctx, "natsclient: connection closed")
+		//
+		// A live credential revocation (internal/bus.Broker.ReloadCredentials
+		// disconnects the client synchronously via authViolation) lands here,
+		// not at the initial dial in [Connect] — the connection was already
+		// established when the credential stopped being valid. nats.Conn's
+		// own doc for LastError says it "can be used reliably within
+		// ClosedCB in order to find out reason why connection was closed",
+		// so this is the one place that case can be classified and named,
+		// rather than surfacing only as a generic closure to the operator.
+		nats.ClosedHandler(func(nc *nats.Conn) {
+			if wrapped, ok := credentialRejectedError(nc.LastError()); ok {
+				logger.ErrorContext(ctx, "natsclient: connection closed", slog.Any("error", wrapped))
+			} else {
+				logger.InfoContext(ctx, "natsclient: connection closed")
+			}
 			close(closedCh)
 		}),
 		nats.ErrorHandler(func(_ *nats.Conn, _ *nats.Subscription, err error) {
@@ -161,12 +227,49 @@ func buildOptions(ctx context.Context, cfg workerconfig.NATSConfig, logger *slog
 		}),
 	}
 
+	// ── Per-worker reply inbox ───────────────────────────────────
+	//
+	// Without this the connection takes nats.go's process-global "_INBOX"
+	// prefix, and the only permission that could then cover a lease reply
+	// is "_INBOX.>" — which covers every OTHER client's reply inbox on the
+	// same broker too, handing any enrolled worker the assignment batches
+	// of work it never leased. See [brokerauth.InboxPrefix].
+	//
+	// Applied whether or not a credential is present, so the connect path
+	// does not diverge between the auth-on and auth-off modes. An absent
+	// worker ID, or one that is not a single subject token, would leave the
+	// connection on the shared prefix or silently widen the subtree the
+	// matching grant covers — so it is rejected rather than trusted:
+	// LoadOrCreateWorkerID writes a UUID, but the file it writes is one an
+	// operator can edit.
+	if !brokerauth.ValidWorkerIDToken(workerID) {
+		return nil, fmt.Errorf(
+			"natsclient: worker id %q is not a valid NATS subject token — it must be non-empty and must not contain '.', whitespace, '*' or '>'",
+			workerID,
+		)
+	}
+	opts = append(opts, nats.CustomInboxPrefix(brokerauth.InboxPrefix(workerID)))
+
 	// ── TLS ──────────────────────────────────────────────────────
 	tlsOpts, err := buildTLSOptions(cfg)
 	if err != nil {
 		return nil, err
 	}
 	opts = append(opts, tlsOpts...)
+
+	// ── Broker credential ────────────────────────────────────────
+	//
+	// A non-empty seed authenticates this connection as the worker's
+	// enrolled nkey. An empty seed adds no option at all, which is correct
+	// on a farm that does not require worker authentication — the broker
+	// accepts the anonymous connection exactly as it does today. When the
+	// broker DOES require authentication, connecting with no credential (or
+	// a rejected one) fails at nats.Connect above with nats.ErrAuthorization
+	// or nats.ErrAuthExpired, which is classified as fatal rather than
+	// retried.
+	if len(seed) > 0 {
+		opts = append(opts, brokerauth.NkeyOption(publicKey, seed))
+	}
 
 	return opts, nil
 }

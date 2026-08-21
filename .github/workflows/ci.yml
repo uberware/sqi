@@ -149,12 +149,13 @@ jobs:
       # branch that had touched none of the reported code. Bump this
       # deliberately, in its own commit, with the fallout fixed alongside it.
       #
-      # 2.13.1 is also a FLOOR, not just a pin: .golangci.yml excludes
+      # There is also a FLOOR below this pin: .golangci.yml excludes
       # errors.AsType from errcheck by function name, and errcheck before
-      # 2.13.1 cannot resolve a generic function's name, so on an older
+      # 2.13.0 cannot resolve a generic function's name, so on an older
       # golangci-lint that exclusion silently fails to match and every
-      # errors.AsType call site is reported. Keep docs/development.md's
-      # required-version note in step with this value.
+      # errors.AsType call site is reported. The floor is 2.13.0 (what Homebrew
+      # ships, verified clean on this repo); this pin is one patch above it.
+      # Keep docs/development.md's required-version note in step with both.
       #
       # Explicit path patterns mirror the Makefile LINT_PKGS variable: they
       # exclude web/node_modules/ (third-party JS packages that happen to
@@ -958,6 +959,105 @@ jobs:
             echo "Confirmed all ${#expected[@]}/16 named isolation tests passed."
           fi
           exit $missing
+
+  # ── Integration suite (whole package) ────────────────────────────────────────
+  # Runs every file under test/integration/ via `make test-integration`, rather
+  # than naming individual tests in a -run regex the way the LDAP, OIDC, and
+  # isolation jobs below do. Those three name their tests because each needs
+  # its own runner matrix or container prerequisites; everything else in the
+  # package — broker auth, EXPR parameter binding and end-to-end execution,
+  # failure-reason propagation (both in-process and against a real worker
+  # binary), retry/auto-park behavior, and product retry-override submission —
+  # shares no such prerequisite, so a single whole-package run covers a new
+  # test the moment it is added instead of only if someone also remembers to
+  # list it in a job. `go build`s a real sqi-worker binary along the way (see
+  # worker_binary_test.go); no other tooling is required beyond Go itself.
+  #
+  # LDAP, OIDC, and isolation tests live in this same package and this job
+  # exercises them too, but ubuntu-latest ships Docker so they are expected to
+  # run rather than skip; the LDAP and Keycloak images are pulled explicitly
+  # first so a registry hiccup fails here with a clear message instead of
+  # inside the test as a cold-pull timeout that would read as a skip. The
+  # isolation tests, in contrast, require running as root (see
+  # isolation-integration below) and are expected to skip on this ordinary
+  # runner — that is fine, and this job asserts nothing about them by name.
+  #
+  # IMPORTANT: a green `go test` here proves nothing on its own if the whole
+  # suite silently collected zero tests (a build-tag regression, a stray
+  # -run filter). This job does not trust the exit code alone: it requires a
+  # test named from every file in the package that has no dedicated CI job of
+  # its own — one exception is authfixture_test.go, which holds only helpers
+  # shared by ldap_test.go and oidc_test.go and declares no test function of
+  # its own to name. A confirmed-skip line for LDAP/OIDC/isolation does not
+  # fail the job; only a missing PASS among the required names, or a nonzero
+  # exit, does.
+  integration-tests:
+    name: Integration suite
+    runs-on: ubuntu-latest
+    needs: test
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+
+      # Pulled explicitly for the same reason ldap-integration and
+      # oidc-integration below pull them: a registry problem fails here with a
+      # clear message rather than surfacing inside the test as a cold-pull
+      # timeout, which the test's own Docker-unavailable handling would read
+      # as an ordinary skip.
+      - name: Pull OpenLDAP image
+        run: docker pull osixia/openldap:1.5.0
+
+      - name: Pull Keycloak image
+        run: docker pull quay.io/keycloak/keycloak:26.0.7
+
+      - name: Run the integration suite
+        run: |
+          set +e
+          # go test's own default (10m per package) leaves little headroom
+          # once the LDAP and Keycloak containers are in the run: up to ~90s
+          # for LDAP readiness plus up to ~180s for Keycloak, on top of the
+          # suite's own runtime, which is dominated by that container
+          # readiness rather than by the tests themselves. 15m is set
+          # explicitly here, through INTEGRATION_TEST_FLAGS, so a slow runner
+          # gets a clear failure instead of a default timeout landing close
+          # enough to the estimate to be a coin flip; local runs are
+          # unaffected since the Makefile leaves this empty by default.
+          make test-integration INTEGRATION_TEST_FLAGS="-timeout 15m" 2>&1 | tee integration-output.log
+          status=${PIPESTATUS[0]}
+          set -e
+
+          # One name from each file in test/integration/ that has no dedicated
+          # CI job of its own, so a build-tag or filter regression that let the
+          # suite silently collect zero tests cannot pass this job.
+          expected=(
+            TestDefaultConfig_NoBrokerAuth
+            TestRevocation_DisconnectsAndReclaims
+            TestEnrollment_ConnectsToRunningBrokerWithoutRestart
+            TestEXPRParamTypes_BindAndCarry
+            TestEXPRJobEndToEnd
+            TestTaskFailureReason_VisibleEndToEnd
+            TestWorkerBinaryStagingFailureReason
+            TestProductSubmit_RetryOverrides
+            TestAutoRetry_RetryThenSucceed
+          )
+          missing=0
+          for name in "${expected[@]}"; do
+            if ! grep -q -- "--- PASS: $name" integration-output.log; then
+              echo "::error::$name did not pass"
+              missing=1
+            fi
+          done
+          if [ "$status" -ne 0 ] || [ "$missing" -ne 0 ]; then
+            echo "::error::the integration suite did not all pass (exit=$status)."
+            exit 1
+          fi
+          echo "Confirmed all ${#expected[@]} named integration tests passed, and the whole suite exited 0."
 
   # Runs the official OpenJD conformance suite (a pinned submodule under
   # third_party/) against internal/openjd. Tagged `conformance`, so it does not

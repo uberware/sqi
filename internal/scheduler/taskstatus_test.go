@@ -17,11 +17,23 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/uberware/sqi/internal/bus"
 	"github.com/uberware/sqi/internal/store"
 	"github.com/uberware/sqi/internal/store/fake"
 	"github.com/uberware/sqi/internal/worker/protocol"
 	"github.com/uberware/sqi/internal/ws"
 )
+
+// statusTestWorkerID is the worker every fixture attempt in this file opens
+// on; statusTestSubject is the matching task.status subject these tests
+// publish on. handleTaskStatusMessage now requires the subject's worker ID
+// to match the attempt's recorded owner, so the two must agree. The job leaf
+// of the subject is not itself checked (only the worker token is), so a
+// fixed placeholder is fine across every test regardless of which job it
+// actually seeds.
+const statusTestWorkerID = "worker-1"
+
+var statusTestSubject = bus.TaskStatusSubject(statusTestWorkerID, "job")
 
 // ── helpers ───────────────────────────────────────────────────────────────────
 
@@ -131,6 +143,7 @@ func seedStatusFixtureWithJobStatus(
 	attempt, err = st.CreateTaskAttempt(ctx, store.TaskAttempt{
 		ID:            uuid.NewString(),
 		TaskID:        task.ID,
+		WorkerID:      statusTestWorkerID,
 		AttemptNumber: 1,
 		Status:        store.AttemptStatusRunning,
 		StartedAt:     now,
@@ -164,6 +177,7 @@ func TestHandleTaskStatusMessage_MissingTaskID(t *testing.T) {
 	s.ctx = t.Context()
 
 	msg := &fakeJSMsg{
+		subject: statusTestSubject,
 		data: taskStatusMsgJSON(t, protocol.TaskStatusMsg{
 			Version:   protocol.ProtocolVersion,
 			TaskID:    "",
@@ -184,6 +198,7 @@ func TestHandleTaskStatusMessage_UnknownAttemptID(t *testing.T) {
 	s.ctx = t.Context()
 
 	msg := &fakeJSMsg{
+		subject: statusTestSubject,
 		data: taskStatusMsgJSON(t, protocol.TaskStatusMsg{
 			Version:   protocol.ProtocolVersion,
 			TaskID:    uuid.NewString(),
@@ -209,6 +224,7 @@ func TestProcessTaskStatus_Running(t *testing.T) {
 
 	sessionID := "openjd-session-abc"
 	msg := &fakeJSMsg{
+		subject: statusTestSubject,
 		data: taskStatusMsgJSON(t, protocol.TaskStatusMsg{
 			Version:   protocol.ProtocolVersion,
 			TaskID:    task.ID,
@@ -252,6 +268,7 @@ func TestProcessTaskStatus_Running_PromotesPendingJob(t *testing.T) {
 	)
 
 	msg := &fakeJSMsg{
+		subject: statusTestSubject,
 		data: taskStatusMsgJSON(t, protocol.TaskStatusMsg{
 			Version:   protocol.ProtocolVersion,
 			TaskID:    task.ID,
@@ -289,6 +306,7 @@ func TestProcessTaskStatus_Running_DoesNotUnpauseJob(t *testing.T) {
 	)
 
 	msg := &fakeJSMsg{
+		subject: statusTestSubject,
 		data: taskStatusMsgJSON(t, protocol.TaskStatusMsg{
 			Version:   protocol.ProtocolVersion,
 			TaskID:    task.ID,
@@ -318,6 +336,7 @@ func TestProcessTaskStatus_Succeeded(t *testing.T) {
 	exitCode := 0
 
 	msg := &fakeJSMsg{
+		subject: statusTestSubject,
 		data: taskStatusMsgJSON(t, protocol.TaskStatusMsg{
 			Version:   protocol.ProtocolVersion,
 			TaskID:    task.ID,
@@ -341,6 +360,37 @@ func TestProcessTaskStatus_Succeeded(t *testing.T) {
 	}
 }
 
+// TestProcessTaskStatus_Succeeded_EvictsAttemptCache proves handleTaskTerminal
+// evicts the attempt-owner cache entry on a terminal status, not just the
+// store row. Every other test in this file only asserts on the store, so a
+// deleted evict call in handleTaskTerminal would leave them all green.
+func TestProcessTaskStatus_Succeeded_EvictsAttemptCache(t *testing.T) {
+	st := fake.New()
+	s := newStatusTestScheduler(st)
+	s.ctx = t.Context()
+
+	_, _, task, attempt := seedStatusFixture(t, st, store.TaskStatusRunning)
+	s.attemptCache.put(attempt.ID, attempt.WorkerID, task.ID)
+	exitCode := 0
+
+	msg := &fakeJSMsg{
+		subject: statusTestSubject,
+		data: taskStatusMsgJSON(t, protocol.TaskStatusMsg{
+			Version:   protocol.ProtocolVersion,
+			TaskID:    task.ID,
+			AttemptID: attempt.ID,
+			Status:    "succeeded",
+			ExitCode:  &exitCode,
+			At:        time.Now().UTC(),
+		}),
+	}
+	s.handleTaskStatusMessage(msg)
+
+	if _, ok := s.attemptCache.get(attempt.ID); ok {
+		t.Error("expected attempt-owner cache entry to be evicted on terminal status")
+	}
+}
+
 func TestProcessTaskStatus_Failed(t *testing.T) {
 	st := fake.New()
 	s := newStatusTestScheduler(st)
@@ -350,6 +400,7 @@ func TestProcessTaskStatus_Failed(t *testing.T) {
 	exitCode := 1
 
 	msg := &fakeJSMsg{
+		subject: statusTestSubject,
 		data: taskStatusMsgJSON(t, protocol.TaskStatusMsg{
 			Version:   protocol.ProtocolVersion,
 			TaskID:    task.ID,
@@ -378,6 +429,7 @@ func TestProcessTaskStatus_Canceled(t *testing.T) {
 	_, _, task, attempt := seedStatusFixture(t, st, store.TaskStatusRunning)
 
 	msg := &fakeJSMsg{
+		subject: statusTestSubject,
 		data: taskStatusMsgJSON(t, protocol.TaskStatusMsg{
 			Version:   protocol.ProtocolVersion,
 			TaskID:    task.ID,
@@ -409,6 +461,7 @@ func TestProcessTaskStatus_Canceled_PersistsMessageAndReason(t *testing.T) {
 	_, _, task, attempt := seedStatusFixture(t, st, store.TaskStatusRunning)
 
 	msg := &fakeJSMsg{
+		subject: statusTestSubject,
 		data: taskStatusMsgJSON(t, protocol.TaskStatusMsg{
 			Version:   protocol.ProtocolVersion,
 			TaskID:    task.ID,
@@ -464,6 +517,7 @@ func TestProcessTaskStatus_Canceled_EmptyWorkerEchoPreservesServerReason(t *test
 
 	// The killed worker's terminal echo always carries an empty Message.
 	msg := &fakeJSMsg{
+		subject: statusTestSubject,
 		data: taskStatusMsgJSON(t, protocol.TaskStatusMsg{
 			Version:   protocol.ProtocolVersion,
 			TaskID:    task.ID,
@@ -505,6 +559,7 @@ func TestProcessTaskStatus_AllTasksSucceeded_StepAndJobComplete(t *testing.T) {
 
 	exitCode := 0
 	msg := &fakeJSMsg{
+		subject: statusTestSubject,
 		data: taskStatusMsgJSON(t, protocol.TaskStatusMsg{
 			Version:   protocol.ProtocolVersion,
 			TaskID:    task.ID,
@@ -547,6 +602,7 @@ func TestProcessTaskStatus_TaskFailed_JobFails(t *testing.T) {
 
 	exitCode := 1
 	msg := &fakeJSMsg{
+		subject: statusTestSubject,
 		data: taskStatusMsgJSON(t, protocol.TaskStatusMsg{
 			Version:   protocol.ProtocolVersion,
 			TaskID:    task.ID,
@@ -629,6 +685,7 @@ func TestProcessTaskStatus_SucceededStep_UnblocksDependentStep(t *testing.T) {
 	attempt1, err := st.CreateTaskAttempt(ctx, store.TaskAttempt{
 		ID:            uuid.NewString(),
 		TaskID:        task1.ID,
+		WorkerID:      statusTestWorkerID,
 		AttemptNumber: 1,
 		Status:        store.AttemptStatusRunning,
 		StartedAt:     now,
@@ -643,6 +700,7 @@ func TestProcessTaskStatus_SucceededStep_UnblocksDependentStep(t *testing.T) {
 
 	exitCode := 0
 	msg := &fakeJSMsg{
+		subject: statusTestSubject,
 		data: taskStatusMsgJSON(t, protocol.TaskStatusMsg{
 			Version:   protocol.ProtocolVersion,
 			TaskID:    task1.ID,
@@ -707,6 +765,7 @@ func TestProcessTaskStatus_FailedStep_CascadeCancelsDependentAndCompletesJob(t *
 
 	exitCode := 1
 	msg := &fakeJSMsg{
+		subject: statusTestSubject,
 		data: taskStatusMsgJSON(t, protocol.TaskStatusMsg{
 			Version:   protocol.ProtocolVersion,
 			TaskID:    task1.ID,
@@ -768,6 +827,7 @@ func TestProcessTaskStatus_CascadeCancel_NotifiesCanceledTasks(t *testing.T) {
 
 	exitCode := 1
 	msg := &fakeJSMsg{
+		subject: statusTestSubject,
 		data: taskStatusMsgJSON(t, protocol.TaskStatusMsg{
 			Version:   protocol.ProtocolVersion,
 			TaskID:    task1.ID,
@@ -811,6 +871,7 @@ func TestProcessTaskStatus_CascadeCancel_StoreError_Nacked(t *testing.T) {
 
 	exitCode := 1
 	msg := &fakeJSMsg{
+		subject: statusTestSubject,
 		data: taskStatusMsgJSON(t, protocol.TaskStatusMsg{
 			Version:   protocol.ProtocolVersion,
 			TaskID:    task1.ID,
@@ -848,6 +909,7 @@ func TestProcessTaskStatus_UpdateAttemptError_Nacked(t *testing.T) {
 
 	exitCode := 0
 	msg := &fakeJSMsg{
+		subject: statusTestSubject,
 		data: taskStatusMsgJSON(t, protocol.TaskStatusMsg{
 			Version:   protocol.ProtocolVersion,
 			TaskID:    task.ID,

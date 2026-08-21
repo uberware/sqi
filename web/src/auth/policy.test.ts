@@ -88,6 +88,7 @@ describe('permission union stays in lockstep with the server', () => {
     'apikeys.self',
     'apikeys.admin',
     'isolation.manage',
+    'workers.enroll',
   ]
 
   it('ALL_PERMISSIONS matches the server-declared permission set exactly', () => {

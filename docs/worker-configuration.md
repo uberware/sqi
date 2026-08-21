@@ -140,6 +140,19 @@ nats:
   max_reconnect_attempts: -1
 ```
 
+> **`0` weakens a diagnostic message, not just reconnect behavior.** When
+> broker authentication is on and the server rejects this worker's
+> credential mid-run (most often after `sqi-server worker revoke` or
+> `DELETE /api/v1/workers/{id}/credential`), the worker names the cause and
+> the remediation — but doing so relies on at least one reconnect attempt
+> completing its handshake with the broker, which is where the specific
+> rejection reason is confirmed. With `max_reconnect_attempts: 0`, no
+> reconnect is attempted at all: the connection simply closes, and the
+> operator sees only a generic "connection closed" with no named cause. The
+> default of `-1` does not have this problem — reconnect indefinitely and
+> the crafted diagnostic message is always reached before the worker exits.
+> If you must cap reconnect attempts, keep it above `0`.
+
 ---
 
 ### `nats.reconnect_wait`
@@ -157,6 +170,104 @@ be `> 0`.
 ```yaml
 nats:
   reconnect_wait: "2s"
+```
+
+---
+
+### `nats.credential_file`
+
+| | |
+|---|---|
+| **Type** | `string` |
+| **Default** | `""` (resolves to `<worker.data_dir>/worker.nk`) |
+| **Env var** | `SQI_WORKER_NATS_CREDENTIAL_FILE` |
+
+Path to this worker's nkey seed file. Only meaningful when the server's
+`nats.auth.enabled` is `true` — see
+[`docs/configuration.md`](configuration.md#natsauthenabled). The worker
+presents the credential in this file to authenticate to the broker. When
+left empty, it defaults to `<worker.data_dir>/worker.nk`, and that default
+path is created by enrollment or by `sqi-worker keygen`. The file must be
+mode `0600`, and `SaveSeed` requires **write permission on the containing
+directory**, not just the file itself — the write goes through a temporary
+file created alongside the target and then renamed into place, so a
+directory locked down to e.g. `0500` fails the write even if the seed file
+inside it is owner-writable.
+
+Set this field to a non-default path and both enrollment paths honor it:
+`sqi-worker keygen` loads the same layered configuration `sqi-worker start`
+does (the root `-c/--config` file, `SQI_WORKER_NATS_CREDENTIAL_FILE`, and
+this field's config-file value) and writes wherever `credential_file`
+resolves, and self-service enrollment writes to the same resolved path as
+part of a live enrollment run.
+
+```yaml
+nats:
+  credential_file: "/var/lib/sqi-worker/worker.nk"
+```
+
+---
+
+### `nats.join_token`
+
+| | |
+|---|---|
+| **Type** | `string` |
+| **Default** | `""` |
+| **Env var** | `SQI_WORKER_NATS_JOIN_TOKEN` |
+
+A worker enrollment token, used exactly once on first start to obtain a
+credential. Ignored once `nats.credential_file` already exists. Prefer
+[`nats.join_token_file`](#natsjoin_token_file) over this field — a token in a
+config file is a secret at rest.
+
+```yaml
+nats:
+  join_token: ""
+```
+
+---
+
+### `nats.join_token_file`
+
+| | |
+|---|---|
+| **Type** | `string` |
+| **Default** | `""` |
+| **Env var** | `SQI_WORKER_NATS_JOIN_TOKEN_FILE` |
+
+Path to a file containing a join token. Takes precedence over
+[`nats.join_token`](#natsjoin_token).
+
+```yaml
+nats:
+  join_token_file: "/run/secrets/sqi-join-token"
+```
+
+---
+
+### `nats.server_url`
+
+| | |
+|---|---|
+| **Type** | `string` |
+| **Default** | `""` |
+| **Env var** | `SQI_WORKER_NATS_SERVER_URL` |
+
+`sqi-server` HTTP base URL used for enrollment, e.g.
+`"http://sqi-server.example:8080"`. Enrollment runs over REST, not NATS: the
+broker's job is to reject unauthenticated connections, so it cannot also be
+the channel a worker gets its first credential over.
+
+This is **not** derived from mDNS discovery — it must be set explicitly
+whenever [`nats.join_token`](#natsjoin_token) or
+[`nats.join_token_file`](#natsjoin_token_file) is configured. A worker that
+needs to enroll with no `server_url` set fails fast with an actionable error
+naming this field, rather than attempting a request with no host.
+
+```yaml
+nats:
+  server_url: "http://sqi-server.example:8080"
 ```
 
 ---
@@ -479,13 +590,22 @@ worker:
 | **Env var** | `SQI_WORKER_QUEUE_IDS` (comma-separated) |
 
 Restrict this worker to serving specific queue IDs. The worker keeps one
-outstanding lease request per listed queue (`work.lease.<queueID>`). When
+outstanding lease request per listed queue (`work.lease.<workerID>.<queueID>`). When
 empty (the default), the worker issues a single lease request on the reserved
-subject `work.lease._any` — an empty leaf would produce the invalid subject
-`work.lease.` with no responders. The server selects tasks farm-wide for that
+subject `work.lease.<workerID>._any` — an empty queue token would produce an
+unroutable subject with no responders. The server selects tasks farm-wide for that
 token and gates by worker eligibility, so a queue-unaffiliated worker is
 matched to any queue's ready work. Set this on heterogeneous farms where some
 workers specialise in a subset of queues.
+
+Each entry must be usable as a single NATS subject token, because it becomes
+one: `<queueID>` is a literal token in `work.lease.<workerID>.<queueID>`, so
+an entry containing `.` would silently split into extra tokens the
+server-side parser and this worker's own broker-auth publish grant both
+reject. An entry that is empty, or contains `.`, whitespace, `*` or `>`, is
+therefore **rejected at load**, naming the offending entry: the worker
+refuses to start rather than issuing lease requests that would be silently
+refused or simply go unanswered with nothing in its logs saying why.
 
 ```yaml
 worker:
@@ -1463,6 +1583,10 @@ log_streamer:
 | `nats.insecure_skip_verify` | bool | `false` | `SQI_WORKER_NATS_INSECURE_SKIP_VERIFY` | `--nats-insecure-skip-verify` |
 | `nats.max_reconnect_attempts` | int | `-1` | `SQI_WORKER_NATS_MAX_RECONNECT_ATTEMPTS` | — |
 | `nats.reconnect_wait` | duration | `2s` | `SQI_WORKER_NATS_RECONNECT_WAIT` | — |
+| `nats.credential_file` | string | `""` (`<worker.data_dir>/worker.nk`) | `SQI_WORKER_NATS_CREDENTIAL_FILE` | — |
+| `nats.join_token` | string | `""` | `SQI_WORKER_NATS_JOIN_TOKEN` | — |
+| `nats.join_token_file` | string | `""` | `SQI_WORKER_NATS_JOIN_TOKEN_FILE` | — |
+| `nats.server_url` | string | `""` | `SQI_WORKER_NATS_SERVER_URL` | — |
 | `worker.name` | string | hostname | `SQI_WORKER_NAME` | — |
 | `worker.farm_id` | string | `""` | `SQI_WORKER_FARM_ID` | — |
 | `worker.data_dir` | string | `~/.sqi/worker` (Linux/macOS); `%USERPROFILE%\.sqi\worker` (Windows) | `SQI_WORKER_DATA_DIR` | — |
@@ -1554,12 +1678,15 @@ long as three things differ per instance:
 
 | Setting | Env var | Why it must differ |
 |---|---|---|
-| [`worker.data_dir`](#workerdata_dir) | `SQI_WORKER_DATA_DIR` | Holds the persistent `worker.id` UUID; a shared dir means a duplicate identity on the server. |
+| [`worker.data_dir`](#workerdata_dir) | `SQI_WORKER_DATA_DIR` | Holds the persistent `worker.id` UUID and (when `nats.credential_file` is left at its default) the worker's nkey seed; a shared dir means a duplicate identity on the server, or two instances fighting over one credential. |
 | [`metrics.addr`](#metricsaddr) | `SQI_WORKER_METRICS_ADDR` | The local health/metrics HTTP server; a second instance on the same port fails to bind. |
 | [`worker.name`](#workername) | `SQI_WORKER_NAME` | Cosmetic only — defaults to the hostname, so instances would otherwise share a label in the web UI. |
 
 Everything else (NATS URL, discovery, capability tags) can be shared or vary
-as you like.
+as you like. If broker authentication is on and each instance enrolls with a
+join token, each also needs its own token: tokens are single-use by default
+(`nats.auth.join_token_single_use`), so the second instance to redeem a
+shared token fails enrollment.
 
 For local development the `make run-workers` target wires all of this up for
 you — see

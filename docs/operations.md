@@ -214,14 +214,19 @@ sqi-server backup \
   --out /backups/sqi/sqi-$(date +%Y%m%d-%H%M%S).db
 ```
 
-The `--db` flag defaults to `$SQI_SQLITE_PATH` (or `sqi.db` if that variable is
-unset). Note that this is a different environment variable from `SQI_STORE_SQLITE_PATH`
-used by the running server; set `--db` explicitly or export `SQI_SQLITE_PATH` to
-match your deployment.
+`--db` is optional: omitted, the source path resolves through the same
+config layer the server uses (the root `-c/--config` file and
+`SQI_STORE_SQLITE_PATH`, i.e. `store.sqlite_path`), falling back to the
+legacy `SQI_SQLITE_PATH` environment variable and then to `sqi.db` in the
+working directory. Passing `--db` explicitly, as in the example above,
+always wins.
 
-The command opens the source database read-only and writes an identical clean
-copy to the destination path. It exits non-zero if the destination file already
-exists — use a timestamped filename or a fresh directory each time.
+The command opens the source database without applying migrations (SQLite
+still opens it read-write and may create `-wal`/`-shm` sidecar files) and
+writes an identical clean copy to the destination path. It exits non-zero if
+the source database does not exist (it never creates one) or if the
+destination file already exists — use a timestamped filename or a fresh
+directory each time.
 
 ### Automated daily backup (cron)
 
@@ -267,6 +272,78 @@ To restore from a backup:
    ```sh
    sudo systemctl start sqi-server
    ```
+
+---
+
+## Worker broker credentials
+
+`sqi-server worker` groups the offline CLI commands for NATS broker
+authentication (`nats.auth.*` — see
+[Broker authentication](auth.md#broker-authentication-transport) for the
+full model). Like `migrate` and `backup`, these subcommands open the SQLite
+database file directly and do not start an HTTP server or NATS broker, so
+they work whether or not `sqi-server` is running — and, independently,
+whether or not the user-facing `auth.enabled` is on.
+
+> **These commands resolve the database path the same way `backup` and
+> `migrate` do** — an explicit `--db`, then `store.sqlite_path` (the root
+> `-c/--config` file and `SQI_STORE_SQLITE_PATH`), then the legacy
+> `SQI_SQLITE_PATH` environment variable, then `sqi.db`. Unlike `migrate`,
+> they never create or migrate the database: pointing one at a path with no
+> database there is a clear error naming the resolved path, not a silently
+> created empty one. Run `sqi-server migrate up` against the target database
+> first if it does not exist yet.
+
+### Issue a join token
+
+```sh
+sqi-server worker token issue --db /data/sqi.db --ttl 1h
+```
+
+Prints the raw token to stdout exactly once — capture it
+(`TOKEN=$(sqi-server worker token issue --db /data/sqi.db)`) or store it
+securely; only its hash is kept in the database. `--ttl` defaults to `1h`
+and is bounded 1 minute to 24 hours. Hand the token to a worker via
+`nats.join_token_file` (preferred) or `nats.join_token`, or mint one over
+REST instead with `POST /api/v1/workers/join-tokens` when `auth.enabled` is
+also on.
+
+### Enroll a worker manually
+
+```sh
+sqi-server worker enroll --db /data/sqi.db \
+  --worker-id 3f2a... --public-key UABC...XYZ
+```
+
+Registers a worker's broker credential directly, by worker ID and public
+key — the offline counterpart to self-service enrollment over REST. Run
+`sqi-worker keygen` on the worker host first; it prints this exact command
+with the worker's own ID and public key filled in. A **running**
+`sqi-server` does not see the new credential until it restarts — the broker
+builds its authorized-key set once at startup, and this command writes the
+database from a separate process with no broker handle.
+
+### Revoke a worker's credential
+
+```sh
+sqi-server worker revoke --db /data/sqi.db <worker-id>
+```
+
+Revokes a worker credential in the database. Takes effect the next time
+`sqi-server` starts, not immediately — to disconnect a worker at once
+against a running server, use `DELETE /api/v1/workers/{id}/credential`
+instead.
+
+### List worker credentials
+
+```sh
+sqi-server worker list --db /data/sqi.db
+```
+
+Lists every worker credential that has not been revoked: worker ID, name,
+public key, enrollment time, and last-seen time. Last-seen is set on worker
+registration (startup and reconnect) only, never by heartbeat — it answers
+"when did this worker last (re)connect", not "is it up right now".
 
 ---
 
