@@ -52,23 +52,72 @@ func PublicKeyFromSeed(seed []byte) (string, error) {
 }
 
 // SaveSeed writes seed to path with owner-only permissions, creating parent
-// directories as needed. The 0600 mode is enforced even when path already
-// exists: os.WriteFile only applies its perm argument when it creates the
-// file, so a plain write over an existing, more permissive file (key
-// rotation, a leftover from an earlier bug, an operator who chmod'd it to
-// look at it) would otherwise silently leave secret material group- or
-// world-readable. Chmod runs unconditionally, after the write, so the final
-// mode never depends on the file's prior state.
+// directories as needed.
+//
+// The write is atomic: seed is written to a temporary file in the same
+// directory as path, synced, and moved into place with os.Rename. A plain
+// os.WriteFile truncates the target before writing, so a crash, power loss,
+// or full disk between the truncate and the write would otherwise leave a
+// zero-length seed file — a state worse than a missing one, since it is
+// indistinguishable from "enrolled" to every caller that only checks
+// existence, and the worker can never recover without an operator deleting
+// the file by hand. Renaming within one directory is atomic on every
+// platform sqi supports, so a reader always observes either the previous
+// seed or the new one, never a truncated one. The temp file is created in
+// filepath.Dir(path) rather than the system temp directory because a rename
+// across filesystems is not atomic and can fail outright.
+//
+// The temp file is synced before the rename so the new bytes are not left
+// sitting only in the page cache: a rename is atomic with respect to
+// ordering, but on a hard power loss an unsynced write can still vanish,
+// silently reverting a saved seed to whatever was on disk before it. The
+// file is small enough (an nkey seed is a few dozen bytes) that this costs
+// nothing worth avoiding.
+//
+// The final mode is 0600 regardless of what, if anything, existed at path
+// before: the temp file is created 0600 by os.CreateTemp and that mode is
+// set explicitly rather than relied upon, and the rename replaces whatever
+// was there — including a more permissive leftover from key rotation, an
+// earlier bug, or an operator who chmod'd it to look at it — with a file
+// that was never observable under any mode but 0600.
 func SaveSeed(path string, seed []byte) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return fmt.Errorf("brokerauth: create seed dir: %w", err)
 	}
-	if err := os.WriteFile(path, seed, 0o600); err != nil {
-		return fmt.Errorf("brokerauth: write seed %s: %w", path, err)
+
+	tmp, err := os.CreateTemp(dir, "."+filepath.Base(path)+".tmp-*")
+	if err != nil {
+		return fmt.Errorf("brokerauth: create temp seed file: %w", err)
 	}
-	if err := os.Chmod(path, 0o600); err != nil {
-		return fmt.Errorf("brokerauth: chmod seed %s: %w", path, err)
+	tmpPath := tmp.Name()
+	renamed := false
+	defer func() {
+		if !renamed {
+			_ = os.Remove(tmpPath)
+		}
+	}()
+
+	if chmodErr := tmp.Chmod(0o600); chmodErr != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("brokerauth: chmod temp seed file %s: %w", tmpPath, chmodErr)
 	}
+	if _, writeErr := tmp.Write(seed); writeErr != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("brokerauth: write temp seed file %s: %w", tmpPath, writeErr)
+	}
+	if syncErr := tmp.Sync(); syncErr != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("brokerauth: sync temp seed file %s: %w", tmpPath, syncErr)
+	}
+	if closeErr := tmp.Close(); closeErr != nil {
+		return fmt.Errorf("brokerauth: close temp seed file %s: %w", tmpPath, closeErr)
+	}
+
+	if renameErr := os.Rename(tmpPath, path); renameErr != nil {
+		return fmt.Errorf("brokerauth: rename seed into place %s: %w", path, renameErr)
+	}
+	renamed = true
 	return nil
 }
 
