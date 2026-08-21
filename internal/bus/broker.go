@@ -158,7 +158,7 @@ func (b *Broker) Start(ctx context.Context) error {
 			return fmt.Errorf("bus: generate server key: %w", err)
 		}
 		serverSeed, serverPub = seed, pub
-		opts.Nkeys = buildNkeys(serverPub, b.cfg.Auth.Credentials)
+		opts.Nkeys = buildNkeys(serverPub, b.cfg.Auth.Credentials, b.logger)
 	}
 
 	// Retain a pristine copy of the boot options for ReloadCredentials:
@@ -314,13 +314,36 @@ func (b *Broker) NewClient() (*Client, error) {
 // ReloadCredentials (which reads it under b.mu itself) can call it without
 // also needing to take the lock — and risk taking it twice on the same
 // goroutine.
-func buildNkeys(serverPub string, creds []WorkerCredentialRef) []*natsserver.NkeyUser {
+// A credential whose worker ID is not a single NATS subject token is SKIPPED
+// and logged rather than installed. Both enrollment boundaries reject such an
+// ID before it can be stored (internal/api's enroll handler and sqi-server's
+// worker enroll command), so this is defense in depth for a row that arrived
+// some other way — a hand-edited database, or a binary predating those
+// checks. It matters because the worker ID becomes a subject PATTERN here:
+// installing "*" would grant one credential "task.status.*.*",
+// "worker.deregister.*", "work.lease.*.*" and the rest, letting it publish
+// concrete subjects belonging to any worker on the farm; installing ">" (or
+// an empty or whitespace-bearing ID) produces a malformed subject that
+// nats-server refuses, which would fail every ReloadCredentials call — so
+// revocation would return 500 forever — or stop the broker booting at all.
+// Dropping the one bad row keeps every good credential working.
+func buildNkeys(serverPub string, creds []WorkerCredentialRef, logger *slog.Logger) []*natsserver.NkeyUser {
 	users := make([]*natsserver.NkeyUser, 0, len(creds)+1)
 	users = append(users, &natsserver.NkeyUser{
 		Nkey:        serverPub,
 		Permissions: brokerauth.ServerPermissions(),
 	})
 	for _, c := range creds {
+		if !brokerauth.ValidWorkerIDToken(c.WorkerID) {
+			logger.WarnContext(
+				context.Background(),
+				"bus: skipping a worker credential whose worker id is not a valid NATS subject token",
+				slog.String("worker_id", c.WorkerID),
+				slog.String("impact", "this worker cannot connect; its grants would have been subject wildcards or a malformed subject"),
+				slog.String("remediation", "revoke the credential and re-enroll the worker with an id containing no '.', whitespace, '*' or '>'"),
+			)
+			continue
+		}
 		users = append(users, &natsserver.NkeyUser{
 			Nkey:        c.PublicKey,
 			Permissions: brokerauth.WorkerPermissions(c.WorkerID),
@@ -377,7 +400,7 @@ func (b *Broker) ReloadCredentials(creds []WorkerCredentialRef) error {
 		return errors.New("bus: broker not started")
 	}
 	opts := bootOpts.Clone()
-	opts.Nkeys = buildNkeys(serverPub, creds)
+	opts.Nkeys = buildNkeys(serverPub, creds, b.logger)
 	if err := ns.ReloadOptions(opts); err != nil {
 		return fmt.Errorf("bus: reload broker credentials: %w", err)
 	}

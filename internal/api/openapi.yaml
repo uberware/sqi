@@ -846,8 +846,12 @@ components:
         worker_id:
           type: string
           description: >-
-            The worker's stable ID. Rejected with 409 if it already has an
-            active credential bound to a different public key.
+            The worker's stable ID. Must be a single NATS subject token:
+            non-empty, and containing no ".", whitespace, "*" or ">" —
+            this value becomes a subject pattern in the credential's broker
+            grants, so a wildcard would authorize publishing as any worker.
+            Rejected with 400 if it is not; rejected with 409 if it already
+            has an active credential bound to a different public key.
         public_key:
           type: string
           description: The worker's nkey public key, starting with "U".
@@ -2810,7 +2814,9 @@ paths:
               schema:
                 $ref: "#/components/schemas/WorkerCredential"
         "400":
-          description: Malformed request body, missing fields, or an invalid public key.
+          description: >-
+            Malformed request body, missing fields, an invalid public key, or
+            a worker_id that is not a single NATS subject token.
           content:
             application/problem+json:
               schema:

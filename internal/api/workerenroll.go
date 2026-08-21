@@ -187,10 +187,26 @@ func (h *workerEnrollHandler) enroll(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Validate the key BEFORE the token is claimed, so a malformed
-	// public_key costs a 400 and not the operator's single-use token.
+	// Validate the key and the worker ID BEFORE the token is claimed, so a
+	// malformed request costs a 400 and not the operator's single-use token.
 	if err := brokerauth.ValidatePublicKey(req.PublicKey); err != nil {
 		writeProblem(w, r, http.StatusBadRequest, err.Error())
+		return
+	}
+	// The recorded worker ID is what this credential's broker grants are
+	// built from (brokerauth.WorkerPermissions), and those grants are NATS
+	// subject PATTERNS. A worker_id of "*" would mint a credential allowed
+	// to publish "task.status.*.*", "worker.deregister.*", "work.lease.*.*"
+	// and the rest — concrete subjects belonging to ANY worker, so it could
+	// forge status and logs, deregister the farm, and lease work as another
+	// worker and receive that worker's assignment batch. The scheduler's
+	// provenance checks cannot catch that: the subject NATS vouches for
+	// genuinely names the victim. A worker_id of ">" is worse-shaped still,
+	// putting the malformed "task.status.>.*" into the broker's key set,
+	// which nats-server rejects outright.
+	if !brokerauth.ValidWorkerIDToken(req.WorkerID) {
+		writeProblem(w, r, http.StatusBadRequest,
+			"worker_id must be a single NATS subject token: non-empty, and containing no '.', whitespace, '*' or '>'")
 		return
 	}
 

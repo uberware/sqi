@@ -213,6 +213,18 @@ func runWorkerEnroll(_ *cobra.Command, _ []string) error {
 	if err := brokerauth.ValidatePublicKey(workerEnrollFlags.PublicKey); err != nil {
 		return err
 	}
+	// The recorded worker ID is what this credential's broker grants are
+	// built from (brokerauth.WorkerPermissions), and those grants are NATS
+	// subject PATTERNS — so "*" would record a credential allowed to publish
+	// concrete subjects belonging to any worker on the farm, and ">" would
+	// put a malformed subject into the broker's key set. MarkFlagRequired
+	// does not cover this: --worker-id "" counts as supplied.
+	if !brokerauth.ValidWorkerIDToken(workerEnrollFlags.WorkerID) {
+		return fmt.Errorf(
+			"--worker-id %q is not a valid NATS subject token: it must be non-empty and must not contain '.', whitespace, '*' or '>'",
+			workerEnrollFlags.WorkerID,
+		)
+	}
 
 	ctx := context.Background()
 	st, err := openWorkerStore(ctx)

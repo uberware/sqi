@@ -367,3 +367,49 @@ func TestBrokerAuth_WorkerCannotSeeAnotherWorkersLeaseReply(t *testing.T) {
 		}
 	}
 }
+
+// TestBrokerAuth_SkipsCredentialWithAnInvalidWorkerID is the last line of
+// defense behind the two enrollment boundaries, which reject an invalid
+// worker ID before it is ever stored (internal/api's enroll handler and
+// sqi-server's worker enroll command).
+//
+// The worker ID becomes a NATS subject PATTERN in this credential's grants,
+// so a stored "*" would mint one credential allowed to publish concrete
+// subjects belonging to any worker, and a stored ">" would put the
+// malformed "task.status.>.*" into Options.Nkeys — which nats-server may
+// reject, failing every later ReloadOptions (revocation permanently 500ing)
+// or refusing to boot at all. A row from a hand-edited database or an older
+// binary must not be able to do either, so buildNkeys drops it and logs.
+func TestBrokerAuth_SkipsCredentialWithAnInvalidWorkerID(t *testing.T) {
+	good, goodSeed := enrolledWorker(t, "worker-a")
+
+	for _, workerID := range []string{"*", ">", "a.b", "a b", ""} {
+		t.Run("worker id "+workerID, func(t *testing.T) {
+			bad, badSeed := enrolledWorker(t, workerID)
+			b := startBrokerAuth(t, BrokerAuthConfig{
+				Enabled:     true,
+				Credentials: []WorkerCredentialRef{good, bad},
+			})
+
+			// The valid credential is unaffected — the broker booted and
+			// still authorizes it.
+			nc, err := nats.Connect(b.ClientURL(), nkeyOption(t, goodSeed, good.PublicKey))
+			if err != nil {
+				t.Fatalf("the valid credential was refused after an invalid one was skipped: %v", err)
+			}
+			defer nc.Close()
+
+			// The invalid one was never installed, so its key is unknown.
+			if bnc, err := nats.Connect(b.ClientURL(), nkeyOption(t, badSeed, bad.PublicKey)); err == nil {
+				bnc.Close()
+				t.Errorf("a credential with worker id %q was installed; it must be skipped", workerID)
+			}
+
+			// And a reload over the same set still succeeds rather than
+			// failing on a malformed subject pattern.
+			if err := b.ReloadCredentials([]WorkerCredentialRef{good, bad}); err != nil {
+				t.Errorf("ReloadCredentials with a skipped credential failed: %v", err)
+			}
+		})
+	}
+}

@@ -361,3 +361,58 @@ func TestWorkerCmd_OpenWorkerStore_EmptyDBPath(t *testing.T) {
 		t.Errorf("error should mention 'empty'; got: %v", err)
 	}
 }
+
+// TestWorkerCmd_Enroll_InvalidWorkerID rejects a worker ID that is not a
+// single NATS subject token, at the offline enrollment boundary.
+//
+// The recorded worker_id is what brokerauth.WorkerPermissions builds this
+// credential's grants from, and those grants are subject PATTERNS: a
+// worker ID of "*" yields "task.status.*.*", "worker.deregister.*",
+// "work.lease.*.*" and the rest, so one credential could publish concrete
+// subjects belonging to any worker on the farm. ">" additionally produces
+// the malformed "task.status.>.*" inside Options.Nkeys, which can wedge
+// the broker or make every later credential reload fail.
+func TestWorkerCmd_Enroll_InvalidWorkerID(t *testing.T) {
+	cases := []struct {
+		name     string
+		workerID string
+	}{
+		{"single-token wildcard", "*"},
+		{"multi-token wildcard", ">"},
+		{"contains a dot", "render.01"},
+		{"contains whitespace", "render 01"},
+		{"empty", ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dbPath := filepath.Join(t.TempDir(), "test.db")
+			_, pub, err := brokerauth.GenerateSeed()
+			if err != nil {
+				t.Fatalf("GenerateSeed: %v", err)
+			}
+
+			prepareRoot([]string{"worker", "enroll", "--db", dbPath, "--worker-id", tc.workerID, "--public-key", pub})
+			var runErr error
+			_ = captureStdout(t, func() {
+				runErr = Execute()
+			})
+			if runErr == nil {
+				t.Fatalf("worker id %q: expected an error, got nil", tc.workerID)
+			}
+			if !strings.Contains(runErr.Error(), "worker-id") {
+				t.Errorf("worker id %q: error should name the offending flag; got: %v", tc.workerID, runErr)
+			}
+
+			// Nothing may have been recorded under it.
+			prepareRoot([]string{"worker", "list", "--db", dbPath})
+			out := captureStdout(t, func() {
+				if err := Execute(); err != nil {
+					t.Fatalf("list: unexpected error: %v", err)
+				}
+			})
+			if strings.Contains(out, pub) {
+				t.Errorf("worker id %q: a credential was recorded anyway:\n%s", tc.workerID, out)
+			}
+		})
+	}
+}

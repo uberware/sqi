@@ -804,3 +804,67 @@ func TestWorkerEnroll_SingleUseTokenIsSpentBeforeTheCredentialIsCreated(t *testi
 			"which means it precedes the credential write and cannot be undone by its failure")
 	}
 }
+
+// ── worker_id must be a single NATS subject token ───────────────────────────
+
+// TestWorkerEnroll_InvalidWorkerID_BadRequest is the enrollment boundary's
+// half of the branch's whole premise. The stored worker_id flows verbatim
+// into brokerauth.WorkerPermissions when the broker builds its key set, and
+// those grants are NATS subject PATTERNS. A worker_id of "*" therefore mints
+// a credential granted "task.status.*.*", "worker.deregister.*",
+// "work.lease.*.*" and the rest — one credential that may publish concrete
+// subjects belonging to ANY worker: forge status and logs, deregister the
+// farm, and lease work as another worker, receiving that worker's assignment
+// batch in its own inbox. The scheduler's provenance checks cannot catch it,
+// because the subject NATS vouches for genuinely names the victim.
+//
+// ">" is worse-shaped still: it yields the malformed "task.status.>.*"
+// inside Options.Nkeys, which can make every later ReloadOptions fail —
+// revocation permanently 500ing — or wedge the broker at boot.
+func TestWorkerEnroll_InvalidWorkerID_BadRequest(t *testing.T) {
+	cases := []struct {
+		name     string
+		workerID string
+	}{
+		{"single-token wildcard", "*"},
+		{"multi-token wildcard", ">"},
+		{"contains a dot", "render.01"},
+		{"contains whitespace", "render 01"},
+		{"empty", ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			st := fake.New()
+			r := newWorkerEnrollRouter(st, true, time.Hour)
+			raw, tok := seedJoinToken(t, st, nil)
+
+			req := newReq(t, http.MethodPost, "/workers/enroll", jsonBody(t, workerEnrollRequest{
+				JoinToken: raw, WorkerID: tc.workerID, PublicKey: genPublicKey(t),
+			}))
+			rr := httptest.NewRecorder()
+			r.ServeHTTP(rr, req)
+
+			if rr.Code != http.StatusBadRequest {
+				t.Fatalf("worker_id %q: status = %d, want 400 — body: %s", tc.workerID, rr.Code, rr.Body)
+			}
+
+			// Rejected before the claim, so the operator's token survives.
+			stored, err := st.GetWorkerJoinTokenByHash(t.Context(), tok.TokenHash)
+			if err != nil {
+				t.Fatalf("GetWorkerJoinTokenByHash: %v", err)
+			}
+			if stored.UsedAt != nil {
+				t.Error("an invalid worker_id spent the join token; it must be rejected before the token is claimed")
+			}
+
+			// And nothing was enrolled under it.
+			creds, err := st.ListActiveWorkerCredentials(t.Context())
+			if err != nil {
+				t.Fatalf("ListActiveWorkerCredentials: %v", err)
+			}
+			if len(creds) != 0 {
+				t.Errorf("credential created for invalid worker_id %q: %+v", tc.workerID, creds)
+			}
+		})
+	}
+}
