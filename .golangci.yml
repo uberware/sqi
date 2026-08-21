@@ -121,7 +121,7 @@ linters:
         # and reports it. Exclude the function rather than turning check-blank
         # off, so a genuine `_ = f()` is still caught.
         #
-        # Requires golangci-lint >= 2.13.1: earlier errcheck cannot resolve a
+        # Requires golangci-lint >= 2.13.0: earlier errcheck cannot resolve a
         # generic function's name (it reports "Error return value is not
         # checked" with no name), so this entry never matches and every
         # errors.AsType call site is flagged.

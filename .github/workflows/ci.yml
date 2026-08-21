@@ -149,12 +149,13 @@ jobs:
       # branch that had touched none of the reported code. Bump this
       # deliberately, in its own commit, with the fallout fixed alongside it.
       #
-      # 2.13.1 is also a FLOOR, not just a pin: .golangci.yml excludes
+      # There is also a FLOOR below this pin: .golangci.yml excludes
       # errors.AsType from errcheck by function name, and errcheck before
-      # 2.13.1 cannot resolve a generic function's name, so on an older
+      # 2.13.0 cannot resolve a generic function's name, so on an older
       # golangci-lint that exclusion silently fails to match and every
-      # errors.AsType call site is reported. Keep docs/development.md's
-      # required-version note in step with this value.
+      # errors.AsType call site is reported. The floor is 2.13.0 (what Homebrew
+      # ships, verified clean on this repo); this pin is one patch above it.
+      # Keep docs/development.md's required-version note in step with both.
       #
       # Explicit path patterns mirror the Makefile LINT_PKGS variable: they
       # exclude web/node_modules/ (third-party JS packages that happen to
