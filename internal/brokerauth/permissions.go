@@ -8,9 +8,10 @@ import natsserver "github.com/nats-io/nats-server/v2/server"
 //
 // Every worker→server subject carries the worker's ID as a token precisely so
 // that these permissions can bind it. That is not a stylistic choice: NATS
-// permissions are static per credential, JetStream does not stamp publisher
-// identity onto a message, and the pre-H1 subjects were keyed by job and task
-// — so there was no way to express "only this worker's own traffic" at all.
+// permissions are static per credential and JetStream does not stamp
+// publisher identity onto a message, so a subject scheme keyed only by job
+// and task would give no way to express "only this worker's own traffic" —
+// the worker's identity has to live in the subject itself.
 func WorkerPermissions(workerID string) *natsserver.Permissions {
 	return &natsserver.Permissions{
 		Publish: &natsserver.SubjectPermission{
@@ -33,10 +34,10 @@ func WorkerPermissions(workerID string) *natsserver.Permissions {
 				// ACCEPTED GAP. Workers subscribe per-task at assignment time
 				// (internal/worker/cancel/cancel.go), so a static permission
 				// cannot be narrower than the whole subtree: any enrolled
-				// worker can observe any task's cancel signals. Narrowing it
-				// needs a permission reload per assignment, or NATS auth
-				// callout. Low severity — a cancel message for a task the
-				// worker does not hold is inert — and revisited in H14.
+				// worker can observe any task's cancel signals. Narrowing
+				// this needs a permission reload per assignment, or a NATS
+				// auth callout. Low severity — a cancel message for a task
+				// the worker does not hold is inert.
 				"task.cancel.>",
 			},
 		},

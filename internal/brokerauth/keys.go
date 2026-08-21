@@ -52,13 +52,22 @@ func PublicKeyFromSeed(seed []byte) (string, error) {
 }
 
 // SaveSeed writes seed to path with owner-only permissions, creating parent
-// directories as needed.
+// directories as needed. The 0600 mode is enforced even when path already
+// exists: os.WriteFile only applies its perm argument when it creates the
+// file, so a plain write over an existing, more permissive file (key
+// rotation, a leftover from an earlier bug, an operator who chmod'd it to
+// look at it) would otherwise silently leave secret material group- or
+// world-readable. Chmod runs unconditionally, after the write, so the final
+// mode never depends on the file's prior state.
 func SaveSeed(path string, seed []byte) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return fmt.Errorf("brokerauth: create seed dir: %w", err)
 	}
 	if err := os.WriteFile(path, seed, 0o600); err != nil {
 		return fmt.Errorf("brokerauth: write seed %s: %w", path, err)
+	}
+	if err := os.Chmod(path, 0o600); err != nil {
+		return fmt.Errorf("brokerauth: chmod seed %s: %w", path, err)
 	}
 	return nil
 }
