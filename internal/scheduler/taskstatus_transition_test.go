@@ -36,6 +36,7 @@ func TestHandleTaskStatusMessage_InvalidTransitionIsAcked(t *testing.T) {
 	}
 
 	msg := &fakeJSMsg{
+		subject: statusTestSubject,
 		data: taskStatusMsgJSON(t, protocol.TaskStatusMsg{
 			Version:   protocol.ProtocolVersion,
 			TaskID:    task.ID,
@@ -74,6 +75,7 @@ func TestHandleTaskStatusMessage_DuplicateRunningIsAcked(t *testing.T) {
 
 	for i := range 2 {
 		msg := &fakeJSMsg{
+			subject: statusTestSubject,
 			data: taskStatusMsgJSON(t, protocol.TaskStatusMsg{
 				Version:   protocol.ProtocolVersion,
 				TaskID:    task.ID,

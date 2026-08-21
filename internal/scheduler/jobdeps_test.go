@@ -15,10 +15,17 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/uberware/sqi/internal/bus"
 	"github.com/uberware/sqi/internal/store"
 	fakestore "github.com/uberware/sqi/internal/store/fake"
 	"github.com/uberware/sqi/internal/worker/protocol"
 )
+
+// jobDepsWorkerID is the worker seedRunnableJob's attempt is opened on, and
+// the worker whose subject completeJob publishes the "succeeded" status on —
+// they must match, since handleTaskStatusMessage now requires the subject's
+// worker ID to match the attempt's recorded owner.
+const jobDepsWorkerID = "worker-1"
 
 // ── test harness ────────────────────────────────────────────────────────────
 
@@ -189,6 +196,7 @@ func (h *jobDepsHarness) seedRunnableJob(t *testing.T) store.Job {
 	h.attempt, err = h.store.CreateTaskAttempt(ctx, store.TaskAttempt{
 		ID:            uuid.NewString(),
 		TaskID:        task.ID,
+		WorkerID:      jobDepsWorkerID,
 		AttemptNumber: 1,
 		Status:        store.AttemptStatusRunning,
 		StartedAt:     time.Now(),
@@ -212,6 +220,7 @@ func (h *jobDepsHarness) completeJob(t *testing.T, jobID string) {
 	}
 	exitCode := 0
 	msg := &fakeJSMsg{
+		subject: bus.TaskStatusSubject(jobDepsWorkerID, h.task.JobID),
 		data: taskStatusMsgJSON(t, protocol.TaskStatusMsg{
 			Version:   protocol.ProtocolVersion,
 			TaskID:    h.task.ID,

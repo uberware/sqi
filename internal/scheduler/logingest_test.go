@@ -20,11 +20,17 @@ import (
 	"github.com/google/uuid"
 	"github.com/nats-io/nats.go/jetstream"
 
+	"github.com/uberware/sqi/internal/bus"
 	"github.com/uberware/sqi/internal/store"
 	"github.com/uberware/sqi/internal/store/fake"
 	"github.com/uberware/sqi/internal/worker/protocol"
 	"github.com/uberware/sqi/internal/ws"
 )
+
+// logTestWorkerID is the worker whose subject these tests publish log chunks
+// on. handleLogChunk now checks it against the chunk's attempt, so any test
+// exercising the persist path must open the attempt on this same worker.
+const logTestWorkerID = "worker-1"
 
 // ── fakeJSMsg: minimal jetstream.Msg for log ingest tests ────────────────────
 
@@ -98,7 +104,15 @@ func TestHandleLogChunk_ValidStdout(t *testing.T) {
 	taskID := uuid.NewString()
 	now := time.Now().UTC()
 
+	if _, err := st.CreateTaskAttempt(t.Context(), store.TaskAttempt{
+		ID: attemptID, TaskID: taskID, WorkerID: logTestWorkerID,
+		AttemptNumber: 1, Status: store.AttemptStatusRunning, StartedAt: now,
+	}); err != nil {
+		t.Fatalf("CreateTaskAttempt: %v", err)
+	}
+
 	msg := &fakeJSMsg{
+		subject: bus.TaskLogsSubject(logTestWorkerID, taskID),
 		natsSeq: 42,
 		data: msgJSON(t, protocol.LogChunkMsg{
 			TaskID:    taskID,
@@ -141,13 +155,23 @@ func TestHandleLogChunk_ValidStderr(t *testing.T) {
 	s.ctx = t.Context()
 
 	attemptID := uuid.NewString()
+	taskID := uuid.NewString()
+	now := time.Now().UTC()
+	if _, err := st.CreateTaskAttempt(t.Context(), store.TaskAttempt{
+		ID: attemptID, TaskID: taskID, WorkerID: logTestWorkerID,
+		AttemptNumber: 1, Status: store.AttemptStatusRunning, StartedAt: now,
+	}); err != nil {
+		t.Fatalf("CreateTaskAttempt: %v", err)
+	}
+
 	msg := &fakeJSMsg{
+		subject: bus.TaskLogsSubject(logTestWorkerID, taskID),
 		natsSeq: 1,
 		data: msgJSON(t, protocol.LogChunkMsg{
-			TaskID:    uuid.NewString(),
+			TaskID:    taskID,
 			AttemptID: attemptID,
 			SeqNum:    1,
-			At:        time.Now().UTC(),
+			At:        now,
 			Stream:    "stderr",
 			Data:      "error output",
 		}),
@@ -174,10 +198,19 @@ func TestHandleLogChunk_ZeroAtUsesServerTime(t *testing.T) {
 
 	before := time.Now().UTC()
 	attemptID := uuid.NewString()
+	taskID := uuid.NewString()
+	if _, err := st.CreateTaskAttempt(t.Context(), store.TaskAttempt{
+		ID: attemptID, TaskID: taskID, WorkerID: logTestWorkerID,
+		AttemptNumber: 1, Status: store.AttemptStatusRunning, StartedAt: before,
+	}); err != nil {
+		t.Fatalf("CreateTaskAttempt: %v", err)
+	}
+
 	msg := &fakeJSMsg{
+		subject: bus.TaskLogsSubject(logTestWorkerID, taskID),
 		natsSeq: 1,
 		data: msgJSON(t, protocol.LogChunkMsg{
-			TaskID:    uuid.NewString(),
+			TaskID:    taskID,
 			AttemptID: attemptID,
 			SeqNum:    1,
 			At:        time.Time{}, // zero → server clock
@@ -259,14 +292,23 @@ func TestHandleLogChunk_MissingAttemptID_Acked(t *testing.T) {
 
 func TestHandleLogChunk_StoreFailure_Nacked(t *testing.T) {
 	inner := fake.New()
+	taskID := uuid.NewString()
+	attemptID := uuid.NewString()
+	if _, err := inner.CreateTaskAttempt(t.Context(), store.TaskAttempt{
+		ID: attemptID, TaskID: taskID, WorkerID: logTestWorkerID,
+		AttemptNumber: 1, Status: store.AttemptStatusRunning, StartedAt: time.Now().UTC(),
+	}); err != nil {
+		t.Fatalf("CreateTaskAttempt: %v", err)
+	}
 	est := &logIngestErrSt{Store: inner}
 	s := newLogTestScheduler(est)
 	s.ctx = t.Context()
 
 	msg := &fakeJSMsg{
+		subject: bus.TaskLogsSubject(logTestWorkerID, taskID),
 		data: msgJSON(t, protocol.LogChunkMsg{
-			TaskID:    uuid.NewString(),
-			AttemptID: uuid.NewString(),
+			TaskID:    taskID,
+			AttemptID: attemptID,
 			SeqNum:    1,
 			At:        time.Now().UTC(),
 			Stream:    "stdout",
@@ -291,10 +333,19 @@ func TestHandleLogChunk_MetadataError_NATSSeqZero(t *testing.T) {
 	s.ctx = t.Context()
 
 	attemptID := uuid.NewString()
+	taskID := uuid.NewString()
+	if _, err := st.CreateTaskAttempt(t.Context(), store.TaskAttempt{
+		ID: attemptID, TaskID: taskID, WorkerID: logTestWorkerID,
+		AttemptNumber: 1, Status: store.AttemptStatusRunning, StartedAt: time.Now().UTC(),
+	}); err != nil {
+		t.Fatalf("CreateTaskAttempt: %v", err)
+	}
+
 	msg := &fakeJSMsg{
+		subject: bus.TaskLogsSubject(logTestWorkerID, taskID),
 		metaErr: context.DeadlineExceeded, // metadata unavailable
 		data: msgJSON(t, protocol.LogChunkMsg{
-			TaskID:    uuid.NewString(),
+			TaskID:    taskID,
 			AttemptID: attemptID,
 			SeqNum:    7,
 			At:        time.Now().UTC(),

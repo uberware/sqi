@@ -27,12 +27,14 @@ package scheduler
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/nats-io/nats.go/jetstream"
 
+	"github.com/uberware/sqi/internal/bus"
 	"github.com/uberware/sqi/internal/store"
 	"github.com/uberware/sqi/internal/worker/protocol"
 	"github.com/uberware/sqi/internal/ws"
@@ -48,6 +50,11 @@ func (s *Scheduler) startTaskLogsConsumer(ctx context.Context) error {
 
 // handleLogChunk is the JetStream message handler for task.logs.<worker>.<task> messages
 // published by workers.
+//
+// [protocol.LogChunkMsg] carries no worker-identity field of its own, so the
+// subject is the ONLY identity available: it is compared against the
+// attempt's recorded owner before a chunk is persisted, so a worker cannot
+// inject log content into another worker's task.
 func (s *Scheduler) handleLogChunk(msg jetstream.Msg) {
 	ctx := s.ctx
 
@@ -65,6 +72,58 @@ func (s *Scheduler) handleLogChunk(msg jetstream.Msg) {
 			ctx, "scheduler: task.logs missing task_id or attempt_id — discarding",
 			slog.String("task_id", m.TaskID),
 			slog.String("attempt_id", m.AttemptID),
+		)
+		s.ackMsg(ctx, msg)
+		return
+	}
+
+	// The subject is the only identity NATS itself can vouch for; a message
+	// on a subject that does not carry one concrete worker ID cannot be
+	// attributed to anyone and is discarded rather than acted on.
+	subjectWorkerID, _, ok := bus.ParseWorkerSubject(msg.Subject())
+	if !ok {
+		s.logger.WarnContext(
+			ctx, "scheduler: task.logs on unexpected subject — discarding",
+			slog.String("subject", msg.Subject()),
+		)
+		s.ackMsg(ctx, msg)
+		return
+	}
+
+	// Resolve the attempt this chunk claims to belong to so its recorded
+	// WorkerID can be checked against the subject below. A store failure here
+	// is transient (not "this attempt doesn't exist"), so it is Nak'ed for
+	// redelivery rather than discarded.
+	attempt, err := s.store.GetTaskAttempt(ctx, m.AttemptID)
+	if errors.Is(err, store.ErrNotFound) {
+		s.logger.WarnContext(
+			ctx, "scheduler: task.logs for unknown attempt — discarding",
+			slog.String("attempt_id", m.AttemptID),
+			slog.String("task_id", m.TaskID),
+		)
+		s.ackMsg(ctx, msg)
+		return
+	}
+	if err != nil {
+		s.logger.WarnContext(
+			ctx, "scheduler: task.logs: lookup attempt failed — will redeliver",
+			slog.String("attempt_id", m.AttemptID),
+			slog.Any("error", err),
+		)
+		s.nakMsg(ctx, msg)
+		return
+	}
+	// The subject's worker ID was enforced by NATS when broker auth is on;
+	// with LogChunkMsg carrying no worker field of its own, it is the only
+	// identity this handler has to check at all. Treat a mismatch as
+	// permanent — redelivery cannot make a forged message legal.
+	if subjectWorkerID != attempt.WorkerID {
+		s.logger.WarnContext(
+			ctx, "scheduler: task.logs from a worker that does not hold this task — discarding",
+			slog.String("task_id", m.TaskID),
+			slog.String("attempt_id", m.AttemptID),
+			slog.String("subject_worker_id", subjectWorkerID),
+			slog.String("attempt_worker_id", attempt.WorkerID),
 		)
 		s.ackMsg(ctx, msg)
 		return

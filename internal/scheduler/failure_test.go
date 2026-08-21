@@ -186,7 +186,7 @@ func (h *failureHarness) reportFailedWithMessage(taskID, message string) {
 		Message:   message,
 		At:        time.Now().UTC(),
 	}
-	if err := h.s.processTaskStatus(h.t.Context(), msg); err != nil {
+	if err := h.s.processTaskStatus(h.t.Context(), attempt.WorkerID, msg); err != nil {
 		h.t.Fatalf("processTaskStatus(failed): %v", err)
 	}
 }
@@ -360,7 +360,7 @@ func TestHandleTaskFailed_RedeliveryCountsOnce(t *testing.T) {
 	}
 
 	// First delivery: one genuine failure → retry, task back to ready.
-	if err := h.s.processTaskStatus(t.Context(), msg); err != nil {
+	if err := h.s.processTaskStatus(t.Context(), h.current["t1"].WorkerID, msg); err != nil {
 		t.Fatalf("first delivery: %v", err)
 	}
 	if got := h.taskFailedAttempts("t1"); got != 1 {
@@ -377,7 +377,7 @@ func TestHandleTaskFailed_RedeliveryCountsOnce(t *testing.T) {
 	// failed, so RecordTaskFailure returns the current counts without
 	// re-incrementing, the retry decision is re-made identically, and the
 	// requeue is re-applied harmlessly.
-	if err := h.s.processTaskStatus(t.Context(), msg); err != nil {
+	if err := h.s.processTaskStatus(t.Context(), h.current["t1"].WorkerID, msg); err != nil {
 		t.Fatalf("redelivery: %v", err)
 	}
 	if got := h.taskFailedAttempts("t1"); got != 1 {
@@ -616,7 +616,7 @@ func TestHandleTaskFailed_SupersededAttempt_LeavesReleasedTaskAlone(t *testing.T
 		ExitCode:  &exitCode,
 		At:        time.Now().UTC(),
 	}
-	if err := h.s.processTaskStatus(ctx, msg); err != nil {
+	if err := h.s.processTaskStatus(ctx, stale.WorkerID, msg); err != nil {
 		t.Fatalf("processTaskStatus(stale failed): %v", err)
 	}
 

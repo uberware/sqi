@@ -50,7 +50,19 @@ func (s *Scheduler) handleLeaseRequest(workerID, queueID string, data []byte) []
 		return marshalLeaseReply(nil)
 	}
 
-	worker, err := s.store.GetWorker(ctx, req.WorkerID)
+	// The subject is authoritative. A payload that names a different worker
+	// is either a stale client or an attempt to have tasks assigned to
+	// another worker while this connection receives the job code.
+	if req.WorkerID != "" && req.WorkerID != workerID {
+		s.logger.WarnContext(
+			ctx, "scheduler: lease request whose payload identity differs from its subject — refusing",
+			slog.String("subject_worker_id", workerID),
+			slog.String("payload_worker_id", req.WorkerID),
+		)
+		return marshalLeaseReply(nil)
+	}
+
+	worker, err := s.store.GetWorker(ctx, workerID)
 	if err != nil {
 		return marshalLeaseReply(nil)
 	}
@@ -59,7 +71,7 @@ func (s *Scheduler) handleLeaseRequest(workerID, queueID string, data []byte) []
 	if err != nil {
 		s.logger.WarnContext(
 			ctx, "scheduler: lease selection failed",
-			slog.String("worker_id", req.WorkerID),
+			slog.String("worker_id", workerID),
 			slog.Any("error", err),
 		)
 		return marshalLeaseReply(nil)
@@ -72,7 +84,7 @@ func (s *Scheduler) handleLeaseRequest(workerID, queueID string, data []byte) []
 	// The park happens OUTSIDE the per-worker lock; only the selection below is
 	// serialized, so a re-woken request reads the up-to-date committed cores.
 	if s.waiters.wait(ctx, queueID, s.leaseHoldTimeout) {
-		if w2, err2 := s.store.GetWorker(ctx, req.WorkerID); err2 == nil {
+		if w2, err2 := s.store.GetWorker(ctx, workerID); err2 == nil {
 			if batch2, err2 := s.selectLeaseBatchLocked(ctx, w2); err2 == nil {
 				return marshalLeaseReply(batch2)
 			}

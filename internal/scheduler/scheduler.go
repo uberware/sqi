@@ -773,6 +773,15 @@ func (s *Scheduler) handleWorkerRegister(ctx context.Context, msg jetstream.Msg,
 		"this worker is not registered and will be offered no work at all") {
 		return
 	}
+	if m.WorkerID != subjectWorkerID {
+		s.logger.WarnContext(
+			ctx, "scheduler: worker message whose payload identity differs from its subject — discarding",
+			slog.String("subject_worker_id", subjectWorkerID),
+			slog.String("payload_worker_id", m.WorkerID),
+		)
+		s.ackMsg(ctx, msg)
+		return
+	}
 	if m.WorkerID == "" {
 		s.logger.WarnContext(ctx, "scheduler: worker.register missing worker_id")
 		s.ackMsg(ctx, msg)
@@ -934,6 +943,15 @@ func (s *Scheduler) handleWorkerDeregister(ctx context.Context, msg jetstream.Ms
 		s.ackMsg(ctx, msg)
 		return
 	}
+	if m.WorkerID != subjectWorkerID {
+		s.logger.WarnContext(
+			ctx, "scheduler: worker message whose payload identity differs from its subject — discarding",
+			slog.String("subject_worker_id", subjectWorkerID),
+			slog.String("payload_worker_id", m.WorkerID),
+		)
+		s.ackMsg(ctx, msg)
+		return
+	}
 	if m.WorkerID == "" {
 		s.logger.WarnContext(ctx, "scheduler: worker.deregister missing worker_id")
 		s.ackMsg(ctx, msg)
@@ -1013,6 +1031,15 @@ func (s *Scheduler) handleWorkerHeartbeat(ctx context.Context, msg jetstream.Msg
 	// quiet. The registration warning is the operator-facing signal.
 	if s.discardOnVersionMismatch(ctx, msg, slog.LevelDebug, m.Version, m.WorkerID,
 		"this worker's liveness signal is not recorded; the heartbeat sweep will retire it") {
+		return
+	}
+	if m.WorkerID != subjectWorkerID {
+		s.logger.WarnContext(
+			ctx, "scheduler: worker message whose payload identity differs from its subject — discarding",
+			slog.String("subject_worker_id", subjectWorkerID),
+			slog.String("payload_worker_id", m.WorkerID),
+		)
+		s.ackMsg(ctx, msg)
 		return
 	}
 	if m.WorkerID == "" {
