@@ -59,6 +59,7 @@ func init() {
 		configCmd,
 		capabilitiesCmd,
 		isolationCmd,
+		keygenCmd,
 	)
 }
 
