@@ -36,6 +36,7 @@ import (
 	"github.com/nats-io/nkeys"
 
 	"github.com/uberware/sqi/internal/brokerauth"
+	"github.com/uberware/sqi/internal/config"
 	"github.com/uberware/sqi/internal/scheduler"
 	"github.com/uberware/sqi/internal/server"
 	"github.com/uberware/sqi/internal/store"
@@ -423,4 +424,89 @@ func TestEnrollment_ConnectsToRunningBrokerWithoutRestart(t *testing.T) {
 	// the test outright with "Authorization Violation", so reaching this
 	// point at all already proves the enrolled worker could connect.
 	pollWorkerOnline(t, ts, "worker-c", 5*time.Second)
+}
+
+// ── The default-config regression ───────────────────────────────────────────
+
+// listActiveWorkerCredentials opens a second, independent connection to the
+// SQLite database a running server was started against and calls
+// ListActiveWorkerCredentials. This is safe to run WHILE that server is
+// still up: the store opens every database in WAL mode, which allows a
+// reader to run alongside the server's own single-connection writer.
+// AutoMigrate is left off — the server that owns dbPath has already applied
+// every migration, and re-running goose's version check here would be pure
+// overhead against a live file for no benefit.
+func listActiveWorkerCredentials(t *testing.T, dbPath string) []store.WorkerCredential {
+	t.Helper()
+	ctx := context.Background()
+	st, err := sqlite.Open(ctx, dbPath, sqlite.Options{AutoMigrate: false})
+	if err != nil {
+		t.Fatalf("listActiveWorkerCredentials: sqlite.Open: %v", err)
+	}
+	defer func() { _ = st.Close() }()
+
+	creds, err := st.ListActiveWorkerCredentials(ctx)
+	if err != nil {
+		t.Fatalf("listActiveWorkerCredentials: %v", err)
+	}
+	return creds
+}
+
+// TestDefaultConfig_NoBrokerAuth is the load-bearing regression for the
+// whole component: a server and worker started with NO broker-auth
+// configuration must behave exactly as they did before broker
+// authentication existed. Every other test in this file proves the new
+// capability works; this one proves it costs nothing when unused.
+//
+// If this test fails, the default path has regressed. Fix the cause — never
+// adjust the test to accommodate the regression. Every operator who has
+// never heard of broker authentication meets this exact path on day one.
+//
+// This is one half of a two-part proof. The other half — that
+// internal/config's own zero-configuration default carries nats.auth.enabled
+// = false through to the value the server actually runs with — is pinned at
+// the unit level by TestServerConfig_DefaultsAreTheConfigDefaults and
+// TestServerConfig_CarriesTheBrokerAuthSettings in cmd/sqi-server, which
+// exercise the exact config.Config -> server.Config mapping function the
+// serve subcommand uses. This test starts from that already-proven
+// conclusion (asserted below as a guard, not re-derived) and proves the
+// RUNTIME behavior it implies: a real sqi-worker subprocess with no
+// credential file and no join token registers, is leased a task, runs it to
+// completion, and the worker-credential table -- which only broker auth
+// ever writes to -- stays empty throughout.
+func TestDefaultConfig_NoBrokerAuth(t *testing.T) {
+	// Guard the claim the rest of this test depends on: an operator's own
+	// zero-configuration default leaves broker authentication off.
+	if config.DefaultConfig().NATS.Auth.Enabled {
+		t.Fatal("config.DefaultConfig().NATS.Auth.Enabled = true, want false -- " +
+			"broker authentication must default to off")
+	}
+
+	// startServer boots server.Config with every NATSAuth* field left at its
+	// zero value: the same "nobody has ever configured this" state an
+	// operator gets with no nats.auth section in their config file, no
+	// SQI_NATS_AUTH_* environment variable, and no --nats-auth-* flag --
+	// matching the config default asserted above.
+	ts := startServer(t)
+	farmID, queueID := seedFarmAndQueue(t, ts)
+
+	// A real sqi-worker subprocess. startRealWorker sets no join-token,
+	// credential-file, or server-url environment variable at all -- exactly
+	// as every worker invocation looked before broker auth existed -- and
+	// blocks until the worker is visible online, which is this test's proof
+	// of criterion 1: the worker registers with no credential.
+	startRealWorker(t, ts, farmID, queueID)
+
+	// Criterion 2: it is leased a task and runs it to completion.
+	jobID := submitJob(t, ts, farmID, queueID)
+	if got := pollJobStatus(t, ts, jobID, []string{"completed", "failed", "canceled"}, 30*time.Second); got != "completed" {
+		t.Fatalf("job on the default no-broker-auth path ended %q, want completed", got)
+	}
+
+	// Criterion 3: nothing enrolled anything. Broker auth was never engaged
+	// on this path, so no row should ever have been written to the
+	// worker-credential table.
+	if creds := listActiveWorkerCredentials(t, ts.DBPath); len(creds) != 0 {
+		t.Errorf("default path created %d worker credentials, want 0: %+v", len(creds), creds)
+	}
 }

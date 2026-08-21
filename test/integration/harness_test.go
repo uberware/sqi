@@ -75,6 +75,13 @@ type testServer struct {
 	// NATSAddr is the full "host:port" address the embedded NATS server
 	// is listening on.  Workers connect to "nats://" + NATSAddr.
 	NATSAddr string
+	// DBPath is the SQLite file this server was started against. Set by
+	// constructors that know it, empty otherwise. A caller that needs to
+	// inspect store state the REST API does not expose (e.g. confirming no
+	// row was ever written to a table) can open a second, independent
+	// connection to this same path — safe because the store runs in WAL
+	// mode, which allows a reader to run alongside the server's own writer.
+	DBPath string
 
 	cancel context.CancelFunc
 	done   chan error
@@ -160,6 +167,7 @@ func startServer(t *testing.T) *testServer {
 	ts := &testServer{
 		HTTPAddr: httpAddr,
 		NATSAddr: natsAddr,
+		DBPath:   sqlitePath,
 		cancel:   cancel,
 		done:     done,
 	}

@@ -960,6 +960,67 @@ jobs:
           fi
           exit $missing
 
+  # ── Broker authentication integration ────────────────────────────────────────
+  # Runs the three broker-authentication integration tests: the default-config
+  # regression (a server and worker started with NO broker-auth configuration
+  # still register, lease, run a task to completion, and enroll nothing — the
+  # whole component must cost nothing when unused), and the two end-to-end
+  # proofs that the opt-in capability itself works (revocation disconnects and
+  # reclaims synchronously; a worker enrolled via a join token connects to an
+  # already-running broker with no restart). None of the three need Docker or
+  # any external service — they boot a real embedded server and, for the
+  # default-config regression, a real sqi-worker subprocess, entirely
+  # in-process, the same shape as the untagged tests `test` already runs.
+  # They are gated behind the `integration` build tag anyway (matching every
+  # other file in test/integration this suite shares a harness with), so
+  # nothing here runs as part of `make test-cover`.
+  #
+  # IMPORTANT: a green `go test` here proves nothing on its own if the -run
+  # regex ever stops matching (a rename, a typo) — it would exit 0 having run
+  # zero tests. This job does not trust the exit code alone: it requires all
+  # three tests confirmed PASS by name, the same guard ldap-integration and
+  # isolation-integration use.
+  broker-auth-integration:
+    name: Broker auth integration
+    runs-on: ubuntu-latest
+    needs: test
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+
+      - name: Run broker auth integration tests
+        run: |
+          set +e
+          go test -tags integration -race -run \
+            'TestDefaultConfig_NoBrokerAuth|TestRevocation_DisconnectsAndReclaims|TestEnrollment_ConnectsToRunningBrokerWithoutRestart' \
+            -v -timeout 5m ./test/integration/ 2>&1 | tee broker-auth-output.log
+          status=${PIPESTATUS[0]}
+          set -e
+
+          expected=(
+            TestDefaultConfig_NoBrokerAuth
+            TestRevocation_DisconnectsAndReclaims
+            TestEnrollment_ConnectsToRunningBrokerWithoutRestart
+          )
+          missing=0
+          for name in "${expected[@]}"; do
+            if ! grep -q -- "--- PASS: $name" broker-auth-output.log; then
+              echo "::error::$name did not pass"
+              missing=1
+            fi
+          done
+          if [ "$status" -ne 0 ] || [ "$missing" -ne 0 ]; then
+            echo "::error::broker auth integration tests did not all pass (exit=$status)."
+            exit 1
+          fi
+          echo "Confirmed all ${#expected[@]}/3 named broker auth integration tests passed."
+
   # Runs the official OpenJD conformance suite (a pinned submodule under
   # third_party/) against internal/openjd. Tagged `conformance`, so it does not
   # run in the default `make test`.
