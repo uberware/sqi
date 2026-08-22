@@ -3,11 +3,15 @@
 package bus
 
 import (
+	"bytes"
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"errors"
 	"fmt"
 	"log/slog"
 	"net"
+	"os"
 	"strconv"
 	"sync"
 	"time"
@@ -45,6 +49,132 @@ type BrokerConfig struct {
 	// Auth configures per-worker nkey authorization on the broker. Zero value
 	// leaves authorization disabled.
 	Auth BrokerAuthConfig
+
+	// TLS configures transport encryption on the client listener. Zero value
+	// leaves the broker plaintext, which is the default.
+	TLS BrokerTLSConfig
+}
+
+// selfTLSConfig returns the CLIENT-side TLS configuration the server uses for
+// its own in-process connections to its own broker.
+//
+// It pins to the exact certificate just loaded from disk rather than verifying
+// a chain and hostname. That is deliberate and is stronger, not weaker, than
+// normal verification here: the connection never leaves the process (it runs
+// over a net.Pipe), and the peer is required to present byte-for-byte the
+// certificate this process itself read. Chain-and-hostname verification would
+// additionally demand that the operator's certificate carry a loopback SAN —
+// and a server that cannot talk to its own broker because someone issued a
+// certificate for the LAN name only is a boot failure with no good remedy.
+//
+// InsecureSkipVerify disables only Go's default chain/hostname check;
+// VerifyPeerCertificate below replaces it with an exact-match pin.
+func selfTLSConfig(leaf []byte) *tls.Config {
+	return &tls.Config{
+		MinVersion:         tls.VersionTLS12,
+		InsecureSkipVerify: true, //nolint:gosec // G402: replaced by the exact-certificate pin in VerifyPeerCertificate/VerifyConnection below
+		VerifyPeerCertificate: func(rawCerts [][]byte, _ [][]*x509.Certificate) error {
+			if len(rawCerts) == 0 {
+				return errors.New("bus: broker presented no certificate on the in-process connection")
+			}
+			if !bytes.Equal(rawCerts[0], leaf) {
+				return errors.New("bus: broker presented a certificate this server did not load")
+			}
+			return nil
+		},
+		// VerifyPeerCertificate is not called on a RESUMED session, so the pin
+		// is repeated here: VerifyConnection runs on every handshake, resumed
+		// or full. Without it a resumed session would skip the check entirely.
+		VerifyConnection: func(cs tls.ConnectionState) error {
+			if len(cs.PeerCertificates) == 0 {
+				return errors.New("bus: broker presented no certificate on the in-process connection")
+			}
+			if !bytes.Equal(cs.PeerCertificates[0].Raw, leaf) {
+				return errors.New("bus: broker presented a certificate this server did not load")
+			}
+			return nil
+		},
+	}
+}
+
+// buildBrokerTLS assembles the broker's server-side TLS configuration and the
+// matching self-trust client configuration for the server's own connections.
+// The paths have already been validated at config load, so a failure here
+// means the files changed underneath a running process.
+func buildBrokerTLS(cfg BrokerTLSConfig) (serverTLS, selfTLS *tls.Config, err error) {
+	cert, err := tls.LoadX509KeyPair(cfg.CertFile, cfg.KeyFile)
+	if err != nil {
+		return nil, nil, fmt.Errorf("load keypair %s/%s: %w", cfg.CertFile, cfg.KeyFile, err)
+	}
+	if len(cert.Certificate) == 0 {
+		return nil, nil, fmt.Errorf("keypair %s/%s contains no certificate", cfg.CertFile, cfg.KeyFile)
+	}
+	tlsCfg := &tls.Config{
+		MinVersion:   tls.VersionTLS12,
+		Certificates: []tls.Certificate{cert},
+	}
+	self := selfTLSConfig(cert.Certificate[0])
+	if cfg.ClientCAFile == "" {
+		return tlsCfg, self, nil
+	}
+	pemBytes, err := os.ReadFile(cfg.ClientCAFile)
+	if err != nil {
+		return nil, nil, fmt.Errorf("read client CA file %s: %w", cfg.ClientCAFile, err)
+	}
+	pool := x509.NewCertPool()
+	if !pool.AppendCertsFromPEM(pemBytes) {
+		return nil, nil, fmt.Errorf("no valid certificates found in client CA file %s", cfg.ClientCAFile)
+	}
+	tlsCfg.ClientCAs = pool
+	tlsCfg.ClientAuth = tls.RequireAndVerifyClientCert
+
+	// The server's own in-process connection is exempted from the
+	// client-certificate requirement.
+	//
+	// Requiring one of it would be meaningless: the peer is this same process,
+	// which already holds the broker's private key. It is also unsatisfiable
+	// without inventing a per-boot client certificate, because the only
+	// keypair the server owns is the broker's own SERVER certificate, and Go
+	// rejects that as a client certificate for want of ExtKeyUsageClientAuth.
+	//
+	// The discriminator is the connection's network. nats-server builds
+	// in-process connections on net.Pipe, whose addresses report "pipe"; a
+	// real network client always reports "tcp"/"tcp4"/"tcp6" and so can never
+	// reach this branch. mTLS is therefore still required of every worker.
+	base := tlsCfg.Clone()
+	tlsCfg.GetConfigForClient = func(hello *tls.ClientHelloInfo) (*tls.Config, error) {
+		if hello.Conn != nil && hello.Conn.LocalAddr().Network() == "pipe" {
+			exempt := base.Clone()
+			exempt.ClientAuth = tls.NoClientCert
+			exempt.ClientCAs = nil
+			return exempt, nil
+		}
+		return nil, nil //nolint:nilnil // a nil *tls.Config means "use the listener's own config", which is the crypto/tls contract here
+	}
+	return tlsCfg, self, nil
+}
+
+// BrokerTLSConfig controls TLS on the embedded broker's client listener.
+// Zero value leaves TLS off, which is the default.
+//
+// This is bus's own view of the operator's nats.tls block, mapped by the
+// caller, so that internal/bus does not import internal/config — the same
+// boundary WorkerCredentialRef draws against internal/store.
+type BrokerTLSConfig struct {
+	// Enabled makes the broker require TLS on every client connection.
+	Enabled bool
+
+	// CertFile and KeyFile are the PEM certificate and key the broker
+	// presents. Both are validated at config load.
+	CertFile string
+	KeyFile  string
+
+	// ClientCAFile, when set, requires each connecting worker to present a
+	// client certificate signed by this CA. It is a transport control
+	// layered on the nkey credential, never a substitute: the certificate
+	// decides who may open a connection, the nkey decides which worker they
+	// are.
+	ClientCAFile string
 }
 
 // BrokerAuthConfig controls per-worker nkey authorization on the broker.
@@ -87,8 +217,9 @@ type Broker struct {
 	// theoretical one.
 	mu sync.Mutex
 
-	ns *natsserver.Server // embedded NATS server process
-	nc *nats.Conn         // admin connection used for stream provisioning
+	ns      *natsserver.Server // embedded NATS server process
+	nc      *nats.Conn         // admin connection used for stream provisioning
+	selfTLS *tls.Config        // client-side TLS for the server's own connections; nil when broker TLS is off
 
 	// serverSeed and serverPub are the broker's own nkey, generated at boot
 	// and held only in memory, so that the broker's own connections (stream
@@ -160,6 +291,24 @@ func (b *Broker) Start(ctx context.Context) error {
 		opts.Nkeys = buildNkeys(serverPub, b.cfg.Auth.Credentials, b.logger)
 	}
 
+	var selfTLS *tls.Config
+	if b.cfg.TLS.Enabled {
+		tlsCfg, self, err := buildBrokerTLS(b.cfg.TLS)
+		if err != nil {
+			return fmt.Errorf("bus: tls: %w", err)
+		}
+		selfTLS = self
+		// Setting TLSConfig is what makes the broker REQUIRE TLS:
+		// nats-server computes `tlsReq := opts.TLSConfig != nil`. There is no
+		// separate flag. TLSTimeout self-defaults to 2s when left zero.
+		//
+		// This must happen BEFORE the bootOpts clone below: ReloadCredentials
+		// rebuilds from that clone, so a TLSConfig set afterwards would be
+		// dropped the first time a worker is revoked — silently taking the
+		// whole broker back to plaintext.
+		opts.TLSConfig = tlsCfg
+	}
+
 	// Retain a pristine copy of the boot options for ReloadCredentials:
 	// ReloadOptions documents that the Options passed to it must not be
 	// reused, so credential reloads clone from this copy rather than the one
@@ -185,7 +334,7 @@ func (b *Broker) Start(ctx context.Context) error {
 	// serverPub/bootOpts are still zero, or any other partially-updated
 	// combination.
 	b.mu.Lock()
-	b.serverSeed, b.serverPub, b.bootOpts, b.ns = serverSeed, serverPub, bootOpts, ns
+	b.serverSeed, b.serverPub, b.bootOpts, b.ns, b.selfTLS = serverSeed, serverPub, bootOpts, ns, selfTLS
 	b.mu.Unlock()
 
 	b.logger.InfoContext(
@@ -198,7 +347,7 @@ func (b *Broker) Start(ctx context.Context) error {
 	// Establish an admin connection used only for stream provisioning.
 	// This is a plain TCP connection to the loopback listener; the latency
 	// is negligible and avoids importing the server package into callers.
-	nc, err := nats.Connect(ns.ClientURL(), b.adminOptions()...)
+	nc, err := nats.Connect(ns.ClientURL(), b.adminOptions(ns)...)
 	if err != nil {
 		ns.Shutdown()
 		ns.WaitForShutdown()
@@ -303,7 +452,7 @@ func (b *Broker) NewClient() (*Client, error) {
 	if ns == nil {
 		return nil, errors.New("bus: broker not started")
 	}
-	return NewClient(ns.ClientURL(), b.logger, b.adminOptions()...)
+	return NewClient(ns.ClientURL(), b.logger, b.adminOptions(ns)...)
 }
 
 // buildNkeys converts the enrolled credential set into NATS nkey users, plus
@@ -366,16 +515,45 @@ func buildNkeys(serverPub string, creds []WorkerCredentialRef, logger *slog.Logg
 	return users
 }
 
-// adminOptions returns the connect options for the broker's own admin
-// connection, which provisions streams. Empty when auth is disabled.
-func (b *Broker) adminOptions() []nats.Option {
-	if !b.cfg.Auth.Enabled {
-		return nil
-	}
+// adminOptions returns the connect options the server's OWN connections use —
+// the admin connection that provisions streams, and every Client handed out by
+// [Broker.NewClient].
+//
+// These connections go in-process (nats.InProcessServer) rather than over the
+// loopback TCP listener. That is what lets broker TLS be turned on without the
+// server having to trust its own certificate to talk to itself: nats-server
+// clears info.TLSRequired for in-process connections (server/server.go:3296).
+//
+// Authentication is unaffected — an in-process connection still traverses the
+// normal client auth path, so the server nkey is presented and checked exactly
+// as before.
+func (b *Broker) adminOptions(ns *natsserver.Server) []nats.Option {
+	opts := []nats.Option{nats.InProcessServer(ns)}
+
 	b.mu.Lock()
-	pub, seed := b.serverPub, b.serverSeed
+	pub, seed, selfTLS := b.serverPub, b.serverSeed, b.selfTLS
 	b.mu.Unlock()
-	return []nats.Option{brokerauth.NkeyOption(pub, seed)}
+
+	// When the broker requires TLS, the server's own connection must speak it
+	// too. nats-server SNIFFS the first six bytes of an in-process connection
+	// to decide whether the client wants TLS (createClientEx, sniffTLS), and
+	// it does that read BEFORE sending INFO. Over a net.Pipe — which is
+	// unbuffered and synchronous — a client that waits for INFO before writing
+	// deadlocks against that read. Speaking TLS makes the client write a
+	// ClientHello immediately, the sniff sees 0x16, and the handshake
+	// proceeds.
+	//
+	// The in-process TLS exemption at nats-server server.go:3296 is therefore
+	// unreachable for a client that stays silent, which is why this does not
+	// simply connect in the clear.
+	if selfTLS != nil {
+		opts = append(opts, nats.Secure(selfTLS))
+	}
+
+	if !b.cfg.Auth.Enabled {
+		return opts
+	}
+	return append(opts, brokerauth.NkeyOption(pub, seed))
 }
 
 // ReloadCredentials replaces the enrolled worker set on a running broker.
