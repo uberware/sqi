@@ -3,35 +3,12 @@
 package api
 
 import (
-	"bytes"
-	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 
 	"github.com/uberware/sqi/internal/store/fake"
 )
-
-// doRequestWithClient is doRequest with a caller-supplied client. The shared
-// helper uses http.DefaultClient, which cannot verify httptest's self-signed
-// TLS certificate; httptest.Server.Client() can.
-func doRequestWithClient(t *testing.T, client *http.Client, method, url string, body any) *http.Response {
-	t.Helper()
-	b, err := json.Marshal(body)
-	if err != nil {
-		t.Fatalf("marshal body: %v", err)
-	}
-	req, err := http.NewRequestWithContext(t.Context(), method, url, bytes.NewReader(b))
-	if err != nil {
-		t.Fatalf("new request: %v", err)
-	}
-	req.Header.Set("Content-Type", "application/json")
-	resp, err := client.Do(req)
-	if err != nil {
-		t.Fatalf("%s %s: %v", method, url, err)
-	}
-	return resp
-}
 
 // The session cookie's Secure attribute is resolved by authHandler.secure from
 // the three-valued auth.session.cookie_secure setting. "auto" — the default —
@@ -63,7 +40,7 @@ func loginCookieUnder(t *testing.T, tlsListener bool, mode string) *http.Cookie 
 
 	client := srv.Client() // trusts httptest's own certificate when TLS
 	resp := doRequestWithClient(t, client, http.MethodPost, srv.URL+"/api/v1/auth/login",
-		map[string]string{"username": "alice", "password": "hunter2!"})
+		map[string]string{"username": "alice", "password": "hunter2!"}, nil)
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {

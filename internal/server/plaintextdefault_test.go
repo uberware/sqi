@@ -3,19 +3,15 @@
 package server
 
 import (
-	"context"
 	"crypto/tls"
-	"fmt"
-	"log/slog"
 	"net/http"
-	"os"
+	"strings"
 	"testing"
 	"time"
 
 	nats "github.com/nats-io/nats.go"
 
 	"github.com/uberware/sqi/internal/config"
-	"github.com/uberware/sqi/internal/scheduler"
 )
 
 // TestDefaultConfig_ServesPlaintextUnchanged is Phase 4's named
@@ -27,11 +23,6 @@ import (
 // Each assertion states a property of the plaintext default that a future TLS
 // change would break loudly rather than quietly.
 func TestDefaultConfig_ServesPlaintextUnchanged(t *testing.T) {
-	httpPort, natsPort := freeTestPort(t), freeTestPort(t)
-	httpAddr := fmt.Sprintf("127.0.0.1:%d", httpPort)
-	natsAddr := fmt.Sprintf("127.0.0.1:%d", natsPort)
-	tmpDir := t.TempDir()
-
 	// Derived from config.DefaultConfig() rather than hand-written, so a
 	// default that starts shipping TLS on would fail here instead of being
 	// invisible to a literal struct.
@@ -43,47 +34,16 @@ func TestDefaultConfig_ServesPlaintextUnchanged(t *testing.T) {
 		t.Fatal("config.DefaultConfig() ships nats.tls.enabled = true; TLS must be opt-in")
 	}
 
-	cfg := Config{
-		HTTPAddr:           httpAddr,
-		HTTPTLS:            defaults.HTTP.TLS,
-		NATSTLS:            defaults.NATS.TLS,
-		CORSOrigins:        []string{"*"},
-		NATSAddr:           natsAddr,
-		NATSDataDir:        tmpDir + "/nats",
-		NATSMaxStoreMB:     64,
-		SQLitePath:         tmpDir + "/test.db",
-		CheckpointInterval: time.Minute,
-		Scheduler: scheduler.Config{
-			AssignInterval:         100 * time.Millisecond,
-			AssignBatchSize:        10,
-			AssignWorkers:          2,
-			WorkerTimeout:          30 * time.Second,
-			HeartbeatSweepInterval: 15 * time.Second,
-		},
-		DiscoveryEnabled: false,
-	}
-	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	srv := New(cfg, logger, nil)
-
-	ctx, cancel := context.WithCancel(context.Background())
-	done := make(chan error, 1)
-	go func() { done <- srv.Run(ctx) }()
-	t.Cleanup(func() {
-		cancel()
-		select {
-		case <-done:
-		case <-time.After(30 * time.Second):
-			t.Error("server did not shut down within 30s")
-		}
+	// Same boot helper the TLS tests use, so the only difference between this
+	// test and those is the TLS configuration itself.
+	srv, base := startTestServer(t, "http", func(cfg *Config) {
+		cfg.HTTPTLS = defaults.HTTP.TLS
+		cfg.NATSTLS = defaults.NATS.TLS
 	})
-	select {
-	case err := <-done:
-		t.Fatalf("server exited during startup: %v", err)
-	case <-time.After(50 * time.Millisecond):
-	}
+	httpAddr := strings.TrimPrefix(base, "http://")
+	natsAddr := srv.cfg.NATSAddr
 
 	client := &http.Client{Timeout: 5 * time.Second}
-	base := "http://" + httpAddr
 
 	// 1. Plain HTTP serves.
 	deadline := time.Now().Add(10 * time.Second)

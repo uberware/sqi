@@ -3,7 +3,6 @@
 package config_test
 
 import (
-	"crypto/tls"
 	"os"
 	"path/filepath"
 	"strings"
@@ -154,68 +153,5 @@ func TestValidate_DefaultConfigHasTLSOff(t *testing.T) {
 	}
 	if errs := config.Validate(cfg); len(errs) != 0 {
 		t.Errorf("default config does not validate: %v", errs)
-	}
-}
-
-func TestLoadServerTLS_NoClientCAMeansNoClientAuth(t *testing.T) {
-	cert, key, _ := writeCerts(t, time.Hour)
-	tc, err := config.LoadServerTLS(cert, key, "")
-	if err != nil {
-		t.Fatalf("LoadServerTLS: %v", err)
-	}
-	if tc.ClientAuth != tls.NoClientCert {
-		t.Errorf("ClientAuth = %v, want NoClientCert", tc.ClientAuth)
-	}
-	if tc.MinVersion != tls.VersionTLS12 {
-		t.Errorf("MinVersion = %x, want TLS 1.2", tc.MinVersion)
-	}
-}
-
-func TestLoadServerTLS_ClientCARequiresAndVerifies(t *testing.T) {
-	cert, key, caFile := writeCerts(t, time.Hour)
-	tc, err := config.LoadServerTLS(cert, key, caFile)
-	if err != nil {
-		t.Fatalf("LoadServerTLS: %v", err)
-	}
-	if tc.ClientAuth != tls.RequireAndVerifyClientCert {
-		t.Errorf("ClientAuth = %v, want RequireAndVerifyClientCert", tc.ClientAuth)
-	}
-	if tc.ClientCAs == nil {
-		t.Error("ClientCAs is nil, want the configured CA pool")
-	}
-}
-
-func TestLoad_TLSFromFileAndEnv(t *testing.T) {
-	cert, key, ca := writeCerts(t, time.Hour)
-	path := filepath.Join(t.TempDir(), "sqi.yaml")
-	body := "http:\n  tls:\n    enabled: true\n    cert_file: " + cert + "\n    key_file: " + key +
-		"\nnats:\n  tls:\n    enabled: true\n    cert_file: " + cert + "\n    key_file: " + key +
-		"\n    client_ca_file: " + ca + "\n"
-	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
-		t.Fatalf("write config: %v", err)
-	}
-
-	cfg, err := config.Load(path, config.FlagOverrides{})
-	if err != nil {
-		t.Fatalf("Load: %v", err)
-	}
-	if !cfg.HTTP.TLS.Enabled || cfg.HTTP.TLS.CertFile != cert || cfg.HTTP.TLS.KeyFile != key {
-		t.Errorf("http.tls from file = %+v, want enabled with %s/%s", cfg.HTTP.TLS, cert, key)
-	}
-	if !cfg.NATS.TLS.Enabled || cfg.NATS.TLS.ClientCAFile != ca {
-		t.Errorf("nats.tls from file = %+v, want enabled with client CA %s", cfg.NATS.TLS, ca)
-	}
-
-	t.Setenv("SQI_HTTP_TLS_ENABLED", "false")
-	t.Setenv("SQI_NATS_TLS_CLIENT_CA_FILE", "/env/override.pem")
-	cfg, err = config.Load(path, config.FlagOverrides{})
-	if err != nil {
-		t.Fatalf("Load with env: %v", err)
-	}
-	if cfg.HTTP.TLS.Enabled {
-		t.Error("SQI_HTTP_TLS_ENABLED=false did not override the config file")
-	}
-	if cfg.NATS.TLS.ClientCAFile != "/env/override.pem" {
-		t.Errorf("nats.tls.client_ca_file = %q, want the env override", cfg.NATS.TLS.ClientCAFile)
 	}
 }

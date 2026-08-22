@@ -120,26 +120,37 @@ func runTLSInit(cmd *cobra.Command, _ []string) error {
 		return err
 	}
 
-	out := cmd.OutOrStdout()
-	fmt.Fprintf(out, "Wrote certificate material to %s\n", tlsInitOut)
-	fmt.Fprintf(out, "  SANs: %v\n\n", hosts)
-	fmt.Fprintf(out, "On sqi-server:\n")
-	fmt.Fprintf(out, "  http.tls.enabled:    true\n")
-	fmt.Fprintf(out, "  http.tls.cert_file:  %s/server.crt\n", tlsInitOut)
-	fmt.Fprintf(out, "  http.tls.key_file:   %s/server.key\n", tlsInitOut)
-	fmt.Fprintf(out, "  nats.tls.enabled:    true\n")
-	fmt.Fprintf(out, "  nats.tls.cert_file:  %s/server.crt\n", tlsInitOut)
-	fmt.Fprintf(out, "  nats.tls.key_file:   %s/server.key\n\n", tlsInitOut)
-	fmt.Fprintf(out, "On each sqi-worker (copy ca.crt over first):\n")
-	fmt.Fprintf(out, "  nats.tls_ca_file:         /path/to/ca.crt\n")
-	fmt.Fprintf(out, "  nats.server_tls_ca_file:  /path/to/ca.crt\n")
+	// One template rather than a run of Fprintf calls, so the rendered layout
+	// is visible in the source. TestTLSInit_PrintsConfigKeys only greps for
+	// substrings, so a lost blank line would otherwise go unnoticed.
+	fmt.Fprintf(cmd.OutOrStdout(), `Wrote certificate material to %[1]s
+  SANs: %[2]v
+
+On sqi-server:
+  http.tls.enabled:    true
+  http.tls.cert_file:  %[1]s/server.crt
+  http.tls.key_file:   %[1]s/server.key
+  nats.tls.enabled:    true
+  nats.tls.cert_file:  %[1]s/server.crt
+  nats.tls.key_file:   %[1]s/server.key
+
+On each sqi-worker (copy ca.crt over first):
+  nats.tls_ca_file:         /path/to/ca.crt
+  nats.server_tls_ca_file:  /path/to/ca.crt
+`, tlsInitOut, hosts)
+
 	if len(tlsInitClients) > 0 {
-		fmt.Fprintf(out, "\nFor client-certificate (mTLS) workers, also set on the server:\n")
-		fmt.Fprintf(out, "  nats.tls.client_ca_file: %s/ca.crt\n", tlsInitOut)
-		fmt.Fprintf(out, "and give each worker its own client-<id>.crt / .key as\n")
-		fmt.Fprintf(out, "  nats.tls_cert_file / nats.tls_key_file\n")
+		fmt.Fprintf(cmd.OutOrStdout(), `
+For client-certificate (mTLS) workers, also set on the server:
+  nats.tls.client_ca_file: %s/ca.crt
+and give each worker its own client-<id>.crt / .key as
+  nats.tls_cert_file / nats.tls_key_file
+`, tlsInitOut)
 	}
-	fmt.Fprintf(out, "\nEnabling TLS is a coordinated restart, not a rolling one: distribute\n")
-	fmt.Fprintf(out, "ca.crt and stage worker config BEFORE flipping the server. See docs/tls.md.\n")
+
+	fmt.Fprint(cmd.OutOrStdout(), `
+Enabling TLS is a coordinated restart, not a rolling one: distribute
+ca.crt and stage worker config BEFORE flipping the server. See docs/tls.md.
+`)
 	return nil
 }

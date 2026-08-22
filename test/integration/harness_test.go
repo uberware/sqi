@@ -75,6 +75,15 @@ type testServer struct {
 	// NATSAddr is the full "host:port" address the embedded NATS server
 	// is listening on.  Workers connect to "nats://" + NATSAddr.
 	NATSAddr string
+	// Scheme is "http" or "https", matching whether this server terminates
+	// TLS. Empty means "http". apiURL and every helper built on it read this,
+	// so a TLS server needs no parallel set of helpers.
+	Scheme string
+
+	// Client performs requests against this server. Nil means the package's
+	// default plaintext client; a TLS server sets one trusting its farm CA.
+	Client *http.Client
+
 	// DBPath is the SQLite file this server was started against. Set by
 	// constructors that know it, empty otherwise. A caller that needs to
 	// inspect store state the REST API does not expose (e.g. confirming no
@@ -184,6 +193,15 @@ func startServer(t *testing.T) *testServer {
 	return ts
 }
 
+// clientFor returns the HTTP client to use against ts: its own when it has one
+// (a TLS server trusting its farm CA), the package default otherwise.
+func clientFor(ts *testServer) *http.Client {
+	if ts != nil && ts.Client != nil {
+		return ts.Client
+	}
+	return httpClient
+}
+
 // waitForTCP dials addr in a polling loop until the connection succeeds or
 // timeout expires.  Returns true if the port became reachable.
 func waitForTCP(tb testing.TB, addr string, timeout time.Duration) bool {
@@ -206,15 +224,14 @@ func waitForTCP(tb testing.TB, addr string, timeout time.Duration) bool {
 // stream provisioning) are fully up before tests start.
 func waitForReadyz(tb testing.TB, httpAddr string, timeout time.Duration) bool {
 	tb.Helper()
-	return waitForReadyzClient(tb, &http.Client{Timeout: 2 * time.Second}, "http://"+httpAddr, timeout)
+	return waitForReadyzClient(tb, &http.Client{Timeout: 2 * time.Second}, "http://"+httpAddr+"/readyz", timeout)
 }
 
 // waitForReadyzClient is waitForReadyz against a caller-supplied client and
 // base URL. A TLS-terminated server needs both: an https:// scheme, and a
 // client that trusts the farm CA. See tls_test.go.
-func waitForReadyzClient(tb testing.TB, client *http.Client, baseURL string, timeout time.Duration) bool {
+func waitForReadyzClient(tb testing.TB, client *http.Client, url string, timeout time.Duration) bool {
 	tb.Helper()
-	url := baseURL + "/readyz"
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
 		req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, url, nil)

@@ -15,7 +15,6 @@ import (
 	"bytes"
 	"context"
 	"crypto/tls"
-	"crypto/x509"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -27,6 +26,7 @@ import (
 	"time"
 
 	"github.com/uberware/sqi/internal/brokerauth"
+	"github.com/uberware/sqi/internal/tlsutil"
 )
 
 // ErrNoCredential is returned when no credential file exists and no join
@@ -85,13 +85,9 @@ func httpClient(cfg Config) (*http.Client, error) {
 		InsecureSkipVerify: cfg.InsecureSkipVerify, //nolint:gosec // G402: explicitly requested via nats.server_tls_insecure_skip_verify
 	}
 	if cfg.TLSCAFile != "" {
-		pemBytes, err := os.ReadFile(cfg.TLSCAFile)
+		pool, err := tlsutil.CertPool(cfg.TLSCAFile)
 		if err != nil {
-			return nil, fmt.Errorf("worker: read enrollment CA file %s: %w", cfg.TLSCAFile, err)
-		}
-		pool := x509.NewCertPool()
-		if !pool.AppendCertsFromPEM(pemBytes) {
-			return nil, fmt.Errorf("worker: no valid certificates found in enrollment CA file %s", cfg.TLSCAFile)
+			return nil, fmt.Errorf("worker: enrollment %w", err)
 		}
 		tlsCfg.RootCAs = pool
 	}
@@ -212,6 +208,12 @@ func enrollWithServer(ctx context.Context, cfg Config, token, publicKey string) 
 	client, err := httpClient(cfg)
 	if err != nil {
 		return err
+	}
+	if cfg.HTTPClient == nil {
+		// This client is ours and is used exactly once. Without this the
+		// worker keeps an idle TLS connection to the server open for the rest
+		// of its life, for a request it will never repeat.
+		defer client.CloseIdleConnections()
 	}
 
 	resp, err := client.Do(req)

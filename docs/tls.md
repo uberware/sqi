@@ -225,6 +225,11 @@ silently: a certificate signed by an unknown CA fails verification with that nam
 as the cause, and a worker with no TLS configuration attempting a TLS-required
 broker fails with `secure connection not available`.
 
+The server also advertises `tls=1` / `nats_tls=1` in its mDNS TXT records when the
+respective listener is TLS-terminated. Nothing consumes those records yet — a
+discovering worker still learns the transport by attempting a connection — so
+treat them as informational for external tooling rather than as auto-configuration.
+
 `scripts/smoke.sh` runs its whole flow in three modes — plain, broker-auth and TLS
 — so the TLS path is exercised end to end on every CI run.
 

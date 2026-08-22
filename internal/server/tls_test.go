@@ -7,7 +7,6 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
-	"fmt"
 	"log/slog"
 	"net"
 	"net/http"
@@ -45,22 +44,6 @@ func writeServerCerts(t *testing.T, validFor time.Duration) (certFile, keyFile, 
 	return filepath.Join(dir, "server.crt"), filepath.Join(dir, "server.key"), filepath.Join(dir, "ca.crt")
 }
 
-// freeTestPort returns a port that was free a moment ago.
-func freeTestPort(t *testing.T) int {
-	t.Helper()
-	var lc net.ListenConfig
-	l, err := lc.Listen(context.Background(), "tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("listen: %v", err)
-	}
-	defer func() { _ = l.Close() }()
-	addr, ok := l.Addr().(*net.TCPAddr)
-	if !ok {
-		t.Fatalf("listener address %v is not a *net.TCPAddr", l.Addr())
-	}
-	return addr.Port
-}
-
 // get performs a GET and returns the response. It exists because the lint
 // config forbids http.Client.Get (noctx) in favor of an explicit request.
 func get(t *testing.T, client *http.Client, url string) (*http.Response, error) {
@@ -72,19 +55,22 @@ func get(t *testing.T, client *http.Client, url string) (*http.Response, error) 
 	return client.Do(req)
 }
 
-// startTLSServer boots a real Server with TLS enabled and returns its
-// https:// base URL plus the CA that signed its certificate.
-func startTLSServer(t *testing.T, certFile, keyFile string) string {
+// startTestServer boots a real Server on free loopback ports, applies mutate
+// to its Config, waits for the listener, and returns the base URL.
+//
+// Shared by the TLS tests and by the plaintext-default regression test, so the
+// two cannot drift apart in how they boot a server — the difference between
+// them should be the TLS config and nothing else.
+func startTestServer(t *testing.T, scheme string, mutate func(*Config)) (*Server, string) {
 	t.Helper()
-	httpPort, natsPort := freeTestPort(t), freeTestPort(t)
-	httpAddr := fmt.Sprintf("127.0.0.1:%d", httpPort)
+	httpAddr := freeLoopbackAddr(t)
+	natsAddr := freeLoopbackAddr(t)
 	tmpDir := t.TempDir()
 
 	cfg := Config{
 		HTTPAddr:           httpAddr,
-		HTTPTLS:            config.TLSConfig{Enabled: true, CertFile: certFile, KeyFile: keyFile},
 		CORSOrigins:        []string{"*"},
-		NATSAddr:           fmt.Sprintf("127.0.0.1:%d", natsPort),
+		NATSAddr:           natsAddr,
 		NATSDataDir:        tmpDir + "/nats",
 		NATSMaxStoreMB:     64,
 		SQLitePath:         tmpDir + "/test.db",
@@ -97,6 +83,9 @@ func startTLSServer(t *testing.T, certFile, keyFile string) string {
 			HeartbeatSweepInterval: 15 * time.Second,
 		},
 		DiscoveryEnabled: false,
+	}
+	if mutate != nil {
+		mutate(&cfg)
 	}
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
 	srv := New(cfg, logger, nil)
@@ -119,24 +108,31 @@ func startTLSServer(t *testing.T, certFile, keyFile string) string {
 	case <-time.After(50 * time.Millisecond):
 	}
 
-	base := "https://" + httpAddr
-	// Wait for the TLS listener to accept.
 	dialer := &net.Dialer{Timeout: 200 * time.Millisecond}
 	deadline := time.Now().Add(10 * time.Second)
 	for !time.Now().After(deadline) {
 		c, err := dialer.DialContext(context.Background(), "tcp", httpAddr)
 		if err == nil {
 			_ = c.Close()
-			return base
+			return srv, scheme + "://" + httpAddr
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
-	t.Fatalf("TLS listener did not come up on %s within 10s", httpAddr)
-	return ""
+	t.Fatalf("listener did not come up on %s within 10s", httpAddr)
+	return nil, ""
 }
 
-// caClient returns an HTTP client trusting only caFile.
-func caClient(t *testing.T, caFile string) *http.Client {
+// startTLSServer boots a server with TLS enabled and returns its https:// URL.
+func startTLSServer(t *testing.T, certFile, keyFile string) string {
+	t.Helper()
+	_, base := startTestServer(t, "https", func(cfg *Config) {
+		cfg.HTTPTLS = config.TLSConfig{Enabled: true, CertFile: certFile, KeyFile: keyFile}
+	})
+	return base
+}
+
+// caPool returns a root pool trusting only caFile.
+func caPool(t *testing.T, caFile string) *x509.CertPool {
 	t.Helper()
 	pem, err := os.ReadFile(caFile)
 	if err != nil {
@@ -146,6 +142,13 @@ func caClient(t *testing.T, caFile string) *http.Client {
 	if !pool.AppendCertsFromPEM(pem) {
 		t.Fatal("CA did not append to pool")
 	}
+	return pool
+}
+
+// caClient returns an HTTP client trusting only caFile.
+func caClient(t *testing.T, caFile string) *http.Client {
+	t.Helper()
+	pool := caPool(t, caFile)
 	return &http.Client{
 		Timeout: 5 * time.Second,
 		Transport: &http.Transport{

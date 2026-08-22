@@ -42,6 +42,7 @@ import (
 	"github.com/uberware/sqi/internal/scheduler"
 	"github.com/uberware/sqi/internal/store"
 	"github.com/uberware/sqi/internal/store/sqlite"
+	"github.com/uberware/sqi/internal/tlsutil"
 	"github.com/uberware/sqi/internal/version"
 	"github.com/uberware/sqi/internal/ws"
 )
@@ -321,7 +322,7 @@ func (s *Server) Metrics() *metrics.Metrics {
 func (s *Server) serveHTTP(ctx context.Context) error {
 	tlsOn := s.cfg.HTTPTLS.Enabled
 	if tlsOn {
-		tlsCfg, err := config.LoadServerTLS(s.cfg.HTTPTLS.CertFile, s.cfg.HTTPTLS.KeyFile, "")
+		tlsCfg, err := tlsutil.ServerConfig(s.cfg.HTTPTLS.CertFile, s.cfg.HTTPTLS.KeyFile, "")
 		if err != nil {
 			return fmt.Errorf("http: tls: %w", err)
 		}
@@ -359,24 +360,28 @@ func (s *Server) serveHTTP(ctx context.Context) error {
 // warnings are emitted here rather than in internal/bus so that package does
 // not have to import internal/config.
 func warnTLSConfig(ctx context.Context, logger *slog.Logger, httpTLS config.TLSConfig, natsTLS config.NATSTLSConfig) {
-	if !httpTLS.Enabled && (httpTLS.CertFile != "" || httpTLS.KeyFile != "") {
-		logger.WarnContext(ctx, "http: tls certificates are configured but http.tls.enabled is false; serving plaintext",
-			slog.String("cert_file", httpTLS.CertFile))
+	surfaces := []struct {
+		component string // log prefix
+		key       string // the config key an operator would flip
+		enabled   bool
+		certFile  string
+		keyFile   string
+	}{
+		{"http", "http.tls.enabled", httpTLS.Enabled, httpTLS.CertFile, httpTLS.KeyFile},
+		{"bus", "nats.tls.enabled", natsTLS.Enabled, natsTLS.CertFile, natsTLS.KeyFile},
 	}
-	if !natsTLS.Enabled && (natsTLS.CertFile != "" || natsTLS.KeyFile != "") {
-		logger.WarnContext(ctx, "bus: tls certificates are configured but nats.tls.enabled is false; broker is plaintext",
-			slog.String("cert_file", natsTLS.CertFile))
-	}
-	if httpTLS.Enabled {
-		if notAfter, soon := config.ExpiringSoon(httpTLS.CertFile, httpTLS.KeyFile); soon {
-			logger.WarnContext(ctx, "http: tls certificate expires soon",
-				slog.String("cert_file", httpTLS.CertFile), slog.Time("not_after", notAfter))
+	for _, s := range surfaces {
+		if !s.enabled {
+			if s.certFile != "" || s.keyFile != "" {
+				logger.WarnContext(ctx,
+					s.component+": tls certificates are configured but "+s.key+" is false; serving plaintext",
+					slog.String("cert_file", s.certFile))
+			}
+			continue
 		}
-	}
-	if natsTLS.Enabled {
-		if notAfter, soon := config.ExpiringSoon(natsTLS.CertFile, natsTLS.KeyFile); soon {
-			logger.WarnContext(ctx, "bus: tls certificate expires soon",
-				slog.String("cert_file", natsTLS.CertFile), slog.Time("not_after", notAfter))
+		if notAfter, soon := config.ExpiringSoon(s.certFile); soon {
+			logger.WarnContext(ctx, s.component+": tls certificate expires soon",
+				slog.String("cert_file", s.certFile), slog.Time("not_after", notAfter))
 		}
 	}
 }

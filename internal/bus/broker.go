@@ -11,7 +11,6 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
-	"os"
 	"strconv"
 	"sync"
 	"time"
@@ -21,6 +20,7 @@ import (
 	"github.com/nats-io/nats.go/jetstream"
 
 	"github.com/uberware/sqi/internal/brokerauth"
+	"github.com/uberware/sqi/internal/tlsutil"
 )
 
 // BrokerConfig holds the parameters needed to start the embedded NATS server.
@@ -70,29 +70,34 @@ type BrokerConfig struct {
 // InsecureSkipVerify disables only Go's default chain/hostname check;
 // VerifyPeerCertificate below replaces it with an exact-match pin.
 func selfTLSConfig(leaf []byte) *tls.Config {
+	// One pin, called from both callbacks. VerifyPeerCertificate is NOT
+	// invoked on a resumed session, so VerifyConnection — which runs on every
+	// handshake, resumed or full — is what actually guarantees the check
+	// cannot be skipped. Keeping both is deliberate; duplicating the
+	// comparison between them was not.
+	pin := func(raw []byte) error {
+		if len(raw) == 0 {
+			return errors.New("bus: broker presented no certificate on the in-process connection")
+		}
+		if !bytes.Equal(raw, leaf) {
+			return errors.New("bus: broker presented a certificate this server did not load")
+		}
+		return nil
+	}
 	return &tls.Config{
 		MinVersion:         tls.VersionTLS12,
 		InsecureSkipVerify: true, //nolint:gosec // G402: replaced by the exact-certificate pin in VerifyPeerCertificate/VerifyConnection below
 		VerifyPeerCertificate: func(rawCerts [][]byte, _ [][]*x509.Certificate) error {
 			if len(rawCerts) == 0 {
-				return errors.New("bus: broker presented no certificate on the in-process connection")
+				return pin(nil)
 			}
-			if !bytes.Equal(rawCerts[0], leaf) {
-				return errors.New("bus: broker presented a certificate this server did not load")
-			}
-			return nil
+			return pin(rawCerts[0])
 		},
-		// VerifyPeerCertificate is not called on a RESUMED session, so the pin
-		// is repeated here: VerifyConnection runs on every handshake, resumed
-		// or full. Without it a resumed session would skip the check entirely.
 		VerifyConnection: func(cs tls.ConnectionState) error {
 			if len(cs.PeerCertificates) == 0 {
-				return errors.New("bus: broker presented no certificate on the in-process connection")
+				return pin(nil)
 			}
-			if !bytes.Equal(cs.PeerCertificates[0].Raw, leaf) {
-				return errors.New("bus: broker presented a certificate this server did not load")
-			}
-			return nil
+			return pin(cs.PeerCertificates[0].Raw)
 		},
 	}
 }
@@ -102,31 +107,17 @@ func selfTLSConfig(leaf []byte) *tls.Config {
 // The paths have already been validated at config load, so a failure here
 // means the files changed underneath a running process.
 func buildBrokerTLS(cfg BrokerTLSConfig) (serverTLS, selfTLS *tls.Config, err error) {
-	cert, err := tls.LoadX509KeyPair(cfg.CertFile, cfg.KeyFile)
+	tlsCfg, err := tlsutil.ServerConfig(cfg.CertFile, cfg.KeyFile, cfg.ClientCAFile)
 	if err != nil {
-		return nil, nil, fmt.Errorf("load keypair %s/%s: %w", cfg.CertFile, cfg.KeyFile, err)
+		return nil, nil, err
 	}
-	if len(cert.Certificate) == 0 {
+	if len(tlsCfg.Certificates) == 0 || len(tlsCfg.Certificates[0].Certificate) == 0 {
 		return nil, nil, fmt.Errorf("keypair %s/%s contains no certificate", cfg.CertFile, cfg.KeyFile)
 	}
-	tlsCfg := &tls.Config{
-		MinVersion:   tls.VersionTLS12,
-		Certificates: []tls.Certificate{cert},
-	}
-	self := selfTLSConfig(cert.Certificate[0])
+	self := selfTLSConfig(tlsCfg.Certificates[0].Certificate[0])
 	if cfg.ClientCAFile == "" {
 		return tlsCfg, self, nil
 	}
-	pemBytes, err := os.ReadFile(cfg.ClientCAFile)
-	if err != nil {
-		return nil, nil, fmt.Errorf("read client CA file %s: %w", cfg.ClientCAFile, err)
-	}
-	pool := x509.NewCertPool()
-	if !pool.AppendCertsFromPEM(pemBytes) {
-		return nil, nil, fmt.Errorf("no valid certificates found in client CA file %s", cfg.ClientCAFile)
-	}
-	tlsCfg.ClientCAs = pool
-	tlsCfg.ClientAuth = tls.RequireAndVerifyClientCert
 
 	// The server's own in-process connection is exempted from the
 	// client-certificate requirement.
@@ -141,12 +132,11 @@ func buildBrokerTLS(cfg BrokerTLSConfig) (serverTLS, selfTLS *tls.Config, err er
 	// in-process connections on net.Pipe, whose addresses report "pipe"; a
 	// real network client always reports "tcp"/"tcp4"/"tcp6" and so can never
 	// reach this branch. mTLS is therefore still required of every worker.
-	base := tlsCfg.Clone()
+	exempt := tlsCfg.Clone()
+	exempt.ClientAuth = tls.NoClientCert
+	exempt.ClientCAs = nil
 	tlsCfg.GetConfigForClient = func(hello *tls.ClientHelloInfo) (*tls.Config, error) {
 		if hello.Conn != nil && hello.Conn.LocalAddr().Network() == "pipe" {
-			exempt := base.Clone()
-			exempt.ClientAuth = tls.NoClientCert
-			exempt.ClientCAs = nil
 			return exempt, nil
 		}
 		return nil, nil //nolint:nilnil // a nil *tls.Config means "use the listener's own config", which is the crypto/tls contract here

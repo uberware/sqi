@@ -64,13 +64,25 @@ type workerListResp struct {
 
 // apiURL builds a full URL for the test server.
 func apiURL(ts *testServer, path string) string {
-	return "http://" + ts.HTTPAddr + path
+	scheme := ts.Scheme
+	if scheme == "" {
+		scheme = "http"
+	}
+	return scheme + "://" + ts.HTTPAddr + path
 }
 
 // mustDoJSON performs an HTTP request and decodes the JSON response body into
 // dst.  It fails the test on any transport or status error outside the
 // expected status code set.
 func mustDoJSON(t *testing.T, method, url string, body []byte, contentType string, expectStatus int, dst any) {
+	t.Helper()
+	mustDoJSONClient(t, httpClient, method, url, body, contentType, expectStatus, dst)
+}
+
+// mustDoJSONClient is [mustDoJSON] with a caller-supplied client, for a server
+// whose certificate the package-default client cannot verify. Same shape as
+// waitForReadyzClient in harness_test.go.
+func mustDoJSONClient(t *testing.T, client *http.Client, method, url string, body []byte, contentType string, expectStatus int, dst any) {
 	t.Helper()
 
 	var reqBody *bytes.Reader
@@ -88,7 +100,7 @@ func mustDoJSON(t *testing.T, method, url string, body []byte, contentType strin
 		req.Header.Set("Content-Type", contentType)
 	}
 
-	resp, err := httpClient.Do(req)
+	resp, err := client.Do(req)
 	if err != nil {
 		t.Fatalf("mustDoJSON: %s %s: %v", method, url, err)
 	}
@@ -177,7 +189,7 @@ func seedFarmAndQueue(t *testing.T, ts *testServer) (farmID, queueID string) {
 	var farmResp struct {
 		ID string `json:"id"`
 	}
-	mustDoJSON(t, http.MethodPost, apiURL(ts, "/api/v1/farms"), farmBody, "application/json", http.StatusCreated, &farmResp)
+	mustDoJSONClient(t, clientFor(ts), http.MethodPost, apiURL(ts, "/api/v1/farms"), farmBody, "application/json", http.StatusCreated, &farmResp)
 	if farmResp.ID == "" {
 		t.Fatal("seedFarmAndQueue: server returned empty farm ID")
 	}
@@ -193,7 +205,7 @@ func seedFarmAndQueue(t *testing.T, ts *testServer) (farmID, queueID string) {
 	var queueResp struct {
 		ID string `json:"id"`
 	}
-	mustDoJSON(t, http.MethodPost, apiURL(ts, "/api/v1/queues"), queueBody, "application/json", http.StatusCreated, &queueResp)
+	mustDoJSONClient(t, clientFor(ts), http.MethodPost, apiURL(ts, "/api/v1/queues"), queueBody, "application/json", http.StatusCreated, &queueResp)
 	if queueResp.ID == "" {
 		t.Fatal("seedFarmAndQueue: server returned empty queue ID")
 	}

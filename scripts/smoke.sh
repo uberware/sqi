@@ -269,41 +269,30 @@ if [ "$mode" = "brokerauth" ]; then
 fi
 
 log "starting sqi-server (http=${HTTP_ADDR}, nats=${NATS_ADDR}, mode=${mode})"
-if [ "$mode" = "tls" ]; then
-  SQI_HTTP_ADDR="$HTTP_ADDR" \
-  SQI_NATS_ADDR="$NATS_ADDR" \
-  SQI_NATS_DATA_DIR="${TMP_DIR}/nats" \
-  SQI_STORE_SQLITE_PATH="${TMP_DIR}/sqi.db" \
-  SQI_DISCOVERY_ENABLED="false" \
-  SQI_SCHEDULER_TICK_INTERVAL="100ms" \
-  SQI_LOG_LEVEL="warn" \
-  SQI_HTTP_TLS_ENABLED="true" \
-  SQI_HTTP_TLS_CERT_FILE="${CERT_DIR}/server.crt" \
-  SQI_HTTP_TLS_KEY_FILE="${CERT_DIR}/server.key" \
-  SQI_NATS_TLS_ENABLED="true" \
-  SQI_NATS_TLS_CERT_FILE="${CERT_DIR}/server.crt" \
-  SQI_NATS_TLS_KEY_FILE="${CERT_DIR}/server.key" \
-    "$SERVER_BIN" serve >"$SERVER_LOG" 2>&1 &
-elif [ "$mode" = "brokerauth" ]; then
-  SQI_HTTP_ADDR="$HTTP_ADDR" \
-  SQI_NATS_ADDR="$NATS_ADDR" \
-  SQI_NATS_DATA_DIR="${TMP_DIR}/nats" \
-  SQI_STORE_SQLITE_PATH="${TMP_DIR}/sqi.db" \
-  SQI_DISCOVERY_ENABLED="false" \
-  SQI_SCHEDULER_TICK_INTERVAL="100ms" \
-  SQI_LOG_LEVEL="warn" \
-  SQI_NATS_AUTH_ENABLED="true" \
-    "$SERVER_BIN" serve >"$SERVER_LOG" 2>&1 &
-else
-  SQI_HTTP_ADDR="$HTTP_ADDR" \
-  SQI_NATS_ADDR="$NATS_ADDR" \
-  SQI_NATS_DATA_DIR="${TMP_DIR}/nats" \
-  SQI_STORE_SQLITE_PATH="${TMP_DIR}/sqi.db" \
-  SQI_DISCOVERY_ENABLED="false" \
-  SQI_SCHEDULER_TICK_INTERVAL="100ms" \
-  SQI_LOG_LEVEL="warn" \
-    "$SERVER_BIN" serve >"$SERVER_LOG" 2>&1 &
-fi
+# run_smoke_flow runs in a subshell, so these exports are scoped to this run.
+# One common block plus per-mode extras: three near-identical copies is how a
+# new default silently ends up applying to only two of the three modes.
+export SQI_HTTP_ADDR="$HTTP_ADDR"
+export SQI_NATS_ADDR="$NATS_ADDR"
+export SQI_NATS_DATA_DIR="${TMP_DIR}/nats"
+export SQI_STORE_SQLITE_PATH="${TMP_DIR}/sqi.db"
+export SQI_DISCOVERY_ENABLED="false"
+export SQI_SCHEDULER_TICK_INTERVAL="100ms"
+export SQI_LOG_LEVEL="warn"
+case "$mode" in
+  brokerauth)
+    export SQI_NATS_AUTH_ENABLED="true"
+    ;;
+  tls)
+    export SQI_HTTP_TLS_ENABLED="true"
+    export SQI_HTTP_TLS_CERT_FILE="${CERT_DIR}/server.crt"
+    export SQI_HTTP_TLS_KEY_FILE="${CERT_DIR}/server.key"
+    export SQI_NATS_TLS_ENABLED="true"
+    export SQI_NATS_TLS_CERT_FILE="${CERT_DIR}/server.crt"
+    export SQI_NATS_TLS_KEY_FILE="${CERT_DIR}/server.key"
+    ;;
+esac
+"$SERVER_BIN" serve >"$SERVER_LOG" 2>&1 &
 SERVER_PID=$!
 
 # Poll /readyz until 200 (bounded). Fail fast if the process exits early.
@@ -342,53 +331,32 @@ log "created queue ${QUEUE_ID}"
 # ── Start the worker ──────────────────────────────────────────────────────────
 
 log "starting sqi-worker (nats=nats://${NATS_ADDR}, farm=${FARM_ID}, queue=${QUEUE_ID}, mode=${mode})"
-if [ "$mode" = "tls" ]; then
-  SQI_WORKER_NATS_URL="nats://${NATS_ADDR}" \
-  SQI_WORKER_DISCOVERY_ENABLE_MDNS="false" \
-  SQI_WORKER_FARM_ID="$FARM_ID" \
-  SQI_WORKER_QUEUE_IDS="$QUEUE_ID" \
-  SQI_WORKER_DATA_DIR="${TMP_DIR}/worker-data" \
-  SQI_WORKER_ALLOW_ROOT="true" \
-  SQI_WORKER_LOG_LEVEL="warn" \
-  SQI_WORKER_LOG_FORMAT="text" \
-  SQI_WORKER_HEARTBEAT_INTERVAL="1s" \
-  SQI_WORKER_PULL_IDLE_BACKOFF="300ms" \
-  SQI_WORKER_METRICS_ADDR="127.0.0.1:$(free_port)" \
-  SQI_WORKER_NATS_TLS_CA_FILE="${CERT_DIR}/ca.crt" \
-  SQI_WORKER_NATS_SERVER_TLS_CA_FILE="${CERT_DIR}/ca.crt" \
-    "$WORKER_BIN" start >"$WORKER_LOG" 2>&1 &
-elif [ "$mode" = "brokerauth" ]; then
-  # No SQI_WORKER_NATS_CREDENTIAL_FILE: it defaults under
-  # SQI_WORKER_DATA_DIR, which is what makes this worker's enrolled
-  # credential land in its own fresh, per-run data directory.
-  SQI_WORKER_NATS_URL="nats://${NATS_ADDR}" \
-  SQI_WORKER_DISCOVERY_ENABLE_MDNS="false" \
-  SQI_WORKER_FARM_ID="$FARM_ID" \
-  SQI_WORKER_QUEUE_IDS="$QUEUE_ID" \
-  SQI_WORKER_DATA_DIR="${TMP_DIR}/worker-data" \
-  SQI_WORKER_ALLOW_ROOT="true" \
-  SQI_WORKER_LOG_LEVEL="warn" \
-  SQI_WORKER_LOG_FORMAT="text" \
-  SQI_WORKER_HEARTBEAT_INTERVAL="1s" \
-  SQI_WORKER_PULL_IDLE_BACKOFF="300ms" \
-  SQI_WORKER_METRICS_ADDR="127.0.0.1:$(free_port)" \
-  SQI_WORKER_NATS_JOIN_TOKEN_FILE="$JOIN_TOKEN_FILE" \
-  SQI_WORKER_NATS_SERVER_URL="$BASE_URL" \
-    "$WORKER_BIN" start >"$WORKER_LOG" 2>&1 &
-else
-  SQI_WORKER_NATS_URL="nats://${NATS_ADDR}" \
-  SQI_WORKER_DISCOVERY_ENABLE_MDNS="false" \
-  SQI_WORKER_FARM_ID="$FARM_ID" \
-  SQI_WORKER_QUEUE_IDS="$QUEUE_ID" \
-  SQI_WORKER_DATA_DIR="${TMP_DIR}/worker-data" \
-  SQI_WORKER_ALLOW_ROOT="true" \
-  SQI_WORKER_LOG_LEVEL="warn" \
-  SQI_WORKER_LOG_FORMAT="text" \
-  SQI_WORKER_HEARTBEAT_INTERVAL="1s" \
-  SQI_WORKER_PULL_IDLE_BACKOFF="300ms" \
-  SQI_WORKER_METRICS_ADDR="127.0.0.1:$(free_port)" \
-    "$WORKER_BIN" start >"$WORKER_LOG" 2>&1 &
-fi
+# Same shape as the server block above: one common set, per-mode extras.
+export SQI_WORKER_NATS_URL="nats://${NATS_ADDR}"
+export SQI_WORKER_DISCOVERY_ENABLE_MDNS="false"
+export SQI_WORKER_FARM_ID="$FARM_ID"
+export SQI_WORKER_QUEUE_IDS="$QUEUE_ID"
+export SQI_WORKER_DATA_DIR="${TMP_DIR}/worker-data"
+export SQI_WORKER_ALLOW_ROOT="true"
+export SQI_WORKER_LOG_LEVEL="warn"
+export SQI_WORKER_LOG_FORMAT="text"
+export SQI_WORKER_HEARTBEAT_INTERVAL="1s"
+export SQI_WORKER_PULL_IDLE_BACKOFF="300ms"
+export SQI_WORKER_METRICS_ADDR="127.0.0.1:$(free_port)"
+case "$mode" in
+  brokerauth)
+    # No SQI_WORKER_NATS_CREDENTIAL_FILE: it defaults under
+    # SQI_WORKER_DATA_DIR, which is what makes this worker's enrolled
+    # credential land in its own fresh, per-run data directory.
+    export SQI_WORKER_NATS_JOIN_TOKEN_FILE="$JOIN_TOKEN_FILE"
+    export SQI_WORKER_NATS_SERVER_URL="$BASE_URL"
+    ;;
+  tls)
+    export SQI_WORKER_NATS_TLS_CA_FILE="${CERT_DIR}/ca.crt"
+    export SQI_WORKER_NATS_SERVER_TLS_CA_FILE="${CERT_DIR}/ca.crt"
+    ;;
+esac
+"$WORKER_BIN" start >"$WORKER_LOG" 2>&1 &
 WORKER_PID=$!
 
 # Poll GET /api/v1/workers until our worker is online.

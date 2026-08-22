@@ -5,9 +5,6 @@ package server
 import (
 	"context"
 	"crypto/tls"
-	"crypto/x509"
-	"os"
-	"path/filepath"
 	"testing"
 	"time"
 
@@ -16,40 +13,6 @@ import (
 	"github.com/uberware/sqi/internal/bus"
 	"github.com/uberware/sqi/internal/store/fake"
 )
-
-// startTestBrokerTLS boots a real embedded broker with BOTH authentication
-// and TLS enabled, mirroring startTestBroker in revokeworker_test.go.
-func startTestBrokerTLS(t *testing.T, creds []bus.WorkerCredentialRef, certFile, keyFile string) *bus.Broker {
-	t.Helper()
-	b := bus.New(bus.BrokerConfig{
-		Addr:       freeLoopbackAddr(t),
-		DataDir:    t.TempDir() + "/nats",
-		MaxStoreMB: 64,
-		Auth:       bus.BrokerAuthConfig{Enabled: true, Credentials: creds},
-		TLS:        bus.BrokerTLSConfig{Enabled: true, CertFile: certFile, KeyFile: keyFile},
-	}, testLogger())
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	defer cancel()
-	if err := b.Start(ctx); err != nil {
-		t.Fatalf("startTestBrokerTLS: Start: %v", err)
-	}
-	t.Cleanup(b.Shutdown)
-	return b
-}
-
-// tlsPoolFor returns a root pool trusting the CA that sits beside certFile.
-func tlsPoolFor(t *testing.T, certFile string) *x509.CertPool {
-	t.Helper()
-	pem, err := os.ReadFile(filepath.Join(filepath.Dir(certFile), "ca.crt"))
-	if err != nil {
-		t.Fatalf("read ca.crt: %v", err)
-	}
-	pool := x509.NewCertPool()
-	if !pool.AppendCertsFromPEM(pem) {
-		t.Fatal("ca.crt did not append to pool")
-	}
-	return pool
-}
 
 // TestRevokeWorker_TLSSurvivesCredentialReload pins the one behavior that
 // lives only at the seam between H1 and H2, and that neither component's own
@@ -63,14 +26,16 @@ func tlsPoolFor(t *testing.T, certFile string) *x509.CertPool {
 // the entire broker to plaintext, and every other test in the tree would
 // still pass.
 func TestRevokeWorker_TLSSurvivesCredentialReload(t *testing.T) {
-	certFile, keyFile, _ := writeServerCerts(t, 365*24*time.Hour)
+	certFile, keyFile, caFile := writeServerCerts(t, 365*24*time.Hour)
 	st := fake.New()
 	refA, seedA := enrolledCredential(t, st, "worker-a")
 	refB, _ := enrolledCredential(t, st, "worker-b")
 
-	broker := startTestBrokerTLS(t, []bus.WorkerCredentialRef{refA, refB}, certFile, keyFile)
+	broker := startTestBroker(t, []bus.WorkerCredentialRef{refA, refB}, func(c *bus.BrokerConfig) {
+		c.TLS = bus.BrokerTLSConfig{Enabled: true, CertFile: certFile, KeyFile: keyFile}
+	})
 	s := &Server{cfg: Config{NATSAuthEnabled: true}, store: st, broker: broker, logger: testLogger()}
-	pool := tlsPoolFor(t, certFile)
+	pool := caPool(t, caFile)
 
 	secure := nats.Secure(&tls.Config{MinVersion: tls.VersionTLS12, RootCAs: pool})
 

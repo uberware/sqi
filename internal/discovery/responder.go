@@ -67,15 +67,18 @@ type Config struct {
 	InstanceID string
 
 	// HTTPTLS reports whether the REST/WebSocket listener is TLS-terminated,
-	// advertised as the "tls" TXT record. It exists so a discovering client
-	// knows to speak https:// rather than discovering that through a failed
-	// request.
+	// advertised as the "tls" TXT record.
+	//
+	// NOTE: nothing consumes this yet. internal/worker/discovery reads only
+	// the "nats", "id" and "version" keys, so a discovering worker still learns
+	// the transport by attempting a connection. The record is advertised now so
+	// the signal exists on the wire; teaching the browser to act on it is
+	// separate work. Do not describe it as something clients react to.
 	HTTPTLS bool
 
 	// NATSTLS reports whether the embedded broker requires TLS, advertised as
-	// the "nats_tls" TXT record. A worker that discovers a TLS-required broker
-	// with no TLS configured can then say so plainly instead of failing in a
-	// handshake.
+	// the "nats_tls" TXT record. Same caveat as HTTPTLS: advertised, not yet
+	// consumed.
 	NATSTLS bool
 }
 

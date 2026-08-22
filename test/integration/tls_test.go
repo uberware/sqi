@@ -19,11 +19,9 @@ package integration
 // pass while TLS was quietly optional.
 
 import (
-	"bytes"
 	"context"
 	"crypto/tls"
 	"crypto/x509"
-	"encoding/json"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -85,88 +83,14 @@ func startTLSServer(t *testing.T, dbPath, dir string) *testServer {
 	certFile := filepath.Join(dir, "server.crt")
 	keyFile := filepath.Join(dir, "server.key")
 
-	return startBrokerAuthServer(t, dbPath, func(cfg *server.Config) {
+	ts := startBrokerAuthServer(t, dbPath, func(cfg *server.Config) {
 		cfg.HTTPTLS = config.TLSConfig{Enabled: true, CertFile: certFile, KeyFile: keyFile}
 		cfg.NATSTLS = config.NATSTLSConfig{Enabled: true, CertFile: certFile, KeyFile: keyFile}
 		cfg.NATSAuthEnrollmentEndpointEnabled = true
 	})
-}
-
-// waitForOnlineWorkerTLS polls GET /api/v1/workers over HTTPS until a worker
-// in farmID reports "online", returning its ID. Returns "" on timeout.
-func waitForOnlineWorkerTLS(t *testing.T, client *http.Client, httpAddr, farmID string, timeout time.Duration) string {
-	t.Helper()
-	deadline := time.Now().Add(timeout)
-	for time.Now().Before(deadline) {
-		req, err := http.NewRequestWithContext(context.Background(), http.MethodGet,
-			"https://"+httpAddr+"/api/v1/workers", nil)
-		if err != nil {
-			t.Fatalf("build workers request: %v", err)
-		}
-		resp, err := client.Do(req)
-		if err == nil {
-			var body struct {
-				Items []struct {
-					ID     string `json:"id"`
-					FarmID string `json:"farm_id"`
-					Status string `json:"status"`
-				} `json:"items"`
-			}
-			decErr := json.NewDecoder(resp.Body).Decode(&body)
-			_ = resp.Body.Close()
-			if decErr == nil {
-				for _, w := range body.Items {
-					if w.FarmID == farmID && w.Status == "online" {
-						return w.ID
-					}
-				}
-			}
-		}
-		time.Sleep(200 * time.Millisecond)
-	}
-	return ""
-}
-
-// seedFarmAndQueueTLS creates a farm and a queue over HTTPS and returns their
-// server-generated IDs. The plaintext seedFarmAndQueue in e2e_test.go goes
-// through apiURL/mustDoJSON, both of which hardcode http://.
-func seedFarmAndQueueTLS(t *testing.T, client *http.Client, httpAddr string) (farmID, queueID string) {
-	t.Helper()
-
-	post := func(path string, body any) string {
-		raw, err := json.Marshal(body)
-		if err != nil {
-			t.Fatalf("marshal %s body: %v", path, err)
-		}
-		req, err := http.NewRequestWithContext(context.Background(), http.MethodPost,
-			"https://"+httpAddr+path, bytes.NewReader(raw))
-		if err != nil {
-			t.Fatalf("build %s request: %v", path, err)
-		}
-		req.Header.Set("Content-Type", "application/json")
-		resp, err := client.Do(req)
-		if err != nil {
-			t.Fatalf("POST %s over HTTPS: %v", path, err)
-		}
-		defer func() { _ = resp.Body.Close() }()
-		if resp.StatusCode != http.StatusCreated {
-			t.Fatalf("POST %s status = %d, want 201", path, resp.StatusCode)
-		}
-		var out struct {
-			ID string `json:"id"`
-		}
-		if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
-			t.Fatalf("decode %s response: %v", path, err)
-		}
-		if out.ID == "" {
-			t.Fatalf("POST %s returned an empty id", path)
-		}
-		return out.ID
-	}
-
-	farmID = post("/api/v1/farms", map[string]any{"name": "TLS Farm"})
-	queueID = post("/api/v1/queues", map[string]any{"farm_id": farmID, "name": "TLS Queue"})
-	return farmID, queueID
+	// startBrokerAuthServer stamps ts.Scheme/ts.Client from cfg.HTTPTLS, so
+	// every shared helper already speaks https here.
+	return ts
 }
 
 func TestTLSEndToEnd(t *testing.T) {
@@ -174,7 +98,6 @@ func TestTLSEndToEnd(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "sqi.db")
 	joinToken := seedJoinToken(t, dbPath, "tls-e2e")
 	ts := startTLSServer(t, dbPath, dir)
-	client := tlsClient(t, dir)
 
 	// The API really is HTTPS, verified against the farm CA.
 	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet,
@@ -182,7 +105,7 @@ func TestTLSEndToEnd(t *testing.T) {
 	if err != nil {
 		t.Fatalf("build readyz request: %v", err)
 	}
-	resp, err := client.Do(req)
+	resp, err := ts.Client.Do(req)
 	if err != nil {
 		t.Fatalf("GET /readyz over HTTPS: %v", err)
 	}
@@ -191,9 +114,9 @@ func TestTLSEndToEnd(t *testing.T) {
 		t.Fatalf("/readyz status = %d, want 200", resp.StatusCode)
 	}
 
-	farmID, queueID := seedFarmAndQueueTLS(t, client, ts.HTTPAddr)
+	farmID, queueID := seedFarmAndQueue(t, ts)
 	caFile := filepath.Join(dir, "ca.crt")
-	startRealWorkerNoWait(t, ts, farmID, queueID, []string{
+	startRealWorkerNoWait(t, ts, farmID, queueID, nil, []string{
 		// Broker TLS: this URL overrides the harness default because exec
 		// resolves duplicate environment entries to the last one.
 		"SQI_WORKER_NATS_URL=nats://" + ts.NATSAddr,
@@ -202,9 +125,9 @@ func TestTLSEndToEnd(t *testing.T) {
 		"SQI_WORKER_NATS_SERVER_URL=https://" + ts.HTTPAddr,
 		"SQI_WORKER_NATS_SERVER_TLS_CA_FILE=" + caFile,
 		"SQI_WORKER_NATS_JOIN_TOKEN=" + joinToken,
-	})
+	}, true)
 
-	if id := waitForOnlineWorkerTLS(t, client, ts.HTTPAddr, farmID, 45*time.Second); id == "" {
+	if id := findOnlineWorker(t, ts, farmID, 45*time.Second); id == "" {
 		t.Fatal("worker never came online over TLS: enrollment over HTTPS or the TLS broker connection failed")
 	}
 }
@@ -214,26 +137,17 @@ func TestTLSWorkerWithoutCAIsRefused(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "sqi.db")
 	joinToken := seedJoinToken(t, dbPath, "tls-nocert")
 	ts := startTLSServer(t, dbPath, dir)
-	client := tlsClient(t, dir)
 
-	farmID, queueID := seedFarmAndQueueTLS(t, client, ts.HTTPAddr)
+	farmID, queueID := seedFarmAndQueue(t, ts)
 	// No CA configured anywhere: the worker can neither verify the server's
 	// certificate for enrollment nor speak TLS to the broker.
-	startRealWorkerNoWait(t, ts, farmID, queueID, []string{
+	startRealWorkerNoWait(t, ts, farmID, queueID, nil, []string{
 		"SQI_WORKER_NATS_URL=nats://" + ts.NATSAddr,
 		"SQI_WORKER_NATS_SERVER_URL=https://" + ts.HTTPAddr,
 		"SQI_WORKER_NATS_JOIN_TOKEN=" + joinToken,
-	})
+	}, true)
 
-	if id := waitForOnlineWorkerTLS(t, client, ts.HTTPAddr, farmID, 10*time.Second); id != "" {
+	if id := findOnlineWorker(t, ts, farmID, 10*time.Second); id != "" {
 		t.Fatalf("worker %s registered without any CA configured; TLS is not actually being enforced", id)
 	}
-}
-
-// readyzTLSClient builds a client trusting the CA that sits beside certFile.
-// It is used by startBrokerAuthServer's readiness probe when the server under
-// test is TLS-terminated.
-func readyzTLSClient(t *testing.T, certFile string) *http.Client {
-	t.Helper()
-	return tlsClient(t, filepath.Dir(certFile))
 }

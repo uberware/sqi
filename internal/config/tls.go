@@ -5,56 +5,17 @@ package config
 import (
 	"crypto/tls"
 	"crypto/x509"
-	"errors"
+	"encoding/pem"
 	"fmt"
 	"os"
 	"time"
+
+	"github.com/uberware/sqi/internal/tlsutil"
 )
 
 // expiryWarnWindow is how close to NotAfter a certificate has to be before
 // startup warns about it.
 const expiryWarnWindow = 30 * 24 * time.Hour
-
-// LoadServerTLS builds a server *tls.Config from a certificate/key pair,
-// optionally requiring client certificates signed by clientCAFile.
-//
-// It is called once at startup with paths [Validate] has already checked, so
-// the certificate is read exactly once: passing the paths on to
-// ListenAndServeTLS instead would read them a second time, and a rotation
-// landing between the two reads would serve a half-written file.
-func LoadServerTLS(certFile, keyFile, clientCAFile string) (*tls.Config, error) {
-	cert, err := tls.LoadX509KeyPair(certFile, keyFile)
-	if err != nil {
-		return nil, fmt.Errorf("load keypair %s/%s: %w", certFile, keyFile, err)
-	}
-	cfg := &tls.Config{
-		MinVersion:   tls.VersionTLS12,
-		Certificates: []tls.Certificate{cert},
-	}
-	if clientCAFile == "" {
-		return cfg, nil
-	}
-	pool, err := certPool(clientCAFile)
-	if err != nil {
-		return nil, err
-	}
-	cfg.ClientCAs = pool
-	cfg.ClientAuth = tls.RequireAndVerifyClientCert
-	return cfg, nil
-}
-
-// certPool reads a PEM bundle into a certificate pool.
-func certPool(caFile string) (*x509.CertPool, error) {
-	pem, err := os.ReadFile(caFile)
-	if err != nil {
-		return nil, fmt.Errorf("read CA file %s: %w", caFile, err)
-	}
-	pool := x509.NewCertPool()
-	if !pool.AppendCertsFromPEM(pem) {
-		return nil, fmt.Errorf("no valid certificates found in CA file %s", caFile)
-	}
-	return pool, nil
-}
 
 // missingPathErrors reports the "must be set" errors for an enabled TLS block
 // with an empty certificate or key path.
@@ -68,17 +29,6 @@ func missingPathErrors(certField, keyField, certFile, keyFile string) []Validati
 		errs = append(errs, ValidationError{Field: keyField, Message: msg})
 	}
 	return errs
-}
-
-// leafOf returns the parsed leaf certificate of a loaded keypair.
-func leafOf(pair tls.Certificate) (*x509.Certificate, error) {
-	if pair.Leaf != nil {
-		return pair.Leaf, nil
-	}
-	if len(pair.Certificate) == 0 {
-		return nil, errors.New("keypair contains no certificate")
-	}
-	return x509.ParseCertificate(pair.Certificate[0])
 }
 
 // validateKeypair checks that certFile and keyFile load together and that the
@@ -101,7 +51,7 @@ func validateKeypair(certField, keyField, certFile, keyFile string) []Validation
 		}}
 	}
 
-	leaf, err := leafOf(pair)
+	leaf, err := tlsutil.LeafOf(pair)
 	if err != nil {
 		return []ValidationError{{
 			Field:   certField,
@@ -138,7 +88,7 @@ func validateNATSTLS(cfg NATSTLSConfig) []ValidationError {
 	}
 	errs := validateKeypair("nats.tls.cert_file", "nats.tls.key_file", cfg.CertFile, cfg.KeyFile)
 	if cfg.ClientCAFile != "" {
-		if _, err := certPool(cfg.ClientCAFile); err != nil {
+		if _, err := tlsutil.CertPool(cfg.ClientCAFile); err != nil {
 			errs = append(errs, ValidationError{
 				Field:   "nats.tls.client_ca_file",
 				Message: err.Error(),
@@ -149,17 +99,39 @@ func validateNATSTLS(cfg NATSTLSConfig) []ValidationError {
 }
 
 // ExpiringSoon reports whether the leaf certificate in certFile expires
-// within 30 days, returning its NotAfter. It is advisory: startup warns,
-// it does not refuse. Errors are swallowed because Validate has already
-// rejected anything unloadable.
-func ExpiringSoon(certFile, keyFile string) (time.Time, bool) {
-	pair, err := tls.LoadX509KeyPair(certFile, keyFile)
+// within 30 days, returning its NotAfter. It is advisory: startup warns, it
+// does not refuse. Errors are swallowed because Validate has already rejected
+// anything unloadable.
+//
+// It takes only the certificate: the private key has no bearing on expiry, and
+// asking for it would imply otherwise.
+func ExpiringSoon(certFile string) (time.Time, bool) {
+	raw, err := os.ReadFile(certFile)
 	if err != nil {
 		return time.Time{}, false
 	}
-	leaf, err := leafOf(pair)
+	block, _ := pemDecode(raw)
+	if block == nil {
+		return time.Time{}, false
+	}
+	leaf, err := x509.ParseCertificate(block)
 	if err != nil {
 		return time.Time{}, false
 	}
 	return leaf.NotAfter, time.Until(leaf.NotAfter) < expiryWarnWindow
+}
+
+// pemDecode returns the DER bytes of the first CERTIFICATE block in raw.
+func pemDecode(raw []byte) ([]byte, bool) {
+	for len(raw) > 0 {
+		block, rest := pem.Decode(raw)
+		if block == nil {
+			return nil, false
+		}
+		if block.Type == "CERTIFICATE" {
+			return block.Bytes, true
+		}
+		raw = rest
+	}
+	return nil, false
 }
