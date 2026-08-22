@@ -57,7 +57,7 @@ func TestPortFromAddr(t *testing.T) {
 func TestBuildTXTRecords(t *testing.T) {
 	t.Parallel()
 
-	got := buildTXTRecords("abc-123", 8080, 4222, "render-01", "v0.1.0")
+	got := buildTXTRecords("abc-123", 8080, 4222, "render-01", "v0.1.0", false, false)
 	want := []string{
 		"id=abc-123",
 		"http=8080",
@@ -67,6 +67,51 @@ func TestBuildTXTRecords(t *testing.T) {
 	}
 	if !slices.Equal(got, want) {
 		t.Errorf("buildTXTRecords() = %v, want %v", got, want)
+	}
+}
+
+// TestBuildTXTRecords_TLSKeysOmittedWhenOff pins that a plaintext farm's
+// advertisement is byte-for-byte what it has always been: the TLS keys are
+// ABSENT, not present-and-zero. Anything else would change what every
+// existing client sees on an unchanged deployment.
+func TestBuildTXTRecords_TLSKeysOmittedWhenOff(t *testing.T) {
+	t.Parallel()
+
+	for _, rec := range buildTXTRecords("id-1", 8080, 4222, "host", "0.4.0", false, false) {
+		if strings.HasPrefix(rec, "tls=") || strings.HasPrefix(rec, "nats_tls=") {
+			t.Errorf("plaintext advertisement contains %q; TLS keys must be absent, not zero-valued", rec)
+		}
+	}
+}
+
+func TestBuildTXTRecords_TLSKeysPresentWhenOn(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name             string
+		httpTLS, natsTLS bool
+		want             []string
+		absent           []string
+	}{
+		{"both on", true, true, []string{"tls=1", "nats_tls=1"}, nil},
+		{"http only", true, false, []string{"tls=1"}, []string{"nats_tls=1"}},
+		{"nats only", false, true, []string{"nats_tls=1"}, []string{"tls=1"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got := buildTXTRecords("id-1", 8080, 4222, "host", "0.4.0", tt.httpTLS, tt.natsTLS)
+			for _, w := range tt.want {
+				if !slices.Contains(got, w) {
+					t.Errorf("records %v missing %q", got, w)
+				}
+			}
+			for _, a := range tt.absent {
+				if slices.Contains(got, a) {
+					t.Errorf("records %v unexpectedly contain %q", got, a)
+				}
+			}
+		})
 	}
 }
 

@@ -740,6 +740,8 @@ func (s *Server) start(ctx context.Context) error {
 		InstanceName: s.cfg.DiscoveryInstanceName,
 		HTTPAddr:     s.cfg.HTTPAddr,
 		NATSAddr:     s.cfg.NATSAddr,
+		HTTPTLS:      s.cfg.HTTPTLS.Enabled,
+		NATSTLS:      s.cfg.NATSTLS.Enabled,
 	}, s.logger)
 	if err != nil {
 		return fmt.Errorf("init discovery: %w", err)

@@ -65,6 +65,18 @@ type Config struct {
 	// InstanceID uniquely identifies this server process. When empty, [New]
 	// generates a random UUID. Advertised in the "id" TXT record.
 	InstanceID string
+
+	// HTTPTLS reports whether the REST/WebSocket listener is TLS-terminated,
+	// advertised as the "tls" TXT record. It exists so a discovering client
+	// knows to speak https:// rather than discovering that through a failed
+	// request.
+	HTTPTLS bool
+
+	// NATSTLS reports whether the embedded broker requires TLS, advertised as
+	// the "nats_tls" TXT record. A worker that discovers a TLS-required broker
+	// with no TLS configured can then say so plainly instead of failing in a
+	// handshake.
+	NATSTLS bool
 }
 
 // Responder owns the lifecycle of the mDNS service advertisement. Create one
@@ -127,7 +139,7 @@ func (r *Responder) Start(ctx context.Context) error {
 		return nil
 	}
 
-	txt := buildTXTRecords(r.cfg.InstanceID, r.httpPort, r.natsPort, hostname(), version.Version)
+	txt := buildTXTRecords(r.cfg.InstanceID, r.httpPort, r.natsPort, hostname(), version.Version, r.cfg.HTTPTLS, r.cfg.NATSTLS)
 
 	server, err := zeroconf.Register(
 		r.cfg.InstanceName,
@@ -189,14 +201,25 @@ func portFromAddr(addr string) (int, error) {
 
 // buildTXTRecords assembles the DNS-SD TXT key=value records advertised
 // alongside the service. Order is stable for deterministic tests.
-func buildTXTRecords(instanceID string, httpPort, natsPort int, host, ver string) []string {
-	return []string{
+func buildTXTRecords(instanceID string, httpPort, natsPort int, host, ver string, httpTLS, natsTLS bool) []string {
+	txt := []string{
 		"id=" + instanceID,
 		"http=" + strconv.Itoa(httpPort),
 		"nats=" + strconv.Itoa(natsPort),
 		"host=" + host,
 		"version=" + ver,
 	}
+	// The TLS keys are OMITTED rather than emitted as "tls=0" when off, so a
+	// plaintext farm advertises byte-for-byte what it always has. Clients that
+	// predate these keys ignore unknown keys, so adding them is compatible in
+	// both directions.
+	if httpTLS {
+		txt = append(txt, "tls=1")
+	}
+	if natsTLS {
+		txt = append(txt, "nats_tls=1")
+	}
+	return txt
 }
 
 // hostname returns the host's reported name, or "unknown" if it cannot be
