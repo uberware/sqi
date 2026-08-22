@@ -93,22 +93,38 @@ Path to the client TLS private key (PEM-encoded). Must be set together with
 
 | | |
 |---|---|
-| **Type** | `bool` |
-| **Default** | `false` |
+| **Type** | `string` — `"auto"`, `"true"` or `"false"` |
+| **Default** | `"auto"` |
 | **Env var** | `SQI_WORKER_NATS_TLS_ENABLED` |
 
-Force TLS on the broker connection even when no CA, certificate or key is
-configured.
+Whether to use TLS on the broker connection. Three-valued, mirroring the
+server's [`auth.session.cookie_secure`](configuration.md):
 
-**Force-on only, never force-off.** TLS is used when this is `true` *or* when
-any of the TLS fields is set, so a worker with `tls_ca_file` configured and
-this left `false` still uses TLS. It exists for the one case the inference
-cannot see: a broker presenting a publicly-trusted certificate, where a worker
-needs no CA file and would otherwise attempt plaintext and fail obscurely.
+| Value | Meaning |
+|---|---|
+| `"auto"` | Use TLS when there is a reason to: any `tls_*` field is set, **or** the server discovered over mDNS advertises a TLS-required broker (`nats_tls=1`) |
+| `"true"` | Always use TLS, even with no CA configured — verification then uses the system roots, which is right for a publicly-trusted broker certificate and wrong for a farm CA |
+| `"false"` | Never use TLS, even with a CA configured |
+
+A bool cannot express this: the interesting states are *infer* and *force off*,
+and a bool collapses both onto its zero value.
+
+The usual boolean spellings are accepted as synonyms in both the config file and
+the environment — `1`/`yes`/`on` for `"true"`, `0`/`no`/`off` for `"false"` —
+since `SQI_WORKER_NATS_TLS_ENABLED=1` is how boolean-looking variables get set.
+Anything else is rejected at startup with a `nats.tls_enabled` validation error,
+rather than silently falling back to `"auto"`.
+
+Under `"auto"`, a worker that discovers a TLS-required broker enables TLS and
+says so in its startup log; if no `tls_ca_file` is configured it also warns that
+the system roots cannot verify a farm CA. Under `"false"` the advertisement is
+honored rather than overridden, but the worker warns that the connection is
+about to be refused — the broker's own error names neither the cause nor this
+setting.
 
 ```yaml
 nats:
-  tls_enabled: true
+  tls_enabled: "auto"
 ```
 
 ---

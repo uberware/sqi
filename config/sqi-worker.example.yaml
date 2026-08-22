@@ -31,15 +31,18 @@ nats:
   # Type: string   Env: SQI_WORKER_NATS_URL
   url: ""
 
-  # Force TLS on the broker connection even when no CA, certificate or key is
-  # set below — for a broker presenting a publicly-trusted certificate, where
-  # nothing else would signal intent.
+  # Whether to use TLS on the broker connection. THREE-VALUED, not a bool:
   #
-  # FORCE-ON ONLY, never force-off: TLS is used when this is true OR when any
-  # TLS field below is set. Leaving this false with tls_ca_file set still uses
-  # TLS. See docs/tls.md.
-  # Type: bool   Env: SQI_WORKER_NATS_TLS_ENABLED
-  tls_enabled: false
+  #   "auto"  (default) use TLS when there is a reason to: any tls_* field
+  #                     below is set, OR the server found over mDNS advertises
+  #                     a TLS-required broker.
+  #   "true"            always use TLS, even with no CA configured (system
+  #                     roots) — for a publicly-trusted broker certificate.
+  #   "false"           never use TLS, even with a CA configured.
+  #
+  # Any other value is rejected at startup. See docs/tls.md.
+  # Type: string   Env: SQI_WORKER_NATS_TLS_ENABLED
+  tls_enabled: "auto"
 
   # Path to the client TLS certificate (PEM-encoded). Leave empty to disable
   # mutual TLS. Required only when the server demands client certificates

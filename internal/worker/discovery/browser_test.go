@@ -231,9 +231,9 @@ func TestEntryToResultFields(t *testing.T) {
 	}
 }
 
-// ── ResolveNATSURL ────────────────────────────────────────────────────────────
+// ── Resolve ────────────────────────────────────────────────────────────
 
-func TestResolveNATSURLExplicitBypassesMDNS(t *testing.T) {
+func TestResolveExplicitBypassesMDNS(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
@@ -244,7 +244,8 @@ func TestResolveNATSURLExplicitBypassesMDNS(t *testing.T) {
 	for _, enabled := range []bool{true, false} {
 		t.Run("mdns_enabled="+boolStr(enabled), func(t *testing.T) {
 			t.Parallel()
-			url, err := ResolveNATSURL(ctx, "nats://explicit:4222", enabled, time.Second, logger)
+			got, err := Resolve(ctx, "nats://explicit:4222", enabled, time.Second, logger)
+			url := got.NATSURL
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
@@ -255,13 +256,13 @@ func TestResolveNATSURLExplicitBypassesMDNS(t *testing.T) {
 	}
 }
 
-func TestResolveNATSURLDisabledNoURL(t *testing.T) {
+func TestResolveDisabledNoURL(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
 	logger := testLogger()
 
-	_, err := ResolveNATSURL(ctx, "", false, time.Second, logger)
+	_, err := Resolve(ctx, "", false, time.Second, logger)
 	if err == nil {
 		t.Fatal("expected ErrDiscoveryDisabled, got nil")
 	}
@@ -299,14 +300,14 @@ func TestBrowseMDNSTimeout(t *testing.T) {
 	}
 }
 
-func TestResolveNATSURLContextCancelled(t *testing.T) {
+func TestResolveContextCancelled(t *testing.T) {
 	t.Parallel()
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel() // cancel immediately before any I/O
 
 	logger := testLogger()
-	_, err := ResolveNATSURL(ctx, "", true, 5*time.Second, logger)
+	_, err := Resolve(ctx, "", true, 5*time.Second, logger)
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("expected context.Canceled, got %v", err)
 	}
@@ -319,4 +320,75 @@ func boolStr(b bool) string {
 		return "true"
 	}
 	return "false"
+}
+
+// ── TLS TXT records ───────────────────────────────────────────────────────────
+
+func TestEntryToResult_TLSRecords(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name        string
+		txt         []string
+		wantNATSTLS bool
+		wantHTTPTLS bool
+	}{
+		{
+			// A plaintext server omits the keys entirely rather than sending
+			// "tls=0", so absence is the normal case and must read as false.
+			name: "absent keys mean plaintext",
+			txt:  []string{"id=a", "nats=4222", "version=0.4.0", "http=8080"},
+		},
+		{
+			name:        "nats_tls only",
+			txt:         []string{"id=a", "nats=4222", "nats_tls=1"},
+			wantNATSTLS: true,
+		},
+		{
+			name:        "tls only",
+			txt:         []string{"id=a", "nats=4222", "tls=1"},
+			wantHTTPTLS: true,
+		},
+		{
+			name:        "both",
+			txt:         []string{"id=a", "nats=4222", "tls=1", "nats_tls=1"},
+			wantNATSTLS: true,
+			wantHTTPTLS: true,
+		},
+		{
+			// Only "1" counts. Anything else is a server we do not understand,
+			// and guessing "probably TLS" would break a plaintext farm.
+			name: "unexpected values are not truthy",
+			txt:  []string{"id=a", "nats=4222", "tls=true", "nats_tls=yes"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got, err := entryToResult(buildZeroconfEntry("render01.local.", tt.txt, "srv"))
+			if err != nil {
+				t.Fatalf("entryToResult: %v", err)
+			}
+			if got.NATSTLS != tt.wantNATSTLS {
+				t.Errorf("NATSTLS = %v, want %v", got.NATSTLS, tt.wantNATSTLS)
+			}
+			if got.HTTPTLS != tt.wantHTTPTLS {
+				t.Errorf("HTTPTLS = %v, want %v", got.HTTPTLS, tt.wantHTTPTLS)
+			}
+		})
+	}
+}
+
+func TestResolve_ExplicitURLClaimsNothingAboutTLS(t *testing.T) {
+	t.Parallel()
+
+	// An explicit URL discovers nothing, so the TLS fields must stay false
+	// rather than asserting a transport nobody looked up.
+	got, err := Resolve(t.Context(), "nats://explicit:4222", true, time.Second, testLogger())
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if got.NATSTLS || got.HTTPTLS {
+		t.Errorf("explicit URL reported TLS state %+v, want both false", got)
+	}
 }

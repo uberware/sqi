@@ -69,16 +69,20 @@ type Config struct {
 	// HTTPTLS reports whether the REST/WebSocket listener is TLS-terminated,
 	// advertised as the "tls" TXT record.
 	//
-	// NOTE: nothing consumes this yet. internal/worker/discovery reads only
-	// the "nats", "id" and "version" keys, so a discovering worker still learns
-	// the transport by attempting a connection. The record is advertised now so
-	// the signal exists on the wire; teaching the browser to act on it is
-	// separate work. Do not describe it as something clients react to.
+	// Consumed by internal/worker/discovery, which surfaces it as
+	// Result.HTTPTLS. Enrollment never uses a discovered URL, so a worker uses
+	// this to warn that its http:// nats.server_url points at an HTTPS server
+	// rather than to rewrite anything.
 	HTTPTLS bool
 
 	// NATSTLS reports whether the embedded broker requires TLS, advertised as
-	// the "nats_tls" TXT record. Same caveat as HTTPTLS: advertised, not yet
-	// consumed.
+	// the "nats_tls" TXT record.
+	//
+	// This is the one signal that can tell a worker its broker needs TLS
+	// without anything being configured locally, so it feeds
+	// nats.tls_enabled's "auto" mode directly: a discovering worker turns TLS
+	// on rather than attempting plaintext and failing with an error that names
+	// neither the cause nor the fix.
 	NATSTLS bool
 }
 

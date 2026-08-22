@@ -303,17 +303,11 @@ func exponentialBackoff(base time.Duration) func(int) time.Duration {
 //   - cfg.TLSCAFile                     — custom CA for server cert verification
 //   - cfg.InsecureSkipVerify            — disable server cert verification
 func buildTLSOptions(cfg workerconfig.NATSConfig) ([]nats.Option, error) {
-	// TLSEnabled is a force-ON switch, never a force-off: TLS is used when it
-	// is true OR when any TLS field is set. A worker with tls_ca_file set and
-	// tls_enabled left false still uses TLS, exactly as it did before this
-	// knob existed. Reading it as a master switch would silently downgrade a
-	// working TLS worker to plaintext on upgrade.
-	//
-	// It exists for the one case the inference cannot see: a broker
-	// presenting a publicly-trusted certificate, where a worker needs no CA
-	// file and would otherwise attempt plaintext and fail obscurely.
-	wantTLS := cfg.TLSEnabled || cfg.TLSCertFile != "" || cfg.TLSKeyFile != "" ||
-		cfg.TLSCAFile != "" || cfg.InsecureSkipVerify
+	// The three-valued nats.tls_enabled decides this; see NATSConfig.UseTLS.
+	// The discovery signal has already been folded into cfg by the caller (see
+	// applyDiscoveredTLS in cmd/sqi-worker), so false here means "nothing,
+	// including mDNS, gave a reason to use TLS".
+	wantTLS := cfg.UseTLS(false)
 
 	if !wantTLS {
 		return nil, nil

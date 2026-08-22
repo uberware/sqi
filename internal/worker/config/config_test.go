@@ -746,3 +746,91 @@ func TestLoad_NATSCredentialFileExplicitValuePreserved(t *testing.T) {
 		t.Errorf("NATS.CredentialFile = %q, want /etc/sqi/worker.nk", cfg.NATS.CredentialFile)
 	}
 }
+
+func TestNATSConfig_UseTLS(t *testing.T) {
+	tests := []struct {
+		name          string
+		cfg           NATSConfig
+		advertisedTLS bool
+		want          bool
+	}{
+		{"zero value behaves as auto", NATSConfig{}, false, false},
+		{"auto, nothing set", NATSConfig{TLSEnabled: TLSAuto}, false, false},
+		{"auto infers from ca file", NATSConfig{TLSEnabled: TLSAuto, TLSCAFile: "/ca.crt"}, false, true},
+		{"auto infers from client cert", NATSConfig{TLSEnabled: TLSAuto, TLSCertFile: "/c.crt"}, false, true},
+		{"auto infers from insecure_skip_verify", NATSConfig{TLSEnabled: TLSAuto, InsecureSkipVerify: true}, false, true},
+
+		// The discovery signal is an inference input, and ONLY for auto.
+		{"auto infers from a TLS-advertising server", NATSConfig{TLSEnabled: TLSAuto}, true, true},
+		{"zero value infers from a TLS-advertising server", NATSConfig{}, true, true},
+
+		{"true forces on with nothing configured", NATSConfig{TLSEnabled: TLSOn}, false, true},
+		{"true ignores a non-advertising server", NATSConfig{TLSEnabled: TLSOn}, false, true},
+
+		// The state the old force-on-only boolean could not express.
+		{"false forces off despite a ca file", NATSConfig{TLSEnabled: TLSOff, TLSCAFile: "/ca.crt"}, false, false},
+		{"false forces off despite discovery", NATSConfig{TLSEnabled: TLSOff}, true, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := tt.cfg.UseTLS(tt.advertisedTLS); got != tt.want {
+				t.Errorf("UseTLS(%v) = %v, want %v", tt.advertisedTLS, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestValidate_NATSTLSMode(t *testing.T) {
+	for _, mode := range []string{"", TLSAuto, TLSOn, TLSOff, "1", "0", "yes", "off"} {
+		cfg := Default()
+		cfg.NATS.URL = "nats://localhost:4222"
+		cfg.NATS.TLSEnabled = mode
+		for _, e := range Validate(cfg) {
+			if e.Field == "nats.tls_enabled" {
+				t.Errorf("mode %q was rejected: %s", mode, e.Message)
+			}
+		}
+	}
+
+	cfg := Default()
+	cfg.NATS.URL = "nats://localhost:4222"
+	cfg.NATS.TLSEnabled = "maybe"
+	var found bool
+	for _, e := range Validate(cfg) {
+		if e.Field == "nats.tls_enabled" {
+			found = true
+			if !strings.Contains(e.Message, "auto") {
+				t.Errorf("message does not mention the auto mode: %s", e.Message)
+			}
+		}
+	}
+	if !found {
+		// An unrecognized value would otherwise fall into the auto default and
+		// silently mean something the operator did not write. ("yes" and "1"
+		// ARE recognized — see TestNormalizeTLSMode_AcceptsBoolSynonyms.)
+		t.Error("nats.tls_enabled = \"maybe\" was accepted")
+	}
+}
+
+func TestNormalizeTLSMode_AcceptsBoolSynonyms(t *testing.T) {
+	// This key looked like a bool until recently, and SQI_WORKER_NATS_TLS_ENABLED=1
+	// is how people set boolean-looking env vars. YAML and env must agree.
+	for _, v := range []string{"1", "yes", "on", "TRUE", " true "} {
+		if mode, ok := normalizeTLSMode(v); !ok || mode != TLSOn {
+			t.Errorf("normalizeTLSMode(%q) = (%q, %v), want (%q, true)", v, mode, ok, TLSOn)
+		}
+	}
+	for _, v := range []string{"0", "no", "off", "FALSE"} {
+		if mode, ok := normalizeTLSMode(v); !ok || mode != TLSOff {
+			t.Errorf("normalizeTLSMode(%q) = (%q, %v), want (%q, true)", v, mode, ok, TLSOff)
+		}
+	}
+	for _, v := range []string{"", "auto", "AUTO"} {
+		if mode, ok := normalizeTLSMode(v); !ok || mode != TLSAuto {
+			t.Errorf("normalizeTLSMode(%q) = (%q, %v), want (%q, true)", v, mode, ok, TLSAuto)
+		}
+	}
+	if _, ok := normalizeTLSMode("maybe"); ok {
+		t.Error("normalizeTLSMode accepted \"maybe\"")
+	}
+}

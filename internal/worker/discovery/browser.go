@@ -56,6 +56,22 @@ type Result struct {
 
 	// Version is the server build version from the "version" TXT record.
 	Version string
+
+	// NATSTLS reports whether the discovered server's broker requires TLS,
+	// from the "nats_tls" TXT record. A server that predates the record, or
+	// one serving a plaintext broker, leaves this false.
+	//
+	// This is an INPUT to nats.tls_enabled's "auto" mode: it is the one signal
+	// that can tell a worker the broker needs TLS without the operator having
+	// configured anything locally.
+	NATSTLS bool
+
+	// HTTPTLS reports whether the discovered server's REST API is
+	// TLS-terminated, from the "tls" TXT record. Enrollment does not use a
+	// discovered URL (nats.server_url is always explicit), so this is used to
+	// warn about an http:// server_url pointed at an https:// server rather
+	// than to rewrite anything.
+	HTTPTLS bool
 }
 
 // ErrDiscoveryTimeout is returned by [Browse] when the timeout expires with
@@ -208,6 +224,8 @@ func entryToResult(entry *zeroconf.ServiceEntry) (Result, error) {
 		InstanceName: entry.Instance,
 		InstanceID:   txt["id"],
 		Version:      txt["version"],
+		NATSTLS:      txt["nats_tls"] == "1",
+		HTTPTLS:      txt["tls"] == "1",
 	}, nil
 }
 
@@ -227,35 +245,37 @@ func parseTXTRecords(records []string) map[string]string {
 	return out
 }
 
-// ResolveNATSURL returns the NATS URL to connect to, applying the following
-// precedence:
+// Resolve returns the discovered server, applying the following precedence:
 //
 //  1. If explicitURL is non-empty, return it directly (mDNS bypassed entirely).
 //  2. If mdnsEnabled is false, return an error with a clear message.
-//  3. Run [Browse] with the given timeout and return the discovered URL.
+//  3. Run [Browse] and return what it found.
+//
+// It returns the whole [Result], not just the URL: the TLS records travel with
+// it, and a caller that only took the URL would silently drop the one signal
+// that can tell a worker its broker needs TLS.
+//
+// An explicit URL yields a Result with only NATSURL set — nothing was
+// discovered, so nothing is known about the server's transport, and the TLS
+// fields stay false rather than claiming otherwise.
 //
 // This is the single entry point that start.go calls before dialing NATS.
-func ResolveNATSURL(ctx context.Context, explicitURL string, mdnsEnabled bool, timeout time.Duration, logger *slog.Logger) (string, error) {
+func Resolve(ctx context.Context, explicitURL string, mdnsEnabled bool, timeout time.Duration, logger *slog.Logger) (Result, error) {
 	// Explicit URL bypasses mDNS entirely.
 	if explicitURL != "" {
 		logger.InfoContext(
 			ctx, "discovery: using explicit NATS URL (mDNS bypassed)",
 			slog.String("url", explicitURL),
 		)
-		return explicitURL, nil
+		return Result{NATSURL: explicitURL}, nil
 	}
 
 	// MDNS disabled — log clearly and return actionable error.
 	if !mdnsEnabled {
 		logger.ErrorContext(ctx, "discovery: mDNS is disabled and no explicit NATS URL is configured; "+
 			"set nats.url in configuration or enable discovery.enable_mdns")
-		return "", ErrDiscoveryDisabled
+		return Result{}, ErrDiscoveryDisabled
 	}
 
-	// Browse the local network.
-	result, err := Browse(ctx, timeout, logger)
-	if err != nil {
-		return "", err
-	}
-	return result.NATSURL, nil
+	return Browse(ctx, timeout, logger)
 }
