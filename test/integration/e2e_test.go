@@ -128,7 +128,7 @@ func submitJob(t *testing.T, ts *testServer, farmID, queueID string) string {
 	t.Helper()
 	url := fmt.Sprintf("%s?farm_id=%s&queue_id=%s&owner=test", apiURL(ts, "/api/v1/jobs"), farmID, queueID)
 	var resp jobResp
-	mustDoJSON(t, http.MethodPost, url, []byte(minimalJobYAML), "application/x-yaml", http.StatusCreated, &resp)
+	mustDoJSONClient(t, clientFor(ts), http.MethodPost, url, []byte(minimalJobYAML), "application/x-yaml", http.StatusCreated, &resp)
 	if resp.ID == "" {
 		t.Fatal("submitJob: server returned empty job ID")
 	}
@@ -148,7 +148,7 @@ func pollJobStatus(t *testing.T, ts *testServer, jobID string, targets []string,
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
 		var resp jobResp
-		mustDoJSON(t, http.MethodGet, apiURL(ts, "/api/v1/jobs/"+jobID), nil, "", http.StatusOK, &resp)
+		mustDoJSONClient(t, clientFor(ts), http.MethodGet, apiURL(ts, "/api/v1/jobs/"+jobID), nil, "", http.StatusOK, &resp)
 		lastStatus = resp.Status
 		if targetSet[resp.Status] {
 			return resp.Status

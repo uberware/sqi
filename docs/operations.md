@@ -80,6 +80,10 @@ Minimum required changes for production:
 - `store.sqlite_path` — set to an absolute path on a local SSD
 - `nats.data_dir` — set to a persistent directory for JetStream storage
 - `http.addr` — restrict to `127.0.0.1:8080` if a reverse proxy handles TLS
+- `http.tls` / `nats.tls` — terminate TLS in sqi instead, if there is no proxy.
+  Both are off by default, so **the API and the worker transport are plaintext
+  until you set one or the other**. See [`docs/tls.md`](tls.md); note that
+  enabling TLS on a running farm is a coordinated restart, not a rolling one
 
 See [`docs/configuration.md`](configuration.md) for all options.
 

@@ -172,6 +172,14 @@ func TestTLSEndToEnd(t *testing.T) {
 	if id := findOnlineWorker(t, ts, farmID, 45*time.Second); id == "" {
 		t.Fatal("worker never came online over TLS: enrollment over HTTPS or the TLS broker connection failed")
 	}
+
+	// Registering proves the transport works. Running a job proves the whole
+	// path does: submitted over HTTPS, assigned over the TLS broker, executed,
+	// and its status read back over HTTPS.
+	jobID := submitJob(t, ts, farmID, queueID)
+	if got := pollJobStatus(t, ts, jobID, []string{"completed", "failed", "canceled"}, 60*time.Second); got != "completed" {
+		t.Errorf("job %s ended %q, want completed", jobID, got)
+	}
 }
 
 func TestTLSWorkerWithoutCAIsRefused(t *testing.T) {

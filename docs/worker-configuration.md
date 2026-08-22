@@ -1527,6 +1527,12 @@ network by default.
 | **Default** | `"127.0.0.1:9091"` |
 | **Env var** | `SQI_WORKER_METRICS_ADDR` |
 
+**This listener is plaintext and has no TLS setting** — `nats.tls_*` covers the
+broker connection, not this. It serves metrics, health and (optionally) pprof,
+never credentials or job payloads, and defaults to loopback. Binding it wider
+for a scraper exposes all of that in the clear; put it on a trusted network or
+in front of a proxy that terminates TLS.
+
 TCP address the local HTTP server listens on. Use `0.0.0.0:9091` to expose
 the endpoints to Prometheus scrapers on the network (ensure the port is
 firewalled appropriately).

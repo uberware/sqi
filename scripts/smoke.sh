@@ -342,7 +342,10 @@ export SQI_WORKER_LOG_LEVEL="warn"
 export SQI_WORKER_LOG_FORMAT="text"
 export SQI_WORKER_HEARTBEAT_INTERVAL="1s"
 export SQI_WORKER_PULL_IDLE_BACKOFF="300ms"
-export SQI_WORKER_METRICS_ADDR="127.0.0.1:$(free_port)"
+# Declared and assigned separately so the command substitution's exit status
+# is not masked by `export` (shellcheck SC2155).
+WORKER_METRICS_PORT="$(free_port)"
+export SQI_WORKER_METRICS_ADDR="127.0.0.1:${WORKER_METRICS_PORT}"
 case "$mode" in
   brokerauth)
     # No SQI_WORKER_NATS_CREDENTIAL_FILE: it defaults under
