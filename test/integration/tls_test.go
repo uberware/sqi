@@ -39,6 +39,14 @@ import (
 // generator rather than a test-only substitute.
 func tlsMaterial(t *testing.T) string {
 	t.Helper()
+	return tlsMaterialFor(t, []string{"localhost", "127.0.0.1", "::1"})
+}
+
+// tlsMaterialFor is [tlsMaterial] with an explicit SAN list, for a server that
+// has to be reachable by a name other than loopback — see the mDNS discovery
+// tests, where the advertisement carries this machine's hostname.
+func tlsMaterialFor(t *testing.T, sans []string) string {
+	t.Helper()
 	dir := t.TempDir()
 	ca, err := certgen.NewCA("integration farm CA", 10*365*24*time.Hour)
 	if err != nil {
@@ -47,7 +55,7 @@ func tlsMaterial(t *testing.T) string {
 	if err := certgen.WriteCA(dir, ca); err != nil {
 		t.Fatalf("WriteCA: %v", err)
 	}
-	leaf, err := ca.NewServerCert([]string{"localhost", "127.0.0.1", "::1"}, 365*24*time.Hour)
+	leaf, err := ca.NewServerCert(sans, 365*24*time.Hour)
 	if err != nil {
 		t.Fatalf("NewServerCert: %v", err)
 	}

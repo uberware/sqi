@@ -81,6 +81,7 @@ Run `make` (no arguments) to see all available targets with descriptions.
 | `make test-oidc` | Run the SSO tests against a real Keycloak in a container (needs Docker; **skips** without it) |
 | `make test-isolation` | Run run-as-user task-isolation tests as real root against real OS accounts in a container (needs Docker; **skips** without it) |
 | `make test-isolation-windows` | Run the Windows run-as-user isolation tests against real local accounts — must be run from an **elevated** shell on a real Windows host (no container); exits 0 with a message when not elevated |
+| `make test-discovery` | Run the mDNS discovery tests over **real multicast** (no container; **fails rather than skips** when multicast is unavailable) |
 | `make test-conformance` | Run the official OpenJD conformance suite against the vendored `third_party/` fixtures (build tag `conformance`) |
 | `make test-expr-oracle` | Differential-test the EXPR evaluator against the OpenJD reference implementation (needs `python3`; **skips** without it) |
 | `make test-preset-library` | Validate the **published** preset library against the validator in your tree (needs network; **skips** when the library is unreachable, **fails** when it is reachable but invalid) |
@@ -108,6 +109,42 @@ Override the race detector: `make test RACE=off`
 Override the coverage threshold: `make test-cover COVERAGE_MIN=50`
 
 ---
+
+
+## Testing mDNS discovery over real multicast
+
+`make test-discovery` runs the discovery suite against a **real** mDNS round
+trip: a real responder advertises on a real interface and a real browser finds
+it. It needs no container — unlike LDAP, SSO and isolation, nothing here is
+unavailable natively.
+
+What it covers that unit tests cannot: the server decides its TXT records from
+its own config, they cross the wire, and the worker parses them back and acts on
+them. The halves were each unit-tested for a while with nothing joining them,
+which is how `nats_tls` came to be advertised by the server and read by nobody.
+`TestDiscovery_RealBinaryFindsItsServerOverMDNS` goes furthest: a real
+`sqi-worker` subprocess with **no** `nats.url` at all has to find its server,
+learn from the advertisement that the broker needs TLS, and register.
+
+Three things to know before running it:
+
+- **It uses the network.** For a few seconds it advertises a service and binds
+  the test broker to all interfaces, because mDNS advertises this machine's
+  hostname and a loopback-bound broker is unreachable at that name. Broker
+  authentication and TLS are both on, so a join token is still required to
+  enroll.
+- **It refuses to run next to a real farm.** If anything else is already
+  advertising `_sqi._tcp`, the tests skip rather than risk discovering someone
+  else's server — real mDNS is not sandboxed, and the test cannot tell a
+  colleague's production broker from its own before connecting.
+- **A skip is a failure here.** `SQI_TEST_REQUIRE_MULTICAST=1` (which the target
+  sets) turns the capability skip into a failure, so the target cannot pass
+  while running nothing. The same tests are part of `make test-integration`,
+  where they skip cleanly on a host without multicast.
+
+If the preflight reports no round trip, the host has no multicast-capable
+interface. Note that Linux `lo` usually does not have the MULTICAST flag, so a
+container needs a real bridge interface rather than loopback alone.
 
 ## Running tests
 

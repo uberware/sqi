@@ -133,7 +133,13 @@ func startServer(t *testing.T) *testServer {
 			WorkerTimeout:          30 * time.Second,
 			HeartbeatSweepInterval: 15 * time.Second,
 		},
-		// mDNS disabled: multicast is not available in most CI environments.
+		// mDNS disabled: these tests reach the server by an explicit address, so
+		// advertising would add a real network side effect for no coverage.
+		//
+		// NOT because multicast is unavailable — this comment used to say that,
+		// and it was never tested. It is tested now: discovery_test.go proves an
+		// mDNS round trip on a real interface, and `make test-discovery` fails
+		// rather than skips when one is not possible.
 		DiscoveryEnabled: false,
 	}
 

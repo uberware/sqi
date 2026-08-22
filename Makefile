@@ -335,6 +335,14 @@ test-isolation: ## Run run-as-user isolation tests as root against real OS accou
 	docker run --rm --init sqi-isolation-test \
 	  go test $(TEST_FLAGS) -tags integration -run 'TestIsolation_' -v -timeout 15m ./test/integration/
 
+.PHONY: test-discovery
+test-discovery: ## Run the mDNS discovery tests over REAL multicast (fails rather than skips if multicast is unavailable)
+	@echo "note: these tests advertise on the local network for a few seconds and"
+	@echo "      bind the test broker to all interfaces; they refuse to run if another"
+	@echo "      sqi-server is already advertising. See docs/development.md."
+	SQI_TEST_REQUIRE_MULTICAST=1 go test $(TEST_FLAGS) -tags integration \
+	  -run 'TestDiscovery_' -v -timeout 10m ./test/integration/
+
 .PHONY: test-isolation-windows
 test-isolation-windows: ## Run windows run-as-user isolation tests as SYSTEM against real local accounts (needs an elevated shell)
 	@powershell -NoProfile -ExecutionPolicy Bypass -File scripts/test-isolation-windows.ps1
