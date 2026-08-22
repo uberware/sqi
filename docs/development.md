@@ -126,25 +126,44 @@ which is how `nats_tls` came to be advertised by the server and read by nobody.
 `sqi-worker` subprocess with **no** `nats.url` at all has to find its server,
 learn from the advertisement that the broker needs TLS, and register.
 
-Three things to know before running it:
+### It does not advertise on your network
 
-- **It uses the network.** For a few seconds it advertises a service and binds
-  the test broker to all interfaces, because mDNS advertises this machine's
-  hostname and a loopback-bound broker is unreachable at that name. Broker
-  authentication and TLS are both on, so a join token is still required to
-  enroll.
-- **It refuses to run next to a real farm.** If anything else is already
-  advertising `_sqi._tcp`, the tests skip rather than risk discovering someone
-  else's server — real mDNS is not sandboxed, and the test cannot tell a
-  colleague's production broker from its own before connecting.
+Every advertisement these tests make is restricted to **loopback**. A browser
+listening on all interfaces still receives it — that is verified rather than
+assumed — so the coverage is unaffected, and a test run never announces a
+service on the LAN it happens to be attached to. This is an invariant, not a
+preference: where loopback cannot carry multicast the tests refuse to run rather
+than quietly falling back to a real interface.
+
+Linux `lo` ships without the MULTICAST flag, so on Linux:
+
+```bash
+sudo ip link set lo multicast on
+```
+
+The tests say exactly that when the flag is missing, and the CI job runs it.
+
+### The one test that does open a listener
+
+`TestDiscovery_RealBinaryFindsItsServerOverMDNS` binds the test broker to all
+interfaces for about ten seconds, so it runs **only** under `make
+test-discovery` — `make test-integration` skips it. It cannot avoid the
+listener: the mDNS advertisement carries this machine's *hostname*, so the
+worker dials that name whatever interface the announcement went out on, and a
+loopback-bound broker is unreachable there. Broker authentication and TLS are
+both on, so enrolling still requires a join token.
+
+### Two more things
+
+- **It refuses to run next to a real farm.** The tests never advertise beyond
+  loopback, but they still *browse* on every interface, because the production
+  worker does. If anything else is already advertising `_sqi._tcp` they skip,
+  rather than risk discovering a colleague's server — the test cannot tell their
+  production broker from its own before connecting to it.
 - **A skip is a failure here.** `SQI_TEST_REQUIRE_MULTICAST=1` (which the target
   sets) turns the capability skip into a failure, so the target cannot pass
   while running nothing. The same tests are part of `make test-integration`,
-  where they skip cleanly on a host without multicast.
-
-If the preflight reports no round trip, the host has no multicast-capable
-interface. Note that Linux `lo` usually does not have the MULTICAST flag, so a
-container needs a real bridge interface rather than loopback alone.
+  where they skip cleanly on a host without loopback multicast.
 
 ## Running tests
 

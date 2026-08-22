@@ -1079,11 +1079,13 @@ jobs:
           echo "Confirmed all ${#expected[@]} named integration tests passed, and the whole suite exited 0."
 
   # ── mDNS discovery over real multicast ───────────────────────────────────────
-  # A SEPARATE job, not folded into integration-tests, for one reason: whether a
-  # hosted runner can do multicast loopback is the one thing about this suite
-  # that could not be verified before it was written. Isolating it means a
-  # runner that cannot means this job fails and says so precisely, instead of
-  # taking the whole integration suite down with an unrelated-looking error.
+  # A SEPARATE job, not folded into integration-tests, for two reasons. Whether
+  # a hosted runner can do multicast on loopback is the one thing about this
+  # suite that could not be verified before it was written, so isolating it
+  # means such a runner fails this job precisely instead of taking the whole
+  # integration suite down with an unrelated-looking error. And the real-binary
+  # test binds the test broker to all interfaces, which should happen only when
+  # discovery testing was asked for — `make test-integration` skips it.
   #
   # SQI_TEST_REQUIRE_MULTICAST=1 (set by `make test-discovery`) turns the
   # capability skip into a failure, so this job cannot go green while covering
@@ -1101,6 +1103,17 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
+
+      # Linux `lo` ships without the MULTICAST flag. The tests advertise on
+      # loopback only — deliberately, so a run never announces a service on the
+      # network it happens to be on — and refuse to fall back to a real
+      # interface, so the flag has to be on or they cannot run at all.
+      - name: Enable multicast on loopback
+        run: |
+          ip link show lo
+          sudo ip link set lo multicast on
+          ip link show lo | grep -q MULTICAST || {
+            echo "::error::could not enable MULTICAST on lo"; exit 1; }
 
       - name: Run the discovery suite over real multicast
         run: |

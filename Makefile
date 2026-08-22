@@ -337,9 +337,10 @@ test-isolation: ## Run run-as-user isolation tests as root against real OS accou
 
 .PHONY: test-discovery
 test-discovery: ## Run the mDNS discovery tests over REAL multicast (fails rather than skips if multicast is unavailable)
-	@echo "note: these tests advertise on the local network for a few seconds and"
-	@echo "      bind the test broker to all interfaces; they refuse to run if another"
-	@echo "      sqi-server is already advertising. See docs/development.md."
+	@echo "note: advertisements are restricted to loopback, so nothing is announced"
+	@echo "      on your network. One test (RealBinary...) binds the test broker to"
+	@echo "      all interfaces for ~10s; make test-integration skips that one."
+	@echo "      On Linux, loopback needs: sudo ip link set lo multicast on"
 	SQI_TEST_REQUIRE_MULTICAST=1 go test $(TEST_FLAGS) -tags integration \
 	  -run 'TestDiscovery_' -v -timeout 10m ./test/integration/
 

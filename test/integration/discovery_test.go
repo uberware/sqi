@@ -45,6 +45,9 @@ func advertise(t *testing.T, httpTLS, natsTLS bool) string {
 		NATSAddr:     "127.0.0.1:14222",
 		HTTPTLS:      httpTLS,
 		NATSTLS:      natsTLS,
+		// Loopback only: a test must not announce a service on the network it
+		// happens to be running on.
+		Interfaces: loopbackIfaces(),
 	}, slog.New(slog.DiscardHandler))
 	if err != nil {
 		t.Fatalf("responder New: %v", err)
@@ -152,17 +155,28 @@ func TestDiscovery_AdvertisedBrokerTLSReachesWorkerConfig(t *testing.T) {
 // sqi-worker subprocess given NO nats.url at all, which has to discover the
 // server, act on nats_tls, and register.
 func TestDiscovery_RealBinaryFindsItsServerOverMDNS(t *testing.T) {
+	// This is the ONE test here that opens a listener beyond loopback, so it
+	// runs only when discovery testing was asked for explicitly — `make
+	// test-discovery` or the CI job — never as a side effect of `make
+	// test-integration`.
+	//
+	// It cannot avoid the listener. The advertisement carries this machine's
+	// HOSTNAME (entryToResult prefers entry.HostName), so the worker dials that
+	// name whatever interface the announcement went out on, and a
+	// loopback-bound broker is unreachable there. Verified by trying: bound to
+	// 127.0.0.1 the worker discovers the server and then fails with "no servers
+	// available". Changing the product to advertise a loopback literal would be
+	// bending production behavior to suit a test.
+	if !multicastRequired() {
+		t.Skip("binds the test broker to all interfaces; run `make test-discovery` to include it")
+	}
 	requireMulticast(t)
 	noForeignServer(t)
 
-	// mDNS advertises this machine's HOSTNAME, not a loopback literal, so two
-	// things the rest of the suite can take for granted have to be arranged
-	// here — both of them are what a real deployment does anyway:
+	// Two consequences of the advertisement carrying a hostname, both of them
+	// what a real deployment does anyway:
 	//
-	//  1. The broker must bind all interfaces. Bound to 127.0.0.1 it is
-	//     unreachable at the advertised hostname, which resolves to a real
-	//     interface address (and on a dual-stack host, to a link-local IPv6
-	//     address first).
+	//  1. The broker must bind all interfaces, per the note above.
 	//  2. The certificate must cover that hostname, or the TLS handshake fails
 	//     on a SAN mismatch. `sqi-server tls init` includes os.Hostname() by
 	//     default for exactly this reason.
@@ -189,6 +203,7 @@ func TestDiscovery_RealBinaryFindsItsServerOverMDNS(t *testing.T) {
 		// The point of this test: advertise, so the worker can find us.
 		cfg.DiscoveryEnabled = true
 		cfg.DiscoveryInstanceName = instance
+		cfg.DiscoveryInterfaces = loopbackIfaces()
 	})
 
 	farmID, queueID := seedFarmAndQueue(t, ts)

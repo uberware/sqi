@@ -75,6 +75,16 @@ type Config struct {
 	// rather than to rewrite anything.
 	HTTPTLS bool
 
+	// Interfaces restricts which network interfaces the service is advertised
+	// on. Nil — the production value — advertises on every multicast-capable
+	// interface, which is the point of mDNS discovery.
+	//
+	// It is set by tests, to loopback, so a test run never transmits an
+	// advertisement onto the network it happens to be running on. It has no
+	// config key: an operator who wants to limit advertisement should say so
+	// through a real setting, and none exists yet.
+	Interfaces []net.Interface
+
 	// NATSTLS reports whether the embedded broker requires TLS, advertised as
 	// the "nats_tls" TXT record.
 	//
@@ -154,7 +164,7 @@ func (r *Responder) Start(ctx context.Context) error {
 		domain,
 		r.httpPort,
 		txt,
-		nil, // nil interfaces = advertise on all multicast-capable interfaces
+		r.cfg.Interfaces, // nil = every multicast-capable interface
 	)
 	if err != nil {
 		return fmt.Errorf("discovery: register mDNS service: %w", err)

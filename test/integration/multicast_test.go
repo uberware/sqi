@@ -12,6 +12,13 @@ package integration
 // round trip and reports what happened, rather than guessing from the
 // environment.
 //
+// These tests do NOT transmit on the network they are running on. Every
+// advertisement is restricted to loopback (see loopbackIfaces), which a browser
+// listening on all interfaces still receives — verified, not assumed. That
+// keeps a test run from announcing a service on an office LAN, and it is an
+// invariant rather than a preference: where loopback cannot carry multicast the
+// tests refuse to run rather than falling back to a real interface.
+//
 // Because a skipped test verifies nothing, SQI_TEST_REQUIRE_MULTICAST=1 turns
 // the skip into a failure. `make test-discovery` and the CI job set it, so a
 // runner that silently loses multicast fails the build instead of quietly
@@ -20,6 +27,7 @@ package integration
 import (
 	"context"
 	"log/slog"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
@@ -36,8 +44,32 @@ func multicastRequired() bool {
 	return v == "1" || v == "true" || v == "yes"
 }
 
+// loopbackIfaces returns the multicast-capable loopback interfaces.
+//
+// Advertising only on these is what keeps a test run off the real network. It
+// works because multicast sent on loopback is delivered to anything listening
+// on loopback, including a resolver bound to every interface — which is what
+// the production worker uses, so the real-binary test needs no special casing.
+//
+// Linux `lo` does not carry the MULTICAST flag by default, which is why the CI
+// job enables it; see docs/development.md for the one-line remediation.
+func loopbackIfaces() []net.Interface {
+	ifs, err := net.Interfaces()
+	if err != nil {
+		return nil
+	}
+	var out []net.Interface
+	for _, i := range ifs {
+		if i.Flags&net.FlagLoopback != 0 && i.Flags&net.FlagMulticast != 0 && i.Flags&net.FlagUp != 0 {
+			out = append(out, i)
+		}
+	}
+	return out
+}
+
 // requireMulticast proves an mDNS round trip works on this host before a test
-// depends on one, by advertising a throwaway service and browsing for it.
+// depends on one, by advertising a throwaway service on loopback and browsing
+// for it.
 //
 // It exists so a discovery test fails for the reason it actually failed: a
 // broken responder looks identical to a host that cannot do multicast at all,
@@ -45,12 +77,20 @@ func multicastRequired() bool {
 func requireMulticast(t *testing.T) {
 	t.Helper()
 
+	lo := loopbackIfaces()
+	if len(lo) == 0 {
+		skipOrFail(t, "loopback has no MULTICAST flag, and these tests refuse to "+
+			"advertise on a real interface; on Linux run: sudo ip link set lo multicast on")
+		return
+	}
+
 	logger := slog.New(slog.DiscardHandler)
 	probe, err := serverdiscovery.New(serverdiscovery.Config{
 		Enabled:      true,
 		InstanceName: instanceName(t, "sqi-probe"),
 		HTTPAddr:     "127.0.0.1:1",
 		NATSAddr:     "127.0.0.1:2",
+		Interfaces:   lo,
 	}, logger)
 	if err != nil {
 		t.Fatalf("multicast probe: responder New: %v", err)
@@ -64,8 +104,8 @@ func requireMulticast(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
 	defer cancel()
 	if _, err := workerdiscovery.Browse(ctx, 6*time.Second, logger); err != nil {
-		skipOrFail(t, "multicast probe: no mDNS round trip on this host ("+err.Error()+
-			"); the host needs a multicast-capable interface")
+		skipOrFail(t, "multicast probe: no mDNS round trip over loopback on this host ("+
+			err.Error()+")")
 	}
 }
 
@@ -119,13 +159,14 @@ func instanceName(t *testing.T, prefix string) string {
 	return strings.Trim(name, "-")
 }
 
-// noForeignServer skips (or fails) when something other than this test is
-// already advertising _sqi._tcp on the network.
+// noForeignServer skips when something other than this test is already
+// advertising _sqi._tcp.
 //
-// Real mDNS is not sandboxed: a developer running this on an office LAN with a
-// live sqi-server would otherwise have the test's worker discover THAT server
-// and connect to it. Refusing to run is the only safe response — the test
-// cannot tell a colleague's production broker from its own before connecting.
+// The tests never advertise beyond loopback, but they still BROWSE on every
+// interface — the production worker does, and the real-binary test runs the
+// production worker. So a live sqi-server on the same LAN can still be
+// discovered, and the test cannot tell a colleague's production broker from its
+// own before connecting to it. Refusing to run is the only safe response.
 func noForeignServer(t *testing.T) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)

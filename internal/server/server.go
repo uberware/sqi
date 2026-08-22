@@ -138,6 +138,11 @@ type Config struct {
 	// multicast (most cloud VPCs). Default true.
 	DiscoveryEnabled bool
 
+	// DiscoveryInterfaces restricts mDNS advertisement to specific interfaces.
+	// Nil — the production value — advertises on all multicast-capable ones.
+	// Set by tests to loopback; see internal/discovery.Config.Interfaces.
+	DiscoveryInterfaces []net.Interface
+
 	// DiscoveryInstanceName is the mDNS service instance name advertised on
 	// the network. Each server on the same subnet should use a distinct name.
 	// Default "sqi-server".
@@ -756,6 +761,7 @@ func (s *Server) start(ctx context.Context) error {
 		NATSAddr:     s.cfg.NATSAddr,
 		HTTPTLS:      s.cfg.HTTPTLS.Enabled,
 		NATSTLS:      s.cfg.NATSTLS.Enabled,
+		Interfaces:   s.cfg.DiscoveryInterfaces,
 	}, s.logger)
 	if err != nil {
 		return fmt.Errorf("init discovery: %w", err)
