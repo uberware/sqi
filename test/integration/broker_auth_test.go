@@ -127,7 +127,16 @@ func startBrokerAuthServer(t *testing.T, sqlitePath string, mutate func(*server.
 	if !waitForTCP(t, httpAddr, 10*time.Second) {
 		t.Fatal("startBrokerAuthServer: HTTP server did not start listening")
 	}
-	if !waitForReadyz(t, httpAddr, 10*time.Second) {
+	// Readiness must be probed over whatever scheme this server is actually
+	// serving: an https:// listener answers a plaintext GET with a 400, which
+	// would look like "never became ready" forever.
+	ready := false
+	if cfg.HTTPTLS.Enabled {
+		ready = waitForReadyzClient(t, readyzTLSClient(t, cfg.HTTPTLS.CertFile), "https://"+httpAddr, 10*time.Second)
+	} else {
+		ready = waitForReadyz(t, httpAddr, 10*time.Second)
+	}
+	if !ready {
 		t.Fatal("startBrokerAuthServer: server did not become ready")
 	}
 	return ts

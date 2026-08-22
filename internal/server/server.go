@@ -439,6 +439,15 @@ func (s *Server) startBroker(ctx context.Context) (*bus.Broker, error) {
 		DataDir:    s.cfg.NATSDataDir,
 		MaxStoreMB: s.cfg.NATSMaxStoreMB,
 		Auth:       brokerAuth,
+		// Mapped field by field rather than shared: internal/bus does not
+		// import internal/config, the same boundary WorkerCredentialRef draws
+		// against internal/store.
+		TLS: bus.BrokerTLSConfig{
+			Enabled:      s.cfg.NATSTLS.Enabled,
+			CertFile:     s.cfg.NATSTLS.CertFile,
+			KeyFile:      s.cfg.NATSTLS.KeyFile,
+			ClientCAFile: s.cfg.NATSTLS.ClientCAFile,
+		},
 	}, s.logger)
 	if err := broker.Start(ctx); err != nil {
 		return nil, err

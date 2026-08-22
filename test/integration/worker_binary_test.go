@@ -157,6 +157,25 @@ func startRealWorkerAnyOS(t *testing.T, ts *testServer, farmID, queueID string) 
 // whether the POSIX-command skip applies; everything else is identical.
 func startRealWorkerCore(t *testing.T, ts *testServer, farmID, queueID string, extraArgs, extraEnv []string, allowWindows bool) string {
 	t.Helper()
+	return startRealWorkerCoreOpt(t, ts, farmID, queueID, extraArgs, extraEnv, allowWindows, true)
+}
+
+// startRealWorkerNoWait starts a real worker subprocess and returns without
+// waiting for it to come online.
+//
+// Two callers need this and neither can use the waiting form: a TLS test,
+// whose readiness poll must speak https:// (pollForOnlineWorker is plaintext
+// only), and any test asserting a worker must NEVER register, for which
+// "did not come online" is the expected result rather than a fatal error.
+func startRealWorkerNoWait(t *testing.T, ts *testServer, farmID, queueID string, extraEnv []string) {
+	t.Helper()
+	startRealWorkerCoreOpt(t, ts, farmID, queueID, nil, extraEnv, true, false)
+}
+
+// startRealWorkerCoreOpt implements startRealWorkerCore with an explicit
+// choice of whether to block until the worker reports online.
+func startRealWorkerCoreOpt(t *testing.T, ts *testServer, farmID, queueID string, extraArgs, extraEnv []string, allowWindows, waitOnline bool) string {
+	t.Helper()
 
 	if runtime.GOOS == "windows" && !allowWindows {
 		t.Skip("real-worker integration test requires a POSIX shell; skipping on Windows")
@@ -225,6 +244,9 @@ func startRealWorkerCore(t *testing.T, ts *testServer, farmID, queueID string, e
 	// Poll GET /api/v1/workers until this worker appears with status "online".
 	// The worker needs to connect to NATS, register, and receive at least one
 	// heartbeat sweep before the server marks it online.
+	if !waitOnline {
+		return ""
+	}
 	workerID := pollForOnlineWorker(t, ts, farmID, 30*time.Second)
 	t.Logf("real worker registered: id=%s", workerID)
 	return workerID

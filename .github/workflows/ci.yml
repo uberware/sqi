@@ -510,7 +510,7 @@ jobs:
       # Reuses scripts/smoke.sh (the same script developers run via `make smoke`).
       # Passing the prebuilt binaries skips its internal `make build`, so no GNU
       # make is required on the Windows runner.
-      - name: End-to-end smoke (REST + WebSocket)
+      - name: End-to-end smoke (REST + WebSocket, plain / broker-auth / TLS)
         run: |
           ext=""; [ "$RUNNER_OS" = "Windows" ] && ext=".exe"
           export SQI_SERVER_BIN="bin/sqi-server${ext}"
@@ -519,7 +519,24 @@ jobs:
           # status is not masked by `export` (shellcheck SC2155).
           SQI_SMOKE_PYTHON="$(command -v python)"
           export SQI_SMOKE_PYTHON
-          bash scripts/smoke.sh
+          bash scripts/smoke.sh 2>&1 | tee smoke-output.log
+          status=${PIPESTATUS[0]}
+
+          # The script runs three modes. Assert each one actually reported a
+          # pass by name: a filter or branch regression that silently skipped a
+          # mode would otherwise leave this job green while covering less.
+          missing=0
+          for mode in noauth brokerauth tls; do
+            if ! grep -q "SMOKE TEST PASSED (mode=$mode)" smoke-output.log; then
+              echo "::error::smoke mode $mode did not report a pass"
+              missing=1
+            fi
+          done
+          if [ "$status" -ne 0 ] || [ "$missing" -ne 0 ]; then
+            echo "::error::the smoke test did not pass in all three modes (exit=$status)."
+            exit 1
+          fi
+          echo "Confirmed all three smoke modes passed."
 
   # ── Docker smoke test ────────────────────────────────────────────────────────
   # Builds both Docker images from source (no registry push) and runs them
@@ -1045,6 +1062,8 @@ jobs:
             TestWorkerBinaryStagingFailureReason
             TestProductSubmit_RetryOverrides
             TestAutoRetry_RetryThenSucceed
+            TestTLSEndToEnd
+            TestTLSWorkerWithoutCAIsRefused
           )
           missing=0
           for name in "${expected[@]}"; do

@@ -206,8 +206,15 @@ func waitForTCP(tb testing.TB, addr string, timeout time.Duration) bool {
 // stream provisioning) are fully up before tests start.
 func waitForReadyz(tb testing.TB, httpAddr string, timeout time.Duration) bool {
 	tb.Helper()
-	client := &http.Client{Timeout: 2 * time.Second}
-	url := "http://" + httpAddr + "/readyz"
+	return waitForReadyzClient(tb, &http.Client{Timeout: 2 * time.Second}, "http://"+httpAddr, timeout)
+}
+
+// waitForReadyzClient is waitForReadyz against a caller-supplied client and
+// base URL. A TLS-terminated server needs both: an https:// scheme, and a
+// client that trusts the farm CA. See tls_test.go.
+func waitForReadyzClient(tb testing.TB, client *http.Client, baseURL string, timeout time.Duration) bool {
+	tb.Helper()
+	url := baseURL + "/readyz"
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
 		req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, url, nil)
