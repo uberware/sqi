@@ -20,8 +20,9 @@ func TestBrokerInProcess_ServerReachesJetStreamUnderTLSAndAuth(t *testing.T) {
 		BrokerAuthConfig{Enabled: true, Credentials: []WorkerCredentialRef{enrolled}},
 	)
 
-	// The server's own client carries no CA configuration of its own: it pins
-	// to the certificate the broker loaded, over an in-process pipe.
+	// The server's own client carries no TLS configuration at all: the
+	// connection is an in-process pipe, which nats-server exempts from the TLS
+	// requirement, so there is nothing to trust and nothing to encrypt.
 	c, err := b.NewClient()
 	if err != nil {
 		t.Fatalf("NewClient under TLS + auth: %v", err)
@@ -35,19 +36,20 @@ func TestBrokerInProcess_ServerReachesJetStreamUnderTLSAndAuth(t *testing.T) {
 	}
 }
 
-func TestBrokerInProcess_ExemptionDoesNotLeakToNetworkClients(t *testing.T) {
+func TestBrokerInProcess_NetworkClientsStillNeedCertificates(t *testing.T) {
 	dir, _ := farmCerts(t)
 	b := startBrokerTLS(t, brokerTLSOf(dir, true), BrokerAuthConfig{})
 
-	// The in-process connection is exempt from the client-certificate
-	// requirement. A real network client must not inherit that exemption.
+	// The server's own connection is in-process and therefore plaintext, which
+	// bypasses the client-certificate requirement by never doing a handshake.
+	// A real network client must not get the same pass.
 	nc, err := nats.Connect(b.ClientURL(), nats.NoReconnect(), nats.Secure(&tls.Config{
 		MinVersion: tls.VersionTLS12,
 		RootCAs:    caPool(t, dir),
 	}))
 	if err == nil {
 		nc.Close()
-		t.Fatal("a TCP client without a certificate connected; the in-process mTLS exemption leaked to the network")
+		t.Fatal("a TCP client without a certificate connected to an mTLS broker")
 	}
 }
 

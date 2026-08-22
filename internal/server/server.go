@@ -325,6 +325,11 @@ func (s *Server) Metrics() *metrics.Metrics {
 // listener in a background goroutine. Split out of [Server.start] to keep that
 // function under the cyclop complexity threshold.
 func (s *Server) serveHTTP(ctx context.Context) error {
+	// Both TLS surfaces are warned about here, beside the listener they concern,
+	// rather than riding on broker startup where a reordering would silently
+	// take the HTTP warning with it.
+	warnTLSConfig(ctx, s.logger, s.cfg.HTTPTLS, s.cfg.NATSTLS)
+
 	tlsOn := s.cfg.HTTPTLS.Enabled
 	if tlsOn {
 		tlsCfg, err := tlsutil.ServerConfig(s.cfg.HTTPTLS.CertFile, s.cfg.HTTPTLS.KeyFile, "")
@@ -437,7 +442,6 @@ func isLoopbackHost(host string) bool {
 // enrolled worker credential set when broker authentication is enabled.
 func (s *Server) startBroker(ctx context.Context) (*bus.Broker, error) {
 	warnIfBrokerUnauthenticated(ctx, s.cfg.NATSAddr, s.cfg.NATSAuthEnabled, s.logger)
-	warnTLSConfig(ctx, s.logger, s.cfg.HTTPTLS, s.cfg.NATSTLS)
 
 	brokerAuth, err := loadBrokerAuthConfig(ctx, s.store, s.cfg.NATSAuthEnabled)
 	if err != nil {

@@ -304,9 +304,9 @@ func exponentialBackoff(base time.Duration) func(int) time.Duration {
 //   - cfg.InsecureSkipVerify            — disable server cert verification
 func buildTLSOptions(cfg workerconfig.NATSConfig) ([]nats.Option, error) {
 	// The three-valued nats.tls_enabled decides this; see NATSConfig.UseTLS.
-	// The discovery signal has already been folded into cfg by the caller (see
-	// applyDiscoveredTLS in cmd/sqi-worker), so false here means "nothing,
-	// including mDNS, gave a reason to use TLS".
+	// Any mDNS signal has already been folded into cfg by the caller (see
+	// discovery.ApplyTLS), so false here means "nothing, including mDNS, gave a
+	// reason to use TLS".
 	wantTLS := cfg.UseTLS(false)
 
 	if !wantTLS {

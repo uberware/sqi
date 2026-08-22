@@ -1108,6 +1108,21 @@ jobs:
       # loopback only — deliberately, so a run never announces a service on the
       # network it happens to be on — and refuse to fall back to a real
       # interface, so the flag has to be on or they cannot run at all.
+      # The advertisement carries "<hostname>.local", which the worker dials.
+      # macOS answers that through mDNSResponder; a stock ubuntu runner has no
+      # mDNS NSS module, so the worker would discover the server and then fail
+      # to dial it.
+      #
+      # A hosts entry rather than libnss-mdns + avahi: avahi-daemon would want
+      # port 5353, which is the port the test's own responder binds, so
+      # installing it to fix resolution risks breaking advertisement. Mapping
+      # the name to loopback needs no daemon and cannot conflict.
+      - name: Resolve this host's mDNS name locally
+        run: |
+          echo "127.0.0.1 $(hostname).local" | sudo tee -a /etc/hosts
+          getent hosts "$(hostname).local" || {
+            echo "::error::$(hostname).local still does not resolve"; exit 1; }
+
       - name: Enable multicast on loopback
         run: |
           ip link show lo

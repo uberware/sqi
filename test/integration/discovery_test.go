@@ -206,6 +206,10 @@ func TestDiscovery_RealBinaryFindsItsServerOverMDNS(t *testing.T) {
 		cfg.DiscoveryInterfaces = loopbackIfaces()
 	})
 
+	// Only now, with the server advertising: the mDNS name is answered by the
+	// responder, so this is the first moment the check means anything.
+	requireLocalHostnameResolves(t)
+
 	farmID, queueID := seedFarmAndQueue(t, ts)
 	caFile := filepath.Join(dir, "ca.crt")
 

@@ -98,14 +98,13 @@ func TestDefaultConfig_ServesPlaintextUnchanged(t *testing.T) {
 	}
 	nc.Close()
 
-	// 5. A session cookie issued over this listener is not Secure. The
-	//    cookie_secure default is "auto", which resolves from r.TLS — a Secure
-	//    cookie on a plaintext listener is silently dropped by the browser and
-	//    breaks login with no error anywhere. Pinned at the resolver here; the
-	//    full login path is covered in internal/api/tlscookie_test.go.
-	if defaults.Auth.Session.CookieSecure != "auto" {
-		t.Errorf("cookie_secure default = %q, want \"auto\"", defaults.Auth.Session.CookieSecure)
-	}
+	// 5. Session cookies: NOT asserted here.
+	//
+	//    The default is cookie_secure "auto", which resolves from r.TLS, so on
+	//    this plaintext listener a cookie must not be Secure. Checking the
+	//    default string here would assert a constant, not a behavior;
+	//    TestSessionCookie_NotSecureOnPlaintext in internal/api drives an actual
+	//    login over an actual plaintext listener and inspects the real cookie.
 
 	// 6. The mDNS advertisement carries no TLS keys.
 	//

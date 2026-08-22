@@ -22,6 +22,14 @@ import (
 // An explicit nats.url discovers nothing, so found's TLS fields are false and
 // this is a no-op: an operator who configures the URL by hand also configures
 // the transport by hand.
+//
+// On trusting an advertisement at all: the signal cannot be used to weaken the
+// connection. Forging nats_tls=1 UPGRADES a worker to TLS; withholding it
+// leaves the worker attempting plaintext against a TLS broker, which fails
+// closed. Any locally configured tls_* setting still wins, so an advertisement
+// can never downgrade a worker that was configured for TLS. And an attacker
+// able to forge mDNS already controls NATSURL entirely, so the TLS record adds
+// no surface that was not already there.
 func ApplyTLS(ctx context.Context, cfg *workerconfig.NATSConfig, found Result, logger *slog.Logger) {
 	switch {
 	case found.NATSTLS && cfg.TLSEnabled == workerconfig.TLSOff:

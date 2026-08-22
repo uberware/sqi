@@ -101,6 +101,11 @@ func NewCA(commonName string, validFor time.Duration) (*CA, error) {
 
 // newLeaf signs an end-entity certificate with ca.
 func (ca *CA) newLeaf(commonName string, hosts []string, usage x509.ExtKeyUsage, validFor time.Duration) (*Leaf, error) {
+	return ca.newLeafAt(commonName, hosts, usage, time.Now().Add(-time.Hour), validFor+time.Hour)
+}
+
+// newLeafAt is newLeaf with an explicit validity start.
+func (ca *CA) newLeafAt(commonName string, hosts []string, usage x509.ExtKeyUsage, notBefore time.Time, validFor time.Duration) (*Leaf, error) {
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
 		return nil, fmt.Errorf("certgen: generate leaf key: %w", err)
@@ -109,12 +114,11 @@ func (ca *CA) newLeaf(commonName string, hosts []string, usage x509.ExtKeyUsage,
 	if err != nil {
 		return nil, err
 	}
-	now := time.Now()
 	tmpl := &x509.Certificate{
 		SerialNumber:          serial,
 		Subject:               pkix.Name{CommonName: commonName},
-		NotBefore:             now.Add(-time.Hour),
-		NotAfter:              now.Add(validFor),
+		NotBefore:             notBefore,
+		NotAfter:              notBefore.Add(validFor),
 		KeyUsage:              x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,
 		ExtKeyUsage:           []x509.ExtKeyUsage{usage},
 		BasicConstraintsValid: true,
@@ -139,12 +143,21 @@ func (ca *CA) newLeaf(commonName string, hosts []string, usage x509.ExtKeyUsage,
 
 // NewServerCert signs a server certificate covering hosts. Entries that
 // parse as an IP address become IP SANs; the rest become DNS SANs.
+//
+// The validity window starts an hour in the past, so a certificate is usable
+// immediately on a host whose clock runs slightly behind the issuer's.
 func (ca *CA) NewServerCert(hosts []string, validFor time.Duration) (*Leaf, error) {
+	return ca.NewServerCertNotBefore(hosts, time.Now().Add(-time.Hour), validFor+time.Hour)
+}
+
+// NewServerCertNotBefore is [CA.NewServerCert] with an explicit start to the
+// validity window, for a certificate minted ahead of a scheduled rollout.
+func (ca *CA) NewServerCertNotBefore(hosts []string, notBefore time.Time, validFor time.Duration) (*Leaf, error) {
 	cn := "sqi-server"
 	if len(hosts) > 0 {
 		cn = hosts[0]
 	}
-	return ca.newLeaf(cn, hosts, x509.ExtKeyUsageServerAuth, validFor)
+	return ca.newLeafAt(cn, hosts, x509.ExtKeyUsageServerAuth, notBefore, validFor)
 }
 
 // NewClientCert signs a client certificate for the worker mTLS path. The

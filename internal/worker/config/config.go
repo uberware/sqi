@@ -1120,8 +1120,10 @@ func Validate(cfg WorkerConfig) []ValidationError {
 }
 
 // validateNATSTLSMode rejects a nats.tls_enabled value that is not one of the
-// three modes. A typo like "yes" would otherwise fall into the "auto" default
-// and silently mean something the operator did not write.
+// three modes or one of their accepted synonyms. An unrecognized value would
+// otherwise fall into the "auto" default and silently mean something the
+// operator did not write. ("yes" and "1" ARE recognized — see
+// normalizeTLSMode.)
 func validateNATSTLSMode(cfg NATSConfig) []ValidationError {
 	if _, ok := normalizeTLSMode(cfg.TLSEnabled); ok {
 		return nil

@@ -32,8 +32,12 @@ func missingPathErrors(certField, keyField, certFile, keyFile string) []Validati
 }
 
 // validateKeypair checks that certFile and keyFile load together and that the
-// leaf has not expired. Every problem a certificate can have is caught here,
-// at load, rather than at the first connection attempt.
+// leaf's validity window covers now.
+//
+// This covers loadability, pairing and validity dates — NOT every problem a
+// certificate can have. A SAN or hostname mismatch is still only discovered
+// when a peer verifies the certificate, because it depends on the name that
+// peer used, which is not knowable here.
 func validateKeypair(certField, keyField, certFile, keyFile string) []ValidationError {
 	if certFile == "" || keyFile == "" {
 		return missingPathErrors(certField, keyField, certFile, keyFile)
@@ -58,10 +62,20 @@ func validateKeypair(certField, keyField, certFile, keyFile string) []Validation
 			Message: fmt.Sprintf("cannot parse leaf certificate in %s: %s", certFile, err),
 		}}
 	}
-	if time.Now().After(leaf.NotAfter) {
+	now := time.Now()
+	if now.After(leaf.NotAfter) {
 		return []ValidationError{{
 			Field:   certField,
 			Message: fmt.Sprintf("certificate %s expired at %s; issue a new one (`sqi-server tls init`) — a server that boots with an expired certificate is a server whose whole farm fails to connect", certFile, leaf.NotAfter.Format(time.RFC3339)),
+		}}
+	}
+	// Not yet valid fails exactly like expired at the peer, and for a reason
+	// (a clock skew, a certificate minted for a future rollout) that is even
+	// harder to read from a handshake error.
+	if now.Before(leaf.NotBefore) {
+		return []ValidationError{{
+			Field:   certField,
+			Message: fmt.Sprintf("certificate %s is not valid until %s; check the system clock, or wait", certFile, leaf.NotBefore.Format(time.RFC3339)),
 		}}
 	}
 	return nil
@@ -99,7 +113,11 @@ func validateNATSTLS(cfg NATSTLSConfig) []ValidationError {
 }
 
 // ExpiringSoon reports whether the leaf certificate in certFile expires
-// within 30 days, returning its NotAfter. It is advisory: startup warns, it
+// within 30 days, returning its NotAfter.
+//
+// It inspects the FIRST CERTIFICATE block, which the docs require to be the
+// leaf. A chain written the other way round would have this report the CA's
+// expiry instead — harmless, but it would warn about the wrong date. It is advisory: startup warns, it
 // does not refuse. Errors are swallowed because Validate has already rejected
 // anything unloadable.
 //

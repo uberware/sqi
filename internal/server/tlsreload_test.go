@@ -5,6 +5,7 @@ package server
 import (
 	"context"
 	"crypto/tls"
+	"strings"
 	"testing"
 	"time"
 
@@ -52,9 +53,20 @@ func TestRevokeWorker_TLSSurvivesCredentialReload(t *testing.T) {
 	}
 
 	// THE assertion: TLS is still required after the reload.
-	if plain, err := nats.Connect(broker.ClientURL(), nats.NoReconnect()); err == nil {
+	//
+	// The plaintext client carries credential A's VALID nkey. Without it the
+	// broker refuses the connection for want of authentication whatever the TLS
+	// state, and the check cannot tell "TLS still required" from "auth still
+	// required" — it passed even with the ordering regression injected. With a
+	// valid credential, refusal can only mean TLS.
+	plain, err := nats.Connect(broker.ClientURL(), nats.NoReconnect(),
+		nkeyOption(t, seedA, refA.PublicKey))
+	if err == nil {
 		plain.Close()
-		t.Fatal("a plaintext client connected after a credential reload; the reload dropped broker TLS")
+		t.Fatal("a plaintext client with a valid credential connected after a credential reload; the reload dropped broker TLS")
+	}
+	if !strings.Contains(err.Error(), "secure") && !strings.Contains(err.Error(), "TLS") && !strings.Contains(err.Error(), "tls") {
+		t.Errorf("plaintext client was refused for the wrong reason: %v — this assertion only means anything if TLS is what refused it", err)
 	}
 
 	// And A can still connect over TLS afterwards.

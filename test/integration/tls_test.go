@@ -65,6 +65,40 @@ func tlsMaterialFor(t *testing.T, sans []string) string {
 	return dir
 }
 
+// tlsMaterialWithClient generates the farm CA, a server certificate and a
+// worker CLIENT certificate in one pass, returning the directory and the
+// client keypair's paths.
+//
+// It mints all three together because `sqi-server tls init` refuses to
+// overwrite an existing CA, so a second invocation cannot issue a client
+// certificate against a CA it already wrote.
+func tlsMaterialWithClient(t *testing.T, workerID string) (dir, certFile, keyFile string) {
+	t.Helper()
+	dir = t.TempDir()
+	ca, err := certgen.NewCA("integration farm CA", 10*365*24*time.Hour)
+	if err != nil {
+		t.Fatalf("NewCA: %v", err)
+	}
+	if err := certgen.WriteCA(dir, ca); err != nil {
+		t.Fatalf("WriteCA: %v", err)
+	}
+	server, err := ca.NewServerCert([]string{"localhost", "127.0.0.1", "::1"}, 365*24*time.Hour)
+	if err != nil {
+		t.Fatalf("NewServerCert: %v", err)
+	}
+	if err := certgen.WriteLeaf(dir, "server", server); err != nil {
+		t.Fatalf("WriteLeaf(server): %v", err)
+	}
+	client, err := ca.NewClientCert(workerID, 365*24*time.Hour)
+	if err != nil {
+		t.Fatalf("NewClientCert: %v", err)
+	}
+	if err := certgen.WriteLeaf(dir, "client-"+workerID, client); err != nil {
+		t.Fatalf("WriteLeaf(client): %v", err)
+	}
+	return dir, filepath.Join(dir, "client-"+workerID+".crt"), filepath.Join(dir, "client-"+workerID+".key")
+}
+
 // tlsClient returns an HTTP client trusting only the CA in dir.
 func tlsClient(t *testing.T, dir string) *http.Client {
 	t.Helper()
@@ -157,5 +191,86 @@ func TestTLSWorkerWithoutCAIsRefused(t *testing.T) {
 
 	if id := findOnlineWorker(t, ts, farmID, 10*time.Second); id != "" {
 		t.Fatalf("worker %s registered without any CA configured; TLS is not actually being enforced", id)
+	}
+}
+
+// TestTLSMutualAuthEndToEnd covers the mTLS flow docs/tls.md promotes, with a
+// real worker binary: `sqi-server tls init --client <id>` issues a client
+// keypair, the worker presents it via nats.tls_cert_file/tls_key_file, and the
+// broker accepts it.
+//
+// The unit tests in internal/bus hand-build the client tls.Config, so they
+// never traverse natsclient.buildTLSOptions — which is the code an operator's
+// configuration actually reaches, and where a wrong ExtKeyUsage on the
+// generated certificate would bite.
+func TestTLSMutualAuthEndToEnd(t *testing.T) {
+	dir, clientCert, clientKey := tlsMaterialWithClient(t, "render-01")
+
+	dbPath := filepath.Join(t.TempDir(), "sqi.db")
+	joinToken := seedJoinToken(t, dbPath, "mtls-e2e")
+
+	certFile := filepath.Join(dir, "server.crt")
+	keyFile := filepath.Join(dir, "server.key")
+	caFile := filepath.Join(dir, "ca.crt")
+
+	ts := startBrokerAuthServer(t, dbPath, func(cfg *server.Config) {
+		cfg.HTTPTLS = config.TLSConfig{Enabled: true, CertFile: certFile, KeyFile: keyFile}
+		cfg.NATSTLS = config.NATSTLSConfig{
+			Enabled: true, CertFile: certFile, KeyFile: keyFile,
+			// Require a client certificate from every worker.
+			ClientCAFile: caFile,
+		}
+		cfg.NATSAuthEnrollmentEndpointEnabled = true
+	})
+
+	farmID, queueID := seedFarmAndQueue(t, ts)
+	startRealWorkerNoWait(t, ts, farmID, queueID, nil, []string{
+		"SQI_WORKER_NATS_URL=nats://" + ts.NATSAddr,
+		"SQI_WORKER_NATS_TLS_CA_FILE=" + caFile,
+		"SQI_WORKER_NATS_TLS_CERT_FILE=" + clientCert,
+		"SQI_WORKER_NATS_TLS_KEY_FILE=" + clientKey,
+		"SQI_WORKER_NATS_SERVER_URL=https://" + ts.HTTPAddr,
+		"SQI_WORKER_NATS_SERVER_TLS_CA_FILE=" + caFile,
+		"SQI_WORKER_NATS_JOIN_TOKEN=" + joinToken,
+	}, true)
+
+	if id := findOnlineWorker(t, ts, farmID, 45*time.Second); id == "" {
+		t.Fatal("worker never came online under mutual TLS: the generated client certificate was not accepted")
+	}
+}
+
+// TestTLSMutualAuthRefusesWorkerWithoutCertificate is the negative half: the
+// same broker must reject a worker that presents no client certificate.
+// Without it, a broker that silently stopped requiring one would still pass
+// the test above.
+func TestTLSMutualAuthRefusesWorkerWithoutCertificate(t *testing.T) {
+	dir := tlsMaterial(t)
+	dbPath := filepath.Join(t.TempDir(), "sqi.db")
+	joinToken := seedJoinToken(t, dbPath, "mtls-negative")
+
+	certFile := filepath.Join(dir, "server.crt")
+	keyFile := filepath.Join(dir, "server.key")
+	caFile := filepath.Join(dir, "ca.crt")
+
+	ts := startBrokerAuthServer(t, dbPath, func(cfg *server.Config) {
+		cfg.HTTPTLS = config.TLSConfig{Enabled: true, CertFile: certFile, KeyFile: keyFile}
+		cfg.NATSTLS = config.NATSTLSConfig{
+			Enabled: true, CertFile: certFile, KeyFile: keyFile, ClientCAFile: caFile,
+		}
+		cfg.NATSAuthEnrollmentEndpointEnabled = true
+	})
+
+	farmID, queueID := seedFarmAndQueue(t, ts)
+	// Correct CA, correct join token, no client certificate.
+	startRealWorkerNoWait(t, ts, farmID, queueID, nil, []string{
+		"SQI_WORKER_NATS_URL=nats://" + ts.NATSAddr,
+		"SQI_WORKER_NATS_TLS_CA_FILE=" + caFile,
+		"SQI_WORKER_NATS_SERVER_URL=https://" + ts.HTTPAddr,
+		"SQI_WORKER_NATS_SERVER_TLS_CA_FILE=" + caFile,
+		"SQI_WORKER_NATS_JOIN_TOKEN=" + joinToken,
+	}, true)
+
+	if id := findOnlineWorker(t, ts, farmID, 10*time.Second); id != "" {
+		t.Fatalf("worker %s registered without a client certificate against an mTLS broker", id)
 	}
 }
