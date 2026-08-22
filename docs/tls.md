@@ -1,15 +1,9 @@
 # TLS
 
-sqi can terminate TLS in-process on both listeners `sqi-server` opens: the REST
-API, the WebSocket gateway and the embedded web UI on one, and the embedded NATS
-broker on the other. Workers can optionally be required to present a client
-certificate.
-
-One listener is **not** covered: the worker's own metrics and health endpoint
-(`metrics.addr`, default `127.0.0.1:9091`). It has no TLS setting, so an operator
-who binds it beyond loopback for Prometheus is serving it in plaintext. It
-carries operational metrics and health, never credentials or job payloads — see
-[What is encrypted, and what is not](#what-is-encrypted-and-what-is-not).
+sqi can terminate TLS in-process on every listener it opens: `sqi-server`'s REST
+API, WebSocket gateway and embedded web UI on one listener, its embedded NATS
+broker on another, and the worker's own metrics and health endpoint on a third.
+Workers can optionally be required to present a client certificate.
 
 **TLS is off by default.** A `sqi-server` started with no TLS configuration
 behaves exactly as it did before TLS existed: one plaintext HTTP listener, one
@@ -26,7 +20,7 @@ many deployments will do anyway — see [Reverse proxy](#reverse-proxy).
 | Worker ↔ broker (assignments, status, logs) | `nats.tls` | Closes the cleartext gap that broker authentication alone does not |
 | Worker enrollment (`POST /api/v1/workers/enroll`) | `http.tls` server-side, `nats.server_tls_ca_file` worker-side | Runs over REST before the worker holds any credential |
 | Outbound LDAP / OIDC | Their own settings (`auth.ldap.*`, `auth.oidc.*`) | Unchanged by anything here |
-| Worker metrics / health (`metrics.addr`) | **nothing — plaintext** | Loopback by default; binding it wider for Prometheus exposes metrics, health and (if enabled) pprof in the clear |
+| Worker metrics / health (`metrics.addr`) | `metrics.tls` (worker) | Loopback by default, where plaintext is fine; turn TLS on with any address reachable from elsewhere, since this carries metrics, health and — with `enable_pprof` — full runtime profiles |
 
 Two things TLS does **not** do:
 
@@ -79,12 +73,26 @@ nats:
   server_url: "https://sqi-server.example:8080"
   server_tls_ca_file: ""                   # CA that verifies the API certificate
   server_tls_insecure_skip_verify: false
+
+metrics:
+  addr: "127.0.0.1:9091"
+  tls:                                     # the worker's own metrics listener
+    enabled: false
+    cert_file: ""
+    key_file: ""
 ```
 
 Environment: `SQI_WORKER_NATS_TLS_ENABLED`, `SQI_WORKER_NATS_TLS_CA_FILE`,
 `SQI_WORKER_NATS_TLS_CERT_FILE`, `SQI_WORKER_NATS_TLS_KEY_FILE`,
 `SQI_WORKER_NATS_SERVER_TLS_CA_FILE`,
-`SQI_WORKER_NATS_SERVER_TLS_INSECURE_SKIP_VERIFY`.
+`SQI_WORKER_NATS_SERVER_TLS_INSECURE_SKIP_VERIFY`,
+`SQI_WORKER_METRICS_TLS_ENABLED`, `SQI_WORKER_METRICS_TLS_CERT_FILE`,
+`SQI_WORKER_METRICS_TLS_KEY_FILE`.
+
+`metrics.tls` is independent of everything else here: it protects the worker's
+own listener, not its connection to the server. A worker needs a certificate of
+its own for it — issue one with `sqi-server tls issue --host <worker-host>`, or
+use whatever your monitoring stack already trusts.
 
 `tls_ca_file` and `server_tls_ca_file` are separate keys on purpose: they verify
 two different certificates, on two different ports, which can legitimately come

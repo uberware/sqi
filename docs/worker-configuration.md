@@ -1527,11 +1527,11 @@ network by default.
 | **Default** | `"127.0.0.1:9091"` |
 | **Env var** | `SQI_WORKER_METRICS_ADDR` |
 
-**This listener is plaintext and has no TLS setting** — `nats.tls_*` covers the
-broker connection, not this. It serves metrics, health and (optionally) pprof,
-never credentials or job payloads, and defaults to loopback. Binding it wider
-for a scraper exposes all of that in the clear; put it on a trusted network or
-in front of a proxy that terminates TLS.
+This listener is **plaintext unless [`metrics.tls.enabled`](#metricstlsenabled)
+is set** — `nats.tls_*` covers the broker connection, not this one. It serves
+metrics, health and (optionally) pprof, never credentials or job payloads, and
+defaults to loopback. Turn TLS on together with any address reachable from
+elsewhere.
 
 TCP address the local HTTP server listens on. Use `0.0.0.0:9091` to expose
 the endpoints to Prometheus scrapers on the network (ensure the port is
@@ -1543,6 +1543,35 @@ give each instance a distinct port — otherwise the second worker fails to bind
 ```yaml
 metrics:
   addr: "127.0.0.1:9091"
+```
+
+---
+
+### `metrics.tls.enabled`
+
+| | |
+|---|---|
+| **Type** | `bool` |
+| **Default** | `false` |
+| **Env var** | `SQI_WORKER_METRICS_TLS_ENABLED` |
+
+Terminate TLS on the metrics/health listener. As with the server's listeners,
+there is no plaintext port when it is on — the listener upgrades in place.
+
+Requires `metrics.tls.cert_file` and `metrics.tls.key_file`
+(`SQI_WORKER_METRICS_TLS_CERT_FILE` / `SQI_WORKER_METRICS_TLS_KEY_FILE`); the
+worker refuses to start without both, and refuses a pair it cannot load. The
+worker needs a certificate of its own here — this listener is the worker's, not
+the server's — so issue one with `sqi-server tls issue --host <worker-host>` or
+use whatever your monitoring stack already trusts.
+
+```yaml
+metrics:
+  addr: "0.0.0.0:9091"
+  tls:
+    enabled: true
+    cert_file: "/etc/sqi/certs/worker.crt"
+    key_file: "/etc/sqi/certs/worker.key"
 ```
 
 ---

@@ -24,6 +24,7 @@ package obs
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"net/http"
 	httppprof "net/http/pprof"
@@ -31,6 +32,7 @@ import (
 
 	"github.com/uberware/sqi/internal/health"
 	"github.com/uberware/sqi/internal/middleware"
+	"github.com/uberware/sqi/internal/tlsutil"
 	workmetrics "github.com/uberware/sqi/internal/worker/metrics"
 )
 
@@ -43,6 +45,19 @@ const (
 	uptimeTick = 15 * time.Second
 )
 
+// TLSConfig terminates TLS on the worker's observability listener.
+//
+// This listener serves metrics, health and optionally pprof. It defaults to
+// loopback, where plaintext is fine — but an operator scraping it from
+// Prometheus has to bind it wider, and then everything on it, pprof included,
+// crosses the network in the clear. Zero value leaves it plaintext, which is
+// the default and unchanged.
+type TLSConfig struct {
+	Enabled  bool
+	CertFile string
+	KeyFile  string
+}
+
 // Server is the local observability HTTP server for sqi-worker.
 // Create with [New]; start with [Run]; stop with [Shutdown].
 type Server struct {
@@ -51,6 +66,7 @@ type Server struct {
 	logger      *slog.Logger
 	metrics     *workmetrics.Metrics
 	health      *health.Registry
+	tlsCfg      TLSConfig
 	httpServer  *http.Server
 }
 
@@ -61,12 +77,14 @@ type Server struct {
 //   - logger      — used for request logging and startup/shutdown messages
 //   - m           — worker Prometheus metrics; /metrics serves this registry
 //   - h           — health registry consulted by /readyz
+//   - tlsCfg      — optional TLS termination; zero value serves plaintext
 func New(
 	addr string,
 	enablePprof bool,
 	logger *slog.Logger,
 	m *workmetrics.Metrics,
 	h *health.Registry,
+	tlsCfg TLSConfig,
 ) *Server {
 	return &Server{
 		addr:        addr,
@@ -74,14 +92,16 @@ func New(
 		logger:      logger,
 		metrics:     m,
 		health:      h,
+		tlsCfg:      tlsCfg,
 	}
 }
 
-// Run starts the HTTP server and blocks until ctx is canceled, at which point
-// it performs a graceful shutdown and returns.
+// Run starts the HTTP server and blocks until the listener stops — which
+// happens when [Server.Shutdown] is called, NOT when ctx is canceled. Canceling
+// ctx alone stops the uptime goroutine and leaves the listener serving.
 //
 // Run also starts a background goroutine that refreshes the uptime metric on
-// [uptimeTick] intervals; that goroutine exits when ctx is canceled.
+// [uptimeTick] intervals; that goroutine does exit when ctx is canceled.
 func (s *Server) Run(ctx context.Context) {
 	mux := s.buildMux(ctx)
 
@@ -116,7 +136,21 @@ func (s *Server) Run(ctx context.Context) {
 		slog.Bool("pprof", s.enablePprof),
 	)
 
-	if err := s.httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+	// Certificates are loaded once, here, and handed to the server rather than
+	// passed as paths — the same reason internal/server does it: re-reading at
+	// listen time could pick up a half-written file mid-rotation.
+	serve := s.httpServer.ListenAndServe
+	if s.tlsCfg.Enabled {
+		tlsConf, err := tlsutil.ServerConfig(s.tlsCfg.CertFile, s.tlsCfg.KeyFile, "")
+		if err != nil {
+			s.logger.ErrorContext(ctx, "obs: tls", slog.Any("error", err))
+			return
+		}
+		s.httpServer.TLSConfig = tlsConf
+		serve = func() error { return s.httpServer.ListenAndServeTLS("", "") }
+	}
+
+	if err := serve(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		s.logger.ErrorContext(ctx, "obs: http server error", slog.Any("error", err))
 	}
 }

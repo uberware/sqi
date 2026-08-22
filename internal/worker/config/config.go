@@ -14,6 +14,7 @@
 package config
 
 import (
+	"crypto/tls"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -539,6 +540,28 @@ type MetricsConfig struct {
 	// EnablePprof exposes Go runtime profiling endpoints at /debug/pprof/.
 	// Env: SQI_WORKER_METRICS_ENABLE_PPROF
 	EnablePprof bool `yaml:"enable_pprof"`
+
+	// TLS terminates TLS on this listener. Off by default, which is right for
+	// the loopback default address; turn it on together with any Addr that is
+	// reachable from elsewhere, since this endpoint carries metrics, health and
+	// — if EnablePprof is set — full runtime profiles.
+	TLS MetricsTLSConfig `yaml:"tls"`
+}
+
+// MetricsTLSConfig terminates TLS on the worker's metrics/health listener.
+type MetricsTLSConfig struct {
+	// Enabled serves HTTPS on metrics.addr. There is no plaintext port when it
+	// is on: the listener upgrades in place, as the server's does.
+	// Env: SQI_WORKER_METRICS_TLS_ENABLED
+	Enabled bool `yaml:"enabled"`
+
+	// CertFile is the PEM certificate served on this listener.
+	// Env: SQI_WORKER_METRICS_TLS_CERT_FILE
+	CertFile string `yaml:"cert_file"`
+
+	// KeyFile is the PEM private key matching CertFile.
+	// Env: SQI_WORKER_METRICS_TLS_KEY_FILE
+	KeyFile string `yaml:"key_file"`
 }
 
 // DiscoveryConfig controls mDNS-based sqi-server auto-discovery.
@@ -970,6 +993,15 @@ func applyMetricsEnv(c *MetricsConfig) {
 	if v := os.Getenv("SQI_WORKER_METRICS_ADDR"); v != "" {
 		c.Addr = v
 	}
+	if v := os.Getenv("SQI_WORKER_METRICS_TLS_ENABLED"); v != "" {
+		c.TLS.Enabled = parseBoolEnv(v)
+	}
+	if v := os.Getenv("SQI_WORKER_METRICS_TLS_CERT_FILE"); v != "" {
+		c.TLS.CertFile = v
+	}
+	if v := os.Getenv("SQI_WORKER_METRICS_TLS_KEY_FILE"); v != "" {
+		c.TLS.KeyFile = v
+	}
 	if v := os.Getenv("SQI_WORKER_METRICS_ENABLE_PPROF"); v != "" {
 		c.EnablePprof = parseBoolEnv(v)
 	}
@@ -1115,8 +1147,40 @@ func Validate(cfg WorkerConfig) []ValidationError {
 	errs = append(errs, validateExpr(cfg.Expr)...)
 	errs = append(errs, validateQueueIDs(cfg.Worker.QueueIDs)...)
 	errs = append(errs, validateNATSTLSMode(cfg.NATS)...)
+	errs = append(errs, validateMetricsTLS(cfg.Metrics)...)
 
 	return errs
+}
+
+// validateMetricsTLS refuses a metrics TLS block that cannot serve, at load
+// rather than when the first scrape arrives.
+func validateMetricsTLS(cfg MetricsConfig) []ValidationError {
+	if !cfg.TLS.Enabled {
+		return nil
+	}
+	var errs []ValidationError
+	if cfg.TLS.CertFile == "" {
+		errs = append(errs, ValidationError{
+			Field:   "metrics.tls.cert_file",
+			Message: "must be set when metrics.tls.enabled is true",
+		})
+	}
+	if cfg.TLS.KeyFile == "" {
+		errs = append(errs, ValidationError{
+			Field:   "metrics.tls.key_file",
+			Message: "must be set when metrics.tls.enabled is true",
+		})
+	}
+	if len(errs) > 0 {
+		return errs
+	}
+	if _, err := tls.LoadX509KeyPair(cfg.TLS.CertFile, cfg.TLS.KeyFile); err != nil {
+		return []ValidationError{{
+			Field:   "metrics.tls.cert_file",
+			Message: fmt.Sprintf("cannot load certificate/key pair (%s, %s): %s", cfg.TLS.CertFile, cfg.TLS.KeyFile, err),
+		}}
+	}
+	return nil
 }
 
 // validateNATSTLSMode rejects a nats.tls_enabled value that is not one of the

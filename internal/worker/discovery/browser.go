@@ -40,6 +40,11 @@ const (
 
 	// domain is the standard mDNS multicast domain.
 	domain = "local."
+
+	// hostLookupTimeout bounds the check in resolveHost. It is short on
+	// purpose: a name that needs longer than this is not one a worker should
+	// wait on at every boot, and the advertised IP is right there.
+	hostLookupTimeout = 2 * time.Second
 )
 
 // Result holds the information extracted from a discovered sqi-server
@@ -65,6 +70,14 @@ type Result struct {
 	// that can tell a worker the broker needs TLS without the operator having
 	// configured anything locally.
 	NATSTLS bool
+
+	// ipHost is the IP address the advertisement carried, kept so a hostname
+	// that does not resolve on this host can still be reached. Unexported:
+	// callers want NATSURL, not the decision behind it.
+	ipHost string
+
+	// natsPort is the advertised broker port, kept for the same reason.
+	natsPort int
 
 	// HTTPTLS reports whether the discovered server's REST API is
 	// TLS-terminated, from the "tls" TXT record. Enrollment does not use a
@@ -156,6 +169,9 @@ func browseService(ctx context.Context, service string, timeout time.Duration, l
 				)
 				continue
 			}
+			// The advertised hostname is only useful if this host can resolve
+			// it; fall back to the advertised IP when it cannot.
+			result = resolveHost(ctx, result, logger)
 			logger.InfoContext(
 				ctx, "discovery: found sqi-server via mDNS",
 				slog.String("instance", result.InstanceName),
@@ -208,6 +224,11 @@ func entryToResult(entry *zeroconf.ServiceEntry) (Result, error) {
 	// Strip trailing dot from mDNS hostname (e.g. "myhost.local." → "myhost.local")
 	host = strings.TrimSuffix(host, ".")
 
+	// Keep the advertised IP even when a hostname is present. mDNS gives us
+	// both, and the hostname is only useful to a host that can resolve it —
+	// see resolveHost.
+	ipHost := advertisedIP(entry)
+
 	txt := parseTXTRecords(entry.Text)
 
 	natsPortStr, ok := txt["nats"]
@@ -221,12 +242,96 @@ func entryToResult(entry *zeroconf.ServiceEntry) (Result, error) {
 
 	return Result{
 		NATSURL:      "nats://" + net.JoinHostPort(host, strconv.Itoa(natsPort)),
+		ipHost:       ipHost,
+		natsPort:     natsPort,
 		InstanceName: entry.Instance,
 		InstanceID:   txt["id"],
 		Version:      txt["version"],
 		NATSTLS:      txt["nats_tls"] == "1",
 		HTTPTLS:      txt["tls"] == "1",
 	}, nil
+}
+
+// advertisedIP returns a usable IP address from the mDNS entry, or "" when it
+// carried none.
+//
+// "Usable" excludes link-local addresses. A responder publishes every address
+// on the interfaces it advertised on, and on loopback that includes fe80::1 —
+// which cannot be dialed without a zone index, so a worker that picked it would
+// fail with "no route to host" having had a working address in the same entry.
+//
+// IPv4 is preferred simply because it is likelier to be reachable and to appear
+// in a certificate's SANs.
+func advertisedIP(entry *zeroconf.ServiceEntry) string {
+	for _, ip := range entry.AddrIPv4 {
+		if !usableIP(ip) {
+			continue
+		}
+		// To4() for the dotted-decimal form: String() on a v4-mapped IPv6
+		// address returns "::ffff:a.b.c.d", which is not a valid URL host.
+		if ip4 := ip.To4(); ip4 != nil {
+			return ip4.String()
+		}
+		return ip.String()
+	}
+	for _, ip := range entry.AddrIPv6 {
+		if usableIP(ip) {
+			return ip.String()
+		}
+	}
+	return ""
+}
+
+// usableIP reports whether ip can be dialed from this host as written.
+func usableIP(ip net.IP) bool {
+	return ip != nil &&
+		!ip.IsUnspecified() &&
+		!ip.IsLinkLocalUnicast() &&
+		!ip.IsLinkLocalMulticast()
+}
+
+// lookupHost is net.DefaultResolver.LookupHost, replaced in tests.
+var lookupHost = net.DefaultResolver.LookupHost
+
+// resolveHost returns r with NATSURL rewritten to the advertised IP when the
+// advertised HOSTNAME cannot be resolved on this machine.
+//
+// mDNS advertises "<hostname>.local", and resolving that needs an mDNS NSS
+// module. macOS has one built in; a headless Linux worker generally does not
+// (no avahi/nss-mdns), and there the worker would discover its server correctly
+// and then fail to dial it — "no servers available", which names neither the
+// cause nor the fix. The address was in the advertisement all along.
+//
+// The hostname is preferred when it does resolve, because a TLS broker's
+// certificate names hosts far more often than IPs: `sqi-server tls init` puts
+// the machine's hostname in the SANs, not its LAN address. Falling back to an
+// IP against a TLS broker therefore trades an unresolvable name for a
+// certificate mismatch — better, because that error says what is wrong, but
+// worth warning about.
+func resolveHost(ctx context.Context, r Result, logger *slog.Logger) Result {
+	if r.ipHost == "" || r.natsPort == 0 {
+		return r // nothing to fall back to
+	}
+	host, _, err := net.SplitHostPort(strings.TrimPrefix(r.NATSURL, "nats://"))
+	if err != nil || net.ParseIP(host) != nil {
+		return r // already an IP
+	}
+
+	lookupCtx, cancel := context.WithTimeout(ctx, hostLookupTimeout)
+	defer cancel()
+	if addrs, err := lookupHost(lookupCtx, host); err == nil && len(addrs) > 0 {
+		return r
+	}
+
+	r.NATSURL = "nats://" + net.JoinHostPort(r.ipHost, strconv.Itoa(r.natsPort))
+	logger.WarnContext(ctx,
+		"discovery: the advertised hostname does not resolve here; using the advertised IP instead",
+		slog.String("hostname", host),
+		slog.String("url", r.NATSURL),
+		slog.String("note", "if the broker uses TLS, its certificate must cover this IP "+
+			"(sqi-server tls init names the hostname, not the address) — install an mDNS "+
+			"resolver such as libnss-mdns, or add a hosts entry, to use the name instead"))
+	return r
 }
 
 // parseTXTRecords converts a slice of "key=value" DNS TXT strings into a map.

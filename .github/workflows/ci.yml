@@ -1108,6 +1108,10 @@ jobs:
       # loopback only — deliberately, so a run never announces a service on the
       # network it happens to be on — and refuse to fall back to a real
       # interface, so the flag has to be on or they cannot run at all.
+      # Linux `lo` ships without the MULTICAST flag. The tests advertise on
+      # loopback only — deliberately, so a run never announces a service on the
+      # network it happens to be on — and refuse to fall back to a real
+      # interface, so the flag has to be on or they cannot run at all.
       # The advertisement carries "<hostname>.local", which the worker dials.
       # macOS answers that through mDNSResponder; a stock ubuntu runner has no
       # mDNS NSS module, so the worker would discover the server and then fail

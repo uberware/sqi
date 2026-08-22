@@ -207,6 +207,11 @@ func runStart(cmd *cobra.Command, _ []string) error {
 		logger,
 		m,
 		h,
+		obs.TLSConfig{
+			Enabled:  cfg.Metrics.TLS.Enabled,
+			CertFile: cfg.Metrics.TLS.CertFile,
+			KeyFile:  cfg.Metrics.TLS.KeyFile,
+		},
 	)
 	go obsServer.Run(ctx)
 

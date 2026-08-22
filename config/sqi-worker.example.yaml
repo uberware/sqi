@@ -289,9 +289,26 @@ metrics:
   # TCP address the local HTTP server listens on.
   # Change only if port 9091 is in use on this host. Use "0.0.0.0:9091" to
   # expose the endpoints to Prometheus scrapers on the network (ensure the port
-  # is firewalled appropriately).
+  # is firewalled appropriately, and turn on tls below).
   # Type: string   Env: SQI_WORKER_METRICS_ADDR
   addr: "127.0.0.1:9091"
+
+  # Terminate TLS on THIS listener — the worker's own metrics/health endpoint,
+  # not its connection to the server (that is nats.tls_* above).
+  #
+  # Off by default, which is right for the loopback address above. Turn it on
+  # together with any addr reachable from elsewhere: this endpoint serves
+  # metrics, health and, with enable_pprof, full runtime profiles.
+  #
+  # The worker needs a certificate of its own here; issue one with
+  # `sqi-server tls issue --host <worker-host>`. See docs/tls.md.
+  # tls:
+  #   # Type: bool   Env: SQI_WORKER_METRICS_TLS_ENABLED
+  #   enabled: true
+  #   # Type: string Env: SQI_WORKER_METRICS_TLS_CERT_FILE
+  #   cert_file: "/etc/sqi/certs/worker.crt"
+  #   # Type: string Env: SQI_WORKER_METRICS_TLS_KEY_FILE
+  #   key_file: "/etc/sqi/certs/worker.key"
 
   # Expose Go runtime profiling endpoints at /debug/pprof/.
   # Profiling data reveals memory layout, goroutine stacks, and CPU hotspots —

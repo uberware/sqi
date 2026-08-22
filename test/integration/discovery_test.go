@@ -177,9 +177,11 @@ func TestDiscovery_RealBinaryFindsItsServerOverMDNS(t *testing.T) {
 	// what a real deployment does anyway:
 	//
 	//  1. The broker must bind all interfaces, per the note above.
-	//  2. The certificate must cover that hostname, or the TLS handshake fails
-	//     on a SAN mismatch. `sqi-server tls init` includes os.Hostname() by
-	//     default for exactly this reason.
+	//  2. The certificate must cover the name OR the address the worker ends up
+	//     dialing. Advertisements here are loopback-only, so "<hostname>.local"
+	//     is answered by nothing the system resolver queries and the worker
+	//     falls back to the advertised IP (see discovery.resolveHost) — which
+	//     is why the loopback addresses below matter as much as the hostname.
 	host, err := os.Hostname()
 	if err != nil {
 		t.Fatalf("os.Hostname: %v", err)
@@ -205,10 +207,6 @@ func TestDiscovery_RealBinaryFindsItsServerOverMDNS(t *testing.T) {
 		cfg.DiscoveryInstanceName = instance
 		cfg.DiscoveryInterfaces = loopbackIfaces()
 	})
-
-	// Only now, with the server advertising: the mDNS name is answered by the
-	// responder, so this is the first moment the check means anything.
-	requireLocalHostnameResolves(t)
 
 	farmID, queueID := seedFarmAndQueue(t, ts)
 	caFile := filepath.Join(dir, "ca.crt")
