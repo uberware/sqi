@@ -1,0 +1,155 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
+// Package certgen generates the certificate material a farm needs to run
+// sqi over TLS: a farm certificate authority, server certificates for the
+// API listener and the embedded broker, and client certificates for the
+// optional worker mTLS path.
+//
+// It exists because SANs and extended key usage are exactly what
+// hand-rolled openssl invocations get wrong, and getting them wrong fails
+// at worker-connect time — far from the mistake — rather than at load.
+//
+// The same generator backs `sqi-server tls init` and the test suites, so
+// the code path under test is the code path that ships. Tests therefore
+// never need checked-in certificate fixtures, which expire and break CI on
+// a date nobody chose.
+package certgen
+
+import (
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/x509"
+	"crypto/x509/pkix"
+	"encoding/pem"
+	"fmt"
+	"math/big"
+	"net"
+	"time"
+)
+
+// CA is a generated certificate authority held in memory.
+type CA struct {
+	Cert    *x509.Certificate
+	Key     *ecdsa.PrivateKey
+	CertPEM []byte
+	KeyPEM  []byte
+}
+
+// Leaf is a generated end-entity certificate held in memory.
+type Leaf struct {
+	CertPEM []byte
+	KeyPEM  []byte
+}
+
+// serialNumber returns a random 128-bit certificate serial number.
+func serialNumber() (*big.Int, error) {
+	limit := new(big.Int).Lsh(big.NewInt(1), 128)
+	n, err := rand.Int(rand.Reader, limit)
+	if err != nil {
+		return nil, fmt.Errorf("certgen: generate serial: %w", err)
+	}
+	return n, nil
+}
+
+// encode marshals a certificate DER blob and its key into PEM form.
+func encode(der []byte, key *ecdsa.PrivateKey) (certPEM, keyPEM []byte, err error) {
+	keyDER, err := x509.MarshalECPrivateKey(key)
+	if err != nil {
+		return nil, nil, fmt.Errorf("certgen: marshal key: %w", err)
+	}
+	certPEM = pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
+	keyPEM = pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER})
+	return certPEM, keyPEM, nil
+}
+
+// NewCA generates a self-signed certificate authority valid for validFor.
+func NewCA(commonName string, validFor time.Duration) (*CA, error) {
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		return nil, fmt.Errorf("certgen: generate CA key: %w", err)
+	}
+	serial, err := serialNumber()
+	if err != nil {
+		return nil, err
+	}
+	now := time.Now()
+	tmpl := &x509.Certificate{
+		SerialNumber:          serial,
+		Subject:               pkix.Name{CommonName: commonName},
+		NotBefore:             now.Add(-time.Hour),
+		NotAfter:              now.Add(validFor),
+		KeyUsage:              x509.KeyUsageCertSign | x509.KeyUsageCRLSign | x509.KeyUsageDigitalSignature,
+		BasicConstraintsValid: true,
+		IsCA:                  true,
+		MaxPathLenZero:        true,
+	}
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
+	if err != nil {
+		return nil, fmt.Errorf("certgen: create CA certificate: %w", err)
+	}
+	cert, err := x509.ParseCertificate(der)
+	if err != nil {
+		return nil, fmt.Errorf("certgen: parse CA certificate: %w", err)
+	}
+	certPEM, keyPEM, err := encode(der, key)
+	if err != nil {
+		return nil, err
+	}
+	return &CA{Cert: cert, Key: key, CertPEM: certPEM, KeyPEM: keyPEM}, nil
+}
+
+// newLeaf signs an end-entity certificate with ca.
+func (ca *CA) newLeaf(commonName string, hosts []string, usage x509.ExtKeyUsage, validFor time.Duration) (*Leaf, error) {
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		return nil, fmt.Errorf("certgen: generate leaf key: %w", err)
+	}
+	serial, err := serialNumber()
+	if err != nil {
+		return nil, err
+	}
+	now := time.Now()
+	tmpl := &x509.Certificate{
+		SerialNumber:          serial,
+		Subject:               pkix.Name{CommonName: commonName},
+		NotBefore:             now.Add(-time.Hour),
+		NotAfter:              now.Add(validFor),
+		KeyUsage:              x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,
+		ExtKeyUsage:           []x509.ExtKeyUsage{usage},
+		BasicConstraintsValid: true,
+	}
+	for _, h := range hosts {
+		if ip := net.ParseIP(h); ip != nil {
+			tmpl.IPAddresses = append(tmpl.IPAddresses, ip)
+			continue
+		}
+		tmpl.DNSNames = append(tmpl.DNSNames, h)
+	}
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, ca.Cert, &key.PublicKey, ca.Key)
+	if err != nil {
+		return nil, fmt.Errorf("certgen: create leaf certificate: %w", err)
+	}
+	certPEM, keyPEM, err := encode(der, key)
+	if err != nil {
+		return nil, err
+	}
+	return &Leaf{CertPEM: certPEM, KeyPEM: keyPEM}, nil
+}
+
+// NewServerCert signs a server certificate covering hosts. Entries that
+// parse as an IP address become IP SANs; the rest become DNS SANs.
+func (ca *CA) NewServerCert(hosts []string, validFor time.Duration) (*Leaf, error) {
+	cn := "sqi-server"
+	if len(hosts) > 0 {
+		cn = hosts[0]
+	}
+	return ca.newLeaf(cn, hosts, x509.ExtKeyUsageServerAuth, validFor)
+}
+
+// NewClientCert signs a client certificate for the worker mTLS path. The
+// common name is informational: sqi does not bind a certificate to a worker
+// identity — the nkey does that. See docs/tls.md.
+func (ca *CA) NewClientCert(commonName string, validFor time.Duration) (*Leaf, error) {
+	return ca.newLeaf(commonName, nil, x509.ExtKeyUsageClientAuth, validFor)
+}
