@@ -41,7 +41,9 @@ func writePair(dir, base string, certPEM, keyPEM []byte) error {
 func WriteCA(dir string, ca *CA) error {
 	keyPath := filepath.Join(dir, "ca.key")
 	if _, err := os.Stat(keyPath); err == nil {
-		return fmt.Errorf("%w at %s; move it aside to generate a new one (every certificate issued from it stops verifying)", ErrCAExists, keyPath)
+		return fmt.Errorf("%w at %s; to add a worker or rotate the server certificate use `sqi-server tls issue`, "+
+			"which signs from this CA — replacing the CA itself means moving it aside first, and every "+
+			"certificate ever issued from it stops verifying", ErrCAExists, keyPath)
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return fmt.Errorf("certgen: stat %s: %w", keyPath, err)
 	}

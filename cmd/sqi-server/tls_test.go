@@ -169,3 +169,163 @@ func TestTLSInit_PrintsConfigKeys(t *testing.T) {
 		}
 	}
 }
+
+// ── tls issue ────────────────────────────────────────────────────────────────
+//
+// `tls init` deliberately refuses to overwrite a CA, which left no way to add a
+// worker to an established mTLS farm or to rotate a server certificate: the
+// whole command failed, taking --client with it. `tls issue` is that path.
+
+// runTLSIssueCmd drives "tls issue" and returns its stdout.
+func runTLSIssueCmd(t *testing.T, args ...string) (string, error) {
+	t.Helper()
+	tlsIssueOut, tlsIssueClients, tlsIssueHosts, tlsIssueForce = "./certs", nil, nil, false
+
+	prepareRoot(append([]string{"tls", "issue"}, args...))
+	var out bytes.Buffer
+	rootCmd.SetOut(&out)
+	rootCmd.SetErr(&out)
+	err := rootCmd.Execute()
+	return out.String(), err
+}
+
+// existingFarm runs `tls init` into a fresh directory and returns it.
+func existingFarm(t *testing.T) string {
+	t.Helper()
+	dir := filepath.Join(t.TempDir(), "certs")
+	if _, err := runTLSInitCmd(t, "--out", dir, "--host", "sqi.example"); err != nil {
+		t.Fatalf("tls init: %v", err)
+	}
+	return dir
+}
+
+func TestTLSIssue_ClientCertAgainstAnExistingCA(t *testing.T) {
+	dir := existingFarm(t)
+	caBefore, err := os.ReadFile(filepath.Join(dir, "ca.key"))
+	if err != nil {
+		t.Fatalf("read ca.key: %v", err)
+	}
+
+	if _, err := runTLSIssueCmd(t, "--out", dir, "--client", "render-07"); err != nil {
+		t.Fatalf("tls issue --client against an existing CA: %v", err)
+	}
+
+	cert := parseCertFile(t, filepath.Join(dir, "client-render-07.crt"))
+	if len(cert.ExtKeyUsage) != 1 || cert.ExtKeyUsage[0] != x509.ExtKeyUsageClientAuth {
+		t.Errorf("ExtKeyUsage = %v, want [ClientAuth]", cert.ExtKeyUsage)
+	}
+
+	// It must chain to the farm's EXISTING CA, or the broker rejects it.
+	ca := parseCertFile(t, filepath.Join(dir, "ca.crt"))
+	pool := x509.NewCertPool()
+	pool.AddCert(ca)
+	if _, err := cert.Verify(x509.VerifyOptions{
+		Roots:     pool,
+		KeyUsages: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
+	}); err != nil {
+		t.Errorf("issued certificate does not verify against the farm CA: %v", err)
+	}
+
+	// Issuing must never disturb the CA itself.
+	caAfter, err := os.ReadFile(filepath.Join(dir, "ca.key"))
+	if err != nil {
+		t.Fatalf("re-read ca.key: %v", err)
+	}
+	if !bytes.Equal(caBefore, caAfter) {
+		t.Error("ca.key changed while issuing a leaf certificate")
+	}
+
+	info, err := os.Stat(filepath.Join(dir, "client-render-07.key"))
+	if err != nil {
+		t.Fatalf("stat client key: %v", err)
+	}
+	if got := info.Mode().Perm(); got != 0o600 {
+		t.Errorf("client key mode = %04o, want 0600", got)
+	}
+}
+
+func TestTLSIssue_ServerCertForRotation(t *testing.T) {
+	dir := existingFarm(t)
+	before := parseCertFile(t, filepath.Join(dir, "server.crt"))
+
+	// Rotation replaces server.crt, so it needs --force.
+	if _, err := runTLSIssueCmd(t, "--out", dir, "--host", "sqi.example"); err == nil {
+		t.Fatal("overwrote server.crt without --force")
+	}
+	if _, err := runTLSIssueCmd(t, "--out", dir, "--host", "sqi.example", "--force"); err != nil {
+		t.Fatalf("tls issue --host --force: %v", err)
+	}
+
+	after := parseCertFile(t, filepath.Join(dir, "server.crt"))
+	if after.SerialNumber.Cmp(before.SerialNumber) == 0 {
+		t.Error("server.crt was not reissued: same serial number")
+	}
+	ca := parseCertFile(t, filepath.Join(dir, "ca.crt"))
+	pool := x509.NewCertPool()
+	pool.AddCert(ca)
+	if _, err := after.Verify(x509.VerifyOptions{
+		Roots: pool, DNSName: "sqi.example",
+		KeyUsages: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+	}); err != nil {
+		t.Errorf("rotated server certificate does not verify: %v", err)
+	}
+}
+
+func TestTLSIssue_RefusesToClobberAnExistingClientKey(t *testing.T) {
+	dir := existingFarm(t)
+	if _, err := runTLSIssueCmd(t, "--out", dir, "--client", "render-07"); err != nil {
+		t.Fatalf("first issue: %v", err)
+	}
+	original, err := os.ReadFile(filepath.Join(dir, "client-render-07.key"))
+	if err != nil {
+		t.Fatalf("read client key: %v", err)
+	}
+
+	// A worker is already using this key; silently replacing it would take that
+	// worker offline at its next restart with no indication why.
+	_, err = runTLSIssueCmd(t, "--out", dir, "--client", "render-07")
+	if err == nil {
+		t.Fatal("reissued over an existing client key without --force")
+	}
+	if !strings.Contains(err.Error(), "--force") {
+		t.Errorf("error does not mention --force: %v", err)
+	}
+
+	after, err := os.ReadFile(filepath.Join(dir, "client-render-07.key"))
+	if err != nil {
+		t.Fatalf("re-read client key: %v", err)
+	}
+	if !bytes.Equal(original, after) {
+		t.Error("client key changed despite the refusal")
+	}
+}
+
+func TestTLSIssue_ErrorsWithoutACA(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "empty")
+	_, err := runTLSIssueCmd(t, "--out", dir, "--client", "w1")
+	if err == nil {
+		t.Fatal("issued against a directory with no CA")
+	}
+	if !strings.Contains(err.Error(), "tls init") {
+		t.Errorf("error does not point at `tls init`: %v", err)
+	}
+}
+
+func TestTLSIssue_ErrorsWithNothingToIssue(t *testing.T) {
+	dir := existingFarm(t)
+	if _, err := runTLSIssueCmd(t, "--out", dir); err == nil {
+		t.Fatal("accepted an invocation with neither --client nor --host")
+	}
+}
+
+func TestTLSInit_PointsAtIssueWhenTheCAExists(t *testing.T) {
+	dir := existingFarm(t)
+	// The original gap: this failed with no hint that another command does it.
+	_, err := runTLSInitCmd(t, "--out", dir, "--client", "render-07")
+	if err == nil {
+		t.Fatal("tls init overwrote an existing CA")
+	}
+	if !strings.Contains(err.Error(), "tls issue") {
+		t.Errorf("error does not point at `tls issue`: %v", err)
+	}
+}

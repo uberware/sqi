@@ -274,3 +274,66 @@ func TestTLSMutualAuthRefusesWorkerWithoutCertificate(t *testing.T) {
 		t.Fatalf("worker %s registered without a client certificate against an mTLS broker", id)
 	}
 }
+
+// TestTLSMutualAuthWithIssuedCertificate covers the DAY-TWO path: a farm is
+// already running mutual TLS, and a new worker is added with
+// `sqi-server tls issue --client <id>` against the CA that already exists.
+//
+// `tls init` cannot do this — it refuses to overwrite the CA and fails as a
+// whole, taking --client with it — so before `tls issue` existed there was no
+// supported way to add a worker to an mTLS farm. The unit tests prove the
+// certificate chains; this proves the broker actually accepts it.
+func TestTLSMutualAuthWithIssuedCertificate(t *testing.T) {
+	// A farm that already exists, with no client certificate for our worker.
+	dir := tlsMaterial(t)
+
+	// Day two: issue one from the SAME CA, exactly as the CLI does.
+	caPEM, err := os.ReadFile(filepath.Join(dir, "ca.crt"))
+	if err != nil {
+		t.Fatalf("read ca.crt: %v", err)
+	}
+	caKeyPEM, err := os.ReadFile(filepath.Join(dir, "ca.key"))
+	if err != nil {
+		t.Fatalf("read ca.key: %v", err)
+	}
+	ca, err := certgen.LoadCA(caPEM, caKeyPEM)
+	if err != nil {
+		t.Fatalf("LoadCA: %v", err)
+	}
+	leaf, err := ca.NewClientCert("render-day2", 365*24*time.Hour)
+	if err != nil {
+		t.Fatalf("NewClientCert: %v", err)
+	}
+	if err := certgen.WriteLeaf(dir, "client-render-day2", leaf); err != nil {
+		t.Fatalf("WriteLeaf: %v", err)
+	}
+
+	dbPath := filepath.Join(t.TempDir(), "sqi.db")
+	joinToken := seedJoinToken(t, dbPath, "mtls-day2")
+	certFile := filepath.Join(dir, "server.crt")
+	keyFile := filepath.Join(dir, "server.key")
+	caFile := filepath.Join(dir, "ca.crt")
+
+	ts := startBrokerAuthServer(t, dbPath, func(cfg *server.Config) {
+		cfg.HTTPTLS = config.TLSConfig{Enabled: true, CertFile: certFile, KeyFile: keyFile}
+		cfg.NATSTLS = config.NATSTLSConfig{
+			Enabled: true, CertFile: certFile, KeyFile: keyFile, ClientCAFile: caFile,
+		}
+		cfg.NATSAuthEnrollmentEndpointEnabled = true
+	})
+
+	farmID, queueID := seedFarmAndQueue(t, ts)
+	startRealWorkerNoWait(t, ts, farmID, queueID, nil, []string{
+		"SQI_WORKER_NATS_URL=nats://" + ts.NATSAddr,
+		"SQI_WORKER_NATS_TLS_CA_FILE=" + caFile,
+		"SQI_WORKER_NATS_TLS_CERT_FILE=" + filepath.Join(dir, "client-render-day2.crt"),
+		"SQI_WORKER_NATS_TLS_KEY_FILE=" + filepath.Join(dir, "client-render-day2.key"),
+		"SQI_WORKER_NATS_SERVER_URL=https://" + ts.HTTPAddr,
+		"SQI_WORKER_NATS_SERVER_TLS_CA_FILE=" + caFile,
+		"SQI_WORKER_NATS_JOIN_TOKEN=" + joinToken,
+	}, true)
+
+	if id := findOnlineWorker(t, ts, farmID, 45*time.Second); id == "" {
+		t.Fatal("a worker using a certificate issued from the existing CA was not accepted")
+	}
+}

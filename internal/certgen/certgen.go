@@ -22,6 +22,7 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/pem"
+	"errors"
 	"fmt"
 	"math/big"
 	"net"
@@ -97,6 +98,66 @@ func NewCA(commonName string, validFor time.Duration) (*CA, error) {
 		return nil, err
 	}
 	return &CA{Cert: cert, Key: key, CertPEM: certPEM, KeyPEM: keyPEM}, nil
+}
+
+// LoadCA reconstructs a [CA] from PEM material previously written by
+// [WriteCA], so certificates can be issued from a farm CA that already exists.
+//
+// Without this, `tls init` is the only way to get a CA and it refuses to
+// overwrite one — which left no way at all to add a worker to an established
+// mTLS farm, or to rotate a server certificate, short of replacing the CA and
+// reissuing everything.
+func LoadCA(certPEM, keyPEM []byte) (*CA, error) {
+	certBlock, _ := pem.Decode(certPEM)
+	if certBlock == nil || certBlock.Type != "CERTIFICATE" {
+		return nil, errors.New("certgen: no CERTIFICATE block in the CA certificate")
+	}
+	cert, err := x509.ParseCertificate(certBlock.Bytes)
+	if err != nil {
+		return nil, fmt.Errorf("certgen: parse CA certificate: %w", err)
+	}
+	// A leaf cannot sign. Accepting one would mint certificates that every peer
+	// rejects, discovered only at the first handshake.
+	if !cert.IsCA {
+		return nil, errors.New("certgen: the certificate is not a CA (BasicConstraints CA:FALSE)")
+	}
+
+	keyBlock, _ := pem.Decode(keyPEM)
+	if keyBlock == nil {
+		return nil, errors.New("certgen: no PEM block in the CA key")
+	}
+	key, err := parseECKey(keyBlock)
+	if err != nil {
+		return nil, err
+	}
+
+	// The pair must actually belong together: a mismatched key produces
+	// signatures nothing can verify.
+	pub, ok := cert.PublicKey.(*ecdsa.PublicKey)
+	if !ok {
+		return nil, errors.New("certgen: CA certificate does not carry an ECDSA public key")
+	}
+	if !pub.Equal(key.Public()) {
+		return nil, errors.New("certgen: CA key does not match the CA certificate")
+	}
+
+	return &CA{Cert: cert, Key: key, CertPEM: certPEM, KeyPEM: keyPEM}, nil
+}
+
+// parseECKey accepts the EC key encodings openssl and Go produce.
+func parseECKey(block *pem.Block) (*ecdsa.PrivateKey, error) {
+	if key, err := x509.ParseECPrivateKey(block.Bytes); err == nil {
+		return key, nil
+	}
+	generic, err := x509.ParsePKCS8PrivateKey(block.Bytes)
+	if err != nil {
+		return nil, fmt.Errorf("certgen: parse CA key: %w", err)
+	}
+	key, ok := generic.(*ecdsa.PrivateKey)
+	if !ok {
+		return nil, fmt.Errorf("certgen: CA key is %T, want an ECDSA key", generic)
+	}
+	return key, nil
 }
 
 // newLeaf signs an end-entity certificate with ca.

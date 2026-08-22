@@ -3,8 +3,10 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"slices"
 	"time"
 
@@ -45,7 +47,29 @@ var (
 	tlsInitOut     string
 	tlsInitHosts   []string
 	tlsInitClients []string
+
+	tlsIssueOut     string
+	tlsIssueHosts   []string
+	tlsIssueClients []string
+	tlsIssueForce   bool
 )
+
+var tlsIssueCmd = &cobra.Command{
+	Use:   "issue",
+	Short: "Issue certificates from an existing farm CA",
+	Long: `Issue additional certificates from a farm CA that already exists.
+
+Use this to add a worker to a farm running mutual TLS, or to rotate the server
+certificate. It never touches the CA itself.
+
+` + "`tls init`" + ` deliberately refuses to overwrite a CA, so it cannot do either
+job: a second invocation fails as a whole, taking --client with it.
+
+Existing files are never replaced without --force, because a client key that is
+already deployed belongs to a running worker, and replacing it takes that worker
+offline at its next restart with nothing to indicate why.`,
+	RunE: runTLSIssue,
+}
 
 func init() {
 	tlsInitCmd.Flags().StringVar(&tlsInitOut, "out", "./certs",
@@ -55,6 +79,97 @@ func init() {
 	tlsInitCmd.Flags().StringArrayVar(&tlsInitClients, "client", nil,
 		"worker ID to issue a client certificate for, used only with nats.tls.client_ca_file (repeatable)")
 	tlsCmd.AddCommand(tlsInitCmd)
+
+	tlsIssueCmd.Flags().StringVar(&tlsIssueOut, "out", "./certs",
+		"directory holding ca.crt and ca.key, and where new material is written")
+	tlsIssueCmd.Flags().StringArrayVar(&tlsIssueClients, "client", nil,
+		"worker ID to issue a client certificate for (repeatable)")
+	tlsIssueCmd.Flags().StringArrayVar(&tlsIssueHosts, "host", nil,
+		"reissue the server certificate covering these hosts (repeatable; loopback is always added)")
+	tlsIssueCmd.Flags().BoolVar(&tlsIssueForce, "force", false,
+		"replace certificate files that already exist")
+	tlsCmd.AddCommand(tlsIssueCmd)
+}
+
+// loadFarmCA reads the CA written by `tls init` from dir.
+func loadFarmCA(dir string) (*certgen.CA, error) {
+	certPEM, err := os.ReadFile(filepath.Join(dir, "ca.crt"))
+	if err != nil {
+		return nil, fmt.Errorf("no farm CA in %s (%w); create one with `sqi-server tls init`", dir, err)
+	}
+	keyPEM, err := os.ReadFile(filepath.Join(dir, "ca.key"))
+	if err != nil {
+		return nil, fmt.Errorf("no CA key in %s (%w); it must sit beside ca.crt — `sqi-server tls init` writes both", dir, err)
+	}
+	return certgen.LoadCA(certPEM, keyPEM)
+}
+
+// refuseExisting reports an error when base.crt or base.key already exists and
+// --force was not given.
+func refuseExisting(dir, base string) error {
+	if tlsIssueForce {
+		return nil
+	}
+	for _, ext := range []string{".crt", ".key"} {
+		path := filepath.Join(dir, base+ext)
+		if _, err := os.Stat(path); err == nil {
+			return fmt.Errorf("%s already exists; pass --force to replace it "+
+				"(a deployed key belongs to a running worker, which stops connecting once it is replaced)", path)
+		}
+	}
+	return nil
+}
+
+func runTLSIssue(cmd *cobra.Command, _ []string) error {
+	if len(tlsIssueClients) == 0 && len(tlsIssueHosts) == 0 {
+		return errors.New("nothing to issue: pass --client <worker-id> and/or --host <name>")
+	}
+
+	ca, err := loadFarmCA(tlsIssueOut)
+	if err != nil {
+		return err
+	}
+
+	out := cmd.OutOrStdout()
+	if len(tlsIssueHosts) > 0 {
+		hosts := resolveTLSHosts(tlsIssueHosts)
+		if err := refuseExisting(tlsIssueOut, "server"); err != nil {
+			return err
+		}
+		leaf, err := ca.NewServerCert(hosts, leafValidity)
+		if err != nil {
+			return err
+		}
+		if err := certgen.WriteLeaf(tlsIssueOut, "server", leaf); err != nil {
+			return err
+		}
+		fmt.Fprintf(out, "Reissued %s/server.crt covering %v\n", tlsIssueOut, hosts)
+		fmt.Fprintf(out, "  The server reads certificates once, at startup — restart it to pick this up.\n\n")
+	}
+
+	for _, id := range tlsIssueClients {
+		base := "client-" + id
+		if err := refuseExisting(tlsIssueOut, base); err != nil {
+			return err
+		}
+		leaf, err := ca.NewClientCert(id, leafValidity)
+		if err != nil {
+			return err
+		}
+		if err := certgen.WriteLeaf(tlsIssueOut, base, leaf); err != nil {
+			return err
+		}
+		fmt.Fprintf(out, "Issued %s/%s.crt for worker %q\n", tlsIssueOut, base, id)
+	}
+
+	if len(tlsIssueClients) > 0 {
+		fmt.Fprintf(out, "\nOn each of those workers:\n")
+		fmt.Fprintf(out, "  nats.tls_cert_file: /path/to/client-<worker-id>.crt\n")
+		fmt.Fprintf(out, "  nats.tls_key_file:  /path/to/client-<worker-id>.key\n")
+		fmt.Fprintf(out, "  nats.tls_ca_file:   /path/to/ca.crt\n")
+		fmt.Fprintf(out, "\nThe CA is unchanged, so existing workers keep working.\n")
+	}
+	return nil
 }
 
 // loopbackSANs are always present on a generated server certificate.
@@ -149,6 +264,11 @@ and give each worker its own client-<id>.crt / .key as
 	}
 
 	fmt.Fprint(cmd.OutOrStdout(), `
+To add a worker or rotate the server certificate later, use:
+  sqi-server tls issue --client <worker-id>
+This command will not run again in the same directory: it refuses to replace a
+CA, because every certificate issued from the old one would stop verifying.
+
 Enabling TLS is a coordinated restart, not a rolling one: distribute
 ca.crt and stage worker config BEFORE flipping the server. See docs/tls.md.
 `)

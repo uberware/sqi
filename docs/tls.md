@@ -169,6 +169,31 @@ The command **refuses to overwrite an existing `ca.key`**. Replacing a farm CA
 invalidates every certificate ever issued from it, so that has to be a deliberate
 act: move the old directory aside first.
 
+That refusal means `tls init` cannot be re-run to add a worker later — use
+`tls issue`.
+
+### Adding a worker, or rotating the server certificate
+
+```bash
+# add a worker to a farm that already exists
+sqi-server tls issue --out ./certs --client render-07
+
+# rotate the server certificate (replaces server.crt, so --force)
+sqi-server tls issue --out ./certs --host sqi-server.example --force
+```
+
+`tls issue` signs from the CA already in `--out` and never touches it, so every
+certificate already deployed keeps working. Distribute the new
+`client-<id>.crt`/`.key` to that worker and set `nats.tls_cert_file` /
+`nats.tls_key_file`; no other worker needs to change.
+
+It **refuses to replace an existing file without `--force`**. A client key that
+is already deployed belongs to a running worker, and replacing it takes that
+worker offline at its next restart with nothing to indicate why.
+
+A rotated server certificate is only picked up on restart — certificates are
+read once, at startup.
+
 The command exists because SANs and extended key usage are exactly what
 hand-rolled `openssl` invocations get wrong, and getting them wrong fails at
 worker-connect time — far from the mistake — rather than at load. Any CA works;
