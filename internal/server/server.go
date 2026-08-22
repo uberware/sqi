@@ -60,6 +60,14 @@ type Config struct {
 	// HTTPAddr is the TCP address the REST + WebSocket server listens on.
 	HTTPAddr string // default "0.0.0.0:8080"
 
+	// HTTPTLS terminates HTTPS in-process on the REST/WebSocket listener.
+	// Zero value leaves it plaintext, which is the default.
+	HTTPTLS config.TLSConfig
+
+	// NATSTLS encrypts the embedded broker's client listener. Zero value
+	// leaves it plaintext, which is the default.
+	NATSTLS config.NATSTLSConfig
+
 	// CORSOrigins is the list of origins that the CORS middleware permits.
 	// Use ["*"] to allow all origins (suitable for local / dev deployments).
 	// An empty slice is treated as ["*"]. Tighten this for production
@@ -307,6 +315,72 @@ func (s *Server) Metrics() *metrics.Metrics {
 	return s.metrics
 }
 
+// serveHTTP configures TLS on s.httpServer when it is enabled and starts the
+// listener in a background goroutine. Split out of [Server.start] to keep that
+// function under the cyclop complexity threshold.
+func (s *Server) serveHTTP(ctx context.Context) error {
+	tlsOn := s.cfg.HTTPTLS.Enabled
+	if tlsOn {
+		tlsCfg, err := config.LoadServerTLS(s.cfg.HTTPTLS.CertFile, s.cfg.HTTPTLS.KeyFile, "")
+		if err != nil {
+			return fmt.Errorf("http: tls: %w", err)
+		}
+		s.httpServer.TLSConfig = tlsCfg
+	}
+
+	go func() {
+		s.logger.InfoContext(ctx, "http: listening",
+			slog.String("addr", s.cfg.HTTPAddr),
+			slog.Bool("tls", tlsOn),
+			slog.String("url", browseURL(s.cfg.HTTPAddr, tlsOn)))
+
+		// Certificates are already loaded into TLSConfig, so both paths pass
+		// empty filenames: re-reading them here could pick up a half-written
+		// file if a rotation lands between validation and listen.
+		var err error
+		if tlsOn {
+			err = s.httpServer.ListenAndServeTLS("", "")
+		} else {
+			err = s.httpServer.ListenAndServe()
+		}
+		if err != nil && !errors.Is(err, http.ErrServerClosed) {
+			s.logger.ErrorContext(ctx, "http: server error", slog.Any("error", err))
+		}
+	}()
+	return nil
+}
+
+// warnTLSConfig emits the advisory startup warnings for both TLS blocks:
+// certificates staged but not switched on, and certificates close to expiry.
+//
+// Neither is a load error — staging a certificate before flipping the switch
+// is a legitimate rollout step, and a certificate 29 days from expiry still
+// works — but both are worth saying out loud once at startup. The broker's
+// warnings are emitted here rather than in internal/bus so that package does
+// not have to import internal/config.
+func warnTLSConfig(ctx context.Context, logger *slog.Logger, httpTLS config.TLSConfig, natsTLS config.NATSTLSConfig) {
+	if !httpTLS.Enabled && (httpTLS.CertFile != "" || httpTLS.KeyFile != "") {
+		logger.WarnContext(ctx, "http: tls certificates are configured but http.tls.enabled is false; serving plaintext",
+			slog.String("cert_file", httpTLS.CertFile))
+	}
+	if !natsTLS.Enabled && (natsTLS.CertFile != "" || natsTLS.KeyFile != "") {
+		logger.WarnContext(ctx, "bus: tls certificates are configured but nats.tls.enabled is false; broker is plaintext",
+			slog.String("cert_file", natsTLS.CertFile))
+	}
+	if httpTLS.Enabled {
+		if notAfter, soon := config.ExpiringSoon(httpTLS.CertFile, httpTLS.KeyFile); soon {
+			logger.WarnContext(ctx, "http: tls certificate expires soon",
+				slog.String("cert_file", httpTLS.CertFile), slog.Time("not_after", notAfter))
+		}
+	}
+	if natsTLS.Enabled {
+		if notAfter, soon := config.ExpiringSoon(natsTLS.CertFile, natsTLS.KeyFile); soon {
+			logger.WarnContext(ctx, "bus: tls certificate expires soon",
+				slog.String("cert_file", natsTLS.CertFile), slog.Time("not_after", notAfter))
+		}
+	}
+}
+
 // warnIfBrokerUnauthenticated emits a WARN when the NATS broker is reachable
 // from outside this machine and has no credential requirement.
 //
@@ -353,6 +427,7 @@ func isLoopbackHost(host string) bool {
 // enrolled worker credential set when broker authentication is enabled.
 func (s *Server) startBroker(ctx context.Context) (*bus.Broker, error) {
 	warnIfBrokerUnauthenticated(ctx, s.cfg.NATSAddr, s.cfg.NATSAuthEnabled, s.logger)
+	warnTLSConfig(ctx, s.logger, s.cfg.HTTPTLS, s.cfg.NATSTLS)
 
 	brokerAuth, err := loadBrokerAuthConfig(ctx, s.store, s.cfg.NATSAuthEnabled)
 	if err != nil {
@@ -651,14 +726,9 @@ func (s *Server) start(ctx context.Context) error {
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 
-	go func() {
-		s.logger.InfoContext(ctx, "http: listening",
-			slog.String("addr", s.cfg.HTTPAddr),
-			slog.String("url", browseURL(s.cfg.HTTPAddr)))
-		if err := s.httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			s.logger.ErrorContext(ctx, "http: server error", slog.Any("error", err))
-		}
-	}()
+	if err := s.serveHTTP(ctx); err != nil {
+		return err
+	}
 
 	// ── mDNS responder ────────────────────────────────────────────────────
 	// Advertise _sqi._tcp on the local network so workers and the
@@ -939,17 +1009,21 @@ func toOIDCConfig(c config.OIDCConfig, logger *slog.Logger) oidc.Config {
 // any wildcard or empty host, leaving an explicit host (e.g. "127.0.0.1" or a
 // LAN IP) untouched. The original bind address is still logged separately under
 // the "addr" key for operators.
-func browseURL(addr string) string {
+func browseURL(addr string, tlsOn bool) string {
+	scheme := "http://"
+	if tlsOn {
+		scheme = "https://"
+	}
 	host, port, err := net.SplitHostPort(addr)
 	if err != nil {
 		// Not in host:port form; surface it as-is rather than guessing.
-		return "http://" + addr
+		return scheme + addr
 	}
 	switch host {
 	case "", "0.0.0.0", "::", "[::]":
 		host = "localhost"
 	}
-	return "http://" + net.JoinHostPort(host, port)
+	return scheme + net.JoinHostPort(host, port)
 }
 
 // shutdown stops all running components in reverse dependency order within

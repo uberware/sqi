@@ -167,6 +167,8 @@ func runServe(cmd *cobra.Command, _ []string) error {
 func serverConfig(cfg config.Config, schedCfg scheduler.Config) server.Config {
 	return server.Config{
 		HTTPAddr:                          cfg.HTTP.Addr,
+		HTTPTLS:                           cfg.HTTP.TLS,
+		NATSTLS:                           cfg.NATS.TLS,
 		CORSOrigins:                       cfg.HTTP.CORSOrigins,
 		NATSAddr:                          cfg.NATS.Addr,
 		NATSAuthEnabled:                   cfg.NATS.Auth.Enabled,
