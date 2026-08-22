@@ -62,7 +62,8 @@ func validateHTTP(cfg HTTPConfig) []ValidationError {
 			Message: fmt.Sprintf("invalid address %q: %s", cfg.Addr, err),
 		}}
 	}
-	return validateCORSOrigins(cfg.CORSOrigins)
+	errs := validateCORSOrigins(cfg.CORSOrigins)
+	return append(errs, validateHTTPTLS(cfg.TLS)...)
 }
 
 // validateCORSOrigins rejects origins go-chi/cors can never match, so a typo
@@ -135,6 +136,11 @@ func validateNATS(cfg NATSConfig) []ValidationError {
 			Message: fmt.Sprintf("must be > 0, got %d; set SQI_NATS_MAX_STORE_MB or nats.max_store_mb", cfg.MaxStoreMB),
 		})
 	}
+	// TLS is validated BEFORE the auth early-return below: the two blocks are
+	// independent, and a farm running TLS with broker authentication off must
+	// still have its certificates checked at load.
+	errs = append(errs, validateNATSTLS(cfg.TLS)...)
+
 	// A disabled auth block must never produce validation errors — the same
 	// rule validateAuth follows. Turning a feature off must not stop a
 	// server from starting because of a value nobody is reading.

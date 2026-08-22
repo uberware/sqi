@@ -21,7 +21,8 @@ const (
 
 // writePair writes a certificate and its private key with the right modes.
 func writePair(dir, base string, certPEM, keyPEM []byte) error {
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	// 0750: the directory holds private keys, so it must not be world-readable.
+	if err := os.MkdirAll(dir, 0o750); err != nil {
 		return fmt.Errorf("certgen: create %s: %w", dir, err)
 	}
 	certPath := filepath.Join(dir, base+".crt")
