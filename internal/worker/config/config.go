@@ -271,6 +271,18 @@ type NATSConfig struct {
 	// Env: SQI_WORKER_NATS_URL
 	URL string `yaml:"url"`
 
+	// TLSEnabled forces TLS on the broker connection even when no CA,
+	// certificate or key is configured — for a broker presenting a
+	// publicly-trusted certificate, where nothing else would signal intent.
+	//
+	// It is force-ON only, never force-off: TLS is used when this is true OR
+	// when any of the TLS fields below is set. Setting it to false with
+	// tls_ca_file configured still uses TLS, exactly as it did before this
+	// key existed. Reading it as a master switch would silently downgrade a
+	// working TLS worker to plaintext on upgrade.
+	// Env: SQI_WORKER_NATS_TLS_ENABLED
+	TLSEnabled bool `yaml:"tls_enabled"`
+
 	// TLSCertFile is the path to the client TLS certificate (PEM).
 	// Env: SQI_WORKER_NATS_TLS_CERT_FILE
 	TLSCertFile string `yaml:"tls_cert_file"`
@@ -326,6 +338,22 @@ type NATSConfig struct {
 	// than attempting a request with no host.
 	// Env: SQI_WORKER_NATS_SERVER_URL
 	ServerURL string `yaml:"server_url"`
+
+	// ServerTLSCAFile is the CA that verifies sqi-server's certificate at
+	// ServerURL, for enrollment over HTTPS. Empty means the system roots;
+	// set means THAT CA only.
+	//
+	// Deliberately separate from TLSCAFile above, which is documented as the
+	// NATS broker CA: the two can legitimately differ (a publicly-issued
+	// certificate on the API, a private farm CA on the broker), and reusing
+	// one key for both surfaces reads fine now and misleads later.
+	// Env: SQI_WORKER_NATS_SERVER_TLS_CA_FILE
+	ServerTLSCAFile string `yaml:"server_tls_ca_file"`
+
+	// ServerTLSInsecureSkipVerify disables verification of sqi-server's
+	// certificate during enrollment. Development only.
+	// Env: SQI_WORKER_NATS_SERVER_TLS_INSECURE_SKIP_VERIFY
+	ServerTLSInsecureSkipVerify bool `yaml:"server_tls_insecure_skip_verify"`
 }
 
 // WorkerSettings controls the worker's identity and runtime behavior.
@@ -757,9 +785,12 @@ func applyStagingEnv(c *StagingConfig) {
 	}
 }
 
-func applyNATSEnv(c *NATSConfig) {
-	if v := os.Getenv("SQI_WORKER_NATS_URL"); v != "" {
-		c.URL = v
+// applyNATSTLSEnv overlays the NATS TLS environment variables onto c. Split
+// out of [applyNATSEnv] to keep its cyclomatic complexity under the lint
+// threshold.
+func applyNATSTLSEnv(c *NATSConfig) {
+	if v := os.Getenv("SQI_WORKER_NATS_TLS_ENABLED"); v != "" {
+		c.TLSEnabled = parseBoolEnv(v)
 	}
 	if v := os.Getenv("SQI_WORKER_NATS_TLS_CERT_FILE"); v != "" {
 		c.TLSCertFile = v
@@ -773,6 +804,19 @@ func applyNATSEnv(c *NATSConfig) {
 	if v := os.Getenv("SQI_WORKER_NATS_INSECURE_SKIP_VERIFY"); v != "" {
 		c.InsecureSkipVerify = parseBoolEnv(v)
 	}
+	if v := os.Getenv("SQI_WORKER_NATS_SERVER_TLS_CA_FILE"); v != "" {
+		c.ServerTLSCAFile = v
+	}
+	if v := os.Getenv("SQI_WORKER_NATS_SERVER_TLS_INSECURE_SKIP_VERIFY"); v != "" {
+		c.ServerTLSInsecureSkipVerify = parseBoolEnv(v)
+	}
+}
+
+func applyNATSEnv(c *NATSConfig) {
+	if v := os.Getenv("SQI_WORKER_NATS_URL"); v != "" {
+		c.URL = v
+	}
+	applyNATSTLSEnv(c)
 	if v := os.Getenv("SQI_WORKER_NATS_MAX_RECONNECT_ATTEMPTS"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil {
 			c.MaxReconnectAttempts = n

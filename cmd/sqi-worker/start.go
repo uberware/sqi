@@ -491,6 +491,10 @@ func connectToBroker(
 		JoinToken:      cfg.NATS.JoinToken,
 		JoinTokenFile:  cfg.NATS.JoinTokenFile,
 		ServerURL:      cfg.NATS.ServerURL,
+		// Without these the worker cannot enroll against an HTTPS server
+		// backed by a private farm CA, which is the first REST call it makes.
+		TLSCAFile:          cfg.NATS.ServerTLSCAFile,
+		InsecureSkipVerify: cfg.NATS.ServerTLSInsecureSkipVerify,
 	}, logger)
 	noCredential := errors.Is(err, enroll.ErrNoCredential)
 	if err != nil && !noCredential {

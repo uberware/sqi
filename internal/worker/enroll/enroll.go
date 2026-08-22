@@ -14,6 +14,8 @@ package enroll
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -22,6 +24,7 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/uberware/sqi/internal/brokerauth"
 )
@@ -54,9 +57,48 @@ type Config struct {
 	// ServerURL is the sqi-server HTTP base URL used for enrollment.
 	ServerURL string
 
-	// HTTPClient performs the enrollment request. When nil,
-	// http.DefaultClient is used.
+	// HTTPClient performs the enrollment request. When nil, one is built from
+	// TLSCAFile and InsecureSkipVerify below.
 	HTTPClient *http.Client
+
+	// TLSCAFile is the CA that verifies the server's certificate at
+	// ServerURL. Empty means the system roots; set means THAT CA only, so a
+	// farm CA pins the acceptable issuer rather than widening it.
+	TLSCAFile string
+
+	// InsecureSkipVerify disables verification of the server's certificate.
+	// Development only.
+	InsecureSkipVerify bool
+}
+
+// httpClient returns the client used for the enrollment request.
+//
+// It exists because http.DefaultClient cannot trust a private farm CA, and
+// enrollment is the one REST call a worker makes BEFORE it has any credential
+// at all — so without this a farm with an HTTPS server could not bootstrap.
+func httpClient(cfg Config) (*http.Client, error) {
+	if cfg.HTTPClient != nil {
+		return cfg.HTTPClient, nil
+	}
+	tlsCfg := &tls.Config{
+		MinVersion:         tls.VersionTLS12,
+		InsecureSkipVerify: cfg.InsecureSkipVerify, //nolint:gosec // G402: explicitly requested via nats.server_tls_insecure_skip_verify
+	}
+	if cfg.TLSCAFile != "" {
+		pemBytes, err := os.ReadFile(cfg.TLSCAFile)
+		if err != nil {
+			return nil, fmt.Errorf("worker: read enrollment CA file %s: %w", cfg.TLSCAFile, err)
+		}
+		pool := x509.NewCertPool()
+		if !pool.AppendCertsFromPEM(pemBytes) {
+			return nil, fmt.Errorf("worker: no valid certificates found in enrollment CA file %s", cfg.TLSCAFile)
+		}
+		tlsCfg.RootCAs = pool
+	}
+	return &http.Client{
+		Timeout:   30 * time.Second,
+		Transport: &http.Transport{TLSClientConfig: tlsCfg},
+	}, nil
 }
 
 // enrollRequest is the body of POST /api/v1/workers/enroll.
@@ -167,9 +209,9 @@ func enrollWithServer(ctx context.Context, cfg Config, token, publicKey string) 
 	}
 	req.Header.Set("Content-Type", "application/json")
 
-	client := cfg.HTTPClient
-	if client == nil {
-		client = http.DefaultClient
+	client, err := httpClient(cfg)
+	if err != nil {
+		return err
 	}
 
 	resp, err := client.Do(req)

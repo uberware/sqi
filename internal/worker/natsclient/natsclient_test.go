@@ -57,6 +57,12 @@ func TestBuildTLSOptions(t *testing.T) {
 		wantErr  bool
 	}{
 		{"no tls", workerconfig.NATSConfig{}, false, false},
+		// tls_enabled is the force-ON switch for a broker with a
+		// publicly-trusted certificate, where no CA file signals intent.
+		{"tls_enabled with system roots", workerconfig.NATSConfig{TLSEnabled: true}, true, false},
+		// Force-ON only: false must not undo the CA-file inference, or an
+		// upgrade would silently downgrade a working TLS worker to plaintext.
+		{"tls_enabled false does not disable an inferred TLS", workerconfig.NATSConfig{TLSEnabled: false, InsecureSkipVerify: true}, true, false},
 		{"insecure skip verify", workerconfig.NATSConfig{InsecureSkipVerify: true}, true, false},
 		{"cert without key errors", workerconfig.NATSConfig{TLSCertFile: "/x.crt"}, false, true},
 		{"bad ca file errors", workerconfig.NATSConfig{TLSCAFile: "/does/not/exist.pem"}, false, true},
