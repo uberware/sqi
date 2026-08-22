@@ -39,6 +39,11 @@ worker; it does not stop someone who can already read the network from
 reading what crosses it. Do not conclude "I turned on broker authentication"
 means "the channel is private" — it does not.
 
+Encrypting that transport is a separate, independent setting: `nats.tls`. See
+[`docs/tls.md`](tls.md). A production farm wants both — authentication decides
+*who* may connect, TLS decides *who may read what crosses the wire* — and
+neither substitutes for the other.
+
 ### The credential: an nkey per worker
 
 Each worker holds an Ed25519 **nkey** keypair. The worker generates it
@@ -466,9 +471,13 @@ A queue may set `run_as_user` (and optionally `run_as_group`) via
 attaches that **username only** — never a credential — to every task
 assignment for that queue's tasks (`AssignMsg.Isolation` /
 `protocol.IsolationSpec`, `internal/worker/protocol/protocol.go`). This is
-deliberate: worker↔server transport has no authentication at all today (see
-[Known gaps](#known-gaps)), so nothing secret can be allowed to travel on
-that channel. The worker resolves the username to a real OS credential
+deliberate: both worker↔server transport protections are **opt-in and off by
+default** — authentication via `nats.auth` (see
+[Broker authentication (transport)](#broker-authentication-transport)) and
+encryption via `nats.tls` ([`docs/tls.md`](tls.md)) — so the assignment
+channel must be assumed readable, and nothing secret can be allowed to travel
+on it. That holds regardless of what any individual deployment turns on: the
+protocol is designed for the weakest configuration it supports. The worker resolves the username to a real OS credential
 locally and runs both job-code launch sites under it — an OpenJD
 environment's `onEnter`/`onExit` actions and a task's own actions — with a
 filtered environment and a session working directory private to that user.
@@ -637,7 +646,7 @@ The cookie:
 
 `cookie_secure` is a **3-valued string, not a bool**, because sqi's default
 deployment posture is a trusted, plain-HTTP LAN (`http.addr` defaults to
-`0.0.0.0:8080`, no TLS). `"auto"` sets `Secure` when the request arrived over
+`0.0.0.0:8080`, and TLS is opt-in — see [`docs/tls.md`](tls.md)). `"auto"` sets `Secure` when the request arrived over
 TLS or carries `X-Forwarded-Proto: https`, which is right behind a
 TLS-terminating proxy that sets that header — but an operator on plain HTTP,
 with no such proxy, needs to be able to force `Secure` off explicitly rather
@@ -782,6 +791,17 @@ otherwise honor it as a prefix/suffix match — with credentials, once auth is
 enabled — letting an attacker-registrable origin (like
 `https://app.example.com.evil.io`) ride a victim's session cookie. Name every
 allowed origin explicitly.
+
+**Origins are scheme-sensitive, so enabling TLS invalidates `http://`
+entries.** The Origin check compares scheme, host and port — `http://ui.example.com`
+and `https://ui.example.com` are different origins, and matching on host alone
+would accept a plaintext origin against a TLS deployment. If you turn on
+`http.tls` ([`docs/tls.md`](tls.md)), or move behind a TLS-terminating proxy,
+update every entry here to `https://` at the same time or credentialed
+cross-origin requests from the UI will start returning `403`. The same applies
+to the same-origin path: it resolves the request's scheme from `r.TLS` or
+`X-Forwarded-Proto`, so a proxy that does not set that header makes a genuinely
+same-origin `https://` request look cross-origin.
 
 Leaving the list empty keeps the previous default of `["*"]`. **The
 wildcard-drop above still applies**: with auth enabled, `"*"` — whether
@@ -1710,7 +1730,9 @@ provider](development.md#testing-against-a-real-directory-or-identity-provider) 
   attackers, and any host that can reach the embedded NATS broker's port
   (`4222` by default) can register as a worker and receive task assignments.
   Turning broker authentication on does not encrypt the transport either —
-  task payloads, assignments and log chunks stay cleartext regardless.
+  task payloads, assignments and log chunks stay cleartext unless `nats.tls`
+  is also configured ([`docs/tls.md`](tls.md)); the two settings are
+  independent and address different threats.
   `sqi-server` emits a startup WARN when the broker address is non-loopback
   and broker auth is off, precisely because an operator reading "I flipped
   `auth.enabled` to `true`, so the server is now locked down" should not

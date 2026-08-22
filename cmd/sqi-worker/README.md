@@ -162,3 +162,4 @@ path), `--log-level`, and `--log-format`. `--dry-run` and
 - [`docs/worker-deployment.md`](../../docs/worker-deployment.md) — systemd, launchd, Windows service, Docker.
 - [`docs/worker-capabilities.md`](../../docs/worker-capabilities.md) — Capability tag reference.
 - [`docs/worker-docker.md`](../../docs/worker-docker.md) — Docker image quickstart.
+- [`docs/tls.md`](../../docs/tls.md) — Connecting to a TLS broker and enrolling over HTTPS.

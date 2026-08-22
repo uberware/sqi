@@ -67,7 +67,7 @@ sqi-worker          # run on each render node — finds the server automatically
 
 On a local network, workers discover the server via mDNS and connect without any configuration. Open a browser, start submitting. That's it.
 
-There is no authentication in this mode — the server trusts the local network, by design. To require logins, set `auth.enabled: true` and see [docs/auth.md](docs/auth.md), which covers the first-admin bootstrap, roles, API keys, and connecting a directory or SSO provider.
+There is no authentication in this mode — the server trusts the local network, by design. To require logins, set `auth.enabled: true` and see [docs/auth.md](docs/auth.md), which covers the first-admin bootstrap, roles, API keys, and connecting a directory or SSO provider. Traffic is unencrypted in this mode too; [docs/tls.md](docs/tls.md) covers turning on TLS for the API and the worker transport, which is a separate opt-in setting.
 
 See the [Quickstart](docs/quickstart.md) for a full walkthrough (binary or Docker Compose), including creating a farm and queue and submitting your first job.
 

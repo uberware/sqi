@@ -645,6 +645,16 @@ who published a message it received (`bus.ParseWorkerSubject`).
 A queue-unaffiliated worker leases on the reserved queue token
 `work.lease.<worker_id>._any` (`bus.WildcardQueueToken`).
 
+**Transport security.** Every subject above crosses the broker's client
+listener, which is **plaintext unless `nats.tls` is configured** — see
+[`docs/tls.md`](tls.md). That matters most for `work.lease.*`, whose reply
+carries the whole `AssignMsg`: command lines, embedded file contents, job
+parameters, environment and the run-as-user name. Broker *authentication*
+(`nats.auth`, [`docs/auth.md`](auth.md)) is a separate setting: it decides who
+may connect and constrains which subjects they may use, but it does not encrypt
+anything. The server's own connections to the embedded broker never touch this
+listener at all — they run in-process over a pipe.
+
 JetStream streams use file-backed storage with configurable size limits.
 `work.lease.<worker_id>.<queue>` uses core NATS request/reply — no stream is created for
 it. The server holds an unfulfillable request in memory for up to 30 s before

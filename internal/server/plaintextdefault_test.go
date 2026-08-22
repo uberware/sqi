@@ -109,7 +109,9 @@ func TestDefaultConfig_ServesPlaintextUnchanged(t *testing.T) {
 	tlsClient := &http.Client{
 		Timeout: 5 * time.Second,
 		Transport: &http.Transport{
-			TLSClientConfig: &tls.Config{InsecureSkipVerify: true, MinVersion: tls.VersionTLS12}, //nolint:gosec // asserting that no TLS listener exists at all
+			// InsecureSkipVerify is deliberate: the assertion is that no TLS
+			// listener exists at all, so verification must not be what fails.
+			TLSClientConfig: &tls.Config{InsecureSkipVerify: true, MinVersion: tls.VersionTLS12},
 		},
 	}
 	if r, err := get(t, tlsClient, "https://"+httpAddr+"/healthz"); err == nil {
