@@ -52,7 +52,8 @@ func multicastRequired() bool {
 // the production worker uses, so the real-binary test needs no special casing.
 //
 // Linux `lo` does not carry the MULTICAST flag by default, which is why the CI
-// job enables it; see docs/development.md for the one-line remediation.
+// job enables it — and having the flag is necessary but not sufficient, see
+// advertisable. docs/development.md carries both remediations.
 func loopbackIfaces() []net.Interface {
 	ifs, err := net.Interfaces()
 	if err != nil {
@@ -84,6 +85,14 @@ func requireMulticast(t *testing.T) {
 		return
 	}
 
+	if !anyAdvertisable(lo) {
+		skipOrFail(t, "loopback carries loopback addresses only, and zeroconf "+
+			"discards those when it builds the advertisement's address records, "+
+			"so a loopback-only advertisement cannot register at all; on Linux "+
+			"run: sudo ip -6 addr add fe80::1/64 dev lo")
+		return
+	}
+
 	logger := slog.New(slog.DiscardHandler)
 	probe, err := serverdiscovery.New(serverdiscovery.Config{
 		Enabled:      true,
@@ -107,6 +116,41 @@ func requireMulticast(t *testing.T) {
 		skipOrFail(t, "multicast probe: no mDNS round trip over loopback on this host ("+
 			err.Error()+")")
 	}
+}
+
+// anyAdvertisable reports whether any of these interfaces can carry an
+// advertisement.
+func anyAdvertisable(ifaces []net.Interface) bool {
+	for _, i := range ifaces {
+		addrs, err := i.Addrs()
+		if err != nil {
+			continue
+		}
+		if advertisable(addrs) {
+			return true
+		}
+	}
+	return false
+}
+
+// advertisable mirrors the address filter zeroconf applies when it builds an
+// advertisement, so a host that cannot register says so in its own terms.
+//
+// zeroconf fills the A/AAAA records from the interface's own addresses and
+// drops every loopback one (addrsForInterface: `!ipnet.IP.IsLoopback()`), then
+// fails with "Could not determine host IP addresses" if nothing is left. Linux
+// `lo` carries only 127.0.0.1 and ::1, so registering on loopback alone fails
+// there outright; macOS lo0 also carries fe80::1, which is why the same test
+// passes on a Mac. Without this check that shows up as an error three layers
+// down which says nothing about loopback, and the multicast flag — which is
+// genuinely fine — is the first thing anyone suspects.
+func advertisable(addrs []net.Addr) bool {
+	for _, a := range addrs {
+		if ipnet, ok := a.(*net.IPNet); ok && !ipnet.IP.IsLoopback() {
+			return true
+		}
+	}
+	return false
 }
 
 // skipOrFail skips, unless multicast was declared required.
@@ -229,5 +273,38 @@ func TestInstanceName_FitsTheDNSLabelLimit(t *testing.T) {
 	}
 	if long == instanceName(t, strings.Repeat("y", 200)) {
 		t.Error("two over-long names collided after truncation; the unique tail was trimmed")
+	}
+}
+
+// TestAdvertisable_MatchesZeroconfAddressFilter pins the check that tells a
+// Linux host why a loopback-only advertisement cannot register.
+//
+// The two loopback rows are the whole point: they are what macOS and Linux
+// actually put on their loopback interface, and only one of them can carry an
+// advertisement.
+func TestAdvertisable_MatchesZeroconfAddressFilter(t *testing.T) {
+	addr := func(cidr string) net.Addr {
+		ip, n, err := net.ParseCIDR(cidr)
+		if err != nil {
+			t.Fatalf("ParseCIDR(%q): %v", cidr, err)
+		}
+		return &net.IPNet{IP: ip, Mask: n.Mask}
+	}
+
+	for _, tc := range []struct {
+		name  string
+		addrs []net.Addr
+		want  bool
+	}{
+		{"linux lo", []net.Addr{addr("127.0.0.1/8"), addr("::1/128")}, false},
+		{"macos lo0", []net.Addr{addr("127.0.0.1/8"), addr("::1/128"), addr("fe80::1/64")}, true},
+		{"no addresses", nil, false},
+		{"routable interface", []net.Addr{addr("192.168.1.10/24")}, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := advertisable(tc.addrs); got != tc.want {
+				t.Errorf("advertisable() = %v, want %v", got, tc.want)
+			}
+		})
 	}
 }

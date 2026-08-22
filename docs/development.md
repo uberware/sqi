@@ -135,13 +135,24 @@ service on the LAN it happens to be attached to. This is an invariant, not a
 preference: where loopback cannot carry multicast the tests refuse to run rather
 than quietly falling back to a real interface.
 
-Linux `lo` ships without the MULTICAST flag, so on Linux:
+Linux loopback needs two things macOS lo0 has by default, and the tests state
+each one when it is missing:
 
 ```bash
-sudo ip link set lo multicast on
+sudo ip link set lo multicast on      # Linux `lo` ships without the flag
+sudo ip -6 addr add fe80::1/64 dev lo # and with no non-loopback address
 ```
 
-The tests say exactly that when the flag is missing, and the CI job runs it.
+The second is the less obvious one. zeroconf builds the advertisement's address
+records from the advertising interface's own addresses and **discards loopback
+ones**, so on Linux — whose `lo` carries only `127.0.0.1` and `::1` — there is
+nothing left to advertise and registration fails outright with "Could not
+determine host IP addresses", multicast flag or no multicast flag. macOS lo0
+also carries `fe80::1`, which is the whole reason this is invisible on a Mac.
+Adding that same link-local address makes the two hosts behave alike; it is
+scoped to the link and is not routed anywhere.
+
+The CI job runs both.
 
 ### The one test that does open a listener
 

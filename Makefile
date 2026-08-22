@@ -340,7 +340,9 @@ test-discovery: ## Run the mDNS discovery tests over REAL multicast (fails rathe
 	@echo "note: advertisements are restricted to loopback, so nothing is announced"
 	@echo "      on your network. One test (RealBinary...) binds the test broker to"
 	@echo "      all interfaces for ~10s; make test-integration skips that one."
-	@echo "      On Linux, loopback needs: sudo ip link set lo multicast on"
+	@echo "      On Linux, loopback needs both: sudo ip link set lo multicast on"
+	@echo "      and: sudo ip -6 addr add fe80::1/64 dev lo (zeroconf discards"
+	@echo "      loopback addresses, so lo has nothing to advertise without it)"
 	SQI_TEST_REQUIRE_MULTICAST=1 go test $(TEST_FLAGS) -tags integration \
 	  -run 'TestDiscovery_' -v -timeout 10m ./test/integration/
 

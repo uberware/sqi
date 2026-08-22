@@ -1104,14 +1104,6 @@ jobs:
           go-version-file: go.mod
           cache: true
 
-      # Linux `lo` ships without the MULTICAST flag. The tests advertise on
-      # loopback only — deliberately, so a run never announces a service on the
-      # network it happens to be on — and refuse to fall back to a real
-      # interface, so the flag has to be on or they cannot run at all.
-      # Linux `lo` ships without the MULTICAST flag. The tests advertise on
-      # loopback only — deliberately, so a run never announces a service on the
-      # network it happens to be on — and refuse to fall back to a real
-      # interface, so the flag has to be on or they cannot run at all.
       # The advertisement carries "<hostname>.local", which the worker dials.
       # macOS answers that through mDNSResponder; a stock ubuntu runner has no
       # mDNS NSS module, so the worker would discover the server and then fail
@@ -1127,12 +1119,34 @@ jobs:
           getent hosts "$(hostname).local" || {
             echo "::error::$(hostname).local still does not resolve"; exit 1; }
 
-      - name: Enable multicast on loopback
+      # Two things a Linux loopback lacks that macOS lo0 has by default, and the
+      # loopback-only advertisement needs both. The tests advertise on loopback
+      # only — deliberately, so a run never announces a service on the network it
+      # happens to be on — and refuse to fall back to a real interface, so
+      # neither of these can be skipped: without them the suite cannot run at all.
+      #
+      #  1. The MULTICAST flag. Linux `lo` ships without it, and the tests select
+      #     their interfaces by that flag, so an untouched `lo` looks to them like
+      #     a host that cannot do multicast.
+      #  2. A non-loopback address. zeroconf fills the advertisement's address
+      #     records from the interface's own addresses and discards loopback ones
+      #     (addrsForInterface: `!ipnet.IP.IsLoopback()`); a Linux `lo` carries
+      #     only 127.0.0.1 and ::1, so registering on loopback alone fails
+      #     outright with "Could not determine host IP addresses". macOS lo0 also
+      #     carries fe80::1, which is the whole reason this never shows up there.
+      #     Adding that same link-local address makes the two behave alike — it
+      #     is scoped to the link and is not routed anywhere.
+      - name: Prepare loopback for mDNS
         run: |
-          ip link show lo
+          ip -o addr show lo
           sudo ip link set lo multicast on
           ip link show lo | grep -q MULTICAST || {
             echo "::error::could not enable MULTICAST on lo"; exit 1; }
+          sudo ip -6 addr add fe80::1/64 dev lo || true
+          ip -o -6 addr show lo scope link | grep -q fe80 || {
+            echo "::error::lo has no link-local address, so a loopback-only mDNS"
+            echo "::error::advertisement cannot register — see the comment above"
+            exit 1; }
 
       - name: Run the discovery suite over real multicast
         run: |
