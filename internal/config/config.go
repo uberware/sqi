@@ -62,6 +62,9 @@ type HTTPConfig struct {
 	// separately-hosted UI must name its origin explicitly here.
 	// Env: SQI_HTTP_CORS_ORIGINS (comma-separated)
 	CORSOrigins []string `yaml:"cors_origins"`
+
+	// TLS terminates HTTPS in-process on this listener. Off by default.
+	TLS TLSConfig `yaml:"tls"`
 }
 
 // NATSConfig controls the embedded NATS JetStream broker.
@@ -86,6 +89,53 @@ type NATSConfig struct {
 	// different surfaces, and coupling them would force an operator who
 	// wants worker authentication into user accounts they did not ask for.
 	Auth NATSAuthConfig `yaml:"auth"`
+
+	// TLS encrypts the embedded broker's client listener. Off by default.
+	TLS NATSTLSConfig `yaml:"tls"`
+}
+
+// TLSConfig controls in-process TLS termination for a listener. Zero value
+// leaves TLS off, which is the default and must stay byte-for-byte
+// equivalent to how the listener behaved before TLS existed.
+type TLSConfig struct {
+	// Enabled turns the listener into an HTTPS listener. There is no
+	// plaintext port when it is on: the listener upgrades in place.
+	// Env: SQI_HTTP_TLS_ENABLED
+	Enabled bool `yaml:"enabled"`
+
+	// CertFile is the PEM certificate (leaf first, then any intermediates).
+	// Env: SQI_HTTP_TLS_CERT_FILE
+	CertFile string `yaml:"cert_file"`
+
+	// KeyFile is the PEM private key matching CertFile.
+	// Env: SQI_HTTP_TLS_KEY_FILE
+	KeyFile string `yaml:"key_file"`
+}
+
+// NATSTLSConfig controls TLS on the embedded broker. It is deliberately
+// separate from the http.tls block: the two protect different surfaces and
+// an operator may legitimately use a publicly-issued certificate on the API
+// and a private farm CA on the broker.
+type NATSTLSConfig struct {
+	// Enabled requires TLS on every broker connection.
+	// Env: SQI_NATS_TLS_ENABLED
+	Enabled bool `yaml:"enabled"`
+
+	// CertFile is the PEM certificate presented to connecting workers.
+	// Env: SQI_NATS_TLS_CERT_FILE
+	CertFile string `yaml:"cert_file"`
+
+	// KeyFile is the PEM private key matching CertFile.
+	// Env: SQI_NATS_TLS_KEY_FILE
+	KeyFile string `yaml:"key_file"`
+
+	// ClientCAFile, when set, requires every worker to present a client
+	// certificate signed by this CA. This is a TRANSPORT control layered on
+	// top of the per-worker nkey credential, not a replacement for it: the
+	// certificate gates who may open a connection, the nkey decides which
+	// worker you are.
+	// Env: SQI_NATS_TLS_CLIENT_CA_FILE
+	ClientCAFile string `yaml:"client_ca_file"`
 }
 
 // NATSAuthConfig configures broker authentication and worker enrollment.

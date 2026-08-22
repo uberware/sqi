@@ -202,4 +202,5 @@ internal/
 - [`docs/architecture.md`](../../docs/architecture.md) — Component layout and job lifecycle data flow.
 - [`docs/configuration.md`](../../docs/configuration.md) — Complete configuration reference.
 - [`docs/api.md`](../../docs/api.md) — REST API reference with worked examples.
+- [`docs/tls.md`](../../docs/tls.md) — In-process TLS for the API and broker, `tls init` / `tls issue`, and worker mTLS.
 - [`docs/development.md`](../../docs/development.md) — Local setup and contribution guide.

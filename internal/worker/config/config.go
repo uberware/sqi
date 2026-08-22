@@ -14,6 +14,7 @@
 package config
 
 import (
+	"crypto/tls"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -271,6 +272,23 @@ type NATSConfig struct {
 	// Env: SQI_WORKER_NATS_URL
 	URL string `yaml:"url"`
 
+	// TLSEnabled controls TLS on the broker connection. It is a THREE-VALUED
+	// string, not a bool, mirroring auth.session.cookie_secure on the server:
+	//
+	//   - "auto" (default): use TLS when there is a reason to. That means any
+	//     of the TLS fields below being set, or the discovered server
+	//     advertising a TLS-required broker over mDNS.
+	//   - "true":  always use TLS, even with no CA configured (system roots) —
+	//     for a broker presenting a publicly-trusted certificate, which
+	//     nothing else would signal.
+	//   - "false": never use TLS, even with a CA configured. An explicit
+	//     override for an operator who knows the broker is plaintext.
+	//
+	// A bool cannot express this: the interesting states are "infer" and
+	// "force off", and a bool collapses them onto the same zero value.
+	// Env: SQI_WORKER_NATS_TLS_ENABLED
+	TLSEnabled string `yaml:"tls_enabled"`
+
 	// TLSCertFile is the path to the client TLS certificate (PEM).
 	// Env: SQI_WORKER_NATS_TLS_CERT_FILE
 	TLSCertFile string `yaml:"tls_cert_file"`
@@ -326,6 +344,69 @@ type NATSConfig struct {
 	// than attempting a request with no host.
 	// Env: SQI_WORKER_NATS_SERVER_URL
 	ServerURL string `yaml:"server_url"`
+
+	// ServerTLSCAFile is the CA that verifies sqi-server's certificate at
+	// ServerURL, for enrollment over HTTPS. Empty means the system roots;
+	// set means THAT CA only.
+	//
+	// Deliberately separate from TLSCAFile above, which is documented as the
+	// NATS broker CA: the two can legitimately differ (a publicly-issued
+	// certificate on the API, a private farm CA on the broker), and reusing
+	// one key for both surfaces reads fine now and misleads later.
+	// Env: SQI_WORKER_NATS_SERVER_TLS_CA_FILE
+	ServerTLSCAFile string `yaml:"server_tls_ca_file"`
+
+	// ServerTLSInsecureSkipVerify disables verification of sqi-server's
+	// certificate during enrollment. Development only.
+	// Env: SQI_WORKER_NATS_SERVER_TLS_INSECURE_SKIP_VERIFY
+	ServerTLSInsecureSkipVerify bool `yaml:"server_tls_insecure_skip_verify"`
+}
+
+// TLS modes for [NATSConfig.TLSEnabled]. The zero value ("") is treated as
+// TLSAuto so a struct built in a test behaves like a defaulted config.
+const (
+	TLSAuto = "auto"
+	TLSOn   = "true"
+	TLSOff  = "false"
+)
+
+// normalizeTLSMode maps a configured tls_enabled value onto one of the three
+// modes, or returns ok=false if it is not a value we understand.
+//
+// The truthy/falsy synonyms are accepted because SQI_WORKER_NATS_TLS_ENABLED=1
+// is how people set boolean-looking environment variables, and this key looked
+// like a bool until recently. They are accepted in YAML too, so the file and
+// the environment never disagree about what a value means.
+func normalizeTLSMode(v string) (mode string, ok bool) {
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case "", TLSAuto:
+		return TLSAuto, true
+	case TLSOn, "1", "yes", "on":
+		return TLSOn, true
+	case TLSOff, "0", "no", "off":
+		return TLSOff, true
+	default:
+		return "", false
+	}
+}
+
+// UseTLS reports whether the broker connection should use TLS.
+//
+// brokerAdvertisedTLS is what mDNS discovery learned about the server (the
+// "nats_tls" TXT record); it is false when the URL was configured explicitly,
+// since nothing was discovered. It only participates in "auto".
+func (c NATSConfig) UseTLS(brokerAdvertisedTLS bool) bool {
+	mode, _ := normalizeTLSMode(c.TLSEnabled)
+	switch mode {
+	case TLSOn:
+		return true
+	case TLSOff:
+		return false
+	default: // TLSAuto, including the "" zero value
+		return brokerAdvertisedTLS ||
+			c.TLSCertFile != "" || c.TLSKeyFile != "" ||
+			c.TLSCAFile != "" || c.InsecureSkipVerify
+	}
 }
 
 // WorkerSettings controls the worker's identity and runtime behavior.
@@ -459,6 +540,28 @@ type MetricsConfig struct {
 	// EnablePprof exposes Go runtime profiling endpoints at /debug/pprof/.
 	// Env: SQI_WORKER_METRICS_ENABLE_PPROF
 	EnablePprof bool `yaml:"enable_pprof"`
+
+	// TLS terminates TLS on this listener. Off by default, which is right for
+	// the loopback default address; turn it on together with any Addr that is
+	// reachable from elsewhere, since this endpoint carries metrics, health and
+	// — if EnablePprof is set — full runtime profiles.
+	TLS MetricsTLSConfig `yaml:"tls"`
+}
+
+// MetricsTLSConfig terminates TLS on the worker's metrics/health listener.
+type MetricsTLSConfig struct {
+	// Enabled serves HTTPS on metrics.addr. There is no plaintext port when it
+	// is on: the listener upgrades in place, as the server's does.
+	// Env: SQI_WORKER_METRICS_TLS_ENABLED
+	Enabled bool `yaml:"enabled"`
+
+	// CertFile is the PEM certificate served on this listener.
+	// Env: SQI_WORKER_METRICS_TLS_CERT_FILE
+	CertFile string `yaml:"cert_file"`
+
+	// KeyFile is the PEM private key matching CertFile.
+	// Env: SQI_WORKER_METRICS_TLS_KEY_FILE
+	KeyFile string `yaml:"key_file"`
 }
 
 // DiscoveryConfig controls mDNS-based sqi-server auto-discovery.
@@ -498,6 +601,7 @@ func Default() WorkerConfig {
 	}
 	return WorkerConfig{
 		NATS: NATSConfig{
+			TLSEnabled:           TLSAuto,
 			MaxReconnectAttempts: -1,
 			ReconnectWait:        2 * time.Second,
 		},
@@ -757,9 +861,12 @@ func applyStagingEnv(c *StagingConfig) {
 	}
 }
 
-func applyNATSEnv(c *NATSConfig) {
-	if v := os.Getenv("SQI_WORKER_NATS_URL"); v != "" {
-		c.URL = v
+// applyNATSTLSEnv overlays the NATS TLS environment variables onto c. Split
+// out of [applyNATSEnv] to keep its cyclomatic complexity under the lint
+// threshold.
+func applyNATSTLSEnv(c *NATSConfig) {
+	if v := os.Getenv("SQI_WORKER_NATS_TLS_ENABLED"); v != "" {
+		c.TLSEnabled = v
 	}
 	if v := os.Getenv("SQI_WORKER_NATS_TLS_CERT_FILE"); v != "" {
 		c.TLSCertFile = v
@@ -773,6 +880,19 @@ func applyNATSEnv(c *NATSConfig) {
 	if v := os.Getenv("SQI_WORKER_NATS_INSECURE_SKIP_VERIFY"); v != "" {
 		c.InsecureSkipVerify = parseBoolEnv(v)
 	}
+	if v := os.Getenv("SQI_WORKER_NATS_SERVER_TLS_CA_FILE"); v != "" {
+		c.ServerTLSCAFile = v
+	}
+	if v := os.Getenv("SQI_WORKER_NATS_SERVER_TLS_INSECURE_SKIP_VERIFY"); v != "" {
+		c.ServerTLSInsecureSkipVerify = parseBoolEnv(v)
+	}
+}
+
+func applyNATSEnv(c *NATSConfig) {
+	if v := os.Getenv("SQI_WORKER_NATS_URL"); v != "" {
+		c.URL = v
+	}
+	applyNATSTLSEnv(c)
 	if v := os.Getenv("SQI_WORKER_NATS_MAX_RECONNECT_ATTEMPTS"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil {
 			c.MaxReconnectAttempts = n
@@ -872,6 +992,15 @@ func applyLogEnv(c *LogConfig) {
 func applyMetricsEnv(c *MetricsConfig) {
 	if v := os.Getenv("SQI_WORKER_METRICS_ADDR"); v != "" {
 		c.Addr = v
+	}
+	if v := os.Getenv("SQI_WORKER_METRICS_TLS_ENABLED"); v != "" {
+		c.TLS.Enabled = parseBoolEnv(v)
+	}
+	if v := os.Getenv("SQI_WORKER_METRICS_TLS_CERT_FILE"); v != "" {
+		c.TLS.CertFile = v
+	}
+	if v := os.Getenv("SQI_WORKER_METRICS_TLS_KEY_FILE"); v != "" {
+		c.TLS.KeyFile = v
 	}
 	if v := os.Getenv("SQI_WORKER_METRICS_ENABLE_PPROF"); v != "" {
 		c.EnablePprof = parseBoolEnv(v)
@@ -1017,8 +1146,61 @@ func Validate(cfg WorkerConfig) []ValidationError {
 	errs = append(errs, validateIsolation(cfg)...)
 	errs = append(errs, validateExpr(cfg.Expr)...)
 	errs = append(errs, validateQueueIDs(cfg.Worker.QueueIDs)...)
+	errs = append(errs, validateNATSTLSMode(cfg.NATS)...)
+	errs = append(errs, validateMetricsTLS(cfg.Metrics)...)
 
 	return errs
+}
+
+// validateMetricsTLS refuses a metrics TLS block that cannot serve, at load
+// rather than when the first scrape arrives.
+func validateMetricsTLS(cfg MetricsConfig) []ValidationError {
+	if !cfg.TLS.Enabled {
+		return nil
+	}
+	var errs []ValidationError
+	if cfg.TLS.CertFile == "" {
+		errs = append(errs, ValidationError{
+			Field:   "metrics.tls.cert_file",
+			Message: "must be set when metrics.tls.enabled is true",
+		})
+	}
+	if cfg.TLS.KeyFile == "" {
+		errs = append(errs, ValidationError{
+			Field:   "metrics.tls.key_file",
+			Message: "must be set when metrics.tls.enabled is true",
+		})
+	}
+	if len(errs) > 0 {
+		return errs
+	}
+	if _, err := tls.LoadX509KeyPair(cfg.TLS.CertFile, cfg.TLS.KeyFile); err != nil {
+		return []ValidationError{{
+			Field:   "metrics.tls.cert_file",
+			Message: fmt.Sprintf("cannot load certificate/key pair (%s, %s): %s", cfg.TLS.CertFile, cfg.TLS.KeyFile, err),
+		}}
+	}
+	return nil
+}
+
+// validateNATSTLSMode rejects a nats.tls_enabled value that is not one of the
+// three modes or one of their accepted synonyms. An unrecognized value would
+// otherwise fall into the "auto" default and silently mean something the
+// operator did not write. ("yes" and "1" ARE recognized — see
+// normalizeTLSMode.)
+func validateNATSTLSMode(cfg NATSConfig) []ValidationError {
+	if _, ok := normalizeTLSMode(cfg.TLSEnabled); ok {
+		return nil
+	}
+	return []ValidationError{
+		{
+			Field: "nats.tls_enabled",
+			Message: fmt.Sprintf(
+				"must be %q, %q or %q, got %q; %q infers TLS from the other tls_* settings and from mDNS discovery",
+				TLSAuto, TLSOn, TLSOff, cfg.TLSEnabled, TLSAuto,
+			),
+		},
+	}
 }
 
 // validateExpr rejects an out-of-range expr: value at STARTUP rather than

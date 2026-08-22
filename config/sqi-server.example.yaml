@@ -32,6 +32,24 @@ http:
   # Type: bool   Env: SQI_HTTP_ENABLE_PPROF
   enable_pprof: false
 
+  # In-process TLS termination for the REST API, WebSocket gateway and web UI.
+  #
+  # OFF by default. When enabled the listener above UPGRADES IN PLACE — there
+  # is no plaintext port left, so enabling this on a running farm is a
+  # coordinated restart, not a rolling one. Generate a certificate pair with
+  # `sqi-server tls init`. Full guide: docs/tls.md.
+  #
+  # Certificates are validated at startup: a missing file, a mismatched key or
+  # an expired certificate is a startup error naming the key, and one expiring
+  # within 30 days logs a WARN. Rotation requires a restart.
+  # tls:
+  #   # Type: bool   Env: SQI_HTTP_TLS_ENABLED
+  #   enabled: true
+  #   # Type: string Env: SQI_HTTP_TLS_CERT_FILE
+  #   cert_file: "/etc/sqi/certs/server.crt"
+  #   # Type: string Env: SQI_HTTP_TLS_KEY_FILE
+  #   key_file: "/etc/sqi/certs/server.key"
+
 # ── NATS JetStream (embedded broker) ─────────────────────────────────────────
 nats:
   # TCP address the embedded NATS server binds to.
@@ -59,6 +77,30 @@ nats:
   # Broker authentication for worker connections. Opt-in and independent of
   # the top-level auth block (auth.enabled) below — that block gates human
   # users and API keys; this one gates workers connecting to the broker.
+  # In-process TLS on the embedded broker's client listener.
+  #
+  # OFF by default. This is what encrypts the WORKER TRANSPORT — assignments
+  # (command lines, embedded file contents, parameters, environment, the
+  # isolation username), status messages and log chunks. Broker AUTHENTICATION
+  # below does not encrypt anything: the two are independent settings against
+  # different threats, and a production farm wants both.
+  #
+  # Workers need the matching CA in nats.tls_ca_file. See docs/tls.md.
+  # tls:
+  #   # Type: bool   Env: SQI_NATS_TLS_ENABLED
+  #   enabled: true
+  #   # Type: string Env: SQI_NATS_TLS_CERT_FILE
+  #   cert_file: "/etc/sqi/certs/server.crt"
+  #   # Type: string Env: SQI_NATS_TLS_KEY_FILE
+  #   key_file: "/etc/sqi/certs/server.key"
+  #   # Require each worker to present a client certificate signed by this CA
+  #   # (mutual TLS). Layers ON TOP of the nkey credential below rather than
+  #   # replacing it: the certificate gates who may connect, the nkey decides
+  #   # which worker they are. Issue per-worker certificates with
+  #   # `sqi-server tls init --client <worker-id>`.
+  #   # Type: string Env: SQI_NATS_TLS_CLIENT_CA_FILE
+  #   client_ca_file: "/etc/sqi/certs/ca.crt"
+
   auth:
     # Requires every NATS client to present a per-worker nkey credential.
     # When false, the broker accepts any connection (the v0.3.0 behavior).

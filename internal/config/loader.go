@@ -152,6 +152,11 @@ type fileConfig struct {
 		Addr        *string   `yaml:"addr"`
 		EnablePprof *bool     `yaml:"enable_pprof"`
 		CORSOrigins *[]string `yaml:"cors_origins"`
+		TLS         *struct {
+			Enabled  *bool   `yaml:"enabled"`
+			CertFile *string `yaml:"cert_file"`
+			KeyFile  *string `yaml:"key_file"`
+		} `yaml:"tls"`
 	} `yaml:"http"`
 
 	NATS *struct {
@@ -164,6 +169,12 @@ type fileConfig struct {
 			JoinTokenSingleUse        *bool   `yaml:"join_token_single_use"`
 			EnrollmentEndpointEnabled *bool   `yaml:"enrollment_endpoint_enabled"`
 		} `yaml:"auth"`
+		TLS *struct {
+			Enabled      *bool   `yaml:"enabled"`
+			CertFile     *string `yaml:"cert_file"`
+			KeyFile      *string `yaml:"key_file"`
+			ClientCAFile *string `yaml:"client_ca_file"`
+		} `yaml:"tls"`
 	} `yaml:"nats"`
 
 	Store *struct {
@@ -335,6 +346,24 @@ func mergeHTTPFile(cfg *Config, fc fileConfig) {
 	if fc.HTTP.CORSOrigins != nil {
 		cfg.HTTP.CORSOrigins = *fc.HTTP.CORSOrigins
 	}
+	mergeHTTPTLSFile(cfg, fc.HTTP.TLS)
+}
+
+// mergeHTTPTLSFile overlays the http.tls sub-fields from fc onto cfg. Split
+// out of [mergeHTTPFile] to keep its cyclomatic complexity under the lint
+// threshold, following the mergeNATSAuthFile precedent.
+func mergeHTTPTLSFile(cfg *Config, t *struct {
+	Enabled  *bool   `yaml:"enabled"`
+	CertFile *string `yaml:"cert_file"`
+	KeyFile  *string `yaml:"key_file"`
+},
+) {
+	if t == nil {
+		return
+	}
+	setIfNotNilBool(&cfg.HTTP.TLS.Enabled, t.Enabled)
+	setIfNotNilString(&cfg.HTTP.TLS.CertFile, t.CertFile)
+	setIfNotNilString(&cfg.HTTP.TLS.KeyFile, t.KeyFile)
 }
 
 func mergeNATSFile(cfg *Config, fc fileConfig) {
@@ -351,6 +380,25 @@ func mergeNATSFile(cfg *Config, fc fileConfig) {
 		cfg.NATS.MaxStoreMB = *fc.NATS.MaxStoreMB
 	}
 	mergeNATSAuthFile(cfg, fc.NATS.Auth)
+	mergeNATSTLSFile(cfg, fc.NATS.TLS)
+}
+
+// mergeNATSTLSFile overlays the nats.tls sub-fields from fc onto cfg. Split
+// out of [mergeNATSFile] for the same reason as [mergeNATSAuthFile].
+func mergeNATSTLSFile(cfg *Config, t *struct {
+	Enabled      *bool   `yaml:"enabled"`
+	CertFile     *string `yaml:"cert_file"`
+	KeyFile      *string `yaml:"key_file"`
+	ClientCAFile *string `yaml:"client_ca_file"`
+},
+) {
+	if t == nil {
+		return
+	}
+	setIfNotNilBool(&cfg.NATS.TLS.Enabled, t.Enabled)
+	setIfNotNilString(&cfg.NATS.TLS.CertFile, t.CertFile)
+	setIfNotNilString(&cfg.NATS.TLS.KeyFile, t.KeyFile)
+	setIfNotNilString(&cfg.NATS.TLS.ClientCAFile, t.ClientCAFile)
 }
 
 // mergeNATSAuthFile overlays the nats.auth sub-fields from fc onto cfg. Split
@@ -710,11 +758,18 @@ func applyEnv(cfg *Config) error {
 
 	setString(&cfg.HTTP.Addr, "SQI_HTTP_ADDR")
 	collect(setBool(&cfg.HTTP.EnablePprof, "SQI_HTTP_ENABLE_PPROF"))
+	collect(setBool(&cfg.HTTP.TLS.Enabled, "SQI_HTTP_TLS_ENABLED"))
+	setString(&cfg.HTTP.TLS.CertFile, "SQI_HTTP_TLS_CERT_FILE")
+	setString(&cfg.HTTP.TLS.KeyFile, "SQI_HTTP_TLS_KEY_FILE")
 	setStringSlice(&cfg.HTTP.CORSOrigins, "SQI_HTTP_CORS_ORIGINS")
 
 	setString(&cfg.NATS.Addr, "SQI_NATS_ADDR")
 	setString(&cfg.NATS.DataDir, "SQI_NATS_DATA_DIR")
 	collect(setInt(&cfg.NATS.MaxStoreMB, "SQI_NATS_MAX_STORE_MB"))
+	collect(setBool(&cfg.NATS.TLS.Enabled, "SQI_NATS_TLS_ENABLED"))
+	setString(&cfg.NATS.TLS.CertFile, "SQI_NATS_TLS_CERT_FILE")
+	setString(&cfg.NATS.TLS.KeyFile, "SQI_NATS_TLS_KEY_FILE")
+	setString(&cfg.NATS.TLS.ClientCAFile, "SQI_NATS_TLS_CLIENT_CA_FILE")
 	collect(setBool(&cfg.NATS.Auth.Enabled, "SQI_NATS_AUTH_ENABLED"))
 	collect(setDuration(&cfg.NATS.Auth.JoinTokenTTL, "SQI_NATS_AUTH_JOIN_TOKEN_TTL"))
 	collect(setBool(&cfg.NATS.Auth.JoinTokenSingleUse, "SQI_NATS_AUTH_JOIN_TOKEN_SINGLE_USE"))

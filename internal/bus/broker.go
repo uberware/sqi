@@ -4,6 +4,7 @@ package bus
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -17,6 +18,7 @@ import (
 	"github.com/nats-io/nats.go/jetstream"
 
 	"github.com/uberware/sqi/internal/brokerauth"
+	"github.com/uberware/sqi/internal/tlsutil"
 )
 
 // BrokerConfig holds the parameters needed to start the embedded NATS server.
@@ -45,6 +47,47 @@ type BrokerConfig struct {
 	// Auth configures per-worker nkey authorization on the broker. Zero value
 	// leaves authorization disabled.
 	Auth BrokerAuthConfig
+
+	// TLS configures transport encryption on the client listener. Zero value
+	// leaves the broker plaintext, which is the default.
+	TLS BrokerTLSConfig
+}
+
+// buildBrokerTLS assembles the broker's server-side TLS configuration.
+// The paths have already been validated at config load, so a failure here
+// means the files changed underneath a running process.
+//
+// Note what is NOT here: the server's own connections need no client-side TLS
+// configuration at all, because they never speak TLS. See adminOptions.
+func buildBrokerTLS(cfg BrokerTLSConfig) (*tls.Config, error) {
+	tlsCfg, err := tlsutil.ServerConfig(cfg.CertFile, cfg.KeyFile, cfg.ClientCAFile)
+	if err != nil {
+		return nil, err
+	}
+	return tlsCfg, nil
+}
+
+// BrokerTLSConfig controls TLS on the embedded broker's client listener.
+// Zero value leaves TLS off, which is the default.
+//
+// This is bus's own view of the operator's nats.tls block, mapped by the
+// caller, so that internal/bus does not import internal/config — the same
+// boundary WorkerCredentialRef draws against internal/store.
+type BrokerTLSConfig struct {
+	// Enabled makes the broker require TLS on every client connection.
+	Enabled bool
+
+	// CertFile and KeyFile are the PEM certificate and key the broker
+	// presents. Both are validated at config load.
+	CertFile string
+	KeyFile  string
+
+	// ClientCAFile, when set, requires each connecting worker to present a
+	// client certificate signed by this CA. It is a transport control
+	// layered on the nkey credential, never a substitute: the certificate
+	// decides who may open a connection, the nkey decides which worker they
+	// are.
+	ClientCAFile string
 }
 
 // BrokerAuthConfig controls per-worker nkey authorization on the broker.
@@ -160,6 +203,22 @@ func (b *Broker) Start(ctx context.Context) error {
 		opts.Nkeys = buildNkeys(serverPub, b.cfg.Auth.Credentials, b.logger)
 	}
 
+	if b.cfg.TLS.Enabled {
+		tlsCfg, err := buildBrokerTLS(b.cfg.TLS)
+		if err != nil {
+			return fmt.Errorf("bus: tls: %w", err)
+		}
+		// Setting TLSConfig is what makes the broker REQUIRE TLS:
+		// nats-server computes `tlsReq := opts.TLSConfig != nil`. There is no
+		// separate flag. TLSTimeout self-defaults to 2s when left zero.
+		//
+		// This must happen BEFORE the bootOpts clone below: ReloadCredentials
+		// rebuilds from that clone, so a TLSConfig set afterwards would be
+		// dropped the first time a worker is revoked — silently taking the
+		// whole broker back to plaintext.
+		opts.TLSConfig = tlsCfg
+	}
+
 	// Retain a pristine copy of the boot options for ReloadCredentials:
 	// ReloadOptions documents that the Options passed to it must not be
 	// reused, so credential reloads clone from this copy rather than the one
@@ -198,7 +257,7 @@ func (b *Broker) Start(ctx context.Context) error {
 	// Establish an admin connection used only for stream provisioning.
 	// This is a plain TCP connection to the loopback listener; the latency
 	// is negligible and avoids importing the server package into callers.
-	nc, err := nats.Connect(ns.ClientURL(), b.adminOptions()...)
+	nc, err := nats.Connect(inProcessURL, b.adminOptions(ns)...)
 	if err != nil {
 		ns.Shutdown()
 		ns.WaitForShutdown()
@@ -303,7 +362,7 @@ func (b *Broker) NewClient() (*Client, error) {
 	if ns == nil {
 		return nil, errors.New("bus: broker not started")
 	}
-	return NewClient(ns.ClientURL(), b.logger, b.adminOptions()...)
+	return NewClient(inProcessURL, b.logger, b.adminOptions(ns)...)
 }
 
 // buildNkeys converts the enrolled credential set into NATS nkey users, plus
@@ -366,17 +425,46 @@ func buildNkeys(serverPub string, creds []WorkerCredentialRef, logger *slog.Logg
 	return users
 }
 
-// adminOptions returns the connect options for the broker's own admin
-// connection, which provisions streams. Empty when auth is disabled.
-func (b *Broker) adminOptions() []nats.Option {
-	if !b.cfg.Auth.Enabled {
-		return nil
-	}
+// adminOptions returns the connect options the server's OWN connections use —
+// the admin connection that provisions streams, and every Client handed out by
+// [Broker.NewClient].
+//
+// These connections go in-process (nats.InProcessServer) rather than over the
+// loopback TCP listener. That is what lets broker TLS be turned on without the
+// server having to trust its own certificate to talk to itself: nats-server
+// clears info.TLSRequired for in-process connections (server/server.go:3296).
+//
+// Authentication is unaffected — an in-process connection still traverses the
+// normal client auth path, so the server nkey is presented and checked exactly
+// as before.
+func (b *Broker) adminOptions(ns *natsserver.Server) []nats.Option {
+	opts := []nats.Option{nats.InProcessServer(ns)}
+
 	b.mu.Lock()
 	pub, seed := b.serverPub, b.serverSeed
 	b.mu.Unlock()
-	return []nats.Option{brokerauth.NkeyOption(pub, seed)}
+
+	if !b.cfg.Auth.Enabled {
+		return opts
+	}
+	return append(opts, brokerauth.NkeyOption(pub, seed))
 }
+
+// inProcessURL is the URL the server's own connections dial: none.
+//
+// It is deliberately empty even though nats.InProcessServer makes the URL
+// unused for transport, because nats.go still PARSES it — and
+// Server.ClientURL() returns a "tls://" scheme once TLS is enabled, which makes
+// the client negotiate TLS over what is only a net.Pipe inside this process.
+// That in turn would demand the server trust its own certificate, for a
+// connection that never touches a socket.
+//
+// Passing no URL avoids all of it: nats-server clears info.TLSRequired for
+// in-process connections (server/server.go:3296), so the connection is plain
+// and authentication still applies — an in-process client presents the server
+// nkey and is checked exactly like any other. Verified against a broker with
+// TLS, mutual TLS and nkey auth all enabled.
+const inProcessURL = ""
 
 // ReloadCredentials replaces the enrolled worker set on a running broker.
 //

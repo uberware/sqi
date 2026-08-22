@@ -157,6 +157,23 @@ func startRealWorkerAnyOS(t *testing.T, ts *testServer, farmID, queueID string) 
 // whether the POSIX-command skip applies; everything else is identical.
 func startRealWorkerCore(t *testing.T, ts *testServer, farmID, queueID string, extraArgs, extraEnv []string, allowWindows bool) string {
 	t.Helper()
+	startRealWorkerNoWait(t, ts, farmID, queueID, extraArgs, extraEnv, allowWindows)
+
+	// Poll GET /api/v1/workers until this worker appears with status "online".
+	// The worker needs to connect to NATS, register, and receive at least one
+	// heartbeat sweep before the server marks it online.
+	workerID := pollForOnlineWorker(t, ts, farmID, 30*time.Second)
+	t.Logf("real worker registered: id=%s", workerID)
+	return workerID
+}
+
+// startRealWorkerNoWait starts a real worker subprocess and returns as soon as
+// it is launched, without waiting for it to come online.
+//
+// A test asserting a worker must NEVER register needs this: for it, "never
+// came online" is the expected outcome rather than a fatal error.
+func startRealWorkerNoWait(t *testing.T, ts *testServer, farmID, queueID string, extraArgs, extraEnv []string, allowWindows bool) {
+	t.Helper()
 
 	if runtime.GOOS == "windows" && !allowWindows {
 		t.Skip("real-worker integration test requires a POSIX shell; skipping on Windows")
@@ -221,18 +238,23 @@ func startRealWorkerCore(t *testing.T, ts *testServer, farmID, queueID string, e
 			<-done                 // join the Wait goroutine; never call Wait again
 		}
 	})
-
-	// Poll GET /api/v1/workers until this worker appears with status "online".
-	// The worker needs to connect to NATS, register, and receive at least one
-	// heartbeat sweep before the server marks it online.
-	workerID := pollForOnlineWorker(t, ts, farmID, 30*time.Second)
-	t.Logf("real worker registered: id=%s", workerID)
-	return workerID
 }
 
 // pollForOnlineWorker polls GET /api/v1/workers until any worker in farmID
 // has status "online" and returns its ID, or fails the test after timeout.
 func pollForOnlineWorker(t *testing.T, ts *testServer, farmID string, timeout time.Duration) string {
+	t.Helper()
+	id := findOnlineWorker(t, ts, farmID, timeout)
+	if id == "" {
+		t.Fatalf("pollForOnlineWorker: no online worker in farm %s within %s", farmID, timeout)
+	}
+	return id
+}
+
+// findOnlineWorker is [pollForOnlineWorker] without the fatal: it returns ""
+// on timeout. A test asserting a worker must NEVER register needs that, since
+// for it a timeout is the expected result rather than a failure.
+func findOnlineWorker(t *testing.T, ts *testServer, farmID string, timeout time.Duration) string {
 	t.Helper()
 
 	deadline := time.Now().Add(timeout)
@@ -248,13 +270,13 @@ func pollForOnlineWorker(t *testing.T, ts *testServer, farmID string, timeout ti
 
 		req, err := http.NewRequestWithContext(
 			context.Background(), http.MethodGet,
-			"http://"+ts.HTTPAddr+"/api/v1/workers", nil,
+			apiURL(ts, "/api/v1/workers"), nil,
 		)
 		if err != nil {
 			time.Sleep(200 * time.Millisecond)
 			continue
 		}
-		r, err := httpClient.Do(req)
+		r, err := clientFor(ts).Do(req)
 		if err != nil {
 			time.Sleep(200 * time.Millisecond)
 			continue
@@ -274,7 +296,6 @@ func pollForOnlineWorker(t *testing.T, ts *testServer, farmID string, timeout ti
 		time.Sleep(200 * time.Millisecond)
 	}
 
-	t.Fatalf("pollForOnlineWorker: no online worker in farm %s within %s", farmID, timeout)
 	return ""
 }
 

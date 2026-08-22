@@ -60,6 +60,7 @@ func init() {
 		configCmd,
 		backupCmd,
 		workerCmd,
+		tlsCmd,
 	)
 }
 

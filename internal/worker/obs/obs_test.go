@@ -23,7 +23,7 @@ func newTestServer(t *testing.T, pprof bool, ready bool) *Server {
 		}))
 	}
 	logger := slog.New(slog.DiscardHandler)
-	return New("127.0.0.1:0", pprof, logger, workmetrics.New(), reg)
+	return New("127.0.0.1:0", pprof, logger, workmetrics.New(), reg, TLSConfig{})
 }
 
 func TestBuildMux_HealthzAlwaysOK(t *testing.T) {

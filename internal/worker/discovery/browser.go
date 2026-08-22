@@ -40,6 +40,11 @@ const (
 
 	// domain is the standard mDNS multicast domain.
 	domain = "local."
+
+	// hostLookupTimeout bounds the check in resolveHost. It is short on
+	// purpose: a name that needs longer than this is not one a worker should
+	// wait on at every boot, and the advertised IP is right there.
+	hostLookupTimeout = 2 * time.Second
 )
 
 // Result holds the information extracted from a discovered sqi-server
@@ -56,6 +61,30 @@ type Result struct {
 
 	// Version is the server build version from the "version" TXT record.
 	Version string
+
+	// NATSTLS reports whether the discovered server's broker requires TLS,
+	// from the "nats_tls" TXT record. A server that predates the record, or
+	// one serving a plaintext broker, leaves this false.
+	//
+	// This is an INPUT to nats.tls_enabled's "auto" mode: it is the one signal
+	// that can tell a worker the broker needs TLS without the operator having
+	// configured anything locally.
+	NATSTLS bool
+
+	// ipHost is the IP address the advertisement carried, kept so a hostname
+	// that does not resolve on this host can still be reached. Unexported:
+	// callers want NATSURL, not the decision behind it.
+	ipHost string
+
+	// natsPort is the advertised broker port, kept for the same reason.
+	natsPort int
+
+	// HTTPTLS reports whether the discovered server's REST API is
+	// TLS-terminated, from the "tls" TXT record. Enrollment does not use a
+	// discovered URL (nats.server_url is always explicit), so this is used to
+	// warn about an http:// server_url pointed at an https:// server rather
+	// than to rewrite anything.
+	HTTPTLS bool
 }
 
 // ErrDiscoveryTimeout is returned by [Browse] when the timeout expires with
@@ -140,6 +169,9 @@ func browseService(ctx context.Context, service string, timeout time.Duration, l
 				)
 				continue
 			}
+			// The advertised hostname is only useful if this host can resolve
+			// it; fall back to the advertised IP when it cannot.
+			result = resolveHost(ctx, result, logger)
 			logger.InfoContext(
 				ctx, "discovery: found sqi-server via mDNS",
 				slog.String("instance", result.InstanceName),
@@ -192,6 +224,11 @@ func entryToResult(entry *zeroconf.ServiceEntry) (Result, error) {
 	// Strip trailing dot from mDNS hostname (e.g. "myhost.local." → "myhost.local")
 	host = strings.TrimSuffix(host, ".")
 
+	// Keep the advertised IP even when a hostname is present. mDNS gives us
+	// both, and the hostname is only useful to a host that can resolve it —
+	// see resolveHost.
+	ipHost := advertisedIP(entry)
+
 	txt := parseTXTRecords(entry.Text)
 
 	natsPortStr, ok := txt["nats"]
@@ -205,10 +242,96 @@ func entryToResult(entry *zeroconf.ServiceEntry) (Result, error) {
 
 	return Result{
 		NATSURL:      "nats://" + net.JoinHostPort(host, strconv.Itoa(natsPort)),
+		ipHost:       ipHost,
+		natsPort:     natsPort,
 		InstanceName: entry.Instance,
 		InstanceID:   txt["id"],
 		Version:      txt["version"],
+		NATSTLS:      txt["nats_tls"] == "1",
+		HTTPTLS:      txt["tls"] == "1",
 	}, nil
+}
+
+// advertisedIP returns a usable IP address from the mDNS entry, or "" when it
+// carried none.
+//
+// "Usable" excludes link-local addresses. A responder publishes every address
+// on the interfaces it advertised on, and on loopback that includes fe80::1 —
+// which cannot be dialed without a zone index, so a worker that picked it would
+// fail with "no route to host" having had a working address in the same entry.
+//
+// IPv4 is preferred simply because it is likelier to be reachable and to appear
+// in a certificate's SANs.
+func advertisedIP(entry *zeroconf.ServiceEntry) string {
+	for _, ip := range entry.AddrIPv4 {
+		if !usableIP(ip) {
+			continue
+		}
+		// To4() for the dotted-decimal form: String() on a v4-mapped IPv6
+		// address returns "::ffff:a.b.c.d", which is not a valid URL host.
+		if ip4 := ip.To4(); ip4 != nil {
+			return ip4.String()
+		}
+		return ip.String()
+	}
+	for _, ip := range entry.AddrIPv6 {
+		if usableIP(ip) {
+			return ip.String()
+		}
+	}
+	return ""
+}
+
+// usableIP reports whether ip can be dialed from this host as written.
+func usableIP(ip net.IP) bool {
+	return ip != nil &&
+		!ip.IsUnspecified() &&
+		!ip.IsLinkLocalUnicast() &&
+		!ip.IsLinkLocalMulticast()
+}
+
+// lookupHost is net.DefaultResolver.LookupHost, replaced in tests.
+var lookupHost = net.DefaultResolver.LookupHost
+
+// resolveHost returns r with NATSURL rewritten to the advertised IP when the
+// advertised HOSTNAME cannot be resolved on this machine.
+//
+// mDNS advertises "<hostname>.local", and resolving that needs an mDNS NSS
+// module. macOS has one built in; a headless Linux worker generally does not
+// (no avahi/nss-mdns), and there the worker would discover its server correctly
+// and then fail to dial it — "no servers available", which names neither the
+// cause nor the fix. The address was in the advertisement all along.
+//
+// The hostname is preferred when it does resolve, because a TLS broker's
+// certificate names hosts far more often than IPs: `sqi-server tls init` puts
+// the machine's hostname in the SANs, not its LAN address. Falling back to an
+// IP against a TLS broker therefore trades an unresolvable name for a
+// certificate mismatch — better, because that error says what is wrong, but
+// worth warning about.
+func resolveHost(ctx context.Context, r Result, logger *slog.Logger) Result {
+	if r.ipHost == "" || r.natsPort == 0 {
+		return r // nothing to fall back to
+	}
+	host, _, err := net.SplitHostPort(strings.TrimPrefix(r.NATSURL, "nats://"))
+	if err != nil || net.ParseIP(host) != nil {
+		return r // already an IP
+	}
+
+	lookupCtx, cancel := context.WithTimeout(ctx, hostLookupTimeout)
+	defer cancel()
+	if addrs, err := lookupHost(lookupCtx, host); err == nil && len(addrs) > 0 {
+		return r
+	}
+
+	r.NATSURL = "nats://" + net.JoinHostPort(r.ipHost, strconv.Itoa(r.natsPort))
+	logger.WarnContext(ctx,
+		"discovery: the advertised hostname does not resolve here; using the advertised IP instead",
+		slog.String("hostname", host),
+		slog.String("url", r.NATSURL),
+		slog.String("note", "if the broker uses TLS, its certificate must cover this IP "+
+			"(sqi-server tls init names the hostname, not the address) — install an mDNS "+
+			"resolver such as libnss-mdns, or add a hosts entry, to use the name instead"))
+	return r
 }
 
 // parseTXTRecords converts a slice of "key=value" DNS TXT strings into a map.
@@ -227,35 +350,37 @@ func parseTXTRecords(records []string) map[string]string {
 	return out
 }
 
-// ResolveNATSURL returns the NATS URL to connect to, applying the following
-// precedence:
+// Resolve returns the discovered server, applying the following precedence:
 //
 //  1. If explicitURL is non-empty, return it directly (mDNS bypassed entirely).
 //  2. If mdnsEnabled is false, return an error with a clear message.
-//  3. Run [Browse] with the given timeout and return the discovered URL.
+//  3. Run [Browse] and return what it found.
+//
+// It returns the whole [Result], not just the URL: the TLS records travel with
+// it, and a caller that only took the URL would silently drop the one signal
+// that can tell a worker its broker needs TLS.
+//
+// An explicit URL yields a Result with only NATSURL set — nothing was
+// discovered, so nothing is known about the server's transport, and the TLS
+// fields stay false rather than claiming otherwise.
 //
 // This is the single entry point that start.go calls before dialing NATS.
-func ResolveNATSURL(ctx context.Context, explicitURL string, mdnsEnabled bool, timeout time.Duration, logger *slog.Logger) (string, error) {
+func Resolve(ctx context.Context, explicitURL string, mdnsEnabled bool, timeout time.Duration, logger *slog.Logger) (Result, error) {
 	// Explicit URL bypasses mDNS entirely.
 	if explicitURL != "" {
 		logger.InfoContext(
 			ctx, "discovery: using explicit NATS URL (mDNS bypassed)",
 			slog.String("url", explicitURL),
 		)
-		return explicitURL, nil
+		return Result{NATSURL: explicitURL}, nil
 	}
 
 	// MDNS disabled — log clearly and return actionable error.
 	if !mdnsEnabled {
 		logger.ErrorContext(ctx, "discovery: mDNS is disabled and no explicit NATS URL is configured; "+
 			"set nats.url in configuration or enable discovery.enable_mdns")
-		return "", ErrDiscoveryDisabled
+		return Result{}, ErrDiscoveryDisabled
 	}
 
-	// Browse the local network.
-	result, err := Browse(ctx, timeout, logger)
-	if err != nil {
-		return "", err
-	}
-	return result.NATSURL, nil
+	return Browse(ctx, timeout, logger)
 }

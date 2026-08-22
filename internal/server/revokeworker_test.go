@@ -51,14 +51,18 @@ func freeLoopbackAddr(t *testing.T) string {
 
 // startTestBroker boots a real embedded broker with authentication enabled
 // and enrolled with creds, and registers cleanup.
-func startTestBroker(t *testing.T, creds []bus.WorkerCredentialRef) *bus.Broker {
+func startTestBroker(t *testing.T, creds []bus.WorkerCredentialRef, mutate ...func(*bus.BrokerConfig)) *bus.Broker {
 	t.Helper()
-	b := bus.New(bus.BrokerConfig{
+	cfg := bus.BrokerConfig{
 		Addr:       freeLoopbackAddr(t),
 		DataDir:    t.TempDir() + "/nats",
 		MaxStoreMB: 64,
 		Auth:       bus.BrokerAuthConfig{Enabled: true, Credentials: creds},
-	}, testLogger())
+	}
+	for _, m := range mutate {
+		m(&cfg)
+	}
+	b := bus.New(cfg, testLogger())
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	if err := b.Start(ctx); err != nil {

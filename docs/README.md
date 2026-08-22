@@ -33,6 +33,7 @@ Long-form documentation for `sqi-server` operators and contributors.
 
 - `configuration.md` — every server config option with type, default, env var, example
 - `auth.md` — the opt-in `auth.enabled` gate, the `Principal`/`Authenticator` model, and what's scaffolding vs. live
+- `tls.md` — in-process TLS for the API and the embedded broker, `sqi-server tls init`, and optional worker mTLS
 - `worker-configuration.md` — the full `sqi-worker` config reference
 - `worker-capabilities.md` — capability tags and software auto-detection
 - `worker-deployment.md` — running workers (systemd, bare binary)

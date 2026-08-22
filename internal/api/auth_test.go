@@ -72,6 +72,17 @@ func seedAuthUser(t *testing.T, st store.Store, username, pw, role string) store
 // ambient cookie. Set Origin from url's own scheme+host to model that.
 func doRequest(t *testing.T, method, url string, body any, cookie *http.Cookie) *http.Response {
 	t.Helper()
+	return doRequestWithClient(t, http.DefaultClient, method, url, body, cookie)
+}
+
+// doRequestWithClient is [doRequest] with a caller-supplied client. A TLS
+// httptest server needs its own client (http.DefaultClient cannot verify the
+// self-signed certificate), and everything else about the request — the JSON
+// body, the cookie, and the Origin header that goes with it — must stay
+// identical, or a TLS test hits the CSRF middleware for reasons the test
+// itself does not explain.
+func doRequestWithClient(t *testing.T, client *http.Client, method, url string, body any, cookie *http.Cookie) *http.Response {
+	t.Helper()
 	var reader *bytes.Reader
 	if body != nil {
 		b, err := json.Marshal(body)
@@ -95,7 +106,7 @@ func doRequest(t *testing.T, method, url string, body any, cookie *http.Cookie) 
 			req.Header.Set("Origin", u.Scheme+"://"+u.Host)
 		}
 	}
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := client.Do(req)
 	if err != nil {
 		t.Fatalf("%s %s: %v", method, url, err)
 	}

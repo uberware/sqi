@@ -335,6 +335,17 @@ test-isolation: ## Run run-as-user isolation tests as root against real OS accou
 	docker run --rm --init sqi-isolation-test \
 	  go test $(TEST_FLAGS) -tags integration -run 'TestIsolation_' -v -timeout 15m ./test/integration/
 
+.PHONY: test-discovery
+test-discovery: ## Run the mDNS discovery tests over REAL multicast (fails rather than skips if multicast is unavailable)
+	@echo "note: advertisements are restricted to loopback, so nothing is announced"
+	@echo "      on your network. One test (RealBinary...) binds the test broker to"
+	@echo "      all interfaces for ~10s; make test-integration skips that one."
+	@echo "      On Linux, loopback needs both: sudo ip link set lo multicast on"
+	@echo "      and: sudo ip -6 addr add fe80::1/64 dev lo (zeroconf discards"
+	@echo "      loopback addresses, so lo has nothing to advertise without it)"
+	SQI_TEST_REQUIRE_MULTICAST=1 go test $(TEST_FLAGS) -tags integration \
+	  -run 'TestDiscovery_' -v -timeout 10m ./test/integration/
+
 .PHONY: test-isolation-windows
 test-isolation-windows: ## Run windows run-as-user isolation tests as SYSTEM against real local accounts (needs an elevated shell)
 	@powershell -NoProfile -ExecutionPolicy Bypass -File scripts/test-isolation-windows.ps1

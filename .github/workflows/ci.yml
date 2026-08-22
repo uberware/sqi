@@ -510,7 +510,7 @@ jobs:
       # Reuses scripts/smoke.sh (the same script developers run via `make smoke`).
       # Passing the prebuilt binaries skips its internal `make build`, so no GNU
       # make is required on the Windows runner.
-      - name: End-to-end smoke (REST + WebSocket)
+      - name: End-to-end smoke (REST + WebSocket, plain / broker-auth / TLS)
         run: |
           ext=""; [ "$RUNNER_OS" = "Windows" ] && ext=".exe"
           export SQI_SERVER_BIN="bin/sqi-server${ext}"
@@ -519,7 +519,24 @@ jobs:
           # status is not masked by `export` (shellcheck SC2155).
           SQI_SMOKE_PYTHON="$(command -v python)"
           export SQI_SMOKE_PYTHON
-          bash scripts/smoke.sh
+          bash scripts/smoke.sh 2>&1 | tee smoke-output.log
+          status=${PIPESTATUS[0]}
+
+          # The script runs three modes. Assert each one actually reported a
+          # pass by name: a filter or branch regression that silently skipped a
+          # mode would otherwise leave this job green while covering less.
+          missing=0
+          for mode in noauth brokerauth tls; do
+            if ! grep -q "SMOKE TEST PASSED (mode=$mode)" smoke-output.log; then
+              echo "::error::smoke mode $mode did not report a pass"
+              missing=1
+            fi
+          done
+          if [ "$status" -ne 0 ] || [ "$missing" -ne 0 ]; then
+            echo "::error::the smoke test did not pass in all three modes (exit=$status)."
+            exit 1
+          fi
+          echo "Confirmed all three smoke modes passed."
 
   # ── Docker smoke test ────────────────────────────────────────────────────────
   # Builds both Docker images from source (no registry push) and runs them
@@ -1045,6 +1062,8 @@ jobs:
             TestWorkerBinaryStagingFailureReason
             TestProductSubmit_RetryOverrides
             TestAutoRetry_RetryThenSucceed
+            TestTLSEndToEnd
+            TestTLSWorkerWithoutCAIsRefused
           )
           missing=0
           for name in "${expected[@]}"; do
@@ -1058,6 +1077,102 @@ jobs:
             exit 1
           fi
           echo "Confirmed all ${#expected[@]} named integration tests passed, and the whole suite exited 0."
+
+  # ── mDNS discovery over real multicast ───────────────────────────────────────
+  # A SEPARATE job, not folded into integration-tests, for two reasons. Whether
+  # a hosted runner can do multicast on loopback is the one thing about this
+  # suite that could not be verified before it was written, so isolating it
+  # means such a runner fails this job precisely instead of taking the whole
+  # integration suite down with an unrelated-looking error. And the real-binary
+  # test binds the test broker to all interfaces, which should happen only when
+  # discovery testing was asked for — `make test-integration` skips it.
+  #
+  # SQI_TEST_REQUIRE_MULTICAST=1 (set by `make test-discovery`) turns the
+  # capability skip into a failure, so this job cannot go green while covering
+  # nothing — the same guard ldap-integration and isolation-integration use.
+  discovery-integration:
+    name: mDNS discovery (real multicast)
+    runs-on: ubuntu-latest
+    needs: test
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      # The advertisement carries "<hostname>.local", which the worker dials.
+      # macOS answers that through mDNSResponder; a stock ubuntu runner has no
+      # mDNS NSS module, so the worker would discover the server and then fail
+      # to dial it.
+      #
+      # A hosts entry rather than libnss-mdns + avahi: avahi-daemon would want
+      # port 5353, which is the port the test's own responder binds, so
+      # installing it to fix resolution risks breaking advertisement. Mapping
+      # the name to loopback needs no daemon and cannot conflict.
+      - name: Resolve this host's mDNS name locally
+        run: |
+          echo "127.0.0.1 $(hostname).local" | sudo tee -a /etc/hosts
+          getent hosts "$(hostname).local" || {
+            echo "::error::$(hostname).local still does not resolve"; exit 1; }
+
+      # Two things a Linux loopback lacks that macOS lo0 has by default, and the
+      # loopback-only advertisement needs both. The tests advertise on loopback
+      # only — deliberately, so a run never announces a service on the network it
+      # happens to be on — and refuse to fall back to a real interface, so
+      # neither of these can be skipped: without them the suite cannot run at all.
+      #
+      #  1. The MULTICAST flag. Linux `lo` ships without it, and the tests select
+      #     their interfaces by that flag, so an untouched `lo` looks to them like
+      #     a host that cannot do multicast.
+      #  2. A non-loopback address. zeroconf fills the advertisement's address
+      #     records from the interface's own addresses and discards loopback ones
+      #     (addrsForInterface: `!ipnet.IP.IsLoopback()`); a Linux `lo` carries
+      #     only 127.0.0.1 and ::1, so registering on loopback alone fails
+      #     outright with "Could not determine host IP addresses". macOS lo0 also
+      #     carries fe80::1, which is the whole reason this never shows up there.
+      #     Adding that same link-local address makes the two behave alike — it
+      #     is scoped to the link and is not routed anywhere.
+      - name: Prepare loopback for mDNS
+        run: |
+          ip -o addr show lo
+          sudo ip link set lo multicast on
+          ip link show lo | grep -q MULTICAST || {
+            echo "::error::could not enable MULTICAST on lo"; exit 1; }
+          sudo ip -6 addr add fe80::1/64 dev lo || true
+          ip -o -6 addr show lo scope link | grep -q fe80 || {
+            echo "::error::lo has no link-local address, so a loopback-only mDNS"
+            echo "::error::advertisement cannot register — see the comment above"
+            exit 1; }
+
+      - name: Run the discovery suite over real multicast
+        run: |
+          set +e
+          make test-discovery 2>&1 | tee discovery-output.log
+          status=${PIPESTATUS[0]}
+          set -e
+
+          expected=(
+            TestDiscovery_TLSRecordsCrossTheWire
+            TestDiscovery_AdvertisedBrokerTLSReachesWorkerConfig
+            TestDiscovery_RealBinaryFindsItsServerOverMDNS
+          )
+          missing=0
+          for name in "${expected[@]}"; do
+            if ! grep -q -- "--- PASS: $name" discovery-output.log; then
+              echo "::error::$name did not pass"
+              missing=1
+            fi
+          done
+          if [ "$status" -ne 0 ] || [ "$missing" -ne 0 ]; then
+            echo "::error::the mDNS discovery suite did not pass (exit=$status)."
+            echo "::error::if the runner cannot do multicast, the suite says so explicitly."
+            exit 1
+          fi
+          echo "Confirmed all ${#expected[@]} discovery tests passed over real multicast."
 
   # Runs the official OpenJD conformance suite (a pinned submodule under
   # third_party/) against internal/openjd. Tagged `conformance`, so it does not

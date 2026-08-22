@@ -123,6 +123,66 @@ SQI_HTTP_CORS_ORIGINS="https://ui.example.com,http://localhost:5173"
 sqi-server serve --http-cors-origins=https://ui.example.com
 ```
 
+### `http.tls.enabled`
+
+| | |
+|---|---|
+| **Type** | `bool` |
+| **Default** | `false` |
+| **Env var** | `SQI_HTTP_TLS_ENABLED` |
+
+Terminate TLS in-process on the REST/WebSocket listener. **The listener
+upgrades in place — there is no plaintext port when this is on.** A plaintext
+request to the TLS port receives a `400` rather than hanging.
+
+Requires [`http.tls.cert_file`](#httptlscert_file) and
+[`http.tls.key_file`](#httptlskey_file); the server refuses to start without
+both. See [`docs/tls.md`](tls.md) for the full model, including the
+coordinated restart that enabling this requires on a running farm.
+
+```yaml
+http:
+  tls:
+    enabled: true
+    cert_file: "/etc/sqi/certs/server.crt"
+    key_file: "/etc/sqi/certs/server.key"
+```
+
+---
+
+### `http.tls.cert_file`
+
+| | |
+|---|---|
+| **Type** | `string` |
+| **Default** | `""` |
+| **Env var** | `SQI_HTTP_TLS_CERT_FILE` |
+
+PEM certificate served on the HTTP listener: leaf first, then any
+intermediates. Generate a pair with `sqi-server tls init`.
+
+Validated at startup — a missing file, a key that does not match, or an
+already-expired certificate is a startup error naming this key, never a
+runtime surprise. A certificate expiring within 30 days logs a WARN. Setting
+this while `http.tls.enabled` is `false` logs a WARN that the server is
+serving plaintext.
+
+---
+
+### `http.tls.key_file`
+
+| | |
+|---|---|
+| **Type** | `string` |
+| **Default** | `""` |
+| **Env var** | `SQI_HTTP_TLS_KEY_FILE` |
+
+PEM private key matching [`http.tls.cert_file`](#httptlscert_file). Should be
+mode `0600`; `sqi-server tls init` writes it that way.
+
+Certificates are read once at startup. **Rotation requires a restart** —
+replacing the files under a running server has no effect until it restarts.
+
 ---
 
 ## `nats` — Embedded NATS JetStream broker
@@ -273,6 +333,89 @@ nats:
   auth:
     enrollment_endpoint_enabled: false
 ```
+
+---
+
+### `nats.tls.enabled`
+
+| | |
+|---|---|
+| **Type** | `bool` |
+| **Default** | `false` |
+| **Env var** | `SQI_NATS_TLS_ENABLED` |
+
+Require TLS on every connection to the embedded broker.
+
+This is what encrypts the **worker transport** — task assignments (command
+lines, embedded file contents, parameters, environment, the isolation
+username), status messages and log chunks. Broker *authentication*
+([`nats.auth.enabled`](#natsauthenabled)) does not encrypt anything; the two
+settings are independent and address different threats. A production farm
+wants both.
+
+Requires [`nats.tls.cert_file`](#natstlscert_file) and
+[`nats.tls.key_file`](#natstlskey_file). Workers must be configured with the
+matching CA (`nats.tls_ca_file`) — see [`docs/tls.md`](tls.md).
+
+```yaml
+nats:
+  tls:
+    enabled: true
+    cert_file: "/etc/sqi/certs/server.crt"
+    key_file: "/etc/sqi/certs/server.key"
+```
+
+---
+
+### `nats.tls.cert_file`
+
+| | |
+|---|---|
+| **Type** | `string` |
+| **Default** | `""` |
+| **Env var** | `SQI_NATS_TLS_CERT_FILE` |
+
+PEM certificate the broker presents to connecting workers. May be the same
+file as [`http.tls.cert_file`](#httptlscert_file), or a different one — the
+two listeners are configured independently, so an operator can serve the API
+with a publicly-issued certificate and the broker with a private farm CA.
+
+Validated at startup on the same terms as `http.tls.cert_file`.
+
+---
+
+### `nats.tls.key_file`
+
+| | |
+|---|---|
+| **Type** | `string` |
+| **Default** | `""` |
+| **Env var** | `SQI_NATS_TLS_KEY_FILE` |
+
+PEM private key matching [`nats.tls.cert_file`](#natstlscert_file).
+
+---
+
+### `nats.tls.client_ca_file`
+
+| | |
+|---|---|
+| **Type** | `string` |
+| **Default** | `""` |
+| **Env var** | `SQI_NATS_TLS_CLIENT_CA_FILE` |
+
+When set, every connecting worker must present a client certificate signed by
+this CA (mutual TLS). Issue per-worker certificates with
+`sqi-server tls init --client <worker-id>`.
+
+This **layers on** the per-worker nkey credential rather than replacing it: the
+certificate gates who may open a connection, the nkey decides which worker they
+are and drives subject permissions and revocation. A valid farm certificate on
+its own authenticates nobody. sqi does not bind a certificate to a worker ID.
+
+Requires [`nats.tls.enabled`](#natstlsenabled) — setting this on a plaintext
+broker is a startup error, since client certificates cannot be verified where
+there is no TLS handshake.
 
 ---
 

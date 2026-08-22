@@ -42,6 +42,7 @@ import (
 	"github.com/uberware/sqi/internal/scheduler"
 	"github.com/uberware/sqi/internal/store"
 	"github.com/uberware/sqi/internal/store/sqlite"
+	"github.com/uberware/sqi/internal/tlsutil"
 	"github.com/uberware/sqi/internal/version"
 	"github.com/uberware/sqi/internal/ws"
 )
@@ -59,6 +60,14 @@ const ShutdownTimeout = 30 * time.Second
 type Config struct {
 	// HTTPAddr is the TCP address the REST + WebSocket server listens on.
 	HTTPAddr string // default "0.0.0.0:8080"
+
+	// HTTPTLS terminates HTTPS in-process on the REST/WebSocket listener.
+	// Zero value leaves it plaintext, which is the default.
+	HTTPTLS config.TLSConfig
+
+	// NATSTLS encrypts the embedded broker's client listener. Zero value
+	// leaves it plaintext, which is the default.
+	NATSTLS config.NATSTLSConfig
 
 	// CORSOrigins is the list of origins that the CORS middleware permits.
 	// Use ["*"] to allow all origins (suitable for local / dev deployments).
@@ -128,6 +137,11 @@ type Config struct {
 	// server on the local network. Disable in environments that forbid
 	// multicast (most cloud VPCs). Default true.
 	DiscoveryEnabled bool
+
+	// DiscoveryInterfaces restricts mDNS advertisement to specific interfaces.
+	// Nil — the production value — advertises on all multicast-capable ones.
+	// Set by tests to loopback; see internal/discovery.Config.Interfaces.
+	DiscoveryInterfaces []net.Interface
 
 	// DiscoveryInstanceName is the mDNS service instance name advertised on
 	// the network. Each server on the same subnet should use a distinct name.
@@ -307,6 +321,81 @@ func (s *Server) Metrics() *metrics.Metrics {
 	return s.metrics
 }
 
+// serveHTTP configures TLS on s.httpServer when it is enabled and starts the
+// listener in a background goroutine. Split out of [Server.start] to keep that
+// function under the cyclop complexity threshold.
+func (s *Server) serveHTTP(ctx context.Context) error {
+	// Both TLS surfaces are warned about here, beside the listener they concern,
+	// rather than riding on broker startup where a reordering would silently
+	// take the HTTP warning with it.
+	warnTLSConfig(ctx, s.logger, s.cfg.HTTPTLS, s.cfg.NATSTLS)
+
+	tlsOn := s.cfg.HTTPTLS.Enabled
+	if tlsOn {
+		tlsCfg, err := tlsutil.ServerConfig(s.cfg.HTTPTLS.CertFile, s.cfg.HTTPTLS.KeyFile, "")
+		if err != nil {
+			return fmt.Errorf("http: tls: %w", err)
+		}
+		s.httpServer.TLSConfig = tlsCfg
+	}
+
+	go func() {
+		s.logger.InfoContext(ctx, "http: listening",
+			slog.String("addr", s.cfg.HTTPAddr),
+			slog.Bool("tls", tlsOn),
+			slog.String("url", browseURL(s.cfg.HTTPAddr, tlsOn)))
+
+		// Certificates are already loaded into TLSConfig, so both paths pass
+		// empty filenames: re-reading them here could pick up a half-written
+		// file if a rotation lands between validation and listen.
+		var err error
+		if tlsOn {
+			err = s.httpServer.ListenAndServeTLS("", "")
+		} else {
+			err = s.httpServer.ListenAndServe()
+		}
+		if err != nil && !errors.Is(err, http.ErrServerClosed) {
+			s.logger.ErrorContext(ctx, "http: server error", slog.Any("error", err))
+		}
+	}()
+	return nil
+}
+
+// warnTLSConfig emits the advisory startup warnings for both TLS blocks:
+// certificates staged but not switched on, and certificates close to expiry.
+//
+// Neither is a load error — staging a certificate before flipping the switch
+// is a legitimate rollout step, and a certificate 29 days from expiry still
+// works — but both are worth saying out loud once at startup. The broker's
+// warnings are emitted here rather than in internal/bus so that package does
+// not have to import internal/config.
+func warnTLSConfig(ctx context.Context, logger *slog.Logger, httpTLS config.TLSConfig, natsTLS config.NATSTLSConfig) {
+	surfaces := []struct {
+		component string // log prefix
+		key       string // the config key an operator would flip
+		enabled   bool
+		certFile  string
+		keyFile   string
+	}{
+		{"http", "http.tls.enabled", httpTLS.Enabled, httpTLS.CertFile, httpTLS.KeyFile},
+		{"bus", "nats.tls.enabled", natsTLS.Enabled, natsTLS.CertFile, natsTLS.KeyFile},
+	}
+	for _, s := range surfaces {
+		if !s.enabled {
+			if s.certFile != "" || s.keyFile != "" {
+				logger.WarnContext(ctx,
+					s.component+": tls certificates are configured but "+s.key+" is false; serving plaintext",
+					slog.String("cert_file", s.certFile))
+			}
+			continue
+		}
+		if notAfter, soon := config.ExpiringSoon(s.certFile); soon {
+			logger.WarnContext(ctx, s.component+": tls certificate expires soon",
+				slog.String("cert_file", s.certFile), slog.Time("not_after", notAfter))
+		}
+	}
+}
+
 // warnIfBrokerUnauthenticated emits a WARN when the NATS broker is reachable
 // from outside this machine and has no credential requirement.
 //
@@ -364,6 +453,15 @@ func (s *Server) startBroker(ctx context.Context) (*bus.Broker, error) {
 		DataDir:    s.cfg.NATSDataDir,
 		MaxStoreMB: s.cfg.NATSMaxStoreMB,
 		Auth:       brokerAuth,
+		// Mapped field by field rather than shared: internal/bus does not
+		// import internal/config, the same boundary WorkerCredentialRef draws
+		// against internal/store.
+		TLS: bus.BrokerTLSConfig{
+			Enabled:      s.cfg.NATSTLS.Enabled,
+			CertFile:     s.cfg.NATSTLS.CertFile,
+			KeyFile:      s.cfg.NATSTLS.KeyFile,
+			ClientCAFile: s.cfg.NATSTLS.ClientCAFile,
+		},
 	}, s.logger)
 	if err := broker.Start(ctx); err != nil {
 		return nil, err
@@ -651,14 +749,9 @@ func (s *Server) start(ctx context.Context) error {
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 
-	go func() {
-		s.logger.InfoContext(ctx, "http: listening",
-			slog.String("addr", s.cfg.HTTPAddr),
-			slog.String("url", browseURL(s.cfg.HTTPAddr)))
-		if err := s.httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			s.logger.ErrorContext(ctx, "http: server error", slog.Any("error", err))
-		}
-	}()
+	if err := s.serveHTTP(ctx); err != nil {
+		return err
+	}
 
 	// ── mDNS responder ────────────────────────────────────────────────────
 	// Advertise _sqi._tcp on the local network so workers and the
@@ -670,6 +763,9 @@ func (s *Server) start(ctx context.Context) error {
 		InstanceName: s.cfg.DiscoveryInstanceName,
 		HTTPAddr:     s.cfg.HTTPAddr,
 		NATSAddr:     s.cfg.NATSAddr,
+		HTTPTLS:      s.cfg.HTTPTLS.Enabled,
+		NATSTLS:      s.cfg.NATSTLS.Enabled,
+		Interfaces:   s.cfg.DiscoveryInterfaces,
 	}, s.logger)
 	if err != nil {
 		return fmt.Errorf("init discovery: %w", err)
@@ -939,17 +1035,21 @@ func toOIDCConfig(c config.OIDCConfig, logger *slog.Logger) oidc.Config {
 // any wildcard or empty host, leaving an explicit host (e.g. "127.0.0.1" or a
 // LAN IP) untouched. The original bind address is still logged separately under
 // the "addr" key for operators.
-func browseURL(addr string) string {
+func browseURL(addr string, tlsOn bool) string {
+	scheme := "http://"
+	if tlsOn {
+		scheme = "https://"
+	}
 	host, port, err := net.SplitHostPort(addr)
 	if err != nil {
 		// Not in host:port form; surface it as-is rather than guessing.
-		return "http://" + addr
+		return scheme + addr
 	}
 	switch host {
 	case "", "0.0.0.0", "::", "[::]":
 		host = "localhost"
 	}
-	return "http://" + net.JoinHostPort(host, port)
+	return scheme + net.JoinHostPort(host, port)
 }
 
 // shutdown stops all running components in reverse dependency order within

@@ -12,21 +12,26 @@ import (
 
 func TestBrowseURL(t *testing.T) {
 	tests := []struct {
-		name string
-		addr string
-		want string
+		name  string
+		addr  string
+		tlsOn bool
+		want  string
 	}{
-		{"ipv4 wildcard becomes localhost", "0.0.0.0:8080", "http://localhost:8080"},
-		{"ipv6 wildcard becomes localhost", "[::]:8080", "http://localhost:8080"},
-		{"empty host becomes localhost", ":8080", "http://localhost:8080"},
-		{"explicit loopback is preserved", "127.0.0.1:8080", "http://127.0.0.1:8080"},
-		{"explicit lan ip is preserved", "192.168.1.10:9000", "http://192.168.1.10:9000"},
-		{"non host:port surfaced as-is", "not-an-addr", "http://not-an-addr"},
+		{"ipv4 wildcard becomes localhost", "0.0.0.0:8080", false, "http://localhost:8080"},
+		{"ipv6 wildcard becomes localhost", "[::]:8080", false, "http://localhost:8080"},
+		{"empty host becomes localhost", ":8080", false, "http://localhost:8080"},
+		{"explicit loopback is preserved", "127.0.0.1:8080", false, "http://127.0.0.1:8080"},
+		{"explicit lan ip is preserved", "192.168.1.10:9000", false, "http://192.168.1.10:9000"},
+		{"non host:port surfaced as-is", "not-an-addr", false, "http://not-an-addr"},
+		{"tls wildcard becomes https localhost", "0.0.0.0:8080", true, "https://localhost:8080"},
+		{"tls explicit host keeps scheme", "sqi.example:8443", true, "https://sqi.example:8443"},
+		{"tls ipv6 wildcard", "[::]:8080", true, "https://localhost:8080"},
+		{"tls non host:port surfaced as-is", "not-an-addr", true, "https://not-an-addr"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := browseURL(tt.addr); got != tt.want {
-				t.Errorf("browseURL(%q) = %q, want %q", tt.addr, got, tt.want)
+			if got := browseURL(tt.addr, tt.tlsOn); got != tt.want {
+				t.Errorf("browseURL(%q, %v) = %q, want %q", tt.addr, tt.tlsOn, got, tt.want)
 			}
 		})
 	}

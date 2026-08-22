@@ -57,6 +57,16 @@ func TestBuildTLSOptions(t *testing.T) {
 		wantErr  bool
 	}{
 		{"no tls", workerconfig.NATSConfig{}, false, false},
+		// "auto" is the default and infers from the other tls_* settings.
+		{"auto with a ca file infers tls", workerconfig.NATSConfig{TLSEnabled: workerconfig.TLSAuto, InsecureSkipVerify: true}, true, false},
+		{"auto with nothing set stays plaintext", workerconfig.NATSConfig{TLSEnabled: workerconfig.TLSAuto}, false, false},
+		// "true" forces TLS for a broker with a publicly-trusted certificate,
+		// where no CA file would signal intent.
+		{"true forces tls with system roots", workerconfig.NATSConfig{TLSEnabled: workerconfig.TLSOn}, true, false},
+		// "false" forces plaintext even against configured TLS material —
+		// the state a force-on-only boolean could not express.
+		{"false overrides a configured ca file", workerconfig.NATSConfig{TLSEnabled: workerconfig.TLSOff, TLSCAFile: "/does/not/exist.pem"}, false, false},
+		{"false overrides insecure_skip_verify", workerconfig.NATSConfig{TLSEnabled: workerconfig.TLSOff, InsecureSkipVerify: true}, false, false},
 		{"insecure skip verify", workerconfig.NATSConfig{InsecureSkipVerify: true}, true, false},
 		{"cert without key errors", workerconfig.NATSConfig{TLSCertFile: "/x.crt"}, false, true},
 		{"bad ca file errors", workerconfig.NATSConfig{TLSCAFile: "/does/not/exist.pem"}, false, true},

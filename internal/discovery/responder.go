@@ -65,6 +65,35 @@ type Config struct {
 	// InstanceID uniquely identifies this server process. When empty, [New]
 	// generates a random UUID. Advertised in the "id" TXT record.
 	InstanceID string
+
+	// HTTPTLS reports whether the REST/WebSocket listener is TLS-terminated,
+	// advertised as the "tls" TXT record.
+	//
+	// Consumed by internal/worker/discovery, which surfaces it as
+	// Result.HTTPTLS. Enrollment never uses a discovered URL, so a worker uses
+	// this to warn that its http:// nats.server_url points at an HTTPS server
+	// rather than to rewrite anything.
+	HTTPTLS bool
+
+	// Interfaces restricts which network interfaces the service is advertised
+	// on. Nil — the production value — advertises on every multicast-capable
+	// interface, which is the point of mDNS discovery.
+	//
+	// It is set by tests, to loopback, so a test run never transmits an
+	// advertisement onto the network it happens to be running on. It has no
+	// config key: an operator who wants to limit advertisement should say so
+	// through a real setting, and none exists yet.
+	Interfaces []net.Interface
+
+	// NATSTLS reports whether the embedded broker requires TLS, advertised as
+	// the "nats_tls" TXT record.
+	//
+	// This is the one signal that can tell a worker its broker needs TLS
+	// without anything being configured locally, so it feeds
+	// nats.tls_enabled's "auto" mode directly: a discovering worker turns TLS
+	// on rather than attempting plaintext and failing with an error that names
+	// neither the cause nor the fix.
+	NATSTLS bool
 }
 
 // Responder owns the lifecycle of the mDNS service advertisement. Create one
@@ -127,7 +156,7 @@ func (r *Responder) Start(ctx context.Context) error {
 		return nil
 	}
 
-	txt := buildTXTRecords(r.cfg.InstanceID, r.httpPort, r.natsPort, hostname(), version.Version)
+	txt := buildTXTRecords(r.cfg.InstanceID, r.httpPort, r.natsPort, hostname(), version.Version, r.cfg.HTTPTLS, r.cfg.NATSTLS)
 
 	server, err := zeroconf.Register(
 		r.cfg.InstanceName,
@@ -135,7 +164,7 @@ func (r *Responder) Start(ctx context.Context) error {
 		domain,
 		r.httpPort,
 		txt,
-		nil, // nil interfaces = advertise on all multicast-capable interfaces
+		r.cfg.Interfaces, // nil = every multicast-capable interface
 	)
 	if err != nil {
 		return fmt.Errorf("discovery: register mDNS service: %w", err)
@@ -189,14 +218,25 @@ func portFromAddr(addr string) (int, error) {
 
 // buildTXTRecords assembles the DNS-SD TXT key=value records advertised
 // alongside the service. Order is stable for deterministic tests.
-func buildTXTRecords(instanceID string, httpPort, natsPort int, host, ver string) []string {
-	return []string{
+func buildTXTRecords(instanceID string, httpPort, natsPort int, host, ver string, httpTLS, natsTLS bool) []string {
+	txt := []string{
 		"id=" + instanceID,
 		"http=" + strconv.Itoa(httpPort),
 		"nats=" + strconv.Itoa(natsPort),
 		"host=" + host,
 		"version=" + ver,
 	}
+	// The TLS keys are OMITTED rather than emitted as "tls=0" when off, so a
+	// plaintext farm advertises byte-for-byte what it always has. Clients that
+	// predate these keys ignore unknown keys, so adding them is compatible in
+	// both directions.
+	if httpTLS {
+		txt = append(txt, "tls=1")
+	}
+	if natsTLS {
+		txt = append(txt, "nats_tls=1")
+	}
+	return txt
 }
 
 // hostname returns the host's reported name, or "unknown" if it cannot be

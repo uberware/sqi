@@ -130,9 +130,9 @@ func runStart(cmd *cobra.Command, _ []string) error {
 	// Resolve the NATS URL before dialing. If an explicit URL is configured
 	// it is used as-is (mDNS bypassed). Otherwise mDNS is browsed
 	// for "_sqi._tcp" services on the local network. If mDNS is
-	// disabled and no explicit URL is set, discovery.ResolveNATSURL returns a
+	// disabled and no explicit URL is set, discovery.Resolve returns a
 	// clear error that is surfaced to the operator.
-	natsURL, err := workerdiscovery.ResolveNATSURL(
+	found, err := workerdiscovery.Resolve(
 		ctx,
 		cfg.NATS.URL,
 		cfg.Discovery.EnableMDNS,
@@ -145,7 +145,8 @@ func runStart(cmd *cobra.Command, _ []string) error {
 
 	// Overwrite NATS.URL with the resolved address so natsclient.Connect and
 	// all downstream log statements use the concrete URL.
-	cfg.NATS.URL = natsURL
+	cfg.NATS.URL = found.NATSURL
+	workerdiscovery.ApplyTLS(ctx, &cfg.NATS, found, logger)
 
 	// ── Broker credential + NATS connection ──────────────────────
 	//
@@ -206,6 +207,11 @@ func runStart(cmd *cobra.Command, _ []string) error {
 		logger,
 		m,
 		h,
+		obs.TLSConfig{
+			Enabled:  cfg.Metrics.TLS.Enabled,
+			CertFile: cfg.Metrics.TLS.CertFile,
+			KeyFile:  cfg.Metrics.TLS.KeyFile,
+		},
 	)
 	go obsServer.Run(ctx)
 
@@ -491,6 +497,10 @@ func connectToBroker(
 		JoinToken:      cfg.NATS.JoinToken,
 		JoinTokenFile:  cfg.NATS.JoinTokenFile,
 		ServerURL:      cfg.NATS.ServerURL,
+		// Without these the worker cannot enroll against an HTTPS server
+		// backed by a private farm CA, which is the first REST call it makes.
+		TLSCAFile:          cfg.NATS.ServerTLSCAFile,
+		InsecureSkipVerify: cfg.NATS.ServerTLSInsecureSkipVerify,
 	}, logger)
 	noCredential := errors.Is(err, enroll.ErrNoCredential)
 	if err != nil && !noCredential {

@@ -28,6 +28,7 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -115,6 +116,15 @@ func startBrokerAuthServer(t *testing.T, sqlitePath string, mutate func(*server.
 	}
 
 	ts := &testServer{HTTPAddr: httpAddr, NATSAddr: natsAddr, cancel: cancel, done: done}
+	// Derive the transport from the config this server was actually given, so
+	// every shared helper (apiURL, seedFarmAndQueue, pollForOnlineWorker, the
+	// readiness probe below) speaks the right scheme with no TLS-specific
+	// variants. `sqi-server tls init` writes ca.crt beside the server cert,
+	// which is what the TLS callers here use.
+	if cfg.HTTPTLS.Enabled {
+		ts.Scheme = "https"
+		ts.Client = tlsClient(t, filepath.Dir(cfg.HTTPTLS.CertFile))
+	}
 	t.Cleanup(func() {
 		cancel()
 		select {
@@ -127,7 +137,11 @@ func startBrokerAuthServer(t *testing.T, sqlitePath string, mutate func(*server.
 	if !waitForTCP(t, httpAddr, 10*time.Second) {
 		t.Fatal("startBrokerAuthServer: HTTP server did not start listening")
 	}
-	if !waitForReadyz(t, httpAddr, 10*time.Second) {
+	// Readiness must be probed over whatever scheme this server is actually
+	// serving: an https:// listener answers a plaintext GET with a 400, which
+	// would look like "never became ready" forever. A TLS caller stamps
+	// ts.Scheme/ts.Client before this runs (see startTLSServer in tls_test.go).
+	if !waitForReadyzClient(t, clientFor(ts), apiURL(ts, "/readyz"), 10*time.Second) {
 		t.Fatal("startBrokerAuthServer: server did not become ready")
 	}
 	return ts

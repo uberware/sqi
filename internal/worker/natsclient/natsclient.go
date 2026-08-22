@@ -25,18 +25,17 @@ package natsclient
 import (
 	"context"
 	"crypto/tls"
-	"crypto/x509"
 	"errors"
 	"fmt"
 	"log/slog"
 	"math"
 	"math/rand/v2"
-	"os"
 	"time"
 
 	nats "github.com/nats-io/nats.go"
 
 	"github.com/uberware/sqi/internal/brokerauth"
+	"github.com/uberware/sqi/internal/tlsutil"
 	workerconfig "github.com/uberware/sqi/internal/worker/config"
 )
 
@@ -304,8 +303,11 @@ func exponentialBackoff(base time.Duration) func(int) time.Duration {
 //   - cfg.TLSCAFile                     — custom CA for server cert verification
 //   - cfg.InsecureSkipVerify            — disable server cert verification
 func buildTLSOptions(cfg workerconfig.NATSConfig) ([]nats.Option, error) {
-	wantTLS := cfg.TLSCertFile != "" || cfg.TLSKeyFile != "" ||
-		cfg.TLSCAFile != "" || cfg.InsecureSkipVerify
+	// The three-valued nats.tls_enabled decides this; see NATSConfig.UseTLS.
+	// Any mDNS signal has already been folded into cfg by the caller (see
+	// discovery.ApplyTLS), so false here means "nothing, including mDNS, gave a
+	// reason to use TLS".
+	wantTLS := cfg.UseTLS(false)
 
 	if !wantTLS {
 		return nil, nil
@@ -330,13 +332,9 @@ func buildTLSOptions(cfg workerconfig.NATSConfig) ([]nats.Option, error) {
 
 	// Custom CA for verifying the server's certificate.
 	if cfg.TLSCAFile != "" {
-		pem, err := os.ReadFile(cfg.TLSCAFile)
+		pool, err := tlsutil.CertPool(cfg.TLSCAFile)
 		if err != nil {
-			return nil, fmt.Errorf("natsclient: read CA file: %w", err)
-		}
-		pool := x509.NewCertPool()
-		if !pool.AppendCertsFromPEM(pem) {
-			return nil, fmt.Errorf("natsclient: no valid certificates found in CA file %s", cfg.TLSCAFile)
+			return nil, fmt.Errorf("natsclient: %w", err)
 		}
 		tlsCfg.RootCAs = pool
 	}
