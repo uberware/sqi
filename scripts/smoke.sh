@@ -56,6 +56,20 @@ fail() { printf '[smoke] FAIL: %s\n' "$*" >&2; exit 1; }
 
 command -v curl >/dev/null 2>&1 || fail "curl is required but not found on PATH"
 
+# Windows curl builds (Git for Windows' curl and the curl.exe shipped in
+# System32 alike) link Schannel rather than OpenSSL, and Schannel insists on
+# checking certificate revocation. `sqi-server tls init` mints a private CA
+# that publishes no CRL or OCSP endpoint, so --cacert alone fails every request
+# in TLS mode with "schannel: the revocation status is unknown" (curl exit 60)
+# against a chain that is otherwise perfectly valid — which reads as the server
+# never becoming ready. --ssl-revoke-best-effort relaxes only the revocation
+# check: an untrusted root is still rejected, so TLS mode keeps asserting that
+# the server presents a certificate signed by the CA we generated.
+CURL_TLS_EXTRA=""
+if curl -V 2>/dev/null | grep -qi schannel; then
+  CURL_TLS_EXTRA="--ssl-revoke-best-effort"
+fi
+
 HAVE_JQ=0
 if command -v jq >/dev/null 2>&1; then
   HAVE_JQ=1
@@ -244,7 +258,7 @@ if [ "$mode" = "tls" ]; then
     || fail "sqi-server tls init failed"
   [ -f "${CERT_DIR}/server.crt" ] || fail "tls init did not write server.crt"
   BASE_URL="https://${HTTP_ADDR}"
-  CURL_CA="--cacert ${CERT_DIR}/ca.crt"
+  CURL_CA="--cacert ${CERT_DIR}/ca.crt ${CURL_TLS_EXTRA}"
 fi
 
 # In broker-auth mode, mint a join token BEFORE the server starts — the CLI
