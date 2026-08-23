@@ -8,6 +8,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"syscall"
 	"unsafe"
 
 	"golang.org/x/sys/windows"
@@ -105,8 +106,17 @@ func logonUserW(username, domain, password *uint16, logonType, logonProvider uin
 		uintptr(unsafe.Pointer(&token)),
 	)
 	if r1 == 0 {
-		if e1 != nil {
-			return 0, e1
+		// syscall.Proc.Call's third result is a syscall.Errno, and Errno(0)
+		// is still a NON-NIL error interface value — so `e1 != nil` is
+		// always true and the fallback below was unreachable. A LogonUserW
+		// that fails with GetLastError()==0 would then have surfaced as
+		// "The operation completed successfully." as the reason isolation
+		// could not resolve a credential. Compare against the zero Errno
+		// instead, which is what actually distinguishes "the call set an
+		// error code" from "it did not".
+		var errno syscall.Errno
+		if errors.As(e1, &errno) && errno != 0 {
+			return 0, errno
 		}
 		return 0, errors.New("LogonUserW: failed with no error code")
 	}
