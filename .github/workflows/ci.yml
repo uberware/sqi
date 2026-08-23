@@ -914,6 +914,29 @@ jobs:
         with:
           go-version-file: go.mod
 
+      # Lint the Windows-only sources. THIS JOB IS THE ONLY PLACE THEY ARE
+      # LINTED AT ALL: the `lint` step lives in the `test` job on
+      # ubuntu-latest, where golangci-lint type-checks with GOOS=linux and so
+      # never compiles a *_windows.go file. Every //go:build windows source in
+      # this repo was therefore unlinted until this step existed — a blind spot
+      # of exactly the same shape as `go build` never compiling _test.go (see
+      # the cross-compile job), and it hid a real defect: provider_windows.go
+      # checked `if e1 != nil` on the third result of syscall.Proc.Call, which
+      # is a syscall.Errno and therefore never nil, making the fallback branch
+      # unreachable and reporting "The operation completed successfully." as
+      # the reason a LogonUserW failed.
+      #
+      # The version is pinned to the same v2.13.1 the ubuntu lint step uses;
+      # keep the two in step, or a bump lands here as an unrelated red run.
+      # Scoped to the worker tree rather than the whole module: those are the
+      # packages that carry per-GOOS files, and a full-module run on Windows
+      # would re-report the same findings the ubuntu job already gates.
+      - name: golangci-lint (windows sources)
+        uses: golangci/golangci-lint-action@v9
+        with:
+          version: v2.13.1
+          args: --timeout=5m ./cmd/sqi-worker/... ./internal/worker/... ./internal/brokerauth/... ./internal/tlsutil/...
+
       # Windows-only unit tests. See the job comment above for why these six
       # packages and not others. -count=1 disables the test cache so a stale
       # pass from an earlier step can't stand in for a real run. -v (and the
