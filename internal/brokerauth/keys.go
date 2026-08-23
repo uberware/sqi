@@ -16,6 +16,8 @@ import (
 	"runtime"
 	"strings"
 
+	"github.com/uberware/sqi/internal/fsutil"
+
 	"github.com/nats-io/nkeys"
 )
 
@@ -88,10 +90,18 @@ func PublicKeyFromSeed(seed []byte) (string, error) {
 // even though a direct write to the existing file would have succeeded.
 func SaveSeed(path string, seed []byte) error {
 	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0o700); err != nil {
+	if err := fsutil.MkdirSecret(dir); err != nil {
 		return fmt.Errorf("brokerauth: create seed dir: %w", err)
 	}
 
+	// os.CreateTemp reserves a unique name; it is closed immediately and the
+	// seed goes in through fsutil.WriteSecret, which reopens with the access
+	// rights needed to set an ACL and applies that ACL BEFORE the first byte
+	// is written. Chmod(0o600) on the CreateTemp handle — what this used to do
+	// — is a no-op on Windows, where os.Chmod maps only to the read-only
+	// attribute and cannot deny read access to anyone, so the nkey seed landed
+	// with whatever DACL it inherited. The empty placeholder that exists in
+	// between carries no secret, so its inherited access discloses nothing.
 	tmp, err := os.CreateTemp(dir, "."+filepath.Base(path)+".tmp-*")
 	if err != nil {
 		return fmt.Errorf("brokerauth: create temp seed file: %w", err)
@@ -103,21 +113,12 @@ func SaveSeed(path string, seed []byte) error {
 			_ = os.Remove(tmpPath)
 		}
 	}()
-
-	if chmodErr := tmp.Chmod(0o600); chmodErr != nil {
-		_ = tmp.Close()
-		return fmt.Errorf("brokerauth: chmod temp seed file %s: %w", tmpPath, chmodErr)
-	}
-	if _, writeErr := tmp.Write(seed); writeErr != nil {
-		_ = tmp.Close()
-		return fmt.Errorf("brokerauth: write temp seed file %s: %w", tmpPath, writeErr)
-	}
-	if syncErr := tmp.Sync(); syncErr != nil {
-		_ = tmp.Close()
-		return fmt.Errorf("brokerauth: sync temp seed file %s: %w", tmpPath, syncErr)
-	}
 	if closeErr := tmp.Close(); closeErr != nil {
 		return fmt.Errorf("brokerauth: close temp seed file %s: %w", tmpPath, closeErr)
+	}
+
+	if writeErr := fsutil.WriteSecret(tmpPath, seed); writeErr != nil {
+		return fmt.Errorf("brokerauth: write temp seed file %s: %w", tmpPath, writeErr)
 	}
 
 	if renameErr := os.Rename(tmpPath, path); renameErr != nil {

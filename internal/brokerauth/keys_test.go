@@ -12,6 +12,7 @@ import (
 	"github.com/nats-io/nkeys"
 
 	"github.com/uberware/sqi/internal/brokerauth"
+	"github.com/uberware/sqi/internal/fsutil"
 )
 
 func TestGenerateSeed_RoundTrips(t *testing.T) {
@@ -40,12 +41,41 @@ func TestSaveSeed_WritesOwnerOnly(t *testing.T) {
 	if err := brokerauth.SaveSeed(path, seed); err != nil {
 		t.Fatalf("SaveSeed: %v", err)
 	}
-	info, err := os.Stat(path)
-	if err != nil {
-		t.Fatalf("Stat: %v", err)
+	assertSecretRestricted(t, path)
+}
+
+// assertSecretRestricted asserts that path holds key material only its owner
+// can read.
+//
+// The POSIX mode is still asserted where it is meaningful. On Windows it is
+// not: os.Chmod maps only to the read-only ATTRIBUTE and cannot deny read
+// access to anyone, so `perm == 0o600` is unsatisfiable there however well the
+// file is protected — fsutil.IsRestricted inspects the real DACL instead.
+// Asserting the POSIX mode on both platforms is what let the nkey seed ship
+// with no confidentiality on Windows while CI stayed green on Linux.
+//
+// The two sibling tests below still skip on Windows, and correctly so: they
+// are about os.WriteFile's create-only mode semantics and LoadSeed's
+// reader-side mode check, both of which are genuinely POSIX-specific
+// questions rather than this one, which is about the property itself.
+func assertSecretRestricted(t *testing.T, path string) {
+	t.Helper()
+	if runtime.GOOS != "windows" {
+		info, err := os.Stat(path)
+		if err != nil {
+			t.Fatalf("stat %s: %v", path, err)
+		}
+		if perm := info.Mode().Perm(); perm != 0o600 {
+			t.Errorf("%s mode = %04o, want 0600", path, perm)
+		}
+		return
 	}
-	if perm := info.Mode().Perm(); perm != 0o600 {
-		t.Errorf("mode = %o, want 600", perm)
+	restricted, err := fsutil.IsRestricted(path)
+	if err != nil {
+		t.Fatalf("IsRestricted %s: %v", path, err)
+	}
+	if !restricted {
+		t.Errorf("%s is readable beyond its owner", path)
 	}
 }
 
