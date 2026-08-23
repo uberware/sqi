@@ -936,7 +936,8 @@ jobs:
       # elevation, no throwaway OS accounts), so a shared list would hide
       # which prerequisite went missing.
       #
-      # The Windows stage-out tests carry t.Skipf escape hatches for a
+      # The Windows staging tests — the stage-out containment set plus the
+      # stage-in hardlink refusal — carry t.Skipf escape hatches for a
       # non-NTFS temp directory and for a CreateFile that cannot take an
       # exclusive handle. A skipped test verifies nothing, and a green `go
       # test` cannot tell the two apart — so every one of them is confirmed
@@ -1011,7 +1012,13 @@ jobs:
           )
           missing=0
           for name in "${expected[@]}"; do
-            if ! grep -q -- "--- PASS: $name" isolation-windows.log; then
+            # Trailing space is an ANCHOR, not formatting — same reasoning as
+            # the staging block above. `go test -v` emits
+            # "--- PASS: <name> (0.01s)", so a passing name is always followed
+            # by a space; without it this is a PREFIX match and a future
+            # TestIsolationWindowsSystem_CapableXyz would silently satisfy the
+            # assertion for TestIsolationWindowsSystem_Capable.
+            if ! grep -q -- "--- PASS: $name " isolation-windows.log; then
               echo "::error::$name did not pass"
               missing=1
             fi

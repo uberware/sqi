@@ -404,11 +404,14 @@ func classifyStageOutOpenError(rel, rootName string, err error) error {
 //     was then followed by the copy. Creating a junction needs no privilege,
 //     unlike an NTFS symlink, so this was reachable by any isolated task —
 //     one-shot, no race required.
-//   - Reparse points are refused by the kernel. os.Root maps to
-//     OBJ_DONT_REPARSE on Windows (any reparse point anywhere in the relative
-//     path fails the lookup) and to openat with per-component O_NOFOLLOW on
-//     POSIX. There is no window between deciding and opening, because they
-//     are the same operation.
+//   - The lookup is atomic, so there is no window between deciding and
+//     opening — they are the same operation. Every component of rel is
+//     resolved by the kernel as part of the open: openat with per-component
+//     O_NOFOLLOW on POSIX, an OBJ_DONT_REPARSE handle walk on Windows.
+//     What that refuses is NOT symmetric across the two, and the shorthand
+//     "any reparse point anywhere in the path fails the lookup" is wrong on
+//     Windows — see the mechanism paragraph below for what actually refuses
+//     a junction, and for the relative-symlink case that is followed.
 //   - There is no ".." to normalize away, so no escape by construction.
 //
 // Deliberate platform asymmetry, stated here rather than discovered later —

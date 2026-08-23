@@ -1371,8 +1371,18 @@ per-worker opt-in, distinct from the automatic fallback described under
 > configure one explicitly rather than relying on the built-in copy.
 
 > **The built-in copy refuses an input that already carries more than one
-> hardlink**, on stage-in as well as stage-out, failing the task with
-> `copy refused: … has more than one hardlink`. A hardlink is not a copy of
+> hardlink**, on stage-in as well as stage-out. The two paths fail the task
+> with **different messages** — grep for both:
+>
+> - stage-in: `copy refused: opened "<path>" has more than one hardlink; sqi
+>   will not copy a file that may alias content beyond scratch`
+> - stage-out: `stage-out refused: "<path>" has more than one hardlink; sqi
+>   will not copy a file that may alias content beyond scratch`
+>
+> (stage-out quotes the path *relative to the scratch directory*, not the
+> absolute one, because it is looked up through a rooted descriptor.) The
+> shared, greppable substring across both is
+> `has more than one hardlink`. A hardlink is not a copy of
 > the file, it *is* the file — one inode under a second name — so staging it
 > into scratch and chowning it to the run-as-user identity would chown the
 > original too, and nothing sqi does afterward can separate them again. If
