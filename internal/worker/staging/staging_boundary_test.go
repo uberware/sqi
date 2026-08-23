@@ -33,7 +33,9 @@ func TestStager_StageOut_RefusesSymlinkSource(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("creating a symlink on Windows requires SeCreateSymbolicLinkPrivilege or " +
 			"Developer Mode, unavailable to an ordinary CI user; this test proves POSIX " +
-			"symlink-source refusal and cannot be exercised without first creating one")
+			"symlink-source refusal and cannot be exercised without first creating one" +
+			"; the junction test in staging_windows_test.go covers this code path " +
+			"with an unprivileged primitive")
 	}
 
 	scratch := t.TempDir()
@@ -75,11 +77,6 @@ func TestStager_StageOut_RefusesSymlinkSource(t *testing.T) {
 // host kernel setting sqi does not control, so this must be enforced
 // independently of it.
 func TestStager_StageOut_RefusesHardlinkedSource(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("hardlink-count check is unimplemented on Windows (see staging_windows.go); " +
-			"a real, currently-open gap now that Windows run-as-user isolation is supported")
-	}
-
 	scratch := t.TempDir()
 	s := staging.New(scratch, fakeSync(t), false, discard())
 	scratchDir := filepath.Join(scratch, "job1", "att1")
@@ -122,7 +119,9 @@ func TestStager_StageOut_RefusesSourceOutsideScratch(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("creating a directory symlink on Windows requires SeCreateSymbolicLinkPrivilege " +
 			"or Developer Mode, unavailable to an ordinary CI user; this test proves POSIX " +
-			"scratch-containment refusal and cannot be exercised without first creating one")
+			"scratch-containment refusal and cannot be exercised without first creating one" +
+			"; the junction test in staging_windows_test.go covers this code path " +
+			"with an unprivileged primitive")
 	}
 
 	scratch := t.TempDir()

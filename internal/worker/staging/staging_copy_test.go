@@ -70,7 +70,9 @@ func TestBuiltinCopy(t *testing.T) {
 		if runtime.GOOS == "windows" {
 			t.Skip("creating a symlink on Windows requires SeCreateSymbolicLinkPrivilege or " +
 				"Developer Mode, unavailable to an ordinary CI user; this test proves POSIX " +
-				"symlink-source refusal and cannot be exercised without first creating one")
+				"symlink-source refusal and cannot be exercised without first creating one" +
+				"; the junction test in staging_windows_test.go covers this code path " +
+				"with an unprivileged primitive")
 		}
 
 		dir := t.TempDir()
@@ -124,7 +126,9 @@ func TestCopyFile_RefusesSymlinkDest(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("creating a symlink on Windows requires SeCreateSymbolicLinkPrivilege or " +
 			"Developer Mode, unavailable to an ordinary CI user; this test proves POSIX " +
-			"symlink-dest refusal and cannot be exercised without first creating one")
+			"symlink-dest refusal and cannot be exercised without first creating one" +
+			"; the junction test in staging_windows_test.go covers this code path " +
+			"with an unprivileged primitive")
 	}
 
 	dir := t.TempDir()
@@ -173,11 +177,6 @@ func TestCopyFile_RefusesSymlinkDest(t *testing.T) {
 // first, simulates exactly that: the source path already shares its inode
 // with another entry by the time copyFile ever sees it.
 func TestCopyFile_RefusesSourceWithExtraHardlink(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("hardlink-count check is unimplemented on Windows (see staging_windows.go); " +
-			"a real, currently-open gap now that Windows run-as-user isolation is supported")
-	}
-
 	dir := t.TempDir()
 	outside := filepath.Join(dir, "secret.txt")
 	if err := os.WriteFile(outside, []byte("root-only-contents"), 0o644); err != nil {
