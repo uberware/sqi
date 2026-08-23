@@ -945,6 +945,7 @@ jobs:
         shell: bash
         run: |
           expected=(
+            TestCopyFile_RefusesHardlinkedStageInSourceOnWindows
             TestStageOut_OrdinaryFileUnaffected
             TestStageOut_RefusesHardlinkedSourceOnWindows
             TestStageOut_RefusesJunctionAtFinalComponent
@@ -954,13 +955,19 @@ jobs:
           )
           missing=0
           for name in "${expected[@]}"; do
-            if ! grep -q -- "--- PASS: $name" windows-unit.log; then
+            # The trailing space is an ANCHOR, not formatting. `go test -v`
+            # emits "--- PASS: <name> (0.01s)", so the name is always followed
+            # by one; without it this is a PREFIX match and a future
+            # TestStageOut_OrdinaryFileUnaffectedByX would silently satisfy
+            # the assertion for TestStageOut_OrdinaryFileUnaffected, which
+            # could then be deleted with this step still green.
+            if ! grep -q -- "--- PASS: $name " windows-unit.log; then
               echo "::error::$name did not pass (skipped, missing, or failed)"
               missing=1
             fi
           done
           if [ "$missing" -eq 0 ]; then
-            echo "Confirmed all ${#expected[@]}/6 named windows staging tests passed."
+            echo "Confirmed all ${#expected[@]} named windows staging tests passed."
           fi
           exit $missing
 

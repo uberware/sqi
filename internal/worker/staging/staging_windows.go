@@ -36,6 +36,21 @@ const noFollowFlag = 0
 // name (hardlink) on the volume. NTFS supports hardlinks and creating one
 // requires no privilege, so this is a real check on Windows, not a stub.
 //
+// It used to be a stub — (false, nil), unconditionally — and turning it real
+// was NOT free, so do not read it as pure parity. Both callers gained it at
+// once: openStageOutSource (new with H3, stage-out only, adversarial) and
+// copyFile, which is the built-in STAGE-IN copy plus copyTree's recursion and
+// is not adversarial at all. So a job INPUT asset carrying a second NTFS
+// hardlink now fails stage-in on Windows with "copy refused: ... has more
+// than one hardlink", where before H3 it copied. Content-addressed and dedup
+// asset stores, and "rsync --link-dest"-style delivery, produce multiply
+// linked files as a matter of course. That cost is accepted — the refusal is
+// correct under run-as-user isolation, and POSIX has always behaved this way
+// — but it is a real change to legitimate Windows workloads, recorded here
+// because this is the function that makes it happen. See copyFile's doc for
+// the operator-facing half and docs/worker-configuration.md for the "a
+// hardlink IS the file" reasoning.
+//
 // It must go through GetFileInformationByHandle because Windows exposes no
 // link count via os.FileInfo: Sys() yields a *syscall.Win32FileAttributeData,
 // which has no such field, and Go's Windows fileStat does not carry one

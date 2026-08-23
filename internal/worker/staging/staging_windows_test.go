@@ -378,3 +378,55 @@ func TestStageOut_SharingViolationIsNotReportedAsEscape(t *testing.T) {
 		t.Errorf("err = %v, want the operator-facing message not to allege an escape", err)
 	}
 }
+
+// TestCopyFile_RefusesHardlinkedStageInSourceOnWindows pins a real BEHAVIOR
+// CHANGE H3 made to Windows STAGE-IN, so that it stands on the record as a
+// decision rather than surviving as an accident nobody wrote down.
+//
+// hasExtraHardlinks used to return (false, nil) unconditionally on Windows.
+// Making it real gave the link-count refusal to BOTH its callers at once —
+// openStageOutSource, which is adversarial and is the point of H3, and
+// copyFile, which is the built-in stage-in copy and is not adversarial at
+// all. So a job INPUT asset that happens to carry a second NTFS hardlink is
+// now refused on Windows where it previously staged in fine: content-
+// addressed and dedup asset stores, and "rsync --link-dest"-style delivery,
+// all produce multiply linked files routinely. The refusal is deliberate,
+// is POSIX parity, and is kept — but if this test ever has to change, THAT
+// is the conversation to have first, not a quiet edit to the check.
+//
+// Deliberately distinct from TestCopyFile_RefusesSourceWithExtraHardlink in
+// staging_copy_test.go, which frames the same check as a TOCTOU defense and
+// calls copyFile directly. This one drives builtinCopy — the actual stage-in
+// entry point Stager.transfer reaches — with a wholly legitimate input, which
+// is the scenario an operator will actually hit.
+func TestCopyFile_RefusesHardlinkedStageInSourceOnWindows(t *testing.T) {
+	dir := t.TempDir()
+
+	// The asset store's object, and the delivered job input that shares its
+	// inode. Nothing here is an attack: this is what `rsync --link-dest` or a
+	// content-addressed store produces on a normal, successful delivery.
+	object := filepath.Join(dir, "cas-object")
+	if err := os.WriteFile(object, []byte("input-asset-bytes"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	src := filepath.Join(dir, "shot.ma")
+	if err := os.Link(object, src); err != nil {
+		t.Skipf("hardlinks unsupported in this temp dir (not NTFS?): %v", err)
+	}
+
+	dest := filepath.Join(t.TempDir(), "shot.ma")
+	err := builtinCopy(context.Background(), src, dest)
+	if err == nil {
+		t.Fatal("want stage-in to refuse an input carrying a second hardlink on Windows " +
+			"(pre-H3 this copied: hasExtraHardlinks was a stub here)")
+	}
+	if !strings.Contains(err.Error(), "hardlink") {
+		t.Errorf("err = %v, want the operator-facing message to name the hardlink refusal", err)
+	}
+	if strings.Contains(err.Error(), "outside scratch") {
+		t.Errorf("err = %v, want the hardlink refusal NOT to borrow the containment refusal's wording", err)
+	}
+	if _, statErr := os.Stat(dest); statErr == nil {
+		t.Error("dest must not exist: stage-in must refuse before copying any bytes")
+	}
+}

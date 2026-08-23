@@ -264,6 +264,18 @@ func (s *Stager) prepareEntries(ctx context.Context, scratchDir string, entries 
 // both identically: sqi cannot audit an arbitrary sync_command template, since
 // whether it dereferences symlinks is a property of that command ("rsync -a"
 // preserves them; "rsync -aL" or plain "cp" follow them).
+//
+// Exactly ONE path-based lookup survives in this design, acknowledged here
+// rather than left looking overlooked: os.OpenRoot(scratchDir) below is
+// itself a resolve by path, and on Windows it FOLLOWS a reparse point at
+// scratchDir (verified on the host: OpenRoot on a junction succeeds). It is
+// closed by ownership rather than by the kernel. Replacing scratchDir means
+// creating an entry in its PARENT — the per-job directory StageIn creates as
+// the daemon, which is never chowned (POSIX) or ACL'd (Windows) to the task
+// on either platform; only the per-attempt leaf below it is handed over by
+// ChownRecursive. A task therefore cannot substitute the root that every
+// lookup in this loop is anchored to, which is what makes anchoring to it
+// sound.
 func (s *Stager) StageOut(ctx context.Context, scratchDir string, entries []protocol.StageEntry) error {
 	root, err := os.OpenRoot(scratchDir)
 	if err != nil {
@@ -333,7 +345,13 @@ var (
 	errStageOutEscape     = errors.New("resolves outside scratch dir, or reaches it through a symlink or junction")
 	errStageOutUnreadable = errors.New("could not be opened")
 	errStageOutNotRegular = errors.New("is not a regular file")
-	errStageOutHardlink   = errors.New("has more than one hardlink; sqi will not copy a file that may alias content outside scratch")
+	// The wording deliberately says "beyond scratch", NOT "outside scratch":
+	// that latter substring belongs to errStageOutEscape alone and is what
+	// tests (including test/integration/isolation_windows_test.go) match on
+	// to pin the CONTAINMENT refusal specifically. Two sentinels sharing it
+	// would let a hardlink refusal satisfy an assertion written about an
+	// escape. One reason, one substring.
+	errStageOutHardlink = errors.New("has more than one hardlink; sqi will not copy a file that may alias content beyond scratch")
 )
 
 // classifyStageOutOpenError turns a Root.OpenFile failure into an error that
@@ -393,14 +411,42 @@ func classifyStageOutOpenError(rel, rootName string, err error) error {
 //     are the same operation.
 //   - There is no ".." to normalize away, so no escape by construction.
 //
-// Deliberate platform asymmetry, stated here rather than discovered later:
-// os.Root refuses EVERY reparse point on Windows, including one that points
-// back inside the root, while on POSIX it FOLLOWS a symlink that stays within
-// the root. That difference is harmless for this caller — nothing legitimate
+// Deliberate platform asymmetry, stated here rather than discovered later —
+// and stated by MECHANISM, because the mechanism is not the obvious one and
+// an earlier revision of this comment got it wrong.
+//
+// Windows os.Root passes OBJ_DONT_REPARSE, so the kernel fails a lookup that
+// meets a reparse point anywhere in rel. Go does NOT stop there: it reads the
+// link target and retries it as a path inside the root (os.readReparseLinkAt,
+// then doInRoot's errSymlink case, GOROOT/src/os/root_windows.go and
+// root_openat.go). So what actually refuses a JUNCTION is the retry, not the
+// OBJ_DONT_REPARSE. A junction's stored target is an
+// IO_REPARSE_TAG_MOUNT_POINT substitute name, which is ALWAYS absolute — Go's
+// readReparseLinkHandle has no relative branch for that tag, unlike
+// IO_REPARSE_TAG_SYMLINK's SYMLINK_FLAG_RELATIVE — and splitPathInRoot ->
+// rootCleanPath -> filepathlite.IsLocal rejects a volume-qualified path as
+// errPathEscapes. THAT is why every junction is refused, including one
+// pointing back INSIDE the root: verified on a real Windows host, not
+// inferred.
+//
+// The consequence worth naming, since "os.Root refuses every reparse point on
+// Windows" would hide it: a RELATIVE NTFS directory symlink whose target
+// stays inside the root WOULD be followed here, exactly as POSIX follows an
+// in-root symlink. That is not a hole, for two independent reasons. It is
+// unreachable by the threat model this function exists for — creating any
+// NTFS symlink needs SeCreateSymbolicLinkPrivilege or Developer Mode, which
+// an unprivileged isolated task does not hold, which is precisely why the
+// junction was the attack primitive. And it would be harmless if reached,
+// because the retried path is by construction still inside the root, so it
+// cannot leave scratch. Keep the conclusion; do not restore the wrong reason
+// for it.
+//
+// Either way the asymmetry is harmless for this caller — nothing legitimate
 // under scratch is ever a link (prepareEntries creates only directories, and
 // copyTree explicitly skips non-regular entries) — and the advisory Lstat
-// below means POSIX keeps refusing any symlink at rel outright, preserving
-// the pre-H3 behavior and wording.
+// below means both platforms keep refusing a symlink (POSIX) or any reparse
+// point (Windows) at rel's FINAL component outright, preserving the pre-H3
+// behavior and wording.
 //
 // On POSIX this is therefore NOT a pure strengthening, and should not be read
 // as one. Stage-out used to reach copyFile, whose O_NOFOLLOW refused ANY
@@ -571,6 +617,19 @@ func builtinCopy(ctx context.Context, src, dest string) error {
 // though — a hardlink IS a regular file, so it opens successfully — which is
 // why in.Stat()'s link count below runs on the OPENED DESCRIPTOR, pinning the
 // inode this call actually reads.
+//
+// BEHAVIOR CHANGE, WINDOWS, not free: hasExtraHardlinks used to return
+// (false, nil) unconditionally on Windows, so the link-count refusal below
+// was POSIX-only. It is now real on both platforms — which means a job INPUT
+// asset that happens to carry a second NTFS hardlink is refused at STAGE-IN
+// where it previously copied fine. Content-addressed or dedup asset stores
+// and "rsync --link-dest"-style delivery all produce exactly that. The
+// refusal is deliberate and kept (a hardlink IS the file: chowning the
+// scratch copy to the run-as-user identity chowns the original too, and
+// nothing downstream can separate them again — see
+// docs/worker-configuration.md), but it is a NEW refusal of previously
+// working legitimate work on Windows, not a no-cost parity win. Pinned by
+// TestCopyFile_RefusesHardlinkedStageInSourceOnWindows.
 func copyFile(src, dest string, mode os.FileMode) error {
 	in, err := os.OpenFile(src, os.O_RDONLY|noFollowFlag, 0)
 	if err != nil {
@@ -587,7 +646,7 @@ func copyFile(src, dest string, mode os.FileMode) error {
 	if linked, err := hasExtraHardlinks(in); err != nil {
 		return fmt.Errorf("fstat %q: %w", src, err)
 	} else if linked {
-		return fmt.Errorf("copy refused: opened %q has more than one hardlink; sqi will not copy a file that may alias content outside scratch", src)
+		return fmt.Errorf("copy refused: opened %q has more than one hardlink; sqi will not copy a file that may alias content beyond scratch", src)
 	}
 	return copyFromFile(in, dest, mode)
 }

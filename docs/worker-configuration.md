@@ -1370,6 +1370,28 @@ per-worker opt-in, distinct from the automatic fallback described under
 > `sync_command` (`rsync`, `aws s3 cp`, etc.) to move data between them —
 > configure one explicitly rather than relying on the built-in copy.
 
+> **The built-in copy refuses an input that already carries more than one
+> hardlink**, on stage-in as well as stage-out, failing the task with
+> `copy refused: … has more than one hardlink`. A hardlink is not a copy of
+> the file, it *is* the file — one inode under a second name — so staging it
+> into scratch and chowning it to the run-as-user identity would chown the
+> original too, and nothing sqi does afterward can separate them again. If
+> your inputs are delivered by a content-addressed or deduplicating asset
+> store, or by `cp -al` / `rsync --link-dest`, they will be multiply linked
+> and will be refused. Deliver them with a real copy (`rsync -a` without
+> `--link-dest`, `cp` without `-l`) or configure a `sync_command` that does.
+>
+> This is **not** the same thing as the `sync_command` hardlink warning
+> below, and the remedies differ: that one is about a *sync command you
+> configure* creating a link into scratch; this one is about an *input asset
+> that already had one* before sqi ever saw it. **On Windows this refusal is
+> new**: the link count was not checked there until the stage-out containment
+> fix landed, so a multiply linked input used to stage in silently. POSIX
+> workers have always enforced it. On a mixed farm the same job may therefore
+> start failing on the Windows workers and nowhere else — not because those
+> workers are stricter than the rest, but because they have stopped being the
+> lenient ones.
+
 > **`sync_command` MUST NOT create hardlinks into scratch** when run-as-user
 > isolation is in use — e.g. `cp -al`, or `rsync --link-dest`. A hardlink IS
 > the file: it shares one inode with whatever it links to, so chowning the

@@ -76,6 +76,19 @@ func TestStager_StageOut_RefusesSymlinkSource(t *testing.T) {
 // too. fs.protected_hardlinks narrows who can CREATE such a hardlink but is a
 // host kernel setting sqi does not control, so this must be enforced
 // independently of it.
+//
+// THIS TEST IS POSIX-ONLY, and not because of the primitive. It carries no
+// runtime.GOOS guard of its own — one was removed during H3 on the theory
+// that NTFS hardlinks make it portable, which is true of os.Link but not of
+// this test — because it still skips on Windows inside fakeSync, whose
+// fixture is a POSIX "#!/bin/sh" script Windows cannot exec (see fakeSync's
+// own doc in staging_test.go). Removing that guard was therefore a no-op, and
+// re-deriving the fact costs a `go test -v -run` every time. Do NOT "fix" it
+// by making fakeSync cross-platform for this test's sake: Windows coverage of
+// the same check already exists as
+// TestStageOut_RefusesHardlinkedSourceOnWindows in staging_windows_test.go,
+// which drives openStageOutSource directly and needs no sync command at all,
+// and CI asserts that test passed BY NAME.
 func TestStager_StageOut_RefusesHardlinkedSource(t *testing.T) {
 	scratch := t.TempDir()
 	s := staging.New(scratch, fakeSync(t), false, discard())
