@@ -32,6 +32,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"syscall"
 	"testing"
 	"unsafe"
 
@@ -793,6 +794,13 @@ func TestIsolationWindowsSystem_StageOutRefusesPlantedJunction(t *testing.T) {
 	defer cred.Close() // test cleanup
 
 	scratch := t.TempDir()
+	// "builtin" duplicates staging's unexported builtinSentinel (staging.go),
+	// which this package cannot import. If that sentinel is ever renamed this
+	// literal silently becomes a sync_command TEMPLATE instead, and stage-out
+	// would try to execute it. That failure is no longer obscure: the
+	// "outside scratch" assertion at the bottom pins the REASON StageOut
+	// refused, so a sentinel drift fails there naming the wrong error rather
+	// than passing as a containment refusal it never performed.
 	s := staging.New(scratch, "builtin", false, slog.New(slog.DiscardHandler))
 
 	outOrig := filepath.Join(t.TempDir(), "render.exr")
@@ -814,8 +822,40 @@ func TestIsolationWindowsSystem_StageOutRefusesPlantedJunction(t *testing.T) {
 	// half the point: if the isolated account could not do it, the refusal
 	// below would be vacuous.
 	stagedDir := filepath.Join(scratchDir, "0")
-	script := `rmdir /s /q "` + stagedDir + `" && mklink /J "` + stagedDir + `" "` + secretDir + `"`
-	cmd := exec.CommandContext(context.Background(), "cmd", "/c", script)
+
+	// The script MUST be delivered through SysProcAttr.CmdLine, not through
+	// exec.Cmd.Args, and the quotes around each path are why.
+	//
+	// os/exec builds a Windows command line by escaping each Arg with
+	// CommandLineToArgvW rules, so an embedded `"` becomes `\"`. cmd.exe does
+	// not understand that escape: it hands rmdir the literal `\"C:\...\0\"`,
+	// which is not a valid path, `&&` short-circuits, and the plant step
+	// fails with "The filename, directory name, or volume label syntax is
+	// incorrect" — a failure unrelated to the property under test. This is
+	// the documented os/exec exception for cmd.exe, and it is invisible to
+	// go vet, to compilation and to -test.list; only running it finds it.
+	//
+	// Dropping the quotes instead (the shape the other cmd /c calls in this
+	// file use, e.g. "dir "+dir) works only while no path contains a space.
+	// These are t.TempDir() paths rooted at os.TempDir(), which is SYSTEM's
+	// %TEMP% under this tier — normally C:\Windows\TEMP, but it is a host
+	// setting, not an invariant, and an unquoted space would fail the plant
+	// step for a second reason having nothing to do with containment. Quoting
+	// costs nothing here and removes the question.
+	//
+	// cmd's own /S is what makes the stripping deterministic: it strips
+	// exactly the first and last quote after /C and passes the rest through
+	// verbatim, instead of cmd's conditional rule (which only applies when
+	// there are exactly two quotes and no & < > ( ) @ ^ | between them — not
+	// this string). CmdLine includes the program name, and exec ignores Args
+	// entirely when it is set.
+	//
+	// isolation.Apply only sets SysProcAttr.Token, allocating the struct when
+	// it is nil, so a caller-set CmdLine survives it (see isolation/apply_windows.go).
+	cmd := exec.CommandContext(context.Background(), "cmd")
+	cmd.SysProcAttr = &syscall.SysProcAttr{
+		CmdLine: `cmd /s /c "rmdir /s /q "` + stagedDir + `" && mklink /J "` + stagedDir + `" "` + secretDir + `""`,
+	}
 	if err := isolation.Apply(cmd, cred); err != nil {
 		t.Fatalf("Apply: %v", err)
 	}
@@ -827,8 +867,20 @@ func TestIsolationWindowsSystem_StageOutRefusesPlantedJunction(t *testing.T) {
 		t.Fatalf("junction is not live: %v", err)
 	}
 
-	if err := s.StageOut(context.Background(), scratchDir, entries); err == nil {
+	// Pin the REASON, not merely that something went wrong. Asserting err !=
+	// nil alone leaves a vacuous-pass channel wide open: a denied
+	// os.OpenRoot, a sharing violation, or a malformed path all satisfy it
+	// while proving nothing about containment, and this is the branch's
+	// headline proof. errStageOutEscape is unexported and unreachable from
+	// this package, so match the operator-facing message the way the
+	// unit-tier twin (TestStageOut_RefusesJunctionedScratchSubdir) matches it
+	// alongside its errors.Is check.
+	stageOutErr := s.StageOut(context.Background(), scratchDir, entries)
+	if stageOutErr == nil {
 		t.Error("StageOut accepted a source reached through a task-planted junction")
+	} else if !strings.Contains(stageOutErr.Error(), "outside scratch") {
+		t.Errorf("StageOut failed for the wrong reason: %v; want the containment "+
+			"refusal naming the scratch boundary, not an incidental access failure", stageOutErr)
 	}
 	if _, err := os.Stat(outOrig); err == nil {
 		t.Fatal("outOrig exists: a task running as a separate account made the " +
