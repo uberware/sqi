@@ -53,6 +53,13 @@ This is the fastest, highest-signal check. It builds the binaries, boots a
 server + worker, submits an `echo` job, and asserts the output is retrievable
 over **both REST and WebSocket**.
 
+That whole flow runs **three times**, back to back: once on the default path
+(broker auth off, no TLS), once with broker authentication on and the worker
+enrolling via a join token, and once with TLS on end to end (HTTPS REST, `wss://`
+gateway, TLS broker) against certificates from `sqi-server tls init`. The plain
+run always goes first, so a failure before the `MODE 2/3` banner means the
+default path regressed — much the most serious of the three.
+
 ### A.1 Linux / macOS
 
 ```sh
@@ -64,11 +71,18 @@ make smoke
 `scripts/smoke.sh` against them. Expected tail:
 
 ```
-[smoke] SMOKE TEST PASSED
+[smoke] SMOKE TEST PASSED (mode=tls)
 [smoke]   REST log assertion: PASSED
 [smoke]   WS   log assertion: PASSED
 [smoke]   EXPR phase-3 assertion: PASSED
+[smoke] ==================================================================
+[smoke] SMOKE TEST PASSED IN ALL THREE MODES
+[smoke] ==================================================================
 ```
+
+Each mode prints its own `SMOKE TEST PASSED (mode=…)` block — `noauth`,
+`brokerauth`, then `tls`. Only the final `IN ALL THREE MODES` line means the
+whole run passed.
 
 The EXPR line is the newest leg: a second job declaring `extensions: [EXPR]`
 whose `onRun` args the worker resolves at phase 3, asserted on the resolved text
@@ -108,9 +122,20 @@ SQI_SERVER_BIN=bin/sqi-server.exe SQI_WORKER_BIN=bin/sqi-worker.exe \
 > **Windows note:** this exercises the worker's Windows process-termination path
 > (`taskkill`/`TerminateProcess`) when the job's `echo` process is reaped — the
 > code path that only has unit coverage elsewhere. A clean
-> `[smoke] SMOKE TEST PASSED` confirms it works end to end on Windows.
+> `[smoke] SMOKE TEST PASSED IN ALL THREE MODES` confirms it works end to end on
+> Windows.
+>
+> The TLS mode additionally exercises Windows' TLS stack: curl on Windows links
+> **Schannel**, which insists on checking certificate revocation, and the CA
+> `sqi-server tls init` mints publishes no CRL or OCSP endpoint. The script
+> detects a Schannel-backed curl and adds `--ssl-revoke-best-effort` itself, so
+> nothing extra is needed here — but if you verify a TLS server by hand, see the
+> Windows note under [TLS → Verifying](tls.md#verifying).
 
 ### A.3 What "pass" means
+
+Each of the three modes asserts all of the following, so a full pass means every
+one of them held on the default path, with broker auth on, and with TLS on:
 
 - `GET /readyz` returned ready (SQLite + NATS up).
 - The worker appears online in `GET /api/v1/workers`.

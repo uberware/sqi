@@ -281,6 +281,21 @@ assignments, status and log chunks.
 curl --cacert ./certs/ca.crt https://sqi-server.example:8080/readyz
 ```
 
+On **Windows**, add `--ssl-revoke-best-effort`:
+
+```powershell
+# curl.exe, not curl: Windows PowerShell aliases `curl` to Invoke-WebRequest.
+curl.exe --cacert .\certs\ca.crt --ssl-revoke-best-effort https://sqi-server.example:8080/readyz
+```
+
+Windows curl builds link Schannel, which insists on checking certificate
+revocation. The CA `tls init` generates publishes no CRL or OCSP endpoint, so
+the request otherwise fails with `schannel: the revocation status is unknown`
+(exit 60) against a chain that is perfectly valid. The flag relaxes only the
+revocation check — an untrusted root is still rejected, so the command keeps
+proving the server presents a certificate signed by your CA. This affects curl
+only; sqi's own components verify with Go's TLS stack and need no such flag.
+
 The startup log states the transport plainly:
 
 ```
