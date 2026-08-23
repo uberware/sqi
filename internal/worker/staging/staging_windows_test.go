@@ -35,6 +35,23 @@ func mklinkJunction(t *testing.T, link, target string) {
 	}
 }
 
+// There is deliberately NO Windows test asserting that the copy layer itself
+// refuses a reparse-point source, and a reader must not assume one exists.
+// Since H3 the stage-out copy layer takes an already-open, already-validated
+// descriptor (copyFromFile), so there is no path for a junction to be planted
+// at — the refusal lives entirely in openStageOutSource, which every test
+// below drives. copyFile, the by-path opener, is the STAGE-IN path only; its
+// O_NOFOLLOW guard is a no-op on Windows (noFollowFlag is 0 there), and the
+// two primitives that would exercise it are unavailable: a junction is
+// directory-only, so opening one by path fails ERROR_ACCESS_DENIED rather
+// than exercising any reparse check, and an NTFS FILE symlink needs
+// SeCreateSymbolicLinkPrivilege, which an ordinary task does not hold and
+// this suite therefore never creates. A test named for the copy layer that
+// actually called openStageOutSource used to live here; it was a near-exact
+// duplicate of TestStageOut_RefusesJunctionedScratchSubdir wearing a name
+// that claimed coverage it did not provide, and was removed rather than
+// renamed.
+
 // TestStageOut_RefusesJunctionedScratchSubdir is the primary H3 regression.
 //
 // A task owns its per-entry scratch subdirectory (StageIn's ChownRecursive
@@ -273,40 +290,6 @@ func TestStageOut_SwapAfterValidateIsRefused(t *testing.T) {
 	if string(got) != "legit-task-output" {
 		t.Errorf("dest = %q, want %q — the copy followed the PATH and read the "+
 			"post-swap file instead of the validated descriptor", got, "legit-task-output")
-	}
-}
-
-// TestCopyFile_RefusesReparsePointSource proves the copy layer refuses a
-// junctioned source entirely on its own, with no upstream boundary check
-// involved — the same independence TestCopyFile_RefusesSourceWithExtraHardlink
-// asserts for the hardlink case on POSIX.
-func TestCopyFile_RefusesReparsePointSource(t *testing.T) {
-	scratch := t.TempDir()
-	secretDir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(secretDir, "render.exr"), []byte("daemon-only-contents"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	mklinkJunction(t, filepath.Join(scratch, "0"), secretDir)
-
-	root, err := os.OpenRoot(scratch)
-	if err != nil {
-		t.Fatalf("OpenRoot: %v", err)
-	}
-	defer root.Close()
-
-	f, err := openStageOutSource(root, filepath.Join("0", "render.exr"))
-	if err == nil {
-		f.Close()
-		t.Fatal("want error opening a source reached through a junction")
-	}
-	// The junction is an INTERMEDIATE component here, so the kernel-enforced
-	// open is what refuses this, not the advisory Lstat — see
-	// TestStageOut_RefusesJunctionAtFinalComponent for the other branch.
-	if !errors.Is(err, errStageOutEscape) {
-		t.Errorf("err = %v, want errStageOutEscape (the kernel-enforced open refused the lookup)", err)
-	}
-	if !strings.Contains(err.Error(), "outside scratch") {
-		t.Errorf("err = %v, want it to name the scratch boundary", err)
 	}
 }
 

@@ -916,17 +916,53 @@ jobs:
 
       # Windows-only unit tests. See the job comment above for why these six
       # packages and not others. -count=1 disables the test cache so a stale
-      # pass from an earlier step can't stand in for a real run.
+      # pass from an earlier step can't stand in for a real run. -v (and the
+      # tee) exist so the assertion step below has per-test PASS lines to
+      # match against; without them a t.Skip is indistinguishable from a pass
+      # in this step's output.
       - name: Windows unit tests
         shell: bash
         run: |
-          go test -count=1 \
+          go test -count=1 -v \
             ./internal/worker/isolation/... \
             ./internal/worker/executor/... \
             ./internal/worker/envutil/... \
             ./internal/worker/session/... \
             ./internal/worker/staging/... \
-            ./cmd/sqi-worker/...
+            ./cmd/sqi-worker/... 2>&1 | tee windows-unit.log
+
+      # Separate from the isolation assertion below on purpose: these are a
+      # different suite with different prerequisites (plain `go test`, no
+      # elevation, no throwaway OS accounts), so a shared list would hide
+      # which prerequisite went missing.
+      #
+      # The Windows stage-out tests carry t.Skipf escape hatches for a
+      # non-NTFS temp directory and for a CreateFile that cannot take an
+      # exclusive handle. A skipped test verifies nothing, and a green `go
+      # test` cannot tell the two apart — so every one of them is confirmed
+      # PASS by name here, the same way the isolation suite's names are below.
+      - name: Assert the windows staging tests actually ran
+        shell: bash
+        run: |
+          expected=(
+            TestStageOut_OrdinaryFileUnaffected
+            TestStageOut_RefusesHardlinkedSourceOnWindows
+            TestStageOut_RefusesJunctionAtFinalComponent
+            TestStageOut_RefusesJunctionedScratchSubdir
+            TestStageOut_SharingViolationIsNotReportedAsEscape
+            TestStageOut_SwapAfterValidateIsRefused
+          )
+          missing=0
+          for name in "${expected[@]}"; do
+            if ! grep -q -- "--- PASS: $name" windows-unit.log; then
+              echo "::error::$name did not pass (skipped, missing, or failed)"
+              missing=1
+            fi
+          done
+          if [ "$missing" -eq 0 ]; then
+            echo "Confirmed all ${#expected[@]}/6 named windows staging tests passed."
+          fi
+          exit $missing
 
       - name: Run windows isolation integration tests
         shell: pwsh
@@ -936,8 +972,8 @@ jobs:
 
       # Does not trust a bare exit-0 from the script: asserts the suite
       # actually executed (the runner was elevated) and that every one of the
-      # 16 named tests — 8 TestIsolationWindows_* (elevated admin) plus
-      # 8 TestIsolationWindowsSystem_* (SYSTEM) — is confirmed PASS by name, so
+      # 17 named tests — 8 TestIsolationWindows_* (elevated admin) plus
+      # 9 TestIsolationWindowsSystem_* (SYSTEM) — is confirmed PASS by name, so
       # a silent skip, a build failure, or a partial run all fail the job
       # instead of passing quietly.
       - name: Assert the suite actually ran
@@ -964,6 +1000,7 @@ jobs:
             TestIsolationWindowsSystem_NoIsolationUnchanged
             TestIsolationWindowsSystem_ProfileEnvPointsAtTargetUser
             TestIsolationWindowsSystem_RunsAsSystem
+            TestIsolationWindowsSystem_StageOutRefusesPlantedJunction
           )
           missing=0
           for name in "${expected[@]}"; do
@@ -973,7 +1010,7 @@ jobs:
             fi
           done
           if [ "$missing" -eq 0 ]; then
-            echo "Confirmed all ${#expected[@]}/16 named isolation tests passed."
+            echo "Confirmed all ${#expected[@]}/17 named isolation tests passed."
           fi
           exit $missing
 

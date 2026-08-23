@@ -26,6 +26,7 @@ package integration
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -38,6 +39,8 @@ import (
 
 	"github.com/uberware/sqi/internal/worker/envutil"
 	"github.com/uberware/sqi/internal/worker/isolation"
+	"github.com/uberware/sqi/internal/worker/protocol"
+	"github.com/uberware/sqi/internal/worker/staging"
 )
 
 // requireHarness skips unless the PowerShell harness set up the throwaway
@@ -765,5 +768,70 @@ func TestIsolationWindowsSystem_NoIsolationUnchanged(t *testing.T) {
 
 	if got := strings.TrimSpace(string(out)); got != "inherited" {
 		t.Errorf("unisolated task saw %q, want the daemon's full environment", got)
+	}
+}
+
+// TestIsolationWindowsSystem_StageOutRefusesPlantedJunction is the H3 proof
+// at full fidelity: a REAL task, running as a REAL second local account under
+// a real logon token, plants the junction — and the daemon refuses.
+//
+// System tier because planting it as the target user needs
+// CreateProcessAsUser, hence SeAssignPrimaryTokenPrivilege, which an elevated
+// administrator does not hold.
+//
+// The unit tests in internal/worker/staging prove the refusal; this proves
+// the PREMISE those tests assume — that an isolated task genuinely has write
+// access to its own scratch subdirectory and can therefore perform this swap.
+// Without run-as-user isolation the task already runs as the daemon's own
+// account and gains nothing by winning, which is exactly why enabling
+// isolation on Windows is what made this reachable.
+func TestIsolationWindowsSystem_StageOutRefusesPlantedJunction(t *testing.T) {
+	requireHarness(t)
+	user := os.Getenv("SQI_TEST_ISOLATION_USER_A")
+
+	cred := resolveHarnessCredential(t, user)
+	defer cred.Close() // test cleanup
+
+	scratch := t.TempDir()
+	s := staging.New(scratch, "builtin", false, slog.New(slog.DiscardHandler))
+
+	outOrig := filepath.Join(t.TempDir(), "render.exr")
+	entries := []protocol.StageEntry{
+		{Path: outOrig, Direction: "OUT", ObjectType: "FILE"},
+	}
+	_, scratchDir, err := s.StageIn(context.Background(), "job1", "att1", entries, cred)
+	if err != nil {
+		t.Fatalf("StageIn: %v", err)
+	}
+
+	secretDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(secretDir, "render.exr"), []byte("daemon-only-contents"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	// The TASK — not the test process — removes its own scratch subdirectory
+	// and junctions it at the secret directory. Asserting this SUCCEEDS is
+	// half the point: if the isolated account could not do it, the refusal
+	// below would be vacuous.
+	stagedDir := filepath.Join(scratchDir, "0")
+	script := `rmdir /s /q "` + stagedDir + `" && mklink /J "` + stagedDir + `" "` + secretDir + `"`
+	cmd := exec.CommandContext(context.Background(), "cmd", "/c", script)
+	if err := isolation.Apply(cmd, cred); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("the isolated task could not plant the junction, so this test "+
+			"proves nothing about the refusal below: %v: %s", err, out)
+	}
+	if _, err := os.Stat(filepath.Join(stagedDir, "render.exr")); err != nil {
+		t.Fatalf("junction is not live: %v", err)
+	}
+
+	if err := s.StageOut(context.Background(), scratchDir, entries); err == nil {
+		t.Error("StageOut accepted a source reached through a task-planted junction")
+	}
+	if _, err := os.Stat(outOrig); err == nil {
+		t.Fatal("outOrig exists: a task running as a separate account made the " +
+			"elevated daemon copy a file from outside its scratch directory")
 	}
 }
