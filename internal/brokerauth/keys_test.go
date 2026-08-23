@@ -79,10 +79,13 @@ func assertSecretRestricted(t *testing.T, path string) {
 	}
 }
 
-func TestSaveSeed_FixesModeOfExistingFile(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("POSIX mode bits")
-	}
+// TestSaveSeed_RestrictsAnExistingPermissiveFile no longer skips on Windows:
+// since fsutil.WriteSecret, SaveSeed restricts on both platforms, so
+// overwriting a permissive leftover must produce a restricted file on both.
+// Only the way the "permissive leftover" is CONSTRUCTED differs, and
+// os.WriteFile at 0644 constructs it on either — a real mode on POSIX,
+// inherited directory access on Windows.
+func TestSaveSeed_RestrictsAnExistingPermissiveFile(t *testing.T) {
 	seed, _, err := brokerauth.GenerateSeed()
 	if err != nil {
 		t.Fatalf("GenerateSeed: %v", err)
@@ -100,12 +103,12 @@ func TestSaveSeed_FixesModeOfExistingFile(t *testing.T) {
 	if err := brokerauth.SaveSeed(path, seed); err != nil {
 		t.Fatalf("SaveSeed: %v", err)
 	}
-	info, err := os.Stat(path)
-	if err != nil {
-		t.Fatalf("Stat: %v", err)
-	}
-	if perm := info.Mode().Perm(); perm != 0o600 {
-		t.Errorf("mode = %o, want 600", perm)
+	assertSecretRestricted(t, path)
+
+	// And the result must be loadable: a restriction the reader then refuses
+	// would be worse than the permissive file it replaced.
+	if _, err := brokerauth.LoadSeed(path); err != nil {
+		t.Errorf("LoadSeed after SaveSeed replaced a permissive file: %v", err)
 	}
 }
 
@@ -188,23 +191,49 @@ func TestSaveSeed_NoTempFileSurvivesCreateFailure(t *testing.T) {
 	}
 }
 
-func TestLoadSeed_RejectsPermissiveMode(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("POSIX mode bits")
-	}
+// TestLoadSeed_RejectsPermissiveSeed proves the reader-side guard on EVERY
+// platform.
+//
+// It no longer skips on Windows. The old version wrote a restricted seed and
+// then chmod'd it to 0644 to make it permissive, which is a POSIX-only move —
+// os.Chmod on Windows toggles the read-only attribute and cannot widen read
+// access to anybody, so there was no way to construct the bad state and the
+// test simply skipped. Writing the seed with a plain os.WriteFile constructs it
+// on both: 0644 on POSIX, and on Windows a file that inherits its directory's
+// access instead of carrying a protected DACL. That is exactly the state every
+// Windows seed was in before fsutil.WriteSecret existed.
+func TestLoadSeed_RejectsPermissiveSeed(t *testing.T) {
 	seed, _, err := brokerauth.GenerateSeed()
 	if err != nil {
 		t.Fatalf("GenerateSeed: %v", err)
 	}
 	path := filepath.Join(t.TempDir(), "worker.nk")
+
+	// Deliberately NOT SaveSeed: this is the pre-fix on-disk state, a valid
+	// seed written with ordinary inherited access.
+	if err := os.WriteFile(path, seed, 0o644); err != nil {
+		t.Fatalf("seed pre-write: %v", err)
+	}
+
+	_, err = brokerauth.LoadSeed(path)
+	if err == nil {
+		t.Fatal("LoadSeed accepted a seed readable beyond its owner; want error")
+	}
+	if !strings.Contains(err.Error(), "readable beyond its owner") {
+		t.Errorf("err = %v, want it to name the restriction failure", err)
+	}
+
+	// The same bytes must load once the file is properly restricted, so the
+	// rejection is about ACCESS and not about the seed itself.
 	if err := brokerauth.SaveSeed(path, seed); err != nil {
 		t.Fatalf("SaveSeed: %v", err)
 	}
-	if err := os.Chmod(path, 0o644); err != nil {
-		t.Fatalf("Chmod: %v", err)
+	got, err := brokerauth.LoadSeed(path)
+	if err != nil {
+		t.Fatalf("LoadSeed after SaveSeed restricted it: %v", err)
 	}
-	if _, err := brokerauth.LoadSeed(path); err == nil {
-		t.Error("LoadSeed accepted a world-readable seed file; want error")
+	if string(got) != string(seed) {
+		t.Errorf("seed = %q, want %q", got, seed)
 	}
 }
 
