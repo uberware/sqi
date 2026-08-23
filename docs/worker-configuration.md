@@ -937,9 +937,16 @@ is terminated when the worker process exits, including on a graceful service
 restart. Previously such processes were orphaned while the task was reclaimed
 and re-run elsewhere.
 
-> **Open gap: session-directory TOCTOU on Windows.** See [Known
-> gaps](auth.md#known-gaps) in `docs/auth.md` for the staging race this
-> enables.
+> **A session directory is genuinely task-owned, and stage-out assumes it.**
+> Because the ACL hands the directory to the target account, an isolated task
+> can replace anything under its own scratch subdirectory — including
+> swapping the file it just wrote for a symlink or a directory junction.
+> Stage-out is built for that: it opens every source through an `os.Root`
+> rooted at the scratch directory, so the kernel refuses a reparse point or
+> an escape at the open, and the built-in copy reads that same descriptor
+> rather than the path. See [`staging.sync_command`](#stagingsync_command)
+> for the one residue this leaves — an operator-configured `sync_command`
+> gets path strings, not a descriptor.
 
 ### Privileged accounts and groups are refused outright
 
@@ -1373,16 +1380,23 @@ per-worker opt-in, distinct from the automatic fallback described under
 > inode.
 
 > **`sync_command` MUST NOT dereference symlinks at either end**, on stage-in
-> or stage-out. sqi validates the scratch-side path before invoking the
-> command (regular file, single hardlink, contained in scratch), but that
-> check cannot see what the command itself does once invoked: `rsync -a`
-> preserves a symlink, `rsync -aL` or plain `cp` follow it. A command that
-> follows a symlink a task planted at its declared output path hands the
-> daemon's `sync_command` process — running as root — whatever that symlink
-> points to, on stage-out, or writes through a symlink planted at the real
-> destination path, on stage-in. This is entirely a property of the command
-> template an operator chooses and is outside anything sqi can inspect or
-> enforce.
+> or stage-out. sqi validates the scratch-side source before invoking the
+> command: on stage-out it opens that source *through* an `os.Root` rooted at
+> the scratch directory, so containment is enforced by the kernel in the open
+> itself (`OBJ_DONT_REPARSE` on Windows, `openat` with per-component
+> `O_NOFOLLOW` on POSIX) rather than computed from the path beforehand, and a
+> source reached through a symlink or a directory junction is refused before
+> the command is ever invoked — which is what makes this check real on
+> Windows, where the previous path-based containment computation did not
+> resolve junctions at all. It then checks on that open descriptor that the
+> source is a regular file with a single hardlink. But none of that can see
+> what the command itself does once invoked: `rsync -a` preserves a symlink,
+> `rsync -aL` or plain `cp` follow it. A command that follows a symlink a
+> task planted at its declared output path hands the daemon's `sync_command`
+> process — running as root — whatever that symlink points to, on stage-out,
+> or writes through a symlink planted at the real destination path, on
+> stage-in. This is entirely a property of the command template an operator
+> chooses and is outside anything sqi can inspect or enforce.
 >
 > **Be aware this residue also includes a race, and it is structurally
 > unclosable for `sync_command` specifically.** sqi hands `sync_command` a

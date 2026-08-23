@@ -432,8 +432,9 @@ diagnostics:
 # make test-isolation-windows (real local accounts, real NTFS ACLs, DPAPI
 # credential storage, privileged tier as SYSTEM) — DPAPI credential storage,
 # NTFS session-directory ACLs, and job-object process containment all pass.
-# See docs/worker-configuration.md for full Windows setup and docs/auth.md's
-# Known gaps for the open staging TOCTOU caveat.
+# See docs/worker-configuration.md for full Windows setup, and its
+# staging.sync_command entry for the one residue an operator-configured
+# sync_command still carries.
 # isolation:
 #   # Exit at boot if this worker cannot assume another OS identity.
 #   # POSIX: requires running as root. Windows: requires running as a service
