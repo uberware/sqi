@@ -84,7 +84,7 @@ func setKillOnClose(job windows.Handle, on bool) error {
 //
 // This is the success path, and clearing the flag first is what keeps Windows
 // behaviourally identical to POSIX. internal/worker/staging's TOCTOU analysis
-// (see staging.go, validateStageOutSource) explicitly depends on the fact
+// (see staging.go, openStageOutSource) explicitly depends on the fact
 // that "nothing kills a task's process group on a SUCCESSFUL exit" — a
 // still-running background child is expected to survive there. Closing a
 // KILL_ON_JOB_CLOSE job here would kill it, making the two platforms differ

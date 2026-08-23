@@ -5,9 +5,13 @@
 package staging
 
 import (
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"syscall"
+
+	"golang.org/x/sys/windows"
 )
 
 // noFollowFlag is a no-op on Windows: there is no portable O_NOFOLLOW open
@@ -64,4 +68,26 @@ func hasExtraHardlinks(f *os.File) (bool, error) {
 		return false, fmt.Errorf("GetFileInformationByHandle %q: %w", f.Name(), infoErr)
 	}
 	return info.NumberOfLinks > 1, nil
+}
+
+// isAccessError reports whether err from an os.Root lookup is a permission or
+// sharing failure rather than a containment refusal — see
+// classifyStageOutOpenError for why the two must not be worded alike.
+//
+// The sharing cases are the reason this is a per-platform helper at all: a
+// task's background child that outlives it (nothing kills a task's process
+// group on a SUCCESSFUL exit — see executor.processTree.release) can still
+// hold the staged output open with a restrictive share mode, and NTFS answers
+// the daemon's open with ERROR_SHARING_VIOLATION. Go maps neither that nor
+// ERROR_LOCK_VIOLATION to fs.ErrPermission, so without naming them a mundane
+// "the task left a writer open" is reported to the operator as a containment
+// breach.
+//
+// An escape, and any reparse point met anywhere in the relative path, surface
+// from os.Root as its own "path escapes from parent" error instead — verified
+// on this platform, not assumed — so neither is misclassified here.
+func isAccessError(err error) bool {
+	return errors.Is(err, fs.ErrPermission) ||
+		errors.Is(err, windows.ERROR_SHARING_VIOLATION) ||
+		errors.Is(err, windows.ERROR_LOCK_VIOLATION)
 }

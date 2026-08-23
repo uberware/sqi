@@ -14,7 +14,7 @@ import (
 	"github.com/uberware/sqi/internal/worker/staging"
 )
 
-// These tests prove StageOut's boundary check (validateStageOutSource, run
+// These tests prove StageOut's boundary check (openStageOutSource, run
 // upstream of both the built-in copy and an operator sync_command) refuses
 // every primitive a task could use to make root read or leak content outside
 // its own scratch directory when its output is copied back to the real

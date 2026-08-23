@@ -6,11 +6,14 @@ package staging
 
 import (
 	"context"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"golang.org/x/sys/windows"
 
 	"github.com/uberware/sqi/internal/worker/protocol"
 )
@@ -81,10 +84,314 @@ func TestStageOut_RefusesJunctionedScratchSubdir(t *testing.T) {
 	if err == nil {
 		t.Fatal("want error refusing a stage-out source reached through a junction")
 	}
-	if !strings.Contains(err.Error(), "junction") && !strings.Contains(err.Error(), "outside scratch") {
-		t.Errorf("err = %v, want it to name the junction or the scratch boundary", err)
+	// Assert the SPECIFIC branch, not just that the word "junction" appears
+	// somewhere. The junction here is an INTERMEDIATE component of rel, so
+	// root.Lstat fails on it and the advisory block is skipped entirely — the
+	// refusal comes from the kernel-enforced open. Both messages mention a
+	// junction, so a substring assertion would pass either way and could not
+	// see the two branches being confused for one another.
+	if !errors.Is(err, errStageOutEscape) {
+		t.Errorf("err = %v, want errStageOutEscape (the kernel-enforced open refused the lookup)", err)
+	}
+	if errors.Is(err, errStageOutReparse) {
+		t.Errorf("err = %v, want the OPEN to have refused this, not the advisory Lstat", err)
+	}
+	if !strings.Contains(err.Error(), "outside scratch") {
+		t.Errorf("err = %v, want the operator-facing message to name the scratch boundary", err)
 	}
 	if _, statErr := os.Stat(outOrig); statErr == nil {
 		t.Fatal("outOrig exists: the secret's contents reached the job's real output path")
+	}
+}
+
+// TestStageOut_RefusesJunctionAtFinalComponent covers the ADVISORY Lstat
+// branch, which no other test reaches.
+//
+// TestStageOut_RefusesJunctionedScratchSubdir above plants its junction at an
+// intermediate component, so root.Lstat itself errors and the advisory block
+// is skipped — every junction refusal in this package actually came from the
+// open. Planting the junction at the FINAL component instead is what makes
+// root.Lstat succeed and report fs.ModeIrregular (Go surfaces a
+// IO_REPARSE_TAG_MOUNT_POINT that way, never as ModeSymlink), so the advisory
+// branch is the one that answers. Without this test, deleting that whole
+// block would leave the package green.
+func TestStageOut_RefusesJunctionAtFinalComponent(t *testing.T) {
+	scratch := t.TempDir()
+	stagedDir := filepath.Join(scratch, "0")
+	if err := os.MkdirAll(stagedDir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	secretDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(secretDir, "inner.txt"), []byte("daemon-only-contents"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	// The task's declared output path is itself a junction at a directory it
+	// must not be able to hand the daemon.
+	mklinkJunction(t, filepath.Join(stagedDir, "render.exr"), secretDir)
+
+	root, err := os.OpenRoot(scratch)
+	if err != nil {
+		t.Fatalf("OpenRoot: %v", err)
+	}
+	defer root.Close()
+
+	rel := filepath.Join("0", "render.exr")
+
+	// Assert the setup actually put the advisory branch in play: a test that
+	// passed because Lstat failed would be testing the open again.
+	li, err := root.Lstat(rel)
+	if err != nil {
+		t.Fatalf("Lstat on a final-component junction: %v; this test would prove nothing", err)
+	}
+	if li.Mode()&os.ModeIrregular == 0 {
+		t.Fatalf("Lstat mode = %v, want fs.ModeIrregular; this test would prove nothing", li.Mode())
+	}
+
+	f, err := openStageOutSource(root, rel)
+	if err == nil {
+		f.Close()
+		t.Fatal("want error refusing a junction at the stage-out source itself")
+	}
+	if !errors.Is(err, errStageOutReparse) {
+		t.Errorf("err = %v, want errStageOutReparse (the advisory Lstat branch)", err)
+	}
+	if errors.Is(err, errStageOutEscape) {
+		t.Errorf("err = %v, want the advisory Lstat to have refused this, not the open", err)
+	}
+}
+
+// TestStageOut_RefusesHardlinkedSourceOnWindows is the Windows half of
+// TestStager_StageOut_RefusesHardlinkedSource, which never runs here: that
+// test drives StageOut with the fakeSync fixture, a POSIX "#!/bin/sh" script
+// Windows cannot execute, so it skips and Windows link-count coverage on the
+// stage-out path was zero. NTFS supports hardlinks and os.Link needs no
+// privilege, so the primitive itself is fully available to a task.
+//
+// It drives openStageOutSource directly, the way the swap test below does —
+// no sync command is needed to exercise the check, which runs upstream of
+// both transfer mechanisms.
+func TestStageOut_RefusesHardlinkedSourceOnWindows(t *testing.T) {
+	scratch := t.TempDir()
+	stagedDir := filepath.Join(scratch, "0")
+	if err := os.MkdirAll(stagedDir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+
+	// A file outside scratch, and a second NAME for it inside scratch. The
+	// staged entry is an ordinary regular file with one inode and two links —
+	// it passes every other check in openStageOutSource.
+	outside := filepath.Join(t.TempDir(), "secret.txt")
+	if err := os.WriteFile(outside, []byte("daemon-only-contents"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	staged := filepath.Join(stagedDir, "render.exr")
+	if err := os.Link(outside, staged); err != nil {
+		t.Skipf("hardlinks unsupported between these temp dirs (not NTFS?): %v", err)
+	}
+
+	root, err := os.OpenRoot(scratch)
+	if err != nil {
+		t.Fatalf("OpenRoot: %v", err)
+	}
+	defer root.Close()
+
+	f, err := openStageOutSource(root, filepath.Join("0", "render.exr"))
+	if err == nil {
+		f.Close()
+		t.Fatal("want error refusing a stage-out source with an extra hardlink")
+	}
+	if !errors.Is(err, errStageOutHardlink) {
+		t.Errorf("err = %v, want errStageOutHardlink", err)
+	}
+	if !strings.Contains(err.Error(), "hardlink") {
+		t.Errorf("err = %v, want the operator-facing message to mention the hardlink refusal", err)
+	}
+}
+
+// TestStageOut_SwapAfterValidateIsRefused proves the stage-out TOCTOU is
+// CLOSED, not merely narrowed.
+//
+// Nothing kills a task's process group on a SUCCESSFUL exit (see
+// executor.runTask / killAndWait), so a background child that outlives its
+// task still owns the scratch subdirectory and can swap the source out after
+// validation and before the copy. This drives that window deterministically:
+// the two halves are called in sequence with the swap performed between them.
+// No sleep, no goroutine, no timing dependence — a flaky race test would get
+// marked flaky and disabled, and the gap would reopen silently.
+//
+// The property under test is that copyFromFile reads the DESCRIPTOR
+// openStageOutSource validated, so a swap at the path cannot change what is
+// copied. Step 3's assertion (a fresh path read now yields the attacker's
+// bytes) is what stops this test from being vacuous.
+func TestStageOut_SwapAfterValidateIsRefused(t *testing.T) {
+	scratch := t.TempDir()
+	stagedDir := filepath.Join(scratch, "0")
+	if err := os.MkdirAll(stagedDir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	src := filepath.Join(stagedDir, "render.exr")
+	if err := os.WriteFile(src, []byte("legit-task-output"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	root, err := os.OpenRoot(scratch)
+	if err != nil {
+		t.Fatalf("OpenRoot: %v", err)
+	}
+	defer root.Close()
+
+	rel := filepath.Join("0", "render.exr")
+	f, err := openStageOutSource(root, rel)
+	if err != nil {
+		t.Fatalf("openStageOutSource on an ordinary file: %v", err)
+	}
+	defer f.Close()
+
+	// THE SWAP — the window between validation and the read. NTFS frees the
+	// name immediately because os.Root opens with FILE_SHARE_DELETE, so this
+	// works with our handle still open.
+	if err := os.Rename(src, src+".moved"); err != nil {
+		t.Fatalf("swap step 1 (rename away): %v", err)
+	}
+	if err := os.WriteFile(src, []byte("attacker-bytes"), 0o600); err != nil {
+		t.Fatalf("swap step 2 (plant attacker file): %v", err)
+	}
+	if b, err := os.ReadFile(src); err != nil || string(b) != "attacker-bytes" {
+		t.Fatalf("the swap did not take (%q, %v); this test would prove nothing", b, err)
+	}
+
+	dest := filepath.Join(t.TempDir(), "render.exr")
+	if err := copyFromFile(f, dest, 0o600); err != nil {
+		t.Fatalf("copyFromFile: %v", err)
+	}
+
+	got, err := os.ReadFile(dest)
+	if err != nil {
+		t.Fatalf("read dest: %v", err)
+	}
+	if string(got) != "legit-task-output" {
+		t.Errorf("dest = %q, want %q — the copy followed the PATH and read the "+
+			"post-swap file instead of the validated descriptor", got, "legit-task-output")
+	}
+}
+
+// TestCopyFile_RefusesReparsePointSource proves the copy layer refuses a
+// junctioned source entirely on its own, with no upstream boundary check
+// involved — the same independence TestCopyFile_RefusesSourceWithExtraHardlink
+// asserts for the hardlink case on POSIX.
+func TestCopyFile_RefusesReparsePointSource(t *testing.T) {
+	scratch := t.TempDir()
+	secretDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(secretDir, "render.exr"), []byte("daemon-only-contents"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	mklinkJunction(t, filepath.Join(scratch, "0"), secretDir)
+
+	root, err := os.OpenRoot(scratch)
+	if err != nil {
+		t.Fatalf("OpenRoot: %v", err)
+	}
+	defer root.Close()
+
+	f, err := openStageOutSource(root, filepath.Join("0", "render.exr"))
+	if err == nil {
+		f.Close()
+		t.Fatal("want error opening a source reached through a junction")
+	}
+	// The junction is an INTERMEDIATE component here, so the kernel-enforced
+	// open is what refuses this, not the advisory Lstat — see
+	// TestStageOut_RefusesJunctionAtFinalComponent for the other branch.
+	if !errors.Is(err, errStageOutEscape) {
+		t.Errorf("err = %v, want errStageOutEscape (the kernel-enforced open refused the lookup)", err)
+	}
+	if !strings.Contains(err.Error(), "outside scratch") {
+		t.Errorf("err = %v, want it to name the scratch boundary", err)
+	}
+}
+
+// TestStageOut_OrdinaryFileUnaffected is the named default-configuration
+// regression test for H3: the adversarial checks must not cost the normal
+// path anything. An ordinary staged output still copies back byte for byte
+// with the built-in copy, which is what a worker with no staging
+// configuration uses.
+func TestStageOut_OrdinaryFileUnaffected(t *testing.T) {
+	scratch := t.TempDir()
+	s := New(scratch, builtinSentinel, false, discardLogger())
+
+	outOrig := filepath.Join(t.TempDir(), "render.exr")
+	entries := []protocol.StageEntry{
+		{Path: outOrig, Direction: "OUT", ObjectType: "FILE"},
+	}
+	rules, scratchDir, err := s.StageIn(context.Background(), "job1", "att1", entries, nil)
+	if err != nil {
+		t.Fatalf("StageIn: %v", err)
+	}
+	if err := os.WriteFile(rules[0].DestinationPath, []byte("rendered"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := s.StageOut(context.Background(), scratchDir, entries); err != nil {
+		t.Fatalf("StageOut on an ordinary output: %v", err)
+	}
+	if b, err := os.ReadFile(outOrig); err != nil || string(b) != "rendered" {
+		t.Fatalf("copied-out = %q err=%v, want %q", b, err, "rendered")
+	}
+}
+
+// TestStageOut_SharingViolationIsNotReportedAsEscape covers the honest-error
+// branch: a stage-out source the daemon simply cannot open right now must not
+// be reported as a containment breach.
+//
+// This is not hypothetical on Windows. Nothing kills a task's process group on
+// a SUCCESSFUL exit (see executor.processTree.release), so a background child
+// that outlives its task can still hold the staged output open with a
+// restrictive share mode; NTFS then answers the daemon's open with
+// ERROR_SHARING_VIOLATION. Go maps that to neither fs.ErrPermission nor
+// fs.ErrNotExist, so before the classification split it fell through to the
+// escape wording and told the operator their task had tried to break out of
+// scratch. Failing closed is right and unchanged — only the story is.
+func TestStageOut_SharingViolationIsNotReportedAsEscape(t *testing.T) {
+	scratch := t.TempDir()
+	stagedDir := filepath.Join(scratch, "0")
+	if err := os.MkdirAll(stagedDir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	staged := filepath.Join(stagedDir, "render.exr")
+	if err := os.WriteFile(staged, []byte("half-written-output"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	// Stand in for the surviving child: hold the file open sharing nothing.
+	name, err := windows.UTF16PtrFromString(staged)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h, err := windows.CreateFile(name, windows.GENERIC_READ, 0 /* dwShareMode: deny all */, nil,
+		windows.OPEN_EXISTING, windows.FILE_ATTRIBUTE_NORMAL, 0)
+	if err != nil {
+		t.Skipf("cannot take an exclusive handle on this filesystem: %v", err)
+	}
+	defer windows.CloseHandle(h) //nolint:errcheck // test teardown; a failure here cannot affect the assertion
+
+	root, err := os.OpenRoot(scratch)
+	if err != nil {
+		t.Fatalf("OpenRoot: %v", err)
+	}
+	defer root.Close()
+
+	f, err := openStageOutSource(root, filepath.Join("0", "render.exr"))
+	if err == nil {
+		f.Close()
+		t.Fatal("want an error: the source cannot be opened while another handle denies sharing")
+	}
+	if !errors.Is(err, errStageOutUnreadable) {
+		t.Errorf("err = %v, want errStageOutUnreadable (an access failure, not an attack)", err)
+	}
+	if errors.Is(err, errStageOutEscape) {
+		t.Errorf("err = %v, want it NOT classified as a containment breach", err)
+	}
+	if strings.Contains(err.Error(), "outside scratch") {
+		t.Errorf("err = %v, want the operator-facing message not to allege an escape", err)
 	}
 }

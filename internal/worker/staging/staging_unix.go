@@ -5,7 +5,9 @@
 package staging
 
 import (
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"syscall"
 )
@@ -43,4 +45,13 @@ func hasExtraHardlinks(f *os.File) (bool, error) {
 		return false, fmt.Errorf("stat_t unavailable for %q", f.Name())
 	}
 	return stat.Nlink > 1, nil
+}
+
+// isAccessError reports whether err from an os.Root lookup is a permission or
+// I/O failure rather than a containment refusal — see
+// classifyStageOutOpenError for why the two must not be worded alike. An
+// escape or a refused reparse point surfaces from os.Root as its own
+// "path escapes from parent" error (or ELOOP), never as one of these.
+func isAccessError(err error) bool {
+	return errors.Is(err, fs.ErrPermission) || errors.Is(err, syscall.EIO)
 }

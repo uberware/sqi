@@ -312,6 +312,57 @@ func (s *Stager) stageOutEntry(ctx context.Context, root *os.Root, scratchDir st
 	return copyFromFile(f, e.Path, info.Mode())
 }
 
+// Refusal classifications for [openStageOutSource]. Each names exactly ONE
+// branch of it, so a test can assert the specific path it exercises instead of
+// pattern-matching a message several branches happen to share.
+//
+// That distinction is load-bearing rather than tidiness. Two different things
+// refuse a junction: errStageOutReparse, when the advisory Root.Lstat below
+// saw a reparse point at rel's FINAL component, and errStageOutEscape, when
+// the kernel refused a lookup that met one ANYWHERE in rel. Both messages
+// necessarily say "junction", so a strings.Contains(err, "junction")
+// assertion cannot tell them apart — the whole advisory block could be
+// deleted with every test still green. errors.Is against these values can.
+//
+// Each sentinel's text IS the reason clause of the message the operator sees,
+// so wrapping one costs no wording: the strings other tests match on
+// ("symlink", "hardlink", "outside scratch dir") are unchanged.
+var (
+	errStageOutSymlink    = errors.New("is a symlink; sqi will not follow it to copy the file it points to")
+	errStageOutReparse    = errors.New("is a reparse point (junction or symlink); sqi will not follow it to copy the file it points to")
+	errStageOutEscape     = errors.New("resolves outside scratch dir, or reaches it through a symlink or junction")
+	errStageOutUnreadable = errors.New("could not be opened")
+	errStageOutNotRegular = errors.New("is not a regular file")
+	errStageOutHardlink   = errors.New("has more than one hardlink; sqi will not copy a file that may alias content outside scratch")
+)
+
+// classifyStageOutOpenError turns a Root.OpenFile failure into an error that
+// says which of three very different things happened. Reporting all of them as
+// a containment breach — which this did until the classification was split out
+// — sends an operator hunting an attack that never occurred:
+//
+//   - not-exist: the task simply produced no output. By far the most common
+//     failure of the three and not an attack, so keep it boring.
+//   - permission, sharing violation, I/O error: the daemon could not read a
+//     source it is entirely entitled to — a scratch subdirectory chowned away
+//     from it, a background child of the task still holding the file open
+//     with a restrictive Windows share mode, a failing disk. Failing closed
+//     is still correct and does not change; calling it an escape is not.
+//   - anything else: the lookup was refused. os.Root fails a lookup that
+//     leaves the root AND one that meets a reparse point, and both surface as
+//     "path escapes from parent", so this is where a real attack lands.
+func classifyStageOutOpenError(rel, rootName string, err error) error {
+	switch {
+	case errors.Is(err, fs.ErrNotExist):
+		return fmt.Errorf("open %q: %w", rel, err)
+	case isAccessError(err):
+		return fmt.Errorf("stage-out failed: %q %w from scratch dir %q; this is an access or I/O failure, not a containment breach: %w",
+			rel, errStageOutUnreadable, rootName, err)
+	default:
+		return fmt.Errorf("stage-out refused: %q %w (scratch dir %q): %w", rel, errStageOutEscape, rootName, err)
+	}
+}
+
 // openStageOutSource returns a validated, already-open read descriptor for one
 // stage-out source, or an error naming why it was refused. rel is the source's
 // path RELATIVE to root, which is rooted at the attempt's scratch directory.
@@ -351,6 +402,21 @@ func (s *Stager) stageOutEntry(ctx context.Context, root *os.Root, scratchDir st
 // below means POSIX keeps refusing any symlink at rel outright, preserving
 // the pre-H3 behavior and wording.
 //
+// On POSIX this is therefore NOT a pure strengthening, and should not be read
+// as one. Stage-out used to reach copyFile, whose O_NOFOLLOW refused ANY
+// symlink at the source's final component authoritatively, at the open. Now
+// Root.OpenFile FOLLOWS a symlink that stays inside the root, so the only
+// thing refusing an in-root symlink is the racy advisory Lstat above it. That
+// narrowing is accepted deliberately: it is not an escalation, because
+// everything under the per-attempt scratch directory is already task-owned
+// and task-writable (StageIn's ChownRecursive hands it over), so a task gains
+// nothing by symlinking one scratch path at another that it could not get by
+// writing the same bytes directly. Meanwhile the property that actually
+// matters — no escape from scratch — moved from a racy, and on Windows
+// simply wrong, filepath.EvalSymlinks computation to a kernel-enforced
+// lookup. A weaker check on something the task already controls, in exchange
+// for a sound one on the boundary.
+//
 // The remaining two checks run on the DESCRIPTOR, never on the path again:
 //
 //   - regular-file-only: refuses device nodes, FIFOs and sockets. None is a
@@ -376,20 +442,15 @@ func openStageOutSource(root *os.Root, rel string) (*os.File, error) {
 	if li, err := root.Lstat(rel); err == nil {
 		switch {
 		case li.Mode()&os.ModeSymlink != 0:
-			return nil, fmt.Errorf("stage-out refused: %q is a symlink; sqi will not follow it to copy the file it points to", rel)
+			return nil, fmt.Errorf("stage-out refused: %q %w", rel, errStageOutSymlink)
 		case li.Mode()&os.ModeIrregular != 0:
-			return nil, fmt.Errorf("stage-out refused: %q is a reparse point (junction or symlink); sqi will not follow it to copy the file it points to", rel)
+			return nil, fmt.Errorf("stage-out refused: %q %w", rel, errStageOutReparse)
 		}
 	}
 
 	f, err := root.OpenFile(rel, os.O_RDONLY, 0)
 	if err != nil {
-		if errors.Is(err, fs.ErrNotExist) {
-			// The task simply produced no output. Keep this boring: it is by
-			// far the most common failure and is not an attack.
-			return nil, fmt.Errorf("open %q: %w", rel, err)
-		}
-		return nil, fmt.Errorf("stage-out refused: %q resolves outside scratch dir %q, or reaches it through a symlink or junction: %w", rel, root.Name(), err)
+		return nil, classifyStageOutOpenError(rel, root.Name(), err)
 	}
 
 	info, err := f.Stat()
@@ -399,7 +460,7 @@ func openStageOutSource(root *os.Root, rel string) (*os.File, error) {
 	}
 	if !info.Mode().IsRegular() {
 		f.Close()
-		return nil, fmt.Errorf("stage-out refused: %q is not a regular file (mode %s)", rel, info.Mode())
+		return nil, fmt.Errorf("stage-out refused: %q %w (mode %s)", rel, errStageOutNotRegular, info.Mode())
 	}
 	linked, err := hasExtraHardlinks(f)
 	if err != nil {
@@ -408,7 +469,7 @@ func openStageOutSource(root *os.Root, rel string) (*os.File, error) {
 	}
 	if linked {
 		f.Close()
-		return nil, fmt.Errorf("stage-out refused: %q has more than one hardlink; sqi will not copy a file that may alias content outside scratch", rel)
+		return nil, fmt.Errorf("stage-out refused: %q %w", rel, errStageOutHardlink)
 	}
 	return f, nil
 }
