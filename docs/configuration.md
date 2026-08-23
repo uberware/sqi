@@ -1881,9 +1881,9 @@ weakest configuration it supports, and a secret that never travels cannot be
 read by an attacker who has attached to the broker or is reading the wire.
 The worker resolves that username to a real OS credential itself.
 
-This mechanism runs on both POSIX (Linux/macOS)
-and Windows (the worker must run as a LocalSystem service, or hold
-`SeAssignPrimaryTokenPrivilege`, to assume another account's identity); see
+This mechanism runs on both POSIX (Linux/macOS) and Windows (the worker must
+run as a LocalSystem service, or hold `SeAssignPrimaryTokenPrivilege`, to
+assume another account's identity); see
 [`docs/worker-configuration.md`](worker-configuration.md#isolation--run-as-user-task-execution)
 for the full worker-side `isolation` config block, the environment allowlist,
 and the per-platform requirements.

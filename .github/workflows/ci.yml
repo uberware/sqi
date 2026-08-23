@@ -936,12 +936,14 @@ jobs:
       # elevation, no throwaway OS accounts), so a shared list would hide
       # which prerequisite went missing.
       #
-      # The Windows staging tests — the stage-out containment set plus the
-      # stage-in hardlink refusal — carry t.Skipf escape hatches for a
-      # non-NTFS temp directory and for a CreateFile that cannot take an
-      # exclusive handle. A skipped test verifies nothing, and a green `go
-      # test` cannot tell the two apart — so every one of them is confirmed
-      # PASS by name here, the same way the isolation suite's names are below.
+      # The Windows staging tests below are a mix: the two hardlink-refusal
+      # tests and TestStageOut_SharingViolationIsNotReportedAsEscape carry a
+      # t.Skipf escape hatch (for a non-NTFS temp directory, and for a
+      # CreateFile that cannot take an exclusive handle, respectively), but
+      # the rest — including both junction tests — carry none. A skipped test
+      # verifies nothing, and a green `go test` cannot tell a skip from a pass
+      # — so every one of them is confirmed PASS by name here, the same way
+      # the isolation suite's names are below.
       - name: Assert the windows staging tests actually ran
         shell: bash
         run: |
@@ -1118,7 +1120,7 @@ jobs:
           )
           missing=0
           for name in "${expected[@]}"; do
-            if ! grep -q -- "--- PASS: $name" integration-output.log; then
+            if ! grep -q -- "--- PASS: $name " integration-output.log; then
               echo "::error::$name did not pass"
               missing=1
             fi
@@ -1213,7 +1215,7 @@ jobs:
           )
           missing=0
           for name in "${expected[@]}"; do
-            if ! grep -q -- "--- PASS: $name" discovery-output.log; then
+            if ! grep -q -- "--- PASS: $name " discovery-output.log; then
               echo "::error::$name did not pass"
               missing=1
             fi
@@ -1341,7 +1343,7 @@ jobs:
             TestFFmpegPreset_PortableRejectsBeyondItsCostCeiling \
             TestFFmpegPreset_SequenceEncodeNamesOutputAfterPattern \
           ; do
-            grep -q -- "--- PASS: ${name}" /tmp/ffmpeg-presets.log \
+            grep -q -- "--- PASS: ${name} " /tmp/ffmpeg-presets.log \
               || { echo "::error::${name} did not run to a PASS"; exit 1; }
           done
 
