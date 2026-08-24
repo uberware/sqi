@@ -975,26 +975,29 @@
 //     Value.String() rendered a list's string elements unquoted while
 //     string()'s JSON row quoted them (see the float-passthrough bullet
 //     above); that quoting gap closed in this wave, and the two were then
-//     measured to also agree byte-for-byte on ESCAPING for every case
-//     tried: an embedded double quote, non-ASCII, angle brackets and an
-//     ampersand, a newline, a backslash, tab, backspace, formfeed, carriage
-//     return, an emoji, U+2028/U+2029, and the empty string
-//     (TestValueString_VersusStringFunction). That is the full extent of
-//     the claim, and it must not be read as universal agreement: the two
-//     are INDEPENDENT implementations — Value.String() quotes a list's
-//     string elements with strconv.Quote (value.go), string()'s list row
-//     encodes with encoding/json and SetEscapeHTML(false) (funcsconv.go's
-//     writeJSONValue) — and a direct probe of the two encoders against each
-//     other, outside the set above, finds real divergences: on the C0
-//     controls U+0000, U+0001 and U+001B, strconv.Quote emits its own
-//     hex-escape form where the JSON encoder emits a \u00XX escape; on
-//     vertical tab (U+000B), Quote emits its own short escape where JSON
-//     emits \u000b; on DEL (U+007F), Quote escapes it where JSON leaves it
-//     literal; and on invalid UTF-8, Quote preserves the raw bytes where
-//     JSON substitutes U+FFFD — all four measured directly against both
-//     functions and pinned as regression tests, not just measured once
-//     (TestValueString_DivergesFromStringFunctionOutsideMeasuredSet). Do not
-//     widen the agreement claim past the set it was measured on.
+//     measured to also agree byte-for-byte on ESCAPING for thirteen cases:
+//     an embedded double quote, non-ASCII, angle brackets and an ampersand,
+//     a newline, a backslash, tab, backspace, formfeed, carriage return, an
+//     emoji, U+2028/U+2029, and the empty string
+//     (TestValueString_VersusStringFunction). That claim was deliberately
+//     NARROW, because the two were independent implementations —
+//     Value.String() used strconv.Quote while string()'s list row used
+//     encoding/json with SetEscapeHTML(false) — and a direct probe outside
+//     the measured set found real divergences on the C0 controls, vertical
+//     tab, DEL and invalid UTF-8, pinned in the opposite direction.
+//
+//     THAT IS NO LONGER THE SHAPE OF IT. openjd-specifications#176 added
+//     the rule that format-string interpolation "uses this same conversion"
+//     as string() and that the result "must parse as JSON". Go's spelling
+//     of a control character (\x01, and \a/\v for two JSON does not name)
+//     is not JSON at all, so every one of those divergences was a defect
+//     rather than a permitted difference. Both renderers now call
+//     funcsconv.go's jsonQuoteElement, so the agreement holds BY
+//     CONSTRUCTION for every input rather than by measurement over a set,
+//     and TestValueString_ListQuotingIsJSONEverywhere pins the six cases
+//     that used to diverge. The separator still differs from
+//     internal/openjd's canonical STORAGE form ("," there, ", " here), and
+//     paramjson.go states that difference where it lives.
 //
 //     unique() CHARGES PER COMPARISON, NOT PER ELEMENT — and the reason is
 //     a prediction that measurement overturned, not a preference. C1

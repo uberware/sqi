@@ -274,7 +274,14 @@ func (v Value) String() string {
 			// the regex family and the path .parts/.suffixes properties.
 			switch elem.Type.Code {
 			case CodeString, CodePath, CodeRangeExpr:
-				parts[i] = strconv.Quote(elem.s)
+				// jsonQuoteElement, NOT strconv.Quote: Go's quoting spells a
+				// control character "\x01" and has "\a"/"\v" forms JSON does
+				// not define, so it produced output no JSON parser accepts --
+				// which openjd-specifications#176 forbids outright, and which
+				// also made this rendering disagree with string()'s for the
+				// same list. Sharing funcsconv.go's quoter is what keeps
+				// section 2.2.1's "same conversion" true by construction.
+				parts[i] = jsonQuoteElement(elem.s)
 			default:
 				parts[i] = elem.String()
 			}
