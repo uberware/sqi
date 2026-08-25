@@ -100,6 +100,24 @@ func TestReprPwsh(t *testing.T) {
 		// list of text, not a nested array. A nested list must become a
 		// nested "@(...)" array literal instead.
 		{"nested list becomes a nested array literal", `repr_pwsh([['a'], ['b']])`, "@(@('a'), @('b'))"},
+		// Section 2.2.6, as restated by openjd-specifications#176: a
+		// ONE-element list whose element is itself a list takes the unary
+		// comma form, because "@(@(1, 2))" flattens to "@(1, 2)" under
+		// PowerShell's array-flattening rules while "@(,@(1, 2))" preserves
+		// the nesting. The rule is about the number of ELEMENTS, not the
+		// depth: a two-element list of lists needs no comma, and a
+		// one-element list of SCALARS must not get one (@('a') is already
+		// unambiguous, and @(,'a') would be a different, wronger thing to
+		// write).
+		{"single nested list takes the unary comma form", `repr_pwsh([[1, 2]])`, "@(,@(1, 2))"},
+		{"single nested EMPTY list takes the unary comma form", `repr_pwsh([[]])`, "@(,@())"},
+		{"two nested lists take no comma", `repr_pwsh([[1, 2], [3]])`, "@(@(1, 2), @(3))"},
+		{"single scalar element takes no comma", `repr_pwsh(['a'])`, "@('a')"},
+		// The rule recurses: each list decides for itself. The reference
+		// implementation refuses three levels of nesting outright ("Lists
+		// may be nested at most 2 levels deep"), so this row's ground truth
+		// is section 2.2.6's own wording, not the oracle.
+		{"unary comma applies at depth too", `repr_pwsh([[['a']], [['b']]])`, "@(@(,@('a')), @(,@('b')))"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
