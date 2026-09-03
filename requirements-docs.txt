@@ -8,4 +8,4 @@
 # mkdocs-material pins its own compatible mkdocs, pymdown-extensions, and
 # Pygments, all of which mkdocs.yml relies on.
 mkdocs==1.6.1
-mkdocs-material==9.7.6
+mkdocs-material==9.7.7
