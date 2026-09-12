@@ -259,18 +259,21 @@ presets:
       case: TestPresetTier3/ffmpeg-segment-transcode-expr/default
       required_on: [linux, darwin]
 
-  # required_on is EMPTY for this one, and that is the honest answer rather than a
-  # gap. Both of its steps declare `attr.worker.os.family anyOf ["windows"]`, and
-  # unlike a capability tag — which SQI_WORKER_CAPABILITY_TAGS simply asserts —
-  # that attribute is derived from the worker's runtime.GOOS at registration
-  # (capabilities.Detect) and translated by internal/scheduler/matcher.go's
-  # osFamily. Nothing in the test environment can make a darwin or linux worker
-  # answer "windows", so the job would sit `pending` until the timeout. Tier 3
-  # for this preset needs a Windows worker, which TestPresetTier3 does not yet
-  # run (it skips on Windows, where the sibling cases' POSIX commands have no
-  # equivalent); the case therefore SKIPS everywhere today, naming os.family as
-  # the reason, and claiming any platform in required_on would be a lie the
-  # registry is built to catch.
+  # There is NO Tier-3 block for this one, and that is the honest answer rather
+  # than a gap. Both of its steps declare `attr.worker.os.family anyOf
+  # ["windows"]`, and unlike a capability tag — which SQI_WORKER_CAPABILITY_TAGS
+  # simply asserts — that attribute is derived from the worker's runtime.GOOS at
+  # registration (capabilities.Detect) and translated by
+  # internal/scheduler/matcher.go's osFamily. Nothing in the test environment can
+  # make a darwin or linux worker answer "windows", so the job would sit
+  # `pending` until the timeout. Tier 3 for this preset needs a Windows worker,
+  # which TestPresetTier3 does not yet run (it skips on Windows, where the
+  # sibling cases' POSIX commands have no equivalent), so this entry deliberately
+  # carries no `tier3` block: absence is how this registry records a tier we
+  # cannot run here, the same way no entry carries a `tier2` block today. An
+  # empty required_on would be worse than nothing — `slices.Contains([], any)` is
+  # false on every GOOS that exists or ever will, so the registry's skip check
+  # could never fail for it, and the loader now rejects that shape outright.
   - name: ffmpeg-segment-transcode-powershell
     source: presets/sqi
     tier: 1
@@ -293,9 +296,6 @@ presets:
         an ordinary character to a POSIX PurePath — correct, but by accident rather
         than by design. Not proven: that powershell.exe accepts the script at all, or
         that Get-ChildItem -Filter orders as the comment claims.
-    tier3:
-      case: TestPresetTier3/ffmpeg-segment-transcode-powershell/default
-      required_on: []
 
   - name: script
     source: internal/product/builtins

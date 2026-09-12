@@ -248,6 +248,15 @@ func runTier3Case(t *testing.T, entry presettest.Entry, c presettest.Case, caseN
 	}
 
 	recs := env.records(t)
+	// Both assertions below are vacuous on an empty recording:
+	// assertInvocationCounts returns early when the fixture names no expected
+	// invocations (which Case's doc comment permits), and
+	// assertObservedMatchesComputed iterates OVER recs, so its body never runs.
+	// Without this guard such a case would pass having observed only that the job
+	// reached "completed" -- which the stub was installed precisely to go beyond.
+	if len(recs) == 0 {
+		t.Fatalf("stub recorded nothing; Tier 3 observed only that the job completed")
+	}
 	assertInvocationCounts(t, c, recs)
 	if !scriptShaped(snap) {
 		assertObservedMatchesComputed(t, snap, recs)
@@ -362,22 +371,35 @@ func requiredAttributeValue(attr openjd.AttributeRequirement) string {
 // unsatisfiableOSFamily returns the attr.worker.os.family requirement this host
 // cannot meet, or "" when every such requirement is satisfiable here.
 //
-// It exists for ffmpeg-segment-transcode-powershell, which requires "windows",
-// and there is NO way to fake that: the worker reports runtime.GOOS at
+// No registry entry reaches it today -- ffmpeg-segment-transcode-powershell,
+// which requires "windows", carries no tier3 block at all for that very reason.
+// It stays because the requirement is a property of the HOST that no test
+// environment can fake: the worker reports runtime.GOOS at
 // registration (capabilities.Detect) and the scheduler translates it
-// (internal/scheduler/matcher.go osFamily), so the attribute is a property of
-// the host rather than of the test environment — unlike a capability tag, which
-// SQI_WORKER_CAPABILITY_TAGS can simply assert. Without this gate the preset's
+// (internal/scheduler/matcher.go osFamily) — unlike a capability tag, which
+// SQI_WORKER_CAPABILITY_TAGS can simply assert. Without this gate such a preset's
 // job never leaves `pending` and the case fails on the 90s timeout with nothing
 // naming the cause.
+//
+// Both anyOf and allOf are inspected. os.family is single-valued per worker, so
+// an allOf listing anything other than exactly this host's family is
+// unsatisfiable here for the same reason; checking only anyOf would leave a
+// future allOf preset hanging for the whole 90s timeout instead of skipping with
+// a reason.
 func unsatisfiableOSFamily(t *testing.T, entry presettest.Entry) string {
 	t.Helper()
+	host := hostOSFamily()
 	for _, attr := range hostAttributeRequirements(t, entry) {
 		if attr.Name != "attr.worker.os.family" {
 			continue
 		}
-		if !slices.Contains(attr.AnyOf, hostOSFamily()) {
+		if len(attr.AnyOf) > 0 && !slices.Contains(attr.AnyOf, host) {
 			return strings.Join(attr.AnyOf, "|")
+		}
+		for _, want := range attr.AllOf {
+			if want != host {
+				return strings.Join(attr.AllOf, "&")
+			}
 		}
 	}
 	return ""

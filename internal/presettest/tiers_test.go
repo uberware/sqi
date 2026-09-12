@@ -46,6 +46,55 @@ presets:
 	}
 }
 
+// An execution-tier block with no required platform can never fail the
+// registry's skip check -- slices.Contains(nil, anything) is false on every GOOS
+// that exists or ever will -- so it would read as verified forever while proving
+// nothing. Omitting the block is how an unrunnable tier is recorded.
+func TestLoadRegistry_RejectsExecTierWithNoRequiredPlatform(t *testing.T) {
+	for _, field := range []string{"tier2", "tier3"} {
+		t.Run(field, func(t *testing.T) {
+			_, err := presettest.ParseRegistry([]byte(`
+presets:
+  - name: demo
+    source: presets/sqi
+    tier: 1
+    tier1: {cases: [default], caveat: x}
+    ` + field + `:
+      case: TestPresetTier3/demo/default
+      required_on: []
+`))
+			if err == nil {
+				t.Fatalf("ParseRegistry: want error for a %s block with an empty required_on, got nil", field)
+			}
+		})
+	}
+	// The same block WITH a platform is accepted, so the rule rejects the empty
+	// list rather than the block.
+	if _, err := presettest.ParseRegistry([]byte(`
+presets:
+  - name: demo
+    source: presets/sqi
+    tier: 1
+    tier1: {cases: [default], caveat: x}
+    tier3:
+      case: TestPresetTier3/demo/default
+      required_on: [linux]
+`)); err != nil {
+		t.Errorf("ParseRegistry: a tier3 block naming a platform must parse, got %v", err)
+	}
+	// And omitting the block entirely stays legal -- that is the documented way
+	// to record a tier nothing can run.
+	if _, err := presettest.ParseRegistry([]byte(`
+presets:
+  - name: demo
+    source: presets/sqi
+    tier: 1
+    tier1: {cases: [default], caveat: x}
+`)); err != nil {
+		t.Errorf("ParseRegistry: an entry with no tier3 block must parse, got %v", err)
+	}
+}
+
 func TestLoadRegistry_RejectsUnknownSourceAndDuplicates(t *testing.T) {
 	if _, err := presettest.ParseRegistry([]byte(`
 presets:

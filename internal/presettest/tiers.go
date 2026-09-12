@@ -36,6 +36,10 @@ type TierExec struct {
 	// RequiredOn lists the GOOS values on which that case MUST actually run. If
 	// it skips on one of them, the registry verification fails. A target that
 	// can silently pass while running nothing is worse than no target.
+	//
+	// It must name at least one platform; the loader rejects an empty list,
+	// because a claim required nowhere can never fail. A tier that cannot be run
+	// anywhere is recorded by omitting the block entirely.
 	RequiredOn []string `yaml:"required_on"`
 }
 
@@ -117,11 +121,30 @@ func validateEntry(i int, e Entry, seen map[string]bool) error {
 			"presettest: %s: tier1 has no caveat -- state what the argv snapshot does NOT prove", e.Name,
 		)
 	}
-	if e.Tier3 != nil && e.Tier3.Case == "" {
-		return fmt.Errorf("presettest: %s: tier3 block names no case", e.Name)
+	if err := validateTierExec(e.Name, "tier2", e.Tier2); err != nil {
+		return err
 	}
-	if e.Tier2 != nil && e.Tier2.Case == "" {
-		return fmt.Errorf("presettest: %s: tier2 block names no case", e.Name)
+	return validateTierExec(e.Name, "tier3", e.Tier3)
+}
+
+// validateTierExec checks one execution-tier block. A nil block is fine:
+// OMITTING the block is how this registry records a tier we cannot run, which is
+// why an empty RequiredOn is an error rather than a weaker claim.
+func validateTierExec(name, field string, t *TierExec) error {
+	if t == nil {
+		return nil
+	}
+	if t.Case == "" {
+		return fmt.Errorf("presettest: %s: %s block names no case", name, field)
+	}
+	// slices.Contains(nil, anything) is false on every GOOS that exists or ever
+	// will, so a block with no required platform can never fail the registry's
+	// skip check -- it would look verified forever while proving nothing.
+	if len(t.RequiredOn) == 0 {
+		return fmt.Errorf(
+			"presettest: %s: %s block requires no platform, so its claim could never fail"+
+				" -- omit the block instead of listing an empty required_on", name, field,
+		)
 	}
 	return nil
 }
