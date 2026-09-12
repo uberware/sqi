@@ -1,0 +1,201 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+#
+# Which validation tier each shipped preset and built-in product has actually
+# reached. See docs/preset-library.md for what each tier proves.
+#
+# THIS FILE IS VERIFIED, NOT DECLARATIVE. internal/presettest and
+# test/integration/preset_tiers_test.go refuse a claim that is not backed by a
+# fixture, a golden, or a named test that actually ran — including a Tier-3
+# claim whose case skipped on a platform listed in required_on. A tier here is a
+# fact about the test suite, not an intention.
+presets:
+  - name: blender-batch-render
+    source: presets/sqi
+    tier: 1
+    tier1:
+      cases: [default, multi-frame-chunk]
+      caveat: >-
+        argv derived from Blender 4.x command-line documentation; no Blender has
+        executed it.
+
+  - name: maya-layer-render
+    source: presets/sqi
+    tier: 1
+    tier1:
+      cases: [default, multi-frame-chunk]
+      caveat: >-
+        argv derived from Autodesk's documented Maya Render command-line flags
+        (Render -r <renderer> -s/-e -rl <layer>); no Maya render session has
+        executed it.
+
+  - name: maya-scene-render
+    source: presets/sqi
+    tier: 1
+    tier1:
+      cases: [default, multi-frame-chunk]
+      caveat: >-
+        argv derived from Autodesk's documented Maya Render command-line flags
+        (Render -r <renderer> -s/-e -rd <dir>); no Maya render session has
+        executed it.
+
+  - name: mistika-boutique-render
+    source: presets/sqi
+    tier: 1
+    tier1:
+      cases: [default, multi-frame-chunk]
+      caveat: >-
+        argv derived from SGO's documented Mistika Boutique command-line
+        invocation (mistika -r <scene> -s/-e); no Mistika installation has
+        executed it, and sqi has no in-application Mistika submitter to
+        cross-check the convention against.
+
+  - name: mistika-vr-render
+    source: presets/sqi
+    tier: 1
+    tier1:
+      cases: [default, multi-frame-chunk]
+      caveat: >-
+        argv derived from SGO's documented Mistika VR command-line invocation
+        (vr -r <scene> -s/-e); no Mistika installation has executed it, and sqi
+        has no in-application Mistika submitter to cross-check the convention
+        against.
+
+  - name: mistika-workflows-render
+    source: presets/sqi
+    tier: 1
+    tier1:
+      cases: [default, multi-frame-chunk]
+      caveat: >-
+        argv derived from SGO's documented Mistika Workflows command-line
+        invocation (workflows -r <scene> -s/-e); no Mistika installation has
+        executed it, and sqi has no in-application Mistika submitter to
+        cross-check the convention against.
+
+  - name: houdini-rop-render
+    source: presets/sqi
+    tier: 1
+    tier1:
+      cases: [default, chunked]
+      caveat: >-
+        argv derived from SideFX's documented hython command-line convention for
+        driving a ROP via an embedded Python driver script; no Houdini/hython
+        installation has executed it.
+
+  - name: nuke-write-render
+    source: presets/sqi
+    tier: 1
+    tier1:
+      cases: [default, chunked]
+      caveat: >-
+        argv derived from Foundry's documented nuke -x batch-render flags
+        (-X <write node> -F <frame list>); no Nuke installation has executed it.
+
+  - name: nuke-script-render
+    source: presets/sqi
+    tier: 1
+    tier1:
+      cases: [default, chunked]
+      caveat: >-
+        argv derived from Foundry's documented nuke -x batch-render flags
+        (-F <frame list>, rendering every enabled Write node); no Nuke
+        installation has executed it.
+
+  - name: ffmpeg-transcode
+    source: presets/sqi
+    tier: 1
+    tier1:
+      cases: [default]
+      caveat: >-
+        unlike the documentation-derived caveats above, this preset already has
+        stronger evidence than its Tier-1 argv snapshot: real ffmpeg runs it
+        end to end in test/integration/ffmpeg_presets_test.go, which decodes the
+        produced file and asserts on its actual duration and codec. The Tier-1
+        golden is a faster, non-executing companion check, not the only
+        evidence.
+
+  - name: ffmpeg-sequence-encode
+    source: presets/sqi
+    tier: 1
+    tier1:
+      cases: [default]
+      caveat: >-
+        unlike the documentation-derived caveats above, this preset already has
+        stronger evidence than its Tier-1 argv snapshot: real ffmpeg encodes a
+        real frame sequence with it in test/integration/ffmpeg_presets_test.go,
+        which asserts on the produced file's name and duration. The Tier-1
+        golden is a faster, non-executing companion check, not the only
+        evidence.
+
+  - name: ffmpeg-segment-transcode-bash
+    source: presets/sqi
+    tier: 1
+    tier1:
+      cases: [default]
+      caveat: >-
+        unlike the documentation-derived caveats above, this preset already has
+        stronger evidence than its Tier-1 argv snapshot: real ffmpeg transcodes
+        segments and a real bash process joins them in
+        test/integration/ffmpeg_presets_test.go
+        (TestFFmpegPreset_BashSegmentTranscodeJoins), which asserts on the
+        joined output's duration. That test skips when bash is not on PATH, so
+        a local pass proves nothing unless the "--- PASS" line is confirmed.
+
+  - name: ffmpeg-segment-transcode-expr
+    source: presets/sqi
+    tier: 1
+    tier1:
+      cases: [default]
+      caveat: >-
+        unlike the documentation-derived caveats above, this preset already has
+        stronger evidence than its Tier-1 argv snapshot: real ffmpeg transcodes
+        segments and the template's own EXPR-generated concat list joins them
+        (no shell) in test/integration/ffmpeg_presets_test.go, which asserts on
+        the joined output's duration and on slice count/naming. This is the
+        variant every other segment-transcode case in that file exercises most
+        heavily.
+
+  - name: ffmpeg-segment-transcode-powershell
+    source: presets/sqi
+    tier: 1
+    tier1:
+      cases: [default]
+      caveat: >-
+        unlike the documentation-derived caveats above, this preset already has
+        stronger evidence than its Tier-1 argv snapshot: real ffmpeg transcodes
+        segments and a real PowerShell process joins them in
+        test/integration/ffmpeg_presets_test.go
+        (TestFFmpegPreset_PowerShellSegmentTranscodeJoins), which asserts on the
+        joined output's duration. That test skips on any non-Windows worker, so
+        a local pass on macOS or Linux proves nothing unless it actually ran on
+        Windows.
+
+  - name: script
+    source: internal/product/builtins
+    tier: 1
+    tier1:
+      cases: [default]
+      caveat: >-
+        argv derived from the /bin/sh -c convention documented in the product's
+        own readme; no worker has actually invoked /bin/sh with the resulting
+        command under this harness.
+
+  - name: python
+    source: internal/product/builtins
+    tier: 1
+    tier1:
+      cases: [default]
+      caveat: >-
+        argv derived from the interpreter-plus-script-path convention documented
+        in the product's own readme (<Interpreter> <embedded script.py>); no
+        Python interpreter has executed the resulting script under this
+        harness.
+
+  - name: container
+    source: internal/product/builtins
+    tier: 1
+    tier1:
+      cases: [default]
+      caveat: >-
+        argv derived from the documented "docker run --rm <image>" convention
+        in the product's own readme; no Docker daemon has pulled or run the
+        resulting image under this harness.
