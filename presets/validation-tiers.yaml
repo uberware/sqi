@@ -15,8 +15,14 @@ presets:
     tier1:
       cases: [default, multi-frame-chunk]
       caveat: >-
-        argv derived from Blender 4.x command-line documentation; no Blender has
-        executed it.
+        argv derived from Blender 4.x command-line documentation. The goldens show
+        the documented ordering rule holding — -o/-s/-e all precede -a, which
+        triggers the render — and chunk bounds 1-5 then 6-10 under a patched chunk
+        size. No Blender has executed it, so the #### frame-padding token in -o and
+        whether Blender appends its own extension to the supplied .png are
+        unverified. Neither golden covers a stepped Frames range at a chunk size
+        above 1: -s/-e is a contiguous span, so the skipped frames would be
+        rendered (see docs/openjd-extensions/sqi-chunk-bounds.md).
 
   - name: maya-layer-render
     source: presets/sqi
@@ -25,8 +31,13 @@ presets:
       cases: [default, multi-frame-chunk]
       caveat: >-
         argv derived from Autodesk's documented Maya Render command-line flags
-        (Render -r <renderer> -s/-e -rl <layer>); no Maya render session has
-        executed it.
+        (Render -r <renderer> -s/-e -rl <layer> -rd <dir> <scene>). The goldens
+        cover the shipped one-frame-per-task shape and a patched chunk size of 5
+        (1-5 then 6-10, so both bound ends are reviewed). No Maya render session has
+        executed it, so whether the chosen renderer honours -rl and -rd, and whether
+        -r file resolves the scene's own renderer, are unverified. A stepped Frames
+        range at a chunk size above 1 is NOT covered and would render the frames the
+        step excluded (docs/openjd-extensions/sqi-chunk-bounds.md).
 
   - name: maya-scene-render
     source: presets/sqi
@@ -35,19 +46,28 @@ presets:
       cases: [default, multi-frame-chunk]
       caveat: >-
         argv derived from Autodesk's documented Maya Render command-line flags
-        (Render -r <renderer> -s/-e -rd <dir>); no Maya render session has
-        executed it.
+        (Render -r <renderer> -s/-e -rd <dir> <scene>). Same coverage and same gaps
+        as maya-layer-render, minus -rl: the goldens review the shipped
+        one-frame-per-task shape and a patched chunk size of 5, and no Maya render
+        session has executed either. Which layers Maya treats as renderable — the
+        whole point of this variant — is not observable in argv at all.
 
   - name: mistika-boutique-render
     source: presets/sqi
     tier: 1
     tier1:
-      cases: [default, multi-frame-chunk]
+      cases: [default, multi-frame-chunk, stepped-range]
       caveat: >-
-        argv derived from SGO's documented Mistika Boutique command-line
-        invocation (mistika -r <scene> -s/-e); no Mistika installation has
-        executed it, and sqi has no in-application Mistika submitter to
-        cross-check the convention against.
+        argv derived from SGO's documented Mistika Boutique/Ultima command-line
+        invocation (mistika -r <scene> -s/-e). Weaker than the other
+        documentation-derived claims here in one specific way: the COMMAND TOKEN
+        itself (mistika) is unverified as well as its flags, because no Mistika
+        installation has executed it and sqi has no in-application Mistika
+        submitter to cross-check the convention against. This preset also ships
+        chunks.defaultTaskCount 10, so a stepped Frames range loses its step at the
+        SHIPPED chunk size — mistika-boutique-render's stepped-range golden shows
+        Frame=1-19:2 reaching the renderer as -s 1 -e 19, i.e. ten requested frames
+        becoming nineteen rendered ones.
 
   - name: mistika-vr-render
     source: presets/sqi
@@ -55,10 +75,16 @@ presets:
     tier1:
       cases: [default, multi-frame-chunk]
       caveat: >-
-        argv derived from SGO's documented Mistika VR command-line invocation
-        (vr -r <scene> -s/-e); no Mistika installation has executed it, and sqi
-        has no in-application Mistika submitter to cross-check the convention
-        against.
+        argv derived from SGO's documented Mistika VR command-line
+        invocation (vr -r <scene> -s/-e). Weaker than the other
+        documentation-derived claims here in one specific way: the COMMAND TOKEN
+        itself (vr) is unverified as well as its flags, because no Mistika
+        installation has executed it and sqi has no in-application Mistika
+        submitter to cross-check the convention against. This preset also ships
+        chunks.defaultTaskCount 10, so a stepped Frames range loses its step at the
+        SHIPPED chunk size — mistika-boutique-render's stepped-range golden shows
+        Frame=1-19:2 reaching the renderer as -s 1 -e 19, i.e. ten requested frames
+        becoming nineteen rendered ones.
 
   - name: mistika-workflows-render
     source: presets/sqi
@@ -67,38 +93,58 @@ presets:
       cases: [default, multi-frame-chunk]
       caveat: >-
         argv derived from SGO's documented Mistika Workflows command-line
-        invocation (workflows -r <scene> -s/-e); no Mistika installation has
-        executed it, and sqi has no in-application Mistika submitter to
-        cross-check the convention against.
+        invocation (workflows -r <scene> -s/-e). Weaker than the other
+        documentation-derived claims here in one specific way: the COMMAND TOKEN
+        itself (workflows) is unverified as well as its flags, because no Mistika
+        installation has executed it and sqi has no in-application Mistika
+        submitter to cross-check the convention against. This preset also ships
+        chunks.defaultTaskCount 10, so a stepped Frames range loses its step at the
+        SHIPPED chunk size — mistika-boutique-render's stepped-range golden shows
+        Frame=1-19:2 reaching the renderer as -s 1 -e 19, i.e. ten requested frames
+        becoming nineteen rendered ones.
 
   - name: houdini-rop-render
     source: presets/sqi
     tier: 1
     tier1:
-      cases: [default, chunked]
+      cases: [default, stepped-range]
       caveat: >-
         argv derived from SideFX's documented hython command-line convention for
-        driving a ROP via an embedded Python driver script; no Houdini/hython
-        installation has executed it.
+        driving a ROP via an embedded Python driver script. Stronger than the other
+        render presets in one respect: the chunk syntax the driver must parse is
+        visible in the golden (1-10, and 1-19:2 in the stepped-range case) alongside
+        the parser itself, so the two can be read against each other. Still, no
+        Houdini or hython installation has executed it: hou.hipFile.load,
+        hou.node and RopNode.render(frame_range=...) are unexercised, and a golden
+        cannot show that hython puts the script's own path in sys.argv[0].
 
   - name: nuke-write-render
     source: presets/sqi
     tier: 1
     tier1:
-      cases: [default, chunked]
+      cases: [default, stepped-range]
       caveat: >-
         argv derived from Foundry's documented nuke -x batch-render flags
         (-X <write node> -F <frame list>); no Nuke installation has executed it.
+        READ THE stepped-range GOLDEN BEFORE TRUSTING THIS ONE: it shows a stepped
+        Frames range reaching Nuke as -F 1-19:2, and Foundry documents Nuke's frame
+        increment separator as x (1-19x2), not the colon of OpenJD range syntax.
+        This preset's own readme tells operators to type 1-100:2. A real Nuke (Tier
+        2) is what would settle whether -F rejects the colon form, and nothing at
+        Tier 1 can.
 
   - name: nuke-script-render
     source: presets/sqi
     tier: 1
     tier1:
-      cases: [default, chunked]
+      cases: [default, stepped-range]
       caveat: >-
         argv derived from Foundry's documented nuke -x batch-render flags
-        (-F <frame list>, rendering every enabled Write node); no Nuke
-        installation has executed it.
+        (-F <frame list>, rendering every enabled Write node); no Nuke installation
+        has executed it, so which Write nodes are enabled — this variant's entire
+        subject — is invisible in argv. It also shares nuke-write-render's suspected
+        -F increment-separator defect: see the stepped-range golden, which passes
+        Nuke -F 1-19:2 where Foundry documents 1-19x2.
 
   - name: ffmpeg-transcode
     source: presets/sqi
@@ -107,67 +153,95 @@ presets:
       cases: [default]
       caveat: >-
         unlike the documentation-derived caveats above, this preset already has
-        stronger evidence than its Tier-1 argv snapshot: real ffmpeg runs it
-        end to end in test/integration/ffmpeg_presets_test.go, which decodes the
-        produced file and asserts on its actual duration and codec. The Tier-1
-        golden is a faster, non-executing companion check, not the only
-        evidence.
+        stronger evidence than its Tier-1 argv snapshot: real ffmpeg runs it end to
+        end in test/integration/ffmpeg_presets_test.go
+        (TestFFmpegPreset_TranscodeProducesPlayableOutput), which decodes the produced
+        file and asserts on its actual duration and codec. The Tier-1 golden is a
+        faster, non-executing companion check, not the only evidence. One case is the
+        whole preset here: it declares no parameter space, so there is no second
+        expansion shape. What neither proves is that -crf is meaningful when
+        VideoCodec is copy; ffmpeg ignores it with a warning.
 
   - name: ffmpeg-sequence-encode
     source: presets/sqi
     tier: 1
     tier1:
-      cases: [default]
+      cases: [default, offset-range]
       caveat: >-
         unlike the documentation-derived caveats above, this preset already has
-        stronger evidence than its Tier-1 argv snapshot: real ffmpeg encodes a
-        real frame sequence with it in test/integration/ffmpeg_presets_test.go,
-        which asserts on the produced file's name and duration. The Tier-1
-        golden is a faster, non-executing companion check, not the only
-        evidence.
+        stronger evidence than its Tier-1 argv snapshot: real ffmpeg encodes a real
+        frame sequence with it in test/integration/ffmpeg_presets_test.go, which
+        asserts on the produced file's name and duration. The two Tier-1 cases add
+        what that single run cannot show — the EXPR-derived output filename under
+        both separator shapes (beauty_%04d and .plate.%04d, i.e. the underscore and
+        the dot that rstrip(..., '_-.') must strip) and -frames:v at a non-1 start
+        frame (1001-1048 -> 48, a count and not an end frame). It has no parameter
+        space, so neither case is a second expansion shape. Colour handling is
+        unverified and unopinionated: a linear EXR sequence forced to yuv420p with no
+        transform will look dark, and no test asserts otherwise.
 
   - name: ffmpeg-segment-transcode-bash
     source: presets/sqi
     tier: 1
     tier1:
-      cases: [default]
+      cases: [default, uneven-tail]
       caveat: >-
         unlike the documentation-derived caveats above, this preset already has
         stronger evidence than its Tier-1 argv snapshot: real ffmpeg transcodes
         segments and a real bash process joins them in
         test/integration/ffmpeg_presets_test.go
-        (TestFFmpegPreset_BashSegmentTranscodeJoins), which asserts on the
-        joined output's duration. That test skips when bash is not on PATH, so
-        a local pass proves nothing unless the "--- PASS" line is confirmed.
+        (TestFFmpegPreset_BashSegmentTranscodeJoins), which asserts on the joined
+        output's duration. That test skips when bash is not on PATH, so a local pass
+        proves nothing unless the "--- PASS" line is confirmed. The two Tier-1 cases
+        add the review that test cannot do: the goldens put the join script's glob
+        (<dir>/<stem>_seg_*.<ext>) next to the exact slice paths the Transcode step
+        writes, at 3 slices and at 4 (uneven-tail, 7s in 2s slices, which is also the
+        shape a truncating division would get wrong). Not proven: that endOfLine LF
+        survives to a WINDOWS worker — this golden was rendered on a POSIX host,
+        where LF is what you would get either way — and the concat list quotes
+        slice paths as file '<path>', which a path containing a single quote would
+        break.
 
   - name: ffmpeg-segment-transcode-expr
     source: presets/sqi
     tier: 1
     tier1:
-      cases: [default]
+      cases: [default, uneven-tail]
       caveat: >-
         unlike the documentation-derived caveats above, this preset already has
         stronger evidence than its Tier-1 argv snapshot: real ffmpeg transcodes
-        segments and the template's own EXPR-generated concat list joins them
-        (no shell) in test/integration/ffmpeg_presets_test.go, which asserts on
-        the joined output's duration and on slice count/naming. This is the
-        variant every other segment-transcode case in that file exercises most
-        heavily.
+        segments and the template's own EXPR-generated concat list joins them (no
+        shell) in test/integration/ffmpeg_presets_test.go, which asserts on the joined
+        output's duration and on slice count/naming. This is the variant every other
+        segment-transcode case in that file exercises most heavily. What the two
+        Tier-1 goldens add is the only side-by-side comparison that exists: the
+        resolved concat-list body and the Transcode step's slice paths are both
+        printed in full, and they are character-identical at 3 slices and at 4
+        (uneven-tail). Not proven: the file '<path>' quoting is not escaped, so a
+        slice path containing a single quote would break the concat parse.
 
   - name: ffmpeg-segment-transcode-powershell
     source: presets/sqi
     tier: 1
     tier1:
-      cases: [default]
+      cases: [default, uneven-tail]
       caveat: >-
         unlike the documentation-derived caveats above, this preset already has
         stronger evidence than its Tier-1 argv snapshot: real ffmpeg transcodes
         segments and a real PowerShell process joins them in
         test/integration/ffmpeg_presets_test.go
         (TestFFmpegPreset_PowerShellSegmentTranscodeJoins), which asserts on the
-        joined output's duration. That test skips on any non-Windows worker, so
-        a local pass on macOS or Linux proves nothing unless it actually ran on
-        Windows.
+        joined output's duration. That test skips on any non-Windows worker, so a
+        local pass on macOS or Linux proves nothing unless it actually ran on
+        Windows — which is exactly why the Tier-1 goldens matter most here: they are
+        the only review this variant gets off Windows. They pin the two things that
+        shipped broken before (667b921, d7d8fcc): the embedded file's on-disk name is
+        join.ps1, which powershell -File requires, and its body carries no byte-order
+        mark. The cases also use native C:\... paths and show them surviving the
+        POSIX-flavoured path engine intact, which works only because a backslash is
+        an ordinary character to a POSIX PurePath — correct, but by accident rather
+        than by design. Not proven: that powershell.exe accepts the script at all, or
+        that Get-ChildItem -Filter orders as the comment claims.
 
   - name: script
     source: internal/product/builtins

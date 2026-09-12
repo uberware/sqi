@@ -1,0 +1,44 @@
+preset: nuke-write-render
+case:   stepped-range
+params:
+  Frames=1-60:2
+  SceneFile=/mnt/show/seq010/shot0010/comp/shot0010_comp_v021.nk
+  WriteNode=Write_exr_main
+
+step "Render" — 3 tasks
+
+task 1/3  name="Render[Frames=1-19:2]"
+  task params:
+    Frames=1-19:2
+  command: nuke
+  args:
+    [0]  -x
+    [1]  -X
+    [2]  Write_exr_main
+    [3]  -F
+    [4]  1-19:2
+    [5]  /mnt/show/seq010/shot0010/comp/shot0010_comp_v021.nk
+
+task 2/3  name="Render[Frames=21-39:2]"
+  task params:
+    Frames=21-39:2
+  command: nuke
+  args:
+    [0]  -x
+    [1]  -X
+    [2]  Write_exr_main
+    [3]  -F
+    [4]  21-39:2
+    [5]  /mnt/show/seq010/shot0010/comp/shot0010_comp_v021.nk
+
+task 3/3  name="Render[Frames=41-59:2]"
+  task params:
+    Frames=41-59:2
+  command: nuke
+  args:
+    [0]  -x
+    [1]  -X
+    [2]  Write_exr_main
+    [3]  -F
+    [4]  41-59:2
+    [5]  /mnt/show/seq010/shot0010/comp/shot0010_comp_v021.nk

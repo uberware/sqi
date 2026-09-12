@@ -1,0 +1,49 @@
+preset: mistika-workflows-render
+case:   default
+params:
+  Frames=1-24
+  SceneFile=/mnt/show/seq010/shot0010/render/shot0010_conform_v003.rnd
+
+step "Render" — 3 tasks
+
+task 1/3  name="Render[Frame=1-10,Frame.End=10,Frame.Start=1]"
+  task params:
+    Frame=1-10
+    Frame.End=10
+    Frame.Start=1
+  command: workflows
+  args:
+    [0]  -r
+    [1]  /mnt/show/seq010/shot0010/render/shot0010_conform_v003.rnd
+    [2]  -s
+    [3]  1
+    [4]  -e
+    [5]  10
+
+task 2/3  name="Render[Frame=11-20,Frame.End=20,Frame.Start=11]"
+  task params:
+    Frame=11-20
+    Frame.End=20
+    Frame.Start=11
+  command: workflows
+  args:
+    [0]  -r
+    [1]  /mnt/show/seq010/shot0010/render/shot0010_conform_v003.rnd
+    [2]  -s
+    [3]  11
+    [4]  -e
+    [5]  20
+
+task 3/3  name="Render[Frame=21-24,Frame.End=24,Frame.Start=21]"
+  task params:
+    Frame=21-24
+    Frame.End=24
+    Frame.Start=21
+  command: workflows
+  args:
+    [0]  -r
+    [1]  /mnt/show/seq010/shot0010/render/shot0010_conform_v003.rnd
+    [2]  -s
+    [3]  21
+    [4]  -e
+    [5]  24
