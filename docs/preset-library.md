@@ -257,11 +257,14 @@ them.
 
 ## Validation tiers
 
-Every shipped job type — the 14 presets under `presets/sqi/` and
-`presets/testing/` above, plus the three built-in products documented in
-[`docs/development.md`](development.md#adding-a-product) — is tracked in
-`presets/validation-tiers.yaml`, a registry stating which validation tier that
-job type has actually reached. The tiers are:
+`presets/validation-tiers.yaml` tracks exactly 17 entries — the 14 presets
+under `presets/sqi/` plus the three built-in products documented in
+[`docs/development.md`](development.md#adding-a-product) — stating which
+validation tier each job type has actually reached. The four `presets/testing/`
+presets above are intentionally out of scope for this registry: unlike the
+reference presets, they need no vendor application to prove anything — they
+*are* the stand-in executable, meant to be installed and run directly against
+a real farm rather than reviewed tier by tier. The tiers are:
 
 - **Tier 1 — argv snapshot.** The template is expanded and resolved through
   the real production submit → assign → resolve pipeline
