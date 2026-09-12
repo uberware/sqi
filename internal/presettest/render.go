@@ -66,7 +66,7 @@ func Render(s Snapshot) string {
 			}
 			for _, f := range task.Files {
 				fmt.Fprintf(&b, "  embedded file %q (%s):\n", f.Name, fileName(f))
-				for _, line := range strings.Split(strings.TrimRight(normalize(f.Data), "\n"), "\n") {
+				for line := range strings.SplitSeq(strings.TrimRight(normalize(f.Data), "\n"), "\n") {
 					fmt.Fprintf(&b, "    %s\n", line)
 				}
 			}
