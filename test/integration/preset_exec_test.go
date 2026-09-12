@@ -30,6 +30,14 @@ import (
 	stubrecord "github.com/uberware/sqi/test/stubproc/record"
 )
 
+// The stub binary is cached across every test in this package (see
+// presettest.BuildStub), so no single test can own its directory. TestMain
+// drains packageCleanups; this is the same arrangement the OIDC suite's
+// container uses.
+func init() {
+	packageCleanups = append(packageCleanups, presettest.RemoveStub)
+}
+
 // presetJobTimeout covers worker registration plus a stubbed "render".
 const presetJobTimeout = 90 * time.Second
 
