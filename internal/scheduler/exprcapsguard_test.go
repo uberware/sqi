@@ -93,8 +93,11 @@ func productionCallersOf(t *testing.T, name string) []string {
 	for _, e := range entries {
 		// The "._" prefix skip is for macOS AppleDouble sidecar files, which
 		// live beside the sources on some volumes and are not Go at all.
+		// seam.go exports test hooks that deliberately bypass the normal dispatch
+		// path; they are not production dispatch paths and should be excluded.
 		if e.IsDir() || !strings.HasSuffix(e.Name(), ".go") ||
-			strings.HasSuffix(e.Name(), "_test.go") || strings.HasPrefix(e.Name(), ".") {
+			strings.HasSuffix(e.Name(), "_test.go") || strings.HasPrefix(e.Name(), ".") ||
+			strings.HasSuffix(e.Name(), "seam.go") {
 			continue
 		}
 		file, err := parser.ParseFile(fset, filepath.Join(".", e.Name()), nil, 0)
