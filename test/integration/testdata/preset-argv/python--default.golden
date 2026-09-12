@@ -1,0 +1,14 @@
+preset: python
+case:   default
+params:
+  Interpreter=python3
+  Script=print("hello")
+
+step "Run" — 1 task
+
+task 1/1  name="Run"
+  command: python3
+  args:
+    [0]  <WORKDIR>
+  embedded file "script" (script.py):
+    print("hello")

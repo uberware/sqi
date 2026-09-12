@@ -1,0 +1,8 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+cases:
+  - name: default
+    params:
+      Command: "echo hello"
+    expect_tasks: 1
+    expect_invocations:
+      sh: 1
