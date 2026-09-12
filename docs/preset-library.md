@@ -252,3 +252,107 @@ Install them exactly like the reference presets (Browse → Install as a product
 then submit with the generated form. Because they depend on no software, they
 require no worker capability tags — any online worker on the matching OS can run
 them.
+
+---
+
+## Validation tiers
+
+Every shipped job type — the 14 presets under `presets/sqi/` and
+`presets/testing/` above, plus the three built-in products documented in
+[`docs/development.md`](development.md#adding-a-product) — is tracked in
+`presets/validation-tiers.yaml`, a registry stating which validation tier that
+job type has actually reached. The tiers are:
+
+- **Tier 1 — argv snapshot.** The template is expanded and resolved through
+  the real production submit → assign → resolve pipeline
+  (`internal/presettest`, driving the same code path a live server and worker
+  use) and the resulting command line is compared byte-for-byte against a
+  reviewed golden file.
+
+  **What a green Tier-1 test proves:** the preset expands to *exactly* the
+  command line a human reviewed, and any future change to expansion,
+  resolution, or the preset's own template shows up as a golden diff someone
+  has to look at.
+
+  **What it does NOT prove: that the vendor's application accepts that
+  command line.** No Maya, Nuke, Houdini, Blender, or Mistika installation
+  executes anything at Tier 1 — the argv is correct only insofar as the
+  documentation it was derived from is correct and current. This is not a
+  hypothetical gap: the Tier-1 retrofit that built this harness found two real,
+  currently unfixed defects this way, both recorded as `caveat` text on the
+  affected entries in `presets/validation-tiers.yaml` rather than fixed
+  (fixing a preset is out of scope for this harness):
+  - `nuke-write-render` and `nuke-script-render` pass Nuke's `-F` flag an
+    OpenJD-syntax stepped range (`1-19:2`). Foundry documents the increment
+    separator as `x` (`1-19x2`), not a colon — so the flag Nuke actually
+    receives may not be the flag Nuke actually accepts. Only a real Nuke (Tier
+    2) can settle it.
+  - The three Mistika presets — and, latently, Maya and Blender if an
+    operator raises their chunk size above the shipped default — can
+    **silently render more frames than requested**: a stepped `Frames` range
+    collapses to its contiguous span (`-s`/`-e`) once it crosses a chunk
+    boundary, because `SQI_CHUNK_BOUNDS` has no way to express a step. Ten
+    requested frames become nineteen rendered ones.
+
+  Read a preset's `caveat` field before trusting its golden for anything more
+  than "the template still expands the way it did when this was reviewed."
+
+- **Tier 2 — real application.** A real, licensed copy of the vendor
+  application runs the resolved command and its output is inspected. No
+  preset in this repo has reached Tier 2 yet — none of the vendor
+  applications (Maya, Nuke, Houdini, Blender, the three Mistika products) has
+  a redistributable, CI-friendly way to run headless in this project's CI, so
+  `presets/validation-tiers.yaml` carries no `tier2` block on any entry today.
+  The five ffmpeg presets are the exception in spirit, not in the registry:
+  ffmpeg is freely available, so `test/integration/ffmpeg_presets_test.go`
+  already runs real ffmpeg end to end and decodes the produced file — real
+  Tier-2-grade evidence — but it predates this registry and is referenced
+  from each ffmpeg entry's `caveat` text rather than a `tier2:` field.
+
+- **Tier 3 — real pipeline, no vendor license.** A real `sqi-server` and
+  `sqi-worker`, wired together exactly as in production, execute the preset
+  end to end — but the worker's OpenJD action target is
+  `test/stubproc`, a recording stand-in binary rather than the real vendor
+  executable. This proves the *sqi-side* plumbing (task assignment, worker
+  process execution, environment/argument delivery, exit-status handling)
+  without needing a Maya or Nuke license in CI, and cross-checks the
+  arguments the stub actually observed against the Tier-1 golden for the same
+  case.
+
+**The registry is verified, not maintained by hand.** Every claim in
+`presets/validation-tiers.yaml` is checked by
+`test/integration/preset_tiers_test.go`'s `TestZZPresetTierRegistrySatisfied`
+against what the suite actually ran — not what the file merely asserts. A
+Tier-1 claim needs a fixture case and a golden that exist; a Tier-3 claim
+needs a named test that actually ran, and **a Tier-3 case that skipped on a
+platform listed in that entry's `required_on` is a registry failure**, not a
+quiet no-op — every container-backed target in this repo can exit 0 while
+running nothing, and this is enforced in Go rather than by a CI job asserting
+test names by hand. An entry may omit its `tier3` block entirely when this
+suite cannot verify it here (for example, `ffmpeg-segment-transcode-powershell`
+gates on `attr.worker.os.family anyOf ["windows"]`, and nothing in this
+environment can make a non-Windows worker answer `windows`); an empty
+`required_on: []` is rejected at load time instead, because it would make the
+skip check permanently unfalsifiable.
+
+### Adding a preset to the harness
+
+1. **Fixture** — add a case file at `test/integration/testdata/preset-cases/<preset-name>.yaml`
+   describing the job parameters for each scenario you want reviewed (at
+   minimum a `default` case).
+2. **Golden** — run
+   `go test ./test/integration/ -run TestPresetTier1Argv -preset-update` to
+   generate `test/integration/testdata/preset-argv/<preset-name>--<case>.golden`
+   for each case.
+3. **Registry entry** — add the preset to `presets/validation-tiers.yaml` with
+   its `tier1.cases` list, a `caveat` describing what the golden is derived
+   from and what it does not prove, and — if a Tier-3 case exists and can run
+   in this environment — a `tier3` block naming the test and the platforms it
+   must not skip on (`required_on`).
+4. **Review the diff.** A regenerated or newly generated golden is not a
+   passing test by itself; reading the diff *is* the test. Check the argv
+   against the vendor's actual documented CLI, not just against what the
+   template was expected to produce.
+
+`go test ./test/integration/ -run 'TestPreset|TestZZPreset'` runs the whole
+harness (Tiers 1 and 3, plus the registry verification) locally.
