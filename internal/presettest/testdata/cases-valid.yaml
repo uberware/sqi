@@ -1,0 +1,15 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+cases:
+  - name: default
+    params:
+      Frames: "1-3"
+    expect_tasks: 3
+    expect_invocations:
+      renderer: 3
+  - name: multi-frame-chunk
+    params:
+      Frames: "1-10"
+    template_patch:
+      step: Render
+      chunks_default_task_count: 5
+    expect_tasks: 2
