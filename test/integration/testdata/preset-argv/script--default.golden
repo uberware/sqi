@@ -1,7 +1,7 @@
 preset: script
 case:   default
 params:
-  Command=echo hello
+  Command=sqi-stub-command --frame 1
 
 step "Run" — 1 task
 
@@ -9,4 +9,4 @@ task 1/1  name="Run"
   command: /bin/sh
   args:
     [0]  -c
-    [1]  echo hello
+    [1]  sqi-stub-command --frame 1

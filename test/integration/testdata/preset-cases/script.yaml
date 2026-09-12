@@ -1,8 +1,23 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
+#
+# Run a Shell Command. The only case in this whole fixture set whose onRun
+# command is an ABSOLUTE path (/bin/sh), which is the one shape the Tier-3 stub
+# cannot shadow: the worker execs /bin/sh directly and never consults PATH.
+#
+# Command therefore names a command that does not exist on any host, so that the
+# thing Tier 3 CAN observe -- what the shell resolves from PATH inside -c -- is a
+# stub invocation. Two consequences, both deliberate:
+#
+#   - expect_invocations names sqi-stub-command, not sh. A fixture claiming `sh`
+#     would be unsatisfiable, since nothing shadows /bin/sh.
+#   - if PATH did not reach the shell, /bin/sh would exit 127 and the task would
+#     fail outright, rather than the run quietly succeeding against some real
+#     binary that happened to be installed. A made-up name is the only spelling
+#     with that property; `echo hello` would pass either way.
 cases:
   - name: default
     params:
-      Command: "echo hello"
+      Command: "sqi-stub-command --frame 1"
     expect_tasks: 1
     expect_invocations:
-      sh: 1
+      sqi-stub-command: 1

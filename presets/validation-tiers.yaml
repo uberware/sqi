@@ -23,6 +23,9 @@ presets:
         unverified. Neither golden covers a stepped Frames range at a chunk size
         above 1: -s/-e is a contiguous span, so the skipped frames would be
         rendered (see docs/openjd-extensions/sqi-chunk-bounds.md).
+    tier3:
+      case: TestPresetTier3/blender-batch-render/default
+      required_on: [linux, darwin]
 
   - name: maya-layer-render
     source: presets/sqi
@@ -38,6 +41,9 @@ presets:
         -r file resolves the scene's own renderer, are unverified. A stepped Frames
         range at a chunk size above 1 is NOT covered and would render the frames the
         step excluded (docs/openjd-extensions/sqi-chunk-bounds.md).
+    tier3:
+      case: TestPresetTier3/maya-layer-render/default
+      required_on: [linux, darwin]
 
   - name: maya-scene-render
     source: presets/sqi
@@ -51,6 +57,9 @@ presets:
         one-frame-per-task shape and a patched chunk size of 5, and no Maya render
         session has executed either. Which layers Maya treats as renderable — the
         whole point of this variant — is not observable in argv at all.
+    tier3:
+      case: TestPresetTier3/maya-scene-render/default
+      required_on: [linux, darwin]
 
   - name: mistika-boutique-render
     source: presets/sqi
@@ -68,6 +77,9 @@ presets:
         SHIPPED chunk size — mistika-boutique-render's stepped-range golden shows
         Frame=1-19:2 reaching the renderer as -s 1 -e 19, i.e. ten requested frames
         becoming nineteen rendered ones.
+    tier3:
+      case: TestPresetTier3/mistika-boutique-render/default
+      required_on: [linux, darwin]
 
   - name: mistika-vr-render
     source: presets/sqi
@@ -85,6 +97,9 @@ presets:
         SHIPPED chunk size — mistika-boutique-render's stepped-range golden shows
         Frame=1-19:2 reaching the renderer as -s 1 -e 19, i.e. ten requested frames
         becoming nineteen rendered ones.
+    tier3:
+      case: TestPresetTier3/mistika-vr-render/default
+      required_on: [linux, darwin]
 
   - name: mistika-workflows-render
     source: presets/sqi
@@ -102,6 +117,9 @@ presets:
         SHIPPED chunk size — mistika-boutique-render's stepped-range golden shows
         Frame=1-19:2 reaching the renderer as -s 1 -e 19, i.e. ten requested frames
         becoming nineteen rendered ones.
+    tier3:
+      case: TestPresetTier3/mistika-workflows-render/default
+      required_on: [linux, darwin]
 
   - name: houdini-rop-render
     source: presets/sqi
@@ -117,6 +135,9 @@ presets:
         Houdini or hython installation has executed it: hou.hipFile.load,
         hou.node and RopNode.render(frame_range=...) are unexercised, and a golden
         cannot show that hython puts the script's own path in sys.argv[0].
+    tier3:
+      case: TestPresetTier3/houdini-rop-render/default
+      required_on: [linux, darwin]
 
   - name: nuke-write-render
     source: presets/sqi
@@ -132,6 +153,9 @@ presets:
         This preset's own readme tells operators to type 1-100:2. A real Nuke (Tier
         2) is what would settle whether -F rejects the colon form, and nothing at
         Tier 1 can.
+    tier3:
+      case: TestPresetTier3/nuke-write-render/default
+      required_on: [linux, darwin]
 
   - name: nuke-script-render
     source: presets/sqi
@@ -145,6 +169,9 @@ presets:
         subject — is invisible in argv. It also shares nuke-write-render's suspected
         -F increment-separator defect: see the stepped-range golden, which passes
         Nuke -F 1-19:2 where Foundry documents 1-19x2.
+    tier3:
+      case: TestPresetTier3/nuke-script-render/default
+      required_on: [linux, darwin]
 
   - name: ffmpeg-transcode
     source: presets/sqi
@@ -161,6 +188,9 @@ presets:
         whole preset here: it declares no parameter space, so there is no second
         expansion shape. What neither proves is that -crf is meaningful when
         VideoCodec is copy; ffmpeg ignores it with a warning.
+    tier3:
+      case: TestPresetTier3/ffmpeg-transcode/default
+      required_on: [linux, darwin]
 
   - name: ffmpeg-sequence-encode
     source: presets/sqi
@@ -179,6 +209,9 @@ presets:
         space, so neither case is a second expansion shape. Colour handling is
         unverified and unopinionated: a linear EXR sequence forced to yuv420p with no
         transform will look dark, and no test asserts otherwise.
+    tier3:
+      case: TestPresetTier3/ffmpeg-sequence-encode/default
+      required_on: [linux, darwin]
 
   - name: ffmpeg-segment-transcode-bash
     source: presets/sqi
@@ -201,6 +234,9 @@ presets:
         where LF is what you would get either way — and the concat list quotes
         slice paths as file '<path>', which a path containing a single quote would
         break.
+    tier3:
+      case: TestPresetTier3/ffmpeg-segment-transcode-bash/default
+      required_on: [linux, darwin]
 
   - name: ffmpeg-segment-transcode-expr
     source: presets/sqi
@@ -219,7 +255,22 @@ presets:
         printed in full, and they are character-identical at 3 slices and at 4
         (uneven-tail). Not proven: the file '<path>' quoting is not escaped, so a
         slice path containing a single quote would break the concat parse.
+    tier3:
+      case: TestPresetTier3/ffmpeg-segment-transcode-expr/default
+      required_on: [linux, darwin]
 
+  # required_on is EMPTY for this one, and that is the honest answer rather than a
+  # gap. Both of its steps declare `attr.worker.os.family anyOf ["windows"]`, and
+  # unlike a capability tag — which SQI_WORKER_CAPABILITY_TAGS simply asserts —
+  # that attribute is derived from the worker's runtime.GOOS at registration
+  # (capabilities.Detect) and translated by internal/scheduler/matcher.go's
+  # osFamily. Nothing in the test environment can make a darwin or linux worker
+  # answer "windows", so the job would sit `pending` until the timeout. Tier 3
+  # for this preset needs a Windows worker, which TestPresetTier3 does not yet
+  # run (it skips on Windows, where the sibling cases' POSIX commands have no
+  # equivalent); the case therefore SKIPS everywhere today, naming os.family as
+  # the reason, and claiming any platform in required_on would be a lie the
+  # registry is built to catch.
   - name: ffmpeg-segment-transcode-powershell
     source: presets/sqi
     tier: 1
@@ -242,6 +293,9 @@ presets:
         an ordinary character to a POSIX PurePath — correct, but by accident rather
         than by design. Not proven: that powershell.exe accepts the script at all, or
         that Get-ChildItem -Filter orders as the comment claims.
+    tier3:
+      case: TestPresetTier3/ffmpeg-segment-transcode-powershell/default
+      required_on: []
 
   - name: script
     source: internal/product/builtins
@@ -252,6 +306,9 @@ presets:
         argv derived from the /bin/sh -c convention documented in the product's
         own readme; no worker has actually invoked /bin/sh with the resulting
         command under this harness.
+    tier3:
+      case: TestPresetTier3/script/default
+      required_on: [linux, darwin]
 
   - name: python
     source: internal/product/builtins
@@ -263,6 +320,9 @@ presets:
         in the product's own readme (<Interpreter> <embedded script.py>); no
         Python interpreter has executed the resulting script under this
         harness.
+    tier3:
+      case: TestPresetTier3/python/default
+      required_on: [linux, darwin]
 
   - name: container
     source: internal/product/builtins
@@ -273,3 +333,6 @@ presets:
         argv derived from the documented "docker run --rm <image>" convention
         in the product's own readme; no Docker daemon has pulled or run the
         resulting image under this harness.
+    tier3:
+      case: TestPresetTier3/container/default
+      required_on: [linux, darwin]
