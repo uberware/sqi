@@ -42,7 +42,7 @@ function makeQueryResult(
     refetch: vi.fn(),
     promise: Promise.resolve({ records: [] }),
     ...overrides,
-  } as UseQueryResult<DiagnosticLogsResponse>
+  } as unknown as UseQueryResult<DiagnosticLogsResponse>
 }
 
 function renderPanel(component: string) {
