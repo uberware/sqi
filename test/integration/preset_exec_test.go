@@ -446,8 +446,17 @@ func assertInvocationCounts(t *testing.T, c presettest.Case, recs []stubrecord.R
 	}
 }
 
-// assertObservedMatchesComputed is the cross-check: every argv the stub
-// recorded must equal an argv the computed snapshot predicted.
+// assertObservedMatchesComputed is the cross-check: the set of argvs the stub
+// recorded must EQUAL the set the computed snapshot predicted — every observed
+// argv has a computed counterpart, and every computed argv was observed.
+//
+// Both directions are asserted because each catches a different regression.
+// Containment alone (observed ⊆ computed) cannot see a phase-3 resolution that
+// collapses every task of a preset onto the SAME argv: the repeated argv is a
+// member of the computed set, so containment holds, and assertInvocationCounts
+// only totals invocations per command name, never their distinctness. The
+// reverse direction (computed ⊆ observed) is what notices that two of a
+// three-chunk preset's bounds never appeared.
 //
 // Order is not asserted — tasks are leased concurrently, so the run order is
 // genuinely nondeterministic. Set equality is the real claim.
@@ -469,11 +478,19 @@ func assertObservedMatchesComputed(t *testing.T, snap presettest.Snapshot, recs 
 			computed[argvKey(filepath.Base(task.Command), foldFilePaths(task.Args, files))] = true
 		}
 	}
+	observed := map[string]bool{}
 	for _, rec := range recs {
 		key := argvKey(rec.Command, foldFilePaths(rec.Args, files))
+		observed[key] = true
 		if !computed[key] {
 			t.Errorf("observed argv has no computed counterpart:\n  observed: %s\n  computed set: %v",
 				key, keysOf(computed))
+		}
+	}
+	for key := range computed {
+		if !observed[key] {
+			t.Errorf("computed argv was never observed:\n  computed: %s\n  observed set: %v",
+				key, keysOf(observed))
 		}
 	}
 }
