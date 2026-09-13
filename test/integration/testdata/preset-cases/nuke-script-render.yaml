@@ -1,0 +1,19 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+#
+# Nuke Script Render. As nuke-write-render, without -X: every enabled Write node
+# in the script renders. The two cases vary the range shape.
+cases:
+  - name: default
+    params:
+      SceneFile: /mnt/show/seq010/shot0010/comp/shot0010_comp_v021.nk
+      Frames: "1-24"
+    expect_tasks: 3
+    expect_invocations:
+      nuke: 3
+  - name: stepped-range
+    params:
+      SceneFile: /mnt/show/seq010/shot0010/comp/shot0010_comp_v021.nk
+      Frames: "1-60:2"
+    expect_tasks: 3
+    expect_invocations:
+      nuke: 3

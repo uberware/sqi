@@ -1,0 +1,32 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+#
+# FFmpeg Sequence Encode. Single step, single task, no parameter space — so the
+# second case is not there to cover a second expansion shape but a second
+# EXPR result: the output filename is derived by
+# `rstrip(split(SourcePattern.stem, '%')[0], '_-.') + '.mp4'`, and the two cases
+# hit the underscore separator and the dot separator respectively. StartFrame is
+# also non-1 in the second case, which is the only way to see whether
+# `-frames:v` is a count or an end frame.
+cases:
+  - name: default
+    params:
+      SourcePattern: /mnt/show/seq010/shot0010/images/shot0010_beauty_%04d.exr
+      StartFrame: "1"
+      EndFrame: "24"
+      FrameRate: "24"
+      OutputDir: /mnt/show/seq010/shot0010/movies
+    expect_tasks: 1
+    expect_invocations:
+      ffmpeg: 1
+  - name: offset-range
+    params:
+      SourcePattern: /mnt/show/seq010/shot0010/images/shot0010.plate.%04d.dpx
+      StartFrame: "1001"
+      EndFrame: "1048"
+      FrameRate: "25"
+      OutputDir: /mnt/show/seq010/shot0010/movies
+      VideoCodec: libx265
+      Quality: "18"
+    expect_tasks: 1
+    expect_invocations:
+      ffmpeg: 1

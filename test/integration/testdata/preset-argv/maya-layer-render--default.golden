@@ -1,0 +1,67 @@
+preset: maya-layer-render
+case:   default
+params:
+  Frames=1-3
+  OutputDir=/mnt/show/seq010/shot0010/images
+  RenderLayer=masterLayer
+  Renderer=file
+  SceneFile=/mnt/show/seq010/shot0010/scene/shot0010_lighting_v012.ma
+
+step "Render" — 3 tasks
+
+task 1/3  name="Render[Frame=1,Frame.End=1,Frame.Start=1]"
+  task params:
+    Frame=1
+    Frame.End=1
+    Frame.Start=1
+  command: Render
+  args:
+    [0]  -r
+    [1]  file
+    [2]  -s
+    [3]  1
+    [4]  -e
+    [5]  1
+    [6]  -rl
+    [7]  masterLayer
+    [8]  -rd
+    [9]  /mnt/show/seq010/shot0010/images
+    [10]  /mnt/show/seq010/shot0010/scene/shot0010_lighting_v012.ma
+
+task 2/3  name="Render[Frame=2,Frame.End=2,Frame.Start=2]"
+  task params:
+    Frame=2
+    Frame.End=2
+    Frame.Start=2
+  command: Render
+  args:
+    [0]  -r
+    [1]  file
+    [2]  -s
+    [3]  2
+    [4]  -e
+    [5]  2
+    [6]  -rl
+    [7]  masterLayer
+    [8]  -rd
+    [9]  /mnt/show/seq010/shot0010/images
+    [10]  /mnt/show/seq010/shot0010/scene/shot0010_lighting_v012.ma
+
+task 3/3  name="Render[Frame=3,Frame.End=3,Frame.Start=3]"
+  task params:
+    Frame=3
+    Frame.End=3
+    Frame.Start=3
+  command: Render
+  args:
+    [0]  -r
+    [1]  file
+    [2]  -s
+    [3]  3
+    [4]  -e
+    [5]  3
+    [6]  -rl
+    [7]  masterLayer
+    [8]  -rd
+    [9]  /mnt/show/seq010/shot0010/images
+    [10]  /mnt/show/seq010/shot0010/scene/shot0010_lighting_v012.ma
