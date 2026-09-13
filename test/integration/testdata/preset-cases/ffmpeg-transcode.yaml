@@ -1,0 +1,14 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+#
+# FFmpeg Transcode. One step, one task, no parameter space at all, so there is
+# no second expansion shape to cover: a single case is the whole preset. Real
+# ffmpeg already runs this end to end in ffmpeg_presets_test.go
+# (TestFFmpegPreset_TranscodeProducesPlayableOutput).
+cases:
+  - name: default
+    params:
+      SourceFile: /mnt/show/seq010/shot0010/movies/shot0010_source.mov
+      OutputFile: /mnt/show/seq010/shot0010/movies/shot0010_h264.mp4
+    expect_tasks: 1
+    expect_invocations:
+      ffmpeg: 1

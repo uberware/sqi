@@ -1,0 +1,77 @@
+preset: houdini-rop-render
+case:   stepped-range
+params:
+  Frames=1-60:2
+  RopPath=/out/mantra_beauty
+  SceneFile=/mnt/show/seq010/shot0010/scene/shot0010_fx_v004.hip
+
+step "Render" — 3 tasks
+
+task 1/3  name="Render[Frames=1-19:2]"
+  task params:
+    Frames=1-19:2
+  command: hython
+  args:
+    [0]  <WORKDIR>
+    [1]  /mnt/show/seq010/shot0010/scene/shot0010_fx_v004.hip
+    [2]  /out/mantra_beauty
+    [3]  1-19:2
+  embedded file "render_chunk" (render_chunk.py):
+    import sys
+    import hou
+    
+    hip, rop_path, frames = sys.argv[1], sys.argv[2], sys.argv[3]
+    hou.hipFile.load(hip, ignore_load_warnings=True)
+    rop = hou.node(rop_path)
+    if rop is None:
+        raise SystemExit("no such ROP: " + rop_path)
+    for part in frames.split(","):
+        expr, _, step = part.partition(":")
+        lo, _, hi = expr.partition("-")
+        rop.render(frame_range=(int(lo), int(hi or lo), int(step or 1)))
+
+task 2/3  name="Render[Frames=21-39:2]"
+  task params:
+    Frames=21-39:2
+  command: hython
+  args:
+    [0]  <WORKDIR>
+    [1]  /mnt/show/seq010/shot0010/scene/shot0010_fx_v004.hip
+    [2]  /out/mantra_beauty
+    [3]  21-39:2
+  embedded file "render_chunk" (render_chunk.py):
+    import sys
+    import hou
+    
+    hip, rop_path, frames = sys.argv[1], sys.argv[2], sys.argv[3]
+    hou.hipFile.load(hip, ignore_load_warnings=True)
+    rop = hou.node(rop_path)
+    if rop is None:
+        raise SystemExit("no such ROP: " + rop_path)
+    for part in frames.split(","):
+        expr, _, step = part.partition(":")
+        lo, _, hi = expr.partition("-")
+        rop.render(frame_range=(int(lo), int(hi or lo), int(step or 1)))
+
+task 3/3  name="Render[Frames=41-59:2]"
+  task params:
+    Frames=41-59:2
+  command: hython
+  args:
+    [0]  <WORKDIR>
+    [1]  /mnt/show/seq010/shot0010/scene/shot0010_fx_v004.hip
+    [2]  /out/mantra_beauty
+    [3]  41-59:2
+  embedded file "render_chunk" (render_chunk.py):
+    import sys
+    import hou
+    
+    hip, rop_path, frames = sys.argv[1], sys.argv[2], sys.argv[3]
+    hou.hipFile.load(hip, ignore_load_warnings=True)
+    rop = hou.node(rop_path)
+    if rop is None:
+        raise SystemExit("no such ROP: " + rop_path)
+    for part in frames.split(","):
+        expr, _, step = part.partition(":")
+        lo, _, hi = expr.partition("-")
+        rop.render(frame_range=(int(lo), int(hi or lo), int(step or 1)))

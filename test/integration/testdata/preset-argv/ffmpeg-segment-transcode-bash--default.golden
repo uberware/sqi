@@ -1,0 +1,127 @@
+preset: ffmpeg-segment-transcode-bash
+case:   default
+params:
+  AudioCodec=aac
+  DurationSeconds=6
+  OutputFile=/mnt/show/seq010/shot0010/movies/shot0010_h264.mp4
+  Quality=20
+  SegmentSeconds=2
+  SourceFile=/mnt/show/seq010/shot0010/movies/shot0010_source.mov
+  VideoCodec=libx264
+
+step "Transcode" — 3 tasks
+
+task 1/3  name="Transcode[Segment=0]"
+  task params:
+    Segment=0
+  command: ffmpeg
+  args:
+    [0]  -y
+    [1]  -ss
+    [2]  0
+    [3]  -t
+    [4]  2
+    [5]  -i
+    [6]  /mnt/show/seq010/shot0010/movies/shot0010_source.mov
+    [7]  -c:v
+    [8]  libx264
+    [9]  -crf
+    [10]  20
+    [11]  -c:a
+    [12]  aac
+    [13]  /mnt/show/seq010/shot0010/movies/shot0010_h264_seg_00000.mp4
+
+task 2/3  name="Transcode[Segment=1]"
+  task params:
+    Segment=1
+  command: ffmpeg
+  args:
+    [0]  -y
+    [1]  -ss
+    [2]  2
+    [3]  -t
+    [4]  2
+    [5]  -i
+    [6]  /mnt/show/seq010/shot0010/movies/shot0010_source.mov
+    [7]  -c:v
+    [8]  libx264
+    [9]  -crf
+    [10]  20
+    [11]  -c:a
+    [12]  aac
+    [13]  /mnt/show/seq010/shot0010/movies/shot0010_h264_seg_00001.mp4
+
+task 3/3  name="Transcode[Segment=2]"
+  task params:
+    Segment=2
+  command: ffmpeg
+  args:
+    [0]  -y
+    [1]  -ss
+    [2]  4
+    [3]  -t
+    [4]  2
+    [5]  -i
+    [6]  /mnt/show/seq010/shot0010/movies/shot0010_source.mov
+    [7]  -c:v
+    [8]  libx264
+    [9]  -crf
+    [10]  20
+    [11]  -c:a
+    [12]  aac
+    [13]  /mnt/show/seq010/shot0010/movies/shot0010_h264_seg_00002.mp4
+
+step "Join" — 1 task
+
+task 1/1  name="Join"
+  command: bash
+  args:
+    [0]  <WORKDIR>
+    [1]  /mnt/show/seq010/shot0010/movies/shot0010_h264.mp4
+  embedded file "join" (join):
+    #!/usr/bin/env bash
+    set -euo pipefail
+    
+    out="$1"
+    
+    # Windows (git-bash): a drive-letter or UNC path arrives with
+    # backslashes, which are not separators to dirname/basename or to
+    # the glob below, so every path operation here would silently
+    # produce garbage. Fold them to forward slashes, which bash, the
+    # glob, and ffmpeg.exe all accept on Windows. Guarded on the
+    # Windows path prefixes so a POSIX path that legitimately contains
+    # a backslash is left untouched.
+    case "$out" in
+      [A-Za-z]:[\\/]* | \\\\*) out="${out//\\//}" ;;
+    esac
+    
+    dir="$(dirname "$out")"
+    base="$(basename "$out")"
+    stem="${base%.*}"
+    ext="${base##*.}"
+    
+    shopt -s nullglob
+    segs=("${dir}/${stem}_seg_"*".${ext}")
+    if [ ${#segs[@]} -eq 0 ]; then
+      echo "no slices found matching ${dir}/${stem}_seg_*.${ext}" >&2
+      exit 1
+    fi
+    
+    # Zero-padded slice numbers make lexical order numeric order, so
+    # the glob above is already in the right sequence.
+    #
+    # The list is written beside the output rather than in $TMPDIR
+    # because ffmpeg is a native binary: under git-bash an mktemp path
+    # like /tmp/tmp.XXXX reaches ffmpeg.exe through MSYS argument
+    # conversion, and the name below is already host-native. It cannot
+    # collide with the glob above, which requires "_seg_" and the
+    # output's own extension.
+    list="${dir}/${stem}_concat.txt"
+    trap 'rm -f "$list"' EXIT
+    : > "$list"
+    for s in "${segs[@]}"; do
+      printf "file '%s'\n" "$s" >> "$list"
+    done
+    
+    ffmpeg -y -f concat -safe 0 -i "$list" -c copy "$out"
+    rm -f "${segs[@]}"

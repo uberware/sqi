@@ -62,10 +62,20 @@ jobs:
             # is that a change to the worker's format-string resolution can
             # break the PowerShell join without this firing — that lands on the
             # push-to-main run instead.
+            #
+            # 'presets/**' already covers presets/validation-tiers.yaml (listed
+            # explicitly anyway, since it is the tier registry and the whole
+            # point of the entry below); test/stubproc/** and
+            # test/integration/testdata/** are the preset validation harness's
+            # own inputs (the Tier-3 recording stub and the Tier-1 fixtures +
+            # goldens), so a change to either also fires this filter.
             presets:
               - 'presets/**'
+              - 'presets/validation-tiers.yaml'
               - 'test/integration/ffmpeg_presets_test.go'
               - 'test/integration/worker_binary_test.go'
+              - 'test/stubproc/**'
+              - 'test/integration/testdata/**'
               - '.github/workflows/ci.yml'
             workflows:
               - '.github/workflows/**'
