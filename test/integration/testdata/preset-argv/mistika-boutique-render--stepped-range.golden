@@ -1,0 +1,21 @@
+preset: mistika-boutique-render
+case:   stepped-range
+params:
+  Frames=1-20:2
+  SceneFile=/mnt/show/seq010/shot0010/render/shot0010_grade_v003.rnd
+
+step "Render" — 1 task
+
+task 1/1  name="Render[Frame=1-19:2,Frame.End=19,Frame.Start=1]"
+  task params:
+    Frame=1-19:2
+    Frame.End=19
+    Frame.Start=1
+  command: mistika
+  args:
+    [0]  -r
+    [1]  /mnt/show/seq010/shot0010/render/shot0010_grade_v003.rnd
+    [2]  -s
+    [3]  1
+    [4]  -e
+    [5]  19

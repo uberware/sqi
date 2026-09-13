@@ -1,0 +1,9 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+cases:
+  - name: default
+    params:
+      Interpreter: "python3"
+      Script: "print(\"hello\")"
+    expect_tasks: 1
+    expect_invocations:
+      python3: 1

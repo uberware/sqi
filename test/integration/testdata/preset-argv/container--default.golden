@@ -1,0 +1,13 @@
+preset: container
+case:   default
+params:
+  Image=alpine:3.20
+
+step "Run" — 1 task
+
+task 1/1  name="Run"
+  command: docker
+  args:
+    [0]  run
+    [1]  --rm
+    [2]  alpine:3.20

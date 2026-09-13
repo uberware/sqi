@@ -1,0 +1,49 @@
+preset: maya-layer-render
+case:   multi-frame-chunk
+template modified: step "Render" chunks.defaultTaskCount=5
+params:
+  Frames=1-10
+  OutputDir=/mnt/show/seq010/shot0010/images
+  RenderLayer=charLayer
+  Renderer=arnold
+  SceneFile=/mnt/show/seq010/shot0010/scene/shot0010_lighting_v012.ma
+
+step "Render" — 2 tasks
+
+task 1/2  name="Render[Frame=1-5,Frame.End=5,Frame.Start=1]"
+  task params:
+    Frame=1-5
+    Frame.End=5
+    Frame.Start=1
+  command: Render
+  args:
+    [0]  -r
+    [1]  arnold
+    [2]  -s
+    [3]  1
+    [4]  -e
+    [5]  5
+    [6]  -rl
+    [7]  charLayer
+    [8]  -rd
+    [9]  /mnt/show/seq010/shot0010/images
+    [10]  /mnt/show/seq010/shot0010/scene/shot0010_lighting_v012.ma
+
+task 2/2  name="Render[Frame=6-10,Frame.End=10,Frame.Start=6]"
+  task params:
+    Frame=6-10
+    Frame.End=10
+    Frame.Start=6
+  command: Render
+  args:
+    [0]  -r
+    [1]  arnold
+    [2]  -s
+    [3]  6
+    [4]  -e
+    [5]  10
+    [6]  -rl
+    [7]  charLayer
+    [8]  -rd
+    [9]  /mnt/show/seq010/shot0010/images
+    [10]  /mnt/show/seq010/shot0010/scene/shot0010_lighting_v012.ma

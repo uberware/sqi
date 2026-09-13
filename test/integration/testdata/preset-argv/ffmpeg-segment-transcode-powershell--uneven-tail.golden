@@ -1,0 +1,133 @@
+preset: ffmpeg-segment-transcode-powershell
+case:   uneven-tail
+params:
+  AudioCodec=copy
+  DurationSeconds=7
+  OutputFile=C:\show\seq010\shot0010\movies\shot0010_h264.mp4
+  Quality=20
+  SegmentSeconds=2
+  SourceFile=C:\show\seq010\shot0010\movies\shot0010_source.mov
+  VideoCodec=libx264
+
+step "Transcode" — 4 tasks
+
+task 1/4  name="Transcode[Segment=0]"
+  task params:
+    Segment=0
+  command: ffmpeg
+  args:
+    [0]  -y
+    [1]  -ss
+    [2]  0
+    [3]  -t
+    [4]  2
+    [5]  -i
+    [6]  C:\show\seq010\shot0010\movies\shot0010_source.mov
+    [7]  -c:v
+    [8]  libx264
+    [9]  -crf
+    [10]  20
+    [11]  -c:a
+    [12]  copy
+    [13]  C:\show\seq010\shot0010\movies\shot0010_h264_seg_00000.mp4
+
+task 2/4  name="Transcode[Segment=1]"
+  task params:
+    Segment=1
+  command: ffmpeg
+  args:
+    [0]  -y
+    [1]  -ss
+    [2]  2
+    [3]  -t
+    [4]  2
+    [5]  -i
+    [6]  C:\show\seq010\shot0010\movies\shot0010_source.mov
+    [7]  -c:v
+    [8]  libx264
+    [9]  -crf
+    [10]  20
+    [11]  -c:a
+    [12]  copy
+    [13]  C:\show\seq010\shot0010\movies\shot0010_h264_seg_00001.mp4
+
+task 3/4  name="Transcode[Segment=2]"
+  task params:
+    Segment=2
+  command: ffmpeg
+  args:
+    [0]  -y
+    [1]  -ss
+    [2]  4
+    [3]  -t
+    [4]  2
+    [5]  -i
+    [6]  C:\show\seq010\shot0010\movies\shot0010_source.mov
+    [7]  -c:v
+    [8]  libx264
+    [9]  -crf
+    [10]  20
+    [11]  -c:a
+    [12]  copy
+    [13]  C:\show\seq010\shot0010\movies\shot0010_h264_seg_00002.mp4
+
+task 4/4  name="Transcode[Segment=3]"
+  task params:
+    Segment=3
+  command: ffmpeg
+  args:
+    [0]  -y
+    [1]  -ss
+    [2]  6
+    [3]  -t
+    [4]  2
+    [5]  -i
+    [6]  C:\show\seq010\shot0010\movies\shot0010_source.mov
+    [7]  -c:v
+    [8]  libx264
+    [9]  -crf
+    [10]  20
+    [11]  -c:a
+    [12]  copy
+    [13]  C:\show\seq010\shot0010\movies\shot0010_h264_seg_00003.mp4
+
+step "Join" — 1 task
+
+task 1/1  name="Join"
+  command: powershell
+  args:
+    [0]  -NoProfile
+    [1]  -ExecutionPolicy
+    [2]  Bypass
+    [3]  -File
+    [4]  <WORKDIR>
+    [5]  C:\show\seq010\shot0010\movies\shot0010_h264.mp4
+  embedded file "join" (join.ps1):
+    $ErrorActionPreference = 'Stop'
+    
+    $out = $args[0]
+    $dir = Split-Path -Parent $out
+    $stem = [System.IO.Path]::GetFileNameWithoutExtension($out)
+    $ext = [System.IO.Path]::GetExtension($out)
+    
+    # Zero-padded slice numbers make lexical order numeric order.
+    $segs = Get-ChildItem -Path $dir -Filter "$stem`_seg_*$ext" | Sort-Object Name
+    if ($segs.Count -eq 0) {
+      Write-Error "no slices found matching $dir\$stem`_seg_*$ext"
+      exit 1
+    }
+    
+    $list = [System.IO.Path]::GetTempFileName()
+    try {
+      $lines = $segs | ForEach-Object { "file '" + $_.FullName + "'" }
+      # Encoding is explicit and deliberate: ASCII (Set-Content's implicit
+      # choice) silently mangles non-ASCII slice paths, and -Encoding UTF8
+      # writes a BOM on Windows PowerShell 5.1 that breaks the concat
+      # demuxer's parse of the first "file" line. BOM-less UTF-8 avoids both.
+      [System.IO.File]::WriteAllLines($list, $lines, (New-Object System.Text.UTF8Encoding $false))
+      ffmpeg -y -f concat -safe 0 -i $list -c copy $out
+      if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      $segs | Remove-Item -Force
+    } finally {
+      Remove-Item -Force $list -ErrorAction SilentlyContinue
+    }

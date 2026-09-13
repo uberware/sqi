@@ -1,0 +1,34 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+#
+# FFmpeg Segment Transcode (Bash). Two steps: Transcode fans out into
+# ceil(DurationSeconds / SegmentSeconds) slices, then Join runs once.
+#
+# `default` uses the same 6s/2s geometry as ffmpeg_presets_test.go, so the two
+# suites describe the same job: 3 slices + 1 join = 4 tasks.
+#
+# `uneven-tail` is the second expansion shape required of any preset with a
+# parameter space: 7s in 2s slices needs ceil(3.5) = 4 slices, so it changes the
+# task count AND is the case a truncating division would get wrong (3 slices,
+# losing the last second of the source).
+cases:
+  - name: default
+    params:
+      SourceFile: /mnt/show/seq010/shot0010/movies/shot0010_source.mov
+      OutputFile: /mnt/show/seq010/shot0010/movies/shot0010_h264.mp4
+      DurationSeconds: "6"
+      SegmentSeconds: "2"
+    expect_tasks: 4
+    expect_invocations:
+      ffmpeg: 3
+      bash: 1
+  - name: uneven-tail
+    params:
+      SourceFile: /mnt/show/seq010/shot0010/movies/shot0010_source.mov
+      OutputFile: /mnt/show/seq010/shot0010/movies/shot0010_h264.mp4
+      DurationSeconds: "7"
+      SegmentSeconds: "2"
+      AudioCodec: copy
+    expect_tasks: 5
+    expect_invocations:
+      ffmpeg: 4
+      bash: 1

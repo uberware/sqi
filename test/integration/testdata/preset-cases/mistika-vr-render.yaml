@@ -1,0 +1,22 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+#
+# Mistika VR Render. Ships chunks.defaultTaskCount 10; "1-24" leaves a short
+# tail chunk (21-24) so the bounds derivation is reviewable at both ends.
+cases:
+  - name: default
+    params:
+      SceneFile: /mnt/show/seq010/shot0010/render/shot0010_stitch_v003.rnd
+      Frames: "1-24"
+    expect_tasks: 3
+    expect_invocations:
+      vr: 3
+  - name: multi-frame-chunk
+    params:
+      SceneFile: /mnt/show/seq010/shot0010/render/shot0010_stitch_v003.rnd
+      Frames: "1-10"
+    template_patch:
+      step: Render
+      chunks_default_task_count: 5
+    expect_tasks: 2
+    expect_invocations:
+      vr: 2

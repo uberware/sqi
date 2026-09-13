@@ -1,0 +1,25 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+#
+# Blender Batch Render. OutputPath defaults to "" (Blender then writes to its
+# own scene-configured output path); the cases below supply one so the -o
+# argument is reviewable, including Blender's #### frame-padding convention.
+cases:
+  - name: default
+    params:
+      SceneFile: /mnt/show/seq010/shot0010/scene/shot0010_anim_v007.blend
+      Frames: "1-3"
+      OutputPath: /mnt/show/seq010/shot0010/images/shot0010_####.png
+    expect_tasks: 3
+    expect_invocations:
+      blender: 3
+  - name: multi-frame-chunk
+    params:
+      SceneFile: /mnt/show/seq010/shot0010/scene/shot0010_anim_v007.blend
+      Frames: "1-10"
+      OutputPath: /mnt/show/seq010/shot0010/images/shot0010_####.png
+    template_patch:
+      step: Render
+      chunks_default_task_count: 5
+    expect_tasks: 2
+    expect_invocations:
+      blender: 2
