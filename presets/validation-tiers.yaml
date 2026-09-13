@@ -304,8 +304,14 @@ presets:
       cases: [default]
       caveat: >-
         argv derived from the /bin/sh -c convention documented in the product's
-        own readme; no worker has actually invoked /bin/sh with the resulting
-        command under this harness.
+        own readme. Tier 3 DOES execute it: a real worker runs a real /bin/sh,
+        which resolves the fixture's deliberately nonexistent command
+        (sqi-stub-command --frame 1) from PATH, so the stub is observed being
+        invoked from inside -c. What that cannot show is the argv of the shell
+        ITSELF — /bin/sh is an absolute path, so nothing shadows it and the
+        observed-vs-computed cross-check does not apply here (see scriptShaped in
+        test/integration/preset_exec_test.go): the -c string is evidenced only by
+        the Tier-1 golden and by the fact that the shell found the stub in it.
     tier3:
       case: TestPresetTier3/script/default
       required_on: [linux, darwin]

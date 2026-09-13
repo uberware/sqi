@@ -317,10 +317,13 @@ a real farm rather than reviewed tier by tier. The tiers are:
   end to end — but the worker's OpenJD action target is
   `test/stubproc`, a recording stand-in binary rather than the real vendor
   executable. This proves the *sqi-side* plumbing (task assignment, worker
-  process execution, environment/argument delivery, exit-status handling)
+  process execution, argument delivery, exit-status handling)
   without needing a Maya or Nuke license in CI, and cross-checks the
   arguments the stub actually observed against the Tier-1 golden for the same
-  case.
+  case — in both directions, so a resolution that collapsed every task onto one
+  argv would fail. Environment delivery is **not** covered: the stub records
+  only the command, its arguments, its working directory and its stdin, so
+  nothing here observes the variables a task's process was handed.
 
 **The registry is verified, not maintained by hand.** Every claim in
 `presets/validation-tiers.yaml` is checked by
