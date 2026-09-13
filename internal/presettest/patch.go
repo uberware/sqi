@@ -46,6 +46,8 @@ func ApplyChunkPatch(rawTemplate string, p ChunkPatch) (string, error) {
 		if err != nil {
 			return "", err
 		}
+		// First match wins: duplicate step names are rejected by openjd
+		// validation, so at most one step can ever match.
 		break
 	}
 	if patched == 0 {

@@ -80,7 +80,7 @@ func writeRecord(name string) error {
 	// O_APPEND with a single Write of one line under the platform's atomic
 	// append: tasks run concurrently, and interleaved half-lines would be
 	// undecodable.
-	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600) //nolint:gosec // G703: stub records caller-provided paths from tempdir
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600) //nolint:gosec // G304: a test stub deliberately writes wherever its caller points it (SQI_STUB_RECORD)
 	if err != nil {
 		return fmt.Errorf("open record: %w", err)
 	}
@@ -122,10 +122,10 @@ func touchFromArg() error {
 		return fmt.Errorf("SQI_STUB_TOUCH_ARG %d: only %d arguments", idx, len(args))
 	}
 	target := args[idx]
-	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil { //nolint:gosec // G301: stub touches caller-provided paths from tempdir
+	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil { //nolint:gosec // G301: 0o755 on a test stub's output directory, which holds nothing secret
 		return fmt.Errorf("mkdir for %s: %w", target, err)
 	}
-	f, err := os.OpenFile(target, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600) //nolint:gosec // G703: stub creates caller-provided paths from tempdir
+	f, err := os.OpenFile(target, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600) //nolint:gosec // G304: a test stub deliberately writes wherever its caller points it (an argv index named by SQI_STUB_TOUCH_ARG)
 	if err != nil {
 		return fmt.Errorf("create %s: %w", target, err)
 	}
