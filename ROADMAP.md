@@ -295,6 +295,23 @@ before Phase 3. See [docs/auth.md](docs/auth.md) for the model and setup.
 - Distributed NATS cluster
 - Worker auto-scaling hooks (AWS, GCP, Azure)
 - Installer packages (Linux, macOS, Windows)
+- **Two open reference-preset findings** — surfaced by the P1 preset-validation
+  harness and deliberately left unfixed there; each needs a decision (template
+  fix, readme warning, or a validator that rejects the shape), neither is
+  urgent:
+  - `nuke-write-render` and `nuke-script-render` pass Nuke's `-F` flag an
+    OpenJD-syntax stepped range (`1-19:2`), where Foundry documents `x` as the
+    increment separator (`1-19x2`) — and both presets' readmes tell operators to
+    type the colon form.
+  - A stepped `Frames` range collapses to a contiguous span through
+    `SQI_CHUNK_BOUNDS`, which cannot express a step, so more frames are rendered
+    than were requested. Live today in the three Mistika presets (they ship
+    `chunks.defaultTaskCount` 10); latent in the Maya and Blender presets the
+    moment an operator raises chunk size as their own readmes advise. See
+    [docs/openjd-extensions/sqi-chunk-bounds.md](docs/openjd-extensions/sqi-chunk-bounds.md).
+
+  Both are described per preset in `presets/validation-tiers.yaml` and in
+  [docs/preset-library.md](docs/preset-library.md).
 
 ### Phase 5: LLM Plugin and Polish (v0.5 — RC)
 

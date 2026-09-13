@@ -1,0 +1,26 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+#
+# Maya Scene Render. Same chunk geometry as maya-layer-render, without the
+# -rl layer selection: this variant renders every layer the scene marks
+# renderable.
+cases:
+  - name: default
+    params:
+      SceneFile: /mnt/show/seq010/shot0010/scene/shot0010_lighting_v012.ma
+      Frames: "1-3"
+      OutputDir: /mnt/show/seq010/shot0010/images
+    expect_tasks: 3
+    expect_invocations:
+      Render: 3
+  - name: multi-frame-chunk
+    params:
+      SceneFile: /mnt/show/seq010/shot0010/scene/shot0010_lighting_v012.ma
+      Frames: "1-10"
+      OutputDir: /mnt/show/seq010/shot0010/images
+      Renderer: arnold
+    template_patch:
+      step: Render
+      chunks_default_task_count: 5
+    expect_tasks: 2
+    expect_invocations:
+      Render: 2

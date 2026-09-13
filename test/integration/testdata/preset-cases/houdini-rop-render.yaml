@@ -1,0 +1,25 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+#
+# Houdini ROP Render. This preset hands the whole chunk to its driver script as
+# a frame LIST rather than a start/end pair, so the reviewable question is not
+# "are the bounds right" but "what range syntax reaches the script". The two
+# cases therefore vary the SHAPE of the range: a plain contiguous range, and a
+# stepped one, each large enough (chunks.defaultTaskCount ships at 10) to split
+# into several chunks so chunk boundaries are visible too.
+cases:
+  - name: default
+    params:
+      SceneFile: /mnt/show/seq010/shot0010/scene/shot0010_fx_v004.hip
+      Frames: "1-24"
+      RopPath: /out/mantra_beauty
+    expect_tasks: 3
+    expect_invocations:
+      hython: 3
+  - name: stepped-range
+    params:
+      SceneFile: /mnt/show/seq010/shot0010/scene/shot0010_fx_v004.hip
+      Frames: "1-60:2"
+      RopPath: /out/mantra_beauty
+    expect_tasks: 3
+    expect_invocations:
+      hython: 3

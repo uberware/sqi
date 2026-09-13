@@ -391,6 +391,44 @@ asserts that line by name for this reason.
 
 ---
 
+### Running the preset validation harness
+
+Every shipped preset and built-in product has a Tier-1 argv "golden" — a
+reviewed snapshot of the exact command line the template resolves to — and
+most have a Tier-3 case that runs the real submit → assign → resolve pipeline
+against a recording stub in place of the vendor executable. See
+[`docs/preset-library.md`](preset-library.md#validation-tiers) for what each
+tier does and does not prove.
+
+```sh
+# Run the whole harness: Tier 1 (argv goldens), Tier 3 (stub execution), and
+# the registry-verification test that checks both actually ran.
+go test ./test/integration/ -run 'TestPreset|TestZZPreset'
+
+# Just Tier 1, verbose, for one preset
+go test ./test/integration/ -run TestPresetTier1Argv/maya-layer-render -v
+```
+
+To regenerate goldens after an intentional change to a preset's template or to
+expansion/resolution behavior:
+
+```sh
+go test ./test/integration/ -run TestPresetTier1Argv -preset-update
+```
+
+**A regenerated golden is not a passing test — reading the diff is the test.**
+`-preset-update` rewrites the golden to match whatever the pipeline currently
+produces, including a regression; `git diff` the golden file and check the new
+argv against the vendor's actual documented command-line flags before staging
+it. A golden that changed because of a bug would still make the test pass
+right after regeneration.
+
+Adding a new preset to the harness (fixture → golden → registry entry) is
+covered step by step in
+[`docs/preset-library.md`](preset-library.md#adding-a-preset-to-the-harness).
+
+---
+
 ## Code layout
 
 ```
