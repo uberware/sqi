@@ -1,0 +1,36 @@
+preset: mistika-boutique-render
+case:   multi-frame-chunk
+template modified: step "Render" chunks.defaultTaskCount=5
+params:
+  Frames=1-10
+  SceneFile=/mnt/show/seq010/shot0010/render/shot0010_grade_v003.rnd
+
+step "Render" — 2 tasks
+
+task 1/2  name="Render[Frame=1-5,Frame.End=5,Frame.Start=1]"
+  task params:
+    Frame=1-5
+    Frame.End=5
+    Frame.Start=1
+  command: mistika
+  args:
+    [0]  -r
+    [1]  /mnt/show/seq010/shot0010/render/shot0010_grade_v003.rnd
+    [2]  -s
+    [3]  1
+    [4]  -e
+    [5]  5
+
+task 2/2  name="Render[Frame=6-10,Frame.End=10,Frame.Start=6]"
+  task params:
+    Frame=6-10
+    Frame.End=10
+    Frame.Start=6
+  command: mistika
+  args:
+    [0]  -r
+    [1]  /mnt/show/seq010/shot0010/render/shot0010_grade_v003.rnd
+    [2]  -s
+    [3]  6
+    [4]  -e
+    [5]  10

@@ -1,0 +1,35 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+#
+# FFmpeg Segment Transcode (PowerShell). Windows-only by hostRequirements, so
+# the Tier-3 execution case can never run on a Linux or macOS worker and the
+# golden is the only review this variant's join script gets off Windows.
+#
+# Two historical bugs shipped green in exactly this script — a UTF-8 BOM on the
+# concat list (d7d8fcc) and an embedded file with no .ps1 extension, which
+# `powershell -File` refuses (667b921) — so the golden's embedded-file NAME and
+# full BODY are the load-bearing part, not the argv.
+#
+# `default` matches ffmpeg_presets_test.go's 6s/2s geometry (3 slices + 1 join).
+# `uneven-tail` uses 7s/2s: ceil(3.5) = 4 slices, a different task count.
+cases:
+  - name: default
+    params:
+      SourceFile: 'C:\show\seq010\shot0010\movies\shot0010_source.mov'
+      OutputFile: 'C:\show\seq010\shot0010\movies\shot0010_h264.mp4'
+      DurationSeconds: "6"
+      SegmentSeconds: "2"
+    expect_tasks: 4
+    expect_invocations:
+      ffmpeg: 3
+      powershell: 1
+  - name: uneven-tail
+    params:
+      SourceFile: 'C:\show\seq010\shot0010\movies\shot0010_source.mov'
+      OutputFile: 'C:\show\seq010\shot0010\movies\shot0010_h264.mp4'
+      DurationSeconds: "7"
+      SegmentSeconds: "2"
+      AudioCodec: copy
+    expect_tasks: 5
+    expect_invocations:
+      ffmpeg: 4
+      powershell: 1

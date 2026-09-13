@@ -1,0 +1,22 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+#
+# Nuke Write Render. The chunk reaches nuke as a frame list after -F, so the two
+# cases vary the range shape (contiguous, then stepped) rather than patching the
+# chunk size; chunks.defaultTaskCount ships at 10, so both cases fan out.
+cases:
+  - name: default
+    params:
+      SceneFile: /mnt/show/seq010/shot0010/comp/shot0010_comp_v021.nk
+      Frames: "1-24"
+      WriteNode: Write_exr_main
+    expect_tasks: 3
+    expect_invocations:
+      nuke: 3
+  - name: stepped-range
+    params:
+      SceneFile: /mnt/show/seq010/shot0010/comp/shot0010_comp_v021.nk
+      Frames: "1-60:2"
+      WriteNode: Write_exr_main
+    expect_tasks: 3
+    expect_invocations:
+      nuke: 3
