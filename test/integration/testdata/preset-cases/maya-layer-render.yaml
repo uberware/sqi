@@ -1,0 +1,27 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+#
+# Maya Layer Render. Ships chunks.defaultTaskCount 1, so the shipped shape can
+# only ever produce Frame.Start == Frame.End; the patched case is the only way
+# to review the "-s START -e END" span this preset exists to pass.
+cases:
+  - name: default
+    params:
+      SceneFile: /mnt/show/seq010/shot0010/scene/shot0010_lighting_v012.ma
+      Frames: "1-3"
+      OutputDir: /mnt/show/seq010/shot0010/images
+    expect_tasks: 3
+    expect_invocations:
+      Render: 3
+  - name: multi-frame-chunk
+    params:
+      SceneFile: /mnt/show/seq010/shot0010/scene/shot0010_lighting_v012.ma
+      Frames: "1-10"
+      OutputDir: /mnt/show/seq010/shot0010/images
+      Renderer: arnold
+      RenderLayer: charLayer
+    template_patch:
+      step: Render
+      chunks_default_task_count: 5
+    expect_tasks: 2
+    expect_invocations:
+      Render: 2

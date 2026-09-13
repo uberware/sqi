@@ -1,0 +1,43 @@
+preset: blender-batch-render
+case:   multi-frame-chunk
+template modified: step "Render" chunks.defaultTaskCount=5
+params:
+  Frames=1-10
+  OutputPath=/mnt/show/seq010/shot0010/images/shot0010_####.png
+  SceneFile=/mnt/show/seq010/shot0010/scene/shot0010_anim_v007.blend
+
+step "Render" — 2 tasks
+
+task 1/2  name="Render[Frame=1-5,Frame.End=5,Frame.Start=1]"
+  task params:
+    Frame=1-5
+    Frame.End=5
+    Frame.Start=1
+  command: blender
+  args:
+    [0]  -b
+    [1]  /mnt/show/seq010/shot0010/scene/shot0010_anim_v007.blend
+    [2]  -o
+    [3]  /mnt/show/seq010/shot0010/images/shot0010_####.png
+    [4]  -s
+    [5]  1
+    [6]  -e
+    [7]  5
+    [8]  -a
+
+task 2/2  name="Render[Frame=6-10,Frame.End=10,Frame.Start=6]"
+  task params:
+    Frame=6-10
+    Frame.End=10
+    Frame.Start=6
+  command: blender
+  args:
+    [0]  -b
+    [1]  /mnt/show/seq010/shot0010/scene/shot0010_anim_v007.blend
+    [2]  -o
+    [3]  /mnt/show/seq010/shot0010/images/shot0010_####.png
+    [4]  -s
+    [5]  6
+    [6]  -e
+    [7]  10
+    [8]  -a

@@ -1,0 +1,38 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+#
+# Mistika Ultima & Boutique Render. Unlike the Maya and Blender presets this one
+# ships chunks.defaultTaskCount 10, so the unpatched case already spans frames;
+# "1-24" is chosen so the last chunk is a short tail (21-24) rather than a full
+# ten, which is where an off-by-one in the bounds derivation would show.
+cases:
+  - name: default
+    params:
+      SceneFile: /mnt/show/seq010/shot0010/render/shot0010_grade_v003.rnd
+      Frames: "1-24"
+    expect_tasks: 3
+    expect_invocations:
+      mistika: 3
+  - name: multi-frame-chunk
+    params:
+      SceneFile: /mnt/show/seq010/shot0010/render/shot0010_grade_v003.rnd
+      Frames: "1-10"
+    template_patch:
+      step: Render
+      chunks_default_task_count: 5
+    expect_tasks: 2
+    expect_invocations:
+      mistika: 2
+  # Third case, and the only one here that is not about argv shape: it pins a
+  # hazard rather than a convention. This preset's readme tells operators to type
+  # "1-100:2" for every second frame, and it ships chunks.defaultTaskCount 10, so
+  # a stepped range collapses to a single -s/-e SPAN and mistika renders the
+  # frames the step excluded. docs/openjd-extensions/sqi-chunk-bounds.md
+  # documents that .Start/.End cannot express a step; the preset readme does not.
+  # The golden makes the consequence visible instead of latent.
+  - name: stepped-range
+    params:
+      SceneFile: /mnt/show/seq010/shot0010/render/shot0010_grade_v003.rnd
+      Frames: "1-20:2"
+    expect_tasks: 1
+    expect_invocations:
+      mistika: 1
