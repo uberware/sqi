@@ -792,37 +792,88 @@ path | string :: path('s3://b//').relative_to(path('s3://b//'))
 # relative_to sums both operands' byte charges; reference takes the max (see section header).
 path | string :: path('s3://b///d').relative_to(path('s3://b//'))
 
-# ── sqi is right: string(list) charges per element; reference is flat 1 ─────
+# ── string(list): sqi omits the reference's RESULT unit and its recursion ────
 #
-# Rule 2's enumeration is introduced with "such as", so the general
-# "iterates every element of a list" clause is not closed by the named
-# list, and writeJSONValue really does walk every element of the list
-# argument to render it -- confirmed against the spec text at
-# third_party/openjd-specifications/wiki/2026-02-Expression-Language.md:
-# 1084-1087. sqi charges rule 1 (1) plus ArgElements (the list's own
-# length, NOT recursively flattened for a nested list); the reference
-# never charges more than 1 regardless of list size. "string(flatten(...))"
-# combines this with flatten()'s own charge, which the reference already
-# matches exactly (flatten is not itself in this baseline) -- the whole
-# diff there is string(list)'s own over-count for a 4-element result.
+# REWRITTEN 2026-08-24 on the 0.11.5 pin bump (openjd-expr 0.4.0). This section
+# used to read "sqi is right: string(list) charges per element; reference is
+# flat 1", and every word of that was true against 0.3.0 -- sqi charged MORE
+# than the reference, whose flat 1 ignored list length entirely. openjd-rs#336
+# changed the reference's counting and the direction INVERTED without a single
+# entry going stale: the three-direction rule cannot see a reason going false
+# while the divergence itself persists. That is the second occurrence of the
+# trap the upstream tracker's section 6a recorded on the previous bump -- read
+# the DELTAS, not just the pass line.
+#
+# What the reference charges now, measured directly at openjd-model 0.11.5:
+#
+#   string([])                  2 = 1 call + 0 elements + 1 result
+#   string([1])                 3 = 1 + 1 + 1
+#   string([1, 2, 3, 4, 5])     7 = 1 + 5 + 1
+#   string([[1], [2]])          6 = 1 + (2 outer + 2 inner) + 1
+#   string([[1,2,3], [4,5,6]]) 10 = 1 + (2 outer + 6 inner) + 1
+#
+# -- one per element counted RECURSIVELY, plus a unit for the RESULT string.
+# sqi charges rule 1 (1) plus ArgElements, the argument list's own length, not
+# recursed, and nothing for the result. So sqi is now BELOW the reference on
+# every entry in this section, where it used to be above.
+#
+# TWO divergences now, adjudicated separately:
+#
+#   1. The RESULT unit -- sqi is right to omit it. Rule 3 charges "when a
+#      function processes a string or path VALUE", which is about what goes in,
+#      not what comes out. This is the identical ruling the repr_* section
+#      below already records, made there on the 0.11.4 bump when openjd-rs#284
+#      added result units to those five functions. One rule, two sections.
+#
+#   2. The RECURSION -- sqi UNDER-charges, and this half is a known gap in sqi
+#      rather than a ruling in our favour. sqi's own reading of rule 2 is that
+#      the general "iterates through every element of a list" clause applies
+#      here because writeJSONValue walks every element; that walk descends into
+#      nested lists, so the same reading charges their elements too. Closing it
+#      means giving Cost.ArgElements a recursive variant, and ArgElements is a
+#      shared primitive whose other rows (the five repr_*, join, and the rest)
+#      each carry their own separately measured reference behavior -- changing
+#      it inside a pin bump would move all of them at once. Deferred, and
+#      recorded here rather than silently kept. Under-charging is the SAFE
+#      direction: it can only accept an expression a limit would otherwise
+#      reject, never reject a legitimate one.
+#
+# Rule 2's enumeration is introduced with "such as", so the general clause is
+# not closed by the named list, and writeJSONValue really does walk every
+# element of the list argument to render it -- confirmed against the spec text
+# at third_party/openjd-specifications/wiki/2026-02-Expression-Language.md,
+# section 1.3.10 rule 2. "string(flatten(...))" combines this with flatten()'s
+# own charge, which the reference already matches exactly (flatten is not
+# itself in this baseline).
 
-# string(list)'s per-element ArgElements charge; reference is flat 1 (see section header).
+# The EMPTY list: no elements for the two sides to disagree about, so the
+# whole divergence here is the reference's result unit (see section header).
+string | list[nulltype] :: string([])
+
+# go=2 ref=3, one element: the difference is the reference's result unit alone
+# (see section header).
+string | list[string] :: string(['a<b>c&d'])
+
+# go=3 ref=4, two elements: the difference is the reference's result unit alone
+# (see section header).
 string | list[int] :: string([1, 2])
 
-# string(list)'s per-element ArgElements charge; reference is flat 1 (see section header).
+# go=3 ref=4: same shape as the entry above, string elements (see section
+# header).
 string | list[string] :: string(["a", "b"])
 
-# string(list)'s per-element ArgElements charge; reference is flat 1 (see section header).
-string | list[list[int]] :: string([[1], [2]])
-
-# string(list)'s per-element ArgElements charge; reference is flat 1 (see section header).
+# go=3 ref=4: same shape again, bool elements (see section header).
 string | list[bool] :: string([true, false])
 
-# string(list)'s per-element ArgElements charge; reference is flat 1 (see section header).
-string | list[string] | list[list[string]] :: string(flatten([["-e", "A=1"], ["-e", "B=2"]]))
+# go=3 ref=6, the only entry that shows BOTH halves at once: one result unit
+# plus the two INNER elements sqi does not recurse into (see section header,
+# divergence 2 -- the known gap).
+string | list[list[int]] :: string([[1], [2]])
 
-# string(list)'s per-element ArgElements charge; reference is flat 1 (see section header).
-string | list[string] :: string(['a<b>c&d'])
+# go=12 ref=13: flatten()'s own charge is common ground and matches exactly;
+# the whole remaining difference is string(list)'s result unit, and there is no
+# recursion term because flatten's result is already flat (see section header).
+string | list[string] | list[list[string]] :: string(flatten([["-e", "A=1"], ["-e", "B=2"]]))
 
 # ── the repr_* family: sqi charges its ARGUMENT, the reference its RESULT ───
 #

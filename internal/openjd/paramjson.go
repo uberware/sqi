@@ -18,15 +18,25 @@ import (
 // so a typed model representation would have to serialize at every boundary
 // anyway. One representation, defined once, at the top.
 //
-// THE STORED FORM IS NOT THE INTERPOLATED FORM. A list rendered into a command
-// line goes through expr.Value.String(), which quotes elements with
-// strconv.Quote -- Go syntax, identical to JSON for ordinary text and
-// different for control characters (Go writes \x00 where JSON requires a
-//  escape, and \x00 is not valid JSON at all). Section 1.3.2 governs
-// interpolation; this file governs storage. They are two renderings for two
-// purposes and must not be assumed interchangeable --
-// TestListDefault_JSONIsNotValueString pins the difference so it stays a
-// documented fact rather than a latent surprise for sub-project F2.
+// THE STORED FORM IS NOT THE INTERPOLATED FORM, but the gap is now narrower
+// than it was. A list rendered into a command line goes through
+// expr.Value.String(). That used to quote elements with strconv.Quote -- Go
+// syntax, identical to JSON for ordinary text and different for control
+// characters, where Go writes \x00 and JSON requires \u0000 -- so the two
+// forms could not even be compared as text. openjd-specifications#176 then
+// stated that interpolation and string() must use the same conversion and
+// that the result must parse as JSON, and expr's renderer moved onto
+// encoding/json (with HTML escaping off, exactly as marshalCanonical below
+// uses it), so the ELEMENT QUOTING is now the same rule on both sides.
+//
+// What still differs is the SEPARATOR: canonical JSON writes ",", while
+// section 2.2.1's rendering writes ", ". A single-element list therefore
+// renders identically in both forms and a multi-element one does not.
+// Section 1.3.2 governs interpolation; this file governs storage. They remain
+// two renderings for two purposes and must not be assumed interchangeable --
+// TestListDefault_JSONVersusValueString pins both halves, the agreement and
+// the remaining difference, so each stays a documented fact rather than a
+// latent surprise.
 
 // isListParamType reports whether t is one of RFC 0007's list types.
 func isListParamType(t JobParamType) bool {

@@ -2,7 +2,10 @@
 
 package expr
 
-import "testing"
+import (
+	"encoding/json"
+	"testing"
+)
 
 func TestValue_Constructors(t *testing.T) {
 	tests := []struct {
@@ -373,29 +376,50 @@ func TestValueString_VersusStringFunction(t *testing.T) {
 	}
 }
 
-// TestValueString_DivergesFromStringFunctionOutsideMeasuredSet pins the four
-// classes of input where Value.String() (value.go's strconv.Quote) and
-// string(list)'s JSON row (funcsconv.go's writeJSONValue, an
-// encoding/json.Encoder with SetEscapeHTML(false)) are independent
-// implementations that provably do NOT agree, so doc.go's narrow "agrees on
-// every case exercised" claim stays testable in both directions rather than
-// only the agreeing one.
+// TestValueString_ListQuotingIsJSONEverywhere pins the rule
+// openjd-specifications#176 added to section 2.2.1: a list's string and path
+// elements are double-quoted with `"`, `\` and every character below U+0020
+// escaped, "the result must parse as JSON", and format-string interpolation
+// with surrounding text -- which renders through Value.String() -- uses "this
+// same conversion", so `"items: {{ MyList }}"` and `"items: " + string(MyList)`
+// agree.
 //
-// Constructed directly through the List/String value constructors rather
-// than through Eval: an EXPR source string must itself be valid UTF-8, so
-// the invalid-UTF-8 case cannot be expressed as parseable source text at
-// all. Building every case the same way keeps the six comparable.
-func TestValueString_DivergesFromStringFunctionOutsideMeasuredSet(t *testing.T) {
+// This test REPLACES TestValueString_DivergesFromStringFunctionOutsideMeasuredSet,
+// which pinned the opposite: six classes of input where Value.String()
+// (strconv.Quote, GO syntax) and string(list)'s JSON row provably did not
+// agree. That divergence was defensible while the specification only said
+// "the JSON string representation" of the string() row and said nothing at
+// all about the interpolation row; #176 states both, and Go's spelling of a
+// control character -- "\x01", and "\a"/"\v" for two JSON does not name --
+// is not JSON at all. So each of those six now has one right answer, and the
+// old test's own closing instruction ("update doc.go's divergence claim if
+// this is now correct") is what is being carried out here.
+//
+// Constructed through the List/String value constructors rather than through
+// Eval: an EXPR source string must itself be valid UTF-8, so the invalid-UTF-8
+// case cannot be written as parseable source at all. Building every case the
+// same way keeps them comparable.
+func TestValueString_ListQuotingIsJSONEverywhere(t *testing.T) {
 	tests := []struct {
 		name string
 		s    string
+		want string
 	}{
-		{"C0 control U+0000", "\x00"},
-		{"C0 control U+0001", "\x01"},
-		{"C0 control U+001B (ESC)", "\x1b"},
-		{"vertical tab U+000B", "\v"},
-		{"DEL U+007F", "\x7f"},
-		{"invalid UTF-8", "\xff\xfe"},
+		{"C0 control U+0000", "\x00", `["\u0000"]`},
+		{"C0 control U+0001", "\x01", `["\u0001"]`},
+		{"C0 control U+001B (ESC)", "\x1b", `["\u001b"]`},
+		{"vertical tab U+000B", "\v", `["\u000b"]`},
+		// DEL is not a C0 control, so #176's "below U+0020" does not reach
+		// it and it stays literal -- which is also what the reference
+		// implementation renders (probed at openjd-model 0.11.5). repr_json
+		// is the spelling that escapes it.
+		{"DEL U+007F", "\x7f", "[\"\u007f\"]"},
+		// Invalid UTF-8 has no JSON spelling; the encoder substitutes
+		// U+FFFD REPLACEMENT CHARACTER, and writes it as the six-character
+		// \ufffd ESCAPE rather than as the rune itself. The point of the row
+		// is that both renderings make the SAME substitution, not that the
+		// bytes survive.
+		{"invalid UTF-8", "\xff\xfe", `["\ufffd\ufffd"]`},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -405,10 +429,84 @@ func TestValueString_DivergesFromStringFunctionOutsideMeasuredSet(t *testing.T) 
 			if err != nil {
 				t.Fatalf("jsonList(%q): %v", tt.s, err)
 			}
-			if valueStr == jsonStr {
-				t.Errorf("Value.String() and string(list) unexpectedly AGREE on %q (both %s); "+
-					"update doc.go's divergence claim if this is now correct", tt.s, valueStr)
+			if valueStr != jsonStr {
+				t.Errorf("Value.String() = %s; string(list) = %s; want the two to agree", valueStr, jsonStr)
+			}
+			if valueStr != tt.want {
+				t.Errorf("Value.String() = %s; want %s", valueStr, tt.want)
+			}
+			var parsed []string
+			if err := json.Unmarshal([]byte(valueStr), &parsed); err != nil {
+				t.Errorf("Value.String() = %s, which is not valid JSON: %v", valueStr, err)
 			}
 		})
 	}
+}
+
+// TestStringConversion_MatchesSpecFixture transcribes the expectations of
+// conformance-tests/2023-09/EXPR/jobs/expr2.2.1--string-conversion-list-escaping.test.yaml,
+// added to the specification by openjd-specifications#176.
+//
+// It is transcribed rather than scored because sqi's conformance harness
+// collects job_templates and env_templates only -- the jobs/ suite executes a
+// real task and asserts its stdout, which the harness has no runner for. That
+// makes these rows the same kind of ground truth sub-project D's 31
+// apply_path_mapping expectations are: authored by the specification, checked
+// here by hand, and invisible to every automated suite otherwise.
+//
+// The PATHS rows matter most, because they pin the INTERPOLATED rendering
+// rather than string()'s: the fixture writes "{{ paths }}" with no call, which
+// is Value.String() on a bare list.
+func TestStringConversion_MatchesSpecFixture(t *testing.T) {
+	t.Run("string() rows", func(t *testing.T) {
+		tests := []struct{ name, src, want string }{
+			{"QUOTE", `string(['a"b'])`, `["a\"b"]`},
+			{"BACKSLASH", `string(['a\\b'])`, `["a\\b"]`},
+			{"NEWLINE", `string(['a\nb'])`, `["a\nb"]`},
+			{"TAB", `string(['a\tb'])`, `["a\tb"]`},
+			{"NUL", `string(['\x00'])`, `["\u0000"]`},
+			{"NESTED", `string([['a"b']])`, `[["a\"b"]]`},
+		}
+		for _, tt := range tests {
+			t.Run(tt.name, func(t *testing.T) {
+				v, err := Eval(tt.src, nil, TString)
+				if err != nil {
+					t.Fatalf("Eval(%s): %v", tt.src, err)
+				}
+				if got := v.AsStr(); got != tt.want {
+					t.Errorf("Eval(%s) = %s; want %s", tt.src, got, tt.want)
+				}
+				var parsed any
+				if err := json.Unmarshal([]byte(v.AsStr()), &parsed); err != nil {
+					t.Errorf("Eval(%s) = %s, which is not valid JSON: %v", tt.src, v.AsStr(), err)
+				}
+			})
+		}
+	})
+
+	// The fixture builds its list in TEMPLATE-scoped let so path() uses the
+	// POSIX flavor, then renders it in each host's own flavor. sqi's
+	// path_format is an evaluation option rather than a host default (doc.go's
+	// PATH FORMAT bullet), so the two host rows are two evaluations here.
+	t.Run("PATHS rows", func(t *testing.T) {
+		const src = `[path("/out/a.exr"), path("/out/b.exr")]`
+		for _, tt := range []struct {
+			name   string
+			format PathFormat
+			want   string
+		}{
+			{"output_posix", PathPOSIX, `["/out/a.exr", "/out/b.exr"]`},
+			{"output_windows", PathWindows, `["\\out\\a.exr", "\\out\\b.exr"]`},
+		} {
+			t.Run(tt.name, func(t *testing.T) {
+				v, err := Eval(src, nil, TAny, WithPathFormat(tt.format))
+				if err != nil {
+					t.Fatalf("Eval(%s): %v", src, err)
+				}
+				if got := v.String(); got != tt.want {
+					t.Errorf("Value.String() = %s; want %s", got, tt.want)
+				}
+			})
+		}
+	})
 }

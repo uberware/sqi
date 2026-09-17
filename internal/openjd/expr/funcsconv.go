@@ -175,27 +175,29 @@ var convFuncs = map[string][]Shape{
 				return String(s), nil
 			},
 		},
-		// RFC 0006 calls this "the JSON string representation", and it is a
-		// separate implementation from Value.String() -- two renderings, two
-		// functions, on purpose: this row encodes with encoding/json and
-		// SetEscapeHTML(false) (writeJSONValue), while Value.String() quotes a
-		// list's string elements with strconv.Quote (value.go).
+		// RFC 0006 calls this "the JSON string representation". This row and
+		// Value.String() are two renderings for two purposes, but they now
+		// share ONE quoting rule: both send a list's string-like elements
+		// through jsonQuoteElement (encoding/json with SetEscapeHTML(false)).
 		//
-		// CORRECTION (final whole-branch review, sub-project E1): an earlier
-		// revision said Value.String() "renders a list's string elements
-		// unquoted ('[a, b]') as a diagnostic form, which is a known
-		// divergence deferred to sub-project E". That was true when written
-		// and is FALSE now -- sub-project E1 CLOSED the divergence rather than
-		// deferring it, and Value.String() has quoted list string elements
-		// since. What is true today: the two renderings agree byte-for-byte on
-		// quoting AND on escaping for every case measured
-		// (TestValueString_VersusStringFunction's thirteen), but they remain
-		// independent implementations and do NOT agree universally -- they
-		// diverge on the C0 controls, vertical tab, DEL and invalid UTF-8,
-		// pinned in the opposite direction by
-		// TestValueString_DivergesFromStringFunctionOutsideMeasuredSet. Do not
-		// restate the old claim, and do not widen the new one past the set it
-		// was measured on; doc.go carries the full statement.
+		// HISTORY, because two earlier revisions of this comment were each
+		// true when written and false later. (1) The oldest said
+		// Value.String() "renders a list's string elements unquoted" as a
+		// diagnostic form -- sub-project E1 closed that. (2) Its replacement
+		// said the two were INDEPENDENT implementations that agreed on the
+		// thirteen cases measured (TestValueString_VersusStringFunction) and
+		// provably diverged outside them -- on the C0 controls, vertical tab,
+		// DEL and invalid UTF-8 -- and warned against widening the claim.
+		// That was correct until openjd-specifications#176, which states that
+		// format-string interpolation "uses this same conversion" and that
+		// the result "must parse as JSON": Go's \x00 and \v forms are not
+		// JSON, so the divergence became a defect and the two renderers were
+		// merged onto one quoter. The agreement is now universal BY
+		// CONSTRUCTION rather than by measurement, and
+		// TestValueString_ListQuotingIsJSONEverywhere pins the six cases that
+		// used to diverge. What still differs is the SEPARATOR in
+		// internal/openjd's canonical storage form ("," there, ", " here) --
+		// see paramjson.go.
 		//
 		// Cost{ArgElements: {0}} — a DELIBERATE divergence from the reference,
 		// which measures a flat 1 for string([1,2,3]) AND for a 10-element
@@ -348,6 +350,37 @@ func jsonList(v Value) (string, error) {
 	return b.String(), nil
 }
 
+// jsonQuoteElement renders one string-like list element as a JSON string.
+//
+// The HTML-escaping note above this function's only other caller applies
+// here: json.Marshal escapes "<", ">" and "&" by default, because its output
+// is meant to be safe inside an HTML document, which is not this context.
+// Neither the reference implementation nor Python's json.dumps does that, and
+// RFC 0006 asks for "the JSON string representation" without qualification.
+// An Encoder with SetEscapeHTML(false) is the supported way to turn it off;
+// it appends a newline, which is trimmed.
+//
+// Value.String() renders a list's elements through this same function, and
+// must keep doing so: openjd-specifications#176 states that format-string
+// interpolation with surrounding text "uses this same conversion", so
+// "items: {{ MyList }}" and "items: " + string(MyList) are required to agree.
+// They are two renderers sharing one quoting rule, not two rules -- see
+// TestValueString_ListQuotingIsJSONEverywhere, which pins the six classes of
+// input (C0 controls, vertical tab, DEL, invalid UTF-8) where a second rule
+// would show through.
+func jsonQuoteElement(s string) string {
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(false)
+	// Encode reports unsupported types, encoding cycles and writer failures,
+	// none of which a string written into a bytes.Buffer can produce.
+	// Invalid UTF-8 is not an error either -- the encoder substitutes U+FFFD
+	// -- so there is no failure left for a caller to handle, and an
+	// infallible signature is what lets Value.String() share this function.
+	_ = enc.Encode(s) //nolint:errcheck // cannot fail for a string into a buffer; see above
+	return string(bytes.TrimRight(buf.Bytes(), "\n"))
+}
+
 // writeJSONValue is jsonList's recursive worker.
 func writeJSONValue(b *strings.Builder, v Value) error {
 	switch v.Type.Code {
@@ -371,13 +404,7 @@ func writeJSONValue(b *strings.Builder, v Value) error {
 		// rendering into a surprising one. An Encoder with SetEscapeHTML(false)
 		// is the supported way to turn it off; it appends a newline, which is
 		// trimmed.
-		var buf bytes.Buffer
-		enc := json.NewEncoder(&buf)
-		enc.SetEscapeHTML(false)
-		if err := enc.Encode(v.s); err != nil {
-			return err
-		}
-		b.Write(bytes.TrimRight(buf.Bytes(), "\n"))
+		b.WriteString(jsonQuoteElement(v.s))
 	default:
 		// bool, int, float and null all render bare, and Value.String()
 		// already spells each of them the way JSON does.

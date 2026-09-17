@@ -83,11 +83,12 @@ var reprShellFuncs = map[string][]Shape{
 		}},
 		// DIVERGENCE from the reference: see this var block's own COST comment.
 		{Params: []Type{ListOf(varT)}, Ret: TString, Cost: Cost{ArgElements: []int{0}}, Fn: func(args []Value) (Value, error) {
-			body, err := joinValues(args[0].AsList(), ", ", pwshElement)
+			elems := args[0].AsList()
+			body, err := joinValues(elems, ", ", pwshElement)
 			if err != nil {
 				return Value{}, err
 			}
-			return boundedString("@(" + body.AsStr() + ")")
+			return boundedString("@(" + pwshUnaryComma(elems) + body.AsStr() + ")")
 		}},
 	},
 }
@@ -152,6 +153,9 @@ func pwshQuote(s string) string {
 // runnable PowerShell for anything that expects array elements. Recursing
 // through pwshElement instead builds a nested "@(...)" literal, matching how
 // the top-level ListOf(varT) row itself is built.
+//
+// A nested list also picks up its own unary comma when it needs one, since
+// the decision is per-list; see pwshUnaryComma.
 func pwshElement(v Value) string {
 	switch v.Type.Code {
 	case CodeBool:
@@ -164,12 +168,33 @@ func pwshElement(v Value) string {
 	case CodeNull:
 		return "$null"
 	case CodeList:
-		parts := make([]string, len(v.AsList()))
-		for i, elem := range v.AsList() {
+		elems := v.AsList()
+		parts := make([]string, len(elems))
+		for i, elem := range elems {
 			parts[i] = pwshElement(elem)
 		}
-		return "@(" + strings.Join(parts, ", ") + ")"
+		return "@(" + pwshUnaryComma(elems) + strings.Join(parts, ", ") + ")"
 	default:
 		return pwshQuote(v.String())
 	}
+}
+
+// pwshUnaryComma returns the "," that section 2.2.6 requires in front of a
+// one-element array whose only element is itself an array, and "" for every
+// other list.
+//
+// PowerShell flattens "@(@(1, 2))" to "@(1, 2)", so the nesting is lost on
+// the round trip; the unary comma operator, "@(,@(1, 2))", preserves it. The
+// test is on the element COUNT, not on depth: "@(@(1, 2), @(3))" needs no
+// comma because two elements already force an array, and a one-element list
+// of SCALARS must not get one -- "@('a')" is unambiguous already.
+//
+// This is a spec rule sqi missed until openjd-specifications#176 stated it
+// outright; the reference implementation refuses lists nested more than two
+// deep, so it cannot answer the recursive case at all.
+func pwshUnaryComma(elems []Value) string {
+	if len(elems) == 1 && elems[0].Type.Code == CodeList {
+		return ","
+	}
+	return ""
 }

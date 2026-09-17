@@ -1,0 +1,32 @@
+preset: ffmpeg-sequence-encode
+case:   offset-range
+params:
+  EndFrame=1048
+  FrameRate=25
+  OutputDir=/mnt/show/seq010/shot0010/movies
+  Quality=18
+  SourcePattern=/mnt/show/seq010/shot0010/images/shot0010.plate.%04d.dpx
+  StartFrame=1001
+  VideoCodec=libx265
+
+step "Encode" — 1 task
+
+task 1/1  name="Encode"
+  command: ffmpeg
+  args:
+    [0]  -y
+    [1]  -framerate
+    [2]  25
+    [3]  -start_number
+    [4]  1001
+    [5]  -i
+    [6]  /mnt/show/seq010/shot0010/images/shot0010.plate.%04d.dpx
+    [7]  -frames:v
+    [8]  48
+    [9]  -c:v
+    [10]  libx265
+    [11]  -crf
+    [12]  18
+    [13]  -pix_fmt
+    [14]  yuv420p
+    [15]  /mnt/show/seq010/shot0010/movies/shot0010.plate.mp4

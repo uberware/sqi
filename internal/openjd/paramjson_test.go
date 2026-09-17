@@ -157,17 +157,19 @@ func TestListDefault_ListTypeWithoutEXPRStillRejected(t *testing.T) {
 	}
 }
 
-// TestListDefault_JSONIsNotValueString pins the divergence paramjson.go's
-// header describes, so it is a documented fact rather than a latent surprise:
-// the STORED form is JSON, the INTERPOLATED form is expr.Value.String() (Go
-// syntax, via strconv.Quote). They agree on ordinary text and separate on
-// control characters — JSON requires a six-character \u0000 escape where Go
-// writes \x00, and \x00 is not valid JSON at all.
+// TestListDefault_JSONVersusValueString pins what paramjson.go's header
+// describes: the stored form and the interpolated form now share their
+// element QUOTING and still differ in their SEPARATOR.
 //
-// Neither is wrong. They are two renderings for two purposes, and sub-project
-// F2 must not assume a value read from the store can be compared against an
-// interpolated one as text.
-func TestListDefault_JSONIsNotValueString(t *testing.T) {
+// The quoting half used to be a divergence -- the stored form was JSON while
+// expr.Value.String() used strconv.Quote, so a control character came out
+// \x00 on one side and \u0000 on the other, and \x00 is not valid JSON at
+// all. openjd-specifications#176 removed that freedom by requiring the
+// interpolated form to parse as JSON and to match string()'s conversion, and
+// expr now renders through the same encoder. The separator half is untouched:
+// canonical JSON has no space after the comma and section 2.2.1's rendering
+// does.
+func TestListDefault_JSONVersusValueString(t *testing.T) {
 	const nul = "a\x00b"
 
 	stored, err := encodeListDefault([]any{nul}, JobParamTypeListString)
@@ -176,11 +178,26 @@ func TestListDefault_JSONIsNotValueString(t *testing.T) {
 	}
 	rendered := expr.List(expr.TString, []expr.Value{expr.String(nul)}).String()
 
-	if stored == rendered {
-		t.Fatalf("stored and interpolated renderings agree (%s); this test exists "+
-			"because they do not, and something has changed", stored)
+	// One element: no separator to disagree about, so the two forms must now
+	// be byte-identical. This is the assertion that would have failed before
+	// the #176 fix.
+	if stored != rendered {
+		t.Errorf("stored = %s, interpolated = %s; a single-element list must render "+
+			"identically now that both quote through encoding/json", stored, rendered)
 	}
-	t.Logf("stored=%q interpolated=%q — two forms, two purposes", stored, rendered)
+
+	// Two elements: the separator is the one remaining difference.
+	storedPair, err := encodeListDefault([]any{"a", "b"}, JobParamTypeListString)
+	if err != nil {
+		t.Fatalf("encode pair: %v", err)
+	}
+	renderedPair := expr.List(expr.TString, []expr.Value{expr.String("a"), expr.String("b")}).String()
+	if storedPair != `["a","b"]` {
+		t.Errorf("stored pair = %s, want [\"a\",\"b\"] (canonical JSON, no space)", storedPair)
+	}
+	if renderedPair != `["a", "b"]` {
+		t.Errorf("interpolated pair = %s, want [\"a\", \"b\"] (section 2.2.1, with space)", renderedPair)
+	}
 
 	// The stored form must be valid JSON that round-trips; that is the whole
 	// point of choosing it for storage.

@@ -220,19 +220,6 @@ bool | string :: isalnum('٣')
 # title's word boundary on the same rune: see the explanation above.
 string :: title('²x y')
 
-# ── the reference is wrong: a negative maxsplit discards the string ──────────
-#
-# RFC 0006 documents maxsplit as "at most maxsplit times" and defines nothing
-# below zero, so unlimited — Python's rule — is the only reading with support.
-# The reference returns an EMPTY LIST, discarding the input entirely. Reported
-# in expr-tracker.md's upstream ledger.
-
-# Negative maxsplit: see the shared explanation above.
-list[string] | string | int :: split('a,b,c', ',', -1)
-
-# Negative maxsplit, rsplit direction: see the shared explanation above.
-list[string] | string | int :: rsplit('a b c', ' ', -1)
-
 # ── sqi is right: the intersection rule rejects what one engine alone accepts ─
 #
 # RFC 0006 states the accepted regular-expression syntax is the INTERSECTION of
@@ -447,28 +434,6 @@ string :: repr_sh("it's")
 # shared explanation above.
 string :: repr_py("it's")
 
-# ── sqi is right: re_split's negative maxsplit discards the string, too ──────
-#
-# A DIFFERENT rule from the split()/rsplit() negative-maxsplit entries above,
-# reached by the same reference bug — do not fold this into that shared
-# explanation, and do not "fix" one function to match the other. C2's
-# split()/rsplit() follow str.split's own convention, where a negative
-# maxsplit means UNLIMITED; re_split follows RFC 0006's regex-function text
-# ("at most maxsplit times", nothing defined below zero) and Python's
-# re.split, where a negative maxsplit means NO split — the whole string comes
-# back as its own one-element list. The reference returns an EMPTY LIST for
-# re_split too, discarding the input entirely, which is wrong under either
-# reading of "at most maxsplit times": zero matches its rule (the string is
-# an available zero-split outcome, not a null result), and it does not match
-# str.split's convention either, since re_split does not follow that one.
-# Reported in expr-tracker.md's upstream ledger alongside the split()/
-# rsplit() case.
-
-# Negative maxsplit, re_split direction: sqi returns the string unsplit
-# ("['a1b2c']") per Python's re.split rule; the reference discards it
-# ("[]"). See the shared explanation above.
-list[string] | string | int :: re_split('a1b2c', '\d', -1)
-
 # ═══ C4: the path family ═════════════════════════════════════════════════════
 #
 # Everything below is a path case. The reference implementation's path family
@@ -496,21 +461,6 @@ path | list[string] :: path(['//', 'a'])
 # breaks it (false) because its path(parts) collapsed the root. See the
 # explanation above.
 bool | path | list[string] | string :: path(path('//a/b').parts) == path('//a/b')
-
-# ── sqi is right: path([]) is Path(), which is "." ───────────────────────────
-#
-# Two specification rules meet here. RFC 0006 line 755 defines the list row as
-# "Construct path from components (like Path(*parts) in Python)", and Path()
-# with no components is PurePosixPath("."). Expression-Language line 846 makes
-# list[nulltype] implicitly convertible to list[T] for any T, which is what
-# lets the empty literal reach that row at all — the same rule that makes
-# [].join(sep) resolve, already relied on by C2's join. The reference has no
-# list[nulltype] row and rejects the call outright.
-
-# The empty-list constructor: sqi returns "." per Path(*[]), the reference
-# reports "No matching signature for path(list[nulltype])". See the
-# explanation above.
-path | list[nulltype] :: path([])
 
 # ── sqi is right: a URI keeps the empty component a trailing slash leaves ────
 #

@@ -1,0 +1,24 @@
+preset: ffmpeg-transcode
+case:   default
+params:
+  AudioCodec=aac
+  OutputFile=/mnt/show/seq010/shot0010/movies/shot0010_h264.mp4
+  Quality=20
+  SourceFile=/mnt/show/seq010/shot0010/movies/shot0010_source.mov
+  VideoCodec=libx264
+
+step "Transcode" — 1 task
+
+task 1/1  name="Transcode"
+  command: ffmpeg
+  args:
+    [0]  -y
+    [1]  -i
+    [2]  /mnt/show/seq010/shot0010/movies/shot0010_source.mov
+    [3]  -c:v
+    [4]  libx264
+    [5]  -crf
+    [6]  20
+    [7]  -c:a
+    [8]  aac
+    [9]  /mnt/show/seq010/shot0010/movies/shot0010_h264.mp4

@@ -39,9 +39,11 @@ package fmtres
 //   - Anything else -- literal text, a reference embedded inside other
 //     text, or more than one reference -- evaluates each reference
 //     unconstrained (expr.TAny) and converts its NATURAL result to text via
-//     Value.String(), which funcsconv.go's own string() row documents as
-//     agreeing byte-for-byte with the language's string() function for
-//     every case that has been checked. checkFormatString takes exactly
+//     Value.String(), which agrees byte-for-byte with the language's
+//     string() function -- openjd-specifications#176 requires exactly that
+//     ("this same conversion"), and expr enforces it by routing both
+//     renderings through one quoter rather than by measuring two.
+//     checkFormatString takes exactly
 //     this same branch for the identical position and ignores its own
 //     target parameter there, for the identical reason: the result is
 //     converted to a string regardless of what the reference itself

@@ -218,7 +218,7 @@ test-conformance: ## Run the official OpenJD conformance suite (needs the pinned
 # unpinned upgrade could turn the differential test red without a single sqi
 # commit — and because a divergence report is meaningless without knowing
 # which build of the reference produced it.
-OPENJD_MODEL_VERSION ?= 0.11.4
+OPENJD_MODEL_VERSION ?= 0.11.5
 ORACLE_VENV := .venv-oracle
 
 .PHONY: expr-oracle-venv
