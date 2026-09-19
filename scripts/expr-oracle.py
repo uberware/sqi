@@ -39,8 +39,26 @@ import sys
 
 
 def main() -> int:
+    # The protocol above is UTF-8 JSON, so say so rather than inheriting it.
+    #
+    # Python picks the LOCALE encoding for stdio, which is UTF-8 on Linux and
+    # macOS but the ANSI code page (cp1252 on a US/Western install) on Windows.
+    # The Go side always writes UTF-8, so without this every corpus case
+    # carrying a non-ASCII character was silently answered for a DIFFERENT
+    # expression: `len("héllo")` arrived as `len("hÃ©llo")` and the
+    # reference correctly returned 6 for it. It did not surface as a divergence,
+    # because the case `id` is the expression text and it was mangled the same
+    # way -- so the Go side's lookup missed and reported "the reference returned
+    # no result", 24 cases graded against nothing at all.
+    #
+    # Only stdin strictly needs it: emit() leaves json.dumps at its
+    # ensure_ascii default, so what goes out is already pure ASCII. stdout is
+    # reconfigured anyway so the two halves cannot drift apart later.
+    sys.stdin.reconfigure(encoding="utf-8")
+    sys.stdout.reconfigure(encoding="utf-8")
+
     try:
-        from openjd.expr import ExprType, parse_expression
+        from openjd.expr import ExprType, PathFormat, parse_expression
     except ImportError as exc:  # pragma: no cover - exercised by the skip path
         print(f"import failed: {exc}", file=sys.stderr)
         return 2
@@ -60,12 +78,12 @@ def main() -> int:
         if not line:
             continue
         case = json.loads(line)
-        emit(evaluate(case, ExprType, parse_expression))
+        emit(evaluate(case, ExprType, PathFormat, parse_expression))
 
     return 0
 
 
-def evaluate(case: dict, ExprType, parse_expression) -> dict:  # noqa: N803
+def evaluate(case: dict, ExprType, PathFormat, parse_expression) -> dict:  # noqa: N803
     """Evaluate one case, reporting any failure as data rather than raising.
 
     A malformed target type is reported through the same `error` channel as a
@@ -77,7 +95,23 @@ def evaluate(case: dict, ExprType, parse_expression) -> dict:  # noqa: N803
     try:
         target = ExprType(case["target"])
         parsed = parse_expression(case["src"])
-        outcome = parsed.evaluate_with_metrics(target_type=target)
+        # path_format is PINNED, not defaulted, and that is what makes this
+        # oracle host-independent.
+        #
+        # Left to itself the reference follows the specification's host-native
+        # default, so `path('/a/b/c')` renders "/a/b/c" on Linux and "\a\b\c"
+        # on Windows. sqi deliberately does NOT follow that default --
+        # expr.WithPathFormat defaults to POSIX so a server-side template
+        # expands identically whatever submitted it -- so on a Windows host
+        # every one of the corpus's 132 path cases diverged, all of them noise.
+        #
+        # POSIX here matches sqi's own default, which means this is a no-op on
+        # Linux and macOS (host-native already resolved to POSIX) and the CI
+        # job's results are unchanged. What it buys is that a divergence now
+        # means the same thing on every development host.
+        outcome = parsed.evaluate_with_metrics(
+            target_type=target, path_format=PathFormat.POSIX
+        )
     except BaseException as exc:  # noqa: BLE001 - see comment below
         result["ok"] = False
         # BaseException, not Exception, and deliberately.
