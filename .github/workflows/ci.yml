@@ -69,13 +69,22 @@ jobs:
             # test/integration/testdata/** are the preset validation harness's
             # own inputs (the Tier-3 recording stub and the Tier-1 fixtures +
             # goldens), so a change to either also fires this filter.
+            #
+            # internal/presettest/** and preset_argv_test.go are the Tier-1
+            # harness itself, added so preset-goldens-windows fires when the
+            # renderer changes and not only when a golden does. They are the
+            # half that is actually host-sensitive: Render() undoes the host's
+            # path flavor, so a change there can break every golden on Windows
+            # while leaving the goldens themselves untouched.
             presets:
               - 'presets/**'
               - 'presets/validation-tiers.yaml'
               - 'test/integration/ffmpeg_presets_test.go'
+              - 'test/integration/preset_argv_test.go'
               - 'test/integration/worker_binary_test.go'
               - 'test/stubproc/**'
               - 'test/integration/testdata/**'
+              - 'internal/presettest/**'
               - '.github/workflows/ci.yml'
             workflows:
               - '.github/workflows/**'
@@ -1381,6 +1390,65 @@ jobs:
           done
 
   # ── ffmpeg reference presets: the Windows-gated variant ──────────────────────
+  # ── Tier-1 preset goldens, on Windows ────────────────────────────────────────
+  # TestPresetTier1Argv is UNTAGGED, so it runs in the ordinary `make test`
+  # suite -- and that suite runs only on ubuntu-latest. Nothing ran it on
+  # Windows, which is a gap rather than a redundancy: the goldens it compares
+  # against are POSIX-spelled, and phase 3 is a host context, so an EXPR preset
+  # resolving "/mnt/show/a.mov" really does produce a backslash-separated
+  # spelling of it on a Windows worker. internal/presettest's Render() undoes
+  # that flavor so ONE reviewed golden serves every host; if it ever stops doing
+  # so, the argv sqi ships to a Windows renderer has changed and no ubuntu job
+  # can see it.
+  #
+  # Its own job rather than a step on isolation-integration-windows, for the
+  # same reason ffmpeg-presets-windows is its own job below: that one is a
+  # run-as-user suite needing an elevated runner and a SYSTEM re-launch, and a
+  # preset regression reported under "Isolation integration (windows)" names the
+  # wrong thing. This needs no elevation and no containers.
+  #
+  # Runs on every push, and on pull requests only when the presets filter fires.
+  preset-goldens-windows:
+    name: Tier-1 preset goldens (windows)
+    runs-on: windows-latest
+    needs: [test, changes]
+    if: ${{ github.event_name != 'pull_request' || needs.changes.outputs.presets == 'true' }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+
+      # bash (Git Bash, on every windows runner) so the pipeline and the grep
+      # assertion below are the same shell as every other assertion here. The
+      # trailing pipe continues the command, which needs no continuation marker
+      # and cannot be silently eaten by one.
+      - name: Render and compare the Tier-1 goldens
+        shell: bash
+        run: |
+          go test -count=1 -run TestPresetTier1Argv -v -timeout 600s ./test/integration/ 2>&1 |
+            tee preset-goldens-windows.log
+
+      # Not redundant with the step above. TestPresetTier1Argv drives every
+      # preset in presets/validation-tiers.yaml through subtests, and a `-run`
+      # regex that matched nothing -- after a rename, or a registry that failed
+      # to load -- exits 0 having compared no golden at all. The trailing space
+      # is an ANCHOR, not formatting: `go test -v` emits
+      # "--- PASS: <name> (0.01s)", so without it this is a prefix match that a
+      # future TestPresetTier1ArgvXyz would satisfy on this test's behalf.
+      - name: Assert the goldens were actually compared
+        shell: bash
+        run: |
+          if ! grep -q -- "--- PASS: TestPresetTier1Argv " preset-goldens-windows.log; then
+            echo "::error::TestPresetTier1Argv did not run to a PASS on windows"
+            exit 1
+          fi
+          echo "Confirmed the Tier-1 goldens were rendered and compared on windows."
+
   # ffmpeg-segment-transcode-powershell gates on attr.worker.os.family = windows,
   # so a Windows runner is the ONLY place its join script can execute at all —
   # every other job in this workflow skips it by construction. That script has
