@@ -26,6 +26,34 @@ func nopLogger() *slog.Logger {
 	return slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError + 100}))
 }
 
+// noopAction returns an environment action that starts a real process and
+// exits 0, on any host.
+//
+// `true` is a POSIX executable, and hardcoding it made a test pass on a
+// developer's Windows box while failing on a GitHub windows-latest runner: Git
+// for Windows ships `usr/bin/true.exe`, so whether the command resolves comes
+// down to whether that directory happens to be on PATH. It usually is locally
+// and is not on the runner. The assertion that tripped over this
+// (TestResolveEnvAction_TeardownBudgetIsFreshPerEvaluation) is about EXPR
+// budget accounting, which has nothing to do with the host -- so the command is
+// made portable rather than the test skipped, which is what the POSIX-shell
+// tests in dynamicenv_test.go correctly do when the SHELL SYNTAX is the point.
+//
+// cmd.exe is reached through COMSPEC when it is set, since that is the value
+// Windows itself defines for exactly this purpose, and falls back to a bare
+// "cmd" (System32 is always on a Windows PATH) so an unset COMSPEC cannot
+// reintroduce the same class of failure this helper exists to remove.
+func noopAction() *protocol.Action {
+	if runtime.GOOS != "windows" {
+		return &protocol.Action{Command: "true"}
+	}
+	shell := os.Getenv("COMSPEC")
+	if shell == "" {
+		shell = "cmd"
+	}
+	return &protocol.Action{Command: shell, Args: []string{"/c", "exit", "0"}}
+}
+
 // ── Manager.Create ────────────────────────────────────────────────────────────
 
 func TestManagerCreate_CreatesWorkDir(t *testing.T) {

@@ -194,7 +194,9 @@ func TestResolveEnvAction_TeardownBudgetIsFreshPerEvaluation(t *testing.T) {
 	env := protocol.AssignEnvironment{
 		Name:      "env",
 		Variables: vars,
-		OnEnter:   &protocol.Action{Command: "true"},
+		// Portable: this action is really EXECUTED by Create, and the budget
+		// property under test does not care which process runs. See noopAction.
+		OnEnter: noopAction(),
 	}
 	msg := &protocol.AssignMsg{JobID: "j", EXPR: true, Environments: []protocol.AssignEnvironment{env}}
 
@@ -207,7 +209,10 @@ func TestResolveEnvAction_TeardownBudgetIsFreshPerEvaluation(t *testing.T) {
 		t.Fatalf("Create: 9,001 positions is under the 10,000 assignment-wide default: %v", err)
 	}
 
-	onExit := &protocol.Action{Command: "true", Args: args}
+	// onExit is only RESOLVED, never started, so its command need not exist --
+	// but it is kept portable anyway so the file carries no POSIX-only name to
+	// copy into a test that does start one. The 1,500 args are the point here.
+	onExit := &protocol.Action{Command: noopAction().Command, Args: args}
 	if _, _, err := s.resolveEnvAction(env, onExit, vars); err != nil {
 		t.Fatalf("teardown must resolve 9,000 variables and a 1,500-arg onExit -- each evaluation "+
 			"gets its OWN ledger, so nothing accumulates across the four. A shared budget makes "+
