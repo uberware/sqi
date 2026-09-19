@@ -3,6 +3,7 @@
 package presettest_test
 
 import (
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -90,5 +91,72 @@ func TestRender_ShowsEveryArgAndFileBody(t *testing.T) {
 	// Params must render sorted, so a map's iteration order cannot churn a golden.
 	if strings.Index(got, "Alpha=1") > strings.Index(got, "Beta=2") {
 		t.Errorf("params not sorted:\n%s", got)
+	}
+}
+
+// TestRender_GoldensAreHostNeutral pins the property that lets ONE reviewed
+// golden per case serve every host: a path value that phase 3 rendered in the
+// host's own flavor comes back in the POSIX spelling the goldens are written
+// in, while text that merely happens to contain a backslash does not.
+//
+// Phase 3 is a host context, so Expression-Language section 1.2.1 gives it the
+// host operating system's path semantics and an EXPR preset resolving
+// "/mnt/show/a.mov" on a Windows worker really does produce "\mnt\show\a.mov".
+// The inputs here are therefore built with filepath.FromSlash, which is what
+// the worker itself applies: on Windows that makes these assertions real, and
+// on POSIX it is the identity, so the same assertions hold for the untouched
+// text. What must NOT hold on either is a blanket separator transform -- the
+// last two cases are the values such a transform would corrupt.
+func TestRender_GoldensAreHostNeutral(t *testing.T) {
+	const (
+		dir   = "/mnt/show/seq010/movies"
+		src   = "/mnt/show/seq010/movies/shot_source.mov"
+		winFx = `C:\show\seq010\movies\shot_source.mov`
+		shell = `case "$out" in [A-Za-z]:[\/]*) out="${out//\//}" ;; esac`
+	)
+	snap := presettest.Snapshot{
+		Preset: "demo",
+		Case:   "default",
+		// SourceFile is a full path; OutputDir is a directory the preset joins a
+		// derived filename onto; WindowsSource is a literal Windows fixture, which
+		// is what ffmpeg-segment-transcode-powershell's cases really bind.
+		Params: map[string]string{"OutputDir": dir, "SourceFile": src, "WindowsSource": winFx},
+		Steps: []presettest.StepSnapshot{{
+			Name: "Encode",
+			Tasks: []presettest.TaskSnapshot{{
+				Name:    "Encode",
+				Command: "ffmpeg",
+				Args: []string{
+					filepath.FromSlash(src),                       // the parameter itself
+					filepath.FromSlash(dir + "/shot_seg_000.mp4"), // derived in its directory
+					winFx, // never a POSIX path to begin with
+				},
+				Files: []presettest.FileSnapshot{{
+					Name:     "join",
+					Filename: "join.sh",
+					// Both shapes in one body: a path the preset generated, and shell
+					// syntax whose backslashes are not separators at all.
+					Data: "file '" + filepath.FromSlash(dir+"/shot_seg_000.mp4") + "'\n" + shell + "\n",
+				}},
+			}},
+		}},
+	}
+
+	got := presettest.Render(snap)
+	for _, want := range []string{
+		"    [0]  " + src,
+		"    [1]  " + dir + "/shot_seg_000.mp4",
+		"    [2]  " + winFx,
+		"    file '" + dir + "/shot_seg_000.mp4'",
+		"    " + shell,
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("render missing %q:\n%s", want, got)
+		}
+	}
+	// The whole point: no rendered text may carry the host's separator for a
+	// path the goldens spell with "/".
+	if strings.Contains(got, `\mnt`) {
+		t.Errorf("render leaked a host-flavored path:\n%s", got)
 	}
 }
