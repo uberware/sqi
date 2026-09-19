@@ -221,11 +221,27 @@ test-conformance: ## Run the official OpenJD conformance suite (needs the pinned
 OPENJD_MODEL_VERSION ?= 0.11.5
 ORACLE_VENV := .venv-oracle
 
+# The interpreter INSIDE that venv. `python3 -m venv` puts it in bin/ on POSIX
+# and in Scripts/ on Windows, so this path is a function of the HOST, not of the
+# venv -- and hardcoding bin/python3 made every target here unrunnable on a
+# Windows development host. Both halves failed in the same silent direction:
+# creation died with `CreateProcess ... failed` before pip ever ran, and the
+# staleness check below tested a path that cannot exist there, so it found
+# nothing to compare and reinstalled nothing. The suite then fell through to
+# test/oracle/oracle_test.go's own probe -- which DOES know both layouts -- and
+# spoke to whatever that Scripts/ venv happened to hold. Only
+# SQI_EXPR_ORACLE_EXPECT_VERSION caught it, by failing the test outright.
+ifeq ($(OS),Windows_NT)
+ORACLE_PY := $(ORACLE_VENV)/Scripts/python.exe
+else
+ORACLE_PY := $(ORACLE_VENV)/bin/python3
+endif
+
 .PHONY: expr-oracle-venv
 expr-oracle-venv: ## Create the venv holding the pinned OpenJD reference implementation
 	@python3 -m venv $(ORACLE_VENV)
-	@$(ORACLE_VENV)/bin/python3 -m pip install --quiet --upgrade pip
-	@$(ORACLE_VENV)/bin/python3 -m pip install --quiet "openjd-model==$(OPENJD_MODEL_VERSION)"
+	@$(ORACLE_PY) -m pip install --quiet --upgrade pip
+	@$(ORACLE_PY) -m pip install --quiet "openjd-model==$(OPENJD_MODEL_VERSION)"
 	@echo "reference implementation ready: openjd-model $(OPENJD_MODEL_VERSION) in $(ORACLE_VENV)"
 
 # Differential test against the reference implementation. Like test-isolation,
@@ -234,7 +250,7 @@ expr-oracle-venv: ## Create the venv holding the pinned OpenJD reference impleme
 # name for that reason.
 .PHONY: test-expr-oracle
 test-expr-oracle: ## Differential-test the EXPR evaluator against the OpenJD reference (needs python3)
-	@if [ ! -x "$(ORACLE_VENV)/bin/python3" ] && [ -z "$$SQI_EXPR_ORACLE_PYTHON" ]; then \
+	@if [ ! -x "$(ORACLE_PY)" ] && [ -z "$$SQI_EXPR_ORACLE_PYTHON" ]; then \
 	  if ! command -v python3 >/dev/null 2>&1; then \
 	    echo "python3 unavailable — skipping the expression oracle"; exit 0; fi; \
 	  echo "no $(ORACLE_VENV) — creating it (run 'make expr-oracle-venv' to do this explicitly)"; \
@@ -248,8 +264,8 @@ test-expr-oracle: ## Differential-test the EXPR evaluator against the OpenJD ref
 # assert the version it actually spoke to (SQI_EXPR_ORACLE_EXPECT_VERSION) so
 # the guarantee survives a hand-run `go test` too. Skipped entirely when
 # SQI_EXPR_ORACLE_PYTHON points the harness at an interpreter we do not own.
-	@if [ -x "$(ORACLE_VENV)/bin/python3" ] && [ -z "$$SQI_EXPR_ORACLE_PYTHON" ]; then \
-	  have=$$($(ORACLE_VENV)/bin/python3 -c \
+	@if [ -x "$(ORACLE_PY)" ] && [ -z "$$SQI_EXPR_ORACLE_PYTHON" ]; then \
+	  have=$$($(ORACLE_PY) -c \
 	    'import importlib.metadata as m; print(m.version("openjd-model"))' 2>/dev/null); \
 	  if [ "$$have" != "$(OPENJD_MODEL_VERSION)" ]; then \
 	    echo "$(ORACLE_VENV) has openjd-model $$have, pin is $(OPENJD_MODEL_VERSION) — reinstalling"; \
