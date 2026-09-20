@@ -87,7 +87,7 @@ func TestProcessTree_KillReapsOrphanedGrandchild(t *testing.T) {
 
 // TestProcessTree_ReleaseLeavesSurvivorsAlone proves the SUCCESS path matches
 // POSIX. internal/worker/staging's TOCTOU analysis (staging.go,
-// validateStageOutSource) depends on the fact that nothing kills a task's
+// openStageOutSource) depends on the fact that nothing kills a task's
 // process group on a successful exit, so a still-running background child is
 // expected to survive there. release() must clear
 // JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE before closing the handle, or Windows

@@ -9,10 +9,44 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"testing"
+
+	"github.com/uberware/sqi/internal/fsutil"
 )
+
+// assertSecretRestricted asserts that path holds a PRIVATE KEY only its owner
+// can read.
+//
+// The POSIX mode is still asserted where it means something. On Windows it
+// does not: os.Chmod maps only to the read-only ATTRIBUTE and cannot deny read
+// access to anyone, so `perm == 0o600` is unsatisfiable there however well the
+// key is protected — fsutil.IsRestricted inspects the real DACL instead.
+// Asserting the POSIX mode on both platforms is what let `tls init` and
+// `tls issue` write the farm CA key, the server key and every client key with
+// no confidentiality on Windows while CI stayed green on Linux.
+func assertSecretRestricted(t *testing.T, path string) {
+	t.Helper()
+	if runtime.GOOS != "windows" {
+		info, err := os.Stat(path)
+		if err != nil {
+			t.Fatalf("stat %s: %v", path, err)
+		}
+		if perm := info.Mode().Perm(); perm != 0o600 {
+			t.Errorf("%s mode = %04o, want 0600", path, perm)
+		}
+		return
+	}
+	restricted, err := fsutil.IsRestricted(path)
+	if err != nil {
+		t.Fatalf("IsRestricted %s: %v", path, err)
+	}
+	if !restricted {
+		t.Errorf("%s is readable beyond its owner", path)
+	}
+}
 
 // runTLSInitCmd drives "tls init" with args and returns its stdout.
 func runTLSInitCmd(t *testing.T, args ...string) (string, error) {
@@ -91,15 +125,9 @@ func TestTLSInit_WritesExpectedFiles(t *testing.T) {
 		t.Errorf("server.crt does not verify against ca.crt: %v", err)
 	}
 
-	// Private keys must not be world- or group-readable.
+	// Private keys must not be readable beyond their owner.
 	for _, name := range []string{"ca.key", "server.key"} {
-		info, err := os.Stat(filepath.Join(dir, name))
-		if err != nil {
-			t.Fatalf("stat %s: %v", name, err)
-		}
-		if got := info.Mode().Perm(); got != 0o600 {
-			t.Errorf("%s mode = %04o, want 0600", name, got)
-		}
+		assertSecretRestricted(t, filepath.Join(dir, name))
 	}
 }
 
@@ -235,13 +263,7 @@ func TestTLSIssue_ClientCertAgainstAnExistingCA(t *testing.T) {
 		t.Error("ca.key changed while issuing a leaf certificate")
 	}
 
-	info, err := os.Stat(filepath.Join(dir, "client-render-07.key"))
-	if err != nil {
-		t.Fatalf("stat client key: %v", err)
-	}
-	if got := info.Mode().Perm(); got != 0o600 {
-		t.Errorf("client key mode = %04o, want 0600", got)
-	}
+	assertSecretRestricted(t, filepath.Join(dir, "client-render-07.key"))
 }
 
 func TestTLSIssue_ServerCertForRotation(t *testing.T) {

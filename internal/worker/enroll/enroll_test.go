@@ -11,12 +11,44 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
 	"github.com/uberware/sqi/internal/brokerauth"
+	"github.com/uberware/sqi/internal/fsutil"
 	"github.com/uberware/sqi/internal/worker/enroll"
 )
+
+// assertSecretRestricted asserts that path holds key material only its owner
+// can read.
+//
+// The POSIX mode is still asserted where it means something. On Windows it
+// does not: os.Chmod maps only to the read-only ATTRIBUTE and cannot deny read
+// access to anyone, so `perm == 0o600` is unsatisfiable there however well the
+// credential is protected — fsutil.IsRestricted inspects the real DACL
+// instead. See fsutil.WriteSecret for why every key-material writer in this
+// repo had to move off a bare POSIX mode.
+func assertSecretRestricted(t *testing.T, path string) {
+	t.Helper()
+	if runtime.GOOS != "windows" {
+		info, err := os.Stat(path)
+		if err != nil {
+			t.Fatalf("stat %s: %v", path, err)
+		}
+		if perm := info.Mode().Perm(); perm != 0o600 {
+			t.Errorf("%s mode = %04o, want 0600", path, perm)
+		}
+		return
+	}
+	restricted, err := fsutil.IsRestricted(path)
+	if err != nil {
+		t.Fatalf("IsRestricted %s: %v", path, err)
+	}
+	if !restricted {
+		t.Errorf("%s is readable beyond its owner", path)
+	}
+}
 
 func discardLogger() *slog.Logger {
 	return slog.New(slog.DiscardHandler)
@@ -104,13 +136,7 @@ func TestEnsureCredential_NoSeedWithTokenEnrollsAndWritesSeed(t *testing.T) {
 		t.Errorf("public_key = %q, want %q", gotBody["public_key"], pub)
 	}
 
-	info, err := os.Stat(credFile)
-	if err != nil {
-		t.Fatalf("Stat credential file: %v", err)
-	}
-	if perm := info.Mode().Perm(); perm != 0o600 {
-		t.Errorf("credential file mode = %o, want 600", perm)
-	}
+	assertSecretRestricted(t, credFile)
 
 	// The credential file now contains the same seed that was returned, so a
 	// subsequent boot loads it without re-enrolling.

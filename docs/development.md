@@ -351,6 +351,18 @@ Moving parts:
 | `scripts/expr-oracle.py` | Feeds the corpus to the reference over JSON lines. |
 | `test/oracle/oracle_test.go` | Runs both sides and compares (build tag `oracle`). |
 
+**The oracle grades the same on every host**, and two deliberate pins are what
+make that true rather than incidental. `scripts/expr-oracle.py` reads and writes
+UTF-8 explicitly, because Python otherwise picks the locale encoding and Windows
+hands it the ANSI code page — which silently answered every non-ASCII corpus
+case for a mangled expression. And it passes `path_format=PathFormat.POSIX`
+rather than letting the reference follow the specification's host-native
+default: sqi's own `expr.WithPathFormat` defaults to POSIX on purpose, so
+without that pin every path case in the corpus diverges on a Windows host and
+none of it means anything. Both are no-ops on Linux and macOS, and
+`make expr-oracle-venv` likewise resolves the venv's interpreter per host
+(`bin/python3` or `Scripts/python.exe`).
+
 **The reference is not the authority.** Despite living in the `openjd.expr`
 Python namespace, it is a thin re-export layer over a compiled Rust crate
 (`openjd-expr`, in `OpenJobDescription/openjd-rs`), and that crate is **Beta** —

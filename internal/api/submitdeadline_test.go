@@ -454,7 +454,9 @@ steps:
     actions:
       onRun:
         command: echo
-        args: ["{{ len([1, 2, 3]) }}"]
+        args:
+        - "{{ len(('x' * 400000).title()) }}"
+        - "{{ len([1, 2, 3]) }}"
 `
 
 // expiredDeadline is the configured duration used to force a breach.
@@ -462,10 +464,42 @@ steps:
 // It is a duration, not an instant, because that is all an operator configures:
 // the handlers turn it into an absolute time at the top of each request
 // (see TestSubmitJob_DeadlineIsComputedPerRequest), so a test cannot hand them
-// one already in the past. A single nanosecond is spent many times over by the
-// YAML parse that runs before the first charge, so the breach is not a race:
-// the alternative would need the whole parse and walk to complete inside one
-// nanosecond.
+// one already in the past. It cannot be zero or negative either — exprDeadlineAt
+// maps everything <= 0 to "no deadline at all", which would disable the very
+// mechanism under test.
+//
+// THE FIXTURE ABOVE MUST DO REAL, MEASURABLE WORK, AND THAT IS THIS CONSTANT'S
+// DOING. An earlier revision of this comment argued the breach was not a race
+// because "a single nanosecond is spent many times over by the YAML parse that
+// runs before the first charge". That reasoning assumes the clock can OBSERVE a
+// nanosecond. On Linux it can; on Windows it cannot, and these three tests
+// failed there for years without anyone seeing it, because CI ran only on
+// ubuntu-latest. Measured on a real Windows 11 host: 199,999 of 200,000
+// back-to-back time.Since calls returned exactly ZERO, the smallest observable
+// non-zero interval was ~555µs, and a 500,000-iteration loop measured as 0s. A
+// template validating in microseconds completes inside a single clock tick, so
+// every read returns the instant the deadline was computed from and
+// t.After(deadline) is false. The tests were not detecting a broken deadline;
+// they were asking the clock a question it could not answer.
+//
+// Hence the fixture's shape, which must not be "simplified" back:
+//
+//   - The first argument is op-cheap and BYTE-heavy, the exact asymmetry H1's
+//     wall-clock backstop exists to catch (see ExprLimits.SubmissionOperations,
+//     which measures .title() at ~7,034 operations for ~57ms over 900 KB).
+//     400,000 characters spends a few thousand of the 10,000-operation budget
+//     while costing tens of milliseconds — two orders of magnitude above the
+//     tick, on any host.
+//   - The SECOND argument exists so the walk has a second expression position.
+//     The meter reads the clock on a position's FIRST charge and then only
+//     every deadlineCheckInterval (1024) charges, and a bulk operation like
+//     'x' * 400000 charges its whole cost in one call — so within a single
+//     position the check can land only before the work. The submission routes
+//     walk the template twice (phase 1 then phase 2) and would breach on the
+//     second walk regardless, but POST /api/v1/products validates ONCE. Its
+//     breach comes from position two's first charge seeing position one's
+//     elapsed time. Drop the second argument and that test alone silently
+//     stops testing anything.
 const expiredDeadline = time.Nanosecond
 
 // generousDeadline is the control's configured duration: far more than the

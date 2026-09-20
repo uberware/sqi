@@ -69,13 +69,22 @@ jobs:
             # test/integration/testdata/** are the preset validation harness's
             # own inputs (the Tier-3 recording stub and the Tier-1 fixtures +
             # goldens), so a change to either also fires this filter.
+            #
+            # internal/presettest/** and preset_argv_test.go are the Tier-1
+            # harness itself, added so preset-goldens-windows fires when the
+            # renderer changes and not only when a golden does. They are the
+            # half that is actually host-sensitive: Render() undoes the host's
+            # path flavor, so a change there can break every golden on Windows
+            # while leaving the goldens themselves untouched.
             presets:
               - 'presets/**'
               - 'presets/validation-tiers.yaml'
               - 'test/integration/ffmpeg_presets_test.go'
+              - 'test/integration/preset_argv_test.go'
               - 'test/integration/worker_binary_test.go'
               - 'test/stubproc/**'
               - 'test/integration/testdata/**'
+              - 'internal/presettest/**'
               - '.github/workflows/ci.yml'
             workflows:
               - '.github/workflows/**'
@@ -924,19 +933,100 @@ jobs:
         with:
           go-version-file: go.mod
 
+      # Lint the Windows-only sources. THIS JOB IS THE ONLY PLACE THEY ARE
+      # LINTED AT ALL: the `lint` step lives in the `test` job on
+      # ubuntu-latest, where golangci-lint type-checks with GOOS=linux and so
+      # never compiles a *_windows.go file. Every //go:build windows source in
+      # this repo was therefore unlinted until this step existed — a blind spot
+      # of exactly the same shape as `go build` never compiling _test.go (see
+      # the cross-compile job), and it hid a real defect: provider_windows.go
+      # checked `if e1 != nil` on the third result of syscall.Proc.Call, which
+      # is a syscall.Errno and therefore never nil, making the fallback branch
+      # unreachable and reporting "The operation completed successfully." as
+      # the reason a LogonUserW failed.
+      #
+      # The version is pinned to the same v2.13.1 the ubuntu lint step uses;
+      # keep the two in step, or a bump lands here as an unrelated red run.
+      # Scoped to the worker tree rather than the whole module: those are the
+      # packages that carry per-GOOS files, and a full-module run on Windows
+      # would re-report the same findings the ubuntu job already gates.
+      - name: golangci-lint (windows sources)
+        uses: golangci/golangci-lint-action@v9
+        with:
+          version: v2.13.1
+          args: --timeout=5m ./cmd/sqi-worker/... ./internal/worker/... ./internal/brokerauth/... ./internal/tlsutil/...
+
       # Windows-only unit tests. See the job comment above for why these six
       # packages and not others. -count=1 disables the test cache so a stale
-      # pass from an earlier step can't stand in for a real run.
+      # pass from an earlier step can't stand in for a real run. -v (and the
+      # tee) exist so the assertion step below has per-test PASS lines to
+      # match against; without them a t.Skip is indistinguishable from a pass
+      # in this step's output.
       - name: Windows unit tests
         shell: bash
         run: |
-          go test -count=1 \
+          go test -count=1 -v \
             ./internal/worker/isolation/... \
             ./internal/worker/executor/... \
             ./internal/worker/envutil/... \
             ./internal/worker/session/... \
             ./internal/worker/staging/... \
-            ./cmd/sqi-worker/...
+            ./cmd/sqi-worker/... 2>&1 | tee windows-unit.log
+
+      # Separate from the isolation assertion below on purpose: these are a
+      # different suite with different prerequisites (plain `go test`, no
+      # elevation, no throwaway OS accounts), so a shared list would hide
+      # which prerequisite went missing.
+      #
+      # The Windows staging tests below are a mix: the two hardlink-refusal
+      # tests carry a t.Skipf escape hatch for a non-NTFS temp directory, but
+      # the rest — including both junction tests — carry none. A skipped test
+      # verifies nothing, and a green `go test` cannot tell a skip from a pass
+      # — so every one of them is confirmed PASS by name here, the same way
+      # the isolation suite's names are below.
+      #
+      # TestStageOut_SharingViolationIsNotReportedAsEscape is deliberately NOT
+      # in this list, and that is a finding rather than an omission: THIS
+      # RUNNER DOES NOT ENFORCE A DENY-ALL SHARE MODE. Measured here —
+      # CreateFile(dwShareMode: 0) returns a handle and a second open of the
+      # same path then succeeds, through os.Root and through a plain os.Open
+      # alike — so the sharing violation that test exists to classify cannot
+      # be provoked on this host and it now skips, honestly, instead of
+      # reporting a missing OS behavior as an sqi defect. The property it
+      # proves is required by name below as
+      # TestClassifyStageOutOpenError_SharingViolationIsUnreadable, which
+      # feeds the classifier the errno the kernel really produces and so holds
+      # on every host. Requiring the provocation test by name would mean
+      # demanding an OS behavior the runner does not have.
+      - name: Assert the windows staging tests actually ran
+        shell: bash
+        run: |
+          expected=(
+            TestCopyFile_RefusesHardlinkedStageInSourceOnWindows
+            TestStageOut_OrdinaryFileUnaffected
+            TestStageOut_RefusesHardlinkedSourceOnWindows
+            TestStageOut_RefusesJunctionAtFinalComponent
+            TestStageOut_RefusesJunctionedScratchSubdir
+            TestClassifyStageOutOpenError_SharingViolationIsUnreadable
+            TestStageOut_SwapAfterValidateIsRefused
+          )
+          missing=0
+          for name in "${expected[@]}"; do
+            # The trailing space is an ANCHOR, not formatting. `go test -v`
+            # emits "--- PASS: <name> (0.01s)", so the name is always followed
+            # by one; without it this is a PREFIX match and a future
+            # TestStageOut_OrdinaryFileUnaffectedByX would silently satisfy
+            # the assertion for TestStageOut_OrdinaryFileUnaffected, which
+            # could then be deleted with this step still green.
+            if ! grep -q -- "--- PASS: $name " windows-unit.log; then
+              echo "::error::$name did not pass (skipped, missing, or failed)"
+              missing=1
+            fi
+          done
+          if [ "$missing" -eq 0 ]; then
+            echo "Confirmed all ${#expected[@]} named windows staging tests passed."
+          fi
+          exit $missing
 
       - name: Run windows isolation integration tests
         shell: pwsh
@@ -946,8 +1036,8 @@ jobs:
 
       # Does not trust a bare exit-0 from the script: asserts the suite
       # actually executed (the runner was elevated) and that every one of the
-      # 16 named tests — 8 TestIsolationWindows_* (elevated admin) plus
-      # 8 TestIsolationWindowsSystem_* (SYSTEM) — is confirmed PASS by name, so
+      # 17 named tests — 8 TestIsolationWindows_* (elevated admin) plus
+      # 9 TestIsolationWindowsSystem_* (SYSTEM) — is confirmed PASS by name, so
       # a silent skip, a build failure, or a partial run all fail the job
       # instead of passing quietly.
       - name: Assert the suite actually ran
@@ -974,16 +1064,23 @@ jobs:
             TestIsolationWindowsSystem_NoIsolationUnchanged
             TestIsolationWindowsSystem_ProfileEnvPointsAtTargetUser
             TestIsolationWindowsSystem_RunsAsSystem
+            TestIsolationWindowsSystem_StageOutRefusesPlantedJunction
           )
           missing=0
           for name in "${expected[@]}"; do
-            if ! grep -q -- "--- PASS: $name" isolation-windows.log; then
+            # Trailing space is an ANCHOR, not formatting — same reasoning as
+            # the staging block above. `go test -v` emits
+            # "--- PASS: <name> (0.01s)", so a passing name is always followed
+            # by a space; without it this is a PREFIX match and a future
+            # TestIsolationWindowsSystem_CapableXyz would silently satisfy the
+            # assertion for TestIsolationWindowsSystem_Capable.
+            if ! grep -q -- "--- PASS: $name " isolation-windows.log; then
               echo "::error::$name did not pass"
               missing=1
             fi
           done
           if [ "$missing" -eq 0 ]; then
-            echo "Confirmed all ${#expected[@]}/16 named isolation tests passed."
+            echo "Confirmed all ${#expected[@]}/17 named isolation tests passed."
           fi
           exit $missing
 
@@ -1077,7 +1174,7 @@ jobs:
           )
           missing=0
           for name in "${expected[@]}"; do
-            if ! grep -q -- "--- PASS: $name" integration-output.log; then
+            if ! grep -q -- "--- PASS: $name " integration-output.log; then
               echo "::error::$name did not pass"
               missing=1
             fi
@@ -1172,7 +1269,7 @@ jobs:
           )
           missing=0
           for name in "${expected[@]}"; do
-            if ! grep -q -- "--- PASS: $name" discovery-output.log; then
+            if ! grep -q -- "--- PASS: $name " discovery-output.log; then
               echo "::error::$name did not pass"
               missing=1
             fi
@@ -1300,11 +1397,70 @@ jobs:
             TestFFmpegPreset_PortableRejectsBeyondItsCostCeiling \
             TestFFmpegPreset_SequenceEncodeNamesOutputAfterPattern \
           ; do
-            grep -q -- "--- PASS: ${name}" /tmp/ffmpeg-presets.log \
+            grep -q -- "--- PASS: ${name} " /tmp/ffmpeg-presets.log \
               || { echo "::error::${name} did not run to a PASS"; exit 1; }
           done
 
   # ── ffmpeg reference presets: the Windows-gated variant ──────────────────────
+  # ── Tier-1 preset goldens, on Windows ────────────────────────────────────────
+  # TestPresetTier1Argv is UNTAGGED, so it runs in the ordinary `make test`
+  # suite -- and that suite runs only on ubuntu-latest. Nothing ran it on
+  # Windows, which is a gap rather than a redundancy: the goldens it compares
+  # against are POSIX-spelled, and phase 3 is a host context, so an EXPR preset
+  # resolving "/mnt/show/a.mov" really does produce a backslash-separated
+  # spelling of it on a Windows worker. internal/presettest's Render() undoes
+  # that flavor so ONE reviewed golden serves every host; if it ever stops doing
+  # so, the argv sqi ships to a Windows renderer has changed and no ubuntu job
+  # can see it.
+  #
+  # Its own job rather than a step on isolation-integration-windows, for the
+  # same reason ffmpeg-presets-windows is its own job below: that one is a
+  # run-as-user suite needing an elevated runner and a SYSTEM re-launch, and a
+  # preset regression reported under "Isolation integration (windows)" names the
+  # wrong thing. This needs no elevation and no containers.
+  #
+  # Runs on every push, and on pull requests only when the presets filter fires.
+  preset-goldens-windows:
+    name: Tier-1 preset goldens (windows)
+    runs-on: windows-latest
+    needs: [test, changes]
+    if: ${{ github.event_name != 'pull_request' || needs.changes.outputs.presets == 'true' }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+
+      # bash (Git Bash, on every windows runner) so the pipeline and the grep
+      # assertion below are the same shell as every other assertion here. The
+      # trailing pipe continues the command, which needs no continuation marker
+      # and cannot be silently eaten by one.
+      - name: Render and compare the Tier-1 goldens
+        shell: bash
+        run: |
+          go test -count=1 -run TestPresetTier1Argv -v -timeout 600s ./test/integration/ 2>&1 |
+            tee preset-goldens-windows.log
+
+      # Not redundant with the step above. TestPresetTier1Argv drives every
+      # preset in presets/validation-tiers.yaml through subtests, and a `-run`
+      # regex that matched nothing -- after a rename, or a registry that failed
+      # to load -- exits 0 having compared no golden at all. The trailing space
+      # is an ANCHOR, not formatting: `go test -v` emits
+      # "--- PASS: <name> (0.01s)", so without it this is a prefix match that a
+      # future TestPresetTier1ArgvXyz would satisfy on this test's behalf.
+      - name: Assert the goldens were actually compared
+        shell: bash
+        run: |
+          if ! grep -q -- "--- PASS: TestPresetTier1Argv " preset-goldens-windows.log; then
+            echo "::error::TestPresetTier1Argv did not run to a PASS on windows"
+            exit 1
+          fi
+          echo "Confirmed the Tier-1 goldens were rendered and compared on windows."
+
   # ffmpeg-segment-transcode-powershell gates on attr.worker.os.family = windows,
   # so a Windows runner is the ONLY place its join script can execute at all —
   # every other job in this workflow skips it by construction. That script has

@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -16,9 +17,13 @@ import (
 )
 
 // buildStub compiles the stub into dir and returns its path.
+//
+// The binary keeps the platform's executable suffix: Windows will not exec a
+// file without one, and main strips the extension before recording the name,
+// so a "kick.exe" here still records itself as "kick".
 func buildStub(t *testing.T, dir, name string) string {
 	t.Helper()
-	out := filepath.Join(dir, name)
+	out := filepath.Join(dir, name+exeSuffix())
 	cmd := exec.CommandContext(t.Context(), "go", "build", "-o", out, "github.com/uberware/sqi/test/stubproc")
 	if combined, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("build stub: %v\n%s", err, combined)
@@ -136,4 +141,12 @@ func TestStub_SleepsOnRequest(t *testing.T) {
 	if elapsed := time.Since(start); elapsed < 250*time.Millisecond {
 		t.Errorf("returned after %s, want at least ~300ms", elapsed)
 	}
+}
+
+// exeSuffix is ".exe" on Windows and "" elsewhere.
+func exeSuffix() string {
+	if runtime.GOOS == "windows" {
+		return ".exe"
+	}
+	return ""
 }

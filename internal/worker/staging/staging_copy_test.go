@@ -70,7 +70,9 @@ func TestBuiltinCopy(t *testing.T) {
 		if runtime.GOOS == "windows" {
 			t.Skip("creating a symlink on Windows requires SeCreateSymbolicLinkPrivilege or " +
 				"Developer Mode, unavailable to an ordinary CI user; this test proves POSIX " +
-				"symlink-source refusal and cannot be exercised without first creating one")
+				"symlink-source refusal and cannot be exercised without first creating one" +
+				"; the junction test in staging_windows_test.go covers this code path " +
+				"with an unprivileged primitive")
 		}
 
 		dir := t.TempDir()
@@ -124,7 +126,9 @@ func TestCopyFile_RefusesSymlinkDest(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("creating a symlink on Windows requires SeCreateSymbolicLinkPrivilege or " +
 			"Developer Mode, unavailable to an ordinary CI user; this test proves POSIX " +
-			"symlink-dest refusal and cannot be exercised without first creating one")
+			"symlink-dest refusal and cannot be exercised without first creating one" +
+			"; the junction test in staging_windows_test.go covers this code path " +
+			"with an unprivileged primitive")
 	}
 
 	dir := t.TempDir()
@@ -160,24 +164,20 @@ func TestCopyFile_RefusesSymlinkDest(t *testing.T) {
 
 // TestCopyFile_RefusesSourceWithExtraHardlink proves copyFile's own fd-based
 // re-check refuses a source with an extra hardlink ENTIRELY ON ITS OWN, with
-// no upstream path-based guard (validateStageOutSource) involved at all.
-// That is the point of the fix: O_NOFOLLOW closes the symlink half of the
-// stage-out TOCTOU (a symlink swapped in after an upstream Lstat cannot be
-// traversed), but a hardlink IS a regular file — O_NOFOLLOW opens it
-// successfully — so nothing before this test's fd-based in.Stat() call would
-// have refused it. A background child left running past its task's
-// successful exit (nothing kills the process group on success — see
-// executor.runTask/killAndWait) can link a second name onto a scratch entry's
-// inode between validateStageOutSource's Lstat and copyFile's open; calling
-// copyFile directly here, without going through StageOut/validateStageOutSource
-// first, simulates exactly that: the source path already shares its inode
-// with another entry by the time copyFile ever sees it.
+// no upstream guard (openStageOutSource) involved at all — which is what
+// matters now that copyFile is the STAGE-IN path, where there is no os.Root
+// above it to enforce anything. O_NOFOLLOW closes the symlink half of the
+// TOCTOU (a symlink swapped in after an upstream Lstat cannot be traversed),
+// but a hardlink IS a regular file — O_NOFOLLOW opens it successfully — so
+// nothing before this test's fd-based in.Stat() call would have refused it. A
+// background child left running past its task's successful exit (nothing
+// kills the process group on success — see executor.runTask/killAndWait) can
+// link a second name onto a scratch entry's inode between any path-based
+// check and copyFile's open; calling copyFile directly here, without going
+// through StageOut/openStageOutSource first, simulates exactly that: the
+// source path already shares its inode with another entry by the time
+// copyFile ever sees it.
 func TestCopyFile_RefusesSourceWithExtraHardlink(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("hardlink-count check is unimplemented on Windows (see staging_windows.go); " +
-			"a real, currently-open gap now that Windows run-as-user isolation is supported")
-	}
-
 	dir := t.TempDir()
 	outside := filepath.Join(dir, "secret.txt")
 	if err := os.WriteFile(outside, []byte("root-only-contents"), 0o644); err != nil {

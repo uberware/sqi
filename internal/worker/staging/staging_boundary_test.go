@@ -14,7 +14,7 @@ import (
 	"github.com/uberware/sqi/internal/worker/staging"
 )
 
-// These tests prove StageOut's boundary check (validateStageOutSource, run
+// These tests prove StageOut's boundary check (openStageOutSource, run
 // upstream of both the built-in copy and an operator sync_command) refuses
 // every primitive a task could use to make root read or leak content outside
 // its own scratch directory when its output is copied back to the real
@@ -33,7 +33,9 @@ func TestStager_StageOut_RefusesSymlinkSource(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("creating a symlink on Windows requires SeCreateSymbolicLinkPrivilege or " +
 			"Developer Mode, unavailable to an ordinary CI user; this test proves POSIX " +
-			"symlink-source refusal and cannot be exercised without first creating one")
+			"symlink-source refusal and cannot be exercised without first creating one" +
+			"; the junction test in staging_windows_test.go covers this code path " +
+			"with an unprivileged primitive")
 	}
 
 	scratch := t.TempDir()
@@ -74,12 +76,20 @@ func TestStager_StageOut_RefusesSymlinkSource(t *testing.T) {
 // too. fs.protected_hardlinks narrows who can CREATE such a hardlink but is a
 // host kernel setting sqi does not control, so this must be enforced
 // independently of it.
+//
+// THIS TEST IS POSIX-ONLY, and not because of the primitive. It carries no
+// runtime.GOOS guard of its own — one was removed during H3 on the theory
+// that NTFS hardlinks make it portable, which is true of os.Link but not of
+// this test — because it still skips on Windows inside fakeSync, whose
+// fixture is a POSIX "#!/bin/sh" script Windows cannot exec (see fakeSync's
+// own doc in staging_test.go). Removing that guard was therefore a no-op, and
+// re-deriving the fact costs a `go test -v -run` every time. Do NOT "fix" it
+// by making fakeSync cross-platform for this test's sake: Windows coverage of
+// the same check already exists as
+// TestStageOut_RefusesHardlinkedSourceOnWindows in staging_windows_test.go,
+// which drives openStageOutSource directly and needs no sync command at all,
+// and CI asserts that test passed BY NAME.
 func TestStager_StageOut_RefusesHardlinkedSource(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("hardlink-count check is unimplemented on Windows (see staging_windows.go); " +
-			"a real, currently-open gap now that Windows run-as-user isolation is supported")
-	}
-
 	scratch := t.TempDir()
 	s := staging.New(scratch, fakeSync(t), false, discard())
 	scratchDir := filepath.Join(scratch, "job1", "att1")
@@ -122,7 +132,9 @@ func TestStager_StageOut_RefusesSourceOutsideScratch(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("creating a directory symlink on Windows requires SeCreateSymbolicLinkPrivilege " +
 			"or Developer Mode, unavailable to an ordinary CI user; this test proves POSIX " +
-			"scratch-containment refusal and cannot be exercised without first creating one")
+			"scratch-containment refusal and cannot be exercised without first creating one" +
+			"; the junction test in staging_windows_test.go covers this code path " +
+			"with an unprivileged primitive")
 	}
 
 	scratch := t.TempDir()

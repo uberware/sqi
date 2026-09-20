@@ -1749,19 +1749,6 @@ provider](development.md#testing-against-a-real-directory-or-identity-provider) 
   output, never a real directory server — see
   [`docs/worker-configuration.md`](worker-configuration.md) for that caveat in
   full.
-- **Windows staging has no TOCTOU re-check on stage-out, and isolation is what
-  makes it reachable.** On POSIX, `internal/worker/staging`'s `builtinCopy`
-  re-checks for a symlink swap or a hardlink-count change (`O_NOFOLLOW`,
-  hardlink-count) between its own `Lstat` and the elevated daemon's subsequent
-  read of the same path. Windows has no equivalent re-check yet. Because a
-  session directory is now genuinely ACL-secured to the target account, a task
-  running under that account has write access to its own session directory
-  and can in principle race a symlink/junction swap into the window between
-  `builtinCopy`'s `Lstat` and the daemon's later read during stage-out. An
-  unisolated worker has nothing to gain from winning that race — its tasks
-  already run as the daemon's own account — so isolation being enabled on
-  Windows is precisely what makes this reachable. Not yet fixed; tracked for
-  a follow-up before this is considered hardened.
 - **`DELETE /workers/{id}/credential` stays mounted with `auth.enabled=false`.**
   Every other permission-gated route in this document is bypassed by the
   anonymous superuser when `auth.enabled` is off — that is unchanged,

@@ -937,9 +937,16 @@ is terminated when the worker process exits, including on a graceful service
 restart. Previously such processes were orphaned while the task was reclaimed
 and re-run elsewhere.
 
-> **Open gap: session-directory TOCTOU on Windows.** See [Known
-> gaps](auth.md#known-gaps) in `docs/auth.md` for the staging race this
-> enables.
+> **A session directory is genuinely task-owned, and stage-out assumes it.**
+> Because the ACL hands the directory to the target account, an isolated task
+> can replace anything under its own scratch subdirectory — including
+> swapping the file it just wrote for a symlink or a directory junction.
+> Stage-out is built for that: it opens every source through an `os.Root`
+> rooted at the scratch directory, so the kernel refuses a reparse point or
+> an escape at the open, and the built-in copy reads that same descriptor
+> rather than the path. See [`staging.sync_command`](#stagingsync_command)
+> for the one residue this leaves — an operator-configured `sync_command`
+> gets path strings, not a descriptor.
 
 ### Privileged accounts and groups are refused outright
 
@@ -1363,6 +1370,38 @@ per-worker opt-in, distinct from the automatic fallback described under
 > `sync_command` (`rsync`, `aws s3 cp`, etc.) to move data between them —
 > configure one explicitly rather than relying on the built-in copy.
 
+> **The built-in copy refuses an input that already carries more than one
+> hardlink**, on stage-in as well as stage-out. The two paths fail the task
+> with **different messages** — grep for both:
+>
+> - stage-in: `copy refused: opened "<path>" has more than one hardlink; sqi
+>   will not copy a file that may alias content beyond scratch`
+> - stage-out: `stage-out refused: "<path>" has more than one hardlink; sqi
+>   will not copy a file that may alias content beyond scratch`
+>
+> (stage-out quotes the path *relative to the scratch directory*, not the
+> absolute one, because it is looked up through a rooted descriptor.) The
+> shared, greppable substring across both is
+> `has more than one hardlink`. A hardlink is not a copy of
+> the file, it *is* the file — one inode under a second name — so staging it
+> into scratch and chowning it to the run-as-user identity would chown the
+> original too, and nothing sqi does afterward can separate them again. If
+> your inputs are delivered by a content-addressed or deduplicating asset
+> store, or by `cp -al` / `rsync --link-dest`, they will be multiply linked
+> and will be refused. Deliver them with a real copy (`rsync -a` without
+> `--link-dest`, `cp` without `-l`) or configure a `sync_command` that does.
+>
+> This is **not** the same thing as the `sync_command` hardlink warning
+> below, and the remedies differ: that one is about a *sync command you
+> configure* creating a link into scratch; this one is about an *input asset
+> that already had one* before sqi ever saw it. **On Windows this refusal is
+> new**: the link count was not checked there until the stage-out containment
+> fix landed, so a multiply linked input used to stage in silently. POSIX
+> workers have always enforced it. On a mixed farm the same job may therefore
+> start failing on the Windows workers and nowhere else — not because those
+> workers are stricter than the rest, but because they have stopped being the
+> lenient ones.
+
 > **`sync_command` MUST NOT create hardlinks into scratch** when run-as-user
 > isolation is in use — e.g. `cp -al`, or `rsync --link-dest`. A hardlink IS
 > the file: it shares one inode with whatever it links to, so chowning the
@@ -1373,16 +1412,23 @@ per-worker opt-in, distinct from the automatic fallback described under
 > inode.
 
 > **`sync_command` MUST NOT dereference symlinks at either end**, on stage-in
-> or stage-out. sqi validates the scratch-side path before invoking the
-> command (regular file, single hardlink, contained in scratch), but that
-> check cannot see what the command itself does once invoked: `rsync -a`
-> preserves a symlink, `rsync -aL` or plain `cp` follow it. A command that
-> follows a symlink a task planted at its declared output path hands the
-> daemon's `sync_command` process — running as root — whatever that symlink
-> points to, on stage-out, or writes through a symlink planted at the real
-> destination path, on stage-in. This is entirely a property of the command
-> template an operator chooses and is outside anything sqi can inspect or
-> enforce.
+> or stage-out. sqi validates the scratch-side source before invoking the
+> command: on stage-out it opens that source *through* an `os.Root` rooted at
+> the scratch directory, so containment is enforced by the kernel in the open
+> itself (`OBJ_DONT_REPARSE` on Windows, `openat` with per-component
+> `O_NOFOLLOW` on POSIX) rather than computed from the path beforehand, and a
+> source reached through a symlink or a directory junction is refused before
+> the command is ever invoked — which is what makes this check real on
+> Windows, where the previous path-based containment computation did not
+> resolve junctions at all. It then checks on that open descriptor that the
+> source is a regular file with a single hardlink. But none of that can see
+> what the command itself does once invoked: `rsync -a` preserves a symlink,
+> `rsync -aL` or plain `cp` follow it. A command that follows a symlink a
+> task planted at its declared output path hands the daemon's `sync_command`
+> process — running as root — whatever that symlink points to, on stage-out,
+> or writes through a symlink planted at the real destination path, on
+> stage-in. This is entirely a property of the command template an operator
+> chooses and is outside anything sqi can inspect or enforce.
 >
 > **Be aware this residue also includes a race, and it is structurally
 > unclosable for `sync_command` specifically.** sqi hands `sync_command` a
