@@ -138,6 +138,21 @@ func startRealWorkerWithOptions(t *testing.T, ts *testServer, farmID, queueID st
 	return startRealWorkerCore(t, ts, farmID, queueID, extraArgs, extraEnv, false)
 }
 
+// startRealWorkerWithOptionsAnyOS is [startRealWorkerWithOptions] for callers
+// whose job commands are genuinely cross-platform, so the POSIX-command skip in
+// startRealWorkerNoWait does not apply.
+//
+// The Tier-3 preset harness is the caller: every command it runs is
+// test/stubproc, installed on PATH under the vendor's name with the platform's
+// executable suffix, so there is no POSIX command anywhere in the path. Which
+// presets can actually run on this host is decided per preset by
+// unsatisfiableOSFamily, reading each template's own attr.worker.os.family --
+// not by a blanket platform check here.
+func startRealWorkerWithOptionsAnyOS(t *testing.T, ts *testServer, farmID, queueID string, extraArgs, extraEnv []string) string {
+	t.Helper()
+	return startRealWorkerCore(t, ts, farmID, queueID, extraArgs, extraEnv, true)
+}
+
 // startRealWorkerAnyOS is [startRealWorker] for callers whose job commands are
 // genuinely cross-platform, so the Windows skip below does not apply to them.
 //

@@ -235,10 +235,6 @@ func recordTier3Outcome(t *testing.T, caseName string) {
 func runTier3Case(t *testing.T, entry presettest.Entry, c presettest.Case, caseName string) {
 	t.Helper()
 	recordTier3Outcome(t, caseName)
-	if runtime.GOOS == "windows" {
-		presettest.RecordOutcome(caseName, true, "preset tier-3 uses a POSIX worker")
-		t.Skip("preset tier-3 uses a POSIX worker; skipping on Windows")
-	}
 	if want := unsatisfiableOSFamily(t, entry); want != "" {
 		reason := fmt.Sprintf("preset requires attr.worker.os.family %q; this host reports %q", want, hostOSFamily())
 		presettest.RecordOutcome(caseName, true, reason)
@@ -261,7 +257,7 @@ func runTier3Case(t *testing.T, entry presettest.Entry, c presettest.Case, caseN
 	ts := startServer(t)
 	farmID, queueID := seedFarmAndQueue(t, ts)
 	env := newTier3Env(t, names, workerTagEnv(t, entry)...)
-	startRealWorkerWithOptions(t, ts, farmID, queueID, nil, env.env)
+	startRealWorkerWithOptionsAnyOS(t, ts, farmID, queueID, nil, env.env)
 
 	jobID := submitPresetJob(t, ts, farmID, queueID, presetCaseTemplate(t, entry, c), c.Params)
 	// Job statuses are "completed"/"failed"/"canceled"/"paused" (store.JobStatus)
@@ -581,13 +577,10 @@ func keysOf(m map[string]bool) []string {
 // failure, not just a success: a non-zero vendor exit must reach the API as a
 // failed task carrying a failure_reason.
 func TestPresetTier3_StubFailureSurfacesAsFailedTask(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("preset tier-3 uses a POSIX worker; skipping on Windows")
-	}
 	ts := startServer(t)
 	farmID, queueID := seedFarmAndQueue(t, ts)
 	env := newTier3Env(t, []string{"failing-renderer"}, "SQI_STUB_EXIT=3")
-	startRealWorkerWithOptions(t, ts, farmID, queueID, nil, env.env)
+	startRealWorkerWithOptionsAnyOS(t, ts, farmID, queueID, nil, env.env)
 
 	jobID := submitJobCustomYAML(t, ts, farmID, queueID, stubJobYAML("failing-renderer"))
 	if status := pollJobStatus(t, ts, jobID, []string{"completed", "failed", "canceled"}, presetJobTimeout); status != "failed" {
@@ -602,13 +595,10 @@ func TestPresetTier3_StubFailureSurfacesAsFailedTask(t *testing.T) {
 // TestPresetTier3_StubHangIsKilledByTimeout proves the timeout path: a vendor
 // command that never returns must not wedge the task forever.
 func TestPresetTier3_StubHangIsKilledByTimeout(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("preset tier-3 uses a POSIX worker; skipping on Windows")
-	}
 	ts := startServer(t)
 	farmID, queueID := seedFarmAndQueue(t, ts)
 	env := newTier3Env(t, []string{"hanging-renderer"}, "SQI_STUB_SLEEP=120s")
-	startRealWorkerWithOptions(t, ts, farmID, queueID, nil, env.env)
+	startRealWorkerWithOptionsAnyOS(t, ts, farmID, queueID, nil, env.env)
 
 	// timeout: 2 in the template, so the worker kills the process after ~2s.
 	jobID := submitJobCustomYAML(t, ts, farmID, queueID, stubJobYAMLWithTimeout("hanging-renderer", 2))
