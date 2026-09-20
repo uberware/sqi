@@ -7,10 +7,12 @@ package staging
 import (
 	"context"
 	"errors"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 
 	"golang.org/x/sys/windows"
@@ -363,31 +365,31 @@ func TestStageOut_SharingViolationIsNotReportedAsEscape(t *testing.T) {
 	}
 	defer root.Close()
 
+	// The deny-all handle above is only a PRECONDITION, and on the CI runner it
+	// does not hold: CreateFile(dwShareMode: 0) returns a handle there and a
+	// second open of the same path then succeeds anyway -- measured through
+	// os.Root AND through a plain os.Open, so it is not about
+	// FILE_OPEN_FOR_BACKUP_INTENT or about privilege. That host simply does not
+	// enforce the share mode. No sharing violation can be provoked there, so
+	// there is nothing for the classifier to classify, and failing would report
+	// a missing OS behavior as an sqi defect.
+	//
+	// Probed with a plain open, which shares no code with the path under test,
+	// so the probe cannot mask a defect in openStageOutSource itself. The
+	// classification is proven unconditionally on every host by
+	// TestClassifyStageOutOpenError_SharingViolationIsUnreadable below -- that
+	// is the one CI requires by name; this test adds the end-to-end proof
+	// wherever the OS makes it possible.
+	if probe, probeErr := os.Open(staged); probeErr == nil {
+		probe.Close()
+		t.Skip("this host does not enforce the deny-all share mode: a plain open of the " +
+			"exclusively-held file succeeded, so no sharing violation can be provoked here")
+	}
+
 	f, err := openStageOutSource(root, filepath.Join("0", "render.exr"))
 	if err == nil {
 		f.Close()
-		// Self-diagnosing on the one path that has actually gone wrong: this
-		// open SUCCEEDED on a windows-latest runner while passing on every
-		// developer box, and the bare "want an error" said nothing about which
-		// assumption broke -- each guess then cost a full CI cycle.
-		//
-		// The discriminator is a PLAIN os.Open of the same path. Go's os.Root
-		// reaches the file through NtCreateFile with
-		// FILE_OPEN_FOR_BACKUP_INTENT (internal/syscall/windows.Openat), whose
-		// effect depends on privileges the caller holds; os.Open does not use
-		// it. So a plain open that FAILS while the rooted one succeeded means
-		// backup intent -- a privilege the runner's token has and a developer
-		// shell does not. BOTH succeeding means the deny-all share mode is not
-		// enforced on that host at all, and the premise of this test rather
-		// than os.Root is what does not hold there.
-		plain, plainErr := os.Open(staged)
-		if plainErr == nil {
-			plain.Close()
-		}
-		t.Fatalf("want an error: the source cannot be opened while another handle denies sharing "+
-			"[rooted open with FILE_OPEN_FOR_BACKUP_INTENT: succeeded] "+
-			"[plain os.Open without it: %v] [process elevated: %v]",
-			plainErr, windows.GetCurrentProcessToken().IsElevated())
+		t.Fatal("want an error: the source cannot be opened while another handle denies sharing")
 	}
 	if !errors.Is(err, errStageOutUnreadable) {
 		t.Errorf("err = %v, want errStageOutUnreadable (an access failure, not an attack)", err)
@@ -449,5 +451,42 @@ func TestCopyFile_RefusesHardlinkedStageInSourceOnWindows(t *testing.T) {
 	}
 	if _, statErr := os.Stat(dest); statErr == nil {
 		t.Error("dest must not exist: stage-in must refuse before copying any bytes")
+	}
+}
+
+// TestClassifyStageOutOpenError_SharingViolationIsUnreadable proves the
+// property the test above can only demonstrate where the OS cooperates: an
+// ERROR_SHARING_VIOLATION is an ACCESS failure, and must never be reported as
+// a containment breach.
+//
+// It feeds the classifier the errno the kernel really produces instead of
+// provoking one, so it holds on every Windows host -- including the CI runner,
+// which does not enforce a deny-all share mode and therefore cannot produce the
+// error at all. The distinction is operator-facing: the escape wording tells an
+// operator their task tried to break out of its scratch directory, which is an
+// accusation, and a background child still holding a render open is not that.
+func TestClassifyStageOutOpenError_SharingViolationIsUnreadable(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		errno syscall.Errno
+	}{
+		{"sharing violation", windows.ERROR_SHARING_VIOLATION},
+		{"lock violation", windows.ERROR_LOCK_VIOLATION},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			// Shaped as the open really returns it: a *fs.PathError wrapping the errno.
+			err := classifyStageOutOpenError("0/render.exr", "C:/scratch",
+				&fs.PathError{Op: "openat", Path: "0/render.exr", Err: tc.errno})
+
+			if !errors.Is(err, errStageOutUnreadable) {
+				t.Errorf("err = %v, want errStageOutUnreadable (an access failure, not an attack)", err)
+			}
+			if errors.Is(err, errStageOutEscape) {
+				t.Errorf("err = %v, want it NOT classified as a containment breach", err)
+			}
+			if !errors.Is(err, tc.errno) {
+				t.Errorf("err = %v, want the underlying errno still unwrappable", err)
+			}
+		})
 	}
 }

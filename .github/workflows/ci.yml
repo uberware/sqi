@@ -979,13 +979,25 @@ jobs:
       # which prerequisite went missing.
       #
       # The Windows staging tests below are a mix: the two hardlink-refusal
-      # tests and TestStageOut_SharingViolationIsNotReportedAsEscape carry a
-      # t.Skipf escape hatch (for a non-NTFS temp directory, and for a
-      # CreateFile that cannot take an exclusive handle, respectively), but
+      # tests carry a t.Skipf escape hatch for a non-NTFS temp directory, but
       # the rest — including both junction tests — carry none. A skipped test
       # verifies nothing, and a green `go test` cannot tell a skip from a pass
       # — so every one of them is confirmed PASS by name here, the same way
       # the isolation suite's names are below.
+      #
+      # TestStageOut_SharingViolationIsNotReportedAsEscape is deliberately NOT
+      # in this list, and that is a finding rather than an omission: THIS
+      # RUNNER DOES NOT ENFORCE A DENY-ALL SHARE MODE. Measured here —
+      # CreateFile(dwShareMode: 0) returns a handle and a second open of the
+      # same path then succeeds, through os.Root and through a plain os.Open
+      # alike — so the sharing violation that test exists to classify cannot
+      # be provoked on this host and it now skips, honestly, instead of
+      # reporting a missing OS behavior as an sqi defect. The property it
+      # proves is required by name below as
+      # TestClassifyStageOutOpenError_SharingViolationIsUnreadable, which
+      # feeds the classifier the errno the kernel really produces and so holds
+      # on every host. Requiring the provocation test by name would mean
+      # demanding an OS behavior the runner does not have.
       - name: Assert the windows staging tests actually ran
         shell: bash
         run: |
@@ -995,7 +1007,7 @@ jobs:
             TestStageOut_RefusesHardlinkedSourceOnWindows
             TestStageOut_RefusesJunctionAtFinalComponent
             TestStageOut_RefusesJunctionedScratchSubdir
-            TestStageOut_SharingViolationIsNotReportedAsEscape
+            TestClassifyStageOutOpenError_SharingViolationIsUnreadable
             TestStageOut_SwapAfterValidateIsRefused
           )
           missing=0
