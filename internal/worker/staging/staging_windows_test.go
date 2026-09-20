@@ -366,7 +366,28 @@ func TestStageOut_SharingViolationIsNotReportedAsEscape(t *testing.T) {
 	f, err := openStageOutSource(root, filepath.Join("0", "render.exr"))
 	if err == nil {
 		f.Close()
-		t.Fatal("want an error: the source cannot be opened while another handle denies sharing")
+		// Self-diagnosing on the one path that has actually gone wrong: this
+		// open SUCCEEDED on a windows-latest runner while passing on every
+		// developer box, and the bare "want an error" said nothing about which
+		// assumption broke -- each guess then cost a full CI cycle.
+		//
+		// The discriminator is a PLAIN os.Open of the same path. Go's os.Root
+		// reaches the file through NtCreateFile with
+		// FILE_OPEN_FOR_BACKUP_INTENT (internal/syscall/windows.Openat), whose
+		// effect depends on privileges the caller holds; os.Open does not use
+		// it. So a plain open that FAILS while the rooted one succeeded means
+		// backup intent -- a privilege the runner's token has and a developer
+		// shell does not. BOTH succeeding means the deny-all share mode is not
+		// enforced on that host at all, and the premise of this test rather
+		// than os.Root is what does not hold there.
+		plain, plainErr := os.Open(staged)
+		if plainErr == nil {
+			plain.Close()
+		}
+		t.Fatalf("want an error: the source cannot be opened while another handle denies sharing "+
+			"[rooted open with FILE_OPEN_FOR_BACKUP_INTENT: succeeded] "+
+			"[plain os.Open without it: %v] [process elevated: %v]",
+			plainErr, windows.GetCurrentProcessToken().IsElevated())
 	}
 	if !errors.Is(err, errStageOutUnreadable) {
 		t.Errorf("err = %v, want errStageOutUnreadable (an access failure, not an attack)", err)
