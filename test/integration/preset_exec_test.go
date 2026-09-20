@@ -209,9 +209,32 @@ func TestPresetTier3(t *testing.T) {
 	}
 }
 
-func runTier3Case(t *testing.T, entry presettest.Entry, c presettest.Case, caseName string) {
+// recordTier3Outcome marks caseName as running, and re-marks it as SKIPPED if
+// anything below this call skips the test.
+//
+// The bare RecordOutcome that used to stand here recorded {Ran: true,
+// Skipped: false} and left it there, so a t.Skip from any helper -- the worker
+// start, the stub build, the toolchain check -- read back as a successful run.
+// That is the registry's own failure mode ("a skipped test verifies nothing")
+// reproduced one level down, and it is why this closes the class rather than
+// the one instance.
+func recordTier3Outcome(t *testing.T, caseName string) {
 	t.Helper()
 	presettest.RecordOutcome(caseName, false, "")
+	t.Cleanup(func() {
+		if !t.Skipped() {
+			return
+		}
+		if prior := presettest.LookupOutcome(caseName); prior.Skipped && prior.Reason != "" {
+			return // an explicit skip already recorded a better reason
+		}
+		presettest.RecordOutcome(caseName, true, "skipped by a helper below runTier3Case")
+	})
+}
+
+func runTier3Case(t *testing.T, entry presettest.Entry, c presettest.Case, caseName string) {
+	t.Helper()
+	recordTier3Outcome(t, caseName)
 	if runtime.GOOS == "windows" {
 		presettest.RecordOutcome(caseName, true, "preset tier-3 uses a POSIX worker")
 		t.Skip("preset tier-3 uses a POSIX worker; skipping on Windows")
@@ -260,6 +283,40 @@ func runTier3Case(t *testing.T, entry presettest.Entry, c presettest.Case, caseN
 	assertInvocationCounts(t, c, recs)
 	if !scriptShaped(snap) {
 		assertObservedMatchesComputed(t, snap, recs)
+	}
+}
+
+// TestRecordTier3Outcome_ReportsAHelperSkip pins the thing the outcome sink
+// could not see: a case that records "running" and is then skipped by a helper
+// BELOW that record. Every execution-tier helper in this file can skip on its
+// own -- startRealWorkerWithOptions on an unsupported platform, newTier3Env
+// with no Go toolchain, buildWorkerBinary on a build failure -- and without the
+// Cleanup this drives, each of those reads back as a successful run and
+// TestZZPresetTierRegistrySatisfied treats the claim as verified.
+//
+// The subtest's Cleanup functions run before t.Run returns, so the parent can
+// assert on what the sink holds afterwards.
+func TestRecordTier3Outcome_ReportsAHelperSkip(t *testing.T) {
+	const caseName = "TestRecordTier3Outcome/synthetic/helper-skip"
+
+	t.Run("skipped-by-a-helper", func(t *testing.T) {
+		recordTier3Outcome(t, caseName)
+		// Stands in for startRealWorkerWithOptions/newTier3Env/buildWorkerBinary,
+		// each of which calls t.Skip from inside a helper.
+		t.Skip("simulating a helper that skips below the first RecordOutcome")
+	})
+
+	got := presettest.LookupOutcome(caseName)
+	if !got.Ran {
+		t.Fatalf("outcome.Ran = false, want true: the case did report")
+	}
+	if !got.Skipped {
+		t.Errorf("outcome.Skipped = false, want true\n"+
+			"a helper skipped below the first RecordOutcome and the sink recorded a successful run;\n"+
+			"reason recorded: %q", got.Reason)
+	}
+	if got.Reason == "" {
+		t.Error("outcome.Reason is empty; the registry's failure message prints it")
 	}
 }
 
