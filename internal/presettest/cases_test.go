@@ -76,6 +76,66 @@ func TestPresetTemplate_LoadsBothSources(t *testing.T) {
 	}
 }
 
+// TestLoadCases_StubInner pins the fixture field that replaced an inference.
+//
+// The shape used to be derived from filepath.IsAbs(command), which is FALSE on
+// Windows for "/bin/sh" because it carries no volume name -- so the inference
+// inverted on the one platform that made it matter. A fixture states it
+// instead.
+func TestLoadCases_StubInner(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "cases.yaml")
+	body := []byte(`cases:
+  - name: shadows-the-command
+    params:
+      A: "1"
+    expect_tasks: 1
+  - name: shadows-what-the-command-invokes
+    params:
+      A: "1"
+    stub_inner: true
+    expect_tasks: 1
+`)
+	if err := os.WriteFile(path, body, 0o600); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+
+	cases, err := presettest.LoadCases(path)
+	if err != nil {
+		t.Fatalf("LoadCases: %v", err)
+	}
+	if len(cases) != 2 {
+		t.Fatalf("len(cases) = %d, want 2", len(cases))
+	}
+	if cases[0].StubInner {
+		t.Error("case 0 StubInner = true, want false (the field is absent, so it must default to false)")
+	}
+	if !cases[1].StubInner {
+		t.Error("case 1 StubInner = false, want true (the fixture declares stub_inner: true)")
+	}
+}
+
+// TestLoadCases_ScriptBuiltinDeclaresStubInner is the regression guard for the
+// one shipped case that depends on this shape. `script` runs /bin/sh -c, which
+// the stub cannot shadow, so Tier 3 must intercept what the SHELL invokes.
+func TestLoadCases_ScriptBuiltinDeclaresStubInner(t *testing.T) {
+	root, err := presettest.RepoRoot()
+	if err != nil {
+		t.Fatalf("RepoRoot: %v", err)
+	}
+	path := filepath.Join(root, "test", "integration", "testdata", "preset-cases", "script.yaml")
+	cases, err := presettest.LoadCases(path)
+	if err != nil {
+		t.Fatalf("LoadCases: %v", err)
+	}
+	for _, c := range cases {
+		if !c.StubInner {
+			t.Errorf("script case %q does not declare stub_inner: true -- Tier 3 would try to "+
+				"shadow /bin/sh on PATH, which the worker never consults for an absolute path", c.Name)
+		}
+	}
+}
+
 func writeFile(t *testing.T, path, content string) {
 	t.Helper()
 	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {

@@ -247,10 +247,11 @@ func runTier3Case(t *testing.T, entry presettest.Entry, c presettest.Case, caseN
 
 	snap := capturePresetCase(t, entry, c)
 	names := presettest.CommandNames(snap)
-	if scriptShaped(snap) {
-		// The onRun command is an absolute path, which cannot be shadowed on
-		// PATH. The commands the SHELL (or the script) invokes are what the stub
-		// intercepts, so install those instead — the fixture names them.
+	if c.StubInner {
+		// The onRun command cannot be shadowed on PATH -- an absolute path the
+		// worker execs directly, or a real shell we want to actually run. The
+		// commands it invokes INSIDE are what the stub intercepts, so install
+		// those instead; the fixture names them.
 		names = invocationNames(c)
 	}
 	if len(names) == 0 {
@@ -281,7 +282,7 @@ func runTier3Case(t *testing.T, entry presettest.Entry, c presettest.Case, caseN
 		t.Fatalf("stub recorded nothing; Tier 3 observed only that the job completed")
 	}
 	assertInvocationCounts(t, c, recs)
-	if !scriptShaped(snap) {
+	if !c.StubInner {
 		assertObservedMatchesComputed(t, snap, recs)
 	}
 }
@@ -318,28 +319,6 @@ func TestRecordTier3Outcome_ReportsAHelperSkip(t *testing.T) {
 	if got.Reason == "" {
 		t.Error("outcome.Reason is empty; the registry's failure message prints it")
 	}
-}
-
-// scriptShaped reports whether any of this preset's task commands is an
-// ABSOLUTE path, which is the one shape [presettest.InstallStub] cannot
-// intercept: the worker execs the path directly and never consults PATH.
-//
-// Exactly one shipped case is in this shape today — the `script` built-in runs
-// `/bin/sh -c "<Command>"` — and a materialized embedded file used as the
-// command ("<WORKDIR>/main.sh") would be too. For these the stub intercepts what
-// the shell or script invokes INSIDE, so the observed argv has no computed
-// counterpart (the computed side is the shell's own argv) and the
-// observed-vs-computed cross-check cannot apply: expect_invocations carries the
-// whole claim.
-func scriptShaped(snap presettest.Snapshot) bool {
-	for _, step := range snap.Steps {
-		for _, task := range step.Tasks {
-			if filepath.IsAbs(task.Command) {
-				return true
-			}
-		}
-	}
-	return false
 }
 
 // invocationNames returns the command basenames a case expects the stub to

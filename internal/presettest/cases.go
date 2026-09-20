@@ -39,6 +39,23 @@ type Case struct {
 	// golden header records it.
 	Patch *ChunkPatch `yaml:"template_patch"`
 
+	// StubInner selects which commands Tier 3 shadows on PATH.
+	//
+	// False (the default) shadows the task's own command, so the observed argv
+	// has a computed counterpart and assertObservedMatchesComputed applies.
+	//
+	// True shadows what that command invokes INSIDE instead -- the shape of the
+	// `script` built-in, whose /bin/sh is an absolute path the worker execs
+	// directly without ever consulting PATH, and of `script-powershell`, where
+	// shadowing powershell itself would prove argv delivery and nothing else.
+	// For these the computed side is the shell's own argv, so the cross-check
+	// cannot apply and ExpectInvocations carries the whole claim.
+	//
+	// Declared rather than inferred: the previous filepath.IsAbs(command)
+	// inference returns FALSE on Windows for "/bin/sh", because a POSIX path
+	// carries no volume name.
+	StubInner bool `yaml:"stub_inner"`
+
 	// ExpectTasks is the number of tasks this case must expand to. Stated in
 	// the fixture rather than derived, so an expansion change is a review
 	// event rather than a silently different golden.
