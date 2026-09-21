@@ -27,9 +27,11 @@ readme: |
   staged for you: any path in the command must already be reachable from the
   worker.
 
-  There are no host requirements, so this product will run *anywhere*. Add a
-  `hostRequirements` block to the template if the command needs a particular
-  platform or tool — see the [OpenJD specification](https://github.com/OpenJobDescription/openjd-specifications).
+  This product runs on Linux and macOS workers only: the command is handed to
+  `/bin/sh`, which Windows has no equivalent of. Use **Run a PowerShell
+  Command** on Windows workers. Add further `hostRequirements` to the template
+  if your command needs a particular tool — see the
+  [OpenJD specification](https://github.com/OpenJobDescription/openjd-specifications).
 category: General
 version: 1.0.0
 template:
@@ -43,6 +45,10 @@ template:
         label: Command
   steps:
     - name: Run
+      hostRequirements:
+        attributes:
+          - name: attr.worker.os.family
+            anyOf: ["linux", "macos"]
       script:
         actions:
           onRun:

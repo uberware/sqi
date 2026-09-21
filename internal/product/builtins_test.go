@@ -3,9 +3,11 @@
 package product_test
 
 import (
+	"path"
 	"strings"
 	"testing"
 
+	"github.com/uberware/sqi/internal/openjd"
 	"github.com/uberware/sqi/internal/product"
 	"github.com/uberware/sqi/internal/store"
 )
@@ -111,4 +113,67 @@ func TestBuiltins_ReadmesExerciseTheSupportedSubset(t *testing.T) {
 			}
 		}
 	}
+}
+
+// TestBuiltins_PlatformSpecificCommandsAreGated refuses a built-in that can
+// only run on some platforms without saying so in its template.
+//
+// `script` shipped for three releases running /bin/sh with no hostRequirements
+// at all, and its readme said in as many words that it "will run anywhere". On
+// a mixed farm a Windows worker leases that task and fails to exec it. The gate
+// is what the scheduler reads, so the template is the only place the claim can
+// be made truthfully.
+//
+// Two shapes are refused: an ABSOLUTE command path (a filesystem layout is
+// platform-specific by definition) and a bare shell name from the list below
+// (every one of these exists on some platforms and not others).
+func TestBuiltins_PlatformSpecificCommandsAreGated(t *testing.T) {
+	platformShells := map[string]bool{
+		"sh": true, "bash": true, "zsh": true,
+		"powershell": true, "pwsh": true, "cmd": true,
+	}
+
+	for _, p := range product.Builtins() {
+		t.Run(p.Name, func(t *testing.T) {
+			tmpl, err := openjd.Parse([]byte(p.Template), openjd.FormatYAML)
+			if err != nil {
+				t.Fatalf("openjd.Parse: %v", err)
+			}
+			for _, step := range tmpl.Steps {
+				if step.Script == nil {
+					continue
+				}
+				cmd := step.Script.Actions.OnRun.Command
+				// A command that is itself a job parameter (the `python`
+				// built-in's "{{Param.Interpreter}}") names no platform, so
+				// there is nothing to gate.
+				if cmd == "" || strings.Contains(cmd, "{{") {
+					continue
+				}
+				abs := strings.HasPrefix(cmd, "/") || strings.Contains(cmd, `:\`)
+				shell := platformShells[strings.TrimSuffix(path.Base(cmd), ".exe")]
+				if !abs && !shell {
+					continue
+				}
+				if !declaresOSFamily(step) {
+					t.Errorf("step %q runs %q, which is platform-specific, but declares no "+
+						"attr.worker.os.family -- a worker on the wrong platform will lease "+
+						"this task and fail to execute it", step.Name, cmd)
+				}
+			}
+		})
+	}
+}
+
+// declaresOSFamily reports whether step constrains attr.worker.os.family.
+func declaresOSFamily(step openjd.StepTemplate) bool {
+	if step.HostRequirements == nil {
+		return false
+	}
+	for _, attr := range step.HostRequirements.Attributes {
+		if attr.Name == "attr.worker.os.family" && (len(attr.AnyOf) > 0 || len(attr.AllOf) > 0) {
+			return true
+		}
+	}
+	return false
 }
