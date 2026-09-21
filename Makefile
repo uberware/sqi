@@ -300,7 +300,7 @@ test-preset-library: ## Validate the published preset library against this tree 
 # tier2 blocks require it, and a skip on a required platform is a failure.
 .PHONY: test-preset-harness
 test-preset-harness: ## Run the whole preset validation harness (tiers 1-3 + registry) in ONE process
-	go test $(TEST_FLAGS) -count=1 -run 'TestPreset|TestZZPreset|TestFFmpegPreset' -v -timeout 1800s ./test/integration/
+	go test $(TEST_FLAGS) -count=1 -run 'TestPreset|TestZZPreset|TestFFmpegPreset|TestScriptPowerShell' -v -timeout 1800s ./test/integration/
 
 .PHONY: test-ldap
 test-ldap: ## Run the LDAP tests against a real directory in a container (needs Docker)

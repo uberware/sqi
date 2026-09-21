@@ -1154,6 +1154,17 @@ jobs:
       - name: Pull Keycloak image
         run: docker pull quay.io/keycloak/keycloak:26.0.7
 
+      # The preset tests are untagged by design (the `test` job runs
+      # `make test-cover`, which passes no -tags), so this job runs
+      # TestZZPresetTierRegistrySatisfied -- and the registry's tier2 blocks
+      # require the real-ffmpeg cases to RUN here, not skip. Before those blocks
+      # existed this job stayed green having executed no ffmpeg at all.
+      - name: Install ffmpeg (the registry's tier-2 claims require it)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends ffmpeg
+          ffmpeg -version | head -1
+
       - name: Run the integration suite
         run: |
           set +e
@@ -1468,7 +1479,7 @@ jobs:
         shell: bash
         run: |
           ffmpeg -version | head -1
-          go test -count=1 -run 'TestPreset|TestZZPreset|TestFFmpegPreset' -v -timeout 1800s ./test/integration/ 2>&1 |
+          go test -count=1 -run 'TestPreset|TestZZPreset|TestFFmpegPreset|TestScriptPowerShell' -v -timeout 1800s ./test/integration/ 2>&1 |
             tee preset-harness-windows.log
 
       # Not redundant with the step above. A `-run` regex that matched nothing --
@@ -1481,9 +1492,10 @@ jobs:
         run: |
           missing=0
           for name in "TestPresetTier1Argv " "TestPresetTier3 " "TestZZPresetTierRegistrySatisfied " \
-                      "TestFFmpegPreset_PowerShellSegmentTranscodeJoins"; do
+                      "TestFFmpegPreset_PowerShellSegmentTranscodeJoins" \
+                      "TestScriptPowerShell_NonZeroExitFailsTheTask"; do
             if ! grep -q -- "--- PASS: ${name}" preset-harness-windows.log; then
-              echo "::error::${name}did not run to a PASS on windows"
+              echo "::error::${name} did not run to a PASS on windows"
               missing=1
             fi
           done
