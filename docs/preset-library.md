@@ -301,16 +301,16 @@ a real farm rather than reviewed tier by tier. The tiers are:
   than "the template still expands the way it did when this was reviewed."
 
 - **Tier 2 — real application.** A real, licensed copy of the vendor
-  application runs the resolved command and its output is inspected. No
-  preset in this repo has reached Tier 2 yet — none of the vendor
-  applications (Maya, Nuke, Houdini, Blender, the three Mistika products) has
-  a redistributable, CI-friendly way to run headless in this project's CI, so
-  `presets/validation-tiers.yaml` carries no `tier2` block on any entry today.
-  The five ffmpeg presets are the exception in spirit, not in the registry:
-  ffmpeg is freely available, so `test/integration/ffmpeg_presets_test.go`
-  already runs real ffmpeg end to end and decodes the produced file — real
-  Tier-2-grade evidence — but it predates this registry and is referenced
-  from each ffmpeg entry's `caveat` text rather than a `tier2:` field.
+  application runs the resolved command and its output is inspected. The nine
+  render presets (Maya, Nuke, Houdini, Blender, the three Mistika products)
+  have not reached Tier 2 — none of those vendor applications has a
+  redistributable, CI-friendly way to run headless in this project's CI, so
+  their entries in `presets/validation-tiers.yaml` carry no `tier2` block.
+  The five ffmpeg presets *are* Tier 2: ffmpeg is freely available, so each of
+  their registry entries carries a `tier2` block, and
+  `test/integration/ffmpeg_presets_test.go` runs real ffmpeg end to end and
+  decodes the produced file — real Tier-2-grade evidence, checked against the
+  registry the same way Tier 1 and Tier 3 are.
 
 - **Tier 3 — real pipeline, no vendor license.** A real `sqi-server` and
   `sqi-worker`, wired together exactly as in production, execute the preset
@@ -334,12 +334,15 @@ needs a named test that actually ran, and **a Tier-3 case that skipped on a
 platform listed in that entry's `required_on` is a registry failure**, not a
 quiet no-op — every container-backed target in this repo can exit 0 while
 running nothing, and this is enforced in Go rather than by a CI job asserting
-test names by hand. An entry may omit its `tier3` block entirely when this
-suite cannot verify it here (for example, `ffmpeg-segment-transcode-powershell`
-gates on `attr.worker.os.family anyOf ["windows"]`, and nothing in this
-environment can make a non-Windows worker answer `windows`); an empty
-`required_on: []` is rejected at load time instead, because it would make the
-skip check permanently unfalsifiable.
+test names by hand. An entry's `tier3.required_on` need not name every
+platform: it may leave out a platform the preset itself is gated against, so a
+skip there is expected rather than a registry failure. For example, `script`
+(the POSIX-only built-in) gates on `attr.worker.os.family anyOf ["linux",
+"darwin"]`, so a Windows worker could never run it — its `tier3.required_on:
+[linux, darwin]` deliberately omits `windows`, rather than naming a platform
+the skip check could never see a real run on. An empty `required_on: []` is
+rejected at load time instead, because it would make the skip check
+permanently unfalsifiable on every platform.
 
 ### Adding a preset to the harness
 
@@ -360,5 +363,30 @@ skip check permanently unfalsifiable.
    against the vendor's actual documented CLI, not just against what the
    template was expected to produce.
 
-`go test ./test/integration/ -run 'TestPreset|TestZZPreset'` runs the whole
-harness (Tiers 1 and 3, plus the registry verification) locally.
+`make test-preset-harness` runs the whole harness (Tiers 1, 2 and 3, plus the
+registry verification) locally, in one `go test` invocation —
+`TestZZPresetTierRegistrySatisfied` asserts on what the tier tests recorded in
+that same process, so splitting the run across two `go test` invocations makes
+the registry check fail with "never reported" in both. ffmpeg must be on
+`PATH`: the registry's `tier2` blocks require the real-ffmpeg cases to run,
+and a skip on a platform named in `required_on` is a registry failure, not a
+harmless no-op.
+
+### Tier 3 on Windows
+
+Tier 3 runs on Windows exactly as it does on Linux and macOS — a real
+`sqi-server` and `sqi-worker`, wired together, executing every preset end to
+end against `test/stubproc` in place of the vendor executable — and CI proves
+it in a dedicated job (`preset-harness-windows`) rather than assuming a
+Linux-passing suite behaves the same way on another host. Of the 18 entries in
+`presets/validation-tiers.yaml`, 15 name `windows` in their `tier3.required_on`
+and are required to actually run there, not skip; the three that do not are
+platform-gated products whose Tier 3 case cannot run everywhere by
+construction — `script` (POSIX-only, `required_on: [linux, darwin]`),
+`script-powershell` (Windows-only, `required_on: [windows]`), and
+`ffmpeg-segment-transcode-powershell` (gated on
+`attr.worker.os.family anyOf ["windows"]`, `required_on: [windows]`).
+`script-powershell` is `script`'s Windows counterpart: where `script` invokes
+`/bin/sh -c`, `script-powershell` invokes `powershell -NoProfile -Command`, so
+between the two every worker platform sqi ships has a generic single-command
+built-in.
