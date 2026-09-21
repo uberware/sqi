@@ -379,13 +379,16 @@ Tier 3 runs on Windows exactly as it does on Linux and macOS — a real
 end against `test/stubproc` in place of the vendor executable — and CI proves
 it in a dedicated job (`preset-harness-windows`) rather than assuming a
 Linux-passing suite behaves the same way on another host. Of the 18 entries in
-`presets/validation-tiers.yaml`, 15 name `windows` in their `tier3.required_on`
-and are required to actually run there, not skip; the three that do not are
-platform-gated products whose Tier 3 case cannot run everywhere by
-construction — `script` (POSIX-only, `required_on: [linux, darwin]`),
+`presets/validation-tiers.yaml`, 15 require **all three** platforms
+(`tier3.required_on: [linux, darwin, windows]`), so a skip on Windows is a
+registry failure for every one of them, not a harmless no-op. The other 3 are
+gated to a narrower platform subset, because their Tier 3 case cannot run
+everywhere by construction — `script` (POSIX-only, `required_on: [linux, darwin]`),
 `script-powershell` (Windows-only, `required_on: [windows]`), and
 `ffmpeg-segment-transcode-powershell` (gated on
-`attr.worker.os.family anyOf ["windows"]`, `required_on: [windows]`).
+`attr.worker.os.family anyOf ["windows"]`, `required_on: [windows]`). The
+latter two still name `windows` and are required to run on this Windows job —
+they simply aren't required anywhere else.
 `script-powershell` is `script`'s Windows counterpart: where `script` invokes
 `/bin/sh -c`, `script-powershell` invokes `powershell -NoProfile -Command`, so
 between the two every worker platform sqi ships has a generic single-command
