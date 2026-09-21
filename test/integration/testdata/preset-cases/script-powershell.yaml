@@ -1,0 +1,24 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+#
+# Run a PowerShell Command. Windows-only by hostRequirements, so its Tier-3 case
+# can never run on a Linux or macOS worker.
+#
+# stub_inner mirrors the `script` fixture's reasoning rather than the default
+# shape: shadowing `powershell` itself on PATH would replace the shell and prove
+# only that argv was delivered. Letting the REAL powershell run, with a Command
+# naming a binary that exists on no host, means the thing Tier 3 observes is the
+# shell resolving that name from PATH -- so the -Command text is evidenced by
+# something other than the golden that computed it.
+#
+# If PATH did not reach the shell, powershell would fail to resolve the name and
+# the task would fail outright, rather than quietly succeeding against some real
+# binary that happened to be installed. A made-up name is the only spelling with
+# that property.
+cases:
+  - name: default
+    params:
+      Command: "sqi-stub-command --frame 1"
+    stub_inner: true
+    expect_tasks: 1
+    expect_invocations:
+      sqi-stub-command: 1

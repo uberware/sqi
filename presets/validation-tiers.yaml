@@ -317,6 +317,25 @@ presets:
       case: TestPresetTier3/script/default
       required_on: [linux, darwin]
 
+  - name: script-powershell
+    source: internal/product/builtins
+    tier: 1
+    tier1:
+      cases: [default]
+      caveat: >-
+        argv derived from the documented powershell -NoProfile -Command
+        convention in the product's own readme. Tier 3 DOES execute it: a real
+        worker runs a real powershell.exe, which resolves the fixture's
+        deliberately nonexistent command (sqi-stub-command --frame 1) from PATH,
+        so the stub is observed being invoked from inside -Command. What that
+        cannot show is the argv of the SHELL itself, which is evidenced only by
+        the Tier-1 golden. Nor can either tier show the exit-status wrapper
+        working: the stub always exits 0, so
+        TestScriptPowerShell_NonZeroExitFailsTheTask carries that claim alone.
+    tier3:
+      case: TestPresetTier3/script-powershell/default
+      required_on: [windows]
+
   - name: python
     source: internal/product/builtins
     tier: 1

@@ -1,0 +1,13 @@
+preset: script-powershell
+case:   default
+params:
+  Command=sqi-stub-command --frame 1
+
+step "Run" — 1 task
+
+task 1/1  name="Run"
+  command: powershell
+  args:
+    [0]  -NoProfile
+    [1]  -Command
+    [2]  $ErrorActionPreference = 'Stop'; sqi-stub-command --frame 1; exit $LASTEXITCODE

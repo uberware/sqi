@@ -1,0 +1,69 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+name: script-powershell
+title: Run a PowerShell Command
+description: Run an arbitrary PowerShell command on a Windows worker.
+readme: |
+  # Run a PowerShell Command
+
+  Runs one PowerShell command on a Windows worker, as a single task. The
+  Windows counterpart of **Run a Shell Command**, which is Linux and macOS
+  only because it hands its text to `/bin/sh`.
+
+  ## Parameters
+
+  - **Command** - the PowerShell text to run. It is passed to
+    `powershell -NoProfile -Command`, so pipelines, redirection and `;` all
+    work.
+
+  ## Example
+
+  ```powershell
+  ffmpeg -i input.mov -c:v libx264 output.mp4
+  ```
+
+  ## Exit status
+
+  The command's exit status is propagated:
+  `$ErrorActionPreference = 'Stop'` turns a failing cmdlet into a terminating
+  error, and `exit $LASTEXITCODE` forwards a failing native executable's code.
+  A command that runs no native executable and throws nothing exits 0.
+
+  Note that `$LASTEXITCODE` reflects the **last** native command, so
+  `a.exe; b.exe` reports only `b.exe`'s status - the same way `/bin/sh -c
+  "a; b"` does.
+
+  ## Requirements
+
+  Windows workers only (`attr.worker.os.family` = `windows`). It uses
+  `powershell` - Windows PowerShell 5.1, which ships with Windows - not
+  `pwsh`, which does not.
+
+  The command runs on whichever worker picks up the task, as the account that
+  worker runs under, in a session directory the worker creates. Nothing is
+  staged for you: any path in the command must already be reachable from the
+  worker.
+category: General
+version: 1.0.0
+template:
+  specificationVersion: jobtemplate-2023-09
+  name: Script (PowerShell)
+  parameterDefinitions:
+    - name: Command
+      type: STRING
+      userInterface:
+        control: MULTILINE_EDIT
+        label: Command
+  steps:
+    - name: Run
+      hostRequirements:
+        attributes:
+          - name: attr.worker.os.family
+            anyOf: ["windows"]
+      script:
+        actions:
+          onRun:
+            command: powershell
+            args:
+              - "-NoProfile"
+              - "-Command"
+              - "$ErrorActionPreference = 'Stop'; {{Param.Command}}; exit $LASTEXITCODE"
