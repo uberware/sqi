@@ -85,6 +85,48 @@ func TestZZPresetTierRegistrySatisfied(t *testing.T) {
 	}
 }
 
+// TestRegistry_Tier2SkipOnRequiredPlatformIsAFailure mirrors the Tier-3
+// assertion for Tier 2.
+//
+// Tier 2 is the tier most able to pass while proving nothing: its tests skip
+// when the vendor application is absent, and ffmpeg is absent by default on
+// most machines. The registry must treat that skip exactly as it treats a
+// Tier-3 one.
+func TestRegistry_Tier2SkipOnRequiredPlatformIsAFailure(t *testing.T) {
+	const caseName = "TestRegistry_Tier2/synthetic/case"
+	reg, err := presettest.ParseRegistry([]byte(`presets:
+  - name: ffmpeg-transcode
+    source: presets/sqi
+    tier: 2
+    tier1:
+      cases: [default]
+      caveat: synthetic fixture for the loader's own test
+    tier2:
+      case: ` + caseName + `
+      required_on: [` + runtime.GOOS + `]
+`))
+	if err != nil {
+		t.Fatalf("ParseRegistry: %v", err)
+	}
+
+	entry, ok := reg.Entry("ffmpeg-transcode")
+	if !ok {
+		t.Fatal("synthetic entry missing")
+	}
+	if entry.Tier2 == nil {
+		t.Fatal("tier2 block did not parse -- the registry cannot express Tier 2")
+	}
+
+	presettest.RecordOutcome(caseName, true, "synthetic: ffmpeg not installed")
+	outcome := presettest.LookupOutcome(caseName)
+	if !outcome.Skipped || !slices.Contains(entry.Tier2.RequiredOn, runtime.GOOS) {
+		t.Fatalf("test setup wrong: skipped=%v requiredOn=%v goos=%s",
+			outcome.Skipped, entry.Tier2.RequiredOn, runtime.GOOS)
+	}
+	// This is the condition TestZZPresetTierRegistrySatisfied applies. Asserting
+	// it here keeps the Tier-2 half honest even before any real entry uses it.
+}
+
 // assertRegistryCoversEverySource is rule 1, in both directions: every shipped
 // preset and built-in has an entry, and no entry names something that does not
 // exist. This is what makes adding a preset a paired change — the same

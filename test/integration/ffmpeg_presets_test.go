@@ -48,6 +48,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/uberware/sqi/internal/presettest"
 	"github.com/uberware/sqi/internal/product"
 )
 
@@ -358,6 +359,13 @@ func sliceFiles(t *testing.T, outputFile string) []string {
 // and carries both streams — a command line that dropped -c:a, or read the
 // wrong input, would not.
 func TestFFmpegPreset_TranscodeProducesPlayableOutput(t *testing.T) {
+	const caseName = "TestFFmpegPreset_TranscodeProducesPlayableOutput"
+	presettest.RecordOutcome(caseName, false, "")
+	t.Cleanup(func() {
+		if t.Skipped() {
+			presettest.RecordOutcome(caseName, true, "skipped: see the test's own skip reason")
+		}
+	})
 	requireFFmpeg(t)
 
 	ts := startServer(t)
@@ -429,6 +437,13 @@ func runSegmentPreset(t *testing.T, name string, wantSlicesKept bool) {
 // TEMPLATE, so the assertion covers EXPR embedded-file generation on top of the
 // ffmpeg command lines, and it is the one variant that runs on every platform.
 func TestFFmpegPreset_PortableSegmentTranscodeJoins(t *testing.T) {
+	const caseName = "TestFFmpegPreset_PortableSegmentTranscodeJoins"
+	presettest.RecordOutcome(caseName, false, "")
+	t.Cleanup(func() {
+		if t.Skipped() {
+			presettest.RecordOutcome(caseName, true, "skipped: see the test's own skip reason")
+		}
+	})
 	runSegmentPreset(t, "ffmpeg-segment-transcode-expr", true)
 }
 
@@ -454,7 +469,16 @@ func TestFFmpegPreset_PortableSegmentTranscodeJoins(t *testing.T) {
 // of the script's backslash folding; it has NOT been run on a real Windows
 // host, so treat a green run here as covering the POSIX half only.
 func TestFFmpegPreset_BashSegmentTranscodeJoins(t *testing.T) {
+	const caseName = "TestFFmpegPreset_BashSegmentTranscodeJoins"
+	presettest.RecordOutcome(caseName, false, "")
+	t.Cleanup(func() {
+		if t.Skipped() {
+			presettest.RecordOutcome(caseName, true, "skipped: see the test's own skip reason")
+		}
+	})
 	if _, err := exec.LookPath("bash"); err != nil {
+		presettest.RecordOutcome(caseName, true,
+			fmt.Sprintf("ffmpeg-segment-transcode-bash requires bash on PATH: %v", err))
 		t.Skipf("ffmpeg-segment-transcode-bash requires bash on PATH: %v", err)
 	}
 	runSegmentPreset(t, "ffmpeg-segment-transcode-bash", false)
@@ -465,7 +489,16 @@ func TestFFmpegPreset_BashSegmentTranscodeJoins(t *testing.T) {
 // runner is the only place this preset's join script — the one that has already
 // shipped two runtime-only bugs — can be executed at all.
 func TestFFmpegPreset_PowerShellSegmentTranscodeJoins(t *testing.T) {
+	const caseName = "TestFFmpegPreset_PowerShellSegmentTranscodeJoins"
+	presettest.RecordOutcome(caseName, false, "")
+	t.Cleanup(func() {
+		if t.Skipped() {
+			presettest.RecordOutcome(caseName, true, "skipped: see the test's own skip reason")
+		}
+	})
 	if runtime.GOOS != "windows" {
+		presettest.RecordOutcome(caseName, true,
+			fmt.Sprintf("ffmpeg-segment-transcode-powershell requires a windows worker; GOOS=%s", runtime.GOOS))
 		t.Skipf("ffmpeg-segment-transcode-powershell requires a windows worker; GOOS=%s", runtime.GOOS)
 	}
 	runSegmentPreset(t, "ffmpeg-segment-transcode-powershell", false)
@@ -660,6 +693,13 @@ func TestFFmpegPreset_PortableRejectsBeyondItsCostCeiling(t *testing.T) {
 // that path is what pins the expression; a change that left the trailing
 // separator on would write frame_.mp4 and fail here.
 func TestFFmpegPreset_SequenceEncodeNamesOutputAfterPattern(t *testing.T) {
+	const caseName = "TestFFmpegPreset_SequenceEncodeNamesOutputAfterPattern"
+	presettest.RecordOutcome(caseName, false, "")
+	t.Cleanup(func() {
+		if t.Skipped() {
+			presettest.RecordOutcome(caseName, true, "skipped: see the test's own skip reason")
+		}
+	})
 	requireFFmpeg(t)
 
 	ts := startServer(t)

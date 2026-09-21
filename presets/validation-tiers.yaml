@@ -175,84 +175,94 @@ presets:
 
   - name: ffmpeg-transcode
     source: presets/sqi
-    tier: 1
+    tier: 2
     tier1:
       cases: [default]
       caveat: >-
-        unlike the documentation-derived caveats above, this preset already has
-        stronger evidence than its Tier-1 argv snapshot: real ffmpeg runs it end to
-        end in test/integration/ffmpeg_presets_test.go
-        (TestFFmpegPreset_TranscodeProducesPlayableOutput), which decodes the produced
-        file and asserts on its actual duration and codec. The Tier-1 golden is a
-        faster, non-executing companion check, not the only evidence. One case is the
-        whole preset here: it declares no parameter space, so there is no second
-        expansion shape. What neither proves is that -crf is meaningful when
-        VideoCodec is copy; ffmpeg ignores it with a warning.
+        this entry carries a tier2 block, so the real-ffmpeg evidence is a
+        verified fact rather than prose -- read it there. What the Tier-1 golden
+        adds is a non-executing companion check; one case is the whole preset,
+        since it declares no parameter space. What NEITHER tier proves is that
+        -crf is meaningful when VideoCodec is copy: ffmpeg ignores it with a
+        warning, and no assertion notices.
+    tier2:
+      case: TestFFmpegPreset_TranscodeProducesPlayableOutput
+      required_on: [linux, darwin, windows]
     tier3:
       case: TestPresetTier3/ffmpeg-transcode/default
       required_on: [linux, darwin, windows]
 
   - name: ffmpeg-sequence-encode
     source: presets/sqi
-    tier: 1
+    tier: 2
     tier1:
       cases: [default, offset-range]
       caveat: >-
-        unlike the documentation-derived caveats above, this preset already has
-        stronger evidence than its Tier-1 argv snapshot: real ffmpeg encodes a real
-        frame sequence with it in test/integration/ffmpeg_presets_test.go, which
-        asserts on the produced file's name and duration. The two Tier-1 cases add
-        what that single run cannot show — the EXPR-derived output filename under
-        both separator shapes (beauty_%04d and .plate.%04d, i.e. the underscore and
-        the dot that rstrip(..., '_-.') must strip) and -frames:v at a non-1 start
-        frame (1001-1048 -> 48, a count and not an end frame). It has no parameter
-        space, so neither case is a second expansion shape. Colour handling is
-        unverified and unopinionated: a linear EXR sequence forced to yuv420p with no
-        transform will look dark, and no test asserts otherwise.
+        this entry carries a tier2 block, so the real-ffmpeg evidence is a
+        verified fact rather than prose -- read it there. What the two Tier-1
+        cases add is what that single run cannot show — the EXPR-derived output
+        filename under both separator shapes (beauty_%04d and .plate.%04d, i.e.
+        the underscore and the dot that rstrip(..., '_-.') must strip) and
+        -frames:v at a non-1 start frame (1001-1048 -> 48, a count and not an
+        end frame). It has no parameter space, so neither case is a second
+        expansion shape. What NEITHER tier proves is colour handling: it is
+        unverified and unopinionated, a linear EXR sequence forced to yuv420p
+        with no transform will look dark, and no test asserts otherwise.
+    tier2:
+      case: TestFFmpegPreset_SequenceEncodeNamesOutputAfterPattern
+      required_on: [linux, darwin, windows]
     tier3:
       case: TestPresetTier3/ffmpeg-sequence-encode/default
       required_on: [linux, darwin, windows]
 
   - name: ffmpeg-segment-transcode-bash
     source: presets/sqi
-    tier: 1
+    tier: 2
     tier1:
       cases: [default, uneven-tail]
       caveat: >-
-        unlike the documentation-derived caveats above, this preset already has
-        stronger evidence than its Tier-1 argv snapshot: real ffmpeg transcodes
-        segments and a real bash process joins them in
-        test/integration/ffmpeg_presets_test.go
-        (TestFFmpegPreset_BashSegmentTranscodeJoins), which asserts on the joined
-        output's duration. That test skips when bash is not on PATH, so a local pass
-        proves nothing unless the "--- PASS" line is confirmed. The two Tier-1 cases
-        add the review that test cannot do: the goldens put the join script's glob
-        (<dir>/<stem>_seg_*.<ext>) next to the exact slice paths the Transcode step
-        writes, at 3 slices and at 4 (uneven-tail, 7s in 2s slices, which is also the
-        shape a truncating division would get wrong). The concat list quotes
-        slice paths as file '<path>', which a path containing a single quote would
-        break.
+        this entry carries a tier2 block, so the real-ffmpeg-and-real-bash
+        evidence is a verified fact rather than prose -- read it there. What the
+        two Tier-1 cases add is the review that test cannot do: the goldens put
+        the join script's glob (<dir>/<stem>_seg_*.<ext>) next to the exact
+        slice paths the Transcode step writes, at 3 slices and at 4
+        (uneven-tail, 7s in 2s slices, which is also the shape a truncating
+        division would get wrong). What NEITHER tier proves is the concat
+        list's quoting: it quotes slice paths as file '<path>', unescaped, so a
+        path containing a single quote would break the concat parse.
+    tier2:
+      case: TestFFmpegPreset_BashSegmentTranscodeJoins
+      # NOT required on windows, although it passes there on a developer host.
+      # ci.yml's ffmpeg-presets-windows job states the rule: this test is
+      # promoted only once THAT RUNNER IMAGE is seen to PASS rather than SKIP,
+      # because it skips when bash.exe is not resolvable by Windows PATH lookup
+      # from the worker process. A pass on a machine with Git Bash installed is
+      # the wrong host's evidence. Promote it in a follow-up.
+      required_on: [linux, darwin]
     tier3:
       case: TestPresetTier3/ffmpeg-segment-transcode-bash/default
       required_on: [linux, darwin, windows]
 
   - name: ffmpeg-segment-transcode-expr
     source: presets/sqi
-    tier: 1
+    tier: 2
     tier1:
       cases: [default, uneven-tail]
       caveat: >-
-        unlike the documentation-derived caveats above, this preset already has
-        stronger evidence than its Tier-1 argv snapshot: real ffmpeg transcodes
-        segments and the template's own EXPR-generated concat list joins them (no
-        shell) in test/integration/ffmpeg_presets_test.go, which asserts on the joined
-        output's duration and on slice count/naming. This is the variant every other
-        segment-transcode case in that file exercises most heavily. What the two
-        Tier-1 goldens add is the only side-by-side comparison that exists: the
-        resolved concat-list body and the Transcode step's slice paths are both
-        printed in full, and they are character-identical at 3 slices and at 4
-        (uneven-tail). Not proven: the file '<path>' quoting is not escaped, so a
-        slice path containing a single quote would break the concat parse.
+        this entry carries a tier2 block, so the real-ffmpeg evidence -- the
+        template's own EXPR-generated concat list joining the segments with no
+        shell -- is a verified fact rather than prose -- read it there. This is
+        the variant every other segment-transcode case in that file exercises
+        most heavily. What the two Tier-1 goldens add is the only side-by-side
+        comparison that exists: the resolved concat-list body and the
+        Transcode step's slice paths are both printed in full, and they are
+        character-identical at 3 slices and at 4 (uneven-tail). What NEITHER
+        tier proves is the concat list's quoting: the file '<path>' quoting is
+        not escaped, so a slice path containing a single quote would break the
+        concat parse.
+    tier2:
+      case: TestFFmpegPreset_PortableSegmentTranscodeJoins
+      required_on: [linux, darwin, windows]
     tier3:
       case: TestPresetTier3/ffmpeg-segment-transcode-expr/default
       required_on: [linux, darwin, windows]
@@ -265,29 +275,30 @@ presets:
   # exactly that reason.
   - name: ffmpeg-segment-transcode-powershell
     source: presets/sqi
-    tier: 1
+    tier: 2
     tier1:
       cases: [default, uneven-tail]
       caveat: >-
-        unlike the documentation-derived caveats above, this preset already has
-        stronger evidence than its Tier-1 argv snapshot: real ffmpeg transcodes
-        segments and a real PowerShell process joins them in
-        test/integration/ffmpeg_presets_test.go
-        (TestFFmpegPreset_PowerShellSegmentTranscodeJoins), which asserts on the
-        joined output's duration. That test skips on any non-Windows worker, so a
-        local pass on macOS or Linux proves nothing unless it actually ran on
-        Windows — which is exactly why the Tier-1 goldens matter most here: they are
-        the only review this variant gets off Windows. They pin the two things that
-        shipped broken before (667b921, d7d8fcc): the embedded file's on-disk name is
-        join.ps1, which powershell -File requires, and its body carries no byte-order
-        mark. The cases also use native C:\... paths and show them surviving the
-        POSIX-flavoured path engine intact, which works only because a backslash is
-        an ordinary character to a POSIX PurePath — correct, but by accident rather
-        than by design. Tier 2 and Tier 3 both now execute this on a real Windows
-        worker, so powershell.exe accepting the script is proven. Get-ChildItem -Filter's
-        ordering is exercised only at three and four slices, where lexical and
-        numeric order coincide for any padding; TestFFmpegPreset_SliceNamesAreZeroPadded
+        this entry carries a tier2 block, so the real-ffmpeg-and-real-PowerShell
+        evidence is a verified fact rather than prose -- read it there; its
+        required_on: [windows] is what the "skips on any non-Windows worker"
+        warning used to say in prose, now enforced rather than remembered. The
+        Tier-1 goldens still matter most here: they are the only review this
+        variant gets off Windows, and they pin the two things that shipped
+        broken before (667b921, d7d8fcc): the embedded file's on-disk name is
+        join.ps1, which powershell -File requires, and its body carries no
+        byte-order mark. The cases also use native C:\... paths and show them
+        surviving the POSIX-flavoured path engine intact, which works only
+        because a backslash is an ordinary character to a POSIX PurePath —
+        correct, but by accident rather than by design. Tier 2 and Tier 3 both
+        now execute this on a real Windows worker, so powershell.exe accepting
+        the script is proven. Get-ChildItem -Filter's ordering is exercised
+        only at three and four slices, where lexical and numeric order
+        coincide for any padding; TestFFmpegPreset_SliceNamesAreZeroPadded
         covers the eleven-slice case on the portable variant, not this one.
+    tier2:
+      case: TestFFmpegPreset_PowerShellSegmentTranscodeJoins
+      required_on: [windows]
     tier3:
       case: TestPresetTier3/ffmpeg-segment-transcode-powershell/default
       required_on: [windows]
