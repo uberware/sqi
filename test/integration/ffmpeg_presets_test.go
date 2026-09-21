@@ -498,7 +498,7 @@ func TestFFmpegPreset_PowerShellSegmentTranscodeJoins(t *testing.T) {
 	})
 	if runtime.GOOS != "windows" {
 		presettest.RecordOutcome(caseName, true,
-			fmt.Sprintf("ffmpeg-segment-transcode-powershell requires a windows worker; GOOS=%s", runtime.GOOS))
+			"ffmpeg-segment-transcode-powershell requires a windows worker; GOOS="+runtime.GOOS)
 		t.Skipf("ffmpeg-segment-transcode-powershell requires a windows worker; GOOS=%s", runtime.GOOS)
 	}
 	runSegmentPreset(t, "ffmpeg-segment-transcode-powershell", false)
