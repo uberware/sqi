@@ -75,11 +75,28 @@ const (
 
 // requireFFmpeg skips unless both binaries the presets and these assertions
 // depend on are present.
-func requireFFmpeg(t *testing.T) {
+//
+// When caseName is non-empty, the skip reason is recorded under that name
+// BEFORE the skip happens, naming ffmpeg explicitly and how to install it. A
+// developer with no ffmpeg on PATH running `make ci` (which passes no `-v`)
+// would otherwise never see the real reason: the five ffmpeg tests' own
+// t.Cleanup only sees a skip after the fact and records the generic "see the
+// test's own skip reason" catch-all, which names nothing. Pass "" from a
+// caller that has no RecordOutcome/Cleanup pair of its own (the arithmetic
+// and cost-ceiling cases below) so nothing is recorded on their behalf.
+func requireFFmpeg(t *testing.T, caseName string) {
 	t.Helper()
 	for _, bin := range []string{"ffmpeg", "ffprobe"} {
 		if _, err := exec.LookPath(bin); err != nil {
-			t.Skipf("skipping ffmpeg preset test: %s not on PATH: %v", bin, err)
+			reason := fmt.Sprintf(
+				"%s not on PATH — install ffmpeg (apt-get install ffmpeg / "+
+					"choco install ffmpeg / brew install ffmpeg) to run this test: %v",
+				bin, err,
+			)
+			if caseName != "" {
+				presettest.RecordOutcome(caseName, true, reason)
+			}
+			t.Skip(reason)
 		}
 	}
 }
@@ -363,10 +380,17 @@ func TestFFmpegPreset_TranscodeProducesPlayableOutput(t *testing.T) {
 	presettest.RecordOutcome(caseName, false, "")
 	t.Cleanup(func() {
 		if t.Skipped() {
-			presettest.RecordOutcome(caseName, true, "skipped: see the test's own skip reason")
+			// RecordOutcome is last-write-wins, and a specific reason (e.g.
+			// requireFFmpeg's ffmpeg-missing message, or a bash/GOOS check's own
+			// message) may already have been recorded before the t.Skip that got
+			// us here — only fall back to the generic message when nothing more
+			// specific ran first, or this Cleanup would clobber it.
+			if presettest.LookupOutcome(caseName).Reason == "" {
+				presettest.RecordOutcome(caseName, true, "skipped: see the test's own skip reason")
+			}
 		}
 	})
-	requireFFmpeg(t)
+	requireFFmpeg(t, caseName)
 
 	ts := startServer(t)
 	farmID, queueID := seedFarmAndQueue(t, ts)
@@ -392,9 +416,13 @@ func TestFFmpegPreset_TranscodeProducesPlayableOutput(t *testing.T) {
 // runSegmentPreset drives one segmented variant and applies the assertions all
 // three share: the join must reproduce the full source length, and the run must
 // have fanned out into ffmpegWantSlices tasks rather than transcoding once.
-func runSegmentPreset(t *testing.T, name string, wantSlicesKept bool) {
+//
+// caseName is the calling test's RecordOutcome name (or "" if it has none),
+// threaded through to requireFFmpeg so an ffmpeg-missing skip is recorded
+// under the right name with a reason that names ffmpeg.
+func runSegmentPreset(t *testing.T, caseName, name string, wantSlicesKept bool) {
 	t.Helper()
-	requireFFmpeg(t)
+	requireFFmpeg(t, caseName)
 
 	ts := startServer(t)
 	farmID, queueID := seedFarmAndQueue(t, ts)
@@ -441,10 +469,17 @@ func TestFFmpegPreset_PortableSegmentTranscodeJoins(t *testing.T) {
 	presettest.RecordOutcome(caseName, false, "")
 	t.Cleanup(func() {
 		if t.Skipped() {
-			presettest.RecordOutcome(caseName, true, "skipped: see the test's own skip reason")
+			// RecordOutcome is last-write-wins, and a specific reason (e.g.
+			// requireFFmpeg's ffmpeg-missing message, or a bash/GOOS check's own
+			// message) may already have been recorded before the t.Skip that got
+			// us here — only fall back to the generic message when nothing more
+			// specific ran first, or this Cleanup would clobber it.
+			if presettest.LookupOutcome(caseName).Reason == "" {
+				presettest.RecordOutcome(caseName, true, "skipped: see the test's own skip reason")
+			}
 		}
 	})
-	runSegmentPreset(t, "ffmpeg-segment-transcode-expr", true)
+	runSegmentPreset(t, caseName, "ffmpeg-segment-transcode-expr", true)
 }
 
 // TestFFmpegPreset_BashSegmentTranscodeJoins runs the bash-joined variant,
@@ -473,7 +508,14 @@ func TestFFmpegPreset_BashSegmentTranscodeJoins(t *testing.T) {
 	presettest.RecordOutcome(caseName, false, "")
 	t.Cleanup(func() {
 		if t.Skipped() {
-			presettest.RecordOutcome(caseName, true, "skipped: see the test's own skip reason")
+			// RecordOutcome is last-write-wins, and a specific reason (e.g.
+			// requireFFmpeg's ffmpeg-missing message, or a bash/GOOS check's own
+			// message) may already have been recorded before the t.Skip that got
+			// us here — only fall back to the generic message when nothing more
+			// specific ran first, or this Cleanup would clobber it.
+			if presettest.LookupOutcome(caseName).Reason == "" {
+				presettest.RecordOutcome(caseName, true, "skipped: see the test's own skip reason")
+			}
 		}
 	})
 	if _, err := exec.LookPath("bash"); err != nil {
@@ -481,7 +523,7 @@ func TestFFmpegPreset_BashSegmentTranscodeJoins(t *testing.T) {
 			fmt.Sprintf("ffmpeg-segment-transcode-bash requires bash on PATH: %v", err))
 		t.Skipf("ffmpeg-segment-transcode-bash requires bash on PATH: %v", err)
 	}
-	runSegmentPreset(t, "ffmpeg-segment-transcode-bash", false)
+	runSegmentPreset(t, caseName, "ffmpeg-segment-transcode-bash", false)
 }
 
 // TestFFmpegPreset_PowerShellSegmentTranscodeJoins runs the PowerShell-joined
@@ -493,7 +535,14 @@ func TestFFmpegPreset_PowerShellSegmentTranscodeJoins(t *testing.T) {
 	presettest.RecordOutcome(caseName, false, "")
 	t.Cleanup(func() {
 		if t.Skipped() {
-			presettest.RecordOutcome(caseName, true, "skipped: see the test's own skip reason")
+			// RecordOutcome is last-write-wins, and a specific reason (e.g.
+			// requireFFmpeg's ffmpeg-missing message, or a bash/GOOS check's own
+			// message) may already have been recorded before the t.Skip that got
+			// us here — only fall back to the generic message when nothing more
+			// specific ran first, or this Cleanup would clobber it.
+			if presettest.LookupOutcome(caseName).Reason == "" {
+				presettest.RecordOutcome(caseName, true, "skipped: see the test's own skip reason")
+			}
 		}
 	})
 	if runtime.GOOS != "windows" {
@@ -501,7 +550,7 @@ func TestFFmpegPreset_PowerShellSegmentTranscodeJoins(t *testing.T) {
 			"ffmpeg-segment-transcode-powershell requires a windows worker; GOOS="+runtime.GOOS)
 		t.Skipf("ffmpeg-segment-transcode-powershell requires a windows worker; GOOS=%s", runtime.GOOS)
 	}
-	runSegmentPreset(t, "ffmpeg-segment-transcode-powershell", false)
+	runSegmentPreset(t, caseName, "ffmpeg-segment-transcode-powershell", false)
 }
 
 // ── Slice arithmetic ──────────────────────────────────────────────────────────
@@ -525,7 +574,7 @@ func TestFFmpegPreset_PowerShellSegmentTranscodeJoins(t *testing.T) {
 // It runs the portable variant because that is the one that executes on every
 // platform, so this arithmetic is covered wherever the suite runs.
 func TestFFmpegPreset_SegmentCountUsesCeilingNotTruncation(t *testing.T) {
-	requireFFmpeg(t)
+	requireFFmpeg(t, "")
 
 	const (
 		sourceSeconds  = 5
@@ -580,7 +629,7 @@ var sliceIndexRe = regexp.MustCompile(`_seg_(\d{5})\.`)
 // every slice and still runs the full length. So this asserts the filenames the
 // glob actually sorts, which is the property the ordering rests on.
 func TestFFmpegPreset_SliceNamesAreZeroPadded(t *testing.T) {
-	requireFFmpeg(t)
+	requireFFmpeg(t, "")
 
 	const (
 		sourceSeconds  = 11
@@ -655,7 +704,7 @@ func TestFFmpegPreset_SliceNamesAreZeroPadded(t *testing.T) {
 // under load and a retry may work. Nothing else asserts that mapping for a
 // shipped preset, and no worker is needed to prove it.
 func TestFFmpegPreset_PortableRejectsBeyondItsCostCeiling(t *testing.T) {
-	requireFFmpeg(t)
+	requireFFmpeg(t, "")
 
 	ts := startServer(t)
 	farmID, queueID := seedFarmAndQueue(t, ts)
@@ -697,10 +746,17 @@ func TestFFmpegPreset_SequenceEncodeNamesOutputAfterPattern(t *testing.T) {
 	presettest.RecordOutcome(caseName, false, "")
 	t.Cleanup(func() {
 		if t.Skipped() {
-			presettest.RecordOutcome(caseName, true, "skipped: see the test's own skip reason")
+			// RecordOutcome is last-write-wins, and a specific reason (e.g.
+			// requireFFmpeg's ffmpeg-missing message, or a bash/GOOS check's own
+			// message) may already have been recorded before the t.Skip that got
+			// us here — only fall back to the generic message when nothing more
+			// specific ran first, or this Cleanup would clobber it.
+			if presettest.LookupOutcome(caseName).Reason == "" {
+				presettest.RecordOutcome(caseName, true, "skipped: see the test's own skip reason")
+			}
 		}
 	})
-	requireFFmpeg(t)
+	requireFFmpeg(t, caseName)
 
 	ts := startServer(t)
 	farmID, queueID := seedFarmAndQueue(t, ts)

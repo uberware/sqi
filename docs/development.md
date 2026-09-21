@@ -17,6 +17,7 @@ guides for extending the worker.
 | `golangci-lint` ≥ 2.13.0 (see the version floor below) | Linter suite | [golangci-lint.run/usage/install](https://golangci-lint.run/usage/install/) |
 | `lefthook` | Git hook runner | `go install github.com/evilmartians/lefthook@latest` |
 | `pkgsite` | Local pkg.go.dev docs server | `go install golang.org/x/pkgsite/cmd/pkgsite@latest` |
+| `ffmpeg` (with `ffprobe`) | Required by `make test`, `make test-cover`, `make ci`, and `make test-preset-harness` — the preset validation registry's `tier2` blocks require the real-ffmpeg cases to run rather than skip, and a skip on a required platform is a hard failure, not a quiet no-op | `apt-get install ffmpeg` / `choco install ffmpeg` / `brew install ffmpeg` |
 | Docker (optional) | Build and run the container image; also runs the real-directory LDAP tests (`make test-ldap`), the real-provider SSO tests (`make test-oidc`), and the real-root run-as-user isolation tests (`make test-isolation`), all of which skip cleanly without it | [docs.docker.com](https://docs.docker.com/get-docker/), or `brew install colima docker && colima start` |
 
 `gofumpt`, `goimports`, and `golangci-lint` are required at commit time via
