@@ -607,6 +607,58 @@ func TestPresetTier3_StubHangIsKilledByTimeout(t *testing.T) {
 	}
 }
 
+// TestScriptPowerShell_NonZeroExitFailsTheTask pins the one claim about
+// script-powershell that no other tier can reach.
+//
+// `powershell -Command "<text>"` can exit 0 even when a command inside <text>
+// fails, as long as that failing command is not the LAST statement executed
+// (verified directly against powershell.exe -- see the Command value below).
+// Without the template's trailing `exit $LASTEXITCODE`, this product would
+// silently report such a failure as a success. Tier 3 cannot see it: the stub
+// always exits 0. So this runs a REAL powershell against a command that
+// really fails, and asserts the failure reaches the API.
+//
+// Windows-only by construction -- the product declares attr.worker.os.family
+// anyOf ["windows"], so no other host can lease the task at all.
+func TestScriptPowerShell_NonZeroExitFailsTheTask(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skipf("script-powershell requires a windows worker; GOOS=%s", runtime.GOOS)
+	}
+
+	tmpl, err := presettest.PresetTemplate(presettest.SourceBuiltins, "script-powershell")
+	if err != nil {
+		t.Fatalf("PresetTemplate: %v", err)
+	}
+
+	ts := startServer(t)
+	farmID, queueID := seedFarmAndQueue(t, ts)
+	// No stub: a real powershell.exe must run, or the wrapper is not exercised.
+	startRealWorkerWithOptionsAnyOS(t, ts, farmID, queueID, nil, nil)
+
+	// A single failing statement is not enough to demonstrate this: verified
+	// directly against powershell.exe, a bare `-Command "cmd /c exit 3"`
+	// already exits 1 (not 0) because the failing call is the LAST statement.
+	// The silent-success case needs a failing statement that is NOT last:
+	// bare `-Command "cmd /c exit 3; Write-Host done"` exits 0 (Write-Host's
+	// own success wins), and only the template's trailing
+	// `exit $LASTEXITCODE` recovers the real code (3) by re-reading
+	// $LASTEXITCODE, which the failing `cmd /c exit 3` still set even though
+	// it was not the last statement executed.
+	jobID := submitPresetJob(t, ts, farmID, queueID, tmpl, map[string]string{
+		"Command": "cmd /c exit 3; Write-Host done",
+	})
+
+	status := pollJobStatus(t, ts, jobID, []string{"completed", "failed", "canceled"}, presetJobTimeout)
+	if status != "failed" {
+		t.Fatalf("job status = %q, want failed\n"+
+			"a non-zero exit inside -Command was reported as success: the template's "+
+			"`exit $LASTEXITCODE` wrapper is missing or ineffective", status)
+	}
+	if reason := firstTaskFailureReason(t, ts, jobID); reason == "" {
+		t.Error("failed task carries no failure_reason")
+	}
+}
+
 // firstTaskFailureReason fetches a job's task list and returns the first
 // non-empty failure_reason found, or "" if every task's is empty.
 func firstTaskFailureReason(t *testing.T, ts *testServer, jobID string) string {
