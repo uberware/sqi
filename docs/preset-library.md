@@ -257,8 +257,8 @@ them.
 
 ## Validation tiers
 
-`presets/validation-tiers.yaml` tracks exactly 17 entries — the 14 presets
-under `presets/sqi/` plus the three built-in products documented in
+`presets/validation-tiers.yaml` tracks exactly 18 entries — the 14 presets
+under `presets/sqi/` plus the four built-in products documented in
 [`docs/development.md`](development.md#adding-a-product) — stating which
 validation tier each job type has actually reached. The four `presets/testing/`
 presets above are intentionally out of scope for this registry: unlike the
@@ -338,7 +338,7 @@ test names by hand. An entry's `tier3.required_on` need not name every
 platform: it may leave out a platform the preset itself is gated against, so a
 skip there is expected rather than a registry failure. For example, `script`
 (the POSIX-only built-in) gates on `attr.worker.os.family anyOf ["linux",
-"darwin"]`, so a Windows worker could never run it — its `tier3.required_on:
+"macos"]`, so a Windows worker could never run it — its `tier3.required_on:
 [linux, darwin]` deliberately omits `windows`, rather than naming a platform
 the skip check could never see a real run on. An empty `required_on: []` is
 rejected at load time instead, because it would make the skip check

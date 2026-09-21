@@ -171,7 +171,7 @@ can render appropriate form controls.
 
 ## Built-in products
 
-Three products are embedded directly in the `sqi-server` binary. They are
+Four products are embedded directly in the `sqi-server` binary. They are
 defined as YAML files under `internal/product/builtins/`, compiled in via
 `//go:embed`, parsed and validated at process init, and served read-only from the
 catalog. Mutations (PUT, DELETE) against a built-in return `403 Forbidden`.
@@ -179,7 +179,28 @@ catalog. Mutations (PUT, DELETE) against a built-in return `403 Forbidden`.
 ### `script` — Run a Shell Command
 
 Demonstrates the minimal product shape: one `STRING` parameter with a
-`MULTILINE_EDIT` control. Executes `/bin/sh -c "{{Param.Command}}"`.
+`MULTILINE_EDIT` control. Executes `/bin/sh -c "{{Param.Command}}"`. Gated to
+`attr.worker.os.family anyOf ["linux", "macos"]` — Linux and macOS workers
+only, since `/bin/sh` has no Windows equivalent. Use `script-powershell` on
+Windows workers.
+
+### `script-powershell` — Run a PowerShell Command
+
+The Windows counterpart of `script`: runs one PowerShell command on a Windows
+worker, as a single task. Gated to `attr.worker.os.family anyOf ["windows"]`.
+One `STRING` parameter (`Command`) with a `MULTILINE_EDIT` control, passed to
+`powershell -NoProfile -Command`, so pipelines, redirection and `;` all work.
+Uses `powershell` — Windows PowerShell 5.1, which ships with Windows — not
+`pwsh`, which does not.
+
+The command is wrapped as
+`$ErrorActionPreference = 'Stop'; {{Param.Command}}; exit $LASTEXITCODE` so
+its exit status is propagated correctly: `$ErrorActionPreference = 'Stop'`
+turns a failing cmdlet into a terminating error, and `exit $LASTEXITCODE`
+forwards a failing native executable's code. A command that runs no native
+executable and throws nothing exits 0. Note that `$LASTEXITCODE` reflects the
+**last** native command, so `a.exe; b.exe` reports only `b.exe`'s status — the
+same way `/bin/sh -c "a; b"` does.
 
 ### `python` — Run a Python Script
 
