@@ -78,8 +78,13 @@ jobs:
             # while leaving the goldens themselves untouched. test/integration/
             # preset_*.go widens that to every tier test file (Tier-3 execution
             # and the registry check too), for the same reason.
+            #
+            # internal/product/builtins/** holds four registry entries of its
+            # own, and script-powershell's exit-status wrapper is executed by
+            # nothing but this job.
             presets:
               - 'presets/**'
+              - 'internal/product/builtins/**'
               - 'presets/validation-tiers.yaml'
               - 'test/integration/ffmpeg_presets_test.go'
               - 'test/integration/preset_argv_test.go'
@@ -1154,11 +1159,10 @@ jobs:
       - name: Pull Keycloak image
         run: docker pull quay.io/keycloak/keycloak:26.0.7
 
-      # The preset tests are untagged by design (the `test` job runs
-      # `make test-cover`, which passes no -tags), so this job runs
-      # TestZZPresetTierRegistrySatisfied -- and the registry's tier2 blocks
-      # require the real-ffmpeg cases to RUN here, not skip. Before those blocks
-      # existed this job stayed green having executed no ffmpeg at all.
+      # The preset tests are untagged, so the `integration` build tag this job
+      # adds does not exclude them: `make test-integration` runs
+      # TestZZPresetTierRegistrySatisfied too, and the registry's tier2 blocks
+      # require the real-ffmpeg cases to RUN, not skip.
       - name: Install ffmpeg (the registry's tier-2 claims require it)
         run: |
           sudo apt-get update
@@ -1348,12 +1352,6 @@ jobs:
           grep -q -- '--- PASS: TestConformance_Templates' /tmp/conformance.log
           grep -q -- '--- PASS: TestConformance_E3ProtectedFixtures' /tmp/conformance.log
 
-  # Differential-tests internal/openjd/expr against the implementation the EXPR
-  # specification names as its reference — the openjd.expr namespace of
-  # openjd-model, which is a thin re-export layer over a compiled Rust crate
-  # rather than a Python implementation. Tagged `oracle`, so it does not run in
-  # the default `make test`.
-  #
   # ── ffmpeg reference presets: execute them ───────────────────────────────────
   # The shipped ffmpeg presets (presets/sqi/ffmpeg-*.yaml) are covered three
   # ways: internal/product validates them against the schema, exprpresetcost
@@ -1364,12 +1362,13 @@ jobs:
   # presets (a BOM'd concat list, and an embedded join script with no .ps1
   # filename), both found by reading rather than by testing.
   #
-  # This job exists because that third layer SKIPS without ffmpeg and ffprobe on
-  # PATH, and nothing installs them: inside `make test-cover` those tests would
-  # skip silently and the `test` job would stay green having executed no ffmpeg
-  # at all. Installing the binaries and then requiring each PASS line by name is
-  # the same guard conformance, expr-oracle, ldap-integration and
-  # isolation-integration use.
+  # That third layer SKIPS without ffmpeg and ffprobe on PATH. The `test` job
+  # now installs ffmpeg too, but the registry it enforces there
+  # (presets/validation-tiers.yaml) names only ONE tier2 case per preset; the
+  # rest of TestFFmpegPreset_* -- the ceiling, zero-padding and cost-ceiling
+  # cases -- are named nowhere else. This job installs the binaries and requires
+  # each PASS line by name, the same guard conformance, expr-oracle,
+  # ldap-integration and isolation-integration use.
   #
   # Linux is where the bash-joined variant's coverage is REQUIRED by name below.
   # That variant no longer gates on an OS -- bash is not POSIX-only, git-bash
@@ -1409,8 +1408,8 @@ jobs:
 
       # Each case is named individually so that a preset losing its coverage --
       # by being skipped, renamed, or deleted -- fails here rather than
-      # shrinking the suite quietly. The two PowerShell-gated and
-      # Windows-skipped cases are deliberately absent.
+      # shrinking the suite quietly. The PowerShell-joined case is deliberately
+      # absent: it is Windows-only, and preset-harness-windows asserts it.
       - name: Assert every linux-runnable case actually ran
         run: |
           for name in \
@@ -1482,9 +1481,11 @@ jobs:
 
       # Not redundant with the step above. A `-run` regex that matched nothing --
       # after a rename, or a registry that failed to load -- exits 0 having
-      # asserted nothing. The trailing space on the first three is an ANCHOR:
+      # asserted nothing. A trailing space is an ANCHOR:
       # `go test -v` emits "--- PASS: <name> (0.01s)", so without it these are
       # prefix matches a future TestPresetTier3Xyz would satisfy on their behalf.
+      # Only the ffmpeg name, a full test name nothing else extends, goes
+      # without one.
       #
       # TestFFmpegPreset_BashSegmentTranscodeJoins runs here but is deliberately
       # NOT listed, and the registry's tier2 required_on omits windows for it: it
@@ -1497,7 +1498,7 @@ jobs:
           missing=0
           for name in "TestPresetTier1Argv " "TestPresetTier3 " "TestZZPresetTierRegistrySatisfied " \
                       "TestFFmpegPreset_PowerShellSegmentTranscodeJoins" \
-                      "TestScriptPowerShell_NonZeroExitFailsTheTask"; do
+                      "TestScriptPowerShell_ExitStatus "; do
             if ! grep -q -- "--- PASS: ${name}" preset-harness-windows.log; then
               echo "::error::${name} did not run to a PASS on windows"
               missing=1
@@ -1506,6 +1507,12 @@ jobs:
           [ "$missing" -eq 0 ] || exit 1
           echo "Confirmed tiers 1, 2 and 3 plus the registry check ran on windows."
 
+  # Differential-tests internal/openjd/expr against the implementation the EXPR
+  # specification names as its reference — the openjd.expr namespace of
+  # openjd-model, which is a thin re-export layer over a compiled Rust crate
+  # rather than a Python implementation. Tagged `oracle`, so it does not run in
+  # the default `make test`.
+  #
   # IMPORTANT: the assertion step below is not redundant. `make test-expr-oracle`
   # exits 0 when no interpreter has the package importable, and the test itself
   # SKIPS in that case — so a green job would otherwise prove nothing at all.
