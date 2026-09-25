@@ -63,6 +63,11 @@ else
   TEST_FLAGS :=
 endif
 
+# Per-package timeout for `make test` and `make test-cover`. go test's default
+# is 10m, and ./test/integration/ now runs every preset's Tier-3 case and the
+# real-ffmpeg Tier-2 cases untagged, under -race, in one package.
+TEST_TIMEOUT ?= 20m
+
 COVERAGE_OUT := coverage.out
 # Raise in 5-point increments as new test suites land.
 # 2026-06-13: measured 74.5% (race) after the phase-1 unit-test backfill;
@@ -183,11 +188,11 @@ run-workers: build-worker ## Spin up N sqi-worker instances locally (N=3 default
 
 .PHONY: test
 test: ## Run all tests (race detector on by default; override with RACE=off)
-	go test $(TEST_FLAGS) $(GO_PKGS)
+	go test $(TEST_FLAGS) -timeout $(TEST_TIMEOUT) $(GO_PKGS)
 
 .PHONY: test-cover
 test-cover: ## Run tests and emit coverage report
-	go test $(TEST_FLAGS) -coverprofile=$(COVERAGE_OUT) -covermode=atomic $(GO_PKGS)
+	go test $(TEST_FLAGS) -timeout $(TEST_TIMEOUT) -coverprofile=$(COVERAGE_OUT) -covermode=atomic $(GO_PKGS)
 	go tool cover -func=$(COVERAGE_OUT) | tail -1
 	@cov=$$(go tool cover -func=$(COVERAGE_OUT) | tail -1 | awk '{print int($$3)}'); \
 	  echo "Coverage: $$cov% (minimum: $(COVERAGE_MIN)%)"; \
