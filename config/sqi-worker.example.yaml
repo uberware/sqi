@@ -152,7 +152,7 @@ worker:
   # server can correlate this worker across restarts. Do not delete
   # worker.id unless you intend to re-register as a new worker.
   # Type: string   Env: SQI_WORKER_DATA_DIR
-  data_dir: "~/.sqi/worker"  # Linux/macOS default; %APPDATA%\sqi\worker on Windows
+  data_dir: "~/.sqi/worker"  # Linux/macOS default; %USERPROFILE%\.sqi\worker on Windows
 
   # Directory under which session working directories are created
   # (<session_dir>/<sessionID>/). Deliberately separate from data_dir: this
