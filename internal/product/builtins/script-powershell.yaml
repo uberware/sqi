@@ -11,26 +11,39 @@ readme: |
 
   ## Parameters
 
-  - **Command** - the PowerShell text to run. It is passed to
-    `powershell -NoProfile -Command`, so pipelines, redirection and `;` all
-    work.
+  - **Command** - the PowerShell text to run. It is written to a UTF-8
+    `command.ps1` and run with
+    `powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File`, so
+    pipelines, redirection, `;`, several lines, comments, non-ASCII text and
+    `& .\script.ps1` all work. Nothing can prompt: `Read-Host` and
+    confirmation prompts fail rather than waiting for input.
 
   ## Example
 
   ```powershell
-  ffmpeg -i input.mov -c:v libx264 output.mp4
+  ffmpeg -i input.mov -c:v libx264 output.mp4 2>&1
   ```
 
   ## Exit status
 
-  The command's exit status is propagated:
-  `$ErrorActionPreference = 'Stop'` turns a failing cmdlet into a terminating
-  error, and `exit $LASTEXITCODE` forwards a failing native executable's code.
-  A command that runs no native executable and throws nothing exits 0.
+  The task's exit status is decided once the whole command has run, mostly by
+  its **last** statement - much as `/bin/sh -c` does on Linux and macOS:
 
-  Note that `$LASTEXITCODE` reflects the **last** native command, so
-  `a.exe; b.exe` reports only `b.exe`'s status - the same way `/bin/sh -c
-  "a; b"` does.
+  - an explicit `exit N` exits `N`;
+  - a native executable's non-zero exit code is forwarded - `$LASTEXITCODE`
+    keeps the most recent native command's code, so `a.exe; Write-Host done`
+    still fails when `a.exe` did, but `a.exe; b.exe` reports only `b.exe`;
+  - a thrown exception, or a cmdlet error in the last statement, exits 1;
+  - otherwise it exits 0.
+
+  A native command writing to stderr is **not** a failure, even when that
+  stderr is redirected (`2>&1`, `2> log.txt`) - tools such as ffmpeg write
+  their progress there.
+
+  A cmdlet error in an earlier statement does not fail the task if later
+  statements succeed. To stop at the first cmdlet error instead, start the
+  command with `$ErrorActionPreference = 'Stop'`, keeping in mind that Windows
+  PowerShell 5.1 then also stops on redirected native stderr.
 
   ## Requirements
 
@@ -60,10 +73,25 @@ template:
           - name: attr.worker.os.family
             anyOf: ["windows"]
       script:
+        embeddedFiles:
+          # The command runs as a script FILE rather than as -Command text for
+          # two reasons. OpenJD forbids a line break in a template's literal
+          # args, so a -Command wrapper must join its statements with `;` --
+          # and a trailing `#` comment in Command then swallows everything the
+          # wrapper appends. And Windows PowerShell 5.1 reads a BOM-less .ps1
+          # in the ANSI code page, so the data opens with a UTF-8 BOM (\uFEFF)
+          # or a non-ASCII command would be mangled.
+          #
+          # After Command: $? is read before anything can reset it. $Error is
+          # consulted because Windows PowerShell 5.1 records each line of a
+          # native command's REDIRECTED stderr as a NativeCommandError and
+          # clears $?, so a trailing `ffmpeg ... 2>&1` that exited 0 would
+          # otherwise fail the task.
+          - name: command
+            type: TEXT
+            filename: command.ps1
+            data: "\uFEFF{{Param.Command}}\n$sqiOk = $?\nif ($LASTEXITCODE) { exit $LASTEXITCODE }\nif (-not $sqiOk -and -not ($Error.Count -and $Error[0].FullyQualifiedErrorId -like 'NativeCommandError*')) { exit 1 }\nexit 0\n"
         actions:
           onRun:
             command: powershell
-            args:
-              - "-NoProfile"
-              - "-Command"
-              - "$ErrorActionPreference = 'Stop'; {{Param.Command}}; exit $LASTEXITCODE"
+            args: ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", "{{Task.File.command}}"]

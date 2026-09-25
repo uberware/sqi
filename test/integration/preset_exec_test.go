@@ -410,9 +410,11 @@ func requiredAttributeValue(attr openjd.AttributeRequirement) string {
 // unsatisfiableOSFamily returns the attr.worker.os.family requirement this host
 // cannot meet, or "" when every such requirement is satisfiable here.
 //
-// No registry entry reaches it today -- ffmpeg-segment-transcode-powershell,
-// which requires "windows", carries no tier3 block at all for that very reason.
-// It stays because the requirement is a property of the HOST that no test
+// Three registry entries reach it: script (linux|macos), and script-powershell
+// and ffmpeg-segment-transcode-powershell (windows). Each one's tier3
+// required_on names only the platforms its gate admits, so the skip this
+// produces is never a registry failure. It exists because the requirement is a
+// property of the HOST that no test
 // environment can fake: the worker reports runtime.GOOS at
 // registration (capabilities.Detect) and the scheduler translates it
 // (internal/scheduler/matcher.go osFamily) — unlike a capability tag, which
@@ -614,20 +616,21 @@ func TestPresetTier3_StubHangIsKilledByTimeout(t *testing.T) {
 	}
 }
 
-// TestScriptPowerShell_NonZeroExitFailsTheTask pins the one claim about
-// script-powershell that no other tier can reach.
+// TestScriptPowerShell_ExitStatus pins the exit-status contract of
+// script-powershell, which no other tier can reach: Tier 3's stub always exits
+// 0, so only a REAL powershell.exe running a command that really fails (or
+// really succeeds noisily) can show the wrapper in the product's command.ps1
+// doing its job. Each row was first measured directly against powershell.exe;
+// every "failed" row except the plain cmdlet error exits 0 without the wrapper,
+// and the redirected-stderr row exits 1 under $ErrorActionPreference = 'Stop'.
 //
-// `powershell -Command "<text>"` can exit 0 even when a command inside <text>
-// fails, as long as that failing command is not the LAST statement executed
-// (verified directly against powershell.exe -- see the Command value below).
-// Without the template's trailing `exit $LASTEXITCODE`, this product would
-// silently report such a failure as a success. Tier 3 cannot see it: the stub
-// always exits 0. So this runs a REAL powershell against a command that
-// really fails, and asserts the failure reaches the API.
+// One server and one worker serve every row: the jobs are all submitted up
+// front and then polled in turn, so the table costs one worker start-up rather
+// than one per row.
 //
 // Windows-only by construction -- the product declares attr.worker.os.family
 // anyOf ["windows"], so no other host can lease the task at all.
-func TestScriptPowerShell_NonZeroExitFailsTheTask(t *testing.T) {
+func TestScriptPowerShell_ExitStatus(t *testing.T) {
 	if runtime.GOOS != "windows" {
 		t.Skipf("script-powershell requires a windows worker; GOOS=%s", runtime.GOOS)
 	}
@@ -637,32 +640,53 @@ func TestScriptPowerShell_NonZeroExitFailsTheTask(t *testing.T) {
 		t.Fatalf("PresetTemplate: %v", err)
 	}
 
+	cases := []struct {
+		name    string
+		command string
+		want    string
+	}{
+		// $LASTEXITCODE outlives the native command that set it, so a later
+		// successful cmdlet does not hide the failure.
+		{"native failure before a cmdlet", "cmd /c exit 3; Write-Host done", "failed"},
+		// The reason the command is a file and not -Command text: a trailing
+		// comment on a `;`-joined line swallowed the wrapper and exited 0.
+		{"trailing comment", "cmd /c exit 3 # trailing comment", "failed"},
+		{"comment on the last line", "cmd /c exit 3\n# done", "failed"},
+		{"thrown exception", "throw 'boom'; Write-Host after", "failed"},
+		{"cmdlet error with no native command", "Get-Item 'C:/sqi/no/such/path'", "failed"},
+		// ffmpeg writes its progress to stderr. Windows PowerShell 5.1 turns
+		// redirected native stderr into NativeCommandError records and clears
+		// $?, which must not fail a command that exited 0.
+		{"redirected native stderr", `cmd /c "echo progress 1>&2" 2>&1`, "completed"},
+		// command.ps1 opens with a UTF-8 BOM; without it 5.1 reads the file in
+		// the ANSI code page and this string is no longer eight characters.
+		{"non-ascii text", "if ('Überwäre'.Length -ne 8) { exit 9 }", "completed"},
+		{"plain success", "Write-Host ok", "completed"},
+	}
+
 	ts := startServer(t)
 	farmID, queueID := seedFarmAndQueue(t, ts)
 	// No stub: a real powershell.exe must run, or the wrapper is not exercised.
 	startRealWorkerAnyOS(t, ts, farmID, queueID)
 
-	// A single failing statement is not enough to demonstrate this: verified
-	// directly against powershell.exe, a bare `-Command "cmd /c exit 3"`
-	// already exits 1 (not 0) because the failing call is the LAST statement.
-	// The silent-success case needs a failing statement that is NOT last:
-	// bare `-Command "cmd /c exit 3; Write-Host done"` exits 0 (Write-Host's
-	// own success wins), and only the template's trailing
-	// `exit $LASTEXITCODE` recovers the real code (3) by re-reading
-	// $LASTEXITCODE, which the failing `cmd /c exit 3` still set even though
-	// it was not the last statement executed.
-	jobID := submitPresetJob(t, ts, farmID, queueID, tmpl, map[string]string{
-		"Command": "cmd /c exit 3; Write-Host done",
-	})
-
-	status := pollJobStatus(t, ts, jobID, []string{"completed", "failed", "canceled"}, presetJobTimeout)
-	if status != "failed" {
-		t.Fatalf("job status = %q, want failed\n"+
-			"a non-zero exit inside -Command was reported as success: the template's "+
-			"`exit $LASTEXITCODE` wrapper is missing or ineffective", status)
+	jobIDs := make([]string, len(cases))
+	for i, tc := range cases {
+		jobIDs[i] = submitPresetJob(t, ts, farmID, queueID, tmpl, map[string]string{"Command": tc.command})
 	}
-	if reason := firstTaskFailureReason(t, ts, jobID); reason == "" {
-		t.Error("failed task carries no failure_reason")
+	for i, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			status := pollJobStatus(t, ts, jobIDs[i], []string{"completed", "failed", "canceled"}, presetJobTimeout)
+			if status != tc.want {
+				t.Fatalf("job status = %q, want %q for Command %q\n"+
+					"the exit-status wrapper in script-powershell's command.ps1 is missing or ineffective",
+					status, tc.want, tc.command)
+			}
+			if status == "failed" {
+				if reason := firstTaskFailureReason(t, ts, jobIDs[i]); reason == "" {
+					t.Error("failed task carries no failure_reason")
+				}
+			}
+		})
 	}
 }
 

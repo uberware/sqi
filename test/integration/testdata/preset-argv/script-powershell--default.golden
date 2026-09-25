@@ -9,5 +9,14 @@ task 1/1  name="Run"
   command: powershell
   args:
     [0]  -NoProfile
-    [1]  -Command
-    [2]  $ErrorActionPreference = 'Stop'; sqi-stub-command --frame 1; exit $LASTEXITCODE
+    [1]  -NonInteractive
+    [2]  -ExecutionPolicy
+    [3]  Bypass
+    [4]  -File
+    [5]  <WORKDIR>
+  embedded file "command" (command.ps1):
+    ﻿sqi-stub-command --frame 1
+    $sqiOk = $?
+    if ($LASTEXITCODE) { exit $LASTEXITCODE }
+    if (-not $sqiOk -and -not ($Error.Count -and $Error[0].FullyQualifiedErrorId -like 'NativeCommandError*')) { exit 1 }
+    exit 0
