@@ -57,6 +57,26 @@ func open(m *mgr.Mgr, name string) (*mgr.Service, error) {
 	return s, nil
 }
 
+// Exists reports whether a service named name is registered. Failing to open
+// it for any reason but its absence is an error, not "absent".
+func Exists(name string) (bool, error) {
+	m, err := connect()
+	if err != nil {
+		return false, err
+	}
+	defer m.Disconnect() //nolint:errcheck // handle cleanup
+	s, err := open(m, name)
+	switch {
+	case err == nil:
+		s.Close() // only probing for existence
+		return true, nil
+	case errors.Is(err, ErrServiceNotFound):
+		return false, nil
+	default:
+		return false, err
+	}
+}
+
 // Install registers cfg: start type Automatic (delayed when
 // cfg.DelayedAutoStart), cfg's restart-on-failure actions with recovery on
 // non-crash failures enabled too, and cfg.PreShutdownTimeout. mgr.CreateService

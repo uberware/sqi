@@ -49,6 +49,7 @@ type CommandSpec struct {
 // ones.
 type operations struct {
 	requireElevated     func() error
+	exists              func(name string) (bool, error)
 	grantLogonRight     func(account string) error
 	validateCredentials func(account, password string) error
 	ensureLogDir        func(dir, account string) error
@@ -63,6 +64,7 @@ type operations struct {
 func systemOperations() operations {
 	return operations{
 		requireElevated:     RequireElevated,
+		exists:              Exists,
 		grantLogonRight:     GrantServiceLogonRight,
 		validateCredentials: ValidateCredentials,
 		ensureLogDir:        EnsureLogDir,
@@ -138,7 +140,8 @@ granted.`,
 		RunE: c.elevated(func(cmd *cobra.Command) error { return c.runInstall(cmd, f) }),
 	}
 	c.nameFlag(sub, &f.name)
-	sub.Flags().StringVar(&f.displayName, "display-name", c.spec.DisplayName, "service display name")
+	sub.Flags().StringVar(&f.displayName, "display-name", c.spec.DisplayName,
+		`service display name; another --name defaults to "`+c.spec.DisplayName+` (<name>)"`)
 	sub.Flags().StringVar(&f.user, "user", "",
 		`account to run as: DOMAIN\name or .\name (default LocalSystem); the password is prompted for`)
 	sub.Flags().BoolVar(&f.start, "start", false, "start the service after installing it and wait for it to run")
@@ -154,10 +157,14 @@ func configFlag(cmd *cobra.Command) string {
 	return ""
 }
 
-// runInstall registers the service. The order is fixed: everything that can
-// be checked without changing the system first (installConfig), then the
-// account's logon right and password, the log directory, and the service.
+// runInstall registers the service. The order is fixed: the name and the
+// existence probe (refuseExisting), everything else that can be checked
+// without changing the system (installConfig), then the account's logon right
+// and password, the log directory, and the service.
 func (c commands) runInstall(cmd *cobra.Command, f installFlags) error {
+	if err := c.refuseExisting(f.name); err != nil {
+		return err
+	}
 	out := cmd.OutOrStdout()
 	sc, err := c.installConfig(cmd, f)
 	if err != nil {
@@ -171,8 +178,8 @@ func (c commands) runInstall(cmd *cobra.Command, f installFlags) error {
 		return err
 	}
 	if err := c.ops.install(sc); err != nil {
-		if errors.Is(err, ErrServiceExists) {
-			return fmt.Errorf("%w; remove it first with: %s service uninstall --name %s", err, c.spec.Binary, sc.Name)
+		if errors.Is(err, ErrServiceExists) { // created since refuseExisting probed
+			return c.existsError(err, sc.Name)
 		}
 		return err
 	}
@@ -183,6 +190,43 @@ func (c commands) runInstall(cmd *cobra.Command, f installFlags) error {
 		return nil
 	}
 	return c.startAndReport(out, sc.Name, logPath)
+}
+
+// refuseExisting rejects an invalid name, or one a service already has (spec
+// §2: no overwrite), before install prompts for a password or changes
+// anything. Otherwise the logon right, a credential check (a wrong password
+// counts toward the account's lockout) and an ACE on the log directory every
+// sqi service shares would all come first. Install's own probe still catches
+// a service created after this one.
+func (c commands) refuseExisting(name string) error {
+	if err := validateName(name); err != nil {
+		return err
+	}
+	exists, err := c.ops.exists(name)
+	if err != nil {
+		return err
+	}
+	if exists {
+		return c.existsError(fmt.Errorf("%w: %s", ErrServiceExists, name), name)
+	}
+	return nil
+}
+
+// existsError points an ErrServiceExists at `service uninstall`.
+func (c commands) existsError(err error, name string) error {
+	return fmt.Errorf("%w; remove it first with: %s service uninstall --name %s", err, c.spec.Binary, name)
+}
+
+// displayName is the display name to register. An explicit --display-name
+// wins. Otherwise an instance other than the default gets "<default> (<name>)":
+// the SCM refuses a display name another service already has
+// (ERROR_DUPLICATE_SERVICE_NAME). Service names are case-insensitive, so
+// "SQI-Worker" is the default instance.
+func (c commands) displayName(name, flagValue string, explicit bool) string {
+	if explicit || strings.EqualFold(name, c.spec.Binary) {
+		return flagValue
+	}
+	return c.spec.DisplayName + " (" + name + ")"
 }
 
 // installConfig resolves the config file, the drain timeout, the account and
@@ -209,10 +253,16 @@ func (c commands) installConfig(cmd *cobra.Command, f installFlags) (ServiceConf
 		return ServiceConfig{}, err
 	}
 	return BuildServiceConfig(InstallSpec{
-		Name: f.name, DisplayName: f.displayName, Description: c.spec.Description,
-		ExePath: exe, RunVerb: c.spec.RunVerb, ConfigPath: cfgPath,
-		Account: account, Password: password,
-		DelayedAutoStart: c.spec.DelayedAutoStart, DrainTimeout: drain,
+		Name:             f.name,
+		DisplayName:      c.displayName(f.name, f.displayName, cmd.Flags().Changed("display-name")),
+		Description:      c.spec.Description,
+		ExePath:          exe,
+		RunVerb:          c.spec.RunVerb,
+		ConfigPath:       cfgPath,
+		Account:          account,
+		Password:         password,
+		DelayedAutoStart: c.spec.DelayedAutoStart,
+		DrainTimeout:     drain,
 	})
 }
 

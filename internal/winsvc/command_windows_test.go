@@ -35,6 +35,8 @@ const (
 type fakeOps struct {
 	calls          []string
 	installed      ServiceConfig
+	existing       bool // what exists reports
+	existsErr      error
 	validateErr    error
 	installErr     error
 	startErr       error
@@ -49,6 +51,10 @@ func (f *fakeOps) recordf(format string, args ...any) {
 func (f *fakeOps) operations() operations {
 	return operations{
 		requireElevated: func() error { f.recordf("requireElevated"); return nil },
+		exists: func(name string) (bool, error) {
+			f.recordf("exists %s", name)
+			return f.existing, f.existsErr
+		},
 		grantLogonRight: func(account string) error { f.recordf("grant %s", account); return nil },
 		validateCredentials: func(account, password string) error {
 			f.recordf("validate %s %s", account, password)
@@ -163,6 +169,60 @@ func TestNewCommand_EverySubcommandRequiresElevationFirst(t *testing.T) {
 	}
 }
 
+// refusingOps is an operations set for a process that is not elevated: the
+// elevation check fails, and every other operation fails the test if called.
+func refusingOps(t *testing.T) operations {
+	t.Helper()
+	touched := func(op string) error {
+		t.Errorf("%s ran before the elevation check", op)
+		return fmt.Errorf("%s must not run", op)
+	}
+	return operations{
+		requireElevated:     func() error { return ErrNotElevated },
+		exists:              func(string) (bool, error) { return false, touched("exists") },
+		grantLogonRight:     func(string) error { return touched("grantLogonRight") },
+		validateCredentials: func(string, string) error { return touched("validateCredentials") },
+		ensureLogDir:        func(string, string) error { return touched("ensureLogDir") },
+		install:             func(ServiceConfig) error { return touched("install") },
+		uninstall:           func(string, time.Duration) error { return touched("uninstall") },
+		start:               func(string, time.Duration) (StatusInfo, error) { return StatusInfo{}, touched("start") },
+		stop:                func(string, time.Duration) (StatusInfo, error) { return StatusInfo{}, touched("stop") },
+		status:              func(string) (StatusInfo, error) { return StatusInfo{}, touched("status") },
+		preShutdownTimeout:  func(string) (time.Duration, error) { return 0, touched("preShutdownTimeout") },
+	}
+}
+
+// TestNewCommand_ElevationCheckedBeforeAnyOperation pins spec §2's "every
+// subcommand checks for elevation first" at any elevation, CI's elevated
+// runners included: with the check failing, no subcommand may call another
+// operation, read its config's drain timeout, read stdin or print.
+func TestNewCommand_ElevationCheckedBeforeAnyOperation(t *testing.T) {
+	cfg := writeConfig(t)
+	for _, args := range [][]string{
+		{"install", "--name", "sqi-extra", "--user", "render", "--start", "--config", cfg},
+		{"uninstall", "--name", "sqi-extra"},
+		{"start", "--name", "sqi-extra"},
+		{"stop", "--name", "sqi-extra"},
+		{"status", "--name", "sqi-extra"},
+	} {
+		t.Run(args[0], func(t *testing.T) {
+			spec := testSpec(new(int))
+			spec.DrainTimeout = func(string) (time.Duration, error) {
+				t.Error("DrainTimeout ran before the elevation check")
+				return testDrain, nil
+			}
+			stdin := &readSpy{}
+			out, err := execute(t, spec, refusingOps(t), stdin, args...)
+			if !errors.Is(err, ErrNotElevated) {
+				t.Fatalf("service %s = %v, want ErrNotElevated", args[0], err)
+			}
+			if stdin.read || out != "" {
+				t.Errorf("work ran before the elevation check: stdin read %v, output %q", stdin.read, out)
+			}
+		})
+	}
+}
+
 // TestCommandWait pins the stop/uninstall wait: the service's PreShutdown
 // timeout plus ShutdownMargin, never below startWait, and startWait when the
 // timeout cannot be read.
@@ -209,6 +269,7 @@ func TestInstall_UserAccount(t *testing.T) {
 			}
 			want := []string{
 				"requireElevated",
+				"exists " + testBinary,
 				"grant " + tc.account,
 				"validate " + tc.account + " s3cret",
 				"ensureLogDir " + logDir + " " + tc.account,
@@ -256,7 +317,7 @@ func TestInstall_LocalSystem(t *testing.T) {
 			if err != nil {
 				t.Fatalf("install: %v\n%s", err, out)
 			}
-			want := []string{"requireElevated", "ensureLogDir " + logDir + " ", "install " + testBinary}
+			want := []string{"requireElevated", "exists " + testBinary, "ensureLogDir " + logDir + " ", "install " + testBinary}
 			if !slices.Equal(fake.calls, want) {
 				t.Errorf("calls:\n got %q\nwant %q", fake.calls, want)
 			}
@@ -272,17 +333,21 @@ func TestInstall_LocalSystem(t *testing.T) {
 
 // TestInstall_InvalidInputChangesNothing pins that everything install can
 // reject without touching the system is rejected before the logon right is
-// granted or the log directory is touched.
+// granted or the log directory is touched. An invalid name is rejected before
+// the existence probe too.
 func TestInstall_InvalidInputChangesNothing(t *testing.T) {
 	missing := filepath.Join(t.TempDir(), "missing.yaml")
+	probed := []string{"requireElevated", "exists " + testBinary}
 	for _, tc := range []struct {
 		name, stdin, want string
 		args              []string
+		calls             []string
 	}{
-		{"missing config", "s3cret\n", "not found", []string{"--config", missing}},
-		{"empty password", "\n", "password must not be empty", nil},
-		{"no password", "", "read password", nil},
-		{"invalid service name", "s3cret\n", "is invalid", []string{"--name", `bad\name`}},
+		{"missing config", "s3cret\n", "not found", []string{"--config", missing}, probed},
+		{"empty password", "\n", "password must not be empty", nil, probed},
+		{"no password", "", "read password", nil, probed},
+		{"invalid service name", "s3cret\n", "is invalid", []string{"--name", `bad\name`}, []string{"requireElevated"}},
+		{"empty service name", "s3cret\n", "is invalid", []string{"--name", ""}, []string{"requireElevated"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var drainCalls int
@@ -292,8 +357,8 @@ func TestInstall_InvalidInputChangesNothing(t *testing.T) {
 			if err == nil || !strings.Contains(err.Error(), tc.want) {
 				t.Fatalf("install = %v, want an error containing %q", err, tc.want)
 			}
-			if want := []string{"requireElevated"}; !slices.Equal(fake.calls, want) {
-				t.Errorf("calls = %q, want only %q", fake.calls, want)
+			if !slices.Equal(fake.calls, tc.calls) {
+				t.Errorf("calls = %q, want only %q", fake.calls, tc.calls)
 			}
 		})
 	}
@@ -310,12 +375,83 @@ func TestInstall_WrongPasswordStopsBeforeInstall(t *testing.T) {
 	if !errors.Is(err, windows.ERROR_LOGON_FAILURE) || !strings.Contains(err.Error(), "check the password") {
 		t.Fatalf("install = %v, want the logon failure and a password hint", err)
 	}
-	want := []string{"requireElevated", `grant .\render`, `validate .\render wrong`}
+	want := []string{"requireElevated", "exists " + testBinary, `grant .\render`, `validate .\render wrong`}
 	if !slices.Equal(fake.calls, want) {
 		t.Errorf("calls:\n got %q\nwant %q", fake.calls, want)
 	}
 }
 
+// TestInstall_ExistingServiceRefusedBeforeAnySideEffect pins spec §2's
+// refusal of an existing service: it comes straight after the elevation
+// check, before the password prompt, the logon right, the credential check
+// (a wrong password would count toward the account's lockout) and the shared
+// log directory's ACL. A probe that fails for another reason stops install
+// the same way.
+func TestInstall_ExistingServiceRefusedBeforeAnySideEffect(t *testing.T) {
+	probeErr := fmt.Errorf("open service sqi-extra: %w", windows.ERROR_ACCESS_DENIED)
+	for _, tc := range []struct {
+		name     string
+		fake     *fakeOps
+		want     error
+		wantHint bool
+	}{
+		{"exists", &fakeOps{existing: true}, ErrServiceExists, true},
+		{"probe fails", &fakeOps{existsErr: probeErr}, windows.ERROR_ACCESS_DENIED, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			stdin := &readSpy{}
+			out, err := execute(t, testSpec(new(int)), tc.fake.operations(), stdin,
+				"install", "--name", "sqi-extra", "--user", "render", "--start", "--config", writeConfig(t))
+			if !errors.Is(err, tc.want) {
+				t.Fatalf("install = %v, want %v", err, tc.want)
+			}
+			if hint := strings.Contains(fmt.Sprint(err), "sqi-test service uninstall --name sqi-extra"); hint != tc.wantHint {
+				t.Errorf("uninstall hint present = %v, want %v: %v", hint, tc.wantHint, err)
+			}
+			if want := []string{"requireElevated", "exists sqi-extra"}; !slices.Equal(tc.fake.calls, want) {
+				t.Errorf("calls:\n got %q\nwant %q", tc.fake.calls, want)
+			}
+			if stdin.read || out != "" {
+				t.Errorf("install prompted or printed before refusing (stdin read %v): %q", stdin.read, out)
+			}
+		})
+	}
+}
+
+// TestInstall_DisplayNameForAnotherInstance pins that a second instance gets a
+// display name of its own: the SCM refuses a duplicate display name
+// (ERROR_DUPLICATE_SERVICE_NAME), so the default one cannot be reused. An
+// explicit --display-name always wins.
+func TestInstall_DisplayNameForAnotherInstance(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		args []string
+		want string
+	}{
+		{"default instance", nil, "sqi Test"},
+		{"default name given explicitly", []string{"--name", testBinary}, "sqi Test"},
+		{"default name in another case", []string{"--name", "SQI-Test"}, "sqi Test"},
+		{"another instance", []string{"--name", "sqi-test-2"}, "sqi Test (sqi-test-2)"},
+		{"explicit display name", []string{"--name", "sqi-test-2", "--display-name", "Render node 2"}, "Render node 2"},
+		{"explicit default display name", []string{"--name", "sqi-test-2", "--display-name", "sqi Test"}, "sqi Test"},
+		{"explicit display name, default instance", []string{"--display-name", "Render node"}, "Render node"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fake := &fakeOps{}
+			args := append([]string{"install", "--config", writeConfig(t)}, tc.args...)
+			if out, err := execute(t, testSpec(new(int)), fake.operations(), &readSpy{}, args...); err != nil {
+				t.Fatalf("install: %v\n%s", err, out)
+			}
+			if got := fake.installed.DisplayName; got != tc.want {
+				t.Errorf("display name = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestInstall_ExistingServicePointsAtUninstall covers the race the probe
+// cannot: a service created between the probe and Install, which Install
+// reports as ErrServiceExists.
 func TestInstall_ExistingServicePointsAtUninstall(t *testing.T) {
 	var drainCalls int
 	fake := &fakeOps{installErr: fmt.Errorf("%w: sqi-extra", ErrServiceExists)}

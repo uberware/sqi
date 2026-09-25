@@ -66,10 +66,20 @@ func BuildServiceConfig(spec InstallSpec) (ServiceConfig, error) {
 	}, nil
 }
 
+// validateName checks a service name the way the SCM would, so `service
+// install` can reject a bad one before probing for it or changing anything.
+func validateName(name string) error {
+	if name == "" || strings.ContainsAny(name, `/\`) {
+		return fmt.Errorf("service name %q is invalid: it must be non-empty and contain no slashes", name)
+	}
+	return nil
+}
+
 func validateSpec(spec InstallSpec) error {
+	if err := validateName(spec.Name); err != nil {
+		return err
+	}
 	switch {
-	case spec.Name == "" || strings.ContainsAny(spec.Name, `/\`):
-		return fmt.Errorf("service name %q is invalid: it must be non-empty and contain no slashes", spec.Name)
 	case !filepath.IsAbs(spec.ExePath):
 		return fmt.Errorf("executable path %q must be absolute", spec.ExePath)
 	case !filepath.IsAbs(spec.ConfigPath):
