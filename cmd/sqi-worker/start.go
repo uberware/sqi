@@ -380,7 +380,7 @@ func runWorker(ctx context.Context, cmd *cobra.Command) error {
 		m,
 		openjdInterceptor, // openjd_progress/status/fail interception + log streaming
 		executor.Config{
-			KillGracePeriod:         cfg.Worker.ShutdownGracePeriod / 3, // 1/3 of grace period as kill window
+			KillGracePeriod:         shutdownKillGrace(cfg.Worker.ShutdownGracePeriod),
 			AllowRoot:               cfg.Worker.AllowRoot,
 			StagingScratchDir:       cfg.Staging.ScratchDir,
 			StagingSyncCommand:      cfg.Staging.SyncCommand,
@@ -497,6 +497,13 @@ func runWorker(ctx context.Context, cmd *cobra.Command) error {
 	obsServer.Shutdown(shutdownCtx)
 	return nil
 }
+
+// shutdownKillGrace is the executor's kill window during a worker shutdown: a
+// task still running when the grace period ends gets SIGTERM, then this long
+// before SIGKILL — a third of the grace period. The Windows service's
+// PreShutdown timeout is built from it (workerDrainBound), so the two cannot
+// drift apart.
+func shutdownKillGrace(grace time.Duration) time.Duration { return grace / 3 }
 
 // checkRootAndLoadWorkerID performs the two boot-time identity checks that
 // must happen before any network connection: refusing to run as root on

@@ -9,8 +9,13 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/uberware/sqi/internal/winsvc"
 )
 
+// TestWorkerDrainTimeout_FromConfig pins that the drain timeout a service is
+// installed with covers the whole worker drain: the configured grace period,
+// then the SIGTERM→SIGKILL window (a third of it) for tasks still running.
 func TestWorkerDrainTimeout_FromConfig(t *testing.T) {
 	t.Setenv("SQI_WORKER_SHUTDOWN_GRACE_PERIOD", "")
 	path := filepath.Join(t.TempDir(), "sqi-worker.yaml")
@@ -18,8 +23,28 @@ func TestWorkerDrainTimeout_FromConfig(t *testing.T) {
 		t.Fatal(err)
 	}
 	got, err := workerDrainTimeout(path)
-	if err != nil || got != 90*time.Second {
-		t.Fatalf("workerDrainTimeout = %v, %v; want 90s", got, err)
+	if err != nil || got != 120*time.Second {
+		t.Fatalf("workerDrainTimeout = %v, %v; want 120s (90s grace + 30s kill window)", got, err)
+	}
+}
+
+// TestWorkerDrainBound_CoversGraceAndKillWindow pins the relationship between
+// the service's drain bound and the executor's kill window: both come from
+// shutdownKillGrace, the window is a third of the grace period, and at the
+// default 30 s grace the PreShutdown timeout is 55 s (30 + 10 + 15), which the
+// Windows service docs quote.
+func TestWorkerDrainBound_CoversGraceAndKillWindow(t *testing.T) {
+	for _, grace := range []time.Duration{30 * time.Second, 45 * time.Second, 90 * time.Second, 10 * time.Minute} {
+		kill := shutdownKillGrace(grace)
+		if kill != grace/3 {
+			t.Errorf("shutdownKillGrace(%v) = %v, want a third of the grace period", grace, kill)
+		}
+		if got := workerDrainBound(grace); got != grace+kill {
+			t.Errorf("workerDrainBound(%v) = %v, want the grace period plus the kill window, %v", grace, got, grace+kill)
+		}
+	}
+	if got := workerDrainBound(30*time.Second) + winsvc.ShutdownMargin; got != 55*time.Second {
+		t.Errorf("PreShutdown timeout at the default grace period = %v, want 55s", got)
 	}
 }
 

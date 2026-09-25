@@ -28,13 +28,21 @@ func init() {
 	}))
 }
 
-// workerDrainTimeout reads worker.shutdown_grace_period from configPath, with
-// SQI_WORKER_* overrides from the installing shell applied. The service itself
-// sees the system environment, not that shell's.
+// workerDrainTimeout is the worker's drain bound ([workerDrainBound]) for the
+// worker.shutdown_grace_period in configPath, with SQI_WORKER_* overrides from
+// the installing shell applied. The service itself sees the system
+// environment, not that shell's.
 func workerDrainTimeout(configPath string) (time.Duration, error) {
 	cfg, err := workerconfig.Load(configPath, workerconfig.FlagOverrides{})
 	if err != nil {
 		return 0, fmt.Errorf("load %s: %w", configPath, err)
 	}
-	return cfg.Worker.ShutdownGracePeriod, nil
+	return workerDrainBound(cfg.Worker.ShutdownGracePeriod), nil
 }
+
+// workerDrainBound is how long a worker shutdown can take to drain: up to the
+// grace period for running tasks to finish, then, for any still running,
+// SIGTERM and the kill window ([shutdownKillGrace]) before SIGKILL. What
+// follows — the tasks' final statuses, deregistration and the NATS drain — is
+// normally well under a second and is covered by winsvc.ShutdownMargin.
+func workerDrainBound(grace time.Duration) time.Duration { return grace + shutdownKillGrace(grace) }
