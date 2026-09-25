@@ -388,8 +388,11 @@ everywhere by construction — `script` (POSIX-only, `required_on: [linux, darwi
 `ffmpeg-segment-transcode-powershell` (gated on
 `attr.worker.os.family anyOf ["windows"]`, `required_on: [windows]`). The
 latter two still name `windows` and are required to run on this Windows job —
-they simply aren't required anywhere else.
+they simply aren't required anywhere else. That is a rule, not a convention:
+`TestPresetTier3RequiredOnMatchesOSGate` fails any entry whose
+`tier3.required_on` differs from the platforms its template's
+`attr.worker.os.family` requirements admit.
 `script-powershell` is `script`'s Windows counterpart: where `script` invokes
-`/bin/sh -c`, `script-powershell` invokes `powershell -NoProfile -Command`, so
-between the two every worker platform sqi ships has a generic single-command
-built-in.
+`/bin/sh -c`, `script-powershell` runs the command as an embedded `.ps1` with
+`powershell -File`, so between the two every worker platform sqi ships has a
+generic single-command built-in.

@@ -227,9 +227,15 @@ presets:
         the join script's glob (<dir>/<stem>_seg_*.<ext>) next to the exact
         slice paths the Transcode step writes, at 3 slices and at 4
         (uneven-tail, 7s in 2s slices, which is also the shape a truncating
-        division would get wrong). What NEITHER tier proves is the concat
-        list's quoting: it quotes slice paths as file '<path>', unescaped, so a
-        path containing a single quote would break the concat parse.
+        division would get wrong). The goldens now render on Windows too, but
+        they show the computed file BODY, not the bytes the worker writes, so
+        they do not prove that endOfLine LF survives to a Windows worker. What
+        does is a real bash running the join script there, which has been
+        observed on a developer Windows host only: the tier2 case below is not
+        required on windows, so that evidence is unenforced until it is
+        promoted. What NEITHER tier proves is the concat list's quoting: it
+        quotes slice paths as file '<path>', unescaped, so a path containing a
+        single quote would break the concat parse.
     tier2:
       case: TestFFmpegPreset_BashSegmentTranscodeJoins
       # NOT required on windows, although it passes there on a developer host.
@@ -329,15 +335,19 @@ presets:
     tier1:
       cases: [default]
       caveat: >-
-        argv derived from the documented powershell -NoProfile -Command
-        convention in the product's own readme. Tier 3 DOES execute it: a real
-        worker runs a real powershell.exe, which resolves the fixture's
+        argv derived from the documented powershell -NoProfile -NonInteractive
+        -ExecutionPolicy Bypass -File convention in the product's own readme,
+        and the golden prints the embedded command.ps1 in full (including its
+        leading UTF-8 BOM, which is invisible there). Tier 3 DOES execute it: a
+        real worker runs a real powershell.exe, which resolves the fixture's
         deliberately nonexistent command (sqi-stub-command --frame 1) from PATH,
-        so the stub is observed being invoked from inside -Command. What that
+        so the stub is observed being invoked from inside command.ps1. What that
         cannot show is the argv of the SHELL itself, which is evidenced only by
         the Tier-1 golden. Nor can either tier show the exit-status wrapper
-        working: the stub always exits 0, so
-        TestScriptPowerShell_NonZeroExitFailsTheTask carries that claim alone.
+        working: the stub always exits 0, so TestScriptPowerShell_ExitStatus
+        carries that claim alone -- and it is NOT a registry case, so the only
+        thing enforcing that it runs is its by-name PASS assertion in ci.yml's
+        preset-harness-windows job.
     tier3:
       case: TestPresetTier3/script-powershell/default
       required_on: [windows]

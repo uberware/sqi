@@ -24,7 +24,7 @@ func TestBuiltins_LoadValidateAndStamp(t *testing.T) {
 			t.Errorf("%s: template invalid: %v", p.Name, err)
 		}
 	}
-	// Sorted by name and exactly the expected three.
+	// Sorted by name and exactly the expected four.
 	want := []string{"container", "python", "script", "script-powershell"}
 	if strings.Join(names, ",") != strings.Join(want, ",") {
 		t.Fatalf("builtins = %v, want %v", names, want)
