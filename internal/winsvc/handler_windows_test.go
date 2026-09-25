@@ -221,24 +221,40 @@ func TestHandler_ChdirFailureIsReported(t *testing.T) {
 // service-specific exit code 1 would let the SCM's recovery actions restart a
 // service that was just stopped.
 func TestHandler_CanceledErrorAfterStopIsCleanExit(t *testing.T) {
-	hs := newHarness(t, func(ctx context.Context) error {
-		<-ctx.Done()
-		return fmt.Errorf("discovery: %w", context.Canceled)
-	})
-	hs.start("sqi-worker")
-	hs.waitState(t, svc.Running)
-	hs.requests <- svc.ChangeRequest{Cmd: svc.Stop}
-	hs.wait(t)
-	if hs.specific || hs.code != 0 {
-		t.Fatalf("exit = (%v, %d), want (false, 0)", hs.specific, hs.code)
-	}
-	if b, err := os.ReadFile(hs.trace); err == nil && len(b) != 0 {
-		t.Fatalf("a stop-initiated cancel wrote a failure trace: %q", b)
-	} else if err != nil && !errors.Is(err, fs.ErrNotExist) {
-		t.Fatalf("reading trace: %v", err)
-	}
-	if hs.h.err != nil {
-		t.Fatalf("handler recorded %v; Run must return nil for a clean stop", hs.h.err)
+	for _, tc := range []struct {
+		name       string
+		cmd        svc.Cmd
+		wantReason string
+	}{
+		{"stop", svc.Stop, "service stop"},
+		{"preshutdown", svc.PreShutdown, "service preshutdown"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var reason string
+			hs := newHarness(t, func(ctx context.Context) error {
+				<-ctx.Done()
+				reason = StopReason(ctx)
+				return fmt.Errorf("discovery: %w", context.Canceled)
+			})
+			hs.start("sqi-worker")
+			hs.waitState(t, svc.Running)
+			hs.requests <- svc.ChangeRequest{Cmd: tc.cmd}
+			hs.wait(t)
+			if hs.specific || hs.code != 0 {
+				t.Fatalf("exit = (%v, %d), want (false, 0)", hs.specific, hs.code)
+			}
+			if b, err := os.ReadFile(hs.trace); err == nil && len(b) != 0 {
+				t.Fatalf("a stop-initiated cancel wrote a failure trace: %q", b)
+			} else if err != nil && !errors.Is(err, fs.ErrNotExist) {
+				t.Fatalf("reading trace: %v", err)
+			}
+			if hs.h.err != nil {
+				t.Fatalf("handler recorded %v; Run must return nil for a clean stop", hs.h.err)
+			}
+			if reason != tc.wantReason {
+				t.Fatalf("StopReason = %q, want %q", reason, tc.wantReason)
+			}
+		})
 	}
 }
 

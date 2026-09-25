@@ -79,7 +79,10 @@ func (h *handler) Execute(args []string, r <-chan svc.ChangeRequest, s chan<- sv
 // just stopped. So a canceled error after a recorded stop is nil. Everything
 // else is left alone: a context.Canceled with no stop requested (fn canceled a
 // ctx it derived) still fails, and so does any other error after a stop, such
-// as a shutdown timeout or context.DeadlineExceeded.
+// as a shutdown timeout or context.DeadlineExceeded. Note errors.Is also
+// matches any member of an errors.Join, so a joined error holding a Canceled
+// leg plus a genuine failure would be forgiven after a stop; none of today's
+// post-stop paths builds such a join.
 func cleanStop(reason *stopReason, err error) error {
 	if err != nil && reason.get() != "" && errors.Is(err, context.Canceled) {
 		return nil

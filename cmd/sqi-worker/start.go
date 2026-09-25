@@ -154,13 +154,13 @@ func runWorker(ctx context.Context, cmd *cobra.Command) error {
 	//
 	// shutdownSig captures the OS signal (console runs) so shutdown can log the
 	// trigger name ("interrupt" vs "terminated") rather than the generic
-	// ctx.Err() string; a service stop is read from winsvc.StopReason instead.
-	// winsvc.Run's own signal registration (console) and this one receive the
-	// same delivery. The extra cancel lets watchNATSClosure start a shutdown on
-	// permanent NATS loss.
-	shutdownSig := make(chan os.Signal, 1)
-	signal.Notify(shutdownSig, os.Interrupt, syscall.SIGTERM)
-	defer signal.Stop(shutdownSig)
+	// ctx.Err() string; a service stop is read from winsvc.StopReason instead,
+	// and a service registers no signal handler at all (see
+	// registerShutdownSignals). winsvc.Run's own signal registration (console)
+	// and this one receive the same delivery. The extra cancel lets
+	// watchNATSClosure start a shutdown on permanent NATS loss.
+	shutdownSig, releaseSignals := registerShutdownSignals(winsvc.IsService())
+	defer releaseSignals()
 	ctx, stop := context.WithCancel(ctx)
 	defer stop()
 
@@ -551,6 +551,14 @@ func connectToBroker(
 				cfg.NATS.CredentialFile,
 			)
 		}
+		// natsclient.Connect's dial is not ctx-aware, so a service Stop that
+		// lands during a failing dial (server down) surfaces as a plain dial
+		// error, not a wrapped context.Canceled. Add the ctx error so the
+		// service host recognizes a stop-initiated exit and does not report
+		// exit code 1 (which would restart a service the operator just stopped).
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return nil, nil, fmt.Errorf("nats connect: %w: %w", err, ctxErr)
+		}
 		return nil, nil, fmt.Errorf("nats connect: %w", err)
 	}
 	return nc, natsClosed, nil
@@ -676,18 +684,48 @@ func watchNATSClosure(ctx context.Context, natsClosed <-chan struct{}, stop func
 	}
 }
 
-// shutdownTrigger names what started shutdown for the log: the OS signal in a
-// console run, the SCM request for a Windows service, or ctx's error (e.g. a
-// NATS-driven shutdown). It is called once ctx is done; with no signal and no
-// service stop it reports ctx.Err(), which is non-nil only then.
+// registerShutdownSignals returns the channel shutdownTrigger drains and a func
+// that releases the registration. A console run registers for SIGINT/SIGTERM
+// so the shutdown log can name the signal. A Windows service must NOT register
+// at all: once any channel is registered the Go runtime maps
+// CTRL_LOGOFF_EVENT and CTRL_SHUTDOWN_EVENT to SIGTERM, and Windows delivers
+// those to services on every interactive logoff, so a routine logoff would
+// leave a stale SIGTERM buffered and the next SCM Stop would be logged as
+// "terminated" rather than "service stop". A service gets an unregistered
+// (never-ready) channel, so shutdownTrigger's select still cannot block.
+func registerShutdownSignals(service bool) (sig <-chan os.Signal, release func()) {
+	return registerShutdownSignalsWith(service, signal.Notify, signal.Stop)
+}
+
+// registerShutdownSignalsWith is [registerShutdownSignals] with the runtime's
+// signal.Notify and signal.Stop injected, so a test can observe whether a
+// registration happened without an SCM.
+func registerShutdownSignalsWith(
+	service bool,
+	notify func(chan<- os.Signal, ...os.Signal),
+	stop func(chan<- os.Signal),
+) (sig <-chan os.Signal, release func()) {
+	c := make(chan os.Signal, 1)
+	if service {
+		return c, func() {}
+	}
+	notify(c, os.Interrupt, syscall.SIGTERM)
+	return c, func() { stop(c) }
+}
+
+// shutdownTrigger names what started shutdown for the log: the SCM request for
+// a Windows service, the OS signal in a console run, or ctx's error (e.g. a
+// NATS-driven shutdown). It is called once ctx is done; with no service stop
+// and no signal it reports ctx.Err(), which is non-nil only then. The SCM
+// reason is checked first so it can never be shadowed by a signal.
 func shutdownTrigger(ctx context.Context, sig <-chan os.Signal) string {
+	if r := winsvc.StopReason(ctx); r != "" {
+		return r
+	}
 	select {
 	case s := <-sig:
 		return s.String()
 	default:
-	}
-	if r := winsvc.StopReason(ctx); r != "" {
-		return r
 	}
 	return ctx.Err().Error()
 }

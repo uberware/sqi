@@ -4,6 +4,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"net"
 	"strconv"
@@ -106,5 +107,40 @@ func TestConnectToBroker_AuthOnFarmWithNoCredentialNamesBothRemediations(t *test
 	}
 	if !strings.Contains(err.Error(), "sqi-server worker token issue") {
 		t.Errorf("error %q does not mention obtaining a join token", err.Error())
+	}
+}
+
+// natsclient.Connect's dial is not ctx-aware, so a service Stop that lands
+// during a failing dial (server down) surfaces as "no servers available",
+// which does not wrap context.Canceled. connectToBroker must add the ctx error
+// so the service host can tell a stop-initiated failure from a real one.
+func TestConnectToBroker_FailedDialAfterCancelWrapsCanceled(t *testing.T) {
+	var cfg workerconfig.WorkerConfig
+	cfg.NATS.URL = "nats://" + net.JoinHostPort("127.0.0.1", strconv.Itoa(freeTestPort(t))) // nothing listens
+	cfg.NATS.CredentialFile = t.TempDir() + "/worker.nk"
+	cfg.NATS.MaxReconnectAttempts = 0
+	cfg.NATS.ReconnectWait = 10 * time.Millisecond
+	logger := slog.New(slog.DiscardHandler)
+
+	// Control: the same dial with a live ctx fails without claiming a cancel.
+	_, _, err := connectToBroker(context.Background(), cfg, "worker-a", logger)
+	if err == nil {
+		t.Fatal("connectToBroker to a closed port: want error, got nil")
+	}
+	if errors.Is(err, context.Canceled) {
+		t.Fatalf("live-ctx failure wraps context.Canceled: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, _, err = connectToBroker(ctx, cfg, "worker-a", logger)
+	if err == nil {
+		t.Fatal("connectToBroker to a closed port with a canceled ctx: want error, got nil")
+	}
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("errors.Is(err, context.Canceled) = false for %v", err)
+	}
+	if !strings.Contains(err.Error(), "nats connect") || !strings.Contains(err.Error(), "natsclient: connect") {
+		t.Errorf("original dial error text lost: %v", err)
 	}
 }
