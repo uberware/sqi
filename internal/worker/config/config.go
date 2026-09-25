@@ -529,6 +529,21 @@ type LogConfig struct {
 	// Format is the log output format: json or text.
 	// Env: SQI_WORKER_LOG_FORMAT
 	Format string `yaml:"format"`
+
+	// File, when set, sends log output to this file instead of stderr,
+	// rotated by size. Empty keeps stderr. When sqi-worker runs as a Windows
+	// service with File empty, logs go to
+	// %ProgramData%\sqi\logs\<service-name>.log.
+	// Env: SQI_WORKER_LOG_FILE
+	File string `yaml:"file"`
+
+	// MaxSizeMB is the size in megabytes at which File is rotated. Must be > 0.
+	// Env: SQI_WORKER_LOG_MAX_SIZE_MB
+	MaxSizeMB int `yaml:"max_size_mb"`
+
+	// MaxBackups is how many rotated files are kept; 0 keeps none.
+	// Env: SQI_WORKER_LOG_MAX_BACKUPS
+	MaxBackups int `yaml:"max_backups"`
 }
 
 // MetricsConfig controls the local HTTP server for health probes and metrics.
@@ -614,8 +629,10 @@ func Default() WorkerConfig {
 			PullNackDelay:       5 * time.Second,
 		},
 		Log: LogConfig{
-			Level:  "info",
-			Format: "json",
+			Level:      "info",
+			Format:     "json",
+			MaxSizeMB:  100,
+			MaxBackups: 5,
 		},
 		Metrics: MetricsConfig{
 			Addr: "127.0.0.1:9091",
@@ -987,6 +1004,19 @@ func applyLogEnv(c *LogConfig) {
 	if v := os.Getenv("SQI_WORKER_LOG_FORMAT"); v != "" {
 		c.Format = v
 	}
+	if v := os.Getenv("SQI_WORKER_LOG_FILE"); v != "" {
+		c.File = v
+	}
+	if v := os.Getenv("SQI_WORKER_LOG_MAX_SIZE_MB"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			c.MaxSizeMB = n
+		}
+	}
+	if v := os.Getenv("SQI_WORKER_LOG_MAX_BACKUPS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			c.MaxBackups = n
+		}
+	}
 }
 
 func applyMetricsEnv(c *MetricsConfig) {
@@ -1135,6 +1165,7 @@ func Validate(cfg WorkerConfig) []ValidationError {
 		})
 	}
 
+	errs = append(errs, validateLogFile(cfg.Log)...)
 	errs = append(errs, validateLogStreamer(cfg.LogStreamer)...)
 
 	for i, d := range cfg.Capabilities.Detect {
@@ -1319,6 +1350,35 @@ func validateQueueIDs(queueIDs []string) []ValidationError {
 					"%q is not a valid NATS subject token: it must be non-empty and must not contain '.', whitespace, '*' or '>'",
 					q,
 				),
+			})
+		}
+	}
+	return errs
+}
+
+// validateLogFile checks log.file and its rotation limits. An explicitly
+// configured file's directory must already exist (the Windows service-mode
+// default is created by internal/winsvc instead).
+func validateLogFile(c LogConfig) []ValidationError {
+	var errs []ValidationError
+	if c.MaxSizeMB <= 0 {
+		errs = append(errs, ValidationError{
+			Field:   "log.max_size_mb",
+			Message: fmt.Sprintf("must be greater than 0, got %d", c.MaxSizeMB),
+		})
+	}
+	if c.MaxBackups < 0 {
+		errs = append(errs, ValidationError{
+			Field:   "log.max_backups",
+			Message: fmt.Sprintf("must not be negative, got %d", c.MaxBackups),
+		})
+	}
+	if c.File != "" {
+		dir := filepath.Dir(c.File)
+		if info, err := os.Stat(dir); err != nil || !info.IsDir() {
+			errs = append(errs, ValidationError{
+				Field:   "log.file",
+				Message: fmt.Sprintf("directory %q does not exist; create it or choose another path", dir),
 			})
 		}
 	}
