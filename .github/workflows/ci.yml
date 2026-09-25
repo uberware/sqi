@@ -1375,7 +1375,7 @@ jobs:
   # That variant no longer gates on an OS -- bash is not POSIX-only, git-bash
   # puts it on Windows too -- so it also runs on the Windows job, but only
   # opportunistically there (see that job's own note). The PowerShell-gated
-  # variant has its own job below (ffmpeg-presets-windows), because it can run
+  # variant runs in preset-harness-windows below, because it can run
   # nowhere but a Windows runner.
   ffmpeg-presets:
     name: ffmpeg reference presets (execution)
@@ -1426,7 +1426,6 @@ jobs:
               || { echo "::error::${name} did not run to a PASS"; exit 1; }
           done
 
-  # ── ffmpeg reference presets: the Windows-gated variant ──────────────────────
   # ── Preset harness, on Windows ───────────────────────────────────────────────
   # TestPresetTier1Argv, TestPresetTier3 and TestZZPresetTierRegistrySatisfied
   # are all UNTAGGED, so they run in the ordinary `make test` suite -- and that
@@ -1441,9 +1440,8 @@ jobs:
   # so this is the only job that can prove ffmpeg's real-execution cases run
   # here rather than skip.
   #
-  # Its own job rather than a step on isolation-integration-windows, for the
-  # same reason ffmpeg-presets-windows is its own job below: that one is a
-  # run-as-user suite needing an elevated runner and a SYSTEM re-launch, and a
+  # Its own job rather than a step on isolation-integration-windows: that one
+  # is a run-as-user suite needing an elevated runner and a SYSTEM re-launch, and a
   # preset regression reported under "Isolation integration (windows)" names the
   # wrong thing. This needs no elevation and no containers.
   #
@@ -1487,6 +1485,12 @@ jobs:
       # asserted nothing. The trailing space on the first three is an ANCHOR:
       # `go test -v` emits "--- PASS: <name> (0.01s)", so without it these are
       # prefix matches a future TestPresetTier3Xyz would satisfy on their behalf.
+      #
+      # TestFFmpegPreset_BashSegmentTranscodeJoins runs here but is deliberately
+      # NOT listed, and the registry's tier2 required_on omits windows for it: it
+      # skips when bash.exe is not resolvable by Windows PATH lookup from the
+      # worker process, which has not been observed on this runner image.
+      # Promote it (here and in the registry) once a run here shows a PASS.
       - name: Assert every tier actually ran
         shell: bash
         run: |
@@ -1501,69 +1505,6 @@ jobs:
           done
           [ "$missing" -eq 0 ] || exit 1
           echo "Confirmed tiers 1, 2 and 3 plus the registry check ran on windows."
-
-  # ffmpeg-segment-transcode-powershell gates on attr.worker.os.family = windows,
-  # so a Windows runner is the ONLY place its join script can execute at all —
-  # every other job in this workflow skips it by construction. That script has
-  # already shipped two bugs a real run would have caught immediately and review
-  # by reading did not: a BOM'd concat list the demuxer rejects, and an embedded
-  # file with no .ps1 extension, which `powershell -File` refuses outright.
-  #
-  # Its own job rather than a step on cross-platform-runtime, for two reasons:
-  # that job is a REST/WebSocket smoke test with a different purpose, and it is a
-  # macOS+Windows matrix — a preset-only PR would pay for a macOS leg that skips
-  # every case here.
-  #
-  # Runs on every push, and on pull requests only when the presets filter fires.
-  # isolation-integration-windows already runs a windows-latest job on every PR
-  # unconditionally, so a filtered one costs strictly less than the precedent.
-  ffmpeg-presets-windows:
-    name: ffmpeg reference presets (execution, windows)
-    runs-on: windows-latest
-    needs: [test, changes]
-    if: ${{ github.event_name != 'pull_request' || needs.changes.outputs.presets == 'true' }}
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v7
-
-      - name: Set up Go
-        uses: actions/setup-go@v7
-        with:
-          go-version-file: go.mod
-
-      - name: Install ffmpeg
-        run: choco install ffmpeg --yes --no-progress
-
-      # bash (Git Bash, present on every windows runner) so the pipeline and the
-      # grep assertion below are the same shell as the Linux job's.
-      - name: Execute the ffmpeg presets end to end
-        shell: bash
-        run: |
-          ffmpeg -version | head -1
-          go test -run TestFFmpegPreset -v -timeout 900s ./test/integration/ 2>&1 \
-            | tee /tmp/ffmpeg-presets-windows.log
-
-      # Only the PowerShell case is required by name. The rest are already
-      # required by name on the Linux job, and duplicating them would make this
-      # job fail for reasons that have nothing to do with Windows.
-      #
-      # TestFFmpegPreset_BashSegmentTranscodeJoins is the interesting omission.
-      # Its preset dropped its linux/macos gate (git-bash means bash is not
-      # POSIX-only), so it no longer skips here by construction -- it runs, and
-      # if its join fails on Windows the `go test` step above goes red, which is
-      # exactly the coverage that change needs. It is NOT required by name yet
-      # because it skips when `bash.exe` is not resolvable by Windows PATH
-      # lookup from the worker process, and that has not been observed on this
-      # runner image: requiring it now would turn the job red for an
-      # environmental reason rather than a real one. Promote it to the list once
-      # a run here is seen to PASS rather than SKIP.
-      - name: Assert the PowerShell join actually ran
-        shell: bash
-        run: |
-          grep -q -- '--- PASS: TestFFmpegPreset_PowerShellSegmentTranscodeJoins' \
-            /tmp/ffmpeg-presets-windows.log \
-            || { echo "::error::the PowerShell-joined preset did not run to a PASS"; exit 1; }
 
   # IMPORTANT: the assertion step below is not redundant. `make test-expr-oracle`
   # exits 0 when no interpreter has the package importable, and the test itself

@@ -233,7 +233,7 @@ presets:
     tier2:
       case: TestFFmpegPreset_BashSegmentTranscodeJoins
       # NOT required on windows, although it passes there on a developer host.
-      # ci.yml's ffmpeg-presets-windows job states the rule: this test is
+      # ci.yml's preset-harness-windows job states the rule: this test is
       # promoted only once THAT RUNNER IMAGE is seen to PASS rather than SKIP,
       # because it skips when bash.exe is not resolvable by Windows PATH lookup
       # from the worker process. A pass on a machine with Git Bash installed is

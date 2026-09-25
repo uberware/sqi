@@ -48,7 +48,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/uberware/sqi/internal/presettest"
 	"github.com/uberware/sqi/internal/product"
 )
 
@@ -76,14 +75,10 @@ const (
 // requireFFmpeg skips unless both binaries the presets and these assertions
 // depend on are present.
 //
-// When caseName is non-empty, the skip reason is recorded under that name
-// BEFORE the skip happens, naming ffmpeg explicitly and how to install it. A
-// developer with no ffmpeg on PATH running `make ci` (which passes no `-v`)
-// would otherwise never see the real reason: the five ffmpeg tests' own
-// t.Cleanup only sees a skip after the fact and records the generic "see the
-// test's own skip reason" catch-all, which names nothing. Pass "" from a
-// caller that has no RecordOutcome/Cleanup pair of its own (the arithmetic
-// and cost-ceiling cases below) so nothing is recorded on their behalf.
+// When caseName is non-empty the skip goes through skipOutcome, so the
+// registry's failure message names ffmpeg and how to install it rather than
+// trackOutcome's generic catch-all. Pass "" from a caller the registry does not
+// name (the arithmetic and cost-ceiling cases below).
 func requireFFmpeg(t *testing.T, caseName string) {
 	t.Helper()
 	for _, bin := range []string{"ffmpeg", "ffprobe"} {
@@ -94,7 +89,7 @@ func requireFFmpeg(t *testing.T, caseName string) {
 				bin, err,
 			)
 			if caseName != "" {
-				presettest.RecordOutcome(caseName, true, reason)
+				skipOutcome(t, caseName, reason)
 			}
 			t.Skip(reason)
 		}
@@ -377,19 +372,7 @@ func sliceFiles(t *testing.T, outputFile string) []string {
 // wrong input, would not.
 func TestFFmpegPreset_TranscodeProducesPlayableOutput(t *testing.T) {
 	const caseName = "TestFFmpegPreset_TranscodeProducesPlayableOutput"
-	presettest.RecordOutcome(caseName, false, "")
-	t.Cleanup(func() {
-		if t.Skipped() {
-			// RecordOutcome is last-write-wins, and a specific reason (e.g.
-			// requireFFmpeg's ffmpeg-missing message, or a bash/GOOS check's own
-			// message) may already have been recorded before the t.Skip that got
-			// us here — only fall back to the generic message when nothing more
-			// specific ran first, or this Cleanup would clobber it.
-			if presettest.LookupOutcome(caseName).Reason == "" {
-				presettest.RecordOutcome(caseName, true, "skipped: see the test's own skip reason")
-			}
-		}
-	})
+	trackOutcome(t, caseName)
 	requireFFmpeg(t, caseName)
 
 	ts := startServer(t)
@@ -466,19 +449,7 @@ func runSegmentPreset(t *testing.T, caseName, name string, wantSlicesKept bool) 
 // ffmpeg command lines, and it is the one variant that runs on every platform.
 func TestFFmpegPreset_PortableSegmentTranscodeJoins(t *testing.T) {
 	const caseName = "TestFFmpegPreset_PortableSegmentTranscodeJoins"
-	presettest.RecordOutcome(caseName, false, "")
-	t.Cleanup(func() {
-		if t.Skipped() {
-			// RecordOutcome is last-write-wins, and a specific reason (e.g.
-			// requireFFmpeg's ffmpeg-missing message, or a bash/GOOS check's own
-			// message) may already have been recorded before the t.Skip that got
-			// us here — only fall back to the generic message when nothing more
-			// specific ran first, or this Cleanup would clobber it.
-			if presettest.LookupOutcome(caseName).Reason == "" {
-				presettest.RecordOutcome(caseName, true, "skipped: see the test's own skip reason")
-			}
-		}
-	})
+	trackOutcome(t, caseName)
 	runSegmentPreset(t, caseName, "ffmpeg-segment-transcode-expr", true)
 }
 
@@ -501,27 +472,14 @@ func TestFFmpegPreset_PortableSegmentTranscodeJoins(t *testing.T) {
 // than exec'ing the shebang script directly, since direct shebang execution is
 // a POSIX kernel feature (binfmt_script) Windows has no equivalent of. On a
 // Windows host this case is the only automated coverage of that invocation and
-// of the script's backslash folding; it has NOT been run on a real Windows
-// host, so treat a green run here as covering the POSIX half only.
+// of the script's backslash folding. It passes on a Windows host with Git Bash,
+// but is not yet required there: see the tier2 note in
+// presets/validation-tiers.yaml.
 func TestFFmpegPreset_BashSegmentTranscodeJoins(t *testing.T) {
 	const caseName = "TestFFmpegPreset_BashSegmentTranscodeJoins"
-	presettest.RecordOutcome(caseName, false, "")
-	t.Cleanup(func() {
-		if t.Skipped() {
-			// RecordOutcome is last-write-wins, and a specific reason (e.g.
-			// requireFFmpeg's ffmpeg-missing message, or a bash/GOOS check's own
-			// message) may already have been recorded before the t.Skip that got
-			// us here — only fall back to the generic message when nothing more
-			// specific ran first, or this Cleanup would clobber it.
-			if presettest.LookupOutcome(caseName).Reason == "" {
-				presettest.RecordOutcome(caseName, true, "skipped: see the test's own skip reason")
-			}
-		}
-	})
+	trackOutcome(t, caseName)
 	if _, err := exec.LookPath("bash"); err != nil {
-		presettest.RecordOutcome(caseName, true,
-			fmt.Sprintf("ffmpeg-segment-transcode-bash requires bash on PATH: %v", err))
-		t.Skipf("ffmpeg-segment-transcode-bash requires bash on PATH: %v", err)
+		skipOutcome(t, caseName, fmt.Sprintf("ffmpeg-segment-transcode-bash requires bash on PATH: %v", err))
 	}
 	runSegmentPreset(t, caseName, "ffmpeg-segment-transcode-bash", false)
 }
@@ -532,23 +490,9 @@ func TestFFmpegPreset_BashSegmentTranscodeJoins(t *testing.T) {
 // shipped two runtime-only bugs — can be executed at all.
 func TestFFmpegPreset_PowerShellSegmentTranscodeJoins(t *testing.T) {
 	const caseName = "TestFFmpegPreset_PowerShellSegmentTranscodeJoins"
-	presettest.RecordOutcome(caseName, false, "")
-	t.Cleanup(func() {
-		if t.Skipped() {
-			// RecordOutcome is last-write-wins, and a specific reason (e.g.
-			// requireFFmpeg's ffmpeg-missing message, or a bash/GOOS check's own
-			// message) may already have been recorded before the t.Skip that got
-			// us here — only fall back to the generic message when nothing more
-			// specific ran first, or this Cleanup would clobber it.
-			if presettest.LookupOutcome(caseName).Reason == "" {
-				presettest.RecordOutcome(caseName, true, "skipped: see the test's own skip reason")
-			}
-		}
-	})
+	trackOutcome(t, caseName)
 	if runtime.GOOS != "windows" {
-		presettest.RecordOutcome(caseName, true,
-			"ffmpeg-segment-transcode-powershell requires a windows worker; GOOS="+runtime.GOOS)
-		t.Skipf("ffmpeg-segment-transcode-powershell requires a windows worker; GOOS=%s", runtime.GOOS)
+		skipOutcome(t, caseName, "ffmpeg-segment-transcode-powershell requires a windows worker; GOOS="+runtime.GOOS)
 	}
 	runSegmentPreset(t, caseName, "ffmpeg-segment-transcode-powershell", false)
 }
@@ -743,19 +687,7 @@ func TestFFmpegPreset_PortableRejectsBeyondItsCostCeiling(t *testing.T) {
 // separator on would write frame_.mp4 and fail here.
 func TestFFmpegPreset_SequenceEncodeNamesOutputAfterPattern(t *testing.T) {
 	const caseName = "TestFFmpegPreset_SequenceEncodeNamesOutputAfterPattern"
-	presettest.RecordOutcome(caseName, false, "")
-	t.Cleanup(func() {
-		if t.Skipped() {
-			// RecordOutcome is last-write-wins, and a specific reason (e.g.
-			// requireFFmpeg's ffmpeg-missing message, or a bash/GOOS check's own
-			// message) may already have been recorded before the t.Skip that got
-			// us here — only fall back to the generic message when nothing more
-			// specific ran first, or this Cleanup would clobber it.
-			if presettest.LookupOutcome(caseName).Reason == "" {
-				presettest.RecordOutcome(caseName, true, "skipped: see the test's own skip reason")
-			}
-		}
-	})
+	trackOutcome(t, caseName)
 	requireFFmpeg(t, caseName)
 
 	ts := startServer(t)

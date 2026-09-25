@@ -13,6 +13,7 @@ package integration
 // asserting test names by hand; here it is enforced in Go instead.
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -65,15 +66,9 @@ func TestZZPresetTierRegistrySatisfied(t *testing.T) {
 					continue
 				}
 				outcome := presettest.LookupOutcome(tier.Case)
-				if !outcome.Ran {
-					t.Errorf("%s claims case %q, which never reported -- run the whole package "+
-						"(go test ./test/integration/), or the claim is backed by nothing", label, tier.Case)
-					continue
-				}
-				anyRecorded = true
-				if outcome.Skipped && slices.Contains(tier.RequiredOn, runtime.GOOS) {
-					t.Errorf("%s case %q SKIPPED on %s, which required_on lists: %s\n"+
-						"a skipped test verifies nothing", label, tier.Case, runtime.GOOS, outcome.Reason)
+				anyRecorded = anyRecorded || outcome.Ran
+				if msg := execTierViolation(label, tier, outcome, runtime.GOOS); msg != "" {
+					t.Error(msg)
 				}
 			}
 		})
@@ -85,46 +80,51 @@ func TestZZPresetTierRegistrySatisfied(t *testing.T) {
 	}
 }
 
-// TestRegistry_Tier2SkipOnRequiredPlatformIsAFailure mirrors the Tier-3
-// assertion for Tier 2.
+// execTierViolation is rules 3 and 4 for one execution-tier claim: the case
+// must have reported, and must not have skipped on a platform required_on
+// lists. It returns "" when the claim is earned.
+func execTierViolation(label string, tier *presettest.TierExec, outcome presettest.Outcome, goos string) string {
+	if !outcome.Ran {
+		return fmt.Sprintf("%s claims case %q, which never reported -- run the whole package "+
+			"(make test-preset-harness), or the claim is backed by nothing", label, tier.Case)
+	}
+	if outcome.Skipped && slices.Contains(tier.RequiredOn, goos) {
+		return fmt.Sprintf("%s case %q SKIPPED on %s, which required_on lists: %s\n"+
+			"a skipped test verifies nothing", label, tier.Case, goos, outcome.Reason)
+	}
+	return ""
+}
+
+// TestExecTierViolation pins rules 3 and 4 directly, for both tiers.
 //
 // Tier 2 is the tier most able to pass while proving nothing: its tests skip
 // when the vendor application is absent, and ffmpeg is absent by default on
 // most machines. The registry must treat that skip exactly as it treats a
 // Tier-3 one.
-func TestRegistry_Tier2SkipOnRequiredPlatformIsAFailure(t *testing.T) {
-	const caseName = "TestRegistry_Tier2/synthetic/case"
-	reg, err := presettest.ParseRegistry([]byte(`presets:
-  - name: ffmpeg-transcode
-    source: presets/sqi
-    tier: 2
-    tier1:
-      cases: [default]
-      caveat: synthetic fixture for the loader's own test
-    tier2:
-      case: ` + caseName + `
-      required_on: [` + runtime.GOOS + `]
-`))
-	if err != nil {
-		t.Fatalf("ParseRegistry: %v", err)
+func TestExecTierViolation(t *testing.T) {
+	tier := &presettest.TierExec{Case: "synthetic", RequiredOn: []string{"linux"}}
+	skipped := presettest.Outcome{Ran: true, Skipped: true, Reason: "ffmpeg not on PATH"}
+	tests := []struct {
+		name          string
+		outcome       presettest.Outcome
+		goos          string
+		wantViolation bool
+	}{
+		{"never reported", presettest.Outcome{}, "linux", true},
+		{"ran", presettest.Outcome{Ran: true}, "linux", false},
+		{"skipped on a required platform", skipped, "linux", true},
+		{"skipped on an optional platform", skipped, "windows", false},
 	}
-
-	entry, ok := reg.Entry("ffmpeg-transcode")
-	if !ok {
-		t.Fatal("synthetic entry missing")
+	for _, tt := range tests {
+		for _, label := range []string{"tier2", "tier3"} {
+			t.Run(label+"/"+tt.name, func(t *testing.T) {
+				got := execTierViolation(label, tier, tt.outcome, tt.goos)
+				if (got != "") != tt.wantViolation {
+					t.Errorf("execTierViolation = %q, want violation=%v", got, tt.wantViolation)
+				}
+			})
+		}
 	}
-	if entry.Tier2 == nil {
-		t.Fatal("tier2 block did not parse -- the registry cannot express Tier 2")
-	}
-
-	presettest.RecordOutcome(caseName, true, "synthetic: ffmpeg not installed")
-	outcome := presettest.LookupOutcome(caseName)
-	if !outcome.Skipped || !slices.Contains(entry.Tier2.RequiredOn, runtime.GOOS) {
-		t.Fatalf("test setup wrong: skipped=%v requiredOn=%v goos=%s",
-			outcome.Skipped, entry.Tier2.RequiredOn, runtime.GOOS)
-	}
-	// This is the condition TestZZPresetTierRegistrySatisfied applies. Asserting
-	// it here keeps the Tier-2 half honest even before any real entry uses it.
 }
 
 // assertRegistryCoversEverySource is rule 1, in both directions: every shipped

@@ -209,16 +209,15 @@ func TestPresetTier3(t *testing.T) {
 	}
 }
 
-// recordTier3Outcome marks caseName as running, and re-marks it as SKIPPED if
-// anything below this call skips the test.
+// trackOutcome marks caseName as running in the registry's outcome sink, and
+// re-marks it as SKIPPED if anything below this call skips the test. Every
+// test the registry names (tier 2 and tier 3) calls it first.
 //
-// The bare RecordOutcome that used to stand here recorded {Ran: true,
-// Skipped: false} and left it there, so a t.Skip from any helper -- the worker
-// start, the stub build, the toolchain check -- read back as a successful run.
-// That is the registry's own failure mode ("a skipped test verifies nothing")
-// reproduced one level down, and it is why this closes the class rather than
-// the one instance.
-func recordTier3Outcome(t *testing.T, caseName string) {
+// A bare RecordOutcome recorded {Ran: true, Skipped: false} and left it there,
+// so a t.Skip from any helper -- the worker start, the stub build, the
+// toolchain check -- read back as a successful run. That is the registry's own
+// failure mode ("a skipped test verifies nothing") reproduced one level down.
+func trackOutcome(t *testing.T, caseName string) {
 	t.Helper()
 	presettest.RecordOutcome(caseName, false, "")
 	t.Cleanup(func() {
@@ -226,19 +225,27 @@ func recordTier3Outcome(t *testing.T, caseName string) {
 			return
 		}
 		if prior := presettest.LookupOutcome(caseName); prior.Skipped && prior.Reason != "" {
-			return // an explicit skip already recorded a better reason
+			return // skipOutcome already recorded a better reason
 		}
-		presettest.RecordOutcome(caseName, true, "skipped by a helper below runTier3Case")
+		presettest.RecordOutcome(caseName, true, "skipped by a helper; see the test's own skip reason")
 	})
+}
+
+// skipOutcome records reason against caseName, then skips. Recording first
+// matters: `make ci` passes no -v, so the registry's failure message is the
+// only place a developer sees why a required case did not run.
+func skipOutcome(t *testing.T, caseName, reason string) {
+	t.Helper()
+	presettest.RecordOutcome(caseName, true, reason)
+	t.Skip(reason)
 }
 
 func runTier3Case(t *testing.T, entry presettest.Entry, c presettest.Case, caseName string) {
 	t.Helper()
-	recordTier3Outcome(t, caseName)
+	trackOutcome(t, caseName)
 	if want := unsatisfiableOSFamily(t, entry); want != "" {
-		reason := fmt.Sprintf("preset requires attr.worker.os.family %q; this host reports %q", want, hostOSFamily())
-		presettest.RecordOutcome(caseName, true, reason)
-		t.Skip(reason)
+		skipOutcome(t, caseName,
+			fmt.Sprintf("preset requires attr.worker.os.family %q; this host reports %q", want, hostOSFamily()))
 	}
 
 	snap := capturePresetCase(t, entry, c)
@@ -257,7 +264,7 @@ func runTier3Case(t *testing.T, entry presettest.Entry, c presettest.Case, caseN
 	ts := startServer(t)
 	farmID, queueID := seedFarmAndQueue(t, ts)
 	env := newTier3Env(t, names, workerTagEnv(t, entry)...)
-	startRealWorkerWithOptionsAnyOS(t, ts, farmID, queueID, nil, env.env)
+	startRealWorkerAnyOS(t, ts, farmID, queueID, env.env...)
 
 	jobID := submitPresetJob(t, ts, farmID, queueID, presetCaseTemplate(t, entry, c), c.Params)
 	// Job statuses are "completed"/"failed"/"canceled"/"paused" (store.JobStatus)
@@ -283,7 +290,7 @@ func runTier3Case(t *testing.T, entry presettest.Entry, c presettest.Case, caseN
 	}
 }
 
-// TestRecordTier3Outcome_ReportsAHelperSkip pins the thing the outcome sink
+// TestTrackOutcome_ReportsAHelperSkip pins the thing the outcome sink
 // could not see: a case that records "running" and is then skipped by a helper
 // BELOW that record. Every execution-tier helper in this file can skip on its
 // own -- startRealWorkerWithOptions on an unsupported platform, newTier3Env
@@ -293,11 +300,11 @@ func runTier3Case(t *testing.T, entry presettest.Entry, c presettest.Case, caseN
 //
 // The subtest's Cleanup functions run before t.Run returns, so the parent can
 // assert on what the sink holds afterwards.
-func TestRecordTier3Outcome_ReportsAHelperSkip(t *testing.T) {
-	const caseName = "TestRecordTier3Outcome/synthetic/helper-skip"
+func TestTrackOutcome_ReportsAHelperSkip(t *testing.T) {
+	const caseName = "TestTrackOutcome/synthetic/helper-skip"
 
 	t.Run("skipped-by-a-helper", func(t *testing.T) {
-		recordTier3Outcome(t, caseName)
+		trackOutcome(t, caseName)
 		// Stands in for startRealWorkerWithOptions/newTier3Env/buildWorkerBinary,
 		// each of which calls t.Skip from inside a helper.
 		t.Skip("simulating a helper that skips below the first RecordOutcome")
@@ -580,7 +587,7 @@ func TestPresetTier3_StubFailureSurfacesAsFailedTask(t *testing.T) {
 	ts := startServer(t)
 	farmID, queueID := seedFarmAndQueue(t, ts)
 	env := newTier3Env(t, []string{"failing-renderer"}, "SQI_STUB_EXIT=3")
-	startRealWorkerWithOptionsAnyOS(t, ts, farmID, queueID, nil, env.env)
+	startRealWorkerAnyOS(t, ts, farmID, queueID, env.env...)
 
 	jobID := submitJobCustomYAML(t, ts, farmID, queueID, stubJobYAML("failing-renderer"))
 	if status := pollJobStatus(t, ts, jobID, []string{"completed", "failed", "canceled"}, presetJobTimeout); status != "failed" {
@@ -598,7 +605,7 @@ func TestPresetTier3_StubHangIsKilledByTimeout(t *testing.T) {
 	ts := startServer(t)
 	farmID, queueID := seedFarmAndQueue(t, ts)
 	env := newTier3Env(t, []string{"hanging-renderer"}, "SQI_STUB_SLEEP=120s")
-	startRealWorkerWithOptionsAnyOS(t, ts, farmID, queueID, nil, env.env)
+	startRealWorkerAnyOS(t, ts, farmID, queueID, env.env...)
 
 	// timeout: 2 in the template, so the worker kills the process after ~2s.
 	jobID := submitJobCustomYAML(t, ts, farmID, queueID, stubJobYAMLWithTimeout("hanging-renderer", 2))
@@ -633,7 +640,7 @@ func TestScriptPowerShell_NonZeroExitFailsTheTask(t *testing.T) {
 	ts := startServer(t)
 	farmID, queueID := seedFarmAndQueue(t, ts)
 	// No stub: a real powershell.exe must run, or the wrapper is not exercised.
-	startRealWorkerWithOptionsAnyOS(t, ts, farmID, queueID, nil, nil)
+	startRealWorkerAnyOS(t, ts, farmID, queueID)
 
 	// A single failing statement is not enough to demonstrate this: verified
 	// directly against powershell.exe, a bare `-Command "cmd /c exit 3"`
