@@ -147,6 +147,7 @@ curl -s http://localhost:8080/api/v1/workers | jq '.[].name'
 | `sqi-worker config print` | Print the effective merged configuration |
 | `sqi-worker capabilities` | Print every tag this worker would advertise, with its source |
 | `sqi-worker isolation set-credential <user>` | Store a run-as-user account's password (Windows; reads the secret from stdin) |
+| `sqi-worker service install\|uninstall\|start\|stop\|status` | Windows only: install, uninstall, start, stop and inspect the Windows service (elevated shell) — see [`docs/worker-deployment.md`](../../docs/worker-deployment.md#windows--windows-service) |
 | `sqi-worker version` | Print version, commit, build date, and Go version |
 
 Three flags are available on **every** subcommand: `--config`/`-c` (config file

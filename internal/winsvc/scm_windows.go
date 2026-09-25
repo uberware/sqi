@@ -194,6 +194,29 @@ func Stop(name string, wait time.Duration) (StatusInfo, error) {
 	return statusInfo(s, name, st), err
 }
 
+// PreShutdownTimeout reads the PreShutdown timeout the service is registered
+// with — for a service `service install` created, its drain timeout plus
+// ShutdownMargin.
+func PreShutdownTimeout(name string) (time.Duration, error) {
+	m, err := connect()
+	if err != nil {
+		return 0, err
+	}
+	defer m.Disconnect() //nolint:errcheck // handle cleanup
+	s, err := open(m, name)
+	if err != nil {
+		return 0, err
+	}
+	defer s.Close()
+	var info servicePreshutdownInfo
+	var needed uint32
+	if err := windows.QueryServiceConfig2(s.Handle, windows.SERVICE_CONFIG_PRESHUTDOWN_INFO,
+		(*byte)(unsafe.Pointer(&info)), uint32(unsafe.Sizeof(info)), &needed); err != nil {
+		return 0, fmt.Errorf("query preshutdown timeout of %s: %w", name, err)
+	}
+	return time.Duration(info.timeoutMillis) * time.Millisecond, nil
+}
+
 // Status reports the service's state and registration.
 func Status(name string) (StatusInfo, error) {
 	m, err := connect()

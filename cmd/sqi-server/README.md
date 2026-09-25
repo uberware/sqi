@@ -64,6 +64,11 @@ SQI_LOG_FORMAT=text ./bin/sqi-server serve --http-addr 127.0.0.1:8090
 ./bin/sqi-server version
 ```
 
+On Windows, `sqi-server service install|uninstall|start|stop|status` installs,
+uninstalls, starts, stops and inspects the Windows service (from an elevated
+shell) — see [`docs/operations.md`](../../docs/operations.md#windows-service).
+The `service` command exists only in Windows builds.
+
 The first time the server starts it creates the SQLite database and runs
 all pending migrations automatically. No manual schema setup is required.
 
