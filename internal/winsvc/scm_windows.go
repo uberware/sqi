@@ -81,7 +81,7 @@ func Install(cfg ServiceConfig) (err error) {
 		Password:         cfg.Password,
 	}, cfg.Args...)
 	if err != nil {
-		return fmt.Errorf("create service %s: %w", cfg.Name, err)
+		return createError(cfg.Name, err)
 	}
 	defer s.Close()
 	defer func() {
@@ -90,6 +90,17 @@ func Install(cfg ServiceConfig) (err error) {
 		}
 	}()
 	return configure(s, cfg)
+}
+
+// createError reports mgr.CreateService's error. ERROR_SERVICE_EXISTS (a
+// race with another install, or an existence probe that failed for another
+// reason) is ErrServiceExists, so callers can still point at `service
+// uninstall`.
+func createError(name string, err error) error {
+	if errors.Is(err, windows.ERROR_SERVICE_EXISTS) {
+		return fmt.Errorf("%w: %s", ErrServiceExists, name)
+	}
+	return fmt.Errorf("create service %s: %w", name, err)
 }
 
 func configure(s *mgr.Service, cfg ServiceConfig) error {
@@ -128,7 +139,7 @@ func Uninstall(name string, wait time.Duration) error {
 	}
 	defer s.Close()
 	if st, qerr := s.Query(); qerr == nil && st.State != svc.Stopped {
-		if _, err := stopAndWait(s, wait); err != nil {
+		if _, err := stopAndWait(s, name, wait); err != nil {
 			return err
 		}
 	}
@@ -154,7 +165,8 @@ func Start(name string, wait time.Duration) (StatusInfo, error) {
 	if err := s.Start(); err != nil {
 		return StatusInfo{}, fmt.Errorf("start service %s: %w", name, err)
 	}
-	st, err := waitFor(s, wait, func(st svc.Status) bool { return st.State == svc.Running || st.State == svc.Stopped })
+	st, err := waitFor(s, name, wait, time.Now().Add(wait),
+		func(st svc.Status) bool { return st.State == svc.Running || st.State == svc.Stopped })
 	info := statusInfo(s, name, st)
 	if err != nil {
 		return info, err
@@ -178,7 +190,7 @@ func Stop(name string, wait time.Duration) (StatusInfo, error) {
 		return StatusInfo{}, err
 	}
 	defer s.Close()
-	st, err := stopAndWait(s, wait)
+	st, err := stopAndWait(s, name, wait)
 	return statusInfo(s, name, st), err
 }
 
@@ -201,25 +213,68 @@ func Status(name string) (StatusInfo, error) {
 	return statusInfo(s, name, st), nil
 }
 
-func stopAndWait(s *mgr.Service, wait time.Duration) (svc.Status, error) {
-	if _, err := s.Control(svc.Stop); err != nil && !errors.Is(err, windows.ERROR_SERVICE_NOT_ACTIVE) {
-		return svc.Status{}, fmt.Errorf("stop service %s: %w", s.Name, err)
-	}
-	return waitFor(s, wait, func(st svc.Status) bool { return st.State == svc.Stopped })
+// controller is the part of *mgr.Service that stopping and waiting use, so
+// they can be tested without an SCM.
+type controller interface {
+	Control(c svc.Cmd) (svc.Status, error)
+	Query() (svc.Status, error)
 }
 
-func waitFor(s *mgr.Service, wait time.Duration, done func(svc.Status) bool) (svc.Status, error) {
+// stopAndWait stops s and waits for Stopped, all within one wait budget
+// (overrun: at most one poll interval plus the SCM calls in flight). A
+// service already stopping is just waited for; one still starting is waited
+// out of StartPending first, then stopped once if it came up.
+func stopAndWait(s controller, name string, wait time.Duration) (svc.Status, error) {
 	deadline := time.Now().Add(wait)
+	starting, err := requestStop(s, name)
+	if err != nil {
+		return svc.Status{}, err
+	}
+	if starting {
+		st, err := waitFor(s, name, wait, deadline, func(st svc.Status) bool { return st.State != svc.StartPending })
+		if err != nil {
+			return st, err
+		}
+		if st.State != svc.Stopped {
+			if _, err := requestStop(s, name); err != nil {
+				return st, err
+			}
+		}
+	}
+	return waitFor(s, name, wait, deadline, func(st svc.Status) bool { return st.State == svc.Stopped })
+}
+
+// requestStop sends Stop. The SCM refuses it with CANNOT_ACCEPT_CTRL (and the
+// current status) while a service is start- or stop-pending: stop-pending
+// needs nothing more, and starting reports start-pending, which must be
+// waited out before Stop can be sent.
+func requestStop(s controller, name string) (starting bool, err error) {
+	st, err := s.Control(svc.Stop)
+	switch {
+	case err == nil || errors.Is(err, windows.ERROR_SERVICE_NOT_ACTIVE):
+		return false, nil
+	case errors.Is(err, windows.ERROR_SERVICE_CANNOT_ACCEPT_CTRL) && st.State == svc.StopPending:
+		return false, nil
+	case errors.Is(err, windows.ERROR_SERVICE_CANNOT_ACCEPT_CTRL) && st.State == svc.StartPending:
+		return true, nil
+	default:
+		return false, fmt.Errorf("stop service %s: %w", name, err)
+	}
+}
+
+// waitFor polls s until done, giving up once deadline has passed; wait is
+// only reported.
+func waitFor(s controller, name string, wait time.Duration, deadline time.Time, done func(svc.Status) bool) (svc.Status, error) {
 	for {
 		st, err := s.Query()
 		if err != nil {
-			return svc.Status{}, fmt.Errorf("query service %s: %w", s.Name, err)
+			return svc.Status{}, fmt.Errorf("query service %s: %w", name, err)
 		}
 		if done(st) {
 			return st, nil
 		}
 		if time.Now().After(deadline) {
-			return st, fmt.Errorf("service %s still %s after %v", s.Name, stateString(st.State), wait)
+			return st, fmt.Errorf("service %s still %s after %v", name, stateString(st.State), wait)
 		}
 		time.Sleep(pollInterval)
 	}

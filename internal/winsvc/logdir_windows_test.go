@@ -48,6 +48,25 @@ func TestCreateLogDir_ExistingDirIsUntouched(t *testing.T) {
 	}
 }
 
+// TestCreateLogDir_ExistingJunctionIsLeftAlone pins that the runtime path's
+// "already exists" branch never reaches an ACL write, even through a junction.
+func TestCreateLogDir_ExistingJunctionIsLeftAlone(t *testing.T) {
+	root := t.TempDir()
+	target := filepath.Join(root, "target")
+	if err := os.Mkdir(target, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(root, "logs")
+	mklinkJunction(t, link, target)
+	before := daclBytes(t, target)
+	if err := createLogDir(link); err != nil {
+		t.Fatal(err)
+	}
+	if after := daclBytes(t, target); after != before {
+		t.Errorf("createLogDir changed the junction target's DACL:\nbefore %s\nafter  %s", before, after)
+	}
+}
+
 // TestRuntimeLogDirsAreProtected pins that both runtime sites that create the
 // default log directory go through createLogDir.
 func TestRuntimeLogDirsAreProtected(t *testing.T) {

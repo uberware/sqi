@@ -6,9 +6,13 @@ package winsvc
 
 import (
 	"errors"
+	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
+	"time"
 	"unsafe"
 
 	"golang.org/x/sys/windows"
@@ -65,6 +69,121 @@ func TestSplitAccount(t *testing.T) {
 	}
 }
 
+// fakeService is a scripted controller. Control(Stop) behaves like the SCM's
+// ControlService: NOT_ACTIVE when stopped, CANNOT_ACCEPT_CTRL (with the
+// status) while start- or stop-pending, else accepted — the service then
+// moves to StopPending and through afterStop. Each Query reports the current
+// state, then advances along next.
+type fakeService struct {
+	state     svc.State
+	next      []svc.State
+	afterStop []svc.State
+	ctlErr    error // returned by every Control when set
+	stops     int
+}
+
+func (f *fakeService) Control(c svc.Cmd) (svc.Status, error) {
+	if c != svc.Stop {
+		return svc.Status{}, fmt.Errorf("unexpected control %d", c)
+	}
+	f.stops++
+	st := svc.Status{State: f.state}
+	switch {
+	case f.ctlErr != nil:
+		return svc.Status{}, f.ctlErr
+	case f.state == svc.Stopped:
+		return st, windows.ERROR_SERVICE_NOT_ACTIVE
+	case f.state == svc.StartPending || f.state == svc.StopPending:
+		return st, windows.ERROR_SERVICE_CANNOT_ACCEPT_CTRL
+	}
+	f.state, f.next = svc.StopPending, f.afterStop
+	return svc.Status{State: svc.StopPending}, nil
+}
+
+func (f *fakeService) Query() (svc.Status, error) {
+	st := svc.Status{State: f.state}
+	if len(f.next) > 0 {
+		f.state, f.next = f.next[0], f.next[1:]
+	}
+	return st, nil
+}
+
+func TestStopAndWait(t *testing.T) {
+	const wait = 5 * time.Second
+	for _, tc := range []struct {
+		name      string
+		svc       *fakeService
+		wantStops int
+	}{
+		{"already stopped", &fakeService{state: svc.Stopped}, 1},
+		{"running", &fakeService{state: svc.Running, afterStop: []svc.State{svc.Stopped}}, 1},
+		{"stop pending on arrival", &fakeService{state: svc.StopPending, next: []svc.State{svc.StopPending, svc.Stopped}}, 1},
+		{
+			"start pending then running",
+			&fakeService{
+				state: svc.StartPending, next: []svc.State{svc.StartPending, svc.Running},
+				afterStop: []svc.State{svc.Stopped},
+			},
+			2,
+		},
+		{"start pending then stopped on its own", &fakeService{state: svc.StartPending, next: []svc.State{svc.Stopped}}, 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			st, err := stopAndWait(tc.svc, "sqi-test", wait)
+			if err != nil {
+				t.Fatalf("stopAndWait = %v", err)
+			}
+			if st.State != svc.Stopped {
+				t.Errorf("final state = %s, want stopped", stateString(st.State))
+			}
+			if tc.svc.stops != tc.wantStops {
+				t.Errorf("sent %d stop controls, want %d", tc.svc.stops, tc.wantStops)
+			}
+		})
+	}
+}
+
+func TestStopAndWait_NeverStopsIsBounded(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		svc  *fakeService
+		want string
+	}{
+		{"stuck stopping", &fakeService{state: svc.Running}, "still stop pending"},
+		{"stuck starting", &fakeService{state: svc.StartPending}, "still start pending"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			const wait = 300 * time.Millisecond
+			start := time.Now()
+			_, err := stopAndWait(tc.svc, "sqi-test", wait)
+			elapsed := time.Since(start)
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("stopAndWait = %v, want an error containing %q", err, tc.want)
+			}
+			if limit := wait + pollInterval + 100*time.Millisecond; elapsed > limit {
+				t.Errorf("took %v, want at most %v", elapsed, limit)
+			}
+		})
+	}
+}
+
+func TestStopAndWait_OtherControlErrorFails(t *testing.T) {
+	f := &fakeService{state: svc.Running, ctlErr: windows.ERROR_ACCESS_DENIED}
+	if _, err := stopAndWait(f, "sqi-test", time.Second); !errors.Is(err, windows.ERROR_ACCESS_DENIED) {
+		t.Fatalf("stopAndWait = %v, want ERROR_ACCESS_DENIED", err)
+	}
+}
+
+func TestCreateError_MapsServiceExists(t *testing.T) {
+	if err := createError("sqi-worker", windows.ERROR_SERVICE_EXISTS); !errors.Is(err, ErrServiceExists) {
+		t.Errorf("createError(ERROR_SERVICE_EXISTS) = %v, want ErrServiceExists", err)
+	}
+	err := createError("sqi-worker", windows.ERROR_ACCESS_DENIED)
+	if errors.Is(err, ErrServiceExists) || !errors.Is(err, windows.ERROR_ACCESS_DENIED) {
+		t.Errorf("createError(ERROR_ACCESS_DENIED) = %v, want it wrapped and not ErrServiceExists", err)
+	}
+}
+
 func TestRequireElevated_MatchesProcessToken(t *testing.T) {
 	err := RequireElevated()
 	if windows.GetCurrentProcessToken().IsElevated() {
@@ -79,17 +198,25 @@ func TestRequireElevated_MatchesProcessToken(t *testing.T) {
 }
 
 // TestEnsureLogDir_GrantsAccountOnExistingProtectedDir pins plan
-// clarification 4: a LocalSystem install creates the protected directory, and
-// a later --user install must add its account to it without widening it.
+// clarification 4: an earlier install creates the protected directory, and a
+// later --user install must add its account to it without widening it.
+//
+// The earlier install runs as the test user, who stands in for the elevated
+// Administrator that really creates the directory: the grant reads the
+// directory's attributes through its handle, which an unelevated owner with no
+// ACE of its own cannot do (the Administrators ACE is deny-only here). The
+// later install's account is NetworkService, named via its SID so the test
+// also passes on a localized Windows.
 func TestEnsureLogDir_GrantsAccountOnExistingProtectedDir(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "logs")
-	if err := EnsureLogDir(dir, ""); err != nil { // the earlier LocalSystem install
+	me, earlier := currentAccount(t)
+	if err := EnsureLogDir(dir, earlier); err != nil { // the earlier install
 		t.Fatal(err)
 	}
 	if _, protected := daclOf(t, dir); !protected {
 		t.Fatal("a new log directory's DACL is not protected")
 	}
-	me, account := currentAccount(t)
+	later, account := wellKnownAccount(t, windows.WinNetworkServiceSid)
 	if err := EnsureLogDir(dir, account); err != nil {
 		t.Fatal(err)
 	}
@@ -99,18 +226,20 @@ func TestEnsureLogDir_GrantsAccountOnExistingProtectedDir(t *testing.T) {
 		t.Error("the grant unprotected the DACL; the directory would inherit ProgramData's Users access")
 	}
 	entries := aclEntries(t, acl)
-	mine := allowedFor(entries, me)
-	if len(mine) != 1 {
-		t.Fatalf("want exactly one ACE for %s, got %d: %+v", account, len(mine), entries)
+	granted := allowedFor(entries, later)
+	if len(granted) != 1 {
+		t.Fatalf("want exactly one ACE for %s, got %d: %+v", account, len(granted), entries)
 	}
-	if mine[0].mask != fileModifyAccess {
-		t.Errorf("account ACE mask = %#x, want Modify %#x (not full control)", mine[0].mask, fileModifyAccess)
+	if granted[0].mask != fileModifyAccess {
+		t.Errorf("account ACE mask = %#x, want Modify %#x (not full control)", granted[0].mask, fileModifyAccess)
 	}
-	if !inheritable(mine[0]) {
-		t.Errorf("account ACE flags = %#x, want object+container inherit and not inherit-only", mine[0].flags)
+	if !inheritable(granted[0]) {
+		t.Errorf("account ACE flags = %#x, want object+container inherit and not inherit-only", granted[0].flags)
 	}
-	for _, wk := range []windows.WELL_KNOWN_SID_TYPE{windows.WinLocalSystemSid, windows.WinBuiltinAdministratorsSid} {
-		assertFullControl(t, entries, wellKnownSID(t, wk))
+	for _, sid := range []*windows.SID{
+		wellKnownSID(t, windows.WinLocalSystemSid), wellKnownSID(t, windows.WinBuiltinAdministratorsSid), me,
+	} {
+		assertFullControl(t, entries, sid)
 	}
 	if users := allowedFor(entries, wellKnownSID(t, windows.WinBuiltinUsersSid)); len(users) != 0 {
 		t.Errorf("BUILTIN\\Users was granted access: %+v", users)
@@ -160,6 +289,63 @@ func TestEnsureLogDir_KeepsUnprotectedDirUnprotected(t *testing.T) {
 	if len(explicit) != 1 || explicit[0].mask&fileModifyAccess != fileModifyAccess || !inheritable(explicit[0]) {
 		t.Errorf("want one explicit inheritable ACE of at least Modify for %s, got %+v", account, explicit)
 	}
+}
+
+// TestEnsureLogDir_RefusesJunction pins the fix for a privilege-escalation
+// chain: any local user can create %ProgramData%\sqi and plant `logs` as a
+// junction (no privilege needed), and following it would hand the service
+// account Modify on the junction's target. EnsureLogDir must refuse, and the
+// target's DACL must not change by a single byte.
+func TestEnsureLogDir_RefusesJunction(t *testing.T) {
+	root := t.TempDir()
+	target := filepath.Join(root, "target")
+	if err := os.Mkdir(target, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(root, "logs")
+	mklinkJunction(t, link, target)
+	before := daclBytes(t, target)
+	_, account := currentAccount(t)
+
+	err := EnsureLogDir(link, account)
+	if !errors.Is(err, errReparsePoint) {
+		t.Errorf("EnsureLogDir(junction) = %v, want errReparsePoint", err)
+	}
+	if after := daclBytes(t, target); after != before {
+		t.Errorf("the junction target's DACL changed:\nbefore %s\nafter  %s", before, after)
+	}
+}
+
+func TestEnsureLogDir_RefusesExistingFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "logs")
+	if err := os.WriteFile(path, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, account := currentAccount(t)
+	if err := EnsureLogDir(path, account); err == nil {
+		t.Error("EnsureLogDir accepted a regular file as the log directory")
+	}
+}
+
+// mklinkJunction creates link as a directory junction to target. Unlike a
+// symbolic link, a junction needs no privilege (as in
+// internal/worker/isolation's workdir_windows_test.go).
+func mklinkJunction(t *testing.T, link, target string) {
+	t.Helper()
+	if out, err := exec.CommandContext(t.Context(), "cmd", "/c", "mklink", "/j", link, target).CombinedOutput(); err != nil {
+		t.Fatalf("mklink /j %q %q: %v: %s", link, target, err, out)
+	}
+}
+
+// daclBytes renders dir's DACL protection state and raw DACL bytes, for a
+// byte-for-byte before/after comparison.
+func daclBytes(t *testing.T, dir string) string {
+	t.Helper()
+	acl, protected := daclOf(t, dir)
+	// ACL header: revision (1 byte), Sbz1 (1), AclSize (2) — x/sys does not export the size.
+	size := *(*uint16)(unsafe.Add(unsafe.Pointer(acl), 2))
+	raw := unsafe.Slice((*byte)(unsafe.Pointer(acl)), size)
+	return fmt.Sprintf("protected=%v %x", protected, raw)
 }
 
 // --- DACL inspection helpers. SDDL is deliberately not used: it renders
@@ -268,6 +454,18 @@ func wellKnownSID(t *testing.T, wk windows.WELL_KNOWN_SID_TYPE) *windows.SID {
 		t.Fatalf("CreateWellKnownSid(%d): %v", wk, err)
 	}
 	return sid
+}
+
+// wellKnownAccount returns a well-known account's SID and its (localized)
+// DOMAIN\name.
+func wellKnownAccount(t *testing.T, wk windows.WELL_KNOWN_SID_TYPE) (*windows.SID, string) {
+	t.Helper()
+	sid := wellKnownSID(t, wk)
+	name, domain, _, err := sid.LookupAccount("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return sid, domain + `\` + name
 }
 
 // currentAccount returns the process user's SID and DOMAIN\name. Resolving the

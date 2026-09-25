@@ -5,6 +5,7 @@
 package winsvc
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -70,7 +71,7 @@ func mkdirProtected(dir string, account *windows.SID) (created bool, err error) 
 	}
 	trustees, err := protectedTrustees(account)
 	if err == nil {
-		err = setDirDACL(dir, trustees, fileAllAccess, nil, true)
+		err = protectNewDir(dir, trustees)
 	}
 	if err != nil {
 		// Leave nothing behind: a retry would otherwise find the directory
@@ -98,10 +99,28 @@ func protectedTrustees(account *windows.SID) ([]*windows.SID, error) {
 	return sids, nil
 }
 
+// protectNewDir gives the directory mkdirProtected just created a protected
+// DACL of inheritable full control for sids.
+func protectNewDir(dir string, sids []*windows.SID) error {
+	h, err := openDirForACL(dir)
+	if err != nil {
+		return err
+	}
+	defer windows.CloseHandle(h) //nolint:errcheck // best-effort close of a handle we are done with
+	return writeDACL(h, dir, sids, fileAllAccess, nil, true)
+}
+
 // grantDir adds an inheritable ACE granting mask to sid onto dir's existing
-// DACL, keeping the DACL's other entries and its protection state.
+// DACL, keeping the DACL's other entries and its protection state. It reads
+// and writes through one handle to dir itself, so it refuses a junction or
+// symbolic link rather than changing the ACL of what it points to.
 func grantDir(dir string, sid *windows.SID, mask windows.ACCESS_MASK) error {
-	sd, err := windows.GetNamedSecurityInfo(dir, windows.SE_FILE_OBJECT, windows.DACL_SECURITY_INFORMATION)
+	h, err := openDirForACL(dir)
+	if err != nil {
+		return err
+	}
+	defer windows.CloseHandle(h) //nolint:errcheck // best-effort close of a handle we are done with
+	sd, err := windows.GetSecurityInfo(h, windows.SE_FILE_OBJECT, windows.DACL_SECURITY_INFORMATION)
 	if err != nil {
 		return fmt.Errorf("read ACL of %s: %w", dir, err)
 	}
@@ -113,12 +132,64 @@ func grantDir(dir string, sid *windows.SID, mask windows.ACCESS_MASK) error {
 	if err != nil {
 		return fmt.Errorf("read ACL control of %s: %w", dir, err)
 	}
-	return setDirDACL(dir, []*windows.SID{sid}, mask, existing, control&windows.SE_DACL_PROTECTED != 0)
+	return writeDACL(h, dir, []*windows.SID{sid}, mask, existing, control&windows.SE_DACL_PROTECTED != 0)
 }
 
-// setDirDACL writes a DACL of inheritable grants of mask to sids, merged onto
-// base when base is non-nil.
-func setDirDACL(dir string, sids []*windows.SID, mask windows.ACCESS_MASK, base *windows.ACL, protected bool) error {
+// errReparsePoint is returned when a directory whose ACL would change is a
+// junction or symbolic link.
+var errReparsePoint = errors.New("is a junction or symbolic link; refusing to change the ACL of what it points to")
+
+// openDirForACL opens dir itself for reading and writing its DACL, and fails
+// unless dir is a plain directory.
+//
+// FILE_FLAG_OPEN_REPARSE_POINT opens a junction or symbolic link at dir as
+// itself, never its target. Any local user can create %ProgramData%\sqi and
+// plant `logs` as a junction (a junction needs no privilege), and a DACL
+// write that followed it would give the service account Modify on the
+// target. Whether path-based Get/SetNamedSecurityInfo follow a final
+// junction is undocumented (Windows 11 build 26200 does not), so the ACL is
+// read and written through this handle instead, and the attributes are read
+// from the same handle so nothing can be swapped in between. Adapted from
+// internal/worker/isolation's openForACL, which this leaf package may not
+// import. FILE_FLAG_BACKUP_SEMANTICS is required to open a directory at all.
+func openDirForACL(dir string) (windows.Handle, error) {
+	p, err := windows.UTF16PtrFromString(dir)
+	if err != nil {
+		return 0, fmt.Errorf("encode path %q: %w", dir, err)
+	}
+	h, err := windows.CreateFile(p,
+		windows.READ_CONTROL|windows.WRITE_DAC|windows.FILE_READ_ATTRIBUTES,
+		windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE|windows.FILE_SHARE_DELETE,
+		nil, windows.OPEN_EXISTING,
+		windows.FILE_FLAG_BACKUP_SEMANTICS|windows.FILE_FLAG_OPEN_REPARSE_POINT, 0)
+	if err != nil {
+		return 0, fmt.Errorf("open %s to change its ACL: %w", dir, err)
+	}
+	if err := checkPlainDir(h, dir); err != nil {
+		windows.CloseHandle(h) //nolint:errcheck // returning the check's error
+		return 0, err
+	}
+	return h, nil
+}
+
+func checkPlainDir(h windows.Handle, dir string) error {
+	var info windows.ByHandleFileInformation
+	if err := windows.GetFileInformationByHandle(h, &info); err != nil {
+		return fmt.Errorf("read attributes of %s: %w", dir, err)
+	}
+	switch {
+	case info.FileAttributes&windows.FILE_ATTRIBUTE_REPARSE_POINT != 0:
+		return fmt.Errorf("%s %w", dir, errReparsePoint)
+	case info.FileAttributes&windows.FILE_ATTRIBUTE_DIRECTORY == 0:
+		return fmt.Errorf("%s is not a directory", dir)
+	}
+	return nil
+}
+
+// writeDACL writes to h a DACL of inheritable grants of mask to sids, merged
+// onto base when base is non-nil. It is the only place this package writes a
+// DACL.
+func writeDACL(h windows.Handle, dir string, sids []*windows.SID, mask windows.ACCESS_MASK, base *windows.ACL, protected bool) error {
 	entries := make([]windows.EXPLICIT_ACCESS, 0, len(sids))
 	for _, sid := range sids {
 		entries = append(entries, windows.EXPLICIT_ACCESS{
@@ -142,7 +213,7 @@ func setDirDACL(dir string, sids []*windows.SID, mask windows.ACCESS_MASK, base 
 	} else {
 		info |= windows.UNPROTECTED_DACL_SECURITY_INFORMATION
 	}
-	if err := windows.SetNamedSecurityInfo(dir, windows.SE_FILE_OBJECT, info, nil, nil, acl, nil); err != nil {
+	if err := windows.SetSecurityInfo(h, windows.SE_FILE_OBJECT, info, nil, nil, acl, nil); err != nil {
 		return fmt.Errorf("secure %s: %w", dir, err)
 	}
 	return nil
