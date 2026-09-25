@@ -3,6 +3,10 @@
 package main
 
 import (
+	"context"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -169,5 +173,27 @@ func TestServerConfig_BrokerAuthDefaultsAreTheConfigDefaults(t *testing.T) {
 	if got.NATSAuthJoinTokenSingleUse != def.NATS.Auth.JoinTokenSingleUse {
 		t.Errorf("at defaults NATSAuthJoinTokenSingleUse = %v, want %v",
 			got.NATSAuthJoinTokenSingleUse, def.NATS.Auth.JoinTokenSingleUse)
+	}
+}
+
+// TestServe_ConfigErrorReturnedThroughRun pins that config validation now runs
+// inside winsvc.Run (so a service's early failure reaches the trace) and still
+// surfaces to the console caller unchanged.
+func TestServe_ConfigErrorReturnedThroughRun(t *testing.T) {
+	// An empty explicit config file keeps the test independent of any
+	// sqi-server.yaml on the search path; persistentFlags is a package global,
+	// so it is restored for the tests that read it directly.
+	cfgPath := filepath.Join(t.TempDir(), "sqi-server.yaml")
+	if err := os.WriteFile(cfgPath, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	orig := persistentFlags.ConfigFile
+	persistentFlags.ConfigFile = cfgPath
+	t.Cleanup(func() { persistentFlags.ConfigFile = orig })
+
+	t.Setenv("SQI_LOG_FILE", filepath.Join(t.TempDir(), "missing-dir", "s.log"))
+	err := serve(context.Background(), config.FlagOverrides{})
+	if err == nil || !strings.Contains(err.Error(), "log.file") {
+		t.Fatalf("serve = %v, want a configuration error naming log.file", err)
 	}
 }
