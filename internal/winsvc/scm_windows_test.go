@@ -74,14 +74,17 @@ func TestSplitAccount(t *testing.T) {
 // ControlService: NOT_ACTIVE when stopped, CANNOT_ACCEPT_CTRL (with the
 // status) while start- or stop-pending, else accepted — the service then
 // moves to StopPending and through afterStop. Each Query reports the current
-// state, then advances along next.
+// state (with win32Exit and specificExit as its exit codes), then advances
+// along next.
 type fakeService struct {
-	state     svc.State
-	next      []svc.State
-	afterStop []svc.State
-	ctlErr    error     // returned by every Control when set …
-	ctlState  svc.State // … with this status
-	stops     int
+	state        svc.State
+	next         []svc.State
+	afterStop    []svc.State
+	ctlErr       error     // returned by every Control when set …
+	ctlState     svc.State // … with this status
+	stops        int
+	win32Exit    uint32
+	specificExit uint32
 }
 
 func (f *fakeService) Control(c svc.Cmd) (svc.Status, error) {
@@ -103,11 +106,69 @@ func (f *fakeService) Control(c svc.Cmd) (svc.Status, error) {
 }
 
 func (f *fakeService) Query() (svc.Status, error) {
-	st := svc.Status{State: f.state}
+	st := svc.Status{State: f.state, Win32ExitCode: f.win32Exit, ServiceSpecificExitCode: f.specificExit}
 	if len(f.next) > 0 {
 		f.state, f.next = f.next[0], f.next[1:]
 	}
 	return st, nil
+}
+
+// TestAwaitStart pins how `service start` and `install --start` judge a start.
+// The service reports Running before the binary has loaded its configuration,
+// so a bad configuration stops it moments later: a service that stops within
+// the settle window after Running is a failed start carrying its exit codes,
+// one still running when the window closes has started, and one that stops
+// before it ever runs fails as it always did. Every path is bounded.
+func TestAwaitStart(t *testing.T) {
+	const wait, settle = 5 * time.Second, time.Second
+	const failed = "stopped during startup (exit code 1066, service exit code 1)"
+	for _, tc := range []struct {
+		name       string
+		svc        *fakeService
+		wantState  svc.State
+		wantErr    string // "" = a successful start
+		minElapsed time.Duration
+	}{
+		{
+			"running and stays running",
+			&fakeService{state: svc.StartPending, next: []svc.State{svc.Running}},
+			svc.Running, "", settle,
+		},
+		{
+			"running then stopped within the window",
+			&fakeService{
+				state: svc.StartPending, next: []svc.State{svc.Running, svc.Running, svc.Stopped},
+				win32Exit: 1066, specificExit: 1,
+			},
+			svc.Stopped, failed, 0,
+		},
+		{
+			"stopped while start pending",
+			&fakeService{state: svc.StartPending, next: []svc.State{svc.Stopped}, win32Exit: 1066, specificExit: 1},
+			svc.Stopped, failed, 0,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			start := time.Now()
+			st, err := awaitStart(tc.svc, "sqi-test", wait, settle)
+			elapsed := time.Since(start)
+			if tc.wantErr == "" && err != nil {
+				t.Fatalf("awaitStart = %v, want a successful start", err)
+			}
+			if tc.wantErr != "" && (err == nil || !strings.Contains(err.Error(), tc.wantErr)) {
+				t.Fatalf("awaitStart = %v, want an error containing %q", err, tc.wantErr)
+			}
+			if st.State != tc.wantState {
+				t.Errorf("final state = %s, want %s", stateString(st.State), stateString(tc.wantState))
+			}
+			if elapsed < tc.minElapsed {
+				t.Errorf("took %v: a running service was not watched for the %v settle window", elapsed, tc.minElapsed)
+			}
+			if limit := wait + settle + 2*pollInterval + 600*time.Millisecond; elapsed > limit {
+				t.Errorf("took %v, want at most %v", elapsed, limit)
+			}
+		})
+	}
 }
 
 func TestStopAndWait(t *testing.T) {

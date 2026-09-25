@@ -21,8 +21,8 @@ import (
 
 const (
 	// startWait bounds how long start and install --start wait for the
-	// service to run, and is the least that stop and uninstall wait for it to
-	// stop.
+	// service to run (Start then watches it for startSettle more), and is the
+	// least that stop and uninstall wait for it to stop.
 	startWait = 60 * time.Second
 	// tailCount is how many lines of the service log a failed start prints.
 	tailCount = 20

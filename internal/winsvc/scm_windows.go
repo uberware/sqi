@@ -22,7 +22,12 @@ var (
 	ErrServiceNotFound = errors.New("service not found")
 )
 
-const pollInterval = 250 * time.Millisecond
+const (
+	pollInterval = 250 * time.Millisecond
+	// startSettle is how long Start keeps watching a service after it reports
+	// Running (see awaitStart).
+	startSettle = 3 * time.Second
+)
 
 // servicePreshutdownInfo is SERVICE_PRESHUTDOWN_INFO, which
 // golang.org/x/sys/windows v0.48.0 does not declare (it does declare
@@ -169,8 +174,10 @@ func Uninstall(name string, wait time.Duration) error {
 	return nil
 }
 
-// Start starts the service and waits up to wait for it to run or stop. A
-// service that stops instead of running is an error carrying its exit codes.
+// Start starts the service and waits up to wait for it to run or stop, then
+// watches a running service for startSettle more (see awaitStart). A service
+// that stops instead of running, or within that window, is an error carrying
+// its exit codes.
 func Start(name string, wait time.Duration) (StatusInfo, error) {
 	m, err := connect()
 	if err != nil {
@@ -185,17 +192,46 @@ func Start(name string, wait time.Duration) (StatusInfo, error) {
 	if err := s.Start(); err != nil {
 		return StatusInfo{}, fmt.Errorf("start service %s: %w", name, err)
 	}
+	st, err := awaitStart(s, name, wait, startSettle)
+	return statusInfo(s, name, st), err
+}
+
+// awaitStart waits up to wait for a service just asked to start to run or
+// stop. The service host reports Running before the binary has loaded its
+// configuration, so a service that runs is watched for settle more: a bad
+// configuration stops it within moments, and that is a failed start too.
+// Stopped, either way, is an error carrying the exit codes. The whole wait is
+// bounded by wait + settle plus a poll interval or two.
+func awaitStart(s controller, name string, wait, settle time.Duration) (svc.Status, error) {
 	st, err := waitFor(s, name, wait, time.Now().Add(wait),
 		func(st svc.Status) bool { return st.State == svc.Running || st.State == svc.Stopped })
-	info := statusInfo(s, name, st)
+	if err == nil && st.State == svc.Running {
+		st, err = settleRunning(s, name, settle)
+	}
 	if err != nil {
-		return info, err
+		return st, err
 	}
 	if st.State == svc.Stopped {
-		return info, fmt.Errorf("service %s stopped during startup (exit code %d, service exit code %d)",
+		return st, fmt.Errorf("service %s stopped during startup (exit code %d, service exit code %d)",
 			name, st.Win32ExitCode, st.ServiceSpecificExitCode)
 	}
-	return info, nil
+	return st, nil
+}
+
+// settleRunning polls a service that has just reported Running until it stops
+// or window has passed, and returns the last status it saw.
+func settleRunning(s controller, name string, window time.Duration) (svc.Status, error) {
+	deadline := time.Now().Add(window)
+	for {
+		time.Sleep(pollInterval)
+		st, err := s.Query()
+		if err != nil {
+			return svc.Status{}, fmt.Errorf("query service %s: %w", name, err)
+		}
+		if st.State == svc.Stopped || !time.Now().Before(deadline) {
+			return st, nil
+		}
+	}
 }
 
 // Stop asks the service to stop and waits up to wait for it.
