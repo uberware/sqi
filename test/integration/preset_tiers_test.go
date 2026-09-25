@@ -21,6 +21,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/uberware/sqi/internal/openjd"
 	"github.com/uberware/sqi/internal/presettest"
 	"github.com/uberware/sqi/internal/product"
 )
@@ -125,6 +126,69 @@ func TestExecTierViolation(t *testing.T) {
 			})
 		}
 	}
+}
+
+// TestPresetTier3RequiredOnMatchesOSGate holds the rule that Tier 3 is required
+// on every platform a preset can run on, and only those. The registry states
+// required_on by hand, so without this a new ungated preset listing
+// required_on: [linux, darwin] would pass every other check while its Windows
+// case was free to skip; and a preset gated to one OS but required on another
+// would fail only on that other host's CI run, naming a skip rather than the
+// mismatch.
+//
+// What a template admits is derived from its attr.worker.os.family
+// requirements alone, across every step: those are the only requirements no
+// test environment can fake (see unsatisfiableOSFamily). Tier 2 is not held to
+// this -- ffmpeg-segment-transcode-bash's tier2 omits windows on purpose until
+// the Windows runner image is seen to run it.
+func TestPresetTier3RequiredOnMatchesOSGate(t *testing.T) {
+	reg, err := presettest.LoadRegistry()
+	if err != nil {
+		t.Fatalf("LoadRegistry: %v", err)
+	}
+	for _, entry := range reg.Presets {
+		if entry.Tier3 == nil {
+			continue
+		}
+		t.Run(entry.Name, func(t *testing.T) {
+			want := admittedGOOS(hostAttributeRequirements(t, entry))
+			got := slices.Sorted(slices.Values(entry.Tier3.RequiredOn))
+			if !slices.Equal(got, want) {
+				t.Errorf("tier3 required_on = %v, but the template's attr.worker.os.family "+
+					"requirements admit %v -- required_on must name exactly the platforms "+
+					"the preset can run on", got, want)
+			}
+		})
+	}
+}
+
+// admittedGOOS returns, sorted, the GOOS values whose os.family satisfies every
+// attr.worker.os.family requirement in attrs. os.family is single-valued per
+// worker, so an allOf is satisfiable only by a family equal to each of its
+// values.
+func admittedGOOS(attrs []openjd.AttributeRequirement) []string {
+	family := map[string]string{"linux": "linux", "darwin": "macos", "windows": "windows"}
+	var out []string
+	for _, goos := range []string{"darwin", "linux", "windows"} {
+		ok := true
+		for _, attr := range attrs {
+			if attr.Name != "attr.worker.os.family" {
+				continue
+			}
+			if len(attr.AnyOf) > 0 && !slices.Contains(attr.AnyOf, family[goos]) {
+				ok = false
+			}
+			for _, v := range attr.AllOf {
+				if v != family[goos] {
+					ok = false
+				}
+			}
+		}
+		if ok {
+			out = append(out, goos)
+		}
+	}
+	return out
 }
 
 // assertRegistryCoversEverySource is rule 1, in both directions: every shipped
