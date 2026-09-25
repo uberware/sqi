@@ -528,6 +528,73 @@ log:
 
 ---
 
+### `log.file`
+
+| | |
+|---|---|
+| **Type** | `string` |
+| **Default** | `""` (log to stderr) |
+| **Env var** | `SQI_LOG_FILE` |
+| **CLI flag** | — |
+
+Path of a file to write log output to instead of stderr. The file is rotated by
+size (see `log.max_size_mb` and `log.max_backups`). Relative paths resolve
+against the working directory; a Windows service runs in the directory that
+holds its config file. Empty keeps logging on stderr.
+
+The directory must already exist: sqi-server does not create it, and startup
+fails with a `log.file` validation error naming the missing directory.
+
+When `sqi-server` runs as a Windows service and `log.file` is empty, logs go to
+`%ProgramData%\sqi\logs\<service-name>.log` instead, since a service has no
+stderr to write to. That default directory is created for you.
+
+```yaml
+log:
+  file: "C:\\ProgramData\\sqi\\logs\\sqi-server.log"
+```
+
+---
+
+### `log.max_size_mb`
+
+| | |
+|---|---|
+| **Type** | `int` |
+| **Default** | `100` |
+| **Env var** | `SQI_LOG_MAX_SIZE_MB` |
+| **CLI flag** | — |
+
+Size in megabytes at which `log.file` is rotated. Must be `> 0`. Has no effect
+while `log.file` is empty and the server is not running as a Windows service.
+
+```yaml
+log:
+  max_size_mb: 100
+```
+
+---
+
+### `log.max_backups`
+
+| | |
+|---|---|
+| **Type** | `int` |
+| **Default** | `5` |
+| **Env var** | `SQI_LOG_MAX_BACKUPS` |
+| **CLI flag** | — |
+
+How many rotated files (`<file>.1` through `<file>.N`) are kept. `0` keeps
+none: the file is discarded and started fresh when it reaches
+`log.max_size_mb`. Must be `>= 0`.
+
+```yaml
+log:
+  max_backups: 5
+```
+
+---
+
 ## `scheduler` — Task assignment loop
 
 ### `scheduler.heartbeat_timeout`
@@ -2042,6 +2109,9 @@ for the detector schema reference.
 | `store.checkpoint_interval` | duration | `5m` | `SQI_STORE_CHECKPOINT_INTERVAL` | — |
 | `log.level` | string | `info` | `SQI_LOG_LEVEL` | `--log-level` |
 | `log.format` | string | `json` | `SQI_LOG_FORMAT` | `--log-format` |
+| `log.file` | string | `""` | `SQI_LOG_FILE` | — |
+| `log.max_size_mb` | int | `100` | `SQI_LOG_MAX_SIZE_MB` | — |
+| `log.max_backups` | int | `5` | `SQI_LOG_MAX_BACKUPS` | — |
 | `scheduler.heartbeat_timeout` | duration | `30s` | `SQI_SCHEDULER_HEARTBEAT_TIMEOUT` | — |
 | `scheduler.tick_interval` | duration | `500ms` | `SQI_SCHEDULER_TICK_INTERVAL` | — |
 | `scheduler.max_tasks_per_worker` | int | `1` | `SQI_SCHEDULER_MAX_TASKS_PER_WORKER` | — |

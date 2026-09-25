@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"net"
 	"net/url"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 
@@ -209,6 +211,37 @@ func validateLog(cfg LogConfig) []ValidationError {
 			Field:   "log.format",
 			Message: fmt.Sprintf("unknown format %q; accepted values: json, text", cfg.Format),
 		})
+	}
+	errs = append(errs, validateLogFile(cfg)...)
+	return errs
+}
+
+// validateLogFile checks log.file and its rotation limits. An explicitly
+// configured file's directory must already exist: the server does not create
+// directories on an operator's behalf (the Windows service-mode default is the
+// exception, created by internal/winsvc).
+func validateLogFile(cfg LogConfig) []ValidationError {
+	var errs []ValidationError
+	if cfg.MaxSizeMB <= 0 {
+		errs = append(errs, ValidationError{
+			Field:   "log.max_size_mb",
+			Message: fmt.Sprintf("must be greater than 0, got %d", cfg.MaxSizeMB),
+		})
+	}
+	if cfg.MaxBackups < 0 {
+		errs = append(errs, ValidationError{
+			Field:   "log.max_backups",
+			Message: fmt.Sprintf("must not be negative, got %d", cfg.MaxBackups),
+		})
+	}
+	if cfg.File != "" {
+		dir := filepath.Dir(cfg.File)
+		if info, err := os.Stat(dir); err != nil || !info.IsDir() {
+			errs = append(errs, ValidationError{
+				Field:   "log.file",
+				Message: fmt.Sprintf("directory %q does not exist; create it or choose another path", dir),
+			})
+		}
 	}
 	return errs
 }

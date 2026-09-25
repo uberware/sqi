@@ -183,8 +183,11 @@ type fileConfig struct {
 	} `yaml:"store"`
 
 	Log *struct {
-		Level  *string `yaml:"level"`
-		Format *string `yaml:"format"`
+		Level      *string `yaml:"level"`
+		Format     *string `yaml:"format"`
+		File       *string `yaml:"file"`
+		MaxSizeMB  *int    `yaml:"max_size_mb"`
+		MaxBackups *int    `yaml:"max_backups"`
 	} `yaml:"log"`
 
 	Scheduler *struct {
@@ -453,6 +456,15 @@ func mergeLogFile(cfg *Config, fc fileConfig) {
 	}
 	if fc.Log.Format != nil {
 		cfg.Log.Format = *fc.Log.Format
+	}
+	if fc.Log.File != nil {
+		cfg.Log.File = *fc.Log.File
+	}
+	if fc.Log.MaxSizeMB != nil {
+		cfg.Log.MaxSizeMB = *fc.Log.MaxSizeMB
+	}
+	if fc.Log.MaxBackups != nil {
+		cfg.Log.MaxBackups = *fc.Log.MaxBackups
 	}
 }
 
@@ -780,6 +792,9 @@ func applyEnv(cfg *Config) error {
 
 	setString(&cfg.Log.Level, "SQI_LOG_LEVEL")
 	setString(&cfg.Log.Format, "SQI_LOG_FORMAT")
+	setString(&cfg.Log.File, "SQI_LOG_FILE")
+	collect(setInt(&cfg.Log.MaxSizeMB, "SQI_LOG_MAX_SIZE_MB"))
+	collect(setInt(&cfg.Log.MaxBackups, "SQI_LOG_MAX_BACKUPS"))
 
 	collect(setDuration(&cfg.Scheduler.HeartbeatTimeout, "SQI_SCHEDULER_HEARTBEAT_TIMEOUT"))
 	collect(setDuration(&cfg.Scheduler.TickInterval, "SQI_SCHEDULER_TICK_INTERVAL"))
