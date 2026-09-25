@@ -231,7 +231,8 @@ Both counters increment inside `internal/scheduler/failure.go`'s
 The retry line carries `task_id`; the auto-park line carries `job_id` — both
 are [diagnostic log correlation keys](#correlation-keys), so these decisions
 are visible (component `server`) in Admin → Server log and
-`GET /api/v1/diagnostics/logs`, in addition to stderr.
+`GET /api/v1/diagnostics/logs`, in addition to the server's own log (stderr, or
+`log.file` when set).
 
 ---
 

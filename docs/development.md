@@ -374,8 +374,9 @@ PowerShell:
 ```powershell
 # Leftover services: list them, then stop (if running) and delete each
 sc.exe query state= all | findstr sqi-test
-sc.exe stop <name>
-sc.exe delete <name>
+$name = 'sqi-test-server-xxxxxxxx'   # a name from the list above
+sc.exe stop $name
+sc.exe delete $name
 
 # A leftover account, in this order: undo what the --user install did to the
 # machine while the account can still be looked up, then delete it

@@ -455,7 +455,8 @@ a binary that ordinary users can replace is a privilege escalation.
 
 The configuration file, `worker.data_dir` (the worker ID, and the worker's
 credential when broker authentication is on) and — for `sqi-server` — the
-database all live in `C:\ProgramData\sqi` by default, and the service reads them
+database all belong in `C:\ProgramData\sqi` (the configuration file's default
+location, and where step 3 puts `worker.data_dir`), and the service reads them
 as LocalSystem. `C:\ProgramData` lets **any local user create folders**, and
 whoever creates `C:\ProgramData\sqi` first owns it: they keep the right to
 change its permissions, and those of everything they put in it, however much you
@@ -527,9 +528,13 @@ nats:
 discovery:
   enable_mdns: false
 worker:
-  data_dir: "C:\ProgramData\sqi\worker"
+  data_dir: 'C:\ProgramData\sqi\worker'
 '@ | Set-Content -Path C:\ProgramData\sqi\sqi-worker.yaml -Encoding ascii
 ```
+
+The path is single-quoted YAML, where a backslash is literal. In a double-quoted
+YAML string every backslash must be doubled (`"C:\\ProgramData\\sqi\\worker"`),
+and a single one is a parse error.
 
 Set `worker.data_dir` explicitly. Left out, it defaults to `.sqi\worker` under
 the *running* account's profile, which for LocalSystem is inside
@@ -614,7 +619,9 @@ and the worker reads its configuration and opens its log *after* that. So a bad
 configuration usually still prints `is running`, and the service stops moments
 later with `exit codes: 1066 (service-specific 1)`. Run `service status` a few
 seconds after `--start` (or `service start`) and read the [log](#logs) if it says
-`stopped`.
+`stopped`. A failed service is restarted after 5 s (then 30 s, then 60 s), and
+in that window `service status` can show `running` or `start pending` for the
+restarted process: check again after the restart delay before trusting it.
 
 If `--start` does not find the service running at all — it had already stopped
 by the time the command looked, or it was still starting after 60 s — the command
@@ -630,8 +637,17 @@ jobs read scenes or write renders on SMB shares that only grant users access,
 run it as a user account:
 
 ```powershell
-& "C:\Program Files\sqi\sqi-worker.exe" service install --user STUDIO\render-svc --start
+& "C:\Program Files\sqi\sqi-worker.exe" service install --user STUDIO\render-svc `
+  --config C:\ProgramData\sqi-render\sqi-worker.yaml
 ```
+
+The account cannot read the default configuration file, which lives in the
+administrators-only directory of step 2, so `--user` needs an explicit `--config`
+in a location it can read (see *Give the account a directory of its own* below).
+`--start` is left out on purpose: the second mitigation in the
+[known limitations](#security-notes-and-known-limitations) wants the service
+stopped until it has its own `log.file`. If you are not applying it, add
+`--start`.
 
 The installer then, in this order:
 
@@ -673,9 +689,12 @@ icacls $data /grant "${acct}:(OI)(CI)M"
 ```
 
 Put the configuration file in `$dir`, set `worker.data_dir` to `$data`, and
-install with `--config "$dir\sqi-worker.yaml"`. Any other place the worker writes
-(a `log.file` directory; see [the known limitations](#security-notes-and-known-limitations))
-needs the same.
+install with `--config "$dir\sqi-worker.yaml"`. Anything else the worker writes
+needs Modify for the account too: a `log.file` (see
+[the known limitations](#security-notes-and-known-limitations)) belongs in `$data`
+or another directory the account has Modify on, **not** in `$dir` itself, where
+the account can only read — the path passes validation there, and the service
+then fails to open the file at every start.
 
 **Run-as-user queues.** If the farm uses run-as-user queues
 ([task isolation](worker-configuration.md#windows)), the worker's own account
@@ -739,8 +758,8 @@ Get-Content C:\ProgramData\sqi\logs\sqi-worker.log -Wait -Tail 50
   can create or append to the configured file; without `log.file` a console run
   logs to stderr.
 
-`service status` and `install --start` always show and tail the **default** log
-path. If you set `log.file`, read that file instead.
+`service status` shows, and `service start` and `install --start` tail, the
+**default** log path. If you set `log.file`, read that file instead.
 
 ### Managing the service
 
@@ -877,20 +896,23 @@ the defaults.
   There are two mitigations, and each has a price:
   - *Send the other services' logs elsewhere.* Give the server, and every other
     service `X` must not see, a `log.file` in a directory that only that
-    service's account and administrators can write — for example the
+    service's account and administrators can read **and** write — for example the
     administrators-only `C:\ProgramData\sqi` from step 2:
-    `log.file: "C:\\ProgramData\\sqi\\sqi-server.log"`. The price: `service
-    status`, `service start` and `install --start` no longer show that service's
-    log (see below), and a service that fails at startup still appends its one
-    `service exited with error` line to the default directory, where `X` can
-    read it.
+    `log.file: "C:\\ProgramData\\sqi\\sqi-server.log"`. Then move or delete the
+    server's existing `sqi-server.log` and its `.1` to `.N` backups out of
+    `logs\`, because `X`'s permission already reaches those files. The price:
+    `service status`, `service start` and `install --start` no longer show that
+    service's log (see below), and a service that fails at startup still appends
+    its one `service exited with error` line to the default directory, where `X`
+    can read it.
   - *Take `X` out of the default directory once it is installed.* Install the
     `--user` service without `--start`, run
     `icacls "C:\ProgramData\sqi\logs" /remove:g "STUDIO\render-svc"` (with the
     account you installed under; the removal reaches the files already there),
-    give the worker its own `log.file` in a directory `X` can write — its own
-    directory from [Choosing the account](#choosing-the-account) is the natural
-    place — and only then `service start`. The price: the worker **needs** that
+    give the worker its own `log.file` in a directory `X` has Modify on — the
+    `$data` directory from [Choosing the account](#choosing-the-account), not
+    `$dir`, where it can only read — and only then `service start`. The price:
+    the worker **needs** that
     `log.file`, because without the permission it cannot open the default log
     file and fails at every start; and it loses the best-effort startup-failure
     line, so a configuration error leaves you only
@@ -903,9 +925,10 @@ the defaults.
   mitigation and nothing else stands in for it. The installer refuses a junction
   or symbolic link at the log directory, or at its parent `C:\ProgramData\sqi`,
   but only while it has to create `logs` or, for `--user`, change its
-  permissions. A LocalSystem install of a `logs` directory that already exists is
-  not checked, and a running service never checks: `C:\ProgramData\sqi` may be a
-  junction to a directory that already contains `logs`, and the service writes
+  permissions; a running service makes the same check only when it has to create
+  `logs`. A `logs` directory that already exists is otherwise used unchecked, by
+  a LocalSystem install and by every running service: `C:\ProgramData\sqi` may be
+  a junction to a directory that already contains `logs`, and the service writes
   its log through it. Nothing checks or protects the working directory, the
   configuration file, `worker.data_dir` or (for `sqi-server`) the database, and a
   directory the installer or a starting service has to create gets ProgramData's

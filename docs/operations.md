@@ -171,6 +171,11 @@ with `sqi-server` for `sqi-worker`. The worker-only parts do not apply to the
 server: delayed start (the server starts automatically, not delayed),
 `worker.shutdown_grace_period` (the server's drain is a fixed 30 s), the
 NATS-loss exit, and the run-as-user privileges and the warning that names them.
+The command a service runs is different too: the server's is `serve`, not
+`start`, so the guide's console recipe for seeing startup errors becomes
+`sqi-server.exe service stop`, `Set-Location C:\ProgramData\sqi`, then
+`sqi-server.exe serve --config C:\ProgramData\sqi\sqi-server.yaml` (stop the
+service first, or the two fight over the same ports and database).
 
 **Prepare `C:\ProgramData\sqi` first**, exactly as in
 [step 2 of the worker guide](worker-deployment.md#2-create-the-directory-administrators-only):
@@ -193,7 +198,10 @@ There is no separate migration step: the server applies pending migrations
 when it starts. `service install --start` can print `is running` even though the
 server then rejects its configuration and stops moments later, so check
 `service status` (it shows `exit codes: 1066 (service-specific 1)` after an
-error) and the log a few seconds after starting.
+error) and the log a few seconds after starting. A failed service is restarted
+after 5 s (then 30 s, then 60 s), and in that window `service status` can show
+`running` or `start pending` for the restarted process, so check again after the
+restart delay.
 
 `service install` needs the configuration file to exist. It defaults to
 `C:\ProgramData\sqi\sqi-server.yaml`; pass `--config` (`-c`) for another. It
@@ -245,8 +253,10 @@ a host shares the one `C:\ProgramData\sqi\logs` directory by default. Any servic
 installed with `--user` — a worker on the same host, say — is always granted
 access to that directory, whatever its own `log.file` is. If the server shares a
 host with one, give the server a `log.file` outside that directory, in one only
-it and administrators can write (for example
-`log.file: "C:\\ProgramData\\sqi\\sqi-server.log"`), and read the
+it and administrators can read **and** write (for example
+`log.file: "C:\\ProgramData\\sqi\\sqi-server.log"`), move or delete its existing
+`sqi-server.log` and `.1` to `.N` backups out of `logs\` (the account's
+permission already reaches those files), and read the
 [security notes](worker-deployment.md#security-notes-and-known-limitations) for
 what that costs. `service stop`, `start` and `uninstall` act on any service name
 you give `--name`, like `sc.exe`.
