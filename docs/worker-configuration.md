@@ -876,13 +876,16 @@ reports it at boot with the fix named.
 That is not the only privilege the worker's own account needs. `Capable()` also
 requires `SeIncreaseQuotaPrivilege` (`CreateProcessAsUser` needs it too), and
 loading the target account's profile needs `SeBackupPrivilege` and
-`SeRestorePrivilege`. LocalSystem holds all four; an account you install the
+`SeRestorePrivilege`. LocalSystem holds all four. An account you install the
 service under with `sqi-worker service install --user …` holds them only if you
 grant them (Local Security Policy → User Rights Assignment: *Replace a process
 level token*, *Adjust memory quotas for a process*, *Back up files and
-directories* and *Restore files and directories*). See
-[Windows service](worker-deployment.md#choosing-the-account) for installing the
-worker under an account.
+directories* and *Restore files and directories*) — and that list is only what
+sqi itself checks or documents, not a promise that granting it is enough:
+Microsoft documents `LoadUserProfile` as callable only by an administrator or
+LocalSystem. Treat LocalSystem as the supported account for run-as-user
+isolation. See [Choosing the account](worker-deployment.md#choosing-the-account)
+for installing the worker under another account.
 
 **Each run-as-user account needs the "Log on as a batch job" right**
 (`SeBatchLogonRight`). The provider logs the account on with
@@ -1505,7 +1508,7 @@ staging:
 When enabled (the default) the worker publishes its own `slog` output to the
 ephemeral core-NATS subject `worker.diag.<workerID>`, which the server ingests
 into its diagnostics ring buffer and surfaces in the web UI. Set to `false` to
-suppress publishing (the worker still logs to stderr). This is the worker
+suppress publishing (the worker still logs locally: to stderr, or to `log.file` when set). This is the worker
 counterpart to the server's `diagnostics.buffer_size` knob.
 
 ```yaml

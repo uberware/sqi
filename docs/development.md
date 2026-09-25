@@ -390,6 +390,12 @@ Remove-Item -Recurse -Force "$env:ProgramData\sqi winservice*"
 Remove-Item "$env:ProgramData\sqi\logs\sqi-test-*"
 ```
 
+The suite also creates `%ProgramData%\sqi` and `%ProgramData%\sqi\logs` when they
+are missing (the installer does) and **never removes them**, so they are left
+behind on a host that had none — `logs` with the protected permissions the
+installer gives it. Delete them by hand if you want the host back as it was, once
+you have checked that nothing else on the machine uses them.
+
 ---
 
 ### Differential-testing EXPR against the reference implementation

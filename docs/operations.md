@@ -164,25 +164,36 @@ sudo journalctl -u sqi-server -f
 (SCM) starts it, and a service **Stop** — or a reboot — runs the
 [graceful shutdown](#graceful-shutdown) sequence. Its `service` command group is
 the same as `sqi-worker`'s, and
-[worker deployment](worker-deployment.md#windows--windows-service) is the full
-reference for it — flags, accounts, timeouts, logs, troubleshooting and the
-security notes — with `sqi-server` in place of `sqi-worker` throughout.
+[worker deployment](worker-deployment.md#windows--windows-service) is the
+reference for what the two share — flags, the password check for `--user`,
+timeouts, log files and rotation, troubleshooting and the security notes — read
+with `sqi-server` for `sqi-worker`. The worker-only parts do not apply to the
+server: delayed start (the server starts automatically, not delayed),
+`worker.shutdown_grace_period` (the server's drain is a fixed 30 s), the
+NATS-loss exit, and the run-as-user privileges and the warning that names them.
 
-Create `C:\ProgramData\sqi` administrators-only before you install, because the
-server's database and JetStream data end up there — the `icacls` recipe is in
-[the security notes](worker-deployment.md#security-notes-and-known-limitations).
-Then, from an **elevated** PowerShell (every `service` subcommand needs one,
-`status` included):
+**Prepare `C:\ProgramData\sqi` first**, exactly as in
+[step 2 of the worker guide](worker-deployment.md#2-create-the-directory-administrators-only):
+created by you, as administrator, administrators-only, with the owner checked.
+The server's configuration, database and JetStream data end up there, and a user
+who created it first can edit the configuration a LocalSystem service runs with,
+and read or replace its database. Then, from an **elevated** PowerShell (every
+`service` subcommand needs one, `status` included):
 
 ```powershell
-New-Item -ItemType Directory -Force C:\ProgramData\sqi | Out-Null
 & "C:\Program Files\sqi\sqi-server.exe" config print > C:\ProgramData\sqi\sqi-server.yaml
 # edit the file, then:
 & "C:\Program Files\sqi\sqi-server.exe" service install --start
+sqi-server service status   # a few seconds later
 ```
 
+`config print` writes the values in effect in the shell that ran it, `SQI_*`
+variables included, so run it from a shell without any you do not want kept.
 There is no separate migration step: the server applies pending migrations
-when it starts.
+when it starts. `service install --start` can print `is running` even though the
+server then rejects its configuration and stops moments later, so check
+`service status` (it shows `exit codes: 1066 (service-specific 1)` after an
+error) and the log a few seconds after starting.
 
 `service install` needs the configuration file to exist. It defaults to
 `C:\ProgramData\sqi\sqi-server.yaml`; pass `--config` (`-c`) for another. It
@@ -201,7 +212,9 @@ registers a service named `sqi-server` (display name *sqi Server*; `--name` and
   `store.sqlite_path` (`sqi.db`) and `nats.data_dir` (`data\nats`) live beside the
   config — `C:\ProgramData\sqi` by default. Set absolute paths, for example on a
   data volume, if you would rather keep them elsewhere. A `--user` account
-  needs write access to wherever they are;
+  cannot read the administrators-only directory: give the server its own, as
+  [choosing the account](worker-deployment.md#choosing-the-account) does for a
+  worker, with write access to the database and JetStream directories;
 - logs to `C:\ProgramData\sqi\logs\sqi-server.log` unless `log.file` is set
   (see [Writing to a file](#writing-to-a-file)).
 
@@ -228,11 +241,15 @@ the last `"service exited with error"` line in the log.
 > `Set-Location C:\ProgramData\sqi` first.
 
 The server's logs can carry job and environment detail, and every sqi service on
-a host shares the one `C:\ProgramData\sqi\logs` directory: read the
-[security notes](worker-deployment.md#security-notes-and-known-limitations)
-before running a worker on the same host as another account. `service stop`,
-`start` and `uninstall` act on any service name you give `--name`, like
-`sc.exe`.
+a host shares the one `C:\ProgramData\sqi\logs` directory by default. Any service
+installed with `--user` — a worker on the same host, say — is always granted
+access to that directory, whatever its own `log.file` is. If the server shares a
+host with one, give the server a `log.file` outside that directory, in one only
+it and administrators can write (for example
+`log.file: "C:\\ProgramData\\sqi\\sqi-server.log"`), and read the
+[security notes](worker-deployment.md#security-notes-and-known-limitations) for
+what that costs. `service stop`, `start` and `uninstall` act on any service name
+you give `--name`, like `sc.exe`.
 
 ---
 

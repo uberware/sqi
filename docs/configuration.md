@@ -2034,7 +2034,7 @@ which is always streamed. This is the worker's counterpart to the server's
 
 | Key | Type | Default | Env var | Description |
 |---|---|---|---|---|
-| `diagnostics.enabled` | bool | `true` | `SQI_DIAGNOSTICS_ENABLED` | When `true`, the worker's diagnostic-log records are published to `sqi-server` in addition to local stderr. Set `false` to keep them local only. |
+| `diagnostics.enabled` | bool | `true` | `SQI_DIAGNOSTICS_ENABLED` | When `true`, the worker's diagnostic-log records are published to `sqi-server` in addition to the local log (stderr, or `log.file` when set). Set `false` to keep them local only. |
 
 Note the env var is `SQI_DIAGNOSTICS_ENABLED` (not `SQI_WORKER_…`), matching the
 server-side diagnostics naming.

@@ -451,43 +451,108 @@ write, e.g. `C:\Program Files\sqi\sqi-worker.exe`. `service install` registers
 the copy you run it from, and the service runs it as LocalSystem by default, so
 a binary that ordinary users can replace is a privilege escalation.
 
-### 2. Create a configuration file
+### 2. Create the directory, administrators-only
+
+The configuration file, `worker.data_dir` (the worker ID, and the worker's
+credential when broker authentication is on) and — for `sqi-server` — the
+database all live in `C:\ProgramData\sqi` by default, and the service reads them
+as LocalSystem. `C:\ProgramData` lets **any local user create folders**, and
+whoever creates `C:\ProgramData\sqi` first owns it: they keep the right to
+change its permissions, and those of everything they put in it, however much you
+tighten it afterwards. That includes a configuration file they put there in
+advance: overwriting a file keeps its permissions, so it stays theirs to edit.
+A user who can edit the configuration a LocalSystem service runs can point
+`nats.url` at a server of their own, which can then hand the worker tasks to run
+as LocalSystem. A squatted directory is code execution as SYSTEM, not just a look
+at some logs.
+
+So create the directory yourself, as administrator, before anything else on the
+host does (`service install` and a starting service create it too, with
+ProgramData's permissive inherited permissions, if it is missing):
+
+```powershell
+$dir = 'C:\ProgramData\sqi'
+if (Test-Path -LiteralPath $dir) {
+    Write-Warning "$dir already exists. Do not use it as it is: see 'If the directory already exists' below."
+} else {
+    # No -Force: New-Item fails if somebody creates it between the check and here.
+    New-Item -ItemType Directory -Path $dir -ErrorAction Stop | Out-Null
+    icacls $dir /inheritance:r /grant:r "*S-1-5-18:(OI)(CI)F" "*S-1-5-32-544:(OI)(CI)F" /T /C /Q
+    icacls $dir /setowner "*S-1-5-32-544" /T /C /Q
+}
+# Check it, whichever branch ran.
+Get-Item -LiteralPath $dir -Force | Format-List FullName, Attributes, LinkType, Target
+(Get-Acl -LiteralPath $dir).Owner
+icacls $dir
+Get-ChildItem -LiteralPath $dir -Force
+```
+
+(`*S-1-5-18` is SYSTEM and `*S-1-5-32-544` is Administrators.) The directory is
+what you want when `Attributes` is `Directory` with no `ReparsePoint` (and
+`LinkType` is empty), the owner is `BUILTIN\Administrators`, the ACL lists only
+`NT AUTHORITY\SYSTEM` and `BUILTIN\Administrators`, both `(OI)(CI)(F)`, and the
+listing is empty.
+
+**If the directory already exists,** keep it only if you created it, as
+administrator, and that check passes and its contents are ones you recognise.
+Otherwise treat whoever created it as hostile: move it aside,
+
+```powershell
+Rename-Item -LiteralPath $dir -NewName ('sqi.suspect-' + (Get-Date -Format yyyyMMddHHmmss))
+```
+
+which renames a junction or symbolic link as itself and touches nothing it
+points at; copy nothing out of it, least of all a configuration file; and run
+the recipe again. `cmd.exe /c rmdir "C:\ProgramData\sqi"` also removes a
+junction, and only the link — it refuses a real directory that is not empty.
+Do not try to repair a squatted directory in place with `icacls`: its creator
+owns everything they put in it, and an owner can always rewrite the permissions
+again.
+
+A service that runs as an ordinary account (`--user`) cannot read this
+directory; see [Choosing the account](#choosing-the-account) for giving it one
+of its own.
+
+### 3. Create a configuration file
 
 `service install` needs the configuration file to exist — a service cannot
 prompt for one — and bakes its absolute path into the service. The default
 location is `C:\ProgramData\sqi\sqi-worker.yaml` (`%ProgramData%\sqi\sqi-worker.yaml`);
-pass `--config` (`-c`) for another. Start from the effective defaults:
+pass `--config` (`-c`) for another. Write a small one:
 
 ```powershell
-New-Item -ItemType Directory -Force C:\ProgramData\sqi | Out-Null
-& "C:\Program Files\sqi\sqi-worker.exe" config print > C:\ProgramData\sqi\sqi-worker.yaml
-```
-
-> **Create that directory administrators-only.** Any local user can create
-> `C:\ProgramData\sqi` first, or read what a service later writes there. See
-> [Security notes and known limitations](#security-notes-and-known-limitations)
-> for the two-line `icacls` recipe, and run it *before* the commands above.
-
-At minimum set:
-
-```yaml
+@'
 nats:
   url: "nats://sqi-server.example.com:4222"
 discovery:
   enable_mdns: false
 worker:
-  data_dir: "C:\\ProgramData\\sqi\\worker"
+  data_dir: "C:\ProgramData\sqi\worker"
+'@ | Set-Content -Path C:\ProgramData\sqi\sqi-worker.yaml -Encoding ascii
 ```
 
-Set `worker.data_dir` explicitly: its default is `.sqi\worker` under the running
-account's profile, which for LocalSystem is inside
-`C:\Windows\System32\config\systemprofile`.
+Set `worker.data_dir` explicitly. Left out, it defaults to `.sqi\worker` under
+the *running* account's profile, which for LocalSystem is inside
+`C:\Windows\System32\config\systemprofile`. `nats.credential_file` then follows
+it (`<data_dir>\worker.nk`), which is where the worker's private key goes when
+broker authentication is on.
+
+> **`config print` is not a template for this file.** The file it prints holds
+> the values in effect *in the shell that ran it*: your own profile as
+> `worker.data_dir` and as `nats.credential_file`, the host name as
+> `worker.name`, and any `SQI_WORKER_*` variables you have set. Installed as it
+> is, a LocalSystem service would keep its credential in your profile, and a
+> service that runs as another account (`--user`) would fail at every start,
+> because it cannot read the credential file's path in your profile. The error
+> `service install` prints for a missing file suggests `config print`; if you
+> use it to see every option, delete what you do not mean to set, and at least
+> `nats.credential_file`, `worker.data_dir` (replace it) and `worker.name`.
 
 Check the file before installing it with
 `sqi-worker.exe start --dry-run --config C:\ProgramData\sqi\sqi-worker.yaml`.
 See [`docs/worker-configuration.md`](worker-configuration.md) for every option.
 
-### 3. Install and start the service
+### 4. Install and start the service
 
 From an **elevated** PowerShell:
 
@@ -543,9 +608,17 @@ effect:
 Error: service already exists: sqi-worker; remove it first with: sqi-worker service uninstall --name sqi-worker
 ```
 
-If `--start` does not find the service running — it stopped during startup, or
-was still starting after 60 s — the command prints
-`service "sqi-worker" did not start: …` and the last 20 lines of the
+**`is running` is not proof that the configuration was accepted.** The service
+reports *Running* to the Service Control Manager as soon as its process is up,
+and the worker reads its configuration and opens its log *after* that. So a bad
+configuration usually still prints `is running`, and the service stops moments
+later with `exit codes: 1066 (service-specific 1)`. Run `service status` a few
+seconds after `--start` (or `service start`) and read the [log](#logs) if it says
+`stopped`.
+
+If `--start` does not find the service running at all — it had already stopped
+by the time the command looked, or it was still starting after 60 s — the command
+prints `service "sqi-worker" did not start: …` and the last 20 lines of the
 [default log file](#logs), and exits with an error. The service stays installed;
 fix the problem and run `service start`.
 
@@ -583,17 +656,39 @@ A domain Group Policy that defines "Log on as a service" overwrites local grants
 at its next refresh, after which the service fails to start with error **1069**.
 The installer cannot fix that; add the account to the policy.
 
-The account must be able to read the configuration file and write
-`worker.data_dir`.
+**Give the account a directory of its own.** It cannot read the
+administrators-only directory from step 2, so it could not read a configuration
+file there or write `worker.data_dir` there — and you should not open that
+directory to it. Prepare a second one with the same recipe (for example
+`$dir = 'C:\ProgramData\sqi-render'`), then grant the account at least read on
+it (the configuration file inherits that) and modify on the worker's data
+directory:
 
-**Run-as-user queues need more privileges.** If the farm uses run-as-user queues
+```powershell
+$acct = 'STUDIO\render-svc'
+$data = Join-Path $dir 'worker'
+icacls $dir /grant "${acct}:(OI)(CI)RX"
+New-Item -ItemType Directory -Path $data -ErrorAction Stop | Out-Null
+icacls $data /grant "${acct}:(OI)(CI)M"
+```
+
+Put the configuration file in `$dir`, set `worker.data_dir` to `$data`, and
+install with `--config "$dir\sqi-worker.yaml"`. Any other place the worker writes
+(a `log.file` directory; see [the known limitations](#security-notes-and-known-limitations))
+needs the same.
+
+**Run-as-user queues.** If the farm uses run-as-user queues
 ([task isolation](worker-configuration.md#windows)), the worker's own account
 needs `SeAssignPrimaryTokenPrivilege` — the installer prints a warning naming it
 whenever you pass `--user`, because the worker config cannot tell whether a
-queue will use isolation — and also `SeIncreaseQuotaPrivilege`, and
-`SeBackupPrivilege` and `SeRestorePrivilege` to load the target account's
-profile. LocalSystem holds all of them; a user account holds them only if you
-grant them. If no queue uses run-as-user, the warning does not apply.
+queue will use isolation. The worker also checks for `SeIncreaseQuotaPrivilege`
+before it runs a task as another account, and loading that account's profile
+needs `SeBackupPrivilege` and `SeRestorePrivilege`. That is the least sqi itself
+asks of the account, not a promise that granting it is enough: Microsoft
+documents `LoadUserProfile` as callable only by an administrator or LocalSystem.
+**LocalSystem is the supported account for a worker that uses run-as-user
+isolation**; run it as a user account for the share access above when no queue
+uses run-as-user, and the warning does not apply.
 
 ### Paths and drive letters
 
@@ -624,8 +719,9 @@ Get-Content C:\ProgramData\sqi\logs\sqi-worker.log -Wait -Tail 50
 - **The default directory** is created with permissions that grant full control
   to SYSTEM, Administrators and the service's account only, and nothing is
   inherited. `service install` creates it; a hand-registered service creates it
-  at its first start. A directory that already exists is left as it is (a
-  `--user` service is added to it — see the [known limitations](#security-notes-and-known-limitations)).
+  at its first start. A directory that already exists is left as it is, except
+  that `service install --user` always adds its account to it, whatever
+  `log.file` says (see the [known limitations](#security-notes-and-known-limitations)).
 - **Rotation** is by size: the file becomes `<file>.1`, `.1` becomes `.2`, and so
   on up to `log.max_backups`, and the oldest is dropped. A rotation that fails
   — most often because something such as `Get-Content -Wait`, an editor or a log
@@ -708,21 +804,29 @@ Start-Service sqi-worker
 ```
 
 Quote the executable and the config path inside the single-quoted string, as
-above, whenever they contain spaces, and use absolute paths. Such a service
-still answers the SCM natively, drains on Stop and on shutdown, runs in the
-config file's directory and logs to the default file. What only `service
-install` configures is missing: delayed start, the recovery actions and the
-PreShutdown timeout, so on a reboot Windows may stop the worker before its drain
-completes. Set recovery yourself with `sc.exe` (not `sc`, which is a PowerShell
-alias for `Set-Content`):
+above, whenever they contain spaces, and use absolute paths: a relative
+`--config` is resolved against the directory the SCM starts the process in,
+`C:\Windows\System32`. Such a service still answers the SCM natively, drains on
+Stop and on shutdown, runs in the config file's directory and logs to the default
+file. Without `--config` it runs in `C:\ProgramData\sqi`, creating that
+directory, with ProgramData's inherited permissions, if it is missing — so
+prepare it as in step 2 first.
+
+What only `service install` configures is missing: delayed start, the recovery
+actions and the PreShutdown timeout. Set the first two yourself with `sc.exe`
+(not `sc`, which is a PowerShell alias for `Set-Content`):
 
 ```powershell
+sc.exe config sqi-worker start= delayed-auto
 sc.exe failure sqi-worker reset= 86400 actions= restart/5000/restart/30000/restart/60000
 sc.exe failureflag sqi-worker 1
 ```
 
-The second command is what makes the SCM restart a service that stops itself
-with an error rather than crashing.
+`failureflag 1` is what makes the SCM restart a service that stops itself with an
+error rather than crashing. Neither `New-Service` nor `sc.exe` sets the
+PreShutdown timeout: to give the worker its full drain time on a reboot, use
+`service install`. Without it, Windows may stop the worker before its drain
+completes.
 
 ### Troubleshooting
 
@@ -730,7 +834,7 @@ with an error rather than crashing.
 |---|---|
 | Error **1053**, "the service did not respond to the start or control request in a timely fashion" | The process never answered the SCM. Builds before native service support were plain console programs, so a service registered with `New-Service` timed out and stopped; upgrade `sqi-worker.exe`. On a current build, run it in a console (below) to see why it did not get that far. |
 | Error **1069**, "the service did not start due to a logon failure" | The account's password is wrong or has changed, or the account no longer holds "Log on as a service" (a domain policy can remove it). Add the account to the policy if one applies, then run `service uninstall` and `service install --user …` again, which prompts for the password and grants the right. |
-| The service stops straight after starting | `service status` shows `exit codes: 1066 (service-specific 1)`: the worker exited with an error. Read the [log](#logs); the reason is the last `"service exited with error"` line. The SCM keeps restarting it (5 s, 30 s, then every 60 s) until the configuration is fixed. |
+| The service stops straight after starting | `service status` shows `exit codes: 1066 (service-specific 1)`: the worker exited with an error. `service start` and `install --start` may well have printed `is running` first (see above). Read the [log](#logs); the reason is the last `"service exited with error"` line. The SCM keeps restarting it (5 s, 30 s, then every 60 s) until the configuration is fixed. |
 | `stopped` with `exit codes: 0` that you did not ask for | Unless someone else stopped it, the worker lost its NATS connection for good and shut itself down cleanly, which the SCM does not treat as a failure. See the [known limitations](#security-notes-and-known-limitations). |
 | `service already exists: …` | The name is taken. `service uninstall --name <name>` first, or choose another `--name`. |
 | `must be run from an elevated (Administrator) shell` | Open PowerShell with *Run as administrator*. |
@@ -743,48 +847,72 @@ worker — then, from an elevated prompt:
 
 ```powershell
 sqi-worker.exe service stop
+Set-Location C:\ProgramData\sqi
 sqi-worker.exe start --config C:\ProgramData\sqi\sqi-worker.yaml
 ```
 
 Output goes to the console (unless `log.file` is set) and Ctrl-C drains and
-stops it. It runs as *you*, not as the service account, so a problem specific to
-that account (permissions, profile, mapped drives) will not reproduce.
+stops it. Run it from the configuration file's directory, as the `Set-Location`
+does: a service runs there, but a console run resolves relative paths — a
+relative `log.file`, say — against the *shell's* directory, which for an elevated
+prompt is `C:\Windows\System32`. It runs as *you*, not as the service account, so
+a problem specific to that account (permissions, profile, mapped drives) will not
+reproduce.
 
 ### Security notes and known limitations
 
 These describe what the Windows service support does today; none is hidden by
 the defaults.
 
-- **The log directory is shared.** The server and every worker on a host log to
-  the one `C:\ProgramData\sqi\logs` directory. A service installed with
-  `--user X` is granted an inheritable *Modify* permission on it (full control,
-  if it created the directory), so `X` can read, rewrite and delete the *other*
-  services' logs there — for example the LocalSystem `sqi-server`'s, which can
-  carry job and environment detail. When the server and a `--user` worker share
-  a host, give the worker its own `log.file` in a directory that only that
-  account and administrators can write.
-- **`C:\ProgramData\sqi` can be squatted.** `C:\ProgramData` lets any local user
-  create folders, so a user can create `C:\ProgramData\sqi` before you do, and
-  files created there inherit read access for ordinary users. The installer
-  refuses a junction or symbolic link where it has to create the log directory
-  or change its permissions (the directory's parent, and for `--user` the
-  directory itself), but a real directory — or a junction — that already exists
-  at `C:\ProgramData\sqi\logs` is used as it is, and the LocalSystem service then
-  writes through it. And the service's working directory is the directory of its
-  configuration file, `C:\ProgramData\sqi` by default, where the examples above
-  also put `worker.data_dir` (the worker ID and, with broker authentication on,
-  its credential). Create the directory yourself, administrators-only, **before**
-  installing, and keep the configuration file and binaries somewhere only
-  administrators can write:
-
-  ```powershell
-  New-Item -ItemType Directory -Force C:\ProgramData\sqi | Out-Null
-  icacls "C:\ProgramData\sqi" /inheritance:r /grant:r "*S-1-5-18:(OI)(CI)F" "*S-1-5-32-544:(OI)(CI)F"
-  ```
-
-  (`*S-1-5-18` is SYSTEM and `*S-1-5-32-544` is Administrators.) For a `--user`
-  service also grant that account what it needs, or better give it a directory
-  of its own for its `--config`, `worker.data_dir` and `log.file`.
+- **`--user` always gets access to the shared log directory.** The server and
+  every worker on a host log to the one `C:\ProgramData\sqi\logs` directory by
+  default, and `service install --user X` always prepares *that* directory for
+  `X`: it adds an inheritable *Modify* permission for `X` (full control, if the
+  install had to create the directory). It does so whatever `log.file` says —
+  the installer does not read the configuration for it — and the permission
+  reaches the logs already in the directory as well as those created later. So
+  `X` can read, rewrite and delete the *other* services' logs there, for example
+  the LocalSystem `sqi-server`'s, which can carry job and environment detail.
+  Giving the `--user` worker its own `log.file` does **not** take that away.
+  There are two mitigations, and each has a price:
+  - *Send the other services' logs elsewhere.* Give the server, and every other
+    service `X` must not see, a `log.file` in a directory that only that
+    service's account and administrators can write — for example the
+    administrators-only `C:\ProgramData\sqi` from step 2:
+    `log.file: "C:\\ProgramData\\sqi\\sqi-server.log"`. The price: `service
+    status`, `service start` and `install --start` no longer show that service's
+    log (see below), and a service that fails at startup still appends its one
+    `service exited with error` line to the default directory, where `X` can
+    read it.
+  - *Take `X` out of the default directory once it is installed.* Install the
+    `--user` service without `--start`, run
+    `icacls "C:\ProgramData\sqi\logs" /remove:g "STUDIO\render-svc"` (with the
+    account you installed under; the removal reaches the files already there),
+    give the worker its own `log.file` in a directory `X` can write — its own
+    directory from [Choosing the account](#choosing-the-account) is the natural
+    place — and only then `service start`. The price: the worker **needs** that
+    `log.file`, because without the permission it cannot open the default log
+    file and fails at every start; and it loses the best-effort startup-failure
+    line, so a configuration error leaves you only
+    `exit codes: 1066 (service-specific 1)` and the console recipe under
+    [Troubleshooting](#troubleshooting) to find out why. Every later
+    `service install --user X` adds the permission back, so run the `icacls`
+    command again after each one.
+- **`C:\ProgramData\sqi` can be squatted, and the installer's checks are
+  narrow.** [Step 2](#2-create-the-directory-administrators-only) is the
+  mitigation and nothing else stands in for it. The installer refuses a junction
+  or symbolic link at the log directory, or at its parent `C:\ProgramData\sqi`,
+  but only while it has to create `logs` or, for `--user`, change its
+  permissions. A LocalSystem install of a `logs` directory that already exists is
+  not checked, and a running service never checks: `C:\ProgramData\sqi` may be a
+  junction to a directory that already contains `logs`, and the service writes
+  its log through it. Nothing checks or protects the working directory, the
+  configuration file, `worker.data_dir` or (for `sqi-server`) the database, and a
+  directory the installer or a starting service has to create gets ProgramData's
+  permissive inherited permissions. That is why step 2 comes first, and why its
+  check includes the owner: what a squatter plants there is theirs, and what they
+  own they can always re-permission. Keep the configuration file and the binaries
+  somewhere only administrators can write too.
 - **Losing NATS for good does not restart the worker.** When the worker's NATS
   connection is permanently lost — a finite `nats.max_reconnect_attempts` running
   out, or the server revoking its credential — it shuts down cleanly and exits
@@ -792,14 +920,16 @@ the defaults.
   `Restart=on-failure`. The SCM's recovery actions fire only on a failure, so the
   service stays stopped. Watch the worker's online state in the web UI, or
   `service status`, and restart it with a wrapper or an external monitor.
-- **`service status` and `install --start` know only the default log path.**
-  With `log.file` set they still print and tail `C:\ProgramData\sqi\logs\<name>.log`,
-  which may be missing or a stale file from an earlier run, and a fatal
-  startup error is recorded there too. Read the file you configured.
+- **`service status` prints, and `service start` and `install --start` tail,
+  only the default log path.** With `log.file` set they still print and tail
+  `C:\ProgramData\sqi\logs\<name>.log`, which may be missing or a stale file from
+  an earlier run, and a fatal startup error is recorded there too. Read the file
+  you configured.
 - **Account rights are yours to grant.** The installer grants "Log on as a
   service" only. Other privileges a `--user` account needs (see [Choosing the
-  account](#choosing-the-account)) are not granted for you, and a domain Group
-  Policy can undo the one it grants.
+  account](#choosing-the-account)) are not granted for you, a domain Group Policy
+  can undo the one it grants, and LocalSystem is the supported account for
+  run-as-user isolation.
 - **PreShutdown is best effort.** Windows still limits the total time a shutdown
   may take, so a drain longer than the operating system allows is cut short. Tasks
   still running are then reassigned once the server notices the worker is gone.
@@ -902,7 +1032,9 @@ three settings that must differ per instance. Manage each with the usual
 > **Windows:** install each instance as its own service with its own `--name`
 > and `--config`, and give each configuration file its own `worker.data_dir`,
 > `metrics.addr` and `worker.name` (`service install` gives each instance its own
-> configuration file, not per-instance environment variables):
+> configuration file, not per-instance environment variables), all in
+> directories only administrators can write, as in
+> [step 2](#2-create-the-directory-administrators-only):
 >
 > ```powershell
 > & "C:\Program Files\sqi\sqi-worker.exe" service install `

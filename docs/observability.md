@@ -661,7 +661,10 @@ Get-Content C:\ProgramData\sqi\logs\sqi-worker.log -Wait -Tail 50
 
 Point a file-based shipper (the Filebeat `log` input above, for example) at
 `C:\ProgramData\sqi\logs\*.log`, which matches the live files and not their
-rotated copies (`.log.1`, `.log.2`, ...). The process rotates by renaming, so a
+rotated copies (`.log.1`, `.log.2`, ...). The default log directory is protected
+when sqi creates it — full control for SYSTEM, Administrators and the service's
+own account, and nothing inherited — so the shipper must run as SYSTEM or an
+administrator, or be granted read access to it. The process rotates by renaming, so a
 reader that holds the file open without allowing it to be renamed (`Get-Content -Wait`
 is one) blocks that rotation, and some shippers may too. Nothing is lost: the
 process keeps appending and retries after another `log.max_size_mb` of output,
@@ -688,7 +691,7 @@ diagnostics:
 
 | YAML key | Env var | Type | Default | Description |
 |---|---|---|---|---|
-| `diagnostics.enabled` | `SQI_DIAGNOSTICS_ENABLED` | bool | `true` | Publish slog records to the server over `worker.diag.<workerID>`. When false, logs go to stderr only. |
+| `diagnostics.enabled` | `SQI_DIAGNOSTICS_ENABLED` | bool | `true` | Publish slog records to the server over `worker.diag.<workerID>`. When false, logs stay local: stderr, or `log.file` when set. |
 
 Example:
 
