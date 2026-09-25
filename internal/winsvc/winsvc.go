@@ -36,7 +36,9 @@ type options struct {
 // configPath (or %ProgramData%\sqi when configPath is empty), so relative
 // paths in the config — the server's default sqi.db and data/nats — resolve
 // beside it instead of in C:\Windows\System32, a service's default working
-// directory. It has no effect outside service mode.
+// directory. It has no effect outside service mode. With configPath empty the
+// commands refuse to load any configuration (see [RequireConfigFile]), so the
+// service stops with an error straight after changing into that directory.
 func WithWorkDirFromConfig(configPath string) Option {
 	return func(o *options) { o.configPath = configPath }
 }
@@ -95,6 +97,29 @@ func ProgramDataDir() string {
 // DefaultLogPath is where a service logs when log.file is not configured.
 func DefaultLogPath(serviceName string) string {
 	return filepath.Join(ProgramDataDir(), "sqi", "logs", serviceName+".log")
+}
+
+// RequireConfigFile refuses to run a Windows service that was given no
+// --config (configPath empty); binary names the command to suggest. Without
+// one, both binaries search a default path for their configuration, and on
+// Windows two of its entries are open to any local user: the relative
+// config\<binary>.yaml resolves under the service's working directory
+// (%ProgramData%\sqi, where Users may create folders), and /etc/sqi resolves to
+// \etc\sqi on that directory's drive (C:\ grants Authenticated Users
+// create-folder). Whoever put a file there would choose what a LocalSystem
+// service runs. `service install` always passes --config, so this refuses only
+// a service registered by hand without one. It returns nil in a console, where
+// the search path is the operator's own.
+func RequireConfigFile(ctx context.Context, binary, configPath string) error {
+	if configPath != "" || ServiceName(ctx) == "" {
+		return nil
+	}
+	wd := workDir("")
+	return fmt.Errorf("running as a Windows service requires --config: without it the configuration "+
+		"is searched for in %s and in a config folder under the service's working directory %s, "+
+		"which non-administrators can create; install the service with `%s service install` "+
+		"(it passes --config) or add --config <path> to the service's command line",
+		filepath.VolumeName(wd)+`\etc\sqi`, wd, binary)
 }
 
 func workDir(configPath string) string {

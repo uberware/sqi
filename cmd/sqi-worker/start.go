@@ -100,7 +100,8 @@ func runStart(cmd *cobra.Command, _ []string) error {
 	// winsvc.Run cancels ctx on SIGINT/SIGTERM in a console, or on a service
 	// Stop/PreShutdown when the Windows SCM started us. Everything — config
 	// included — runs inside it, so a service resolves relative paths from its
-	// config directory and an early failure reaches the service's log.
+	// config directory and an early failure — including a service's refusal to
+	// run without --config — reaches the service's log.
 	return winsvc.Run("sqi-worker", func(ctx context.Context) error {
 		return runWorker(ctx, cmd)
 	}, winsvc.WithWorkDirFromConfig(persistentFlags.ConfigFile))
@@ -113,6 +114,12 @@ func runStart(cmd *cobra.Command, _ []string) error {
 // would trigger the SCM's failure-recovery restart.
 func runWorker(ctx context.Context, cmd *cobra.Command) error {
 	// ── Configuration ─────────────────────────────────────────────────────────
+	//
+	// A Windows service without --config stops first, before the config search
+	// could read a file a non-administrator planted.
+	if err := winsvc.RequireConfigFile(ctx, "sqi-worker", persistentFlags.ConfigFile); err != nil {
+		return err
+	}
 	cfg, err := loadAndValidateConfig(cmd)
 	if err != nil {
 		return err

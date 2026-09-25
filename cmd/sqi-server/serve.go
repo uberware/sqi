@@ -104,15 +104,20 @@ func runServe(cmd *cobra.Command, _ []string) error {
 	// winsvc.Run cancels ctx on SIGINT/SIGTERM in a console, or on a service
 	// Stop/PreShutdown when the Windows SCM started us. Config is loaded inside
 	// so a service resolves relative paths from its config directory and a load
-	// failure reaches the service's log.
+	// failure — including a service's refusal to run without --config —
+	// reaches the service's log.
 	return winsvc.Run("sqi-server", func(ctx context.Context) error {
 		return serve(ctx, overrides)
 	}, winsvc.WithWorkDirFromConfig(persistentFlags.ConfigFile))
 }
 
 // serve loads configuration, builds the logger and runs the server until ctx
-// is canceled.
+// is canceled. A Windows service without --config stops here, before the
+// config search could read a file a non-administrator planted.
 func serve(ctx context.Context, overrides config.FlagOverrides) error {
+	if err := winsvc.RequireConfigFile(ctx, "sqi-server", persistentFlags.ConfigFile); err != nil {
+		return err
+	}
 	cfg, err := config.Load(persistentFlags.ConfigFile, overrides)
 	if err != nil {
 		return fmt.Errorf("load config: %w", err)

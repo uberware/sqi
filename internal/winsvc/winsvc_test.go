@@ -45,6 +45,44 @@ func TestServiceContextAccessors(t *testing.T) {
 	}
 }
 
+// TestRequireConfigFile pins that a service given no --config refuses to run:
+// the config search path it would otherwise fall back to includes locations
+// any local user can create. A console run, and a service with --config, are
+// unaffected.
+func TestRequireConfigFile(t *testing.T) {
+	console := context.Background()
+	service := withService(context.Background(), "sqi-worker", &stopReason{})
+	for _, tc := range []struct {
+		name       string
+		ctx        context.Context
+		configPath string
+		wantErr    bool
+	}{
+		{"console without --config", console, "", false},
+		{"console with --config", console, "sqi-worker.yaml", false},
+		{"service with --config", service, `C:\ProgramData\sqi\sqi-worker.yaml`, false},
+		{"service without --config", service, "", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := RequireConfigFile(tc.ctx, "sqi-worker", tc.configPath)
+			if !tc.wantErr {
+				if err != nil {
+					t.Fatalf("RequireConfigFile = %v, want nil", err)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatal("RequireConfigFile = nil, want a refusal")
+			}
+			for _, want := range []string{"--config", `\etc\sqi`, "sqi-worker service install"} {
+				if !strings.Contains(err.Error(), want) {
+					t.Errorf("error %q does not mention %q", err, want)
+				}
+			}
+		})
+	}
+}
+
 func TestDefaultLogPath_UnderProgramData(t *testing.T) {
 	pd := t.TempDir()
 	t.Setenv("ProgramData", pd)
