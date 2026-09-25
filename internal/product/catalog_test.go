@@ -33,8 +33,8 @@ func TestCatalog_ListMergesBuiltinsAndStored(t *testing.T) {
 	if err != nil {
 		t.Fatalf("list: %v", err)
 	}
-	// 3 built-ins + 1 custom, name-ordered, custom last.
-	if len(list) != 4 || list[len(list)-1].Name != "zzz-custom" {
+	// 4 built-ins + 1 custom, name-ordered, custom last.
+	if len(list) != 5 || list[len(list)-1].Name != "zzz-custom" {
 		t.Fatalf("merge wrong: %+v", list)
 	}
 }

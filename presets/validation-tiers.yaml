@@ -25,7 +25,7 @@ presets:
         rendered (see docs/openjd-extensions/sqi-chunk-bounds.md).
     tier3:
       case: TestPresetTier3/blender-batch-render/default
-      required_on: [linux, darwin]
+      required_on: [linux, darwin, windows]
 
   - name: maya-layer-render
     source: presets/sqi
@@ -43,7 +43,7 @@ presets:
         step excluded (docs/openjd-extensions/sqi-chunk-bounds.md).
     tier3:
       case: TestPresetTier3/maya-layer-render/default
-      required_on: [linux, darwin]
+      required_on: [linux, darwin, windows]
 
   - name: maya-scene-render
     source: presets/sqi
@@ -59,7 +59,7 @@ presets:
         whole point of this variant — is not observable in argv at all.
     tier3:
       case: TestPresetTier3/maya-scene-render/default
-      required_on: [linux, darwin]
+      required_on: [linux, darwin, windows]
 
   - name: mistika-boutique-render
     source: presets/sqi
@@ -79,7 +79,7 @@ presets:
         becoming nineteen rendered ones.
     tier3:
       case: TestPresetTier3/mistika-boutique-render/default
-      required_on: [linux, darwin]
+      required_on: [linux, darwin, windows]
 
   - name: mistika-vr-render
     source: presets/sqi
@@ -99,7 +99,7 @@ presets:
         becoming nineteen rendered ones.
     tier3:
       case: TestPresetTier3/mistika-vr-render/default
-      required_on: [linux, darwin]
+      required_on: [linux, darwin, windows]
 
   - name: mistika-workflows-render
     source: presets/sqi
@@ -119,7 +119,7 @@ presets:
         becoming nineteen rendered ones.
     tier3:
       case: TestPresetTier3/mistika-workflows-render/default
-      required_on: [linux, darwin]
+      required_on: [linux, darwin, windows]
 
   - name: houdini-rop-render
     source: presets/sqi
@@ -137,7 +137,7 @@ presets:
         cannot show that hython puts the script's own path in sys.argv[0].
     tier3:
       case: TestPresetTier3/houdini-rop-render/default
-      required_on: [linux, darwin]
+      required_on: [linux, darwin, windows]
 
   - name: nuke-write-render
     source: presets/sqi
@@ -155,7 +155,7 @@ presets:
         Tier 1 can.
     tier3:
       case: TestPresetTier3/nuke-write-render/default
-      required_on: [linux, darwin]
+      required_on: [linux, darwin, windows]
 
   - name: nuke-script-render
     source: presets/sqi
@@ -171,131 +171,143 @@ presets:
         Nuke -F 1-19:2 where Foundry documents 1-19x2.
     tier3:
       case: TestPresetTier3/nuke-script-render/default
-      required_on: [linux, darwin]
+      required_on: [linux, darwin, windows]
 
   - name: ffmpeg-transcode
     source: presets/sqi
-    tier: 1
+    tier: 2
     tier1:
       cases: [default]
       caveat: >-
-        unlike the documentation-derived caveats above, this preset already has
-        stronger evidence than its Tier-1 argv snapshot: real ffmpeg runs it end to
-        end in test/integration/ffmpeg_presets_test.go
-        (TestFFmpegPreset_TranscodeProducesPlayableOutput), which decodes the produced
-        file and asserts on its actual duration and codec. The Tier-1 golden is a
-        faster, non-executing companion check, not the only evidence. One case is the
-        whole preset here: it declares no parameter space, so there is no second
-        expansion shape. What neither proves is that -crf is meaningful when
-        VideoCodec is copy; ffmpeg ignores it with a warning.
+        this entry carries a tier2 block, so the real-ffmpeg evidence is a
+        verified fact rather than prose -- read it there. What the Tier-1 golden
+        adds is a non-executing companion check; one case is the whole preset,
+        since it declares no parameter space. What NEITHER tier proves is that
+        -crf is meaningful when VideoCodec is copy: ffmpeg ignores it with a
+        warning, and no assertion notices.
+    tier2:
+      case: TestFFmpegPreset_TranscodeProducesPlayableOutput
+      required_on: [linux, darwin, windows]
     tier3:
       case: TestPresetTier3/ffmpeg-transcode/default
-      required_on: [linux, darwin]
+      required_on: [linux, darwin, windows]
 
   - name: ffmpeg-sequence-encode
     source: presets/sqi
-    tier: 1
+    tier: 2
     tier1:
       cases: [default, offset-range]
       caveat: >-
-        unlike the documentation-derived caveats above, this preset already has
-        stronger evidence than its Tier-1 argv snapshot: real ffmpeg encodes a real
-        frame sequence with it in test/integration/ffmpeg_presets_test.go, which
-        asserts on the produced file's name and duration. The two Tier-1 cases add
-        what that single run cannot show — the EXPR-derived output filename under
-        both separator shapes (beauty_%04d and .plate.%04d, i.e. the underscore and
-        the dot that rstrip(..., '_-.') must strip) and -frames:v at a non-1 start
-        frame (1001-1048 -> 48, a count and not an end frame). It has no parameter
-        space, so neither case is a second expansion shape. Colour handling is
-        unverified and unopinionated: a linear EXR sequence forced to yuv420p with no
-        transform will look dark, and no test asserts otherwise.
+        this entry carries a tier2 block, so the real-ffmpeg evidence is a
+        verified fact rather than prose -- read it there. What the two Tier-1
+        cases add is what that single run cannot show — the EXPR-derived output
+        filename under both separator shapes (beauty_%04d and .plate.%04d, i.e.
+        the underscore and the dot that rstrip(..., '_-.') must strip) and
+        -frames:v at a non-1 start frame (1001-1048 -> 48, a count and not an
+        end frame). It has no parameter space, so neither case is a second
+        expansion shape. What NEITHER tier proves is colour handling: it is
+        unverified and unopinionated, a linear EXR sequence forced to yuv420p
+        with no transform will look dark, and no test asserts otherwise.
+    tier2:
+      case: TestFFmpegPreset_SequenceEncodeNamesOutputAfterPattern
+      required_on: [linux, darwin, windows]
     tier3:
       case: TestPresetTier3/ffmpeg-sequence-encode/default
-      required_on: [linux, darwin]
+      required_on: [linux, darwin, windows]
 
   - name: ffmpeg-segment-transcode-bash
     source: presets/sqi
-    tier: 1
+    tier: 2
     tier1:
       cases: [default, uneven-tail]
       caveat: >-
-        unlike the documentation-derived caveats above, this preset already has
-        stronger evidence than its Tier-1 argv snapshot: real ffmpeg transcodes
-        segments and a real bash process joins them in
-        test/integration/ffmpeg_presets_test.go
-        (TestFFmpegPreset_BashSegmentTranscodeJoins), which asserts on the joined
-        output's duration. That test skips when bash is not on PATH, so a local pass
-        proves nothing unless the "--- PASS" line is confirmed. The two Tier-1 cases
-        add the review that test cannot do: the goldens put the join script's glob
-        (<dir>/<stem>_seg_*.<ext>) next to the exact slice paths the Transcode step
-        writes, at 3 slices and at 4 (uneven-tail, 7s in 2s slices, which is also the
-        shape a truncating division would get wrong). Not proven: that endOfLine LF
-        survives to a WINDOWS worker — this golden was rendered on a POSIX host,
-        where LF is what you would get either way — and the concat list quotes
-        slice paths as file '<path>', which a path containing a single quote would
-        break.
+        this entry carries a tier2 block, so the real-ffmpeg-and-real-bash
+        evidence is a verified fact rather than prose -- read it there. What the
+        two Tier-1 cases add is the review that test cannot do: the goldens put
+        the join script's glob (<dir>/<stem>_seg_*.<ext>) next to the exact
+        slice paths the Transcode step writes, at 3 slices and at 4
+        (uneven-tail, 7s in 2s slices, which is also the shape a truncating
+        division would get wrong). The goldens now render on Windows too, but
+        they show the computed file BODY, not the bytes the worker writes, so
+        they do not prove that endOfLine LF survives to a Windows worker. What
+        does is a real bash running the join script there, which has been
+        observed on a developer Windows host only: the tier2 case below is not
+        required on windows, so that evidence is unenforced until it is
+        promoted. What NEITHER tier proves is the concat list's quoting: it
+        quotes slice paths as file '<path>', unescaped, so a path containing a
+        single quote would break the concat parse.
+    tier2:
+      case: TestFFmpegPreset_BashSegmentTranscodeJoins
+      # NOT required on windows, although it passes there on a developer host.
+      # ci.yml's preset-harness-windows job states the rule: this test is
+      # promoted only once THAT RUNNER IMAGE is seen to PASS rather than SKIP,
+      # because it skips when bash.exe is not resolvable by Windows PATH lookup
+      # from the worker process. A pass on a machine with Git Bash installed is
+      # the wrong host's evidence. Promote it in a follow-up.
+      required_on: [linux, darwin]
     tier3:
       case: TestPresetTier3/ffmpeg-segment-transcode-bash/default
-      required_on: [linux, darwin]
+      required_on: [linux, darwin, windows]
 
   - name: ffmpeg-segment-transcode-expr
     source: presets/sqi
-    tier: 1
+    tier: 2
     tier1:
       cases: [default, uneven-tail]
       caveat: >-
-        unlike the documentation-derived caveats above, this preset already has
-        stronger evidence than its Tier-1 argv snapshot: real ffmpeg transcodes
-        segments and the template's own EXPR-generated concat list joins them (no
-        shell) in test/integration/ffmpeg_presets_test.go, which asserts on the joined
-        output's duration and on slice count/naming. This is the variant every other
-        segment-transcode case in that file exercises most heavily. What the two
-        Tier-1 goldens add is the only side-by-side comparison that exists: the
-        resolved concat-list body and the Transcode step's slice paths are both
-        printed in full, and they are character-identical at 3 slices and at 4
-        (uneven-tail). Not proven: the file '<path>' quoting is not escaped, so a
-        slice path containing a single quote would break the concat parse.
+        this entry carries a tier2 block, so the real-ffmpeg evidence -- the
+        template's own EXPR-generated concat list joining the segments with no
+        shell -- is a verified fact rather than prose -- read it there. This is
+        the variant every other segment-transcode case in that file exercises
+        most heavily. What the two Tier-1 goldens add is the only side-by-side
+        comparison that exists: the resolved concat-list body and the
+        Transcode step's slice paths are both printed in full, and they are
+        character-identical at 3 slices and at 4 (uneven-tail). What NEITHER
+        tier proves is the concat list's quoting: the file '<path>' quoting is
+        not escaped, so a slice path containing a single quote would break the
+        concat parse.
+    tier2:
+      case: TestFFmpegPreset_PortableSegmentTranscodeJoins
+      required_on: [linux, darwin, windows]
     tier3:
       case: TestPresetTier3/ffmpeg-segment-transcode-expr/default
-      required_on: [linux, darwin]
+      required_on: [linux, darwin, windows]
 
-  # There is NO Tier-3 block for this one, and that is the honest answer rather
-  # than a gap. Both of its steps declare `attr.worker.os.family anyOf
-  # ["windows"]`, and unlike a capability tag — which SQI_WORKER_CAPABILITY_TAGS
-  # simply asserts — that attribute is derived from the worker's runtime.GOOS at
-  # registration (capabilities.Detect) and translated by
-  # internal/scheduler/matcher.go's osFamily. Nothing in the test environment can
-  # make a darwin or linux worker answer "windows", so the job would sit
-  # `pending` until the timeout. Tier 3 for this preset needs a Windows worker,
-  # which TestPresetTier3 does not yet run (it skips on Windows, where the
-  # sibling cases' POSIX commands have no equivalent), so this entry deliberately
-  # carries no `tier3` block: absence is how this registry records a tier we
-  # cannot run here, the same way no entry carries a `tier2` block today. An
-  # empty required_on would be worse than nothing — `slices.Contains([], any)` is
-  # false on every GOOS that exists or ever will, so the registry's skip check
-  # could never fail for it, and the loader now rejects that shape outright.
+  # Windows-only by hostRequirements (attr.worker.os.family anyOf ["windows"]),
+  # which no test environment can fake -- the worker reports runtime.GOOS at
+  # registration and scheduler/matcher.go translates it. So this entry's Tier-3
+  # claim is required_on [windows] ALONE: it cannot run anywhere else, and
+  # before the harness ran on Windows at all it carried no tier3 block for
+  # exactly that reason.
   - name: ffmpeg-segment-transcode-powershell
     source: presets/sqi
-    tier: 1
+    tier: 2
     tier1:
       cases: [default, uneven-tail]
       caveat: >-
-        unlike the documentation-derived caveats above, this preset already has
-        stronger evidence than its Tier-1 argv snapshot: real ffmpeg transcodes
-        segments and a real PowerShell process joins them in
-        test/integration/ffmpeg_presets_test.go
-        (TestFFmpegPreset_PowerShellSegmentTranscodeJoins), which asserts on the
-        joined output's duration. That test skips on any non-Windows worker, so a
-        local pass on macOS or Linux proves nothing unless it actually ran on
-        Windows — which is exactly why the Tier-1 goldens matter most here: they are
-        the only review this variant gets off Windows. They pin the two things that
-        shipped broken before (667b921, d7d8fcc): the embedded file's on-disk name is
-        join.ps1, which powershell -File requires, and its body carries no byte-order
-        mark. The cases also use native C:\... paths and show them surviving the
-        POSIX-flavoured path engine intact, which works only because a backslash is
-        an ordinary character to a POSIX PurePath — correct, but by accident rather
-        than by design. Not proven: that powershell.exe accepts the script at all, or
-        that Get-ChildItem -Filter orders as the comment claims.
+        this entry carries a tier2 block, so the real-ffmpeg-and-real-PowerShell
+        evidence is a verified fact rather than prose -- read it there; its
+        required_on: [windows] is what the "skips on any non-Windows worker"
+        warning used to say in prose, now enforced rather than remembered. The
+        Tier-1 goldens still matter most here: they are the only review this
+        variant gets off Windows, and they pin the two things that shipped
+        broken before (667b921, d7d8fcc): the embedded file's on-disk name is
+        join.ps1, which powershell -File requires, and its body carries no
+        byte-order mark. The cases also use native C:\... paths and show them
+        surviving the POSIX-flavoured path engine intact, which works only
+        because a backslash is an ordinary character to a POSIX PurePath —
+        correct, but by accident rather than by design. Tier 2 and Tier 3 both
+        now execute this on a real Windows worker, so powershell.exe accepting
+        the script is proven. Get-ChildItem -Filter's ordering is exercised
+        only at three and four slices, where lexical and numeric order
+        coincide for any padding; TestFFmpegPreset_SliceNamesAreZeroPadded
+        covers the eleven-slice case on the portable variant, not this one.
+    tier2:
+      case: TestFFmpegPreset_PowerShellSegmentTranscodeJoins
+      required_on: [windows]
+    tier3:
+      case: TestPresetTier3/ffmpeg-segment-transcode-powershell/default
+      required_on: [windows]
 
   - name: script
     source: internal/product/builtins
@@ -309,12 +321,36 @@ presets:
         (sqi-stub-command --frame 1) from PATH, so the stub is observed being
         invoked from inside -c. What that cannot show is the argv of the shell
         ITSELF — /bin/sh is an absolute path, so nothing shadows it and the
-        observed-vs-computed cross-check does not apply here (see scriptShaped in
-        test/integration/preset_exec_test.go): the -c string is evidenced only by
+        observed-vs-computed cross-check does not apply here (this fixture
+        declares stub_inner: true; see Case.StubInner in
+        internal/presettest/cases.go): the -c string is evidenced only by
         the Tier-1 golden and by the fact that the shell found the stub in it.
     tier3:
       case: TestPresetTier3/script/default
       required_on: [linux, darwin]
+
+  - name: script-powershell
+    source: internal/product/builtins
+    tier: 1
+    tier1:
+      cases: [default]
+      caveat: >-
+        argv derived from the documented powershell -NoProfile -NonInteractive
+        -ExecutionPolicy Bypass -File convention in the product's own readme,
+        and the golden prints the embedded command.ps1 in full (including its
+        leading UTF-8 BOM, which is invisible there). Tier 3 DOES execute it: a
+        real worker runs a real powershell.exe, which resolves the fixture's
+        deliberately nonexistent command (sqi-stub-command --frame 1) from PATH,
+        so the stub is observed being invoked from inside command.ps1. What that
+        cannot show is the argv of the SHELL itself, which is evidenced only by
+        the Tier-1 golden. Nor can either tier show the exit-status wrapper
+        working: the stub always exits 0, so TestScriptPowerShell_ExitStatus
+        carries that claim alone -- and it is NOT a registry case, so the only
+        thing enforcing that it runs is its by-name PASS assertion in ci.yml's
+        preset-harness-windows job.
+    tier3:
+      case: TestPresetTier3/script-powershell/default
+      required_on: [windows]
 
   - name: python
     source: internal/product/builtins
@@ -328,7 +364,7 @@ presets:
         harness.
     tier3:
       case: TestPresetTier3/python/default
-      required_on: [linux, darwin]
+      required_on: [linux, darwin, windows]
 
   - name: container
     source: internal/product/builtins
@@ -341,4 +377,4 @@ presets:
         resulting image under this harness.
     tier3:
       case: TestPresetTier3/container/default
-      required_on: [linux, darwin]
+      required_on: [linux, darwin, windows]

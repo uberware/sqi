@@ -171,7 +171,7 @@ can render appropriate form controls.
 
 ## Built-in products
 
-Three products are embedded directly in the `sqi-server` binary. They are
+Four products are embedded directly in the `sqi-server` binary. They are
 defined as YAML files under `internal/product/builtins/`, compiled in via
 `//go:embed`, parsed and validated at process init, and served read-only from the
 catalog. Mutations (PUT, DELETE) against a built-in return `403 Forbidden`.
@@ -179,7 +179,49 @@ catalog. Mutations (PUT, DELETE) against a built-in return `403 Forbidden`.
 ### `script` — Run a Shell Command
 
 Demonstrates the minimal product shape: one `STRING` parameter with a
-`MULTILINE_EDIT` control. Executes `/bin/sh -c "{{Param.Command}}"`.
+`MULTILINE_EDIT` control. Executes `/bin/sh -c "{{Param.Command}}"`. Gated to
+`attr.worker.os.family anyOf ["linux", "macos"]` — Linux and macOS workers
+only, since `/bin/sh` has no Windows equivalent. Use `script-powershell` on
+Windows workers.
+
+### `script-powershell` — Run a PowerShell Command
+
+The Windows counterpart of `script`: runs one PowerShell command on a Windows
+worker, as a single task. Gated to `attr.worker.os.family anyOf ["windows"]`.
+One `STRING` parameter (`Command`) with a `MULTILINE_EDIT` control. The
+command is written to an embedded `command.ps1` and run with
+`powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File`, so
+pipelines, redirection, `;`, several lines, comments, non-ASCII text and
+`& .\script.ps1` all work, and nothing can block waiting for input. Uses
+`powershell` — Windows PowerShell 5.1, which ships with Windows — not `pwsh`,
+which does not.
+
+It is a file rather than `-Command` text for two reasons. OpenJD forbids a
+line break in a template's literal `args`, so a `-Command` wrapper has to join
+its statements with `;`, and a trailing `#` comment in the command then
+swallows the wrapper. And Windows PowerShell 5.1 reads a `.ps1` with no
+byte-order mark in the ANSI code page, so `command.ps1` opens with a UTF-8 BOM.
+
+The exit status is decided once the whole command has run, mostly by its last
+statement, much as `/bin/sh -c` does:
+
+- an explicit `exit N` exits `N`;
+- a native executable's non-zero exit code is forwarded. `$LASTEXITCODE` keeps
+  the most recent native command's code, so `a.exe; Write-Host done` still
+  fails when `a.exe` did, but `a.exe; b.exe` reports only `b.exe`;
+- a thrown exception, or a cmdlet error in the last statement, exits 1;
+- otherwise it exits 0.
+
+A native command writing to stderr is **not** a failure, even when the stderr
+is redirected (`2>&1`, `2> log.txt`). Windows PowerShell 5.1 records each
+redirected stderr line as a `NativeCommandError` and clears `$?`; the wrapper
+ignores those, since tools such as ffmpeg write their progress there. The
+trade-off is that a cmdlet error in an earlier statement does not fail the task
+if later statements succeed. A command that wants to stop at the first cmdlet
+error can begin with `$ErrorActionPreference = 'Stop'`, accepting that 5.1 then
+also stops on redirected native stderr. `TestScriptPowerShell_ExitStatus` in
+`test/integration/preset_exec_test.go` pins every one of these rows against a
+real `powershell.exe`.
 
 ### `python` — Run a Python Script
 

@@ -17,6 +17,7 @@ guides for extending the worker.
 | `golangci-lint` ≥ 2.13.0 (see the version floor below) | Linter suite | [golangci-lint.run/usage/install](https://golangci-lint.run/usage/install/) |
 | `lefthook` | Git hook runner | `go install github.com/evilmartians/lefthook@latest` |
 | `pkgsite` | Local pkg.go.dev docs server | `go install golang.org/x/pkgsite/cmd/pkgsite@latest` |
+| `ffmpeg` (with `ffprobe`) | Required by `make test`, `make test-cover`, `make ci`, and `make test-preset-harness` — the preset validation registry's `tier2` blocks require the real-ffmpeg cases to run rather than skip, and a skip on a required platform is a hard failure, not a quiet no-op | `apt-get install ffmpeg` / `choco install ffmpeg` / `brew install ffmpeg` |
 | Docker (optional) | Build and run the container image; also runs the real-directory LDAP tests (`make test-ldap`), the real-provider SSO tests (`make test-oidc`), and the real-root run-as-user isolation tests (`make test-isolation`), all of which skip cleanly without it | [docs.docker.com](https://docs.docker.com/get-docker/), or `brew install colima docker && colima start` |
 
 `gofumpt`, `goimports`, and `golangci-lint` are required at commit time via
@@ -406,20 +407,34 @@ asserts that line by name for this reason.
 ### Running the preset validation harness
 
 Every shipped preset and built-in product has a Tier-1 argv "golden" — a
-reviewed snapshot of the exact command line the template resolves to — and
-most have a Tier-3 case that runs the real submit → assign → resolve pipeline
-against a recording stub in place of the vendor executable. See
+reviewed snapshot of the exact command line the template resolves to — most
+have a Tier-3 case that runs the real submit → assign → resolve pipeline
+against a recording stub in place of the vendor executable, and the five
+ffmpeg presets also have a Tier-2 case that runs real ffmpeg end to end. See
 [`docs/preset-library.md`](preset-library.md#validation-tiers) for what each
 tier does and does not prove.
 
 ```sh
-# Run the whole harness: Tier 1 (argv goldens), Tier 3 (stub execution), and
-# the registry-verification test that checks both actually ran.
-go test ./test/integration/ -run 'TestPreset|TestZZPreset'
+# Run the whole harness: Tier 1 (argv goldens), Tier 2 (real ffmpeg), Tier 3
+# (stub execution), and the registry-verification test that checks all three
+# actually ran — in ONE go test invocation, which TestZZPresetTierRegistrySatisfied
+# requires (it asserts on an in-process outcome sink, so splitting the tiers
+# across invocations makes it fail with "never reported" in both).
+make test-preset-harness
 
 # Just Tier 1, verbose, for one preset
 go test ./test/integration/ -run TestPresetTier1Argv/maya-layer-render -v
 ```
+
+`make test-preset-harness` needs ffmpeg on `PATH` — the registry's `tier2`
+blocks require the real-ffmpeg cases to run rather than skip, and a skip on a
+required platform is a registry failure. Two presets are gated to a single
+platform each (`script` to POSIX, `script-powershell` to Windows) and one more
+(`ffmpeg-segment-transcode-powershell`) only executes on Windows; running the
+harness on Windows is the only place any of the three actually run — a
+Linux-only run passing proves nothing about them, which is why CI runs the
+whole harness again natively on Windows (`preset-harness-windows`) rather than
+trusting the Linux job's result to generalize.
 
 To regenerate goldens after an intentional change to a preset's template or to
 expansion/resolution behavior:

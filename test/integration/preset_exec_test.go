@@ -209,25 +209,52 @@ func TestPresetTier3(t *testing.T) {
 	}
 }
 
-func runTier3Case(t *testing.T, entry presettest.Entry, c presettest.Case, caseName string) {
+// trackOutcome marks caseName as running in the registry's outcome sink, and
+// re-marks it as SKIPPED if anything below this call skips the test. Every
+// test the registry names (tier 2 and tier 3) calls it first.
+//
+// A bare RecordOutcome recorded {Ran: true, Skipped: false} and left it there,
+// so a t.Skip from any helper -- the worker start, the stub build, the
+// toolchain check -- read back as a successful run. That is the registry's own
+// failure mode ("a skipped test verifies nothing") reproduced one level down.
+func trackOutcome(t *testing.T, caseName string) {
 	t.Helper()
 	presettest.RecordOutcome(caseName, false, "")
-	if runtime.GOOS == "windows" {
-		presettest.RecordOutcome(caseName, true, "preset tier-3 uses a POSIX worker")
-		t.Skip("preset tier-3 uses a POSIX worker; skipping on Windows")
-	}
+	t.Cleanup(func() {
+		if !t.Skipped() {
+			return
+		}
+		if prior := presettest.LookupOutcome(caseName); prior.Skipped && prior.Reason != "" {
+			return // skipOutcome already recorded a better reason
+		}
+		presettest.RecordOutcome(caseName, true, "skipped by a helper; see the test's own skip reason")
+	})
+}
+
+// skipOutcome records reason against caseName, then skips. Recording first
+// matters: `make ci` passes no -v, so the registry's failure message is the
+// only place a developer sees why a required case did not run.
+func skipOutcome(t *testing.T, caseName, reason string) {
+	t.Helper()
+	presettest.RecordOutcome(caseName, true, reason)
+	t.Skip(reason)
+}
+
+func runTier3Case(t *testing.T, entry presettest.Entry, c presettest.Case, caseName string) {
+	t.Helper()
+	trackOutcome(t, caseName)
 	if want := unsatisfiableOSFamily(t, entry); want != "" {
-		reason := fmt.Sprintf("preset requires attr.worker.os.family %q; this host reports %q", want, hostOSFamily())
-		presettest.RecordOutcome(caseName, true, reason)
-		t.Skip(reason)
+		skipOutcome(t, caseName,
+			fmt.Sprintf("preset requires attr.worker.os.family %q; this host reports %q", want, hostOSFamily()))
 	}
 
 	snap := capturePresetCase(t, entry, c)
 	names := presettest.CommandNames(snap)
-	if scriptShaped(snap) {
-		// The onRun command is an absolute path, which cannot be shadowed on
-		// PATH. The commands the SHELL (or the script) invokes are what the stub
-		// intercepts, so install those instead — the fixture names them.
+	if c.StubInner {
+		// The onRun command cannot be shadowed on PATH -- an absolute path the
+		// worker execs directly, or a real shell we want to actually run. The
+		// commands it invokes INSIDE are what the stub intercepts, so install
+		// those instead; the fixture names them.
 		names = invocationNames(c)
 	}
 	if len(names) == 0 {
@@ -237,7 +264,7 @@ func runTier3Case(t *testing.T, entry presettest.Entry, c presettest.Case, caseN
 	ts := startServer(t)
 	farmID, queueID := seedFarmAndQueue(t, ts)
 	env := newTier3Env(t, names, workerTagEnv(t, entry)...)
-	startRealWorkerWithOptions(t, ts, farmID, queueID, nil, env.env)
+	startRealWorkerAnyOS(t, ts, farmID, queueID, env.env...)
 
 	jobID := submitPresetJob(t, ts, farmID, queueID, presetCaseTemplate(t, entry, c), c.Params)
 	// Job statuses are "completed"/"failed"/"canceled"/"paused" (store.JobStatus)
@@ -258,31 +285,43 @@ func runTier3Case(t *testing.T, entry presettest.Entry, c presettest.Case, caseN
 		t.Fatalf("stub recorded nothing; Tier 3 observed only that the job completed")
 	}
 	assertInvocationCounts(t, c, recs)
-	if !scriptShaped(snap) {
+	if !c.StubInner {
 		assertObservedMatchesComputed(t, snap, recs)
 	}
 }
 
-// scriptShaped reports whether any of this preset's task commands is an
-// ABSOLUTE path, which is the one shape [presettest.InstallStub] cannot
-// intercept: the worker execs the path directly and never consults PATH.
+// TestTrackOutcome_ReportsAHelperSkip pins the thing the outcome sink
+// could not see: a case that records "running" and is then skipped by a helper
+// BELOW that record. Every execution-tier helper in this file can skip on its
+// own -- startRealWorkerWithOptions on an unsupported platform, newTier3Env
+// with no Go toolchain, buildWorkerBinary on a build failure -- and without the
+// Cleanup this drives, each of those reads back as a successful run and
+// TestZZPresetTierRegistrySatisfied treats the claim as verified.
 //
-// Exactly one shipped case is in this shape today — the `script` built-in runs
-// `/bin/sh -c "<Command>"` — and a materialized embedded file used as the
-// command ("<WORKDIR>/main.sh") would be too. For these the stub intercepts what
-// the shell or script invokes INSIDE, so the observed argv has no computed
-// counterpart (the computed side is the shell's own argv) and the
-// observed-vs-computed cross-check cannot apply: expect_invocations carries the
-// whole claim.
-func scriptShaped(snap presettest.Snapshot) bool {
-	for _, step := range snap.Steps {
-		for _, task := range step.Tasks {
-			if filepath.IsAbs(task.Command) {
-				return true
-			}
-		}
+// The subtest's Cleanup functions run before t.Run returns, so the parent can
+// assert on what the sink holds afterwards.
+func TestTrackOutcome_ReportsAHelperSkip(t *testing.T) {
+	const caseName = "TestTrackOutcome/synthetic/helper-skip"
+
+	t.Run("skipped-by-a-helper", func(t *testing.T) {
+		trackOutcome(t, caseName)
+		// Stands in for startRealWorkerWithOptions/newTier3Env/buildWorkerBinary,
+		// each of which calls t.Skip from inside a helper.
+		t.Skip("simulating a helper that skips below the first RecordOutcome")
+	})
+
+	got := presettest.LookupOutcome(caseName)
+	if !got.Ran {
+		t.Fatalf("outcome.Ran = false, want true: the case did report")
 	}
-	return false
+	if !got.Skipped {
+		t.Errorf("outcome.Skipped = false, want true\n"+
+			"a helper skipped below the first RecordOutcome and the sink recorded a successful run;\n"+
+			"reason recorded: %q", got.Reason)
+	}
+	if got.Reason == "" {
+		t.Error("outcome.Reason is empty; the registry's failure message prints it")
+	}
 }
 
 // invocationNames returns the command basenames a case expects the stub to
@@ -371,9 +410,11 @@ func requiredAttributeValue(attr openjd.AttributeRequirement) string {
 // unsatisfiableOSFamily returns the attr.worker.os.family requirement this host
 // cannot meet, or "" when every such requirement is satisfiable here.
 //
-// No registry entry reaches it today -- ffmpeg-segment-transcode-powershell,
-// which requires "windows", carries no tier3 block at all for that very reason.
-// It stays because the requirement is a property of the HOST that no test
+// Three registry entries reach it: script (linux|macos), and script-powershell
+// and ffmpeg-segment-transcode-powershell (windows). Each one's tier3
+// required_on names only the platforms its gate admits, so the skip this
+// produces is never a registry failure. It exists because the requirement is a
+// property of the HOST that no test
 // environment can fake: the worker reports runtime.GOOS at
 // registration (capabilities.Detect) and the scheduler translates it
 // (internal/scheduler/matcher.go osFamily) — unlike a capability tag, which
@@ -545,13 +586,10 @@ func keysOf(m map[string]bool) []string {
 // failure, not just a success: a non-zero vendor exit must reach the API as a
 // failed task carrying a failure_reason.
 func TestPresetTier3_StubFailureSurfacesAsFailedTask(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("preset tier-3 uses a POSIX worker; skipping on Windows")
-	}
 	ts := startServer(t)
 	farmID, queueID := seedFarmAndQueue(t, ts)
 	env := newTier3Env(t, []string{"failing-renderer"}, "SQI_STUB_EXIT=3")
-	startRealWorkerWithOptions(t, ts, farmID, queueID, nil, env.env)
+	startRealWorkerAnyOS(t, ts, farmID, queueID, env.env...)
 
 	jobID := submitJobCustomYAML(t, ts, farmID, queueID, stubJobYAML("failing-renderer"))
 	if status := pollJobStatus(t, ts, jobID, []string{"completed", "failed", "canceled"}, presetJobTimeout); status != "failed" {
@@ -566,18 +604,89 @@ func TestPresetTier3_StubFailureSurfacesAsFailedTask(t *testing.T) {
 // TestPresetTier3_StubHangIsKilledByTimeout proves the timeout path: a vendor
 // command that never returns must not wedge the task forever.
 func TestPresetTier3_StubHangIsKilledByTimeout(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("preset tier-3 uses a POSIX worker; skipping on Windows")
-	}
 	ts := startServer(t)
 	farmID, queueID := seedFarmAndQueue(t, ts)
 	env := newTier3Env(t, []string{"hanging-renderer"}, "SQI_STUB_SLEEP=120s")
-	startRealWorkerWithOptions(t, ts, farmID, queueID, nil, env.env)
+	startRealWorkerAnyOS(t, ts, farmID, queueID, env.env...)
 
 	// timeout: 2 in the template, so the worker kills the process after ~2s.
 	jobID := submitJobCustomYAML(t, ts, farmID, queueID, stubJobYAMLWithTimeout("hanging-renderer", 2))
 	if status := pollJobStatus(t, ts, jobID, []string{"completed", "failed", "canceled"}, presetJobTimeout); status != "failed" {
 		t.Fatalf("job status = %q, want failed (timed out)", status)
+	}
+}
+
+// TestScriptPowerShell_ExitStatus pins the exit-status contract of
+// script-powershell, which no other tier can reach: Tier 3's stub always exits
+// 0, so only a REAL powershell.exe running a command that really fails (or
+// really succeeds noisily) can show the wrapper in the product's command.ps1
+// doing its job. Each row was first measured directly against powershell.exe;
+// every "failed" row except the plain cmdlet error exits 0 without the wrapper,
+// and the redirected-stderr row exits 1 under $ErrorActionPreference = 'Stop'.
+//
+// One server and one worker serve every row: the jobs are all submitted up
+// front and then polled in turn, so the table costs one worker start-up rather
+// than one per row.
+//
+// Windows-only by construction -- the product declares attr.worker.os.family
+// anyOf ["windows"], so no other host can lease the task at all.
+func TestScriptPowerShell_ExitStatus(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skipf("script-powershell requires a windows worker; GOOS=%s", runtime.GOOS)
+	}
+
+	tmpl, err := presettest.PresetTemplate(presettest.SourceBuiltins, "script-powershell")
+	if err != nil {
+		t.Fatalf("PresetTemplate: %v", err)
+	}
+
+	cases := []struct {
+		name    string
+		command string
+		want    string
+	}{
+		// $LASTEXITCODE outlives the native command that set it, so a later
+		// successful cmdlet does not hide the failure.
+		{"native failure before a cmdlet", "cmd /c exit 3; Write-Host done", "failed"},
+		// The reason the command is a file and not -Command text: a trailing
+		// comment on a `;`-joined line swallowed the wrapper and exited 0.
+		{"trailing comment", "cmd /c exit 3 # trailing comment", "failed"},
+		{"comment on the last line", "cmd /c exit 3\n# done", "failed"},
+		{"thrown exception", "throw 'boom'; Write-Host after", "failed"},
+		{"cmdlet error with no native command", "Get-Item 'C:/sqi/no/such/path'", "failed"},
+		// ffmpeg writes its progress to stderr. Windows PowerShell 5.1 turns
+		// redirected native stderr into NativeCommandError records and clears
+		// $?, which must not fail a command that exited 0.
+		{"redirected native stderr", `cmd /c "echo progress 1>&2" 2>&1`, "completed"},
+		// command.ps1 opens with a UTF-8 BOM; without it 5.1 reads the file in
+		// the ANSI code page and this string is no longer eight characters.
+		{"non-ascii text", "if ('Überwäre'.Length -ne 8) { exit 9 }", "completed"},
+		{"plain success", "Write-Host ok", "completed"},
+	}
+
+	ts := startServer(t)
+	farmID, queueID := seedFarmAndQueue(t, ts)
+	// No stub: a real powershell.exe must run, or the wrapper is not exercised.
+	startRealWorkerAnyOS(t, ts, farmID, queueID)
+
+	jobIDs := make([]string, len(cases))
+	for i, tc := range cases {
+		jobIDs[i] = submitPresetJob(t, ts, farmID, queueID, tmpl, map[string]string{"Command": tc.command})
+	}
+	for i, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			status := pollJobStatus(t, ts, jobIDs[i], []string{"completed", "failed", "canceled"}, presetJobTimeout)
+			if status != tc.want {
+				t.Fatalf("job status = %q, want %q for Command %q\n"+
+					"the exit-status wrapper in script-powershell's command.ps1 is missing or ineffective",
+					status, tc.want, tc.command)
+			}
+			if status == "failed" {
+				if reason := firstTaskFailureReason(t, ts, jobIDs[i]); reason == "" {
+					t.Error("failed task carries no failure_reason")
+				}
+			}
+		})
 	}
 }
 

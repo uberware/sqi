@@ -1,0 +1,97 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+name: script-powershell
+title: Run a PowerShell Command
+description: Run an arbitrary PowerShell command on a Windows worker.
+readme: |
+  # Run a PowerShell Command
+
+  Runs one PowerShell command on a Windows worker, as a single task. The
+  Windows counterpart of **Run a Shell Command**, which is Linux and macOS
+  only because it hands its text to `/bin/sh`.
+
+  ## Parameters
+
+  - **Command** - the PowerShell text to run. It is written to a UTF-8
+    `command.ps1` and run with
+    `powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File`, so
+    pipelines, redirection, `;`, several lines, comments, non-ASCII text and
+    `& .\script.ps1` all work. Nothing can prompt: `Read-Host` and
+    confirmation prompts fail rather than waiting for input.
+
+  ## Example
+
+  ```powershell
+  ffmpeg -i input.mov -c:v libx264 output.mp4 2>&1
+  ```
+
+  ## Exit status
+
+  The task's exit status is decided once the whole command has run, mostly by
+  its **last** statement - much as `/bin/sh -c` does on Linux and macOS:
+
+  - an explicit `exit N` exits `N`;
+  - a native executable's non-zero exit code is forwarded - `$LASTEXITCODE`
+    keeps the most recent native command's code, so `a.exe; Write-Host done`
+    still fails when `a.exe` did, but `a.exe; b.exe` reports only `b.exe`;
+  - a thrown exception, or a cmdlet error in the last statement, exits 1;
+  - otherwise it exits 0.
+
+  A native command writing to stderr is **not** a failure, even when that
+  stderr is redirected (`2>&1`, `2> log.txt`) - tools such as ffmpeg write
+  their progress there.
+
+  A cmdlet error in an earlier statement does not fail the task if later
+  statements succeed. To stop at the first cmdlet error instead, start the
+  command with `$ErrorActionPreference = 'Stop'`, keeping in mind that Windows
+  PowerShell 5.1 then also stops on redirected native stderr.
+
+  ## Requirements
+
+  Windows workers only (`attr.worker.os.family` = `windows`). It uses
+  `powershell` - Windows PowerShell 5.1, which ships with Windows - not
+  `pwsh`, which does not.
+
+  The command runs on whichever worker picks up the task, as the account that
+  worker runs under, in a session directory the worker creates. Nothing is
+  staged for you: any path in the command must already be reachable from the
+  worker.
+category: General
+version: 1.0.0
+template:
+  specificationVersion: jobtemplate-2023-09
+  name: Script (PowerShell)
+  parameterDefinitions:
+    - name: Command
+      type: STRING
+      userInterface:
+        control: MULTILINE_EDIT
+        label: Command
+  steps:
+    - name: Run
+      hostRequirements:
+        attributes:
+          - name: attr.worker.os.family
+            anyOf: ["windows"]
+      script:
+        embeddedFiles:
+          # The command runs as a script FILE rather than as -Command text for
+          # two reasons. OpenJD forbids a line break in a template's literal
+          # args, so a -Command wrapper must join its statements with `;` --
+          # and a trailing `#` comment in Command then swallows everything the
+          # wrapper appends. And Windows PowerShell 5.1 reads a BOM-less .ps1
+          # in the ANSI code page, so the data opens with a UTF-8 BOM (\uFEFF)
+          # or a non-ASCII command would be mangled.
+          #
+          # After Command: $? is read before anything can reset it. $Error is
+          # consulted because Windows PowerShell 5.1 records each line of a
+          # native command's REDIRECTED stderr as a NativeCommandError and
+          # clears $?, so a trailing `ffmpeg ... 2>&1` that exited 0 would
+          # otherwise fail the task.
+          - name: command
+            type: TEXT
+            filename: command.ps1
+            data: "\uFEFF{{Param.Command}}\n$sqiOk = $?\nif ($LASTEXITCODE) { exit $LASTEXITCODE }\nif (-not $sqiOk -and -not ($Error.Count -and $Error[0].FullyQualifiedErrorId -like 'NativeCommandError*')) { exit 1 }\nexit 0\n"
+        actions:
+          onRun:
+            command: powershell
+            args: ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", "{{Task.File.command}}"]

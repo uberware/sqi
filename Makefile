@@ -63,6 +63,11 @@ else
   TEST_FLAGS :=
 endif
 
+# Per-package timeout for `make test` and `make test-cover`. go test's default
+# is 10m, and ./test/integration/ now runs every preset's Tier-3 case and the
+# real-ffmpeg Tier-2 cases untagged, under -race, in one package.
+TEST_TIMEOUT ?= 20m
+
 COVERAGE_OUT := coverage.out
 # Raise in 5-point increments as new test suites land.
 # 2026-06-13: measured 74.5% (race) after the phase-1 unit-test backfill;
@@ -183,11 +188,11 @@ run-workers: build-worker ## Spin up N sqi-worker instances locally (N=3 default
 
 .PHONY: test
 test: ## Run all tests (race detector on by default; override with RACE=off)
-	go test $(TEST_FLAGS) $(GO_PKGS)
+	go test $(TEST_FLAGS) -timeout $(TEST_TIMEOUT) $(GO_PKGS)
 
 .PHONY: test-cover
 test-cover: ## Run tests and emit coverage report
-	go test $(TEST_FLAGS) -coverprofile=$(COVERAGE_OUT) -covermode=atomic $(GO_PKGS)
+	go test $(TEST_FLAGS) -timeout $(TEST_TIMEOUT) -coverprofile=$(COVERAGE_OUT) -covermode=atomic $(GO_PKGS)
 	go tool cover -func=$(COVERAGE_OUT) | tail -1
 	@cov=$$(go tool cover -func=$(COVERAGE_OUT) | tail -1 | awk '{print int($$3)}'); \
 	  echo "Coverage: $$cov% (minimum: $(COVERAGE_MIN)%)"; \
@@ -292,6 +297,15 @@ test-expr-oracle: ## Differential-test the EXPR evaluator against the OpenJD ref
 .PHONY: test-preset-library
 test-preset-library: ## Validate the published preset library against this tree (needs network)
 	go test $(TEST_FLAGS) -tags presetlib -run 'TestPublishedPresets' -v -timeout 5m ./test/presetlib/
+
+# ONE `go test` call, deliberately. TestZZPresetTierRegistrySatisfied asserts on
+# what the tier tests recorded IN THIS PROCESS (internal/presettest's outcome
+# sink), so splitting the tiers across two invocations makes the registry check
+# fail with "never reported" in both. ffmpeg must be on PATH: the registry's
+# tier2 blocks require it, and a skip on a required platform is a failure.
+.PHONY: test-preset-harness
+test-preset-harness: ## Run the whole preset validation harness (tiers 1-3 + registry) in ONE process
+	go test $(TEST_FLAGS) -count=1 -run 'TestPreset|TestZZPreset|TestFFmpegPreset|TestScriptPowerShell' -v -timeout 1800s ./test/integration/
 
 .PHONY: test-ldap
 test-ldap: ## Run the LDAP tests against a real directory in a container (needs Docker)

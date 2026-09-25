@@ -74,11 +74,24 @@ const (
 
 // requireFFmpeg skips unless both binaries the presets and these assertions
 // depend on are present.
-func requireFFmpeg(t *testing.T) {
+//
+// When caseName is non-empty the skip goes through skipOutcome, so the
+// registry's failure message names ffmpeg and how to install it rather than
+// trackOutcome's generic catch-all. Pass "" from a caller the registry does not
+// name (the arithmetic and cost-ceiling cases below).
+func requireFFmpeg(t *testing.T, caseName string) {
 	t.Helper()
 	for _, bin := range []string{"ffmpeg", "ffprobe"} {
 		if _, err := exec.LookPath(bin); err != nil {
-			t.Skipf("skipping ffmpeg preset test: %s not on PATH: %v", bin, err)
+			reason := fmt.Sprintf(
+				"%s not on PATH — install ffmpeg (apt-get install ffmpeg / "+
+					"choco install ffmpeg / brew install ffmpeg) to run this test: %v",
+				bin, err,
+			)
+			if caseName != "" {
+				skipOutcome(t, caseName, reason)
+			}
+			t.Skip(reason)
 		}
 	}
 }
@@ -358,7 +371,9 @@ func sliceFiles(t *testing.T, outputFile string) []string {
 // and carries both streams — a command line that dropped -c:a, or read the
 // wrong input, would not.
 func TestFFmpegPreset_TranscodeProducesPlayableOutput(t *testing.T) {
-	requireFFmpeg(t)
+	const caseName = "TestFFmpegPreset_TranscodeProducesPlayableOutput"
+	trackOutcome(t, caseName)
+	requireFFmpeg(t, caseName)
 
 	ts := startServer(t)
 	farmID, queueID := seedFarmAndQueue(t, ts)
@@ -384,9 +399,13 @@ func TestFFmpegPreset_TranscodeProducesPlayableOutput(t *testing.T) {
 // runSegmentPreset drives one segmented variant and applies the assertions all
 // three share: the join must reproduce the full source length, and the run must
 // have fanned out into ffmpegWantSlices tasks rather than transcoding once.
-func runSegmentPreset(t *testing.T, name string, wantSlicesKept bool) {
+//
+// caseName is the calling test's RecordOutcome name (or "" if it has none),
+// threaded through to requireFFmpeg so an ffmpeg-missing skip is recorded
+// under the right name with a reason that names ffmpeg.
+func runSegmentPreset(t *testing.T, caseName, name string, wantSlicesKept bool) {
 	t.Helper()
-	requireFFmpeg(t)
+	requireFFmpeg(t, caseName)
 
 	ts := startServer(t)
 	farmID, queueID := seedFarmAndQueue(t, ts)
@@ -429,7 +448,9 @@ func runSegmentPreset(t *testing.T, name string, wantSlicesKept bool) {
 // TEMPLATE, so the assertion covers EXPR embedded-file generation on top of the
 // ffmpeg command lines, and it is the one variant that runs on every platform.
 func TestFFmpegPreset_PortableSegmentTranscodeJoins(t *testing.T) {
-	runSegmentPreset(t, "ffmpeg-segment-transcode-expr", true)
+	const caseName = "TestFFmpegPreset_PortableSegmentTranscodeJoins"
+	trackOutcome(t, caseName)
+	runSegmentPreset(t, caseName, "ffmpeg-segment-transcode-expr", true)
 }
 
 // TestFFmpegPreset_BashSegmentTranscodeJoins runs the bash-joined variant,
@@ -451,13 +472,16 @@ func TestFFmpegPreset_PortableSegmentTranscodeJoins(t *testing.T) {
 // than exec'ing the shebang script directly, since direct shebang execution is
 // a POSIX kernel feature (binfmt_script) Windows has no equivalent of. On a
 // Windows host this case is the only automated coverage of that invocation and
-// of the script's backslash folding; it has NOT been run on a real Windows
-// host, so treat a green run here as covering the POSIX half only.
+// of the script's backslash folding. It passes on a Windows host with Git Bash,
+// but is not yet required there: see the tier2 note in
+// presets/validation-tiers.yaml.
 func TestFFmpegPreset_BashSegmentTranscodeJoins(t *testing.T) {
+	const caseName = "TestFFmpegPreset_BashSegmentTranscodeJoins"
+	trackOutcome(t, caseName)
 	if _, err := exec.LookPath("bash"); err != nil {
-		t.Skipf("ffmpeg-segment-transcode-bash requires bash on PATH: %v", err)
+		skipOutcome(t, caseName, fmt.Sprintf("ffmpeg-segment-transcode-bash requires bash on PATH: %v", err))
 	}
-	runSegmentPreset(t, "ffmpeg-segment-transcode-bash", false)
+	runSegmentPreset(t, caseName, "ffmpeg-segment-transcode-bash", false)
 }
 
 // TestFFmpegPreset_PowerShellSegmentTranscodeJoins runs the PowerShell-joined
@@ -465,10 +489,12 @@ func TestFFmpegPreset_BashSegmentTranscodeJoins(t *testing.T) {
 // runner is the only place this preset's join script — the one that has already
 // shipped two runtime-only bugs — can be executed at all.
 func TestFFmpegPreset_PowerShellSegmentTranscodeJoins(t *testing.T) {
+	const caseName = "TestFFmpegPreset_PowerShellSegmentTranscodeJoins"
+	trackOutcome(t, caseName)
 	if runtime.GOOS != "windows" {
-		t.Skipf("ffmpeg-segment-transcode-powershell requires a windows worker; GOOS=%s", runtime.GOOS)
+		skipOutcome(t, caseName, "ffmpeg-segment-transcode-powershell requires a windows worker; GOOS="+runtime.GOOS)
 	}
-	runSegmentPreset(t, "ffmpeg-segment-transcode-powershell", false)
+	runSegmentPreset(t, caseName, "ffmpeg-segment-transcode-powershell", false)
 }
 
 // ── Slice arithmetic ──────────────────────────────────────────────────────────
@@ -492,7 +518,7 @@ func TestFFmpegPreset_PowerShellSegmentTranscodeJoins(t *testing.T) {
 // It runs the portable variant because that is the one that executes on every
 // platform, so this arithmetic is covered wherever the suite runs.
 func TestFFmpegPreset_SegmentCountUsesCeilingNotTruncation(t *testing.T) {
-	requireFFmpeg(t)
+	requireFFmpeg(t, "")
 
 	const (
 		sourceSeconds  = 5
@@ -547,7 +573,7 @@ var sliceIndexRe = regexp.MustCompile(`_seg_(\d{5})\.`)
 // every slice and still runs the full length. So this asserts the filenames the
 // glob actually sorts, which is the property the ordering rests on.
 func TestFFmpegPreset_SliceNamesAreZeroPadded(t *testing.T) {
-	requireFFmpeg(t)
+	requireFFmpeg(t, "")
 
 	const (
 		sourceSeconds  = 11
@@ -622,7 +648,7 @@ func TestFFmpegPreset_SliceNamesAreZeroPadded(t *testing.T) {
 // under load and a retry may work. Nothing else asserts that mapping for a
 // shipped preset, and no worker is needed to prove it.
 func TestFFmpegPreset_PortableRejectsBeyondItsCostCeiling(t *testing.T) {
-	requireFFmpeg(t)
+	requireFFmpeg(t, "")
 
 	ts := startServer(t)
 	farmID, queueID := seedFarmAndQueue(t, ts)
@@ -660,7 +686,9 @@ func TestFFmpegPreset_PortableRejectsBeyondItsCostCeiling(t *testing.T) {
 // that path is what pins the expression; a change that left the trailing
 // separator on would write frame_.mp4 and fail here.
 func TestFFmpegPreset_SequenceEncodeNamesOutputAfterPattern(t *testing.T) {
-	requireFFmpeg(t)
+	const caseName = "TestFFmpegPreset_SequenceEncodeNamesOutputAfterPattern"
+	trackOutcome(t, caseName)
+	requireFFmpeg(t, caseName)
 
 	ts := startServer(t)
 	farmID, queueID := seedFarmAndQueue(t, ts)

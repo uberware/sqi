@@ -13,8 +13,8 @@ func TestLoadRegistry_CoversEveryPresetAndBuiltin(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadRegistry: %v", err)
 	}
-	if len(reg.Presets) != 17 {
-		t.Fatalf("registry entries = %d, want 17 (14 presets + 3 built-ins)", len(reg.Presets))
+	if len(reg.Presets) != 18 {
+		t.Fatalf("registry entries = %d, want 18 (14 presets + 4 built-ins)", len(reg.Presets))
 	}
 	e, ok := reg.Entry("maya-layer-render")
 	if !ok {

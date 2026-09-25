@@ -18,6 +18,7 @@ cases:
   - name: default
     params:
       Command: "sqi-stub-command --frame 1"
+    stub_inner: true
     expect_tasks: 1
     expect_invocations:
       sqi-stub-command: 1

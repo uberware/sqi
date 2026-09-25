@@ -13,6 +13,7 @@ package integration
 // asserting test names by hand; here it is enforced in Go instead.
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -20,6 +21,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/uberware/sqi/internal/openjd"
 	"github.com/uberware/sqi/internal/presettest"
 	"github.com/uberware/sqi/internal/product"
 )
@@ -65,15 +67,9 @@ func TestZZPresetTierRegistrySatisfied(t *testing.T) {
 					continue
 				}
 				outcome := presettest.LookupOutcome(tier.Case)
-				if !outcome.Ran {
-					t.Errorf("%s claims case %q, which never reported -- run the whole package "+
-						"(go test ./test/integration/), or the claim is backed by nothing", label, tier.Case)
-					continue
-				}
-				anyRecorded = true
-				if outcome.Skipped && slices.Contains(tier.RequiredOn, runtime.GOOS) {
-					t.Errorf("%s case %q SKIPPED on %s, which required_on lists: %s\n"+
-						"a skipped test verifies nothing", label, tier.Case, runtime.GOOS, outcome.Reason)
+				anyRecorded = anyRecorded || outcome.Ran
+				if msg := execTierViolation(label, tier, outcome, runtime.GOOS); msg != "" {
+					t.Error(msg)
 				}
 			}
 		})
@@ -83,6 +79,116 @@ func TestZZPresetTierRegistrySatisfied(t *testing.T) {
 		t.Error("no execution-tier case reported at all: this test asserts on what " +
 			"TestPresetTier3 recorded, so run the whole package rather than this test alone")
 	}
+}
+
+// execTierViolation is rules 3 and 4 for one execution-tier claim: the case
+// must have reported, and must not have skipped on a platform required_on
+// lists. It returns "" when the claim is earned.
+func execTierViolation(label string, tier *presettest.TierExec, outcome presettest.Outcome, goos string) string {
+	if !outcome.Ran {
+		return fmt.Sprintf("%s claims case %q, which never reported -- run the whole package "+
+			"(make test-preset-harness), or the claim is backed by nothing", label, tier.Case)
+	}
+	if outcome.Skipped && slices.Contains(tier.RequiredOn, goos) {
+		return fmt.Sprintf("%s case %q SKIPPED on %s, which required_on lists: %s\n"+
+			"a skipped test verifies nothing", label, tier.Case, goos, outcome.Reason)
+	}
+	return ""
+}
+
+// TestExecTierViolation pins rules 3 and 4 directly, for both tiers.
+//
+// Tier 2 is the tier most able to pass while proving nothing: its tests skip
+// when the vendor application is absent, and ffmpeg is absent by default on
+// most machines. The registry must treat that skip exactly as it treats a
+// Tier-3 one.
+func TestExecTierViolation(t *testing.T) {
+	tier := &presettest.TierExec{Case: "synthetic", RequiredOn: []string{"linux"}}
+	skipped := presettest.Outcome{Ran: true, Skipped: true, Reason: "ffmpeg not on PATH"}
+	tests := []struct {
+		name          string
+		outcome       presettest.Outcome
+		goos          string
+		wantViolation bool
+	}{
+		{"never reported", presettest.Outcome{}, "linux", true},
+		{"ran", presettest.Outcome{Ran: true}, "linux", false},
+		{"skipped on a required platform", skipped, "linux", true},
+		{"skipped on an optional platform", skipped, "windows", false},
+	}
+	for _, tt := range tests {
+		for _, label := range []string{"tier2", "tier3"} {
+			t.Run(label+"/"+tt.name, func(t *testing.T) {
+				got := execTierViolation(label, tier, tt.outcome, tt.goos)
+				if (got != "") != tt.wantViolation {
+					t.Errorf("execTierViolation = %q, want violation=%v", got, tt.wantViolation)
+				}
+			})
+		}
+	}
+}
+
+// TestPresetTier3RequiredOnMatchesOSGate holds the rule that Tier 3 is required
+// on every platform a preset can run on, and only those. The registry states
+// required_on by hand, so without this a new ungated preset listing
+// required_on: [linux, darwin] would pass every other check while its Windows
+// case was free to skip; and a preset gated to one OS but required on another
+// would fail only on that other host's CI run, naming a skip rather than the
+// mismatch.
+//
+// What a template admits is derived from its attr.worker.os.family
+// requirements alone, across every step: those are the only requirements no
+// test environment can fake (see unsatisfiableOSFamily). Tier 2 is not held to
+// this -- ffmpeg-segment-transcode-bash's tier2 omits windows on purpose until
+// the Windows runner image is seen to run it.
+func TestPresetTier3RequiredOnMatchesOSGate(t *testing.T) {
+	reg, err := presettest.LoadRegistry()
+	if err != nil {
+		t.Fatalf("LoadRegistry: %v", err)
+	}
+	for _, entry := range reg.Presets {
+		if entry.Tier3 == nil {
+			continue
+		}
+		t.Run(entry.Name, func(t *testing.T) {
+			want := admittedGOOS(hostAttributeRequirements(t, entry))
+			got := slices.Sorted(slices.Values(entry.Tier3.RequiredOn))
+			if !slices.Equal(got, want) {
+				t.Errorf("tier3 required_on = %v, but the template's attr.worker.os.family "+
+					"requirements admit %v -- required_on must name exactly the platforms "+
+					"the preset can run on", got, want)
+			}
+		})
+	}
+}
+
+// admittedGOOS returns, sorted, the GOOS values whose os.family satisfies every
+// attr.worker.os.family requirement in attrs. os.family is single-valued per
+// worker, so an allOf is satisfiable only by a family equal to each of its
+// values.
+func admittedGOOS(attrs []openjd.AttributeRequirement) []string {
+	family := map[string]string{"linux": "linux", "darwin": "macos", "windows": "windows"}
+	var out []string
+	for _, goos := range []string{"darwin", "linux", "windows"} {
+		ok := true
+		for _, attr := range attrs {
+			if attr.Name != "attr.worker.os.family" {
+				continue
+			}
+			if len(attr.AnyOf) > 0 && !slices.Contains(attr.AnyOf, family[goos]) {
+				ok = false
+			}
+			for _, v := range attr.AllOf {
+				if v != family[goos] {
+					ok = false
+				}
+			}
+		}
+		if ok {
+			out = append(out, goos)
+		}
+	}
+	return out
 }
 
 // assertRegistryCoversEverySource is rule 1, in both directions: every shipped
