@@ -25,12 +25,14 @@ type RotatingFile struct {
 	path       string
 	maxBytes   int64
 	maxBackups int
-	f          *os.File
+	f          *os.File // nil after a failed reopen, until the next Write retries it
+	closed     bool
 	size       int64
 	threshold  int64 // size at which the next rotation is attempted
 
-	rename func(oldpath, newpath string) error // os.Rename; replaced in tests
-	remove func(name string) error             // os.Remove
+	rename   func(oldpath, newpath string) error // os.Rename; replaced in tests
+	remove   func(name string) error             // os.Remove
+	openFile func(name string) (*os.File, error) // openLogFile
 }
 
 // OpenRotatingFile opens (creating or appending to) path, rotating it once it
@@ -53,6 +55,7 @@ func openRotatingFile(path string, maxBytes int64, maxBackups int) (*RotatingFil
 		threshold:  maxBytes,
 		rename:     os.Rename,
 		remove:     os.Remove,
+		openFile:   openLogFile,
 	}
 	if err := r.open(); err != nil {
 		return nil, err
@@ -60,9 +63,14 @@ func openRotatingFile(path string, maxBytes int64, maxBackups int) (*RotatingFil
 	return r, nil
 }
 
-func (r *RotatingFile) open() error {
+// openLogFile opens name for appending, creating it if needed.
+func openLogFile(name string) (*os.File, error) {
 	//nolint:gosec // G302: log files are group-readable so a log shipper in the service's group can tail them
-	f, err := os.OpenFile(r.path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o640)
+	return os.OpenFile(name, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o640)
+}
+
+func (r *RotatingFile) open() error {
+	f, err := r.openFile(r.path)
 	if err != nil {
 		return fmt.Errorf("log: open %s: %w", r.path, err)
 	}
@@ -76,9 +84,22 @@ func (r *RotatingFile) open() error {
 }
 
 // Write appends p, rotating first when p would take the file past its limit.
+//
+// A failed reopen (a full disk, a transient lock) loses the record that hit it
+// and returns the error, but leaves the writer without an open file rather than
+// with a closed one: the next Write retries the open, so logging resumes as soon
+// as the condition clears. Write after [RotatingFile.Close] is an error.
 func (r *RotatingFile) Write(p []byte) (int, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if r.closed {
+		return 0, fmt.Errorf("log: write %s: %w", r.path, fs.ErrClosed)
+	}
+	if r.f == nil {
+		if err := r.open(); err != nil {
+			return 0, err
+		}
+	}
 	if r.size > 0 && r.size+int64(len(p)) > r.threshold {
 		if err := r.rotate(); err != nil {
 			return 0, err
@@ -89,11 +110,14 @@ func (r *RotatingFile) Write(p []byte) (int, error) {
 	return n, err
 }
 
-// rotate closes, shifts and reopens the file. Only a failure to reopen is an
-// error; a failed shift leaves the current file in place and defers the next
-// attempt by another maxBytes.
+// rotate closes, shifts and reopens the file. Only a failure to close or to
+// reopen is an error; a failed shift leaves the current file in place and defers
+// the next attempt by another maxBytes. Either error leaves r.f nil, never
+// pointing at the closed file, so the next Write reopens it.
 func (r *RotatingFile) rotate() error {
-	if err := r.f.Close(); err != nil {
+	err := r.f.Close()
+	r.f = nil
+	if err != nil {
 		return fmt.Errorf("log: close %s for rotation: %w", r.path, err)
 	}
 	if err := r.shift(); err != nil {
@@ -121,11 +145,18 @@ func (r *RotatingFile) shift() error {
 
 func backupName(path string, i int) string { return path + "." + strconv.Itoa(i) }
 
-// Close closes the current file.
+// Close closes the current file. It is idempotent, and it returns nil when a
+// failed reopen left no file open, so a shutdown path can always call it.
 func (r *RotatingFile) Close() error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	return r.f.Close()
+	r.closed = true
+	if r.f == nil {
+		return nil
+	}
+	err := r.f.Close()
+	r.f = nil
+	return err
 }
 
 // Output returns the log destination for a configured log file: a

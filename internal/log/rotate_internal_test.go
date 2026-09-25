@@ -159,3 +159,78 @@ func TestOutput_OpenFailureReturnsNilWriter(t *testing.T) {
 		t.Fatalf("writer = %#v on error; want a nil interface, not a typed-nil *RotatingFile", w)
 	}
 }
+
+// failOpens replaces w's opener with one that fails while *failing is true, as
+// ENOSPC or a transient Windows lock would.
+func failOpens(w *RotatingFile, failing *bool) {
+	orig := w.openFile
+	w.openFile = func(name string) (*os.File, error) {
+		if *failing {
+			return nil, errors.New("no space left on device")
+		}
+		return orig(name)
+	}
+}
+
+func TestRotatingFile_RecoversAfterFailedReopen(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "a.log")
+	w, err := openRotatingFile(path, 10, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	failing := false
+	failOpens(w, &failing)
+	writeLines(t, w, "line1")
+
+	failing = true
+	if _, err := w.Write([]byte("line2\n")); err == nil { // rotates, then the reopen fails
+		t.Fatal("write that hit a failed reopen returned nil; that record is lost and must say so")
+	}
+
+	failing = false
+	writeLines(t, w, "line3") // must reopen and carry on, not die on a closed file
+
+	if err := w.Close(); err != nil {
+		t.Fatalf("close after recovery: %v", err)
+	}
+	if got := readFile(t, path); got != "line3\n" {
+		t.Errorf("current = %q, want line3", got)
+	}
+	if got := readFile(t, path+".1"); got != "line1\n" {
+		t.Errorf(".1 = %q, want line1", got)
+	}
+	// Idempotent: a second Close is not an error either.
+	if err := w.Close(); err != nil {
+		t.Fatalf("second close: %v", err)
+	}
+}
+
+func TestRotatingFile_CloseAfterUnrecoveredReopenIsNil(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "a.log")
+	w, err := openRotatingFile(path, 10, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	failing := false
+	failOpens(w, &failing)
+	writeLines(t, w, "line1")
+
+	failing = true
+	if _, err := w.Write([]byte("line2\n")); err == nil {
+		t.Fatal("write that hit a failed reopen returned nil")
+	}
+	// The opener is still failing: the next write must retry it (and fail
+	// honestly), not touch the closed file.
+	if _, err := w.Write([]byte("line3\n")); err == nil {
+		t.Fatal("write with the opener still failing returned nil")
+	}
+	if err := w.Close(); err != nil {
+		t.Fatalf("close with no open file: %v", err)
+	}
+	// A closed writer stays closed: it must not reopen the file behind the
+	// caller's back and leak the handle.
+	failing = false
+	if _, err := w.Write([]byte("late\n")); err == nil {
+		t.Fatal("write after Close succeeded")
+	}
+}
