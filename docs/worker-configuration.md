@@ -873,6 +873,17 @@ does **not** hold it by default — this is the single most common cause of
 `isolation: worker cannot assume another OS identity` on Windows. `Capable()`
 reports it at boot with the fix named.
 
+That is not the only privilege the worker's own account needs. `Capable()` also
+requires `SeIncreaseQuotaPrivilege` (`CreateProcessAsUser` needs it too), and
+loading the target account's profile needs `SeBackupPrivilege` and
+`SeRestorePrivilege`. LocalSystem holds all four; an account you install the
+service under with `sqi-worker service install --user …` holds them only if you
+grant them (Local Security Policy → User Rights Assignment: *Replace a process
+level token*, *Adjust memory quotas for a process*, *Back up files and
+directories* and *Restore files and directories*). See
+[Windows service](worker-deployment.md#choosing-the-account) for installing the
+worker under an account.
+
 **Each run-as-user account needs the "Log on as a batch job" right**
 (`SeBatchLogonRight`). The provider logs the account on with
 `LOGON32_LOGON_BATCH` — the correct logon type for a service doing work on a

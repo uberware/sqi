@@ -33,8 +33,11 @@ retains messages, you can reload the log page and still see all output.
 
 Both binaries write their own operational output (scheduler decisions, worker
 registration, errors, etc.) using Go's structured `slog`. This output is
-**always** written to **stderr** in JSON format by default (see
-[Log format](#log-format-and-level)). When diagnostics are enabled (the
+written to **stderr** in JSON format by default (see
+[Log format](#log-format-and-level)); set `log.file` to write it to a rotating
+file instead. A Windows service has no stderr, so it always writes a file — by
+default `C:\ProgramData\sqi\logs\<service-name>.log` (see
+[Log destination](#log-destination)). When diagnostics are enabled (the
 default), the logs are also forwarded to the server's in-memory ring buffer and
 surfaced in the web UI — so operators do not need to shell into a host just to
 see why a worker is misbehaving.
@@ -283,11 +286,12 @@ When server diagnostics are disabled (`buffer_size: 0`):
 - The worker diagnostics panel and Admin → Server log show nothing.
 
 Workers have a separate boolean toggle: set `SQI_DIAGNOSTICS_ENABLED=false` on a
-worker so it logs to stderr only and does not publish `worker.diag` messages
-(workers publish rather than buffer, so there is no size to configure there).
+worker so it logs locally only (to stderr, or to its `log.file`) and does not
+publish `worker.diag` messages (workers publish rather than buffer, so there is
+no size to configure there).
 
 In this mode, operational logs are available only out-of-band (journald, Docker,
-file forwarding — see [Out-of-band wiring](#out-of-band-wiring)).
+log files — see [Out-of-band wiring](#out-of-band-wiring)).
 
 > **Buffer lifetime:** the ring buffer is **in-memory only** and is lost on
 > server restart. If you need durable operational logs beyond `buffer_size`
@@ -468,14 +472,42 @@ The stderr JSON lines (with `SQI_LOG_FORMAT=json`) look like:
 
 Use `text` only in development; log aggregators expect structured JSON.
 
+### Log destination
+
+By default both binaries write their log to **stderr**. Three more keys (the
+environment variables are `SQI_LOG_FILE`, `SQI_LOG_MAX_SIZE_MB` and
+`SQI_LOG_MAX_BACKUPS` for the server, and `SQI_WORKER_LOG_FILE`,
+`SQI_WORKER_LOG_MAX_SIZE_MB` and `SQI_WORKER_LOG_MAX_BACKUPS` for a worker)
+send it to a file instead:
+
+```yaml
+log:
+  file: "/var/log/sqi/sqi-worker.log"  # empty = stderr; the directory must already exist
+  max_size_mb: 100                     # rotate when the file reaches this size
+  max_backups: 5                       # keep <file>.1 ... <file>.5
+```
+
+The file is rotated by size, by the process itself: `<file>` becomes
+`<file>.1`, `.1` becomes `.2`, and so on, and the oldest is dropped. The full
+reference is [`log.file`](configuration.md#logfile) (server) and
+[`log.file`](worker-configuration.md#logfile) (worker).
+
+A **Windows service** has no stderr to write to, so with `log.file` empty it logs
+to `C:\ProgramData\sqi\logs\<service-name>.log`, where `<service-name>` is the
+name the service was installed under, and creates that directory. Rotation
+applies to that file too. See
+[Windows service](operations.md#windows-service) and
+[worker deployment](worker-deployment.md#logs).
+
 ---
 
 ## Out-of-band wiring
 
-Both binaries always write structured JSON to **stderr**. The in-UI buffer
-complements out-of-band log forwarding — it does not replace it. Ship stderr to
-your log platform for durable, searchable operational history beyond what the
-ring buffer retains.
+By default both binaries write structured JSON to **stderr**; with `log.file` set,
+or under a Windows service, they write it to a file instead (see
+[Log destination](#log-destination)). The in-UI buffer complements out-of-band
+log forwarding — it does not replace it. Ship the log to your log platform for
+durable, searchable operational history beyond what the ring buffer retains.
 
 ### journald (systemd)
 
@@ -617,6 +649,24 @@ For file-based deployments (stdout/stderr redirected to files), use the
 JSON fields so you can filter on `level`, `msg`, `task_id`, etc. directly in
 Kibana.
 
+### Log files and Windows services
+
+A file written through `log.file`, or a Windows service's default
+`C:\ProgramData\sqi\logs\<service-name>.log`, is a plain file of JSON lines (with
+the default `json` format). Tail it live with:
+
+```powershell
+Get-Content C:\ProgramData\sqi\logs\sqi-worker.log -Wait -Tail 50
+```
+
+Point a file-based shipper (the Filebeat `log` input above, for example) at
+`C:\ProgramData\sqi\logs\*.log`, which matches the live files and not their
+rotated copies (`.log.1`, `.log.2`, ...). The process rotates by renaming, so a
+reader that holds the file open without allowing it to be renamed (`Get-Content -Wait`
+is one) blocks that rotation, and some shippers may too. Nothing is lost: the
+process keeps appending and retries after another `log.max_size_mb` of output,
+and the file grows past its limit until the reader lets go.
+
 ---
 
 ## Configuration reference
@@ -649,8 +699,10 @@ diagnostics:
 
 The `SQI_LOG_FORMAT` and `SQI_LOG_LEVEL` env vars (and their `log.format` /
 `log.level` YAML equivalents) apply to both binaries and control what reaches
-stderr regardless of whether diagnostics are enabled. See
-[`docs/configuration.md`](configuration.md) for the full log config reference.
+stderr — or `log.file`, when set — regardless of whether diagnostics are
+enabled. See [`docs/configuration.md`](configuration.md) for the full log config
+reference, including `log.file`, `log.max_size_mb` and `log.max_backups`
+(worker: [`docs/worker-configuration.md`](worker-configuration.md)).
 
 ---
 

@@ -432,21 +432,43 @@ launchctl unload ~/Library/LaunchAgents/net.uberware.sqi-worker.plist
 
 ## Windows — Windows Service
 
+`sqi-worker` runs as a native Windows service. When the Service Control Manager
+(SCM) starts it, a service **Stop** — or a reboot — drains in-flight tasks
+exactly as Ctrl-C does in a console: the worker stops taking new assignments,
+waits up to `worker.shutdown_grace_period` for running tasks, deregisters and
+exits. `sqi-worker service install` registers it. `sqi-server` has the same
+command group; see [its operations guide](operations.md#windows-service). The
+`service` command exists only in Windows builds.
+
+Every `service` subcommand, `status` included, must run from an **elevated**
+(Administrator) PowerShell. From any other shell it fails straight away with
+`this command must be run from an elevated (Administrator) shell`.
+
 ### 1. Install the binary
 
-Copy `sqi-worker.exe` to a permanent location, e.g.:
-
-```
-C:\Program Files\sqi\sqi-worker.exe
-```
+Copy `sqi-worker.exe` to a permanent location that only administrators can
+write, e.g. `C:\Program Files\sqi\sqi-worker.exe`. `service install` registers
+the copy you run it from, and the service runs it as LocalSystem by default, so
+a binary that ordinary users can replace is a privilege escalation.
 
 ### 2. Create a configuration file
 
-```
-C:\ProgramData\sqi\sqi-worker.yaml
+`service install` needs the configuration file to exist — a service cannot
+prompt for one — and bakes its absolute path into the service. The default
+location is `C:\ProgramData\sqi\sqi-worker.yaml` (`%ProgramData%\sqi\sqi-worker.yaml`);
+pass `--config` (`-c`) for another. Start from the effective defaults:
+
+```powershell
+New-Item -ItemType Directory -Force C:\ProgramData\sqi | Out-Null
+& "C:\Program Files\sqi\sqi-worker.exe" config print > C:\ProgramData\sqi\sqi-worker.yaml
 ```
 
-At minimum:
+> **Create that directory administrators-only.** Any local user can create
+> `C:\ProgramData\sqi` first, or read what a service later writes there. See
+> [Security notes and known limitations](#security-notes-and-known-limitations)
+> for the two-line `icacls` recipe, and run it *before* the commands above.
+
+At minimum set:
 
 ```yaml
 nats:
@@ -457,52 +479,333 @@ worker:
   data_dir: "C:\\ProgramData\\sqi\\worker"
 ```
 
-### 3. Register as a Windows service
+Set `worker.data_dir` explicitly: its default is `.sqi\worker` under the running
+account's profile, which for LocalSystem is inside
+`C:\Windows\System32\config\systemprofile`.
 
-Open a PowerShell prompt **as Administrator**:
+Check the file before installing it with
+`sqi-worker.exe start --dry-run --config C:\ProgramData\sqi\sqi-worker.yaml`.
+See [`docs/worker-configuration.md`](worker-configuration.md) for every option.
+
+### 3. Install and start the service
+
+From an **elevated** PowerShell:
 
 ```powershell
-New-Service `
-  -Name "sqi-worker" `
-  -DisplayName "sqi Worker Agent" `
-  -Description "sqi distributed task worker" `
-  -BinaryPathName '"C:\Program Files\sqi\sqi-worker.exe" start --config "C:\ProgramData\sqi\sqi-worker.yaml"' `
-  -StartupType Automatic
+& "C:\Program Files\sqi\sqi-worker.exe" service install --start
+```
 
+```text
+installed service "sqi-worker"
+  command: "C:\Program Files\sqi\sqi-worker.exe" start --config C:\ProgramData\sqi\sqi-worker.yaml
+  account: LocalSystem
+  log:     C:\ProgramData\sqi\logs\sqi-worker.log (unless log.file is set)
+service "sqi-worker" is running (pid 4812)
+```
+
+This registers a service named `sqi-worker` (display name *sqi Worker Agent*)
+that:
+
+- runs `sqi-worker.exe start --config <absolute path of the config file>`, with
+  the binary you ran the installer from. Root flags such as `--log-level` are
+  **not** stored in the service; set `log.level` and `log.format` in the config
+  file;
+- runs as **LocalSystem** unless you pass `--user` (see below);
+- runs in the configuration file's directory, so a relative path in the
+  configuration resolves beside it rather than in `C:\Windows\System32`;
+- starts automatically at boot as an *Automatic (Delayed Start)* service, after
+  the other boot-time services. It does not wait for the server: a worker that
+  cannot reach it at boot exits with a failure, and the recovery actions below
+  try again;
+- is restarted by the SCM after a failure — after 5 s, 30 s, then 60 s for the
+  first, second and later failures, with the count reset after 24 hours without
+  one — including when the worker stops itself with an error rather than
+  crashing;
+- is given `worker.shutdown_grace_period` + 15 s (45 s at the default) to drain
+  when Windows shuts down. This is the service's *PreShutdown* timeout (see
+  [Managing the service](#managing-the-service)).
+
+The flags of `service install`:
+
+| Flag | Meaning |
+|---|---|
+| `--config`, `-c` | The worker's configuration file (a flag of the root command; default `C:\ProgramData\sqi\sqi-worker.yaml`). It must exist. If it does not, the error suggests `sqi-worker config print > <path>`. |
+| `--name` | Service name (default `sqi-worker`). See [Multiple workers on one host](#multiple-workers-on-one-host). |
+| `--display-name` | Display name (default `sqi Worker Agent`). A service installed under another `--name` defaults to `sqi Worker Agent (<name>)`, because the SCM refuses two services with the same display name. |
+| `--user` | Account to run as: `DOMAIN\name`, `.\name`, a bare local name (treated as `.\name`) or a UPN. Default LocalSystem. You are prompted for the password. See [Choosing the account](#choosing-the-account). |
+| `--start` | Start the service after installing it and wait (up to 60 s) for it to run. |
+
+`service install` refuses a name that is already registered — straight after the
+elevation check, before any password prompt, permission change or other side
+effect:
+
+```text
+Error: service already exists: sqi-worker; remove it first with: sqi-worker service uninstall --name sqi-worker
+```
+
+If `--start` does not find the service running — it stopped during startup, or
+was still starting after 60 s — the command prints
+`service "sqi-worker" did not start: …` and the last 20 lines of the
+[default log file](#logs), and exits with an error. The service stays installed;
+fix the problem and run `service start`.
+
+### Choosing the account
+
+The service runs as **LocalSystem** by default. LocalSystem reaches network
+shares as the *computer* account (`DOMAIN\HOSTNAME$`), not as a user — if your
+jobs read scenes or write renders on SMB shares that only grant users access,
+run it as a user account:
+
+```powershell
+& "C:\Program Files\sqi\sqi-worker.exe" service install --user STUDIO\render-svc --start
+```
+
+The installer then, in this order:
+
+1. refuses an existing service (above);
+2. checks the configuration file: it must exist, and the worker reads
+   `worker.shutdown_grace_period` from it;
+3. prints a warning about run-as-user privileges (below) and prompts for the
+   password — or reads it from piped standard input; an empty password is
+   refused;
+4. grants the account **Log on as a service** (`SeServiceLogonRight`);
+5. checks the password with a service-type logon;
+6. prepares the log directory's permissions (see [Logs](#logs)); and
+7. creates the service.
+
+The right is granted *before* the password is checked because the check needs
+it. **A wrong password therefore stops the install at step 5 with the right
+still granted; nothing is rolled back.** To take it back, remove the account
+under *Local Security Policy* (`secpol.msc`) → *Local Policies* → *User Rights
+Assignment* → *Log on as a service* (Windows Home has no `secpol.msc`).
+
+A domain Group Policy that defines "Log on as a service" overwrites local grants
+at its next refresh, after which the service fails to start with error **1069**.
+The installer cannot fix that; add the account to the policy.
+
+The account must be able to read the configuration file and write
+`worker.data_dir`.
+
+**Run-as-user queues need more privileges.** If the farm uses run-as-user queues
+([task isolation](worker-configuration.md#windows)), the worker's own account
+needs `SeAssignPrimaryTokenPrivilege` — the installer prints a warning naming it
+whenever you pass `--user`, because the worker config cannot tell whether a
+queue will use isolation — and also `SeIncreaseQuotaPrivilege`, and
+`SeBackupPrivilege` and `SeRestorePrivilege` to load the target account's
+profile. LocalSystem holds all of them; a user account holds them only if you
+grant them. If no queue uses run-as-user, the warning does not apply.
+
+### Paths and drive letters
+
+Services do not see drive letters mapped in a user's logon session. Use UNC
+paths (`\\nas\shows\...`) in job parameters, or map them with
+[storage locations](storage-locations.md) / path mapping.
+
+### Logs
+
+A service has no console, so it logs to a file. Unless `log.file` is set, that
+is `C:\ProgramData\sqi\logs\<service-name>.log` — `<service-name>` being the
+name the service was installed under (`sqi-worker.log` by default) — rotated at
+`log.max_size_mb` (default 100 MB), keeping `log.max_backups` (default 5) old
+files:
+
+```powershell
+Get-Content C:\ProgramData\sqi\logs\sqi-worker.log -Wait -Tail 50
+```
+
+- **Settings.** [`log.file`](worker-configuration.md#logfile),
+  [`log.max_size_mb`](worker-configuration.md#logmax_size_mb) and
+  [`log.max_backups`](worker-configuration.md#logmax_backups) (environment
+  `SQI_WORKER_LOG_FILE`, `SQI_WORKER_LOG_MAX_SIZE_MB` and
+  `SQI_WORKER_LOG_MAX_BACKUPS`) apply to the service like any other run. A
+  relative `log.file` resolves against the service's working directory, which is
+  the directory that holds its configuration file. An explicit `log.file` needs
+  its directory to exist already.
+- **The default directory** is created with permissions that grant full control
+  to SYSTEM, Administrators and the service's account only, and nothing is
+  inherited. `service install` creates it; a hand-registered service creates it
+  at its first start. A directory that already exists is left as it is (a
+  `--user` service is added to it — see the [known limitations](#security-notes-and-known-limitations)).
+- **Rotation** is by size: the file becomes `<file>.1`, `.1` becomes `.2`, and so
+  on up to `log.max_backups`, and the oldest is dropped. A rotation that fails
+  — most often because something such as `Get-Content -Wait`, an editor or a log
+  shipper holds the file open without allowing it to be renamed — is not an
+  error and loses no lines: the worker keeps appending to the current file and
+  tries again after another `log.max_size_mb` of output, so the file can
+  temporarily grow past its limit.
+- **Startup failures** are recorded even when the worker never got as far as
+  opening its log: a worker that stops with an error (for example an invalid
+  config) appends one line to `C:\ProgramData\sqi\logs\<service-name>.log`, such
+  as `{"time":"…","level":"ERROR","msg":"service exited with error","error":"…"}`,
+  and the service reports exit code `1066 (service-specific 1)`. The write is
+  best effort: if that directory cannot be created, only the exit code is left.
+- A console `sqi-worker start --dry-run` opens `log.file` when it is set, so it
+  can create or append to the configured file; without `log.file` a console run
+  logs to stderr.
+
+`service status` and `install --start` always show and tail the **default** log
+path. If you set `log.file`, read that file instead.
+
+### Managing the service
+
+From an elevated PowerShell (with `sqi-worker.exe` on your `PATH`, or by its full
+path). Each command takes `--name` for a service installed under another name.
+
+```powershell
+sqi-worker service status     # state, exit codes, account, start type, command line, log path
+sqi-worker service stop       # asks the worker to drain, and waits for the service to stop
+sqi-worker service start      # waits (up to 60 s) for the service to run
+sqi-worker service uninstall  # stops it (draining first), then removes it; config, data and logs are kept
+```
+
+```text
+name:       sqi-worker
+state:      running
+pid:        4812
+exit codes: 0 (service-specific 0)
+account:    LocalSystem
+start type: automatic (delayed)
+command:    "C:\Program Files\sqi\sqi-worker.exe" start --config C:\ProgramData\sqi\sqi-worker.yaml
+log:        C:\ProgramData\sqi\logs\sqi-worker.log (unless log.file is set)
+```
+
+A service that stopped because of an error shows
+`exit codes: 1066 (service-specific 1)`; one that was stopped on request shows
+`0 (service-specific 0)`. That includes a Stop, or a shutdown, that arrives
+while the worker is still starting up (say, still looking for the server): it is
+a clean stop, never a failure the recovery actions would answer.
+
+`Get-Service sqi-worker` (which needs no elevation), `Start-Service`,
+`Stop-Service` and `services.msc` work too. To upgrade, `service stop`, replace
+`sqi-worker.exe`, and `service start`; the registration keeps its path and
+settings.
+
+**How long each command waits.** `start` waits up to 60 s. `stop` and
+`uninstall` wait for the service to stop for up to its PreShutdown timeout plus
+15 s, and never less than 60 s (60 s at the default grace period); after that
+they fail with `service sqi-worker still stop pending after …`, and the worker
+carries on draining — run `service status` until it shows `stopped`.
+
+**The PreShutdown timeout is fixed at install time.** It is
+`worker.shutdown_grace_period` + 15 s (the server's is 45 s), worked out once by
+`service install` from the configuration file *and* the `SQI_WORKER_*`
+variables set in the shell you install from, and registered with the service.
+Changing `worker.shutdown_grace_period` afterwards, in the file or in the machine
+environment, does not change it: run `service uninstall` and `service install`
+again. Note the running service sees the *machine* environment, not your shell's,
+so a `SQI_WORKER_*` variable set only in your shell shapes the timeout but not
+the worker; put settings in the configuration file.
+
+### Registering the service by hand
+
+`service install` is a convenience; a service registered any other way works
+too, for example:
+
+```powershell
+New-Service -Name "sqi-worker" -DisplayName "sqi Worker Agent" -StartupType Automatic `
+  -BinaryPathName '"C:\Program Files\sqi\sqi-worker.exe" start --config "C:\ProgramData\sqi\sqi-worker.yaml"'
 Start-Service sqi-worker
 ```
 
-Check status:
+Quote the executable and the config path inside the single-quoted string, as
+above, whenever they contain spaces, and use absolute paths. Such a service
+still answers the SCM natively, drains on Stop and on shutdown, runs in the
+config file's directory and logs to the default file. What only `service
+install` configures is missing: delayed start, the recovery actions and the
+PreShutdown timeout, so on a reboot Windows may stop the worker before its drain
+completes. Set recovery yourself with `sc.exe` (not `sc`, which is a PowerShell
+alias for `Set-Content`):
 
 ```powershell
-Get-Service sqi-worker
+sc.exe failure sqi-worker reset= 86400 actions= restart/5000/restart/30000/restart/60000
+sc.exe failureflag sqi-worker 1
 ```
 
-View the Windows Event Log for output (the worker writes JSON to stderr, which
-Windows services route to the Event Log when `StandardOutput` is not
-redirected):
+The second command is what makes the SCM restart a service that stops itself
+with an error rather than crashing.
+
+### Troubleshooting
+
+| Symptom | Cause and fix |
+|---|---|
+| Error **1053**, "the service did not respond to the start or control request in a timely fashion" | The process never answered the SCM. Builds before native service support were plain console programs, so a service registered with `New-Service` timed out and stopped; upgrade `sqi-worker.exe`. On a current build, run it in a console (below) to see why it did not get that far. |
+| Error **1069**, "the service did not start due to a logon failure" | The account's password is wrong or has changed, or the account no longer holds "Log on as a service" (a domain policy can remove it). Add the account to the policy if one applies, then run `service uninstall` and `service install --user …` again, which prompts for the password and grants the right. |
+| The service stops straight after starting | `service status` shows `exit codes: 1066 (service-specific 1)`: the worker exited with an error. Read the [log](#logs); the reason is the last `"service exited with error"` line. The SCM keeps restarting it (5 s, 30 s, then every 60 s) until the configuration is fixed. |
+| `stopped` with `exit codes: 0` that you did not ask for | Unless someone else stopped it, the worker lost its NATS connection for good and shut itself down cleanly, which the SCM does not treat as a failure. See the [known limitations](#security-notes-and-known-limitations). |
+| `service already exists: …` | The name is taken. `service uninstall --name <name>` first, or choose another `--name`. |
+| `must be run from an elevated (Administrator) shell` | Open PowerShell with *Run as administrator*. |
+| `service uninstall` succeeds but the service is still listed | It is *marked for deletion* until every handle to it closes — typically `services.msc` or another management tool. Close them. |
+| Jobs cannot find files | Mapped drive letters or share permissions — see *Choosing the account* and *Paths and drive letters*. |
+
+**Running in a console to see startup errors.** Stop the service first — a
+console run uses the same `worker.data_dir`, so it would register as the same
+worker — then, from an elevated prompt:
 
 ```powershell
-Get-EventLog -LogName Application -Source sqi-worker -Newest 50
+sqi-worker.exe service stop
+sqi-worker.exe start --config C:\ProgramData\sqi\sqi-worker.yaml
 ```
 
-### 4. Stop and remove the service
+Output goes to the console (unless `log.file` is set) and Ctrl-C drains and
+stops it. It runs as *you*, not as the service account, so a problem specific to
+that account (permissions, profile, mapped drives) will not reproduce.
 
-```powershell
-Stop-Service sqi-worker
-Remove-Service sqi-worker
-```
+### Security notes and known limitations
 
-### 5. Auto-start on boot
+These describe what the Windows service support does today; none is hidden by
+the defaults.
 
-The service is created with `StartupType Automatic`, so Windows starts it on
-every boot without additional configuration.
+- **The log directory is shared.** The server and every worker on a host log to
+  the one `C:\ProgramData\sqi\logs` directory. A service installed with
+  `--user X` is granted an inheritable *Modify* permission on it (full control,
+  if it created the directory), so `X` can read, rewrite and delete the *other*
+  services' logs there — for example the LocalSystem `sqi-server`'s, which can
+  carry job and environment detail. When the server and a `--user` worker share
+  a host, give the worker its own `log.file` in a directory that only that
+  account and administrators can write.
+- **`C:\ProgramData\sqi` can be squatted.** `C:\ProgramData` lets any local user
+  create folders, so a user can create `C:\ProgramData\sqi` before you do, and
+  files created there inherit read access for ordinary users. The installer
+  refuses a junction or symbolic link where it has to create the log directory
+  or change its permissions (the directory's parent, and for `--user` the
+  directory itself), but a real directory — or a junction — that already exists
+  at `C:\ProgramData\sqi\logs` is used as it is, and the LocalSystem service then
+  writes through it. And the service's working directory is the directory of its
+  configuration file, `C:\ProgramData\sqi` by default, where the examples above
+  also put `worker.data_dir` (the worker ID and, with broker authentication on,
+  its credential). Create the directory yourself, administrators-only, **before**
+  installing, and keep the configuration file and binaries somewhere only
+  administrators can write:
 
-To delay start until after network services are ready:
+  ```powershell
+  New-Item -ItemType Directory -Force C:\ProgramData\sqi | Out-Null
+  icacls "C:\ProgramData\sqi" /inheritance:r /grant:r "*S-1-5-18:(OI)(CI)F" "*S-1-5-32-544:(OI)(CI)F"
+  ```
 
-```powershell
-Set-Service sqi-worker -StartupType AutomaticDelayedStart
-```
+  (`*S-1-5-18` is SYSTEM and `*S-1-5-32-544` is Administrators.) For a `--user`
+  service also grant that account what it needs, or better give it a directory
+  of its own for its `--config`, `worker.data_dir` and `log.file`.
+- **Losing NATS for good does not restart the worker.** When the worker's NATS
+  connection is permanently lost — a finite `nats.max_reconnect_attempts` running
+  out, or the server revoking its credential — it shuts down cleanly and exits
+  with code 0, as it does on the console and under systemd's
+  `Restart=on-failure`. The SCM's recovery actions fire only on a failure, so the
+  service stays stopped. Watch the worker's online state in the web UI, or
+  `service status`, and restart it with a wrapper or an external monitor.
+- **`service status` and `install --start` know only the default log path.**
+  With `log.file` set they still print and tail `C:\ProgramData\sqi\logs\<name>.log`,
+  which may be missing or a stale file from an earlier run, and a fatal
+  startup error is recorded there too. Read the file you configured.
+- **Account rights are yours to grant.** The installer grants "Log on as a
+  service" only. Other privileges a `--user` account needs (see [Choosing the
+  account](#choosing-the-account)) are not granted for you, and a domain Group
+  Policy can undo the one it grants.
+- **PreShutdown is best effort.** Windows still limits the total time a shutdown
+  may take, so a drain longer than the operating system allows is cut short. Tasks
+  still running are then reassigned once the server notices the worker is gone.
+- **`--name` addresses any service.** `service start`, `stop`, `status` and
+  `uninstall` act on whatever service name you give them, like `sc.exe`:
+  `sqi-worker service uninstall --name Spooler` would delete the print spooler.
 
 ---
 
@@ -593,9 +896,23 @@ capability tags, queues); the template's `Environment=` lines override only the
 three settings that must differ per instance. Manage each with the usual
 `systemctl status sqi-worker@9091` / `journalctl -u sqi-worker@9091`.
 
-> **macOS / Windows:** the same rule applies — give each launchd plist or
-> Windows service a unique `Label`/service name, `SQI_WORKER_DATA_DIR`, and
-> `SQI_WORKER_METRICS_ADDR`.
+> **macOS:** the same rule applies — give each launchd plist a unique `Label`,
+> `SQI_WORKER_DATA_DIR`, and `SQI_WORKER_METRICS_ADDR`.
+
+> **Windows:** install each instance as its own service with its own `--name`
+> and `--config`, and give each configuration file its own `worker.data_dir`,
+> `metrics.addr` and `worker.name` (`service install` gives each instance its own
+> configuration file, not per-instance environment variables):
+>
+> ```powershell
+> & "C:\Program Files\sqi\sqi-worker.exe" service install `
+>   --name sqi-worker-2 --config C:\ProgramData\sqi\sqi-worker-2.yaml --start
+> ```
+>
+> The instance gets the display name `sqi Worker Agent (sqi-worker-2)`, logs to
+> `C:\ProgramData\sqi\logs\sqi-worker-2.log`, and is managed with
+> `sqi-worker service status --name sqi-worker-2`. See
+> [Windows — Windows Service](#windows--windows-service).
 
 > **Docker:** containers are already filesystem-isolated, so just run multiple
 > containers with distinct `--name` values and separate data volumes — see
@@ -631,6 +948,11 @@ tasks to complete. systemd sends `SIGTERM` before `SIGKILL`, so the default
 For long-running renders, increase `shutdown_grace_period` to match your
 longest expected task duration and set `TimeoutStopSec` in the unit file
 accordingly.
+
+On Windows a service **Stop** and a reboot start the same drain. The service's
+PreShutdown timeout is fixed when `service install` runs, so after raising
+`shutdown_grace_period` run `service uninstall` and `service install` again — see
+[Managing the service](#managing-the-service).
 
 ---
 
