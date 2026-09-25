@@ -444,9 +444,14 @@ jobs:
   # POSIX-only isolation_test.go referenced SysProcAttr.Credential, silently
   # breaking `GOOS=windows go vet` with nothing in CI to notice. The extra
   # windows/amd64-only step compiles every internal package (not just cmd/,
-  # unlike the matrix build above) and vets internal/worker/... — vet, like
-  # test compilation, type-checks _test.go files too — so the same class of
-  # break fails a PR instead of surviving until someone runs it by hand.
+  # unlike the matrix build above) and vets internal/worker/... plus the
+  # packages that carry the Windows service support (internal/winsvc,
+  # internal/secretin, internal/log, cmd/...) — vet, like test compilation,
+  # type-checks _test.go files too — so the same class of break fails a PR
+  # instead of surviving until someone runs it by hand. The real-SCM suite
+  # test/winservice is behind both the `winservice` build tag and
+  # //go:build windows, so it is only ever type-checked by the second vet
+  # line, which passes the tag explicitly.
   cross-compile:
     name: Cross-compile (${{ matrix.goos }}/${{ matrix.goarch }})
     runs-on: ubuntu-latest
@@ -479,7 +484,8 @@ jobs:
         if: matrix.goos == 'windows' && matrix.goarch == 'amd64'
         run: |
           GOOS=windows GOARCH=amd64 go build ./internal/... ./cmd/...
-          GOOS=windows GOARCH=amd64 go vet ./internal/worker/...
+          GOOS=windows GOARCH=amd64 go vet ./internal/worker/... ./internal/winsvc/... ./internal/secretin/... ./internal/log/... ./cmd/...
+          GOOS=windows GOARCH=amd64 go vet -tags winservice ./test/winservice/...
 
   # ── Cross-platform runtime smoke ─────────────────────────────────────────────
   # cross-compile (above) proves the binaries *build* for every target; this job
@@ -927,7 +933,11 @@ jobs:
   # every package that merely imports something isolation-related:
   # internal/worker/isolation, internal/worker/executor, internal/worker/staging,
   # and cmd/sqi-worker each carry dedicated _windows.go/_windows_test.go files;
-  # internal/worker/envutil and internal/worker/session have no such files but
+  # so do the Windows service packages: internal/winsvc (the service handler,
+  # SCM wrapper, log-directory ACLs and the `service` command group),
+  # internal/secretin, internal/log (the rotating log file's Windows-only test)
+  # and cmd/sqi-server (its service wiring). internal/worker/envutil and
+  # internal/worker/session have no such files but
   # branch on runtime.GOOS in their test bodies (path separators, credential
   # handling, profile-env resolution), so running them only on Linux would
   # silently skip the Windows branch of every one of those tests.
@@ -966,19 +976,24 @@ jobs:
       #
       # The version is pinned to the same v2.13.1 the ubuntu lint step uses;
       # keep the two in step, or a bump lands here as an unrelated red run.
-      # Scoped to the worker tree rather than the whole module: those are the
-      # packages that carry per-GOOS files, and a full-module run on Windows
-      # would re-report the same findings the ubuntu job already gates.
+      # Scoped to the packages that carry per-GOOS files rather than the whole
+      # module: the worker tree, cmd/sqi-server and cmd/sqi-worker, and the
+      # Windows service support (internal/winsvc, internal/secretin, and
+      # internal/log, whose rotating file has a Windows-only test). A
+      # full-module run on Windows would re-report the same findings the
+      # ubuntu job already gates. ./test/winservice/... is behind the
+      # `winservice` build tag (set in .golangci.yml) AND //go:build windows,
+      # so this is the only place it is ever compiled by the linter.
       - name: golangci-lint (windows sources)
         uses: golangci/golangci-lint-action@v9
         with:
           version: v2.13.1
-          args: --timeout=5m ./cmd/sqi-worker/... ./internal/worker/... ./internal/brokerauth/... ./internal/tlsutil/...
+          args: --timeout=5m ./cmd/sqi-worker/... ./cmd/sqi-server/... ./internal/worker/... ./internal/winsvc/... ./internal/secretin/... ./internal/log/... ./internal/brokerauth/... ./internal/tlsutil/... ./test/winservice/...
 
-      # Windows-only unit tests. See the job comment above for why these six
+      # Windows-only unit tests. See the job comment above for why these
       # packages and not others. -count=1 disables the test cache so a stale
       # pass from an earlier step can't stand in for a real run. -v (and the
-      # tee) exist so the assertion step below has per-test PASS lines to
+      # tee) exist so the assertion steps below have per-test PASS lines to
       # match against; without them a t.Skip is indistinguishable from a pass
       # in this step's output.
       - name: Windows unit tests
@@ -990,6 +1005,10 @@ jobs:
             ./internal/worker/envutil/... \
             ./internal/worker/session/... \
             ./internal/worker/staging/... \
+            ./internal/winsvc/... \
+            ./internal/secretin/... \
+            ./internal/log/... \
+            ./cmd/sqi-server/... \
             ./cmd/sqi-worker/... 2>&1 | tee windows-unit.log
 
       # Separate from the isolation assertion below on purpose: these are a
@@ -1047,6 +1066,112 @@ jobs:
           fi
           exit $missing
 
+      # The Windows service support's unit tests, confirmed PASS by name for the
+      # same reason as the staging block above: a skipped test verifies nothing
+      # and a green `go test` cannot tell a skip from a pass. Separate from the
+      # staging list because it is a different feature with different
+      # prerequisites; the real-SCM suite (test/winservice) has its own job.
+      #
+      # Everything below runs on this job's ELEVATED windows-latest runner and
+      # touches no real service, account or system directory: the service
+      # handler is driven through a fake SCM request channel, the command group
+      # through injected fake operations, and the ACL tests on temp directories
+      # the test owns. A test that can skip on this runner is deliberately NOT
+      # listed:
+      #
+      # TestNewCommand_EverySubcommandRequiresElevationFirst runs the real
+      # operations and therefore skips whenever the process IS elevated, which
+      # this runner is. The property it pins (every subcommand checks for
+      # elevation before doing anything else) is required by name below as
+      # TestNewCommand_ElevationCheckedBeforeAnyOperation, which injects an
+      # operations set whose elevation check fails and so holds at any
+      # elevation.
+      #
+      # TestRotatingFile_RenameBlockedByOpenHandleKeepsAppending is deliberately
+      # NOT in this list either, and that is a finding rather than an omission:
+      # THIS RUNNER DOES NOT ENFORCE WINDOWS SHARE MODES (the same measurement
+      # the staging block above rests on). A file opened without
+      # FILE_SHARE_DELETE can still be renamed, so the blocked rotation that
+      # test exists to provoke cannot be reproduced on this host and the test's
+      # own probe skips it, honestly, instead of reporting a missing OS
+      # behavior as an sqi defect. The property it proves (a failed rotation
+      # rename keeps appending, loses nothing, and retries later) is required
+      # by name below as TestRotatingFile_RenameFailureKeepsAppendingAndRetriesLater,
+      # which injects the failure and so holds on every host.
+      - name: Assert the windows service unit tests actually ran
+        shell: bash
+        run: |
+          expected=(
+            # The SCM handler (internal/winsvc/handler_windows_test.go).
+            TestHandler_StopCancelsAndExitsZero
+            TestHandler_PreShutdownCancels
+            TestHandler_FnErrorExitsServiceSpecificAndTraces
+            TestHandler_CheckpointsAdvanceDuringSlowDrain
+            TestHandler_StopDuringSlowStartup
+            TestHandler_InterrogateAnsweredWhileRunningAndStopping
+            TestHandler_ServiceNameFromArgs
+            TestHandler_ChdirFailureIsReported
+            TestHandler_CanceledErrorAfterStopIsCleanExit
+            TestHandler_CanceledErrorWithoutStopStillFails
+            TestHandler_OtherErrorAfterStopStillFails
+            # The `service` command group, driven by fake operations.
+            TestNewCommand_ElevationCheckedBeforeAnyOperation
+            TestInstall_ExistingServiceRefusedBeforeAnySideEffect
+            TestInstall_DisplayNameForAnotherInstance
+            # SCM helpers: stop-and-wait, create-error mapping, elevation check.
+            TestStopAndWait
+            TestStopAndWait_NeverStopsIsBounded
+            TestStopAndWait_OtherControlErrorFails
+            TestCreateError_MapsServiceExists
+            TestRequireElevated_MatchesProcessToken
+            # Log-directory ACLs and junction refusal, on temp directories.
+            TestEnsureLogDir_GrantsAccountOnExistingProtectedDir
+            TestEnsureLogDir_CreatesProtectedDirForAccount
+            TestEnsureLogDir_KeepsUnprotectedDirUnprotected
+            TestEnsureLogDir_RefusesJunction
+            TestEnsureLogDir_RefusesReparsePointParent
+            TestEnsureLogDir_RefusesReparsePointParentOnCreate
+            TestEnsureLogDir_RefusesExistingFile
+            TestCreateLogDir_MissingDirGetsProtectedDACL
+            TestCreateLogDir_ExistingDirIsUntouched
+            TestCreateLogDir_ExistingJunctionIsLeftAlone
+            TestCreateLogDir_RefusesReparsePointParent
+            TestCreateLogDir_ExistingDirUnderReparsePointParentIsLeftAlone
+            TestRuntimeLogDirsAreProtected
+            # Service-mode log path resolution and the startup-failure trace.
+            TestDefaultLogPath_UnderProgramData
+            TestResolveLogFile_ServiceModeCreatesDirectory
+            TestAppendTrace_WritesJSONLine
+            # The rotating log file (internal/log).
+            TestRotatingFile_RenameFailureKeepsAppendingAndRetriesLater
+            TestRotatingFile_RecoversAfterFailedReopen
+            TestRotatingFile_CloseAfterUnrecoveredReopenIsNil
+            # Hidden-input secret reading (internal/secretin).
+            TestReadLine_PipedInputUnchanged
+            TestReadLine_EmptyInputErrors
+            # Per-binary service wiring.
+            TestServerServiceCommand_Registered
+            TestServerDrainTimeout_IsShutdownTimeout
+            TestWorkerServiceCommand_Registered
+            TestWorkerDrainTimeout_FromConfig
+            TestRegisterShutdownSignals
+            TestRegisterShutdownSignals_RealConsolePathReleases
+            TestConnectToBroker_FailedDialAfterCancelWrapsCanceled
+          )
+          missing=0
+          for name in "${expected[@]}"; do
+            # The trailing space is an ANCHOR, not formatting: see the staging
+            # block above.
+            if ! grep -q -- "--- PASS: $name " windows-unit.log; then
+              echo "::error::$name did not pass (skipped, missing, or failed)"
+              missing=1
+            fi
+          done
+          if [ "$missing" -eq 0 ]; then
+            echo "Confirmed all ${#expected[@]} named windows service unit tests passed."
+          fi
+          exit $missing
+
       - name: Run windows isolation integration tests
         shell: pwsh
         run: |
@@ -1100,6 +1225,76 @@ jobs:
           done
           if [ "$missing" -eq 0 ]; then
             echo "Confirmed all ${#expected[@]}/17 named isolation tests passed."
+          fi
+          exit $missing
+
+  # ── Windows service: real Service Control Manager ────────────────────────────
+  # Drives both binaries through the real Windows Service Control Manager:
+  # install, start, stop, uninstall, a hand-registered New-Service worker (the
+  # original bug report), a startup failure's trace, and a --user account.
+  # The fake-driven unit tests for the same code run in
+  # isolation-integration-windows above; this is the only job that installs a
+  # real service.
+  #
+  # windows-latest runners are elevated. The suite prints "not elevated" and
+  # exits 0 without running when they are not — the same shape as the isolation
+  # script above — so a bare exit 0 proves NOTHING, and the assertion step fails
+  # on that message and requires every test PASS by name.
+  #
+  # One arch, for the same reason as isolation-integration-windows: the Win32
+  # APIs this exercises (the SCM, LogonUserW, the LSA) are not architecture-
+  # dependent, and hosted windows-arm64 runners are not generally available.
+  winservice-integration:
+    name: Windows service integration
+    runs-on: windows-latest
+    needs: test
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+
+      # -timeout matches `make test-service-windows`. The suite builds both
+      # binaries itself (in TestMain), so no separate build step is needed.
+      - name: Run the Windows service suite
+        shell: bash
+        run: |
+          go test -tags winservice -count=1 -v -timeout 20m ./test/winservice/... 2>&1 | tee winservice.log
+
+      # Does not trust a bare exit-0: asserts the suite actually executed (the
+      # runner was elevated) and that each of the six tests is confirmed PASS by
+      # name, so a silent skip, a build failure, or a partial run all fail the
+      # job instead of passing quietly.
+      - name: Assert the suite actually ran
+        shell: bash
+        run: |
+          if grep -q "not elevated" winservice.log; then
+            echo "::error::The runner was not elevated — the service suite did not run. A skip here proves nothing, so this is a hard failure."
+            exit 1
+          fi
+          expected=(
+            TestWinService_ServerLifecycle
+            TestWinService_InstallRefusesExisting
+            TestWinService_WorkerLifecycle
+            TestWinService_StartupFailureLeavesTrace
+            TestWinService_HandRegisteredNewService
+            TestWinService_UserAccount
+          )
+          missing=0
+          for name in "${expected[@]}"; do
+            # Trailing space is an ANCHOR, not formatting — same reasoning as
+            # the isolation-integration-windows job's assertion steps.
+            if ! grep -q -- "--- PASS: $name " winservice.log; then
+              echo "::error::$name did not pass (skipped, missing, or failed)"
+              missing=1
+            fi
+          done
+          if [ "$missing" -eq 0 ]; then
+            echo "Confirmed all ${#expected[@]}/6 named Windows service tests passed."
           fi
           exit $missing
 

@@ -22,6 +22,8 @@ run:
     - conformance
     - oracle
     - presetlib
+    # test/winservice: real-SCM suite, also `windows`-only, so it is linted by the Windows job.
+    - winservice
 
 # ── Linters ───────────────────────────────────────────────────────────────────
 linters:
