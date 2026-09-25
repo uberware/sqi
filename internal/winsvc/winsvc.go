@@ -108,9 +108,9 @@ func workDir(configPath string) string {
 }
 
 // ResolveLogFile returns the log file to write: configured when set; in
-// service mode with nothing configured, [DefaultLogPath] (its directory
-// created — a hand-registered service never ran `service install`); otherwise
-// "" for stderr.
+// service mode with nothing configured, [DefaultLogPath] (a missing directory
+// created with a protected ACL — a hand-registered service never ran `service
+// install`); otherwise "" for stderr.
 func ResolveLogFile(ctx context.Context, configured string) (string, error) {
 	if configured != "" {
 		return configured, nil
@@ -120,7 +120,7 @@ func ResolveLogFile(ctx context.Context, configured string) (string, error) {
 		return "", nil
 	}
 	path := DefaultLogPath(name)
-	if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
+	if err := createLogDir(filepath.Dir(path)); err != nil {
 		return "", fmt.Errorf("winsvc: create log directory: %w", err)
 	}
 	return path, nil

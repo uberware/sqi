@@ -14,7 +14,7 @@ import (
 // error, so a service that fails before (or after) building its own logger
 // still leaves a line an operator can read.
 func appendTrace(path string, cause error) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
+	if err := createLogDir(filepath.Dir(path)); err != nil {
 		return fmt.Errorf("winsvc: create trace directory: %w", err)
 	}
 	line, err := json.Marshal(struct {
