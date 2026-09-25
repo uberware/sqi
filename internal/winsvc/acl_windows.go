@@ -7,6 +7,7 @@ package winsvc
 import (
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"slices"
@@ -58,8 +59,21 @@ func EnsureLogDir(dir, account string) error {
 // mkdirProtected creates dir, and any missing parents, and gives dir a
 // protected DACL granting inheritable full control to SYSTEM, Administrators
 // and account (when non-nil). Parents it creates inherit as usual. When dir
-// already exists it changes nothing and reports created false.
+// already exists it changes nothing and reports created false. It refuses to
+// create dir under a reparse-point parent (see checkParent).
 func mkdirProtected(dir string, account *windows.SID) (created bool, err error) {
+	info, err := os.Stat(dir)
+	switch {
+	case err == nil && info.IsDir():
+		return false, nil
+	case err == nil:
+		return false, fmt.Errorf("%s exists and is not a directory", dir)
+	case !errors.Is(err, fs.ErrNotExist):
+		return false, fmt.Errorf("stat %s: %w", dir, err)
+	}
+	if err := checkParent(dir); err != nil {
+		return false, err
+	}
 	if err := os.MkdirAll(filepath.Dir(dir), 0o750); err != nil {
 		return false, fmt.Errorf("create %s: %w", filepath.Dir(dir), err)
 	}
@@ -115,6 +129,9 @@ func protectNewDir(dir string, sids []*windows.SID) error {
 // and writes through one handle to dir itself, so it refuses a junction or
 // symbolic link rather than changing the ACL of what it points to.
 func grantDir(dir string, sid *windows.SID, mask windows.ACCESS_MASK) error {
+	if err := checkParent(dir); err != nil {
+		return err
+	}
 	h, err := openDirForACL(dir)
 	if err != nil {
 		return err
@@ -135,9 +152,31 @@ func grantDir(dir string, sid *windows.SID, mask windows.ACCESS_MASK) error {
 	return writeDACL(h, dir, []*windows.SID{sid}, mask, existing, control&windows.SE_DACL_PROTECTED != 0)
 }
 
-// errReparsePoint is returned when a directory whose ACL would change is a
+// errReparsePoint is returned when the log directory, or its parent, is a
 // junction or symbolic link.
-var errReparsePoint = errors.New("is a junction or symbolic link; refusing to change the ACL of what it points to")
+var errReparsePoint = errors.New("is a junction or symbolic link")
+
+// checkParent refuses to go on when dir's parent exists and is not a plain
+// directory. FILE_FLAG_OPEN_REPARSE_POINT protects only dir's final
+// component, but the default log directory's parent, %ProgramData%\sqi, can
+// be created as a junction by any local user without privilege (ProgramData
+// grants Users create-folder and write-data), or an empty one converted into
+// one; every path below it would then resolve into the junction's target —
+// and every host has C:\Windows\Logs. A missing parent is fine: MkdirAll
+// creates it. Residual TOCTOU, accepted: the parent is checked and then used
+// by path, so one swapped for a junction during the install itself is not
+// caught.
+func checkParent(dir string) error {
+	h, err := openPlainDir(filepath.Dir(dir), windows.FILE_READ_ATTRIBUTES)
+	switch {
+	case errors.Is(err, windows.ERROR_FILE_NOT_FOUND) || errors.Is(err, windows.ERROR_PATH_NOT_FOUND):
+		return nil
+	case err != nil:
+		return fmt.Errorf("cannot secure log directory %s: parent %w", dir, err)
+	}
+	windows.CloseHandle(h) //nolint:errcheck // only its attributes were needed
+	return nil
+}
 
 // openDirForACL opens dir itself for reading and writing its DACL, and fails
 // unless dir is a plain directory.
@@ -153,35 +192,46 @@ var errReparsePoint = errors.New("is a junction or symbolic link; refusing to ch
 // internal/worker/isolation's openForACL, which this leaf package may not
 // import. FILE_FLAG_BACKUP_SEMANTICS is required to open a directory at all.
 func openDirForACL(dir string) (windows.Handle, error) {
-	p, err := windows.UTF16PtrFromString(dir)
+	h, err := openPlainDir(dir, windows.READ_CONTROL|windows.WRITE_DAC|windows.FILE_READ_ATTRIBUTES)
 	if err != nil {
-		return 0, fmt.Errorf("encode path %q: %w", dir, err)
+		return 0, fmt.Errorf("cannot secure log directory: %w", err)
 	}
-	h, err := windows.CreateFile(p,
-		windows.READ_CONTROL|windows.WRITE_DAC|windows.FILE_READ_ATTRIBUTES,
+	return h, nil
+}
+
+// openPlainDir opens path itself (never a reparse point's target) with access,
+// which must include FILE_READ_ATTRIBUTES, and fails unless it is a plain
+// directory. The CreateFile error is wrapped, so a caller can test for a
+// missing path.
+func openPlainDir(path string, access uint32) (windows.Handle, error) {
+	p, err := windows.UTF16PtrFromString(path)
+	if err != nil {
+		return 0, fmt.Errorf("encode path %q: %w", path, err)
+	}
+	h, err := windows.CreateFile(p, access,
 		windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE|windows.FILE_SHARE_DELETE,
 		nil, windows.OPEN_EXISTING,
 		windows.FILE_FLAG_BACKUP_SEMANTICS|windows.FILE_FLAG_OPEN_REPARSE_POINT, 0)
 	if err != nil {
-		return 0, fmt.Errorf("open %s to change its ACL: %w", dir, err)
+		return 0, fmt.Errorf("open %s: %w", path, err)
 	}
-	if err := checkPlainDir(h, dir); err != nil {
+	if err := checkPlainDir(h, path); err != nil {
 		windows.CloseHandle(h) //nolint:errcheck // returning the check's error
 		return 0, err
 	}
 	return h, nil
 }
 
-func checkPlainDir(h windows.Handle, dir string) error {
+func checkPlainDir(h windows.Handle, path string) error {
 	var info windows.ByHandleFileInformation
 	if err := windows.GetFileInformationByHandle(h, &info); err != nil {
-		return fmt.Errorf("read attributes of %s: %w", dir, err)
+		return fmt.Errorf("read attributes of %s: %w", path, err)
 	}
 	switch {
 	case info.FileAttributes&windows.FILE_ATTRIBUTE_REPARSE_POINT != 0:
-		return fmt.Errorf("%s %w", dir, errReparsePoint)
+		return fmt.Errorf("%s %w; it must be a real directory", path, errReparsePoint)
 	case info.FileAttributes&windows.FILE_ATTRIBUTE_DIRECTORY == 0:
-		return fmt.Errorf("%s is not a directory", dir)
+		return fmt.Errorf("%s is not a directory", path)
 	}
 	return nil
 }

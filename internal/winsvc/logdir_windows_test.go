@@ -7,6 +7,7 @@ package winsvc
 import (
 	"context"
 	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"testing"
@@ -64,6 +65,33 @@ func TestCreateLogDir_ExistingJunctionIsLeftAlone(t *testing.T) {
 	}
 	if after := daclBytes(t, target); after != before {
 		t.Errorf("createLogDir changed the junction target's DACL:\nbefore %s\nafter  %s", before, after)
+	}
+}
+
+// TestCreateLogDir_RefusesReparsePointParent pins that a service creating its
+// default log directory at runtime refuses a junction parent (and so fails
+// with a trace) rather than creating the directory inside the target.
+func TestCreateLogDir_RefusesReparsePointParent(t *testing.T) {
+	dir, targetLogs := junctionParent(t, false)
+	if err := createLogDir(dir); !errors.Is(err, errReparsePoint) {
+		t.Errorf("createLogDir(<junction>\\logs) = %v, want errReparsePoint", err)
+	}
+	if _, err := os.Lstat(targetLogs); !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("a logs directory was created in the junction's target (lstat: %v)", err)
+	}
+}
+
+// TestCreateLogDir_ExistingDirUnderReparsePointParentIsLeftAlone pins that
+// the "already exists → change nothing" branch stays as it was: with no ACL
+// change there is nothing to refuse.
+func TestCreateLogDir_ExistingDirUnderReparsePointParentIsLeftAlone(t *testing.T) {
+	dir, targetLogs := junctionParent(t, true)
+	before := daclBytes(t, targetLogs)
+	if err := createLogDir(dir); err != nil {
+		t.Fatalf("createLogDir = %v, want nil for an existing directory", err)
+	}
+	if after := daclBytes(t, targetLogs); after != before {
+		t.Errorf("createLogDir changed an existing directory's DACL:\nbefore %s\nafter  %s", before, after)
 	}
 }
 

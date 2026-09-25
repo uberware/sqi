@@ -7,6 +7,7 @@ package winsvc
 import (
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -78,7 +79,8 @@ type fakeService struct {
 	state     svc.State
 	next      []svc.State
 	afterStop []svc.State
-	ctlErr    error // returned by every Control when set
+	ctlErr    error     // returned by every Control when set …
+	ctlState  svc.State // … with this status
 	stops     int
 }
 
@@ -90,7 +92,7 @@ func (f *fakeService) Control(c svc.Cmd) (svc.Status, error) {
 	st := svc.Status{State: f.state}
 	switch {
 	case f.ctlErr != nil:
-		return svc.Status{}, f.ctlErr
+		return svc.Status{State: f.ctlState}, f.ctlErr
 	case f.state == svc.Stopped:
 		return st, windows.ERROR_SERVICE_NOT_ACTIVE
 	case f.state == svc.StartPending || f.state == svc.StopPending:
@@ -127,6 +129,12 @@ func TestStopAndWait(t *testing.T) {
 			2,
 		},
 		{"start pending then stopped on its own", &fakeService{state: svc.StartPending, next: []svc.State{svc.Stopped}}, 1},
+		{
+			// It stopped between the caller's Query and this Control.
+			"stopped before the control landed",
+			&fakeService{state: svc.Stopped, ctlErr: windows.ERROR_SERVICE_CANNOT_ACCEPT_CTRL, ctlState: svc.Stopped},
+			1,
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			st, err := stopAndWait(tc.svc, "sqi-test", wait)
@@ -313,6 +321,61 @@ func TestEnsureLogDir_RefusesJunction(t *testing.T) {
 	}
 	if after := daclBytes(t, target); after != before {
 		t.Errorf("the junction target's DACL changed:\nbefore %s\nafter  %s", before, after)
+	}
+}
+
+// junctionParent builds <root>\target (with a plain `logs` subdirectory when
+// withLogs) and <root>\sqi as a junction to it, the way any local user can
+// pre-position %ProgramData%\sqi. It returns <root>\sqi\logs and the real
+// <root>\target\logs.
+func junctionParent(t *testing.T, withLogs bool) (dir, targetLogs string) {
+	t.Helper()
+	root := t.TempDir()
+	target := filepath.Join(root, "target")
+	if err := os.Mkdir(target, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	targetLogs = filepath.Join(target, "logs")
+	if withLogs {
+		if err := os.Mkdir(targetLogs, 0o750); err != nil {
+			t.Fatal(err)
+		}
+	}
+	parent := filepath.Join(root, "sqi")
+	mklinkJunction(t, parent, target)
+	return filepath.Join(parent, "logs"), targetLogs
+}
+
+// TestEnsureLogDir_RefusesReparsePointParent pins that a junction one level
+// up cannot redirect the grant: every host has C:\Windows\Logs, so a
+// %ProgramData%\sqi junction to C:\Windows would otherwise hand the service
+// account Modify on it.
+func TestEnsureLogDir_RefusesReparsePointParent(t *testing.T) {
+	dir, targetLogs := junctionParent(t, true)
+	before := daclBytes(t, targetLogs)
+	_, account := currentAccount(t)
+
+	err := EnsureLogDir(dir, account)
+	if !errors.Is(err, errReparsePoint) {
+		t.Errorf("EnsureLogDir(<junction>\\logs) = %v, want errReparsePoint", err)
+	}
+	if after := daclBytes(t, targetLogs); after != before {
+		t.Errorf("the junction target's logs DACL changed:\nbefore %s\nafter  %s", before, after)
+	}
+}
+
+// TestEnsureLogDir_RefusesReparsePointParentOnCreate is the create path of the
+// same redirection: nothing may be created inside the junction's target.
+func TestEnsureLogDir_RefusesReparsePointParentOnCreate(t *testing.T) {
+	dir, targetLogs := junctionParent(t, false)
+	_, account := currentAccount(t)
+
+	err := EnsureLogDir(dir, account)
+	if !errors.Is(err, errReparsePoint) {
+		t.Errorf("EnsureLogDir(<junction>\\logs) = %v, want errReparsePoint", err)
+	}
+	if _, statErr := os.Lstat(targetLogs); !errors.Is(statErr, fs.ErrNotExist) {
+		t.Errorf("a logs directory was created in the junction's target (lstat: %v)", statErr)
 	}
 }
 

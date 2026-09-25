@@ -247,13 +247,15 @@ func stopAndWait(s controller, name string, wait time.Duration) (svc.Status, err
 // requestStop sends Stop. The SCM refuses it with CANNOT_ACCEPT_CTRL (and the
 // current status) while a service is start- or stop-pending: stop-pending
 // needs nothing more, and starting reports start-pending, which must be
-// waited out before Stop can be sent.
+// waited out before Stop can be sent. CANNOT_ACCEPT_CTRL with Stopped means
+// the service stopped between the caller's Query and this Control.
 func requestStop(s controller, name string) (starting bool, err error) {
 	st, err := s.Control(svc.Stop)
 	switch {
 	case err == nil || errors.Is(err, windows.ERROR_SERVICE_NOT_ACTIVE):
 		return false, nil
-	case errors.Is(err, windows.ERROR_SERVICE_CANNOT_ACCEPT_CTRL) && st.State == svc.StopPending:
+	case errors.Is(err, windows.ERROR_SERVICE_CANNOT_ACCEPT_CTRL) &&
+		(st.State == svc.StopPending || st.State == svc.Stopped):
 		return false, nil
 	case errors.Is(err, windows.ERROR_SERVICE_CANNOT_ACCEPT_CTRL) && st.State == svc.StartPending:
 		return true, nil
