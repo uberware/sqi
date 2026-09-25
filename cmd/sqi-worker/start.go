@@ -6,9 +6,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"sort"
 	"strings"
 	"syscall"
@@ -21,6 +23,7 @@ import (
 	"github.com/uberware/sqi/internal/bus"
 	"github.com/uberware/sqi/internal/health"
 	sqilog "github.com/uberware/sqi/internal/log"
+	"github.com/uberware/sqi/internal/winsvc"
 	"github.com/uberware/sqi/internal/worker/cancel"
 	"github.com/uberware/sqi/internal/worker/capabilities"
 	workerconfig "github.com/uberware/sqi/internal/worker/config"
@@ -55,11 +58,11 @@ The worker discovers and connects to a running sqi-server (via explicit NATS
 URL or mDNS auto-discovery), registers itself with its capability tags and
 compute location, and begins requesting task leases over NATS.
 
-The worker runs until it receives SIGINT or SIGTERM, at which point it
-performs a graceful shutdown: it stops accepting new task assignments and
-waits for in-flight tasks to complete (up to the configured shutdown grace
-period), then force-terminates any remaining tasks and closes the NATS
-connection.
+The worker runs until it receives SIGINT or SIGTERM — or, when started by the
+Windows Service Control Manager, a service stop — at which point it performs a
+graceful shutdown: it stops accepting new task assignments and waits for
+in-flight tasks to complete (up to the configured shutdown grace period), then
+force-terminates any remaining tasks and closes the NATS connection.
 
 Use --dry-run to resolve and print the effective configuration and detected
 capabilities without connecting to the server.`,
@@ -80,6 +83,35 @@ func init() {
 }
 
 func runStart(cmd *cobra.Command, _ []string) error {
+	// In service mode winsvc.Run changes the working directory to the config
+	// file's directory before calling runWorker, so a relative --config (a
+	// service registered by hand) would then resolve against the new
+	// directory. Make it absolute first so WithWorkDirFromConfig and
+	// loadAndValidateConfig (which reads persistentFlags.ConfigFile) see the
+	// same path. A console run keeps the value exactly as given.
+	if winsvc.IsService() && persistentFlags.ConfigFile != "" {
+		abs, err := filepath.Abs(persistentFlags.ConfigFile)
+		if err != nil {
+			return fmt.Errorf("resolve config path: %w", err)
+		}
+		persistentFlags.ConfigFile = abs
+	}
+
+	// winsvc.Run cancels ctx on SIGINT/SIGTERM in a console, or on a service
+	// Stop/PreShutdown when the Windows SCM started us. Everything — config
+	// included — runs inside it, so a service resolves relative paths from its
+	// config directory and an early failure reaches the service's log.
+	return winsvc.Run("sqi-worker", func(ctx context.Context) error {
+		return runWorker(ctx, cmd)
+	}, winsvc.WithWorkDirFromConfig(persistentFlags.ConfigFile))
+}
+
+// runWorker loads configuration, builds the logger and runs the worker until
+// ctx is canceled (a signal, a service stop, or a permanent NATS loss), then
+// drains in-flight tasks and deregisters. It returns nil after a clean
+// shutdown: a service that exits non-zero on a Stop the operator asked for
+// would trigger the SCM's failure-recovery restart.
+func runWorker(ctx context.Context, cmd *cobra.Command) error {
 	// ── Configuration ─────────────────────────────────────────────────────────
 	cfg, err := loadAndValidateConfig(cmd)
 	if err != nil {
@@ -87,7 +119,17 @@ func runStart(cmd *cobra.Command, _ []string) error {
 	}
 
 	// ── Logger ────────────────────────────────────────────────────────────────
-	logger, err := sqilog.New(cfg.Log.Level, cfg.Log.Format, os.Stderr)
+	//
+	// out is stderr unless log.file is set (or the process is a service, which
+	// defaults to a file under %ProgramData%). It is closed on return; the defer
+	// is registered before every other one in this function, so it runs last and
+	// the logger's synchronous users all finish first.
+	out, err := winsvc.LogOutput(ctx, cfg.Log.File, cfg.Log.MaxSizeMB, cfg.Log.MaxBackups)
+	if err != nil {
+		return fmt.Errorf("open log output: %w", err)
+	}
+	defer out.Close()
+	logger, err := sqilog.New(cfg.Log.Level, cfg.Log.Format, out)
 	if err != nil {
 		return fmt.Errorf("init logger: %w", err)
 	}
@@ -108,22 +150,19 @@ func runStart(cmd *cobra.Command, _ []string) error {
 		return err
 	}
 
-	// ── Signal context ────────────────────────────────────────────────────────
+	// ── Shutdown context ──────────────────────────────────────────────────────
 	//
-	// shutdownSig captures the actual OS signal so shutdown can log the trigger
-	// name ("interrupt" vs "terminated") rather than the generic ctx.Err()
-	// string.  signal.NotifyContext registers for the same signals and cancels
-	// ctx; both registrations receive the same delivery.
+	// shutdownSig captures the OS signal (console runs) so shutdown can log the
+	// trigger name ("interrupt" vs "terminated") rather than the generic
+	// ctx.Err() string; a service stop is read from winsvc.StopReason instead.
+	// winsvc.Run's own signal registration (console) and this one receive the
+	// same delivery. The extra cancel lets watchNATSClosure start a shutdown on
+	// permanent NATS loss.
 	shutdownSig := make(chan os.Signal, 1)
 	signal.Notify(shutdownSig, os.Interrupt, syscall.SIGTERM)
-
-	ctx, stop := signal.NotifyContext(
-		context.Background(),
-		os.Interrupt,    // SIGINT  (Ctrl-C)
-		syscall.SIGTERM, // sent by systemd / Docker
-	)
-	defer stop()
 	defer signal.Stop(shutdownSig)
+	ctx, stop := context.WithCancel(ctx)
+	defer stop()
 
 	// ── Server discovery ───────────────────────────────────────
 	//
@@ -166,7 +205,7 @@ func runStart(cmd *cobra.Command, _ []string) error {
 	// All components constructed below receive this sink-enabled logger;
 	// NewWithSink also installs it as slog.Default(). The early logger was used
 	// only for startup messages emitted before the NATS connection existed.
-	logger, err = withDiagnosticSink(cfg, logger, nc, workerID)
+	logger, err = withDiagnosticSink(cfg, logger, out, nc, workerID)
 	if err != nil {
 		return err
 	}
@@ -409,16 +448,11 @@ func runStart(cmd *cobra.Command, _ []string) error {
 
 	// ── Log shutdown trigger ─────────────────────────────────────────
 	//
-	// Determine the signal that triggered shutdown for operators reading logs.
-	// NATS-driven shutdowns (permanent connection loss) won't populate sigName;
-	// they fall back to the ctx.Err() message.
-	var sigName string
-	select {
-	case sig := <-shutdownSig:
-		sigName = sig.String()
-	default:
-		sigName = ctx.Err().Error()
-	}
+	// Determine what triggered shutdown for operators reading logs: the OS
+	// signal in a console run, the SCM request for a Windows service.
+	// NATS-driven shutdowns (permanent connection loss) populate neither; they
+	// fall back to the ctx.Err() message.
+	sigName := shutdownTrigger(ctx, shutdownSig)
 	logger.InfoContext(
 		context.Background(), "sqi-worker shutdown triggered",
 		slog.String("trigger", sigName),
@@ -460,7 +494,7 @@ func runStart(cmd *cobra.Command, _ []string) error {
 // checkRootAndLoadWorkerID performs the two boot-time identity checks that
 // must happen before any network connection: refusing to run as root on
 // Linux/macOS unless allow_root is explicitly set (a no-op on Windows), then
-// loading or creating this worker's stable ID. Extracted from [runStart] to
+// loading or creating this worker's stable ID. Extracted from [runWorker] to
 // keep that function's cyclomatic complexity within the project limit.
 func checkRootAndLoadWorkerID(cfg workerconfig.WorkerConfig, logger *slog.Logger) (string, error) {
 	if err := executor.CheckRootUser(cfg.Worker.AllowRoot, logger); err != nil {
@@ -474,7 +508,7 @@ func checkRootAndLoadWorkerID(cfg workerconfig.WorkerConfig, logger *slog.Logger
 }
 
 // connectToBroker loads or obtains this worker's nkey broker credential and
-// dials the broker with it. Extracted from [runStart] to keep that
+// dials the broker with it. Extracted from [runWorker] to keep that
 // function's cyclomatic complexity within the project limit.
 //
 // A missing credential (enroll.ErrNoCredential) is NOT immediately fatal:
@@ -524,7 +558,7 @@ func connectToBroker(
 
 // loadAndValidateConfig resolves CLI flag overrides, loads the layered
 // configuration, and runs validation — returning a ready-to-use [WorkerConfig]
-// or an error with an actionable message. Extracted from [runStart] to keep
+// or an error with an actionable message. Extracted from [runWorker] to keep
 // that function's cyclomatic complexity within the project limit.
 func loadAndValidateConfig(cmd *cobra.Command) (workerconfig.WorkerConfig, error) {
 	overrides := flagOverrides()
@@ -627,7 +661,7 @@ func runDryRun(cfg workerconfig.WorkerConfig) error {
 
 // watchNATSClosure blocks until either ctx is canceled (normal shutdown) or the
 // NATS connection permanently closes. On unexpected closure it logs and calls
-// stop to trigger a graceful worker shutdown. Extracted from [runStart] to keep
+// stop to trigger a graceful worker shutdown. Extracted from [runWorker] to keep
 // that function's cyclomatic complexity within the project limit.
 func watchNATSClosure(ctx context.Context, natsClosed <-chan struct{}, stop func(), logger *slog.Logger) {
 	select {
@@ -636,27 +670,44 @@ func watchNATSClosure(ctx context.Context, natsClosed <-chan struct{}, stop func
 	case <-natsClosed:
 		// NATS permanently closed outside of a planned shutdown. Cancel the
 		// signal context to trigger the worker shutdown sequence.
-		logger.ErrorContext(context.Background(),
+		logger.ErrorContext(ctx,
 			"natsclient: connection permanently closed — initiating worker shutdown")
 		stop()
 	}
 }
 
+// shutdownTrigger names what started shutdown for the log: the OS signal in a
+// console run, the SCM request for a Windows service, or ctx's error (e.g. a
+// NATS-driven shutdown). It is called once ctx is done; with no signal and no
+// service stop it reports ctx.Err(), which is non-nil only then.
+func shutdownTrigger(ctx context.Context, sig <-chan os.Signal) string {
+	select {
+	case s := <-sig:
+		return s.String()
+	default:
+	}
+	if r := winsvc.StopReason(ctx); r != "" {
+		return r
+	}
+	return ctx.Err().Error()
+}
+
 // withDiagnosticSink rebuilds logger so the worker's own slog output is mirrored
-// to sqi-server on worker.diag.<workerID> (in addition to stderr) when
-// diagnostics are enabled; otherwise it returns logger unchanged. Extracted from
-// [runStart] to keep that function's cyclomatic complexity within the project
-// limit.
+// to sqi-server on worker.diag.<workerID> (in addition to out, the log
+// destination the caller opened) when diagnostics are enabled; otherwise it
+// returns logger unchanged. Extracted from [runWorker] to keep that function's
+// cyclomatic complexity within the project limit.
 func withDiagnosticSink(
 	cfg workerconfig.WorkerConfig,
 	logger *slog.Logger,
+	out io.Writer,
 	nc *nats.Conn,
 	workerID string,
 ) (*slog.Logger, error) {
 	if !cfg.Diagnostics.Enabled {
 		return logger, nil
 	}
-	l, err := sqilog.NewWithSink(cfg.Log.Level, cfg.Log.Format, os.Stderr, diaglog.New(nc, workerID))
+	l, err := sqilog.NewWithSink(cfg.Log.Level, cfg.Log.Format, out, diaglog.New(nc, workerID))
 	if err != nil {
 		return nil, fmt.Errorf("init diagnostic logger: %w", err)
 	}
