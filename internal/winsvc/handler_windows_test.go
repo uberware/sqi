@@ -7,6 +7,8 @@ package winsvc
 import (
 	"context"
 	"errors"
+	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -210,5 +212,80 @@ func TestHandler_ChdirFailureIsReported(t *testing.T) {
 	b, err := os.ReadFile(hs.trace)
 	if err != nil || !strings.Contains(string(b), "access denied") {
 		t.Fatalf("trace = %q, %v", b, err)
+	}
+}
+
+// A Stop that lands while fn is still booting makes fn return an error that
+// wraps context.Canceled (its blocking dial, discovery or registration saw the
+// canceled ctx). That is the operator's stop, not a failure: reporting it as
+// service-specific exit code 1 would let the SCM's recovery actions restart a
+// service that was just stopped.
+func TestHandler_CanceledErrorAfterStopIsCleanExit(t *testing.T) {
+	hs := newHarness(t, func(ctx context.Context) error {
+		<-ctx.Done()
+		return fmt.Errorf("discovery: %w", context.Canceled)
+	})
+	hs.start("sqi-worker")
+	hs.waitState(t, svc.Running)
+	hs.requests <- svc.ChangeRequest{Cmd: svc.Stop}
+	hs.wait(t)
+	if hs.specific || hs.code != 0 {
+		t.Fatalf("exit = (%v, %d), want (false, 0)", hs.specific, hs.code)
+	}
+	if b, err := os.ReadFile(hs.trace); err == nil && len(b) != 0 {
+		t.Fatalf("a stop-initiated cancel wrote a failure trace: %q", b)
+	} else if err != nil && !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("reading trace: %v", err)
+	}
+	if hs.h.err != nil {
+		t.Fatalf("handler recorded %v; Run must return nil for a clean stop", hs.h.err)
+	}
+}
+
+// Without a stop request, a context.Canceled from fn is fn's own doing (it
+// canceled a ctx it derived) and remains a failure.
+func TestHandler_CanceledErrorWithoutStopStillFails(t *testing.T) {
+	hs := newHarness(t, func(context.Context) error { return context.Canceled })
+	hs.start("sqi-worker")
+	hs.wait(t)
+	if !hs.specific || hs.code != 1 {
+		t.Fatalf("exit = (%v, %d), want (true, 1)", hs.specific, hs.code)
+	}
+	b, err := os.ReadFile(hs.trace)
+	if err != nil || !strings.Contains(string(b), context.Canceled.Error()) {
+		t.Fatalf("trace = %q, %v", b, err)
+	}
+	if !errors.Is(hs.h.err, context.Canceled) {
+		t.Fatalf("handler recorded %v; Run must return fn's error", hs.h.err)
+	}
+}
+
+// Only a canceled error after a stop is forgiven: a drain that failed or timed
+// out is a real failure the SCM must see.
+func TestHandler_OtherErrorAfterStopStillFails(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		err  error
+	}{
+		{"plain", errors.New("shutdown timeout")},
+		{"deadline", fmt.Errorf("drain: %w", context.DeadlineExceeded)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			hs := newHarness(t, func(ctx context.Context) error { <-ctx.Done(); return tc.err })
+			hs.start("sqi-worker")
+			hs.waitState(t, svc.Running)
+			hs.requests <- svc.ChangeRequest{Cmd: svc.Stop}
+			hs.wait(t)
+			if !hs.specific || hs.code != 1 {
+				t.Fatalf("exit = (%v, %d), want (true, 1)", hs.specific, hs.code)
+			}
+			b, err := os.ReadFile(hs.trace)
+			if err != nil || !strings.Contains(string(b), tc.err.Error()) {
+				t.Fatalf("trace = %q, %v", b, err)
+			}
+			if !errors.Is(hs.h.err, tc.err) {
+				t.Fatalf("handler recorded %v; Run must return fn's error", hs.h.err)
+			}
+		})
 	}
 }

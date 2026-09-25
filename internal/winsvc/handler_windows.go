@@ -6,6 +6,7 @@ package winsvc
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -64,10 +65,26 @@ func (h *handler) Execute(args []string, r <-chan svc.ChangeRequest, s chan<- sv
 			case svc.Stop, svc.PreShutdown:
 				reason.set(stopReasonFor(c.Cmd))
 				cancel()
-				return h.finish(name, h.drain(done, r, s))
+				return h.finish(name, cleanStop(reason, h.drain(done, r, s)))
 			}
 		}
 	}
+}
+
+// cleanStop maps fn's result once the SCM has asked the service to stop. A Stop
+// or PreShutdown that lands while fn is still booting (blocked in discovery, a
+// dial or registration) makes fn return an error wrapping context.Canceled:
+// that is the operator's stop taking effect, not a failure, and reporting it as
+// exit code 1 would let the SCM's recovery actions restart a service that was
+// just stopped. So a canceled error after a recorded stop is nil. Everything
+// else is left alone: a context.Canceled with no stop requested (fn canceled a
+// ctx it derived) still fails, and so does any other error after a stop, such
+// as a shutdown timeout or context.DeadlineExceeded.
+func cleanStop(reason *stopReason, err error) error {
+	if err != nil && reason.get() != "" && errors.Is(err, context.Canceled) {
+		return nil
+	}
+	return err
 }
 
 func stopReasonFor(c svc.Cmd) string {
