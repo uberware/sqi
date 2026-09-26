@@ -1088,16 +1088,18 @@ jobs:
       # elevation.
       #
       # TestRotatingFile_RenameBlockedByOpenHandleKeepsAppending is deliberately
-      # NOT in this list either, and that is a finding rather than an omission:
-      # THIS RUNNER DOES NOT ENFORCE WINDOWS SHARE MODES (the same measurement
-      # the staging block above rests on). A file opened without
-      # FILE_SHARE_DELETE can still be renamed, so the blocked rotation that
-      # test exists to provoke cannot be reproduced on this host and the test's
-      # own probe skips it, honestly, instead of reporting a missing OS
-      # behavior as an sqi defect. The property it proves (a failed rotation
-      # rename keeps appending, loses nothing, and retries later) is required
-      # by name below as TestRotatingFile_RenameFailureKeepsAppendingAndRetriesLater,
-      # which injects the failure and so holds on every host.
+      # NOT in this list either: it is EXPECTED to skip on this runner, for the
+      # same reason as the staging test above. What was measured here is a
+      # deny-all share mode (0) that the runner does not enforce; the rotation
+      # test's own scenario — renaming a file held open without
+      # FILE_SHARE_DELETE — was not measured separately. The test does not
+      # depend on that guess: it probes the host first (renames a scratch file
+      # held by such a handle) and skips, honestly, when the rename succeeds,
+      # instead of reporting a missing OS behavior as an sqi defect. The
+      # property it proves (a failed rotation rename keeps appending, loses
+      # nothing, and retries later) is required by name below as
+      # TestRotatingFile_RenameFailureKeepsAppendingAndRetriesLater, which
+      # injects the failure and so holds on every host.
       - name: Assert the windows service unit tests actually ran
         shell: bash
         run: |
@@ -1146,7 +1148,9 @@ jobs:
             TestRotatingFile_RenameFailureKeepsAppendingAndRetriesLater
             TestRotatingFile_RecoversAfterFailedReopen
             TestRotatingFile_CloseAfterUnrecoveredReopenIsNil
-            # Hidden-input secret reading (internal/secretin).
+            # Secret reading (internal/secretin) — the non-console fallback
+            # only: these tests read from a strings.Reader, which is not an
+            # *os.File, so the no-echo console path is not exercised here.
             TestReadLine_PipedInputUnchanged
             TestReadLine_EmptyInputErrors
             # Per-binary service wiring.
