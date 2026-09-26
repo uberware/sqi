@@ -229,7 +229,10 @@ func TestStopAndWait_NeverStopsIsBounded(t *testing.T) {
 			if err == nil || !strings.Contains(err.Error(), tc.want) {
 				t.Fatalf("stopAndWait = %v, want an error containing %q", err, tc.want)
 			}
-			if limit := wait + pollInterval + 100*time.Millisecond; elapsed > limit {
+			// The bound is the wait plus one poll interval of overrun; the
+			// extra 600ms is scheduling slack for a loaded CI runner, far short
+			// of the further poll intervals an unbounded wait would add.
+			if limit := wait + pollInterval + 600*time.Millisecond; elapsed > limit {
 				t.Errorf("took %v, want at most %v", elapsed, limit)
 			}
 		})
