@@ -205,6 +205,23 @@ type LogConfig struct {
 	// Accepted values: json, text.
 	// Env: SQI_LOG_FORMAT
 	Format string `yaml:"format"`
+
+	// File, when set, sends log output to this file instead of stderr,
+	// rotated by size. Relative paths resolve against the working directory
+	// (a Windows service runs in its config file's directory). Empty keeps
+	// stderr. When sqi-server runs as a Windows service with File empty, logs
+	// go to %ProgramData%\sqi\logs\<service-name>.log.
+	// Env: SQI_LOG_FILE
+	File string `yaml:"file"`
+
+	// MaxSizeMB is the size in megabytes at which File is rotated. Must be > 0.
+	// Env: SQI_LOG_MAX_SIZE_MB
+	MaxSizeMB int `yaml:"max_size_mb"`
+
+	// MaxBackups is how many rotated files (File.1 … File.N) are kept; 0
+	// keeps none. Must be >= 0.
+	// Env: SQI_LOG_MAX_BACKUPS
+	MaxBackups int `yaml:"max_backups"`
 }
 
 // SchedulerConfig controls the task assignment loop behavior.
@@ -804,8 +821,10 @@ func DefaultConfig() Config {
 			CheckpointInterval: 5 * time.Minute,
 		},
 		Log: LogConfig{
-			Level:  "info",
-			Format: "json",
+			Level:      "info",
+			Format:     "json",
+			MaxSizeMB:  100,
+			MaxBackups: 5,
 		},
 		Scheduler: SchedulerConfig{
 			HeartbeatTimeout:          30 * time.Second,

@@ -98,6 +98,14 @@ func Connect(ctx context.Context, cfg workerconfig.NATSConfig, workerID string, 
 		if wrapped, ok := credentialRejectedError(err); ok {
 			return nil, nil, wrapped
 		}
+		// The dial is not ctx-aware, so a cancel (a Windows service Stop)
+		// that lands during a failing dial surfaces as a plain dial error.
+		// Wrap ctx's error too so callers can tell a stop-initiated exit from
+		// a failure: the service host would otherwise report exit code 1 and
+		// restart a service the operator just stopped.
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return nil, nil, fmt.Errorf("natsclient: connect %q: %w: %w", cfg.URL, err, ctxErr)
+		}
 		return nil, nil, fmt.Errorf("natsclient: connect %q: %w", cfg.URL, err)
 	}
 

@@ -82,6 +82,7 @@ Run `make` (no arguments) to see all available targets with descriptions.
 | `make test-oidc` | Run the SSO tests against a real Keycloak in a container (needs Docker; **skips** without it) |
 | `make test-isolation` | Run run-as-user task-isolation tests as real root against real OS accounts in a container (needs Docker; **skips** without it) |
 | `make test-isolation-windows` | Run the Windows run-as-user isolation tests against real local accounts — must be run from an **elevated** shell on a real Windows host (no container); exits 0 with a message when not elevated |
+| `make test-service-windows` | Drive `sqi-server` and `sqi-worker` through the real Windows service manager — it **really installs, starts, stops and deletes services** (`sqi-test-*`) and creates and deletes a throwaway local account (`sqisvc-*`); must be run from an **elevated** shell on a real Windows host (no container); exits 0 with a "not elevated" message, having done nothing, when not elevated |
 | `make test-discovery` | Run the mDNS discovery tests over **real multicast** (no container; **fails rather than skips** when multicast is unavailable) |
 | `make test-conformance` | Run the official OpenJD conformance suite against the vendored `third_party/` fixtures (build tag `conformance`) |
 | `make test-expr-oracle` | Differential-test the EXPR evaluator against the OpenJD reference implementation (needs `python3`; **skips** without it) |
@@ -205,6 +206,10 @@ make test-oidc
 # container (needs Docker)
 make test-isolation
 
+# Windows service tests against the real service manager (elevated shell on a
+# real Windows host; installs and deletes real services)
+make test-service-windows
+
 # Fuzz targets (run for 30 seconds each)
 go test -fuzz=FuzzParse         -fuzztime=30s ./internal/openjd/...
 go test -fuzz=FuzzRESTPayloads  -fuzztime=30s ./internal/api/...
@@ -321,6 +326,76 @@ load-bearing: the test scrapes Keycloak's own login and logout-confirmation
 markup. It appears in two places that must stay in step — `keycloakImage` in
 `test/integration/oidc_test.go` and the `docker pull` in
 `.github/workflows/ci.yml`.
+
+### Testing the Windows service against the real service manager
+
+The unit tests in `internal/winsvc` drive the `service` commands through a fake
+SCM. That cannot show what the real Service Control Manager, the LSA and NTFS do
+with a registration, so `test/winservice` builds both binaries and installs,
+starts, stops and removes real services with them:
+
+```powershell
+make test-service-windows
+```
+
+It must run from an **elevated** shell on a real Windows host, and it is not
+sandboxed: it **really installs, starts, stops and deletes services** named
+`sqi-test-*`, and it creates and deletes a throwaway local account
+(`sqisvc-*`) and its profile. It builds the binaries into
+`%ProgramData%\sqi winservice bin NNN` and works in `%ProgramData%\sqi winservice NNN`
+directories, and it writes logs to `%ProgramData%\sqi\logs\sqi-test-*.log`. Six
+tests, `TestWinService_ServerLifecycle`, `InstallRefusesExisting`,
+`WorkerLifecycle`, `StartupFailureLeavesTrace`, `HandRegisteredNewService` and
+`UserAccount`, cover the install, start, status, stop and uninstall round trip
+for both binaries, the refusal of an existing name, a service that fails at
+startup and leaves a trace line, a hand-registered service, and `--user`.
+
+Not elevated, it prints `winservice: not elevated — the service suite needs an
+elevated (Administrator) shell` and **exits 0 without doing anything**. **A skip
+verifies nothing**, so confirm all six `--- PASS: TestWinService_` lines (the
+target already passes `-count=1`, so a cached result cannot stand in). CI runs it as the
+`winservice-integration` job on a `windows-latest` runner, which is elevated, on
+one architecture (the Win32 APIs it exercises are not architecture-dependent),
+and fails the job on that message or on any of the six names not passing.
+
+Two things make a local run fail for reasons that are not sqi's:
+
+- **Machine-level `SQI_*` environment variables** reach the services the suite
+  installs, because a service sees the machine environment. Unset them first.
+- **`services.msc` holding a handle** on a service makes the check that it is
+  gone after `uninstall` fail: a service with an open handle is only *marked for
+  deletion*. Close it.
+
+**Cleaning up after a killed run.** Every test registers its cleanup, but a
+killed run (or Ctrl-C) skips them. Unique names mean a leftover never breaks the
+next run, but it stays on the machine until you remove it, from an elevated
+PowerShell:
+
+```powershell
+# Leftover services: list them, then stop (if running) and delete each
+sc.exe query state= all | findstr sqi-test
+$name = 'sqi-test-server-xxxxxxxx'   # a name from the list above
+sc.exe stop $name
+sc.exe delete $name
+
+# A leftover account, in this order: undo what the --user install did to the
+# machine while the account can still be looked up, then delete it
+icacls "$env:ProgramData\sqi\logs" /remove:g sqisvc-xxxxxxxx
+# secpol.msc -> Local Policies -> User Rights Assignment -> Log on as a service:
+#   remove sqisvc-xxxxxxxx
+Get-CimInstance Win32_UserProfile | Where-Object LocalPath -like '*\sqisvc-*' | Remove-CimInstance
+net user sqisvc-xxxxxxxx /delete
+
+# Leftover files
+Remove-Item -Recurse -Force "$env:ProgramData\sqi winservice*"
+Remove-Item "$env:ProgramData\sqi\logs\sqi-test-*"
+```
+
+The suite also creates `%ProgramData%\sqi` and `%ProgramData%\sqi\logs` when they
+are missing (the installer does) and **never removes them**, so they are left
+behind on a host that had none — `logs` with the protected permissions the
+installer gives it. Delete them by hand if you want the host back as it was, once
+you have checked that nothing else on the machine uses them.
 
 ---
 

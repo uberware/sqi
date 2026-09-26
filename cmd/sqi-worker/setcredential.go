@@ -8,6 +8,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/uberware/sqi/internal/secretin"
 	workerconfig "github.com/uberware/sqi/internal/worker/config"
 	"github.com/uberware/sqi/internal/worker/isolation"
 )
@@ -45,7 +46,7 @@ Run from an elevated shell:
 		}
 
 		fmt.Fprintf(cmd.OutOrStdout(), "Password for %s: ", user)
-		secret, err := readSecretLine(cmd)
+		secret, err := secretin.ReadLine(cmd)
 		if err != nil {
 			return fmt.Errorf("read secret: %w", err)
 		}

@@ -152,7 +152,7 @@ worker:
   # server can correlate this worker across restarts. Do not delete
   # worker.id unless you intend to re-register as a new worker.
   # Type: string   Env: SQI_WORKER_DATA_DIR
-  data_dir: "~/.sqi/worker"  # Linux/macOS default; %APPDATA%\sqi\worker on Windows
+  data_dir: "~/.sqi/worker"  # Linux/macOS default; %USERPROFILE%\.sqi\worker on Windows
 
   # Directory under which session working directories are created
   # (<session_dir>/<sessionID>/). Deliberately separate from data_dir: this
@@ -279,6 +279,26 @@ log:
   # Accepted: json | text
   # Type: string   Env: SQI_WORKER_LOG_FORMAT   Flag: --log-format
   format: "json"
+
+  # File to write log output to instead of stderr; empty keeps stderr. The file
+  # is rotated by size (max_size_mb, max_backups below). The directory must
+  # already exist. A relative path resolves against the working directory (a
+  # Windows service runs in the directory that holds its config file).
+  # When sqi-worker runs as a Windows service and this is empty, logs go to
+  # %ProgramData%\sqi\logs\<service-name>.log instead, and that directory is
+  # created for you (see docs/worker-deployment.md#windows--windows-service).
+  # Type: string   Env: SQI_WORKER_LOG_FILE
+  file: ""
+
+  # Size in megabytes at which the log file is rotated. Must be > 0. Applies
+  # when file is set, and to a Windows service's default log file.
+  # Type: int   Env: SQI_WORKER_LOG_MAX_SIZE_MB
+  max_size_mb: 100
+
+  # How many rotated files (<file>.1 .. <file>.N) to keep. 0 keeps none: the
+  # file is discarded and started fresh at max_size_mb. Must be >= 0.
+  # Type: int   Env: SQI_WORKER_LOG_MAX_BACKUPS
+  max_backups: 5
 
 # ── Local HTTP server (health probes and metrics) ─────────────────────────────
 # The worker exposes a small HTTP server on loopback for container orchestration

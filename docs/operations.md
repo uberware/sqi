@@ -158,6 +158,122 @@ sudo systemctl enable --now sqi-server
 sudo journalctl -u sqi-server -f
 ```
 
+### Windows service
+
+`sqi-server` runs as a native Windows service: the Service Control Manager
+(SCM) starts it, and a service **Stop** — or a reboot — runs the
+[graceful shutdown](#graceful-shutdown) sequence. Its `service` command group is
+the same as `sqi-worker`'s, and
+[worker deployment](worker-deployment.md#windows--windows-service) is the
+reference for what the two share — flags, the password check for `--user`,
+timeouts, log files and rotation, troubleshooting and the security notes — read
+with `sqi-server` for `sqi-worker`. The worker-only parts do not apply to the
+server: delayed start (the server starts automatically, not delayed),
+`worker.shutdown_grace_period` (the server's drain is a fixed 30 s), the
+NATS-loss exit, and the run-as-user privileges and the warning that names them.
+The command a service runs is different too: the server's is `serve`, not
+`start`, so the guide's console recipe for seeing startup errors becomes
+`sqi-server.exe service stop`, `Set-Location C:\ProgramData\sqi`, then
+`sqi-server.exe serve --config C:\ProgramData\sqi\sqi-server.yaml` (stop the
+service first, or the two fight over the same ports and database).
+
+**Prepare `C:\ProgramData\sqi` first**, exactly as in
+[step 2 of the worker guide](worker-deployment.md#2-create-the-directory-administrators-only):
+created by you, as administrator, administrators-only, with the owner checked.
+The server's configuration, database and JetStream data end up there, and a user
+who created it first can edit the configuration a LocalSystem service runs with,
+and read or replace its database. Then, from an **elevated** PowerShell (every
+`service` subcommand needs one, `status` included):
+
+```powershell
+& "C:\Program Files\sqi\sqi-server.exe" config print > C:\ProgramData\sqi\sqi-server.yaml
+# edit the file, then:
+& "C:\Program Files\sqi\sqi-server.exe" service install --start
+sqi-server service status   # a few seconds later
+```
+
+`config print` writes the values in effect in the shell that ran it, `SQI_*`
+variables included, so run it from a shell without any you do not want kept.
+There is no separate migration step: the server applies pending migrations
+when it starts. The service reports *Running* before the server has read its
+configuration, so `service install --start` (and `service start`) watches it for
+3 s after that: a configuration the server rejects stops it within that window
+and is reported as a failed start, with the last lines of the log. A failure
+that comes later, or in a restart the recovery actions make, shows only in
+`service status` (it shows `exit codes: 1066 (service-specific 1)` after an
+error) and the log, so check both a few seconds after starting. A failed service
+is restarted after 5 s (then 30 s, then 60 s), and in that window
+`service status` can show `running` or `start pending` for the restarted
+process, so check again after the restart delay.
+
+`service install` needs the configuration file to exist. It defaults to
+`C:\ProgramData\sqi\sqi-server.yaml`; pass `--config` (`-c`) for another. A
+service you register by hand must pass `--config` too: without it the server
+refuses to start (`running as a Windows service requires --config`), because the
+configuration search it would fall back to includes folders any local user can
+create — see
+[registering the service by hand](worker-deployment.md#registering-the-service-by-hand).
+`service install` registers a service named `sqi-server` (display name
+*sqi Server*; `--name` and `--display-name` change them) that:
+
+- runs `sqi-server.exe serve --config <absolute path of the config file>`, as
+  LocalSystem unless you pass `--user DOMAIN\name` (see
+  [choosing the account](worker-deployment.md#choosing-the-account) for the
+  logon right and the password check `--user` brings);
+- starts automatically at boot and is restarted after a failure (5 s, 30 s, then
+  60 s);
+- is given 45 s to shut down when Windows reboots: the server's own 30 s
+  shutdown bound (`server.ShutdownTimeout`, not configurable) plus 15 s;
+- runs **in the configuration file's directory**, so the default relative
+  `store.sqlite_path` (`sqi.db`) and `nats.data_dir` (`data\nats`) live beside the
+  config — `C:\ProgramData\sqi` by default. Set absolute paths, for example on a
+  data volume, if you would rather keep them elsewhere. A `--user` account
+  cannot read the administrators-only directory: give the server its own, as
+  [choosing the account](worker-deployment.md#choosing-the-account) does for a
+  worker, with write access to the database and JetStream directories;
+- logs to `C:\ProgramData\sqi\logs\sqi-server.log` unless `log.file` is set
+  (see [Writing to a file](#writing-to-a-file)).
+
+```powershell
+sqi-server service status     # state, exit codes, account, start type, command line, log path
+sqi-server service stop       # runs the graceful shutdown, and waits for the service to stop
+sqi-server service start
+sqi-server service uninstall  # stops it, then removes it; config, database and logs are kept
+```
+
+`Get-Service sqi-server`, `Start-Service`, `Stop-Service` and `services.msc` work
+too. To upgrade, `service stop`, replace `sqi-server.exe`, and `service start`.
+A service that stopped because of an error shows
+`exit codes: 1066 (service-specific 1)` in `service status`, and its reason is
+the last `"service exited with error"` line in the log — or, when the log
+directory could not be used, in `sqi-server.trace.log` beside the configuration
+file (the fallback is described under
+[Logs](worker-deployment.md#logs) in the worker guide). Both are best effort.
+
+> **`migrate`, `backup` and `worker` run from a console use the *shell's*
+> working directory, not the service's.** With the default relative
+> `store.sqlite_path`, `sqi-server migrate up --config C:\ProgramData\sqi\sqi-server.yaml`
+> looks for `sqi.db` in the directory the shell is in — an elevated PowerShell
+> usually starts in `C:\Windows\System32` — and would *create* a new, empty
+> database there, while `backup` and `worker` would report `no database at …`.
+> Either set an absolute `store.sqlite_path` in the configuration file, or
+> `Set-Location C:\ProgramData\sqi` first.
+
+The server's logs can carry job and environment detail, and every sqi service on
+a host shares the one `C:\ProgramData\sqi\logs` directory by default. Any service
+installed with `--user` — a worker on the same host, say — is always granted
+access to that directory, whatever its own `log.file` is. If the server shares a
+host with one, give the server a `log.file` outside that directory, in one only
+it and administrators can read **and** write (for example
+`log.file: "C:\\ProgramData\\sqi\\sqi-server.log"`), restart the server
+(`service stop`, then `service start`: while it runs it holds
+`logs\sqi-server.log` open, and Windows will not let the file be moved or
+deleted), then move or delete that `sqi-server.log` and its `.1` to `.N` backups
+out of `logs\` (the account's permission already reaches those files), and read the
+[security notes](worker-deployment.md#security-notes-and-known-limitations) for
+what that costs. `service stop`, `start` and `uninstall` act on any service name
+you give `--name`, like `sc.exe`.
+
 ---
 
 ## Upgrade
@@ -383,6 +499,41 @@ log:
 SQI_LOG_LEVEL=debug SQI_LOG_FORMAT=text sqi-server serve
 ```
 
+### Writing to a file
+
+To have the server write its own log file, and rotate it, set `log.file`:
+
+```yaml
+log:
+  file: "D:\\sqi-logs\\sqi-server.log"  # empty (the default) = stderr
+  max_size_mb: 100   # rotate when the file reaches this size
+  max_backups: 5     # keep sqi-server.log.1 ... sqi-server.log.5
+```
+
+The environment variables are `SQI_LOG_FILE`, `SQI_LOG_MAX_SIZE_MB` and
+`SQI_LOG_MAX_BACKUPS`; the reference is
+[`log.file`](configuration.md#logfile),
+[`log.max_size_mb`](configuration.md#logmax_size_mb) and
+[`log.max_backups`](configuration.md#logmax_backups).
+
+- **The directory must already exist.** Startup fails with a `log.file`
+  validation error that names it otherwise, and likewise when `log.file` names
+  an existing directory or ends with a path separator: it must name a file.
+  A relative path resolves against the
+  server's working directory (a Windows service runs in the directory that holds
+  its config file).
+- **Rotation is by size.** At `max_size_mb` the file becomes `<file>.1`, `.1`
+  becomes `.2`, and so on up to `max_backups`, and the oldest is dropped.
+  `max_backups: 0` keeps none: the file is discarded and started fresh.
+- **A blocked rotation loses no lines.** On Windows a rename fails while another
+  process, such as `Get-Content -Wait` or a log shipper, holds the file open
+  without allowing it to be renamed. The server then keeps appending to the
+  current file and tries again after another `max_size_mb` of output, so the file
+  can temporarily grow past its limit.
+- **A Windows service always logs to a file.** With `log.file` empty it writes
+  `C:\ProgramData\sqi\logs\<service-name>.log` (`sqi-server.log` by default),
+  creating that directory. See [Windows service](#windows-service).
+
 ### Routing logs
 
 When running under systemd, logs flow to journald automatically:
@@ -395,13 +546,16 @@ journalctl -u sqi-server -f
 journalctl -u sqi-server -n 1000 -o json
 ```
 
-To write to a file instead, redirect stderr in the service unit or use a
-log-forwarding agent (Fluentd, Vector, Promtail) reading from journald.
+To write to a file instead, set `log.file` (above), redirect stderr in the
+service unit, or use a log-forwarding agent (Fluentd, Vector, Promtail) reading
+from journald.
 
 ### Log rotation
 
-Because `sqi-server` writes to stderr rather than a file, log rotation is
-handled outside the process:
+Unless `log.file` is set, `sqi-server` writes to stderr rather than a file, so
+log rotation is handled outside the process. journald and logrotate apply only
+in that case; with `log.file` set, the server rotates the file itself, as
+described in [Writing to a file](#writing-to-a-file).
 
 - **journald** rotates automatically; tune retention with `journald.conf`
   (`SystemMaxUse`, `MaxRetentionSec`).
@@ -520,6 +674,10 @@ that it logs `graceful shutdown timed out after 30s` and exits. The example
 unit's `TimeoutStopSec=60s` is deliberate headroom over that 30 s so systemd
 never SIGKILLs mid-drain; raising it further has no effect on how long the
 server actually waits.
+
+As a Windows service, a service **Stop** or a shutdown (PreShutdown) request
+starts the same sequence. The service is registered with a 45 s PreShutdown
+timeout: the 30 s deadline plus 15 s.
 
 ---
 

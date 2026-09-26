@@ -6,7 +6,9 @@ layers overriding earlier ones:
 1. **Built-in defaults** — sensible values for local development.
 2. **Config file** — YAML or JSON; searched in `./config/sqi-worker.yaml`,
    `~/.sqi/sqi-worker.yaml`, and `/etc/sqi/sqi-worker.yaml` by default. Pass
-   an explicit path with `--config /path/to/file`.
+   an explicit path with `--config /path/to/file`. A Windows service does not
+   search: it refuses to start without `--config` (see
+   [registering the service by hand](worker-deployment.md#registering-the-service-by-hand)).
 3. **Environment variables** — prefixed `SQI_WORKER_`, e.g.
    `SQI_WORKER_NATS_URL`. (Exceptions: `diagnostics.enabled` uses
    `SQI_DIAGNOSTICS_ENABLED` and `staging.defaults` uses
@@ -873,6 +875,20 @@ does **not** hold it by default — this is the single most common cause of
 `isolation: worker cannot assume another OS identity` on Windows. `Capable()`
 reports it at boot with the fix named.
 
+That is not the only privilege the worker's own account needs. `Capable()` also
+requires `SeIncreaseQuotaPrivilege` (`CreateProcessAsUser` needs it too), and
+loading the target account's profile needs `SeBackupPrivilege` and
+`SeRestorePrivilege`. LocalSystem holds all four. An account you install the
+service under with `sqi-worker service install --user …` holds them only if you
+grant them (Local Security Policy → User Rights Assignment: *Replace a process
+level token*, *Adjust memory quotas for a process*, *Back up files and
+directories* and *Restore files and directories*) — and that list is only what
+sqi itself checks or documents, not a promise that granting it is enough:
+Microsoft documents `LoadUserProfile` as callable only by an administrator or
+LocalSystem. Treat LocalSystem as the supported account for run-as-user
+isolation. See [Choosing the account](worker-deployment.md#choosing-the-account)
+for installing the worker under another account.
+
 **Each run-as-user account needs the "Log on as a batch job" right**
 (`SeBatchLogonRight`). The provider logs the account on with
 `LOGON32_LOGON_BATCH` — the correct logon type for a service doing work on a
@@ -1494,7 +1510,7 @@ staging:
 When enabled (the default) the worker publishes its own `slog` output to the
 ephemeral core-NATS subject `worker.diag.<workerID>`, which the server ingests
 into its diagnostics ring buffer and surfaces in the web UI. Set to `false` to
-suppress publishing (the worker still logs to stderr). This is the worker
+suppress publishing (the worker still logs locally: to stderr, or to `log.file` when set). This is the worker
 counterpart to the server's `diagnostics.buffer_size` knob.
 
 ```yaml
@@ -1548,6 +1564,75 @@ development.
 ```yaml
 log:
   format: "json"
+```
+
+---
+
+### `log.file`
+
+| | |
+|---|---|
+| **Type** | `string` |
+| **Default** | `""` (log to stderr) |
+| **Env var** | `SQI_WORKER_LOG_FILE` |
+| **CLI flag** | — |
+
+Path of a file to write log output to instead of stderr. The file is rotated by
+size (see `log.max_size_mb` and `log.max_backups`). Relative paths resolve
+against the working directory; a Windows service runs in the directory that
+holds its config file. Empty keeps logging on stderr.
+
+The directory must already exist: sqi-worker does not create it, and startup
+fails with a `log.file` validation error naming the missing directory. The path
+must name a file: one that ends with a path separator, or names an existing
+directory, fails validation too.
+
+When `sqi-worker` runs as a Windows service and `log.file` is empty, logs go to
+`%ProgramData%\sqi\logs\<service-name>.log` instead, since a service has no
+stderr to write to. That default directory is created for you.
+
+```yaml
+log:
+  file: "D:\\sqi-logs\\sqi-worker.log"
+```
+
+---
+
+### `log.max_size_mb`
+
+| | |
+|---|---|
+| **Type** | `int` |
+| **Default** | `100` |
+| **Env var** | `SQI_WORKER_LOG_MAX_SIZE_MB` |
+| **CLI flag** | — |
+
+Size in megabytes at which `log.file` is rotated. Must be `> 0`. Has no effect
+while `log.file` is empty and the worker is not running as a Windows service.
+
+```yaml
+log:
+  max_size_mb: 100
+```
+
+---
+
+### `log.max_backups`
+
+| | |
+|---|---|
+| **Type** | `int` |
+| **Default** | `5` |
+| **Env var** | `SQI_WORKER_LOG_MAX_BACKUPS` |
+| **CLI flag** | — |
+
+How many rotated files (`<file>.1` through `<file>.N`) are kept. `0` keeps
+none: the file is discarded and started fresh when it reaches
+`log.max_size_mb`. Must be `>= 0`.
+
+```yaml
+log:
+  max_backups: 5
 ```
 
 ---
@@ -1791,6 +1876,9 @@ log_streamer:
 | `diagnostics.enabled` | bool | `true` | `SQI_DIAGNOSTICS_ENABLED` | — |
 | `log.level` | string | `info` | `SQI_WORKER_LOG_LEVEL` | `--log-level` |
 | `log.format` | string | `json` | `SQI_WORKER_LOG_FORMAT` | `--log-format` |
+| `log.file` | string | `""` | `SQI_WORKER_LOG_FILE` | — |
+| `log.max_size_mb` | int | `100` | `SQI_WORKER_LOG_MAX_SIZE_MB` | — |
+| `log.max_backups` | int | `5` | `SQI_WORKER_LOG_MAX_BACKUPS` | — |
 | `metrics.addr` | string | `127.0.0.1:9091` | `SQI_WORKER_METRICS_ADDR` | — |
 | `metrics.enable_pprof` | bool | `false` | `SQI_WORKER_METRICS_ENABLE_PPROF` | — |
 | `discovery.enable_mdns` | bool | `true` | `SQI_WORKER_DISCOVERY_ENABLE_MDNS` | — |

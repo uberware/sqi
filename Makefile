@@ -380,6 +380,14 @@ test-discovery: ## Run the mDNS discovery tests over REAL multicast (fails rathe
 test-isolation-windows: ## Run windows run-as-user isolation tests as SYSTEM against real local accounts (needs an elevated shell)
 	@powershell -NoProfile -ExecutionPolicy Bypass -File scripts/test-isolation-windows.ps1
 
+# Installs, starts, stops and deletes real Windows services, and creates (then
+# deletes) one throwaway local account. Unelevated, the suite prints a "not
+# elevated" line and exits 0 WITHOUT running anything — a skip verifies
+# nothing, so confirm the six `--- PASS: TestWinService_` lines.
+.PHONY: test-service-windows
+test-service-windows: ## Run the Windows service tests against the real SCM (needs an elevated shell on Windows)
+	go test -tags winservice -count=1 -v -timeout 20m ./test/winservice/...
+
 .PHONY: bench
 bench: ## Run benchmarks
 	go test -bench=. -benchmem $(GO_PKGS)
