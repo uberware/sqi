@@ -59,13 +59,11 @@ func RequireElevated() error {
 	return nil
 }
 
-func windowsComputerName() (string, error) { return windows.ComputerName() }
-
 // lookupName rewrites the SCM's ".\name" into "HOST\name", which
 // LookupAccountName requires.
 func lookupName(account string) string {
 	if rest, ok := strings.CutPrefix(account, `.\`); ok {
-		if host, err := windowsComputerName(); err == nil {
+		if host, err := windows.ComputerName(); err == nil {
 			return host + `\` + rest
 		}
 	}

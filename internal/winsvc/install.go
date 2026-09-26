@@ -6,6 +6,7 @@ import (
 	"bufio"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -127,18 +128,35 @@ func ResolveConfigPath(flagValue, binary string) (string, error) {
 	return abs, nil
 }
 
+// tailWindow bounds how much of the file TailLines reads: the lines it wants
+// are at the end, and a long-running service's log can be max_size_mb long.
+const tailWindow = 64 << 10
+
 // TailLines returns up to the last n lines of path, or nil if it cannot be
-// read. Used to show why a freshly installed service failed to start.
+// read. Used to show why a freshly installed service failed to start. Only the
+// last tailWindow bytes are read, less the partial line they start in.
 func TailLines(path string, n int) []string {
 	f, err := os.Open(path)
 	if err != nil {
 		return nil
 	}
 	defer f.Close()
+	skipPartial := false
+	if info, err := f.Stat(); err == nil && info.Size() > tailWindow {
+		// Start one byte early and drop the first line read: that is the rest
+		// of the line the window starts in, or empty when the byte before the
+		// window ends a line, so a whole line is never dropped.
+		_, err := f.Seek(info.Size()-tailWindow-1, io.SeekStart)
+		skipPartial = err == nil
+	}
 	var lines []string
 	sc := bufio.NewScanner(f)
 	sc.Buffer(make([]byte, 64*1024), 1024*1024)
 	for sc.Scan() {
+		if skipPartial {
+			skipPartial = false
+			continue
+		}
 		lines = append(lines, sc.Text())
 		if len(lines) > n {
 			lines = lines[1:]

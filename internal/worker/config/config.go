@@ -26,6 +26,7 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/uberware/sqi/internal/brokerauth"
+	sqilog "github.com/uberware/sqi/internal/log"
 	"github.com/uberware/sqi/internal/worker/capabilities"
 )
 
@@ -1373,32 +1374,10 @@ func validateLogFile(c LogConfig) []ValidationError {
 			Message: fmt.Sprintf("must not be negative, got %d", c.MaxBackups),
 		})
 	}
-	if c.File != "" {
-		if msg := logFileProblem(c.File, "sqi-worker.log"); msg != "" {
-			errs = append(errs, ValidationError{Field: "log.file", Message: msg})
-		}
+	if msg := sqilog.FileProblem(c.File, "sqi-worker.log"); msg != "" {
+		errs = append(errs, ValidationError{Field: "log.file", Message: msg})
 	}
 	return errs
-}
-
-// logFileProblem describes what makes file unusable as log.file, or returns
-// "". It must name a file (not end in a path separator, not be an existing
-// directory) in a directory that exists; example is the file name the
-// suggested fix uses.
-func logFileProblem(file, example string) string {
-	if os.IsPathSeparator(file[len(file)-1]) {
-		return fmt.Sprintf("%q ends with a path separator; log.file must name a file, such as %q",
-			file, filepath.Join(file, example))
-	}
-	if info, err := os.Stat(file); err == nil && info.IsDir() {
-		return fmt.Sprintf("%q is a directory; log.file must name a file, such as %q",
-			file, filepath.Join(file, example))
-	}
-	dir := filepath.Dir(file)
-	if info, err := os.Stat(dir); err != nil || !info.IsDir() {
-		return fmt.Sprintf("directory %q does not exist; create it or choose another path", dir)
-	}
-	return ""
 }
 
 // validateLogStreamer validates the LogStreamerConfig fields.

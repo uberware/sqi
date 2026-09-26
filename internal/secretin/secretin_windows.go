@@ -5,11 +5,8 @@
 package secretin
 
 import (
-	"bufio"
 	"fmt"
-	"io"
 	"os"
-	"strings"
 
 	"github.com/spf13/cobra"
 	"golang.org/x/sys/windows"
@@ -60,16 +57,4 @@ func ReadLine(cmd *cobra.Command) (string, error) {
 	// have produced.
 	fmt.Fprintln(cmd.OutOrStdout())
 	return secret, err
-}
-
-// readLineEcho is the plain line read the secret prompt has always used —
-// no attempt to suppress terminal echo. It is the entire behavior on POSIX
-// (see secretin_other.go) and the fallback here whenever stdin is not an
-// interactive Windows console.
-func readLineEcho(r io.Reader) (string, error) {
-	line, err := bufio.NewReader(r).ReadString('\n')
-	if err != nil && line == "" {
-		return "", err
-	}
-	return strings.TrimRight(line, "\r\n"), nil
 }

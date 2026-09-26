@@ -9,11 +9,8 @@ import (
 	"io"
 	"log/slog"
 	"os"
-	"os/signal"
-	"path/filepath"
 	"sort"
 	"strings"
-	"syscall"
 	"time"
 
 	nats "github.com/nats-io/nats.go"
@@ -83,28 +80,14 @@ func init() {
 }
 
 func runStart(cmd *cobra.Command, _ []string) error {
-	// In service mode winsvc.Run changes the working directory to the config
-	// file's directory before calling runWorker, so a relative --config (a
-	// service registered by hand) would then resolve against the new
-	// directory. Make it absolute first so WithWorkDirFromConfig and
-	// loadAndValidateConfig (which reads persistentFlags.ConfigFile) see the
-	// same path. A console run keeps the value exactly as given.
-	if winsvc.IsService() && persistentFlags.ConfigFile != "" {
-		abs, err := filepath.Abs(persistentFlags.ConfigFile)
-		if err != nil {
-			return fmt.Errorf("resolve config path: %w", err)
-		}
-		persistentFlags.ConfigFile = abs
-	}
-
 	// winsvc.Run cancels ctx on SIGINT/SIGTERM in a console, or on a service
-	// Stop/PreShutdown when the Windows SCM started us. Everything — config
-	// included — runs inside it, so a service resolves relative paths from its
-	// config directory and an early failure — including a service's refusal to
-	// run without --config — reaches the service's log.
-	return winsvc.Run("sqi-worker", func(ctx context.Context) error {
+	// Stop/PreShutdown when the Windows SCM started us. A service runs in its
+	// config file's directory (Run makes --config absolute first, and refuses to
+	// start without one). Everything — config included — runs inside it, so an
+	// early failure reaches the service's log.
+	return winsvc.Run("sqi-worker", &persistentFlags.ConfigFile, func(ctx context.Context) error {
 		return runWorker(ctx, cmd)
-	}, winsvc.WithWorkDirFromConfig(persistentFlags.ConfigFile))
+	})
 }
 
 // runWorker loads configuration, builds the logger and runs the worker until
@@ -114,12 +97,6 @@ func runStart(cmd *cobra.Command, _ []string) error {
 // would trigger the SCM's failure-recovery restart.
 func runWorker(ctx context.Context, cmd *cobra.Command) error {
 	// ── Configuration ─────────────────────────────────────────────────────────
-	//
-	// A Windows service without --config stops first, before the config search
-	// could read a file a non-administrator planted.
-	if err := winsvc.RequireConfigFile(ctx, "sqi-worker", persistentFlags.ConfigFile); err != nil {
-		return err
-	}
 	cfg, err := loadAndValidateConfig(cmd)
 	if err != nil {
 		return err
@@ -159,15 +136,8 @@ func runWorker(ctx context.Context, cmd *cobra.Command) error {
 
 	// ── Shutdown context ──────────────────────────────────────────────────────
 	//
-	// shutdownSig captures the OS signal (console runs) so shutdown can log the
-	// trigger name ("interrupt" vs "terminated") rather than the generic
-	// ctx.Err() string; a service stop is read from winsvc.StopReason instead,
-	// and a service registers no signal handler at all (see
-	// registerShutdownSignals). winsvc.Run's own signal registration (console)
-	// and this one receive the same delivery. The extra cancel lets
-	// watchNATSClosure start a shutdown on permanent NATS loss.
-	shutdownSig, releaseSignals := registerShutdownSignals(winsvc.IsService())
-	defer releaseSignals()
+	// The extra cancel lets watchNATSClosure start a shutdown on permanent NATS
+	// loss.
 	ctx, stop := context.WithCancel(ctx)
 	defer stop()
 
@@ -455,11 +425,11 @@ func runWorker(ctx context.Context, cmd *cobra.Command) error {
 
 	// ── Log shutdown trigger ─────────────────────────────────────────
 	//
-	// Determine what triggered shutdown for operators reading logs: the OS
-	// signal in a console run, the SCM request for a Windows service.
-	// NATS-driven shutdowns (permanent connection loss) populate neither; they
-	// fall back to the ctx.Err() message.
-	sigName := shutdownTrigger(ctx, shutdownSig)
+	// Name what triggered shutdown for operators reading logs: the OS signal
+	// in a console run ("interrupt", "terminated"), the SCM request for a
+	// Windows service ("service stop"). NATS-driven shutdowns (permanent
+	// connection loss) cancel with no cause, so they log "context canceled".
+	sigName := context.Cause(ctx).Error()
 	logger.InfoContext(
 		context.Background(), "sqi-worker shutdown triggered",
 		slog.String("trigger", sigName),
@@ -565,14 +535,7 @@ func connectToBroker(
 				cfg.NATS.CredentialFile,
 			)
 		}
-		// natsclient.Connect's dial is not ctx-aware, so a service Stop that
-		// lands during a failing dial (server down) surfaces as a plain dial
-		// error, not a wrapped context.Canceled. Add the ctx error so the
-		// service host recognizes a stop-initiated exit and does not report
-		// exit code 1 (which would restart a service the operator just stopped).
-		if ctxErr := ctx.Err(); ctxErr != nil {
-			return nil, nil, fmt.Errorf("nats connect: %w: %w", err, ctxErr)
-		}
+		// A cancel during the dial is wrapped in err (see natsclient.Connect).
 		return nil, nil, fmt.Errorf("nats connect: %w", err)
 	}
 	return nc, natsClosed, nil
@@ -696,52 +659,6 @@ func watchNATSClosure(ctx context.Context, natsClosed <-chan struct{}, stop func
 			"natsclient: connection permanently closed — initiating worker shutdown")
 		stop()
 	}
-}
-
-// registerShutdownSignals returns the channel shutdownTrigger drains and a func
-// that releases the registration. A console run registers for SIGINT/SIGTERM
-// so the shutdown log can name the signal. A Windows service must NOT register
-// at all: once any channel is registered the Go runtime maps
-// CTRL_LOGOFF_EVENT and CTRL_SHUTDOWN_EVENT to SIGTERM, and Windows delivers
-// those to services on every interactive logoff, so a routine logoff would
-// leave a stale SIGTERM buffered and the next SCM Stop would be logged as
-// "terminated" rather than "service stop". A service gets an unregistered
-// (never-ready) channel, so shutdownTrigger's select still cannot block.
-func registerShutdownSignals(service bool) (sig <-chan os.Signal, release func()) {
-	return registerShutdownSignalsWith(service, signal.Notify, signal.Stop)
-}
-
-// registerShutdownSignalsWith is [registerShutdownSignals] with the runtime's
-// signal.Notify and signal.Stop injected, so a test can observe whether a
-// registration happened without an SCM.
-func registerShutdownSignalsWith(
-	service bool,
-	notify func(chan<- os.Signal, ...os.Signal),
-	stop func(chan<- os.Signal),
-) (sig <-chan os.Signal, release func()) {
-	c := make(chan os.Signal, 1)
-	if service {
-		return c, func() {}
-	}
-	notify(c, os.Interrupt, syscall.SIGTERM)
-	return c, func() { stop(c) }
-}
-
-// shutdownTrigger names what started shutdown for the log: the SCM request for
-// a Windows service, the OS signal in a console run, or ctx's error (e.g. a
-// NATS-driven shutdown). It is called once ctx is done; with no service stop
-// and no signal it reports ctx.Err(), which is non-nil only then. The SCM
-// reason is checked first so it can never be shadowed by a signal.
-func shutdownTrigger(ctx context.Context, sig <-chan os.Signal) string {
-	if r := winsvc.StopReason(ctx); r != "" {
-		return r
-	}
-	select {
-	case s := <-sig:
-		return s.String()
-	default:
-	}
-	return ctx.Err().Error()
 }
 
 // withDiagnosticSink rebuilds logger so the worker's own slog output is mirrored

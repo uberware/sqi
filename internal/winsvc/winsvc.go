@@ -6,9 +6,11 @@
 // [Run] is the only thing the binaries' run commands call. When the Windows
 // Service Control Manager (SCM) started the process, Run hosts the command
 // under svc.Run and cancels its context on Stop or PreShutdown. Otherwise — a
-// console on Windows, or any other OS — it is exactly the signal.NotifyContext
-// the commands used before this package existed, so non-service behavior does
-// not change.
+// console on Windows, or any other OS — it cancels on SIGINT/SIGTERM as the
+// signal.NotifyContext the commands used before this package existed did, so
+// non-service behavior does not change. Either way context.Cause names what
+// stopped the command: the signal ("interrupt", "terminated"), or
+// "service stop" / "service preshutdown".
 //
 // This package is a leaf: it must not import internal/config, internal/server
 // or internal/worker/...; callers pass in whatever configuration it needs.
@@ -20,70 +22,23 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"sync/atomic"
 
 	sqilog "github.com/uberware/sqi/internal/log"
 )
 
-// Option configures [Run].
-type Option func(*options)
+type ctxKey struct{}
 
-type options struct {
-	configPath string
-}
-
-// WithWorkDirFromConfig makes a service run in the directory containing
-// configPath (or %ProgramData%\sqi when configPath is empty), so relative
-// paths in the config — the server's default sqi.db and data/nats — resolve
-// beside it instead of in C:\Windows\System32, a service's default working
-// directory. It has no effect outside service mode. With configPath empty the
-// commands refuse to load any configuration (see [RequireConfigFile]), so the
-// service stops with an error straight after changing into that directory.
-func WithWorkDirFromConfig(configPath string) Option {
-	return func(o *options) { o.configPath = configPath }
-}
-
-type ctxKey int
-
-const (
-	serviceNameKey ctxKey = iota
-	stopReasonKey
-)
-
-// stopReason records why the SCM asked the service to stop.
-type stopReason struct{ v atomic.Value }
-
-func (r *stopReason) set(s string) { r.v.Store(s) }
-
-func (r *stopReason) get() string {
-	if s, ok := r.v.Load().(string); ok {
-		return s
-	}
-	return ""
-}
-
-func withService(ctx context.Context, name string, reason *stopReason) context.Context {
-	ctx = context.WithValue(ctx, serviceNameKey, name)
-	return context.WithValue(ctx, stopReasonKey, reason)
+func withService(ctx context.Context, name string) context.Context {
+	return context.WithValue(ctx, ctxKey{}, name)
 }
 
 // ServiceName returns the installed service name when running as a service
 // (delivered by the SCM, so it reflects `service install --name`), else "".
 func ServiceName(ctx context.Context) string {
-	if s, ok := ctx.Value(serviceNameKey).(string); ok {
+	if s, ok := ctx.Value(ctxKey{}).(string); ok {
 		return s
 	}
 	return ""
-}
-
-// StopReason returns "service stop" or "service preshutdown" once the SCM has
-// asked the service to stop, else "".
-func StopReason(ctx context.Context) string {
-	r, ok := ctx.Value(stopReasonKey).(*stopReason)
-	if !ok {
-		return ""
-	}
-	return r.get()
 }
 
 // ProgramDataDir returns %ProgramData%, falling back to C:\ProgramData.
@@ -99,7 +54,7 @@ func DefaultLogPath(serviceName string) string {
 	return filepath.Join(ProgramDataDir(), "sqi", "logs", serviceName+".log")
 }
 
-// RequireConfigFile refuses to run a Windows service that was given no
+// requireConfigFile refuses to run a Windows service that was given no
 // --config (configPath empty); binary names the command to suggest. Without
 // one, both binaries search a default path for their configuration, and on
 // Windows two of its entries are open to any local user: the relative
@@ -108,10 +63,10 @@ func DefaultLogPath(serviceName string) string {
 // \etc\sqi on that directory's drive (C:\ grants Authenticated Users
 // create-folder). Whoever put a file there would choose what a LocalSystem
 // service runs. `service install` always passes --config, so this refuses only
-// a service registered by hand without one. It returns nil in a console, where
-// the search path is the operator's own.
-func RequireConfigFile(ctx context.Context, binary, configPath string) error {
-	if configPath != "" || ServiceName(ctx) == "" {
+// a service registered by hand without one. Only service mode calls it: in a
+// console the search path is the operator's own.
+func requireConfigFile(binary, configPath string) error {
+	if configPath != "" {
 		return nil
 	}
 	wd := workDir("")
@@ -122,12 +77,11 @@ func RequireConfigFile(ctx context.Context, binary, configPath string) error {
 		filepath.VolumeName(wd)+`\etc\sqi`, wd, binary)
 }
 
+// workDir is the directory a service runs in: the one containing configPath
+// (already absolute, see Run), or %ProgramData%\sqi when it is empty.
 func workDir(configPath string) string {
 	if configPath == "" {
 		return filepath.Join(ProgramDataDir(), "sqi")
-	}
-	if abs, err := filepath.Abs(configPath); err == nil {
-		configPath = abs
 	}
 	return filepath.Dir(configPath)
 }

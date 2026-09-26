@@ -3,6 +3,7 @@
 package winsvc
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -137,5 +138,31 @@ func TestTailLines(t *testing.T) {
 	}
 	if got := TailLines(filepath.Join(t.TempDir(), "none.log"), 5); got != nil {
 		t.Errorf("TailLines(missing) = %q, want nil", got)
+	}
+
+	// A log longer than the window: only whole lines from its end come back.
+	big := filepath.Join(t.TempDir(), "big.log")
+	var b strings.Builder
+	for i := 0; b.Len() < 3*tailWindow; i++ {
+		fmt.Fprintf(&b, "line %06d\n", i)
+	}
+	fmt.Fprintf(&b, "last\n")
+	if err := os.WriteFile(big, []byte(b.String()), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	got := TailLines(big, 3)
+	if len(got) != 3 || got[2] != "last" || !strings.HasPrefix(got[0], "line ") || len(got[0]) != len("line 000000") {
+		t.Errorf("TailLines(big) = %q", got)
+	}
+
+	// The window starting exactly on a line boundary keeps that whole line.
+	exact := filepath.Join(t.TempDir(), "exact.log")
+	line := strings.Repeat("x", 1023) + "\n" // tailWindow is a whole number of these
+	body := "older\n" + strings.Repeat(line, tailWindow/len(line))
+	if err := os.WriteFile(exact, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got := TailLines(exact, tailWindow); len(got) != tailWindow/len(line) {
+		t.Errorf("TailLines(exact) returned %d lines, want %d", len(got), tailWindow/len(line))
 	}
 }

@@ -747,8 +747,9 @@ Get-Content C:\ProgramData\sqi\logs\sqi-worker.log -Wait -Tail 50
   inherited. `service install` creates it; a hand-registered service creates it
   at its first start. A directory that already exists is left as it is, except
   that `service install --user` always adds its account to it, whatever
-  `log.file` says, and that `service install` refuses one that is, or sits under,
-  a junction or symbolic link (see the [known limitations](#security-notes-and-known-limitations)).
+  `log.file` says, and that both `service install` and the starting service
+  refuse one that is, or sits under, a junction or symbolic link (see the
+  [known limitations](#security-notes-and-known-limitations)).
 - **Rotation** is by size: the file becomes `<file>.1`, `.1` becomes `.2`, and so
   on up to `log.max_backups`, and the oldest is dropped. A rotation that fails
   — most often because something such as `Get-Content -Wait`, an editor or a log
@@ -761,9 +762,8 @@ Get-Content C:\ProgramData\sqi\logs\sqi-worker.log -Wait -Tail 50
   config) appends one line to `C:\ProgramData\sqi\logs\<service-name>.log`, such
   as `{"time":"…","level":"ERROR","msg":"service exited with error","error":"…"}`,
   and the service reports exit code `1066 (service-specific 1)`. When that file
-  cannot be written — say its directory is missing and would have to be created
-  under a junction, which the service refuses, or the account may not write
-  there — the line goes instead to `<service-name>.trace.log` in
+  cannot be written — say its directory is, or sits under, a junction, which the
+  service refuses, or the account may not write there — the line goes instead to `<service-name>.trace.log` in
   the service's working directory (the configuration file's directory), with a
   `log_error` field saying why the default log could not take it; the file gets
   that directory's permissions. Both writes are best effort: if neither
@@ -957,15 +957,15 @@ the defaults.
   mitigation and nothing else stands in for it. `service install` refuses a
   junction or symbolic link at the log directory, or at its parent
   `C:\ProgramData\sqi`, for a LocalSystem install and a `--user` one alike,
-  whether it creates `logs` or finds it already there. A running service is
-  laxer: it makes that check only when it has to create `logs` itself, and
-  otherwise uses an existing `logs` unchecked. So a hand-registered service
-  (which never ran `service install`), or one whose directory was swapped after
-  it was installed — or during the install itself, a race the check cannot
-  close — writes its log through whatever `C:\ProgramData\sqi` and `logs` then
-  point at: `C:\ProgramData\sqi` may be a junction to a directory that already
-  contains `logs`. Nothing checks or protects the working directory, the
-  configuration file, `worker.data_dir` or (for `sqi-server`) the database, and a
+  whether it creates `logs` or finds it already there, and a starting service
+  makes the same check each time it opens its default log, so a hand-registered
+  service (which never ran `service install`) gets it too. What the check cannot
+  close is a race: the path is checked and then used by name, so a directory
+  swapped for a junction between the two — during the install, or while the
+  service runs — still redirects the log, and a squatter who owns
+  `C:\ProgramData\sqi` can make that swap at will. Nothing checks or protects
+  the working directory, the configuration file, `worker.data_dir` or (for
+  `sqi-server`) the database, and a
   directory the installer or a starting service has to create gets ProgramData's
   permissive inherited permissions. That is why step 2 comes first, and why its
   check includes the owner: what a squatter plants there is theirs, and what they

@@ -450,8 +450,8 @@ jobs:
   # type-checks _test.go files too — so the same class of break fails a PR
   # instead of surviving until someone runs it by hand. The real-SCM suite
   # test/winservice is behind both the `winservice` build tag and
-  # //go:build windows, so it is only ever type-checked by the second vet
-  # line, which passes the tag explicitly.
+  # //go:build windows, so the vet line passes the tag explicitly (no other
+  # package uses it).
   cross-compile:
     name: Cross-compile (${{ matrix.goos }}/${{ matrix.goarch }})
     runs-on: ubuntu-latest
@@ -484,8 +484,7 @@ jobs:
         if: matrix.goos == 'windows' && matrix.goarch == 'amd64'
         run: |
           GOOS=windows GOARCH=amd64 go build ./internal/... ./cmd/...
-          GOOS=windows GOARCH=amd64 go vet ./internal/worker/... ./internal/winsvc/... ./internal/secretin/... ./internal/log/... ./cmd/...
-          GOOS=windows GOARCH=amd64 go vet -tags winservice ./test/winservice/...
+          GOOS=windows GOARCH=amd64 go vet -tags winservice ./internal/worker/... ./internal/winsvc/... ./internal/secretin/... ./internal/log/... ./cmd/... ./test/winservice/...
 
   # ── Cross-platform runtime smoke ─────────────────────────────────────────────
   # cross-compile (above) proves the binaries *build* for every target; this job
@@ -1113,6 +1112,7 @@ jobs:
             TestHandler_InterrogateAnsweredWhileRunningAndStopping
             TestHandler_ServiceNameFromArgs
             TestHandler_ChdirFailureIsReported
+            TestHandler_NoConfigPathRefusedBeforeFn
             TestHandler_CanceledErrorAfterStopIsCleanExit
             TestHandler_CanceledErrorWithoutStopStillFails
             TestHandler_OtherErrorAfterStopStillFails
@@ -1144,9 +1144,9 @@ jobs:
             TestEnsureLogDir_RefusesExistingFile
             TestCreateLogDir_MissingDirGetsProtectedDACL
             TestCreateLogDir_ExistingDirIsUntouched
-            TestCreateLogDir_ExistingJunctionIsLeftAlone
+            TestCreateLogDir_RefusesExistingJunction
             TestCreateLogDir_RefusesReparsePointParent
-            TestCreateLogDir_ExistingDirUnderReparsePointParentIsLeftAlone
+            TestCreateLogDir_RefusesExistingDirUnderReparsePointParent
             TestRuntimeLogDirsAreProtected
             # Service-mode log path resolution and the startup-failure trace.
             TestDefaultLogPath_UnderProgramData
@@ -1157,6 +1157,8 @@ jobs:
             TestRequireConfigFile
             # The rotating log file (internal/log).
             TestRotatingFile_RenameFailureKeepsAppendingAndRetriesLater
+            TestRotatingFile_BlockedCurrentFileRenameKeepsBackups
+            TestRotatingFile_BackupShiftFailurePutsCurrentFileBack
             TestRotatingFile_RecoversAfterFailedReopen
             TestRotatingFile_CloseAfterUnrecoveredReopenIsNil
             # Secret reading (internal/secretin) — the non-console fallback
@@ -1170,8 +1172,6 @@ jobs:
             TestWorkerServiceCommand_Registered
             TestWorkerDrainTimeout_FromConfig
             TestWorkerDrainBound_CoversGraceAndKillWindow
-            TestRegisterShutdownSignals
-            TestRegisterShutdownSignals_RealConsolePathReleases
             TestConnectToBroker_FailedDialAfterCancelWrapsCanceled
           )
           missing=0

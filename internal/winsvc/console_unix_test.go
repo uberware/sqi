@@ -14,12 +14,16 @@ import (
 // TestRun_ConsoleSIGTERMCancelsContext pins the console path to today's
 // serve/start behavior: SIGTERM cancels the context fn runs under.
 func TestRun_ConsoleSIGTERMCancelsContext(t *testing.T) {
-	err := Run("x", func(ctx context.Context) error {
+	err := Run("x", new(string), func(ctx context.Context) error {
 		if err := syscall.Kill(syscall.Getpid(), syscall.SIGTERM); err != nil {
 			return err
 		}
 		select {
 		case <-ctx.Done():
+			// The worker logs this cause as its shutdown trigger.
+			if got := context.Cause(ctx).Error(); got != "terminated" {
+				t.Errorf("Cause = %q", got)
+			}
 			return nil
 		case <-time.After(5 * time.Second):
 			t.Error("SIGTERM did not cancel the context")

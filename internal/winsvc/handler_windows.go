@@ -25,6 +25,7 @@ const (
 // where Shutdown gets only a few seconds.
 type handler struct {
 	name            string // default; the SCM's args[0] wins
+	configPath      string // absolute, or "" (refused)
 	workDir         string
 	fn              func(context.Context) error
 	checkpointEvery time.Duration
@@ -47,10 +48,12 @@ func (h *handler) Execute(args []string, r <-chan svc.ChangeRequest, s chan<- sv
 		return h.finish(name, fmt.Errorf("winsvc: change directory to %s: %w", h.workDir, err))
 	}
 	h.inWorkDir = true
+	if err := requireConfigFile(h.name, h.configPath); err != nil {
+		return h.finish(name, err)
+	}
 
-	reason := &stopReason{}
-	ctx, cancel := context.WithCancel(withService(context.Background(), name, reason))
-	defer cancel()
+	ctx, cancel := context.WithCancelCause(withService(context.Background(), name))
+	defer cancel(nil)
 	done := make(chan error, 1)
 	go func() { done <- h.fn(ctx) }()
 
@@ -65,9 +68,8 @@ func (h *handler) Execute(args []string, r <-chan svc.ChangeRequest, s chan<- sv
 			case svc.Interrogate:
 				s <- running
 			case svc.Stop, svc.PreShutdown:
-				reason.set(stopReasonFor(c.Cmd))
-				cancel()
-				return h.finish(name, cleanStop(reason, h.drain(done, r, s)))
+				cancel(stopCause(c.Cmd))
+				return h.finish(name, cleanStop(h.drain(done, r, s)))
 			}
 		}
 	}
@@ -78,25 +80,26 @@ func (h *handler) Execute(args []string, r <-chan svc.ChangeRequest, s chan<- sv
 // dial or registration) makes fn return an error wrapping context.Canceled:
 // that is the operator's stop taking effect, not a failure, and reporting it as
 // exit code 1 would let the SCM's recovery actions restart a service that was
-// just stopped. So a canceled error after a recorded stop is nil. Everything
-// else is left alone: a context.Canceled with no stop requested (fn canceled a
-// ctx it derived) still fails, and so does any other error after a stop, such
-// as a shutdown timeout or context.DeadlineExceeded. Note errors.Is also
+// just stopped. So a canceled error after a stop is nil. Everything else is
+// left alone: any other error after a stop still fails, such as a shutdown
+// timeout or context.DeadlineExceeded (and a context.Canceled with no stop
+// requested — fn canceled a ctx it derived — never reaches here). Note errors.Is also
 // matches any member of an errors.Join, so a joined error holding a Canceled
 // leg plus a genuine failure would be forgiven after a stop; none of today's
 // post-stop paths builds such a join.
-func cleanStop(reason *stopReason, err error) error {
-	if err != nil && reason.get() != "" && errors.Is(err, context.Canceled) {
+func cleanStop(err error) error {
+	if errors.Is(err, context.Canceled) {
 		return nil
 	}
 	return err
 }
 
-func stopReasonFor(c svc.Cmd) string {
+// stopCause is the context.Cause fn sees for an SCM stop request.
+func stopCause(c svc.Cmd) error {
 	if c == svc.PreShutdown {
-		return "service preshutdown"
+		return errors.New("service preshutdown")
 	}
-	return "service stop"
+	return errors.New("service stop")
 }
 
 // drain reports StopPending with an advancing checkpoint until fn returns, and

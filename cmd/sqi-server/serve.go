@@ -6,7 +6,6 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
-	"path/filepath"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -88,36 +87,19 @@ func runServe(cmd *cobra.Command, _ []string) error {
 	if cmd.Flags().Changed("auth-validate-job-owner") {
 		overrides.ValidateJobOwner = &serveFlags.AuthValidateJobOwner
 	}
-	// In service mode winsvc.Run changes the working directory to the config
-	// file's directory before calling serve, so a relative --config (a service
-	// registered by hand) would then resolve against the new directory. Make it
-	// absolute first so WithWorkDirFromConfig and config.Load see the same
-	// path. A console run keeps the value exactly as given.
-	if winsvc.IsService() && persistentFlags.ConfigFile != "" {
-		abs, err := filepath.Abs(persistentFlags.ConfigFile)
-		if err != nil {
-			return fmt.Errorf("resolve config path: %w", err)
-		}
-		persistentFlags.ConfigFile = abs
-	}
-
 	// winsvc.Run cancels ctx on SIGINT/SIGTERM in a console, or on a service
-	// Stop/PreShutdown when the Windows SCM started us. Config is loaded inside
-	// so a service resolves relative paths from its config directory and a load
-	// failure — including a service's refusal to run without --config —
-	// reaches the service's log.
-	return winsvc.Run("sqi-server", func(ctx context.Context) error {
+	// Stop/PreShutdown when the Windows SCM started us. A service runs in its
+	// config file's directory (Run makes --config absolute first, and refuses to
+	// start without one), and config is loaded inside so a load failure reaches
+	// the service's log.
+	return winsvc.Run("sqi-server", &persistentFlags.ConfigFile, func(ctx context.Context) error {
 		return serve(ctx, overrides)
-	}, winsvc.WithWorkDirFromConfig(persistentFlags.ConfigFile))
+	})
 }
 
 // serve loads configuration, builds the logger and runs the server until ctx
-// is canceled. A Windows service without --config stops here, before the
-// config search could read a file a non-administrator planted.
+// is canceled.
 func serve(ctx context.Context, overrides config.FlagOverrides) error {
-	if err := winsvc.RequireConfigFile(ctx, "sqi-server", persistentFlags.ConfigFile); err != nil {
-		return err
-	}
 	cfg, err := config.Load(persistentFlags.ConfigFile, overrides)
 	if err != nil {
 		return fmt.Errorf("load config: %w", err)

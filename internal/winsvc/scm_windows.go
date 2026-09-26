@@ -39,7 +39,6 @@ type servicePreshutdownInfo struct {
 // StatusInfo is what `service status` prints.
 type StatusInfo struct {
 	Name, State, Account, StartType, BinaryPath string
-	DelayedAutoStart                            bool
 	Win32ExitCode, ServiceExitCode, PID         uint32
 }
 
@@ -60,6 +59,21 @@ func open(m *mgr.Mgr, name string) (*mgr.Service, error) {
 		return nil, fmt.Errorf("open service %s: %w", name, err)
 	}
 	return s, nil
+}
+
+// withOpenService connects to the SCM, opens name and calls fn with it.
+func withOpenService(name string, fn func(*mgr.Service) error) error {
+	m, err := connect()
+	if err != nil {
+		return err
+	}
+	defer m.Disconnect() //nolint:errcheck // handle cleanup
+	s, err := open(m, name)
+	if err != nil {
+		return err
+	}
+	defer s.Close()
+	return fn(s)
 }
 
 // Exists reports whether a service named name is registered. Failing to open
@@ -93,10 +107,6 @@ func Install(cfg ServiceConfig) (err error) {
 		return err
 	}
 	defer m.Disconnect() //nolint:errcheck // handle cleanup
-	if s, openErr := m.OpenService(cfg.Name); openErr == nil {
-		s.Close() // only probing for existence
-		return fmt.Errorf("%w: %s", ErrServiceExists, cfg.Name)
-	}
 	s, err := m.CreateService(cfg.Name, cfg.ExePath, mgr.Config{
 		DisplayName:      cfg.DisplayName,
 		Description:      cfg.Description,
@@ -117,9 +127,9 @@ func Install(cfg ServiceConfig) (err error) {
 	return configure(s, cfg)
 }
 
-// createError reports mgr.CreateService's error. ERROR_SERVICE_EXISTS (a
-// race with another install, or an existence probe that failed for another
-// reason) is ErrServiceExists, so callers can still point at `service
+// createError reports mgr.CreateService's error. ERROR_SERVICE_EXISTS (the
+// name is taken, including by a race with another install after runInstall's
+// Exists check) is ErrServiceExists, so callers can still point at `service
 // uninstall`.
 func createError(name string, err error) error {
 	if errors.Is(err, windows.ERROR_SERVICE_EXISTS) {
@@ -153,47 +163,33 @@ func configure(s *mgr.Service, cfg ServiceConfig) error {
 // Uninstall stops the service if it is running (waiting up to wait) and
 // deletes it. Config, data and logs are untouched.
 func Uninstall(name string, wait time.Duration) error {
-	m, err := connect()
-	if err != nil {
-		return err
-	}
-	defer m.Disconnect() //nolint:errcheck // handle cleanup
-	s, err := open(m, name)
-	if err != nil {
-		return err
-	}
-	defer s.Close()
-	if st, qerr := s.Query(); qerr == nil && st.State != svc.Stopped {
-		if _, err := stopAndWait(s, name, wait); err != nil {
-			return err
+	return withOpenService(name, func(s *mgr.Service) error {
+		if st, qerr := s.Query(); qerr == nil && st.State != svc.Stopped {
+			if _, err := stopAndWait(s, name, wait); err != nil {
+				return err
+			}
 		}
-	}
-	if err := s.Delete(); err != nil {
-		return fmt.Errorf("delete service %s: %w", name, err)
-	}
-	return nil
+		if err := s.Delete(); err != nil {
+			return fmt.Errorf("delete service %s: %w", name, err)
+		}
+		return nil
+	})
 }
 
 // Start starts the service and waits up to wait for it to run or stop, then
 // watches a running service for startSettle more (see awaitStart). A service
 // that stops instead of running, or within that window, is an error carrying
 // its exit codes.
-func Start(name string, wait time.Duration) (StatusInfo, error) {
-	m, err := connect()
-	if err != nil {
-		return StatusInfo{}, err
-	}
-	defer m.Disconnect() //nolint:errcheck // handle cleanup
-	s, err := open(m, name)
-	if err != nil {
-		return StatusInfo{}, err
-	}
-	defer s.Close()
-	if err := s.Start(); err != nil {
-		return StatusInfo{}, fmt.Errorf("start service %s: %w", name, err)
-	}
-	st, err := awaitStart(s, name, wait, startSettle)
-	return statusInfo(s, name, st), err
+func Start(name string, wait time.Duration) (info StatusInfo, err error) {
+	err = withOpenService(name, func(s *mgr.Service) error {
+		if err := s.Start(); err != nil {
+			return fmt.Errorf("start service %s: %w", name, err)
+		}
+		st, err := awaitStart(s, name, wait, startSettle)
+		info = statusInfo(s, name, st)
+		return err
+	})
+	return info, err
 }
 
 // awaitStart waits up to wait for a service just asked to start to run or
@@ -235,61 +231,42 @@ func settleRunning(s controller, name string, window time.Duration) (svc.Status,
 }
 
 // Stop asks the service to stop and waits up to wait for it.
-func Stop(name string, wait time.Duration) (StatusInfo, error) {
-	m, err := connect()
-	if err != nil {
-		return StatusInfo{}, err
-	}
-	defer m.Disconnect() //nolint:errcheck // handle cleanup
-	s, err := open(m, name)
-	if err != nil {
-		return StatusInfo{}, err
-	}
-	defer s.Close()
-	st, err := stopAndWait(s, name, wait)
-	return statusInfo(s, name, st), err
+func Stop(name string, wait time.Duration) (info StatusInfo, err error) {
+	err = withOpenService(name, func(s *mgr.Service) error {
+		st, err := stopAndWait(s, name, wait)
+		info = statusInfo(s, name, st)
+		return err
+	})
+	return info, err
 }
 
 // PreShutdownTimeout reads the PreShutdown timeout the service is registered
 // with — for a service `service install` created, its drain timeout plus
 // ShutdownMargin.
 func PreShutdownTimeout(name string) (time.Duration, error) {
-	m, err := connect()
-	if err != nil {
-		return 0, err
-	}
-	defer m.Disconnect() //nolint:errcheck // handle cleanup
-	s, err := open(m, name)
-	if err != nil {
-		return 0, err
-	}
-	defer s.Close()
 	var info servicePreshutdownInfo
-	var needed uint32
-	if err := windows.QueryServiceConfig2(s.Handle, windows.SERVICE_CONFIG_PRESHUTDOWN_INFO,
-		(*byte)(unsafe.Pointer(&info)), uint32(unsafe.Sizeof(info)), &needed); err != nil {
-		return 0, fmt.Errorf("query preshutdown timeout of %s: %w", name, err)
-	}
-	return time.Duration(info.timeoutMillis) * time.Millisecond, nil
+	err := withOpenService(name, func(s *mgr.Service) error {
+		var needed uint32
+		if err := windows.QueryServiceConfig2(s.Handle, windows.SERVICE_CONFIG_PRESHUTDOWN_INFO,
+			(*byte)(unsafe.Pointer(&info)), uint32(unsafe.Sizeof(info)), &needed); err != nil {
+			return fmt.Errorf("query preshutdown timeout of %s: %w", name, err)
+		}
+		return nil
+	})
+	return time.Duration(info.timeoutMillis) * time.Millisecond, err
 }
 
 // Status reports the service's state and registration.
-func Status(name string) (StatusInfo, error) {
-	m, err := connect()
-	if err != nil {
-		return StatusInfo{}, err
-	}
-	defer m.Disconnect() //nolint:errcheck // handle cleanup
-	s, err := open(m, name)
-	if err != nil {
-		return StatusInfo{}, err
-	}
-	defer s.Close()
-	st, err := s.Query()
-	if err != nil {
-		return StatusInfo{}, fmt.Errorf("query service %s: %w", name, err)
-	}
-	return statusInfo(s, name, st), nil
+func Status(name string) (info StatusInfo, err error) {
+	err = withOpenService(name, func(s *mgr.Service) error {
+		st, err := s.Query()
+		if err != nil {
+			return fmt.Errorf("query service %s: %w", name, err)
+		}
+		info = statusInfo(s, name, st)
+		return nil
+	})
+	return info, err
 }
 
 // controller is the part of *mgr.Service that stopping and waiting use, so
@@ -369,7 +346,6 @@ func statusInfo(s *mgr.Service, name string, st svc.Status) StatusInfo {
 	if c, err := s.Config(); err == nil {
 		info.Account = c.ServiceStartName
 		info.BinaryPath = c.BinaryPathName
-		info.DelayedAutoStart = c.DelayedAutoStart
 		info.StartType = startTypeString(c.StartType, c.DelayedAutoStart)
 	}
 	return info

@@ -125,6 +125,85 @@ func TestRotatingFile_RenameFailureKeepsAppendingAndRetriesLater(t *testing.T) {
 	}
 }
 
+// A reader holding the current file without FILE_SHARE_DELETE (Get-Content
+// -Wait) blocks only the rename of the current file. Every deferred retry must
+// leave the existing backups alone, not drop the oldest one each time.
+func TestRotatingFile_BlockedCurrentFileRenameKeepsBackups(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "a.log")
+	for i, content := range []string{"b1\n", "b2\n", "b3\n"} {
+		if err := os.WriteFile(backupName(path, i+1), []byte(content), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	w, err := openRotatingFile(path, 10, 3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	blocked := 0
+	w.rename = func(oldpath, newpath string) error {
+		if oldpath == path {
+			blocked++
+			return errors.New("sharing violation")
+		}
+		return os.Rename(oldpath, newpath)
+	}
+	// Enough output for several deferred retries.
+	writeLines(t, w, "line1", "line2", "line3", "line4", "line5", "line6", "line7", "line8")
+	if blocked < 2 {
+		t.Fatalf("rotation retried %d time(s), want several", blocked)
+	}
+	for i, want := range []string{"b1\n", "b2\n", "b3\n"} {
+		if got := readFile(t, backupName(path, i+1)); got != want {
+			t.Errorf("backup %d = %q, want %q", i+1, got, want)
+		}
+	}
+
+	// Once the handle closes, rotation shifts the backups as usual.
+	w.rename = os.Rename
+	writeLines(t, w, "after")
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if got := readFile(t, path); got != "after\n" {
+		t.Errorf("current = %q, want the line written after rotation", got)
+	}
+	if got := readFile(t, backupName(path, 1)); !strings.Contains(got, "line8\n") {
+		t.Errorf(".1 = %q, want the held file's lines", got)
+	}
+	if got := readFile(t, backupName(path, 2)); got != "b1\n" {
+		t.Errorf(".2 = %q, want the old .1", got)
+	}
+}
+
+// A backup rename failing after the current file was moved aside puts the
+// current file back, so its lines stay where the writer reopens them.
+func TestRotatingFile_BackupShiftFailurePutsCurrentFileBack(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "a.log")
+	if err := os.WriteFile(backupName(path, 1), []byte("b1\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	w, err := openRotatingFile(path, 10, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	w.rename = func(oldpath, newpath string) error {
+		if oldpath == backupName(path, 1) {
+			return errors.New("sharing violation")
+		}
+		return os.Rename(oldpath, newpath)
+	}
+	writeLines(t, w, "line1", "line2")
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if got := readFile(t, path); got != "line1\nline2\n" {
+		t.Errorf("current = %q, want both lines", got)
+	}
+	if _, err := os.Stat(path + ".rotating"); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("pending file left behind: %v", err)
+	}
+}
+
 func TestOpenRotatingFile_RejectsBadLimits(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "a.log")
 	if _, err := OpenRotatingFile(path, 0, 1); err == nil {
@@ -232,5 +311,11 @@ func TestRotatingFile_CloseAfterUnrecoveredReopenIsNil(t *testing.T) {
 	failing = false
 	if _, err := w.Write([]byte("late\n")); err == nil {
 		t.Fatal("write after Close succeeded")
+	}
+}
+
+func TestFileProblem_EmptyIsStderr(t *testing.T) {
+	if got := FileProblem("", "x.log"); got != "" {
+		t.Fatalf("FileProblem(\"\") = %q, want \"\" (stderr)", got)
 	}
 }

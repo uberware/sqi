@@ -39,6 +39,7 @@ func newHarness(t *testing.T, fn func(context.Context) error) *harness {
 	}
 	hs.h = &handler{
 		name:            "default-name",
+		configPath:      `C:\sqi\default-name.yaml`,
 		workDir:         t.TempDir(),
 		fn:              fn,
 		checkpointEvery: 10 * time.Millisecond,
@@ -85,7 +86,7 @@ func TestHandler_StopCancelsAndExitsZero(t *testing.T) {
 	var reason string
 	hs := newHarness(t, func(ctx context.Context) error {
 		<-ctx.Done()
-		reason = StopReason(ctx)
+		reason = context.Cause(ctx).Error()
 		return nil
 	})
 	hs.start("sqi-worker")
@@ -100,19 +101,38 @@ func TestHandler_StopCancelsAndExitsZero(t *testing.T) {
 		t.Fatalf("exit = (%v, %d), want (false, 0)", hs.specific, hs.code)
 	}
 	if reason != "service stop" {
-		t.Fatalf("StopReason = %q", reason)
+		t.Fatalf("Cause = %q", reason)
 	}
 }
 
 func TestHandler_PreShutdownCancels(t *testing.T) {
 	var reason string
-	hs := newHarness(t, func(ctx context.Context) error { <-ctx.Done(); reason = StopReason(ctx); return nil })
+	hs := newHarness(t, func(ctx context.Context) error { <-ctx.Done(); reason = context.Cause(ctx).Error(); return nil })
 	hs.start("sqi-server")
 	hs.waitState(t, svc.Running)
 	hs.requests <- svc.ChangeRequest{Cmd: svc.PreShutdown}
 	hs.wait(t)
 	if reason != "service preshutdown" {
-		t.Fatalf("StopReason = %q", reason)
+		t.Fatalf("Cause = %q", reason)
+	}
+}
+
+// A service given no --config must not call fn at all: fn's config search
+// would read files a non-administrator can plant (see requireConfigFile).
+func TestHandler_NoConfigPathRefusedBeforeFn(t *testing.T) {
+	called := false
+	hs := newHarness(t, func(context.Context) error { called = true; return nil })
+	hs.h.configPath = ""
+	hs.start("sqi-worker")
+	hs.wait(t)
+	if called {
+		t.Fatal("fn ran without --config")
+	}
+	if !hs.specific || hs.code != 1 {
+		t.Fatalf("exit = (%v, %d), want (true, 1)", hs.specific, hs.code)
+	}
+	if b, err := os.ReadFile(hs.trace); err != nil || !strings.Contains(string(b), "requires --config") {
+		t.Fatalf("trace = %q, %v; want the --config refusal", b, err)
 	}
 }
 
@@ -305,7 +325,7 @@ func TestHandler_CanceledErrorAfterStopIsCleanExit(t *testing.T) {
 			var reason string
 			hs := newHarness(t, func(ctx context.Context) error {
 				<-ctx.Done()
-				reason = StopReason(ctx)
+				reason = context.Cause(ctx).Error()
 				return fmt.Errorf("discovery: %w", context.Canceled)
 			})
 			hs.start("sqi-worker")
@@ -324,7 +344,7 @@ func TestHandler_CanceledErrorAfterStopIsCleanExit(t *testing.T) {
 				t.Fatalf("handler recorded %v; Run must return nil for a clean stop", hs.h.err)
 			}
 			if reason != tc.wantReason {
-				t.Fatalf("StopReason = %q, want %q", reason, tc.wantReason)
+				t.Fatalf("Cause = %q, want %q", reason, tc.wantReason)
 			}
 		})
 	}

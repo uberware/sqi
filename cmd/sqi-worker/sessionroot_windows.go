@@ -7,6 +7,8 @@ package main
 import (
 	"os"
 	"path/filepath"
+
+	"github.com/uberware/sqi/internal/winsvc"
 )
 
 // defaultSessionRoot returns the session working-directory root on Windows.
@@ -24,9 +26,5 @@ import (
 // Everyone by default, so a task reaches its own session directory without
 // any right on the ancestors.
 func defaultSessionRoot() (path string, mode os.FileMode) {
-	base := os.Getenv("ProgramData")
-	if base == "" {
-		base = `C:\ProgramData`
-	}
-	return filepath.Join(base, "sqi", "worker", "sessions"), 0o711
+	return filepath.Join(winsvc.ProgramDataDir(), "sqi", "worker", "sessions"), 0o711
 }

@@ -8,14 +8,13 @@ import (
 	"fmt"
 	"net"
 	"net/url"
-	"os"
-	"path/filepath"
 	"slices"
 	"strings"
 
 	"github.com/uberware/sqi/internal/auth/oidc"
 	"github.com/uberware/sqi/internal/auth/policy"
 	"github.com/uberware/sqi/internal/auth/rolemap"
+	sqilog "github.com/uberware/sqi/internal/log"
 )
 
 // ValidationError describes a single configuration error with the field path
@@ -234,32 +233,10 @@ func validateLogFile(cfg LogConfig) []ValidationError {
 			Message: fmt.Sprintf("must not be negative, got %d", cfg.MaxBackups),
 		})
 	}
-	if cfg.File != "" {
-		if msg := logFileProblem(cfg.File, "sqi-server.log"); msg != "" {
-			errs = append(errs, ValidationError{Field: "log.file", Message: msg})
-		}
+	if msg := sqilog.FileProblem(cfg.File, "sqi-server.log"); msg != "" {
+		errs = append(errs, ValidationError{Field: "log.file", Message: msg})
 	}
 	return errs
-}
-
-// logFileProblem describes what makes file unusable as log.file, or returns
-// "". It must name a file (not end in a path separator, not be an existing
-// directory) in a directory that exists; example is the file name the
-// suggested fix uses.
-func logFileProblem(file, example string) string {
-	if os.IsPathSeparator(file[len(file)-1]) {
-		return fmt.Sprintf("%q ends with a path separator; log.file must name a file, such as %q",
-			file, filepath.Join(file, example))
-	}
-	if info, err := os.Stat(file); err == nil && info.IsDir() {
-		return fmt.Sprintf("%q is a directory; log.file must name a file, such as %q",
-			file, filepath.Join(file, example))
-	}
-	dir := filepath.Dir(file)
-	if info, err := os.Stat(dir); err != nil || !info.IsDir() {
-		return fmt.Sprintf("directory %q does not exist; create it or choose another path", dir)
-	}
-	return ""
 }
 
 func validateScheduler(cfg SchedulerConfig) []ValidationError {

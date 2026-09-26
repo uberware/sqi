@@ -55,13 +55,13 @@ func runSuite(m *testing.M) int {
 		fmt.Println(err)
 		return 1
 	}
-	for _, b := range []string{"sqi-server", "sqi-worker"} {
-		cmd := exec.CommandContext(context.Background(), "go", "build", "-o", filepath.Join(dir, b+".exe"), "./cmd/"+b)
-		cmd.Dir = root
-		if out, err := cmd.CombinedOutput(); err != nil {
-			fmt.Printf("build %s: %v\n%s", b, err, out)
-			return 1
-		}
+	// One build loads the package graph once and links both binaries into dir.
+	cmd := exec.CommandContext(context.Background(), "go", "build",
+		"-o", dir+string(os.PathSeparator), "./cmd/sqi-server", "./cmd/sqi-worker")
+	cmd.Dir = root
+	if out, err := cmd.CombinedOutput(); err != nil {
+		fmt.Printf("build: %v\n%s", err, out)
+		return 1
 	}
 	return m.Run()
 }

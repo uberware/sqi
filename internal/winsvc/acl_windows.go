@@ -41,9 +41,7 @@ const (
 // installed earlier may already have created dir without it, and this
 // service could not then create its log (plan clarification 4). Either way an
 // existing dir that is, or sits under, a junction or symbolic link is refused
-// (errReparsePoint): for an account because its ACE would land on the target,
-// and for LocalSystem, which changes no ACL, because the service would write
-// its log through it (see checkExistingDir).
+// (errReparsePoint; see mkdirProtected).
 func EnsureLogDir(dir, account string) error {
 	var sid *windows.SID
 	if account != "" {
@@ -54,22 +52,15 @@ func EnsureLogDir(dir, account string) error {
 		sid = s
 	}
 	created, err := mkdirProtected(dir, sid)
-	switch {
-	case err != nil || created:
+	if err != nil || created || sid == nil {
 		return err
-	case sid == nil:
-		return checkExistingDir(dir)
 	}
 	return grantDir(dir, sid, fileModifyAccess)
 }
 
 // checkExistingDir makes the read-only checks grantDir makes before it
 // changes an ACL — dir's parent and dir itself must be plain directories, not
-// junctions or symbolic links — and changes nothing. A LocalSystem install
-// needs no ACE, but registering a service that would write its log through a
-// pre-positioned junction is still refused, as it is for --user. (The
-// service's own runtime check, createLogDir, deliberately leaves an existing
-// directory alone.)
+// junctions or symbolic links — and changes nothing.
 func checkExistingDir(dir string) error {
 	if err := checkParent(dir); err != nil {
 		return err
@@ -85,13 +76,17 @@ func checkExistingDir(dir string) error {
 // mkdirProtected creates dir, and any missing parents, and gives dir a
 // protected DACL granting inheritable full control to SYSTEM, Administrators
 // and account (when non-nil). Parents it creates inherit as usual. When dir
-// already exists it changes nothing and reports created false. It refuses to
-// create dir under a reparse-point parent (see checkParent).
+// already exists it changes nothing and reports created false. Either way it
+// refuses a dir that is, or sits under, a junction or symbolic link (see
+// checkParent and checkExistingDir): the service would write, rename and
+// delete its log files through it, as SYSTEM for a LocalSystem service.
+// Install and a running service share this check, so a hand-registered
+// service, which never ran `service install`, gets it too.
 func mkdirProtected(dir string, account *windows.SID) (created bool, err error) {
 	info, err := os.Stat(dir)
 	switch {
 	case err == nil && info.IsDir():
-		return false, nil
+		return false, checkExistingDir(dir)
 	case err == nil:
 		return false, fmt.Errorf("%s exists and is not a directory", dir)
 	case !errors.Is(err, fs.ErrNotExist):
@@ -105,7 +100,7 @@ func mkdirProtected(dir string, account *windows.SID) (created bool, err error) 
 	}
 	if err := os.Mkdir(dir, 0o750); err != nil {
 		if info, statErr := os.Stat(dir); statErr == nil && info.IsDir() {
-			return false, nil
+			return false, checkExistingDir(dir)
 		}
 		return false, fmt.Errorf("create %s: %w", dir, err)
 	}

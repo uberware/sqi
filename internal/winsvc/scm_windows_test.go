@@ -666,7 +666,7 @@ func currentAccount(t *testing.T) (*windows.SID, string) {
 
 func computerName(t *testing.T) string {
 	t.Helper()
-	n, err := windowsComputerName()
+	n, err := windows.ComputerName()
 	if err != nil {
 		t.Fatal(err)
 	}

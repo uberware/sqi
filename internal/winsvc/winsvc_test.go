@@ -16,70 +16,45 @@ func TestRun_ConsolePassesLiveContextAndReturnsFnError(t *testing.T) {
 		t.Skip("running under the SCM")
 	}
 	want := errors.New("boom")
-	got := Run("x", func(ctx context.Context) error {
+	configPath := "relative.yaml"
+	got := Run("x", &configPath, func(ctx context.Context) error {
 		if ctx.Err() != nil {
 			t.Errorf("ctx already done: %v", ctx.Err())
 		}
-		if ServiceName(ctx) != "" || StopReason(ctx) != "" {
-			t.Errorf("console ctx carries service values")
+		if ServiceName(ctx) != "" {
+			t.Errorf("console ctx carries a service name")
 		}
 		return want
 	})
+	if configPath != "relative.yaml" {
+		t.Errorf("console Run rewrote --config to %q", configPath)
+	}
 	if !errors.Is(got, want) {
 		t.Fatalf("Run = %v, want %v", got, want)
 	}
 }
 
-func TestServiceContextAccessors(t *testing.T) {
-	r := &stopReason{}
-	ctx := withService(context.Background(), "sqi-worker-2", r)
-	if ServiceName(ctx) != "sqi-worker-2" {
-		t.Fatalf("ServiceName = %q", ServiceName(ctx))
-	}
-	if StopReason(ctx) != "" {
-		t.Fatalf("StopReason before stop = %q", StopReason(ctx))
-	}
-	r.set("service stop")
-	if StopReason(ctx) != "service stop" {
-		t.Fatalf("StopReason = %q", StopReason(ctx))
+func TestServiceName(t *testing.T) {
+	if got := ServiceName(withService(context.Background(), "sqi-worker-2")); got != "sqi-worker-2" {
+		t.Fatalf("ServiceName = %q", got)
 	}
 }
 
 // TestRequireConfigFile pins that a service given no --config refuses to run:
 // the config search path it would otherwise fall back to includes locations
-// any local user can create. A console run, and a service with --config, are
-// unaffected.
+// any local user can create. A service with --config is unaffected.
 func TestRequireConfigFile(t *testing.T) {
-	console := context.Background()
-	service := withService(context.Background(), "sqi-worker", &stopReason{})
-	for _, tc := range []struct {
-		name       string
-		ctx        context.Context
-		configPath string
-		wantErr    bool
-	}{
-		{"console without --config", console, "", false},
-		{"console with --config", console, "sqi-worker.yaml", false},
-		{"service with --config", service, `C:\ProgramData\sqi\sqi-worker.yaml`, false},
-		{"service without --config", service, "", true},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			err := RequireConfigFile(tc.ctx, "sqi-worker", tc.configPath)
-			if !tc.wantErr {
-				if err != nil {
-					t.Fatalf("RequireConfigFile = %v, want nil", err)
-				}
-				return
-			}
-			if err == nil {
-				t.Fatal("RequireConfigFile = nil, want a refusal")
-			}
-			for _, want := range []string{"--config", `\etc\sqi`, "sqi-worker service install"} {
-				if !strings.Contains(err.Error(), want) {
-					t.Errorf("error %q does not mention %q", err, want)
-				}
-			}
-		})
+	if err := requireConfigFile("sqi-worker", `C:\ProgramData\sqi\sqi-worker.yaml`); err != nil {
+		t.Fatalf("with --config = %v, want nil", err)
+	}
+	err := requireConfigFile("sqi-worker", "")
+	if err == nil {
+		t.Fatal("without --config = nil, want a refusal")
+	}
+	for _, want := range []string{"--config", `\etc\sqi`, "sqi-worker service install"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q does not mention %q", err, want)
+		}
 	}
 }
 
@@ -96,7 +71,7 @@ func TestResolveLogFile(t *testing.T) {
 	pd := t.TempDir()
 	t.Setenv("ProgramData", pd)
 	console := context.Background()
-	svcCtx := withService(context.Background(), "sqi-server", &stopReason{})
+	svcCtx := withService(context.Background(), "sqi-server")
 
 	if got, err := ResolveLogFile(console, ""); err != nil || got != "" {
 		t.Errorf("console, unset = %q, %v; want stderr (\"\")", got, err)
@@ -120,7 +95,7 @@ func TestResolveLogFile(t *testing.T) {
 func TestResolveLogFile_ServiceModeCreatesDirectory(t *testing.T) {
 	pd := filepath.Join(t.TempDir(), "fresh-programdata")
 	t.Setenv("ProgramData", pd)
-	ctx := withService(context.Background(), "sqi-server", &stopReason{})
+	ctx := withService(context.Background(), "sqi-server")
 	got, err := ResolveLogFile(ctx, "")
 	if err != nil {
 		t.Fatal(err)

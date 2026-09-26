@@ -8,6 +8,7 @@ import (
 	"io"
 	"io/fs"
 	"os"
+	"path/filepath"
 	"strconv"
 	"sync"
 )
@@ -128,10 +129,33 @@ func (r *RotatingFile) rotate() error {
 	return r.open()
 }
 
+// shift moves the current file to path.1, first shifting the backups up. The
+// current file is moved aside before any backup is touched: that is the rename
+// a handle held without FILE_SHARE_DELETE blocks, and failing it first leaves
+// every backup in place, where failing it last would drop the oldest backup on
+// each deferred retry. Should a later step fail, the current file is put back.
 func (r *RotatingFile) shift() error {
 	if r.maxBackups == 0 {
 		return r.remove(r.path)
 	}
+	pending := r.path + ".rotating"
+	if err := r.rename(r.path, pending); err != nil {
+		return err
+	}
+	err := r.shiftBackups()
+	if err == nil {
+		err = r.rename(pending, backupName(r.path, 1))
+	}
+	if err != nil {
+		if rbErr := r.rename(pending, r.path); rbErr != nil {
+			return errors.Join(err, rbErr)
+		}
+	}
+	return err
+}
+
+// shiftBackups drops the oldest backup and renames path.i to path.i+1.
+func (r *RotatingFile) shiftBackups() error {
 	if err := r.remove(backupName(r.path, r.maxBackups)); err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return err
 	}
@@ -140,7 +164,7 @@ func (r *RotatingFile) shift() error {
 			return err
 		}
 	}
-	return r.rename(r.path, backupName(r.path, 1))
+	return nil
 }
 
 func backupName(path string, i int) string { return path + "." + strconv.Itoa(i) }
@@ -173,6 +197,31 @@ func Output(path string, maxSizeMB, maxBackups int) (io.WriteCloser, error) {
 		return nil, err
 	}
 	return r, nil
+}
+
+// FileProblem describes what makes file unusable as a log file for
+// [OpenRotatingFile], or returns "". It must name a file (not end in a path
+// separator, not be an existing directory) in a directory that exists; example
+// is the file name the suggested fix uses. Config validation reports it under
+// log.file, so the messages name that key. An empty file is no problem: it
+// means stderr.
+func FileProblem(file, example string) string {
+	if file == "" {
+		return ""
+	}
+	if os.IsPathSeparator(file[len(file)-1]) {
+		return fmt.Sprintf("%q ends with a path separator; log.file must name a file, such as %q",
+			file, filepath.Join(file, example))
+	}
+	if info, err := os.Stat(file); err == nil && info.IsDir() {
+		return fmt.Sprintf("%q is a directory; log.file must name a file, such as %q",
+			file, filepath.Join(file, example))
+	}
+	dir := filepath.Dir(file)
+	if info, err := os.Stat(dir); err != nil || !info.IsDir() {
+		return fmt.Sprintf("directory %q does not exist; create it or choose another path", dir)
+	}
+	return ""
 }
 
 type nopCloser struct{ io.Writer }
