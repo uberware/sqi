@@ -1116,14 +1116,19 @@ jobs:
             TestHandler_CanceledErrorAfterStopIsCleanExit
             TestHandler_CanceledErrorWithoutStopStillFails
             TestHandler_OtherErrorAfterStopStillFails
+            TestHandler_TraceFallsBackToWorkDir
+            TestHandler_TraceUsesDefaultLogWhenWritable
+            TestHandler_NoTraceFallbackWithoutWorkDir
             # The `service` command group, driven by fake operations.
             TestNewCommand_ElevationCheckedBeforeAnyOperation
             TestInstall_ExistingServiceRefusedBeforeAnySideEffect
             TestInstall_DisplayNameForAnotherInstance
-            # SCM helpers: stop-and-wait, create-error mapping, elevation check.
+            # SCM helpers: stop-and-wait, the start settle window, create-error
+            # mapping, elevation check.
             TestStopAndWait
             TestStopAndWait_NeverStopsIsBounded
             TestStopAndWait_OtherControlErrorFails
+            TestAwaitStart
             TestCreateError_MapsServiceExists
             TestRequireElevated_MatchesProcessToken
             # Log-directory ACLs and junction refusal, on temp directories.
@@ -1133,6 +1138,9 @@ jobs:
             TestEnsureLogDir_RefusesJunction
             TestEnsureLogDir_RefusesReparsePointParent
             TestEnsureLogDir_RefusesReparsePointParentOnCreate
+            TestEnsureLogDir_LocalSystemExistingDirUnchanged
+            TestEnsureLogDir_LocalSystemRefusesJunction
+            TestEnsureLogDir_LocalSystemRefusesReparsePointParent
             TestEnsureLogDir_RefusesExistingFile
             TestCreateLogDir_MissingDirGetsProtectedDACL
             TestCreateLogDir_ExistingDirIsUntouched
@@ -1144,6 +1152,9 @@ jobs:
             TestDefaultLogPath_UnderProgramData
             TestResolveLogFile_ServiceModeCreatesDirectory
             TestAppendTrace_WritesJSONLine
+            TestFallbackTracePath
+            # A service refuses to run without --config.
+            TestRequireConfigFile
             # The rotating log file (internal/log).
             TestRotatingFile_RenameFailureKeepsAppendingAndRetriesLater
             TestRotatingFile_RecoversAfterFailedReopen
@@ -1158,6 +1169,7 @@ jobs:
             TestServerDrainTimeout_IsShutdownTimeout
             TestWorkerServiceCommand_Registered
             TestWorkerDrainTimeout_FromConfig
+            TestWorkerDrainBound_CoversGraceAndKillWindow
             TestRegisterShutdownSignals
             TestRegisterShutdownSignals_RealConsolePathReleases
             TestConnectToBroker_FailedDialAfterCancelWrapsCanceled
