@@ -30,6 +30,7 @@ type handler struct {
 	checkpointEvery time.Duration
 	tracePath       func(serviceName string) string
 	chdir           func(dir string) error
+	inWorkDir       bool  // chdir succeeded: workDir exists and can take a fallback trace
 	err             error // fn's result, returned by Run
 }
 
@@ -45,6 +46,7 @@ func (h *handler) Execute(args []string, r <-chan svc.ChangeRequest, s chan<- sv
 	if err := h.chdir(h.workDir); err != nil {
 		return h.finish(name, fmt.Errorf("winsvc: change directory to %s: %w", h.workDir, err))
 	}
+	h.inWorkDir = true
 
 	reason := &stopReason{}
 	ctx, cancel := context.WithCancel(withService(context.Background(), name, reason))
@@ -120,14 +122,26 @@ func (h *handler) drain(done <-chan error, r <-chan svc.ChangeRequest, s chan<- 
 }
 
 // finish records fn's result and maps it to Execute's exit codes: nil exits 0;
-// an error is appended to the default log path and exits with a
-// service-specific code of 1, so the SCM (and its recovery actions) see a
-// failure.
+// an error is traced (see trace) and exits with a service-specific code of 1,
+// so the SCM (and its recovery actions) see a failure.
 func (h *handler) finish(name string, err error) (specific bool, code uint32) {
 	h.err = err
 	if err == nil {
 		return false, 0
 	}
-	appendTrace(h.tracePath(name), err) //nolint:errcheck // best effort: the exit code still reports the failure
+	h.trace(name, err)
 	return true, 1
+}
+
+// trace appends err to the default log path. When that fails — its directory
+// refused or impossible to create — the line goes to fallbackTracePath in the
+// working directory instead, which exists once the service has changed into
+// it, noting why the default log could not take it. Both are best effort: the
+// exit code reports the failure regardless.
+func (h *handler) trace(name string, err error) {
+	logErr := appendTrace(h.tracePath(name), err)
+	if logErr == nil || !h.inWorkDir {
+		return
+	}
+	writeTrace(fallbackTracePath(h.workDir, name), err, logErr) //nolint:errcheck // best effort: the exit code still reports the failure
 }

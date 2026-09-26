@@ -153,6 +153,26 @@ func TestAppendTrace_WritesJSONLine(t *testing.T) {
 	}
 }
 
+// TestFallbackTracePath pins the fallback trace's name: the service name with
+// anything unsafe in a file name replaced, so it stays a plain file in dir.
+func TestFallbackTracePath(t *testing.T) {
+	dir := t.TempDir()
+	for name, want := range map[string]string{
+		"sqi-worker":   "sqi-worker.trace.log",
+		"sqi_worker.2": "sqi_worker.2.trace.log",
+		`a:b*c?"<>|`:   "a_b_c_____.trace.log",
+		"..":           "...trace.log",
+	} {
+		got := fallbackTracePath(dir, name)
+		if got != filepath.Join(dir, want) {
+			t.Errorf("fallbackTracePath(%q) = %q, want %q", name, got, filepath.Join(dir, want))
+		}
+		if filepath.Dir(got) != dir {
+			t.Errorf("fallbackTracePath(%q) = %q leaves %s", name, got, dir)
+		}
+	}
+}
+
 func TestWorkDir(t *testing.T) {
 	pd := t.TempDir()
 	t.Setenv("ProgramData", pd)

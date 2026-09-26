@@ -215,6 +215,78 @@ func TestHandler_ChdirFailureIsReported(t *testing.T) {
 	}
 }
 
+// blockedTracePath returns a trace path whose directory cannot be created,
+// because a regular file already sits where the directory would go.
+func blockedTracePath(t *testing.T) string {
+	t.Helper()
+	blocker := filepath.Join(t.TempDir(), "logs")
+	if err := os.WriteFile(blocker, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return filepath.Join(blocker, "sqi-worker.log")
+}
+
+// TestHandler_TraceFallsBackToWorkDir pins that a failure whose default log
+// directory cannot be created (refused, or blocked) still leaves a line: in
+// <service-name>.trace.log in the service's working directory, with the reason
+// the default log could not take it.
+func TestHandler_TraceFallsBackToWorkDir(t *testing.T) {
+	hs := newHarness(t, func(context.Context) error { return errors.New("load config: bad yaml") })
+	primary := blockedTracePath(t)
+	hs.h.tracePath = func(string) string { return primary }
+	hs.start("sqi-worker")
+	hs.wait(t)
+	if !hs.specific || hs.code != 1 {
+		t.Fatalf("exit = (%v, %d), want (true, 1)", hs.specific, hs.code)
+	}
+	b, err := os.ReadFile(filepath.Join(hs.h.workDir, "sqi-worker.trace.log"))
+	if err != nil {
+		t.Fatalf("no fallback trace in the working directory: %v", err)
+	}
+	for _, want := range []string{`"msg":"service exited with error"`, `"error":"load config: bad yaml"`, `"log_error":`} {
+		if !strings.Contains(string(b), want) {
+			t.Errorf("fallback trace %q missing %s", b, want)
+		}
+	}
+	if hs.h.err == nil || hs.h.err.Error() != "load config: bad yaml" {
+		t.Fatalf("handler recorded %v; Run must return fn's error", hs.h.err)
+	}
+}
+
+// TestHandler_TraceUsesDefaultLogWhenWritable pins that the fallback is only a
+// fallback: a writable default log takes the line, and nothing is written to
+// the working directory.
+func TestHandler_TraceUsesDefaultLogWhenWritable(t *testing.T) {
+	hs := newHarness(t, func(context.Context) error { return errors.New("load config: bad yaml") })
+	hs.start("sqi-worker")
+	hs.wait(t)
+	if b, err := os.ReadFile(hs.trace); err != nil || !strings.Contains(string(b), "load config: bad yaml") {
+		t.Fatalf("default trace = %q, %v", b, err)
+	}
+	if _, err := os.Lstat(filepath.Join(hs.h.workDir, "sqi-worker.trace.log")); !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("a fallback trace was written although the default log was writable (lstat: %v)", err)
+	}
+}
+
+// TestHandler_NoTraceFallbackWithoutWorkDir pins that the fallback is used only
+// once the service has changed into its working directory: after a failed
+// chdir that directory may not exist, or may not be one the service should
+// write to.
+func TestHandler_NoTraceFallbackWithoutWorkDir(t *testing.T) {
+	hs := newHarness(t, func(context.Context) error { return nil })
+	primary := blockedTracePath(t)
+	hs.h.tracePath = func(string) string { return primary }
+	hs.h.chdir = func(string) error { return errors.New("access denied") }
+	hs.start("sqi-worker")
+	hs.wait(t)
+	if !hs.specific || hs.code != 1 {
+		t.Fatalf("exit = (%v, %d), want (true, 1)", hs.specific, hs.code)
+	}
+	if _, err := os.Lstat(filepath.Join(hs.h.workDir, "sqi-worker.trace.log")); !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("a fallback trace was written to a working directory the service never entered (lstat: %v)", err)
+	}
+}
+
 // A Stop that lands while fn is still booting makes fn return an error that
 // wraps context.Canceled (its blocking dial, discovery or registration saw the
 // canceled ctx). That is the operator's stop, not a failure: reporting it as
