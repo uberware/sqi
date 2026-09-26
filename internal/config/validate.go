@@ -235,15 +235,31 @@ func validateLogFile(cfg LogConfig) []ValidationError {
 		})
 	}
 	if cfg.File != "" {
-		dir := filepath.Dir(cfg.File)
-		if info, err := os.Stat(dir); err != nil || !info.IsDir() {
-			errs = append(errs, ValidationError{
-				Field:   "log.file",
-				Message: fmt.Sprintf("directory %q does not exist; create it or choose another path", dir),
-			})
+		if msg := logFileProblem(cfg.File, "sqi-server.log"); msg != "" {
+			errs = append(errs, ValidationError{Field: "log.file", Message: msg})
 		}
 	}
 	return errs
+}
+
+// logFileProblem describes what makes file unusable as log.file, or returns
+// "". It must name a file (not end in a path separator, not be an existing
+// directory) in a directory that exists; example is the file name the
+// suggested fix uses.
+func logFileProblem(file, example string) string {
+	if os.IsPathSeparator(file[len(file)-1]) {
+		return fmt.Sprintf("%q ends with a path separator; log.file must name a file, such as %q",
+			file, filepath.Join(file, example))
+	}
+	if info, err := os.Stat(file); err == nil && info.IsDir() {
+		return fmt.Sprintf("%q is a directory; log.file must name a file, such as %q",
+			file, filepath.Join(file, example))
+	}
+	dir := filepath.Dir(file)
+	if info, err := os.Stat(dir); err != nil || !info.IsDir() {
+		return fmt.Sprintf("directory %q does not exist; create it or choose another path", dir)
+	}
+	return ""
 }
 
 func validateScheduler(cfg SchedulerConfig) []ValidationError {

@@ -69,12 +69,20 @@ func TestWorkerValidate_LogFileAndRotation(t *testing.T) {
 		name      string
 		mutate    func(*workerconfig.LogConfig)
 		wantField string
+		wantMsg   string // when set, the error message must contain it
 	}{
-		{"defaults valid", func(*workerconfig.LogConfig) {}, ""},
-		{"file in existing dir", func(l *workerconfig.LogConfig) { l.File = filepath.Join(dir, "w.log") }, ""},
-		{"file in missing dir", func(l *workerconfig.LogConfig) { l.File = filepath.Join(dir, "nope", "w.log") }, "log.file"},
-		{"zero max size", func(l *workerconfig.LogConfig) { l.MaxSizeMB = 0 }, "log.max_size_mb"},
-		{"negative backups", func(l *workerconfig.LogConfig) { l.MaxBackups = -1 }, "log.max_backups"},
+		{"defaults valid", func(*workerconfig.LogConfig) {}, "", ""},
+		{"file in existing dir", func(l *workerconfig.LogConfig) { l.File = filepath.Join(dir, "w.log") }, "", ""},
+		{"file in missing dir", func(l *workerconfig.LogConfig) { l.File = filepath.Join(dir, "nope", "w.log") }, "log.file", "does not exist"},
+		{"file is an existing directory", func(l *workerconfig.LogConfig) { l.File = dir }, "log.file", "is a directory"},
+		{"trailing slash", func(l *workerconfig.LogConfig) { l.File = dir + "/" }, "log.file", "ends with a path separator"},
+		{
+			"trailing OS separator",
+			func(l *workerconfig.LogConfig) { l.File = dir + string(filepath.Separator) },
+			"log.file", "ends with a path separator",
+		},
+		{"zero max size", func(l *workerconfig.LogConfig) { l.MaxSizeMB = 0 }, "log.max_size_mb", ""},
+		{"negative backups", func(l *workerconfig.LogConfig) { l.MaxBackups = -1 }, "log.max_backups", ""},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -83,10 +91,11 @@ func TestWorkerValidate_LogFileAndRotation(t *testing.T) {
 				t.Fatal(err)
 			}
 			tc.mutate(&cfg.Log)
-			var fields []string
+			var fields, msgs []string
 			for _, e := range workerconfig.Validate(cfg) {
 				if strings.HasPrefix(e.Field, "log.") {
 					fields = append(fields, e.Field)
+					msgs = append(msgs, e.Message)
 				}
 			}
 			if tc.wantField == "" && len(fields) > 0 {
@@ -94,6 +103,9 @@ func TestWorkerValidate_LogFileAndRotation(t *testing.T) {
 			}
 			if tc.wantField != "" && (len(fields) != 1 || fields[0] != tc.wantField) {
 				t.Fatalf("log errors = %v, want exactly [%s]", fields, tc.wantField)
+			}
+			if tc.wantMsg != "" && !strings.Contains(msgs[0], tc.wantMsg) {
+				t.Fatalf("log error %q, want it to say %q", msgs[0], tc.wantMsg)
 			}
 		})
 	}
