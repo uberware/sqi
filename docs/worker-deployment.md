@@ -533,8 +533,11 @@ worker:
 ```
 
 The path is single-quoted YAML, where a backslash is literal. In a double-quoted
-YAML string every backslash must be doubled (`"C:\\ProgramData\\sqi\\worker"`),
-and a single one is a parse error.
+YAML string every backslash must be doubled (`"C:\\ProgramData\\sqi\\worker"`).
+A single one starts an escape sequence: either one YAML does not know, which is
+a parse error (`"C:\sqi\worker"` fails with `found unknown escape character`),
+or, worse, one it does, which loads silently as something else —
+`"D:\render\tmp"` becomes `D:`, a carriage return, `ender`, a tab and `mp`.
 
 Set `worker.data_dir` explicitly. Left out, it defaults to `.sqi\worker` under
 the *running* account's profile, which for LocalSystem is inside
@@ -591,9 +594,11 @@ that:
   first, second and later failures, with the count reset after 24 hours without
   one — including when the worker stops itself with an error rather than
   crashing;
-- is given `worker.shutdown_grace_period` + 15 s (45 s at the default) to drain
-  when Windows shuts down. This is the service's *PreShutdown* timeout (see
-  [Managing the service](#managing-the-service)).
+- is given 55 s at the default to drain when Windows shuts down:
+  `worker.shutdown_grace_period` (30 s) for running tasks to finish, a third of
+  that again (10 s) for any still running to close once asked to before they
+  are killed, and 15 s for the worker to deregister and exit. This is the
+  service's *PreShutdown* timeout (see [Managing the service](#managing-the-service)).
 
 The flags of `service install`:
 
@@ -603,7 +608,7 @@ The flags of `service install`:
 | `--name` | Service name (default `sqi-worker`). See [Multiple workers on one host](#multiple-workers-on-one-host). |
 | `--display-name` | Display name (default `sqi Worker Agent`). A service installed under another `--name` defaults to `sqi Worker Agent (<name>)`, because the SCM refuses two services with the same display name. |
 | `--user` | Account to run as: `DOMAIN\name`, `.\name`, a bare local name (treated as `.\name`) or a UPN. Default LocalSystem. You are prompted for the password. See [Choosing the account](#choosing-the-account). |
-| `--start` | Start the service after installing it and wait (up to 60 s) for it to run. |
+| `--start` | Start the service after installing it, wait (up to 60 s) for it to run, then watch it for 3 s more (see below). |
 
 `service install` refuses a name that is already registered — straight after the
 elevation check, before any password prompt, permission change or other side
@@ -613,21 +618,23 @@ effect:
 Error: service already exists: sqi-worker; remove it first with: sqi-worker service uninstall --name sqi-worker
 ```
 
-**`is running` is not proof that the configuration was accepted.** The service
-reports *Running* to the Service Control Manager as soon as its process is up,
-and the worker reads its configuration and opens its log *after* that. So a bad
-configuration usually still prints `is running`, and the service stops moments
-later with `exit codes: 1066 (service-specific 1)`. Run `service status` a few
-seconds after `--start` (or `service start`) and read the [log](#logs) if it says
-`stopped`. A failed service is restarted after 5 s (then 30 s, then 60 s), and
-in that window `service status` can show `running` or `start pending` for the
+**`is running` means the service stayed up for 3 seconds.** The service reports
+*Running* to the Service Control Manager as soon as its process is up, and the
+worker reads its configuration and opens its log *after* that. So `--start` (and
+`service start`) keeps watching a service that has reported *Running* for 3 s
+more: a bad configuration stops it within that window, and the command reports
+a failed start (below). A failure that comes later than that, or in a restart
+the recovery actions make, it does not see: that shows up only in
+`service status` (`exit codes: 1066 (service-specific 1)`) and in the
+[log](#logs). A failed service is restarted after 5 s (then 30 s, then 60 s),
+and in that window `service status` can show `running` or `start pending` for the
 restarted process: check again after the restart delay before trusting it.
 
-If `--start` does not find the service running at all — it had already stopped
-by the time the command looked, or it was still starting after 60 s — the command
-prints `service "sqi-worker" did not start: …` and the last 20 lines of the
-[default log file](#logs), and exits with an error. The service stays installed;
-fix the problem and run `service start`.
+If the service does not start — it stops before it runs or within those 3 s, or
+is still starting after 60 s — the command prints
+`service "sqi-worker" did not start: …` (for a stop, with its exit codes) and the
+last 20 lines of the [default log file](#logs), and exits with an error. The
+service stays installed; fix the problem and run `service start`.
 
 ### Choosing the account
 
@@ -740,7 +747,8 @@ Get-Content C:\ProgramData\sqi\logs\sqi-worker.log -Wait -Tail 50
   inherited. `service install` creates it; a hand-registered service creates it
   at its first start. A directory that already exists is left as it is, except
   that `service install --user` always adds its account to it, whatever
-  `log.file` says (see the [known limitations](#security-notes-and-known-limitations)).
+  `log.file` says, and that `service install` refuses one that is, or sits under,
+  a junction or symbolic link (see the [known limitations](#security-notes-and-known-limitations)).
 - **Rotation** is by size: the file becomes `<file>.1`, `.1` becomes `.2`, and so
   on up to `log.max_backups`, and the oldest is dropped. A rotation that fails
   — most often because something such as `Get-Content -Wait`, an editor or a log
@@ -752,8 +760,14 @@ Get-Content C:\ProgramData\sqi\logs\sqi-worker.log -Wait -Tail 50
   opening its log: a worker that stops with an error (for example an invalid
   config) appends one line to `C:\ProgramData\sqi\logs\<service-name>.log`, such
   as `{"time":"…","level":"ERROR","msg":"service exited with error","error":"…"}`,
-  and the service reports exit code `1066 (service-specific 1)`. The write is
-  best effort: if that directory cannot be created, only the exit code is left.
+  and the service reports exit code `1066 (service-specific 1)`. When that file
+  cannot be written — say its directory is missing and would have to be created
+  under a junction, which the service refuses, or the account may not write
+  there — the line goes instead to `<service-name>.trace.log` in
+  the service's working directory (the configuration file's directory), with a
+  `log_error` field saying why the default log could not take it; the file gets
+  that directory's permissions. Both writes are best effort: if neither
+  succeeds, only the exit code is left.
 - A console `sqi-worker start --dry-run` opens `log.file` when it is set, so it
   can create or append to the configured file; without `log.file` a console run
   logs to stderr.
@@ -769,7 +783,7 @@ path). Each command takes `--name` for a service installed under another name.
 ```powershell
 sqi-worker service status     # state, exit codes, account, start type, command line, log path
 sqi-worker service stop       # asks the worker to drain, and waits for the service to stop
-sqi-worker service start      # waits (up to 60 s) for the service to run
+sqi-worker service start      # waits (up to 60 s) for the service to run, then 3 s more
 sqi-worker service uninstall  # stops it (draining first), then removes it; config, data and logs are kept
 ```
 
@@ -795,14 +809,17 @@ a clean stop, never a failure the recovery actions would answer.
 `sqi-worker.exe`, and `service start`; the registration keeps its path and
 settings.
 
-**How long each command waits.** `start` waits up to 60 s. `stop` and
-`uninstall` wait for the service to stop for up to its PreShutdown timeout plus
-15 s, and never less than 60 s (60 s at the default grace period); after that
-they fail with `service sqi-worker still stop pending after …`, and the worker
-carries on draining — run `service status` until it shows `stopped`.
+**How long each command waits.** `start` waits up to 60 s for the service to
+run, then watches it for 3 s more. `stop` and `uninstall` wait for the service
+to stop for up to its PreShutdown timeout plus 15 s, and never less than 60 s
+(70 s at the default grace period); after that they fail with
+`service sqi-worker still stop pending after …`, and the worker carries on
+draining — run `service status` until it shows `stopped`.
 
 **The PreShutdown timeout is fixed at install time.** It is
-`worker.shutdown_grace_period` + 15 s (the server's is 45 s), worked out once by
+`worker.shutdown_grace_period`, plus a third of it for tasks still running at
+the end to close, plus 15 s — 55 s at the default (the server's is 45 s) —
+worked out once by
 `service install` from the configuration file *and* the `SQI_WORKER_*`
 variables set in the shell you install from, and registered with the service.
 Changing `worker.shutdown_grace_period` afterwards, in the file or in the machine
@@ -827,9 +844,19 @@ above, whenever they contain spaces, and use absolute paths: a relative
 `--config` is resolved against the directory the SCM starts the process in,
 `C:\Windows\System32`. Such a service still answers the SCM natively, drains on
 Stop and on shutdown, runs in the config file's directory and logs to the default
-file. Without `--config` it runs in `C:\ProgramData\sqi`, creating that
-directory, with ProgramData's inherited permissions, if it is missing — so
-prepare it as in step 2 first.
+file.
+
+**`--config` is required.** A service registered without it refuses to start:
+it stops at once with `exit codes: 1066 (service-specific 1)`, and its
+`service exited with error` line reads
+`running as a Windows service requires --config: …`. Without `--config` the
+worker would search for its configuration, and two of the places it looks are
+folders any local user can create: `config\sqi-worker.yaml` under the service's
+working directory (`C:\ProgramData\sqi` when there is no `--config`) and
+`\etc\sqi\sqi-worker.yaml` on that drive (`C:\etc\sqi`). Whoever put a file
+there would choose what a LocalSystem service runs. (Before stopping, such a
+service still changes into `C:\ProgramData\sqi`, creating it with ProgramData's
+inherited permissions if it is missing, so prepare it as in step 2 either way.)
 
 What only `service install` configures is missing: delayed start, the recovery
 actions and the PreShutdown timeout. Set the first two yourself with `sc.exe`
@@ -853,7 +880,7 @@ completes.
 |---|---|
 | Error **1053**, "the service did not respond to the start or control request in a timely fashion" | The process never answered the SCM. Builds before native service support were plain console programs, so a service registered with `New-Service` timed out and stopped; upgrade `sqi-worker.exe`. On a current build, run it in a console (below) to see why it did not get that far. |
 | Error **1069**, "the service did not start due to a logon failure" | The account's password is wrong or has changed, or the account no longer holds "Log on as a service" (a domain policy can remove it). Add the account to the policy if one applies, then run `service uninstall` and `service install --user …` again, which prompts for the password and grants the right. |
-| The service stops straight after starting | `service status` shows `exit codes: 1066 (service-specific 1)`: the worker exited with an error. `service start` and `install --start` may well have printed `is running` first (see above). Read the [log](#logs); the reason is the last `"service exited with error"` line. The SCM keeps restarting it (5 s, 30 s, then every 60 s) until the configuration is fixed. |
+| The service stops straight after starting | `service status` shows `exit codes: 1066 (service-specific 1)`: the worker exited with an error. `service start` and `install --start` report a stop within 3 s of the service running as a failed start; a later one they miss, having printed `is running` (see above). Read the [log](#logs); the reason is the last `"service exited with error"` line — or, when the log directory could not be used, the line in `sqi-worker.trace.log` beside the configuration file. The SCM keeps restarting it (5 s, 30 s, then every 60 s) until the configuration is fixed. |
 | `stopped` with `exit codes: 0` that you did not ask for | Unless someone else stopped it, the worker lost its NATS connection for good and shut itself down cleanly, which the SCM does not treat as a failure. See the [known limitations](#security-notes-and-known-limitations). |
 | `service already exists: …` | The name is taken. `service uninstall --name <name>` first, or choose another `--name`. |
 | `must be run from an elevated (Administrator) shell` | Open PowerShell with *Run as administrator*. |
@@ -898,9 +925,12 @@ the defaults.
     service `X` must not see, a `log.file` in a directory that only that
     service's account and administrators can read **and** write — for example the
     administrators-only `C:\ProgramData\sqi` from step 2:
-    `log.file: "C:\\ProgramData\\sqi\\sqi-server.log"`. Then move or delete the
-    server's existing `sqi-server.log` and its `.1` to `.N` backups out of
-    `logs\`, because `X`'s permission already reaches those files. The price:
+    `log.file: "C:\\ProgramData\\sqi\\sqi-server.log"`. Then restart the server
+    — `sqi-server service stop`, then `service start` — so that it closes the old
+    file and writes the new one: while it runs it holds `logs\sqi-server.log` open
+    and Windows will not let the file be moved or deleted. Only then move or
+    delete that `sqi-server.log` and its `.1` to `.N` backups out of `logs\`,
+    because `X`'s permission already reaches those files. The price:
     `service status`, `service start` and `install --start` no longer show that
     service's log (see below), and a service that fails at startup still appends
     its one `service exited with error` line to the default directory, where `X`
@@ -915,21 +945,26 @@ the defaults.
     the worker **needs** that
     `log.file`, because without the permission it cannot open the default log
     file and fails at every start; and it loses the best-effort startup-failure
-    line, so a configuration error leaves you only
+    line — the default directory is closed to it, and the fallback,
+    `<service-name>.trace.log` beside the configuration file, is in `$dir`, where
+    it can only read — so a configuration error leaves you only
     `exit codes: 1066 (service-specific 1)` and the console recipe under
     [Troubleshooting](#troubleshooting) to find out why. Every later
     `service install --user X` adds the permission back, so run the `icacls`
     command again after each one.
 - **`C:\ProgramData\sqi` can be squatted, and the installer's checks are
   narrow.** [Step 2](#2-create-the-directory-administrators-only) is the
-  mitigation and nothing else stands in for it. The installer refuses a junction
-  or symbolic link at the log directory, or at its parent `C:\ProgramData\sqi`,
-  but only while it has to create `logs` or, for `--user`, change its
-  permissions; a running service makes the same check only when it has to create
-  `logs`. A `logs` directory that already exists is otherwise used unchecked, by
-  a LocalSystem install and by every running service: `C:\ProgramData\sqi` may be
-  a junction to a directory that already contains `logs`, and the service writes
-  its log through it. Nothing checks or protects the working directory, the
+  mitigation and nothing else stands in for it. `service install` refuses a
+  junction or symbolic link at the log directory, or at its parent
+  `C:\ProgramData\sqi`, for a LocalSystem install and a `--user` one alike,
+  whether it creates `logs` or finds it already there. A running service is
+  laxer: it makes that check only when it has to create `logs` itself, and
+  otherwise uses an existing `logs` unchecked. So a hand-registered service
+  (which never ran `service install`), or one whose directory was swapped after
+  it was installed — or during the install itself, a race the check cannot
+  close — writes its log through whatever `C:\ProgramData\sqi` and `logs` then
+  point at: `C:\ProgramData\sqi` may be a junction to a directory that already
+  contains `logs`. Nothing checks or protects the working directory, the
   configuration file, `worker.data_dir` or (for `sqi-server`) the database, and a
   directory the installer or a starting service has to create gets ProgramData's
   permissive inherited permissions. That is why step 2 comes first, and why its
@@ -946,8 +981,9 @@ the defaults.
 - **`service status` prints, and `service start` and `install --start` tail,
   only the default log path.** With `log.file` set they still print and tail
   `C:\ProgramData\sqi\logs\<name>.log`, which may be missing or a stale file from
-  an earlier run, and a fatal startup error is recorded there too. Read the file
-  you configured.
+  an earlier run, and a fatal startup error is recorded there too (or, when that
+  directory cannot be used, in `<name>.trace.log` beside the configuration file,
+  which they never show). Read the file you configured.
 - **Account rights are yours to grant.** The installer grants "Log on as a
   service" only. Other privileges a `--user` account needs (see [Choosing the
   account](#choosing-the-account)) are not granted for you, a domain Group Policy

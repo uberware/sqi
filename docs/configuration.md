@@ -10,7 +10,9 @@ layers overriding earlier ones:
    `~/.sqi/sqi-server.yaml`, `~/.sqi/sqi-server.json`,
    `/etc/sqi/sqi-server.yaml`, `/etc/sqi/sqi-server.json`. Pass an explicit
    path with `--config /path/to/file` (a path that does not exist is an
-   error, unlike the search).
+   error, unlike the search). A Windows service does not search: it refuses
+   to start without `--config` (see
+   [Windows service](operations.md#windows-service)).
 3. **Environment variables** — prefixed `SQI_`, e.g. `SQI_HTTP_ADDR`.
 4. **CLI flags** — highest priority. `--config`, `--log-level` and
    `--log-format` are available on every subcommand; the remaining flags
@@ -543,7 +545,9 @@ against the working directory; a Windows service runs in the directory that
 holds its config file. Empty keeps logging on stderr.
 
 The directory must already exist: sqi-server does not create it, and startup
-fails with a `log.file` validation error naming the missing directory.
+fails with a `log.file` validation error naming the missing directory. The path
+must name a file: one that ends with a path separator, or names an existing
+directory, fails validation too.
 
 When `sqi-server` runs as a Windows service and `log.file` is empty, logs go to
 `%ProgramData%\sqi\logs\<service-name>.log` instead, since a service has no
@@ -551,7 +555,7 @@ stderr to write to. That default directory is created for you.
 
 ```yaml
 log:
-  file: "C:\\ProgramData\\sqi\\logs\\sqi-server.log"
+  file: "D:\\sqi-logs\\sqi-server.log"
 ```
 
 ---

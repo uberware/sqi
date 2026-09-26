@@ -195,18 +195,26 @@ sqi-server service status   # a few seconds later
 `config print` writes the values in effect in the shell that ran it, `SQI_*`
 variables included, so run it from a shell without any you do not want kept.
 There is no separate migration step: the server applies pending migrations
-when it starts. `service install --start` can print `is running` even though the
-server then rejects its configuration and stops moments later, so check
+when it starts. The service reports *Running* before the server has read its
+configuration, so `service install --start` (and `service start`) watches it for
+3 s after that: a configuration the server rejects stops it within that window
+and is reported as a failed start, with the last lines of the log. A failure
+that comes later, or in a restart the recovery actions make, shows only in
 `service status` (it shows `exit codes: 1066 (service-specific 1)` after an
-error) and the log a few seconds after starting. A failed service is restarted
-after 5 s (then 30 s, then 60 s), and in that window `service status` can show
-`running` or `start pending` for the restarted process, so check again after the
-restart delay.
+error) and the log, so check both a few seconds after starting. A failed service
+is restarted after 5 s (then 30 s, then 60 s), and in that window
+`service status` can show `running` or `start pending` for the restarted
+process, so check again after the restart delay.
 
 `service install` needs the configuration file to exist. It defaults to
-`C:\ProgramData\sqi\sqi-server.yaml`; pass `--config` (`-c`) for another. It
-registers a service named `sqi-server` (display name *sqi Server*; `--name` and
-`--display-name` change them) that:
+`C:\ProgramData\sqi\sqi-server.yaml`; pass `--config` (`-c`) for another. A
+service you register by hand must pass `--config` too: without it the server
+refuses to start (`running as a Windows service requires --config`), because the
+configuration search it would fall back to includes folders any local user can
+create — see
+[registering the service by hand](worker-deployment.md#registering-the-service-by-hand).
+`service install` registers a service named `sqi-server` (display name
+*sqi Server*; `--name` and `--display-name` change them) that:
 
 - runs `sqi-server.exe serve --config <absolute path of the config file>`, as
   LocalSystem unless you pass `--user DOMAIN\name` (see
@@ -237,7 +245,10 @@ sqi-server service uninstall  # stops it, then removes it; config, database and 
 too. To upgrade, `service stop`, replace `sqi-server.exe`, and `service start`.
 A service that stopped because of an error shows
 `exit codes: 1066 (service-specific 1)` in `service status`, and its reason is
-the last `"service exited with error"` line in the log.
+the last `"service exited with error"` line in the log — or, when the log
+directory could not be used, in `sqi-server.trace.log` beside the configuration
+file (the fallback is described under
+[Logs](worker-deployment.md#logs) in the worker guide). Both are best effort.
 
 > **`migrate`, `backup` and `worker` run from a console use the *shell's*
 > working directory, not the service's.** With the default relative
@@ -254,9 +265,11 @@ installed with `--user` — a worker on the same host, say — is always granted
 access to that directory, whatever its own `log.file` is. If the server shares a
 host with one, give the server a `log.file` outside that directory, in one only
 it and administrators can read **and** write (for example
-`log.file: "C:\\ProgramData\\sqi\\sqi-server.log"`), move or delete its existing
-`sqi-server.log` and `.1` to `.N` backups out of `logs\` (the account's
-permission already reaches those files), and read the
+`log.file: "C:\\ProgramData\\sqi\\sqi-server.log"`), restart the server
+(`service stop`, then `service start`: while it runs it holds
+`logs\sqi-server.log` open, and Windows will not let the file be moved or
+deleted), then move or delete that `sqi-server.log` and its `.1` to `.N` backups
+out of `logs\` (the account's permission already reaches those files), and read the
 [security notes](worker-deployment.md#security-notes-and-known-limitations) for
 what that costs. `service stop`, `start` and `uninstall` act on any service name
 you give `--name`, like `sc.exe`.
@@ -492,7 +505,7 @@ To have the server write its own log file, and rotate it, set `log.file`:
 
 ```yaml
 log:
-  file: "C:\\ProgramData\\sqi\\logs\\sqi-server.log"  # empty (the default) = stderr
+  file: "D:\\sqi-logs\\sqi-server.log"  # empty (the default) = stderr
   max_size_mb: 100   # rotate when the file reaches this size
   max_backups: 5     # keep sqi-server.log.1 ... sqi-server.log.5
 ```
@@ -504,7 +517,9 @@ The environment variables are `SQI_LOG_FILE`, `SQI_LOG_MAX_SIZE_MB` and
 [`log.max_backups`](configuration.md#logmax_backups).
 
 - **The directory must already exist.** Startup fails with a `log.file`
-  validation error that names it otherwise. A relative path resolves against the
+  validation error that names it otherwise, and likewise when `log.file` names
+  an existing directory or ends with a path separator: it must name a file.
+  A relative path resolves against the
   server's working directory (a Windows service runs in the directory that holds
   its config file).
 - **Rotation is by size.** At `max_size_mb` the file becomes `<file>.1`, `.1`

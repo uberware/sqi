@@ -6,7 +6,9 @@ layers overriding earlier ones:
 1. **Built-in defaults** — sensible values for local development.
 2. **Config file** — YAML or JSON; searched in `./config/sqi-worker.yaml`,
    `~/.sqi/sqi-worker.yaml`, and `/etc/sqi/sqi-worker.yaml` by default. Pass
-   an explicit path with `--config /path/to/file`.
+   an explicit path with `--config /path/to/file`. A Windows service does not
+   search: it refuses to start without `--config` (see
+   [registering the service by hand](worker-deployment.md#registering-the-service-by-hand)).
 3. **Environment variables** — prefixed `SQI_WORKER_`, e.g.
    `SQI_WORKER_NATS_URL`. (Exceptions: `diagnostics.enabled` uses
    `SQI_DIAGNOSTICS_ENABLED` and `staging.defaults` uses
@@ -1581,7 +1583,9 @@ against the working directory; a Windows service runs in the directory that
 holds its config file. Empty keeps logging on stderr.
 
 The directory must already exist: sqi-worker does not create it, and startup
-fails with a `log.file` validation error naming the missing directory.
+fails with a `log.file` validation error naming the missing directory. The path
+must name a file: one that ends with a path separator, or names an existing
+directory, fails validation too.
 
 When `sqi-worker` runs as a Windows service and `log.file` is empty, logs go to
 `%ProgramData%\sqi\logs\<service-name>.log` instead, since a service has no
@@ -1589,7 +1593,7 @@ stderr to write to. That default directory is created for you.
 
 ```yaml
 log:
-  file: "C:\\ProgramData\\sqi\\logs\\sqi-worker.log"
+  file: "D:\\sqi-logs\\sqi-worker.log"
 ```
 
 ---
