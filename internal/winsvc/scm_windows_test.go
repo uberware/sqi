@@ -443,6 +443,60 @@ func TestEnsureLogDir_RefusesReparsePointParentOnCreate(t *testing.T) {
 	}
 }
 
+// TestEnsureLogDir_LocalSystemExistingDirUnchanged pins that a LocalSystem
+// install (no account) accepts an existing plain log directory and changes
+// nothing about it: an existing directory's ACL is left alone (spec §2).
+func TestEnsureLogDir_LocalSystemExistingDirUnchanged(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "logs")
+	if err := os.Mkdir(dir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	before := daclBytes(t, dir)
+	if err := EnsureLogDir(dir, ""); err != nil {
+		t.Fatalf("EnsureLogDir(existing dir, LocalSystem) = %v, want nil", err)
+	}
+	if after := daclBytes(t, dir); after != before {
+		t.Errorf("EnsureLogDir changed an existing directory's DACL:\nbefore %s\nafter  %s", before, after)
+	}
+}
+
+// TestEnsureLogDir_LocalSystemRefusesJunction pins that a LocalSystem install
+// refuses a pre-positioned junction at the log directory, as a --user install
+// does, rather than registering a service that would write its log through
+// it; and that the refusal changes nothing on the target.
+func TestEnsureLogDir_LocalSystemRefusesJunction(t *testing.T) {
+	root := t.TempDir()
+	target := filepath.Join(root, "target")
+	if err := os.Mkdir(target, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(root, "logs")
+	mklinkJunction(t, link, target)
+	before := daclBytes(t, target)
+
+	if err := EnsureLogDir(link, ""); !errors.Is(err, errReparsePoint) {
+		t.Errorf("EnsureLogDir(junction, LocalSystem) = %v, want errReparsePoint", err)
+	}
+	if after := daclBytes(t, target); after != before {
+		t.Errorf("the junction target's DACL changed:\nbefore %s\nafter  %s", before, after)
+	}
+}
+
+// TestEnsureLogDir_LocalSystemRefusesReparsePointParent is the same refusal one
+// level up: a junction at the log directory's parent (%ProgramData%\sqi) to a
+// directory that already has a `logs`.
+func TestEnsureLogDir_LocalSystemRefusesReparsePointParent(t *testing.T) {
+	dir, targetLogs := junctionParent(t, true)
+	before := daclBytes(t, targetLogs)
+
+	if err := EnsureLogDir(dir, ""); !errors.Is(err, errReparsePoint) {
+		t.Errorf("EnsureLogDir(<junction>\\logs, LocalSystem) = %v, want errReparsePoint", err)
+	}
+	if after := daclBytes(t, targetLogs); after != before {
+		t.Errorf("the junction target's logs DACL changed:\nbefore %s\nafter  %s", before, after)
+	}
+}
+
 func TestEnsureLogDir_RefusesExistingFile(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "logs")
 	if err := os.WriteFile(path, nil, 0o600); err != nil {

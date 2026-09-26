@@ -39,7 +39,11 @@ const (
 // An existing dir keeps its DACL and its protection state. When account is
 // set, one inheritable Modify ACE for it is added: a LocalSystem service
 // installed earlier may already have created dir without it, and this
-// service could not then create its log (plan clarification 4).
+// service could not then create its log (plan clarification 4). Either way an
+// existing dir that is, or sits under, a junction or symbolic link is refused
+// (errReparsePoint): for an account because its ACE would land on the target,
+// and for LocalSystem, which changes no ACL, because the service would write
+// its log through it (see checkExistingDir).
 func EnsureLogDir(dir, account string) error {
 	var sid *windows.SID
 	if account != "" {
@@ -50,10 +54,32 @@ func EnsureLogDir(dir, account string) error {
 		sid = s
 	}
 	created, err := mkdirProtected(dir, sid)
-	if err != nil || created || sid == nil {
+	switch {
+	case err != nil || created:
 		return err
+	case sid == nil:
+		return checkExistingDir(dir)
 	}
 	return grantDir(dir, sid, fileModifyAccess)
+}
+
+// checkExistingDir makes the read-only checks grantDir makes before it
+// changes an ACL — dir's parent and dir itself must be plain directories, not
+// junctions or symbolic links — and changes nothing. A LocalSystem install
+// needs no ACE, but registering a service that would write its log through a
+// pre-positioned junction is still refused, as it is for --user. (The
+// service's own runtime check, createLogDir, deliberately leaves an existing
+// directory alone.)
+func checkExistingDir(dir string) error {
+	if err := checkParent(dir); err != nil {
+		return err
+	}
+	h, err := openPlainDir(dir, windows.FILE_READ_ATTRIBUTES)
+	if err != nil {
+		return fmt.Errorf("cannot use log directory: %w", err)
+	}
+	windows.CloseHandle(h) //nolint:errcheck // only its attributes were needed
+	return nil
 }
 
 // mkdirProtected creates dir, and any missing parents, and gives dir a
