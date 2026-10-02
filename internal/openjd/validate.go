@@ -3169,6 +3169,17 @@ func validateTaskParamRangeAndChunks(tp TaskParamDefinition, base string, exprDe
 		}
 	}
 
+	errs = append(errs, validateChunksField(tp, base, exprDeclared)...)
+
+	return errs
+}
+
+// validateChunksField validates the chunks definition of a task parameter. It
+// is extracted from [validateTaskParamRangeAndChunks] to keep that function's
+// cyclomatic complexity within bounds.
+func validateChunksField(tp TaskParamDefinition, base string, exprDeclared bool) ValidationErrors {
+	var errs ValidationErrors
+
 	// The spec's minimum is 0: "When the value is 0, a scheduler should
 	// ignore this configuration and use defaultTaskCount" (Template Schemas,
 	// chunks). A format-string value is checked once resolved, at submission.

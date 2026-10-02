@@ -85,8 +85,7 @@ func TestSubmit_SpecTutorialChunkTemplate(t *testing.T) {
 func TestSubmit_ChunkSizeResolvingBelowOneRejected(t *testing.T) {
 	tmpl := strings.Replace(tutorialChunkTemplate, "minValue: 1, default: 3", "default: 3", 1)
 	_, err := submitChunks(t, tmpl, map[string]string{"ChunkSize": "0"})
-	var ve *openjd.SubmitValidationError
-	if !errors.As(err, &ve) {
+	if _, ok := errors.AsType[*openjd.SubmitValidationError](err); !ok {
 		t.Fatalf("err = %v, want a SubmitValidationError", err)
 	}
 	if !strings.Contains(err.Error(), "/steps/0/parameterSpace/taskParameterDefinitions/0/chunks/defaultTaskCount") {
@@ -98,8 +97,7 @@ func TestSubmit_ChunkSizeResolvingBelowOneRejected(t *testing.T) {
 // naming the parameter -- never a 500, never a silent chunk size of 1.
 func TestSubmit_ChunkSizeNonIntegerParameterRejected(t *testing.T) {
 	_, err := submitChunks(t, tutorialChunkTemplate, map[string]string{"ChunkSize": "abc"})
-	var ve *openjd.SubmitValidationError
-	if !errors.As(err, &ve) {
+	if _, ok := errors.AsType[*openjd.SubmitValidationError](err); !ok {
 		t.Fatalf("err = %v, want a SubmitValidationError", err)
 	}
 	if !strings.Contains(err.Error(), "ChunkSize") {
