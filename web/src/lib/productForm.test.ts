@@ -3,13 +3,14 @@ import { describe, it, expect } from 'vitest'
 import {
   selectWidget,
   paramLabel,
+  productLabel,
   isRequired,
   defaultJobName,
   initialValue,
   listElementType,
   isBoolTruthy,
 } from './productForm'
-import type { ProductParameter } from '@/api/types'
+import type { Product, ProductParameter } from '@/api/types'
 
 function param(over: Partial<ProductParameter>): ProductParameter {
   return {
@@ -146,6 +147,21 @@ describe('helpers', () => {
       ),
     ).toBe('Scene file')
     expect(paramLabel(param({ name: 'Scene' }))).toBe('Scene')
+  })
+  it('productLabel prefers the title', () => {
+    const product: Product = {
+      name: 'command-sequence',
+      title: 'Command Sequence',
+      description: '',
+      readme: '',
+      category: 'General',
+      version: '1',
+      source: 'builtin',
+      template: '',
+      format: 'yaml',
+    }
+    expect(productLabel(product)).toBe('Command Sequence')
+    expect(productLabel({ ...product, title: '' })).toBe('command-sequence')
   })
   it('isRequired is true only with no default', () => {
     expect(isRequired(param({ default: null }))).toBe(true)

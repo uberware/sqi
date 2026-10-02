@@ -9,7 +9,13 @@ import { useToast } from '@/components/Toast'
 import { useProduct, useProductParameters, useFarmsWithQueues } from '@/api/queries'
 import { useSubmitProductJob } from '@/api/mutations'
 import { ApiError } from '@/api/client'
-import { initialValue, defaultJobName, paramGroup, selectWidget } from '@/lib/productForm'
+import {
+  initialValue,
+  defaultJobName,
+  paramGroup,
+  productLabel,
+  selectWidget,
+} from '@/lib/productForm'
 import { parseOptionalInt } from '@/lib/parse'
 import { validateAll } from '@/lib/productValidation'
 import { useAuth } from '@/auth/context'
@@ -76,7 +82,7 @@ export default function ProductSubmit() {
     const productData = product.data
     if (!jobNameSeeded.current && productData) {
       jobNameSeeded.current = true
-      setJobName(defaultJobName(productData.title || productData.name))
+      setJobName(defaultJobName(productLabel(productData)))
     }
   }, [product.data])
 
@@ -171,7 +177,7 @@ export default function ProductSubmit() {
 
   return (
     <form className={styles.page} onSubmit={(e) => void handleSubmit(e)}>
-      <PageHeader title="Submit" subtitle={productData.title || productData.name} />
+      <PageHeader title="Submit" subtitle={productLabel(productData)} />
 
       <div className={styles.content}>
         <div className={styles.row}>

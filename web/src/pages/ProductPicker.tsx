@@ -6,6 +6,7 @@ import { useSearchParam } from '@/hooks/useSearchParam'
 import { filterBySearch } from '@/utils/filterBySearch'
 import { useProducts } from '@/api/queries'
 import ReadmeButton from '@/components/ReadmeButton'
+import { productLabel } from '@/lib/productForm'
 import type { Product, ProductSource } from '@/api/types'
 import styles from './ProductPicker.module.css'
 
@@ -17,12 +18,8 @@ const GROUPS: { source: ProductSource; label: string }[] = [
   { source: 'installed', label: 'Installed' },
 ]
 
-// What a card shows as the product's name, and what a group is ordered by:
-// the API sorts by name, which reads as no order at all once titles are shown.
-function productLabel(product: Product): string {
-  return product.title || product.name
-}
-
+// A group is ordered by what its cards show: the API sorts by name, which reads
+// as no order at all once titles are shown.
 function byLabel(a: Product, b: Product): number {
   return productLabel(a).localeCompare(productLabel(b), undefined, { sensitivity: 'base' })
 }
