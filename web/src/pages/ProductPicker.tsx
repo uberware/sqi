@@ -17,11 +17,21 @@ const GROUPS: { source: ProductSource; label: string }[] = [
   { source: 'installed', label: 'Installed' },
 ]
 
+// What a card shows as the product's name, and what a group is ordered by:
+// the API sorts by name, which reads as no order at all once titles are shown.
+function productLabel(product: Product): string {
+  return product.title || product.name
+}
+
+function byLabel(a: Product, b: Product): number {
+  return productLabel(a).localeCompare(productLabel(b), undefined, { sensitivity: 'base' })
+}
+
 function ProductCard({ product }: { product: Product }) {
   return (
     <div className={styles.card}>
       <Link className={styles.cardLink} to={`/submit/product/${encodeURIComponent(product.name)}`}>
-        <strong>{product.title || product.name}</strong>
+        <strong>{productLabel(product)}</strong>
         {product.description && <p>{product.description}</p>}
       </Link>
       <ReadmeButton
@@ -61,7 +71,7 @@ export default function ProductPicker() {
           <p>No products match “{search}”.</p>
         )}
         {GROUPS.map(({ source, label }) => {
-          const inGroup = filtered.filter((p) => p.source === source)
+          const inGroup = filtered.filter((p) => p.source === source).sort(byLabel)
           if (inGroup.length === 0) return null
           return (
             <section className={styles.group} key={source}>

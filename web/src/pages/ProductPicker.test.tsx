@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 import { describe, it, expect, vi } from 'vitest'
-import { render, screen, waitFor } from '@testing-library/react'
+import { render, screen, waitFor, within } from '@testing-library/react'
 import { MemoryRouter, useLocation } from 'react-router'
 import userEvent from '@testing-library/user-event'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
@@ -9,7 +9,20 @@ import ProductPicker from './ProductPicker'
 vi.mock('@/api/queries', async (orig) => ({
   ...(await orig<typeof import('@/api/queries')>()),
   useProducts: () => ({
+    // The API sorts by name, so this order is what the page receives: name
+    // order differs from title order, which is what a person reads.
     data: [
+      {
+        name: 'a-zeta',
+        title: 'Zeta Tool',
+        category: 'misc',
+        description: '',
+        readme: '',
+        version: '1',
+        source: 'builtin',
+        template: '',
+        format: 'yaml',
+      },
       {
         name: 'my-tool',
         title: 'My Tool',
@@ -25,6 +38,17 @@ vi.mock('@/api/queries', async (orig) => ({
         name: 'blender',
         title: 'Blender',
         category: 'render',
+        description: '',
+        readme: '',
+        version: '1',
+        source: 'builtin',
+        template: '',
+        format: 'yaml',
+      },
+      {
+        name: 'z-alpha',
+        title: 'Alpha Tool',
+        category: 'misc',
         description: '',
         readme: '',
         version: '1',
@@ -76,6 +100,17 @@ describe('ProductPicker', () => {
     // builtin group precedes custom; no 'installed' product → no 'Installed' group.
     expect(headings).toEqual(['Built In', 'Custom'])
     expect(screen.queryByRole('heading', { name: 'Installed' })).not.toBeInTheDocument()
+  })
+
+  it('orders the products in a group by their displayed title', () => {
+    renderPage()
+    const builtIn = screen.getByRole('heading', { level: 2, name: 'Built In' }).closest('section')
+    if (builtIn === null) throw new Error('Built In section not found')
+    const titles = within(builtIn)
+      .getAllByRole('link')
+      .filter((a) => a.getAttribute('href')?.startsWith('/submit/product/'))
+      .map((a) => a.querySelector('strong')?.textContent)
+    expect(titles).toEqual(['Alpha Tool', 'Blender', 'Zeta Tool'])
   })
 
   it('filters products as you type and hides emptied groups', async () => {
