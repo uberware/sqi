@@ -148,7 +148,8 @@ func TestSubmit_ChunkSizeExpressionUnderEXPR(t *testing.T) {
 
 func TestValidate_ChunkSizeHostScopeRejectedUnderEXPR(t *testing.T) {
 	tmpl, err := openjd.Parse(
-		[]byte(strings.Replace(exprChunkTemplate, "%s", "{{ Session.WorkingDirectory }}", 1)), openjd.FormatYAML)
+		[]byte(strings.Replace(exprChunkTemplate, "%s", "{{ Session.WorkingDirectory }}", 1)), openjd.FormatYAML,
+	)
 	if err != nil {
 		t.Fatalf("Parse: %v", err)
 	}

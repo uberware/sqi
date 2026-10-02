@@ -130,22 +130,38 @@ func TestExpand_ChunkContiguousNeverSpansAGap(t *testing.T) {
 		constraint string
 		want       []string
 	}{
-		{"RFC 0001 example", "1,10-12,18-50", 10, "CONTIGUOUS",
-			[]string{"1-1", "10-12", "18-27", "28-37", "38-47", "48-50"}},
-		{"stepped range is one frame per chunk", "1-9:2", 5, "CONTIGUOUS",
-			[]string{"1-1", "3-3", "5-5", "7-7", "9-9"}},
-		{"list with a run longer than the chunk", "1,5,10-20", 5, "CONTIGUOUS",
-			[]string{"1-1", "5-5", "10-14", "15-19", "20-20"}},
-		{"single frames are start-end", "1-3", 1, "CONTIGUOUS",
-			[]string{"1-1", "2-2", "3-3"}},
-		{"negative frames", "-3-2", 3, "CONTIGUOUS",
-			[]string{"-3--1", "0-2"}},
-		{"chunk larger than range", "1-5", 100, "CONTIGUOUS",
-			[]string{"1-5"}},
-		{"empty constraint defaults to contiguous", "1,3", 2, "",
-			[]string{"1-1", "3-3"}},
-		{"noncontiguous is unchanged", "1-9:2", 3, "NONCONTIGUOUS",
-			[]string{"1,3,5", "7,9"}},
+		{
+			"RFC 0001 example", "1,10-12,18-50", 10, "CONTIGUOUS",
+			[]string{"1-1", "10-12", "18-27", "28-37", "38-47", "48-50"},
+		},
+		{
+			"stepped range is one frame per chunk", "1-9:2", 5, "CONTIGUOUS",
+			[]string{"1-1", "3-3", "5-5", "7-7", "9-9"},
+		},
+		{
+			"list with a run longer than the chunk", "1,5,10-20", 5, "CONTIGUOUS",
+			[]string{"1-1", "5-5", "10-14", "15-19", "20-20"},
+		},
+		{
+			"single frames are start-end", "1-3", 1, "CONTIGUOUS",
+			[]string{"1-1", "2-2", "3-3"},
+		},
+		{
+			"negative frames", "-3-2", 3, "CONTIGUOUS",
+			[]string{"-3--1", "0-2"},
+		},
+		{
+			"chunk larger than range", "1-5", 100, "CONTIGUOUS",
+			[]string{"1-5"},
+		},
+		{
+			"empty constraint defaults to contiguous", "1,3", 2, "",
+			[]string{"1-1", "3-3"},
+		},
+		{
+			"noncontiguous is unchanged", "1-9:2", 3, "NONCONTIGUOUS",
+			[]string{"1,3,5", "7,9"},
+		},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

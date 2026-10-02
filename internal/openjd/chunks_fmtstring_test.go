@@ -46,17 +46,25 @@ func TestDecodeTaskChunks_SizingFieldsAcceptFormatStrings(t *testing.T) {
 	}{
 		{name: "integer", chunks: "defaultTaskCount: 10, rangeConstraint: CONTIGUOUS", wantCount: 10},
 		{name: "intstring", chunks: `defaultTaskCount: "10", rangeConstraint: CONTIGUOUS`, wantCount: 10},
-		{name: "format string", chunks: `defaultTaskCount: "{{Param.ChunkSize}}", rangeConstraint: CONTIGUOUS`,
-			wantCountEx: "{{Param.ChunkSize}}"},
+		{
+			name: "format string", chunks: `defaultTaskCount: "{{Param.ChunkSize}}", rangeConstraint: CONTIGUOUS`,
+			wantCountEx: "{{Param.ChunkSize}}",
+		},
 		{name: "garbage", chunks: `defaultTaskCount: "ten", rangeConstraint: CONTIGUOUS`, wantErr: "defaultTaskCount"},
-		{name: "runtime zero", chunks: "defaultTaskCount: 1, targetRuntimeSeconds: 0, rangeConstraint: CONTIGUOUS",
-			wantCount: 1, wantTRS: new(0)},
-		{name: "runtime format string",
+		{
+			name: "runtime zero", chunks: "defaultTaskCount: 1, targetRuntimeSeconds: 0, rangeConstraint: CONTIGUOUS",
+			wantCount: 1, wantTRS: new(0),
+		},
+		{
+			name:      "runtime format string",
 			chunks:    `defaultTaskCount: 1, targetRuntimeSeconds: "{{Param.Runtime}}", rangeConstraint: CONTIGUOUS`,
-			wantCount: 1, wantTRSEx: "{{Param.Runtime}}"},
-		{name: "runtime garbage",
+			wantCount: 1, wantTRSEx: "{{Param.Runtime}}",
+		},
+		{
+			name:    "runtime garbage",
 			chunks:  `defaultTaskCount: 1, targetRuntimeSeconds: "soon", rangeConstraint: CONTIGUOUS`,
-			wantErr: "targetRuntimeSeconds"},
+			wantErr: "targetRuntimeSeconds",
+		},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -102,14 +110,20 @@ func TestValidateChunks_FormatStringsAndBounds(t *testing.T) {
 		wantPtr string // "" => expect no errors
 	}{
 		{"job-scope reference", `defaultTaskCount: "{{Param.ChunkSize}}", rangeConstraint: CONTIGUOUS`, ""},
-		{"host-scope reference", `defaultTaskCount: "{{Session.WorkingDirectory}}", rangeConstraint: CONTIGUOUS`,
-			"/chunks/defaultTaskCount"},
+		{
+			"host-scope reference", `defaultTaskCount: "{{Session.WorkingDirectory}}", rangeConstraint: CONTIGUOUS`,
+			"/chunks/defaultTaskCount",
+		},
 		{"runtime zero is valid", "defaultTaskCount: 1, targetRuntimeSeconds: 0, rangeConstraint: CONTIGUOUS", ""},
-		{"runtime negative", "defaultTaskCount: 1, targetRuntimeSeconds: -1, rangeConstraint: CONTIGUOUS",
-			"/chunks/targetRuntimeSeconds"},
-		{"runtime host-scope reference",
+		{
+			"runtime negative", "defaultTaskCount: 1, targetRuntimeSeconds: -1, rangeConstraint: CONTIGUOUS",
+			"/chunks/targetRuntimeSeconds",
+		},
+		{
+			"runtime host-scope reference",
 			`defaultTaskCount: 1, targetRuntimeSeconds: "{{Task.Param.Frame}}", rangeConstraint: CONTIGUOUS`,
-			"/chunks/targetRuntimeSeconds"},
+			"/chunks/targetRuntimeSeconds",
+		},
 		{"literal zero count", "defaultTaskCount: 0, rangeConstraint: CONTIGUOUS", "/chunks/defaultTaskCount"},
 	}
 	for _, tc := range tests {
