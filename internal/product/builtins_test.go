@@ -180,3 +180,38 @@ func declaresOSFamily(step openjd.StepTemplate) bool {
 	}
 	return false
 }
+
+// command-sequence-powershell's command.ps1 ends with the exit-status trailer
+// script-powershell's does, and TestScriptPowerShell_ExitStatus exercises only
+// script-powershell's. OpenJD has no include, so this keeps the copy honest: a
+// fix to one trailer that misses the other fails here.
+func TestBuiltins_PowerShellExitTrailersMatch(t *testing.T) {
+	trailer := func(name string) string {
+		t.Helper()
+		for _, p := range product.Builtins() {
+			if p.Name != name {
+				continue
+			}
+			tmpl, err := openjd.Parse([]byte(p.Template), openjd.FormatYAML)
+			if err != nil {
+				t.Fatalf("%s: openjd.Parse: %v", name, err)
+			}
+			for _, step := range tmpl.Steps {
+				if step.Script == nil {
+					continue
+				}
+				for _, f := range step.Script.EmbeddedFiles {
+					if _, after, ok := strings.Cut(f.Data, "{{Param.Command}}"); ok {
+						return after
+					}
+				}
+			}
+			t.Fatalf("%s: no embedded file carries {{Param.Command}}", name)
+		}
+		t.Fatalf("built-in %s not found", name)
+		return ""
+	}
+	if got, want := trailer("command-sequence-powershell"), trailer("script-powershell"); got != want {
+		t.Fatalf("command-sequence-powershell trailer = %q, want script-powershell's %q", got, want)
+	}
+}
