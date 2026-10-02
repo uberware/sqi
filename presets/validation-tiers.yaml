@@ -398,6 +398,29 @@ presets:
       case: TestPresetTier3/command-sequence-powershell/default
       required_on: [windows]
 
+  - name: python-sequence
+    source: internal/product/builtins
+    tier: 2
+    tier1:
+      cases: [default, chunked, frame-list]
+      caveat: >-
+        this entry carries a tier2 block, so the real-Python evidence is a
+        verified fact rather than prose -- read it there. What the Tier-1
+        goldens add is the launcher's argv per task (the three frame values
+        after the two embedded-file paths) and the launcher's full text, which
+        contains no format string by design. Tier 3 runs the stub AS the
+        interpreter, so it observes that argv through a real worker and the
+        observed-vs-computed cross-check applies. What no tier proves is an
+        interpreter whose sys.executable cannot run a script file (an embedded
+        DCC Python launched through its host application): the launcher
+        re-runs sys.executable, so Interpreter must be a real Python.
+    tier2:
+      case: TestPresetPythonSequence_LauncherContract
+      required_on: [linux, darwin, windows]
+    tier3:
+      case: TestPresetTier3/python-sequence/default
+      required_on: [linux, darwin, windows]
+
   - name: python
     source: internal/product/builtins
     tier: 1

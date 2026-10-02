@@ -171,7 +171,7 @@ can render appropriate form controls.
 
 ## Built-in products
 
-Four products are embedded directly in the `sqi-server` binary. They are
+Seven products are embedded directly in the `sqi-server` binary. They are
 defined as YAML files under `internal/product/builtins/`, compiled in via
 `//go:embed`, parsed and validated at process init, and served read-only from the
 catalog. Mutations (PUT, DELETE) against a built-in return `403 Forbidden`.
@@ -248,6 +248,19 @@ The Windows counterpart of `command-sequence`, and the fan-out counterpart of
 BOM-prefixed `command.ps1`, with the variables assigned before `Command` and
 that product's exit-status handling unchanged after it. Gated to Windows.
 The same `run_as_user` recommendation applies.
+
+### `python-sequence` — Run a Python Script per Frame
+
+The fan-out counterpart of `python`: the same `Interpreter` and `Script`
+parameters plus `Frames` and `FramesPerTask`, and the same four variables, read
+from `os.environ`. A small embedded launcher sets them and runs the script as
+`<Interpreter> script.py` in a **child process**, forwarding its exit code
+(a POSIX signal death exits `128 + N`), so `__name__ == "__main__"`,
+`sys.argv[0]`, `sys.path[0]` and Windows `multiprocessing` all behave exactly
+as when run by hand. The launcher survives a cancellation signal so the
+script's own exit code is reported. Not OS-gated; `python3` is often missing
+on Windows, so set `Interpreter` there. The same `run_as_user` recommendation
+applies.
 
 ### `python` — Run a Python Script
 

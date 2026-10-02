@@ -1,0 +1,147 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+name: python-sequence
+title: Run a Python Script per Frame
+description: Run a Python script once per frame, or once per chunk of frames, across a frame range.
+readme: |
+  # Run a Python Script per Frame
+
+  Runs a Python script once for every frame in a range, or once for every
+  chunk of frames, and tells each task which frames are its own. The per-frame
+  version of **Run a Python Script**, and a direct way to run batch inference,
+  simulation or data processing across many workers.
+
+  ## Parameters
+
+  - **Interpreter** - the Python to run, `python3` by default. On Windows that
+    name is often missing, so give `python` or an absolute path there.
+  - **Python Script** - the script body each task runs.
+  - **Frame Range** - the frames to cover, in OpenJD range syntax: `1-100`,
+    `1-100:2` for every second frame, or a list such as `1,5,10-20`.
+  - **Frames per Task** - how many consecutive frames each task covers. One by
+    default.
+
+  ## Frame variables
+
+  The script reads its frames from `os.environ`:
+
+  - `SQI_FRAME_START` - the task's first frame.
+  - `SQI_FRAME_END` - the task's last frame.
+  - `SQI_FRAMES` - the task's frames as OpenJD writes them, always `START-END`.
+  - `SQI_FRAME` - the same as `SQI_FRAME_START`, the natural name at one frame
+    per task.
+
+  A task never covers a gap in the range: frames are grouped only while they
+  are consecutive. A frame can be any integer index: a dataset shard, a seed,
+  a batch number.
+
+  ## Example
+
+  ```python
+  import os
+  shard = int(os.environ["SQI_FRAME"])
+  print("processing shard", shard)
+  ```
+
+  ## How it runs
+
+  The script is delivered as a real `script.py` and run by a small launcher
+  as `python3 script.py` (with your **Interpreter** in place of `python3`) in
+  a child process, with the four variables added to its environment. It therefore behaves exactly as if you ran it
+  yourself: `__name__` is `"__main__"`, `sys.argv[0]` is its own path, and
+  `multiprocessing` works. The task's exit code is the script's.
+
+  ## Requirements
+
+  Nothing installs the interpreter for you. Each task runs on whichever worker
+  picks it up, as the account that worker runs under. That is arbitrary code
+  execution by design, so on a shared farm set **run as user** on the queue,
+  which runs every task as an account the operator chooses instead; see the
+  sqi documentation on task isolation.
+category: General
+version: 1.0.0
+template:
+  specificationVersion: jobtemplate-2023-09
+  name: Python Sequence
+  extensions: [TASK_CHUNKING, SQI_CHUNK_BOUNDS]
+  parameterDefinitions:
+    - name: Interpreter
+      type: STRING
+      default: python3
+      userInterface:
+        control: LINE_EDIT
+        label: Interpreter
+    - name: Script
+      type: STRING
+      userInterface:
+        control: MULTILINE_EDIT
+        label: Python Script
+    - name: Frames
+      type: STRING
+      userInterface:
+        control: LINE_EDIT
+        label: Frame Range
+    - name: FramesPerTask
+      type: INT
+      default: 1
+      minValue: 1
+      userInterface:
+        control: SPIN_BOX
+        label: Frames per Task
+  steps:
+    - name: Run
+      parameterSpace:
+        taskParameterDefinitions:
+          - name: Frame
+            type: CHUNK[INT]
+            range: "{{Param.Frames}}"
+            chunks:
+              defaultTaskCount: "{{Param.FramesPerTask}}"
+              rangeConstraint: CONTIGUOUS
+      script:
+        embeddedFiles:
+          - name: script
+            type: TEXT
+            filename: script.py
+            data: "{{Param.Script}}"
+          # Static text: no format string may appear in it, so the frame values
+          # arrive as argv rather than being substituted into Python source.
+          - name: launcher
+            type: TEXT
+            filename: launcher.py
+            data: |
+              # sqi python-sequence launcher: runs the user's script as a child
+              # process with the four SQI_FRAME* variables added to its
+              # environment, and exits with the child's exit code.
+              import os
+              import signal
+              import subprocess
+              import sys
+
+
+              def _wait_for_child(signum, frame):
+                  # Cancellation signals the whole process group, so the child
+                  # receives this signal itself; the launcher stays alive to
+                  # report its exit code. A handler, not SIG_IGN: an ignored
+                  # signal stays ignored in the child across exec.
+                  pass
+
+
+              for _name in ("SIGTERM", "SIGINT"):
+                  _sig = getattr(signal, _name, None)
+                  if _sig is not None:
+                      signal.signal(_sig, _wait_for_child)
+
+              script, start, end, frames = sys.argv[1:5]
+              env = dict(os.environ)
+              env.update(SQI_FRAME=start, SQI_FRAME_START=start, SQI_FRAME_END=end, SQI_FRAMES=frames)
+              code = subprocess.call([sys.executable, script], env=env)
+              sys.exit(128 - code if code < 0 else code)
+        actions:
+          onRun:
+            command: "{{Param.Interpreter}}"
+            args:
+              - "{{Task.File.launcher}}"
+              - "{{Task.File.script}}"
+              - "{{Task.Param.Frame.Start}}"
+              - "{{Task.Param.Frame.End}}"
+              - "{{Task.Param.Frame}}"

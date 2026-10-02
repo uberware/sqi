@@ -1,0 +1,34 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+#
+# Run a Python Script per Frame. NOT stub_inner: the stub stands in for the
+# Interpreter itself (python3), so it records the launcher's argv -- which
+# carries the three frame values -- and the observed-vs-computed cross-check
+# compares every task's argv against the golden. What a real launcher does with
+# them is TestPresetPythonSequence_LauncherContract's job (Tier 2).
+cases:
+  - name: default
+    params:
+      Interpreter: "python3"
+      Script: "print('hello')"
+      Frames: "1-3"
+    expect_tasks: 3
+    expect_invocations:
+      python3: 3
+  - name: chunked
+    params:
+      Interpreter: "python3"
+      Script: "print('hello')"
+      Frames: "1-10"
+      FramesPerTask: "5"
+    expect_tasks: 2
+    expect_invocations:
+      python3: 2
+  - name: frame-list
+    params:
+      Interpreter: "python3"
+      Script: "print('hello')"
+      Frames: "1,5,10-20"
+      FramesPerTask: "5"
+    expect_tasks: 5
+    expect_invocations:
+      python3: 5

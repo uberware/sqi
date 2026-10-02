@@ -1,0 +1,224 @@
+preset: python-sequence
+case:   frame-list
+params:
+  Frames=1,5,10-20
+  FramesPerTask=5
+  Interpreter=python3
+  Script=print('hello')
+
+step "Run" — 5 tasks
+
+task 1/5  name="Run[Frame=1-1,Frame.End=1,Frame.Start=1]"
+  task params:
+    Frame=1-1
+    Frame.End=1
+    Frame.Start=1
+  command: python3
+  args:
+    [0]  <WORKDIR>
+    [1]  <WORKDIR>
+    [2]  1
+    [3]  1
+    [4]  1-1
+  embedded file "launcher" (launcher.py):
+    # sqi python-sequence launcher: runs the user's script as a child
+    # process with the four SQI_FRAME* variables added to its
+    # environment, and exits with the child's exit code.
+    import os
+    import signal
+    import subprocess
+    import sys
+    
+    
+    def _wait_for_child(signum, frame):
+        # Cancellation signals the whole process group, so the child
+        # receives this signal itself; the launcher stays alive to
+        # report its exit code. A handler, not SIG_IGN: an ignored
+        # signal stays ignored in the child across exec.
+        pass
+    
+    
+    for _name in ("SIGTERM", "SIGINT"):
+        _sig = getattr(signal, _name, None)
+        if _sig is not None:
+            signal.signal(_sig, _wait_for_child)
+    
+    script, start, end, frames = sys.argv[1:5]
+    env = dict(os.environ)
+    env.update(SQI_FRAME=start, SQI_FRAME_START=start, SQI_FRAME_END=end, SQI_FRAMES=frames)
+    code = subprocess.call([sys.executable, script], env=env)
+    sys.exit(128 - code if code < 0 else code)
+  embedded file "script" (script.py):
+    print('hello')
+
+task 2/5  name="Run[Frame=5-5,Frame.End=5,Frame.Start=5]"
+  task params:
+    Frame=5-5
+    Frame.End=5
+    Frame.Start=5
+  command: python3
+  args:
+    [0]  <WORKDIR>
+    [1]  <WORKDIR>
+    [2]  5
+    [3]  5
+    [4]  5-5
+  embedded file "launcher" (launcher.py):
+    # sqi python-sequence launcher: runs the user's script as a child
+    # process with the four SQI_FRAME* variables added to its
+    # environment, and exits with the child's exit code.
+    import os
+    import signal
+    import subprocess
+    import sys
+    
+    
+    def _wait_for_child(signum, frame):
+        # Cancellation signals the whole process group, so the child
+        # receives this signal itself; the launcher stays alive to
+        # report its exit code. A handler, not SIG_IGN: an ignored
+        # signal stays ignored in the child across exec.
+        pass
+    
+    
+    for _name in ("SIGTERM", "SIGINT"):
+        _sig = getattr(signal, _name, None)
+        if _sig is not None:
+            signal.signal(_sig, _wait_for_child)
+    
+    script, start, end, frames = sys.argv[1:5]
+    env = dict(os.environ)
+    env.update(SQI_FRAME=start, SQI_FRAME_START=start, SQI_FRAME_END=end, SQI_FRAMES=frames)
+    code = subprocess.call([sys.executable, script], env=env)
+    sys.exit(128 - code if code < 0 else code)
+  embedded file "script" (script.py):
+    print('hello')
+
+task 3/5  name="Run[Frame=10-14,Frame.End=14,Frame.Start=10]"
+  task params:
+    Frame=10-14
+    Frame.End=14
+    Frame.Start=10
+  command: python3
+  args:
+    [0]  <WORKDIR>
+    [1]  <WORKDIR>
+    [2]  10
+    [3]  14
+    [4]  10-14
+  embedded file "launcher" (launcher.py):
+    # sqi python-sequence launcher: runs the user's script as a child
+    # process with the four SQI_FRAME* variables added to its
+    # environment, and exits with the child's exit code.
+    import os
+    import signal
+    import subprocess
+    import sys
+    
+    
+    def _wait_for_child(signum, frame):
+        # Cancellation signals the whole process group, so the child
+        # receives this signal itself; the launcher stays alive to
+        # report its exit code. A handler, not SIG_IGN: an ignored
+        # signal stays ignored in the child across exec.
+        pass
+    
+    
+    for _name in ("SIGTERM", "SIGINT"):
+        _sig = getattr(signal, _name, None)
+        if _sig is not None:
+            signal.signal(_sig, _wait_for_child)
+    
+    script, start, end, frames = sys.argv[1:5]
+    env = dict(os.environ)
+    env.update(SQI_FRAME=start, SQI_FRAME_START=start, SQI_FRAME_END=end, SQI_FRAMES=frames)
+    code = subprocess.call([sys.executable, script], env=env)
+    sys.exit(128 - code if code < 0 else code)
+  embedded file "script" (script.py):
+    print('hello')
+
+task 4/5  name="Run[Frame=15-19,Frame.End=19,Frame.Start=15]"
+  task params:
+    Frame=15-19
+    Frame.End=19
+    Frame.Start=15
+  command: python3
+  args:
+    [0]  <WORKDIR>
+    [1]  <WORKDIR>
+    [2]  15
+    [3]  19
+    [4]  15-19
+  embedded file "launcher" (launcher.py):
+    # sqi python-sequence launcher: runs the user's script as a child
+    # process with the four SQI_FRAME* variables added to its
+    # environment, and exits with the child's exit code.
+    import os
+    import signal
+    import subprocess
+    import sys
+    
+    
+    def _wait_for_child(signum, frame):
+        # Cancellation signals the whole process group, so the child
+        # receives this signal itself; the launcher stays alive to
+        # report its exit code. A handler, not SIG_IGN: an ignored
+        # signal stays ignored in the child across exec.
+        pass
+    
+    
+    for _name in ("SIGTERM", "SIGINT"):
+        _sig = getattr(signal, _name, None)
+        if _sig is not None:
+            signal.signal(_sig, _wait_for_child)
+    
+    script, start, end, frames = sys.argv[1:5]
+    env = dict(os.environ)
+    env.update(SQI_FRAME=start, SQI_FRAME_START=start, SQI_FRAME_END=end, SQI_FRAMES=frames)
+    code = subprocess.call([sys.executable, script], env=env)
+    sys.exit(128 - code if code < 0 else code)
+  embedded file "script" (script.py):
+    print('hello')
+
+task 5/5  name="Run[Frame=20-20,Frame.End=20,Frame.Start=20]"
+  task params:
+    Frame=20-20
+    Frame.End=20
+    Frame.Start=20
+  command: python3
+  args:
+    [0]  <WORKDIR>
+    [1]  <WORKDIR>
+    [2]  20
+    [3]  20
+    [4]  20-20
+  embedded file "launcher" (launcher.py):
+    # sqi python-sequence launcher: runs the user's script as a child
+    # process with the four SQI_FRAME* variables added to its
+    # environment, and exits with the child's exit code.
+    import os
+    import signal
+    import subprocess
+    import sys
+    
+    
+    def _wait_for_child(signum, frame):
+        # Cancellation signals the whole process group, so the child
+        # receives this signal itself; the launcher stays alive to
+        # report its exit code. A handler, not SIG_IGN: an ignored
+        # signal stays ignored in the child across exec.
+        pass
+    
+    
+    for _name in ("SIGTERM", "SIGINT"):
+        _sig = getattr(signal, _name, None)
+        if _sig is not None:
+            signal.signal(_sig, _wait_for_child)
+    
+    script, start, end, frames = sys.argv[1:5]
+    env = dict(os.environ)
+    env.update(SQI_FRAME=start, SQI_FRAME_START=start, SQI_FRAME_END=end, SQI_FRAMES=frames)
+    code = subprocess.call([sys.executable, script], env=env)
+    sys.exit(128 - code if code < 0 else code)
+  embedded file "script" (script.py):
+    print('hello')

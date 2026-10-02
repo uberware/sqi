@@ -25,7 +25,10 @@ func TestBuiltins_LoadValidateAndStamp(t *testing.T) {
 		}
 	}
 	// Sorted by name and exactly the expected set.
-	want := []string{"command-sequence", "command-sequence-powershell", "container", "python", "script", "script-powershell"}
+	want := []string{
+		"command-sequence", "command-sequence-powershell", "container",
+		"python", "python-sequence", "script", "script-powershell",
+	}
 	if strings.Join(names, ",") != strings.Join(want, ",") {
 		t.Fatalf("builtins = %v, want %v", names, want)
 	}
