@@ -4,12 +4,12 @@ params:
   Frames=1-20:2
   SceneFile=/mnt/show/seq010/shot0010/render/shot0010_grade_v003.rnd
 
-step "Render" — 1 task
+step "Render" — 10 tasks
 
-task 1/1  name="Render[Frame=1-19:2,Frame.End=19,Frame.Start=1]"
+task 1/10  name="Render[Frame=1-1,Frame.End=1,Frame.Start=1]"
   task params:
-    Frame=1-19:2
-    Frame.End=19
+    Frame=1-1
+    Frame.End=1
     Frame.Start=1
   command: mistika
   args:
@@ -17,5 +17,131 @@ task 1/1  name="Render[Frame=1-19:2,Frame.End=19,Frame.Start=1]"
     [1]  /mnt/show/seq010/shot0010/render/shot0010_grade_v003.rnd
     [2]  -s
     [3]  1
+    [4]  -e
+    [5]  1
+
+task 2/10  name="Render[Frame=3-3,Frame.End=3,Frame.Start=3]"
+  task params:
+    Frame=3-3
+    Frame.End=3
+    Frame.Start=3
+  command: mistika
+  args:
+    [0]  -r
+    [1]  /mnt/show/seq010/shot0010/render/shot0010_grade_v003.rnd
+    [2]  -s
+    [3]  3
+    [4]  -e
+    [5]  3
+
+task 3/10  name="Render[Frame=5-5,Frame.End=5,Frame.Start=5]"
+  task params:
+    Frame=5-5
+    Frame.End=5
+    Frame.Start=5
+  command: mistika
+  args:
+    [0]  -r
+    [1]  /mnt/show/seq010/shot0010/render/shot0010_grade_v003.rnd
+    [2]  -s
+    [3]  5
+    [4]  -e
+    [5]  5
+
+task 4/10  name="Render[Frame=7-7,Frame.End=7,Frame.Start=7]"
+  task params:
+    Frame=7-7
+    Frame.End=7
+    Frame.Start=7
+  command: mistika
+  args:
+    [0]  -r
+    [1]  /mnt/show/seq010/shot0010/render/shot0010_grade_v003.rnd
+    [2]  -s
+    [3]  7
+    [4]  -e
+    [5]  7
+
+task 5/10  name="Render[Frame=9-9,Frame.End=9,Frame.Start=9]"
+  task params:
+    Frame=9-9
+    Frame.End=9
+    Frame.Start=9
+  command: mistika
+  args:
+    [0]  -r
+    [1]  /mnt/show/seq010/shot0010/render/shot0010_grade_v003.rnd
+    [2]  -s
+    [3]  9
+    [4]  -e
+    [5]  9
+
+task 6/10  name="Render[Frame=11-11,Frame.End=11,Frame.Start=11]"
+  task params:
+    Frame=11-11
+    Frame.End=11
+    Frame.Start=11
+  command: mistika
+  args:
+    [0]  -r
+    [1]  /mnt/show/seq010/shot0010/render/shot0010_grade_v003.rnd
+    [2]  -s
+    [3]  11
+    [4]  -e
+    [5]  11
+
+task 7/10  name="Render[Frame=13-13,Frame.End=13,Frame.Start=13]"
+  task params:
+    Frame=13-13
+    Frame.End=13
+    Frame.Start=13
+  command: mistika
+  args:
+    [0]  -r
+    [1]  /mnt/show/seq010/shot0010/render/shot0010_grade_v003.rnd
+    [2]  -s
+    [3]  13
+    [4]  -e
+    [5]  13
+
+task 8/10  name="Render[Frame=15-15,Frame.End=15,Frame.Start=15]"
+  task params:
+    Frame=15-15
+    Frame.End=15
+    Frame.Start=15
+  command: mistika
+  args:
+    [0]  -r
+    [1]  /mnt/show/seq010/shot0010/render/shot0010_grade_v003.rnd
+    [2]  -s
+    [3]  15
+    [4]  -e
+    [5]  15
+
+task 9/10  name="Render[Frame=17-17,Frame.End=17,Frame.Start=17]"
+  task params:
+    Frame=17-17
+    Frame.End=17
+    Frame.Start=17
+  command: mistika
+  args:
+    [0]  -r
+    [1]  /mnt/show/seq010/shot0010/render/shot0010_grade_v003.rnd
+    [2]  -s
+    [3]  17
+    [4]  -e
+    [5]  17
+
+task 10/10  name="Render[Frame=19-19,Frame.End=19,Frame.Start=19]"
+  task params:
+    Frame=19-19
+    Frame.End=19
+    Frame.Start=19
+  command: mistika
+  args:
+    [0]  -r
+    [1]  /mnt/show/seq010/shot0010/render/shot0010_grade_v003.rnd
+    [2]  -s
+    [3]  19
     [4]  -e
     [5]  19

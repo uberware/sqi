@@ -33,6 +33,6 @@ cases:
     params:
       SceneFile: /mnt/show/seq010/shot0010/render/shot0010_grade_v003.rnd
       Frames: "1-20:2"
-    expect_tasks: 1
+    expect_tasks: 10
     expect_invocations:
-      mistika: 1
+      mistika: 10

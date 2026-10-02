@@ -5,40 +5,364 @@ params:
   SceneFile=/mnt/show/seq010/shot0010/comp/shot0010_comp_v021.nk
   WriteNode=Write_exr_main
 
-step "Render" — 3 tasks
+step "Render" — 30 tasks
 
-task 1/3  name="Render[Frames=1-19:2]"
+task 1/30  name="Render[Frames=1-1]"
   task params:
-    Frames=1-19:2
+    Frames=1-1
   command: nuke
   args:
     [0]  -x
     [1]  -X
     [2]  Write_exr_main
     [3]  -F
-    [4]  1-19:2
+    [4]  1-1
     [5]  /mnt/show/seq010/shot0010/comp/shot0010_comp_v021.nk
 
-task 2/3  name="Render[Frames=21-39:2]"
+task 2/30  name="Render[Frames=3-3]"
   task params:
-    Frames=21-39:2
+    Frames=3-3
   command: nuke
   args:
     [0]  -x
     [1]  -X
     [2]  Write_exr_main
     [3]  -F
-    [4]  21-39:2
+    [4]  3-3
     [5]  /mnt/show/seq010/shot0010/comp/shot0010_comp_v021.nk
 
-task 3/3  name="Render[Frames=41-59:2]"
+task 3/30  name="Render[Frames=5-5]"
   task params:
-    Frames=41-59:2
+    Frames=5-5
   command: nuke
   args:
     [0]  -x
     [1]  -X
     [2]  Write_exr_main
     [3]  -F
-    [4]  41-59:2
+    [4]  5-5
+    [5]  /mnt/show/seq010/shot0010/comp/shot0010_comp_v021.nk
+
+task 4/30  name="Render[Frames=7-7]"
+  task params:
+    Frames=7-7
+  command: nuke
+  args:
+    [0]  -x
+    [1]  -X
+    [2]  Write_exr_main
+    [3]  -F
+    [4]  7-7
+    [5]  /mnt/show/seq010/shot0010/comp/shot0010_comp_v021.nk
+
+task 5/30  name="Render[Frames=9-9]"
+  task params:
+    Frames=9-9
+  command: nuke
+  args:
+    [0]  -x
+    [1]  -X
+    [2]  Write_exr_main
+    [3]  -F
+    [4]  9-9
+    [5]  /mnt/show/seq010/shot0010/comp/shot0010_comp_v021.nk
+
+task 6/30  name="Render[Frames=11-11]"
+  task params:
+    Frames=11-11
+  command: nuke
+  args:
+    [0]  -x
+    [1]  -X
+    [2]  Write_exr_main
+    [3]  -F
+    [4]  11-11
+    [5]  /mnt/show/seq010/shot0010/comp/shot0010_comp_v021.nk
+
+task 7/30  name="Render[Frames=13-13]"
+  task params:
+    Frames=13-13
+  command: nuke
+  args:
+    [0]  -x
+    [1]  -X
+    [2]  Write_exr_main
+    [3]  -F
+    [4]  13-13
+    [5]  /mnt/show/seq010/shot0010/comp/shot0010_comp_v021.nk
+
+task 8/30  name="Render[Frames=15-15]"
+  task params:
+    Frames=15-15
+  command: nuke
+  args:
+    [0]  -x
+    [1]  -X
+    [2]  Write_exr_main
+    [3]  -F
+    [4]  15-15
+    [5]  /mnt/show/seq010/shot0010/comp/shot0010_comp_v021.nk
+
+task 9/30  name="Render[Frames=17-17]"
+  task params:
+    Frames=17-17
+  command: nuke
+  args:
+    [0]  -x
+    [1]  -X
+    [2]  Write_exr_main
+    [3]  -F
+    [4]  17-17
+    [5]  /mnt/show/seq010/shot0010/comp/shot0010_comp_v021.nk
+
+task 10/30  name="Render[Frames=19-19]"
+  task params:
+    Frames=19-19
+  command: nuke
+  args:
+    [0]  -x
+    [1]  -X
+    [2]  Write_exr_main
+    [3]  -F
+    [4]  19-19
+    [5]  /mnt/show/seq010/shot0010/comp/shot0010_comp_v021.nk
+
+task 11/30  name="Render[Frames=21-21]"
+  task params:
+    Frames=21-21
+  command: nuke
+  args:
+    [0]  -x
+    [1]  -X
+    [2]  Write_exr_main
+    [3]  -F
+    [4]  21-21
+    [5]  /mnt/show/seq010/shot0010/comp/shot0010_comp_v021.nk
+
+task 12/30  name="Render[Frames=23-23]"
+  task params:
+    Frames=23-23
+  command: nuke
+  args:
+    [0]  -x
+    [1]  -X
+    [2]  Write_exr_main
+    [3]  -F
+    [4]  23-23
+    [5]  /mnt/show/seq010/shot0010/comp/shot0010_comp_v021.nk
+
+task 13/30  name="Render[Frames=25-25]"
+  task params:
+    Frames=25-25
+  command: nuke
+  args:
+    [0]  -x
+    [1]  -X
+    [2]  Write_exr_main
+    [3]  -F
+    [4]  25-25
+    [5]  /mnt/show/seq010/shot0010/comp/shot0010_comp_v021.nk
+
+task 14/30  name="Render[Frames=27-27]"
+  task params:
+    Frames=27-27
+  command: nuke
+  args:
+    [0]  -x
+    [1]  -X
+    [2]  Write_exr_main
+    [3]  -F
+    [4]  27-27
+    [5]  /mnt/show/seq010/shot0010/comp/shot0010_comp_v021.nk
+
+task 15/30  name="Render[Frames=29-29]"
+  task params:
+    Frames=29-29
+  command: nuke
+  args:
+    [0]  -x
+    [1]  -X
+    [2]  Write_exr_main
+    [3]  -F
+    [4]  29-29
+    [5]  /mnt/show/seq010/shot0010/comp/shot0010_comp_v021.nk
+
+task 16/30  name="Render[Frames=31-31]"
+  task params:
+    Frames=31-31
+  command: nuke
+  args:
+    [0]  -x
+    [1]  -X
+    [2]  Write_exr_main
+    [3]  -F
+    [4]  31-31
+    [5]  /mnt/show/seq010/shot0010/comp/shot0010_comp_v021.nk
+
+task 17/30  name="Render[Frames=33-33]"
+  task params:
+    Frames=33-33
+  command: nuke
+  args:
+    [0]  -x
+    [1]  -X
+    [2]  Write_exr_main
+    [3]  -F
+    [4]  33-33
+    [5]  /mnt/show/seq010/shot0010/comp/shot0010_comp_v021.nk
+
+task 18/30  name="Render[Frames=35-35]"
+  task params:
+    Frames=35-35
+  command: nuke
+  args:
+    [0]  -x
+    [1]  -X
+    [2]  Write_exr_main
+    [3]  -F
+    [4]  35-35
+    [5]  /mnt/show/seq010/shot0010/comp/shot0010_comp_v021.nk
+
+task 19/30  name="Render[Frames=37-37]"
+  task params:
+    Frames=37-37
+  command: nuke
+  args:
+    [0]  -x
+    [1]  -X
+    [2]  Write_exr_main
+    [3]  -F
+    [4]  37-37
+    [5]  /mnt/show/seq010/shot0010/comp/shot0010_comp_v021.nk
+
+task 20/30  name="Render[Frames=39-39]"
+  task params:
+    Frames=39-39
+  command: nuke
+  args:
+    [0]  -x
+    [1]  -X
+    [2]  Write_exr_main
+    [3]  -F
+    [4]  39-39
+    [5]  /mnt/show/seq010/shot0010/comp/shot0010_comp_v021.nk
+
+task 21/30  name="Render[Frames=41-41]"
+  task params:
+    Frames=41-41
+  command: nuke
+  args:
+    [0]  -x
+    [1]  -X
+    [2]  Write_exr_main
+    [3]  -F
+    [4]  41-41
+    [5]  /mnt/show/seq010/shot0010/comp/shot0010_comp_v021.nk
+
+task 22/30  name="Render[Frames=43-43]"
+  task params:
+    Frames=43-43
+  command: nuke
+  args:
+    [0]  -x
+    [1]  -X
+    [2]  Write_exr_main
+    [3]  -F
+    [4]  43-43
+    [5]  /mnt/show/seq010/shot0010/comp/shot0010_comp_v021.nk
+
+task 23/30  name="Render[Frames=45-45]"
+  task params:
+    Frames=45-45
+  command: nuke
+  args:
+    [0]  -x
+    [1]  -X
+    [2]  Write_exr_main
+    [3]  -F
+    [4]  45-45
+    [5]  /mnt/show/seq010/shot0010/comp/shot0010_comp_v021.nk
+
+task 24/30  name="Render[Frames=47-47]"
+  task params:
+    Frames=47-47
+  command: nuke
+  args:
+    [0]  -x
+    [1]  -X
+    [2]  Write_exr_main
+    [3]  -F
+    [4]  47-47
+    [5]  /mnt/show/seq010/shot0010/comp/shot0010_comp_v021.nk
+
+task 25/30  name="Render[Frames=49-49]"
+  task params:
+    Frames=49-49
+  command: nuke
+  args:
+    [0]  -x
+    [1]  -X
+    [2]  Write_exr_main
+    [3]  -F
+    [4]  49-49
+    [5]  /mnt/show/seq010/shot0010/comp/shot0010_comp_v021.nk
+
+task 26/30  name="Render[Frames=51-51]"
+  task params:
+    Frames=51-51
+  command: nuke
+  args:
+    [0]  -x
+    [1]  -X
+    [2]  Write_exr_main
+    [3]  -F
+    [4]  51-51
+    [5]  /mnt/show/seq010/shot0010/comp/shot0010_comp_v021.nk
+
+task 27/30  name="Render[Frames=53-53]"
+  task params:
+    Frames=53-53
+  command: nuke
+  args:
+    [0]  -x
+    [1]  -X
+    [2]  Write_exr_main
+    [3]  -F
+    [4]  53-53
+    [5]  /mnt/show/seq010/shot0010/comp/shot0010_comp_v021.nk
+
+task 28/30  name="Render[Frames=55-55]"
+  task params:
+    Frames=55-55
+  command: nuke
+  args:
+    [0]  -x
+    [1]  -X
+    [2]  Write_exr_main
+    [3]  -F
+    [4]  55-55
+    [5]  /mnt/show/seq010/shot0010/comp/shot0010_comp_v021.nk
+
+task 29/30  name="Render[Frames=57-57]"
+  task params:
+    Frames=57-57
+  command: nuke
+  args:
+    [0]  -x
+    [1]  -X
+    [2]  Write_exr_main
+    [3]  -F
+    [4]  57-57
+    [5]  /mnt/show/seq010/shot0010/comp/shot0010_comp_v021.nk
+
+task 30/30  name="Render[Frames=59-59]"
+  task params:
+    Frames=59-59
+  command: nuke
+  args:
+    [0]  -x
+    [1]  -X
+    [2]  Write_exr_main
+    [3]  -F
+    [4]  59-59
     [5]  /mnt/show/seq010/shot0010/comp/shot0010_comp_v021.nk

@@ -300,63 +300,57 @@ func expandChunkInt(tp TaskParamDefinition) ([]string, error) {
 		}
 		contiguous = tp.Chunks.RangeConstraint != "NONCONTIGUOUS"
 	}
-
-	var out []string
-	for i := 0; i < len(all); i += chunkSize {
-		end := min(i+chunkSize, len(all))
-		chunk := all[i:end]
-		if contiguous {
-			out = append(out, formatContiguousChunk(chunk))
-		} else {
-			out = append(out, formatNoncontiguousChunk(chunk))
-		}
-	}
-	return out, nil
+	return chunkValues(all, chunkSize, contiguous), nil
 }
 
-// formatContiguousChunk encodes a chunk as a compact range expression.
-// E.g. [1,2,3,4] → "1-4", [1,3,5] → "1-5:2", [1,2,5] → "1-2,5".
+// chunkValues groups all into chunks of at most chunkSize values, in order.
+//
+// A CONTIGUOUS chunk is "always a contiguous range of integers" (TASK_CHUNKING,
+// Template Schemas), so all is first split into runs of consecutive integers
+// and each run is chunked on its own: RFC 0001's example, "1,10-12,18-50" at
+// 10, is "1-1", "10-12", "18-27", "28-37", "38-47", "48-50". Chunking the flat
+// list instead -- what this function did before -- produced "1,10-12,18-23",
+// whose SQI_CHUNK_BOUNDS span 1..23 rendered fourteen frames the range had
+// excluded. A NONCONTIGUOUS chunk may be any set, so the flat list is chunked
+// directly.
+func chunkValues(all []int, chunkSize int, contiguous bool) []string {
+	var out []string
+	if !contiguous {
+		for i := 0; i < len(all); i += chunkSize {
+			out = append(out, formatNoncontiguousChunk(all[i:min(i+chunkSize, len(all))]))
+		}
+		return out
+	}
+	for _, run := range consecutiveRuns(all) {
+		for i := 0; i < len(run); i += chunkSize {
+			out = append(out, formatContiguousChunk(run[i:min(i+chunkSize, len(run))]))
+		}
+	}
+	return out
+}
+
+// consecutiveRuns splits vals, keeping their order, into maximal runs in which
+// every value is the previous one plus one. vals must be non-empty.
+func consecutiveRuns(vals []int) [][]int {
+	var runs [][]int
+	start := 0
+	for i := 1; i <= len(vals); i++ {
+		if i == len(vals) || vals[i] != vals[i-1]+1 {
+			runs = append(runs, vals[start:i])
+			start = i
+		}
+	}
+	return runs
+}
+
+// formatContiguousChunk spells a run of consecutive integers as "<start>-<end>",
+// including a single value ("5-5"): RFC 0001 says a CONTIGUOUS chunk is
+// "always like <startframe>-<endframe>", and the specification's own tutorial
+// (Job-Intro-03) says "if there's just one frame it will look like 1-1" and
+// parses it with ^(-?[0-9]+)-(-?[0-9]+)$. vals is always a run from
+// consecutiveRuns, never a stepped or gapped set.
 func formatContiguousChunk(vals []int) string {
-	if len(vals) == 1 {
-		return strconv.Itoa(vals[0])
-	}
-	// Try to express as one or more sub-ranges.
-	type segment struct{ start, end, step int }
-	var segs []segment
-	start := vals[0]
-	step := vals[1] - vals[0]
-	end := vals[0]
-
-	for i := 1; i < len(vals); i++ {
-		diff := vals[i] - vals[i-1]
-		if diff == step {
-			end = vals[i]
-		} else {
-			segs = append(segs, segment{start, end, step})
-			start = vals[i]
-			if i+1 < len(vals) {
-				step = vals[i+1] - vals[i]
-			} else {
-				step = 1
-			}
-			end = vals[i]
-		}
-	}
-	segs = append(segs, segment{start, end, step})
-
-	parts := make([]string, len(segs))
-	for i, seg := range segs {
-		switch {
-		case seg.start == seg.end:
-			parts[i] = strconv.Itoa(seg.start)
-		case seg.step == 1:
-			parts[i] = strconv.Itoa(seg.start) + "-" + strconv.Itoa(seg.end)
-		default:
-			parts[i] = strconv.Itoa(seg.start) + "-" + strconv.Itoa(seg.end) +
-				":" + strconv.Itoa(seg.step)
-		}
-	}
-	return strings.Join(parts, ",")
+	return fmt.Sprintf("%d-%d", vals[0], vals[len(vals)-1])
 }
 
 // formatNoncontiguousChunk encodes a chunk as a comma-separated integer list.
@@ -370,7 +364,8 @@ func formatNoncontiguousChunk(vals []int) string {
 
 // DeriveChunkBounds adds "<name>.Start" and "<name>.End" keys to every row in
 // rows for each CHUNK[INT] parameter declared in ps. Each chunk value is a
-// contiguous integer range encoding (e.g. "1-10", "5", "1-10:2"); Start is the
+// contiguous integer range encoding (e.g. "1-10", "5-5"; a NONCONTIGUOUS-style
+// list is also tolerated); Start is the
 // smallest integer in the chunk and End the largest. It is a no-op when ps is
 // nil or declares no CHUNK[INT] parameter, and is only meaningful (and only
 // called) when the SQI_CHUNK_BOUNDS extension is enabled. A value that fails to

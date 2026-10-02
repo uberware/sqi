@@ -291,8 +291,16 @@ func TestRangeCheckerResolverAgreement_INTWholeFieldRangeString(t *testing.T) {
 					}
 
 					got := expandedValues(rows, "P", typ)
-					if !slices.Equal(got, tc.wantRows) {
-						t.Errorf("expanded values = %v, want %v", got, tc.wantRows)
+					want := tc.wantRows
+					if typ == TaskParamTypeChunkInt {
+						// Default chunk size 1: each CONTIGUOUS chunk is "N-N".
+						want = make([]string, len(tc.wantRows))
+						for i, v := range tc.wantRows {
+							want[i] = v + "-" + v
+						}
+					}
+					if !slices.Equal(got, want) {
+						t.Errorf("expanded values = %v, want %v", got, want)
 					}
 				})
 			}
