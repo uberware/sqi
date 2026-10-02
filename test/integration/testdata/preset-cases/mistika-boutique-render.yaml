@@ -22,13 +22,12 @@ cases:
     expect_tasks: 2
     expect_invocations:
       mistika: 2
-  # Third case, and the only one here that is not about argv shape: it pins a
-  # former hazard. This preset's readme tells operators to type "1-100:2" for
-  # every second frame, and it ships chunks.defaultTaskCount 10. A CONTIGUOUS
-  # chunk never spans a gap, so the stepped range yields one single-frame -s/-e
-  # task per requested frame (10 tasks for "1-20:2") and mistika never renders a
-  # frame the step excluded. docs/openjd-extensions/sqi-chunk-bounds.md has the
-  # rule; the golden keeps the behaviour visible.
+  # Third case, and the only one here that is not about argv shape: a stepped
+  # range at the shipped chunks.defaultTaskCount of 10 (the readme tells
+  # operators to type "1-100:2" for every second frame). A CONTIGUOUS chunk never
+  # spans a gap, so the range yields one single-frame -s/-e task per requested
+  # frame (10 tasks for "1-20:2") and mistika never renders a frame the step
+  # excluded. docs/openjd-extensions/sqi-chunk-bounds.md has the rule.
   - name: stepped-range
     params:
       SceneFile: /mnt/show/seq010/shot0010/render/shot0010_grade_v003.rnd

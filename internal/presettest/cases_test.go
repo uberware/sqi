@@ -145,14 +145,8 @@ func writeFile(t *testing.T, path, content string) {
 
 func TestLoadCases_ExpectInnerArgv(t *testing.T) {
 	dir := t.TempDir()
-	write := func(name, body string) string {
-		p := filepath.Join(dir, name)
-		if err := os.WriteFile(p, []byte(body), 0o600); err != nil {
-			t.Fatalf("write fixture: %v", err)
-		}
-		return p
-	}
-	ok := write("ok.yaml", `cases:
+	ok := filepath.Join(dir, "ok.yaml")
+	writeFile(t, ok, `cases:
   - name: inner
     stub_inner: true
     expect_tasks: 2
@@ -168,7 +162,8 @@ func TestLoadCases_ExpectInnerArgv(t *testing.T) {
 		t.Fatalf("ExpectInnerArgv = %v", got)
 	}
 
-	bad := write("bad.yaml", `cases:
+	bad := filepath.Join(dir, "bad.yaml")
+	writeFile(t, bad, `cases:
   - name: outer
     expect_tasks: 1
     expect_inner_argv:

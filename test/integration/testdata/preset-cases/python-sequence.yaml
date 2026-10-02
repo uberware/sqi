@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 #
-# Run a Python Script per Frame. NOT stub_inner: the stub stands in for the
+# Run a Python Script per Frame. Not stub_inner: the stub stands in for the
 # Interpreter itself (python3), so it records the launcher's argv -- which
 # carries the three frame values -- and the observed-vs-computed cross-check
 # compares every task's argv against the golden. What a real launcher does with

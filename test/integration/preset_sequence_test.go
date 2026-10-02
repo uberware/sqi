@@ -15,11 +15,10 @@ import (
 )
 
 // TestPresetPythonSequence_LauncherContract is python-sequence's Tier-2 claim:
-// a REAL Python runs the product's launcher, which is the one part of the
-// product no stub can stand in for. It pins the contract readers rely on --
-// the four variables per task, the child's exit code, and (POSIX) a canceled
-// child's own exit code -- plus Review Focus 4: the script runs as __main__
-// with its own path in sys.argv[0], as under `python script.py`.
+// a real Python runs the product's launcher, the one part of the product no
+// stub can stand in for. It pins the four variables per task, the child's exit
+// code, (POSIX) a canceled child's own exit code, and that the script runs as
+// __main__ with its own path in sys.argv[0], as under `python script.py`.
 //
 // Named TestPreset* so the harness's -run pattern (Makefile, ci.yml) selects
 // it; registered in presets/validation-tiers.yaml as a tier2 case, so a skip

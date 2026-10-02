@@ -17,10 +17,9 @@ import (
 // Source directories the tier registry and the harness know about.
 //
 // Both exist because "what job types does sqi have?" cannot be answered from
-// presets/ alone: internal/product/builtins/ ships four compiled-in products
-// (script, script-powershell, python, container) that are always present with
-// no preset-library install. Phase 4's own preset survey surveyed presets/ only and produced a
-// wrong headline finding.
+// presets/ alone: internal/product/builtins/ ships seven compiled-in products
+// (script, script-powershell, python, container, and the three sequence
+// built-ins) that are always present with no preset-library install.
 const (
 	SourcePresets  = "presets/sqi"
 	SourceBuiltins = "internal/product/builtins"
