@@ -745,7 +745,7 @@ jobs:
     # and would test the emulator's timing rather than the runner's.
     #
     # fail-fast is off on purpose. When these two disagree, the disagreement IS
-    # the finding, and cancelling the sibling job throws away half of it.
+    # the finding, and canceling the sibling job throws away half of it.
     strategy:
       fail-fast: false
       matrix:
