@@ -171,7 +171,7 @@ export default function ProductSubmit() {
 
   return (
     <form className={styles.page} onSubmit={(e) => void handleSubmit(e)}>
-      <PageHeader title={`Submit: ${productData.title || productData.name}`} />
+      <PageHeader title="Submit" subtitle={productData.title || productData.name} />
 
       <div className={styles.content}>
         <div className={styles.row}>
