@@ -509,6 +509,16 @@ type TaskChunks struct {
 	// permits this explicitly: "A scheduler can ignore this, or dynamically
 	// adjust the chunk task count to be closer to this value."
 	TargetRuntimeSeconds *int
+	// DefaultTaskCountExpr holds defaultTaskCount's raw text when the template
+	// gives it as a format string -- the spec types the field
+	// `<integer> | <intstring> # @fmtstring`, and its own tutorial writes
+	// "{{Param.ChunkSize}}". DefaultTaskCount is then 0 until
+	// ResolveParameterSpaceParams resolves this into it and clears it;
+	// expandChunkInt refuses a chunk that still carries one.
+	DefaultTaskCountExpr *string
+	// TargetRuntimeSecondsExpr is the same for targetRuntimeSeconds, which is
+	// then nil until resolved.
+	TargetRuntimeSecondsExpr *string
 	// RangeConstraint is "CONTIGUOUS" or "NONCONTIGUOUS"; required, validated
 	// in [validateChunks].
 	RangeConstraint string

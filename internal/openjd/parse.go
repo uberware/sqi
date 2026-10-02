@@ -8,6 +8,7 @@ import (
 	"math"
 	"sort"
 	"strconv"
+	"strings"
 
 	"gopkg.in/yaml.v3"
 )
@@ -917,8 +918,8 @@ func decodeTaskParamDefinition(raw map[string]any, exprDeclared bool) (TaskParam
 }
 
 // decodeTaskChunks decodes a CHUNK[INT] parameter's chunks block, rejecting a
-// non-integer defaultTaskCount or targetRuntimeSeconds rather than silently
-// coercing it to 0.
+// non-integer defaultTaskCount or targetRuntimeSeconds (one that is neither an
+// integer nor a format string) rather than silently coercing it to 0.
 func decodeTaskChunks(v any) (*TaskChunks, error) {
 	m, err := toMap(v, "chunks")
 	if err != nil {
@@ -929,20 +930,47 @@ func decodeTaskChunks(v any) (*TaskChunks, error) {
 	// the schema). Defaulting it would make a missing value invisible to
 	// validation.
 	var chunks TaskChunks
-	if n, ok, err := intFieldStrict(m, "defaultTaskCount", "chunks.defaultTaskCount"); err != nil {
+	n, ex, ok, err := chunkIntField(m, "defaultTaskCount")
+	if err != nil {
 		return nil, err
-	} else if ok {
-		chunks.DefaultTaskCount = n
 	}
-	if n, ok, err := intFieldStrict(m, "targetRuntimeSeconds", "chunks.targetRuntimeSeconds"); err != nil {
+	if ok {
+		chunks.DefaultTaskCount, chunks.DefaultTaskCountExpr = n, ex
+	}
+	n, ex, ok, err = chunkIntField(m, "targetRuntimeSeconds")
+	if err != nil {
 		return nil, err
-	} else if ok {
-		chunks.TargetRuntimeSeconds = &n
+	}
+	if ok {
+		if ex != nil {
+			chunks.TargetRuntimeSecondsExpr = ex
+		} else {
+			chunks.TargetRuntimeSeconds = &n
+		}
 	}
 	if rc, ok := m["rangeConstraint"]; ok && rc != nil {
 		chunks.RangeConstraint = anyToString(rc)
 	}
 	return &chunks, nil
+}
+
+// chunkIntField decodes one of a chunks block's two sizing fields, both typed
+// `<integer> | <intstring> # @fmtstring`. An integer, or a string holding one,
+// decodes to n. A string carrying a format-string reference is returned as
+// expr, to be resolved against job parameters at submission. Anything else
+// -- "ten", a mapping, a sequence -- is rejected rather than coerced to 0.
+func chunkIntField(m map[string]any, key string) (n int, expr *string, present bool, err error) {
+	v, ok := m[key]
+	if !ok || v == nil {
+		return 0, nil, false, nil
+	}
+	if i, ok := scalarToInt(v); ok {
+		return i, nil, true, nil
+	}
+	if s, ok := v.(string); ok && strings.Contains(s, "{{") {
+		return 0, &s, true, nil
+	}
+	return 0, nil, false, fmt.Errorf("openjd: chunks.%s must be an integer or a format string", key)
 }
 
 // ─── embedded file decoder ───────────────────────────────────────────────────

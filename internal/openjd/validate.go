@@ -3169,11 +3169,17 @@ func validateTaskParamRangeAndChunks(tp TaskParamDefinition, base string, exprDe
 		}
 	}
 
-	if tp.Chunks != nil && tp.Chunks.TargetRuntimeSeconds != nil && *tp.Chunks.TargetRuntimeSeconds < 1 {
+	// The spec's minimum is 0: "When the value is 0, a scheduler should
+	// ignore this configuration and use defaultTaskCount" (Template Schemas,
+	// chunks). A format-string value is checked once resolved, at submission.
+	if tp.Chunks != nil && tp.Chunks.TargetRuntimeSeconds != nil && *tp.Chunks.TargetRuntimeSeconds < 0 {
 		errs = append(errs, ValidationError{
 			Pointer: base + "/chunks/targetRuntimeSeconds",
-			Message: fmt.Sprintf("must be a positive number of seconds (got %d)", *tp.Chunks.TargetRuntimeSeconds),
+			Message: fmt.Sprintf("must not be negative (got %d)", *tp.Chunks.TargetRuntimeSeconds),
 		})
+	}
+	if tp.Chunks != nil && !exprDeclared {
+		errs = append(errs, validateChunkFormatStrings(*tp.Chunks, base)...)
 	}
 
 	// CHUNK[INT] must have a chunks definition with defaultTaskCount >= 1
@@ -3191,13 +3197,28 @@ func validateTaskParamRangeAndChunks(tp TaskParamDefinition, base string, exprDe
 	return errs
 }
 
+// validateChunkFormatStrings scope-checks a chunks block's two @fmtstring
+// sizing fields on the base-spec path, exactly as the range field beside them
+// is checked: both are resolved at job creation, so only job-scope symbols are
+// in scope. Under EXPR, checkChunkExpressions (exprcheck.go) does this instead.
+func validateChunkFormatStrings(c TaskChunks, base string) ValidationErrors {
+	var errs ValidationErrors
+	if c.DefaultTaskCountExpr != nil {
+		errs = append(errs, validateFormatString(*c.DefaultTaskCountExpr, base+"/chunks/defaultTaskCount", ScopeJob, nil)...)
+	}
+	if c.TargetRuntimeSecondsExpr != nil {
+		errs = append(errs, validateFormatString(*c.TargetRuntimeSecondsExpr, base+"/chunks/targetRuntimeSeconds", ScopeJob, nil)...)
+	}
+	return errs
+}
+
 // validateChunks validates a CHUNK[INT] parameter's chunks definition. It is
 // extracted from [validateTaskParamRangeAndChunks] to keep that function's
 // cyclomatic complexity within bounds.
 func validateChunks(c TaskChunks, base string) ValidationErrors {
 	var errs ValidationErrors
 
-	if c.DefaultTaskCount <= 0 {
+	if c.DefaultTaskCountExpr == nil && c.DefaultTaskCount <= 0 {
 		errs = append(errs, ValidationError{
 			Pointer: base + "/chunks/defaultTaskCount",
 			Message: "must be a positive integer",

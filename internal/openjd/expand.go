@@ -270,6 +270,13 @@ func expandTaskParam(tp TaskParamDefinition) ([]string, error) {
 // comma-separated integer list (NONCONTIGUOUS), matching the value a worker
 // will receive as its task parameter.
 func expandChunkInt(tp TaskParamDefinition) ([]string, error) {
+	if tp.Chunks != nil && tp.Chunks.DefaultTaskCountExpr != nil {
+		// Only ResolveParameterSpaceParams turns this into a count. Reaching here
+		// with it unresolved would silently chunk by 1 -- the user's chunk size
+		// ignored -- so refuse instead.
+		return nil, fmt.Errorf("chunks.defaultTaskCount %q was not resolved before expansion",
+			*tp.Chunks.DefaultTaskCountExpr)
+	}
 	// Resolve the full ordered integer list.
 	var all []int
 	if tp.RangeExpr != nil {
