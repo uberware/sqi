@@ -1,0 +1,58 @@
+preset: command-sequence
+case:   frame-list
+params:
+  Command=sqi-stub-command "$SQI_FRAMES"
+  Frames=1,5,10-20
+  FramesPerTask=5
+
+step "Run" — 5 tasks
+
+task 1/5  name="Run[Frame=1-1,Frame.End=1,Frame.Start=1]"
+  task params:
+    Frame=1-1
+    Frame.End=1
+    Frame.Start=1
+  command: /bin/sh
+  args:
+    [0]  -c
+    [1]  export SQI_FRAME='1' SQI_FRAME_START='1' SQI_FRAME_END='1' SQI_FRAMES='1-1'; sqi-stub-command "$SQI_FRAMES"
+
+task 2/5  name="Run[Frame=5-5,Frame.End=5,Frame.Start=5]"
+  task params:
+    Frame=5-5
+    Frame.End=5
+    Frame.Start=5
+  command: /bin/sh
+  args:
+    [0]  -c
+    [1]  export SQI_FRAME='5' SQI_FRAME_START='5' SQI_FRAME_END='5' SQI_FRAMES='5-5'; sqi-stub-command "$SQI_FRAMES"
+
+task 3/5  name="Run[Frame=10-14,Frame.End=14,Frame.Start=10]"
+  task params:
+    Frame=10-14
+    Frame.End=14
+    Frame.Start=10
+  command: /bin/sh
+  args:
+    [0]  -c
+    [1]  export SQI_FRAME='10' SQI_FRAME_START='10' SQI_FRAME_END='14' SQI_FRAMES='10-14'; sqi-stub-command "$SQI_FRAMES"
+
+task 4/5  name="Run[Frame=15-19,Frame.End=19,Frame.Start=15]"
+  task params:
+    Frame=15-19
+    Frame.End=19
+    Frame.Start=15
+  command: /bin/sh
+  args:
+    [0]  -c
+    [1]  export SQI_FRAME='15' SQI_FRAME_START='15' SQI_FRAME_END='19' SQI_FRAMES='15-19'; sqi-stub-command "$SQI_FRAMES"
+
+task 5/5  name="Run[Frame=20-20,Frame.End=20,Frame.Start=20]"
+  task params:
+    Frame=20-20
+    Frame.End=20
+    Frame.Start=20
+  command: /bin/sh
+  args:
+    [0]  -c
+    [1]  export SQI_FRAME='20' SQI_FRAME_START='20' SQI_FRAME_END='20' SQI_FRAMES='20-20'; sqi-stub-command "$SQI_FRAMES"

@@ -223,6 +223,23 @@ also stops on redirected native stderr. `TestScriptPowerShell_ExitStatus` in
 `test/integration/preset_exec_test.go` pins every one of these rows against a
 real `powershell.exe`.
 
+### `command-sequence` — Run a Shell Command per Frame
+
+The fan-out counterpart of `script`: runs one shell command per frame, or per
+chunk of consecutive frames, across a range. Parameters `Command`
+(`MULTILINE_EDIT`), `Frames` (OpenJD range syntax) and `FramesPerTask` (`INT`,
+default 1, minimum 1, the chunk size via a format-string `defaultTaskCount`).
+Each task's command sees `SQI_FRAME_START`, `SQI_FRAME_END`, `SQI_FRAMES`
+(always `START-END`) and `SQI_FRAME` (equal to `SQI_FRAME_START`), exported by
+a prefix on the `/bin/sh -c` string. A chunk never spans a gap in the range,
+so `-s $SQI_FRAME_START -e $SQI_FRAME_END` renders exactly the requested
+frames. Gated to Linux and macOS, like `script`.
+
+It runs arbitrary code as the worker's account by design; on a shared farm,
+set the queue's `run_as_user` so tasks run as an operator-chosen account (see
+*Queue identity* in [configuration](configuration.md) and the worker's
+[`isolation` settings](worker-configuration.md)).
+
 ### `python` — Run a Python Script
 
 Demonstrates two parameters (`Interpreter` and `Script`), an OpenJD

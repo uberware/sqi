@@ -356,6 +356,27 @@ presets:
       case: TestPresetTier3/script-powershell/default
       required_on: [windows]
 
+  - name: command-sequence
+    source: internal/product/builtins
+    tier: 1
+    tier1:
+      cases: [default, chunked, frame-list]
+      caveat: >-
+        argv derived from the /bin/sh -c convention documented in the product's
+        own readme, with the four SQI_FRAME* exports prefixed to Command. The
+        goldens show that prefix at one frame per task, at five per task with a
+        multi-line Command ending in a comment, and over a frame list, where
+        the chunks stop at every gap (1-1, 5-5, 10-14, 15-19, 20-20). Tier 3
+        DOES execute it: a real /bin/sh runs the export prefix and hands the
+        expanded variables to the stub, and expect_inner_argv pins the exact
+        values each of the three tasks received. What neither tier observes is
+        the argv of the shell itself, which is an absolute path nothing
+        shadows (stub_inner: true), so the -c string is evidenced by the golden
+        alone.
+    tier3:
+      case: TestPresetTier3/command-sequence/default
+      required_on: [linux, darwin]
+
   - name: python
     source: internal/product/builtins
     tier: 1
