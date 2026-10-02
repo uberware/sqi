@@ -393,6 +393,15 @@ measured results, not assertions:
 | `FEATURE_BUNDLE_1/env_templates` | not applicable — extension not registered (4 tests) |
 | `WRAP_ACTIONS/env_templates` | not applicable — extension not registered (9 tests) |
 
+**`TASK_CHUNKING` defects the scored suite could not see.** Three were fixed
+together: the chunk sizing fields rejected the format strings the schema
+allows (the specification's own tutorial failed to upload);
+`targetRuntimeSeconds: 0` was rejected although 0 is the documented minimum;
+and a `CONTIGUOUS` chunk could span a gap in the range (`1,10-12` at 10 became
+one chunk, `1,10-12`, whose bounds enclosed 2-9) and spelled a single frame
+`5` rather than `5-5`. No `job_templates` fixture exercises any of the three,
+which is why the 11/11 above never moved.
+
 **CORRECTIONS to the `EXPR` rows, kept because both were wrong for a while.**
 The `job_templates` row went uncorrected through the whole of sub-project E2,
 still carrying a pre-E2 figure (143/209 pass, 66 baselined) while the real score

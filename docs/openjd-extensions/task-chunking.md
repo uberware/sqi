@@ -14,6 +14,13 @@ so large frame ranges become a manageable number of tasks.
 A task parameter may use the `CHUNK[INT]` type. The template must declare
 `TASK_CHUNKING` in its top-level `extensions` list.
 
+`chunks.defaultTaskCount` and `chunks.targetRuntimeSeconds` are each an
+integer or a format string (`defaultTaskCount: "{{Param.ChunkSize}}"`),
+resolved against the job's parameters when the job is created. The resolved
+`defaultTaskCount` must be at least 1 and `targetRuntimeSeconds` at least 0;
+`0` means "ignore and use `defaultTaskCount`". sqi parses
+`targetRuntimeSeconds` but does not act on it, as the specification permits.
+
 ## Validation
 - Declaring `CHUNK[INT]` without `TASK_CHUNKING` in `extensions` is rejected
   (`/steps/{i}/parameterSpace`).
