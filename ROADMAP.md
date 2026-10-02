@@ -295,19 +295,13 @@ before Phase 3. See [docs/auth.md](docs/auth.md) for the model and setup.
 - Distributed NATS cluster
 - Worker auto-scaling hooks (AWS, GCP, Azure)
 - Installer packages (Linux, macOS, Windows)
-- **Two reference-preset findings** ✅ Resolved — surfaced by the P1
-  preset-validation harness and closed by gap-aware chunking:
-  - The Nuke `-F` colon-step suspicion (`1-19:2` vs Foundry's `1-19x2`) is
-    retired: a `CONTIGUOUS` chunk never carries a step, so `-F` receives only a
-    plain `start-end`.
-  - A stepped `Frames` range no longer collapses to a contiguous span through
-    `SQI_CHUNK_BOUNDS`: a `CONTIGUOUS` chunk never spans a gap, so a stepped
-    range yields one single-frame chunk per frame and no excluded frame is
-    rendered. See
-    [docs/openjd-extensions/sqi-chunk-bounds.md](docs/openjd-extensions/sqi-chunk-bounds.md).
-
-  Both are described per preset in `presets/validation-tiers.yaml` and in
-  [docs/preset-library.md](docs/preset-library.md).
+- **Reference-preset frame ranges** ✅ Resolved by gap-aware chunking. A
+  `CONTIGUOUS` chunk is always a plain `start-end` run of consecutive frames,
+  so Nuke's `-F` never receives an OpenJD step (`1-19:2`, where Foundry
+  documents `1-19x2`), and a stepped range no longer widens to its contiguous
+  span through `SQI_CHUNK_BOUNDS`. See
+  [docs/openjd-extensions/sqi-chunk-bounds.md](docs/openjd-extensions/sqi-chunk-bounds.md)
+  and [docs/preset-library.md](docs/preset-library.md).
 
 ### Phase 5: LLM Plugin and Polish (v0.5 — RC)
 

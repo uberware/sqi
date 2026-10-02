@@ -20,10 +20,10 @@ presets:
         triggers the render — and chunk bounds 1-5 then 6-10 under a patched chunk
         size. No Blender has executed it, so the #### frame-padding token in -o and
         whether Blender appends its own extension to the supplied .png are
-        unverified. A stepped or listed Frames range splits into one chunk per run of
-        consecutive frames, so -s/-e never spans a frame the range excluded
-        (internal/openjd/expand.go chunkValues); neither golden here exercises
-        one -- houdini-rop-render's stepped-range golden shows the expansion.
+        unverified. A stepped or listed Frames range splits into one chunk per
+        run of consecutive frames, so -s/-e never spans a frame the range
+        excluded; neither golden here exercises one (houdini-rop-render's
+        stepped-range golden shows the expansion).
     tier3:
       case: TestPresetTier3/blender-batch-render/default
       required_on: [linux, darwin, windows]
@@ -39,9 +39,9 @@ presets:
         cover the shipped one-frame-per-task shape and a patched chunk size of 5
         (1-5 then 6-10, so both bound ends are reviewed). No Maya render session has
         executed it, so whether the chosen renderer honours -rl and -rd, and whether
-        -r file resolves the scene's own renderer, are unverified. A stepped Frames range is not covered by these goldens; it splits into
-        one chunk per run of consecutive frames, so -s/-e cannot span an
-        excluded frame.
+        -r file resolves the scene's own renderer, are unverified. A stepped
+        Frames range is not covered by these goldens; it splits into one chunk
+        per run of consecutive frames, so -s/-e cannot span an excluded frame.
     tier3:
       case: TestPresetTier3/maya-layer-render/default
       required_on: [linux, darwin, windows]
@@ -73,12 +73,12 @@ presets:
         documentation-derived claims here in one specific way: the COMMAND TOKEN
         itself (mistika) is unverified as well as its flags, because no Mistika
         installation has executed it and sqi has no in-application Mistika
-        submitter to cross-check the convention against. This preset ships chunks.defaultTaskCount 10, but a stepped Frames range
-        splits into one chunk per run of consecutive frames, so -s/-e never
-        spans an excluded frame: mistika-boutique-render's stepped-range golden
-        shows Frame=1-20:2 reaching the renderer as ten single-frame tasks
-        (-s 1 -e 1, -s 3 -e 3, ...), at the cost of ten scene loads rather than
-        one.
+        submitter to cross-check the convention against. This preset ships
+        chunks.defaultTaskCount 10, but a stepped Frames range splits into one
+        chunk per run of consecutive frames, so -s/-e never spans an excluded
+        frame: mistika-boutique-render's stepped-range golden shows
+        Frame=1-20:2 reaching the renderer as ten single-frame tasks (-s 1 -e 1,
+        -s 3 -e 3, ...), at the cost of ten scene loads rather than one.
     tier3:
       case: TestPresetTier3/mistika-boutique-render/default
       required_on: [linux, darwin, windows]
@@ -94,12 +94,12 @@ presets:
         documentation-derived claims here in one specific way: the COMMAND TOKEN
         itself (vr) is unverified as well as its flags, because no Mistika
         installation has executed it and sqi has no in-application Mistika
-        submitter to cross-check the convention against. This preset ships chunks.defaultTaskCount 10, but a stepped Frames range
-        splits into one chunk per run of consecutive frames, so -s/-e never
-        spans an excluded frame: mistika-boutique-render's stepped-range golden
-        shows Frame=1-20:2 reaching the renderer as ten single-frame tasks
-        (-s 1 -e 1, -s 3 -e 3, ...), at the cost of ten scene loads rather than
-        one.
+        submitter to cross-check the convention against. This preset ships
+        chunks.defaultTaskCount 10, but a stepped Frames range splits into one
+        chunk per run of consecutive frames, so -s/-e never spans an excluded
+        frame: mistika-boutique-render's stepped-range golden shows
+        Frame=1-20:2 reaching the renderer as ten single-frame tasks (-s 1 -e 1,
+        -s 3 -e 3, ...), at the cost of ten scene loads rather than one.
     tier3:
       case: TestPresetTier3/mistika-vr-render/default
       required_on: [linux, darwin, windows]
@@ -115,12 +115,12 @@ presets:
         documentation-derived claims here in one specific way: the COMMAND TOKEN
         itself (workflows) is unverified as well as its flags, because no Mistika
         installation has executed it and sqi has no in-application Mistika
-        submitter to cross-check the convention against. This preset ships chunks.defaultTaskCount 10, but a stepped Frames range
-        splits into one chunk per run of consecutive frames, so -s/-e never
-        spans an excluded frame: mistika-boutique-render's stepped-range golden
-        shows Frame=1-20:2 reaching the renderer as ten single-frame tasks
-        (-s 1 -e 1, -s 3 -e 3, ...), at the cost of ten scene loads rather than
-        one.
+        submitter to cross-check the convention against. This preset ships
+        chunks.defaultTaskCount 10, but a stepped Frames range splits into one
+        chunk per run of consecutive frames, so -s/-e never spans an excluded
+        frame: mistika-boutique-render's stepped-range golden shows
+        Frame=1-20:2 reaching the renderer as ten single-frame tasks (-s 1 -e 1,
+        -s 3 -e 3, ...), at the cost of ten scene loads rather than one.
     tier3:
       case: TestPresetTier3/mistika-workflows-render/default
       required_on: [linux, darwin, windows]
@@ -134,8 +134,9 @@ presets:
         argv derived from SideFX's documented hython command-line convention for
         driving a ROP via an embedded Python driver script. Stronger than the other
         render presets in one respect: the chunk syntax the driver must parse is
-        visible in the golden (1-10 in the default case; the stepped-range case now expands to thirty single-frame chunks such as 1-1, so the driver's :step branch is reached by no shipped expansion) alongside
-        the parser itself, so the two can be read against each other. Still, no
+        visible in the golden (1-10 in the default case; the stepped-range case
+        expands to thirty single-frame chunks such as 1-1, so no shipped
+        expansion reaches the driver's :step branch) alongside the parser itself, so the two can be read against each other. Still, no
         Houdini or hython installation has executed it: hou.hipFile.load,
         hou.node and RopNode.render(frame_range=...) are unexercised, and a golden
         cannot show that hython puts the script's own path in sys.argv[0].
@@ -153,10 +154,9 @@ presets:
         (-X <write node> -F <frame list>); no Nuke installation has executed it.
         The stepped-range golden shows a stepped Frames range expanding to one
         single-frame task per requested frame (-F 1-1, -F 3-3, ...), because a
-        CONTIGUOUS chunk never spans a gap. That retires the earlier suspicion
-        that -F received OpenJD's colon step syntax (1-19:2) where Foundry
-        documents x (1-19x2): no CONTIGUOUS chunk carries a step any more.
-        Whether Nuke reads -F 1-1 as the single frame 1 is unverified at Tier 1.
+        CONTIGUOUS chunk never spans a gap, so -F never receives OpenJD's colon
+        step syntax (1-19:2) where Foundry documents x (1-19x2). Whether Nuke
+        reads -F 1-1 as the single frame 1 is unverified at Tier 1.
     tier3:
       case: TestPresetTier3/nuke-write-render/default
       required_on: [linux, darwin, windows]
@@ -170,9 +170,10 @@ presets:
         argv derived from Foundry's documented nuke -x batch-render flags
         (-F <frame list>, rendering every enabled Write node); no Nuke installation
         has executed it, so which Write nodes are enabled — this variant's entire
-        subject — is invisible in argv. Its stepped-range golden shows the same single-frame expansion as
-        nuke-write-render's (-F 1-1, -F 3-3, ...), so no step separator reaches
-        -F; whether Nuke reads -F 1-1 as one frame is unverified at Tier 1.
+        subject — is invisible in argv. Its stepped-range golden shows the same
+        single-frame expansion as nuke-write-render's (-F 1-1, -F 3-3, ...), so
+        no step separator reaches -F; whether Nuke reads -F 1-1 as one frame is
+        unverified at Tier 1.
     tier3:
       case: TestPresetTier3/nuke-script-render/default
       required_on: [linux, darwin, windows]
@@ -367,7 +368,7 @@ presets:
         goldens show that prefix at one frame per task, at five per task with a
         multi-line Command ending in a comment, and over a frame list, where
         the chunks stop at every gap (1-1, 5-5, 10-14, 15-19, 20-20). Tier 3
-        DOES execute it: a real /bin/sh runs the export prefix and hands the
+        executes it: a real /bin/sh runs the export prefix and hands the
         expanded variables to the stub, and expect_inner_argv pins the exact
         values each of the three tasks received. What neither tier observes is
         the argv of the shell itself, which is an absolute path nothing
@@ -388,12 +389,13 @@ presets:
         argv derived from script-powershell's documented -File convention; the
         goldens print the embedded command.ps1 in full, showing the four
         $env:SQI_FRAME* assignments between the (invisible) BOM and Command, and
-        script-powershell's exit-status trailer unchanged after it. Tier 3 DOES
-        execute it: a real powershell.exe assigns the variables and hands them
+        script-powershell's exit-status trailer unchanged after it. Tier 3
+        executes it: a real powershell.exe assigns the variables and hands them
         to the stub, and expect_inner_argv pins the exact values each of the
         three tasks received. Not re-proven here: the trailer's exit-status
         behaviour, which TestScriptPowerShell_ExitStatus carries for
-        script-powershell and which this product inherits byte for byte.
+        script-powershell; TestBuiltins_PowerShellExitTrailersMatch pins this
+        product's copy of the trailer to that one.
     tier3:
       case: TestPresetTier3/command-sequence-powershell/default
       required_on: [windows]
@@ -404,11 +406,10 @@ presets:
     tier1:
       cases: [default, chunked, frame-list]
       caveat: >-
-        this entry carries a tier2 block, so the real-Python evidence is a
-        verified fact rather than prose -- read it there. What the Tier-1
+        the real-Python behavior is this entry's tier2 claim. What the Tier-1
         goldens add is the launcher's argv per task (the three frame values
         after the two embedded-file paths) and the launcher's full text, which
-        contains no format string by design. Tier 3 runs the stub AS the
+        contains no format string by design. Tier 3 runs the stub as the
         interpreter, so it observes that argv through a real worker and the
         observed-vs-computed cross-check applies. What no tier proves is an
         interpreter whose sys.executable cannot run a script file (an embedded

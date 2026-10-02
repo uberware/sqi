@@ -7,8 +7,7 @@ readme: |
 
   Runs a Python script once for every frame in a range, or once for every
   chunk of frames, and tells each task which frames are its own. The per-frame
-  version of **Run a Python Script**, and a direct way to run batch inference,
-  simulation or data processing across many workers.
+  version of **Run a Python Script**.
 
   ## Parameters
 
@@ -46,9 +45,9 @@ readme: |
 
   The script is delivered as a real `script.py`. A small launcher, started by
   your **Interpreter**, runs it in a child process with that same Python
-  (`sys.executable`), with the four variables added to its environment. It therefore behaves exactly as if you ran it
-  yourself: `__name__` is `"__main__"`, `sys.argv[0]` is its own path, and
-  `multiprocessing` works. The task's exit code is the script's.
+  (`sys.executable`), with the four variables added to its environment, so it
+  behaves as if you ran it yourself: `__name__` is `"__main__"`,
+  `sys.argv[0]` is its own path, and `multiprocessing` works. The task's exit code is the script's.
 
   ## Requirements
 

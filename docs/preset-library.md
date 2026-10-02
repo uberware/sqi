@@ -280,25 +280,17 @@ a real farm rather than reviewed tier by tier. The tiers are:
   **What it does NOT prove: that the vendor's application accepts that
   command line.** No Maya, Nuke, Houdini, Blender, or Mistika installation
   executes anything at Tier 1 — the argv is correct only insofar as the
-  documentation it was derived from is correct and current. This is not a
-  hypothetical gap: the Tier-1 retrofit that built this harness raised two
-  suspected defects this way, both recorded as `caveat` text in
-  `presets/validation-tiers.yaml` and both since closed:
-  - `nuke-write-render` and `nuke-script-render` were suspected of passing
-    Nuke's `-F` flag an OpenJD-syntax stepped range (`1-19:2`) where Foundry
-    documents `x` as the increment separator (`1-19x2`). That suspicion is
-    retired: a `CONTIGUOUS` chunk never carries a step any more (below), so
-    `-F` only ever receives a plain `start-end`. Whether Nuke reads `-F 1-1` as
-    the single frame 1 still needs a real Nuke (Tier 2).
-  - The three Mistika presets — and, latently, Maya and Blender once an
-    operator raised their chunk size — could **silently render more frames than
-    requested**: a stepped `Frames` range collapsed to its contiguous span
-    (`-s`/`-e`), because `SQI_CHUNK_BOUNDS` has no way to express a step. This
-    is fixed: a `CONTIGUOUS` chunk now never spans a gap, so a stepped or listed
-    range splits into one chunk per run of consecutive frames (a stepped range
-    yields one single-frame chunk per frame) and `-s`/`-e` always spells
-    `start-end` over frames that were actually requested. The goldens show it.
-    See [sqi-chunk-bounds](openjd-extensions/sqi-chunk-bounds.md).
+  documentation it was derived from is correct and current. What the goldens
+  do pin for the frame-range presets follows from their `CONTIGUOUS` chunks,
+  each always a plain `start-end` run of consecutive frames:
+  - `nuke-write-render` and `nuke-script-render` never pass Nuke's `-F` flag an
+    OpenJD step (`1-19:2`, where Foundry documents `1-19x2`). Whether Nuke
+    reads `-F 1-1` as the single frame 1 needs a real Nuke (Tier 2).
+  - The `-s`/`-e` presets (Maya, Blender and the three Mistika presets) never
+    render a frame the range excluded: a stepped or listed range splits into
+    one chunk per run of consecutive frames, so a stepped range yields one
+    single-frame chunk per frame. See
+    [sqi-chunk-bounds](openjd-extensions/sqi-chunk-bounds.md).
 
   Read a preset's `caveat` field before trusting its golden for anything more
   than "the template still expands the way it did when this was reviewed."
@@ -382,15 +374,15 @@ Tier 3 runs on Windows exactly as it does on Linux and macOS — a real
 end against `test/stubproc` in place of the vendor executable — and CI proves
 it in a dedicated job (`preset-harness-windows`) rather than assuming a
 Linux-passing suite behaves the same way on another host. Of the 21 entries in
-`presets/validation-tiers.yaml`, 15 require **all three** platforms
+`presets/validation-tiers.yaml`, 16 require **all three** platforms
 (`tier3.required_on: [linux, darwin, windows]`), so a skip on Windows is a
-registry failure for every one of them, not a harmless no-op. The other 6 are
+registry failure for every one of them, not a harmless no-op. The other 5 are
 gated to a narrower platform subset, because their Tier 3 case cannot run
-everywhere by construction. Three are POSIX-only (`required_on: [linux, darwin]`):
-`script`, `command-sequence` and `ffmpeg-segment-transcode-bash`. Three are
-Windows-only (`required_on: [windows]`): `script-powershell`,
-`command-sequence-powershell` and `ffmpeg-segment-transcode-powershell` (gated
-on `attr.worker.os.family anyOf ["windows"]`). The Windows-only three still name
+everywhere by construction. Two are POSIX-only (`required_on: [linux, darwin]`):
+`script` and `command-sequence`. Three are Windows-only
+(`required_on: [windows]`): `script-powershell`, `command-sequence-powershell`
+and `ffmpeg-segment-transcode-powershell` (gated on
+`attr.worker.os.family anyOf ["windows"]`). The Windows-only three still name
 `windows` and are required to run on this Windows job — they simply aren't
 required anywhere else. That is a rule, not a convention:
 `TestPresetTier3RequiredOnMatchesOSGate` fails any entry whose

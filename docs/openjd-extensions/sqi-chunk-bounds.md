@@ -48,7 +48,7 @@ See `internal/openjd/validate.go` (`validateChunkBounds`).
 
 Note: a `CONTIGUOUS` chunk is always a run of consecutive integers. The range
 is split at every gap before it is chunked (`internal/openjd/expand.go`
-`chunkValues`, following RFC 0001's own example), so `.Start`/`.End` are
+`chunkValues`, following the example in RFC 0001), so `.Start`/`.End` are
 exactly the chunk's frames. A stepped range such as `1-10:2` therefore yields
 one single-frame chunk per frame (`Start == End`), whatever `defaultTaskCount`
 is, and a `-s/-e` renderer never renders a frame the range excluded.

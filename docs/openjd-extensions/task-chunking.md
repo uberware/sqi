@@ -32,9 +32,15 @@ See `internal/openjd/validate.go` (`validateExtensions`).
 A `CONTIGUOUS` chunk never spans a gap in the range: the values are split
 into runs of consecutive integers and each run is chunked separately, so
 `1,10-12,18-50` at 10 is `1-1`, `10-12`, `18-27`, `28-37`, `38-47`, `48-50`
-(RFC 0001's own example). It is always spelled `<start>-<end>`, a single
+(the example in RFC 0001). It is always spelled `<start>-<end>`, a single
 frame included (`5-5`). A `NONCONTIGUOUS` chunk is a comma-separated list of
 up to `defaultTaskCount` values, gaps allowed.
+
+A template that reads `{{Task.Param.<name>}}` as one frame number therefore
+receives `5-5` at a chunk size of 1, and for the trailing one-frame chunk of a
+range that does not divide evenly (`1-11` at 5 ends `11-11`). A stepped range
+yields one task per frame, since no two of its frames are consecutive; declare
+`NONCONTIGUOUS` to keep a step in one chunk.
 
 ## Worker behavior
 Chunked expansion is implemented in `internal/openjd/expand.go`; tasks carry the

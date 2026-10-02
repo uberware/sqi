@@ -7,8 +7,7 @@ readme: |
 
   Runs a shell command once for every frame in a range, or once for every
   chunk of frames, and tells each task which frames are its own. The
-  per-frame version of **Run a Shell Command**, and the quickest way to put any
-  command-line tool on the farm.
+  per-frame version of **Run a Shell Command**.
 
   ## Parameters
 

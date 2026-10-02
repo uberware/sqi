@@ -15,7 +15,10 @@ readme: |
   - **Command** - the PowerShell text each task runs. It is written to a UTF-8
     `command.ps1` and run with
     `powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File`, so
-    pipelines, redirection, several lines and comments all work.
+    pipelines, redirection, several lines and comments all work. The frame
+    variables are set by lines written ahead of it, so the command cannot
+    open with a `param()` block or a `using` statement, which PowerShell
+    accepts only at the very start of a script.
   - **Frame Range** - the frames to cover, in OpenJD range syntax: `1-100`,
     `1-100:2` for every second frame, or a list such as `1,5,10-20`.
   - **Frames per Task** - how many consecutive frames each task covers. One by
