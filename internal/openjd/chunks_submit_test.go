@@ -4,6 +4,7 @@ package openjd_test
 
 import (
 	"errors"
+	"fmt"
 	"slices"
 	"strings"
 	"testing"
@@ -13,10 +14,9 @@ import (
 	"github.com/uberware/sqi/internal/store/fake"
 )
 
-// tutorialChunkTemplate reproduces the chunks block of the specification's own
-// tutorial (wiki/Job-Intro-03-Creating-a-Job-Template.md, lines 1006-1027): a
-// range built from two parameters, and both sizing fields given as format
-// strings. sqi rejected this at upload before P2.
+// tutorialChunkTemplate reproduces the chunks block of the specification's
+// tutorial (wiki/Job-Intro-03-Creating-a-Job-Template.md): a range built from
+// two parameters, and both sizing fields given as format strings.
 const tutorialChunkTemplate = `
 specificationVersion: jobtemplate-2023-09
 name: Tutorial Chunks
@@ -73,7 +73,7 @@ func TestSubmit_SpecTutorialChunkTemplate(t *testing.T) {
 			if err != nil {
 				t.Fatalf("Submit: %v", err)
 			}
-			if got := chunkValuesOf(res); strings.Join(got, " ") != strings.Join(tc.want, " ") {
+			if got := chunkValuesOf(res); !slices.Equal(got, tc.want) {
 				t.Fatalf("chunks = %v, want %v", got, tc.want)
 			}
 		})
@@ -93,7 +93,23 @@ func TestSubmit_ChunkSizeResolvingBelowOneRejected(t *testing.T) {
 	}
 }
 
-// Review Focus 5: a non-integer reaching an INT chunk-size parameter is a 422
+// targetRuntimeSeconds' minimum is 0, not 1, and a format string is only
+// checked once resolved: a negative result must be a 422 naming that field.
+func TestSubmit_TargetRuntimeResolvingNegativeRejected(t *testing.T) {
+	tmpl := strings.Replace(tutorialChunkTemplate, "minValue: 0, default: 0", "default: 0", 1)
+	if _, err := submitChunks(t, tmpl, map[string]string{"ChunkTargetRuntimeSeconds": "0"}); err != nil {
+		t.Fatalf("Submit at 0: %v, want accepted", err)
+	}
+	_, err := submitChunks(t, tmpl, map[string]string{"ChunkTargetRuntimeSeconds": "-1"})
+	if _, ok := errors.AsType[*openjd.SubmitValidationError](err); !ok {
+		t.Fatalf("err = %v, want a SubmitValidationError", err)
+	}
+	if !strings.Contains(err.Error(), "/steps/0/parameterSpace/taskParameterDefinitions/0/chunks/targetRuntimeSeconds") {
+		t.Fatalf("err = %v, want it to point at chunks/targetRuntimeSeconds", err)
+	}
+}
+
+// A non-integer reaching an INT chunk-size parameter is a 422
 // naming the parameter -- never a 500, never a silent chunk size of 1.
 func TestSubmit_ChunkSizeNonIntegerParameterRejected(t *testing.T) {
 	_, err := submitChunks(t, tutorialChunkTemplate, map[string]string{"ChunkSize": "abc"})
@@ -117,7 +133,9 @@ func TestSubmit_ChunkSizeResolvingToTextRejected(t *testing.T) {
 	}
 }
 
-const exprChunkTemplate = `
+// exprChunkTemplate is an EXPR template whose defaultTaskCount is size.
+func exprChunkTemplate(size string) string {
+	return fmt.Sprintf(`
 specificationVersion: jobtemplate-2023-09
 name: Expr Chunks
 extensions: [EXPR, TASK_CHUNKING]
@@ -132,21 +150,22 @@ steps:
           range: "1-12"
           chunks: { defaultTaskCount: "%s", rangeConstraint: CONTIGUOUS }
     script: { actions: { onRun: { command: render } } }
-`
+`, size)
+}
 
 func TestSubmit_ChunkSizeExpressionUnderEXPR(t *testing.T) {
-	res, err := submitChunks(t, strings.Replace(exprChunkTemplate, "%s", "{{ Param.N * 2 }}", 1), nil)
+	res, err := submitChunks(t, exprChunkTemplate("{{ Param.N * 2 }}"), nil)
 	if err != nil {
 		t.Fatalf("Submit: %v", err)
 	}
-	if got := chunkValuesOf(res); strings.Join(got, " ") != "1-6 7-12" {
+	if got := chunkValuesOf(res); !slices.Equal(got, []string{"1-6", "7-12"}) {
 		t.Fatalf("chunks = %v, want [1-6 7-12]", got)
 	}
 }
 
 func TestValidate_ChunkSizeHostScopeRejectedUnderEXPR(t *testing.T) {
 	tmpl, err := openjd.Parse(
-		[]byte(strings.Replace(exprChunkTemplate, "%s", "{{ Session.WorkingDirectory }}", 1)), openjd.FormatYAML,
+		[]byte(exprChunkTemplate("{{ Session.WorkingDirectory }}")), openjd.FormatYAML,
 	)
 	if err != nil {
 		t.Fatalf("Parse: %v", err)

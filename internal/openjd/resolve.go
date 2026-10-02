@@ -280,7 +280,7 @@ func ResolveParameterSpaceParams(
 func resolveTaskParamDefinition(
 	b *templateBudget, exprEnabled bool, i int, def TaskParamDefinition, syms expr.MapSymbols, scope fmtstring.Scope,
 ) (TaskParamDefinition, ValidationErrors) {
-	newDef := def // shallow copy — Name, Type, Chunks, Combination are unchanged
+	newDef := def // shallow copy — Name, Type, Combination are unchanged; the caller resolves Chunks
 
 	if def.RangeExpr != nil {
 		ptr := fmt.Sprintf("/parameterSpace/taskParameterDefinitions/%d/range", i)
@@ -809,8 +809,7 @@ func rangeExprElemType(typ TaskParamType) expr.Type {
 // resolveChunkFields resolves a CHUNK[INT] definition's two @fmtstring sizing
 // fields, which -- like range -- are resolved at job creation against the
 // bound job parameters. c is returned as-is when neither field is a format
-// string, so a template with literal sizes resolves exactly as it always has;
-// otherwise a fresh copy comes back with each resolved field set and its Expr
+// string; otherwise a fresh copy comes back with each resolved field set and its Expr
 // cleared. A budget or deadline stop leaves the Expr in place and reports
 // nothing here: the caller's b.errs()/b.deadline() discards the whole result.
 func resolveChunkFields(
@@ -842,7 +841,7 @@ func resolveChunkFields(
 // resolveChunkInt resolves one sizing format string to an integer of at least
 // minimum. On the EXPR path it is one charged position evaluated toward
 // expr.TInt, and a wall-clock stop is diverted onto the budget (ok=false, no
-// error) exactly as resolveTaskParamDefinition diverts one; on the base-spec
+// error) as resolveTaskParamDefinition diverts one; on the base-spec
 // path it is plain substitution.
 func resolveChunkInt(
 	b *templateBudget, exprEnabled bool, raw, ptr string, minimum int, syms expr.MapSymbols, scope fmtstring.Scope,
@@ -850,13 +849,9 @@ func resolveChunkInt(
 	if exprEnabled && !b.chargePositions(1, ptr) {
 		return 0, false, nil
 	}
-	var text string
-	var err error
-	if exprEnabled {
-		text, err = resolveFormatStringExpr(raw, syms, expr.TInt, b.limits.evalOptions()...)
-	} else {
-		text, err = fmtstring.Resolve(raw, scope)
-	}
+	// An INT range-list entry is resolved as a sizing field must be:
+	// toward expr.TInt under EXPR, plain substitution otherwise.
+	text, err := resolveRangeListEntry(exprEnabled, raw, TaskParamTypeInt, syms, scope, b.limits)
 	if err != nil {
 		if b.recordDeadline(err) {
 			return 0, false, nil

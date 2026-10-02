@@ -32,8 +32,7 @@ steps:
 }
 
 // The spec types both sizing fields `<integer> | <intstring> # @fmtstring`
-// (Template Schemas, chunks); sqi decoded them as plain integers and rejected
-// the spec's own tutorial template.
+// (Template Schemas, chunks).
 func TestDecodeTaskChunks_SizingFieldsAcceptFormatStrings(t *testing.T) {
 	tests := []struct {
 		name        string

@@ -310,9 +310,9 @@ func TestRangeCheckerResolverAgreement_INTWholeFieldRangeString(t *testing.T) {
 
 // expandedValues pulls the value of task parameter name out of every expanded
 // row. A CHUNK[INT] definition groups its integers into chunks, so with
-// chunks unset each row's value is the chunk's own <IntRangeExpr> text for a
-// single value -- identical to the INT rendering for these one-value chunks,
-// which is why both types share one expectation column above.
+// chunks unset each row's value is a one-value CONTIGUOUS chunk, "N-N" -- the
+// caller derives that from the INT expectation column rather than keeping a
+// second one.
 func expandedValues(rows []TaskParams, name string, _ TaskParamType) []string {
 	out := make([]string, 0, len(rows))
 	for _, r := range rows {

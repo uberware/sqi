@@ -271,9 +271,8 @@ func expandTaskParam(tp TaskParamDefinition) ([]string, error) {
 // will receive as its task parameter.
 func expandChunkInt(tp TaskParamDefinition) ([]string, error) {
 	if tp.Chunks != nil && tp.Chunks.DefaultTaskCountExpr != nil {
-		// Only ResolveParameterSpaceParams turns this into a count. Reaching here
-		// with it unresolved would silently chunk by 1 -- the user's chunk size
-		// ignored -- so refuse instead.
+		// Only ResolveParameterSpaceParams turns this into a count; chunking
+		// without it would silently ignore the requested chunk size.
 		return nil, fmt.Errorf("chunks.defaultTaskCount %q was not resolved before expansion",
 			*tp.Chunks.DefaultTaskCountExpr)
 	}
@@ -315,22 +314,17 @@ func expandChunkInt(tp TaskParamDefinition) ([]string, error) {
 // A CONTIGUOUS chunk is "always a contiguous range of integers" (TASK_CHUNKING,
 // Template Schemas), so all is first split into runs of consecutive integers
 // and each run is chunked on its own: RFC 0001's example, "1,10-12,18-50" at
-// 10, is "1-1", "10-12", "18-27", "28-37", "38-47", "48-50". Chunking the flat
-// list instead -- what this function did before -- produced "1,10-12,18-23",
-// whose SQI_CHUNK_BOUNDS span 1..23 rendered fourteen frames the range had
-// excluded. A NONCONTIGUOUS chunk may be any set, so the flat list is chunked
-// directly.
+// 10, is "1-1", "10-12", "18-27", "28-37", "38-47", "48-50". A NONCONTIGUOUS
+// chunk may be any set, so the flat list is chunked directly.
 func chunkValues(all []int, chunkSize int, contiguous bool) []string {
-	var out []string
-	if !contiguous {
-		for i := 0; i < len(all); i += chunkSize {
-			out = append(out, formatNoncontiguousChunk(all[i:min(i+chunkSize, len(all))]))
-		}
-		return out
+	runs, format := [][]int{all}, formatNoncontiguousChunk
+	if contiguous {
+		runs, format = consecutiveRuns(all), formatContiguousChunk
 	}
-	for _, run := range consecutiveRuns(all) {
+	var out []string
+	for _, run := range runs {
 		for i := 0; i < len(run); i += chunkSize {
-			out = append(out, formatContiguousChunk(run[i:min(i+chunkSize, len(run))]))
+			out = append(out, format(run[i:min(i+chunkSize, len(run))]))
 		}
 	}
 	return out
@@ -351,13 +345,10 @@ func consecutiveRuns(vals []int) [][]int {
 }
 
 // formatContiguousChunk spells a run of consecutive integers as "<start>-<end>",
-// including a single value ("5-5"): RFC 0001 says a CONTIGUOUS chunk is
-// "always like <startframe>-<endframe>", and the specification's own tutorial
-// (Job-Intro-03) says "if there's just one frame it will look like 1-1" and
-// parses it with ^(-?[0-9]+)-(-?[0-9]+)$. vals is always a run from
-// consecutiveRuns, never a stepped or gapped set.
+// including a single value ("5-5"), as RFC 0001 specifies. vals is always a
+// run from consecutiveRuns, never a stepped or gapped set.
 func formatContiguousChunk(vals []int) string {
-	return fmt.Sprintf("%d-%d", vals[0], vals[len(vals)-1])
+	return strconv.Itoa(vals[0]) + "-" + strconv.Itoa(vals[len(vals)-1])
 }
 
 // formatNoncontiguousChunk encodes a chunk as a comma-separated integer list.
@@ -372,10 +363,10 @@ func formatNoncontiguousChunk(vals []int) string {
 // DeriveChunkBounds adds "<name>.Start" and "<name>.End" keys to every row in
 // rows for each CHUNK[INT] parameter declared in ps. Each chunk value is a
 // contiguous integer range encoding (e.g. "1-10", "5-5"; a NONCONTIGUOUS-style
-// list is also tolerated); Start is the
-// smallest integer in the chunk and End the largest. It is a no-op when ps is
-// nil or declares no CHUNK[INT] parameter, and is only meaningful (and only
-// called) when the SQI_CHUNK_BOUNDS extension is enabled. A value that fails to
+// list is also tolerated); Start is the smallest integer in the chunk and End
+// the largest. It is a no-op when ps is nil or declares no CHUNK[INT]
+// parameter, and is only meaningful (and only called) when the
+// SQI_CHUNK_BOUNDS extension is enabled. A value that fails to
 // parse is left without derived keys — expansion has already validated ranges.
 func DeriveChunkBounds(rows []TaskParams, ps *StepParameterSpace) {
 	if ps == nil {

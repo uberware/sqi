@@ -1972,7 +1972,7 @@ func rangeExprFieldType(typ TaskParamType) expr.Type {
 }
 
 // checkChunkExpressions checks a CHUNK[INT] definition's two @fmtstring sizing
-// fields as job-scope positions, exactly like the range field beside them:
+// fields as job-scope positions, like the range field beside them:
 // Template Schemas' "Job creation" row resolves both then. One position each,
 // charged to the template-wide budget like every other position.
 func checkChunkExpressions(b *templateBudget, c *TaskChunks, ptr string, syms expr.MapSymbols) ValidationErrors {

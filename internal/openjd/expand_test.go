@@ -9,7 +9,7 @@ package openjd_test
 // This file adds the one gap: a syntactically malformed combination expression.
 
 import (
-	"strings"
+	"slices"
 	"testing"
 
 	"github.com/uberware/sqi/internal/openjd"
@@ -120,8 +120,8 @@ func TestDeriveChunkBounds_NilAndNonChunk(t *testing.T) {
 
 // TestExpand_ChunkContiguousNeverSpansAGap pins RFC 0001's definition of a
 // CONTIGUOUS chunk: "always a contiguous range of integers", spelled
-// "<start>-<end>" even for one frame. The first row is the RFC's own worked
-// example (rfcs/0001-task-chunking.md:28-31), verbatim.
+// "<start>-<end>" even for one frame. The first row is the RFC's worked
+// example.
 func TestExpand_ChunkContiguousNeverSpansAGap(t *testing.T) {
 	tests := []struct {
 		name       string
@@ -179,7 +179,7 @@ func TestExpand_ChunkContiguousNeverSpansAGap(t *testing.T) {
 			for i, r := range rows {
 				got[i] = r["Frame"]
 			}
-			if strings.Join(got, " ") != strings.Join(tc.want, " ") {
+			if !slices.Equal(got, tc.want) {
 				t.Fatalf("chunks = %v, want %v", got, tc.want)
 			}
 		})

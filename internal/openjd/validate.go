@@ -3178,38 +3178,36 @@ func validateTaskParamRangeAndChunks(tp TaskParamDefinition, base string, exprDe
 // is extracted from [validateTaskParamRangeAndChunks] to keep that function's
 // cyclomatic complexity within bounds.
 func validateChunksField(tp TaskParamDefinition, base string, exprDeclared bool) ValidationErrors {
-	var errs ValidationErrors
+	c := tp.Chunks
+	if c == nil {
+		if tp.Type == TaskParamTypeChunkInt {
+			return ValidationErrors{{Pointer: base + "/chunks", Message: "required for CHUNK[INT] parameters"}}
+		}
+		return nil
+	}
 
+	var errs ValidationErrors
 	// The spec's minimum is 0: "When the value is 0, a scheduler should
 	// ignore this configuration and use defaultTaskCount" (Template Schemas,
 	// chunks). A format-string value is checked once resolved, at submission.
-	if tp.Chunks != nil && tp.Chunks.TargetRuntimeSeconds != nil && *tp.Chunks.TargetRuntimeSeconds < 0 {
+	if c.TargetRuntimeSeconds != nil && *c.TargetRuntimeSeconds < 0 {
 		errs = append(errs, ValidationError{
 			Pointer: base + "/chunks/targetRuntimeSeconds",
-			Message: fmt.Sprintf("must not be negative (got %d)", *tp.Chunks.TargetRuntimeSeconds),
+			Message: fmt.Sprintf("must not be negative (got %d)", *c.TargetRuntimeSeconds),
 		})
 	}
-	if tp.Chunks != nil && !exprDeclared {
-		errs = append(errs, validateChunkFormatStrings(*tp.Chunks, base)...)
+	if !exprDeclared {
+		errs = append(errs, validateChunkFormatStrings(*c, base)...)
 	}
-
-	// CHUNK[INT] must have a chunks definition with defaultTaskCount >= 1
+	// CHUNK[INT] must have defaultTaskCount >= 1.
 	if tp.Type == TaskParamTypeChunkInt {
-		if tp.Chunks == nil {
-			errs = append(errs, ValidationError{
-				Pointer: base + "/chunks",
-				Message: "required for CHUNK[INT] parameters",
-			})
-		} else {
-			errs = append(errs, validateChunks(*tp.Chunks, base)...)
-		}
+		errs = append(errs, validateChunks(*c, base)...)
 	}
-
 	return errs
 }
 
 // validateChunkFormatStrings scope-checks a chunks block's two @fmtstring
-// sizing fields on the base-spec path, exactly as the range field beside them
+// sizing fields on the base-spec path, as the range field beside them
 // is checked: both are resolved at job creation, so only job-scope symbols are
 // in scope. Under EXPR, checkChunkExpressions (exprcheck.go) does this instead.
 func validateChunkFormatStrings(c TaskChunks, base string) ValidationErrors {
