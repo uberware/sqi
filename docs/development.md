@@ -341,7 +341,11 @@ make test-service-windows
 It must run from an **elevated** shell on a real Windows host, and it is not
 sandboxed: it **really installs, starts, stops and deletes services** named
 `sqi-test-*`, and it creates and deletes a throwaway local account
-(`sqisvc-*`) and its profile. It builds the binaries into
+(`sqisvc-*`) and its profile. The profile outlives the run: Windows loads it to
+start the `--user` service and keeps it loaded until reboot (the User Profile
+Service holds its hives open after the service is stopped and deleted), so
+`UserAccount` notes it and leaves it, and the first run after a reboot deletes
+every such profile whose account is gone. It builds the binaries into
 `%ProgramData%\sqi winservice bin NNN` and works in `%ProgramData%\sqi winservice NNN`
 directories, and it writes logs to `%ProgramData%\sqi\logs\sqi-test-*.log`. Six
 tests, `TestWinService_ServerLifecycle`, `InstallRefusesExisting`,
@@ -383,8 +387,8 @@ sc.exe delete $name
 icacls "$env:ProgramData\sqi\logs" /remove:g sqisvc-xxxxxxxx
 # secpol.msc -> Local Policies -> User Rights Assignment -> Log on as a service:
 #   remove sqisvc-xxxxxxxx
-Get-CimInstance Win32_UserProfile | Where-Object LocalPath -like '*\sqisvc-*' | Remove-CimInstance
 net user sqisvc-xxxxxxxx /delete
+# Its profile cannot be deleted until a reboot; the next suite run removes it.
 
 # Leftover files
 Remove-Item -Recurse -Force "$env:ProgramData\sqi winservice*"

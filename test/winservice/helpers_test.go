@@ -16,6 +16,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"testing"
@@ -23,6 +24,7 @@ import (
 	"unsafe"
 
 	"golang.org/x/sys/windows"
+	"golang.org/x/sys/windows/registry"
 )
 
 var binDir string // built once by TestMain, in a path containing a space
@@ -63,6 +65,7 @@ func runSuite(m *testing.M) int {
 		fmt.Printf("build: %v\n%s", err, out)
 		return 1
 	}
+	sweepStaleProfiles()
 	return m.Run()
 }
 
@@ -337,9 +340,10 @@ func readLog(t *testing.T, path string) string {
 // `net user`, so its password never appears on a command line (which process
 // auditing can record). Its removal also undoes what `service install --user`
 // and running the service leave keyed to its SID — the "Log on as a service"
-// right, the ACE on the shared log directory, the profile — because deleting
-// an account removes none of them, and this suite also runs on developer
-// machines (scripts/test-isolation-windows.ps1 does the same for its accounts).
+// right, the ACE on the shared log directory, the profile (not until a later
+// run after a reboot, see deleteProfile) — because deleting an account removes
+// none of them, and this suite also runs on developer machines
+// (scripts/test-isolation-windows.ps1 does the same for its accounts).
 
 var (
 	modNetapi32                = windows.NewLazySystemDLL("netapi32.dll")
@@ -387,6 +391,9 @@ type lsaObjectAttributes struct {
 	SecurityQualityOfService uintptr
 }
 
+// accountPrefix names every throwawayAccount, and so their profile directories.
+const accountPrefix = "sqisvc"
+
 // throwawayAccount creates a local standard user with a random password, and
 // registers its removal even if the test fails midway. Call it before the test
 // registers anything that uses the account, so that — cleanups running in
@@ -394,7 +401,7 @@ type lsaObjectAttributes struct {
 // password must never be logged.
 func throwawayAccount(t *testing.T) (account, password string) {
 	t.Helper()
-	account = uniqueName(t, "sqisvc") // 15 characters; a local account name allows 20
+	account = uniqueName(t, accountPrefix) // 15 characters; a local account name allows 20
 	// All four character classes, so any password complexity policy accepts it.
 	password = "Aa1!" + randomHex(t, 16)
 	if err := netUserAdd(account, password); err != nil {
@@ -499,27 +506,100 @@ func revokeAllRights(sid *windows.SID) error {
 }
 
 // deleteProfile removes the profile the SCM loaded to run the service as the
-// account (its directory under the profiles root, and its ProfileList entry).
-// The hive can stay loaded briefly after the service stops, so a failure is
-// retried; a profile that was never created is not an error. One that cannot
-// be removed is only reported: Windows sometimes holds a hive until reboot.
+// account (its directory under the profiles root, and its ProfileList entry),
+// if it can. It normally cannot: the SCM loads the profile to start the
+// service and never unloads it, so the User Profile Service holds its hives
+// open until reboot — after the service has stopped and been deleted, and
+// whatever the test does (deleting fails with ERROR_SHARING_VIOLATION, and
+// RegUnLoadKey with access denied, against the service's own handles). That
+// is noted, not reported as a failure; sweepStaleProfiles removes the profile
+// on the first run after a reboot. Any other failure is a warning.
 func deleteProfile(t *testing.T, account, sid string) {
 	t.Helper()
+	switch err := deleteProfileW(sid); {
+	case err == nil:
+	case errors.Is(err, windows.ERROR_SHARING_VIOLATION):
+		t.Logf("note: the profile of %s (%s) stays loaded until reboot; the first run after one removes it", account, sid)
+	default:
+		t.Logf("warning: cleanup could not delete the profile of %s (%s): %v; remove it by hand", account, sid, err)
+	}
+}
+
+// deleteProfileW deletes the profile of sid. A profile that does not exist is
+// not an error.
+func deleteProfileW(sid string) error {
 	p, err := windows.UTF16PtrFromString(sid)
 	if err != nil {
-		t.Errorf("cleanup: %v", err)
+		return err
+	}
+	r1, _, e1 := procDeleteProfileW.Call(uintptr(unsafe.Pointer(p)), 0, 0)
+	if r1 != 0 || errors.Is(e1, windows.ERROR_FILE_NOT_FOUND) || errors.Is(e1, windows.ERROR_PATH_NOT_FOUND) {
+		return nil
+	}
+	return e1
+}
+
+// staleProfileDir matches the profile directory of a throwawayAccount, which
+// Windows may suffix with ".<COMPUTERNAME>" when the plain name is taken.
+var staleProfileDir = regexp.MustCompile(`(?i)^` + accountPrefix + `-[0-9a-f]{8}(\..+)?$`)
+
+// sweepStaleProfiles deletes the profiles earlier runs could not (see
+// deleteProfile): those whose directory is a throwawayAccount's and whose
+// account no longer exists, so a run still in progress keeps its own. Ones
+// loaded since the last reboot still cannot be deleted and are left quietly.
+// Best-effort: it only prints what it did.
+func sweepStaleProfiles() {
+	const profileList = `SOFTWARE\Microsoft\Windows NT\CurrentVersion\ProfileList`
+	root, err := registry.OpenKey(registry.LOCAL_MACHINE, profileList, registry.READ)
+	if err != nil {
+		fmt.Printf("winservice: sweep stale profiles: %v\n", err)
 		return
 	}
-	var last error
-	for deadline := time.Now().Add(15 * time.Second); ; time.Sleep(time.Second) {
-		r1, _, e1 := procDeleteProfileW.Call(uintptr(unsafe.Pointer(p)), 0, 0)
-		if r1 != 0 || errors.Is(e1, windows.ERROR_FILE_NOT_FOUND) || errors.Is(e1, windows.ERROR_PATH_NOT_FOUND) {
-			return
+	defer root.Close()
+	sids, err := root.ReadSubKeyNames(-1)
+	if err != nil {
+		fmt.Printf("winservice: sweep stale profiles: %v\n", err)
+		return
+	}
+	loaded := 0
+	for _, sid := range sids {
+		dir, ok := profileDir(profileList, sid)
+		if !ok || !staleProfileDir.MatchString(filepath.Base(dir)) || accountExists(sid) {
+			continue
 		}
-		last = e1
-		if time.Now().After(deadline) {
-			break
+		switch err := deleteProfileW(sid); {
+		case err == nil:
+			fmt.Printf("winservice: removed the stale test profile %s (%s)\n", dir, sid)
+		case errors.Is(err, windows.ERROR_SHARING_VIOLATION):
+			loaded++
+		default:
+			fmt.Printf("winservice: could not remove the stale test profile %s (%s): %v\n", dir, sid, err)
 		}
 	}
-	t.Logf("warning: cleanup could not delete the profile of %s (%s): %v; remove it by hand", account, sid, last)
+	if loaded > 0 {
+		fmt.Printf("winservice: %d stale test profile(s) stay loaded until reboot\n", loaded)
+	}
+}
+
+// profileDir is the ProfileImagePath of sid's ProfileList entry.
+func profileDir(profileList, sid string) (string, bool) {
+	k, err := registry.OpenKey(registry.LOCAL_MACHINE, profileList+`\`+sid, registry.QUERY_VALUE)
+	if err != nil {
+		return "", false
+	}
+	defer k.Close()
+	dir, _, err := k.GetStringValue("ProfileImagePath")
+	return dir, err == nil
+}
+
+// accountExists reports whether sid still names an account. Anything but a
+// definite "no such account" counts as existing, so a lookup failure never
+// deletes a live profile.
+func accountExists(sid string) bool {
+	s, err := windows.StringToSid(sid)
+	if err != nil {
+		return true
+	}
+	_, _, _, err = s.LookupAccount("")
+	return !errors.Is(err, windows.ERROR_NONE_MAPPED)
 }
