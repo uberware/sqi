@@ -254,7 +254,8 @@ The same `run_as_user` recommendation applies.
 The fan-out counterpart of `python`: the same `Interpreter` and `Script`
 parameters plus `Frames` and `FramesPerTask`, and the same four variables, read
 from `os.environ`. A small embedded launcher sets them and runs the script as
-`<Interpreter> script.py` in a **child process**, forwarding its exit code
+`script.py` in a **child process** (re-run with `sys.executable`, the
+interpreter that ran the launcher, which is your `Interpreter`), forwarding its exit code
 (a POSIX signal death exits `128 + N`), so `__name__ == "__main__"`,
 `sys.argv[0]`, `sys.path[0]` and Windows `multiprocessing` all behave exactly
 as when run by hand. The launcher survives a cancellation signal so the

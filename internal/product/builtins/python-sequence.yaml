@@ -44,9 +44,9 @@ readme: |
 
   ## How it runs
 
-  The script is delivered as a real `script.py` and run by a small launcher
-  as `python3 script.py` (with your **Interpreter** in place of `python3`) in
-  a child process, with the four variables added to its environment. It therefore behaves exactly as if you ran it
+  The script is delivered as a real `script.py`. A small launcher, started by
+  your **Interpreter**, runs it in a child process with that same Python
+  (`sys.executable`), with the four variables added to its environment. It therefore behaves exactly as if you ran it
   yourself: `__name__` is `"__main__"`, `sys.argv[0]` is its own path, and
   `multiprocessing` works. The task's exit code is the script's.
 
