@@ -287,6 +287,14 @@ func runTier3Case(t *testing.T, entry presettest.Entry, c presettest.Case, caseN
 	assertInvocationCounts(t, c, recs)
 	if !c.StubInner {
 		assertObservedMatchesComputed(t, snap, recs)
+	} else if len(c.ExpectInnerArgv) > 0 {
+		got := make([][]string, len(recs))
+		for i, rec := range recs {
+			got[i] = rec.Args
+		}
+		for _, msg := range presettest.ArgvSetDiff(c.ExpectInnerArgv, got) {
+			t.Error(msg)
+		}
 	}
 }
 
