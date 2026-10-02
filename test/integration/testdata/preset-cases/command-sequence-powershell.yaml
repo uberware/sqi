@@ -1,0 +1,38 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+#
+# Run a PowerShell Command per Frame. stub_inner for the reason
+# script-powershell's fixture gives: shadowing powershell itself would prove
+# argv delivery and nothing else. The Tier-3 case hands the four $env: values
+# to the stub as arguments, so expect_inner_argv pins what each task's
+# environment carried.
+cases:
+  - name: default
+    params:
+      Command: 'sqi-stub-command "$env:SQI_FRAME" "$env:SQI_FRAME_START" "$env:SQI_FRAME_END" "$env:SQI_FRAMES"'
+      Frames: "1-3"
+    stub_inner: true
+    expect_tasks: 3
+    expect_invocations:
+      sqi-stub-command: 3
+    expect_inner_argv:
+      - ["1", "1", "1", "1-1"]
+      - ["2", "2", "2", "2-2"]
+      - ["3", "3", "3", "3-3"]
+  - name: chunked
+    params:
+      Command: "Write-Host starting\nsqi-stub-command \"$env:SQI_FRAMES\"\n# done"
+      Frames: "1-10"
+      FramesPerTask: "5"
+    stub_inner: true
+    expect_tasks: 2
+    expect_invocations:
+      sqi-stub-command: 2
+  - name: frame-list
+    params:
+      Command: 'sqi-stub-command "$env:SQI_FRAMES"'
+      Frames: "1,5,10-20"
+      FramesPerTask: "5"
+    stub_inner: true
+    expect_tasks: 5
+    expect_invocations:
+      sqi-stub-command: 5

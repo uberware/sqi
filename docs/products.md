@@ -240,6 +240,15 @@ set the queue's `run_as_user` so tasks run as an operator-chosen account (see
 *Queue identity* in [configuration](configuration.md) and the worker's
 [`isolation` settings](worker-configuration.md)).
 
+### `command-sequence-powershell` — Run a PowerShell Command per Frame
+
+The Windows counterpart of `command-sequence`, and the fan-out counterpart of
+`script-powershell`: the same parameters and the same four variables, read as
+`$env:SQI_FRAME_START` and so on. The command runs from `script-powershell`'s
+BOM-prefixed `command.ps1`, with the variables assigned before `Command` and
+that product's exit-status handling unchanged after it. Gated to Windows.
+The same `run_as_user` recommendation applies.
+
 ### `python` — Run a Python Script
 
 Demonstrates two parameters (`Interpreter` and `Script`), an OpenJD

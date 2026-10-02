@@ -377,6 +377,27 @@ presets:
       case: TestPresetTier3/command-sequence/default
       required_on: [linux, darwin]
 
+  # Windows-only by hostRequirements, so its Tier-3 claim is required_on
+  # [windows] alone -- the same reasoning as ffmpeg-segment-transcode-powershell.
+  - name: command-sequence-powershell
+    source: internal/product/builtins
+    tier: 1
+    tier1:
+      cases: [default, chunked, frame-list]
+      caveat: >-
+        argv derived from script-powershell's documented -File convention; the
+        goldens print the embedded command.ps1 in full, showing the four
+        $env:SQI_FRAME* assignments between the (invisible) BOM and Command, and
+        script-powershell's exit-status trailer unchanged after it. Tier 3 DOES
+        execute it: a real powershell.exe assigns the variables and hands them
+        to the stub, and expect_inner_argv pins the exact values each of the
+        three tasks received. Not re-proven here: the trailer's exit-status
+        behaviour, which TestScriptPowerShell_ExitStatus carries for
+        script-powershell and which this product inherits byte for byte.
+    tier3:
+      case: TestPresetTier3/command-sequence-powershell/default
+      required_on: [windows]
+
   - name: python
     source: internal/product/builtins
     tier: 1
