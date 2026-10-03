@@ -281,6 +281,21 @@ type JobStore interface {
 	// an unknown job.
 	FinalizeJob(ctx context.Context, id string, now time.Time) (JobStatus, bool, error)
 
+	// ReleaseBlockedJob moves a blocked job to pending, but only while every
+	// one of its upstream edges points at an existing completed job. The check
+	// is evaluated inside the write (invariant I4). Returns false, writing
+	// nothing, when the job is not blocked or an upstream is not completed, so
+	// a job another writer already canceled is never revived (invariant I1).
+	// Returns ErrNotFound for an unknown job.
+	ReleaseBlockedJob(ctx context.Context, id string, now time.Time) (bool, error)
+
+	// CancelBlockedJob cancels a blocked job together with every non-terminal
+	// step and every pending task it owns, stamping reason on tasks that carry
+	// none, in one transaction. Guarded on the job being blocked; otherwise it
+	// returns (false, nil, nil) and writes nothing. Returns the canceled tasks,
+	// and ErrNotFound for an unknown job.
+	CancelBlockedJob(ctx context.Context, id, reason string, now time.Time) (bool, []Task, error)
+
 	// DemoteStalledJobs returns any job in [JobStatusRunning] that currently has
 	// no task in [TaskStatusAssigned] or [TaskStatusRunning] — yet still has at
 	// least one schedulable (ready or pending) task — back to [JobStatusPending],

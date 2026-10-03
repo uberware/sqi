@@ -156,3 +156,53 @@ func (s *Store) movePendingStep(id string, stepTo store.StepStatus, taskTo store
 	s.steps[id] = st
 	return true, s.transitionPendingTasksLocked(id, taskTo, reason, now), nil
 }
+
+// ReleaseBlockedJob implements [store.JobStore].
+func (s *Store) ReleaseBlockedJob(_ context.Context, id string, now time.Time) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	j, ok := s.jobs[id]
+	if !ok {
+		return false, store.ErrNotFound
+	}
+	if j.Status != store.JobStatusBlocked {
+		return false, nil
+	}
+	// Like the SQLite statement, an edge whose upstream no longer exists is
+	// unsatisfied: the edge survives the upstream's deletion on purpose.
+	for _, up := range s.jobDependencies[id] {
+		if u, ok := s.jobs[up]; !ok || u.Status != store.JobStatusCompleted {
+			return false, nil
+		}
+	}
+	j.Status, j.UpdatedAt = store.JobStatusPending, now.UTC() // SQLite stores UTC.
+	s.jobs[id] = j
+	return true, nil
+}
+
+// CancelBlockedJob implements [store.JobStore].
+func (s *Store) CancelBlockedJob(_ context.Context, id, reason string, now time.Time) (bool, []store.Task, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	j, ok := s.jobs[id]
+	if !ok {
+		return false, nil, store.ErrNotFound
+	}
+	if j.Status != store.JobStatusBlocked {
+		return false, nil, nil
+	}
+	now = now.UTC() // SQLite stores UTC; keep the fake's times in the same zone.
+	at := now
+	j.Status, j.CompletedAt, j.UpdatedAt = store.JobStatusCanceled, &at, now
+	s.jobs[id] = j
+	for sid, st := range s.steps {
+		if st.JobID == id && !terminalStep(st.Status) {
+			st.Status, st.UpdatedAt = store.StepStatusCanceled, now
+			s.steps[sid] = st
+		}
+	}
+	tasks := s.transitionPendingTasksWhereLocked(
+		func(t store.Task) bool { return t.JobID == id }, store.TaskStatusCanceled, reason, now,
+	)
+	return true, tasks, nil
+}

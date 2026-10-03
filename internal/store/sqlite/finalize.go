@@ -221,3 +221,141 @@ func queryTasksTx(ctx context.Context, tx *sql.Tx, query string, args ...any) ([
 	}
 	return out, mapErr(rows.Err())
 }
+
+const (
+	// sqlReleaseBlockedJob is invariant I4 for cross-job dependencies: the
+	// "every upstream completed" check is part of the statement that writes the
+	// release, and the status guard (I1) means a job another writer already
+	// canceled or released is never rewritten. An edge whose upstream no longer
+	// exists counts as unsatisfied (the edge deliberately survives the
+	// upstream's deletion, see migration 00020).
+	sqlReleaseBlockedJob = `
+UPDATE jobs SET status = 'pending', updated_at = ?
+WHERE  id = ? AND status = 'blocked'
+  AND  NOT EXISTS (
+         SELECT 1 FROM job_dependencies jd
+         LEFT JOIN jobs u ON u.id = jd.depends_on_job_id
+         WHERE jd.job_id = jobs.id AND (u.id IS NULL OR u.status != 'completed'))`
+
+	sqlCancelBlockedJobRow = `
+UPDATE jobs SET status = 'canceled', completed_at = ?, updated_at = ?
+WHERE  id = ? AND status = 'blocked'`
+
+	sqlCancelJobOpenSteps = `
+UPDATE steps SET status = 'canceled', updated_at = ?
+WHERE  job_id = ? AND status NOT IN ('completed', 'failed', 'canceled')`
+
+	// sqlCancelJobPendingTasks is the job-wide twin of
+	// [sqlTransitionStepPendingTasks]: same columns, same reason-stamping rule.
+	sqlCancelJobPendingTasks = `
+UPDATE tasks
+SET    status = 'canceled', updated_at = ?, unschedulable_reason = '',
+       failure_reason = CASE WHEN failure_reason = '' THEN ? ELSE failure_reason END
+WHERE  job_id = ? AND status = 'pending'
+RETURNING ` + taskCols
+)
+
+// ReleaseBlockedJob implements [store.JobStore].
+//
+// Anchors: the job row, then each upstream job row (H4c locks those FOR
+// SHARE, so a concurrent finalize of an upstream is ordered against this
+// release). The write is one guarded UPDATE; see [sqlReleaseBlockedJob].
+func (s *Store) ReleaseBlockedJob(ctx context.Context, id string, now time.Time) (bool, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return false, fmt.Errorf("sqlite: begin release blocked job: %w", mapErr(err))
+	}
+	defer func() { _ = tx.Rollback() }() //nolint:errcheck // rollback after commit is a no-op
+
+	anchors, err := blockedJobAnchorsTx(ctx, tx, id)
+	if err != nil {
+		return false, err
+	}
+	if err := lockAnchors(ctx, tx, anchors...); err != nil {
+		return false, err
+	}
+	res, err := tx.ExecContext(ctx, sqlReleaseBlockedJob, timeToText(now.UTC()), id)
+	if err != nil {
+		return false, fmt.Errorf("sqlite: release blocked job %s: %w", id, mapErr(err))
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("sqlite: release blocked job %s: %w", id, err)
+	}
+	if err := tx.Commit(); err != nil {
+		return false, fmt.Errorf("sqlite: commit release blocked job: %w", mapErr(err))
+	}
+	return n == 1, nil
+}
+
+// CancelBlockedJob implements [store.JobStore].
+//
+// Anchors as for [Store.ReleaseBlockedJob]. The job row is written first and
+// guards the rest: when the job is no longer blocked nothing is written at
+// all, otherwise its open steps and pending tasks follow in the same
+// transaction so a canceled job is never observed with live children.
+func (s *Store) CancelBlockedJob(ctx context.Context, id, reason string, now time.Time) (bool, []store.Task, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return false, nil, fmt.Errorf("sqlite: begin cancel blocked job: %w", mapErr(err))
+	}
+	defer func() { _ = tx.Rollback() }() //nolint:errcheck // rollback after commit is a no-op
+
+	anchors, err := blockedJobAnchorsTx(ctx, tx, id)
+	if err != nil {
+		return false, nil, err
+	}
+	if err := lockAnchors(ctx, tx, anchors...); err != nil {
+		return false, nil, err
+	}
+	nowText := timeToText(now.UTC())
+	res, err := tx.ExecContext(ctx, sqlCancelBlockedJobRow, nowText, nowText, id)
+	if err != nil {
+		return false, nil, fmt.Errorf("sqlite: cancel blocked job %s: %w", id, mapErr(err))
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, nil, fmt.Errorf("sqlite: cancel blocked job %s: %w", id, err)
+	}
+	if n == 0 {
+		return false, nil, nil
+	}
+	if _, err := tx.ExecContext(ctx, sqlCancelJobOpenSteps, nowText, id); err != nil {
+		return false, nil, fmt.Errorf("sqlite: cancel steps of blocked job %s: %w", id, mapErr(err))
+	}
+	tasks, err := queryTasksTx(ctx, tx, sqlCancelJobPendingTasks, nowText, reason, id)
+	if err != nil {
+		return false, nil, fmt.Errorf("sqlite: cancel tasks of blocked job %s: %w", id, err)
+	}
+	if err := tx.Commit(); err != nil {
+		return false, nil, fmt.Errorf("sqlite: commit cancel blocked job: %w", mapErr(err))
+	}
+	return true, tasks, nil
+}
+
+// blockedJobAnchorsTx returns the anchor list for a blocked-job operation: the
+// job row, then each upstream job row in id order. It returns ErrNotFound for
+// an unknown job.
+func blockedJobAnchorsTx(ctx context.Context, tx *sql.Tx, id string) ([]anchor, error) {
+	var one int
+	if err := tx.QueryRowContext(ctx, `SELECT 1 FROM jobs WHERE id = ?`, id).Scan(&one); err != nil {
+		return nil, mapErr(err)
+	}
+	rows, err := tx.QueryContext(ctx, sqlListJobDependencyIDs, id)
+	if err != nil {
+		return nil, mapErr(err)
+	}
+	defer rows.Close()
+	anchors := []anchor{jobAnchor(id)}
+	for rows.Next() {
+		var up string
+		if err := rows.Scan(&up); err != nil {
+			return nil, err
+		}
+		anchors = append(anchors, jobAnchor(up))
+	}
+	if err := rows.Err(); err != nil {
+		return nil, mapErr(err)
+	}
+	return anchors, nil
+}

@@ -158,9 +158,19 @@ func (s *Store) TransitionStepPendingTasks(_ context.Context, stepID string, to 
 // non-empty failureReason on tasks that carry none, and returns copies of the
 // moved tasks. The caller holds s.mu.
 func (s *Store) transitionPendingTasksLocked(stepID string, to store.TaskStatus, failureReason string, updatedAt time.Time) []store.Task {
+	return s.transitionPendingTasksWhereLocked(func(t store.Task) bool { return t.StepID == stepID }, to, failureReason, updatedAt)
+}
+
+// transitionPendingTasksWhereLocked moves every pending task for which match
+// returns true, with the semantics transitionPendingTasksLocked documents.
+// [Store.CancelBlockedJob] shares it with the step moves so the two cannot
+// drift. The caller holds s.mu.
+func (s *Store) transitionPendingTasksWhereLocked(
+	match func(store.Task) bool, to store.TaskStatus, failureReason string, updatedAt time.Time,
+) []store.Task {
 	var affected []store.Task
 	for id, t := range s.tasks {
-		if t.StepID != stepID || t.Status != store.TaskStatusPending {
+		if t.Status != store.TaskStatusPending || !match(t) {
 			continue
 		}
 		t.Status = to

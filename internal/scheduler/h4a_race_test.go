@@ -177,3 +177,51 @@ func TestH4a_RedeliveredCompletionStillPropagates(t *testing.T) {
 		})
 	}
 }
+
+// ── F9: dependency reconcile must not undo a user cancel ────────────────────
+
+// cancelDuringReconcileStore fires its hook after the reconcile has read the
+// dependent's upstream list, which is the window between its "still blocked"
+// read and its release write.
+type cancelDuringReconcileStore struct {
+	store.Store
+
+	hook *once
+}
+
+func (s *cancelDuringReconcileStore) ListJobDependencyIDs(ctx context.Context, id string) ([]string, error) {
+	ids, err := s.Store.ListJobDependencyIDs(ctx, id)
+	s.hook.fire()
+	return ids, err
+}
+
+func TestH4a_F9_ReconcileDoesNotUndoUserCancel(t *testing.T) {
+	for name, st := range raceBackends(t) {
+		t.Run(name, func(t *testing.T) {
+			up, _, _, _ := seedStatusFixtureWithJobStatus(t, st, store.JobStatusCompleted, store.TaskStatusSucceeded)
+			now := time.Now()
+			dep, err := st.CreateJob(t.Context(), store.Job{
+				ID: uuid.NewString(), FarmID: "farm-1", QueueID: "queue-1", Name: "dep",
+				Status: store.JobStatusBlocked, TemplateFormat: store.TemplateFormatJSON, CreatedAt: now, UpdatedAt: now,
+			})
+			if err != nil {
+				t.Fatalf("CreateJob: %v", err)
+			}
+			if err := st.CreateJobDependencies(t.Context(), dep.ID, []string{up.ID}); err != nil {
+				t.Fatalf("CreateJobDependencies: %v", err)
+			}
+			wrapped := &cancelDuringReconcileStore{Store: st, hook: &once{fn: func() {
+				if err := st.CancelJobStatus(context.Background(), dep.ID); err != nil {
+					t.Errorf("CancelJobStatus in hook: %v", err)
+				}
+			}}}
+			s := newStatusTestScheduler(wrapped)
+			if err := s.reconcileBlockedJob(t.Context(), dep.ID); err != nil {
+				t.Fatalf("reconcileBlockedJob: %v", err)
+			}
+			if got := mustJob(t, st, dep.ID); got.Status != store.JobStatusCanceled {
+				t.Fatalf("job = %q, want canceled (the user's cancel must survive the reconcile)", got.Status)
+			}
+		})
+	}
+}

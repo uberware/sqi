@@ -90,9 +90,19 @@ func (s *Scheduler) reconcileBlockedJob(ctx context.Context, jobID string) error
 
 // releaseBlockedJob transitions a satisfied blocked job to pending and promotes
 // its no-dependency steps' tasks to ready.
+//
+// The move is store.ReleaseBlockedJob, a guarded write that re-checks both that
+// the job is still blocked and that every upstream is completed. The reads in
+// reconcileBlockedJob that led here are only a fast path: a user cancel (or
+// another reconciler) landing after them makes the release a no-op instead of
+// reviving the job.
 func (s *Scheduler) releaseBlockedJob(ctx context.Context, job store.Job) error {
-	if err := s.store.UpdateJobStatus(ctx, job.ID, store.JobStatusPending); err != nil {
+	released, err := s.store.ReleaseBlockedJob(ctx, job.ID, time.Now().UTC())
+	if err != nil {
 		return err
+	}
+	if !released {
+		return nil // another writer moved the job first, or an upstream is not completed
 	}
 	if _, err := openjd.ResolveDependencies(ctx, s.store, job.ID); err != nil {
 		return err
@@ -116,34 +126,22 @@ func (s *Scheduler) cancelAndCascade(ctx context.Context, jobID string) error {
 	return s.ReconcileDependents(ctx, jobID)
 }
 
-// cancelBlockedJob cancels every non-terminal step and pending task of a blocked
-// job and marks the job canceled, stamping the upstream-failed reason. Because a
-// blocked job's tasks are always pending (never assigned), no worker is involved.
+// cancelBlockedJob cancels a blocked job together with its non-terminal steps
+// and pending tasks, stamping the upstream-failed reason, in one guarded store
+// transaction. Because a blocked job's tasks are always pending (never
+// assigned), no worker is involved. A job that is no longer blocked (a user
+// cancel or another reconciler got there first) is left alone and emits no
+// events.
 func (s *Scheduler) cancelBlockedJob(ctx context.Context, jobID string) error {
-	steps, err := s.store.ListSteps(ctx, jobID)
+	now := time.Now().UTC()
+	canceled, tasks, err := s.store.CancelBlockedJob(ctx, jobID, store.FailureReasonUpstreamFailed, now)
 	if err != nil {
 		return err
 	}
-	var canceledTasks []store.Task
-	for _, step := range steps {
-		if isTerminalStepStatus(step.Status) {
-			continue
-		}
-		if err := s.store.UpdateStepStatus(ctx, step.ID, store.StepStatusCanceled); err != nil {
-			return err
-		}
-		tasks, err := s.store.TransitionStepPendingTasks(ctx, step.ID, store.TaskStatusCanceled, store.FailureReasonUpstreamFailed)
-		if err != nil {
-			return err
-		}
-		canceledTasks = append(canceledTasks, tasks...)
+	if !canceled {
+		return nil // no longer blocked; another writer decided first
 	}
-	if err := s.store.UpdateJobStatus(ctx, jobID, store.JobStatusCanceled); err != nil {
-		return err
-	}
-
-	now := time.Now().UTC()
-	for _, t := range canceledTasks {
+	for _, t := range tasks {
 		s.notifier.NotifyTask(ws.TaskEvent{
 			JobID:     t.JobID,
 			TaskID:    t.ID,

@@ -537,14 +537,3 @@ func (s *Scheduler) checkJobCompletion(ctx context.Context, jobID string) error 
 	}
 	return nil
 }
-
-// ── Terminal-state helpers ────────────────────────────────────────────────────
-
-// isTerminalStepStatus reports whether s is a terminal step state.
-func isTerminalStepStatus(s store.StepStatus) bool {
-	switch s {
-	case store.StepStatusCompleted, store.StepStatusFailed, store.StepStatusCanceled:
-		return true
-	}
-	return false
-}
