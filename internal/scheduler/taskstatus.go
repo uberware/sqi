@@ -25,10 +25,10 @@ package scheduler
 //        unblock downstream steps.
 //     f. Check whether the enclosing job is now complete.
 //
-// Step and job completion checks use simple list scans over the step's tasks
-// and the job's steps.  This is acceptable for Phase 1 workloads; large jobs
-// with many thousands of tasks per step would benefit from a counter-based
-// approach added as a schema migration.
+// Step and job completion are decided inside the store (FinalizeStep and
+// FinalizeJob, invariant I4), computed from the child rows in the same
+// statement that writes the status, so they have no page limit and cannot be
+// outrun by a concurrent retry.
 
 import (
 	"context"
@@ -412,87 +412,32 @@ func failureReasonOrFallback(msg string, exitCode *int, status store.TaskStatus)
 
 // ── Step and job completion ───────────────────────────────────────────────────
 
-// checkStepCompletion inspects the task statuses of all tasks in the step.
-// If every task has reached a terminal state it transitions the step and then
-// calls [checkJobCompletion].  If all tasks succeeded it also calls
-// [openjd.ResolveDependencies] to unblock any downstream steps.
+// checkStepCompletion finalizes the step when every task is terminal
+// (store.FinalizeStep computes the outcome inside the write, invariant I4, with
+// no page limit), then propagates dependencies and finalizes the job.
 //
-// For Phase 1 workloads (steps with up to a few thousand tasks) a single
-// [store.MaxLimit] page is sufficient. Steps with more than [store.MaxLimit]
-// tasks would need multiple pages — that path is left as a TODO since it is
-// not expected to be exercised in Phase 1.
+// Propagation runs whenever the step is terminal, not only when this call
+// wrote it: a redelivered completion whose first delivery finalized the step
+// and then died must still release or cancel dependents. Every step involved
+// is idempotent.
 func (s *Scheduler) checkStepCompletion(ctx context.Context, stepID, jobID string) error {
-	page, err := s.store.ListTasks(ctx, store.ListTasksOptions{
-		StepID: stepID,
-		Pagination: store.Pagination{
-			Limit: store.MaxLimit,
-		},
-	})
+	status, changed, err := s.store.FinalizeStep(ctx, stepID, time.Now().UTC())
 	if err != nil {
 		return err
 	}
-
-	// Guard against silent truncation: if the step has more tasks than a single
-	// MaxLimit page can return, the completion check would only see the first
-	// MaxLimit tasks and might incorrectly mark a step complete while others are
-	// still pending.  Return an error rather than silently computing a wrong result.
-	if page.Total > store.MaxLimit {
-		s.logger.WarnContext(
-			ctx, "scheduler: checkStepCompletion: step exceeds MaxLimit — skipping to avoid incorrect completion",
+	if status == "" {
+		return nil // a task is still in flight
+	}
+	if changed {
+		s.logger.InfoContext(
+			ctx, "scheduler: step complete",
 			slog.String("step_id", stepID),
-			slog.Int("total", page.Total),
-			slog.Int("max_limit", store.MaxLimit),
+			slog.String("status", string(status)),
 		)
-		return fmt.Errorf("step %q has %d tasks, exceeding MaxLimit (%d): pagination required for correct completion check",
-			stepID, page.Total, store.MaxLimit)
 	}
-
-	allDone := true
-	anyFailed := false
-	anyCanceled := false
-
-	for _, t := range page.Items {
-		if !isTerminalTaskStatus(t.Status) {
-			allDone = false
-			break
-		}
-		switch t.Status {
-		case store.TaskStatusFailed:
-			anyFailed = true
-		case store.TaskStatusCanceled:
-			anyCanceled = true
-		}
-	}
-
-	if !allDone {
-		// Step is still running; nothing to do.
-		return nil
-	}
-
-	var newStepStatus store.StepStatus
-	switch {
-	case anyFailed:
-		newStepStatus = store.StepStatusFailed
-	case anyCanceled:
-		newStepStatus = store.StepStatusCanceled
-	default:
-		newStepStatus = store.StepStatusCompleted
-	}
-
-	if err := s.store.UpdateStepStatus(ctx, stepID, newStepStatus); err != nil {
+	if err := s.propagateStepDependencies(ctx, jobID, status); err != nil {
 		return err
 	}
-
-	s.logger.InfoContext(
-		ctx, "scheduler: step complete",
-		slog.String("step_id", stepID),
-		slog.String("status", string(newStepStatus)),
-	)
-
-	if err := s.propagateStepDependencies(ctx, jobID, newStepStatus); err != nil {
-		return err
-	}
-
 	return s.checkJobCompletion(ctx, jobID)
 }
 
@@ -555,61 +500,33 @@ func (s *Scheduler) propagateStepDependencies(ctx context.Context, jobID string,
 	return nil
 }
 
-// checkJobCompletion inspects all steps in the job.  If every step has reached
-// a terminal state it transitions the job to the matching terminal status.
+// checkJobCompletion finalizes the job when every step is terminal
+// (store.FinalizeJob, invariant I4). The job event is emitted only by the call
+// that wrote the status; dependents are reconciled whenever the job is terminal,
+// because ReconcileDependents is idempotent and a redelivery must not strand
+// them.
 func (s *Scheduler) checkJobCompletion(ctx context.Context, jobID string) error {
-	steps, err := s.store.ListSteps(ctx, jobID)
+	status, changed, err := s.store.FinalizeJob(ctx, jobID, time.Now().UTC())
 	if err != nil {
 		return err
 	}
-
-	allDone := true
-	anyFailed := false
-	anyCanceled := false
-
-	for _, st := range steps {
-		if !isTerminalStepStatus(st.Status) {
-			allDone = false
-			break
-		}
-		switch st.Status {
-		case store.StepStatusFailed:
-			anyFailed = true
-		case store.StepStatusCanceled:
-			anyCanceled = true
-		}
+	if status == "" {
+		return nil // a step is still in flight
 	}
+	if changed {
+		s.logger.InfoContext(
+			ctx, "scheduler: job complete",
+			slog.String("job_id", jobID),
+			slog.String("status", string(status)),
+		)
 
-	if !allDone {
-		return nil
+		// Notify WebSocket hub of the job completion event.
+		s.notifier.NotifyJob(ws.JobEvent{
+			JobID:     jobID,
+			Status:    string(status),
+			UpdatedAt: time.Now().UTC(),
+		})
 	}
-
-	var newJobStatus store.JobStatus
-	switch {
-	case anyFailed:
-		newJobStatus = store.JobStatusFailed
-	case anyCanceled:
-		newJobStatus = store.JobStatusCanceled
-	default:
-		newJobStatus = store.JobStatusCompleted
-	}
-
-	if err := s.store.UpdateJobStatus(ctx, jobID, newJobStatus); err != nil {
-		return err
-	}
-
-	s.logger.InfoContext(
-		ctx, "scheduler: job complete",
-		slog.String("job_id", jobID),
-		slog.String("status", string(newJobStatus)),
-	)
-
-	// Notify WebSocket hub of the job completion event.
-	s.notifier.NotifyJob(ws.JobEvent{
-		JobID:     jobID,
-		Status:    string(newJobStatus),
-		UpdatedAt: time.Now().UTC(),
-	})
 
 	// Release or cancel any jobs blocked on this one now that it is terminal.
 	// Non-fatal: the periodic sweep is the backstop, so a failure here must not
@@ -622,15 +539,6 @@ func (s *Scheduler) checkJobCompletion(ctx context.Context, jobID string) error 
 }
 
 // ── Terminal-state helpers ────────────────────────────────────────────────────
-
-// isTerminalTaskStatus reports whether s is a terminal task state.
-func isTerminalTaskStatus(s store.TaskStatus) bool {
-	switch s {
-	case store.TaskStatusSucceeded, store.TaskStatusFailed, store.TaskStatusCanceled:
-		return true
-	}
-	return false
-}
 
 // isTerminalStepStatus reports whether s is a terminal step state.
 func isTerminalStepStatus(s store.StepStatus) bool {

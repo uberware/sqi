@@ -893,7 +893,7 @@ func withWorkerLetRetained(c store.WorkerExprLimits, n int64) store.WorkerExprLi
 	return c
 }
 
-func mustJob(t *testing.T, st *fake.Store, id string) store.Job {
+func mustJob(t *testing.T, st store.Store, id string) store.Job {
 	t.Helper()
 	job, err := st.GetJob(t.Context(), id)
 	if err != nil {

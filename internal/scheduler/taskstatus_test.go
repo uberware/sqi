@@ -83,7 +83,7 @@ func taskStatusMsgJSON(t *testing.T, m protocol.TaskStatusMsg) []byte {
 
 // seedStatusFixture builds a complete job/step/task/attempt in the store with
 // the job already in the running state. Returns all four records.
-func seedStatusFixture(t *testing.T, st *fake.Store, taskStatus store.TaskStatus) (
+func seedStatusFixture(t *testing.T, st store.Store, taskStatus store.TaskStatus) (
 	job store.Job, step store.Step, task store.Task, attempt store.TaskAttempt,
 ) {
 	t.Helper()
@@ -93,7 +93,7 @@ func seedStatusFixture(t *testing.T, st *fake.Store, taskStatus store.TaskStatus
 // seedStatusFixtureWithJobStatus is like seedStatusFixture but lets the caller
 // choose the initial job status (e.g. pending, to exercise promotion to running).
 func seedStatusFixtureWithJobStatus(
-	t *testing.T, st *fake.Store, jobStatus store.JobStatus, taskStatus store.TaskStatus,
+	t *testing.T, st store.Store, jobStatus store.JobStatus, taskStatus store.TaskStatus,
 ) (
 	job store.Job, step store.Step, task store.Task, attempt store.TaskAttempt,
 ) {
