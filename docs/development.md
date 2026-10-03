@@ -731,18 +731,23 @@ compiling.
 > **Every terminal non-success must leave a reason.** `task_attempts.message`
 > is the per-attempt reason (next to `exit_code`); `tasks.failure_reason`
 > denormalizes the latest terminal reason onto the task (mirroring
-> `unschedulable_reason`), cleared on retry. Two `TaskStore` methods write it:
-> `SetTaskFailureReason(ctx, id, reason)` (unconditional) and
-> `SetTaskFailureReasonIfEmpty(ctx, id, reason)` (a no-op, not an error, when
-> the task already carries a reason). `FailureReasonSummary(ctx, jobID)`
+> `unschedulable_reason`), cleared on retry. The reason is written by the same
+> guarded store operation that moves the task to its terminal status, never by
+> a separate call afterwards: `CompleteTaskAttempt` stamps a worker report's
+> `FailureReason`, and `CancelJobExecution`, `CancelTaskExecution`,
+> `CancelPendingStep` and `CancelBlockedJob` stamp their `reason` argument only
+> on a task that has none yet, so a cascade-cancel's more specific reason
+> always wins regardless of ordering. `FailureReasonSummary(ctx, jobID)`
 > aggregates a job's failed tasks by reason (`FailedCount`, `DominantReason`,
 > `DistinctReasons`) for the job-detail failure banner. **The rule for new
 > code:** any new code path that drives a task to a terminal `failed` or
-> `canceled` must call one of the two setters — reach for
-> `SetTaskFailureReasonIfEmpty` whenever a more-specific reason may already be
-> set by another path (the pattern cascade-cancel and user-cancel use so
-> cascade always wins regardless of ordering), and the unconditional
-> `SetTaskFailureReason` only when your path is authoritative. See
+> `canceled` stamps its reason inside the write that moves the task, and only
+> on a task with no reason when a more specific one may already be set. A
+> separate setter call after the status write is a second write that can land
+> on a task another writer has moved in between, which the store's
+> [invariants](architecture.md#store-invariants) rule out.
+> `SetTaskFailureReason` and `SetTaskFailureReasonIfEmpty` remain on
+> `TaskStore` but no production path calls them. See
 > [the durable-failure-reason table](architecture.md#5-status-ingestion) for
 > every existing path and its reason string.
 

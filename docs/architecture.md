@@ -97,9 +97,11 @@ main()
           callback to it
       10. Create and run Scheduler (internal/scheduler). Scheduler.Run is what
           registers every NATS consumer: worker registration/heartbeat/deregister,
-          task status, task logs, the core-NATS worker.diag.> subscriber, and the
-          core-NATS work.lease.> request/reply subscriber; it also starts the
-          heartbeat sweep
+          task status, task logs and the core-NATS worker.diag.> subscriber. It
+          then finalizes, once, any step an earlier release left stuck
+          (reconcileStuckSteps, see "Store invariants"), and only after that
+          subscribes the core-NATS work.lease.> request/reply handler and starts
+          the heartbeat sweep
       11. Wire auth (internal/server wireAuthDeps) — skipped to the anonymous
           superuser when auth.enabled is false, so auth-off boot is unchanged:
             a. Bootstrap the first admin account (no-op once any user exists)
@@ -207,13 +209,26 @@ path (measured 7.4 s versus 8.8 s for 100,000 tasks) — but the window during
 which other writers wait is one contiguous transaction instead of N gaps.
 `GET /healthz` (liveness) registers no checkers and was never affected.
 
+**Correctness does not rest on that single write connection.** Every rule that
+spans more than one row (a usage claim exists only while its attempt is open,
+a step finalizes only when every task is terminal, a pool never exceeds its
+cap) is enforced by one store operation, which names the rows a concurrent
+store must lock first. On SQLite that lock is a no-op, because the write
+connection already serializes every write transaction; a PostgreSQL store has
+to take it. See [Store invariants](#store-invariants).
+
 **Cross-job dependencies (`depends_on`).** A submission — raw `POST /api/v1/jobs`
 or `POST /api/v1/products/{name}/jobs`, from the REST API, the web UI, or the
 Python SDK (`submit_job`/`submit_and_wait`/`submit_product_job`) — may include
 `depends_on`, a list of upstream job IDs that must all reach `completed` before
 this job's work may run. The upstreams must already exist and be in the same
 farm as the new job (cross-farm dependencies are not supported); this is
-validated at submit time and recorded as edges in `job_dependencies`. A job
+validated at submit time and recorded as edges in `job_dependencies`. The
+submitter's check runs before the write, so `CreateJobSubmission` re-checks
+every upstream inside its own transaction: one that failed, was canceled or
+was deleted in between makes it refuse the whole submission
+(`store.ErrDependencyUnsatisfiable`, HTTP 400), while one that completed in
+between is left to the sweep, which releases the job on its next tick. A job
 with a non-empty `depends_on` is created in a new `blocked` status instead of
 `pending`, and — unlike a normal submission — **every** step and task is
 written `pending` up front, even steps with no step-level dependencies that
@@ -233,7 +248,11 @@ of *its* own dependents in turn. This reconcile is primarily **event-driven** �
 triggered from the same choke point that detects job completion
 (`checkJobCompletion` in `internal/scheduler/taskstatus.go`) and from the job
 cancel and delete paths — with the periodic heartbeat sweep acting as a backstop pass over
-all `blocked` jobs to catch anything missed by the event-driven path.
+all `blocked` jobs to catch anything missed by the event-driven path. Both
+moves are single guarded store writes: `store.ReleaseBlockedJob` re-checks
+every upstream inside the `UPDATE` that releases the job, and neither it nor
+`store.CancelBlockedJob` touches a job that is no longer `blocked`, so a
+reconcile can never undo a user's cancel.
 
 ### 2. Task readiness
 
@@ -250,7 +269,11 @@ For the initial set this evaluation happens **before** the write, not inside it:
 expanding the template in memory, and the `CreateJobSubmission` transaction only
 persists the statuses it already chose. It runs again via the scheduler's
 `handleTaskTerminal` → `propagateStepDependencies` path whenever a task reaches a
-terminal state.
+terminal state, once its step has been finalized (`store.FinalizeStep`). Each
+release is `store.ReleaseStep`, which moves a step that is still `pending`, and
+its pending tasks, to `ready` in one guarded transaction; a failed or canceled
+upstream step instead cancels its dependents through `store.CancelPendingStep`,
+with the same guard.
 
 ### 3. Assignment (lease-on-request)
 
@@ -270,14 +293,20 @@ handleLeaseRequest(workerID, queueID)
   │     (queue affinity is applied per-candidate by WorkerEligible, not by this query)
   │
   │  First-fit walk over candidates:
-  ├─ WorkerEligible(task, worker)     → bool (capability/queue/farm/location/amounts match)
-  ├─ effectiveCost = task.RequiredCores ?? worker.CPUCount
-  ├─ If effectiveCost fits free:
-  │     store.LeaseReadyTask(taskID, workerID, now)
-  │           Atomically: status ready→assigned, stamp assigned_at,
-  │                       create running attempt, apply policy gates,
-  │                       TryClaimSlots (usage pools)
-  │     Decrement free; add to batch
+  ├─ effectiveCost = task.RequiredCores ?? worker.CPUCount; skip if it does not fit free
+  ├─ Early filters, on values read a moment ago (cheap; not the decision):
+  │     job not paused or terminal, policyGate (queue/farm MaxConcurrentTasks),
+  │     WorkerEligible(task, worker) → capability/queue/farm/location/amounts and
+  │     usage-pool room
+  ├─ store.LeaseTask(task, worker, attempt ID, now, usage claims)
+  │     One transaction (the decision):
+  │       guarded ready→assigned (task still leasable), stamp assigned_at,
+  │       re-check the queue's and farm's MaxConcurrentTasks,
+  │       insert the running attempt (attempt_number = MAX + 1),
+  │       per usage pool: re-read its max_concurrent, count, insert the claim
+  │     Any outcome but Leased (Lost, QueueFull, FarmFull, PoolFull) writes
+  │     nothing: the task is skipped and stays ready for the next request
+  ├─ Leased: decrement free; add to batch
   │
   └─ bus.Reply(batch []AssignMsg)
          Each AssignMsg includes: task/job/step/attempt IDs, resolved OnRun action
@@ -311,7 +340,9 @@ same `WorkerEligible` check used above for lease assignment — read-only, it
 never changes scheduling, only an annotation. A task that has waited longer
 than `scheduler.unschedulable_grace` with no eligible online worker is flagged
 with a human-readable `unschedulable_reason`, cleared automatically once a
-matching worker appears or the task leaves `ready`. See
+matching worker appears or the task leaves `ready`. The reason is written only
+while the task is still `ready`, a condition evaluated inside the write itself,
+so a task leased between the sweep's read and its write is never stamped. See
 [`docs/observability.md`](observability.md#why-isnt-my-job-running--unschedulable-tasks)
 for the operator-facing view and
 [`scheduler.unschedulable_grace`](configuration.md#schedulerunschedulable_grace)
@@ -337,14 +368,19 @@ sqi-worker
 NATS consumer (internal/scheduler/taskstatus.go)
   │
   ├─ Receive task.status message   { …, message }  ← worker's human-readable reason, if any
-  ├─ store.UpdateTaskAttempt(attempt_id, status, exit_code, end_time, message)
+  ├─ Check the attempt exists, belongs to the task and is held by the subject's worker
+  ├─ If running:
+  │     store.UpdateTaskStatus(task_id, running)   ← state-machine guarded compare-and-set
+  │     store.UpdateTaskAttempt(attempt)           ← records session_id; only while the attempt is running
+  │     store.PromoteJobRunning(job_id)            ← only a pending job; never un-pauses or revives one
+  ├─ If failed: store.RecordTaskFailure(...), then retry, park or go terminal (see Auto-retry below)
   ├─ If terminal (succeeded/failed/canceled):
-  │     store.UpdateTaskStatus(task_id, status)   ← state-machine guarded
-  │     If failed/canceled: store.SetTaskFailureReason(task_id, reason)  ← see below
-  │     usagePool.ReleaseClaim(claim_id)
-  │     checkStepCompletion → propagateStepDependencies   ← marks successor tasks ready
+  │     store.CompleteTaskAttempt(report)   ← one transaction: close the attempt if it is still
+  │                                           running, release its usage claims, move the task
+  │                                           (state-machine guarded), stamp failure_reason
   │     notifier.NotifyTask(...)                          ← triggers WebSocket fanout
-  └─ ack message
+  │     checkStepCompletion: store.FinalizeStep → propagateStepDependencies → store.FinalizeJob
+  └─ ack message (a refused transition is acked too; its claims were still released)
 ```
 
 **Durable failure reason.** Every `task_attempts` row carries a `message`
@@ -360,11 +396,16 @@ scheduler for the paths that have none:
 
 | Path | Reason | Where |
 |---|---|---|
-| Worker-reported failure/cancel | the worker's `Message` verbatim | `handleTaskTerminal` |
+| Worker-reported failure/cancel | the worker's `Message` verbatim | `handleTaskTerminal`, stamped by `store.CompleteTaskAttempt` in the same transaction that moves the task, and only if the task ends up in the reported status |
 | Failed with no worker message | `"failed (exit N)"` or `"failed"` | `handleTaskTerminal` fallback |
-| Worker reclaimed (heartbeat timeout) | `"worker went offline"` | stale-worker sweep — set on the **attempt** `message` only; reclaim is not a task failure, so `tasks.failure_reason` is left untouched |
-| Cascade-canceled (upstream step failed) | `"canceled: upstream step failed"` | stamped by `openjd.CancelDependents` inside the same UPDATE that cancels the tasks (`store.TransitionStepPendingTasks`) |
-| User-initiated cancel | `"canceled by user"` | `CancelJob` stamps it inside the bulk-cancel UPDATE (`store.CancelJobTasks`); `CancelTask` uses `store.SetTaskFailureReasonIfEmpty`. Both are only-if-empty, so a cascade-cancel's more specific reason always wins regardless of ordering |
+| Worker reclaimed (heartbeat timeout or graceful deregister) | `"worker went offline"` | `store.OfflineStaleWorker` / `store.OfflineWorker` — set on the **attempt** `message` only; reclaim is not a task failure, so `tasks.failure_reason` is left untouched |
+| Cascade-canceled (upstream step failed, or a blocked job's upstream job failed) | `"canceled: upstream step failed"` | stamped inside the same UPDATE that cancels the tasks: `store.CancelPendingStep` (called by `openjd.CancelDependents`) for a step, `store.CancelBlockedJob` for a blocked job |
+| User-initiated cancel | `"canceled by user"` | stamped inside the UPDATE that cancels the tasks: `store.CancelJobExecution` for `CancelJob`, `store.CancelTaskExecution` for `CancelTask` |
+
+Every server-originated reason is stamped only on a task that has no reason
+yet, so a cascade-cancel's more specific reason always wins regardless of
+ordering. None of them is a separate write after the status change: each is
+part of the guarded write that moves the task.
 
 These server-originated reason strings are shared constants in `internal/store`
 (`FailureReasonCanceledByUser`, `FailureReasonUpstreamFailed`,
@@ -499,22 +540,41 @@ The diagram shows the happy path only. The complete permitted set
 `succeeded`, `failed`, and `canceled` are terminal — no outgoing transitions.
 
 Transitions are validated by `store.ValidateTaskTransition`
-(`internal/store/statemachine.go`) and enforced by `UpdateTaskStatus` in both
-store implementations: the SQLite store reads the current status and writes the
-new one inside a single transaction, so the check cannot race a concurrent
-writer, and the in-memory fake does the same under its mutex. A transition
-outside the permitted set returns `store.ErrInvalidTransition` and leaves the
-row unchanged.
+(`internal/store/statemachine.go`) and enforced, in both store implementations,
+by the two writes that move a task on a worker's report: `UpdateTaskStatus`
+(the `running` report) and `CompleteTaskAttempt` (a terminal report). Both are
+a compare-and-set: the store reads the current status, validates the arrow,
+and writes the new status only while the row still holds the status it read,
+re-reading a bounded number of times if another writer moved it in between.
+The check therefore cannot race a concurrent writer on any store, not only
+under SQLite's single write connection; the in-memory fake does the same under
+its mutex. A transition outside the permitted set returns
+`store.ErrInvalidTransition` (a `Rejected` result, from `CompleteTaskAttempt`)
+and leaves the task row unchanged.
+
+The one path the table does not describe is a manual retry: `RetryTasks`
+revives `failed` and `canceled` tasks to `pending`, by design, in its own
+guarded SQL.
 
 **There are two state machines, in two packages, with two sentinel errors.**
 The **task** machine is `store.ValidateTaskTransition` /
-`store.ErrInvalidTransition` (`internal/store/statemachine.go`), enforced by
-`UpdateTaskStatus` on every write. The **step** machine is
+`store.ErrInvalidTransition` (`internal/store/statemachine.go`), enforced on
+every task status write above. The **step** machine is
 `openjd.ValidateStepTransition` / `openjd.ErrInvalidTransition`
-(`internal/openjd/statemachine.go`). The task machine lives in `store` and not
-in `openjd` for a hard reason: `openjd` imports `store`, so `store` can never
-import `openjd` back. Do not merge the two sentinels — `errors.Is` against the
-wrong one silently stops matching.
+(`internal/openjd/statemachine.go`), and beside the task machine sits a **job**
+table, `store.JobTransitions`. Unlike the task machine, the step and job tables
+are not consulted at run time: they are specifications that tests check. Every
+step and job status write is a named store operation (`FinalizeStep`,
+`ReleaseStep`, `CancelPendingStep`, `FinalizeJob`, `PromoteJobRunning`,
+`PauseJob` and the rest) whose precondition is in its own SQL, and a
+table-driven test per table asserts that each operation's from-states are legal
+arrows there. Steps have no `running` status: nothing writes it, so a step goes
+`pending` → `ready` → `completed`/`failed`/`canceled`, and back to `pending`
+only on a retry. The value survives in the enum and wire types, and a real
+running step would be a separate, user-visible feature. The task machine lives
+in `store` and not in `openjd` for a hard reason: `openjd` imports `store`, so
+`store` can never import `openjd` back. Do not merge the two sentinels —
+`errors.Is` against the wrong one silently stops matching.
 
 Two rules keep enforcement safe given that task status arrives over JetStream
 (at-least-once delivery):
@@ -526,12 +586,14 @@ Two rules keep enforcement safe given that task status arrives over JetStream
   redelivery, so Nak'ing would loop forever. It is discarded with a warning,
   the same treatment a malformed payload gets.
 
-Cancellation follows the same principle. `CancelTask` checks for a terminal
-status before writing, but the check and the write are separate operations, so
-a task can finish in between and the state machine then rejects the cancel.
-That is treated as the no-op it would have been had the check seen the newer
-value — canceling a completed task is not an error, regardless of which side
-of the race the caller landed on. Other store failures still propagate.
+Cancellation follows the same principle. `CancelTask` is one store call,
+`store.CancelTaskExecution`, whose `UPDATE` cancels the task only while it is
+non-terminal. A task that finished first, before the call or during it, is
+reported as not canceled and nothing is written: canceling a completed task is
+not an error, regardless of which side of the race the caller landed on. Other
+store failures still propagate. A single-task cancel keeps the task's
+`assigned_worker_id`, so a canceled task still shows the worker that held it; a
+job-wide cancel (`store.CancelJobExecution`) clears it.
 
 Two arrows deserve note. `assigned` → `succeeded`/`failed` is permitted even
 though it appears to skip `running`: the worker publishes `running` first, but
@@ -539,9 +601,13 @@ that publish is best-effort and gives up after `MaxRetries`, so it can be lost
 while the task still runs to completion. Rejecting the terminal message would
 strand finished work. Separately, the auto-retry re-queue described below
 (`running` → `ready` on a transient failure) is a **policy-driven store call**
-(`RequeueTaskForRetry`) with its own guarded SQL, as are the other bulk paths
-(`RetryTasks`, `TransitionStepPendingTasks`, `CancelJobTasks`, and the reclaim
-sweeps); none of them route through `UpdateTaskStatus`.
+(`RequeueTaskForRetry`) with its own guarded SQL, as are the other paths that
+move tasks for the server's own reasons: `LeaseTask`, `RetryTasks`,
+`ReleaseStep` / `CancelPendingStep`, `CancelBlockedJob`, `CancelJobExecution` /
+`CancelTaskExecution`, and the reclaim operations (`ReclaimStaleAssignedTasks`,
+`OfflineStaleWorker`, `OfflineWorker`). None of them route through
+`UpdateTaskStatus`, and each writes only the rows its own `WHERE` still
+matches (see [Store invariants](#store-invariants)).
 
 ### Auto-retry on worker-reported failure
 
@@ -602,7 +668,10 @@ the lease-assignment path) now excludes:
    (`completed`/`failed`/`canceled`) job are skipped.
 
 The job-status gate is defense-in-depth, checked again at the lease-time
-`leaseGatesPass` step to close the read-list→lease race window. It also fixed
+`leaseGatesPass` step and, decisively, inside `store.LeaseTask`, whose guarded
+`ready` → `assigned` write applies the same predicate as the list (backoff
+elapsed, queue unpaused, job neither paused nor terminal), so a job paused
+between the list and the lease leaves its task unleased. It also fixed
 a **pre-existing gap**: before this feature, a job that was *manually* paused
 via the REST API had no gate stopping its `ready` tasks from still being
 leased and run by a worker — pausing only stopped new *scheduling* decisions
@@ -620,6 +689,201 @@ above, and clears the task's `failure_reason` — both the automatic and manual
 retry paths above leave a fresh task with no stale reason attached. See
 [Durable failure reason](#5-status-ingestion) for how `failure_reason` is set
 in the first place.
+
+---
+
+## Store invariants
+
+Five rules hold across the store's rows. Each is enforced by **one store
+operation**: the scheduler and the REST handlers never assemble one out of
+several store calls, because a decision made on one call's answer can be stale
+by the time the next call writes. They are written down here because a store
+with genuinely concurrent writers, such as the planned PostgreSQL backend, has
+to uphold them with row locks, where SQLite gets most of them from its single
+write connection.
+
+- **I1. No blind status writes.** Every status change states its precondition
+  in its own `WHERE`. Zero rows affected means the world moved on: the
+  operation reports a typed no-op (or `store.ErrConflict` where the API needs
+  one, such as a pause of a job that has finished) and never overwrites. It is
+  the rule task status already followed — writing a task's current status is a
+  no-op, not an error — and a task status write driven by a worker report is a
+  compare-and-set on the status read in the same transaction.
+- **I2. A set-returning operation returns exactly the rows it changed.** It
+  uses `UPDATE … RETURNING`. Where the caller needs the *pre*-update value,
+  which SQLite's `RETURNING` cannot report (a job cancel clears the worker it
+  must then signal), the transaction keeps a `SELECT` and takes its anchor lock
+  before it.
+- **I3. An active usage claim exists if and only if its attempt is open.**
+  Whatever closes an attempt releases its claims in the same transaction: a
+  terminal report (`CompleteTaskAttempt`), a recorded failure
+  (`RecordTaskFailure`), a cancel (`CancelJobExecution`, `CancelTaskExecution`),
+  a reap (`ReclaimStaleAssignedTasks`) and an offline reclaim
+  (`OfflineStaleWorker`, `OfflineWorker`). A claim is inserted only by
+  `LeaseTask`, in the transaction that assigns the task and opens the attempt,
+  and a lease that does not complete writes nothing at all, so there is no
+  rollback path to leak from.
+- **I4. A derived decision is made inside the statement that writes it.** Step
+  and job finalization (`FinalizeStep`, `FinalizeJob`), blocked-job release
+  (`ReleaseBlockedJob`), stalled-job demotion (`DemoteStalledJobs`) and the
+  last-admin guard (`UpdateUserKeepingAdmin`, `DeleteUser`) compute their
+  condition in the `UPDATE` or `DELETE` itself and report what they decided.
+- **I5. A capacity check and its write are atomic.** `LeaseTask` re-checks the
+  queue's and the farm's `max_concurrent_tasks` and each usage pool's
+  `max_concurrent` at write time, against values read in its own transaction.
+  The scheduler's earlier checks (`policyGate`, `WorkerEligible`) are cheap
+  filters, not the decision.
+
+Single-row rules are guarded the same way: `SetTaskUnschedulableReason` writes
+only while the task is `ready` (otherwise a no-op), `UpdateTaskAttempt` only
+while the attempt is `running` (a closed one is `store.ErrConflict`),
+`PauseJob` only while the job is `pending` or `running`, and
+`DeleteWorkerIfRemovable` only while the worker is still removable.
+
+### Anchor rows
+
+Under PostgreSQL's default READ COMMITTED isolation, I1 and I2 hold as
+written, because a guarded single-row `UPDATE` re-checks its predicate against
+the row it locks. I3, I4 and I5 do not: their conditions read *other* rows.
+Each operation that guards one of them therefore names **anchor rows** to lock
+before it reads, by calling `lockAnchors` (`internal/store/sqlite/anchor.go`).
+
+**On SQLite, I3–I5 hold because the write pool's single connection serializes
+every write transaction; `lockAnchors` is a no-op there. A PostgreSQL store
+must take the anchor locks to provide the same guarantee.** The anchors each
+operation passes today:
+
+| Operation | Anchor rows, in lock order | Notes |
+|---|---|---|
+| `LeaseTask` | the task's queue row (only if it has a cap), its farm row (only if it has a cap), then each requested usage-pool row, sorted by id | The queue and farm caps that decide whether those rows are anchored are read before the lock. No job row and no worker row (see below). |
+| `CompleteTaskAttempt`, `RecordTaskFailure` | the task's job row | |
+| `CancelJobExecution`, `CancelTaskExecution` | the job row (the task's job, for a single task) | |
+| `RetryTasks` | the job row | |
+| `FinalizeStep`, `FinalizeJob` | the job row (the step's job, for a step) | The current status, used only to report "already terminal", is read before the lock. |
+| `ReleaseStep`, `CancelPendingStep` | the step's job row | |
+| `ReleaseBlockedJob`, `CancelBlockedJob` | the job row, then each upstream job row sorted by id, the upstream rows shared (`FOR SHARE`) | The anchor type carries no lock mode yet; the call sites document the shared one. |
+| `CreateJobSubmission` (dependency re-check) | each upstream job row, sorted by id, shared | As above. |
+| `DeleteJob` | the job row | |
+| `DeleteTerminalJobsBefore` (retention) | each candidate's job row, taken just before that job's eligibility re-check | Candidates come in the eligibility query's order, unsorted, and every lock is held to the sweep's one commit. |
+| `ReclaimStaleAssignedTasks` | none today; a PostgreSQL store must take each candidate's job row, sorted by id, **before** the `UPDATE` (see below) | |
+| `OfflineStaleWorker`, `OfflineWorker` | the worker row, then the job row of each of the worker's assigned or running tasks, sorted by id | |
+| `UpdateUserKeepingAdmin`, `DeleteUser` (last-admin guard) | every enabled admin's user row, sorted by id | The admin set is read before the lock. |
+| `DemoteStalledJobs` | **left for the PostgreSQL store to decide**: every lease takes the job row (contention on large jobs), or demotion goes per job under the job lock, or it stays cosmetic and self-heals on the job's next `running` report | |
+
+### Statement order
+
+Inside these transactions **the order of the statements is part of the
+contract** on PostgreSQL. Every operation that cancels or reclaims tasks writes
+the task rows **first**, and only then closes their attempts and releases
+their claims: `CancelJobExecution`, `CancelTaskExecution`,
+`ReclaimStaleAssignedTasks`, `OfflineStaleWorker` and `OfflineWorker`. A
+concurrent writer already holding one of those task rows then makes the task
+`UPDATE` wait, and once that writer commits, READ COMMITTED gives the later
+statements a fresh snapshot, so they see the attempt and claims it wrote.
+Closing attempts first would miss an attempt a lease created in between, or
+let a worker's report move a task after its attempt had been closed.
+
+Whether an in-flight writer is waited for depends on the predicate. The
+`UPDATE` waits only when its predicate matches the row as that writer found
+it. A cancel matches any non-terminal task, so it waits for a lease moving the
+task from `ready` to `assigned` and then cancels what the lease committed. The
+reaper (`status = 'assigned'`, assigned before the cutoff) and the offline
+reclaim (the worker's `assigned` or `running` tasks) do not match a `ready`
+row, so they **skip** a task a lease is moving out of `ready` rather than wait
+for it; what they wait for is a worker's report on a task they do match.
+
+`CompleteTaskAttempt` and `RecordTaskFailure` run the other way round (close
+the attempt, release its claims, then move the task), so the claims are freed
+even when the task move is refused. The two orders coexist only because these
+operations lock the task's job row first, so they cannot interleave on the same
+job; the reaper does not take that lock yet (see below). `LeaseTask` writes its
+task row before any count, so that row lock orders it against a cancel of the
+same task and every count after it includes the task itself; it inserts the
+attempt before the claims that reference it.
+
+### What the anchor table does not close yet
+
+All of the following hold on SQLite, where the single write connection
+serializes every writer. A PostgreSQL store has to close each of them:
+
+- **`LeaseTask` takes neither the task's job row nor the worker row.**
+  `CancelJobExecution` and `CancelTaskExecution` read the tasks they report,
+  with the worker each one held, under only the job-row anchor. A lease that
+  commits between that read and the cancel's `UPDATE` is canceled, with its
+  attempt and claims closed, so I3 holds, but it is not reported, and its
+  worker never gets a cancel signal. Either `LeaseTask` also anchors the job
+  row (per-job lease contention: the same trade-off as `DemoteStalledJobs`),
+  or the reported set comes from the `UPDATE` itself. Likewise
+  `OfflineStaleWorker` and `OfflineWorker` read the worker's in-flight jobs
+  after locking the worker row, yet a lease can still hand that worker a task
+  afterwards: if it commits before the reclaim, the reclaim takes the task
+  under a job row it never locked; if it is still in flight, the reclaim skips
+  the task and only the stale-assignment reaper recovers it. Either `LeaseTask`
+  takes the worker row `FOR SHARE`, or the offline operation re-reads that set
+  until it is stable.
+- **`DeleteJob` and retention lock the job row, but a lease and a log append
+  (`CreateTaskLog`, which runs without a transaction) do not.** Either can
+  insert a child row after its table was cleared, so the final `DELETE` of the
+  job row fails on a foreign key. The PostgreSQL store must retry the cascade
+  on a foreign-key or deadlock error.
+- **`ReclaimStaleAssignedTasks` must take its anchors before its `UPDATE`,
+  without locking a task row first**: read the candidate tasks and their job
+  IDs unlocked, lock the job rows sorted by id, then run the `UPDATE` re-guarded
+  on the candidate IDs, `status = 'assigned'` and the cutoff, with
+  `RETURNING`. Selecting the tasks `FOR UPDATE` first, or anchoring after the
+  `RETURNING`, locks a task row before its job row, the reverse of every
+  job-level operation. Without the job-row lock the reaper's task-then-attempt
+  order can also deadlock against `CompleteTaskAttempt`'s attempt-then-task
+  order.
+- **Values read before the lock must be re-read under it**: `LeaseTask`'s queue
+  and farm caps (a row read as uncapped is not anchored at all), the
+  last-admin guard's admin set, and the status `FinalizeStep` and `FinalizeJob`
+  report as "already terminal".
+- **Upstream job rows want a shared lock**, which the anchor type cannot
+  express yet, and **retention should lock its candidates in id order** (or
+  commit per job).
+
+### What changed for operators
+
+The invariants changed some behaviour beyond fixing the races they close:
+
+- A worker's late, echoed or redelivered report never rewrites an attempt that
+  is already closed, whether the server closed it (a cancel, a reap, an
+  offline reclaim) or an earlier delivery of the same report did. The attempt
+  keeps the `status`, `ended_at` and `message` it was closed with, and its
+  `exit_code` and `session_id` are not overwritten either. A report the state
+  machine refuses still releases the attempt's usage claims, and the consumer
+  acks it.
+- `SetTaskUnschedulableReason` on a task that is no longer `ready` is a no-op,
+  not an error, so a task leased while the unschedulable sweep was deciding is
+  never stamped.
+- A released claim's `released_at` and a task row's `updated_at` are server
+  time, whatever time the worker reports; the worker's time goes only to the
+  attempt's `ended_at`.
+
+**Upgrade repair.** A v0.3.0 database can hold damage these invariants now
+prevent, and fixing the code does not undo it, so it is repaired in two parts:
+
+- Migration `00031_release_leaked_claims` releases every active claim whose
+  attempt is missing or no longer running, or whose task is terminal (the I3
+  checker's predicate), stamping `released_at` from SQLite's own clock. A
+  healthy database comes out byte-for-byte unchanged, and its `Down` is a
+  documented no-op, because a repair is not reversible.
+- Every scheduler start runs `reconcileStuckSteps` before the lease subscriber
+  starts. `store.ListStuckSteps` lists each non-terminal step that has at least
+  one task, no non-terminal task, **and a job that is not itself terminal**,
+  and each one goes through the normal completion path: `FinalizeStep`,
+  dependency propagation, `FinalizeJob`, cross-job dependents and WebSocket
+  events. That finalizes steps left stuck by the old 1,000-task page limit on
+  step completion, and steps stranded when a single-task cancel took a job's
+  last open task and no worker report followed (`CancelTask` itself does not
+  drive step completion). The job condition is what keeps a healthy farm free
+  of writes: canceling a job does not itself finalize its steps, so without it
+  every start would rewrite the open steps of each job canceled since the
+  start before it. On a healthy farm the pass is one query and no writes. It
+  runs synchronously, with no bound on how many steps it finalizes, so a first
+  start on a database with many stuck steps does that work before it leases
+  anything.
 
 ---
 
