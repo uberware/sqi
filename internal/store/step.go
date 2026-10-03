@@ -135,4 +135,20 @@ type StepStore interface {
 	// UpdateStepStatus transitions a step to a new status and updates
 	// UpdatedAt. Returns [ErrNotFound] if the step does not exist.
 	UpdateStepStatus(ctx context.Context, id string, status StepStatus) error
+
+	// FinalizeStep derives the step's terminal status from its tasks and writes
+	// it in one statement (invariant I4): failed if any task failed, else
+	// canceled if any was canceled, else completed. It returns the step's
+	// terminal status and whether THIS call wrote it. While any task is
+	// non-terminal it returns ("", false, nil) and writes nothing. A step that
+	// is already terminal returns its status with false, so a redelivered
+	// completion still drives the caller's idempotent propagation. A step with
+	// no tasks completes. Not bounded by MaxLimit. Returns ErrNotFound for an
+	// unknown step.
+	FinalizeStep(ctx context.Context, id string, now time.Time) (StepStatus, bool, error)
+
+	// ListStuckSteps returns every non-terminal step that has at least one task
+	// and no non-terminal task: steps FinalizeStep would finalize but that no
+	// future task report will ever trigger. Used once at scheduler start.
+	ListStuckSteps(ctx context.Context) ([]Step, error)
 }

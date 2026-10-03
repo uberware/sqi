@@ -3,6 +3,7 @@
 package store_test
 
 import (
+	"errors"
 	"testing"
 	"time"
 
@@ -204,3 +205,5 @@ func mustJob(t *testing.T, st store.Store, id string) store.Job {
 	}
 	return v
 }
+
+func errorsIsNotFound(err error) bool { return errors.Is(err, store.ErrNotFound) }

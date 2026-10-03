@@ -274,6 +274,13 @@ type JobStore interface {
 	//   - Job not found → returns [ErrNotFound].
 	CancelJobStatus(ctx context.Context, id string) error
 
+	// FinalizeJob derives the job's terminal status from its steps and writes
+	// it in one statement (invariant I4): failed if any step failed, else
+	// canceled if any was canceled, else completed, stamping CompletedAt. The
+	// return contract matches [StepStore.FinalizeStep]. Returns ErrNotFound for
+	// an unknown job.
+	FinalizeJob(ctx context.Context, id string, now time.Time) (JobStatus, bool, error)
+
 	// DemoteStalledJobs returns any job in [JobStatusRunning] that currently has
 	// no task in [TaskStatusAssigned] or [TaskStatusRunning] — yet still has at
 	// least one schedulable (ready or pending) task — back to [JobStatusPending],
