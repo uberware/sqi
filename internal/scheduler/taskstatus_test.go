@@ -893,8 +893,8 @@ type cancelTasksErrSt struct {
 	store.Store
 }
 
-func (*cancelTasksErrSt) TransitionStepPendingTasks(_ context.Context, _ string, _ store.TaskStatus, _ string) ([]store.Task, error) {
-	return nil, errInjectedLog
+func (*cancelTasksErrSt) CancelPendingStep(context.Context, string, string, time.Time) (bool, []store.Task, error) {
+	return false, nil, errInjectedLog
 }
 
 // ── Store error on UpdateTaskAttempt → message nacked ────────────────────────

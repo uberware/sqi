@@ -142,3 +142,94 @@ func (s *Store) ListStuckSteps(ctx context.Context) ([]store.Step, error) {
 func isTerminalStep(s store.StepStatus) bool {
 	return s == store.StepStatusCompleted || s == store.StepStatusFailed || s == store.StepStatusCanceled
 }
+
+const (
+	// sqlGuardStepPending is the I1 guard for releasing or canceling a step: it
+	// writes only a step that is still pending, so a step another writer already
+	// moved (finalized, canceled by a job cancel) is never overwritten.
+	sqlGuardStepPending = `
+UPDATE steps SET status = ?, updated_at = ? WHERE id = ? AND status = 'pending'`
+
+	// sqlMoveStepPendingTasks moves the step's pending tasks and returns them.
+	// A pending task has never been assigned, so there is no worker assignment
+	// to clear. The reason (empty when releasing) is stamped only on rows that
+	// carry none, so a more specific cause survives. A single statement, not
+	// bounded by MaxLimit.
+	sqlMoveStepPendingTasks = `
+UPDATE tasks
+SET    status = ?, updated_at = ?, unschedulable_reason = '',
+       failure_reason = CASE WHEN failure_reason = '' THEN ? ELSE failure_reason END
+WHERE  step_id = ? AND status = 'pending'
+RETURNING ` + taskCols
+)
+
+// ReleaseStep implements [store.StepStore].
+func (s *Store) ReleaseStep(ctx context.Context, id string, now time.Time) (bool, []store.Task, error) {
+	return s.movePendingStep(ctx, id, store.StepStatusReady, store.TaskStatusReady, "", now)
+}
+
+// CancelPendingStep implements [store.StepStore].
+func (s *Store) CancelPendingStep(ctx context.Context, id, reason string, now time.Time) (bool, []store.Task, error) {
+	return s.movePendingStep(ctx, id, store.StepStatusCanceled, store.TaskStatusCanceled, reason, now)
+}
+
+// movePendingStep moves a pending step and its pending tasks together, in one
+// transaction. The anchor is the job row (the step's parent), taken before the
+// step is written so a concurrent finalize or cancel of the same job is
+// ordered against this move. The step row is written first and guards the
+// task move: when the step is no longer pending nothing is written at all.
+func (s *Store) movePendingStep(
+	ctx context.Context, id string, stepTo store.StepStatus, taskTo store.TaskStatus, reason string, now time.Time,
+) (bool, []store.Task, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return false, nil, fmt.Errorf("sqlite: begin move pending step: %w", mapErr(err))
+	}
+	defer func() { _ = tx.Rollback() }() //nolint:errcheck // rollback after commit is a no-op
+
+	var jobID string
+	if err := tx.QueryRowContext(ctx, `SELECT job_id FROM steps WHERE id = ?`, id).Scan(&jobID); err != nil {
+		return false, nil, mapErr(err)
+	}
+	if err := lockAnchors(ctx, tx, jobAnchor(jobID)); err != nil {
+		return false, nil, err
+	}
+	nowText := timeToText(now.UTC())
+	res, err := tx.ExecContext(ctx, sqlGuardStepPending, string(stepTo), nowText, id)
+	if err != nil {
+		return false, nil, fmt.Errorf("sqlite: move pending step %s: %w", id, mapErr(err))
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, nil, fmt.Errorf("sqlite: move pending step %s: %w", id, mapErr(err))
+	}
+	if n == 0 {
+		return false, nil, nil
+	}
+	tasks, err := queryTasksTx(ctx, tx, sqlMoveStepPendingTasks, string(taskTo), nowText, reason, id)
+	if err != nil {
+		return false, nil, fmt.Errorf("sqlite: move pending tasks of step %s: %w", id, err)
+	}
+	if err := tx.Commit(); err != nil {
+		return false, nil, fmt.Errorf("sqlite: commit move pending step: %w", mapErr(err))
+	}
+	return true, tasks, nil
+}
+
+// queryTasksTx runs a task-returning statement inside tx and scans every row.
+func queryTasksTx(ctx context.Context, tx *sql.Tx, query string, args ...any) ([]store.Task, error) {
+	rows, err := tx.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, mapErr(err)
+	}
+	defer rows.Close()
+	var out []store.Task
+	for rows.Next() {
+		t, err := scanTask(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, t)
+	}
+	return out, mapErr(rows.Err())
+}

@@ -127,3 +127,47 @@ func (s *Store) ListStuckSteps(_ context.Context) ([]store.Step, error) {
 	})
 	return out, nil
 }
+
+// ReleaseStep implements [store.StepStore].
+func (s *Store) ReleaseStep(_ context.Context, id string, now time.Time) (bool, []store.Task, error) {
+	return s.movePendingStep(id, store.StepStatusReady, store.TaskStatusReady, "", now)
+}
+
+// CancelPendingStep implements [store.StepStore].
+func (s *Store) CancelPendingStep(_ context.Context, id, reason string, now time.Time) (bool, []store.Task, error) {
+	return s.movePendingStep(id, store.StepStatusCanceled, store.TaskStatusCanceled, reason, now)
+}
+
+// movePendingStep moves a pending step and its pending tasks together under
+// one lock. Like the SQLite version it writes nothing unless the step is
+// still pending, and it stamps reason only on tasks that carry none.
+func (s *Store) movePendingStep(id string, stepTo store.StepStatus, taskTo store.TaskStatus, reason string, now time.Time) (bool, []store.Task, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	st, ok := s.steps[id]
+	if !ok {
+		return false, nil, store.ErrNotFound
+	}
+	if st.Status != store.StepStatusPending {
+		return false, nil, nil
+	}
+	now = now.UTC()
+	st.Status, st.UpdatedAt = stepTo, now
+	s.steps[id] = st
+	var moved []store.Task
+	for tid, t := range s.tasks {
+		if t.StepID != id || t.Status != store.TaskStatusPending {
+			continue
+		}
+		t.Status, t.UpdatedAt, t.UnschedulableReason = taskTo, now, ""
+		if reason != "" && t.FailureReason == "" {
+			t.FailureReason = reason
+		}
+		s.tasks[tid] = t
+
+		out := t
+		out.Parameters = copyMap(t.Parameters)
+		moved = append(moved, out)
+	}
+	return true, moved, nil
+}
