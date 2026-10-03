@@ -111,7 +111,7 @@ func TestPoolFor_RoutesEveryPreparedStatement(t *testing.T) {
 	writes := map[string]string{
 		"sqlInsertJob":                  sqlInsertJob,
 		"sqlInsertTask":                 sqlInsertTask,
-		"sqlUpdateTaskStatus":           sqlUpdateTaskStatus,
+		"sqlCASTaskStatus":              sqlCASTaskStatus,
 		"sqlDeleteJobRow":               sqlDeleteJobRow,
 		"sqlDeleteOfflineWorkersBefore": sqlDeleteOfflineWorkersBefore, // DELETE ... RETURNING
 		"sqlUpdateUser":                 sqlUpdateUser,                 // UPDATE ... RETURNING

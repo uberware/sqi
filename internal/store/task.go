@@ -114,6 +114,42 @@ const (
 	TaskSortByName TaskSortField = "name"
 )
 
+// AttemptCompletion is a worker's terminal report for one attempt.
+type AttemptCompletion struct {
+	// AttemptID is the attempt the worker is reporting on.
+	AttemptID string
+	// TaskID is the task the attempt belongs to.
+	TaskID string
+	// TaskStatus is the status the task should end up in: succeeded, failed or
+	// canceled.
+	TaskStatus TaskStatus
+	// AttemptStatus is the attempt's terminal status.
+	AttemptStatus AttemptStatus
+	// ExitCode is the process exit code, or nil when there is none.
+	ExitCode *int
+	// SessionID is the OpenJD session ID; "" leaves the stored value unchanged.
+	SessionID string
+	// Message is the attempt's human-readable outcome; "" leaves the stored
+	// value unchanged.
+	Message string
+	// FailureReason, when non-empty, is stamped on the task if the task ends up
+	// holding TaskStatus. Callers pass "" for a success.
+	FailureReason string
+	// EndedAt is when the attempt ended.
+	EndedAt time.Time
+}
+
+// CompletionResult reports what [TaskStore.CompleteTaskAttempt] did to the
+// task. The attempt is closed and its claims released in every non-error case.
+type CompletionResult struct {
+	// Applied is true when the task now holds the requested status (it moved
+	// there, or was already there on a redelivery).
+	Applied bool
+	// Rejected is true when the state machine refused the transition (the task
+	// had already reached a different terminal status). The caller acks it.
+	Rejected bool
+}
+
 // TaskStore is the persistence interface for [Task] records.
 type TaskStore interface {
 	// CreateTask inserts a new task. The caller must populate all fields
@@ -133,8 +169,25 @@ type TaskStore interface {
 	ListTasks(ctx context.Context, opts ListTasksOptions) (Page[Task], error)
 
 	// UpdateTaskStatus transitions a task to a new status and updates
-	// UpdatedAt. Returns [ErrNotFound] if the task does not exist.
+	// UpdatedAt. The write is a compare-and-set (invariant I1): it is made only
+	// while the task still holds the status it was validated against, so a
+	// concurrent writer is never overwritten. Writing the status the task
+	// already holds is a no-op, not an error. Returns [ErrNotFound] if the task
+	// does not exist and [ErrInvalidTransition] if the state machine refuses the
+	// move.
 	UpdateTaskStatus(ctx context.Context, id string, status TaskStatus) error
+
+	// CompleteTaskAttempt applies a worker's terminal report in one
+	// transaction (invariant I3):
+	//  1. close the attempt if it is still running;
+	//  2. release every active claim the attempt holds;
+	//  3. move the task to c.TaskStatus by compare-and-set;
+	//  4. stamp c.FailureReason when the task ends up holding c.TaskStatus.
+	// Steps 1 and 2 commit even when step 3 is rejected, so a canceled task's
+	// late report never leaks a usage slot. Returns ErrNotFound for an unknown
+	// task. A redelivery is safe: the attempt is already closed, so it is not
+	// rewritten, and a task already holding c.TaskStatus is a no-op.
+	CompleteTaskAttempt(ctx context.Context, c AttemptCompletion) (CompletionResult, error)
 
 	// AssignTask atomically sets AssignedWorkerID, AssignedAt, and Status to
 	// [TaskStatusAssigned] for the given task. Returns [ErrNotFound] if the
@@ -296,8 +349,9 @@ type TaskStore interface {
 	// job FailedAttempts values, plus firstClose — true iff this call performed
 	// the running→failed close (i.e. this is the first delivery, so retry/park
 	// ACTIONS are authorized; a redelivery must first check that the attempt is
-	// still relevant before re-driving them). Returns [ErrNotFound] if the task
-	// does not exist.
+	// still relevant before re-driving them). The same transaction releases
+	// every active usage claim the attempt holds (invariant I3), on a
+	// redelivery too. Returns [ErrNotFound] if the task does not exist.
 	RecordTaskFailure(ctx context.Context, attemptID, taskID string, exitCode *int, sessionID, message string, now time.Time) (taskFailed, jobFailed int, firstClose bool, err error)
 
 	// RequeueTaskForRetry transitions a task back to [TaskStatusReady],

@@ -240,15 +240,7 @@ func (s *Store) ReleaseAttemptClaims(_ context.Context, taskAttemptID string, re
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	n := 0
-	for id, co := range s.usageClaims {
-		if co.TaskAttemptID == taskAttemptID && co.ReleasedAt == nil {
-			co.ReleasedAt = &releasedAt
-			s.usageClaims[id] = co
-			n++
-		}
-	}
-	return n, nil
+	return s.releaseAttemptClaimsLocked(taskAttemptID, releasedAt), nil
 }
 
 // ReleaseJobClaims sets ReleasedAt on every active claim held by any

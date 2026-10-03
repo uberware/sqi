@@ -5,7 +5,6 @@ package sqlite
 import (
 	"context"
 	"database/sql"
-	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -29,14 +28,9 @@ RETURNING ` + taskCols
 
 	sqlGetTask = `SELECT ` + taskCols + ` FROM tasks WHERE id = ?`
 
-	// unschedulable_reason is only meaningful while a task is ready (set by the
-	// scheduler sweep); it is cleared here so a task carries no stale
-	// annotation once it leaves ready for any reason.
-	sqlUpdateTaskStatus = `
-UPDATE tasks SET status = ?, updated_at = ?, unschedulable_reason = '' WHERE id = ?`
-
-	// sqlSelectTaskStatus reads the current status inside UpdateTaskStatus's
-	// transaction so the state-machine check and the write are indivisible.
+	// sqlSelectTaskStatus reads the current status inside the transaction of a
+	// compare-and-set ([casTaskStatusTx]), so the state-machine check and the
+	// guarded write share one transaction.
 	sqlSelectTaskStatus = `
 SELECT status FROM tasks WHERE id = ?`
 
@@ -443,9 +437,9 @@ func (s *Store) ListTasks(ctx context.Context, opts store.ListTasksOptions) (sto
 // arrives over JetStream, which is at-least-once, so a redelivered message must
 // not fail — the consumer would Nak it and redeliver forever.
 //
-// The read and the write share a transaction, serialized by the
-// single-connection pool (SetMaxOpenConns(1)), so no other goroutine can move
-// the task between the check and the update. Mirrors [Store.TryClaimSlots].
+// The write is a compare-and-set on the status that was read (invariant I1, see
+// [casTaskStatusTx]), so it is correct under concurrent writers rather than
+// only under SQLite's single write connection.
 func (s *Store) UpdateTaskStatus(ctx context.Context, id string, status store.TaskStatus) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -453,30 +447,7 @@ func (s *Store) UpdateTaskStatus(ctx context.Context, id string, status store.Ta
 	}
 	defer func() { _ = tx.Rollback() }() //nolint:errcheck // rollback is best-effort after commit
 
-	var current string
-	if err = tx.QueryRowContext(ctx, sqlSelectTaskStatus, id).Scan(&current); err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return store.ErrNotFound
-		}
-		return fmt.Errorf("sqlite: select task status: %w", mapErr(err))
-	}
-
-	if store.TaskStatus(current) == status {
-		return nil // idempotent redelivery; nothing to write
-	}
-	if err = store.ValidateTaskTransition(store.TaskStatus(current), status); err != nil {
-		return fmt.Errorf("sqlite: task %s: %w", id, err)
-	}
-
-	// Raw SQL rather than the prepared s.stmtUpdateTaskStatus: a statement
-	// bound into a transaction with tx.StmtContext must itself be closed, and
-	// the other transactional writers here use tx.ExecContext for the same
-	// reason.
-	res, err := tx.ExecContext(ctx, sqlUpdateTaskStatus, string(status), timeToText(time.Now().UTC()), id)
-	if err != nil {
-		return mapErr(err)
-	}
-	if err := checkRowsAffected(res); err != nil {
+	if _, err = casTaskStatusTx(ctx, tx, id, status, time.Now().UTC()); err != nil {
 		return err
 	}
 	if err = tx.Commit(); err != nil {
@@ -881,6 +852,11 @@ func (s *Store) LeaseReadyTask(ctx context.Context, taskID, workerID string, now
 // rows, skips both increments, and returns the current counts instead. This
 // makes the failure count exactly-once per attempt, and keeps the two counters
 // in lockstep: either both increment or neither does.
+//
+// Invariant I3: the same transaction releases the attempt's claims, so a
+// closed attempt never keeps a usage slot. Anchor: the task's job row, taken
+// before the first write. The statements run attempt close, claim release, then
+// the counters; the claim release does not depend on the counters.
 func (s *Store) RecordTaskFailure(
 	ctx context.Context,
 	attemptID, taskID string,
@@ -896,6 +872,14 @@ func (s *Store) RecordTaskFailure(
 	}
 	defer func() { _ = tx.Rollback() }() //nolint:errcheck // rollback after commit is a no-op
 
+	var anchorJobID string
+	if err = tx.QueryRowContext(ctx, sqlTaskJobID, taskID).Scan(&anchorJobID); err != nil {
+		return 0, 0, false, mapErr(err) // no such task => ErrNotFound
+	}
+	if err := lockAnchors(ctx, tx, jobAnchor(anchorJobID)); err != nil {
+		return 0, 0, false, err
+	}
+
 	res, err := tx.ExecContext(ctx, sqlCloseAttemptAsFailed, nowText, nullInt(exitCode), sessionID, message, attemptID)
 	if err != nil {
 		return 0, 0, false, mapErr(err)
@@ -903,6 +887,11 @@ func (s *Store) RecordTaskFailure(
 	closed, err := res.RowsAffected()
 	if err != nil {
 		return 0, 0, false, err
+	}
+	// Invariant I3: a closed attempt holds no claims. Released unconditionally,
+	// so a redelivery is also safe; the UPDATE is a no-op when nothing is active.
+	if _, err = tx.ExecContext(ctx, sqlReleaseAttemptClaims, nowText, attemptID); err != nil {
+		return 0, 0, false, mapErr(err)
 	}
 
 	if closed == 0 {

@@ -677,6 +677,7 @@ func (s *Store) LeaseReadyTask(_ context.Context, taskID, workerID string, now t
 // delivery of the failure). A redelivery — whose attempt is already terminal,
 // or whose attempt is unknown — does not re-count; it returns the current
 // counters so the caller's retry/park decision is stable across redeliveries.
+// Either way the attempt's active usage claims are released (invariant I3).
 func (s *Store) RecordTaskFailure(
 	_ context.Context,
 	attemptID, taskID string,
@@ -724,6 +725,10 @@ func (s *Store) RecordTaskFailure(
 		j.UpdatedAt = now
 		s.jobs[t.JobID] = j
 	}
+
+	// Invariant I3: a closed attempt holds no claims. Released unconditionally,
+	// like SQLite's, so a redelivery is also safe.
+	s.releaseAttemptClaimsLocked(attemptID, now)
 
 	return t.FailedAttempts, j.FailedAttempts, firstClose, nil
 }

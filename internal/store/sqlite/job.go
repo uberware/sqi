@@ -285,7 +285,7 @@ func (s *Store) CreateJob(ctx context.Context, job store.Job) (store.Job, error)
 // insert uses raw SQL via tx rather than the prepared statements the per-row
 // creators use: a statement bound into a transaction with tx.StmtContext must
 // itself be closed, and the other transactional writers here take the same
-// approach (see UpdateTaskStatus in task.go).
+// approach (see casWriteTaskStatus in attemptclose.go).
 //
 // Each step and task row is stamped with its OWN time.Now(), exactly as
 // CreateStep and CreateTask do — see insertTasksTx for why sharing one
