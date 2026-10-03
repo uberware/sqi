@@ -399,13 +399,14 @@ scheduler for the paths that have none:
 | Worker-reported failure/cancel | the worker's `Message` verbatim | `handleTaskTerminal`, stamped by `store.CompleteTaskAttempt` in the same transaction that moves the task, and only if the task ends up in the reported status |
 | Failed with no worker message | `"failed (exit N)"` or `"failed"` | `handleTaskTerminal` fallback |
 | Worker reclaimed (heartbeat timeout or graceful deregister) | `"worker went offline"` | `store.OfflineStaleWorker` / `store.OfflineWorker` — set on the **attempt** `message` only; reclaim is not a task failure, so `tasks.failure_reason` is left untouched |
-| Cascade-canceled (upstream step failed, or a blocked job's upstream job failed) | `"canceled: upstream step failed"` | stamped inside the same UPDATE that cancels the tasks: `store.CancelPendingStep` (called by `openjd.CancelDependents`) for a step, `store.CancelBlockedJob` for a blocked job |
+| Cascade-canceled (an upstream step failed or was canceled, or a blocked job's upstream job failed, was canceled or was deleted) | `"canceled: upstream step failed"` | stamped inside the same UPDATE that cancels the tasks: `store.CancelPendingStep` (called by `openjd.CancelDependents`) for a step, `store.CancelBlockedJob` for a blocked job |
 | User-initiated cancel | `"canceled by user"` | stamped inside the UPDATE that cancels the tasks: `store.CancelJobExecution` for `CancelJob`, `store.CancelTaskExecution` for `CancelTask` |
 
-Every server-originated reason is stamped only on a task that has no reason
-yet, so a cascade-cancel's more specific reason always wins regardless of
-ordering. None of them is a separate write after the status change: each is
-part of the guarded write that moves the task.
+Both server-originated task reasons (the two cancel rows) are stamped only on a
+task that has no reason yet, so a cascade-cancel's more specific reason always
+wins regardless of ordering. No reason is a separate write after the status
+change: each is part of the guarded write that moves the task (or, for the
+offline reclaim, closes the attempt).
 
 These server-originated reason strings are shared constants in `internal/store`
 (`FailureReasonCanceledByUser`, `FailureReasonUpstreamFailed`,
@@ -803,7 +804,7 @@ attempt before the claims that reference it.
 
 ### What the anchor table does not close yet
 
-All of the following hold on SQLite, where the single write connection
+None of the following can happen on SQLite, where the single write connection
 serializes every writer. A PostgreSQL store has to close each of them:
 
 - **`LeaseTask` takes neither the task's job row nor the worker row.**
