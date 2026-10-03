@@ -378,8 +378,9 @@ NATS consumer (internal/scheduler/taskstatus.go)
   ├─ If failed: store.RecordTaskFailure(...), then retry, park or go terminal (see Auto-retry below)
   ├─ If terminal (succeeded/failed/canceled):
   │     store.CompleteTaskAttempt(report)   ← one transaction: close the attempt if it is still
-  │                                           running, release its usage claims, move the task
-  │                                           (state-machine guarded), stamp failure_reason
+  │                                           running, release its usage claims, then, only if
+  │                                           it is still the task's latest attempt, move the task
+  │                                           (state-machine guarded) and stamp failure_reason
   │     notifier.NotifyTask(...)                          ← triggers WebSocket fanout
   │     checkStepCompletion: store.FinalizeStep → propagateStepDependencies → store.FinalizeJob
   └─ ack message (a refused transition is acked too; its claims were still released)
@@ -801,8 +802,10 @@ row, so they **skip** a task a lease is moving out of `ready` rather than wait
 for it; what they wait for is a worker's report on a task they do match.
 
 `CompleteTaskAttempt` and `RecordTaskFailure` run the other way round (close
-the attempt, release its claims, then move the task), so the claims are freed
-even when the task move is refused. The two orders coexist only because these
+the attempt, release its claims, then move the task; `CompleteTaskAttempt`
+first checks that the attempt is still the task's latest and refuses the move
+when it is not), so the claims are freed even when the task move is refused.
+The two orders coexist only because these
 operations lock the task's job row first, so they cannot interleave on the same
 job; the reaper does not take that lock yet (see below). `LeaseTask` writes its
 task row before any count, so that row lock orders it against a cancel of the
@@ -848,6 +851,11 @@ serializes every writer. A PostgreSQL store has to close each of them:
   and farm caps (a row read as uncapped is not anchored at all), the
   last-admin guard's admin set, and the status `FinalizeStep` and `FinalizeJob`
   report as "already terminal".
+- **`CompleteTaskAttempt`'s latest-attempt check** reads the task's attempts
+  before anything holds the task row, and `LeaseTask` does not take the job
+  row, so a lease committing between that check and the compare-and-set would
+  make a superseded report look current. Lock the task row (after the job row)
+  before the check.
 - **Upstream job rows want a shared lock**, which the anchor type cannot
   express yet, and **retention should lock its candidates in id order** (or
   commit per job).
@@ -863,6 +871,15 @@ The invariants changed some behaviour beyond fixing the races they close:
   `exit_code` and `session_id` are not overwritten either. A report the state
   machine refuses still releases the attempt's usage claims, and the consumer
   acks it.
+- A worker's late terminal report for an attempt that is no longer the task's
+  latest (the attempt was reaped or its worker taken offline, and the task was
+  leased again) is refused and acked the same way. It still closes that
+  attempt and releases its claims, but it no longer ends the task under the new
+  lease (v0.3.0 completed or canceled it while the new attempt was running).
+- A submission with `depends_on` whose upstream job fails, is canceled or is
+  deleted between the server's dependency check and the write is now rejected
+  with 422, as one whose upstream had already ended that way is; v0.3.0 created
+  it `blocked` and canceled it later through the dependency sweep.
 - `SetTaskUnschedulableReason` on a task that is no longer `ready` is a no-op,
   not an error, so a task leased while the unschedulable sweep was deciding is
   never stamped.
@@ -899,6 +916,56 @@ prevent, and fixing the code does not undo it, so it is repaired in two parts:
   runs synchronously, with no bound on how many steps it finalizes, so a first
   start on a database with many stuck steps does that work before it leases
   anything.
+
+### Known gaps (all pre-existing in v0.3.0)
+
+The invariants above do not close these; each predates them and is left for a
+later change.
+
+- **The cancel paths do not finalize steps.** A single-task cancel of a job's
+  last open task leaves its step open and its job unfinished until the next
+  start's reconcile. A job cancel never finalizes the job's steps at all (the
+  reconcile skips terminal jobs), so a `RetryJob` after a cancel that found
+  nothing in flight leaves the revived tasks `pending` forever.
+- **Neither does the retry path.** `RetryTasks` resets only `failed` and
+  `canceled` steps and `ResolveDependencies` releases only `pending` ones, so
+  retrying a failed task whose step is still `ready` (a sibling still in
+  flight) also leaves it `pending` forever. A fix must cover this path, not
+  only the cancel paths.
+- **A disabled worker that dies is never reclaimed**: the heartbeat sweep and
+  its offline guard look only at `online` workers. Re-enabling it lets the
+  sweep take it offline and reclaim its tasks. `DeleteWorkerIfRemovable` can
+  delete such a worker while it still has tasks in flight.
+- **Late reports the latest-attempt check cannot see.** A late `running` report
+  from a superseded attempt still moves the new lease's task to `running`
+  (`handleTaskRunning` does not check the attempt is still open). A late
+  terminal report from a task's latest attempt after the task left flight
+  without a new lease is applied when the arrow is legal: a late cancel echo
+  re-cancels a task a user canceled and then retried. And the failure fork's
+  requeue is a separate write after `RecordTaskFailure`, guarded on the task's
+  status and not its attempt, so a reclaim and a new lease landing between the
+  two return the new lease to `ready` with its attempt still open.
+- **Worker-protocol ordering.** A worker that restarts and re-registers within
+  `WorkerTimeout` leaves the tasks its previous process was running `running`:
+  registration does not reclaim them, its heartbeat stays fresh, and the
+  stale-assignment reaper reclaims only `assigned` tasks. A worker's task
+  reports and its deregister travel on different streams (`SQI_TASK`,
+  `SQI_WORKER`), so the server can apply the deregister first even though the
+  worker sends it last: a forced shutdown's `failed` (`worker_shutdown`) report
+  counts as a genuine task failure only when it lands before the deregister.
+- **Migration `00031` repairs claims, not attempts.** It leaves an orphaned
+  `running` attempt on a terminal task as it is, and it does not touch a
+  v0.3.0 reaper race (F5) whose task is still in flight: the older attempt
+  stays `running`, with its claims, while the task runs under a newer attempt
+  that the old reaper had closed.
+- **A `LeaseTask` error aborts the whole lease batch**: `selectLeaseBatch`
+  returns no batch, so the leases it already committed are never delivered and
+  sit `assigned` until the stale-assignment reaper returns them to `ready`. It
+  should return the partial batch.
+- **The 422 a `depends_on` race earns** (see above) reads
+  `openjd: submit: store: job dependency can never be satisfied: upstream <id>`,
+  with a `store:` prefix and an unquoted ID, unlike the dependency check's own
+  `depends_on job "<id>" …` messages.
 
 ---
 
