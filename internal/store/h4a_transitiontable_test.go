@@ -20,8 +20,12 @@ import (
 // no paused → paused entry.
 //
 // FinalizeJob's SQL guard is "status NOT IN (terminal)", which also admits
-// blocked. A blocked job's steps are all pending, so FinalizeJob can never
-// finalize one; the table lists the reachable sources only.
+// blocked, and a blocked job can be finalized. Canceling each of its tasks one
+// at a time leaves its pending steps with only terminal tasks, the startup
+// reconcile finalizes them pending → canceled, and FinalizeJob then moves the
+// job blocked → canceled: a legal arrow, listed below as its own entry.
+// blocked → completed and blocked → failed cannot happen, because a blocked
+// job's tasks are never leased, so none of them succeeds or fails.
 func TestJobOperations_FromStatesAreLegal(t *testing.T) {
 	nonTerminal := []store.JobStatus{store.JobStatusPending, store.JobStatusRunning, store.JobStatusPaused, store.JobStatusBlocked}
 	finalizable := []store.JobStatus{store.JobStatusPending, store.JobStatusRunning, store.JobStatusPaused}
@@ -45,6 +49,8 @@ func TestJobOperations_FromStatesAreLegal(t *testing.T) {
 	for _, target := range []store.JobStatus{store.JobStatusCompleted, store.JobStatusFailed, store.JobStatusCanceled} {
 		ops = append(ops, operation{"FinalizeJob", finalizable, target})
 	}
+	// A blocked job whose tasks were all canceled one at a time (see above).
+	ops = append(ops, operation{"FinalizeJob", []store.JobStatus{store.JobStatusBlocked}, store.JobStatusCanceled})
 
 	for _, o := range ops {
 		for _, f := range o.from {

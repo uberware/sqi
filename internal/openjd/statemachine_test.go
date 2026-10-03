@@ -89,9 +89,18 @@ func TestValidateStepTransition_UnknownStatus(t *testing.T) {
 // named store operation's guarded from-states are legal in the table.
 //
 // FinalizeStep's SQL guard is "status NOT IN (terminal)", which also admits
-// pending. A pending step's tasks are pending, so FinalizeStep can never
-// finalize one; the table lists the reachable sources only. Update this table
-// in the same change as any guard.
+// pending, and a pending step can be finalized. Canceling each of its pending
+// tasks one at a time leaves it pending with only terminal tasks (CancelTask
+// does not drive step completion), and the startup reconcile then finalizes it
+// pending → canceled: a legal arrow, listed below as its own entry.
+// pending → failed is reachable too, but only through a window: a single-task
+// retry whose dependency resolution never ran (the server stopped, or the store
+// failed, after RetryTasks committed) leaves the step pending beside a sibling
+// that is still failed, and canceling the revived task then makes it
+// finalizable as failed. The table has no pending → failed arrow, so it is not
+// listed; that gap is recorded for H4b. pending → completed cannot happen: a
+// pending step's tasks are never leased, so none succeeds while it is pending.
+// Update this table in the same change as any guard.
 func TestStepOperations_FromStatesAreLegal(t *testing.T) {
 	ops := []struct {
 		op   string
@@ -112,6 +121,8 @@ func TestStepOperations_FromStatesAreLegal(t *testing.T) {
 			[]store.StepStatus{store.StepStatusReady, store.StepStatusRunning},
 			[]store.StepStatus{store.StepStatusCompleted, store.StepStatusFailed, store.StepStatusCanceled},
 		},
+		// A pending step whose tasks were all canceled one at a time (see above).
+		{"FinalizeStep", []store.StepStatus{store.StepStatusPending}, []store.StepStatus{store.StepStatusCanceled}},
 		{"RetryTasks", []store.StepStatus{store.StepStatusFailed, store.StepStatusCanceled}, []store.StepStatus{store.StepStatusPending}},
 	}
 	for _, o := range ops {
