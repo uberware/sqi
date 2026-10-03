@@ -355,17 +355,7 @@ func (s *Store) CountActiveTasksInQueue(_ context.Context, queueID string) (int,
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	n := 0
-	for _, t := range s.tasks {
-		if t.Status != store.TaskStatusAssigned && t.Status != store.TaskStatusRunning {
-			continue
-		}
-		job, ok := s.jobs[t.JobID]
-		if ok && job.QueueID == queueID {
-			n++
-		}
-	}
-	return n, nil
+	return s.activeTasksLocked(func(j store.Job) bool { return j.QueueID == queueID }), nil
 }
 
 // CountActiveTasksInFarm returns the number of tasks in 'assigned' or
@@ -374,17 +364,22 @@ func (s *Store) CountActiveTasksInFarm(_ context.Context, farmID string) (int, e
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	return s.activeTasksLocked(func(j store.Job) bool { return j.FarmID == farmID }), nil
+}
+
+// activeTasksLocked counts the tasks in 'assigned' or 'running' state whose
+// job exists and is in scope. Caller holds s.mu.
+func (s *Store) activeTasksLocked(inScope func(store.Job) bool) int {
 	n := 0
 	for _, t := range s.tasks {
 		if t.Status != store.TaskStatusAssigned && t.Status != store.TaskStatusRunning {
 			continue
 		}
-		job, ok := s.jobs[t.JobID]
-		if ok && job.FarmID == farmID {
+		if job, ok := s.jobs[t.JobID]; ok && inScope(job) {
 			n++
 		}
 	}
-	return n, nil
+	return n
 }
 
 // CancelJobTasks transitions all non-terminal tasks for the given job to

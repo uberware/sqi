@@ -73,13 +73,22 @@ FROM   tasks  t
 JOIN   jobs   j ON t.job_id   = j.id
 JOIN   queues q ON j.queue_id = q.id
 JOIN   steps  s ON t.step_id  = s.id
-WHERE  t.status  = 'ready'
-  AND  (? = '' OR j.farm_id = ?)
-  AND  q.paused  = 0
-  AND  j.status NOT IN ('paused','completed','failed','canceled')
-  AND  (t.retry_after IS NULL OR t.retry_after <= ?)
+WHERE  (? = '' OR j.farm_id = ?)
+  AND  ` + sqlLeasableTask + `
 ORDER BY j.priority DESC, j.created_at ASC, s.step_order ASC, t.created_at ASC
 LIMIT ?`
+
+	// sqlLeasableTask is the eligibility predicate a task must pass to be
+	// leased, over the aliases t (tasks), j (jobs) and q (queues): the task is
+	// ready and its backoff has elapsed (its one bind parameter is now), its
+	// queue is unpaused, and its job is neither paused nor terminal.
+	// sqlListReadyTasks, sqlCountReadyTasksByQueue and sqlLeaseTaskGuarded
+	// (lease.go) all embed it, so the lease's guard cannot drift from the list
+	// the scheduler chose the task from.
+	sqlLeasableTask = `t.status  = 'ready'
+  AND  q.paused  = 0
+  AND  j.status NOT IN ('paused','completed','failed','canceled')
+  AND  (t.retry_after IS NULL OR t.retry_after <= ?)`
 
 	sqlReclaimWorkerTasks = `
 UPDATE tasks
@@ -117,11 +126,11 @@ JOIN   jobs  j ON t.job_id = j.id
 WHERE  j.farm_id = ?
   AND  t.status IN ('assigned', 'running')`
 
-	// Per-queue count of LEASABLE ready tasks for a given farm — same
-	// eligibility predicate as sqlListReadyTasks (backoff elapsed, queue
-	// unpaused, job schedulable), so the sweep neither reports depth for nor
-	// wakes lease waiters on queues whose only ready work is backing off or
-	// held under a paused/parked job.
+	// Per-queue count of LEASABLE ready tasks for a given farm — the same
+	// eligibility predicate as sqlListReadyTasks (sqlLeasableTask: backoff
+	// elapsed, queue unpaused, job schedulable), so the sweep neither reports
+	// depth for nor wakes lease waiters on queues whose only ready work is
+	// backing off or held under a paused/parked job.
 	// Used for the sqi_scheduler_queue_depth Prometheus gauge and the
 	// heartbeat-sweep queue wake. farmID = '' means "all farms".
 	sqlCountReadyTasksByQueue = `
@@ -129,11 +138,8 @@ SELECT j.queue_id, COUNT(*)
 FROM   tasks  t
 JOIN   jobs   j ON t.job_id   = j.id
 JOIN   queues q ON j.queue_id = q.id
-WHERE  t.status  = 'ready'
-  AND  (? = '' OR j.farm_id = ?)
-  AND  q.paused  = 0
-  AND  j.status NOT IN ('paused','completed','failed','canceled')
-  AND  (t.retry_after IS NULL OR t.retry_after <= ?)
+WHERE  (? = '' OR j.farm_id = ?)
+  AND  ` + sqlLeasableTask + `
 GROUP BY j.queue_id`
 
 	// Counts tasks for a given job grouped by status.
@@ -192,10 +198,16 @@ FROM   tasks
 WHERE  assigned_worker_id = ?
   AND  status IN ('assigned', 'running')`
 
-	sqlLeaseReadyTask = `
-UPDATE tasks
+	// sqlLeaseTaskWrite is the ready → assigned write shared by
+	// sqlLeaseReadyTask and sqlLeaseTaskGuarded (lease.go), which differ only
+	// in the guard they append to it. The target is aliased t so a guard can
+	// use sqlLeasableTask's t.-qualified columns.
+	sqlLeaseTaskWrite = `
+UPDATE tasks AS t
 SET    status = 'assigned', assigned_worker_id = ?, assigned_at = ?, updated_at = ?, unschedulable_reason = ''
-WHERE  id = ? AND status = 'ready'`
+WHERE  t.id = ?`
+
+	sqlLeaseReadyTask = sqlLeaseTaskWrite + ` AND t.status = 'ready'`
 
 	// sqlCloseAttemptAsFailed closes a running attempt as failed, stamping
 	// ended_at, and coalescing exit_code/session_id/message so a nil exit code

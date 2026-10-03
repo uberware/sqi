@@ -152,6 +152,56 @@ type CompletionResult struct {
 	Rejected bool
 }
 
+// LeaseOutcome says what [TaskStore.LeaseTask] did. Every outcome other than
+// [LeaseLeased] wrote nothing.
+type LeaseOutcome string
+
+const (
+	// LeaseLeased means the task is now assigned to the worker, with a running
+	// attempt and every requested usage claim.
+	LeaseLeased LeaseOutcome = "leased"
+	// LeaseLost means the task is no longer leasable: it is unknown, another
+	// lease took it, it is still backing off, or its job or queue is paused or
+	// its job is terminal.
+	LeaseLost LeaseOutcome = "lost"
+	// LeaseQueueFull means the task's queue is at its MaxConcurrentTasks.
+	LeaseQueueFull LeaseOutcome = "queue_full"
+	// LeaseFarmFull means the task's farm is at its MaxConcurrentTasks.
+	LeaseFarmFull LeaseOutcome = "farm_full"
+	// LeasePoolFull means a requested usage pool is at its max_concurrent, or
+	// no longer exists. [LeaseResult.FullPool] names it.
+	LeasePoolFull LeaseOutcome = "pool_full"
+)
+
+// LeaseRequest asks [TaskStore.LeaseTask] to lease one task to one worker.
+type LeaseRequest struct {
+	// TaskID is the task to lease.
+	TaskID string
+	// WorkerID is the worker the task is assigned to and the attempt runs on.
+	WorkerID string
+	// AttemptID is the caller-generated ID of the attempt the lease creates.
+	AttemptID string
+	// Now stamps the assignment, the attempt's start and the claims, and is
+	// the instant a retry backoff is compared against.
+	Now time.Time
+	// Claims are the usage-pool slots the attempt must hold. ClaimID, PoolID
+	// and PoolName are used; MaxConcurrent is ignored, because the pool's cap
+	// is read in the lease's own transaction.
+	Claims []UsagePoolClaim
+}
+
+// LeaseResult is what [TaskStore.LeaseTask] did.
+type LeaseResult struct {
+	// Outcome is the lease's outcome.
+	Outcome LeaseOutcome
+	// Attempt is the attempt the lease created. It is set only when Outcome is
+	// [LeaseLeased].
+	Attempt TaskAttempt
+	// FullPool is the name of the full or missing pool when Outcome is
+	// [LeasePoolFull].
+	FullPool string
+}
+
 // TaskStore is the persistence interface for [Task] records.
 type TaskStore interface {
 	// CreateTask inserts a new task. The caller must populate all fields
@@ -301,6 +351,21 @@ type TaskStore interface {
 	// false return means another worker leased it first. This is the race guard
 	// for concurrent lease requests.
 	LeaseReadyTask(ctx context.Context, taskID, workerID string, now time.Time) (bool, error)
+
+	// LeaseTask leases one ready task to a worker in a single transaction
+	// (invariants I3 and I5):
+	//  1. move the task ready → assigned, guarded on the same eligibility
+	//     predicate as ListReadyTasks (queue not paused, job not paused or
+	//     terminal, backoff elapsed);
+	//  2. re-check the queue's and farm's MaxConcurrentTasks against values read
+	//     in the transaction;
+	//  3. insert the attempt, numbered MAX(attempt_number)+1;
+	//  4. for each claim, in pool-ID order, re-check the pool's max_concurrent
+	//     as read in the transaction (a deleted pool counts as full) and insert
+	//     the claim.
+	// Any outcome other than LeaseLeased writes nothing at all, so there is no
+	// rollback path for the caller. An unknown task is LeaseLost, not an error.
+	LeaseTask(ctx context.Context, req LeaseRequest) (LeaseResult, error)
 
 	// SetTaskUnschedulableReason sets (or, with an empty string, clears) the
 	// reason a ready task cannot be scheduled. Returns ErrNotFound if id is unknown.

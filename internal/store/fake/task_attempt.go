@@ -37,6 +37,16 @@ func (s *Store) LatestTaskAttempt(_ context.Context, taskID string) (store.TaskA
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	found, exists := s.latestAttemptLocked(taskID)
+	if !exists {
+		return store.TaskAttempt{}, store.ErrNotFound
+	}
+	return found, nil
+}
+
+// latestAttemptLocked returns taskID's attempt with the highest AttemptNumber,
+// and false when the task has none. Caller holds s.mu.
+func (s *Store) latestAttemptLocked(taskID string) (store.TaskAttempt, bool) {
 	var found store.TaskAttempt
 	var exists bool
 	for _, a := range s.taskAttempts {
@@ -48,10 +58,7 @@ func (s *Store) LatestTaskAttempt(_ context.Context, taskID string) (store.TaskA
 			exists = true
 		}
 	}
-	if !exists {
-		return store.TaskAttempt{}, store.ErrNotFound
-	}
-	return found, nil
+	return found, exists
 }
 
 // ListTaskAttempts returns all attempts for the given task, ordered by

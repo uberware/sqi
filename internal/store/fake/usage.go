@@ -182,13 +182,19 @@ func (s *Store) ActiveClaimCount(_ context.Context, poolID string) (int, error) 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	count := 0
+	return s.activeClaimsLocked(poolID), nil
+}
+
+// activeClaimsLocked counts poolID's active (unreleased) claims. Caller holds
+// s.mu.
+func (s *Store) activeClaimsLocked(poolID string) int {
+	n := 0
 	for _, claim := range s.usageClaims {
 		if claim.PoolID == poolID && claim.ReleasedAt == nil {
-			count++
+			n++
 		}
 	}
-	return count, nil
+	return n
 }
 
 // TryClaimSlots atomically checks pool capacity and creates claim
@@ -209,13 +215,7 @@ func (s *Store) TryClaimSlots(
 		if c.MaxConcurrent <= 0 {
 			continue // unlimited
 		}
-		active := 0
-		for _, co := range s.usageClaims {
-			if co.PoolID == c.PoolID && co.ReleasedAt == nil {
-				active++
-			}
-		}
-		if active >= c.MaxConcurrent {
+		if s.activeClaimsLocked(c.PoolID) >= c.MaxConcurrent {
 			return store.ErrUsageAtCapacity
 		}
 	}
