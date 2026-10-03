@@ -423,6 +423,15 @@ func (s *Scheduler) Run(ctx context.Context) error {
 		s.logger.InfoContext(ctx, "scheduler: diagnostic-log consumer started")
 	}
 
+	// ── Stuck-step repair ─────────────────────────────────────────
+	// Finalize, once, the steps earlier releases left stuck (see
+	// reconcileStuckSteps). It runs before the lease subscriber starts, so no
+	// work is leased while the repair is still releasing or canceling steps, and
+	// before the sweeps begin. The task-status consumer is already running, so a
+	// report arriving concurrently is safe: every write on the completion path
+	// is guarded and idempotent.
+	s.reconcileStuckSteps(ctx)
+
 	// ── Lease subscriber ──────────────────────────────────────────
 	// A core-NATS request-reply subscriber that handles worker lease requests.
 	// Workers ask for work; handleLeaseRequest selects a batch or parks until
@@ -475,6 +484,51 @@ func (s *Scheduler) Run(ctx context.Context) error {
 func (s *Scheduler) Stop() {
 	if s.cancel != nil {
 		s.cancel()
+	}
+}
+
+// reconcileStuckSteps finalizes, once at start, every step whose tasks are all
+// terminal but which no future task report will ever finalize. v0.3.0 left
+// such steps behind when a step had more than [store.MaxLimit] tasks (H4a F6):
+// completion decided from one page of tasks and never decided at all. Nothing
+// reports on those tasks again, so without this pass the step, its job, the
+// steps behind it and the jobs blocked on it would stay stuck for good.
+//
+// The repair is deliberately not a data migration. Finalizing a step has
+// downstream effects (dependency propagation keyed on step names, the
+// transitive cancel cascade, job finalization, cross-job dependents and
+// WebSocket events), and doing that in SQL would be a second copy of the
+// completion logic that could drift from the first and could not emit events.
+// Each step instead goes through [Scheduler.checkStepCompletion], the path a
+// task report takes, so the repair cannot differ from normal completion.
+//
+// It is idempotent: every write on that path is guarded, and on a healthy farm
+// the one [store.StepStore.ListStuckSteps] query returns nothing and nothing
+// is written. A step that fails is logged and skipped so one bad row cannot
+// block the rest, and it stays stuck, so the next start retries it. Cross-job
+// dependents of a job this pass finalizes are reconciled by the same completion
+// path, with [Scheduler.sweepBlockedJobs] as its backstop.
+func (s *Scheduler) reconcileStuckSteps(ctx context.Context) {
+	steps, err := s.store.ListStuckSteps(ctx)
+	if err != nil {
+		if !errors.Is(err, context.Canceled) {
+			s.logger.WarnContext(ctx, "scheduler: list stuck steps failed", slog.Any("error", err))
+		}
+		return
+	}
+	for _, step := range steps {
+		if ctx.Err() != nil {
+			return // shutting down: whatever is left is picked up by the next start
+		}
+		if err := s.checkStepCompletion(ctx, step.ID, step.JobID); err != nil {
+			if !errors.Is(err, context.Canceled) {
+				s.logger.WarnContext(ctx, "scheduler: reconcile stuck step failed",
+					slog.String("step_id", step.ID), slog.String("job_id", step.JobID), slog.Any("error", err))
+			}
+			continue
+		}
+		s.logger.InfoContext(ctx, "scheduler: reconciled step left stuck by an earlier release",
+			slog.String("step_id", step.ID), slog.String("job_id", step.JobID))
 	}
 }
 
