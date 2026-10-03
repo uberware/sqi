@@ -77,3 +77,13 @@ var ErrNotFound = errors.New("store: not found")
 // ErrConflict is returned when an insert or update would violate a uniqueness
 // constraint (e.g. creating a farm with a name that already exists).
 var ErrConflict = errors.New("store: conflict")
+
+// ErrLastAdmin is returned when a write would leave the farm with no enabled
+// admin account. The guard is evaluated inside the write itself (invariant
+// I4), so two concurrent demotions cannot both pass it.
+var ErrLastAdmin = errors.New("store: would remove the last admin")
+
+// ErrDependencyUnsatisfiable is returned by [JobStore.CreateJobSubmission]
+// when, inside its own transaction, a depends-on upstream job is missing or has
+// already failed or been canceled.
+var ErrDependencyUnsatisfiable = errors.New("store: job dependency can never be satisfied")
