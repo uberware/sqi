@@ -64,20 +64,45 @@ func TestFinalizeStep_AlreadyTerminal(t *testing.T) {
 	}
 }
 
-// TestFinalizeStep_MoreThanMaxLimitTasks pins F6 at the store layer.
+// TestFinalizeStep_MoreThanMaxLimitTasks pins F6 at the store layer. The
+// decisive task is the LAST one, index MaxLimit, so it lies beyond the first
+// page: an implementation that reads only MaxLimit tasks sees all-succeeded and
+// reports the wrong outcome. The all-succeeded case is the plain regression
+// guard and cannot tell a paged read from a full one on its own.
 func TestFinalizeStep_MoreThanMaxLimitTasks(t *testing.T) {
-	tasks := make([]store.TaskStatus, store.MaxLimit+1)
-	for i := range tasks {
-		tasks[i] = store.TaskStatusSucceeded
+	cases := []struct {
+		name    string
+		last    store.TaskStatus
+		want    store.StepStatus
+		changed bool
+	}{
+		{"all succeeded", store.TaskStatusSucceeded, store.StepStatusCompleted, true},
+		{"failed beyond the first page", store.TaskStatusFailed, store.StepStatusFailed, true},
+		{"running beyond the first page", store.TaskStatusRunning, "", false},
 	}
-	for name, st := range newStores(t) {
-		t.Run(name, func(t *testing.T) {
-			g := seedGraph(t, st, graphOpts{}, stepSpec{name: "a", status: store.StepStatusReady, tasks: tasks})
-			got, changed, err := st.FinalizeStep(t.Context(), g.Steps["a"].ID, time.Now().UTC())
-			if err != nil || got != store.StepStatusCompleted || !changed {
-				t.Fatalf("FinalizeStep over %d tasks = (%q, %v, %v), want (completed, true, nil)", len(tasks), got, changed, err)
-			}
-		})
+	for _, tc := range cases {
+		tasks := make([]store.TaskStatus, store.MaxLimit+1)
+		for i := range tasks {
+			tasks[i] = store.TaskStatusSucceeded
+		}
+		tasks[store.MaxLimit] = tc.last
+		for name, st := range newStores(t) {
+			t.Run(tc.name+"/"+name, func(t *testing.T) {
+				g := seedGraph(t, st, graphOpts{}, stepSpec{name: "a", status: store.StepStatusReady, tasks: tasks})
+				got, changed, err := st.FinalizeStep(t.Context(), g.Steps["a"].ID, time.Now().UTC())
+				if err != nil || got != tc.want || changed != tc.changed {
+					t.Fatalf("FinalizeStep over %d tasks = (%q, %v, %v), want (%q, %v, nil)",
+						len(tasks), got, changed, err, tc.want, tc.changed)
+				}
+				wantRow := store.StepStatusReady
+				if tc.changed {
+					wantRow = tc.want
+				}
+				if row := mustStep(t, st, g.Steps["a"].ID).Status; row != wantRow {
+					t.Fatalf("step row = %q, want %q", row, wantRow)
+				}
+			})
+		}
 	}
 }
 
