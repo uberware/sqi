@@ -49,7 +49,7 @@ type jobDepsHarness struct {
 // touches it).
 func newJobDepsHarness(t *testing.T) *jobDepsHarness {
 	t.Helper()
-	st := fakestore.New()
+	st := newCheckedFake(t)
 	n := &retryNotifier{}
 	sched := New(
 		DefaultConfig(),
