@@ -510,8 +510,9 @@ func (s *Scheduler) Stop() {
 // It is idempotent: every write on that path is guarded, and on a farm with no
 // such steps the one [store.StepStore.ListStuckSteps] query returns nothing and
 // nothing is written. Steps of jobs that are already terminal are deliberately
-// ignored: canceling a job leaves its steps non-terminal, so they would
-// otherwise be rewritten on every start. Such a step is not harmless (a later
+// ignored: canceling a job does not itself finalize its steps, so every start
+// would otherwise write the steps of each job canceled since the start before
+// it. Such a step is not harmless (a later
 // retry of the canceled job can revive its tasks to pending under a step that
 // is never released, a bug that predates H4a), but its root cause is the cancel
 // path not finalizing steps, which this pass does not repair. A step that

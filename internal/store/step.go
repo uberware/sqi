@@ -163,12 +163,13 @@ type StepStore interface {
 	// trigger. Used once at scheduler start. Ordered by job ID, then step order.
 	//
 	// The job condition is deliberate. Canceling a job writes its tasks and its
-	// job row but never its steps, so the steps of every user-canceled job stay
-	// ready or pending with all tasks terminal and would all be listed, and
-	// rewritten, on every start. The repair target is a live job whose step
-	// never finalized (so the job never completed); a terminal job has no
-	// downstream that needs its steps finalized, and jobs blocked on it follow
-	// its job status. A paused job is live and is listed. A step whose job row
-	// is missing is not listed.
+	// job row but not its steps (one finalizes only if a worker report for one
+	// of its tasks arrives afterwards), so a user-canceled job's steps can stay
+	// ready or pending with all tasks terminal, and every start would list and
+	// rewrite those of each job canceled since the start before it. The repair
+	// target is a live job whose step never finalized (so the job never
+	// completed); a terminal job has no downstream that needs its steps
+	// finalized, and jobs blocked on it follow its job status. A paused job is
+	// live and is listed. A step whose job row is missing is not listed.
 	ListStuckSteps(ctx context.Context) ([]Step, error)
 }

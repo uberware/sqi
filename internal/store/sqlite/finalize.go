@@ -47,10 +47,11 @@ RETURNING status`
 	// sqlListStuckSteps selects the steps sqlFinalizeStep would finalize now,
 	// restricted to steps of a job that is not itself terminal. The job
 	// condition is what keeps a healthy farm quiet: canceling a job writes its
-	// tasks and its job row but never its steps, so every step of a canceled job
-	// still in retention looks stuck by its tasks alone and would be rewritten
-	// for nothing. A terminal job has no downstream that needs its steps
-	// finalized, and its cross-job dependents follow the job's own status.
+	// tasks and its job row but never its steps, so a canceled job's open steps
+	// look stuck by their tasks alone, and every start would rewrite those of
+	// each job canceled since the start before it. A terminal job has no
+	// downstream that needs its steps finalized, and its cross-job dependents
+	// follow the job's own status.
 	sqlListStuckSteps = `SELECT ` + stepCols + `
 FROM   steps
 WHERE  status NOT IN ('completed', 'failed', 'canceled')
