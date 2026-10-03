@@ -168,9 +168,10 @@ WHERE  job_id = ? AND status = 'failed' AND failure_reason != ''
 GROUP  BY failure_reason
 ORDER  BY n DESC, failure_reason ASC`
 
-	// Cancels all non-terminal tasks for a job and returns the number of rows
-	// updated. The caller first SELECTs active tasks within the same
-	// transaction to capture worker IDs before this UPDATE clears them.
+	// Cancels all non-terminal tasks for a job. Both [Store.CancelJobExecution]
+	// and the [Store.CancelJobTasks] fixture run it, each first SELECTing the
+	// active tasks within the same transaction to capture worker IDs before this
+	// UPDATE clears them.
 	// The reason is stamped only on rows with no failure_reason yet, so a more
 	// specific cause recorded earlier (e.g. a cascade-cancel) survives.
 	sqlCancelJobTasks = `
@@ -521,7 +522,7 @@ func (s *Store) ReclaimWorkerTasks(ctx context.Context, workerID string) (int, e
 // The SELECT and UPDATE run inside a single SQLite transaction so a concurrent
 // "running" status update cannot slip a task out of 'assigned' between the
 // observation and the reset; the UPDATE's status guard keeps the returned set
-// and the reclaimed set identical. Mirrors [Store.CancelJobTasks].
+// and the reclaimed set identical. Mirrors [Store.CancelJobExecution].
 func (s *Store) ReclaimStaleAssignedTasks(ctx context.Context, cutoff time.Time) ([]store.Task, error) {
 	cutoffText := timeToText(cutoff.UTC())
 

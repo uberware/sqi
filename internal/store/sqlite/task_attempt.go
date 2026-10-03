@@ -90,8 +90,10 @@ WHERE status = 'running'
   )`
 
 	// sqlCancelJobAttempts closes out all running attempts for tasks belonging
-	// to the given job. It is the fixture method's statement; the job cancel
-	// runs [sqlCancelJobRunningAttempts] after the tasks are canceled.
+	// to the given job, not only those of tasks a cancel just moved: an attempt
+	// left open on a task that is already terminal is the same leak. It is the
+	// one statement behind both [Store.CancelJobExecution], which runs it after
+	// the tasks are canceled, and the [Store.CancelJobAttempts] fixture.
 	sqlCancelJobAttempts = `
 UPDATE task_attempts
 SET    status = 'canceled', ended_at = ?

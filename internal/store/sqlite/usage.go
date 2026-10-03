@@ -160,8 +160,9 @@ SET released_at = ?
 WHERE task_attempt_id = ? AND released_at IS NULL`
 
 	// Releases all active claims held by any attempt belonging to the given
-	// job. Used during job cancellation to free all usage pool slots in
-	// a single UPDATE rather than iterating through individual attempts.
+	// job, whatever the attempt's status. It backs only the [Store.ReleaseJobClaims]
+	// fixture; the job cancel runs [sqlReleaseClosedJobClaims], which releases
+	// only the claims of attempts that are no longer running.
 	sqlReleaseJobClaims = `
 UPDATE usage_claims
 SET    released_at = ?

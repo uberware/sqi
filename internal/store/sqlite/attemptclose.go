@@ -175,13 +175,6 @@ const (
 	// clears it, and SQLite's RETURNING cannot report the pre-update value (I2).
 	sqlSelectActiveJobTasks = `SELECT ` + taskCols + ` FROM tasks WHERE job_id = ? AND status IN ('assigned', 'running')`
 
-	// sqlCancelJobRunningAttempts closes every running attempt of the job's
-	// tasks, not only those of the tasks the cancel just moved: an attempt left
-	// open on a task that is already terminal is the same leak.
-	sqlCancelJobRunningAttempts = `
-UPDATE task_attempts SET status = 'canceled', ended_at = ?
-WHERE  status = 'running' AND task_id IN (SELECT id FROM tasks WHERE job_id = ?)`
-
 	// sqlReleaseClosedJobClaims releases the claims of the job's attempts that
 	// are no longer running (I3). The status guard means a claim is never
 	// released while its attempt is still open.
@@ -240,7 +233,7 @@ func (s *Store) CancelJobExecution(ctx context.Context, jobID, reason string, no
 	if _, err := tx.ExecContext(ctx, sqlCancelJobTasks, nowText, reason, jobID); err != nil {
 		return nil, fmt.Errorf("sqlite: cancel tasks of job %s: %w", jobID, mapErr(err))
 	}
-	if _, err := tx.ExecContext(ctx, sqlCancelJobRunningAttempts, nowText, jobID); err != nil {
+	if _, err := tx.ExecContext(ctx, sqlCancelJobAttempts, nowText, jobID); err != nil {
 		return nil, fmt.Errorf("sqlite: close attempts of job %s: %w", jobID, mapErr(err))
 	}
 	if _, err := tx.ExecContext(ctx, sqlReleaseClosedJobClaims, nowText, jobID); err != nil {
