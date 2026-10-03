@@ -17,7 +17,14 @@ func (s *Store) LatestTaskAttempt(ctx context.Context, taskID string) (store.Tas
 	return out, mapErr(err)
 }
 
-// TerminateWorkerAttempts implements [store.TaskAttemptStore].
+// TerminateWorkerAttempts closes every running attempt of the tasks currently
+// assigned to workerID with the given status and end time, recording
+// [store.FailureReasonWorkerOffline] as the message, and returns how many it
+// closed. It releases no claims and leaves the tasks alone; a worker is taken
+// offline through [Store.OfflineStaleWorker] and [Store.OfflineWorker], which do
+// all three in one transaction.
+//
+// Test fixture only: a blind write that is not part of store.Store (H4a). H4b decides its fate.
 func (s *Store) TerminateWorkerAttempts(ctx context.Context, workerID string, status store.AttemptStatus, endedAt time.Time) (int, error) {
 	res, err := s.stmtTerminateWorkerAttempts.ExecContext(ctx, string(status), timeToText(endedAt), store.FailureReasonWorkerOffline, workerID)
 	if err != nil {

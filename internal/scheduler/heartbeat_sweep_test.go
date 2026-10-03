@@ -43,13 +43,22 @@ func (n *jobRecordingNotifier) hasJobStatus(jobID, status string) bool {
 }
 
 // seedStaleWorkerWithTask registers an online worker whose last heartbeat is
-// older than the given cutoff age, plus an assigned task and a running attempt
-// on that worker. Returns the worker and task IDs.
-func seedStaleWorkerWithTask(t *testing.T, st *fake.Store, age time.Duration) (workerID, taskID, attemptID string) {
+// older than the given age (an age of 0 is a heartbeat that just arrived), plus
+// a running task and a running attempt on that worker, in farm-1 and queue-1.
+// It works on any backend, so it creates the farm and queue rows a real SQLite
+// store's foreign keys need. Returns the worker, task and attempt IDs.
+func seedStaleWorkerWithTask(t *testing.T, st store.Store, age time.Duration) (workerID, taskID, attemptID string) {
 	t.Helper()
 	ctx := t.Context()
 	now := time.Now().UTC()
 	stale := now.Add(-age)
+
+	if _, err := st.CreateFarm(ctx, store.Farm{ID: "farm-1", Name: "farm-1"}); err != nil {
+		t.Fatalf("CreateFarm: %v", err)
+	}
+	if _, err := st.CreateQueue(ctx, store.Queue{ID: "queue-1", FarmID: "farm-1", Name: "queue-1"}); err != nil {
+		t.Fatalf("CreateQueue: %v", err)
+	}
 
 	workerID = "w-stale"
 	if _, err := st.RegisterWorker(ctx, store.Worker{
@@ -572,5 +581,51 @@ func TestSweepThenDemote_StalledJobReturnsToPending(t *testing.T) {
 	}
 	if !found {
 		t.Errorf("no pending JobEvent emitted for %q; events = %+v", jobID, notifier.jobs)
+	}
+}
+
+// offlineErrSt makes OfflineStaleWorker fail for one worker, to exercise the
+// sweep's per-worker error path.
+type offlineErrSt struct {
+	store.Store
+
+	failFor string
+}
+
+func (s *offlineErrSt) OfflineStaleWorker(ctx context.Context, id string, cutoff, now time.Time) ([]store.Task, bool, error) {
+	if id == s.failFor {
+		return nil, false, errors.New("store unavailable")
+	}
+	return s.Store.OfflineStaleWorker(ctx, id, cutoff, now)
+}
+
+// TestSweepStaleWorkers_AnnouncesOnlyWorkersTakenOffline pins what the sweep
+// reports. A worker the store took offline is announced with its identity; a
+// worker whose offline transition failed is left online, not announced, and does
+// not stop the sweep from handling the next one.
+func TestSweepStaleWorkers_AnnouncesOnlyWorkersTakenOffline(t *testing.T) {
+	st := fake.New()
+	rec := &workerRecordingNotifier{}
+	s := newRetentionScheduler(&offlineErrSt{Store: st, failFor: "w-broken"}, time.Hour, rec)
+
+	seedWorkerWithHeartbeat(t, st, "w-broken", store.WorkerStatusOnline, time.Hour)
+	seedWorkerWithHeartbeat(t, st, "w-dead", store.WorkerStatusOnline, time.Hour)
+
+	s.sweepStaleWorkers(t.Context())
+
+	for id, want := range map[string]store.WorkerStatus{"w-broken": store.WorkerStatusOnline, "w-dead": store.WorkerStatusOffline} {
+		w, err := st.GetWorker(t.Context(), id)
+		if err != nil {
+			t.Fatalf("GetWorker %s: %v", id, err)
+		}
+		if w.Status != want {
+			t.Errorf("worker %s = %q, want %q", id, w.Status, want)
+		}
+	}
+	if len(rec.workers) != 1 {
+		t.Fatalf("worker events = %+v, want exactly one, for the worker taken offline", rec.workers)
+	}
+	if e := rec.workers[0]; e.WorkerID != "w-dead" || e.Hostname != "w-dead" || e.FarmID != "farm-1" || e.Status != string(store.WorkerStatusOffline) {
+		t.Errorf("worker event = %+v, want an offline event for w-dead carrying its hostname and farm", e)
 	}
 }

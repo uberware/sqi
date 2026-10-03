@@ -228,12 +228,18 @@ func (h *failureHarness) reassignAndReportFailed(taskID, workerID string) {
 	h.reportFailed(taskID)
 }
 
-// reclaimWorker drives the existing offline-worker reclaim path directly
-// (the same call sweepStaleWorkers makes once a worker's heartbeat goes
-// stale) — a "lost work" event distinct from a worker-reported failure.
+// reclaimWorker takes the worker offline through the store call the graceful
+// deregister makes (the same transition sweepStaleWorkers makes once a worker's
+// heartbeat goes stale, minus the staleness guard), then reports the reclaim as
+// the scheduler does: a "lost work" event distinct from a worker-reported
+// failure.
 func (h *failureHarness) reclaimWorker(workerID string) {
 	h.t.Helper()
-	h.s.reclaimOfflineWorkerTasks(h.t.Context(), workerID, workerID)
+	reclaimed, err := h.st.OfflineWorker(h.t.Context(), workerID, time.Now().UTC())
+	if err != nil {
+		h.t.Fatalf("OfflineWorker(%s): %v", workerID, err)
+	}
+	h.s.reclaimOfflineWorkerTasks(h.t.Context(), workerID, workerID, reclaimed)
 }
 
 func (h *failureHarness) taskStatus(taskID string) store.TaskStatus {

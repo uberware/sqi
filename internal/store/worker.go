@@ -177,7 +177,11 @@ type WorkerStore interface {
 	UpdateWorker(ctx context.Context, worker Worker) (Worker, error)
 
 	// UpdateWorkerStatus sets the status of the worker and updates UpdatedAt.
-	// Returns [ErrNotFound] if the worker does not exist.
+	// Returns [ErrNotFound] if the worker does not exist. It is a plain status
+	// write that touches nothing else: it is the admin enable/disable path, and
+	// it must not be used to take a worker offline, because it would leave the
+	// worker's tasks, attempts and usage claims behind. Use
+	// [WorkerStore.OfflineStaleWorker] or [WorkerStore.OfflineWorker] for that.
 	UpdateWorkerStatus(ctx context.Context, id string, status WorkerStatus) error
 
 	// UpdateWorkerHeartbeat records the most recent heartbeat time for the
@@ -187,8 +191,45 @@ type WorkerStore interface {
 
 	// ListStaleWorkers returns workers whose last heartbeat is older than
 	// before and whose status is [WorkerStatusOnline]. Used by the heartbeat
-	// timeout sweep to find workers to mark offline.
+	// timeout sweep to find workers to mark offline. The result is a candidate
+	// list only; [WorkerStore.OfflineStaleWorker] re-checks staleness inside its
+	// own write.
 	ListStaleWorkers(ctx context.Context, before time.Time) ([]Worker, error)
+
+	// OfflineStaleWorker takes a worker offline if, and only if, it is still
+	// stale: the write is guarded by status = [WorkerStatusOnline] AND a
+	// last_heartbeat_at strictly older than cutoff, so a heartbeat or a
+	// re-registration that landed after the caller listed its candidates keeps
+	// the worker online and its tasks running (invariant I1).
+	//
+	// When the guard matches, the same transaction closes the running attempts
+	// of the worker's [TaskStatusAssigned] and [TaskStatusRunning] tasks as
+	// [AttemptStatusFailed] with the message [FailureReasonWorkerOffline],
+	// releases the claims of those attempts (invariant I3), and returns the
+	// tasks to [TaskStatusReady] with their worker cleared. It returns exactly
+	// the tasks it reclaimed (invariant I2), as they are after the reset, and
+	// true. When the guard does not match (the worker is unknown, is not online,
+	// or has a heartbeat at or after cutoff) nothing is written and it returns
+	// (nil, false, nil). A worker with no recorded heartbeat is never stale.
+	//
+	// now stamps the worker's and the reclaimed tasks' updated_at, the closed
+	// attempts' ended_at and the released claims' released_at.
+	//
+	// Anchor rows and statement order (spec 4.1): the worker row first, then each
+	// affected job row sorted by id; within the transaction the worker is marked
+	// offline, the tasks are reclaimed, and only then are their attempts closed
+	// and their claims released. See the SQLite implementation for the exact
+	// Postgres order.
+	OfflineStaleWorker(ctx context.Context, id string, cutoff, now time.Time) ([]Task, bool, error)
+
+	// OfflineWorker is the unconditional sibling of [WorkerStore.OfflineStaleWorker]
+	// for a graceful deregister: the worker is taken offline whatever its status
+	// and heartbeat, and its in-flight tasks are reclaimed exactly as
+	// OfflineStaleWorker reclaims them (attempts closed, claims released, tasks
+	// back to ready). It returns the reclaimed tasks as they are after the reset,
+	// or [ErrNotFound] for an unknown worker. A worker that is already offline is
+	// not an error: it has nothing left to reclaim and the call returns no tasks.
+	OfflineWorker(ctx context.Context, id string, now time.Time) ([]Task, error)
 
 	// CountIdleWorkers returns the number of online workers in the given farm
 	// that have no task currently in [TaskStatusAssigned] or

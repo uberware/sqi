@@ -213,8 +213,16 @@ WHERE  released_at IS NULL
 // the claims of every attempt of the task that is no longer running. The
 // release is by attempt status, so a claim is never released while its attempt
 // is open, and it also repairs a claim an earlier close left on a finished
-// attempt. The task row must already have left assigned/running, so a lease
-// cannot be adding an attempt behind this close.
+// attempt. A non-empty message is recorded over the attempt's own; an empty one
+// leaves it.
+//
+// Callers run it AFTER writing the task row in the same transaction (a cancel to
+// canceled, a reap or an offline reclaim to ready), and that write is the
+// guarantee: it holds the task row until commit, so no lease can add an attempt
+// to the task behind this close. A lease that committed before the write is
+// waited for and its attempt is closed here; one that starts after it blocks
+// until commit and then opens a new attempt of its own, which this close never
+// sees.
 func closeTaskAttemptsTx(ctx context.Context, tx *sql.Tx, taskID string, status store.AttemptStatus, message, nowText string) error {
 	if _, err := tx.ExecContext(ctx, sqlCloseTaskRunningAttempts, string(status), nowText, message, taskID); err != nil {
 		return fmt.Errorf("sqlite: close attempts of task %s: %w", taskID, mapErr(err))
@@ -315,4 +323,144 @@ func (s *Store) CancelTaskExecution(ctx context.Context, taskID, reason string, 
 		return store.Task{}, false, fmt.Errorf("sqlite: commit cancel task execution: %w", mapErr(err))
 	}
 	return prior, true, nil
+}
+
+const (
+	// sqlOfflineStaleWorker is the I1 guard for the heartbeat sweep's write: the
+	// worker goes offline only while it is still online and its heartbeat is still
+	// older than the cutoff. A NULL heartbeat compares false, so a worker with no
+	// recorded heartbeat is never stale. Its binds are updated_at, id, cutoff.
+	sqlOfflineStaleWorker = `
+UPDATE workers SET status = 'offline', updated_at = ?
+WHERE  id = ? AND status = 'online' AND last_heartbeat_at < ?`
+
+	// sqlOfflineWorker is the unconditional write behind a graceful deregister.
+	// Its binds are updated_at, id.
+	sqlOfflineWorker = `UPDATE workers SET status = 'offline', updated_at = ? WHERE id = ?`
+
+	// sqlReclaimWorkerTasksReturning returns a worker's in-flight tasks to ready
+	// and RETURNING hands back exactly the rows it changed, as they are after the
+	// reset (I2). Its binds are updated_at, worker id.
+	sqlReclaimWorkerTasksReturning = sqlReclaimWorkerTasks + `
+RETURNING ` + taskCols
+
+	// sqlWorkerInFlightJobIDs lists, sorted and without repeats, the jobs the
+	// worker's assigned and running tasks belong to: the job rows an offline
+	// transition anchors.
+	sqlWorkerInFlightJobIDs = `
+SELECT DISTINCT job_id FROM tasks
+WHERE  assigned_worker_id = ? AND status IN ('assigned', 'running')
+ORDER BY job_id`
+)
+
+// OfflineStaleWorker implements [store.WorkerStore].
+func (s *Store) OfflineStaleWorker(ctx context.Context, id string, cutoff, now time.Time) ([]store.Task, bool, error) {
+	return s.offlineWorker(ctx, id, now, sqlOfflineStaleWorker, timeToText(now.UTC()), id, timeToText(cutoff.UTC()))
+}
+
+// OfflineWorker implements [store.WorkerStore].
+func (s *Store) OfflineWorker(ctx context.Context, id string, now time.Time) ([]store.Task, error) {
+	tasks, ok, err := s.offlineWorker(ctx, id, now, sqlOfflineWorker, timeToText(now.UTC()), id)
+	if err != nil {
+		return nil, err
+	}
+	if !ok {
+		return nil, store.ErrNotFound
+	}
+	return tasks, nil
+}
+
+// offlineWorker takes the worker offline with the given guarded statement and,
+// only if that statement matched, closes the attempts of its in-flight tasks,
+// releases their claims and returns the tasks to ready, all in one transaction
+// (invariants I1, I2 and I3). The bool is whether the worker was taken offline.
+//
+// Anchors and statement order (spec 4.1): the worker row first, then each job row
+// the worker's tasks belong to, sorted by id; the statements run worker, tasks,
+// then attempts and claims. The tasks are reclaimed before their attempts are
+// closed so that, on Postgres, a LeaseTask or a terminal report holding one of
+// them is waited for by the reclaim's UPDATE, and the attempt and claims it
+// committed are seen by the statements after it. Closing attempts first would
+// miss an attempt added in between.
+//
+// What H4c must do on Postgres. The marking UPDATE takes the worker row lock
+// itself, so the worker anchor is already first. The in-flight job IDs are read
+// UNLOCKED, after the worker row is held and before any task row is touched, and
+// the job rows are locked sorted before the reclaim UPDATE; a task row locked
+// before its job row is the inversion every job-level operation would deadlock
+// on. That read is only a candidate set: a task leased to this worker after it
+// has an unanchored job row, because LeaseTask does not take the worker row.
+// H4c must either have LeaseTask take the worker row FOR SHARE, or re-read the
+// set once the worker row is held and repeat until it is stable. None of that
+// can arise here: the single write connection serializes every writer, so the
+// set read below cannot change before the reclaim, and lockAnchors does nothing.
+func (s *Store) offlineWorker(ctx context.Context, id string, now time.Time, markSQL string, markArgs ...any) ([]store.Task, bool, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, false, fmt.Errorf("sqlite: begin offline worker: %w", mapErr(err))
+	}
+	defer func() { _ = tx.Rollback() }() //nolint:errcheck // rollback after commit is a no-op
+
+	// Order (spec 4.1): the worker row, then the guarded mark, then the job rows,
+	// then the tasks, attempts and claims. See the doc comment.
+	if err := lockAnchors(ctx, tx, workerAnchor(id)); err != nil {
+		return nil, false, err
+	}
+	res, err := tx.ExecContext(ctx, markSQL, markArgs...)
+	if err != nil {
+		return nil, false, fmt.Errorf("sqlite: mark worker %s offline: %w", id, mapErr(err))
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return nil, false, fmt.Errorf("sqlite: mark worker %s offline: %w", id, mapErr(err))
+	}
+	if n == 0 {
+		// The guard did not match (unknown worker, not online, or a fresh
+		// heartbeat): nothing was written and the deferred rollback ends the
+		// transaction.
+		return nil, false, nil
+	}
+	jobAnchors, err := workerJobAnchorsTx(ctx, tx, id)
+	if err != nil {
+		return nil, false, err
+	}
+	if err := lockAnchors(ctx, tx, jobAnchors...); err != nil {
+		return nil, false, err
+	}
+	nowText := timeToText(now.UTC())
+	reclaimed, err := queryTasksTx(ctx, tx, sqlReclaimWorkerTasksReturning, nowText, id)
+	if err != nil {
+		return nil, false, fmt.Errorf("sqlite: reclaim tasks of worker %s: %w", id, err)
+	}
+	for _, t := range reclaimed {
+		if err := closeTaskAttemptsTx(ctx, tx, t.ID, store.AttemptStatusFailed, store.FailureReasonWorkerOffline, nowText); err != nil {
+			return nil, false, err
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, false, fmt.Errorf("sqlite: commit offline worker: %w", mapErr(err))
+	}
+	return reclaimed, true, nil
+}
+
+// workerJobAnchorsTx returns the job-row anchors of the jobs the worker's
+// assigned and running tasks belong to, sorted by id.
+func workerJobAnchorsTx(ctx context.Context, tx *sql.Tx, workerID string) ([]anchor, error) {
+	rows, err := tx.QueryContext(ctx, sqlWorkerInFlightJobIDs, workerID)
+	if err != nil {
+		return nil, fmt.Errorf("sqlite: list in-flight jobs of worker %s: %w", workerID, mapErr(err))
+	}
+	defer rows.Close()
+	var anchors []anchor
+	for rows.Next() {
+		var jobID string
+		if err := rows.Scan(&jobID); err != nil {
+			return nil, fmt.Errorf("sqlite: scan in-flight job of worker %s: %w", workerID, err)
+		}
+		anchors = append(anchors, jobAnchor(jobID))
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("sqlite: list in-flight jobs of worker %s: %w", workerID, mapErr(err))
+	}
+	return anchors, nil
 }

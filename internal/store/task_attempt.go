@@ -67,11 +67,4 @@ type TaskAttemptStore interface {
 	// UpdateTaskAttempt replaces the mutable fields of an existing attempt
 	// (Status, ExitCode, EndedAt). Returns [ErrNotFound] if it does not exist.
 	UpdateTaskAttempt(ctx context.Context, attempt TaskAttempt) (TaskAttempt, error)
-
-	// TerminateWorkerAttempts marks all running [TaskAttempt] records for tasks
-	// currently assigned to workerID as the given terminal status with the
-	// supplied end time. Called by the heartbeat sweep before reclaiming tasks
-	// from an offline worker so that each attempt has a closed EndedAt.
-	// Returns the number of attempts updated.
-	TerminateWorkerAttempts(ctx context.Context, workerID string, status AttemptStatus, endedAt time.Time) (int, error)
 }

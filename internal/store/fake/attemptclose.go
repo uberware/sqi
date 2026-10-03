@@ -123,7 +123,7 @@ func (s *Store) CancelJobExecution(_ context.Context, jobID, reason string, now 
 		}
 		s.cancelTaskRowLocked(id, reason, now, true)
 	}
-	s.closeAttemptsAndReleaseClaimsLocked(func(taskID string) bool { return s.tasks[taskID].JobID == jobID }, store.AttemptStatusCanceled, now)
+	s.closeAttemptsAndReleaseClaimsLocked(func(taskID string) bool { return s.tasks[taskID].JobID == jobID }, store.AttemptStatusCanceled, "", now)
 	return active, nil
 }
 
@@ -148,7 +148,7 @@ func (s *Store) CancelTaskExecution(_ context.Context, taskID, reason string, no
 	// Same order as the job cancel: the task, then its attempt, then the claims.
 	now = now.UTC()
 	s.cancelTaskRowLocked(taskID, reason, now, false)
-	s.closeAttemptsAndReleaseClaimsLocked(func(id string) bool { return id == taskID }, store.AttemptStatusCanceled, now)
+	s.closeAttemptsAndReleaseClaimsLocked(func(id string) bool { return id == taskID }, store.AttemptStatusCanceled, "", now)
 	return prior, true, nil
 }
 
@@ -168,18 +168,24 @@ func (s *Store) cancelTaskRowLocked(taskID, reason string, now time.Time, clearA
 	s.tasks[taskID] = t
 }
 
-// closeAttemptsAndReleaseClaimsLocked is invariant I3 for a cancel or a reap: it
-// closes every running attempt whose task matches with status, ended at now, and
-// then releases the active claims of every matching attempt that is no longer
-// running. The release is by attempt status, as SQLite's is, so a claim is never
-// released while its attempt is open. Caller holds s.mu.
-func (s *Store) closeAttemptsAndReleaseClaimsLocked(matches func(taskID string) bool, status store.AttemptStatus, now time.Time) {
+// closeAttemptsAndReleaseClaimsLocked is invariant I3 for a cancel, a reap or an
+// offline reclaim: it closes every running attempt whose task matches with
+// status, ended at now, and then releases the active claims of every matching
+// attempt that is no longer running. The release is by attempt status, as
+// SQLite's is, so a claim is never released while its attempt is open. A
+// non-empty message is recorded over the attempt's own and an empty one leaves
+// it, as SQLite's close does (it keeps the stored message when given none).
+// Caller holds s.mu.
+func (s *Store) closeAttemptsAndReleaseClaimsLocked(matches func(taskID string) bool, status store.AttemptStatus, message string, now time.Time) {
 	for id, a := range s.taskAttempts {
 		if !matches(a.TaskID) || a.Status != store.AttemptStatusRunning {
 			continue
 		}
 		ended := now
 		a.Status, a.EndedAt = status, &ended
+		if message != "" {
+			a.Message = message
+		}
 		s.taskAttempts[id] = a
 	}
 	for id, a := range s.taskAttempts {
@@ -187,4 +193,69 @@ func (s *Store) closeAttemptsAndReleaseClaimsLocked(matches func(taskID string) 
 			s.releaseAttemptClaimsLocked(id, now)
 		}
 	}
+}
+
+// OfflineStaleWorker implements [store.WorkerStore].
+//
+// The outcomes match the SQLite store's, which is the reference: the worker goes
+// offline only while it is online and its heartbeat is strictly older than
+// cutoff (a worker with no recorded heartbeat is never stale, as SQL's NULL
+// comparison has it, and an unknown worker is simply not stale); otherwise
+// nothing is written. See [Store.offlineWorkerLocked] for what a match does.
+func (s *Store) OfflineStaleWorker(_ context.Context, id string, cutoff, now time.Time) ([]store.Task, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	w, ok := s.workers[id]
+	if !ok || w.Status != store.WorkerStatusOnline || w.LastHeartbeatAt == nil || !w.LastHeartbeatAt.Before(cutoff) {
+		return nil, false, nil
+	}
+	return s.offlineWorkerLocked(id, now), true, nil
+}
+
+// OfflineWorker implements [store.WorkerStore]. An unknown worker is
+// [store.ErrNotFound], as SQLite's zero-row mark is; any known worker, whatever
+// its status, goes offline.
+func (s *Store) OfflineWorker(_ context.Context, id string, now time.Time) ([]store.Task, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if _, ok := s.workers[id]; !ok {
+		return nil, store.ErrNotFound
+	}
+	return s.offlineWorkerLocked(id, now), nil
+}
+
+// offlineWorkerLocked takes the worker offline, returns its assigned and running
+// tasks to ready, then closes those tasks' running attempts as failed with
+// [store.FailureReasonWorkerOffline] and releases the claims of their closed
+// attempts (invariant I3). It returns the reclaimed tasks as they are after the
+// reset, as SQLite's RETURNING does. The order mirrors SQLite's (spec 4.1): the
+// worker, the tasks, then the attempts and claims; the store lock stands in for
+// the worker-row and job-row anchors. Caller holds s.mu and has checked the
+// worker exists.
+func (s *Store) offlineWorkerLocked(id string, now time.Time) []store.Task {
+	now = now.UTC() // SQLite stores and returns these times in UTC
+	w := s.workers[id]
+	w.Status, w.UpdatedAt = store.WorkerStatusOffline, now
+	s.workers[id] = w
+
+	reclaimed := make(map[string]bool)
+	var out []store.Task
+	for taskID, t := range s.tasks {
+		if t.AssignedWorkerID != id || (t.Status != store.TaskStatusAssigned && t.Status != store.TaskStatusRunning) {
+			continue
+		}
+		t.Status, t.AssignedWorkerID, t.AssignedAt, t.UnschedulableReason, t.UpdatedAt = store.TaskStatusReady, "", nil, "", now
+		s.tasks[taskID] = t
+		reclaimed[taskID] = true
+		row := t
+		row.Parameters = copyMap(t.Parameters)
+		out = append(out, row)
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	s.closeAttemptsAndReleaseClaimsLocked(func(taskID string) bool { return reclaimed[taskID] }, store.AttemptStatusFailed, store.FailureReasonWorkerOffline, now)
+	return out
 }

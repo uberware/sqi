@@ -311,16 +311,20 @@ func TestReclaimOfflineWorkerTasks_WakesParkedWaiters(t *testing.T) {
 	one := 1
 	w, _ := seedLeaseFixture(t, st, []*int{&one, &one})
 
-	// Assign the worker's tasks so reclaim has work to return (n > 0).
+	// Assign the worker's tasks so the offline transition has work to return.
 	if _, err := s.selectLeaseBatch(t.Context(), w); err != nil {
 		t.Fatalf("selectLeaseBatch: %v", err)
+	}
+	reclaimed, err := st.OfflineWorker(t.Context(), w.ID, time.Now().UTC())
+	if err != nil || len(reclaimed) != 2 {
+		t.Fatalf("OfflineWorker = (%d tasks, %v), want the worker's 2 leased tasks", len(reclaimed), err)
 	}
 
 	woke := make(chan bool, 1)
 	go func() { woke <- s.waiters.wait(context.Background(), "q1", time.Second) }()
 	time.Sleep(20 * time.Millisecond) // let the waiter park
 
-	s.reclaimOfflineWorkerTasks(t.Context(), w.ID, w.Hostname)
+	s.reclaimOfflineWorkerTasks(t.Context(), w.ID, w.Hostname, reclaimed)
 
 	select {
 	case got := <-woke:
@@ -329,6 +333,26 @@ func TestReclaimOfflineWorkerTasks_WakesParkedWaiters(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("waiter did not return after reclaim")
+	}
+}
+
+// TestReclaimOfflineWorkerTasks_NothingReclaimedDoesNotWake pins the other
+// branch: a worker that went offline holding nothing returns no tasks to the
+// ready queue, so there is nothing for a parked waiter to re-lease and no wake.
+func TestReclaimOfflineWorkerTasks_NothingReclaimedDoesNotWake(t *testing.T) {
+	st := fake.New()
+	s := newMetricsScheduler(st, &recordBus{}, "f1")
+	one := 1
+	w, _ := seedLeaseFixture(t, st, []*int{&one})
+
+	woke := parkWaiter(t, s, "q1")
+
+	s.reclaimOfflineWorkerTasks(t.Context(), w.ID, w.Hostname, nil)
+
+	select {
+	case <-woke:
+		t.Fatal("a waiter was woken although no task came back to ready")
+	case <-time.After(100 * time.Millisecond):
 	}
 }
 

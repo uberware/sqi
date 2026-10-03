@@ -260,13 +260,6 @@ type TaskStore interface {
 	// Used by the scheduler's assignment loop.
 	ListReadyTasks(ctx context.Context, farmID string, now time.Time, limit int) ([]Task, error)
 
-	// ReclaimWorkerTasks resets all tasks assigned to workerID that are still
-	// in [TaskStatusAssigned] or [TaskStatusRunning] back to [TaskStatusReady]
-	// so they can be reassigned by the scheduler. Called by the heartbeat
-	// timeout sweep after a worker is marked offline.
-	// Returns the number of tasks reclaimed.
-	ReclaimWorkerTasks(ctx context.Context, workerID string) (int, error)
-
 	// ReclaimStaleAssignedTasks returns tasks stuck in [TaskStatusAssigned] whose
 	// assigned_at is older than cutoff to [TaskStatusReady], clearing
 	// assigned_worker_id and assigned_at so the scheduler can reassign them.

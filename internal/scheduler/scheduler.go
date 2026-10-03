@@ -20,10 +20,12 @@
 //
 //  3. Heartbeat sweep: a NATS push-consumer that updates each worker's
 //     LastHeartbeatAt on worker.heartbeat messages, paired with a periodic
-//     timer that marks workers offline once their heartbeat goes stale
-//     ([store.WorkerStore.ListStaleWorkers]), terminates their open attempts
-//     ([store.TaskAttemptStore.TerminateWorkerAttempts]), and returns their
-//     in-flight tasks to the ready queue ([store.TaskStore.ReclaimWorkerTasks]).
+//     timer that finds workers whose heartbeat has gone stale
+//     ([store.WorkerStore.ListStaleWorkers], a candidate list only) and takes
+//     each offline with [store.WorkerStore.OfflineStaleWorker], which re-checks
+//     the heartbeat inside its write, closes the worker's open attempts,
+//     releases their usage claims and returns its in-flight tasks to the ready
+//     queue in one transaction.
 //     The same tick refreshes the queue-depth, idle-worker, and usage-claim
 //     Prometheus gauges.
 //
@@ -876,7 +878,8 @@ func (s *Scheduler) touchWorkerCredential(ctx context.Context, workerID string, 
 // handleWorkerDeregister processes a worker.deregister message published by a
 // worker on graceful shutdown. It marks the worker offline immediately so the
 // scheduler stops dispatching new assignments to it rather than waiting for
-// the heartbeat-timeout sweep.
+// the heartbeat-timeout sweep, and returns its in-flight tasks to the ready
+// queue, closing their attempts and releasing their usage claims.
 //
 // subjectWorkerID is the worker the message's subject attributes it to.
 func (s *Scheduler) handleWorkerDeregister(ctx context.Context, msg jetstream.Msg, subjectWorkerID string) {
@@ -900,7 +903,11 @@ func (s *Scheduler) handleWorkerDeregister(ctx context.Context, msg jetstream.Ms
 		return
 	}
 
-	if err := s.store.UpdateWorkerStatus(ctx, m.WorkerID, store.WorkerStatusOffline); err != nil {
+	// Unconditional, unlike the heartbeat sweep's guarded write: the worker told us
+	// it is leaving, so there is no heartbeat to re-check. The same store call
+	// closes its attempts, releases their claims and reclaims its tasks.
+	reclaimed, err := s.store.OfflineWorker(ctx, m.WorkerID, time.Now().UTC())
+	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			// Worker was never registered or already removed — benign race
 			// (e.g., deregister arrived before the registration was processed,
@@ -931,9 +938,9 @@ func (s *Scheduler) handleWorkerDeregister(ctx context.Context, msg jetstream.Ms
 
 	// A gracefully-deregistered worker is now offline and the heartbeat sweep
 	// (which only inspects workers still marked online) will never look at it
-	// again. Reclaim its in-flight tasks here so they return to the ready queue
-	// instead of being stranded in 'assigned'/'running'.
-	s.reclaimOfflineWorkerTasks(ctx, m.WorkerID, "")
+	// again. Its in-flight tasks were returned to the ready queue by the store
+	// call above instead of being stranded in 'assigned'/'running'; report them.
+	s.reclaimOfflineWorkerTasks(ctx, m.WorkerID, "", reclaimed)
 
 	s.notifier.NotifyWorker(ws.WorkerEvent{
 		WorkerID: m.WorkerID,
@@ -1115,6 +1122,14 @@ func (s *Scheduler) reapStaleAssignedTasks(ctx context.Context) {
 // sweepStaleWorkers finds workers whose heartbeat has expired, marks them
 // offline, reclaims their assigned/running tasks, and refreshes the
 // WorkersTotal gauge.
+//
+// The list of stale workers is only a hint. By the time each candidate is
+// handled its heartbeat may have arrived, or it may have re-registered, so the
+// offline transition is [store.WorkerStore.OfflineStaleWorker], which re-checks
+// the heartbeat inside its own write and leaves such a worker online with its
+// tasks running. Only a worker the store actually took offline is announced and
+// has its reclaim reported; the attempts, claims and tasks are handled by that
+// same store call.
 func (s *Scheduler) sweepStaleWorkers(ctx context.Context) {
 	cutoff := time.Now().UTC().Add(-s.cfg.WorkerTimeout)
 	stale, err := s.store.ListStaleWorkers(ctx, cutoff)
@@ -1134,12 +1149,24 @@ func (s *Scheduler) sweepStaleWorkers(ctx context.Context) {
 	)
 
 	for _, w := range stale {
-		// Mark the worker offline.
-		if err := s.store.UpdateWorkerStatus(ctx, w.ID, store.WorkerStatusOffline); err != nil {
+		// Mark the worker offline and hand its in-flight work back in one store
+		// call. The guard re-checks the heartbeat against the same cutoff the list
+		// used, so a heartbeat or a re-registration that landed after the list
+		// keeps the worker online (invariant I1) instead of being declared dead
+		// while its tasks are still running.
+		reclaimed, marked, err := s.store.OfflineStaleWorker(ctx, w.ID, cutoff, time.Now().UTC())
+		if err != nil {
 			s.logger.WarnContext(
 				ctx, "scheduler: mark worker offline failed",
 				slog.String("worker_id", w.ID),
 				slog.Any("error", err),
+			)
+			continue
+		}
+		if !marked {
+			s.logger.DebugContext(
+				ctx, "scheduler: stale worker's heartbeat arrived first, left online",
+				slog.String("worker_id", w.ID),
 			)
 			continue
 		}
@@ -1151,9 +1178,7 @@ func (s *Scheduler) sweepStaleWorkers(ctx context.Context) {
 			Status:   string(store.WorkerStatusOffline),
 		})
 
-		// Close out running attempts and return the worker's in-flight tasks to
-		// the ready queue so they can be reassigned.
-		s.reclaimOfflineWorkerTasks(ctx, w.ID, w.Hostname)
+		s.reclaimOfflineWorkerTasks(ctx, w.ID, w.Hostname, reclaimed)
 	}
 
 	s.refreshWorkerGauge(ctx)
@@ -1237,60 +1262,33 @@ func (s *Scheduler) sweepRetiredJobs(ctx context.Context) {
 	}
 }
 
-// reclaimOfflineWorkerTasks closes any running attempt records for workerID and
-// returns its assigned/running tasks to the ready queue. It is shared by the
-// heartbeat sweep and the graceful-deregister handler: both mark a worker
-// offline and must hand its in-flight work back to the scheduler, otherwise the
-// tasks are orphaned in 'assigned'/'running' forever (the heartbeat sweep only
-// considers workers still marked online, so it cannot recover them afterwards).
-func (s *Scheduler) reclaimOfflineWorkerTasks(ctx context.Context, workerID, hostname string) {
-	// Close out any running attempt records before the task assignment is
-	// cleared by ReclaimWorkerTasks. The subquery in TerminateWorkerAttempts
-	// joins on assigned_worker_id, which is still set at this point.
-	now := time.Now().UTC()
-	nAttempts, err := s.store.TerminateWorkerAttempts(ctx, workerID, store.AttemptStatusFailed, now)
-	if err != nil {
-		s.logger.WarnContext(
-			ctx, "scheduler: terminate worker attempts failed",
-			slog.String("worker_id", workerID),
-			slog.Any("error", err),
-		)
-		// Non-fatal: continue to reclaim tasks so the farm keeps running.
-	} else if nAttempts > 0 {
-		s.logger.InfoContext(
-			ctx, "scheduler: closed running attempts for offline worker",
-			slog.String("worker_id", workerID),
-			slog.String("hostname", hostname),
-			slog.Int("attempts_closed", nAttempts),
-		)
-	}
-
-	// Reclaim tasks that were assigned to or running on the now-offline worker.
-	n, err := s.store.ReclaimWorkerTasks(ctx, workerID)
-	switch {
-	case err != nil:
-		s.logger.WarnContext(
-			ctx, "scheduler: reclaim worker tasks failed",
-			slog.String("worker_id", workerID),
-			slog.Any("error", err),
-		)
-	case n > 0:
-		s.logger.InfoContext(
-			ctx, "scheduler: reclaimed tasks from offline worker",
-			slog.String("worker_id", workerID),
-			slog.String("hostname", hostname),
-			slog.Int("tasks_reclaimed", n),
-		)
-		// Reclaimed tasks are back to ready but we have no jobIDs to scope a
-		// per-queue wake; broadcast so parked workers re-lease promptly.
-		s.waiters.notifyAll()
-	default:
+// reclaimOfflineWorkerTasks reports the outcome of taking workerID offline: the
+// tasks the store returned to the ready queue. It is shared by the heartbeat
+// sweep and the graceful-deregister handler. By the time it runs the store has
+// already closed the worker's running attempts, released their usage claims and
+// returned its assigned/running tasks to ready, all in the transaction that
+// marked the worker offline (invariant I3). The tasks therefore cannot be
+// orphaned in 'assigned'/'running' (the heartbeat sweep only considers workers
+// still marked online, so it could never recover them afterwards), and no
+// license slot stays held on behalf of a worker that is gone.
+func (s *Scheduler) reclaimOfflineWorkerTasks(ctx context.Context, workerID, hostname string, reclaimed []store.Task) {
+	if len(reclaimed) == 0 {
 		s.logger.InfoContext(
 			ctx, "scheduler: worker marked offline (no tasks to reclaim)",
 			slog.String("worker_id", workerID),
 			slog.String("hostname", hostname),
 		)
+		return
 	}
+	s.logger.InfoContext(
+		ctx, "scheduler: reclaimed tasks from offline worker",
+		slog.String("worker_id", workerID),
+		slog.String("hostname", hostname),
+		slog.Int("tasks_reclaimed", len(reclaimed)),
+	)
+	// Reclaimed tasks are back to ready but we have no jobIDs to scope a
+	// per-queue wake; broadcast so parked workers re-lease promptly.
+	s.waiters.notifyAll()
 }
 
 // WakeQueue wakes any parked lease waiters on queueID. Called by the API job

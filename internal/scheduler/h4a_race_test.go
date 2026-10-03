@@ -20,6 +20,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/uberware/sqi/internal/bus"
 	"github.com/uberware/sqi/internal/metrics"
 	"github.com/uberware/sqi/internal/store"
 	"github.com/uberware/sqi/internal/store/fake"
@@ -954,6 +955,136 @@ func TestH4a_F5_ReaperDoesNotCloseReleasedAttempt(t *testing.T) {
 			}
 			if n := activeClaimsOf(t, st, pool.ID); n != 1 {
 				t.Fatalf("active claims = %d, want 1 (the re-lease's own; the reaped attempt's is released)", n)
+			}
+			if v := claimViolations(t, st); len(v) != 0 {
+				t.Fatalf("I3 violations: %v", v)
+			}
+		})
+	}
+}
+
+// ── F1: a heartbeat that lands during the sweep keeps the worker online ──────
+
+// heartbeatDuringSweepStore fires its hook right after the sweep has listed its
+// stale candidates, which is the window between the list and the write that
+// takes a worker offline.
+type heartbeatDuringSweepStore struct {
+	store.Store
+
+	hook *once
+}
+
+// ListStaleWorkers is called by the sweep before and after the fix.
+func (s *heartbeatDuringSweepStore) ListStaleWorkers(ctx context.Context, before time.Time) ([]store.Worker, error) {
+	out, err := s.Store.ListStaleWorkers(ctx, before)
+	s.hook.fire()
+	return out, err
+}
+
+// TestH4a_F1_HeartbeatDuringSweepKeepsWorkerOnline lands a heartbeat in the
+// window between the sweep's stale list and its offline write. The old sweep
+// wrote the offline status unconditionally, so the live worker was marked
+// offline and its running task went back to ready, to be leased and run a
+// second time. The offline write now re-checks the heartbeat itself, so the
+// worker stays online, its task stays running and no offline event is sent.
+func TestH4a_F1_HeartbeatDuringSweepKeepsWorkerOnline(t *testing.T) {
+	for name, st := range raceBackends(t) {
+		t.Run(name, func(t *testing.T) {
+			workerID, taskID, attemptID := seedStaleWorkerWithTask(t, st, 10*time.Minute)
+			pool := seedPoolClaim(t, st, attemptID)
+			wrapped := &heartbeatDuringSweepStore{Store: st, hook: &once{fn: func() {
+				if err := st.UpdateWorkerHeartbeat(context.Background(), workerID, time.Now().UTC()); err != nil {
+					t.Errorf("heartbeat in hook: %v", err)
+				}
+			}}}
+			rec := &workerRecordingNotifier{}
+			s := newRetentionScheduler(wrapped, time.Hour, rec)
+
+			s.sweepStaleWorkers(t.Context())
+
+			w, err := st.GetWorker(t.Context(), workerID)
+			if err != nil {
+				t.Fatalf("GetWorker: %v", err)
+			}
+			if w.Status != store.WorkerStatusOnline {
+				t.Fatalf("worker = %q, want online (its heartbeat arrived during the sweep)", w.Status)
+			}
+			if got := mustTaskOf(t, st, taskID); got.Status != store.TaskStatusRunning || got.AssignedWorkerID != workerID {
+				t.Fatalf("task = %q on %q, want it still running on %q: a live worker's task was reclaimed and will run twice (F1)",
+					got.Status, got.AssignedWorkerID, workerID)
+			}
+			if a := mustAttemptOf(t, st, attemptID); a.Status != store.AttemptStatusRunning || a.EndedAt != nil {
+				t.Fatalf("attempt = %q (ended %v), want running and open", a.Status, a.EndedAt)
+			}
+			if n := activeClaimsOf(t, st, pool.ID); n != 1 {
+				t.Fatalf("active claims = %d, want the live attempt's 1", n)
+			}
+			for _, e := range rec.workers {
+				if e.WorkerID == workerID && e.Status == string(store.WorkerStatusOffline) {
+					t.Fatalf("an offline event was sent for a worker that stayed online: %+v", e)
+				}
+			}
+		})
+	}
+}
+
+// ── F2: offline reclaim releases the usage claims of the attempts it closes ──
+
+// TestH4a_F2_OfflineReclaimReleasesClaims is the plain bug behind F2: the
+// offline sweep closed a dead worker's attempts and returned its tasks to ready
+// but never released the attempts' usage claims, so a license slot stayed held
+// until the job was deleted.
+func TestH4a_F2_OfflineReclaimReleasesClaims(t *testing.T) {
+	for name, st := range raceBackends(t) {
+		t.Run(name, func(t *testing.T) {
+			_, taskID, attemptID := seedStaleWorkerWithTask(t, st, 10*time.Minute)
+			pool := seedPoolClaim(t, st, attemptID)
+			s := newRetentionScheduler(st, time.Hour, ws.NoopNotifier{})
+
+			s.sweepStaleWorkers(t.Context())
+
+			if got := mustTaskOf(t, st, taskID); got.Status != store.TaskStatusReady {
+				t.Fatalf("task = %q, want ready (reclaimed)", got.Status)
+			}
+			if a := mustAttemptOf(t, st, attemptID); a.Status != store.AttemptStatusFailed {
+				t.Fatalf("attempt = %q, want failed", a.Status)
+			}
+			if n := activeClaimsOf(t, st, pool.ID); n != 0 {
+				t.Fatalf("active claims = %d, want 0 (F2): the dead worker's license slot is still held", n)
+			}
+			if v := claimViolations(t, st); len(v) != 0 {
+				t.Fatalf("I3 violations: %v", v)
+			}
+		})
+	}
+}
+
+// TestH4a_F2_DeregisterReleasesClaims is the graceful-shutdown twin: a worker
+// that deregisters mid-render must free its license slot as well.
+func TestH4a_F2_DeregisterReleasesClaims(t *testing.T) {
+	for name, st := range raceBackends(t) {
+		t.Run(name, func(t *testing.T) {
+			workerID, taskID, attemptID := seedStaleWorkerWithTask(t, st, 0) // a live worker
+			pool := seedPoolClaim(t, st, attemptID)
+			s := newRetentionScheduler(st, time.Hour, ws.NoopNotifier{})
+
+			msg := &fakeJSMsg{
+				subject: bus.WorkerDeregisterSubject(workerID),
+				data:    workerMsgJSON(t, map[string]string{"worker_id": workerID, "reason": "shutdown"}),
+			}
+			s.handleWorkerMessage(msg)
+
+			if !msg.acked {
+				t.Fatal("deregister was not acked")
+			}
+			if w, err := st.GetWorker(t.Context(), workerID); err != nil || w.Status != store.WorkerStatusOffline {
+				t.Fatalf("worker = (%+v, %v), want offline", w, err)
+			}
+			if got := mustTaskOf(t, st, taskID); got.Status != store.TaskStatusReady {
+				t.Fatalf("task = %q, want ready (reclaimed on deregister)", got.Status)
+			}
+			if n := activeClaimsOf(t, st, pool.ID); n != 0 {
+				t.Fatalf("active claims = %d, want 0 (F2): a deregistered worker's license slot is still held", n)
 			}
 			if v := claimViolations(t, st); len(v) != 0 {
 				t.Fatalf("I3 violations: %v", v)

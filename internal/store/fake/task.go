@@ -211,7 +211,11 @@ func (s *Store) AssignTask(_ context.Context, id, workerID string, assignedAt ti
 }
 
 // ReclaimWorkerTasks resets assigned/running tasks for the given worker back
-// to [store.TaskStatusReady] and returns the count of tasks reclaimed.
+// to [store.TaskStatusReady] and returns the count of tasks reclaimed. It closes
+// no attempts and releases no claims; a worker is taken offline through
+// [Store.OfflineStaleWorker] and [Store.OfflineWorker], which do all three.
+//
+// Test fixture only: a blind write that is not part of store.Store (H4a). H4b decides its fate.
 func (s *Store) ReclaimWorkerTasks(_ context.Context, workerID string) (int, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -271,7 +275,7 @@ func (s *Store) ReclaimStaleAssignedTasks(_ context.Context, cutoff time.Time) (
 	if len(out) == 0 {
 		return nil, nil
 	}
-	s.closeAttemptsAndReleaseClaimsLocked(func(taskID string) bool { return reclaimed[taskID] }, store.AttemptStatusFailed, now)
+	s.closeAttemptsAndReleaseClaimsLocked(func(taskID string) bool { return reclaimed[taskID] }, store.AttemptStatusFailed, "", now)
 	return out, nil
 }
 

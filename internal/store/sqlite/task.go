@@ -504,7 +504,12 @@ func (s *Store) AssignTask(ctx context.Context, id, workerID string, assignedAt 
 	return checkRowsAffected(res)
 }
 
-// ReclaimWorkerTasks implements [store.TaskStore].
+// ReclaimWorkerTasks returns every assigned or running task of workerID to
+// ready and returns how many it reset. It closes no attempts and releases no
+// claims; a worker is taken offline through [Store.OfflineStaleWorker] and
+// [Store.OfflineWorker], which do all three in one transaction.
+//
+// Test fixture only: a blind write that is not part of store.Store (H4a). H4b decides its fate.
 func (s *Store) ReclaimWorkerTasks(ctx context.Context, workerID string) (int, error) {
 	now := timeToText(time.Now().UTC())
 	res, err := s.stmtReclaimWorkerTasks.ExecContext(ctx, now, workerID)

@@ -88,7 +88,12 @@ func (s *Store) ListTaskAttempts(_ context.Context, taskID string) ([]store.Task
 }
 
 // TerminateWorkerAttempts marks all running attempts for tasks currently
-// assigned to workerID as the given terminal status with the supplied end time.
+// assigned to workerID as the given terminal status with the supplied end time,
+// recording [store.FailureReasonWorkerOffline] as the message. It releases no
+// claims and leaves the tasks alone; a worker is taken offline through
+// [Store.OfflineStaleWorker] and [Store.OfflineWorker], which do all three.
+//
+// Test fixture only: a blind write that is not part of store.Store (H4a). H4b decides its fate.
 func (s *Store) TerminateWorkerAttempts(_ context.Context, workerID string, status store.AttemptStatus, endedAt time.Time) (int, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
