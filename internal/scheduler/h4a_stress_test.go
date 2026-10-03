@@ -2,13 +2,20 @@
 
 package scheduler
 
-// The H4a concurrent stress test (spec §8.4). Goroutines race every operation
-// H4a made atomic against one job whose tasks claim capped usage pools, on the
-// real SQLite store, and a monitor checks the invariants on every snapshot it
-// reads while they run. SQLite serializes writers, so this cannot prove the
-// group-1 races closed (spec §3.2); what it catches, non-deterministically, is a
-// group-2 regression: an operation whose own transaction leaves the database in
-// a state the invariants forbid, or two operations whose composition does.
+// The H4a concurrent stress test (spec §8.4). Racers run every operation H4a
+// made atomic, concurrently, against one job whose tasks claim capped usage
+// pools, on the real SQLite store, and a monitor racing alongside them checks
+// the invariants on the snapshots it reads. SQLite serializes writers, so this
+// cannot prove the group-1 races closed (spec §3.2); what it catches,
+// non-deterministically, is a group-2 regression: an operation whose own
+// transaction leaves the database in a state the invariants forbid, or two
+// operations whose composition does.
+//
+// The run is a sequence of rounds. In each round every racer due that round
+// makes one call, all of them started together so they race, and the next round
+// starts when the last of them returns. How much a run does, and what each
+// racer is offered to work on, is therefore a function of the round count and
+// not of how fast the host is: a run on a fast host does the same work, faster.
 
 import (
 	"context"
@@ -36,13 +43,16 @@ import (
 const (
 	// stressTasks is the number of tasks in the stressed job.
 	stressTasks = 24
-	// stressIterations is how many leases each leaser, and how many reports
-	// each reporter, attempts. The other racers run until the last of those
-	// finishes. Sized for under ten seconds under -race on a slow Windows host,
-	// well inside the package's time budget.
-	stressIterations = 400
-	// stressReapAfter is the reaper's assignment timeout.
-	stressReapAfter = 20 * time.Millisecond
+	// stressSilentEvery makes every stressSilentEvery-th task silent: no
+	// reporter ever reports on it (see [stressRun.silent]).
+	stressSilentEvery = 6
+	// stressMinRounds is how many rounds every run makes. It sets the run's
+	// volume, not its duration: about 8 s under -race on a slow Windows host,
+	// under a second without -race.
+	stressMinRounds = 200
+	// stressMaxRounds bounds a run in which some racer has not yet taken effect
+	// by stressMinRounds (see [stressRun.missing]). Reaching it fails the test.
+	stressMaxRounds = 3000
 )
 
 // stressPoolCaps are the caps of the two usage pools. Every lease claims the
@@ -106,6 +116,13 @@ type stressCounts struct {
 	reports map[string]*atomic.Int64
 }
 
+// stressRacer is one entry of the round schedule: fn runs, with the round
+// number, in every round where round%every == offset.
+type stressRacer struct {
+	every, offset int
+	fn            func(round int)
+}
+
 // stressRun is one run of the stress test.
 type stressRun struct {
 	t  *testing.T
@@ -114,39 +131,46 @@ type stressRun struct {
 	s  *Scheduler
 	fx stressFixture
 	// reportedBy[g] is reporter g's scheduler. Two schedulers share the store as
-	// two server handlers would: reporter 0's lets every failure go terminal and
+	// two server processes on one database would (handlers inside one server
+	// share one *Scheduler): reporter 0's lets every failure go terminal and
 	// reporter 1's requeues a task until its third failure, so both arms of the
 	// failure fork race (a cancel and the retry after it reset a task's failure
 	// count too often for one policy to reach both).
 	reportedBy [2]*Scheduler
 	counts     stressCounts
 
-	// locks[i] serializes a lease of task i with a report on task i. Leases,
-	// reports and nothing else take it; every other racer runs unlocked. The
-	// reporter reads the task's latest attempt and reports on it under the
-	// lock, so no lease can supersede that attempt in between. That interleaving
-	// (a worker's late report for an attempt the reaper closed and a new lease
-	// replaced completes the task while the new attempt holds its claims) is a
-	// known pre-existing shape the store does not prevent; it is outside H4a and
-	// would turn this test into a test of it.
+	// locks[i] serializes every lease and every report of task i: lease x
+	// report, and with it lease x lease and report x report on the same task.
+	// It is held across the whole report, processTaskStatus included. Nothing
+	// else takes it; every other racer runs unlocked. Its purpose is the lease x
+	// report pair: the reporter reads the task's latest attempt and reports on
+	// it under the lock, so no lease can supersede that attempt in between. That
+	// interleaving (a worker's late report for an attempt the reaper closed and
+	// a new lease replaced completes the task while the new attempt holds its
+	// claims) is a known pre-existing shape the store does not prevent; it is
+	// outside H4a and would turn this test into a test of it. On SQLite the
+	// wider serialization hides nothing, because the store serializes the
+	// writes anyway. On Postgres (H4c) it would HIDE the group-1 double-lease
+	// race, two leases of one task committing in parallel, so a Postgres run of
+	// this test must drop the lock or narrow it to lease x report.
 	locks []sync.Mutex
 
-	stop     chan struct{}
-	stopOnce sync.Once
-	// failed is set by the first failure, which alone is reported: what fails
-	// after it is usually its consequence.
+	// failed is set by the first failure, which alone is reported (what fails
+	// after it is usually its consequence); the run stops after that round.
 	failed atomic.Bool
 }
 
 // TestH4a_ConcurrentStress_SQLite races leases, CancelJob, CancelTask, the
 // reaper, OfflineStaleWorker, RetryTasks (through RetryJob) and worker reports
 // against one job with capped usage pools, on the real SQLite store. While they
-// run, a monitor asserts on every snapshot it reads that invariant I3 holds, no
-// pool is over its cap and no task has two open attempts; afterwards the test
-// asserts the same again and that every task's whole status history is made of
-// legal arrows. It cannot prove group 1 (spec §3.2) because SQLite serializes
-// writes; it catches group-2 regressions non-deterministically. Runs in make
-// test.
+// run, a monitor racing alongside asserts on every snapshot it reads that
+// invariant I3 holds, no pool is over its cap, no task has two open attempts
+// and no task out of flight has an open one; afterwards the test asserts the
+// same again and that every task's whole status history is made of legal
+// arrows, and fails a run in which any racer never took effect. It cannot
+// prove group 1 (spec §3.2) because SQLite serializes writes; it catches
+// group-2 regressions non-deterministically. Runs in make test, with or
+// without -race.
 func TestH4a_ConcurrentStress_SQLite(t *testing.T) {
 	if testing.Short() {
 		t.Skip("stress test: races every H4a store operation on SQLite")
@@ -168,7 +192,6 @@ func TestH4a_ConcurrentStress_SQLite(t *testing.T) {
 		s:     newStressScheduler(t, st, 1),
 		fx:    seedStressJob(t, st, stressTasks),
 		locks: make([]sync.Mutex, stressTasks),
-		stop:  make(chan struct{}),
 	}
 	r.reportedBy = [2]*Scheduler{r.s, newStressScheduler(t, st, 3)}
 	r.counts.reports = map[string]*atomic.Int64{}
@@ -177,62 +200,141 @@ func TestH4a_ConcurrentStress_SQLite(t *testing.T) {
 	}
 
 	start := time.Now()
-	var drivers, racers sync.WaitGroup
-	for g := range 2 {
-		drivers.Go(func() { r.leaser(g) })
-	}
-	for g := range 2 {
-		drivers.Go(func() { r.reporter(g) })
-	}
-	// The paces keep the racers' writes from starving the leases and reports on
-	// the single write connection, and keep a job cancel (which cancels every
-	// task) rare enough that work is in flight most of the time.
-	racers.Go(func() { r.race(30*time.Millisecond, r.cancelTask) })
-	racers.Go(func() { r.race(300*time.Millisecond, r.cancelJob) })
-	racers.Go(func() { r.race(10*time.Millisecond, r.reap) })
-	racers.Go(func() { r.race(15*time.Millisecond, r.offline) })
-	racers.Go(func() { r.race(20*time.Millisecond, r.retry) })
-	racers.Go(func() { r.race(2*time.Millisecond, func(int) { r.checkSnapshot("during the run") }) })
-	drivers.Wait()
-	r.halt()
-	racers.Wait()
-	elapsed := time.Since(start)
-
-	r.logCounts(elapsed)
+	rounds := r.run()
+	r.logCounts(rounds, time.Since(start))
 	if t.Failed() {
 		return
 	}
 	r.checkSnapshot("after the run")
 	assertAtMostOneOpenAttempt(t, st, r.fx.taskIDs)
 	r.assertLegalHistory()
-	r.assertItRaced()
+}
+
+// ── the round schedule ───────────────────────────────────────────────────────
+
+// schedule is who races in which rounds. Leases, reports and the monitor run
+// every round; the rest run often enough to give every other racer work and
+// rarely enough that work stays in flight (a job cancel cancels every task).
+//
+// CancelJob runs in an even round, where no retry runs, and never in round 0.
+// Once it commits nothing in its round can revive a task (only a retry does), so
+// every task is terminal when the next round's retry finalizes the step, and
+// that retry returns them all to ready (see [stressRun.retry]). In the same
+// round as a retry, the retry could revive the tasks before the cancel and
+// leave them pending in a step the cancel never finalizes, run after run.
+func (r *stressRun) schedule() []stressRacer {
+	return []stressRacer{
+		{1, 0, func(n int) { r.leaseOne(0, n) }},
+		{1, 0, func(n int) { r.leaseOne(1, n) }},
+		{1, 0, func(n int) { r.reportOne(0, n) }},
+		{1, 0, func(n int) { r.reportOne(1, n) }},
+		{1, 0, func(int) { r.checkSnapshot("during the run") }},
+		{3, 0, r.cancelTask},
+		{30, 28, r.cancelJob},
+		{3, 1, r.reap},
+		{2, 0, r.offline},
+		{2, 1, r.retry},
+	}
+}
+
+// run makes the rounds and returns how many it made. It stops after
+// stressMinRounds once every racer has taken effect, and fails the test if one
+// still has not by stressMaxRounds.
+func (r *stressRun) run() int {
+	racers := r.schedule()
+	for round := range stressMaxRounds {
+		var wg sync.WaitGroup
+		for _, rc := range racers {
+			if round%rc.every == rc.offset {
+				wg.Go(func() { rc.fn(round) })
+			}
+		}
+		wg.Wait()
+		if r.failed.Load() {
+			return round + 1
+		}
+		if round+1 >= stressMinRounds && len(r.missing()) == 0 {
+			return round + 1
+		}
+	}
+	r.failf("after %d rounds the stress run had made no %s: it did not race what it claims to",
+		stressMaxRounds, strings.Join(r.missing(), ", "))
+	return stressMaxRounds
+}
+
+// missing names the racers that have not taken effect yet. Each is offered
+// work by construction every few rounds, whatever the host's speed, so a run
+// reaching stressMaxRounds with one missing means it is broken, not slow:
+//   - leases: the job starts with every task ready and both pools empty, and
+//     retry returns canceled and failed tasks to ready all through the run;
+//   - pool-full refusals: the silent tasks are all odd, so each claims both
+//     pools, and they stay assigned until something reclaims them (the reaper
+//     runs every third round); two of them fill the second pool;
+//   - running and terminal reports: two reporters every round, each looking
+//     for a task in flight that is not silent;
+//   - reaper reclaims: a silent task's assignment is never reported, so it
+//     stays assigned until the reaper (every third round, cutoff "now", so
+//     every assignment committed before its call is eligible with no clock
+//     aging), an offline sweep of its worker or a cancel takes it;
+//   - offline reclaims: every second round one worker, in turn, is swept, and
+//     leases go to the workers in turn, silent tasks included;
+//   - retry revivals: every third round CancelTask cancels a task in turn, and
+//     reporter 0 lets a failure go terminal.
+//
+// Not listed, because their counts are fixed by the schedule and so prove
+// nothing: the CancelTask, CancelJob and RetryJob calls (their effect is the
+// revivals above and the arrows in the history), and the offline sweeps
+// marked, since each sweep re-arms its worker as stale immediately before.
+// Rejected reports are not listed either: they need a racer to move a task
+// between the reporter's read and its write, which is a timing, not a schedule.
+func (r *stressRun) missing() []string {
+	c := &r.counts
+	var out []string
+	for _, k := range []struct {
+		name string
+		n    int64
+	}{
+		{"leases", c.leased.Load()},
+		{"pool-full lease refusals", c.leasePoolFull.Load()},
+		{"running reports applied", c.reports["running"].Load()},
+		{"terminal reports applied", c.reports["succeeded"].Load() + c.reports["failed"].Load() + c.reports["canceled"].Load()},
+		{"tasks reclaimed by the reaper", c.reaped.Load()},
+		{"tasks reclaimed by an offline sweep", c.offlineReclaimed.Load()},
+		{"tasks revived by retry", c.revived.Load()},
+	} {
+		if k.n == 0 {
+			out = append(out, k.name)
+		}
+	}
+	return out
 }
 
 // ── racers ───────────────────────────────────────────────────────────────────
 
-// leaser leases tasks to the fixture's workers in turn, claiming one or two
-// pools per lease. It aims each lease at a task it last saw ready, so most
-// leases contend for real work rather than bounce off a task in flight; the
-// task may still be gone by the time the lease runs. Every lease outcome is
-// legitimate under contention; only an error fails the test.
-func (r *stressRun) leaser(g int) {
-	for i := range stressIterations {
-		if r.stopped() {
-			return
-		}
-		idx, ok := r.find((i*5+g*11)%stressTasks, store.TaskStatusReady)
-		if !ok {
-			continue
-		}
-		r.lease(idx, r.fx.workers[(i+g)%len(r.fx.workers)])
+// silent reports whether task idx is one no reporter ever reports on, as if
+// its worker died without a word: only the reaper, an offline sweep or a
+// cancel can take its assignment back.
+func silent(idx int) bool { return idx%stressSilentEvery == stressSilentEvery-1 }
+
+// leaseOne is leaser g's lease in round n: it leases a task it last saw ready
+// to the fixture's workers in turn, claiming one or two pools. Aiming at a
+// ready task makes most leases contend for real work rather than bounce off a
+// task in flight; the task may still be gone by the time the lease runs.
+func (r *stressRun) leaseOne(g, n int) {
+	if idx, ok := r.find((n*5+g*11)%stressTasks, false, store.TaskStatusReady); ok {
+		r.lease(idx, r.fx.workers[(n+g)%len(r.fx.workers)])
 	}
 }
 
-// find returns the first task, scanning from start, whose status is one of
-// want when read. The read is unlocked and only a hint.
-func (r *stressRun) find(start int, want ...store.TaskStatus) (int, bool) {
+// find returns the first task, scanning from start and passing over the silent
+// tasks when skipSilent, whose status is one of want when read. The read is
+// unlocked and only a hint.
+func (r *stressRun) find(start int, skipSilent bool, want ...store.TaskStatus) (int, bool) {
 	for k := range stressTasks {
 		idx := (start + k) % stressTasks
+		if skipSilent && silent(idx) {
+			continue
+		}
 		task, err := r.st.GetTask(r.t.Context(), r.fx.taskIDs[idx])
 		if !r.expect("GetTask", err) {
 			return 0, false
@@ -244,6 +346,8 @@ func (r *stressRun) find(start int, want ...store.TaskStatus) (int, bool) {
 	return 0, false
 }
 
+// lease leases task idx to workerID. Every lease outcome is legitimate under
+// contention and is counted; only an error fails the test.
 func (r *stressRun) lease(idx int, workerID string) {
 	r.locks[idx].Lock()
 	defer r.locks[idx].Unlock()
@@ -269,21 +373,19 @@ func (r *stressRun) lease(idx int, workerID string) {
 	}
 }
 
-// reporter plays the workers: for a task in flight it reports on the task's
-// latest attempt, "running" for half the assigned ones and otherwise a
-// terminal status, through the scheduler's own report handler (so a failure
-// runs the auto-retry fork and a terminal report finalizes the step and job).
-func (r *stressRun) reporter(g int) {
-	for i := range stressIterations {
-		if r.stopped() {
-			return
-		}
-		if idx, ok := r.find((i*7+g*13)%stressTasks, store.TaskStatusAssigned, store.TaskStatusRunning); ok {
-			r.report(g, idx, i)
-		}
+// reportOne is reporter g's report in round n. The reporters play the workers:
+// for a task in flight that is not silent they report on the task's latest
+// attempt, "running" for half the assigned ones and otherwise a terminal
+// status, through the scheduler's own report handler (so a failure runs the
+// auto-retry fork and a terminal report finalizes the step and job).
+func (r *stressRun) reportOne(g, n int) {
+	if idx, ok := r.find((n*7+g*13)%stressTasks, true, store.TaskStatusAssigned, store.TaskStatusRunning); ok {
+		r.report(g, idx, n)
 	}
 }
 
+// report has reporter g report on task idx's latest attempt, under the task's
+// lock (see [stressRun.locks]); i picks the status (see [stressReport]).
 func (r *stressRun) report(g, idx, i int) {
 	r.locks[idx].Lock()
 	defer r.locks[idx].Unlock()
@@ -339,14 +441,6 @@ func stressReport(task store.Task, attempt store.TaskAttempt, i int) protocol.Ta
 	return m
 }
 
-// race runs op every pace until the drivers finish.
-func (r *stressRun) race(pace time.Duration, op func(n int)) {
-	for n := 0; !r.stopped(); n++ {
-		op(n)
-		time.Sleep(pace)
-	}
-}
-
 func (r *stressRun) cancelTask(n int) {
 	r.counts.taskCancels.Add(1)
 	r.expect("CancelTask", r.s.CancelTask(r.t.Context(), r.fx.taskIDs[(n*3)%stressTasks]))
@@ -357,11 +451,11 @@ func (r *stressRun) cancelJob(int) {
 	r.expect("CancelJob", r.s.CancelJob(r.t.Context(), r.fx.jobID))
 }
 
-// reap runs the reaper with an assignment timeout of stressReapAfter, short
-// enough that it reclaims assignments all through the run and long enough that
-// the reporter reaches most of them first.
+// reap runs the reaper with a cutoff of now, so every assignment committed
+// before the call is stale: what it is offered depends on the schedule, not on
+// how long an assignment has been waiting by the clock.
 func (r *stressRun) reap(int) {
-	reclaimed, err := r.st.ReclaimStaleAssignedTasks(r.t.Context(), time.Now().UTC().Add(-stressReapAfter))
+	reclaimed, err := r.st.ReclaimStaleAssignedTasks(r.t.Context(), time.Now().UTC())
 	if r.expect("ReclaimStaleAssignedTasks", err) {
 		r.counts.reaped.Add(int64(len(reclaimed)))
 	}
@@ -389,10 +483,15 @@ func (r *stressRun) offline(n int) {
 	r.counts.offlineReclaimed.Add(int64(len(reclaimed)))
 }
 
-// retry finalizes the step if every task is terminal, as a worker's cancel
-// echo or the start-up reconcile would, and then retries the job. The step has
-// to be terminal first: RetryTasks resets only a failed or canceled step, and
-// a revived task in a step still marked ready stays pending forever.
+// retry finalizes the step when every task is terminal, then retries the job
+// (RetryJob, which calls the store's RetryTasks). The finalize is a WORKAROUND
+// for a pre-existing bug, not something production does at this point: a job
+// cancel never finalizes the job's steps, and RetryTasks resets only a failed or
+// canceled step, so cancel-then-RetryJob leaves every revived task pending
+// forever in a step still marked ready. When nothing was in flight at the
+// cancel no worker echo finalizes the step, and ListStuckSteps skips the
+// canceled job. Whoever fixes that bug should remove the checkStepCompletion
+// call here.
 func (r *stressRun) retry(int) {
 	ctx := r.t.Context()
 	if !r.expect("checkStepCompletion", r.s.checkStepCompletion(ctx, r.fx.stepID, r.fx.jobID)) {
@@ -407,23 +506,12 @@ func (r *stressRun) retry(int) {
 
 // ── control ──────────────────────────────────────────────────────────────────
 
-func (r *stressRun) halt() { r.stopOnce.Do(func() { close(r.stop) }) }
-
-func (r *stressRun) stopped() bool {
-	select {
-	case <-r.stop:
-		return true
-	default:
-		return false
-	}
-}
-
 // expect reports whether err is nil. Any error is unexpected: every outcome a
 // race can legitimately produce is a typed result, not an error (a lease that
 // loses is LeaseLost, a cancel that loses to completion returns nil, a sweep
 // that finds a fresh heartbeat returns marked=false), and the one typed error
 // a racer tolerates, a refused report, is handled by its caller. It fails the
-// test and stops the run otherwise.
+// test, and the run stops after the current round, otherwise.
 func (r *stressRun) expect(op string, err error) bool {
 	if err == nil {
 		return true
@@ -435,9 +523,17 @@ func (r *stressRun) expect(op string, err error) bool {
 // ── invariants ───────────────────────────────────────────────────────────────
 
 // checkSnapshot asserts the invariants on the committed state it reads: I3, no
-// pool over its cap and no task with two open attempts. Each check is one
-// statement, so it sees one consistent snapshot, and every committed state must
-// satisfy them because each H4a operation keeps them inside its transaction.
+// pool over its cap, no task with two open attempts, and no open attempt on a
+// task that is not in flight. Each check is one statement, so it sees one
+// consistent snapshot, and every committed state must satisfy them because each
+// H4a operation keeps them inside its transaction.
+//
+// The last check is the other half of "a task is held by at most one attempt":
+// an operation that returns a task to ready, or ends it, without closing its
+// attempt leaves an attempt open on a task nothing holds. I3 cannot see that
+// (the attempt is open, so its claims are legitimately active), and the
+// two-attempts check sees it only if the task is leased again while the stale
+// attempt still holds its pool slots, which those very slots usually prevent.
 func (r *stressRun) checkSnapshot(when string) {
 	if r.failed.Load() {
 		return
@@ -462,26 +558,45 @@ func (r *stressRun) checkSnapshot(when string) {
 			return
 		}
 	}
-	held, err := r.tasksWithTwoOpenAttempts(ctx)
-	if !r.expect("open-attempt query", err) {
+	held, err := r.taskIDs(ctx, sqlStressTasksHeldTwice)
+	if !r.expect("held-twice query", err) {
 		return
 	}
 	if len(held) != 0 {
 		r.failf("%s: tasks held twice (two running attempts): %v", when, held)
+		return
+	}
+	stray, err := r.taskIDs(ctx, sqlStressOpenAttemptOffFlight)
+	if !r.expect("stray-attempt query", err) {
+		return
+	}
+	if len(stray) != 0 {
+		r.failf("%s: tasks neither assigned nor running that still have a running attempt: %v", when, stray)
 	}
 }
 
-// failf fails the test with the run's first failure and stops the run.
+// failf fails the test with the run's first failure; the run stops after the
+// current round.
 func (r *stressRun) failf(format string, args ...any) {
 	if r.failed.CompareAndSwap(false, true) {
 		r.t.Errorf(format, args...)
 	}
-	r.halt()
 }
 
-func (r *stressRun) tasksWithTwoOpenAttempts(ctx context.Context) ([]string, error) {
-	rows, err := r.db.QueryContext(ctx, `SELECT task_id FROM task_attempts WHERE status = 'running'
-		GROUP BY task_id HAVING COUNT(*) > 1 ORDER BY task_id`)
+const (
+	// sqlStressTasksHeldTwice lists the tasks with more than one running attempt.
+	sqlStressTasksHeldTwice = `SELECT task_id FROM task_attempts WHERE status = 'running'
+		GROUP BY task_id HAVING COUNT(*) > 1 ORDER BY task_id`
+	// sqlStressOpenAttemptOffFlight lists the tasks that are neither assigned nor
+	// running but still have a running attempt.
+	sqlStressOpenAttemptOffFlight = `SELECT DISTINCT a.task_id FROM task_attempts a JOIN tasks t ON t.id = a.task_id
+		WHERE a.status = 'running' AND t.status NOT IN ('assigned', 'running') ORDER BY a.task_id`
+)
+
+// taskIDs runs query, which selects one task ID per row, on the history
+// connection.
+func (r *stressRun) taskIDs(ctx context.Context, query string) ([]string, error) {
+	rows, err := r.db.QueryContext(ctx, query)
 	if err != nil {
 		return nil, err
 	}
@@ -611,30 +726,12 @@ func legalStressArrow(from, to store.TaskStatus) bool {
 	return store.ValidateTaskTransition(from, to) == nil || stressRetryArrows[[2]store.TaskStatus{from, to}]
 }
 
-// assertItRaced fails a run in which a racer never took effect: a pass on an
-// idle database proves nothing.
-func (r *stressRun) assertItRaced() {
+func (r *stressRun) logCounts(rounds int, elapsed time.Duration) {
 	c := &r.counts
-	for name, n := range map[string]int64{
-		"leases":                    c.leased.Load(),
-		"running reports applied":   c.reports["running"].Load(),
-		"terminal reports applied":  c.reports["succeeded"].Load() + c.reports["failed"].Load() + c.reports["canceled"].Load(),
-		"tasks reclaimed by reaper": c.reaped.Load(),
-		"tasks reclaimed offline":   c.offlineReclaimed.Load(),
-		"tasks revived by retry":    c.revived.Load(),
-	} {
-		if n == 0 {
-			r.t.Errorf("the stress run made no %s; it did not race what it claims to", name)
-		}
-	}
-}
-
-func (r *stressRun) logCounts(elapsed time.Duration) {
-	c := &r.counts
-	r.t.Logf("stress run %v: leases leased=%d lost=%d pool_full=%d other=%d; "+
+	r.t.Logf("stress run: %d rounds in %v: leases leased=%d lost=%d pool_full=%d other=%d; "+
 		"reports running=%d succeeded=%d failed=%d canceled=%d rejected=%d; "+
 		"cancels task=%d job=%d; reaped=%d; offline marked=%d reclaimed=%d; retries=%d revived=%d; snapshots=%d",
-		elapsed.Round(time.Millisecond), c.leased.Load(), c.leaseLost.Load(), c.leasePoolFull.Load(), c.leaseOther.Load(),
+		rounds, elapsed.Round(time.Millisecond), c.leased.Load(), c.leaseLost.Load(), c.leasePoolFull.Load(), c.leaseOther.Load(),
 		c.reports["running"].Load(), c.reports["succeeded"].Load(), c.reports["failed"].Load(), c.reports["canceled"].Load(),
 		c.reportsRejected.Load(), c.taskCancels.Load(), c.jobCancels.Load(), c.reaped.Load(),
 		c.offlined.Load(), c.offlineReclaimed.Load(), c.retries.Load(), c.revived.Load(), c.snapshots.Load())

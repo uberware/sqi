@@ -18,7 +18,7 @@ func newCheckedFake(t *testing.T) *fake.Store {
 	st := fake.New()
 	t.Cleanup(func() {
 		if v := st.ClaimInvariantViolations(); len(v) != 0 {
-			t.Errorf("invariant I3 violated at test end: active claims on closed attempts or terminal tasks: %v", v)
+			t.Errorf("invariant I3 violated at test end (fake store): active claims on closed attempts or terminal tasks: %v", v)
 		}
 	})
 	return st
@@ -34,11 +34,11 @@ func checkSQLiteClaimsAtEnd(t *testing.T, st *sqlite.Store) {
 	t.Cleanup(func() {
 		v, err := st.ClaimInvariantViolations(context.Background())
 		if err != nil {
-			t.Errorf("I3 check at test end: %v", err)
+			t.Errorf("I3 check at test end (SQLite store): %v", err)
 			return
 		}
 		if len(v) != 0 {
-			t.Errorf("invariant I3 violated at test end: active claims on closed attempts or terminal tasks: %v", v)
+			t.Errorf("invariant I3 violated at test end (SQLite store): active claims on closed attempts or terminal tasks: %v", v)
 		}
 	})
 }
