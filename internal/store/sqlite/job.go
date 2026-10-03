@@ -829,9 +829,11 @@ func selectExpiredJobsTx(ctx context.Context, tx *sql.Tx, query string, args []a
 // purgeExpiredJobTx takes the job's anchor, re-checks that it is still
 // eligible for retention and, if so, runs the cascade. It reports whether the
 // job was deleted. The anchor comes first so that, once the re-check passes, no
-// other writer can change the job before the final DELETE; the re-check comes
-// before any child row is touched because the sweep is one transaction and a
-// half-purged job cannot be skipped after the fact.
+// other job-anchored writer can change the job's status before the final
+// DELETE; the re-check comes before any child row is touched because the sweep
+// is one transaction and a half-purged job cannot be skipped after the fact. As
+// for [Store.DeleteJob], the anchor does not stop a log append or a lease from
+// inserting a child row mid-cascade, so H4c must retry on a foreign-key error.
 func purgeExpiredJobTx(ctx context.Context, tx *sql.Tx, recheck string, args []any, id string) (bool, error) {
 	if err := lockAnchors(ctx, tx, jobAnchor(id)); err != nil {
 		return false, err
@@ -860,10 +862,15 @@ func purgeExpiredJobTx(ctx context.Context, tx *sql.Tx, recheck string, args []a
 // transaction; if the jobs-row delete affects zero rows the job did not exist
 // and the transaction is rolled back with [store.ErrNotFound].
 //
-// G7: the job anchor is taken first, so a child row inserted after its table
-// was cleared (a log chunk or an attempt landing mid-cascade) cannot make the
-// final parent DELETE fail on a foreign key. SQLite cannot produce that race;
-// retrying on a foreign-key or deadlock error is H4c's job.
+// G7: the job anchor is taken first, which serializes the cascade against the
+// other job-anchored writers (cancel, retry, finalize, completion, retention).
+// It does not by itself stop a log append (CreateTaskLog, no transaction, no
+// anchor) or a lease (LeaseTask, which anchors only the queue, farm and pool
+// rows) from inserting a child row after its table was cleared, so on
+// PostgreSQL the final parent DELETE can still fail on a foreign key. Retrying
+// the cascade on a foreign-key or deadlock error is H4c's job (spec §5.4).
+// SQLite cannot produce either error: its single write connection serializes
+// every writer.
 func (s *Store) DeleteJob(ctx context.Context, id string) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {

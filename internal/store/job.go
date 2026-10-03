@@ -331,8 +331,16 @@ type JobStore interface {
 	// audit_log is left intact (it references entities by id, not by foreign
 	// key).
 	//
-	// The job's anchor row is locked first, so a log chunk or attempt landing
-	// mid-cascade cannot make the final jobs-row delete fail on a foreign key.
+	// The job's anchor row is locked first, which serializes the cascade
+	// against the other job-anchored writers (cancel, retry, finalize,
+	// completion, retention). It does NOT by itself stop a concurrent log
+	// append ([TaskLogStore.CreateTaskLog]) or a lease ([TaskStore.LeaseTask])
+	// from inserting a child row mid-cascade, because neither takes the job
+	// anchor: on a store without a single writer such an insert can land after
+	// its table was cleared and make the final delete fail on a foreign key. The
+	// caller of the cascade must therefore retry it on a foreign-key or deadlock
+	// error. The SQLite store cannot produce either, because its single write
+	// connection serializes every writer.
 	DeleteJob(ctx context.Context, id string) error
 
 	// DeleteTerminalJobsBefore hard-deletes terminal jobs whose completion time
