@@ -95,3 +95,32 @@ func ValidateTaskTransition(from, to TaskStatus) error {
 	}
 	return fmt.Errorf("%w: task %q → %q not permitted", ErrInvalidTransition, from, to)
 }
+
+// ── Job state machine ─────────────────────────────────────────────────────────
+
+// JobTransitions is the job lifecycle as sqi implements it. It is a TEST-TIME
+// SPECIFICATION (H4a, decision D4), not consulted at run time: every job write
+// is a named store operation guarded in its own SQL (invariant I1), and the
+// transition-table test asserts each operation's from-states are legal here.
+//
+// The arrows come from the operations themselves:
+//
+//	pending → completed         a task reached assigned → succeeded, its running report dropped
+//	running → pending           DemoteStalledJobs
+//	paused → pending            ResumeJob, and RetryTasks on an auto-parked job
+//	blocked → pending           ReleaseBlockedJob
+//	failed/canceled → pending   RetryTasks
+//	any non-terminal → paused   ParkJob (PauseJob for pending and running)
+//	any non-terminal → canceled CancelJobStatus (CancelBlockedJob for blocked)
+//
+// A write to a job's current status is a no-op, not a transition, so no status
+// lists itself.
+var JobTransitions = map[JobStatus][]JobStatus{
+	JobStatusPending:   {JobStatusRunning, JobStatusPaused, JobStatusCompleted, JobStatusFailed, JobStatusCanceled},
+	JobStatusRunning:   {JobStatusPending, JobStatusPaused, JobStatusCompleted, JobStatusFailed, JobStatusCanceled},
+	JobStatusPaused:    {JobStatusPending, JobStatusCompleted, JobStatusFailed, JobStatusCanceled},
+	JobStatusBlocked:   {JobStatusPending, JobStatusPaused, JobStatusCanceled},
+	JobStatusCompleted: {},
+	JobStatusFailed:    {JobStatusPending},
+	JobStatusCanceled:  {JobStatusPending},
+}

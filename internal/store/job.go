@@ -251,18 +251,12 @@ type JobStore interface {
 	// failure_limit) and updates UpdatedAt.
 	//
 	// status, started_at, completed_at, failed_attempts, and park_reason are
-	// lifecycle columns and are intentionally excluded — use [UpdateJobStatus],
-	// [CancelJobStatus], or the scheduler's failure-limit sweep for those. The
+	// lifecycle columns and are intentionally excluded — use [CancelJobStatus],
+	// [FinalizeJob], or the scheduler's failure-limit sweep for those. The
 	// returned Job reflects the current DB state of all columns.
 	//
 	// Returns [ErrNotFound] if the job does not exist.
 	UpdateJob(ctx context.Context, job Job) (Job, error)
-
-	// UpdateJobStatus transitions a job to a new status and updates UpdatedAt.
-	// If the new status is [JobStatusRunning] and StartedAt is nil, StartedAt
-	// is set to the current time. Terminal statuses set CompletedAt.
-	// Returns [ErrNotFound] if the job does not exist.
-	UpdateJobStatus(ctx context.Context, id string, status JobStatus) error
 
 	// CancelJobStatus transitions a job to [JobStatusCanceled] only when the
 	// job is not already in a terminal state, preventing a race where a

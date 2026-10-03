@@ -289,8 +289,8 @@ func (s *Store) UpdateJob(_ context.Context, job store.Job) (store.Job, error) {
 		return store.Job{}, store.ErrNotFound
 	}
 
-	// Preserve lifecycle fields — these are owned by UpdateJobStatus /
-	// CancelJobStatus, not by UpdateJob.
+	// Preserve lifecycle fields — these are owned by the status operations
+	// (FinalizeJob, CancelJobStatus, ...), not by UpdateJob.
 	job.Status = existing.Status
 	job.StartedAt = existing.StartedAt
 	job.CompletedAt = existing.CompletedAt
@@ -308,6 +308,8 @@ func (s *Store) UpdateJob(_ context.Context, job store.Job) (store.Job, error) {
 // UpdateJobStatus transitions a job to a new status and updates UpdatedAt.
 // If the new status is [store.JobStatusRunning] and StartedAt is nil, StartedAt
 // is set to the current time. Terminal statuses set CompletedAt.
+//
+// Test fixture only: a blind write that is not part of store.Store (H4a). H4b decides its fate.
 func (s *Store) UpdateJobStatus(_ context.Context, id string, status store.JobStatus) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()

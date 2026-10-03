@@ -38,12 +38,13 @@ RETURNING ` + jobCols
 
 	// sqlUpdateJob updates only the mutable user-settable fields of a job.
 	// status, started_at, and completed_at are lifecycle columns managed
-	// exclusively by UpdateJobStatus / CancelJobStatus and are intentionally
-	// excluded here — writing them via UpdateJob would race with concurrent
-	// scheduler status transitions. failed_attempts and park_reason are
-	// likewise lifecycle-managed (by the scheduler's failure-limit sweep) and
-	// are excluded for the same reason; max_attempts, retry_delay_seconds,
-	// and failure_limit are the user-settable retry-policy overrides.
+	// exclusively by the status operations (FinalizeJob, CancelJobStatus, ...)
+	// and are intentionally excluded here — writing them via UpdateJob would
+	// race with concurrent scheduler status transitions. failed_attempts and
+	// park_reason are likewise lifecycle-managed (by the scheduler's
+	// failure-limit sweep) and are excluded for the same reason; max_attempts,
+	// retry_delay_seconds, and failure_limit are the user-settable retry-policy
+	// overrides.
 	//
 	// declared_extensions is likewise excluded: it is derived from the template
 	// at submission and is not user-settable. raw_template is on the SET list
@@ -603,7 +604,7 @@ func (s *Store) ListJobs(ctx context.Context, opts store.ListJobsOptions) (store
 // owner, submitter, priority, project, raw_template, template_format,
 // max_attempts, retry_delay_seconds, failure_limit).
 // status, started_at, completed_at, failed_attempts, and park_reason are
-// never touched here; use UpdateJobStatus, CancelJobStatus, or the
+// never touched here; use CancelJobStatus, FinalizeJob, or the
 // scheduler's failure-limit sweep for those.
 func (s *Store) UpdateJob(ctx context.Context, job store.Job) (store.Job, error) {
 	now := timeToText(time.Now().UTC())
@@ -616,7 +617,10 @@ func (s *Store) UpdateJob(ctx context.Context, job store.Job) (store.Job, error)
 	return out, mapErr(err)
 }
 
-// UpdateJobStatus implements [store.JobStore].
+// UpdateJobStatus sets a job's status unconditionally, stamping StartedAt on
+// the first transition to running and CompletedAt on every terminal status.
+//
+// Test fixture only: a blind write that is not part of store.Store (H4a). H4b decides its fate.
 func (s *Store) UpdateJobStatus(ctx context.Context, id string, status store.JobStatus) error {
 	now := time.Now().UTC()
 	nowText := timeToText(now)

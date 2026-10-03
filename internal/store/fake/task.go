@@ -144,6 +144,8 @@ func (s *Store) SetTaskFailureReasonIfEmpty(_ context.Context, id, reason string
 // TransitionStepPendingTasks transitions every pending task of the step to `to`,
 // updates UpdatedAt, stamps a non-empty failureReason on tasks that carry none,
 // and returns the affected tasks.
+//
+// Test fixture only: a blind write that is not part of store.Store (H4a). H4b decides its fate.
 func (s *Store) TransitionStepPendingTasks(_ context.Context, stepID string, to store.TaskStatus, failureReason string) ([]store.Task, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

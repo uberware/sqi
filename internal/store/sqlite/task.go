@@ -768,10 +768,12 @@ func (s *Store) RetryTasks(ctx context.Context, jobID string, taskIDs []string, 
 	return revived, nil
 }
 
-// TransitionStepPendingTasks implements [store.TaskStore].
+// TransitionStepPendingTasks moves every pending task of the step to `to`
+// without touching the step or its job. The UPDATE ... RETURNING runs as one
+// statement so the transition is atomic and covers every pending task of the
+// step regardless of count.
 //
-// The UPDATE ... RETURNING runs as one statement so the transition is atomic and
-// covers every pending task of the step regardless of count.
+// Test fixture only: a blind write that is not part of store.Store (H4a). H4b decides its fate.
 func (s *Store) TransitionStepPendingTasks(ctx context.Context, stepID string, to store.TaskStatus, failureReason string) ([]store.Task, error) {
 	rows, err := s.db.QueryContext(ctx, sqlTransitionStepPendingTasks, string(to), timeToText(time.Now().UTC()), failureReason, stepID)
 	if err != nil {

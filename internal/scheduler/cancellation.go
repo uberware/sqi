@@ -48,7 +48,7 @@ type cancelPayload struct {
 //
 // CancelJob does NOT update the job's own status; that is the caller's
 // responsibility (typically the REST handler that also calls
-// [store.JobStore.UpdateJobStatus]).
+// [store.JobStore.CancelJobStatus]).
 //
 // The method is idempotent: if all tasks are already in terminal states the
 // store operations are no-ops and no NATS messages are published.

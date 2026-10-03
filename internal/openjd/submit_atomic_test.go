@@ -15,18 +15,19 @@ import (
 
 // ── helpers ───────────────────────────────────────────────────────────────────
 
-// submitSpy wraps the fake store and records six of its methods: the five row
+// submitSpy wraps the fake store and records five of its methods: the row
 // creators a submission could use — CreateJob, CreateJobDependencies,
-// CreateStep, CreateTask, CreateJobSubmission — and UpdateJobStatus. It
-// delegates each one, so the store still behaves exactly like the fake; the
-// counters only observe.
+// CreateStep, CreateTask, CreateJobSubmission. It delegates each one, so the
+// store still behaves exactly like the fake; the counters only observe.
 //
 // It is NOT a general write recorder. It embeds [fake.Store], so every other
 // method reaches the fake untouched and is invisible to `writes`: a regression
 // that persisted something through some other store method would leave the
-// counters unchanged and TestSubmit_PersistsInASingleCall green. The six are
+// counters unchanged and TestSubmit_PersistsInASingleCall green. The five are
 // the ones the pre-atomic Submit used, plus the one that replaced them, which
-// is what the counters exist to detect a return to.
+// is what the counters exist to detect a return to. The separate status write
+// the pre-atomic Submit also made is not among them: UpdateJobStatus has left
+// [store.Store], so a Submit holding one cannot call it at all.
 //
 // It exists because a failed submission must leave no rows AND, once expansion
 // runs to completion first, must not have attempted a write at all. The former
@@ -47,13 +48,6 @@ type submitSpy struct {
 	// call. It is how a test inspects what Submit asked the store to write, as
 	// opposed to what the store then made of it.
 	lastSubmission store.JobSubmission
-	// statusUpdates counts UpdateJobStatus calls. A submission must make none:
-	// every status a submission decides is part of the one atomic write.
-	statusUpdates int
-	// failStatusUpdate, when non-nil, is returned by UpdateJobStatus instead of
-	// delegating. It injects the failure of the write that used to run after
-	// the atomic one.
-	failStatusUpdate error
 	// failSubmission, when non-nil, is returned by CreateJobSubmission instead
 	// of delegating. It injects a store failure during the submission write --
 	// a client disconnect, a full disk, a transient DB error -- which is the
@@ -100,14 +94,6 @@ func (s *submitSpy) CreateJobSubmission(ctx context.Context, sub store.JobSubmis
 		return store.JobSubmission{}, s.failSubmission
 	}
 	return s.Store.CreateJobSubmission(ctx, sub)
-}
-
-func (s *submitSpy) UpdateJobStatus(ctx context.Context, id string, status store.JobStatus) error {
-	s.statusUpdates++
-	if s.failStatusUpdate != nil {
-		return s.failStatusUpdate
-	}
-	return s.Store.UpdateJobStatus(ctx, id, status)
 }
 
 // twoStepsSecondOverTaskCap returns a two-step template whose SECOND step
@@ -413,12 +399,18 @@ func newBlockedSubmitFixture(t *testing.T) (st *submitSpy, sub *openjd.Submitter
 //
 // It used to be a separate UpdateJobStatus issued after that call, so the two
 // halves of one decision — "this job is blocked" and "here is what it is
-// blocked on" — committed independently. Asserting that Submit issues no status
-// update at all is what makes the coupling structural rather than incidental: a
-// change that reintroduces the second write fails here even if it happens to
-// leave the end state correct.
+// blocked on" — committed independently. That writer has since left
+// [store.Store] (H4a), so the old regression can no longer be written. What
+// stays observable is the other half of the coupling: the submission handed to
+// the store carries the blocked status, and it is the ONLY row-creating call
+// Submit makes, so no second write can exist to carry a status of its own. A
+// change that adds one fails here even if it happens to leave the end state
+// correct.
 func TestSubmit_BlockedStatusIsPartOfTheAtomicWrite(t *testing.T) {
 	st, sub, farmID, queueID, upstreamID := newBlockedSubmitFixture(t)
+
+	// The fixture's own upstream submission has already been counted.
+	writesBefore, submissionsBefore := st.writes, st.submissions
 
 	result, err := sub.Submit(t.Context(), minimalJSON("BlockedJob"), store.TemplateFormatJSON, openjd.SubmitOptions{
 		FarmID:    farmID,
@@ -435,8 +427,9 @@ func TestSubmit_BlockedStatusIsPartOfTheAtomicWrite(t *testing.T) {
 	if got := st.lastSubmission.DependsOn; len(got) != 1 || got[0] != upstreamID {
 		t.Errorf("the submission handed to the store carried DependsOn %v, want [%s]", got, upstreamID)
 	}
-	if st.statusUpdates != 0 {
-		t.Errorf("Submit issued %d UpdateJobStatus calls, want 0 (the status belongs to the atomic write)", st.statusUpdates)
+	if writes, submissions := st.writes-writesBefore, st.submissions-submissionsBefore; writes != 1 || submissions != 1 {
+		t.Errorf("Submit made %d row-creating calls (%d of them CreateJobSubmission), want exactly 1: the status belongs to the atomic write",
+			writes, submissions)
 	}
 	if result.Job.Status != store.JobStatusBlocked {
 		t.Errorf("result job status = %q, want blocked", result.Job.Status)
@@ -459,51 +452,72 @@ func TestSubmit_BlockedStatusIsPartOfTheAtomicWrite(t *testing.T) {
 // written to the failure mode this one was first thought to have — "assert the
 // tasks are not ready" — passes without the fix, because they were never ready.
 //
-// What it actually exercises on HEAD, stated plainly: the injected failure is on
-// UpdateJobStatus, which Submit no longer calls, so err is always nil here and
-// the err != nil branch — the zero-rows assertion — is DEAD CODE today. The live
-// assertion is the success branch: the submission completed and the persisted
-// job is blocked. The dead branch is kept deliberately, as the guard for a
-// regression that reintroduces a separate status write: such a change would make
-// this injection fire again, and the branch would then assert what it was
-// written to assert. Either branch is atomic; a job row surviving in the wrong
-// status is not.
+// The separate status write is gone (UpdateJobStatus has left [store.Store]),
+// so the old injection point no longer exists. The two subtests assert the same
+// property through CreateJobSubmission, the one call that remains: when it
+// succeeds the persisted job is blocked and whole, and when it fails Submit
+// leaves no job row behind, because it has no second write path (a compensating
+// status write, a per-row fallback) that could strand one. The injected failure
+// is returned by the spy without delegating, so nothing is written by the store
+// either way; what the failure case pins is that Submit itself writes nothing
+// else. The rollback proper is proven at the store layer by
+// TestJobStore_CreateJobSubmission_RollsBackEntirely.
 func TestSubmit_BlockedStatusIsAtomicWithTheRows(t *testing.T) {
-	st, sub, farmID, queueID, upstreamID := newBlockedSubmitFixture(t)
-	st.failStatusUpdate = errors.New("status write failed")
+	t.Run("success is whole", func(t *testing.T) {
+		st, sub, farmID, queueID, upstreamID := newBlockedSubmitFixture(t)
 
-	result, err := sub.Submit(t.Context(), minimalJSON("BlockedJob"), store.TemplateFormatJSON, openjd.SubmitOptions{
-		FarmID:    farmID,
-		QueueID:   queueID,
-		DependsOn: []string{upstreamID},
+		result, err := sub.Submit(t.Context(), minimalJSON("BlockedJob"), store.TemplateFormatJSON, openjd.SubmitOptions{
+			FarmID:    farmID,
+			QueueID:   queueID,
+			DependsOn: []string{upstreamID},
+		})
+		if err != nil {
+			t.Fatalf("Submit: %v", err)
+		}
+
+		job, gerr := st.GetJob(t.Context(), result.Job.ID)
+		if gerr != nil {
+			t.Fatalf("GetJob(%s): %v", result.Job.ID, gerr)
+		}
+		if job.Status != store.JobStatusBlocked {
+			t.Errorf("persisted job status = %q, want blocked", job.Status)
+		}
+		if result.Job.Status != store.JobStatusBlocked {
+			t.Errorf("result job status = %q, want blocked", result.Job.Status)
+		}
 	})
 
-	// The job ID is taken from the spy rather than the result, because a failed
-	// Submit returns nil and the caller never learns which row to look for --
-	// which is exactly why a stranded row could not be cleaned up.
-	jobID := st.lastSubmission.Job.ID
-	if jobID == "" {
-		t.Fatal("Submit never reached the store; the test cannot observe what it left behind")
-	}
+	t.Run("failure leaves no rows", func(t *testing.T) {
+		st, sub, farmID, queueID, upstreamID := newBlockedSubmitFixture(t)
+		st.failSubmission = errors.New("submission write failed")
 
-	if err != nil {
+		_, err := sub.Submit(t.Context(), minimalJSON("BlockedJob"), store.TemplateFormatJSON, openjd.SubmitOptions{
+			FarmID:    farmID,
+			QueueID:   queueID,
+			DependsOn: []string{upstreamID},
+		})
+		if err == nil {
+			t.Fatal("Submit reported success although the store failed the write")
+		}
+
+		// The job ID is taken from the spy rather than the result, because a
+		// failed Submit returns nil and the caller never learns which row to
+		// look for -- which is exactly why a stranded row could not be cleaned up.
+		jobID := st.lastSubmission.Job.ID
+		if jobID == "" {
+			t.Fatal("Submit never reached the store; the test cannot observe what it left behind")
+		}
 		if _, gerr := st.GetJob(t.Context(), jobID); !errors.Is(gerr, store.ErrNotFound) {
 			t.Fatalf("a job row survived a failed submission (GetJob(%s) = %v), want ErrNotFound", jobID, gerr)
 		}
-		return
-	}
-
-	// The status write is gone, so the submission succeeded: it must be whole.
-	job, gerr := st.GetJob(t.Context(), jobID)
-	if gerr != nil {
-		t.Fatalf("GetJob(%s): %v", jobID, gerr)
-	}
-	if job.Status != store.JobStatusBlocked {
-		t.Errorf("persisted job status = %q, want blocked", job.Status)
-	}
-	if result.Job.Status != store.JobStatusBlocked {
-		t.Errorf("result job status = %q, want blocked", result.Job.Status)
-	}
+		edges, lerr := st.ListJobDependencyIDs(t.Context(), jobID)
+		if lerr != nil {
+			t.Fatalf("ListJobDependencyIDs: %v", lerr)
+		}
+		if len(edges) != 0 {
+			t.Errorf("dependency edges %v survived a failed submission, want none", edges)
+		}
+	})
 }
 
 // TestSubmit_BlockedJobIsNeverObservableWithoutItsEdges pins the end state that

@@ -68,6 +68,8 @@ func (s *Store) ListSteps(_ context.Context, jobID string) ([]store.Step, error)
 }
 
 // UpdateStepStatus transitions a step to a new status and updates UpdatedAt.
+//
+// Test fixture only: a blind write that is not part of store.Store (H4a). H4b decides its fate.
 func (s *Store) UpdateStepStatus(_ context.Context, id string, status store.StepStatus) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
