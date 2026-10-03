@@ -875,8 +875,10 @@ func purgeExpiredJobTx(ctx context.Context, tx *sql.Tx, recheck string, args []a
 // It does not by itself stop a log append (CreateTaskLog, no transaction, no
 // anchor) or a lease (LeaseTask, which anchors only the queue, farm and pool
 // rows) from inserting a child row after its table was cleared, so on
-// PostgreSQL the final parent DELETE can still fail on a foreign key. Retrying
-// the cascade on a foreign-key or deadlock error is H4c's job (spec §5.4).
+// PostgreSQL a later DELETE in the cascade (claims, logs, attempts, tasks,
+// steps, dependency edges, then the job row) can still fail on a foreign key.
+// Retrying the cascade on a foreign-key or deadlock error is H4c's job (spec
+// §5.4).
 // SQLite cannot produce either error: its single write connection serializes
 // every writer.
 func (s *Store) DeleteJob(ctx context.Context, id string) error {

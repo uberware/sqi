@@ -17,15 +17,19 @@ const (
 	StepStatusReady StepStatus = "ready"
 	// StepStatusRunning is reserved and never written: no store operation moves
 	// a step to running, so a step with running tasks stays ready (H4a decision
-	// D4). It survives for the wire types and for old rows, which FinalizeStep
-	// can still finish.
+	// D4). It survives for the wire types and for rows written outside the store
+	// operations (test fixtures, through CreateStep or the concrete stores'
+	// UpdateStepStatus), which FinalizeStep can still finish.
 	StepStatusRunning StepStatus = "running"
 	// StepStatusCompleted means all tasks in this step succeeded.
 	StepStatusCompleted StepStatus = "completed"
 	// StepStatusFailed means one or more tasks failed.
 	StepStatusFailed StepStatus = "failed"
-	// StepStatusCanceled means the step was canceled, typically because the
-	// parent job was canceled.
+	// StepStatusCanceled means the step was canceled. A step reaches it through
+	// CancelPendingStep (the cascade from a failed or canceled upstream step),
+	// CancelBlockedJob (a blocked job canceled before it ran), or FinalizeStep
+	// once all its tasks are terminal and a canceled one is among them with no
+	// failed one. A job cancel never writes its steps.
 	StepStatusCanceled StepStatus = "canceled"
 )
 

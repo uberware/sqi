@@ -216,7 +216,11 @@ func TestMigration00031_ReleasesLeakedClaims(t *testing.T) {
 		seedClaimOn(t, s, claimSeed{store.TaskStatusCanceled, store.AttemptStatusCanceled, false}, poolID),
 		// F4: a lease claimed a slot after the cancel released the job's claims.
 		seedClaimOn(t, s, claimSeed{store.TaskStatusCanceled, store.AttemptStatusRunning, false}, poolID),
-		// F5: the stale-assignment reaper closed the wrong attempt of a finished task.
+		// A terminal report whose claim release never landed: v0.3.0 closed the
+		// attempt and moved the task, then released the claims in a separate call
+		// whose error it treated as non-fatal. (This is not F5: v0.3.0's F5 left
+		// the older attempt running, claims active, on a task still in flight,
+		// which this predicate rightly leaves alone.)
 		seedClaimOn(t, s, claimSeed{store.TaskStatusSucceeded, store.AttemptStatusSucceeded, false}, poolID),
 	}
 	// An already-released claim on a finished attempt is neither healthy-active

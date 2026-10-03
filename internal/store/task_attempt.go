@@ -75,5 +75,15 @@ type TaskAttemptStore interface {
 	// write, so a late or echoed report can never overwrite an attempt that
 	// something else already closed (F16). Returns [ErrConflict] when the
 	// attempt exists but is closed, and [ErrNotFound] if it does not exist.
+	//
+	// It must not be used to CLOSE an attempt: it will write a terminal Status,
+	// but it releases none of the attempt's usage claims, so the claims would
+	// stay active on a closed attempt (invariant I3). The closing paths are
+	// [TaskStore.CompleteTaskAttempt], [TaskStore.RecordTaskFailure], the
+	// cancels ([TaskStore.CancelJobExecution], [TaskStore.CancelTaskExecution]),
+	// the reaper ([TaskStore.ReclaimStaleAssignedTasks]) and the offline
+	// reclaims ([WorkerStore.OfflineStaleWorker], [WorkerStore.OfflineWorker]),
+	// each of which releases the claims in the same transaction. Its one
+	// production use records a running attempt's session ID.
 	UpdateTaskAttempt(ctx context.Context, attempt TaskAttempt) (TaskAttempt, error)
 }

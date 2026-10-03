@@ -191,6 +191,11 @@ func (s *Store) ListTaskAttempts(ctx context.Context, taskID string) ([]store.Ta
 // The write applies only while the attempt is running. A zero-row result is
 // told apart by a read afterwards: an attempt that exists but is closed is
 // [store.ErrConflict], one that does not exist is [store.ErrNotFound].
+//
+// It must not be used to close an attempt: it can write a terminal status but
+// releases no usage claims (I3). The closing operations are CompleteTaskAttempt,
+// RecordTaskFailure, CancelJobExecution, CancelTaskExecution,
+// ReclaimStaleAssignedTasks, OfflineStaleWorker and OfflineWorker.
 func (s *Store) UpdateTaskAttempt(ctx context.Context, attempt store.TaskAttempt) (store.TaskAttempt, error) {
 	var exitCode sql.NullInt64
 	if attempt.ExitCode != nil {
