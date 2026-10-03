@@ -147,8 +147,11 @@ type CompletionResult struct {
 	// Applied is true when the task now holds the requested status (it moved
 	// there, or was already there on a redelivery).
 	Applied bool
-	// Rejected is true when the state machine refused the transition (the task
-	// had already reached a different terminal status). The caller acks it.
+	// Rejected is true when the state machine refused the transition: the task
+	// no longer holds a status the report can move it from, because it reached
+	// a different terminal status (a cancel, say) or went back to ready or
+	// pending (a reap, an offline reclaim, an auto-retry requeue or a manual
+	// retry). The caller acks it.
 	Rejected bool
 }
 
@@ -272,9 +275,12 @@ type TaskStore interface {
 	//
 	// Statement order (spec 4.1): the tasks are reset first, then their attempts
 	// are closed, then their claims released. A Postgres implementation must take
-	// its anchors (each candidate task's job row, sorted) BEFORE the UPDATE, by
-	// selecting the candidate IDs FOR UPDATE first; an anchor taken after the
-	// UPDATE ... RETURNING is the wrong order there.
+	// its anchors (each candidate task's job row, sorted by id) BEFORE the UPDATE
+	// and without locking a task row first: read the candidates unlocked, lock
+	// their job rows, then run the UPDATE re-guarded on the candidate IDs, status
+	// assigned and the cutoff. Locking the task rows first, or anchoring after the
+	// UPDATE ... RETURNING, takes a task row before its job row, the reverse of
+	// every job-level operation's order.
 	ReclaimStaleAssignedTasks(ctx context.Context, cutoff time.Time) ([]Task, error)
 
 	// CountActiveTasksInQueue returns the number of tasks for the given queue
@@ -319,7 +325,13 @@ type TaskStore interface {
 	//
 	// Statement order is part of the contract on Postgres: tasks are canceled
 	// first, then attempts closed and claims released, so a concurrent LeaseTask
-	// holding a task row is waited for and its attempt and claims are seen.
+	// holding a task row is waited for and its attempt and claims are seen. The
+	// returned set is read before step 1 under the job-row anchor only, and
+	// LeaseTask does not take the job row, so on Postgres a lease that commits
+	// between that read and step 1 is canceled (and its attempt and claims
+	// closed) but not returned, and its worker gets no cancel signal. A Postgres
+	// implementation must close that gap (see "Store invariants" in
+	// docs/architecture.md).
 	CancelJobExecution(ctx context.Context, jobID, reason string, now time.Time) ([]Task, error)
 
 	// CancelTaskExecution cancels one task in one transaction (invariant I3),
@@ -335,7 +347,10 @@ type TaskStore interface {
 	// started or it completed first, is returned unchanged with false and a
 	// nil error: that is the "lost the race to completion" outcome, not a
 	// failure. An unknown task is [ErrNotFound]. The same statement-order
-	// contract applies on Postgres.
+	// contract applies on Postgres, and so does CancelJobExecution's gap: the
+	// prior task is read under the job-row anchor, which a LeaseTask does not
+	// take, so a lease committing between that read and the cancel's write is
+	// canceled while the returned task still shows it ready with no worker.
 	CancelTaskExecution(ctx context.Context, taskID, reason string, now time.Time) (Task, bool, error)
 
 	// RetryTasks revives failed/canceled tasks so they can run again. It
@@ -441,7 +456,11 @@ type TaskStore interface {
 	// ACTIONS are authorized; a redelivery must first check that the attempt is
 	// still relevant before re-driving them). The same transaction releases
 	// every active usage claim the attempt holds (invariant I3), on a
-	// redelivery too. Returns [ErrNotFound] if the task does not exist.
+	// redelivery too. now stamps the attempt's ended_at and the task's and
+	// job's updated_at; the released claims' released_at is server time, never
+	// now, because now is the worker's reported time and a skewed worker clock
+	// could otherwise put a release before its claim. Returns [ErrNotFound] if
+	// the task does not exist.
 	RecordTaskFailure(ctx context.Context, attemptID, taskID string, exitCode *int, sessionID, message string, now time.Time) (taskFailed, jobFailed int, firstClose bool, err error)
 
 	// RequeueTaskForRetry transitions a task back to [TaskStatusReady],

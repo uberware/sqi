@@ -728,9 +728,14 @@ func (s *Store) CancelJobStatus(ctx context.Context, id string) error {
 
 // DemoteStalledJobs implements [store.JobStore].
 //
-// The single UPDATE ... RETURNING statement is atomic: a concurrent task
-// transition to assigned/running cannot slip between the EXISTS check and the
-// write, so a job that has just been re-activated is never spuriously demoted.
+// The single UPDATE ... RETURNING statement is atomic here: the single write
+// connection serializes it against every lease, so a concurrent task transition
+// to assigned/running cannot slip between the EXISTS check and the write, and a
+// job that has just been re-activated is never spuriously demoted. That is a
+// property of SQLite's single writer, not of the statement: under PostgreSQL
+// READ COMMITTED the NOT EXISTS subquery is not re-checked against a lease that
+// commits concurrently, and it takes no anchor. How H4c closes that is left open
+// (see "Store invariants" in docs/architecture.md).
 func (s *Store) DemoteStalledJobs(ctx context.Context, now time.Time) ([]string, error) {
 	rows, err := s.db.QueryContext(ctx, sqlDemoteStalledJobs, timeToText(now.UTC()))
 	if err != nil {
@@ -760,7 +765,10 @@ func (s *Store) DemoteStalledJobs(ctx context.Context, now time.Time) ([]string,
 // longer matches is skipped, neither deleted nor reported. On SQLite the
 // single write connection means the snapshot cannot go stale, so the re-check
 // never skips; it is the PostgreSQL store's (H4c) guard, where the job-row lock
-// is what makes it sound.
+// is what makes it sound. The candidates are anchored in the order the SELECT
+// returns them, which has no ORDER BY, and the sweep holds every lock it takes
+// until its one commit, so H4c should sort the candidates by id (or commit per
+// job) to keep a lock order other job-anchored writers can agree with.
 func (s *Store) DeleteTerminalJobsBefore(
 	ctx context.Context, cutoff time.Time, includeFailed bool,
 ) ([]store.DeletedJob, error) {

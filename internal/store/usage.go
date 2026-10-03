@@ -115,9 +115,13 @@ type UsageClaimStore interface {
 	ActiveClaimCount(ctx context.Context, poolID string) (int, error)
 
 	// ReleaseAttemptClaims sets ReleasedAt on every active claim
-	// (released_at IS NULL) for the given taskAttemptID. Called when a task
-	// attempt reaches a terminal state so the usage pool slots are freed for
-	// reassignment.
+	// (released_at IS NULL) for the given taskAttemptID.
+	//
+	// It has no production caller: every operation that closes an attempt
+	// releases that attempt's claims in its own transaction (invariant I3), so
+	// a separate release call is never needed and would reopen the window
+	// between the two writes. It stays on the interface as fixture surface
+	// (H4b decides its fate).
 	//
 	// Returns the number of claims released (0 is not an error when the
 	// attempt held no claims).

@@ -245,6 +245,9 @@ func (s *Store) DeleteUser(ctx context.Context, id string) error {
 // the fixed id order keeps two such transactions from deadlocking on PostgreSQL.
 // On SQLite lockAnchors does nothing and the single write connection provides
 // the serialization; the guard in the statement is what makes the answer right.
+// H4c: the admin set is read before its rows are locked, so on Postgres an
+// account made an enabled admin in between is not anchored; re-read the set
+// under the locks (and repeat until it is stable) or lock a wider range.
 func (s *Store) withAdminAnchors(ctx context.Context, fn func(*sql.Tx) error) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {

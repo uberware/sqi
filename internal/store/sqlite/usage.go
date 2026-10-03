@@ -210,9 +210,12 @@ func (s *Store) ActiveClaimCount(ctx context.Context, poolID string) (int, error
 // [store.ErrUsageAtCapacity] (at least one pool is saturated). The scheduler
 // claims through [Store.LeaseTask], which reads the caps itself.
 //
-// The transaction is serialized by the single-connection pool (SetMaxOpenConns(1))
-// so no other goroutine can modify claim counts between the count check and
-// the inserts.
+// The count and the inserts are safe together only because the single write
+// connection serializes every write transaction here: under concurrent writers
+// two calls can both see a pool one short of its cap and both insert. Invariant
+// I5 (see "Store invariants" in docs/architecture.md) is upheld by
+// [Store.LeaseTask], which counts each pool under that pool's anchor row; this
+// fixture takes no anchor.
 //
 // Test fixture only: a blind write that is not part of store.Store (H4a). H4b decides its fate.
 func (s *Store) TryClaimSlots(

@@ -7,9 +7,12 @@ import (
 	"database/sql"
 )
 
-// anchor names one row that an invariant-guarding transaction must hold
-// exclusively before it reads the other rows its decision depends on. See
-// "Store invariants" in docs/architecture.md for the full anchor-row table.
+// anchor names one row that an invariant-guarding transaction must hold before
+// it reads the other rows its decision depends on: exclusively, except the
+// upstream job rows of the blocked-job operations and of a submission's
+// dependency check, which only need a shared lock. anchor carries no lock mode
+// yet; those call sites say so in a comment. See "Store invariants" in
+// docs/architecture.md for the full anchor-row table.
 type anchor struct {
 	table string
 	id    string
@@ -26,9 +29,11 @@ func userAnchor(id string) anchor   { return anchor{table: "users", id: id} }
 // does nothing on SQLite: the store's single write connection
 // (SetMaxOpenConns(1)) already serializes every write transaction, so a row
 // lock would add nothing. The PostgreSQL store (H4c) implements the same call
-// as SELECT ... FOR UPDATE on each anchor, in the order given. Callers pass
-// anchors in the order the anchor-row table specifies, so the two backends
-// agree on lock order and Postgres cannot deadlock on it.
+// as SELECT ... FOR UPDATE on each anchor, in the order given (FOR SHARE for
+// the upstream job rows, which needs a lock mode this type does not carry
+// yet). Callers pass anchors in the order the anchor-row table specifies, so
+// the two backends agree on lock order. The table is not yet the whole Postgres
+// story: docs/architecture.md lists the gaps it leaves open.
 func lockAnchors(_ context.Context, _ *sql.Tx, _ ...anchor) error {
 	return nil
 }

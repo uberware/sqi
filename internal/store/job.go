@@ -338,9 +338,10 @@ type JobStore interface {
 	// from inserting a child row mid-cascade, because neither takes the job
 	// anchor: on a store without a single writer such an insert can land after
 	// its table was cleared and make the final delete fail on a foreign key. The
-	// caller of the cascade must therefore retry it on a foreign-key or deadlock
-	// error. The SQLite store cannot produce either, because its single write
-	// connection serializes every writer.
+	// PostgreSQL store (H4c) must therefore retry the cascade itself, inside
+	// DeleteJob, on a foreign-key or deadlock error; the REST handler that calls
+	// it does not retry. The SQLite store cannot produce either, because its
+	// single write connection serializes every writer.
 	DeleteJob(ctx context.Context, id string) error
 
 	// DeleteTerminalJobsBefore hard-deletes terminal jobs whose completion time

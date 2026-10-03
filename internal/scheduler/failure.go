@@ -13,9 +13,9 @@ package scheduler
 //     the job has not hit its failure limit — the attempt is closed as failed
 //     (usage-pool claims are released inside RecordTaskFailure's transaction),
 //     and the task is re-queued to [store.TaskStatusReady] with a backoff
-//     RetryAfter. It does NOT go
-//     through handleTaskTerminal / checkStepCompletion, since the step is not
-//     actually done — it must stay eligible for re-lease.
+//     RetryAfter. It does NOT go through handleTaskTerminal /
+//     checkStepCompletion, since the step is not actually done — it must stay
+//     eligible for re-lease.
 //   - PARKED: the job's cumulative failure count reached its FailureLimit —
 //     the job is parked (paused) first, then the tripping task still goes
 //     terminal-failed so the step/job completion cascade runs and the job

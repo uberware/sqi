@@ -82,12 +82,17 @@ func (s *Store) LeaseTask(ctx context.Context, req store.LeaseRequest) (store.Le
 // order and cannot deadlock on Postgres. The scope read precedes them only
 // because it names those rows and says which are capped. The task's guarded
 // UPDATE runs before any count: it takes the task's row lock, so a concurrent
-// cancel or reap of this task is ordered against the lease, and every count
+// cancel of this task is ordered against the lease, and every count
 // after it includes the task itself. The queue, farm and pool counts each run
 // under their anchor, so no other lease can change them between this count
 // and this write (I5). The attempt is inserted before its claims, which
-// reference it. H4c: the caps used here were read before the anchors were
-// taken, so on Postgres they must be re-read under the anchor locks.
+// reference it. H4c: the queue and farm caps used here were read before the
+// anchors were taken, so on Postgres they must be re-read under the anchor
+// locks, and a queue or farm read as uncapped is not anchored at all, so a cap
+// set on it concurrently is not seen by this lease. The pool caps are read
+// under their anchors already. The lease takes neither the task's job row nor
+// the worker row; "Store invariants" in docs/architecture.md lists what that
+// leaves open on Postgres.
 func leaseTx(ctx context.Context, tx *sql.Tx, req store.LeaseRequest) (store.LeaseResult, error) {
 	lost := store.LeaseResult{Outcome: store.LeaseLost}
 	scope, found, err := readLeaseScopeTx(ctx, tx, req.TaskID)

@@ -297,7 +297,8 @@ func (s *Scheduler) maybePromoteJobRunning(ctx context.Context, jobID string) {
 // write ([store.TaskStore.CompleteTaskAttempt]), then checks step/job completion.
 //
 // A report the state machine refuses (the task already reached a different
-// terminal status) still closes the attempt and frees its slots; it returns
+// terminal status, or went back to ready or pending through a reap, an offline
+// reclaim or a retry) still closes the attempt and frees its slots; it returns
 // [store.ErrInvalidTransition] so the consumer acks it.
 func (s *Scheduler) handleTaskTerminal(
 	ctx context.Context,
@@ -346,10 +347,12 @@ func (s *Scheduler) handleTaskTerminal(
 	s.notifyQueueForJob(ctx, task.JobID)
 
 	if res.Rejected {
-		// The task had already reached a different terminal status (a cancel, or a
-		// retry that raced this report). The claims were released above, so nothing
-		// leaks. Returned as ErrInvalidTransition so the consumer acks the message
-		// instead of redelivering a report that can never become legal.
+		// The task no longer holds a status this report can move it from: it
+		// reached a different terminal status (a cancel), or it went back to ready
+		// or pending (a reap, an offline reclaim, or a retry that raced this
+		// report). The claims were released above, so nothing leaks. Returned as
+		// ErrInvalidTransition so the consumer acks the message instead of
+		// redelivering a report that can never become legal.
 		return fmt.Errorf("scheduler: task %s: %w", m.TaskID, store.ErrInvalidTransition)
 	}
 
@@ -374,8 +377,10 @@ func (s *Scheduler) handleTaskTerminal(
 }
 
 // failureReasonOrFallback returns m.Message, or a synthesized fallback so a
-// terminal non-success is never blank. Canceled with no message stays blank
-// (server-originated cancels set their own reason via SetTaskFailureReason).
+// terminal non-success is never blank. Canceled with no message stays blank:
+// a server-originated cancel stamps its own reason, only on a task with none
+// yet, inside the store write that cancels the task (CancelJobExecution,
+// CancelTaskExecution, CancelPendingStep or CancelBlockedJob).
 func failureReasonOrFallback(msg string, exitCode *int, status store.TaskStatus) string {
 	if msg != "" {
 		return msg

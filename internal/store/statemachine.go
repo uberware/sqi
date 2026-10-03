@@ -105,13 +105,20 @@ func ValidateTaskTransition(from, to TaskStatus) error {
 //
 // The arrows come from the operations themselves:
 //
-//	pending → completed         a task reached assigned → succeeded, its running report dropped
-//	running → pending           DemoteStalledJobs
-//	paused → pending            ResumeJob, and RetryTasks on an auto-parked job
-//	blocked → pending           ReleaseBlockedJob
-//	failed/canceled → pending   RetryTasks
-//	any non-terminal → paused   ParkJob (PauseJob for pending and running)
-//	any non-terminal → canceled CancelJobStatus (CancelBlockedJob for blocked)
+//	pending → running                 PromoteJobRunning, on the first running report
+//	pending/running/paused → terminal FinalizeJob, derived from the steps
+//	running → pending                 DemoteStalledJobs
+//	paused → pending                  ResumeJob, and RetryTasks on an auto-parked job
+//	blocked → pending                 ReleaseBlockedJob
+//	failed/canceled → pending         RetryTasks
+//	any non-terminal → paused         ParkJob (PauseJob for pending and running)
+//	any non-terminal → canceled       CancelJobStatus (CancelBlockedJob for blocked)
+//
+// FinalizeJob's pending → completed is real: a task can reach assigned →
+// succeeded with its running report dropped, so the job is never promoted. Its
+// SQL guard also admits blocked, but a blocked job's steps are all pending, so
+// it never finalizes one and the table has no blocked → terminal arrow besides
+// the cancels.
 //
 // A write to a job's current status is a no-op, not a transition, so no status
 // lists itself.

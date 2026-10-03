@@ -243,9 +243,18 @@ func closeTaskAttemptsTx(ctx context.Context, tx *sql.Tx, taskID string, status 
 // comes before the SELECT that reports the active tasks (I2), and the writes run
 // in the order spec 4.1 requires on Postgres: the tasks are canceled first, and
 // only then are their attempts closed and their claims released. A LeaseTask
-// that holds one of the tasks is therefore waited for by the task UPDATE, and
-// the attempt and claims it committed are seen by the two statements after it.
-// Closing attempts first would miss an attempt a lease created in between.
+// that holds one of the tasks is therefore waited for by the task UPDATE (whose
+// predicate matches the task both as ready and as assigned), and the attempt
+// and claims it committed are seen by the two statements after it. Closing
+// attempts first would miss an attempt a lease created in between.
+//
+// The anchor does not make the reported set exact on Postgres. LeaseTask does
+// not take the job row, so a lease that commits between the SELECT and the
+// task UPDATE is canceled, and its attempt and claims closed, but it is not in
+// the returned set and its worker gets no cancel signal. H4c must close that:
+// either LeaseTask also anchors the job row, or the set comes from the
+// UPDATE itself. None of it can arise here, where the single write connection
+// serializes the lease against this whole transaction.
 func (s *Store) CancelJobExecution(ctx context.Context, jobID, reason string, now time.Time) ([]store.Task, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -283,9 +292,14 @@ func (s *Store) CancelJobExecution(ctx context.Context, jobID, reason string, no
 // Anchor and statement order are CancelJobExecution's: the task's job row first
 // (the task's job id never changes, so it is read before the lock), then the
 // task as it is under that lock, then the task is canceled before its attempt
-// is closed and its claims released. The task row is read again after the lock
-// rather than before it, so on Postgres the returned prior task and the
-// "already terminal" answer are the ones the anchor protects.
+// is closed and its claims released. The task row is read after the lock rather
+// than before it, so on Postgres the returned prior task is current against
+// every job-anchored writer. The "already terminal" answer comes from the
+// guarded UPDATE itself, so it is exact on any store. The prior task is NOT
+// protected against a LeaseTask, which does not take the job row: on Postgres a
+// lease that commits between the read and the UPDATE is canceled while prior
+// still shows the task ready with no worker, so no cancel signal reaches that
+// worker. That is CancelJobExecution's gap, and H4c closes both the same way.
 func (s *Store) CancelTaskExecution(ctx context.Context, taskID, reason string, now time.Time) (store.Task, bool, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {

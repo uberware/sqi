@@ -48,16 +48,21 @@ type TaskAttempt struct {
 
 // TaskAttemptStore is the persistence interface for [TaskAttempt] records.
 type TaskAttemptStore interface {
-	// CreateTaskAttempt inserts a new attempt record. Called when the server
-	// assigns a task to a worker and the worker acknowledges it.
+	// CreateTaskAttempt inserts a new attempt record. It has no production
+	// caller: every attempt the scheduler opens is inserted by
+	// [TaskStore.LeaseTask], in the same transaction as the lease and its usage
+	// claims. It stays on the interface as fixture surface (H4b decides its
+	// fate).
 	CreateTaskAttempt(ctx context.Context, attempt TaskAttempt) (TaskAttempt, error)
 
 	// GetTaskAttempt returns the attempt with the given ID, or [ErrNotFound].
 	GetTaskAttempt(ctx context.Context, id string) (TaskAttempt, error)
 
 	// LatestTaskAttempt returns the attempt with the highest AttemptNumber for
-	// the given task, or [ErrNotFound] if no attempts exist yet. Used by the
-	// scheduler to determine the correct AttemptNumber when creating a retry.
+	// the given task, or [ErrNotFound] if no attempts exist yet. The REST layer
+	// reads it, and the scheduler uses it to tell whether a failure report's
+	// attempt is still the task's latest. Attempt numbers are assigned inside
+	// [TaskStore.LeaseTask], not from this read.
 	LatestTaskAttempt(ctx context.Context, taskID string) (TaskAttempt, error)
 
 	// ListTaskAttempts returns all attempts for the given task, ordered by

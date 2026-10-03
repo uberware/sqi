@@ -548,17 +548,26 @@ func (s *Store) ReclaimWorkerTasks(ctx context.Context, workerID string) (int, e
 //
 // Statement order (spec 4.1): the tasks are reset first and only then are their
 // attempts closed and their claims released, the order CancelJobExecution uses.
-// On Postgres the UPDATE takes each task's row lock, so a LeaseTask holding one
-// of the tasks is waited for, and the attempt and claims it committed are seen
-// by the two statements after it. Closing attempts first would miss an attempt a
-// lease created in between.
+// The writer this order guards against is the worker's own report on a stale
+// assigned task. On Postgres the UPDATE takes each task's row lock, so a running
+// or terminal report already holding the row is waited for, and the UPDATE then
+// re-checks status = 'assigned' against the committed row and skips a task the
+// report moved on. Closing attempts first would let a report move the task
+// (assigned to running, say) after its attempt was already closed as failed. A
+// LeaseTask is not a competitor here: it moves a ready row, which this UPDATE's
+// predicate does not match, and the task it leaves assigned is not stale.
 //
-// Anchors: none are taken, deliberately. H4c must take them BEFORE the UPDATE:
-// each candidate task's job row, in sorted order, which means selecting the
-// candidate IDs FOR UPDATE first and re-guarding the UPDATE by ID. An anchor
-// taken after the UPDATE ... RETURNING is the wrong order on Postgres: the
-// UPDATE has already locked task rows, and every job-level operation locks the
-// job row before its tasks, so the two orders can deadlock.
+// Anchors: none are taken, deliberately. H4c must take them BEFORE the UPDATE,
+// and without locking any task row first: read the candidate task IDs and their
+// job IDs UNLOCKED, take the job-row anchors sorted by id, then run the UPDATE
+// re-guarded as WHERE id IN (candidates) AND status = 'assigned' AND assigned_at
+// < cutoff RETURNING. Locking the task rows first (SELECT ... FOR UPDATE on
+// tasks) or anchoring after the UPDATE ... RETURNING both take a task row before
+// its job row, and every job-level operation locks the job row before its
+// tasks, so the two orders can deadlock. The anchors are also what orders the
+// reaper against CompleteTaskAttempt, which writes the attempt row before the
+// task row, the reverse of this function: both under the same job-row lock,
+// they cannot interleave.
 func (s *Store) ReclaimStaleAssignedTasks(ctx context.Context, cutoff time.Time) ([]store.Task, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {

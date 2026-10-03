@@ -119,6 +119,11 @@ func (s *Store) UpdateWorkerHeartbeat(_ context.Context, id string, at time.Time
 
 // ListStaleWorkers returns workers whose last heartbeat is older than before
 // and whose status is [store.WorkerStatusOnline].
+//
+// Unlike SQLite, where a NULL heartbeat never compares older, it also lists an
+// online worker that has never sent a heartbeat; TestListStaleWorkers pins
+// that. The list is only a candidate source: [Store.OfflineStaleWorker] applies
+// SQLite's rule, so such a worker is never taken offline on either backend.
 func (s *Store) ListStaleWorkers(_ context.Context, before time.Time) ([]store.Worker, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

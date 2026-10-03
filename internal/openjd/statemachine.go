@@ -26,8 +26,8 @@ var ErrInvalidTransition = errors.New("openjd: invalid state transition")
 // validStepTransitions is the step lifecycle sqi actually implements. It is a
 // TEST-TIME SPECIFICATION (H4a, decision D4): no runtime path consults it.
 // Every step write is a named store operation guarded in its own SQL
-// (invariant I1), and internal/store's transition-table test asserts each
-// operation's from-states are legal here.
+// (invariant I1), and TestStepOperations_FromStatesAreLegal (in this package's
+// statemachine_test.go) asserts each operation's from-states are legal here.
 //
 //	pending  → ready      ReleaseStep (dependencies satisfied)
 //	pending  → canceled   CancelPendingStep / CancelBlockedJob

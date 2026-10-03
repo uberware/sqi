@@ -511,7 +511,10 @@ func (s *Scheduler) Stop() {
 // such steps the one [store.StepStore.ListStuckSteps] query returns nothing and
 // nothing is written. Steps of jobs that are already terminal are deliberately
 // ignored: canceling a job leaves its steps non-terminal, so they would
-// otherwise be rewritten on every start for no downstream effect. A step that
+// otherwise be rewritten on every start. Such a step is not harmless (a later
+// retry of the canceled job can revive its tasks to pending under a step that
+// is never released, a bug that predates H4a), but its root cause is the cancel
+// path not finalizing steps, which this pass does not repair. A step that
 // fails is logged and skipped so one bad row cannot block the rest, and it
 // stays stuck, so the next start retries it. Cross-job dependents of a job this
 // pass finalizes are reconciled by the same completion path, with

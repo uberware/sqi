@@ -63,6 +63,12 @@ ORDER BY job_id, step_order`
 )
 
 // FinalizeStep implements [store.StepStore].
+//
+// Anchor: the step's job row. The step's current status is read before the
+// anchor and is used only to report an already-terminal step when the guarded
+// UPDATE writes nothing. On Postgres a finalize committing between that read
+// and the UPDATE makes it stale (the step is reported in flight rather than
+// terminal), so H4c should re-read it under the lock.
 func (s *Store) FinalizeStep(ctx context.Context, id string, now time.Time) (store.StepStatus, bool, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -97,6 +103,10 @@ func (s *Store) FinalizeStep(ctx context.Context, id string, now time.Time) (sto
 }
 
 // FinalizeJob implements [store.JobStore].
+//
+// Anchor: the job row. As in [Store.FinalizeStep], the current status is read
+// before the anchor, only to report an already-terminal job, and H4c should
+// re-read it under the lock.
 func (s *Store) FinalizeJob(ctx context.Context, id string, now time.Time) (store.JobStatus, bool, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
