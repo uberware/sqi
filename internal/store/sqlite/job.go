@@ -5,6 +5,7 @@ package sqlite
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"slices"
 	"strings"
@@ -159,6 +160,10 @@ WHERE status IN (`
         WHERE jd.depends_on_job_id = jobs.id
           AND d.status NOT IN ('completed', 'failed', 'canceled'))`
 
+	// sqlExpiredJobByID narrows the retention eligibility SELECT to one job,
+	// for the per-job re-check immediately before that job's cascade (G6).
+	sqlExpiredJobByID = ` AND id = ?`
+
 	// sqlParkJob pauses a job and records why, but only while it is
 	// non-terminal — a job that has already reached completed/failed/canceled
 	// is left alone (zero rows affected is a legitimate no-op, not an error).
@@ -310,6 +315,13 @@ func (s *Store) CreateJobSubmission(ctx context.Context, sub store.JobSubmission
 			return store.JobSubmission{}, fmt.Errorf("sqlite: create job dependency %s->%s: %w", sub.Job.ID, up, mapErr(err))
 		}
 	}
+	// F13: the edges are written first and checked after. job_dependencies has
+	// no foreign key on depends_on_job_id, so inserting an edge to a missing or
+	// doomed upstream is harmless, and an unsatisfiable one rolls the whole
+	// submission back with the deferred Rollback.
+	if err := checkUpstreamsTx(ctx, tx, sub.DependsOn); err != nil {
+		return store.JobSubmission{}, err
+	}
 	if out.Steps, err = insertStepsTx(ctx, tx, sub.Steps); err != nil {
 		return store.JobSubmission{}, err
 	}
@@ -321,6 +333,38 @@ func (s *Store) CreateJobSubmission(ctx context.Context, sub store.JobSubmission
 		return store.JobSubmission{}, mapErr(err)
 	}
 	return out, nil
+}
+
+// checkUpstreamsTx re-checks, inside the submission's transaction, that every
+// upstream still exists and has not failed or been canceled (F13). It returns
+// [store.ErrDependencyUnsatisfiable] naming the first upstream (in ID order)
+// that does not qualify. The other direction, where an upstream completes
+// after the submitter's read, is left to sweepBlockedJobs, which releases the
+// job within one sweep tick. H4c locks each upstream row FOR SHARE here, in ID
+// order so two submissions naming the same upstreams cannot deadlock.
+func checkUpstreamsTx(ctx context.Context, tx *sql.Tx, upstreams []string) error {
+	ids := slices.Clone(upstreams)
+	slices.Sort(ids)
+	ids = slices.Compact(ids)
+	anchors := make([]anchor, 0, len(ids))
+	for _, up := range ids {
+		anchors = append(anchors, jobAnchor(up))
+	}
+	if err := lockAnchors(ctx, tx, anchors...); err != nil {
+		return err
+	}
+	for _, up := range ids {
+		var status string
+		err := tx.QueryRowContext(ctx, `SELECT status FROM jobs WHERE id = ?`, up).Scan(&status)
+		if errors.Is(err, sql.ErrNoRows) ||
+			status == string(store.JobStatusFailed) || status == string(store.JobStatusCanceled) {
+			return fmt.Errorf("%w: upstream %s", store.ErrDependencyUnsatisfiable, up)
+		}
+		if err != nil {
+			return fmt.Errorf("sqlite: check upstream %s: %w", up, mapErr(err))
+		}
+	}
+	return nil
 }
 
 // insertJobTx inserts one job row inside tx, mirroring CreateJob's argument
@@ -708,16 +752,22 @@ func (s *Store) DemoteStalledJobs(ctx context.Context, now time.Time) ([]string,
 // DeleteTerminalJobsBefore implements [store.JobStore]. It selects the eligible
 // job IDs first, then deletes each via the shared cascade, all inside one
 // transaction so a partially-applied sweep can never leave orphaned child rows.
+//
+// G6: the SELECT is a snapshot, and a retry can revive one of its jobs before
+// that job's turn comes. So each job takes its own job anchor and is then
+// re-checked against the full eligibility predicate (terminal status, cutoff,
+// no live dependent) immediately before its cascade starts; a job that no
+// longer matches is skipped, neither deleted nor reported. On SQLite the
+// single write connection means the snapshot cannot go stale, so the re-check
+// never skips; it is the PostgreSQL store's (H4c) guard, where the job-row lock
+// is what makes it sound.
 func (s *Store) DeleteTerminalJobsBefore(
 	ctx context.Context, cutoff time.Time, includeFailed bool,
 ) ([]store.DeletedJob, error) {
-	statuses := []any{string(store.JobStatusCompleted), string(store.JobStatusCanceled)}
-	if includeFailed {
-		statuses = append(statuses, string(store.JobStatusFailed))
-	}
-	placeholders := strings.TrimSuffix(strings.Repeat("?,", len(statuses)), ",")
-	// placeholders is "?,?[,?]" — only ? marks; status values are bound.
-	query := sqlSelectExpiredJobsPrefix + placeholders + sqlSelectExpiredJobsSuffix //nolint:gosec // see comment
+	query, args := expiredJobsQuery(cutoff, includeFailed)
+	// recheck narrows the same predicate to one job; the appended text is a
+	// constant and the id is bound.
+	recheck := query + sqlExpiredJobByID
 
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -725,36 +775,18 @@ func (s *Store) DeleteTerminalJobsBefore(
 	}
 	defer func() { _ = tx.Rollback() }() //nolint:errcheck // rollback after commit is a no-op
 
-	args := append([]any(nil), statuses...)
-	args = append(args, timeToText(cutoff.UTC()))
-	rows, err := tx.QueryContext(ctx, query, args...)
+	candidates, err := selectExpiredJobsTx(ctx, tx, query, args)
 	if err != nil {
-		return nil, mapErr(err)
+		return nil, err
 	}
-	defer rows.Close()
-	var deleted []store.DeletedJob
-	for rows.Next() {
-		var d store.DeletedJob
-		if err := rows.Scan(&d.ID, &d.Name, &d.FarmID, &d.QueueID); err != nil {
+	deleted := candidates[:0]
+	for _, d := range candidates {
+		purged, err := purgeExpiredJobTx(ctx, tx, recheck, args, d.ID)
+		if err != nil {
 			return nil, err
 		}
-		deleted = append(deleted, d)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	if err := rows.Close(); err != nil {
-		return nil, err
-	}
-
-	for _, d := range deleted {
-		for _, q := range []string{
-			sqlDeleteJobCheckouts, sqlDeleteJobTaskLogs, sqlDeleteJobAttempts,
-			sqlDeleteJobTasks, sqlDeleteJobSteps, sqlDeleteJobDependencies, sqlDeleteJobRow,
-		} {
-			if _, err := tx.ExecContext(ctx, q, d.ID); err != nil {
-				return nil, mapErr(err)
-			}
+		if purged {
+			deleted = append(deleted, d)
 		}
 	}
 	if err := tx.Commit(); err != nil {
@@ -763,15 +795,85 @@ func (s *Store) DeleteTerminalJobsBefore(
 	return deleted, nil
 }
 
+// expiredJobsQuery builds the retention eligibility SELECT and its bound
+// arguments: the statuses the sweep covers, then the cutoff.
+func expiredJobsQuery(cutoff time.Time, includeFailed bool) (query string, args []any) {
+	statuses := []any{string(store.JobStatusCompleted), string(store.JobStatusCanceled)}
+	if includeFailed {
+		statuses = append(statuses, string(store.JobStatusFailed))
+	}
+	placeholders := strings.TrimSuffix(strings.Repeat("?,", len(statuses)), ",")
+	// placeholders is "?,?[,?]" — only ? marks; status values are bound.
+	query = sqlSelectExpiredJobsPrefix + placeholders + sqlSelectExpiredJobsSuffix
+	return query, slices.Concat(statuses, []any{timeToText(cutoff.UTC())})
+}
+
+// selectExpiredJobsTx runs the retention eligibility SELECT inside tx.
+func selectExpiredJobsTx(ctx context.Context, tx *sql.Tx, query string, args []any) ([]store.DeletedJob, error) {
+	rows, err := tx.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, mapErr(err)
+	}
+	defer rows.Close()
+	var out []store.DeletedJob
+	for rows.Next() {
+		var d store.DeletedJob
+		if err := rows.Scan(&d.ID, &d.Name, &d.FarmID, &d.QueueID); err != nil {
+			return nil, err
+		}
+		out = append(out, d)
+	}
+	return out, rows.Err()
+}
+
+// purgeExpiredJobTx takes the job's anchor, re-checks that it is still
+// eligible for retention and, if so, runs the cascade. It reports whether the
+// job was deleted. The anchor comes first so that, once the re-check passes, no
+// other writer can change the job before the final DELETE; the re-check comes
+// before any child row is touched because the sweep is one transaction and a
+// half-purged job cannot be skipped after the fact.
+func purgeExpiredJobTx(ctx context.Context, tx *sql.Tx, recheck string, args []any, id string) (bool, error) {
+	if err := lockAnchors(ctx, tx, jobAnchor(id)); err != nil {
+		return false, err
+	}
+	var still store.DeletedJob
+	err := tx.QueryRowContext(ctx, recheck, slices.Concat(args, []any{id})...).
+		Scan(&still.ID, &still.Name, &still.FarmID, &still.QueueID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, mapErr(err)
+	}
+	for _, q := range []string{
+		sqlDeleteJobCheckouts, sqlDeleteJobTaskLogs, sqlDeleteJobAttempts,
+		sqlDeleteJobTasks, sqlDeleteJobSteps, sqlDeleteJobDependencies, sqlDeleteJobRow,
+	} {
+		if _, err := tx.ExecContext(ctx, q, id); err != nil {
+			return false, mapErr(err)
+		}
+	}
+	return true, nil
+}
+
 // DeleteJob implements [store.JobStore]. The cascade runs in a single
 // transaction; if the jobs-row delete affects zero rows the job did not exist
 // and the transaction is rolled back with [store.ErrNotFound].
+//
+// G7: the job anchor is taken first, so a child row inserted after its table
+// was cleared (a log chunk or an attempt landing mid-cascade) cannot make the
+// final parent DELETE fail on a foreign key. SQLite cannot produce that race;
+// retrying on a foreign-key or deadlock error is H4c's job.
 func (s *Store) DeleteJob(ctx context.Context, id string) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return mapErr(err)
 	}
 	defer func() { _ = tx.Rollback() }() //nolint:errcheck // rollback after commit is a no-op
+
+	if err := lockAnchors(ctx, tx, jobAnchor(id)); err != nil {
+		return err
+	}
 
 	for _, q := range []string{
 		sqlDeleteJobCheckouts,

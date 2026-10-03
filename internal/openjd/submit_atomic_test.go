@@ -53,6 +53,10 @@ type submitSpy struct {
 	// a client disconnect, a full disk, a transient DB error -- which is the
 	// only way to fail a submission that has already passed expansion.
 	failSubmission error
+	// beforeSubmission, when non-nil, runs once at the top of
+	// CreateJobSubmission, before it delegates. It is how a test changes the
+	// world between Submit's dependency pre-read and the submission write.
+	beforeSubmission func()
 }
 
 func (s *submitSpy) CreateJob(ctx context.Context, job store.Job) (store.Job, error) {
@@ -90,6 +94,9 @@ func (s *submitSpy) CreateJobSubmission(ctx context.Context, sub store.JobSubmis
 	s.writes++
 	s.submissions++
 	s.lastSubmission = sub
+	if s.beforeSubmission != nil {
+		s.beforeSubmission()
+	}
 	if s.failSubmission != nil {
 		return store.JobSubmission{}, s.failSubmission
 	}
@@ -518,6 +525,49 @@ func TestSubmit_BlockedStatusIsAtomicWithTheRows(t *testing.T) {
 			t.Errorf("dependency edges %v survived a failed submission, want none", edges)
 		}
 	})
+}
+
+// TestSubmit_UpstreamLostBeforeTheWrite_IsAValidationError pins F13 at the
+// submitter: resolveDependencies reads each upstream before the submission
+// transaction, so an upstream can be canceled or deleted in between. The store
+// refuses the write with [store.ErrDependencyUnsatisfiable], and Submit reports
+// it as a *SubmitValidationError, the same client-fault class (HTTP 400) that
+// resolveDependencies itself uses, rather than as an internal error (HTTP 500).
+func TestSubmit_UpstreamLostBeforeTheWrite_IsAValidationError(t *testing.T) {
+	for name, lose := range map[string]func(t *testing.T, st *submitSpy, upstreamID string){
+		"canceled": func(t *testing.T, st *submitSpy, upstreamID string) {
+			t.Helper()
+			if err := st.CancelJobStatus(t.Context(), upstreamID); err != nil {
+				t.Fatalf("CancelJobStatus: %v", err)
+			}
+		},
+		"deleted": func(t *testing.T, st *submitSpy, upstreamID string) {
+			t.Helper()
+			if err := st.DeleteJob(t.Context(), upstreamID); err != nil {
+				t.Fatalf("DeleteJob: %v", err)
+			}
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			st, sub, farmID, queueID, upstreamID := newBlockedSubmitFixture(t)
+			st.beforeSubmission = func() { lose(t, st, upstreamID) }
+
+			_, err := sub.Submit(t.Context(), minimalJSON("BlockedJob"), store.TemplateFormatJSON, openjd.SubmitOptions{
+				FarmID:    farmID,
+				QueueID:   queueID,
+				DependsOn: []string{upstreamID},
+			})
+			if _, ok := errors.AsType[*openjd.SubmitValidationError](err); !ok {
+				t.Fatalf("Submit = %v, want a *SubmitValidationError", err)
+			}
+			if !errors.Is(err, store.ErrDependencyUnsatisfiable) {
+				t.Errorf("Submit = %v, want it to wrap ErrDependencyUnsatisfiable", err)
+			}
+			if _, gerr := st.GetJob(t.Context(), st.lastSubmission.Job.ID); !errors.Is(gerr, store.ErrNotFound) {
+				t.Errorf("a job row survived the refused submission (GetJob = %v)", gerr)
+			}
+		})
+	}
 }
 
 // TestSubmit_BlockedJobIsNeverObservableWithoutItsEdges pins the end state that

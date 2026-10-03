@@ -211,6 +211,14 @@ type JobStore interface {
 	// insert, which does not join the edge table, so Job.DependsOn is
 	// backend-dependent and must not be relied on. Only [JobStore.GetJob]
 	// populates it.
+	//
+	// Before it commits, it re-checks inside its own transaction that every
+	// DependsOn upstream still exists and has not failed or been canceled, and
+	// returns [ErrDependencyUnsatisfiable] (naming the first such upstream, in
+	// ID order) if one has: the submitter's own pre-read ran before the
+	// transaction, so an upstream can change in between. The other direction,
+	// an upstream completing in that window, is not refused: the job is
+	// created blocked and sweepBlockedJobs releases it on its next tick.
 	CreateJobSubmission(ctx context.Context, sub JobSubmission) (JobSubmission, error)
 
 	// GetJob returns the job with the given ID, or [ErrNotFound].
@@ -322,6 +330,9 @@ type JobStore interface {
 	// deleted". Returns [ErrNotFound] when the job does not exist. The
 	// audit_log is left intact (it references entities by id, not by foreign
 	// key).
+	//
+	// The job's anchor row is locked first, so a log chunk or attempt landing
+	// mid-cascade cannot make the final jobs-row delete fail on a foreign key.
 	DeleteJob(ctx context.Context, id string) error
 
 	// DeleteTerminalJobsBefore hard-deletes terminal jobs whose completion time
@@ -330,6 +341,11 @@ type JobStore interface {
 	// always eligible; failed jobs are included only when includeFailed is true.
 	// Active jobs are never removed. Each removed job's children are deleted via
 	// the same cascade as [DeleteJob].
+	//
+	// Each job is re-checked against that eligibility rule, under its anchor
+	// lock, immediately before its cascade starts. A job that a concurrent
+	// retry has made live since the eligibility read is skipped: it is neither
+	// deleted nor included in the returned summary.
 	DeleteTerminalJobsBefore(ctx context.Context, cutoff time.Time, includeFailed bool) ([]DeletedJob, error)
 
 	// ParkJob transitions a job to [JobStatusPaused] and records reason in

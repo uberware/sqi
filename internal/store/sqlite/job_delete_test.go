@@ -559,3 +559,83 @@ func TestJob_ListJobDependencyIDs_OrderedByUpstreamID(t *testing.T) {
 		t.Fatalf("ListJobDependencyIDs = %v, want %v", deps, want)
 	}
 }
+
+// TestStore_PurgeExpiredJobTx_SkipsAJobRevivedAfterTheSelect reaches the G6
+// re-check branch, which no black-box test can on SQLite: the single write
+// connection means a retry cannot commit between DeleteTerminalJobsBefore's
+// SELECT and its per-job delete. The test plays the retry itself, inside the
+// sweep's own transaction, between the two steps: the job is a candidate when
+// selected, is then revived, and must be neither deleted nor reported. A
+// second candidate that is left alone is purged, so the skip cannot be a
+// blanket refusal.
+func TestStore_PurgeExpiredJobTx_SkipsAJobRevivedAfterTheSelect(t *testing.T) {
+	ctx := context.Background()
+	st := openTestStoreWB(t)
+	cutoff := time.Date(2026, 6, 20, 12, 0, 0, 0, time.UTC)
+	old := cutoff.Add(-time.Hour)
+	seedTerminalJobAt(t, st, "revived", store.JobStatusFailed, old)
+	seedTerminalJobAt(t, st, "untouched", store.JobStatusFailed, old)
+	// The fixture's children are what a wrongful purge would destroy.
+	if _, err := st.CreateStep(ctx, store.Step{
+		ID: "revived-step", JobID: "revived", Name: "step", Status: store.StepStatusFailed, DependsOn: []string{},
+	}); err != nil {
+		t.Fatalf("CreateStep: %v", err)
+	}
+
+	query, args := expiredJobsQuery(cutoff, true)
+	tx, err := st.db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatalf("BeginTx: %v", err)
+	}
+	defer func() { _ = tx.Rollback() }() //nolint:errcheck // rollback after commit is a no-op
+
+	candidates, err := selectExpiredJobsTx(ctx, tx, query, args)
+	if err != nil {
+		t.Fatalf("selectExpiredJobsTx: %v", err)
+	}
+	if got := deletedJobIDs(candidates); !slices.Equal(got, []string{"revived", "untouched"}) {
+		t.Fatalf("candidates = %v, want both jobs", got)
+	}
+
+	// The retry: the job is live again before its turn comes.
+	if _, err := tx.ExecContext(
+		ctx,
+		`UPDATE jobs SET status = 'pending', completed_at = NULL, updated_at = ? WHERE id = 'revived'`,
+		timeToText(cutoff.Add(time.Hour)),
+	); err != nil {
+		t.Fatalf("revive: %v", err)
+	}
+
+	recheck := query + sqlExpiredJobByID
+	purged, err := purgeExpiredJobTx(ctx, tx, recheck, args, "revived")
+	if err != nil {
+		t.Fatalf("purgeExpiredJobTx(revived): %v", err)
+	}
+	if purged {
+		t.Fatal("a job revived after the SELECT was purged")
+	}
+	purged, err = purgeExpiredJobTx(ctx, tx, recheck, args, "untouched")
+	if err != nil {
+		t.Fatalf("purgeExpiredJobTx(untouched): %v", err)
+	}
+	if !purged {
+		t.Fatal("an unchanged candidate was skipped")
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatalf("Commit: %v", err)
+	}
+
+	if j, err := st.GetJob(ctx, "revived"); err != nil || j.Status != store.JobStatusPending {
+		t.Fatalf("GetJob(revived) = (%v, %v), want the live job intact", j.Status, err)
+	}
+	var steps int
+	if err := st.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM steps WHERE job_id = 'revived'`).Scan(&steps); err != nil {
+		t.Fatalf("count steps: %v", err)
+	}
+	if steps != 1 {
+		t.Fatalf("steps of the revived job = %d, want 1: its children must survive", steps)
+	}
+	if _, err := st.GetJob(ctx, "untouched"); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("GetJob(untouched) = %v, want ErrNotFound", err)
+	}
+}

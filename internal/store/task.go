@@ -359,7 +359,9 @@ type TaskStore interface {
 	// [openjd.ResolveDependencies] to re-gate the revived tasks in dependency
 	// order. Tasks not in a terminal-retryable state are not modified. Returns
 	// the revived task rows (each with Status == pending), or an empty slice
-	// when nothing matched.
+	// when nothing matched. The returned set is exactly the set of rows the
+	// call changed: it takes the job's anchor lock first, so a concurrent
+	// cancel cannot add a failed/canceled task between the read and the write.
 	RetryTasks(ctx context.Context, jobID string, taskIDs []string, now time.Time) ([]Task, error)
 
 	// CountTasksByJob returns the number of tasks for the given job keyed by

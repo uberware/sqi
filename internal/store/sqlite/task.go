@@ -713,26 +713,16 @@ func (s *Store) RetryTasks(ctx context.Context, jobID string, taskIDs []string, 
 	}
 	defer func() { _ = tx.Rollback() }() //nolint:errcheck // rollback is best-effort after commit
 
-	// Capture the tasks to revive before the UPDATE so we can return them.
-	revived, err := func() ([]store.Task, error) {
-		args := append([]any{jobID}, idArgs...)
-		rows, qErr := tx.QueryContext(ctx, sqlSelectRetryableTasksPrefix+inSuffix, args...)
-		if qErr != nil {
-			return nil, fmt.Errorf("sqlite: select retryable tasks for job %s: %w", jobID, mapErr(qErr))
-		}
-		defer rows.Close()
+	// G5: the anchor is the job row, taken before the SELECT. The SELECT below
+	// and the UPDATE after it use the same predicate, so the returned set is the
+	// changed set (I2) only if nothing can add a failed/canceled task between
+	// them; H4c's row lock is what stops a concurrent cancel doing that.
+	if err := lockAnchors(ctx, tx, jobAnchor(jobID)); err != nil {
+		return nil, err
+	}
 
-		var out []store.Task
-		for rows.Next() {
-			t, sErr := scanTask(rows)
-			if sErr != nil {
-				return nil, sErr
-			}
-			t.Status = store.TaskStatusPending // reflect the post-update state
-			out = append(out, t)
-		}
-		return out, rows.Err()
-	}()
+	// Capture the tasks to revive before the UPDATE so we can return them.
+	revived, err := selectRetryableTasksTx(ctx, tx, jobID, inSuffix, idArgs)
 	if err != nil {
 		return nil, err
 	}
@@ -758,6 +748,30 @@ func (s *Store) RetryTasks(ctx context.Context, jobID string, taskIDs []string, 
 		return nil, fmt.Errorf("sqlite: commit retry tasks: %w", err)
 	}
 	return revived, nil
+}
+
+// selectRetryableTasksTx reads the failed/canceled tasks of jobID that a retry
+// will revive, narrowed by inSuffix (an optional "AND id IN (...)" whose
+// placeholders idArgs binds). Each returned task already reflects its
+// post-update status, pending.
+func selectRetryableTasksTx(ctx context.Context, tx *sql.Tx, jobID, inSuffix string, idArgs []any) ([]store.Task, error) {
+	args := append([]any{jobID}, idArgs...)
+	rows, err := tx.QueryContext(ctx, sqlSelectRetryableTasksPrefix+inSuffix, args...)
+	if err != nil {
+		return nil, fmt.Errorf("sqlite: select retryable tasks for job %s: %w", jobID, mapErr(err))
+	}
+	defer rows.Close()
+
+	var out []store.Task
+	for rows.Next() {
+		t, err := scanTask(rows)
+		if err != nil {
+			return nil, err
+		}
+		t.Status = store.TaskStatusPending // reflect the post-update state
+		out = append(out, t)
+	}
+	return out, rows.Err()
 }
 
 // TransitionStepPendingTasks moves every pending task of the step to `to`

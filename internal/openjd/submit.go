@@ -467,6 +467,12 @@ func (s *Submitter) Submit(
 		Tasks:     tasks,
 	})
 	if err != nil {
+		if errors.Is(err, store.ErrDependencyUnsatisfiable) {
+			// An upstream failed, was canceled or was deleted after
+			// resolveDependencies read it: a client-visible validation error,
+			// the same class resolveDependencies itself reports.
+			return nil, &SubmitValidationError{Cause: fmt.Errorf("openjd: submit: %w", err)}
+		}
 		return nil, fmt.Errorf("openjd: submit: create job: %w", err)
 	}
 
