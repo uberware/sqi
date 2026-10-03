@@ -141,6 +141,27 @@ type Worker struct {
 	UpdatedAt       time.Time
 }
 
+// RemovableBefore reports whether the worker may be hard-deleted. This is the
+// one statement of the removability rule: a worker is removable when it is
+// [WorkerStatusOffline], or when it is [WorkerStatusDisabled] and its last
+// heartbeat is strictly before disabledCutoff (the machine is gone, not merely
+// paused). Every other status is not removable, and a disabled worker that
+// never sent a heartbeat (nil LastHeartbeatAt) is not removable either.
+//
+// [WorkerStore.DeleteWorkerIfRemovable] applies this rule inside its write; the
+// SQLite statement restates it in SQL, which cannot call Go, so a change here
+// must be made there too. The API's pre-check and the fake call this method.
+func (w Worker) RemovableBefore(disabledCutoff time.Time) bool {
+	switch w.Status {
+	case WorkerStatusOffline:
+		return true
+	case WorkerStatusDisabled:
+		return w.LastHeartbeatAt != nil && w.LastHeartbeatAt.Before(disabledCutoff)
+	default:
+		return false
+	}
+}
+
 // WorkerSortField is a column by which [WorkerStore.ListWorkers] results can
 // be ordered.
 type WorkerSortField string

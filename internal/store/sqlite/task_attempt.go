@@ -185,8 +185,8 @@ func (s *Store) ListTaskAttempts(ctx context.Context, taskID string) ([]store.Ta
 
 // UpdateTaskAttempt implements [store.TaskAttemptStore].
 // If attempt.SessionID is non-empty it is written to the record; an empty
-// value is treated as "no change" via COALESCE so callers that do not have
-// a session ID (e.g. the cancellation path) do not overwrite an existing one.
+// value is treated as "no change" via COALESCE so a caller that has no
+// session ID to record does not overwrite an existing one.
 //
 // The write applies only while the attempt is running. A zero-row result is
 // told apart by a read afterwards: an attempt that exists but is closed is

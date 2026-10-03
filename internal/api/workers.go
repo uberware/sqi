@@ -63,16 +63,11 @@ const workerNotRemovableMsg = "worker is not removable: only offline or dead dis
 // or it is administratively disabled but its last heartbeat is older than the
 // offline threshold (i.e. the machine is actually gone, not merely paused). A
 // live disabled worker is never removable — removing it would let it
-// re-register as online, silently undoing the operator's Disable.
+// re-register as online, silently undoing the operator's Disable. The rule
+// itself is [store.Worker.RemovableBefore], the same one the guarded delete
+// applies, so this pre-check can never be more permissive than the store.
 func workerRemovable(wk store.Worker, threshold time.Duration, now time.Time) bool {
-	switch wk.Status {
-	case store.WorkerStatusOffline:
-		return true
-	case store.WorkerStatusDisabled:
-		return wk.LastHeartbeatAt != nil && wk.LastHeartbeatAt.Before(now.Add(-threshold))
-	default:
-		return false
-	}
+	return wk.RemovableBefore(now.Add(-threshold))
 }
 
 // ── Wire-format types ─────────────────────────────────────────────────────────

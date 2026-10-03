@@ -179,8 +179,8 @@ func (s *Store) DeleteWorker(_ context.Context, id string) error {
 	return nil
 }
 
-// DeleteWorkerIfRemovable implements [store.WorkerStore]. A disabled worker with
-// no heartbeat is not removable, as in SQLite where NULL < cutoff is not true.
+// DeleteWorkerIfRemovable implements [store.WorkerStore]. The rule is
+// [store.Worker.RemovableBefore], which SQLite restates in its DELETE.
 func (s *Store) DeleteWorkerIfRemovable(_ context.Context, id string, disabledCutoff time.Time) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -189,9 +189,7 @@ func (s *Store) DeleteWorkerIfRemovable(_ context.Context, id string, disabledCu
 	if !ok {
 		return store.ErrNotFound
 	}
-	removable := w.Status == store.WorkerStatusOffline ||
-		(w.Status == store.WorkerStatusDisabled && w.LastHeartbeatAt != nil && w.LastHeartbeatAt.Before(disabledCutoff))
-	if !removable {
+	if !w.RemovableBefore(disabledCutoff) {
 		return store.ErrConflict
 	}
 	delete(s.workers, id)

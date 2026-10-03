@@ -88,10 +88,13 @@ WHERE  w.status = 'online'
 
 	sqlDeleteWorker = `DELETE FROM workers WHERE id = ?`
 
-	// sqlDeleteWorkerIfRemovable carries the removability rule (offline, or
-	// disabled and silent since the cutoff) in its WHERE so the check and the
-	// delete are one statement (I1). NULL last_heartbeat_at never matches the
-	// disabled arm (NULL < ? is NULL), so a never-seen disabled worker stays.
+	// sqlDeleteWorkerIfRemovable carries the removability rule in its WHERE so
+	// the check and the delete are one statement (I1). It mirrors
+	// [store.Worker.RemovableBefore], the one Go statement of the rule: SQL
+	// cannot call Go, so the two are kept in step by hand and pinned against
+	// each other by TestDeleteWorkerIfRemovable. NULL last_heartbeat_at never
+	// matches the disabled arm (NULL < ? is NULL), as a nil LastHeartbeatAt is
+	// never removable in Go, so a never-seen disabled worker stays.
 	sqlDeleteWorkerIfRemovable = `
 DELETE FROM workers
 WHERE id = ? AND (status = 'offline' OR (status = 'disabled' AND last_heartbeat_at < ?))`

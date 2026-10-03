@@ -152,13 +152,18 @@ access. A worker with no credential (broker authentication disabled, or a
 worker that was never enrolled) is deleted exactly as before; a credential
 that is already revoked is treated the same way.
 
-The ordering matters: `store.DeleteWorker` never rejects with a conflict —
-removability was already decided by an earlier check — so revoking first
-never wastes a revocation on a delete that was always going to be refused.
-If the revoke fails, nothing has happened yet: the worker row is intact, the
-request answers 500, and it is safe to retry. If the delete then fails after
-a successful revoke, the worker row survives but its broker access is
-already cut — the safe direction to fail in — and retrying `DELETE
+The ordering matters: removability is decided by an earlier check, so in the
+common case the delete cannot be refused and revoking first never wastes a
+revocation on a delete that was always going to be refused. The delete itself
+is guarded — it applies the same removability rule inside its own write — so
+a worker that comes back between the revoke and the guarded delete keeps its
+row and gets a 409 Conflict, with its credential already revoked. That window
+is documented rather than closed, and it errs the safe way: access is cut,
+the worker row is kept, and the worker can be enrolled again under a new key
+(see below). If the revoke fails, nothing has happened yet: the worker row is
+intact, the request answers 500, and it is safe to retry. If the delete then
+fails after a successful revoke, the worker row survives but its broker access
+is already cut — the safe direction to fail in — and retrying `DELETE
 /workers/{id}` simply re-revokes (a no-op the second time) and tries the
 delete again. Deleting first and revoking after was tried and rejected: a
 failure in the revoke's own store write, not just a broker-reload failure,
