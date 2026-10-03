@@ -94,7 +94,9 @@ func (s *Store) UpdateTaskStatus(_ context.Context, id string, status store.Task
 	return nil
 }
 
-// SetTaskUnschedulableReason implements [store.TaskStore].
+// SetTaskUnschedulableReason implements [store.TaskStore]. A task that is no
+// longer ready is a guarded no-op returning nil; only an unknown task is an
+// error.
 func (s *Store) SetTaskUnschedulableReason(_ context.Context, id, reason string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -102,6 +104,9 @@ func (s *Store) SetTaskUnschedulableReason(_ context.Context, id, reason string)
 	task, ok := s.tasks[id]
 	if !ok {
 		return store.ErrNotFound
+	}
+	if task.Status != store.TaskStatusReady {
+		return nil // no longer ready: a guarded no-op (F15)
 	}
 	task.UnschedulableReason = reason
 	task.UpdatedAt = time.Now()
@@ -190,8 +195,13 @@ func (s *Store) transitionPendingTasksWhereLocked(
 	return affected
 }
 
-// AssignTask atomically sets AssignedWorkerID, AssignedAt, and Status to
-// [store.TaskStatusAssigned] for the given task.
+// AssignTask sets AssignedWorkerID, AssignedAt, and Status to
+// [store.TaskStatusAssigned] for the given task unconditionally and clears its
+// unschedulable reason. It returns [store.ErrNotFound] when the task does not
+// exist. The scheduler takes tasks through [Store.LeaseTask], which guards the
+// same move.
+//
+// Test fixture only: a blind write that is not part of store.Store (H4a). H4b decides its fate.
 func (s *Store) AssignTask(_ context.Context, id, workerID string, assignedAt time.Time) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()

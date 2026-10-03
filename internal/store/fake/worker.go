@@ -179,6 +179,25 @@ func (s *Store) DeleteWorker(_ context.Context, id string) error {
 	return nil
 }
 
+// DeleteWorkerIfRemovable implements [store.WorkerStore]. A disabled worker with
+// no heartbeat is not removable, as in SQLite where NULL < cutoff is not true.
+func (s *Store) DeleteWorkerIfRemovable(_ context.Context, id string, disabledCutoff time.Time) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	w, ok := s.workers[id]
+	if !ok {
+		return store.ErrNotFound
+	}
+	removable := w.Status == store.WorkerStatusOffline ||
+		(w.Status == store.WorkerStatusDisabled && w.LastHeartbeatAt != nil && w.LastHeartbeatAt.Before(disabledCutoff))
+	if !removable {
+		return store.ErrConflict
+	}
+	delete(s.workers, id)
+	return nil
+}
+
 // DeleteOfflineWorkersBefore hard-deletes every offline worker last seen before
 // cutoff and returns the removed records. Non-offline workers (including
 // disabled) and workers that have never sent a heartbeat are left untouched.

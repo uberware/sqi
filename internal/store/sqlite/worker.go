@@ -88,6 +88,14 @@ WHERE  w.status = 'online'
 
 	sqlDeleteWorker = `DELETE FROM workers WHERE id = ?`
 
+	// sqlDeleteWorkerIfRemovable carries the removability rule (offline, or
+	// disabled and silent since the cutoff) in its WHERE so the check and the
+	// delete are one statement (I1). NULL last_heartbeat_at never matches the
+	// disabled arm (NULL < ? is NULL), so a never-seen disabled worker stays.
+	sqlDeleteWorkerIfRemovable = `
+DELETE FROM workers
+WHERE id = ? AND (status = 'offline' OR (status = 'disabled' AND last_heartbeat_at < ?))`
+
 	// Deletes offline workers last seen before the cutoff and returns the
 	// removed rows so the caller can emit notifications. NULL last_heartbeat_at
 	// never matches (NULL < ? is NULL), so a never-seen worker is left alone.
@@ -350,6 +358,26 @@ func (s *Store) DeleteWorker(ctx context.Context, id string) error {
 		return mapErr(err)
 	}
 	return checkRowsAffected(res)
+}
+
+// DeleteWorkerIfRemovable implements [store.WorkerStore].
+//
+// The zero-rows case is told apart by a read AFTER the delete: a worker that
+// exists but did not match is [store.ErrConflict], one that is gone is
+// [store.ErrNotFound]. A concurrent change between the two statements can only
+// move the answer between those two errors, never delete a row the rule refused.
+func (s *Store) DeleteWorkerIfRemovable(ctx context.Context, id string, disabledCutoff time.Time) error {
+	res, err := s.db.ExecContext(ctx, sqlDeleteWorkerIfRemovable, id, timeToText(disabledCutoff.UTC()))
+	if err != nil {
+		return mapErr(err)
+	}
+	if n, err := res.RowsAffected(); err != nil || n == 1 {
+		return err
+	}
+	if _, err := s.GetWorker(ctx, id); err != nil {
+		return err // ErrNotFound
+	}
+	return store.ErrConflict
 }
 
 // DeleteOfflineWorkersBefore implements [store.WorkerStore].

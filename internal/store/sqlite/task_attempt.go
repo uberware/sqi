@@ -5,6 +5,7 @@ package sqlite
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"time"
 
 	"github.com/uberware/sqi/internal/store"
@@ -72,6 +73,9 @@ LIMIT 1`
 FROM task_attempts WHERE task_id = ?
 ORDER BY attempt_number ASC`
 
+	// sqlUpdateAttempt writes only while the attempt is still running, so a
+	// late or echoed report can never overwrite an attempt something else
+	// already closed (F16). The status test is evaluated inside the UPDATE (I1).
 	sqlUpdateAttempt = `
 UPDATE task_attempts
 SET status    = ?,
@@ -79,7 +83,7 @@ SET status    = ?,
     ended_at  = ?,
     session_id = COALESCE(NULLIF(?, ''), session_id),
     message = COALESCE(NULLIF(?, ''), message)
-WHERE id = ?
+WHERE id = ? AND status = 'running'
 RETURNING ` + attemptCols
 
 	// sqlTerminateWorkerAttempts closes out all running attempts for tasks
@@ -183,6 +187,10 @@ func (s *Store) ListTaskAttempts(ctx context.Context, taskID string) ([]store.Ta
 // If attempt.SessionID is non-empty it is written to the record; an empty
 // value is treated as "no change" via COALESCE so callers that do not have
 // a session ID (e.g. the cancellation path) do not overwrite an existing one.
+//
+// The write applies only while the attempt is running. A zero-row result is
+// told apart by a read afterwards: an attempt that exists but is closed is
+// [store.ErrConflict], one that does not exist is [store.ErrNotFound].
 func (s *Store) UpdateTaskAttempt(ctx context.Context, attempt store.TaskAttempt) (store.TaskAttempt, error) {
 	var exitCode sql.NullInt64
 	if attempt.ExitCode != nil {
@@ -194,5 +202,11 @@ func (s *Store) UpdateTaskAttempt(ctx context.Context, attempt store.TaskAttempt
 		attempt.Message,   // COALESCE(NULLIF(?, ''), message)
 		attempt.ID)
 	out, err := scanAttempt(row)
+	if errors.Is(err, sql.ErrNoRows) {
+		if _, gerr := s.GetTaskAttempt(ctx, attempt.ID); gerr != nil {
+			return store.TaskAttempt{}, gerr // ErrNotFound
+		}
+		return store.TaskAttempt{}, store.ErrConflict // closed: never rewritten (F16)
+	}
 	return out, mapErr(err)
 }

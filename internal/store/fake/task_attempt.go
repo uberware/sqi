@@ -159,7 +159,9 @@ func (s *Store) CancelJobAttempts(_ context.Context, jobID string, endedAt time.
 }
 
 // UpdateTaskAttempt replaces the mutable fields of an existing attempt
-// (Status, ExitCode, EndedAt, and SessionID/Message if non-empty).
+// (Status, ExitCode, EndedAt, and SessionID/Message if non-empty). It writes
+// only while the attempt is running: a closed attempt is [store.ErrConflict]
+// and is left untouched, as in SQLite (F16).
 func (s *Store) UpdateTaskAttempt(_ context.Context, attempt store.TaskAttempt) (store.TaskAttempt, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -167,6 +169,9 @@ func (s *Store) UpdateTaskAttempt(_ context.Context, attempt store.TaskAttempt) 
 	existing, ok := s.taskAttempts[attempt.ID]
 	if !ok {
 		return store.TaskAttempt{}, store.ErrNotFound
+	}
+	if existing.Status != store.AttemptStatusRunning {
+		return store.TaskAttempt{}, store.ErrConflict
 	}
 
 	existing.Status = attempt.Status

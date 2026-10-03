@@ -13,6 +13,7 @@ package scheduler
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"sync"
 	"testing"
@@ -44,6 +45,25 @@ func raceBackends(t *testing.T) map[string]store.Store {
 		}
 	})
 	return map[string]store.Store{"fake": fake.New(), "sqlite": sq}
+}
+
+// fixtureAssigner is the fixture-only AssignTask both concrete stores keep
+// after it left store.Store (H4a F17). The race tests hold a store.Store, so
+// they reach it through this narrow assertion.
+type fixtureAssigner interface {
+	AssignTask(ctx context.Context, id, workerID string, assignedAt time.Time) error
+}
+
+// forceAssign force-assigns a task to workerID at assignedAt, standing in
+// for "some other lease took it" or "this assignment is old" without the
+// attempt and claims a real lease would write. It fails when the store has no
+// fixture AssignTask.
+func forceAssign(st store.Store, taskID, workerID string, assignedAt time.Time) error {
+	a, ok := st.(fixtureAssigner)
+	if !ok {
+		return fmt.Errorf("%T has no fixture AssignTask", st)
+	}
+	return a.AssignTask(context.Background(), taskID, workerID, assignedAt)
 }
 
 // once runs fn the first time it is called and never again.
@@ -622,7 +642,7 @@ func TestH4a_F12_CapsHoldUnderParallelLease(t *testing.T) {
 					taskA := mustTaskOf(t, st, ids[0])
 					wrapped := &leaseDuringPolicyStore{Store: st, hook: &once{fn: func() {
 						// Another lease wins task B between the policy count and this lease.
-						if err := st.AssignTask(context.Background(), ids[1], "w-other", time.Now()); err != nil {
+						if err := forceAssign(st, ids[1], "w-other", time.Now()); err != nil {
 							t.Errorf("AssignTask in hook: %v", err)
 						}
 					}}}
@@ -818,7 +838,7 @@ func TestTryLeaseTask_NonLeasedOutcomesWriteNothing(t *testing.T) {
 			name: "lost to another lease",
 			race: func(t *testing.T, st store.Store, _ store.Worker, ids []string, _ store.UsagePool) {
 				t.Helper()
-				if err := st.AssignTask(context.Background(), ids[0], "w-other", time.Now()); err != nil {
+				if err := forceAssign(st, ids[0], "w-other", time.Now()); err != nil {
 					t.Errorf("AssignTask in hook: %v", err)
 				}
 			},
@@ -914,7 +934,7 @@ func TestH4a_F5_ReaperDoesNotCloseReleasedAttempt(t *testing.T) {
 	for name, st := range raceBackends(t) {
 		t.Run(name, func(t *testing.T) {
 			_, _, task, stale := seedStatusFixture(t, st, store.TaskStatusAssigned)
-			if err := st.AssignTask(t.Context(), task.ID, "w-old", time.Now().Add(-time.Hour)); err != nil { // stale assigned_at
+			if err := forceAssign(st, task.ID, "w-old", time.Now().Add(-time.Hour)); err != nil { // stale assigned_at
 				t.Fatalf("AssignTask: %v", err)
 			}
 			pool, err := st.CreateUsagePool(t.Context(), store.UsagePool{ID: uuid.NewString(), Name: "lic", MaxConcurrent: 2})

@@ -241,11 +241,6 @@ type TaskStore interface {
 	// rewritten, and a task already holding c.TaskStatus is a no-op.
 	CompleteTaskAttempt(ctx context.Context, c AttemptCompletion) (CompletionResult, error)
 
-	// AssignTask atomically sets AssignedWorkerID, AssignedAt, and Status to
-	// [TaskStatusAssigned] for the given task. Returns [ErrNotFound] if the
-	// task does not exist.
-	AssignTask(ctx context.Context, id, workerID string, assignedAt time.Time) error
-
 	// ListReadyTasks returns up to limit tasks in [TaskStatusReady] that
 	// belong to non-paused queues within the given farm, excluding:
 	//   - tasks whose RetryAfter is set and after now (still backing off), and
@@ -391,7 +386,12 @@ type TaskStore interface {
 	LeaseTask(ctx context.Context, req LeaseRequest) (LeaseResult, error)
 
 	// SetTaskUnschedulableReason sets (or, with an empty string, clears) the
-	// reason a ready task cannot be scheduled. Returns ErrNotFound if id is unknown.
+	// reason a ready task cannot be scheduled. It writes only while the task is
+	// [TaskStatusReady], evaluated inside the write: the scheduler's sweep reads
+	// its candidates before it writes, and a task a lease took in between is left
+	// alone rather than stamped with a reason that no longer applies. A task that
+	// is not ready is therefore a no-op returning nil, not an error. Returns
+	// ErrNotFound if id is unknown.
 	SetTaskUnschedulableReason(ctx context.Context, id, reason string) error
 
 	// SetTaskFailureReason sets (or, with an empty string, clears) the

@@ -245,6 +245,17 @@ type WorkerStore interface {
 	// in-flight work before removing it.
 	DeleteWorker(ctx context.Context, id string) error
 
+	// DeleteWorkerIfRemovable deletes the worker only while it is removable:
+	// offline, or disabled with a heartbeat older than disabledCutoff (a
+	// disabled worker that never sent a heartbeat is not removable). The rule is
+	// evaluated inside the DELETE (invariant I1), so a worker that came back
+	// between the caller's read and this write keeps its row. Returns
+	// [ErrConflict] when the worker exists but is not removable and
+	// [ErrNotFound] when it does not exist. Like [WorkerStore.DeleteWorker],
+	// task and task-attempt rows that reference the worker by ID are left
+	// intact.
+	DeleteWorkerIfRemovable(ctx context.Context, id string, disabledCutoff time.Time) error
+
 	// DeleteOfflineWorkersBefore hard-deletes every worker in
 	// [WorkerStatusOffline] whose LastHeartbeatAt is strictly before cutoff,
 	// and returns the deleted records. Workers in any other status (including

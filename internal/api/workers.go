@@ -55,6 +55,10 @@ func newWorkerHandler(st store.Store, notifier ws.Notifier, revoker WorkerRevoke
 	}
 }
 
+// workerNotRemovableMsg is the 409 detail for a worker that is not removable,
+// whether the pre-check or the guarded delete found it so.
+const workerNotRemovableMsg = "worker is not removable: only offline or dead disabled workers can be removed"
+
 // workerRemovable reports whether a worker may be hard-deleted: it is offline,
 // or it is administratively disabled but its last heartbeat is older than the
 // offline threshold (i.e. the machine is actually gone, not merely paused). A
@@ -365,21 +369,27 @@ func (h *workerHandler) setWorkerStatus(w http.ResponseWriter, r *http.Request, 
 // who can delete a worker is not otherwise able to revoke what it can still
 // do.
 //
-// Revoke-then-delete, not the reverse: store.DeleteWorker never returns
-// ErrConflict in either backend (removability was already decided above via
-// GetWorker + workerRemovable), so revoking first can never waste a
-// revocation on a delete that was going to be legitimately rejected. A
-// revoke failure then means nothing happened at all — worker row intact, a
-// clean 500, safely retryable. Deleting first would instead let a failure
-// of the revoke's own store write (not just a broker-reload failure — a
-// documented, recoverable degraded mode) leave the worker row gone, the
-// credential never revoked, and nothing left to reap it: the caller who
-// holds WorkersManage without WorkersEnroll has no other way to revoke it,
-// and would be told 204 while the machine kept live broker access
-// permanently. A delete failure after a successful revoke leaves access cut
-// and the row present — the safe direction — and a retried removeWorker
-// re-invokes RevokeWorker, which is a correct no-op the second time via
-// ErrNotFound.
+// Revoke-then-delete, not the reverse: removability was already decided
+// above via GetWorker + workerRemovable, so in the common case the delete
+// cannot be refused and revoking first never wastes a revocation on a delete
+// that was going to be legitimately rejected. A revoke failure then means
+// nothing happened at all — worker row intact, a clean 500, safely
+// retryable. Deleting first would instead let a failure of the revoke's own
+// store write (not just a broker-reload failure — a documented, recoverable
+// degraded mode) leave the worker row gone, the credential never revoked,
+// and nothing left to reap it: the caller who holds WorkersManage without
+// WorkersEnroll has no other way to revoke it, and would be told 204 while
+// the machine kept live broker access permanently. A delete failure after a
+// successful revoke leaves access cut and the row present — the safe
+// direction — and a retried removeWorker re-invokes RevokeWorker, which is a
+// correct no-op the second time via ErrNotFound.
+//
+// The delete is [store.WorkerStore.DeleteWorkerIfRemovable], which applies
+// the same removability rule inside its own write, so a worker that came
+// back between the GetWorker above and the delete is never removed on a
+// stale read. A worker that comes back between the revoke and the guarded
+// delete keeps its row and gets a 409, with its credential already revoked:
+// the safe direction, documented rather than closed (spec F18).
 func (h *workerHandler) removeWorker(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	id := chi.URLParam(r, "id")
@@ -397,8 +407,7 @@ func (h *workerHandler) removeWorker(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if !workerRemovable(wk, h.offlineThreshold, time.Now()) {
-		writeProblem(w, r, http.StatusConflict,
-			"worker is not removable: only offline or dead disabled workers can be removed")
+		writeProblem(w, r, http.StatusConflict, workerNotRemovableMsg)
 		return
 	}
 
@@ -414,9 +423,14 @@ func (h *workerHandler) removeWorker(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := h.store.DeleteWorker(ctx, id); err != nil {
+	if err := h.store.DeleteWorkerIfRemovable(ctx, id, time.Now().Add(-h.offlineThreshold)); err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			writeProblem(w, r, http.StatusNotFound, "worker not found")
+			return
+		}
+		if errors.Is(err, store.ErrConflict) {
+			// The worker became non-removable after the pre-check above.
+			writeProblem(w, r, http.StatusConflict, workerNotRemovableMsg)
 			return
 		}
 		h.logger.ErrorContext(ctx, "workers: delete failed",

@@ -34,8 +34,12 @@ RETURNING ` + taskCols
 	sqlSelectTaskStatus = `
 SELECT status FROM tasks WHERE id = ?`
 
+	// sqlSetTaskUnschedulableReason writes only while the task is ready: the
+	// sweep reads its candidates before it writes, and a task a lease took in
+	// between must not be stamped with a reason that says it cannot be
+	// scheduled (F15). The status test is evaluated inside the UPDATE (I1).
 	sqlSetTaskUnschedulableReason = `
-UPDATE tasks SET unschedulable_reason = ?, updated_at = ? WHERE id = ?`
+UPDATE tasks SET unschedulable_reason = ?, updated_at = ? WHERE id = ? AND status = 'ready'`
 
 	sqlSetTaskFailureReason = `
 UPDATE tasks SET failure_reason = ?, updated_at = ? WHERE id = ?`
@@ -467,13 +471,21 @@ func (s *Store) UpdateTaskStatus(ctx context.Context, id string, status store.Ta
 	return nil
 }
 
-// SetTaskUnschedulableReason implements [store.TaskStore].
+// SetTaskUnschedulableReason implements [store.TaskStore]. A task that is no
+// longer ready is a guarded no-op returning nil; only an unknown task is an
+// error.
 func (s *Store) SetTaskUnschedulableReason(ctx context.Context, id, reason string) error {
 	res, err := s.stmtSetTaskUnschedulableReason.ExecContext(ctx, reason, timeToText(time.Now().UTC()), id)
 	if err != nil {
 		return mapErr(err)
 	}
-	return checkRowsAffected(res)
+	if n, err := res.RowsAffected(); err != nil || n == 1 {
+		return err
+	}
+	if _, err := s.GetTask(ctx, id); err != nil {
+		return err // ErrNotFound
+	}
+	return nil // no longer ready: a guarded no-op (F15)
 }
 
 // SetTaskFailureReason implements [store.TaskStore]. An empty reason clears it.
@@ -494,7 +506,12 @@ func (s *Store) SetTaskFailureReasonIfEmpty(ctx context.Context, id, reason stri
 	return nil
 }
 
-// AssignTask implements [store.TaskStore].
+// AssignTask sets a task's worker, assignment time and status to assigned
+// unconditionally and clears its unschedulable reason. It returns
+// [store.ErrNotFound] when the task does not exist. The scheduler takes tasks
+// through [Store.LeaseTask], which guards the same move.
+//
+// Test fixture only: a blind write that is not part of store.Store (H4a). H4b decides its fate.
 func (s *Store) AssignTask(ctx context.Context, id, workerID string, assignedAt time.Time) error {
 	now := timeToText(time.Now().UTC())
 	res, err := s.stmtAssignTask.ExecContext(ctx, workerID, timeToText(assignedAt), now, id)

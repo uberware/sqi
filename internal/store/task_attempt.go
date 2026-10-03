@@ -65,6 +65,10 @@ type TaskAttemptStore interface {
 	ListTaskAttempts(ctx context.Context, taskID string) ([]TaskAttempt, error)
 
 	// UpdateTaskAttempt replaces the mutable fields of an existing attempt
-	// (Status, ExitCode, EndedAt). Returns [ErrNotFound] if it does not exist.
+	// (Status, ExitCode, EndedAt; SessionID and Message only when non-empty).
+	// It writes only while the attempt is still running, evaluated inside the
+	// write, so a late or echoed report can never overwrite an attempt that
+	// something else already closed (F16). Returns [ErrConflict] when the
+	// attempt exists but is closed, and [ErrNotFound] if it does not exist.
 	UpdateTaskAttempt(ctx context.Context, attempt TaskAttempt) (TaskAttempt, error)
 }
