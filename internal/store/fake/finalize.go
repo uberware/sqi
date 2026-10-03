@@ -61,7 +61,7 @@ func (s *Store) FinalizeStep(_ context.Context, id string, now time.Time) (store
 	if out == "" {
 		return "", false, nil
 	}
-	st.Status, st.UpdatedAt = out, now
+	st.Status, st.UpdatedAt = out, now.UTC() // SQLite stores timeToText(now.UTC())
 	s.steps[id] = st
 	return out, true, nil
 }
@@ -97,8 +97,8 @@ func (s *Store) FinalizeJob(_ context.Context, id string, now time.Time) (store.
 	} else if canceled {
 		out = store.JobStatusCanceled
 	}
-	at := now
-	j.Status, j.CompletedAt, j.UpdatedAt = out, &at, now
+	at := now.UTC() // SQLite stores timeToText(now.UTC())
+	j.Status, j.CompletedAt, j.UpdatedAt = out, &at, at
 	s.jobs[id] = j
 	return out, true, nil
 }

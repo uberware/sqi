@@ -31,7 +31,7 @@ func (s *Store) releaseAttemptClaimsLocked(attemptID string, at time.Time) int {
 // does; the claim release is unconditional in both. Caller holds s.mu.
 func (s *Store) closeRunningAttemptLocked(c store.AttemptCompletion) {
 	if a, ok := s.taskAttempts[c.AttemptID]; ok && a.Status == store.AttemptStatusRunning {
-		ended := c.EndedAt
+		ended := c.EndedAt.UTC() // SQLite stores timeToText(c.EndedAt.UTC())
 		a.Status, a.EndedAt, a.ExitCode = c.AttemptStatus, &ended, nil
 		if c.ExitCode != nil {
 			code := *c.ExitCode
@@ -130,7 +130,9 @@ func (s *Store) CancelJobExecution(_ context.Context, jobID, reason string, now 
 			continue
 		}
 		if t.Status == store.TaskStatusAssigned || t.Status == store.TaskStatusRunning {
-			active = append(active, t)
+			row := t
+			row.Parameters = copyMap(t.Parameters) // a copy, as GetTask returns
+			active = append(active, row)
 		}
 		s.cancelTaskRowLocked(id, reason, now, true)
 	}
@@ -153,6 +155,7 @@ func (s *Store) CancelTaskExecution(_ context.Context, taskID, reason string, no
 	if !ok {
 		return store.Task{}, false, store.ErrNotFound
 	}
+	prior.Parameters = copyMap(prior.Parameters) // a copy, as GetTask returns
 	if terminalTask(prior.Status) {
 		return prior, false, nil
 	}
