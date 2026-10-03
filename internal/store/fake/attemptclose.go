@@ -54,6 +54,9 @@ func (s *Store) closeRunningAttemptLocked(c store.AttemptCompletion) {
 //
 // The outcomes match the SQLite store's, which is the reference:
 //   - unknown task: [store.ErrNotFound], nothing written;
+//   - c.AttemptID is not the task's latest attempt (a newer lease superseded
+//     it): Rejected, the task and its failure reason are left alone, but the
+//     attempt close and the claim release still happen;
 //   - the task already holds c.TaskStatus: Applied, the task is not rewritten
 //     (a redelivery);
 //   - the state machine refuses the move: Rejected, but the attempt close and
@@ -61,7 +64,7 @@ func (s *Store) closeRunningAttemptLocked(c store.AttemptCompletion) {
 //   - otherwise the task moves and Applied is reported.
 //
 // In every non-error case the failure reason is stamped only when the task
-// ends up holding c.TaskStatus.
+// ends up holding c.TaskStatus by this attempt's report.
 func (s *Store) CompleteTaskAttempt(_ context.Context, c store.AttemptCompletion) (store.CompletionResult, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -72,7 +75,15 @@ func (s *Store) CompleteTaskAttempt(_ context.Context, c store.AttemptCompletion
 	}
 
 	// Decide the task move before writing anything, so an error return leaves
-	// no half-applied state, as SQLite's rolled-back transaction does.
+	// no half-applied state, as SQLite's rolled-back transaction does. The
+	// latest-attempt check comes first, as SQLite runs it before it reads the
+	// task's status; it reads only attempt numbers, which the close below does
+	// not change, so deciding it before the close is the same as after.
+	if !s.isLatestAttemptLocked(c.TaskID, c.AttemptID) {
+		// Superseded: the attempt close and claim release still commit.
+		s.closeRunningAttemptLocked(c)
+		return store.CompletionResult{Rejected: true}, nil
+	}
 	moves := t.Status != c.TaskStatus
 	if moves {
 		if err := store.ValidateTaskTransition(t.Status, c.TaskStatus); err != nil {

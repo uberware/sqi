@@ -133,7 +133,8 @@ type AttemptCompletion struct {
 	// value unchanged.
 	Message string
 	// FailureReason, when non-empty, is stamped on the task if the task ends up
-	// holding TaskStatus. Callers pass "" for a success.
+	// holding TaskStatus. It is never stamped by a Rejected report, including
+	// one from a superseded attempt. Callers pass "" for a success.
 	FailureReason string
 	// EndedAt is when the attempt ended, as the worker reports it. It feeds only
 	// the attempt's ended_at: the task row's updated_at and the released claims'
@@ -147,11 +148,15 @@ type CompletionResult struct {
 	// Applied is true when the task now holds the requested status (it moved
 	// there, or was already there on a redelivery).
 	Applied bool
-	// Rejected is true when the state machine refused the transition: the task
-	// no longer holds a status the report can move it from, because it reached
-	// a different terminal status (a cancel, say) or went back to ready or
-	// pending (a reap, an offline reclaim, an auto-retry requeue or a manual
-	// retry). The caller acks it.
+	// Rejected is true when the task was not moved, for one of two reasons.
+	// Either the report's attempt is not the task's latest (the highest
+	// attempt_number): the reaper or an offline sweep closed it and a new lease
+	// replaced it, so the old worker's late report must not end the new lease.
+	// Or the state machine refused the transition: the task no longer holds a
+	// status the report can move it from, because it reached a different
+	// terminal status (a cancel, say) or went back to ready or pending (a reap,
+	// an offline reclaim, an auto-retry requeue or a manual retry). Either way
+	// the failure reason is not stamped, and the caller acks the report.
 	Rejected bool
 }
 
@@ -236,12 +241,19 @@ type TaskStore interface {
 	// transaction (invariant I3):
 	//  1. close the attempt if it is still running;
 	//  2. release every active claim the attempt holds;
-	//  3. move the task to c.TaskStatus by compare-and-set;
-	//  4. stamp c.FailureReason when the task ends up holding c.TaskStatus.
-	// Steps 1 and 2 commit even when step 3 is rejected, so a canceled task's
-	// late report never leaks a usage slot. Returns ErrNotFound for an unknown
-	// task. A redelivery is safe: the attempt is already closed, so it is not
-	// rewritten, and a task already holding c.TaskStatus is a no-op.
+	//  3. if c.AttemptID is not the task's latest attempt (the highest
+	//     attempt_number; an unknown attempt or another task's is not), stop:
+	//     the result is Rejected and the task is not touched;
+	//  4. move the task to c.TaskStatus by compare-and-set;
+	//  5. stamp c.FailureReason when the task ends up holding c.TaskStatus.
+	// Steps 1 and 2 commit even when step 3 or 4 rejects the report, so a
+	// canceled task's late report never leaks a usage slot. Step 3 is what
+	// stops a superseded attempt's late report (its attempt reaped or its
+	// worker taken offline, the task leased again) from ending the task by a
+	// legal arrow while the new attempt is open and holds its claims. Returns
+	// ErrNotFound for an unknown task. A redelivery is safe: the attempt is
+	// already closed, so it is not rewritten, and a task already holding
+	// c.TaskStatus is a no-op, provided the attempt is still the latest.
 	CompleteTaskAttempt(ctx context.Context, c AttemptCompletion) (CompletionResult, error)
 
 	// ListReadyTasks returns up to limit tasks in [TaskStatusReady] that

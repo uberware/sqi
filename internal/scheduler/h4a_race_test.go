@@ -984,6 +984,88 @@ func TestH4a_F5_ReaperDoesNotCloseReleasedAttempt(t *testing.T) {
 	}
 }
 
+// ── A superseded attempt's late report must not end the re-leased task ──────
+
+// TestH4a_SupersededAttemptLateReportIsIgnored reaps an assignment, leases the
+// task again to another worker, and then delivers the first worker's late
+// terminal report. The arrow assigned/running -> succeeded (or canceled) is
+// legal, so the store used to complete the task while the new attempt was open
+// and held its claims: an I3 violation, and for a canceled echo a silent undo
+// of a cancel-then-retry. The store now refuses a report from an attempt that
+// is not the task's latest; the consumer acks it as it does any refused report,
+// still wakes lease waiters, and leaves the new lease alone.
+func TestH4a_SupersededAttemptLateReportIsIgnored(t *testing.T) {
+	cases := []struct {
+		name    string
+		current store.TaskStatus // the re-leased task's status when the late report lands
+		report  string
+	}{
+		{"succeeded on an assigned task", store.TaskStatusAssigned, "succeeded"},
+		{"succeeded on a running task", store.TaskStatusRunning, "succeeded"},
+		{"canceled echo on a running task", store.TaskStatusRunning, "canceled"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			for name, st := range raceBackends(t) {
+				t.Run(name, func(t *testing.T) {
+					job, _, task, stale := seedStatusFixture(t, st, store.TaskStatusAssigned)
+					if err := forceAssign(st, task.ID, statusTestWorkerID, time.Now().Add(-time.Hour)); err != nil { // stale assigned_at
+						t.Fatalf("AssignTask: %v", err)
+					}
+					pool := seedPoolClaim(t, st, stale.ID)
+					s := newStatusTestScheduler(st)
+					s.ctx = t.Context()
+					s.cfg.AssignedTaskTimeout = time.Minute
+
+					s.reapStaleAssignedTasks(t.Context())
+					res, err := st.LeaseTask(t.Context(), store.LeaseRequest{
+						TaskID: task.ID, WorkerID: "w-new", AttemptID: uuid.NewString(), Now: time.Now().UTC(),
+						Claims: []store.UsagePoolClaim{{ClaimID: uuid.NewString(), PoolID: pool.ID, PoolName: pool.Name}},
+					})
+					if err != nil || res.Outcome != store.LeaseLeased {
+						t.Fatalf("re-lease after the reap = (%+v, %v), want leased", res, err)
+					}
+					fresh := res.Attempt
+					if tc.current == store.TaskStatusRunning {
+						if err := st.UpdateTaskStatus(t.Context(), task.ID, store.TaskStatusRunning); err != nil {
+							t.Fatalf("UpdateTaskStatus running: %v", err)
+						}
+					}
+					woke := parkWaiter(t, s, job.QueueID)
+
+					msg := terminalReport(t, task, stale, tc.report, "")
+					s.handleTaskStatusMessage(msg)
+
+					if msg.nacked || !msg.acked {
+						t.Fatalf("a superseded attempt's report must be acked, not nacked (acked=%v nacked=%v)", msg.acked, msg.nacked)
+					}
+					if got := mustTaskOf(t, st, task.ID); got.Status != tc.current || got.AssignedWorkerID != "w-new" {
+						t.Fatalf("task = %q on %q, want %q on w-new (a superseded attempt's report must not end the new lease)",
+							got.Status, got.AssignedWorkerID, tc.current)
+					}
+					if a := mustAttemptOf(t, st, fresh.ID); a.Status != store.AttemptStatusRunning || a.EndedAt != nil {
+						t.Fatalf("new attempt = %q (ended %v), want running and open", a.Status, a.EndedAt)
+					}
+					if n := activeClaimsOf(t, st, pool.ID); n != 1 {
+						t.Fatalf("active claims = %d, want 1 (the new attempt's)", n)
+					}
+					if v := claimViolations(t, st); len(v) != 0 {
+						t.Fatalf("I3 violations: %v", v)
+					}
+					select {
+					case got := <-woke:
+						if !got {
+							t.Fatal("waiter returned without being woken")
+						}
+					case <-time.After(5 * time.Second):
+						t.Fatal("lease waiter was not woken by the refused late report")
+					}
+				})
+			}
+		})
+	}
+}
+
 // ── F1: a heartbeat that lands during the sweep keeps the worker online ──────
 
 // heartbeatDuringSweepStore fires its hook right after the sweep has listed its

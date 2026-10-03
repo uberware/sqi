@@ -21,7 +21,8 @@ package scheduler
 //     a. In one store write (CompleteTaskAttempt): close the attempt (EndedAt,
 //        Status, ExitCode), release any held usage pool slots, and transition
 //        the task to the matching terminal status. The close and the release
-//        commit even when the task transition is refused.
+//        commit even when the task transition is refused, which it also is
+//        when a newer lease has superseded the reporting attempt.
 //     b. Check whether the enclosing step is now complete.
 //     c. If the step completed successfully, call ResolveDependencies to
 //        unblock downstream steps.
@@ -296,9 +297,11 @@ func (s *Scheduler) maybePromoteJobRunning(ctx context.Context, jobID string) {
 // closes the attempt, releases its usage slots and moves the task in one store
 // write ([store.TaskStore.CompleteTaskAttempt]), then checks step/job completion.
 //
-// A report the state machine refuses (the task already reached a different
-// terminal status, or went back to ready or pending through a reap, an offline
-// reclaim or a retry) still closes the attempt and frees its slots; it returns
+// A report the store refuses (the state machine rejects the move because the
+// task already reached a different terminal status, or went back to ready or
+// pending through a reap, an offline reclaim or a retry; or the report's
+// attempt is no longer the task's latest because a new lease superseded it)
+// still closes the attempt and frees its slots; it returns
 // [store.ErrInvalidTransition] so the consumer acks it.
 func (s *Scheduler) handleTaskTerminal(
 	ctx context.Context,
@@ -350,9 +353,11 @@ func (s *Scheduler) handleTaskTerminal(
 		// The task no longer holds a status this report can move it from: it
 		// reached a different terminal status (a cancel), or it went back to ready
 		// or pending (a reap, an offline reclaim, or a retry that raced this
-		// report). The claims were released above, so nothing leaks. Returned as
-		// ErrInvalidTransition so the consumer acks the message instead of
-		// redelivering a report that can never become legal.
+		// report). Or the report is a late one from an attempt a newer lease
+		// superseded, which must not end that lease. The claims were released
+		// above, so nothing leaks. Returned as ErrInvalidTransition so the consumer
+		// acks the message instead of redelivering a report that can never
+		// become legal.
 		return fmt.Errorf("scheduler: task %s: %w", m.TaskID, store.ErrInvalidTransition)
 	}
 

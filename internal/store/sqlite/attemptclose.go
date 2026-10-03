@@ -34,6 +34,15 @@ WHERE  id = ? AND status = 'running'`
 
 	sqlTaskJobID = `SELECT job_id FROM tasks WHERE id = ?`
 
+	// sqlIsLatestAttempt reports whether an attempt is one of its task's attempts
+	// with the highest attempt_number. An attempt that does not exist, or that
+	// belongs to another task, is not. Its binds are attempt id, task id, task id.
+	sqlIsLatestAttempt = `
+SELECT EXISTS (
+  SELECT 1 FROM task_attempts a
+  WHERE  a.id = ? AND a.task_id = ?
+    AND  a.attempt_number = (SELECT MAX(attempt_number) FROM task_attempts WHERE task_id = ?))`
+
 	// casMaxAttempts bounds the compare-and-set loop. On SQLite the guarded
 	// UPDATE can never miss, because the transaction is serialized; under
 	// Postgres READ COMMITTED a miss means another writer moved the task
@@ -127,7 +136,13 @@ func closeAttemptAndReleaseTx(ctx context.Context, tx *sql.Tx, c store.AttemptCo
 // statements run in the order of spec 5.2: close the attempt, release its
 // claims, then move the task. The claims are released before the task row is
 // touched, and the release commits even when the task move is refused, so a
-// canceled task's late report still frees its pool slots.
+// canceled task's late report still frees its pool slots. The latest-attempt
+// check runs after the release and before the task move. Here the single write
+// connection makes the check and the move one step. On Postgres it does not: a
+// LeaseTask committing between the check and the compare-and-set's read would
+// make a superseded report look current, and LeaseTask does not take the job
+// row, so H4c must lock the task row (FOR UPDATE, after the job anchor) before
+// the check, so that a lease in flight is waited for and its attempt is seen.
 func (s *Store) CompleteTaskAttempt(ctx context.Context, c store.AttemptCompletion) (store.CompletionResult, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -148,14 +163,39 @@ func (s *Store) CompleteTaskAttempt(ctx context.Context, c store.AttemptCompleti
 	if err := closeAttemptAndReleaseTx(ctx, tx, c, timeToText(c.EndedAt.UTC()), timeToText(now)); err != nil {
 		return store.CompletionResult{}, err
 	}
+	result, err := applyCompletionTx(ctx, tx, c, now)
+	if err != nil {
+		return store.CompletionResult{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return store.CompletionResult{}, fmt.Errorf("sqlite: commit complete task attempt: %w", mapErr(err))
+	}
+	return result, nil
+}
 
-	result := store.CompletionResult{Applied: true}
+// applyCompletionTx is the task half of [Store.CompleteTaskAttempt], run after
+// the attempt close and claim release in the same transaction. A report from an
+// attempt that is not the task's latest is refused before the task is read: the
+// reaper or an offline sweep closed that attempt and a new lease replaced it,
+// and the legal arrow assigned/running -> succeeded/failed/canceled would
+// otherwise end the task while the new attempt is open and holds its claims
+// (I3), or undo a cancel-then-retry. Otherwise the task moves by
+// compare-and-set, and the failure reason is stamped only when it lands.
+func applyCompletionTx(ctx context.Context, tx *sql.Tx, c store.AttemptCompletion, now time.Time) (store.CompletionResult, error) {
+	var latest bool
+	if err := tx.QueryRowContext(ctx, sqlIsLatestAttempt, c.AttemptID, c.TaskID, c.TaskID).Scan(&latest); err != nil {
+		return store.CompletionResult{}, fmt.Errorf("sqlite: latest attempt of task %s: %w", c.TaskID, mapErr(err))
+	}
+	if !latest {
+		return store.CompletionResult{Rejected: true}, nil
+	}
 	cas, err := casTaskStatusTx(ctx, tx, c.TaskID, c.TaskStatus, now)
 	switch {
 	case cas == casRejected && errors.Is(err, store.ErrInvalidTransition):
-		// The task is already terminal in some other status. The attempt close
-		// and claim release above still commit: only the task write is refused.
-		result = store.CompletionResult{Rejected: true}
+		// The task is already terminal in some other status, or back in ready or
+		// pending. Only the task write is refused: the attempt close and claim
+		// release before this still commit.
+		return store.CompletionResult{Rejected: true}, nil
 	case err != nil:
 		return store.CompletionResult{}, err
 	case c.FailureReason != "":
@@ -163,10 +203,7 @@ func (s *Store) CompleteTaskAttempt(ctx context.Context, c store.AttemptCompleti
 			return store.CompletionResult{}, fmt.Errorf("sqlite: stamp failure reason on task %s: %w", c.TaskID, mapErr(err))
 		}
 	}
-	if err := tx.Commit(); err != nil {
-		return store.CompletionResult{}, fmt.Errorf("sqlite: commit complete task attempt: %w", mapErr(err))
-	}
-	return result, nil
+	return store.CompletionResult{Applied: true}, nil
 }
 
 const (

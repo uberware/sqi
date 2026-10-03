@@ -139,22 +139,6 @@ type stressRun struct {
 	reportedBy [2]*Scheduler
 	counts     stressCounts
 
-	// locks[i] serializes every lease and every report of task i: lease x
-	// report, and with it lease x lease and report x report on the same task.
-	// It is held across the whole report, processTaskStatus included. Nothing
-	// else takes it; every other racer runs unlocked. Its purpose is the lease x
-	// report pair: the reporter reads the task's latest attempt and reports on
-	// it under the lock, so no lease can supersede that attempt in between. That
-	// interleaving (a worker's late report for an attempt the reaper closed and
-	// a new lease replaced completes the task while the new attempt holds its
-	// claims) is a known pre-existing shape the store does not prevent; it is
-	// outside H4a and would turn this test into a test of it. On SQLite the
-	// wider serialization hides nothing, because the store serializes the
-	// writes anyway. On Postgres (H4c) it would HIDE the group-1 double-lease
-	// race, two leases of one task committing in parallel, so a Postgres run of
-	// this test must drop the lock or narrow it to lease x report.
-	locks []sync.Mutex
-
 	// failed is set by the first failure, which alone is reported (what fails
 	// after it is usually its consequence); the run stops after that round.
 	failed atomic.Bool
@@ -186,12 +170,11 @@ func TestH4a_ConcurrentStress_SQLite(t *testing.T) {
 		}
 	})
 	r := &stressRun{
-		t:     t,
-		st:    st,
-		db:    openStressHistory(t, path),
-		s:     newStressScheduler(t, st, 1),
-		fx:    seedStressJob(t, st, stressTasks),
-		locks: make([]sync.Mutex, stressTasks),
+		t:  t,
+		st: st,
+		db: openStressHistory(t, path),
+		s:  newStressScheduler(t, st, 1),
+		fx: seedStressJob(t, st, stressTasks),
 	}
 	r.reportedBy = [2]*Scheduler{r.s, newStressScheduler(t, st, 3)}
 	r.counts.reports = map[string]*atomic.Int64{}
@@ -349,8 +332,6 @@ func (r *stressRun) find(start int, skipSilent bool, want ...store.TaskStatus) (
 // lease leases task idx to workerID. Every lease outcome is legitimate under
 // contention and is counted; only an error fails the test.
 func (r *stressRun) lease(idx int, workerID string) {
-	r.locks[idx].Lock()
-	defer r.locks[idx].Unlock()
 	claims := []store.UsagePoolClaim{{ClaimID: uuid.NewString(), PoolID: r.fx.pools[0].ID, PoolName: r.fx.pools[0].Name}}
 	if idx%2 == 1 {
 		claims = append(claims, store.UsagePoolClaim{ClaimID: uuid.NewString(), PoolID: r.fx.pools[1].ID, PoolName: r.fx.pools[1].Name})
@@ -384,11 +365,21 @@ func (r *stressRun) reportOne(g, n int) {
 	}
 }
 
-// report has reporter g report on task idx's latest attempt, under the task's
-// lock (see [stressRun.locks]); i picks the status (see [stressReport]).
+// report has reporter g report on task idx's latest attempt; i picks the status
+// (see [stressReport]). Nothing serializes it against a lease or another
+// report, as nothing does between real workers: between the read of the latest
+// attempt and the report, the reaper or an offline sweep may close that attempt
+// and a lease may replace it, so the report arrives late from a superseded
+// attempt, as an old worker's would. A terminal report from it is refused by
+// the store (CompleteTaskAttempt checks that the attempt is the task's latest),
+// and a failure report whose attempt was already closed is discarded by the
+// failure fork (failureReportStillCurrent). One pre-existing window stays open:
+// a failure report that closes the attempt itself (RecordTaskFailure), then a
+// reclaim and a new lease, then the report's RequeueTaskForRetry, which is
+// guarded on the task's status and not on its attempt, so it returns the new
+// lease to ready with its attempt open. The snapshot checks catch that shape
+// if a run hits it; closing it is H4b's work, not this test's.
 func (r *stressRun) report(g, idx, i int) {
-	r.locks[idx].Lock()
-	defer r.locks[idx].Unlock()
 	ctx := r.t.Context()
 	task, err := r.st.GetTask(ctx, r.fx.taskIDs[idx])
 	if !r.expect("GetTask", err) {

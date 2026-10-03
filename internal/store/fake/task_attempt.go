@@ -61,6 +61,20 @@ func (s *Store) latestAttemptLocked(taskID string) (store.TaskAttempt, bool) {
 	return found, exists
 }
 
+// isLatestAttemptLocked reports whether attemptID is one of taskID's attempts
+// with the highest AttemptNumber, as SQLite's sqlIsLatestAttempt does: the
+// numbers are compared, not the IDs, so two attempts sharing the highest number
+// are both latest there and here. An attempt that does not exist, or that
+// belongs to another task, is not. Caller holds s.mu.
+func (s *Store) isLatestAttemptLocked(taskID, attemptID string) bool {
+	a, ok := s.taskAttempts[attemptID]
+	if !ok || a.TaskID != taskID {
+		return false
+	}
+	latest, _ := s.latestAttemptLocked(taskID) // exists: a is one of the task's attempts
+	return a.AttemptNumber == latest.AttemptNumber
+}
+
 // ListTaskAttempts returns all attempts for the given task, ordered by
 // AttemptNumber ascending.
 func (s *Store) ListTaskAttempts(_ context.Context, taskID string) ([]store.TaskAttempt, error) {

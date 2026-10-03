@@ -235,6 +235,147 @@ func TestCompleteTaskAttempt_Redelivery(t *testing.T) {
 	}
 }
 
+// supersededWorker is the worker a superseded task is leased to again.
+const supersededWorker = "w2"
+
+// seedSupersededAttempt seeds the shape of a superseded attempt through the
+// store's own operations: a task assigned to the fixture worker with a running
+// attempt (#1) holding a claim; the reaper takes it back (the attempt closed
+// as failed, its claim released, the task ready); then a new lease hands it to
+// supersededWorker (attempt #2, running, holding a claim on the same pool).
+// When taskStatus is running the new worker has also reported running. It
+// returns the task, the superseded attempt, the new attempt and the pool.
+func seedSupersededAttempt(t *testing.T, st store.Store, taskStatus store.TaskStatus) (store.Task, store.TaskAttempt, store.TaskAttempt, store.UsagePool) {
+	t.Helper()
+	task, old, pool := seedRunningTask(t, st, store.TaskStatusAssigned)
+	if got, err := st.ReclaimStaleAssignedTasks(t.Context(), time.Now().UTC().Add(time.Minute)); err != nil || len(got) != 1 {
+		t.Fatalf("ReclaimStaleAssignedTasks = (%+v, %v), want the one assigned task", got, err)
+	}
+	req := leaseReq(task, poolClaim(pool))
+	req.WorkerID = supersededWorker
+	fresh := mustLease(t, st, req, store.LeaseLeased).Attempt
+	if taskStatus == store.TaskStatusRunning {
+		if err := st.UpdateTaskStatus(t.Context(), task.ID, store.TaskStatusRunning); err != nil {
+			t.Fatalf("UpdateTaskStatus running: %v", err)
+		}
+	}
+	return task, old, fresh, pool
+}
+
+// TestCompleteTaskAttempt_SupersededAttemptIsRejected pins the report path's
+// half of I3: a worker's late terminal report for an attempt that the reaper
+// closed and a new lease replaced must not end the task while the new attempt
+// is open and holds its claims. The arrow alone (assigned or running to
+// succeeded, failed or canceled) is legal, so only the latest-attempt check
+// stops it. The report is Rejected, so the scheduler acks it, and the task,
+// its failure reason, the new attempt and its claim are left as they were.
+// The new attempt's own report still applies, and its redelivery is a no-op.
+func TestCompleteTaskAttempt_SupersededAttemptIsRejected(t *testing.T) {
+	cases := []struct {
+		name    string
+		current store.TaskStatus // the re-leased task's status when the late report lands
+		report  store.TaskStatus
+		attempt store.AttemptStatus
+	}{
+		{"succeeded on an assigned task", store.TaskStatusAssigned, store.TaskStatusSucceeded, store.AttemptStatusSucceeded},
+		{"succeeded on a running task", store.TaskStatusRunning, store.TaskStatusSucceeded, store.AttemptStatusSucceeded},
+		{"canceled echo", store.TaskStatusRunning, store.TaskStatusCanceled, store.AttemptStatusCanceled},
+		{"failed", store.TaskStatusRunning, store.TaskStatusFailed, store.AttemptStatusFailed},
+	}
+	for _, tc := range cases {
+		for name, st := range newStores(t) {
+			t.Run(tc.name+"/"+name, func(t *testing.T) {
+				task, old, fresh, pool := seedSupersededAttempt(t, st, tc.current)
+				before := mustTask(t, st, task.ID)
+
+				late := completion(task, old, tc.report, tc.attempt)
+				late.FailureReason = "must not be stamped by a superseded report"
+				res, err := st.CompleteTaskAttempt(t.Context(), late)
+				if err != nil || res.Applied || !res.Rejected {
+					t.Fatalf("late report = (%+v, %v), want rejected with no error", res, err)
+				}
+				got := mustTask(t, st, task.ID)
+				if got.Status != tc.current || got.AssignedWorkerID != supersededWorker || got.FailureReason != "" ||
+					!got.UpdatedAt.Equal(before.UpdatedAt) {
+					t.Fatalf("task = (%s on %q, reason %q, updated %v), want it untouched: %s on %q, no reason, updated %v",
+						got.Status, got.AssignedWorkerID, got.FailureReason, got.UpdatedAt, tc.current, supersededWorker, before.UpdatedAt)
+				}
+				if a := mustAttempt(t, st, fresh.ID); a.Status != store.AttemptStatusRunning || a.EndedAt != nil {
+					t.Fatalf("new attempt = %q (ended %v), want running and open", a.Status, a.EndedAt)
+				}
+				if a := mustAttempt(t, st, old.ID); a.Status != store.AttemptStatusFailed {
+					t.Fatalf("superseded attempt = %q, want the reaper's failed close left as it was", a.Status)
+				}
+				if n := activeClaims(t, st, pool.ID); n != 1 {
+					t.Fatalf("active claims = %d, want 1 (the new attempt's)", n)
+				}
+				if v := claimViolations(t, st); len(v) != 0 {
+					t.Fatalf("I3 violations: %v", v)
+				}
+
+				// The latest attempt's report applies, and redelivering it is a no-op.
+				current := completion(task, fresh, tc.report, tc.attempt)
+				for i := range 2 {
+					res, err := st.CompleteTaskAttempt(t.Context(), current)
+					if err != nil || !res.Applied || res.Rejected {
+						t.Fatalf("latest attempt's report, delivery %d = (%+v, %v), want applied", i+1, res, err)
+					}
+					if got := mustTask(t, st, task.ID); got.Status != tc.report {
+						t.Fatalf("delivery %d: task = %q, want %q", i+1, got.Status, tc.report)
+					}
+					if n := activeClaims(t, st, pool.ID); n != 0 {
+						t.Fatalf("delivery %d: active claims = %d, want 0", i+1, n)
+					}
+					if v := claimViolations(t, st); len(v) != 0 {
+						t.Fatalf("delivery %d: I3 violations: %v", i+1, v)
+					}
+				}
+			})
+		}
+	}
+}
+
+// TestCompleteTaskAttempt_SupersededOpenAttemptIsClosed pins the order the
+// latest-attempt check runs in: after the reporting attempt is closed and its
+// claims released, as on every path, so only the task move is refused. The
+// shape, an older attempt still open beside the latest one, cannot come from
+// H4a's operations (each closes a task's attempts whenever it takes the task
+// back), but it is what a v0.3.0 reaper race (F5) could leave behind, and the
+// old worker's report must release that attempt's slot rather than keep it.
+func TestCompleteTaskAttempt_SupersededOpenAttemptIsClosed(t *testing.T) {
+	for name, st := range newStores(t) {
+		t.Run(name, func(t *testing.T) {
+			g := seedGraph(t, st, graphOpts{}, stepSpec{name: "a", status: store.StepStatusReady, tasks: []store.TaskStatus{store.TaskStatusRunning}})
+			task := g.Tasks["a"][0]
+			pool := seedPool(t, st, 2)
+			old := seedAttempt(t, st, task, store.AttemptStatusRunning)
+			seedClaim(t, st, pool.ID, old.ID)
+			fresh := seedAttempt(t, st, task, store.AttemptStatusRunning)
+			seedClaim(t, st, pool.ID, fresh.ID)
+
+			res, err := st.CompleteTaskAttempt(t.Context(), completion(task, old, store.TaskStatusSucceeded, store.AttemptStatusSucceeded))
+			if err != nil || res.Applied || !res.Rejected {
+				t.Fatalf("CompleteTaskAttempt = (%+v, %v), want rejected with no error", res, err)
+			}
+			if got := mustTask(t, st, task.ID); got.Status != store.TaskStatusRunning {
+				t.Fatalf("task = %q, want running (the latest attempt still holds it)", got.Status)
+			}
+			if a := mustAttempt(t, st, old.ID); a.Status != store.AttemptStatusSucceeded || a.EndedAt == nil {
+				t.Fatalf("reporting attempt = %q (ended %v), want closed as reported", a.Status, a.EndedAt)
+			}
+			if a := mustAttempt(t, st, fresh.ID); a.Status != store.AttemptStatusRunning || a.EndedAt != nil {
+				t.Fatalf("latest attempt = %q (ended %v), want running and open", a.Status, a.EndedAt)
+			}
+			if n := activeClaims(t, st, pool.ID); n != 1 {
+				t.Fatalf("active claims = %d, want 1 (only the latest attempt's)", n)
+			}
+			if v := claimViolations(t, st); len(v) != 0 {
+				t.Fatalf("I3 violations: %v", v)
+			}
+		})
+	}
+}
+
 func TestCompleteTaskAttempt_UnknownTask(t *testing.T) {
 	for name, st := range newStores(t) {
 		t.Run(name, func(t *testing.T) {
