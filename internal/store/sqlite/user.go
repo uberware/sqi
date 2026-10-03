@@ -4,6 +4,8 @@ package sqlite
 
 import (
 	"context"
+	"database/sql"
+	"errors"
 	"time"
 
 	"github.com/uberware/sqi/internal/store"
@@ -45,9 +47,33 @@ RETURNING id, username, display_name, password_hash, role, auth_source, external
 UPDATE users SET display_name = ?, updated_at = ?
 WHERE id = ?
 RETURNING id, username, display_name, password_hash, role, auth_source, external_id, disabled, created_at, updated_at`
-	sqlDeleteUser  = `DELETE FROM users WHERE id = ?`
 	sqlCountUsers  = `SELECT COUNT(*) FROM users`
 	sqlCountAdmins = `SELECT COUNT(*) FROM users WHERE role = 'admin' AND disabled = 0`
+
+	// sqlLastLiveAdmin is true for the row being written when it is an enabled
+	// admin and no other enabled admin exists (invariant I4). The count
+	// includes the row itself, so "<= 1" means it is the only one. It names the
+	// row's own columns unqualified, so it is only valid inside a statement
+	// whose target table is users.
+	sqlLastLiveAdmin = `(role = 'admin' AND disabled = 0
+	AND (SELECT COUNT(*) FROM users o WHERE o.role = 'admin' AND o.disabled = 0) <= 1)`
+
+	// sqlDeleteUserKeepingAdmin deletes the user unless it is the last enabled
+	// admin. Zero rows affected means unknown id or refused; the caller tells
+	// them apart.
+	sqlDeleteUserKeepingAdmin = `DELETE FROM users WHERE id = ? AND NOT ` + sqlLastLiveAdmin
+
+	// sqlUpdateUserKeepingAdmin is sqlUpdateUser refused when the row is the
+	// last enabled admin and the new role/disabled pair would make it
+	// something else. The two trailing placeholders are the NEW role and
+	// disabled values, so a harmless edit of the last admin still lands.
+	sqlUpdateUserKeepingAdmin = `
+UPDATE users SET display_name = ?, role = ?, disabled = ?, updated_at = ?
+WHERE id = ?
+  AND NOT (` + sqlLastLiveAdmin + ` AND NOT (? = 'admin' AND ? = 0))
+RETURNING id, username, display_name, password_hash, role, auth_source, external_id, disabled, created_at, updated_at`
+
+	sqlListLiveAdminIDs = `SELECT id FROM users WHERE role = 'admin' AND disabled = 0 ORDER BY id`
 )
 
 func scanUser(row scanner) (store.User, error) {
@@ -162,13 +188,104 @@ func (s *Store) SetUserDisplayName(ctx context.Context, id, displayName string) 
 	return out, mapErr(err)
 }
 
-// DeleteUser implements [store.UserStore].
+// UpdateUserKeepingAdmin implements [store.UserStore]. The guard is in the
+// UPDATE's WHERE clause, so the refusal and the write are one statement.
+func (s *Store) UpdateUserKeepingAdmin(ctx context.Context, u store.User) (store.User, error) {
+	var out store.User
+	err := s.withAdminAnchors(ctx, func(tx *sql.Tx) error {
+		d := boolToInt(u.Disabled)
+		row := tx.QueryRowContext(ctx, sqlUpdateUserKeepingAdmin,
+			u.DisplayName, u.Role, d, timeToText(time.Now().UTC()), u.ID, u.Role, d)
+		var err error
+		out, err = scanUser(row)
+		if errors.Is(err, sql.ErrNoRows) {
+			return userMissingOrLastAdmin(ctx, tx, u.ID)
+		}
+		return mapErr(err)
+	})
+	return out, err
+}
+
+// DeleteUser implements [store.UserStore]. The guard is in the DELETE's WHERE
+// clause, so the refusal and the write are one statement.
 func (s *Store) DeleteUser(ctx context.Context, id string) error {
-	res, err := s.stmtDeleteUser.ExecContext(ctx, id)
+	return s.withAdminAnchors(ctx, func(tx *sql.Tx) error {
+		res, err := tx.ExecContext(ctx, sqlDeleteUserKeepingAdmin, id)
+		if err != nil {
+			return mapErr(err)
+		}
+		n, err := res.RowsAffected()
+		if err != nil {
+			return err
+		}
+		if n == 1 {
+			return nil
+		}
+		return userMissingOrLastAdmin(ctx, tx, id)
+	})
+}
+
+// withAdminAnchors runs fn in a write transaction after taking the anchor
+// locks for the last-admin guard (invariant I4).
+//
+// Order (spec 4.1): every enabled admin's user row, sorted by id, then the
+// guarded write inside fn. The guard counts the OTHER enabled admins, so two
+// concurrent writes that each demote a different admin would each see the other
+// still enabled and both pass; holding the whole admin set serializes them, and
+// the fixed id order keeps two such transactions from deadlocking on PostgreSQL.
+// On SQLite lockAnchors does nothing and the single write connection provides
+// the serialization; the guard in the statement is what makes the answer right.
+func (s *Store) withAdminAnchors(ctx context.Context, fn func(*sql.Tx) error) error {
+	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return mapErr(err)
 	}
-	return checkRowsAffected(res)
+	defer func() { _ = tx.Rollback() }() //nolint:errcheck // rollback after commit is a no-op
+
+	anchors, err := liveAdminAnchorsTx(ctx, tx)
+	if err != nil {
+		return err
+	}
+	if err := lockAnchors(ctx, tx, anchors...); err != nil {
+		return err
+	}
+	if err := fn(tx); err != nil {
+		return err
+	}
+	return mapErr(tx.Commit())
+}
+
+// liveAdminAnchorsTx returns the anchors of every enabled admin's user row,
+// sorted by id.
+func liveAdminAnchorsTx(ctx context.Context, tx *sql.Tx) ([]anchor, error) {
+	rows, err := tx.QueryContext(ctx, sqlListLiveAdminIDs)
+	if err != nil {
+		return nil, mapErr(err)
+	}
+	defer rows.Close()
+	var anchors []anchor
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		anchors = append(anchors, userAnchor(id))
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return anchors, nil
+}
+
+// userMissingOrLastAdmin explains a guarded write that touched no row: the id
+// is unknown ([store.ErrNotFound]) or the guard refused it
+// ([store.ErrLastAdmin]).
+func userMissingOrLastAdmin(ctx context.Context, tx *sql.Tx, id string) error {
+	var one int
+	if err := tx.QueryRowContext(ctx, `SELECT 1 FROM users WHERE id = ?`, id).Scan(&one); err != nil {
+		return mapErr(err) // sql.ErrNoRows becomes ErrNotFound
+	}
+	return store.ErrLastAdmin
 }
 
 // CountUsers implements [store.UserStore].

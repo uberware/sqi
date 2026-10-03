@@ -227,7 +227,6 @@ type Store struct {
 	stmtUpdateUser          *sql.Stmt
 	stmtSetUserPassword     *sql.Stmt
 	stmtSetUserDisplayName  *sql.Stmt
-	stmtDeleteUser          *sql.Stmt
 	stmtCountUsers          *sql.Stmt
 	stmtCountAdmins         *sql.Stmt
 
@@ -767,9 +766,6 @@ func (s *Store) prepareAll(ctx context.Context) error {
 		return err
 	}
 	if s.stmtSetUserDisplayName, err = s.prepare(ctx, sqlSetUserDisplayName); err != nil {
-		return err
-	}
-	if s.stmtDeleteUser, err = s.prepare(ctx, sqlDeleteUser); err != nil {
 		return err
 	}
 	if s.stmtCountUsers, err = s.prepare(ctx, sqlCountUsers); err != nil {

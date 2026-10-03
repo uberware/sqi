@@ -63,8 +63,16 @@ type UserStore interface {
 	// ListUsers returns all users ordered by username.
 	ListUsers(ctx context.Context) ([]User, error)
 	// UpdateUser replaces display_name, role and disabled, and bumps
-	// UpdatedAt. Returns [ErrNotFound].
+	// UpdatedAt. Returns [ErrNotFound]. It is deliberately unguarded: it may
+	// demote or disable the last admin, which directory sync relies on. Use
+	// [UserStore.UpdateUserKeepingAdmin] where the last admin must survive.
 	UpdateUser(ctx context.Context, u User) (User, error)
+	// UpdateUserKeepingAdmin is UpdateUser with the last-admin guard applied
+	// inside the write (invariant I4): it returns [ErrLastAdmin], writing
+	// nothing, when the update would leave no enabled admin. The REST API uses
+	// it; directory sync uses plain UpdateUser, because the directory is
+	// authoritative there. Returns [ErrNotFound] for an unknown id.
+	UpdateUserKeepingAdmin(ctx context.Context, u User) (User, error)
 	// SetUserPassword replaces the stored password hash. Returns [ErrNotFound].
 	SetUserPassword(ctx context.Context, id, passwordHash string) error
 	// SetUserPasswordAndEvictSessions sets the password and deletes every
@@ -85,11 +93,15 @@ type UserStore interface {
 	// role or disabled change and silently revert it.
 	SetUserDisplayName(ctx context.Context, id, displayName string) (User, error)
 	// DeleteUser removes a user by ID (cascading their sessions). Returns
-	// [ErrNotFound].
+	// [ErrNotFound]. Refused with [ErrLastAdmin], deleting nothing, when the
+	// user is the last enabled admin; the guard is evaluated inside the DELETE
+	// (invariant I4).
 	DeleteUser(ctx context.Context, id string) error
 	// CountUsers returns the number of users (for the bootstrap gate).
 	CountUsers(ctx context.Context) (int, error)
-	// CountAdmins returns the number of enabled accounts with role "admin"
-	// (used by the last-admin lockout guard).
+	// CountAdmins returns the number of enabled accounts with role "admin".
+	// It is a read, not a guard: the last-admin check lives inside
+	// [UserStore.DeleteUser] and [UserStore.UpdateUserKeepingAdmin], because a
+	// count taken before a write can be stale by the time the write lands.
 	CountAdmins(ctx context.Context) (int, error)
 }
