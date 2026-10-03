@@ -259,6 +259,56 @@ func TestMigrations_00027_JobDeclaredExtensionsDownUp(t *testing.T) {
 	}
 }
 
+// TestMigrations_00032_TasksStepStatusIndexDownUp pins 00032 in both directions:
+// Up creates the tasks(step_id, status) index that step finalization reads
+// (pinned against the query plans by the sqlite package's
+// TestStepFinalizationQueries_UseStepStatusIndex), Down drops it, and a re-Up
+// creates it again.
+func TestMigrations_00032_TasksStepStatusIndexDownUp(t *testing.T) {
+	dbPath := t.TempDir() + "/test.db"
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("sql.Open: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	goose.SetBaseFS(migrations.FS)
+	if err := goose.SetDialect("sqlite3"); err != nil {
+		t.Fatalf("SetDialect: %v", err)
+	}
+	if err := goose.Up(db, "."); err != nil {
+		t.Fatalf("goose.Up: %v", err)
+	}
+	if !hasIndex(t, db, "tasks", "tasks_step_status") {
+		t.Fatal("tasks_step_status index missing after Up")
+	}
+
+	if err := goose.DownTo(db, ".", 31); err != nil {
+		t.Fatalf("goose.DownTo(31): %v", err)
+	}
+	if hasIndex(t, db, "tasks", "tasks_step_status") {
+		t.Fatal("tasks_step_status index still present after Down")
+	}
+
+	if err := goose.Up(db, "."); err != nil {
+		t.Fatalf("goose.Up (re-apply): %v", err)
+	}
+	if !hasIndex(t, db, "tasks", "tasks_step_status") {
+		t.Fatal("tasks_step_status index missing after re-Up")
+	}
+}
+
+// hasIndex reports whether table has an index named index.
+func hasIndex(t *testing.T, db *sql.DB, table, index string) bool {
+	t.Helper()
+	var n int
+	if err := db.QueryRowContext(t.Context(),
+		`SELECT count(*) FROM sqlite_master WHERE type = 'index' AND tbl_name = ? AND name = ?`, table, index).Scan(&n); err != nil {
+		t.Fatalf("look up index %s on %s: %v", index, table, err)
+	}
+	return n == 1
+}
+
 // seedJobRowWithoutExtensions inserts the farm, queue and job a pre-migration
 // deployment would already hold, using raw SQL so no Go-side default can creep
 // in and mask what the schema actually stores.

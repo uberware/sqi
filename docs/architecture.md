@@ -732,7 +732,10 @@ write connection.
   and job finalization (`FinalizeStep`, `FinalizeJob`), blocked-job release
   (`ReleaseBlockedJob`), stalled-job demotion (`DemoteStalledJobs`) and the
   last-admin guard (`UpdateUserKeepingAdmin`, `DeleteUser`) compute their
-  condition in the `UPDATE` or `DELETE` itself and report what they decided.
+  condition in the `UPDATE` or `DELETE` itself and report what they decided;
+  `FinalizeStep`, which runs on the single write connection for every terminal
+  report, answers its check of the step's tasks from the
+  `tasks (step_id, status)` index (migration `00032`) rather than the task rows.
 - **I5. A capacity check and its write are atomic.** `LeaseTask` re-checks the
   queue's and the farm's `max_concurrent_tasks` and each usage pool's
   `max_concurrent` at write time, against values read in its own transaction.

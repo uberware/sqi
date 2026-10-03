@@ -186,6 +186,9 @@ func claimReleasedAt(t *testing.T, db *sql.DB, id string) sql.NullString {
 // the schema the v0.3.0 releases ran on. Once 00031 exists this rolls it back
 // (its Down is a documented no-op), so the next goose.Up re-applies it to
 // whatever was seeded; before 00031 exists it is a no-op at the high-water mark.
+// Every later migration is rolled back first and re-applied by that goose.Up
+// too: 00032's Down drops the tasks(step_id, status) index and its Up creates
+// it again, which leaves the rows dumpTables compares untouched.
 func rewindTo30(t *testing.T, path string) *sql.DB {
 	t.Helper()
 	db, err := sql.Open("sqlite", path)

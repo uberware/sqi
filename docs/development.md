@@ -697,7 +697,7 @@ statement.
 
 **A wholly new aggregate — a new table, not just a new method on an
 existing one — needs a migration.** Add a numbered SQL file to
-`internal/store/migrations/` (e.g. `00031_my_feature.sql`, continuing the
+`internal/store/migrations/` (e.g. `00033_my_feature.sql`, continuing the
 existing sequence), with `+goose Up`/`+goose Down` sections following the
 pattern of the surrounding files. A new column or index on an existing
 table needs one too. A new method on an *existing* table (like
