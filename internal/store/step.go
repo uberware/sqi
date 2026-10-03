@@ -15,7 +15,10 @@ const (
 	StepStatusPending StepStatus = "pending"
 	// StepStatusReady means all dependencies have succeeded; tasks can be scheduled.
 	StepStatusReady StepStatus = "ready"
-	// StepStatusRunning means at least one task in this step is running.
+	// StepStatusRunning is reserved and never written: no store operation moves
+	// a step to running, so a step with running tasks stays ready (H4a decision
+	// D4). It survives for the wire types and for old rows, which FinalizeStep
+	// can still finish.
 	StepStatusRunning StepStatus = "running"
 	// StepStatusCompleted means all tasks in this step succeeded.
 	StepStatusCompleted StepStatus = "completed"

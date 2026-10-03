@@ -512,14 +512,14 @@ func (s *Scheduler) Stop() {
 // nothing is written. Steps of jobs that are already terminal are deliberately
 // ignored: canceling a job does not itself finalize its steps, so every start
 // would otherwise write the steps of each job canceled since the start before
-// it. Such a step is not harmless (a later
-// retry of the canceled job can revive its tasks to pending under a step that
-// is never released, a bug that predates H4a), but its root cause is the cancel
-// path not finalizing steps, which this pass does not repair. A step that
-// fails is logged and skipped so one bad row cannot block the rest, and it
-// stays stuck, so the next start retries it. Cross-job dependents of a job this
-// pass finalizes are reconciled by the same completion path, with
-// [Scheduler.sweepBlockedJobs] as its backstop.
+// it. Such a step is not harmless (a later retry of the canceled job can
+// revive its tasks to pending under a step that is never released, a bug that
+// predates H4a), but its root cause is the cancel path not finalizing steps,
+// which this pass does not repair. A step that fails is logged and skipped so
+// one bad row cannot block the rest, and it stays stuck, so the next start
+// retries it. Cross-job dependents of a job this pass finalizes are reconciled
+// by the same completion path, with [Scheduler.sweepBlockedJobs] as its
+// backstop.
 func (s *Scheduler) reconcileStuckSteps(ctx context.Context) {
 	steps, err := s.store.ListStuckSteps(ctx)
 	if err != nil {

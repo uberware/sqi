@@ -209,13 +209,15 @@ path (measured 7.4 s versus 8.8 s for 100,000 tasks) — but the window during
 which other writers wait is one contiguous transaction instead of N gaps.
 `GET /healthz` (liveness) registers no checkers and was never affected.
 
-**Correctness does not rest on that single write connection.** Every rule that
-spans more than one row (a usage claim exists only while its attempt is open,
-a step finalizes only when every task is terminal, a pool never exceeds its
-cap) is enforced by one store operation, which names the rows a concurrent
-store must lock first. On SQLite that lock is a no-op, because the write
-connection already serializes every write transaction; a PostgreSQL store has
-to take it. See [Store invariants](#store-invariants).
+**Correctness is not an accident of that single write connection.** Every rule
+that spans more than one row (a usage claim exists only while its attempt is
+open, a step finalizes only when every task is terminal, a pool never exceeds
+its cap) is enforced by a single store operation. On SQLite the write
+connection provides the serialization those operations rely on, and the
+anchor-lock hook most of them call (`lockAnchors`) is a no-op. A PostgreSQL
+store must take the anchor locks instead, and [Store invariants](#store-invariants)
+lists the operations that name no anchor yet and what the anchor table does
+not close.
 
 **Cross-job dependencies (`depends_on`).** A submission — raw `POST /api/v1/jobs`
 or `POST /api/v1/products/{name}/jobs`, from the REST API, the web UI, or the
@@ -570,12 +572,14 @@ step and job status write is a named store operation (`FinalizeStep`,
 `PauseJob` and the rest) whose precondition is in its own SQL, and a
 table-driven test per table asserts that each operation's from-states are legal
 arrows there. Steps have no `running` status: nothing writes it, so a step goes
-`pending` → `ready` → `completed`/`failed`/`canceled`, and back to `pending`
-only on a retry. The value survives in the enum and wire types, and a real
-running step would be a separate, user-visible feature. The task machine lives
-in `store` and not in `openjd` for a hard reason: `openjd` imports `store`, so
-`store` can never import `openjd` back. Do not merge the two sentinels —
-`errors.Is` against the wrong one silently stops matching.
+`pending` → `ready` → `completed`/`failed`/`canceled`, or straight from
+`pending` to `canceled` when an upstream step fails or is canceled
+(`CancelPendingStep`) or its blocked job is canceled (`CancelBlockedJob`), and
+back to `pending` only on a retry. The value survives in the enum and wire
+types, and a real running step would be a separate, user-visible feature. The
+task machine lives in `store` and not in `openjd` for a hard reason: `openjd`
+imports `store`, so `store` can never import `openjd` back. Do not merge the
+two sentinels — `errors.Is` against the wrong one silently stops matching.
 
 Two rules keep enforcement safe given that task status arrives over JetStream
 (at-least-once delivery):
@@ -824,8 +828,9 @@ serializes every writer. A PostgreSQL store has to close each of them:
   until it is stable.
 - **`DeleteJob` and retention lock the job row, but a lease and a log append
   (`CreateTaskLog`, which runs without a transaction) do not.** Either can
-  insert a child row after its table was cleared, so the final `DELETE` of the
-  job row fails on a foreign key. The PostgreSQL store must retry the cascade
+  insert a child row after its table was cleared, so a later `DELETE` in the
+  cascade (claims, logs, attempts, tasks, steps, dependency edges, then the
+  job row) fails on a foreign key. The PostgreSQL store must retry the cascade
   on a foreign-key or deadlock error.
 - **`ReclaimStaleAssignedTasks` must take its anchors before its `UPDATE`,
   without locking a task row first**: read the candidate tasks and their job
@@ -858,9 +863,15 @@ The invariants changed some behaviour beyond fixing the races they close:
 - `SetTaskUnschedulableReason` on a task that is no longer `ready` is a no-op,
   not an error, so a task leased while the unschedulable sweep was deciding is
   never stamped.
-- A released claim's `released_at` and a task row's `updated_at` are server
-  time, whatever time the worker reports; the worker's time goes only to the
-  attempt's `ended_at`.
+
+Timestamps are unchanged from v0.3.0, though the writes that stamp them moved.
+A released claim's `released_at` is always server time. A terminal report
+applied through `CompleteTaskAttempt` stamps the task row's `updated_at` with
+server time and the attempt's `ended_at` with the worker's reported time. The
+failure path still uses the worker's reported time: `RecordTaskFailure` stamps
+the attempt's `ended_at` and the task's and job's `updated_at` with it, an
+auto-retry requeue stamps the task's `updated_at` with it and computes
+`retry_after` from it, and an auto-park stamps the job's `updated_at` with it.
 
 **Upgrade repair.** A v0.3.0 database can hold damage these invariants now
 prevent, and fixing the code does not undo it, so it is repaired in two parts:

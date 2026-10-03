@@ -42,11 +42,14 @@
 //
 // Correctness under concurrent writers is not left to the single write
 // connection: every multi-row invariant is a single store operation (see
-// "Store invariants" in docs/architecture.md) that names its anchor rows via
-// lockAnchors, a no-op here because the one write connection already
-// serializes every write transaction. A store with concurrent writers takes
-// locks on those rows instead, and single-row writes carry their own
-// precondition in their WHERE clause on either kind of store.
+// "Store invariants" in docs/architecture.md), and most of them name their
+// anchor rows via lockAnchors, a no-op here because the one write connection
+// already serializes every write transaction. A store with concurrent writers
+// must lock those rows instead, but the anchors alone are not yet enough
+// there: ReclaimStaleAssignedTasks and DemoteStalledJobs name none, and the
+// architecture doc lists the gaps the anchor table leaves open. Single-row
+// writes carry their own precondition in their WHERE clause on either kind of
+// store.
 //
 // An in-memory or temporary database gets one pool for both roles: a second
 // [sql.Open] on ":memory:" would open a different, empty database.
