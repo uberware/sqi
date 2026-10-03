@@ -143,25 +143,13 @@ func isTerminalStep(s store.StepStatus) bool {
 	return s == store.StepStatusCompleted || s == store.StepStatusFailed || s == store.StepStatusCanceled
 }
 
-const (
-	// sqlGuardStepPending is the I1 guard for releasing or canceling a step: it
-	// writes only a step that is still pending, so a step another writer already
-	// moved (finalized, canceled by a job cancel) is never overwritten.
-	sqlGuardStepPending = `
+// sqlGuardStepPending is the I1 guard for releasing or canceling a step: it
+// writes only a step that is still pending, so a step another writer already
+// moved (finalized, canceled by a job cancel) is never overwritten. The task
+// half of the move is [sqlTransitionStepPendingTasks], shared with
+// [Store.TransitionStepPendingTasks] so the two cannot drift.
+const sqlGuardStepPending = `
 UPDATE steps SET status = ?, updated_at = ? WHERE id = ? AND status = 'pending'`
-
-	// sqlMoveStepPendingTasks moves the step's pending tasks and returns them.
-	// A pending task has never been assigned, so there is no worker assignment
-	// to clear. The reason (empty when releasing) is stamped only on rows that
-	// carry none, so a more specific cause survives. A single statement, not
-	// bounded by MaxLimit.
-	sqlMoveStepPendingTasks = `
-UPDATE tasks
-SET    status = ?, updated_at = ?, unschedulable_reason = '',
-       failure_reason = CASE WHEN failure_reason = '' THEN ? ELSE failure_reason END
-WHERE  step_id = ? AND status = 'pending'
-RETURNING ` + taskCols
-)
 
 // ReleaseStep implements [store.StepStore].
 func (s *Store) ReleaseStep(ctx context.Context, id string, now time.Time) (bool, []store.Task, error) {
@@ -206,7 +194,7 @@ func (s *Store) movePendingStep(
 	if n == 0 {
 		return false, nil, nil
 	}
-	tasks, err := queryTasksTx(ctx, tx, sqlMoveStepPendingTasks, string(taskTo), nowText, reason, id)
+	tasks, err := queryTasksTx(ctx, tx, sqlTransitionStepPendingTasks, string(taskTo), nowText, reason, id)
 	if err != nil {
 		return false, nil, fmt.Errorf("sqlite: move pending tasks of step %s: %w", id, err)
 	}

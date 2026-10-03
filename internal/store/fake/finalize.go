@@ -151,23 +151,8 @@ func (s *Store) movePendingStep(id string, stepTo store.StepStatus, taskTo store
 	if st.Status != store.StepStatusPending {
 		return false, nil, nil
 	}
-	now = now.UTC()
+	now = now.UTC() // SQLite stores UTC; keep the fake's times in the same zone.
 	st.Status, st.UpdatedAt = stepTo, now
 	s.steps[id] = st
-	var moved []store.Task
-	for tid, t := range s.tasks {
-		if t.StepID != id || t.Status != store.TaskStatusPending {
-			continue
-		}
-		t.Status, t.UpdatedAt, t.UnschedulableReason = taskTo, now, ""
-		if reason != "" && t.FailureReason == "" {
-			t.FailureReason = reason
-		}
-		s.tasks[tid] = t
-
-		out := t
-		out.Parameters = copyMap(t.Parameters)
-		moved = append(moved, out)
-	}
-	return true, moved, nil
+	return true, s.transitionPendingTasksLocked(id, taskTo, reason, now), nil
 }

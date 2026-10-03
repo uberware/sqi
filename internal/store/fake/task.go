@@ -148,6 +148,16 @@ func (s *Store) TransitionStepPendingTasks(_ context.Context, stepID string, to 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	return s.transitionPendingTasksLocked(stepID, to, failureReason, time.Now()), nil
+}
+
+// transitionPendingTasksLocked is the task half of every pending-step move
+// ([Store.TransitionStepPendingTasks], [Store.ReleaseStep],
+// [Store.CancelPendingStep]): it moves every pending task of the step to `to`,
+// stamping updatedAt, clearing the unschedulable reason and stamping a
+// non-empty failureReason on tasks that carry none, and returns copies of the
+// moved tasks. The caller holds s.mu.
+func (s *Store) transitionPendingTasksLocked(stepID string, to store.TaskStatus, failureReason string, updatedAt time.Time) []store.Task {
 	var affected []store.Task
 	for id, t := range s.tasks {
 		if t.StepID != stepID || t.Status != store.TaskStatusPending {
@@ -158,14 +168,14 @@ func (s *Store) TransitionStepPendingTasks(_ context.Context, stepID string, to 
 		if failureReason != "" && t.FailureReason == "" {
 			t.FailureReason = failureReason
 		}
-		t.UpdatedAt = time.Now()
+		t.UpdatedAt = updatedAt
 		s.tasks[id] = t
 
 		out := t
 		out.Parameters = copyMap(t.Parameters)
 		affected = append(affected, out)
 	}
-	return affected, nil
+	return affected
 }
 
 // AssignTask atomically sets AssignedWorkerID, AssignedAt, and Status to
