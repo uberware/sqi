@@ -9,7 +9,6 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/uberware/sqi/internal/store"
-	"github.com/uberware/sqi/internal/store/fake"
 	"github.com/uberware/sqi/internal/worker/protocol"
 )
 
@@ -18,7 +17,7 @@ import (
 // calls the exported one; if the two ever diverge, every preset golden in the
 // repo becomes a snapshot of something no worker runs.
 func TestBuildAssignPayload_ExportedSeamMatchesUnexported(t *testing.T) {
-	st := fake.New()
+	st := newCheckedFake(t)
 	task, worker, job, step, queue := buildFixture(t, minimalJobJSON, store.TemplateFormatJSON, "Render")
 	attemptID := uuid.NewString()
 

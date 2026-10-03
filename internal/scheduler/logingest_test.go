@@ -24,7 +24,6 @@ import (
 
 	"github.com/uberware/sqi/internal/bus"
 	"github.com/uberware/sqi/internal/store"
-	"github.com/uberware/sqi/internal/store/fake"
 	"github.com/uberware/sqi/internal/worker/protocol"
 	"github.com/uberware/sqi/internal/ws"
 )
@@ -98,7 +97,7 @@ func newLogTestScheduler(st store.Store) *Scheduler {
 // ── handleLogChunk tests ──────────────────────────────────────────────────────
 
 func TestHandleLogChunk_ValidStdout(t *testing.T) {
-	st := fake.New()
+	st := newCheckedFake(t)
 	s := newLogTestScheduler(st)
 	s.ctx = t.Context()
 
@@ -152,7 +151,7 @@ func TestHandleLogChunk_ValidStdout(t *testing.T) {
 }
 
 func TestHandleLogChunk_ValidStderr(t *testing.T) {
-	st := fake.New()
+	st := newCheckedFake(t)
 	s := newLogTestScheduler(st)
 	s.ctx = t.Context()
 
@@ -194,7 +193,7 @@ func TestHandleLogChunk_ValidStderr(t *testing.T) {
 }
 
 func TestHandleLogChunk_ZeroAtUsesServerTime(t *testing.T) {
-	st := fake.New()
+	st := newCheckedFake(t)
 	s := newLogTestScheduler(st)
 	s.ctx = t.Context()
 
@@ -236,7 +235,7 @@ func TestHandleLogChunk_ZeroAtUsesServerTime(t *testing.T) {
 }
 
 func TestHandleLogChunk_MalformedJSON_Acked(t *testing.T) {
-	st := fake.New()
+	st := newCheckedFake(t)
 	s := newLogTestScheduler(st)
 	s.ctx = t.Context()
 
@@ -249,7 +248,7 @@ func TestHandleLogChunk_MalformedJSON_Acked(t *testing.T) {
 }
 
 func TestHandleLogChunk_MissingTaskID_Acked(t *testing.T) {
-	st := fake.New()
+	st := newCheckedFake(t)
 	s := newLogTestScheduler(st)
 	s.ctx = t.Context()
 
@@ -271,7 +270,7 @@ func TestHandleLogChunk_MissingTaskID_Acked(t *testing.T) {
 }
 
 func TestHandleLogChunk_MissingAttemptID_Acked(t *testing.T) {
-	st := fake.New()
+	st := newCheckedFake(t)
 	s := newLogTestScheduler(st)
 	s.ctx = t.Context()
 
@@ -293,7 +292,7 @@ func TestHandleLogChunk_MissingAttemptID_Acked(t *testing.T) {
 }
 
 func TestHandleLogChunk_StoreFailure_Nacked(t *testing.T) {
-	inner := fake.New()
+	inner := newCheckedFake(t)
 	taskID := uuid.NewString()
 	attemptID := uuid.NewString()
 	if _, err := inner.CreateTaskAttempt(t.Context(), store.TaskAttempt{
@@ -330,7 +329,7 @@ func TestHandleLogChunk_StoreFailure_Nacked(t *testing.T) {
 
 func TestHandleLogChunk_MetadataError_NATSSeqZero(t *testing.T) {
 	// When metadata extraction fails, NATSSeq should be 0 but the log still persists.
-	st := fake.New()
+	st := newCheckedFake(t)
 	s := newLogTestScheduler(st)
 	s.ctx = t.Context()
 
@@ -392,7 +391,7 @@ func (s *countingAttemptStore) GetTaskAttempt(ctx context.Context, id string) (s
 // chunk for the same attempt does not re-read the store: the first chunk
 // misses the cache and reads through, the second hits.
 func TestHandleLogChunk_RepeatedChunk_CachedAfterFirstRead(t *testing.T) {
-	cst := &countingAttemptStore{Store: fake.New()}
+	cst := &countingAttemptStore{Store: newCheckedFake(t)}
 	s := newLogTestScheduler(cst)
 	s.ctx = t.Context()
 
@@ -453,7 +452,7 @@ func TestHandleLogChunk_RepeatedChunk_CachedAfterFirstRead(t *testing.T) {
 // still falls back to the store (rather than assuming ownership) and
 // discards the chunk exactly as it would with no cache at all.
 func TestHandleLogChunk_CacheMiss_VanishedAttempt_StillDiscarded(t *testing.T) {
-	cst := &countingAttemptStore{Store: fake.New()}
+	cst := &countingAttemptStore{Store: newCheckedFake(t)}
 	s := newLogTestScheduler(cst)
 	s.ctx = t.Context()
 
@@ -527,7 +526,7 @@ func (s *fkEnforcingLogStore) CreateTaskLog(ctx context.Context, log store.TaskL
 // entry so the redelivery takes the store path and discards the chunk
 // cleanly, rather than hitting the same stale entry and failing forever.
 func TestHandleLogChunk_CacheHit_DeletedAttempt_SelfHeals(t *testing.T) {
-	base := fake.New()
+	base := newCheckedFake(t)
 	st := &fkEnforcingLogStore{Store: base}
 	s := newLogTestScheduler(st)
 	s.ctx = t.Context()

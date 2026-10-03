@@ -132,7 +132,7 @@ func seedTaskForJob(t *testing.T, st *fake.Store, job store.Job, workerID string
 // ── CancelJob tests ───────────────────────────────────────────────────────────
 
 func TestCancelJob_NoActiveTasks(t *testing.T) {
-	st := fake.New()
+	st := newCheckedFake(t)
 	bus := &stubBus{}
 	s := newTestScheduler(st, bus)
 
@@ -147,7 +147,7 @@ func TestCancelJob_NoActiveTasks(t *testing.T) {
 }
 
 func TestCancelJob_WithAssignedWorkers(t *testing.T) {
-	st := fake.New()
+	st := newCheckedFake(t)
 	bus := &stubBus{}
 	s := newTestScheduler(st, bus)
 
@@ -167,7 +167,7 @@ func TestCancelJob_WithAssignedWorkers(t *testing.T) {
 
 func TestCancelJob_NATSPublishFailure_NonFatal(t *testing.T) {
 	// NATS publish failures must be non-fatal: CancelJob should still return nil.
-	st := fake.New()
+	st := newCheckedFake(t)
 	bus := &stubBus{cancelErr: errors.New("nats: unavailable")}
 	s := newTestScheduler(st, bus)
 
@@ -180,7 +180,7 @@ func TestCancelJob_NATSPublishFailure_NonFatal(t *testing.T) {
 }
 
 func TestCancelJob_TasksAreCanceledInStore(t *testing.T) {
-	st := fake.New()
+	st := newCheckedFake(t)
 	s := newTestScheduler(st, &stubBus{})
 
 	job := seedCancelJob(t, st)
@@ -208,7 +208,7 @@ func TestCancelJob_TasksAreCanceledInStore(t *testing.T) {
 // reason yet, so this holds even under real concurrency; here we pre-set the
 // reason to model a cascade that landed first.
 func TestCancelJob_DoesNotClobberCascadeReason(t *testing.T) {
-	st := fake.New()
+	st := newCheckedFake(t)
 	s := newTestScheduler(st, &stubBus{})
 
 	job := seedCancelJob(t, st)
@@ -236,7 +236,7 @@ func TestCancelJob_DoesNotClobberCascadeReason(t *testing.T) {
 // ── CancelTask tests ──────────────────────────────────────────────────────────
 
 func TestCancelTask_NotFound(t *testing.T) {
-	st := fake.New()
+	st := newCheckedFake(t)
 	s := newTestScheduler(st, &stubBus{})
 
 	err := s.CancelTask(t.Context(), "no-such-task")
@@ -252,7 +252,7 @@ func TestCancelTask_AlreadyTerminal_NoOp(t *testing.T) {
 		store.TaskStatusCanceled,
 	} {
 		t.Run(string(status), func(t *testing.T) {
-			st := fake.New()
+			st := newCheckedFake(t)
 			bus := &stubBus{}
 			s := newTestScheduler(st, bus)
 			job := seedCancelJob(t, st)
@@ -277,7 +277,7 @@ func TestCancelTask_AlreadyTerminal_NoOp(t *testing.T) {
 }
 
 func TestCancelTask_AssignedTask_CanceledAndSignaled(t *testing.T) {
-	st := fake.New()
+	st := newCheckedFake(t)
 	bus := &stubBus{}
 	s := newTestScheduler(st, bus)
 
@@ -306,7 +306,7 @@ func TestCancelTask_AssignedTask_CanceledAndSignaled(t *testing.T) {
 // TestCancelTask_DoesNotClobberCascadeReason mirrors the CancelJob case: a task
 // already annotated with a cascade-cancel reason keeps it through CancelTask.
 func TestCancelTask_DoesNotClobberCascadeReason(t *testing.T) {
-	st := fake.New()
+	st := newCheckedFake(t)
 	s := newTestScheduler(st, &stubBus{})
 
 	job := seedCancelJob(t, st)
@@ -331,7 +331,7 @@ func TestCancelTask_DoesNotClobberCascadeReason(t *testing.T) {
 
 func TestCancelTask_ReadyTask_NoNATSSignal(t *testing.T) {
 	// Ready tasks have no assigned worker — no NATS signal should be published.
-	st := fake.New()
+	st := newCheckedFake(t)
 	bus := &stubBus{}
 	s := newTestScheduler(st, bus)
 

@@ -5,7 +5,7 @@ package scheduler
 // Tests for policy.go — item 8a of the test roadmap.
 //
 // policyGate is unexported so these tests live in package scheduler (white-box).
-// All tests use fake.New() as the store — no NATS or real SQLite needed.
+// All tests use the fake store (newCheckedFake) — no NATS or real SQLite needed.
 
 import (
 	"context"
@@ -97,7 +97,7 @@ func addActiveTask(t *testing.T, st *fake.Store, job store.Job) {
 // ── Queue limit ───────────────────────────────────────────────────────────────
 
 func TestPolicyGate_QueueUnlimited(t *testing.T) {
-	st := fake.New()
+	st := newCheckedFake(t)
 	farm, queue, job := seedPolicy(t, st, 0, 0)
 	for range 5 {
 		addActiveTask(t, st, job)
@@ -108,7 +108,7 @@ func TestPolicyGate_QueueUnlimited(t *testing.T) {
 }
 
 func TestPolicyGate_QueueUnderLimit(t *testing.T) {
-	st := fake.New()
+	st := newCheckedFake(t)
 	farm, queue, job := seedPolicy(t, st, 0, 2) // limit=2
 	addActiveTask(t, st, job)                   // 1 active
 	if err := policyGate(t.Context(), st, job, queue, farm); err != nil {
@@ -117,7 +117,7 @@ func TestPolicyGate_QueueUnderLimit(t *testing.T) {
 }
 
 func TestPolicyGate_QueueAtCapacity(t *testing.T) {
-	st := fake.New()
+	st := newCheckedFake(t)
 	farm, queue, job := seedPolicy(t, st, 0, 2)
 	addActiveTask(t, st, job) // 1
 	addActiveTask(t, st, job) // 2 — at limit
@@ -133,7 +133,7 @@ func TestPolicyGate_QueueAtCapacity(t *testing.T) {
 // ── Farm limit ────────────────────────────────────────────────────────────────
 
 func TestPolicyGate_FarmUnlimited(t *testing.T) {
-	st := fake.New()
+	st := newCheckedFake(t)
 	farm, queue, job := seedPolicy(t, st, 0, 0)
 	for range 5 {
 		addActiveTask(t, st, job)
@@ -144,7 +144,7 @@ func TestPolicyGate_FarmUnlimited(t *testing.T) {
 }
 
 func TestPolicyGate_FarmAtCapacity(t *testing.T) {
-	st := fake.New()
+	st := newCheckedFake(t)
 	farm, queue, job := seedPolicy(t, st, 1, 0) // farm limit=1
 	addActiveTask(t, st, job)                   // 1 — farm at limit
 	err := policyGate(t.Context(), st, job, queue, farm)
@@ -157,7 +157,7 @@ func TestPolicyGate_FarmAtCapacity(t *testing.T) {
 }
 
 func TestPolicyGate_QueuePassesFarmBlocks(t *testing.T) {
-	st := fake.New()
+	st := newCheckedFake(t)
 	farm, queue, job := seedPolicy(t, st, 1, 10) // farm=1, queue=10
 	addActiveTask(t, st, job)                    // 1 — farm full
 	err := policyGate(t.Context(), st, job, queue, farm)
@@ -172,7 +172,7 @@ func TestPolicyGate_QueuePassesFarmBlocks(t *testing.T) {
 // ── Store error paths ──────────────────────────────────────────────────────────
 
 func TestPolicyGate_QueueCountError(t *testing.T) {
-	st := fake.New()
+	st := newCheckedFake(t)
 	farm, queue, job := seedPolicy(t, st, 0, 5) // non-zero limit triggers the count
 	est := &policyErrSt{Store: st, queueErr: errors.New("db error")}
 	err := policyGate(t.Context(), est, job, queue, farm)
@@ -185,7 +185,7 @@ func TestPolicyGate_QueueCountError(t *testing.T) {
 }
 
 func TestPolicyGate_FarmCountError(t *testing.T) {
-	st := fake.New()
+	st := newCheckedFake(t)
 	// queue limit=0 (unlimited) so we skip queue check and hit farm check
 	farm, queue, job := seedPolicy(t, st, 5, 0)
 	est := &policyErrSt{Store: st, farmErr: errors.New("db error")}

@@ -115,7 +115,7 @@ func seedRunnableTask(t *testing.T, st *fake.Store, workerID string) (store.Job,
 // standing between an attacker and a forged completion was that attempt_id is
 // an unguessable UUID — capability-by-obscurity, not authorization.
 func TestProvenance_StatusFromWrongWorker(t *testing.T) {
-	st := fake.New()
+	st := newCheckedFake(t)
 	ctx := t.Context()
 
 	// Two workers, a task held by B, and a live attempt for it.
@@ -180,7 +180,7 @@ func TestProvenance_StatusFromWrongWorker(t *testing.T) {
 // ONLY identity available for this channel — so this is the case where
 // dropping the subject check would leave zero provenance signal whatsoever.
 func TestProvenance_LogsFromWrongWorker(t *testing.T) {
-	st := fake.New()
+	st := newCheckedFake(t)
 	ctx := t.Context()
 
 	const workerA, workerB = "worker-a", "worker-b"
@@ -240,7 +240,7 @@ func TestProvenance_LogsFromWrongWorker(t *testing.T) {
 // to publish on — so the leaf cannot be relied on either; only comparing the
 // attempt's own TaskID against the payload's TaskID catches this.
 func TestProvenance_LogsForAnotherWorkersTask(t *testing.T) {
-	st := fake.New()
+	st := newCheckedFake(t)
 	ctx := t.Context()
 
 	const workerA, workerB = "worker-a", "worker-b"
@@ -295,7 +295,7 @@ func TestProvenance_LogsForAnotherWorkersTask(t *testing.T) {
 // overwrite worker B's row — CPU count, tags, EXPR caps and all — by
 // publishing a registration on its own subject with B's ID in the payload.
 func TestProvenance_RegisterOfAnotherWorker(t *testing.T) {
-	st := fake.New()
+	st := newCheckedFake(t)
 	ctx := t.Context()
 
 	const workerA, workerB = "worker-a", "worker-b"
@@ -349,7 +349,7 @@ func TestProvenance_RegisterOfAnotherWorker(t *testing.T) {
 // worker B looking alive — and therefore un-reclaimed — by publishing a
 // heartbeat on its own subject with B's ID in the payload.
 func TestProvenance_HeartbeatOfAnotherWorker(t *testing.T) {
-	st := fake.New()
+	st := newCheckedFake(t)
 	ctx := t.Context()
 
 	const workerA, workerB = "worker-a", "worker-b"
@@ -396,7 +396,7 @@ func TestProvenance_HeartbeatOfAnotherWorker(t *testing.T) {
 // payload — a denial-of-service against the farm otherwise available to any
 // worker that can reach the broker.
 func TestProvenance_DeregisterOfAnotherWorker(t *testing.T) {
-	st := fake.New()
+	st := newCheckedFake(t)
 	ctx := t.Context()
 
 	const workerA, workerB = "worker-a", "worker-b"
@@ -445,7 +445,7 @@ func TestProvenance_DeregisterOfAnotherWorker(t *testing.T) {
 // on worker A's subject cannot have its assignments credited to worker B: the
 // reply must be empty and no task may end up assigned to B.
 func TestProvenance_LeaseAsAnotherWorker(t *testing.T) {
-	st := fake.New()
+	st := newCheckedFake(t)
 	one := 1
 	// seedLeaseFixture (lease_test.go) registers a real, eligible worker "w1"
 	// with a ready task — workerB below is that real worker, the one being

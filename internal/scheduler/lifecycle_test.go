@@ -19,7 +19,7 @@ import (
 )
 
 func TestRun_StartAndStop(t *testing.T) {
-	st := fake.New()
+	st := newCheckedFake(t)
 	s := newMetricsScheduler(st, &recordBus{}, "farm-1")
 	// Tiny interval so the heartbeat-sweep ticker (which also refreshes the
 	// metric gauges) fires at least once before the context is canceled,
@@ -52,7 +52,7 @@ func TestStop_NilCancel_NoPanic(_ *testing.T) {
 }
 
 func TestStop_WithCancel_CancelsContext(t *testing.T) {
-	st := fake.New()
+	st := newCheckedFake(t)
 	s := newMetricsScheduler(st, &recordBus{}, "")
 
 	// White-box wire a cancel func as Run would, then verify Stop invokes it.

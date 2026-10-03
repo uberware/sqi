@@ -286,7 +286,7 @@ func TestExprCaps_ViolationThroughConfigurationIsCaught(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			st := fake.New()
+			st := newCheckedFake(t)
 			w, taskID := seedExprLeaseFixture(t, st, exprTemplateJSON, tc.workerCaps)
 			s := schedulerWithExprLimits(st, tc.serverLimits)
 
@@ -327,7 +327,7 @@ func TestExprCaps_ViolationThroughConfigurationIsCaught(t *testing.T) {
 // worse outage than the one being prevented, and §1 chose per-worker
 // configuration precisely so a small host CAN be sized down.
 func TestExprCaps_BaseSpecWorkIsUnaffected(t *testing.T) {
-	st := fake.New()
+	st := newCheckedFake(t)
 	w, _ := seedExprLeaseFixture(t, st, minimalRenderJSON, store.WorkerExprLimits{
 		OperationLimit:          fmtres.MinExprOperationLimit,
 		MemoryLimit:             fmtres.MinExprMemoryLimit,
@@ -346,7 +346,7 @@ func TestExprCaps_BaseSpecWorkIsUnaffected(t *testing.T) {
 // made a per-task refusal the right shape: with one tight worker and one
 // capable worker, the EXPR job runs on the capable one and no task is flagged.
 func TestExprCaps_HeterogeneousFarmKeepsTheCapableWorker(t *testing.T) {
-	st := fake.New()
+	st := newCheckedFake(t)
 	tight, taskID := seedExprLeaseFixture(t, st, exprTemplateJSON, store.WorkerExprLimits{
 		OperationLimit:          fmtres.MinExprOperationLimit,
 		MemoryLimit:             fmtres.MinExprMemoryLimit,
@@ -545,7 +545,7 @@ func TestExprCaps_RelationIsSatisfiableAtEveryLegalServerSetting(t *testing.T) {
 // the handler directly, so the whole decode-and-convert hop is exercised end
 // to end.
 func TestHandleWorkerRegister_PersistsAdvertisedExprCaps(t *testing.T) {
-	st := fake.New()
+	st := newCheckedFake(t)
 	s := newMetricsScheduler(st, &recordBus{}, "")
 
 	want := store.WorkerExprLimits{
@@ -580,7 +580,7 @@ func TestHandleWorkerRegister_PersistsAdvertisedExprCaps(t *testing.T) {
 // line per reconnect. It must still re-report when the shortfall CHANGES --
 // either side reconfigured is news.
 func TestHandleWorkerRegister_ExprCapWarningIsDeDuplicated(t *testing.T) {
-	st := fake.New()
+	st := newCheckedFake(t)
 	logs := &countingHandler{}
 	s := New(schedulerConfigWithPositions(50_000), st, &recordBus{},
 		metrics.New(), slog.New(logs), ws.NoopNotifier{}, nil)
@@ -677,7 +677,7 @@ func TestNew_NormalizesExprLimits(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			cfg := DefaultConfig()
 			cfg.ExprLimits = tc.in
-			s := New(cfg, fake.New(), &recordBus{}, metrics.New(), slog.New(slog.DiscardHandler), ws.NoopNotifier{}, nil)
+			s := New(cfg, newCheckedFake(t), &recordBus{}, metrics.New(), slog.New(slog.DiscardHandler), ws.NoopNotifier{}, nil)
 			if got := s.cfg.ExprLimits; got != tc.want {
 				t.Fatalf("scheduler ExprLimits = %+v, want %+v", got, tc.want)
 			}
@@ -716,7 +716,7 @@ func TestNew_NormalizesExprLimits(t *testing.T) {
 // for -- at which point discardOnVersionMismatch refuses the message instead
 // of half-reading it.
 func TestHandleWorkerRegister_EveryWireFieldReachesTheStore(t *testing.T) {
-	st := fake.New()
+	st := newCheckedFake(t)
 	s := newMetricsScheduler(st, &recordBus{}, "")
 
 	sent := protocol.RegisterMsg{
@@ -993,7 +993,7 @@ func TestJobMayUseEXPR_RequiresAnExtensionDeclaration(t *testing.T) {
 // narrowing this leased 0 assignments, and with no capable worker in the queue
 // the task waited `ready` indefinitely.
 func TestExprCaps_BaseSpecJobMentioningEXPRIsStillDispatched(t *testing.T) {
-	st := fake.New()
+	st := newCheckedFake(t)
 	w, taskID := seedExprLeaseFixture(t, st, houdiniEXPRCacheJSON, store.WorkerExprLimits{
 		OperationLimit:          fmtres.MinExprOperationLimit,
 		MemoryLimit:             fmtres.MinExprMemoryLimit,
@@ -1024,7 +1024,7 @@ func TestExprCaps_BaseSpecJobMentioningEXPRIsStillDispatched(t *testing.T) {
 // and on a farm where every worker is short, the EXPR text overwrote the real
 // reason for every one of them.
 func TestEvaluateSchedulability_GenuineIneligibilityOutranksEXPR(t *testing.T) {
-	st := fake.New()
+	st := newCheckedFake(t)
 	w, taskID := seedExprLeaseFixture(t, st, exprTemplateJSON, store.WorkerExprLimits{
 		OperationLimit:          fmtres.MinExprOperationLimit,
 		MemoryLimit:             fmtres.MinExprMemoryLimit,
@@ -1052,7 +1052,7 @@ func TestEvaluateSchedulability_GenuineIneligibilityOutranksEXPR(t *testing.T) {
 // the other half of that order: reordering must not silence the EXPR reason for
 // the worker the operator actually needs to fix.
 func TestEvaluateSchedulability_EXPRStillReportedForAnOtherwiseEligibleWorker(t *testing.T) {
-	st := fake.New()
+	st := newCheckedFake(t)
 	w, taskID := seedExprLeaseFixture(t, st, exprTemplateJSON, store.WorkerExprLimits{
 		OperationLimit:          fmtres.MinExprOperationLimit,
 		MemoryLimit:             fmtres.MinExprMemoryLimit,
@@ -1166,7 +1166,7 @@ func seedSubmittedExprLeaseFixture(
 // the job is dispatched to a worker that is short on EXPR limits it does not
 // use.
 func TestExprCaps_SubmittedBaseSpecJobMentioningEXPRIsDispatched(t *testing.T) {
-	st := fake.New()
+	st := newCheckedFake(t)
 	w, taskID := seedSubmittedExprLeaseFixture(t, st, taskChunkingWithEXPRCacheJSON, minWorkerExprCaps())
 
 	// The premise: the byte scan really does get this one wrong, so the test
@@ -1198,7 +1198,7 @@ func TestExprCaps_SubmittedBaseSpecJobMentioningEXPRIsDispatched(t *testing.T) {
 // that says "no" must not stop saying "yes" when the template really does
 // declare the extension. This is design spec §2's incident.
 func TestExprCaps_SubmittedEXPRJobIsStillWithheld(t *testing.T) {
-	st := fake.New()
+	st := newCheckedFake(t)
 	w, taskID := seedSubmittedExprLeaseFixture(t, st, exprTemplateJSON, minWorkerExprCaps())
 
 	job := mustJob(t, st, mustTask(t, st, taskID).JobID)
@@ -1225,7 +1225,7 @@ func TestExprCaps_SubmittedEXPRJobIsStillWithheld(t *testing.T) {
 // would silently lose the gate, which is a REGRESSION against the heuristic
 // this change replaces, and an invisible one.
 func TestExprCaps_LegacyRowFallsBackToTheByteScan(t *testing.T) {
-	st := fake.New()
+	st := newCheckedFake(t)
 	// seedExprLeaseFixture writes the job row directly, recording nothing --
 	// exactly the shape a pre-migration row has after the column is added.
 	w, taskID := seedExprLeaseFixture(t, st, exprTemplateJSON, minWorkerExprCaps())
@@ -1253,7 +1253,7 @@ func TestExprCaps_LegacyRowFallsBackToTheByteScan(t *testing.T) {
 // dispatched anyway. If the two states were conflated, this job would be
 // withheld on evidence the row already contradicts.
 func TestExprCaps_RecordedEmptyIsNotUnrecorded(t *testing.T) {
-	st := fake.New()
+	st := newCheckedFake(t)
 	w, taskID := seedExprLeaseFixtureJob(t, st, store.Job{
 		// Bytes that the scan matches, and a recorded list that says otherwise.
 		RawTemplate:        exprTemplateJSON,

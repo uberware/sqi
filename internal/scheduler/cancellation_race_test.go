@@ -22,7 +22,6 @@ import (
 	"time"
 
 	"github.com/uberware/sqi/internal/store"
-	"github.com/uberware/sqi/internal/store/fake"
 )
 
 type completeBeforeCancelStore struct {
@@ -51,7 +50,7 @@ func TestCancelTask_LosesRaceToCompletion_IsNoOp(t *testing.T) {
 		store.TaskStatusFailed,
 	} {
 		t.Run(string(terminal), func(t *testing.T) {
-			st := fake.New()
+			st := newCheckedFake(t)
 			bus := &stubBus{}
 			job := seedCancelJob(t, st)
 			tk := seedTaskForJob(t, st, job, "w1", store.TaskStatusRunning)
@@ -80,7 +79,7 @@ func TestCancelTask_LosesRaceToCompletion_IsNoOp(t *testing.T) {
 // TestCancelTask_RealErrorStillPropagates guards against the fix being written
 // as a blanket "swallow every error from the cancel operation".
 func TestCancelTask_RealErrorStillPropagates(t *testing.T) {
-	st := fake.New()
+	st := newCheckedFake(t)
 	bus := &stubBus{}
 	job := seedCancelJob(t, st)
 	tk := seedTaskForJob(t, st, job, "w1", store.TaskStatusRunning)

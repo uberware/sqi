@@ -140,7 +140,7 @@ func seedAssignFixture(t *testing.T, st *fake.Store, mutate func(*assignFixture)
 // ── buildUsageContext / buildUsageClaims units ────────────────────────────────
 
 func TestBuildUsageContext_NoRequirements(t *testing.T) {
-	st := fake.New()
+	st := newCheckedFake(t)
 	s := newMetricsScheduler(st, &recordBus{}, "")
 
 	pools, counts, err := s.buildUsageContext(t.Context(), store.Step{})
@@ -153,7 +153,7 @@ func TestBuildUsageContext_NoRequirements(t *testing.T) {
 }
 
 func TestBuildUsageContext_WithPool(t *testing.T) {
-	st := fake.New()
+	st := fake.New() // deliberately seeds an I3 violation; see counts["maya"] (a claim on attempt "a1", which has no row)
 	s := newMetricsScheduler(st, &recordBus{}, "")
 
 	poolID := uuid.NewString()
@@ -213,7 +213,7 @@ func TestBuildUsageClaims(t *testing.T) {
 // ── gauges run without error against a seeded store ────────────────────────────
 
 func TestRefreshGauges_Smoke(t *testing.T) {
-	st := fake.New()
+	st := fake.New() // deliberately seeds an I3 violation; see refreshUsageClaimGauge (a claim on attempt "a1", which has no row)
 	s := newMetricsScheduler(st, &recordBus{}, "farm-1")
 	seedAssignFixture(t, st, nil)
 

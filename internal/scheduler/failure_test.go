@@ -45,7 +45,7 @@ type failureHarness struct {
 
 func newFailureHarness(t *testing.T, policy RetryPolicy) *failureHarness {
 	t.Helper()
-	st := fake.New()
+	st := newCheckedFake(t)
 
 	cfg := DefaultConfig()
 	cfg.DefaultMaxAttempts = policy.MaxAttempts

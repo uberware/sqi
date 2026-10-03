@@ -159,7 +159,7 @@ func seedStatusFixtureWithJobStatus(
 // ── handleTaskStatusMessage — routing and discard ─────────────────────────────
 
 func TestHandleTaskStatusMessage_MalformedJSON(t *testing.T) {
-	st := fake.New()
+	st := newCheckedFake(t)
 	s := newStatusTestScheduler(st)
 	s.ctx = t.Context()
 
@@ -172,7 +172,7 @@ func TestHandleTaskStatusMessage_MalformedJSON(t *testing.T) {
 }
 
 func TestHandleTaskStatusMessage_MissingTaskID(t *testing.T) {
-	st := fake.New()
+	st := newCheckedFake(t)
 	s := newStatusTestScheduler(st)
 	s.ctx = t.Context()
 
@@ -193,7 +193,7 @@ func TestHandleTaskStatusMessage_MissingTaskID(t *testing.T) {
 }
 
 func TestHandleTaskStatusMessage_UnknownAttemptID(t *testing.T) {
-	st := fake.New()
+	st := newCheckedFake(t)
 	s := newStatusTestScheduler(st)
 	s.ctx = t.Context()
 
@@ -216,7 +216,7 @@ func TestHandleTaskStatusMessage_UnknownAttemptID(t *testing.T) {
 // ── processTaskStatus — "running" path ───────────────────────────────────────
 
 func TestProcessTaskStatus_Running(t *testing.T) {
-	st := fake.New()
+	st := newCheckedFake(t)
 	s := newStatusTestScheduler(st)
 	s.ctx = t.Context()
 
@@ -259,7 +259,7 @@ func TestProcessTaskStatus_Running(t *testing.T) {
 // task of a still-pending job reports "running", the enclosing job is promoted
 // to running and its StartedAt is stamped.
 func TestProcessTaskStatus_Running_PromotesPendingJob(t *testing.T) {
-	st := fake.New()
+	st := newCheckedFake(t)
 	s := newStatusTestScheduler(st)
 	s.ctx = t.Context()
 
@@ -297,7 +297,7 @@ func TestProcessTaskStatus_Running_PromotesPendingJob(t *testing.T) {
 // status for a job that is not pending (e.g. paused) does not flip it back to
 // running.
 func TestProcessTaskStatus_Running_DoesNotUnpauseJob(t *testing.T) {
-	st := fake.New()
+	st := newCheckedFake(t)
 	s := newStatusTestScheduler(st)
 	s.ctx = t.Context()
 
@@ -328,7 +328,7 @@ func TestProcessTaskStatus_Running_DoesNotUnpauseJob(t *testing.T) {
 // ── processTaskStatus — terminal paths ───────────────────────────────────────
 
 func TestProcessTaskStatus_Succeeded(t *testing.T) {
-	st := fake.New()
+	st := newCheckedFake(t)
 	s := newStatusTestScheduler(st)
 	s.ctx = t.Context()
 
@@ -365,7 +365,7 @@ func TestProcessTaskStatus_Succeeded(t *testing.T) {
 // store row. Every other test in this file only asserts on the store, so a
 // deleted evict call in handleTaskTerminal would leave them all green.
 func TestProcessTaskStatus_Succeeded_EvictsAttemptCache(t *testing.T) {
-	st := fake.New()
+	st := newCheckedFake(t)
 	s := newStatusTestScheduler(st)
 	s.ctx = t.Context()
 
@@ -392,7 +392,7 @@ func TestProcessTaskStatus_Succeeded_EvictsAttemptCache(t *testing.T) {
 }
 
 func TestProcessTaskStatus_Failed(t *testing.T) {
-	st := fake.New()
+	st := newCheckedFake(t)
 	s := newStatusTestScheduler(st)
 	s.ctx = t.Context()
 
@@ -422,7 +422,7 @@ func TestProcessTaskStatus_Failed(t *testing.T) {
 }
 
 func TestProcessTaskStatus_Canceled(t *testing.T) {
-	st := fake.New()
+	st := newCheckedFake(t)
 	s := newStatusTestScheduler(st)
 	s.ctx = t.Context()
 
@@ -454,7 +454,7 @@ func TestProcessTaskStatus_Canceled(t *testing.T) {
 // handleTaskTerminal, not RecordTaskFailure) still persists the worker's
 // Message onto both the closed attempt and the task's durable FailureReason.
 func TestProcessTaskStatus_Canceled_PersistsMessageAndReason(t *testing.T) {
-	st := fake.New()
+	st := newCheckedFake(t)
 	s := newStatusTestScheduler(st)
 	s.ctx = t.Context()
 
@@ -503,7 +503,7 @@ func TestProcessTaskStatus_Canceled_PersistsMessageAndReason(t *testing.T) {
 // clobbering the server-set one. The fix guards that write so an empty
 // synthesized reason never overwrites an existing reason.
 func TestProcessTaskStatus_Canceled_EmptyWorkerEchoPreservesServerReason(t *testing.T) {
-	st := fake.New()
+	st := newCheckedFake(t)
 	s := newStatusTestScheduler(st)
 	s.ctx = t.Context()
 
@@ -551,7 +551,7 @@ func TestProcessTaskStatus_Canceled_EmptyWorkerEchoPreservesServerReason(t *test
 func TestProcessTaskStatus_AllTasksSucceeded_StepAndJobComplete(t *testing.T) {
 	// Single-step job: when the only task succeeds, the step and job should
 	// both transition to their terminal states.
-	st := fake.New()
+	st := newCheckedFake(t)
 	s := newStatusTestScheduler(st)
 	s.ctx = t.Context()
 
@@ -594,7 +594,7 @@ func TestProcessTaskStatus_AllTasksSucceeded_StepAndJobComplete(t *testing.T) {
 
 func TestProcessTaskStatus_TaskFailed_JobFails(t *testing.T) {
 	// Single-step job: failed task → step failed → job failed.
-	st := fake.New()
+	st := newCheckedFake(t)
 	s := newStatusTestScheduler(st)
 	s.ctx = t.Context()
 
@@ -626,7 +626,7 @@ func TestProcessTaskStatus_TaskFailed_JobFails(t *testing.T) {
 func TestProcessTaskStatus_SucceededStep_UnblocksDependentStep(t *testing.T) {
 	// Two-step job: Step1 → Step2 (depends on Step1).
 	// When Step1's task succeeds, Step2's tasks should move from pending→ready.
-	st := fake.New()
+	st := newCheckedFake(t)
 	ctx := t.Context()
 	now := time.Now()
 
@@ -754,7 +754,7 @@ func TestProcessTaskStatus_FailedStep_CascadeCancelsDependentAndCompletesJob(t *
 	// When Step1's task fails, Step2 can never run, so it must be canceled
 	// (along with its pending tasks) and the job must reach a terminal state
 	// rather than hanging in running forever.
-	st := fake.New()
+	st := newCheckedFake(t)
 	ctx := t.Context()
 
 	job, _, task1, attempt1 := seedStatusFixture(t, st, store.TaskStatusRunning)
@@ -815,7 +815,7 @@ func TestProcessTaskStatus_FailedStep_CascadeCancelsDependentAndCompletesJob(t *
 func TestProcessTaskStatus_CascadeCancel_NotifiesCanceledTasks(t *testing.T) {
 	// A cascade-canceled dependent task must be fanned out to WebSocket clients,
 	// otherwise the live UI shows it frozen as pending.
-	st := fake.New()
+	st := newCheckedFake(t)
 	ctx := t.Context()
 
 	job, _, task1, attempt1 := seedStatusFixture(t, st, store.TaskStatusRunning)
@@ -859,7 +859,7 @@ func TestProcessTaskStatus_CascadeCancel_StoreError_Nacked(t *testing.T) {
 	// If the cascade hits a transient store error, the message must be nacked so
 	// JetStream redelivers — otherwise dependents strand and the job hangs, the
 	// exact failure this cascade exists to prevent.
-	inner := fake.New()
+	inner := newCheckedFake(t)
 	ctx := t.Context()
 
 	job, _, task1, attempt1 := seedStatusFixture(t, inner, store.TaskStatusRunning)
@@ -900,7 +900,7 @@ func (*cancelTasksErrSt) CancelPendingStep(context.Context, string, string, time
 // ── Store error on CompleteTaskAttempt → message nacked ──────────────────────
 
 func TestProcessTaskStatus_CompleteAttemptError_Nacked(t *testing.T) {
-	inner := fake.New()
+	inner := newCheckedFake(t)
 	_, _, task, attempt := seedStatusFixture(t, inner, store.TaskStatusRunning)
 	est := &completeAttemptErrSt{Store: inner}
 

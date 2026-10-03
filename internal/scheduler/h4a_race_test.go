@@ -44,7 +44,8 @@ func raceBackends(t *testing.T) map[string]store.Store {
 			t.Errorf("close sqlite store: %v", err)
 		}
 	})
-	return map[string]store.Store{"fake": fake.New(), "sqlite": sq}
+	checkSQLiteClaimsAtEnd(t, sq)
+	return map[string]store.Store{"fake": newCheckedFake(t), "sqlite": sq}
 }
 
 // fixtureAssigner is the fixture-only AssignTask both concrete stores keep
