@@ -359,3 +359,55 @@ func blockedJobAnchorsTx(ctx context.Context, tx *sql.Tx, id string) ([]anchor, 
 	}
 	return anchors, nil
 }
+
+const (
+	// sqlPromoteJobRunning is the I1 guard for the first start: only a pending
+	// job is promoted, so a pause, cancel or completion that landed first is
+	// never overwritten. started_at is kept when already set.
+	sqlPromoteJobRunning = `
+UPDATE jobs SET status = 'running', started_at = COALESCE(started_at, ?), updated_at = ?
+WHERE id = ? AND status = 'pending'`
+
+	// sqlPauseJob is the I1 guard for an administrative pause: only a pending
+	// or running job is paused.
+	sqlPauseJob = `
+UPDATE jobs SET status = 'paused', updated_at = ?
+WHERE id = ? AND status IN ('pending', 'running')`
+)
+
+// PromoteJobRunning implements [store.JobStore]. It is one guarded UPDATE, so
+// it needs no anchor: an unknown job and a job that is not pending both write
+// nothing and return false.
+func (s *Store) PromoteJobRunning(ctx context.Context, id string, now time.Time) (bool, error) {
+	nowText := timeToText(now.UTC())
+	res, err := s.db.ExecContext(ctx, sqlPromoteJobRunning, nowText, nowText, id)
+	if err != nil {
+		return false, fmt.Errorf("sqlite: promote job %s running: %w", id, mapErr(err))
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("sqlite: promote job %s running: %w", id, mapErr(err))
+	}
+	return n == 1, nil
+}
+
+// PauseJob implements [store.JobStore]. The guarded UPDATE does the work; a
+// zero-row result is ambiguous between an unknown job and one in another
+// status, and a follow-up read tells them apart.
+func (s *Store) PauseJob(ctx context.Context, id string, now time.Time) error {
+	res, err := s.db.ExecContext(ctx, sqlPauseJob, timeToText(now.UTC()), id)
+	if err != nil {
+		return fmt.Errorf("sqlite: pause job %s: %w", id, mapErr(err))
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("sqlite: pause job %s: %w", id, mapErr(err))
+	}
+	if n == 1 {
+		return nil
+	}
+	if _, err := s.GetJob(ctx, id); err != nil {
+		return err // ErrNotFound for an unknown job
+	}
+	return store.ErrConflict
+}

@@ -146,9 +146,10 @@ func newJobRouter(st store.Store, sched jobCanceler) chi.Router {
 	return r
 }
 
-// seedJob pre-populates the fake store with one farm, one queue, and one job.
-// Returns the seeded job for use in subsequent assertions.
-func seedJob(t *testing.T, st *fake.Store, status store.JobStatus) store.Job {
+// seedJob pre-populates a store (the fake, or a real backend for the H4a race
+// tests) with one farm, one queue, and one job. Returns the seeded job for use
+// in subsequent assertions.
+func seedJob(t *testing.T, st store.Store, status store.JobStatus) store.Job {
 	t.Helper()
 	ctx := t.Context()
 

@@ -206,3 +206,39 @@ func (s *Store) CancelBlockedJob(_ context.Context, id, reason string, now time.
 	)
 	return true, tasks, nil
 }
+
+// PromoteJobRunning implements [store.JobStore]. Like the SQLite statement it
+// writes only a pending job and reports false, without error, for an unknown
+// job.
+func (s *Store) PromoteJobRunning(_ context.Context, id string, now time.Time) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	j, ok := s.jobs[id]
+	if !ok || j.Status != store.JobStatusPending {
+		return false, nil
+	}
+	now = now.UTC() // SQLite stores UTC; keep the fake's times in the same zone.
+	if j.StartedAt == nil {
+		at := now
+		j.StartedAt = &at
+	}
+	j.Status, j.UpdatedAt = store.JobStatusRunning, now
+	s.jobs[id] = j
+	return true, nil
+}
+
+// PauseJob implements [store.JobStore].
+func (s *Store) PauseJob(_ context.Context, id string, now time.Time) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	j, ok := s.jobs[id]
+	if !ok {
+		return store.ErrNotFound
+	}
+	if j.Status != store.JobStatusPending && j.Status != store.JobStatusRunning {
+		return store.ErrConflict
+	}
+	j.Status, j.UpdatedAt = store.JobStatusPaused, now.UTC() // SQLite stores UTC.
+	s.jobs[id] = j
+	return nil
+}

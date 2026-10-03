@@ -700,7 +700,9 @@ func (*jobHandler) resolveAction(
 // It writes an error response and returns a non-nil error when persistence fails.
 // A resume goes through [store.JobStore.ResumeJob] so an auto-parked job also
 // has its park reason cleared and failure counter reset (re-arming the failure
-// limit); other transitions use the plain status update.
+// limit); a pause goes through [store.JobStore.PauseJob], which is guarded in
+// the write, so a job that completed, failed or was canceled after the
+// handler's status read answers 409 instead of being overwritten.
 func (h *jobHandler) applyStatusChange(
 	w http.ResponseWriter,
 	r *http.Request,
@@ -709,12 +711,22 @@ func (h *jobHandler) applyStatusChange(
 	job store.Job,
 ) (store.Job, error) {
 	var err error
-	if action == "resume" {
+	switch action {
+	case "resume":
 		err = h.store.ResumeJob(r.Context(), id, time.Now().UTC())
-	} else {
-		err = h.store.UpdateJobStatus(r.Context(), id, newStatus)
+	case "pause":
+		err = h.store.PauseJob(r.Context(), id, time.Now().UTC())
 	}
-	if err != nil {
+	switch {
+	case errors.Is(err, store.ErrConflict):
+		// The job left pending/running between the handler's read and the
+		// guarded write (invariant I1).
+		writeProblem(w, r, http.StatusConflict, "job cannot be paused in its current state")
+		return job, err
+	case errors.Is(err, store.ErrNotFound):
+		writeProblem(w, r, http.StatusNotFound, "job not found")
+		return job, err
+	case err != nil:
 		h.logger.ErrorContext(
 			r.Context(), "jobs: patch status update failed",
 			slog.String("id", id),

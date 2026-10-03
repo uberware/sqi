@@ -274,6 +274,17 @@ type JobStore interface {
 	//   - Job not found → returns [ErrNotFound].
 	CancelJobStatus(ctx context.Context, id string) error
 
+	// PromoteJobRunning moves a pending job to running, stamping StartedAt on
+	// first start. Guarded on pending (invariant I1), so a late running report
+	// can never un-pause, un-cancel or revive a job. Returns false, writing
+	// nothing, for any other status (an unknown job included).
+	PromoteJobRunning(ctx context.Context, id string, now time.Time) (bool, error)
+
+	// PauseJob administratively pauses a pending or running job. Guarded in the
+	// write (invariant I1): a job in any other status is left untouched and
+	// [ErrConflict] is returned. [ErrNotFound] for an unknown job.
+	PauseJob(ctx context.Context, id string, now time.Time) error
+
 	// FinalizeJob derives the job's terminal status from its steps and writes
 	// it in one statement (invariant I4): failed if any step failed, else
 	// canceled if any was canceled, else completed, stamping CompletedAt. The

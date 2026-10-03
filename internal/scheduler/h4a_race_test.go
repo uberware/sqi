@@ -225,3 +225,43 @@ func TestH4a_F9_ReconcileDoesNotUndoUserCancel(t *testing.T) {
 		})
 	}
 }
+
+// ── F7: a late running report must not overwrite a pause ────────────────────
+
+// pauseDuringPromoteStore fires its hook just before the promotion decision
+// lands: after GetJob (old maybePromoteJobRunning, which read the status and
+// then wrote blind) or before PromoteJobRunning (new, guarded).
+type pauseDuringPromoteStore struct {
+	store.Store
+
+	hook *once
+}
+
+func (s *pauseDuringPromoteStore) GetJob(ctx context.Context, id string) (store.Job, error) {
+	j, err := s.Store.GetJob(ctx, id)
+	s.hook.fire()
+	return j, err
+}
+
+func (s *pauseDuringPromoteStore) PromoteJobRunning(ctx context.Context, id string, now time.Time) (bool, error) {
+	s.hook.fire()
+	return s.Store.PromoteJobRunning(ctx, id, now)
+}
+
+func TestH4a_F7_PromoteDoesNotOverwritePause(t *testing.T) {
+	for name, st := range raceBackends(t) {
+		t.Run(name, func(t *testing.T) {
+			job, _, _, _ := seedStatusFixtureWithJobStatus(t, st, store.JobStatusPending, store.TaskStatusRunning)
+			wrapped := &pauseDuringPromoteStore{Store: st, hook: &once{fn: func() {
+				if err := st.PauseJob(context.Background(), job.ID, time.Now()); err != nil {
+					t.Errorf("PauseJob in hook: %v", err)
+				}
+			}}}
+			s := newStatusTestScheduler(wrapped)
+			s.maybePromoteJobRunning(t.Context(), job.ID)
+			if got := mustJob(t, st, job.ID); got.Status != store.JobStatusPaused {
+				t.Fatalf("job = %q, want paused (the pause must survive a late running report)", got.Status)
+			}
+		})
+	}
+}
