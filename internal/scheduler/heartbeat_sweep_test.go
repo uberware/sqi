@@ -218,6 +218,27 @@ func TestReapStaleAssignedTasks_ReclaimsStuckTask(t *testing.T) {
 	}
 }
 
+// TestReapStaleAssignedTasks_NotifiesReclaimedTask pins what the reaper still
+// reports now that the store does the cleanup: one ready TaskEvent per task the
+// store says it reclaimed, and nothing for a task it left alone.
+func TestReapStaleAssignedTasks_NotifiesReclaimedTask(t *testing.T) {
+	st := fake.New()
+	s := newMetricsScheduler(st, &recordBus{}, "farm-1")
+	notifier := &recordingNotifier{}
+	s.notifier = notifier
+	staleID, _ := seedAssignedTask(t, st, time.Hour)
+	seedAssignedTask(t, st, 5*time.Second) // fresh: the reaper must leave it alone
+
+	s.reapStaleAssignedTasks(t.Context())
+
+	if len(notifier.tasks) != 1 {
+		t.Fatalf("task events = %+v, want exactly one (the reaped task)", notifier.tasks)
+	}
+	if e := notifier.tasks[0]; e.TaskID != staleID || e.Status != string(store.TaskStatusReady) {
+		t.Errorf("task event = %+v, want task %s ready", e, staleID)
+	}
+}
+
 // TestReapStaleAssignedTasks_LeavesFreshAssignment verifies that a recently
 // assigned task (within AssignedTaskTimeout) is not disturbed by the reaper.
 func TestReapStaleAssignedTasks_LeavesFreshAssignment(t *testing.T) {

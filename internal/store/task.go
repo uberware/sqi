@@ -272,9 +272,21 @@ type TaskStore interface {
 	// assigned_worker_id and assigned_at so the scheduler can reassign them.
 	// Tasks in [TaskStatusRunning] are left untouched — only assignments that
 	// never started are reclaimed (e.g. the assignment message expired from the
-	// work stream before the worker pulled it). Returns the reclaimed tasks,
-	// each still carrying its pre-reset assigned_worker_id, so the caller can
-	// close their attempts and release usage-pool claims.
+	// work stream before the worker pulled it).
+	//
+	// Inside the same transaction it closes each reclaimed task's running
+	// attempts as [AttemptStatusFailed] and releases the claims of the task's
+	// closed attempts (invariant I3), so the caller never looks an attempt up
+	// afterwards: a task leased again after this call keeps its new attempt and
+	// claims. Returns exactly the tasks this call reclaimed (invariant I2), as
+	// they are after the reset: [TaskStatusReady] with an empty
+	// assigned_worker_id.
+	//
+	// Statement order (spec 4.1): the tasks are reset first, then their attempts
+	// are closed, then their claims released. A Postgres implementation must take
+	// its anchors (each candidate task's job row, sorted) BEFORE the UPDATE, by
+	// selecting the candidate IDs FOR UPDATE first; an anchor taken after the
+	// UPDATE ... RETURNING is the wrong order there.
 	ReclaimStaleAssignedTasks(ctx context.Context, cutoff time.Time) ([]Task, error)
 
 	// CountActiveTasksInQueue returns the number of tasks for the given queue

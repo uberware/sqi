@@ -96,18 +96,16 @@ SET status = 'ready', assigned_worker_id = NULL, assigned_at = NULL, updated_at 
 WHERE assigned_worker_id = ?
   AND status IN ('assigned', 'running')`
 
-	// Selects tasks stuck in 'assigned' past the cutoff so the reaper can return
-	// the affected rows to the caller. Only 'assigned' (never 'running') so an
-	// in-progress task is never disturbed by the timer.
-	sqlSelectStaleAssignedTasks = `
-SELECT ` + taskCols + `
-FROM   tasks
-WHERE  status = 'assigned' AND assigned_at IS NOT NULL AND assigned_at < ?`
-
+	// sqlReclaimStaleAssignedTasks returns tasks stuck in 'assigned' past the
+	// cutoff to ready, and RETURNING hands back exactly the rows this statement
+	// changed, as they are after the reset (invariant I2). Only 'assigned'
+	// (never 'running') so an in-progress task is never disturbed by the timer.
+	// Its binds are updated_at, then cutoff.
 	sqlReclaimStaleAssignedTasks = `
 UPDATE tasks
 SET    status = 'ready', assigned_worker_id = NULL, assigned_at = NULL, updated_at = ?, unschedulable_reason = ''
-WHERE  status = 'assigned' AND assigned_at IS NOT NULL AND assigned_at < ?`
+WHERE  status = 'assigned' AND assigned_at IS NOT NULL AND assigned_at < ?
+RETURNING ` + taskCols
 
 	// Counts tasks in 'assigned' or 'running' state for per-queue policy.
 	// Joins to jobs so we can filter by queue_id.
@@ -519,53 +517,52 @@ func (s *Store) ReclaimWorkerTasks(ctx context.Context, workerID string) (int, e
 
 // ReclaimStaleAssignedTasks implements [store.TaskStore].
 //
-// The SELECT and UPDATE run inside a single SQLite transaction so a concurrent
-// "running" status update cannot slip a task out of 'assigned' between the
-// observation and the reset; the UPDATE's status guard keeps the returned set
-// and the reclaimed set identical. Mirrors [Store.CancelJobExecution].
+// One transaction returns the stale assignments to ready, then closes each
+// reclaimed task's running attempts as failed and releases those attempts'
+// claims (invariant I3). The returned set is the UPDATE's RETURNING set, so it
+// is exactly the tasks this call reset (invariant I2); the scheduler never has
+// to look an attempt up after the fact, which is what let the old reaper close
+// the new attempt of a task that had been leased again in between.
+//
+// Statement order (spec 4.1): the tasks are reset first and only then are their
+// attempts closed and their claims released, the order CancelJobExecution uses.
+// On Postgres the UPDATE takes each task's row lock, so a LeaseTask holding one
+// of the tasks is waited for, and the attempt and claims it committed are seen
+// by the two statements after it. Closing attempts first would miss an attempt a
+// lease created in between.
+//
+// Anchors: none are taken, deliberately. H4c must take them BEFORE the UPDATE:
+// each candidate task's job row, in sorted order, which means selecting the
+// candidate IDs FOR UPDATE first and re-guarding the UPDATE by ID. An anchor
+// taken after the UPDATE ... RETURNING is the wrong order on Postgres: the
+// UPDATE has already locked task rows, and every job-level operation locks the
+// job row before its tasks, so the two orders can deadlock.
 func (s *Store) ReclaimStaleAssignedTasks(ctx context.Context, cutoff time.Time) ([]store.Task, error) {
-	cutoffText := timeToText(cutoff.UTC())
-
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
-		return nil, fmt.Errorf("sqlite: begin tx for reclaim stale assigned tasks: %w", err)
+		return nil, fmt.Errorf("sqlite: begin tx for reclaim stale assigned tasks: %w", mapErr(err))
 	}
-	defer func() { _ = tx.Rollback() }() //nolint:errcheck // rollback is best-effort after commit
+	defer func() { _ = tx.Rollback() }() //nolint:errcheck // rollback after commit is a no-op
 
-	// Read matching rows into a slice before the UPDATE so the cursor is closed
-	// by the time we write (single-connection pool).
-	stale, err := func() ([]store.Task, error) {
-		rows, queryErr := tx.QueryContext(ctx, sqlSelectStaleAssignedTasks, cutoffText)
-		if queryErr != nil {
-			return nil, fmt.Errorf("sqlite: select stale assigned tasks: %w", mapErr(queryErr))
-		}
-		defer rows.Close()
-
-		var tasks []store.Task
-		for rows.Next() {
-			t, scanErr := scanTask(rows)
-			if scanErr != nil {
-				return nil, scanErr
-			}
-			tasks = append(tasks, t)
-		}
-		return tasks, rows.Err()
-	}()
+	// Order (spec 4.1): the tasks, then each one's attempts and claims. Server
+	// time stamps updated_at, ended_at and released_at alike.
+	nowText := timeToText(time.Now().UTC())
+	reclaimed, err := queryTasksTx(ctx, tx, sqlReclaimStaleAssignedTasks, nowText, timeToText(cutoff.UTC()))
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("sqlite: reclaim stale assigned tasks: %w", err)
 	}
-
-	if len(stale) == 0 {
-		return nil, nil // nothing to reclaim; no write needed
+	if len(reclaimed) == 0 {
+		return nil, nil // nothing was stale; the deferred rollback ends the empty transaction
 	}
-
-	if _, err = tx.ExecContext(ctx, sqlReclaimStaleAssignedTasks, timeToText(time.Now().UTC()), cutoffText); err != nil {
-		return nil, fmt.Errorf("sqlite: reclaim stale assigned tasks: %w", mapErr(err))
+	for _, t := range reclaimed {
+		if err := closeTaskAttemptsTx(ctx, tx, t.ID, store.AttemptStatusFailed, "", nowText); err != nil {
+			return nil, err
+		}
 	}
-	if err = tx.Commit(); err != nil {
+	if err := tx.Commit(); err != nil {
 		return nil, fmt.Errorf("sqlite: commit reclaim stale assigned tasks: %w", mapErr(err))
 	}
-	return stale, nil
+	return reclaimed, nil
 }
 
 // ListReadyTasks implements [store.TaskStore].

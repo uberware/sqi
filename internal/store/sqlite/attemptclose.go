@@ -195,14 +195,35 @@ SET    status = 'canceled', updated_at = ?, unschedulable_reason = '',
        failure_reason = CASE WHEN failure_reason = '' THEN ? ELSE failure_reason END
 WHERE  id = ? AND status IN ('pending', 'ready', 'assigned', 'running')`
 
+	// sqlCloseTaskRunningAttempts closes a task's running attempts with the
+	// given status. An empty message leaves the stored one, so a close that has
+	// nothing to say never blanks what the attempt already recorded.
 	sqlCloseTaskRunningAttempts = `
-UPDATE task_attempts SET status = 'canceled', ended_at = ? WHERE task_id = ? AND status = 'running'`
+UPDATE task_attempts SET status = ?, ended_at = ?, message = COALESCE(NULLIF(?, ''), message)
+WHERE  task_id = ? AND status = 'running'`
 
 	sqlReleaseClosedTaskClaims = `
 UPDATE usage_claims SET released_at = ?
 WHERE  released_at IS NULL
   AND  task_attempt_id IN (SELECT id FROM task_attempts WHERE task_id = ? AND status != 'running')`
 )
+
+// closeTaskAttemptsTx is invariant I3 for one task inside an open transaction:
+// it closes the task's running attempts with status and message, then releases
+// the claims of every attempt of the task that is no longer running. The
+// release is by attempt status, so a claim is never released while its attempt
+// is open, and it also repairs a claim an earlier close left on a finished
+// attempt. The task row must already have left assigned/running, so a lease
+// cannot be adding an attempt behind this close.
+func closeTaskAttemptsTx(ctx context.Context, tx *sql.Tx, taskID string, status store.AttemptStatus, message, nowText string) error {
+	if _, err := tx.ExecContext(ctx, sqlCloseTaskRunningAttempts, string(status), nowText, message, taskID); err != nil {
+		return fmt.Errorf("sqlite: close attempts of task %s: %w", taskID, mapErr(err))
+	}
+	if _, err := tx.ExecContext(ctx, sqlReleaseClosedTaskClaims, nowText, taskID); err != nil {
+		return fmt.Errorf("sqlite: release claims of task %s: %w", taskID, mapErr(err))
+	}
+	return nil
+}
 
 // CancelJobExecution implements [store.TaskStore].
 //
@@ -287,11 +308,8 @@ func (s *Store) CancelTaskExecution(ctx context.Context, taskID, reason string, 
 		// leaves the attempts and claims for whatever closed the task.
 		return prior, false, nil
 	}
-	if _, err := tx.ExecContext(ctx, sqlCloseTaskRunningAttempts, nowText, taskID); err != nil {
-		return store.Task{}, false, fmt.Errorf("sqlite: close attempts of task %s: %w", taskID, mapErr(err))
-	}
-	if _, err := tx.ExecContext(ctx, sqlReleaseClosedTaskClaims, nowText, taskID); err != nil {
-		return store.Task{}, false, fmt.Errorf("sqlite: release claims of task %s: %w", taskID, mapErr(err))
+	if err := closeTaskAttemptsTx(ctx, tx, taskID, store.AttemptStatusCanceled, "", nowText); err != nil {
+		return store.Task{}, false, err
 	}
 	if err := tx.Commit(); err != nil {
 		return store.Task{}, false, fmt.Errorf("sqlite: commit cancel task execution: %w", mapErr(err))

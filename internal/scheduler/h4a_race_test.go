@@ -885,3 +885,79 @@ func TestTryLeaseTask_NonLeasedOutcomesWriteNothing(t *testing.T) {
 		})
 	}
 }
+
+// ── F5: the reaper must never close a re-leased attempt ─────────────────────
+
+// leaseAfterReapStore fires its hook right after the reclaim has committed,
+// which is where the old reaper went on to look the task's latest attempt up.
+type leaseAfterReapStore struct {
+	store.Store
+
+	hook *once
+}
+
+func (s *leaseAfterReapStore) ReclaimStaleAssignedTasks(ctx context.Context, cutoff time.Time) ([]store.Task, error) {
+	out, err := s.Store.ReclaimStaleAssignedTasks(ctx, cutoff)
+	s.hook.fire()
+	return out, err
+}
+
+// TestH4a_F5_ReaperDoesNotCloseReleasedAttempt re-leases a task in the window
+// between the reaper's reclaim and what the reaper does next. The old reaper
+// then looked up the task's latest attempt, found the one the new lease had
+// just written, and closed it as failed and released its claims, while the
+// task kept running on the new worker. The store now closes exactly the
+// attempts of the tasks it reclaimed, inside the reclaim, so the new lease is
+// out of reach. The reclaimed assignment's own attempt and claim are released.
+func TestH4a_F5_ReaperDoesNotCloseReleasedAttempt(t *testing.T) {
+	for name, st := range raceBackends(t) {
+		t.Run(name, func(t *testing.T) {
+			_, _, task, stale := seedStatusFixture(t, st, store.TaskStatusAssigned)
+			if err := st.AssignTask(t.Context(), task.ID, "w-old", time.Now().Add(-time.Hour)); err != nil { // stale assigned_at
+				t.Fatalf("AssignTask: %v", err)
+			}
+			pool, err := st.CreateUsagePool(t.Context(), store.UsagePool{ID: uuid.NewString(), Name: "lic", MaxConcurrent: 2})
+			if err != nil {
+				t.Fatalf("CreateUsagePool: %v", err)
+			}
+			if _, err := st.CreateClaim(t.Context(), store.UsageClaim{ID: uuid.NewString(), PoolID: pool.ID, TaskAttemptID: stale.ID}); err != nil {
+				t.Fatalf("CreateClaim: %v", err)
+			}
+			var fresh store.TaskAttempt
+			wrapped := &leaseAfterReapStore{Store: st, hook: &once{fn: func() {
+				res, err := st.LeaseTask(context.Background(), store.LeaseRequest{
+					TaskID: task.ID, WorkerID: "w-new", AttemptID: uuid.NewString(), Now: time.Now().UTC(),
+					Claims: []store.UsagePoolClaim{{ClaimID: uuid.NewString(), PoolID: pool.ID, PoolName: pool.Name, MaxConcurrent: pool.MaxConcurrent}},
+				})
+				if err != nil || res.Outcome != store.LeaseLeased {
+					t.Errorf("re-lease in hook = (%+v, %v), want leased", res, err)
+					return
+				}
+				fresh = res.Attempt
+			}}}
+			s := newMetricsScheduler(wrapped, &recordBus{}, "farm-1")
+			s.cfg.AssignedTaskTimeout = time.Minute
+
+			s.reapStaleAssignedTasks(t.Context())
+
+			if fresh.ID == "" {
+				t.Fatal("the hook did not re-lease the task")
+			}
+			if a := mustAttemptOf(t, st, fresh.ID); a.Status != store.AttemptStatusRunning || a.EndedAt != nil {
+				t.Fatalf("re-leased attempt = %q (ended %v), want running and open (F5)", a.Status, a.EndedAt)
+			}
+			if a := mustAttemptOf(t, st, stale.ID); a.Status != store.AttemptStatusFailed {
+				t.Fatalf("reaped attempt = %q, want failed", a.Status)
+			}
+			if got := mustTaskOf(t, st, task.ID); got.Status != store.TaskStatusAssigned || got.AssignedWorkerID != "w-new" {
+				t.Fatalf("task = %q on %q, want assigned to w-new", got.Status, got.AssignedWorkerID)
+			}
+			if n := activeClaimsOf(t, st, pool.ID); n != 1 {
+				t.Fatalf("active claims = %d, want 1 (the re-lease's own; the reaped attempt's is released)", n)
+			}
+			if v := claimViolations(t, st); len(v) != 0 {
+				t.Fatalf("I3 violations: %v", v)
+			}
+		})
+	}
+}

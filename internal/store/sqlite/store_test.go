@@ -1364,10 +1364,11 @@ func TestTask_ReclaimStaleAssignedTasks(t *testing.T) {
 	if reclaimed[0].ID != "t1" {
 		t.Errorf("reclaimed task: got %q, want t1", reclaimed[0].ID)
 	}
-	// The returned snapshot must retain the pre-reset worker so the caller can
-	// close attempts and release usage claims.
-	if reclaimed[0].AssignedWorkerID != "w1" {
-		t.Errorf("reclaimed AssignedWorkerID: got %q, want w1", reclaimed[0].AssignedWorkerID)
+	// The returned rows are the rows the UPDATE left (RETURNING), so the reset
+	// worker is already gone: the attempts and claims were closed inside the call.
+	if reclaimed[0].AssignedWorkerID != "" || reclaimed[0].Status != store.TaskStatusReady {
+		t.Errorf("reclaimed row: got status %q worker %q, want the post-reset row (ready, no worker)",
+			reclaimed[0].Status, reclaimed[0].AssignedWorkerID)
 	}
 
 	t1, err := s.GetTask(ctx, "t1")

@@ -550,37 +550,6 @@ func (s *Scheduler) buildUsageContext(
 
 // buildAssignPayload is implemented in assign.go.
 
-// ── Usage release ────────────────────────────────────────────────────
-
-// ReleaseTaskUsage releases all active usage-pool claims for the given task
-// attempt. It is called when a task attempt transitions to a terminal state
-// (succeeded, failed, or canceled), freeing the usage pool slots for other tasks.
-//
-// This method is safe to call with an empty attemptID — it returns nil without
-// querying the store. It is idempotent: releasing an already-released claim
-// is a no-op in the underlying SQL.
-//
-// A worker's terminal report no longer goes through here: it releases the
-// attempt's claims inside [store.TaskStore.CompleteTaskAttempt] (and
-// RecordTaskFailure), in the same transaction that closes the attempt.
-func (s *Scheduler) ReleaseTaskUsage(ctx context.Context, attemptID string) error {
-	if attemptID == "" {
-		return nil
-	}
-	n, err := s.store.ReleaseAttemptClaims(ctx, attemptID, time.Now().UTC())
-	if err != nil {
-		return fmt.Errorf("release usage claims for attempt %s: %w", attemptID, err)
-	}
-	if n > 0 {
-		s.logger.DebugContext(
-			ctx, "scheduler: released usage-pool claims",
-			slog.String("attempt_id", attemptID),
-			slog.Int("count", n),
-		)
-	}
-	return nil
-}
-
 // ── Worker NATS consumer ─────────────────────────────────────────────
 
 // handleWorkerMessage is the JetStream message handler for the worker
@@ -1106,8 +1075,11 @@ func (s *Scheduler) demoteStalledJobs(ctx context.Context) {
 // not key on worker liveness: a task can be lost in 'assigned' on a worker that
 // is still happily heartbeating (e.g. the assignment message expired from the
 // work stream before the worker had a free slot to pull it), and nothing else
-// in the system would ever recover it. For each reclaimed task it closes the
-// provisional attempt and releases any usage-pool claims it held.
+// in the system would ever recover it. The store closes each reclaimed task's
+// attempt and releases its usage-pool claims inside the same transaction that
+// returns the task to ready (invariant I3), and reports exactly the tasks it
+// reclaimed, so a task that is leased again right afterwards keeps its new
+// attempt and claims.
 func (s *Scheduler) reapStaleAssignedTasks(ctx context.Context) {
 	cutoff := time.Now().UTC().Add(-s.cfg.AssignedTaskTimeout)
 	reclaimed, err := s.store.ReclaimStaleAssignedTasks(ctx, cutoff)
@@ -1129,7 +1101,6 @@ func (s *Scheduler) reapStaleAssignedTasks(ctx context.Context) {
 
 	now := time.Now().UTC()
 	for _, task := range reclaimed {
-		s.cleanupReapedAttempt(ctx, task, now)
 		s.notifier.NotifyTask(ws.TaskEvent{
 			JobID:     task.JobID,
 			TaskID:    task.ID,
@@ -1138,48 +1109,6 @@ func (s *Scheduler) reapStaleAssignedTasks(ctx context.Context) {
 			UpdatedAt: now,
 		})
 		s.notifyQueueForJob(ctx, task.JobID)
-	}
-}
-
-// cleanupReapedAttempt closes the provisional attempt for a reaped task and
-// releases its usage-pool claims. Both steps are best-effort: the task is
-// already back in the ready queue, so a cleanup failure leaks an attempt record
-// or pool slot but never blocks rescheduling.
-func (s *Scheduler) cleanupReapedAttempt(ctx context.Context, task store.Task, now time.Time) {
-	attempt, err := s.store.LatestTaskAttempt(ctx, task.ID)
-	if errors.Is(err, store.ErrNotFound) {
-		return
-	}
-	if err != nil {
-		s.logger.WarnContext(
-			ctx, "scheduler: reap cleanup: latest attempt lookup failed",
-			slog.String("task_id", task.ID),
-			slog.Any("error", err),
-		)
-		return
-	}
-	// Only the open provisional attempt needs closing; a terminal attempt is
-	// already accounted for.
-	if attempt.Status == store.AttemptStatusRunning {
-		closed := attempt
-		closed.Status = store.AttemptStatusFailed
-		closed.EndedAt = &now
-		if _, err := s.store.UpdateTaskAttempt(ctx, closed); err != nil {
-			s.logger.WarnContext(
-				ctx, "scheduler: reap cleanup: close attempt failed",
-				slog.String("task_id", task.ID),
-				slog.String("attempt_id", attempt.ID),
-				slog.Any("error", err),
-			)
-		}
-	}
-	if err := s.ReleaseTaskUsage(ctx, attempt.ID); err != nil {
-		s.logger.WarnContext(
-			ctx, "scheduler: reap cleanup: release usage failed",
-			slog.String("task_id", task.ID),
-			slog.String("attempt_id", attempt.ID),
-			slog.Any("error", err),
-		)
 	}
 }
 

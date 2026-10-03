@@ -237,14 +237,19 @@ func (s *Store) ReclaimWorkerTasks(_ context.Context, workerID string) (int, err
 }
 
 // ReclaimStaleAssignedTasks resets tasks stuck in [store.TaskStatusAssigned]
-// with an AssignedAt older than cutoff back to [store.TaskStatusReady] and
-// returns the reclaimed tasks (carrying their pre-reset assigned_worker_id).
+// with an AssignedAt older than cutoff back to [store.TaskStatusReady], closes
+// each reclaimed task's running attempts as failed and releases the claims of
+// its closed attempts, and returns the reclaimed tasks as they are after the
+// reset (assigned_worker_id empty), matching the SQLite store's RETURNING.
 func (s *Store) ReclaimStaleAssignedTasks(_ context.Context, cutoff time.Time) ([]store.Task, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	now := time.Now()
-	var reclaimed []store.Task
+	// Order mirrors SQLite's (spec 4.1): the tasks, then their attempts, then the
+	// claims. The store lock stands in for the row locks.
+	now := time.Now().UTC()
+	reclaimed := make(map[string]bool)
+	var out []store.Task
 	for id, task := range s.tasks {
 		if task.Status != store.TaskStatusAssigned {
 			continue
@@ -252,15 +257,22 @@ func (s *Store) ReclaimStaleAssignedTasks(_ context.Context, cutoff time.Time) (
 		if task.AssignedAt == nil || !task.AssignedAt.Before(cutoff) {
 			continue
 		}
-		reclaimed = append(reclaimed, task) // snapshot with assigned_worker_id intact
 		task.Status = store.TaskStatusReady
 		task.AssignedWorkerID = ""
 		task.AssignedAt = nil
 		task.UnschedulableReason = ""
 		task.UpdatedAt = now
 		s.tasks[id] = task
+		reclaimed[id] = true
+		row := task
+		row.Parameters = copyMap(task.Parameters)
+		out = append(out, row)
 	}
-	return reclaimed, nil
+	if len(out) == 0 {
+		return nil, nil
+	}
+	s.closeAttemptsAndReleaseClaimsLocked(func(taskID string) bool { return reclaimed[taskID] }, store.AttemptStatusFailed, now)
+	return out, nil
 }
 
 // ListReadyTasks returns up to limit tasks in [store.TaskStatusReady] that

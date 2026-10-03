@@ -123,7 +123,7 @@ func (s *Store) CancelJobExecution(_ context.Context, jobID, reason string, now 
 		}
 		s.cancelTaskRowLocked(id, reason, now, true)
 	}
-	s.closeAttemptsAndReleaseClaimsLocked(func(taskID string) bool { return s.tasks[taskID].JobID == jobID }, now)
+	s.closeAttemptsAndReleaseClaimsLocked(func(taskID string) bool { return s.tasks[taskID].JobID == jobID }, store.AttemptStatusCanceled, now)
 	return active, nil
 }
 
@@ -148,7 +148,7 @@ func (s *Store) CancelTaskExecution(_ context.Context, taskID, reason string, no
 	// Same order as the job cancel: the task, then its attempt, then the claims.
 	now = now.UTC()
 	s.cancelTaskRowLocked(taskID, reason, now, false)
-	s.closeAttemptsAndReleaseClaimsLocked(func(id string) bool { return id == taskID }, now)
+	s.closeAttemptsAndReleaseClaimsLocked(func(id string) bool { return id == taskID }, store.AttemptStatusCanceled, now)
 	return prior, true, nil
 }
 
@@ -168,18 +168,18 @@ func (s *Store) cancelTaskRowLocked(taskID, reason string, now time.Time, clearA
 	s.tasks[taskID] = t
 }
 
-// closeAttemptsAndReleaseClaimsLocked is invariant I3 for a cancel: it closes
-// every running attempt whose task matches, as canceled and ended at now, and
+// closeAttemptsAndReleaseClaimsLocked is invariant I3 for a cancel or a reap: it
+// closes every running attempt whose task matches with status, ended at now, and
 // then releases the active claims of every matching attempt that is no longer
 // running. The release is by attempt status, as SQLite's is, so a claim is never
 // released while its attempt is open. Caller holds s.mu.
-func (s *Store) closeAttemptsAndReleaseClaimsLocked(matches func(taskID string) bool, now time.Time) {
+func (s *Store) closeAttemptsAndReleaseClaimsLocked(matches func(taskID string) bool, status store.AttemptStatus, now time.Time) {
 	for id, a := range s.taskAttempts {
 		if !matches(a.TaskID) || a.Status != store.AttemptStatusRunning {
 			continue
 		}
 		ended := now
-		a.Status, a.EndedAt = store.AttemptStatusCanceled, &ended
+		a.Status, a.EndedAt = status, &ended
 		s.taskAttempts[id] = a
 	}
 	for id, a := range s.taskAttempts {
