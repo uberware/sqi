@@ -240,15 +240,31 @@ func (s *Store) offlineWorkerLocked(id string, now time.Time) []store.Task {
 	w.Status, w.UpdatedAt = store.WorkerStatusOffline, now
 	s.workers[id] = w
 
+	return s.reclaimToReadyLocked(func(t store.Task) bool {
+		return t.AssignedWorkerID == id && (t.Status == store.TaskStatusAssigned || t.Status == store.TaskStatusRunning)
+	}, store.FailureReasonWorkerOffline, now)
+}
+
+// reclaimToReadyLocked is the shared reclaim block of the reaper and the offline
+// transitions, the fake's counterpart of SQLite's one reset statement
+// (sqlReclaimStaleAssignedTasks / sqlReclaimWorkerTasks, both RETURNING). It
+// returns every task match accepts to [store.TaskStatusReady] with its worker
+// and assignment time cleared and its unschedulable reason emptied, then closes
+// those tasks' running attempts as failed with message and releases the claims of
+// their closed attempts (invariant I3). It returns the reclaimed tasks as they
+// are after the reset, with Parameters copied, as RETURNING does, or nil when
+// nothing matched. The tasks come first, then the attempts, then the claims
+// (spec 4.1). now is stamped as given; callers pass UTC. Caller holds s.mu.
+func (s *Store) reclaimToReadyLocked(match func(store.Task) bool, message string, now time.Time) []store.Task {
 	reclaimed := make(map[string]bool)
 	var out []store.Task
-	for taskID, t := range s.tasks {
-		if t.AssignedWorkerID != id || (t.Status != store.TaskStatusAssigned && t.Status != store.TaskStatusRunning) {
+	for id, t := range s.tasks {
+		if !match(t) {
 			continue
 		}
 		t.Status, t.AssignedWorkerID, t.AssignedAt, t.UnschedulableReason, t.UpdatedAt = store.TaskStatusReady, "", nil, "", now
-		s.tasks[taskID] = t
-		reclaimed[taskID] = true
+		s.tasks[id] = t
+		reclaimed[id] = true
 		row := t
 		row.Parameters = copyMap(t.Parameters)
 		out = append(out, row)
@@ -256,6 +272,6 @@ func (s *Store) offlineWorkerLocked(id string, now time.Time) []store.Task {
 	if len(out) == 0 {
 		return nil
 	}
-	s.closeAttemptsAndReleaseClaimsLocked(func(taskID string) bool { return reclaimed[taskID] }, store.AttemptStatusFailed, store.FailureReasonWorkerOffline, now)
+	s.closeAttemptsAndReleaseClaimsLocked(func(taskID string) bool { return reclaimed[taskID] }, store.AttemptStatusFailed, message, now)
 	return out
 }

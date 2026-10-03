@@ -219,8 +219,12 @@ WHERE  released_at IS NULL
 // Callers run it AFTER writing the task row in the same transaction (a cancel to
 // canceled, a reap or an offline reclaim to ready), and that write is the
 // guarantee: it holds the task row until commit, so no lease can add an attempt
-// to the task behind this close. A lease that committed before the write is
-// waited for and its attempt is closed here; one that starts after it blocks
+// to the task behind this close. A lease that has already committed needs no
+// waiting: its attempt and claims are visible to the statements here. A lease
+// still in flight is waited for only when the write's predicate matches the
+// row's pre-lease version: a cancel's does (it matches ready), while the reaper's
+// and the offline reclaim's do not (they match assigned/running), so those skip a
+// row a lease is moving out of ready. A lease that starts after the write blocks
 // until commit and then opens a new attempt of its own, which this close never
 // sees.
 func closeTaskAttemptsTx(ctx context.Context, tx *sql.Tx, taskID string, status store.AttemptStatus, message, nowText string) error {
@@ -378,10 +382,17 @@ func (s *Store) OfflineWorker(ctx context.Context, id string, now time.Time) ([]
 // Anchors and statement order (spec 4.1): the worker row first, then each job row
 // the worker's tasks belong to, sorted by id; the statements run worker, tasks,
 // then attempts and claims. The tasks are reclaimed before their attempts are
-// closed so that, on Postgres, a LeaseTask or a terminal report holding one of
-// them is waited for by the reclaim's UPDATE, and the attempt and claims it
-// committed are seen by the statements after it. Closing attempts first would
-// miss an attempt added in between.
+// closed so that, on Postgres, a running or terminal report holding the row of an
+// already assigned/running task is waited for by the reclaim's UPDATE (which then
+// re-checks its predicate against the committed row), and the attempt and claims
+// that report committed are seen by the statements after it. Closing attempts
+// first would let a report move the task (assigned to running, say) after its
+// attempt was already closed as failed. A LeaseTask still in flight is NOT waited
+// for: it is moving a ready row, which the reclaim's predicate does not match in
+// the version its snapshot sees, so the UPDATE skips that row. The gap that
+// leaves is the one described next (LeaseTask does not anchor the worker); until
+// H4c closes it, the stale-assignment reaper recovers a task a lease hands a
+// worker that has already gone offline.
 //
 // What H4c must do on Postgres. The marking UPDATE takes the worker row lock
 // itself, so the worker anchor is already first. The in-flight job IDs are read

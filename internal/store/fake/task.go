@@ -251,32 +251,9 @@ func (s *Store) ReclaimStaleAssignedTasks(_ context.Context, cutoff time.Time) (
 
 	// Order mirrors SQLite's (spec 4.1): the tasks, then their attempts, then the
 	// claims. The store lock stands in for the row locks.
-	now := time.Now().UTC()
-	reclaimed := make(map[string]bool)
-	var out []store.Task
-	for id, task := range s.tasks {
-		if task.Status != store.TaskStatusAssigned {
-			continue
-		}
-		if task.AssignedAt == nil || !task.AssignedAt.Before(cutoff) {
-			continue
-		}
-		task.Status = store.TaskStatusReady
-		task.AssignedWorkerID = ""
-		task.AssignedAt = nil
-		task.UnschedulableReason = ""
-		task.UpdatedAt = now
-		s.tasks[id] = task
-		reclaimed[id] = true
-		row := task
-		row.Parameters = copyMap(task.Parameters)
-		out = append(out, row)
-	}
-	if len(out) == 0 {
-		return nil, nil
-	}
-	s.closeAttemptsAndReleaseClaimsLocked(func(taskID string) bool { return reclaimed[taskID] }, store.AttemptStatusFailed, "", now)
-	return out, nil
+	return s.reclaimToReadyLocked(func(t store.Task) bool {
+		return t.Status == store.TaskStatusAssigned && t.AssignedAt != nil && t.AssignedAt.Before(cutoff)
+	}, "", time.Now().UTC()), nil
 }
 
 // ListReadyTasks returns up to limit tasks in [store.TaskStatusReady] that

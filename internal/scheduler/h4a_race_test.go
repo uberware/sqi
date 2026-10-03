@@ -972,11 +972,15 @@ type heartbeatDuringSweepStore struct {
 	store.Store
 
 	hook *once
+	// listed holds the candidates the sweep was handed, so a test can tell that
+	// the worker was one of them when the hook ran.
+	listed []store.Worker
 }
 
 // ListStaleWorkers is called by the sweep before and after the fix.
 func (s *heartbeatDuringSweepStore) ListStaleWorkers(ctx context.Context, before time.Time) ([]store.Worker, error) {
 	out, err := s.Store.ListStaleWorkers(ctx, before)
+	s.listed = out
 	s.hook.fire()
 	return out, err
 }
@@ -992,7 +996,11 @@ func TestH4a_F1_HeartbeatDuringSweepKeepsWorkerOnline(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			workerID, taskID, attemptID := seedStaleWorkerWithTask(t, st, 10*time.Minute)
 			pool := seedPoolClaim(t, st, attemptID)
+			// fired proves the heartbeat landed inside the race window: every
+			// assertion below also holds if the worker was never a candidate.
+			fired := false
 			wrapped := &heartbeatDuringSweepStore{Store: st, hook: &once{fn: func() {
+				fired = true
 				if err := st.UpdateWorkerHeartbeat(context.Background(), workerID, time.Now().UTC()); err != nil {
 					t.Errorf("heartbeat in hook: %v", err)
 				}
@@ -1002,6 +1010,12 @@ func TestH4a_F1_HeartbeatDuringSweepKeepsWorkerOnline(t *testing.T) {
 
 			s.sweepStaleWorkers(t.Context())
 
+			if !fired {
+				t.Fatal("the heartbeat hook never ran: the sweep did not list stale workers, so this test proves nothing")
+			}
+			if len(wrapped.listed) != 1 || wrapped.listed[0].ID != workerID {
+				t.Fatalf("sweep candidates = %+v, want the stale worker %q (the heartbeat must land after it was listed)", wrapped.listed, workerID)
+			}
 			w, err := st.GetWorker(t.Context(), workerID)
 			if err != nil {
 				t.Fatalf("GetWorker: %v", err)

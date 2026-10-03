@@ -1165,7 +1165,7 @@ func (s *Scheduler) sweepStaleWorkers(ctx context.Context) {
 		}
 		if !marked {
 			s.logger.DebugContext(
-				ctx, "scheduler: stale worker's heartbeat arrived first, left online",
+				ctx, "scheduler: worker no longer stale or online, left as is",
 				slog.String("worker_id", w.ID),
 			)
 			continue
