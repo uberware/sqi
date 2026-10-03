@@ -6,6 +6,7 @@ import { useSearchParam } from '@/hooks/useSearchParam'
 import { filterBySearch } from '@/utils/filterBySearch'
 import { useProducts } from '@/api/queries'
 import ReadmeButton from '@/components/ReadmeButton'
+import { productLabel } from '@/lib/productForm'
 import type { Product, ProductSource } from '@/api/types'
 import styles from './ProductPicker.module.css'
 
@@ -17,11 +18,17 @@ const GROUPS: { source: ProductSource; label: string }[] = [
   { source: 'installed', label: 'Installed' },
 ]
 
+// A group is ordered by what its cards show: the API sorts by name, which reads
+// as no order at all once titles are shown.
+function byLabel(a: Product, b: Product): number {
+  return productLabel(a).localeCompare(productLabel(b), undefined, { sensitivity: 'base' })
+}
+
 function ProductCard({ product }: { product: Product }) {
   return (
     <div className={styles.card}>
       <Link className={styles.cardLink} to={`/submit/product/${encodeURIComponent(product.name)}`}>
-        <strong>{product.title || product.name}</strong>
+        <strong>{productLabel(product)}</strong>
         {product.description && <p>{product.description}</p>}
       </Link>
       <ReadmeButton
@@ -61,7 +68,7 @@ export default function ProductPicker() {
           <p>No products match “{search}”.</p>
         )}
         {GROUPS.map(({ source, label }) => {
-          const inGroup = filtered.filter((p) => p.source === source)
+          const inGroup = filtered.filter((p) => p.source === source).sort(byLabel)
           if (inGroup.length === 0) return null
           return (
             <section className={styles.group} key={source}>

@@ -1,0 +1,80 @@
+preset: command-sequence-powershell
+case:   default
+params:
+  Command=sqi-stub-command "$env:SQI_FRAME" "$env:SQI_FRAME_START" "$env:SQI_FRAME_END" "$env:SQI_FRAMES"
+  Frames=1-3
+  FramesPerTask=1
+
+step "Run" — 3 tasks
+
+task 1/3  name="Run[Frame=1-1,Frame.End=1,Frame.Start=1]"
+  task params:
+    Frame=1-1
+    Frame.End=1
+    Frame.Start=1
+  command: powershell
+  args:
+    [0]  -NoProfile
+    [1]  -NonInteractive
+    [2]  -ExecutionPolicy
+    [3]  Bypass
+    [4]  -File
+    [5]  <WORKDIR>
+  embedded file "command" (command.ps1):
+    ﻿$env:SQI_FRAME = '1'
+    $env:SQI_FRAME_START = '1'
+    $env:SQI_FRAME_END = '1'
+    $env:SQI_FRAMES = '1-1'
+    sqi-stub-command "$env:SQI_FRAME" "$env:SQI_FRAME_START" "$env:SQI_FRAME_END" "$env:SQI_FRAMES"
+    $sqiOk = $?
+    if ($LASTEXITCODE) { exit $LASTEXITCODE }
+    if (-not $sqiOk -and -not ($Error.Count -and $Error[0].FullyQualifiedErrorId -like 'NativeCommandError*')) { exit 1 }
+    exit 0
+
+task 2/3  name="Run[Frame=2-2,Frame.End=2,Frame.Start=2]"
+  task params:
+    Frame=2-2
+    Frame.End=2
+    Frame.Start=2
+  command: powershell
+  args:
+    [0]  -NoProfile
+    [1]  -NonInteractive
+    [2]  -ExecutionPolicy
+    [3]  Bypass
+    [4]  -File
+    [5]  <WORKDIR>
+  embedded file "command" (command.ps1):
+    ﻿$env:SQI_FRAME = '2'
+    $env:SQI_FRAME_START = '2'
+    $env:SQI_FRAME_END = '2'
+    $env:SQI_FRAMES = '2-2'
+    sqi-stub-command "$env:SQI_FRAME" "$env:SQI_FRAME_START" "$env:SQI_FRAME_END" "$env:SQI_FRAMES"
+    $sqiOk = $?
+    if ($LASTEXITCODE) { exit $LASTEXITCODE }
+    if (-not $sqiOk -and -not ($Error.Count -and $Error[0].FullyQualifiedErrorId -like 'NativeCommandError*')) { exit 1 }
+    exit 0
+
+task 3/3  name="Run[Frame=3-3,Frame.End=3,Frame.Start=3]"
+  task params:
+    Frame=3-3
+    Frame.End=3
+    Frame.Start=3
+  command: powershell
+  args:
+    [0]  -NoProfile
+    [1]  -NonInteractive
+    [2]  -ExecutionPolicy
+    [3]  Bypass
+    [4]  -File
+    [5]  <WORKDIR>
+  embedded file "command" (command.ps1):
+    ﻿$env:SQI_FRAME = '3'
+    $env:SQI_FRAME_START = '3'
+    $env:SQI_FRAME_END = '3'
+    $env:SQI_FRAMES = '3-3'
+    sqi-stub-command "$env:SQI_FRAME" "$env:SQI_FRAME_START" "$env:SQI_FRAME_END" "$env:SQI_FRAMES"
+    $sqiOk = $?
+    if ($LASTEXITCODE) { exit $LASTEXITCODE }
+    if (-not $sqiOk -and -not ($Error.Count -and $Error[0].FullyQualifiedErrorId -like 'NativeCommandError*')) { exit 1 }
+    exit 0

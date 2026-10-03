@@ -24,8 +24,11 @@ func TestBuiltins_LoadValidateAndStamp(t *testing.T) {
 			t.Errorf("%s: template invalid: %v", p.Name, err)
 		}
 	}
-	// Sorted by name and exactly the expected four.
-	want := []string{"container", "python", "script", "script-powershell"}
+	// Sorted by name and exactly the expected set.
+	want := []string{
+		"command-sequence", "command-sequence-powershell", "container",
+		"python", "python-sequence", "script", "script-powershell",
+	}
 	if strings.Join(names, ",") != strings.Join(want, ",") {
 		t.Fatalf("builtins = %v, want %v", names, want)
 	}
@@ -176,4 +179,39 @@ func declaresOSFamily(step openjd.StepTemplate) bool {
 		}
 	}
 	return false
+}
+
+// command-sequence-powershell's command.ps1 ends with the exit-status trailer
+// script-powershell's does, and TestScriptPowerShell_ExitStatus exercises only
+// script-powershell's. OpenJD has no include, so this keeps the copy honest: a
+// fix to one trailer that misses the other fails here.
+func TestBuiltins_PowerShellExitTrailersMatch(t *testing.T) {
+	trailer := func(name string) string {
+		t.Helper()
+		for _, p := range product.Builtins() {
+			if p.Name != name {
+				continue
+			}
+			tmpl, err := openjd.Parse([]byte(p.Template), openjd.FormatYAML)
+			if err != nil {
+				t.Fatalf("%s: openjd.Parse: %v", name, err)
+			}
+			for _, step := range tmpl.Steps {
+				if step.Script == nil {
+					continue
+				}
+				for _, f := range step.Script.EmbeddedFiles {
+					if _, after, ok := strings.Cut(f.Data, "{{Param.Command}}"); ok {
+						return after
+					}
+				}
+			}
+			t.Fatalf("%s: no embedded file carries {{Param.Command}}", name)
+		}
+		t.Fatalf("built-in %s not found", name)
+		return ""
+	}
+	if got, want := trailer("command-sequence-powershell"), trailer("script-powershell"); got != want {
+		t.Fatalf("command-sequence-powershell trailer = %q, want script-powershell's %q", got, want)
+	}
 }

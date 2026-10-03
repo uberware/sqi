@@ -20,6 +20,6 @@ cases:
       SceneFile: /mnt/show/seq010/shot0010/scene/shot0010_fx_v004.hip
       Frames: "1-60:2"
       RopPath: /out/mantra_beauty
-    expect_tasks: 3
+    expect_tasks: 30
     expect_invocations:
-      hython: 3
+      hython: 30

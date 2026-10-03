@@ -341,7 +341,11 @@ make test-service-windows
 It must run from an **elevated** shell on a real Windows host, and it is not
 sandboxed: it **really installs, starts, stops and deletes services** named
 `sqi-test-*`, and it creates and deletes a throwaway local account
-(`sqisvc-*`) and its profile. It builds the binaries into
+(`sqisvc-*`) and its profile. The profile outlives the run: Windows loads it to
+start the `--user` service and keeps it loaded until reboot (the User Profile
+Service holds its hives open after the service is stopped and deleted), so
+`UserAccount` notes it and leaves it, and the first run after a reboot deletes
+every such profile whose account is gone. It builds the binaries into
 `%ProgramData%\sqi winservice bin NNN` and works in `%ProgramData%\sqi winservice NNN`
 directories, and it writes logs to `%ProgramData%\sqi\logs\sqi-test-*.log`. Six
 tests, `TestWinService_ServerLifecycle`, `InstallRefusesExisting`,
@@ -383,8 +387,8 @@ sc.exe delete $name
 icacls "$env:ProgramData\sqi\logs" /remove:g sqisvc-xxxxxxxx
 # secpol.msc -> Local Policies -> User Rights Assignment -> Log on as a service:
 #   remove sqisvc-xxxxxxxx
-Get-CimInstance Win32_UserProfile | Where-Object LocalPath -like '*\sqisvc-*' | Remove-CimInstance
 net user sqisvc-xxxxxxxx /delete
+# Its profile cannot be deleted until a reboot; the next suite run removes it.
 
 # Leftover files
 Remove-Item -Recurse -Force "$env:ProgramData\sqi winservice*"
@@ -503,13 +507,15 @@ go test ./test/integration/ -run TestPresetTier1Argv/maya-layer-render -v
 
 `make test-preset-harness` needs ffmpeg on `PATH` — the registry's `tier2`
 blocks require the real-ffmpeg cases to run rather than skip, and a skip on a
-required platform is a registry failure. Two presets are gated to a single
-platform each (`script` to POSIX, `script-powershell` to Windows) and one more
-(`ffmpeg-segment-transcode-powershell`) only executes on Windows; running the
-harness on Windows is the only place any of the three actually run — a
-Linux-only run passing proves nothing about them, which is why CI runs the
-whole harness again natively on Windows (`preset-harness-windows`) rather than
-trusting the Linux job's result to generalize.
+required platform is a registry failure. Four built-ins are gated to a single
+platform each (`script` and `command-sequence` to POSIX, `script-powershell`
+and `command-sequence-powershell` to Windows) and one more
+(`ffmpeg-segment-transcode-powershell`) only executes on Windows. Each of these
+five therefore runs only on its own platform: the two POSIX-gated built-ins on
+Linux or macOS, the other three on Windows. A pass on one OS proves nothing
+about the other OS's products, which is why CI runs the whole harness natively
+on both Linux and Windows (`preset-harness-windows`) rather than trusting one
+job's result to generalize.
 
 To regenerate goldens after an intentional change to a preset's template or to
 expansion/resolution behavior:

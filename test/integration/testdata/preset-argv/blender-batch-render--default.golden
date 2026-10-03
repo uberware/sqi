@@ -7,9 +7,9 @@ params:
 
 step "Render" — 3 tasks
 
-task 1/3  name="Render[Frame=1,Frame.End=1,Frame.Start=1]"
+task 1/3  name="Render[Frame=1-1,Frame.End=1,Frame.Start=1]"
   task params:
-    Frame=1
+    Frame=1-1
     Frame.End=1
     Frame.Start=1
   command: blender
@@ -24,9 +24,9 @@ task 1/3  name="Render[Frame=1,Frame.End=1,Frame.Start=1]"
     [7]  1
     [8]  -a
 
-task 2/3  name="Render[Frame=2,Frame.End=2,Frame.Start=2]"
+task 2/3  name="Render[Frame=2-2,Frame.End=2,Frame.Start=2]"
   task params:
-    Frame=2
+    Frame=2-2
     Frame.End=2
     Frame.Start=2
   command: blender
@@ -41,9 +41,9 @@ task 2/3  name="Render[Frame=2,Frame.End=2,Frame.Start=2]"
     [7]  2
     [8]  -a
 
-task 3/3  name="Render[Frame=3,Frame.End=3,Frame.Start=3]"
+task 3/3  name="Render[Frame=3-3,Frame.End=3,Frame.Start=3]"
   task params:
-    Frame=3
+    Frame=3-3
     Frame.End=3
     Frame.Start=3
   command: blender

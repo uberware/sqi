@@ -1,0 +1,104 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+name: command-sequence
+title: Run a Shell Command per Frame
+description: Run a shell command once per frame, or once per chunk of frames, across a frame range.
+readme: |
+  # Run a Shell Command per Frame
+
+  Runs a shell command once for every frame in a range, or once for every
+  chunk of frames, and tells each task which frames are its own. The
+  per-frame version of **Run a Shell Command**.
+
+  ## Parameters
+
+  - **Command** - the shell text each task runs. It is passed to `/bin/sh -c`,
+    so pipes, redirection and `&&` all work.
+  - **Frame Range** - the frames to cover, in OpenJD range syntax: `1-100`,
+    `1-100:2` for every second frame, or a list such as `1,5,10-20`.
+  - **Frames per Task** - how many consecutive frames each task covers. One by
+    default.
+
+  ## Frame variables
+
+  Each task's command sees four environment variables:
+
+  - `SQI_FRAME_START` - the task's first frame.
+  - `SQI_FRAME_END` - the task's last frame.
+  - `SQI_FRAMES` - the task's frames as OpenJD writes them, always `START-END`.
+  - `SQI_FRAME` - the same as `SQI_FRAME_START`, the natural name at one frame
+    per task.
+
+  A task never covers a gap in the range. Frames are grouped only while they
+  are consecutive, so `1-100:2` runs one frame per task whatever **Frames per
+  Task** says, and `1,5,10-20` at five per task runs `1-1`, `5-5`, `10-14`,
+  `15-19` and `20-20`. A renderer given `-s $SQI_FRAME_START -e
+  $SQI_FRAME_END` therefore renders exactly the frames you asked for. A frame
+  can be any integer index: a dataset shard, a seed, a batch number.
+
+  ## Example
+
+  ```sh
+  render -s "$SQI_FRAME_START" -e "$SQI_FRAME_END" /mnt/show/scene.file
+  ```
+
+  ## Requirements
+
+  Linux and macOS workers only: the command is handed to `/bin/sh`. Use **Run a
+  PowerShell Command per Frame** on Windows workers.
+
+  Each task runs on whichever worker picks it up, as the account that worker
+  runs under. That is arbitrary code execution by design, so on a shared farm
+  set **run as user** on the queue, which runs every task as an account the
+  operator chooses instead; see the sqi documentation on task isolation.
+  Nothing is staged for you: any path in the command must already be
+  reachable from the worker.
+category: General
+version: 1.0.0
+template:
+  specificationVersion: jobtemplate-2023-09
+  name: Command Sequence
+  extensions: [TASK_CHUNKING, SQI_CHUNK_BOUNDS]
+  parameterDefinitions:
+    - name: Command
+      type: STRING
+      userInterface:
+        control: MULTILINE_EDIT
+        label: Command
+    - name: Frames
+      type: STRING
+      userInterface:
+        control: LINE_EDIT
+        label: Frame Range
+    - name: FramesPerTask
+      type: INT
+      default: 1
+      minValue: 1
+      userInterface:
+        control: SPIN_BOX
+        label: Frames per Task
+  steps:
+    - name: Run
+      hostRequirements:
+        attributes:
+          - name: attr.worker.os.family
+            anyOf: ["linux", "macos"]
+      parameterSpace:
+        taskParameterDefinitions:
+          - name: Frame
+            type: CHUNK[INT]
+            range: "{{Param.Frames}}"
+            chunks:
+              defaultTaskCount: "{{Param.FramesPerTask}}"
+              rangeConstraint: CONTIGUOUS
+      script:
+        actions:
+          onRun:
+            # OpenJD forbids a line break in a template's literal args, so the
+            # exports join Command with `;`. The values are integers and
+            # START-END range text -- nothing that needs escaping inside single
+            # quotes. Nothing follows Command, so a `#` comment in it can only
+            # swallow the rest of its own line.
+            command: /bin/sh
+            args:
+              - "-c"
+              - "export SQI_FRAME='{{Task.Param.Frame.Start}}' SQI_FRAME_START='{{Task.Param.Frame.Start}}' SQI_FRAME_END='{{Task.Param.Frame.End}}' SQI_FRAMES='{{Task.Param.Frame}}'; {{Param.Command}}"

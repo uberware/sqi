@@ -716,3 +716,62 @@ func TestExprLimits_DeadlineSurvivesNormalization(t *testing.T) {
 			"want exactly one more", len(set), len(unset))
 	}
 }
+
+// exprDeadlineResolveChunkTemplate reaches the resolver's chunk-sizing site,
+// resolveChunkInt: definition 0's range is literal text, so nothing before its
+// defaultTaskCount evaluates, and definition 1's deliberate syntax error makes a
+// walk that kept going past the deadline observable. The count is "1 + 1", not
+// "2": the deadline is checked when an operation is charged, and a bare
+// literal charges none.
+const exprDeadlineResolveChunkTemplate = `
+specificationVersion: jobtemplate-2023-09
+extensions: [EXPR, TASK_CHUNKING]
+name: T
+steps:
+- name: S
+  parameterSpace:
+    taskParameterDefinitions:
+    - name: F
+      type: CHUNK[INT]
+      range: "1-12"
+      chunks: { defaultTaskCount: "{{ 1 + 1 }}", rangeConstraint: CONTIGUOUS }
+    - name: G
+      type: INT
+      range: "{{ 1 + }}"
+  script:
+    actions:
+      onRun:
+        command: echo
+        args: ["hi"]
+`
+
+// TestResolveParameterSpaceParams_DeadlineAtChunkPosition covers resolveChunkInt
+// with the two assertions its range siblings make: the deadline is diverted onto
+// the budget rather than reported as a ValidationError, and the walk stops.
+func TestResolveParameterSpaceParams_DeadlineAtChunkPosition(t *testing.T) {
+	tmpl, err := Parse([]byte(exprDeadlineResolveChunkTemplate), FormatYAML)
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	step := tmpl.Steps[0]
+
+	budget := newTemplateBudget(ExprLimits{Deadline: time.Now().Add(-time.Second)})
+	ps, errs := ResolveParameterSpaceParams(tmpl, &step, step.ParameterSpace, nil, budget)
+
+	if !errors.Is(budget.deadline(), expr.ErrDeadlineExceeded) {
+		t.Fatalf("budget deadline = %v, want expr.ErrDeadlineExceeded: the resolver's "+
+			"chunk-sizing site is not diverting it", budget.deadline())
+	}
+	if ps != nil {
+		t.Errorf("resolved parameter space = %+v, want nil: the walk stopped early", ps)
+	}
+	for _, e := range errs {
+		if strings.Contains(strings.ToLower(e.Message), "deadline") {
+			t.Errorf("deadline reported as a ValidationError at %s: %s", e.Pointer, e.Message)
+		}
+		if strings.HasPrefix(e.Pointer, "/parameterSpace/taskParameterDefinitions/1") {
+			t.Errorf("definition 1 was resolved past the deadline (%s: %s); the backstop "+
+				"must stop the walk, not merely stop reporting", e.Pointer, e.Message)
+		}
+	}
+}

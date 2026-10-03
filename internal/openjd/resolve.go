@@ -4,6 +4,7 @@ package openjd
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 
 	"github.com/uberware/sqi/internal/openjd/expr"
@@ -216,6 +217,9 @@ func ResolveParameterSpaceParams(
 		}
 		newDef, defErrs := resolveTaskParamDefinition(b, exprEnabled, i, def, syms, scope)
 		errs = append(errs, defErrs...)
+		chunks, chunkErrs := resolveChunkFields(b, exprEnabled, i, def.Chunks, syms, scope)
+		errs = append(errs, chunkErrs...)
+		newDef.Chunks = chunks
 		newDefs[i] = newDef
 	}
 
@@ -276,7 +280,7 @@ func ResolveParameterSpaceParams(
 func resolveTaskParamDefinition(
 	b *templateBudget, exprEnabled bool, i int, def TaskParamDefinition, syms expr.MapSymbols, scope fmtstring.Scope,
 ) (TaskParamDefinition, ValidationErrors) {
-	newDef := def // shallow copy — Name, Type, Chunks, Combination are unchanged
+	newDef := def // shallow copy — Name, Type, Combination are unchanged; the caller resolves Chunks
 
 	if def.RangeExpr != nil {
 		ptr := fmt.Sprintf("/parameterSpace/taskParameterDefinitions/%d/range", i)
@@ -800,4 +804,66 @@ func rangeExprElemType(typ TaskParamType) expr.Type {
 	default: // TaskParamTypeInt, TaskParamTypeChunkInt
 		return expr.TInt
 	}
+}
+
+// resolveChunkFields resolves a CHUNK[INT] definition's two @fmtstring sizing
+// fields, which -- like range -- are resolved at job creation against the
+// bound job parameters. c is returned as-is when neither field is a format
+// string; otherwise a fresh copy comes back with each resolved field set and its Expr
+// cleared. A budget or deadline stop leaves the Expr in place and reports
+// nothing here: the caller's b.errs()/b.deadline() discards the whole result.
+func resolveChunkFields(
+	b *templateBudget, exprEnabled bool, i int, c *TaskChunks, syms expr.MapSymbols, scope fmtstring.Scope,
+) (*TaskChunks, ValidationErrors) {
+	if c == nil || (c.DefaultTaskCountExpr == nil && c.TargetRuntimeSecondsExpr == nil) {
+		return c, nil
+	}
+	out := *c
+	base := fmt.Sprintf("/parameterSpace/taskParameterDefinitions/%d/chunks", i)
+	var errs ValidationErrors
+	if raw := c.DefaultTaskCountExpr; raw != nil {
+		n, ok, e := resolveChunkInt(b, exprEnabled, *raw, base+"/defaultTaskCount", 1, syms, scope)
+		errs = append(errs, e...)
+		if ok {
+			out.DefaultTaskCount, out.DefaultTaskCountExpr = n, nil
+		}
+	}
+	if raw := c.TargetRuntimeSecondsExpr; raw != nil {
+		n, ok, e := resolveChunkInt(b, exprEnabled, *raw, base+"/targetRuntimeSeconds", 0, syms, scope)
+		errs = append(errs, e...)
+		if ok {
+			out.TargetRuntimeSeconds, out.TargetRuntimeSecondsExpr = &n, nil
+		}
+	}
+	return &out, errs
+}
+
+// resolveChunkInt resolves one sizing format string to an integer of at least
+// minimum. On the EXPR path it is one charged position evaluated toward
+// expr.TInt, and a wall-clock stop is diverted onto the budget (ok=false, no
+// error) as resolveTaskParamDefinition diverts one; on the base-spec
+// path it is plain substitution.
+func resolveChunkInt(
+	b *templateBudget, exprEnabled bool, raw, ptr string, minimum int, syms expr.MapSymbols, scope fmtstring.Scope,
+) (n int, ok bool, errs ValidationErrors) {
+	if exprEnabled && !b.chargePositions(1, ptr) {
+		return 0, false, nil
+	}
+	// An INT range-list entry is resolved as a sizing field must be:
+	// toward expr.TInt under EXPR, plain substitution otherwise.
+	text, err := resolveRangeListEntry(exprEnabled, raw, TaskParamTypeInt, syms, scope, b.limits)
+	if err != nil {
+		if b.recordDeadline(err) {
+			return 0, false, nil
+		}
+		return 0, false, ValidationErrors{{Pointer: ptr, Message: err.Error()}}
+	}
+	n, convErr := strconv.Atoi(text)
+	if convErr != nil {
+		return 0, false, ValidationErrors{{Pointer: ptr, Message: fmt.Sprintf("resolved to %q, which is not an integer", text)}}
+	}
+	if n < minimum {
+		return 0, false, ValidationErrors{{Pointer: ptr, Message: fmt.Sprintf("resolved to %d; must be at least %d", n, minimum)}}
+	}
+	return n, true, nil
 }

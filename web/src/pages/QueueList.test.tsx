@@ -176,7 +176,7 @@ describe('QueueList', () => {
     await screen.findByText(/queue "lighting" deleted/i)
   })
 
-  it('does not call DELETE when the confirm dialog is cancelled', async () => {
+  it('does not call DELETE when the confirm dialog is canceled', async () => {
     vi.spyOn(window, 'confirm').mockReturnValue(false)
     mockFarmsAndQueues()
     renderPage()

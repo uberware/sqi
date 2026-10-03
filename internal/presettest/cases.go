@@ -17,10 +17,9 @@ import (
 // Source directories the tier registry and the harness know about.
 //
 // Both exist because "what job types does sqi have?" cannot be answered from
-// presets/ alone: internal/product/builtins/ ships four compiled-in products
-// (script, script-powershell, python, container) that are always present with
-// no preset-library install. Phase 4's own preset survey surveyed presets/ only and produced a
-// wrong headline finding.
+// presets/ alone: internal/product/builtins/ ships seven compiled-in products
+// (script, script-powershell, python, container, and the three sequence
+// built-ins) that are always present with no preset-library install.
 const (
 	SourcePresets  = "presets/sqi"
 	SourceBuiltins = "internal/product/builtins"
@@ -65,6 +64,14 @@ type Case struct {
 	// of times Tier 3 must observe it. Empty means Tier 3 asserts nothing
 	// beyond job success.
 	ExpectInvocations map[string]int `yaml:"expect_invocations"`
+
+	// ExpectInnerArgv is, for a StubInner case, the exact set of argument
+	// vectors the stub must record (order ignored). ExpectInvocations only
+	// counts invocations, which for a stub reached through a shell cannot show
+	// that a value -- an environment variable the shell expanded -- arrived.
+	// Legal only with StubInner: otherwise the observed-vs-computed cross-check
+	// already compares argv.
+	ExpectInnerArgv [][]string `yaml:"expect_inner_argv"`
 }
 
 type caseFile struct {
@@ -91,6 +98,9 @@ func LoadCases(path string) ([]Case, error) {
 		}
 		if seen[c.Name] {
 			return nil, fmt.Errorf("presettest: %s declares case %q twice", path, c.Name)
+		}
+		if len(c.ExpectInnerArgv) > 0 && !c.StubInner {
+			return nil, fmt.Errorf("presettest: %s case %q declares expect_inner_argv without stub_inner", path, c.Name)
 		}
 		seen[c.Name] = true
 	}

@@ -393,6 +393,13 @@ measured results, not assertions:
 | `FEATURE_BUNDLE_1/env_templates` | not applicable — extension not registered (4 tests) |
 | `WRAP_ACTIONS/env_templates` | not applicable — extension not registered (9 tests) |
 
+**`TASK_CHUNKING` behavior the scored suite does not cover.** No
+`job_templates` fixture exercises a format-string `defaultTaskCount` or
+`targetRuntimeSeconds`, `targetRuntimeSeconds: 0` (the documented minimum), or
+a `CONTIGUOUS` range with gaps (`1,10-12` at 10 must be the two chunks `1-1`
+and `10-12`, never one chunk whose bounds enclose 2-9). sqi's own tests in
+`internal/openjd` cover all three.
+
 **CORRECTIONS to the `EXPR` rows, kept because both were wrong for a while.**
 The `job_templates` row went uncorrected through the whole of sub-project E2,
 still carrying a pre-E2 figure (143/209 pass, 66 baselined) while the real score

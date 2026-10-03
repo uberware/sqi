@@ -9,6 +9,7 @@ package openjd_test
 // This file adds the one gap: a syntactically malformed combination expression.
 
 import (
+	"slices"
 	"testing"
 
 	"github.com/uberware/sqi/internal/openjd"
@@ -114,5 +115,99 @@ func TestDeriveChunkBounds_NilAndNonChunk(t *testing.T) {
 	openjd.DeriveChunkBounds(rows, ps)
 	if _, ok := rows[0]["X.Start"]; ok {
 		t.Error("non-chunk param should not get .Start")
+	}
+}
+
+// TestExpand_ChunkContiguousNeverSpansAGap pins RFC 0001's definition of a
+// CONTIGUOUS chunk: "always a contiguous range of integers", spelled
+// "<start>-<end>" even for one frame. The first row is the RFC's worked
+// example.
+func TestExpand_ChunkContiguousNeverSpansAGap(t *testing.T) {
+	tests := []struct {
+		name       string
+		rangeExpr  string
+		chunkSize  int
+		constraint string
+		want       []string
+	}{
+		{
+			"RFC 0001 example", "1,10-12,18-50", 10, "CONTIGUOUS",
+			[]string{"1-1", "10-12", "18-27", "28-37", "38-47", "48-50"},
+		},
+		{
+			"stepped range is one frame per chunk", "1-9:2", 5, "CONTIGUOUS",
+			[]string{"1-1", "3-3", "5-5", "7-7", "9-9"},
+		},
+		{
+			"list with a run longer than the chunk", "1,5,10-20", 5, "CONTIGUOUS",
+			[]string{"1-1", "5-5", "10-14", "15-19", "20-20"},
+		},
+		{
+			"single frames are start-end", "1-3", 1, "CONTIGUOUS",
+			[]string{"1-1", "2-2", "3-3"},
+		},
+		{
+			"negative frames", "-3-2", 3, "CONTIGUOUS",
+			[]string{"-3--1", "0-2"},
+		},
+		{
+			"chunk larger than range", "1-5", 100, "CONTIGUOUS",
+			[]string{"1-5"},
+		},
+		{
+			"empty constraint defaults to contiguous", "1,3", 2, "",
+			[]string{"1-1", "3-3"},
+		},
+		{
+			"noncontiguous is unchanged", "1-9:2", 3, "NONCONTIGUOUS",
+			[]string{"1,3,5", "7,9"},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			ps := &openjd.StepParameterSpace{
+				TaskParameterDefinitions: []openjd.TaskParamDefinition{{
+					Name: "Frame", Type: openjd.TaskParamTypeChunkInt, RangeExpr: new(tc.rangeExpr),
+					Chunks: &openjd.TaskChunks{DefaultTaskCount: tc.chunkSize, RangeConstraint: tc.constraint},
+				}},
+			}
+			rows, err := openjd.ExpandParameterSpace(ps)
+			if err != nil {
+				t.Fatalf("ExpandParameterSpace: %v", err)
+			}
+			got := make([]string, len(rows))
+			for i, r := range rows {
+				got[i] = r["Frame"]
+			}
+			if !slices.Equal(got, tc.want) {
+				t.Fatalf("chunks = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestDeriveChunkBounds_GappedRangeGivesPerRunBounds is the user-visible half:
+// .Start/.End over a gapped range must never enclose a frame the range excluded.
+func TestDeriveChunkBounds_GappedRangeGivesPerRunBounds(t *testing.T) {
+	ps := &openjd.StepParameterSpace{
+		TaskParameterDefinitions: []openjd.TaskParamDefinition{{
+			Name: "Frame", Type: openjd.TaskParamTypeChunkInt, RangeExpr: new("1,10-12"),
+			Chunks: &openjd.TaskChunks{DefaultTaskCount: 10, RangeConstraint: "CONTIGUOUS"},
+		}},
+	}
+	rows, err := openjd.ExpandParameterSpace(ps)
+	if err != nil {
+		t.Fatalf("ExpandParameterSpace: %v", err)
+	}
+	openjd.DeriveChunkBounds(rows, ps)
+	want := [][2]string{{"1", "1"}, {"10", "12"}}
+	if len(rows) != len(want) {
+		t.Fatalf("rows = %v, want %d", rows, len(want))
+	}
+	for i, w := range want {
+		if rows[i]["Frame.Start"] != w[0] || rows[i]["Frame.End"] != w[1] {
+			t.Errorf("row %d bounds = %s..%s, want %s..%s",
+				i, rows[i]["Frame.Start"], rows[i]["Frame.End"], w[0], w[1])
+		}
 	}
 }

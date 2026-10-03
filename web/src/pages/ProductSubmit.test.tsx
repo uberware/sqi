@@ -230,6 +230,13 @@ function renderWithAuth(ui: ReactElement, { permissions }: { permissions: Permis
 }
 
 describe('ProductSubmit', () => {
+  it('titles the page Submit and names the product in the subtitle', async () => {
+    renderPage()
+    // PageHeader inverts the title's case for the display font.
+    expect(await screen.findByRole('heading', { level: 1, name: 'sUBMIT' })).toBeInTheDocument()
+    expect(screen.getByText('Blender', { selector: 'header p' })).toBeInTheDocument()
+  })
+
   it('blocks submit when a required field is empty', async () => {
     renderPage()
     fireEvent.click(screen.getByRole('button', { name: /submit/i }))

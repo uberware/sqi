@@ -46,10 +46,12 @@ Example:
 
 See `internal/openjd/validate.go` (`validateChunkBounds`).
 
-Note: `.Start`/`.End` describe the enclosing span of the chunk, so a stepped
-range (e.g. `1-10:2` → frames 1,3,5,7,9) yields `Start=1`, `End=9`. A renderer
-invoked with `-s 1 -e 9` will render the full contiguous span, including the
-frames the step skipped — start/end renderers cannot express a step.
+Note: a `CONTIGUOUS` chunk is always a run of consecutive integers. The range
+is split at every gap before it is chunked (`internal/openjd/expand.go`
+`chunkValues`, following the example in RFC 0001), so `.Start`/`.End` are
+exactly the chunk's frames. A stepped range such as `1-10:2` therefore yields
+one single-frame chunk per frame (`Start == End`), whatever `defaultTaskCount`
+is, and a `-s/-e` renderer never renders a frame the range excluded.
 
 ## Worker behavior
 The derived keys are added to each task's parameters during submission

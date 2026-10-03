@@ -79,7 +79,7 @@ jobs:
             # preset_*.go widens that to every tier test file (Tier-3 execution
             # and the registry check too), for the same reason.
             #
-            # internal/product/builtins/** holds four registry entries of its
+            # internal/product/builtins/** holds seven registry entries of its
             # own, and script-powershell's exit-status wrapper is executed by
             # nothing but this job.
             presets:
@@ -745,7 +745,7 @@ jobs:
     # and would test the emulator's timing rather than the runner's.
     #
     # fail-fast is off on purpose. When these two disagree, the disagreement IS
-    # the finding, and cancelling the sibling job throws away half of it.
+    # the finding, and canceling the sibling job throws away half of it.
     strategy:
       fail-fast: false
       matrix:
@@ -1680,6 +1680,14 @@ jobs:
       - name: Install ffmpeg
         run: choco install ffmpeg --yes --no-progress
 
+      # Explicit, for the reason ffmpeg is: python-sequence's tier2 claim
+      # (TestPresetPythonSequence_LauncherContract) is required on windows, and
+      # a Python present on the image by accident disappears on an image bump.
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+
       # ONE invocation covering every tier. TestZZPresetTierRegistrySatisfied
       # asserts on an in-process sink, so splitting the tiers across steps or
       # jobs makes it fail with "never reported" in each of them.
@@ -1709,14 +1717,15 @@ jobs:
           missing=0
           for name in "TestPresetTier1Argv " "TestPresetTier3 " "TestZZPresetTierRegistrySatisfied " \
                       "TestFFmpegPreset_PowerShellSegmentTranscodeJoins" \
-                      "TestScriptPowerShell_ExitStatus "; do
+                      "TestScriptPowerShell_ExitStatus " \
+                      "TestPresetPythonSequence_LauncherContract "; do
             if ! grep -q -- "--- PASS: ${name}" preset-harness-windows.log; then
               echo "::error::${name} did not run to a PASS on windows"
               missing=1
             fi
           done
           [ "$missing" -eq 0 ] || exit 1
-          echo "Confirmed tiers 1, 2 and 3 plus the registry check ran on windows."
+          echo "Confirmed tiers 1, 2 and 3, the Python launcher and the registry check ran on windows."
 
   # Differential-tests internal/openjd/expr against the implementation the EXPR
   # specification names as its reference — the openjd.expr namespace of

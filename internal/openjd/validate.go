@@ -3169,25 +3169,55 @@ func validateTaskParamRangeAndChunks(tp TaskParamDefinition, base string, exprDe
 		}
 	}
 
-	if tp.Chunks != nil && tp.Chunks.TargetRuntimeSeconds != nil && *tp.Chunks.TargetRuntimeSeconds < 1 {
+	errs = append(errs, validateChunksField(tp, base, exprDeclared)...)
+
+	return errs
+}
+
+// validateChunksField validates the chunks definition of a task parameter. It
+// is extracted from [validateTaskParamRangeAndChunks] to keep that function's
+// cyclomatic complexity within bounds.
+func validateChunksField(tp TaskParamDefinition, base string, exprDeclared bool) ValidationErrors {
+	c := tp.Chunks
+	if c == nil {
+		if tp.Type == TaskParamTypeChunkInt {
+			return ValidationErrors{{Pointer: base + "/chunks", Message: "required for CHUNK[INT] parameters"}}
+		}
+		return nil
+	}
+
+	var errs ValidationErrors
+	// The spec's minimum is 0: "When the value is 0, a scheduler should
+	// ignore this configuration and use defaultTaskCount" (Template Schemas,
+	// chunks). A format-string value is checked once resolved, at submission.
+	if c.TargetRuntimeSeconds != nil && *c.TargetRuntimeSeconds < 0 {
 		errs = append(errs, ValidationError{
 			Pointer: base + "/chunks/targetRuntimeSeconds",
-			Message: fmt.Sprintf("must be a positive number of seconds (got %d)", *tp.Chunks.TargetRuntimeSeconds),
+			Message: fmt.Sprintf("must not be negative (got %d)", *c.TargetRuntimeSeconds),
 		})
 	}
-
-	// CHUNK[INT] must have a chunks definition with defaultTaskCount >= 1
-	if tp.Type == TaskParamTypeChunkInt {
-		if tp.Chunks == nil {
-			errs = append(errs, ValidationError{
-				Pointer: base + "/chunks",
-				Message: "required for CHUNK[INT] parameters",
-			})
-		} else {
-			errs = append(errs, validateChunks(*tp.Chunks, base)...)
-		}
+	if !exprDeclared {
+		errs = append(errs, validateChunkFormatStrings(*c, base)...)
 	}
+	// CHUNK[INT] must have defaultTaskCount >= 1.
+	if tp.Type == TaskParamTypeChunkInt {
+		errs = append(errs, validateChunks(*c, base)...)
+	}
+	return errs
+}
 
+// validateChunkFormatStrings scope-checks a chunks block's two @fmtstring
+// sizing fields on the base-spec path, as the range field beside them
+// is checked: both are resolved at job creation, so only job-scope symbols are
+// in scope. Under EXPR, checkChunkExpressions (exprcheck.go) does this instead.
+func validateChunkFormatStrings(c TaskChunks, base string) ValidationErrors {
+	var errs ValidationErrors
+	if c.DefaultTaskCountExpr != nil {
+		errs = append(errs, validateFormatString(*c.DefaultTaskCountExpr, base+"/chunks/defaultTaskCount", ScopeJob, nil)...)
+	}
+	if c.TargetRuntimeSecondsExpr != nil {
+		errs = append(errs, validateFormatString(*c.TargetRuntimeSecondsExpr, base+"/chunks/targetRuntimeSeconds", ScopeJob, nil)...)
+	}
 	return errs
 }
 
@@ -3197,7 +3227,7 @@ func validateTaskParamRangeAndChunks(tp TaskParamDefinition, base string, exprDe
 func validateChunks(c TaskChunks, base string) ValidationErrors {
 	var errs ValidationErrors
 
-	if c.DefaultTaskCount <= 0 {
+	if c.DefaultTaskCountExpr == nil && c.DefaultTaskCount <= 0 {
 		errs = append(errs, ValidationError{
 			Pointer: base + "/chunks/defaultTaskCount",
 			Message: "must be a positive integer",

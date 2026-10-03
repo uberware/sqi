@@ -1,0 +1,138 @@
+preset: python-sequence
+case:   default
+params:
+  Frames=1-3
+  FramesPerTask=1
+  Interpreter=python3
+  Script=print('hello')
+
+step "Run" — 3 tasks
+
+task 1/3  name="Run[Frame=1-1,Frame.End=1,Frame.Start=1]"
+  task params:
+    Frame=1-1
+    Frame.End=1
+    Frame.Start=1
+  command: python3
+  args:
+    [0]  <WORKDIR>
+    [1]  <WORKDIR>
+    [2]  1
+    [3]  1
+    [4]  1-1
+  embedded file "launcher" (launcher.py):
+    # sqi python-sequence launcher: runs the user's script as a child
+    # process with the four SQI_FRAME* variables added to its
+    # environment, and exits with the child's exit code.
+    import os
+    import signal
+    import subprocess
+    import sys
+    
+    
+    def _wait_for_child(signum, frame):
+        # Cancellation signals the whole process group, so the child
+        # receives this signal itself; the launcher stays alive to
+        # report its exit code. A handler, not SIG_IGN: an ignored
+        # signal stays ignored in the child across exec.
+        pass
+    
+    
+    for _name in ("SIGTERM", "SIGINT"):
+        _sig = getattr(signal, _name, None)
+        if _sig is not None:
+            signal.signal(_sig, _wait_for_child)
+    
+    script, start, end, frames = sys.argv[1:5]
+    env = dict(os.environ)
+    env.update(SQI_FRAME=start, SQI_FRAME_START=start, SQI_FRAME_END=end, SQI_FRAMES=frames)
+    code = subprocess.call([sys.executable, script], env=env)
+    sys.exit(128 - code if code < 0 else code)
+  embedded file "script" (script.py):
+    print('hello')
+
+task 2/3  name="Run[Frame=2-2,Frame.End=2,Frame.Start=2]"
+  task params:
+    Frame=2-2
+    Frame.End=2
+    Frame.Start=2
+  command: python3
+  args:
+    [0]  <WORKDIR>
+    [1]  <WORKDIR>
+    [2]  2
+    [3]  2
+    [4]  2-2
+  embedded file "launcher" (launcher.py):
+    # sqi python-sequence launcher: runs the user's script as a child
+    # process with the four SQI_FRAME* variables added to its
+    # environment, and exits with the child's exit code.
+    import os
+    import signal
+    import subprocess
+    import sys
+    
+    
+    def _wait_for_child(signum, frame):
+        # Cancellation signals the whole process group, so the child
+        # receives this signal itself; the launcher stays alive to
+        # report its exit code. A handler, not SIG_IGN: an ignored
+        # signal stays ignored in the child across exec.
+        pass
+    
+    
+    for _name in ("SIGTERM", "SIGINT"):
+        _sig = getattr(signal, _name, None)
+        if _sig is not None:
+            signal.signal(_sig, _wait_for_child)
+    
+    script, start, end, frames = sys.argv[1:5]
+    env = dict(os.environ)
+    env.update(SQI_FRAME=start, SQI_FRAME_START=start, SQI_FRAME_END=end, SQI_FRAMES=frames)
+    code = subprocess.call([sys.executable, script], env=env)
+    sys.exit(128 - code if code < 0 else code)
+  embedded file "script" (script.py):
+    print('hello')
+
+task 3/3  name="Run[Frame=3-3,Frame.End=3,Frame.Start=3]"
+  task params:
+    Frame=3-3
+    Frame.End=3
+    Frame.Start=3
+  command: python3
+  args:
+    [0]  <WORKDIR>
+    [1]  <WORKDIR>
+    [2]  3
+    [3]  3
+    [4]  3-3
+  embedded file "launcher" (launcher.py):
+    # sqi python-sequence launcher: runs the user's script as a child
+    # process with the four SQI_FRAME* variables added to its
+    # environment, and exits with the child's exit code.
+    import os
+    import signal
+    import subprocess
+    import sys
+    
+    
+    def _wait_for_child(signum, frame):
+        # Cancellation signals the whole process group, so the child
+        # receives this signal itself; the launcher stays alive to
+        # report its exit code. A handler, not SIG_IGN: an ignored
+        # signal stays ignored in the child across exec.
+        pass
+    
+    
+    for _name in ("SIGTERM", "SIGINT"):
+        _sig = getattr(signal, _name, None)
+        if _sig is not None:
+            signal.signal(_sig, _wait_for_child)
+    
+    script, start, end, frames = sys.argv[1:5]
+    env = dict(os.environ)
+    env.update(SQI_FRAME=start, SQI_FRAME_START=start, SQI_FRAME_END=end, SQI_FRAMES=frames)
+    code = subprocess.call([sys.executable, script], env=env)
+    sys.exit(128 - code if code < 0 else code)
+  embedded file "script" (script.py):
+    print('hello')

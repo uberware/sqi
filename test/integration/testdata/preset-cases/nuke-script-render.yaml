@@ -14,6 +14,6 @@ cases:
     params:
       SceneFile: /mnt/show/seq010/shot0010/comp/shot0010_comp_v021.nk
       Frames: "1-60:2"
-    expect_tasks: 3
+    expect_tasks: 30
     expect_invocations:
-      nuke: 3
+      nuke: 30

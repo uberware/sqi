@@ -171,7 +171,7 @@ can render appropriate form controls.
 
 ## Built-in products
 
-Four products are embedded directly in the `sqi-server` binary. They are
+Seven products are embedded directly in the `sqi-server` binary. They are
 defined as YAML files under `internal/product/builtins/`, compiled in via
 `//go:embed`, parsed and validated at process init, and served read-only from the
 catalog. Mutations (PUT, DELETE) against a built-in return `403 Forbidden`.
@@ -222,6 +222,45 @@ error can begin with `$ErrorActionPreference = 'Stop'`, accepting that 5.1 then
 also stops on redirected native stderr. `TestScriptPowerShell_ExitStatus` in
 `test/integration/preset_exec_test.go` pins every one of these rows against a
 real `powershell.exe`.
+
+### `command-sequence` — Run a Shell Command per Frame
+
+The fan-out counterpart of `script`: runs one shell command per frame, or per
+chunk of consecutive frames, across a range. Parameters `Command`
+(`MULTILINE_EDIT`), `Frames` (OpenJD range syntax) and `FramesPerTask` (`INT`,
+default 1, minimum 1, the chunk size via a format-string `defaultTaskCount`).
+Each task's command sees `SQI_FRAME_START`, `SQI_FRAME_END`, `SQI_FRAMES`
+(always `START-END`) and `SQI_FRAME` (equal to `SQI_FRAME_START`), exported by
+a prefix on the `/bin/sh -c` string. A chunk never spans a gap in the range,
+so `-s $SQI_FRAME_START -e $SQI_FRAME_END` renders exactly the requested
+frames. Gated to Linux and macOS, like `script`.
+
+It runs arbitrary code as the worker's account by design; on a shared farm,
+set the queue's `run_as_user` so tasks run as an operator-chosen account (see
+*Queue identity* in [configuration](configuration.md) and the worker's
+[`isolation` settings](worker-configuration.md)).
+
+### `command-sequence-powershell` — Run a PowerShell Command per Frame
+
+The Windows counterpart of `command-sequence`, and the fan-out counterpart of
+`script-powershell`: the same parameters and the same four variables, read as
+`$env:SQI_FRAME_START` and so on. The command runs from `script-powershell`'s
+BOM-prefixed `command.ps1`, with the variables assigned before `Command` and
+that product's exit-status handling unchanged after it. Gated to Windows.
+The same `run_as_user` recommendation applies.
+
+### `python-sequence` — Run a Python Script per Frame
+
+The fan-out counterpart of `python`: the same `Interpreter` and `Script`
+parameters plus `Frames` and `FramesPerTask`, and the same four variables, read
+from `os.environ`. A small embedded launcher sets them and runs the script as
+`script.py` in a child process started with `sys.executable` (the
+`Interpreter`), so `__name__ == "__main__"`, `sys.argv[0]`, `sys.path[0]` and
+Windows `multiprocessing` behave as when the script is run by hand. The
+launcher forwards the script's exit code (a POSIX signal death exits
+`128 + N`) and survives a cancellation signal, so that exit code is the one
+reported. Not OS-gated; `python3` is often missing on Windows, so set
+`Interpreter` there. The same `run_as_user` recommendation applies.
 
 ### `python` — Run a Python Script
 

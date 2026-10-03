@@ -1279,6 +1279,7 @@ func templateExprRetainedBytes(syms expr.MapSymbols) int64 {
 //	job name                          ScopeJob                TargetString
 //	host requirement values           ScopeJob + step let     TargetString
 //	task-parameter range entries      ScopeJob + step let     §1.3.12 per-type
+//	task-parameter chunk sizing       ScopeJob + step let     expr.TInt (checkChunkExpressions)
 //	environment variable values       job/step env            TargetString
 //	env + step embedded-file data     job/step env / step     TargetString
 //	action command                    matching env / step     TargetString
@@ -1902,6 +1903,7 @@ func checkParameterSpaceExpressions(b *templateBudget, ps StepParameterSpace, ba
 				)...)
 			}
 		}
+		errs = append(errs, checkChunkExpressions(b, tp.Chunks, ptr, syms)...)
 	}
 	return errs
 }
@@ -1967,4 +1969,32 @@ func rangeExprFieldType(typ TaskParamType) expr.Type {
 	default:
 		return expr.ListOf(elem)
 	}
+}
+
+// checkChunkExpressions checks a CHUNK[INT] definition's two @fmtstring sizing
+// fields as job-scope positions, like the range field beside them:
+// Template Schemas' "Job creation" row resolves both then. One position each,
+// charged to the template-wide budget like every other position.
+func checkChunkExpressions(b *templateBudget, c *TaskChunks, ptr string, syms expr.MapSymbols) ValidationErrors {
+	if c == nil {
+		return nil
+	}
+	fields := []struct {
+		raw  *string
+		name string
+	}{
+		{c.DefaultTaskCountExpr, "defaultTaskCount"},
+		{c.TargetRuntimeSecondsExpr, "targetRuntimeSeconds"},
+	}
+	var errs ValidationErrors
+	for _, f := range fields {
+		if f.raw == nil || !b.ok() {
+			continue
+		}
+		p := ptr + "/chunks/" + f.name
+		if b.chargePositions(1, p) {
+			errs = append(errs, checkFormatString(b, *f.raw, p, ScopeJob, syms, expr.TInt)...)
+		}
+	}
+	return errs
 }

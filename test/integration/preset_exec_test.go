@@ -287,6 +287,14 @@ func runTier3Case(t *testing.T, entry presettest.Entry, c presettest.Case, caseN
 	assertInvocationCounts(t, c, recs)
 	if !c.StubInner {
 		assertObservedMatchesComputed(t, snap, recs)
+	} else if len(c.ExpectInnerArgv) > 0 {
+		got := make([][]string, len(recs))
+		for i, rec := range recs {
+			got[i] = rec.Args
+		}
+		for _, msg := range presettest.ArgvSetDiff(c.ExpectInnerArgv, got) {
+			t.Error(msg)
+		}
 	}
 }
 
@@ -513,26 +521,17 @@ func assertInvocationCounts(t *testing.T, c presettest.Case, recs []stubrecord.R
 func assertObservedMatchesComputed(t *testing.T, snap presettest.Snapshot, recs []stubrecord.Record) {
 	t.Helper()
 	files := materializedFileNames(snap)
-	computed := map[string]bool{}
+	var computed, observed [][]string
 	for _, step := range snap.Steps {
 		for _, task := range step.Tasks {
-			computed[argvKey(filepath.Base(task.Command), foldFilePaths(task.Args, files))] = true
+			computed = append(computed, append([]string{filepath.Base(task.Command)}, foldFilePaths(task.Args, files)...))
 		}
 	}
-	observed := map[string]bool{}
 	for _, rec := range recs {
-		key := argvKey(rec.Command, foldFilePaths(rec.Args, files))
-		observed[key] = true
-		if !computed[key] {
-			t.Errorf("observed argv has no computed counterpart:\n  observed: %s\n  computed set: %v",
-				key, keysOf(computed))
-		}
+		observed = append(observed, append([]string{rec.Command}, foldFilePaths(rec.Args, files)...))
 	}
-	for key := range computed {
-		if !observed[key] {
-			t.Errorf("computed argv was never observed:\n  computed: %s\n  observed set: %v",
-				key, keysOf(observed))
-		}
+	for _, msg := range presettest.ArgvSetDiff(computed, observed) {
+		t.Error(msg)
 	}
 }
 
@@ -566,19 +565,6 @@ func foldFilePaths(args []string, files map[string]bool) []string {
 		}
 		out[i] = a
 	}
-	return out
-}
-
-func argvKey(command string, args []string) string {
-	return command + " " + strings.Join(args, "\x1f")
-}
-
-func keysOf(m map[string]bool) []string {
-	out := make([]string, 0, len(m))
-	for k := range m {
-		out = append(out, k)
-	}
-	sort.Strings(out)
 	return out
 }
 

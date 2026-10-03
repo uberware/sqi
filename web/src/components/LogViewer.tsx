@@ -121,10 +121,10 @@ export default function LogViewer({ taskId, taskStatus }: LogViewerProps) {
 
   // Initial fetch: runs whenever taskId changes (component is re-keyed by parent).
   useEffect(() => {
-    let cancelled = false
+    let canceled = false
     fetchTaskLogs({ taskId, afterNatsSeq: 0, limit: INITIAL_LIMIT })
       .then((resp) => {
-        if (cancelled) return
+        if (canceled) return
         setChunks(resp.items)
         const last = resp.items[resp.items.length - 1]
         setAfterNatsSeq(last !== undefined ? last.nats_seq : 0)
@@ -132,12 +132,12 @@ export default function LogViewer({ taskId, taskStatus }: LogViewerProps) {
         setLoading(false)
       })
       .catch((err: unknown) => {
-        if (cancelled) return
+        if (canceled) return
         setLoadError(err instanceof Error ? err.message : 'Failed to load logs')
         setLoading(false)
       })
     return () => {
-      cancelled = true
+      canceled = true
     }
   }, [taskId])
 

@@ -142,3 +142,34 @@ func writeFile(t *testing.T, path, content string) {
 		t.Fatalf("write %s: %v", path, err)
 	}
 }
+
+func TestLoadCases_ExpectInnerArgv(t *testing.T) {
+	dir := t.TempDir()
+	ok := filepath.Join(dir, "ok.yaml")
+	writeFile(t, ok, `cases:
+  - name: inner
+    stub_inner: true
+    expect_tasks: 2
+    expect_inner_argv:
+      - ["1", "1-1"]
+      - ["2", "2-2"]
+`)
+	cases, err := presettest.LoadCases(ok)
+	if err != nil {
+		t.Fatalf("LoadCases: %v", err)
+	}
+	if got := cases[0].ExpectInnerArgv; len(got) != 2 || got[1][1] != "2-2" {
+		t.Fatalf("ExpectInnerArgv = %v", got)
+	}
+
+	bad := filepath.Join(dir, "bad.yaml")
+	writeFile(t, bad, `cases:
+  - name: outer
+    expect_tasks: 1
+    expect_inner_argv:
+      - ["1"]
+`)
+	if _, err := presettest.LoadCases(bad); err == nil || !strings.Contains(err.Error(), "stub_inner") {
+		t.Fatalf("LoadCases err = %v, want expect_inner_argv without stub_inner rejected", err)
+	}
+}

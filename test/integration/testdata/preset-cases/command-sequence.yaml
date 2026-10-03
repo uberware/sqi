@@ -1,0 +1,43 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+#
+# Run a Shell Command per Frame. Like `script`, the onRun command is the
+# absolute /bin/sh, which the Tier-3 stub cannot shadow, so these cases are
+# stub_inner: the stub stands in for a command the shell runs. The Tier-3 case
+# passes the four frame variables to it as arguments, so the stub's recorded
+# argv is the value each task's environment carried; expect_inner_argv pins
+# that per task. sqi-stub-command exists on no host, so a PATH that failed to
+# reach the shell would exit 127 rather than pass against a real binary.
+#
+# `chunked` uses a multi-line Command whose last line is a comment: the
+# golden shows the export prefix intact and the second line still present.
+cases:
+  - name: default
+    params:
+      Command: 'sqi-stub-command "$SQI_FRAME" "$SQI_FRAME_START" "$SQI_FRAME_END" "$SQI_FRAMES"'
+      Frames: "1-3"
+    stub_inner: true
+    expect_tasks: 3
+    expect_invocations:
+      sqi-stub-command: 3
+    expect_inner_argv:
+      - ["1", "1", "1", "1-1"]
+      - ["2", "2", "2", "2-2"]
+      - ["3", "3", "3", "3-3"]
+  - name: chunked
+    params:
+      Command: "echo starting\nsqi-stub-command \"$SQI_FRAMES\"\n# done"
+      Frames: "1-10"
+      FramesPerTask: "5"
+    stub_inner: true
+    expect_tasks: 2
+    expect_invocations:
+      sqi-stub-command: 2
+  - name: frame-list
+    params:
+      Command: 'sqi-stub-command "$SQI_FRAMES"'
+      Frames: "1,5,10-20"
+      FramesPerTask: "5"
+    stub_inner: true
+    expect_tasks: 5
+    expect_invocations:
+      sqi-stub-command: 5

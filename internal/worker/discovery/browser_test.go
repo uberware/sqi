@@ -300,7 +300,7 @@ func TestBrowseMDNSTimeout(t *testing.T) {
 	}
 }
 
-func TestResolveContextCancelled(t *testing.T) {
+func TestResolveContextCanceled(t *testing.T) {
 	t.Parallel()
 
 	ctx, cancel := context.WithCancel(context.Background())

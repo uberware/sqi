@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-import type { ProductParameter } from '@/api/types'
+import type { Product, ProductParameter } from '@/api/types'
 
 export type Widget = 'text' | 'textarea' | 'select' | 'checkbox' | 'number' | 'hidden' | 'list'
 
@@ -73,6 +73,11 @@ export function selectWidget(p: ProductParameter): Widget {
 
 export function paramLabel(p: ProductParameter): string {
   return p.user_interface?.label || p.name
+}
+
+/** What a product is called wherever it is shown: its title, else its name. */
+export function productLabel(product: Product): string {
+  return product.title || product.name
 }
 
 /** Display-only truthiness for a BOOL value, recognising the same spellings
