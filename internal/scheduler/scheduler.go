@@ -660,8 +660,9 @@ func (s *Scheduler) buildUsageContext(
 // querying the store. It is idempotent: releasing an already-released claim
 // is a no-op in the underlying SQL.
 //
-// The worker wire protocol calls this method when terminal task
-// status messages arrive from workers.
+// A worker's terminal report no longer goes through here: it releases the
+// attempt's claims inside [store.TaskStore.CompleteTaskAttempt] (and
+// RecordTaskFailure), in the same transaction that closes the attempt.
 func (s *Scheduler) ReleaseTaskUsage(ctx context.Context, attemptID string) error {
 	if attemptID == "" {
 		return nil

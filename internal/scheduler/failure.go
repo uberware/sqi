@@ -10,9 +10,10 @@ package scheduler
 // the genuine failure, then picks one of three outcomes:
 //
 //   - RETRY: the task's failed_attempts is still below its policy ceiling and
-//     the job has not hit its failure limit — the attempt is closed as failed,
-//     usage-pool claims are released, and the task is re-queued to
-//     [store.TaskStatusReady] with a backoff RetryAfter. It does NOT go
+//     the job has not hit its failure limit — the attempt is closed as failed
+//     (usage-pool claims are released inside RecordTaskFailure's transaction),
+//     and the task is re-queued to [store.TaskStatusReady] with a backoff
+//     RetryAfter. It does NOT go
 //     through handleTaskTerminal / checkStepCompletion, since the step is not
 //     actually done — it must stay eligible for re-lease.
 //   - PARKED: the job's cumulative failure count reached its FailureLimit —
@@ -90,7 +91,7 @@ func (s *Scheduler) handleTaskFailed(ctx context.Context, attempt store.TaskAtte
 	parked := policy.FailureLimit > 0 && jobFailed >= policy.FailureLimit
 
 	if !parked && taskFailed < policy.MaxAttempts {
-		return s.retryTaskAfterFailure(ctx, task, job, attempt, m, policy, taskFailed, at)
+		return s.retryTaskAfterFailure(ctx, task, job, m, policy, taskFailed, at)
 	}
 
 	if parked {
@@ -103,22 +104,20 @@ func (s *Scheduler) handleTaskFailed(ctx context.Context, attempt store.TaskAtte
 	return s.handleTaskTerminal(ctx, attempt, m, store.TaskStatusFailed, store.AttemptStatusFailed, at)
 }
 
-// retryTaskAfterFailure closes the attempt as failed and re-queues the task
-// with backoff. Split out of handleTaskFailed to keep cyclomatic complexity in
-// check.
+// retryTaskAfterFailure re-queues the task with backoff. Split out of
+// handleTaskFailed to keep cyclomatic complexity in check.
 func (s *Scheduler) retryTaskAfterFailure(
 	ctx context.Context,
 	task store.Task,
 	job store.Job,
-	attempt store.TaskAttempt,
 	m protocol.TaskStatusMsg,
 	policy RetryPolicy,
 	taskFailed int,
 	at time.Time,
 ) error {
-	// RETRY: the attempt was already closed as failed inside RecordTaskFailure;
-	// here we only release its usage claims and re-queue with backoff.
-	s.releaseRetryAttemptUsage(ctx, attempt)
+	// RETRY: the attempt was already closed as failed, and its usage claims
+	// released, inside RecordTaskFailure's transaction; here we only re-queue
+	// with backoff.
 	retryAfter := at.Add(policy.RetryDelay)
 	requeued, err := s.store.RequeueTaskForRetry(ctx, m.TaskID, retryAfter, at)
 	if err != nil {
@@ -181,19 +180,6 @@ func (s *Scheduler) failureReportStillCurrent(ctx context.Context, taskID, attem
 		return false, err
 	}
 	return latest.ID == attemptID, nil
-}
-
-// releaseRetryAttemptUsage releases the failed attempt's usage-pool claims on
-// the retry path. The attempt itself is already closed as failed inside
-// [store.TaskStore.RecordTaskFailure]; this only frees the pool slots so the
-// retried task can re-lease. Best-effort and idempotent: a leaked slot is
-// recovered by the next usage sweep, and a redelivery that re-releases an
-// already-released claim is a no-op.
-func (s *Scheduler) releaseRetryAttemptUsage(ctx context.Context, attempt store.TaskAttempt) {
-	if err := s.ReleaseTaskUsage(ctx, attempt.ID); err != nil {
-		s.logger.WarnContext(ctx, "scheduler: retry: release usage failed",
-			slog.String("attempt_id", attempt.ID), slog.Any("error", err))
-	}
 }
 
 // scheduleRetryWake wakes the task's queue once its backoff delay elapses so a

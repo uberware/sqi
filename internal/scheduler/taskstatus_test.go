@@ -897,12 +897,12 @@ func (*cancelTasksErrSt) CancelPendingStep(context.Context, string, string, time
 	return false, nil, errInjectedLog
 }
 
-// ── Store error on UpdateTaskAttempt → message nacked ────────────────────────
+// ── Store error on CompleteTaskAttempt → message nacked ──────────────────────
 
-func TestProcessTaskStatus_UpdateAttemptError_Nacked(t *testing.T) {
+func TestProcessTaskStatus_CompleteAttemptError_Nacked(t *testing.T) {
 	inner := fake.New()
 	_, _, task, attempt := seedStatusFixture(t, inner, store.TaskStatusRunning)
-	est := &updateAttemptErrSt{Store: inner}
+	est := &completeAttemptErrSt{Store: inner}
 
 	s := newStatusTestScheduler(est)
 	s.ctx = t.Context()
@@ -926,11 +926,11 @@ func TestProcessTaskStatus_UpdateAttemptError_Nacked(t *testing.T) {
 	}
 }
 
-// updateAttemptErrSt makes UpdateTaskAttempt fail.
-type updateAttemptErrSt struct {
+// completeAttemptErrSt makes CompleteTaskAttempt fail.
+type completeAttemptErrSt struct {
 	store.Store
 }
 
-func (*updateAttemptErrSt) UpdateTaskAttempt(_ context.Context, _ store.TaskAttempt) (store.TaskAttempt, error) {
-	return store.TaskAttempt{}, errInjectedLog
+func (*completeAttemptErrSt) CompleteTaskAttempt(context.Context, store.AttemptCompletion) (store.CompletionResult, error) {
+	return store.CompletionResult{}, errInjectedLog
 }

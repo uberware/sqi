@@ -8,8 +8,9 @@ package scheduler
 // This file implements the task-status consumer — the counterpart of the
 // worker-register and worker-heartbeat consumers already in scheduler.go.
 // When a worker publishes a protocol.TaskStatusMsg to task.status.<worker>.<job>,
-// handleTaskStatusMessage updates the store, closes the attempt record,
-// releases usage pool slots, and drives step/job completion logic.
+// handleTaskStatusMessage updates the store (closing the attempt record,
+// releasing usage pool slots and moving the task in one write), and drives
+// step/job completion logic.
 //
 // Flow for each TaskStatusMsg:
 //
@@ -17,13 +18,14 @@ package scheduler
 //  2. Load the task attempt from the store to verify AttemptID.
 //  3. For "running": update task status and record session ID on the attempt.
 //  4. For terminal states (succeeded/failed/canceled):
-//     a. Close the attempt (EndedAt, Status, ExitCode).
-//     b. Transition the task to the matching terminal status.
-//     c. Release any held usage pool slots.
-//     d. Check whether the enclosing step is now complete.
-//     e. If the step completed successfully, call ResolveDependencies to
+//     a. In one store write (CompleteTaskAttempt): close the attempt (EndedAt,
+//        Status, ExitCode), release any held usage pool slots, and transition
+//        the task to the matching terminal status. The close and the release
+//        commit even when the task transition is refused.
+//     b. Check whether the enclosing step is now complete.
+//     c. If the step completed successfully, call ResolveDependencies to
 //        unblock downstream steps.
-//     f. Check whether the enclosing job is now complete.
+//     d. Check whether the enclosing job is now complete.
 //
 // Step and job completion are decided inside the store (FinalizeStep and
 // FinalizeJob, invariant I4), computed from the child rows in the same
@@ -291,8 +293,12 @@ func (s *Scheduler) maybePromoteJobRunning(ctx context.Context, jobID string) {
 }
 
 // handleTaskTerminal handles a terminal TaskStatusMsg (succeeded/failed/canceled):
-// closes the attempt, updates the task, releases usage slots, and checks step/job
-// completion.
+// closes the attempt, releases its usage slots and moves the task in one store
+// write ([store.TaskStore.CompleteTaskAttempt]), then checks step/job completion.
+//
+// A report the state machine refuses (the task already reached a different
+// terminal status) still closes the attempt and frees its slots; it returns
+// [store.ErrInvalidTransition] so the consumer acks it.
 func (s *Scheduler) handleTaskTerminal(
 	ctx context.Context,
 	attempt store.TaskAttempt,
@@ -301,59 +307,50 @@ func (s *Scheduler) handleTaskTerminal(
 	attemptStatus store.AttemptStatus,
 	at time.Time,
 ) error {
-	// ── Close the attempt record ──────────────────────────────────────────
-	// Skipped for failed: that path only arrives here via handleTaskFailed,
-	// whose RecordTaskFailure already closed the attempt (same status, end
-	// time, exit code, session, and message) inside its transaction.
-	if attemptStatus != store.AttemptStatusFailed {
-		updated := attempt
-		updated.Status = attemptStatus
-		updated.SessionID = m.SessionID // empty = no-change via COALESCE in SQL
-		updated.EndedAt = &at
-		updated.Message = m.Message
-		if m.ExitCode != nil {
-			code := *m.ExitCode
-			updated.ExitCode = &code
-		}
-		if _, err := s.store.UpdateTaskAttempt(ctx, updated); err != nil {
-			return err
-		}
+	// ── Attempt, claims and task in one write (invariant I3) ──────────────
+	// The attempt close is a guarded no-op on the failed path, whose
+	// RecordTaskFailure already closed it; the claim release is unconditional, and
+	// so is its commit: a refused task transition (below) still frees the slot.
+	var reason string
+	if taskStatus == store.TaskStatusFailed || taskStatus == store.TaskStatusCanceled {
+		// An empty synthesized reason (worker "canceled" echoes always carry an
+		// empty Message, see internal/worker/executor/run.go) is not stamped, so it
+		// can never overwrite a server-set reason such as CancelTask/CancelJob's
+		// "canceled by user" or the cascade's "canceled: upstream step failed".
+		reason = failureReasonOrFallback(m.Message, m.ExitCode, taskStatus)
+	}
+	res, err := s.store.CompleteTaskAttempt(ctx, store.AttemptCompletion{
+		AttemptID: attempt.ID, TaskID: m.TaskID, TaskStatus: taskStatus, AttemptStatus: attemptStatus,
+		ExitCode: m.ExitCode, SessionID: m.SessionID, Message: m.Message, FailureReason: reason, EndedAt: at,
+	})
+	if err != nil {
+		return err
 	}
 	// The attempt is now terminal (closed above, or already closed by
-	// RecordTaskFailure for the failed path), so no further log chunks will
-	// be produced for it and its cached ownership entry is no longer needed.
+	// RecordTaskFailure for the failed path), so no further log chunks will be
+	// produced for it and its cached ownership entry is no longer needed.
 	// SQI_LOGS and SQI_STATUS are separate streams, so a chunk published just
-	// before this status can still be consumed after it — that is harmless,
-	// since a cache miss falls back to the store and re-reads correctly.
+	// before this status can still be consumed after it; that is harmless, since
+	// a cache miss falls back to the store and re-reads correctly.
 	s.attemptCache.evict(attempt.ID)
 
-	// ── Transition the task ───────────────────────────────────────────────
-	if err := s.store.UpdateTaskStatus(ctx, m.TaskID, taskStatus); err != nil {
+	// Fetch the task to get its StepID and JobID.
+	task, err := s.store.GetTask(ctx, m.TaskID)
+	if err != nil {
 		return err
 	}
 
-	// ── Durable per-task failure reason for terminal non-success ─────────
-	// An empty synthesized reason (worker "canceled" echoes always carry an
-	// empty Message — see internal/worker/executor/run.go) must never
-	// overwrite an existing, server-set reason (e.g. CancelTask/CancelJob's
-	// "canceled by user" or the cascade's "canceled: upstream step failed").
-	if taskStatus == store.TaskStatusFailed || taskStatus == store.TaskStatusCanceled {
-		if reason := failureReasonOrFallback(m.Message, m.ExitCode, taskStatus); reason != "" {
-			if err := s.store.SetTaskFailureReason(ctx, m.TaskID, reason); err != nil {
-				return err
-			}
-		}
-	}
+	// Wake any parked lease waiters: the attempt's usage claims were released
+	// whether or not the task moved, and a completed task frees the worker's
+	// cores, so pending tasks may now fit.
+	s.notifyQueueForJob(ctx, task.JobID)
 
-	// ── Release usage pool slots ──────────────────────────────────────────
-	if err := s.ReleaseTaskUsage(ctx, attempt.ID); err != nil {
-		// Non-fatal: a leaked slot is recovered by the next usage count
-		// check, and the job is not blocked.
-		s.logger.WarnContext(
-			ctx, "scheduler: release task usage claims failed",
-			slog.String("attempt_id", attempt.ID),
-			slog.Any("error", err),
-		)
+	if res.Rejected {
+		// The task had already reached a different terminal status (a cancel, or a
+		// retry that raced this report). The claims were released above, so nothing
+		// leaks. Returned as ErrInvalidTransition so the consumer acks the message
+		// instead of redelivering a report that can never become legal.
+		return fmt.Errorf("scheduler: task %s: %w", m.TaskID, store.ErrInvalidTransition)
 	}
 
 	s.logger.InfoContext(
@@ -362,17 +359,6 @@ func (s *Scheduler) handleTaskTerminal(
 		slog.String("status", m.Status),
 		slog.String("attempt_id", m.AttemptID),
 	)
-
-	// ── Step / job completion ─────────────────────────────────────────────
-	// Fetch the task to get its StepID and JobID.
-	task, err := s.store.GetTask(ctx, m.TaskID)
-	if err != nil {
-		return err
-	}
-
-	// Wake any parked lease waiters: a completed task frees the worker's cores
-	// so pending tasks may now fit.
-	s.notifyQueueForJob(ctx, task.JobID)
 
 	// Notify WebSocket hub of the terminal status change.
 	s.notifier.NotifyTask(ws.TaskEvent{
