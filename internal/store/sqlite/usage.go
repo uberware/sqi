@@ -203,15 +203,17 @@ func (s *Store) ActiveClaimCount(ctx context.Context, poolID string) (int, error
 	return n, mapErr(err)
 }
 
-// TryClaimSlots implements [store.UsageClaimStore].
-//
-// It opens a transaction, counts active claims for each pool in claims, and
-// either inserts all claim rows (all pools have capacity) or rolls back and
-// returns [store.ErrUsageAtCapacity] (at least one pool is saturated).
+// TryClaimSlots opens a transaction, counts active claims for each pool in
+// claims against the caller's copy of its MaxConcurrent, and either inserts all
+// claim rows (all pools have capacity) or rolls back and returns
+// [store.ErrUsageAtCapacity] (at least one pool is saturated). The scheduler
+// claims through [Store.LeaseTask], which reads the caps itself.
 //
 // The transaction is serialized by the single-connection pool (SetMaxOpenConns(1))
 // so no other goroutine can modify claim counts between the count check and
 // the inserts.
+//
+// Test fixture only: a blind write that is not part of store.Store (H4a). H4b decides its fate.
 func (s *Store) TryClaimSlots(
 	ctx context.Context,
 	taskAttemptID string,

@@ -197,10 +197,13 @@ func (s *Store) activeClaimsLocked(poolID string) int {
 	return n
 }
 
-// TryClaimSlots atomically checks pool capacity and creates claim
-// records for each claim. The fake implementation holds the mutex for the
-// duration of the check-and-insert, mirroring the transactional semantics of
-// the SQLite implementation.
+// TryClaimSlots atomically checks pool capacity, using the caller's copy of each
+// pool's MaxConcurrent, and creates a claim record for each claim, or returns
+// [store.ErrUsageAtCapacity] and writes nothing. It holds the mutex for the
+// whole check-and-insert, mirroring the SQLite implementation. The scheduler
+// claims through [Store.LeaseTask], which reads the caps itself.
+//
+// Test fixture only: a blind write that is not part of store.Store (H4a). H4b decides its fate.
 func (s *Store) TryClaimSlots(
 	_ context.Context,
 	taskAttemptID string,

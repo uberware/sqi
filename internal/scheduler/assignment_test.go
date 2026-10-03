@@ -3,8 +3,9 @@
 package scheduler
 
 // Tests for the assignment helpers shared by the lease path in lease.go:
-// createAttemptAndClaimUsage's building blocks (buildUsageContext,
-// buildUsageClaims, nextAttemptNumber) and the instrumentation gauges.
+// the lease's building blocks (buildUsageContext, buildUsageClaims) and the
+// instrumentation gauges. Attempt numbering belongs to store.LeaseTask now and
+// is tested there.
 //
 // These are white-box tests in package scheduler. A fake store (fake.New)
 // drives all store-backed paths; a recording bus stub satisfies busClient
@@ -136,7 +137,7 @@ func seedAssignFixture(t *testing.T, st *fake.Store, mutate func(*assignFixture)
 	return f
 }
 
-// ── buildUsageContext / buildUsageClaims / nextAttemptNumber units ────────────
+// ── buildUsageContext / buildUsageClaims units ────────────────────────────────
 
 func TestBuildUsageContext_NoRequirements(t *testing.T) {
 	st := fake.New()
@@ -206,36 +207,6 @@ func TestBuildUsageClaims(t *testing.T) {
 				t.Errorf("claims = %d, want %d", len(got), tt.wantCount)
 			}
 		})
-	}
-}
-
-func TestNextAttemptNumber(t *testing.T) {
-	st := fake.New()
-	s := newMetricsScheduler(st, &recordBus{}, "")
-
-	// No prior attempts → 1.
-	n, err := s.nextAttemptNumber(t.Context(), "fresh-task")
-	if err != nil {
-		t.Fatalf("nextAttemptNumber: %v", err)
-	}
-	if n != 1 {
-		t.Errorf("first attempt = %d, want 1", n)
-	}
-
-	// One prior attempt #3 → 4.
-	now := time.Now()
-	if _, err := st.CreateTaskAttempt(t.Context(), store.TaskAttempt{
-		ID: uuid.NewString(), TaskID: "task-x", AttemptNumber: 3,
-		Status: store.AttemptStatusFailed, StartedAt: now, CreatedAt: now,
-	}); err != nil {
-		t.Fatalf("CreateTaskAttempt: %v", err)
-	}
-	n, err = s.nextAttemptNumber(t.Context(), "task-x")
-	if err != nil {
-		t.Fatalf("nextAttemptNumber: %v", err)
-	}
-	if n != 4 {
-		t.Errorf("retry attempt = %d, want 4", n)
 	}
 }
 

@@ -644,7 +644,11 @@ func (s *Store) CommittedCores(_ context.Context, workerID string, fullMachineCo
 	return total, nil
 }
 
-// LeaseReadyTask implements [store.TaskStore].
+// LeaseReadyTask moves a ready task to assigned without an attempt, a cap
+// check or a claim, and reports whether the task was still ready. The
+// scheduler leases through [Store.LeaseTask], which does all of that in one step.
+//
+// Test fixture only: a blind write that is not part of store.Store (H4a). H4b decides its fate.
 func (s *Store) LeaseReadyTask(_ context.Context, taskID, workerID string, now time.Time) (bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

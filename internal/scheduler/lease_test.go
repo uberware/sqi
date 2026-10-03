@@ -82,7 +82,18 @@ const minimalRenderJSON = `{
   ]
 }`
 
-func seedLeaseFixture(t *testing.T, st *fake.Store, coresPerTask []*int) (store.Worker, []string) {
+// seedLeaseFixture seeds farm f1, queue q1, a 4-core worker w1, a running job
+// and a ready "render" step with one ready task per entry of coresPerTask.
+func seedLeaseFixture(t *testing.T, st store.Store, coresPerTask []*int) (store.Worker, []string) {
+	t.Helper()
+	return seedLeaseFixtureWith(t, st, coresPerTask, nil)
+}
+
+// seedLeaseFixtureWith is seedLeaseFixture with host requirements on the step,
+// so a test can make the lease carry usage-pool claims. Pass nil for none.
+func seedLeaseFixtureWith(
+	t *testing.T, st store.Store, coresPerTask []*int, hostReqs *store.StepHostRequirements,
+) (store.Worker, []string) {
 	t.Helper()
 	ctx := t.Context()
 	now := time.Now().UTC()
@@ -110,7 +121,7 @@ func seedLeaseFixture(t *testing.T, st *fake.Store, coresPerTask []*int) (store.
 	}
 	step, err := st.CreateStep(ctx, store.Step{
 		ID: uuid.NewString(), JobID: job.ID, Name: "render",
-		Status: store.StepStatusReady, CreatedAt: now, UpdatedAt: now,
+		Status: store.StepStatusReady, HostRequirements: hostReqs, CreatedAt: now, UpdatedAt: now,
 	})
 	if err != nil {
 		t.Fatal(err)

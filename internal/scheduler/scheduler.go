@@ -10,7 +10,7 @@
 //     ([handleLeaseRequest]). Idle workers ask for work; the scheduler selects a
 //     priority-ordered batch of ready tasks the worker is eligible for that fits
 //     its free CPU cores ([selectLeaseBatch]), atomically leases each
-//     ([store.TaskStore.LeaseReadyTask]), and replies with the assignment
+//     ([store.TaskStore.LeaseTask]), and replies with the assignment
 //     payloads. When no work is available the request parks in the waiter
 //     registry until new work appears or the hold elapses, then replies.
 //
@@ -30,12 +30,13 @@
 // Worker selection. A task is matched to a worker by capability tags,
 // compute-location affinity, and queue/farm filtering ([WorkerEligible]),
 // subject to per-queue and per-farm maximum-concurrent-task limits
-// ([policyGate]). Once a worker is chosen, a provisional [store.TaskAttempt] is
-// created and any required usage pool slots are claimed atomically
-// ([store.UsageClaimStore.TryClaimSlots]); if the pool is saturated
-// the assignment is rolled back and the task stays ready for the next tick.
-// Attempt numbers come from [store.TaskAttemptStore.LatestTaskAttempt] — 1 for
-// a fresh task, N+1 on retry.
+// ([policyGate]). Those checks are early filters. Once a worker is chosen,
+// [store.TaskStore.LeaseTask] makes the real decision in one transaction: it
+// moves the task to assigned, re-checks the queue, farm and usage-pool caps
+// against their current values, creates the provisional [store.TaskAttempt] and
+// claims any required usage pool slots. If a cap filled in the meantime nothing
+// is written and the task stays ready for the next lease request. Attempt numbers
+// are computed by the same transaction — 1 for a fresh task, N+1 on retry.
 //
 // Assignment payload. [buildAssignPayload] re-parses the job's raw OpenJD
 // template to extract the matching step's OnRun action, embedded files, and
@@ -474,110 +475,8 @@ func (s *Scheduler) Stop() {
 	}
 }
 
-// errNoWorkerAvailable signals that a task could not be leased because no
-// eligible worker/capacity was available (or a usage pool was saturated). It is
-// a skip signal, not a logged warning — the task simply stays ready for the next
-// lease request. Used by the lease path (lease.go) and the usage-claim helper.
-var errNoWorkerAvailable = errors.New("no worker available")
-
-// createAttemptAndClaimUsage creates a provisional [store.TaskAttempt] for
-// the assignment and atomically claims any required usage pool slots.
-//
-// If either operation fails the task's status is reverted to
-// [store.TaskStatusReady] so it is re-queued on the next lease request.
-// [errNoWorkerAvailable] is returned when a usage pool is at capacity so
-// the caller skips logging a warning.
-func (s *Scheduler) createAttemptAndClaimUsage(
-	ctx context.Context,
-	task store.Task,
-	worker store.Worker,
-	step store.Step,
-	pools map[string]store.UsagePool,
-	now time.Time,
-) (store.TaskAttempt, error) {
-	// The attempt record must exist before usage claims can be created
-	// (FK constraint). Determine the next AttemptNumber from the latest existing
-	// attempt so that retries are numbered correctly (1 for a fresh task, N+1
-	// on each subsequent retry).
-	nextNum, err := s.nextAttemptNumber(ctx, task.ID)
-	if err != nil {
-		s.revertTaskToReady(ctx, task.ID, "attempt number lookup error")
-		return store.TaskAttempt{}, fmt.Errorf("next attempt number for task %s: %w", task.ID, err)
-	}
-
-	attempt, err := s.store.CreateTaskAttempt(ctx, store.TaskAttempt{
-		ID:            uuid.NewString(),
-		TaskID:        task.ID,
-		WorkerID:      worker.ID,
-		AttemptNumber: nextNum,
-		Status:        store.AttemptStatusRunning,
-		StartedAt:     now,
-		CreatedAt:     now,
-	})
-	if err != nil {
-		s.revertTaskToReady(ctx, task.ID, "attempt creation error")
-		return store.TaskAttempt{}, fmt.Errorf("create task attempt for task %s: %w", task.ID, err)
-	}
-	// The scheduler already knows both fields the log-ingest path needs, so
-	// populate the cache now rather than waiting for the first log chunk to
-	// pay for a store read.
-	s.attemptCache.put(attempt.ID, attempt.WorkerID, attempt.TaskID)
-
-	// Re-check pool availability and create claim rows inside a single DB
-	// transaction so no concurrent assignment can over-subscribe a pool.
-	claims := buildUsageClaims(step, pools)
-	if len(claims) == 0 {
-		return attempt, nil
-	}
-
-	if err := s.store.TryClaimSlots(ctx, attempt.ID, claims, now); err != nil {
-		s.revertTaskToReady(ctx, task.ID, "usage claim error")
-		// The attempt row survives this failure with no terminal status ever
-		// coming for it, so nothing else would evict its cache entry. Drop it
-		// now rather than let it sit as a stale, never-reused hit.
-		s.attemptCache.evict(attempt.ID)
-		if errors.Is(err, store.ErrUsageAtCapacity) {
-			s.logger.DebugContext(
-				ctx, "scheduler: usage pool at capacity — deferring assignment",
-				slog.String("task_id", task.ID),
-				slog.String("attempt_id", attempt.ID),
-			)
-			return store.TaskAttempt{}, errNoWorkerAvailable
-		}
-		return store.TaskAttempt{}, fmt.Errorf("claim usage slots for attempt %s: %w", attempt.ID, err)
-	}
-	return attempt, nil
-}
-
-// revertTaskToReady resets a task's status back to ready after a failed
-// assignment step. Logs a warning if the revert itself fails.
-func (s *Scheduler) revertTaskToReady(ctx context.Context, taskID, reason string) {
-	if err := s.store.UpdateTaskStatus(ctx, taskID, store.TaskStatusReady); err != nil {
-		s.logger.WarnContext(
-			ctx, "scheduler: revert task assignment failed",
-			slog.String("task_id", taskID),
-			slog.String("during", reason),
-			slog.Any("error", err),
-		)
-	}
-}
-
-// nextAttemptNumber returns the AttemptNumber to use for a new [store.TaskAttempt]
-// on the given task. It is 1 for a task with no prior attempts, and
-// latest.AttemptNumber+1 on each retry.
-func (s *Scheduler) nextAttemptNumber(ctx context.Context, taskID string) (int, error) {
-	latest, err := s.store.LatestTaskAttempt(ctx, taskID)
-	if errors.Is(err, store.ErrNotFound) {
-		return 1, nil
-	}
-	if err != nil {
-		return 0, err
-	}
-	return latest.AttemptNumber + 1, nil
-}
-
 // buildUsageClaims converts the step's usage pool requirements into
-// [store.UsagePoolClaim] values ready for [store.UsageClaimStore.TryClaimSlots].
+// [store.UsagePoolClaim] values for [store.LeaseRequest.Claims].
 // Each claim gets a fresh UUID as its claim ID.
 // Pools not found in the pools map are skipped (the matcher already rejected
 // workers when the pool was missing, so this path is unreachable in practice).

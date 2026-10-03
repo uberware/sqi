@@ -8,14 +8,14 @@ import (
 	"time"
 )
 
-// ErrUsageAtCapacity is returned by [UsageClaimStore.TryClaimSlots]
-// when one or more required usage pools are saturated (active claims have
-// reached MaxConcurrent). The task should remain ready for reassignment on the
-// next scheduler tick.
+// ErrUsageAtCapacity is returned by the stores' TryClaimSlots test fixture when
+// one or more required usage pools are saturated (active claims have reached
+// MaxConcurrent). [TaskStore.LeaseTask] does not return it: a full pool is the
+// [LeasePoolFull] outcome there.
 var ErrUsageAtCapacity = errors.New("store: usage pool at capacity")
 
 // UsagePoolClaim describes a single usage pool slot to be claimed
-// atomically by [UsageClaimStore.TryClaimSlots].
+// atomically by [TaskStore.LeaseTask] (see [LeaseRequest.Claims]).
 type UsagePoolClaim struct {
 	// ClaimID is a caller-supplied UUID for the claim row to be created.
 	ClaimID string
@@ -23,8 +23,9 @@ type UsagePoolClaim struct {
 	PoolID string
 	// PoolName is used in error messages and debug logging only.
 	PoolName string
-	// MaxConcurrent is the pool's current limit. The implementation uses this
-	// value inside the transaction to avoid a second pool lookup.
+	// MaxConcurrent is the pool's limit as the caller last saw it.
+	// [TaskStore.LeaseTask] ignores it and re-reads the stored limit inside its
+	// transaction; only the TryClaimSlots test fixture uses it as given.
 	MaxConcurrent int
 }
 
@@ -112,19 +113,6 @@ type UsageClaimStore interface {
 	// where ReleasedAt IS NULL. Used by the scheduler's admission check before
 	// assigning a task that requires the pool.
 	ActiveClaimCount(ctx context.Context, poolID string) (int, error)
-
-	// TryClaimSlots atomically verifies that every pool in claims has
-	// remaining capacity and, if so, inserts a [UsageClaim] row for each.
-	// The operation runs inside a single database transaction so the
-	// count-check and insert are indivisible.
-	//
-	// Returns [ErrUsageAtCapacity] if any pool is saturated; no rows are
-	// inserted in that case. Returns [ErrConflict] if any claim ID or
-	// (task_attempt_id, pool_id) pair already exists.
-	//
-	// taskAttemptID must reference an existing [TaskAttempt] row. claimedAt
-	// is the timestamp recorded on each new claim.
-	TryClaimSlots(ctx context.Context, taskAttemptID string, claims []UsagePoolClaim, claimedAt time.Time) error
 
 	// ReleaseAttemptClaims sets ReleasedAt on every active claim
 	// (released_at IS NULL) for the given taskAttemptID. Called when a task

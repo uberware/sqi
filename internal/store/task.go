@@ -345,13 +345,6 @@ type TaskStore interface {
 	// an undeclared task (required_cores NULL) counts as the whole machine.
 	CommittedCores(ctx context.Context, workerID string, fullMachineCost int) (int, error)
 
-	// LeaseReadyTask atomically transitions a task from [TaskStatusReady] to
-	// [TaskStatusAssigned], setting assigned_worker_id and assigned_at. It
-	// returns true iff the task was still ready (exactly one row changed); a
-	// false return means another worker leased it first. This is the race guard
-	// for concurrent lease requests.
-	LeaseReadyTask(ctx context.Context, taskID, workerID string, now time.Time) (bool, error)
-
 	// LeaseTask leases one ready task to a worker in a single transaction
 	// (invariants I3 and I5):
 	//  1. move the task ready → assigned, guarded on the same eligibility

@@ -530,3 +530,281 @@ func TestH4a_FailedReportReleasesClaims(t *testing.T) {
 		})
 	}
 }
+
+// ── F12: queue and farm caps must hold under parallel leases ─────────────────
+
+// leaseDuringPolicyStore fires its hook right after policyGate reads a cap
+// count, which is the window between the cap check and the lease. policyGate
+// is the pre-filter both before and after the fix, so the hook fires at the
+// same point in both.
+type leaseDuringPolicyStore struct {
+	store.Store
+
+	hook *once
+}
+
+func (s *leaseDuringPolicyStore) CountActiveTasksInQueue(ctx context.Context, id string) (int, error) {
+	n, err := s.Store.CountActiveTasksInQueue(ctx, id)
+	s.hook.fire()
+	return n, err
+}
+
+func (s *leaseDuringPolicyStore) CountActiveTasksInFarm(ctx context.Context, id string) (int, error) {
+	n, err := s.Store.CountActiveTasksInFarm(ctx, id)
+	s.hook.fire()
+	return n, err
+}
+
+// TestH4a_F12_CapsHoldUnderParallelLease leases task A while a parallel lease
+// wins task B between A's policy check and A's lease. With a cap of one, the
+// scheduler used to count zero active tasks, pass the gate, and then assign A
+// as well, so two tasks ran under a cap of one. The lease transaction now
+// re-checks the cap with the task already counted.
+func TestH4a_F12_CapsHoldUnderParallelLease(t *testing.T) {
+	one := 1
+	cases := []struct {
+		name   string
+		setCap func(t *testing.T, st store.Store)
+		active func(t *testing.T, st store.Store) int
+	}{
+		{
+			name: "queue",
+			setCap: func(t *testing.T, st store.Store) {
+				t.Helper()
+				q, err := st.GetQueue(t.Context(), "q1")
+				if err != nil {
+					t.Fatalf("GetQueue: %v", err)
+				}
+				q.MaxConcurrentTasks = 1
+				if _, err := st.UpdateQueue(t.Context(), q); err != nil {
+					t.Fatalf("UpdateQueue: %v", err)
+				}
+			},
+			active: func(t *testing.T, st store.Store) int {
+				t.Helper()
+				n, err := st.CountActiveTasksInQueue(t.Context(), "q1")
+				if err != nil {
+					t.Fatalf("CountActiveTasksInQueue: %v", err)
+				}
+				return n
+			},
+		},
+		{
+			name: "farm",
+			setCap: func(t *testing.T, st store.Store) {
+				t.Helper()
+				f, err := st.GetFarm(t.Context(), "f1")
+				if err != nil {
+					t.Fatalf("GetFarm: %v", err)
+				}
+				f.MaxConcurrentTasks = 1
+				if _, err := st.UpdateFarm(t.Context(), f); err != nil {
+					t.Fatalf("UpdateFarm: %v", err)
+				}
+			},
+			active: func(t *testing.T, st store.Store) int {
+				t.Helper()
+				n, err := st.CountActiveTasksInFarm(t.Context(), "f1")
+				if err != nil {
+					t.Fatalf("CountActiveTasksInFarm: %v", err)
+				}
+				return n
+			},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			for name, st := range raceBackends(t) {
+				t.Run(name, func(t *testing.T) {
+					worker, ids := seedLeaseFixture(t, st, []*int{&one, &one})
+					tc.setCap(t, st)
+					taskA := mustTaskOf(t, st, ids[0])
+					wrapped := &leaseDuringPolicyStore{Store: st, hook: &once{fn: func() {
+						// Another lease wins task B between the policy count and this lease.
+						if err := st.AssignTask(context.Background(), ids[1], "w-other", time.Now()); err != nil {
+							t.Errorf("AssignTask in hook: %v", err)
+						}
+					}}}
+					s := newMetricsScheduler(wrapped, &recordBus{}, "f1")
+
+					_, _, leased, err := s.tryLeaseTask(t.Context(), taskA, worker, worker.CPUCount, "")
+					if err != nil {
+						t.Fatalf("tryLeaseTask: %v", err)
+					}
+
+					if n := tc.active(t, st); n > 1 {
+						t.Fatalf("active tasks = %d, want at most the cap of 1 (F12)", n)
+					}
+					if leased {
+						t.Fatal("tryLeaseTask leased task A although the cap was already taken")
+					}
+					if got := mustTaskOf(t, st, ids[0]); got.Status != store.TaskStatusReady {
+						t.Fatalf("task A = %q, want ready (a refused lease writes nothing)", got.Status)
+					}
+				})
+			}
+		})
+	}
+}
+
+// ── F4: a cancel racing a lease must not leave a running attempt behind ──────
+
+// racingLeaseStore fires its hook at the point where a lease has decided to go
+// ahead but has not yet written its attempt: CreateTaskAttempt (the old
+// three-call lease, after LeaseReadyTask had already committed the
+// assignment) and LeaseTask (the one-transaction lease).
+type racingLeaseStore struct {
+	store.Store
+
+	hook *once
+}
+
+func (s *racingLeaseStore) CreateTaskAttempt(ctx context.Context, a store.TaskAttempt) (store.TaskAttempt, error) {
+	s.hook.fire()
+	return s.Store.CreateTaskAttempt(ctx, a)
+}
+
+func (s *racingLeaseStore) LeaseTask(ctx context.Context, req store.LeaseRequest) (store.LeaseResult, error) {
+	s.hook.fire()
+	return s.Store.LeaseTask(ctx, req)
+}
+
+// TestH4a_F4_CancelRacingLease cancels the job just before the lease writes its
+// attempt. The old lease had already moved the task to assigned by then, so the
+// cancel closed nothing and canceled the task, and the lease then created a
+// running attempt (and an active usage claim) on a canceled task, which nothing
+// ever closed. The lease transaction now sees the canceled task and writes
+// nothing.
+func TestH4a_F4_CancelRacingLease(t *testing.T) {
+	for name, st := range raceBackends(t) {
+		t.Run(name, func(t *testing.T) {
+			pool, err := st.CreateUsagePool(t.Context(), store.UsagePool{ID: uuid.NewString(), Name: "maya", MaxConcurrent: 1})
+			if err != nil {
+				t.Fatalf("CreateUsagePool: %v", err)
+			}
+			one := 1
+			worker, ids := seedLeaseFixtureWith(t, st, []*int{&one}, &store.StepHostRequirements{UsagePools: []string{"maya"}})
+			taskA := mustTaskOf(t, st, ids[0])
+			canceller := newMetricsScheduler(st, &recordBus{}, "f1")
+			wrapped := &racingLeaseStore{Store: st, hook: &once{fn: func() {
+				if err := canceller.CancelJob(context.Background(), taskA.JobID); err != nil {
+					t.Errorf("CancelJob in hook: %v", err)
+				}
+			}}}
+			s := newMetricsScheduler(wrapped, &recordBus{}, "f1")
+
+			if _, _, _, err := s.tryLeaseTask(t.Context(), taskA, worker, worker.CPUCount, ""); err != nil {
+				t.Fatalf("tryLeaseTask: %v", err)
+			}
+
+			if got := mustTaskOf(t, st, ids[0]); got.Status != store.TaskStatusCanceled {
+				t.Fatalf("task = %q, want canceled (the hook did not run, or the lease overwrote the cancel)", got.Status)
+			}
+			attempts, err := st.ListTaskAttempts(t.Context(), ids[0])
+			if err != nil {
+				t.Fatalf("ListTaskAttempts: %v", err)
+			}
+			for _, a := range attempts {
+				if a.Status == store.AttemptStatusRunning {
+					t.Errorf("attempt %s is running on a canceled task (F4)", a.ID)
+				}
+			}
+			if v := claimViolations(t, st); len(v) != 0 {
+				t.Errorf("I3 violations: %v", v)
+			}
+			if n := activeClaimsOf(t, st, pool.ID); n != 0 {
+				t.Errorf("active claims = %d on a canceled task, want 0 (F4)", n)
+			}
+		})
+	}
+}
+
+// ── Lease outcomes other than Leased leave the task ready and write nothing ──
+
+// TestTryLeaseTask_NonLeasedOutcomesWriteNothing drives the two outcomes a
+// racing lease can produce after the scheduler's own checks passed: the task is
+// taken by another lease (Lost), and the usage pool fills (PoolFull). Neither
+// leaves an attempt or a claim behind. The old three-call lease left an
+// orphaned attempt row after a pool refusal, because it created the attempt
+// before it claimed.
+func TestTryLeaseTask_NonLeasedOutcomesWriteNothing(t *testing.T) {
+	cases := []struct {
+		name string
+		// race runs between the scheduler's checks and its lease. It may use
+		// ids[1], a second ready task in the same step.
+		race       func(t *testing.T, st store.Store, worker store.Worker, ids []string, pool store.UsagePool)
+		wantStatus store.TaskStatus
+		wantClaims int
+	}{
+		{
+			name: "lost to another lease",
+			race: func(t *testing.T, st store.Store, _ store.Worker, ids []string, _ store.UsagePool) {
+				t.Helper()
+				if err := st.AssignTask(context.Background(), ids[0], "w-other", time.Now()); err != nil {
+					t.Errorf("AssignTask in hook: %v", err)
+				}
+			},
+			wantStatus: store.TaskStatusAssigned,
+			wantClaims: 0,
+		},
+		{
+			name: "pool filled by another lease",
+			race: func(t *testing.T, st store.Store, worker store.Worker, ids []string, pool store.UsagePool) {
+				t.Helper()
+				res, err := st.LeaseTask(context.Background(), store.LeaseRequest{
+					TaskID: ids[1], WorkerID: worker.ID, AttemptID: uuid.NewString(), Now: time.Now().UTC(),
+					Claims: []store.UsagePoolClaim{{
+						ClaimID: uuid.NewString(), PoolID: pool.ID, PoolName: pool.Name, MaxConcurrent: pool.MaxConcurrent,
+					}},
+				})
+				if err != nil || res.Outcome != store.LeaseLeased {
+					t.Errorf("competing LeaseTask in hook = %q, %v; want leased", res.Outcome, err)
+				}
+			},
+			wantStatus: store.TaskStatusReady,
+			wantClaims: 1, // the competing lease's own claim, and only that
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			for name, st := range raceBackends(t) {
+				t.Run(name, func(t *testing.T) {
+					pool, err := st.CreateUsagePool(t.Context(), store.UsagePool{ID: uuid.NewString(), Name: "maya", MaxConcurrent: 1})
+					if err != nil {
+						t.Fatalf("CreateUsagePool: %v", err)
+					}
+					one := 1
+					worker, ids := seedLeaseFixtureWith(t, st, []*int{&one, &one}, &store.StepHostRequirements{UsagePools: []string{"maya"}})
+					taskA := mustTaskOf(t, st, ids[0])
+					wrapped := &racingLeaseStore{Store: st, hook: &once{fn: func() { tc.race(t, st, worker, ids, pool) }}}
+					s := newMetricsScheduler(wrapped, &recordBus{}, "f1")
+
+					payload, cost, leased, err := s.tryLeaseTask(t.Context(), taskA, worker, worker.CPUCount, "")
+					if err != nil {
+						t.Fatalf("tryLeaseTask: %v", err)
+					}
+
+					if leased || payload != nil || cost != 0 {
+						t.Fatalf("tryLeaseTask = (payload %d bytes, cost %d, leased %v), want a skip", len(payload), cost, leased)
+					}
+					if got := mustTaskOf(t, st, ids[0]); got.Status != tc.wantStatus {
+						t.Fatalf("task = %q, want %q", got.Status, tc.wantStatus)
+					}
+					attempts, err := st.ListTaskAttempts(t.Context(), ids[0])
+					if err != nil {
+						t.Fatalf("ListTaskAttempts: %v", err)
+					}
+					if len(attempts) != 0 {
+						t.Fatalf("task has %d attempt rows after a refused lease, want 0", len(attempts))
+					}
+					if n := activeClaimsOf(t, st, pool.ID); n != tc.wantClaims {
+						t.Fatalf("active claims = %d, want %d", n, tc.wantClaims)
+					}
+					if v := claimViolations(t, st); len(v) != 0 {
+						t.Fatalf("I3 violations: %v", v)
+					}
+				})
+			}
+		})
+	}
+}

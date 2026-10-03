@@ -16,6 +16,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/google/uuid"
+
 	"github.com/uberware/sqi/internal/store"
 )
 
@@ -255,7 +257,9 @@ func (s *Scheduler) leaseGatesPass(
 
 // tryLeaseTask attempts to lease one task to worker if it is eligible and fits
 // free cores. Returns (payload, coreCost, true, nil) on success; (nil, 0, false,
-// nil) when skipped; a non-nil error only on an unexpected store failure.
+// nil) when skipped, including when the lease transaction refuses it because a
+// parallel lease changed the picture after the gates passed; a non-nil error only
+// on an unexpected store failure.
 func (s *Scheduler) tryLeaseTask(
 	ctx context.Context,
 	task store.Task,
@@ -285,34 +289,54 @@ func (s *Scheduler) tryLeaseTask(
 		return nil, 0, false, nil
 	}
 
-	// Win the race for this still-ready task.
-	now := time.Now().UTC()
-	leased, err := s.store.LeaseReadyTask(ctx, task.ID, worker.ID, now)
+	// The gates above are cheap early filters over values read a moment ago.
+	// This call is the decision: one transaction leases the task, re-checks the
+	// queue, farm and pool caps against their current values, and writes the
+	// attempt and its claims (invariants I3 and I5). Every outcome other than
+	// Leased writes nothing, so there is nothing to revert and the task simply
+	// stays ready (or is no longer ours) for the next lease request.
+	res, err := s.store.LeaseTask(ctx, store.LeaseRequest{
+		TaskID:    task.ID,
+		WorkerID:  worker.ID,
+		AttemptID: uuid.NewString(),
+		Now:       time.Now().UTC(),
+		Claims:    buildUsageClaims(gd.step, gd.pools),
+	})
 	if err != nil {
 		return nil, 0, false, fmt.Errorf("lease: lease task %s: %w", task.ID, err)
 	}
-	if !leased {
-		return nil, 0, false, nil // another worker got it
+	if res.Outcome != store.LeaseLeased {
+		s.logLeaseRefused(ctx, task.ID, res)
+		return nil, 0, false, nil // skip, do not propagate: a lost race is not an error
 	}
-
-	// Attempt + usage claim (reverts task to ready on failure internally).
-	attempt, claimErr := s.createAttemptAndClaimUsage(ctx, task, worker, gd.step, gd.pools, now)
-	if claimErr != nil {
-		if !errors.Is(claimErr, errNoWorkerAvailable) {
-			s.logger.WarnContext(
-				ctx, "lease: createAttemptAndClaimUsage failed — task reverted to ready",
-				slog.String("task_id", task.ID),
-				slog.Any("error", claimErr),
-			)
-		}
-		return nil, 0, false, nil // task already reverted internally; skip, do not propagate
-	}
+	attempt := res.Attempt
+	// The scheduler already knows both fields the log-ingest path needs, so
+	// populate the cache now rather than waiting for the first log chunk to
+	// pay for a store read.
+	s.attemptCache.put(attempt.ID, attempt.WorkerID, attempt.TaskID)
 
 	payload, err = buildAssignPayload(ctx, task, worker, gd.job, gd.step, gd.queue, attempt.ID, s.store)
 	if err != nil {
 		return nil, 0, false, fmt.Errorf("lease: build payload for %s: %w", task.ID, err)
 	}
 	return payload, cost, true, nil
+}
+
+// logLeaseRefused records why [store.TaskStore.LeaseTask] did not lease a task.
+// Every refusal is a skip, never an error: another lease took the task or it
+// stopped being leasable (LeaseLost), or a cap filled between the gates and the
+// lease (LeaseQueueFull, LeaseFarmFull, LeasePoolFull). Only a full usage pool is
+// logged, because the policy gate and the lost-race skip have always been silent
+// and a pool name is the one thing an operator can act on.
+func (s *Scheduler) logLeaseRefused(ctx context.Context, taskID string, res store.LeaseResult) {
+	if res.Outcome != store.LeasePoolFull {
+		return
+	}
+	s.logger.DebugContext(
+		ctx, "scheduler: usage pool at capacity — deferring assignment",
+		slog.String("task_id", taskID),
+		slog.String("pool", res.FullPool),
+	)
 }
 
 // fullMachineCost returns a task's effective CPU cost for worker: its declared
