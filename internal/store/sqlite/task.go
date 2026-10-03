@@ -659,8 +659,9 @@ func (s *Store) CountReadyTasksByQueue(ctx context.Context, farmID string, now t
 //
 // The SELECT and UPDATE execute inside a single SQLite transaction so no
 // concurrent scheduler tick can assign a task between observation and
-// cancellation.  The rows cursor is closed inside a helper closure before the
-// UPDATE runs, which avoids any potential cursor/write contention on the
+// cancellation. The SELECT is [sqlSelectActiveJobTasks], the one
+// [Store.CancelJobExecution] runs, and [queryTasksTx] closes its cursor before
+// the UPDATE runs, which avoids any cursor/write contention on the
 // single-connection pool.
 //
 // Test fixture only: a blind write that is not part of store.Store (H4a). H4b decides its fate.
@@ -672,33 +673,11 @@ func (s *Store) CancelJobTasks(ctx context.Context, jobID string, now time.Time,
 	defer func() { _ = tx.Rollback() }() //nolint:errcheck // rollback is best-effort after commit
 
 	// Capture tasks that are currently assigned or running so the scheduler can
-	// publish cancel signals to their workers.  We read into a slice before the
-	// UPDATE so the cursor is closed by the time we write.
-	active, err := func() ([]store.Task, error) {
-		rows, queryErr := tx.QueryContext(ctx, `
-SELECT id, job_id, step_id, name, parameters, status,
-       assigned_worker_id, assigned_at, created_at, updated_at, required_cores,
-       unschedulable_reason, failed_attempts, retry_after, failure_reason
-FROM   tasks
-WHERE  job_id = ?
-  AND  status IN ('assigned', 'running')`, jobID)
-		if queryErr != nil {
-			return nil, fmt.Errorf("sqlite: select active tasks for job %s: %w", jobID, mapErr(queryErr))
-		}
-		defer rows.Close()
-
-		var tasks []store.Task
-		for rows.Next() {
-			t, scanErr := scanTask(rows)
-			if scanErr != nil {
-				return nil, scanErr
-			}
-			tasks = append(tasks, t)
-		}
-		return tasks, rows.Err()
-	}()
+	// publish cancel signals to their workers. They are read into a slice before
+	// the UPDATE, so the cursor is closed by the time we write.
+	active, err := queryTasksTx(ctx, tx, sqlSelectActiveJobTasks, jobID)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("sqlite: select active tasks for job %s: %w", jobID, err)
 	}
 
 	// Transition all non-terminal tasks to canceled, clearing the worker

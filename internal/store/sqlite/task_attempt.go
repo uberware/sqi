@@ -76,14 +76,9 @@ ORDER BY attempt_number ASC`
 	// sqlUpdateAttempt writes only while the attempt is still running, so a
 	// late or echoed report can never overwrite an attempt something else
 	// already closed (F16). The status test is evaluated inside the UPDATE (I1).
-	sqlUpdateAttempt = `
-UPDATE task_attempts
-SET status    = ?,
-    exit_code = ?,
-    ended_at  = ?,
-    session_id = COALESCE(NULLIF(?, ''), session_id),
-    message = COALESCE(NULLIF(?, ''), message)
-WHERE id = ? AND status = 'running'
+	// It is [sqlCloseRunningAttempt], the same guarded write with the same
+	// binds, returning the row it wrote.
+	sqlUpdateAttempt = sqlCloseRunningAttempt + `
 RETURNING ` + attemptCols
 
 	// sqlTerminateWorkerAttempts closes out all running attempts for tasks
