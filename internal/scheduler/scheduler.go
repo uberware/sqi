@@ -487,12 +487,17 @@ func (s *Scheduler) Stop() {
 	}
 }
 
-// reconcileStuckSteps finalizes, once at start, every step whose tasks are all
-// terminal but which no future task report will ever finalize. v0.3.0 left
-// such steps behind when a step had more than [store.MaxLimit] tasks (H4a F6):
-// completion decided from one page of tasks and never decided at all. Nothing
-// reports on those tasks again, so without this pass the step, its job, the
-// steps behind it and the jobs blocked on it would stay stuck for good.
+// reconcileStuckSteps finalizes, once at start, every step of a live
+// (non-terminal) job whose tasks are all terminal but which was never
+// finalized, and which no future task report will ever finalize. Two things
+// leave such steps behind. v0.3.0 left them when a step had more than
+// [store.MaxLimit] tasks (H4a F6): completion decided from one page of tasks
+// and never decided at all. And a single-task cancel of a job's last open task
+// strands its step the same way, because [Scheduler.CancelTask] does not drive
+// step completion; that bug predates H4a and its root cause is outside it, so
+// this pass repairs it as a side effect, at the next start. Nothing reports on
+// those tasks again, so without this pass the step, its job, the steps behind
+// it and the jobs blocked on it would stay stuck.
 //
 // The repair is deliberately not a data migration. Finalizing a step has
 // downstream effects (dependency propagation keyed on step names, the
@@ -502,12 +507,15 @@ func (s *Scheduler) Stop() {
 // Each step instead goes through [Scheduler.checkStepCompletion], the path a
 // task report takes, so the repair cannot differ from normal completion.
 //
-// It is idempotent: every write on that path is guarded, and on a healthy farm
-// the one [store.StepStore.ListStuckSteps] query returns nothing and nothing
-// is written. A step that fails is logged and skipped so one bad row cannot
-// block the rest, and it stays stuck, so the next start retries it. Cross-job
-// dependents of a job this pass finalizes are reconciled by the same completion
-// path, with [Scheduler.sweepBlockedJobs] as its backstop.
+// It is idempotent: every write on that path is guarded, and on a farm with no
+// such steps the one [store.StepStore.ListStuckSteps] query returns nothing and
+// nothing is written. Steps of jobs that are already terminal are deliberately
+// ignored: canceling a job leaves its steps non-terminal, so they would
+// otherwise be rewritten on every start for no downstream effect. A step that
+// fails is logged and skipped so one bad row cannot block the rest, and it
+// stays stuck, so the next start retries it. Cross-job dependents of a job this
+// pass finalizes are reconciled by the same completion path, with
+// [Scheduler.sweepBlockedJobs] as its backstop.
 func (s *Scheduler) reconcileStuckSteps(ctx context.Context) {
 	steps, err := s.store.ListStuckSteps(ctx)
 	if err != nil {
@@ -527,7 +535,7 @@ func (s *Scheduler) reconcileStuckSteps(ctx context.Context) {
 			}
 			continue
 		}
-		s.logger.InfoContext(ctx, "scheduler: reconciled step left stuck by an earlier release",
+		s.logger.InfoContext(ctx, "scheduler: reconciled a step of a live job whose tasks were all terminal but never finalized",
 			slog.String("step_id", step.ID), slog.String("job_id", step.JobID))
 	}
 }

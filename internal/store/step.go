@@ -158,7 +158,17 @@ type StepStore interface {
 	CancelPendingStep(ctx context.Context, id, reason string, now time.Time) (bool, []Task, error)
 
 	// ListStuckSteps returns every non-terminal step that has at least one task
-	// and no non-terminal task: steps FinalizeStep would finalize but that no
-	// future task report will ever trigger. Used once at scheduler start.
+	// and no non-terminal task, and whose job is not terminal: steps
+	// FinalizeStep would finalize but that no future task report will ever
+	// trigger. Used once at scheduler start. Ordered by job ID, then step order.
+	//
+	// The job condition is deliberate. Canceling a job writes its tasks and its
+	// job row but never its steps, so the steps of every user-canceled job stay
+	// ready or pending with all tasks terminal and would all be listed, and
+	// rewritten, on every start. The repair target is a live job whose step
+	// never finalized (so the job never completed); a terminal job has no
+	// downstream that needs its steps finalized, and jobs blocked on it follow
+	// its job status. A paused job is live and is listed. A step whose job row
+	// is missing is not listed.
 	ListStuckSteps(ctx context.Context) ([]Step, error)
 }

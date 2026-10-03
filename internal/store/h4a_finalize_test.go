@@ -188,3 +188,62 @@ func TestListStuckSteps(t *testing.T) {
 		})
 	}
 }
+
+// TestListStuckSteps_OnlyStepsOfLiveJobs pins the job condition: a step that
+// looks stuck by its tasks alone is listed only when its job is not terminal.
+// Canceling a job writes its tasks and its job row but never its steps, so
+// every step of a user-canceled job is left ready or pending with all tasks
+// terminal; listing those would make a healthy farm rewrite them on every start.
+// A completed or failed job can carry the same shape, and none of them has
+// downstream work that needs its steps finalized. A running job (the F6 case)
+// and a paused one are live and ARE listed.
+func TestListStuckSteps_OnlyStepsOfLiveJobs(t *testing.T) {
+	cases := []struct {
+		jobStatus store.JobStatus
+		task      store.TaskStatus // the terminal task the stuck-looking step holds
+		listed    bool
+	}{
+		{store.JobStatusRunning, store.TaskStatusSucceeded, true},
+		{store.JobStatusPaused, store.TaskStatusSucceeded, true},
+		{store.JobStatusCanceled, store.TaskStatusCanceled, false}, // what CancelJobExecution leaves behind
+		{store.JobStatusCompleted, store.TaskStatusSucceeded, false},
+		{store.JobStatusFailed, store.TaskStatusFailed, false},
+	}
+	for name, st := range newStores(t) {
+		t.Run(name, func(t *testing.T) {
+			// One job per case, all in the first job's farm and queue.
+			var shared *h4aGraph
+			stepOf := map[store.JobStatus]string{}
+			wantCount := 0
+			for _, tc := range cases {
+				g := seedGraph(t, st, graphOpts{jobStatus: tc.jobStatus, share: shared}, stepSpec{
+					name: "s", status: store.StepStatusReady, tasks: []store.TaskStatus{tc.task},
+				})
+				if shared == nil {
+					shared = &g
+				}
+				stepOf[tc.jobStatus] = g.Steps["s"].ID
+				if tc.listed {
+					wantCount++
+				}
+			}
+
+			stuck, err := st.ListStuckSteps(t.Context())
+			if err != nil {
+				t.Fatalf("ListStuckSteps: %v", err)
+			}
+			got := map[string]bool{}
+			for _, s := range stuck {
+				got[s.ID] = true
+			}
+			for _, tc := range cases {
+				if listed := got[stepOf[tc.jobStatus]]; listed != tc.listed {
+					t.Errorf("step of a %s job: listed = %v, want %v", tc.jobStatus, listed, tc.listed)
+				}
+			}
+			if len(stuck) != wantCount {
+				t.Errorf("ListStuckSteps returned %d steps, want %d", len(stuck), wantCount)
+			}
+		})
+	}
+}

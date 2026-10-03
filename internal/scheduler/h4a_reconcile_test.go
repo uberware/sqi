@@ -303,6 +303,11 @@ func seedStuckFarm(t *testing.T, st store.Store, bigTasks int) stuckFarm {
 	// A stuck step that failed: its dependent, and that dependent's dependent,
 	// can never run and must be canceled by the cascade.
 	bad := newReconcileJob("bad", store.JobStatusRunning)
+	// ListStuckSteps orders by job ID, so give this job an ID that sorts before
+	// every random one: the step of this job is then always the FIRST the pass
+	// handles, and a test that makes it fail proves the pass goes on to the rest
+	// rather than depending on where a random UUID happened to land.
+	bad.ID = "00000000-" + bad.ID[len("00000000-"):]
 	badStep := newReconcileStep(bad.ID, "Bad", 0, store.StepStatusRunning)
 	downStep := newReconcileStep(bad.ID, "Down", 1, store.StepStatusPending, "Bad")
 	tailStep := newReconcileStep(bad.ID, "Tail", 2, store.StepStatusPending, "Down")
@@ -351,9 +356,11 @@ type healthyFarm struct {
 	jobs []string
 }
 
-// seedHealthyFarm seeds a farm with nothing to repair, covering every shape the
+// seedHealthyFarm seeds a farm with nothing to repair, covering the shapes the
 // stuck-step query has to leave alone: work in flight, a step with no tasks at
-// all, finished jobs, a failed job with a canceled dependent, and a blocked job.
+// all, finished jobs, a failed job with a canceled dependent, a blocked job,
+// and the two terminal-job shapes whose steps look stuck by their tasks alone,
+// a job the user canceled and a failed job holding a never-finalized step.
 func seedHealthyFarm(t *testing.T, st store.Store) healthyFarm {
 	t.Helper()
 	seedReconcileFarm(t, st)
@@ -395,6 +402,45 @@ func seedHealthyFarm(t *testing.T, st store.Store) healthyFarm {
 		Tasks: reconcileTasks(blocked.ID, blockedStep.ID, store.TaskStatusPending),
 	})
 	f.jobs = append(f.jobs, blocked.ID)
+
+	// A job the user canceled, through the same two calls api/jobs.go makes.
+	// They write the job's tasks and the job row but never its steps, so the job
+	// ends up terminal with every step still non-terminal and every task
+	// canceled: stuck-looking by its tasks alone, and not stuck at all, because
+	// nothing downstream of a terminal job needs its steps finalized.
+	userCanceled := newReconcileJob("user-canceled", store.JobStatusRunning)
+	cancelRender := newReconcileStep(userCanceled.ID, "Render", 0, store.StepStatusRunning)
+	cancelLater := newReconcileStep(userCanceled.ID, "Later", 1, store.StepStatusPending, "Render")
+	cancelTasks := reconcileTasks(userCanceled.ID, cancelRender.ID, store.TaskStatusRunning, store.TaskStatusReady)
+	cancelTasks = append(cancelTasks, newReconcileTask(userCanceled.ID, cancelLater.ID, 0, store.TaskStatusPending))
+	submitReconcile(t, st, store.JobSubmission{
+		Job: userCanceled, Steps: []store.Step{cancelRender, cancelLater}, Tasks: cancelTasks,
+	})
+	canceler := newReconcileScheduler(st, &recordBus{}, ws.NoopNotifier{})
+	if err := canceler.CancelJob(t.Context(), userCanceled.ID); err != nil {
+		t.Fatalf("CancelJob: %v", err)
+	}
+	if err := st.CancelJobStatus(t.Context(), userCanceled.ID); err != nil {
+		t.Fatalf("CancelJobStatus: %v", err)
+	}
+	// The fixture only means something if the cancel really left this shape.
+	wantJobStatus(t, st, userCanceled.ID, "user-canceled (seeded)", store.JobStatusCanceled)
+	wantStepStatus(t, st, cancelRender.ID, "user-canceled/Render (seeded)", store.StepStatusRunning)
+	wantStepStatus(t, st, cancelLater.ID, "user-canceled/Later (seeded)", store.StepStatusPending)
+	for _, task := range cancelTasks {
+		wantTaskStatus(t, st, task.ID, "user-canceled task (seeded)", store.TaskStatusCanceled, store.FailureReasonCanceledByUser)
+	}
+	f.jobs = append(f.jobs, userCanceled.ID)
+
+	// A failed job with a step that was never finalized and holds only terminal
+	// tasks. However it got that way, its job is terminal, so it is left alone.
+	orphaned := newReconcileJob("orphaned", store.JobStatusFailed)
+	orphanedStep := newReconcileStep(orphaned.ID, "Orphan", 0, store.StepStatusReady)
+	submitReconcile(t, st, store.JobSubmission{
+		Job: orphaned, Steps: []store.Step{orphanedStep},
+		Tasks: reconcileTasks(orphaned.ID, orphanedStep.ID, store.TaskStatusSucceeded, store.TaskStatusFailed),
+	})
+	f.jobs = append(f.jobs, orphaned.ID)
 	return f
 }
 

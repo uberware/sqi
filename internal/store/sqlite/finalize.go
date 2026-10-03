@@ -44,10 +44,18 @@ WHERE  id = ?
                    AND s.status NOT IN ('completed', 'failed', 'canceled'))
 RETURNING status`
 
-	// sqlListStuckSteps selects the steps sqlFinalizeStep would finalize now.
+	// sqlListStuckSteps selects the steps sqlFinalizeStep would finalize now,
+	// restricted to steps of a job that is not itself terminal. The job
+	// condition is what keeps a healthy farm quiet: canceling a job writes its
+	// tasks and its job row but never its steps, so every step of a canceled job
+	// still in retention looks stuck by its tasks alone and would be rewritten
+	// for nothing. A terminal job has no downstream that needs its steps
+	// finalized, and its cross-job dependents follow the job's own status.
 	sqlListStuckSteps = `SELECT ` + stepCols + `
 FROM   steps
 WHERE  status NOT IN ('completed', 'failed', 'canceled')
+  AND  EXISTS     (SELECT 1 FROM jobs j WHERE j.id = steps.job_id
+                   AND j.status NOT IN ('completed', 'failed', 'canceled'))
   AND  EXISTS     (SELECT 1 FROM tasks t WHERE t.step_id = steps.id)
   AND  NOT EXISTS (SELECT 1 FROM tasks t WHERE t.step_id = steps.id
                    AND t.status NOT IN ('succeeded', 'failed', 'canceled'))

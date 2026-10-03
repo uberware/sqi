@@ -103,7 +103,9 @@ func (s *Store) FinalizeJob(_ context.Context, id string, now time.Time) (store.
 	return out, true, nil
 }
 
-// ListStuckSteps implements [store.StepStore].
+// ListStuckSteps implements [store.StepStore]. Like the SQLite query it lists
+// only steps of a job that exists and is not terminal: canceling a job leaves
+// its steps untouched, so a terminal job's steps would otherwise all look stuck.
 func (s *Store) ListStuckSteps(_ context.Context) ([]store.Step, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -114,6 +116,10 @@ func (s *Store) ListStuckSteps(_ context.Context) ([]store.Step, error) {
 	var out []store.Step
 	for id, st := range s.steps {
 		if terminalStep(st.Status) || !hasTask[id] || s.stepOutcomeLocked(id) == "" {
+			continue
+		}
+		// SQLite's EXISTS on jobs also excludes a step whose job row is missing.
+		if j, ok := s.jobs[st.JobID]; !ok || j.Status.IsTerminal() {
 			continue
 		}
 		st.DependsOn = copySlice(st.DependsOn)
