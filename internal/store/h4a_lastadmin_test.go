@@ -53,9 +53,29 @@ func TestLastAdminGuard(t *testing.T) {
 			if _, err := st.UpdateUserKeepingAdmin(ctx, renamed); err != nil {
 				t.Fatalf("a harmless edit of the last admin = %v, want nil", err)
 			}
-			// Directory sync keeps its authority.
+			got, err = st.GetUser(ctx, a.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got.DisplayName != "still admin" || got.Role != "admin" || got.Disabled {
+				t.Fatalf("after the harmless edit: display=%q role=%q disabled=%v, want %q, admin, false",
+					got.DisplayName, got.Role, got.Disabled, "still admin")
+			}
+			// Directory sync keeps its authority: the unguarded UpdateUser may demote
+			// the last admin (spec 5.5), and the write must actually land.
 			if _, err := st.UpdateUser(ctx, demoted); err != nil {
 				t.Fatalf("plain UpdateUser demoting the last admin = %v, want nil (directory sync)", err)
+			}
+			got, err = st.GetUser(ctx, a.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got.Role != "viewer" || got.DisplayName != demoted.DisplayName {
+				t.Fatalf("after the plain demotion: role=%q display=%q, want viewer, %q",
+					got.Role, got.DisplayName, demoted.DisplayName)
+			}
+			if n, err := st.CountAdmins(ctx); err != nil || n != 0 {
+				t.Fatalf("enabled admins after directory sync demoted the last one = %d, %v; want 0, nil", n, err)
 			}
 		})
 	}

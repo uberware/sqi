@@ -33,13 +33,20 @@ FROM users WHERE auth_source = ? AND external_id = ? AND external_id != ''`
 SELECT id, username, display_name, password_hash, role, auth_source, external_id, disabled, created_at, updated_at
 FROM users ORDER BY username`
 
-	// auth_source and external_id are deliberately absent from the SET list:
-	// an account's credential backend and its provider-assigned identity are
-	// both fixed at creation.
-	sqlUpdateUser = `
+	// sqlUpdateUserHead is the write that plain and guarded updates share, so a
+	// future column lands in both or in neither; its placeholders are bound by
+	// updateUserArgs. auth_source and external_id are deliberately absent from
+	// the SET list: an account's credential backend and its provider-assigned
+	// identity are both fixed at creation.
+	sqlUpdateUserHead = `
 UPDATE users SET display_name = ?, role = ?, disabled = ?, updated_at = ?
-WHERE id = ?
+WHERE id = ?`
+
+	// sqlUserReturning hands back the whole updated row, in scanUser's order.
+	sqlUserReturning = `
 RETURNING id, username, display_name, password_hash, role, auth_source, external_id, disabled, created_at, updated_at`
+
+	sqlUpdateUser = sqlUpdateUserHead + sqlUserReturning
 
 	sqlSetUserPassword = `UPDATE users SET password_hash = ?, updated_at = ? WHERE id = ?` //nolint:gosec // G101: SQL text, not a credential
 
@@ -65,13 +72,11 @@ RETURNING id, username, display_name, password_hash, role, auth_source, external
 
 	// sqlUpdateUserKeepingAdmin is sqlUpdateUser refused when the row is the
 	// last enabled admin and the new role/disabled pair would make it
-	// something else. The two trailing placeholders are the NEW role and
-	// disabled values, so a harmless edit of the last admin still lands.
-	sqlUpdateUserKeepingAdmin = `
-UPDATE users SET display_name = ?, role = ?, disabled = ?, updated_at = ?
-WHERE id = ?
-  AND NOT (` + sqlLastLiveAdmin + ` AND NOT (? = 'admin' AND ? = 0))
-RETURNING id, username, display_name, password_hash, role, auth_source, external_id, disabled, created_at, updated_at`
+	// something else. The two trailing placeholders follow updateUserArgs's and
+	// are the NEW role and disabled values, so a harmless edit of the last
+	// admin still lands.
+	sqlUpdateUserKeepingAdmin = sqlUpdateUserHead + `
+  AND NOT (` + sqlLastLiveAdmin + ` AND NOT (? = 'admin' AND ? = 0))` + sqlUserReturning
 
 	sqlListLiveAdminIDs = `SELECT id FROM users WHERE role = 'admin' AND disabled = 0 ORDER BY id`
 )
@@ -140,10 +145,15 @@ func (s *Store) ListUsers(ctx context.Context) ([]store.User, error) {
 
 // UpdateUser implements [store.UserStore].
 func (s *Store) UpdateUser(ctx context.Context, u store.User) (store.User, error) {
-	now := timeToText(time.Now().UTC())
-	row := s.stmtUpdateUser.QueryRowContext(ctx, u.DisplayName, u.Role, boolToInt(u.Disabled), now, u.ID)
+	row := s.stmtUpdateUser.QueryRowContext(ctx, updateUserArgs(u, timeToText(time.Now().UTC()))...)
 	out, err := scanUser(row)
 	return out, mapErr(err)
+}
+
+// updateUserArgs binds sqlUpdateUserHead's placeholders, in order. Plain and
+// guarded updates both take their arguments from here.
+func updateUserArgs(u store.User, now string) []any {
+	return []any{u.DisplayName, u.Role, boolToInt(u.Disabled), now, u.ID}
 }
 
 // SetUserPassword implements [store.UserStore].
@@ -193,9 +203,9 @@ func (s *Store) SetUserDisplayName(ctx context.Context, id, displayName string) 
 func (s *Store) UpdateUserKeepingAdmin(ctx context.Context, u store.User) (store.User, error) {
 	var out store.User
 	err := s.withAdminAnchors(ctx, func(tx *sql.Tx) error {
-		d := boolToInt(u.Disabled)
-		row := tx.QueryRowContext(ctx, sqlUpdateUserKeepingAdmin,
-			u.DisplayName, u.Role, d, timeToText(time.Now().UTC()), u.ID, u.Role, d)
+		// The guard's own two placeholders carry the NEW role and disabled values.
+		args := append(updateUserArgs(u, timeToText(time.Now().UTC())), u.Role, boolToInt(u.Disabled))
+		row := tx.QueryRowContext(ctx, sqlUpdateUserKeepingAdmin, args...)
 		var err error
 		out, err = scanUser(row)
 		if errors.Is(err, sql.ErrNoRows) {
