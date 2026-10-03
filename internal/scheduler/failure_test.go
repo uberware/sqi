@@ -568,19 +568,10 @@ func TestHandleTaskFailed_CancelRace_DoesNotResurrectTask(t *testing.T) {
 	ctx := t.Context()
 	now := time.Now().UTC()
 
-	// The CancelTask sequence lands first: close the attempt as canceled,
-	// cancel the task, stamp the durable reason.
-	att := h.current["t1"]
-	att.Status = store.AttemptStatusCanceled
-	att.EndedAt = &now
-	if _, err := h.st.UpdateTaskAttempt(ctx, att); err != nil {
-		t.Fatalf("UpdateTaskAttempt: %v", err)
-	}
-	if err := h.st.UpdateTaskStatus(ctx, "t1", store.TaskStatusCanceled); err != nil {
-		t.Fatalf("UpdateTaskStatus: %v", err)
-	}
-	if err := h.st.SetTaskFailureReasonIfEmpty(ctx, "t1", store.FailureReasonCanceledByUser); err != nil {
-		t.Fatalf("SetTaskFailureReasonIfEmpty: %v", err)
+	// The cancel lands first: one store operation closes the attempt as
+	// canceled, cancels the task and stamps the durable reason.
+	if _, canceled, err := h.st.CancelTaskExecution(ctx, "t1", store.FailureReasonCanceledByUser, now); err != nil || !canceled {
+		t.Fatalf("CancelTaskExecution = (%v, %v), want canceled", canceled, err)
 	}
 
 	// The worker's in-flight "failed" report is processed afterwards.

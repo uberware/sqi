@@ -247,7 +247,11 @@ func (s *Store) ReleaseAttemptClaims(_ context.Context, taskAttemptID string, re
 }
 
 // ReleaseJobClaims sets ReleasedAt on every active claim held by any
-// attempt for tasks belonging to the given job. Returns the number released.
+// attempt for tasks belonging to the given job. Returns the number released. A
+// job is canceled through [Store.CancelJobExecution], which releases only the
+// claims of closed attempts, in the same step that closes them.
+//
+// Test fixture only: a blind write that is not part of store.Store (H4a). H4b decides its fate.
 func (s *Store) ReleaseJobClaims(_ context.Context, jobID string, releasedAt time.Time) (int, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

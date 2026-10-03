@@ -298,22 +298,45 @@ type TaskStore interface {
 	// still backing off, or under an auto-parked job).
 	CountReadyTasksByQueue(ctx context.Context, farmID string, now time.Time) (map[string]int, error)
 
-	// CancelJobTasks transitions all non-terminal tasks for the given job to
-	// [TaskStatusCanceled], clearing AssignedWorkerID and AssignedAt on each,
-	// and returns the subset that were in [TaskStatusAssigned] or
-	// [TaskStatusRunning] at the time of the call (with their AssignedWorkerID
-	// intact) so the caller can publish NATS cancel signals to the appropriate
-	// workers.
+	// CancelJobExecution cancels a job's work in one transaction (invariant I3),
+	// in this statement order:
+	//  1. move every non-terminal task of the job (pending, ready, assigned or
+	//     running) to [TaskStatusCanceled], clearing AssignedWorkerID and
+	//     AssignedAt, and stamp reason as FailureReason on each task that has
+	//     none yet, so a more specific cause recorded earlier (e.g. a
+	//     cascade-cancel) is never clobbered;
+	//  2. close every running attempt of the job's tasks as
+	//     [AttemptStatusCanceled], ended at now;
+	//  3. release every active claim held by an attempt of the job's tasks that
+	//     is no longer running.
+	// It returns the tasks that were in [TaskStatusAssigned] or
+	// [TaskStatusRunning] when step 1 ran, each as it was before the cancel (its
+	// AssignedWorkerID intact), so the caller can signal the workers. Tasks
+	// already terminal are not modified, and a job with nothing left to cancel
+	// returns no tasks and no error. now stamps the tasks, the attempts and the
+	// claims. The job's own status is not changed; that is
+	// [JobStore.CancelJobStatus].
 	//
-	// A non-empty reason is stamped as FailureReason on each canceled task
-	// unless the task already carries one, so a more specific cause recorded
-	// earlier (e.g. a cascade-cancel) is never clobbered.
+	// Statement order is part of the contract on Postgres: tasks are canceled
+	// first, then attempts closed and claims released, so a concurrent LeaseTask
+	// holding a task row is waited for and its attempt and claims are seen.
+	CancelJobExecution(ctx context.Context, jobID, reason string, now time.Time) ([]Task, error)
+
+	// CancelTaskExecution cancels one task in one transaction (invariant I3),
+	// in the same statement order as [TaskStore.CancelJobExecution]: move the
+	// task to [TaskStatusCanceled] (stamping reason only if it has none), close
+	// its running attempt as [AttemptStatusCanceled], then release the claims
+	// of its closed attempts. Unlike the job-wide cancel it leaves
+	// AssignedWorkerID and AssignedAt in place, so a canceled task still shows
+	// the worker that held it.
 	//
-	// The SELECT and UPDATE run inside a single database transaction so no
-	// concurrent assignment can race between observation and cancellation.
-	// Tasks already in a terminal state (succeeded, failed, canceled) are not
-	// modified.
-	CancelJobTasks(ctx context.Context, jobID string, now time.Time, reason string) ([]Task, error)
+	// It returns the task as it was before the cancel, and whether it was
+	// canceled. A task that is already terminal, whether it was when the call
+	// started or it completed first, is returned unchanged with false and a
+	// nil error: that is the "lost the race to completion" outcome, not a
+	// failure. An unknown task is [ErrNotFound]. The same statement-order
+	// contract applies on Postgres.
+	CancelTaskExecution(ctx context.Context, taskID, reason string, now time.Time) (Task, bool, error)
 
 	// RetryTasks revives failed/canceled tasks so they can run again. It
 	// transitions every task of jobID in [TaskStatusFailed] or

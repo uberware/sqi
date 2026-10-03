@@ -54,9 +54,10 @@
 // the log-tail pagination cursor.
 //
 // Cancellation. [CancelJob] and [CancelTask] are the server-side entry points
-// called by the REST layer: they close running attempts, transition tasks to
-// [store.TaskStatusCanceled], publish task.cancel.<taskID> signals to assigned
-// workers ([bus.Client.PublishTaskCancel]), and release held usage pool slots. The
+// called by the REST layer: each makes one store call that transitions tasks to
+// [store.TaskStatusCanceled], closes their running attempts and releases their
+// usage pool slots in a single transaction, then publishes task.cancel.<taskID>
+// signals to the workers that held them ([bus.Client.PublishTaskCancel]). The
 // logic lives in cancellation.go; the SQI_CANCEL stream and publish helper live
 // in the bus package.
 //

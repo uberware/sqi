@@ -74,11 +74,4 @@ type TaskAttemptStore interface {
 	// from an offline worker so that each attempt has a closed EndedAt.
 	// Returns the number of attempts updated.
 	TerminateWorkerAttempts(ctx context.Context, workerID string, status AttemptStatus, endedAt time.Time) (int, error)
-
-	// CancelJobAttempts marks all running [TaskAttempt] records for tasks
-	// belonging to the given job as [AttemptStatusCanceled] with the supplied
-	// end time. Should be called before [TaskStore.CancelJobTasks] so
-	// that attempts are closed while the tasks still carry their assigned worker.
-	// Returns the number of attempts updated.
-	CancelJobAttempts(ctx context.Context, jobID string, endedAt time.Time) (int, error)
 }

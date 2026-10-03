@@ -622,13 +622,19 @@ func (s *Store) CountReadyTasksByQueue(ctx context.Context, farmID string, now t
 	return counts, rows.Err()
 }
 
-// CancelJobTasks implements [store.TaskStore].
+// CancelJobTasks cancels every non-terminal task of the job, clearing the worker
+// assignment, and returns the ones that were assigned or running with their
+// worker intact. It closes no attempts and releases no claims; a job is
+// canceled through [Store.CancelJobExecution], which does all three in one
+// transaction.
 //
 // The SELECT and UPDATE execute inside a single SQLite transaction so no
 // concurrent scheduler tick can assign a task between observation and
 // cancellation.  The rows cursor is closed inside a helper closure before the
 // UPDATE runs, which avoids any potential cursor/write contention on the
 // single-connection pool.
+//
+// Test fixture only: a blind write that is not part of store.Store (H4a). H4b decides its fate.
 func (s *Store) CancelJobTasks(ctx context.Context, jobID string, now time.Time, reason string) ([]store.Task, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {

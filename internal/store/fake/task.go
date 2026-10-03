@@ -385,7 +385,11 @@ func (s *Store) activeTasksLocked(inScope func(store.Job) bool) int {
 // CancelJobTasks transitions all non-terminal tasks for the given job to
 // [store.TaskStatusCanceled], stamping a non-empty reason on tasks that carry
 // no failure reason yet, and returns those that were in
-// [store.TaskStatusAssigned] or [store.TaskStatusRunning] at call time.
+// [store.TaskStatusAssigned] or [store.TaskStatusRunning] at call time. It
+// closes no attempts and releases no claims; a job is canceled through
+// [Store.CancelJobExecution], which does all three.
+//
+// Test fixture only: a blind write that is not part of store.Store (H4a). H4b decides its fate.
 func (s *Store) CancelJobTasks(_ context.Context, jobID string, now time.Time, reason string) ([]store.Task, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

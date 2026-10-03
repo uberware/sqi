@@ -168,3 +168,140 @@ func (s *Store) CompleteTaskAttempt(ctx context.Context, c store.AttemptCompleti
 	}
 	return result, nil
 }
+
+const (
+	// sqlSelectActiveJobTasks reads the tasks a job cancel is about to move out
+	// of assigned/running, with their worker still set: the UPDATE that follows
+	// clears it, and SQLite's RETURNING cannot report the pre-update value (I2).
+	sqlSelectActiveJobTasks = `SELECT ` + taskCols + ` FROM tasks WHERE job_id = ? AND status IN ('assigned', 'running')`
+
+	// sqlCancelJobRunningAttempts closes every running attempt of the job's
+	// tasks, not only those of the tasks the cancel just moved: an attempt left
+	// open on a task that is already terminal is the same leak.
+	sqlCancelJobRunningAttempts = `
+UPDATE task_attempts SET status = 'canceled', ended_at = ?
+WHERE  status = 'running' AND task_id IN (SELECT id FROM tasks WHERE job_id = ?)`
+
+	// sqlReleaseClosedJobClaims releases the claims of the job's attempts that
+	// are no longer running (I3). The status guard means a claim is never
+	// released while its attempt is still open.
+	sqlReleaseClosedJobClaims = `
+UPDATE usage_claims SET released_at = ?
+WHERE  released_at IS NULL
+  AND  task_attempt_id IN (SELECT ta.id FROM task_attempts ta JOIN tasks t ON t.id = ta.task_id
+                           WHERE t.job_id = ? AND ta.status != 'running')`
+
+	// sqlCancelOneTask is the single-task cancel. Unlike [sqlCancelJobTasks] it
+	// leaves assigned_worker_id and assigned_at in place, as a status write
+	// through [Store.UpdateTaskStatus] always has, so a canceled task still
+	// shows the worker that held it. The reason is stamped only on a task with
+	// none yet.
+	sqlCancelOneTask = `
+UPDATE tasks
+SET    status = 'canceled', updated_at = ?, unschedulable_reason = '',
+       failure_reason = CASE WHEN failure_reason = '' THEN ? ELSE failure_reason END
+WHERE  id = ? AND status IN ('pending', 'ready', 'assigned', 'running')`
+
+	sqlCloseTaskRunningAttempts = `
+UPDATE task_attempts SET status = 'canceled', ended_at = ? WHERE task_id = ? AND status = 'running'`
+
+	sqlReleaseClosedTaskClaims = `
+UPDATE usage_claims SET released_at = ?
+WHERE  released_at IS NULL
+  AND  task_attempt_id IN (SELECT id FROM task_attempts WHERE task_id = ? AND status != 'running')`
+)
+
+// CancelJobExecution implements [store.TaskStore].
+//
+// Anchor: the job row, the parent every job-level operation locks. The anchor
+// comes before the SELECT that reports the active tasks (I2), and the writes run
+// in the order spec 4.1 requires on Postgres: the tasks are canceled first, and
+// only then are their attempts closed and their claims released. A LeaseTask
+// that holds one of the tasks is therefore waited for by the task UPDATE, and
+// the attempt and claims it committed are seen by the two statements after it.
+// Closing attempts first would miss an attempt a lease created in between.
+func (s *Store) CancelJobExecution(ctx context.Context, jobID, reason string, now time.Time) ([]store.Task, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, fmt.Errorf("sqlite: begin cancel job execution: %w", mapErr(err))
+	}
+	defer func() { _ = tx.Rollback() }() //nolint:errcheck // rollback after commit is a no-op
+
+	// Order (spec 4.1): anchor, then the SELECT of the active set, then tasks,
+	// attempts, claims. See the doc comment for why tasks come first.
+	if err := lockAnchors(ctx, tx, jobAnchor(jobID)); err != nil {
+		return nil, err
+	}
+	active, err := queryTasksTx(ctx, tx, sqlSelectActiveJobTasks, jobID)
+	if err != nil {
+		return nil, fmt.Errorf("sqlite: select active tasks of job %s: %w", jobID, err)
+	}
+	nowText := timeToText(now.UTC())
+	if _, err := tx.ExecContext(ctx, sqlCancelJobTasks, nowText, reason, jobID); err != nil {
+		return nil, fmt.Errorf("sqlite: cancel tasks of job %s: %w", jobID, mapErr(err))
+	}
+	if _, err := tx.ExecContext(ctx, sqlCancelJobRunningAttempts, nowText, jobID); err != nil {
+		return nil, fmt.Errorf("sqlite: close attempts of job %s: %w", jobID, mapErr(err))
+	}
+	if _, err := tx.ExecContext(ctx, sqlReleaseClosedJobClaims, nowText, jobID); err != nil {
+		return nil, fmt.Errorf("sqlite: release claims of job %s: %w", jobID, mapErr(err))
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("sqlite: commit cancel job execution: %w", mapErr(err))
+	}
+	return active, nil
+}
+
+// CancelTaskExecution implements [store.TaskStore].
+//
+// Anchor and statement order are CancelJobExecution's: the task's job row first
+// (the task's job id never changes, so it is read before the lock), then the
+// task as it is under that lock, then the task is canceled before its attempt
+// is closed and its claims released. The task row is read again after the lock
+// rather than before it, so on Postgres the returned prior task and the
+// "already terminal" answer are the ones the anchor protects.
+func (s *Store) CancelTaskExecution(ctx context.Context, taskID, reason string, now time.Time) (store.Task, bool, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return store.Task{}, false, fmt.Errorf("sqlite: begin cancel task execution: %w", mapErr(err))
+	}
+	defer func() { _ = tx.Rollback() }() //nolint:errcheck // rollback after commit is a no-op
+
+	// Order (spec 4.1): the task's job id, the anchor on that job row, the task
+	// as it is under the anchor, then task, attempt, claims. See the doc comment.
+	var jobID string
+	if err := tx.QueryRowContext(ctx, sqlTaskJobID, taskID).Scan(&jobID); err != nil {
+		return store.Task{}, false, mapErr(err) // sql.ErrNoRows is ErrNotFound
+	}
+	if err := lockAnchors(ctx, tx, jobAnchor(jobID)); err != nil {
+		return store.Task{}, false, err
+	}
+	prior, err := scanTask(tx.QueryRowContext(ctx, sqlGetTask, taskID))
+	if err != nil {
+		return store.Task{}, false, mapErr(err)
+	}
+	nowText := timeToText(now.UTC())
+	res, err := tx.ExecContext(ctx, sqlCancelOneTask, nowText, reason, taskID)
+	if err != nil {
+		return store.Task{}, false, fmt.Errorf("sqlite: cancel task %s: %w", taskID, mapErr(err))
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return store.Task{}, false, fmt.Errorf("sqlite: cancel task %s: %w", taskID, mapErr(err))
+	}
+	if n == 0 {
+		// Already terminal: nothing was written, and the deferred rollback
+		// leaves the attempts and claims for whatever closed the task.
+		return prior, false, nil
+	}
+	if _, err := tx.ExecContext(ctx, sqlCloseTaskRunningAttempts, nowText, taskID); err != nil {
+		return store.Task{}, false, fmt.Errorf("sqlite: close attempts of task %s: %w", taskID, mapErr(err))
+	}
+	if _, err := tx.ExecContext(ctx, sqlReleaseClosedTaskClaims, nowText, taskID); err != nil {
+		return store.Task{}, false, fmt.Errorf("sqlite: release claims of task %s: %w", taskID, mapErr(err))
+	}
+	if err := tx.Commit(); err != nil {
+		return store.Task{}, false, fmt.Errorf("sqlite: commit cancel task execution: %w", mapErr(err))
+	}
+	return prior, true, nil
+}

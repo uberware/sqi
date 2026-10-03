@@ -120,7 +120,11 @@ func (s *Store) TerminateWorkerAttempts(_ context.Context, workerID string, stat
 }
 
 // CancelJobAttempts marks all running [store.TaskAttempt] records for tasks
-// belonging to the given job as [store.AttemptStatusCanceled].
+// belonging to the given job as [store.AttemptStatusCanceled]. It releases no
+// claims and leaves the tasks alone; a job is canceled through
+// [Store.CancelJobExecution], which does all three.
+//
+// Test fixture only: a blind write that is not part of store.Store (H4a). H4b decides its fate.
 func (s *Store) CancelJobAttempts(_ context.Context, jobID string, endedAt time.Time) (int, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

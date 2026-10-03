@@ -27,7 +27,12 @@ func (s *Store) TerminateWorkerAttempts(ctx context.Context, workerID string, st
 	return int(n), err
 }
 
-// CancelJobAttempts implements [store.TaskAttemptStore].
+// CancelJobAttempts closes every running attempt of the job's tasks as canceled,
+// ended at endedAt, and returns how many it closed. It releases no claims and
+// leaves the tasks alone; a job is canceled through [Store.CancelJobExecution],
+// which does all three in one transaction.
+//
+// Test fixture only: a blind write that is not part of store.Store (H4a). H4b decides its fate.
 func (s *Store) CancelJobAttempts(ctx context.Context, jobID string, endedAt time.Time) (int, error) {
 	res, err := s.stmtCancelJobAttempts.ExecContext(ctx, timeToText(endedAt), jobID)
 	if err != nil {
@@ -85,8 +90,8 @@ WHERE status = 'running'
   )`
 
 	// sqlCancelJobAttempts closes out all running attempts for tasks belonging
-	// to the given job. Should be called before CancelJobTasks so
-	// that task_attempts.ended_at is recorded before the task rows are updated.
+	// to the given job. It is the fixture method's statement; the job cancel
+	// runs [sqlCancelJobRunningAttempts] after the tasks are canceled.
 	sqlCancelJobAttempts = `
 UPDATE task_attempts
 SET    status = 'canceled', ended_at = ?

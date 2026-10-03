@@ -273,7 +273,12 @@ func (s *Store) ReleaseAttemptClaims(ctx context.Context, taskAttemptID string, 
 	return int(n), err
 }
 
-// ReleaseJobClaims implements [store.UsageClaimStore].
+// ReleaseJobClaims releases every active claim held by an attempt of the job's
+// tasks, whatever the attempt's status, and returns how many it released. A job
+// is canceled through [Store.CancelJobExecution], which releases only the claims
+// of closed attempts and does so in the same transaction that closes them.
+//
+// Test fixture only: a blind write that is not part of store.Store (H4a). H4b decides its fate.
 func (s *Store) ReleaseJobClaims(ctx context.Context, jobID string, releasedAt time.Time) (int, error) {
 	res, err := s.stmtReleaseJobClaims.ExecContext(ctx, timeToText(releasedAt), jobID)
 	if err != nil {

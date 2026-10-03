@@ -98,3 +98,93 @@ func (s *Store) CompleteTaskAttempt(_ context.Context, c store.AttemptCompletion
 	s.tasks[c.TaskID] = t
 	return store.CompletionResult{Applied: true}, nil
 }
+
+// CancelJobExecution implements [store.TaskStore].
+//
+// The outcomes match the SQLite store's, which is the reference: every
+// non-terminal task of the job is canceled with its worker assignment cleared,
+// then every running attempt of the job's tasks (including one on a task that
+// was already terminal) is closed, then the claims of the job's closed attempts
+// are released. The tasks go first, as the interface documents.
+func (s *Store) CancelJobExecution(_ context.Context, jobID, reason string, now time.Time) ([]store.Task, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	// Order mirrors SQLite's (spec 4.1): the tasks, then the attempts, then the
+	// claims. The store lock stands in for the job-row anchor.
+	now = now.UTC() // SQLite stores and returns these times in UTC
+	var active []store.Task
+	for id, t := range s.tasks {
+		if t.JobID != jobID || terminalTask(t.Status) {
+			continue
+		}
+		if t.Status == store.TaskStatusAssigned || t.Status == store.TaskStatusRunning {
+			active = append(active, t)
+		}
+		s.cancelTaskRowLocked(id, reason, now, true)
+	}
+	s.closeAttemptsAndReleaseClaimsLocked(func(taskID string) bool { return s.tasks[taskID].JobID == jobID }, now)
+	return active, nil
+}
+
+// CancelTaskExecution implements [store.TaskStore].
+//
+// The outcomes match the SQLite store's: an unknown task is
+// [store.ErrNotFound]; a terminal task is returned unchanged with false and
+// nothing is written (its attempts and claims are left to whatever closed it);
+// otherwise the task is canceled with its worker assignment kept, then its
+// running attempt is closed and its closed attempts' claims released.
+func (s *Store) CancelTaskExecution(_ context.Context, taskID, reason string, now time.Time) (store.Task, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	prior, ok := s.tasks[taskID]
+	if !ok {
+		return store.Task{}, false, store.ErrNotFound
+	}
+	if terminalTask(prior.Status) {
+		return prior, false, nil
+	}
+	// Same order as the job cancel: the task, then its attempt, then the claims.
+	now = now.UTC()
+	s.cancelTaskRowLocked(taskID, reason, now, false)
+	s.closeAttemptsAndReleaseClaimsLocked(func(id string) bool { return id == taskID }, now)
+	return prior, true, nil
+}
+
+// cancelTaskRowLocked moves one non-terminal task to canceled and stamps reason
+// when the task has none. A job-wide cancel clears the worker assignment
+// (clearAssignment); a single-task cancel leaves it, as SQLite's two statements
+// do. Caller holds s.mu.
+func (s *Store) cancelTaskRowLocked(taskID, reason string, now time.Time, clearAssignment bool) {
+	t := s.tasks[taskID]
+	t.Status, t.UnschedulableReason, t.UpdatedAt = store.TaskStatusCanceled, "", now
+	if clearAssignment {
+		t.AssignedWorkerID, t.AssignedAt = "", nil
+	}
+	if reason != "" && t.FailureReason == "" {
+		t.FailureReason = reason
+	}
+	s.tasks[taskID] = t
+}
+
+// closeAttemptsAndReleaseClaimsLocked is invariant I3 for a cancel: it closes
+// every running attempt whose task matches, as canceled and ended at now, and
+// then releases the active claims of every matching attempt that is no longer
+// running. The release is by attempt status, as SQLite's is, so a claim is never
+// released while its attempt is open. Caller holds s.mu.
+func (s *Store) closeAttemptsAndReleaseClaimsLocked(matches func(taskID string) bool, now time.Time) {
+	for id, a := range s.taskAttempts {
+		if !matches(a.TaskID) || a.Status != store.AttemptStatusRunning {
+			continue
+		}
+		ended := now
+		a.Status, a.EndedAt = store.AttemptStatusCanceled, &ended
+		s.taskAttempts[id] = a
+	}
+	for id, a := range s.taskAttempts {
+		if matches(a.TaskID) && a.Status != store.AttemptStatusRunning {
+			s.releaseAttemptClaimsLocked(id, now)
+		}
+	}
+}

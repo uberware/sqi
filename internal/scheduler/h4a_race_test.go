@@ -719,6 +719,83 @@ func TestH4a_F4_CancelRacingLease(t *testing.T) {
 	}
 }
 
+// cancelAfterLeaseStore fires its hook right after a lease has committed: after
+// CreateTaskAttempt (the old three-call lease) and after LeaseTask (the
+// one-transaction lease).
+type cancelAfterLeaseStore struct {
+	store.Store
+
+	hook *once
+}
+
+func (s *cancelAfterLeaseStore) CreateTaskAttempt(ctx context.Context, a store.TaskAttempt) (store.TaskAttempt, error) {
+	out, err := s.Store.CreateTaskAttempt(ctx, a)
+	s.hook.fire()
+	return out, err
+}
+
+func (s *cancelAfterLeaseStore) LeaseTask(ctx context.Context, req store.LeaseRequest) (store.LeaseResult, error) {
+	out, err := s.Store.LeaseTask(ctx, req)
+	s.hook.fire()
+	return out, err
+}
+
+// TestH4a_F4_LeaseDuringCancelLeaksNothing is the other side of
+// [TestH4a_F4_CancelRacingLease]: the cancel lands immediately after the lease
+// commits, so the attempt and the claim it just wrote already exist and the
+// cancel must find, close and release them. A cancel that closed attempts
+// without releasing their claims, or released claims first and closed attempts
+// afterwards, would leave an active claim on a canceled task.
+//
+// This one is green on the unmodified three-call cancel as well: the
+// lease-side window (the cancel landing before the lease writes) is the one
+// that was red, and [TestH4a_F4_CancelRacingLease] carries that reproduction.
+// This test pins that the single-transaction cancel closes the same ground.
+func TestH4a_F4_LeaseDuringCancelLeaksNothing(t *testing.T) {
+	for name, st := range raceBackends(t) {
+		t.Run(name, func(t *testing.T) {
+			pool, err := st.CreateUsagePool(t.Context(), store.UsagePool{ID: uuid.NewString(), Name: "lic", MaxConcurrent: 1})
+			if err != nil {
+				t.Fatalf("CreateUsagePool: %v", err)
+			}
+			one := 1
+			worker, ids := seedLeaseFixtureWith(t, st, []*int{&one}, &store.StepHostRequirements{UsagePools: []string{"lic"}})
+			task := mustTaskOf(t, st, ids[0])
+			canceller := newMetricsScheduler(st, &recordBus{}, "f1")
+			wrapped := &cancelAfterLeaseStore{Store: st, hook: &once{fn: func() {
+				if err := canceller.CancelJob(context.Background(), task.JobID); err != nil {
+					t.Errorf("CancelJob in hook: %v", err)
+				}
+			}}}
+			s := newMetricsScheduler(wrapped, &recordBus{}, "f1")
+
+			if _, _, _, err := s.tryLeaseTask(t.Context(), task, worker, worker.CPUCount, ""); err != nil {
+				t.Fatalf("tryLeaseTask: %v", err)
+			}
+
+			if got := mustTaskOf(t, st, task.ID); got.Status != store.TaskStatusCanceled {
+				t.Fatalf("task = %q, want canceled (the hook did not run, or the lease overwrote the cancel)", got.Status)
+			}
+			attempts, err := st.ListTaskAttempts(t.Context(), task.ID)
+			if err != nil {
+				t.Fatalf("ListTaskAttempts: %v", err)
+			}
+			if len(attempts) != 1 {
+				t.Fatalf("attempts = %d, want the one the lease wrote (the hook ran before the lease committed)", len(attempts))
+			}
+			if attempts[0].Status != store.AttemptStatusCanceled {
+				t.Errorf("attempt = %q, want canceled", attempts[0].Status)
+			}
+			if v := claimViolations(t, st); len(v) != 0 {
+				t.Errorf("I3 violations after cancel-vs-lease: %v (F4 leak)", v)
+			}
+			if n := activeClaimsOf(t, st, pool.ID); n != 0 {
+				t.Errorf("active claims = %d on a canceled task, want 0 (F4)", n)
+			}
+		})
+	}
+}
+
 // ── Lease outcomes other than Leased leave the task ready and write nothing ──
 
 // TestTryLeaseTask_NonLeasedOutcomesWriteNothing drives the two outcomes a

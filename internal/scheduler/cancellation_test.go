@@ -203,9 +203,10 @@ func TestCancelJob_TasksAreCanceledInStore(t *testing.T) {
 
 // TestCancelJob_DoesNotClobberCascadeReason asserts that a task already carrying
 // a cascade-cancel reason keeps it when CancelJob runs — cascade (the specific
-// cause) always wins over user-cancel, regardless of ordering. The guarded
-// SetTaskFailureReasonIfEmpty makes this hold even under real concurrency; here
-// we pre-set the reason to model a cascade that landed first.
+// cause) always wins over user-cancel, regardless of ordering. The reason is
+// stamped by the same UPDATE that cancels the task, and only on a task with no
+// reason yet, so this holds even under real concurrency; here we pre-set the
+// reason to model a cascade that landed first.
 func TestCancelJob_DoesNotClobberCascadeReason(t *testing.T) {
 	st := fake.New()
 	s := newTestScheduler(st, &stubBus{})

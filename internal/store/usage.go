@@ -122,13 +122,4 @@ type UsageClaimStore interface {
 	// Returns the number of claims released (0 is not an error when the
 	// attempt held no claims).
 	ReleaseAttemptClaims(ctx context.Context, taskAttemptID string, releasedAt time.Time) (int, error)
-
-	// ReleaseJobClaims sets ReleasedAt on every active claim for any task
-	// attempt belonging to a task in the given job. Called during job
-	// cancellation to free all usage pool slots held by that job in a single
-	// operation, rather than iterating through individual attempts.
-	//
-	// Returns the number of claims released (0 is not an error when the job
-	// held no claims).
-	ReleaseJobClaims(ctx context.Context, jobID string, releasedAt time.Time) (int, error)
 }
