@@ -890,7 +890,8 @@ func (s *Store) RecordTaskFailure(
 	}
 	// Invariant I3: a closed attempt holds no claims. Released unconditionally,
 	// so a redelivery is also safe; the UPDATE is a no-op when nothing is active.
-	if _, err = tx.ExecContext(ctx, sqlReleaseAttemptClaims, nowText, attemptID); err != nil {
+	// released_at is server time, not the caller's now (a worker-reported time).
+	if _, err = tx.ExecContext(ctx, sqlReleaseAttemptClaims, timeToText(time.Now().UTC()), attemptID); err != nil {
 		return 0, 0, false, mapErr(err)
 	}
 

@@ -45,7 +45,9 @@ func (s *Store) closeRunningAttemptLocked(c store.AttemptCompletion) {
 		}
 		s.taskAttempts[c.AttemptID] = a
 	}
-	s.releaseAttemptClaimsLocked(c.AttemptID, c.EndedAt)
+	// released_at is server time, like the task row's updated_at: c.EndedAt is
+	// the worker's clock and feeds only the attempt's ended_at above.
+	s.releaseAttemptClaimsLocked(c.AttemptID, time.Now().UTC())
 }
 
 // CompleteTaskAttempt implements [store.TaskStore].

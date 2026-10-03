@@ -727,8 +727,9 @@ func (s *Store) RecordTaskFailure(
 	}
 
 	// Invariant I3: a closed attempt holds no claims. Released unconditionally,
-	// like SQLite's, so a redelivery is also safe.
-	s.releaseAttemptClaimsLocked(attemptID, now)
+	// like SQLite's, so a redelivery is also safe. released_at is server time,
+	// not the caller's now (a worker-reported time).
+	s.releaseAttemptClaimsLocked(attemptID, time.Now().UTC())
 
 	return t.FailedAttempts, j.FailedAttempts, firstClose, nil
 }

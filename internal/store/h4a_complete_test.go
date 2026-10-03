@@ -121,7 +121,10 @@ func TestCompleteTaskAttempt_RecordsAttemptDetails(t *testing.T) {
 // TestCompleteTaskAttempt_TaskRowUsesServerTime pins that EndedAt, which comes
 // from the worker's clock, is the attempt's end time only: the task row's
 // updated_at (what TaskSortByUpdatedAt orders by) is stamped with server time,
-// as UpdateTaskStatus does, so worker clock skew cannot reorder tasks.
+// as UpdateTaskStatus does, so worker clock skew cannot reorder tasks. The
+// released claim's released_at is server time too; neither backend exposes a
+// claim read, so that is pinned by TestCompleteTaskAttempt_ClaimReleasedAtUsesServerTime
+// in each backend's own package (internal/store/sqlite and internal/store/fake).
 func TestCompleteTaskAttempt_TaskRowUsesServerTime(t *testing.T) {
 	cases := []struct {
 		name   string

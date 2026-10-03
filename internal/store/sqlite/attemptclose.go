@@ -105,13 +105,16 @@ func casTaskStatusTx(ctx context.Context, tx *sql.Tx, id string, to store.TaskSt
 // closeAttemptAndReleaseTx is invariant I3 inside an open transaction: close
 // the attempt if it is still running, then release every claim it holds. The
 // release is unconditional so a redelivery (attempt already closed) and an
-// attempt that never held a claim are both harmless no-ops.
-func closeAttemptAndReleaseTx(ctx context.Context, tx *sql.Tx, c store.AttemptCompletion, endedText string) error {
+// attempt that never held a claim are both harmless no-ops. The attempt's
+// ended_at is the worker's c.EndedAt; the claims' released_at is server time
+// (releasedText), as every claim release has always been, so a skewed worker
+// clock can never put it before the claim's claimed_at.
+func closeAttemptAndReleaseTx(ctx context.Context, tx *sql.Tx, c store.AttemptCompletion, endedText, releasedText string) error {
 	if _, err := tx.ExecContext(ctx, sqlCloseRunningAttempt,
 		string(c.AttemptStatus), nullInt(c.ExitCode), endedText, c.SessionID, c.Message, c.AttemptID); err != nil {
 		return fmt.Errorf("sqlite: close attempt %s: %w", c.AttemptID, mapErr(err))
 	}
-	if _, err := tx.ExecContext(ctx, sqlReleaseAttemptClaims, endedText, c.AttemptID); err != nil {
+	if _, err := tx.ExecContext(ctx, sqlReleaseAttemptClaims, releasedText, c.AttemptID); err != nil {
 		return fmt.Errorf("sqlite: release claims of attempt %s: %w", c.AttemptID, mapErr(err))
 	}
 	return nil
@@ -139,14 +142,13 @@ func (s *Store) CompleteTaskAttempt(ctx context.Context, c store.AttemptCompleti
 	if err := lockAnchors(ctx, tx, jobAnchor(jobID)); err != nil {
 		return store.CompletionResult{}, err
 	}
-	endedText := timeToText(c.EndedAt.UTC())
-	if err := closeAttemptAndReleaseTx(ctx, tx, c, endedText); err != nil {
+	// Server time stamps the claims' released_at and the task row's updated_at:
+	// c.EndedAt comes from the worker's clock and belongs to the attempt only.
+	now := time.Now().UTC()
+	if err := closeAttemptAndReleaseTx(ctx, tx, c, timeToText(c.EndedAt.UTC()), timeToText(now)); err != nil {
 		return store.CompletionResult{}, err
 	}
 
-	// The task row's updated_at is server time, as UpdateTaskStatus stamps it:
-	// c.EndedAt comes from the worker's clock and belongs to the attempt only.
-	now := time.Now().UTC()
 	result := store.CompletionResult{Applied: true}
 	cas, err := casTaskStatusTx(ctx, tx, c.TaskID, c.TaskStatus, now)
 	switch {
