@@ -3,6 +3,7 @@
 package sqlite
 
 import (
+	"database/sql"
 	"errors"
 	"testing"
 	"time"
@@ -22,7 +23,7 @@ func TestCasTaskStatusTx_GuardsOnObservedStatus(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = tx.Rollback() }() //nolint:errcheck // test cleanup
+	rollbackOnCleanup(t, tx)
 	ok, err := casWriteTaskStatus(ctx, tx, "t1", store.TaskStatusReady, store.TaskStatusRunning, time.Now())
 	if err != nil || ok {
 		t.Fatalf("CAS with a stale observed status = (%v, %v), want (false, nil)", ok, err)
@@ -61,7 +62,7 @@ func TestCasTaskStatusTx_Outcomes(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			defer func() { _ = tx.Rollback() }() //nolint:errcheck // test cleanup
+			rollbackOnCleanup(t, tx)
 			got, err := casTaskStatusTx(ctx, tx, tc.id, tc.to, time.Now())
 			if got != tc.want || !errors.Is(err, tc.wantErr) {
 				t.Fatalf("casTaskStatusTx = (%v, %v), want (%v, %v)", got, err, tc.want, tc.wantErr)
@@ -78,6 +79,18 @@ func TestCasTaskStatusTx_Outcomes(t *testing.T) {
 			}
 		})
 	}
+}
+
+// rollbackOnCleanup rolls tx back when the test ends. A transaction the test
+// already committed reports sql.ErrTxDone, which is expected; anything else is
+// a real failure.
+func rollbackOnCleanup(t *testing.T, tx *sql.Tx) {
+	t.Helper()
+	t.Cleanup(func() {
+		if err := tx.Rollback(); err != nil && !errors.Is(err, sql.ErrTxDone) {
+			t.Errorf("rollback: %v", err)
+		}
+	})
 }
 
 func seedCASTask(t *testing.T, s *Store, id string, status store.TaskStatus) {

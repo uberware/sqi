@@ -84,11 +84,14 @@ func (s *Store) CompleteTaskAttempt(_ context.Context, c store.AttemptCompletion
 	}
 
 	s.closeRunningAttemptLocked(c)
+	// The task row's updated_at is server time, as UpdateTaskStatus stamps it:
+	// c.EndedAt comes from the worker's clock and belongs to the attempt only.
+	now := time.Now().UTC()
 	if moves {
-		t.Status, t.UnschedulableReason, t.UpdatedAt = c.TaskStatus, "", c.EndedAt
+		t.Status, t.UnschedulableReason, t.UpdatedAt = c.TaskStatus, "", now
 	}
 	if c.FailureReason != "" {
-		t.FailureReason, t.UpdatedAt = c.FailureReason, c.EndedAt
+		t.FailureReason, t.UpdatedAt = c.FailureReason, now
 	}
 	s.tasks[c.TaskID] = t
 	return store.CompletionResult{Applied: true}, nil

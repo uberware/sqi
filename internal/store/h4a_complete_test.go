@@ -118,6 +118,45 @@ func TestCompleteTaskAttempt_RecordsAttemptDetails(t *testing.T) {
 	}
 }
 
+// TestCompleteTaskAttempt_TaskRowUsesServerTime pins that EndedAt, which comes
+// from the worker's clock, is the attempt's end time only: the task row's
+// updated_at (what TaskSortByUpdatedAt orders by) is stamped with server time,
+// as UpdateTaskStatus does, so worker clock skew cannot reorder tasks.
+func TestCompleteTaskAttempt_TaskRowUsesServerTime(t *testing.T) {
+	cases := []struct {
+		name   string
+		from   store.TaskStatus
+		to     store.TaskStatus
+		as     store.AttemptStatus
+		reason string
+	}{
+		{"status write", store.TaskStatusRunning, store.TaskStatusSucceeded, store.AttemptStatusSucceeded, ""},
+		{"status write and failure reason", store.TaskStatusRunning, store.TaskStatusFailed, store.AttemptStatusFailed, "boom"},
+		{"failure reason on a task already there", store.TaskStatusFailed, store.TaskStatusFailed, store.AttemptStatusFailed, "boom"},
+	}
+	for _, tc := range cases {
+		for name, st := range newStores(t) {
+			t.Run(tc.name+"/"+name, func(t *testing.T) {
+				task, a, _ := seedRunningTask(t, st, tc.from)
+				skewed := time.Now().UTC().Add(-time.Hour).Truncate(time.Second)
+				c := completion(task, a, tc.to, tc.as)
+				c.EndedAt, c.FailureReason = skewed, tc.reason
+
+				res, err := st.CompleteTaskAttempt(t.Context(), c)
+				if err != nil || !res.Applied {
+					t.Fatalf("CompleteTaskAttempt = (%+v, %v), want applied", res, err)
+				}
+				if got := mustAttempt(t, st, a.ID); got.EndedAt == nil || !got.EndedAt.Equal(skewed) {
+					t.Fatalf("attempt ended_at = %v, want the supplied %v", got.EndedAt, skewed)
+				}
+				if age := time.Since(mustTask(t, st, task.ID).UpdatedAt).Abs(); age > 5*time.Second {
+					t.Fatalf("task updated_at is %v old, want server time within a few seconds (EndedAt was an hour ago)", age)
+				}
+			})
+		}
+	}
+}
+
 // TestCompleteTaskAttempt_RejectedStillReleases pins F3: the task was canceled
 // while running; the worker's terminal report is rejected but the claim must
 // still be released and the attempt closed.

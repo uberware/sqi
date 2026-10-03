@@ -144,8 +144,11 @@ func (s *Store) CompleteTaskAttempt(ctx context.Context, c store.AttemptCompleti
 		return store.CompletionResult{}, err
 	}
 
+	// The task row's updated_at is server time, as UpdateTaskStatus stamps it:
+	// c.EndedAt comes from the worker's clock and belongs to the attempt only.
+	now := time.Now().UTC()
 	result := store.CompletionResult{Applied: true}
-	cas, err := casTaskStatusTx(ctx, tx, c.TaskID, c.TaskStatus, c.EndedAt)
+	cas, err := casTaskStatusTx(ctx, tx, c.TaskID, c.TaskStatus, now)
 	switch {
 	case cas == casRejected && errors.Is(err, store.ErrInvalidTransition):
 		// The task is already terminal in some other status. The attempt close
@@ -154,7 +157,7 @@ func (s *Store) CompleteTaskAttempt(ctx context.Context, c store.AttemptCompleti
 	case err != nil:
 		return store.CompletionResult{}, err
 	case c.FailureReason != "":
-		if _, err := tx.ExecContext(ctx, sqlSetTaskFailureReason, c.FailureReason, endedText, c.TaskID); err != nil {
+		if _, err := tx.ExecContext(ctx, sqlSetTaskFailureReason, c.FailureReason, timeToText(now), c.TaskID); err != nil {
 			return store.CompletionResult{}, fmt.Errorf("sqlite: stamp failure reason on task %s: %w", c.TaskID, mapErr(err))
 		}
 	}

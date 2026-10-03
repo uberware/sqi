@@ -135,7 +135,9 @@ type AttemptCompletion struct {
 	// FailureReason, when non-empty, is stamped on the task if the task ends up
 	// holding TaskStatus. Callers pass "" for a success.
 	FailureReason string
-	// EndedAt is when the attempt ended.
+	// EndedAt is when the attempt ended, as the worker reports it. It is the
+	// attempt's end time only: the task row's own updated_at is stamped with
+	// server time.
 	EndedAt time.Time
 }
 
