@@ -6,11 +6,11 @@ package scheduler
 //
 // RetryJob and RetryTask are the server-side entry points for explicit retry
 // (triggered by the REST API layer). Both delegate to the store's RetryTasks
-// primitive — which transitions the target failed/canceled tasks, their
-// terminal steps, and the terminal job back to pending in one transaction —
-// then re-run openjd.ResolveDependencies to re-gate the revived tasks in
-// dependency order, and fan the resulting status changes out to WebSocket
-// subscribers.
+// primitive — which revives the target failed/canceled tasks (ready under a
+// step that is already ready, pending otherwise), resets their terminal steps
+// and the terminal job to pending, in one transaction — then re-run
+// openjd.ResolveDependencies to re-gate the revived tasks in dependency order,
+// and fan the resulting status changes out to WebSocket subscribers.
 
 import (
 	"context"

@@ -408,7 +408,8 @@ type TaskStore interface {
 	// given IDs that are failed/canceled — clearing each revived task's
 	// genuine-failure state (FailedAttempts reset to zero, RetryAfter
 	// cleared). Each revived task becomes [TaskStatusReady] when its step is
-	// ready (a sibling still in flight) and [TaskStatusPending] otherwise; the
+	// ready (a sibling still in flight; a step recorded as the legacy running
+	// status counts as ready too) and [TaskStatusPending] otherwise; the
 	// returned tasks carry that status. Any of their enclosing steps that are
 	// currently in a terminal status are reset to [StepStatusPending], and the
 	// job itself is reset to [JobStatusPending] when it is currently terminal

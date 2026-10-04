@@ -170,15 +170,16 @@ type StepStore interface {
 	// FinalizeStep would finalize but that no future task report will ever
 	// trigger. Used once at scheduler start. Ordered by job ID, then step order.
 	//
-	// The job condition is deliberate. Canceling a job writes its tasks and its
-	// job row but not its steps (one finalizes only if a worker report for one
-	// of its tasks arrives afterwards), so a user-canceled job's steps can stay
-	// ready or pending with all tasks terminal, and every start would list and
-	// rewrite those of each job canceled since the start before it. The repair
-	// target is a live job whose step never finalized (so the job never
-	// completed); a terminal job has no downstream that needs its steps
-	// finalized, and jobs blocked on it follow its job status. A paused job is
-	// live and is listed. A step whose job row is missing is not listed.
+	// The job condition is deliberate. Since H4a2 a job cancel finalizes the
+	// job's steps in its own transaction (CancelJobExecution), and migration
+	// 00033 repaired the jobs canceled by earlier releases, so a terminal job
+	// carries open steps only in a database that skipped that repair; those are
+	// the migration's to finalize, not this start-up pass's, which on a healthy
+	// farm must stay one query and no writes. The repair target is a live job
+	// whose step never finalized (so the job never completed); a terminal job
+	// has no downstream that needs its steps finalized, and jobs blocked on it
+	// follow its job status. A paused job is live and is listed. A step whose
+	// job row is missing is not listed.
 	ListStuckSteps(ctx context.Context) ([]Step, error)
 
 	// ListJobIDsWithPendingSteps returns, ascending, the IDs of jobs that are

@@ -150,10 +150,11 @@ func mustRegisterInstance(t *testing.T, st store.Store, w store.Worker, instance
 // before the server has consumed its new registration, and a task leased to it
 // then would be handed back to ready by that registration's reclaim (which
 // matches by worker ID) while the process runs it. A request whose instance ID
-// differs from the stored one is answered with no work, at once and without
-// touching a task; one whose ID matches, or that carries none, is served; and
-// once the new registration lands the new process is served, and what it leases
-// is not reclaimed by a later re-register of the same process.
+// differs from the stored one is answered with no work, held for
+// leaseRefusalDelay (so the worker's lease loop cannot spin) but not parked, and
+// without touching a task; one whose ID matches, or that carries none, is
+// served; and once the new registration lands the new process is served, and
+// what it leases is not reclaimed by a later re-register of the same process.
 func TestH4a2_LeaseHeldBackUntilARestartedProcessRegisters(t *testing.T) {
 	for name, st := range raceBackends(t) {
 		t.Run(name, func(t *testing.T) {

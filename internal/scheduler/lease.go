@@ -77,7 +77,8 @@ func (s *Scheduler) handleLeaseRequest(workerID, queueID string, data []byte) []
 		return marshalLeaseReply(nil)
 	}
 	// Both refusals are held, not answered at once: see refuseLeaseAfterDelay.
-	// Disabled is checked first; it needs no instance ID to decide.
+	// The order of the two checks only decides whether the instance-mismatch
+	// Debug log fires: a disabled worker is refused without it.
 	if workerDisabled(worker) || s.leaseFromUnregisteredInstance(ctx, worker, req.InstanceID) {
 		return s.refuseLeaseAfterDelay(ctx)
 	}

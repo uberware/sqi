@@ -533,7 +533,9 @@ func TestCountReadyTasksByQueue_ExcludesIneligible(t *testing.T) {
 	mustCreateTask(t, s, "t-ok", "j1", "s1", store.TaskStatusReady)
 
 	// Backing off: ready but retry_after has not elapsed (requeued from
-	// running through the real auto-retry path).
+	// running, as the auto-retry path does). The requeue is guarded on the
+	// reporting attempt being the task's latest, so this seeds the task's live
+	// (running) attempt for the guard to pass.
 	mustCreateTask(t, s, "t-backoff", "j1", "s1", store.TaskStatusRunning)
 	backoffAttempt := mustCreateAttempt(t, s, "a-backoff", "t-backoff", 1, store.AttemptStatusRunning)
 	if requeued, err := s.RequeueTaskForRetry(ctx(), "t-backoff", backoffAttempt.ID, now.Add(time.Minute), now); err != nil || !requeued {

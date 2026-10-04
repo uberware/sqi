@@ -57,7 +57,8 @@ func newWorkerHandler(st store.Store, notifier ws.Notifier, revoker WorkerRevoke
 
 // workerNotRemovableMsg is the 409 detail for a worker that is not removable,
 // whether the pre-check or the guarded delete found it so.
-const workerNotRemovableMsg = "worker is not removable: only offline or dead disabled workers can be removed"
+const workerNotRemovableMsg = "worker is not removable: only an offline worker, or a disabled worker whose heartbeat is stale, " +
+	"can be removed, and only while it has no task assigned or running"
 
 // workerRemovable reports whether a worker may be hard-deleted: it is offline,
 // or it is administratively disabled but its last heartbeat is older than the

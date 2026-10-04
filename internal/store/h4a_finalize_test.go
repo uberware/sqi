@@ -191,11 +191,13 @@ func TestListStuckSteps(t *testing.T) {
 
 // TestListStuckSteps_OnlyStepsOfLiveJobs pins the job condition: a step that
 // looks stuck by its tasks alone is listed only when its job is not terminal.
-// Canceling a job writes its tasks and its job row but never its steps, so
-// every step of a user-canceled job is left ready or pending with all tasks
-// terminal; listing those would make a healthy farm rewrite them on every start.
-// A completed or failed job can carry the same shape, and none of them has
-// downstream work that needs its steps finalized. A running job (the F6 case)
+// Since H4a2 a job cancel finalizes the job's steps in its own transaction, and
+// migration 00033 finalized the steps of jobs canceled by earlier releases, so
+// a terminal job carries an open step only in a database that has not been
+// through that repair. A completed or failed job can carry the same shape. None
+// of them has downstream work that needs its steps finalized, and the terminal
+// jobs are the migration's to repair, not this start-up pass's, which on a
+// healthy farm must stay one query and no writes. A running job (the F6 case)
 // and a paused one are live and ARE listed.
 func TestListStuckSteps_OnlyStepsOfLiveJobs(t *testing.T) {
 	cases := []struct {
@@ -205,7 +207,7 @@ func TestListStuckSteps_OnlyStepsOfLiveJobs(t *testing.T) {
 	}{
 		{store.JobStatusRunning, store.TaskStatusSucceeded, true},
 		{store.JobStatusPaused, store.TaskStatusSucceeded, true},
-		{store.JobStatusCanceled, store.TaskStatusCanceled, false}, // what CancelJobExecution leaves behind
+		{store.JobStatusCanceled, store.TaskStatusCanceled, false}, // what releases before H4a2 left behind (migration 00033 repairs it)
 		{store.JobStatusCompleted, store.TaskStatusSucceeded, false},
 		{store.JobStatusFailed, store.TaskStatusFailed, false},
 	}

@@ -246,8 +246,9 @@ func TestLeaseTask_Backoff(t *testing.T) {
 			t.Run(tc.name+"/"+name, func(t *testing.T) {
 				g := seedStepA(t, st, graphOpts{}, store.TaskStatusAssigned)
 				now := time.Now().UTC()
-				// The requeue is guarded on the reporting attempt, so the task
-				// needs the attempt a real failure would have closed.
+				// The requeue is guarded on the reporting attempt being the
+				// task's latest, so this seeds the task's live (running) attempt
+				// for the guard to pass.
 				failed := seedAttempt(t, st, g.Tasks["a"][0], store.AttemptStatusRunning)
 				if ok, err := st.RequeueTaskForRetry(t.Context(), g.Tasks["a"][0].ID, failed.ID, now.Add(tc.after), now); err != nil || !ok {
 					t.Fatalf("RequeueTaskForRetry = (%v, %v), want requeued", ok, err)

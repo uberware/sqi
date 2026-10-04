@@ -90,16 +90,20 @@ func TestValidateStepTransition_UnknownStatus(t *testing.T) {
 //
 // FinalizeStep's SQL guard is "status NOT IN (terminal)", which also admits
 // pending, and a pending step can be finalized. Canceling each of its pending
-// tasks one at a time leaves it pending with only terminal tasks (CancelTask
-// does not drive step completion), and the startup reconcile then finalizes it
-// pending → canceled: a legal arrow, listed below as its own entry.
+// tasks one at a time leaves it pending with only terminal tasks; CancelTask
+// drives step completion (H4a2 §3.1), with the startup reconcile as its
+// backstop, and finalizes it pending → canceled: a legal arrow, listed below
+// as its own entry.
 // pending → failed is reachable too, but only through a window: a single-task
 // retry whose dependency resolution never ran (the server stopped, or the store
 // failed, after RetryTasks committed) leaves the step pending beside a sibling
 // that is still failed, and canceling the revived task then makes it
 // finalizable as failed. The table has no pending → failed arrow, so it is not
-// listed; that gap is recorded for H4b. pending → completed cannot happen: a
-// pending step's tasks are never leased, so none succeeds while it is pending.
+// listed. H4a2 §3.5 closes the server-stop case (the startup reconcile releases
+// or cascade-cancels such a step before anything can finalize it); a store
+// failure with the server still up stays open (H4a2 design §10).
+// pending → completed cannot happen: a pending step's tasks are never leased,
+// so none succeeds while it is pending.
 // Update this table in the same change as any guard.
 func TestStepOperations_FromStatesAreLegal(t *testing.T) {
 	ops := []struct {

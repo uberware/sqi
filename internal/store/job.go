@@ -214,9 +214,13 @@ type JobStore interface {
 	//
 	// Before it commits, it re-checks inside its own transaction that every
 	// DependsOn upstream still exists and has not failed or been canceled, and
-	// returns [ErrDependencyUnsatisfiable] (naming the first such upstream, in
-	// ID order) if one has: the submitter's own pre-read ran before the
-	// transaction, so an upstream can change in between. The other direction,
+	// returns a [*DependencyUnsatisfiableError] (which matches
+	// [ErrDependencyUnsatisfiable] under errors.Is) naming the first such
+	// upstream, in ID order, if one has: UpstreamID is its ID and Status its
+	// status (failed or canceled), empty when it was deleted. A backend must
+	// fill both, because the submitter words its 422 from them. The
+	// submitter's own pre-read ran before the transaction, so an upstream can
+	// change in between. The other direction,
 	// an upstream completing in that window, is not refused: the job is
 	// created blocked and sweepBlockedJobs releases it on its next tick.
 	CreateJobSubmission(ctx context.Context, sub JobSubmission) (JobSubmission, error)
