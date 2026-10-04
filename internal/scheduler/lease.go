@@ -84,15 +84,16 @@ func (s *Scheduler) handleLeaseRequest(workerID, queueID string, data []byte) []
 
 	batch, err := s.selectLeaseBatchLocked(ctx, worker)
 	if err != nil {
-		s.logger.WarnContext(
-			ctx, "scheduler: lease selection failed",
-			slog.String("worker_id", workerID),
-			slog.Any("error", err),
-		)
-		return marshalLeaseReply(nil)
+		s.logLeaseSelectionFailure(ctx, workerID, len(batch), err)
 	}
+	// A store error part way through a batch still delivers what was leased
+	// before it: those tasks are committed as assigned, and dropping them would
+	// strand them with nobody running them until the assigned-task timeout.
 	if len(batch) > 0 {
 		return marshalLeaseReply(batch)
+	}
+	if err != nil {
+		return marshalLeaseReply(nil)
 	}
 
 	// Park until work appears or the hold elapses, then try exactly once more.
@@ -137,8 +138,10 @@ func workerDisabled(w store.Worker) bool {
 
 // leaseAfterPark is the one retry a parked lease request makes once woken: it
 // re-reads the worker and, unless the worker was disabled, or re-registered from
-// another process, while the request was parked, selects a batch. Any failure is
-// an empty batch.
+// another process, while the request was parked, selects a batch. A failure to
+// read the worker is an empty batch; a failure part way through selection
+// returns the tasks already leased, which must reach the worker (see
+// [Scheduler.selectLeaseBatch]).
 func (s *Scheduler) leaseAfterPark(ctx context.Context, workerID, instanceID string) [][]byte {
 	w, err := s.store.GetWorker(ctx, workerID)
 	if err != nil || workerDisabled(w) || s.leaseFromUnregisteredInstance(ctx, w, instanceID) {
@@ -146,9 +149,20 @@ func (s *Scheduler) leaseAfterPark(ctx context.Context, workerID, instanceID str
 	}
 	batch, err := s.selectLeaseBatchLocked(ctx, w)
 	if err != nil {
-		return nil
+		s.logLeaseSelectionFailure(ctx, workerID, len(batch), err)
 	}
 	return batch
+}
+
+// logLeaseSelectionFailure records a store error during lease selection and how
+// many tasks leased before it are still delivered.
+func (s *Scheduler) logLeaseSelectionFailure(ctx context.Context, workerID string, delivered int, err error) {
+	s.logger.WarnContext(
+		ctx, "scheduler: lease selection failed",
+		slog.String("worker_id", workerID),
+		slog.Int("delivered", delivered),
+		slog.Any("error", err),
+	)
 }
 
 // leaseFromUnregisteredInstance reports whether a lease request comes from a
@@ -221,6 +235,9 @@ type leaseGateData struct {
 // in the store's priority order (first-fit, skip-and-continue). Each leased task
 // is transitioned ready->assigned, given an open attempt, and has its usage-pool
 // claims held; the returned slice holds the marshaled AssignMsg payloads.
+//
+// On a store error it returns the assignments already leased together with the
+// error: those tasks are committed as assigned, so they must reach the worker.
 func (s *Scheduler) selectLeaseBatch(ctx context.Context, worker store.Worker) ([][]byte, error) {
 	full := worker.CPUCount
 	if full <= 0 {
@@ -253,7 +270,7 @@ func (s *Scheduler) selectLeaseBatch(ctx context.Context, worker store.Worker) (
 		}
 		payload, cost, ok, err := s.tryLeaseTask(ctx, task, worker, free, exprShortfall)
 		if err != nil {
-			return nil, err
+			return batch, err
 		}
 		if !ok {
 			continue // ineligible, didn't fit, lost the race, or policy/usage blocked

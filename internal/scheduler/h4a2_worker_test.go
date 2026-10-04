@@ -5,6 +5,7 @@ package scheduler
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"testing"
 	"time"
 
@@ -556,5 +557,56 @@ func TestH4a2_SweepReclaimsADeadDisabledWorkerWithoutAnOfflineEvent(t *testing.T
 				t.Fatalf("worker events = %+v, want none", rec.workers)
 			}
 		})
+	}
+}
+
+// failSecondLeaseStore fails LeaseTask from its second call on.
+type failSecondLeaseStore struct {
+	store.Store
+
+	calls int
+}
+
+func (s *failSecondLeaseStore) LeaseTask(ctx context.Context, req store.LeaseRequest) (store.LeaseResult, error) {
+	s.calls++
+	if s.calls > 1 {
+		return store.LeaseResult{}, errors.New("injected lease failure")
+	}
+	return s.Store.LeaseTask(ctx, req)
+}
+
+// TestH4a2_PartialLeaseBatchIsDelivered: a store error after the first lease
+// of a batch no longer drops the already-leased task for the reaper to find.
+func TestH4a2_PartialLeaseBatchIsDelivered(t *testing.T) {
+	base := newCheckedFake(t)
+	st := &failSecondLeaseStore{Store: base}
+	s := newMetricsScheduler(st, &recordBus{}, "f1")
+	s.leaseHoldTimeout = 20 * time.Millisecond
+	one := 1
+	w, _ := seedLeaseFixture(t, base, []*int{&one, &one})
+	req, err := json.Marshal(leaseRequest{WorkerID: w.ID})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var got leaseReply
+	if err := json.Unmarshal(s.handleLeaseRequest(w.ID, "q1", req), &got); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if len(got.Assignments) != 1 {
+		t.Fatalf("assignments = %d, want the 1 leased before the failure", len(got.Assignments))
+	}
+}
+
+// TestH4a2_PartialLeaseBatchIsDeliveredAfterPark is the same rule on the
+// request that parked and was woken: the one retry it makes also delivers the
+// tasks leased before a store error rather than answering empty.
+func TestH4a2_PartialLeaseBatchIsDeliveredAfterPark(t *testing.T) {
+	base := newCheckedFake(t)
+	st := &failSecondLeaseStore{Store: base}
+	s := newMetricsScheduler(st, &recordBus{}, "f1")
+	one := 1
+	w, _ := seedLeaseFixture(t, base, []*int{&one, &one})
+	if got := s.leaseAfterPark(t.Context(), w.ID, ""); len(got) != 1 {
+		t.Fatalf("assignments after park = %d, want the 1 leased before the failure", len(got))
 	}
 }
