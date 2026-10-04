@@ -610,3 +610,25 @@ func TestH4a2_PartialLeaseBatchIsDeliveredAfterPark(t *testing.T) {
 		t.Fatalf("assignments after park = %d, want the 1 leased before the failure", len(got))
 	}
 }
+
+// TestH4a2_UnschedulableNoOpEmitsNoEvent pins the F15 residue: when the
+// guarded write declines (the task was leased since the sweep read it), no
+// stale "ready" event is sent.
+func TestH4a2_UnschedulableNoOpEmitsNoEvent(t *testing.T) {
+	for name, st := range raceBackends(t) {
+		t.Run(name, func(t *testing.T) {
+			notifier := &recordingNotifier{}
+			s := newStatusTestSchedulerWithNotifier(st, notifier)
+			_, _, task, _ := seedStatusFixture(t, st, store.TaskStatusAssigned)
+			stale := task
+			stale.Status = store.TaskStatusReady // what the sweep read before the lease
+			s.reconcileTaskSchedulability(t.Context(), stale, nil)
+			if len(notifier.tasks) != 0 {
+				t.Fatalf("task events = %+v, want none for a declined write", notifier.tasks)
+			}
+			if got := mustTaskOf(t, st, task.ID).UnschedulableReason; got != "" {
+				t.Fatalf("reason = %q on a leased task, want empty", got)
+			}
+		})
+	}
+}

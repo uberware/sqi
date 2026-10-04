@@ -95,23 +95,23 @@ func (s *Store) UpdateTaskStatus(_ context.Context, id string, status store.Task
 }
 
 // SetTaskUnschedulableReason implements [store.TaskStore]. A task that is no
-// longer ready is a guarded no-op returning nil; only an unknown task is an
-// error.
-func (s *Store) SetTaskUnschedulableReason(_ context.Context, id, reason string) error {
+// longer ready is a guarded no-op returning (false, nil); only an unknown task
+// is an error.
+func (s *Store) SetTaskUnschedulableReason(_ context.Context, id, reason string) (bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	task, ok := s.tasks[id]
 	if !ok {
-		return store.ErrNotFound
+		return false, store.ErrNotFound
 	}
 	if task.Status != store.TaskStatusReady {
-		return nil // no longer ready: a guarded no-op (F15)
+		return false, nil // no longer ready: a guarded no-op (F15)
 	}
 	task.UnschedulableReason = reason
 	task.UpdatedAt = time.Now()
 	s.tasks[id] = task
-	return nil
+	return true, nil
 }
 
 // SetTaskFailureReason implements [store.TaskStore].

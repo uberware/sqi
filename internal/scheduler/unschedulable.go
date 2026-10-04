@@ -69,13 +69,17 @@ func (s *Scheduler) reconcileTaskSchedulability(ctx context.Context, task store.
 	if reason == task.UnschedulableReason {
 		return // no change — avoid notification churn
 	}
-	if err := s.store.SetTaskUnschedulableReason(ctx, task.ID, reason); err != nil {
+	written, err := s.store.SetTaskUnschedulableReason(ctx, task.ID, reason)
+	if err != nil {
 		s.logger.WarnContext(
 			ctx, "scheduler: unschedulable sweep: set reason failed",
 			slog.String("task_id", task.ID),
 			slog.Any("error", err),
 		)
 		return
+	}
+	if !written {
+		return // the task left ready since the sweep read it (F15): nothing to report
 	}
 	s.notifier.NotifyTask(ws.TaskEvent{
 		JobID:               task.JobID,

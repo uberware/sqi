@@ -18,30 +18,46 @@ func TestSetTaskUnschedulableReason_OnlyWhileReady(t *testing.T) {
 			leased, ready := g.Tasks["a"][0].ID, g.Tasks["a"][1].ID
 
 			// A task a lease has just taken is a guarded no-op, not an error and not
-			// a write (F15).
-			if err := st.SetTaskUnschedulableReason(t.Context(), leased, "no worker"); err != nil {
+			// a write (F15), and the caller is told so: written is false.
+			written, err := st.SetTaskUnschedulableReason(t.Context(), leased, "no worker")
+			if err != nil {
 				t.Fatalf("SetTaskUnschedulableReason on assigned = %v, want nil no-op", err)
+			}
+			if written {
+				t.Fatal("written = true on a just-leased task, want false (the write declined)")
 			}
 			if got := mustTask(t, st, leased).UnschedulableReason; got != "" {
 				t.Fatalf("reason = %q on a just-leased task, want empty (F15)", got)
 			}
 
 			// A ready task takes the reason, and an empty string clears it.
-			if err := st.SetTaskUnschedulableReason(t.Context(), ready, "no worker"); err != nil {
+			written, err = st.SetTaskUnschedulableReason(t.Context(), ready, "no worker")
+			if err != nil {
 				t.Fatalf("SetTaskUnschedulableReason on ready = %v", err)
+			}
+			if !written {
+				t.Fatal("written = false on a ready task, want true")
 			}
 			if got := mustTask(t, st, ready).UnschedulableReason; got != "no worker" {
 				t.Fatalf("reason = %q on a ready task, want %q", got, "no worker")
 			}
-			if err := st.SetTaskUnschedulableReason(t.Context(), ready, ""); err != nil {
+			written, err = st.SetTaskUnschedulableReason(t.Context(), ready, "")
+			if err != nil {
 				t.Fatalf("SetTaskUnschedulableReason clear on ready = %v", err)
+			}
+			if !written {
+				t.Fatal("written = false on a clear of a ready task, want true")
 			}
 			if got := mustTask(t, st, ready).UnschedulableReason; got != "" {
 				t.Fatalf("reason = %q after a clear, want empty", got)
 			}
 
-			if err := st.SetTaskUnschedulableReason(t.Context(), "nope", "x"); !errors.Is(err, store.ErrNotFound) {
+			written, err = st.SetTaskUnschedulableReason(t.Context(), "nope", "x")
+			if !errors.Is(err, store.ErrNotFound) {
 				t.Fatalf("unknown task = %v, want ErrNotFound", err)
+			}
+			if written {
+				t.Fatal("written = true for an unknown task, want false")
 			}
 		})
 	}

@@ -882,7 +882,8 @@ The invariants changed some behaviour beyond fixing the races they close:
   it `blocked` and canceled it later through the dependency sweep.
 - `SetTaskUnschedulableReason` on a task that is no longer `ready` is a no-op,
   not an error, so a task leased while the unschedulable sweep was deciding is
-  never stamped.
+  never stamped. It reports `written=false`, and the sweep sends no task event
+  for it.
 
 Timestamps are unchanged from v0.3.0, though the writes that stamp them moved.
 A released claim's `released_at` is always server time. A terminal report

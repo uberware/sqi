@@ -484,20 +484,24 @@ func (s *Store) UpdateTaskStatus(ctx context.Context, id string, status store.Ta
 }
 
 // SetTaskUnschedulableReason implements [store.TaskStore]. A task that is no
-// longer ready is a guarded no-op returning nil; only an unknown task is an
-// error.
-func (s *Store) SetTaskUnschedulableReason(ctx context.Context, id, reason string) error {
+// longer ready is a guarded no-op returning (false, nil); only an unknown task
+// is an error.
+func (s *Store) SetTaskUnschedulableReason(ctx context.Context, id, reason string) (bool, error) {
 	res, err := s.stmtSetTaskUnschedulableReason.ExecContext(ctx, reason, timeToText(time.Now().UTC()), id)
 	if err != nil {
-		return mapErr(err)
+		return false, mapErr(err)
 	}
-	if n, err := res.RowsAffected(); err != nil || n == 1 {
-		return err
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+	if n == 1 {
+		return true, nil
 	}
 	if _, err := s.GetTask(ctx, id); err != nil {
-		return err // ErrNotFound
+		return false, err // ErrNotFound
 	}
-	return nil // no longer ready: a guarded no-op (F15)
+	return false, nil // no longer ready: a guarded no-op (F15)
 }
 
 // SetTaskFailureReason implements [store.TaskStore]. An empty reason clears it.

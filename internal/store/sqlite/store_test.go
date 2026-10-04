@@ -1431,7 +1431,7 @@ func TestTask_CountUnschedulableTasksByJob(t *testing.T) {
 		if err := s.UpdateTaskStatus(ctx, id, store.TaskStatusReady); err != nil {
 			t.Fatalf("UpdateTaskStatus(%q): %v", id, err)
 		}
-		if err := s.SetTaskUnschedulableReason(ctx, id, "no worker matches required capability"); err != nil {
+		if _, err := s.SetTaskUnschedulableReason(ctx, id, "no worker matches required capability"); err != nil {
 			t.Fatalf("SetTaskUnschedulableReason(%q): %v", id, err)
 		}
 	}
@@ -1450,7 +1450,7 @@ func TestTask_CountUnschedulableTasksByJob(t *testing.T) {
 
 	// Clearing the reason on t1 (as the scheduler does when it becomes
 	// schedulable again) drops the count.
-	if err := s.SetTaskUnschedulableReason(ctx, "t1", ""); err != nil {
+	if _, err := s.SetTaskUnschedulableReason(ctx, "t1", ""); err != nil {
 		t.Fatalf("SetTaskUnschedulableReason(clear): %v", err)
 	}
 	n, err = s.CountUnschedulableTasksByJob(ctx, "j1")
@@ -1663,7 +1663,7 @@ func TestTask_SetUnschedulableReason(t *testing.T) {
 		t.Fatalf("UpdateTaskStatus ready: %v", err)
 	}
 
-	if err := s.SetTaskUnschedulableReason(ctx, "t1", "no eligible online worker: attribute requirement not met"); err != nil {
+	if _, err := s.SetTaskUnschedulableReason(ctx, "t1", "no eligible online worker: attribute requirement not met"); err != nil {
 		t.Fatalf("SetTaskUnschedulableReason: %v", err)
 	}
 	got, err := s.GetTask(ctx, "t1")
@@ -1675,7 +1675,7 @@ func TestTask_SetUnschedulableReason(t *testing.T) {
 	}
 
 	// Clearing.
-	if err := s.SetTaskUnschedulableReason(ctx, "t1", ""); err != nil {
+	if _, err := s.SetTaskUnschedulableReason(ctx, "t1", ""); err != nil {
 		t.Fatalf("SetTaskUnschedulableReason clear: %v", err)
 	}
 	got, err = s.GetTask(ctx, "t1")
@@ -1687,7 +1687,7 @@ func TestTask_SetUnschedulableReason(t *testing.T) {
 	}
 
 	// Unknown id.
-	if err := s.SetTaskUnschedulableReason(ctx, "nope", "x"); !errors.Is(err, store.ErrNotFound) {
+	if _, err := s.SetTaskUnschedulableReason(ctx, "nope", "x"); !errors.Is(err, store.ErrNotFound) {
 		t.Errorf("expected ErrNotFound for unknown task id, got %v", err)
 	}
 }
@@ -1709,7 +1709,7 @@ func TestUnschedulableReason_ClearedOnAssign(t *testing.T) {
 	if err := s.UpdateTaskStatus(ctx, "t1", store.TaskStatusReady); err != nil {
 		t.Fatalf("UpdateTaskStatus: %v", err)
 	}
-	if err := s.SetTaskUnschedulableReason(ctx, "t1", "no eligible online worker"); err != nil {
+	if _, err := s.SetTaskUnschedulableReason(ctx, "t1", "no eligible online worker"); err != nil {
 		t.Fatalf("SetTaskUnschedulableReason: %v", err)
 	}
 
@@ -1740,7 +1740,7 @@ func TestUnschedulableReason_ClearedOnCancel(t *testing.T) {
 	if err := s.UpdateTaskStatus(ctx, "t1", store.TaskStatusReady); err != nil {
 		t.Fatalf("UpdateTaskStatus: %v", err)
 	}
-	if err := s.SetTaskUnschedulableReason(ctx, "t1", "no eligible online worker"); err != nil {
+	if _, err := s.SetTaskUnschedulableReason(ctx, "t1", "no eligible online worker"); err != nil {
 		t.Fatalf("SetTaskUnschedulableReason: %v", err)
 	}
 
@@ -1771,7 +1771,7 @@ func TestUnschedulableReason_ClearedOnUpdateStatus(t *testing.T) {
 	if err := s.UpdateTaskStatus(ctx, "t1", store.TaskStatusReady); err != nil {
 		t.Fatalf("UpdateTaskStatus ready: %v", err)
 	}
-	if err := s.SetTaskUnschedulableReason(ctx, "t1", "no eligible online worker"); err != nil {
+	if _, err := s.SetTaskUnschedulableReason(ctx, "t1", "no eligible online worker"); err != nil {
 		t.Fatalf("SetTaskUnschedulableReason: %v", err)
 	}
 

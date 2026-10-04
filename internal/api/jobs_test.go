@@ -618,7 +618,7 @@ func TestListJobs(t *testing.T) {
 			if err != nil {
 				t.Fatalf("CreateTask: %v", err)
 			}
-			if err := st.SetTaskUnschedulableReason(ctx, tk.ID, "no worker matches"); err != nil {
+			if _, err := st.SetTaskUnschedulableReason(ctx, tk.ID, "no worker matches"); err != nil {
 				t.Fatalf("SetTaskUnschedulableReason: %v", err)
 			}
 		}
@@ -795,7 +795,7 @@ func TestGetJob(t *testing.T) {
 			if err != nil {
 				t.Fatalf("CreateTask: %v", err)
 			}
-			if err := st.SetTaskUnschedulableReason(ctx, tk.ID, "no worker matches"); err != nil {
+			if _, err := st.SetTaskUnschedulableReason(ctx, tk.ID, "no worker matches"); err != nil {
 				t.Fatalf("SetTaskUnschedulableReason: %v", err)
 			}
 		}

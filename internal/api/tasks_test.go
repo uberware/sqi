@@ -278,7 +278,7 @@ func TestGetTask(t *testing.T) {
 		_, tk := seedTask(t, st, store.TaskStatusReady)
 
 		const reason = "no online worker satisfies required capabilities"
-		if err := st.SetTaskUnschedulableReason(t.Context(), tk.ID, reason); err != nil {
+		if _, err := st.SetTaskUnschedulableReason(t.Context(), tk.ID, reason); err != nil {
 			t.Fatalf("SetTaskUnschedulableReason: %v", err)
 		}
 

@@ -457,9 +457,11 @@ type TaskStore interface {
 	// [TaskStatusReady], evaluated inside the write: the scheduler's sweep reads
 	// its candidates before it writes, and a task a lease took in between is left
 	// alone rather than stamped with a reason that no longer applies. A task that
-	// is not ready is therefore a no-op returning nil, not an error. Returns
-	// ErrNotFound if id is unknown.
-	SetTaskUnschedulableReason(ctx context.Context, id, reason string) error
+	// is not ready is therefore a no-op, not an error: written reports whether
+	// the reason was stored, and is false (with a nil error) when the task is no
+	// longer ready, so a caller can skip any follow-up (an event) for a write
+	// that did not land. Returns ErrNotFound if id is unknown.
+	SetTaskUnschedulableReason(ctx context.Context, id, reason string) (written bool, err error)
 
 	// SetTaskFailureReason sets (or, with an empty string, clears) the
 	// human-readable reason the task reached a terminal non-success. Returns
