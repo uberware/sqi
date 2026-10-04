@@ -316,7 +316,7 @@ func TestGetTask(t *testing.T) {
 			t.Fatalf("RecordTaskFailure: %v", err)
 		}
 		retryAfter := now.Add(30 * time.Second)
-		if requeued, err := st.RequeueTaskForRetry(t.Context(), tk.ID, retryAfter, now); err != nil || !requeued {
+		if requeued, err := st.RequeueTaskForRetry(t.Context(), tk.ID, att.ID, retryAfter, now); err != nil || !requeued {
 			t.Fatalf("RequeueTaskForRetry: requeued=%v err=%v", requeued, err)
 		}
 

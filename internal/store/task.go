@@ -507,7 +507,12 @@ type TaskStore interface {
 	// succeeded, or already returned to ready. It reports whether the task was
 	// actually requeued; false (task missing or not assigned/running) is a
 	// legitimate no-op, not an error.
-	RequeueTaskForRetry(ctx context.Context, taskID string, retryAfter, now time.Time) (bool, error)
+	//
+	// It acts only while attemptID is the task's latest attempt (H4a2 §4.3),
+	// so a reclaim and a new lease landing between RecordTaskFailure and this
+	// call leave the new lease alone. On Postgres (H4c) take the job-row anchor
+	// first.
+	RequeueTaskForRetry(ctx context.Context, taskID, attemptID string, retryAfter, now time.Time) (bool, error)
 }
 
 // ListTasksOptions filters and orders [TaskStore.ListTasks] results.

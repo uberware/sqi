@@ -755,14 +755,15 @@ func (s *Store) RecordTaskFailure(
 
 // RequeueTaskForRetry implements [store.TaskStore]. It returns the task to
 // [store.TaskStatusReady], clears its worker assignment, and stamps RetryAfter.
-// Guarded to assigned/running; anything else (including a missing task) is a
-// legitimate no-op reported as false.
-func (s *Store) RequeueTaskForRetry(_ context.Context, taskID string, retryAfter, now time.Time) (bool, error) {
+// Guarded to assigned/running and to attemptID being the task's latest attempt
+// (open or already closed, as SQLite's); anything else (including a missing
+// task) is a legitimate no-op reported as false.
+func (s *Store) RequeueTaskForRetry(_ context.Context, taskID, attemptID string, retryAfter, now time.Time) (bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	t, ok := s.tasks[taskID]
-	if !ok || (t.Status != store.TaskStatusAssigned && t.Status != store.TaskStatusRunning) {
+	if !ok || (t.Status != store.TaskStatusAssigned && t.Status != store.TaskStatusRunning) || !s.isLatestAttemptLocked(taskID, attemptID) {
 		return false, nil
 	}
 	t.Status = store.TaskStatusReady

@@ -86,3 +86,25 @@ func TestCompleteTaskAttempt_RefusesATaskOutOfFlight(t *testing.T) {
 		}
 	}
 }
+
+func TestRequeueTaskForRetry_GuardsOnTheLatestAttempt(t *testing.T) {
+	for name, st := range newStores(t) {
+		t.Run(name, func(t *testing.T) {
+			ctx, now := t.Context(), time.Now().UTC()
+			g := seedGraph(t, st, graphOpts{jobStatus: store.JobStatusRunning},
+				stepSpec{name: "a", status: store.StepStatusReady, tasks: []store.TaskStatus{store.TaskStatusAssigned}})
+			task := g.Tasks["a"][0]
+			failed := seedAttempt(t, st, task, store.AttemptStatusFailed)
+			fresh := seedAttempt(t, st, task, store.AttemptStatusRunning) // a new lease
+			if ok, err := st.RequeueTaskForRetry(ctx, task.ID, failed.ID, now, now); err != nil || ok {
+				t.Fatalf("requeue on a superseded attempt = (%v, %v), want (false, nil)", ok, err)
+			}
+			if got := mustTask(t, st, task.ID).Status; got != store.TaskStatusAssigned {
+				t.Fatalf("task = %q, want assigned (the new lease)", got)
+			}
+			if ok, err := st.RequeueTaskForRetry(ctx, task.ID, fresh.ID, now, now); err != nil || !ok {
+				t.Fatalf("requeue on the latest attempt = (%v, %v), want (true, nil)", ok, err)
+			}
+		})
+	}
+}

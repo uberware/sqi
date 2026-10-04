@@ -3,13 +3,17 @@
 package scheduler
 
 import (
+	"context"
+	"log/slog"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
 
+	"github.com/uberware/sqi/internal/metrics"
 	"github.com/uberware/sqi/internal/store"
 	"github.com/uberware/sqi/internal/worker/protocol"
+	"github.com/uberware/sqi/internal/ws"
 )
 
 // runningReport builds the "running" message a worker publishes for attempt.
@@ -93,6 +97,71 @@ func TestH4a2_CancelEchoAfterRetryLeavesTaskReady(t *testing.T) {
 			}
 			if got := mustTaskOf(t, st, task.ID).Status; got != store.TaskStatusReady {
 				t.Fatalf("task = %q, want ready", got)
+			}
+		})
+	}
+}
+
+// reclaimBeforeRequeueStore runs hook just before the failure fork's requeue:
+// the window between RecordTaskFailure and RequeueTaskForRetry.
+type reclaimBeforeRequeueStore struct {
+	store.Store
+
+	hook *once
+}
+
+func (s *reclaimBeforeRequeueStore) RequeueTaskForRetry(ctx context.Context, taskID, attemptID string, retryAfter, now time.Time) (bool, error) {
+	s.hook.fire()
+	return s.Store.RequeueTaskForRetry(ctx, taskID, attemptID, retryAfter, now)
+}
+
+// TestH4a2_RequeueAfterReleaseLeavesTheNewLease pins item 9's third
+// late-report hole: an offline reclaim and a new lease landing between
+// RecordTaskFailure and the requeue must not return the new lease to ready.
+func TestH4a2_RequeueAfterReleaseLeavesTheNewLease(t *testing.T) {
+	for name, base := range raceBackends(t) {
+		t.Run(name, func(t *testing.T) {
+			_, _, task, attempt := seedStatusFixture(t, base, store.TaskStatusAssigned)
+			now := time.Now().UTC()
+			// The offline reclaim matches on assigned_worker_id, which the
+			// status fixture leaves empty.
+			if err := forceAssign(base, task.ID, statusTestWorkerID, now); err != nil {
+				t.Fatalf("AssignTask: %v", err)
+			}
+			if _, err := base.RegisterWorker(t.Context(), store.Worker{
+				ID: statusTestWorkerID, FarmID: "farm-1", Hostname: "h", Status: store.WorkerStatusOnline, LastHeartbeatAt: &now,
+			}); err != nil {
+				t.Fatalf("RegisterWorker: %v", err)
+			}
+			var fresh store.TaskAttempt
+			st := &reclaimBeforeRequeueStore{Store: base}
+			st.hook = &once{fn: func() {
+				if _, err := base.OfflineWorker(context.Background(), statusTestWorkerID, time.Now().UTC()); err != nil {
+					t.Errorf("OfflineWorker: %v", err)
+				}
+				res, err := base.LeaseTask(context.Background(), store.LeaseRequest{
+					TaskID: task.ID, WorkerID: "w-new", AttemptID: uuid.NewString(), Now: time.Now().UTC(),
+				})
+				if err != nil || res.Outcome != store.LeaseLeased {
+					t.Errorf("re-lease = (%+v, %v)", res, err)
+				}
+				fresh = res.Attempt
+			}}
+			cfg := DefaultConfig()
+			cfg.DefaultMaxAttempts, cfg.RetryDelay = 3, 0
+			s := New(cfg, st, nil, metrics.New(), slog.New(slog.DiscardHandler), ws.NoopNotifier{}, nil)
+			s.ctx = t.Context()
+
+			s.handleTaskStatusMessage(terminalReport(t, task, attempt, "failed", "boom"))
+
+			if got := mustTaskOf(t, base, task.ID); got.Status != store.TaskStatusAssigned || got.AssignedWorkerID != "w-new" {
+				t.Fatalf("task = %q on %q, want assigned on w-new", got.Status, got.AssignedWorkerID)
+			}
+			if a := mustAttemptOf(t, base, fresh.ID); a.Status != store.AttemptStatusRunning {
+				t.Fatalf("new attempt = %q, want running", a.Status)
+			}
+			if v := claimViolations(t, base); len(v) != 0 {
+				t.Fatalf("I3 violations: %v", v)
 			}
 		})
 	}

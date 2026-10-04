@@ -119,14 +119,15 @@ func (s *Scheduler) retryTaskAfterFailure(
 	// released, inside RecordTaskFailure's transaction; here we only re-queue
 	// with backoff.
 	retryAfter := at.Add(policy.RetryDelay)
-	requeued, err := s.store.RequeueTaskForRetry(ctx, m.TaskID, retryAfter, at)
+	requeued, err := s.store.RequeueTaskForRetry(ctx, m.TaskID, m.AttemptID, retryAfter, at)
 	if err != nil {
 		return err
 	}
 	if !requeued {
-		// The task left assigned/running in the meantime (canceled, or a
-		// redelivery whose first delivery already requeued it) — the store
-		// guard declined the transition, so skip the retry side effects too.
+		// The task left assigned/running, or a newer lease superseded this
+		// attempt (canceled, reclaimed and re-leased, or a redelivery whose
+		// first delivery already requeued it) — the store guard declined the
+		// transition, so skip the retry side effects too.
 		s.logger.InfoContext(ctx, "scheduler: retry requeue skipped — task no longer in-flight",
 			slog.String("task_id", m.TaskID))
 		return nil

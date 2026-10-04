@@ -248,12 +248,21 @@ WHERE  t.id = ?`
 	// until the backoff elapses. Guarded to assigned/running — the only states
 	// a genuine in-flight failure can arrive from — so a stale or redelivered
 	// failure report can never resurrect a canceled/succeeded task or yank a
-	// task that has already been returned to ready.
+	// task that has already been returned to ready. Also guarded on the
+	// reporting attempt still being the task's latest (compared by attempt
+	// number, like sqlIsLatestAttempt): a reclaim and a new lease landing
+	// between RecordTaskFailure and this statement must not return the new
+	// lease to ready (H4a2 §4.3). The attempt need not still be running: a
+	// crash-recovery redelivery finds it already closed as failed by the first
+	// delivery, yet still the latest, and must requeue.
 	sqlRequeueTaskForRetry = `
 UPDATE tasks
 SET status = 'ready', assigned_worker_id = NULL, assigned_at = NULL,
     retry_after = ?, updated_at = ?, failure_reason = ''
-WHERE id = ? AND status IN ('assigned', 'running')`
+WHERE id = ? AND status IN ('assigned', 'running')
+  AND EXISTS (SELECT 1 FROM task_attempts a
+              WHERE a.id = ? AND a.task_id = tasks.id
+                AND a.attempt_number = (SELECT MAX(attempt_number) FROM task_attempts WHERE task_id = tasks.id))`
 
 	// sqlRetryTasksPrefix revives the selected failed/canceled tasks, clearing
 	// the genuine-failure state a manual retry gives a clean slate:
@@ -941,11 +950,12 @@ func (s *Store) RecordTaskFailure(
 	return taskFailed, jobFailed, true, nil
 }
 
-// RequeueTaskForRetry implements [store.TaskStore]. Zero rows (task missing
-// or no longer assigned/running) is a legitimate no-op reported as false —
-// NOT an error, so a stale redelivery never naks into a redelivery loop.
-func (s *Store) RequeueTaskForRetry(ctx context.Context, taskID string, retryAfter, now time.Time) (bool, error) {
-	res, err := s.db.ExecContext(ctx, sqlRequeueTaskForRetry, timeToText(retryAfter.UTC()), timeToText(now.UTC()), taskID)
+// RequeueTaskForRetry implements [store.TaskStore]. Zero rows (task missing,
+// no longer assigned/running, or attemptID not the task's latest attempt) is a
+// legitimate no-op reported as false — NOT an error, so a stale redelivery
+// never naks into a redelivery loop.
+func (s *Store) RequeueTaskForRetry(ctx context.Context, taskID, attemptID string, retryAfter, now time.Time) (bool, error) {
+	res, err := s.db.ExecContext(ctx, sqlRequeueTaskForRetry, timeToText(retryAfter.UTC()), timeToText(now.UTC()), taskID, attemptID)
 	if err != nil {
 		return false, mapErr(err)
 	}

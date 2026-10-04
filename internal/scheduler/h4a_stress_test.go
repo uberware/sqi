@@ -379,12 +379,9 @@ func (r *stressRun) reportOne(g, n int) {
 // attempt, as an old worker's would. A terminal report from it is refused by
 // the store (CompleteTaskAttempt checks that the attempt is the task's latest),
 // and a failure report whose attempt was already closed is discarded by the
-// failure fork (failureReportStillCurrent). One pre-existing window stays open:
-// a failure report that closes the attempt itself (RecordTaskFailure), then a
-// reclaim and a new lease, then the report's RequeueTaskForRetry, which is
-// guarded on the task's status and not on its attempt, so it returns the new
-// lease to ready with its attempt open. The snapshot checks catch that shape
-// if a run hits it; closing it is H4b's work, not this test's.
+// failure fork (failureReportStillCurrent). The requeue is guarded on the
+// attempt (H4a2), so a reclaim and a new lease landing between
+// RecordTaskFailure and RequeueTaskForRetry leave the new lease alone.
 func (r *stressRun) report(g, idx, i int) {
 	ctx := r.t.Context()
 	task, err := r.st.GetTask(ctx, r.fx.taskIDs[idx])

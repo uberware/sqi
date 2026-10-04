@@ -213,7 +213,7 @@ func TestRetryTasks_ResetsFailureCounters(t *testing.T) {
 	if _, _, _, err := s.RecordTaskFailure(ctx, att.ID, "t1", nil, "", "", now); err != nil {
 		t.Fatalf("RecordTaskFailure: %v", err)
 	}
-	if requeued, err := s.RequeueTaskForRetry(ctx, "t1", now.Add(time.Minute), now); err != nil || !requeued {
+	if requeued, err := s.RequeueTaskForRetry(ctx, "t1", att.ID, now.Add(time.Minute), now); err != nil || !requeued {
 		t.Fatalf("RequeueTaskForRetry: requeued=%v err=%v", requeued, err)
 	}
 	if err := s.ParkJob(ctx, "j1", "failure limit reached (1)", now); err != nil {
@@ -442,8 +442,10 @@ func TestRequeueTaskForRetry_ResetsAssignment(t *testing.T) {
 		t.Fatalf("AssignTask: %v", err)
 	}
 
+	att := insertAttempt(t, s, "t1", "w1", 1)
+
 	future := now.Add(30 * time.Second)
-	if requeued, err := s.RequeueTaskForRetry(ctx, "t1", future, now); err != nil || !requeued {
+	if requeued, err := s.RequeueTaskForRetry(ctx, "t1", att.ID, future, now); err != nil || !requeued {
 		t.Fatalf("requeue: requeued=%v err=%v", requeued, err)
 	}
 	got, err := s.GetTask(ctx, "t1")
@@ -476,7 +478,9 @@ func TestRequeueTaskForRetry_ClearsFailureReason(t *testing.T) {
 		t.Fatalf("SetTaskFailureReason: %v", err)
 	}
 
-	if requeued, err := s.RequeueTaskForRetry(ctx, "t1", now.Add(30*time.Second), now); err != nil || !requeued {
+	att := insertAttempt(t, s, "t1", "w1", 1)
+
+	if requeued, err := s.RequeueTaskForRetry(ctx, "t1", att.ID, now.Add(30*time.Second), now); err != nil || !requeued {
 		t.Fatalf("RequeueTaskForRetry: requeued=%v err=%v", requeued, err)
 	}
 
@@ -505,7 +509,7 @@ func TestRequeueTaskForRetry_GuardedToInFlight(t *testing.T) {
 	insertJob(t, s, "j1", "f1", "q1")
 	insertStep(t, s, "s1", "j1", "S1", 0)
 
-	if requeued, err := s.RequeueTaskForRetry(ctx, "missing", now.Add(time.Second), now); err != nil || requeued {
+	if requeued, err := s.RequeueTaskForRetry(ctx, "missing", "no-attempt", now.Add(time.Second), now); err != nil || requeued {
 		t.Fatalf("missing task: requeued=%v err=%v, want false,nil", requeued, err)
 	}
 
@@ -527,7 +531,7 @@ func TestRequeueTaskForRetry_GuardedToInFlight(t *testing.T) {
 				}
 			}
 
-			requeued, err := s.RequeueTaskForRetry(ctx, id, now.Add(time.Second), now)
+			requeued, err := s.RequeueTaskForRetry(ctx, id, "no-attempt", now.Add(time.Second), now)
 			if err != nil || requeued {
 				t.Fatalf("requeued=%v err=%v, want false,nil", requeued, err)
 			}

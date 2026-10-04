@@ -53,12 +53,7 @@ func mustLease(t *testing.T, st store.Store, req store.LeaseRequest, want store.
 // has none, and each given pool (which had no active claims) still has none.
 func assertNothingWritten(t *testing.T, st store.Store, before store.Task, pools ...store.UsagePool) {
 	t.Helper()
-	got := mustTask(t, st, before.ID)
-	if got.Status != before.Status || got.AssignedWorkerID != before.AssignedWorkerID ||
-		got.UnschedulableReason != before.UnschedulableReason || !got.UpdatedAt.Equal(before.UpdatedAt) ||
-		!sameTime(got.AssignedAt, before.AssignedAt) {
-		t.Fatalf("task = %+v, want it left as %+v", got, before)
-	}
+	assertTaskUntouched(t, st, before)
 	if as := mustAttempts(t, st, before.ID); len(as) != 0 {
 		t.Fatalf("attempts = %+v, want none", as)
 	}
@@ -66,6 +61,18 @@ func assertNothingWritten(t *testing.T, st store.Store, before store.Task, pools
 		if n := activeClaims(t, st, p.ID); n != 0 {
 			t.Fatalf("pool %s active claims = %d, want 0", p.Name, n)
 		}
+	}
+}
+
+// assertTaskUntouched fails unless the task still matches before in every field
+// a lease or a refused lease would write.
+func assertTaskUntouched(t *testing.T, st store.Store, before store.Task) {
+	t.Helper()
+	got := mustTask(t, st, before.ID)
+	if got.Status != before.Status || got.AssignedWorkerID != before.AssignedWorkerID ||
+		got.UnschedulableReason != before.UnschedulableReason || !got.UpdatedAt.Equal(before.UpdatedAt) ||
+		!sameTime(got.AssignedAt, before.AssignedAt) {
+		t.Fatalf("task = %+v, want it left as %+v", got, before)
 	}
 }
 
@@ -239,14 +246,21 @@ func TestLeaseTask_Backoff(t *testing.T) {
 			t.Run(tc.name+"/"+name, func(t *testing.T) {
 				g := seedStepA(t, st, graphOpts{}, store.TaskStatusAssigned)
 				now := time.Now().UTC()
-				if ok, err := st.RequeueTaskForRetry(t.Context(), g.Tasks["a"][0].ID, now.Add(tc.after), now); err != nil || !ok {
+				// The requeue is guarded on the reporting attempt, so the task
+				// needs the attempt a real failure would have closed.
+				failed := seedAttempt(t, st, g.Tasks["a"][0], store.AttemptStatusRunning)
+				if ok, err := st.RequeueTaskForRetry(t.Context(), g.Tasks["a"][0].ID, failed.ID, now.Add(tc.after), now); err != nil || !ok {
 					t.Fatalf("RequeueTaskForRetry = (%v, %v), want requeued", ok, err)
 				}
 				before := mustTask(t, st, g.Tasks["a"][0].ID)
 
 				mustLease(t, st, leaseReq(before), tc.want)
 				if tc.want == store.LeaseLost {
-					assertNothingWritten(t, st, before)
+					// assertNothingWritten demands no attempts; the seeded one stays, and no second is opened.
+					assertTaskUntouched(t, st, before)
+					if as := mustAttempts(t, st, before.ID); len(as) != 1 {
+						t.Fatalf("attempts = %+v, want only the seeded one", as)
+					}
 				} else if got := mustTask(t, st, before.ID); got.Status != store.TaskStatusAssigned {
 					t.Fatalf("task = %q, want assigned", got.Status)
 				}
