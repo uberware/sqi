@@ -264,7 +264,7 @@ func (e *Executor) runTask(ctx context.Context, msg *protocol.AssignMsg, sess *s
 				slog.Int("pid", result.PID),
 				slog.Duration("duration", result.duration()),
 			)
-			e.statusPub.Terminal(context.Background(), msg, sess.ID, "failed", nil, "worker_shutdown", lp, result.EndedAt)
+			e.statusPub.Terminal(context.Background(), msg, sess.ID, "failed", nil, protocol.MessageWorkerShutdown, lp, result.EndedAt)
 			e.m.TasksTotal.WithLabelValues("failed").Inc()
 			e.m.ExecDuration.WithLabelValues("failed").Observe(result.duration().Seconds())
 		} else {

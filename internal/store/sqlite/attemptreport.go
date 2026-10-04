@@ -94,3 +94,45 @@ func (s *Store) StartTaskAttempt(ctx context.Context, attemptID, taskID, session
 	}
 	return true, nil
 }
+
+// sqlReclaimOneTask returns one in-flight task to ready. Binds: updated_at, id.
+const sqlReclaimOneTask = `
+UPDATE tasks
+SET    status = 'ready', assigned_worker_id = NULL, assigned_at = NULL, updated_at = ?, unschedulable_reason = ''
+WHERE  id = ? AND status IN ('assigned', 'running')`
+
+// ReclaimTaskAttempt implements [store.TaskStore].
+//
+// Anchor and statement order are offlineWorker's for one task: the job row
+// (beginTaskTx), then the task, then its attempts and claims
+// (closeTaskAttemptsTx). No worker anchor is taken, because the worker row is
+// neither read nor written here. The task is written before its attempt is
+// closed for offlineWorker's reason. On Postgres (H4c) the task row must be
+// locked FOR UPDATE after the anchor and before the latest-attempt check, as
+// for StartTaskAttempt.
+func (s *Store) ReclaimTaskAttempt(ctx context.Context, attemptID, taskID string, now time.Time) (bool, error) {
+	tx, err := s.beginTaskTx(ctx, taskID, "reclaim task attempt")
+	if err != nil {
+		return false, err
+	}
+	defer func() { _ = tx.Rollback() }() //nolint:errcheck // rollback after commit is a no-op
+
+	live, current, err := liveAttemptTx(ctx, tx, attemptID, taskID)
+	if err != nil {
+		return false, err
+	}
+	if !live || (current != store.TaskStatusAssigned && current != store.TaskStatusRunning) {
+		return false, tx.Commit()
+	}
+	nowText := timeToText(now.UTC())
+	if _, err := tx.ExecContext(ctx, sqlReclaimOneTask, nowText, taskID); err != nil {
+		return false, fmt.Errorf("sqlite: reclaim task %s: %w", taskID, mapErr(err))
+	}
+	if err := closeTaskAttemptsTx(ctx, tx, taskID, store.AttemptStatusFailed, store.FailureReasonWorkerShutdown, nowText); err != nil {
+		return false, err
+	}
+	if err := tx.Commit(); err != nil {
+		return false, fmt.Errorf("sqlite: commit reclaim task attempt: %w", mapErr(err))
+	}
+	return true, nil
+}

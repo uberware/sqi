@@ -99,6 +99,11 @@ const (
 	TypeTaskCancel = "task_cancel" // server → worker
 )
 
+// MessageWorkerShutdown is the Message of the "failed" TaskStatusMsg a worker
+// publishes for each task it abandons on a forced shutdown. The server treats
+// it as a reclaim, not a genuine failure (H4a2 §4.4).
+const MessageWorkerShutdown = "worker_shutdown"
+
 // ── RegisterMsg ───────────────────────────────────────────────────────────────
 
 // RegisterMsg is the JSON payload workers publish to worker.register.<worker>.

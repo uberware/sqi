@@ -108,3 +108,69 @@ func TestRequeueTaskForRetry_GuardsOnTheLatestAttempt(t *testing.T) {
 		})
 	}
 }
+
+func TestReclaimTaskAttempt(t *testing.T) {
+	for name, st := range newStores(t) {
+		t.Run(name, func(t *testing.T) {
+			ctx, now := t.Context(), time.Now().UTC()
+			g := seedGraph(t, st, graphOpts{jobStatus: store.JobStatusRunning},
+				stepSpec{name: "a", status: store.StepStatusReady, tasks: []store.TaskStatus{store.TaskStatusRunning, store.TaskStatusCanceled, store.TaskStatusRunning}})
+			running, canceled, userCanceled := g.Tasks["a"][0], g.Tasks["a"][1], g.Tasks["a"][2]
+			pool := seedPool(t, st, 1)
+			a := seedAttempt(t, st, running, store.AttemptStatusRunning)
+			seedClaim(t, st, pool.ID, a.ID)
+
+			if ok, err := st.ReclaimTaskAttempt(ctx, a.ID, running.ID, now); err != nil || !ok {
+				t.Fatalf("ReclaimTaskAttempt = (%v, %v), want (true, nil)", ok, err)
+			}
+			got := mustTask(t, st, running.ID)
+			if got.Status != store.TaskStatusReady || got.AssignedWorkerID != "" || got.FailedAttempts != 0 {
+				t.Fatalf("task = %+v, want ready, unassigned, no failure counted", got)
+			}
+			if at := mustAttempt(t, st, a.ID); at.Status != store.AttemptStatusFailed || at.Message != store.FailureReasonWorkerShutdown {
+				t.Fatalf("attempt = %+v, want failed with the shutdown message", at)
+			}
+			if n := activeClaims(t, st, pool.ID); n != 0 {
+				t.Fatalf("active claims = %d, want 0", n)
+			}
+			if j := mustJob(t, st, g.Job.ID); j.FailedAttempts != 0 {
+				t.Fatalf("job failed_attempts = %d, want 0", j.FailedAttempts)
+			}
+			// Again: the attempt is closed, so nothing happens.
+			if ok, err := st.ReclaimTaskAttempt(ctx, a.ID, running.ID, now); err != nil || ok {
+				t.Fatalf("second ReclaimTaskAttempt = (%v, %v), want (false, nil)", ok, err)
+			}
+			// Review Focus 3: a task the user already canceled stays canceled.
+			c := seedAttempt(t, st, canceled, store.AttemptStatusCanceled)
+			if ok, err := st.ReclaimTaskAttempt(ctx, c.ID, canceled.ID, now); err != nil || ok {
+				t.Fatalf("ReclaimTaskAttempt(canceled) = (%v, %v), want (false, nil)", ok, err)
+			}
+			if got := mustTask(t, st, canceled.ID).Status; got != store.TaskStatusCanceled {
+				t.Fatalf("canceled task = %q, want canceled", got)
+			}
+			if at := mustAttempt(t, st, c.ID); at.Status != store.AttemptStatusCanceled || at.Message == store.FailureReasonWorkerShutdown {
+				t.Fatalf("canceled attempt = %+v, want canceled and untouched", at)
+			}
+			// The same through the real cancel path: the user cancels a running
+			// task, then its worker's shutdown report arrives for the attempt the
+			// cancel closed.
+			u := seedAttempt(t, st, userCanceled, store.AttemptStatusRunning)
+			if _, ok, err := st.CancelTaskExecution(ctx, userCanceled.ID, store.FailureReasonCanceledByUser, now); err != nil || !ok {
+				t.Fatalf("CancelTaskExecution = (%v, %v), want (true, nil)", ok, err)
+			}
+			if ok, err := st.ReclaimTaskAttempt(ctx, u.ID, userCanceled.ID, now); err != nil || ok {
+				t.Fatalf("ReclaimTaskAttempt(user-canceled) = (%v, %v), want (false, nil)", ok, err)
+			}
+			if got := mustTask(t, st, userCanceled.ID).Status; got != store.TaskStatusCanceled {
+				t.Fatalf("user-canceled task = %q, want canceled", got)
+			}
+			if got := mustAttempt(t, st, u.ID).Status; got != store.AttemptStatusCanceled {
+				t.Fatalf("user-canceled attempt = %q, want canceled", got)
+			}
+
+			if _, err := st.ReclaimTaskAttempt(ctx, a.ID, "no-such-task", now); !errors.Is(err, store.ErrNotFound) {
+				t.Fatalf("unknown task: err = %v, want ErrNotFound", err)
+			}
+		})
+	}
+}

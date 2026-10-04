@@ -296,12 +296,13 @@ func (s *Scheduler) maybePromoteJobRunning(ctx context.Context, jobID string) {
 // closes the attempt, releases its usage slots and moves the task in one store
 // write ([store.TaskStore.CompleteTaskAttempt]), then checks step/job completion.
 //
-// A report the store refuses (the state machine rejects the move because the
-// task already reached a different terminal status, or went back to ready or
-// pending through a reap, an offline reclaim or a retry; or the report's
-// attempt is no longer the task's latest because a new lease superseded it)
-// still closes the attempt and frees its slots; it returns
-// [store.ErrInvalidTransition] so the consumer acks it.
+// A report the store refuses (CompleteTaskAttempt's in-flight guard moves the
+// task only from assigned or running, so it refuses a task that already
+// reached a different terminal status or went back to ready or pending
+// through a reap, an offline reclaim or a retry; or the report's attempt is
+// no longer the task's latest because a new lease superseded it) still closes
+// the attempt and frees its slots; it returns [store.ErrInvalidTransition] so
+// the consumer acks it.
 func (s *Scheduler) handleTaskTerminal(
 	ctx context.Context,
 	attempt store.TaskAttempt,
@@ -349,11 +350,12 @@ func (s *Scheduler) handleTaskTerminal(
 	s.notifyQueueForJob(ctx, task.JobID)
 
 	if res.Rejected {
-		// The task no longer holds a status this report can move it from: it
-		// reached a different terminal status (a cancel), or it went back to ready
-		// or pending (a reap, an offline reclaim, or a retry that raced this
-		// report). Or the report is a late one from an attempt a newer lease
-		// superseded, which must not end that lease. The claims were released
+		// The task no longer holds a status this report can move it from, so
+		// CompleteTaskAttempt's in-flight guard (assigned or running only)
+		// refused it: it reached a different terminal status (a cancel), or it
+		// went back to ready or pending (a reap, an offline reclaim, or a retry
+		// that raced this report). Or the report is a late one from an attempt a
+		// newer lease superseded, which must not end that lease. The claims were released
 		// above, so nothing leaks. Returned as ErrInvalidTransition so the consumer
 		// acks the message instead of redelivering a report that can never
 		// become legal.

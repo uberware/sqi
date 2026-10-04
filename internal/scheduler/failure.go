@@ -7,7 +7,8 @@ package scheduler
 // A "failed" TaskStatusMsg no longer routes straight to handleTaskTerminal.
 // Instead handleTaskFailed resolves the effective retry policy (job -> queue
 // -> farm -> server default, via ResolveRetryPolicy/RetryDefaults) and records
-// the genuine failure, then picks one of three outcomes:
+// the genuine failure, then picks one of the first three outcomes below; a
+// shutdown report takes the fourth and records no failure:
 //
 //   - RETRY: the task's failed_attempts is still below its policy ceiling and
 //     the job has not hit its failure limit — the attempt is closed as failed
@@ -23,6 +24,8 @@ package scheduler
 //   - EXHAUSTED: failed_attempts reached MaxAttempts with no failure limit in
 //     play — the task goes terminal-failed via the existing handleTaskTerminal
 //     path.
+//   - SHUTDOWN: a report whose Message is protocol.MessageWorkerShutdown is a
+//     reclaim, not a failure (handleTaskShutdown).
 
 import (
 	"context"
@@ -40,6 +43,9 @@ import (
 // and either re-queues the task (backoff) or lets it go terminal-failed —
 // parking the job first if its failure limit is reached.
 func (s *Scheduler) handleTaskFailed(ctx context.Context, attempt store.TaskAttempt, m protocol.TaskStatusMsg, at time.Time) error {
+	if m.Message == protocol.MessageWorkerShutdown {
+		return s.handleTaskShutdown(ctx, attempt, m)
+	}
 	task, err := s.store.GetTask(ctx, m.TaskID)
 	if err != nil {
 		return err
@@ -104,6 +110,37 @@ func (s *Scheduler) handleTaskFailed(ctx context.Context, attempt store.TaskAtte
 	return s.handleTaskTerminal(ctx, attempt, m, store.TaskStatusFailed, store.AttemptStatusFailed, at)
 }
 
+// handleTaskShutdown applies a "failed"/"worker_shutdown" report as a reclaim
+// (H4a2 §4.4, spec D2): the task did nothing wrong, so it goes back to ready
+// with no retry consumed and no job failure counted, exactly as the offline
+// reclaim behind a deregister treats it. Whichever of the two the server
+// applies first does the work; the other finds the attempt closed and does
+// nothing, so both orders end in the same state.
+func (s *Scheduler) handleTaskShutdown(ctx context.Context, attempt store.TaskAttempt, m protocol.TaskStatusMsg) error {
+	reclaimed, err := s.store.ReclaimTaskAttempt(ctx, attempt.ID, m.TaskID, time.Now().UTC())
+	if err != nil {
+		return err
+	}
+	s.attemptCache.evict(attempt.ID)
+	if !reclaimed {
+		s.logger.InfoContext(ctx, "scheduler: shutdown report for an attempt already closed — discarding",
+			slog.String("task_id", m.TaskID), slog.String("attempt_id", attempt.ID))
+		return nil
+	}
+	task, err := s.store.GetTask(ctx, m.TaskID)
+	if err != nil {
+		return err
+	}
+	s.logger.InfoContext(ctx, "scheduler: task reclaimed from a shutting-down worker",
+		slog.String("task_id", m.TaskID), slog.String("worker_id", attempt.WorkerID))
+	s.notifier.NotifyTask(ws.TaskEvent{
+		JobID: task.JobID, TaskID: task.ID, Name: task.Name,
+		Status: string(store.TaskStatusReady), UpdatedAt: time.Now().UTC(),
+	})
+	s.notifyQueueForJob(ctx, task.JobID)
+	return nil
+}
+
 // retryTaskAfterFailure re-queues the task with backoff. Split out of
 // handleTaskFailed to keep cyclomatic complexity in check.
 func (s *Scheduler) retryTaskAfterFailure(
@@ -128,8 +165,9 @@ func (s *Scheduler) retryTaskAfterFailure(
 		// attempt (canceled, reclaimed and re-leased, or a redelivery whose
 		// first delivery already requeued it) — the store guard declined the
 		// transition, so skip the retry side effects too.
-		s.logger.InfoContext(ctx, "scheduler: retry requeue skipped — task no longer in-flight",
-			slog.String("task_id", m.TaskID))
+		s.logger.InfoContext(ctx, "scheduler: retry requeue skipped — task no longer in flight or attempt superseded",
+			slog.String("task_id", m.TaskID),
+			slog.String("attempt_id", m.AttemptID))
 		return nil
 	}
 	s.metrics.TaskRetriesTotal.WithLabelValues(job.QueueID).Inc()

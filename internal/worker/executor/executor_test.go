@@ -529,8 +529,8 @@ func TestExecutor_DrainAndShutdown_workerShutdown(t *testing.T) {
 	if last.Status != "failed" {
 		t.Errorf("terminal status = %q; want %q (worker shutdown)", last.Status, "failed")
 	}
-	if last.Message != "worker_shutdown" {
-		t.Errorf("Message = %q; want %q", last.Message, "worker_shutdown")
+	if last.Message != protocol.MessageWorkerShutdown {
+		t.Errorf("Message = %q; want %q", last.Message, protocol.MessageWorkerShutdown)
 	}
 }
 
@@ -638,8 +638,8 @@ func TestExecutor_DrainAndShutdown_mixed(t *testing.T) {
 	if slowTerminal.Status != "failed" {
 		t.Errorf("slow task terminal status = %q; want %q", slowTerminal.Status, "failed")
 	}
-	if slowTerminal.Message != "worker_shutdown" {
-		t.Errorf("slow task Message = %q; want %q", slowTerminal.Message, "worker_shutdown")
+	if slowTerminal.Message != protocol.MessageWorkerShutdown {
+		t.Errorf("slow task Message = %q; want %q", slowTerminal.Message, protocol.MessageWorkerShutdown)
 	}
 }
 
@@ -922,8 +922,8 @@ func TestExecutor_FlushShutdownStatuses(t *testing.T) {
 		if sm.Status != "failed" {
 			t.Errorf("FlushShutdownStatuses message Status = %q; want %q", sm.Status, "failed")
 		}
-		if sm.Message != "worker_shutdown" {
-			t.Errorf("FlushShutdownStatuses message Message = %q; want %q", sm.Message, "worker_shutdown")
+		if sm.Message != protocol.MessageWorkerShutdown {
+			t.Errorf("FlushShutdownStatuses message Message = %q; want %q", sm.Message, protocol.MessageWorkerShutdown)
 		}
 	}
 }

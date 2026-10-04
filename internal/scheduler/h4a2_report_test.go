@@ -4,6 +4,7 @@ package scheduler
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"testing"
 	"time"
@@ -164,5 +165,67 @@ func TestH4a2_RequeueAfterReleaseLeavesTheNewLease(t *testing.T) {
 				t.Fatalf("I3 violations: %v", v)
 			}
 		})
+	}
+}
+
+// TestH4a2_ShutdownReportAndDeregisterAgreeInEitherOrder pins spec D2: a
+// forced shutdown's "failed"/"worker_shutdown" report and the worker's
+// deregister leave the same state whichever the server applies first, and
+// neither counts a genuine failure.
+func TestH4a2_ShutdownReportAndDeregisterAgreeInEitherOrder(t *testing.T) {
+	for _, reportFirst := range []bool{true, false} {
+		for name, st := range raceBackends(t) {
+			t.Run(fmt.Sprintf("reportFirst=%v/%s", reportFirst, name), func(t *testing.T) {
+				job, _, task, attempt := seedStatusFixture(t, st, store.TaskStatusAssigned)
+				now := time.Now().UTC()
+				// The offline reclaim matches on assigned_worker_id, which the
+				// status fixture leaves empty.
+				if err := forceAssign(st, task.ID, statusTestWorkerID, now); err != nil {
+					t.Fatalf("AssignTask: %v", err)
+				}
+				if _, err := st.RegisterWorker(t.Context(), store.Worker{
+					ID: statusTestWorkerID, FarmID: "farm-1", Hostname: "h", Status: store.WorkerStatusOnline, LastHeartbeatAt: &now,
+				}); err != nil {
+					t.Fatalf("RegisterWorker: %v", err)
+				}
+				pool := seedPoolClaim(t, st, attempt.ID)
+				cfg := DefaultConfig()
+				cfg.DefaultMaxAttempts = 3
+				s := New(cfg, st, nil, metrics.New(), slog.New(slog.DiscardHandler), ws.NoopNotifier{}, nil)
+				s.ctx = t.Context()
+
+				msg := terminalReport(t, task, attempt, "failed", protocol.MessageWorkerShutdown)
+				report := func() { s.handleTaskStatusMessage(msg) }
+				deregister := func() {
+					if _, err := st.OfflineWorker(t.Context(), statusTestWorkerID, time.Now().UTC()); err != nil {
+						t.Fatalf("OfflineWorker: %v", err)
+					}
+				}
+				if reportFirst {
+					report()
+					deregister()
+				} else {
+					deregister()
+					report()
+				}
+
+				if !msg.acked || msg.nacked {
+					t.Fatalf("shutdown report must be acked (acked=%v nacked=%v)", msg.acked, msg.nacked)
+				}
+				got := mustTaskOf(t, st, task.ID)
+				if got.Status != store.TaskStatusReady || got.FailedAttempts != 0 {
+					t.Fatalf("task = %q failed_attempts=%d, want ready with 0", got.Status, got.FailedAttempts)
+				}
+				if j := mustJob(t, st, job.ID); j.FailedAttempts != 0 {
+					t.Fatalf("job failed_attempts = %d, want 0", j.FailedAttempts)
+				}
+				if a := mustAttemptOf(t, st, attempt.ID); a.Status != store.AttemptStatusFailed {
+					t.Fatalf("attempt = %q, want failed", a.Status)
+				}
+				if n := activeClaimsOf(t, st, pool.ID); n != 0 {
+					t.Fatalf("active claims = %d, want 0", n)
+				}
+			})
+		}
 	}
 }

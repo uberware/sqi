@@ -46,6 +46,9 @@ const (
 	// FailureReasonWorkerOffline is the attempt message recorded when the
 	// heartbeat sweep terminates attempts of a worker that went offline.
 	FailureReasonWorkerOffline = "worker went offline"
+	// FailureReasonWorkerShutdown is the attempt message recorded when a
+	// worker's forced shutdown abandons a task and it is reclaimed.
+	FailureReasonWorkerShutdown = "worker shut down"
 )
 
 // Task is the atomic unit of work — one process on one worker. Tasks are
@@ -271,6 +274,17 @@ type TaskStore interface {
 	// task row must be locked FOR UPDATE after the anchor and before the
 	// latest-attempt check (handoff item 3h's reason).
 	StartTaskAttempt(ctx context.Context, attemptID, taskID, sessionID string, now time.Time) (started bool, err error)
+
+	// ReclaimTaskAttempt hands one task back as the offline reclaim does
+	// (H4a2 §4.4): it returns the task to ready with no worker, closes
+	// attemptID as failed with [FailureReasonWorkerShutdown] and releases its
+	// claims, without touching failed_attempts or the job's failure count. It
+	// acts only while attemptID is running and is the task's latest and the
+	// task is assigned or running; otherwise reclaimed is false and nothing
+	// changes. Anchor and statement order are the offline reclaim's: the job
+	// row, then the task, then the attempt and claims. Unknown task:
+	// [ErrNotFound].
+	ReclaimTaskAttempt(ctx context.Context, attemptID, taskID string, now time.Time) (reclaimed bool, err error)
 
 	// ListReadyTasks returns up to limit tasks in [TaskStatusReady] that
 	// belong to non-paused queues within the given farm, excluding:
@@ -505,8 +519,8 @@ type TaskStore interface {
 	// or [TaskStatusRunning] is requeued, so a stale or redelivered failure
 	// report can never resurrect a task that has since been canceled,
 	// succeeded, or already returned to ready. It reports whether the task was
-	// actually requeued; false (task missing or not assigned/running) is a
-	// legitimate no-op, not an error.
+	// actually requeued; false (task missing, not assigned/running, or
+	// attemptID not the task's latest) is a legitimate no-op, not an error.
 	//
 	// It acts only while attemptID is the task's latest attempt (H4a2 §4.3),
 	// so a reclaim and a new lease landing between RecordTaskFailure and this
