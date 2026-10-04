@@ -70,3 +70,30 @@ func TestH4a2_SupersededRunningReportIsIgnored(t *testing.T) {
 		})
 	}
 }
+
+// TestH4a2_CancelEchoAfterRetryLeavesTaskReady: the user cancels a running
+// task, retries it, then the old worker's "canceled" echo arrives. The task
+// must stay ready (v0.3.0 and H4a re-canceled it).
+func TestH4a2_CancelEchoAfterRetryLeavesTaskReady(t *testing.T) {
+	for name, st := range raceBackends(t) {
+		t.Run(name, func(t *testing.T) {
+			_, _, task, attempt := seedStatusFixture(t, st, store.TaskStatusRunning)
+			s := newTestScheduler(st, &stubBus{})
+			s.ctx = t.Context()
+			if err := s.CancelTask(t.Context(), task.ID); err != nil {
+				t.Fatalf("CancelTask: %v", err)
+			}
+			if err := s.RetryTask(t.Context(), task.ID); err != nil {
+				t.Fatalf("RetryTask: %v", err)
+			}
+			msg := terminalReport(t, task, attempt, "canceled", "")
+			s.handleTaskStatusMessage(msg)
+			if !msg.acked || msg.nacked {
+				t.Fatalf("echo must be acked (acked=%v nacked=%v)", msg.acked, msg.nacked)
+			}
+			if got := mustTaskOf(t, st, task.ID).Status; got != store.TaskStatusReady {
+				t.Fatalf("task = %q, want ready", got)
+			}
+		})
+	}
+}

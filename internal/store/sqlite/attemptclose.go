@@ -181,8 +181,10 @@ func (s *Store) CompleteTaskAttempt(ctx context.Context, c store.AttemptCompleti
 // reaper or an offline sweep closed that attempt and a new lease replaced it,
 // and the legal arrow assigned/running -> succeeded/failed/canceled would
 // otherwise end the task while the new attempt is open and holds its claims
-// (I3), or undo a cancel-then-retry. Otherwise the task moves by
-// compare-and-set, and the failure reason is stamped only when it lands.
+// (I3), or undo a cancel-then-retry. A task out of flight (neither assigned nor
+// running, and not already at the reported status) is refused the same way
+// (H4a2 §4.2). Otherwise the task moves by compare-and-set, and the failure
+// reason is stamped only when it lands.
 func applyCompletionTx(ctx context.Context, tx *sql.Tx, c store.AttemptCompletion, now time.Time) (store.CompletionResult, error) {
 	var latest bool
 	if err := tx.QueryRowContext(ctx, sqlIsLatestAttempt, c.AttemptID, c.TaskID, c.TaskID).Scan(&latest); err != nil {
@@ -191,11 +193,23 @@ func applyCompletionTx(ctx context.Context, tx *sql.Tx, c store.AttemptCompletio
 	if !latest {
 		return store.CompletionResult{Rejected: true}, nil
 	}
+	// A worker report moves only a task in flight (H4a2 §4.2). A task already
+	// holding the reported status is a redelivery, or the echo of a server-side
+	// cancel, and goes on to the compare-and-set's same-status no-op; any other
+	// out-of-flight task (back in ready or pending through a retry, with no new
+	// lease) is refused, so a late cancel echo cannot re-cancel a retried task.
+	var current string
+	if err := tx.QueryRowContext(ctx, sqlSelectTaskStatus, c.TaskID).Scan(&current); err != nil {
+		return store.CompletionResult{}, mapErr(err)
+	}
+	if cur := store.TaskStatus(current); cur != c.TaskStatus && cur != store.TaskStatusAssigned && cur != store.TaskStatusRunning {
+		return store.CompletionResult{Rejected: true}, nil
+	}
 	cas, err := casTaskStatusTx(ctx, tx, c.TaskID, c.TaskStatus, now)
 	switch {
 	case cas == casRejected && errors.Is(err, store.ErrInvalidTransition):
-		// The task is already terminal in some other status, or back in ready or
-		// pending. Only the task write is refused: the attempt close and claim
+		// The task is in flight (the guard above) but the state machine refuses
+		// the move. Only the task write is refused: the attempt close and claim
 		// release before this still commit.
 		return store.CompletionResult{Rejected: true}, nil
 	case err != nil:

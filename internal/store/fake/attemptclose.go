@@ -59,6 +59,8 @@ func (s *Store) closeRunningAttemptLocked(c store.AttemptCompletion) {
 //     attempt close and the claim release still happen;
 //   - the task already holds c.TaskStatus: Applied, the task is not rewritten
 //     (a redelivery);
+//   - the task is out of flight (not assigned/running) and not already at
+//     c.TaskStatus: Rejected, close and release still happen;
 //   - the state machine refuses the move: Rejected, but the attempt close and
 //     the claim release still happen;
 //   - otherwise the task moves and Applied is reported.
@@ -86,6 +88,11 @@ func (s *Store) CompleteTaskAttempt(_ context.Context, c store.AttemptCompletion
 	}
 	moves := t.Status != c.TaskStatus
 	if moves {
+		if t.Status != store.TaskStatusAssigned && t.Status != store.TaskStatusRunning {
+			// Out of flight (H4a2 §4.2): refused, but the close and release commit.
+			s.closeRunningAttemptLocked(c)
+			return store.CompletionResult{Rejected: true}, nil
+		}
 		if err := store.ValidateTaskTransition(t.Status, c.TaskStatus); err != nil {
 			if !errors.Is(err, store.ErrInvalidTransition) {
 				return store.CompletionResult{}, err

@@ -244,7 +244,10 @@ type TaskStore interface {
 	//  3. if c.AttemptID is not the task's latest attempt (the highest
 	//     attempt_number; an unknown attempt or another task's is not), stop:
 	//     the result is Rejected and the task is not touched;
-	//  4. move the task to c.TaskStatus by compare-and-set;
+	//  4. move the task to c.TaskStatus by compare-and-set, and only while it is
+	//     assigned or running (H4a2): a task already holding the status is a
+	//     no-op (Applied), anything else (ready, pending, or another terminal
+	//     status) is Rejected;
 	//  5. stamp c.FailureReason when the task ends up holding c.TaskStatus.
 	// Steps 1 and 2 commit even when step 3 or 4 rejects the report, so a
 	// canceled task's late report never leaks a usage slot. Step 3 is what

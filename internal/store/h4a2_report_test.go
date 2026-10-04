@@ -59,3 +59,30 @@ func TestStartTaskAttempt(t *testing.T) {
 		})
 	}
 }
+
+// TestCompleteTaskAttempt_RefusesATaskOutOfFlight pins item 9's second
+// late-report hole: a late terminal report from the latest attempt, after the
+// task left flight with no new lease (canceled then retried), must not move
+// it. The attempt close and claim release still happen.
+func TestCompleteTaskAttempt_RefusesATaskOutOfFlight(t *testing.T) {
+	for _, current := range []store.TaskStatus{store.TaskStatusReady, store.TaskStatusPending} {
+		for name, st := range newStores(t) {
+			t.Run(string(current)+"/"+name, func(t *testing.T) {
+				g := seedGraph(t, st, graphOpts{jobStatus: store.JobStatusRunning},
+					stepSpec{name: "a", status: store.StepStatusReady, tasks: []store.TaskStatus{current}})
+				task := g.Tasks["a"][0]
+				a := seedAttempt(t, st, task, store.AttemptStatusCanceled)
+				res, err := st.CompleteTaskAttempt(t.Context(), store.AttemptCompletion{
+					AttemptID: a.ID, TaskID: task.ID, TaskStatus: store.TaskStatusCanceled,
+					AttemptStatus: store.AttemptStatusCanceled, EndedAt: time.Now().UTC(),
+				})
+				if err != nil || !res.Rejected || res.Applied {
+					t.Fatalf("CompleteTaskAttempt = (%+v, %v), want Rejected", res, err)
+				}
+				if got := mustTask(t, st, task.ID).Status; got != current {
+					t.Fatalf("task = %q, want %q (untouched)", got, current)
+				}
+			})
+		}
+	}
+}
