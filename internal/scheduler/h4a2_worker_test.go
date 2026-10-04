@@ -160,19 +160,24 @@ func TestH4a2_LeaseHeldBackUntilARestartedProcessRegisters(t *testing.T) {
 			s.ctx = t.Context()
 			s.cfg.AssignBatchSize = 1             // one task per served request
 			s.leaseHoldTimeout = 30 * time.Second // a park would show as a slow answer
+			s.leaseRefusalDelay = 50 * time.Millisecond
 			one := 1
 			w, ids := seedLeaseFixture(t, st, []*int{&one, &one, &one})
 			if r := mustRegisterInstance(t, st, w, "p1"); len(r) != 0 {
 				t.Fatalf("first instance register reclaimed %d", len(r))
 			}
 
-			// A process whose registration has not landed: no work, at once.
+			// A process whose registration has not landed: no work, held for
+			// the refusal delay (so its lease loop cannot spin) but not parked.
 			got, took := leaseAs(t, s, w.ID, "p2")
 			if len(got) != 0 {
 				t.Fatalf("lease as p2 before its registration = %v, want no assignments", got)
 			}
+			if took < s.leaseRefusalDelay {
+				t.Fatalf("lease as p2 answered in %v, want at least the refusal delay %v", took, s.leaseRefusalDelay)
+			}
 			if took > 5*time.Second {
-				t.Fatalf("lease as p2 took %v: the refusal parked instead of answering at once", took)
+				t.Fatalf("lease as p2 took %v: the refusal parked instead of answering after the delay", took)
 			}
 			for _, id := range ids {
 				if task := mustTaskOf(t, st, id); task.Status != store.TaskStatusReady || task.AssignedWorkerID != "" {
@@ -277,5 +282,45 @@ func TestH4a2_ParkedLeaseFromASupersededProcessGetsNoWork(t *testing.T) {
 				t.Fatalf("reclaimed task = %q, want still ready", task.Status)
 			}
 		})
+	}
+}
+
+// TestH4a2_HeldLeaseRefusalEndsWithTheScheduler pins that the refusal's hold
+// (leaseRefusalDelay) gives way to the scheduler's context: a request held
+// when the scheduler shuts down is answered, empty, at once.
+func TestH4a2_HeldLeaseRefusalEndsWithTheScheduler(t *testing.T) {
+	st := newCheckedFake(t)
+	s := newMetricsScheduler(st, &recordBus{}, "f1")
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	s.ctx = ctx
+	s.leaseRefusalDelay = time.Minute
+	one := 1
+	w, ids := seedLeaseFixture(t, st, []*int{&one})
+	mustRegisterInstance(t, st, w, "p1")
+
+	req, err := json.Marshal(leaseRequest{WorkerID: w.ID, InstanceID: "p2"})
+	if err != nil {
+		t.Fatalf("marshal lease request: %v", err)
+	}
+	done := make(chan []byte, 1)
+	go func() { done <- s.handleLeaseRequest(w.ID, "q1", req) }()
+	time.Sleep(20 * time.Millisecond) // let the request reach its hold
+	cancel()
+
+	select {
+	case raw := <-done:
+		var rep leaseReply
+		if err := json.Unmarshal(raw, &rep); err != nil {
+			t.Fatalf("unmarshal lease reply: %v", err)
+		}
+		if len(rep.Assignments) != 0 {
+			t.Fatalf("held refusal answered %s, want no assignments", raw)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("a held refusal did not return when the scheduler's context ended")
+	}
+	if task := mustTaskOf(t, st, ids[0]); task.Status != store.TaskStatusReady {
+		t.Fatalf("task = %q, want still ready", task.Status)
 	}
 }

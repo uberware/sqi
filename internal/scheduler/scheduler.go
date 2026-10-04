@@ -277,6 +277,13 @@ type Scheduler struct {
 	// before replying empty. Overridable in tests.
 	leaseHoldTimeout time.Duration
 
+	// leaseRefusalDelay is how long a lease request from a worker process
+	// whose registration has not landed is held before its empty reply (see
+	// [Scheduler.leaseFromUnregisteredInstance]). The worker re-requests as
+	// soon as a reply arrives, so answering at once would make its lease loop
+	// spin. Overridable in tests.
+	leaseRefusalDelay time.Duration
+
 	// wg tracks all internal goroutines so [Run] can wait for clean exit.
 	wg sync.WaitGroup
 
@@ -338,17 +345,18 @@ func New(cfg Config, st store.Store, busClient busClient, m *metrics.Metrics, lo
 		n = ws.NoopNotifier{}
 	}
 	return &Scheduler{
-		cfg:              cfg,
-		store:            st,
-		bus:              busClient,
-		metrics:          m,
-		logger:           logger,
-		notifier:         n,
-		diagBuf:          diagBuf,
-		waiters:          newWaiterRegistry(),
-		attemptCache:     newAttemptOwnerCache(),
-		leaseHoldTimeout: 30 * time.Second,
-		retryWakeTimers:  make(map[*time.Timer]struct{}),
+		cfg:               cfg,
+		store:             st,
+		bus:               busClient,
+		metrics:           m,
+		logger:            logger,
+		notifier:          n,
+		diagBuf:           diagBuf,
+		waiters:           newWaiterRegistry(),
+		attemptCache:      newAttemptOwnerCache(),
+		leaseHoldTimeout:  30 * time.Second,
+		leaseRefusalDelay: time.Second,
+		retryWakeTimers:   make(map[*time.Timer]struct{}),
 		// ctx is overwritten with the derived cancellable context in Run.
 		// The background fallback ensures NATS callbacks can't nil-panic if
 		// somehow invoked before Run (e.g. in a partial test setup).

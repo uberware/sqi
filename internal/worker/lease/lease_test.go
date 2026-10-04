@@ -17,14 +17,21 @@ type fakeTransport struct {
 	mu       sync.Mutex
 	replies  [][]byte
 	calls    int
-	requests [][]byte // every request body sent, in order
+	requests [][]byte // the first maxRecordedRequests request bodies, in order
 }
+
+// maxRecordedRequests caps fakeTransport.requests: a loop against an
+// always-empty fake re-requests without pause, so recording every body would
+// grow without bound for as long as the loop runs.
+const maxRecordedRequests = 8
 
 func (f *fakeTransport) RequestLease(_ context.Context, _, _ string, data []byte, _ time.Duration) ([]byte, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.calls++
-	f.requests = append(f.requests, data)
+	if len(f.requests) < maxRecordedRequests {
+		f.requests = append(f.requests, data)
+	}
 	if len(f.replies) == 0 {
 		out, _ := json.Marshal(reply{}) //nolint:errcheck // simple struct, never fails
 		return out, nil

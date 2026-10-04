@@ -73,8 +73,11 @@ func (s *Scheduler) handleLeaseRequest(workerID, queueID string, data []byte) []
 	}
 
 	worker, err := s.store.GetWorker(ctx, workerID)
-	if err != nil || s.leaseFromUnregisteredInstance(ctx, worker, req.InstanceID) {
+	if err != nil {
 		return marshalLeaseReply(nil)
+	}
+	if s.leaseFromUnregisteredInstance(ctx, worker, req.InstanceID) {
+		return s.refuseLeaseAfterDelay(ctx)
 	}
 
 	batch, err := s.selectLeaseBatchLocked(ctx, worker)
@@ -99,6 +102,23 @@ func (s *Scheduler) handleLeaseRequest(workerID, queueID string, data []byte) []
 	return marshalLeaseReply(nil)
 }
 
+// refuseLeaseAfterDelay answers a lease request from a worker process whose
+// registration has not landed: an empty batch, held for leaseRefusalDelay (or
+// until ctx ends). The worker re-requests as soon as a reply arrives, so an
+// immediate answer would spin its lease loop for as long as the registration
+// takes. It holds no lock and touches nothing; each request runs on its own
+// goroutine and a worker keeps one request outstanding per queue, so a process
+// holds at most one of these per queue.
+func (s *Scheduler) refuseLeaseAfterDelay(ctx context.Context) []byte {
+	t := time.NewTimer(s.leaseRefusalDelay)
+	defer t.Stop()
+	select {
+	case <-ctx.Done():
+	case <-t.C:
+	}
+	return marshalLeaseReply(nil)
+}
+
 // leaseAfterPark is the one retry a parked lease request makes once woken: it
 // re-reads the worker and, unless the worker re-registered from another process
 // while the request was parked, selects a batch. Any failure is an empty batch.
@@ -116,16 +136,18 @@ func (s *Scheduler) leaseAfterPark(ctx context.Context, workerID, instanceID str
 
 // leaseFromUnregisteredInstance reports whether a lease request comes from a
 // worker process other than the one whose registration the store last applied:
-// both instance IDs are known and they differ. Such a request is answered with
-// an empty batch, immediately and without parking. The common case is a
+// both instance IDs are known and they differ. Such a request gets an empty
+// batch, without parking and without touching a task. The common case is a
 // restarted worker that asks for work before the server has consumed its new
 // registration (the register message goes through JetStream asynchronously,
 // the lease is core-NATS request/reply); a task leased to it then would match
 // the registration's restart reclaim, which goes by worker ID, and be handed
 // back to ready while this process runs it. Its next request, after the
-// registration lands, is served. An empty ID on either side (a worker that
-// sends none, or a row no ID-sending process has registered yet) proves
-// nothing, and the request is served as before.
+// registration lands, is served. The refusal at the front of the handler is
+// held for leaseRefusalDelay (see [Scheduler.refuseLeaseAfterDelay]); the one
+// after a park is not, since the park already waited. An empty ID on either
+// side (a worker that sends none, or a row no ID-sending process has
+// registered yet) proves nothing, and the request is served as before.
 func (s *Scheduler) leaseFromUnregisteredInstance(ctx context.Context, w store.Worker, instanceID string) bool {
 	if w.InstanceID == "" || instanceID == "" || w.InstanceID == instanceID {
 		return false
