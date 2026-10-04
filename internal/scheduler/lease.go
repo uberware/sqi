@@ -76,10 +76,9 @@ func (s *Scheduler) handleLeaseRequest(workerID, queueID string, data []byte) []
 	if err != nil {
 		return marshalLeaseReply(nil)
 	}
-	if workerDisabled(worker) {
-		return marshalLeaseReply(nil)
-	}
-	if s.leaseFromUnregisteredInstance(ctx, worker, req.InstanceID) {
+	// Both refusals are held, not answered at once: see refuseLeaseAfterDelay.
+	// Disabled is checked first; it needs no instance ID to decide.
+	if workerDisabled(worker) || s.leaseFromUnregisteredInstance(ctx, worker, req.InstanceID) {
 		return s.refuseLeaseAfterDelay(ctx)
 	}
 
@@ -105,11 +104,13 @@ func (s *Scheduler) handleLeaseRequest(workerID, queueID string, data []byte) []
 	return marshalLeaseReply(nil)
 }
 
-// refuseLeaseAfterDelay answers a lease request from a worker process whose
-// registration has not landed: an empty batch, held for leaseRefusalDelay (or
-// until ctx ends). The worker re-requests as soon as a reply arrives, so an
-// immediate answer would spin its lease loop for as long as the registration
-// takes. It holds no lock and touches nothing; each request runs on its own
+// refuseLeaseAfterDelay answers a lease request that is refused outright, from a
+// worker process whose registration has not landed or from a disabled worker: an
+// empty batch, held for leaseRefusalDelay (or until ctx ends). The worker
+// re-requests as soon as a reply arrives, so an immediate answer would spin its
+// lease loop for as long as the registration takes, or, for a disabled worker
+// (which can stay disabled for days), for as long as the operator leaves it
+// disabled. It holds no lock and touches nothing; each request runs on its own
 // goroutine and a worker keeps one request outstanding per queue, so a process
 // holds at most one of these per queue.
 func (s *Scheduler) refuseLeaseAfterDelay(ctx context.Context) []byte {
@@ -124,10 +125,12 @@ func (s *Scheduler) refuseLeaseAfterDelay(ctx context.Context) []byte {
 
 // workerDisabled reports whether an operator has disabled the worker. Disabled
 // drains: the worker finishes the tasks it holds and is leased nothing new
-// (docs/api.md). It is checked on the lease request and again after a park,
-// because a worker can be disabled while its request is parked. A disable that
-// lands between the check and the lease can still let one batch through, which
-// is the documented drain.
+// (docs/api.md). It is checked on the lease request, where the refusal is held
+// for leaseRefusalDelay so the worker's loop cannot spin, and again after a
+// park, where it is answered at once because the park already waited. A worker
+// can be disabled while its request is parked. A disable that lands between the
+// check and the lease can still let one batch through, which is the documented
+// drain.
 func workerDisabled(w store.Worker) bool {
 	return w.Status == store.WorkerStatusDisabled
 }

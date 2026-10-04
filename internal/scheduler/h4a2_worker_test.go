@@ -326,29 +326,40 @@ func TestH4a2_HeldLeaseRefusalEndsWithTheScheduler(t *testing.T) {
 }
 
 // TestH4a2_DisabledWorkerGetsNoWork pins N1: docs/api.md says disable "stops
-// new assignments", but the lease path never checked worker status.
+// new assignments", but the lease path never checked worker status. The refusal
+// is held for leaseRefusalDelay, like the unregistered-instance one: a worker
+// re-requests the moment a reply arrives and can stay disabled for days, so an
+// instant empty reply would spin its lease loop against the broker and the
+// store for that long.
 func TestH4a2_DisabledWorkerGetsNoWork(t *testing.T) {
 	st := newCheckedFake(t)
 	s := newMetricsScheduler(st, &recordBus{}, "f1")
-	s.leaseHoldTimeout = 20 * time.Millisecond
+	s.leaseHoldTimeout = 30 * time.Second // a park would show as a slow answer
+	s.leaseRefusalDelay = 50 * time.Millisecond
 	one := 1
 	w, ids := seedLeaseFixture(t, st, []*int{&one})
 	if err := st.UpdateWorkerStatus(t.Context(), w.ID, store.WorkerStatusDisabled); err != nil {
 		t.Fatalf("UpdateWorkerStatus: %v", err)
 	}
-	req, err := json.Marshal(leaseRequest{WorkerID: w.ID})
+	got, took := leaseAs(t, s, w.ID, "")
+	if len(got) != 0 {
+		t.Fatalf("assignments = %v, want none for a disabled worker", got)
+	}
+	if took < s.leaseRefusalDelay {
+		t.Fatalf("refusal answered in %v, want at least the refusal delay %v", took, s.leaseRefusalDelay)
+	}
+	if took > 5*time.Second {
+		t.Fatalf("refusal took %v: it parked instead of answering after the delay", took)
+	}
+	if task := mustTaskOf(t, st, ids[0]); task.Status != store.TaskStatusReady || task.AssignedWorkerID != "" {
+		t.Fatalf("task = %q on %q, want ready and unassigned (not leased)", task.Status, task.AssignedWorkerID)
+	}
+	attempts, err := st.ListTaskAttempts(t.Context(), ids[0])
 	if err != nil {
-		t.Fatalf("marshal: %v", err)
+		t.Fatalf("ListTaskAttempts: %v", err)
 	}
-	var got leaseReply
-	if err := json.Unmarshal(s.handleLeaseRequest(w.ID, "q1", req), &got); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
-	if len(got.Assignments) != 0 {
-		t.Fatalf("assignments = %d, want 0 for a disabled worker", len(got.Assignments))
-	}
-	if task := mustTaskOf(t, st, ids[0]); task.Status != store.TaskStatusReady {
-		t.Fatalf("task = %q, want ready (not leased)", task.Status)
+	if len(attempts) != 0 {
+		t.Fatalf("task has %d attempts after the refused lease, want 0", len(attempts))
 	}
 }
 
