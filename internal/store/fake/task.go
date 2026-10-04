@@ -424,8 +424,9 @@ func (s *Store) CancelJobTasks(_ context.Context, jobID string, now time.Time, r
 	return active, nil
 }
 
-// RetryTasks reverts failed/canceled tasks (and their terminal steps and the
-// terminal job) to pending. See [store.TaskStore.RetryTasks].
+// RetryTasks revives failed/canceled tasks (ready under a ready step, else
+// pending) and resets their terminal steps and the terminal job. See
+// [store.TaskStore.RetryTasks].
 func (s *Store) RetryTasks(_ context.Context, jobID string, taskIDs []string, now time.Time) ([]store.Task, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -452,7 +453,7 @@ func (s *Store) RetryTasks(_ context.Context, jobID string, taskIDs []string, no
 				continue
 			}
 		}
-		t.Status = store.TaskStatusPending
+		t.Status = s.revivedStatusLocked(t.StepID)
 		t.UnschedulableReason = ""
 		t.FailedAttempts = 0
 		t.RetryAfter = nil
@@ -487,6 +488,18 @@ func (s *Store) RetryTasks(_ context.Context, jobID string, taskIDs []string, no
 	s.retryResetJobLocked(jobID, now)
 
 	return revived, nil
+}
+
+// revivedStatusLocked is the status a retried task of stepID is revived into:
+// ready when its step is still ready (H4a2 §3.4), as SQLite's CASE does, and
+// pending otherwise. The legacy running step status counts as ready, for rows
+// written outside the store operations (no step is running, H4a D4). Caller
+// must hold s.mu.
+func (s *Store) revivedStatusLocked(stepID string) store.TaskStatus {
+	if st, ok := s.steps[stepID]; ok && (st.Status == store.StepStatusReady || st.Status == store.StepStatusRunning) {
+		return store.TaskStatusReady
+	}
+	return store.TaskStatusPending
 }
 
 // retryResetJobLocked resets the job to pending when it is currently terminal

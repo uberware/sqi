@@ -255,23 +255,26 @@ SET status = 'ready', assigned_worker_id = NULL, assigned_at = NULL,
     retry_after = ?, updated_at = ?, failure_reason = ''
 WHERE id = ? AND status IN ('assigned', 'running')`
 
-	// sqlSelectRetryableTasksPrefix selects the failed/canceled tasks of a job
-	// that a retry will revive. The optional "AND id IN (?, …)" suffix is
-	// appended at call time when a task-ID subset is supplied.
-	sqlSelectRetryableTasksPrefix = `
-SELECT ` + taskCols + `
-FROM   tasks
-WHERE  job_id = ? AND status IN ('failed', 'canceled')`
-
-	// sqlRetryTasksPrefix reverts the selected tasks to pending, clearing the
-	// genuine-failure state (Tasks 1-3) a manual retry gives a clean slate:
-	// failed_attempts back to zero and any backoff stamp removed.
-	// The optional "AND id IN (?, …)" suffix is appended at call time.
+	// sqlRetryTasksPrefix revives the selected failed/canceled tasks, clearing
+	// the genuine-failure state a manual retry gives a clean slate:
+	// failed_attempts back to zero and any backoff stamp removed. A task whose
+	// step is still ready (a sibling in flight) is revived ready, since nothing
+	// releases a pending task in a ready step (H4a2 §3.4); any other is revived
+	// pending for ResolveDependencies to release. 'running' is treated as ready
+	// for rows written outside the store operations (no step is running, H4a
+	// D4). The optional "AND id IN (?, …)" suffix and sqlRetryTasksReturning are
+	// appended at call time.
 	sqlRetryTasksPrefix = `
 UPDATE tasks
-SET    status = 'pending', updated_at = ?, unschedulable_reason = '',
+SET    status = CASE WHEN (SELECT s.status FROM steps s WHERE s.id = tasks.step_id) IN ('ready', 'running')
+                     THEN 'ready' ELSE 'pending' END,
+       updated_at = ?, unschedulable_reason = '',
        failed_attempts = 0, retry_after = NULL, failure_reason = ''
 WHERE  job_id = ? AND status IN ('failed', 'canceled')`
+
+	// sqlRetryTasksReturning hands back exactly the revived rows, as they are
+	// after the update (I2).
+	sqlRetryTasksReturning = ` RETURNING ` + taskCols
 
 	// sqlRetryResetSteps resets any terminal step that now owns a pending task
 	// (i.e. a task this retry just revived) back to pending.
@@ -718,18 +721,17 @@ func (s *Store) RetryTasks(ctx context.Context, jobID string, taskIDs []string, 
 	}
 	defer func() { _ = tx.Rollback() }() //nolint:errcheck // rollback is best-effort after commit
 
-	// G5: the anchor is the job row, taken before the SELECT. The SELECT below
-	// and the UPDATE after it use the same predicate, so the returned set is the
-	// changed set (I2) only if nothing can add a failed/canceled task between
-	// them; H4c's row lock is what stops a concurrent cancel doing that.
+	// G5: the anchor is the job row, taken first. The revive UPDATE ... RETURNING
+	// is the returned set (I2), so there is no SELECT for a concurrent writer to
+	// slip in behind.
 	if err := lockAnchors(ctx, tx, jobAnchor(jobID)); err != nil {
 		return nil, err
 	}
 
-	// Capture the tasks to revive before the UPDATE so we can return them.
-	revived, err := selectRetryableTasksTx(ctx, tx, jobID, inSuffix, idArgs)
+	updArgs := append([]any{nowText, jobID}, idArgs...)
+	revived, err := queryTasksTx(ctx, tx, sqlRetryTasksPrefix+inSuffix+sqlRetryTasksReturning, updArgs...)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("sqlite: retry tasks for job %s: %w", jobID, err)
 	}
 	if len(revived) == 0 {
 		if err = tx.Commit(); err != nil {
@@ -738,10 +740,6 @@ func (s *Store) RetryTasks(ctx context.Context, jobID string, taskIDs []string, 
 		return nil, nil
 	}
 
-	updArgs := append([]any{nowText, jobID}, idArgs...)
-	if _, err = tx.ExecContext(ctx, sqlRetryTasksPrefix+inSuffix, updArgs...); err != nil {
-		return nil, fmt.Errorf("sqlite: retry tasks for job %s: %w", jobID, mapErr(err))
-	}
 	if _, err = tx.ExecContext(ctx, sqlRetryResetSteps, nowText, jobID); err != nil {
 		return nil, fmt.Errorf("sqlite: reset steps for job %s: %w", jobID, mapErr(err))
 	}
@@ -753,30 +751,6 @@ func (s *Store) RetryTasks(ctx context.Context, jobID string, taskIDs []string, 
 		return nil, fmt.Errorf("sqlite: commit retry tasks: %w", err)
 	}
 	return revived, nil
-}
-
-// selectRetryableTasksTx reads the failed/canceled tasks of jobID that a retry
-// will revive, narrowed by inSuffix (an optional "AND id IN (...)" whose
-// placeholders idArgs binds). Each returned task already reflects its
-// post-update status, pending.
-func selectRetryableTasksTx(ctx context.Context, tx *sql.Tx, jobID, inSuffix string, idArgs []any) ([]store.Task, error) {
-	args := append([]any{jobID}, idArgs...)
-	rows, err := tx.QueryContext(ctx, sqlSelectRetryableTasksPrefix+inSuffix, args...)
-	if err != nil {
-		return nil, fmt.Errorf("sqlite: select retryable tasks for job %s: %w", jobID, mapErr(err))
-	}
-	defer rows.Close()
-
-	var out []store.Task
-	for rows.Next() {
-		t, err := scanTask(rows)
-		if err != nil {
-			return nil, err
-		}
-		t.Status = store.TaskStatusPending // reflect the post-update state
-		out = append(out, t)
-	}
-	return out, rows.Err()
 }
 
 // TransitionStepPendingTasks moves every pending task of the step to `to`

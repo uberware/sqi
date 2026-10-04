@@ -56,9 +56,10 @@ func (f *fakeTaskCanceler) RetryTask(ctx context.Context, id string) error {
 		// Revive through RetryTasks, the same store call the real scheduler
 		// makes. UpdateTaskStatus would be wrong here: it enforces the task
 		// state machine, and failed → ready is not an arrow — production
-		// revives failed → pending inside RetryTasks and then promotes to ready
-		// via dependency resolution. Using UpdateTaskStatus made this double
-		// exercise a transition the real store rejects.
+		// revives inside RetryTasks (ready under a live step, else pending) and
+		// then promotes pending to ready via dependency resolution. Using
+		// UpdateTaskStatus made this double exercise a transition the real
+		// store rejects.
 		task, err := f.retryStore.GetTask(ctx, id)
 		if err != nil {
 			return err
@@ -67,8 +68,9 @@ func (f *fakeTaskCanceler) RetryTask(ctx context.Context, id string) error {
 			return err
 		}
 		if status != store.TaskStatusPending {
-			// RetryTasks lands on pending; walk the legal pending → ready arrow
-			// when the test wants the post-resolution status.
+			// RetryTasks lands on pending under a step that is not live; walk
+			// the legal pending → ready arrow when the test wants the
+			// post-resolution status (a no-op when it already landed ready).
 			return f.retryStore.UpdateTaskStatus(ctx, id, status)
 		}
 		return nil
@@ -710,11 +712,41 @@ func TestRetryTask(t *testing.T) {
 		}
 	})
 
+	t.Run("retry under a live step returns ready status", func(t *testing.T) {
+		// seedTask's step is running (the legacy live status), so RetryTasks
+		// revives the task ready: nothing would release it from pending there
+		// (H4a2 §3.4). This test used to assert pending, which pinned that bug.
+		st := fake.New()
+		sched := &fakeTaskCanceler{retryStore: st, retryStatus: store.TaskStatusPending}
+		r := newTaskRouterCanceler(st, sched)
+		_, tk := seedTask(t, st, store.TaskStatusFailed)
+
+		req := newReq(t, http.MethodPost, "/api/v1/tasks/"+tk.ID+"/retry", nil)
+		rr := httptest.NewRecorder()
+		r.ServeHTTP(rr, req)
+
+		if rr.Code != http.StatusAccepted {
+			t.Fatalf("expected 202, got %d — body: %s", rr.Code, rr.Body)
+		}
+		var resp retryResponse
+		if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		if resp.Status != "ready" {
+			t.Errorf("status = %q, want ready", resp.Status)
+		}
+	})
+
 	t.Run("retry with unsatisfied deps returns pending status", func(t *testing.T) {
 		st := fake.New()
 		sched := &fakeTaskCanceler{retryStore: st, retryStatus: store.TaskStatusPending}
 		r := newTaskRouterCanceler(st, sched)
 		_, tk := seedTask(t, st, store.TaskStatusFailed)
+		// A task whose dependencies are unsatisfied sits under a pending step,
+		// where RetryTasks revives it pending for ResolveDependencies to gate.
+		if err := st.UpdateStepStatus(t.Context(), tk.StepID, store.StepStatusPending); err != nil {
+			t.Fatalf("UpdateStepStatus: %v", err)
+		}
 
 		req := newReq(t, http.MethodPost, "/api/v1/tasks/"+tk.ID+"/retry", nil)
 		rr := httptest.NewRecorder()

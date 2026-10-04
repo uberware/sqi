@@ -83,12 +83,16 @@ var stressHistoryDDL = []string{
 // [store.ValidateTaskTransition]'s table. The table is the arrow set of
 // UpdateTaskStatus, which never revives a terminal task ("terminal states have
 // no outgoing transitions"). RetryTasks is the one bulk path that does, by
-// design: it moves failed and canceled tasks back to pending
-// ([store.TaskStore.RetryTasks]). Every other bulk path (reclaim, offline
-// reclaim, requeue, cancel, step release) writes an arrow the table lists.
+// design: it revives failed and canceled tasks, pending under a step that
+// ResolveDependencies will release and ready under a step that is already ready
+// (H4a2 §3.4, [store.TaskStore.RetryTasks]). Every other bulk path (reclaim,
+// offline reclaim, requeue, cancel, step release) writes an arrow the table
+// lists.
 var stressRetryArrows = map[[2]store.TaskStatus]bool{
 	{store.TaskStatusFailed, store.TaskStatusPending}:   true,
 	{store.TaskStatusCanceled, store.TaskStatusPending}: true,
+	{store.TaskStatusFailed, store.TaskStatusReady}:     true,
+	{store.TaskStatusCanceled, store.TaskStatusReady}:   true,
 }
 
 // stressFixture is the seeded world the stress test races over.

@@ -369,24 +369,27 @@ type TaskStore interface {
 	CancelTaskExecution(ctx context.Context, taskID, reason string, now time.Time) (Task, bool, error)
 
 	// RetryTasks revives failed/canceled tasks so they can run again. It
-	// transitions every task of jobID in [TaskStatusFailed] or
+	// revives every task of jobID in [TaskStatusFailed] or
 	// [TaskStatusCanceled] — or, when taskIDs is non-nil, only those of the
-	// given IDs that are failed/canceled — back to [TaskStatusPending],
-	// clearing each revived task's genuine-failure state (FailedAttempts reset
-	// to zero, RetryAfter cleared). Any of their enclosing steps that are
+	// given IDs that are failed/canceled — clearing each revived task's
+	// genuine-failure state (FailedAttempts reset to zero, RetryAfter
+	// cleared). Each revived task becomes [TaskStatusReady] when its step is
+	// ready (a sibling still in flight) and [TaskStatusPending] otherwise; the
+	// returned tasks carry that status. Any of their enclosing steps that are
 	// currently in a terminal status are reset to [StepStatusPending], and the
 	// job itself is reset to [JobStatusPending] when it is currently terminal
 	// (failed/canceled) — likewise clearing the job's FailedAttempts and
 	// ParkReason; a non-terminal job is left unchanged. All updates run in a
 	// single transaction.
 	//
-	// Resetting to pending (rather than ready) lets the caller re-run
-	// [openjd.ResolveDependencies] to re-gate the revived tasks in dependency
-	// order. Tasks not in a terminal-retryable state are not modified. Returns
-	// the revived task rows (each with Status == pending), or an empty slice
-	// when nothing matched. The returned set is exactly the set of rows the
-	// call changed: it takes the job's anchor lock first, so a concurrent
-	// cancel cannot add a failed/canceled task between the read and the write.
+	// A task revived pending lets the caller re-run
+	// [openjd.ResolveDependencies] to re-gate it in dependency order; a task
+	// in a ready step is revived ready because nothing would release it from
+	// pending there. Tasks not in a terminal-retryable state are not modified.
+	// Returns the revived task rows, or an empty slice when nothing matched.
+	// The returned set is exactly the set of rows the call changed: it takes
+	// the job's anchor lock first, so a concurrent cancel cannot add a
+	// failed/canceled task between the read and the write.
 	RetryTasks(ctx context.Context, jobID string, taskIDs []string, now time.Time) ([]Task, error)
 
 	// CountTasksByJob returns the number of tasks for the given job keyed by

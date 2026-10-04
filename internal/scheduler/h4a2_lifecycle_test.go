@@ -80,3 +80,31 @@ func TestH4a2_CancelJobThenRetryJobRunsAgain(t *testing.T) {
 		})
 	}
 }
+
+// TestH4a2_RetryFailedTaskWhileSiblingRunsIsLeasable pins item 9 vi through
+// RetryTask: the revived task is ready at once, not pending under a ready step.
+func TestH4a2_RetryFailedTaskWhileSiblingRunsIsLeasable(t *testing.T) {
+	for name, st := range raceBackends(t) {
+		t.Run(name, func(t *testing.T) {
+			job, step, running, _ := seedStatusFixture(t, st, store.TaskStatusRunning)
+			now := time.Now()
+			failed, err := st.CreateTask(t.Context(), store.Task{
+				ID: uuid.NewString(), JobID: job.ID, StepID: step.ID, Name: "t-failed",
+				Status: store.TaskStatusFailed, CreatedAt: now, UpdatedAt: now,
+			})
+			if err != nil {
+				t.Fatalf("CreateTask: %v", err)
+			}
+			s := newTestScheduler(st, &stubBus{})
+			if err := s.RetryTask(t.Context(), failed.ID); err != nil {
+				t.Fatalf("RetryTask: %v", err)
+			}
+			if got := mustTaskOf(t, st, failed.ID).Status; got != store.TaskStatusReady {
+				t.Fatalf("retried task = %q, want ready", got)
+			}
+			if got := mustTaskOf(t, st, running.ID).Status; got != store.TaskStatusRunning {
+				t.Fatalf("sibling = %q, want still running", got)
+			}
+		})
+	}
+}
