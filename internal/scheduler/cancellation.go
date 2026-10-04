@@ -17,6 +17,12 @@ package scheduler
 //     ([bus.Client.PublishTaskCancel]) so the worker can interrupt the running
 //     process without waiting for the next heartbeat timeout.
 //
+//  3. CancelTask then drives step and job completion
+//     ([Scheduler.checkStepCompletion]), as a terminal worker report does,
+//     because canceling a job's last open task finishes its step. CancelJob
+//     needs no such call: the store finalizes the job's steps inside the same
+//     transaction that cancels its tasks.
+//
 // Because the claims are released in the same transaction that closes the
 // attempts, there is no window in which a canceled task still holds a usage
 // slot, and nothing that has to be cleaned up afterwards.
@@ -86,7 +92,8 @@ func (s *Scheduler) CancelJob(ctx context.Context, jobID string) error {
 // terminal state was visible up front or the task reached it mid-cancel: the
 // store decides inside its transaction and reports a terminal task as "not
 // canceled", so losing that race is reported the same way as never having had
-// it. Any other store failure propagates.
+// it. Any other store failure propagates. It then drives step and job
+// completion, as a terminal report does.
 func (s *Scheduler) CancelTask(ctx context.Context, taskID string) error {
 	now := time.Now().UTC()
 
@@ -105,6 +112,19 @@ func (s *Scheduler) CancelTask(ctx context.Context, taskID string) error {
 
 	// Publish a cancel signal to the worker that held the task (if any).
 	s.publishCancelSignals(ctx, []store.Task{prior}, now)
+
+	// Finish the step and job as a terminal worker report would (H4a2 §3.1):
+	// a cancel of a job's last open task otherwise left both open until the
+	// next start. The cancel has committed, so a failure here is logged, not
+	// returned; the start-up reconcile (reconcileStuckSteps) is the backstop.
+	if err := s.checkStepCompletion(ctx, prior.StepID, prior.JobID); err != nil {
+		s.logger.WarnContext(
+			ctx, "scheduler: cancel task: step completion failed",
+			slog.String("task_id", taskID),
+			slog.String("step_id", prior.StepID),
+			slog.Any("error", err),
+		)
+	}
 
 	s.logger.InfoContext(
 		ctx, "scheduler: task canceled",

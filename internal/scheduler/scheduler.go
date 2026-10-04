@@ -492,12 +492,11 @@ func (s *Scheduler) Stop() {
 // finalized, and which no future task report will ever finalize. Two things
 // leave such steps behind. v0.3.0 left them when a step had more than
 // [store.MaxLimit] tasks (H4a F6): completion decided from one page of tasks
-// and never decided at all. And a single-task cancel of a job's last open task
-// strands its step the same way, because [Scheduler.CancelTask] does not drive
-// step completion; that bug predates H4a and its root cause is outside it, so
-// this pass repairs it as a side effect, at the next start. Nothing reports on
-// those tasks again, so without this pass the step, its job, the steps behind
-// it and the jobs blocked on it would stay stuck.
+// and never decided at all. Before H4a2 a single-task cancel of a job's last
+// open task stranded its step the same way; [Scheduler.CancelTask] now drives
+// completion, and this pass still repairs steps stranded by older releases.
+// Nothing reports on those tasks again, so without this pass the step, its
+// job, the steps behind it and the jobs blocked on it would stay stuck.
 //
 // The repair is deliberately not a data migration. Finalizing a step has
 // downstream effects (dependency propagation keyed on step names, the
@@ -509,13 +508,9 @@ func (s *Scheduler) Stop() {
 //
 // It is idempotent: every write on that path is guarded, and on a farm with no
 // such steps the one [store.StepStore.ListStuckSteps] query returns nothing and
-// nothing is written. Steps of jobs that are already terminal are deliberately
-// ignored: canceling a job does not itself finalize its steps, so every start
-// would otherwise write the steps of each job canceled since the start before
-// it. Such a step is not harmless (a later retry of the canceled job can
-// revive its tasks to pending under a step that is never released, a bug that
-// predates H4a), but its root cause is the cancel path not finalizing steps,
-// which this pass does not repair. A step that fails is logged and skipped so
+// nothing is written. Steps of jobs that are already terminal are ignored:
+// since H4a2 a job cancel finalizes its own steps, and migration 00033
+// finalized those canceled before. A step that fails is logged and skipped so
 // one bad row cannot block the rest, and it stays stuck, so the next start
 // retries it. Cross-job dependents of a job this pass finalizes are reconciled
 // by the same completion path, with [Scheduler.sweepBlockedJobs] as its

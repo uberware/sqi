@@ -200,11 +200,13 @@ func TestH4a_ConcurrentStress_SQLite(t *testing.T) {
 // rarely enough that work stays in flight (a job cancel cancels every task).
 //
 // CancelJob runs in an even round, where no retry runs, and never in round 0.
-// Once it commits nothing in its round can revive a task (only a retry does), so
-// every task is terminal when the next round's retry finalizes the step, and
-// that retry returns them all to ready (see [stressRun.retry]). In the same
-// round as a retry, the retry could revive the tasks before the cancel and
-// leave them pending in a step the cancel never finalizes, run after run.
+// Once it commits nothing in its round can revive a task (only a retry does),
+// and the cancel has already finalized the job's steps in its own transaction
+// (H4a2), so the next round's retry returns every task to ready (see
+// [stressRun.retry]). Before H4a2 a retry in the same round as the cancel could
+// revive the tasks before the cancel and leave them pending in a step the
+// cancel never finalized, run after run; the schedule keeps the two apart
+// regardless.
 func (r *stressRun) schedule() []stressRacer {
 	return []stressRacer{
 		{1, 0, func(n int) { r.leaseOne(0, n) }},
@@ -474,21 +476,11 @@ func (r *stressRun) offline(n int) {
 	r.counts.offlineReclaimed.Add(int64(len(reclaimed)))
 }
 
-// retry finalizes the step when every task is terminal, then retries the job
-// (RetryJob, which calls the store's RetryTasks). The finalize is a WORKAROUND
-// for a pre-existing bug, not something production does at this point: a job
-// cancel never finalizes the job's steps, and RetryTasks resets only a failed or
-// canceled step, so cancel-then-RetryJob leaves every revived task pending
-// forever in a step still marked ready. When nothing was in flight at the
-// cancel no worker echo finalizes the step, and ListStuckSteps skips the
-// canceled job. Whoever fixes that bug should remove the checkStepCompletion
-// call here.
+// retry retries the job (RetryJob, which calls the store's RetryTasks). A job
+// cancel finalizes the job's steps and a single-task cancel drives step
+// completion (H4a2), so nothing is needed between a cancel and this retry.
 func (r *stressRun) retry(int) {
-	ctx := r.t.Context()
-	if !r.expect("checkStepCompletion", r.s.checkStepCompletion(ctx, r.fx.stepID, r.fx.jobID)) {
-		return
-	}
-	n, err := r.s.RetryJob(ctx, r.fx.jobID)
+	n, err := r.s.RetryJob(r.t.Context(), r.fx.jobID)
 	if r.expect("RetryJob", err) {
 		r.counts.retries.Add(1)
 		r.counts.revived.Add(int64(n))
