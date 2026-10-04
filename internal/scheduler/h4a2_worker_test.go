@@ -4,6 +4,7 @@ package scheduler
 
 import (
 	"context"
+	"encoding/json"
 	"testing"
 	"time"
 
@@ -102,5 +103,179 @@ func TestHandleWorkerRegister_EventCarriesTheStoredStatus(t *testing.T) {
 
 	if len(rec.workers) != 1 || rec.workers[0].Status != string(store.WorkerStatusDisabled) {
 		t.Fatalf("worker events = %+v, want one carrying the stored status %q", rec.workers, store.WorkerStatusDisabled)
+	}
+}
+
+// leaseAs sends one lease request for workerID on q1 carrying instance, and
+// returns the assigned task IDs and how long the handler took to answer.
+func leaseAs(t *testing.T, s *Scheduler, workerID, instance string) ([]string, time.Duration) {
+	t.Helper()
+	req, err := json.Marshal(leaseRequest{WorkerID: workerID, InstanceID: instance})
+	if err != nil {
+		t.Fatalf("marshal lease request: %v", err)
+	}
+	start := time.Now()
+	raw := s.handleLeaseRequest(workerID, "q1", req)
+	took := time.Since(start)
+	var rep leaseReply
+	if err := json.Unmarshal(raw, &rep); err != nil {
+		t.Fatalf("unmarshal lease reply: %v", err)
+	}
+	ids := make([]string, 0, len(rep.Assignments))
+	for _, a := range rep.Assignments {
+		var m protocol.AssignMsg
+		if err := json.Unmarshal(a, &m); err != nil {
+			t.Fatalf("unmarshal assignment: %v", err)
+		}
+		ids = append(ids, m.TaskID)
+	}
+	return ids, took
+}
+
+func mustRegisterInstance(t *testing.T, st store.Store, w store.Worker, instance string) []store.Task {
+	t.Helper()
+	w.InstanceID = instance
+	now := time.Now().UTC()
+	w.LastHeartbeatAt = &now
+	_, reclaimed, err := st.RegisterWorker(t.Context(), w)
+	if err != nil {
+		t.Fatalf("RegisterWorker(%q): %v", instance, err)
+	}
+	return reclaimed
+}
+
+// TestH4a2_LeaseHeldBackUntilARestartedProcessRegisters pins the lease side of
+// the restart reclaim (H4a2 §4.5): a restarted worker process can ask for work
+// before the server has consumed its new registration, and a task leased to it
+// then would be handed back to ready by that registration's reclaim (which
+// matches by worker ID) while the process runs it. A request whose instance ID
+// differs from the stored one is answered with no work, at once and without
+// touching a task; one whose ID matches, or that carries none, is served; and
+// once the new registration lands the new process is served, and what it leases
+// is not reclaimed by a later re-register of the same process.
+func TestH4a2_LeaseHeldBackUntilARestartedProcessRegisters(t *testing.T) {
+	for name, st := range raceBackends(t) {
+		t.Run(name, func(t *testing.T) {
+			s := newMetricsScheduler(st, &recordBus{}, "f1")
+			s.ctx = t.Context()
+			s.cfg.AssignBatchSize = 1             // one task per served request
+			s.leaseHoldTimeout = 30 * time.Second // a park would show as a slow answer
+			one := 1
+			w, ids := seedLeaseFixture(t, st, []*int{&one, &one, &one})
+			if r := mustRegisterInstance(t, st, w, "p1"); len(r) != 0 {
+				t.Fatalf("first instance register reclaimed %d", len(r))
+			}
+
+			// A process whose registration has not landed: no work, at once.
+			got, took := leaseAs(t, s, w.ID, "p2")
+			if len(got) != 0 {
+				t.Fatalf("lease as p2 before its registration = %v, want no assignments", got)
+			}
+			if took > 5*time.Second {
+				t.Fatalf("lease as p2 took %v: the refusal parked instead of answering at once", took)
+			}
+			for _, id := range ids {
+				if task := mustTaskOf(t, st, id); task.Status != store.TaskStatusReady || task.AssignedWorkerID != "" {
+					t.Fatalf("task %s = %q on %q after the refused lease, want ready and unassigned", id, task.Status, task.AssignedWorkerID)
+				}
+				attempts, err := st.ListTaskAttempts(t.Context(), id)
+				if err != nil {
+					t.Fatalf("ListTaskAttempts: %v", err)
+				}
+				if len(attempts) != 0 {
+					t.Fatalf("task %s has %d attempts after the refused lease, want 0", id, len(attempts))
+				}
+			}
+
+			// The registered process, and a worker that sends no ID: served.
+			if got, _ := leaseAs(t, s, w.ID, "p1"); len(got) != 1 {
+				t.Fatalf("lease as the registered p1 = %v, want one assignment", got)
+			}
+			if got, _ := leaseAs(t, s, w.ID, ""); len(got) != 1 {
+				t.Fatalf("lease with no instance ID = %v, want one assignment", got)
+			}
+
+			// p2's registration lands: the two tasks leased before it belong to
+			// the previous process and are reclaimed; then p2 is served.
+			if r := mustRegisterInstance(t, st, w, "p2"); len(r) != 2 {
+				t.Fatalf("p2 register reclaimed %d, want the 2 tasks leased before it", len(r))
+			}
+			fresh, _ := leaseAs(t, s, w.ID, "p2")
+			if len(fresh) != 1 {
+				t.Fatalf("lease as p2 after its registration = %v, want one assignment", fresh)
+			}
+			// A reconnect re-register of p2 reclaims nothing: the task p2 leased
+			// stays with it.
+			if r := mustRegisterInstance(t, st, w, "p2"); len(r) != 0 {
+				t.Fatalf("p2 re-register reclaimed %+v, want nothing", r)
+			}
+			if task := mustTaskOf(t, st, fresh[0]); task.Status != store.TaskStatusAssigned || task.AssignedWorkerID != w.ID {
+				t.Fatalf("p2's task = %q on %q, want still assigned to %s", task.Status, task.AssignedWorkerID, w.ID)
+			}
+		})
+	}
+}
+
+// TestH4a2_ParkedLeaseFromASupersededProcessGetsNoWork pins the same rule on
+// the parked path: a request that parked while its process was the registered
+// one, and is woken after another process of the worker has registered, gets
+// no work, so a reclaimed task is not handed to the process that is gone.
+func TestH4a2_ParkedLeaseFromASupersededProcessGetsNoWork(t *testing.T) {
+	for name, st := range raceBackends(t) {
+		t.Run(name, func(t *testing.T) {
+			s := newMetricsScheduler(st, &recordBus{}, "f1")
+			s.ctx = t.Context()
+			s.leaseHoldTimeout = 30 * time.Second
+			one := 1
+			w, ids := seedLeaseFixture(t, st, []*int{&one})
+			mustRegisterInstance(t, st, w, "p1")
+			if got, _ := leaseAs(t, s, w.ID, "p1"); len(got) != 1 {
+				t.Fatalf("lease as p1 = %v, want the one task", got)
+			}
+
+			// p1 asks again with nothing ready, and parks. The goroutine only
+			// calls the handler; the reply is decoded on the test goroutine.
+			req, err := json.Marshal(leaseRequest{WorkerID: w.ID, InstanceID: "p1"})
+			if err != nil {
+				t.Fatalf("marshal lease request: %v", err)
+			}
+			done := make(chan []byte, 1)
+			go func() { done <- s.handleLeaseRequest(w.ID, "q1", req) }()
+			deadline := time.Now().Add(5 * time.Second)
+			for {
+				s.waiters.mu.Lock()
+				parked := len(s.waiters.waiters["q1"])
+				s.waiters.mu.Unlock()
+				if parked > 0 {
+					break
+				}
+				if time.Now().After(deadline) {
+					t.Fatal("p1's second lease request never parked")
+				}
+				time.Sleep(time.Millisecond)
+			}
+
+			// p2 registers: p1's task is reclaimed to ready, and the parked
+			// request is woken with work available.
+			if r := mustRegisterInstance(t, st, w, "p2"); len(r) != 1 {
+				t.Fatalf("p2 register reclaimed %d, want p1's task", len(r))
+			}
+			s.waiters.notifyAll()
+			select {
+			case raw := <-done:
+				var rep leaseReply
+				if err := json.Unmarshal(raw, &rep); err != nil {
+					t.Fatalf("unmarshal lease reply: %v", err)
+				}
+				if len(rep.Assignments) != 0 {
+					t.Fatalf("woken lease from the superseded p1 = %s, want no assignments", raw)
+				}
+			case <-time.After(10 * time.Second):
+				t.Fatal("the parked lease request never returned")
+			}
+			if task := mustTaskOf(t, st, ids[0]); task.Status != store.TaskStatusReady {
+				t.Fatalf("reclaimed task = %q, want still ready", task.Status)
+			}
+		})
 	}
 }

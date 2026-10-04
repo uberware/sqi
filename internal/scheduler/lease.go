@@ -24,6 +24,10 @@ import (
 // leaseRequest is the worker's work-lease request payload.
 type leaseRequest struct {
 	WorkerID string `json:"worker_id"`
+	// InstanceID is the requesting worker process's instance ID, the one it
+	// sends in its registration (H4a2 §4.5). Empty from a worker that sends
+	// none. See [Scheduler.leaseFromUnregisteredInstance].
+	InstanceID string `json:"instance_id,omitempty"`
 }
 
 // leaseReply is the server's batch response. Assignments holds marshaled
@@ -69,7 +73,7 @@ func (s *Scheduler) handleLeaseRequest(workerID, queueID string, data []byte) []
 	}
 
 	worker, err := s.store.GetWorker(ctx, workerID)
-	if err != nil {
+	if err != nil || s.leaseFromUnregisteredInstance(ctx, worker, req.InstanceID) {
 		return marshalLeaseReply(nil)
 	}
 
@@ -90,13 +94,51 @@ func (s *Scheduler) handleLeaseRequest(workerID, queueID string, data []byte) []
 	// The park happens OUTSIDE the per-worker lock; only the selection below is
 	// serialized, so a re-woken request reads the up-to-date committed cores.
 	if s.waiters.wait(ctx, queueID, s.leaseHoldTimeout) {
-		if w2, err2 := s.store.GetWorker(ctx, workerID); err2 == nil {
-			if batch2, err2 := s.selectLeaseBatchLocked(ctx, w2); err2 == nil {
-				return marshalLeaseReply(batch2)
-			}
-		}
+		return marshalLeaseReply(s.leaseAfterPark(ctx, workerID, req.InstanceID))
 	}
 	return marshalLeaseReply(nil)
+}
+
+// leaseAfterPark is the one retry a parked lease request makes once woken: it
+// re-reads the worker and, unless the worker re-registered from another process
+// while the request was parked, selects a batch. Any failure is an empty batch.
+func (s *Scheduler) leaseAfterPark(ctx context.Context, workerID, instanceID string) [][]byte {
+	w, err := s.store.GetWorker(ctx, workerID)
+	if err != nil || s.leaseFromUnregisteredInstance(ctx, w, instanceID) {
+		return nil
+	}
+	batch, err := s.selectLeaseBatchLocked(ctx, w)
+	if err != nil {
+		return nil
+	}
+	return batch
+}
+
+// leaseFromUnregisteredInstance reports whether a lease request comes from a
+// worker process other than the one whose registration the store last applied:
+// both instance IDs are known and they differ. Such a request is answered with
+// an empty batch, immediately and without parking. The common case is a
+// restarted worker that asks for work before the server has consumed its new
+// registration (the register message goes through JetStream asynchronously,
+// the lease is core-NATS request/reply); a task leased to it then would match
+// the registration's restart reclaim, which goes by worker ID, and be handed
+// back to ready while this process runs it. Its next request, after the
+// registration lands, is served. An empty ID on either side (a worker that
+// sends none, or a row no ID-sending process has registered yet) proves
+// nothing, and the request is served as before.
+func (s *Scheduler) leaseFromUnregisteredInstance(ctx context.Context, w store.Worker, instanceID string) bool {
+	if w.InstanceID == "" || instanceID == "" || w.InstanceID == instanceID {
+		return false
+	}
+	// Debug: a restarted worker asks once per queue until its registration
+	// lands, and an unauthenticated broker lets anything publish here.
+	s.logger.DebugContext(
+		ctx, "scheduler: lease request from a worker process whose registration has not landed — no work",
+		slog.String("worker_id", w.ID),
+		slog.String("registered_instance_id", w.InstanceID),
+		slog.String("request_instance_id", instanceID),
+	)
+	return true
 }
 
 // selectLeaseBatchLocked runs selectLeaseBatch while holding the per-worker

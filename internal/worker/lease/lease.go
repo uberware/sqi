@@ -21,6 +21,11 @@ type Config struct {
 	QueueIDs       []string      // queues this worker serves (at least one)
 	RequestTimeout time.Duration // long-poll request timeout; default 35s
 	WorkerID       string        // included in each request
+	// InstanceID is this worker process's instance ID (the one its
+	// registration carries), included in each request so the server can hold
+	// work back from a restarted process until its registration has landed
+	// (H4a2 §4.5). Empty sends none.
+	InstanceID string
 }
 
 // Transport sends a lease request and returns the server's reply bytes.
@@ -36,7 +41,8 @@ type Dispatcher interface {
 }
 
 type request struct {
-	WorkerID string `json:"worker_id"`
+	WorkerID   string `json:"worker_id"`
+	InstanceID string `json:"instance_id,omitempty"`
 }
 
 type reply struct {
@@ -82,7 +88,7 @@ func (l *Loop) Run(ctx context.Context) {
 
 // runQueue keeps one outstanding request for queueID, dispatching each batch.
 func (l *Loop) runQueue(ctx context.Context, queueID string) {
-	reqBytes, _ := json.Marshal(request{WorkerID: l.cfg.WorkerID}) //nolint:errcheck // simple struct, never fails
+	reqBytes, _ := json.Marshal(request{WorkerID: l.cfg.WorkerID, InstanceID: l.cfg.InstanceID}) //nolint:errcheck // simple struct, never fails
 	for {
 		if ctx.Err() != nil {
 			return
