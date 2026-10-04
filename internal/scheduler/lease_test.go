@@ -102,7 +102,7 @@ func seedLeaseFixtureWith(
 	if _, err := st.CreateQueue(ctx, store.Queue{ID: "q1", FarmID: "f1", Name: "Q1"}); err != nil {
 		t.Fatal(err)
 	}
-	w, err := st.RegisterWorker(ctx, store.Worker{
+	w, _, err := st.RegisterWorker(ctx, store.Worker{
 		ID: "w1", FarmID: "f1", Hostname: "h1", Status: store.WorkerStatusOnline,
 		CPUCount: 4, LastHeartbeatAt: &now, Tags: map[string]string{},
 	})
@@ -323,7 +323,7 @@ func TestReclaimOfflineWorkerTasks_WakesParkedWaiters(t *testing.T) {
 	go func() { woke <- s.waiters.wait(context.Background(), "q1", time.Second) }()
 	time.Sleep(20 * time.Millisecond) // let the waiter park
 
-	s.reclaimOfflineWorkerTasks(t.Context(), w.ID, w.Hostname, reclaimed)
+	s.reclaimOfflineWorkerTasks(t.Context(), w.ID, w.Hostname, reclaimOffline, reclaimed)
 
 	select {
 	case got := <-woke:
@@ -346,7 +346,7 @@ func TestReclaimOfflineWorkerTasks_NothingReclaimedDoesNotWake(t *testing.T) {
 
 	woke := parkWaiter(t, s, "q1")
 
-	s.reclaimOfflineWorkerTasks(t.Context(), w.ID, w.Hostname, nil)
+	s.reclaimOfflineWorkerTasks(t.Context(), w.ID, w.Hostname, reclaimOffline, nil)
 
 	select {
 	case <-woke:
@@ -397,7 +397,7 @@ func TestHandleLeaseRequest_EmptyTimesOut(t *testing.T) {
 	if _, err := st.CreateQueue(t.Context(), store.Queue{ID: "q1", FarmID: "f1", Name: "Q1"}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := st.RegisterWorker(t.Context(), store.Worker{
+	if _, _, err := st.RegisterWorker(t.Context(), store.Worker{
 		ID: "w1", FarmID: "f1", Status: store.WorkerStatusOnline, CPUCount: 4,
 		LastHeartbeatAt: &now, Tags: map[string]string{},
 	}); err != nil {

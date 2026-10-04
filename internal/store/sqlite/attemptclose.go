@@ -504,27 +504,40 @@ func (s *Store) offlineWorker(ctx context.Context, id string, now time.Time, mar
 		// transaction.
 		return nil, false, nil
 	}
-	jobAnchors, err := workerJobAnchorsTx(ctx, tx, id)
+	reclaimed, err := reclaimWorkerTasksTx(ctx, tx, id, store.FailureReasonWorkerOffline, now)
 	if err != nil {
 		return nil, false, err
-	}
-	if err := lockAnchors(ctx, tx, jobAnchors...); err != nil {
-		return nil, false, err
-	}
-	nowText := timeToText(now.UTC())
-	reclaimed, err := queryTasksTx(ctx, tx, sqlReclaimWorkerTasksReturning, nowText, id)
-	if err != nil {
-		return nil, false, fmt.Errorf("sqlite: reclaim tasks of worker %s: %w", id, err)
-	}
-	for _, t := range reclaimed {
-		if err := closeTaskAttemptsTx(ctx, tx, t.ID, store.AttemptStatusFailed, store.FailureReasonWorkerOffline, nowText); err != nil {
-			return nil, false, err
-		}
 	}
 	if err := tx.Commit(); err != nil {
 		return nil, false, fmt.Errorf("sqlite: commit offline worker: %w", mapErr(err))
 	}
 	return reclaimed, true, nil
+}
+
+// reclaimWorkerTasksTx reclaims the worker's assigned and running tasks inside
+// tx: the job-row anchors sorted by id, then the tasks back to ready, then
+// their attempts closed as failed with message and their claims released. It
+// returns the tasks as they are after the reset. The caller holds the worker
+// row (its anchor, or the UPDATE that marked it).
+func reclaimWorkerTasksTx(ctx context.Context, tx *sql.Tx, workerID, message string, now time.Time) ([]store.Task, error) {
+	jobAnchors, err := workerJobAnchorsTx(ctx, tx, workerID)
+	if err != nil {
+		return nil, err
+	}
+	if err := lockAnchors(ctx, tx, jobAnchors...); err != nil {
+		return nil, err
+	}
+	nowText := timeToText(now.UTC())
+	reclaimed, err := queryTasksTx(ctx, tx, sqlReclaimWorkerTasksReturning, nowText, workerID)
+	if err != nil {
+		return nil, fmt.Errorf("sqlite: reclaim tasks of worker %s: %w", workerID, err)
+	}
+	for _, t := range reclaimed {
+		if err := closeTaskAttemptsTx(ctx, tx, t.ID, store.AttemptStatusFailed, message, nowText); err != nil {
+			return nil, err
+		}
+	}
+	return reclaimed, nil
 }
 
 // workerJobAnchorsTx returns the job-row anchors of the jobs the worker's

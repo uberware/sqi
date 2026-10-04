@@ -345,21 +345,27 @@ func TestRegister_UnsetExprLimitsAdvertiseTheDefaults(t *testing.T) {
 // SQI_WORKER stream.
 func firstWorkerStreamMsg(tb testing.TB, nc *nats.Conn) []byte {
 	tb.Helper()
+	return workerStreamMsg(tb, nc, 1)
+}
+
+// workerStreamMsg returns the data of the SQI_WORKER stream message at seq.
+func workerStreamMsg(tb testing.TB, nc *nats.Conn, seq uint64) []byte {
+	tb.Helper()
 
 	js, err := jetstream.New(nc)
 	if err != nil {
-		tb.Fatalf("firstWorkerStreamMsg: jetstream.New: %v", err)
+		tb.Fatalf("workerStreamMsg: jetstream.New: %v", err)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
 	stream, err := js.Stream(ctx, bus.StreamWorker)
 	if err != nil {
-		tb.Fatalf("firstWorkerStreamMsg: Stream: %v", err)
+		tb.Fatalf("workerStreamMsg: Stream: %v", err)
 	}
-	msg, err := stream.GetMsg(ctx, 1)
+	msg, err := stream.GetMsg(ctx, seq)
 	if err != nil {
-		tb.Fatalf("firstWorkerStreamMsg: GetMsg: %v", err)
+		tb.Fatalf("workerStreamMsg: GetMsg(%d): %v", seq, err)
 	}
 	return msg.Data
 }
@@ -425,5 +431,40 @@ func TestLastRegisteredAt_MonotonicallyIncreases(t *testing.T) {
 
 	if !second.After(first) {
 		t.Errorf("second LastRegisteredAt (%v) not after first (%v)", second, first)
+	}
+}
+
+// TestRegister_SendsAStablePerProcessInstanceID pins H4a2 §4.5 on the worker:
+// the registration carries this process's instance ID, which is non-empty, is
+// the same in every registration the process makes (boot and a reconnect's
+// re-register), and differs between two processes (two Registrars).
+func TestRegister_SendsAStablePerProcessInstanceID(t *testing.T) {
+	url := startTestNATS(t)
+	nc := connectNATS(t, url)
+
+	reg := newRegistrar(t, nc, "worker-instance", minimalCfg(), capabilities.Capabilities{OS: "linux"})
+	// The boot registration, then the re-register a NATS reconnect makes.
+	for i := range 2 {
+		if err := reg.Register(context.Background()); err != nil {
+			t.Fatalf("Register #%d: %v", i+1, err)
+		}
+	}
+	var boot, reconnect protocol.RegisterMsg
+	if err := json.Unmarshal(workerStreamMsg(t, nc, 1), &boot); err != nil {
+		t.Fatalf("unmarshal the first RegisterMsg: %v", err)
+	}
+	if err := json.Unmarshal(workerStreamMsg(t, nc, 2), &reconnect); err != nil {
+		t.Fatalf("unmarshal the second RegisterMsg: %v", err)
+	}
+	if boot.InstanceID == "" || boot.InstanceID != reg.InstanceID() {
+		t.Fatalf("instance_id = %q, want the Registrar's non-empty %q", boot.InstanceID, reg.InstanceID())
+	}
+	if reconnect.InstanceID != boot.InstanceID {
+		t.Fatalf("re-register instance_id = %q, want the boot registration's %q (one process, one ID)",
+			reconnect.InstanceID, boot.InstanceID)
+	}
+	other := newRegistrar(t, nc, "worker-instance", minimalCfg(), capabilities.Capabilities{OS: "linux"})
+	if other.InstanceID() == reg.InstanceID() {
+		t.Fatal("two Registrars (two processes) share an instance ID")
 	}
 }

@@ -98,7 +98,7 @@ func seedExprLeaseFixtureJob(
 	if _, err := st.CreateQueue(ctx, store.Queue{ID: "q1", FarmID: "f1", Name: "Q1"}); err != nil {
 		t.Fatal(err)
 	}
-	w, err := st.RegisterWorker(ctx, store.Worker{
+	w, _, err := st.RegisterWorker(ctx, store.Worker{
 		ID: "w1", FarmID: "f1", Hostname: "h1", Status: store.WorkerStatusOnline,
 		CPUCount: 4, LastHeartbeatAt: &now, Tags: map[string]string{},
 		ExprLimits: workerCaps,
@@ -354,7 +354,7 @@ func TestExprCaps_HeterogeneousFarmKeepsTheCapableWorker(t *testing.T) {
 		AssignmentRetainedBytes: fmtres.MinExprAssignmentRetainedBytes,
 	})
 	now := time.Now().UTC()
-	big, err := st.RegisterWorker(t.Context(), store.Worker{
+	big, _, err := st.RegisterWorker(t.Context(), store.Worker{
 		ID: "w2", FarmID: "f1", Hostname: "h2", Status: store.WorkerStatusOnline,
 		CPUCount: 4, LastHeartbeatAt: &now, Tags: map[string]string{},
 		ExprLimits: store.WorkerExprLimits{
@@ -723,6 +723,7 @@ func TestHandleWorkerRegister_EveryWireFieldReachesTheStore(t *testing.T) {
 		Version:            protocol.ProtocolVersion,
 		Type:               protocol.TypeRegister,
 		WorkerID:           "w-1",
+		InstanceID:         "inst-1",
 		FarmID:             "farm-1",
 		QueueID:            "queue-1",
 		Name:               "render-node-alpha",
@@ -765,6 +766,7 @@ func TestHandleWorkerRegister_EveryWireFieldReachesTheStore(t *testing.T) {
 		got, want any
 	}{
 		{"worker_id", w.ID, sent.WorkerID},
+		{"instance_id", w.InstanceID, sent.InstanceID},
 		{"farm_id", w.FarmID, sent.FarmID},
 		{"queue_id", w.QueueID, sent.QueueID},
 		{"name", w.Name, sent.Name},
@@ -846,7 +848,7 @@ func TestHandleWorkerRegister_EveryWireFieldReachesTheStore(t *testing.T) {
 // persisting it means adding its name here, which is the moment to notice it
 // also needs a row in the table.
 var persistedRegisterFields = []string{
-	"WorkerID", "FarmID", "QueueID", "Name", "Hostname", "IPAddress",
+	"WorkerID", "InstanceID", "FarmID", "QueueID", "Name", "Hostname", "IPAddress",
 	"ComputeLocation", "OS", "OSVersion", "Arch", "WorkerVersion", "CPUCount", "RAMMb",
 	"GPUInfo", "Tags", "ExprLimits",
 }
@@ -1137,7 +1139,7 @@ func seedSubmittedExprLeaseFixture(
 	if _, err := st.CreateQueue(ctx, store.Queue{ID: "q1", FarmID: "f1", Name: "Q1"}); err != nil {
 		t.Fatal(err)
 	}
-	w, err := st.RegisterWorker(ctx, store.Worker{
+	w, _, err := st.RegisterWorker(ctx, store.Worker{
 		ID: "w1", FarmID: "f1", Hostname: "h1", Status: store.WorkerStatusOnline,
 		CPUCount: 4, LastHeartbeatAt: &now, Tags: map[string]string{},
 		ExprLimits: workerCaps,

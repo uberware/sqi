@@ -298,6 +298,70 @@ func TestMigrations_00032_TasksStepStatusIndexDownUp(t *testing.T) {
 	}
 }
 
+// TestMigrations_00034_WorkerInstanceIDDownUp pins 00034 in both directions, and
+// pins the DEFAULT. A worker row that predates the column must read back empty
+// ("unknown"), never NULL (scanWorker reads it into a plain string) and never a
+// value: RegisterWorker reclaims a worker's tasks only when the STORED instance
+// ID is non-empty and differs from the incoming one, so the empty default is
+// what keeps the first registration after an upgrade from reclaiming the tasks
+// of a worker that never restarted.
+//
+// Down is pinned for the same reason 00026's is: SQLite refuses ALTER TABLE
+// DROP COLUMN on a column referenced by a CHECK constraint or an index.
+func TestMigrations_00034_WorkerInstanceIDDownUp(t *testing.T) {
+	dbPath := t.TempDir() + "/test.db"
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("sql.Open: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	goose.SetBaseFS(migrations.FS)
+	if err := goose.SetDialect("sqlite3"); err != nil {
+		t.Fatalf("SetDialect: %v", err)
+	}
+	if err := goose.Up(db, "."); err != nil {
+		t.Fatalf("goose.Up: %v", err)
+	}
+	if !hasColumn(t, db, "workers", "instance_id") {
+		t.Fatal("instance_id column missing after Up")
+	}
+
+	// A row written before the Down, carrying an instance ID: the Down drops
+	// the value with the column, and the re-Up must bring the column back with
+	// its '' default rather than NULL.
+	if _, err := db.ExecContext(
+		t.Context(),
+		`INSERT INTO workers (id, hostname, os, status, registered_at, updated_at, instance_id)
+		 VALUES ('w-1', 'h', 'linux', 'online', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', 'i-1')`,
+	); err != nil {
+		t.Fatalf("insert worker: %v", err)
+	}
+
+	if err := goose.DownTo(db, ".", 33); err != nil {
+		t.Fatalf("goose.DownTo(33): %v", err)
+	}
+	if hasColumn(t, db, "workers", "instance_id") {
+		t.Fatal("instance_id column still present after Down")
+	}
+
+	if err := goose.Up(db, "."); err != nil {
+		t.Fatalf("goose.Up (re-apply): %v", err)
+	}
+	if !hasColumn(t, db, "workers", "instance_id") {
+		t.Fatal("instance_id column missing after re-Up")
+	}
+	var instanceID string
+	if err := db.QueryRowContext(t.Context(),
+		`SELECT instance_id FROM workers WHERE id = 'w-1'`).Scan(&instanceID); err != nil {
+		t.Fatalf("select instance_id after re-Up: %v (a NULL here is a scanWorker failure "+
+			"for every pre-existing worker row)", err)
+	}
+	if instanceID != "" {
+		t.Errorf("instance_id = %q for a row that predates the column, want %q (\"unknown\")", instanceID, "")
+	}
+}
+
 // hasIndex reports whether table has an index named index.
 func hasIndex(t *testing.T, db *sql.DB, table, index string) bool {
 	t.Helper()

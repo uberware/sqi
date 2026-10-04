@@ -72,7 +72,7 @@ func insertQueue(t *testing.T, s *sqlite.Store, id, farmID, name string) store.Q
 // insertWorker inserts a minimal worker and returns the created record.
 func insertWorker(t *testing.T, s *sqlite.Store, id, farmID string) store.Worker {
 	t.Helper()
-	w, err := s.RegisterWorker(context.Background(), store.Worker{
+	w, _, err := s.RegisterWorker(context.Background(), store.Worker{
 		ID:       id,
 		FarmID:   farmID,
 		Hostname: "host-" + id,
@@ -450,7 +450,7 @@ func TestWorker_RegisterAndGet(t *testing.T) {
 		Tags:            map[string]string{"env": "prod"},
 		Status:          store.WorkerStatusOnline,
 	}
-	got, err := s.RegisterWorker(ctx, w)
+	got, _, err := s.RegisterWorker(ctx, w)
 	if err != nil {
 		t.Fatalf("RegisterWorker: %v", err)
 	}
@@ -495,12 +495,12 @@ func TestWorker_Upsert(t *testing.T) {
 	ctx := context.Background()
 	insertFarm(t, s, "f1", "F1")
 
-	w1, err := s.RegisterWorker(ctx, store.Worker{ID: "w1", FarmID: "f1", Hostname: "a", Status: store.WorkerStatusOnline, Tags: map[string]string{}})
+	w1, _, err := s.RegisterWorker(ctx, store.Worker{ID: "w1", FarmID: "f1", Hostname: "a", Status: store.WorkerStatusOnline, Tags: map[string]string{}})
 	if err != nil {
 		t.Fatalf("first register: %v", err)
 	}
 	// Re-register with updated hostname — should update, not fail.
-	w2, err := s.RegisterWorker(ctx, store.Worker{ID: "w1", FarmID: "f1", Hostname: "b", Status: store.WorkerStatusOnline, Tags: map[string]string{}})
+	w2, _, err := s.RegisterWorker(ctx, store.Worker{ID: "w1", FarmID: "f1", Hostname: "b", Status: store.WorkerStatusOnline, Tags: map[string]string{}})
 	if err != nil {
 		t.Fatalf("upsert register: %v", err)
 	}
@@ -2069,7 +2069,7 @@ func TestWorker_ListWorkers_Search(t *testing.T) {
 	ctx := context.Background()
 	insertFarm(t, s, "f1", "F1")
 	mk := func(id, name, host, loc string) {
-		if _, err := s.RegisterWorker(ctx, store.Worker{
+		if _, _, err := s.RegisterWorker(ctx, store.Worker{
 			ID: id, FarmID: "f1", Name: name, Hostname: host,
 			ComputeLocation: loc, Status: store.WorkerStatusOnline,
 			Tags: map[string]string{},

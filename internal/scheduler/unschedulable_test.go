@@ -79,7 +79,7 @@ func seedOnlineWorker(t *testing.T, st *fake.Store, tags map[string]string) stor
 	t.Helper()
 	unschedulableWorkerSeq++
 	id := fmt.Sprintf("w-unsched-%d", unschedulableWorkerSeq)
-	w, err := st.RegisterWorker(t.Context(), store.Worker{
+	w, _, err := st.RegisterWorker(t.Context(), store.Worker{
 		ID: id, FarmID: "farm-1", Hostname: id, Tags: tags,
 		Status: store.WorkerStatusOnline,
 	})

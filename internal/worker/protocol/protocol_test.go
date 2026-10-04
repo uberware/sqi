@@ -200,3 +200,34 @@ func TestAssignMsg_EXPRFieldsOmittedForBaseSpec(t *testing.T) {
 		t.Errorf("Environments = %+v, want Let nil and StepEnvironment false", out.Environments)
 	}
 }
+
+// TestMessageWorkerShutdown_WireValue pins the wire value itself: the worker
+// sends it and the server matches it, and tests on both sides compare against
+// the constant, so a rename would pass them all while breaking a worker and a
+// server built from different revisions.
+func TestMessageWorkerShutdown_WireValue(t *testing.T) {
+	if protocol.MessageWorkerShutdown != "worker_shutdown" {
+		t.Fatalf("MessageWorkerShutdown = %q, want %q", protocol.MessageWorkerShutdown, "worker_shutdown")
+	}
+}
+
+// TestRegisterMsg_InstanceIDWireKey pins the instance ID's wire key and that it
+// is omitted when empty, so a registration from a worker that sets none is
+// byte-for-byte what it was before the field existed (H4a2 §4.5: additive, no
+// ProtocolVersion bump).
+func TestRegisterMsg_InstanceIDWireKey(t *testing.T) {
+	data, err := json.Marshal(protocol.RegisterMsg{WorkerID: "w1", InstanceID: "inst-1"})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if !strings.Contains(string(data), `"instance_id":"inst-1"`) {
+		t.Errorf("marshaled RegisterMsg = %s, want an \"instance_id\" key", data)
+	}
+	empty, err := json.Marshal(protocol.RegisterMsg{WorkerID: "w1"})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if strings.Contains(string(empty), `"instance_id"`) {
+		t.Errorf("marshaled RegisterMsg without an instance ID = %s, want no \"instance_id\" key", empty)
+	}
+}

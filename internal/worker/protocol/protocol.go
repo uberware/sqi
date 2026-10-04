@@ -123,6 +123,13 @@ type RegisterMsg struct {
 	// updates the existing record rather than creating a duplicate.
 	WorkerID string `json:"worker_id"`
 
+	// InstanceID is a random identifier generated once per worker process and
+	// sent unchanged in every registration it makes (boot and NATS reconnect).
+	// A new value tells the server the previous process is gone, so its
+	// in-flight tasks are reclaimed. Optional: a server that does not know it
+	// ignores it, and an empty value means "unknown" (H4a2 §4.5).
+	InstanceID string `json:"instance_id,omitempty"`
+
 	// FarmID is the farm this worker belongs to.  Required.
 	FarmID string `json:"farm_id"`
 

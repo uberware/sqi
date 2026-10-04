@@ -139,7 +139,7 @@ func TestDeleteWorkerIfRemovable(t *testing.T) {
 		for name, st := range newStores(t) {
 			t.Run(tc.name+"/"+name, func(t *testing.T) {
 				g := seedGraph(t, st, graphOpts{})
-				if _, err := st.RegisterWorker(t.Context(), store.Worker{
+				if _, _, err := st.RegisterWorker(t.Context(), store.Worker{
 					ID: fixtureWorkerID, FarmID: g.Farm.ID, Hostname: "node", Status: tc.status, LastHeartbeatAt: tc.heartbeat,
 				}); err != nil {
 					t.Fatalf("RegisterWorker: %v", err)

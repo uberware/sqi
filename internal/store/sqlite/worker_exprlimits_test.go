@@ -36,7 +36,7 @@ func TestWorker_ExprLimitsRoundTrip(t *testing.T) {
 		AssignmentRetainedBytes: 4_444_444,
 		LetRetainedBytes:        5_555_555,
 	}
-	registered, err := s.RegisterWorker(ctx, store.Worker{
+	registered, _, err := s.RegisterWorker(ctx, store.Worker{
 		ID: "w1", FarmID: "f1", Hostname: "h1", Status: store.WorkerStatusOnline,
 		Tags: map[string]string{}, ExprLimits: want,
 	})
@@ -64,7 +64,7 @@ func TestWorker_ExprLimitsRoundTrip(t *testing.T) {
 		AssignmentRetainedBytes: 2_000_000,
 		LetRetainedBytes:        1_000_000,
 	}
-	if _, err := s.RegisterWorker(ctx, store.Worker{
+	if _, _, err := s.RegisterWorker(ctx, store.Worker{
 		ID: "w1", FarmID: "f1", Hostname: "h1", Status: store.WorkerStatusOnline,
 		Tags: map[string]string{}, ExprLimits: tightened,
 	}); err != nil {
@@ -121,7 +121,7 @@ func TestWorker_UnadvertisedExprLimitsAreZero(t *testing.T) {
 	ctx := context.Background()
 	insertFarm(t, s, "f1", "F1")
 
-	if _, err := s.RegisterWorker(ctx, store.Worker{
+	if _, _, err := s.RegisterWorker(ctx, store.Worker{
 		ID: "w1", FarmID: "f1", Hostname: "h1", Status: store.WorkerStatusOnline,
 		Tags: map[string]string{},
 	}); err != nil {

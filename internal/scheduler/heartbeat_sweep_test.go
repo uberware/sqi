@@ -61,7 +61,7 @@ func seedStaleWorkerWithTask(t *testing.T, st store.Store, age time.Duration) (w
 	}
 
 	workerID = "w-stale"
-	if _, err := st.RegisterWorker(ctx, store.Worker{
+	if _, _, err := st.RegisterWorker(ctx, store.Worker{
 		ID: workerID, FarmID: "farm-1", Hostname: "node-stale",
 		Status: store.WorkerStatusOnline, LastHeartbeatAt: &stale,
 	}); err != nil {
@@ -272,7 +272,7 @@ func TestSweepStaleWorkers_NoStaleWorkers_NoOp(t *testing.T) {
 
 	// Fresh worker: heartbeat now, well within the timeout window.
 	now := time.Now().UTC()
-	if _, err := st.RegisterWorker(t.Context(), store.Worker{
+	if _, _, err := st.RegisterWorker(t.Context(), store.Worker{
 		ID: "w-fresh", FarmID: "farm-1", Status: store.WorkerStatusOnline, LastHeartbeatAt: &now,
 	}); err != nil {
 		t.Fatalf("RegisterWorker: %v", err)
@@ -318,7 +318,7 @@ func seedWorkerWithHeartbeat(t *testing.T, st *fake.Store, id string, status sto
 		at := time.Now().UTC().Add(-age)
 		w.LastHeartbeatAt = &at
 	}
-	if _, err := st.RegisterWorker(t.Context(), w); err != nil {
+	if _, _, err := st.RegisterWorker(t.Context(), w); err != nil {
 		t.Fatalf("RegisterWorker(%q): %v", id, err)
 	}
 	// RegisterWorker forces status online; set the intended status explicitly.

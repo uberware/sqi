@@ -5,6 +5,8 @@ package sqlite
 import (
 	"context"
 	"database/sql"
+	"errors"
+	"fmt"
 	"time"
 
 	"github.com/uberware/sqi/internal/store"
@@ -13,16 +15,17 @@ import (
 const workerCols = `
 	id, farm_id, queue_id, name, hostname, ip_address, compute_location,
 	os, os_version, arch, version, cpu_count, ram_mb, gpu_info, tags, expr_limits, status,
-	last_heartbeat_at, registered_at, updated_at`
+	last_heartbeat_at, registered_at, updated_at, instance_id`
 
 const (
-	// ON CONFLICT preserves registered_at so re-registration does not reset it.
+	// ON CONFLICT preserves registered_at so re-registration does not reset it,
+	// and an empty instance_id (a worker that sends none) keeps the stored one.
 	sqlUpsertWorker = `
 INSERT INTO workers (
 	id, farm_id, queue_id, name, hostname, ip_address, compute_location,
 	os, os_version, arch, version, cpu_count, ram_mb, gpu_info, tags, expr_limits, status,
-	last_heartbeat_at, registered_at, updated_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	last_heartbeat_at, registered_at, updated_at, instance_id)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT (id) DO UPDATE SET
 	farm_id           = excluded.farm_id,
 	queue_id          = excluded.queue_id,
@@ -41,7 +44,8 @@ ON CONFLICT (id) DO UPDATE SET
 	expr_limits       = excluded.expr_limits,
 	status            = excluded.status,
 	last_heartbeat_at = excluded.last_heartbeat_at,
-	updated_at        = excluded.updated_at
+	updated_at        = excluded.updated_at,
+	instance_id       = CASE WHEN excluded.instance_id = '' THEN workers.instance_id ELSE excluded.instance_id END
 RETURNING ` + workerCols
 
 	sqlGetWorker = `SELECT ` + workerCols + ` FROM workers WHERE id = ?`
@@ -117,7 +121,7 @@ func scanWorker(row scanner) (store.Worker, error) {
 	if err := row.Scan(
 		&w.ID, &farmID, &queueID, &w.Name, &w.Hostname, &w.IPAddress, &w.ComputeLocation,
 		&w.OS, &w.OSVersion, &w.Arch, &w.Version, &w.CPUCount, &w.RAMMb, &gpuJSON, &tagsJSON, &exprJSON, &status,
-		&lastHeartbeat, &registeredAt, &updatedAt,
+		&lastHeartbeat, &registeredAt, &updatedAt, &w.InstanceID,
 	); err != nil {
 		return store.Worker{}, err
 	}
@@ -183,15 +187,47 @@ func workerBindArgs(w store.Worker, now string) ([]any, error) {
 }
 
 // RegisterWorker implements [store.WorkerStore].
-func (s *Store) RegisterWorker(ctx context.Context, worker store.Worker) (store.Worker, error) {
-	now := timeToText(time.Now().UTC())
-	args, err := workerBindArgs(worker, now)
+//
+// Anchor: the worker row, then (on a restart) the reclaim's job rows, the same
+// order as offlineWorker, and inheriting its H4c gap (handoff item 3b).
+func (s *Store) RegisterWorker(ctx context.Context, worker store.Worker) (store.Worker, []store.Task, error) {
+	now := time.Now().UTC()
+	args, err := workerBindArgs(worker, timeToText(now))
 	if err != nil {
-		return store.Worker{}, err
+		return store.Worker{}, nil, err
 	}
-	row := s.stmtUpsertWorker.QueryRowContext(ctx, args...)
-	out, err := scanWorker(row)
-	return out, mapErr(err)
+	args = append(args, worker.InstanceID)
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return store.Worker{}, nil, fmt.Errorf("sqlite: begin register worker: %w", mapErr(err))
+	}
+	defer func() { _ = tx.Rollback() }() //nolint:errcheck // rollback after commit is a no-op
+
+	if err := lockAnchors(ctx, tx, workerAnchor(worker.ID)); err != nil {
+		return store.Worker{}, nil, err
+	}
+	var prior string
+	err = tx.QueryRowContext(ctx, `SELECT instance_id FROM workers WHERE id = ?`, worker.ID).Scan(&prior)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return store.Worker{}, nil, fmt.Errorf("sqlite: read worker %s instance: %w", worker.ID, mapErr(err))
+	}
+	upsert := tx.StmtContext(ctx, s.stmtUpsertWorker)
+	defer upsert.Close()
+	out, err := scanWorker(upsert.QueryRowContext(ctx, args...))
+	if err != nil {
+		return store.Worker{}, nil, mapErr(err)
+	}
+	var reclaimed []store.Task
+	if prior != "" && worker.InstanceID != "" && prior != worker.InstanceID {
+		if reclaimed, err = reclaimWorkerTasksTx(ctx, tx, worker.ID, store.FailureReasonWorkerRestarted, now); err != nil {
+			return store.Worker{}, nil, err
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return store.Worker{}, nil, fmt.Errorf("sqlite: commit register worker: %w", mapErr(err))
+	}
+	return out, reclaimed, nil
 }
 
 // GetWorker implements [store.WorkerStore].

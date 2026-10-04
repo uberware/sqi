@@ -49,6 +49,10 @@ const (
 	// FailureReasonWorkerShutdown is the attempt message recorded when a
 	// worker's forced shutdown abandons a task and it is reclaimed.
 	FailureReasonWorkerShutdown = "worker shut down"
+	// FailureReasonWorkerRestarted is the attempt message recorded when a
+	// worker re-registers from a new process and its previous process's tasks
+	// are reclaimed.
+	FailureReasonWorkerRestarted = "worker restarted"
 )
 
 // Task is the atomic unit of work — one process on one worker. Tasks are

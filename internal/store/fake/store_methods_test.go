@@ -80,7 +80,7 @@ func mustCreateTask(t *testing.T, s *Store, id, jobID, stepID string, status sto
 
 func mustCreateWorker(t *testing.T, s *Store, id, farmID string, status store.WorkerStatus) store.Worker {
 	t.Helper()
-	w, err := s.RegisterWorker(ctx(), store.Worker{
+	w, _, err := s.RegisterWorker(ctx(), store.Worker{
 		ID: id, FarmID: farmID, Hostname: id,
 		Status: status, RegisteredAt: time.Now(),
 	})
@@ -1203,7 +1203,7 @@ func TestListWorkers_SortAndFilter(t *testing.T) {
 func TestListWorkers_Search(t *testing.T) {
 	st := New()
 	mk := func(id, name, host, loc string) {
-		if _, err := st.RegisterWorker(ctx(), store.Worker{
+		if _, _, err := st.RegisterWorker(ctx(), store.Worker{
 			ID: id, Name: name, Hostname: host, ComputeLocation: loc,
 			Status: store.WorkerStatusOnline, Tags: map[string]string{},
 		}); err != nil {

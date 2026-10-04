@@ -85,7 +85,7 @@ func seedWorker(t *testing.T, st *fake.Store, status store.WorkerStatus) store.W
 		RegisteredAt: now,
 		UpdatedAt:    now,
 	}
-	created, err := st.RegisterWorker(t.Context(), w)
+	created, _, err := st.RegisterWorker(t.Context(), w)
 	if err != nil {
 		t.Fatalf("seedWorker: %v", err)
 	}
@@ -221,7 +221,7 @@ func TestListWorkers(t *testing.T) {
 
 		// Insert a worker in a different farm.
 		now := time.Now()
-		if _, err := st.RegisterWorker(t.Context(), store.Worker{
+		if _, _, err := st.RegisterWorker(t.Context(), store.Worker{
 			ID:           uuid.NewString(),
 			FarmID:       "farm-other",
 			Hostname:     "other-node",
@@ -286,7 +286,7 @@ func TestListWorkers_SearchParam(t *testing.T) {
 		{ID: "w1", Hostname: "alpha.local", Status: store.WorkerStatusOnline, Tags: map[string]string{}},
 		{ID: "w2", Hostname: "beta.local", Status: store.WorkerStatusOnline, Tags: map[string]string{}},
 	} {
-		if _, err := st.RegisterWorker(ctx, w); err != nil {
+		if _, _, err := st.RegisterWorker(ctx, w); err != nil {
 			t.Fatal(err)
 		}
 	}

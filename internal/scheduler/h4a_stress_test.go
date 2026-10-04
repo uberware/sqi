@@ -461,7 +461,7 @@ func (r *stressRun) offline(n int) {
 	ctx := r.t.Context()
 	id := r.fx.workers[n%len(r.fx.workers)]
 	old := time.Now().UTC().Add(-time.Minute)
-	if _, err := r.st.RegisterWorker(ctx, store.Worker{
+	if _, _, err := r.st.RegisterWorker(ctx, store.Worker{
 		ID: id, FarmID: r.fx.farmID, Hostname: id, Status: store.WorkerStatusOnline, LastHeartbeatAt: &old,
 	}); !r.expect("RegisterWorker", err) {
 		return
@@ -806,7 +806,7 @@ func seedStressJob(t *testing.T, st *sqlite.Store, n int) stressFixture {
 	}
 	for i := range 4 {
 		id := fmt.Sprintf("stress-w%d", i)
-		if _, err := st.RegisterWorker(ctx, store.Worker{
+		if _, _, err := st.RegisterWorker(ctx, store.Worker{
 			ID: id, FarmID: farm.ID, Hostname: id, Status: store.WorkerStatusOnline, LastHeartbeatAt: &now,
 		}); err != nil {
 			t.Fatalf("RegisterWorker: %v", err)

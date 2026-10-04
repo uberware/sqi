@@ -826,8 +826,9 @@ func (s *Scheduler) discardOnIdentityMismatch(ctx context.Context, msg jetstream
 }
 
 // handleWorkerRegister processes a worker.register message:
-// decodes the payload, upserts the worker in the store, and refreshes the
-// WorkersTotal Prometheus gauge.
+// decodes the payload, upserts the worker in the store, reports any tasks the
+// store reclaimed because the worker restarted (a new instance ID, H4a2 §4.5),
+// and refreshes the WorkersTotal Prometheus gauge.
 //
 // subjectWorkerID is the worker the message's subject attributes it to.
 func (s *Scheduler) handleWorkerRegister(ctx context.Context, msg jetstream.Msg, subjectWorkerID string) {
@@ -863,6 +864,7 @@ func (s *Scheduler) handleWorkerRegister(ctx context.Context, msg jetstream.Msg,
 	now := time.Now().UTC()
 	w := store.Worker{
 		ID:              m.WorkerID,
+		InstanceID:      m.InstanceID,
 		FarmID:          m.FarmID,
 		QueueID:         m.QueueID,
 		Name:            m.Name,
@@ -882,7 +884,8 @@ func (s *Scheduler) handleWorkerRegister(ctx context.Context, msg jetstream.Msg,
 		LastHeartbeatAt: &now,
 	}
 
-	if _, err := s.store.RegisterWorker(ctx, w); err != nil {
+	stored, reclaimed, err := s.store.RegisterWorker(ctx, w)
+	if err != nil {
 		s.logger.ErrorContext(
 			ctx, "scheduler: persist worker registration failed",
 			slog.String("worker_id", m.WorkerID),
@@ -890,6 +893,11 @@ func (s *Scheduler) handleWorkerRegister(ctx context.Context, msg jetstream.Msg,
 		)
 		s.nakMsg(ctx, msg)
 		return
+	}
+	if len(reclaimed) > 0 {
+		// A new worker process: the previous one's in-flight tasks went back to
+		// ready inside the registration write (H4a2 §4.5).
+		s.reclaimOfflineWorkerTasks(ctx, m.WorkerID, m.Hostname, reclaimRestart, reclaimed)
 	}
 
 	s.ensureComputeLocation(ctx, m.ComputeLocation)
@@ -917,7 +925,9 @@ func (s *Scheduler) handleWorkerRegister(ctx context.Context, msg jetstream.Msg,
 		Name:     m.Name,
 		Hostname: m.Hostname,
 		FarmID:   m.FarmID,
-		Status:   string(store.WorkerStatusOnline),
+		// The stored row's status, which is not always the online this
+		// registration asked for (H4a2 §5.3 keeps a disabled worker disabled).
+		Status: string(stored.Status),
 	})
 	s.refreshWorkerGauge(ctx)
 	s.ackMsg(ctx, msg)
@@ -1081,7 +1091,7 @@ func (s *Scheduler) handleWorkerDeregister(ctx context.Context, msg jetstream.Ms
 	// (which only inspects workers still marked online) will never look at it
 	// again. Its in-flight tasks were returned to the ready queue by the store
 	// call above instead of being stranded in 'assigned'/'running'; report them.
-	s.reclaimOfflineWorkerTasks(ctx, m.WorkerID, "", reclaimed)
+	s.reclaimOfflineWorkerTasks(ctx, m.WorkerID, "", reclaimOffline, reclaimed)
 
 	s.notifier.NotifyWorker(ws.WorkerEvent{
 		WorkerID: m.WorkerID,
@@ -1319,7 +1329,7 @@ func (s *Scheduler) sweepStaleWorkers(ctx context.Context) {
 			Status:   string(store.WorkerStatusOffline),
 		})
 
-		s.reclaimOfflineWorkerTasks(ctx, w.ID, w.Hostname, reclaimed)
+		s.reclaimOfflineWorkerTasks(ctx, w.ID, w.Hostname, reclaimOffline, reclaimed)
 	}
 
 	s.refreshWorkerGauge(ctx)
@@ -1403,26 +1413,50 @@ func (s *Scheduler) sweepRetiredJobs(ctx context.Context) {
 	}
 }
 
-// reclaimOfflineWorkerTasks reports the outcome of taking workerID offline: the
-// tasks the store returned to the ready queue. It is shared by the heartbeat
-// sweep and the graceful-deregister handler. By the time it runs the store has
-// already closed the worker's running attempts, released their usage claims and
-// returned its assigned/running tasks to ready, all in the transaction that
-// marked the worker offline (invariant I3). The tasks therefore cannot be
-// orphaned in 'assigned'/'running' (the heartbeat sweep only considers workers
-// still marked online, so it could never recover them afterwards), and no
-// license slot stays held on behalf of a worker that is gone.
-func (s *Scheduler) reclaimOfflineWorkerTasks(ctx context.Context, workerID, hostname string, reclaimed []store.Task) {
+// reclaimCause says why the store reclaimed a worker's tasks. It selects only
+// the wording [Scheduler.reclaimOfflineWorkerTasks] logs; the reporting is the
+// same for every cause.
+type reclaimCause int
+
+const (
+	// reclaimOffline: the worker was taken offline (heartbeat sweep or
+	// graceful deregister).
+	reclaimOffline reclaimCause = iota
+	// reclaimRestart: the worker re-registered from a new process (a changed
+	// instance ID, H4a2 §4.5) and stays online; only its previous process's
+	// tasks were reclaimed.
+	reclaimRestart
+)
+
+// reclaimOfflineWorkerTasks reports the tasks the store returned to the ready
+// queue when it took workerID offline (the heartbeat sweep and the
+// graceful-deregister handler, cause reclaimOffline) or when the worker
+// re-registered from a new process (the register handler, cause
+// reclaimRestart). By the time it runs the store has already closed the
+// worker's running attempts, released their usage claims and returned its
+// assigned/running tasks to ready, all in the transaction that marked the
+// worker offline or recorded its new instance (invariant I3). The tasks
+// therefore cannot be orphaned in 'assigned'/'running' (the heartbeat sweep
+// only considers workers still marked online, so it could never recover them
+// afterwards, and a restarted worker's new process never reports on them), and
+// no license slot stays held on behalf of a worker process that is gone.
+func (s *Scheduler) reclaimOfflineWorkerTasks(ctx context.Context, workerID, hostname string, cause reclaimCause, reclaimed []store.Task) {
 	if len(reclaimed) == 0 {
-		s.logger.InfoContext(
-			ctx, "scheduler: worker marked offline (no tasks to reclaim)",
-			slog.String("worker_id", workerID),
-			slog.String("hostname", hostname),
-		)
+		if cause == reclaimOffline {
+			s.logger.InfoContext(
+				ctx, "scheduler: worker marked offline (no tasks to reclaim)",
+				slog.String("worker_id", workerID),
+				slog.String("hostname", hostname),
+			)
+		}
 		return
 	}
+	msg := "scheduler: reclaimed tasks from offline worker"
+	if cause == reclaimRestart {
+		msg = "scheduler: reclaimed tasks from a restarted worker"
+	}
 	s.logger.InfoContext(
-		ctx, "scheduler: reclaimed tasks from offline worker",
+		ctx, msg,
 		slog.String("worker_id", workerID),
 		slog.String("hostname", hostname),
 		slog.Int("tasks_reclaimed", len(reclaimed)),

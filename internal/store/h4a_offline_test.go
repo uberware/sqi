@@ -138,7 +138,7 @@ func TestOfflineStaleWorker_NoHeartbeatIsNotStale(t *testing.T) {
 	for name, st := range newStores(t) {
 		t.Run(name, func(t *testing.T) {
 			g := seedGraph(t, st, graphOpts{}, stepSpec{name: "a", status: store.StepStatusReady, tasks: []store.TaskStatus{store.TaskStatusRunning}})
-			if _, err := st.RegisterWorker(t.Context(), store.Worker{ID: fixtureWorkerID, FarmID: g.Farm.ID, Hostname: "node", Status: store.WorkerStatusOnline}); err != nil {
+			if _, _, err := st.RegisterWorker(t.Context(), store.Worker{ID: fixtureWorkerID, FarmID: g.Farm.ID, Hostname: "node", Status: store.WorkerStatusOnline}); err != nil {
 				t.Fatalf("RegisterWorker: %v", err)
 			}
 			now := time.Now().UTC()
@@ -182,7 +182,7 @@ func TestOfflineStaleWorker_ReclaimsOnlyItsOwnInFlightTasks(t *testing.T) {
 			})
 			now := time.Now().UTC()
 			seedWorker(t, st, first.Farm.ID, store.WorkerStatusOnline, now.Add(-time.Hour))
-			if _, err := st.RegisterWorker(t.Context(), store.Worker{
+			if _, _, err := st.RegisterWorker(t.Context(), store.Worker{
 				ID: "w2", FarmID: first.Farm.ID, Hostname: "other", Status: store.WorkerStatusOnline, LastHeartbeatAt: &now,
 			}); err != nil {
 				t.Fatalf("RegisterWorker w2: %v", err)

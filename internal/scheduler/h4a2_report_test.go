@@ -129,7 +129,7 @@ func TestH4a2_RequeueAfterReleaseLeavesTheNewLease(t *testing.T) {
 			if err := forceAssign(base, task.ID, statusTestWorkerID, now); err != nil {
 				t.Fatalf("AssignTask: %v", err)
 			}
-			if _, err := base.RegisterWorker(t.Context(), store.Worker{
+			if _, _, err := base.RegisterWorker(t.Context(), store.Worker{
 				ID: statusTestWorkerID, FarmID: "farm-1", Hostname: "h", Status: store.WorkerStatusOnline, LastHeartbeatAt: &now,
 			}); err != nil {
 				t.Fatalf("RegisterWorker: %v", err)
@@ -183,7 +183,7 @@ func TestH4a2_ShutdownReportAndDeregisterAgreeInEitherOrder(t *testing.T) {
 				if err := forceAssign(st, task.ID, statusTestWorkerID, now); err != nil {
 					t.Fatalf("AssignTask: %v", err)
 				}
-				if _, err := st.RegisterWorker(t.Context(), store.Worker{
+				if _, _, err := st.RegisterWorker(t.Context(), store.Worker{
 					ID: statusTestWorkerID, FarmID: "farm-1", Hostname: "h", Status: store.WorkerStatusOnline, LastHeartbeatAt: &now,
 				}); err != nil {
 					t.Fatalf("RegisterWorker: %v", err)

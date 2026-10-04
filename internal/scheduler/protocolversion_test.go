@@ -101,7 +101,7 @@ func TestHandleWorkerHeartbeat_VersionMismatch_Discarded(t *testing.T) {
 			s := newMetricsScheduler(st, &recordBus{}, "")
 
 			seeded := time.Now().UTC().Add(-time.Hour)
-			if _, err := st.RegisterWorker(t.Context(), store.Worker{
+			if _, _, err := st.RegisterWorker(t.Context(), store.Worker{
 				ID: "w-1", FarmID: "farm-1",
 				Status: store.WorkerStatusOnline, LastHeartbeatAt: &seeded,
 			}); err != nil {

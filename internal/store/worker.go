@@ -126,11 +126,15 @@ type Worker struct {
 	// Version is the sqi-worker build version the worker self-reports at
 	// registration (the worker binary's internal/version.Version). May be empty
 	// for workers registered before this field existed.
-	Version  string
-	CPUCount int
-	RAMMb    int
-	GPUInfo  GPUInfo
-	Tags     map[string]string // arbitrary capability tags
+	Version string
+	// InstanceID identifies the worker process that last registered. It
+	// changes when the worker restarts and is empty for a worker that does not
+	// send one (H4a2 §4.5).
+	InstanceID string
+	CPUCount   int
+	RAMMb      int
+	GPUInfo    GPUInfo
+	Tags       map[string]string // arbitrary capability tags
 	// ExprLimits holds the worker's self-reported OpenJD EXPR evaluation caps.
 	// Zero-valued for workers registered before this field existed; see
 	// [WorkerExprLimits] for what the server does with them.
@@ -181,8 +185,15 @@ const (
 type WorkerStore interface {
 	// RegisterWorker inserts or replaces the worker record for the given ID.
 	// Called by the server when a worker sends its registration message.
-	// If the worker ID already exists its record is updated in full.
-	RegisterWorker(ctx context.Context, worker Worker) (Worker, error)
+	// If the worker ID already exists its record is updated in full, except
+	// that an empty InstanceID keeps the stored one. When the stored
+	// InstanceID is non-empty and differs from a non-empty incoming one, the
+	// previous worker process is gone: in the same transaction its assigned and
+	// running tasks are reclaimed exactly as [WorkerStore.OfflineWorker]
+	// reclaims them (attempts closed as failed with
+	// [FailureReasonWorkerRestarted], claims released, tasks ready) and
+	// returned as they are after the reset.
+	RegisterWorker(ctx context.Context, worker Worker) (Worker, []Task, error)
 
 	// GetWorker returns the worker with the given ID, or [ErrNotFound].
 	GetWorker(ctx context.Context, id string) (Worker, error)

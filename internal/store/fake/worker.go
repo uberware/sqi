@@ -11,21 +11,33 @@ import (
 	"github.com/uberware/sqi/internal/store"
 )
 
-// RegisterWorker inserts or replaces the worker record for the given ID.
-// If the worker ID already exists its record is updated in full.
-func (s *Store) RegisterWorker(_ context.Context, worker store.Worker) (store.Worker, error) {
+// RegisterWorker implements [store.WorkerStore]: it inserts or replaces the
+// worker record for the given ID, except that an empty InstanceID keeps the
+// stored one. A non-empty stored InstanceID that differs from a non-empty
+// incoming one is a restarted worker process, whose assigned and running tasks
+// are reclaimed as the offline transitions reclaim them, with
+// [store.FailureReasonWorkerRestarted]; the store lock stands in for SQLite's
+// worker-row and job-row anchors.
+func (s *Store) RegisterWorker(_ context.Context, worker store.Worker) (store.Worker, []store.Task, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	existing, isUpdate := s.workers[worker.ID]
-
 	worker.Tags = copyMap(worker.Tags)
+	var reclaimed []store.Task
 	if isUpdate {
 		worker.RegisteredAt = existing.RegisteredAt
+		if worker.InstanceID == "" {
+			worker.InstanceID = existing.InstanceID
+		} else if existing.InstanceID != "" && existing.InstanceID != worker.InstanceID {
+			id := worker.ID
+			reclaimed = s.reclaimToReadyLocked(func(t store.Task) bool {
+				return t.AssignedWorkerID == id && (t.Status == store.TaskStatusAssigned || t.Status == store.TaskStatusRunning)
+			}, store.FailureReasonWorkerRestarted, time.Now().UTC())
+		}
 	}
-
 	s.workers[worker.ID] = worker
-	return worker, nil
+	return worker, reclaimed, nil
 }
 
 // GetWorker returns the worker with the given ID, or [store.ErrNotFound].
@@ -68,7 +80,9 @@ func (s *Store) ListWorkers(_ context.Context, opts store.ListWorkersOptions) (s
 }
 
 // UpdateWorker replaces the mutable capability fields of an existing worker
-// (everything except ID and RegisteredAt) and updates UpdatedAt.
+// (everything except ID, RegisteredAt and InstanceID) and updates UpdatedAt.
+// InstanceID is kept as SQLite's UPDATE keeps it: an edit never changes which
+// worker process the row belongs to.
 func (s *Store) UpdateWorker(_ context.Context, worker store.Worker) (store.Worker, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -79,6 +93,7 @@ func (s *Store) UpdateWorker(_ context.Context, worker store.Worker) (store.Work
 	}
 
 	worker.RegisteredAt = existing.RegisteredAt
+	worker.InstanceID = existing.InstanceID
 	worker.UpdatedAt = time.Now()
 	worker.Tags = copyMap(worker.Tags)
 	s.workers[worker.ID] = worker

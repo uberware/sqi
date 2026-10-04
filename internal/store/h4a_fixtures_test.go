@@ -152,7 +152,7 @@ func seedClaim(t *testing.T, st store.Store, poolID, attemptID string) store.Usa
 // the intended status is passed straight through.
 func seedWorker(t *testing.T, st store.Store, farmID string, status store.WorkerStatus, lastHeartbeat time.Time) store.Worker {
 	t.Helper()
-	w, err := st.RegisterWorker(t.Context(), store.Worker{
+	w, _, err := st.RegisterWorker(t.Context(), store.Worker{
 		ID: fixtureWorkerID, FarmID: farmID, Hostname: "node", Status: status, LastHeartbeatAt: &lastHeartbeat,
 	})
 	if err != nil {

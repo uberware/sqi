@@ -131,7 +131,7 @@ func seedAssignFixture(t *testing.T, st *fake.Store, mutate func(*assignFixture)
 	if _, err := st.CreateTask(ctx, f.task); err != nil {
 		t.Fatalf("CreateTask: %v", err)
 	}
-	if _, err := st.RegisterWorker(ctx, f.worker); err != nil {
+	if _, _, err := st.RegisterWorker(ctx, f.worker); err != nil {
 		t.Fatalf("RegisterWorker: %v", err)
 	}
 	return f

@@ -63,7 +63,7 @@ func seedRunnableTask(t *testing.T, st *fake.Store, workerID string) (store.Job,
 	if err != nil {
 		t.Fatalf("CreateQueue: %v", err)
 	}
-	if _, err := st.RegisterWorker(ctx, store.Worker{
+	if _, _, err := st.RegisterWorker(ctx, store.Worker{
 		ID: workerID, FarmID: farm.ID, Hostname: workerID,
 		Status: store.WorkerStatusOnline, CPUCount: 4, LastHeartbeatAt: &now,
 		Tags: map[string]string{},
@@ -300,7 +300,7 @@ func TestProvenance_RegisterOfAnotherWorker(t *testing.T) {
 
 	const workerA, workerB = "worker-a", "worker-b"
 	now := time.Now().UTC()
-	if _, err := st.RegisterWorker(ctx, store.Worker{
+	if _, _, err := st.RegisterWorker(ctx, store.Worker{
 		ID: workerB, FarmID: "farm-1", Hostname: "real-host", CPUCount: 8,
 		Status: store.WorkerStatusOnline, LastHeartbeatAt: &now,
 		Tags: map[string]string{"gpu": "true"},
@@ -354,7 +354,7 @@ func TestProvenance_HeartbeatOfAnotherWorker(t *testing.T) {
 
 	const workerA, workerB = "worker-a", "worker-b"
 	stale := time.Now().UTC().Add(-time.Hour)
-	if _, err := st.RegisterWorker(ctx, store.Worker{
+	if _, _, err := st.RegisterWorker(ctx, store.Worker{
 		ID: workerB, FarmID: "farm-1", Status: store.WorkerStatusOnline, LastHeartbeatAt: &stale,
 	}); err != nil {
 		t.Fatalf("RegisterWorker(B): %v", err)
@@ -401,12 +401,12 @@ func TestProvenance_DeregisterOfAnotherWorker(t *testing.T) {
 
 	const workerA, workerB = "worker-a", "worker-b"
 	now := time.Now().UTC()
-	if _, err := st.RegisterWorker(ctx, store.Worker{
+	if _, _, err := st.RegisterWorker(ctx, store.Worker{
 		ID: workerA, FarmID: "farm-1", Status: store.WorkerStatusOnline, LastHeartbeatAt: &now,
 	}); err != nil {
 		t.Fatalf("RegisterWorker(A): %v", err)
 	}
-	if _, err := st.RegisterWorker(ctx, store.Worker{
+	if _, _, err := st.RegisterWorker(ctx, store.Worker{
 		ID: workerB, FarmID: "farm-1", Status: store.WorkerStatusOnline, LastHeartbeatAt: &now,
 	}); err != nil {
 		t.Fatalf("RegisterWorker(B): %v", err)
@@ -460,7 +460,7 @@ func TestProvenance_LeaseAsAnotherWorker(t *testing.T) {
 	// were empty merely because worker A didn't exist or wasn't eligible,
 	// removing the check wouldn't turn this test red.
 	now := time.Now().UTC()
-	if _, err := st.RegisterWorker(t.Context(), store.Worker{
+	if _, _, err := st.RegisterWorker(t.Context(), store.Worker{
 		ID: workerA, FarmID: "f1", Hostname: workerA,
 		Status: store.WorkerStatusOnline, CPUCount: 4, LastHeartbeatAt: &now,
 		Tags: map[string]string{},

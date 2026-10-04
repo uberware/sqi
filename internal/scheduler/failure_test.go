@@ -84,7 +84,7 @@ func (h *failureHarness) seedRunningTask(jobID, taskID, workerID string) {
 	ctx := h.t.Context()
 	now := time.Now().UTC()
 
-	if _, err := h.st.RegisterWorker(ctx, store.Worker{
+	if _, _, err := h.st.RegisterWorker(ctx, store.Worker{
 		ID: workerID, FarmID: "farm-1", Hostname: workerID,
 		Status: store.WorkerStatusOnline, CPUCount: 4,
 	}); err != nil {
@@ -239,7 +239,7 @@ func (h *failureHarness) reclaimWorker(workerID string) {
 	if err != nil {
 		h.t.Fatalf("OfflineWorker(%s): %v", workerID, err)
 	}
-	h.s.reclaimOfflineWorkerTasks(h.t.Context(), workerID, workerID, reclaimed)
+	h.s.reclaimOfflineWorkerTasks(h.t.Context(), workerID, workerID, reclaimOffline, reclaimed)
 }
 
 func (h *failureHarness) taskStatus(taskID string) store.TaskStatus {
@@ -480,7 +480,7 @@ func TestLeaseGatesPass_SkipsPausedJob(t *testing.T) {
 	ctx := t.Context()
 	now := time.Now().UTC()
 
-	worker, err := h.st.RegisterWorker(ctx, store.Worker{
+	worker, _, err := h.st.RegisterWorker(ctx, store.Worker{
 		ID: "w1", FarmID: "farm-1", Hostname: "w1",
 		Status: store.WorkerStatusOnline, CPUCount: 4,
 	})

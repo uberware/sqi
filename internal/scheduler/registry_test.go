@@ -114,8 +114,8 @@ type registerErrSt struct {
 	store.Store
 }
 
-func (*registerErrSt) RegisterWorker(_ context.Context, _ store.Worker) (store.Worker, error) {
-	return store.Worker{}, context.DeadlineExceeded
+func (*registerErrSt) RegisterWorker(_ context.Context, _ store.Worker) (store.Worker, []store.Task, error) {
+	return store.Worker{}, nil, context.DeadlineExceeded
 }
 
 func TestHandleWorkerRegister_StoreError_Nacked(t *testing.T) {
@@ -249,7 +249,7 @@ func TestHandleWorkerHeartbeat_Valid(t *testing.T) {
 	s := newMetricsScheduler(st, &recordBus{}, "")
 
 	now := time.Now().UTC()
-	if _, err := st.RegisterWorker(t.Context(), store.Worker{
+	if _, _, err := st.RegisterWorker(t.Context(), store.Worker{
 		ID: "w-1", FarmID: "farm-1", Status: store.WorkerStatusOnline, LastHeartbeatAt: &now,
 	}); err != nil {
 		t.Fatalf("RegisterWorker: %v", err)
@@ -280,7 +280,7 @@ func TestHandleWorkerHeartbeat_ZeroAt_UsesServerTime(t *testing.T) {
 
 	before := time.Now().UTC()
 	old := before.Add(-time.Hour)
-	if _, err := st.RegisterWorker(t.Context(), store.Worker{
+	if _, _, err := st.RegisterWorker(t.Context(), store.Worker{
 		ID: "w-1", FarmID: "farm-1", Status: store.WorkerStatusOnline, LastHeartbeatAt: &old,
 	}); err != nil {
 		t.Fatalf("RegisterWorker: %v", err)
@@ -351,7 +351,7 @@ func TestHandleWorkerDeregister_Valid(t *testing.T) {
 	s := newMetricsScheduler(st, &recordBus{}, "")
 
 	now := time.Now().UTC()
-	if _, err := st.RegisterWorker(t.Context(), store.Worker{
+	if _, _, err := st.RegisterWorker(t.Context(), store.Worker{
 		ID: "w-1", FarmID: "farm-1", Status: store.WorkerStatusOnline, LastHeartbeatAt: &now,
 	}); err != nil {
 		t.Fatalf("RegisterWorker: %v", err)
@@ -386,7 +386,7 @@ func TestHandleWorkerDeregister_ReclaimsInFlightTasks(t *testing.T) {
 	now := time.Now().UTC()
 
 	const workerID = "w-bye"
-	if _, err := st.RegisterWorker(ctx, store.Worker{
+	if _, _, err := st.RegisterWorker(ctx, store.Worker{
 		ID: workerID, FarmID: "farm-1", Hostname: "node-bye",
 		Status: store.WorkerStatusOnline, LastHeartbeatAt: &now,
 	}); err != nil {

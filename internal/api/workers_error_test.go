@@ -67,7 +67,7 @@ func TestListWorkers_QueueIDFilterAndErrors(t *testing.T) {
 
 		now := time.Now()
 		// Worker assigned to queue-A.
-		_, err := st.RegisterWorker(t.Context(), store.Worker{
+		_, _, err := st.RegisterWorker(t.Context(), store.Worker{
 			ID:           uuid.NewString(),
 			FarmID:       "farm-1",
 			QueueID:      "queue-A",
@@ -80,7 +80,7 @@ func TestListWorkers_QueueIDFilterAndErrors(t *testing.T) {
 			t.Fatalf("RegisterWorker: %v", err)
 		}
 		// Worker assigned to queue-B.
-		_, err = st.RegisterWorker(t.Context(), store.Worker{
+		_, _, err = st.RegisterWorker(t.Context(), store.Worker{
 			ID:           uuid.NewString(),
 			FarmID:       "farm-1",
 			QueueID:      "queue-B",
