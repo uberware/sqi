@@ -62,6 +62,9 @@ func TestMigration00033_FinalizesOpenStepsOfTerminalJobs(t *testing.T) {
 		{"canceled job, pending step", seedStep(t, s, store.JobStatusCanceled, store.StepStatusPending, C), store.StepStatusCanceled},
 		{"canceled job, pending step with a failure", seedStep(t, s, store.JobStatusCanceled, store.StepStatusPending, F, C), store.StepStatusCanceled},
 		{"failed job, ready step, all succeeded", seedStep(t, s, store.JobStatusFailed, store.StepStatusReady, S), store.StepStatusCompleted},
+		// A step that never got a task is canceled, not "completed": with no
+		// tasks the failed/canceled probes both miss and the ELSE would fire.
+		{"canceled job, ready step, no tasks", seedStep(t, s, store.JobStatusCanceled, store.StepStatusReady), store.StepStatusCanceled},
 		// Live jobs belong to the start-up reconcile, not to the migration.
 		{"running job, stuck ready step", seedStep(t, s, store.JobStatusRunning, store.StepStatusReady, S), store.StepStatusReady},
 		// A step with a task still in flight is never finalized.
