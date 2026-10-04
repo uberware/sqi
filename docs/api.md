@@ -662,7 +662,26 @@ curl -s -X POST "$BASE/workers/$WORKER_ID/disable"
 
 # Re-enable
 curl -s -X POST "$BASE/workers/$WORKER_ID/enable"
+
+# Remove a worker (offline, or a disabled worker whose heartbeat has gone stale)
+curl -s -X DELETE "$BASE/workers/$WORKER_ID"
 ```
+
+What disabling a worker does:
+
+- **It drains.** The worker finishes the tasks it already holds and is leased
+  nothing new. Its lease requests are answered with an empty batch (after
+  about a second, so the worker's request loop does not spin). A disable that
+  lands while a lease is in flight can still let that one batch through.
+- **It survives the worker coming and going.** A disabled worker stays
+  `disabled` when it reconnects, when its process restarts and when it
+  deregisters gracefully; only `enable` brings it back.
+- **A dead disabled worker is still cleaned up.** If it stops heartbeating, the
+  heartbeat sweep reclaims the tasks it held (they return to `ready`, and no
+  retry attempt is consumed) and the worker stays `disabled`.
+- **It cannot be removed while it holds work.** `DELETE /workers/{id}` answers
+  `409` for a worker that is online, for a disabled worker that is still
+  heartbeating, and for any worker that still has a task assigned or running.
 
 ---
 

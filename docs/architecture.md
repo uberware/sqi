@@ -98,10 +98,11 @@ main()
       10. Create and run Scheduler (internal/scheduler). Scheduler.Run is what
           registers every NATS consumer: worker registration/heartbeat/deregister,
           task status, task logs and the core-NATS worker.diag.> subscriber. It
-          then finalizes, once, any step an earlier release left stuck
-          (reconcileStuckSteps, see "Store invariants"), and only after that
-          subscribes the core-NATS work.lease.> request/reply handler and starts
-          the heartbeat sweep
+          then finalizes, once, any step an earlier release left stuck and
+          releases any pending step a retry reset but never released
+          (reconcileStuckSteps and reconcilePendingSteps, see "Store
+          invariants"), and only after that subscribes the core-NATS
+          work.lease.> request/reply handler and starts the heartbeat sweep
       11. Wire auth (internal/server wireAuthDeps) — skipped to the anonymous
           superuser when auth.enabled is false, so auth-off boot is unchanged:
             a. Bootstrap the first admin account (no-op once any user exists)
@@ -229,7 +230,8 @@ validated at submit time and recorded as edges in `job_dependencies`. The
 submitter's check runs before the write, so `CreateJobSubmission` re-checks
 every upstream inside its own transaction: one that failed, was canceled or
 was deleted in between makes it refuse the whole submission
-(`store.ErrDependencyUnsatisfiable`, HTTP 400), while one that completed in
+(`store.ErrDependencyUnsatisfiable`, HTTP 422, worded exactly as the
+submitter's own pre-check words the same cause), while one that completed in
 between is left to the sweep, which releases the job on its next tick. A job
 with a non-empty `depends_on` is created in a new `blocked` status instead of
 `pending`, and — unlike a normal submission — **every** step and task is
@@ -286,6 +288,9 @@ request/reply). When a request arrives the server:
 ```
 handleLeaseRequest(workerID, queueID)
   │
+  ├─ Refuse (empty batch, held ~1 s so the worker's loop cannot spin) if the worker is
+  │     disabled, or the request comes from a worker process whose registration has not
+  │     landed (its instance_id differs from the stored one)
   ├─ store.CommittedCores(workerID, worker.CPUCount) → committed (Σ required_cores of assigned+running tasks)
   ├─ free = worker.CPUCount − committed
   │     If free ≤ 0: park request in the per-queue waiter registry (~30 s hold)
@@ -372,15 +377,20 @@ NATS consumer (internal/scheduler/taskstatus.go)
   ├─ Receive task.status message   { …, message }  ← worker's human-readable reason, if any
   ├─ Check the attempt exists, belongs to the task and is held by the subject's worker
   ├─ If running:
-  │     store.UpdateTaskStatus(task_id, running)   ← state-machine guarded compare-and-set
-  │     store.UpdateTaskAttempt(attempt)           ← records session_id; only while the attempt is running
+  │     store.StartTaskAttempt(attempt, task, session_id)  ← one transaction: acts only while the attempt is
+  │                                           still running and is the task's latest and the task is
+  │                                           assigned or running; moves assigned → running, records
+  │                                           session_id. A stale report is acked and emits no event
   │     store.PromoteJobRunning(job_id)            ← only a pending job; never un-pauses or revives one
+  ├─ If failed with message "worker_shutdown": store.ReclaimTaskAttempt(...)  ← a reclaim, not a failure:
+  │                                           the task goes back to ready, no retry is consumed
   ├─ If failed: store.RecordTaskFailure(...), then retry, park or go terminal (see Auto-retry below)
   ├─ If terminal (succeeded/failed/canceled):
   │     store.CompleteTaskAttempt(report)   ← one transaction: close the attempt if it is still
   │                                           running, release its usage claims, then, only if
-  │                                           it is still the task's latest attempt, move the task
-  │                                           (state-machine guarded) and stamp failure_reason
+  │                                           it is still the task's latest attempt and the task is
+  │                                           assigned or running, move the task (state-machine
+  │                                           guarded) and stamp failure_reason
   │     notifier.NotifyTask(...)                          ← triggers WebSocket fanout
   │     checkStepCompletion: store.FinalizeStep → propagateStepDependencies → store.FinalizeJob
   └─ ack message (a refused transition is acked too; its claims were still released)
@@ -402,6 +412,8 @@ scheduler for the paths that have none:
 | Worker-reported failure/cancel | the worker's `Message` verbatim | `handleTaskTerminal`, stamped by `store.CompleteTaskAttempt` in the same transaction that moves the task, and only if the task ends up in the reported status |
 | Failed with no worker message | `"failed (exit N)"` or `"failed"` | `handleTaskTerminal` fallback |
 | Worker reclaimed (heartbeat timeout or graceful deregister) | `"worker went offline"` | `store.OfflineStaleWorker` / `store.OfflineWorker` — set on the **attempt** `message` only; reclaim is not a task failure, so `tasks.failure_reason` is left untouched |
+| Worker restarted (a new process registers under the same worker ID) | `"worker restarted"` | `store.RegisterWorker`, in the registration's own transaction — attempt `message` only, as above |
+| Worker shut down (a `failed` report whose message is `worker_shutdown`) | `"worker shut down"` | `store.ReclaimTaskAttempt` — attempt `message` only, as above |
 | Cascade-canceled (an upstream step failed or was canceled, or a blocked job's upstream job failed, was canceled or was deleted) | `"canceled: upstream step failed"` | stamped inside the same UPDATE that cancels the tasks: `store.CancelPendingStep` (called by `openjd.CancelDependents`) for a step, `store.CancelBlockedJob` for a blocked job |
 | User-initiated cancel | `"canceled by user"` | stamped inside the UPDATE that cancels the tasks: `store.CancelJobExecution` for `CancelJob`, `store.CancelTaskExecution` for `CancelTask` |
 
@@ -409,11 +421,12 @@ Both server-originated task reasons (the two cancel rows) are stamped only on a
 task that has no reason yet, so a cascade-cancel's more specific reason always
 wins regardless of ordering. No reason is a separate write after the status
 change: each is part of the guarded write that moves the task (or, for the
-offline reclaim, closes the attempt).
+reclaims, closes the attempt).
 
 These server-originated reason strings are shared constants in `internal/store`
 (`FailureReasonCanceledByUser`, `FailureReasonUpstreamFailed`,
-`FailureReasonWorkerOffline`) — `FailureReasonSummary` groups by exact string,
+`FailureReasonWorkerOffline`, `FailureReasonWorkerRestarted`,
+`FailureReasonWorkerShutdown`) — `FailureReasonSummary` groups by exact string,
 so producers must not drift.
 
 **Attempt history.** Each attempt's `message` — previously visible only by
@@ -533,32 +546,52 @@ The diagram shows the happy path only. The complete permitted set
 | `ready` | `assigned` | scheduler leases the task to a worker |
 | `ready` | `canceled` | task canceled while waiting for a worker |
 | `assigned` | `running` | worker confirms execution started |
-| `assigned` | `ready` | reclaim: assigned worker disconnected or the stale-assigned reaper fired |
+| `assigned` | `ready` | reclaim: the assigned worker went offline, restarted or shut down, or the stale-assigned reaper fired |
 | `assigned` | `canceled` | task canceled after assignment, before confirmation |
 | `assigned` | `succeeded` / `failed` | the worker's `running` publish was lost (see below) |
 | `running` | `succeeded` | worker reports clean exit (exit code 0) |
 | `running` | `failed` | worker reports non-zero exit or a fatal error |
-| `running` | `ready` | reclaim (worker unreachable) or auto-retry re-queue |
+| `running` | `ready` | reclaim (worker offline, restarted or shut down) or auto-retry re-queue |
 | `running` | `canceled` | task canceled while executing |
 
 `succeeded`, `failed`, and `canceled` are terminal — no outgoing transitions.
 
 Transitions are validated by `store.ValidateTaskTransition`
 (`internal/store/statemachine.go`) and enforced, in both store implementations,
-by the two writes that move a task on a worker's report: `UpdateTaskStatus`
-(the `running` report) and `CompleteTaskAttempt` (a terminal report). Both are
-a compare-and-set: the store reads the current status, validates the arrow,
-and writes the new status only while the row still holds the status it read,
-re-reading a bounded number of times if another writer moved it in between.
-The check therefore cannot race a concurrent writer on any store, not only
-under SQLite's single write connection; the in-memory fake does the same under
-its mutex. A transition outside the permitted set returns
-`store.ErrInvalidTransition` (a `Rejected` result, from `CompleteTaskAttempt`)
-and leaves the task row unchanged.
+by the two writes that move a task on a worker's report: `StartTaskAttempt`
+(the `running` report, which writes only `assigned` → `running`) and
+`CompleteTaskAttempt` (a terminal report). Both are a compare-and-set: the
+store reads the current status, checks the arrow, and writes the new status
+only while the row still holds the status it read. `CompleteTaskAttempt`
+validates the arrow against the table and re-reads a bounded number of times
+if another writer moved the row in between. The check therefore cannot race a
+concurrent writer on any store, not only under SQLite's single write
+connection; the in-memory fake does the same under its mutex. A transition
+outside the permitted set returns `store.ErrInvalidTransition` (a `Rejected`
+result, from `CompleteTaskAttempt`) and leaves the task row unchanged.
+
+**A worker's report moves a task only from the attempt the server still
+considers live.** `StartTaskAttempt` acts only while the report's attempt is
+still `running` and is the task's latest and the task is `assigned` or
+`running`; otherwise it reports `started = false`, nothing is written, and the
+consumer acks the message and emits no event. `CompleteTaskAttempt` always
+closes the attempt and releases its claims, but moves the task only when the
+attempt is the task's latest **and** the task is `assigned` or `running` (a
+task already holding the reported status is a no-op). A task that went back to
+`ready` or `pending`, or reached another terminal status, refuses the move, so
+a canceled task's late `canceled` echo cannot re-cancel a task that was
+retried in the meantime. `RequeueTaskForRetry` (the failure fork's requeue)
+likewise acts only while its attempt is the task's latest, so a reclaim and a
+new lease landing between `RecordTaskFailure` and the requeue leave the new
+lease alone. `UpdateTaskStatus`, which these reports used to go through, has no
+production caller any more.
 
 The one path the table does not describe is a manual retry: `RetryTasks`
-revives `failed` and `canceled` tasks to `pending`, by design, in its own
-guarded SQL.
+revives `failed` and `canceled` tasks in its own guarded SQL, to `pending`, or
+to `ready` when the task's step is itself `ready` (a sibling still in flight;
+nothing would otherwise release a `pending` task from a step that is already
+released). A step still recorded as the legacy `running` status is treated as
+`ready` here.
 
 **There are two state machines, in two packages, with two sentinel errors.**
 The **task** machine is `store.ValidateTaskTransition` /
@@ -575,9 +608,15 @@ table-driven test per table asserts that each operation's from-states are legal
 arrows there. Steps have no `running` status: nothing writes it, so a step goes
 `pending` → `ready` → `completed`/`failed`/`canceled`, or straight from
 `pending` to `canceled` when an upstream step fails or is canceled
-(`CancelPendingStep`) or its blocked job is canceled (`CancelBlockedJob`), and
-back to `pending` only on a retry. The value survives in the enum and wire
-types, and a real running step would be a separate, user-visible feature. The
+(`CancelPendingStep`), its blocked job is canceled (`CancelBlockedJob`) or its
+job is canceled (`CancelJobExecution`), and back to `pending` only on a retry.
+There is deliberately no `pending` → `failed` arrow: the only way a pending
+step could be judged failed is a retry interrupted before dependency
+resolution, and the start-up reconcile releases such a step first (see
+*Upgrade repair* under [What changed for operators](#what-changed-for-operators)).
+The value survives in the enum
+and wire types, and a real running step would be a separate, user-visible
+feature. The
 task machine lives in `store` and not in `openjd` for a hard reason: `openjd`
 imports `store`, so `store` can never import `openjd` back. Do not merge the
 two sentinels — `errors.Is` against the wrong one silently stops matching.
@@ -601,6 +640,21 @@ store failures still propagate. A single-task cancel keeps the task's
 `assigned_worker_id`, so a canceled task still shows the worker that held it; a
 job-wide cancel (`store.CancelJobExecution`) clears it.
 
+**A cancel finishes the work it leaves behind.** After `CancelTaskExecution`
+reports a task canceled, `Scheduler.CancelTask` drives the same completion path
+a terminal worker report does (`checkStepCompletion`: finalize the step,
+propagate dependencies, finalize the job, reconcile cross-job dependents), so
+canceling a step's last open task finishes the step and, if it was the last,
+the job. The cancel has already committed, so an error from that path is
+logged at Warn and not returned: the caller never sees a 500 for a cancel that
+happened, and the start-up reconcile is the backstop. A job-wide cancel
+finalizes in the store instead: `CancelJobExecution` finalizes every open step
+of the job in the same transaction, last, after the tasks, attempts and claims
+(a pending step, or one with no tasks, becomes `canceled`; any other gets
+`FinalizeStep`'s outcome rule). After a job cancel every step is terminal, so
+`RetryJob` on a job canceled with nothing in flight works: the revived tasks
+sit under a step that `RetryTasks` resets and `ResolveDependencies` releases.
+
 Two arrows deserve note. `assigned` → `succeeded`/`failed` is permitted even
 though it appears to skip `running`: the worker publishes `running` first, but
 that publish is best-effort and gives up after `MaxRetries`, so it can be lost
@@ -611,7 +665,8 @@ strand finished work. Separately, the auto-retry re-queue described below
 move tasks for the server's own reasons: `LeaseTask`, `RetryTasks`,
 `ReleaseStep` / `CancelPendingStep`, `CancelBlockedJob`, `CancelJobExecution` /
 `CancelTaskExecution`, and the reclaim operations (`ReclaimStaleAssignedTasks`,
-`OfflineStaleWorker`, `OfflineWorker`). None of them route through
+`OfflineStaleWorker`, `OfflineWorker`, `ReclaimTaskAttempt`, and the restart
+reclaim inside `RegisterWorker`). None of them route through
 `UpdateTaskStatus`, and each writes only the rows its own `WHERE` still
 matches (see [Store invariants](#store-invariants)).
 
@@ -627,8 +682,10 @@ server default) and records the genuine failure via
   `max_attempts` and the job has not hit its `failure_limit` — the attempt
   closes as failed, usage-pool claims are released, and the task re-enters
   `ready` (`store.RequeueTaskForRetry`) stamped with a `retry_after` backoff
-  timestamp (`now + retry_delay`). It does **not** go through the terminal /
-  step-completion path, since the step isn't actually done.
+  timestamp (`now + retry_delay`). The requeue acts only while the failed
+  attempt is still the task's latest, so a reclaim and a new lease landing
+  between the two writes are left alone. It does **not** go through the
+  terminal / step-completion path, since the step isn't actually done.
 - **Exhausted.** The task's genuine-failure count reaches `max_attempts` with
   no failure limit tripped — the task goes terminal-`failed`, cascading to its
   step and job exactly as before this feature.
@@ -639,11 +696,16 @@ server default) and records the genuine failure via
   completion cascade runs normally rather than leaving the job half-running.
 
 **Lost/reclaimed work is separate and uncapped.** A task reclaimed because its
-worker went offline (heartbeat timeout) or because it lingered in `assigned`
-past the stale-assigned reaper's timeout is simply returned to `ready` — it
-never goes through `handleTaskFailed`, so it does not consume any of the
-task's `max_attempts` and never counts toward the job's `failure_limit`. Only
-a *genuine* worker-reported failure counts.
+worker went offline (heartbeat timeout or graceful deregister), because its
+worker process restarted and registered again, because its worker reported
+`failed` with the message `worker_shutdown`, or because it lingered in
+`assigned` past the stale-assigned reaper's timeout is simply returned to
+`ready` — it never consumes any of the task's `max_attempts` and never counts
+toward the job's `failure_limit` (a `worker_shutdown` report is routed to
+`ReclaimTaskAttempt` before the failure policy is consulted). Only a *genuine*
+worker-reported failure counts. A rolling restart of the farm's workers
+therefore cannot park jobs, and a worker's `worker_shutdown` report and its
+deregister end in the same state whichever the server applies first.
 
 **A parked job is not stuck forever.** Parking only sets `status=paused`; it
 does not force every other task in the job to a terminal state. If the job
@@ -689,7 +751,9 @@ manually-paused and auto-parked jobs.
 On retry the task resets to `pending`, and its step and the job also reset to
 `pending` when they were terminal; the scheduler's step-dependency propagation
 then re-gates `pending`→`ready`, so tasks whose step dependencies are already
-met land in `ready` immediately. A manual retry also resets the task's and
+met land in `ready` immediately. The exception is a task whose step is still
+`ready` (a sibling is in flight, so the step is not reset and nothing would
+release the task from `pending`): it is revived straight to `ready`. A manual retry also resets the task's and
 job's genuine-failure counters, independent of the automatic retry policy
 above, and clears the task's `failure_reason` — both the automatic and manual
 retry paths above leave a fresh task with no stale reason attached. See
@@ -724,8 +788,9 @@ write connection.
   Whatever closes an attempt releases its claims in the same transaction: a
   terminal report (`CompleteTaskAttempt`), a recorded failure
   (`RecordTaskFailure`), a cancel (`CancelJobExecution`, `CancelTaskExecution`),
-  a reap (`ReclaimStaleAssignedTasks`) and an offline reclaim
-  (`OfflineStaleWorker`, `OfflineWorker`). A claim is inserted only by
+  a reap (`ReclaimStaleAssignedTasks`), a shutdown reclaim
+  (`ReclaimTaskAttempt`) and an offline or restart reclaim
+  (`OfflineStaleWorker`, `OfflineWorker`, `RegisterWorker`). A claim is inserted only by
   `LeaseTask`, in the transaction that assigns the task and opens the attempt,
   and a lease that does not complete writes nothing at all, so there is no
   rollback path to leak from.
@@ -747,7 +812,9 @@ Single-row rules are guarded the same way: `SetTaskUnschedulableReason` writes
 only while the task is `ready` (otherwise a no-op), `UpdateTaskAttempt` only
 while the attempt is `running` (a closed one is `store.ErrConflict`),
 `PauseJob` only while the job is `pending` or `running`, and
-`DeleteWorkerIfRemovable` only while the worker is still removable.
+`DeleteWorkerIfRemovable` only while the worker is still removable **and holds
+no task**: the in-flight check (no task `assigned` or `running` on the worker)
+is part of the `DELETE` statement itself.
 
 ### Anchor rows
 
@@ -766,7 +833,9 @@ operation passes today:
 |---|---|---|
 | `LeaseTask` | the task's queue row (only if it has a cap), its farm row (only if it has a cap), then each requested usage-pool row, sorted by id | The queue and farm caps that decide whether those rows are anchored are read before the lock. No job row and no worker row (see below). |
 | `CompleteTaskAttempt`, `RecordTaskFailure` | the task's job row | |
-| `CancelJobExecution`, `CancelTaskExecution` | the job row (the task's job, for a single task) | |
+| `StartTaskAttempt`, `ReclaimTaskAttempt` | the task's job row | A PostgreSQL store must `SELECT … FOR UPDATE` the task row after the job anchor and **before** the latest-attempt check, as for `CompleteTaskAttempt` (see below). `ReclaimTaskAttempt` takes no worker row: it neither reads nor writes one. |
+| `RequeueTaskForRetry` | none today (one guarded `UPDATE` whose predicate includes the latest-attempt check); a PostgreSQL store takes the job row first | Same: lock the task row `FOR UPDATE` before the latest-attempt check. |
+| `CancelJobExecution`, `CancelTaskExecution` | the job row (the task's job, for a single task) | `CancelJobExecution` writes the job's steps **last**, after the tasks, attempts and claims; the step write touches only `steps`, which no lease or report writes, so it adds no lock-order inversion. |
 | `RetryTasks` | the job row | |
 | `FinalizeStep`, `FinalizeJob` | the job row (the step's job, for a step) | The current status, used only to report "already terminal", is read before the lock. |
 | `ReleaseStep`, `CancelPendingStep` | the step's job row | |
@@ -776,6 +845,7 @@ operation passes today:
 | `DeleteTerminalJobsBefore` (retention) | each candidate's job row, taken just before that job's eligibility re-check | Candidates come in the eligibility query's order, unsorted, and every lock is held to the sweep's one commit. |
 | `ReclaimStaleAssignedTasks` | none today; a PostgreSQL store must take each candidate's job row, sorted by id, **before** the `UPDATE` (see below) | |
 | `OfflineStaleWorker`, `OfflineWorker` | the worker row, then the job row of each of the worker's assigned or running tasks, sorted by id | |
+| `RegisterWorker` | the worker row, then, only when the registration is from a new process, the job row of each of the worker's assigned or running tasks, sorted by id | `offlineWorker`'s order, so it inherits the gap described below (`LeaseTask` takes no worker row). |
 | `UpdateUserKeepingAdmin`, `DeleteUser` (last-admin guard) | every enabled admin's user row, sorted by id | The admin set is read before the lock. |
 | `DemoteStalledJobs` | **left for the PostgreSQL store to decide**: every lease takes the job row (contention on large jobs), or demotion goes per job under the job lock, or it stays cosmetic and self-heals on the job's next `running` report | |
 
@@ -785,7 +855,8 @@ Inside these transactions **the order of the statements is part of the
 contract** on PostgreSQL. Every operation that cancels or reclaims tasks writes
 the task rows **first**, and only then closes their attempts and releases
 their claims: `CancelJobExecution`, `CancelTaskExecution`,
-`ReclaimStaleAssignedTasks`, `OfflineStaleWorker` and `OfflineWorker`. A
+`ReclaimStaleAssignedTasks`, `ReclaimTaskAttempt`, `OfflineStaleWorker`,
+`OfflineWorker` and the restart reclaim inside `RegisterWorker`. A
 concurrent writer already holding one of those task rows then makes the task
 `UPDATE` wait, and once that writer commits, READ COMMITTED gives the later
 statements a fresh snapshot, so they see the attempt and claims it wrote.
@@ -825,7 +896,8 @@ serializes every writer. A PostgreSQL store has to close each of them:
   worker never gets a cancel signal. Either `LeaseTask` also anchors the job
   row (per-job lease contention: the same trade-off as `DemoteStalledJobs`),
   or the reported set comes from the `UPDATE` itself. Likewise
-  `OfflineStaleWorker` and `OfflineWorker` read the worker's in-flight jobs
+  `OfflineStaleWorker`, `OfflineWorker` and `RegisterWorker`'s restart reclaim
+  read the worker's in-flight jobs
   after locking the worker row, yet a lease can still hand that worker a task
   afterwards: if it commits before the reclaim, the reclaim takes the task
   under a job row it never locked; if it is still in flight, the reclaim skips
@@ -851,18 +923,22 @@ serializes every writer. A PostgreSQL store has to close each of them:
   and farm caps (a row read as uncapped is not anchored at all), the
   last-admin guard's admin set, and the status `FinalizeStep` and `FinalizeJob`
   report as "already terminal".
-- **`CompleteTaskAttempt`'s latest-attempt check** reads the task's attempts
+- **The latest-attempt check** of `CompleteTaskAttempt`, `StartTaskAttempt`,
+  `ReclaimTaskAttempt` and `RequeueTaskForRetry` reads the task's attempts
   before anything holds the task row, and `LeaseTask` does not take the job
-  row, so a lease committing between that check and the compare-and-set would
-  make a superseded report look current. Lock the task row (after the job row)
-  before the check.
+  row, so a lease committing between that check and the write would make a
+  superseded report look current. Lock the task row (after the job row)
+  before the check; for `RequeueTaskForRetry`, which takes no anchor on SQLite,
+  take the job row first as well.
 - **Upstream job rows want a shared lock**, which the anchor type cannot
   express yet, and **retention should lock its candidates in id order** (or
   commit per job).
 
 ### What changed for operators
 
-The invariants changed some behaviour beyond fixing the races they close:
+The invariants changed some behaviour beyond fixing the races they close, and
+the lifecycle and report fixes that followed them (H4a2) changed more. The
+list is in two groups; the first is the invariants', the second H4a2's.
 
 - A worker's late, echoed or redelivered report never rewrites an attempt that
   is already closed, whether the server closed it (a cancel, a reap, an
@@ -885,6 +961,53 @@ The invariants changed some behaviour beyond fixing the races they close:
   never stamped. It reports `written=false`, and the sweep sends no task event
   for it.
 
+And from the lifecycle and report fixes:
+
+- Canceling a job's last open task, canceling a job, and retrying a failed
+  task while its step is still running all finish the step and job now, and
+  `RetryJob` after a cancel runs the tasks again (see Cancellation above).
+  Jobs already canceled get their open steps finalized on the first start
+  after upgrade (migration `00033`).
+- A **disabled** worker finishes the tasks it holds and is leased nothing new:
+  its lease requests are answered with an empty batch, held for about a second
+  (`leaseRefusalDelay`) so the worker's request loop does not spin. It stays
+  disabled across reconnects, restarts and a graceful deregister, which used
+  to overwrite `disabled` with `online` or `offline`. If it dies, the heartbeat
+  sweep reclaims its tasks and it stays `disabled` (an idle disabled worker is
+  not listed or rewritten). `DELETE /workers/{id}` refuses a worker that still
+  holds an assigned or running task with the same 409 as any worker that is
+  not removable.
+- A worker process that restarts within the heartbeat timeout no longer leaves
+  its previous process's tasks `running`. Each worker process sends a random
+  `instance_id` in every registration (additive and optional: no
+  `ProtocolVersion` bump; an older worker sends none and is treated as before).
+  When the stored one is non-empty and differs from a non-empty incoming one,
+  the registration transaction reclaims the worker's assigned and running
+  tasks. Migration `00034` adds the column, empty on existing rows, so the
+  first registration after upgrade reclaims nothing. The lease request carries
+  the same optional `instance_id`, and the scheduler refuses to serve a request
+  whose instance differs from the stored non-empty one until the registration
+  has landed (the registration travels through JetStream, the lease is core
+  NATS request/reply, so a restarted process can ask for work first, and a task
+  leased to it before its registration landed would be reclaimed by that
+  registration while the process runs it). The refusal is held for
+  `leaseRefusalDelay`, as for a disabled worker.
+- A task interrupted by its worker shutting down (`failed` with the message
+  `worker_shutdown`) no longer consumes a retry or counts toward the job's
+  failure limit, whichever of the report and the deregister the server sees
+  first.
+- A late or duplicate worker report can no longer move a task that was
+  reclaimed, re-leased, canceled or retried: a `running` report from a
+  superseded or closed attempt is acked and discarded (no event, no job
+  promotion), a terminal report moves the task only while it is assigned or
+  running, and the failure fork's requeue acts only for the task's latest
+  attempt.
+- Orphaned attempts and their usage claims are closed on the first start after
+  upgrade (migration `00035`).
+- A submission that loses its `depends_on` upstream mid-submit gets the same
+  422 message as one that fails the pre-check (`depends_on job "<id>" already
+  terminated unsuccessfully (<status>)` or `depends_on job "<id>" not found`).
+
 Timestamps are unchanged from v0.3.0, though the writes that stamp them moved.
 A released claim's `released_at` is always server time. A terminal report
 applied through `CompleteTaskAttempt` stamps the task row's `updated_at` with
@@ -895,78 +1018,112 @@ auto-retry requeue stamps the task's `updated_at` with it and computes
 `retry_after` from it, and an auto-park stamps the job's `updated_at` with it.
 
 **Upgrade repair.** A v0.3.0 database can hold damage these invariants now
-prevent, and fixing the code does not undo it, so it is repaired in two parts:
+prevent, and fixing the code does not undo it, so it is repaired in four
+parts:
 
 - Migration `00031_release_leaked_claims` releases every active claim whose
   attempt is missing or no longer running, or whose task is terminal (the I3
   checker's predicate), stamping `released_at` from SQLite's own clock. A
   healthy database comes out byte-for-byte unchanged, and its `Down` is a
   documented no-op, because a repair is not reversible.
-- Every scheduler start runs `reconcileStuckSteps` before the lease subscriber
-  starts. `store.ListStuckSteps` lists each non-terminal step that has at least
-  one task, no non-terminal task, **and a job that is not itself terminal**,
-  and each one goes through the normal completion path: `FinalizeStep`,
-  dependency propagation, `FinalizeJob`, cross-job dependents and WebSocket
-  events. That finalizes steps left stuck by the old 1,000-task page limit on
-  step completion, and steps stranded when a single-task cancel took a job's
-  last open task and no worker report followed (`CancelTask` itself does not
-  drive step completion). The job condition is what keeps a healthy farm free
-  of writes: canceling a job does not itself finalize its steps, so without it
-  every start would rewrite the open steps of each job canceled since the
-  start before it. On a healthy farm the pass is one query and no writes. It
-  runs synchronously, with no bound on how many steps it finalizes, so a first
-  start on a database with many stuck steps does that work before it leases
-  anything.
+- Migration `00033_finalize_canceled_job_steps` finalizes the open steps of
+  every **terminal** job whose tasks are all terminal, by the rule
+  `CancelJobExecution` now applies (a pending step, or one with no tasks,
+  becomes `canceled`; any other gets `FinalizeStep`'s outcome). Until H4a2 a
+  job cancel wrote its tasks and its job row but never its steps. A step with a
+  task still in flight is never touched, steps of live jobs are left to the
+  start-up reconcile below, and `Down` is a no-op.
+- Migration `00035_close_orphan_attempts` closes, as `failed` with server time,
+  every `running` attempt whose task is not in flight (finished, or back in
+  `ready` or `pending`) or that is not its task's latest attempt, then
+  releases every active claim whose attempt is no longer running (`00031`
+  repaired claims only and could not reach these). A healthy database is
+  unchanged and `Down` is a no-op.
+- Every scheduler start runs two reconcile passes before the lease subscriber
+  starts, both synchronous and with no bound on how much they repair, so a
+  first start on a database with a large backlog does that work before it
+  leases anything. On a healthy farm neither writes anything (the first is one
+  query; the second also reads each job it lists).
+  - `reconcileStuckSteps`: `store.ListStuckSteps` lists each non-terminal step
+    that has at least one task, no non-terminal task, **and a job that is not
+    itself terminal**, and each one goes through the normal completion path:
+    `FinalizeStep`, dependency propagation, `FinalizeJob`, cross-job dependents
+    and WebSocket events. That finalizes steps left stuck by the old 1,000-task
+    page limit on step completion, and steps stranded by older releases when a
+    single-task cancel took a job's last open task and no worker report
+    followed. The job condition is what keeps a healthy farm free of writes:
+    terminal jobs are the migration's, not this pass's.
+  - `reconcilePendingSteps`: `store.ListJobIDsWithPendingSteps` lists every
+    non-terminal, non-`blocked` job with at least one `pending` step, and each
+    goes through `ResolveDependencies` (release what is releasable) and
+    `CancelDependents` (cancel what can never run), then `FinalizeJob` if that
+    left every step terminal. A retry commits its revived tasks and the step
+    reset before dependency resolution runs, so a server stop in between used
+    to leave a `pending` step nothing would ever release. A `blocked` job is
+    excluded because its steps wait on another job, not on their own upstream
+    steps.
 
-### Known gaps (all pre-existing in v0.3.0)
+### Known gaps
 
-The invariants above do not close these; each predates them and is left for a
-later change.
+The invariants above and the lifecycle fixes after them do not close these.
+The first group predates both (v0.3.0) and is left for a later change; the
+second is residue of the lifecycle fixes themselves.
 
-- **The cancel paths do not finalize steps.** A single-task cancel of a job's
-  last open task leaves its step open and its job unfinished until the next
-  start's reconcile. A job cancel never finalizes the job's steps at all (the
-  reconcile skips terminal jobs), so a `RetryJob` after a cancel that found
-  nothing in flight leaves the revived tasks `pending` forever.
-- **Neither does the retry path.** `RetryTasks` resets only `failed` and
-  `canceled` steps and `ResolveDependencies` releases only `pending` ones, so
-  retrying a failed task whose step is still `ready` (a sibling still in
-  flight) also leaves it `pending` forever. A fix must cover this path, not
-  only the cancel paths.
-- **A disabled worker that dies is never reclaimed**: the heartbeat sweep and
-  its offline guard look only at `online` workers. Re-enabling it lets the
-  sweep take it offline and reclaim its tasks. `DeleteWorkerIfRemovable` can
-  delete such a worker while it still has tasks in flight.
-- **Late reports the latest-attempt check cannot see.** A late `running` report
-  from a superseded attempt still moves the new lease's task to `running`
-  (`handleTaskRunning` does not check the attempt is still open). A late
-  terminal report from a task's latest attempt after the task left flight
-  without a new lease is applied when the arrow is legal: a late cancel echo
-  re-cancels a task a user canceled and then retried. And the failure fork's
-  requeue is a separate write after `RecordTaskFailure`, guarded on the task's
-  status and not its attempt, so a reclaim and a new lease landing between the
-  two return the new lease to `ready` with its attempt still open.
-- **Worker-protocol ordering.** A worker that restarts and re-registers within
-  `WorkerTimeout` leaves the tasks its previous process was running `running`:
-  registration does not reclaim them, its heartbeat stays fresh, and the
-  stale-assignment reaper reclaims only `assigned` tasks. A worker's task
-  reports and its deregister travel on different streams (`SQI_TASK`,
-  `SQI_WORKER`), so the server can apply the deregister first even though the
-  worker sends it last: a forced shutdown's `failed` (`worker_shutdown`) report
-  counts as a genuine task failure only when it lands before the deregister.
-- **Migration `00031` repairs claims, not attempts.** It leaves an orphaned
-  `running` attempt on a terminal task as it is, and it does not touch a
-  v0.3.0 reaper race (F5) whose task is still in flight: the older attempt
-  stays `running`, with its claims, while the task runs under a newer attempt
-  that the old reaper had closed.
-- **A `LeaseTask` error aborts the whole lease batch**: `selectLeaseBatch`
-  returns no batch, so the leases it already committed are never delivered and
-  sit `assigned` until the stale-assignment reaper returns them to `ready`. It
-  should return the partial batch.
-- **The 422 a `depends_on` race earns** (see above) reads
-  `openjd: submit: store: job dependency can never be satisfied: upstream <id>`,
-  with a `store:` prefix and an unquoted ID, unlike the dependency check's own
-  `depends_on job "<id>" …` messages.
+Pre-existing in v0.3.0:
+
+- **An `offline` worker that keeps asking for work is still leased to.** The
+  lease handler refuses a `disabled` worker and a restarted process whose
+  registration has not landed, but it looks at no other status, so a worker
+  the server has declared offline (a missed heartbeat window) that is in fact
+  alive and keeps requesting work is served.
+- **Heartbeat timestamps compare as text.** SQLite stores timestamps as
+  RFC3339Nano text, which mis-orders within a second (`"…:05Z"` sorts after
+  `"…:05.5Z"`), so its heartbeat-staleness comparison is wrong below one second
+  while the in-memory fake compares exactly. The fake's `ListStaleWorkers` also
+  lists a worker that has never heartbeated as stale, where SQLite never does
+  (pinned by `TestListStaleWorkers`; `OfflineStaleWorker` follows SQLite on
+  both). Both are fixed-width-timestamp work, not part of the lifecycle fixes.
+- **A coarse wall clock fails a store test.** On a host whose clock resolution
+  is coarse (observed on Windows),
+  `TestJobStore_CreateJobSubmission_StampsDistinctRowTimestamps` fails because
+  two rows stamped in one tick are not distinct. It fails the same way at
+  `main`.
+- **A `LeaseTask` that commits is not always delivered.** If building the
+  assignment payload fails after `LeaseTask` committed (a deterministic error:
+  the job's template no longer parses, or its step is gone), that task stays
+  `assigned` without being in the batch, and only the stale-assignment reaper
+  returns it to `ready`. A failure of `LeaseTask` itself no longer has this
+  effect: the tasks leased earlier in the batch are still delivered.
+- **A job whose steps are all terminal but whose own status is not** (a crash
+  between a cancel cascade's last step write and `FinalizeJob`) is repaired by
+  neither start-up reconcile pass: `reconcileStuckSteps` lists non-terminal
+  steps and `reconcilePendingSteps` lists `pending` ones, and this job has
+  neither.
+
+Left by the lifecycle fixes:
+
+- **A stale redelivered registration can reclaim a live process's tasks.** A
+  registration message that is Nak'd and redelivered after the worker has
+  restarted again can flip the stored `instance_id` back to the earlier
+  process's value; the next registration, from the live process, then reads
+  that as a restart and reclaims the live process's tasks. Closing it needs
+  ordering metadata on the registration (a sequence or a timestamp), which the
+  message does not carry.
+- **A refused worker re-requests about once a second per queue.** The refusal
+  of a disabled worker's, or of an unregistered process's, lease request is
+  held for `leaseRefusalDelay` (1 s) precisely so the worker's lease loop does
+  not spin, but the loop does ask again as soon as the empty reply arrives, so
+  a worker whose registration never lands (the message was discarded, or two
+  live processes share a worker ID) asks about once a second per queue for as
+  long as that lasts. The request for an unknown worker ID is answered at once
+  and has always had no such backoff.
+- **Removing a busy worker revokes its credential first.** `DELETE
+  /workers/{id}` revokes the worker's broker credential before the guarded
+  delete, deliberately (a decommissioned machine loses broker access along with
+  its record), and the in-flight check lives in the delete. A dead disabled
+  worker that still holds a task therefore loses its credential and receives
+  the 409; the heartbeat sweep reclaims the task, after which the delete
+  succeeds.
 
 ---
 
@@ -978,9 +1135,9 @@ later change.
 | `task.status.<worker_id>.<job_id>` | JetStream (`SQI_TASK`, MaxAge 24 h) | worker → server | Terminal and intermediate status updates |
 | `task.logs.<worker_id>.<task_id>` | JetStream (`SQI_LOGS`, MaxAge 96 h) | worker → server | Log chunk delivery |
 | `task.cancel.<task_id>` | JetStream (`SQI_CANCEL`, MaxAge 5 min) | server → worker | Cancellation signal; the worker holding the task interrupts the process |
-| `worker.register.<worker_id>` | JetStream (`SQI_WORKER`, MaxAge 2 min) | worker → server | Registration at startup and on reconnect |
+| `worker.register.<worker_id>` | JetStream (`SQI_WORKER`, MaxAge 2 min) | worker → server | Registration at startup and on reconnect; carries the worker process's `instance_id` (a changed one reclaims the previous process's tasks) |
 | `worker.heartbeat.<worker_id>` | JetStream (`SQI_WORKER`, MaxAge 2 min) | worker → server | Liveness heartbeat |
-| `worker.deregister.<worker_id>` | JetStream (`SQI_WORKER`, MaxAge 2 min) | worker → server | Graceful departure; marks the worker offline without waiting for heartbeat timeout |
+| `worker.deregister.<worker_id>` | JetStream (`SQI_WORKER`, MaxAge 2 min) | worker → server | Graceful departure; marks the worker offline without waiting for heartbeat timeout (a disabled worker stays disabled) and reclaims its tasks |
 | `worker.diag.<workerID>` | Core NATS (best-effort) | worker → server | Diagnostic log records |
 
 Every worker → server subject carries the publishing worker's ID directly after
@@ -1005,7 +1162,11 @@ listener at all — they run in-process over a pipe.
 JetStream streams use file-backed storage with configurable size limits.
 `work.lease.<worker_id>.<queue>` uses core NATS request/reply — no stream is created for
 it. The server holds an unfulfillable request in memory for up to 30 s before
-replying with an empty batch; the worker re-requests immediately.
+replying with an empty batch; the worker re-requests immediately. A request it
+refuses outright (from a disabled worker, or from a worker process whose
+registration has not landed yet) is likewise answered with an empty batch, but
+only after holding it for about a second, so the worker's request loop cannot
+spin.
 
 ---
 
