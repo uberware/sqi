@@ -467,10 +467,13 @@ func (s *Submitter) Submit(
 		Tasks:     tasks,
 	})
 	if err != nil {
-		if errors.Is(err, store.ErrDependencyUnsatisfiable) {
+		if dep, ok := errors.AsType[*store.DependencyUnsatisfiableError](err); ok {
 			// An upstream failed, was canceled or was deleted after
-			// resolveDependencies read it: a client-visible validation error,
-			// the same class resolveDependencies itself reports.
+			// resolveDependencies read it: the same client-visible validation
+			// error, in the same words.
+			return nil, unsatisfiedDependency(dep)
+		}
+		if errors.Is(err, store.ErrDependencyUnsatisfiable) {
 			return nil, &SubmitValidationError{Cause: fmt.Errorf("openjd: submit: %w", err)}
 		}
 		return nil, fmt.Errorf("openjd: submit: create job: %w", err)
@@ -725,7 +728,7 @@ func (s *Submitter) resolveDependencies(ctx context.Context, dependsOn []string,
 
 		up, gerr := s.st.GetJob(ctx, id)
 		if errors.Is(gerr, store.ErrNotFound) {
-			return false, &SubmitValidationError{Cause: fmt.Errorf("openjd: submit: depends_on job %q not found", id)}
+			return false, &SubmitValidationError{Cause: fmt.Errorf(dependsOnNotFoundFmt, id)}
 		}
 		if gerr != nil {
 			return false, fmt.Errorf("openjd: submit: look up depends_on job %q: %w", id, gerr)
@@ -735,7 +738,7 @@ func (s *Submitter) resolveDependencies(ctx context.Context, dependsOn []string,
 		}
 		switch up.Status {
 		case store.JobStatusFailed, store.JobStatusCanceled:
-			return false, &SubmitValidationError{Cause: fmt.Errorf("openjd: submit: depends_on job %q already terminated unsuccessfully (%s)", id, up.Status)}
+			return false, &SubmitValidationError{Cause: fmt.Errorf(dependsOnTerminatedFmt, id, up.Status)}
 		case store.JobStatusCompleted:
 			// already satisfied — does not block
 		default:
@@ -743,6 +746,40 @@ func (s *Submitter) resolveDependencies(ctx context.Context, dependsOn []string,
 		}
 	}
 	return blocked, nil
+}
+
+// The two causes a dependency can be unsatisfiable for, worded once so the
+// pre-read in [Submitter.resolveDependencies] and the race path in
+// [unsatisfiedDependency] cannot drift apart.
+const (
+	dependsOnNotFoundFmt   = "openjd: submit: depends_on job %q not found"
+	dependsOnTerminatedFmt = "openjd: submit: depends_on job %q already terminated unsuccessfully (%s)"
+)
+
+// unsatisfiedDependencyError is the Cause of the *SubmitValidationError the
+// race path returns. Its text is exactly the pre-read's wording for the same
+// cause, and it unwraps to the store's typed error, so the 422 body reads like
+// the pre-check's while errors.Is(err, [store.ErrDependencyUnsatisfiable]) and
+// errors.As to [*store.DependencyUnsatisfiableError] still hold on Submit's
+// result.
+type unsatisfiedDependencyError struct {
+	msg string
+	dep *store.DependencyUnsatisfiableError
+}
+
+func (c *unsatisfiedDependencyError) Error() string { return c.msg }
+func (c *unsatisfiedDependencyError) Unwrap() error { return c.dep }
+
+// unsatisfiedDependency words a dependency the store found unsatisfiable inside
+// the submission's write exactly as resolveDependencies words the same cause
+// when its pre-read finds it, so a client cannot tell the race from the
+// pre-check.
+func unsatisfiedDependency(e *store.DependencyUnsatisfiableError) error {
+	msg := fmt.Sprintf(dependsOnTerminatedFmt, e.UpstreamID, e.Status)
+	if e.Status == "" {
+		msg = fmt.Sprintf(dependsOnNotFoundFmt, e.UpstreamID)
+	}
+	return &SubmitValidationError{Cause: &unsatisfiedDependencyError{msg: msg, dep: e}}
 }
 
 // ── Storage location validation ────────────────────────────────────

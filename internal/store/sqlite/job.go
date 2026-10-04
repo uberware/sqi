@@ -336,9 +336,10 @@ func (s *Store) CreateJobSubmission(ctx context.Context, sub store.JobSubmission
 }
 
 // checkUpstreamsTx re-checks, inside the submission's transaction, that every
-// upstream still exists and has not failed or been canceled (F13). It returns
-// [store.ErrDependencyUnsatisfiable] naming the first upstream (in ID order)
-// that does not qualify. The other direction, where an upstream completes
+// upstream still exists and has not failed or been canceled (F13). It returns a
+// [*store.DependencyUnsatisfiableError] (which matches
+// [store.ErrDependencyUnsatisfiable]) naming the first upstream (in ID order)
+// that does not qualify and why. The other direction, where an upstream completes
 // after the submitter's read, is left to sweepBlockedJobs, which releases the
 // job within one sweep tick. H4c locks each upstream row FOR SHARE here, in ID
 // order so two submissions naming the same upstreams cannot deadlock.
@@ -356,12 +357,14 @@ func checkUpstreamsTx(ctx context.Context, tx *sql.Tx, upstreams []string) error
 	for _, up := range ids {
 		var status string
 		err := tx.QueryRowContext(ctx, `SELECT status FROM jobs WHERE id = ?`, up).Scan(&status)
-		if errors.Is(err, sql.ErrNoRows) ||
-			status == string(store.JobStatusFailed) || status == string(store.JobStatusCanceled) {
-			return fmt.Errorf("%w: upstream %s", store.ErrDependencyUnsatisfiable, up)
+		if errors.Is(err, sql.ErrNoRows) {
+			return &store.DependencyUnsatisfiableError{UpstreamID: up}
 		}
 		if err != nil {
 			return fmt.Errorf("sqlite: check upstream %s: %w", up, mapErr(err))
+		}
+		if status == string(store.JobStatusFailed) || status == string(store.JobStatusCanceled) {
+			return &store.DependencyUnsatisfiableError{UpstreamID: up, Status: store.JobStatus(status)}
 		}
 	}
 	return nil

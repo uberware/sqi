@@ -32,6 +32,7 @@ func TestCreateJobSubmission_UnsatisfiableUpstream(t *testing.T) {
 				if !errors.Is(err, store.ErrDependencyUnsatisfiable) {
 					t.Fatalf("CreateJobSubmission = %v, want ErrDependencyUnsatisfiable", err)
 				}
+				assertDependencyError(t, err, upstream.Job.ID, up)
 				assertSubmissionLeftNothing(t, st, jobID, upstream.Job.ID)
 			})
 		}
@@ -50,8 +51,25 @@ func TestCreateJobSubmission_UnsatisfiableUpstream(t *testing.T) {
 			if !errors.Is(err, store.ErrDependencyUnsatisfiable) {
 				t.Fatalf("CreateJobSubmission = %v, want ErrDependencyUnsatisfiable", err)
 			}
+			assertDependencyError(t, err, "gone", "")
 			assertSubmissionLeftNothing(t, st, jobID, "gone")
 		})
+	}
+}
+
+// assertDependencyError checks that err carries the typed
+// [store.DependencyUnsatisfiableError] naming the upstream and why: its
+// status, or empty when the upstream no longer exists. The submitter words its
+// 422 from these two fields, so both backends must fill them in.
+func assertDependencyError(t *testing.T, err error, upstreamID string, status store.JobStatus) {
+	t.Helper()
+	dep, ok := errors.AsType[*store.DependencyUnsatisfiableError](err)
+	if !ok {
+		t.Fatalf("CreateJobSubmission = %v, want a *store.DependencyUnsatisfiableError", err)
+	}
+	if dep.UpstreamID != upstreamID || dep.Status != status {
+		t.Errorf("DependencyUnsatisfiableError = {UpstreamID: %q, Status: %q}, want {%q, %q}",
+			dep.UpstreamID, dep.Status, upstreamID, status)
 	}
 }
 

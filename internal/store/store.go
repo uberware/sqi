@@ -34,6 +34,7 @@ package store
 
 import (
 	"errors"
+	"fmt"
 	"io"
 )
 
@@ -87,3 +88,19 @@ var ErrLastAdmin = errors.New("store: would remove the last admin")
 // when, inside its own transaction, a depends-on upstream job is missing or has
 // already failed or been canceled.
 var ErrDependencyUnsatisfiable = errors.New("store: job dependency can never be satisfied")
+
+// DependencyUnsatisfiableError names the upstream that made a submission's
+// dependency unsatisfiable inside [JobStore.CreateJobSubmission]. Status is
+// the upstream's status (failed or canceled), or empty when it was deleted.
+// It matches [ErrDependencyUnsatisfiable] under errors.Is.
+type DependencyUnsatisfiableError struct {
+	UpstreamID string
+	Status     JobStatus
+}
+
+func (e *DependencyUnsatisfiableError) Error() string {
+	return fmt.Sprintf("%s: upstream %s", ErrDependencyUnsatisfiable, e.UpstreamID)
+}
+
+// Unwrap makes errors.Is(err, ErrDependencyUnsatisfiable) hold.
+func (*DependencyUnsatisfiableError) Unwrap() error { return ErrDependencyUnsatisfiable }

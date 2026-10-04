@@ -5,7 +5,6 @@ package fake
 import (
 	"cmp"
 	"context"
-	"fmt"
 	"slices"
 	"strings"
 	"time"
@@ -142,8 +141,10 @@ func (s *Store) validateSubmission(sub store.JobSubmission) error {
 
 // checkUpstreamsLocked is the in-memory counterpart of SQLite's
 // checkUpstreamsTx (F13): every DependsOn upstream must exist and must not have
-// failed or been canceled, else the submission is refused with
-// [store.ErrDependencyUnsatisfiable] naming the first offender in ID order.
+// failed or been canceled, else the submission is refused with a
+// [*store.DependencyUnsatisfiableError] (which matches
+// [store.ErrDependencyUnsatisfiable]) naming the first offender in ID order and
+// why (an empty Status means the upstream does not exist).
 // SQLite has already inserted the new job's row when it checks, so an edge to
 // the new job itself is judged by the new job's own status. Callers must hold
 // s.mu.
@@ -157,8 +158,11 @@ func (s *Store) checkUpstreamsLocked(sub store.JobSubmission) error {
 			upstream, exists = s.jobs[up]
 			status = upstream.Status
 		}
-		if !exists || status == store.JobStatusFailed || status == store.JobStatusCanceled {
-			return fmt.Errorf("%w: upstream %s", store.ErrDependencyUnsatisfiable, up)
+		if !exists {
+			return &store.DependencyUnsatisfiableError{UpstreamID: up}
+		}
+		if status == store.JobStatusFailed || status == store.JobStatusCanceled {
+			return &store.DependencyUnsatisfiableError{UpstreamID: up, Status: status}
 		}
 	}
 	return nil
