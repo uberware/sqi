@@ -633,3 +633,27 @@ func TestH4a2_UnschedulableNoOpEmitsNoEvent(t *testing.T) {
 		})
 	}
 }
+
+// TestH4a2_UnschedulableWriteEmitsOneEvent is the positive side of
+// [TestH4a2_UnschedulableNoOpEmitsNoEvent]: when the guarded write lands on a
+// task that is still ready, exactly one task event carries the new reason.
+// Without it, inverting the written check would pass the suite.
+func TestH4a2_UnschedulableWriteEmitsOneEvent(t *testing.T) {
+	for name, st := range raceBackends(t) {
+		t.Run(name, func(t *testing.T) {
+			notifier := &recordingNotifier{}
+			s := newStatusTestSchedulerWithNotifier(st, notifier)
+			_, _, task, _ := seedStatusFixture(t, st, store.TaskStatusReady)
+			s.reconcileTaskSchedulability(t.Context(), task, nil)
+			if len(notifier.tasks) != 1 {
+				t.Fatalf("task events = %+v, want exactly one for a written reason", notifier.tasks)
+			}
+			if e := notifier.tasks[0]; e.TaskID != task.ID || e.UnschedulableReason != "no online workers" {
+				t.Fatalf("task event = %+v, want task %s with reason %q", e, task.ID, "no online workers")
+			}
+			if got := mustTaskOf(t, st, task.ID).UnschedulableReason; got != "no online workers" {
+				t.Fatalf("reason = %q, want %q", got, "no online workers")
+			}
+		})
+	}
+}
