@@ -82,6 +82,15 @@ WHERE  status NOT IN ('completed', 'failed', 'canceled')
   AND  NOT EXISTS (SELECT 1 FROM tasks t WHERE t.step_id = steps.id
                    AND t.status NOT IN ('succeeded', 'failed', 'canceled'))
 ORDER BY job_id, step_order`
+
+	// sqlListJobIDsWithPendingSteps selects the jobs whose pending steps the
+	// start-up reconcile re-releases (H4a2 §3.5): live jobs, and not blocked,
+	// since a blocked job's steps wait on another job rather than on a step.
+	sqlListJobIDsWithPendingSteps = `
+SELECT DISTINCT j.id FROM jobs j JOIN steps s ON s.job_id = j.id
+WHERE  j.status NOT IN ('completed', 'failed', 'canceled', 'blocked')
+  AND  s.status = 'pending'
+ORDER BY j.id`
 )
 
 // FinalizeStep implements [store.StepStore].
@@ -177,6 +186,24 @@ func (s *Store) ListStuckSteps(ctx context.Context) ([]store.Step, error) {
 		out = append(out, st)
 	}
 	return out, rows.Err()
+}
+
+// ListJobIDsWithPendingSteps implements [store.StepStore].
+func (s *Store) ListJobIDsWithPendingSteps(ctx context.Context) ([]string, error) {
+	rows, err := s.rdb.QueryContext(ctx, sqlListJobIDsWithPendingSteps)
+	if err != nil {
+		return nil, fmt.Errorf("sqlite: list jobs with pending steps: %w", mapErr(err))
+	}
+	defer rows.Close()
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("sqlite: scan job with pending steps: %w", err)
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
 }
 
 func isTerminalStep(s store.StepStatus) bool {

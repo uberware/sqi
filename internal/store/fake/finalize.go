@@ -134,6 +134,28 @@ func (s *Store) ListStuckSteps(_ context.Context) ([]store.Step, error) {
 	return out, nil
 }
 
+// ListJobIDsWithPendingSteps implements [store.StepStore]. Like the SQLite
+// query it lists only jobs that exist, are not terminal and are not blocked.
+func (s *Store) ListJobIDsWithPendingSteps(_ context.Context) ([]string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	seen := map[string]bool{}
+	var ids []string
+	for _, st := range s.steps {
+		if st.Status != store.StepStatusPending || seen[st.JobID] {
+			continue
+		}
+		j, ok := s.jobs[st.JobID]
+		if !ok || j.Status.IsTerminal() || j.Status == store.JobStatusBlocked {
+			continue
+		}
+		seen[st.JobID] = true
+		ids = append(ids, st.JobID)
+	}
+	slices.Sort(ids)
+	return ids, nil
+}
+
 // ReleaseStep implements [store.StepStore].
 func (s *Store) ReleaseStep(_ context.Context, id string, now time.Time) (bool, []store.Task, error) {
 	return s.movePendingStep(id, store.StepStatusReady, store.TaskStatusReady, "", now)

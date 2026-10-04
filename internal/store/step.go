@@ -180,4 +180,12 @@ type StepStore interface {
 	// finalized, and jobs blocked on it follow its job status. A paused job is
 	// live and is listed. A step whose job row is missing is not listed.
 	ListStuckSteps(ctx context.Context) ([]Step, error)
+
+	// ListJobIDsWithPendingSteps returns, ascending, the IDs of jobs that are
+	// not terminal and not blocked and that have at least one pending step.
+	// Used once at scheduler start to re-run dependency resolution, so a step a
+	// retry reset to pending but never released (the server stopped between
+	// RetryTasks and ResolveDependencies) is released or cascade-canceled
+	// (H4a2 §3.5). A blocked job is excluded: its steps wait on another job.
+	ListJobIDsWithPendingSteps(ctx context.Context) ([]string, error)
 }

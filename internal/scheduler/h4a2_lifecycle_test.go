@@ -3,6 +3,8 @@
 package scheduler
 
 import (
+	"context"
+	"fmt"
 	"log/slog"
 	"testing"
 	"time"
@@ -104,6 +106,123 @@ func TestH4a2_RetryFailedTaskWhileSiblingRunsIsLeasable(t *testing.T) {
 			}
 			if got := mustTaskOf(t, st, running.ID).Status; got != store.TaskStatusRunning {
 				t.Fatalf("sibling = %q, want still running", got)
+			}
+		})
+	}
+}
+
+// fixtureStepStatus is the fixture-only blind step write both concrete stores
+// keep after it left store.Store (H4a).
+type fixtureStepStatus interface {
+	UpdateStepStatus(ctx context.Context, id string, status store.StepStatus) error
+}
+
+func forceStepStatus(st store.Store, stepID string, status store.StepStatus) error {
+	f, ok := st.(fixtureStepStatus)
+	if !ok {
+		return fmt.Errorf("%T has no fixture UpdateStepStatus", st)
+	}
+	return f.UpdateStepStatus(context.Background(), stepID, status)
+}
+
+// TestH4a2_StartupReleasesAStrandedPendingStep pins spec §3.5 / D5: a step a
+// retry reset to pending and never released (the server stopped first) is
+// released, with its task, at the next start. A blocked job that also holds a
+// pending, dependency-free step is left alone: ResolveDependencies does not
+// look at job status, so only the store's exclusion of blocked jobs keeps that
+// step from being released early.
+func TestH4a2_StartupReleasesAStrandedPendingStep(t *testing.T) {
+	for name, st := range raceBackends(t) {
+		t.Run(name, func(t *testing.T) {
+			_, step, task, _ := seedStatusFixture(t, st, store.TaskStatusPending)
+			if err := forceStepStatus(st, step.ID, store.StepStatusPending); err != nil {
+				t.Fatalf("force step pending: %v", err)
+			}
+
+			now := time.Now()
+			blocked, err := st.CreateJob(t.Context(), store.Job{
+				ID: uuid.NewString(), FarmID: "farm-1", QueueID: "queue-1", Name: "blocked",
+				Status: store.JobStatusBlocked, TemplateFormat: store.TemplateFormatJSON,
+				CreatedAt: now, UpdatedAt: now,
+			})
+			if err != nil {
+				t.Fatalf("CreateJob (blocked): %v", err)
+			}
+			blockedStep, err := st.CreateStep(t.Context(), store.Step{
+				ID: uuid.NewString(), JobID: blocked.ID, Name: "Step1",
+				Status: store.StepStatusPending, CreatedAt: now, UpdatedAt: now,
+			})
+			if err != nil {
+				t.Fatalf("CreateStep (blocked): %v", err)
+			}
+			blockedTask, err := st.CreateTask(t.Context(), store.Task{
+				ID: uuid.NewString(), JobID: blocked.ID, StepID: blockedStep.ID, Name: "task-0",
+				Status: store.TaskStatusPending, CreatedAt: now, UpdatedAt: now,
+			})
+			if err != nil {
+				t.Fatalf("CreateTask (blocked): %v", err)
+			}
+
+			s := newTestScheduler(st, &stubBus{})
+			s.reconcilePendingSteps(t.Context())
+
+			if got := mustStep(t, st, step.ID).Status; got != store.StepStatusReady {
+				t.Fatalf("stranded step = %q, want ready", got)
+			}
+			if got := mustTaskOf(t, st, task.ID).Status; got != store.TaskStatusReady {
+				t.Fatalf("stranded task = %q, want ready", got)
+			}
+			if got := mustJob(t, st, blocked.ID).Status; got != store.JobStatusBlocked {
+				t.Fatalf("blocked job = %q, want blocked (untouched)", got)
+			}
+			if got := mustStep(t, st, blockedStep.ID).Status; got != store.StepStatusPending {
+				t.Fatalf("blocked job's step = %q, want pending (untouched)", got)
+			}
+			if got := mustTaskOf(t, st, blockedTask.ID).Status; got != store.TaskStatusPending {
+				t.Fatalf("blocked job's task = %q, want pending (untouched)", got)
+			}
+		})
+	}
+}
+
+// TestH4a2_StartupCancelsAndFinalizesBehindAFailedUpstream pins the other half
+// of the start-up pass: a pending step behind an upstream that already failed
+// can never run, so it is cascade-canceled with its task, and with no step left
+// open the job is finalized (failed) rather than left running.
+func TestH4a2_StartupCancelsAndFinalizesBehindAFailedUpstream(t *testing.T) {
+	for name, st := range raceBackends(t) {
+		t.Run(name, func(t *testing.T) {
+			job, upstream, _, _ := seedStatusFixture(t, st, store.TaskStatusFailed)
+			if err := forceStepStatus(st, upstream.ID, store.StepStatusFailed); err != nil {
+				t.Fatalf("force upstream failed: %v", err)
+			}
+			now := time.Now()
+			down, err := st.CreateStep(t.Context(), store.Step{
+				ID: uuid.NewString(), JobID: job.ID, Name: "Step2", DependsOn: []string{upstream.Name},
+				Status: store.StepStatusPending, CreatedAt: now, UpdatedAt: now,
+			})
+			if err != nil {
+				t.Fatalf("CreateStep (downstream): %v", err)
+			}
+			downTask, err := st.CreateTask(t.Context(), store.Task{
+				ID: uuid.NewString(), JobID: job.ID, StepID: down.ID, Name: "task-0",
+				Status: store.TaskStatusPending, CreatedAt: now, UpdatedAt: now,
+			})
+			if err != nil {
+				t.Fatalf("CreateTask (downstream): %v", err)
+			}
+
+			s := newTestScheduler(st, &stubBus{})
+			s.reconcilePendingSteps(t.Context())
+
+			if got := mustStep(t, st, down.ID).Status; got != store.StepStatusCanceled {
+				t.Fatalf("downstream step = %q, want canceled", got)
+			}
+			if got := mustTaskOf(t, st, downTask.ID).Status; got != store.TaskStatusCanceled {
+				t.Fatalf("downstream task = %q, want canceled", got)
+			}
+			if got := mustJob(t, st, job.ID).Status; got != store.JobStatusFailed {
+				t.Fatalf("job = %q, want failed (no step left open)", got)
 			}
 		})
 	}

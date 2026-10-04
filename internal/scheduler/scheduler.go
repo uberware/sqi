@@ -425,12 +425,14 @@ func (s *Scheduler) Run(ctx context.Context) error {
 
 	// ── Stuck-step repair ─────────────────────────────────────────
 	// Finalize, once, the steps earlier releases left stuck (see
-	// reconcileStuckSteps). It runs before the lease subscriber starts, so no
-	// work is leased while the repair is still releasing or canceling steps, and
-	// before the sweeps begin. The task-status consumer is already running, so a
-	// report arriving concurrently is safe: every write on the completion path
-	// is guarded and idempotent.
+	// reconcileStuckSteps). Then release pending steps a retry reset but never
+	// released (reconcilePendingSteps). Both run before the lease subscriber
+	// starts, so no work is leased while the repair is still releasing or
+	// canceling steps, and before the sweeps begin. The task-status consumer is
+	// already running, so a report arriving concurrently is safe: every write on
+	// the completion path is guarded and idempotent.
 	s.reconcileStuckSteps(ctx)
+	s.reconcilePendingSteps(ctx)
 
 	// ── Lease subscriber ──────────────────────────────────────────
 	// A core-NATS request-reply subscriber that handles worker lease requests.
@@ -537,6 +539,84 @@ func (s *Scheduler) reconcileStuckSteps(ctx context.Context) {
 		s.logger.InfoContext(ctx, "scheduler: reconciled a step of a live job whose tasks were all terminal but never finalized",
 			slog.String("step_id", step.ID), slog.String("job_id", step.JobID))
 	}
+}
+
+// reconcilePendingSteps re-runs dependency resolution, once at start, for every
+// live, non-blocked job that has a pending step (H4a2 §3.5). A retry commits
+// its revived tasks and the step reset before ResolveDependencies runs, so a
+// server that stops in between leaves a pending step nothing would release.
+// Release and cascade are idempotent and write only what is releasable or can
+// never be satisfied, and the job is finalized only when no step of it is left
+// open, so a healthy job (a step waiting on a running upstream) is read and
+// left alone: a start on a healthy farm makes no completion-path write. A job
+// that fails is logged and skipped; the next start retries it.
+func (s *Scheduler) reconcilePendingSteps(ctx context.Context) {
+	ids, err := s.store.ListJobIDsWithPendingSteps(ctx)
+	if err != nil {
+		if !errors.Is(err, context.Canceled) {
+			s.logger.WarnContext(ctx, "scheduler: list jobs with pending steps failed", slog.Any("error", err))
+		}
+		return
+	}
+	for _, jobID := range ids {
+		if ctx.Err() != nil {
+			return // shutting down: whatever is left is picked up by the next start
+		}
+		s.reconcilePendingJob(ctx, jobID)
+	}
+}
+
+// reconcilePendingJob releases what is releasable and cascade-cancels what can
+// never run in one job, then finalizes the job if that left every step
+// terminal. Releasing runs [Scheduler.propagateStepDependencies] as a completed
+// upstream would (ResolveDependencies); the cascade runs it as a failed one
+// would (CancelDependents). Calling both is exactly "release what is
+// releasable, cancel what never can be".
+func (s *Scheduler) reconcilePendingJob(ctx context.Context, jobID string) {
+	if err := s.propagateStepDependencies(ctx, jobID, store.StepStatusCompleted); err != nil {
+		s.logger.WarnContext(ctx, "scheduler: reconcile pending steps: release failed",
+			slog.String("job_id", jobID), slog.Any("error", err))
+		return
+	}
+	if err := s.propagateStepDependencies(ctx, jobID, store.StepStatusFailed); err != nil {
+		s.logger.WarnContext(ctx, "scheduler: reconcile pending steps: cascade failed",
+			slog.String("job_id", jobID), slog.Any("error", err))
+		return
+	}
+	// Only a cascade can leave a job with every step terminal here, and
+	// FinalizeJob is a write transaction even when it changes nothing, so it is
+	// asked only once a read shows nothing is left open.
+	open, err := s.jobHasOpenStep(ctx, jobID)
+	if err != nil {
+		s.logger.WarnContext(ctx, "scheduler: reconcile pending steps: list steps failed",
+			slog.String("job_id", jobID), slog.Any("error", err))
+		return
+	}
+	if open {
+		return
+	}
+	if err := s.checkJobCompletion(ctx, jobID); err != nil {
+		s.logger.WarnContext(ctx, "scheduler: reconcile pending steps: job completion failed",
+			slog.String("job_id", jobID), slog.Any("error", err))
+	}
+}
+
+// jobHasOpenStep reports whether any step of the job is not yet terminal. It is
+// a gate, not a decision: [store.JobStore.FinalizeJob] still computes the
+// outcome inside its own write (invariant I4).
+func (s *Scheduler) jobHasOpenStep(ctx context.Context, jobID string) (bool, error) {
+	steps, err := s.store.ListSteps(ctx, jobID)
+	if err != nil {
+		return false, err
+	}
+	for _, st := range steps {
+		switch st.Status {
+		case store.StepStatusCompleted, store.StepStatusFailed, store.StepStatusCanceled:
+		default:
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 // buildUsageClaims converts the step's usage pool requirements into
