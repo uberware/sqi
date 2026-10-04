@@ -147,9 +147,9 @@ func seedClaim(t *testing.T, st store.Store, poolID, attemptID string) store.Usa
 	return c
 }
 
-// seedWorker registers the fixture worker in the given status. Neither
-// backend's RegisterWorker rewrites Status (both store the value given), so
-// the intended status is passed straight through.
+// seedWorker registers the fixture worker in the given status. RegisterWorker
+// stores the status given, except that an existing disabled worker stays
+// disabled; a fresh fixture worker has none.
 func seedWorker(t *testing.T, st store.Store, farmID string, status store.WorkerStatus, lastHeartbeat time.Time) store.Worker {
 	t.Helper()
 	w, _, err := st.RegisterWorker(t.Context(), store.Worker{

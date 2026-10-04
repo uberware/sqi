@@ -101,27 +101,39 @@ func TestOfflineStaleWorker_FreshHeartbeatWins(t *testing.T) {
 	}
 }
 
-// TestOfflineStaleWorker_OnlyAnOnlineWorker pins the other half of the guard:
-// a worker that is not online is left exactly as it is, so a sweep that races an
-// operator's disable never turns "disabled" into "offline".
+// TestOfflineStaleWorker_OnlyAnOnlineWorker pins the other half of the guard
+// for a stale worker that is not online, holding a running task. An offline
+// worker is left exactly as it is, task and all. A disabled one is reclaimed
+// (H4a2 §5.2: its task returns to ready) but its status is never written, so a
+// sweep that races an operator's disable never turns "disabled" into "offline".
 func TestOfflineStaleWorker_OnlyAnOnlineWorker(t *testing.T) {
-	for _, status := range []store.WorkerStatus{store.WorkerStatusDisabled, store.WorkerStatusOffline} {
-		t.Run(string(status), func(t *testing.T) {
+	tests := []struct {
+		status    store.WorkerStatus
+		wantOK    bool
+		wantTasks int
+		wantTask  store.TaskStatus
+	}{
+		{status: store.WorkerStatusDisabled, wantOK: true, wantTasks: 1, wantTask: store.TaskStatusReady},
+		{status: store.WorkerStatusOffline, wantOK: false, wantTasks: 0, wantTask: store.TaskStatusRunning},
+	}
+	for _, tc := range tests {
+		t.Run(string(tc.status), func(t *testing.T) {
 			for name, st := range newStores(t) {
 				t.Run(name, func(t *testing.T) {
 					g := seedGraph(t, st, graphOpts{}, stepSpec{name: "a", status: store.StepStatusReady, tasks: []store.TaskStatus{store.TaskStatusRunning}})
 					now := time.Now().UTC()
-					seedWorker(t, st, g.Farm.ID, status, now.Add(-time.Hour))
+					seedWorker(t, st, g.Farm.ID, tc.status, now.Add(-time.Hour))
 
 					tasks, ok, err := st.OfflineStaleWorker(t.Context(), fixtureWorkerID, now.Add(-time.Minute), now)
-					if err != nil || ok || len(tasks) != 0 {
-						t.Fatalf("OfflineStaleWorker on a %s worker = (%d, %v, %v), want (0, false, nil)", status, len(tasks), ok, err)
+					if err != nil || ok != tc.wantOK || len(tasks) != tc.wantTasks {
+						t.Fatalf("OfflineStaleWorker on a %s worker = (%d, %v, %v), want (%d, %v, nil)",
+							tc.status, len(tasks), ok, err, tc.wantTasks, tc.wantOK)
 					}
-					if w := mustWorker(t, st, fixtureWorkerID); w.Status != status {
-						t.Fatalf("worker = %q, want %q left alone", w.Status, status)
+					if w := mustWorker(t, st, fixtureWorkerID); w.Status != tc.status {
+						t.Fatalf("worker = %q, want %q kept", w.Status, tc.status)
 					}
-					if mustTask(t, st, g.Tasks["a"][0].ID).Status != store.TaskStatusRunning {
-						t.Fatal("task was reclaimed from a worker that was not online")
+					if got := mustTask(t, st, g.Tasks["a"][0].ID).Status; got != tc.wantTask {
+						t.Fatalf("task = %q, want %q", got, tc.wantTask)
 					}
 				})
 			}

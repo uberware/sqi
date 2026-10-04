@@ -675,6 +675,34 @@ func TestRemoveWorker(t *testing.T) {
 		}
 	})
 
+	t.Run("offline worker with a running task returns 409 until it is idle", func(t *testing.T) {
+		// H4a2 §5.4: the guarded delete refuses a worker with work in flight,
+		// which the status-only pre-check cannot see.
+		st := fake.New()
+		r := newWorkerRouter(st)
+		w := seedWorker(t, st, store.WorkerStatusOffline)
+		task := seedWorkerTask(t, st, w.ID, store.TaskStatusRunning, "busy")
+
+		req := newReq(t, http.MethodDelete, "/api/v1/workers/"+w.ID, nil)
+		rr := httptest.NewRecorder()
+		r.ServeHTTP(rr, req)
+		if rr.Code != http.StatusConflict {
+			t.Fatalf("expected 409, got %d — body: %s", rr.Code, rr.Body)
+		}
+		if _, err := st.GetWorker(t.Context(), w.ID); err != nil {
+			t.Fatalf("worker should survive a refused remove: GetWorker: %v", err)
+		}
+
+		if err := st.UpdateTaskStatus(t.Context(), task.ID, store.TaskStatusSucceeded); err != nil {
+			t.Fatalf("UpdateTaskStatus: %v", err)
+		}
+		rr = httptest.NewRecorder()
+		r.ServeHTTP(rr, newReq(t, http.MethodDelete, "/api/v1/workers/"+w.ID, nil))
+		if rr.Code != http.StatusNoContent {
+			t.Fatalf("once idle: expected 204, got %d — body: %s", rr.Code, rr.Body)
+		}
+	})
+
 	t.Run("unknown worker returns 404", func(t *testing.T) {
 		st := fake.New()
 		r := newWorkerRouter(st)

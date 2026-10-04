@@ -17,9 +17,16 @@ const workerCols = `
 	os, os_version, arch, version, cpu_count, ram_mb, gpu_info, tags, expr_limits, status,
 	last_heartbeat_at, registered_at, updated_at, instance_id`
 
+// sqlWorkerHasWorkInFlight is true when the worker row's id holds an assigned
+// or running task. It is a fragment for a WHERE clause over workers.
+const sqlWorkerHasWorkInFlight = `EXISTS (SELECT 1 FROM tasks t
+  WHERE t.assigned_worker_id = workers.id AND t.status IN ('assigned', 'running'))`
+
 const (
 	// ON CONFLICT preserves registered_at so re-registration does not reset it,
-	// and an empty instance_id (a worker that sends none) keeps the stored one.
+	// an empty instance_id (a worker that sends none) keeps the stored one, and
+	// a disabled worker stays disabled (the admin's decision outlives any
+	// reconnect, H4a2 §5.3).
 	sqlUpsertWorker = `
 INSERT INTO workers (
 	id, farm_id, queue_id, name, hostname, ip_address, compute_location,
@@ -42,7 +49,7 @@ ON CONFLICT (id) DO UPDATE SET
 	gpu_info          = excluded.gpu_info,
 	tags              = excluded.tags,
 	expr_limits       = excluded.expr_limits,
-	status            = excluded.status,
+	status            = CASE WHEN workers.status = 'disabled' THEN 'disabled' ELSE excluded.status END,
 	last_heartbeat_at = excluded.last_heartbeat_at,
 	updated_at        = excluded.updated_at,
 	instance_id       = CASE WHEN excluded.instance_id = '' THEN workers.instance_id ELSE excluded.instance_id END
@@ -64,8 +71,14 @@ UPDATE workers SET status = ?, updated_at = ? WHERE id = ?`
 	sqlUpdateWorkerHeartbeat = `
 UPDATE workers SET last_heartbeat_at = ?, updated_at = ? WHERE id = ?`
 
+	// sqlListStaleWorkers lists the heartbeat sweep's candidates: online
+	// workers, and disabled ones with work in flight (H4a2 §5.2), whose
+	// heartbeat is older than the cutoff. An idle disabled worker has nothing to
+	// reclaim and is not listed, so it is not rewritten every sweep.
 	sqlListStaleWorkers = `SELECT ` + workerCols + `
-FROM workers WHERE status = 'online' AND last_heartbeat_at < ?`
+FROM workers
+WHERE last_heartbeat_at < ?
+  AND (status = 'online' OR (status = 'disabled' AND ` + sqlWorkerHasWorkInFlight + `))`
 
 	// Online workers with no active (assigned or running) task.
 	// An empty farmID is handled in Go by choosing the appropriate variant.
@@ -98,10 +111,13 @@ WHERE  w.status = 'online'
 	// cannot call Go, so the two are kept in step by hand and pinned against
 	// each other by TestDeleteWorkerIfRemovable. NULL last_heartbeat_at never
 	// matches the disabled arm (NULL < ? is NULL), as a nil LastHeartbeatAt is
-	// never removable in Go, so a never-seen disabled worker stays.
+	// never removable in Go, so a never-seen disabled worker stays. The
+	// in-flight arm (H4a2 §5.4) is the one condition a Worker value cannot see,
+	// so it is stated here and in the fake, not in RemovableBefore.
 	sqlDeleteWorkerIfRemovable = `
 DELETE FROM workers
-WHERE id = ? AND (status = 'offline' OR (status = 'disabled' AND last_heartbeat_at < ?))`
+WHERE id = ? AND (status = 'offline' OR (status = 'disabled' AND last_heartbeat_at < ?))
+  AND NOT ` + sqlWorkerHasWorkInFlight
 
 	// Deletes offline workers last seen before the cutoff and returns the
 	// removed rows so the caller can emit notifications. NULL last_heartbeat_at

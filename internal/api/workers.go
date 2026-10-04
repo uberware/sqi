@@ -424,7 +424,9 @@ func (h *workerHandler) removeWorker(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if errors.Is(err, store.ErrConflict) {
-			// The worker became non-removable after the pre-check above.
+			// The worker became non-removable after the pre-check above, or
+			// still has a task assigned or running, which only the guarded
+			// delete checks (H4a2 §5.4).
 			writeProblem(w, r, http.StatusConflict, workerNotRemovableMsg)
 			return
 		}

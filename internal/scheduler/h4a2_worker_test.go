@@ -433,3 +433,128 @@ func TestH4a2_ParkedLeaseOfAWorkerDisabledMeanwhileGetsNoWork(t *testing.T) {
 		t.Fatalf("task = %q, want ready (not leased to the disabled worker)", task.Status)
 	}
 }
+
+// TestH4a2_DeregisterOfADisabledWorkerSaysDisabled is Review Focus 4: a
+// graceful deregister of a disabled worker still reclaims its task, the store
+// keeps the worker disabled (H4a2 §5.3), and the worker event says so rather
+// than announcing an offline the row does not hold.
+func TestH4a2_DeregisterOfADisabledWorkerSaysDisabled(t *testing.T) {
+	for name, st := range raceBackends(t) {
+		t.Run(name, func(t *testing.T) {
+			workerID, taskID, _ := seedStaleWorkerWithTask(t, st, 0)
+			if err := st.UpdateWorkerStatus(t.Context(), workerID, store.WorkerStatusDisabled); err != nil {
+				t.Fatalf("UpdateWorkerStatus: %v", err)
+			}
+			rec := &workerRecordingNotifier{}
+			s := newMetricsScheduler(st, &recordBus{}, "")
+			s.notifier = rec
+			s.ctx = t.Context()
+			msg := &fakeJSMsg{subject: bus.WorkerDeregisterSubject(workerID), data: workerMsgJSON(t, protocol.DeregisterMsg{
+				Version: protocol.ProtocolVersion, Type: protocol.TypeDeregister, WorkerID: workerID,
+			})}
+			s.handleWorkerMessage(msg)
+			if !msg.acked {
+				t.Fatal("the deregister was not acked")
+			}
+			if got := mustTaskOf(t, st, taskID).Status; got != store.TaskStatusReady {
+				t.Fatalf("task = %q, want ready (reclaimed)", got)
+			}
+			w, err := st.GetWorker(t.Context(), workerID)
+			if err != nil {
+				t.Fatalf("GetWorker: %v", err)
+			}
+			if w.Status != store.WorkerStatusDisabled {
+				t.Fatalf("worker = %q, want disabled (kept)", w.Status)
+			}
+			if len(rec.workers) != 1 || rec.workers[0].WorkerID != workerID || rec.workers[0].Status != string(store.WorkerStatusDisabled) {
+				t.Fatalf("worker events = %+v, want one saying %s is disabled", rec.workers, workerID)
+			}
+		})
+	}
+}
+
+// TestH4a2_DeregisterOfAnOnlineWorkerSaysOffline is the control for the test
+// above: the deregister event reads the stored status, which for any worker
+// that is not disabled is offline.
+func TestH4a2_DeregisterOfAnOnlineWorkerSaysOffline(t *testing.T) {
+	for name, st := range raceBackends(t) {
+		t.Run(name, func(t *testing.T) {
+			workerID, _, _ := seedStaleWorkerWithTask(t, st, 0)
+			rec := &workerRecordingNotifier{}
+			s := newMetricsScheduler(st, &recordBus{}, "")
+			s.notifier = rec
+			s.ctx = t.Context()
+			s.handleWorkerMessage(&fakeJSMsg{subject: bus.WorkerDeregisterSubject(workerID), data: workerMsgJSON(t, protocol.DeregisterMsg{
+				Version: protocol.ProtocolVersion, Type: protocol.TypeDeregister, WorkerID: workerID,
+			})})
+			if len(rec.workers) != 1 || rec.workers[0].Status != string(store.WorkerStatusOffline) {
+				t.Fatalf("worker events = %+v, want one saying offline", rec.workers)
+			}
+		})
+	}
+}
+
+// TestH4a2_RegisterOfADisabledWorkerSaysDisabled pins the registration half of
+// H4a2 §5.3 end to end, on the real stores rather than a stand-in: a disabled
+// worker that re-registers (any NATS reconnect) stays disabled, and the worker
+// event carries that, not the online the registration asked for.
+func TestH4a2_RegisterOfADisabledWorkerSaysDisabled(t *testing.T) {
+	for name, st := range raceBackends(t) {
+		t.Run(name, func(t *testing.T) {
+			workerID, _, _ := seedStaleWorkerWithTask(t, st, 0)
+			if err := st.UpdateWorkerStatus(t.Context(), workerID, store.WorkerStatusDisabled); err != nil {
+				t.Fatalf("UpdateWorkerStatus: %v", err)
+			}
+			rec := &workerRecordingNotifier{}
+			s := newMetricsScheduler(st, &recordBus{}, "")
+			s.notifier = rec
+			s.ctx = t.Context()
+			msg := registerMsg(t, workerID, "")
+			s.handleWorkerMessage(msg)
+			if !msg.acked {
+				t.Fatal("the registration was not acked")
+			}
+			w, err := st.GetWorker(t.Context(), workerID)
+			if err != nil {
+				t.Fatalf("GetWorker: %v", err)
+			}
+			if w.Status != store.WorkerStatusDisabled {
+				t.Fatalf("worker = %q, want disabled (kept)", w.Status)
+			}
+			if len(rec.workers) != 1 || rec.workers[0].Status != string(store.WorkerStatusDisabled) {
+				t.Fatalf("worker events = %+v, want one saying disabled", rec.workers)
+			}
+		})
+	}
+}
+
+// TestH4a2_SweepReclaimsADeadDisabledWorkerWithoutAnOfflineEvent pins item 9
+// iv: a disabled worker that dies holding a task has the task reclaimed by the
+// heartbeat sweep, stays disabled, and is announced by no worker event.
+func TestH4a2_SweepReclaimsADeadDisabledWorkerWithoutAnOfflineEvent(t *testing.T) {
+	for name, st := range raceBackends(t) {
+		t.Run(name, func(t *testing.T) {
+			workerID, taskID, _ := seedStaleWorkerWithTask(t, st, time.Hour)
+			if err := st.UpdateWorkerStatus(t.Context(), workerID, store.WorkerStatusDisabled); err != nil {
+				t.Fatalf("UpdateWorkerStatus: %v", err)
+			}
+			rec := &workerRecordingNotifier{}
+			s := newMetricsScheduler(st, &recordBus{}, "")
+			s.notifier = rec
+			s.sweepStaleWorkers(t.Context())
+			if got := mustTaskOf(t, st, taskID).Status; got != store.TaskStatusReady {
+				t.Fatalf("task = %q, want ready", got)
+			}
+			w, err := st.GetWorker(t.Context(), workerID)
+			if err != nil {
+				t.Fatalf("GetWorker: %v", err)
+			}
+			if w.Status != store.WorkerStatusDisabled {
+				t.Fatalf("worker = %q, want disabled", w.Status)
+			}
+			if len(rec.workers) != 0 {
+				t.Fatalf("worker events = %+v, want none", rec.workers)
+			}
+		})
+	}
+}

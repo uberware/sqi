@@ -245,25 +245,27 @@ func (s *Store) closeAttemptsAndReleaseClaimsLocked(matches func(taskID string) 
 
 // OfflineStaleWorker implements [store.WorkerStore].
 //
-// The outcomes match the SQLite store's, which is the reference: the worker goes
-// offline only while it is online and its heartbeat is strictly older than
-// cutoff (a worker with no recorded heartbeat is never stale, as SQL's NULL
-// comparison has it, and an unknown worker is simply not stale); otherwise
-// nothing is written. See [Store.offlineWorkerLocked] for what a match does.
+// The outcomes match the SQLite store's, which is the reference: the guard
+// admits a worker that is online, or disabled with work in flight (H4a2 §5.2),
+// and whose heartbeat is strictly older than cutoff (a worker with no recorded
+// heartbeat is never stale, as SQL's NULL comparison has it, and an unknown
+// worker is simply not stale); otherwise nothing is written. See
+// [Store.offlineWorkerLocked] for what a match does.
 func (s *Store) OfflineStaleWorker(_ context.Context, id string, cutoff, now time.Time) ([]store.Task, bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	w, ok := s.workers[id]
-	if !ok || w.Status != store.WorkerStatusOnline || w.LastHeartbeatAt == nil || !w.LastHeartbeatAt.Before(cutoff) {
+	if !ok || w.LastHeartbeatAt == nil || !w.LastHeartbeatAt.Before(cutoff) ||
+		(w.Status != store.WorkerStatusOnline && (w.Status != store.WorkerStatusDisabled || !s.hasWorkInFlightLocked(id))) {
 		return nil, false, nil
 	}
 	return s.offlineWorkerLocked(id, now), true, nil
 }
 
 // OfflineWorker implements [store.WorkerStore]. An unknown worker is
-// [store.ErrNotFound], as SQLite's zero-row mark is; any known worker, whatever
-// its status, goes offline.
+// [store.ErrNotFound], as SQLite's zero-row mark is; any other known worker
+// goes offline, except a disabled one, which stays disabled (H4a2 §5.3).
 func (s *Store) OfflineWorker(_ context.Context, id string, now time.Time) ([]store.Task, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -274,7 +276,8 @@ func (s *Store) OfflineWorker(_ context.Context, id string, now time.Time) ([]st
 	return s.offlineWorkerLocked(id, now), nil
 }
 
-// offlineWorkerLocked takes the worker offline, returns its assigned and running
+// offlineWorkerLocked takes the worker offline (a disabled worker keeps its
+// status, H4a2 §5.2 and §5.3), returns its assigned and running
 // tasks to ready, then closes those tasks' running attempts as failed with
 // [store.FailureReasonWorkerOffline] and releases the claims of their closed
 // attempts (invariant I3). It returns the reclaimed tasks as they are after the
@@ -285,7 +288,10 @@ func (s *Store) OfflineWorker(_ context.Context, id string, now time.Time) ([]st
 func (s *Store) offlineWorkerLocked(id string, now time.Time) []store.Task {
 	now = now.UTC() // SQLite stores and returns these times in UTC
 	w := s.workers[id]
-	w.Status, w.UpdatedAt = store.WorkerStatusOffline, now
+	if w.Status != store.WorkerStatusDisabled {
+		w.Status = store.WorkerStatusOffline
+	}
+	w.UpdatedAt = now
 	s.workers[id] = w
 
 	return s.reclaimToReadyLocked(func(t store.Task) bool {

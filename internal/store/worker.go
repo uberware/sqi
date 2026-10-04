@@ -155,6 +155,9 @@ type Worker struct {
 // [WorkerStore.DeleteWorkerIfRemovable] applies this rule inside its write; the
 // SQLite statement restates it in SQL, which cannot call Go, so a change here
 // must be made there too. The API's pre-check and the fake call this method.
+// The store adds one condition a Worker value alone cannot see: no task may be
+// assigned to or running on the worker (H4a2 §5.4), so a true here does not
+// guarantee the delete succeeds.
 func (w Worker) RemovableBefore(disabledCutoff time.Time) bool {
 	switch w.Status {
 	case WorkerStatusOffline:
@@ -186,10 +189,11 @@ type WorkerStore interface {
 	// RegisterWorker inserts or replaces the worker record for the given ID.
 	// Called by the server when a worker sends its registration message.
 	// If the worker ID already exists its record is updated in full, except
-	// that an empty InstanceID keeps the stored one. When the stored
-	// InstanceID is non-empty and differs from a non-empty incoming one, the
-	// previous worker process is gone: in the same transaction its assigned and
-	// running tasks are reclaimed exactly as [WorkerStore.OfflineWorker]
+	// that an empty InstanceID keeps the stored one. A disabled worker stays
+	// disabled whatever status the registration carries (H4a2 §5.3). When the
+	// stored InstanceID is non-empty and differs from a non-empty incoming one,
+	// the previous worker process is gone: in the same transaction its assigned
+	// and running tasks are reclaimed exactly as [WorkerStore.OfflineWorker]
 	// reclaims them (attempts closed as failed with
 	// [FailureReasonWorkerRestarted], claims released, tasks ready) and
 	// returned as they are after the reset.
@@ -222,9 +226,11 @@ type WorkerStore interface {
 	UpdateWorkerHeartbeat(ctx context.Context, id string, at time.Time) error
 
 	// ListStaleWorkers returns workers whose last heartbeat is older than
-	// before and whose status is [WorkerStatusOnline]. Used by the heartbeat
-	// timeout sweep to find workers to mark offline. The result is a candidate
-	// list only; [WorkerStore.OfflineStaleWorker] re-checks staleness inside its
+	// before and whose status is [WorkerStatusOnline], or [WorkerStatusDisabled]
+	// with an assigned or running task (H4a2 §5.2; an idle disabled worker has
+	// nothing to reclaim and is not listed). Used by the heartbeat timeout sweep
+	// to find workers to mark offline or reclaim. The result is a candidate list
+	// only; [WorkerStore.OfflineStaleWorker] re-checks the whole guard inside its
 	// own write.
 	ListStaleWorkers(ctx context.Context, before time.Time) ([]Worker, error)
 
@@ -232,7 +238,10 @@ type WorkerStore interface {
 	// stale: the write is guarded by status = [WorkerStatusOnline] AND a
 	// last_heartbeat_at strictly older than cutoff, so a heartbeat or a
 	// re-registration that landed after the caller listed its candidates keeps
-	// the worker online and its tasks running (invariant I1).
+	// the worker online and its tasks running (invariant I1). The guard also
+	// admits a [WorkerStatusDisabled] worker with an assigned or running task and
+	// the same stale heartbeat (H4a2 §5.2): a disabled worker keeps its status,
+	// and only its tasks are reclaimed.
 	//
 	// When the guard matches, the same transaction closes the running attempts
 	// of the worker's [TaskStatusAssigned] and [TaskStatusRunning] tasks as
@@ -240,8 +249,9 @@ type WorkerStore interface {
 	// releases the claims of those attempts (invariant I3), and returns the
 	// tasks to [TaskStatusReady] with their worker cleared. It returns exactly
 	// the tasks it reclaimed (invariant I2), as they are after the reset, and
-	// true. When the guard does not match (the worker is unknown, is not online,
-	// or has a heartbeat at or after cutoff) nothing is written and it returns
+	// true. When the guard does not match (the worker is unknown, is neither
+	// online nor disabled with work in flight, or has a heartbeat at or after
+	// cutoff) nothing is written and it returns
 	// (nil, false, nil). A worker with no recorded heartbeat is never stale.
 	//
 	// now stamps the worker's and the reclaimed tasks' updated_at, the closed
@@ -255,10 +265,10 @@ type WorkerStore interface {
 	OfflineStaleWorker(ctx context.Context, id string, cutoff, now time.Time) ([]Task, bool, error)
 
 	// OfflineWorker is the unconditional sibling of [WorkerStore.OfflineStaleWorker]
-	// for a graceful deregister: the worker is taken offline whatever its status
-	// and heartbeat, and its in-flight tasks are reclaimed exactly as
-	// OfflineStaleWorker reclaims them (attempts closed, claims released, tasks
-	// back to ready). It returns the reclaimed tasks as they are after the reset,
+	// for a graceful deregister: the worker is taken offline whatever its
+	// heartbeat (a disabled worker stays disabled, H4a2 §5.3), and its in-flight
+	// tasks are reclaimed exactly as OfflineStaleWorker reclaims them (attempts
+	// closed, claims released, tasks back to ready). It returns the reclaimed tasks as they are after the reset,
 	// or [ErrNotFound] for an unknown worker. A worker that is already offline is
 	// not an error: it has nothing left to reclaim and the call returns no tasks.
 	OfflineWorker(ctx context.Context, id string, now time.Time) ([]Task, error)
@@ -279,7 +289,8 @@ type WorkerStore interface {
 
 	// DeleteWorkerIfRemovable deletes the worker only while it is removable:
 	// offline, or disabled with a heartbeat older than disabledCutoff (a
-	// disabled worker that never sent a heartbeat is not removable). The rule is
+	// disabled worker that never sent a heartbeat is not removable), and only
+	// while no task is assigned to or running on it (H4a2 §5.4). The rule is
 	// evaluated inside the DELETE (invariant I1), so a worker that came back
 	// between the caller's read and this write keeps its row. Returns
 	// [ErrConflict] when the worker exists but is not removable and

@@ -13,7 +13,7 @@ import (
 
 // RegisterWorker implements [store.WorkerStore]: it inserts or replaces the
 // worker record for the given ID, except that an empty InstanceID keeps the
-// stored one. A non-empty stored InstanceID that differs from a non-empty
+// stored one and a disabled worker stays disabled. A non-empty stored InstanceID that differs from a non-empty
 // incoming one is a restarted worker process, whose assigned and running tasks
 // are reclaimed as the offline transitions reclaim them, with
 // [store.FailureReasonWorkerRestarted]; the store lock stands in for SQLite's
@@ -27,6 +27,9 @@ func (s *Store) RegisterWorker(_ context.Context, worker store.Worker) (store.Wo
 	var reclaimed []store.Task
 	if isUpdate {
 		worker.RegisteredAt = existing.RegisteredAt
+		if existing.Status == store.WorkerStatusDisabled {
+			worker.Status = store.WorkerStatusDisabled // H4a2 §5.3
+		}
 		if worker.InstanceID == "" {
 			worker.InstanceID = existing.InstanceID
 		} else if existing.InstanceID != "" && existing.InstanceID != worker.InstanceID {
@@ -133,7 +136,8 @@ func (s *Store) UpdateWorkerHeartbeat(_ context.Context, id string, at time.Time
 }
 
 // ListStaleWorkers returns workers whose last heartbeat is older than before
-// and whose status is [store.WorkerStatusOnline].
+// and whose status is [store.WorkerStatusOnline], or [store.WorkerStatusDisabled]
+// with an assigned or running task (H4a2 §5.2).
 //
 // Unlike SQLite, where a NULL heartbeat never compares older, it also lists an
 // online worker that has never sent a heartbeat; TestListStaleWorkers pins
@@ -145,7 +149,7 @@ func (s *Store) ListStaleWorkers(_ context.Context, before time.Time) ([]store.W
 
 	var workers []store.Worker
 	for _, w := range s.workers {
-		if w.Status != store.WorkerStatusOnline {
+		if w.Status != store.WorkerStatusOnline && (w.Status != store.WorkerStatusDisabled || !s.hasWorkInFlightLocked(w.ID)) {
 			continue
 		}
 		if w.LastHeartbeatAt == nil || w.LastHeartbeatAt.Before(before) {
@@ -200,7 +204,8 @@ func (s *Store) DeleteWorker(_ context.Context, id string) error {
 }
 
 // DeleteWorkerIfRemovable implements [store.WorkerStore]. The rule is
-// [store.Worker.RemovableBefore], which SQLite restates in its DELETE.
+// [store.Worker.RemovableBefore], which SQLite restates in its DELETE, plus the
+// in-flight condition a Worker value cannot see (H4a2 §5.4).
 func (s *Store) DeleteWorkerIfRemovable(_ context.Context, id string, disabledCutoff time.Time) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -209,11 +214,22 @@ func (s *Store) DeleteWorkerIfRemovable(_ context.Context, id string, disabledCu
 	if !ok {
 		return store.ErrNotFound
 	}
-	if !w.RemovableBefore(disabledCutoff) {
+	if !w.RemovableBefore(disabledCutoff) || s.hasWorkInFlightLocked(id) {
 		return store.ErrConflict
 	}
 	delete(s.workers, id)
 	return nil
+}
+
+// hasWorkInFlightLocked reports whether any task is assigned to or running on
+// workerID. Caller holds s.mu.
+func (s *Store) hasWorkInFlightLocked(workerID string) bool {
+	for _, t := range s.tasks {
+		if t.AssignedWorkerID == workerID && (t.Status == store.TaskStatusAssigned || t.Status == store.TaskStatusRunning) {
+			return true
+		}
+	}
+	return false
 }
 
 // DeleteOfflineWorkersBefore hard-deletes every offline worker last seen before

@@ -3,6 +3,7 @@
 package store_test
 
 import (
+	"errors"
 	"testing"
 	"time"
 
@@ -81,6 +82,86 @@ func TestRegisterWorker_ReclaimsAfterARestart(t *testing.T) {
 			w := mustWorker(t, st, fixtureWorkerID)
 			if w.Status != store.WorkerStatusOnline || w.InstanceID != "i2" {
 				t.Fatalf("worker = %q/%q, want online/i2", w.Status, w.InstanceID)
+			}
+		})
+	}
+}
+
+// TestDisabledWorker_StaysDisabledAndIsReclaimed pins H4a2 §5.2 and §5.3: a dead
+// disabled worker is listed and reclaimed by the sweep but stays disabled, an
+// idle one is neither listed nor rewritten, and a re-registration or a graceful
+// deregister keeps it disabled.
+func TestDisabledWorker_StaysDisabledAndIsReclaimed(t *testing.T) {
+	for name, st := range newStores(t) {
+		t.Run(name, func(t *testing.T) {
+			ctx, now := t.Context(), time.Now().UTC()
+			g := seedGraph(t, st, graphOpts{jobStatus: store.JobStatusRunning},
+				stepSpec{name: "a", status: store.StepStatusReady, tasks: []store.TaskStatus{store.TaskStatusRunning}})
+			seedAttempt(t, st, g.Tasks["a"][0], store.AttemptStatusRunning)
+			seedWorker(t, st, g.Farm.ID, store.WorkerStatusDisabled, now.Add(-time.Hour))
+			cutoff := now.Add(-time.Minute)
+
+			listed, err := st.ListStaleWorkers(ctx, cutoff)
+			if err != nil || len(listed) != 1 {
+				t.Fatalf("ListStaleWorkers = (%d, %v), want the dead disabled worker", len(listed), err)
+			}
+			tasks, ok, err := st.OfflineStaleWorker(ctx, fixtureWorkerID, cutoff, now)
+			if err != nil || !ok || len(tasks) != 1 {
+				t.Fatalf("OfflineStaleWorker = (%d, %v, %v), want (1, true, nil)", len(tasks), ok, err)
+			}
+			if w := mustWorker(t, st, fixtureWorkerID); w.Status != store.WorkerStatusDisabled {
+				t.Fatalf("worker = %q, want disabled (kept)", w.Status)
+			}
+			// Idle now: no longer listed, and the guarded write declines.
+			listed, err = st.ListStaleWorkers(ctx, cutoff)
+			if err != nil {
+				t.Fatalf("ListStaleWorkers (idle): %v", err)
+			}
+			if len(listed) != 0 {
+				t.Fatalf("idle disabled worker listed again: %+v", listed)
+			}
+			_, ok, err = st.OfflineStaleWorker(ctx, fixtureWorkerID, cutoff, now)
+			if err != nil {
+				t.Fatalf("OfflineStaleWorker (idle): %v", err)
+			}
+			if ok {
+				t.Fatal("idle disabled worker rewritten by the sweep")
+			}
+			// Re-registration (any NATS reconnect) and a deregister keep disabled.
+			if _, _, err := st.RegisterWorker(ctx, store.Worker{ID: fixtureWorkerID, FarmID: g.Farm.ID, Hostname: "node", Status: store.WorkerStatusOnline, LastHeartbeatAt: &now}); err != nil {
+				t.Fatalf("RegisterWorker: %v", err)
+			}
+			if w := mustWorker(t, st, fixtureWorkerID); w.Status != store.WorkerStatusDisabled {
+				t.Fatalf("after re-register: worker = %q, want disabled", w.Status)
+			}
+			if _, err := st.OfflineWorker(ctx, fixtureWorkerID, now); err != nil {
+				t.Fatalf("OfflineWorker: %v", err)
+			}
+			if w := mustWorker(t, st, fixtureWorkerID); w.Status != store.WorkerStatusDisabled {
+				t.Fatalf("after deregister: worker = %q, want disabled", w.Status)
+			}
+		})
+	}
+}
+
+// TestDeleteWorkerIfRemovable_RefusesAWorkerWithWorkInFlight pins H4a2 §5.4: a
+// worker that is otherwise removable (offline) is refused while a task is still
+// running on it, and removed once it is not.
+func TestDeleteWorkerIfRemovable_RefusesAWorkerWithWorkInFlight(t *testing.T) {
+	for name, st := range newStores(t) {
+		t.Run(name, func(t *testing.T) {
+			ctx, now := t.Context(), time.Now().UTC()
+			g := seedGraph(t, st, graphOpts{jobStatus: store.JobStatusRunning},
+				stepSpec{name: "a", status: store.StepStatusReady, tasks: []store.TaskStatus{store.TaskStatusRunning}})
+			seedWorker(t, st, g.Farm.ID, store.WorkerStatusOffline, now.Add(-time.Hour))
+			if err := st.DeleteWorkerIfRemovable(ctx, fixtureWorkerID, now); !errors.Is(err, store.ErrConflict) {
+				t.Fatalf("delete with a running task: err = %v, want ErrConflict", err)
+			}
+			if err := st.UpdateTaskStatus(ctx, g.Tasks["a"][0].ID, store.TaskStatusSucceeded); err != nil {
+				t.Fatalf("UpdateTaskStatus: %v", err)
+			}
+			if err := st.DeleteWorkerIfRemovable(ctx, fixtureWorkerID, now); err != nil {
+				t.Fatalf("delete once idle: %v", err)
 			}
 		})
 	}
