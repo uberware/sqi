@@ -352,9 +352,12 @@ func (h *workerHandler) setWorkerStatus(w http.ResponseWriter, r *http.Request, 
 
 // removeWorker hard-deletes a worker record. Only removable workers are
 // accepted: offline workers, or disabled workers whose last heartbeat is older
-// than the offline threshold (the machine is gone). Online and live-disabled
-// workers return 409 Conflict. Offline workers already had their in-flight tasks
-// reclaimed when they went offline, so no reclaim is needed here.
+// than the offline threshold (the machine is gone), and in either case only
+// while the worker has no task assigned or running (H4a2). Online and
+// live-disabled workers, and any worker that still holds a task, return 409
+// Conflict. Offline workers already had their in-flight tasks reclaimed when
+// they went offline, so no reclaim is needed here; a dead disabled worker keeps
+// its tasks until the heartbeat sweep reclaims them, and is refused until then.
 //
 // Revokes the worker's broker credential, if it has one, through the
 // injected [WorkerRevoker] — the same path DELETE
@@ -367,8 +370,11 @@ func (h *workerHandler) setWorkerStatus(w http.ResponseWriter, r *http.Request, 
 //
 // Revoke-then-delete, not the reverse: removability was already decided
 // above via GetWorker + workerRemovable, so in the common case the delete
-// cannot be refused and revoking first never wastes a revocation on a delete
-// that was going to be legitimately rejected. A revoke failure then means
+// cannot be refused. The pre-check cannot see tasks, though: a dead disabled
+// worker that still holds a task passes it, has its credential revoked, and
+// only then is refused by the guarded delete's in-flight check (H4a2 §5.4),
+// so revoking first can waste a revocation on a delete that is then rejected;
+// the sweep's reclaim makes a retry succeed. A revoke failure then means
 // nothing happened at all — worker row intact, a clean 500, safely
 // retryable. Deleting first would instead let a failure of the revoke's own
 // store write (not just a broker-reload failure — a documented, recoverable

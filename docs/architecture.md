@@ -290,7 +290,7 @@ handleLeaseRequest(workerID, queueID)
   │
   ├─ Refuse (empty batch, held ~1 s so the worker's loop cannot spin) if the worker is
   │     disabled, or the request comes from a worker process whose registration has not
-  │     landed (its instance_id differs from the stored one)
+  │     landed (its instance_id differs from the stored one, both non-empty)
   ├─ store.CommittedCores(workerID, worker.CPUCount) → committed (Σ required_cores of assigned+running tasks)
   ├─ free = worker.CPUCount − committed
   │     If free ≤ 0: park request in the per-queue waiter registry (~30 s hold)
@@ -612,9 +612,11 @@ arrows there. Steps have no `running` status: nothing writes it, so a step goes
 job is canceled (`CancelJobExecution`), and back to `pending` only on a retry.
 There is deliberately no `pending` → `failed` arrow: the only way a pending
 step could be judged failed is a retry interrupted before dependency
-resolution, and the start-up reconcile releases such a step first (see
-*Upgrade repair* under [What changed for operators](#what-changed-for-operators)).
-The value survives in the enum
+resolution. When the server stops in that window, the start-up reconcile
+releases the step first (see *Upgrade repair* under
+[What changed for operators](#what-changed-for-operators)); when only the store
+call fails and the server stays up, the window stays open until the next start
+(see [Known gaps](#known-gaps)). The value survives in the enum
 and wire types, and a real running step would be a separate, user-visible
 feature. The
 task machine lives in `store` and not in `openjd` for a hard reason: `openjd`
@@ -652,8 +654,8 @@ finalizes in the store instead: `CancelJobExecution` finalizes every open step
 of the job in the same transaction, last, after the tasks, attempts and claims
 (a pending step, or one with no tasks, becomes `canceled`; any other gets
 `FinalizeStep`'s outcome rule). After a job cancel every step is terminal, so
-`RetryJob` on a job canceled with nothing in flight works: the revived tasks
-sit under a step that `RetryTasks` resets and `ResolveDependencies` releases.
+`RetryJob` on a canceled job works: the revived tasks sit under a step that
+`RetryTasks` resets and `ResolveDependencies` releases.
 
 Two arrows deserve note. `assigned` → `succeeded`/`failed` is permitted even
 though it appears to skip `running`: the worker publishes `running` first, but
@@ -964,7 +966,8 @@ list is in two groups; the first is the invariants', the second H4a2's.
 And from the lifecycle and report fixes:
 
 - Canceling a job's last open task, canceling a job, and retrying a failed
-  task while its step is still running all finish the step and job now, and
+  task while a sibling is still in flight (its step is `ready`) all finish the
+  step and job now, and
   `RetryJob` after a cancel runs the tasks again (see Cancellation above).
   Jobs already canceled get their open steps finalized on the first start
   after upgrade (migration `00033`).
@@ -1005,8 +1008,9 @@ And from the lifecycle and report fixes:
 - Orphaned attempts and their usage claims are closed on the first start after
   upgrade (migration `00035`).
 - A submission that loses its `depends_on` upstream mid-submit gets the same
-  422 message as one that fails the pre-check (`depends_on job "<id>" already
-  terminated unsuccessfully (<status>)` or `depends_on job "<id>" not found`).
+  422 message as one that fails the pre-check (`openjd: submit: depends_on job
+  "<id>" already terminated unsuccessfully (<status>)` or `openjd: submit:
+  depends_on job "<id>" not found`).
 
 Timestamps are unchanged from v0.3.0, though the writes that stamp them moved.
 A released claim's `released_at` is always server time. A terminal report
@@ -1117,6 +1121,16 @@ Left by the lifecycle fixes:
   live processes share a worker ID) asks about once a second per queue for as
   long as that lasts. The request for an unknown worker ID is answered at once
   and has always had no such backoff.
+- **A retry whose dependency resolution fails with the server up can still
+  finalize a pending step `failed`.** The start-up reconcile closes the window
+  for a server stop between `RetryTasks` and `ResolveDependencies`, but
+  `RetryJob`/`RetryTask` return an error if `ResolveDependencies` fails after
+  `RetryTasks` committed, leaving the step `pending` with a revived task and
+  nothing to release it until the next start. Until then, canceling that task
+  drives step completion, and `FinalizeStep`'s guard admits `pending`, so a
+  step whose other task is still `failed` is finalized `failed` directly from
+  `pending`, an arrow the step table deliberately lacks. Closing it fully means
+  `FinalizeStep` refusing a `pending` step.
 - **Removing a busy worker revokes its credential first.** `DELETE
   /workers/{id}` revokes the worker's broker credential before the guarded
   delete, deliberately (a decommissioned machine loses broker access along with
