@@ -16,7 +16,9 @@ package scheduler
 //
 //  1. Decode protocol.TaskStatusMsg.
 //  2. Load the task attempt from the store to verify AttemptID.
-//  3. For "running": update task status and record session ID on the attempt.
+//  3. For "running": in one store write (StartTaskAttempt), move the task to
+//     running and record the session ID on the attempt, only while the
+//     reporting attempt is still the task's live one.
 //  4. For terminal states (succeeded/failed/canceled):
 //     a. In one store write (CompleteTaskAttempt): close the attempt (EndedAt,
 //        Status, ExitCode), release any held usage pool slots, and transition
@@ -217,27 +219,24 @@ func (s *Scheduler) processTaskStatus(ctx context.Context, subjectWorkerID strin
 	}
 }
 
-// handleTaskRunning handles a "running" TaskStatusMsg: updates the task row to
-// [store.TaskStatusRunning] and records the OpenJD session ID on the attempt.
+// handleTaskRunning applies a "running" report through
+// [store.TaskStore.StartTaskAttempt], which moves the task and records the
+// session ID only while the report's attempt is still the live one.
 func (s *Scheduler) handleTaskRunning(ctx context.Context, attempt store.TaskAttempt, m protocol.TaskStatusMsg) error {
-	// Update task status to running.
-	if err := s.store.UpdateTaskStatus(ctx, m.TaskID, store.TaskStatusRunning); err != nil {
+	started, err := s.store.StartTaskAttempt(ctx, attempt.ID, m.TaskID, m.SessionID, time.Now().UTC())
+	if err != nil {
 		return err
 	}
-
-	// Record the session ID on the attempt (COALESCE-safe: ignored if empty).
-	if m.SessionID != "" {
-		updated := attempt
-		updated.SessionID = m.SessionID
-		if _, err := s.store.UpdateTaskAttempt(ctx, updated); err != nil {
-			// Non-fatal: the task is running; losing the session ID is a minor
-			// attribution issue, not a correctness problem.
-			s.logger.WarnContext(
-				ctx, "scheduler: update attempt session_id failed",
-				slog.String("attempt_id", attempt.ID),
-				slog.Any("error", err),
-			)
-		}
+	if !started {
+		// A stale report: its attempt was closed (reaped, reclaimed, canceled)
+		// or superseded by a newer lease. Redelivery cannot make it current, so
+		// it is acked and nothing is emitted (H4a2 §4.1).
+		s.logger.InfoContext(
+			ctx, "scheduler: stale running report — discarding",
+			slog.String("task_id", m.TaskID),
+			slog.String("attempt_id", m.AttemptID),
+		)
+		return nil
 	}
 
 	s.logger.InfoContext(

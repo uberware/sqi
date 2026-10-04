@@ -256,6 +256,19 @@ type TaskStore interface {
 	// c.TaskStatus is a no-op, provided the attempt is still the latest.
 	CompleteTaskAttempt(ctx context.Context, c AttemptCompletion) (CompletionResult, error)
 
+	// StartTaskAttempt applies a worker's "running" report in one transaction,
+	// behind the task's job-row anchor (H4a2 §4.1): it acts only while
+	// attemptID is still running (not closed) and is the task's latest attempt
+	// and the task is assigned or running. It then moves the task
+	// assigned -> running (a running task is left as is, so a redelivery is
+	// harmless) and records sessionID on the attempt when non-empty. started
+	// is false, with a nil error, when the report is stale: the attempt was
+	// closed by a reap, an offline reclaim or a cancel, or a newer lease
+	// superseded it. An unknown task is [ErrNotFound]. On Postgres (H4c) the
+	// task row must be locked FOR UPDATE after the anchor and before the
+	// latest-attempt check (handoff item 3h's reason).
+	StartTaskAttempt(ctx context.Context, attemptID, taskID, sessionID string, now time.Time) (started bool, err error)
+
 	// ListReadyTasks returns up to limit tasks in [TaskStatusReady] that
 	// belong to non-paused queues within the given farm, excluding:
 	//   - tasks whose RetryAfter is set and after now (still backing off), and
