@@ -182,14 +182,12 @@ func claimReleasedAt(t *testing.T, db *sql.DB, id string) sql.NullString {
 	return released
 }
 
-// rewindTo30 reopens the database file raw and runs goose back to version 30,
-// the schema the v0.3.0 releases ran on. Once 00031 exists this rolls it back
-// (its Down is a documented no-op), so the next goose.Up re-applies it to
-// whatever was seeded; before 00031 exists it is a no-op at the high-water mark.
-// Every later migration is rolled back first and re-applied by that goose.Up
-// too: 00032's Down drops the tasks(step_id, status) index and its Up creates
-// it again, which leaves the rows dumpTables compares untouched.
-func rewindTo30(t *testing.T, path string) *sql.DB {
+// rewindTo reopens the database file raw and runs goose back to version, so the
+// next goose.Up re-applies every later migration to whatever was seeded. Every
+// later migration's Down must leave the rows dumpTables compares untouched:
+// 00032 drops and 00034 re-adds only an index or a column, and the data
+// repairs' Downs are no-ops.
+func rewindTo(t *testing.T, path string, version int64) *sql.DB {
 	t.Helper()
 	db, err := sql.Open("sqlite", path)
 	if err != nil {
@@ -200,8 +198,8 @@ func rewindTo30(t *testing.T, path string) *sql.DB {
 	if err := goose.SetDialect("sqlite3"); err != nil {
 		t.Fatalf("SetDialect: %v", err)
 	}
-	if err := goose.DownTo(db, ".", 30); err != nil {
-		t.Fatalf("DownTo(30): %v", err)
+	if err := goose.DownTo(db, ".", version); err != nil {
+		t.Fatalf("DownTo(%d): %v", version, err)
 	}
 	return db
 }
@@ -240,7 +238,7 @@ func TestMigration00031_ReleasesLeakedClaims(t *testing.T) {
 		t.Fatalf("Close: %v", err)
 	}
 
-	db := rewindTo30(t, path)
+	db := rewindTo(t, path, 30)
 	releasedBefore := claimReleasedAt(t, db, alreadyReleased)
 	if !releasedBefore.Valid {
 		t.Fatalf("seeded already-released claim %s has no released_at", alreadyReleased)
@@ -310,7 +308,7 @@ func TestMigration00031_HealthyDatabaseUnchanged(t *testing.T) {
 		t.Fatalf("Close: %v", err)
 	}
 
-	db := rewindTo30(t, path)
+	db := rewindTo(t, path, 30)
 	before := dumpTables(t, db)
 	if before == "" {
 		t.Fatal("dumpTables returned nothing; the comparison would be vacuous")
