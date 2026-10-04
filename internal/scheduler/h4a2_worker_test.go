@@ -637,7 +637,8 @@ func TestH4a2_UnschedulableNoOpEmitsNoEvent(t *testing.T) {
 // TestH4a2_UnschedulableWriteEmitsOneEvent is the positive side of
 // [TestH4a2_UnschedulableNoOpEmitsNoEvent]: when the guarded write lands on a
 // task that is still ready, exactly one task event carries the new reason.
-// Without it, inverting the written check would pass the suite.
+// The no-op test already catches an inverted check; the regression only this
+// test guards is the event never being emitted even though the write landed.
 func TestH4a2_UnschedulableWriteEmitsOneEvent(t *testing.T) {
 	for name, st := range raceBackends(t) {
 		t.Run(name, func(t *testing.T) {

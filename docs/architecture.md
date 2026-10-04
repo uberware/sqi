@@ -1003,13 +1003,12 @@ And from the lifecycle and report fixes:
   because the old build deregisters and the deregister reclaims its tasks, so
   drain or stop workers gracefully before upgrading them. The lease request
   carries the same optional `instance_id`, and the scheduler refuses to serve a
-  request
-  whose instance differs from the stored non-empty one until the registration
-  has landed (the registration travels through JetStream, the lease is core
-  NATS request/reply, so a restarted process can ask for work first, and a task
-  leased to it before its registration landed would be reclaimed by that
-  registration while the process runs it). The refusal is held for
-  `leaseRefusalDelay`, as for a disabled worker.
+  request whose instance differs from the stored non-empty one until the
+  registration has landed (the registration travels through JetStream, the
+  lease is core NATS request/reply, so a restarted process can ask for work
+  first, and a task leased to it before its registration landed would be
+  reclaimed by that registration while the process runs it). The refusal is
+  held for `leaseRefusalDelay`, as for a disabled worker.
 - A task interrupted by its worker shutting down (`failed` with the message
   `worker_shutdown`) no longer consumes a retry or counts toward the job's
   failure limit, whichever of the report and the deregister the server sees
@@ -1119,9 +1118,15 @@ Pre-existing in v0.3.0:
   `FinalizeJob` that follows it, is repaired by neither start-up reconcile
   pass: `reconcileStuckSteps` lists non-terminal steps and
   `reconcilePendingSteps` lists `pending` ones, and this job has neither.
-  There is still no start-up repair for it. A user's job cancel no longer
-  leaves this shape: `CancelJobExecution` cancels the job row in the same
-  transaction that cancels its tasks and finalizes its steps.
+  There is still no start-up repair for it. The paths that can leave it are
+  those whose triggering request is not redelivered: REST `CancelTask` (which
+  logs a completion error and moves on), the REST retry, and the start-up
+  `reconcilePendingSteps` pass itself. When the cascade arrives through a
+  worker's terminal report, the JetStream message is redelivered after the
+  stop, and re-running `checkStepCompletion` (which propagates whenever the
+  step is terminal) reaches `FinalizeJob` and repairs it. A user's job cancel
+  no longer leaves this shape: `CancelJobExecution` cancels the job row in the
+  same transaction that cancels its tasks and finalizes its steps.
 
 Left by the lifecycle fixes:
 
