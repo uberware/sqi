@@ -124,6 +124,14 @@ func TestStepOperations_FromStatesAreLegal(t *testing.T) {
 		// A pending step whose tasks were all canceled one at a time (see above).
 		{"FinalizeStep", []store.StepStatus{store.StepStatusPending}, []store.StepStatus{store.StepStatusCanceled}},
 		{"RetryTasks", []store.StepStatus{store.StepStatusFailed, store.StepStatusCanceled}, []store.StepStatus{store.StepStatusPending}},
+		// H4a2 §3.2: a job cancel cancels a pending step outright and gives any
+		// other open step FinalizeStep's outcome.
+		{"CancelJobExecution", []store.StepStatus{store.StepStatusPending}, []store.StepStatus{store.StepStatusCanceled}},
+		{
+			"CancelJobExecution",
+			[]store.StepStatus{store.StepStatusReady, store.StepStatusRunning},
+			[]store.StepStatus{store.StepStatusCompleted, store.StepStatusFailed, store.StepStatusCanceled},
+		},
 	}
 	for _, o := range ops {
 		for _, f := range o.from {

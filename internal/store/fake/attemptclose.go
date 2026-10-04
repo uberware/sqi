@@ -116,13 +116,14 @@ func (s *Store) CompleteTaskAttempt(_ context.Context, c store.AttemptCompletion
 // non-terminal task of the job is canceled with its worker assignment cleared,
 // then every running attempt of the job's tasks (including one on a task that
 // was already terminal) is closed, then the claims of the job's closed attempts
-// are released. The tasks go first, as the interface documents.
+// are released, and finally every open step of the job is finalized. The tasks
+// go first, as the interface documents.
 func (s *Store) CancelJobExecution(_ context.Context, jobID, reason string, now time.Time) ([]store.Task, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	// Order mirrors SQLite's (spec 4.1): the tasks, then the attempts, then the
-	// claims. The store lock stands in for the job-row anchor.
+	// claims, then the steps. The store lock stands in for the job-row anchor.
 	now = now.UTC() // SQLite stores and returns these times in UTC
 	var active []store.Task
 	for id, t := range s.tasks {
@@ -137,7 +138,33 @@ func (s *Store) CancelJobExecution(_ context.Context, jobID, reason string, now 
 		s.cancelTaskRowLocked(id, reason, now, true)
 	}
 	s.closeAttemptsAndReleaseClaimsLocked(func(taskID string) bool { return s.tasks[taskID].JobID == jobID }, store.AttemptStatusCanceled, "", now)
+	s.cancelJobFinalizeStepsLocked(jobID, now)
 	return active, nil
+}
+
+// cancelJobFinalizeStepsLocked is SQLite's sqlCancelJobFinalizeSteps: every
+// open step of the job becomes terminal. A pending step, or one with no tasks,
+// is canceled; any other open step gets FinalizeStep's outcome. A step with a
+// task still in flight is left alone. Caller holds s.mu.
+func (s *Store) cancelJobFinalizeStepsLocked(jobID string, now time.Time) {
+	hasTask := map[string]bool{}
+	for _, t := range s.tasks {
+		hasTask[t.StepID] = true
+	}
+	for id, st := range s.steps {
+		if st.JobID != jobID || terminalStep(st.Status) {
+			continue
+		}
+		out := s.stepOutcomeLocked(id)
+		switch {
+		case out == "":
+			continue // a task is still in flight
+		case st.Status == store.StepStatusPending || !hasTask[id]:
+			out = store.StepStatusCanceled
+		}
+		st.Status, st.UpdatedAt = out, now
+		s.steps[id] = st
+	}
 }
 
 // CancelTaskExecution implements [store.TaskStore].

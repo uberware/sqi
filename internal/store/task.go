@@ -326,7 +326,10 @@ type TaskStore interface {
 	//  2. close every running attempt of the job's tasks as
 	//     [AttemptStatusCanceled], ended at now;
 	//  3. release every active claim held by an attempt of the job's tasks that
-	//     is no longer running.
+	//     is no longer running;
+	//  4. finalize every open step of the job (a pending step, or one with no
+	//     tasks, becomes canceled; any other gets FinalizeStep's outcome), so
+	//     after a job cancel every step is terminal (H4a2).
 	// It returns the tasks that were in [TaskStatusAssigned] or
 	// [TaskStatusRunning] when step 1 ran, each as it was before the cancel (its
 	// AssignedWorkerID intact), so the caller can signal the workers. Tasks

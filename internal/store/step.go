@@ -29,7 +29,8 @@ const (
 	// CancelPendingStep (the cascade from a failed or canceled upstream step),
 	// CancelBlockedJob (a blocked job canceled before it ran), or FinalizeStep
 	// once all its tasks are terminal and a canceled one is among them with no
-	// failed one. A job cancel never writes its steps.
+	// failed one. A job cancel (CancelJobExecution) also finalizes every open
+	// step of the job.
 	StepStatusCanceled StepStatus = "canceled"
 )
 

@@ -44,14 +44,35 @@ WHERE  id = ?
                    AND s.status NOT IN ('completed', 'failed', 'canceled'))
 RETURNING status`
 
+	// sqlCancelJobFinalizeSteps finalizes every open step of a job a cancel has
+	// just emptied (H4a2 §3.2). A pending step, or one with no tasks, is
+	// canceled outright: it never ran in its current life, and finalizing a
+	// pending step by its tasks could write pending -> failed (a failed task
+	// can sit in a pending step only in the retry crash window, spec D5), which
+	// the step table does not allow. Every other open step gets sqlFinalizeStep's
+	// outcome. The NOT EXISTS guard is the same in-flight check: the cancel
+	// leaves no task in flight, so it always holds, but a step is never
+	// finalized while one is. Binds: updated_at, job id.
+	sqlCancelJobFinalizeSteps = `
+UPDATE steps
+SET    status = CASE
+         WHEN status = 'pending' THEN 'canceled'
+         WHEN NOT EXISTS (SELECT 1 FROM tasks t WHERE t.step_id = steps.id) THEN 'canceled'
+         WHEN EXISTS (SELECT 1 FROM tasks t WHERE t.step_id = steps.id AND t.status = 'failed')   THEN 'failed'
+         WHEN EXISTS (SELECT 1 FROM tasks t WHERE t.step_id = steps.id AND t.status = 'canceled') THEN 'canceled'
+         ELSE 'completed' END,
+       updated_at = ?
+WHERE  job_id = ?
+  AND  status NOT IN ('completed', 'failed', 'canceled')
+  AND  NOT EXISTS (SELECT 1 FROM tasks t WHERE t.step_id = steps.id
+                   AND t.status NOT IN ('succeeded', 'failed', 'canceled'))`
+
 	// sqlListStuckSteps selects the steps sqlFinalizeStep would finalize now,
 	// restricted to steps of a job that is not itself terminal. The job
-	// condition is what keeps a healthy farm quiet: canceling a job writes its
-	// tasks and its job row but never its steps, so a canceled job's open steps
-	// look stuck by their tasks alone, and every start would rewrite those of
-	// each job canceled since the start before it. A terminal job has no
-	// downstream that needs its steps finalized, and its cross-job dependents
-	// follow the job's own status.
+	// condition keeps a healthy farm quiet: a terminal job has no downstream
+	// that needs its steps finalized, and since H4a2 a job cancel finalizes its
+	// own steps (migration 00033 repairs those canceled before). Its cross-job
+	// dependents follow the job's own status.
 	sqlListStuckSteps = `SELECT ` + stepCols + `
 FROM   steps
 WHERE  status NOT IN ('completed', 'failed', 'canceled')

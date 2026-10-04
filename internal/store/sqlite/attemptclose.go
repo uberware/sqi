@@ -303,7 +303,7 @@ func (s *Store) CancelJobExecution(ctx context.Context, jobID, reason string, no
 	defer func() { _ = tx.Rollback() }() //nolint:errcheck // rollback after commit is a no-op
 
 	// Order (spec 4.1): anchor, then the SELECT of the active set, then tasks,
-	// attempts, claims. See the doc comment for why tasks come first.
+	// attempts, claims, then steps. See the doc comment for why tasks come first.
 	if err := lockAnchors(ctx, tx, jobAnchor(jobID)); err != nil {
 		return nil, err
 	}
@@ -320,6 +320,11 @@ func (s *Store) CancelJobExecution(ctx context.Context, jobID, reason string, no
 	}
 	if _, err := tx.ExecContext(ctx, sqlReleaseClosedJobClaims, nowText, jobID); err != nil {
 		return nil, fmt.Errorf("sqlite: release claims of job %s: %w", jobID, mapErr(err))
+	}
+	// Then the steps (H4a2 §3.2), last: the step write touches only steps,
+	// which no lease or report writes, so it adds no lock-order inversion.
+	if _, err := tx.ExecContext(ctx, sqlCancelJobFinalizeSteps, nowText, jobID); err != nil {
+		return nil, fmt.Errorf("sqlite: finalize steps of job %s: %w", jobID, mapErr(err))
 	}
 	if err := tx.Commit(); err != nil {
 		return nil, fmt.Errorf("sqlite: commit cancel job execution: %w", mapErr(err))

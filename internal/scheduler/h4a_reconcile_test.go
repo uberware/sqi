@@ -404,10 +404,10 @@ func seedHealthyFarm(t *testing.T, st store.Store) healthyFarm {
 	f.jobs = append(f.jobs, blocked.ID)
 
 	// A job the user canceled, through the same two calls api/jobs.go makes.
-	// They write the job's tasks and the job row but never its steps, so the job
-	// ends up terminal with every step still non-terminal and every task
-	// canceled: stuck-looking by its tasks alone, and not stuck at all, because
-	// nothing downstream of a terminal job needs its steps finalized.
+	// Since H4a2 the first one also finalizes the job's steps, so the job ends up
+	// terminal with every step terminal (the pending one canceled outright) and
+	// every task canceled: nothing for a start to repair. The terminal-job guard
+	// on ListStuckSteps stays covered by the orphaned job below.
 	userCanceled := newReconcileJob("user-canceled", store.JobStatusRunning)
 	cancelRender := newReconcileStep(userCanceled.ID, "Render", 0, store.StepStatusRunning)
 	cancelLater := newReconcileStep(userCanceled.ID, "Later", 1, store.StepStatusPending, "Render")
@@ -425,8 +425,8 @@ func seedHealthyFarm(t *testing.T, st store.Store) healthyFarm {
 	}
 	// The fixture only means something if the cancel really left this shape.
 	wantJobStatus(t, st, userCanceled.ID, "user-canceled (seeded)", store.JobStatusCanceled)
-	wantStepStatus(t, st, cancelRender.ID, "user-canceled/Render (seeded)", store.StepStatusRunning)
-	wantStepStatus(t, st, cancelLater.ID, "user-canceled/Later (seeded)", store.StepStatusPending)
+	wantStepStatus(t, st, cancelRender.ID, "user-canceled/Render (seeded)", store.StepStatusCanceled)
+	wantStepStatus(t, st, cancelLater.ID, "user-canceled/Later (seeded)", store.StepStatusCanceled)
 	for _, task := range cancelTasks {
 		wantTaskStatus(t, st, task.ID, "user-canceled task (seeded)", store.TaskStatusCanceled, store.FailureReasonCanceledByUser)
 	}
