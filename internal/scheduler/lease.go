@@ -76,6 +76,9 @@ func (s *Scheduler) handleLeaseRequest(workerID, queueID string, data []byte) []
 	if err != nil {
 		return marshalLeaseReply(nil)
 	}
+	if workerDisabled(worker) {
+		return marshalLeaseReply(nil)
+	}
 	if s.leaseFromUnregisteredInstance(ctx, worker, req.InstanceID) {
 		return s.refuseLeaseAfterDelay(ctx)
 	}
@@ -119,12 +122,23 @@ func (s *Scheduler) refuseLeaseAfterDelay(ctx context.Context) []byte {
 	return marshalLeaseReply(nil)
 }
 
+// workerDisabled reports whether an operator has disabled the worker. Disabled
+// drains: the worker finishes the tasks it holds and is leased nothing new
+// (docs/api.md). It is checked on the lease request and again after a park,
+// because a worker can be disabled while its request is parked. A disable that
+// lands between the check and the lease can still let one batch through, which
+// is the documented drain.
+func workerDisabled(w store.Worker) bool {
+	return w.Status == store.WorkerStatusDisabled
+}
+
 // leaseAfterPark is the one retry a parked lease request makes once woken: it
-// re-reads the worker and, unless the worker re-registered from another process
-// while the request was parked, selects a batch. Any failure is an empty batch.
+// re-reads the worker and, unless the worker was disabled, or re-registered from
+// another process, while the request was parked, selects a batch. Any failure is
+// an empty batch.
 func (s *Scheduler) leaseAfterPark(ctx context.Context, workerID, instanceID string) [][]byte {
 	w, err := s.store.GetWorker(ctx, workerID)
-	if err != nil || s.leaseFromUnregisteredInstance(ctx, w, instanceID) {
+	if err != nil || workerDisabled(w) || s.leaseFromUnregisteredInstance(ctx, w, instanceID) {
 		return nil
 	}
 	batch, err := s.selectLeaseBatchLocked(ctx, w)

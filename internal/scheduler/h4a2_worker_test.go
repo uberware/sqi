@@ -324,3 +324,101 @@ func TestH4a2_HeldLeaseRefusalEndsWithTheScheduler(t *testing.T) {
 		t.Fatalf("task = %q, want still ready", task.Status)
 	}
 }
+
+// TestH4a2_DisabledWorkerGetsNoWork pins N1: docs/api.md says disable "stops
+// new assignments", but the lease path never checked worker status.
+func TestH4a2_DisabledWorkerGetsNoWork(t *testing.T) {
+	st := newCheckedFake(t)
+	s := newMetricsScheduler(st, &recordBus{}, "f1")
+	s.leaseHoldTimeout = 20 * time.Millisecond
+	one := 1
+	w, ids := seedLeaseFixture(t, st, []*int{&one})
+	if err := st.UpdateWorkerStatus(t.Context(), w.ID, store.WorkerStatusDisabled); err != nil {
+		t.Fatalf("UpdateWorkerStatus: %v", err)
+	}
+	req, err := json.Marshal(leaseRequest{WorkerID: w.ID})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var got leaseReply
+	if err := json.Unmarshal(s.handleLeaseRequest(w.ID, "q1", req), &got); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if len(got.Assignments) != 0 {
+		t.Fatalf("assignments = %d, want 0 for a disabled worker", len(got.Assignments))
+	}
+	if task := mustTaskOf(t, st, ids[0]); task.Status != store.TaskStatusReady {
+		t.Fatalf("task = %q, want ready (not leased)", task.Status)
+	}
+}
+
+// TestH4a2_ParkedLeaseOfAWorkerDisabledMeanwhileGetsNoWork pins the same rule
+// on the parked path: a request that parked while its worker was online, and is
+// woken after an operator disabled the worker, gets no work even though a task
+// is ready and the worker has the cores for it.
+func TestH4a2_ParkedLeaseOfAWorkerDisabledMeanwhileGetsNoWork(t *testing.T) {
+	st := newCheckedFake(t)
+	s := newMetricsScheduler(st, &recordBus{}, "f1")
+	s.ctx = t.Context()
+	s.leaseHoldTimeout = 30 * time.Second
+	one := 1
+	w, ids := seedLeaseFixture(t, st, []*int{&one})
+
+	// The worker takes the one ready task, so its next request finds nothing
+	// ready and parks. It is online and has three cores free, so the only thing
+	// that can keep it from the task added below is its status.
+	if got, _ := leaseAs(t, s, w.ID, ""); len(got) != 1 {
+		t.Fatalf("first lease = %v, want the one task", got)
+	}
+	req, err := json.Marshal(leaseRequest{WorkerID: w.ID})
+	if err != nil {
+		t.Fatalf("marshal lease request: %v", err)
+	}
+	done := make(chan []byte, 1)
+	go func() { done <- s.handleLeaseRequest(w.ID, "q1", req) }()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		s.waiters.mu.Lock()
+		parked := len(s.waiters.waiters["q1"])
+		s.waiters.mu.Unlock()
+		if parked > 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the second lease request never parked")
+		}
+		time.Sleep(time.Millisecond)
+	}
+
+	// While it is parked the worker is disabled and a new task becomes ready.
+	if err := st.UpdateWorkerStatus(t.Context(), w.ID, store.WorkerStatusDisabled); err != nil {
+		t.Fatalf("UpdateWorkerStatus: %v", err)
+	}
+	held := mustTaskOf(t, st, ids[0])
+	now := time.Now().UTC()
+	fresh, err := st.CreateTask(t.Context(), store.Task{
+		ID: "t-after-disable", JobID: held.JobID, StepID: held.StepID,
+		Name: "t", Status: store.TaskStatusReady, Parameters: map[string]string{},
+		RequiredCores: &one, CreatedAt: now, UpdatedAt: now,
+	})
+	if err != nil {
+		t.Fatalf("CreateTask: %v", err)
+	}
+	s.waiters.notifyAll()
+
+	select {
+	case raw := <-done:
+		var rep leaseReply
+		if err := json.Unmarshal(raw, &rep); err != nil {
+			t.Fatalf("unmarshal lease reply: %v", err)
+		}
+		if len(rep.Assignments) != 0 {
+			t.Fatalf("woken lease of a disabled worker = %s, want no assignments", raw)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("the parked lease request never returned")
+	}
+	if task := mustTaskOf(t, st, fresh.ID); task.Status != store.TaskStatusReady {
+		t.Fatalf("task = %q, want ready (not leased to the disabled worker)", task.Status)
+	}
+}
