@@ -43,6 +43,8 @@ func TestJobOperations_FromStatesAreLegal(t *testing.T) {
 		{"ReleaseBlockedJob", []store.JobStatus{store.JobStatusBlocked}, store.JobStatusPending},
 		{"CancelBlockedJob", []store.JobStatus{store.JobStatusBlocked}, store.JobStatusCanceled},
 		{"CancelJobStatus", nonTerminal, store.JobStatusCanceled},
+		// The job-row write at the end of the job cancel, under CancelJobStatus's guard.
+		{"CancelJobExecution", nonTerminal, store.JobStatusCanceled},
 		{"DemoteStalledJobs", []store.JobStatus{store.JobStatusRunning}, store.JobStatusPending},
 		{"RetryTasks", []store.JobStatus{store.JobStatusFailed, store.JobStatusCanceled, store.JobStatusPaused}, store.JobStatusPending},
 	}

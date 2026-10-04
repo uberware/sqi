@@ -20,8 +20,8 @@ package scheduler
 //  3. CancelTask then drives step and job completion
 //     ([Scheduler.checkStepCompletion]), as a terminal worker report does,
 //     because canceling a job's last open task finishes its step. CancelJob
-//     needs no such call: the store finalizes the job's steps inside the same
-//     transaction that cancels its tasks.
+//     needs no such call: the store finalizes the job's steps, and cancels the
+//     job row itself, inside the same transaction that cancels its tasks.
 //
 // Because the claims are released in the same transaction that closes the
 // attempts, there is no window in which a canceled task still holds a usage
@@ -59,9 +59,11 @@ type cancelPayload struct {
 // (e.g. a cascade-cancel's "canceled: upstream step failed") is never
 // clobbered.
 //
-// CancelJob does NOT update the job's own status; that is the caller's
-// responsibility (typically the REST handler that also calls
-// [store.JobStore.CancelJobStatus]).
+// The same transaction also finalizes the job's steps and moves the job itself
+// to canceled, unless it is already completed, failed or canceled, so a job
+// cancel is one write. A caller's later [store.JobStore.CancelJobStatus] (the
+// REST handler makes one) is an idempotent confirmation that reports a job that
+// had already completed or failed.
 //
 // The method is idempotent: if all tasks are already in terminal states the
 // store operation changes nothing and no NATS messages are published.

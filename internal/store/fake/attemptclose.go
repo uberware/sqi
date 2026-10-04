@@ -123,14 +123,16 @@ func (s *Store) CompleteTaskAttempt(_ context.Context, c store.AttemptCompletion
 // non-terminal task of the job is canceled with its worker assignment cleared,
 // then every running attempt of the job's tasks (including one on a task that
 // was already terminal) is closed, then the claims of the job's closed attempts
-// are released, and finally every open step of the job is finalized. The tasks
-// go first, as the interface documents.
+// are released, then every open step of the job is finalized, and finally the
+// job row is canceled unless it is already terminal. The tasks go first, as the
+// interface documents.
 func (s *Store) CancelJobExecution(_ context.Context, jobID, reason string, now time.Time) ([]store.Task, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	// Order mirrors SQLite's (spec 4.1): the tasks, then the attempts, then the
-	// claims, then the steps. The store lock stands in for the job-row anchor.
+	// claims, then the steps, then the job row. The store lock stands in for the
+	// job-row anchor.
 	now = now.UTC() // SQLite stores and returns these times in UTC
 	var active []store.Task
 	for id, t := range s.tasks {
@@ -146,7 +148,22 @@ func (s *Store) CancelJobExecution(_ context.Context, jobID, reason string, now 
 	}
 	s.closeAttemptsAndReleaseClaimsLocked(func(taskID string) bool { return s.tasks[taskID].JobID == jobID }, store.AttemptStatusCanceled, "", now)
 	s.cancelJobFinalizeStepsLocked(jobID, now)
+	s.cancelJobRowLocked(jobID, now)
 	return active, nil
+}
+
+// cancelJobRowLocked is SQLite's sqlCancelJobStatus inside the job cancel: the
+// job becomes canceled, stamped completed_at and updated_at now, unless it is
+// missing or already completed, failed or canceled, which it leaves exactly as
+// it is. Caller holds s.mu.
+func (s *Store) cancelJobRowLocked(jobID string, now time.Time) {
+	j, ok := s.jobs[jobID]
+	if !ok || j.Status.IsTerminal() {
+		return
+	}
+	at := now
+	j.Status, j.CompletedAt, j.UpdatedAt = store.JobStatusCanceled, &at, now
+	s.jobs[jobID] = j
 }
 
 // cancelJobFinalizeStepsLocked is SQLite's sqlCancelJobFinalizeSteps: every

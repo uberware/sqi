@@ -776,8 +776,9 @@ func (h *jobHandler) cancelJob(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Fast-path: already canceled → idempotent 204; completed/failed → 409.
-	// This check also runs inside CancelJobStatus (atomic SQL guard), so a
-	// concurrent transition that races past here is still safe.
+	// The store's cancel applies the same guard to the job row inside its
+	// transaction, so a concurrent transition that races past here is still
+	// safe.
 	switch job.Status {
 	case store.JobStatusCanceled:
 		w.WriteHeader(http.StatusNoContent)
@@ -787,20 +788,23 @@ func (h *jobHandler) cancelJob(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// CancelJob handles task cancellation and NATS signal dispatch.
+	// CancelJob cancels the tasks, finalizes the steps and cancels the job row
+	// in one store transaction, then sends the workers their cancel signals.
 	if err = h.sched.CancelJob(ctx, id); err != nil {
 		h.logger.ErrorContext(ctx, "jobs: cancel scheduler failed", slog.String("id", id), slog.Any("error", err))
 		writeProblem(w, r, http.StatusInternalServerError, "failed to cancel job tasks")
 		return
 	}
 
-	// CancelJobStatus uses a conditional UPDATE (WHERE status NOT IN terminal
-	// states) so a concurrent scheduler transition that completed the job
-	// between the GetJob check above and this call is not overwritten.
+	// CancelJobStatus is now a confirmation: the job row was canceled above, so
+	// it returns nil for that job. Its conditional UPDATE (WHERE status NOT IN
+	// terminal states) still reports a job that a concurrent scheduler
+	// transition completed or failed between the GetJob check above and the
+	// cancel, which the cancel left as it was.
 	if err = h.store.CancelJobStatus(ctx, id); err != nil {
 		if errors.Is(err, store.ErrConflict) {
 			// Job reached a terminal state (completed/failed) concurrently.
-			// Tasks were already canceled above; treat as a conflict.
+			// Any task still open was canceled above; treat as a conflict.
 			writeProblem(w, r, http.StatusConflict, "job completed before cancellation could be applied")
 			return
 		}

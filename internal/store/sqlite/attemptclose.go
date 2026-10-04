@@ -296,7 +296,11 @@ func closeTaskAttemptsTx(ctx context.Context, tx *sql.Tx, taskID string, status 
 // Anchor: the job row, the parent every job-level operation locks. The anchor
 // comes before the SELECT that reports the active tasks (I2), and the writes run
 // in the order spec 4.1 requires on Postgres: the tasks are canceled first, and
-// only then are their attempts closed and their claims released. A LeaseTask
+// only then are their attempts closed and their claims released. The job's steps
+// are finalized after that, and the job row itself is canceled last, under the
+// same guard as [Store.CancelJobStatus], so a job cancel is one write: no stop
+// or failed second write can leave a job live with all of its work canceled
+// (H4a2 final review). A LeaseTask
 // that holds one of the tasks is therefore waited for by the task UPDATE (whose
 // predicate matches the task both as ready and as assigned), and the attempt
 // and claims it committed are seen by the two statements after it. Closing
@@ -317,7 +321,8 @@ func (s *Store) CancelJobExecution(ctx context.Context, jobID, reason string, no
 	defer func() { _ = tx.Rollback() }() //nolint:errcheck // rollback after commit is a no-op
 
 	// Order (spec 4.1): anchor, then the SELECT of the active set, then tasks,
-	// attempts, claims, then steps. See the doc comment for why tasks come first.
+	// attempts, claims, steps, and the job row last. See the doc comment for why
+	// tasks come first.
 	if err := lockAnchors(ctx, tx, jobAnchor(jobID)); err != nil {
 		return nil, err
 	}
@@ -339,6 +344,12 @@ func (s *Store) CancelJobExecution(ctx context.Context, jobID, reason string, no
 	// which no lease or report writes, so it adds no lock-order inversion.
 	if _, err := tx.ExecContext(ctx, sqlCancelJobFinalizeSteps, nowText, jobID); err != nil {
 		return nil, fmt.Errorf("sqlite: finalize steps of job %s: %w", jobID, mapErr(err))
+	}
+	// Then the job row, last: CancelJobStatus's own guarded statement, so a
+	// completed, failed or already canceled job is left exactly as it is. The
+	// anchor already holds this row, so the write adds no lock.
+	if _, err := tx.ExecContext(ctx, sqlCancelJobStatus, nowText, nowText, jobID); err != nil {
+		return nil, fmt.Errorf("sqlite: cancel job %s: %w", jobID, mapErr(err))
 	}
 	if err := tx.Commit(); err != nil {
 		return nil, fmt.Errorf("sqlite: commit cancel job execution: %w", mapErr(err))

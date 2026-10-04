@@ -112,7 +112,8 @@ func ValidateTaskTransition(from, to TaskStatus) error {
 //	blocked → pending                 ReleaseBlockedJob
 //	failed/canceled → pending         RetryTasks
 //	any non-terminal → paused         ParkJob (PauseJob for pending and running)
-//	any non-terminal → canceled       CancelJobStatus (CancelBlockedJob for blocked)
+//	any non-terminal → canceled       CancelJobExecution and CancelJobStatus
+//	                                  (CancelBlockedJob for blocked)
 //
 // FinalizeJob's pending → completed is real: a task can reach assigned →
 // succeeded with its running report dropped, so the job is never promoted. Its

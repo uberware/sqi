@@ -363,14 +363,21 @@ type TaskStore interface {
 	//     is no longer running;
 	//  4. finalize every open step of the job (a pending step, or one with no
 	//     tasks, becomes canceled; any other gets FinalizeStep's outcome), so
-	//     after a job cancel every step is terminal (H4a2).
+	//     after a job cancel every step is terminal (H4a2);
+	//  5. move the job itself to [JobStatusCanceled], writing its CompletedAt
+	//     and UpdatedAt as now, under the same guard as
+	//     [JobStore.CancelJobStatus]: a completed, failed or already canceled
+	//     job is left exactly as it is. A job cancel is therefore one write, and
+	//     no stop or failed second write can leave the job live with all of its
+	//     work canceled.
 	// It returns the tasks that were in [TaskStatusAssigned] or
 	// [TaskStatusRunning] when step 1 ran, each as it was before the cancel (its
 	// AssignedWorkerID intact), so the caller can signal the workers. Tasks
 	// already terminal are not modified, and a job with nothing left to cancel
-	// returns no tasks and no error. now stamps the tasks, the attempts and the
-	// claims. The job's own status is not changed; that is
-	// [JobStore.CancelJobStatus].
+	// returns no tasks and no error. now stamps the tasks, the attempts, the
+	// claims, the steps and the job. A later [JobStore.CancelJobStatus] is an
+	// idempotent confirmation: nil for the job this call canceled, [ErrConflict]
+	// for a job that was already completed or failed.
 	//
 	// Statement order is part of the contract on Postgres: tasks are canceled
 	// first, then attempts closed and claims released, so a concurrent LeaseTask

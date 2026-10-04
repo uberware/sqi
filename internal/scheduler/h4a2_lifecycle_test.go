@@ -83,6 +83,52 @@ func TestH4a2_CancelJobThenRetryJobRunsAgain(t *testing.T) {
 	}
 }
 
+// TestH4a2_CancelEchoAfterJobCancelKeepsTheJobCanceled pins the final review's
+// cancel-echo race. A job cancel finalizes every step, so a step holding a
+// failed task ends failed. When the job row was a second write, the worker's
+// "canceled" echo for a canceled task could reach checkStepCompletion before it,
+// and FinalizeJob then ended the job failed: the user got a 409 although every
+// task had been canceled. The job row is now canceled in the cancel's own
+// transaction, so the echo finds a terminal job and the confirmation succeeds.
+func TestH4a2_CancelEchoAfterJobCancelKeepsTheJobCanceled(t *testing.T) {
+	for name, st := range raceBackends(t) {
+		t.Run(name, func(t *testing.T) {
+			job, _, task, attempt := seedStatusFixture(t, st, store.TaskStatusRunning)
+			now := time.Now()
+			bad, err := st.CreateStep(t.Context(), store.Step{
+				ID: uuid.NewString(), JobID: job.ID, Name: "Bad", StepOrder: 1,
+				Status: store.StepStatusRunning, CreatedAt: now, UpdatedAt: now,
+			})
+			if err != nil {
+				t.Fatalf("CreateStep: %v", err)
+			}
+			if _, err := st.CreateTask(t.Context(), store.Task{
+				ID: uuid.NewString(), JobID: job.ID, StepID: bad.ID, Name: "t-failed",
+				Status: store.TaskStatusFailed, CreatedAt: now, UpdatedAt: now,
+			}); err != nil {
+				t.Fatalf("CreateTask (failed): %v", err)
+			}
+			s := newTestScheduler(st, &stubBus{})
+			s.ctx = t.Context()
+			if err := s.CancelJob(t.Context(), job.ID); err != nil {
+				t.Fatalf("CancelJob: %v", err)
+			}
+			// The worker's echo of the cancel, a same-status terminal report.
+			msg := terminalReport(t, task, attempt, "canceled", "")
+			s.handleTaskStatusMessage(msg)
+			if !msg.acked || msg.nacked {
+				t.Fatalf("echo must be acked (acked=%v nacked=%v)", msg.acked, msg.nacked)
+			}
+			if got := mustJob(t, st, job.ID).Status; got != store.JobStatusCanceled {
+				t.Fatalf("job = %q after the cancel echo, want canceled", got)
+			}
+			if err := st.CancelJobStatus(t.Context(), job.ID); err != nil {
+				t.Fatalf("CancelJobStatus = %v, want nil (the job is already canceled)", err)
+			}
+		})
+	}
+}
+
 // TestH4a2_RetryFailedTaskWhileSiblingRunsIsLeasable pins item 9 vi through
 // RetryTask: the revived task is ready at once, not pending under a ready step.
 func TestH4a2_RetryFailedTaskWhileSiblingRunsIsLeasable(t *testing.T) {

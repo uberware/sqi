@@ -653,9 +653,16 @@ happened, and the start-up reconcile is the backstop. A job-wide cancel
 finalizes in the store instead: `CancelJobExecution` finalizes every open step
 of the job in the same transaction, last, after the tasks, attempts and claims
 (a pending step, or one with no tasks, becomes `canceled`; any other gets
-`FinalizeStep`'s outcome rule). After a job cancel every step is terminal, so
-`RetryJob` on a canceled job works: the revived tasks sit under a step that
-`RetryTasks` resets and `ResolveDependencies` releases.
+`FinalizeStep`'s outcome rule), and then cancels the job row itself, under the
+same guard as `CancelJobStatus` (a completed, failed or already canceled job is
+left as it is). A job cancel is therefore one write: no server stop, store error
+or dropped HTTP request between two writes can leave a job live with all of its
+work canceled, and a worker's late `canceled` echo finds the job already
+terminal instead of finalizing it `failed` ahead of the cancel. The REST
+handler's `CancelJobStatus` after it is an idempotent confirmation that still
+reports a job that completed or failed first. After a job cancel every step is
+terminal, so `RetryJob` on a canceled job works: the revived tasks sit under a
+step that `RetryTasks` resets and `ResolveDependencies` releases.
 
 Two arrows deserve note. `assigned` → `succeeded`/`failed` is permitted even
 though it appears to skip `running`: the worker publishes `running` first, but
@@ -837,7 +844,7 @@ operation passes today:
 | `CompleteTaskAttempt`, `RecordTaskFailure` | the task's job row | |
 | `StartTaskAttempt`, `ReclaimTaskAttempt` | the task's job row | A PostgreSQL store must `SELECT … FOR UPDATE` the task row after the job anchor and **before** the latest-attempt check, as for `CompleteTaskAttempt` (see below). `ReclaimTaskAttempt` takes no worker row: it neither reads nor writes one. |
 | `RequeueTaskForRetry` | none today (one guarded `UPDATE` whose predicate includes the latest-attempt check); a PostgreSQL store takes the job row first | Same: lock the task row `FOR UPDATE` before the latest-attempt check. |
-| `CancelJobExecution`, `CancelTaskExecution` | the job row (the task's job, for a single task) | `CancelJobExecution` writes the job's steps **last**, after the tasks, attempts and claims; the step write touches only `steps`, which no lease or report writes, so it adds no lock-order inversion. |
+| `CancelJobExecution`, `CancelTaskExecution` | the job row (the task's job, for a single task) | `CancelJobExecution` writes the job's steps after the tasks, attempts and claims, and the job row itself **last**; the step write touches only `steps`, which no lease or report writes, and the job row is the anchor this transaction already holds, so neither adds a lock-order inversion. |
 | `RetryTasks` | the job row | |
 | `FinalizeStep`, `FinalizeJob` | the job row (the step's job, for a step) | The current status, used only to report "already terminal", is read before the lock. |
 | `ReleaseStep`, `CancelPendingStep` | the step's job row | |
@@ -1098,11 +1105,15 @@ Pre-existing in v0.3.0:
   `assigned` without being in the batch, and only the stale-assignment reaper
   returns it to `ready`. A failure of `LeaseTask` itself no longer has this
   effect: the tasks leased earlier in the batch are still delivered.
-- **A job whose steps are all terminal but whose own status is not** (a crash
-  between a cancel cascade's last step write and `FinalizeJob`) is repaired by
-  neither start-up reconcile pass: `reconcileStuckSteps` lists non-terminal
-  steps and `reconcilePendingSteps` lists `pending` ones, and this job has
-  neither.
+- **A job whose steps are all terminal but whose own status is not**, left by
+  a server stop between a cancel cascade's commit (`CancelDependents`
+  canceling the last open steps after an upstream step failed) and the
+  `FinalizeJob` that follows it, is repaired by neither start-up reconcile
+  pass: `reconcileStuckSteps` lists non-terminal steps and
+  `reconcilePendingSteps` lists `pending` ones, and this job has neither.
+  There is still no start-up repair for it. A user's job cancel no longer
+  leaves this shape: `CancelJobExecution` cancels the job row in the same
+  transaction that cancels its tasks and finalizes its steps.
 
 Left by the lifecycle fixes:
 
