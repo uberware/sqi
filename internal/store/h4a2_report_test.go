@@ -63,7 +63,7 @@ func TestStartTaskAttempt(t *testing.T) {
 // TestCompleteTaskAttempt_RefusesATaskOutOfFlight pins item 9's second
 // late-report hole: a late terminal report from the latest attempt, after the
 // task left flight with no new lease (canceled then retried), must not move
-// it. The attempt close and claim release still happen.
+// it.
 func TestCompleteTaskAttempt_RefusesATaskOutOfFlight(t *testing.T) {
 	for _, current := range []store.TaskStatus{store.TaskStatusReady, store.TaskStatusPending} {
 		for name, st := range newStores(t) {

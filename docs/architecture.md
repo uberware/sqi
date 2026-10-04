@@ -714,7 +714,9 @@ toward the job's `failure_limit` (a `worker_shutdown` report is routed to
 `ReclaimTaskAttempt` before the failure policy is consulted). Only a *genuine*
 worker-reported failure counts. A rolling restart of the farm's workers
 therefore cannot park jobs, and a worker's `worker_shutdown` report and its
-deregister end in the same state whichever the server applies first.
+deregister end in the same task, claim and counter state whichever the server
+applies first (only the closed attempt's `message` differs: `worker shut down`
+or `worker went offline`, depending on which landed first).
 
 **A parked job is not stuck forever.** Parking only sets `status=paused`; it
 does not force every other task in the job to a terminal state. If the job
@@ -994,8 +996,14 @@ And from the lifecycle and report fixes:
   When the stored one is non-empty and differs from a non-empty incoming one,
   the registration transaction reclaims the worker's assigned and running
   tasks. Migration `00034` adds the column, empty on existing rows, so the
-  first registration after upgrade reclaims nothing. The lease request carries
-  the same optional `instance_id`, and the scheduler refuses to serve a request
+  first registration after upgrade reclaims nothing. The consequence: a worker
+  upgraded by `kill -9` or a crash (so no deregister) while it holds running
+  tasks, and back within the heartbeat timeout, leaves those tasks `running`
+  this one time, the very bug this fixes. An orderly SIGTERM upgrade is fine,
+  because the old build deregisters and the deregister reclaims its tasks, so
+  drain or stop workers gracefully before upgrading them. The lease request
+  carries the same optional `instance_id`, and the scheduler refuses to serve a
+  request
   whose instance differs from the stored non-empty one until the registration
   has landed (the registration travels through JetStream, the lease is core
   NATS request/reply, so a restarted process can ask for work first, and a task

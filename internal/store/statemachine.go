@@ -117,9 +117,12 @@ func ValidateTaskTransition(from, to TaskStatus) error {
 //
 // FinalizeJob's pending → completed is real: a task can reach assigned →
 // succeeded with its running report dropped, so the job is never promoted. Its
-// SQL guard also admits blocked, but a blocked job's steps are all pending, so
-// it never finalizes one and the table has no blocked → terminal arrow besides
-// the cancels.
+// SQL guard also admits blocked, and a blocked job can be finalized: canceling
+// the only task of its only step (CancelTask) finalizes that step pending →
+// canceled, and FinalizeJob then moves the job blocked → canceled, an arrow the
+// table already lists. blocked → completed and blocked → failed cannot happen,
+// because a blocked job's tasks are never leased, so none of them succeeds or
+// fails.
 //
 // A write to a job's current status is a no-op, not a transition, so no status
 // lists itself.
