@@ -534,9 +534,9 @@ func (r *stressRun) staleReport(n int) {
 		if !r.expect("ListTaskAttempts", err) {
 			return
 		}
-		for i := len(attempts) - 1; i >= 0; i-- {
-			if attempts[i].Status != store.AttemptStatusRunning {
-				r.sendStaleReport(attempts[i], n)
+		for _, a := range slices.Backward(attempts) {
+			if a.Status != store.AttemptStatusRunning {
+				r.sendStaleReport(a, n)
 				return
 			}
 		}
