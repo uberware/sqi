@@ -77,6 +77,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -617,14 +618,7 @@ func (s *Scheduler) jobHasOpenStep(ctx context.Context, jobID string) (bool, err
 	if err != nil {
 		return false, err
 	}
-	for _, st := range steps {
-		switch st.Status {
-		case store.StepStatusCompleted, store.StepStatusFailed, store.StepStatusCanceled:
-		default:
-			return true, nil
-		}
-	}
-	return false, nil
+	return slices.ContainsFunc(steps, func(st store.Step) bool { return !st.Status.IsTerminal() }), nil
 }
 
 // buildUsageClaims converts the step's usage pool requirements into
@@ -1274,15 +1268,21 @@ func (s *Scheduler) reapStaleAssignedTasks(ctx context.Context) {
 
 	now := time.Now().UTC()
 	for _, task := range reclaimed {
-		s.notifier.NotifyTask(ws.TaskEvent{
-			JobID:     task.JobID,
-			TaskID:    task.ID,
-			Name:      task.Name,
-			Status:    string(store.TaskStatusReady),
-			UpdatedAt: now,
-		})
-		s.notifyQueueForJob(ctx, task.JobID)
+		s.notifyTaskReclaimed(ctx, task, now)
 	}
+}
+
+// notifyTaskReclaimed announces a task a reclaim returned to ready and wakes
+// the lease waiters on its job's queue.
+func (s *Scheduler) notifyTaskReclaimed(ctx context.Context, task store.Task, now time.Time) {
+	s.notifier.NotifyTask(ws.TaskEvent{
+		JobID:     task.JobID,
+		TaskID:    task.ID,
+		Name:      task.Name,
+		Status:    string(store.TaskStatusReady),
+		UpdatedAt: now,
+	})
+	s.notifyQueueForJob(ctx, task.JobID)
 }
 
 // sweepStaleWorkers finds workers whose heartbeat has expired, marks them

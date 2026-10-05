@@ -33,10 +33,7 @@ func (s *Store) RegisterWorker(_ context.Context, worker store.Worker) (store.Wo
 		if worker.InstanceID == "" {
 			worker.InstanceID = existing.InstanceID
 		} else if existing.InstanceID != "" && existing.InstanceID != worker.InstanceID {
-			id := worker.ID
-			reclaimed = s.reclaimToReadyLocked(func(t store.Task) bool {
-				return t.AssignedWorkerID == id && (t.Status == store.TaskStatusAssigned || t.Status == store.TaskStatusRunning)
-			}, store.FailureReasonWorkerRestarted, time.Now().UTC())
+			reclaimed = s.reclaimWorkerTasksLocked(worker.ID, store.FailureReasonWorkerRestarted, time.Now().UTC())
 		}
 	}
 	s.workers[worker.ID] = worker
@@ -171,7 +168,7 @@ func (s *Store) CountIdleWorkers(_ context.Context, farmID string) (int, error) 
 	// Build the set of worker IDs that have an active task.
 	busy := make(map[string]struct{})
 	for _, t := range s.tasks {
-		if t.Status == store.TaskStatusAssigned || t.Status == store.TaskStatusRunning {
+		if inFlightTask(t.Status) {
 			busy[t.AssignedWorkerID] = struct{}{}
 		}
 	}
@@ -224,8 +221,9 @@ func (s *Store) DeleteWorkerIfRemovable(_ context.Context, id string, disabledCu
 // hasWorkInFlightLocked reports whether any task is assigned to or running on
 // workerID. Caller holds s.mu.
 func (s *Store) hasWorkInFlightLocked(workerID string) bool {
+	onWorker := inFlightOn(workerID)
 	for _, t := range s.tasks {
-		if t.AssignedWorkerID == workerID && (t.Status == store.TaskStatusAssigned || t.Status == store.TaskStatusRunning) {
+		if onWorker(t) {
 			return true
 		}
 	}

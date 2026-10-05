@@ -19,15 +19,24 @@ const (
 	sqlFinalizeStep = `
 UPDATE steps
 SET    status = CASE
-         WHEN EXISTS (SELECT 1 FROM tasks t WHERE t.step_id = steps.id AND t.status = 'failed')   THEN 'failed'
-         WHEN EXISTS (SELECT 1 FROM tasks t WHERE t.step_id = steps.id AND t.status = 'canceled') THEN 'canceled'
-         ELSE 'completed' END,
+` + sqlStepOutcomeArms + `,
        updated_at = ?
 WHERE  id = ?
   AND  status NOT IN ('completed', 'failed', 'canceled')
-  AND  NOT EXISTS (SELECT 1 FROM tasks t WHERE t.step_id = steps.id
-                   AND t.status NOT IN ('succeeded', 'failed', 'canceled'))
+  AND  ` + sqlStepHasNoOpenTask + `
 RETURNING status`
+
+	// sqlStepOutcomeArms is the tail of the step-outcome CASE, computed from the
+	// step's tasks: failed if any failed, else canceled if any was canceled,
+	// else completed. sqlFinalizeStep and sqlCancelJobFinalizeSteps share it.
+	sqlStepOutcomeArms = `         WHEN EXISTS (SELECT 1 FROM tasks t WHERE t.step_id = steps.id AND t.status = 'failed')   THEN 'failed'
+         WHEN EXISTS (SELECT 1 FROM tasks t WHERE t.step_id = steps.id AND t.status = 'canceled') THEN 'canceled'
+         ELSE 'completed' END`
+
+	// sqlStepHasNoOpenTask holds when no task of the step is still open, the
+	// guard every step finalization, and the stuck-step list, share.
+	sqlStepHasNoOpenTask = `NOT EXISTS (SELECT 1 FROM tasks t WHERE t.step_id = steps.id
+                   AND t.status NOT IN ('succeeded', 'failed', 'canceled'))`
 
 	// sqlFinalizeJob is invariant I4 for jobs, computed over the job's steps.
 	sqlFinalizeJob = `
@@ -58,14 +67,11 @@ UPDATE steps
 SET    status = CASE
          WHEN status = 'pending' THEN 'canceled'
          WHEN NOT EXISTS (SELECT 1 FROM tasks t WHERE t.step_id = steps.id) THEN 'canceled'
-         WHEN EXISTS (SELECT 1 FROM tasks t WHERE t.step_id = steps.id AND t.status = 'failed')   THEN 'failed'
-         WHEN EXISTS (SELECT 1 FROM tasks t WHERE t.step_id = steps.id AND t.status = 'canceled') THEN 'canceled'
-         ELSE 'completed' END,
+` + sqlStepOutcomeArms + `,
        updated_at = ?
 WHERE  job_id = ?
   AND  status NOT IN ('completed', 'failed', 'canceled')
-  AND  NOT EXISTS (SELECT 1 FROM tasks t WHERE t.step_id = steps.id
-                   AND t.status NOT IN ('succeeded', 'failed', 'canceled'))`
+  AND  ` + sqlStepHasNoOpenTask
 
 	// sqlListStuckSteps selects the steps sqlFinalizeStep would finalize now,
 	// restricted to steps of a job that is not itself terminal. The job
@@ -79,8 +85,7 @@ WHERE  status NOT IN ('completed', 'failed', 'canceled')
   AND  EXISTS     (SELECT 1 FROM jobs j WHERE j.id = steps.job_id
                    AND j.status NOT IN ('completed', 'failed', 'canceled'))
   AND  EXISTS     (SELECT 1 FROM tasks t WHERE t.step_id = steps.id)
-  AND  NOT EXISTS (SELECT 1 FROM tasks t WHERE t.step_id = steps.id
-                   AND t.status NOT IN ('succeeded', 'failed', 'canceled'))
+  AND  ` + sqlStepHasNoOpenTask + `
 ORDER BY job_id, step_order`
 
 	// sqlListJobIDsWithPendingSteps selects the jobs whose pending steps the
@@ -120,7 +125,7 @@ func (s *Store) FinalizeStep(ctx context.Context, id string, now time.Time) (sto
 	case errors.Is(err, sql.ErrNoRows):
 		// Not finalized now: either a task is still in flight, or the step was
 		// already terminal before this call.
-		if isTerminalStep(store.StepStatus(current)) {
+		if store.StepStatus(current).IsTerminal() {
 			return store.StepStatus(current), false, tx.Commit()
 		}
 		return "", false, tx.Commit()
@@ -204,10 +209,6 @@ func (s *Store) ListJobIDsWithPendingSteps(ctx context.Context) ([]string, error
 		ids = append(ids, id)
 	}
 	return ids, rows.Err()
-}
-
-func isTerminalStep(s store.StepStatus) bool {
-	return s == store.StepStatusCompleted || s == store.StepStatusFailed || s == store.StepStatusCanceled
 }
 
 // sqlGuardStepPending is the I1 guard for releasing or canceling a step: it

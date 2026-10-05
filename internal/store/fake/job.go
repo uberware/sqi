@@ -434,11 +434,7 @@ func (s *Store) CancelJobStatus(_ context.Context, id string) error {
 		return store.ErrConflict
 	}
 
-	now := time.Now()
-	job.Status = store.JobStatusCanceled
-	job.CompletedAt = &now
-	job.UpdatedAt = now
-	s.jobs[id] = job
+	s.cancelJobRowLocked(id, time.Now().UTC())
 	return nil
 }
 

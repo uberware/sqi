@@ -400,7 +400,7 @@ func runWorker(ctx context.Context, cmd *cobra.Command) error {
 	leaseLoop := lease.New(
 		leaseTransport{nc: nc}, // adapts *nats.Conn to lease.Transport
 		exec,                   // *executor.Executor implements lease.Dispatcher
-		leaseConfig(cfg.Worker.QueueIDs, workerID, reg),
+		leaseConfig(cfg.Worker.QueueIDs, workerID, reg.InstanceID()),
 		logger,
 	)
 	go leaseLoop.Run(ctx)
@@ -715,21 +715,15 @@ func leaseQueueIDs(configured []string) []string {
 	return configured
 }
 
-// processIdentity is the part of [registration.Registrar] the lease loop needs:
-// the instance ID this process registers with.
-type processIdentity interface {
-	InstanceID() string
-}
-
 // leaseConfig builds the lease loop's configuration. Every lease request
 // carries the same instance ID as this process's registration, so the server
 // can tell a request from a process whose registration it has not applied yet
 // (H4a2 §4.5).
-func leaseConfig(queueIDs []string, workerID string, process processIdentity) lease.Config {
+func leaseConfig(queueIDs []string, workerID, instanceID string) lease.Config {
 	return lease.Config{
 		QueueIDs:   leaseQueueIDs(queueIDs),
 		WorkerID:   workerID,
-		InstanceID: process.InstanceID(),
+		InstanceID: instanceID,
 	}
 }
 

@@ -473,9 +473,6 @@ func (s *Submitter) Submit(
 			// error, in the same words.
 			return nil, unsatisfiedDependency(dep)
 		}
-		if errors.Is(err, store.ErrDependencyUnsatisfiable) {
-			return nil, &SubmitValidationError{Cause: fmt.Errorf("openjd: submit: %w", err)}
-		}
 		return nil, fmt.Errorf("openjd: submit: create job: %w", err)
 	}
 

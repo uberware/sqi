@@ -763,7 +763,7 @@ func (s *Store) RequeueTaskForRetry(_ context.Context, taskID, attemptID string,
 	defer s.mu.Unlock()
 
 	t, ok := s.tasks[taskID]
-	if !ok || (t.Status != store.TaskStatusAssigned && t.Status != store.TaskStatusRunning) || !s.isLatestAttemptLocked(taskID, attemptID) {
+	if !ok || !inFlightTask(t.Status) || !s.isLatestAttemptLocked(taskID, attemptID) {
 		return false, nil
 	}
 	t.Status = store.TaskStatusReady

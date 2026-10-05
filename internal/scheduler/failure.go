@@ -133,11 +133,7 @@ func (s *Scheduler) handleTaskShutdown(ctx context.Context, attempt store.TaskAt
 	}
 	s.logger.InfoContext(ctx, "scheduler: task reclaimed from a shutting-down worker",
 		slog.String("task_id", m.TaskID), slog.String("worker_id", attempt.WorkerID))
-	s.notifier.NotifyTask(ws.TaskEvent{
-		JobID: task.JobID, TaskID: task.ID, Name: task.Name,
-		Status: string(store.TaskStatusReady), UpdatedAt: time.Now().UTC(),
-	})
-	s.notifyQueueForJob(ctx, task.JobID)
+	s.notifyTaskReclaimed(ctx, task, time.Now().UTC())
 	return nil
 }
 

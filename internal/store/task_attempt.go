@@ -83,7 +83,8 @@ type TaskAttemptStore interface {
 	// cancels ([TaskStore.CancelJobExecution], [TaskStore.CancelTaskExecution]),
 	// the reaper ([TaskStore.ReclaimStaleAssignedTasks]) and the offline
 	// reclaims ([WorkerStore.OfflineStaleWorker], [WorkerStore.OfflineWorker]),
-	// each of which releases the claims in the same transaction. Its one
-	// production use records a running attempt's session ID.
+	// each of which releases the claims in the same transaction. It has no
+	// production caller: [TaskStore.StartTaskAttempt] records a running
+	// attempt's session ID. It remains as test fixture surface.
 	UpdateTaskAttempt(ctx context.Context, attempt TaskAttempt) (TaskAttempt, error)
 }

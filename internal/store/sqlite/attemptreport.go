@@ -13,7 +13,15 @@ import (
 )
 
 const (
-	sqlSelectAttemptStatus = `SELECT status FROM task_attempts WHERE id = ? AND task_id = ?`
+	// sqlSelectAttemptLive reports whether an attempt of the task is still
+	// running and is the task's latest attempt (sqlIsLatestAttempt's rule). No
+	// row means the attempt does not exist or belongs to another task. Binds:
+	// attempt id, task id.
+	sqlSelectAttemptLive = `
+SELECT a.status = 'running'
+   AND a.attempt_number = (SELECT MAX(attempt_number) FROM task_attempts WHERE task_id = a.task_id)
+FROM   task_attempts a
+WHERE  a.id = ? AND a.task_id = ?`
 
 	// sqlSetRunningAttemptSession records a session ID on an attempt only while
 	// it is open. Binds: session_id, id.
@@ -21,27 +29,28 @@ const (
 UPDATE task_attempts SET session_id = ? WHERE id = ? AND status = 'running'`
 )
 
-// liveAttemptTx reports whether attemptID is still running and is taskID's
-// latest attempt, and returns the task's current status. sql.ErrNoRows on the
-// task maps to store.ErrNotFound.
+// liveAttemptTx reports whether a worker report from attemptID may act on
+// taskID: the attempt is still running and is the task's latest attempt, and
+// the task is in flight (assigned or running). It also returns the task's
+// current status. sql.ErrNoRows on the task maps to store.ErrNotFound.
 func liveAttemptTx(ctx context.Context, tx *sql.Tx, attemptID, taskID string) (bool, store.TaskStatus, error) {
 	var current string
 	if err := tx.QueryRowContext(ctx, sqlSelectTaskStatus, taskID).Scan(&current); err != nil {
 		return false, "", mapErr(err)
 	}
-	var attemptStatus string
-	err := tx.QueryRowContext(ctx, sqlSelectAttemptStatus, attemptID, taskID).Scan(&attemptStatus)
+	cur := store.TaskStatus(current)
+	if cur != store.TaskStatusAssigned && cur != store.TaskStatusRunning {
+		return false, cur, nil
+	}
+	var live bool
+	err := tx.QueryRowContext(ctx, sqlSelectAttemptLive, attemptID, taskID).Scan(&live)
 	if errors.Is(err, sql.ErrNoRows) {
-		return false, store.TaskStatus(current), nil
+		return false, cur, nil
 	}
 	if err != nil {
-		return false, "", fmt.Errorf("sqlite: attempt %s status: %w", attemptID, mapErr(err))
+		return false, "", fmt.Errorf("sqlite: attempt %s of task %s: %w", attemptID, taskID, mapErr(err))
 	}
-	var latest bool
-	if err := tx.QueryRowContext(ctx, sqlIsLatestAttempt, attemptID, taskID, taskID).Scan(&latest); err != nil {
-		return false, "", fmt.Errorf("sqlite: latest attempt of task %s: %w", taskID, mapErr(err))
-	}
-	return latest && attemptStatus == string(store.AttemptStatusRunning), store.TaskStatus(current), nil
+	return live, cur, nil
 }
 
 // beginTaskTx opens a transaction and takes the task's job-row anchor.
@@ -74,7 +83,7 @@ func (s *Store) StartTaskAttempt(ctx context.Context, attemptID, taskID, session
 	if err != nil {
 		return false, err
 	}
-	if !live || (current != store.TaskStatusAssigned && current != store.TaskStatusRunning) {
+	if !live {
 		return false, tx.Commit()
 	}
 	if current == store.TaskStatusAssigned {
@@ -96,9 +105,7 @@ func (s *Store) StartTaskAttempt(ctx context.Context, attemptID, taskID, session
 }
 
 // sqlReclaimOneTask returns one in-flight task to ready. Binds: updated_at, id.
-const sqlReclaimOneTask = `
-UPDATE tasks
-SET    status = 'ready', assigned_worker_id = NULL, assigned_at = NULL, updated_at = ?, unschedulable_reason = ''
+const sqlReclaimOneTask = sqlReclaimTaskSet + `
 WHERE  id = ? AND status IN ('assigned', 'running')`
 
 // ReclaimTaskAttempt implements [store.TaskStore].
@@ -117,11 +124,11 @@ func (s *Store) ReclaimTaskAttempt(ctx context.Context, attemptID, taskID string
 	}
 	defer func() { _ = tx.Rollback() }() //nolint:errcheck // rollback after commit is a no-op
 
-	live, current, err := liveAttemptTx(ctx, tx, attemptID, taskID)
+	live, _, err := liveAttemptTx(ctx, tx, attemptID, taskID)
 	if err != nil {
 		return false, err
 	}
-	if !live || (current != store.TaskStatusAssigned && current != store.TaskStatusRunning) {
+	if !live {
 		return false, tx.Commit()
 	}
 	nowText := timeToText(now.UTC())

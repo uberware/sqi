@@ -15,8 +15,19 @@ func terminalTask(s store.TaskStatus) bool {
 	return s == store.TaskStatusSucceeded || s == store.TaskStatusFailed || s == store.TaskStatusCanceled
 }
 
-func terminalStep(s store.StepStatus) bool {
-	return s == store.StepStatusCompleted || s == store.StepStatusFailed || s == store.StepStatusCanceled
+// inFlightTask reports whether a task is assigned or running: held by a worker.
+func inFlightTask(s store.TaskStatus) bool {
+	return s == store.TaskStatusAssigned || s == store.TaskStatusRunning
+}
+
+// stepsWithTasksLocked returns the IDs of the steps that have at least one
+// task. Caller holds s.mu.
+func (s *Store) stepsWithTasksLocked() map[string]bool {
+	hasTask := map[string]bool{}
+	for _, t := range s.tasks {
+		hasTask[t.StepID] = true
+	}
+	return hasTask
 }
 
 // stepOutcomeLocked returns the status FinalizeStep would write, or "" while
@@ -54,7 +65,7 @@ func (s *Store) FinalizeStep(_ context.Context, id string, now time.Time) (store
 	if !ok {
 		return "", false, store.ErrNotFound
 	}
-	if terminalStep(st.Status) {
+	if st.Status.IsTerminal() {
 		return st.Status, false, nil
 	}
 	out := s.stepOutcomeLocked(id)
@@ -83,7 +94,7 @@ func (s *Store) FinalizeJob(_ context.Context, id string, now time.Time) (store.
 			continue
 		}
 		switch {
-		case !terminalStep(st.Status):
+		case !st.Status.IsTerminal():
 			return "", false, nil
 		case st.Status == store.StepStatusFailed:
 			failed = true
@@ -109,13 +120,10 @@ func (s *Store) FinalizeJob(_ context.Context, id string, now time.Time) (store.
 func (s *Store) ListStuckSteps(_ context.Context) ([]store.Step, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	hasTask := map[string]bool{}
-	for _, t := range s.tasks {
-		hasTask[t.StepID] = true
-	}
+	hasTask := s.stepsWithTasksLocked()
 	var out []store.Step
 	for id, st := range s.steps {
-		if terminalStep(st.Status) || !hasTask[id] || s.stepOutcomeLocked(id) == "" {
+		if st.Status.IsTerminal() || !hasTask[id] || s.stepOutcomeLocked(id) == "" {
 			continue
 		}
 		// SQLite's EXISTS on jobs also excludes a step whose job row is missing.
@@ -224,7 +232,7 @@ func (s *Store) CancelBlockedJob(_ context.Context, id, reason string, now time.
 	j.Status, j.CompletedAt, j.UpdatedAt = store.JobStatusCanceled, &at, now
 	s.jobs[id] = j
 	for sid, st := range s.steps {
-		if st.JobID == id && !terminalStep(st.Status) {
+		if st.JobID == id && !st.Status.IsTerminal() {
 			st.Status, st.UpdatedAt = store.StepStatusCanceled, now
 			s.steps[sid] = st
 		}

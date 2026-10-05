@@ -241,7 +241,9 @@ type TaskStore interface {
 	// concurrent writer is never overwritten. Writing the status the task
 	// already holds is a no-op, not an error. Returns [ErrNotFound] if the task
 	// does not exist and [ErrInvalidTransition] if the state machine refuses the
-	// move.
+	// move. It has no production caller (worker reports go through
+	// StartTaskAttempt and CompleteTaskAttempt); it remains as test fixture
+	// surface.
 	UpdateTaskStatus(ctx context.Context, id string, status TaskStatus) error
 
 	// CompleteTaskAttempt applies a worker's terminal report in one

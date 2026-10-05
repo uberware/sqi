@@ -81,29 +81,25 @@ func (s *Store) CompleteTaskAttempt(_ context.Context, c store.AttemptCompletion
 	// latest-attempt check comes first, as SQLite runs it before it reads the
 	// task's status; it reads only attempt numbers, which the close below does
 	// not change, so deciding it before the close is the same as after.
-	if !s.isLatestAttemptLocked(c.TaskID, c.AttemptID) {
-		// Superseded: the attempt close and claim release still commit.
-		s.closeRunningAttemptLocked(c)
-		return store.CompletionResult{Rejected: true}, nil
-	}
+	// A refusal (superseded, out of flight per H4a2 §4.2, or an arrow the state
+	// machine refuses) still commits the attempt close and claim release.
+	rejected := !s.isLatestAttemptLocked(c.TaskID, c.AttemptID)
 	moves := t.Status != c.TaskStatus
-	if moves {
-		if t.Status != store.TaskStatusAssigned && t.Status != store.TaskStatusRunning {
-			// Out of flight (H4a2 §4.2): refused, but the close and release commit.
-			s.closeRunningAttemptLocked(c)
-			return store.CompletionResult{Rejected: true}, nil
-		}
-		if err := store.ValidateTaskTransition(t.Status, c.TaskStatus); err != nil {
+	if !rejected && moves {
+		if !inFlightTask(t.Status) {
+			rejected = true
+		} else if err := store.ValidateTaskTransition(t.Status, c.TaskStatus); err != nil {
 			if !errors.Is(err, store.ErrInvalidTransition) {
 				return store.CompletionResult{}, err
 			}
-			// Refused: the attempt close and claim release still commit.
-			s.closeRunningAttemptLocked(c)
-			return store.CompletionResult{Rejected: true}, nil
+			rejected = true
 		}
 	}
 
 	s.closeRunningAttemptLocked(c)
+	if rejected {
+		return store.CompletionResult{Rejected: true}, nil
+	}
 	// The task row's updated_at is server time, as UpdateTaskStatus stamps it:
 	// c.EndedAt comes from the worker's clock and belongs to the attempt only.
 	now := time.Now().UTC()
@@ -139,7 +135,7 @@ func (s *Store) CancelJobExecution(_ context.Context, jobID, reason string, now 
 		if t.JobID != jobID || terminalTask(t.Status) {
 			continue
 		}
-		if t.Status == store.TaskStatusAssigned || t.Status == store.TaskStatusRunning {
+		if inFlightTask(t.Status) {
 			row := t
 			row.Parameters = copyMap(t.Parameters) // a copy, as GetTask returns
 			active = append(active, row)
@@ -171,12 +167,9 @@ func (s *Store) cancelJobRowLocked(jobID string, now time.Time) {
 // is canceled; any other open step gets FinalizeStep's outcome. A step with a
 // task still in flight is left alone. Caller holds s.mu.
 func (s *Store) cancelJobFinalizeStepsLocked(jobID string, now time.Time) {
-	hasTask := map[string]bool{}
-	for _, t := range s.tasks {
-		hasTask[t.StepID] = true
-	}
+	hasTask := s.stepsWithTasksLocked()
 	for id, st := range s.steps {
-		if st.JobID != jobID || terminalStep(st.Status) {
+		if st.JobID != jobID || st.Status.IsTerminal() {
 			continue
 		}
 		out := s.stepOutcomeLocked(id)
@@ -311,9 +304,19 @@ func (s *Store) offlineWorkerLocked(id string, now time.Time) []store.Task {
 	w.UpdatedAt = now
 	s.workers[id] = w
 
-	return s.reclaimToReadyLocked(func(t store.Task) bool {
-		return t.AssignedWorkerID == id && (t.Status == store.TaskStatusAssigned || t.Status == store.TaskStatusRunning)
-	}, store.FailureReasonWorkerOffline, now)
+	return s.reclaimWorkerTasksLocked(id, store.FailureReasonWorkerOffline, now)
+}
+
+// inFlightOn matches the tasks assigned to or running on workerID.
+func inFlightOn(workerID string) func(store.Task) bool {
+	return func(t store.Task) bool { return t.AssignedWorkerID == workerID && inFlightTask(t.Status) }
+}
+
+// reclaimWorkerTasksLocked is SQLite's reclaimWorkerTasksTx: the worker's
+// assigned and running tasks go back to ready, their attempts closed as failed
+// with message and their claims released. Caller holds s.mu and passes UTC.
+func (s *Store) reclaimWorkerTasksLocked(workerID, message string, now time.Time) []store.Task {
+	return s.reclaimToReadyLocked(inFlightOn(workerID), message, now)
 }
 
 // reclaimToReadyLocked is the shared reclaim block of the reaper and the offline

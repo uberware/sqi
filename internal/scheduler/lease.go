@@ -85,16 +85,15 @@ func (s *Scheduler) handleLeaseRequest(workerID, queueID string, data []byte) []
 
 	batch, err := s.selectLeaseBatchLocked(ctx, worker)
 	if err != nil {
+		// A store error part way through a batch still delivers what was leased
+		// before it: those tasks are committed as assigned, and dropping them
+		// would strand them with nobody running them until the assigned-task
+		// timeout.
 		s.logLeaseSelectionFailure(ctx, workerID, len(batch), err)
-	}
-	// A store error part way through a batch still delivers what was leased
-	// before it: those tasks are committed as assigned, and dropping them would
-	// strand them with nobody running them until the assigned-task timeout.
-	if len(batch) > 0 {
 		return marshalLeaseReply(batch)
 	}
-	if err != nil {
-		return marshalLeaseReply(nil)
+	if len(batch) > 0 {
+		return marshalLeaseReply(batch)
 	}
 
 	// Park until work appears or the hold elapses, then try exactly once more.

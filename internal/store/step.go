@@ -34,6 +34,16 @@ const (
 	StepStatusCanceled StepStatus = "canceled"
 )
 
+// IsTerminal reports whether s is a terminal step state (completed, failed,
+// canceled).
+func (s StepStatus) IsTerminal() bool {
+	switch s {
+	case StepStatusCompleted, StepStatusFailed, StepStatusCanceled:
+		return true
+	}
+	return false
+}
+
 // Step is one stage within a [Job]. Steps may depend on other steps; a step's
 // tasks are not scheduled until all its dependencies have reached
 // [StepStatusCompleted].

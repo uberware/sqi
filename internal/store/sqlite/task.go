@@ -94,9 +94,13 @@ LIMIT ?`
   AND  j.status NOT IN ('paused','completed','failed','canceled')
   AND  (t.retry_after IS NULL OR t.retry_after <= ?)`
 
-	sqlReclaimWorkerTasks = `
+	// sqlReclaimTaskSet is the reset every reclaim writes: the task goes back to
+	// ready with no worker. Its one bind parameter is updated_at.
+	sqlReclaimTaskSet = `
 UPDATE tasks
-SET status = 'ready', assigned_worker_id = NULL, assigned_at = NULL, updated_at = ?, unschedulable_reason = ''
+SET    status = 'ready', assigned_worker_id = NULL, assigned_at = NULL, updated_at = ?, unschedulable_reason = ''`
+
+	sqlReclaimWorkerTasks = sqlReclaimTaskSet + `
 WHERE assigned_worker_id = ?
   AND status IN ('assigned', 'running')`
 
@@ -105,9 +109,7 @@ WHERE assigned_worker_id = ?
 	// changed, as they are after the reset (invariant I2). Only 'assigned'
 	// (never 'running') so an in-progress task is never disturbed by the timer.
 	// Its binds are updated_at, then cutoff.
-	sqlReclaimStaleAssignedTasks = `
-UPDATE tasks
-SET    status = 'ready', assigned_worker_id = NULL, assigned_at = NULL, updated_at = ?, unschedulable_reason = ''
+	sqlReclaimStaleAssignedTasks = sqlReclaimTaskSet + `
 WHERE  status = 'assigned' AND assigned_at IS NOT NULL AND assigned_at < ?
 RETURNING ` + taskCols
 
@@ -249,8 +251,8 @@ WHERE  t.id = ?`
 	// a genuine in-flight failure can arrive from — so a stale or redelivered
 	// failure report can never resurrect a canceled/succeeded task or yank a
 	// task that has already been returned to ready. Also guarded on the
-	// reporting attempt still being the task's latest (compared by attempt
-	// number, like sqlIsLatestAttempt): a reclaim and a new lease landing
+	// reporting attempt still being the task's latest (sqlIsLatestAttempt,
+	// embedded): a reclaim and a new lease landing
 	// between RecordTaskFailure and this statement must not return the new
 	// lease to ready (H4a2 §4.3). The attempt need not still be running: a
 	// crash-recovery redelivery finds it already closed as failed by the first
@@ -260,9 +262,7 @@ UPDATE tasks
 SET status = 'ready', assigned_worker_id = NULL, assigned_at = NULL,
     retry_after = ?, updated_at = ?, failure_reason = ''
 WHERE id = ? AND status IN ('assigned', 'running')
-  AND EXISTS (SELECT 1 FROM task_attempts a
-              WHERE a.id = ? AND a.task_id = tasks.id
-                AND a.attempt_number = (SELECT MAX(attempt_number) FROM task_attempts WHERE task_id = tasks.id))`
+  AND (` + sqlIsLatestAttempt + `)`
 
 	// sqlRetryTasksPrefix revives the selected failed/canceled tasks, clearing
 	// the genuine-failure state a manual retry gives a clean slate:
@@ -959,7 +959,8 @@ func (s *Store) RecordTaskFailure(
 // legitimate no-op reported as false — NOT an error, so a stale redelivery
 // never naks into a redelivery loop.
 func (s *Store) RequeueTaskForRetry(ctx context.Context, taskID, attemptID string, retryAfter, now time.Time) (bool, error) {
-	res, err := s.db.ExecContext(ctx, sqlRequeueTaskForRetry, timeToText(retryAfter.UTC()), timeToText(now.UTC()), taskID, attemptID)
+	res, err := s.db.ExecContext(ctx, sqlRequeueTaskForRetry,
+		timeToText(retryAfter.UTC()), timeToText(now.UTC()), taskID, attemptID, taskID, taskID)
 	if err != nil {
 		return false, mapErr(err)
 	}
