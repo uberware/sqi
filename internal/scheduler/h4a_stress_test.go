@@ -115,6 +115,13 @@ type stressCounts struct {
 	retries, revived                             atomic.Int64
 	snapshots                                    atomic.Int64
 
+	// The H4a2 paths: reports on an attempt already closed, worker-shutdown
+	// reclaims, graceful deregisters (applied, and ignored because they name a
+	// process a later registration replaced), and restart reclaims.
+	staleReports, shutdownReclaims         atomic.Int64
+	deregisterReclaims, deregistersIgnored atomic.Int64
+	restartReclaims                        atomic.Int64
+
 	// reports counts applied reports by status; its keys are fixed up front,
 	// so concurrent readers of the map itself need no lock.
 	reports map[string]*atomic.Int64
@@ -146,11 +153,19 @@ type stressRun struct {
 	// failed is set by the first failure, which alone is reported (what fails
 	// after it is usually its consequence); the run stops after that round.
 	failed atomic.Bool
+
+	// instances[w] lists the instance IDs the restart racer registered worker w
+	// with, oldest first; the deregister racer names the latest or the one
+	// before it. Guarded by instancesMu.
+	instancesMu sync.Mutex
+	instances   map[string][]string
 }
 
 // TestH4a_ConcurrentStress_SQLite races leases, CancelJob, CancelTask, the
-// reaper, OfflineStaleWorker, RetryTasks (through RetryJob) and worker reports
-// against one job with capped usage pools, on the real SQLite store. While they
+// reaper, OfflineStaleWorker, RetryTasks (through RetryJob), worker reports,
+// and H4a2's report and reclaim paths (a report on an attempt already closed, a
+// worker-shutdown report, a graceful deregister from the current or a replaced
+// process, and a restart's re-registration) against one job with capped usage pools, on the real SQLite store. While they
 // run, a monitor racing alongside asserts on every snapshot it reads that
 // invariant I3 holds, no pool is over its cap, no task has two open attempts
 // and no task out of flight has an open one; afterwards the test asserts the
@@ -181,6 +196,7 @@ func TestH4a_ConcurrentStress_SQLite(t *testing.T) {
 		fx: seedStressJob(t, st, stressTasks),
 	}
 	r.reportedBy = [2]*Scheduler{r.s, newStressScheduler(t, st, 3)}
+	r.instances = map[string][]string{}
 	r.counts.reports = map[string]*atomic.Int64{}
 	for _, s := range []string{"running", "succeeded", "failed", "canceled"} {
 		r.counts.reports[s] = &atomic.Int64{}
@@ -223,6 +239,10 @@ func (r *stressRun) schedule() []stressRacer {
 		{3, 1, r.reap},
 		{2, 0, r.offline},
 		{2, 1, r.retry},
+		{3, 2, r.staleReport},
+		{4, 1, r.shutdownOne},
+		{4, 3, r.deregister},
+		{6, 5, r.restart},
 	}
 }
 
@@ -268,7 +288,14 @@ func (r *stressRun) run() int {
 //   - offline reclaims: every second round one worker, in turn, is swept, and
 //     leases go to the workers in turn, silent tasks included;
 //   - retry revivals: every third round CancelTask cancels a task in turn, and
-//     reporter 0 lets a failure go terminal.
+//     reporter 0 lets a failure go terminal;
+//   - stale reports: every reclaim, cancel and failure closes an attempt, and
+//     every third round a report is sent on the latest attempt already closed;
+//   - shutdown, deregister and restart reclaims: leases keep putting tasks on
+//     every worker, and each racer looks for one in flight (shutdown) or takes
+//     a worker in turn (deregister, restart);
+//   - ignored deregisters: the restart racer gives each worker a new instance
+//     ID in turn, and every other deregister names the one before it.
 //
 // Not listed, because their counts are fixed by the schedule and so prove
 // nothing: the CancelTask, CancelJob and RetryJob calls (their effect is the
@@ -290,6 +317,11 @@ func (r *stressRun) missing() []string {
 		{"tasks reclaimed by the reaper", c.reaped.Load()},
 		{"tasks reclaimed by an offline sweep", c.offlineReclaimed.Load()},
 		{"tasks revived by retry", c.revived.Load()},
+		{"reports on a closed attempt", c.staleReports.Load()},
+		{"tasks reclaimed by a shutdown report", c.shutdownReclaims.Load()},
+		{"tasks reclaimed by a deregister", c.deregisterReclaims.Load()},
+		{"deregisters from a replaced process ignored", c.deregistersIgnored.Load()},
+		{"tasks reclaimed by a restart", c.restartReclaims.Load()},
 	} {
 		if k.n == 0 {
 			out = append(out, k.name)
@@ -486,6 +518,138 @@ func (r *stressRun) retry(int) {
 		r.counts.retries.Add(1)
 		r.counts.revived.Add(int64(n))
 	}
+}
+
+// staleReport sends a report on task idx's latest attempt that is already
+// closed, as a worker whose attempt was reaped, reclaimed, canceled or failed
+// would send late: "running", then a terminal status, in turn. The store must
+// refuse it, so the closed attempt must come out of the call exactly as it went
+// in (a closed attempt is never rewritten); the invariants and the history
+// check the rest.
+func (r *stressRun) staleReport(n int) {
+	ctx := r.t.Context()
+	for k := range stressTasks {
+		idx := (n*5 + k) % stressTasks
+		attempts, err := r.st.ListTaskAttempts(ctx, r.fx.taskIDs[idx])
+		if !r.expect("ListTaskAttempts", err) {
+			return
+		}
+		for i := len(attempts) - 1; i >= 0; i-- {
+			if attempts[i].Status != store.AttemptStatusRunning {
+				r.sendStaleReport(attempts[i], n)
+				return
+			}
+		}
+	}
+}
+
+// sendStaleReport sends report number n on closed attempt a and checks the
+// attempt was left as it was.
+func (r *stressRun) sendStaleReport(a store.TaskAttempt, n int) {
+	ctx := r.t.Context()
+	task, err := r.st.GetTask(ctx, a.TaskID)
+	if !r.expect("GetTask", err) {
+		return
+	}
+	m := stressReport(task, a, n)
+	if n%2 == 0 {
+		m.Status, m.ExitCode, m.Message = "running", nil, ""
+	}
+	err = r.s.processTaskStatus(ctx, a.WorkerID, m)
+	if err != nil && !errors.Is(err, store.ErrInvalidTransition) {
+		r.expect("processTaskStatus (stale) "+m.Status, err)
+		return
+	}
+	after, err := r.st.GetTaskAttempt(ctx, a.ID)
+	if !r.expect("GetTaskAttempt", err) {
+		return
+	}
+	if after.Status != a.Status || after.Message != a.Message {
+		r.failf("a stale %q report rewrote closed attempt %s of task %s: %s/%q became %s/%q",
+			m.Status, a.ID, a.TaskID, a.Status, a.Message, after.Status, after.Message)
+		return
+	}
+	r.counts.staleReports.Add(1)
+}
+
+// shutdownOne has the worker holding a task in flight report it "failed" with
+// the worker_shutdown message, through the scheduler's own report handler, as
+// a worker stopping mid-task does: the task goes back to ready with no retry
+// consumed (ReclaimTaskAttempt). It is counted when the attempt was closed with
+// the shutdown message, which only this racer's report writes.
+func (r *stressRun) shutdownOne(n int) {
+	ctx := r.t.Context()
+	idx, ok := r.find((n*3)%stressTasks, false, store.TaskStatusAssigned, store.TaskStatusRunning)
+	if !ok {
+		return
+	}
+	attempt, err := r.st.LatestTaskAttempt(ctx, r.fx.taskIDs[idx])
+	if !r.expect("LatestTaskAttempt", err) || attempt.Status != store.AttemptStatusRunning {
+		return
+	}
+	one := 1
+	m := protocol.TaskStatusMsg{
+		Version: protocol.ProtocolVersion, Type: protocol.TypeTaskStatus,
+		TaskID: attempt.TaskID, AttemptID: attempt.ID, JobID: r.fx.jobID, At: time.Now().UTC(),
+		Status: "failed", ExitCode: &one, Message: protocol.MessageWorkerShutdown,
+	}
+	if err := r.s.processTaskStatus(ctx, attempt.WorkerID, m); err != nil && !errors.Is(err, store.ErrInvalidTransition) {
+		r.expect("processTaskStatus (shutdown)", err)
+		return
+	}
+	after, err := r.st.GetTaskAttempt(ctx, attempt.ID)
+	if r.expect("GetTaskAttempt", err) && after.Message == store.FailureReasonWorkerShutdown {
+		r.counts.shutdownReclaims.Add(1)
+	}
+}
+
+// deregister takes one worker, in turn, through a graceful deregister
+// (OfflineWorker), naming the worker's latest instance ID in even rounds and
+// the one before it in odd rounds, so a deregister from a process a later
+// registration replaced races the rest: it must be ignored. The offline racer
+// brings the worker back online.
+func (r *stressRun) deregister(n int) {
+	id := r.fx.workers[(n/4)%len(r.fx.workers)]
+	r.instancesMu.Lock()
+	ids := r.instances[id]
+	instance := ""
+	switch {
+	case (n/4)%2 == 0 && len(ids) > 0:
+		instance = ids[len(ids)-1]
+	case (n/4)%2 == 1 && len(ids) > 1:
+		instance = ids[len(ids)-2]
+	}
+	r.instancesMu.Unlock()
+	reclaimed, offlined, err := r.st.OfflineWorker(r.t.Context(), id, instance, time.Now().UTC())
+	if !r.expect("OfflineWorker", err) {
+		return
+	}
+	if !offlined {
+		r.counts.deregistersIgnored.Add(1)
+	}
+	r.counts.deregisterReclaims.Add(int64(len(reclaimed)))
+}
+
+// restart re-registers one worker, in turn, with a fresh instance ID, as a
+// restarted worker process does: the registration reclaims whatever the
+// previous process held (RegisterWorker's restart reclaim).
+func (r *stressRun) restart(n int) {
+	id := r.fx.workers[(n/6)%len(r.fx.workers)]
+	instance := uuid.NewString()
+	now := time.Now().UTC()
+	// Registered under the lock, so the deregister racer never names as the
+	// latest an instance ID the store has not stored yet.
+	r.instancesMu.Lock()
+	defer r.instancesMu.Unlock()
+	_, reclaimed, err := r.st.RegisterWorker(r.t.Context(), store.Worker{
+		ID: id, FarmID: r.fx.farmID, Hostname: id, Status: store.WorkerStatusOnline,
+		LastHeartbeatAt: &now, InstanceID: instance,
+	})
+	if !r.expect("RegisterWorker (restart)", err) {
+		return
+	}
+	r.instances[id] = append(r.instances[id], instance)
+	r.counts.restartReclaims.Add(int64(len(reclaimed)))
 }
 
 // ── control ──────────────────────────────────────────────────────────────────
@@ -714,11 +878,14 @@ func (r *stressRun) logCounts(rounds int, elapsed time.Duration) {
 	c := &r.counts
 	r.t.Logf("stress run: %d rounds in %v: leases leased=%d lost=%d pool_full=%d other=%d; "+
 		"reports running=%d succeeded=%d failed=%d canceled=%d rejected=%d; "+
-		"cancels task=%d job=%d; reaped=%d; offline marked=%d reclaimed=%d; retries=%d revived=%d; snapshots=%d",
+		"cancels task=%d job=%d; reaped=%d; offline marked=%d reclaimed=%d; retries=%d revived=%d; "+
+		"stale reports=%d; reclaimed by shutdown=%d deregister=%d restart=%d; deregisters ignored=%d; snapshots=%d",
 		rounds, elapsed.Round(time.Millisecond), c.leased.Load(), c.leaseLost.Load(), c.leasePoolFull.Load(), c.leaseOther.Load(),
 		c.reports["running"].Load(), c.reports["succeeded"].Load(), c.reports["failed"].Load(), c.reports["canceled"].Load(),
 		c.reportsRejected.Load(), c.taskCancels.Load(), c.jobCancels.Load(), c.reaped.Load(),
-		c.offlined.Load(), c.offlineReclaimed.Load(), c.retries.Load(), c.revived.Load(), c.snapshots.Load())
+		c.offlined.Load(), c.offlineReclaimed.Load(), c.retries.Load(), c.revived.Load(),
+		c.staleReports.Load(), c.shutdownReclaims.Load(), c.deregisterReclaims.Load(), c.restartReclaims.Load(),
+		c.deregistersIgnored.Load(), c.snapshots.Load())
 }
 
 // ── fixtures ─────────────────────────────────────────────────────────────────
