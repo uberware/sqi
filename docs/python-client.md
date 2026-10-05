@@ -388,7 +388,7 @@ be paused indefinitely.
 
 `submit_and_wait(template, *, farm_id, queue_id, owner=None, priority=None, project=None, max_attempts=None, retry_delay_seconds=None, failure_limit=None, depends_on=None, poll_interval=2.0, timeout=None) -> Job`
 composes `submit_job` + `wait_for_job` for the simplest pipeline script (a
-`depends_on`-blocked job simply polls through `blocked` → `pending` →
+`depends_on`-blocked job polls through `blocked` → `pending` →
 `running` → terminal like any other):
 
 ```python

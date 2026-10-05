@@ -188,11 +188,11 @@ back:
 `list` is selected by any of RFC 0007's six `*_LIST` `userInterface`
 controls — `LINE_EDIT_LIST`, `SPIN_BOX_LIST`, `CHECK_BOX_LIST`, and the three
 `CHOOSE_*_LIST` file-picker controls, which map to the row editor rather than
-a file dialog because no file-picker widget exists yet, the same interim
-already accepted for their scalar `CHOOSE_*` counterparts (plain text) — or,
-absent an explicit control, by a bare `LIST[STRING]` / `LIST[PATH]` /
-`LIST[INT]` / `LIST[FLOAT]` / `LIST[BOOL]` type. **`LIST[LIST[INT]]` is
-deliberately excluded from that type-based fallback**: RFC 0007 gives it no
+a file dialog because the web UI has no file-picker widget, as with their
+scalar `CHOOSE_*` counterparts (plain text) — or, absent an explicit control,
+by a bare `LIST[STRING]` / `LIST[PATH]` / `LIST[INT]` / `LIST[FLOAT]` /
+`LIST[BOOL]` type. `LIST[LIST[INT]]` is deliberately excluded from that
+type-based fallback: RFC 0007 gives it no
 control but `HIDDEN` and describes its use case as programmatic, so it falls
 through to a raw JSON text field instead of a doubly-nested row editor.
 `ListParamField` falls back to that same raw-JSON field whenever the incoming
@@ -200,35 +200,32 @@ value doesn't parse as a JSON array (a malformed stored default, say), so a
 bad value never blocks the form from rendering.
 
 **The row editor's serialisation must match `internal/openjd/paramjson.go`'s
-canonical JSON form on *type*, not necessarily on byte-for-byte form.**
+canonical JSON form on *type*, not necessarily byte for byte.**
 `ListParamField` encodes with plain `JSON.stringify` — no inserted
 whitespace, each element written as its own JSON type (number, boolean, or
 string) — because the server decodes a submitted list value with
-`encoding/json` and checks each element by its *JSON type* against the
-parameter's declared element type. What actually matters is that fidelity: a
-number must arrive as a JSON number, not a string, and so on for booleans.
-Byte equality is not itself the requirement — `BindJobParameters`
-(`internal/openjd/bind.go`) stores a submitted value verbatim and nothing
-ever compares it against the canonical default — but the two encoders do
-agree on every byte form the editor can actually produce: `JSON.stringify`
+`encoding/json` and checks each element by its JSON type against the
+parameter's declared element type: a number must arrive as a JSON number, not
+a string, and likewise for booleans. Byte equality is not required —
+`BindJobParameters` (`internal/openjd/bind.go`) stores a submitted value
+verbatim and nothing compares it against the canonical default — but the two
+encoders agree on every byte form the editor can produce: `JSON.stringify`
 and `marshalCanonical` agree on separators, string escaping including
 `< > &`, and float formatting, and diverge only on two inputs neither side's
-editor emits — Go escapes U+2028/U+2029 and lone surrogates unconditionally
-— each harmless because both sides decode the other's output identically.
-Nothing mechanical keeps the two encoders in agreement — they match only
-because both sides' tests assert the same literal strings, Go's
-`TestEncodeListDefault` table mirrored into the TypeScript suite for every
-element type the row editor itself renders (strings, ints, floats, bools,
-paths, and the empty-list case; `TestEncodeListDefault`'s two
-`LIST[LIST[INT]]` rows are out of scope here, since that type is
-deliberately excluded from the row editor and falls to the raw-JSON field —
-see above). If you touch either encoder, update both.
+editor emits (Go escapes U+2028/U+2029 and lone surrogates unconditionally),
+each harmless because both sides decode the other's output identically.
+Nothing mechanical keeps the two encoders in agreement: both sides' tests
+assert the same literal strings, with Go's `TestEncodeListDefault` table
+mirrored into the TypeScript suite for every element type the row editor
+renders (strings, ints, floats, bools, paths, and the empty list; the table's
+two `LIST[LIST[INT]]` rows are left out because that type falls to the
+raw-JSON field — see above). If you touch either encoder, update both.
 
 ---
 
 ## Authentication (login route, `AuthProvider`, `useAuth`)
 
-`GET /api/v1/auth/me` is the **single signal** that drives the whole app's
+`GET /api/v1/auth/me` is the single signal that drives the whole app's
 auth gating — there is no separate "is auth enabled?" flag on the client.
 `AuthProvider` (`src/auth/context.tsx`) wraps the app and calls it via the
 `useAuthMe` query hook, resolving to one of three `status` values:
@@ -258,10 +255,9 @@ in the app bounces the user back to the login screen on its own.
 
 **The web stores no token, anywhere.** There is no localStorage, sessionStorage,
 or in-memory token cache — the session is an `HttpOnly` cookie the browser
-attaches automatically, which JavaScript cannot read even if it wanted to.
-This is deliberate: it's what makes the session resistant to exfiltration via
-XSS (a malicious script running in the page still cannot read or copy the
-credential). Every request goes through `apiFetch` (`src/api/client.ts`),
+attaches automatically, which JavaScript cannot read. This makes the session
+resistant to exfiltration via XSS (a malicious script running in the page
+still cannot read or copy the credential). Every request goes through `apiFetch` (`src/api/client.ts`),
 which sets `credentials: 'include'` so the cookie rides along on same-origin
 requests without any client-side bookkeeping.
 
@@ -269,7 +265,7 @@ requests without any client-side bookkeeping.
 
 ## Role gating (`can`, `<RequireRole>`, nav/card filtering)
 
-As of component B1, the web UI mirrors the server's role→permission matrix
+The web UI mirrors the server's role→permission matrix
 (`docs/auth.md#roles--permissions`) so nav items, Admin-hub cards, and route
 access all agree with what the server would actually allow.
 
@@ -421,7 +417,7 @@ once a row is expanded, so collapsed rows cost nothing. The `jobs/{jobId}/tasks`
 WebSocket handler invalidates `queryKeys.tasks.attempts(payload.task_id)` on
 every task event; TanStack Query only refetches an invalidated query while it
 has an active (i.e. expanded) observer, so an open timeline stays live and a
-collapsed one just refetches on next expand. This is what lets an operator
+collapsed one refetches on next expand. This lets an operator
 see the reason a specific attempt failed even for a task mid-retry, whose
 task-level `failure_reason` has already been cleared — see
 [Attempt history](architecture.md#5-status-ingestion) in the architecture doc.

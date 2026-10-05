@@ -163,26 +163,22 @@ REST handler (internal/api/jobs.go)
   └─ HTTP 201 Created  { id, name, status, step_count, task_count }
 ```
 
-That single write is **load-bearing, not incidental**. Submission used to write
-those rows through separate store calls, which left two defects: a failure
-partway through stranded a `pending` job that nothing reaps, and a *store*
-failure on a later step left the earlier steps persisted while that step's row
-was lost entirely — producing a job that `checkJobCompletion`, which derives job
-status from the steps that *exist*, would later mark `completed` having silently
-lost work. (An *expansion* failure produced only the first: the step row was
-written before its tasks were expanded, so the job kept all its steps and simply
-hung `pending`.) Both are properties of partial creation, so splitting the write
-back up reintroduces both.
+The submission is one write so that a job is never partially created. Writing
+those rows through separate store calls allows two defects: a failure partway
+through strands a `pending` job that nothing reaps, and a *store* failure on a
+later step leaves the earlier steps persisted while that step's row is lost —
+producing a job that `checkJobCompletion`, which derives job status from the
+steps that *exist*, would later mark `completed` having lost work.
 
-**It holds the write connection for its full duration — which is why reads run
+**It holds the write connection for its full duration, which is why reads run
 on a second connection pool.** The write pool is `SetMaxOpenConns(1)`
 (`internal/store/sqlite/store.go`), so one submission owns it from `BeginTx` to
 `Commit`. Anything queuing behind it queues in Go's `database/sql` pool, which
-is not `SQLITE_BUSY` and which `busy_timeout` does not affect — nothing surfaces
-it as a lock error, it simply stalls. When reads shared that pool, `GET /readyz`
-stalled with them: its `sqlite` checker is `Store.Ping`, and `internal/health`
-gives all checkers a **5 s** budget per request, so a submission over that
-budget returned HTTP 503 `degraded` — endpoint removal under an orchestrator, at
+is not `SQLITE_BUSY` and which `busy_timeout` does not affect: nothing surfaces
+it as a lock error, it stalls. If reads shared that pool, `GET /readyz` would
+stall with them: its `sqlite` checker is `Store.Ping`, and `internal/health`
+gives all checkers a 5 s budget per request, so a submission over that budget
+would return HTTP 503 `degraded` (endpoint removal under an orchestrator) at
 ~65k tasks, which is 6.5% of one step's legal maximum. Measured on an M-series
 Mac (single step, one `CreateJobSubmission` call, `/readyz` issued 50 ms in):
 
@@ -194,23 +190,22 @@ Mac (single step, one `CreateJobSubmission` call, `/readyz` issued 50 ms in):
 | 50,000 | 3.53 s | ok | ok |
 | 75,000 | 5.40 s | **503** (`context deadline exceeded`) | ok |
 
-WAL mode lets readers proceed alongside a writer, so `Store` now opens a second
-pool over the same file for `SELECT`s only, and `Store.Ping` — the readiness
-checker — deliberately uses it. Measured the same way, `Ping` returns in **tens
-of microseconds** while a 75,000- or 100,000-task submission is mid-flight. See
+WAL mode lets readers proceed alongside a writer, so `Store` opens a second
+pool over the same file for `SELECT`s only, and `Store.Ping`, the readiness
+checker, uses it. Measured the same way, `Ping` returns in tens of
+microseconds while a 75,000- or 100,000-task submission is mid-flight. See
 the Concurrency section of `internal/store/sqlite`'s package doc for how a
 statement is routed and why the classification is by SQL verb rather than by Go
 method.
 
-**Other writes still queue**, by design: lease transitions, task-status writes
-and the sweeps all go through the one write connection, and a long submission
-delays them exactly as before. Only reads were freed. The stall is also not
-*new* cost for the inserts themselves — batching them is faster than the per-row
-path (measured 7.4 s versus 8.8 s for 100,000 tasks) — but the window during
-which other writers wait is one contiguous transaction instead of N gaps.
-`GET /healthz` (liveness) registers no checkers and was never affected.
+**Other writes queue**: lease transitions, task-status writes and the sweeps
+all go through the one write connection, and a long submission delays them.
+Batching the inserts is faster than writing them row by row (measured 7.4 s
+versus 8.8 s for 100,000 tasks), but other writers wait for one contiguous
+transaction instead of through N gaps. `GET /healthz` (liveness) registers no
+checkers and is not affected.
 
-**Correctness is not an accident of that single write connection.** Every rule
+**Every multi-row rule is one store operation.** Every rule
 that spans more than one row (a usage claim exists only while its attempt is
 open, a step finalizes only when every task is terminal, a pool never exceeds
 its cap) is enforced by a single store operation. On SQLite the write
@@ -342,7 +337,7 @@ directly on the raw `step.ComputeLocation` string (promoted from the step's
 `attr.worker.computelocation` host requirement) and on the worker's
 `ComputeLocation` field; it is unchanged by the registry feature. A worker
 whose location name does not appear in the registry is fully eligible for
-matching tasks, and a registry entry with no matching workers simply reports
+matching tasks, and a registry entry with no matching workers reports
 `worker_count: 0`. See [`docs/compute-locations.md`](compute-locations.md).
 
 **Unschedulable detection.** On every heartbeat-sweep tick (the same tick that
@@ -434,11 +429,9 @@ These server-originated reason strings are shared constants in `internal/store`
 `FailureReasonWorkerShutdown`) — `FailureReasonSummary` groups by exact string,
 so producers must not drift.
 
-**Attempt history.** Each attempt's `message` — previously visible only by
-reading the raw `task_attempts.message` column, with no REST surface — is now
-served directly: `GET /api/v1/tasks/{id}/attempts` (backed by
-`store.ListTaskAttempts`) returns the task's full attempt history, oldest
-first:
+**Attempt history.** `GET /api/v1/tasks/{id}/attempts` (backed by
+`store.ListTaskAttempts`) returns the task's full attempt history, including
+each attempt's `message`, oldest first:
 
 ```json
 {
@@ -465,11 +458,10 @@ earlier attempts read `failed`. `worker_id`, `exit_code`, `message`, and
 `404` for an unknown task id, and `{"items":[]}` (not `404`) for a task with
 no attempts yet.
 
-This closes the gap left by `failure_reason`'s clear-on-retry behavior: a
-**mid-retry task** — one that failed, was retried, and is now `running` or
-`ready` again — has an empty task-level `failure_reason`, but the attempt row
-where the earlier failure actually happened still carries its `message`, so
-the reason is never lost, only relocated to the attempt it belongs to.
+Because `failure_reason` is cleared on retry, a mid-retry task (one that
+failed, was retried, and is now `running` or `ready` again) has an empty
+task-level `failure_reason`; the attempt row where the earlier failure
+happened still carries its `message`.
 
 `GET /api/v1/jobs/{id}` (job detail) additionally exposes a `failure_summary`
 (`failed_count`, `dominant_reason`, `distinct_reasons`), aggregated across the
@@ -588,8 +580,8 @@ a canceled task's late `canceled` echo cannot re-cancel a task that was
 retried in the meantime. `RequeueTaskForRetry` (the failure fork's requeue)
 likewise acts only while its attempt is the task's latest, so a reclaim and a
 new lease landing between `RecordTaskFailure` and the requeue leave the new
-lease alone. `UpdateTaskStatus`, which these reports used to go through, is no
-longer part of `store.Store`; both stores keep it only as a test fixture.
+lease alone. `UpdateTaskStatus` is not part of `store.Store`; both stores keep
+it only as a test fixture.
 
 The one path the table does not describe is a manual retry: `RetryTasks`
 revives `failed` and `canceled` tasks in its own guarded SQL, to `pending`, or
@@ -686,7 +678,7 @@ matches (see [Store invariants](#store-invariants)).
 
 ### Auto-retry on worker-reported failure
 
-A worker-reported `failed` status no longer routes straight to a terminal
+A worker-reported `failed` status does not route straight to a terminal
 state. The scheduler (`internal/scheduler/failure.go`) resolves the effective
 [retry policy](configuration.md#retry--failure-limits) (Job → Queue → Farm →
 server default) and records the genuine failure via
@@ -702,7 +694,7 @@ server default) and records the genuine failure via
   terminal / step-completion path, since the step isn't actually done.
 - **Exhausted.** The task's genuine-failure count reaches `max_attempts` with
   no failure limit tripped — the task goes terminal-`failed`, cascading to its
-  step and job exactly as before this feature.
+  step and job.
 - **Auto-park.** The *job's* cumulative genuine-failure count reaches its
   resolved `failure_limit` — the job is parked first (`store.ParkJob`, sets
   `status=paused` and a `park_reason` like `"failure limit reached (3)"`),
@@ -713,7 +705,7 @@ server default) and records the genuine failure via
 worker went offline (heartbeat timeout or graceful deregister), because its
 worker process restarted and registered again, because its worker reported
 `failed` with the message `worker_shutdown`, or because it lingered in
-`assigned` past the stale-assigned reaper's timeout is simply returned to
+`assigned` past the stale-assigned reaper's timeout is returned to
 `ready` — it never consumes any of the task's `max_attempts` and never counts
 toward the job's `failure_limit` (a `worker_shutdown` report is routed to
 `ReclaimTaskAttempt` before the failure policy is consulted). Only a *genuine*
@@ -726,10 +718,10 @@ or `worker went offline`, depending on which landed first).
 **A parked job is not stuck forever.** Parking only sets `status=paused`; it
 does not force every other task in the job to a terminal state. If the job
 still has non-terminal (`pending`/`ready`) tasks elsewhere — the common case,
-since a job usually parks with work still in flight — it simply stays
+since a job usually parks with work still in flight — it stays
 `paused` until an operator resumes it (`PATCH /api/v1/jobs/{id}` with the
 existing resume action), because job completion is still evaluated by "have
-all steps reached a terminal state," which naturally stays false while
+all steps reached a terminal state," which stays false while
 non-terminal work remains. But if the tripping task was the job's last
 non-terminal work, the completion check finalizes the job to `failed`
 immediately — a parked job is not exempted from normal completion.
@@ -737,14 +729,14 @@ immediately — a parked job is not exempted from normal completion.
 **Un-parking re-arms the failure limit.** Both recovery paths clear the park
 state (`store.ResumeJob` for the resume action, the retry reset inside
 `store.RetryTasks` for a manual retry): `park_reason` is cleared and the
-job's `failed_attempts` is reset to zero — without the reset, the very next
+job's `failed_attempts` is reset to zero — without the reset, the next
 genuine failure would compare against the already-tripped counter and
 instantly re-park the job. A *manually* paused job (empty `park_reason`)
 keeps its accumulated `failed_attempts` across pause/resume, and a manual
 pause is never overridden by a task retry.
 
 **Two ready-selection gates support this.** `store.ListReadyTasks` (used by
-the lease-assignment path) now excludes:
+the lease-assignment path) excludes:
 
 1. **Backoff gate** — tasks whose `retry_after` is in the future are skipped
    until the timestamp passes.
@@ -755,12 +747,9 @@ The job-status gate is defense-in-depth, checked again at the lease-time
 `leaseGatesPass` step and, decisively, inside `store.LeaseTask`, whose guarded
 `ready` → `assigned` write applies the same predicate as the list (backoff
 elapsed, queue unpaused, job neither paused nor terminal), so a job paused
-between the list and the lease leaves its task unleased. It also fixed
-a **pre-existing gap**: before this feature, a job that was *manually* paused
-via the REST API had no gate stopping its `ready` tasks from still being
-leased and run by a worker — pausing only stopped new *scheduling* decisions
-downstream, not in-flight `ready` dispatch. The same gate now protects both
-manually-paused and auto-parked jobs.
+between the list and the lease leaves its task unleased. The gate applies to
+both manually paused and auto-parked jobs: without it, the `ready` tasks of a
+job paused via the REST API would still be leased and run.
 
 `failed` and `canceled` tasks can also be retried manually — individually via
 `POST /api/v1/tasks/{id}/retry` or in bulk via `POST /api/v1/jobs/{id}/retry`.
@@ -769,8 +758,8 @@ On retry the task resets to `pending`, and its step and the job also reset to
 then re-gates `pending`→`ready`, so tasks whose step dependencies are already
 met land in `ready` immediately. The exception is a task whose step is still
 `ready` (a sibling is in flight, so the step is not reset and nothing would
-release the task from `pending`): it is revived straight to `ready`. A manual retry also resets the task's and
-job's genuine-failure counters, independent of the automatic retry policy
+release the task from `pending`): it is revived straight to `ready`. A manual
+retry also resets the task's and job's genuine-failure counters, independent of the automatic retry policy
 above, and clears the task's `failure_reason` — both the automatic and manual
 retry paths above leave a fresh task with no stale reason attached. See
 [Durable failure reason](#5-status-ingestion) for how `failure_reason` is set
@@ -951,9 +940,7 @@ serializes every writer. A PostgreSQL store has to close each of them:
 
 ### What changed for operators
 
-The invariants changed some behaviour beyond fixing the races they close, and
-the lifecycle and report fixes that followed them (H4a2) changed more. The
-list is in two groups; the first is the invariants', the second H4a2's.
+Upgrading from v0.3.0 changes the following behaviour.
 
 - A worker's late, echoed or redelivered report never rewrites an attempt that
   is already closed, whether the server closed it (a cancel, a reap, an
@@ -975,9 +962,6 @@ list is in two groups; the first is the invariants', the second H4a2's.
   not an error, so a task leased while the unschedulable sweep was deciding is
   never stamped. It reports `written=false`, and the sweep sends no task event
   for it.
-
-And from the lifecycle and report fixes:
-
 - Canceling a job's last open task, canceling a job, and retrying a failed
   task while a sibling is still in flight (its step is `ready`) all finish the
   step and job now, and
@@ -988,7 +972,7 @@ And from the lifecycle and report fixes:
   (`online`/`offline`), written by registration, deregistration and the
   heartbeat sweep; `workers.disabled` is the operator's decision, written only
   by the enable/disable endpoints (migration `00036` moved existing
-  `disabled` rows to `online` with the flag set). Until then one column held
+  `disabled` rows to `online` with the flag set). In v0.3.0 one column held
   both, and registration, deregistration and the sweep each overwrote
   `disabled` with `online` or `offline`. The API, the `status` filter and the
   worker gauge report the effective status (`disabled` while the flag is set);
@@ -1015,7 +999,7 @@ And from the lifecycle and report fixes:
   first registration after upgrade reclaims nothing. The consequence: a worker
   upgraded by `kill -9` or a crash (so no deregister) while it holds running
   tasks, and back within the heartbeat timeout, leaves those tasks `running`
-  this one time, the very bug this fixes. An orderly SIGTERM upgrade is fine,
+  this one time. An orderly SIGTERM upgrade is fine,
   because the old build deregisters and the deregister reclaims its tasks, so
   drain or stop workers gracefully before upgrading them. The lease request
   carries the same optional `instance_id`, and the scheduler refuses to serve a
@@ -1061,8 +1045,8 @@ the attempt's `ended_at` and the task's and job's `updated_at` with it, an
 auto-retry requeue stamps the task's `updated_at` with it and computes
 `retry_after` from it, and an auto-park stamps the job's `updated_at` with it.
 
-**Upgrade repair.** A v0.3.0 database can hold damage these invariants now
-prevent, and fixing the code does not undo it, so it is repaired in four
+**Upgrade repair.** A v0.3.0 database can hold damage these invariants
+prevent, which the code changes alone do not undo, so it is repaired in four
 parts:
 
 - Migration `00031_release_leaked_claims` releases every active claim whose
@@ -1073,7 +1057,7 @@ parts:
 - Migration `00033_finalize_canceled_job_steps` finalizes the open steps of
   every **terminal** job whose tasks are all terminal, by the rule
   `CancelJobExecution` now applies (a pending step, or one with no tasks,
-  becomes `canceled`; any other gets `FinalizeStep`'s outcome). Until H4a2 a
+  becomes `canceled`; any other gets `FinalizeStep`'s outcome). In v0.3.0 a
   job cancel wrote its tasks and its job row but never its steps. A step with a
   task still in flight is never touched, steps of live jobs are left to the
   start-up reconcile below, and `Down` is a no-op.
@@ -1092,8 +1076,8 @@ parts:
     that has at least one task, no non-terminal task, **and a job that is not
     itself terminal**, and each one goes through the normal completion path:
     `FinalizeStep`, dependency propagation, `FinalizeJob`, cross-job dependents
-    and WebSocket events. That finalizes steps left stuck by the old 1,000-task
-    page limit on step completion, and steps stranded by older releases when a
+    and WebSocket events. That finalizes steps left stuck by an older release's
+    1,000-task page limit on step completion, and steps stranded by older releases when a
     single-task cancel took a job's last open task and no worker report
     followed. The job condition is what keeps a healthy farm free of writes:
     terminal jobs are the migration's, not this pass's.
@@ -1102,30 +1086,25 @@ parts:
     goes through `ResolveDependencies` (release what is releasable) and
     `CancelDependents` (cancel what can never run), then `FinalizeJob` if that
     left every step terminal. A retry commits its revived tasks and the step
-    reset before dependency resolution runs, so a server stop in between used
-    to leave a `pending` step nothing would ever release. A `blocked` job is
+    reset before dependency resolution runs, so a server stop in between
+    leaves a `pending` step that nothing else would release. A `blocked` job is
     excluded because its steps wait on another job, not on their own upstream
     steps.
 
 ### Known gaps
 
-The invariants above and the lifecycle fixes after them do not close these.
-The first group predates both (v0.3.0) and is left for a later change; the
-second is residue of the lifecycle fixes themselves.
-
-Pre-existing in v0.3.0:
+The store does not close these yet.
 
 - **An `offline` worker that keeps asking for work is still leased to.** The
   lease handler refuses a `disabled` worker and a restarted process whose
   registration has not landed, but it looks at no other status, so a worker
   the server has declared offline (a missed heartbeat window) that is in fact
   alive and keeps requesting work is served. Refusing it would starve it for
-  good, since heartbeats never bring a worker back `online`. One case is
-  closed: a request that parked while its worker was online, and is woken after
-  the worker went offline (a graceful deregister or the heartbeat sweep), is
-  answered empty rather than leased a task, so a departed process's last
-  request no longer takes a task into a dead inbox for the stale-assignment
-  reaper to recover. A live worker that hits this is refused once, and its
+  good, since heartbeats never bring a worker back `online`. A request that
+  parked while its worker was online, and is woken after the worker went
+  offline (a graceful deregister or the heartbeat sweep), is answered empty
+  rather than leased a task, so a departed process's last request does not take
+  a task into a dead inbox for the stale-assignment reaper to recover. A live worker that hits this is refused once, and its
   next request is served.
 - **Heartbeat timestamps compare as text.** SQLite stores timestamps as
   RFC3339Nano text, which mis-orders within a second (`"…:05Z"` sorts after
@@ -1133,17 +1112,16 @@ Pre-existing in v0.3.0:
   while the in-memory fake compares exactly. The fake's `ListStaleWorkers` also
   lists a worker that has never heartbeated as stale, where SQLite never does
   (pinned by `TestListStaleWorkers`; `OfflineStaleWorker` follows SQLite on
-  both). Both are fixed-width-timestamp work, not part of the lifecycle fixes.
+  both). Fixing both needs fixed-width timestamps.
 - **A coarse wall clock fails a store test.** On a host whose clock resolution
   is coarse (observed on Windows),
   `TestJobStore_CreateJobSubmission_StampsDistinctRowTimestamps` fails because
-  two rows stamped in one tick are not distinct. It fails the same way at
-  `main`.
+  two rows stamped in one tick are not distinct.
 - **A `LeaseTask` that commits is not always delivered.** If building the
   assignment payload fails after `LeaseTask` committed (a deterministic error:
   the job's template no longer parses, or its step is gone), that task stays
   `assigned` without being in the batch, and only the stale-assignment reaper
-  returns it to `ready`. A failure of `LeaseTask` itself no longer has this
+  returns it to `ready`. A failure of `LeaseTask` itself does not have this
   effect: the tasks leased earlier in the batch are still delivered.
 - **A job whose steps are all terminal but whose own status is not**, left by
   a server stop between a cancel cascade's commit (`CancelDependents`
@@ -1151,18 +1129,15 @@ Pre-existing in v0.3.0:
   `FinalizeJob` that follows it, is repaired by neither start-up reconcile
   pass: `reconcileStuckSteps` lists non-terminal steps and
   `reconcilePendingSteps` lists `pending` ones, and this job has neither.
-  There is still no start-up repair for it. The paths that can leave it are
+  There is no start-up repair for it. The paths that can leave it are
   those whose triggering request is not redelivered: REST `CancelTask` (which
   logs a completion error and moves on), the REST retry, and the start-up
   `reconcilePendingSteps` pass itself. When the cascade arrives through a
   worker's terminal report, the JetStream message is redelivered after the
   stop, and re-running `checkStepCompletion` (which propagates whenever the
   step is terminal) reaches `FinalizeJob` and repairs it. A user's job cancel
-  no longer leaves this shape: `CancelJobExecution` cancels the job row in the
+  does not leave this shape: `CancelJobExecution` cancels the job row in the
   same transaction that cancels its tasks and finalizes its steps.
-
-Left by the lifecycle fixes:
-
 - **A stale redelivered registration can reclaim a live process's tasks.** A
   registration message that is Nak'd and redelivered after the worker has
   restarted again can flip the stored `instance_id` back to the earlier
@@ -1176,11 +1151,11 @@ Left by the lifecycle fixes:
   ask again as soon as the empty reply arrives, so a worker whose registration
   never lands (the message was discarded, or two live processes share a worker
   ID) asks about once a second per queue for as long as that lasts, and gets no
-  work. Such a process is no longer silent: once it has been refused 30 times
+  work. Once such a process has been refused 30 times
   in a row the server logs a Warn naming the worker and both instance IDs, at
   most once every 5 minutes per process. The request for an unknown worker ID
-  is answered at once and has always had no such backoff. A disabled worker no
-  longer does this: its requests are parked for the full lease hold.
+  is answered at once, with no such backoff. A disabled worker does not do
+  this: its requests are parked for the full lease hold.
 - **A retry whose dependency resolution fails with the server up can still
   finalize a pending step `failed`.** The start-up reconcile closes the window
   for a server stop between `RetryTasks` and `ResolveDependencies`, but
@@ -1193,8 +1168,7 @@ Left by the lifecycle fixes:
   `FinalizeStep` refusing a `pending` step.
 - **Removing a busy worker revokes its credential first.** `DELETE
   /workers/{id}` revokes the worker's broker credential before the guarded
-  delete, deliberately (a decommissioned machine loses broker access along with
-  its record), and the in-flight check lives in the delete. Going offline
+  delete (a decommissioned machine loses broker access along with its record), and the in-flight check lives in the delete. Going offline
   reclaims a worker's tasks in the same transaction, so this needs an offline
   worker that was leased a task afterwards (the lease path does not check
   liveness); such a worker loses its credential and receives the 409.
@@ -1305,7 +1279,7 @@ for live events. It lives in the repository at `clients/python/` (import name
 
 **Design notes:**
 
-- **Sync-first.** Phase 1 ships a synchronous client only (backed by
+- **Sync-first.** The client is synchronous only (backed by
   `httpx.Client`). The transport is isolated so an `AsyncSqiClient` can be added
   later without breaking the public API.
 - **Minimal dependencies.** The only required runtime dependency is `httpx`, so

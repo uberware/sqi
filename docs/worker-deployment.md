@@ -1105,7 +1105,7 @@ three settings that must differ per instance. Manage each with the usual
 > `sqi-worker service status --name sqi-worker-2`. See
 > [Windows — Windows Service](#windows--windows-service).
 
-> **Docker:** containers are already filesystem-isolated, so just run multiple
+> **Docker:** containers are already filesystem-isolated, so run multiple
 > containers with distinct `--name` values and separate data volumes — see
 > [`docs/worker-docker.md`](worker-docker.md).
 

@@ -129,7 +129,7 @@ sqi does **not** replicate or synchronize data between locations. Ensure data is
 present in the target storage before jobs run.
 
 S3 I/O — copying files to and from object storage — is handled by the
-operator's sync tool (e.g. `aws s3 cp`, `rclone`, `mc`) through the B4
+operator's sync tool (e.g. `aws s3 cp`, `rclone`, `mc`) through the
 [`stage_locally`](openjd-extensions/path-translation.md) delivery. sqi invokes
 the operator-configured `staging.sync_command`; it stores no S3 credentials or
 endpoint addresses.

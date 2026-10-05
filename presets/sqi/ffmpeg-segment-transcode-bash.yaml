@@ -141,7 +141,7 @@ template:
           - name: join
             type: TEXT
             runnable: true
-            # LF is explicit, not incidental. This script may run under git-bash
+            # LF is set explicitly because this script may run under git-bash
             # on Windows, where a CRLF body fails at the first line with
             # "$'\r': command not found" rather than anything diagnosable.
             endOfLine: LF

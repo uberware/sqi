@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: AGPL-3.0-or-later
 #
-# End-to-end demonstration of the Phase 3 auth surface on a live local farm.
+# End-to-end demonstration of the auth surface on a live local farm.
 #
-# Boots a real sqi-server with auth ENABLED (temp SQLite + temp embedded-NATS,
+# Boots a real sqi-server with auth enabled (temp SQLite + temp embedded-NATS,
 # ephemeral loopback ports, mDNS off) and a bootstrap admin, connects a real
 # sqi-worker, then walks the whole authenticated surface end to end:
 #
@@ -14,8 +14,8 @@
 #   * RBAC: a `user`-role account is denied the admin-only routes (403)
 #   * job owner scoping: each account sees only its own jobs, and a foreign
 #     job id is 403 even when the caller knows it
-#   * the worker runs the job to completion with NO credentials of its own
-#     (worker<->server transport auth is deliberately out of scope in Phase 3)
+#   * the worker runs the job to completion with no credentials of its own
+#     (broker authentication, a separate opt-in gate, is left off here)
 #   * self-service password change sweeps other sessions but keeps API keys
 #   * an admin can revoke another user's API key (apikeys.admin)
 #
@@ -107,9 +107,9 @@ command -v python3 >/dev/null 2>&1 \
 # fields. Everything goes through `jq --arg`, so quoting is never our problem.
 #
 # Use this rather than hand-escaping a literal: a `-d "{\"k\":\"v\"}"` payload
-# does NOT survive nesting inside "$( ... )" — the backslashes reach the server
-# verbatim and it answers 400 "invalid JSON body", which reads exactly like an
-# auth failure and sends you hunting in the wrong place.
+# does not survive nesting inside "$( ... )" — the backslashes reach the server
+# verbatim and it answers 400 "invalid JSON body", which reads like an auth
+# failure and sends you hunting in the wrong place.
 jbody() {
   local args=() parts=""
   while [ $# -gt 0 ]; do
@@ -137,9 +137,9 @@ PY
 #
 #   as_key    Bearer API key. No cookie is sent, so the CSRF guard passes the
 #             request through untouched — this is how headless clients talk.
-#   as_cookie Session cookie from a jar. Unsafe methods MUST also carry an
-#             Origin or the CSRF guard rejects them with 403, which is exactly
-#             what step 5 proves.
+#   as_cookie Session cookie from a jar. Unsafe methods must also carry an
+#             Origin or the CSRF guard rejects them with 403, which the CSRF
+#             step (section 4) proves.
 #
 # Both print the response body; the HTTP status is captured separately by
 # code_* so a failing assertion can report a real status rather than an
@@ -223,7 +223,7 @@ NATS_ADDR="127.0.0.1:${NATS_PORT}"
 BASE_URL="http://${HTTP_ADDR}"
 API="${BASE_URL}/api/v1"
 
-# The bootstrap only fires on an EMPTY user table, which the fresh temp SQLite
+# The bootstrap only fires on an empty user table, which the fresh temp SQLite
 # path guarantees. Against an existing database it is a deliberate no-op.
 SQI_HTTP_ADDR="$HTTP_ADDR" \
 SQI_NATS_ADDR="$NATS_ADDR" \
@@ -482,7 +482,7 @@ assert_eq "artist GET  /jobs/{own job}"   "200" "$(code_key "$ARTIST_KEY" "${API
 
 step "the job actually executes — auth gates the API, not the farm"
 
-# Jobs reach "completed"; it is TASKS that reach "succeeded".
+# Jobs reach "completed"; it is tasks that reach "succeeded".
 job_status=""
 for _ in $(seq 1 200); do
   job_status="$(as_key "$ARTIST_KEY" "${API}/jobs/${ARTIST_JOB_ID}" | jq -r '.status // empty')"
@@ -521,7 +521,7 @@ curl -sS -c "$ARTIST_JAR_B" -o /dev/null -X POST "${API}/auth/login" \
 assert_eq "second session works before the change" "200" \
   "$(code_cookie "$ARTIST_JAR_B" "${API}/auth/me")"
 
-# Wrong current password is 403, not 401: the caller IS authenticated and only
+# Wrong current password is 403, not 401: the caller is authenticated and only
 # failed the re-auth check.
 wrong_current="$(jbody current_password "not-my-password" new_password "$ARTIST_NEW_PASS")"
 assert_eq "password change with wrong current password" "403" \
@@ -550,7 +550,7 @@ assert_eq "old password no longer logs in" "401" \
 
 step "admin revokes the artist's API key (apikeys.admin)"
 
-# An admin can LIST and REVOKE another user's keys but cannot MINT one for
+# An admin can list and revoke another user's keys but cannot mint one for
 # them: revoking someone's credential and minting one they are accountable for
 # are different acts, so there is deliberately no admin key-create route.
 assert_eq "artist cannot list another user's keys" "403" \

@@ -287,8 +287,8 @@ nats:
 How long a newly issued worker join token remains valid. The floor exists
 because below a minute an operator cannot realistically get the token onto a
 machine and boot it; the ceiling exists because a join token mints a worker
-credential, so a token valid for weeks would be a standing secret wearing a
-different name. Ignored while `nats.auth.enabled` is `false`.
+credential, so a token valid for weeks would be a standing secret. Ignored
+while `nats.auth.enabled` is `false`.
 
 ```yaml
 nats:
@@ -679,7 +679,7 @@ record, bounding the growth of the worker list on farms with ephemeral nodes
 (e.g. cloud workers that spin up for a burst of work and are then destroyed). The
 sweep runs on the heartbeat-sweep tick and only removes workers in the `offline`
 state — `online` and administratively `disabled` workers are never auto-removed.
-A worker that reconnects after removal simply re-registers. Set to `0` to disable
+A worker that reconnects after removal re-registers. Set to `0` to disable
 automatic removal entirely (workers can still be removed manually from the web
 UI).
 
@@ -773,7 +773,7 @@ policy:
 
 Farm-wide default number of genuine attempts a task may make before it goes
 terminal-`failed`. Must be `≥ 1`; `1` disables auto-retry (a single failure is
-immediately terminal, matching pre-retry behavior).
+immediately terminal).
 
 ```yaml
 scheduler:
@@ -972,9 +972,9 @@ four can answer `503` for a deadline.
 The preset routes — `GET /api/v1/presets/{name}` and
 `POST /api/v1/presets/{name}/install` — validate a definition too. Its body is
 sha256-pinned against the index at `preset_library.url`, so it is
-operator-vouched rather than client-chosen; since EXPR sub-project H1's
-whole-branch review they nevertheless run under these four keys and under the
-deadline, because the limits are operator configuration (an operator who
+operator-vouched rather than client-chosen; they nevertheless run under these
+four keys and under the deadline, because the limits are operator
+configuration (an operator who
 tightened a knob asked for it to be enforced wherever validation happens) and
 because the install route sits behind the *same* permission as
 `POST /api/v1/products`, which grants everyone access while auth is off.
@@ -984,18 +984,14 @@ resource-exhaustion guards, not OpenJD quantitative limits, and no setting
 turns them off. `0` is not "unlimited" — it is out of range and fails
 startup. **An out-of-range value is a startup failure, not a clamp.**
 
-> **These keys are live.** Earlier revisions of this section carried a
-> "`EXPR` is not accepted yet" callout here: the extension's registry status
-> was *in-progress* and a template declaring `extensions: [EXPR]` was rejected
-> at submission before any of these limits could be spent. **That is no longer
-> true** — `EXPR` is a supported extension, every EXPR template is accepted on
-> its merits, and each of these keys now decides real submissions. See
+> `EXPR` is a supported extension: every EXPR template is accepted on its
+> merits, and each of these keys decides real submissions. See
 > [`docs/openjd-extensions/expr.md`](openjd-extensions/expr.md).
 
 Every one of these has a counterpart on the worker
 ([Worker configuration → `expr`](worker-configuration.md#expr--expr-expression-limits))
 that meters the same thing one phase later. Four caveats apply to all four
-keys, and none of them is obvious from the numbers themselves.
+keys.
 
 A **fifth** key sits alongside them and is deliberately not one of them:
 [`openjd.expr_submission_deadline`](#openjdexpr_submission_deadline) is a
@@ -1060,18 +1056,18 @@ template near **24 minutes**. At the
 two maxima the same construction reaches 98,646 operations in **1.43 s**, and
 100,000 such positions are roughly **40 hours**.
 
-Caveat 1's 100x is the honest scaling factor between those two settings: the
+Caveat 1's 100x is the correct scaling factor between those two settings: the
 worst per-operation rate measured is the same (~14.6 µs) at both, so ten times
 the positions times ten times the operations is a hundred times the time.
 Dividing the two measurements above gives ~139x only because the default-side
 construction leaves ~30% of its 10,000-operation budget unspent while the
 maxima-side one uses 98.6% of its 100,000.
 
-**This figure has now been measured too low three times**, each time by a
-construction nobody had run — the previous revision of this table gave 571
-seconds, from `.title()`, which does not maximize the cost per operation. The
-expression package's own note calls it **"a floor on the worst case, not a
-proof of it"**. Treat the order of magnitude as the claim, never the digit.
+**This figure is a floor on the worst case, not a proof of it**: a
+construction with a higher cost per operation raises it (the same
+10,000-position template built from `.title()`, which does not maximize the
+cost per operation, gives 571 seconds). Treat the order of magnitude as the
+claim, not the digits.
 
 **So: raising these limits lengthens the worst request your farm can be
 asked to serve, roughly in proportion.** There is no value of these settings
@@ -1079,8 +1075,7 @@ that makes a slow request impossible. If `POST /api/v1/jobs` is reachable
 without authentication, size your request timeouts and front-end concurrency
 against that, not against the position cap.
 
-**What does bound the time is a separate key**, added because none of these
-four can:
+**A separate key bounds the time**, because none of these four can:
 [`openjd.expr_submission_deadline`](#openjdexpr_submission_deadline) stops one
 submission's expression evaluation after a fixed wall-clock allowance (5s by
 default) and answers `503`. It bounds elapsed time directly, so it holds
@@ -1090,9 +1085,9 @@ raise freely: a request refused at the deadline still spent that time, and
 concurrent requests each get their own allowance.
 
 **Raising these four keys without also raising the deadline turns legitimate
-acceptances into 503s.** This coupling is the one realistic way a real
-pipeline sees a 503 it does not deserve, and it is not visible from either
-side on its own. Measured on this branch with a generated multi-layer VFX
+acceptances into 503s.** This is the realistic way a legitimate pipeline
+gets a 503, and it is not visible from either side on its own. Measured with a
+generated multi-layer VFX
 shot-render job — 12 `let:` bindings per step, comprehensions over real frame
 ranges, `RANGE_EXPR`/`LIST[STRING]`/`PATH` parameters — driven through the
 real submission path:
@@ -1140,7 +1135,7 @@ this server can be handed work this server accepted and fail it there:
 | `openjd.expr_template_retained_bytes` | `expr.assignment_retained_bytes` |
 | `openjd.expr_template_retained_bytes` | `expr.let_retained_bytes` |
 
-sqi does not leave that to chance. Every worker advertises all five values
+Every worker advertises all five values
 when it registers, and **the scheduler refuses to dispatch an EXPR job to a
 worker whose values are short** — the job is withheld, never accepted and
 then failed per task on the host. What an operator sees:
@@ -1154,7 +1149,7 @@ then failed per task on the host. What an operator sees:
   carrying the same text, plus a WebSocket event —
   **but only while the unschedulable sweep is on.** With
   [`scheduler.unschedulable_grace`](#schedulerunschedulable_grace) set to `0`
-  or negative, the sweep is disabled and such a task simply waits `ready`
+  or negative, the sweep is disabled and such a task waits `ready`
   with nothing written on it; the registration `WARN` — which fires once, and
   may well predate the job — becomes the only signal.
 
@@ -1177,10 +1172,10 @@ job can still exhaust a worker that satisfies every row above.
 
 > **The gate spots an EXPR job by reading the extension list recorded on the
 > job row at submission**, so for every job submitted since the upgrade the
-> test is exact: a job flagged with this reason really does declare `EXPR`.
+> test is exact: a job flagged with this reason declares `EXPR`.
 >
 > Job rows written before that column existed record no list, and those alone
-> fall back to the previous heuristic — a scan of the raw template for the
+> fall back to a heuristic — a scan of the raw template for the
 > bytes `EXPR` *and* the bytes `extensions`. A **base-spec** template that
 > declares some other extension and mentions the string incidentally (a
 > comment, or an environment variable such as `HOUDINI_EXPR_CACHE`) matches
@@ -1241,7 +1236,7 @@ This is the value that decides how large a string or list a single
 expression can build, so it is also what sets the "~900 KB" in caveat 2's
 measurements.
 
-**What raising it really permits is 50x this number.** The template-wide
+**Raising it permits 50x this number.** The template-wide
 retained-bytes counter is charged once per `let:` **block**, after that block
 finishes, so a single block can transiently hold up to
 `50 x openjd.expr_memory_limit` before anything sees it — 50 MB at this
@@ -1346,11 +1341,8 @@ openjd:
 How long this server keeps evaluating **one submission's** expressions before
 giving up on it.
 
-> **This key is live.** Earlier revisions carried a "`EXPR` is not accepted
-> yet" callout here — the extension's registry status was *in-progress*, so no
-> submission ever reached this deadline and none of the 503s described below
-> could occur. **That is no longer true**: `EXPR` is a supported extension, and
-> every route listed below can now answer `503` for a real submission. See
+> `EXPR` is a supported extension, so every route listed below can answer
+> `503` for a real submission. See
 > [`docs/openjd-extensions/expr.md`](openjd-extensions/expr.md).
 
 **This is not a fifth limit, and it does not decide whether a template is
@@ -1360,7 +1352,7 @@ the submitter is told so — `422 Unprocessable Entity`, and retrying is
 pointless. This one is wall clock, so the same body would be accepted on an
 idle host and refused on a loaded one. A breach therefore reports that *this
 server gave up* — `503 Service Unavailable`, and a retry may well succeed.
-Persistent 503s mean either a genuinely expensive template or a deadline set
+Persistent 503s mean either an expensive template or a deadline set
 too low.
 
 Six routes can answer `503` for this reason: `POST /api/v1/jobs` and
@@ -1374,8 +1366,8 @@ everywhere — the 4xx is a verdict on the template, the 503 is not.
 
 It exists because **none of the other four bounds time** (caveat 2). Section
 1.3.10 prices 256 bytes at one operation, so byte-heavy work is nearly free in
-operations and expensive in seconds; the worst single request measured on this
-branch is ~17 minutes of server CPU with every budget respected. This is the
+operations and expensive in seconds; the worst single request measured is
+~17 minutes of server CPU with every budget respected. This is the
 only bound here that does not depend on that measurement being right.
 
 The floor is `1s` because below it a legitimate large template — a body near
@@ -1385,36 +1377,32 @@ ceiling is `60s` because the key exists to bound that ~17-minute figure; a
 ceiling near it would bound nothing.
 
 > **The headroom against real work is ~6x, not three orders of magnitude.**
-> `5s` was originally chosen against an *adversarial* worst case, and an
-> earlier revision of this callout said so and conceded that no
-> large-but-legitimate template had ever been measured against it. One has now
-> been: a generated multi-layer VFX shot-render job (12 `let:` bindings per
-> step, comprehensions over real frame ranges, `RANGE_EXPR`/`LIST[STRING]`/
-> `PATH` parameters) driven through the real submission path. **The worst
-> shape this server still accepts costs 0.83 s** — 100 steps over 1,000
-> frames, 5,013 positions, 1.66M operations — against a 5s default. A
-> production server 2–3x slower than the measuring host puts that same job at
-> 1.7–2.5 s. Still safe, but thinner than "three orders of magnitude"
-> advertised, and worth knowing before you tighten this key.
+> `5s` was chosen against an *adversarial* worst case. Measured with a
+> generated multi-layer VFX shot-render job (12 `let:` bindings per step,
+> comprehensions over real frame ranges, `RANGE_EXPR`/`LIST[STRING]`/`PATH`
+> parameters) driven through the real submission path, **the worst shape this
+> server still accepts costs 0.83 s** — 100 steps over 1,000 frames, 5,013
+> positions, 1.66M operations — against a 5s default. A production server
+> 2–3x slower than the measuring host puts that same job at 1.7–2.5 s. Still
+> safe, but worth knowing before you tighten this key.
 >
-> Two things that measurement settled. **At the defaults the counters always
-> bind before the clock**, and the dimension that binds is *retained bytes*,
-> not positions — 100 steps over 2,000 frames is refused at 1.11 s with a
+> The same measurement shows two more things. **At the defaults the counters
+> always bind before the clock**, and the dimension that binds is *retained
+> bytes*, not positions — 100 steps over 2,000 frames is refused at 1.11 s with a
 > `422`, never reaching this deadline. And the clock and the counters are
 > **not co-sized**: at the legal maximum limits the same job shape at 10,000
 > frames runs 7.5 s and is correctly stopped here with a `503`. Raising the
 > four limits without raising this key converts legitimate acceptances into
 > 503s — see caveat 2 above.
 >
-> **None of that makes the ~17-minute figure unreachable**, and it must not be
-> read that way. The two numbers describe different template *shapes*: an
-> adversarial template does op-cheap, byte-heavy work across many positions and
-> **discards** each result, so it never approaches the retained-bytes cap and
-> this clock is the only thing bounding it, while a legitimate template leans
-> on `let:` and therefore hits retained bytes first, at ~1.1 s. The honest
-> statement is that **~1.1 s is the ceiling for realistic `let:`-using
-> templates, and the adversarial ceiling is far higher — which is why this
-> wall-clock backstop exists at all.**
+> **None of that makes the ~17-minute figure unreachable.** The two numbers
+> describe different template *shapes*: an adversarial template does
+> op-cheap, byte-heavy work across many positions and **discards** each
+> result, so it never approaches the retained-bytes cap and this clock is the
+> only thing bounding it, while a legitimate template leans on `let:` and
+> therefore hits retained bytes first, at ~1.1 s. **~1.1 s is
+> the ceiling for realistic `let:`-using templates, and the adversarial
+> ceiling is far higher — which is why this wall-clock backstop exists.**
 
 Unlike the four limits, it has **no worker counterpart**: the worker's own
 phase-3 evaluation is work this server already accepted, not an anonymous
@@ -1517,12 +1505,11 @@ The single switch for sqi's authentication gate. Default `false` — the server
 is open on a trusted local network and every request is served as an anonymous
 superuser.
 
-As of component A1, this is a live gate: setting it to `true` requires every
-REST request and the WebSocket upgrade to carry a valid session, backed by
-local accounts (see below and [`docs/auth.md`](auth.md)). Role-based
-authorization is enforced as of component B1: every mutating route and several
-read routes are gated by a role→permission policy — see
-[`docs/auth.md`](auth.md).
+Setting it to `true` requires every REST request and the WebSocket upgrade to
+carry a valid session, backed by local accounts (see below and
+[`docs/auth.md`](auth.md)). Role-based authorization is enforced: every
+mutating route and several read routes are gated by a role→permission
+policy — see [`docs/auth.md`](auth.md).
 
 ```yaml
 auth:
@@ -1661,7 +1648,7 @@ account model, and the role/permission matrix enforced on every route.
 
 ### `auth.ldap.*`
 
-Directory (LDAP / Active Directory) authentication, component C1. Every key
+Directory (LDAP / Active Directory) authentication. Every key
 below sits under `auth.ldap`. **No `ldap.*` key has a CLI flag** — these are
 file- or environment-configured only. `role_map` is additionally **file-only:
 it has no environment form**, because a list of group→role pairs has no
@@ -1787,7 +1774,7 @@ mode, and the revocation-lag and timing caveats.
 
 ### `auth.oidc.*`
 
-OAuth2/OIDC single sign-on, component C2. Every key below sits under
+OAuth2/OIDC single sign-on. Every key below sits under
 `auth.oidc`. **No `oidc.*` key has a CLI flag** — these are file- or
 environment-configured only. `role_map` is additionally **file-only: it has
 no environment form**, for the same reason as `auth.ldap.role_map` — a list of
@@ -1969,7 +1956,7 @@ capability, so an admin who sets `run_as_user` on a queue while even one
 un-upgraded worker remains in the farm gets silent, partial enforcement —
 some tasks isolated, some not, with no indication which.
 
-This is the asymmetry worth understanding:
+The asymmetry:
 
 - **A worker that *supports* isolation but is misconfigured fails closed and
   loudly**: it refuses to start, or fails the individual task with an
@@ -1981,9 +1968,8 @@ This is the asymmetry worth understanding:
 **Guidance:** upgrade all workers to a binary that supports task isolation
 before enabling `run_as_user` on any queue. Do not mix binary versions.
 
-A proper solution would require workers to advertise isolation capability and
-the scheduler to refuse isolation-required tasks to workers lacking it — a
-protocol change deferred as a future improvement. For now, the only way to
+Workers do not advertise isolation capability, and the scheduler does not
+refuse isolation-required tasks to workers lacking it, so the only way to
 ensure consistent enforcement is to roll the farm forward in lockstep.
 
 ---

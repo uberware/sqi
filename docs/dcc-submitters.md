@@ -28,9 +28,7 @@ widget/validation rules), scene-context pre-fill (`prefill`), and the
 `HostAdapter` extensibility contract. `qt` builds a generic submit dialog from
 that same core model, used by Maya, Houdini, and Nuke (all of which embed a
 Qt-compatible binding). `hosts/blender` is the exception: Blender ships no Qt,
-so its UI is a native `bpy` N-panel bound directly to the same `FormModel` —
-proof that the core is genuinely UI-agnostic, not just Qt with an adapter
-layer.
+so its UI is a native `bpy` N-panel bound directly to the same `FormModel`.
 
 The framework is **product-driven**: a submitter never bakes in "Maya has
 these fields." It fetches the sqi product catalog (`GET /api/v1/products`),
@@ -286,7 +284,7 @@ configuration — see [Capability
 auto-detection](worker-capabilities.md#capability-auto-detection-built-in-dcc-detectors).
 That satisfies the `anyOf: ["true"]` requirement each of the nine presets above
 declares, so a worker with a standard DCC install matches these presets with
-**zero per-worker configuration**. Run `sqi-worker capabilities` (or
+no per-worker configuration. Run `sqi-worker capabilities` (or
 `start --dry-run`) to confirm at a glance which DCCs were actually found.
 
 **The Mistika detectors probe install locations only, never `PATH`.** The
@@ -388,13 +386,13 @@ parameters yet — selecting a target there only drives the
 `frame_range`/`output_path` override — but a fork that adds a `Scene`
 parameter gets the scene name unambiguously: extras always win over
 convention aliases (below), and `scene` is deliberately not a `scene_path`
-alias for exactly this reason.
+alias for this reason.
 
 Rules that make this a stable contract:
 
 - **Additive-only.** New convention keys or aliases may be added; existing
   ones are never renamed or removed. A form field that doesn't match any
-  known key or extra simply renders unfilled — it's never an error.
+  known key or extra renders unfilled — it's never an error.
 - **Extras win over convention aliases.** If a selected render target's
   `extra` map has a key matching a parameter's name, that value is used even
   if the same parameter name would otherwise match a convention alias.
@@ -543,8 +541,7 @@ Or, for a native (non-Qt) host UI, drive `sqi_submitter.core` directly —
 The canonical, minimal example is `MiniAdapter` in
 `clients/submitter/tests/test_adapter_contract.py` — it drives the whole flow
 (product fetch → parameters → pre-fill → validate → submit) with a fake
-two-line scene/target implementation, and is the executable proof of the
-extensibility contract.
+two-line scene/target implementation.
 
 **Launch-glue checklist** for a new host (see [Installation per host](#installation-per-host)
 for the four existing examples):
@@ -602,8 +599,7 @@ For each host, after installing per [Installation per host](#installation-per-ho
 
 `sqi-submitter` is Python/Qt, which rules out apps that can't host a Python
 process in-process — After Effects (ExtendScript/CEP/UXP JavaScript) being the
-motivating example (see the tracker's **C3** row in
-`docs/superpowers/specs/phase-2-tracker.md`). Nothing about the submission
+motivating example. Nothing about the submission
 contract requires Python, though: it's three REST calls against the same
 server every other client uses.
 

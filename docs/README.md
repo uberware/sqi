@@ -56,4 +56,4 @@ Long-form documentation for `sqi-server` operators and contributors.
 - `roadmap.md` — technical-architecture and roadmap reference (mirrors the repo-root `ROADMAP.md`)
 - `spdx-header.md` — the SPDX license-header convention for source files
 
-The canonical product/vision docs (`README.md`, `ROADMAP.md`, `CONTRIBUTING.md`) live at the repo root; `docs/index.md`, `docs/roadmap.md`, and `docs/contributing.md` are docs-site copies whose **only** intended difference is site-relative links. Any edit to a root copy must be mirrored into its `docs/` twin in the same commit — the two roadmap copies have already drifted apart in both directions.
+The canonical product/vision docs (`README.md`, `ROADMAP.md`, `CONTRIBUTING.md`) live at the repo root; `docs/index.md`, `docs/roadmap.md`, and `docs/contributing.md` are docs-site copies whose only intended difference is site-relative links. Any edit to a root copy must be mirrored into its `docs/` twin in the same commit.

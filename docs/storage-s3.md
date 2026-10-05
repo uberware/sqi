@@ -22,7 +22,7 @@ roots:
 
 sqi sees an ordinary path. No `stage_locally`, no sync command, nothing extra.
 
-### Staged access (B4 `stage_locally`)
+### Staged access (`stage_locally`)
 
 Use an `s3://` root and the `SQI_PATH_TRANSLATION` extension with `stage_locally`.
 Before each task the worker invokes the operator-configured `staging.sync_command`
