@@ -48,8 +48,8 @@ const fetchMock = vi.fn<typeof fetch>()
 beforeEach(() => {
   fetchMock.mockReset()
   vi.stubGlobal('fetch', fetchMock)
-  // Default every test to an operator principal so pre-existing control
-  // assertions keep working unchanged; the read-only gating test overrides
+  // Default every test to an operator principal so the gated
+  // controls render; the read-only gating test overrides
   // this via setPrincipal(READONLY_PRINCIPAL).
   setPrincipal(OPERATOR_PRINCIPAL)
 })

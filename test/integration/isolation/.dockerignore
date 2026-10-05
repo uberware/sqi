@@ -33,7 +33,7 @@ __pycache__/
 coverage/
 # Anchored (leading /, matching this file's own rsync --exclude-from
 # semantics — NOT a bare "dist/", which would also match web/dist/: that
-# directory is load-bearing, holding the git-tracked index.html placeholder
+# directory is required, holding the git-tracked index.html placeholder
 # //go:embed dist (web/embed.go) requires to compile even before a web build
 # has run. These two are the actual local Python build-artifact dist dirs,
 # mirroring the repo-root .gitignore's own /clients/python/dist/ entry.

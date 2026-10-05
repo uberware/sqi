@@ -59,8 +59,8 @@ function UserFormInner({ mode, id, defaults }: InnerProps) {
 
   // Same contract, for the set-password control: straight from the server's
   // `password_editable`, computed from the same predicate that guards PUT
-  // /users/{id}/password. Without it the form happily accepted a new password
-  // for an LDAP or OIDC account and turned every submit into a 409 toast.
+  // /users/{id}/password. Without it the form would accept a new password for
+  // an LDAP or OIDC account and turn every submit into a 409 toast.
   const passwordManagedExternally = !defaults.passwordEditable
 
   const isPending = createUser.isPending || updateUser.isPending
@@ -87,7 +87,7 @@ function UserFormInner({ mode, id, defaults }: InnerProps) {
         // no-op role (equal to the stored one) would in fact be accepted —
         // the server compares against the current value before rejecting —
         // but the control is disabled here, so there is nothing to send and
-        // omitting it keeps the request honest about what the form changed.
+        // omitting it keeps the request limited to what the form changed.
         const input: UserUpdateInput = roleManagedExternally
           ? { display_name: trimmedDisplayName, disabled }
           : { display_name: trimmedDisplayName, disabled, role }

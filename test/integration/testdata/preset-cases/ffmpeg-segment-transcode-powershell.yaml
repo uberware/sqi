@@ -4,10 +4,10 @@
 # the Tier-3 execution case can never run on a Linux or macOS worker and the
 # golden is the only review this variant's join script gets off Windows.
 #
-# Two historical bugs shipped green in exactly this script — a UTF-8 BOM on the
-# concat list (d7d8fcc) and an embedded file with no .ps1 extension, which
-# `powershell -File` refuses (667b921) — so the golden's embedded-file NAME and
-# full BODY are the load-bearing part, not the argv.
+# This script has two failure modes the argv cannot show — a UTF-8 BOM on the
+# concat list, and an embedded file with no .ps1 extension, which
+# `powershell -File` refuses — so the golden's embedded-file NAME and full BODY
+# are the part to review, not the argv.
 #
 # `default` matches ffmpeg_presets_test.go's 6s/2s geometry (3 slices + 1 join).
 # `uneven-tail` uses 7s/2s: ceil(3.5) = 4 slices, a different task count.

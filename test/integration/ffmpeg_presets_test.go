@@ -6,23 +6,21 @@ package integration
 // (presets/sqi/ffmpeg-*.yaml) through a real sqi-server and a real sqi-worker,
 // then asserts on the VIDEO THEY PRODUCE.
 //
-// Why this file exists. Until it landed, every ffmpeg-preset test checked
-// shape: internal/product/sqipresets_test.go validates each preset against the
-// real schema, and internal/product/exprpresetcost_test.go pins the portable
+// Why this file exists. The other ffmpeg-preset tests check shape:
+// internal/product/sqipresets_test.go validates each preset against the real
+// schema, and internal/product/exprpresetcost_test.go pins the portable
 // variant's submission cost. Neither runs ffmpeg, so a preset could ship with a
-// command that parses perfectly and transcodes nothing. That is not
-// hypothetical — two commits on the branch that introduced these presets fixed
-// exactly that class of bug:
+// command that parses perfectly and transcodes nothing. Two examples of that
+// class of bug, both invisible to shape checks:
 //
-//   - 667b921 — the PowerShell join wrote its concat list as BOM'd UTF-8, which
-//     the concat demuxer rejects on the first "file" line.
-//   - d7d8fcc — the same join was an embedded file with no .ps1 filename, which
+//   - the PowerShell join writing its concat list as BOM'd UTF-8, which the
+//     concat demuxer rejects on the first "file" line.
+//   - the same join as an embedded file with no .ps1 filename, which
 //     `powershell -File` refuses to execute.
 //
-// Both were caught by reading, not by testing; both would have shipped green.
-// The assertions below are chosen so that each would have failed here.
+// The assertions below are chosen so that each fails here.
 //
-// NOT tagged `integration`. That is deliberate and load-bearing: the CI `test`
+// NOT tagged `integration`, deliberately: the CI `test`
 // job runs `make test-cover`, which passes no `-tags`, so a file behind that
 // tag compiles and lints but NEVER EXECUTES in CI. worker_binary_test.go — the
 // other real-worker test — is untagged for the same reason, and this file
@@ -422,8 +420,8 @@ func runSegmentPreset(t *testing.T, caseName, name string, wantSlicesKept bool) 
 		"SegmentSeconds":  strconv.Itoa(ffmpegSegmentSeconds),
 	})
 
-	// The load-bearing assertion. Each slice is ffmpegSegmentSeconds long, so a
-	// join that lost one lands a full segment short — far outside the tolerance.
+	// Each slice is ffmpegSegmentSeconds long, so a join that lost one lands a
+	// full segment short — far outside the tolerance.
 	assertDuration(t, output, ffmpegSourceSeconds)
 
 	// Slice retention is a documented, per-variant promise: the shell variants
@@ -460,12 +458,11 @@ func TestFFmpegPreset_PortableSegmentTranscodeJoins(t *testing.T) {
 // on bash being on PATH rather than on GOOS, which is the preset's actual
 // requirement restated.
 //
-// It runs on darwin as well as linux, and that is load-bearing rather than
-// incidental: until scheduler.osFamily landed, a Mac worker reported GOOS
-// "darwin" against a requirement that could only legally say "macos", so this
-// preset validated, submitted, and then waited forever for a worker that could
-// not exist. An earlier revision of this test skipped darwin FOR THAT REASON.
-// Running here is the end-to-end proof that a Mac can take the work — a
+// It runs on darwin as well as linux on purpose: a Mac worker reports GOOS
+// "darwin" while a requirement can only legally say "macos", and
+// scheduler.osFamily translates between them. Without that translation this
+// preset validates, submits, and then waits forever for a worker that cannot
+// exist. Running here is the end-to-end proof that a Mac can take the work — a
 // regression would show up as this test timing out rather than failing fast.
 //
 // The template invokes "command: bash" with the script as an argument rather
@@ -486,8 +483,8 @@ func TestFFmpegPreset_BashSegmentTranscodeJoins(t *testing.T) {
 
 // TestFFmpegPreset_PowerShellSegmentTranscodeJoins runs the PowerShell-joined
 // variant. Its template gates on attr.worker.os.family = windows, so a Windows
-// runner is the only place this preset's join script — the one that has already
-// shipped two runtime-only bugs — can be executed at all.
+// runner is the only place this preset's join script — the subject of both
+// runtime-only bugs in this file's header — can be executed at all.
 func TestFFmpegPreset_PowerShellSegmentTranscodeJoins(t *testing.T) {
 	const caseName = "TestFFmpegPreset_PowerShellSegmentTranscodeJoins"
 	trackOutcome(t, caseName)
@@ -509,8 +506,8 @@ func TestFFmpegPreset_PowerShellSegmentTranscodeJoins(t *testing.T) {
 // expression, `ceil(Param.DurationSeconds / Param.SegmentSeconds)`.
 //
 // 6/2 divides exactly, so the tests above pass identically whether that
-// expression ceils, floors, or truncates — the arithmetic the entire EXPR
-// extension was built to enable is, at that geometry, unpinned. 5 seconds in
+// expression ceils, floors, or truncates — at that geometry the arithmetic is
+// unpinned. 5 seconds in
 // 2-second slices needs ceil(2.5) = 3; truncation yields 2, which transcodes
 // only the first 4 seconds and loses the tail. The duration assertion catches
 // that: 4s against an expected 5s is ten times the tolerance.
@@ -578,7 +575,7 @@ func TestFFmpegPreset_SliceNamesAreZeroPadded(t *testing.T) {
 	const (
 		sourceSeconds  = 11
 		segmentSeconds = 1
-		wantSlices     = 11 // two digits, so padding is load-bearing
+		wantSlices     = 11 // two digits, so padding is exercised
 	)
 
 	ts := startServer(t)
@@ -643,7 +640,7 @@ func TestFFmpegPreset_SliceNamesAreZeroPadded(t *testing.T) {
 //
 // internal/product/exprpresetcost_test.go already pins the ceiling at the
 // submitter, but it asserts on a Go error value. What a pipeline sees is a
-// status code, and the distinction matters: a 422 says the request is wrong and
+// status code: a 422 says the request is wrong and
 // retrying is pointless, while the 503 this must NOT be says the server gave up
 // under load and a retry may work. Nothing else asserts that mapping for a
 // shipped preset, and no worker is needed to prove it.

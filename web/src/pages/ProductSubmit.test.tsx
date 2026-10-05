@@ -13,9 +13,8 @@ import { ApiError } from '@/api/client'
 // ── Auth mock ─────────────────────────────────────────────────────────────────
 // ProductSubmit reads useAuth() to gate the Owner field behind 'jobs.submit_as'.
 // Mock the auth context directly (as JobList.test.tsx/Admin.test.tsx do) and
-// default every test to an operator principal so pre-existing tests, which
-// predate permission gating and don't care about the Owner field, keep seeing
-// it exactly as before.
+// default every test to an operator principal so tests that don't care about
+// the Owner field still see it.
 
 const OPERATOR_PRINCIPAL: Principal = {
   subject: 'u-operator',
@@ -131,7 +130,7 @@ vi.mock('@/api/queries', async (orig) => ({
     isLoading: false,
     error: h.state.paramsError,
   }),
-  // Bug #2 corrected: use real FarmWithQueues shape { farm, queues } not { id, name, queues }
+  // The real FarmWithQueues shape is { farm, queues }, not { id, name, queues }.
   useFarmsWithQueues: () => ({
     data: [
       {
@@ -176,9 +175,8 @@ beforeEach(() => {
   h.state.paramsError = null
   submitMock.mockClear()
   navigateMock.mockClear()
-  // Default every test to an operator principal (holds jobs.submit_as) so
-  // pre-existing assertions, which predate permission gating, keep seeing the
-  // Owner field unchanged; the gating tests below override via renderWithAuth.
+  // Default every test to an operator principal (holds jobs.submit_as) so the
+  // Owner field renders; the gating tests below override via renderWithAuth.
   ;(useAuth as unknown as ReturnType<typeof vi.fn>).mockReturnValue({
     principal: OPERATOR_PRINCIPAL,
     status: 'authed',

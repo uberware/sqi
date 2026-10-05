@@ -59,7 +59,7 @@ func TestClassify(t *testing.T) {
 		{"base job template is live", "base", "job_templates", conformance.StateLive},
 		{"registered official extension job template", "TASK_CHUNKING", "job_templates", conformance.StateLive},
 		{"registered official extension 2 job template", "REDACTED_ENV_VARS", "job_templates", conformance.StateLive},
-		{"EXPR job template is live since sub-project H2 marked it supported", "EXPR", "job_templates", conformance.StateLive},
+		{"EXPR job template is live because EXPR is supported", "EXPR", "job_templates", conformance.StateLive},
 		{"unregistered extension job template", "WRAP_ACTIONS", "job_templates", conformance.StateNotApplicable},
 		{"unregistered extension 2 job template", "FEATURE_BUNDLE_1", "job_templates", conformance.StateNotApplicable},
 		{"base env template is not applicable", "base", "env_templates", conformance.StateNotApplicable},

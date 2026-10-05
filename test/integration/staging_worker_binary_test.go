@@ -10,9 +10,9 @@ package integration
 // the full path through a real worker: a job declaring SQI_PATH_TRANSLATION with
 // swap_in_place + stage_locally is submitted; the worker copies the IN file into
 // scratch, runs the task against the scratch paths, and copies the OUT file back
-// to its real location. It is a regression guard for the staging bugs that unit
-// tests could not catch because nothing exercised stage-in → execute → stage-out
-// as one flow.
+// to its real location. It guards against staging bugs that unit tests cannot
+// catch, because they never exercise stage-in → execute → stage-out as one
+// flow.
 
 import (
 	"fmt"

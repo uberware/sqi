@@ -40,9 +40,9 @@ describe('can', () => {
 })
 
 describe('server-supplied permissions are the only input', () => {
-  // The client used to re-derive permissions from `roles` via a hand-maintained
-  // mirror of the Go grants matrix. It now trusts GET /auth/me's `permissions`,
-  // so the matrix lives in exactly one place (internal/auth/policy/policy.go).
+  // The client never derives permissions from `roles`; it trusts GET
+  // /auth/me's `permissions`, so the grants matrix lives in exactly one place
+  // (internal/auth/policy/policy.go).
   it('ignores roles entirely — a privileged role with no permissions is denied', () => {
     const admin = principal([], { roles: ['admin'] })
     expect(can(admin, 'users.manage')).toBe(false)
@@ -58,15 +58,12 @@ describe('server-supplied permissions are the only input', () => {
 describe('permission union stays in lockstep with the server', () => {
   // internal/auth/policy/policy.go's module doc declares a three-way lockstep:
   // the Go Permission constants, this file's union, and docs/auth.md must all
-  // agree. isolation.manage shipped server-side (0fe53ec) and was omitted from
-  // this file's union for several commits with nothing to catch it — no
-  // compile error, since an unrelated permission set still typechecks, and no
-  // runtime effect today (nothing in the web app currently gates on
-  // isolation.manage), so the gap was invisible until a future admin UI tried
-  // to use it. This list is a hand-mirrored copy of every `Permission =
-  // "..."` constant in policy.go — keep it in sync by hand whenever that file
-  // changes; a permission added to one side and not the other fails this
-  // test rather than silently working with no client-side gate (or, for a
+  // agree. A permission missing from the union causes no compile error (an
+  // unrelated permission set still typechecks) and no runtime effect until
+  // something gates on it. This list is a hand-mirrored copy of every
+  // `Permission = "..."` constant in policy.go — keep it in sync by hand
+  // whenever that file changes; a permission added to one side and not the
+  // other fails this test rather than working with no client-side gate (or, for a
   // Permission-union addition specifically, PERMISSION_SET's
   // Record<Permission, true> in policy.ts already forces the union and
   // ALL_PERMISSIONS to agree with EACH OTHER at compile time — this test is
@@ -110,9 +107,9 @@ describe('auth-off', () => {
   })
 
   it('does not blanket-allow on kind alone', () => {
-    // Guards the A0/B1 mismatch: the client keyed its auth-off bypass off
-    // `kind === 'anonymous'` while the server keys it off `Principal.Superuser`.
-    // Trusting the permission list removes the second source of truth.
+    // The server keys its auth-off bypass off `Principal.Superuser`, not off
+    // `kind === 'anonymous'`, so the client must not bypass on kind alone.
+    // Trusting the permission list avoids a second source of truth.
     const anonWithoutPerms = principal([], { roles: [], kind: 'anonymous' })
     expect(can(anonWithoutPerms, 'users.manage')).toBe(false)
   })

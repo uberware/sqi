@@ -288,8 +288,8 @@ func TestTLSMutualAuthRefusesWorkerWithoutCertificate(t *testing.T) {
 // `sqi-server tls issue --client <id>` against the CA that already exists.
 //
 // `tls init` cannot do this — it refuses to overwrite the CA and fails as a
-// whole, taking --client with it — so before `tls issue` existed there was no
-// supported way to add a worker to an mTLS farm. The unit tests prove the
+// whole, taking --client with it — so `tls issue` is the only supported way to
+// add a worker to an existing mTLS farm. The unit tests prove the
 // certificate chains; this proves the broker actually accepts it.
 func TestTLSMutualAuthWithIssuedCertificate(t *testing.T) {
 	// A farm that already exists, with no client certificate for our worker.

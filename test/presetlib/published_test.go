@@ -5,18 +5,16 @@
 // Package presetlib_test validates the PUBLISHED preset library against the
 // validator in this working tree.
 //
-// It exists because of a real, silent breakage. Commit 2cdef4f ("improved
-// openJD conformance") tightened parameter-control validation to match the base
-// spec -- a PATH parameter may not use LINE_EDIT -- and corrected every preset
-// in this repo in the same change. What it could not correct was the copy
-// already published at uberware.github.io/sqi-presets, which is only refreshed
-// on release. From that commit until the next release, every preset in the
-// library failed to load, and nothing anywhere reported it: the list page
+// The copy published at uberware.github.io/sqi-presets is refreshed only on
+// release. A validator change that tightens what a preset may contain (for
+// example, a PATH parameter may not use LINE_EDIT) can be applied to every
+// preset in this repo in the same change, but the published copy stays
+// invalid until the next release, and nothing else reports it: the list page
 // renders from the index (which needs no validation) and only the detail page
-// parses, so the first signal was a user clicking a preset and getting an
+// parses, so the first signal is a user clicking a preset and getting an
 // error.
 //
-// This test closes that gap by running the published bytes through the same
+// This test runs the published bytes through the same
 // path the server uses -- presetlib.FetchDefinition, which pins the sha256 and
 // then calls product.ParseDefinition -- so a validator change that invalidates
 // published content fails here rather than in someone's browser.
@@ -40,7 +38,7 @@ import (
 
 // defaultIndexURL mirrors config.Defaults()' preset_library.url. Duplicated
 // rather than imported so this test validates what operators actually get by
-// default, and fails loudly if that default is ever repointed without thought.
+// default, and fails if that default is repointed.
 const defaultIndexURL = "https://uberware.github.io/sqi-presets/index.json"
 
 // indexURL is the library under test. SQI_TEST_PRESET_LIBRARY_URL points it at

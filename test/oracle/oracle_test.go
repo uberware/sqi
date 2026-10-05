@@ -110,8 +110,8 @@ func TestExprOracle_MatchesReferenceImplementation(t *testing.T) {
 			if isBaselined {
 				// A baselined divergence that stopped diverging. Left as a
 				// failure rather than tolerated: the baseline is a list of
-				// open questions, and one answering itself is exactly the
-				// event worth surfacing.
+				// open questions, and one answering itself is the event
+				// worth surfacing.
 				t.Errorf("corpus.txt:%d: %s\n  no longer diverges — remove it from baseline.txt\n  baselined reason: %s",
 					c.line, c.id, reason)
 			}
@@ -210,14 +210,10 @@ func evalGo(c exprCase) caseResult {
 // assertPinnedVersion fails when the reference implementation that actually
 // answered is not the one the Makefile pins.
 //
-// It exists because the pin was, until 2026-08-19, advisory in exactly the case
-// that matters: test-expr-oracle creates .venv-oracle only when it is MISSING,
-// so raising OPENJD_MODEL_VERSION against an existing venv changed nothing and
-// the suite went on grading sqi against the old reference. Nothing failed. The
-// version was already logged, which is how the mismatch was eventually noticed
-// — by reading the log, not by a red test, which is the wrong way round for a
-// harness whose whole purpose is to be exact about which build produced a
-// divergence.
+// An existing .venv-oracle is not evidence of the pinned one: without this
+// check, raising OPENJD_MODEL_VERSION against a stale venv would grade sqi
+// against the old reference with nothing failing. The Makefile reinstalls on a
+// mismatch; this check keeps the guarantee for a hand-run `go test` too.
 //
 // The expectation is supplied by the Makefile rather than duplicated here, so
 // there is one pin, not two. Unset means "no expectation" — a bare

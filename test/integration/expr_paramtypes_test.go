@@ -14,15 +14,11 @@ import (
 // parameter type through parse and binding, and asserts the bound values are
 // the canonical text the store, the wire and expr.ValueFromText all consume.
 //
-// IT DOES NOT GO THROUGH THE HTTP GATE. An earlier revision of this comment
-// added "and cannot", because validateExtensions rejected extensions: [EXPR] at
-// /extensions/0 while the registry entry was StatusInProgress — that is no
-// longer true: EXPR sub-project H2 flipped it to StatusSupported, and
-// TestEXPRJobEndToEnd (expr_realworker_test.go) now submits an EXPR job through
-// POST /api/v1/jobs and lets a real sqi-worker resolve its expressions, as does
-// scripts/smoke.sh. This test stays at the binding layer on purpose: it asserts
-// the canonical TEXT of every RFC 0007 parameter type, which a job's logs cannot
-// show.
+// IT DOES NOT GO THROUGH THE HTTP GATE. TestEXPRJobEndToEnd
+// (expr_realworker_test.go) submits an EXPR job through POST /api/v1/jobs and
+// lets a real sqi-worker resolve its expressions, as does scripts/smoke.sh.
+// This test stays at the binding layer on purpose: it asserts the canonical
+// TEXT of every RFC 0007 parameter type, which a job's logs cannot show.
 func TestEXPRParamTypes_BindAndCarry(t *testing.T) {
 	const tmplYAML = `
 specificationVersion: jobtemplate-2023-09

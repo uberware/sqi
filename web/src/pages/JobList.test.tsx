@@ -104,8 +104,8 @@ beforeEach(() => {
   vi.stubGlobal('fetch', fetchMock)
   vi.stubGlobal('WebSocket', MockWebSocket)
   vi.useFakeTimers({ shouldAdvanceTime: true })
-  // Default every test to an operator principal so pre-existing control
-  // assertions keep working unchanged; the read-only gating tests override
+  // Default every test to an operator principal so the gated
+  // controls render; the read-only gating tests override
   // this via setPrincipal(READONLY_PRINCIPAL).
   setPrincipal(OPERATOR_PRINCIPAL)
 })

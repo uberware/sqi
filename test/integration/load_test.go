@@ -101,7 +101,7 @@ func envInt(name string, fallback int) int {
 // passes /readyz.  Cleanup is registered on tb.
 //
 // It reuses freePort / waitForTCP / waitForReadyz from harness_test.go, which
-// were widened to accept testing.TB.
+// accept testing.TB.
 func startLoadServer(tb testing.TB) *testServer {
 	tb.Helper()
 

@@ -60,7 +60,7 @@ describe('AuthProvider', () => {
   })
 
   it('resolves to authed when /auth/me returns the anonymous principal (auth disabled)', async () => {
-    // The auth-off regression: the anonymous authenticator returns 200 with
+    // Auth off: the anonymous authenticator returns 200 with
     // kind: 'anonymous', not a 401 — the web must treat this exactly like any
     // other authed principal so the app shell renders and no login appears.
     fetchMock.mockResolvedValueOnce(

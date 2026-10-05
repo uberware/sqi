@@ -279,9 +279,9 @@ def test_reconnect_storm_is_throttled(monkeypatch: pytest.MonkeyPatch) -> None:
         # module object itself, so EVERY time.sleep in the process lands here --
         # including websockets' own server.shutdown(), which sleeps
         # SHUTDOWN_POLLING_INTERVAL while waiting for the serving thread to
-        # stop. Raising unconditionally therefore threw _Stop out of the
-        # run_ws_server teardown, outside the pytest.raises block, in roughly
-        # 8% of runs (5/60 locally) -- and appended a stray 0.1 to sleeps.
+        # stop. Raising on every call would throw _Stop out of the
+        # run_ws_server teardown, outside the pytest.raises block (about 5 in
+        # 60 runs), and append a stray 0.1 to sleeps.
         #
         # Hijack only the first call, which is the throttle this test is about,
         # and let every later sleep behave normally.

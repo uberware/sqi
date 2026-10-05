@@ -88,11 +88,11 @@ describe('Markdown', () => {
     expect(screen.getByRole('link', { name: 'docs' })).toHaveAttribute('rel', 'noopener noreferrer')
   })
 
-  // Regression guard for a real defect: safeHref must render the exact
-  // string it validated, not a case-folded copy used only for the scheme
-  // check. A `href={cleaned}` implementation lowercases the whole href and
-  // would turn this into a dead link ("mydoc.pdf" 404s where "MyDoc.pdf"
-  // exists), so this must fail against that implementation.
+  // safeHref must render the exact string it validated, not a case-folded
+  // copy used only for the scheme check. A `href={cleaned}` implementation
+  // lowercases the whole href and would turn this into a dead link
+  // ("mydoc.pdf" 404s where "MyDoc.pdf" exists), so this must fail against
+  // that implementation.
   it('preserves path case in a safe href exactly as checked', () => {
     render(<Markdown source={'[docs](https://example.com/MyDoc.pdf)'} />)
     expect(screen.getByRole('link', { name: 'docs' })).toHaveAttribute(
@@ -130,7 +130,7 @@ describe('Markdown', () => {
     it('degrades a leading-whitespace href to literal text, never a link', () => {
       const { container } = render(<Markdown source={'[x](  https://example.com)'} />)
       expect(screen.queryByRole('link')).not.toBeInTheDocument()
-      // getByText normalizes whitespace, which would hide the very thing
+      // getByText normalizes whitespace, which would hide the whitespace
       // being pinned here, so assert on textContent directly.
       expect(container.textContent).toBe('[x](  https://example.com)')
     })
@@ -164,7 +164,7 @@ describe('Markdown', () => {
     })
 
     // Asserting only "no <img>" is not enough: the inline matcher sees the
-    // [alt](url) half of the image and would happily render a LINK to the
+    // [alt](url) half of the image and would render a LINK to the
     // beacon, which leaks the viewer's IP just as effectively on click.
     it('renders images as literal text, never as an img or a link', () => {
       const { container } = render(<Markdown source={'![alt](https://evil.test/beacon.png)'} />)
@@ -176,7 +176,7 @@ describe('Markdown', () => {
 
   // A structural guarantee, not a style rule: because the renderer only ever
   // returns React elements, a parser bug can produce wrong FORMATTING but never
-  // script execution. That property is worth failing a test over.
+  // script execution.
   it('never uses dangerouslySetInnerHTML', async () => {
     const src = await import('./Markdown.tsx?raw')
     expect(src.default).not.toContain('dangerouslySetInnerHTML')

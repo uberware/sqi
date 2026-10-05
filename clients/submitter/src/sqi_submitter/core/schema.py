@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 """UI-agnostic form model built from a product's parameter schema.
 
-Mirrors the web submission form's widget/validation semantics (B2): explicit
+Mirrors the web submission form's widget/validation semantics: explicit
 userInterface control wins, otherwise a type-driven fallback; validation covers
 required, numeric parsing, min/max, length limits, and allowed values.
 """
@@ -30,8 +30,8 @@ class FormField:
         control = ui.control if (ui is not None and ui.control) else ""
         t = self.parameter.type
         # PATH is type-first: a PATH parameter with no control (or a stale
-        # LINE_EDIT — no longer a legal control on PATH server-side, but
-        # tolerated here defensively) derives the picker instead of falling
+        # LINE_EDIT — not a legal control on PATH server-side, but tolerated
+        # here defensively) derives the picker instead of falling
         # back to a plain text field. An explicit CHOOSE_* control falls
         # through to the `if control` branch below and yields the same
         # result; an explicit HIDDEN still wins. See docs/dcc-submitters.md.

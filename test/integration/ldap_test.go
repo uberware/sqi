@@ -4,8 +4,7 @@
 
 package integration
 
-// ldap_test.go — the real-directory regression guard for LDAP authentication
-// (Phase 3, component C1).
+// ldap_test.go — the real-directory regression guard for LDAP authentication.
 //
 // # Why this file exists
 //
@@ -17,13 +16,12 @@ package integration
 // or a server that answers an unsupported request in a way the fake never
 // would. Such a bug passes CI and fails against a live directory.
 //
-// That is not hypothetical. Manual verification against a real OpenLDAP found
-// that it does not *reject* the Active-Directory-only nested-group matching
-// rule — it rewrites the filter to "(?=undefined)" and answers SUCCESS with
-// zero entries. Under an earlier revision, that empty result replaced the
-// user's real groups and silently demoted every nested-group admin to
-// default_role. No fake reproduced it, because no fake would have thought to.
-// TestLDAP_NestedGroupExpansionFallsBackOnNonAD is that bug's guard.
+// For example, a real OpenLDAP does not *reject* the Active-Directory-only
+// nested-group matching rule — it rewrites the filter to "(?=undefined)" and
+// answers SUCCESS with zero entries. If that empty result replaced the user's
+// real groups, every nested-group admin would be demoted to default_role with
+// no error. A fake does not reproduce that answer.
+// TestLDAP_NestedGroupExpansionFallsBackOnNonAD guards it.
 //
 // # What it runs against
 //
@@ -108,11 +106,11 @@ func startDirectory(t *testing.T) *directory {
 	//
 	//	SQI_TEST_LDAP_PLATFORM=linux/amd64 make test-ldap
 	//
-	// This exists because it was needed. ldapImage is multi-arch, and its two
-	// variants are not equivalent — they differ in both cn=config credentials
-	// and which overlays are instantiated — so a fixture verified on Apple
-	// Silicon failed on an x86 runner. Running native by default keeps the common case fast; this
-	// makes the other architecture one variable away instead of a guess.
+	// ldapImage is multi-arch, and its two variants are not equivalent — they
+	// differ in both cn=config credentials and which overlays are
+	// instantiated — so a fixture verified on Apple Silicon can fail on an x86
+	// runner. Running native by default keeps the common case fast; this
+	// makes the other architecture one variable away.
 	var platformArgs []string
 	if p := os.Getenv("SQI_TEST_LDAP_PLATFORM"); p != "" {
 		t.Logf("forcing container platform %s (SQI_TEST_LDAP_PLATFORM)", p)
@@ -120,8 +118,7 @@ func startDirectory(t *testing.T) *directory {
 	}
 
 	// --rm so an aborted run (SIGINT, panic) does not leak a container; the
-	// explicit remove in Cleanup then becomes a no-op rather than the only
-	// thing standing between this test and a pile of orphans.
+	// explicit remove in Cleanup then becomes a no-op.
 	runCtx, runCancel := context.WithTimeout(context.Background(), ldapReadyTimeout)
 	defer runCancel()
 	runArgs := []string{"run", "-d", "--rm"}
@@ -154,15 +151,14 @@ func startDirectory(t *testing.T) *directory {
 // slapdHandoffMarker is logged by the image's entrypoint immediately before it
 // launches the long-lived slapd.
 //
-// It matters because the entrypoint runs slapd TWICE: a short-lived instance
+// The entrypoint runs slapd TWICE: a short-lived instance
 // that applies the initial configuration, then a restart into the real one.
 // Measured locally, the first is up at 0.3s and replaced at 0.6s. A readiness
 // check that only asks "does it answer?" can be satisfied by the temporary
 // instance and return into the restart gap — after which every ldapi command
 // fails with "Can't contact LDAP server", which reads like a broken fixture
-// rather than a race. That is not theoretical: it is what turned the arm64 CI
-// job red while amd64 and every local run stayed green, because the gap lands
-// differently on a faster machine.
+// rather than a race. The gap lands differently on a faster machine, so the
+// race can fail one CI architecture while the other and local runs pass.
 const slapdHandoffMarker = "Running /container/run/process/slapd/run"
 
 // waitReady blocks until the directory can actually serve the fixture.
@@ -326,7 +322,7 @@ olcMemberOfMemberOfAD: memberOf
 // installs (olcMemberOfGroupOC) and the conventional setup shown in
 // docs/auth.md. The two must agree: a group whose objectClass the overlay is
 // not keyed on leaves memberOf empty, so every user authenticates fine and
-// silently lands on default_role — exactly the misconfiguration docs/auth.md
+// silently lands on default_role — the misconfiguration docs/auth.md
 // warns operators about. sqi itself is indifferent; it reads whatever DNs
 // memberOf holds.
 //
@@ -398,13 +394,13 @@ member: uid=bob,ou=people,dc=example,dc=com
 // no ACL here ever exposes a credential.
 //
 // The peercred rule is carried over verbatim: it is how root administers the
-// database over the local ldapi socket — including the very ldapmodify that
+// database over the local ldapi socket — including the ldapmodify that
 // applies this LDIF — so dropping it would lock the fixture out of its own
 // configuration.
 //
 // Applied over ldapi:/// as root (SASL EXTERNAL), NOT by binding to
-// cn=config with a password. That is not a stylistic choice: LDAP_CONFIG_PASSWORD
-// is honored by this image's arm64 variant and ignored by its amd64 variant, so
+// cn=config with a password: LDAP_CONFIG_PASSWORD is honored by this image's
+// arm64 variant and ignored by its amd64 variant, so
 // a password bind to cn=config succeeds on an Apple Silicon dev machine and
 // fails with "invalid credentials" on an x86 CI runner — the same tag behaving
 // differently per architecture. docker exec runs as root, the {0} rule below
@@ -653,9 +649,9 @@ func TestLDAP_TemplateBind(t *testing.T) {
 
 // TestLDAP_AnonymousSearchBind covers search-then-bind with no bind_dn: the
 // search runs on an anonymous connection, then sqi binds as the user. This is
-// a supported deployment (documented in docs/auth.md) that was briefly broken —
-// it reached Bind("", ""), which go-ldap rejects client-side, so every login
-// failed as "directory unavailable".
+// a supported deployment (documented in docs/auth.md). It must not reach
+// Bind("", ""), which go-ldap rejects client-side, or every login fails as
+// "directory unavailable".
 func TestLDAP_AnonymousSearchBind(t *testing.T) {
 	d := startDirectory(t)
 	cfg := searchBindConfig(d.URL)
@@ -667,22 +663,22 @@ func TestLDAP_AnonymousSearchBind(t *testing.T) {
 	assertRejected(t, ts, "bob", "wrongpass", "wrong password over anonymous search")
 }
 
-// TestLDAP_NestedGroupExpansionFallsBackOnNonAD is the guard for the bug that
-// justified this whole file.
+// TestLDAP_NestedGroupExpansionFallsBackOnNonAD guards nested-group expansion
+// against a non-AD server.
 //
 // nested_groups uses LDAP_MATCHING_RULE_IN_CHAIN (1.2.840.113556.1.4.1941),
 // which is Active-Directory-only. OpenLDAP does not reject it: it rewrites the
-// filter to "(?=undefined)" and returns SUCCESS with zero entries. An earlier
-// revision treated that as "the user has no groups" and let the empty result
-// replace the real memberOf values, silently demoting every user — admins
-// included — to default_role, with no error anywhere.
+// filter to "(?=undefined)" and returns SUCCESS with zero entries. Treating
+// that as "the user has no groups" and letting the empty result replace the
+// real memberOf values would demote every user — admins included — to
+// default_role, with no error anywhere.
 //
-// The fix keeps the flat memberOf values when the nested search returns empty
-// but the flat list was not, and logs a WARN. bob must therefore still resolve
-// to "user" here, not "read-only".
+// The verifier keeps the flat memberOf values when the nested search returns
+// empty but the flat list was not, and logs a WARN. bob must therefore still
+// resolve to "user" here, not "read-only".
 //
-// No fake reproduced this, because the failure is a property of how a real
-// non-AD server answers an unsupported matching rule.
+// A fake cannot reproduce this, because the failure is a property of how a
+// real non-AD server answers an unsupported matching rule.
 func TestLDAP_NestedGroupExpansionFallsBackOnNonAD(t *testing.T) {
 	d := startDirectory(t)
 	cfg := searchBindConfig(d.URL)
@@ -803,7 +799,7 @@ func TestLDAP_StableIdentifierSurvivesRename(t *testing.T) {
 // The mirror of the rename case: a NEW directory entry that reuses a departed
 // user's login name must NOT inherit their account.
 //
-// This is the hazard the whole change exists to remove. Under username
+// This is the hazard identifier matching exists to remove. Under username
 // matching, recreating "carol" hands the newcomer the old carol's row —
 // her role, her owned jobs — with no error anywhere. Under identifier
 // matching the new entry has a new entryUUID, so provisioning runs and

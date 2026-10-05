@@ -26,7 +26,7 @@ export default function ProductDetail() {
   const { data: product, isLoading, isError } = useProduct(name)
   const deleteProduct = useDeleteProduct()
   // Default to the readme when there is one, else the template. Computed from
-  // the loaded product, so the hook runs unconditionally and simply re-derives
+  // the loaded product, so the hook runs unconditionally and re-derives
   // once the fetch resolves.
   const { tab, setTab } = useTabParam(TAB_IDS, product?.readme ? 'readme' : 'template')
 

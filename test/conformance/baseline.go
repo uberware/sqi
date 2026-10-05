@@ -51,7 +51,7 @@ func LoadBaseline(path string) (map[string]struct{}, error) {
 // result at all: either the fixture no longer exists in results (upstream
 // deleted or renamed it), or it exists but is no longer StateLive (for
 // example a fixture reclassified to StateNotApplicable, as base/env_templates
-// was by Finding 1's kind-aware Classify). Without this check such an entry
+// is by the kind-aware Classify). Without this check such an entry
 // is invisible forever — the regression/stale loop below only ever looks at
 // live results, so a line nothing live ever matches is never flagged by
 // either of the other two directions.

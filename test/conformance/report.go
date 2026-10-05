@@ -15,15 +15,12 @@ type Group struct {
 	Name string
 	// Passed counts live tests that passed.
 	Passed int
-	// Baselined and Regressed split the live FAILURES, and the split is the
-	// whole point of this type: a failure listed in the baseline has been
-	// adjudicated and written down, while one that is not is a break. Both are
-	// failures and both are counted in the live total; only one of them is news.
-	//
-	// They were a single Failed field until 2026-08-19, and FormatRollup
-	// labeled all of it "baselined" — so the run that first met an unlisted
-	// failure summarized it as "449/450 pass  1 baselined" directly above the
-	// line calling the same fixture a REGRESSION.
+	// Baselined and Regressed split the live FAILURES: a failure listed in the
+	// baseline has been adjudicated and written down, while one that is not is
+	// a break. Both are failures and both are counted in the live total; only
+	// one of them is news. A single failure count would summarize an unlisted
+	// failure as "449/450 pass  1 baselined" directly above the line calling
+	// the same fixture a REGRESSION.
 	Baselined, Regressed int
 	// NotApplicable counts tests for extensions sqi has not registered, or for
 	// a document kind sqi does not implement at all (env_templates). These
@@ -34,7 +31,7 @@ type Group struct {
 // Rollup tallies results per "<extension>/<kind>" directory, sorted by name.
 //
 // The baseline is a parameter rather than something the caller applies
-// afterwards because the tally cannot be honest without it: "failed" and
+// afterwards because the tally is wrong without it: "failed" and
 // "failed in a way we already accepted" are different facts about a run.
 //
 // It classifies through DiffBaseline rather than re-deriving membership from

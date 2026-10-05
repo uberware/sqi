@@ -4,15 +4,15 @@
 
 package integration
 
-// failure_reason_realworker_test.go — the origin-bug regression guard for the
-// failure-reason-visibility feature. Unlike TestTaskFailureReason_VisibleEndToEnd
+// failure_reason_realworker_test.go — the real-worker regression guard for
+// task failure-reason visibility. Unlike TestTaskFailureReason_VisibleEndToEnd
 // (which uses the mock worker and fabricates the failure Message, proving only
 // the server→store→REST transport), this test runs a REAL sqi-worker subprocess
 // with NO staging configured and submits a job that requests the stage_locally
 // path delivery. The worker's real failPreExec path (internal/worker/executor/
-// run.go buildEffectiveLookup → "worker not configured for staging …") is the
-// exact condition that originally failed with no visible reason. This test
-// asserts that reason now surfaces all the way through to the REST API.
+// run.go buildEffectiveLookup → "worker not configured for staging …") fails
+// the task before it executes; this test asserts that reason surfaces all the
+// way through to the REST API.
 
 import (
 	"fmt"
@@ -36,7 +36,7 @@ func TestWorkerBinaryStagingFailureReason(t *testing.T) {
 	farmID, queueID := seedFarmAndQueue(t, ts)
 
 	// Start the real worker with staging.defaults explicitly disabled — with
-	// defaults on, an unconfigured worker now stages successfully by default
+	// defaults on, an unconfigured worker stages successfully by default
 	// (built-in copy + TEMP scratch), so this test must opt out to keep
 	// exercising the failPreExec path.
 	stagingCfg := filepath.Join(t.TempDir(), "sqi-worker.yaml")
@@ -140,8 +140,8 @@ func TestWorkerBinaryStagingFailureReason_MultipleAttempts(t *testing.T) {
 	farmID, queueID := seedFarmAndQueue(t, ts)
 
 	// Start the real worker with staging.defaults explicitly disabled — see
-	// TestWorkerBinaryStagingFailureReason for why this opt-out is now
-	// required to keep exercising the failPreExec path.
+	// TestWorkerBinaryStagingFailureReason for why this opt-out is required
+	// to keep exercising the failPreExec path.
 	stagingCfg := filepath.Join(t.TempDir(), "sqi-worker.yaml")
 	if err := os.WriteFile(stagingCfg, []byte("staging:\n  defaults: false\n"), 0o600); err != nil {
 		t.Fatalf("write staging config: %v", err)

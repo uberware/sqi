@@ -136,8 +136,8 @@ describe('ProductParamField', () => {
 
   it('checks the BOOL checkbox for accepted truthy spellings beyond the literal "true"', () => {
     // parseBoolParamValue (internal/openjd/validate_paramtypes.go) also
-    // accepts 1, 1.0, yes and on -- checked={value === on} only recognised
-    // the on/off pair itself.
+    // accepts 1, 1.0, yes and on -- checked={value === on} would recognise
+    // only the on/off pair itself.
     const { rerender } = render(
       <ProductParamField
         param={param({ name: 'UseGpu', type: 'BOOL' })}

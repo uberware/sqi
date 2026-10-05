@@ -6,11 +6,9 @@ package integration
 
 // Multicast capability detection for the mDNS discovery tests.
 //
-// The rest of this suite disables mDNS, on the long-standing assumption that
-// "multicast is not available in most CI environments". That assumption was
-// never tested. It is tested here: requireMulticast actually performs a
+// The rest of this suite disables mDNS. Here, requireMulticast performs a
 // round trip and reports what happened, rather than guessing from the
-// environment.
+// environment whether multicast is available.
 //
 // These tests do NOT transmit on the network they are running on. Every
 // advertisement is restricted to loopback (see loopbackIfaces), which a browser
@@ -143,7 +141,7 @@ func anyAdvertisable(ifaces []net.Interface) bool {
 // there outright; macOS lo0 also carries fe80::1, which is why the same test
 // passes on a Mac. Without this check that shows up as an error three layers
 // down which says nothing about loopback, and the multicast flag — which is
-// genuinely fine — is the first thing anyone suspects.
+// fine — is the first thing anyone suspects.
 func advertisable(addrs []net.Addr) bool {
 	for _, a := range addrs {
 		if ipnet, ok := a.(*net.IPNet); ok && !ipnet.IP.IsLoopback() {
@@ -163,10 +161,9 @@ func skipOrFail(t *testing.T, reason string) {
 }
 
 // maxInstanceLabel is the DNS label limit a DNS-SD instance name must fit in.
-// Exceeding it does not error: the responder starts and is simply never
+// Exceeding it does not error: the responder starts and is never
 // discoverable, which presents as "multicast does not work on this host".
-// This cost an hour of looking in the wrong place; the cap is enforced in
-// instanceName so no caller has to remember it.
+// The cap is enforced in instanceName so no caller has to remember it.
 const maxInstanceLabel = 63
 
 // instanceName builds a unique, valid mDNS instance name for this test run.
@@ -228,8 +225,8 @@ func noForeignServer(t *testing.T) {
 //
 // It is worth a test of its own because everything else in this file trusts
 // it: get this wrong in the "skip" direction and `make test-discovery` and the
-// CI job go green while running nothing, which is the exact failure the flag
-// exists to prevent.
+// CI job go green while running nothing, which is the failure the flag exists
+// to prevent.
 func TestMulticastRequired_FlagParsing(t *testing.T) {
 	for _, v := range []string{"1", "true", "TRUE", "yes", " 1 "} {
 		t.Setenv("SQI_TEST_REQUIRE_MULTICAST", v)
@@ -245,10 +242,9 @@ func TestMulticastRequired_FlagParsing(t *testing.T) {
 	}
 }
 
-// TestInstanceName_FitsTheDNSLabelLimit guards the trap that cost real time
-// while these tests were being written: an over-long instance name does not
-// error, it just makes the responder undiscoverable, which is indistinguishable
-// from the host having no multicast at all.
+// TestInstanceName_FitsTheDNSLabelLimit guards against an over-long instance
+// name, which does not error but makes the responder undiscoverable, which is
+// indistinguishable from the host having no multicast at all.
 func TestInstanceName_FitsTheDNSLabelLimit(t *testing.T) {
 	got := instanceName(t, "a-deliberately-long-prefix-that-would-overflow-the-label-limit-on-its-own")
 	if len(got) > maxInstanceLabel {
@@ -279,7 +275,7 @@ func TestInstanceName_FitsTheDNSLabelLimit(t *testing.T) {
 // TestAdvertisable_MatchesZeroconfAddressFilter pins the check that tells a
 // Linux host why a loopback-only advertisement cannot register.
 //
-// The two loopback rows are the whole point: they are what macOS and Linux
+// The two loopback rows are the core of the test: they are what macOS and Linux
 // actually put on their loopback interface, and only one of them can carry an
 // advertisement.
 func TestAdvertisable_MatchesZeroconfAddressFilter(t *testing.T) {

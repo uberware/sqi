@@ -20,8 +20,8 @@
 #
 # THE SPEC OUTRANKS THE REFERENCE. Section 1.3.10 states the counting rules
 # precisely, which is what makes counts comparable at all -- but openjd-expr is
-# Beta and has known counting defects (C2 recorded center('ab', -3) failing with
-# "operation count (72057594037927938) exceeded limit"). An entry here may record
+# Beta and has known counting defects (center('ab', -3) has been measured failing
+# with "operation count (72057594037927938) exceeded limit"). An entry here may record
 # either a genuine gap in sqi or a case where sqi is right. Say which.
 
 # ── sqi is right: the reference over-counts ordering, equality and "not" ────
@@ -42,29 +42,23 @@
 # measuring only 1 more than sqi's 2 (which already charges rule 1 once per
 # link), not 2 more.
 #
-# CORRECTION (final whole-branch review, sub-project E1). This header
-# previously extended the rule-1-only claim to the LIST/LIST ordering row as
-# well, arguing "the list/list row of an ordering comparison is not the
-# 'list/range equality comparisons' rule 2 names by name -- that is a
-# distinct, separately-costed operation". That is overturned. doc.go settles
-# the disagreement between the two specification documents over whether rule
-# 2's enumeration is open or closed (the wiki says "such as", RFC 0005 says
-# "This applies to:") in favor of the OPEN reading, under which being
-# unnamed by the enumeration decides nothing. A list ordering comparison runs
-# the same elementwise walk (compareLists) that a list equality comparison
-# runs (valuesEqual), and only the latter was charged -- a discrepancy
-# measured at 1,666x on the same expression shape. ops.go's list/list
-# ordering row now charges Cost{ArgElements: {0}}, matching applyBinary's
-# equality charge exactly.
+# The rule-1-only claim does NOT extend to the LIST/LIST ordering row.
+# internal/openjd/expr/doc.go settles the disagreement between the two
+# specification documents over whether rule 2's enumeration is open or closed
+# (the wiki says "such as", RFC 0005 says "This applies to:") in favor of the
+# OPEN reading, under which being unnamed by the enumeration decides nothing.
+# A list ordering comparison runs the same elementwise walk (compareLists)
+# that a list equality comparison runs (valuesEqual); charging only the
+# latter undercounts by 1,666x on the same expression shape. ops.go's
+# list/list ordering row therefore charges Cost{ArgElements: {0}}, matching
+# applyBinary's equality charge exactly.
 #
-# The consequence for THIS file: eleven list-ordering entries stopped
-# diverging and were removed, because the reference's flat 2 happens to equal
-# sqi's own 1 + 1 on the one-element and empty-list operands the corpus uses.
-# The list-ordering entries that remain are the ones with 2+ elements, where
-# sqi's 1 + N genuinely exceeds the reference's flat 2 -- the same "sqi
-# charges where the reference does not" family as the LIST/RANGE EQUALITY
-# section below, and adjudicated on the identical grounds. Each says so on
-# its own line.
+# On the corpus's one-element left operands, the reference's flat 2 equals
+# sqi's 1 + 1, so those cases agree and are not listed. The list-ordering
+# entries with 2+ elements are listed because sqi's 1 + N exceeds the
+# reference's flat 2 -- the same "sqi charges where the reference does not"
+# family as the LIST/RANGE EQUALITY section below, adjudicated on the same
+# grounds. Each says so on its own line.
 
 # Ordering-comparison reference over-count (see section header above).
 bool :: 1 < 2
@@ -96,13 +90,13 @@ bool :: 'a' < 'a'
 # sqi charges rule 2's elementwise walk on the LEFT operand (1 + N); the
 # reference stays flat at 2 whatever the operands' length. Adjudicated in
 # sqi's favor on the same grounds as the LIST/RANGE EQUALITY section below,
-# which the same walk backs -- see this section's CORRECTION.
+# which the same walk backs -- see this section's header.
 bool :: [1, 2] < [1, 3]
 
 # sqi charges rule 2's elementwise walk on the LEFT operand (1 + N); the
 # reference stays flat at 2 whatever the operands' length. Adjudicated in
 # sqi's favor on the same grounds as the LIST/RANGE EQUALITY section below,
-# which the same walk backs -- see this section's CORRECTION.
+# which the same walk backs -- see this section's header.
 bool :: [1, 2] < [1, 2, 0]
 
 # Ordering-comparison reference over-count (see section header above): both
@@ -128,7 +122,7 @@ bool :: [] <= []
 # sqi charges rule 2's elementwise walk on the LEFT operand (1 + N); the
 # reference stays flat at 2 whatever the operands' length. Adjudicated in
 # sqi's favor on the same grounds as the LIST/RANGE EQUALITY section below,
-# which the same walk backs -- see this section's CORRECTION.
+# which the same walk backs -- see this section's header.
 bool :: [1, 2] < [1.0, 3.0]
 
 # Ordering-comparison reference over-count (see section header above).
@@ -308,26 +302,21 @@ bool :: 9 in [1, 2, 3]
 # "in"/"not in" reference over-count on top of an agreeing container-length charge (see section header).
 bool :: 9 not in [1, 2, 3]
 
-# ADDED by the final whole-branch review, sub-project E1, and this is the
-# OPPOSITE direction from the three entries above: on a RANGE_EXPR container
-# sqi charges MORE than the reference, not less.
+# The three entries below run in the OPPOSITE direction from the three above:
+# on a RANGE_EXPR container sqi charges MORE than the reference, not less.
 #
 # The list and string containers above agree with the reference on scaling
-# and differ only by its flat +1. The range_expr row did not scale at all
-# until this review: ops.go left it uncharged on the sole ground that "the
-# reference's own count does not scale with the range's size", which is a
-# fact about the reference, and this file's own opening rule subordinates the
-# reference to the spec. sqi's containsRangeInt calls rangeInts, which
-# expands the range in full -- rule 2's "a function ... iterates through
-# every element of a list", satisfied outright -- so the row now charges
-# Cost{ArgElements: {1}} like its siblings. Measured before the fix, "1 in
-# Param.R" over a million-element range charged 1 operation while expanding a
-# million integers.
+# and differ only by its flat +1. The reference's count for a range_expr
+# container does not scale with the range's size, but that is a fact about
+# the reference, and this file's opening rule subordinates the reference to
+# the spec. sqi's containsRangeInt calls rangeInts, which expands the range in
+# full -- rule 2's "a function ... iterates through every element of a list",
+# satisfied outright -- so the row charges Cost{ArgElements: {1}} like its
+# siblings. Left uncharged, "1 in Param.R" over a million-element range would
+# charge 1 operation while expanding a million integers.
 #
 # 9 = 1 (range_expr call) + 1 (the "in" call) + 7 (the expansion), against
-# the reference's flat 3. The corpus carried NO "in range_expr" case before
-# this review, which is why the charge had no oracle coverage at all; these
-# three cases exist to give it some.
+# the reference's flat 3.
 
 # "in" over a range_expr charges its full expansion; the reference does not scale (see section header).
 bool | int | string | range_expr :: 1 in range_expr("3-9")
@@ -338,11 +327,9 @@ bool | int | string | range_expr :: 5 in range_expr("3-9")
 # "not in" over a range_expr charges its full expansion; the reference does not scale (see section header).
 bool | int | string | range_expr :: 1 not in range_expr("3-9")
 
-# ARRIVED ON THE 0.11.4 PIN BUMP, and only as an operation-count case: until
-# openjd-expr 0.3.0 this expression diverged on VALUE (the reference rejected a
-# float against a list[int] container; openjd-rs#276 made int/float comparison
-# exact), so its count was never compared. The count divergence it turns out to
-# have is the same flat +1 as the three entries above.
+# A float against a list[int] container (openjd-rs#276 made the reference's
+# int/float comparison exact, so the values agree): the same flat +1 as the
+# list-container entries above.
 # "in"/"not in" reference over-count on top of an agreeing container-length charge (see section header).
 bool :: 2.0 in [1, 2, 3]
 
@@ -355,8 +342,7 @@ bool :: 2.0 in [1, 2, 3]
 # negates something other than a bare int literal -- a FLOAT literal
 # ("-1.5", "abs(-2.5)", "floor(-3.2)", ...) or a COMPUTED value ("-(2 + 3)",
 # the outer negation of "--5") -- and the reference adds exactly one extra
-# operation in every such case, empirically confirmed by direct probing
-# (see the differential probes recorded when this baseline was written).
+# operation in every such case, confirmed by probing the reference directly.
 # This is the same family of unexplained flat over-count as the
 # ordering/equality/not section above, just triggered by a narrower
 # condition (literal-int negation is exempt on the reference's side; every
@@ -392,7 +378,7 @@ int | float :: floor(-9223372036854775808.0)
 # Unary negation of a non-literal-int operand: reference over-count (see section header).
 int | float :: ceil(-9223372036854775808.0)
 
-# The embedded "-1.5" pays the unary-negation over-count; zfill's own charge agrees exactly (see section header, and the ZFILL section below).
+# go=3 ref=5: the embedded "-1.5" pays the unary-negation over-count, and zfill pays the reference's second padding length term (see section header, and the padding section below).
 string | float | int :: zfill(-1.5, 7)
 
 # ── sqi is right: a LIST subscript charges 1; reference charges 2 ───────────
@@ -404,23 +390,17 @@ string | float | int :: zfill(-1.5, 7)
 # nothing. The reference measures a flat 2, an uncredited extra unit with no
 # rule 2/3 basis.
 #
-# CORRECTION (final whole-branch review, sub-project E1). This header
-# previously stated the claim for ALL receiver kinds -- "a subscript touches
-# exactly one element of the receiver, never 'every element of a list'", plus
-# "__getitem__ is not one of rule 2's named iterating functions" -- and both
-# halves were wrong outside the list case. indexValue runs
+# The claim holds for LIST receivers only. indexValue runs
 # []rune(recv.AsStr()) for a STRING receiver, decoding every byte, and
 # rangeInts for a RANGE_EXPR receiver, expanding it in full; neither depends
-# on the index. Those two now charge on the RECEIVER (rule 3 and rule 2
-# respectively), exactly as slice.go's sliceValue already did for the same
-# receivers. The "not named by the enumeration" half is separately dead:
-# doc.go settles rule 2's enumeration as OPEN.
+# on the index. Those two charge on the RECEIVER (rule 3 and rule 2
+# respectively), as slice.go's sliceValue does for the same receivers. That
+# __getitem__ is not named by rule 2's enumeration decides nothing:
+# internal/openjd/expr/doc.go settles rule 2's enumeration as OPEN.
 #
-# Consequence for THIS file: the two string-receiver entries ('hello'[0] and
-# 'hello'[-1]) stopped diverging and were removed -- sqi's new 1 +
-# ceil(5/256) = 2 happens to equal the reference's flat 2 on a five-byte
-# receiver. Only LIST-receiver entries remain here, and for them the claim
-# above is sound. No corpus case subscripts a range_expr.
+# The string-receiver cases ('hello'[0] and 'hello'[-1]) agree and are not
+# listed: sqi's 1 + ceil(5/256) = 2 equals the reference's flat 2 on a
+# five-byte receiver.
 
 # List-subscript reference over-count (see section header above).
 any :: [10, 20, 30][0]
@@ -434,18 +414,12 @@ any :: [10, 20, 30][-1]
 # List-subscript reference over-count (see section header above).
 any :: [10, 20, 30][-3]
 
-# ADDED by the final whole-branch review, sub-project E1, and in the OPPOSITE
-# direction from the four list entries above: on a RANGE_EXPR receiver sqi
-# charges MORE than the reference, because indexValue calls rangeInts and
-# expands the range in full regardless of the index, satisfying rule 2
-# outright. 9 = 1 (range_expr call) + 1 (the subscript call) + 7 (the
-# expansion), against the reference's flat 3; the [-1] case is one higher on
-# both sides for the negation. These two cases were added to corpus.txt in
-# the same review -- it carried no range_expr subscript at all, which is why
-# the flat-1 charge went unseen by the oracle. (No string-receiver entry is
-# needed: sqi's new 1 + ceil(5/256) = 2 happens to equal the reference's flat
-# 2 on the corpus's five-byte receivers, so those two stopped diverging and
-# were removed.)
+# The two entries below run in the OPPOSITE direction from the four list
+# entries above: on a RANGE_EXPR receiver sqi charges MORE than the
+# reference, because indexValue calls rangeInts and expands the range in full
+# regardless of the index, satisfying rule 2 outright. 9 = 1 (range_expr
+# call) + 1 (the subscript call) + 7 (the expansion), against the reference's
+# flat 3; the [-1] case is one higher on both sides for the negation.
 
 # A range_expr subscript charges its full expansion; the reference does not scale (see section header).
 int | string | range_expr :: range_expr("3-9")[0]
@@ -794,17 +768,13 @@ path | string :: path('s3://b///d').relative_to(path('s3://b//'))
 
 # ── string(list): sqi omits the reference's RESULT unit and its recursion ────
 #
-# REWRITTEN 2026-08-24 on the 0.11.5 pin bump (openjd-expr 0.4.0). This section
-# used to read "sqi is right: string(list) charges per element; reference is
-# flat 1", and every word of that was true against 0.3.0 -- sqi charged MORE
-# than the reference, whose flat 1 ignored list length entirely. openjd-rs#336
-# changed the reference's counting and the direction INVERTED without a single
-# entry going stale: the three-direction rule cannot see a reason going false
-# while the divergence itself persists. That is the second occurrence of the
-# trap the upstream tracker's section 6a recorded on the previous bump -- read
-# the DELTAS, not just the pass line.
+# openjd-rs#336 (openjd-expr 0.4.0, openjd-model 0.11.5) changed the
+# reference's counting for string(list). A pin bump can invert the direction
+# of a divergence without any entry going stale: the three-direction rule
+# cannot see a reason going false while the divergence itself persists, so
+# read the DELTAS on a bump, not just the pass line.
 #
-# What the reference charges now, measured directly at openjd-model 0.11.5:
+# What the reference charges, measured directly at openjd-model 0.11.5:
 #
 #   string([])                  2 = 1 call + 0 elements + 1 result
 #   string([1])                 3 = 1 + 1 + 1
@@ -814,16 +784,15 @@ path | string :: path('s3://b///d').relative_to(path('s3://b//'))
 #
 # -- one per element counted RECURSIVELY, plus a unit for the RESULT string.
 # sqi charges rule 1 (1) plus ArgElements, the argument list's own length, not
-# recursed, and nothing for the result. So sqi is now BELOW the reference on
-# every entry in this section, where it used to be above.
+# recursed, and nothing for the result. So sqi is BELOW the reference on
+# every entry in this section.
 #
-# TWO divergences now, adjudicated separately:
+# TWO divergences, adjudicated separately:
 #
 #   1. The RESULT unit -- sqi is right to omit it. Rule 3 charges "when a
 #      function processes a string or path VALUE", which is about what goes in,
-#      not what comes out. This is the identical ruling the repr_* section
-#      below already records, made there on the 0.11.4 bump when openjd-rs#284
-#      added result units to those five functions. One rule, two sections.
+#      not what comes out. The repr_* section below records the same ruling
+#      (openjd-rs#284 added result units to those five functions).
 #
 #   2. The RECURSION -- sqi UNDER-charges, and this half is a known gap in sqi
 #      rather than a ruling in our favour. sqi's own reading of rule 2 is that
@@ -833,8 +802,7 @@ path | string :: path('s3://b///d').relative_to(path('s3://b//'))
 #      means giving Cost.ArgElements a recursive variant, and ArgElements is a
 #      shared primitive whose other rows (the five repr_*, join, and the rest)
 #      each carry their own separately measured reference behavior -- changing
-#      it inside a pin bump would move all of them at once. Deferred, and
-#      recorded here rather than silently kept. Under-charging is the SAFE
+#      it would move all of them at once. Under-charging is the SAFE
 #      direction: it can only accept an expression a limit would otherwise
 #      reject, never reject a legitimate one.
 #
@@ -877,16 +845,10 @@ string | list[string] | list[list[string]] :: string(flatten([["-e", "A=1"], ["-
 
 # ── the repr_* family: sqi charges its ARGUMENT, the reference its RESULT ───
 #
-# REWRITTEN 2026-08-19 on the 0.11.4 pin bump, because the claim this section
-# used to make went false without a single entry going stale -- the failure
-# mode this file has no automatic check for. It read "sqi charges rule 1 plus
-# ArgElements for a list-typed argument; the reference never charges more than
-# a flat 1 regardless of list size", and the seven list rows below measured
-# go=3 ref=1. On openjd-expr 0.3.0 they measure go=3 ref=4. Still diverging,
-# still by one, in the OPPOSITE direction and for a different reason. A reason
-# that has quietly inverted is worse than a missing one, hence a rewrite.
+# Measured on openjd-expr 0.3.0, the two-element list rows below are go=3
+# ref=4.
 #
-# What each side charges now:
+# What each side charges:
 #
 #   sqi        1 (rule 1) + ArgElements on a list-typed argument (rule 2)
 #   reference  the same, plus one unit for the string it BUILDS
@@ -901,36 +863,34 @@ string | list[string] | list[list[string]] :: string(flatten([["-e", "A=1"], ["-
 # charges 0 because there is no string argument at all: repr_py(42) processes
 # an int. sqi's 1 is rule 1 alone. The reference's extra unit is the length of
 # what it PRODUCED -- a value rule 3 does not name -- and it charges it for the
-# four functions rule 3 never mentions as readily as for repr_sh.
-#
-# This is new upstream behavior, not a long-standing disagreement, and it is
-# worth reporting: see docs/superpowers/specs/openjd-upstream-tracker.md.
+# four functions rule 3 never mentions as readily as for repr_sh. The
+# reference added this result unit in openjd-rs#284.
 
-# repr_*() on a list: sqi's per-element rule-2 charge, plus the reference's new result-string unit (see section header).
+# repr_*() on a list: sqi's per-element rule-2 charge, plus the reference's result-string unit (see section header).
 string | list[string] :: repr_cmd(['echo', 'hello & world'])
 
-# repr_*() on a list: sqi's per-element rule-2 charge, plus the reference's new result-string unit (see section header).
+# repr_*() on a list: sqi's per-element rule-2 charge, plus the reference's result-string unit (see section header).
 string | list[string] :: repr_pwsh(['a', 'b'])
 
-# repr_*() on a list: sqi's per-element rule-2 charge, plus the reference's new result-string unit (see section header).
+# repr_*() on a list: sqi's per-element rule-2 charge, plus the reference's result-string unit (see section header).
 string | list[int] :: repr_pwsh([1, 2])
 
-# repr_*() on a list: sqi's per-element rule-2 charge, plus the reference's new result-string unit (see section header).
+# repr_*() on a list: sqi's per-element rule-2 charge, plus the reference's result-string unit (see section header).
 string | list[string] :: repr_py(['a', 'b'])
 
-# repr_*() on a list: sqi's per-element rule-2 charge, plus the reference's new result-string unit (see section header).
+# repr_*() on a list: sqi's per-element rule-2 charge, plus the reference's result-string unit (see section header).
 string | list[int] :: repr_py([1, 2])
 
-# repr_*() on a list: sqi's per-element rule-2 charge, plus the reference's new result-string unit (see section header).
+# repr_*() on a list: sqi's per-element rule-2 charge, plus the reference's result-string unit (see section header).
 string | list[string] :: repr_json(['a', 'b'])
 
-# repr_*() on a list: sqi's per-element rule-2 charge, plus the reference's new result-string unit (see section header).
+# repr_*() on a list: sqi's per-element rule-2 charge, plus the reference's result-string unit (see section header).
 string | list[int] :: repr_json([1, 2])
 
 # repr_*() on a scalar: sqi charges rule 1 alone, the reference adds a unit for the result string it builds (see section header).
 string :: repr_sh('')
 
-# repr_*() on a list: sqi's per-element rule-2 charge, plus the reference's new result-string unit (see section header).
+# repr_*() on a list: sqi's per-element rule-2 charge, plus the reference's result-string unit (see section header).
 string | list[string] :: repr_sh(['echo', 'hello world'])
 
 # repr_*() on a scalar: sqi charges rule 1 alone, the reference adds a unit for the result string it builds (see section header).
@@ -1006,31 +966,22 @@ int :: max(5, 3, 7)
 
 # ── sqi is right: min/max over a range_expr charge its full expansion; reference is flat ──
 #
-# CORRECTION (final whole-branch review, sub-project E1), and the direction
-# of this entry is REVERSED from what it was. It previously read: "The
-# single-argument range_expr overload of min()/max() is charged nothing
-# beyond rule 1, the same ruling already applied to OpIn for an identical
-# range_expr shape -- the reference's own count for this shape does not scale
-# with the range's size either." The reference's flatness is real and
-# unchanged; the inference from it was not. This file's own opening rule is
-# that the SPEC outranks the reference, and the reference's behavior was the
-# only reason given -- so the cited OpIn precedent was itself unadjudicated,
-# and following it propagated one unexamined ruling into a second table.
+# The reference's count for the single-argument range_expr overload of
+# min()/max() does not scale with the range's size. That is a fact about the
+# reference, and the SPEC outranks it.
 #
 # What decides it is sqi's own implementation against rule 2's text: min's
 # and max's range_expr Fn bodies (funcsmath.go) both call rangeInts(args[0]),
 # which expands the range in full with no early exit and no arithmetic
 # shortcut -- "a function ... iterates through every element of a list",
-# satisfied outright. sum's range_expr row one table over already charged
-# Cost{ArgElements: {0}} for a byte-identical body, so the file also
-# contradicted itself. Measured before the fix, min() over a million-element
-# range charged 1 operation while expanding a million integers. Both rows now
-# charge ArgElements{0}; ops.go's OpIn/OpNotIn range_expr rows were corrected
-# in the same pass, so the cited precedent now points the same way.
+# satisfied outright. Both rows charge Cost{ArgElements: {0}}, as sum's
+# range_expr row does for an identical body and as ops.go's OpIn/OpNotIn
+# range_expr rows do. Left uncharged, min() over a million-element range
+# would charge 1 operation while expanding a million integers.
 #
-# sqi is therefore HIGHER than the reference on these two, where it used to
-# be lower: 1 (range_expr call) + 1 (min call) + 7 (the expansion) = 9,
-# against the reference's flat 3.
+# sqi is therefore HIGHER than the reference on these two: 1 (range_expr
+# call) + 1 (min call) + 7 (the expansion) = 9, against the reference's flat
+# 3.
 
 # min()/max() over a range_expr charge its full expansion; the reference does not scale (see section header).
 int | string | range_expr :: min(range_expr("3-9"))
@@ -1056,25 +1007,23 @@ float | int :: round(3.5, 2)
 
 # ── sqi is right: unique() charges its real quadratic scan; reference charges only the linear input ──
 #
-# Task 12 decided this by RUNNING, not by reasoning about it:
-# TestUnique_IsBoundedByTheOperationLimit (internal/openjd/expr/carried_internal_test.go)
-# first ran against unique() charged only by a declared Cost{ArgElements: {0}}
-# -- the input list's length -- and unique(range(20000)) returned
-# successfully in under 4 seconds with ~4*10^8 valuesEqual comparisons
-# actually performed, while only ~20001 operations were charged against the
-# 10-million default limit. Section 1.3.10 rule 2's own text ("when a
+# Measured with TestUnique_IsBoundedByTheOperationLimit
+# (internal/openjd/expr/carried_internal_test.go): with unique() charged only
+# by a declared Cost{ArgElements: {0}} -- the input list's length --
+# unique(range(20000)) returned successfully in under 4 seconds with ~4*10^8
+# valuesEqual comparisons performed, while only ~20001 operations were
+# charged against the 10-million default limit. Section 1.3.10 rule 2's text ("when a
 # function ... iterates through every element of a list, the number of
 # elements is added") does not on its own capture a function that iterates
 # the SAME list once per element it keeps, which is what unique's
 # de-duplication scan does: Value cannot be a map key (its Type contains a
 # slice) and section 1.2.5's cross-type equality is not a hashable relation,
-# so the scan is genuinely O(n^2) in valuesEqual calls and not merely an
-# implementation choice that could be linear instead.
+# so the scan is O(n^2) in valuesEqual calls and not an implementation choice
+# that could be linear instead.
 #
-# sqi now charges ONE operation per valuesEqual comparison (uniqueList,
-# funcslist.go, converted from Fn to FnCtx), which is what makes the
-# operation limit see the real work rather than only the input length --
-# the whole reason section 1.3.10 exists. This is rule 2 applied at the
+# sqi charges ONE operation per valuesEqual comparison (uniqueList,
+# funcslist.go), so the operation limit sees the real work rather than only
+# the input length. This is rule 2 applied at the
 # granularity the actual algorithm operates at, which is more faithful to
 # the rule's stated purpose ("prevents ... excessively long processing
 # times") than matching the reference's under-count would be.
@@ -1082,13 +1031,9 @@ float | int :: round(3.5, 2)
 # unique(): sqi charges one operation per valuesEqual comparison (the real O(n^2) scan); the reference charges only the linear input length (see section header).
 list[int] :: unique([2, 1, 2, 3, 1])
 
-# unique() on strings: same divergence as the entry above, now visible because
-# Task 13 fixed Value.String() to quote list-of-string elements, which moved
-# this case from a value divergence to a value-agreeing one and put its
-# operation count under comparison for the first time. sqi charges one
+# unique() on strings: same divergence as the entry above. sqi charges one
 # operation per valuesEqual comparison (the real O(n^2) scan); the reference's
-# count is not the input length either (see section header) — same class of
-# divergence, not a new question.
+# count does not track the scan (see section header).
 list[string] :: unique(["a", "b", "a"])
 
 # round(2.0, 309) joins the positive-ndigits count family already recorded
@@ -1097,27 +1042,19 @@ list[string] :: unique(["a", "b", "a"])
 # presentation-only field Cost's ArgBytes/ResultBytes deliberately never read
 # (section 1.3.4's rule), and ndigits is an int, which rule 3 does not name
 # ("a string or path value"). go=1, ref=3. Same adjudication as the family
-# header for round above; this case is new only because the corpus had no
-# large-ndigits round case until the positive-branch overflow fix added one.
+# header for round above.
 int | float :: round(2.0, 309)
 
-# ── sqi is right: padding charges ONE length term; the reference now charges two ──
+# ── sqi is right: padding charges ONE length term; the reference charges two ──
 #
-# NEW WITH openjd-expr 0.3.0 (openjd-model 0.11.3+), found on the 0.11.4 pin
-# bump. It REPLACES the "zfill charges ResultBytes; the reference's own count
-# does not track it" section this file used to carry: that section's single
-# entry, zfill('', 3), stopped diverging and was removed on the same run that
-# turned these fifteen long-agreeing cases red. The old section's claim -- "a
-# non-empty base string charges a flat 2 regardless of width, matching sqi
-# exactly, so most zfill cases in this corpus do NOT diverge at all" -- is
-# simply no longer true of the reference.
+# Reference behavior since openjd-expr 0.3.0 (openjd-model 0.11.3+).
 #
 # Section 1.3.10 rule 3 charges "the length OF THE VALUE divided by 256
 # (rounded up)": one value per call. sqi charges the value these functions
 # PRODUCE -- Cost{ResultBytes: true} on ljust/rjust/center and on all three
 # zfill overloads -- so its count is 1 + ceil(len(result)/256).
 #
-# The reference now charges TWO length terms. Probed directly against
+# The reference charges TWO length terms. Probed directly against
 # openjd-model 0.11.4, one call per probe:
 #
 #   ljust(<300-byte literal>, 5)   3 = 1 + ceil(300/256) + ceil(0/256)
@@ -1135,9 +1072,6 @@ int | float :: round(2.0, 309)
 # therefore a small-string case, where the argument and the padding each round
 # up to a unit of their own and the reference's second term is visible.
 
-# This row only became count-comparable on the 0.11.4 bump: its VALUE diverged
-# until center's tie-break was changed to CPython's bias in the same commit
-# (funcsstrpad.go), so the count behind it had never been compared.
 # Padding: the reference charges the argument's length AND the added padding's; rule 3 names one value (see section header).
 string | int :: center('ab', 7)
 

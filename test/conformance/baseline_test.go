@@ -116,7 +116,7 @@ func TestDiffBaseline(t *testing.T) {
 		},
 		{
 			// The fixture still exists but was reclassified to
-			// StateNotApplicable (e.g. Finding 1's env_templates fix) — its
+			// StateNotApplicable (e.g. env_templates) — its
 			// baseline entry is now dead too, even though the ID still
 			// matches a result.
 			name:         "baseline entry for a now-not-applicable fixture is orphaned",

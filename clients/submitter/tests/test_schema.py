@@ -118,9 +118,9 @@ def test_form_field_is_scene_path() -> None:
 @pytest.mark.parametrize(
     ("param", "widget"),
     [
-        # PATH is type-first: an absent control, or a stale LINE_EDIT (no
-        # longer a legal control on PATH server-side, but tolerated here
-        # defensively), must not suppress the derived picker.
+        # PATH is type-first: an absent control, or a stale LINE_EDIT (not a
+        # legal control on PATH server-side, but tolerated here defensively),
+        # must not suppress the derived picker.
         (_p(type_="PATH", ui={"control": "LINE_EDIT"}), "CHOOSE_INPUT_FILE"),
         (
             _p(type_="PATH", object_type="DIRECTORY", ui={"control": "LINE_EDIT"}),

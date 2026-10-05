@@ -87,7 +87,7 @@ describe('TaskLogPage', () => {
     renderAt()
 
     // Header is just "Logs" (display font applies the invert-case styling),
-    // and no longer embeds the name.
+    // and does not embed the name.
     const heading = screen.getByRole('heading')
     expect(heading).toHaveTextContent(/^lOGS$/)
     expect(heading.textContent ?? '').not.toContain('rENDER')

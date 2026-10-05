@@ -1,11 +1,10 @@
 # SPDX-FileCopyrightText: 2026 Uberware Inc. <https://uberware.net>
 # SPDX-License-Identifier: AGPL-3.0-or-later
-"""Tests for bearer-token/env auth plumbing (forward-looking; A2 issues keys).
+"""Tests for bearer-token/env auth plumbing.
 
-A1 ships no issuable headless credential — the browser uses an HttpOnly
-session cookie. These tests only cover the client-side consumption seam (token
-resolution -> ``Authorization`` header) and the ``SqiAuthError`` mapping for
-401/403, with no live credential to round-trip against.
+These tests cover only the client-side consumption seam (token resolution ->
+``Authorization`` header) and the ``SqiAuthError`` mapping for 401/403, with no
+live credential to round-trip against.
 """
 
 from __future__ import annotations

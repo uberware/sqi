@@ -18,8 +18,8 @@ vi.mock('@/api/queries', () => ({
 }))
 
 // Admin filters its cards by permission — default the mocked principal to
-// admin (holds every permission the cards check) so pre-existing assertions
-// keep working unchanged. Role-gating itself is covered by focused tests below.
+// admin (holds every permission the cards check) so every card renders.
+// Role-gating itself is covered by focused tests below.
 const ADMIN_PRINCIPAL: Principal = {
   subject: 'u-admin',
   display_name: 'Admin',

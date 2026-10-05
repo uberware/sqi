@@ -61,10 +61,10 @@ beforeEach(() => {
   setMatchMedia(false)
   fetchMock.mockReset()
   vi.stubGlobal('fetch', fetchMock)
-  // Default every test to a real authed principal so the pre-existing nav
-  // assertions (which render synchronously, before any auth resolution)
-  // keep working unchanged; tests exercising the logout control itself
-  // override this via renderSidebarAs.
+  // Default every test to a real authed principal so the nav assertions
+  // (which render synchronously, before any auth resolution) see every
+  // item; tests exercising the logout control itself override this via
+  // renderSidebarAs.
   fetchMock.mockImplementation((input) => {
     if (urlOf(input).includes('/auth/me')) {
       return Promise.resolve(jsonResponse(200, AUTHED_PRINCIPAL, 'application/json'))
@@ -107,9 +107,9 @@ function renderSidebarAs(principal: unknown, initialEntry = '/') {
 }
 
 describe('Sidebar', () => {
-  it('renders all Phase 1 nav links', async () => {
+  it('renders all primary nav links', async () => {
     renderSidebar()
-    // Nav items are now permission-gated on the resolved principal (async via
+    // Nav items are permission-gated on the resolved principal (async via
     // /auth/me), so wait for one gated item before asserting the rest.
     expect(await screen.findByRole('link', { name: 'Submit' })).toBeInTheDocument()
     expect(screen.getByRole('link', { name: 'Dashboard' })).toBeInTheDocument()
@@ -118,7 +118,7 @@ describe('Sidebar', () => {
     expect(screen.getByRole('link', { name: 'Admin' })).toBeInTheDocument()
   })
 
-  it('Phase 1 links point to correct paths', async () => {
+  it('primary nav links point to correct paths', async () => {
     renderSidebar()
     expect((await screen.findByRole('link', { name: 'Submit' })).getAttribute('href')).toBe(
       '/submit',
@@ -280,8 +280,8 @@ describe('Sidebar', () => {
     it('calls POST /auth/logout and flips auth state to anonymous when clicked', async () => {
       renderSidebarAs(AUTHED_PRINCIPAL)
       const logoutBtn = await screen.findByRole('button', { name: /log ?out/i })
-      // 200 with a JSON body, not 204: since C2 the server answers logout with
-      // a LogoutResult, which carries the provider's end-session URL under
+      // 200 with a JSON body, not 204: the server answers logout with a
+      // LogoutResult, which carries the provider's end-session URL under
       // logout_mode=provider and is `{}` otherwise.
       fetchMock.mockResolvedValueOnce(jsonResponse(200, {}, 'application/json'))
       // After logout, /auth/me is re-queried and must resolve to unauthenticated.

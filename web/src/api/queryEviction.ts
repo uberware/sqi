@@ -7,7 +7,7 @@ import { queryKeys } from './queries'
  * Evict every cached query except `auth.me`, then invalidate `auth.me` so the
  * AuthProvider re-resolves.
  *
- * This is the shared eviction used by **both** paths that transition the app
+ * This is the shared eviction used by both paths that transition the app
  * to anon:
  *
  *  1. Explicit logout — `useLogout` (`mutations.ts`) calls this from its
@@ -24,12 +24,11 @@ import { queryKeys } from './queries'
  * paths above triggered the transition.
  *
  * `auth.me` is deliberately spared rather than swept up in a blanket
- * `clear()` — this was verified against TanStack query-core source:
- * `removeQueries` destroys the Query object without notifying observers, so
- * removing `auth.me` too would leave the `AuthProvider`'s observer pointing
- * at a destroyed query with nothing to trigger a refetch, stranding it
- * pending instead of refetching into the 401 that flips the app to the
- * login page.
+ * `clear()`: in TanStack query-core, `removeQueries` destroys the Query
+ * object without notifying observers, so removing `auth.me` too would leave
+ * the `AuthProvider`'s observer pointing at a destroyed query with nothing to
+ * trigger a refetch, stranding it pending instead of refetching into the 401
+ * that flips the app to the login page.
  */
 export function evictAllExceptAuthMe(qc: QueryClient): void {
   qc.removeQueries({

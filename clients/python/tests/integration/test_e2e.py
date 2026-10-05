@@ -260,7 +260,7 @@ steps:
 def test_product_create_parameters_and_submit(client: SqiClient) -> None:
     """create_product → get_product_parameters → submit_product_job (name override).
 
-    A single depth test for the three new product endpoints plus the job-name
+    A single depth test for the three product endpoints plus the job-name
     override, run against the real server and OpenJD parser — the cross-wire
     contract the respx-mocked unit tests cannot verify. No worker is needed: the
     job is asserted at creation (PENDING), not execution.

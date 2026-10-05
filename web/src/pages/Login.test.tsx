@@ -192,10 +192,10 @@ describe('Login', () => {
   })
 
   it('clears the sso_error marker after showing it, so a later remount does not repeat it', async () => {
-    // Regression test: a failed SSO attempt followed by a successful password
-    // login left the marker in the address bar for the rest of the SPA
-    // session. If the session later expired and Login re-mounted, it told the
-    // user sign-in had failed when nothing of the sort had happened this time.
+    // Without clearing, a failed SSO attempt followed by a successful password
+    // login would leave the marker in the address bar for the rest of the SPA
+    // session. If the session later expired and Login re-mounted, it would
+    // tell the user sign-in had failed when it had not.
     mockAuthEndpoints(passwordOnly)
     window.history.replaceState({}, '', '/?sso_error=1')
     const view = renderLogin()

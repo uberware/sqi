@@ -34,7 +34,7 @@ def test_default_headers_are_set(make_client: ClientFactory) -> None:
 @respx.mock
 def test_extra_headers_are_merged() -> None:
     route = respx.get(_PROBE).mock(return_value=httpx.Response(200))
-    # Caller adds an auth-style header (the Phase 3 hook) and overrides Accept.
+    # Caller adds an auth-style header and overrides Accept.
     with SqiClient(
         BASE_URL,
         max_attempts=1,
@@ -176,7 +176,7 @@ def test_older_major_version_does_not_warn(make_client: ClientFactory) -> None:
 @respx.mock
 def test_deprecated_endpoint_warns_with_path(make_client: ClientFactory) -> None:
     # RFC 8594: deprecation is signaled by the Deprecation header (a date or
-    # "true"), not by the X-API-Deprecated header docs/api.md used to describe.
+    # "true"), not by an X-API-Deprecated header.
     respx.get(_PROBE).mock(return_value=httpx.Response(200, headers={"Deprecation": "true"}))
     client = make_client()
 
@@ -262,8 +262,7 @@ def test_deprecation_warning_includes_sunset_and_link(make_client: ClientFactory
 
 @respx.mock
 def test_legacy_x_api_deprecated_header_is_ignored(make_client: ClientFactory) -> None:
-    # The header documented by the stale docs/api.md was never sent by the
-    # server; the client must not act on it.
+    # The server never sends X-API-Deprecated; the client must not act on it.
     respx.get(_PROBE).mock(
         return_value=httpx.Response(200, headers={"X-API-Version": "1", "X-API-Deprecated": "true"})
     )

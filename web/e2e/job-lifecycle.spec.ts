@@ -50,7 +50,7 @@ test.describe('job lifecycle', () => {
     await openApp(page)
 
     // ── Navigate to the raw-template submit form (client-side routing) ────────
-    // /submit is now the product picker; the raw OpenJD form lives behind its
+    // /submit is the product picker; the raw OpenJD form lives behind its
     // "Advanced" link at /submit/raw.
     await page.getByRole('link', { name: 'Submit', exact: true }).click()
     await page.getByRole('link', { name: /advanced: submit a raw openjd template/i }).click()

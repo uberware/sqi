@@ -50,8 +50,8 @@ const fetchMock = vi.fn<typeof fetch>()
 beforeEach(() => {
   fetchMock.mockReset()
   vi.stubGlobal('fetch', fetchMock)
-  // Default every test to an operator principal so pre-existing control
-  // assertions keep working unchanged; the read-only gating test overrides
+  // Default every test to an operator principal so the gated
+  // controls render; the read-only gating test overrides
   // this via setPrincipal(READONLY_PRINCIPAL).
   setPrincipal(OPERATOR_PRINCIPAL)
 })
@@ -273,8 +273,8 @@ describe('PresetDetail error reporting', () => {
   }
 
   // A stale published library fails validation with a precise, actionable
-  // message naming the offending field. Swallowing it behind "Failed to load
-  // preset" turns a five-second diagnosis into a debugging session.
+  // message naming the offending field, which must not be swallowed behind
+  // "Failed to load preset".
   it('shows the server’s explanation when the definition fails validation', async () => {
     fetchMock.mockResolvedValueOnce(
       problem(
@@ -294,8 +294,8 @@ describe('PresetDetail error reporting', () => {
     expect(await screen.findByRole('alert')).toHaveTextContent(/preset library not configured/)
   })
 
-  // A transport failure has no problem document, so the generic line remains
-  // the honest fallback rather than rendering "undefined".
+  // A transport failure has no problem document, so the generic line is the
+  // fallback rather than rendering "undefined".
   it('falls back to a generic message when there is no problem detail', async () => {
     fetchMock.mockRejectedValueOnce(new Error('network down'))
     renderDetail('/presets/nuke-comp')

@@ -171,7 +171,7 @@ describe('PresetLibrary readme button', () => {
   // The remote library index deliberately carries no readme field, so a list
   // row cannot know whether one exists. The button is therefore always
   // enabled and the detail page shows whatever is actually there. If this ever
-  // becomes a disabled-state test, the index format changed — read the spec.
+  // becomes a disabled-state test, the index format changed.
   it('is enabled even though the index carries no readme', async () => {
     fetchMock.mockResolvedValue(ok([makePreset({ name: 'nuke-comp' })]))
     renderPage()

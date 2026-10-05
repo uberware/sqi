@@ -4,15 +4,12 @@
 
 package integration
 
-// expr_realworker_test.go — the first EXPR job ever executed by the real
-// binaries.
+// expr_realworker_test.go — an EXPR job executed by the real binaries.
 //
-// Until EXPR sub-project H2 flipped the extension to StatusSupported, no
-// template declaring extensions: [EXPR] could be submitted at all: the HTTP
-// gate rejected it at /extensions/0, so every EXPR test in the repo ran
-// in-process against the packages directly. This test closes that: one job,
-// through a real sqi-server and a real sqi-worker subprocess, asserting on the
-// VALUE an expression resolved to rather than merely on the job succeeding.
+// Most EXPR tests run in-process against the packages directly. This one runs
+// one job through a real sqi-server and a real sqi-worker subprocess,
+// asserting on the VALUE an expression resolved to rather than merely on the
+// job succeeding.
 
 import (
 	"fmt"

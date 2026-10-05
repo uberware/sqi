@@ -46,9 +46,9 @@ def _mock_server(products: "list[dict[str, str]] | None" = None) -> respx.Route:
         )
     )
     # NOTE: list_farms is a bare-array endpoint in the real SDK (see
-    # tests/test_session.py::test_farms_and_queues_fetch); the brief's mock
-    # used {"items": [...]} which does not match SqiClient.list_farms and
-    # would make farmCombo stay empty. Fixed to a bare array here.
+    # tests/test_session.py::test_farms_and_queues_fetch); an {"items": [...]}
+    # mock would not match SqiClient.list_farms and would leave farmCombo
+    # empty.
     respx.get(f"{BASE}/api/v1/farms").mock(
         return_value=httpx.Response(200, json=[{"id": "f1", "name": "Farm"}])
     )

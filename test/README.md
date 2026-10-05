@@ -41,11 +41,10 @@ starting a container; that directory must hold the tree in the file's
 `seedLDIF` constant.
 
 It runs in CI on every change (`ldap-integration`, on both amd64 and arm64
-because the image's variants differ), and it is a genuine
-regression guard, not a smoke test: it was written after a real bug in which
-OpenLDAP answered the AD-only nested-group matching rule with *success and zero
-entries*, which silently demoted users to `default_role`. See `docs/auth.md`
-§ "How this is tested".
+because the image's variants differ). It guards against server behavior no
+fake reproduces: OpenLDAP answers the AD-only nested-group matching rule with
+*success and zero entries*, which, if mishandled, silently demotes users to
+`default_role`. See `docs/auth.md` § "How this is tested".
 
 ## OIDC / SSO: `oidc_test.go`
 
@@ -72,6 +71,6 @@ than two: no arch-specific divergence is known for a JVM application whose HTTP
 and token behavior is all this job asserts on.
 
 It also pins the vendor behavior the logout design rests on — including the
-measured finding that Keycloak answers an `id_token_hint`-less end-session
+measured fact that Keycloak answers an `id_token_hint`-less end-session
 request with an interactive confirmation page and keeps its session live behind
 it. See `docs/auth.md` § "Provider logout is weaker than it looks".

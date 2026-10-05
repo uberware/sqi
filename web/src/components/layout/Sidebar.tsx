@@ -35,9 +35,8 @@ function visibleNavItems(principal: Principal | null): NavItem[] {
 /**
  * Signed-in identity + logout action. Hidden entirely when the resolved
  * principal is the anonymous one auth-off deployments return from
- * `GET /auth/me` — that's the binding auth-off regression guarantee: an
- * auth-disabled server must render the sidebar exactly as it did before
- * this feature, with no logout control to click.
+ * `GET /auth/me`, so an auth-disabled server renders the sidebar with no
+ * account section and no logout control to click.
  */
 function AccountSection() {
   const { principal, status } = useAuth()
