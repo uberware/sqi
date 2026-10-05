@@ -1119,7 +1119,14 @@ Pre-existing in v0.3.0:
   lease handler refuses a `disabled` worker and a restarted process whose
   registration has not landed, but it looks at no other status, so a worker
   the server has declared offline (a missed heartbeat window) that is in fact
-  alive and keeps requesting work is served.
+  alive and keeps requesting work is served. Refusing it would starve it for
+  good, since heartbeats never bring a worker back `online`. One case is
+  closed: a request that parked while its worker was online, and is woken after
+  the worker went offline (a graceful deregister or the heartbeat sweep), is
+  answered empty rather than leased a task, so a departed process's last
+  request no longer takes a task into a dead inbox for the stale-assignment
+  reaper to recover. A live worker that hits this is refused once, and its
+  next request is served.
 - **Heartbeat timestamps compare as text.** SQLite stores timestamps as
   RFC3339Nano text, which mis-orders within a second (`"…:05Z"` sorts after
   `"…:05.5Z"`), so its heartbeat-staleness comparison is wrong below one second

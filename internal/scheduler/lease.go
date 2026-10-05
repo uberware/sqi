@@ -146,14 +146,24 @@ func (s *Scheduler) refuseLeaseAfterDelay(ctx context.Context) []byte {
 }
 
 // leaseAfterPark is the one retry a parked lease request makes once woken: it
-// re-reads the worker and, unless the worker was disabled, or re-registered from
-// another process, while the request was parked, selects a batch. A failure to
-// read the worker is an empty batch; a failure part way through selection
-// returns the tasks already leased, which must reach the worker (see
-// [Scheduler.selectLeaseBatch]).
+// re-reads the worker and, unless the worker was disabled, taken offline, or
+// re-registered from another process while the request was parked, selects a
+// batch. A failure to read the worker is an empty batch; a failure part way
+// through selection returns the tasks already leased, which must reach the
+// worker (see [Scheduler.selectLeaseBatch]).
+//
+// The offline check is here and not at the front of the handler. A worker
+// that went offline while its request was parked (a graceful deregister, or
+// the heartbeat sweep) has usually gone, and a task leased to it would wait in
+// a dead inbox until the stale-assignment reaper took it back. At the front, a
+// live worker the sweep took offline would be refused for good, since
+// heartbeats never bring a worker back online; here it is refused once, and
+// its next request is served (the offline-worker known gap in
+// docs/architecture.md).
 func (s *Scheduler) leaseAfterPark(ctx context.Context, workerID, instanceID string) [][]byte {
 	w, err := s.store.GetWorker(ctx, workerID)
-	if err != nil || w.Disabled || s.leaseFromUnregisteredInstance(ctx, w, instanceID) {
+	if err != nil || w.Disabled || w.Status == store.WorkerStatusOffline ||
+		s.leaseFromUnregisteredInstance(ctx, w, instanceID) {
 		return nil
 	}
 	batch, err := s.selectLeaseBatchLocked(ctx, w)

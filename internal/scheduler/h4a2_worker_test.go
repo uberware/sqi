@@ -793,3 +793,69 @@ func TestH4a2_RepeatedInstanceRefusalsWarn(t *testing.T) {
 		t.Fatalf("warns = %d, want 1: a served request restarts the process's count", logs.warns)
 	}
 }
+
+// TestH4a2_ParkedLeaseOfAWorkerTakenOfflineMeanwhileGetsNoWork pins the
+// whole-branch review's recommendation: a request that parked while its worker
+// was online, and is woken after the worker went offline (a graceful
+// deregister, or the heartbeat sweep), gets no work. Its process has usually
+// gone, so a task leased to it would wait in a dead inbox until the
+// stale-assignment reaper took it back. Only the retry after a park checks
+// this: a request that arrives from an offline worker is still served (see the
+// known gaps in docs/architecture.md), so a live worker the sweep wrongly took
+// offline is refused once at most, not starved.
+func TestH4a2_ParkedLeaseOfAWorkerTakenOfflineMeanwhileGetsNoWork(t *testing.T) {
+	st := newCheckedFake(t)
+	s := newMetricsScheduler(st, &recordBus{}, "f1")
+	s.ctx = t.Context()
+	s.leaseHoldTimeout = 30 * time.Second
+	one := 1
+	w, ids := seedLeaseFixture(t, st, []*int{&one})
+
+	// The worker takes the one ready task, so its next request parks.
+	if got, _ := leaseAs(t, s, w.ID, ""); len(got) != 1 {
+		t.Fatalf("first lease = %v, want the one task", got)
+	}
+	req, err := json.Marshal(leaseRequest{WorkerID: w.ID})
+	if err != nil {
+		t.Fatalf("marshal lease request: %v", err)
+	}
+	done := make(chan []byte, 1)
+	go func() { done <- s.handleLeaseRequest(w.ID, "q1", req) }()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		s.waiters.mu.Lock()
+		parked := len(s.waiters.waiters["q1"])
+		s.waiters.mu.Unlock()
+		if parked > 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the second lease request never parked")
+		}
+		time.Sleep(time.Millisecond)
+	}
+
+	// While it is parked the worker deregisters, which returns its task to
+	// ready, and the reclaim wakes every parked request.
+	reclaimed, offlined, err := st.OfflineWorker(t.Context(), w.ID, "", time.Now().UTC())
+	if err != nil || !offlined || len(reclaimed) != 1 {
+		t.Fatalf("OfflineWorker = (%d reclaimed, %v, %v), want (1, true, nil)", len(reclaimed), offlined, err)
+	}
+	s.waiters.notifyAll()
+
+	select {
+	case raw := <-done:
+		var rep leaseReply
+		if err := json.Unmarshal(raw, &rep); err != nil {
+			t.Fatalf("unmarshal lease reply: %v", err)
+		}
+		if len(rep.Assignments) != 0 {
+			t.Fatalf("woken lease of an offline worker = %s, want no assignments", raw)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("the parked lease request never returned")
+	}
+	if task := mustTaskOf(t, st, ids[0]); task.Status != store.TaskStatusReady {
+		t.Fatalf("task = %q, want ready (not leased to the offline worker)", task.Status)
+	}
+}
