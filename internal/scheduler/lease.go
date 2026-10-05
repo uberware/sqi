@@ -88,6 +88,7 @@ func (s *Scheduler) handleLeaseRequest(workerID, queueID string, data []byte) []
 	if s.leaseFromUnregisteredInstance(ctx, worker, req.InstanceID) {
 		return s.refuseLeaseAfterDelay(ctx)
 	}
+	s.instanceRefusals.Delete(instanceRefusalKey{workerID, req.InstanceID})
 
 	batch, err := s.selectLeaseBatchLocked(ctx, worker)
 	if err != nil {
@@ -199,7 +200,55 @@ func (s *Scheduler) leaseFromUnregisteredInstance(ctx context.Context, w store.W
 		slog.String("registered_instance_id", w.InstanceID),
 		slog.String("request_instance_id", instanceID),
 	)
+	s.noteInstanceRefusal(ctx, w, instanceID)
 	return true
+}
+
+// instanceRefusalKey names one worker process: a worker ID and the instance ID
+// its lease requests carry.
+type instanceRefusalKey struct{ workerID, instanceID string }
+
+// instanceRefusal is one worker process's run of refused lease requests.
+type instanceRefusal struct {
+	mu       sync.Mutex
+	count    int
+	lastWarn time.Time
+}
+
+// noteInstanceRefusal counts one more refusal of a lease request from the
+// worker process instanceID and, once that process has been refused
+// instanceRefusalWarnAfter times in a row, logs a Warn, at most once per
+// instanceRefusalWarnEvery while it goes on. A restarted process is refused
+// only until its registration lands, which the Debug line in
+// [Scheduler.leaseFromUnregisteredInstance] covers. Refusals that go on mean
+// the worker gets no work until something changes: its registration was lost
+// (a store error on every redelivery, or the message aged out of the stream),
+// or a second live process registered under the same worker ID. Counting per
+// process rather than per worker keeps the second case visible while the other
+// process is served. It is rate-limited, and only a worker the store knows
+// reaches it, so an unauthenticated broker cannot flood the log through it.
+func (s *Scheduler) noteInstanceRefusal(ctx context.Context, w store.Worker, instanceID string) {
+	v, _ := s.instanceRefusals.LoadOrStore(instanceRefusalKey{w.ID, instanceID}, &instanceRefusal{})
+	r := v.(*instanceRefusal) //nolint:errcheck,forcetypeassert // value type is always *instanceRefusal
+	r.mu.Lock()
+	r.count++
+	refused := r.count
+	warn := refused >= s.instanceRefusalWarnAfter && time.Since(r.lastWarn) >= s.instanceRefusalWarnEvery
+	if warn {
+		r.lastWarn = time.Now()
+	}
+	r.mu.Unlock()
+	if !warn {
+		return
+	}
+	s.logger.WarnContext(
+		ctx, "scheduler: a worker process keeps asking for work before its registration has landed — no work until it does; "+
+			"its registration may have been lost (restart the worker) or another live process may share this worker ID",
+		slog.String("worker_id", w.ID),
+		slog.String("registered_instance_id", w.InstanceID),
+		slog.String("request_instance_id", instanceID),
+		slog.Int("refused_in_a_row", refused),
+	)
 }
 
 // selectLeaseBatchLocked runs selectLeaseBatch while holding the per-worker

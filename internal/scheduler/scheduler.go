@@ -278,6 +278,21 @@ type Scheduler struct {
 	// this process -- bounded, not pruned, and gone on restart.
 	exprCapWarned sync.Map // workerID -> string
 
+	// instanceRefusals counts, per worker process, the lease requests refused
+	// in a row because that process's registration has not landed, so one
+	// that never lands is reported at Warn (see
+	// [Scheduler.noteInstanceRefusal]). An entry is dropped when that
+	// process's request is next served. A process that is refused and then
+	// gone for good leaves its entry until this server restarts: one small
+	// record per such process.
+	instanceRefusals sync.Map // instanceRefusalKey -> *instanceRefusal
+
+	// instanceRefusalWarnAfter and instanceRefusalWarnEvery set when that Warn
+	// fires: once a process has been refused this many times in a row, then at
+	// most once per interval while it goes on. Overridable in tests.
+	instanceRefusalWarnAfter int
+	instanceRefusalWarnEvery time.Duration
+
 	// leaseHoldTimeout bounds how long an unfulfillable lease request parks
 	// before replying empty. Overridable in tests.
 	leaseHoldTimeout time.Duration
@@ -364,7 +379,11 @@ func New(cfg Config, st store.Store, busClient busClient, m *metrics.Metrics, lo
 		attemptCache:      newAttemptOwnerCache(),
 		leaseHoldTimeout:  30 * time.Second,
 		leaseRefusalDelay: time.Second,
-		retryWakeTimers:   make(map[*time.Timer]struct{}),
+		// About half a minute of refusals at leaseRefusalDelay on one queue:
+		// far longer than a registration takes to land.
+		instanceRefusalWarnAfter: 30,
+		instanceRefusalWarnEvery: 5 * time.Minute,
+		retryWakeTimers:          make(map[*time.Timer]struct{}),
 		// ctx is overwritten with the derived cancellable context in Run.
 		// The background fallback ensures NATS callbacks can't nil-panic if
 		// somehow invoked before Run (e.g. in a partial test setup).

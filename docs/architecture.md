@@ -1168,10 +1168,12 @@ Left by the lifecycle fixes:
   (1 s) precisely so the worker's lease loop does not spin, but the loop does
   ask again as soon as the empty reply arrives, so a worker whose registration
   never lands (the message was discarded, or two live processes share a worker
-  ID) asks about once a second per queue for as long as that lasts. The request
-  for an unknown worker ID is answered at once and has always had no such
-  backoff. A disabled worker no longer does this: its requests are parked for
-  the full lease hold.
+  ID) asks about once a second per queue for as long as that lasts, and gets no
+  work. Such a process is no longer silent: once it has been refused 30 times
+  in a row the server logs a Warn naming the worker and both instance IDs, at
+  most once every 5 minutes per process. The request for an unknown worker ID
+  is answered at once and has always had no such backoff. A disabled worker no
+  longer does this: its requests are parked for the full lease hold.
 - **A retry whose dependency resolution fails with the server up can still
   finalize a pending step `failed`.** The start-up reconcile closes the window
   for a server stop between `RetryTasks` and `ResolveDependencies`, but

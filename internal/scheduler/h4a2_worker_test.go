@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"testing"
 	"time"
 
@@ -735,5 +736,60 @@ func TestH4a2_UnschedulableWriteEmitsOneEvent(t *testing.T) {
 				t.Fatalf("reason = %q, want %q", got, "no online workers")
 			}
 		})
+	}
+}
+
+// TestH4a2_RepeatedInstanceRefusalsWarn pins the whole-branch review's
+// diagnosability finding: a process refused because its registration has not
+// landed is logged only at Debug, so one whose registration never lands (lost,
+// or a second live process under the same worker ID) got no work with nothing
+// at Warn. Refusals in a row now warn once they pass instanceRefusalWarnAfter,
+// rate-limited per process, and a served request starts that process's count
+// again.
+func TestH4a2_RepeatedInstanceRefusalsWarn(t *testing.T) {
+	st := newCheckedFake(t)
+	s := newMetricsScheduler(st, &recordBus{}, "f1")
+	s.ctx = t.Context()
+	logs := &countingHandler{}
+	s.logger = slog.New(logs)
+	s.leaseRefusalDelay = time.Millisecond
+	s.leaseHoldTimeout = time.Millisecond
+	s.instanceRefusalWarnAfter = 3
+	s.instanceRefusalWarnEvery = time.Hour
+	w, _ := seedLeaseFixture(t, st, nil)
+	mustRegisterInstance(t, st, w, "p1")
+
+	refuse := func(instance string, times int) {
+		t.Helper()
+		for range times {
+			if got, _ := leaseAs(t, s, w.ID, instance); len(got) != 0 {
+				t.Fatalf("lease as %s = %v, want a refusal", instance, got)
+			}
+		}
+	}
+
+	refuse("p2", 2)
+	if logs.warns != 0 {
+		t.Fatalf("warns after 2 refusals = %d, want 0 (a registration can take that long)", logs.warns)
+	}
+	refuse("p2", 1)
+	if logs.warns != 1 {
+		t.Fatalf("warns after 3 refusals = %d, want 1", logs.warns)
+	}
+	refuse("p2", 5)
+	if logs.warns != 1 {
+		t.Fatalf("warns after 8 refusals = %d, want still 1 (rate-limited)", logs.warns)
+	}
+
+	// p3 is refused twice, then its registration lands and it is served, which
+	// starts its count again: two more refusals after p1 re-registers are not
+	// yet enough to warn.
+	refuse("p3", 2)
+	mustRegisterInstance(t, st, w, "p3")
+	leaseAs(t, s, w.ID, "p3")
+	mustRegisterInstance(t, st, w, "p1")
+	refuse("p3", 2)
+	if logs.warns != 1 {
+		t.Fatalf("warns = %d, want 1: a served request restarts the process's count", logs.warns)
 	}
 }
