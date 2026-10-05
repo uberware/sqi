@@ -172,11 +172,9 @@ func TestParse_Rejected(t *testing.T) {
 }
 
 func TestParse_ErrorCarriesPosition(t *testing.T) {
-	// A subscript used to be the rejected construct here, then a call (both
-	// now parse — B2 and this task, respectively). A trailing comma in a call's
-	// argument list takes their place: section 1.1.2's <ArgList> has no
-	// optional trailing comma, unlike <ListExpr>, so it remains a genuine parse
-	// error carrying a meaningful, non-zero offset.
+	// A trailing comma in a call's argument list: section 1.1.2's <ArgList>
+	// has no optional trailing comma, unlike <ListExpr>, so it is a genuine
+	// parse error carrying a meaningful, non-zero offset.
 	_, err := Parse("Param.X + Param.X(0,)")
 	if err == nil {
 		t.Fatal("Parse = nil error; want an error")
@@ -319,8 +317,7 @@ func TestExpression_Names(t *testing.T) {
 		// {"Param.File.stem"}".
 		{"a trailing property stays in the name", "Param.File.stem", []string{"Param.File.stem"}},
 		// A function or method name is not a symbol at all — the spec puts
-		// those in a separate called_functions set, which this package
-		// deliberately does not build (sub-project D's need).
+		// those in a separate called_functions set (CalledFunctions).
 		{"a plain function name is not a symbol", "len(Param.Items)", []string{"Param.Items"}},
 		{"a method name is not a symbol", "Param.Name.upper()", []string{"Param.Name"}},
 		{"a method on a deep name keeps every other segment", "a.b.c()", []string{"a.b"}},
@@ -410,7 +407,7 @@ func TestCalledFunctions(t *testing.T) {
 				}
 			}
 			// CallsAny is the predicate form of the same collection rule, and
-			// the two agreeing is the whole basis for using it in place of a
+			// the two agreeing is the basis for using it in place of a
 			// membership test over this set. Assert it on every case here
 			// rather than in a table of its own: a divergence between them can
 			// only come from the collection rule, which is exactly what these
@@ -490,8 +487,8 @@ func TestParse_RejectsPythonBeyondEXPR(t *testing.T) {
 	}
 }
 
-// TestParse_AcceptsWhatEXPRRequires is the counterpart: sub-project A's
-// grammar must not have become so strict that it rejects valid expressions.
+// TestParse_AcceptsWhatEXPRRequires is the counterpart: the grammar must not be
+// so strict that it rejects valid expressions.
 func TestParse_AcceptsWhatEXPRRequires(t *testing.T) {
 	for _, src := range []string{
 		"Param.X + 3", "Param.X // 3", "2 ** 3", "-Param.X", "(Param.X + 1) * 2",
@@ -537,22 +534,22 @@ func TestWalk_DescendsIntoCollectionNodes(t *testing.T) {
 	}
 }
 
-// TestWalk_UsesConstantStackDepth is the regression test for walk's rewrite
-// from recursion to an explicit stack (ast.go). It asserts the property
-// directly — the Go stack does not grow with the tree — rather than by walking
-// a tree big enough to overflow it.
+// TestWalk_UsesConstantStackDepth pins that walk (ast.go) uses an explicit
+// stack rather than recursion. It asserts the property directly — the Go
+// stack does not grow with the tree — rather than by walking a tree big enough
+// to overflow it.
 //
 // That choice is deliberate, and follows the same reasoning
 // TestListOperators_RepeatOverflow states for its own omitted case: the tree
 // that actually distinguishes the two implementations is 10,000,000 operators
 // deep, which costs 458 MB of heap and, under -race, 3.6 GB of resident memory.
-// A test that OOM-kills the suite on a revert is worse than one that fails.
-// The measurement itself was made by hand and is recorded here instead: with
-// the recursive walk, 10,000,000 chained Binary nodes died with "fatal error:
-// stack overflow" (the uncatchable runtime.throw, exactly as maxParseDepth and
-// maxEvalDepth exist to prevent); with the iterative one they walk in 0.72 s.
+// A test that OOM-kills the suite on a regression is worse than one that fails.
+// Measured by hand instead: a recursive walk dies on 10,000,000 chained Binary
+// nodes with "fatal error: stack overflow" (the uncatchable runtime.throw,
+// exactly as maxParseDepth and maxEvalDepth exist to prevent); the iterative
+// one walks them in 0.72 s.
 //
-// A reverted walk fails this test at any chain length past a few hundred,
+// A recursive walk fails this test at any chain length past a few hundred,
 // because each Binary node it descends through costs one real Go frame.
 func TestWalk_UsesConstantStackDepth(t *testing.T) {
 	var pcs [8192]uintptr
@@ -714,8 +711,8 @@ func TestParse_SubscriptErrors(t *testing.T) {
 // TestParse_NestingDepthIsBounded asserts that unbounded nesting comes back as
 // an ordinary parse error rather than killing the process.
 //
-// This is not the usual "assert the error message" test. Before maxParseDepth
-// existed, each of these inputs — at a large enough depth — produced
+// This is not the usual "assert the error message" test. Without
+// maxParseDepth, each of these inputs — at a large enough depth — produces
 // "fatal error: stack overflow", which is a runtime.throw and NOT a panic:
 // recover() cannot catch it, no deferred function runs, and the whole process
 // exits. So a regression here does not fail this test, it takes the test binary
@@ -735,14 +732,14 @@ func TestParse_NestingDepthIsBounded(t *testing.T) {
 		{"parentheses", "(", 600},
 		// parseNot and parseUnary recurse into themselves without ever passing
 		// through the entry production, so a guard placed only there would
-		// leave both of these unbounded. Both were verified to overflow the
-		// stack for real before the guard existed.
+		// leave both of these unbounded. Both overflow the stack for real
+		// without the guard.
 		{"not operators", "not ", 600},
 		{"unary minus", "-", 600},
 		// parsePower reads its exponent through parseUnary, which falls straight
 		// back through to parsePower when the next token is not a sign. That
-		// cycle passed through no guard at all until parsePower took one:
-		// Parse(strings.Repeat("2**", 1000000) + "2") died with "fatal error:
+		// cycle passes through no other guard, so without parsePower's own,
+		// Parse(strings.Repeat("2**", 1000000) + "2") dies with "fatal error:
 		// stack overflow", taking the whole process with it.
 		{"power operators", "2**", 600},
 	}
@@ -967,7 +964,7 @@ func TestParse_CallErrors(t *testing.T) {
 		// expression", not "expected name, found end of expression".
 		{"x.", "unexpected end of expression"},
 		// "x.1" cannot exercise parseAccess's "attribute must be a name" error:
-		// the lexer (unchanged by this task) reads a leading-dot float across
+		// the lexer reads a leading-dot float across
 		// any "." immediately followed by a digit, so "x.1" tokenizes as
 		// ident("x"), float(".1") — no tokDot at all, confirmed against
 		// Python's own tokenizer, which splits it the same way. "(x).+" tests

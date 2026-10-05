@@ -8,38 +8,38 @@ import (
 	"unicode/utf8"
 )
 
-// strPadFuncs is sub-project C2's fourth and last group: RFC 0006 section
-// 2.2.4's padding functions.
+// strPadFuncs is the fourth string-function group: RFC 0006 section 2.2.4's
+// padding functions.
 //
 // Separated from the split group because these are bounded by a BYTE count and
 // those by an ELEMENT count — see funcsstrsplit.go's header.
 //
-// Section 1.3.10 rule 3 (sub-project E1, Task 7): all six rows declare
-// Cost{ResultBytes: true} — the PRODUCED, padded string's length, not
-// ArgBytes on the input. Discriminated by holding the input FIXED at 10
-// bytes and growing only the requested WIDTH: an ArgBytes(input) reading
-// would stay flat at every width; it does not — 2/3/4 at widths 20/300/600
+// Section 1.3.10 rule 3: all six rows declare Cost{ResultBytes: true} — the
+// PRODUCED, padded string's length, not ArgBytes on the input. Discriminated by
+// holding the input FIXED at 10 bytes and growing only the requested WIDTH: an
+// ArgBytes(input) reading would stay flat at every width; it does not — 2/3/4
+// at widths 20/300/600
 // (TestOperationCount_PaddingFunctionsChargeProducedBytes). This matches the
 // same ResultBytes-over-ArgBytes idiom join uses above (funcsstrsplit.go) and
-// the "+"/"*" operators use (Task 5, ops.go): the work here is proportional
-// to what the function BUILDS (a string sized by the requested width), not
-// to what it was handed.
+// the "+"/"*" operators use (ops.go): the work here is proportional to what the
+// function BUILDS (a string sized by the requested width), not to what it was
+// handed.
 //
-// zfill is the ONE row in this file where the reference disagrees with its
-// own three siblings: probing shows its measured count does NOT scale with
-// width at all — '5'.zfill(10), .zfill(300), .zfill(600) and .zfill(1000)
-// all measure 2, tracking only the 1-byte INPUT ('5')'s own ArgBytes charge,
-// never the padded output. zfillString shares the EXACT SAME padWidth
-// mechanism ljust/rjust/center use below, and does the exact same
-// proportional work, so this is a reference omission rather than a
-// meaningful semantic difference — the same family of defect the brief flags
-// for negative widths ("center('ab', -3) failing with a bogus 72-quadrillion
-// operation count, and zfill with a negative width panics outright") but on
-// the positive-width path instead. Per the standing rule ("the specification
-// outranks the reference"), sqi does not reproduce the omission: all three
-// zfill rows declare the SAME Cost{ResultBytes: true} as their siblings,
-// rather than making zfill the one padding function whose declared cost does
-// not reflect the padding it performs. See
+// zfill is the ONE row in this file where the reference disagrees with its own
+// three siblings: probing shows its measured count does NOT scale with width at
+// all — '5'.zfill(10), .zfill(300), .zfill(600) and .zfill(1000) all measure 2,
+// tracking only the 1-byte INPUT ('5')'s own ArgBytes charge, never the padded
+// output. zfillString shares the EXACT SAME padWidth mechanism
+// ljust/rjust/center use below, and does the exact same proportional work, so
+// this is a reference omission rather than a meaningful semantic difference —
+// the same family of defect as the reference's negative-width behavior
+// (center('ab', -3) failing with a bogus 72-quadrillion operation count, and
+// zfill with a negative width panicking outright) but on the positive-width
+// path instead. Per the standing rule ("the specification outranks the
+// reference"), sqi does not reproduce the omission: all three zfill rows
+// declare the SAME Cost{ResultBytes: true} as their siblings, rather than
+// making zfill the one padding function whose declared cost does not reflect
+// the padding it performs. See
 // TestOperationCount_ZfillDivergesFromReferenceOnWidth and
 // cost_string_internal_test.go's PROBE comment for the full transcript.
 //
@@ -101,8 +101,7 @@ const (
 // a harmless no-op rather than an error: RFC 0006 declares no error condition
 // for it, so inventing a rejection would be adding a rule the specification does
 // not have. (The reference implementation instead panics with "capacity
-// overflow" for zfill and reports a nonsense operation count for center; that
-// will be recorded in test/oracle/baseline.txt when the oracle corpus lands.)
+// overflow" for zfill and reports a nonsense operation count for center.)
 //
 // The bound goes through checkRepeat, not through len(s)+n compared afterward:
 // width is an arbitrary int64 straight from the expression, so at MaxInt64 the
@@ -136,15 +135,10 @@ func padWidth(ec evalCtx, s string, width int64) (padLen int, need bool, err err
 // left, two right — and not the plain floor split's "  ab   ". The bias only
 // fires when the padding and the width are both odd.
 //
-// CHANGED 2026-08-19, and the reason it changed is the reason it was ever the
-// other way. sqi used the plain floor split because the REFERENCE did, and this
-// comment said so: "matching CPython here would create an oracle divergence for
-// no reason." openjd-expr 0.3.0 (openjd-model 0.11.3+) moved center to
-// CPython's rule, so the plain split became the divergence — caught by the
-// oracle on the 0.11.4 pin bump, as a NEW value divergence on center('ab', 7).
 // RFC 0006 says only "Center, pad with spaces to width" and does not settle the
 // tie, so with the spec silent the tie-break follows the library the function
-// is modeled on, which is now what the reference does too.
+// is modeled on, which is also what the reference does (openjd-expr 0.3.0,
+// openjd-model 0.11.3+).
 func padString(ec evalCtx, s string, width int64, side padSide) (Value, error) {
 	n, need, err := padWidth(ec, s, width)
 	if err != nil {

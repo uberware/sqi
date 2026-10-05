@@ -2,17 +2,17 @@
 
 package openjd_test
 
-// Tests for sub-project E2's Task 9: wiring checkTemplateExpressions into
-// ValidateWithOptions, and the three new format-string positions (host
-// requirement values, task-parameter range entries, action timeout).
+// Tests for the wiring of checkTemplateExpressions into ValidateWithOptions,
+// and the three format-string positions it covers beyond the base-spec ones
+// (host requirement values, task-parameter range entries, action timeout).
 //
 // exprcheck_test.go (package openjd) covers checkTemplateExpressions and its
 // helpers directly, at the unresolved-symbol-table level. This file covers
 // the same ground through the public API (openjd.Validate /
-// openjd.ValidateWithOptions), end to end from YAML, including the
-// blast-radius decision: host requirements and range entries get
-// format-string scope validation for BASE-SPEC templates too, not only EXPR
-// ones -- a deliberate behavior change from v0.1.0/v0.2.0.
+// openjd.ValidateWithOptions), end to end from YAML, including that host
+// requirements and range entries get format-string scope validation for
+// BASE-SPEC templates too, not only EXPR ones -- a deliberate behavior change
+// from v0.1.0/v0.2.0.
 
 import (
 	"testing"
@@ -20,22 +20,15 @@ import (
 	"github.com/uberware/sqi/internal/openjd"
 )
 
-// The EXPR-declaring tests below used to route through a validateEXPRWired
-// helper that set ValidateOptions.CheckEXPRExpressionsWhileUnsupported, because
-// while the EXPR registry entry was StatusInProgress ValidateWithOptions
-// skipped checkTemplateExpressions entirely: the template was already rejected
-// by the status gate and the walk was expensive. Sub-project H2 made EXPR
-// StatusSupported, so plain openjd.Validate runs the walk exactly as production
-// does and the helper is gone -- these tests now pin the wiring on the real
-// path rather than on an opt-in only tests could take.
+// The EXPR-declaring tests below call plain openjd.Validate, which runs the
+// walk exactly as production does, so they pin the wiring on the real path.
 
 // TestValidate_HostRequirements_BaseSpec_OutOfScopeRejected pins the blast
 // radius explicitly: a base-spec template (no extensions declared at all)
 // referencing {{Session.WorkingDirectory}} in a host requirement's attribute
-// value is rejected. Before this task, host requirements had NO
-// format-string scope validation, so this reference was accepted and
-// resolved to nothing at run time -- a silent failure Fail-Fast now catches
-// at submission.
+// value is rejected. Without format-string scope validation on host
+// requirements, this reference would be accepted and resolve to nothing at
+// run time; Fail-Fast catches it at submission instead.
 func TestValidate_HostRequirements_BaseSpec_OutOfScopeRejected(t *testing.T) {
 	tmpl := mustParse(t, `
 specificationVersion: jobtemplate-2023-09
@@ -60,7 +53,7 @@ steps:
 
 // TestValidate_HostRequirements_BaseSpec_InScopeAccepted is the accompanying
 // sanity check: a Param. reference (in scope at ScopeJob) in the same
-// position must NOT be rejected by the new check. Conformance fixtures
+// position must NOT be rejected by the check. Conformance fixtures
 // 3.3.2--format-string-in-anyof.yaml and 3.3.2--format-string-in-allof.yaml
 // pin the same shape against the full conformance suite; this is the
 // unit-level version.
@@ -90,8 +83,8 @@ steps:
 	}
 }
 
-// TestValidate_RangeEntries_BaseSpec_OutOfScopeRejected pins the same blast
-// radius for the "task-parameter range entries" position: a base-spec
+// TestValidate_RangeEntries_BaseSpec_OutOfScopeRejected pins the same
+// base-spec coverage for the "task-parameter range entries" position: a base-spec
 // template with an out-of-scope reference in a literal range entry is
 // rejected.
 func TestValidate_RangeEntries_BaseSpec_OutOfScopeRejected(t *testing.T) {
@@ -117,12 +110,11 @@ steps:
 }
 
 // TestValidate_RangeExpr_BaseSpec_OutOfScopeRejected pins the whole-field
-// RangeExpr form of the range position, which a review caught as unchecked
-// in the first pass of this task: a base-spec template with
-// range: "{{Session.WorkingDirectory}}" (a STRING scalar, not an array) used
-// to validate with ZERO errors -- the same silent resolve-to-nothing this
-// task exists to close, left open at this one field because RangeList (the
-// array form) was closed but RangeExpr (the scalar form) was not.
+// RangeExpr form of the range position: a base-spec template with
+// range: "{{Session.WorkingDirectory}}" (a STRING scalar, not an array) must
+// not validate with ZERO errors -- checking RangeList (the array form) alone
+// would leave the same resolve-to-nothing open at RangeExpr (the scalar
+// form).
 func TestValidate_RangeExpr_BaseSpec_OutOfScopeRejected(t *testing.T) {
 	tmpl := mustParse(t, `
 specificationVersion: jobtemplate-2023-09
@@ -146,9 +138,8 @@ steps:
 }
 
 // TestValidate_RangeExpr_BaseSpec_InScopeAccepted is the accompanying sanity
-// check, using the exact shape sqi's own reference presets use
-// (presets/sqi/*.yaml all set range to "{{Param.Frames}}" or
-// "{{Param.FrameRange}}") -- confirming the new check does not regress the
+// check, using the shape sqi's render presets use (presets/sqi/*-render.yaml
+// set range to "{{Param.Frames}}") -- confirming the check does not reject the
 // common case.
 func TestValidate_RangeExpr_BaseSpec_InScopeAccepted(t *testing.T) {
 	tmpl := mustParse(t, `

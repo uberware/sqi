@@ -41,10 +41,8 @@ type parsedPath struct {
 // pathCanonicalSeparator and normalizeSeparators) to find component
 // boundaries, and funcspath.go's isValidReplacementName consults it
 // directly to reject a with_name/with_stem/with_suffix replacement that
-// contains one. Parser and validator sharing this definition matters
-// because they must never independently drift the way an earlier fix
-// round's joinParts (a second copy of String()'s join rule) and
-// splitStemSuffix (a second copy of suffixes()'s leading-dot handling) did.
+// contains one. Parser and validator share this definition so they cannot
+// drift apart.
 //
 // A URI's body is always "/"-only regardless of flavor — splitURI never
 // calls this function at all, it hard-codes "/" for its own component
@@ -98,19 +96,19 @@ func parsePath(text string, f PathFormat) parsedPath {
 	if root, rest, ok := splitURI(text); ok {
 		p := parsedPath{root: root, isURI: true, flavor: f}
 		// The test is "was there a separator closing the authority", NOT "is
-		// the path portion non-empty", and the difference is the whole point.
-		// splitURI reports rest == "" for two DIFFERENT inputs: "s3://b",
-		// where no separator follows the authority and there is no path
-		// portion at all, and "s3://b/", where one does and the path portion
-		// is empty. Only the first has no component; the second has exactly
-		// one, the empty string — the same component "s3://b/d/" already
-		// carries, produced by the same trailing separator. Testing rest
-		// instead collapsed the two, which is normalization the specification
-		// forbids for a URI's path portion, and it meant a bucket URI lost its
-		// separator at CONSTRUCTION (Path re-parses), so appending an object
-		// key produced "s3://bkey". splitURI returns the whole text as the
-		// root in the no-separator case, so comparing lengths distinguishes
-		// them without a fourth return value.
+		// the path portion non-empty", and the difference matters. splitURI
+		// reports rest == "" for two DIFFERENT inputs: "s3://b", where no
+		// separator follows the authority and there is no path portion at all,
+		// and "s3://b/", where one does and the path portion is empty. Only the
+		// first has no component; the second has exactly one, the empty string
+		// — the same component "s3://b/d/" already carries, produced by the
+		// same trailing separator. Testing rest instead would collapse the two,
+		// which is normalization the specification forbids for a URI's path
+		// portion: a bucket URI would lose its separator at CONSTRUCTION (Path
+		// re-parses), so appending an object key would produce "s3://bkey".
+		// splitURI returns the whole text as the root in the no-separator case,
+		// so comparing lengths distinguishes them without a fourth return
+		// value.
 		if len(root) < len(text) {
 			p.comps = strings.Split(rest, "/")
 		}
@@ -146,10 +144,8 @@ func parsePath(text string, f PathFormat) parsedPath {
 // "." segment is dropped. ".." is kept, for the reason parsePath's own doc
 // comment gives.
 //
-// It exists because parsePath's POSIX branch and parseWindows carried this loop
-// TEXTUALLY TWICE, identical modulo the flavor constant they passed to
-// pathCanonicalSeparator — the same duplication shape the rest of this file has
-// already had to close for separators, stem/suffix splitting and root joining.
+// parsePath's POSIX branch and parseWindows share it; they differ only in the
+// flavor constant they pass to pathCanonicalSeparator.
 // A URI never reaches here: splitURI's body is "/"-only and opacity forbids
 // both normalizations, so parsePath splits it itself, one line above.
 func splitComponents(rest string, f PathFormat) []string {
@@ -179,7 +175,7 @@ func splitComponents(rest string, f PathFormat) []string {
 // comps == ["a:b"], which parsePath produces from the text ".\a:b" once the
 // leading "." is normalized away — gets a "." PREPENDED on render, so the
 // text round-trips as ".\a:b" rather than the bare "a:b" a naive join would
-// produce. That distinction is not decorative: re-parsing "a:b" itself
+// produce. That distinction matters: re-parsing "a:b" itself
 // yields drive "a:" plus component "b" — a DIFFERENT path — so omitting the
 // "." silently corrupts the one case where doing so changes meaning. Only
 // tail[0] (not any later component) is tested, matching the reference: a
@@ -194,12 +190,7 @@ func (p parsedPath) String() string {
 	}
 	// The separator comes from pathCanonicalSeparator, the SAME per-flavor
 	// definition the parse side splits on, rather than a second render-side
-	// encoding of it here. The two were written out independently — "/" or "\"
-	// picked by flavor — and a reviewer proved them equal over an 80-input by
-	// 2-flavor corpus, which is precisely the "two formulas that happen to
-	// agree today" shape this file has already had to close three times
-	// (joinParts against String(), splitStemSuffix against suffixes(),
-	// windowsSeparatorChars against pathSeparatorChars).
+	// encoding of it here.
 	sep := string(pathCanonicalSeparator(p.flavor))
 	switch {
 	case p.root != "":
@@ -234,17 +225,15 @@ func (p parsedPath) name() string {
 
 // splitLeadingDots is the ONE place stem, suffix and suffixes agree on where
 // a name's leading run of dots ends, so they cannot independently drift out
-// of sync the way splitStemSuffix and suffixes() did before fix-round 1 (see
-// splitStemSuffix's doc comment for what that cost).
+// of sync (see splitStemSuffix's doc comment).
 //
-// The general pathlib rule, stated precisely because a narrower reading of
-// it is exactly what shipped broken: strip the ENTIRE leading run of dots
-// first — not just a single leading dot — and only then split what remains
-// on "."; a name whose only dots are that leading run has NO further pieces
-// and therefore no suffix at all, however long the run is. leading is
-// returned separately so a caller can re-prepend it to the stem; pieces is
-// nil when nothing follows the leading run (including when name is entirely
-// dots, or empty).
+// The general pathlib rule, stated precisely because a narrower reading of it
+// is easy to get wrong: strip the ENTIRE leading run of dots first — not just a
+// single leading dot — and only then split what remains on "."; a name whose
+// only dots are that leading run has NO further pieces and therefore no suffix
+// at all, however long the run is. leading is returned separately so a caller
+// can re-prepend it to the stem; pieces is nil when nothing follows the leading
+// run (including when name is entirely dots, or empty).
 func splitLeadingDots(name string) (leading string, pieces []string) {
 	trimmed := strings.TrimLeft(name, ".")
 	leading = name[:len(name)-len(trimmed)]
@@ -261,11 +250,10 @@ func splitLeadingDots(name string) (leading string, pieces []string) {
 // against Python:
 //   - a LEADING dot is not a suffix separator, so ".hidden" is all stem —
 //     and this generalizes to any RUN of leading dots, however long
-//     (splitLeadingDots), not just a single one: "..a" is all stem too,
-//     which is what fix-round 1 found broken here (LastIndex over the
-//     unstripped name, guarded only by i <= 0, catches a single leading dot
-//     at index 0 but not a run of two or more, where the last dot sits at
-//     index >= 1 and slips past the guard);
+//     (splitLeadingDots), not just a single one: "..a" is all stem too
+//     (LastIndex over the unstripped name, guarded only by i <= 0, would
+//     catch a single leading dot at index 0 but not a run of two or more,
+//     where the last dot sits at index >= 1 and slips past the guard);
 //   - a name that is entirely dots ("..") has no suffix at all.
 //
 // A trailing dot IS a suffix: "a." has stem "a" and suffix ".". The reference
@@ -324,12 +312,8 @@ func (p parsedPath) anchorParts() (drive, root string) {
 // It picks a separator in EXACTLY ONE place — the ntpath.join final block in
 // the third bullet below, which supplies the root a bare UNC or device drive
 // does not carry — and nowhere else; every other separator in the result comes
-// from String(). That distinction is the whole point, and an earlier version
-// of this comment overstated it into "nothing here concatenates text or picks
-// a separator", which stopped being true the moment that block was added and
-// then contradicted the code three paragraphs below it. Concatenating the two
-// paths as TEXT, or choosing a separator anywhere else, is still how this
-// wave's earlier joinParts broke bare drives.
+// from String(). Concatenating the two paths as TEXT, or choosing a separator
+// anywhere else, breaks bare drives.
 //
 // The rule is CPython's own ntpath.join/posixpath.join, restated over the
 // parsed shape rather than over strings:
@@ -350,13 +334,12 @@ func (p parsedPath) anchorParts() (drive, root string) {
 //     NOT optional: a bare UNC or device drive ("\\srv", "\\.\dev") is the one
 //     anchor shape that carries no separator of its own, so without it the
 //     components glue straight onto the server name and "path('//nas') /
-//     'renders'" quietly addresses the host "nasrenders". Fix round 1 — the
-//     original version of this function reasoned that String() already knows
-//     how a root joins its components, which is true (it is a faithful port of
-//     _format_parsed_parts, "drv + root + sep.join(tail)") and yet incomplete:
-//     String() ASSUMES the anchor it is handed already carries its separator,
-//     an assumption pathlib can make because its own join is textual and
-//     re-parsed, and this structural join can not.
+//     'renders'" quietly addresses the host "nasrenders". String() alone is
+//     not enough: it is a faithful port of _format_parsed_parts,
+//     "drv + root + sep.join(tail)", and ASSUMES the anchor it is handed
+//     already carries its separator, an assumption pathlib can make because
+//     its own join is textual and re-parsed, and this structural join can
+//     not.
 //
 // isAbsolute() is deliberately NOT the test, even though section 2.1.5 words
 // the rule that way. Under Windows a child can anchor the result without
@@ -379,20 +362,19 @@ func (p parsedPath) anchorParts() (drive, root string) {
 // "//srv/share" is_absolute() is true in BOTH engines — so the spec-faithful
 // answer is arguably sqi's, and changing it would mean deleting a heuristic
 // this file ports from CPython precisely to keep parts() and roots correct
-// elsewhere. Recorded rather than reconciled; it is measured in the C4
-// path-engine bullet of doc.go too.
+// elsewhere. Recorded rather than reconciled; doc.go records it too.
 func pathJoin(parent, child parsedPath) parsedPath {
 	// A URI child replaces the parent whole. It is handled before the anchor
 	// split so that its authority can never be treated as a root the parent's
 	// drive gets prepended to.
 	//
-	// The clone is not decoration: returning child as-is hands the CALLER's
-	// slice back as the result's comps, so the two values share a backing
-	// array. That is safe only under an invariant invisible from here — that
-	// the single caller happens to pass a freshly-parsed child nobody else
-	// holds — in a function where every other arm builds a new slice
-	// (slices.Concat below) rather than aliasing one. Both early returns clone
-	// so the invariant is not needed at all.
+	// The clone matters: returning child as-is hands the CALLER's slice back as
+	// the result's comps, so the two values share a backing array. That is safe
+	// only under an invariant invisible from here — that the single caller
+	// happens to pass a freshly-parsed child nobody else holds — in a function
+	// where every other arm builds a new slice (slices.Concat below) rather
+	// than aliasing one. Both early returns clone so the invariant is not
+	// needed at all.
 	if child.isURI {
 		child.comps = slices.Clone(child.comps)
 		return child
@@ -456,14 +438,14 @@ func trimTrailingEmptyComps(comps []string) []string {
 // trailing slash on the left operand is consumed by the join") and what
 // relativeParts needs on both sides of a base it has just stripped.
 //
-// The consequence it exists for is not cosmetic: relative_to builds its result
-// out of the components remaining after the base, and a LEADING empty
-// component renders as a leading separator, so "s3://b//d" relative to
-// "s3://b" would answer "/d" — an ABSOLUTE result from the one function whose
-// job is to remove an anchor, which then silently discards whatever base it is
-// later joined onto. A trailing empty needs no such treatment there: the
-// remainder is re-parsed as an ordinary relative path, and every flavor's
-// parser already drops a trailing separator.
+// The consequence it exists for: relative_to builds its result out of the
+// components remaining after the base, and a LEADING empty component renders as
+// a leading separator, so "s3://b//d" relative to "s3://b" would answer "/d" —
+// an ABSOLUTE result from the one function whose job is to remove an anchor,
+// which then silently discards whatever base it is later joined onto. A
+// trailing empty needs no such treatment there: the remainder is re-parsed as
+// an ordinary relative path, and every flavor's parser already drops a trailing
+// separator.
 func trimLeadingEmptyComps(comps []string) []string {
 	start := 0
 	for start < len(comps) && comps[start] == "" {
@@ -484,19 +466,17 @@ func trimLeadingEmptyComps(comps []string) []string {
 //
 // Both separators are accepted on input and "\" is emitted, matching pathlib.
 //
-// Extended-length ("\\?\") and device paths are DELIBERATELY not handled,
-// and this paragraph says plainly what that means rather than gesturing at
-// it. pathlib gives the specific literal prefix "\\?\UNC\" its own
+// Extended-length ("\\?\") and device paths are DELIBERATELY not handled.
+// pathlib gives the specific literal prefix "\\?\UNC\" its own
 // start-at-offset-8 parsing (splitting a FURTHER server+share out of what
-// follows), so "\\?\UNC\srv\share" is ONE opaque root
-// ("\\?\UNC\srv\share\") to Python. We do not implement offset-8 parsing at
-// all, so that exact input instead runs through the ordinary offset-2 UNC
-// algorithm below and comes out server="?", share="UNC", with "srv" and
-// "share" demoted to ordinary path COMPONENTS — a different split, not
-// merely a different rendering. This is the one extended-length/device shape
-// known to diverge; it is not implemented on purpose, and doing so would
-// require porting the offset-8/six-segment branches CPython carries
-// alongside the offset-2 ones this file already ports.
+// follows), so "\\?\UNC\srv\share" is ONE opaque root ("\\?\UNC\srv\share\") to
+// Python. We do not implement offset-8 parsing at all, so that exact input
+// instead runs through the ordinary offset-2 UNC algorithm below and comes out
+// server="?", share="UNC", with "srv" and "share" demoted to ordinary path
+// COMPONENTS — a different split, not merely a different rendering. This is the
+// one extended-length/device shape known to diverge; it is not implemented on
+// purpose, and doing so would require porting the offset-8/six-segment branches
+// CPython carries alongside the offset-2 ones this file already ports.
 //
 // A plain "\\?\" or "\\.\" WITHOUT the literal "UNC\" that follows never hits
 // Python's offset-8 branch either — Python's own splitroot only special-cases
@@ -508,8 +488,7 @@ func trimLeadingEmptyComps(comps []string) []string {
 // devices specifically). Measured: PureWindowsPath("//?/a/b").parts and
 // PureWindowsPath("//./a/b").parts are ("\\\\?\\a\\", "b") and
 // ("\\\\.\\a\\", "b"), which is what this file produces; only the literal
-// "\\?\UNC\" prefix diverges. That omission now has a doc.go entry of its own
-// (the C4 path-engine bullet), so this paragraph is no longer its only record.
+// "\\?\UNC\" prefix diverges. doc.go records that omission too.
 //
 // Reserved DEVICE NAMES ("NUL", "CON", "AUX") are a separate thing and are
 // not special-cased here either — nor are they in pathlib, whose PURE paths
@@ -527,12 +506,10 @@ func parseWindows(text string) parsedPath {
 
 // splitRootWindows is a direct port of two pieces of CPython's OWN parsing,
 // read from the running interpreter's installed pathlib source
-// (ntpath.splitroot, and the root-synthesis heuristic in
-// PurePath._parse_path) rather than reverse-engineered from output alone —
-// hand-tracing the fix-round corpus surfaced shapes (a share-less UNC
-// wrapped in extra backslashes, the "\\.\" device prefix) where guessing had
-// already gone wrong once. See task-3-report.md's fix-round section for the
-// exact source excerpts this was read from.
+// (ntpath.splitroot, and the root-synthesis heuristic in PurePath._parse_path)
+// rather than reverse-engineered from output alone, because some shapes (a
+// share-less UNC wrapped in extra backslashes, the "\\.\" device prefix) are
+// easy to guess wrong.
 //
 // It returns drive+root split apart, matching splitroot's own three-way
 // return; parseWindows recombines them into the single anchor parsedPath.root
@@ -578,8 +555,8 @@ func splitRootWindows(p string) (drive, root, rest string) {
 //
 // A drive already ending in "\" (e.g. "\\srv\", the bare-trailing-separator
 // case) is excluded up front — that separator already accounts for
-// everything pathlib would synthesize, and synthesizing a second one is
-// exactly fix-round IMPORTANT 2's fabricated-separator bug.
+// everything pathlib would synthesize, and synthesizing a second one would
+// fabricate a separator.
 //
 // segs[2] is excluded when it is "?" or "." (the "\\?\" extended-length and
 // "\\.\" device prefixes — both deliberately unhandled, see parseWindows's
@@ -624,10 +601,9 @@ func synthesizeUNCRoot(p string) (drive, root, rest string) {
 // right one.
 //
 // This predicate is Windows-drive-specific ONLY. It must NOT be reused to
-// detect a URI scheme (Task 4): the specification's own grammar requires a
-// URI scheme to start with a LETTER, which is a stricter and unrelated rule.
-// As of this task the two checks share no code — keep it that way rather
-// than widening a future scheme check by accident.
+// detect a URI scheme: the specification's own grammar requires a URI scheme
+// to start with a LETTER, which is a stricter and unrelated rule. The two
+// checks share no code — keep it that way.
 func driveColonLen(s string) int {
 	if s == "" {
 		return 0
@@ -710,26 +686,23 @@ func isSchemeByte(b byte) bool {
 // the raw text directly rather than going through isabs, as an optimization
 // pathlib documents in its own source — the result is identical either way).
 //
-// The POSIX branch tests root != "" and NOT root == "/", which is fix round
-// 1's correction and is a restatement of the paragraph above rather than a
-// patch to it: a POSIX root is "", "/" or "//" (parsePath keeps POSIX.1-2017
-// section 4.13's exactly-two-slashes root as its own, as CPython does), and it
-// is non-empty in exactly the cases the raw text began with "/". The == "/"
-// form silently excluded that third root shape, so every "//..." path — which
-// CPython and the reference implementation both call absolute — reported
-// itself relative. Pinned by TestParsePath_POSIXDoubleSlashIsAbsolute, and by
-// the is_absolute column TestParsePath_POSIXMatchesPython gained at the same
-// time; the differential's earlier silence on this is why it survived.
+// The POSIX branch tests root != "" and NOT root == "/", a restatement of the
+// paragraph above: a POSIX root is "", "/" or "//" (parsePath keeps
+// POSIX.1-2017 section 4.13's exactly-two-slashes root as its own, as CPython
+// does), and it is non-empty in exactly the cases the raw text began with
+// "/". An == "/" test would exclude that third root shape, so every "//..."
+// path — which CPython and the reference implementation both call absolute —
+// would report itself relative. Pinned by
+// TestParsePath_POSIXDoubleSlashIsAbsolute and by the is_absolute column of
+// TestParsePath_POSIXMatchesPython.
 //
 // For Windows the rule is PurePath.is_absolute() -> self.parser.isabs(self),
 // where "self" is coerced to its RENDERED string (str(self), i.e. what our
-// String() produces) before ntpath.isabs ever runs. This is NOT a test of
-// the parsed root/drive's SHAPE — an earlier version of this function tried
-// to derive the rule from root shape (UNC prefix, contains ":", etc.) and
-// that derivation was wrong, because the reference rule was never about
-// shape. It is a literal prefix match on the first three CHARACTERS (Unicode
-// code points, not bytes — same multi-byte hazard as driveColonLen) of the
-// rendered string:
+// String() produces) before ntpath.isabs ever runs. This is NOT a test of the
+// parsed root/drive's SHAPE (UNC prefix, contains ":", etc.): the reference
+// rule is not about shape. It is a literal prefix match on the first three
+// CHARACTERS (Unicode code points, not bytes — same multi-byte hazard as
+// driveColonLen) of the rendered string:
 //
 //	s = s[:3].replace('/', '\\')
 //	return s.startswith(':\\', 1) or s.startswith('\\\\')

@@ -9,8 +9,9 @@ import (
 	"github.com/uberware/sqi/internal/store"
 )
 
-// TestUnsatisfiedDependency_MatchesThePreRead pins the F13 race path's 422
-// body to the pre-read's words for the same cause.
+// TestUnsatisfiedDependency_MatchesThePreRead pins the 422 body for an
+// upstream canceled or deleted between Submit's dependency pre-read and the
+// submission transaction to the pre-read's words for the same cause.
 func TestUnsatisfiedDependency_MatchesThePreRead(t *testing.T) {
 	cases := []struct {
 		err  *store.DependencyUnsatisfiableError

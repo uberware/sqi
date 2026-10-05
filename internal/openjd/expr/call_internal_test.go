@@ -44,13 +44,12 @@ func TestEvalCall_Errors(t *testing.T) {
 // callee that is neither a Name nor an Access, so there is no function name to
 // look up at all.
 //
-// It asserts the WHOLE message, not a substring, and that is the point of the
-// test rather than an accident of style. The message used to be built with
-// "%T", which rendered the Go type of the tree node — "a *expr.IntLit cannot be
-// called" — leaking this package's internals into a diagnostic a template
+// It asserts the WHOLE message, not a substring, on purpose. A message built
+// with "%T" would render the Go type of the tree node — "a *expr.IntLit cannot
+// be called" — leaking this package's internals into a diagnostic a template
 // author reads, while every other message here names spec types. A substring
-// assertion cannot catch that coming back, because a "%T" satisfies any
-// substring the fixed wording does; only the full string does.
+// assertion cannot catch that, because a "%T" satisfies any substring the
+// correct wording does; only the full string does.
 func TestEvalCall_NonFunctionCallee(t *testing.T) {
 	syms := MapSymbols{"Param.Flag": Bool(true)}
 	tests := []struct {
@@ -77,10 +76,10 @@ func TestEvalCall_NonFunctionCallee(t *testing.T) {
 
 // withTestFunction registers a function for the duration of a test, so the call
 // path can be exercised end to end against a signature the shipped registry
-// does not supply — sub-project C1 registered 22 real functions, but a test
-// here still needs its own name and shape whenever the behavior under test
-// (an overload set with a specific receiver-restriction interaction, an
-// intentionally minimal signature) isn't one of them.
+// does not supply: a test here needs its own name and shape whenever the
+// behavior under test (an overload set with a specific receiver-restriction
+// interaction, an intentionally minimal signature) isn't one the registry
+// offers.
 //
 // It mutates the package-level functionShapes map directly, which is safe
 // only because nothing in this package calls t.Parallel(); the moment a test
@@ -132,11 +131,7 @@ func TestEvalCall_DispatchesThroughTheRegistry(t *testing.T) {
 // fails for a real reason — its Fn errors, or no signature accepts the
 // receiver's type — must surface that real cause, not the "unknown property"
 // wording that is reserved for a property that was never registered at all.
-// Before the sentinel this collapsed all three into "unknown property". That
-// was unobservable while the registry held no properties at all — true for
-// C1, which registers no property, and would have shipped silently the
-// moment a later C wave (C4, the path engine) added a real one, had this not
-// been pinned first.
+// Without the sentinel all three collapse into "unknown property".
 func TestEvalProperty_RealFailureIsNotRelabeledUnknown(t *testing.T) {
 	tests := []struct {
 		name      string
@@ -253,20 +248,15 @@ func TestEvalProperty_DispatchesThroughTheRegistry(t *testing.T) {
 
 // TestReceiverCoercionRestriction pins specification section 1.2.4: when a
 // function is called as a method, implicit coercion does not apply to the
-// receiver. The spec's own example is startswith(path, string), and this now
+// receiver. The spec's own example is startswith(path, string), and this
 // exercises the SHIPPED startswith from funcsstrfind.go rather than a
 // signature the test registers itself.
 //
-// C1 shipped no (string, string) overload set to pin the spec's own worked
-// example against — round(), C1's own function with a receiver-restriction
-// interaction, only demonstrates the restriction for a single-signature
-// int/float promotion (see doc.go), not the startswith(path, string) case
-// the spec names — so the function used to be registered by the test rather
-// than resolved through functionShapes. This is no longer the ONLY place the
-// restriction is exercised end to end: doc.go documents round(3) succeeding
-// in function position while Param.N.round() fails in method position
-// against the real shipped registry. Sub-project C2's string library shipped
-// a real startswith, which is what this test now targets.
+// This is not the only place the restriction is exercised end to end: doc.go
+// documents round(3) succeeding in function position while Param.N.round()
+// fails in method position against the shipped registry. That only
+// demonstrates the restriction for a single-signature int/float promotion,
+// not the startswith(path, string) case the spec names.
 func TestReceiverCoercionRestriction(t *testing.T) {
 	syms := MapSymbols{"Param.Dir": Value{Type: TPath, s: "/foo/bar"}}
 
@@ -318,18 +308,17 @@ func TestReceiverCoercionRestriction(t *testing.T) {
 //
 // TestReceiverCoercionRestriction covers only the single-signature case, where
 // the two are indistinguishable — the one shape being ruled out is the same
-// event as the call failing. Sub-project C ships overload sets throughout
-// section 2.2's library, so that distinction stops being academic there; this
-// is the test that must exist before it does.
+// event as the call failing. Section 2.2's library has overload sets
+// throughout, so the distinction matters there.
 //
-// Unlike its sibling above, this one KEEPS a synthetic, test-registered
+// Unlike its sibling above, this one uses a synthetic, test-registered
 // function rather than targeting a shipped one: it needs a two-row overload
 // set with a (path, string) row, and the shipped startswith deliberately has
 // no such row — RFC 0006 gives it the string signature only, and a path
 // argument is meant to reach it by coercion in FUNCTION position, not by a
 // dedicated path overload. So the synthetic function here is named
 // "prefixed", not "startswith", to avoid colliding with the real registry
-// entry sub-project C2 ships.
+// entry.
 func TestReceiverRestriction_DisqualifiesAShapeNotTheCall(t *testing.T) {
 	withTestFunction(t, "prefixed", []Shape{
 		{

@@ -10,7 +10,7 @@ import "testing"
 // The reference implementation produces DIFFERENT TEXT for the same inputs — a
 // mixed strategy splicing double- and single-quoted segments, e.g.
 // repr_sh("it's $HOME") gives `"it's "'$HOME'`. That output is shell-equivalent
-// and safe, it is simply not what the specification names, so sqi implements
+// and safe, but it is not what the specification names, so sqi implements
 // shlex.quote and the difference is baselined.
 func TestReprSh(t *testing.T) {
 	tests := []struct {
@@ -44,8 +44,8 @@ func TestReprSh(t *testing.T) {
 }
 
 // TestReprCmd covers RFC 0006's cmd.exe rules. Every expectation here is one of
-// the specification's own worked examples, and the reference reproduced all of
-// them during design, so this function is expected to carry no divergence.
+// the specification's own worked examples, and the reference reproduces all of
+// them, so this function is expected to carry no divergence.
 //
 // The newline stripping is a SECURITY rule, not formatting: cmd.exe has no
 // escape for a literal newline inside a quoted argument, so anything after one
@@ -94,11 +94,10 @@ func TestReprPwsh(t *testing.T) {
 		{"list becomes an array literal", `repr_pwsh(['a', 'b'])`, "@('a', 'b')"},
 		{"int list", `repr_pwsh([1, 2])`, "@(1, 2)"},
 		{"empty list", `repr_pwsh([])`, "@()"},
-		// Code-review finding: pwshElement's default branch used to quote
-		// sqi's own list rendering ("[a]") as a single PowerShell STRING,
-		// giving repr_pwsh([['a'],['b']]) = "@('[a]', '[b]')" — a nested
-		// list of text, not a nested array. A nested list must become a
-		// nested "@(...)" array literal instead.
+		// A nested list must become a nested "@(...)" array literal, not
+		// sqi's own list rendering ("[a]") quoted as a single PowerShell
+		// STRING, which would give repr_pwsh([['a'],['b']]) =
+		// "@('[a]', '[b]')" — a nested list of text, not a nested array.
 		{"nested list becomes a nested array literal", `repr_pwsh([['a'], ['b']])`, "@(@('a'), @('b'))"},
 		// Section 2.2.6, as restated by openjd-specifications#176: a
 		// ONE-element list whose element is itself a list takes the unary
@@ -107,8 +106,7 @@ func TestReprPwsh(t *testing.T) {
 		// the nesting. The rule is about the number of ELEMENTS, not the
 		// depth: a two-element list of lists needs no comma, and a
 		// one-element list of SCALARS must not get one (@('a') is already
-		// unambiguous, and @(,'a') would be a different, wronger thing to
-		// write).
+		// unambiguous, and @(,'a') would be a different thing to write).
 		{"single nested list takes the unary comma form", `repr_pwsh([[1, 2]])`, "@(,@(1, 2))"},
 		{"single nested EMPTY list takes the unary comma form", `repr_pwsh([[]])`, "@(,@())"},
 		{"two nested lists take no comma", `repr_pwsh([[1, 2], [3]])`, "@(@(1, 2), @(3))"},
@@ -132,8 +130,8 @@ func TestReprPwsh(t *testing.T) {
 	}
 }
 
-// TestReprShell_PathAndRange covers the rows that need a symbol table, since
-// path() and a range_expr literal are not available before sub-project C4.
+// TestReprShell_PathAndRange covers the path and range_expr rows, with values
+// taken from a symbol table.
 func TestReprShell_PathAndRange(t *testing.T) {
 	syms := MapSymbols{
 		"Param.Dir":    Value{Type: TPath, s: "/a b/c"},
@@ -147,13 +145,11 @@ func TestReprShell_PathAndRange(t *testing.T) {
 		{`repr_sh(Param.Dir)`, "'/a b/c'"},
 		{`repr_pwsh(Param.Dir)`, "'/a b/c'"},
 		{`repr_pwsh(Param.Frames)`, "'1-10'"},
-		// Previously untested registered row: repr_sh's list[path] shape.
+		// repr_sh's list[path] shape.
 		{`repr_sh(Param.Dirs)`, "'/a b' /c"},
-		// Previously untested registered row, and the one that matters most:
 		// repr_cmd has no dedicated path row at all. Calling it on a path
 		// relies entirely on promoteDefault's path -> string coercion
-		// (section 1.2.3) running before Fn sees the argument — nothing
-		// exercised that path until this test.
+		// (section 1.2.3) running before Fn sees the argument.
 		{`repr_cmd(Param.Dir)`, `"/a b/c"`},
 	}
 	for _, tc := range tests {

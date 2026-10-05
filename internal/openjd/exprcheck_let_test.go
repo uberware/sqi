@@ -30,9 +30,9 @@ func TestCheckLetBindings_SequentialTypePropagation(t *testing.T) {
 		// carries no concrete value for it), so every binding derived from it
 		// stays unresolved too -- correctly: Eval propagates "value not known
 		// yet" through arithmetic and calls exactly as it propagates a known
-		// value, per E2's one-code-path model. What this test pins is the
-		// NATURAL type each binding carries underneath that placeholder
-		// status (3.6.1's "the type of the binding is the natural result type
+		// value, per the checker's one-code-path model. What this test pins
+		// is the NATURAL type each binding carries underneath that
+		// placeholder status (3.6.1's "the type of the binding is the natural result type
 		// of the expression"), so the comparison unwraps one layer of
 		// "unresolved[T]" to T before comparing -- the same unwrap
 		// unwrapUnresolved performs inside the expr package, done here by
@@ -123,15 +123,12 @@ const overBudgetLetBinding = "a = max([len(('y' * 900000).upper()) for i in rang
 // TestCheckLetBindings_OverBudgetEvalIsRejectedAtSubmissionLimit pins that
 // checkLetBindings meters its Eval call at the submission limits, rather than
 // falling back to expr.Eval's much looser execution-time defaults. Without that,
-// an unmetered evaluation on the synchronous POST /api/v1/jobs path is the same
-// class of Critical E2's whole-branch review already found once (~9 minutes of
-// server CPU per request).
+// an unmetered evaluation runs on the synchronous POST /api/v1/jobs path (an
+// unmetered checker walk has measured ~9 minutes of server CPU per request).
 //
 // It passes a NIL budget, which is [templateBudget.evalOptions]' documented
 // "use the package defaults" case -- the same numbers DefaultExprLimits carries,
-// which is why the assertion below can name 10,000. The limits used to arrive
-// as an explicit opts tail here (DefaultExprLimits().evalOptions()...), removed
-// with the tail itself.
+// which is why the assertion below can name 10,000.
 //
 // This is the LEAF half of the pin, and on its own it is not enough: a leaf that
 // reads its limits off the budget cannot fail if a CALL SITE passes the wrong
@@ -268,19 +265,17 @@ func TestCheckLetBindings_RejectsShadowingAnEnclosingBlock(t *testing.T) {
 	}
 }
 
-// TestCheckLetBindings_RejectsShadowingAPreexistingTableEntry replaces the
-// task brief's original third test, which seeded syms with the name
-// "lower.Thing" to prove the check is keyed off the syms TABLE rather than
-// some parallel list of names checkLetBindings itself has bound. That input
-// is unreachable through the real grammar: "." is not a legal
-// <UserIdentifier> character (letbinding.go's isLetBindingNameCont), so
-// parseLetBinding rejects "lower.Thing = 1" for its name before the
-// shadowing check this task adds ever runs -- the test would still see a
-// non-empty errs slice, but for the wrong reason, and would keep "passing"
-// even if the shadowing check were deleted entirely.
+// TestCheckLetBindings_RejectsShadowingAPreexistingTableEntry pins that the
+// shadowing check is keyed off the syms TABLE rather than some parallel list
+// of names checkLetBindings itself has bound. A dotted name such as
+// "lower.Thing" cannot test this: "." is not a legal <UserIdentifier>
+// character (letbinding.go's isLetBindingNameCont), so parseLetBinding
+// rejects "lower.Thing = 1" for its name before the shadowing check ever
+// runs -- the test would see a non-empty errs slice for the wrong reason,
+// and keep passing even if the shadowing check were deleted entirely.
 //
-// This restructures the same intent with a name the grammar actually admits:
-// syms is seeded directly (bypassing checkLetBindings, standing in for
+// So it uses a name the grammar admits: syms is seeded directly (bypassing
+// checkLetBindings, standing in for
 // whatever future mechanism -- a wider identifier rule, a scope model with
 // its own pre-bound names -- might one day place a non-let-derived entry in
 // the table) with a plain lowercase identifier, "thing", that a let binding
@@ -303,10 +298,7 @@ func TestCheckLetBindings_RejectsShadowingAPreexistingTableEntry(t *testing.T) {
 
 // mustParseEXPR parses yaml and fails the test immediately on error. It does
 // NOT call Validate: these tests exercise checkTemplateExpressions directly,
-// with a template built to reach it and nothing else. (Before sub-project H2
-// there was a second reason -- Validate stopped at the EXPR extension's status
-// gate, then StatusInProgress, before checkTemplateExpressions was ever
-// reached. That reason is gone; the first one still holds.)
+// with a template built to reach it and nothing else.
 func mustParseEXPR(t *testing.T, yaml string) *JobTemplate {
 	t.Helper()
 	tmpl, err := Parse([]byte(yaml), FormatYAML)
@@ -480,7 +472,7 @@ steps:
 	}
 }
 
-// ─── fix round 1: mutation-pinned leak tests ───────────────────────────────
+// ─── symbol-table leak tests ───────────────────────────────────────────────
 
 // TestCheckTemplateExpressions_StepEnvironmentSymbolsDoNotLeakIntoHostRequirements
 // pins checkEnvironmentExpressions' baseSyms clone (`maps.Clone(outerLet)`).
@@ -490,7 +482,7 @@ steps:
 // output (here: ScopeStepEnvironment's Step.Name/Session.*/Env.File.) would
 // be written directly into that shared map, and checkStepExpressions runs
 // checkEnvironmentExpressions for stepEnvironments BEFORE it builds jobSyms
-// -- so the pollution would flow forward into hostRequirements, silently
+// -- so the pollution would flow forward into hostRequirements,
 // re-legalizing a symbol section 3.6.2 row 1 and section 7.3.1 both forbid
 // there. A bare Step.Name in a host requirement value must be rejected
 // regardless of whether the step happens to declare a stepEnvironments
@@ -700,33 +692,18 @@ steps:
 // ─── section 1.3.7: a comprehension's loop variable vs a "let" binding ─────
 //
 // EXPR/job_templates/3.6--let-comprehension-shadows*.invalid.yaml has five
-// fixtures, and every one of them declares a LIST[INT] job parameter with a
-// YAML sequence default ("default: [1, 2, 3]") -- sub-project F's work,
-// unsupported today. Verified directly (Parse against each fixture file):
-// all five fail at PARSE time, before checkTemplateExpressions -- let alone
-// this rule -- ever runs, with "openjd: default must be a string, number, or
-// boolean". That error fires generically against the YAML shape of the
-// default value; it is not even a dedicated "unknown parameter type"
-// rejection; a LIST[INT] parameter with a scalar default parses fine and
-// only then fails Validate with "unknown type \"LIST[INT]\"". Either way,
-// every one of the five scores as a pass in test-conformance whether or not
-// section 1.3.7's shadowing rule works at all. That is the same trap
-// sub-project E2 fell into, crediting its scope model with rejecting a
-// fixture the YAML decoder was rejecting on its own; that whole-branch
-// review had to correct the claim in two places. So the tests below
-// transcribe each fixture's INTENT with a parameter type that exists today
-// (INT), naming the fixture each one stands in for, rather than trusting the
-// conformance score to prove anything here.
+// fixtures. test-conformance scores an invalid fixture as a pass for ANY
+// rejection, so it cannot show that section 1.3.7's shadowing rule is what
+// rejected it. The tests below transcribe each fixture's INTENT with an INT
+// job parameter in place of the fixtures' LIST[INT] one, naming the fixture
+// each one stands in for, and assert on the shadowing rejection itself.
 
 // TestCheckTemplateExpressions_ComprehensionCannotShadowStepLet stands in for
 // BOTH EXPR/job_templates/3.6--let-comprehension-shadows.invalid.yaml and
 // 3.6--let-comprehension-shadows-step-let.invalid.yaml. The two fixtures are
-// byte-for-byte identical (verified with diff): the design doc
-// (docs/superpowers/specs/2026-08-08-expr-let-bindings-design.md, section
-// 5.2) names them the "plain" and "step-template" cases respectively, but
-// both bind "x" on a step template's own let and comprehend over "x" in that
-// step's script -- the same position, so one test stands in for both rather
-// than duplicating an identical body under a second name.
+// byte-for-byte identical: both bind "x" on a step template's own let and
+// comprehend over "x" in that step's script -- the same position, so one
+// test stands in for both.
 func TestCheckTemplateExpressions_ComprehensionCannotShadowStepLet(t *testing.T) {
 	tmpl := mustParseEXPR(t, `specificationVersion: jobtemplate-2023-09
 extensions: [EXPR]
@@ -757,8 +734,7 @@ steps:
 // TestCheckTemplateExpressions_ComprehensionCannotShadowStepScriptLet stands
 // in for EXPR/job_templates/3.6--let-comprehension-shadows-script-let.invalid.yaml.
 // It binds "x" on the step SCRIPT's own let (ScopeStepScript) rather than the
-// step template's, and comprehends over "x" in that same script's action --
-// the design doc's "step-script" case.
+// step template's, and comprehends over "x" in that same script's action.
 func TestCheckTemplateExpressions_ComprehensionCannotShadowStepScriptLet(t *testing.T) {
 	tmpl := mustParseEXPR(t, `specificationVersion: jobtemplate-2023-09
 extensions: [EXPR]
@@ -787,8 +763,8 @@ steps:
 }
 
 // TestCheckTemplateExpressions_ComprehensionCannotShadowEnvironmentLet stands
-// in for EXPR/job_templates/3.6--let-comprehension-shadows-env.invalid.yaml --
-// the design doc's "environment" case. It binds "x" on a JOB environment's
+// in for EXPR/job_templates/3.6--let-comprehension-shadows-env.invalid.yaml.
+// It binds "x" on a JOB environment's
 // script let (ScopeJobEnvironment) and comprehends over "x" in that same
 // environment's onEnter action.
 func TestCheckTemplateExpressions_ComprehensionCannotShadowEnvironmentLet(t *testing.T) {
@@ -826,26 +802,21 @@ steps:
 }
 
 // TestCheckTemplateExpressions_ComprehensionCannotShadowStepEnvironmentLet
-// covers the brief's fourth positional variant -- a STEP environment's own
-// script let -- which NO FIXTURE BACKS: none of the five
+// covers a fourth position -- a STEP environment's own script let -- which
+// NO FIXTURE BACKS: none of the five
 // 3.6--let-comprehension-shadows*.invalid.yaml fixtures exercises
 // ScopeStepEnvironment; -env.invalid.yaml is a JOB environment, not a step
-// one. This is on the same footing as
-// TestCheckTemplateExpressions_ComprehensionMayReuseAStepLetFromAnotherStep
-// below: Task 8's review verified the scope model by construction, but
-// nothing in the repo pinned the comprehension-shadow interaction
-// specifically for this position. checkEnvironmentExpressions is called
-// TWICE from checkTemplateExpressions/checkStepExpressions -- once for job
-// environments with outerLet nil, once for stepEnvironments with outerLet =
-// stepLet, the enclosing step's own let-bound names -- and the merge that
-// folds those names into a step environment's table is exactly the area
-// Task 8's own comments flag as subtle (the maps.Clone that keeps one
-// environment's own let from leaking into a sibling environment's table or
-// into the step's hostRequirements). This binds "x" on a step environment's
-// own script let (ScopeStepEnvironment) and comprehends over "x" in that
-// same environment's onEnter action -- a wrong-scoped table for this
-// position specifically (over- or under-rejecting) would not be caught by
-// any existing test.
+// one. checkEnvironmentExpressions is called TWICE from
+// checkTemplateExpressions/checkStepExpressions -- once for job environments
+// with outerLet nil, once for stepEnvironments with outerLet = stepLet, the
+// enclosing step's own let-bound names -- and the merge that folds those
+// names into a step environment's table is subtle (the maps.Clone that keeps
+// one environment's own let from leaking into a sibling environment's table
+// or into the step's hostRequirements). This binds "x" on a step
+// environment's own script let (ScopeStepEnvironment) and comprehends over
+// "x" in that same environment's onEnter action -- a wrong-scoped table for
+// this position specifically (over- or under-rejecting) would not be caught
+// by any other test.
 func TestCheckTemplateExpressions_ComprehensionCannotShadowStepEnvironmentLet(t *testing.T) {
 	tmpl := mustParseEXPR(t, `specificationVersion: jobtemplate-2023-09
 extensions: [EXPR]
@@ -881,12 +852,11 @@ steps:
 }
 
 // EXPR/job_templates/3.6--let-comprehension-shadows-simple-action.invalid.yaml
-// -- the design doc's "simple-action" case -- has no sqi equivalent: it binds
-// "x" on a bash SimpleAction's own let and comprehends over "x" in that
-// action's inline script, but SimpleAction (bash/etc. as shorthand for a full
-// Script) is a FEATURE_BUNDLE_1 element sqi does not model (design spec
-// section 1.1). There is nothing to transcribe it into, so it is recorded
-// here rather than silently covering four of the five fixtures.
+// has no sqi equivalent: it binds "x" on a bash SimpleAction's own let and
+// comprehends over "x" in that action's inline script, but SimpleAction
+// (bash/etc. as shorthand for a full Script) is a FEATURE_BUNDLE_1 element
+// sqi does not model. There is nothing to transcribe it into, so the tests
+// above cover four of the five fixtures.
 
 // TestCheckTemplateExpressions_ComprehensionMayReuseAnUnboundName is the
 // negative half: without it, a checker that rejected every comprehension
@@ -917,11 +887,10 @@ steps:
 
 // TestCheckTemplateExpressions_ComprehensionMayReuseAStepLetFromAnotherStep is
 // the stronger negative: a "let" name bound in one step's scope must not make
-// a comprehension over that same name illegal in a SIBLING step. Task 8's
-// review verified this behavior by construction -- checkTemplateExpressions
-// builds a fresh stepTemplateSyms table per step (checkStepExpressions calls
-// symbolsFor(tmpl, &s, nil, ScopeStepTemplate, params) once per iteration of
-// its loop) -- but no repo test pinned it before this one. Step0's "x" binding
+// a comprehension over that same name illegal in a SIBLING step.
+// checkTemplateExpressions builds a fresh stepTemplateSyms table per step
+// (checkStepExpressions calls symbolsFor(tmpl, &s, nil, ScopeStepTemplate,
+// params) once per iteration of its loop). Step0's "x" binding
 // must never reach Step1's table, so Step1's "[x for x in ...]" comprehends
 // over an unbound name from Step1's own point of view, exactly like the
 // unbound-name case above. Without this test, a checker that (wrongly) shared
@@ -964,14 +933,14 @@ steps:
 // guard in checkLetBindings: a let: block longer than maxLetBindings is
 // evaluated only up to the cap, never in full.
 //
-// The guard is load-bearing and nothing else in the repo covers it.
-// validateLetElementCounts REPORTS an over-count, but reporting is not
-// guarding: ValidateWithOptions does not short-circuit on it, so before this
-// guard existed sqi told the caller the block was invalid and then evaluated
-// every binding anyway. let is the only construct in this checker that RETAINS
-// a value per binding (syms[name] = v), so the per-Eval budget in
-// the per-evaluation memory limit -- which counts one evaluation's live bytes and never sees
-// the table it is handed -- bounds each binding but not their sum. Measured
+// Nothing else in the repo covers the guard. validateLetElementCounts REPORTS
+// an over-count, but reporting is not guarding: ValidateWithOptions does not
+// short-circuit on it, so without this guard sqi tells the caller the block
+// is invalid and then evaluates every binding anyway. let is the only
+// construct in this checker that RETAINS a value per binding
+// (syms[name] = v), so the per-evaluation memory limit -- which counts one
+// evaluation's live bytes and never sees the table it is handed -- bounds
+// each binding but not their sum. Measured
 // through the real Parse + ValidateWithOptions path with the guard removed:
 // 2,000 bindings of `a<i> = "x" * 900000`, a 57 KB template body, allocated
 // 1,725 MB in 335 ms and still returned the same 2 errors. At the 4 MiB

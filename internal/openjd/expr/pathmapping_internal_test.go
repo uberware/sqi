@@ -148,8 +148,6 @@ func TestMapPath(t *testing.T) {
 
 func TestApplyPathMapping_PassthroughWithoutRules(t *testing.T) {
 	// No WithPathMapping option: nil rules, so the input passes through as a path.
-	// This is the behavior the EXPR-only conformance scoring path relied on
-	// (design doc §6); that path is gone, but passthrough is still the contract.
 	v, err := Eval(`apply_path_mapping('/mnt/share')`, MapSymbols{}, TAny)
 	if err != nil {
 		t.Fatalf("Eval failed: %v", err)
@@ -283,11 +281,10 @@ func TestApplyPathMapping_ResultChainsButAPathReceiverIsRefused(t *testing.T) {
 // an external reference.
 //
 // They are transcribed rather than executed because test/conformance scores only
-// the job_templates and env_templates kinds — collectTemplateFixtures filters on
-// the kind directory, and the EXPR path reads exprSuiteDir ("EXPR/job_templates")
-// alone, both in test/conformance/suite_test.go — not EXPR/jobs, which needs a
-// real session and a real python subprocess. Left in the fixture tree they are
-// inert; here they run.
+// the job_templates and env_templates kinds (collectTemplateFixtures in
+// test/conformance/suite_test.go filters on the kind directory), not EXPR/jobs,
+// which needs a real session and a real python subprocess. Left in the fixture
+// tree they are inert; here they run.
 //
 // Each fixture's pathMapping block becomes the rules, and its runOn/output block
 // the format: output_posix under PathPOSIX, output_windows under PathWindows, and

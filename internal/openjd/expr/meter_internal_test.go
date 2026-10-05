@@ -69,10 +69,9 @@ func TestMeter_OperationLimit(t *testing.T) {
 
 // TestMeter_MemoryLimitIsExact pins alloc's bound check to "mem > memLimit"
 // with no slack in either direction -- a real budget, not an approximate one.
-// Written to catch a one-step weakening to "mem > memLimit+1" (Task 11's
-// mutation-testing step 8.1): that mutation lets an allocation land exactly
-// ONE byte over the limit without erroring, which this test's second case
-// exercises directly.
+// It catches a one-step weakening to "mem > memLimit+1", which lets an
+// allocation land exactly ONE byte over the limit without erroring; this
+// test's second case exercises that directly.
 func TestMeter_MemoryLimitIsExact(t *testing.T) {
 	m := newMeter(valueHeaderBytes, defaultOperationLimit) // limit = 64
 	if err := m.alloc(Int(1)); err != nil {                // mem becomes 64, AT the limit
@@ -97,7 +96,7 @@ func TestMeter_MemoryLimitAndRelease(t *testing.T) {
 		t.Fatalf("third alloc = %v; want errMemoryLimit", err)
 	}
 	// Releasing frees room again: the bound is on LIVE memory, not on
-	// cumulative allocation. This is the whole difference between section
+	// cumulative allocation. This is the difference between section
 	// 1.3.9 and a fixed per-operation ceiling like maxStringBytes.
 	m.release(Int(1))
 	m.release(Int(2))
@@ -110,13 +109,10 @@ func TestMeter_MemoryLimitAndRelease(t *testing.T) {
 	}
 }
 
-// TestMeter_ChargeElements and TestMeter_ChargeBytes are not in the brief's
-// own list, but are needed to exercise chargeElements/chargeBytes: nothing in
-// this task wires them into evaluation (that lands in later tasks in this
-// sub-project), and an untested, uncalled method fails golangci-lint's
-// "unused" check. These stay black-box: they charge through the same public
-// meter surface the other meter tests use, matching section 1.3.10 rules 2
-// and 3 (element count, and ceil(len/256) string-processing units).
+// TestMeter_ChargeElements and TestMeter_ChargeBytes exercise
+// chargeElements/chargeBytes black-box, through the same public meter surface
+// the other meter tests use, matching section 1.3.10 rules 2 and 3 (element
+// count, and ceil(len/256) string-processing units).
 func TestMeter_ChargeElements(t *testing.T) {
 	m := newMeter(defaultMemoryLimit, 5)
 	if err := m.chargeElements(5); err != nil {
@@ -188,10 +184,9 @@ func TestWithLimits_NonPositiveIsAnError(t *testing.T) {
 // TestOperatorDispatch_CarriesTheCallersMeter proves an operator reaches
 // callShape with the caller's meter rather than a zero-value evalCtx.
 //
-// Written to FAIL against the pre-task implementation, where applyBinary and
-// applyUnary call callShape(evalCtx{}, ...) -- a context whose m field is nil.
-// Without this, Task 3's charging would silently never fire for any operator,
-// and every count assertion written against it would still pass.
+// If applyBinary and applyUnary called callShape(evalCtx{}, ...) -- a context
+// whose m field is nil -- operator charging would never fire, and every count
+// assertion written against it would still pass.
 func TestOperatorDispatch_CarriesTheCallersMeter(t *testing.T) {
 	var seen *meter
 	probe := Shape{
@@ -216,7 +211,7 @@ func TestOperatorDispatch_CarriesTheCallersMeter(t *testing.T) {
 }
 
 // TestApplyBinary_TakesAContext is a compile-level assertion: applyBinary and
-// applyUnary must accept an evalCtx. It fails to build before this task.
+// applyUnary must accept an evalCtx.
 func TestApplyBinary_TakesAContext(t *testing.T) {
 	ec := newEvalCtx("", nil, nil)
 	v, err := applyBinary(ec, OpAdd, Int(1), Int(2))
@@ -329,17 +324,6 @@ func TestOperationCount_EqualityFastPath(t *testing.T) {
 	}
 }
 
-// TestOperationCount_UnresolvedOperandSites covers Task 3's ruling directly:
-// when an operand is unresolved, callFunction, applyBinary's general
-// (matchShapes) branch, and applyUnary all return before ever reaching
-// callShape, so each needs its OWN rule-1 charge -- and the assertion that
-// matters is the EXACT count. A future edit that charges twice (once here,
-// once by mistakenly still calling into callShape) or drops the charge
-// entirely would both slip past a test that only checked "> 0".
-//
-// TestOperationCount_EqualityFastPath above covers the fourth such site,
-// applyBinary's OpEq/OpNe branch; this test covers the remaining three named
-// in the brief's Step 5.
 // balanceOf evaluates src and returns (live bytes remaining, size of result).
 func balanceOf(t *testing.T, src string) (live, resultSize int64) {
 	t.Helper()
@@ -401,13 +385,13 @@ func TestMemoryLimit_IsReported(t *testing.T) {
 	}
 }
 
-// TestMemoryLimit_CatchesCumulativeWorkThatTheFloorDoesNot is the whole
-// justification for section 1.3.9 over limits.go's fixed maxStringBytes.
+// TestMemoryLimit_CatchesCumulativeWorkThatTheFloorDoesNot pins why section
+// 1.3.9 is needed on top of limits.go's fixed maxStringBytes.
 //
 // Each individual repetition stays under the per-operation ceiling; what breaks
 // the budget is holding many of them live at once. A fixed per-operation bound
-// cannot see this at all, which is why the tracker recorded that nested
-// repetition "grows ~91 MB per level with no cumulative accounting".
+// cannot see this at all: under it alone, nested repetition grows ~91 MB per
+// level with no cumulative accounting.
 func TestMemoryLimit_CatchesCumulativeWorkThatTheFloorDoesNot(t *testing.T) {
 	// 200 strings of 100_000 bytes each is ~20 MB live, well under
 	// maxStringBytes (10 MB) for any SINGLE operation.
@@ -445,6 +429,16 @@ func TestMemoryLimit_CatchesTopLevelCoercion(t *testing.T) {
 	}
 }
 
+// TestOperationCount_UnresolvedOperandSites pins that when an operand is
+// unresolved, callFunction, applyBinary's general (matchShapes) branch, and
+// applyUnary all return before ever reaching callShape, so each needs its OWN
+// rule-1 charge -- and the assertion that matters is the EXACT count. A future
+// edit that charges twice (once here, once by mistakenly still calling into
+// callShape) or drops the charge entirely would both slip past a test that
+// only checked "> 0".
+//
+// TestOperationCount_EqualityFastPath above covers the fourth such site,
+// applyBinary's OpEq/OpNe branch; this test covers the remaining three.
 func TestOperationCount_UnresolvedOperandSites(t *testing.T) {
 	t.Run("applyBinary general branch", func(t *testing.T) {
 		ec := newEvalCtx("", nil, nil)

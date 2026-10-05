@@ -82,12 +82,9 @@ func TestRegistryVendorNamespacing(t *testing.T) {
 // what lets the conformance harness reach the real validation path for a
 // partially-implemented extension without production accepting it.
 //
-// EXPR was the standing example until sub-project H2 marked it supported, and
-// with it went the registry's last StatusInProgress entry. The gate is still
-// live production machinery, so rather than delete the test with the example,
-// it registers a temporary in-progress entry of its own. That keeps the branch
-// covered for the next partially-implemented extension, which is exactly the
-// situation the split status was invented for.
+// The registry has no StatusInProgress entry, but the gate is live production
+// machinery, so the test registers a temporary in-progress entry of its own.
+// That keeps the branch covered for the next partially-implemented extension.
 func TestValidateExtensions_RegisteredButNotSupported(t *testing.T) {
 	const name = "TEST_IN_PROGRESS"
 	registry[name] = Extension{
@@ -137,10 +134,8 @@ func TestValidateExtensions_SupportedStillPass(t *testing.T) {
 }
 
 // TestRegistry_EverySupportedStatusIsTheConstant stops a typo'd status string
-// silently disabling a shipped extension.
-//
-// Every shipped entry is StatusSupported since sub-project H2 flipped EXPR,
-// which was the sole exception this test used to carve out.
+// silently disabling a shipped extension. Every shipped entry is
+// StatusSupported.
 func TestRegistry_EverySupportedStatusIsTheConstant(t *testing.T) {
 	for name, ext := range registry {
 		if ext.Status != StatusSupported {

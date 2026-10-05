@@ -363,32 +363,24 @@ type walkFrame struct {
 }
 
 // walk calls fn for n and every node beneath it, parents before children and
-// siblings left to right — the same order the recursive version visited in —
-// passing each node the walkCtx its position gives it.
+// siblings left to right, passing each node the walkCtx its position gives it.
 //
-// It is ITERATIVE, with an explicit stack, and that is the whole point. The
-// recursive version was the last unbounded recursion in the package: the
-// parser and the evaluator both carry depth bounds (limits.go's maxParseDepth
-// and maxEvalDepth) because exhausting the Go stack is a runtime.throw that
-// recover() cannot catch, and walk had no such bound — 1,000,000 operators
-// walked fine, 10,000,000 killed the process outright with "fatal error: stack
-// overflow". Expression.Names is its only caller, and sub-project E calls that
-// on every expression in a template, so the hazard was on its way to being
-// reachable.
+// It is iterative, with an explicit stack, because a recursive walk is
+// unbounded: the parser and the evaluator both carry depth bounds (limits.go's
+// maxParseDepth and maxEvalDepth) because exhausting the Go stack is a
+// runtime.throw that recover() cannot catch, and a recursive walk over
+// 10,000,000 operators kills the process with "fatal error: stack overflow".
+// The template checker walks every expression in a template.
 //
-// A depth bound was the other option and is the wrong one here. The parser and
-// the evaluator bound their recursion because they genuinely need to REJECT —
-// both are handed source that may be hostile, and both already return errors.
-// Walking a tree that has already parsed cannot fail on anything: every node
-// came from the bounded parser, Names returns []string with no error channel,
-// and a bound would therefore have to either lie by truncating the name set or
-// panic. An explicit stack removes the failure mode rather than converting it
-// into one, and for this node set it costs one small helper.
+// A depth bound would be wrong here. The parser and the evaluator bound their
+// recursion because they need to reject hostile source, and both already
+// return errors. Walking a tree that has already parsed cannot fail on
+// anything: every node came from the bounded parser, Names returns []string
+// with no error channel, and a bound would therefore have to either truncate
+// the name set or panic. An explicit stack removes the failure mode.
 //
-// The stack is LIFO, so children are pushed in reverse to preserve the
-// left-to-right order fn used to see. Nothing depends on that today (Names
-// sorts its result), which is exactly why it is stated here rather than left
-// to be rediscovered.
+// The stack is LIFO, so children are pushed in reverse to keep left-to-right
+// order. Nothing depends on that order today (Names sorts its result).
 func walk(n Node, fn func(Node, walkCtx)) {
 	walkUntil(n, func(n Node, ctx walkCtx) bool {
 		fn(n, ctx)
@@ -411,7 +403,7 @@ func walkUntil(n Node, fn func(Node, walkCtx) bool) bool {
 		return false
 	}
 	// Capacity up front rather than growing from one: the stack is filled by
-	// append, and starting at a single frame made even a small tree pay three
+	// append, and starting at a single frame makes even a small tree pay three
 	// reallocations to reach a depth almost no expression exceeds.
 	stack := make([]walkFrame, 1, initialWalkStack)
 	stack[0] = walkFrame{n: n}
@@ -437,9 +429,9 @@ func walkUntil(n Node, fn func(Node, walkCtx) bool) bool {
 // never itself a callee unless its parent is a Call, so the flag is dropped
 // here and re-set only on a Call's callee.
 //
-// It appends STRAIGHT ONTO THE STACK. An earlier form built a per-node slice of
-// child frames and reversed that, which was one heap allocation for EVERY node
-// visited on a walk the checker runs over every expression in a template.
+// It appends straight onto the stack: building a per-node slice of child
+// frames and reversing it would cost one heap allocation for every node
+// visited, on a walk the checker runs over every expression in a template.
 func pushChildren(stack []walkFrame, f walkFrame) []walkFrame {
 	here := walkCtx{scope: f.ctx.scope}
 	switch v := f.n.(type) {

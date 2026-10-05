@@ -50,8 +50,7 @@ func TestValidate_ChooserControlsAccepted(t *testing.T) {
 	}
 }
 
-// The full control vocabulary checked against every parameter type. Every pair
-// marked invalid here is accepted by sqi before this task.
+// The full control vocabulary checked against every parameter type.
 func TestValidate_ControlsScopedToParameterType(t *testing.T) {
 	for _, tc := range []struct {
 		paramType string
@@ -76,10 +75,8 @@ func TestValidate_ControlsScopedToParameterType(t *testing.T) {
 		{"INT", "CHECK_BOX", false},
 		{"FLOAT", "SPIN_BOX", true},
 		{"FLOAT", "MULTILINE_EDIT", false},
-		// CHIP_INPUT is an sqi invention appearing nowhere in the spec, at any
-		// type. These rows go red here, where the vocabulary actually changes,
-		// and stay as the permanent guard against anyone re-adding it. Task 9
-		// then deletes the dead constant with no new test of its own.
+		// CHIP_INPUT appears nowhere in the spec, at any type. These rows
+		// guard against anyone re-adding it.
 		{"STRING", "CHIP_INPUT", false},
 		{"PATH", "CHIP_INPUT", false},
 		{"INT", "CHIP_INPUT", false},
@@ -121,11 +118,8 @@ steps:
 }
 
 func TestValidate_LabelLengthBounds(t *testing.T) {
-	// The 2026-07-24 ruling here ("enforce the maximum only") rested on `label: ""`
-	// and an absent label being the same state after parsing, leaving no
-	// representable "present but empty" to reject. That premise no longer holds:
-	// the decoder now records LabelSet separately, so the two are distinguishable.
-	// Spec §2.6 gives <UserInterfaceLabelStringValue> a minimum length of 1, and
+	// The decoder records LabelSet separately, so `label: ""` and an absent
+	// label are distinguishable. Spec §2.6 gives <UserInterfaceLabelStringValue> a minimum length of 1, and
 	// conformance fixture 2.1--label-empty.invalid.yaml requires rejecting the
 	// empty case, so the minimum is enforced too. An absent label remains legal —
 	// it is @optional and falls back to the parameter name.

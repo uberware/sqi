@@ -270,8 +270,8 @@ func TestOptionalOf(t *testing.T) {
 func TestUnresolvedIsAlwaysOutermost(t *testing.T) {
 	// The canonical form the ExprType section requires: unresolved is either
 	// absent or wraps the whole type. It never appears inside a list's element
-	// type or a union's members. Later tasks rely on being able to test for it
-	// by looking at the outermost code alone.
+	// type or a union's members. Callers rely on being able to test for it by
+	// looking at the outermost code alone.
 	built := []Type{
 		ListOf(UnresolvedOf(TInt)),
 		UnionOf(TInt, UnresolvedOf(TString)),
@@ -430,15 +430,13 @@ func TestType_String_DefensivePaths(t *testing.T) {
 	}
 }
 
-// TestParseType_AcceptedFormsReparse exists because a validation bypass once
-// let ParseType accept input whose own canonical rendering it then rejected:
-// checkListElem ran before ListOf hoisted an outer "unresolved" wrapper on a
-// list's element outward, so an element written as unresolved[...] could hide
-// an optional or a third level of list nesting from both checks. Rather than
-// pinning just the two instances that surfaced that bug, this asserts the
-// general property every accepted form must have: if ParseType accepts a
-// string, ParseType must also accept that Type's own rendering, and get back
-// an equal Type.
+// TestParseType_AcceptedFormsReparse asserts the general property every
+// accepted form must have: if ParseType accepts a string, ParseType must also
+// accept that Type's own rendering, and get back an equal Type. It catches a
+// validation bypass such as checkListElem running before ListOf hoists an
+// outer "unresolved" wrapper on a list's element outward, which would let an
+// element written as unresolved[...] hide an optional or a third level of list
+// nesting from both checks.
 func TestParseType_AcceptedFormsReparse(t *testing.T) {
 	srcs := []string{
 		"int", "nulltype", "any", "noreturn", "path", "range_expr", "T", "T1",

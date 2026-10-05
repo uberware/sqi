@@ -6,8 +6,8 @@ import "testing"
 
 // TestCheckParamValueAgainstType covers the shared core directly. Each case is
 // a declared type plus a candidate value; the same function serves the
-// template's default (sub-project F1) and a submitted value (F2), which is the
-// whole reason it exists.
+// template's default and a submitted value, which is the whole reason it
+// exists.
 func TestCheckParamValueAgainstType(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -83,10 +83,9 @@ func TestCheckParamValueAgainstType_SkipsFormatStrings(t *testing.T) {
 // bind.go path (allowFormatString=false): a SUBMITTED value is never a format
 // string -- nothing resolves "{{ }}" inside a bound parameter value -- so a
 // "{{"-containing submission must be checked like any other value, not
-// skipped. This is IMPORTANT finding 1 from the F2 whole-branch review: before
-// the fix, a submitted "{{x}}" was silently accepted for every one of the
-// eight RFC 0007 types, then failed at runtime on the worker instead of at
-// submission.
+// skipped. Skipping it would accept a submitted "{{x}}" for every one of the
+// eight RFC 0007 types, which would then fail at runtime on the worker
+// instead of at submission.
 func TestCheckParamValueAgainstType_RejectsFormatStringsWhenSubmitted(t *testing.T) {
 	tests := []struct {
 		name  string
@@ -96,10 +95,10 @@ func TestCheckParamValueAgainstType_RejectsFormatStringsWhenSubmitted(t *testing
 		{"bool", JobParameter{Type: JobParamTypeBool}, "{{Param.Other}}"},
 		{"range expr", JobParameter{Type: JobParamTypeRangeExpr}, "{{Param.Other}}"},
 		// A "{{"-containing element that fails the declared element type --
-		// the old top-level skip hid this by never decoding the list at all.
+		// a top-level skip would hide this by never decoding the list at all.
 		{"list of ints, bad element", JobParameter{Type: JobParamTypeListInt}, `[1, "{{Param.Other}}"]`},
 		// A "{{"-containing value that is well-formed JSON but violates a
-		// list-level constraint -- the old skip hid the minLength violation.
+		// list-level constraint -- a top-level skip would hide the minLength violation.
 		{
 			"list of strings, below minLength",
 			JobParameter{Type: JobParamTypeListString, MinLength: new(5)},

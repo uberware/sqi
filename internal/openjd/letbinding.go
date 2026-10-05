@@ -25,8 +25,8 @@ const letBindingWS = " \t"
 //	<UserIdentifier> ::= [a-z_][A-Za-z0-9_]*
 //	<WS>             ::= tab or space
 //
-// The lowercase-first rule on <UserIdentifier> is load-bearing, not
-// cosmetic: the spec states its purpose is to ensure user-defined names can
+// The lowercase-first rule on <UserIdentifier> is not cosmetic: the spec
+// states its purpose is to ensure user-defined names can
 // never collide with the spec-defined symbols (Param, Task, Session, Env,
 // RawParam), which always start with an uppercase letter. A later stage
 // depends on that property to tell a let-bound name apart from a spec

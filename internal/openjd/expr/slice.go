@@ -41,31 +41,25 @@ func evalSlice(n *Slice, ec evalCtx, depth int) (Value, error) {
 	// call -- so this is the whole rule-1 charge, unconditional past the
 	// receiver-type check exactly as evalIndex's is.
 	//
-	// CORRECTION (review finding, Task 9 fix round): an earlier revision of
-	// this comment argued rule 2 does not apply at all, on the theory that
-	// __getitem__ is unnamed by rule 2's enumeration and that "one call"
-	// settled the whole charge. Both halves of that argument are WRONG, and
-	// the wrongness was already refuted by this package's own precedent
-	// before this comment was written: "not named" was rejected as
-	// sufficient for string(list) (funcsconv.go, charged ArgElements despite
-	// being unnamed, because it provably walks every element) and for
-	// list(range_expr) (shape.go's own words: "rule 2 covers generators as
-	// well as consumers"); and "one call" has never meant rule 1 and rule 2
-	// are mutually exclusive -- join() charges rule 2's element count AND
-	// rule 3's byte count on a single call, and list repetition charges rule
-	// 1 via callShape AND ResultElements. The real question this package
-	// already asks is whether the work is element-count-dominated, and
-	// sliceValue below answers it: an O(1) bounds computation
-	// (sliceIndices) followed by real O(n) work that a rule 2 or rule 3
-	// charge already covers elsewhere in this package for the identical
-	// shape -- see sliceValue's own doc comment for exactly what "n" is for
-	// each of the three receiver kinds, which is NOT uniform (a list's real
-	// work scales with what was SELECTED; a string's and a range_expr's
-	// both scale with the RECEIVER regardless of selection, matching what
-	// this package's own []rune conversion and rangeInts expansion
-	// actually do). Each branch charges before doing that O(n) work, so an
-	// already-exhausted budget stops it from running rather than merely
-	// being billed after the fact.
+	// Rule 2 or 3 applies on top of that. That __getitem__ is unnamed by rule
+	// 2's enumeration does not exempt it: string(list) (funcsconv.go) is
+	// charged ArgElements despite being unnamed, because it walks every
+	// element, and so is list(range_expr) (shape.go: "rule 2 covers generators
+	// as well as consumers"). Nor does "one call" make rule 1 and rule 2
+	// mutually exclusive -- join() charges rule 2's element count AND rule 3's
+	// byte count on a single call, and list repetition charges rule 1 via
+	// callShape AND ResultElements. The question this package asks is whether
+	// the work is element-count-dominated, and sliceValue below answers it: an
+	// O(1) bounds computation (sliceIndices) followed by real O(n) work that a
+	// rule 2 or rule 3 charge already covers elsewhere in this package for the
+	// identical shape -- see sliceValue's own doc comment for exactly what "n"
+	// is for each of the three receiver kinds, which is NOT uniform (a list's
+	// real work scales with what was SELECTED; a string's and a range_expr's
+	// both scale with the RECEIVER regardless of selection, matching what this
+	// package's own []rune conversion and rangeInts expansion actually do).
+	// Each branch charges before doing that O(n) work, so an already-exhausted
+	// budget stops it from running rather than merely being billed after the
+	// fact.
 	if err := ec.m.charge(1); err != nil {
 		return Value{}, err
 	}
@@ -121,7 +115,7 @@ func sliceComponent(n Node, ec evalCtx, depth int) (val *int64, ok bool, err err
 // (a positive step, an absent one, defaulting to positive, or a step whose own
 // sign is not yet known) there is no length to check the selection against,
 // and an empty selection is ALSO a list[int] regardless of a positive step
-// (see sliceRangeExpr): the honest answer is the union of both.
+// (see sliceRangeExpr): the correct answer is the union of both.
 func sliceResultType(recv Type, step *int64) (Type, error) {
 	switch t := unwrapUnresolved(recv); t.Code {
 	case CodeList:

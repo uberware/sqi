@@ -16,11 +16,9 @@ func TestJobParamTypes(t *testing.T) {
 		{"FLOAT", TFloat, TFloat},
 		{"PATH", TPath, TString},
 		{"LIST[PATH]", ListOf(TPath), ListOf(TString)},
-		// BOOL is not a legal job-parameter declaration per section 1.2.2 (F's
-		// job-parameter types are not yet declarable), but ParseType parses
-		// it as a type regardless of whether it is a legal job-parameter
-		// spelling, so it floors through the generic path to bool/bool, not
-		// to any.
+		// BOOL is not in section 1.2.2's table, but ParseType parses it as a
+		// type regardless of whether it is a legal job-parameter spelling,
+		// so it floors through the generic path to bool/bool, not to any.
 		{"BOOL", TBool, TBool},
 		// Unrecognized spelling floors to any rather than leaving the name
 		// unbound.

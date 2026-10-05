@@ -95,9 +95,9 @@ func TestCost_ZeroPolicyChargesOnlyTheCall(t *testing.T) {
 // TestSpecNamedIteratingFunctions pins section 1.3.10 rule 2's own named-
 // REGISTRY-function list (not verbatim against the wiki's token list --
 // "contains()" is deliberately omitted; see specNamedIteratingFunctions's
-// CORRECTION comment, shape.go), so a future edit that drifts from the spec
-// text fails a test rather than silently shrinking what Tasks 5-8's coverage
-// test checks.
+// doc comment, shape.go), so a future edit that drifts from the spec
+// text fails a test rather than shrinking what
+// TestCost_SpecNamedFunctionsAllCharge checks.
 func TestSpecNamedIteratingFunctions(t *testing.T) {
 	want := []string{
 		"sum", "min", "max", "any", "all", "sorted", "reversed", "flatten",
@@ -127,21 +127,15 @@ func TestSpecNamedStringFunctions(t *testing.T) {
 // 1.3.10 names in rules 2 and 3 carries a non-zero Cost on at least one of its
 // signatures.
 //
-// This is the test that makes the declarative choice worth its constraints:
-// the specification ENUMERATES these names, so the table can be checked
+// The specification ENUMERATES these names, so the table can be checked
 // against its own source rather than against someone's memory of it. A
 // function added to the registry without a Cost decision fails here rather
-// than silently under-charging.
+// than under-charging.
 //
-// The brief's own inline draft of this test carried a HAND-COPIED "named"
-// list duplicating specNamedIteratingFunctions's and specNamedStringFunctions's
-// own return values (shape.go). That duplication is exactly what those two
-// helpers exist to prevent -- Task 4 built them for precisely this coverage
-// test, and shape.go's own doc comments on both say so -- so this iterates
-// the SPEC-TEXT-SOURCED helpers directly rather than a third hand-copied
-// list that could drift from either. Names appearing in BOTH lists (join,
-// repr_sh) are simply checked twice, which is harmless: the loop body is
-// idempotent per name.
+// It iterates specNamedIteratingFunctions and specNamedStringFunctions
+// (shape.go) directly rather than a hand-copied list that could drift from
+// either. Names appearing in BOTH lists (join, repr_sh) are checked twice,
+// which is harmless: the loop body is idempotent per name.
 func TestCost_SpecNamedFunctionsAllCharge(t *testing.T) {
 	named := append(slices.Clone(specNamedIteratingFunctions()), specNamedStringFunctions()...)
 	for _, name := range named {

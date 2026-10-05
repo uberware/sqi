@@ -8,15 +8,13 @@ import (
 	"testing"
 )
 
-// PROBE (sub-project E1, Task 8), .venv-oracle/bin/python3 against
-// openjd-model 0.11.1, run as a single consolidated script (recreated below;
-// every string embedded in a src literal was pre-expanded in PYTHON with
-// "a"*N or strings.Repeat-equivalent host-language repetition BEFORE being
-// spliced into the expression text — never with the expression language's own
-// "*" operator, which would bake its own rule-3 charge into the reading, the
-// trap this sub-project's standing note calls out three separate times).
-// Pasted verbatim as evidence, per "run something first, decide against the
-// spec text second."
+// PROBE: .venv-oracle/bin/python3 against openjd-model 0.11.1, run as a
+// single consolidated script (recreated below; every string embedded in a src
+// literal was pre-expanded in PYTHON with "a"*N or strings.Repeat-equivalent
+// host-language repetition BEFORE being spliced into the expression text —
+// never with the expression language's own "*" operator, which would bake its
+// own rule-3 charge into the reading). Pasted verbatim as evidence: run
+// something first, decide against the spec text second.
 //
 //	=== regex group: subject-string (arg 0) ArgBytes scaling ===
 //	10 re_match 2          300 re_match 3          600 re_match 4
@@ -120,12 +118,12 @@ import (
 // construction charges — path()'s 1+ceil(bytes/256), range_expr()'s flat 1 —
 // see funcsre.go/funcsreprshell.go/funcsreprdata.go/funcsmath.go/
 // funcspath.go/pathmapping.go's own COST comments for the row-by-row
-// arithmetic worked out from these numbers) is what the Cost declarations in
-// this task are built from.
+// arithmetic worked out from these numbers) is what the Cost declarations for
+// these groups are built from.
 
 // opsForOpts is opsFor (meter_internal_test.go) with Option support, needed
-// for apply_path_mapping's own test below (the only row in this task that
-// needs WithPathMapping threaded through).
+// for apply_path_mapping's own test below (the only row here that needs
+// WithPathMapping threaded through).
 func opsForOpts(t *testing.T, src string, opts ...Option) int64 {
 	t.Helper()
 	e, err := Parse(src)
@@ -140,9 +138,8 @@ func opsForOpts(t *testing.T, src string, opts ...Option) int64 {
 }
 
 // TestOperationCount_RegexReprMathPath is the main per-group table, one row
-// per function name this task owns (the regex, repr, math and path groups —
-// funcsre.go, funcsreprshell.go, funcsreprdata.go, funcsmath.go,
-// funcspath.go), covering the ordinary (non-divergent, non-boundary) case for
+// per function name in the regex, repr, math and path groups (funcsre.go,
+// funcsreprshell.go, funcsreprdata.go, funcsmath.go, funcspath.go), covering the ordinary (non-divergent, non-boundary) case for
 // each. The divergences and discriminating boundary cases each get their own
 // dedicated test below, per the PROBE comment above.
 func TestOperationCount_RegexReprMathPath(t *testing.T) {
@@ -292,8 +289,8 @@ func TestOperationCount_RegexFunctionsChargeSubjectOnly(t *testing.T) {
 }
 
 // TestOperationCount_RegexFindallSplitDoNotChargeElements pins the
-// ResultElements question the brief asks Task 8 to decide: re_findall and
-// re_split both produce a LIST, but the charge tracks the subject's BYTE
+// ResultElements question for re_findall and re_split: both produce a LIST,
+// but the charge tracks the subject's BYTE
 // length, not the number of matches/parts produced. Discriminated by holding
 // match/split DENSITY fixed and growing the subject: an element-count charge
 // would move in lockstep with the match count; it does not.
@@ -392,13 +389,13 @@ func bigNonOverlappingRangeText() string {
 
 // TestOperationCount_MathScalarRowsChargeNothing pins abs/floor/ceil/round's
 // scalar rows at rule 1 only, isolated from unary minus's own separate
-// charge: "-1" alone already costs 1 (a Task 5 concern, confirmed here only
-// to show abs's OWN share is exactly 1, not 2).
+// charge: "-1" alone already costs 1 (the operator's own charge, confirmed
+// here only to show abs's OWN share is exactly 1, not 2).
 func TestOperationCount_MathScalarRowsChargeNothing(t *testing.T) {
 	neg := opsFor(t, "-1")
 	absNeg := opsFor(t, "abs(-1)")
 	if neg != 1 {
-		t.Fatalf("ops(-1) = %d; want 1 (unary minus's own charge, Task 5's)", neg)
+		t.Fatalf("ops(-1) = %d; want 1 (unary minus's own charge)", neg)
 	}
 	if absNeg-neg != 1 {
 		t.Errorf("abs's own share = %d; want 1 (abs(-1) totals %d, unary minus already accounts for %d of it)", absNeg-neg, absNeg, neg)
@@ -425,15 +422,12 @@ func TestOperationCount_RoundNonzeroNdigitsDivergesFromReference(t *testing.T) {
 	if got := opsFor(t, "round(2.0,1)"); got != 1 {
 		t.Errorf("ops(round(2.0,1)) = %d; want 1 (rule 1 only) -- the reference measures 2 here, not reproduced", got)
 	}
-	// 300, not 600: math.Pow(10, 600) overflows float64 to +Inf inside
-	// roundToDigits, producing a NaN that floatValue rejects -- a pre-existing
-	// bug in round()'s own large-positive-ndigits path, unrelated to Cost and
-	// out of this task's scope. 300 stays within float64's range and still
+	// 300 keeps math.Pow(10, ndigits) within float64's range and still
 	// discriminates (the reference measures 3 here, per the PROBE).
 	if got := opsFor(t, "round(2.0,300)"); got != 1 {
 		t.Errorf("ops(round(2.0,300)) = %d; want 1 -- the reference measures 3 here (ceil(300/256)=2 added), not reproduced", got)
 	}
-	// want 2, not 1: "-600" is itself a unary-minus operation (Task 5's own
+	// want 2, not 1: "-600" is itself a unary-minus operation (its own
 	// charge, 1 op, isolated the same way TestOperationCount_MathScalarRowsChargeNothing
 	// isolates abs(-1)'s), so round's OWN share is still 1 (2 total - 1 for the
 	// negation) -- matching the positive-ndigits rows above, where no negation
@@ -469,16 +463,12 @@ func TestOperationCount_MinMaxScalarFormsDivergeFromReference(t *testing.T) {
 // the range in full, satisfying rule 2's "a function ... iterates through
 // every element of a list" outright.
 //
-// This test previously asserted the OPPOSITE (a flat 2, "uncharged, matching
-// Task 5's precedent for the 'in' operator's range_expr row"), on the ground
-// that the REFERENCE's count does not scale here -- flat at the same total
-// for a 5-value and a 100,000-value range, which is still true and still
-// baselined. The final whole-branch review overturned that: the reference's
-// behavior is subordinate to the spec text by this package's standing rule,
-// and it was the only reason given. The cited precedent was itself corrected
-// in the same pass, so both now charge. min(Param.R) on a million-element
-// range charged 1 operation before this change while expanding a million
-// integers.
+// The REFERENCE's count does not scale here -- flat at the same total for a
+// 5-value and a 100,000-value range, which is baselined -- but the
+// reference's behavior is subordinate to the spec text by this package's
+// standing rule. The 'in' operator's range_expr row charges the same way.
+// Left uncharged, min(Param.R) on a million-element range would charge 1
+// operation while expanding a million integers.
 func TestOperationCount_MinMaxRangeExprChargesItsExpansion(t *testing.T) {
 	// 1 (range_expr call) + 1 (min call) + N (the expansion).
 	if got := opsFor(t, `min(range_expr("1-5"))`); got != 7 {
@@ -561,8 +551,8 @@ func TestOperationCount_PathPropertiesChargeReceiverBytes(t *testing.T) {
 
 // TestOperationCount_PathWithFunctionsIgnoreReplacementLength pins that
 // with_name/with_stem's second (replacement) argument never contributes,
-// however large -- only the RECEIVER's bytes do, the same pattern Task 7
-// established for strip()'s cutset and removeprefix()'s affix arguments.
+// however large -- only the RECEIVER's bytes do, the same pattern as strip()'s
+// cutset and removeprefix()'s affix arguments.
 func TestOperationCount_PathWithFunctionsIgnoreReplacementLength(t *testing.T) {
 	big := strings.Repeat("x", 300)
 	if got := opsFor(t, fmt.Sprintf("path('/a').with_name('%s')", big)); got != 4 {
@@ -615,13 +605,13 @@ func TestOperationCount_RelativeToChargesLikeIsRelativeTo(t *testing.T) {
 	}
 }
 
-// TestOperationCount_UnresolvedArgumentChargesRuleOneOnly covers the standing
-// ruling this whole sub-project relies on ("an unresolved operand charges
-// rule 1 only") for one row this task owns, matching the equivalent test in
-// cost_string_internal_test.go (Task 7) and cost_list_internal_test.go
-// (Task 6). callFunction (call.go) short-circuits before callShape/chargeArgs
-// ever run when any argument is unresolved, so this holds structurally for
-// every row in this task's six files; pinned here rather than assumed.
+// TestOperationCount_UnresolvedArgumentChargesRuleOneOnly covers the ruling
+// "an unresolved operand charges rule 1 only" for one row of these groups,
+// matching the equivalent tests in cost_string_internal_test.go and
+// cost_list_internal_test.go. callFunction (call.go) short-circuits before
+// callShape/chargeArgs ever run when any argument is unresolved, so this
+// holds structurally for every row in these groups; pinned here rather than
+// assumed.
 func TestOperationCount_UnresolvedArgumentChargesRuleOneOnly(t *testing.T) {
 	ec := testCtx()
 	if _, err := callFunction(ec, "re_match", []Value{Unresolved(TString), Unresolved(TString)}, false); err != nil {

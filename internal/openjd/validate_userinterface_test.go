@@ -215,7 +215,7 @@ func TestValidateUIGroupLabelExactBoundary(t *testing.T) {
 // TestValidateUILabelRuneCounting proves the label limit is counted in Unicode
 // runes (characters), not bytes.  "é" (U+00E9) is 2 bytes but 1 rune.
 //
-// With byte counting (the old len() approach) a maxUILabelLen-rune label of
+// With byte counting (len()) a maxUILabelLen-rune label of
 // "é" would be 2*maxUILabelLen bytes and would be wrongly rejected.  With
 // correct rune counting it must be accepted; maxUILabelLen+1 runes must be
 // rejected.

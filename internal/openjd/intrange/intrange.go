@@ -18,7 +18,7 @@
 //
 // Those divergences are deliberate to preserve, NOT bugs to fix in passing:
 // changing them changes which job templates are accepted and the order in which
-// tasks are generated. They are recorded in the sub-project B2 design document.
+// tasks are generated.
 package intrange
 
 import (
@@ -202,7 +202,7 @@ func parseElement(s string, p Policy) (Range, error) {
 	return Range{Start: start, End: end, Step: step}, nil
 }
 
-// parseStep reads an element's step suffix. The error strings are load-bearing:
+// parseStep reads an element's step suffix. The error strings matter:
 // they must match internal/openjd/range.go's current output verbatim, and
 // intrange_test.go's own TestParseWithPolicy_ReproducesOpenJDStrictness — not
 // any existing internal/openjd test, which never compares against a literal

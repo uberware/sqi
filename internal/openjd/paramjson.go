@@ -18,16 +18,12 @@ import (
 // so a typed model representation would have to serialize at every boundary
 // anyway. One representation, defined once, at the top.
 //
-// THE STORED FORM IS NOT THE INTERPOLATED FORM, but the gap is now narrower
-// than it was. A list rendered into a command line goes through
-// expr.Value.String(). That used to quote elements with strconv.Quote -- Go
-// syntax, identical to JSON for ordinary text and different for control
-// characters, where Go writes \x00 and JSON requires \u0000 -- so the two
-// forms could not even be compared as text. openjd-specifications#176 then
-// stated that interpolation and string() must use the same conversion and
-// that the result must parse as JSON, and expr's renderer moved onto
+// THE STORED FORM IS NOT THE INTERPOLATED FORM, though the two are close. A
+// list rendered into a command line goes through expr.Value.String(), which
+// follows openjd-specifications#176 (interpolation and string() use the same
+// conversion and the result must parse as JSON) by rendering elements with
 // encoding/json (with HTML escaping off, exactly as marshalCanonical below
-// uses it), so the ELEMENT QUOTING is now the same rule on both sides.
+// uses it), so the ELEMENT QUOTING is the same rule on both sides.
 //
 // What still differs is the SEPARATOR: canonical JSON writes ",", while
 // section 2.2.1's rendering writes ", ". A single-element list therefore
@@ -114,8 +110,7 @@ func encodeInnerList(item any, i int, t JobParamType) ([]any, error) {
 // It uses json.Encoder with HTML escaping OFF rather than json.Marshal, which
 // escapes <, > and & into \u form so its output is safe to embed in HTML. That
 // is irrelevant here and actively unhelpful: a template author who writes
-// ["a<b"] should read the same text back from the API in sub-project F2, not
-// an escaped form. Both are valid JSON and decode identically.
+// ["a<b"] should read the same text back from the API, not an escaped form. Both are valid JSON and decode identically.
 //
 // json.Encoder terminates every value with a newline, which json.Marshal does
 // not; it is trimmed so a stored default compares equal to the same list

@@ -7,12 +7,11 @@ import (
 	"testing"
 )
 
-// TestCaseTransforms covers the four case functions. The non-ASCII rows are the
-// entire reason this package depends on golang.org/x/text/cases: Go's stdlib
-// strings.ToUpper is SIMPLE case mapping and answers "STRAßE", while the
-// specification's reference implementation and Python both apply FULL case
-// mapping and answer "STRASSE". Every expectation below was produced by running
-// openjd-model 0.11.1 during design.
+// TestCaseTransforms covers the four case functions. The non-ASCII rows are why
+// this package depends on golang.org/x/text/cases: Go's stdlib strings.ToUpper
+// is SIMPLE case mapping and answers "STRAßE", while the specification's
+// reference implementation and Python both apply FULL case mapping and answer
+// "STRASSE". Every expectation below was produced by openjd-model 0.11.1.
 func TestCaseTransforms(t *testing.T) {
 	tests := []struct {
 		name string
@@ -49,7 +48,7 @@ func TestCaseTransforms(t *testing.T) {
 		// = "Αβσ" — medial — so per-rune casing is not just faster than a
 		// substring rewrite here, it is the only reading that matches the
 		// reference. If this ever flips to "Αβς", titleString was rewritten
-		// to case whole word runs and silently changed behavior.
+		// to case whole word runs and changed behavior.
 		{"title final sigma stays medial", `title('ΑΒΣ')`, "Αβσ"},
 		{"method form", `'hello world'.title()`, "Hello World"},
 		{"a path argument coerces in function position", `upper(Param.Dir)`, "/FOO/BAR"},
@@ -133,23 +132,19 @@ func TestClassificationPredicates(t *testing.T) {
 	}
 }
 
-// TestIsAlnum_ComposesFromIsAlphaAndIsDigit is the invariant the divergence
-// above buys. It is asserted over runes rather than by spot-checking, and it
-// evaluates isalpha(), isdigit() and isalnum() THROUGH the registry with Eval
-// — not by reimplementing the predicates' logic locally — so a future edit to
-// any one of the SHIPPED predicates cannot break the relation without failing
-// here.
+// TestIsAlnum_ComposesFromIsAlphaAndIsDigit pins the invariant the divergence
+// above preserves. It is asserted over runes rather than by spot-checking, and
+// it evaluates isalpha(), isdigit() and isalnum() THROUGH the registry with
+// Eval — not by reimplementing the predicates' logic locally — so a future
+// edit to any one of the SHIPPED predicates cannot break the relation without
+// failing here.
 //
-// An earlier version of this test compared isAlnumRune against a local
-// unicode.IsLetter call and a local "r >= '0' && r <= '9'" check — copies of
-// the predicates, not the predicates themselves — so it was only ever
-// comparing isAlnumRune against itself. Verified by mutation: temporarily
-// changing the registered isdigit predicate (strCaseFuncs["isdigit"]) to
-// unicode.IsDigit made isdigit('٣') true while isalpha('٣') and isAlnumRune
-// stayed false, genuinely breaking the isalnum == isalpha || isdigit
-// invariant — and the OLD version of this test still passed, because it
-// never called the registered isdigit at all. This version fails under that
-// same mutation, as it must.
+// Comparing isAlnumRune against local copies of the predicates would only
+// compare isAlnumRune against itself. Changing the registered isdigit
+// predicate (strCaseFuncs["isdigit"]) to unicode.IsDigit makes isdigit('٣')
+// true while isalpha('٣') and isAlnumRune stay false, breaking the
+// isalnum == isalpha || isdigit invariant; this test fails under that
+// mutation, and a test using local copies would not.
 func TestIsAlnum_ComposesFromIsAlphaAndIsDigit(t *testing.T) {
 	predicate := func(t *testing.T, fn string, r rune) bool {
 		t.Helper()

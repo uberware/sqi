@@ -66,9 +66,7 @@ func TestLanguage(t *testing.T) {
 		{name: "float floor division yields an int", src: "7.5 // 2.5", wantCode: expr.CodeInt, want: "3"},
 		{name: "string concatenation", src: `'a' + 'b'`, wantCode: expr.CodeString, want: "ab"},
 		// Section 2.1.1/2.1.4: mixing int and float promotes the int and uses
-		// the float overload — B1's coercing shape match, not A's same-type-
-		// only dispatch. See the SUB-PROJECT B comment below for what is still
-		// deliberately out of scope.
+		// the float overload.
 		{name: "int plus float promotes to float", src: "1 + 2.5", wantCode: expr.CodeFloat, want: "3.5"},
 		{name: "int compared to float promotes to float", src: "1 < 2.5", wantCode: expr.CodeBool, want: "true"},
 		{name: "substring test", src: `'ell' in 'hello'`, wantCode: expr.CodeBool, want: "true"},
@@ -82,8 +80,7 @@ func TestLanguage(t *testing.T) {
 		{name: "zero is truthy", src: "0 or 'fallback'", wantCode: expr.CodeInt, want: "0"},
 		{name: "not", src: "not Param.Flag", wantCode: expr.CodeBool, want: "false"},
 
-		// Implicit coercion, section 1.2.3. Sub-project A rejected every one of
-		// these as an unsupported operand pair. "1 + 2.5", "1 < 2.5" and
+		// Implicit coercion, section 1.2.3. "1 + 2.5", "1 < 2.5" and
 		// "5 == 5.0" already appear in the Operators section above, so they are
 		// not repeated here.
 		{name: "float plus int promotes the int", src: "2.5 + 1", wantCode: expr.CodeFloat, want: "3.5"},
@@ -102,38 +99,22 @@ func TestLanguage(t *testing.T) {
 		{name: "zero to a negative power", src: "0 ** -1", wantErr: "negative power"},
 		{name: "a conditional condition must be a bool", src: "1 if 1 else 2", wantErr: "must be a bool"},
 
-		// Deliberately not in sub-project A. Each of these becomes valid later;
-		// see the package documentation and the plan's scope table. Int/float
-		// promotion (+ and <) moved up to the Operators section above: B1
-		// delivers it.
-		// A list literal now both parses AND evaluates, inferring its element
-		// type per section 1.2.6 (this task's change) — no longer belongs in
-		// the "not yet implemented" group below, unlike its still-unimplemented
-		// neighbor, subscript.
+		// A list literal infers its element type per section 1.2.6.
 		{name: "list literal, element type inferred", src: "[1, 2]", wantCode: expr.CodeList, want: "[1, 2]"},
-		// "Param.Name[0]" now evaluates too (section 2.1.7, this task's
-		// change) — no longer belongs in the "not yet implemented" group
-		// below.
+		// Subscript, section 2.1.7.
 		{name: "subscript", src: "Param.Name[0]", wantCode: expr.CodeString, want: "s"},
-		// Calls, methods and property access now fully EVALUATE (sub-project
-		// B3): the callee resolves, arguments are evaluated, and the call
-		// reaches the function registry. Sub-project C1 has begun populating
-		// that registry — "len" is registered now (see funcsconv.go) — but a
-		// function no wave has reached yet still fails with "unknown
-		// function", a real diagnostic about a missing function rather than
-		// the generic "cannot evaluate" the evaluator gives a node kind it has
-		// no case for at all.
+		// Calls, methods and property access EVALUATE: the callee resolves,
+		// arguments are evaluated, and the call reaches the function registry.
+		// A name the registry does not hold fails with "unknown function", a
+		// real diagnostic about a missing function rather than the generic
+		// "cannot evaluate" the evaluator gives a node kind it has no case for
+		// at all.
 		{name: "function call reaches an unregistered name", src: "nosuchfn(Param.Name)", wantErr: `unknown function "nosuchfn"`},
-		{name: "len is registered by sub-project C1", src: "len('ab')", wantCode: expr.CodeInt, want: "2"},
-		{name: "SUB-PROJECT C: method call", src: "Param.Name.nosuchmethod()", wantErr: `unknown function "nosuchmethod"`},
-		// String repetition (section 2.1.2) now evaluates too — this task's
-		// change, once limits.go's size bound made an unbounded repeat count
-		// safe — no longer belongs in the "not yet implemented" group above,
-		// unlike its still-unimplemented neighbors.
+		{name: "len is registered", src: "len('ab')", wantCode: expr.CodeInt, want: "2"},
+		{name: "method call reaches an unregistered name", src: "Param.Name.nosuchmethod()", wantErr: `unknown function "nosuchmethod"`},
+		// String repetition, section 2.1.2; limits.go's size bound makes an
+		// unbounded repeat count safe.
 		{name: "string repetition", src: `'ab' * 3`, wantCode: expr.CodeString, want: "ababab"},
-
-		// Grammar B1 deliberately does not add. "[1, 2]" no longer belongs
-		// in this "grammar only" group at all: it now evaluates, see above.
 	}
 
 	for _, tt := range tests {
@@ -200,7 +181,7 @@ func TestLanguage_TargetAndPlaceholders(t *testing.T) {
 			target: expr.TAny,
 			want:   "unresolved[int | string]",
 		},
-		// A union-typed value can now be USED, not just produced: __pow__'s
+		// A union-typed value can be USED, not just produced: __pow__'s
 		// declared return, int | float, feeds "+ 1" here. Every member has a
 		// route into the (float, float) shape (int by widening, float
 		// exactly), so it is the only admissible candidate; neither member
@@ -228,7 +209,7 @@ func TestLanguage_TargetAndPlaceholders(t *testing.T) {
 		},
 		// The same union reaching an explicit target directly: both members
 		// (int, float) are individually coercible to float, so the whole
-		// union is, per coercible's new union-source rule.
+		// union is, per coercible's union-source rule.
 		{
 			name:   "a union produced by ** reaches a float target",
 			src:    "Param.X ** 2",
@@ -317,12 +298,11 @@ func TestErrorsCarryLineAndColumn(t *testing.T) {
 //
 // Every other collections test is per-feature: list literals in one table,
 // subscripts in another, slices in a third, list operators in a fourth. Each
-// feature was correct on its own and the suite was green, yet composing two of
-// them — subscripting the union that slicing a range_expr produces — was a hard
-// type error, because the subscript code and the slice code were written one
-// task apart and never met. That is the class of defect this test exists to
-// catch, so every row here chains at least two constructs, and every row
-// asserts a real result rather than merely the absence of an error.
+// feature can be correct on its own while composing two of them — such as
+// subscripting the union that slicing a range_expr produces — is a hard type
+// error. That is the class of defect this test exists to catch, so every row
+// here chains at least two constructs, and every row asserts a real result
+// rather than merely the absence of an error.
 //
 // Each shape appears twice: once fully resolved, and once with an unresolved
 // placeholder somewhere in it, since the placeholder path computes its result
@@ -357,8 +337,8 @@ func TestCollections_Composed(t *testing.T) {
 		{"slice then reverse, unresolved", "Param.Items[1:4][::-1]", "", "unresolved[list[int]]"},
 
 		// A conditional's chosen branch, then a subscript. With an unknown
-		// condition this becomes a union receiver, which is exactly the I2
-		// false rejection.
+		// condition this becomes a union receiver, which a subscript without
+		// a union arm would falsely reject.
 		{"conditional then index", "([1, 2, 3] if true else [4])[0]", "1", "int"},
 		{
 			"conditional then index, unknown condition",
@@ -381,8 +361,8 @@ func TestCollections_Composed(t *testing.T) {
 			"Param.I in Param.Range[1:4]", "", "unresolved[bool]",
 		},
 
-		// Subscripting the union a range_expr slice produces — the I2 case,
-		// and the one this package manufactures for itself.
+		// Subscripting the union a range_expr slice produces — a union this
+		// package manufactures for itself.
 		{"index a sliced range placeholder", "Param.Rng[:][0]", "", "unresolved[int]"},
 		{"index a reverse-sliced range placeholder", "Param.Rng[::-1][0]", "", "unresolved[int]"},
 		{"slice a sliced range placeholder", "Param.Rng[:][0:2]", "", "unresolved[list[int] | range_expr]"},
@@ -406,16 +386,14 @@ func TestCollections_Composed(t *testing.T) {
 		// The whole chain feeding an arithmetic operator.
 		{"chain feeding arithmetic", "([1, 2] + [3])[::-1][0] + 1", "4", "int"},
 
-		// This row asserted unresolved[nulltype] until the shape's declared
-		// return was fixed: OpAdd's generic list shape read T from the LEFT
-		// operand only, so an empty list on the left typed the concatenation
-		// list[nulltype] while "Param.Items + []" just above — the same
-		// concatenation — came out list[int]. concatLists recomputes the real
-		// element type at runtime, so no VALUE was ever wrong; the placeholder
-		// path runs no Fn, which is exactly where the declared type is the
-		// whole answer. The fix is the shape's RetOf (ops.go's concatRet), not
-		// anything in the composition, and this row now pins the two directions
-		// agreeing.
+		// If OpAdd's generic list shape read T from the LEFT operand only, an
+		// empty list on the left would type the concatenation list[nulltype]
+		// while "Param.Items + []" just above — the same concatenation —
+		// comes out list[int]. concatLists recomputes the real element type
+		// at runtime, so no VALUE would be wrong; the placeholder path runs
+		// no Fn, which is exactly where the declared type is the whole
+		// answer. The shape's RetOf (ops.go's concatRet) handles it, and this
+		// row pins the two directions agreeing.
 		{
 			"empty list on the left of an unresolved concat",
 			"([] + Param.Items)[0]", "", "unresolved[int]",

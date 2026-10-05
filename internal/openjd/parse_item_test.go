@@ -72,7 +72,7 @@ func TestDecodeJobParamConstraints_ItemAbsent(t *testing.T) {
 }
 
 // TestDecodeItemConstraint_Rejects covers the shapes the decoder must refuse.
-// The depth cap is the load-bearing one: RFC 0007 allows list[list[T]] and no
+// The depth cap is the one that matters most: RFC 0007 allows list[list[T]] and no
 // deeper, so a third item: level describes a list that cannot exist. Accepting
 // it silently would leave a constraint nothing ever applies.
 func TestDecodeItemConstraint_Rejects(t *testing.T) {

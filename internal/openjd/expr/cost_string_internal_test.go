@@ -8,30 +8,26 @@ import (
 	"testing"
 )
 
-// PROBE (sub-project E1, Task 7), .venv-oracle/bin/python -c "..." against
-// openjd-model 0.11.1. Pasted verbatim as evidence, per "run something first,
-// decide against the spec text second."
+// PROBE: .venv-oracle/bin/python -c "..." against openjd-model 0.11.1. Pasted
+// verbatim as evidence: run something first, decide against the spec text
+// second.
 //
-// HOW TO REPRODUCE THESE NUMBERS (added by the final whole-branch review;
-// cost_misc_internal_test.go's probe header already carried this note and
-// this one did not). Wherever a row below is written with a repetition
-// shorthand such as 'a'*300 or 'xy'*150, the repetition was performed in
-// PYTHON and the resulting literal spliced into the expression text. It was
-// NOT evaluated by the expression language's own "*" operator: doing that
-// bakes "*"'s own rule-1 and rule-3 charge into the reading, and the numbers
-// then do not reproduce -- ('a'*300).upper() measures 6 in-expression, not
-// the 3 transcribed here. funcsstrsplit.go names this exact trap and avoids
-// it for join(); it is the third instance of the same failure class in this
-// sub-project, which is why it is written down rather than assumed.
+// HOW TO REPRODUCE THESE NUMBERS. Wherever a row below is written with a
+// repetition shorthand such as 'a'*300 or 'xy'*150, the repetition was
+// performed in PYTHON and the resulting literal spliced into the expression
+// text. It was NOT evaluated by the expression language's own "*" operator:
+// doing that bakes "*"'s own rule-1 and rule-3 charge into the reading, and
+// the numbers then do not reproduce -- ('a'*300).upper() measures 6
+// in-expression, not the 3 transcribed here. funcsstrsplit.go names this trap
+// and avoids it for join().
 //
-// All 42 rows across funcsstrcase.go
-// (11), funcsstrfind.go (16), funcsstrsplit.go (9) and funcsstrpad.go (6) were
-// probed; the 300/600-byte inputs below are the ones that actually
-// DISCRIMINATE (a sub-256-byte probe cannot, per the brief's own warning: it
+// All 42 rows across funcsstrcase.go (11), funcsstrfind.go (16),
+// funcsstrsplit.go (9) and funcsstrpad.go (6) were probed; the 300/600-byte
+// inputs below are the ones that actually DISCRIMINATE (a sub-256-byte probe
 // cannot tell "charges nothing" from "charges nothing because the input was
 // small").
 //
-// Brief's own command (10-byte inputs, non-discriminating but confirms every
+// Initial command (10-byte inputs, non-discriminating but confirms every
 // row costs SOMETHING beyond len()'s exemption):
 //
 //	2  'abc'.upper()
@@ -55,8 +51,8 @@ import (
 //	2  'a'*10 .capitalize() 3  'a'*300 .capitalize()  4  'a'*600 .capitalize()
 //	2  'a'*10 .title()      3  'a'*300 .title()       4  'a'*600 .title()
 //
-// The ArgBytes-vs-ResultBytes question (Task 5's own trap for "+", re-run here
-// because case mapping can GROW its output): 'İ' (U+0130, 2 UTF-8 bytes)
+// The ArgBytes-vs-ResultBytes question (the same question as for "+", re-run
+// here because case mapping can GROW its output): 'İ' (U+0130, 2 UTF-8 bytes)
 // lowers to 'i' + a combining dot above (3 UTF-8 bytes), a per-rune growth
 // ratio no same-length probe can see. 100 copies is 200 INPUT bytes (ceil/256
 // = 1) but 300 OUTPUT bytes (ceil/256 = 2) -- the two hypotheses predict
@@ -65,12 +61,12 @@ import (
 //	2  ('İ'*100).lower()   ArgBytes predicts 1+1=2 (MATCHES). ResultBytes
 //	                        would predict 1+2=3. ArgBytes wins for the case
 //	                        transforms -- the OPPOSITE of "+"'s ResultBytes
-//	                        finding (Task 5), and the same as string "in"
-//	                        (Task 5's OpIn/OpNotIn ArgBytes rows).
+//	                        answer, and the same as string "in"
+//	                        (the OpIn/OpNotIn ArgBytes rows).
 //
 // Classification predicates (isdigit/isalpha/isalnum/isspace/isupper/islower/
 // isascii) -- same ArgBytes-on-input formula, 10/300 bytes to 2/3, decided
-// explicitly per the brief's item 2: they SCAN THE WHOLE STRING (RFC 0006's
+// explicitly: they SCAN THE WHOLE STRING (RFC 0006's
 // "all characters are X"), so rule 3's "and similar" covers them. They are NOT
 // len()-style lookups -- len() stays flat at 1 on the SAME 300-byte input,
 // pinned as the control:
@@ -117,8 +113,8 @@ import (
 //	2  'ab'.count('c'*300)          2  'ab'.find('c'*300)   -- needle length: no effect
 //
 // replace -- ArgBytes on the MAIN string (arg0) ONLY, confirmed with a probe
-// designed to catch the trap the brief warns about (a huge PRODUCED string
-// hiding behind a small charge): 100 'a's replaced by a 300-byte "new" would
+// designed to catch a huge PRODUCED string hiding behind a small charge: 100
+// 'a's replaced by a 300-byte "new" would
 // balloon the RESULT to ~30000 bytes, and the count does not move:
 //
 //	2  ('a'*10).replace('a','b')     3  ('a'*300).replace('a','b')    4  ('a'*600).replace('a','b')
@@ -137,9 +133,8 @@ import (
 //	2  'a,a,a,a,a'.split(',', 2)    3  (299-byte comma list).split(',', 2)
 //
 // join -- named by BOTH rule 2 (iterates a list) and rule 3 (processes
-// strings), and this is the row the brief and the sub-project's own standing
-// method most distrust. Isolating with a LITERAL list (not a repetition
-// operator, whose own ResultElements charge would contaminate the reading):
+// strings). Isolating with a LITERAL list (not a repetition operator, whose
+// own ResultElements charge would contaminate the reading):
 //
 //	3   ['a','b'].join(',')                    -- 2 elements, 1-byte strings
 //	6   ['a','a','a','a','a'].join(',')        -- 5 elements, 1-byte strings
@@ -151,7 +146,7 @@ import (
 //	21  (20 literal 300-byte elements).join(',') -- 1 + 20 (ArgElements only)
 //	1   [].join(',')                            -- list[nulltype] row
 //
-// This is a genuine SPEC/REFERENCE divergence, not a brief-guess artifact:
+// This is a genuine SPEC/REFERENCE divergence:
 // section 1.3.10 rule 3 names join() BY NAME as a function that "does work
 // roughly proportional to the string length", but the reference's own
 // operation count for join never moves when the strings it is joining grow
@@ -166,7 +161,7 @@ import (
 // the PRODUCED joined string is the same idiom this package already uses
 // wherever a function's byte-proportional work is best measured by what it
 // BUILDS rather than what it was HANDED (padString below; the "+" and "*"
-// operators, ops.go, Task 5). See TestOperationCount_JoinChargesElementsAndBytesTogether.
+// operators, ops.go). See TestOperationCount_JoinChargesElementsAndBytesTogether.
 //
 // ljust/rjust/center -- ResultBytes (the PRODUCED, padded string), not
 // ArgBytes on the input. Discriminated by holding the input FIXED at 10 bytes
@@ -178,7 +173,7 @@ import (
 //	                             result=input=300B either way, not discriminating
 //	(rjust and center measure identically at every size above)
 //	ERR  ('a'*10).ljust(-5)  -- capacity overflow (72057594037927938 ops): the
-//	     reference's own known negative-width defect (brief's own warning).
+//	     reference's own known negative-width defect.
 //	     sqi's padWidth already treats width<=len as a no-op (funcsstrpad.go),
 //	     so a negative width never reaches padString/zfillString's growth path
 //	     at all -- there is nothing for Cost to charge beyond ResultBytes on
@@ -197,11 +192,11 @@ import (
 //	3  ('a'*300).zfill(1)     -- width<cur, a no-op; input=output=300B, so
 //	                              ArgBytes and ResultBytes agree here too
 //
-// This is the same shape of defect the brief calls out for center/zfill's
-// negative widths ("center('ab', -3) failing with a bogus 72-quadrillion
-// operation count, and zfill with a negative width panics outright") but on
-// the POSITIVE-width path instead: the reference's zfill silently fails to
-// charge the pad growth its own sibling ljust/rjust/center charge correctly,
+// This is the same shape of defect as the reference's negative-width
+// failures for center/zfill (center('ab', -3) fails with a bogus
+// 72-quadrillion operation count, and zfill with a negative width panics
+// outright) but on the POSITIVE-width path instead: the reference's zfill
+// fails to charge the pad growth its own sibling ljust/rjust/center charge correctly,
 // even though zfillString (funcsstrpad.go) shares the exact same padWidth
 // mechanism and does the exact same proportional work. Per the standing rule,
 // sqi does not reproduce that omission: all three zfill rows (string/int,
@@ -217,12 +212,12 @@ func TestOperationCount_StringFunctions(t *testing.T) {
 	}{
 		// --- funcsstrcase.go: case transforms, ArgBytes{0} on the input ---
 		{"upper", fmt.Sprintf("'%s'.upper()", a300), 3, "rule 3 names upper() by name; ArgBytes on the input, confirmed scaling 10/300/600 -> 2/3/4"},
-		{"lower", fmt.Sprintf("'%s'.lower()", a300), 3, "rule 3 names lower() by name; ArgBytes on the input -- confirmed by the ArgBytes-vs-ResultBytes 'İ' probe above, unlike '+' (Task 5)"},
+		{"lower", fmt.Sprintf("'%s'.lower()", a300), 3, "rule 3 names lower() by name; ArgBytes on the input -- confirmed by the ArgBytes-vs-ResultBytes 'İ' probe above, unlike '+'"},
 		{"capitalize", fmt.Sprintf("'%s'.capitalize()", a300), 3, "not named by rule 3's own enumeration but does the same length-proportional work as upper/lower; 'and similar' covers it"},
 		{"title", fmt.Sprintf("'%s'.title()", a300), 3, "same as capitalize: 'and similar', ArgBytes on the input"},
 
-		// --- funcsstrcase.go: classification predicates, decided explicitly ---
-		// per the brief's item 2 -- these SCAN THE WHOLE STRING (RFC 0006's
+		// --- funcsstrcase.go: classification predicates ---
+		// These SCAN THE WHOLE STRING (RFC 0006's
 		// "all characters are X and string is non-empty"), so they are rule-3
 		// charges under "and similar", NOT len()-style exempt lookups. len()
 		// itself stays flat at 1 on the identical 300-byte input -- see
@@ -276,9 +271,9 @@ func TestOperationCount_StringFunctions(t *testing.T) {
 
 // TestOperationCount_StringFunctionsCoversEveryFunctionName pins that the
 // table above has exactly one row per one of the 31 RFC 0006 string function
-// names this task owns (11 in funcsstrcase.go + 13 in funcsstrfind.go + 3 in
-// funcsstrsplit.go + 4 in funcsstrpad.go), so a future addition or removal to
-// this task's four files is caught here rather than silently under-covered.
+// names (11 in funcsstrcase.go + 13 in funcsstrfind.go + 3 in
+// funcsstrsplit.go + 4 in funcsstrpad.go), so a future addition or removal in
+// those four files is caught here rather than silently under-covered.
 func TestOperationCount_StringFunctionsCoversEveryFunctionName(t *testing.T) {
 	names := []string{
 		"upper", "lower", "capitalize", "title",
@@ -289,7 +284,7 @@ func TestOperationCount_StringFunctionsCoversEveryFunctionName(t *testing.T) {
 		"ljust", "rjust", "center", "zfill",
 	}
 	if len(names) != 31 {
-		t.Fatalf("this task owns 31 string function names; the coverage list has %d", len(names))
+		t.Fatalf("RFC 0006 has 31 string function names; the coverage list has %d", len(names))
 	}
 	covered := map[string]bool{
 		"upper": true, "lower": true, "capitalize": true, "title": true,
@@ -310,7 +305,7 @@ func TestOperationCount_StringFunctionsCoversEveryFunctionName(t *testing.T) {
 }
 
 // TestOperationCount_ClassificationFunctionsAreNotLenExempt is the explicit
-// side-by-side the brief asks for: the 11 classification/case functions scan
+// side-by-side: the 11 classification/case functions scan
 // the whole string and are rule-3 charges, unlike len(), which stays flat at
 // 1 on the identical input no matter its size.
 func TestOperationCount_ClassificationFunctionsAreNotLenExempt(t *testing.T) {
@@ -363,8 +358,8 @@ func TestOperationCount_NeedleLengthDoesNotAffectFindCost(t *testing.T) {
 	}
 }
 
-// TestOperationCount_ReplaceDoesNotChargeTheProducedResult pins the trap the
-// brief warns about directly: replace() can balloon a small input into a huge
+// TestOperationCount_ReplaceDoesNotChargeTheProducedResult pins a trap
+// directly: replace() can balloon a small input into a huge
 // result (old shorter than new, many occurrences), and the reference's own
 // count does not move when that happens -- it tracks the MAIN string's own
 // length, never the result actually built. sqi follows the reference here
@@ -373,7 +368,7 @@ func TestOperationCount_NeedleLengthDoesNotAffectFindCost(t *testing.T) {
 // ResultBytes 'İ' probe at the top of this file), and the worst-case growth
 // this exposes is independently bounded by maxStringBytes (checkRepeat in
 // replaceAll, funcsstrfind.go) regardless of what the operation count says --
-// a SEPARATE limit (section 1.3.9, Task 11) from this one (section 1.3.10).
+// a SEPARATE limit (section 1.3.9) from this one (section 1.3.10).
 func TestOperationCount_ReplaceDoesNotChargeTheProducedResult(t *testing.T) {
 	// 100 'a's, each replaced by a 300-byte string: the result is ~30000
 	// bytes, but the charge tracks only the 100-byte input.
@@ -400,7 +395,7 @@ func TestOperationCount_SplitDoesNotChargeByWordCount(t *testing.T) {
 }
 
 // TestOperationCount_JoinChargesElementsAndBytesTogether is join's own
-// dedicated test, per the brief: it is named by BOTH rule 2 (iterates a list)
+// dedicated test: it is named by BOTH rule 2 (iterates a list)
 // and rule 3 (processes strings), and is deliberately charged
 // Cost{ArgElements: {0}, ResultBytes: true} -- a divergence from the
 // reference's own measured count, which never moves with string content (see
@@ -430,7 +425,7 @@ func TestOperationCount_JoinChargesElementsAndBytesTogether(t *testing.T) {
 
 // TestOperationCount_JoinListNullRowChargesNothing pins the list[nulltype]
 // row's Cost{}: an empty list is empty by TYPE, matching flatten's and any/
-// all's list[nulltype] rows (funcslist.go, Task 6) -- there is nothing to
+// all's list[nulltype] rows (funcslist.go) -- there is nothing to
 // iterate or produce regardless of Cost, so it is declared as an explicit
 // zero rather than a copy of the list[string] row's Cost.
 func TestOperationCount_JoinListNullRowChargesNothing(t *testing.T) {
@@ -491,12 +486,11 @@ func TestOperationCount_ZfillDivergesFromReferenceOnWidth(t *testing.T) {
 }
 
 // TestOperationCount_UnresolvedStringArgumentChargesRuleOneOnly covers the
-// standing ruling that binds this task: "an unresolved operand charges rule 1
-// only -- no element or byte charges, since no values were processed."
-// callFunction (call.go) short-circuits BEFORE callShape/chargeArgs ever runs
-// when any argument is unresolved, so this holds structurally for every row
-// in this file; pinned here for one of this task's own ArgBytes rows rather
-// than assumed.
+// ruling "an unresolved operand charges rule 1 only -- no element or byte
+// charges, since no values were processed." callFunction (call.go)
+// short-circuits BEFORE callShape/chargeArgs ever runs when any argument is
+// unresolved, so this holds structurally for every row in this file; pinned
+// here for one of the string-function ArgBytes rows rather than assumed.
 func TestOperationCount_UnresolvedStringArgumentChargesRuleOneOnly(t *testing.T) {
 	ec := testCtx()
 	if _, err := callFunction(ec, "upper", []Value{Unresolved(TString)}, false); err != nil {

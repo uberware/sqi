@@ -16,7 +16,7 @@ import (
 // syntax is the INTERSECTION of Python's re and Rust's regex — which the
 // reference implementation does not enforce: it accepts \p{...}, (?<n>...) and
 // [[:alpha:]], all of which Python's re either rejects outright or reads as
-// something different. See the design doc for that adjudication.
+// something different.
 func TestTranslatePattern_Rejects(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -135,9 +135,8 @@ func TestTranslatePattern_UnicodeShorthands(t *testing.T) {
 	}
 }
 
-// TestTranslatePattern_ShorthandsMatchUnicode is the test that actually
-// matters: the rewrite must change WHICH STRINGS MATCH, not merely produce
-// plausible text. Go's own \d does not match an Arabic-Indic digit; the
+// TestTranslatePattern_ShorthandsMatchUnicode pins that the rewrite changes
+// WHICH STRINGS MATCH, not merely that it produces plausible text. Go's own \d does not match an Arabic-Indic digit; the
 // specification says it must.
 func TestTranslatePattern_ShorthandsMatchUnicode(t *testing.T) {
 	tests := []struct {
@@ -182,8 +181,8 @@ func TestTranslatePattern_ShorthandsMatchUnicode(t *testing.T) {
 // White_Space property, one codepoint at a time.
 //
 // \p{White_Space} is NOT usable: Go's regexp supports Unicode categories and
-// scripts only, not properties, and rejects it — measured during design. So the
-// set is written out, and this test is what stops it drifting.
+// scripts only, not properties, and rejects it. So the set is written out, and
+// this test is what stops it drifting.
 func TestUnicodeSpaceSet_MatchesWhiteSpace(t *testing.T) {
 	re := regexp.MustCompile(`^[` + unicodeSpaceSet + `]$`)
 	for _, r := range []rune{
@@ -203,7 +202,7 @@ func TestUnicodeSpaceSet_MatchesWhiteSpace(t *testing.T) {
 
 // TestTranslatePattern_UnicodeEscapes covers the escapes RFC 0006 REQUIRES but
 // Go cannot parse. Both Python and Rust accept \uHHHH and \UHHHHHHHH; Go's
-// regexp has no \u escape at all and rejects them — measured during design.
+// regexp has no \u escape at all and rejects them.
 //
 // Note the asymmetry with the rejection tests: \u{41} is REFUSED (Rust-only
 // brace syntax) while \u0041 is TRANSLATED, and the translation emits the
@@ -299,7 +298,7 @@ func TestTranslatePattern_NegatedShorthandInPositiveClass(t *testing.T) {
 		// \W and \S together: every character is either not-a-word-char or
 		// not-a-space-char (no character is BOTH a word char and a space
 		// char), so the union covers everything — a degenerate but correct
-		// result, and the case the class used to be refused for outright.
+		// result.
 		{"W and S together matches a word char, via the S branch", `^[\W\S]$`, "a", true},
 		{"W and S together matches a space char, via the W branch", `^[\W\S]$`, " ", true},
 		{"W and S together matches ordinary punctuation", `^[\W\S]$`, "!", true},
@@ -336,9 +335,9 @@ func TestTranslatePattern_NegatedShorthandInPositiveClass(t *testing.T) {
 		{"caret after a dropped W stays literal, rejects a digit", `^[\W^a]$`, "3", false},
 		{"caret after a dropped S stays literal, matches the caret", `^[\S^a]$`, "^", true},
 		{"caret after a dropped S stays literal, rejects a space", `^[\S^a]$`, " ", false},
-		// The degenerate case: dropping \W leaves ONLY a caret behind. Before
-		// this fix the remainder was the bare, uncompilable "[^]"; now it is
-		// the one-member literal class "[\^]".
+		// The degenerate case: dropping \W leaves ONLY a caret behind. The
+		// remainder must be the one-member literal class "[\^]", not the
+		// bare, uncompilable "[^]".
 		{"W with nothing but a caret left behind matches the caret", `^[\W^]$`, "^", true},
 		{"W with nothing but a caret left behind rejects a word char", `^[\W^]$`, "a", false},
 	}
@@ -363,10 +362,9 @@ func TestTranslatePattern_NegatedShorthandInPositiveClass(t *testing.T) {
 // every alternation-producing class, not just its match behavior: a wrong
 // bracket placement can compile and even match every probe character in
 // TestTranslatePattern_NegatedShorthandInPositiveClass correctly by
-// coincidence (as "[\W^a]" mistranslated to "(?:[^\p{L}_\p{N}]|[^a])" did —
-// it only diverges from the correct translation on inputs neither test
-// suite happened to probe until this one was written), while still being
-// the wrong regex. Every string here was verified independently: compiled
+// coincidence (as "[\W^a]" mistranslated to "(?:[^\p{L}_\p{N}]|[^a])" would —
+// it only diverges from the correct translation on inputs the match-behavior
+// test does not probe), while still being the wrong regex. Every string here was verified independently: compiled
 // with regexp.Compile and checked against the pattern's OWN meaning across a
 // probe set, not merely copied from whatever this package currently emits.
 func TestTranslatePattern_AlternationText(t *testing.T) {
@@ -413,21 +411,21 @@ func TestTranslatePattern_AlternationText(t *testing.T) {
 	}
 }
 
-// TestTranslatePattern_WordShorthandAdjacentDash covers the code-review
-// finding that \w's expansion, unlike \d, \D and \s, used to END IN A BARE
-// LITERAL character ("_"), so a naive translation let an adjacent "-" in the
-// SOURCE form an unintended character RANGE with it: "[\w-a]" used to
-// translate its set into "[\p{L}\p{N}_-a]", where Go reads "_-a" as the
-// range U+005F..U+0061 — matching the backtick, which is neither a word
-// character nor "a" under any reading of the source. Verified directly
-// against Python's re: it and the reference both REJECT "[\w-a]" outright
-// ("bad character range \w-a"; the reference: "regex parse error").
+// TestTranslatePattern_WordShorthandAdjacentDash covers \w's expansion, which
+// unlike \d, \D and \s contains a BARE LITERAL character ("_"). If the
+// expansion ended in it, an adjacent "-" in the SOURCE would form an
+// unintended character RANGE with it: "[\w-a]" would translate its set into
+// "[\p{L}\p{N}_-a]", where Go reads "_-a" as the range U+005F..U+0061 —
+// matching the backtick, which is neither a word character nor "a" under any
+// reading of the source. Verified directly against Python's re: it and the
+// reference both REJECT "[\w-a]" outright ("bad character range \w-a"; the
+// reference: "regex parse error").
 //
-// The fix (unicodeWordSet's own doc) moves the underscore into the MIDDLE of
-// the set, between the two \p{...} property escapes, so it can never be the
-// first or last character spliced in and therefore can never directly abut
-// whatever SOURCE text sits next to the \w escape, on either side — checked
-// here in both directions, not only the trailing one the finding named.
+// unicodeWordSet (see its doc) puts the underscore in the MIDDLE of the set,
+// between the two \p{...} property escapes, so it can never be the first or
+// last character spliced in and therefore can never directly abut whatever
+// SOURCE text sits next to the \w escape, on either side — checked here in
+// both directions.
 func TestTranslatePattern_WordShorthandAdjacentDash(t *testing.T) {
 	t.Run("translated text", func(t *testing.T) {
 		tests := []struct {
@@ -461,8 +459,8 @@ func TestTranslatePattern_WordShorthandAdjacentDash(t *testing.T) {
 		}{
 			// The critical case: "[\w-a]" must NOT match the backtick.
 			// U+0060 is neither a word character nor "a" under any reading
-			// of the source, but the pre-fix translation matched it via the
-			// accidental "_-a" range.
+			// of the source, but a translation ending in "_" would match it via
+			// the accidental "_-a" range.
 			{`^[\w-a]$`, "`", false},
 			{`^[\w-a]$`, "a", true},
 			{`^[\w-a]$`, "-", true},
@@ -507,11 +505,11 @@ func TestTranslatePattern_WordShorthandAdjacentDash(t *testing.T) {
 	})
 }
 
-// TestTranslatePattern_AlternationAdjacentDash covers the code-review finding
-// that dropping a lifted \W/\S shorthand SPLICES its two former neighbors
-// together, and if one of them is a literal "-" the splice can form a
-// character RANGE the source never wrote: "[a\W-c]" used to translate to
-// "(?:[^\p{L}_\p{N}]|[a-c])", which Go reads as the range a..c and silently
+// TestTranslatePattern_AlternationAdjacentDash covers dropping a lifted \W/\S
+// shorthand, which SPLICES its two former neighbors together; if one of them
+// is a literal "-" the splice can form a character RANGE the source never
+// wrote: a naive translation turns "[a\W-c]" into
+// "(?:[^\p{L}_\p{N}]|[a-c])", which Go reads as the range a..c and so
 // MATCHES "b" — outside every reading of the source, since the "-" sat
 // between "\W" and "c" in the original text, never between "a" and "c".
 // Verified directly: both Python's re ("bad character range \W-c") and the
@@ -519,7 +517,7 @@ func TestTranslatePattern_WordShorthandAdjacentDash(t *testing.T) {
 // outright, so there is no reading of the source under which "b" or "5" is a
 // member.
 //
-// The fix (classBodyWithout's own doc, via dashesAdjacentToDroppedShorthand)
+// classBodyWithout (see its doc, via dashesAdjacentToDroppedShorthand)
 // escapes any "-" that sat immediately next to a dropped occurrence, so the
 // remainder reads as sqi's own permissive union — {not-a-word-char} ∪ {a} ∪
 // {-} ∪ {c} for "[a\W-c]" — rather than a spliced range.
@@ -580,7 +578,7 @@ func TestTranslatePattern_AlternationAdjacentDash(t *testing.T) {
 			{`^[a\W-]$`, "a", true},
 			{`^[a\W-]$`, "!", true},
 			{`^[a\W-]$`, "b", false},
-			// No dash at all: unaffected by the fix.
+			// No dash at all: unaffected by the escaping.
 			{`^[a\Wc]$`, "c", true},
 			{`^[a\Wc]$`, "a", true},
 			{`^[a\Wc]$`, "!", true},
@@ -604,8 +602,8 @@ func TestTranslatePattern_AlternationAdjacentDash(t *testing.T) {
 	})
 }
 
-// TestTranslatePattern_NestedClassIsNeverEmitted pins the failure this whole
-// scanner exists to prevent. Go compiles "[[\p{L}]]" WITHOUT ERROR and matches
+// TestTranslatePattern_NestedClassIsNeverEmitted pins the failure the scanner
+// exists to prevent. Go compiles "[[\p{L}]]" WITHOUT ERROR and matches
 // something other than intended, so a translation that emitted a nested class
 // would ship a silently wrong matcher. No output may contain "[[".
 func TestTranslatePattern_NestedClassIsNeverEmitted(t *testing.T) {

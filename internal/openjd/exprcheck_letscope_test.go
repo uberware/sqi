@@ -10,11 +10,10 @@ import (
 // ─── section 3.6.2's scope table, transcribed ──────────────────────────────
 //
 // Template Schemas section 3.6.2 gives, per let: location, the set of symbols
-// a binding's own expression MAY reference. Design spec section 2 transcribes
-// the table (docs/superpowers/specs/2026-08-08-expr-let-bindings-design.md);
-// this file is that table turned into assertions, direct against the
-// primary source (third_party/openjd-specifications/wiki/2023-09-Template-
-// Schemas.md section 3.6.2), not the transcription.
+// a binding's own expression MAY reference. This file is that table turned
+// into assertions, taken directly from
+// third_party/openjd-specifications/wiki/2023-09-Template-Schemas.md
+// section 3.6.2.
 //
 // Each location gets one test with one table: a row per symbol the row
 // GRANTS, asserting it resolves with no error, and a row per symbol the row
@@ -259,15 +258,14 @@ steps:
 // places, and the omission is there to cover the two placements that have no
 // step, not to strip Step.Name from the one placement that does.
 //
-// RULING (design spec section 2.2): a step environment's own let: KEEPS
-// Step.Name. Section 7.3.1, not 3.6.2's note, governs where Step.Name is
-// legal, and E2 already ships ScopeStepEnvironment differing from
-// ScopeJobEnvironment by exactly that symbol (scope.go's scopeFixed) for
-// every OTHER position in this same element -- variables, actions,
-// embeddedFiles data. Reading 3.6.2's omission as also stripping Step.Name
-// from a step environment's let would make that one position disagree with
-// every sibling position in the same element, for a reason (the note) that
-// does not apply to it: a step environment's enclosing step unambiguously
+// So a step environment's own let: KEEPS Step.Name. Section 7.3.1, not
+// 3.6.2's note, governs where Step.Name is legal, and ScopeStepEnvironment
+// differs from ScopeJobEnvironment by exactly that symbol (scope.go's
+// scopeFixed) for every OTHER position in this same element -- variables,
+// actions, embeddedFiles data. Reading 3.6.2's omission as also stripping
+// Step.Name from a step environment's let would make that one position
+// disagree with every sibling position in the same element, for a reason
+// (the note) that does not apply to it: a step environment's enclosing step
 // exists. The only fixture on this row,
 // 7.3.1--step-name-in-job-environment-let.invalid.yaml, is a JOB
 // environment and does not settle -- and is consistent with -- the step case
@@ -331,7 +329,7 @@ steps:
 
 // TestLetScope_SimpleAction is section 3.6.2's third row, which sqi cannot
 // test because SimpleAction -- a step's bash:/powershell: shorthand -- is a
-// FEATURE_BUNDLE_1 element and is not modeled at all (design spec 1.1).
+// FEATURE_BUNDLE_1 element and is not modeled at all.
 //
 // The row is transcribed here so that whenever FEATURE_BUNDLE_1 is taken up,
 // its rules are already written down rather than re-derived from the spec:

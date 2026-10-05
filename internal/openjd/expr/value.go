@@ -41,12 +41,11 @@ type Value struct {
 	// submitted string, which sqi has at phase 2 (job parameters are stored as
 	// map[string]string): FloatText, below, binds it in
 	// internal/openjd/exprcheck.go's concreteJobParamValue. round() and a
-	// phase-2 float job parameter are the two producers today. Substituting
-	// the carried text back into a rendered template was a separate step, and
-	// sub-project E4a has now taken it: internal/worker/fmtres renders phase-3
-	// values onto a real command line, so the carry is observable end to end
-	// and is pinned there (a FLOAT parameter submitted "3.500" reaches the
-	// command line as 3.500, not 3.5).
+	// phase-2 float job parameter are the two producers. internal/worker/fmtres
+	// substitutes the carried text when it renders phase-3 values onto a real
+	// command line, so the carry is observable end to end and is pinned there
+	// (a FLOAT parameter submitted "3.500" reaches the command line as 3.500,
+	// not 3.5).
 	//
 	// Three invariants make it mostly safe. Float() never sets it. Equal
 	// ignores it, so no comparison anywhere changes. And nothing ARITHMETIC
@@ -56,23 +55,18 @@ type Value struct {
 	//
 	// The third invariant is NARROWER than it sounds: repr_py, repr_json and
 	// repr_pwsh (funcsreprdata.go, funcsreprshell.go) each fall through a
-	// default case that renders int and float via Value.String() -- which
-	// reads fs first -- so all three leak the carry, e.g. repr_py(round(3.5,
-	// 2)) is "3.50", not the canonical "3.5" a fresh float64 would repr as.
-	// This is PRE-EXISTING (round() has carried since sub-project C1; a
-	// second producer, a phase-2 job parameter's submitted text via
-	// FloatText, does not change it) and left AS-IS on purpose: whether
-	// repr_* should show a value's carried text or canonicalise it is
-	// underspecified: section 1.3.4 (the specification, not RFC 0006, which
-	// defines repr_* but says nothing about the carry) addresses substitution
-	// and arithmetic, not a function that emits another language's literal
-	// syntax.
-	//
-	// SETTLED BY SUB-PROJECT E4a: the carry is KEPT, in repr_* as everywhere
-	// else. Section 1.3.4 exists so a submitted "3.500" survives to the
-	// command line, and canonicalising inside a rendering function would
-	// discard the very text it preserves; no output is malformed either way,
-	// since 3.500 is valid Python, JSON and PowerShell alike. Pinned by
+	// default case that renders int and float via Value.String() -- which reads
+	// fs first -- so all three leak the carry, e.g. repr_py(round(3.5, 2)) is
+	// "3.50", not the canonical "3.5" a fresh float64 would repr as. This is
+	// deliberate. Whether repr_* should show a value's carried text or
+	// canonicalise it is underspecified: section 1.3.4 (the specification, not
+	// RFC 0006, which defines repr_* but says nothing about the carry)
+	// addresses substitution and arithmetic, not a function that emits another
+	// language's literal syntax. The carry is KEPT, in repr_* as everywhere
+	// else. Section 1.3.4 exists so a submitted "3.500" survives to the command
+	// line, and canonicalising inside a rendering function would discard the
+	// very text it preserves; no output is malformed either way, since 3.500 is
+	// valid Python, JSON and PowerShell alike. Pinned by
 	// internal/worker/fmtres's float-carry test, which asserts both the
 	// plain-substitution and repr_py paths.
 	fs string
@@ -230,10 +224,10 @@ func (v Value) Equal(o Value) bool {
 	}
 	// A payload-carrying Code with no case above is a defect, not a value this
 	// function has ever seen: falling through to "equal types means equal
-	// values" — the old bare default this replaced — would silently make two
-	// DIFFERENT payloads compare equal, in a function roughly 30 tests across
-	// this package depend on. Panic rather than guess; this can only fire when
-	// a new Code gains a payload field without a matching case here.
+	// values" would silently make two DIFFERENT payloads compare equal, in a
+	// function roughly 30 tests across this package depend on. Panic rather
+	// than guess; this can only fire when a new Code gains a payload field
+	// without a matching case here.
 	panic(fmt.Sprintf("expr: Value.Equal has no case for %s", v.Type))
 }
 
@@ -245,9 +239,9 @@ func (v Value) Equal(o Value) bool {
 // as "true"/"false" — the JSON/YAML spellings, matching the aliases in spec
 // section 1.1.4 and the string(nulltype) -> "null" rule in section 2.2.1.
 //
-// This is a rendering for diagnostics and tests. The definitive form used
-// when interpolating a value back into a template is sub-project E's to fix,
-// and section 1.3.4's float pass-through rule belongs to it.
+// It is also the rendering format-string interpolation uses
+// (internal/openjd's resolve.go and internal/worker/fmtres), except that a
+// null result there becomes the empty string rather than "null".
 func (v Value) String() string {
 	switch v.Type.Code {
 	case CodeNull:
@@ -267,20 +261,21 @@ func (v Value) String() string {
 		parts := make([]string, len(v.l))
 		for i, elem := range v.l {
 			// Section 1.2.1's string-like codes render QUOTED inside a list, so
-			// ["a", "b"] rather than [a, b]. A bare rendering was ambiguous --
-			// ['a, b'] and ['a', 'b'] both printed as [a, b] -- and diverged
-			// from the reference on 31 corpus cases across list literals,
-			// coercion, comprehensions, flatten/sorted/unique, split/rsplit,
-			// the regex family and the path .parts/.suffixes properties.
+			// ["a", "b"] rather than [a, b]. A bare rendering would be
+			// ambiguous -- ['a, b'] and ['a', 'b'] would both print as [a, b]
+			// -- and would diverge from the reference on 31 corpus cases across
+			// list literals, coercion, comprehensions, flatten/sorted/unique,
+			// split/rsplit, the regex family and the path .parts/.suffixes
+			// properties.
 			switch elem.Type.Code {
 			case CodeString, CodePath, CodeRangeExpr:
 				// jsonQuoteElement, NOT strconv.Quote: Go's quoting spells a
 				// control character "\x01" and has "\a"/"\v" forms JSON does
-				// not define, so it produced output no JSON parser accepts --
-				// which openjd-specifications#176 forbids outright, and which
-				// also made this rendering disagree with string()'s for the
-				// same list. Sharing funcsconv.go's quoter is what keeps
-				// section 2.2.1's "same conversion" true by construction.
+				// not define, so it would produce output no JSON parser accepts
+				// -- which openjd-specifications#176 forbids outright -- and
+				// would disagree with string()'s rendering of the same list.
+				// Sharing funcsconv.go's quoter is what keeps section 2.2.1's
+				// "same conversion" true by construction.
 				parts[i] = jsonQuoteElement(elem.s)
 			default:
 				parts[i] = elem.String()
@@ -289,12 +284,9 @@ func (v Value) String() string {
 		return "[" + strings.Join(parts, ", ") + "]"
 	}
 	// A placeholder has no value to render, so name what is known instead:
-	// "<unresolved[int]>". CodeUnresolved had a case of its own above returning
-	// this same expression byte for byte -- Type.String() is a pure function of
-	// the type, so the two could not differ for any value -- and it was removed
-	// as a duplicate rather than as a change of behavior. Every other Code that
-	// reaches here (any, noreturn, the type variables) names a type no VALUE
-	// ever carries, so the same rendering is the right answer for those too.
+	// "<unresolved[int]>". Every other Code that reaches here (any, noreturn,
+	// the type variables) names a type no VALUE ever carries, so the same
+	// rendering is the right answer for those too.
 	return "<" + v.Type.String() + ">"
 }
 

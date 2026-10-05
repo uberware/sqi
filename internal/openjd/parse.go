@@ -144,12 +144,11 @@ var knownTopLevelFields = map[string]struct{}{
 // define and that do not name a SUPPORTED extension.
 //
 // The status check matches validateExtensions' two-part gate rather than bare
-// registry presence. Presence alone would let a stray top-level "EXPR:" key
-// through on a template that does not even declare the extension -- silently
-// accepted for the whole window in which EXPR is registered but
-// StatusInProgress, where before EXPR was registered at all the same key was
-// an error. A registry entry is a scoring and gating device, not a license to
-// carry the name as a top-level field.
+// registry presence. Presence alone would let a stray top-level key naming a
+// registered but StatusInProgress extension through, even on a template that
+// does not declare the extension, where an unregistered name is an error. A
+// registry entry is a scoring and gating device, not a license to carry the
+// name as a top-level field.
 func unknownTopLevelFields(raw map[string]any) []string {
 	var out []string
 	for k := range raw {
@@ -222,11 +221,11 @@ func decodeJobParameter(raw map[string]any, exprDeclared bool) (JobParameter, er
 // Canonicalization leaves an unrecognized spelling verbatim, and "LIST[STRING]"
 // written in a base-spec template is verbatim ALREADY EQUAL to the
 // JobParamTypeListString constant -- so a type-only dispatch would run the list
-// reader for a template that never declared the extension, turning what is
-// today a parse error into a validation error. The template is rejected either
-// way, but a base-spec template's behavior must be byte-for-byte unchanged,
+// reader for a template that never declared the extension, turning a parse
+// error into a validation error. The template is rejected either way, but a
+// base-spec template's behavior must be unaffected by EXPR support,
 // diagnostics included. TestListDefault_ListTypeWithoutEXPRStillRejected pins
-// it; it caught this exact leak.
+// it.
 func decodeJobParamDefault(raw map[string]any, p *JobParameter, exprDeclared bool) error {
 	if exprDeclared && isListParamType(p.Type) {
 		v, ok := raw["default"]
@@ -257,12 +256,12 @@ func decodeJobParamDefault(raw map[string]any, p *JobParameter, exprDeclared boo
 // Both live under `userInterface`, not at the parameter root — see the
 // <JobPathParameterDefinition> schema (§2.2), where fileFilters and
 // fileFilterDefault are members of the userInterface block alongside control
-// and label. sqi previously read them from the parameter root, so a conforming
-// template's filters were silently never decoded and every validation rule for
-// them (label required, pattern grammar, count cap) was dead code.
+// and label. Reading only the parameter root would never decode a conforming
+// template's filters, leaving every validation rule for them (label required,
+// pattern grammar, count cap) dead code.
 // The parameter root is also accepted, as a deliberate back-compat allowance:
-// that is where sqi previously required them, so products already stored by an
-// older sqi carry that shape and would silently lose their filters otherwise.
+// older sqi releases required them there, so products already stored by an
+// older sqi carry that shape and would lose their filters otherwise.
 // userInterface wins when both are present. No conformance fixture asserts that
 // root-level filters must be REJECTED, so accepting them costs no conformance;
 // deprecating the root location is a follow-up.

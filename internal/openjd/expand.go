@@ -119,8 +119,8 @@ func expandParameterSpace(ps *StepParameterSpace, jobBudget *jobTaskBudget) ([]T
 const maxTasksPerStep = 1_000_000
 
 // maxTasksPerJob caps the tasks a whole job may produce, SUMMED across its
-// steps. It is the bound [maxSteps]' own doc comment (validate.go) records as
-// missing, and this constant is that follow-up.
+// steps. See [maxSteps]' own doc comment (validate.go) for why that cap does
+// not bound it.
 //
 // It exists because maxSteps (100) multiplies straight through
 // [maxTasksPerStep]: without it, one POST /api/v1/jobs can reach 100 x
@@ -130,9 +130,9 @@ const maxTasksPerStep = 1_000_000
 //
 // It equals maxTasksPerStep deliberately: a job may not produce more tasks
 // than a single step may. That needs no second number justified from nothing,
-// it states in one sentence, and it cuts the worst case by 100x. It IS an
-// acceptance change — a job of two 600,000-task steps was legal before this
-// constant existed — accepted because the per-step figure is already
+// it states in one sentence, and it cuts the worst case by 100x. It rejects
+// jobs the per-step cap alone would accept — two 600,000-task steps, for
+// example — which is acceptable because the per-step figure is already
 // "deliberately generous" above; tune it if legitimate jobs need larger
 // totals.
 //
@@ -140,7 +140,7 @@ const maxTasksPerStep = 1_000_000
 // is: a caller that relaxes quantitative POLICY limits does not thereby
 // acquire the right to insert a hundred million rows. That matters more here
 // than for the per-step cap, because with EnforceLimits false maxSteps is not
-// enforced either, so before this constant the product had no ceiling at all.
+// enforced either, so without this constant the product has no ceiling at all.
 const maxTasksPerJob = maxTasksPerStep
 
 // jobTaskBudget is the running total of tasks one job's steps have produced so

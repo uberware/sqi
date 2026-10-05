@@ -69,9 +69,8 @@ func shapeUnary(f func(v Value) (Value, error)) func(args []Value) (Value, error
 // nested and flat rows tie at cost 0 for a list of lists, and the earliest-wins
 // rule is what keeps flatten from being the identity. See funcslist.go.
 //
-// Sub-projects B2 and C add shapes here and to their own function registry; a
-// list with no matching shape is reported as "unsupported operand types", which
-// is the same single mechanism sub-project A used.
+// An operator with no matching shape is reported as "unsupported operand
+// types".
 var binaryShapes = map[Op][]Shape{
 	OpAdd: {
 		// Section 1.3.10 rule 2/3: scalar int/float arithmetic processes no
@@ -91,14 +90,14 @@ var binaryShapes = map[Op][]Shape{
 		{Params: []Type{TString, TString}, Ret: TString, Cost: Cost{ResultBytes: true}, Fn: shapeBinary(concatStrings)},
 		// RFC 0006 section 2.1.5's __add__(p: path, suffix: string) -> path.
 		//
-		// This row is what makes "P + 'x'" a PATH rather than the string it
-		// used to be: it matches EXACTLY (cost 0) where the (string, string)
-		// row above matches only by coercing the path operand to string (cost
-		// 1, section 1.2.3's path -> string rule). The reverse pair is
-		// unaffected — "'x' + P" still takes the string row, because
-		// string -> path is not a conversion the matcher will make to select
-		// an overload (promotable, coerce.go) — and so is "'a' + 'b'", which
-		// the string row still matches at cost 0.
+		// This row is what makes "P + 'x'" a PATH rather than a string: it
+		// matches EXACTLY (cost 0) where the (string, string) row above matches
+		// only by coercing the path operand to string (cost 1, section 1.2.3's
+		// path -> string rule). The reverse pair is unaffected — "'x' + P"
+		// still takes the string row, because string -> path is not a
+		// conversion the matcher will make to select an overload (promotable,
+		// coerce.go) — and so is "'a' + 'b'", which the string row still
+		// matches at cost 0.
 		//
 		// Cost.ResultBytes: a path is a string value for rule 3 (RFC 0006),
 		// and the same ResultBytes-over-ArgBytes resolution applies here as
@@ -141,9 +140,9 @@ var binaryShapes = map[Op][]Shape{
 		// cannot be expressed as a binding. RetOf performs the SAME unification
 		// over the bound types, for the path where an operand has no value and
 		// concatLists never runs. Substituting into a declared Ret cannot do
-		// it: Ret: ListOf(varT) reads only the LEFT operand, which typed
+		// it: Ret: ListOf(varT) reads only the LEFT operand, which would type
 		// "[] + Param.Items" as list[nulltype] while "Param.Items + []" — the
-		// same concatenation — came out list[int].
+		// same concatenation — comes out list[int].
 		//
 		// Cost.ArgElements charges rule 2's "list concatenation" by name, on
 		// both operands. Unlike rule 3's ceil(len/256), a plain element count
@@ -196,12 +195,12 @@ var binaryShapes = map[Op][]Shape{
 		{Params: []Type{TInt, TInt}, Ret: TInt, Fn: shapeBinary(intBinary(mulInt))},
 		{Params: []Type{TFloat, TFloat}, Ret: TFloat, Fn: shapeBinary(floatBinary(func(a, b float64) float64 { return a * b }))},
 		// Section 2.1.3's __mul__(list[T], int) and section 2.1.2's
-		// __mul__(string, int). String repetition was absent until the size
-		// bound in limits.go existed to cap the repeat count.
+		// __mul__(string, int). The size bound in limits.go caps string
+		// repetition's repeat count.
 		//
 		// promoteNoRangeText on the string row is what makes "Param.Range * 2"
-		// an ERROR rather than the string repetition "1-101-10" it used to be,
-		// and it is the answer to a question the OpAdd table above raises: why
+		// an ERROR rather than the string repetition "1-101-10", and it is the
+		// answer to a question the OpAdd table above raises: why
 		// does "+" go out of its way to stop a range_expr pair concatenating as
 		// text while "*" would not? Because the spec answers the two operators
 		// differently, and both times explicitly.
@@ -221,7 +220,7 @@ var binaryShapes = map[Op][]Shape{
 		// Reading it the other way makes "Param.Frames * 2" quietly produce a
 		// doubled frame-range TEXT, which no template author can have meant.
 		//
-		// The other two readings were considered and rejected. Treating the
+		// The other two readings do not hold. Treating the
 		// range as list[int] (matching the __add__ precedent, giving a
 		// list[int] result) needs section 1.2.3's range_expr -> list[int] rule,
 		// which is conditioned on "the target types include list[int]" — the
@@ -298,28 +297,22 @@ var binaryShapes = map[Op][]Shape{
 		{Params: []Type{TFloat, TFloat}, Ret: TFloat, Fn: shapeBinary(powFloats)},
 	},
 
-	// CORRECTION (review finding on this task): an earlier revision of this
-	// comment claimed rule 2's "contains()" was a functionShapes registry
-	// entry Tasks 6-8 own, and left every OpIn/OpNotIn row uncharged on that
-	// basis. That premise is false. RFC 0005's own dunder-transform table
-	// (lines 1445-1446) is explicit: "In -> __contains__, NotIn ->
-	// __not_contains__ ... x in y becomes __contains__(y, x)". There is no
-	// registry function named "contains" anywhere in the spec (confirmed:
-	// `rg '"contains"' internal/openjd/expr/` finds no functionShapes entry,
-	// only this comment and a test label) — "contains()" in rule 2's list
-	// (and __contains__/__not_contains__ in the wiki's operator table,
-	// section 2.1.2/2.1.3) IS this operator, named by its dunder rather than
-	// its surface syntax the way every other operator in rule 2's list is
-	// (list concatenation "+", not "__add__"). So "in"/"not in" against a
-	// STRING or a LIST *is* named by rule 2/3 and must charge.
+	// Rule 2's "contains()" is this operator, not a functionShapes registry
+	// entry. RFC 0005's own dunder-transform table (lines 1445-1446) is
+	// explicit: "In -> __contains__, NotIn -> __not_contains__ ... x in y
+	// becomes __contains__(y, x)". There is no registry function named
+	// "contains" anywhere in the spec — "contains()" in rule 2's list (and
+	// __contains__/__not_contains__ in the wiki's operator table, section
+	// 2.1.2/2.1.3) IS this operator, named by its dunder rather than its
+	// surface syntax the way every other operator in rule 2's list is (list
+	// concatenation "+", not "__add__"). So "in"/"not in" against a STRING or a
+	// LIST *is* named by rule 2/3 and must charge.
 	//
-	// ALL THREE rows charge, including range_expr. An earlier revision of this
-	// paragraph ended "only the range_expr row is genuinely unnamed (the
-	// reference agrees: its count does not scale with the range's size)",
-	// which read as a justification for leaving it alone. It is not one: being
-	// unnamed decides nothing once rule 2's enumeration is read as open
+	// ALL THREE rows charge, including range_expr. That row is unnamed, and
+	// the reference's count for it does not scale with the range's size, but
+	// being unnamed decides nothing once rule 2's enumeration is read as open
 	// (doc.go), and containsRangeInt expands the range in full regardless of
-	// what the reference charges. See the row-level CORRECTION below.
+	// what the reference charges. See the row-level comment below.
 	//
 	// Cost.ArgBytes{1} on the string/string rows and Cost.ArgElements{1} on
 	// the list rows, charging the CONTAINER (index 1, per the item-is-
@@ -342,37 +335,31 @@ var binaryShapes = map[Op][]Shape{
 	// TestListOperators's "2.0 in [1, 2, 3]" case rather than assumed.
 	//
 	// The substring rows carry promoteNoRangeText for the same reason OpMul's
-	// string row does, and it is the same defect one operator over: without it
-	// a range_expr operand coerced to its own text and "'1' in Param.Range"
-	// answered a SUBSTRING question about "1-10" rather than the membership
-	// question section 2.1.3 defines, whose only range_expr row is
-	// __contains__(range_expr, int) — the row directly below. Neither section
-	// 2.1.2 nor 2.1.3 gives "in" a string/range_expr row, and the reference
-	// implementation likewise rejects "'1' in range_expr('1-10')".
+	// string row does: without it a range_expr operand would coerce to its own
+	// text and "'1' in Param.Range" would answer a SUBSTRING question about
+	// "1-10" rather than the membership question section 2.1.3 defines, whose
+	// only range_expr row is __contains__(range_expr, int) — the row directly
+	// below. Neither section 2.1.2 nor 2.1.3 gives "in" a string/range_expr
+	// row, and the reference implementation likewise rejects
+	// "'1' in range_expr('1-10')".
 	OpIn: {
 		{Params: []Type{TString, TString}, Ret: TBool, Promote: promoteNoRangeText, Cost: Cost{ArgBytes: []int{1}}, Fn: shapeBinary(containsString)},
 		{Params: []Type{varT, ListOf(varT1)}, Ret: TBool, Cost: Cost{ArgElements: []int{1}}, Fn: shapeBinary(containsElem)},
-		// CORRECTION (final whole-branch review, sub-project E1). An earlier
-		// revision left this row and its OpNotIn twin UNCHARGED, arguing:
-		// "Uncharged on purpose: the reference's own count does not scale with
-		// the range's size (see the probe comment on
-		// TestOperationCount_InOperator), so nothing here supports a per-range
-		// charge the way the string and list rows above have one." That
-		// observation about the reference is accurate and still holds; the
-		// CONCLUSION drawn from it was wrong twice over. First, the reference's
-		// behavior is subordinate to the specification by this package's
-		// standing rule, and it was the SOLE stated reason here. Second, the
-		// specification's own test is what this row actually fails:
+		// This row and its OpNotIn twin charge although the reference's own
+		// count does not scale with the range's size (see the probe comment
+		// on TestOperationCount_InOperator). The reference's behavior is
+		// subordinate to the specification by this package's standing rule,
+		// and the specification's own test is what this row meets:
 		// containsRangeInt (below) calls rangeInts, which FULLY EXPANDS the
 		// range, so "a function ... iterates through every element of a list"
-		// is satisfied outright. Measured before the fix, "1 in Param.R" with
-		// R = range_expr("1-1000000") charged 1 operation while expanding a
-		// million integers. Now Cost{ArgElements: {1}} — index 1, the
-		// container, matching the string and list rows above — which prices
-		// the expansion arithmetically (elementCount routes a range_expr
-		// through rangeExprCount) and charges it BEFORE the expansion runs.
-		// The residual flat +1 the reference adds here is unchanged and stays
-		// baselined; only the SCALING component is at issue.
+		// is satisfied outright. Uncharged, "1 in Param.R" with
+		// R = range_expr("1-1000000") would charge 1 operation while
+		// expanding a million integers. Cost{ArgElements: {1}} — index 1, the
+		// container, matching the string and list rows above — prices the
+		// expansion arithmetically (elementCount routes a range_expr through
+		// rangeExprCount) and charges it BEFORE the expansion runs. The
+		// residual flat +1 the reference adds here stays baselined; only the
+		// SCALING component is at issue.
 		{Params: []Type{TInt, TRangeExpr}, Ret: TBool, Cost: Cost{ArgElements: []int{1}}, Fn: shapeBinary(containsRangeInt)},
 	},
 	OpNotIn: {
@@ -405,25 +392,21 @@ var binaryShapes = map[Op][]Shape{
 // an unexplained reference quirk, baselined in test/oracle/baseline-ops.txt,
 // and is a separate question from the scaling one below.)
 //
-// CORRECTION (final whole-branch review, sub-project E1). The LIST/LIST row
-// was in that same uncharged set, on this reasoning: "Section 1.3.10's rule 2
-// and rule 3 each close with an explicit 'This applies to: ...' enumeration,
-// and ordering operators appear in neither one — not even the list/list row,
-// which iterates its operands' elements (compareLists) but is not the
-// 'list/range equality comparisons' rule 2 names, a distinct operation with
-// its own row." The citation was to rfcs/0005-expression-language.md; the
-// SPECIFICATION (wiki/2026-02-Expression-Language.md) introduces the same
-// enumeration with "such as", and doc.go now settles that disagreement in
-// favor of the open reading for the whole package. Under it, a token-level
-// distinction between "==" and "<" does not survive: applyBinary's equality
-// path and this row run the SAME walk over the same operands (valuesEqual
-// and compareLists both compare elementwise), and only one was charged.
-// Measured before the fix, a 20,000-int list compared 2,000 times cost 6,002
-// operations under "<" while the identical "==" expression tripped the
-// 10,000,000 limit — a 1,666x discrepancy for identical work. The row now
+// The LIST/LIST row is not in that uncharged set. In
+// rfcs/0005-expression-language.md, section 1.3.10's rule 2 and rule 3 each
+// close with an explicit 'This applies to: ...' enumeration naming no
+// ordering operator; the SPECIFICATION (wiki/2026-02-Expression-Language.md)
+// introduces the same enumeration with "such as", and doc.go settles that
+// disagreement in favor of the open reading for the whole package. Under it,
+// a token-level distinction between "==" and "<" does not survive:
+// applyBinary's equality path and this row run the SAME walk over the same
+// operands (valuesEqual and compareLists both compare elementwise).
+// Uncharged, a 20,000-int list compared 2,000 times would cost 6,002
+// operations under "<" while the identical "==" expression trips the
+// 10,000,000 limit — a 1,666x discrepancy for identical work. The row
 // declares Cost{ArgElements: {0}}, charging the LEFT operand's element count,
 // exactly as applyBinary's equality charge does, so the two agree by
-// construction rather than by coincidence.
+// construction.
 func orderingShapes(op Op) []Shape {
 	return []Shape{
 		{Params: []Type{TInt, TInt}, Ret: TBool, Promote: promoteOrdering, Fn: shapeBinary(ordering(op, compareInts))},
@@ -450,16 +433,12 @@ func orderingShapes(op Op) []Shape {
 // unary plus and boolean "not" alike, despite the reference measuring 2 for
 // "not True" rather than 1.
 //
-// CORRECTION (final whole-branch review, sub-project E1): an earlier
-// revision of this comment argued "not" additionally "is not named by rule 2
-// or rule 3's closed 'This applies to: ...' enumerations". That half of the
-// argument is withdrawn — doc.go settles the enumerations as OPEN, so being
-// unnamed by them proves nothing either way. The rows are still correctly
-// uncharged; only the reasoning above stands. and/or are
-// a separate case entirely and are not in this table at all: RFC 0005 line
-// 1454 says they are handled directly by the evaluator rather than
-// transformed to function calls, so evalLogical never reaches applyUnary,
-// callShape, or any Cost here (see doc.go).
+// Being unnamed by rule 2 or rule 3's enumerations proves nothing either way,
+// since doc.go settles them as OPEN; the reasoning above is what leaves these
+// rows uncharged. and/or are a separate case entirely and are not in this table
+// at all: RFC 0005 line 1454 says they are handled directly by the evaluator
+// rather than transformed to function calls, so evalLogical never reaches
+// applyUnary, callShape, or any Cost here (see doc.go).
 var unaryShapes = map[Op][]Shape{
 	OpNeg: {
 		{Params: []Type{TInt}, Ret: TInt, Fn: shapeUnary(negInt)},
@@ -478,13 +457,10 @@ var unaryShapes = map[Op][]Shape{
 // the operand types. Errors carry no position; the evaluator wraps them with the
 // offset of the operator that failed.
 //
-// ec is threaded through to callShape and is NOT optional. An earlier revision
-// passed callShape(evalCtx{}, ...) here, with a comment arguing that a
-// zero-value context was safe "because no row of binaryShapes ever sets FnCtx".
-// CORRECTION (sub-project E1): that reasoning held only while callShape read
-// nothing but FnCtx from the context. callShape now charges section 1.3.10
-// operations against ec.m, and a zero-value evalCtx carries a nil meter, so a
-// fresh context here would silently un-count every operator in the language.
+// ec is threaded through to callShape and is NOT optional: callShape charges
+// section 1.3.10 operations against ec.m, and a zero-value evalCtx carries a
+// nil meter, so a fresh context here would silently un-count every operator in
+// the language.
 func applyBinary(ec evalCtx, op Op, l, r Value) (Value, error) {
 	switch op {
 	case OpEq, OpNe:
@@ -510,8 +486,8 @@ func applyBinary(ec evalCtx, op Op, l, r Value) (Value, error) {
 		// explicitly. elementCount is 0 for any non-collection operand, so
 		// this is a no-op charge for every other type pair; it only fires
 		// when the LEFT operand is a list or range_expr. Charged against the
-		// left operand only -- matching the brief's adjudicated ruling
-		// (cost_eval_internal_test.go's TestOperationCount_ListEquality),
+		// left operand only -- matching the ruling pinned by
+		// cost_eval_internal_test.go's TestOperationCount_ListEquality,
 		// which sets 1 (call) + 2 (elements) = 3 for a two-element
 		// comparison against the reference's unexplained 2.
 		if n, err := elementCountBounded(ec, l); err != nil {
@@ -521,10 +497,9 @@ func applyBinary(ec evalCtx, op Op, l, r Value) (Value, error) {
 		}
 		// The RIGHT operand is RESERVED, never charged -- see
 		// reserveEqualityExpansion (rangeexpr.go). The left-only CHARGE above
-		// is the adjudicated ruling and is unchanged by this; what this adds
-		// is a refusal in front of the expansion listOrRangeEqual performs on
-		// whichever side is a range_expr, which for a right-hand one had
-		// nothing in front of it at all.
+		// is unchanged by this; this adds a refusal in front of the expansion
+		// listOrRangeEqual performs on whichever side is a range_expr, which
+		// for a right-hand one would otherwise have nothing in front of it.
 		if err := reserveEqualityExpansion(ec, l, r); err != nil {
 			return Value{}, err
 		}
@@ -552,9 +527,7 @@ func applyBinary(ec evalCtx, op Op, l, r Value) (Value, error) {
 
 // applyUnary dispatches a prefix operator.
 //
-// See applyBinary on why ec is threaded rather than zero-valued: CORRECTION
-// (sub-project E1) to the previous claim that a zero-value evalCtx was safe at
-// this call site.
+// See applyBinary on why ec is threaded rather than zero-valued.
 func applyUnary(ec evalCtx, op Op, v Value) (Value, error) {
 	s, b, ok := matchShapes(unaryShapes[op], []Type{v.Type})
 	if !ok {
@@ -606,8 +579,8 @@ func callShape(ec evalCtx, s Shape, b bindings, args []Value) (Value, error) {
 		}
 		// This loop runs BEFORE chargeArgs, so a coercion that materializes
 		// a collection is unpriced work: "sorted([1] + range_expr(
-		// "1-10000000"))" expanded 2768 MB here and was only then charged for
-		// it. See reserveRangeExprCoercion (rangeexpr.go).
+		// "1-10000000"))" would expand 2768 MB here and only then be charged
+		// for it. See reserveRangeExprCoercion (rangeexpr.go).
 		if err := reserveRangeExprCoercion(ec, args[i], want); err != nil {
 			return Value{}, err
 		}
@@ -642,7 +615,7 @@ func callShape(ec evalCtx, s Shape, b bindings, args []Value) (Value, error) {
 //
 // An index naming a parameter position that does not exist is ignored rather
 // than panicking: a Cost is data, and a wrong index is caught by the coverage
-// tests in the per-group tasks, not by crashing a running server.
+// tests, not by crashing a running server.
 func chargeArgs(ec evalCtx, c Cost, args []Value) error {
 	for _, i := range c.ArgElements {
 		if i < 0 || i >= len(args) {
@@ -692,7 +665,7 @@ func chargeResult(ec evalCtx, c Cost, out Value) error {
 // A list answers its own count in constant time. A range_expr does not: with
 // two or more sub-ranges rangeExprCount expands to count (rangeexpr.go), so a
 // charge site that called elementCount in order to decide whether the work
-// fits had already done the work by the time it found out -- 687 MB spent to
+// fits would have done the work by the time it found out -- 687 MB spent to
 // produce a figure the very next line refuses. reserveRangeExprExpansion
 // settles that arithmetically first.
 //
@@ -700,9 +673,8 @@ func chargeResult(ec evalCtx, c Cost, out Value) error {
 // chargeResult is deliberately not one of those sites: its value already
 // exists.
 //
-// It is NOT a complete guard against unreserved expansion on its own, and an
-// earlier revision of this comment read as though it were. A charge site is
-// only one of the ways a range_expr gets expanded; the coercions
+// It is NOT a complete guard against unreserved expansion on its own. A charge
+// site is only one of the ways a range_expr gets expanded; the coercions
 // (reserveRangeExprCoercion) and equality's right-hand operand
 // (reserveEqualityExpansion) have no charge in front of them at all. See
 // reserveRangeExprExpansion (rangeexpr.go) for the full enumeration.
@@ -951,13 +923,12 @@ func powFloats(l, r Value) (Value, error) {
 // concatStrings implements section 2.1.2's string concatenation, bounded by
 // the same maxStringBytes that bounds string REPETITION.
 //
-// Without the bound this was the one unbounded producer left in the package —
-// a plain asymmetry, since concatLists has always checked its own element
-// count. Repetition alone is no defense: "'x' * 900000" is well inside the
-// bound, and twenty of those chained with "+" measured 180,000,000 bytes, 18
-// times over it. The check is ARITHMETIC on the two lengths, before the
-// concatenation allocates, for the same reason checkElementCount is: a check
-// made after allocating would be no protection at all.
+// concatLists checks its own element count the same way. Repetition's bound
+// alone is no defense: "'x' * 900000" is well inside the bound, and twenty of
+// those chained with "+" measure 180,000,000 bytes, 18 times over it. The check
+// is ARITHMETIC on the two lengths, before the concatenation allocates, for the
+// same reason checkElementCount is: a check made after allocating would be no
+// protection at all.
 func concatStrings(l, r Value) (Value, error) {
 	if err := checkStringBytes(len(l.AsStr()) + len(r.AsStr())); err != nil {
 		return Value{}, err
@@ -1173,15 +1144,13 @@ func numericOrStringEqual(l, r Value) bool {
 // section 1.2.5), and a range_expr compared against a list is expanded and
 // compared elementwise.
 //
-// It is also where the range_expr vs range_expr row lives — closing a
-// previously PARKED gap where two range_exprs, including one compared to
-// itself, always compared unequal. Comparing their raw text is not right in
-// general (section 1.2.5's expansion rule would make "1-3" equal "1,2,3",
-// which a payload comparison can't see), so the general case expands both
-// sides and compares elementwise like the list rows. But two operands with
-// IDENTICAL text always expand to the identical list, so that case is
-// checked first without expanding — which is what keeps a range_expr past
-// the element-count bound equal to itself even though expanding it would
+// It is also where the range_expr vs range_expr row lives. Comparing their raw
+// text is not right in general (section 1.2.5's expansion rule would make "1-3"
+// equal "1,2,3", which a payload comparison can't see), so the general case
+// expands both sides and compares elementwise like the list rows. But two
+// operands with IDENTICAL text always expand to the identical list, so that
+// case is checked first without expanding — which is what keeps a range_expr
+// past the element-count bound equal to itself even though expanding it would
 // error.
 //
 // An expansion failure elsewhere in this function (list vs an oversized
@@ -1238,9 +1207,8 @@ func listsEqual(a, b []Value) bool {
 }
 
 // intValues wraps expanded range integers as list elements. It is the single
-// copy of that two-line loop: coerce.go (range_expr -> list[int]) and slice.go
-// (a range_expr slice that cannot come back as a range_expr) each hand-rolled
-// their own before, which is three chances for one of them to drift.
+// copy of that two-line loop, shared by coerce.go (range_expr -> list[int])
+// and slice.go (a range_expr slice that cannot come back as a range_expr).
 func intValues(ints []int64) []Value {
 	out := make([]Value, len(ints))
 	for i, n := range ints {
@@ -1308,10 +1276,10 @@ func concatLists(l, r Value) (Value, error) {
 		return Value{}, err
 	}
 	// Both operands are ranged over in turn rather than joined into a
-	// throwaway slice first: the join allocated a complete second copy of both
-	// operands, on top of the correctly-sized result below, purely to have one
-	// loop instead of two — doubling the peak memory of every concatenation,
-	// with maxElements putting that at 10,000,000 values.
+	// throwaway slice first: the join would allocate a complete second copy
+	// of both operands, on top of the correctly-sized result below — doubling
+	// the peak memory of every concatenation, with maxElements putting that at
+	// 10,000,000 values.
 	out := make([]Value, 0, len(left)+len(right))
 	for _, side := range [][]Value{left, right} {
 		for _, v := range side {
@@ -1338,7 +1306,7 @@ func concatLists(l, r Value) (Value, error) {
 // to: both parameters are list[var], so matching binds both, and a pair with no
 // common type is one concatLists would reject — but a declared return type is
 // read on the path where nothing executes, so it must still answer something,
-// and the pre-RetOf answer is the conservative one.
+// and the left operand's list type is the conservative one.
 func concatRet(b bindings) Type {
 	left, leftOK := b.get(CodeVarT)
 	right, rightOK := b.get(CodeVarT1)
@@ -1392,7 +1360,7 @@ func repeatList(ec evalCtx, l, r Value) (Value, error) {
 	}
 	// checkRepeat multiplies len(elems) by n only after confirming the
 	// product cannot overflow int64 — see its doc comment. Multiplying first
-	// and checking the result, as this used to, is not a bound at all: the
+	// and checking the result is not a bound at all: the
 	// product can wrap to a small or negative number and slip past it.
 	total, err := checkRepeat(len(elems), n, maxElements)
 	if err != nil {
@@ -1423,8 +1391,7 @@ func repeatString(ec evalCtx, l, r Value) (Value, error) {
 		return String(""), nil
 	}
 	// See repeatList's comment: checkRepeat's division-first bound is what
-	// makes this multiplication-free of the overflow that let the previous,
-	// multiply-then-check version through.
+	// keeps this multiplication from overflowing.
 	total, err := checkRepeat(len(s), n, maxStringBytes)
 	if err != nil {
 		return Value{}, err

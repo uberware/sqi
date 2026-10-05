@@ -23,15 +23,8 @@ func TestMergeFuncs_CombinesGroups(t *testing.T) {
 // stopped being passed to mergeFuncs in funcs.go — fails here rather than
 // only in whichever per-group test happens to exercise that one name.
 //
-// Renamed from TestFunctionShapes_RegistersC1sTwentyTwoNames when C2 began
-// adding to the table; the count belongs in the list below, not in the name.
-// C1 registered 22 names; C2's string library brought the total to 53; C3's
-// regular-expression group brought it to 59, its shell-quoting group brought
-// it to 62, and its serialization group brought it to 64; C4's path
-// constructor and predicates bring it to 67, its six path properties bring
-// it to 73, its with-functions and relative-to bring it to 78, and
-// with_number brings it to 79; sub-project D's apply_path_mapping brings it to
-// 80 — the whole registry, and with it the whole RFC 0006 function library.
+// The count belongs in the list below, not in the name. The 80 names are the
+// whole registry, and with it the whole RFC 0006 function library.
 func TestFunctionShapes_RegistersEveryShippedName(t *testing.T) {
 	want := []string{
 		// funcsconv.go: general conversions, plus fail (validation).
@@ -66,7 +59,7 @@ func TestFunctionShapes_RegistersEveryShippedName(t *testing.T) {
 		"with_name", "with_stem", "with_suffix", "is_relative_to", "relative_to",
 		// funcspath.go / pathnumber.go: frame-number substitution.
 		"with_number",
-		// pathmapping.go: session path mapping (sub-project D).
+		// pathmapping.go: session path mapping.
 		"apply_path_mapping",
 	}
 	if len(functionShapes) != len(want) {

@@ -2,7 +2,7 @@
 
 package openjd_test
 
-// Tests for statemachine.go — item 7 of the test roadmap.
+// Tests for statemachine.go.
 //
 // Covers all legal and illegal task/step transitions via table-driven tests.
 
@@ -85,23 +85,23 @@ func TestValidateStepTransition_UnknownStatus(t *testing.T) {
 	}
 }
 
-// TestStepOperations_FromStatesAreLegal pins decision D4 for steps: each
-// named store operation's guarded from-states are legal in the table.
+// TestStepOperations_FromStatesAreLegal pins, for steps, that each named store
+// operation's guarded from-states are legal in the table.
 //
 // FinalizeStep's SQL guard is "status NOT IN (terminal)", which also admits
 // pending, and a pending step can be finalized. Canceling each of its pending
 // tasks one at a time leaves it pending with only terminal tasks; CancelTask
-// drives step completion (H4a2 §3.1), with the startup reconcile as its
-// backstop, and finalizes it pending → canceled: a legal arrow, listed below
-// as its own entry.
+// drives step completion, with the startup reconcile as its backstop, and
+// finalizes it pending → canceled: a legal arrow, listed below as its own
+// entry.
 // pending → failed is reachable too, but only through a window: a single-task
 // retry whose dependency resolution never ran (the server stopped, or the store
 // failed, after RetryTasks committed) leaves the step pending beside a sibling
 // that is still failed, and canceling the revived task then makes it
 // finalizable as failed. The table has no pending → failed arrow, so it is not
-// listed. H4a2 §3.5 closes the server-stop case (the startup reconcile releases
-// or cascade-cancels such a step before anything can finalize it); a store
-// failure with the server still up stays open (H4a2 design §10).
+// listed. The startup reconcile closes the server-stop case (it releases or
+// cascade-cancels such a step before anything can finalize it); a store
+// failure with the server still up leaves the window open.
 // pending → completed cannot happen: a pending step's tasks are never leased,
 // so none succeeds while it is pending.
 // Update this table in the same change as any guard.
@@ -128,8 +128,8 @@ func TestStepOperations_FromStatesAreLegal(t *testing.T) {
 		// A pending step whose tasks were all canceled one at a time (see above).
 		{"FinalizeStep", []store.StepStatus{store.StepStatusPending}, []store.StepStatus{store.StepStatusCanceled}},
 		{"RetryTasks", []store.StepStatus{store.StepStatusFailed, store.StepStatusCanceled}, []store.StepStatus{store.StepStatusPending}},
-		// H4a2 §3.2: a job cancel cancels a pending step outright and gives any
-		// other open step FinalizeStep's outcome.
+		// A job cancel cancels a pending step outright and gives any other open
+		// step FinalizeStep's outcome.
 		{"CancelJobExecution", []store.StepStatus{store.StepStatusPending}, []store.StepStatus{store.StepStatusCanceled}},
 		{
 			"CancelJobExecution",

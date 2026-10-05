@@ -458,14 +458,14 @@ func TestValidate_HugeRange_NoOOM(t *testing.T) {
 	}
 }
 
-// ─── E4c Task 1: the parameter-space caps must gate the expression walk ──────
+// ─── the parameter-space caps must gate the expression walk ─────────────────
 //
 // The expression walk (checkTemplateExpressions) is the more expensive of the
 // two walks the checker runs over a step's parameter space -- validated
 // directly: one step at exactly maxTaskParameterDefinitions x
-// 1024 entries of `{{ ("x" * 900000).upper() }}` cost ~97s of
-// CPU in this walk alone before this task, unbounded by anything but the 4
-// MiB request body. These tests assert the PROPERTY the fix establishes --
+// 1024 entries of `{{ ("x" * 900000).upper() }}` costs ~97s of
+// CPU in this walk alone without the gate, unbounded by anything but the 4
+// MiB request body. These tests assert the PROPERTY the gate establishes --
 // the cap error is present and a walk-only error is absent -- rather than a
 // wall-clock threshold, which flakes on shared CI.
 
@@ -591,10 +591,9 @@ func TestValidate_OverCapParameterSpace_SkipsExpressionWalk(t *testing.T) {
 
 	t.Run("over the definition-count cap, EnforceLimits=false", func(t *testing.T) {
 		// The submit pipeline runs with EnforceLimits: false. The cap
-		// ValidationError itself stays gated off (unchanged from before this
-		// task), but the walk must STILL be skipped -- gating the walk on
-		// EnforceLimits would leave exactly the pipeline that matters
-		// unprotected, which is the entire point of this task.
+		// ValidationError itself stays gated off, but the walk must STILL be
+		// skipped -- gating the walk on EnforceLimits would leave exactly the
+		// pipeline that matters unprotected.
 		tmpl := mustParse(t, exprEnabledYAML())
 		tmpl.Steps[0].ParameterSpace = &openjd.StepParameterSpace{
 			TaskParameterDefinitions: makeStringTaskParams(17, 16),

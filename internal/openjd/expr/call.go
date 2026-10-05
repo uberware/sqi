@@ -55,7 +55,7 @@ func evalCall(n *Call, ec evalCtx, depth int) (Value, error) {
 	// []Value{...} literals -- IS the caller's own backing array all the way
 	// down through callFunction. Capture the exact values evalNode allocated
 	// BEFORE that mutation can happen, so the release below always targets
-	// what was actually added to the live total (Task 1's carried finding).
+	// what was actually added to the live total.
 	orig := append([]Value(nil), args...)
 	out, err := callFunction(ec, name, args, methodStyle)
 	if err != nil {

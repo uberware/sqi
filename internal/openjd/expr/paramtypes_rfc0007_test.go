@@ -4,17 +4,15 @@ package expr
 
 import "testing"
 
-// TestValueFromText_ResolvesTheF1Types is the guard on the hand-off EXPR
-// sub-project E4a left in ValueFromText's own doc comment: "BOOL and LIST[*]
-// are sub-project F's job/task-parameter types and a template cannot declare
-// one yet... F MUST add its cases here when that lands, or its own parameters
-// will silently never resolve past a placeholder in phase 3."
+// TestValueFromText_ResolvesTheRFC0007Types pins that ValueFromText has a case for
+// each of RFC 0007's BOOL and LIST[*] parameter types; without one, a
+// parameter of that type never resolves past a placeholder in phase 3.
 //
 // It asserts CONCRETENESS rather than correctness, because that is where the
 // hazard is: an unhandled type falls to the default branch and returns
 // Unresolved(t), which is a LEGITIMATE phase-1 result. Nothing errors, nothing
-// logs, and every expression referencing the parameter simply never resolves.
-func TestValueFromText_ResolvesTheF1Types(t *testing.T) {
+// logs, and every expression referencing the parameter never resolves.
+func TestValueFromText_ResolvesTheRFC0007Types(t *testing.T) {
 	tests := []struct {
 		name string
 		typ  Type
@@ -130,19 +128,15 @@ func TestValueFromText_BoolRejectsUnknownSpelling(t *testing.T) {
 	}
 }
 
-// TestJobParamTypes_F1Types pins the section 1.2.2 mapping for the types RFC
+// TestJobParamTypes_RFC0007Types pins the section 1.2.2 mapping for the types RFC
 // 0007 adds.
 //
-// It asserts existing behavior rather than driving new code: JobParamTypes
-// special-cases LIST[PATH] and otherwise falls through to
-// ParseType(strings.ToLower(declared)), which already understands these names
-// because sub-projects B1 and B2 built the types. Nothing needed writing here.
-//
-// It is worth a test anyway because a regression would be SILENT: an
-// unrecognized spelling floors to TAny, which type-checks against everything,
-// so the failure would surface as an expression that wrongly PASSES rather
-// than as an error.
-func TestJobParamTypes_F1Types(t *testing.T) {
+// JobParamTypes special-cases LIST[PATH] and otherwise falls through to
+// ParseType(strings.ToLower(declared)), which understands these names. A
+// regression would be SILENT: an unrecognized spelling floors to TAny, which
+// type-checks against everything, so the failure would surface as an
+// expression that wrongly PASSES rather than as an error.
+func TestJobParamTypes_RFC0007Types(t *testing.T) {
 	tests := []struct {
 		declared           string
 		wantParam, wantRaw Type

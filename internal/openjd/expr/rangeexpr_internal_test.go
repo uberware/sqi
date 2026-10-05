@@ -99,10 +99,6 @@ func TestRangeExpr_ConstructAndExpand(t *testing.T) {
 // TestRangeExpr_SpecWorkedTable checks every row of the base specification's
 // own worked example table (2023-09 Template Schemas, section 3.4.1.1.1)
 // directly, rather than relying only on cases this package's own author chose.
-// This package has no differential-oracle coverage — nothing in the language
-// constructs a range_expr until a later sub-project adds the range_expr()
-// function — so this table is the only external check on rangeInts's
-// ordering and de-duplication.
 //
 // The table's last row, "1-10:4,10-15" -> "Error: ranges overlap", is
 // deliberately NOT reproduced here: that constraint belongs to
@@ -111,7 +107,7 @@ func TestRangeExpr_ConstructAndExpand(t *testing.T) {
 // intRangeHasOverlap), not to the EXPR language's range_expr type. The EXPR
 // spec (2026-02 Expression-Language.md) defines range_expr(s: string) and
 // list(value: range_expr) with no overlap restriction, so overlapping
-// sub-ranges are legal here and simply de-duplicate — which is exactly what
+// sub-ranges are legal here and de-duplicate — which is exactly what
 // TestRangeExpr_ConstructAndExpand's "1-5,3-7" case above already confirms.
 func TestRangeExpr_SpecWorkedTable(t *testing.T) {
 	tests := []struct {
@@ -208,26 +204,25 @@ func TestCanonicalRange(t *testing.T) {
 
 // TestRangeExprCount_AgreesWithExpansion pins rangeExprCount against the
 // actual expansion (len(rangeInts(v))) for every case, not against
-// hand-written numbers: a table of expected COUNTS could accidentally repeat
-// the same overcounting mistake rangeExprCount itself once made (summing
-// Count() across every sub-range unconditionally, which double-counts
-// overlap). Comparing against rangeInts's own de-duplicated, sorted
+// hand-written numbers: a table of expected COUNTS could repeat an
+// overcounting mistake such as summing Count() across every sub-range
+// unconditionally, which double-counts overlap. Comparing against rangeInts's
+// own de-duplicated, sorted
 // expansion — already pinned elsewhere in this file against the base
 // specification's worked table — is the stronger check, because the two
 // helpers would have to be wrong in exactly the same way to agree by
 // accident.
 //
-// "1-5,3-7" and "10-15:2,1-5" are the two cases from the review finding:
-// TestRangeExpr_ConstructAndExpand and TestRangeExpr_SpecWorkedTable already
-// pin their expansions at 7 and 8 values respectively, which is what makes
-// the naive sum (10 and 13) visibly wrong.
+// For "1-5,3-7" and "10-15:2,1-5", TestRangeExpr_ConstructAndExpand and
+// TestRangeExpr_SpecWorkedTable already pin the expansions at 7 and 8 values
+// respectively, which is what makes the naive sum (10 and 13) visibly wrong.
 func TestRangeExprCount_AgreesWithExpansion(t *testing.T) {
 	for _, text := range []string{
 		"1-5",           // single sub-range, ascending, unit step
 		"1-5:2",         // single sub-range, stepped
 		"7",             // single bare value
 		"10-1:-1",       // single sub-range, descending
-		"1-5,3-7",       // two OVERLAPPING sub-ranges — the review finding's case
+		"1-5,3-7",       // two OVERLAPPING sub-ranges
 		"10-15:2,1-5",   // two sub-ranges, out of order and non-overlapping
 		"1,5,10",        // three bare values, no overlap
 		"1-5,1-5",       // two IDENTICAL sub-ranges — total overlap
@@ -263,13 +258,11 @@ func TestRangeExprCount_AgreesWithExpansion(t *testing.T) {
 // rejects the identical text via the bound check rather than by finishing an
 // expansion — that is unchanged, because rangeInts DOES materialize.
 //
-// rangeExprCount must NOT reject it, and that is Task 12's correction to this
-// test, not a new behavior invented here: this same function's own doc
-// comment already named "len(range_expr('1-20000000'))" as the motivating
-// case for answering arithmetically, but a prior revision ran EVERY
-// sub-range's Count() through checkElementCount before ever branching on
-// len(ranges) == 1, so the single-range path was bound-checked exactly like
-// the materializing multi-range path it was meant to be exempt from. That
+// rangeExprCount must NOT reject it: its own doc comment names
+// "len(range_expr('1-20000000'))" as the motivating case for answering
+// arithmetically. Running every sub-range's Count() through checkElementCount
+// before branching on len(ranges) == 1 would bound-check the single-range
+// path exactly like the materializing multi-range path it is exempt from. That
 // bound guards MATERIALIZATION (maxElements' own doc comment: "how many
 // elements one operation may materialize") — irrelevant here, since
 // intrange.Range.Count() answers arithmetically and allocates nothing however

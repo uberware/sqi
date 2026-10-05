@@ -60,8 +60,8 @@ func TestCheckStringBytes(t *testing.T) {
 	}
 }
 
-// TestCheckRepeat_OverflowSafe pins the class of bug a Critical review found
-// in repeatList/repeatString: computing unitSize*n and checking the PRODUCT,
+// TestCheckRepeat_OverflowSafe pins checkRepeat against an overflow class of
+// bug in repeatList/repeatString: computing unitSize*n and checking the PRODUCT,
 // rather than checking the OPERANDS first, lets a large enough unitSize and n
 // overflow int64 and wrap — sometimes to a negative number (an allocation
 // would then panic), sometimes to a small positive number (the bound would
@@ -113,19 +113,19 @@ func TestCheckRepeat_OverflowSafe(t *testing.T) {
 	}
 }
 
-// TestParse_RejectsAnOversizedSourceBeforeItCosts is the regression test for
-// the parse-time denial of service maxSourceBytes exists to close: every other
-// bound in this package and its callers lives DOWNSTREAM of Parse, so before
-// this limit a single expression could allocate hundreds of megabytes with no
-// budget of any kind consulted.
+// TestParse_RejectsAnOversizedSourceBeforeItCosts pins the parse-time denial
+// of service maxSourceBytes exists to close: every other bound in this package
+// and its callers lives DOWNSTREAM of Parse, so without this limit a single
+// expression could allocate hundreds of megabytes with no budget of any kind
+// consulted.
 //
 // The construction is the exact shape that defeats maxParseDepth — a flat,
 // left-associative chain, which parseBinaryLevel reads in a LOOP and so costs
-// no recursion at all. Measured on the machine this was written on with the
-// bound removed: 4,000,001 bytes of "1+1+1+…" parsed SUCCESSFULLY in 544 ms,
-// holding 427.6 MB of live heap and churning 1,403.3 MB in total.
+// no recursion at all. Measured with the bound removed: 4,000,001 bytes of
+// "1+1+1+…" parsed SUCCESSFULLY in 544 ms, holding 427.6 MB of live heap and
+// churning 1,403.3 MB in total.
 //
-// THE ASSERTION ON ALLOCATION IS THE POINT, not the error. A regression that
+// The assertion on allocation matters here, not the error. A regression that
 // moved this check after tokenize, or dropped it and let some later bound
 // report a different failure, would still return an error here — it would just
 // spend a gigabyte first. Allocation is asserted rather than elapsed time

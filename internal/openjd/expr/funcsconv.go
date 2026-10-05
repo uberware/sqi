@@ -13,25 +13,21 @@ import (
 )
 
 // convFuncs is RFC 0006's general-function group: the conversions between
-// scalar types, plus len. fail (this same file, its own RFC 0006 category
-// despite living beside the conversions here) rounds out sub-project C1's
-// share of the table. A later sub-project never edits this table — C2, C3 and
-// C4 add their own groups in their own files (funcsstrcase.go,
-// funcsstrfind.go, funcsstrsplit.go, funcsstrpad.go, funcsre.go,
-// funcsrepr.go, funcspath.go) and their own entry in funcs.go's mergeFuncs
-// call.
+// scalar types, plus len. fail, its own RFC 0006 category, also lives here.
+// Every other group is its own table in its own file, merged by funcs.go's
+// mergeFuncs.
 var convFuncs = map[string][]Shape{
 	// Section 1.3.10 rule 3 names len() BY NAME as its one explicit exemption:
 	// "Simple lookups like len() that do not process the string content do not
-	// add to the count." All four rows below therefore carry the zero Cost —
-	// not an omission, THE load-bearing case for "zero Cost is a decision" in
-	// this whole sub-project. Confirmed against the reference: len("abc") is 1
-	// (rule 1 only) and len(range_expr("1-100")) is 2 (one call for
-	// range_expr(), one for len() — len itself adds nothing). The range_expr
-	// row below reuses rangeExprCount rather than rangeInts precisely so that
-	// this exemption is not merely a declared charge while the real Fn secretly
-	// materializes the whole expansion underneath it — see Task 12 (the range_expr
-	// row's own comment, and rangeexpr.go). Pinned in cost_list_internal_test.go.
+	// add to the count." All four rows below therefore carry the zero Cost, as
+	// a decision rather than an omission. Confirmed against the reference:
+	// len("abc") is 1 (rule 1 only) and len(range_expr("1-100")) is 2 (one call
+	// for range_expr(), one for len() — len itself adds nothing). The
+	// range_expr row below reuses rangeExprCount rather than rangeInts
+	// precisely so that this exemption is not merely a declared charge while
+	// the real Fn secretly materializes the whole expansion underneath it — see
+	// the range_expr row's own comment, and rangeexpr.go. Pinned in
+	// cost_list_internal_test.go.
 	"len": {
 		{Params: []Type{ListOf(varT)}, Ret: TInt, Fn: func(args []Value) (Value, error) {
 			return Int(int64(len(args[0].AsList()))), nil
@@ -48,21 +44,21 @@ var convFuncs = map[string][]Shape{
 		// count, not the text length, so len(range_expr("1-10")) is 10.
 		// Computed ARITHMETICALLY -- rangeExprCount answers this without
 		// materializing anything for the common single-sub-range case, and
-		// expanding to count refused a legitimate query:
-		// len(range_expr('1-20000000')) failed the element bound for a number
-		// rangeExprCount produces in constant time.
+		// expanding to count would refuse a legitimate query:
+		// len(range_expr('1-20000000')) would fail the element bound for a
+		// number rangeExprCount produces in constant time.
 		//
 		// TWO OR MORE sub-ranges are the case rangeExprCount CANNOT answer
-		// arithmetically, and len() is where that hurt most, because rule 3
+		// arithmetically, and len() is where that costs most, because rule 3
 		// exempts len() from charging at all:
-		// len(range_expr("1-5000000,6000000-9000000")) answered after 645 ms
-		// and 687 MB while charging TWO operations, so no budget in the
-		// package could see it. FnCtx and reserveRangeExprExpansion
+		// len(range_expr("1-5000000,6000000-9000000")) would answer after
+		// 645 ms and 687 MB while charging TWO operations, so no budget in
+		// the package could see it. FnCtx and reserveRangeExprExpansion
 		// (rangeexpr.go) put an arithmetic refusal in front of that
 		// expansion. It reserves without charging, so len()'s exemption --
-		// and every operation count the oracle compares -- is untouched;
-		// what changes is only that len() can no longer spend an
-		// evaluation's whole budget's worth of work while billing none of it.
+		// and every operation count the oracle compares -- is untouched, but
+		// len() cannot spend an evaluation's whole budget's worth of work
+		// while billing none of it.
 		{Params: []Type{TRangeExpr}, Ret: TInt, FnCtx: func(ec evalCtx, args []Value) (Value, error) {
 			if err := reserveRangeExprCount(ec, args[0]); err != nil {
 				return Value{}, err
@@ -112,15 +108,15 @@ var convFuncs = map[string][]Shape{
 			return Value{}, errors.New("Cannot convert list to bool")
 		}},
 	},
-	// RFC 0006 writes int and float with UNION parameters, and that is
-	// load-bearing rather than cosmetic. matchShapesExactFirst refuses a
-	// conversion that can fail when SELECTING an overload — the rule that stops
-	// "1 + 2.5" matching (int, int) by discarding the .5 — so a narrow
-	// int(value: int) row would report int(3.75) as "no signature accepts
-	// (float)" instead of the non-destructive-conversion error RFC 0006 wants.
-	// A union parameter is matched member-wise at no cost, passes the value
-	// through unconverted (coerce's directUnionMember), and leaves the real
-	// conversion to Fn, where its failure is the diagnostic.
+	// RFC 0006 writes int and float with UNION parameters, and so does this
+	// table. matchShapesExactFirst refuses a conversion that can fail when
+	// SELECTING an overload — the rule that stops "1 + 2.5" matching (int, int)
+	// by discarding the .5 — so a narrow int(value: int) row would report
+	// int(3.75) as "no signature accepts (float)" instead of the
+	// non-destructive-conversion error RFC 0006 wants. A union parameter is
+	// matched member-wise at no cost, passes the value through unconverted
+	// (coerce's satisfaction step), and leaves the real conversion to Fn, where
+	// its failure is the diagnostic.
 	//
 	// int() and float() carry no Cost. Neither is named by rule 2 (there is no
 	// list here) or rule 3, and — unlike the string-processing functions rule
@@ -161,7 +157,7 @@ var convFuncs = map[string][]Shape{
 		// to its length beyond formatting a fixed-size number or copying a
 		// string's bytes once. Discriminating probe: string("a"*1000) isolates
 		// to exactly 1 operation once the 1000-byte literal's own repetition
-		// charge (already declared, Task 5) is subtracted — the same flat 1 as
+		// charge (already declared) is subtracted — the same flat 1 as
 		// string("a"). string(path(...)) and string(range_expr(...)) isolate
 		// the same way.
 		{
@@ -176,26 +172,17 @@ var convFuncs = map[string][]Shape{
 			},
 		},
 		// RFC 0006 calls this "the JSON string representation". This row and
-		// Value.String() are two renderings for two purposes, but they now
+		// Value.String() are two renderings for two purposes, but they
 		// share ONE quoting rule: both send a list's string-like elements
 		// through jsonQuoteElement (encoding/json with SetEscapeHTML(false)).
 		//
-		// HISTORY, because two earlier revisions of this comment were each
-		// true when written and false later. (1) The oldest said
-		// Value.String() "renders a list's string elements unquoted" as a
-		// diagnostic form -- sub-project E1 closed that. (2) Its replacement
-		// said the two were INDEPENDENT implementations that agreed on the
-		// thirteen cases measured (TestValueString_VersusStringFunction) and
-		// provably diverged outside them -- on the C0 controls, vertical tab,
-		// DEL and invalid UTF-8 -- and warned against widening the claim.
-		// That was correct until openjd-specifications#176, which states that
+		// They share it because openjd-specifications#176 states that
 		// format-string interpolation "uses this same conversion" and that
 		// the result "must parse as JSON": Go's \x00 and \v forms are not
-		// JSON, so the divergence became a defect and the two renderers were
-		// merged onto one quoter. The agreement is now universal BY
-		// CONSTRUCTION rather than by measurement, and
-		// TestValueString_ListQuotingIsJSONEverywhere pins the six cases that
-		// used to diverge. What still differs is the SEPARATOR in
+		// JSON. The agreement holds BY CONSTRUCTION, and
+		// TestValueString_ListQuotingIsJSONEverywhere pins the six cases
+		// (C0 controls, vertical tab, DEL, invalid UTF-8) where two quoting
+		// rules would differ. What still differs is the SEPARATOR in
 		// internal/openjd's canonical storage form ("," there, ", " here) --
 		// see paramjson.go.
 		//
@@ -204,8 +191,8 @@ var convFuncs = map[string][]Shape{
 		// list, never scaling. Rule 2's operative sentence is "When a function
 		// or the evaluator iterates through every element of a list, the
 		// number of elements is added" — the named function list after it is
-		// introduced with "such as", not "only", and writeJSONValue provably
-		// walks every element of args[0] to build the JSON text. The general
+		// introduced with "such as", not "only", and writeJSONValue walks
+		// every element of args[0] to build the JSON text. The general
 		// rule's text is satisfied regardless of the enumeration, so per
 		// doc.go's standing ruling that the specification outranks the
 		// reference's own (Beta, known-defective) counting, this row charges.
@@ -229,16 +216,16 @@ var convFuncs = map[string][]Shape{
 	//
 	// FnCtx, not Fn, and the expansion is RESERVED before rangeExprValues
 	// performs it: the ResultElements charge lands after the list exists,
-	// which priced list(range_expr("1-10000000")) at 10,000,002 operations
-	// against a 10,000 limit only after allocating 1.6 GB (132 ms measured).
+	// which would price list(range_expr("1-10000000")) at 10,000,002
+	// operations against a 10,000 limit only after allocating 1.6 GB (132 ms
+	// measured).
 	//
-	// reserveRangeExprExpansion, NOT rangeExprCount. The first revision of
-	// this reservation used rangeExprCount, which for two or more sub-ranges
-	// expands to produce its answer -- so the reservation itself did the work
-	// it existed to avert (687 MB before refusing
+	// reserveRangeExprExpansion, NOT rangeExprCount: rangeExprCount expands
+	// two or more sub-ranges to produce its answer, so the reservation itself
+	// would do the work it exists to avert (687 MB before refusing
 	// "1-5000000,6000000-9000000"), and on the success path rangeExprValues
-	// then expanded a SECOND time (+73 MB and +38 ms per call, invisible to
-	// every operation count). The reservation is now arithmetic; the exact
+	// would expand a SECOND time (+73 MB and +38 ms per call, invisible to
+	// every operation count). The reservation is arithmetic; the exact
 	// charge still comes from Cost{ResultElements} on the list actually
 	// produced.
 	"list": {
@@ -267,10 +254,7 @@ var convFuncs = map[string][]Shape{
 		// argument's length — a different question from the string row's
 		// (already-compact range text). Confirmed scaling against the
 		// reference: range_expr([1,2,3]) measures 4 (1 call + 3 elements) and
-		// the 10-element form measures 11 (1 call + 10) — not in the brief's
-		// own "rows that must charge" list, found by probing this row anyway
-		// per the task's instruction to probe every row rather than trust the
-		// brief's starting list.
+		// the 10-element form measures 11 (1 call + 10).
 		{Params: []Type{ListOf(TInt)}, Ret: TRangeExpr, Cost: Cost{ArgElements: []int{0}}, Fn: func(args []Value) (Value, error) {
 			elems := args[0].AsList()
 			if len(elems) == 0 {
@@ -281,20 +265,18 @@ var convFuncs = map[string][]Shape{
 				ints[i] = e.AsInt()
 			}
 			// canonicalRange assumes its input is already sorted and
-			// de-duplicated — B2 always fed it that way from an expanded
-			// range, and this is the first caller that cannot assume it of
-			// its own input.
+			// de-duplicated, as an expanded range always is; this caller's
+			// input is not.
 			slices.Sort(ints)
 			ints = slices.Compact(ints)
 			return RangeExpr(canonicalRange(ints))
 		}},
 	},
-	// fail() needs no special handling anywhere else, and that is worth
-	// knowing rather than rediscovering. With a resolved argument it errors
-	// here; with an unresolved one callFunction returns a placeholder before Fn
-	// runs, because nothing has actually failed while the value is unknown. Its
-	// noreturn return type then collapses out of any union it lands in
-	// (collectUnionMembers, type.go), which is what makes
+	// fail() needs no special handling anywhere else. With a resolved argument
+	// it errors here; with an unresolved one callFunction returns a placeholder
+	// before Fn runs, because nothing has actually failed while the value is
+	// unknown. Its noreturn return type then collapses out of any union it
+	// lands in (collectUnionMembers, type.go), which is what makes
 	// "x if c else fail(...)" typed x rather than x?.
 	//
 	// No Cost: fail() takes a message string but does no work proportional to

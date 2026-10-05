@@ -4,7 +4,7 @@ package expr
 
 import "strings"
 
-// reprShellFuncs is sub-project C3's SHELL quoting group: repr_sh, repr_cmd
+// reprShellFuncs is the repr_* SHELL quoting group: repr_sh, repr_cmd
 // and repr_pwsh.
 //
 // It is separated from repr_py and repr_json (funcsreprdata.go) on purpose.
@@ -13,21 +13,21 @@ import "strings"
 // serialization functions next door produce data, where the same class of bug
 // is merely malformed output.
 //
-// COST (sub-project E1, Task 8): section 1.3.10 rule 2 names all FIVE repr_*
-// functions by name ("repr_sh(), repr_py(), repr_json(), repr_pwsh(),
-// repr_cmd()"), and rule 3 additionally names repr_sh() by name. Every
-// STRING/PATH row here declares Cost{ArgBytes: []int{0}}, confirmed scaling
-// against the reference at 10/300/600-byte inputs (2/3/4 operations). Every
-// LIST row declares Cost{ArgElements: []int{0}} — confirmed for repr_sh
-// against the reference (5 and 20-element literal lists measure 1+N), which is
-// the DIVERGENCE case for the other three: the reference's own count for
-// repr_cmd's and repr_pwsh's list rows stays flat at 1 regardless of element
-// count (5 or 20), omitting rule 2's own charge for the very functions rule 2
-// names by name — see cost_misc_internal_test.go's PROBE comment and
+// COST: section 1.3.10 rule 2 names all FIVE repr_* functions by name
+// ("repr_sh(), repr_py(), repr_json(), repr_pwsh(), repr_cmd()"), and rule 3
+// additionally names repr_sh() by name. Every STRING/PATH row here declares
+// Cost{ArgBytes: []int{0}}, confirmed scaling against the reference at
+// 10/300/600-byte inputs (2/3/4 operations). Every LIST row declares
+// Cost{ArgElements: []int{0}} — confirmed for repr_sh against the reference (5
+// and 20-element literal lists measure 1+N), which is the DIVERGENCE case for
+// the other three: the reference's own count for repr_cmd's and repr_pwsh's
+// list rows stays flat at 1 regardless of element count (5 or 20), omitting
+// rule 2's own charge for the very functions rule 2 names by name — see
+// cost_misc_internal_test.go's PROBE comment and
 // TestOperationCount_ReprFunctionsListChargesElementsDespiteReferenceOmission.
-// Per the standing rule (the specification outranks the reference, and Tasks
-// 5-7 each landed an analogous correction), sqi charges ArgElements on all
-// five repr_* functions' list rows, not just repr_sh's.
+// Per the standing rule that the specification outranks the reference, sqi
+// charges ArgElements on all five repr_* functions' list rows, not just
+// repr_sh's.
 var reprShellFuncs = map[string][]Shape{
 	"repr_sh": {
 		{Params: []Type{TString}, Ret: TString, Cost: Cost{ArgBytes: []int{0}}, Fn: func(args []Value) (Value, error) {
@@ -146,13 +146,13 @@ func pwshQuote(s string) string {
 
 // pwshElement renders one member of a PowerShell array literal.
 //
-// CodeList gets its OWN case rather than falling to the default: without it,
-// a nested list renders as sqi's own "[a, b]" text quoted as a single
-// PowerShell STRING — repr_pwsh([['a'],['b']]) used to give
-// "@('[a]', '[b]')" — a nested list of TEXT, not a nested array, and not
-// runnable PowerShell for anything that expects array elements. Recursing
-// through pwshElement instead builds a nested "@(...)" literal, matching how
-// the top-level ListOf(varT) row itself is built.
+// CodeList gets its OWN case rather than falling to the default: without it, a
+// nested list renders as sqi's own "[a, b]" text quoted as a single PowerShell
+// STRING — repr_pwsh([['a'],['b']]) would give "@('[a]', '[b]')" — a nested
+// list of TEXT, not a nested array, and not runnable PowerShell for anything
+// that expects array elements. Recursing through pwshElement instead builds a
+// nested "@(...)" literal, matching how the top-level ListOf(varT) row itself
+// is built.
 //
 // A nested list also picks up its own unary comma when it needs one, since
 // the decision is per-list; see pwshUnaryComma.
@@ -189,9 +189,9 @@ func pwshElement(v Value) string {
 // comma because two elements already force an array, and a one-element list
 // of SCALARS must not get one -- "@('a')" is unambiguous already.
 //
-// This is a spec rule sqi missed until openjd-specifications#176 stated it
-// outright; the reference implementation refuses lists nested more than two
-// deep, so it cannot answer the recursive case at all.
+// openjd-specifications#176 states this rule outright; the reference
+// implementation refuses lists nested more than two deep, so it cannot answer
+// the recursive case at all.
 func pwshUnaryComma(elems []Value) string {
 	if len(elems) == 1 && elems[0].Type.Code == CodeList {
 		return ","

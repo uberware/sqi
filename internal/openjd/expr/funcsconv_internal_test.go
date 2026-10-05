@@ -76,8 +76,8 @@ func TestLen_Rejects(t *testing.T) {
 // literal is a legal METHOD receiver.
 //
 // Binding an unbound type variable to nulltype converts nothing, so there is no
-// implicit coercion for the receiver restriction to suppress. Before this was
-// ruled, "[].len()" failed while "len([])" succeeded — the same call in two
+// implicit coercion for the receiver restriction to suppress. Otherwise
+// "[].len()" would fail while "len([])" succeeds — the same call in two
 // syntaxes disagreeing. The reference implementation returns 0 for both.
 func TestLen_EmptyListReceiver(t *testing.T) {
 	for _, src := range []string{"[].len()", "len([])"} {
@@ -199,7 +199,7 @@ func TestIntAndFloat(t *testing.T) {
 	}
 }
 
-// TestIntAndFloat_Reject covers the fixtures TestConformance_C1ProtectedFixtures
+// TestIntAndFloat_Reject covers the fixtures TestConformance_ConversionAndMathFixtures
 // guards: RFC 0006 requires a destructive conversion to be an error, and the
 // language produces no infinity and no NaN (section 1.3.4).
 func TestIntAndFloat_Reject(t *testing.T) {
@@ -447,8 +447,8 @@ func TestFail(t *testing.T) {
 	})
 }
 
-// TestStringList_DoesNotHTMLEscape pins a defect found while planning
-// sub-project C3.
+// TestStringList_DoesNotHTMLEscape pins that string(list) leaves "<", ">" and
+// "&" literal.
 //
 // Go's json.Marshal escapes "<", ">" and "&" as < and friends, because its
 // default output is intended to be safe to embed in HTML. Nothing else in this

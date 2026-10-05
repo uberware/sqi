@@ -46,9 +46,9 @@ steps:
 // evaluation happens, so recordDeadline never sees it and cannot swallow it: if
 // checkLetBindings continued past the deadline instead of returning, bindings 1
 // and 2 would each report at /steps/0/let/N. With three heavy-but-valid
-// bindings -- the shape this fixture had before -- every later binding would
-// trip the deadline again, be swallowed, and report nothing, so the assertion
-// held either way and proved nothing.
+// bindings, every later binding would trip the deadline again, be swallowed,
+// and report nothing, so the assertion would hold either way and prove
+// nothing.
 const exprDeadlineLetTemplate = `
 specificationVersion: jobtemplate-2023-09
 extensions:
@@ -74,10 +74,9 @@ steps:
 //
 // The SECOND reference is a syntax error for the same reason the let fixture's
 // later bindings are: a parse failure is appended before any evaluation, so it
-// is the one thing a swallowed deadline cannot hide. With a single reference --
-// the shape this fixture had before -- checkFormatString's "return errs" and a
-// "continue" were indistinguishable, because there was no later segment to keep
-// going to.
+// is the one thing a swallowed deadline cannot hide. With a single reference,
+// checkFormatString's "return errs" and a "continue" would be
+// indistinguishable, because there would be no later segment to keep going to.
 const exprDeadlineSegmentTemplate = `
 specificationVersion: jobtemplate-2023-09
 extensions:
@@ -182,8 +181,8 @@ steps:
 `
 
 // TestValidateWithBudget_DeadlineIsNotAValidationError is the central contract
-// of sub-project H1: a wall-clock stop is the SERVER giving up, not a verdict
-// that the template is invalid.
+// of the wall-clock submission deadline: a wall-clock stop is the SERVER giving
+// up, not a verdict that the template is invalid.
 //
 // A budget error is a ValidationError and becomes a 422. A deadline must not
 // be, because the same body would validate on an idle machine — encoding it as
@@ -268,12 +267,12 @@ func TestValidateWithBudget_DeadlineInEmbeddedSegmentIsNotAValidationError(t *te
 // out. So the block must yield the deadline through the budget and produce no
 // per-binding validation errors at all.
 //
-// The "no /steps/0/let error" assertion below is only load-bearing because of
+// The "no /steps/0/let error" assertion below only proves anything because of
 // how exprDeadlineLetTemplate is built -- bindings 1 and 2 fail to PARSE, which
 // is reported before any evaluation and so cannot be swallowed by
 // recordDeadline. Read that fixture's comment before changing it: with heavy but
 // valid later bindings this assertion holds whether checkLetBindings returns or
-// continues, and the test silently stops testing its own name.
+// continues, and the test stops testing its own name.
 func TestValidateWithBudget_DeadlineInLetBindingsStopsTheBlock(t *testing.T) {
 	tmpl, err := Parse([]byte(exprDeadlineLetTemplate), FormatYAML)
 	if err != nil {
@@ -331,18 +330,14 @@ steps:
 	}
 }
 
-// TestValidateWithOptions_UnchangedByBudget pins that the existing entry point
-// keeps behaving exactly as before, since every caller but the submission path
-// still uses it.
+// TestValidateWithOptions_UnchangedByBudget pins that the deadline-free entry
+// point is unaffected by the deadline plumbing, since every caller but the
+// submission path uses it.
 //
-// THE ASSERTION GOT SHARPER AT SUB-PROJECT H2. While EXPR was
-// StatusInProgress this fixture was rejected by the extension status gate, so
-// all the test could say was "some error came back, not a panic or a hang" --
-// a bar the status-gate error cleared on its own, whether or not the walk ran.
-// EXPR is StatusSupported now, so the ONLY thing that can reject this fixture
-// is the walk itself, and the error it must produce is nameable: the fixture
-// is 100,000 comprehension iterations against a 10,000-operation budget, so
-// the verdict is the DETERMINISTIC operation limit and specifically not the
+// EXPR is StatusSupported, so the ONLY thing that can reject this fixture is
+// the walk itself, and the error it must produce is nameable: the fixture is
+// 100,000 comprehension iterations against a 10,000-operation budget, so the
+// verdict is the DETERMINISTIC operation limit and specifically not the
 // wall-clock backstop, which is what "unchanged by the budget plumbing" means
 // for a caller that sets no deadline.
 func TestValidateWithOptions_UnchangedByBudget(t *testing.T) {
@@ -350,7 +345,7 @@ func TestValidateWithOptions_UnchangedByBudget(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Parse: %v", err)
 	}
-	// No deadline set, so this must behave exactly as it did before H1.
+	// No deadline set, so only the deterministic limits apply.
 	errs := ValidateWithOptions(tmpl, ValidateOptions{EnforceLimits: true})
 	if len(errs) == 0 {
 		t.Fatal("the walk did not run: an over-budget EXPR template was accepted")
@@ -361,8 +356,8 @@ func TestValidateWithOptions_UnchangedByBudget(t *testing.T) {
 		}
 	}
 	if !containsMessageSubstring(errs, "operation limit exceeded") {
-		t.Errorf("errs = %v, want the deterministic operation-limit verdict: with the "+
-			"status gate gone, the walk is the only thing that can reject this fixture", errs)
+		t.Errorf("errs = %v, want the deterministic operation-limit verdict: the walk "+
+			"is the only thing that can reject this fixture", errs)
 	}
 }
 
@@ -525,7 +520,7 @@ func TestResolveParameterSpaceParams_DeadlineAtRangeListPosition(t *testing.T) {
 // The call matters. A bare literal such as "{{ [1, 2, 3] }}" performs no
 // meter.charge at all, so the first-charge clock sample never fires and the
 // position resolves successfully however long ago the deadline passed -- a
-// fixture built on one proves nothing while looking like it proves everything.
+// fixture built on one proves nothing.
 const exprDeadlineSubmitTemplate = `
 specificationVersion: jobtemplate-2023-09
 extensions:
@@ -540,20 +535,13 @@ steps:
         args: ["{{ len([1, 2, 3]) }}"]
 `
 
-// TestSubmit_DeadlineIsNotASubmitValidationError drives H1's contract through
-// the public [Submitter.Submit] API, which is the only place the whole chain is
-// observable: the configured instant reaching both phase-2 budgets, phase 1
-// calling [ValidateWithBudget] rather than [ValidateWithOptions], and the
-// breach coming back as a plain error rather than as the client-fault type.
+// TestSubmit_DeadlineIsNotASubmitValidationError drives the deadline contract
+// through the public [Submitter.Submit] API, which is the only place the whole
+// chain is observable: the configured instant reaching both phase-2 budgets,
+// phase 1 calling [ValidateWithBudget] rather than [ValidateWithOptions], and
+// the breach coming back as a plain error rather than as the client-fault type.
 //
-// It used to flip the EXPR registry entry to StatusSupported for the duration
-// of the test, because while EXPR was StatusInProgress validateExtensions
-// rejected every EXPR-declaring template before a single expression was
-// evaluated and no submission could reach the meter at all -- which is also why
-// H1's deadline was INERT in production. Sub-project H2 flipped that status for
-// real, so the test now drives the production path with no scaffolding.
-//
-// The message assertion is the load-bearing half. Both phase 1 and phase 2 walk
+// The message assertion is the decisive half. Both phase 1 and phase 2 walk
 // the same positions, so a deadline trips in whichever runs first: if phase 1
 // still called ValidateWithOptions -- discarding the channel the breach arrives
 // on -- the walk would stop SILENTLY, phase 1 would report success, and phase 2
@@ -563,11 +551,11 @@ steps:
 func TestSubmit_DeadlineIsNotASubmitValidationError(t *testing.T) {
 	ctx := t.Context()
 	st := fake.New()
-	farm, err := st.CreateFarm(ctx, store.Farm{ID: uuid.NewString(), Name: "h1-farm"})
+	farm, err := st.CreateFarm(ctx, store.Farm{ID: uuid.NewString(), Name: "deadline-farm"})
 	if err != nil {
 		t.Fatalf("CreateFarm: %v", err)
 	}
-	queue, err := st.CreateQueue(ctx, store.Queue{ID: uuid.NewString(), FarmID: farm.ID, Name: "h1-queue"})
+	queue, err := st.CreateQueue(ctx, store.Queue{ID: uuid.NewString(), FarmID: farm.ID, Name: "deadline-queue"})
 	if err != nil {
 		t.Fatalf("CreateQueue: %v", err)
 	}
@@ -600,15 +588,16 @@ func TestSubmit_DeadlineIsNotASubmitValidationError(t *testing.T) {
 
 // TestSubmit_NoDeadlineIsUnchanged pins the other direction at the same level:
 // with SubmitOptions.Deadline left zero -- every caller in this repo that is
-// not a submission handler -- the pipeline behaves exactly as it did before H1.
+// not a submission handler -- the pipeline has no wall-clock bound and submits
+// normally.
 func TestSubmit_NoDeadlineIsUnchanged(t *testing.T) {
 	ctx := t.Context()
 	st := fake.New()
-	farm, err := st.CreateFarm(ctx, store.Farm{ID: uuid.NewString(), Name: "h1-farm"})
+	farm, err := st.CreateFarm(ctx, store.Farm{ID: uuid.NewString(), Name: "deadline-farm"})
 	if err != nil {
 		t.Fatalf("CreateFarm: %v", err)
 	}
-	queue, err := st.CreateQueue(ctx, store.Queue{ID: uuid.NewString(), FarmID: farm.ID, Name: "h1-queue"})
+	queue, err := st.CreateQueue(ctx, store.Queue{ID: uuid.NewString(), FarmID: farm.ID, Name: "deadline-queue"})
 	if err != nil {
 		t.Fatalf("CreateQueue: %v", err)
 	}
@@ -661,14 +650,13 @@ steps:
 	}
 }
 
-// TestStepLetSymbols_NilBudget pins the nil contract H1 made non-uniform.
+// TestStepLetSymbols_NilBudget pins that stepLetSymbols accepts a nil budget.
 //
-// checkFormatString and checkLetBindings both document their new *templateBudget
-// first parameter as nil-able and handle it. stepLetSymbols took the
-// same-shaped parameter in the same change and read b.limits unconditionally,
-// so stepLetSymbols(nil, ...) panicked. No production caller passes nil -- which
-// is exactly why nothing caught it -- so this test is the only thing standing
-// between the three siblings and three different unwritten nil contracts.
+// checkFormatString and checkLetBindings both document their *templateBudget
+// first parameter as nil-able and handle it. stepLetSymbols takes the
+// same-shaped parameter; reading b.limits unconditionally makes
+// stepLetSymbols(nil, ...) panic. No production caller passes nil, so this
+// test is what keeps the three siblings on one nil contract.
 func TestStepLetSymbols_NilBudget(t *testing.T) {
 	tmpl, err := Parse([]byte(exprDeadlineLetTemplate), FormatYAML)
 	if err != nil {
@@ -682,7 +670,7 @@ func TestStepLetSymbols_NilBudget(t *testing.T) {
 	}
 	// One error per binding: binding 0 exceeds the default operation limit, and
 	// bindings 1 and 2 do not parse. A nil budget diverts nothing, so the block
-	// runs to the end and reports all three exactly as it did before H1.
+	// runs to the end and reports all three.
 	if len(errs) != 3 {
 		t.Errorf("stepLetSymbols(nil, ...) returned %d errors, want 3: %v", len(errs), errs)
 	}

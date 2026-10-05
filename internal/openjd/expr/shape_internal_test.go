@@ -221,8 +221,7 @@ func TestMatchShapes_UnionParameterMatchesAMember(t *testing.T) {
 // only the string member is reachable, and it is reachable by a rule the spec
 // names explicitly.
 //
-// bool is the pair this test used to get wrong: it has no promotable path to
-// any of int, float or string. Its only route to string is section 1.2.3's
+// bool has no promotable path to any of int, float or string. Its only route to string is section 1.2.3's
 // single-scalar catch-all (bool/int/float/path -> string, unconditionally),
 // and that catch-all is deliberately excluded from overload selection — see
 // promotable's doc comment in coerce.go. Asserting bool does NOT match here is
@@ -253,11 +252,10 @@ func TestMatchShapes_UnionParameterRejectsAMismatchedList(t *testing.T) {
 
 // TestMatchShapes_EmptyListArgumentMatchesAnyListParameter covers a seam
 // between argCost and promotable: promotable(list[nulltype], list[int]) is
-// true per section 1.2.3's empty-list rule, but argCost's list-descent
-// branch used to recurse into the element types BEFORE promotable was ever
-// consulted, so it never saw that rule and rejected list[nulltype] outright.
-// Inert while B1 registers no list-typed shapes, but the first one B2 adds
-// would otherwise reject "[]" against any list parameter.
+// true per section 1.2.3's empty-list rule, but an argCost whose list-descent
+// branch recursed into the element types BEFORE consulting promotable would
+// never see that rule, reject list[nulltype] outright, and so reject "[]"
+// against any list parameter.
 func TestMatchShapes_EmptyListArgumentMatchesAnyListParameter(t *testing.T) {
 	shapes := []Shape{{Params: []Type{ListOf(TInt)}, Ret: TBool, Fn: noFn}}
 	if _, _, ok := matchShapes(shapes, []Type{ListOf(TNull)}); !ok {
@@ -269,8 +267,7 @@ func TestMatchShapes_EmptyListArgumentMatchesAnyListParameter(t *testing.T) {
 // argument-side dual of the union-PARAMETER tests above: a union-typed
 // ARGUMENT is admissible only where every one of its members is, since the
 // union could BE any one of them at runtime. __pow__'s own declared return,
-// int | float, is exactly this shape once it feeds into another operator —
-// the case the B1 review found unusable end to end.
+// int | float, is exactly this shape once it feeds into another operator.
 func TestMatchShapes_UnionArgumentRequiresEveryMemberAdmissible(t *testing.T) {
 	shapes := []Shape{{Params: []Type{TFloat, TFloat}, Ret: TFloat, Fn: noFn}}
 	if _, _, ok := matchShapes(shapes, []Type{UnionOf(TInt, TFloat), TFloat}); !ok {
@@ -301,9 +298,9 @@ func TestMatchShapes_UnionArgumentBindingConflictIsInadmissible(t *testing.T) {
 }
 
 // TestOrderingAdmissibility pins section 2.1.4's restriction that ordering
-// operands may cross type only between int/float and string/path. Sub-project
-// B1 documented a divergence here: promotable was global, so section 1.2.3's
-// range_expr -> string coercion leaked into ordering's (string, string) shape.
+// operands may cross type only between int/float and string/path. A global
+// promotable would let section 1.2.3's range_expr -> string coercion leak into
+// ordering's (string, string) shape.
 func TestOrderingAdmissibility(t *testing.T) {
 	rng, err := RangeExpr("1-3")
 	if err != nil {
@@ -350,15 +347,14 @@ func TestOrderingAdmissibility(t *testing.T) {
 	}
 }
 
-// TestPromotableUnder_DefaultMatchesPromotable pins promoteDefault's whole
-// reason for existing as the promotion zero value: every OTHER operator in
-// the language relies on it being byte-identical to the old, global
-// promotable predicate, and the shapeCost/argCost call chain now threads a
-// promotion through every one of them. Reasoning about the two call sites
-// staying in lock-step is exactly what sub-project B1 got wrong once already
-// (the very divergence this task closes); this asserts it across the
-// conversions promotable actually recognizes, including the list and
-// unresolved-wrapper cases where the two functions could diverge silently.
+// TestPromotableUnder_DefaultMatchesPromotable pins promoteDefault's reason
+// for existing as the promotion zero value: every OTHER operator in the
+// language relies on it being byte-identical to the global promotable
+// predicate, and the shapeCost/argCost call chain threads a promotion through
+// every one of them. Rather than reasoning that the two call sites stay in
+// lock-step, this asserts it across the conversions promotable recognizes,
+// including the list and unresolved-wrapper cases where the two functions
+// could diverge silently.
 func TestPromotableUnder_DefaultMatchesPromotable(t *testing.T) {
 	pairs := []struct {
 		from, to Type

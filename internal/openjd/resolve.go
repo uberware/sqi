@@ -42,11 +42,10 @@ import (
 //     that table, which is what section 3.6.2 row 1 grants a step template's
 //     let: at the parameterSpace position. Both halves are shared with the
 //     checker rather than reimplemented (exprcheck.go's stepLetSymbols and
-//     rangeScopeSymbols), because them being built separately is exactly how
-//     they drifted: before EXPR sub-project E4b's whole-branch review this
-//     function passed no step at all, so a step-level let: ["base = 10"] with
-//     range: "{{ [base, base + 1] }}" validated at upload, passed the phase-2
-//     re-check, and then failed HERE with unknown symbol "base" — a symbol
+//     rangeScopeSymbols), because built separately they drift: without the
+//     step, a step-level let: ["base = 10"] with range:
+//     "{{ [base, base + 1] }}" would validate at upload, pass the phase-2
+//     re-check, and then fail HERE with unknown symbol "base" — a symbol
 //     the checker had just certified.
 //
 // A nil tmpl, or one that does not declare EXPR, takes exactly the base-spec
@@ -90,44 +89,37 @@ import (
 // budget (below) trips first, in which case the walk stops early -- see that
 // paragraph.
 //
-// budget is EXPR sub-project E4c's Task 4 addition, corrected by fix round 1
-// (post-implementation review, Critical 1): an optional [templateBudget]
-// shared across EVERY STEP's ResolveParameterSpaceParams call for THE SAME
-// SUBMISSION (submit.go's prepareTemplate builds one -- resolverBudget -- and
-// Submit's step loop threads the same object into every step). It is
-// deliberately NOT the same object as checkExpressionsAtSubmit's own budget,
-// even though this function resolves the identical range positions and let
-// bytes checkTemplateExpressions already charged
-// (checkParameterSpaceExpressions, exprcheck.go) for the same submission:
-// fix round 1 found that sharing ONE budget between the two silently HALVED
-// the effective cap for those classes, so a template ValidateWithOptions
-// (phase 1) accepted could be rejected by Submit (phase 2) purely because two
-// walks were drawing from one pool -- exactly the "fail purely on
-// accumulated cost, with no way for the submitter to see why" failure mode
-// design spec §3.1 exists to prevent, one level down from where Task 3
-// closed it for phase 1 vs. phase 2. §3.1 sanctions two budgets per request;
-// this function's budget is the resolver's own. See
+// budget is an optional [templateBudget] shared across EVERY STEP's
+// ResolveParameterSpaceParams call for THE SAME SUBMISSION (submit.go's
+// prepareTemplate builds one -- resolverBudget -- and Submit's step loop
+// threads the same object into every step). It is deliberately NOT the same
+// object as checkExpressionsAtSubmit's own budget, even though this function
+// resolves the identical range positions and let bytes
+// checkTemplateExpressions already charged (checkParameterSpaceExpressions,
+// exprcheck.go) for the same submission: sharing ONE budget between the two
+// would HALVE the effective cap for those classes, so a template
+// ValidateWithOptions (phase 1) accepted could be rejected by Submit
+// (phase 2) purely because two walks were drawing from one pool -- failing on
+// accumulated cost, with no way for the submitter to see why. Each walk in
+// each phase gets its own budget; this one is the resolver's. See
 // TestSubmit_ValidateAcceptsMustNotRejectOnBudgetAlone (resolve_budget_test.go)
-// for the constructions that proved the bug and now prove the fix, and
+// for the constructions that show it, and
 // TestPhase2Budget_CheckerAndResolverHaveIndependentBudgets for the
 // unit-level version.
 //
-// Sharing IS still correct, and unchanged, ACROSS STEPS within one budget:
-// a many-step submission's cumulative resolver cost is bounded together,
-// exactly as a many-step template's cumulative checker cost already is
-// (design spec §3's "one budget per phase" reasoning, applied here to "one
-// budget per WALK per phase" instead of "one budget per phase" outright).
+// Sharing IS correct ACROSS STEPS within one budget: a many-step
+// submission's cumulative resolver cost is bounded together, exactly as a
+// many-step template's cumulative checker cost is ("one budget per WALK per
+// phase").
 //
-// Omitting budget (as every pre-Task-4 caller does) gives this call its own
-// fresh, throwaway allowance -- see [templateBudgetOrFresh] -- which is
-// harmless: no legitimate single call comes close to either dimension's cap
-// on its own.
+// Omitting budget gives this call its own fresh, throwaway allowance -- see
+// [templateBudgetOrFresh] -- which is harmless: no legitimate single call
+// comes close to either dimension's cap on its own.
 //
 // The budget is consulted, and charged, ONLY on the EXPR-enabled path: a
-// template that does not declare EXPR takes the exact base-spec substitution
-// this function has always performed, byte for byte, with no budget
-// interaction of any kind -- matching every other EXPR-only behavior this
-// function gates on exprEnabled.
+// template that does not declare EXPR takes the base-spec substitution, byte
+// for byte, with no budget interaction of any kind -- matching every other
+// EXPR-only behavior this function gates on exprEnabled.
 func ResolveParameterSpaceParams(
 	tmpl *JobTemplate, step *StepTemplate, ps *StepParameterSpace, jobParams map[string]string,
 	budget ...*templateBudget,
@@ -156,7 +148,7 @@ func ResolveParameterSpaceParams(
 
 	// If the resolver's OWN budget (shared across every step's call for this
 	// one submission -- NOT with checkExpressionsAtSubmit's; see this
-	// function's own doc comment, fix round 1) is ALREADY exhausted by an
+	// function's own doc comment) is ALREADY exhausted by an
 	// earlier step's call, stop before doing any of this step's real work --
 	// evaluating its own let: block still costs a real expr.Eval per
 	// binding, and there is nothing left to spend it on.
@@ -247,15 +239,11 @@ func ResolveParameterSpaceParams(
 
 // resolveTaskParamDefinition resolves ONE task-parameter definition's range
 // field -- either shape, RangeExpr or RangeList -- charging b (when
-// exprEnabled) exactly as ResolveParameterSpaceParams' own inline loop body
-// did before EXPR sub-project E4c's Task 4 extracted it: this split exists
-// only to keep ResolveParameterSpaceParams' own cyclomatic complexity within
-// the repo's lint budget (see CLAUDE.md's "Lint is strict" convention;
+// exprEnabled). It is split out only to keep ResolveParameterSpaceParams'
+// own cyclomatic complexity within the repo's lint budget (as
 // exprcheck.go's checkHostRequirementAmount/checkHostRequirementAttribute
-// split for the identical reason), not because the two range shapes needed
-// separating for any behavioral reason -- the "else if, not a second
-// independent if" invariant comment on the RangeList branch, below, is the
-// same one that lived inline before this split.
+// are), not because the two range shapes needed separating for any
+// behavioral reason.
 //
 // Returns the definition's own copy (Name/Type/Chunks/Combination unchanged,
 // Range* fields resolved when successful) and any errors resolving it
@@ -337,7 +325,7 @@ func resolveTaskParamDefinition(
 // It shares that function's deadline diversion, and needs it more: this loop's
 // normal behavior is to collect one ValidationError per bad entry and keep
 // going, which for a wall-clock stop would both mis-report it as a 422 and
-// spend the very time the deadline said had run out.
+// spend the time the deadline said had run out.
 func resolveRangeListDefinition(
 	b *templateBudget, exprEnabled bool, i int, def TaskParamDefinition, syms expr.MapSymbols, scope fmtstring.Scope,
 ) ([]string, ValidationErrors) {
@@ -358,7 +346,7 @@ func resolveRangeListDefinition(
 				// resolveTaskParamDefinition's whole-field site diverts it, and
 				// STOPPED rather than reported-and-continued: this loop's normal
 				// failure mode is to collect one error per bad entry, which for
-				// a deadline would spend the very time the deadline said had run
+				// a deadline would spend the time the deadline said had run
 				// out. Returning (rather than relying on the !b.ok() guard at the
 				// top of the next iteration) keeps that stop local and visible.
 				return newList, errs
@@ -375,13 +363,11 @@ func resolveRangeListDefinition(
 // resolveRangeExprField resolves one task-parameter definition's whole-field
 // range value (TaskParamDefinition.RangeExpr) for a definition of type typ.
 //
-// exprEnabled gates everything, and is the whole reason this function exists
-// rather than inlining the old two-line body: when it is false, this is
-// EXACTLY the base-spec substitution ResolveParameterSpaceParams has always
-// performed — fmtstring.Resolve run over raw, with the result written back
-// into a *string returned as rangeExpr. THAT BRANCH IS BYTE FOR BYTE
-// UNCHANGED from before this task; TestResolveParameterSpaceParams_
-// BaseSpecUnchanged (resolve_test.go) proves it with a range body that is
+// exprEnabled gates everything: when it is false, this is EXACTLY the
+// base-spec substitution — fmtstring.Resolve run over raw, with the result
+// written back into a *string returned as rangeExpr.
+// TestResolveParameterSpaceParams_BaseSpecUnchanged (resolve_test.go)
+// pins that branch with a range body that is
 // valid EXPR syntax but not a valid base-spec dotted-identifier reference —
 // if this function (or its caller) were ever rerouted to the EXPR-aware
 // branch for a non-EXPR template, that test would wrongly succeed with a
@@ -396,8 +382,8 @@ func resolveRangeListDefinition(
 // original <IntRangeExpr> grammar" case) — see that function. Any other shape —
 // literal text with no {{}} at all ("1-100:2"), or a {{...}} reference
 // embedded in surrounding text ("1-{{Param.End}}") — is NOT a whole-field
-// list expression, but as of this task it is still a section 1.3.2 format
-// string, and §1.3.12 says exactly that of the RangeString: "it is a format
+// list expression, but it is still a section 1.3.2 format string, and
+// §1.3.12 says exactly that of the RangeString: "it is a format
 // string, it can now contain an expression". So it is resolved through
 // resolveFormatStringExpr (below), the same embedded-reference machinery
 // checkFormatString (exprcheck.go) already checks it with, evaluating each
@@ -405,27 +391,23 @@ func resolveRangeListDefinition(
 // through fmtstring.Resolve, which only understands a bare dotted-identifier
 // reference and rejects anything else as "not a valid dotted identifier".
 //
-// Before this task, that mismatch was exactly the checker/resolver drift
-// EXPR sub-project E4b Task 1's review found: a template with
-// range: "1-{{ Param.End * 2 }}" and extensions: [EXPR] validated cleanly
-// (checkParameterSpaceExpressions checks the WHOLE RangeExpr field, lone or
-// not, through checkFormatString) and then failed at submit here, because
-// this function still routed the non-lone case to base-spec
-// fmtstring.Resolve. Now both agree: both walk the field as segments and
-// evaluate each embedded reference as an expression.
+// Routing the non-lone case to base-spec fmtstring.Resolve instead would
+// make the checker and resolver drift: a template with
+// range: "1-{{ Param.End * 2 }}" and extensions: [EXPR] would validate
+// cleanly (checkParameterSpaceExpressions checks the WHOLE RangeExpr field,
+// lone or not, through checkFormatString) and then fail at submit here. Both
+// walk the field as segments and evaluate each embedded reference as an
+// expression.
 //
 // The result of this branch is still TEXT, assigned back into rangeExpr,
 // exactly as the base-spec branch below does — NOT a value handed to
 // evalRangeExprField's list-producing path. That is deliberate, and it is NOT
-// a second occurrence of section 2.1's trap (see evalRangeExprField's own doc
-// comment for the trap's full statement) — but NOT for the reason an earlier
-// version of this comment gave. An embedded reference here CAN legitimately
+// a second occurrence of the re-parse trap described in evalRangeExprField's
+// own doc comment. An embedded reference here CAN legitimately
 // evaluate to a genuine range_expr-typed value — "{{ range_expr(\"10-15:2,1-5\") }},7"
 // is a real, reachable input, and Value.String() renders a range_expr value
 // back to ITS OWN <IntRangeExpr> text (rangeexpr.go: the value's payload IS
-// the text range_expr() was called with, unmodified) — so "there is no
-// range_expr-typed VALUE here to mis-stringify" is FALSE; one can be, and
-// String() does stringify it. Confirmed, and pinned by
+// the text range_expr() was called with, unmodified). Pinned by
 // TestResolveParameterSpaceParams_NonLoneRangeExprEmbeddedRangeExprValue:
 // resolving "{{ range_expr(\"10-15:2,1-5\") }},7" produces RangeExpr
 // "10-15:2,1-5,7", which ExpandParameterSpace's parseIntRangeExpr then
@@ -435,13 +417,11 @@ func resolveRangeListDefinition(
 // [1,2,3,4,5,7,10,12,14], so this really does reorder relative to the
 // expression language.
 //
-// The ruling (coordinator, EXPR sub-project E4b Task 2 fix round 1): KEEP
-// this behavior — it is correct, not a defect. Section 2.1's rule is scoped
+// This behavior is correct, not a defect. The no-re-parse rule is scoped
 // to the LONE whole-field form, where the expression IS the range and
 // evalRangeExprField evaluates it as a VALUE (list[elemType] or, for a
 // genuine range_expr, range_expr's own list[int] coercion — never
-// re-entering <IntRangeExpr> text at all, which is what section 2.1 actually
-// forbids). It does not govern a reference EMBEDDED in surrounding range
+// re-entering <IntRangeExpr> text at all). It does not govern a reference EMBEDDED in surrounding range
 // syntax, which is a different position: section 1.3.2 states plainly that
 // an embedded reference evaluates at expr.TAny and converts to a STRING,
 // full stop, regardless of what type that value happens to be — a
@@ -457,11 +437,10 @@ func resolveRangeListDefinition(
 // internal/openjd's OWN <IntRangeExpr> policy (parseIntRangeExpr,
 // range.go) — that policy's three deliberate divergences from the
 // expression language's (start > end rejected, negative step rejected,
-// first-seen rather than ascending order — see this repo's CLAUDE.md, which
-// records and preserves all three on purpose) apply here exactly as they do
-// to any other literal range string, INCLUDING one assembled partly from an
-// embedded range_expr's own text. This wave does not change that policy or
-// its divergences; it only makes the checker and resolver AGREE about which
+// first-seen rather than ascending order, all three preserved on purpose)
+// apply here exactly as they do to any other literal range string,
+// INCLUDING one assembled partly from an embedded range_expr's own text.
+// What matters here is only that the checker and resolver AGREE about which
 // text reaches it.
 //
 // The resulting text is precisely what a base-spec author would have typed
@@ -475,8 +454,7 @@ func resolveRangeListDefinition(
 // Returns exactly one of rangeExpr (non-nil) or rangeList (non-nil) on
 // success — the caller assigns both straight onto the new definition, so a
 // list result must come with a nil rangeExpr to clear the old one and let
-// expandTaskParam (expand.go) take the list branch, per the design spec's
-// section 2.
+// expandTaskParam (expand.go) take the list branch.
 //
 // lim is the walk's operator-configured [ExprLimits], threaded from the
 // caller's [templateBudget] so this position is metered exactly as the
@@ -510,13 +488,12 @@ func resolveRangeExprField(
 // PATH range value, or occasionally a literal INT/CHUNK[INT] value —
 // TaskParamDefinition.RangeList's own doc comment), following the exact same
 // exprEnabled gate resolveRangeExprField's non-EXPR branch does: when
-// exprEnabled is false this is EXACTLY fmtstring.Resolve run over entry, byte
-// for byte unchanged from before this task.
+// exprEnabled is false this is EXACTLY fmtstring.Resolve run over entry.
 //
 // When exprEnabled is true, entry resolves through resolveFormatStringExpr
 // with target rangeExprElemType(typ) — matching
 // checkParameterSpaceExpressions's own checkFormatString call for a RangeList
-// entry exactly (design spec §3): a LONE {{...}} reference is evaluated once
+// entry exactly: a LONE {{...}} reference is evaluated once
 // against the task parameter's own declared element type (so an int/float/
 // path value that needs narrowing, e.g. an integral float for an INT entry,
 // gets the SAME §1.2.3 coercion the checker just verified would succeed —
@@ -528,19 +505,15 @@ func resolveRangeExprField(
 // that text into the parameter's actual type, exactly as it already does for
 // a literal (non-EXPR) entry.
 //
-// Before this task, this function targeted TargetString regardless of typ,
-// which is what let it drift from the checker the moment the checker started
-// targeting the element type: the checker would accept an INT entry like
-// "{{ Param.Scale * 2 }}" with Scale=2.5 (float -> int is a legal §1.2.3
-// coercion and 5.0 is integral), while this function, still at TargetString,
-// rendered that same entry "5.0" — text validateIntList rejects outright
-// ("invalid integer \"5.0\""). Checker accepts, expansion fails: the exact
-// drift class resolveRangeExprField (above) closes for the whole-field
-// position, reopened here by tightening only one side. Threading typ through
-// closes it: both this function and checkParameterSpaceExpressions now target
+// The target must be the element type, not TargetString: the checker accepts
+// an INT entry like "{{ Param.Scale * 2 }}" with Scale=2.5 (float -> int is a
+// legal §1.2.3 coercion and 5.0 is integral), while TargetString would render
+// that same entry "5.0" — text validateIntList rejects outright ("invalid
+// integer \"5.0\""). Checker accepts, expansion fails: the same drift class
+// resolveRangeExprField (above) avoids for the whole-field position. Both
+// this function and checkParameterSpaceExpressions target
 // rangeExprElemType(typ), so a checker accept and a resolver success are the
-// same coercion, not two independent judgment calls that happened to agree
-// before either side had a real target.
+// same coercion.
 func resolveRangeListEntry(
 	exprEnabled bool, entry string, typ TaskParamType, syms expr.MapSymbols, scope fmtstring.Scope, lim ExprLimits,
 ) (string, error) {
@@ -581,14 +554,12 @@ func resolveFormatStringExpr(s string, syms expr.MapSymbols, loneTarget expr.Typ
 		}
 		// Value.String(), NOT v.AsStr(): AsStr panics (Value.mustBe) for any
 		// payload code other than string, and loneTarget is a caller-supplied
-		// PARAMETER, not a constant — resolveRangeListEntry now passes
-		// rangeExprElemType(typ) (design spec §3), which is TInt/TFloat/TPath
-		// for an INT/FLOAT/PATH entry, not always TString. A parameter that
-		// varies must not crash the process (inside a synchronous submit
-		// handler, no less) the first time it does. String() is the same
+		// PARAMETER, not a constant — resolveRangeListEntry passes
+		// rangeExprElemType(typ), which is TInt/TFloat/TPath for an
+		// INT/FLOAT/PATH entry, not always TString, and a panic here would
+		// crash a synchronous submit handler. String() is the same
 		// rendering evalRangeExprField's elements already use and is total
-		// over every Value — the safe choice here costs nothing and is what
-		// makes threading rangeExprElemType through loneTarget safe at all.
+		// over every Value.
 		// See TestResolveFormatStringExpr_NonStringLoneTargetDoesNotPanic.
 		return v.String(), nil
 	}
@@ -657,11 +628,7 @@ func errUnresolvedRangeValue(v expr.Value) error {
 // The evaluation TARGET is rangeExprFieldType(typ) — literally the CHECKER'S
 // OWN function (exprcheck.go), not a second target chosen to match it. That
 // is what makes the two layers' accept/reject verdicts, and their rejection
-// MESSAGES, identical for the same input. Before EXPR sub-project E4b's
-// whole-branch review they were separately chosen and separately too narrow
-// in the same direction, so they agreed only by coincidence — the checker
-// said "cannot be coerced to list[int] | range_expr" and this function said
-// "cannot be coerced to list[int]" for one and the same template.
+// MESSAGES, identical for the same input.
 //
 // THE TWO INT MEMBERS THAT ARE NOT LISTS. Section 1.3.12 leaves the INT row
 // "(unchanged, but see RangeString note below)", and that note extends the
@@ -677,30 +644,30 @@ func errUnresolvedRangeValue(v expr.Value) error {
 // embedded-reference ruling in resolveRangeExprField's doc comment: text a
 // human could have typed by hand is base-spec text.
 //
-// THE DISPATCH ORDER BELOW IS LOAD-BEARING, in a way the union's own member
-// order is not (expr.UnionOf sorts members, and section 1.2.3's match-first
+// THE DISPATCH ORDER BELOW MATTERS, in a way the union's own member order
+// does not (expr.UnionOf sorts members, and section 1.2.3's match-first
 // rule is implemented order-independently — see rangeExprFieldType). A list
 // and a range_expr result MUST be recognized BEFORE the text fallback. Send a
 // lone {{ range_expr("10-15:2,1-5") }} down the text path instead and it
-// would be re-parsed by parseIntRangeExpr, which is precisely the design
-// spec's section 2.1 trap. That trap, stated in full: internal/openjd's OWN
+// would be re-parsed by parseIntRangeExpr. That trap, stated in full:
+// internal/openjd's OWN
 // <IntRangeExpr> reader (parseIntRangeExpr, expand.go, via
 // internal/openjd/intrange with Policy{PositiveStepOnly, AscendingOnly})
 // applies a policy that deliberately DIFFERS from internal/openjd/expr's (the
 // zero Policy) in three ways this repo has decided to preserve — it rejects
 // start > end, rejects a negative step, and expands in first-seen rather than
 // increasing order. Re-admitting an expression-produced range_expr under the
-// STRICTER policy would silently reject, or silently reorder, a range the
-// expression language legitimately produced.
+// STRICTER policy would reject, or reorder, a range the expression language
+// legitimately produced.
 // TestRangeCheckerResolverAgreement_LoneRangeExprPolicy is the detector for
 // exactly that mistake: it pins [1,2,3,4,5,10,12,14] (ascending, expr's
 // policy) for that call, where the text path would give [10,12,14,1,2,3,4,5].
 //
 // expr.Coerce (coerce.go) already implements range_expr -> list[int] as one
-// of section 1.2.3's three list rules — coerceList calls the unexported
-// rangeInts directly on the VALUE, with no detour through text at all — so
-// the range_expr arm reuses the exact conversion sub-project C1 built for the
-// language's own list(range_expr) function, rather than this package writing
+// of section 1.2.3's three list rules — directly on the VALUE, with no
+// detour through text at all — so the range_expr arm reuses the exact
+// conversion the language's own list(range_expr) function uses, rather than
+// this package writing
 // a second, independent implementation of "take the integers out of a
 // range_expr". One code path, not two: a range_expr result and a literal
 // list[int] result (e.g. from range(), which returns list[int] directly —
@@ -710,24 +677,18 @@ func errUnresolvedRangeValue(v expr.Value) error {
 // Every element is rendered to text with Value.String() — the same
 // conversion coerceScalar's own CodeString case performs (coerce a value to
 // expr.TString and the result IS String()'s output), which is the identical
-// rendering EXPR sub-project E4a already established as definitive for a
-// value reaching a template's output text (fmtres/expres.go's
-// resolveFormatStringExpr, LONE-reference branch: evaluate against TString,
-// return AsStr()). That answers this wave's own section 2.3 question for a
-// computed FLOAT with no submitted carry: String() falls through to
-// formatFloat's shortest round-tripping decimal (value.go), which is
-// SPEC-CORRECT, not merely convenient reuse — the base specification states
-// this rendering directly (wiki/2026-02-Expression-Language.md, section
-// 1.3.4, "Float Value Pass-Through": "When an operation is performed on a
-// float value ... string interpolation uses the shortest decimal string
-// representation", worked example "{{Param.V + 1}} outputs \"4.5\"") and E2's
-// carry ruling for a value WITH submitted text says nothing about a value
-// that never had any. Confirmed for this task's own two computed cases —
-// Param.Scale=2.5: Scale*2 -> "5.0", Scale+0.5 -> "3.0" — by a throwaway
-// evaluation against this package before this comment was written; both
-// match the brief's hypothesized values exactly, so there is no ruling to
-// change here, only to record: the existing mechanism already produces the
-// spec-correct answer, reused rather than reimplemented.
+// rendering the worker uses for a value reaching a template's output text
+// (fmtres/expres.go's resolveFormatStringExpr, LONE-reference branch:
+// evaluate against TString, return AsStr()). For a computed FLOAT with no
+// submitted text, String() falls through to formatFloat's shortest
+// round-tripping decimal (value.go), which is SPEC-CORRECT — the base
+// specification states this rendering directly
+// (wiki/2026-02-Expression-Language.md, section 1.3.4, "Float Value
+// Pass-Through": "When an operation is performed on a float value ... string
+// interpolation uses the shortest decimal string representation", worked
+// example "{{Param.V + 1}} outputs \"4.5\""), and the pass-through rule for
+// a value WITH submitted text says nothing about a value that never had any.
+// With Param.Scale=2.5: Scale*2 -> "5.0", Scale+0.5 -> "3.0".
 func evalRangeExprField(
 	body string, typ TaskParamType, syms expr.MapSymbols, lim ExprLimits,
 ) (rangeText *string, rangeList []string, err error) {
@@ -752,7 +713,7 @@ func evalRangeExprField(
 	// Order matters — see the doc comment. Note also that neither of the two
 	// list-producing arms may be reached with AsList() called unguarded: that
 	// method panics (Value.mustBe) for any payload other than CodeList, and
-	// since this task widened the INT target an int or a string result really
+	// with the INT target's int and string members an int or a string result
 	// does arrive here. The switch IS the guard.
 	switch v.Type.Code {
 	case expr.CodeList:

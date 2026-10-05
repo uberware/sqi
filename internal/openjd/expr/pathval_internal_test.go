@@ -9,20 +9,18 @@ import (
 )
 
 // TestParsePath_POSIX pins Python's PurePosixPath normalization. Every
-// expectation was produced by running python3 during design.
+// expectation was produced by python3.
 //
 // The rules are not uniform and that is the point: "//" collapses, "." is
 // dropped, a trailing "/" is dropped, but ".." is KEPT — pathlib does not
 // resolve it because doing so is wrong in the presence of symlinks.
 //
-// THE abs COLUMN IS NOT DECORATION, and its absence is the exact asymmetry that
-// hid a bug for three tasks: TestParsePath_Windows below has always asserted
-// is_absolute and this table did not, so the POSIX "//" root — POSIX.1-2017
-// section 4.13's own, which CPython keeps rather than collapsing — reported
-// itself RELATIVE with nothing to notice. The differential below gained the
-// same column at the same time, and pathCorpusPOSIX gained the "//", "///" and
-// "////" leads that make the shape reachable on purpose rather than by
-// accident.
+// The abs column matters as much as TestParsePath_Windows's: without it, the
+// POSIX "//" root — POSIX.1-2017 section 4.13's own, which CPython keeps
+// rather than collapsing — could report itself RELATIVE with nothing to
+// notice. The differential below checks the same column, and pathCorpusPOSIX
+// carries the "//", "///" and "////" leads that make the shape reachable on
+// purpose rather than by accident.
 func TestParsePath_POSIX(t *testing.T) {
 	tests := []struct {
 		in    string
@@ -42,7 +40,7 @@ func TestParsePath_POSIX(t *testing.T) {
 		{"", ".", []string{}, false},
 		{"a", "a", []string{"a"}, false},
 		{"a/b/..", "a/b/..", []string{"a", "b", ".."}, false},
-		// The three anchor shapes the table never named. Exactly two leading
+		// The three anchor shapes. Exactly two leading
 		// slashes is its OWN root and is preserved; three or more collapse to
 		// one; all of them are absolute.
 		{"//a/b", "//a/b", []string{"//", "a", "b"}, true},
@@ -72,8 +70,8 @@ func TestParsePath_POSIX(t *testing.T) {
 	}
 }
 
-// TestParsePath_POSIXMatchesPython is the test that actually proves the
-// flavor. The table above encodes what we believe; this compares against the
+// TestParsePath_POSIXMatchesPython checks the flavor against Python. The
+// table above encodes what we believe; this compares against the
 // real thing over a generated corpus, so a rule we got subtly wrong shows up
 // even where we did not think to write a row.
 func TestParsePath_POSIXMatchesPython(t *testing.T) {
@@ -85,13 +83,11 @@ func TestParsePath_POSIXMatchesPython(t *testing.T) {
 	// "if not line: continue" would silently swallow that one real input and
 	// desync every line thereafter, which is a bug in the harness, not in the
 	// path engine: it produces the same off-by-one for any implementation.
-	// is_absolute is compared as well as str and parts, and its ABSENCE here
-	// is what let the POSIX "//" root report itself relative for three tasks
-	// (isAbsolute tested the parsed root against "/" while its doc comment
-	// claimed pathlib's raw startswith("/") rule, so the exactly-two-slashes
-	// root fell through). The Windows differential below always compared it;
-	// this one did not, and the corpus has contained "//b" — via an empty
-	// first segment — the whole time.
+	// is_absolute is compared as well as str and parts: without it, an
+	// isAbsolute that tested the parsed root against "/" rather than
+	// pathlib's raw startswith("/") rule would let the exactly-two-slashes
+	// root report itself relative unnoticed, even though the corpus
+	// contains "//b" via an empty first segment.
 	script := `
 import sys
 from pathlib import PurePosixPath as P
@@ -130,9 +126,9 @@ for line in sys.stdin.read().split("\n"):
 // root — exactly two leading slashes, which CPython keeps as its own "//" root
 // rather than collapsing — as ABSOLUTE.
 //
-// Every one of these reported itself relative until fix round 1: isAbsolute's
-// POSIX branch compared the parsed root against "/" exactly, so the one root
-// shape that is neither "" nor "/" fell through to false. CPython
+// An isAbsolute whose POSIX branch compared the parsed root against "/"
+// exactly would report every one of these relative, since "//" is the one root
+// shape that is neither "" nor "/". CPython
 // (PurePosixPath("//a").is_absolute()) and the reference implementation
 // (is_absolute(path("//a")), probed at openjd-model 0.11.1) both answer true.
 // The negatives are here for the same reason the positives are: a predicate
@@ -161,13 +157,12 @@ func TestParsePath_POSIXDoubleSlashIsAbsolute(t *testing.T) {
 // pathCorpusPOSIX generates the inputs both the table and the differential run
 // over: roots, separators, dot segments and trailing slashes in combination.
 //
-// THE ANCHOR LEADS ARE EXPLICIT, and the reason is the asymmetry with
-// pathCorpusWindows that hid the "//" is_absolute bug for three tasks. That
-// corpus carries 25 hand-added leads covering every Windows anchor shape by
-// name; this one carried two ("" and "/"), so "//", "///" and "///a" were
-// reachable only INCIDENTALLY — through an empty first segment, which is a
-// coincidence of the segment list rather than a decision — and "////a" was not
-// reachable at all. The multi-slash leads below make POSIX's three anchor
+// The anchor leads are explicit, as in pathCorpusWindows, which carries 25
+// hand-added leads covering every Windows anchor shape by name. With only ""
+// and "/", "//", "///" and "///a" are reachable only INCIDENTALLY — through an
+// empty first segment, which is a coincidence of the segment list rather than
+// a decision — and "////a" is not reachable at all. The multi-slash leads
+// below make POSIX's three anchor
 // shapes (none, "/", and POSIX.1-2017 section 4.13's own "//") deliberate
 // inputs, crossed with every segment combination the same way the Windows
 // corpus crosses its own.
@@ -187,26 +182,23 @@ func pathCorpusPOSIX() []string {
 	return out
 }
 
-// TestPathName_StemSuffixMatchesPython is the differential
-// TestPathProperties's hand-picked rows should have been backed by from the
-// start: stem, suffix and suffixes operate on the final path COMPONENT only
-// ("name" below), independent of any root or separator, so this drives
-// splitStemSuffix and parsedPath.suffixes directly over a generated corpus of
-// names rather than routing through parsePath/Eval.
+// TestPathName_StemSuffixMatchesPython backs TestPathProperties's hand-picked
+// rows with a differential: stem, suffix and suffixes operate on the final
+// path COMPONENT only ("name" below), independent of any root or separator, so
+// this drives splitStemSuffix and parsedPath.suffixes directly over a
+// generated corpus of names rather than routing through parsePath/Eval.
 //
-// fix-round 1 found 13 mismatches in a 147-name version of this corpus: a
-// name with TWO OR MORE leading dots followed by dot-free content
-// ("..a", "...a", "....txt") kept every leading dot as part of the stem
-// correctly, but a name with two or more leading dots followed by ANOTHER
-// dot ("..a.b") did not — splitStemSuffix took strings.LastIndex over the
-// UNSTRIPPED name and guarded only i <= 0, which catches a single leading
-// dot at index 0 but not a run of two or more, where the last dot sits at
-// index >= 1 and slips past the guard. suffixes() (three lines below in
-// pathval.go) already had the right pattern — strings.TrimLeft the ENTIRE
-// leading run before splitting — and splitStemSuffix now shares it via
-// splitLeadingDots rather than deciding independently, which is what a
-// previous task in this wave had to fix for exactly this failure shape (two
-// formulas that agree on most inputs and diverge on one).
+// The shape it guards: a name with TWO OR MORE leading dots followed by
+// dot-free content ("..a", "...a", "....txt") keeps every leading dot as part
+// of the stem, and so must a name with two or more leading dots followed by
+// ANOTHER dot ("..a.b"). Taking strings.LastIndex over the UNSTRIPPED name and
+// guarding only i <= 0 catches a single leading dot at index 0 but not a run
+// of two or more, where the last dot sits at index >= 1 and slips past the
+// guard (13 mismatches in a 147-name version of this corpus). suffixes()
+// (pathval.go) strips the ENTIRE leading run with strings.TrimLeft before
+// splitting, and splitStemSuffix shares that via splitLeadingDots rather than
+// deciding independently: two formulas that agree on most inputs and diverge
+// on one.
 func TestPathName_StemSuffixMatchesPython(t *testing.T) {
 	requirePythonPathSemantics(t)
 	corpus := pathNameCorpus()
@@ -306,34 +298,33 @@ func runPython(t *testing.T, script, stdin string) string {
 // requirePythonPathSemantics skips a differential unless the python3 on PATH
 // actually implements the two pathlib behaviors sqi targets.
 //
-// It PROBES THE BEHAVIOR rather than the version number, and that distinction
-// is the whole point. The two behaviors are:
+// It PROBES THE BEHAVIOR rather than the version number. The two behaviors
+// are:
 //   - PureWindowsPath.is_absolute() delegating to ntpath.isabs, so a
 //     driveless-but-colon-rooted path like "\:\a" is absolute (older CPython
 //     answered false, using bool(drive and root));
 //   - stem/suffix not treating a name's TRAILING dot run as an extension, so
 //     "a." has suffix ".".
 //
-// WHY NOT A VERSION CHECK: this used to skip unless python3 was >= 3.13, on the
-// stated assumption that 3.13 fixed both and every later release kept them.
-// That assumption is false, and CI proved it. CPython changed trailing-dot
+// WHY NOT A VERSION CHECK: a ">= 3.13" gate assumes 3.13 fixed both and every
+// later release kept them, and that is false. CPython changed trailing-dot
 // stem/suffix handling BETWEEN PATCH RELEASES: 3.14.6 reports
 // PurePosixPath("a.").suffix == "." (what sqi implements) and 3.14.7 reports
-// "" with the dot folded into the stem. Both satisfy ">= 3.13", so the gate let
-// 3.14.7 through and the differential reported 30-odd false mismatches against
-// semantics sqi deliberately implements — on a green working tree, from a
-// runner image bump alone.
+// "" with the dot folded into the stem. Both satisfy ">= 3.13", so such a gate
+// lets 3.14.7 through and the differential reports 30-odd false mismatches
+// against semantics sqi deliberately implements, from a runner image bump
+// alone.
 //
 // A version range would only move the problem: the next release to change this
 // re-breaks it, and the gate would again be asserting a version number as a
-// proxy for a behavior it can simply ask about. So it asks.
+// proxy for a behavior it can ask about directly. So it asks.
 //
-// UNRESOLVED, AND DELIBERATELY NOT RESOLVED HERE: which side is correct is a
-// specification question, not a CI question. sqi's behavior is pinned by
-// TestPathProperties and by isAbsolute's own doc comment, and changing it would
-// move conformance numbers. This gate makes the differential honest — it
-// verifies nothing it cannot trust, exactly as runPython's missing-python3 skip
-// does — and leaves the adjudication to be done against
+// Which side is correct is a specification question, not a CI question, and
+// it is not resolved here. sqi's behavior is pinned by TestPathProperties and
+// by isAbsolute's own doc comment, and changing it would move conformance
+// numbers. This gate keeps the differential trustworthy — it verifies nothing
+// it cannot trust, exactly as runPython's missing-python3 skip does — and
+// leaves the adjudication to be done against
 // third_party/openjd-specifications rather than against whichever interpreter
 // the CI image happens to ship.
 //
@@ -367,7 +358,7 @@ print(P("a.").suffix == "." and W("\\:\\a").is_absolute())
 }
 
 // TestParsePath_Windows pins PureWindowsPath. Every expectation came from
-// running python3 during design.
+// python3.
 //
 // The drive-RELATIVE row is the one that matters most: "C:a\b" is NOT absolute,
 // and its anchor is "C:" with no separator. Getting that wrong makes
@@ -404,15 +395,15 @@ func TestParsePath_Windows(t *testing.T) {
 	}
 }
 
-// TestParsePath_WindowsMatchesPython is the real proof for this flavor. The
-// oracle cannot reach it — the reference evaluates with its own path_format —
-// so this differential is the ONLY automated check on Windows semantics, and it
-// runs on Linux against Python rather than on Windows against anything.
+// TestParsePath_WindowsMatchesPython checks this flavor against Python. The
+// oracle evaluates under POSIX only, so this differential is the ONLY
+// automated check on Windows semantics, and it runs on Linux against Python
+// rather than on Windows against anything.
 func TestParsePath_WindowsMatchesPython(t *testing.T) {
 	requirePythonPathSemantics(t)
 	corpus := pathCorpusWindows()
-	// Unlike an earlier draft of this script, blank input lines are NOT
-	// skipped: pathCorpusWindows's "" lead produces exactly one blank line,
+	// Blank input lines are NOT skipped: pathCorpusWindows's "" lead
+	// produces exactly one blank line,
 	// and (as TestParsePath_POSIXMatchesPython's harness comment explains) a
 	// "if not line: continue" swallows that one real input and desyncs every
 	// line thereafter, turning every later row into a false mismatch.
@@ -435,7 +426,7 @@ for line in sys.stdin.read().split("\n"):
 			// pathlib gives the literal prefix "\\?\UNC\" its own
 			// start-at-offset-8 parsing (see parseWindows's doc comment);
 			// this file does not implement that branch, by design, as part
-			// of this wave's stated extended-length/device-path omission.
+			// of the extended-length/device-path omission.
 			// Every input under this prefix is EXPECTED to disagree with
 			// Python, so it is excluded from the pass/fail assertions below
 			// rather than producing 318 "failures" that would bury a real
@@ -468,7 +459,7 @@ for line in sys.stdin.read().split("\n"):
 }
 
 // TestParsePath_URI pins the opacity rule. Every expectation was produced by
-// running the reference implementation during design.
+// the reference implementation.
 //
 // Each row is something the filesystem flavors would normalize away. If the
 // URI branch is ever skipped, these are what catch it — and they catch it
@@ -485,13 +476,13 @@ func TestParsePath_URI(t *testing.T) {
 		{"s3://bucket/dir/", "s3://bucket/dir/", []string{"s3://bucket", "dir", ""}},
 		{"s3://bucket", "s3://bucket", []string{"s3://bucket"}},
 		{"https://h/x/y", "https://h/x/y", []string{"https://h", "x", "y"}},
-		// Task 11: a trailing slash IMMEDIATELY after the authority is the same
-		// empty component the "s3://bucket/dir/" row above already pins, and it
-		// was being discarded — see TestParsePath_URITrailingSlashAfterAuthority
-		// for what that cost.
+		// A trailing slash IMMEDIATELY after the authority is the same empty
+		// component the "s3://bucket/dir/" row above already pins — see
+		// TestParsePath_URITrailingSlashAfterAuthority for what discarding it
+		// would cost.
 		{"s3://bucket/", "s3://bucket/", []string{"s3://bucket", ""}},
 		{"s3://bucket//", "s3://bucket//", []string{"s3://bucket", "", ""}},
-		// The negative that keeps the fix honest: no separator after the
+		// The negative case: no separator after the
 		// authority at all means no path portion and therefore no component,
 		// however the authority itself ends.
 		{"s3://", "s3://", []string{"s3://"}},
@@ -518,24 +509,25 @@ func TestParsePath_URI(t *testing.T) {
 	}
 }
 
-// TestParsePath_URITrailingSlashAfterAuthority pins the consequences of the
-// empty component a bare "s3://bucket/" carries, which parsePath used to
-// discard.
+// TestParsePath_URITrailingSlashAfterAuthority pins that parsePath keeps the
+// empty component a bare "s3://bucket/" carries.
 //
 // splitURI reports the SAME rest ("") for two different inputs — "s3://bucket",
 // where there is no separator after the authority at all, and "s3://bucket/",
-// where there is one with nothing after it — and parsePath's `if rest != ""`
-// guard then collapsed the two into one value. That is normalization, which
-// the specification forbids for the path portion of a URI ("consecutive
-// slashes, `.`, and `..` segments are preserved verbatim", Expression-Language
-// section 1.2.1), and it made this file's own rules disagree with each other:
-// "s3://bucket/dir/" kept its trailing empty component while "s3://bucket/"
-// lost it, though a trailing separator produced both.
+// where there is one with nothing after it — so a parsePath guarded by
+// `if rest != ""` would collapse the two into one value. That is
+// normalization, which the specification forbids for the path portion of a
+// URI ("consecutive slashes, `.`, and `..` segments are preserved verbatim",
+// Expression-Language section 1.2.1), and it would make this file's own rules
+// disagree with each other: "s3://bucket/dir/" keeps its trailing empty
+// component, so "s3://bucket/" must too, since a trailing separator produces
+// both.
 //
-// It was not cosmetic. Path values are normalized by construction (Value.Path
-// re-parses), so the loss happened at construction and every later operation
-// saw the shortened text: appending an object key to a bucket URI produced
-// "s3://bucketkey", a different and legitimate-looking bucket.
+// It is not cosmetic. Path values are normalized by construction (Value.Path
+// re-parses), so the loss would happen at construction and every later
+// operation would see the shortened text: appending an object key to a bucket
+// URI would produce "s3://bucketkey", a different and legitimate-looking
+// bucket.
 //
 // The reference implementation renders "s3://bucket/" too, and disagrees only
 // about that value's parts, where it contradicts itself — it reports
@@ -589,17 +581,15 @@ func TestParsePath_URIDetection(t *testing.T) {
 func pathCorpusWindows() []string {
 	leads := []string{
 		"", `C:`, `C:\`, `C:/`, `\`, `/`, `\\srv\share\`, `\\srv\share`,
-		// Fix-round-1 additions: a share-less UNC, a UNC with a bare trailing
-		// separator (no share), and all-separator strings — none of these
-		// shapes were reachable from the original 8 leads, and each exposed
-		// a real defect the 848-input corpus could not catch: isAbsolute()
-		// misclassifying a share-less UNC, and the UNC root builder
-		// fabricating a separator that was never in the input.
+		// A share-less UNC, a UNC with a bare trailing separator (no share),
+		// and all-separator strings — none of these shapes is reachable from
+		// the 8 leads above, and they catch isAbsolute() misclassifying a
+		// share-less UNC and the UNC root builder fabricating a separator
+		// that was never in the input.
 		`\\srv`, `\\srv\`, `\\`, `\\\`, `\\\\`,
-		// Fix-round-2 additions (the coordinator's own leads, reproduced
-		// verbatim): a two-character "?." server (the root-synthesis
-		// substring-exclusion bug — three inequalities let "?." itself
-		// through); a raw ":\" root (isAbsolute's rendered-string prefix
+		// A two-character "?." server (a root-synthesis substring exclusion
+		// written as three inequalities lets "?." itself through); a raw
+		// ":\" root (isAbsolute's rendered-string prefix
 		// test disagreeing with a shape-based proxy, independent of any
 		// parsed root shape); a leading "." before a colon-bearing component
 		// (String()'s missing "." disambiguation prefix, and its forward-
@@ -607,7 +597,7 @@ func pathCorpusWindows() []string {
 		// (byte- vs rune-indexed drive detection — Python's ntpath accepts
 		// any single code point before ':', not just ASCII letters).
 		`\\?.\`, `\:\a`, `.\a:b`, `./c:`, `é:`, `£:`, `1:`, `::`, ` :`,
-		// An explicit "\\?\UNC\..." lead: the ONE shape this task
+		// An explicit "\\?\UNC\..." lead: the ONE shape this file
 		// deliberately does not port (see parseWindows's doc comment) —
 		// included so the differential can show this is the ONLY remaining
 		// mismatch category, not merely untested.

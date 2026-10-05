@@ -11,8 +11,8 @@ import (
 )
 
 // TestWithNumber covers RFC 0006's five substitution formats. Every
-// expectation was produced by running the reference implementation during
-// design, and every one matched the specification's own table.
+// expectation was produced by the reference implementation, and every one
+// matches the specification's own table.
 //
 // The rule that makes this non-obvious: the scan runs from the END of the STEM
 // and replaces the LAST match. That is what preserves a shot number —
@@ -44,12 +44,11 @@ func TestWithNumber(t *testing.T) {
 		// A name that is entirely dots has no suffix at all (splitLeadingDots),
 		// so the whole thing is the stem, and no digit/hash/printf pattern is
 		// in it — the no-pattern fallback applies. Measured against the
-		// reference during design.
+		// reference.
 		{`path('/r/...').with_number(3)`, "/r/..._0003"},
 		// A DIGIT RUN INSIDE THE SUFFIX is not a candidate, because the scan
 		// runs over the STEM alone — the case pathnumber.go's own doc comment
-		// names ("file.v2.003.exr") and the one shape the table had no row
-		// for until the final fix wave. The .exr row alone does not pin it:
+		// names ("file.v2.003.exr"). The .exr row alone does not pin it:
 		// scanning the whole NAME instead of the stem gives the identical
 		// answer there, since ".exr" holds no digits at all. The .mp4 row is
 		// the one that separates the two readings — scanning the name would
@@ -61,11 +60,11 @@ func TestWithNumber(t *testing.T) {
 		// Several suffixes: splitStemSuffix cuts at the LAST dot only, so
 		// "a.tar.gz" has stem "a.tar" (no digit pattern in it) and suffix
 		// ".gz" — the no-pattern fallback applies to the stem, not the whole
-		// name. Measured against the reference during design.
+		// name. Measured against the reference.
 		{`path('/r/a.tar.gz').with_number(72)`, "/r/a.tar_0072.gz"},
 		// Overflow, zero and a large negative all pad through the same
 		// zfillString formula with no special-casing. Measured against the
-		// reference during design.
+		// reference.
 		{`path('/r/f_003.exr').with_number(0)`, "/r/f_000.exr"},
 		{`path('/r/f_003.exr').with_number(999999999999)`, "/r/f_999999999999.exr"},
 		{`path('/r/f_003.exr').with_number(-999999999999)`, "/r/f_-999999999999.exr"},
@@ -105,7 +104,7 @@ func TestWithNumber_ReturnTypes(t *testing.T) {
 }
 
 // TestWithNumber_PaddingCap checks the bound AT the limit and one past it, not
-// near it. An earlier wave's float-narrowing defect was found only that way.
+// near it: a defect such as a float-to-int narrowing shows only at the bound.
 func TestWithNumber_PaddingCap(t *testing.T) {
 	wide32 := `path('/r/f_%032d.exr').with_number(1)`
 	if _, err := Eval(wide32, MapSymbols{}, TAny); err != nil {
@@ -125,18 +124,17 @@ func TestWithNumber_PaddingCap(t *testing.T) {
 	}
 }
 
-// TestWithNumber_PaddingCap_WidthOverflowsInt pins fix round 1's Important
-// finding: a %0Nd width literal so large it overflows strconv.Atoi (as
-// opposed to merely exceeding maxNumberPadding) must still surface as
-// errPaddingTooWide, not the raw *strconv.NumError the earlier version of
-// printfReplacement returned unwrapped. A width that doesn't fit in an int at
-// all necessarily exceeds 32, so folding the overflow into the same sentinel
-// is correct, not just convenient. The reference silently ACCEPTS this input
+// TestWithNumber_PaddingCap_WidthOverflowsInt pins that a %0Nd width literal
+// so large it overflows strconv.Atoi (as opposed to merely exceeding
+// maxNumberPadding) surfaces as errPaddingTooWide, not a raw
+// *strconv.NumError from printfReplacement. A width that doesn't fit in an int
+// at all necessarily exceeds 32, so folding the overflow into the same
+// sentinel is correct, not just convenient. The reference ACCEPTS this input
 // with no padding at all (with_number("f_%0999999999999999999999d", 1) is
 // "f_1" there) — a second reference defect against RFC 0006 line 831's
 // "wider printf or hash patterns are an error" rule, in the same family as
 // the hash-then-digit one in TestWithNumber_HashThenDigits. sqi erroring is
-// correct; only the error's shape was wrong before this fix.
+// correct.
 func TestWithNumber_PaddingCap_WidthOverflowsInt(t *testing.T) {
 	src := `path('/r/f_%0999999999999999999999d.exr').with_number(1)`
 	_, err := Eval(src, MapSymbols{}, TAny)
@@ -148,8 +146,8 @@ func TestWithNumber_PaddingCap_WidthOverflowsInt(t *testing.T) {
 	}
 }
 
-// TestWithNumber_HashThenDigits pins fix round 1's refuted Critical: a hash
-// run immediately followed by a digit run (or a non-digit, non-hash
+// TestWithNumber_HashThenDigits pins that a hash run immediately followed by
+// a digit run (or a non-digit, non-hash
 // character) is TWO independent candidates, and withNumber replaces only the
 // LAST one — never everything from the last match to the end of the stem.
 //
@@ -158,12 +156,11 @@ func TestWithNumber_PaddingCap_WidthOverflowsInt(t *testing.T) {
 // suffix of the stem starting at a match. The reference implementation
 // (openjd-model 0.11.1) disagrees: it lets a hash run swallow the rest of the
 // stem, which for "##a3" DESTROYS the literal "a" that was in the input
-// (reference: "07"; sqi, matching the spec text: "##a7"). This was reviewed
-// and adjudicated in sqi's favor — the reference is wrong here, sqi is not —
-// so every "sqi" value below is pinned as CORRECT, not as a known divergence
-// to eventually match. Task 11's oracle baseline needs an entry for each row
-// that disagrees with the reference; see the "reference" column in the
-// comments and this task's report for the exact values to record.
+// (reference: "07"; sqi, matching the spec text: "##a7"). The reference is
+// wrong here, sqi is not, so every "sqi" value below is pinned as CORRECT, not
+// as a known divergence to eventually match. Each row that disagrees with the
+// reference is baselined in test/oracle/baseline.txt; the "reference"
+// comments give its value.
 func TestWithNumber_HashThenDigits(t *testing.T) {
 	tests := []struct {
 		src, want string
@@ -216,14 +213,12 @@ func TestWithNumber_HashThenDigits(t *testing.T) {
 	}
 }
 
-// TestWithNumber_ScanIsAllocationBounded pins the final fix wave's Important
-// finding: withNumber needs only the LAST candidate in the stem, and the
-// original implementation materialized EVERY candidate first
-// (numberPattern.FindAllStringIndex(stem, -1)) to get it. The "-1" is
-// unbounded, and funcsre.go's reSub already wrote the rule down one wave
-// earlier — "an unbounded -1 here would let a zero-width pattern enumerate
-// maxStringBytes+1 matches before anything downstream could object" — which
-// this file did not carry across. Measured before the fix:
+// TestWithNumber_ScanIsAllocationBounded pins that withNumber, which needs
+// only the LAST candidate in the stem, does not materialize EVERY candidate
+// first (numberPattern.FindAllStringIndex(stem, -1)) to get it. The "-1" is
+// unbounded, the rule funcsre.go's reSub states as "an unbounded -1 here
+// would let a zero-width pattern enumerate maxStringBytes+1 matches before
+// anything downstream could object". Measured with the enumerating form:
 // with_number('#a' * 5000000, 7), every operand inside maxStringBytes,
 // allocated 794 MB to produce a 10 MB result.
 //
@@ -254,8 +249,8 @@ func TestWithNumber_HashThenDigits(t *testing.T) {
 //     accumulated since whichever collection happened to fire mid-call, which
 //     is a function of GOGC, GOMEMLIMIT, the live heap left by preceding tests
 //     and the pacer's own state — under -race that put a correct
-//     implementation at 76% of an earlier version of this bound, and GOGC=off
-//     failed outright, because the fixed form still allocates ~377 MB
+//     implementation at 76% of a candidate bound, and GOGC=off failed
+//     outright, because the scanning form still allocates ~377 MB
 //     cumulatively for this input under -race even though it retains almost
 //     none of it. debug.SetGCPercent below overrides the environment for the
 //     measurement window and restores it afterwards, so collection runs often
@@ -263,14 +258,14 @@ func TestWithNumber_HashThenDigits(t *testing.T) {
 //     is genuinely REACHABLE. The enumerating form's match list is reachable by
 //     construction and no pacer setting can collect it.
 //
-// MEASURED SPREAD at the 400,000 candidates below, on the machine this was
-// written on. FIXED, 90 runs: 25 isolated under -race (max 1,956,192), 20 plain
+// MEASURED SPREAD at the 400,000 candidates below, on one development machine.
+// SCANNING, 90 runs: 25 isolated under -race (max 1,956,192), 20 plain
 // (max 1,125,296), 20 under -cover (max 1,173,456), 10 whole-package runs in
 // the make ci shape, -race -cover, so preceding tests' live heap is present
 // (max 1,810,496), and 5 each under GOGC=off, GOGC=400 and GOGC=1000 to show
 // the forced pace neutralizes a hostile environment (maxima 1,806,064,
-// 1,738,448, 1,475,336). Worst case over all 90: 1.96 MB. BROKEN, 32 runs: 8
-// each under plain (min 32,577,304), -race (min 14,501,312), -cover (min
+// 1,738,448, 1,475,336). Worst case over all 90: 1.96 MB. ENUMERATING, 32
+// runs: 8 each under plain (min 32,577,304), -race (min 14,501,312), -cover (min
 // 32,577,288) and -race GOGC=off (min 14,245,016); it went RED in every one of
 // those modes and in the whole-package make ci shape. Best case over all 32:
 // 14.2 MB.
@@ -282,9 +277,8 @@ func TestWithNumber_HashThenDigits(t *testing.T) {
 // run, so a future engine or runtime change moving either side shows up before
 // it becomes a flake or a false green.
 func TestWithNumber_ScanIsAllocationBounded(t *testing.T) {
-	// 400,000 candidates rather than the 200,000 first tried. Raising the count
-	// does NOT widen the RATIO, and saying so matters because the opposite is
-	// the intuitive guess: measured separation is 7.3x here against 7.7x at
+	// 400,000 candidates rather than 200,000. Raising the count does NOT
+	// widen the RATIO: measured separation is 7.3x here against 7.7x at
 	// 200,000, because under -race the enumerating form's retained reading is
 	// itself affected by collection timing and grew only 18% when the candidate
 	// count doubled. What the larger count buys is a bigger ABSOLUTE gap
@@ -344,10 +338,9 @@ func TestWithNumber_ScanIsAllocationBounded(t *testing.T) {
 
 // TestWithNumber_WindowsFlavor pins that the path row's reconstruction goes
 // through withName under the Windows flavor too, same as every other with_*
-// function since Task 7. The reference is POSIX-only for path functions (see
-// this package's other Windows-flavor tests, and CLAUDE.md's note on the
-// oracle), so it cannot adjudicate these — they are pinned by test alone, not
-// measured against the reference.
+// function. The oracle evaluates path functions under POSIX only, so it
+// cannot adjudicate these — they are pinned by test alone, not measured
+// against the reference.
 func TestWithNumber_WindowsFlavor(t *testing.T) {
 	tests := []struct{ src, want string }{
 		{`path('C:/shot_003.exr').with_number(72)`, `C:\shot_072.exr`},

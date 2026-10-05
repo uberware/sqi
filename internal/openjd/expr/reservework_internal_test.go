@@ -11,23 +11,21 @@ import (
 // This file pins the property no operation count can see: how much WORK an
 // evaluation does.
 //
-// Both defects it exists to catch were found by measurement and were invisible
-// to every test in the suite, including the differential oracle, because the
-// operation counts were byte-identical either side of them (EXPR sub-project
-// E4c, whole-branch re-review, IMPORTANT A and B):
+// Both defects it guards against are invisible to every other test in the
+// suite, including the differential oracle, because the operation counts are
+// byte-identical either side of them:
 //
 //   - A range_expr with TWO OR MORE sub-ranges cannot be counted
 //     arithmetically -- rangeExprCount expands it to count it (rangeexpr.go).
-//     So the reservation added to bound expansions was itself performing the
-//     expansion it existed to refuse: len(range_expr(
+//     So a reservation sized through rangeExprCount performs the very
+//     expansion it exists to refuse: len(range_expr(
 //     "1-5000000,6000000-9000000")) answered after 645 ms and 687 MB while
 //     charging TWO operations, and list(), a subscript and a comprehension
 //     each paid the same 687 MB before refusing.
 //
-//   - On the SUCCESS path the same expression was then expanded a SECOND
-//     time by the operation that had just been reserved for -- +73 MB and
-//     +38 ms per call, a pure regression with no observable effect on any
-//     count.
+//   - On the SUCCESS path the same expression is then expanded a SECOND
+//     time by the operation that was just reserved for -- +73 MB and
+//     +38 ms per call, with no observable effect on any count.
 //
 // Allocation deltas, not wall clock: this package's established technique for
 // a cost property that must not flake on shared CI (see
@@ -58,13 +56,13 @@ func allocDelta(f func()) uint64 {
 	return after.TotalAlloc - before.TotalAlloc
 }
 
-// TestReserveRangeExpr_RefusalDoesNotExpand pins finding A: a multi-sub-range
-// range_expr that cannot fit the budget must be refused ARITHMETICALLY, with
-// no expansion at all.
+// TestReserveRangeExpr_RefusalDoesNotExpand pins that a multi-sub-range
+// range_expr that cannot fit the budget is refused ARITHMETICALLY, with no
+// expansion at all.
 //
-// The ceiling is 1 MB against a defect that allocated 687 MB, so it is nearly
-// three orders of magnitude below the regression and comfortably above the
-// parse-and-bounds arithmetic the fixed path actually does.
+// The ceiling is 1 MB against the 687 MB an expansion allocates, so it is
+// nearly three orders of magnitude below that and comfortably above the
+// parse-and-bounds arithmetic the refusal actually does.
 func TestReserveRangeExpr_RefusalDoesNotExpand(t *testing.T) {
 	const ceiling = 1 << 20
 
@@ -73,8 +71,8 @@ func TestReserveRangeExpr_RefusalDoesNotExpand(t *testing.T) {
 		src  string
 	}{
 		// len() is first because it is the worst case: section 1.3.10 exempts
-		// len() from charging, so this expression cost 687 MB while reporting
-		// TWO operations -- no budget in the package could see it.
+		// len() from charging, so expanding here costs 687 MB while reporting
+		// TWO operations -- no budget in the package can see it.
 		{"len", `len(range_expr(` + multiSubRangeRefused + `))`},
 		{"list", `list(range_expr(` + multiSubRangeRefused + `))`},
 		{"subscript", `range_expr(` + multiSubRangeRefused + `)[0]`},
@@ -101,19 +99,19 @@ func TestReserveRangeExpr_RefusalDoesNotExpand(t *testing.T) {
 	}
 }
 
-// TestReserveRangeExpr_SuccessExpandsOnce pins finding B: an accepted
-// multi-sub-range expression must not be expanded twice.
+// TestReserveRangeExpr_SuccessExpandsOnce pins that an accepted
+// multi-sub-range expression is not expanded twice.
 //
 // It asserts a RATIO against a single-sub-range control of the same value
 // count rather than an absolute byte figure. The control's reservation is
-// exact arithmetic and has never expanded, so it measures the one expansion
+// exact arithmetic and never expands, so it measures the one expansion
 // the operation genuinely needs; the multi-sub-range case must stay in the
 // same ballpark. A regression to reserving via rangeExprCount doubles the
 // expansion and pushes the ratio well past 2.
 func TestReserveRangeExpr_SuccessExpandsOnce(t *testing.T) {
 	// 900,001 values in two sub-ranges, against 900,000 in one. Sized to be
 	// within the default operation limit so both SUCCEED -- the success path
-	// is the whole point of this test.
+	// is what this test measures.
 	const multi = `len(list(range_expr(` + multiSubRangeAccepted + `)))`
 	const single = `len(list(range_expr("1-900000")))`
 
@@ -146,8 +144,8 @@ func TestReserveRangeExpr_SuccessExpandsOnce(t *testing.T) {
 	// The multi-sub-range path legitimately costs more than the control even
 	// when it expands once -- expandRanges carries a deduplication map the
 	// single-sub-range path does not (expandOneRange's own doc comment). The
-	// measured figures are ~175 MB against ~144 MB, a ratio near 1.2; the
-	// double-expansion regression measured ~249 MB, a ratio near 1.7. 1.45
+	// measured figures are ~175 MB against ~144 MB, a ratio near 1.2; a
+	// double expansion measured ~249 MB, a ratio near 1.7. 1.45
 	// sits between them with room on both sides.
 	if ratio > 1.45 {
 		t.Errorf("the multi-sub-range success path allocated %.0f%% of the single-sub-range "+
@@ -160,28 +158,28 @@ func TestReserveRangeExpr_SuccessExpandsOnce(t *testing.T) {
 }
 
 // TestReserveRangeExpr_CoercionAndEqualityDoNotExpand pins the three
-// expansion sites that no CHARGE sits in front of, and that therefore could
-// not be caught by the reservations added in fix round 2.
+// expansion sites that no CHARGE sits in front of, so that a reservation at a
+// charge cannot cover them.
 //
-// All three are pre-existing and all three were found by measurement, because
-// each one runs to completion and is caught (if at all) only afterwards:
+// Without a reservation of their own, each one runs to completion and is
+// caught (if at all) only afterwards:
 //
 //   - EQUALITY. Section 1.3.10 charges a list/range comparison against the
 //     LEFT operand only -- an adjudicated ruling
 //     (TestOperationCount_ListEquality) -- but listOrRangeEqual expands
-//     whichever side is a range_expr. A right-hand one had nothing in front of
-//     it: [1] == range_expr("1-5000000,6000000-9000000") allocated 1603 MB in
-//     651 ms, returned false, and charged THREE operations.
+//     whichever side is a range_expr. Unreserved, a right-hand one has nothing
+//     in front of it: [1] == range_expr("1-5000000,6000000-9000000") allocated
+//     1603 MB in 651 ms, returned false, and charged THREE operations.
 //
 //   - ARGUMENT COERCION. callShape's coercion loop runs BEFORE chargeArgs, so
 //     a range_expr coerced to a list[int] parameter is expanded and only then
-//     billed: sorted([1] + range_expr("1-10000000")) spent 2768 MB before
-//     reporting 10,000,003 operations against a limit of 10,000.
+//     billed: unreserved, sorted([1] + range_expr("1-10000000")) spent 2768 MB
+//     before reporting 10,000,003 operations against a limit of 10,000.
 //
 //   - TARGET COERCION. coerceTop expands a range_expr meeting a list[int]
-//     target with no charge at all; the result's own alloc is what caught it,
-//     after 2768 MB existed. evalListLit's ELEMENT coercion is the same rule
-//     one level down ("[range_expr('1-10000000')]" against a list[list[int]]
+//     target with no charge at all; unreserved, the result's own alloc is what
+//     caught it, after 2768 MB existed. evalListLit's ELEMENT coercion is the
+//     same rule one level down ("[range_expr('1-10000000')]" against a list[list[int]]
 //     target, also 2768 MB) and is covered by the same helper.
 //
 // The reservations are check-only, so the left-only charging ruling and every
@@ -242,12 +240,12 @@ func TestReserveEquality_IdenticalRangeTextStillCompares(t *testing.T) {
 
 // TestReserveRangeExprCount_SingleSubRangeStaysFree pins the property that
 // separating reserveRangeExprCount from reserveRangeExprExpansion exists to
-// protect, and that a first draft of this fix broke.
+// protect.
 //
 // len() over a SINGLE sub-range is pure arithmetic on the parsed bounds: it
 // allocates nothing and expands nothing, so there is no work for a
 // reservation to refuse. Reserving the COUNT as though it were the expansion
-// made len(range_expr('1-20000000')) fail under any budget below 20,000,000 --
+// makes len(range_expr('1-20000000')) fail under any budget below 20,000,000 --
 // rejecting the exact query the arithmetic path exists to serve, and the one
 // funcsconv.go's len row and TestLenRangeExpr_DoesNotMaterialize both name.
 func TestReserveRangeExprCount_SingleSubRangeStaysFree(t *testing.T) {

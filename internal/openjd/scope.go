@@ -8,7 +8,7 @@ import "github.com/uberware/sqi/internal/openjd/expr"
 // symbols exist there, and whether the position runs on a worker host.
 //
 // This is the SINGLE declaration of scope in the package. It has two consumers,
-// which is the whole point:
+// which is why it exists:
 //
 //   - The EXPR path builds a typed symbol table from it, so a reference to a
 //     symbol the scope does not expose fails as an unknown symbol from the
@@ -16,9 +16,8 @@ import "github.com/uberware/sqi/internal/openjd/expr"
 //   - The base-spec path keeps prefix-matching, against prefixes DERIVED from
 //     this declaration (derivedPrefixes) rather than a hand-maintained list.
 //
-// Before E2 the base-spec prefixes were three literals in validate.go. Keeping
-// them AND an EXPR scope model would put scope knowledge in two places, which
-// is the shape of a drift this program has already been bitten by once.
+// Keeping hand-written base-spec prefixes AND an EXPR scope model would put
+// scope knowledge in two places, free to drift apart.
 type Scope int
 
 const (
@@ -75,16 +74,15 @@ func (s Scope) String() string {
 // hostOnlyFunctions' own comment.)
 //
 // This is deliberately an explicit positive list of the host-context scopes,
-// not a negation of the non-host ones. A negation (originally "s != ScopeJob")
+// not a negation of the non-host ones. A negation (such as "s != ScopeJob")
 // is an every-scope-but-this-one claim: it is correct only for as long as
 // every scope added later happens to be a host context, which is not a
 // property Go's type system -- or anything else -- enforces. A positive list
-// fails CLOSED: a sixth scope that nobody adds a case for here is simply not a
-// host context, and apply_path_mapping stays unavailable there until someone
-// deliberately decides otherwise. ScopeStepTemplate is the case that exposed
-// the negation as wrong -- it is not ScopeJob, so "s != ScopeJob" would have
-// silently granted it host-only functions despite section 3.6.2 row 1 placing
-// it at submission time, before any host exists.
+// fails CLOSED: a sixth scope that nobody adds a case for here is not a host
+// context, and apply_path_mapping stays unavailable there until someone
+// deliberately decides otherwise. ScopeStepTemplate shows why -- it is not
+// ScopeJob, so "s != ScopeJob" would grant it host-only functions despite
+// section 3.6.2 row 1 placing it at submission time, before any host exists.
 func (s Scope) IsHostContext() bool {
 	switch s {
 	case ScopeJobEnvironment, ScopeStepEnvironment, ScopeStepScript:
@@ -154,7 +152,7 @@ func init() {
 //
 // Every entry here is EXPR-only. Section 1.2.2 defines Job.Name, Step.Name and
 // the Session.* triple as part of the EXPR extension's built-in symbols, and
-// none of them appears in any pre-E2 prefix list -- which is exactly why
+// none of them is a base-spec prefix -- which is why
 // 7.3.1--job-name-requires-expr and 7.3.1--step-name-requires-expr are invalid
 // without the extension.
 //
@@ -196,8 +194,7 @@ func computeScopeFixed(s Scope) []fixedSymbol {
 }
 
 // scopeFamilies returns the template-populated symbol families a scope exposes,
-// IN THE ORDER the pre-E2 prefix literals used. Order is load-bearing:
-// derivedPrefixes feeds validateFormatString's "allowed: ..." message, and
+// in a fixed order. Order matters: derivedPrefixes feeds validateFormatString's "allowed: ..." message, and
 // reordering it would change text users read.
 //
 // The result is the SHARED slice built at init; see the table declaration above
@@ -250,8 +247,7 @@ func computeScopeFamilies(s Scope) []symbolFamily {
 // Falling through to the general computation below would produce a
 // plausible-looking but never-exercised list, and worse, a wrong one: the
 // "s != ScopeJob" rule would append "Session." even though section 3.6.2 row
-// 1 grants a step template no Session symbols at all (2.1 of the design
-// spec). Returning nil here says plainly that this scope is out of scope for
+// 1 grants a step template no Session symbols at all. Returning nil here says plainly that this scope is out of scope for
 // the base-spec path.
 //
 // The result is the SHARED slice built at init; see the table declaration above

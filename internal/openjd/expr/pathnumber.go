@@ -14,11 +14,9 @@ import (
 // run both fail this way; %032d and a 32-character # run are both accepted.
 //
 // The width is INTERPOLATED FROM THE CONSTANT rather than written out beside
-// it: the message and maxNumberPadding stated "32" twice, and a message is
-// exactly the kind of second copy that comes to lie the first time the limit
-// moves. The function-name prefix the message used to carry is gone, so this
-// reads in the same register as funcspath.go's five path errors, none of which
-// names the function it backs — the caller supplies that context already.
+// it, so the message cannot go stale when the limit moves. The message names
+// no function, like funcspath.go's five path errors, none of which names the
+// function it backs — the caller supplies that context already.
 var errPaddingTooWide = fmt.Errorf(
 	"a padding width may not exceed %d characters", maxNumberPadding,
 )
@@ -34,7 +32,7 @@ const maxNumberPadding = 32
 
 // numberPattern finds a with_number frame-number placeholder in a stem: a
 // printf specifier (%d or %0Nd), a run of one or more '#', or a run of one or
-// more digits — in that ALTERNATION ORDER, which is load-bearing. Go's
+// more digits — in that ALTERNATION ORDER, which matters. Go's
 // regexp package matches alternatives leftmost-first (the same "backtracking
 // search" order Perl and Python use), not leftmost-longest: at the position
 // where "%04d" begins, the printf alternative is tried first and consumes
@@ -45,20 +43,18 @@ const maxNumberPadding = 32
 // match".
 //
 // A hash run immediately followed by a digit run — "###003", "##a3" — is TWO
-// candidates, not one: "#+" stops at the first non-'#' character, so it
-// never reaches into the digits (or letters) that follow, and the LAST
-// candidate (the digit run, when there is one) is what withNumber replaces,
-// per RFC 0006 line 822's "replaces the last match found" — a match, not
-// "the match through the end of the stem". with_number("###003", 7) is
-// therefore "###007": the "###" is untouched literal text, exactly as if it
-// were any other prefix like "shot01_####". The reference implementation
-// (openjd-model 0.11.1) disagrees — it lets a hash run consume the rest of
-// the stem, so with_number("##a3", 7) comes back "07" there, DESTROYING the
-// literal "a" that was in the input — which is a reference defect against
-// its own specification's "replaces the last match found" wording, not a
-// second valid reading of it. Confirmed adjudicated in sqi's favor during
-// Task 8 review; do not "fix" this file to match the reference. See
-// TestWithNumber_HashThenDigits and this task's report for the full
+// candidates, not one: "#+" stops at the first non-'#' character, so it never
+// reaches into the digits (or letters) that follow, and the LAST candidate (the
+// digit run, when there is one) is what withNumber replaces, per RFC 0006 line
+// 822's "replaces the last match found" — a match, not "the match through the
+// end of the stem". with_number("###003", 7) is therefore "###007": the "###"
+// is untouched literal text, exactly as if it were any other prefix like
+// "shot01_####". The reference implementation (openjd-model 0.11.1) disagrees —
+// it lets a hash run consume the rest of the stem, so with_number("##a3", 7)
+// comes back "07" there, DESTROYING the literal "a" that was in the input —
+// which is a reference defect against its own specification's "replaces the
+// last match found" wording, not a second valid reading of it. Do not "fix"
+// this file to match the reference. See TestWithNumber_HashThenDigits for the
 // side-by-side.
 var numberPattern = regexp.MustCompile(`%(0\d+)?d|#+|\d+`)
 
@@ -107,19 +103,18 @@ func withNumber(name string, n int64) (string, error) {
 // lastNumberMatch reports the byte range of the LAST numberPattern candidate
 // in stem, or found == false when the stem holds none.
 //
-// IT SCANS RATHER THAN ENUMERATING, and that is a memory bound, not a
-// micro-optimization. The original wrote numberPattern.FindAllStringIndex(stem,
-// -1) and then took the final element — materializing every candidate to use
-// exactly one. The "-1" is unbounded, and funcsre.go's reSub already stated the
-// rule this file did not carry across: "an unbounded -1 here would let a
-// zero-width pattern enumerate maxStringBytes+1 matches before anything
-// downstream could object." C3's reSub, reFindAll and reMatchCount all pass
+// IT SCANS RATHER THAN ENUMERATING, as a memory bound.
+// numberPattern.FindAllStringIndex(stem, -1) followed by taking the final
+// element would materialize every candidate to use exactly one, and the "-1"
+// is unbounded: as funcsre.go's reSub puts it, "an unbounded -1 here would
+// let a zero-width pattern enumerate maxStringBytes+1 matches before anything
+// downstream could object." reSub, reFindAll and reMatchCount all pass
 // maxElements+1 for that reason. Here a bound is not needed at all, because
 // nothing is accumulated: successive FindStringIndex calls over the shrinking
 // remainder keep ONE pair of indices live however many candidates the stem has,
 // so with_number('#a' * 5000000, 7) — every operand inside maxStringBytes —
 // costs a small multiple of the input instead of the 794 MB the enumerating
-// form measured. Pinned by TestWithNumber_ScanIsAllocationBounded, which
+// form measures. Pinned by TestWithNumber_ScanIsAllocationBounded, which
 // asserts LIVE HEAP across the call under a forced collector pace — neither
 // allocation count nor cumulative bytes can separate the two forms under the
 // race detector, and that test's doc comment carries the measurements.
@@ -169,19 +164,18 @@ func numberReplacement(candidate string, n int64) (string, error) {
 	}
 }
 
-// printfReplacement renders n for a printf-style candidate. candidate is
-// either the bare "%d" (no padding at all) or "%0Nd" for some digit string
-// N, which numberPattern guarantees contains only digits — but NOT that
-// those digits fit in an int: "%0999999999999999999999d" is a well-formed
-// match whose width literal overflows strconv.Atoi. That overflow is itself
-// proof the requested width exceeds maxNumberPadding (32), so it is reported
-// as errPaddingTooWide rather than leaking Atoi's raw *NumError — a caller
-// matching on the sentinel via errors.Is must see it regardless of which of
-// the two ways "too wide" was detected. The reference silently ACCEPTS this
-// input with no padding at all, which given RFC 0006 line 831's explicit
-// "wider printf or hash patterns are an error" is a second reference defect
-// in the same neighborhood as the hash-then-digit one above; sqi erroring
-// here is correct, only the error VALUE was wrong before this fix.
+// printfReplacement renders n for a printf-style candidate. candidate is either
+// the bare "%d" (no padding at all) or "%0Nd" for some digit string N, which
+// numberPattern guarantees contains only digits — but NOT that those digits fit
+// in an int: "%0999999999999999999999d" is a well-formed match whose width
+// literal overflows strconv.Atoi. That overflow is itself proof the requested
+// width exceeds maxNumberPadding (32), so it is reported as errPaddingTooWide
+// rather than leaking Atoi's raw *NumError — a caller matching on the sentinel
+// via errors.Is must see it regardless of which of the two ways "too wide" was
+// detected. The reference silently ACCEPTS this input with no padding at all,
+// which given RFC 0006 line 831's explicit "wider printf or hash patterns are
+// an error" is a second reference defect in the same neighborhood as the
+// hash-then-digit one above; sqi errors here.
 func printfReplacement(candidate string, n int64) (string, error) {
 	digits := candidate[1 : len(candidate)-1]
 	if digits == "" {

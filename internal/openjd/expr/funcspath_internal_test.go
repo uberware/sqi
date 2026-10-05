@@ -41,8 +41,8 @@ func TestPathConstructor(t *testing.T) {
 }
 
 // TestPathConstructor_HonoursTheOption is the only place the path_format option
-// is observable end to end, and therefore the only thing that proves the
-// plumbing from Task 1 actually reaches a function.
+// is observable end to end, and therefore the only check that the option's
+// plumbing actually reaches a function.
 func TestPathConstructor_HonoursTheOption(t *testing.T) {
 	v, err := Eval(`path('C:/a/b')`, MapSymbols{}, TAny, WithPathFormat(PathWindows))
 	if err != nil {
@@ -60,7 +60,7 @@ func TestPathConstructor_HonoursTheOption(t *testing.T) {
 	}
 }
 
-// TestAsPosix_ConvertsWindowsSeparators is as_posix's whole reason to exist.
+// TestAsPosix_ConvertsWindowsSeparators covers the case as_posix exists for.
 func TestAsPosix_ConvertsWindowsSeparators(t *testing.T) {
 	v, err := Eval(`path('C:/renders/project').as_posix()`, MapSymbols{}, TAny, WithPathFormat(PathWindows))
 	if err != nil {
@@ -71,25 +71,24 @@ func TestAsPosix_ConvertsWindowsSeparators(t *testing.T) {
 	}
 }
 
-// TestAsPosix_IsFlavorAware pins the final fix wave's ruling: as_posix replaces
-// THE FLAVOR'S OWN separator with "/", so it is the IDENTITY under POSIX and
-// on a URI, and a "\" -> "/" rewrite only under Windows.
+// TestAsPosix_IsFlavorAware pins that as_posix replaces THE FLAVOR'S OWN
+// separator with "/", so it is the IDENTITY under POSIX and on a URI, and a
+// "\" -> "/" rewrite only under Windows.
 //
-// The original implementation rewrote every backslash unconditionally, and the
-// decisive argument against it is sqi's own internal contradiction rather than
-// a preference: under POSIX a backslash is an ordinary filename character, so
-// path('/a/\b/c').parts is ["/", "a", `\b`, "c"] and .name is "c" — and
-// as_posix() answered "/a/b/c", a path with different parts and a different
-// name. One value cannot be both. The same rewrite silently renamed an S3
-// object key, which contradicts this package's own "a URI NORMALIZES NOTHING"
-// ruling.
+// Rewriting every backslash unconditionally would contradict sqi itself:
+// under POSIX a backslash is an ordinary filename character, so
+// path('/a/\b/c').parts is ["/", "a", `\b`, "c"] and .name is "c" — and an
+// as_posix() answering "/a/b/c" would describe a path with different parts
+// and a different name. One value cannot be both. The same rewrite would
+// rename an S3 object key, which contradicts this package's own "a URI
+// NORMALIZES NOTHING" ruling.
 //
 // CPython settles the direction: PurePath.as_posix() is
 // str(self).replace(self.parser.sep, '/') — the FLAVOR's separator — so it is
 // the identity for PurePosixPath (measured: PurePosixPath('/a\\b/c').as_posix()
 // is "/a\b/c"). RFC 0006 line 857 names as_posix among the functions that
-// "match Python's pathlib API", which is the same clause baseline.txt already
-// cites to rule against the reference for stem/suffix. The RFC table row
+// "match Python's pathlib API", which is the same clause baseline.txt cites to
+// rule against the reference for stem/suffix. The RFC table row
 // "return string with forward slashes" summarizes the Windows case, which is
 // the only case where a separator has to change at all.
 //
@@ -107,7 +106,7 @@ func TestAsPosix_IsFlavorAware(t *testing.T) {
 		{`path('/renders/shot_a\\b.exr').as_posix()`, PathPOSIX, `/renders/shot_a\b.exr`},
 		{`path('/a/\\b/c').as_posix()`, PathPOSIX, `/a/\b/c`},
 		{`path('/a/b').as_posix()`, PathPOSIX, "/a/b"},
-		// The contradiction the ruling closes: as_posix must agree with the
+		// The contradiction this rule avoids: as_posix must agree with the
 		// parts and the name of the very same value.
 		{`join(path('/a/\\b/c').parts, '|')`, PathPOSIX, `/|a|\b|c`},
 		{`path('/a/\\b/c').name`, PathPOSIX, "c"},
@@ -135,12 +134,12 @@ func TestAsPosix_IsFlavorAware(t *testing.T) {
 	}
 }
 
-// TestPathRoundTrip_PartsProperty is fix-round 1's property test: RFC 0006
-// states path(p.parts) == p, and the review that found the "C:" + "a" bug did
-// so with a generated corpus, not a single table row, because a second
-// formula beside parsedPath.String() agreed with the first on almost every
-// input and disagreed on exactly one shape. A single regression row proves
-// that ONE shape is fixed; it does not prove no OTHER shape still disagrees.
+// TestPathRoundTrip_PartsProperty tests RFC 0006's path(p.parts) == p as a
+// property over a generated corpus, not a single table row: a second formula
+// beside parsedPath.String() can agree with the first on almost every input
+// and disagree on exactly one shape (a bare Windows drive, "C:" + "a"). A
+// single regression row proves that ONE shape works; it does not prove no
+// OTHER shape disagrees.
 //
 // The corpus is built by taking a raw path TEXT, parsing it once to get the
 // canonical parsedPath p, taking p.parts(), handing those parts BACK through
@@ -150,11 +149,11 @@ func TestAsPosix_IsFlavorAware(t *testing.T) {
 // so the property covers the whole path from FnCtx dispatch down, not just
 // the helper in isolation.
 //
-// Three shapes, matching the fix-round report's "all three flavors":
+// Three shapes, one per flavor:
 //   - POSIX roots ("", "/", "//") crossed with bodies covering plain
 //     components, ".", "..", and doubled separators.
 //   - Windows roots covering every anchor shape pathval.go names by name:
-//     none, a bare drive ("C:", the exact shape the bug was in), a
+//     none, a bare drive ("C:", the shape a second formula gets wrong), a
 //     drive-with-root ("C:\"), a root with no drive ("\"), and a UNC root
 //     both with and without its own trailing separator (the
 //     synthesizeUNCRoot case) — crossed with bodies including one
@@ -163,7 +162,7 @@ func TestAsPosix_IsFlavorAware(t *testing.T) {
 //   - URI roots (several schemes, including one exercising the full
 //     scheme-byte grammar) crossed with bodies that reintroduce EMPTY
 //     components ("a//b", "//a") — URIs keep those, filesystem paths do
-//     not, and this is what the brief called out by name — run under BOTH
+//     not — run under BOTH
 //     PathPOSIX and PathWindows to confirm URI opacity does not depend on
 //     the chosen flavor.
 func TestPathRoundTrip_PartsProperty(t *testing.T) {
@@ -186,8 +185,8 @@ func TestPathRoundTrip_PartsProperty(t *testing.T) {
 
 	// windowsText joins a root and a body the way a real Windows path text
 	// would: most roots already end in a separator (or are empty, or are a
-	// bare drive that attaches with NONE by design — the exact case the bug
-	// was in), so those concatenate directly; the one root pathval.go's
+	// bare drive that attaches with NONE by design), so those concatenate
+	// directly; the one root pathval.go's
 	// synthesizeUNCRoot documents as lacking its own trailing separator
 	// needs one inserted to stay a valid two-component UNC share rather than
 	// merging into the body.
@@ -263,7 +262,7 @@ func TestPathRoundTrip_PartsProperty(t *testing.T) {
 }
 
 // TestPathProperties pins Python's pathlib semantics, including the cases that
-// surprise people. Every expectation came from running python3 during design.
+// surprise people. Every expectation came from python3.
 //
 // ".hidden" has NO suffix — a leading dot is not an extension. "a." has stem
 // "a" and suffix "." , which is where the reference implementation disagrees
@@ -332,21 +331,13 @@ func TestPathListProperties(t *testing.T) {
 // path(p.parts) == p, over the same generated corpus the engine differential
 // uses — so it is a property over many inputs, not three hand-picked ones.
 //
-// DEVIATION 1 from the brief's literal test body: the brief calls a helper
-// named joinParts(parts, flavor) that does not exist in this codebase.
-// task-5's fix round DELETED joinParts outright — it was a second formula for
-// "how does a root join its components" that disagreed with
-// parsedPath.String() on a bare Windows drive ("C:" + "a"; see
-// funcspath.go's pathFromParts doc comment) — and replaced every caller with
-// pathFromParts, which defers to String() instead of re-deriving the rule.
-// Writing a fresh joinParts here to satisfy the brief literally would be
-// exactly the second copy of that formula the fix round removed. This test
-// therefore calls pathFromParts(parts, flavor).String() in joinParts's place;
-// the expected VALUES (parts, roundtrip equality) are unchanged from the
-// brief, only the helper name is current.
+// It rebuilds through pathFromParts(parts, flavor).String(), which defers to
+// String() instead of re-deriving how a root joins its components (see
+// funcspath.go's pathFromParts doc comment): a second formula for that
+// disagrees with parsedPath.String() on a bare Windows drive ("C:" + "a").
 //
-// DEVIATION 2: this stays POSIX-only (pathCorpusPOSIX, matching the brief)
-// rather than also folding in pathCorpusWindows. That corpus was built for a
+// It stays POSIX-only (pathCorpusPOSIX) rather than also folding in
+// pathCorpusWindows. That corpus was built for a
 // DIFFERENT property (TestParsePath_WindowsMatchesPython's parse/render/
 // is_absolute differential) and several of its deliberately adversarial
 // leads — "./c:", ".\a:b" — produce a component whose text is itself
@@ -354,15 +345,13 @@ func TestPathListProperties(t *testing.T) {
 // splitRootWindows on the ORIGINAL parse. Feeding that component back through
 // parts() and pathFromParts reparses it in ISOLATION, where the same text now
 // reads as a real drive, and the round trip genuinely does not hold — not a
-// bug here, since python3 was run to confirm PureWindowsPath itself fails
-// the identical way: W(*W("./c:.").parts) renders "c:", not ".\c:.". C4 Task
-// 7 (with_* and relative_to) or a later fix round is where any additional
-// classification would need to be reconsidered, not this task, and reusing
+// bug here, since PureWindowsPath itself fails the identical way (confirmed
+// with python3): W(*W("./c:.").parts) renders "c:", not ".\c:.". Reusing
 // pathCorpusWindows here would pin an equality RFC 0006 does not actually
-// hold. Three-flavor coverage of the property THAT DOES hold is already
-// delivered by TestPathRoundTrip_PartsProperty above (206 cases spanning
-// POSIX, Windows and URI, curated to avoid this exact known limitation) —
-// this test adds POSIX-differential-corpus breadth on top, per the brief.
+// hold. Three-flavor coverage of the property THAT DOES hold is in
+// TestPathRoundTrip_PartsProperty above (206 cases spanning POSIX, Windows and
+// URI, curated to avoid this known limitation) — this test adds
+// POSIX-differential-corpus breadth on top.
 func TestPathParts_Roundtrip(t *testing.T) {
 	for _, in := range pathCorpusPOSIX() {
 		p := parsePath(in, PathPOSIX)
@@ -375,16 +364,12 @@ func TestPathParts_Roundtrip(t *testing.T) {
 }
 
 // TestBoundedPath_EnforcesTheByteBound pins the ONLY enforcement point the
-// whole path family has for limits.go's maxStringBytes — and it was completely
-// untested until the final fix wave: deleting the checkStringBytes call from
-// boundedPath left this package's tests, the conformance suite and the oracle
-// all green. Every path-producing operation in funcspath.go and ops.go routes
-// its result through this one function, so an unenforced bound there is an
-// unbounded path value everywhere.
-//
-// The gap matters more than its size suggests because this program has already
-// shipped an after-the-fact bound once, on C3's reSub, for the same reason: a
-// limit nothing exercises is a limit nobody notices the absence of.
+// whole path family has for limits.go's maxStringBytes. Without this test,
+// deleting the checkStringBytes call from boundedPath leaves this package's
+// tests, the conformance suite and the oracle all green. Every path-producing
+// operation in funcspath.go and ops.go routes its result through this one
+// function, so an unenforced bound there is an unbounded path value
+// everywhere.
 //
 // The bound is checked AT the limit and one past it, matching
 // TestWithNumber_PaddingCap's rule that a bound tested "near" its value is not
@@ -416,12 +401,12 @@ func TestBoundedPath_EnforcesTheByteBound(t *testing.T) {
 }
 
 // TestPathFromParts_HeadIsARootOnlyWhenItIsNOTHINGElse pins the second half of
-// pathFromParts's head classification, which nothing exercised: a head token is
-// treated as a root only when parsing it alone yields a non-empty root AND NO
-// leftover components.
+// pathFromParts's head classification, which nothing else exercises: a head
+// token is treated as a root only when parsing it alone yields a non-empty
+// root AND NO leftover components.
 //
 // Dropping the "&& len(probe.comps) == 0" clause stays green everywhere except
-// here, and it silently DROPS a component: path(['/a', 'b']) parses "/a" to
+// here, and it DROPS a component: path(['/a', 'b']) parses "/a" to
 // root "/" plus component "a", credits the whole token as the root, and answers
 // "/b" — the "a" gone, with no error. The list handed to path() is not
 // guaranteed to have come from parts(), so a head that is a root PLUS something
@@ -512,7 +497,7 @@ func TestPathWithFunctions(t *testing.T) {
 // absolute path's parents run down to "/", never to ".". The Expression-Language
 // specification names that function outright ("matching uses
 // PurePath.is_relative_to()", section on path mapping rules), and relative_to
-// inherited the same defect in a louder form: it answered path('/a/b') for
+// has the same defect in a louder form: unguarded, it answers path('/a/b') for
 // path('/a/b').relative_to(path('.')) — a "relative" result that is absolute.
 //
 // The rows where BOTH paths are anchorless stay true, which is CPython's answer
@@ -563,8 +548,8 @@ func TestPathRelativeTo_AnchorlessOther(t *testing.T) {
 // relative_to, "strips the matching prefix" — so a base written the way an
 // operator writes a prefix, "s3://renders/", has to match the objects under it.
 //
-// That has to hold at the same time as the OTHER specification rule, which the
-// URI parse fix in this same task established: a URI's path portion is
+// That has to hold at the same time as the OTHER specification rule, which
+// TestParsePath_URITrailingSlashAfterAuthority pins: a URI's path portion is
 // preserved verbatim, so an empty component IS a component and
 // path("s3://b/").parts is ["s3://b", ""]. The two only conflict if the prefix
 // test treats the boundary's own separators as significant. It does not, on
@@ -576,8 +561,8 @@ func TestPathRelativeTo_AnchorlessOther(t *testing.T) {
 //     keeps the result a RELATIVE path. Without it path("s3://b//d")
 //     .relative_to(path("s3://b")) answers "/d" and path("s3://b//")
 //     .relative_to(path("s3://b")) answers "/" — absolute results from a
-//     function whose whole job is to remove an anchor, which then silently
-//     discard whatever base they are later joined onto. That is the same
+//     function whose whole job is to remove an anchor, which then discard
+//     whatever base they are later joined onto. That is the same
 //     defect shape as the anchorless-"." one above, reached through a URI.
 //
 // Every expectation below is the reference implementation's own answer except
@@ -608,7 +593,7 @@ func TestPathRelativeTo_URIBoundarySlash(t *testing.T) {
 		// two-separator case cannot tell a RUN trim from a ONE-STEP trim. A
 		// mutation trimming a single empty component instead of the run leaves
 		// every two-slash row above green and still answers "/d" here, which is
-		// the very defect this rule exists to close. Both directions are
+		// the defect this rule exists to close. Both directions are
 		// covered: a long run in the receiver (the remainder side) and a long
 		// run terminating the base.
 		{`path('s3://b///d').relative_to(path('s3://b'))`, "d"},
@@ -622,8 +607,8 @@ func TestPathRelativeTo_URIBoundarySlash(t *testing.T) {
 		{`path('s3://b/d/e').relative_to(path('s3://b/d//'))`, "e"},
 		{`path('s3://b/d/e').relative_to(path('s3://b/d///'))`, "e"},
 		{`path('s3://b/d').is_relative_to(path('s3://b//'))`, "true"},
-		// The coherence artifact the ruling produces, recorded rather than
-		// left to be rediscovered: two URI values that are NOT equal are each
+		// A coherence artifact of the boundary rule: two URI values that are
+		// NOT equal are each
 		// relative to the other, and relative_to answers "." both ways. That
 		// follows directly from the boundary rule — the separators between
 		// them are the boundary and belong to neither — and it is not a
@@ -659,8 +644,8 @@ func TestPathRelativeTo_URIBoundarySlash(t *testing.T) {
 }
 
 // TestPathWithFunctions_Reject pins the three error conditions. All three
-// behave the same way in Python and in the reference — measured during design —
-// so any divergence here is a bug rather than an adjudication.
+// behave the same way in Python and in the reference, so any divergence here
+// is a bug rather than an adjudication.
 func TestPathWithFunctions_Reject(t *testing.T) {
 	tests := []struct {
 		src     string
@@ -674,7 +659,7 @@ func TestPathWithFunctions_Reject(t *testing.T) {
 		// as with_name and with_stem, so a receiver with no final component
 		// fails the ordinary errEmptyName rather than a second check — even
 		// though withNumber itself never inspects the receiver at all.
-		// Measured against the reference during design.
+		// Measured against the reference.
 		{`path('/').with_number(3)`, errEmptyName},
 	}
 	for _, tc := range tests {
@@ -690,18 +675,17 @@ func TestPathWithFunctions_Reject(t *testing.T) {
 	}
 }
 
-// TestPathWithFunctions_ArgumentValidation is fix round 1: with_name,
-// with_stem and with_suffix originally accepted ANY replacement text,
-// including one containing a separator, fabricating a path component that
-// did not exist in the input. Every expectation here is the reference's
-// actual output at openjd-model 0.11.1, measured by the reviewer during fix
-// round 1 — not adjudicated, not derived from Python alone.
+// TestPathWithFunctions_ArgumentValidation pins that with_name, with_stem and
+// with_suffix validate their replacement text: accepting ANY text, including
+// one containing a separator, would fabricate a path component that did not
+// exist in the input. Every expectation here is the reference's actual output
+// at openjd-model 0.11.1 — not adjudicated, not derived from Python alone.
 func TestPathWithFunctions_ArgumentValidation(t *testing.T) {
 	tests := []struct{ src, want string }{
-		// CRITICAL 1: with_name validates its argument, but ".." is legal —
-		// only exact equality to "." is rejected, not a leading dot run.
+		// with_name validates its argument, but ".." is legal — only exact
+		// equality to "." is rejected, not a leading dot run.
 		{`path('/a/b.txt').with_name('..')`, "/a/.."},
-		// CRITICAL 2 (positive branch): with_stem on a receiver whose own
+		// with_stem (positive branch): with_stem on a receiver whose own
 		// suffix is EMPTY is exactly with_name — no suffix to preserve.
 		{`path('/data/backup.tar.gz').with_stem('x')`, "/data/x.gz"},
 		// Separators are flavor-dependent: backslash is not a POSIX
@@ -733,29 +717,29 @@ func TestPathWithFunctions_ArgumentValidation(t *testing.T) {
 	}
 }
 
-// TestPathWithFunctions_ArgumentValidation_Reject is fix round 1's error
-// side, including the two ordering cases the review's Important finding
-// raised and the reference then REFUTED: suffix-format validation runs
-// BEFORE the receiver's empty-name check, opposite of Python 3.14, and that
-// is deliberate — see the ordering comment on the with_suffix registration.
+// TestPathWithFunctions_ArgumentValidation_Reject is the error side,
+// including two ordering cases the reference settles: suffix-format
+// validation runs BEFORE the receiver's empty-name check, opposite of Python
+// 3.14, and that is deliberate — see the ordering comment on the with_suffix
+// registration.
 func TestPathWithFunctions_ArgumentValidation_Reject(t *testing.T) {
 	tests := []struct {
 		src     string
 		wantErr error
 	}{
-		// CRITICAL 1.
+		// with_name.
 		{`path('/a/b.txt').with_name('a/b')`, errInvalidName},
 		{`path('/a/b.txt').with_name('')`, errInvalidName},
 		{`path('/a/b.txt').with_name('.')`, errInvalidName},
-		// CRITICAL 2.
+		// with_stem.
 		{`path('/a/b').with_stem('')`, errInvalidName},
 		{`path('/a/b').with_stem('.')`, errInvalidName},
 		{`path('/a/b.txt').with_stem('')`, errEmptyStemHasSuffix},
 		{`path('/a/b.txt').with_stem('a/b')`, errInvalidName},
-		// CRITICAL 3.
+		// with_suffix.
 		{`path('/a/b.txt').with_suffix('.')`, errInvalidSuffix},
 		{`path('/a/b.txt').with_suffix('.a/b')`, errInvalidSuffix},
-		// Ordering, refuted by the reference: suffix format wins over the
+		// Ordering, as the reference answers: suffix format wins over the
 		// receiver's empty name, not the other way around.
 		{`path('/').with_suffix('png')`, errInvalidSuffix},
 		{`path('/').with_suffix('.png')`, errEmptyName},
@@ -776,9 +760,9 @@ func TestPathWithFunctions_ArgumentValidation_Reject(t *testing.T) {
 	}
 }
 
-// TestPathWithFunctions_WindowsSeparator has NO reference answer — the
-// reference is POSIX-only for these functions (measured: it accepts a
-// backslash outright, see TestPathWithFunctions_ArgumentValidation above).
+// TestPathWithFunctions_WindowsSeparator has NO reference answer — the oracle
+// evaluates these functions under POSIX only, where the reference accepts a
+// backslash outright (see TestPathWithFunctions_ArgumentValidation above).
 // Under the Windows flavor this package parses BOTH "/" and "\" as
 // separators (parseWindows itself normalizes "/" to "\" before splitting on
 // it), so a replacement name containing either must be rejected there even

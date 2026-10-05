@@ -83,13 +83,12 @@ func TestDeadline_ZeroMeansNoDeadline(t *testing.T) {
 // calls, not many small ones. Measured with an every-1024-charges-only check,
 // every expression below read the clock ZERO times and ran to completion with
 // an already-expired deadline, including '("x" * 900000).title()', the ~57 ms
-// case the whole backstop was designed against.
+// case the deadline exists for.
 //
 // That matters beyond one expression: a template is walked position by
 // position, each position a separate evaluation with a FRESH meter, so without
 // this a template built from small expressions could run arbitrarily far past
-// an expired deadline while every meter sat below the interval forever. If this
-// test is ever "simplified" away, that hole reopens silently.
+// an expired deadline while every meter sat below the interval forever.
 func TestDeadline_TripsAnExpressionTooShortToReachTheInterval(t *testing.T) {
 	for _, src := range []string{
 		`1 + 1`,
@@ -123,20 +122,17 @@ func TestDeadline_TripsAnExpressionTooShortToReachTheInterval(t *testing.T) {
 }
 
 // TestDeadline_ClockIsSampledNotReadOnEveryCharge pins that charge SAMPLES the
-// clock rather than reading it every time, and it exists because every other
-// test in this file passes unchanged under an implementation that reads it on
-// every single charge.
+// clock rather than reading it every time, because every other test in this
+// file passes unchanged under an implementation that reads it on every single
+// charge.
 //
-// That is not a hypothetical worry. Without this test, a future reader who
-// notices that the first-charge branch is what actually catches the expired
-// deadlines those tests assert on could delete the sinceCheck machinery as
-// dead weight — "the interval never fires" — keep the whole suite green, and
-// put a time.Now() on the hottest function in the package. This repository has
-// already paid for one unmetered walk on a server path (~9 minutes of CPU per
-// anonymous request), and a syscall per charge is the same shape of mistake:
-// invisible to correctness tests, expensive in production. If this test fails,
-// the question to ask is not "how do I relax the bound" but "why is the clock
-// being read this often".
+// The first-charge branch is what catches the expired deadlines those tests
+// assert on, so the sinceCheck machinery can look like dead weight — "the
+// interval never fires". Deleting it would keep the rest of the suite green and
+// put a time.Now() on the hottest function in the package: a syscall per
+// charge, invisible to correctness tests and expensive in production. If this
+// test fails, find out why the clock is being read this often rather than
+// relaxing the bound.
 //
 // It asserts on the SURVIVING path — an ample deadline, so both halves run to
 // completion — because that is where the cost is paid. An evaluation that
@@ -283,9 +279,8 @@ func TestDeadline_OperationLimitBeatsTheDeadline(t *testing.T) {
 // TestDeadline_MessageDoesNotRepeatItself pins the rendered text, because the
 // error surfaces verbatim in an HTTP response body. The wrap must ADD
 // information (how far past the deadline the check landed), not restate
-// ErrDeadlineExceeded's own sentence — an earlier revision rendered as
-// "expr: evaluation deadline exceeded: evaluation exceeded its wall-clock
-// deadline".
+// ErrDeadlineExceeded's own sentence, as "expr: evaluation deadline exceeded:
+// evaluation exceeded its wall-clock deadline" would.
 func TestDeadline_MessageDoesNotRepeatItself(t *testing.T) {
 	base := time.Unix(1_700_000_000, 0)
 
@@ -309,7 +304,7 @@ func TestDeadline_MessageDoesNotRepeatItself(t *testing.T) {
 }
 
 // TestDeadline_TripsWithRealClock is the only test in this package that runs
-// PRODUCTION'S OWN CLOCK, and that is the entire reason it exists.
+// PRODUCTION'S OWN CLOCK.
 //
 // Every other test here passes WithClock, so every other test exercises the
 // m.now != nil branch of deadlinePassed and none of them ever reaches the
@@ -318,16 +313,10 @@ func TestDeadline_MessageDoesNotRepeatItself(t *testing.T) {
 // here can see — a clock that is never consulted, or consulted against the
 // wrong field, in the only configuration that ships.
 //
-// An earlier revision of this comment defended the test on a different and
-// FALSE ground: that "a version of this feature where WithDeadline sets a field
-// nothing ever reads would pass all three tests above". It would not —
-// TestDeadline_TripsWithFakeClock would get a nil error and fail. The argument
-// above is the true one, and the distinction matters because the design
-// predicts this test will one day be proposed for deletion as slow or flaky by
-// someone who has not read the reasoning. It is neither: it injects nothing,
-// sets an already-expired deadline, and an expired deadline trips on the first
-// check. Do not "fix" it by injecting a clock — that deletes the only coverage
-// of the shipping path while leaving a green test behind.
+// It is neither slow nor flaky: it injects nothing, sets an already-expired
+// deadline, and an expired deadline trips on the first check. Injecting a clock
+// would delete the only coverage of the shipping path while leaving a green
+// test behind.
 func TestDeadline_TripsWithRealClock(t *testing.T) {
 	_, err := Eval(
 		`[x * 2 for x in range(100000)]`, MapSymbols{}, TAny,

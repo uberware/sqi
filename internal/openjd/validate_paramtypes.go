@@ -112,26 +112,25 @@ const defaultRangeExprMaxLength = 1024
 
 // validateRangeExprParamConstraints checks a RANGE_EXPR parameter.
 //
-// THE DEFAULT IS PARSED WITH THE SPEC'S POLICY, NOT internal/openjd's. This is
-// the single most consequential decision in sub-project F1, so it is written
-// here rather than left to be re-derived:
+// THE DEFAULT IS PARSED WITH THE SPEC'S POLICY, NOT internal/openjd's. That
+// choice has wide consequences, so the reasoning is written here:
 //
 // internal/openjd parses <IntRangeExpr> more strictly than the specification
 // on purpose -- openjdRangePolicy sets PositiveStepOnly and AscendingOnly, so
-// "10-1:-1" and "-1--10:-1" are rejected as literal base-spec range text (see
-// this repo's CLAUDE.md, which records that divergence and preserves it). The
+// "10-1:-1" and "-1--10:-1" are rejected as literal base-spec range text (a
+// divergence preserved deliberately; see internal/openjd/intrange). The
 // conformance fixture 2.10--range-expr-param.yaml declares both of those as
 // RANGE_EXPR defaults, so under the strict policy that fixture could never
 // pass.
 //
 // The permissive policy is also the one the value meets downstream, which is
-// what makes this consistent rather than merely convenient: sub-project E4b
-// ruled that the LONE whole-field form range: "{{Param.FrameRange}}" evaluates
-// as a VALUE through range_expr's own list[int] coercion and never re-enters
-// <IntRangeExpr> text at all, and expr.ValueFromText's CodeRangeExpr case
-// already calls the permissive expr.RangeExpr. Literal base-spec range text --
-// including text assembled from an EMBEDDED reference, which E4b ruled on
-// separately -- keeps the strict policy. F1 does not touch that.
+// what makes this consistent rather than merely convenient: the LONE
+// whole-field form range: "{{Param.FrameRange}}" evaluates as a VALUE through
+// range_expr's own list[int] coercion and never re-enters <IntRangeExpr> text
+// at all (see resolve.go's evalRangeExprField), and expr.ValueFromText's
+// CodeRangeExpr case calls the permissive expr.RangeExpr. Literal base-spec
+// range text -- including text assembled from an EMBEDDED reference (see
+// resolve.go's resolveRangeExprField) -- keeps the strict policy.
 //
 // minLength and maxLength bound the expression's STRING length, not its
 // expanded element count. A range expression is a compact notation precisely
@@ -314,7 +313,7 @@ func validateInnerList(v any, c *ItemConstraint, ptr string) ValidationErrors {
 // validateElemType checks one element against the list's declared element
 // type, using the element's JSON TYPE rather than its text.
 //
-// The distinction is load-bearing: 2.12--list-path-wrong-item-type.invalid
+// The distinction matters: 2.12--list-path-wrong-item-type.invalid
 // declares LIST[PATH] with default [123, 456], and a text-based check would
 // accept those -- every number renders as a perfectly good path string. RFC
 // 0007's schemas say <string> for LIST[STRING] and LIST[PATH] and <integer>

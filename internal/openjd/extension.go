@@ -60,8 +60,7 @@ type Extension struct {
 //     submit.go.
 //   - EXPR: the OpenJD expression language; implemented across internal/openjd
 //     (scope model, checker, resolver), internal/openjd/expr and
-//     internal/worker/fmtres. Supported since sub-project H2 — see that entry's
-//     own comment.
+//     internal/worker/fmtres. See that entry's own comment.
 //
 // Read-only after initialisation; never modified at runtime.
 var registry = map[string]Extension{
@@ -93,14 +92,11 @@ var registry = map[string]Extension{
 		Summary: "Exposes a CHUNK[INT] chunk's first/last integer as Task.Param.<name>.Start/.End.",
 		DocPath: "docs/openjd-extensions/sqi-chunk-bounds.md",
 	},
-	// EXPR is the OpenJD expression language extension, delivered across the
-	// EXPR program's sub-projects A0 and A-I. It was registered but NOT
-	// supported until sub-project H2 flipped it here: section 1.2.2 makes the
-	// BOOL, RANGE_EXPR and LIST[*] job parameter types part of this extension,
-	// and those were sub-project F's, so accepting an EXPR template before F
-	// landed would have shipped a partial implementation the extension's own
-	// contract forbids. F shipped, so the whole extension is now accepted and
-	// every EXPR template is submittable.
+	// EXPR is the OpenJD expression language extension. It may only be
+	// StatusSupported as a whole: the extension permits no partial
+	// implementation, and section 1.2.2 makes the BOOL, RANGE_EXPR and
+	// LIST[*] job parameter types part of it alongside the expression
+	// language itself.
 	ExtensionEXPR: {
 		Name:    ExtensionEXPR,
 		Origin:  OriginOfficial,

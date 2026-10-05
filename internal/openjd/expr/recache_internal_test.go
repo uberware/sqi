@@ -34,9 +34,9 @@ func stringListSymbols(items ...string) MapSymbols {
 	return MapSymbols{"Param.Files": List(TString, vals)}
 }
 
-// TestRECache_ConstantPatternInAComprehensionCompilesOnce is the whole point of
-// the cache: a pattern written once in the source is compiled once, however
-// many elements the comprehension around it iterates.
+// TestRECache_ConstantPatternInAComprehensionCompilesOnce pins what the cache
+// is for: a pattern written once in the source is compiled once, however many
+// elements the comprehension around it iterates.
 func TestRECache_ConstantPatternInAComprehensionCompilesOnce(t *testing.T) {
 	const n = 200
 	items := make([]string, n)
@@ -56,9 +56,8 @@ func TestRECache_ConstantPatternInAComprehensionCompilesOnce(t *testing.T) {
 	}
 }
 
-// TestRECache_AnInvalidPatternIsCompiledOnceToo covers the other half of the
-// same win: a pattern that FAILS must not be re-translated and re-failed once
-// per element either, and the error a later element sees must be the error the
+// TestRECache_AnInvalidPatternIsCompiledOnceToo pins that a pattern that FAILS
+// is not re-translated and re-failed once per element either, and the error a later element sees must be the error the
 // first one saw.
 func TestRECache_AnInvalidPatternIsCompiledOnceToo(t *testing.T) {
 	src := `[re_match(s, r'(?=x)') for s in Param.Files]`
@@ -84,10 +83,10 @@ func TestRECache_AnInvalidPatternIsCompiledOnceToo(t *testing.T) {
 	}
 }
 
-// TestRECache_StopsAtTheCap is the hazard the cap exists for. A pattern is an
+// TestRECache_StopsAtTheCap covers the hazard the cap exists for. A pattern is an
 // attacker-supplied string and need not be constant within an evaluation, so an
 // unbounded map would let one comprehension retain one compiled program per
-// element. Past the cap the cache simply stops storing -- it does not evict and
+// element. Past the cap the cache stops storing -- it does not evict and
 // it does not grow -- and every element still gets the right answer.
 func TestRECache_StopsAtTheCap(t *testing.T) {
 	const n = maxCachedPatterns * 3
@@ -111,8 +110,8 @@ func TestRECache_StopsAtTheCap(t *testing.T) {
 	}
 }
 
-// TestRECache_MatchesTheUncachedResultAtEveryCallSite is the correctness
-// guarantee: a cache hit must return exactly what a fresh compile returns, for
+// TestRECache_MatchesTheUncachedResultAtEveryCallSite pins that a cache hit
+// returns exactly what a fresh compile returns, for
 // every function that compiles a pattern and for a valid and an invalid pattern
 // alike -- the same matches, and the same error text.
 //

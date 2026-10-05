@@ -12,18 +12,17 @@ import (
 	"golang.org/x/text/language"
 )
 
-// strCaseFuncs is the first of sub-project C2's four groups: RFC 0006 section
-// 2.2.4's case transforms and its classification predicates. The two share
-// this file because they share isAlnumRune and the casers below.
+// strCaseFuncs is the first of the four string-function groups: RFC 0006
+// section 2.2.4's case transforms and its classification predicates. The two
+// share this file because they share isAlnumRune and the casers below.
 //
-// Section 1.3.10 rule 3 (sub-project E1, Task 7): every row in this file
-// declares Cost{ArgBytes: []int{0}} -- the RECEIVER's own byte length, not
-// the produced result's. Confirmed by a probe designed to tell the two
-// apart: 'İ' (U+0130, 2 UTF-8 bytes) lowers to 'i' plus a combining dot above
-// (3 UTF-8 bytes), so 100 copies is 200 INPUT bytes (ceil/256 = 1) but 300
-// OUTPUT bytes (ceil/256 = 2). The reference measures 2 for
-// ('İ'*100).lower() -- matching ArgBytes, not ResultBytes -- which is the
-// OPPOSITE of Task 5's finding for string "+" (ResultBytes there). See
+// Section 1.3.10 rule 3: every row in this file declares Cost{ArgBytes:
+// []int{0}} -- the RECEIVER's own byte length, not the produced result's.
+// Confirmed by a probe designed to tell the two apart: 'İ' (U+0130, 2 UTF-8
+// bytes) lowers to 'i' plus a combining dot above (3 UTF-8 bytes), so 100
+// copies is 200 INPUT bytes (ceil/256 = 1) but 300 OUTPUT bytes (ceil/256 = 2).
+// The reference measures 2 for ('İ'*100).lower() -- matching ArgBytes, not
+// ResultBytes -- which is the OPPOSITE of string "+" (ResultBytes, ops.go). See
 // cost_string_internal_test.go's PROBE comment for the full transcript.
 //
 // The four case transforms are named directly ("upper()", "lower()" by rule
@@ -59,8 +58,7 @@ var strCaseFuncs = map[string][]Shape{
 	// false. RFC 0006 defines none of the three, so the reference's own
 	// self-contradiction is the strongest evidence available about which
 	// reading to take: a family that composes is defensible, one that does not
-	// is a bug. Will be baselined in test/oracle/baseline.txt with that reason
-	// when the oracle corpus lands.
+	// is a bug. Baselined in test/oracle/baseline.txt with that reason.
 	"isalnum": {runePredShape(allRunes, isAlnumRune)},
 	"isspace": {runePredShape(allRunes, unicode.IsSpace)},
 	// isupper and islower are NOT allRunes over IsUpper/IsLower. RFC 0006
@@ -87,14 +85,14 @@ var strCaseFuncs = map[string][]Shape{
 
 // caseShape builds the single row of one string -> string case transform.
 //
-// The pre-check is IN THE CONSTRUCTOR, and that is the whole reason this exists
-// rather than four hand-written rows: checkCaseInputBytes is not decoration but
-// a measured bound (upper() on a 10 MB string of U+0390 allocated 172 MB to
-// build a result it then refused -- see its own doc comment), and it is exactly
-// the line a fifth transform written out longhand would forget. Here a fifth
-// transform is one call and cannot omit it. Cost is likewise declared once: see
-// this file's own COST comment for why every row charges the RECEIVER's bytes
-// rather than the produced result's.
+// The pre-check is IN THE CONSTRUCTOR, which is why this exists rather than
+// four hand-written rows: checkCaseInputBytes is a measured bound (without it,
+// upper() on a 10 MB string of U+0390 allocates 172 MB to build a result it
+// then refuses -- see its own doc comment), and it is exactly the line a fifth
+// transform written out longhand would forget. Here a fifth transform is one
+// call and cannot omit it. Cost is likewise declared once: see this file's own
+// COST comment for why every row charges the RECEIVER's bytes rather than the
+// produced result's.
 func caseShape(f func(string) string) Shape {
 	return Shape{
 		Params: []Type{TString}, Ret: TString, Cost: Cost{ArgBytes: []int{0}},
@@ -139,7 +137,7 @@ func runePredShape(scan func(string, func(rune) bool) bool, pred func(rune) bool
 //
 // Matching the stdlib would therefore produce oracle divergences with no
 // reason available to record for them, and test/oracle/baseline.txt treats a
-// missing reason as a hard error — correctly. Where the specification is
+// missing reason as a hard error. Where the specification is
 // silent, the reference is the only available authority.
 //
 // A cases.Caser is documented as stateful and unsafe for concurrent use, so
@@ -196,26 +194,23 @@ func capitalizeString(s string) string {
 // its own isdigit() is ASCII-only, which is the self-contradiction the design
 // rules against; adopting it for word boundaries alone would put two
 // conflicting definitions of "alphanumeric" in this one file. The cost is a
-// single divergence, title("²x y"), which will be recorded in
-// test/oracle/baseline.txt when the oracle corpus lands.
+// single divergence, title("²x y"), recorded in test/oracle/baseline.txt.
 //
 // Each rune is cased INDIVIDUALLY — a fresh one-rune context every call —
-// rather than casing a whole word run in one transform, and that choice is
-// load-bearing, not cosmetic: full Unicode case mapping is
-// CONTEXT-SENSITIVE, and Greek sigma is the rune that proves it. Lowering the
+// rather than casing a whole word run in one transform, because full Unicode
+// case mapping is CONTEXT-SENSITIVE, and Greek sigma shows it. Lowering the
 // isolated rune "Σ" answers medial sigma "σ" (there is no preceding cased
 // letter in a one-rune context, so the Final_Sigma rule cannot fire), while
-// lowering the two-rune substring "ΒΣ" in one transform answers final sigma
-// "ς" (now "Σ" IS preceded by a cased letter and at the end of the input, so
-// Final_Sigma fires). Run against the reference implementation
-// (openjd-model 0.11.1), title('ΑΒΣ') is "Αβσ" — MEDIAL sigma — confirming
-// the reference itself cases the run rune by rune rather than as one
-// contiguous lowercase transform; lower('ΑΒΣ') on the same string, by
-// contrast, is "Αβς" with final sigma, because lower() has no word-boundary
-// splitting and cases the whole string in one transform. So per-rune casing
-// here is not merely defensible, it is the ONLY reading that reproduces the
-// reference's own title() output — a substring-based rewrite for speed would
-// silently change title()'s behavior on Greek text. See
+// lowering the two-rune substring "ΒΣ" in one transform answers final sigma "ς"
+// (now "Σ" IS preceded by a cased letter and at the end of the input, so
+// Final_Sigma fires). Run against the reference implementation (openjd-model
+// 0.11.1), title('ΑΒΣ') is "Αβσ" — MEDIAL sigma — confirming the reference
+// itself cases the run rune by rune rather than as one contiguous lowercase
+// transform; lower('ΑΒΣ') on the same string, by contrast, is "Αβς" with final
+// sigma, because lower() has no word-boundary splitting and cases the whole
+// string in one transform. So per-rune casing here is the ONLY reading that
+// reproduces the reference's own title() output — a substring-based rewrite for
+// speed would silently change title()'s behavior on Greek text. See
 // TestCaseTransforms/title_final_sigma_stays_medial for the pinned case.
 //
 // Per-rune casing costs allocations, so the two Casers are still hoisted out
@@ -272,9 +267,9 @@ const caseMapWorstCaseExpansion = 3
 // afterward by boundedString's exact post-check on the actual result. That
 // asymmetry is the point — a cheap, sound pre-check that only ever rejects
 // inputs that were always going to fail, paired with the expensive exact
-// check that catches everything else. Measured before this existed: upper()
-// on a 10MB string of U+0390 allocated 172MB to produce (and then refuse) a
-// 30MB result; this pre-check rejects the same input for ~0 bytes allocated.
+// check that catches everything else. Without it, upper() on a 10MB string of
+// U+0390 allocates 172MB to produce (and then refuse) a 30MB result; this
+// pre-check rejects the same input for ~0 bytes allocated.
 func checkCaseInputBytes(n int) error {
 	if n < 0 || n > maxStringBytes/caseMapWorstCaseExpansion {
 		return fmt.Errorf("%w: %d input bytes could exceed %d bytes after case mapping",
@@ -291,8 +286,8 @@ func checkCaseInputBytes(n int) error {
 // Case mapping can GROW a string: lowercasing "İ" (U+0130, LATIN CAPITAL
 // LETTER I WITH DOT ABOVE) produces "i" plus a combining dot above, 2 input
 // bytes to 3 output bytes, so a result built from an argument already near
-// the limit can exceed it. The check is cheap and keeps every C2 function
-// honest about bounding its own single operation.
+// the limit can exceed it. The check is cheap and makes every string function
+// bound its own single operation.
 func boundedString(s string) (Value, error) {
 	if err := checkStringBytes(len(s)); err != nil {
 		return Value{}, err
