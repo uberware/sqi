@@ -85,7 +85,7 @@ func sameTime(a, b *time.Time) bool {
 
 // seedStepA seeds a graph whose one ready step, "a", holds tasks in the given
 // statuses.
-func seedStepA(t *testing.T, st store.Store, opts graphOpts, tasks ...store.TaskStatus) h4aGraph {
+func seedStepA(t *testing.T, st store.Store, opts graphOpts, tasks ...store.TaskStatus) jobGraph {
 	t.Helper()
 	return seedGraph(t, st, opts, stepSpec{name: "a", status: store.StepStatusReady, tasks: tasks})
 }
@@ -191,15 +191,15 @@ func TestLeaseTask_Lost(t *testing.T) {
 func TestLeaseTask_PausedAfterListing(t *testing.T) {
 	pauses := []struct {
 		name  string
-		pause func(t *testing.T, st store.Store, g h4aGraph)
+		pause func(t *testing.T, st store.Store, g jobGraph)
 	}{
-		{"job", func(t *testing.T, st store.Store, g h4aGraph) {
+		{"job", func(t *testing.T, st store.Store, g jobGraph) {
 			t.Helper()
 			if err := st.PauseJob(t.Context(), g.Job.ID, time.Now().UTC()); err != nil {
 				t.Fatalf("PauseJob: %v", err)
 			}
 		}},
-		{"queue", func(t *testing.T, st store.Store, g h4aGraph) {
+		{"queue", func(t *testing.T, st store.Store, g jobGraph) {
 			t.Helper()
 			q := g.Queue
 			q.Paused = true

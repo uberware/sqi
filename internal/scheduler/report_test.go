@@ -44,10 +44,10 @@ func releaseToNewWorker(t *testing.T, st store.Store, s *Scheduler, task store.T
 	return res.Attempt
 }
 
-// TestH4a2_SupersededRunningReportIsIgnored pins item 9's first late-report
+// TestSupersededRunningReportIsIgnored pins item 9's first late-report
 // hole: a superseded attempt's "running" report no longer moves the new
 // lease's task to running, and emits no task event.
-func TestH4a2_SupersededRunningReportIsIgnored(t *testing.T) {
+func TestSupersededRunningReportIsIgnored(t *testing.T) {
 	for name, st := range raceBackends(t) {
 		t.Run(name, func(t *testing.T) {
 			_, _, task, stale := seedStatusFixture(t, st, store.TaskStatusAssigned)
@@ -76,10 +76,10 @@ func TestH4a2_SupersededRunningReportIsIgnored(t *testing.T) {
 	}
 }
 
-// TestH4a2_CancelEchoAfterRetryLeavesTaskReady: the user cancels a running
+// TestCancelEchoAfterRetryLeavesTaskReady: the user cancels a running
 // task, retries it, then the old worker's "canceled" echo arrives. The task
 // must stay ready (v0.3.0 and H4a re-canceled it).
-func TestH4a2_CancelEchoAfterRetryLeavesTaskReady(t *testing.T) {
+func TestCancelEchoAfterRetryLeavesTaskReady(t *testing.T) {
 	for name, st := range raceBackends(t) {
 		t.Run(name, func(t *testing.T) {
 			_, _, task, attempt := seedStatusFixture(t, st, store.TaskStatusRunning)
@@ -116,10 +116,10 @@ func (s *reclaimBeforeRequeueStore) RequeueTaskForRetry(ctx context.Context, tas
 	return s.Store.RequeueTaskForRetry(ctx, taskID, attemptID, retryAfter, now)
 }
 
-// TestH4a2_RequeueAfterReleaseLeavesTheNewLease pins item 9's third
+// TestRequeueAfterReleaseLeavesTheNewLease pins item 9's third
 // late-report hole: an offline reclaim and a new lease landing between
 // RecordTaskFailure and the requeue must not return the new lease to ready.
-func TestH4a2_RequeueAfterReleaseLeavesTheNewLease(t *testing.T) {
+func TestRequeueAfterReleaseLeavesTheNewLease(t *testing.T) {
 	for name, base := range raceBackends(t) {
 		t.Run(name, func(t *testing.T) {
 			_, _, task, attempt := seedStatusFixture(t, base, store.TaskStatusAssigned)
@@ -168,11 +168,11 @@ func TestH4a2_RequeueAfterReleaseLeavesTheNewLease(t *testing.T) {
 	}
 }
 
-// TestH4a2_ShutdownReportAndDeregisterAgreeInEitherOrder pins spec D2: a
+// TestShutdownReportAndDeregisterAgreeInEitherOrder pins spec D2: a
 // forced shutdown's "failed"/"worker_shutdown" report and the worker's
 // deregister leave the same state whichever the server applies first, and
 // neither counts a genuine failure.
-func TestH4a2_ShutdownReportAndDeregisterAgreeInEitherOrder(t *testing.T) {
+func TestShutdownReportAndDeregisterAgreeInEitherOrder(t *testing.T) {
 	for _, reportFirst := range []bool{true, false} {
 		for name, st := range raceBackends(t) {
 			t.Run(fmt.Sprintf("reportFirst=%v/%s", reportFirst, name), func(t *testing.T) {

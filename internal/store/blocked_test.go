@@ -10,7 +10,7 @@ import (
 )
 
 // blockedOn creates a blocked job whose single edge points at upstream.
-func blockedOn(t *testing.T, st store.Store, upstream h4aGraph) h4aGraph {
+func blockedOn(t *testing.T, st store.Store, upstream jobGraph) jobGraph {
 	t.Helper()
 	g := seedGraph(t, st, graphOpts{jobStatus: store.JobStatusBlocked, share: &upstream},
 		stepSpec{name: "a", status: store.StepStatusPending, tasks: []store.TaskStatus{store.TaskStatusPending}})

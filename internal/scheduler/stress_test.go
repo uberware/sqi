@@ -65,17 +65,17 @@ var stressPoolCaps = []int{3, 2}
 // It is test-local: the triggers are installed on the test's own database and
 // only append to their own table.
 var stressHistoryDDL = []string{
-	`CREATE TABLE h4a_stress_task_history (
+	`CREATE TABLE stress_task_history (
 		seq         INTEGER PRIMARY KEY AUTOINCREMENT,
 		task_id     TEXT NOT NULL,
 		from_status TEXT,
 		to_status   TEXT NOT NULL)`,
-	`CREATE TRIGGER h4a_stress_task_inserted AFTER INSERT ON tasks BEGIN
-		INSERT INTO h4a_stress_task_history (task_id, from_status, to_status) VALUES (NEW.id, NULL, NEW.status);
+	`CREATE TRIGGER stress_task_inserted AFTER INSERT ON tasks BEGIN
+		INSERT INTO stress_task_history (task_id, from_status, to_status) VALUES (NEW.id, NULL, NEW.status);
 	END`,
-	`CREATE TRIGGER h4a_stress_task_moved AFTER UPDATE OF status ON tasks
+	`CREATE TRIGGER stress_task_moved AFTER UPDATE OF status ON tasks
 	WHEN OLD.status IS NOT NEW.status BEGIN
-		INSERT INTO h4a_stress_task_history (task_id, from_status, to_status) VALUES (NEW.id, OLD.status, NEW.status);
+		INSERT INTO stress_task_history (task_id, from_status, to_status) VALUES (NEW.id, OLD.status, NEW.status);
 	END`,
 }
 
@@ -161,7 +161,7 @@ type stressRun struct {
 	instances   map[string][]string
 }
 
-// TestH4a_ConcurrentStress_SQLite races leases, CancelJob, CancelTask, the
+// TestConcurrentStress_SQLite races leases, CancelJob, CancelTask, the
 // reaper, OfflineStaleWorker, RetryTasks (through RetryJob), worker reports,
 // and H4a2's report and reclaim paths (a report on an attempt already closed, a
 // worker-shutdown report, a graceful deregister from the current or a replaced
@@ -174,7 +174,7 @@ type stressRun struct {
 // prove group 1 (spec §3.2) because SQLite serializes writes; it catches
 // group-2 regressions non-deterministically. Runs in make test, with or
 // without -race.
-func TestH4a_ConcurrentStress_SQLite(t *testing.T) {
+func TestConcurrentStress_SQLite(t *testing.T) {
 	if testing.Short() {
 		t.Skip("stress test: races every H4a store operation on SQLite")
 	}
@@ -800,7 +800,7 @@ func (r *stressRun) describeClaims(ids []string) string {
 // order, the first step of each being the seeding insert (">ready").
 func (r *stressRun) history(ctx context.Context) (map[string][]string, error) {
 	rows, err := r.db.QueryContext(ctx,
-		`SELECT task_id, COALESCE(from_status, ''), to_status FROM h4a_stress_task_history ORDER BY seq`)
+		`SELECT task_id, COALESCE(from_status, ''), to_status FROM stress_task_history ORDER BY seq`)
 	if err != nil {
 		return nil, err
 	}

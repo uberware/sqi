@@ -48,12 +48,12 @@ func (s *lastAdminRaceStore) UpdateUserKeepingAdmin(ctx context.Context, u store
 	return s.Store.UpdateUserKeepingAdmin(ctx, u)
 }
 
-// TestH4a_F11_ConcurrentRemovalsKeepOneAdmin is F11: two requests that each
+// TestConcurrentRemovalsKeepOneAdmin is F11: two requests that each
 // remove one of the last two admins both used to pass the count check and
 // lock the farm out of administration. The request under test (root acting on
 // root2) is overtaken at its decision point by the other request (acting on
 // root); the guard must then see a single admin left and refuse with 409.
-func TestH4a_F11_ConcurrentRemovalsKeepOneAdmin(t *testing.T) {
+func TestConcurrentRemovalsKeepOneAdmin(t *testing.T) {
 	cases := []struct {
 		name string
 		// request acts on the second admin; other is the overtaking request,
@@ -102,9 +102,9 @@ func TestH4a_F11_ConcurrentRemovalsKeepOneAdmin(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			// h4aBackends is called per case: each case needs a farm with exactly
+			// seedBackends is called per case: each case needs a farm with exactly
 			// two admins, and an earlier case leaves one behind.
-			for backend, st := range h4aBackends(t) {
+			for backend, st := range seedBackends(t) {
 				t.Run(backend, func(t *testing.T) {
 					first := seedAuthUser(t, st, "root", "hunter2!", "admin")
 					second := seedAuthUser(t, st, "root2", "hunter2!", "admin")

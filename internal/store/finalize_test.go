@@ -214,7 +214,7 @@ func TestListStuckSteps_OnlyStepsOfLiveJobs(t *testing.T) {
 	for name, st := range newStores(t) {
 		t.Run(name, func(t *testing.T) {
 			// One job per case, all in the first job's farm and queue.
-			var shared *h4aGraph
+			var shared *jobGraph
 			stepOf := map[store.JobStatus]string{}
 			wantCount := 0
 			for _, tc := range cases {

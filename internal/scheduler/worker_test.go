@@ -23,13 +23,13 @@ func registerMsg(t *testing.T, workerID, instance string) *fakeJSMsg {
 	})}
 }
 
-// TestH4a2_RestartedWorkerHasItsTasksReclaimed pins item 9 viii (first half)
+// TestRestartedWorkerHasItsTasksReclaimed pins item 9 viii (first half)
 // end to end: a worker that restarts and re-registers within WorkerTimeout no
 // longer leaves its previous process's task running forever. The reclaim is
 // reported through reclaimOfflineWorkerTasks, so a parked lease waiter is woken
 // for the task that came back to ready, and every registration's worker event
 // carries the status of the row the store returned (online here).
-func TestH4a2_RestartedWorkerHasItsTasksReclaimed(t *testing.T) {
+func TestRestartedWorkerHasItsTasksReclaimed(t *testing.T) {
 	for name, st := range raceBackends(t) {
 		t.Run(name, func(t *testing.T) {
 			workerID, taskID, _ := seedStaleWorkerWithTask(t, st, 0)
@@ -144,7 +144,7 @@ func mustRegisterInstance(t *testing.T, st store.Store, w store.Worker, instance
 	return reclaimed
 }
 
-// TestH4a2_LeaseHeldBackUntilARestartedProcessRegisters pins the lease side of
+// TestLeaseHeldBackUntilARestartedProcessRegisters pins the lease side of
 // the restart reclaim (H4a2 §4.5): a restarted worker process can ask for work
 // before the server has consumed its new registration, and a task leased to it
 // then would be handed back to ready by that registration's reclaim (which
@@ -154,7 +154,7 @@ func mustRegisterInstance(t *testing.T, st store.Store, w store.Worker, instance
 // without touching a task; one whose ID matches, or that carries none, is
 // served; and once the new registration lands the new process is served, and
 // what it leases is not reclaimed by a later re-register of the same process.
-func TestH4a2_LeaseHeldBackUntilARestartedProcessRegisters(t *testing.T) {
+func TestLeaseHeldBackUntilARestartedProcessRegisters(t *testing.T) {
 	for name, st := range raceBackends(t) {
 		t.Run(name, func(t *testing.T) {
 			s := newMetricsScheduler(st, &recordBus{}, "f1")
@@ -222,11 +222,11 @@ func TestH4a2_LeaseHeldBackUntilARestartedProcessRegisters(t *testing.T) {
 	}
 }
 
-// TestH4a2_ParkedLeaseFromASupersededProcessGetsNoWork pins the same rule on
+// TestParkedLeaseFromASupersededProcessGetsNoWork pins the same rule on
 // the parked path: a request that parked while its process was the registered
 // one, and is woken after another process of the worker has registered, gets
 // no work, so a reclaimed task is not handed to the process that is gone.
-func TestH4a2_ParkedLeaseFromASupersededProcessGetsNoWork(t *testing.T) {
+func TestParkedLeaseFromASupersededProcessGetsNoWork(t *testing.T) {
 	for name, st := range raceBackends(t) {
 		t.Run(name, func(t *testing.T) {
 			s := newMetricsScheduler(st, &recordBus{}, "f1")
@@ -286,10 +286,10 @@ func TestH4a2_ParkedLeaseFromASupersededProcessGetsNoWork(t *testing.T) {
 	}
 }
 
-// TestH4a2_HeldLeaseRefusalEndsWithTheScheduler pins that the refusal's hold
+// TestHeldLeaseRefusalEndsWithTheScheduler pins that the refusal's hold
 // (leaseRefusalDelay) gives way to the scheduler's context: a request held
 // when the scheduler shuts down is answered, empty, at once.
-func TestH4a2_HeldLeaseRefusalEndsWithTheScheduler(t *testing.T) {
+func TestHeldLeaseRefusalEndsWithTheScheduler(t *testing.T) {
 	st := newCheckedFake(t)
 	s := newMetricsScheduler(st, &recordBus{}, "f1")
 	ctx, cancel := context.WithCancel(t.Context())
@@ -326,14 +326,14 @@ func TestH4a2_HeldLeaseRefusalEndsWithTheScheduler(t *testing.T) {
 	}
 }
 
-// TestH4a2_DisabledWorkerGetsNoWork pins N1: docs/api.md says disable "stops
+// TestDisabledWorkerGetsNoWork pins N1: docs/api.md says disable "stops
 // new assignments", but the lease path never checked worker status. The refusal
 // is held for leaseHoldTimeout, as an idle worker's request is parked: a worker
 // re-requests the moment a reply arrives and can stay disabled for days, so an
 // instant empty reply would spin its lease loop against the broker and the
 // store for that long, and the short leaseRefusalDelay would still have it ask
 // about once a second per queue (the whole-branch review's finding).
-func TestH4a2_DisabledWorkerGetsNoWork(t *testing.T) {
+func TestDisabledWorkerGetsNoWork(t *testing.T) {
 	st := newCheckedFake(t)
 	s := newMetricsScheduler(st, &recordBus{}, "f1")
 	s.ctx = t.Context()
@@ -366,11 +366,11 @@ func TestH4a2_DisabledWorkerGetsNoWork(t *testing.T) {
 	}
 }
 
-// TestH4a2_EnablingAWorkerWakesItsHeldLease pins the other half of holding a
+// TestEnablingAWorkerWakesItsHeldLease pins the other half of holding a
 // disabled worker's request for the whole lease hold: enabling the worker wakes
 // the held request, which is then leased the ready task at once. A wake while
 // the worker is still disabled leases nothing.
-func TestH4a2_EnablingAWorkerWakesItsHeldLease(t *testing.T) {
+func TestEnablingAWorkerWakesItsHeldLease(t *testing.T) {
 	st := newCheckedFake(t)
 	s := newMetricsScheduler(st, &recordBus{}, "f1")
 	s.ctx = t.Context()
@@ -444,11 +444,11 @@ func TestH4a2_EnablingAWorkerWakesItsHeldLease(t *testing.T) {
 	}
 }
 
-// TestH4a2_ParkedLeaseOfAWorkerDisabledMeanwhileGetsNoWork pins the same rule
+// TestParkedLeaseOfAWorkerDisabledMeanwhileGetsNoWork pins the same rule
 // on the parked path: a request that parked while its worker was online, and is
 // woken after an operator disabled the worker, gets no work even though a task
 // is ready and the worker has the cores for it.
-func TestH4a2_ParkedLeaseOfAWorkerDisabledMeanwhileGetsNoWork(t *testing.T) {
+func TestParkedLeaseOfAWorkerDisabledMeanwhileGetsNoWork(t *testing.T) {
 	st := newCheckedFake(t)
 	s := newMetricsScheduler(st, &recordBus{}, "f1")
 	s.ctx = t.Context()
@@ -515,11 +515,11 @@ func TestH4a2_ParkedLeaseOfAWorkerDisabledMeanwhileGetsNoWork(t *testing.T) {
 	}
 }
 
-// TestH4a2_DeregisterOfADisabledWorkerSaysDisabled is Review Focus 4: a
+// TestDeregisterOfADisabledWorkerSaysDisabled is Review Focus 4: a
 // graceful deregister of a disabled worker still reclaims its task, the store
 // keeps the worker disabled (H4a2 §5.3), and the worker event says so rather
 // than announcing an offline the row does not hold.
-func TestH4a2_DeregisterOfADisabledWorkerSaysDisabled(t *testing.T) {
+func TestDeregisterOfADisabledWorkerSaysDisabled(t *testing.T) {
 	for name, st := range raceBackends(t) {
 		t.Run(name, func(t *testing.T) {
 			workerID, taskID, _ := seedStaleWorkerWithTask(t, st, 0)
@@ -554,10 +554,10 @@ func TestH4a2_DeregisterOfADisabledWorkerSaysDisabled(t *testing.T) {
 	}
 }
 
-// TestH4a2_DeregisterOfAnOnlineWorkerSaysOffline is the control for the test
+// TestDeregisterOfAnOnlineWorkerSaysOffline is the control for the test
 // above: the deregister event reads the stored status, which for any worker
 // that is not disabled is offline.
-func TestH4a2_DeregisterOfAnOnlineWorkerSaysOffline(t *testing.T) {
+func TestDeregisterOfAnOnlineWorkerSaysOffline(t *testing.T) {
 	for name, st := range raceBackends(t) {
 		t.Run(name, func(t *testing.T) {
 			workerID, _, _ := seedStaleWorkerWithTask(t, st, 0)
@@ -575,11 +575,11 @@ func TestH4a2_DeregisterOfAnOnlineWorkerSaysOffline(t *testing.T) {
 	}
 }
 
-// TestH4a2_RegisterOfADisabledWorkerSaysDisabled pins the registration half of
+// TestRegisterOfADisabledWorkerSaysDisabled pins the registration half of
 // H4a2 §5.3 end to end, on the real stores rather than a stand-in: a disabled
 // worker that re-registers (any NATS reconnect) stays disabled, and the worker
 // event carries that, not the online the registration asked for.
-func TestH4a2_RegisterOfADisabledWorkerSaysDisabled(t *testing.T) {
+func TestRegisterOfADisabledWorkerSaysDisabled(t *testing.T) {
 	for name, st := range raceBackends(t) {
 		t.Run(name, func(t *testing.T) {
 			workerID, _, _ := seedStaleWorkerWithTask(t, st, 0)
@@ -609,11 +609,11 @@ func TestH4a2_RegisterOfADisabledWorkerSaysDisabled(t *testing.T) {
 	}
 }
 
-// TestH4a2_SweepReclaimsADeadDisabledWorkerWithoutAnOfflineEvent pins item 9
+// TestSweepReclaimsADeadDisabledWorkerWithoutAnOfflineEvent pins item 9
 // iv: a disabled worker that dies holding a task has the task reclaimed by the
 // heartbeat sweep and goes offline underneath, but stays disabled, so its one
 // worker event carries its effective status, disabled, never offline.
-func TestH4a2_SweepReclaimsADeadDisabledWorkerWithoutAnOfflineEvent(t *testing.T) {
+func TestSweepReclaimsADeadDisabledWorkerWithoutAnOfflineEvent(t *testing.T) {
 	for name, st := range raceBackends(t) {
 		t.Run(name, func(t *testing.T) {
 			workerID, taskID, _ := seedStaleWorkerWithTask(t, st, time.Hour)
@@ -656,9 +656,9 @@ func (s *failSecondLeaseStore) LeaseTask(ctx context.Context, req store.LeaseReq
 	return s.Store.LeaseTask(ctx, req)
 }
 
-// TestH4a2_PartialLeaseBatchIsDelivered: a store error after the first lease
+// TestPartialLeaseBatchIsDelivered: a store error after the first lease
 // of a batch no longer drops the already-leased task for the reaper to find.
-func TestH4a2_PartialLeaseBatchIsDelivered(t *testing.T) {
+func TestPartialLeaseBatchIsDelivered(t *testing.T) {
 	base := newCheckedFake(t)
 	st := &failSecondLeaseStore{Store: base}
 	s := newMetricsScheduler(st, &recordBus{}, "f1")
@@ -678,10 +678,10 @@ func TestH4a2_PartialLeaseBatchIsDelivered(t *testing.T) {
 	}
 }
 
-// TestH4a2_PartialLeaseBatchIsDeliveredAfterPark is the same rule on the
+// TestPartialLeaseBatchIsDeliveredAfterPark is the same rule on the
 // request that parked and was woken: the one retry it makes also delivers the
 // tasks leased before a store error rather than answering empty.
-func TestH4a2_PartialLeaseBatchIsDeliveredAfterPark(t *testing.T) {
+func TestPartialLeaseBatchIsDeliveredAfterPark(t *testing.T) {
 	base := newCheckedFake(t)
 	st := &failSecondLeaseStore{Store: base}
 	s := newMetricsScheduler(st, &recordBus{}, "f1")
@@ -692,10 +692,10 @@ func TestH4a2_PartialLeaseBatchIsDeliveredAfterPark(t *testing.T) {
 	}
 }
 
-// TestH4a2_UnschedulableNoOpEmitsNoEvent pins the F15 residue: when the
+// TestUnschedulableNoOpEmitsNoEvent pins the F15 residue: when the
 // guarded write declines (the task was leased since the sweep read it), no
 // stale "ready" event is sent.
-func TestH4a2_UnschedulableNoOpEmitsNoEvent(t *testing.T) {
+func TestUnschedulableNoOpEmitsNoEvent(t *testing.T) {
 	for name, st := range raceBackends(t) {
 		t.Run(name, func(t *testing.T) {
 			notifier := &recordingNotifier{}
@@ -714,12 +714,12 @@ func TestH4a2_UnschedulableNoOpEmitsNoEvent(t *testing.T) {
 	}
 }
 
-// TestH4a2_UnschedulableWriteEmitsOneEvent is the positive side of
-// [TestH4a2_UnschedulableNoOpEmitsNoEvent]: when the guarded write lands on a
+// TestUnschedulableWriteEmitsOneEvent is the positive side of
+// [TestUnschedulableNoOpEmitsNoEvent]: when the guarded write lands on a
 // task that is still ready, exactly one task event carries the new reason.
 // The no-op test already catches an inverted check; the regression only this
 // test guards is the event never being emitted even though the write landed.
-func TestH4a2_UnschedulableWriteEmitsOneEvent(t *testing.T) {
+func TestUnschedulableWriteEmitsOneEvent(t *testing.T) {
 	for name, st := range raceBackends(t) {
 		t.Run(name, func(t *testing.T) {
 			notifier := &recordingNotifier{}
@@ -739,14 +739,14 @@ func TestH4a2_UnschedulableWriteEmitsOneEvent(t *testing.T) {
 	}
 }
 
-// TestH4a2_RepeatedInstanceRefusalsWarn pins the whole-branch review's
+// TestRepeatedInstanceRefusalsWarn pins the whole-branch review's
 // diagnosability finding: a process refused because its registration has not
 // landed is logged only at Debug, so one whose registration never lands (lost,
 // or a second live process under the same worker ID) got no work with nothing
 // at Warn. Refusals in a row now warn once they pass instanceRefusalWarnAfter,
 // rate-limited per process, and a served request starts that process's count
 // again.
-func TestH4a2_RepeatedInstanceRefusalsWarn(t *testing.T) {
+func TestRepeatedInstanceRefusalsWarn(t *testing.T) {
 	st := newCheckedFake(t)
 	s := newMetricsScheduler(st, &recordBus{}, "f1")
 	s.ctx = t.Context()
@@ -794,7 +794,7 @@ func TestH4a2_RepeatedInstanceRefusalsWarn(t *testing.T) {
 	}
 }
 
-// TestH4a2_ParkedLeaseOfAWorkerTakenOfflineMeanwhileGetsNoWork pins the
+// TestParkedLeaseOfAWorkerTakenOfflineMeanwhileGetsNoWork pins the
 // whole-branch review's recommendation: a request that parked while its worker
 // was online, and is woken after the worker went offline (a graceful
 // deregister, or the heartbeat sweep), gets no work. Its process has usually
@@ -803,7 +803,7 @@ func TestH4a2_RepeatedInstanceRefusalsWarn(t *testing.T) {
 // this: a request that arrives from an offline worker is still served (see the
 // known gaps in docs/architecture.md), so a live worker the sweep wrongly took
 // offline is refused once at most, not starved.
-func TestH4a2_ParkedLeaseOfAWorkerTakenOfflineMeanwhileGetsNoWork(t *testing.T) {
+func TestParkedLeaseOfAWorkerTakenOfflineMeanwhileGetsNoWork(t *testing.T) {
 	st := newCheckedFake(t)
 	s := newMetricsScheduler(st, &recordBus{}, "f1")
 	s.ctx = t.Context()

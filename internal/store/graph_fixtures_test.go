@@ -46,7 +46,7 @@ type graphOpts struct {
 	queuePaused bool
 	// share, when non-nil, reuses that graph's farm and queue so two jobs can
 	// compete for the same caps.
-	share *h4aGraph
+	share *jobGraph
 }
 
 // stepSpec describes one step of a seeded job. The per-row creators accept
@@ -59,8 +59,8 @@ type stepSpec struct {
 	tasks     []store.TaskStatus
 }
 
-// h4aGraph is what seedGraph built.
-type h4aGraph struct {
+// jobGraph is what seedGraph built.
+type jobGraph struct {
 	Farm  store.Farm
 	Queue store.Queue
 	Job   store.Job
@@ -68,11 +68,11 @@ type h4aGraph struct {
 	Tasks map[string][]store.Task // by step name, in creation order
 }
 
-func seedGraph(t *testing.T, st store.Store, opts graphOpts, specs ...stepSpec) h4aGraph {
+func seedGraph(t *testing.T, st store.Store, opts graphOpts, specs ...stepSpec) jobGraph {
 	t.Helper()
 	ctx := t.Context()
 	now := time.Now().UTC()
-	g := h4aGraph{Steps: map[string]store.Step{}, Tasks: map[string][]store.Task{}}
+	g := jobGraph{Steps: map[string]store.Step{}, Tasks: map[string][]store.Task{}}
 
 	if opts.share != nil {
 		g.Farm, g.Queue = opts.share.Farm, opts.share.Queue

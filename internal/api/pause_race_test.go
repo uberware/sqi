@@ -15,10 +15,10 @@ import (
 	"github.com/uberware/sqi/internal/store/sqlite"
 )
 
-// h4aBackends returns a fresh store for each backend the H4a race tests run
+// seedBackends returns a fresh store for each backend the H4a race tests run
 // over (spec §8.1), keyed by subtest name. The SQLite store lives in a temp
 // directory and is closed when the test ends.
-func h4aBackends(t *testing.T) map[string]store.Store {
+func seedBackends(t *testing.T) map[string]store.Store {
 	t.Helper()
 	sq, err := sqlite.Open(t.Context(), t.TempDir()+"/test.db", sqlite.DefaultOptions())
 	if err != nil {
@@ -48,8 +48,8 @@ func (s *completeDuringPatchStore) UpdateJob(ctx context.Context, j store.Job) (
 	return out, err
 }
 
-func TestH4a_F10_PauseDoesNotOverwriteCompletion(t *testing.T) {
-	for name, st := range h4aBackends(t) {
+func TestPauseDoesNotOverwriteCompletion(t *testing.T) {
+	for name, st := range seedBackends(t) {
 		t.Run(name, func(t *testing.T) {
 			j := seedJob(t, st, store.JobStatusRunning)
 			// The seeded job has no steps, so FinalizeJob completes it: the same

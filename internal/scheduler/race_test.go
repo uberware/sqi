@@ -90,7 +90,7 @@ func mustStep(t *testing.T, st store.Store, id string) store.Step {
 
 // ── F6: a step with more than MaxLimit tasks completes ──────────────────────
 
-func TestH4a_F6_StepOverMaxLimitCompletes(t *testing.T) {
+func TestStepOverMaxLimitCompletes(t *testing.T) {
 	for name, st := range raceBackends(t) {
 		t.Run(name, func(t *testing.T) {
 			job, step, _, _ := seedStatusFixture(t, st, store.TaskStatusSucceeded)
@@ -138,7 +138,7 @@ func (s *retryDuringCompletionStore) FinalizeStep(ctx context.Context, id string
 	return s.Store.FinalizeStep(ctx, id, now)
 }
 
-func TestH4a_F8_CompletionDoesNotOverwriteRetry(t *testing.T) {
+func TestCompletionDoesNotOverwriteRetry(t *testing.T) {
 	for name, st := range raceBackends(t) {
 		t.Run(name, func(t *testing.T) {
 			job, step, _, _ := seedStatusFixture(t, st, store.TaskStatusSucceeded)
@@ -171,7 +171,7 @@ func TestH4a_F8_CompletionDoesNotOverwriteRetry(t *testing.T) {
 
 // ── Review Focus #2: redelivery after finalize still propagates ─────────────
 
-func TestH4a_RedeliveredCompletionStillPropagates(t *testing.T) {
+func TestRedeliveredCompletionStillPropagates(t *testing.T) {
 	for name, st := range raceBackends(t) {
 		t.Run(name, func(t *testing.T) {
 			job, step, _, _ := seedStatusFixture(t, st, store.TaskStatusSucceeded)
@@ -221,7 +221,7 @@ func (s *cancelDuringReconcileStore) ListJobDependencyIDs(ctx context.Context, i
 	return ids, err
 }
 
-func TestH4a_F9_ReconcileDoesNotUndoUserCancel(t *testing.T) {
+func TestReconcileDoesNotUndoUserCancel(t *testing.T) {
 	for name, st := range raceBackends(t) {
 		t.Run(name, func(t *testing.T) {
 			up, _, _, _ := seedStatusFixtureWithJobStatus(t, st, store.JobStatusCompleted, store.TaskStatusSucceeded)
@@ -274,7 +274,7 @@ func (s *pauseDuringPromoteStore) PromoteJobRunning(ctx context.Context, id stri
 	return s.Store.PromoteJobRunning(ctx, id, now)
 }
 
-func TestH4a_F7_PromoteDoesNotOverwritePause(t *testing.T) {
+func TestPromoteDoesNotOverwritePause(t *testing.T) {
 	for name, st := range raceBackends(t) {
 		t.Run(name, func(t *testing.T) {
 			job, _, _, _ := seedStatusFixtureWithJobStatus(t, st, store.JobStatusPending, store.TaskStatusRunning)
@@ -391,12 +391,12 @@ func parkWaiter(t *testing.T, s *Scheduler, queueID string) <-chan bool {
 	}
 }
 
-// TestH4a_F3_RejectedTerminalReportReleasesClaims drives a worker's "succeeded"
+// TestRejectedTerminalReportReleasesClaims drives a worker's "succeeded"
 // report at a task the user already canceled. The state machine refuses
 // canceled -> succeeded, and the report must still free the attempt's usage
 // slot: before the fix the early return on the refused transition skipped the
 // release and the slot leaked for good.
-func TestH4a_F3_RejectedTerminalReportReleasesClaims(t *testing.T) {
+func TestRejectedTerminalReportReleasesClaims(t *testing.T) {
 	for name, st := range raceBackends(t) {
 		t.Run(name, func(t *testing.T) {
 			_, _, task, attempt := seedStatusFixture(t, st, store.TaskStatusCanceled)
@@ -426,10 +426,10 @@ func TestH4a_F3_RejectedTerminalReportReleasesClaims(t *testing.T) {
 	}
 }
 
-// TestH4a_F3_RejectedTerminalReportWakesLeaseWaiters pins that the early exit on
+// TestRejectedTerminalReportWakesLeaseWaiters pins that the early exit on
 // a refused transition still tells parked lease waiters: the report released a
 // usage slot, so a waiter that was blocked on that pool may now fit.
-func TestH4a_F3_RejectedTerminalReportWakesLeaseWaiters(t *testing.T) {
+func TestRejectedTerminalReportWakesLeaseWaiters(t *testing.T) {
 	for name, st := range raceBackends(t) {
 		t.Run(name, func(t *testing.T) {
 			job, _, task, attempt := seedStatusFixture(t, st, store.TaskStatusCanceled)
@@ -453,7 +453,7 @@ func TestH4a_F3_RejectedTerminalReportWakesLeaseWaiters(t *testing.T) {
 
 // ── Review Focus #1: a redelivered terminal report is a clean no-op ─────────
 
-func TestH4a_RedeliveredTerminalReportIsNoOp(t *testing.T) {
+func TestRedeliveredTerminalReportIsNoOp(t *testing.T) {
 	for name, st := range raceBackends(t) {
 		t.Run(name, func(t *testing.T) {
 			_, _, task, attempt := seedStatusFixture(t, st, store.TaskStatusRunning)
@@ -495,12 +495,12 @@ func TestH4a_RedeliveredTerminalReportIsNoOp(t *testing.T) {
 
 // ── The failure fork releases claims through RecordTaskFailure ──────────────
 
-// TestH4a_FailedReportReleasesClaims covers both outcomes of a "failed" report.
+// TestFailedReportReleasesClaims covers both outcomes of a "failed" report.
 // The retry path no longer releases the claims itself (RecordTaskFailure does
 // it inside its own transaction), and the exhausted path reaches
 // CompleteTaskAttempt on an attempt RecordTaskFailure already closed, which
 // must be a clean no-op rather than an error.
-func TestH4a_FailedReportReleasesClaims(t *testing.T) {
+func TestFailedReportReleasesClaims(t *testing.T) {
 	cases := []struct {
 		name        string
 		maxAttempts int
@@ -577,12 +577,12 @@ func (s *leaseDuringPolicyStore) CountActiveTasksInFarm(ctx context.Context, id 
 	return n, err
 }
 
-// TestH4a_F12_CapsHoldUnderParallelLease leases task A while a parallel lease
+// TestCapsHoldUnderParallelLease leases task A while a parallel lease
 // wins task B between A's policy check and A's lease. With a cap of one, the
 // scheduler used to count zero active tasks, pass the gate, and then assign A
 // as well, so two tasks ran under a cap of one. The lease transaction now
 // re-checks the cap with the task already counted.
-func TestH4a_F12_CapsHoldUnderParallelLease(t *testing.T) {
+func TestCapsHoldUnderParallelLease(t *testing.T) {
 	one := 1
 	cases := []struct {
 		name   string
@@ -691,13 +691,13 @@ func (s *racingLeaseStore) LeaseTask(ctx context.Context, req store.LeaseRequest
 	return s.Store.LeaseTask(ctx, req)
 }
 
-// TestH4a_F4_CancelRacingLease cancels the job just before the lease writes its
+// TestCancelRacingLease cancels the job just before the lease writes its
 // attempt. The old lease had already moved the task to assigned by then, so the
 // cancel closed nothing and canceled the task, and the lease then created a
 // running attempt (and an active usage claim) on a canceled task, which nothing
 // ever closed. The lease transaction now sees the canceled task and writes
 // nothing.
-func TestH4a_F4_CancelRacingLease(t *testing.T) {
+func TestCancelRacingLease(t *testing.T) {
 	for name, st := range raceBackends(t) {
 		t.Run(name, func(t *testing.T) {
 			pool, err := st.CreateUsagePool(t.Context(), store.UsagePool{ID: uuid.NewString(), Name: "maya", MaxConcurrent: 1})
@@ -762,8 +762,8 @@ func (s *cancelAfterLeaseStore) LeaseTask(ctx context.Context, req store.LeaseRe
 	return out, err
 }
 
-// TestH4a_F4_LeaseDuringCancelLeaksNothing is the other side of
-// [TestH4a_F4_CancelRacingLease]: the cancel lands immediately after the lease
+// TestLeaseDuringCancelLeaksNothing is the other side of
+// [TestCancelRacingLease]: the cancel lands immediately after the lease
 // commits, so the attempt and the claim it just wrote already exist and the
 // cancel must find, close and release them. A cancel that closed attempts
 // without releasing their claims, or released claims first and closed attempts
@@ -771,9 +771,9 @@ func (s *cancelAfterLeaseStore) LeaseTask(ctx context.Context, req store.LeaseRe
 //
 // This one is green on the unmodified three-call cancel as well: the
 // lease-side window (the cancel landing before the lease writes) is the one
-// that was red, and [TestH4a_F4_CancelRacingLease] carries that reproduction.
+// that was red, and [TestCancelRacingLease] carries that reproduction.
 // This test pins that the single-transaction cancel closes the same ground.
-func TestH4a_F4_LeaseDuringCancelLeaksNothing(t *testing.T) {
+func TestLeaseDuringCancelLeaksNothing(t *testing.T) {
 	for name, st := range raceBackends(t) {
 		t.Run(name, func(t *testing.T) {
 			pool, err := st.CreateUsagePool(t.Context(), store.UsagePool{ID: uuid.NewString(), Name: "lic", MaxConcurrent: 1})
@@ -924,14 +924,14 @@ func (s *leaseAfterReapStore) ReclaimStaleAssignedTasks(ctx context.Context, cut
 	return out, err
 }
 
-// TestH4a_F5_ReaperDoesNotCloseReleasedAttempt re-leases a task in the window
+// TestReaperDoesNotCloseReleasedAttempt re-leases a task in the window
 // between the reaper's reclaim and what the reaper does next. The old reaper
 // then looked up the task's latest attempt, found the one the new lease had
 // just written, and closed it as failed and released its claims, while the
 // task kept running on the new worker. The store now closes exactly the
 // attempts of the tasks it reclaimed, inside the reclaim, so the new lease is
 // out of reach. The reclaimed assignment's own attempt and claim are released.
-func TestH4a_F5_ReaperDoesNotCloseReleasedAttempt(t *testing.T) {
+func TestReaperDoesNotCloseReleasedAttempt(t *testing.T) {
 	for name, st := range raceBackends(t) {
 		t.Run(name, func(t *testing.T) {
 			_, _, task, stale := seedStatusFixture(t, st, store.TaskStatusAssigned)
@@ -986,7 +986,7 @@ func TestH4a_F5_ReaperDoesNotCloseReleasedAttempt(t *testing.T) {
 
 // ── A superseded attempt's late report must not end the re-leased task ──────
 
-// TestH4a_SupersededAttemptLateReportIsIgnored reaps an assignment, leases the
+// TestSupersededAttemptLateReportIsIgnored reaps an assignment, leases the
 // task again to another worker, and then delivers the first worker's late
 // terminal report. The arrow assigned/running -> succeeded (or canceled) is
 // legal, so the store used to complete the task while the new attempt was open
@@ -994,7 +994,7 @@ func TestH4a_F5_ReaperDoesNotCloseReleasedAttempt(t *testing.T) {
 // of a cancel-then-retry. The store now refuses a report from an attempt that
 // is not the task's latest; the consumer acks it as it does any refused report,
 // still wakes lease waiters, and leaves the new lease alone.
-func TestH4a_SupersededAttemptLateReportIsIgnored(t *testing.T) {
+func TestSupersededAttemptLateReportIsIgnored(t *testing.T) {
 	cases := []struct {
 		name    string
 		current store.TaskStatus // the re-leased task's status when the late report lands
@@ -1088,13 +1088,13 @@ func (s *heartbeatDuringSweepStore) ListStaleWorkers(ctx context.Context, before
 	return out, err
 }
 
-// TestH4a_F1_HeartbeatDuringSweepKeepsWorkerOnline lands a heartbeat in the
+// TestHeartbeatDuringSweepKeepsWorkerOnline lands a heartbeat in the
 // window between the sweep's stale list and its offline write. The old sweep
 // wrote the offline status unconditionally, so the live worker was marked
 // offline and its running task went back to ready, to be leased and run a
 // second time. The offline write now re-checks the heartbeat itself, so the
 // worker stays online, its task stays running and no offline event is sent.
-func TestH4a_F1_HeartbeatDuringSweepKeepsWorkerOnline(t *testing.T) {
+func TestHeartbeatDuringSweepKeepsWorkerOnline(t *testing.T) {
 	for name, st := range raceBackends(t) {
 		t.Run(name, func(t *testing.T) {
 			workerID, taskID, attemptID := seedStaleWorkerWithTask(t, st, 10*time.Minute)
@@ -1147,11 +1147,11 @@ func TestH4a_F1_HeartbeatDuringSweepKeepsWorkerOnline(t *testing.T) {
 
 // ── F2: offline reclaim releases the usage claims of the attempts it closes ──
 
-// TestH4a_F2_OfflineReclaimReleasesClaims is the plain bug behind F2: the
+// TestOfflineReclaimReleasesClaims is the plain bug behind F2: the
 // offline sweep closed a dead worker's attempts and returned its tasks to ready
 // but never released the attempts' usage claims, so a license slot stayed held
 // until the job was deleted.
-func TestH4a_F2_OfflineReclaimReleasesClaims(t *testing.T) {
+func TestOfflineReclaimReleasesClaims(t *testing.T) {
 	for name, st := range raceBackends(t) {
 		t.Run(name, func(t *testing.T) {
 			_, taskID, attemptID := seedStaleWorkerWithTask(t, st, 10*time.Minute)
@@ -1176,9 +1176,9 @@ func TestH4a_F2_OfflineReclaimReleasesClaims(t *testing.T) {
 	}
 }
 
-// TestH4a_F2_DeregisterReleasesClaims is the graceful-shutdown twin: a worker
+// TestDeregisterReleasesClaims is the graceful-shutdown twin: a worker
 // that deregisters mid-render must free its license slot as well.
-func TestH4a_F2_DeregisterReleasesClaims(t *testing.T) {
+func TestDeregisterReleasesClaims(t *testing.T) {
 	for name, st := range raceBackends(t) {
 		t.Run(name, func(t *testing.T) {
 			workerID, taskID, attemptID := seedStaleWorkerWithTask(t, st, 0) // a live worker

@@ -14,12 +14,12 @@ import (
 	"github.com/uberware/sqi/internal/store"
 )
 
-// TestH4a2_CancelLastOpenTaskFinalizesStepAndJob pins item 9 i: canceling a
+// TestCancelLastOpenTaskFinalizesStepAndJob pins item 9 i: canceling a
 // job's last open task finishes its step and its job, as a terminal worker
 // report does. Before H4a2 the step stayed open until the next restart. The
 // step already holds a succeeded sibling, so the cancel of the last OPEN task is
 // what ends it, and it ends canceled (a canceled task and no failed one).
-func TestH4a2_CancelLastOpenTaskFinalizesStepAndJob(t *testing.T) {
+func TestCancelLastOpenTaskFinalizesStepAndJob(t *testing.T) {
 	for name, st := range raceBackends(t) {
 		t.Run(name, func(t *testing.T) {
 			job, step, task, _ := seedStatusFixture(t, st, store.TaskStatusRunning)
@@ -51,11 +51,11 @@ func TestH4a2_CancelLastOpenTaskFinalizesStepAndJob(t *testing.T) {
 	}
 }
 
-// TestH4a2_CancelJobThenRetryJobRunsAgain pins items 9 ii and v: a job
+// TestCancelJobThenRetryJobRunsAgain pins items 9 ii and v: a job
 // canceled with nothing in flight, then retried, has its tasks released and
 // leasable. Before H4a2 the job cancel left its step open, RetryTasks reset
 // only failed/canceled steps, and the revived task stayed pending forever.
-func TestH4a2_CancelJobThenRetryJobRunsAgain(t *testing.T) {
+func TestCancelJobThenRetryJobRunsAgain(t *testing.T) {
 	for name, st := range raceBackends(t) {
 		t.Run(name, func(t *testing.T) {
 			job, step, task, _ := seedStatusFixture(t, st, store.TaskStatusReady)
@@ -83,14 +83,14 @@ func TestH4a2_CancelJobThenRetryJobRunsAgain(t *testing.T) {
 	}
 }
 
-// TestH4a2_CancelEchoAfterJobCancelKeepsTheJobCanceled pins the final review's
+// TestCancelEchoAfterJobCancelKeepsTheJobCanceled pins the final review's
 // cancel-echo race. A job cancel finalizes every step, so a step holding a
 // failed task ends failed. When the job row was a second write, the worker's
 // "canceled" echo for a canceled task could reach checkStepCompletion before it,
 // and FinalizeJob then ended the job failed: the user got a 409 although every
 // task had been canceled. The job row is now canceled in the cancel's own
 // transaction, so the echo finds a terminal job and the confirmation succeeds.
-func TestH4a2_CancelEchoAfterJobCancelKeepsTheJobCanceled(t *testing.T) {
+func TestCancelEchoAfterJobCancelKeepsTheJobCanceled(t *testing.T) {
 	for name, st := range raceBackends(t) {
 		t.Run(name, func(t *testing.T) {
 			job, _, task, attempt := seedStatusFixture(t, st, store.TaskStatusRunning)
@@ -129,9 +129,9 @@ func TestH4a2_CancelEchoAfterJobCancelKeepsTheJobCanceled(t *testing.T) {
 	}
 }
 
-// TestH4a2_RetryFailedTaskWhileSiblingRunsIsLeasable pins item 9 vi through
+// TestRetryFailedTaskWhileSiblingRunsIsLeasable pins item 9 vi through
 // RetryTask: the revived task is ready at once, not pending under a ready step.
-func TestH4a2_RetryFailedTaskWhileSiblingRunsIsLeasable(t *testing.T) {
+func TestRetryFailedTaskWhileSiblingRunsIsLeasable(t *testing.T) {
 	for name, st := range raceBackends(t) {
 		t.Run(name, func(t *testing.T) {
 			job, step, running, _ := seedStatusFixture(t, st, store.TaskStatusRunning)
@@ -171,13 +171,13 @@ func forceStepStatus(st store.Store, stepID string, status store.StepStatus) err
 	return f.UpdateStepStatus(context.Background(), stepID, status)
 }
 
-// TestH4a2_StartupReleasesAStrandedPendingStep pins spec §3.5 / D5: a step a
+// TestStartupReleasesAStrandedPendingStep pins spec §3.5 / D5: a step a
 // retry reset to pending and never released (the server stopped first) is
 // released, with its task, at the next start. A blocked job that also holds a
 // pending, dependency-free step is left alone: ResolveDependencies does not
 // look at job status, so only the store's exclusion of blocked jobs keeps that
 // step from being released early.
-func TestH4a2_StartupReleasesAStrandedPendingStep(t *testing.T) {
+func TestStartupReleasesAStrandedPendingStep(t *testing.T) {
 	for name, st := range raceBackends(t) {
 		t.Run(name, func(t *testing.T) {
 			_, step, task, _ := seedStatusFixture(t, st, store.TaskStatusPending)
@@ -231,11 +231,11 @@ func TestH4a2_StartupReleasesAStrandedPendingStep(t *testing.T) {
 	}
 }
 
-// TestH4a2_StartupCancelsAndFinalizesBehindAFailedUpstream pins the other half
+// TestStartupCancelsAndFinalizesBehindAFailedUpstream pins the other half
 // of the start-up pass: a pending step behind an upstream that already failed
 // can never run, so it is cascade-canceled with its task, and with no step left
 // open the job is finalized (failed) rather than left running.
-func TestH4a2_StartupCancelsAndFinalizesBehindAFailedUpstream(t *testing.T) {
+func TestStartupCancelsAndFinalizesBehindAFailedUpstream(t *testing.T) {
 	for name, st := range raceBackends(t) {
 		t.Run(name, func(t *testing.T) {
 			job, upstream, _, _ := seedStatusFixture(t, st, store.TaskStatusFailed)
@@ -295,14 +295,14 @@ func (s *retryBeforeCascadeStore) CancelPendingStep(ctx context.Context, id, rea
 	return s.Store.CancelPendingStep(ctx, id, reason, now)
 }
 
-// TestH4a2_RetryBeforeTheCascadeKeepsTheDownstreamStep pins the whole-branch
+// TestRetryBeforeTheCascadeKeepsTheDownstreamStep pins the whole-branch
 // review's stale-read cascade: CancelDependents decides from a step list read
 // before the RetryJob lands, and the cancel used to guard only that the
 // downstream step was still pending. The retried upstream then ran, succeeded,
 // and the job still ended canceled. The cancel now re-checks the upstream
 // inside its own write, so the downstream step stays pending and runs once the
 // upstream completes.
-func TestH4a2_RetryBeforeTheCascadeKeepsTheDownstreamStep(t *testing.T) {
+func TestRetryBeforeTheCascadeKeepsTheDownstreamStep(t *testing.T) {
 	for name, inner := range raceBackends(t) {
 		t.Run(name, func(t *testing.T) {
 			job, upstream, task, attempt := seedStatusFixture(t, inner, store.TaskStatusRunning)
