@@ -7,6 +7,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/uberware/sqi/internal/store"
@@ -231,9 +232,12 @@ func (s *Store) CancelPendingStep(ctx context.Context, id, reason string, now ti
 
 // movePendingStep moves a pending step and its pending tasks together, in one
 // transaction. The anchor is the job row (the step's parent), taken before the
-// step is written so a concurrent finalize or cancel of the same job is
-// ordered against this move. The step row is written first and guards the
-// task move: when the step is no longer pending nothing is written at all.
+// step is read or written, so a concurrent finalize, retry or cancel of the
+// same job is ordered against this move. A cancel first re-checks, under the
+// anchor, that one of the step's upstream steps is failed or canceled
+// (invariant I4); a release needs no such check, because a completed step
+// never reopens. The step row is then written and guards the task move: when
+// the step is no longer pending nothing is written at all.
 func (s *Store) movePendingStep(
 	ctx context.Context, id string, stepTo store.StepStatus, taskTo store.TaskStatus, reason string, now time.Time,
 ) (bool, []store.Task, error) {
@@ -243,12 +247,21 @@ func (s *Store) movePendingStep(
 	}
 	defer func() { _ = tx.Rollback() }() //nolint:errcheck // rollback after commit is a no-op
 
-	var jobID string
-	if err := tx.QueryRowContext(ctx, `SELECT job_id FROM steps WHERE id = ?`, id).Scan(&jobID); err != nil {
+	var jobID, dependsOnJSON string
+	if err := tx.QueryRowContext(ctx, `SELECT job_id, depends_on FROM steps WHERE id = ?`, id).Scan(&jobID, &dependsOnJSON); err != nil {
 		return false, nil, mapErr(err)
 	}
 	if err := lockAnchors(ctx, tx, jobAnchor(jobID)); err != nil {
 		return false, nil, err
+	}
+	if stepTo == store.StepStatusCanceled {
+		failed, err := anyUpstreamUnsuccessfulTx(ctx, tx, jobID, dependsOnJSON)
+		if err != nil {
+			return false, nil, fmt.Errorf("sqlite: upstreams of step %s: %w", id, err)
+		}
+		if !failed {
+			return false, nil, nil
+		}
 	}
 	nowText := timeToText(now.UTC())
 	res, err := tx.ExecContext(ctx, sqlGuardStepPending, string(stepTo), nowText, id)
@@ -270,6 +283,30 @@ func (s *Store) movePendingStep(
 		return false, nil, fmt.Errorf("sqlite: commit move pending step: %w", mapErr(err))
 	}
 	return true, tasks, nil
+}
+
+// anyUpstreamUnsuccessfulTx reports whether any step named in dependsOnJSON (a
+// step's depends_on column) is, in jobID, failed or canceled as tx sees it.
+func anyUpstreamUnsuccessfulTx(ctx context.Context, tx *sql.Tx, jobID, dependsOnJSON string) (bool, error) {
+	deps, err := unmarshalJSON(dependsOnJSON, []string{})
+	if err != nil {
+		return false, err
+	}
+	if len(deps) == 0 {
+		return false, nil
+	}
+	args := make([]any, 0, len(deps)+1)
+	args = append(args, jobID)
+	for _, d := range deps {
+		args = append(args, d)
+	}
+	query := `SELECT EXISTS (SELECT 1 FROM steps WHERE job_id = ? AND status IN ('failed', 'canceled') AND name IN (` +
+		strings.TrimSuffix(strings.Repeat("?,", len(deps)), ",") + `))`
+	var failed bool
+	if err := tx.QueryRowContext(ctx, query, args...).Scan(&failed); err != nil {
+		return false, mapErr(err)
+	}
+	return failed, nil
 }
 
 // queryTasksTx runs a task-returning statement inside tx and scans every row.

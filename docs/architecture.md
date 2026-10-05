@@ -277,7 +277,12 @@ terminal state, once its step has been finalized (`store.FinalizeStep`). Each
 release is `store.ReleaseStep`, which moves a step that is still `pending`, and
 its pending tasks, to `ready` in one guarded transaction; a failed or canceled
 upstream step instead cancels its dependents through `store.CancelPendingStep`,
-with the same guard.
+with the same guard plus a second one: the cancel re-checks, inside its own
+transaction, that one of the step's upstream steps is still `failed` or
+`canceled`. A retry that revives the upstream between the cascade's read of the
+step list and its write therefore leaves the downstream step `pending`, to run
+once the retried upstream completes. A release needs no such re-check, because
+a `completed` step never reopens.
 
 ### 3. Assignment (lease-on-request)
 
@@ -807,8 +812,9 @@ write connection.
   rollback path to leak from.
 - **I4. A derived decision is made inside the statement that writes it.** Step
   and job finalization (`FinalizeStep`, `FinalizeJob`), blocked-job release
-  (`ReleaseBlockedJob`), stalled-job demotion (`DemoteStalledJobs`) and the
-  last-admin guard (`UpdateUserKeepingAdmin`, `DeleteUser`) compute their
+  (`ReleaseBlockedJob`), the step-failure cascade (`CancelPendingStep`, which
+  re-checks that an upstream step is failed or canceled), stalled-job demotion
+  (`DemoteStalledJobs`) and the last-admin guard (`UpdateUserKeepingAdmin`, `DeleteUser`) compute their
   condition in the `UPDATE` or `DELETE` itself and report what they decided;
   `FinalizeStep`, which runs on the single write connection for every terminal
   report, answers its check of the step's tasks from the

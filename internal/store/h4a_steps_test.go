@@ -4,6 +4,7 @@ package store_test
 
 import (
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -93,11 +94,16 @@ func TestReleaseStep_UnknownStep(t *testing.T) {
 	}
 }
 
+// failedUpstream is a failed step for a cascade-cancel test's step "a" to
+// depend on: CancelPendingStep cancels only a step one of whose upstreams is
+// failed or canceled when the write runs.
+var failedUpstream = stepSpec{name: "up", status: store.StepStatusFailed, tasks: []store.TaskStatus{store.TaskStatusFailed}}
+
 func TestCancelPendingStep(t *testing.T) {
 	for name, st := range newStores(t) {
 		t.Run(name, func(t *testing.T) {
-			g := seedGraph(t, st, graphOpts{}, stepSpec{
-				name: "a", status: store.StepStatusPending,
+			g := seedGraph(t, st, graphOpts{}, failedUpstream, stepSpec{
+				name: "a", status: store.StepStatusPending, dependsOn: []string{"up"},
 				tasks: []store.TaskStatus{store.TaskStatusPending},
 			})
 			ok, tasks, err := st.CancelPendingStep(t.Context(), g.Steps["a"].ID, store.FailureReasonUpstreamFailed, time.Now().UTC())
@@ -124,8 +130,8 @@ func TestCancelPendingStep(t *testing.T) {
 func TestCancelPendingStep_MovedStepIsNotOverwritten(t *testing.T) {
 	for name, st := range newStores(t) {
 		t.Run(name, func(t *testing.T) {
-			g := seedGraph(t, st, graphOpts{}, stepSpec{
-				name: "a", status: store.StepStatusReady,
+			g := seedGraph(t, st, graphOpts{}, failedUpstream, stepSpec{
+				name: "a", status: store.StepStatusReady, dependsOn: []string{"up"},
 				tasks: []store.TaskStatus{store.TaskStatusReady},
 			})
 			ok, tasks, err := st.CancelPendingStep(t.Context(), g.Steps["a"].ID, store.FailureReasonUpstreamFailed, time.Now().UTC())
@@ -145,8 +151,8 @@ func TestCancelPendingStep_MovedStepIsNotOverwritten(t *testing.T) {
 func TestCancelPendingStep_KeepsMoreSpecificReason(t *testing.T) {
 	for name, st := range newStores(t) {
 		t.Run(name, func(t *testing.T) {
-			g := seedGraph(t, st, graphOpts{}, stepSpec{
-				name: "a", status: store.StepStatusPending,
+			g := seedGraph(t, st, graphOpts{}, failedUpstream, stepSpec{
+				name: "a", status: store.StepStatusPending, dependsOn: []string{"up"},
 				tasks: []store.TaskStatus{store.TaskStatusPending, store.TaskStatusPending},
 			})
 			const specific = "the earlier, more specific cause"
@@ -164,6 +170,63 @@ func TestCancelPendingStep_KeepsMoreSpecificReason(t *testing.T) {
 				t.Fatalf("reason = %q, want %q", got, store.FailureReasonUpstreamFailed)
 			}
 		})
+	}
+}
+
+// The cascade decides inside its own write (invariant I4): a pending step is
+// canceled only while one of its upstream steps is failed or canceled. A retry
+// that revives the failed upstream between the caller's read of the step list
+// and this write leaves the step pending, so it runs once the upstream
+// completes instead of being canceled for a failure that no longer stands.
+func TestCancelPendingStep_RequiresAnUnsuccessfulUpstream(t *testing.T) {
+	cases := []struct {
+		upstream   []store.StepStatus // one upstream step per entry, "u0", "u1", ...
+		wantCancel bool
+	}{
+		{[]store.StepStatus{store.StepStatusFailed}, true},
+		{[]store.StepStatus{store.StepStatusCanceled}, true},
+		{[]store.StepStatus{store.StepStatusCompleted, store.StepStatusFailed}, true},
+		{[]store.StepStatus{store.StepStatusReady}, false}, // a retry revived it
+		{[]store.StepStatus{store.StepStatusPending}, false},
+		{[]store.StepStatus{store.StepStatusRunning}, false},
+		{[]store.StepStatus{store.StepStatusCompleted}, false},
+		{nil, false}, // no upstream at all
+	}
+	for _, tc := range cases {
+		for name, st := range newStores(t) {
+			t.Run(fmt.Sprintf("%v/%s", tc.upstream, name), func(t *testing.T) {
+				var specs []stepSpec
+				var deps []string
+				for i, status := range tc.upstream {
+					up := fmt.Sprintf("u%d", i)
+					specs = append(specs, stepSpec{name: up, status: status})
+					deps = append(deps, up)
+				}
+				specs = append(specs, stepSpec{
+					name: "a", status: store.StepStatusPending, dependsOn: deps,
+					tasks: []store.TaskStatus{store.TaskStatusPending},
+				})
+				g := seedGraph(t, st, graphOpts{}, specs...)
+
+				ok, tasks, err := st.CancelPendingStep(t.Context(), g.Steps["a"].ID, store.FailureReasonUpstreamFailed, time.Now().UTC())
+				if err != nil {
+					t.Fatalf("CancelPendingStep: %v", err)
+				}
+				if ok != tc.wantCancel || (len(tasks) == 1) != tc.wantCancel {
+					t.Fatalf("CancelPendingStep = (%v, %d tasks), want canceled=%v", ok, len(tasks), tc.wantCancel)
+				}
+				wantStep, wantTask, wantReason := store.StepStatusPending, store.TaskStatusPending, ""
+				if tc.wantCancel {
+					wantStep, wantTask, wantReason = store.StepStatusCanceled, store.TaskStatusCanceled, store.FailureReasonUpstreamFailed
+				}
+				if got := mustStep(t, st, g.Steps["a"].ID).Status; got != wantStep {
+					t.Fatalf("step = %q, want %q", got, wantStep)
+				}
+				if got := mustTask(t, st, g.Tasks["a"][0].ID); got.Status != wantTask || got.FailureReason != wantReason {
+					t.Fatalf("task = %q/%q, want %q/%q", got.Status, got.FailureReason, wantTask, wantReason)
+				}
+			})
+		}
 	}
 }
 

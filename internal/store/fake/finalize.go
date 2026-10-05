@@ -176,13 +176,17 @@ func (s *Store) CancelPendingStep(_ context.Context, id, reason string, now time
 
 // movePendingStep moves a pending step and its pending tasks together under
 // one lock. Like the SQLite version it writes nothing unless the step is
-// still pending, and it stamps reason only on tasks that carry none.
+// still pending, and, for a cancel, unless one of its upstream steps is failed
+// or canceled (invariant I4); it stamps reason only on tasks that carry none.
 func (s *Store) movePendingStep(id string, stepTo store.StepStatus, taskTo store.TaskStatus, reason string, now time.Time) (bool, []store.Task, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	st, ok := s.steps[id]
 	if !ok {
 		return false, nil, store.ErrNotFound
+	}
+	if stepTo == store.StepStatusCanceled && !s.anyUpstreamUnsuccessfulLocked(st) {
+		return false, nil, nil
 	}
 	if st.Status != store.StepStatusPending {
 		return false, nil, nil
@@ -191,6 +195,20 @@ func (s *Store) movePendingStep(id string, stepTo store.StepStatus, taskTo store
 	st.Status, st.UpdatedAt = stepTo, now
 	s.steps[id] = st
 	return true, s.transitionPendingTasksLocked(id, taskTo, reason, now), nil
+}
+
+// anyUpstreamUnsuccessfulLocked reports whether any step st depends on is, in
+// st's job, failed or canceled. Caller holds s.mu.
+func (s *Store) anyUpstreamUnsuccessfulLocked(st store.Step) bool {
+	for _, other := range s.steps {
+		if other.JobID != st.JobID || !slices.Contains(st.DependsOn, other.Name) {
+			continue
+		}
+		if other.Status == store.StepStatusFailed || other.Status == store.StepStatusCanceled {
+			return true
+		}
+	}
+	return false
 }
 
 // ReleaseBlockedJob implements [store.JobStore].

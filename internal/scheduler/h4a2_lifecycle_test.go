@@ -273,3 +273,75 @@ func TestH4a2_StartupCancelsAndFinalizesBehindAFailedUpstream(t *testing.T) {
 		})
 	}
 }
+
+// retryBeforeCascadeStore lands a RetryJob's store write immediately before
+// the failure cascade's cancel of stepID: the RetryJob that arrives between the
+// upstream step finalizing failed and CancelDependents canceling its dependents.
+type retryBeforeCascadeStore struct {
+	store.Store
+
+	jobID, stepID string
+	fired         bool
+	t             *testing.T
+}
+
+func (s *retryBeforeCascadeStore) CancelPendingStep(ctx context.Context, id, reason string, now time.Time) (bool, []store.Task, error) {
+	if id == s.stepID && !s.fired {
+		s.fired = true
+		if _, err := s.RetryTasks(ctx, s.jobID, nil, now); err != nil {
+			s.t.Errorf("retry in hook: %v", err)
+		}
+	}
+	return s.Store.CancelPendingStep(ctx, id, reason, now)
+}
+
+// TestH4a2_RetryBeforeTheCascadeKeepsTheDownstreamStep pins the whole-branch
+// review's stale-read cascade: CancelDependents decides from a step list read
+// before the RetryJob lands, and the cancel used to guard only that the
+// downstream step was still pending. The retried upstream then ran, succeeded,
+// and the job still ended canceled. The cancel now re-checks the upstream
+// inside its own write, so the downstream step stays pending and runs once the
+// upstream completes.
+func TestH4a2_RetryBeforeTheCascadeKeepsTheDownstreamStep(t *testing.T) {
+	for name, inner := range raceBackends(t) {
+		t.Run(name, func(t *testing.T) {
+			job, upstream, task, attempt := seedStatusFixture(t, inner, store.TaskStatusRunning)
+			now := time.Now()
+			down, err := inner.CreateStep(t.Context(), store.Step{
+				ID: uuid.NewString(), JobID: job.ID, Name: "Step2", DependsOn: []string{upstream.Name},
+				StepOrder: 1, Status: store.StepStatusPending, CreatedAt: now, UpdatedAt: now,
+			})
+			if err != nil {
+				t.Fatalf("CreateStep (downstream): %v", err)
+			}
+			downTask, err := inner.CreateTask(t.Context(), store.Task{
+				ID: uuid.NewString(), JobID: job.ID, StepID: down.ID, Name: "task-down",
+				Status: store.TaskStatusPending, CreatedAt: now, UpdatedAt: now,
+			})
+			if err != nil {
+				t.Fatalf("CreateTask (downstream): %v", err)
+			}
+			st := &retryBeforeCascadeStore{Store: inner, jobID: job.ID, stepID: down.ID, t: t}
+			s := newStatusTestScheduler(st)
+			s.ctx = t.Context()
+
+			msg := terminalReport(t, task, attempt, "failed", "boom")
+			s.handleTaskStatusMessage(msg)
+			if !msg.acked || msg.nacked {
+				t.Fatalf("failure report must be acked (acked=%v nacked=%v)", msg.acked, msg.nacked)
+			}
+			if !st.fired {
+				t.Fatal("the cascade never tried to cancel the downstream step")
+			}
+			if got := mustStep(t, inner, down.ID).Status; got != store.StepStatusPending {
+				t.Fatalf("downstream step = %q, want pending (its upstream was retried)", got)
+			}
+			if got := mustTaskOf(t, inner, downTask.ID); got.Status != store.TaskStatusPending || got.FailureReason != "" {
+				t.Fatalf("downstream task = %q/%q, want pending with no reason", got.Status, got.FailureReason)
+			}
+			if got := mustJob(t, inner, job.ID).Status; got.IsTerminal() {
+				t.Fatalf("job = %q, want it still open (the retried upstream will run)", got)
+			}
+		})
+	}
+}

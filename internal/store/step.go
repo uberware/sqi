@@ -170,9 +170,13 @@ type StepStore interface {
 
 	// CancelPendingStep moves a pending step to canceled and every one of its
 	// pending tasks to canceled, stamping reason on tasks that carry none, in
-	// one transaction. Guarded on the step being pending; otherwise
-	// (false, nil, nil). Returns the canceled tasks. ErrNotFound for an unknown
-	// step.
+	// one transaction. Guarded on the step being pending and, decided inside
+	// the same transaction (invariant I4), on at least one of its upstream
+	// steps being failed or canceled; otherwise nothing is written and it
+	// returns (false, nil, nil). The second guard is what makes the failure
+	// cascade safe against a retry that revives the upstream after the caller
+	// read the step list. Returns the canceled tasks. ErrNotFound for an
+	// unknown step.
 	CancelPendingStep(ctx context.Context, id, reason string, now time.Time) (bool, []Task, error)
 
 	// ListStuckSteps returns every non-terminal step that has at least one task

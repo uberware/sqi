@@ -151,8 +151,11 @@ func CancelDependents(ctx context.Context, st store.Store, jobID string) (int, [
 			}
 			canceledTasks = append(canceledTasks, tasks...)
 			// Record the step as no longer pending either way. When the guarded
-			// cancel declined, another writer moved the step first; leaving it
-			// "pending" here would make the fixpoint loop retry it forever.
+			// cancel declined, another writer moved the step first, or a retry
+			// revived the failed upstream after the read above (the store
+			// re-checks the upstream, invariant I4); leaving it "pending" here
+			// would make the fixpoint loop retry it forever. Its own dependents
+			// are then offered a cancel the store declines in the same way.
 			statusByName[step.Name] = store.StepStatusCanceled
 			progressed = true
 			if canceledStep {
