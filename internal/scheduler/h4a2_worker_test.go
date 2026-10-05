@@ -327,15 +327,17 @@ func TestH4a2_HeldLeaseRefusalEndsWithTheScheduler(t *testing.T) {
 
 // TestH4a2_DisabledWorkerGetsNoWork pins N1: docs/api.md says disable "stops
 // new assignments", but the lease path never checked worker status. The refusal
-// is held for leaseRefusalDelay, like the unregistered-instance one: a worker
+// is held for leaseHoldTimeout, as an idle worker's request is parked: a worker
 // re-requests the moment a reply arrives and can stay disabled for days, so an
 // instant empty reply would spin its lease loop against the broker and the
-// store for that long.
+// store for that long, and the short leaseRefusalDelay would still have it ask
+// about once a second per queue (the whole-branch review's finding).
 func TestH4a2_DisabledWorkerGetsNoWork(t *testing.T) {
 	st := newCheckedFake(t)
 	s := newMetricsScheduler(st, &recordBus{}, "f1")
-	s.leaseHoldTimeout = 30 * time.Second // a park would show as a slow answer
-	s.leaseRefusalDelay = 50 * time.Millisecond
+	s.ctx = t.Context()
+	s.leaseHoldTimeout = 200 * time.Millisecond
+	s.leaseRefusalDelay = time.Millisecond // a refusal on this delay would show as a fast answer
 	one := 1
 	w, ids := seedLeaseFixture(t, st, []*int{&one})
 	if _, err := st.SetWorkerDisabled(t.Context(), w.ID, true); err != nil {
@@ -345,11 +347,11 @@ func TestH4a2_DisabledWorkerGetsNoWork(t *testing.T) {
 	if len(got) != 0 {
 		t.Fatalf("assignments = %v, want none for a disabled worker", got)
 	}
-	if took < s.leaseRefusalDelay {
-		t.Fatalf("refusal answered in %v, want at least the refusal delay %v", took, s.leaseRefusalDelay)
+	if took < s.leaseHoldTimeout {
+		t.Fatalf("refusal answered in %v, want it held for the lease hold %v", took, s.leaseHoldTimeout)
 	}
 	if took > 5*time.Second {
-		t.Fatalf("refusal took %v: it parked instead of answering after the delay", took)
+		t.Fatalf("refusal took %v, want about the lease hold %v", took, s.leaseHoldTimeout)
 	}
 	if task := mustTaskOf(t, st, ids[0]); task.Status != store.TaskStatusReady || task.AssignedWorkerID != "" {
 		t.Fatalf("task = %q on %q, want ready and unassigned (not leased)", task.Status, task.AssignedWorkerID)
@@ -360,6 +362,84 @@ func TestH4a2_DisabledWorkerGetsNoWork(t *testing.T) {
 	}
 	if len(attempts) != 0 {
 		t.Fatalf("task has %d attempts after the refused lease, want 0", len(attempts))
+	}
+}
+
+// TestH4a2_EnablingAWorkerWakesItsHeldLease pins the other half of holding a
+// disabled worker's request for the whole lease hold: enabling the worker wakes
+// the held request, which is then leased the ready task at once. A wake while
+// the worker is still disabled leases nothing.
+func TestH4a2_EnablingAWorkerWakesItsHeldLease(t *testing.T) {
+	st := newCheckedFake(t)
+	s := newMetricsScheduler(st, &recordBus{}, "f1")
+	s.ctx = t.Context()
+	s.leaseHoldTimeout = 30 * time.Second // only a wake can answer within the test
+	one := 1
+	w, ids := seedLeaseFixture(t, st, []*int{&one})
+	if _, err := st.SetWorkerDisabled(t.Context(), w.ID, true); err != nil {
+		t.Fatalf("SetWorkerDisabled: %v", err)
+	}
+
+	req, err := json.Marshal(leaseRequest{WorkerID: w.ID})
+	if err != nil {
+		t.Fatalf("marshal lease request: %v", err)
+	}
+	held := func() chan []byte {
+		t.Helper()
+		done := make(chan []byte, 1)
+		go func() { done <- s.handleLeaseRequest(w.ID, "q1", req) }()
+		deadline := time.Now().Add(5 * time.Second)
+		for {
+			s.disabledWaiters.mu.Lock()
+			parked := len(s.disabledWaiters.waiters[w.ID])
+			s.disabledWaiters.mu.Unlock()
+			if parked > 0 {
+				return done
+			}
+			if time.Now().After(deadline) {
+				t.Fatal("the disabled worker's lease request was never held")
+			}
+			time.Sleep(time.Millisecond)
+		}
+	}
+	answer := func(done chan []byte) []string {
+		t.Helper()
+		var raw []byte
+		select {
+		case raw = <-done:
+		case <-time.After(5 * time.Second):
+			t.Fatal("a woken lease request was not answered")
+		}
+		var rep leaseReply
+		if err := json.Unmarshal(raw, &rep); err != nil {
+			t.Fatalf("unmarshal lease reply: %v", err)
+		}
+		ids := make([]string, 0, len(rep.Assignments))
+		for _, a := range rep.Assignments {
+			var m protocol.AssignMsg
+			if err := json.Unmarshal(a, &m); err != nil {
+				t.Fatalf("unmarshal assignment: %v", err)
+			}
+			ids = append(ids, m.TaskID)
+		}
+		return ids
+	}
+
+	// Woken while still disabled: no work.
+	done := held()
+	s.WakeWorker(w.ID)
+	if got := answer(done); len(got) != 0 {
+		t.Fatalf("woken while disabled: assignments = %v, want none", got)
+	}
+
+	// Enabled, then woken: the ready task, at once.
+	done = held()
+	if _, err := st.SetWorkerDisabled(t.Context(), w.ID, false); err != nil {
+		t.Fatalf("SetWorkerDisabled(false): %v", err)
+	}
+	s.WakeWorker(w.ID)
+	if got := answer(done); len(got) != 1 || got[0] != ids[0] {
+		t.Fatalf("woken after enable: assignments = %v, want [%s]", got, ids[0])
 	}
 }
 

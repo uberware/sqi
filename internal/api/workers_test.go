@@ -16,6 +16,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"testing"
 	"time"
 
@@ -44,15 +45,20 @@ func newWorkerRouter(st store.Store) chi.Router {
 }
 
 func newWorkerRouterWithNotifier(st store.Store, notifier ws.Notifier) chi.Router {
-	return newWorkerRouterWith(st, notifier, storeRevoker{store: st})
+	return newWorkerRouterWith(st, notifier, storeRevoker{store: st}, nil)
 }
 
 func newWorkerRouterWithRevoker(st store.Store, revoker WorkerRevoker) chi.Router {
-	return newWorkerRouterWith(st, nil, revoker)
+	return newWorkerRouterWith(st, nil, revoker, nil)
 }
 
-func newWorkerRouterWith(st store.Store, notifier ws.Notifier, revoker WorkerRevoker) chi.Router {
-	h := newWorkerHandler(st, notifier, revoker, newTestLogger())
+// recordingWaker records the workers the handler asked the scheduler to wake.
+type recordingWaker struct{ woken []string }
+
+func (w *recordingWaker) WakeWorker(id string) { w.woken = append(w.woken, id) }
+
+func newWorkerRouterWith(st store.Store, notifier ws.Notifier, revoker WorkerRevoker, waker workerWaker) chi.Router {
+	h := newWorkerHandler(st, notifier, revoker, waker, newTestLogger())
 	r := chi.NewRouter()
 	r.Get("/api/v1/workers", h.listWorkers)
 	r.Get("/api/v1/workers/{id}", h.getWorker)
@@ -632,6 +638,36 @@ func TestEnableWorker(t *testing.T) {
 			t.Fatalf("expected 404, got %d", rr.Code)
 		}
 	})
+}
+
+// TestEnableWorker_WakesItsParkedLeases pins that enabling a worker wakes the
+// lease requests the scheduler parked while it was disabled, so it is leased
+// work at once rather than after the rest of the hold; disabling wakes nothing,
+// and neither does an enable that fails.
+func TestEnableWorker_WakesItsParkedLeases(t *testing.T) {
+	st := fake.New()
+	waker := &recordingWaker{}
+	r := newWorkerRouterWith(st, nil, storeRevoker{store: st}, waker)
+	w := seedWorker(t, st, store.WorkerStatusOnline)
+
+	for _, step := range []struct {
+		path      string
+		wantCode  int
+		wantWoken []string
+	}{
+		{"/api/v1/workers/" + w.ID + "/disable", http.StatusOK, nil},
+		{"/api/v1/workers/" + w.ID + "/enable", http.StatusOK, []string{w.ID}},
+		{"/api/v1/workers/ghost/enable", http.StatusNotFound, []string{w.ID}},
+	} {
+		rr := httptest.NewRecorder()
+		r.ServeHTTP(rr, newReq(t, http.MethodPost, step.path, nil))
+		if rr.Code != step.wantCode {
+			t.Fatalf("POST %s: expected %d, got %d — body: %s", step.path, step.wantCode, rr.Code, rr.Body)
+		}
+		if !slices.Equal(waker.woken, step.wantWoken) {
+			t.Fatalf("after POST %s: woken = %v, want %v", step.path, waker.woken, step.wantWoken)
+		}
+	}
 }
 
 // ── DELETE /api/v1/workers/{id} ──────────────────────────────────────────────

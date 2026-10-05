@@ -254,6 +254,10 @@ type Scheduler struct {
 	// waiters parks long-poll lease requests per queue; woken by wake triggers.
 	waiters *waiterRegistry
 
+	// disabledWaiters parks a disabled worker's lease requests, keyed by worker
+	// ID; [Scheduler.WakeWorker] wakes them when the worker is enabled.
+	disabledWaiters *waiterRegistry
+
 	// attemptCache holds recently-seen task-attempt ownership (workerID,
 	// taskID), consulted by handleLogChunk before it reads the store. See
 	// [attemptOwnerCache].
@@ -282,7 +286,9 @@ type Scheduler struct {
 	// whose registration has not landed is held before its empty reply (see
 	// [Scheduler.leaseFromUnregisteredInstance]). The worker re-requests as
 	// soon as a reply arrives, so answering at once would make its lease loop
-	// spin. Overridable in tests.
+	// spin. It is short because the registration normally lands within it; a
+	// disabled worker's request is held for leaseHoldTimeout instead. Overridable
+	// in tests.
 	leaseRefusalDelay time.Duration
 
 	// wg tracks all internal goroutines so [Run] can wait for clean exit.
@@ -354,6 +360,7 @@ func New(cfg Config, st store.Store, busClient busClient, m *metrics.Metrics, lo
 		notifier:          n,
 		diagBuf:           diagBuf,
 		waiters:           newWaiterRegistry(),
+		disabledWaiters:   newWaiterRegistry(),
 		attemptCache:      newAttemptOwnerCache(),
 		leaseHoldTimeout:  30 * time.Second,
 		leaseRefusalDelay: time.Second,
@@ -1508,6 +1515,15 @@ func (s *Scheduler) WakeQueue(queueID string) {
 	if queueID != bus.WildcardQueueToken {
 		s.waiters.notify(bus.WildcardQueueToken)
 	}
+}
+
+// WakeWorker wakes the lease requests a disabled worker has parked, so a worker
+// that was just enabled is leased work at once rather than after the rest of
+// its leaseHoldTimeout. Called by the API's enable handler after the write. A
+// woken request re-reads the worker, so a wake for a worker that is still
+// disabled leases nothing.
+func (s *Scheduler) WakeWorker(workerID string) {
+	s.disabledWaiters.notify(workerID)
 }
 
 // notifyQueueForJob wakes any parked lease waiters on the job's queue (and any

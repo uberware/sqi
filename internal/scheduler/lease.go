@@ -79,10 +79,13 @@ func (s *Scheduler) handleLeaseRequest(workerID, queueID string, data []byte) []
 	// A disabled worker drains: it finishes the tasks it holds and is leased
 	// nothing new (docs/api.md). A disable that lands between this check and
 	// the lease can still let one batch through, which is the documented drain.
-	// Both refusals are held, not answered at once: see refuseLeaseAfterDelay.
-	// The order of the two checks only decides whether the instance-mismatch
-	// Debug log fires: a disabled worker is refused without it.
-	if worker.Disabled || s.leaseFromUnregisteredInstance(ctx, worker, req.InstanceID) {
+	// Neither refusal is answered at once: see holdDisabledLease and
+	// refuseLeaseAfterDelay. A disabled worker is refused without the
+	// instance-mismatch check or its Debug log.
+	if worker.Disabled {
+		return marshalLeaseReply(s.holdDisabledLease(ctx, workerID, req.InstanceID))
+	}
+	if s.leaseFromUnregisteredInstance(ctx, worker, req.InstanceID) {
 		return s.refuseLeaseAfterDelay(ctx)
 	}
 
@@ -108,13 +111,27 @@ func (s *Scheduler) handleLeaseRequest(workerID, queueID string, data []byte) []
 	return marshalLeaseReply(nil)
 }
 
-// refuseLeaseAfterDelay answers a lease request that is refused outright, from a
-// worker process whose registration has not landed or from a disabled worker: an
-// empty batch, held for leaseRefusalDelay (or until ctx ends). The worker
-// re-requests as soon as a reply arrives, so an immediate answer would spin its
-// lease loop for as long as the registration takes, or, for a disabled worker
-// (which can stay disabled for days), for as long as the operator leaves it
-// disabled. It holds no lock and touches nothing; each request runs on its own
+// holdDisabledLease answers a disabled worker's lease request. A worker
+// re-requests as soon as a reply arrives and can stay disabled for days, so the
+// request is parked for leaseHoldTimeout, as an idle worker's is, rather than
+// refused at once (which would spin its lease loop) or after a short delay
+// (which would still have it ask about once a second per queue for as long as
+// it stays disabled). [Scheduler.WakeWorker], called when the worker is
+// enabled, ends the park early, and the request then makes the one retry a
+// parked request makes, which leases work only if the worker is enabled by
+// then. It holds no lock while parked.
+func (s *Scheduler) holdDisabledLease(ctx context.Context, workerID, instanceID string) [][]byte {
+	if s.disabledWaiters.wait(ctx, workerID, s.leaseHoldTimeout) {
+		return s.leaseAfterPark(ctx, workerID, instanceID)
+	}
+	return nil
+}
+
+// refuseLeaseAfterDelay answers a lease request from a worker process whose
+// registration has not landed: an empty batch, held for leaseRefusalDelay (or
+// until ctx ends). The worker re-requests as soon as a reply arrives, so an
+// immediate answer would spin its lease loop for as long as the registration
+// takes. It holds no lock and touches nothing; each request runs on its own
 // goroutine and a worker keeps one request outstanding per queue, so a process
 // holds at most one of these per queue.
 func (s *Scheduler) refuseLeaseAfterDelay(ctx context.Context) []byte {

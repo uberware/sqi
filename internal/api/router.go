@@ -414,7 +414,12 @@ func NewRouter(cfg Config, deps Deps, logger *slog.Logger, m *metrics.Metrics, h
 	jobs := newJobHandler(deps.Store, deps.Submitter, deps.Scheduler, notifier, logger, retryDefaults,
 		cfg.ValidateJobOwner, cfg.ExprSubmissionDeadline)
 	tasks := newTaskHandler(deps.Store, deps.Scheduler, logger)
-	workers := newWorkerHandler(deps.Store, notifier, deps.WorkerRevoker, logger)
+	// Assigned only when non-nil, for the same reason as notifier above.
+	var waker workerWaker
+	if deps.Scheduler != nil {
+		waker = deps.Scheduler
+	}
+	workers := newWorkerHandler(deps.Store, notifier, deps.WorkerRevoker, waker, logger)
 	farms := newFarmHandler(deps.Store, logger)
 	queues := newQueueHandler(deps.Store, logger)
 	storageLocs := newStorageLocationHandler(deps.Store, logger)

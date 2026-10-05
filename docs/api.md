@@ -674,9 +674,11 @@ What disabling a worker does:
   disabled worker's `status` as `disabled` whatever its liveness, and the
   `status` filter and the worker gauge count it as disabled only.
 - **It drains.** The worker finishes the tasks it already holds and is leased
-  nothing new. Its lease requests are answered with an empty batch (after
-  about a second, so the worker's request loop does not spin). A disable that
-  lands while a lease is in flight can still let that one batch through.
+  nothing new. Its lease requests are held for up to 30 seconds and answered
+  with an empty batch, as an idle worker's are, so a worker left disabled
+  for days does not keep polling the server. Enabling it ends the hold, so it
+  is leased work at once. A disable that lands while a lease is in flight can
+  still let that one batch through.
 - **It survives the worker coming and going.** A disabled worker stays
   `disabled` when it reconnects, when its process restarts and when it
   deregisters gracefully; only `enable` brings it back. `enable` clears the

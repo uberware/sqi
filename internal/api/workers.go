@@ -36,16 +36,29 @@ type workerHandler struct {
 	// this interface — never on internal/bus or internal/server — the same
 	// seam workerEnrollHandler uses for the same reason.
 	revoker WorkerRevoker
-	logger  *slog.Logger
+	// waker wakes an enabled worker's parked lease requests. May be nil (no
+	// scheduler wired): the worker is then leased work when its parked request
+	// times out instead.
+	waker  workerWaker
+	logger *slog.Logger
+}
+
+// workerWaker is the subset of [scheduler.Scheduler] the worker handler uses:
+// a disabled worker's lease requests are parked, and enabling it wakes them so
+// it is leased work at once.
+type workerWaker interface {
+	WakeWorker(workerID string)
 }
 
 // newWorkerHandler returns a workerHandler wired to the given store. notifier
-// may be nil in tests that do not exercise WebSocket push.
-func newWorkerHandler(st store.Store, notifier ws.Notifier, revoker WorkerRevoker, logger *slog.Logger) *workerHandler {
+// and waker may be nil in tests that do not exercise WebSocket push or the
+// scheduler.
+func newWorkerHandler(st store.Store, notifier ws.Notifier, revoker WorkerRevoker, waker workerWaker, logger *slog.Logger) *workerHandler {
 	return &workerHandler{
 		store:    st,
 		notifier: notifier,
 		revoker:  revoker,
+		waker:    waker,
 		logger:   logger,
 	}
 }
@@ -292,7 +305,8 @@ func (h *workerHandler) enableWorker(w http.ResponseWriter, r *http.Request) {
 
 // setWorkerDisabled is the shared implementation for disable and enable: it
 // sets or clears the worker's disabled flag, never its liveness, and returns
-// the effective status the write left.
+// the effective status the write left. An enable also wakes the worker's
+// parked lease requests, so it is leased work without waiting out their hold.
 func (h *workerHandler) setWorkerDisabled(w http.ResponseWriter, r *http.Request, disabled bool) {
 	ctx := r.Context()
 	id := chi.URLParam(r, "id")
@@ -309,6 +323,9 @@ func (h *workerHandler) setWorkerDisabled(w http.ResponseWriter, r *http.Request
 			slog.Any("error", err))
 		writeProblem(w, r, http.StatusInternalServerError, "failed to update worker status")
 		return
+	}
+	if !disabled && h.waker != nil {
+		h.waker.WakeWorker(id)
 	}
 
 	writeJSON(w, http.StatusOK, workerActionResponse{

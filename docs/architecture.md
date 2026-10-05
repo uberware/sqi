@@ -994,8 +994,11 @@ And from the lifecycle and report fixes:
   worker gauge report the effective status (`disabled` while the flag is set);
   offline-worker retention never deletes a disabled worker.
 - A **disabled** worker finishes the tasks it holds and is leased nothing new:
-  its lease requests are answered with an empty batch, held for about a second
-  (`leaseRefusalDelay`) so the worker's request loop does not spin. Because
+  its lease requests are parked for `leaseHoldTimeout` (30 s), as an idle
+  worker's are, and answered with an empty batch, so a worker left disabled for
+  days neither spins its request loop nor polls about once a second per queue.
+  Enabling it (`POST /workers/{id}/enable`) wakes the parked requests through
+  `Scheduler.WakeWorker`, and the woken request is leased work at once. Because
   no liveness write touches the flag, it stays disabled across reconnects,
   restarts and a graceful deregister. If it dies, the heartbeat sweep takes it
   offline and reclaims its tasks like any other worker, and it stays disabled.
@@ -1021,7 +1024,8 @@ And from the lifecycle and report fixes:
   lease is core NATS request/reply, so a restarted process can ask for work
   first, and a task leased to it before its registration landed would be
   reclaimed by that registration while the process runs it). The refusal is
-  held for `leaseRefusalDelay`, as for a disabled worker.
+  held for `leaseRefusalDelay` (1 s), about as long as a registration takes to
+  land.
 - A late or redelivered deregister can no longer take a restarted worker
   offline. The deregister carries the same optional `instance_id`, and
   `OfflineWorker` writes nothing when it and the stored one are both non-empty
@@ -1159,14 +1163,15 @@ Left by the lifecycle fixes:
   that as a restart and reclaims the live process's tasks. Closing it needs
   ordering metadata on the registration (a sequence or a timestamp), which the
   message does not carry.
-- **A refused worker re-requests about once a second per queue.** The refusal
-  of a disabled worker's, or of an unregistered process's, lease request is
-  held for `leaseRefusalDelay` (1 s) precisely so the worker's lease loop does
-  not spin, but the loop does ask again as soon as the empty reply arrives, so
-  a worker whose registration never lands (the message was discarded, or two
-  live processes share a worker ID) asks about once a second per queue for as
-  long as that lasts. The request for an unknown worker ID is answered at once
-  and has always had no such backoff.
+- **A refused process re-requests about once a second per queue.** The refusal
+  of an unregistered process's lease request is held for `leaseRefusalDelay`
+  (1 s) precisely so the worker's lease loop does not spin, but the loop does
+  ask again as soon as the empty reply arrives, so a worker whose registration
+  never lands (the message was discarded, or two live processes share a worker
+  ID) asks about once a second per queue for as long as that lasts. The request
+  for an unknown worker ID is answered at once and has always had no such
+  backoff. A disabled worker no longer does this: its requests are parked for
+  the full lease hold.
 - **A retry whose dependency resolution fails with the server up can still
   finalize a pending step `failed`.** The start-up reconcile closes the window
   for a server stop between `RetryTasks` and `ResolveDependencies`, but
@@ -1222,11 +1227,11 @@ listener at all — they run in-process over a pipe.
 JetStream streams use file-backed storage with configurable size limits.
 `work.lease.<worker_id>.<queue>` uses core NATS request/reply — no stream is created for
 it. The server holds an unfulfillable request in memory for up to 30 s before
-replying with an empty batch; the worker re-requests immediately. A request it
-refuses outright (from a disabled worker, or from a worker process whose
-registration has not landed yet) is likewise answered with an empty batch, but
-only after holding it for about a second, so the worker's request loop cannot
-spin.
+replying with an empty batch; the worker re-requests immediately. A disabled
+worker's request is held the same way (enabling the worker wakes it). A request
+from a worker process whose registration has not landed yet is refused with an
+empty batch, but only after holding it for about a second, so the worker's
+request loop cannot spin.
 
 ---
 
