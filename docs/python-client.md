@@ -267,7 +267,7 @@ for chunk in sqi.tail_task_logs(task_id, follow=True):
 | `get_worker(worker_id) -> Worker` | Worker detail, including `current_tasks`. |
 | `disable_worker(worker_id) -> WorkerAction \| None` | Drain and stop new assignments. |
 | `enable_worker(worker_id) -> WorkerAction \| None` | Re-enable a disabled worker. |
-| `remove_worker(worker_id) -> None` | Hard-delete a worker record; `204` → `None`. Only offline workers, or disabled workers whose last heartbeat is older than the heartbeat-timeout window, are removable — an online or live-disabled worker raises `ConflictError`. |
+| `remove_worker(worker_id) -> None` | Hard-delete a worker record; `204` → `None`. Only offline workers, disabled or not, are removable — an online worker (disabled or not) raises `ConflictError`. |
 
 ```python
 for worker in sqi.iter_workers(status="online"):

@@ -663,25 +663,33 @@ curl -s -X POST "$BASE/workers/$WORKER_ID/disable"
 # Re-enable
 curl -s -X POST "$BASE/workers/$WORKER_ID/enable"
 
-# Remove a worker (offline, or a disabled worker whose heartbeat has gone stale)
+# Remove a worker (offline, disabled or not)
 curl -s -X DELETE "$BASE/workers/$WORKER_ID"
 ```
 
 What disabling a worker does:
 
+- **It is a flag, not a liveness.** Disabled is an operator's decision, kept
+  apart from whether the worker is online or offline. The API reports a
+  disabled worker's `status` as `disabled` whatever its liveness, and the
+  `status` filter and the worker gauge count it as disabled only.
 - **It drains.** The worker finishes the tasks it already holds and is leased
   nothing new. Its lease requests are answered with an empty batch (after
   about a second, so the worker's request loop does not spin). A disable that
   lands while a lease is in flight can still let that one batch through.
 - **It survives the worker coming and going.** A disabled worker stays
   `disabled` when it reconnects, when its process restarts and when it
-  deregisters gracefully; only `enable` brings it back.
+  deregisters gracefully; only `enable` brings it back. `enable` clears the
+  flag and nothing else, so a disabled worker that has gone away comes back
+  as `offline` until it registers again.
 - **A dead disabled worker is still cleaned up.** If it stops heartbeating, the
-  heartbeat sweep reclaims the tasks it held (they return to `ready`, and no
-  retry attempt is consumed) and the worker stays `disabled`.
-- **It cannot be removed while it holds work.** `DELETE /workers/{id}` answers
-  `409` for a worker that is online, for a disabled worker that is still
-  heartbeating, and for any worker that still has a task assigned or running.
+  heartbeat sweep takes it offline like any other worker and reclaims the
+  tasks it held (they return to `ready`, and no retry attempt is consumed); it
+  stays `disabled`. Offline-worker retention never deletes a disabled worker.
+- **It cannot be removed while it is online or holds work.**
+  `DELETE /workers/{id}` answers `409` for a worker that is online (disabled or
+  not) and for any worker that still has a task assigned or running. A dead
+  disabled worker becomes removable once the sweep has taken it offline.
 
 ---
 

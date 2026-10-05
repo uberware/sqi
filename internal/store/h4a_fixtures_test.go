@@ -150,13 +150,25 @@ func seedClaim(t *testing.T, st store.Store, poolID, attemptID string) store.Usa
 // seedWorker registers the fixture worker in the given status. RegisterWorker
 // stores the status given, except that an existing disabled worker stays
 // disabled; a fresh fixture worker has none.
+// seedWorker registers the fixture worker with the given effective status. A
+// disabled status is an online worker an operator then disabled: disabled is a
+// flag over liveness, not a liveness of its own.
 func seedWorker(t *testing.T, st store.Store, farmID string, status store.WorkerStatus, lastHeartbeat time.Time) store.Worker {
 	t.Helper()
+	liveness := status
+	if status == store.WorkerStatusDisabled {
+		liveness = store.WorkerStatusOnline
+	}
 	w, _, err := st.RegisterWorker(t.Context(), store.Worker{
-		ID: fixtureWorkerID, FarmID: farmID, Hostname: "node", Status: status, LastHeartbeatAt: &lastHeartbeat,
+		ID: fixtureWorkerID, FarmID: farmID, Hostname: "node", Status: liveness, LastHeartbeatAt: &lastHeartbeat,
 	})
 	if err != nil {
 		t.Fatalf("RegisterWorker: %v", err)
+	}
+	if status == store.WorkerStatusDisabled {
+		if w, err = st.SetWorkerDisabled(t.Context(), w.ID, true); err != nil {
+			t.Fatalf("SetWorkerDisabled: %v", err)
+		}
 	}
 	return w
 }

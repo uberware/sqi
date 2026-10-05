@@ -980,15 +980,24 @@ And from the lifecycle and report fixes:
   `RetryJob` after a cancel runs the tasks again (see Cancellation above).
   Jobs already canceled get their open steps finalized on the first start
   after upgrade (migration `00033`).
+- **Disabled is a flag, not a status.** `workers.status` is liveness only
+  (`online`/`offline`), written by registration, deregistration and the
+  heartbeat sweep; `workers.disabled` is the operator's decision, written only
+  by the enable/disable endpoints (migration `00036` moved existing
+  `disabled` rows to `online` with the flag set). Until then one column held
+  both, and registration, deregistration and the sweep each overwrote
+  `disabled` with `online` or `offline`. The API, the `status` filter and the
+  worker gauge report the effective status (`disabled` while the flag is set);
+  offline-worker retention never deletes a disabled worker.
 - A **disabled** worker finishes the tasks it holds and is leased nothing new:
   its lease requests are answered with an empty batch, held for about a second
-  (`leaseRefusalDelay`) so the worker's request loop does not spin. It stays
-  disabled across reconnects, restarts and a graceful deregister, which used
-  to overwrite `disabled` with `online` or `offline`. If it dies, the heartbeat
-  sweep reclaims its tasks and it stays `disabled` (an idle disabled worker is
-  not listed or rewritten). `DELETE /workers/{id}` refuses a worker that still
-  holds an assigned or running task with the same 409 as any worker that is
-  not removable.
+  (`leaseRefusalDelay`) so the worker's request loop does not spin. Because
+  no liveness write touches the flag, it stays disabled across reconnects,
+  restarts and a graceful deregister. If it dies, the heartbeat sweep takes it
+  offline and reclaims its tasks like any other worker, and it stays disabled.
+  A worker is removable when it is offline, disabled or not;
+  `DELETE /workers/{id}` also refuses a worker that still holds an assigned or
+  running task with the same 409 as any worker that is not removable.
 - A worker process that restarts within the heartbeat timeout no longer leaves
   its previous process's tasks `running`. Each worker process sends a random
   `instance_id` in every registration (additive and optional: no
@@ -1158,10 +1167,10 @@ Left by the lifecycle fixes:
 - **Removing a busy worker revokes its credential first.** `DELETE
   /workers/{id}` revokes the worker's broker credential before the guarded
   delete, deliberately (a decommissioned machine loses broker access along with
-  its record), and the in-flight check lives in the delete. A dead disabled
-  worker that still holds a task therefore loses its credential and receives
-  the 409; the heartbeat sweep reclaims the task, after which the delete
-  succeeds.
+  its record), and the in-flight check lives in the delete. Going offline
+  reclaims a worker's tasks in the same transaction, so this needs an offline
+  worker that was leased a task afterwards (the lease path does not check
+  liveness); such a worker loses its credential and receives the 409.
 
 ---
 

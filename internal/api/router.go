@@ -79,12 +79,6 @@ type Config struct {
 	// concurrent requests to share one bucket and trigger 429s.
 	DisableRateLimit bool
 
-	// WorkerOfflineThreshold is the heartbeat-timeout window used to decide
-	// whether a disabled worker is dead (and thus removable). It mirrors the
-	// scheduler's WorkerTimeout. Zero is treated as "no grace" (a disabled
-	// worker with any past heartbeat is considered dead).
-	WorkerOfflineThreshold time.Duration
-
 	// AuthEnabled reflects config.AuthConfig.Enabled. When true, the session
 	// cookie is in play and this router activates the browser-security
 	// surface it requires: CORS AllowCredentials, the Origin-based CSRF guard
@@ -420,7 +414,7 @@ func NewRouter(cfg Config, deps Deps, logger *slog.Logger, m *metrics.Metrics, h
 	jobs := newJobHandler(deps.Store, deps.Submitter, deps.Scheduler, notifier, logger, retryDefaults,
 		cfg.ValidateJobOwner, cfg.ExprSubmissionDeadline)
 	tasks := newTaskHandler(deps.Store, deps.Scheduler, logger)
-	workers := newWorkerHandler(deps.Store, notifier, deps.WorkerRevoker, cfg.WorkerOfflineThreshold, logger)
+	workers := newWorkerHandler(deps.Store, notifier, deps.WorkerRevoker, logger)
 	farms := newFarmHandler(deps.Store, logger)
 	queues := newQueueHandler(deps.Store, logger)
 	storageLocs := newStorageLocationHandler(deps.Store, logger)

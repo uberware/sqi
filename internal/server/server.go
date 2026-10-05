@@ -736,7 +736,7 @@ func (s *Server) start(ctx context.Context) error {
 	deps.CookieSecure = s.cfg.AuthCookieSecure
 	natsAuthDeps(s.cfg, &deps)
 	router := api.NewRouter(
-		routerConfig(s.cfg, s.sched.WorkerTimeout()),
+		routerConfig(s.cfg),
 		deps,
 		s.logger,
 		s.metrics,

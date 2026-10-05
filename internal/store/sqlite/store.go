@@ -178,7 +178,7 @@ type Store struct {
 	stmtUpsertWorker             *sql.Stmt
 	stmtGetWorker                *sql.Stmt
 	stmtUpdateWorker             *sql.Stmt
-	stmtUpdateWorkerStatus       *sql.Stmt
+	stmtSetWorkerDisabled        *sql.Stmt
 	stmtUpdateWorkerHeartbeat    *sql.Stmt
 	stmtListStaleWorkers         *sql.Stmt
 	stmtCountIdleWorkers         *sql.Stmt
@@ -627,7 +627,7 @@ func (s *Store) prepareAll(ctx context.Context) error {
 	if s.stmtUpdateWorker, err = s.prepare(ctx, sqlUpdateWorker); err != nil {
 		return err
 	}
-	if s.stmtUpdateWorkerStatus, err = s.prepare(ctx, sqlUpdateWorkerStatus); err != nil {
+	if s.stmtSetWorkerDisabled, err = s.prepare(ctx, sqlSetWorkerDisabled); err != nil {
 		return err
 	}
 	if s.stmtUpdateWorkerHeartbeat, err = s.prepare(ctx, sqlUpdateWorkerHeartbeat); err != nil {

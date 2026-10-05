@@ -1063,16 +1063,16 @@ class SqiClient:
     def remove_worker(self, worker_id: str) -> None:
         """Hard-delete a worker. Returns ``None`` on success (HTTP 204).
 
-        Only removable workers are accepted: offline workers, or disabled
-        workers whose last heartbeat is older than the heartbeat-timeout window
-        (the machine is gone). Check :attr:`Worker.removable` first to avoid a
+        Only removable workers are accepted: offline workers, disabled or not
+        (a disabled worker counts as offline once the heartbeat sweep finds it
+        gone). Check :attr:`Worker.removable` first to avoid a
         ``ConflictError``. Task and attempt history referencing the worker is
         preserved by ID; a removed worker that reconnects simply re-registers.
 
         Raises:
             NotFoundError: No worker with that ID exists (HTTP 404).
-            ConflictError: The worker is not removable — it is online or a
-                still-heartbeating disabled worker (HTTP 409).
+            ConflictError: The worker is not removable — it is online
+                (disabled or not), or still holds a task (HTTP 409).
         """
         self._request("DELETE", f"/workers/{quote(worker_id, safe='')}")
 

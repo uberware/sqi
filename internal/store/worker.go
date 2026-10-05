@@ -8,6 +8,13 @@ import (
 )
 
 // WorkerStatus is the operational state of a worker as known to the server.
+//
+// A stored worker's [Worker.Status] is its liveness, online or offline, and is
+// written by registration, deregistration and the heartbeat sweep. Whether an
+// operator has disabled it is the separate [Worker.Disabled] flag, written only
+// by [WorkerStore.SetWorkerDisabled]. [WorkerStatusDisabled] is the status the
+// API, the status filter and the worker gauge report for a disabled worker
+// ([Worker.EffectiveStatus]); it is never stored as liveness.
 type WorkerStatus string
 
 const (
@@ -16,8 +23,9 @@ const (
 	// WorkerStatusOffline means the worker has not sent a heartbeat within the
 	// configured timeout and is presumed unreachable.
 	WorkerStatusOffline WorkerStatus = "offline"
-	// WorkerStatusDisabled means an operator has administratively paused the
-	// worker; it will not receive new task assignments until re-enabled.
+	// WorkerStatusDisabled is the effective status of a worker an operator has
+	// administratively paused; it will not receive new task assignments until
+	// re-enabled.
 	WorkerStatusDisabled WorkerStatus = "disabled"
 )
 
@@ -138,19 +146,32 @@ type Worker struct {
 	// ExprLimits holds the worker's self-reported OpenJD EXPR evaluation caps.
 	// Zero-valued for workers registered before this field existed; see
 	// [WorkerExprLimits] for what the server does with them.
-	ExprLimits      WorkerExprLimits
-	Status          WorkerStatus
+	ExprLimits WorkerExprLimits
+	// Status is the worker's liveness: [WorkerStatusOnline] or
+	// [WorkerStatusOffline]. See [WorkerStatus].
+	Status WorkerStatus
+	// Disabled is true while an operator has the worker disabled. It is
+	// independent of Status: a disabled worker still goes online and offline,
+	// and stays disabled through both.
+	Disabled        bool
 	LastHeartbeatAt *time.Time
 	RegisteredAt    time.Time
 	UpdatedAt       time.Time
 }
 
-// RemovableBefore reports whether the worker may be hard-deleted. This is the
-// one statement of the removability rule: a worker is removable when it is
-// [WorkerStatusOffline], or when it is [WorkerStatusDisabled] and its last
-// heartbeat is strictly before disabledCutoff (the machine is gone, not merely
-// paused). Every other status is not removable, and a disabled worker that
-// never sent a heartbeat (nil LastHeartbeatAt) is not removable either.
+// EffectiveStatus is the status the API and the worker gauge report:
+// [WorkerStatusDisabled] while the worker is disabled, otherwise its liveness.
+func (w Worker) EffectiveStatus() WorkerStatus {
+	if w.Disabled {
+		return WorkerStatusDisabled
+	}
+	return w.Status
+}
+
+// Removable reports whether the worker may be hard-deleted. This is the one
+// statement of the removability rule: a worker is removable when it is offline,
+// disabled or not. A disabled worker that is still online is a paused machine,
+// not a gone one, and is not removable.
 //
 // [WorkerStore.DeleteWorkerIfRemovable] applies this rule inside its write; the
 // SQLite statement restates it in SQL, which cannot call Go, so a change here
@@ -158,15 +179,8 @@ type Worker struct {
 // The store adds one condition a Worker value alone cannot see: no task may be
 // assigned to or running on the worker (H4a2 §5.4), so a true here does not
 // guarantee the delete succeeds.
-func (w Worker) RemovableBefore(disabledCutoff time.Time) bool {
-	switch w.Status {
-	case WorkerStatusOffline:
-		return true
-	case WorkerStatusDisabled:
-		return w.LastHeartbeatAt != nil && w.LastHeartbeatAt.Before(disabledCutoff)
-	default:
-		return false
-	}
+func (w Worker) Removable() bool {
+	return w.Status == WorkerStatusOffline
 }
 
 // WorkerSortField is a column by which [WorkerStore.ListWorkers] results can
@@ -189,8 +203,9 @@ type WorkerStore interface {
 	// RegisterWorker inserts or replaces the worker record for the given ID.
 	// Called by the server when a worker sends its registration message.
 	// If the worker ID already exists its record is updated in full, except
-	// that an empty InstanceID keeps the stored one. A disabled worker stays
-	// disabled whatever status the registration carries (H4a2 §5.3). When the
+	// that an empty InstanceID keeps the stored one and Disabled is never
+	// written: a disabled worker stays disabled (H4a2 §5.3), and a new one is
+	// enabled. When the
 	// stored InstanceID is non-empty and differs from a non-empty incoming one,
 	// the previous worker process is gone: in the same transaction its assigned
 	// and running tasks are reclaimed exactly as [WorkerStore.OfflineWorker]
@@ -208,17 +223,16 @@ type WorkerStore interface {
 	ListWorkers(ctx context.Context, opts ListWorkersOptions) (Page[Worker], error)
 
 	// UpdateWorker replaces the mutable capability fields of an existing
-	// worker (everything except ID and RegisteredAt) and updates UpdatedAt.
-	// Returns [ErrNotFound] if the worker does not exist.
+	// worker (everything except ID, RegisteredAt, InstanceID and Disabled) and
+	// updates UpdatedAt. Returns [ErrNotFound] if the worker does not exist.
 	UpdateWorker(ctx context.Context, worker Worker) (Worker, error)
 
-	// UpdateWorkerStatus sets the status of the worker and updates UpdatedAt.
-	// Returns [ErrNotFound] if the worker does not exist. It is a plain status
-	// write that touches nothing else: it is the admin enable/disable path, and
-	// it must not be used to take a worker offline, because it would leave the
-	// worker's tasks, attempts and usage claims behind. Use
-	// [WorkerStore.OfflineStaleWorker] or [WorkerStore.OfflineWorker] for that.
-	UpdateWorkerStatus(ctx context.Context, id string, status WorkerStatus) error
+	// SetWorkerDisabled sets or clears the worker's [Worker.Disabled] flag,
+	// updates UpdatedAt and returns the stored worker. It is the admin
+	// enable/disable path and the only writer of the flag; it never changes
+	// the worker's liveness. Setting the value the flag already holds is not an
+	// error. Returns [ErrNotFound] if the worker does not exist.
+	SetWorkerDisabled(ctx context.Context, id string, disabled bool) (Worker, error)
 
 	// UpdateWorkerHeartbeat records the most recent heartbeat time for the
 	// given worker. This is a hot path; implementations should use a single
@@ -226,22 +240,20 @@ type WorkerStore interface {
 	UpdateWorkerHeartbeat(ctx context.Context, id string, at time.Time) error
 
 	// ListStaleWorkers returns workers whose last heartbeat is older than
-	// before and whose status is [WorkerStatusOnline], or [WorkerStatusDisabled]
-	// with an assigned or running task (H4a2 §5.2; an idle disabled worker has
-	// nothing to reclaim and is not listed). Used by the heartbeat timeout sweep
-	// to find workers to mark offline or reclaim. The result is a candidate list
-	// only; [WorkerStore.OfflineStaleWorker] re-checks the whole guard inside its
-	// own write.
+	// before and whose status is [WorkerStatusOnline], disabled or not (H4a2
+	// §5.2: a dead disabled worker is swept like any other). Used by the
+	// heartbeat timeout sweep to find workers to mark offline. The result is a
+	// candidate list only; [WorkerStore.OfflineStaleWorker] re-checks the guard
+	// inside its own write.
 	ListStaleWorkers(ctx context.Context, before time.Time) ([]Worker, error)
 
 	// OfflineStaleWorker takes a worker offline if, and only if, it is still
 	// stale: the write is guarded by status = [WorkerStatusOnline] AND a
 	// last_heartbeat_at strictly older than cutoff, so a heartbeat or a
 	// re-registration that landed after the caller listed its candidates keeps
-	// the worker online and its tasks running (invariant I1). The guard also
-	// admits a [WorkerStatusDisabled] worker with an assigned or running task and
-	// the same stale heartbeat (H4a2 §5.2): a disabled worker keeps its status,
-	// and only its tasks are reclaimed.
+	// the worker online and its tasks running (invariant I1). Disabled does not
+	// enter the guard and is not written: a disabled worker goes offline like
+	// any other and stays disabled (H4a2 §5.2).
 	//
 	// When the guard matches, the same transaction closes the running attempts
 	// of the worker's [TaskStatusAssigned] and [TaskStatusRunning] tasks as
@@ -249,9 +261,9 @@ type WorkerStore interface {
 	// releases the claims of those attempts (invariant I3), and returns the
 	// tasks to [TaskStatusReady] with their worker cleared. It returns exactly
 	// the tasks it reclaimed (invariant I2), as they are after the reset, and
-	// true. When the guard does not match (the worker is unknown, is neither
-	// online nor disabled with work in flight, or has a heartbeat at or after
-	// cutoff) nothing is written and it returns
+	// true. When the guard does not match (the worker is unknown, is not
+	// online, or has a heartbeat at or after cutoff) nothing is written and it
+	// returns
 	// (nil, false, nil). A worker with no recorded heartbeat is never stale.
 	//
 	// now stamps the worker's and the reclaimed tasks' updated_at, the closed
@@ -268,13 +280,14 @@ type WorkerStore interface {
 	// for a graceful deregister: the worker is taken offline whatever its
 	// heartbeat (a disabled worker stays disabled, H4a2 §5.3), and its in-flight
 	// tasks are reclaimed exactly as OfflineStaleWorker reclaims them (attempts
-	// closed, claims released, tasks back to ready). It returns the reclaimed tasks as they are after the reset,
-	// or [ErrNotFound] for an unknown worker. A worker that is already offline is
+	// closed, claims released, tasks back to ready). It returns the reclaimed
+	// tasks as they are after the reset, or [ErrNotFound] for an unknown worker.
+	// A worker that is already offline is
 	// not an error: it has nothing left to reclaim and the call returns no tasks.
 	OfflineWorker(ctx context.Context, id string, now time.Time) ([]Task, error)
 
-	// CountIdleWorkers returns the number of online workers in the given farm
-	// that have no task currently in [TaskStatusAssigned] or
+	// CountIdleWorkers returns the number of online, enabled workers in the
+	// given farm that have no task currently in [TaskStatusAssigned] or
 	// [TaskStatusRunning] state. An empty farmID matches all farms.
 	// Used by the scheduler to update the [SchedulerIdleWorkers] Prometheus
 	// gauge.
@@ -287,23 +300,22 @@ type WorkerStore interface {
 	// in-flight work before removing it.
 	DeleteWorker(ctx context.Context, id string) error
 
-	// DeleteWorkerIfRemovable deletes the worker only while it is removable:
-	// offline, or disabled with a heartbeat older than disabledCutoff (a
-	// disabled worker that never sent a heartbeat is not removable), and only
-	// while no task is assigned to or running on it (H4a2 §5.4). The rule is
-	// evaluated inside the DELETE (invariant I1), so a worker that came back
-	// between the caller's read and this write keeps its row. Returns
-	// [ErrConflict] when the worker exists but is not removable and
-	// [ErrNotFound] when it does not exist. Like [WorkerStore.DeleteWorker],
-	// task and task-attempt rows that reference the worker by ID are left
-	// intact.
-	DeleteWorkerIfRemovable(ctx context.Context, id string, disabledCutoff time.Time) error
+	// DeleteWorkerIfRemovable deletes the worker only while it is removable
+	// ([Worker.Removable]: offline, disabled or not), and only while no task is
+	// assigned to or running on it (H4a2 §5.4). The rule is evaluated inside
+	// the DELETE (invariant I1), so a worker that came back between the
+	// caller's read and this write keeps its row. Returns [ErrConflict] when
+	// the worker exists but is not removable and [ErrNotFound] when it does not
+	// exist. Like [WorkerStore.DeleteWorker], task and task-attempt rows that
+	// reference the worker by ID are left intact.
+	DeleteWorkerIfRemovable(ctx context.Context, id string) error
 
-	// DeleteOfflineWorkersBefore hard-deletes every worker in
+	// DeleteOfflineWorkersBefore hard-deletes every enabled worker in
 	// [WorkerStatusOffline] whose LastHeartbeatAt is strictly before cutoff,
-	// and returns the deleted records. Workers in any other status (including
-	// administratively disabled) are never touched. Used by the scheduler's
-	// offline-retention sweep to bound the growth of the worker table.
+	// and returns the deleted records. Online workers and disabled ones are
+	// never touched: a disabled worker stays until an operator removes it.
+	// Used by the scheduler's offline-retention sweep to bound the growth of
+	// the worker table.
 	DeleteOfflineWorkersBefore(ctx context.Context, cutoff time.Time) ([]Worker, error)
 }
 
@@ -314,7 +326,9 @@ type ListWorkersOptions struct {
 	FarmID          string
 	QueueID         string
 	ComputeLocation string
-	Status          WorkerStatus // empty = all statuses
+	// Status filters by [Worker.EffectiveStatus]: disabled matches every
+	// disabled worker, online and offline match only enabled ones. Empty = all.
+	Status WorkerStatus
 	// Search is a case-insensitive substring matched against name, hostname,
 	// id, and compute_location. Empty = no search filter.
 	Search string

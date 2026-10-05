@@ -9,7 +9,7 @@ package fake
 //                   CountActiveTasksInQueue, CountActiveTasksInFarm,
 //                   CancelJobTasks, CountReadyTasksByQueue, CountTasksByJob,
 //                   ListTasks (sort fields), filterTask edge cases
-//   worker.go     — UpdateWorker, UpdateWorkerStatus, UpdateWorkerHeartbeat,
+//   worker.go     — UpdateWorker, UpdateWorkerHeartbeat,
 //                   ListStaleWorkers, CountIdleWorkers, ListWorkers (sort/filter)
 //   job.go        — UpdateJob, UpdateJobStatus, CancelJobStatus,
 //                   ListJobs (sort/filter)
@@ -974,29 +974,6 @@ func TestUpdateWorker_NotFound(t *testing.T) {
 	}
 }
 
-func TestUpdateWorkerStatus(t *testing.T) {
-	s := New()
-	defer s.Close()
-	mustCreateWorker(t, s, "w1", "f1", store.WorkerStatusOnline)
-
-	if err := s.UpdateWorkerStatus(ctx(), "w1", store.WorkerStatusOffline); err != nil {
-		t.Fatalf("UpdateWorkerStatus: %v", err)
-	}
-	w := mustGetWorker(t, s, "w1")
-	if w.Status != store.WorkerStatusOffline {
-		t.Errorf("status = %v, want offline", w.Status)
-	}
-}
-
-func TestUpdateWorkerStatus_NotFound(t *testing.T) {
-	s := New()
-	defer s.Close()
-	err := s.UpdateWorkerStatus(ctx(), "ghost", store.WorkerStatusOffline)
-	if !errors.Is(err, store.ErrNotFound) {
-		t.Fatalf("want ErrNotFound, got %v", err)
-	}
-}
-
 func TestDeleteWorker(t *testing.T) {
 	s := New()
 	defer s.Close()
@@ -1028,15 +1005,18 @@ func TestDeleteOfflineWorkersBefore(t *testing.T) {
 	// w1: offline + stale → removed.
 	mustCreateWorker(t, s, "w1", "f1", store.WorkerStatusOnline)
 	mustHeartbeat(t, s, "w1", old)
-	mustStatus(t, s, "w1", store.WorkerStatusOffline)
+	mustOffline(t, s, "w1")
 	// w2: offline + recent → kept.
 	mustCreateWorker(t, s, "w2", "f1", store.WorkerStatusOnline)
 	mustHeartbeat(t, s, "w2", recent)
-	mustStatus(t, s, "w2", store.WorkerStatusOffline)
-	// w3: disabled + stale → kept (status filter).
+	mustOffline(t, s, "w2")
+	// w3: offline + stale but disabled → kept (an operator removes it).
 	mustCreateWorker(t, s, "w3", "f1", store.WorkerStatusOnline)
 	mustHeartbeat(t, s, "w3", old)
-	mustStatus(t, s, "w3", store.WorkerStatusDisabled)
+	mustOffline(t, s, "w3")
+	if _, err := s.SetWorkerDisabled(ctx(), "w3", true); err != nil {
+		t.Fatalf("SetWorkerDisabled: %v", err)
+	}
 
 	removed, err := s.DeleteOfflineWorkersBefore(ctx(), time.Now().Add(-time.Hour))
 	if err != nil {
@@ -1062,10 +1042,12 @@ func mustHeartbeat(t *testing.T, s *Store, id string, at time.Time) {
 	}
 }
 
-func mustStatus(t *testing.T, s *Store, id string, status store.WorkerStatus) {
+// mustOffline takes the worker offline as a graceful deregister does; it keeps
+// the heartbeat already recorded.
+func mustOffline(t *testing.T, s *Store, id string) {
 	t.Helper()
-	if err := s.UpdateWorkerStatus(ctx(), id, status); err != nil {
-		t.Fatalf("UpdateWorkerStatus(%q): %v", id, err)
+	if _, err := s.OfflineWorker(ctx(), id, time.Now()); err != nil {
+		t.Fatalf("OfflineWorker(%q): %v", id, err)
 	}
 }
 

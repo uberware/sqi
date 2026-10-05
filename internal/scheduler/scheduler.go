@@ -365,13 +365,6 @@ func New(cfg Config, st store.Store, busClient busClient, m *metrics.Metrics, lo
 	}
 }
 
-// WorkerTimeout returns the effective heartbeat-timeout threshold after
-// normalization. The API layer uses it to decide whether a disabled worker is
-// dead (and therefore removable) from its last-heartbeat age.
-func (s *Scheduler) WorkerTimeout() time.Duration {
-	return s.cfg.WorkerTimeout
-}
-
 // Run starts all scheduler goroutines and blocks until ctx is canceled.
 // It returns after all goroutines have exited cleanly.
 func (s *Scheduler) Run(ctx context.Context) error {
@@ -927,9 +920,10 @@ func (s *Scheduler) handleWorkerRegister(ctx context.Context, msg jetstream.Msg,
 		Name:     m.Name,
 		Hostname: m.Hostname,
 		FarmID:   m.FarmID,
-		// The stored row's status, which is not always the online this
-		// registration asked for (H4a2 §5.3 keeps a disabled worker disabled).
-		Status: string(stored.Status),
+		// The stored row's effective status, which is not always the online
+		// this registration asked for (H4a2 §5.3 keeps a disabled worker
+		// disabled).
+		Status: string(stored.EffectiveStatus()),
 	})
 	s.refreshWorkerGauge(ctx)
 	s.ackMsg(ctx, msg)
@@ -1091,16 +1085,16 @@ func (s *Scheduler) handleWorkerDeregister(ctx context.Context, msg jetstream.Ms
 		slog.String("reason", m.Reason),
 	)
 
-	// A gracefully-deregistered worker is now offline (or still disabled) with
-	// nothing in flight, so the heartbeat sweep (which inspects online workers
-	// and disabled ones with work in flight) will not look at it again. Its
-	// in-flight tasks were returned to the ready queue by the store call above
-	// instead of being stranded in 'assigned'/'running'; report them.
+	// A gracefully-deregistered worker is now offline with nothing in flight,
+	// so the heartbeat sweep (which only inspects online workers) will not look
+	// at it again. Its in-flight tasks were returned to the ready queue by the
+	// store call above instead of being stranded in 'assigned'/'running'; report
+	// them.
 	s.reclaimOfflineWorkerTasks(ctx, m.WorkerID, "", reclaimOffline, reclaimed)
 
 	status := store.WorkerStatusOffline
 	if w, err := s.store.GetWorker(ctx, m.WorkerID); err == nil {
-		status = w.Status // a disabled worker stays disabled (H4a2 §5.3)
+		status = w.EffectiveStatus() // a disabled worker stays disabled (H4a2 §5.3)
 	}
 	s.notifier.NotifyWorker(ws.WorkerEvent{
 		WorkerID: m.WorkerID,
@@ -1287,17 +1281,18 @@ func (s *Scheduler) notifyTaskReclaimed(ctx context.Context, task store.Task, no
 
 // sweepStaleWorkers finds workers whose heartbeat has expired, marks them
 // offline, reclaims their assigned/running tasks, and refreshes the
-// WorkersTotal gauge. A disabled worker with work in flight is a candidate too
-// (H4a2 §5.2): its tasks are reclaimed but it stays disabled, so it gets no
-// offline event.
+// WorkersTotal gauge. A disabled worker is swept like any other (H4a2 §5.2)
+// and stays disabled, so its event carries its effective status, disabled,
+// not offline: the event still tells clients it changed (it is now
+// removable).
 //
 // The list of stale workers is only a hint. By the time each candidate is
 // handled its heartbeat may have arrived, or it may have re-registered, so the
 // offline transition is [store.WorkerStore.OfflineStaleWorker], which re-checks
 // the heartbeat inside its own write and leaves such a worker online with its
-// tasks running. Only a worker the store actually marked has its reclaim
-// reported, and only one listed as online is announced offline; the attempts,
-// claims and tasks are handled by that same store call.
+// tasks running. Only a worker the store actually took offline is announced
+// and has its reclaim reported; the attempts, claims and tasks are handled by
+// that same store call.
 func (s *Scheduler) sweepStaleWorkers(ctx context.Context) {
 	cutoff := time.Now().UTC().Add(-s.cfg.WorkerTimeout)
 	stale, err := s.store.ListStaleWorkers(ctx, cutoff)
@@ -1338,16 +1333,17 @@ func (s *Scheduler) sweepStaleWorkers(ctx context.Context) {
 			)
 			continue
 		}
-		// A disabled worker keeps its status (H4a2 §5.2): only its tasks were reclaimed.
-		if w.Status == store.WorkerStatusOnline {
-			s.notifier.NotifyWorker(ws.WorkerEvent{
-				WorkerID: w.ID,
-				Name:     w.Name,
-				Hostname: w.Hostname,
-				FarmID:   w.FarmID,
-				Status:   string(store.WorkerStatusOffline),
-			})
-		}
+		// The flag is the one listed: an enable or disable racing the sweep is
+		// reported by its own endpoint's response, and the store is correct.
+		offline := w
+		offline.Status = store.WorkerStatusOffline
+		s.notifier.NotifyWorker(ws.WorkerEvent{
+			WorkerID: w.ID,
+			Name:     w.Name,
+			Hostname: w.Hostname,
+			FarmID:   w.FarmID,
+			Status:   string(offline.EffectiveStatus()),
+		})
 
 		s.reclaimOfflineWorkerTasks(ctx, w.ID, w.Hostname, reclaimOffline, reclaimed)
 	}

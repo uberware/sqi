@@ -513,24 +513,6 @@ func TestWorker_Upsert(t *testing.T) {
 	}
 }
 
-func TestWorker_UpdateStatus(t *testing.T) {
-	s := openTestStore(t)
-	ctx := context.Background()
-	insertFarm(t, s, "f1", "F1")
-	insertWorker(t, s, "w1", "f1")
-
-	if err := s.UpdateWorkerStatus(ctx, "w1", store.WorkerStatusOffline); err != nil {
-		t.Fatalf("UpdateWorkerStatus: %v", err)
-	}
-	w, err := s.GetWorker(ctx, "w1")
-	if err != nil {
-		t.Fatalf("GetWorker: %v", err)
-	}
-	if w.Status != store.WorkerStatusOffline {
-		t.Errorf("Status: got %q", w.Status)
-	}
-}
-
 func TestWorker_UpdateHeartbeat(t *testing.T) {
 	s := openTestStore(t)
 	ctx := context.Background()
@@ -662,24 +644,27 @@ func TestWorker_DeleteOfflineWorkersBefore(t *testing.T) {
 	if err := s.UpdateWorkerHeartbeat(ctx, "w1", old); err != nil {
 		t.Fatalf("heartbeat w1: %v", err)
 	}
-	if err := s.UpdateWorkerStatus(ctx, "w1", store.WorkerStatusOffline); err != nil {
-		t.Fatalf("status w1: %v", err)
+	if _, err := s.OfflineWorker(ctx, "w1", time.Now()); err != nil {
+		t.Fatalf("offline w1: %v", err)
 	}
 	// w2: offline but recent heartbeat → kept.
 	insertWorker(t, s, "w2", "f1")
 	if err := s.UpdateWorkerHeartbeat(ctx, "w2", recent); err != nil {
 		t.Fatalf("heartbeat w2: %v", err)
 	}
-	if err := s.UpdateWorkerStatus(ctx, "w2", store.WorkerStatusOffline); err != nil {
-		t.Fatalf("status w2: %v", err)
+	if _, err := s.OfflineWorker(ctx, "w2", time.Now()); err != nil {
+		t.Fatalf("offline w2: %v", err)
 	}
-	// w3: disabled + stale heartbeat → kept (status filter protects it).
+	// w3: offline + stale heartbeat but disabled → kept (an operator removes it).
 	insertWorker(t, s, "w3", "f1")
 	if err := s.UpdateWorkerHeartbeat(ctx, "w3", old); err != nil {
 		t.Fatalf("heartbeat w3: %v", err)
 	}
-	if err := s.UpdateWorkerStatus(ctx, "w3", store.WorkerStatusDisabled); err != nil {
-		t.Fatalf("status w3: %v", err)
+	if _, err := s.OfflineWorker(ctx, "w3", time.Now()); err != nil {
+		t.Fatalf("offline w3: %v", err)
+	}
+	if _, err := s.SetWorkerDisabled(ctx, "w3", true); err != nil {
+		t.Fatalf("disable w3: %v", err)
 	}
 
 	removed, err := s.DeleteOfflineWorkersBefore(ctx, time.Now().Add(-time.Hour))
@@ -1872,11 +1857,11 @@ func TestErrNotFound_GetWorker(t *testing.T) {
 	}
 }
 
-func TestErrNotFound_UpdateWorkerStatus(t *testing.T) {
+func TestErrNotFound_SetWorkerDisabled(t *testing.T) {
 	s := openTestStore(t)
-	err := s.UpdateWorkerStatus(context.Background(), "missing", store.WorkerStatusOffline)
+	_, err := s.SetWorkerDisabled(context.Background(), "missing", true)
 	if !errors.Is(err, store.ErrNotFound) {
-		t.Errorf("UpdateWorkerStatus missing: expected ErrNotFound, got %v", err)
+		t.Errorf("SetWorkerDisabled missing: expected ErrNotFound, got %v", err)
 	}
 }
 
@@ -2048,8 +2033,8 @@ func TestWorker_ListWorkers_FilterByStatus(t *testing.T) {
 	insertWorker(t, s, "w1", "f1")
 	insertWorker(t, s, "w2", "f1")
 
-	if err := s.UpdateWorkerStatus(ctx, "w2", store.WorkerStatusOffline); err != nil {
-		t.Fatalf("UpdateWorkerStatus: %v", err)
+	if _, err := s.OfflineWorker(ctx, "w2", time.Now()); err != nil {
+		t.Fatalf("OfflineWorker: %v", err)
 	}
 
 	page, err := s.ListWorkers(ctx, store.ListWorkersOptions{Status: store.WorkerStatusOnline})

@@ -102,10 +102,10 @@ func TestOfflineStaleWorker_FreshHeartbeatWins(t *testing.T) {
 }
 
 // TestOfflineStaleWorker_OnlyAnOnlineWorker pins the other half of the guard
-// for a stale worker that is not online, holding a running task. An offline
-// worker is left exactly as it is, task and all. A disabled one is reclaimed
-// (H4a2 §5.2: its task returns to ready) but its status is never written, so a
-// sweep that races an operator's disable never turns "disabled" into "offline".
+// for a stale worker holding a running task. An offline worker is left exactly
+// as it is, task and all. A disabled one is online underneath, so it goes
+// offline and is reclaimed like any other (H4a2 §5.2: its task returns to
+// ready), and it stays disabled: the sweep writes liveness, never the flag.
 func TestOfflineStaleWorker_OnlyAnOnlineWorker(t *testing.T) {
 	tests := []struct {
 		status    store.WorkerStatus
@@ -129,8 +129,8 @@ func TestOfflineStaleWorker_OnlyAnOnlineWorker(t *testing.T) {
 						t.Fatalf("OfflineStaleWorker on a %s worker = (%d, %v, %v), want (%d, %v, nil)",
 							tc.status, len(tasks), ok, err, tc.wantTasks, tc.wantOK)
 					}
-					if w := mustWorker(t, st, fixtureWorkerID); w.Status != tc.status {
-						t.Fatalf("worker = %q, want %q kept", w.Status, tc.status)
+					if w := mustWorker(t, st, fixtureWorkerID); w.EffectiveStatus() != tc.status {
+						t.Fatalf("worker = %q, want %q kept", w.EffectiveStatus(), tc.status)
 					}
 					if got := mustTask(t, st, g.Tasks["a"][0].ID).Status; got != tc.wantTask {
 						t.Fatalf("task = %q, want %q", got, tc.wantTask)

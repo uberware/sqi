@@ -13,9 +13,11 @@ import (
 
 // RegisterWorker implements [store.WorkerStore]: it inserts or replaces the
 // worker record for the given ID, except that an empty InstanceID keeps the
-// stored one and a disabled worker stays disabled. A non-empty stored InstanceID that differs from a non-empty
-// incoming one is a restarted worker process, whose assigned and running tasks
-// are reclaimed as the offline transitions reclaim them, with
+// stored one and Disabled is never taken from the registration: a new worker
+// is enabled and an existing one keeps its flag (H4a2 §5.3), as SQLite's
+// upsert leaves the column alone. A non-empty stored InstanceID that differs
+// from a non-empty incoming one is a restarted worker process, whose assigned
+// and running tasks are reclaimed as the offline transitions reclaim them, with
 // [store.FailureReasonWorkerRestarted]; the store lock stands in for SQLite's
 // worker-row and job-row anchors.
 func (s *Store) RegisterWorker(_ context.Context, worker store.Worker) (store.Worker, []store.Task, error) {
@@ -24,12 +26,10 @@ func (s *Store) RegisterWorker(_ context.Context, worker store.Worker) (store.Wo
 
 	existing, isUpdate := s.workers[worker.ID]
 	worker.Tags = copyMap(worker.Tags)
+	worker.Disabled = existing.Disabled // false for a new worker
 	var reclaimed []store.Task
 	if isUpdate {
 		worker.RegisteredAt = existing.RegisteredAt
-		if existing.Status == store.WorkerStatusDisabled {
-			worker.Status = store.WorkerStatusDisabled // H4a2 §5.3
-		}
 		if worker.InstanceID == "" {
 			worker.InstanceID = existing.InstanceID
 		} else if existing.InstanceID != "" && existing.InstanceID != worker.InstanceID {
@@ -80,9 +80,10 @@ func (s *Store) ListWorkers(_ context.Context, opts store.ListWorkersOptions) (s
 }
 
 // UpdateWorker replaces the mutable capability fields of an existing worker
-// (everything except ID, RegisteredAt and InstanceID) and updates UpdatedAt.
-// InstanceID is kept as SQLite's UPDATE keeps it: an edit never changes which
-// worker process the row belongs to.
+// (everything except ID, RegisteredAt, InstanceID and Disabled) and updates
+// UpdatedAt. InstanceID and Disabled are kept as SQLite's UPDATE keeps them: an
+// edit never changes which worker process the row belongs to, nor an
+// operator's disable.
 func (s *Store) UpdateWorker(_ context.Context, worker store.Worker) (store.Worker, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -94,26 +95,28 @@ func (s *Store) UpdateWorker(_ context.Context, worker store.Worker) (store.Work
 
 	worker.RegisteredAt = existing.RegisteredAt
 	worker.InstanceID = existing.InstanceID
+	worker.Disabled = existing.Disabled
 	worker.UpdatedAt = time.Now()
 	worker.Tags = copyMap(worker.Tags)
 	s.workers[worker.ID] = worker
 	return worker, nil
 }
 
-// UpdateWorkerStatus sets the status of the worker and updates UpdatedAt.
-func (s *Store) UpdateWorkerStatus(_ context.Context, id string, status store.WorkerStatus) error {
+// SetWorkerDisabled implements [store.WorkerStore].
+func (s *Store) SetWorkerDisabled(_ context.Context, id string, disabled bool) (store.Worker, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	worker, ok := s.workers[id]
 	if !ok {
-		return store.ErrNotFound
+		return store.Worker{}, store.ErrNotFound
 	}
 
-	worker.Status = status
-	worker.UpdatedAt = time.Now()
+	worker.Disabled = disabled
+	worker.UpdatedAt = time.Now().UTC()
 	s.workers[id] = worker
-	return nil
+	worker.Tags = copyMap(worker.Tags)
+	return worker, nil
 }
 
 // UpdateWorkerHeartbeat records the most recent heartbeat time for the given worker.
@@ -133,8 +136,7 @@ func (s *Store) UpdateWorkerHeartbeat(_ context.Context, id string, at time.Time
 }
 
 // ListStaleWorkers returns workers whose last heartbeat is older than before
-// and whose status is [store.WorkerStatusOnline], or [store.WorkerStatusDisabled]
-// with an assigned or running task (H4a2 §5.2).
+// and whose status is [store.WorkerStatusOnline], disabled or not (H4a2 §5.2).
 //
 // Unlike SQLite, where a NULL heartbeat never compares older, it also lists an
 // online worker that has never sent a heartbeat; TestListStaleWorkers pins
@@ -146,7 +148,7 @@ func (s *Store) ListStaleWorkers(_ context.Context, before time.Time) ([]store.W
 
 	var workers []store.Worker
 	for _, w := range s.workers {
-		if w.Status != store.WorkerStatusOnline && (w.Status != store.WorkerStatusDisabled || !s.hasWorkInFlightLocked(w.ID)) {
+		if w.Status != store.WorkerStatusOnline {
 			continue
 		}
 		if w.LastHeartbeatAt == nil || w.LastHeartbeatAt.Before(before) {
@@ -158,9 +160,9 @@ func (s *Store) ListStaleWorkers(_ context.Context, before time.Time) ([]store.W
 	return workers, nil
 }
 
-// CountIdleWorkers returns the number of online workers in the given farm that
-// have no task in [store.TaskStatusAssigned] or [store.TaskStatusRunning] state.
-// When farmID is empty all farms are counted.
+// CountIdleWorkers returns the number of online, enabled workers in the given
+// farm that have no task in [store.TaskStatusAssigned] or
+// [store.TaskStatusRunning] state. When farmID is empty all farms are counted.
 func (s *Store) CountIdleWorkers(_ context.Context, farmID string) (int, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -175,7 +177,7 @@ func (s *Store) CountIdleWorkers(_ context.Context, farmID string) (int, error) 
 
 	var count int
 	for _, w := range s.workers {
-		if w.Status != store.WorkerStatusOnline {
+		if w.Status != store.WorkerStatusOnline || w.Disabled {
 			continue
 		}
 		if farmID != "" && w.FarmID != farmID {
@@ -201,9 +203,9 @@ func (s *Store) DeleteWorker(_ context.Context, id string) error {
 }
 
 // DeleteWorkerIfRemovable implements [store.WorkerStore]. The rule is
-// [store.Worker.RemovableBefore], which SQLite restates in its DELETE, plus the
+// [store.Worker.Removable], which SQLite restates in its DELETE, plus the
 // in-flight condition a Worker value cannot see (H4a2 §5.4).
-func (s *Store) DeleteWorkerIfRemovable(_ context.Context, id string, disabledCutoff time.Time) error {
+func (s *Store) DeleteWorkerIfRemovable(_ context.Context, id string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -211,7 +213,7 @@ func (s *Store) DeleteWorkerIfRemovable(_ context.Context, id string, disabledCu
 	if !ok {
 		return store.ErrNotFound
 	}
-	if !w.RemovableBefore(disabledCutoff) || s.hasWorkInFlightLocked(id) {
+	if !w.Removable() || s.hasWorkInFlightLocked(id) {
 		return store.ErrConflict
 	}
 	delete(s.workers, id)
@@ -230,16 +232,16 @@ func (s *Store) hasWorkInFlightLocked(workerID string) bool {
 	return false
 }
 
-// DeleteOfflineWorkersBefore hard-deletes every offline worker last seen before
-// cutoff and returns the removed records. Non-offline workers (including
-// disabled) and workers that have never sent a heartbeat are left untouched.
+// DeleteOfflineWorkersBefore hard-deletes every enabled offline worker last
+// seen before cutoff and returns the removed records. Online workers, disabled
+// ones and workers that have never sent a heartbeat are left untouched.
 func (s *Store) DeleteOfflineWorkersBefore(_ context.Context, cutoff time.Time) ([]store.Worker, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	var removed []store.Worker
 	for id, w := range s.workers {
-		if w.Status != store.WorkerStatusOffline {
+		if w.Status != store.WorkerStatusOffline || w.Disabled {
 			continue
 		}
 		if w.LastHeartbeatAt == nil || !w.LastHeartbeatAt.Before(cutoff) {
@@ -265,7 +267,7 @@ func filterWorker(w store.Worker, opts store.ListWorkersOptions) bool {
 	if opts.ComputeLocation != "" && w.ComputeLocation != opts.ComputeLocation {
 		return false
 	}
-	if opts.Status != "" && w.Status != opts.Status {
+	if opts.Status != "" && w.EffectiveStatus() != opts.Status {
 		return false
 	}
 	if opts.Search != "" && !workerMatchesSearch(w, opts.Search) {
@@ -289,7 +291,7 @@ func cmpWorker(a, b store.Worker, field store.WorkerSortField, dir store.SortDir
 	var n int
 	switch field {
 	case store.WorkerSortByStatus:
-		n = cmp.Compare(string(a.Status), string(b.Status))
+		n = cmp.Compare(string(a.EffectiveStatus()), string(b.EffectiveStatus()))
 	case store.WorkerSortByRegisteredAt:
 		n = a.RegisteredAt.Compare(b.RegisteredAt)
 	case store.WorkerSortByLastHeartbeatAt:

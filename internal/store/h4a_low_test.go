@@ -104,31 +104,27 @@ func TestUpdateTaskAttempt_OnlyWhileRunning(t *testing.T) {
 	}
 }
 
-// TestWorker_RemovableBefore pins the one Go statement of the removability
-// rule that the API's pre-check and the fake's guarded delete both call.
-func TestWorker_RemovableBefore(t *testing.T) {
-	cutoff := time.Now().UTC().Add(-time.Minute)
-	before := cutoff.Add(-time.Hour)
-	after := cutoff.Add(time.Hour)
+// TestWorker_Removable pins the one Go statement of the removability rule that
+// the API's pre-check and the fake's guarded delete both call: a worker is
+// removable exactly when it is offline, disabled or not. A disabled worker that
+// is still online is the operator's paused machine, not a dead one.
+func TestWorker_Removable(t *testing.T) {
 	cases := []struct {
-		name      string
-		status    store.WorkerStatus
-		heartbeat *time.Time
-		want      bool
+		name     string
+		liveness store.WorkerStatus
+		disabled bool
+		want     bool
 	}{
-		{"offline", store.WorkerStatusOffline, &after, true},
-		{"offline never heartbeated", store.WorkerStatusOffline, nil, true},
-		{"disabled with an old heartbeat", store.WorkerStatusDisabled, &before, true},
-		{"disabled with a recent heartbeat", store.WorkerStatusDisabled, &after, false},
-		{"disabled exactly at the cutoff", store.WorkerStatusDisabled, &cutoff, false},
-		{"disabled never heartbeated", store.WorkerStatusDisabled, nil, false},
-		{"online with an old heartbeat", store.WorkerStatusOnline, &before, false},
+		{"offline", store.WorkerStatusOffline, false, true},
+		{"offline and disabled", store.WorkerStatusOffline, true, true},
+		{"online", store.WorkerStatusOnline, false, false},
+		{"online and disabled", store.WorkerStatusOnline, true, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			w := store.Worker{Status: tc.status, LastHeartbeatAt: tc.heartbeat}
-			if got := w.RemovableBefore(cutoff); got != tc.want {
-				t.Fatalf("RemovableBefore = %v, want %v", got, tc.want)
+			w := store.Worker{Status: tc.liveness, Disabled: tc.disabled}
+			if got := w.Removable(); got != tc.want {
+				t.Fatalf("Removable = %v, want %v", got, tc.want)
 			}
 		})
 	}
@@ -136,31 +132,32 @@ func TestWorker_RemovableBefore(t *testing.T) {
 
 func TestDeleteWorkerIfRemovable(t *testing.T) {
 	now := time.Now().UTC()
-	recent, old := now, now.Add(-time.Hour)
 	cases := []struct {
-		name      string
-		status    store.WorkerStatus
-		heartbeat *time.Time // nil = the worker never sent a heartbeat
-		wantErr   error
+		name     string
+		liveness store.WorkerStatus
+		disabled bool
+		wantErr  error
 	}{
-		{"offline", store.WorkerStatusOffline, &recent, nil},
-		{"disabled and dead", store.WorkerStatusDisabled, &old, nil},
-		{"disabled and live", store.WorkerStatusDisabled, &recent, store.ErrConflict},
-		// The one edge where SQL NULL semantics (NULL < cutoff is not true) and
-		// the Go nil check must agree.
-		{"disabled and never heartbeated", store.WorkerStatusDisabled, nil, store.ErrConflict},
-		{"online", store.WorkerStatusOnline, &old, store.ErrConflict},
+		{"offline", store.WorkerStatusOffline, false, nil},
+		{"offline and disabled", store.WorkerStatusOffline, true, nil},
+		{"online and disabled", store.WorkerStatusOnline, true, store.ErrConflict},
+		{"online", store.WorkerStatusOnline, false, store.ErrConflict},
 	}
 	for _, tc := range cases {
 		for name, st := range newStores(t) {
 			t.Run(tc.name+"/"+name, func(t *testing.T) {
 				g := seedGraph(t, st, graphOpts{})
 				if _, _, err := st.RegisterWorker(t.Context(), store.Worker{
-					ID: fixtureWorkerID, FarmID: g.Farm.ID, Hostname: "node", Status: tc.status, LastHeartbeatAt: tc.heartbeat,
+					ID: fixtureWorkerID, FarmID: g.Farm.ID, Hostname: "node", Status: tc.liveness, LastHeartbeatAt: &now,
 				}); err != nil {
 					t.Fatalf("RegisterWorker: %v", err)
 				}
-				err := st.DeleteWorkerIfRemovable(t.Context(), fixtureWorkerID, now.Add(-time.Minute))
+				if tc.disabled {
+					if _, err := st.SetWorkerDisabled(t.Context(), fixtureWorkerID, true); err != nil {
+						t.Fatalf("SetWorkerDisabled: %v", err)
+					}
+				}
+				err := st.DeleteWorkerIfRemovable(t.Context(), fixtureWorkerID)
 				if !errors.Is(err, tc.wantErr) {
 					t.Fatalf("DeleteWorkerIfRemovable = %v, want %v", err, tc.wantErr)
 				}
@@ -178,7 +175,7 @@ func TestDeleteWorkerIfRemovable(t *testing.T) {
 	t.Run("unknown worker", func(t *testing.T) {
 		for name, st := range newStores(t) {
 			t.Run(name, func(t *testing.T) {
-				if err := st.DeleteWorkerIfRemovable(t.Context(), "nope", now); !errors.Is(err, store.ErrNotFound) {
+				if err := st.DeleteWorkerIfRemovable(t.Context(), "nope"); !errors.Is(err, store.ErrNotFound) {
 					t.Fatalf("DeleteWorkerIfRemovable(unknown) = %v, want ErrNotFound", err)
 				}
 			})

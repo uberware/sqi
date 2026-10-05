@@ -309,11 +309,16 @@ func (n *workerRecordingNotifier) NotifyWorker(e ws.WorkerEvent) {
 	n.workers = append(n.workers, e)
 }
 
-// seedWorkerWithHeartbeat registers a worker with the given status and a last
-// heartbeat aged by age (0 = never).
+// seedWorkerWithHeartbeat registers a worker with the given effective status
+// and a last heartbeat aged by age (0 = never). A disabled status seeds a
+// disabled worker that has gone offline: the one retention must still keep.
 func seedWorkerWithHeartbeat(t *testing.T, st *fake.Store, id string, status store.WorkerStatus, age time.Duration) {
 	t.Helper()
-	w := store.Worker{ID: id, FarmID: "farm-1", Hostname: id, Status: status}
+	liveness := status
+	if status == store.WorkerStatusDisabled {
+		liveness = store.WorkerStatusOffline
+	}
+	w := store.Worker{ID: id, FarmID: "farm-1", Hostname: id, Status: liveness}
 	if age > 0 {
 		at := time.Now().UTC().Add(-age)
 		w.LastHeartbeatAt = &at
@@ -321,10 +326,9 @@ func seedWorkerWithHeartbeat(t *testing.T, st *fake.Store, id string, status sto
 	if _, _, err := st.RegisterWorker(t.Context(), w); err != nil {
 		t.Fatalf("RegisterWorker(%q): %v", id, err)
 	}
-	// RegisterWorker forces status online; set the intended status explicitly.
-	if status != store.WorkerStatusOnline {
-		if err := st.UpdateWorkerStatus(t.Context(), id, status); err != nil {
-			t.Fatalf("UpdateWorkerStatus(%q): %v", id, err)
+	if status == store.WorkerStatusDisabled {
+		if _, err := st.SetWorkerDisabled(t.Context(), id, true); err != nil {
+			t.Fatalf("SetWorkerDisabled(%q): %v", id, err)
 		}
 	}
 }

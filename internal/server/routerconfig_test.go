@@ -27,7 +27,7 @@ func TestRouterConfig_CarriesTheSubmissionDeadline(t *testing.T) {
 	cfg := DefaultConfig()
 	cfg.OpenJDExprSubmissionDeadline = want
 
-	if got := routerConfig(cfg, time.Minute).ExprSubmissionDeadline; got != want {
+	if got := routerConfig(cfg).ExprSubmissionDeadline; got != want {
 		t.Fatalf("api.Config.ExprSubmissionDeadline = %s, want the configured %s -- "+
 			"the submission handlers would run with no wall-clock backstop at all", got, want)
 	}
@@ -39,7 +39,7 @@ func TestRouterConfig_CarriesTheSubmissionDeadline(t *testing.T) {
 // assertion: a hop that silently zeroes it would look identical to one that
 // never existed.
 func TestRouterConfig_DefaultCarriesTheConfigDefault(t *testing.T) {
-	got := routerConfig(DefaultConfig(), time.Minute).ExprSubmissionDeadline
+	got := routerConfig(DefaultConfig()).ExprSubmissionDeadline
 	if want := config.DefaultOpenJDExprSubmissionDeadline; got != want {
 		t.Fatalf("at defaults api.Config.ExprSubmissionDeadline = %s, want %s", got, want)
 	}
@@ -68,7 +68,7 @@ func TestRouterConfig_CarriesTheExprLimits(t *testing.T) {
 	cfg := DefaultConfig()
 	cfg.OpenJDExprLimits = want
 
-	if got := routerConfig(cfg, time.Minute).ExprLimits; got != want {
+	if got := routerConfig(cfg).ExprLimits; got != want {
 		t.Fatalf("api.Config.ExprLimits = %+v, want the configured %+v -- product template "+
 			"validation would run on the defaults instead", got, want)
 	}
@@ -78,7 +78,7 @@ func TestRouterConfig_CarriesTheExprLimits(t *testing.T) {
 // a server left alone hands the HTTP layer the same limits its Submitter uses,
 // so the three template-accepting routes agree by default.
 func TestRouterConfig_DefaultCarriesTheExprLimitDefaults(t *testing.T) {
-	got := routerConfig(DefaultConfig(), time.Minute).ExprLimits
+	got := routerConfig(DefaultConfig()).ExprLimits
 	if want := openjd.DefaultExprLimits(); got != want {
 		t.Fatalf("at defaults api.Config.ExprLimits = %+v, want %+v", got, want)
 	}
@@ -86,9 +86,7 @@ func TestRouterConfig_DefaultCarriesTheExprLimitDefaults(t *testing.T) {
 
 // TestRouterConfig_CarriesTheOtherHTTPSettings guards the extraction itself:
 // this literal moved out of start to become reachable from a test, and the
-// fields that were already there must still arrive. WorkerOfflineThreshold is
-// the one that does NOT come from Config -- start passes the running
-// scheduler's normalized timeout -- so it is checked as a parameter.
+// fields that were already there must still arrive.
 func TestRouterConfig_CarriesTheOtherHTTPSettings(t *testing.T) {
 	cfg := DefaultConfig()
 	cfg.CORSOrigins = []string{"https://ui.example"}
@@ -97,7 +95,7 @@ func TestRouterConfig_CarriesTheOtherHTTPSettings(t *testing.T) {
 	cfg.AuthEnabled = true
 	cfg.AuthValidateJobOwner = false
 
-	got := routerConfig(cfg, 90*time.Second)
+	got := routerConfig(cfg)
 
 	if len(got.CORSOrigins) != 1 || got.CORSOrigins[0] != "https://ui.example" {
 		t.Errorf("CORSOrigins = %v, want the configured origin", got.CORSOrigins)
@@ -113,8 +111,5 @@ func TestRouterConfig_CarriesTheOtherHTTPSettings(t *testing.T) {
 	}
 	if got.ValidateJobOwner {
 		t.Error("ValidateJobOwner = true, want the configured false")
-	}
-	if got.WorkerOfflineThreshold != 90*time.Second {
-		t.Errorf("WorkerOfflineThreshold = %s, want the scheduler's 90s", got.WorkerOfflineThreshold)
 	}
 }

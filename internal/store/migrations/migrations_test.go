@@ -5,6 +5,7 @@ package migrations_test
 import (
 	"database/sql"
 	"errors"
+	"fmt"
 	"io/fs"
 	"strings"
 	"testing"
@@ -359,6 +360,69 @@ func TestMigrations_00034_WorkerInstanceIDDownUp(t *testing.T) {
 	}
 	if instanceID != "" {
 		t.Errorf("instance_id = %q for a row that predates the column, want %q (\"unknown\")", instanceID, "")
+	}
+}
+
+// TestMigrations_00036_WorkerDisabledFlagDownUp pins 00036 in both directions.
+// Up moves "disabled" out of the liveness column into the flag: a disabled row
+// becomes online (the heartbeat sweep takes it offline if its heartbeat is
+// stale, reclaiming any task it holds) with disabled = 1, and every other row
+// keeps its status with disabled = 0. Down folds the flag back into the
+// status, so a disabled worker is disabled again whatever its liveness.
+func TestMigrations_00036_WorkerDisabledFlagDownUp(t *testing.T) {
+	dbPath := t.TempDir() + "/test.db"
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("sql.Open: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	goose.SetBaseFS(migrations.FS)
+	if err := goose.SetDialect("sqlite3"); err != nil {
+		t.Fatalf("SetDialect: %v", err)
+	}
+	if err := goose.UpTo(db, ".", 35); err != nil {
+		t.Fatalf("goose.UpTo(35): %v", err)
+	}
+	for id, status := range map[string]string{"w-on": "online", "w-off": "offline", "w-dis": "disabled"} {
+		if _, err := db.ExecContext(t.Context(),
+			`INSERT INTO workers (id, hostname, os, status, registered_at, updated_at)
+			 VALUES (?, 'h', 'linux', ?, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')`, id, status); err != nil {
+			t.Fatalf("insert worker %s: %v", id, err)
+		}
+	}
+
+	if err := goose.Up(db, "."); err != nil {
+		t.Fatalf("goose.Up: %v", err)
+	}
+	want := map[string]string{"w-on": "online/0", "w-off": "offline/0", "w-dis": "online/1"}
+	for id, w := range want {
+		var status string
+		var disabled int
+		if err := db.QueryRowContext(t.Context(),
+			`SELECT status, disabled FROM workers WHERE id = ?`, id).Scan(&status, &disabled); err != nil {
+			t.Fatalf("select %s: %v", id, err)
+		}
+		if got := fmt.Sprintf("%s/%d", status, disabled); got != w {
+			t.Errorf("after Up: %s = %s, want %s", id, got, w)
+		}
+	}
+
+	if err := goose.DownTo(db, ".", 35); err != nil {
+		t.Fatalf("goose.DownTo(35): %v", err)
+	}
+	if hasColumn(t, db, "workers", "disabled") {
+		t.Fatal("disabled column still present after Down")
+	}
+	var status string
+	if err := db.QueryRowContext(t.Context(), `SELECT status FROM workers WHERE id = 'w-dis'`).Scan(&status); err != nil {
+		t.Fatalf("select w-dis after Down: %v", err)
+	}
+	if status != "disabled" {
+		t.Errorf("after Down: w-dis status = %q, want disabled", status)
+	}
+	if err := goose.Up(db, "."); err != nil {
+		t.Fatalf("goose.Up (re-apply): %v", err)
 	}
 }
 

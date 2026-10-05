@@ -76,26 +76,24 @@ func TestH4a2_RestartedWorkerHasItsTasksReclaimed(t *testing.T) {
 	}
 }
 
-// registerStatusSt returns, from RegisterWorker, the stored row with its
-// status replaced, standing in for a store that keeps a status the
+// registerStatusSt returns, from RegisterWorker, the stored row marked
+// disabled, standing in for a store that keeps a disabled flag the
 // registration did not ask for (H4a2 §5.3 keeps disabled).
 type registerStatusSt struct {
 	store.Store
-
-	status store.WorkerStatus
 }
 
 func (r *registerStatusSt) RegisterWorker(ctx context.Context, w store.Worker) (store.Worker, []store.Task, error) {
 	out, reclaimed, err := r.Store.RegisterWorker(ctx, w)
-	out.Status = r.status
+	out.Disabled = true
 	return out, reclaimed, err
 }
 
 // TestHandleWorkerRegister_EventCarriesTheStoredStatus pins that the register
-// handler's worker event reports the status of the row RegisterWorker
-// returned, not the "online" the registration asked for.
+// handler's worker event reports the effective status of the row
+// RegisterWorker returned, not the "online" the registration asked for.
 func TestHandleWorkerRegister_EventCarriesTheStoredStatus(t *testing.T) {
-	st := &registerStatusSt{Store: newCheckedFake(t), status: store.WorkerStatusDisabled}
+	st := &registerStatusSt{Store: newCheckedFake(t)}
 	s := newMetricsScheduler(st, &recordBus{}, "")
 	rec := &workerRecordingNotifier{}
 	s.notifier = rec
@@ -340,8 +338,8 @@ func TestH4a2_DisabledWorkerGetsNoWork(t *testing.T) {
 	s.leaseRefusalDelay = 50 * time.Millisecond
 	one := 1
 	w, ids := seedLeaseFixture(t, st, []*int{&one})
-	if err := st.UpdateWorkerStatus(t.Context(), w.ID, store.WorkerStatusDisabled); err != nil {
-		t.Fatalf("UpdateWorkerStatus: %v", err)
+	if _, err := st.SetWorkerDisabled(t.Context(), w.ID, true); err != nil {
+		t.Fatalf("SetWorkerDisabled: %v", err)
 	}
 	got, took := leaseAs(t, s, w.ID, "")
 	if len(got) != 0 {
@@ -404,8 +402,8 @@ func TestH4a2_ParkedLeaseOfAWorkerDisabledMeanwhileGetsNoWork(t *testing.T) {
 	}
 
 	// While it is parked the worker is disabled and a new task becomes ready.
-	if err := st.UpdateWorkerStatus(t.Context(), w.ID, store.WorkerStatusDisabled); err != nil {
-		t.Fatalf("UpdateWorkerStatus: %v", err)
+	if _, err := st.SetWorkerDisabled(t.Context(), w.ID, true); err != nil {
+		t.Fatalf("SetWorkerDisabled: %v", err)
 	}
 	held := mustTaskOf(t, st, ids[0])
 	now := time.Now().UTC()
@@ -444,8 +442,8 @@ func TestH4a2_DeregisterOfADisabledWorkerSaysDisabled(t *testing.T) {
 	for name, st := range raceBackends(t) {
 		t.Run(name, func(t *testing.T) {
 			workerID, taskID, _ := seedStaleWorkerWithTask(t, st, 0)
-			if err := st.UpdateWorkerStatus(t.Context(), workerID, store.WorkerStatusDisabled); err != nil {
-				t.Fatalf("UpdateWorkerStatus: %v", err)
+			if _, err := st.SetWorkerDisabled(t.Context(), workerID, true); err != nil {
+				t.Fatalf("SetWorkerDisabled: %v", err)
 			}
 			rec := &workerRecordingNotifier{}
 			s := newMetricsScheduler(st, &recordBus{}, "")
@@ -465,8 +463,8 @@ func TestH4a2_DeregisterOfADisabledWorkerSaysDisabled(t *testing.T) {
 			if err != nil {
 				t.Fatalf("GetWorker: %v", err)
 			}
-			if w.Status != store.WorkerStatusDisabled {
-				t.Fatalf("worker = %q, want disabled (kept)", w.Status)
+			if w.Status != store.WorkerStatusOffline || !w.Disabled {
+				t.Fatalf("worker = %q disabled=%v, want offline and still disabled", w.Status, w.Disabled)
 			}
 			if len(rec.workers) != 1 || rec.workers[0].WorkerID != workerID || rec.workers[0].Status != string(store.WorkerStatusDisabled) {
 				t.Fatalf("worker events = %+v, want one saying %s is disabled", rec.workers, workerID)
@@ -504,8 +502,8 @@ func TestH4a2_RegisterOfADisabledWorkerSaysDisabled(t *testing.T) {
 	for name, st := range raceBackends(t) {
 		t.Run(name, func(t *testing.T) {
 			workerID, _, _ := seedStaleWorkerWithTask(t, st, 0)
-			if err := st.UpdateWorkerStatus(t.Context(), workerID, store.WorkerStatusDisabled); err != nil {
-				t.Fatalf("UpdateWorkerStatus: %v", err)
+			if _, err := st.SetWorkerDisabled(t.Context(), workerID, true); err != nil {
+				t.Fatalf("SetWorkerDisabled: %v", err)
 			}
 			rec := &workerRecordingNotifier{}
 			s := newMetricsScheduler(st, &recordBus{}, "")
@@ -520,8 +518,8 @@ func TestH4a2_RegisterOfADisabledWorkerSaysDisabled(t *testing.T) {
 			if err != nil {
 				t.Fatalf("GetWorker: %v", err)
 			}
-			if w.Status != store.WorkerStatusDisabled {
-				t.Fatalf("worker = %q, want disabled (kept)", w.Status)
+			if w.Status != store.WorkerStatusOnline || !w.Disabled {
+				t.Fatalf("worker = %q disabled=%v, want online and still disabled", w.Status, w.Disabled)
 			}
 			if len(rec.workers) != 1 || rec.workers[0].Status != string(store.WorkerStatusDisabled) {
 				t.Fatalf("worker events = %+v, want one saying disabled", rec.workers)
@@ -532,13 +530,14 @@ func TestH4a2_RegisterOfADisabledWorkerSaysDisabled(t *testing.T) {
 
 // TestH4a2_SweepReclaimsADeadDisabledWorkerWithoutAnOfflineEvent pins item 9
 // iv: a disabled worker that dies holding a task has the task reclaimed by the
-// heartbeat sweep, stays disabled, and is announced by no worker event.
+// heartbeat sweep and goes offline underneath, but stays disabled, so its one
+// worker event carries its effective status, disabled, never offline.
 func TestH4a2_SweepReclaimsADeadDisabledWorkerWithoutAnOfflineEvent(t *testing.T) {
 	for name, st := range raceBackends(t) {
 		t.Run(name, func(t *testing.T) {
 			workerID, taskID, _ := seedStaleWorkerWithTask(t, st, time.Hour)
-			if err := st.UpdateWorkerStatus(t.Context(), workerID, store.WorkerStatusDisabled); err != nil {
-				t.Fatalf("UpdateWorkerStatus: %v", err)
+			if _, err := st.SetWorkerDisabled(t.Context(), workerID, true); err != nil {
+				t.Fatalf("SetWorkerDisabled: %v", err)
 			}
 			rec := &workerRecordingNotifier{}
 			s := newMetricsScheduler(st, &recordBus{}, "")
@@ -551,11 +550,11 @@ func TestH4a2_SweepReclaimsADeadDisabledWorkerWithoutAnOfflineEvent(t *testing.T
 			if err != nil {
 				t.Fatalf("GetWorker: %v", err)
 			}
-			if w.Status != store.WorkerStatusDisabled {
-				t.Fatalf("worker = %q, want disabled", w.Status)
+			if w.Status != store.WorkerStatusOffline || !w.Disabled {
+				t.Fatalf("worker = %q disabled=%v, want offline and still disabled", w.Status, w.Disabled)
 			}
-			if len(rec.workers) != 0 {
-				t.Fatalf("worker events = %+v, want none", rec.workers)
+			if len(rec.workers) != 1 || rec.workers[0].Status != string(store.WorkerStatusDisabled) {
+				t.Fatalf("worker events = %+v, want one saying disabled", rec.workers)
 			}
 		})
 	}

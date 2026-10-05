@@ -414,23 +414,20 @@ func (s *Store) CancelTaskExecution(ctx context.Context, taskID, reason string, 
 }
 
 const (
-	// sqlOfflineStaleWorker is the I1 guard for the heartbeat sweep's write. An
-	// online worker goes offline; a disabled one with work in flight keeps its
-	// status (the admin's decision, H4a2 §5.2) and is only reclaimed. Both only
-	// while the heartbeat is still older than the cutoff; a NULL heartbeat
-	// compares false, so a worker with no recorded heartbeat is never stale.
-	// Binds: updated_at, id, cutoff.
+	// sqlOfflineStaleWorker is the I1 guard for the heartbeat sweep's write: the
+	// worker goes offline only while it is still online and its heartbeat is
+	// still older than the cutoff. A NULL heartbeat compares false, so a worker
+	// with no recorded heartbeat is never stale. The disabled flag is neither
+	// read nor written: a dead disabled worker goes offline and stays disabled
+	// (H4a2 §5.2). Binds: updated_at, id, cutoff.
 	sqlOfflineStaleWorker = `
-UPDATE workers SET status = CASE WHEN status = 'disabled' THEN 'disabled' ELSE 'offline' END, updated_at = ?
-WHERE  id = ? AND last_heartbeat_at < ?
-  AND  (status = 'online' OR (status = 'disabled' AND ` + sqlWorkerHasWorkInFlight + `))`
+UPDATE workers SET status = 'offline', updated_at = ?
+WHERE  id = ? AND status = 'online' AND last_heartbeat_at < ?`
 
-	// sqlOfflineWorker is the write behind a graceful deregister: offline,
-	// unless the worker is disabled, which it stays (H4a2 §5.3). Binds:
-	// updated_at, id.
-	sqlOfflineWorker = `
-UPDATE workers SET status = CASE WHEN status = 'disabled' THEN 'disabled' ELSE 'offline' END, updated_at = ?
-WHERE id = ?`
+	// sqlOfflineWorker is the unconditional write behind a graceful
+	// deregister. A disabled worker stays disabled (H4a2 §5.3): the flag is
+	// not written. Binds: updated_at, id.
+	sqlOfflineWorker = `UPDATE workers SET status = 'offline', updated_at = ? WHERE id = ?`
 
 	// sqlReclaimWorkerTasksReturning returns a worker's in-flight tasks to ready
 	// and RETURNING hands back exactly the rows it changed, as they are after the
@@ -464,11 +461,10 @@ func (s *Store) OfflineWorker(ctx context.Context, id string, now time.Time) ([]
 	return tasks, nil
 }
 
-// offlineWorker marks the worker with the given guarded statement (offline, or
-// left disabled, H4a2 §5.2 and §5.3) and, only if that statement matched,
-// closes the attempts of its in-flight tasks, releases their claims and returns
-// the tasks to ready, all in one transaction (invariants I1, I2 and I3). The
-// bool is whether the mark matched.
+// offlineWorker takes the worker offline with the given guarded statement and,
+// only if that statement matched, closes the attempts of its in-flight tasks,
+// releases their claims and returns the tasks to ready, all in one transaction
+// (invariants I1, I2 and I3). The bool is whether the worker was taken offline.
 //
 // Anchors and statement order (spec 4.1): the worker row first, then each job row
 // the worker's tasks belong to, sorted by id; the statements run worker, tasks,
@@ -517,9 +513,9 @@ func (s *Store) offlineWorker(ctx context.Context, id string, now time.Time, mar
 		return nil, false, fmt.Errorf("sqlite: mark worker %s offline: %w", id, mapErr(err))
 	}
 	if n == 0 {
-		// The guard did not match (unknown worker, neither online nor disabled
-		// with work in flight, or a fresh heartbeat): nothing was written and
-		// the deferred rollback ends the transaction.
+		// The guard did not match (unknown worker, not online, or a fresh
+		// heartbeat): nothing was written and the deferred rollback ends the
+		// transaction.
 		return nil, false, nil
 	}
 	reclaimed, err := reclaimWorkerTasksTx(ctx, tx, id, store.FailureReasonWorkerOffline, now)

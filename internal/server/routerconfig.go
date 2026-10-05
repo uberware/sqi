@@ -3,8 +3,6 @@
 package server
 
 import (
-	"time"
-
 	"github.com/uberware/sqi/internal/api"
 )
 
@@ -18,17 +16,11 @@ import (
 // it could only be reached by booting a whole server (NATS, SQLite, a
 // listening socket), so in practice nothing tested it at all —
 // TestRouterConfig_CarriesTheSubmissionDeadline does now.
-//
-// workerOfflineThreshold comes from the running scheduler rather than from
-// Config, which is why it is a parameter: the scheduler normalizes its own
-// heartbeat timeout, and the worker handler must gate on the value actually in
-// force, not on the one the operator wrote down.
-func routerConfig(cfg Config, workerOfflineThreshold time.Duration) api.Config {
+func routerConfig(cfg Config) api.Config {
 	return api.Config{
 		CORSOrigins:            cfg.CORSOrigins,
 		EnablePprof:            cfg.EnablePprof,
 		DisableRateLimit:       cfg.DisableRateLimit,
-		WorkerOfflineThreshold: workerOfflineThreshold,
 		AuthEnabled:            cfg.AuthEnabled,
 		ValidateJobOwner:       cfg.AuthValidateJobOwner,
 		ExprSubmissionDeadline: cfg.OpenJDExprSubmissionDeadline,

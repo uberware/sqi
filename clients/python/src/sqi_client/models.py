@@ -807,9 +807,9 @@ class Worker:
     removable: bool = False
     """Whether the worker may be removed via
     :meth:`~sqi_client.client.SqiClient.remove_worker`. Server-authoritative:
-    true for offline workers and for disabled workers whose last heartbeat is
-    older than the heartbeat-timeout window; online and live-disabled workers
-    are never removable."""
+    true for offline workers, disabled or not (a disabled worker counts as
+    offline once the heartbeat sweep finds it gone); online workers, disabled
+    or not, are never removable."""
 
     @classmethod
     def from_dict(cls, data: Mapping[str, Any]) -> Worker:

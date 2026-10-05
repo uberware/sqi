@@ -76,10 +76,13 @@ func (s *Scheduler) handleLeaseRequest(workerID, queueID string, data []byte) []
 	if err != nil {
 		return marshalLeaseReply(nil)
 	}
+	// A disabled worker drains: it finishes the tasks it holds and is leased
+	// nothing new (docs/api.md). A disable that lands between this check and
+	// the lease can still let one batch through, which is the documented drain.
 	// Both refusals are held, not answered at once: see refuseLeaseAfterDelay.
 	// The order of the two checks only decides whether the instance-mismatch
 	// Debug log fires: a disabled worker is refused without it.
-	if workerDisabled(worker) || s.leaseFromUnregisteredInstance(ctx, worker, req.InstanceID) {
+	if worker.Disabled || s.leaseFromUnregisteredInstance(ctx, worker, req.InstanceID) {
 		return s.refuseLeaseAfterDelay(ctx)
 	}
 
@@ -124,18 +127,6 @@ func (s *Scheduler) refuseLeaseAfterDelay(ctx context.Context) []byte {
 	return marshalLeaseReply(nil)
 }
 
-// workerDisabled reports whether an operator has disabled the worker. Disabled
-// drains: the worker finishes the tasks it holds and is leased nothing new
-// (docs/api.md). It is checked on the lease request, where the refusal is held
-// for leaseRefusalDelay so the worker's loop cannot spin, and again after a
-// park, where it is answered at once because the park already waited. A worker
-// can be disabled while its request is parked. A disable that lands between the
-// check and the lease can still let one batch through, which is the documented
-// drain.
-func workerDisabled(w store.Worker) bool {
-	return w.Status == store.WorkerStatusDisabled
-}
-
 // leaseAfterPark is the one retry a parked lease request makes once woken: it
 // re-reads the worker and, unless the worker was disabled, or re-registered from
 // another process, while the request was parked, selects a batch. A failure to
@@ -144,7 +135,7 @@ func workerDisabled(w store.Worker) bool {
 // [Scheduler.selectLeaseBatch]).
 func (s *Scheduler) leaseAfterPark(ctx context.Context, workerID, instanceID string) [][]byte {
 	w, err := s.store.GetWorker(ctx, workerID)
-	if err != nil || workerDisabled(w) || s.leaseFromUnregisteredInstance(ctx, w, instanceID) {
+	if err != nil || w.Disabled || s.leaseFromUnregisteredInstance(ctx, w, instanceID) {
 		return nil
 	}
 	batch, err := s.selectLeaseBatchLocked(ctx, w)

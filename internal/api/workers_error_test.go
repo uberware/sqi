@@ -51,11 +51,11 @@ func (e *workerErrStore) GetWorker(ctx context.Context, id string) (store.Worker
 	return e.Store.GetWorker(ctx, id)
 }
 
-func (e *workerErrStore) DeleteWorkerIfRemovable(ctx context.Context, id string, disabledCutoff time.Time) error {
+func (e *workerErrStore) DeleteWorkerIfRemovable(ctx context.Context, id string) error {
 	if e.deleteIfRemovableErr != nil {
 		return e.deleteIfRemovableErr
 	}
-	return e.Store.DeleteWorkerIfRemovable(ctx, id, disabledCutoff)
+	return e.Store.DeleteWorkerIfRemovable(ctx, id)
 }
 
 // ── listWorkers: additional filter and error paths ────────────────────────────
