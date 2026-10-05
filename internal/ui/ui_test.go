@@ -172,7 +172,7 @@ func TestPathTraversalIsContained(t *testing.T) {
 	h := newTestHandler(t)
 	// A traversal attempt collapses to /etc/passwd after path.Clean. That path
 	// is extensionless, so under the SPA fallback it serves the embedded shell —
-	// crucially, it never serves host filesystem contents. Containment means we
+	// it never serves host filesystem contents. Containment means we
 	// only ever return our own index.html, not /etc/passwd.
 	rec := do(t, h, http.MethodGet, "/../../../../etc/passwd")
 	if rec.Code != http.StatusOK {

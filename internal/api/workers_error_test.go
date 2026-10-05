@@ -2,7 +2,7 @@
 
 package api
 
-// Additional unit tests for worker REST handlers — item 6 of the test roadmap.
+// Additional unit tests for worker REST handlers.
 //
 // Covers filter by queue_id and store error paths not reached by workers_test.go.
 // Uses the storeErr wrapper defined in jobs_error_test.go.

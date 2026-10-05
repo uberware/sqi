@@ -44,9 +44,9 @@ func releaseToNewWorker(t *testing.T, st store.Store, s *Scheduler, task store.T
 	return res.Attempt
 }
 
-// TestSupersededRunningReportIsIgnored pins item 9's first late-report
-// hole: a superseded attempt's "running" report no longer moves the new
-// lease's task to running, and emits no task event.
+// TestSupersededRunningReportIsIgnored pins that a superseded attempt's
+// "running" report does not move the new lease's task to running, and emits
+// no task event.
 func TestSupersededRunningReportIsIgnored(t *testing.T) {
 	for name, st := range raceBackends(t) {
 		t.Run(name, func(t *testing.T) {
@@ -78,7 +78,7 @@ func TestSupersededRunningReportIsIgnored(t *testing.T) {
 
 // TestCancelEchoAfterRetryLeavesTaskReady: the user cancels a running
 // task, retries it, then the old worker's "canceled" echo arrives. The task
-// must stay ready (v0.3.0 and H4a re-canceled it).
+// must stay ready, not be re-canceled.
 func TestCancelEchoAfterRetryLeavesTaskReady(t *testing.T) {
 	for name, st := range raceBackends(t) {
 		t.Run(name, func(t *testing.T) {
@@ -116,9 +116,9 @@ func (s *reclaimBeforeRequeueStore) RequeueTaskForRetry(ctx context.Context, tas
 	return s.Store.RequeueTaskForRetry(ctx, taskID, attemptID, retryAfter, now)
 }
 
-// TestRequeueAfterReleaseLeavesTheNewLease pins item 9's third
-// late-report hole: an offline reclaim and a new lease landing between
-// RecordTaskFailure and the requeue must not return the new lease to ready.
+// TestRequeueAfterReleaseLeavesTheNewLease pins that an offline reclaim and a
+// new lease landing between RecordTaskFailure and the requeue do not return
+// the new lease to ready.
 func TestRequeueAfterReleaseLeavesTheNewLease(t *testing.T) {
 	for name, base := range raceBackends(t) {
 		t.Run(name, func(t *testing.T) {
@@ -168,7 +168,7 @@ func TestRequeueAfterReleaseLeavesTheNewLease(t *testing.T) {
 	}
 }
 
-// TestShutdownReportAndDeregisterAgreeInEitherOrder pins spec D2: a
+// TestShutdownReportAndDeregisterAgreeInEitherOrder pins that a
 // forced shutdown's "failed"/"worker_shutdown" report and the worker's
 // deregister leave the same state whichever the server applies first, and
 // neither counts a genuine failure.

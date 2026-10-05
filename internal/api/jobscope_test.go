@@ -313,16 +313,15 @@ func TestRequireJobAccessViaTaskChildRoute(t *testing.T) {
 	}
 }
 
-// /api/v1/jobs/{id}/tasks carries a JOB id in {id} despite the "tasks" in its
-// path. It used to be the one near-collision for the old pattern-matching
-// classifier; the middleware is now chosen explicitly at mount time, so this
-// pins that the router mounts the job-id variant for it. Kept because the
-// path shape is still the one most likely to be mis-wired by hand.
+// /api/v1/jobs/{id}/tasks carries a job id in {id} despite the "tasks" in its
+// path. The middleware is chosen explicitly at mount time, so this pins that
+// the router mounts the job-id variant for it: the path shape is the one most
+// likely to be mis-wired by hand.
 //
-// Historical note: /api/v1/jobs/{id}/tasks has no
-// "{id}" segment after "tasks", so it must be resolved as a JOB route (the
-// URL param is a job id), never mistaken for a /tasks/{id} task route (which
-// would wrongly call GetTask on a job id and 404/misclassify ownership).
+// /api/v1/jobs/{id}/tasks has no "{id}" segment after "tasks", so it must be
+// resolved as a job route (the URL param is a job id), never mistaken for a
+// /tasks/{id} task route (which would wrongly call GetTask on a job id and
+// 404/misclassify ownership).
 func TestRequireJobAccessJobTasksRouteNotConfusedWithTaskRoute(t *testing.T) {
 	st := fake.New()
 	seedOwnedJob(t, st, "job-1", "alice")
@@ -373,8 +372,7 @@ func TestRequireJobAccessUnknownJob(t *testing.T) {
 // "/tasks/{id}" — every route in this repo is mounted under
 // r.Route("/api/v1", …) (router.go), so RoutePattern() always carries that
 // prefix in production. A bare pattern here would let a HasPrefix-style bug
-// in resolveJob pass silently, exactly as it did before this test helper was
-// fixed to match reality (see TestRequireJobAccessViaTaskChildRoute).
+// in resolveJob pass unnoticed (see TestRequireJobAccessViaTaskChildRoute).
 func jobRequest(t *testing.T, pattern, id string, principal auth.Principal) *http.Request {
 	t.Helper()
 	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/x", nil)

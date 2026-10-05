@@ -2,14 +2,14 @@
 
 package scheduler
 
-// The H4a concurrent stress test (spec §8.4). Racers run every operation H4a
-// made atomic, concurrently, against one job whose tasks claim capped usage
-// pools, on the real SQLite store, and a monitor racing alongside them checks
-// the invariants on the snapshots it reads. SQLite serializes writers, so this
-// cannot prove the group-1 races closed (spec §3.2); what it catches,
-// non-deterministically, is a group-2 regression: an operation whose own
-// transaction leaves the database in a state the invariants forbid, or two
-// operations whose composition does.
+// The concurrent store stress test. Racers run the store's atomic task and
+// worker operations concurrently against one job whose tasks claim capped
+// usage pools, on the real SQLite store, and a monitor racing alongside them
+// checks the invariants on the snapshots it reads. SQLite serializes writers,
+// so this cannot exercise races that only concurrent writers could produce (as
+// on PostgreSQL); what it catches, non-deterministically, is an operation
+// whose own transaction leaves the database in a state the invariants forbid,
+// or two operations whose composition does.
 //
 // The run is a sequence of rounds. In each round every racer due that round
 // makes one call, all of them started together so they race, and the next round
@@ -85,7 +85,7 @@ var stressHistoryDDL = []string{
 // no outgoing transitions"). RetryTasks is the one bulk path that does, by
 // design: it revives failed and canceled tasks, pending under a step that
 // ResolveDependencies will release and ready under a step that is already ready
-// (H4a2 §3.4, [store.TaskStore.RetryTasks]). Every other bulk path (reclaim,
+// ([store.TaskStore.RetryTasks]). Every other bulk path (reclaim,
 // offline reclaim, requeue, cancel, step release) writes an arrow the table
 // lists.
 var stressRetryArrows = map[[2]store.TaskStatus]bool{
@@ -115,9 +115,10 @@ type stressCounts struct {
 	retries, revived                             atomic.Int64
 	snapshots                                    atomic.Int64
 
-	// The H4a2 paths: reports on an attempt already closed, worker-shutdown
-	// reclaims, graceful deregisters (applied, and ignored because they name a
-	// process a later registration replaced), and restart reclaims.
+	// The report and reclaim paths: reports on an attempt already closed,
+	// worker-shutdown reclaims, graceful deregisters (applied, and ignored
+	// because they name a process a later registration replaced), and restart
+	// reclaims.
 	staleReports, shutdownReclaims         atomic.Int64
 	deregisterReclaims, deregistersIgnored atomic.Int64
 	restartReclaims                        atomic.Int64
@@ -163,20 +164,21 @@ type stressRun struct {
 
 // TestConcurrentStress_SQLite races leases, CancelJob, CancelTask, the
 // reaper, OfflineStaleWorker, RetryTasks (through RetryJob), worker reports,
-// and H4a2's report and reclaim paths (a report on an attempt already closed, a
+// and the report and reclaim paths (a report on an attempt already closed, a
 // worker-shutdown report, a graceful deregister from the current or a replaced
-// process, and a restart's re-registration) against one job with capped usage pools, on the real SQLite store. While they
-// run, a monitor racing alongside asserts on every snapshot it reads that
-// invariant I3 holds, no pool is over its cap, no task has two open attempts
-// and no task out of flight has an open one; afterwards the test asserts the
-// same again and that every task's whole status history is made of legal
-// arrows, and fails a run in which any racer never took effect. It cannot
-// prove group 1 (spec §3.2) because SQLite serializes writes; it catches
-// group-2 regressions non-deterministically. Runs in make test, with or
-// without -race.
+// process, and a restart's re-registration) against one job with capped usage
+// pools, on the real SQLite store. While they run, a monitor racing alongside
+// asserts on every snapshot it reads that invariant I3 holds, no pool is over
+// its cap, no task has two open attempts and no task out of flight has an open
+// one; afterwards the test asserts the same again and that every task's whole
+// status history is made of legal arrows, and fails a run in which any racer
+// never took effect. It cannot exercise races that need concurrent writers,
+// because SQLite serializes writes; it catches regressions inside one
+// operation or a composition of them non-deterministically. Runs in make test,
+// with or without -race.
 func TestConcurrentStress_SQLite(t *testing.T) {
 	if testing.Short() {
-		t.Skip("stress test: races every H4a store operation on SQLite")
+		t.Skip("stress test: races the store's atomic operations on SQLite")
 	}
 	path := t.TempDir() + "/test.db"
 	st, err := sqlite.Open(t.Context(), path, sqlite.DefaultOptions())
@@ -221,12 +223,10 @@ func TestConcurrentStress_SQLite(t *testing.T) {
 //
 // CancelJob runs in an even round, where no retry runs, and never in round 0.
 // Once it commits nothing in its round can revive a task (only a retry does),
-// and the cancel has already finalized the job's steps in its own transaction
-// (H4a2), so the next round's retry returns every task to ready (see
-// [stressRun.retry]). Before H4a2 a retry in the same round as the cancel could
-// revive the tasks before the cancel and leave them pending in a step the
-// cancel never finalized, run after run; the schedule keeps the two apart
-// regardless.
+// and the cancel has already finalized the job's steps in its own transaction,
+// so the next round's retry returns every task to ready (see
+// [stressRun.retry]). The schedule keeps a retry out of the cancel's round so
+// that the two never interleave.
 func (r *stressRun) schedule() []stressRacer {
 	return []stressRacer{
 		{1, 0, func(n int) { r.leaseOne(0, n) }},
@@ -412,7 +412,7 @@ func (r *stressRun) reportOne(g, n int) {
 // the store (CompleteTaskAttempt checks that the attempt is the task's latest),
 // and a failure report whose attempt was already closed is discarded by the
 // failure fork (failureReportStillCurrent). The requeue is guarded on the
-// attempt (H4a2), so a reclaim and a new lease landing between
+// attempt, so a reclaim and a new lease landing between
 // RecordTaskFailure and RequeueTaskForRetry leave the new lease alone.
 func (r *stressRun) report(g, idx, i int) {
 	ctx := r.t.Context()
@@ -511,7 +511,7 @@ func (r *stressRun) offline(n int) {
 
 // retry retries the job (RetryJob, which calls the store's RetryTasks). A job
 // cancel finalizes the job's steps and a single-task cancel drives step
-// completion (H4a2), so nothing is needed between a cancel and this retry.
+// completion, so nothing is needed between a cancel and this retry.
 func (r *stressRun) retry(int) {
 	n, err := r.s.RetryJob(r.t.Context(), r.fx.jobID)
 	if r.expect("RetryJob", err) {
@@ -674,14 +674,14 @@ func (r *stressRun) expect(op string, err error) bool {
 // pool over its cap, no task with two open attempts, and no open attempt on a
 // task that is not in flight. Each check is one statement, so it sees one
 // consistent snapshot, and every committed state must satisfy them because each
-// H4a operation keeps them inside its transaction.
+// store operation keeps them inside its transaction.
 //
 // The last check is the other half of "a task is held by at most one attempt":
 // an operation that returns a task to ready, or ends it, without closing its
 // attempt leaves an attempt open on a task nothing holds. I3 cannot see that
 // (the attempt is open, so its claims are legitimately active), and the
 // two-attempts check sees it only if the task is leased again while the stale
-// attempt still holds its pool slots, which those very slots usually prevent.
+// attempt still holds its pool slots, which those slots usually prevent.
 func (r *stressRun) checkSnapshot(when string) {
 	if r.failed.Load() {
 		return

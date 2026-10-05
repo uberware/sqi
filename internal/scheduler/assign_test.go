@@ -2,7 +2,7 @@
 
 package scheduler
 
-// Tests for assign.go — item 8c of the test roadmap.
+// Tests for assign.go.
 //
 // buildAssignPayload is a pure package-level function with no NATS or bus
 // dependency. Tests live in package scheduler (white-box) to access the
@@ -760,12 +760,12 @@ steps:
 }
 
 // TestBuildAssignPayload_ListPathParamLocURIsStagedThroughFullSeam is the
-// F2 whole-branch review's IMPORTANT-2 composition-seam test. Every other
+// composition-seam test for LIST[PATH] loc:// resolution. Every other
 // test of the LIST[*] loc:// and staging behavior calls
 // resolveLocURIsInParamValue/buildStagingManifest directly, passing the
 // declared type by hand — nothing exercises the actual wiring:
 // populateEXPRFields must have populated msg.JobParameterTypes from the EXPR
-// template BEFORE resolveLocURIsInMsg reads it, or LIST[PATH] silently falls
+// template before resolveLocURIsInMsg reads it, or LIST[PATH] falls
 // back to whole-string substitution, which corrupts a Windows destination
 // root (backslashes are not legal JSON escapes, so the re-decoded value stops
 // parsing entirely). This test goes through buildAssignPayload end to end —

@@ -35,7 +35,7 @@
 //
 // # Subjects
 //
-// Four subscription subjects are supported in Phase 1:
+// Four subscription subjects are supported:
 //
 //	"jobs"              — aggregate job-summary events
 //	"jobs/{id}/tasks"   — per-job task-level updates
@@ -433,7 +433,7 @@ func (h *Hub) NotifyTask(e TaskEvent) {
 	// can replay it via since_seq: 0 and have it filtered by Scope.allows,
 	// rather than have it silently never buffered. That only matters when the
 	// hub can have scoped clients at all (auth on): with auth off there is no
-	// such thing as a scoped client, so this must fall back to the pre-B2
+	// such thing as a scoped client, so this must fall back to the
 	// hasSubscribers guard — otherwise the highest-frequency event in the
 	// system unconditionally marshals JSON and takes the ring mutex on every
 	// task transition even with nobody connected.
@@ -511,14 +511,14 @@ func (h *Hub) NotifyLog(e LogEvent) {
 
 // NotifyJob fans a job-status change to all SubjectJobs subscribers.
 //
-// When the hub does owner scoping (auth on), the envelope is always
-// stored in the ring buffer (like NotifyLog), even when no clients are
-// currently subscribed: a scoped client that subscribes moments later must
-// be able to replay it via since_seq: 0 and have it filtered by
-// Scope.allows, rather than have it silently never buffered. With auth off
-// there are no scoped clients to replay for, so this falls back to the pre-B2
-// hasSubscribers guard to keep the auth-off hot path unchanged: zero marshal,
-// zero ring-mutex acquisition, with nobody connected.
+// When the hub does owner scoping (auth on), the envelope is always stored in
+// the ring buffer (like NotifyLog), even when no clients are currently
+// subscribed: a scoped client that subscribes moments later must be able to
+// replay it via since_seq: 0 and have it filtered by Scope.allows, rather than
+// have it silently never buffered. With auth off there are no scoped clients to
+// replay for, so this falls back to the hasSubscribers guard to keep the
+// auth-off hot path cheap: zero marshal, zero ring-mutex acquisition, with
+// nobody connected.
 func (h *Hub) NotifyJob(e JobEvent) {
 	if !h.ownerScoping && !h.hasSubscribers(SubjectJobs) {
 		return

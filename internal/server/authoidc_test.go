@@ -2,10 +2,10 @@
 
 package server
 
-// Tests for the OIDC/SSO half of wireAuthDeps (Phase 3, component C2).
+// Tests for the OIDC/SSO half of wireAuthDeps.
 //
-// Everything below C2 built — the provider, the state cookie, the login and
-// callback routes — is unreachable in a real binary unless this wiring is
+// The provider, the state cookie, the login and callback routes are
+// unreachable in a real binary unless this wiring is
 // correct, and every way it can be wrong is silent: a missing state key makes
 // the routes vanish with a 404, and a transposed field in toOIDCConfig
 // compiles, passes every other test, and fails only against a real provider.
@@ -41,7 +41,7 @@ func validOIDCConfig() config.OIDCConfig {
 }
 
 // TestBuildOIDCProvider_DisabledInjectsNoProvider: leaving auth.oidc.enabled
-// off must produce no provider at all, so the router keeps its pre-C2 shape
+// off must produce no provider at all, so the router mounts no SSO routes
 // rather than merely being configured not to use SSO.
 func TestBuildOIDCProvider_DisabledInjectsNoProvider(t *testing.T) {
 	s := &Server{cfg: Config{AuthEnabled: true}, store: fake.New(), logger: testLogger()}
@@ -255,8 +255,7 @@ func TestToOIDCConfig_MapsEveryField(t *testing.T) {
 	}
 	// GroupsClaim not carried across (or sourced from the wrong claim) means
 	// every login presents no groups, so role_source=directory silently
-	// demotes the entire organization to default_role — the exact failure C1
-	// shipped with against a real OpenLDAP server.
+	// demotes the entire organization to default_role.
 	if got.GroupsClaim != cfg.GroupsClaim {
 		t.Errorf("GroupsClaim: got %q, want %q", got.GroupsClaim, cfg.GroupsClaim)
 	}

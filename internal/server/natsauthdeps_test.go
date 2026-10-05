@@ -103,7 +103,7 @@ func TestNATSAuthDeps_EndToEnd_EnrollRouteMountedWhenConfigured(t *testing.T) {
 
 // TestNATSAuthDeps_EndToEnd_EnrollRouteAbsentAtDefaults is the companion
 // negative case: a server built from DefaultConfig() (broker auth off, the
-// v0.3.0 and pre-H1 behavior) must never expose the enrollment endpoint.
+// v0.3.0 behavior) must never expose the enrollment endpoint.
 func TestNATSAuthDeps_EndToEnd_EnrollRouteAbsentAtDefaults(t *testing.T) {
 	deps := api.Deps{Store: fake.New(), Auth: auth.Anonymous()}
 	natsAuthDeps(DefaultConfig(), &deps)

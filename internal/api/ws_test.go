@@ -49,8 +49,8 @@ import (
 // ── test server helpers ───────────────────────────────────────────────────────
 
 // newWSTestServer starts an httptest.Server serving wsHandler with origin
-// checking disabled (wsOriginConfig{}, the pre-A1 / auth-off default: the
-// zero value has Enabled == false).
+// checking disabled (wsOriginConfig{}, the auth-off default: the zero value
+// has Enabled == false).
 // hub may be nil when the test does not need fan-out.
 func newWSTestServer(t *testing.T, hub *internalws.Hub) *httptest.Server {
 	t.Helper()
@@ -816,8 +816,8 @@ func TestWSHandler_OriginHardening_AuthOn_SameOriginAllowed(t *testing.T) {
 }
 
 func TestWSHandler_OriginHardening_AuthOff_AnyOriginAllowed(t *testing.T) {
-	// Auth off: InsecureSkipVerify stays true regardless of Origin — the
-	// byte-for-byte pre-A1 regression guarantee.
+	// Auth off: InsecureSkipVerify stays true regardless of Origin, so the
+	// auth-off path is unchanged.
 	srv := newWSTestServerWithOrigin(t, nil, wsOriginConfig{Enabled: false})
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -826,7 +826,7 @@ func TestWSHandler_OriginHardening_AuthOff_AnyOriginAllowed(t *testing.T) {
 		HTTPHeader: http.Header{"Origin": []string{"http://evil.example"}},
 	})
 	if err != nil {
-		t.Fatalf("auth-off must allow any Origin (unchanged pre-A1 behavior), got: %v", err)
+		t.Fatalf("auth-off must allow any Origin (unchanged auth-off behavior), got: %v", err)
 	}
 	if resp != nil && resp.Body != nil {
 		resp.Body.Close()
@@ -1070,17 +1070,16 @@ func TestWSSubscribeJobSubjects_StoreErrorFailsClosed(t *testing.T) {
 	}
 }
 
-// TestWSSubscribeJobs_ScopedClientSeesOnlyOwnJobEvents pins the two things the
-// Task-8 review found had zero coverage:
+// TestWSSubscribeJobs_ScopedClientSeesOnlyOwnJobEvents pins two things:
 //
 //  1. readLoop's Register call (ws.go) must actually pass the connection's
 //     real scope (internalws.Scope{Owner: owner, All: !scoped}) derived from
-//     scopeFilter, not the pre-Task-8 Scope{All: true} placeholder — this is
-//     exercised end to end via a real WebSocket connection over
-//     newWSTestServerScoped, not by calling hub.Register directly.
+//     scopeFilter, not a Scope{All: true} placeholder — this is exercised end
+//     to end via a real WebSocket connection over newWSTestServerScoped, not
+//     by calling hub.Register directly.
 //  2. NotifyJob's owner resolution: JobEvent.Owner is left empty here on
-//     purpose, matching the real production call sites (Finding 1) — the hub
-//     must resolve ownership via the injected owner-cache resolver.
+//     purpose, matching the real production call sites — the hub must
+//     resolve ownership via the injected owner-cache resolver.
 //
 // A scoped client subscribed to the global "jobs" subject must receive the
 // push for its own job and must never receive the push for another owner's
@@ -1136,9 +1135,8 @@ func TestWSSubscribeJobs_ScopedClientSeesOnlyOwnJobEvents(t *testing.T) {
 		// not equally serious and the frame type alone cannot tell them apart:
 		// a push for job-bob is a cross-owner leak — the security property this
 		// test exists to protect — whereas a second push for job-alice is a
-		// duplicate-delivery bug. The latter is what made this assertion flaky
-		// in CI until the hub stopped replaying events it had already fanned
-		// out live (see TestHub_Subscribe_NoDuplicateAcrossRegisterAndReplay).
+		// duplicate-delivery bug: the hub replaying events it had already
+		// fanned out live (see TestHub_Subscribe_NoDuplicateAcrossRegisterAndReplay).
 		// Say which one happened rather than making the next reader guess.
 		detail := ""
 		if pong.Type == internalws.TypePush && pong.Subject == internalws.SubjectJobs {

@@ -294,10 +294,10 @@ func requestBodyFor(method string) any {
 	}
 }
 
-// TestAuthz_RouteSweep_TableMatchesRouter is finding (1)(a)+(b): it fails if
-// the live router and expectedRoutes disagree in either direction — a route
-// chi serves with no entry in the table (an unclassified, possibly ungated,
-// new route) or a table entry with no matching live route (stale/renamed).
+// TestAuthz_RouteSweep_TableMatchesRouter fails if the live router and
+// expectedRoutes disagree in either direction — a route chi serves with no
+// entry in the table (an unclassified, possibly ungated, new route) or a
+// table entry with no matching live route (stale/renamed).
 func TestAuthz_RouteSweep_TableMatchesRouter(t *testing.T) {
 	live := liveRoutes(t, authRouter(fake.New()))
 
@@ -342,10 +342,10 @@ func assertRouteGate(t *testing.T, srv *httptest.Server, username, password, rol
 	}
 }
 
-// TestAuthz_RouteSweep_EnforcesPermissionsPerRole is finding (1)(c): for
-// every non-public route in expectedRoutes, drive a real request per
-// built-in role and confirm the gate matches policy.Can exactly. GET /ws is
-// skipped (WebSocket upgrade, gated by its own hook — finding (1)(d)).
+// TestAuthz_RouteSweep_EnforcesPermissionsPerRole drives, for every
+// non-public route in expectedRoutes, a real request per built-in role and
+// confirms the gate matches policy.Can exactly. GET /ws is skipped (WebSocket
+// upgrade, gated by its own hook).
 func TestAuthz_RouteSweep_EnforcesPermissionsPerRole(t *testing.T) {
 	st := fake.New()
 	srv := httptest.NewServer(authRouter(st))
@@ -367,8 +367,8 @@ func TestAuthz_RouteSweep_EnforcesPermissionsPerRole(t *testing.T) {
 	}
 }
 
-// TestAuthz_RouteSweep_DisabledAuthAllowsAll is finding (1)'s auth-off case:
-// with a router built with Auth: auth.Anonymous(), every route in
+// TestAuthz_RouteSweep_DisabledAuthAllowsAll is the route sweep's auth-off
+// case: with a router built with Auth: auth.Anonymous(), every route in
 // expectedRoutes (bar the WebSocket upgrade) must be reachable with zero
 // 403s — the anonymous superuser principal bypasses every gate.
 func TestAuthz_RouteSweep_DisabledAuthAllowsAll(t *testing.T) {
@@ -403,14 +403,13 @@ func TestAuthz_RouteSweep_DisabledAuthAllowsAll(t *testing.T) {
 // seeded job and no owner, so it cannot observe per-object ownership — a
 // role that HOLDS the route's permission but is owner-scoped (e.g. `user`)
 // hits a 404 either way, before or after requireJobAccess runs, and the
-// assertion (403-vs-not) is blind to the difference. A reviewer proved this
-// by sabotage: deleting az.requireJobAccess() from DELETE /jobs/{id} — the
-// exact vulnerability Task 4 closes — left the entire internal/api suite
-// green. TestAuthz_OwnershipSweep_EnforcesOwnerScoping below closes that gap
-// by seeding a REAL job (and task) per owner and asserting a scoped `user`
-// principal gets a non-403 on its own object and a 403 on someone else's,
-// for every one of the 11 job/task object routes requireJobAccess is wired
-// onto in router.go.
+// assertion (403-vs-not) is blind to the difference: without this sweep,
+// deleting az.requireJobAccess() from DELETE /jobs/{id} leaves the rest of
+// the internal/api suite green. TestAuthz_OwnershipSweep_EnforcesOwnerScoping
+// below closes that gap by seeding a real job (and task) per owner and
+// asserting a scoped `user` principal gets a non-403 on its own object and
+// a 403 on someone else's, for every one of the 11 job/task object routes
+// requireJobAccess is wired onto in router.go.
 
 // ownershipGatedRoutes is the hardcoded ground truth for every job/task
 // object route that must enforce per-owner access via

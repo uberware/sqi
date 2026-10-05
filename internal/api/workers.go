@@ -247,7 +247,7 @@ func (h *workerHandler) getWorker(w http.ResponseWriter, r *http.Request) {
 // owner-scoped (lacks jobs.read.all). A worker runs few concurrent tasks at
 // once, so the per-job owner lookups here (deduped by job id) are cheap; an
 // unscoped caller (including the auth-off anonymous superuser) pays no extra
-// lookups at all and sees every task exactly as before B2.
+// lookups at all and sees every task.
 func (h *workerHandler) visibleCurrentTasks(ctx context.Context, tasks []store.Task) []currentTaskResponse {
 	owner, scoped := scopeFilter(ctx)
 
@@ -338,7 +338,7 @@ func (h *workerHandler) setWorkerDisabled(w http.ResponseWriter, r *http.Request
 
 // removeWorker hard-deletes a worker record. Only removable workers are
 // accepted: offline workers, disabled or not ([store.Worker.Removable]), and
-// only while the worker has no task assigned or running (H4a2). Online
+// only while the worker has no task assigned or running. Online
 // workers, disabled or not, and any worker that still holds a task, return 409
 // Conflict. A disabled worker that is still online is a paused machine, and
 // removing it would only let it re-register, so it is refused. Offline workers
@@ -347,7 +347,7 @@ func (h *workerHandler) setWorkerDisabled(w http.ResponseWriter, r *http.Request
 //
 // Revokes the worker's broker credential, if it has one, through the
 // injected [WorkerRevoker] — the same path DELETE
-// /api/v1/workers/{id}/credential uses — BEFORE deleting the worker row.
+// /api/v1/workers/{id}/credential uses — before deleting the worker row.
 // Without this, decommissioning a machine from the farm would leave it able
 // to connect to the broker, lease work and execute job code: WorkersManage
 // (which this route requires) does not imply WorkersEnroll, so an operator
@@ -359,8 +359,8 @@ func (h *workerHandler) setWorkerDisabled(w http.ResponseWriter, r *http.Request
 // refused. The pre-check cannot see tasks, though: an offline worker that
 // still holds a task (one leased to it after the offline transition reclaimed
 // the rest) passes it, has its credential revoked, and only then is refused by
-// the guarded delete's in-flight check (H4a2 §5.4), so revoking first can
-// waste a revocation on a delete that is then rejected. A revoke failure then means
+// the guarded delete's in-flight check, so revoking first can waste a
+// revocation on a delete that is then rejected. A revoke failure then means
 // nothing happened at all — worker row intact, a clean 500, safely
 // retryable. Deleting first would instead let a failure of the revoke's own
 // store write (not just a broker-reload failure — a documented, recoverable
@@ -377,7 +377,7 @@ func (h *workerHandler) setWorkerDisabled(w http.ResponseWriter, r *http.Request
 // back between the GetWorker above and the delete is never removed on a
 // stale read. A worker that comes back between the revoke and the guarded
 // delete keeps its row and gets a 409, with its credential already revoked:
-// the safe direction, documented rather than closed (spec F18).
+// the safe direction, accepted rather than closed.
 func (h *workerHandler) removeWorker(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	id := chi.URLParam(r, "id")
@@ -419,7 +419,7 @@ func (h *workerHandler) removeWorker(w http.ResponseWriter, r *http.Request) {
 		if errors.Is(err, store.ErrConflict) {
 			// The worker became non-removable after the pre-check above, or
 			// still has a task assigned or running, which only the guarded
-			// delete checks (H4a2 §5.4).
+			// delete checks.
 			writeProblem(w, r, http.StatusConflict, workerNotRemovableMsg)
 			return
 		}

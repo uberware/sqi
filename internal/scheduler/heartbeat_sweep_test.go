@@ -463,11 +463,10 @@ func TestScheduler_SweepRetiredJobs_DisabledWhenZero(t *testing.T) {
 }
 
 // TestDefaultConfig_AssignedTaskTimeoutTightened verifies that AssignedTaskTimeout
-// is now <= 60 s, since "assigned" is a brief leased->running window and no longer
-// needs to accommodate the removed SQI_WORK stream's MaxAge.
+// is <= 60 s, since "assigned" is a brief leased->running window.
 func TestDefaultConfig_AssignedTaskTimeoutTightened(t *testing.T) {
 	if got := DefaultConfig().AssignedTaskTimeout; got > 60*time.Second {
-		t.Errorf("AssignedTaskTimeout = %v, want <= 60s after lease cutover", got)
+		t.Errorf("AssignedTaskTimeout = %v, want <= 60s", got)
 	}
 }
 

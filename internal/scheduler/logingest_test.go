@@ -2,7 +2,7 @@
 
 package scheduler
 
-// Tests for logingest.go — item 8d of the test roadmap.
+// Tests for logingest.go.
 //
 // handleLogChunk is an unexported method on *Scheduler, so tests live in
 // package scheduler (white-box). A fakeJSMsg implements jetstream.Msg for the

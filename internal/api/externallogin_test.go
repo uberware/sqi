@@ -2,8 +2,8 @@
 
 package api
 
-// Tests for the shared external-login resolution used by both LDAP (C1) and
-// OIDC (C2). The property under test throughout is that an account is found by
+// Tests for the shared external-login resolution used by both LDAP and
+// OIDC. The property under test throughout is that an account is found by
 // its provider-assigned identifier, never by its name.
 
 import (

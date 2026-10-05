@@ -2,7 +2,7 @@
 
 package api
 
-// Additional unit tests for task REST handlers — item 6 of the test roadmap.
+// Additional unit tests for task REST handlers.
 //
 // Covers sort_by fields and store error paths not reached by tasks_test.go.
 // Uses the storeErr wrapper defined in jobs_error_test.go.

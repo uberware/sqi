@@ -14,11 +14,11 @@ import (
 	"github.com/uberware/sqi/internal/config"
 )
 
-// TestDefaultConfig_ServesPlaintextUnchanged is Phase 4's named
-// default-configuration regression test for H2.
+// TestDefaultConfig_ServesPlaintextUnchanged is the default-configuration
+// regression test for TLS support.
 //
-// The phase's standing rule is that the single-binary, SQLite, embedded-NATS,
-// no-TLS deployment must keep working exactly as it did in v0.3.0. Every other
+// The single-binary, SQLite, embedded-NATS, no-TLS deployment must keep
+// working exactly as it did in v0.3.0. Every other
 // test in this component adds a TLS path; this one proves the absence of one.
 // Each assertion states a property of the plaintext default that a future TLS
 // change would break loudly rather than quietly.

@@ -521,10 +521,10 @@ func (s *Scheduler) Stop() {
 // (non-terminal) job whose tasks are all terminal but which was never
 // finalized, and which no future task report will ever finalize. Two things
 // leave such steps behind. v0.3.0 left them when a step had more than
-// [store.MaxLimit] tasks (H4a F6): completion decided from one page of tasks
-// and never decided at all. Before H4a2 a single-task cancel of a job's last
-// open task stranded its step the same way; [Scheduler.CancelTask] now drives
-// completion, and this pass still repairs steps stranded by older releases.
+// [store.MaxLimit] tasks: completion decided from one page of tasks and never
+// decided at all. Older releases also stranded a step when a single-task
+// cancel hit a job's last open task; [Scheduler.CancelTask] now drives
+// completion, and this pass repairs steps stranded that way too.
 // Nothing reports on those tasks again, so without this pass the step, its
 // job, the steps behind it and the jobs blocked on it would stay stuck.
 //
@@ -538,9 +538,9 @@ func (s *Scheduler) Stop() {
 //
 // It is idempotent: every write on that path is guarded, and on a farm with no
 // such steps the one [store.StepStore.ListStuckSteps] query returns nothing and
-// nothing is written. Steps of jobs that are already terminal are ignored:
-// since H4a2 a job cancel finalizes its own steps, and migration 00033
-// finalized those canceled before. A step that fails is logged and skipped so
+// nothing is written. Steps of jobs that are already terminal are ignored: a
+// job cancel finalizes its own steps, and migration 00033 finalized those of
+// jobs canceled by older releases. A step that fails is logged and skipped so
 // one bad row cannot block the rest, and it stays stuck, so the next start
 // retries it. Cross-job dependents of a job this pass finalizes are reconciled
 // by the same completion path, with [Scheduler.sweepBlockedJobs] as its
@@ -570,7 +570,7 @@ func (s *Scheduler) reconcileStuckSteps(ctx context.Context) {
 }
 
 // reconcilePendingSteps re-runs dependency resolution, once at start, for every
-// live, non-blocked job that has a pending step (H4a2 §3.5). A retry commits
+// live, non-blocked job that has a pending step. A retry commits
 // its revived tasks and the step reset before ResolveDependencies runs, so a
 // server that stops in between leaves a pending step nothing would release.
 // Release and cascade are idempotent and write only what is releasable or can
@@ -848,7 +848,7 @@ func (s *Scheduler) discardOnIdentityMismatch(ctx context.Context, msg jetstream
 
 // handleWorkerRegister processes a worker.register message:
 // decodes the payload, upserts the worker in the store, reports any tasks the
-// store reclaimed because the worker restarted (a new instance ID, H4a2 §4.5),
+// store reclaimed because the worker restarted (a new instance ID),
 // and refreshes the WorkersTotal Prometheus gauge.
 //
 // subjectWorkerID is the worker the message's subject attributes it to.
@@ -872,14 +872,11 @@ func (s *Scheduler) handleWorkerRegister(ctx context.Context, msg jetstream.Msg,
 		return
 	}
 
-	// The two struct conversions below (GPUInfo, ExprLimits) are what replaced
-	// a hand-maintained duplicate of protocol.RegisterMsg that used to live in
-	// this file, related to the real one by nothing but matching json tags: a
-	// rename on either side decoded to the zero value on every registration,
-	// silently and forever, which is exactly what happened to expr_limits once.
-	// A Go struct conversion is compile-checked on field name, type AND
-	// declaration order, so the same drift is now a build failure. The
-	// top-level copy is still by hand, which is what
+	// The two struct conversions below (GPUInfo, ExprLimits) are
+	// compile-checked on field name, type and declaration order, so drift
+	// between the wire type and the store type is a build failure rather than
+	// a field that decodes to the zero value on every registration. The
+	// top-level copy is by hand, which is what
 	// TestHandleWorkerRegister_EveryWireFieldReachesTheStore and its field
 	// counts guard.
 	now := time.Now().UTC()
@@ -917,7 +914,7 @@ func (s *Scheduler) handleWorkerRegister(ctx context.Context, msg jetstream.Msg,
 	}
 	if len(reclaimed) > 0 {
 		// A new worker process: the previous one's in-flight tasks went back to
-		// ready inside the registration write (H4a2 §4.5).
+		// ready inside the registration write.
 		s.reclaimOfflineWorkerTasks(ctx, m.WorkerID, m.Hostname, reclaimRestart, reclaimed)
 	}
 
@@ -947,8 +944,7 @@ func (s *Scheduler) handleWorkerRegister(ctx context.Context, msg jetstream.Msg,
 		Hostname: m.Hostname,
 		FarmID:   m.FarmID,
 		// The stored row's effective status, which is not always the online
-		// this registration asked for (H4a2 §5.3 keeps a disabled worker
-		// disabled).
+		// this registration asked for (a disabled worker stays disabled).
 		Status: string(stored.EffectiveStatus()),
 	})
 	s.refreshWorkerGauge(ctx)
@@ -1050,7 +1046,7 @@ func (s *Scheduler) touchWorkerCredential(ctx context.Context, workerID string, 
 
 // handleWorkerDeregister processes a worker.deregister message published by a
 // worker on graceful shutdown. It marks the worker offline immediately (a
-// disabled worker stays disabled, H4a2 §5.3) so the scheduler stops dispatching
+// disabled worker stays disabled) so the scheduler stops dispatching
 // new assignments to it rather than waiting for the heartbeat-timeout sweep,
 // and returns its in-flight tasks to the ready queue, closing their attempts
 // and releasing their usage claims. The worker event carries the status the
@@ -1136,7 +1132,7 @@ func (s *Scheduler) handleWorkerDeregister(ctx context.Context, msg jetstream.Ms
 
 	status := store.WorkerStatusOffline
 	if w, err := s.store.GetWorker(ctx, m.WorkerID); err == nil {
-		status = w.EffectiveStatus() // a disabled worker stays disabled (H4a2 §5.3)
+		status = w.EffectiveStatus() // a disabled worker stays disabled
 	}
 	s.notifier.NotifyWorker(ws.WorkerEvent{
 		WorkerID: m.WorkerID,
@@ -1323,8 +1319,8 @@ func (s *Scheduler) notifyTaskReclaimed(ctx context.Context, task store.Task, no
 
 // sweepStaleWorkers finds workers whose heartbeat has expired, marks them
 // offline, reclaims their assigned/running tasks, and refreshes the
-// WorkersTotal gauge. A disabled worker is swept like any other (H4a2 §5.2)
-// and stays disabled, so its event carries its effective status, disabled,
+// WorkersTotal gauge. A disabled worker is swept like any other and stays
+// disabled, so its event carries its effective status, disabled,
 // not offline: the event still tells clients it changed (it is now
 // removable).
 //
@@ -1481,7 +1477,7 @@ const (
 	// graceful deregister).
 	reclaimOffline reclaimCause = iota
 	// reclaimRestart: the worker re-registered from a new process (a changed
-	// instance ID, H4a2 §4.5) and stays online; only its previous process's
+	// instance ID) and stays online; only its previous process's
 	// tasks were reclaimed.
 	reclaimRestart
 )

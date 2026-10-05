@@ -6,7 +6,7 @@ package middleware
 //
 // # Why this exists
 //
-// A1 introduces an HttpOnly session cookie. Cookies are ambient credentials:
+// Local accounts use an HttpOnly session cookie. Cookies are ambient credentials:
 // the browser attaches them automatically to any request to this origin,
 // including ones initiated by a malicious third-party page (a classic CSRF
 // attack). Requests authenticated some other way (no cookie present — e.g. a

@@ -421,12 +421,11 @@ func TestGetWorker(t *testing.T) {
 	})
 }
 
-// TestGetWorker_OwnerScoping is the regression test for I-1: an owner-scoped
-// caller (no jobs.read.all) must not see another owner's task — including its
-// name, which for an expanded OpenJD task can carry parameter values such as
-// scene paths — in current_tasks. Unscoped principals (operator, and the
-// auth-off anonymous superuser) must keep seeing every current task exactly
-// as before this fix.
+// TestGetWorker_OwnerScoping pins that an owner-scoped caller (no
+// jobs.read.all) must not see another owner's task — including its name,
+// which for an expanded OpenJD task can carry parameter values such as scene
+// paths — in current_tasks. Unscoped principals (operator, and the auth-off
+// anonymous superuser) must keep seeing every current task.
 func TestGetWorker_OwnerScoping(t *testing.T) {
 	newSeededRouter := func(t *testing.T) (chi.Router, store.Worker) {
 		t.Helper()
@@ -738,8 +737,8 @@ func TestRemoveWorker(t *testing.T) {
 	})
 
 	t.Run("offline worker with a running task returns 409 until it is idle", func(t *testing.T) {
-		// H4a2 §5.4: the guarded delete refuses a worker with work in flight,
-		// which the status-only pre-check cannot see.
+		// The guarded delete refuses a worker with work in flight, which the
+		// status-only pre-check cannot see.
 		st := fake.New()
 		r := newWorkerRouter(st)
 		w := seedWorker(t, st, store.WorkerStatusOffline)

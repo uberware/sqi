@@ -15,8 +15,8 @@ import (
 // The fixtures below trim it before joining so the expected "/mnt/name/rel"
 // and `C:\name\rel` forms come out with exactly one separator.
 
-// TestResolveLocURIsInParamValue_Scalar pins that the scalar path is unchanged:
-// substring replacement, exactly as before sub-project F2.
+// TestResolveLocURIsInParamValue_Scalar pins that a scalar is resolved by
+// substring replacement.
 func TestResolveLocURIsInParamValue_Scalar(t *testing.T) {
 	resolve := func(name, rel string) (string, error) {
 		return "/mnt/" + name + "/" + strings.TrimPrefix(rel, "/"), nil

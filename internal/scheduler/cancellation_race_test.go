@@ -76,8 +76,9 @@ func TestCancelTask_LosesRaceToCompletion_IsNoOp(t *testing.T) {
 	}
 }
 
-// TestCancelTask_RealErrorStillPropagates guards against the fix being written
-// as a blanket "swallow every error from the cancel operation".
+// TestCancelTask_RealErrorStillPropagates pins that CancelTask treats only
+// ErrInvalidTransition as a no-op and does not swallow every error from the
+// cancel operation.
 func TestCancelTask_RealErrorStillPropagates(t *testing.T) {
 	st := newCheckedFake(t)
 	bus := &stubBus{}

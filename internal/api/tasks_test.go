@@ -731,8 +731,7 @@ func TestRetryTask(t *testing.T) {
 
 	t.Run("retry under a live step returns ready status", func(t *testing.T) {
 		// seedTask's step is running (the legacy live status), so RetryTasks
-		// revives the task ready: nothing would release it from pending there
-		// (H4a2 §3.4). This test used to assert pending, which pinned that bug.
+		// revives the task ready: nothing would release it from pending there.
 		st := fake.New()
 		sched := &fakeTaskCanceler{retryStore: st, retryStatus: store.TaskStatusPending}
 		r := newTaskRouterCanceler(st, sched)

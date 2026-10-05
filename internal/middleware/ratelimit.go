@@ -36,17 +36,14 @@ type RateLimitConfig struct {
 // under concurrent rejections — see Reservation.Cancel), so being rejected
 // does not push a client's recovery time out further.
 //
-// Phase 1 limitations (both deferred to Phase 3):
+// Limitations:
 //
 //   - No LRU eviction: the limiter map grows unbounded. This is acceptable for
-//     Phase 1's trusted local deployments where the client IP space is small.
-//     Phase 3 will introduce an LRU cache (e.g. golang.org/x/time/rate +
-//     github.com/hashicorp/golang-lru) sized to expected concurrent client count.
+//     trusted local deployments where the client IP space is small.
 //
 //   - RemoteAddr only: when a reverse proxy is in front, all clients share the
-//     proxy's IP and effectively one bucket. Phase 3 will honor
-//     X-Forwarded-For / X-Real-IP after the trusted-proxy list is configured
-//     alongside the auth layer.
+//     proxy's IP and effectively one bucket. X-Forwarded-For / X-Real-IP are
+//     not honored.
 //
 // Usage (applied to the /api/v1 sub-router):
 //

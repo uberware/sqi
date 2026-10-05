@@ -158,26 +158,24 @@ type Config struct {
 	EnforceOpenJDLimits bool
 
 	// OpenJDExprLimits bounds what one submitted template may spend inside the
-	// EXPR expression checker — EXPR sub-project E4d. Mirror of
-	// config.OpenJDConfig's four expr_* keys, mapped in cmd/sqi-server.
+	// EXPR expression checker. Mirror of config.OpenJDConfig's four expr_*
+	// keys, mapped in cmd/sqi-server.
 	//
-	// The ZERO VALUE means "use openjd's defaults", so a Config built without
-	// it (every test in this repo that constructs a server.Config literal)
-	// behaves exactly as it did before this field existed.
+	// The zero value means "use openjd's defaults", which is what every test
+	// that constructs a server.Config literal without it gets.
 	OpenJDExprLimits openjd.ExprLimits
 
 	// OpenJDExprSubmissionDeadline is how long the expression checker may work
-	// on ONE submission before this server gives up on it and answers 503 —
-	// EXPR sub-project H1's wall-clock backstop. Mirror of
+	// on one submission before this server gives up on it and answers 503 — the
+	// EXPR wall-clock backstop. Mirror of
 	// config.OpenJDConfig.ExprSubmissionDeadline, mapped in cmd/sqi-server.
 	//
-	// A DURATION, never an instant: the API layer turns it into an absolute
+	// A duration, never an instant: the API layer turns it into an absolute
 	// deadline per request. See openjd.SubmitOptions.Deadline for what goes
 	// wrong if that conversion is hoisted anywhere that runs once.
 	//
-	// The ZERO VALUE means no backstop, so a Config built without it (every
-	// test in this repo that constructs a server.Config literal) behaves
-	// exactly as it did before this field existed.
+	// The zero value means no backstop, which is what every test that
+	// constructs a server.Config literal without it gets.
 	OpenJDExprSubmissionDeadline time.Duration
 
 	// PresetLibraryURL is the URL of the community preset library index JSON.
@@ -824,9 +822,9 @@ func wsJobOwnerResolver(st store.Store) func(jobID string) (string, error) {
 // authEnabled drives both hub options together. With auth off, every client
 // registers Scope{All: true} (readLoop's scopeFilter returns scoped=false for
 // the anonymous superuser), so there is nothing to scope and no reason to
-// resolve owners — and the job-summary paths fall back to their pre-B2
-// hasSubscribers guard, keeping the auth-off hot path free of marshaling and
-// ring-mutex traffic when nobody is connected.
+// resolve owners — and the job-summary paths fall back to their hasSubscribers
+// guard, keeping the auth-off hot path free of marshaling and ring-mutex
+// traffic when nobody is connected.
 func newWSHub(logger *slog.Logger, st store.Store, authEnabled bool) *ws.Hub {
 	if !authEnabled {
 		return ws.NewHub(logger, ws.HubOptions{})
@@ -866,9 +864,9 @@ func (s *Server) wireAuthDeps(ctx context.Context, deps *api.Deps) error {
 	return nil
 }
 
-// selectAuth chooses the authenticator wired into the HTTP router. When auth
-// is disabled it returns the anonymous superuser authenticator unchanged
-// (auth-off must remain byte-for-byte pre-A1 behavior — no bootstrap runs, no
+// selectAuth chooses the authenticator wired into the HTTP router. When auth is
+// disabled it returns the anonymous superuser authenticator unchanged (auth off
+// must behave byte-for-byte as a server without auth — no bootstrap runs, no
 // store write happens). When auth is enabled it first bootstraps the initial
 // admin (a no-op once any user exists) and then returns a session-cookie
 // authenticator backed by the store.
@@ -967,7 +965,7 @@ func toRoleMap(in []config.RoleMappingConfig) []rolemap.Mapping {
 // would make an external service a hard dependency of the whole system rather
 // than of SSO alone. Configuration faults still abort boot, in Validate.
 //
-// The same line C1 draws: ldap.New assembles TLS at boot (so a bad ca_file
+// LDAP draws the same line: ldap.New assembles TLS at boot (so a bad ca_file
 // aborts) but does not dial, so a downed domain controller does not stop
 // startup.
 //
@@ -1133,7 +1131,7 @@ const sessionSweepInterval = time.Hour
 // request probes.
 //
 // It is a no-op when auth is disabled: no sessions are minted, so there is
-// nothing to reap, and an auth-off server keeps exactly its pre-A1 behavior.
+// nothing to reap, and an auth-off server does no auth work at all.
 //
 // Failures are logged and retried on the next tick: a sweep is pure
 // housekeeping and must never take the server down.

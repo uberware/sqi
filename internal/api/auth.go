@@ -2,7 +2,7 @@
 
 package api
 
-// Authentication endpoints (Phase 3, component A1).
+// Authentication endpoints.
 //
 //	POST /api/v1/auth/login  — username+password -> Set-Cookie session (public)
 //	POST /api/v1/auth/logout — revoke the current session (authenticated)
@@ -81,7 +81,7 @@ const dummyVerifyPlaintext = "sqi-auth-timing-equalization-dummy"
 // this package. An auth-enabled router forces it at construction via
 // warmDummyHash — deferring it to the first request would make the first
 // unknown-username login after each restart measurably slower than a
-// known-username one, which is the very timing signal this exists to erase,
+// known-username one, which is the timing signal this exists to erase,
 // and would turn mustDummyHash's fail-fast panic into a 500 on a live
 // request instead of a startup abort.
 var dummyHash = sync.OnceValue(mustDummyHash)
@@ -280,8 +280,7 @@ func (h *authHandler) loginUnknownUser(w http.ResponseWriter, r *http.Request, r
 	writeProblem(w, r, http.StatusUnauthorized, invalidLoginDetail)
 }
 
-// loginLocal verifies req against the account's stored password hash. This is
-// the pre-C1 behavior, unchanged.
+// loginLocal verifies req against the account's stored password hash.
 func (h *authHandler) loginLocal(w http.ResponseWriter, r *http.Request, req loginRequest, u store.User) {
 	ok, verr := password.Verify(u.PasswordHash, req.Password)
 	if verr != nil || !ok || u.Disabled {

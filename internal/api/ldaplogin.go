@@ -2,10 +2,9 @@
 
 package api
 
-// LDAP login path (Phase 3, component C1). Reached from authHandler.login for
-// accounts whose store.User.AuthSource is store.AuthSourceLDAP, and for
-// unknown usernames when a verifier is configured (just-in-time
-// provisioning).
+// LDAP login path. Reached from authHandler.login for accounts whose
+// store.User.AuthSource is store.AuthSourceLDAP, and for unknown usernames
+// when a verifier is configured (just-in-time provisioning).
 //
 // Every failure here returns the same 401 body the local path returns.
 // Distinguishing "no such directory entry" from "wrong password" — or from
@@ -105,8 +104,9 @@ func (h *authHandler) loginLDAP(w http.ResponseWriter, r *http.Request, username
 // logPreC2Account explains the one login failure whose cause is invisible from
 // every other vantage point.
 //
-// Rows provisioned before C2 carry an empty users.external_id. Once accounts
-// are matched on the directory's stable identifier, such a user's login traces:
+// LDAP rows provisioned before stable-identifier matching (legacy rows) carry
+// an empty users.external_id. Since accounts are matched on the directory's
+// stable identifier, such a user's login traces:
 // the username lookup finds the row, the directory bind succeeds, the identity
 // lookup misses because the stored identifier is empty, provisioning then
 // collides on the username, and the login is refused — permanently, on every
@@ -115,20 +115,20 @@ func (h *authHandler) loginLDAP(w http.ResponseWriter, r *http.Request, username
 // That refusal is deliberate and is not a bug to be fixed here. The tempting
 // repair — adopt the row when its stored identifier is empty — is username
 // matching wearing a different name, and would preserve the recycled-identity
-// hazard that C2 exists to remove, forever, for exactly the accounts most
-// likely to be long-lived and privileged. The design decision is that pre-C2
-// rows are recreated by an operator.
+// hazard that stable-identifier matching removes, for the accounts most likely
+// to be long-lived and privileged. Legacy rows are instead recreated by an
+// operator.
 //
 // What would be a bug is failing silently, since the symptom is
-// indistinguishable from a wrong password. Hence this ERROR, which names the
-// account and the remedy. It is the ONLY thing that differs: the response is
-// the same equalized 401 as every other failure, because a distinguishable
-// body would turn the pre-C2 state into a user-enumeration oracle.
+// indistinguishable from a wrong password. Hence this error log, which names
+// the account and the remedy. It is the only thing that differs: the response
+// is the same equalized 401 as every other failure, because a distinguishable
+// body would turn the legacy state into a user-enumeration oracle.
 //
 // Gated on ErrConflict specifically. A verified identity that carried no
 // identifier at all is a different fault (auth.ldap.unique_id_attr is wrong
 // for this server) with its own log in resolveExternalUser, and blaming a
-// pre-C2 row for it would send the operator to the wrong fix.
+// legacy row for it would send the operator to the wrong fix.
 //
 // existing is nil when the caller was reached under an alias — the login
 // lookup runs on the typed username (say the UPN "alice@example.com"), which

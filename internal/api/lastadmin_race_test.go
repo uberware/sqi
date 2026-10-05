@@ -13,8 +13,8 @@ import (
 )
 
 // lastAdminRaceStore lets a second request win the race at the decision point
-// of the request under test: right after CountAdmins (where the old guard
-// decided) or right before the write that carries the guard now (DeleteUser,
+// of the request under test: right after CountAdmins (where a check-then-write
+// guard would decide) or right before the guarded write (DeleteUser,
 // UpdateUserKeepingAdmin). hook runs once, and only once armed, so the auth
 // middleware's own store calls during login cannot trigger it early.
 type lastAdminRaceStore struct {
@@ -48,9 +48,9 @@ func (s *lastAdminRaceStore) UpdateUserKeepingAdmin(ctx context.Context, u store
 	return s.Store.UpdateUserKeepingAdmin(ctx, u)
 }
 
-// TestConcurrentRemovalsKeepOneAdmin is F11: two requests that each
-// remove one of the last two admins both used to pass the count check and
-// lock the farm out of administration. The request under test (root acting on
+// TestConcurrentRemovalsKeepOneAdmin pins that two requests that each remove
+// one of the last two admins cannot both pass the count check and lock the
+// farm out of administration. The request under test (root acting on
 // root2) is overtaken at its decision point by the other request (acting on
 // root); the guard must then see a single admin left and refuse with 409.
 func TestConcurrentRemovalsKeepOneAdmin(t *testing.T) {
@@ -136,6 +136,6 @@ func assertLiveAdmins(t *testing.T, st store.Store, want int) {
 		t.Fatalf("CountAdmins: %v", err)
 	}
 	if n != want {
-		t.Fatalf("enabled admins = %d, want %d (F11 lockout)", n, want)
+		t.Fatalf("enabled admins = %d, want %d (last-admin lockout)", n, want)
 	}
 }

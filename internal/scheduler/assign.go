@@ -417,10 +417,10 @@ func detectPathFormat(p string) string {
 // resolveLocURIsInParamValue concretizes loc:// URIs in one job-parameter
 // value, dispatching on the parameter's DECLARED type.
 //
-// A scalar is resolved by substring replacement, unchanged from before
-// sub-project F2. A LIST[*] value is canonical JSON, and substring replacement
-// on it splices the resolved path INSIDE a JSON string literal -- which
-// survives by luck for a POSIX path and corrupts a Windows one, whose
+// A scalar is resolved by substring replacement. A LIST[*] value is canonical
+// JSON, and substring replacement on it splices the resolved path inside a
+// JSON string literal -- which survives by luck for a POSIX path and corrupts
+// a Windows one, whose
 // backslashes are not legal JSON escapes and make the value stop decoding
 // entirely. So a list is decoded, resolved element by element, and re-encoded
 // through the same codec that produced it.

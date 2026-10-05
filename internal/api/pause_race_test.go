@@ -15,8 +15,8 @@ import (
 	"github.com/uberware/sqi/internal/store/sqlite"
 )
 
-// seedBackends returns a fresh store for each backend the H4a race tests run
-// over (spec §8.1), keyed by subtest name. The SQLite store lives in a temp
+// seedBackends returns a fresh store for each backend the race tests run
+// over (the fake and SQLite), keyed by subtest name. The SQLite store lives in a temp
 // directory and is closed when the test ends.
 func seedBackends(t *testing.T) map[string]store.Store {
 	t.Helper()
@@ -33,8 +33,8 @@ func seedBackends(t *testing.T) map[string]store.Store {
 }
 
 // completeDuringPatchStore runs hook between the handler's status read and its
-// status write. patchJob calls UpdateJob on that path both before and after
-// the fix, so the hook lands in the window either way.
+// status write. patchJob calls UpdateJob on that path, so the hook lands in
+// the window.
 type completeDuringPatchStore struct {
 	store.Store
 

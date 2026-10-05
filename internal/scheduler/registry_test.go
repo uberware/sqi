@@ -375,8 +375,8 @@ func TestHandleWorkerDeregister_Valid(t *testing.T) {
 	}
 }
 
-// TestHandleWorkerDeregister_IgnoresASupersededProcess pins the whole-branch
-// review's stale-deregister race: a deregister from a process the worker's
+// TestHandleWorkerDeregister_IgnoresASupersededProcess pins the
+// stale-deregister race: a deregister from a process the worker's
 // latest registration replaced (a late or redelivered message) is acked and
 // ignored, so the new process stays online and keeps the work it holds.
 func TestHandleWorkerDeregister_IgnoresASupersededProcess(t *testing.T) {

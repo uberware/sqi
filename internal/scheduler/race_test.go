@@ -2,14 +2,16 @@
 
 package scheduler
 
-// Deterministic reproductions of the H4a group-2 races (spec §3.1). Each test
-// wraps the store, runs a callback at the interleaving point, and asserts the
-// user-visible outcome. A wrapper overrides BOTH the method the old code
-// called at that point and the method the new code calls there, so one test
-// demonstrates the race before its fix and pins the fix after.
+// Deterministic reproductions of the store races that are live even on
+// SQLite: operations that read in one call and write in another, so another
+// writer can land in between. Each test wraps the store, runs a callback at
+// the interleaving point, and asserts the user-visible outcome. A wrapper
+// overrides both the method a read-then-write implementation would call at
+// that point and the guarded store operation the scheduler calls there, so the
+// test fails against the race and pins the guarded operation.
 //
-// Every test runs over both backends (spec §8.1): the fake and a real SQLite
-// database, so the fake cannot drift from the store it stands in for.
+// Every test runs over both backends, the fake and a real SQLite database, so
+// the fake cannot drift from the store it stands in for.
 
 import (
 	"context"
@@ -30,8 +32,8 @@ import (
 	"github.com/uberware/sqi/internal/ws"
 )
 
-// raceBackends returns a fresh store for each backend the H4a race tests run
-// over, keyed by the subtest name. The SQLite store lives in a temp directory
+// raceBackends returns a fresh store for each backend the race tests run over,
+// keyed by the subtest name. The SQLite store lives in a temp directory
 // and is closed when the test ends.
 func raceBackends(t *testing.T) map[string]store.Store {
 	t.Helper()
@@ -48,9 +50,9 @@ func raceBackends(t *testing.T) map[string]store.Store {
 	return map[string]store.Store{"fake": newCheckedFake(t), "sqlite": sq}
 }
 
-// fixtureAssigner is the fixture-only AssignTask both concrete stores keep
-// after it left store.Store (H4a F17). The race tests hold a store.Store, so
-// they reach it through this narrow assertion.
+// fixtureAssigner is the fixture-only AssignTask both concrete stores keep and
+// store.Store does not. The race tests hold a store.Store, so they reach it
+// through this narrow assertion.
 type fixtureAssigner interface {
 	AssignTask(ctx context.Context, id, workerID string, assignedAt time.Time) error
 }
@@ -88,7 +90,7 @@ func mustStep(t *testing.T, st store.Store, id string) store.Step {
 	return step
 }
 
-// ── F6: a step with more than MaxLimit tasks completes ──────────────────────
+// ── A step with more than MaxLimit tasks completes ──────────────────────────
 
 func TestStepOverMaxLimitCompletes(t *testing.T) {
 	for name, st := range raceBackends(t) {
@@ -117,10 +119,11 @@ func TestStepOverMaxLimitCompletes(t *testing.T) {
 	}
 }
 
-// ── F8: completion must not overwrite a concurrent retry ────────────────────
+// ── Completion must not overwrite a concurrent retry ────────────────────────
 
 // retryDuringCompletionStore fires its hook just before the completion
-// decision: ListTasks (old checkStepCompletion) or FinalizeStep (new).
+// decision: ListTasks (a read-then-write completion check) or FinalizeStep
+// (the guarded decision).
 type retryDuringCompletionStore struct {
 	store.Store
 
@@ -169,7 +172,7 @@ func TestCompletionDoesNotOverwriteRetry(t *testing.T) {
 	}
 }
 
-// ── Review Focus #2: redelivery after finalize still propagates ─────────────
+// ── Redelivery after finalize still propagates ──────────────────────────────
 
 func TestRedeliveredCompletionStillPropagates(t *testing.T) {
 	for name, st := range raceBackends(t) {
@@ -204,7 +207,7 @@ func TestRedeliveredCompletionStillPropagates(t *testing.T) {
 	}
 }
 
-// ── F9: dependency reconcile must not undo a user cancel ────────────────────
+// ── Dependency reconcile must not undo a user cancel ────────────────────────
 
 // cancelDuringReconcileStore fires its hook after the reconcile has read the
 // dependent's upstream list, which is the window between its "still blocked"
@@ -252,11 +255,11 @@ func TestReconcileDoesNotUndoUserCancel(t *testing.T) {
 	}
 }
 
-// ── F7: a late running report must not overwrite a pause ────────────────────
+// ── A late running report must not overwrite a pause ────────────────────────
 
 // pauseDuringPromoteStore fires its hook just before the promotion decision
-// lands: after GetJob (old maybePromoteJobRunning, which read the status and
-// then wrote blind) or before PromoteJobRunning (new, guarded).
+// lands: after GetJob (a promotion that reads the status and then writes
+// blind) or before PromoteJobRunning (the guarded write).
 type pauseDuringPromoteStore struct {
 	store.Store
 
@@ -292,7 +295,7 @@ func TestPromoteDoesNotOverwritePause(t *testing.T) {
 	}
 }
 
-// ── F3: a canceled task's terminal report must release its claims ───────────
+// ── A canceled task's terminal report must release its claims ───────────────
 
 // claimViolations runs the backend's I3 diagnostic (an active claim on a closed
 // attempt or on a task that is no longer in flight).
@@ -394,8 +397,8 @@ func parkWaiter(t *testing.T, s *Scheduler, queueID string) <-chan bool {
 // TestRejectedTerminalReportReleasesClaims drives a worker's "succeeded"
 // report at a task the user already canceled. The state machine refuses
 // canceled -> succeeded, and the report must still free the attempt's usage
-// slot: before the fix the early return on the refused transition skipped the
-// release and the slot leaked for good.
+// slot: an early return on the refused transition that skipped the release
+// would leak the slot for good.
 func TestRejectedTerminalReportReleasesClaims(t *testing.T) {
 	for name, st := range raceBackends(t) {
 		t.Run(name, func(t *testing.T) {
@@ -411,7 +414,7 @@ func TestRejectedTerminalReportReleasesClaims(t *testing.T) {
 				t.Fatalf("a rejected terminal report must be acked, not nacked (acked=%v nacked=%v)", msg.acked, msg.nacked)
 			}
 			if n := activeClaimsOf(t, st, pool.ID); n != 0 {
-				t.Fatalf("active claims = %d, want 0 (F3 leak)", n)
+				t.Fatalf("active claims = %d, want 0 (claim leak)", n)
 			}
 			if v := claimViolations(t, st); len(v) != 0 {
 				t.Fatalf("I3 violations: %v", v)
@@ -451,7 +454,7 @@ func TestRejectedTerminalReportWakesLeaseWaiters(t *testing.T) {
 	}
 }
 
-// ── Review Focus #1: a redelivered terminal report is a clean no-op ─────────
+// ── A redelivered terminal report is a clean no-op ──────────────────────────
 
 func TestRedeliveredTerminalReportIsNoOp(t *testing.T) {
 	for name, st := range raceBackends(t) {
@@ -496,7 +499,7 @@ func TestRedeliveredTerminalReportIsNoOp(t *testing.T) {
 // ── The failure fork releases claims through RecordTaskFailure ──────────────
 
 // TestFailedReportReleasesClaims covers both outcomes of a "failed" report.
-// The retry path no longer releases the claims itself (RecordTaskFailure does
+// The retry path does not release the claims itself (RecordTaskFailure does
 // it inside its own transaction), and the exhausted path reaches
 // CompleteTaskAttempt on an attempt RecordTaskFailure already closed, which
 // must be a clean no-op rather than an error.
@@ -553,12 +556,11 @@ func TestFailedReportReleasesClaims(t *testing.T) {
 	}
 }
 
-// ── F12: queue and farm caps must hold under parallel leases ─────────────────
+// ── Queue and farm caps must hold under parallel leases ─────────────────────
 
 // leaseDuringPolicyStore fires its hook right after policyGate reads a cap
-// count, which is the window between the cap check and the lease. policyGate
-// is the pre-filter both before and after the fix, so the hook fires at the
-// same point in both.
+// count, which is the window between the cap check and the lease. policyGate is
+// the pre-filter, so the hook fires before the lease transaction.
 type leaseDuringPolicyStore struct {
 	store.Store
 
@@ -579,9 +581,9 @@ func (s *leaseDuringPolicyStore) CountActiveTasksInFarm(ctx context.Context, id 
 
 // TestCapsHoldUnderParallelLease leases task A while a parallel lease
 // wins task B between A's policy check and A's lease. With a cap of one, the
-// scheduler used to count zero active tasks, pass the gate, and then assign A
-// as well, so two tasks ran under a cap of one. The lease transaction now
-// re-checks the cap with the task already counted.
+// policy gate counts zero active tasks and passes; assigning A as well would
+// run two tasks under a cap of one. The lease transaction re-checks the cap
+// with the task already counted.
 func TestCapsHoldUnderParallelLease(t *testing.T) {
 	one := 1
 	cases := []struct {
@@ -655,7 +657,7 @@ func TestCapsHoldUnderParallelLease(t *testing.T) {
 					}
 
 					if n := tc.active(t, st); n > 1 {
-						t.Fatalf("active tasks = %d, want at most the cap of 1 (F12)", n)
+						t.Fatalf("active tasks = %d, want at most the cap of 1", n)
 					}
 					if leased {
 						t.Fatal("tryLeaseTask leased task A although the cap was already taken")
@@ -669,12 +671,12 @@ func TestCapsHoldUnderParallelLease(t *testing.T) {
 	}
 }
 
-// ── F4: a cancel racing a lease must not leave a running attempt behind ──────
+// ── A cancel racing a lease must not leave a running attempt behind ─────────
 
 // racingLeaseStore fires its hook at the point where a lease has decided to go
-// ahead but has not yet written its attempt: CreateTaskAttempt (the old
-// three-call lease, after LeaseReadyTask had already committed the
-// assignment) and LeaseTask (the one-transaction lease).
+// ahead but has not yet written its attempt: CreateTaskAttempt (a three-call
+// lease, after LeaseReadyTask has already committed the assignment) and
+// LeaseTask (the one-transaction lease).
 type racingLeaseStore struct {
 	store.Store
 
@@ -692,10 +694,10 @@ func (s *racingLeaseStore) LeaseTask(ctx context.Context, req store.LeaseRequest
 }
 
 // TestCancelRacingLease cancels the job just before the lease writes its
-// attempt. The old lease had already moved the task to assigned by then, so the
-// cancel closed nothing and canceled the task, and the lease then created a
-// running attempt (and an active usage claim) on a canceled task, which nothing
-// ever closed. The lease transaction now sees the canceled task and writes
+// attempt. A three-call lease has already moved the task to assigned by then,
+// so the cancel closes nothing and cancels the task, and the lease then creates
+// a running attempt (and an active usage claim) on a canceled task, which
+// nothing ever closes. The lease transaction sees the canceled task and writes
 // nothing.
 func TestCancelRacingLease(t *testing.T) {
 	for name, st := range raceBackends(t) {
@@ -728,21 +730,21 @@ func TestCancelRacingLease(t *testing.T) {
 			}
 			for _, a := range attempts {
 				if a.Status == store.AttemptStatusRunning {
-					t.Errorf("attempt %s is running on a canceled task (F4)", a.ID)
+					t.Errorf("attempt %s is running on a canceled task", a.ID)
 				}
 			}
 			if v := claimViolations(t, st); len(v) != 0 {
 				t.Errorf("I3 violations: %v", v)
 			}
 			if n := activeClaimsOf(t, st, pool.ID); n != 0 {
-				t.Errorf("active claims = %d on a canceled task, want 0 (F4)", n)
+				t.Errorf("active claims = %d on a canceled task, want 0", n)
 			}
 		})
 	}
 }
 
 // cancelAfterLeaseStore fires its hook right after a lease has committed: after
-// CreateTaskAttempt (the old three-call lease) and after LeaseTask (the
+// CreateTaskAttempt (a three-call lease) and after LeaseTask (the
 // one-transaction lease).
 type cancelAfterLeaseStore struct {
 	store.Store
@@ -769,10 +771,10 @@ func (s *cancelAfterLeaseStore) LeaseTask(ctx context.Context, req store.LeaseRe
 // without releasing their claims, or released claims first and closed attempts
 // afterwards, would leave an active claim on a canceled task.
 //
-// This one is green on the unmodified three-call cancel as well: the
-// lease-side window (the cancel landing before the lease writes) is the one
-// that was red, and [TestCancelRacingLease] carries that reproduction.
-// This test pins that the single-transaction cancel closes the same ground.
+// A three-call cancel passes this test too: the window that fails is the
+// lease-side one (the cancel landing before the lease writes), which
+// [TestCancelRacingLease] reproduces. This test pins that the
+// single-transaction cancel closes the same ground.
 func TestLeaseDuringCancelLeaksNothing(t *testing.T) {
 	for name, st := range raceBackends(t) {
 		t.Run(name, func(t *testing.T) {
@@ -809,10 +811,10 @@ func TestLeaseDuringCancelLeaksNothing(t *testing.T) {
 				t.Errorf("attempt = %q, want canceled", attempts[0].Status)
 			}
 			if v := claimViolations(t, st); len(v) != 0 {
-				t.Errorf("I3 violations after cancel-vs-lease: %v (F4 leak)", v)
+				t.Errorf("I3 violations after cancel-vs-lease: %v (claim leak)", v)
 			}
 			if n := activeClaimsOf(t, st, pool.ID); n != 0 {
-				t.Errorf("active claims = %d on a canceled task, want 0 (F4)", n)
+				t.Errorf("active claims = %d on a canceled task, want 0", n)
 			}
 		})
 	}
@@ -823,9 +825,9 @@ func TestLeaseDuringCancelLeaksNothing(t *testing.T) {
 // TestTryLeaseTask_NonLeasedOutcomesWriteNothing drives the two outcomes a
 // racing lease can produce after the scheduler's own checks passed: the task is
 // taken by another lease (Lost), and the usage pool fills (PoolFull). Neither
-// leaves an attempt or a claim behind. The old three-call lease left an
-// orphaned attempt row after a pool refusal, because it created the attempt
-// before it claimed.
+// leaves an attempt or a claim behind. A three-call lease that created the
+// attempt before it claimed would leave an orphaned attempt row after a pool
+// refusal.
 func TestTryLeaseTask_NonLeasedOutcomesWriteNothing(t *testing.T) {
 	cases := []struct {
 		name string
@@ -908,10 +910,11 @@ func TestTryLeaseTask_NonLeasedOutcomesWriteNothing(t *testing.T) {
 	}
 }
 
-// ── F5: the reaper must never close a re-leased attempt ─────────────────────
+// ── The reaper must never close a re-leased attempt ─────────────────────────
 
 // leaseAfterReapStore fires its hook right after the reclaim has committed,
-// which is where the old reaper went on to look the task's latest attempt up.
+// which is where a reaper that looked up the task's latest attempt afterwards
+// would do so.
 type leaseAfterReapStore struct {
 	store.Store
 
@@ -924,13 +927,13 @@ func (s *leaseAfterReapStore) ReclaimStaleAssignedTasks(ctx context.Context, cut
 	return out, err
 }
 
-// TestReaperDoesNotCloseReleasedAttempt re-leases a task in the window
-// between the reaper's reclaim and what the reaper does next. The old reaper
-// then looked up the task's latest attempt, found the one the new lease had
-// just written, and closed it as failed and released its claims, while the
-// task kept running on the new worker. The store now closes exactly the
-// attempts of the tasks it reclaimed, inside the reclaim, so the new lease is
-// out of reach. The reclaimed assignment's own attempt and claim are released.
+// TestReaperDoesNotCloseReleasedAttempt re-leases a task in the window between
+// the reaper's reclaim and what the reaper does next. A reaper that then looked
+// up the task's latest attempt would find the one the new lease had just
+// written, close it as failed and release its claims, while the task kept
+// running on the new worker. The store closes exactly the attempts of the tasks
+// it reclaimed, inside the reclaim, so the new lease is out of reach. The
+// reclaimed assignment's own attempt and claim are released.
 func TestReaperDoesNotCloseReleasedAttempt(t *testing.T) {
 	for name, st := range raceBackends(t) {
 		t.Run(name, func(t *testing.T) {
@@ -966,7 +969,7 @@ func TestReaperDoesNotCloseReleasedAttempt(t *testing.T) {
 				t.Fatal("the hook did not re-lease the task")
 			}
 			if a := mustAttemptOf(t, st, fresh.ID); a.Status != store.AttemptStatusRunning || a.EndedAt != nil {
-				t.Fatalf("re-leased attempt = %q (ended %v), want running and open (F5)", a.Status, a.EndedAt)
+				t.Fatalf("re-leased attempt = %q (ended %v), want running and open", a.Status, a.EndedAt)
 			}
 			if a := mustAttemptOf(t, st, stale.ID); a.Status != store.AttemptStatusFailed {
 				t.Fatalf("reaped attempt = %q, want failed", a.Status)
@@ -986,14 +989,14 @@ func TestReaperDoesNotCloseReleasedAttempt(t *testing.T) {
 
 // ── A superseded attempt's late report must not end the re-leased task ──────
 
-// TestSupersededAttemptLateReportIsIgnored reaps an assignment, leases the
-// task again to another worker, and then delivers the first worker's late
-// terminal report. The arrow assigned/running -> succeeded (or canceled) is
-// legal, so the store used to complete the task while the new attempt was open
-// and held its claims: an I3 violation, and for a canceled echo a silent undo
-// of a cancel-then-retry. The store now refuses a report from an attempt that
-// is not the task's latest; the consumer acks it as it does any refused report,
-// still wakes lease waiters, and leaves the new lease alone.
+// TestSupersededAttemptLateReportIsIgnored reaps an assignment, leases the task
+// again to another worker, and then delivers the first worker's late terminal
+// report. The arrow assigned/running -> succeeded (or canceled) is legal, so a
+// store that checked only the arrow would complete the task while the new
+// attempt was open and held its claims: an I3 violation, and for a canceled
+// echo an undo of a cancel-then-retry. The store refuses a report from an
+// attempt that is not the task's latest; the consumer acks it as it does any
+// refused report, still wakes lease waiters, and leaves the new lease alone.
 func TestSupersededAttemptLateReportIsIgnored(t *testing.T) {
 	cases := []struct {
 		name    string
@@ -1066,7 +1069,7 @@ func TestSupersededAttemptLateReportIsIgnored(t *testing.T) {
 	}
 }
 
-// ── F1: a heartbeat that lands during the sweep keeps the worker online ──────
+// ── A heartbeat that lands during the sweep keeps the worker online ─────────
 
 // heartbeatDuringSweepStore fires its hook right after the sweep has listed its
 // stale candidates, which is the window between the list and the write that
@@ -1080,7 +1083,7 @@ type heartbeatDuringSweepStore struct {
 	listed []store.Worker
 }
 
-// ListStaleWorkers is called by the sweep before and after the fix.
+// ListStaleWorkers is the sweep's candidate list.
 func (s *heartbeatDuringSweepStore) ListStaleWorkers(ctx context.Context, before time.Time) ([]store.Worker, error) {
 	out, err := s.Store.ListStaleWorkers(ctx, before)
 	s.listed = out
@@ -1088,12 +1091,12 @@ func (s *heartbeatDuringSweepStore) ListStaleWorkers(ctx context.Context, before
 	return out, err
 }
 
-// TestHeartbeatDuringSweepKeepsWorkerOnline lands a heartbeat in the
-// window between the sweep's stale list and its offline write. The old sweep
-// wrote the offline status unconditionally, so the live worker was marked
-// offline and its running task went back to ready, to be leased and run a
-// second time. The offline write now re-checks the heartbeat itself, so the
-// worker stays online, its task stays running and no offline event is sent.
+// TestHeartbeatDuringSweepKeepsWorkerOnline lands a heartbeat in the window
+// between the sweep's stale list and its offline write. An unconditional
+// offline write would mark the live worker offline and send its running task
+// back to ready, to be leased and run a second time. The offline write
+// re-checks the heartbeat itself, so the worker stays online, its task stays
+// running and no offline event is sent.
 func TestHeartbeatDuringSweepKeepsWorkerOnline(t *testing.T) {
 	for name, st := range raceBackends(t) {
 		t.Run(name, func(t *testing.T) {
@@ -1127,7 +1130,7 @@ func TestHeartbeatDuringSweepKeepsWorkerOnline(t *testing.T) {
 				t.Fatalf("worker = %q, want online (its heartbeat arrived during the sweep)", w.Status)
 			}
 			if got := mustTaskOf(t, st, taskID); got.Status != store.TaskStatusRunning || got.AssignedWorkerID != workerID {
-				t.Fatalf("task = %q on %q, want it still running on %q: a live worker's task was reclaimed and will run twice (F1)",
+				t.Fatalf("task = %q on %q, want it still running on %q: a live worker's task was reclaimed and will run twice",
 					got.Status, got.AssignedWorkerID, workerID)
 			}
 			if a := mustAttemptOf(t, st, attemptID); a.Status != store.AttemptStatusRunning || a.EndedAt != nil {
@@ -1145,12 +1148,12 @@ func TestHeartbeatDuringSweepKeepsWorkerOnline(t *testing.T) {
 	}
 }
 
-// ── F2: offline reclaim releases the usage claims of the attempts it closes ──
+// ── Offline reclaim releases the usage claims of the attempts it closes ─────
 
-// TestOfflineReclaimReleasesClaims is the plain bug behind F2: the
-// offline sweep closed a dead worker's attempts and returned its tasks to ready
-// but never released the attempts' usage claims, so a license slot stayed held
-// until the job was deleted.
+// TestOfflineReclaimReleasesClaims pins that the offline sweep, which closes a
+// dead worker's attempts and returns its tasks to ready, also releases the
+// attempts' usage claims; otherwise a license slot stays held until the job is
+// deleted.
 func TestOfflineReclaimReleasesClaims(t *testing.T) {
 	for name, st := range raceBackends(t) {
 		t.Run(name, func(t *testing.T) {
@@ -1167,7 +1170,7 @@ func TestOfflineReclaimReleasesClaims(t *testing.T) {
 				t.Fatalf("attempt = %q, want failed", a.Status)
 			}
 			if n := activeClaimsOf(t, st, pool.ID); n != 0 {
-				t.Fatalf("active claims = %d, want 0 (F2): the dead worker's license slot is still held", n)
+				t.Fatalf("active claims = %d, want 0: the dead worker's license slot is still held", n)
 			}
 			if v := claimViolations(t, st); len(v) != 0 {
 				t.Fatalf("I3 violations: %v", v)
@@ -1201,7 +1204,7 @@ func TestDeregisterReleasesClaims(t *testing.T) {
 				t.Fatalf("task = %q, want ready (reclaimed on deregister)", got.Status)
 			}
 			if n := activeClaimsOf(t, st, pool.ID); n != 0 {
-				t.Fatalf("active claims = %d, want 0 (F2): a deregistered worker's license slot is still held", n)
+				t.Fatalf("active claims = %d, want 0: a deregistered worker's license slot is still held", n)
 			}
 			if v := claimViolations(t, st); len(v) != 0 {
 				t.Fatalf("I3 violations: %v", v)

@@ -3,7 +3,7 @@
 package scheduler
 
 // Tests for reconcileStuckSteps, the startup repair for steps left stuck by
-// v0.3.0 (H4a F6, spec §6.2 and §8.6).
+// v0.3.0.
 //
 // A v0.3.0 database can hold a step whose tasks are all terminal but which was
 // never finalized, because completion read the step's tasks through one
@@ -12,9 +12,9 @@ package scheduler
 // the step, its job, the steps behind it, or the jobs blocked on it.
 //
 // The scenario tests start the scheduler through Run, not by calling the
-// method, so they also pin WHERE the repair sits: it must have finished before
-// the scheduler begins accepting leases. Every test runs over both backends
-// (spec §8.1), so the fake cannot drift from the store it stands in for.
+// method, so they also pin where the repair sits: it must have finished before
+// the scheduler begins accepting leases. Every test runs over both backends,
+// so the fake cannot drift from the store it stands in for.
 
 import (
 	"context"
@@ -49,7 +49,7 @@ var errInjectedReconcile = errors.New("injected store failure")
 // ── instrumented store ──────────────────────────────────────────────────────
 
 // writeCountingStore counts the calls that make up the completion path
-// (spec §6.2: FinalizeStep, then dependency propagation through ReleaseStep and
+// (FinalizeStep, then dependency propagation through ReleaseStep and
 // CancelPendingStep, then FinalizeJob) and the ListStuckSteps query that finds
 // the work. A healthy farm must see the query once and none of the four
 // writes. It can also be told to fail, so the error paths are reachable.
@@ -279,8 +279,9 @@ type stuckFarm struct {
 	canceledJob, canceledStep, canceledTask                 string
 }
 
-// seedStuckFarm seeds the v0.3.0 damage spec §8.6 lists, with bigTasks tasks in
-// the big step. Every stuck step is in status running with only terminal tasks.
+// seedStuckFarm seeds the damage a v0.3.0 database can hold, with bigTasks
+// tasks in the big step. Every stuck step is in status running with only
+// terminal tasks.
 func seedStuckFarm(t *testing.T, st store.Store, bigTasks int) stuckFarm {
 	t.Helper()
 	seedReconcileFarm(t, st)
@@ -404,7 +405,7 @@ func seedHealthyFarm(t *testing.T, st store.Store) healthyFarm {
 	f.jobs = append(f.jobs, blocked.ID)
 
 	// A job the user canceled, through the same two calls api/jobs.go makes.
-	// Since H4a2 the first one also finalizes the job's steps, so the job ends up
+	// The first one also finalizes the job's steps, so the job ends up
 	// terminal with every step terminal (the pending one canceled outright) and
 	// every task canceled: nothing for a start to repair. The terminal-job guard
 	// on ListStuckSteps stays covered by the orphaned job below.
@@ -587,14 +588,14 @@ func (f stuckFarm) wantEvents(t *testing.T, events *reconcileEvents) {
 
 // ── tests ───────────────────────────────────────────────────────────────────
 
-// TestReconcileStuckSteps_RepairsOnStart is spec §8.6's scenario: it seeds a
-// stuck 1,001-task step with a dependent step behind it, a second stuck step
-// whose failure cascade-cancels its dependent, a third that finishes its job,
-// and a cross-job dependent on each of those jobs. It starts the scheduler,
-// and asserts that the steps and their jobs are finalized, that the dependents
-// are released or canceled, that the events fire, and that the repair had
-// finished before the scheduler began leasing. A second start then finds
-// nothing to do: no events and no writes.
+// TestReconcileStuckSteps_RepairsOnStart is the v0.3.0 repair scenario: it
+// seeds a stuck 1,001-task step with a dependent step behind it, a second stuck
+// step whose failure cascade-cancels its dependent, a third that finishes its
+// job, and a cross-job dependent on each of those jobs. It starts the
+// scheduler, and asserts that the steps and their jobs are finalized, that the
+// dependents are released or canceled, that the events fire, and that the
+// repair had finished before the scheduler began leasing. A second start then
+// finds nothing to do: no events and no writes.
 func TestReconcileStuckSteps_RepairsOnStart(t *testing.T) {
 	for name, st := range raceBackends(t) {
 		t.Run(name, func(t *testing.T) {

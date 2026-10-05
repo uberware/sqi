@@ -254,7 +254,7 @@ func toStorageLocationResponse(l store.StorageLocation) storageLocationResponse 
 }
 
 // rejectType returns a non-empty problem message if a client supplied a `type`,
-// which is now server-derived from the roots and must not be sent.
+// which is server-derived from the roots and must not be sent.
 func rejectType(t *string) string {
 	if t != nil {
 		return "type is derived from roots and must not be supplied"

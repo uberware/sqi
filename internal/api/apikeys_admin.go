@@ -2,10 +2,10 @@
 
 package api
 
-// Admin-scoped API-key endpoints (Phase 3, component B3), gated on
-// apikeys.admin. Admins may list and revoke another user's keys but never
-// create one: minting a credential someone else is accountable for is a
-// materially different act from revoking one.
+// Admin-scoped API-key endpoints, gated on apikeys.admin. Admins may list and
+// revoke another user's keys but never create one: minting a credential
+// someone else is accountable for is a materially different act from revoking
+// one.
 //
 //	GET    /api/v1/users/{id}/api-keys          — list that user's keys
 //	DELETE /api/v1/users/{id}/api-keys/{keyId}  — revoke one of that user's keys

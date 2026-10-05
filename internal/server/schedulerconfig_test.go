@@ -8,10 +8,10 @@ import (
 	"github.com/uberware/sqi/internal/openjd"
 )
 
-// TestSchedulerConfig_CarriesTheSubmittersExprLimits pins EXPR sub-project E4d
-// Task 3's server-side wiring: the scheduler's dispatch gate compares each
-// worker's advertised EXPR caps against the limits a template was ACCEPTED
-// under, so it must be given the SAME limits the submitter is built with.
+// TestSchedulerConfig_CarriesTheSubmittersExprLimits pins the server-side
+// wiring of the EXPR dispatch gate: the scheduler compares each worker's
+// advertised EXPR caps against the limits a template was accepted under, so
+// it must be given the same limits the submitter is built with.
 //
 // The values below are deliberately non-default and distinct: this is four
 // int64 fields crossing a struct boundary, where a transposition compiles.

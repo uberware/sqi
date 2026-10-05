@@ -3781,8 +3781,8 @@ paths:
         "503":
           description: >-
             Preset library not configured, or the definition's expression
-            evaluation exceeded openjd.expr_submission_deadline (EXPR
-            sub-project H1's wall-clock backstop). The second is not a verdict
+            evaluation exceeded openjd.expr_submission_deadline (the
+            wall-clock backstop). The second is not a verdict
             on the definition -- the same body would validate on an idle
             server -- so a retry may succeed.
 
@@ -3826,8 +3826,8 @@ paths:
         "503":
           description: >-
             Preset library not configured, or the definition's expression
-            evaluation exceeded openjd.expr_submission_deadline (EXPR
-            sub-project H1's wall-clock backstop). The second is not a verdict
+            evaluation exceeded openjd.expr_submission_deadline (the
+            wall-clock backstop). The second is not a verdict
             on the definition -- the same body would validate on an idle
             server -- so a retry may succeed.
 
@@ -4048,7 +4048,7 @@ paths:
         "400":
           description: Bad request — missing or invalid upgrade headers.
         "401":
-          description: Unauthorized — invalid or missing credentials (Phase 3+).
+          description: Unauthorized — invalid or missing credentials.
         "500":
           $ref: "#/components/responses/InternalServerError"
 

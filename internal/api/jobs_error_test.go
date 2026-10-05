@@ -2,7 +2,7 @@
 
 package api
 
-// Additional unit tests for job REST handlers — item 5 of the test roadmap.
+// Additional unit tests for job REST handlers.
 //
 // These tests cover the error and filter paths not reached by jobs_test.go.
 // An storeErr wrapper is used to inject store-level errors without touching

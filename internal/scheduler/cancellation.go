@@ -115,10 +115,10 @@ func (s *Scheduler) CancelTask(ctx context.Context, taskID string) error {
 	// Publish a cancel signal to the worker that held the task (if any).
 	s.publishCancelSignals(ctx, []store.Task{prior}, now)
 
-	// Finish the step and job as a terminal worker report would (H4a2 §3.1):
-	// a cancel of a job's last open task otherwise left both open until the
-	// next start. The cancel has committed, so a failure here is logged, not
-	// returned; the start-up reconcile (reconcileStuckSteps) is the backstop.
+	// Finish the step and job as a terminal worker report would: otherwise a
+	// cancel of a job's last open task leaves both open until the next start.
+	// The cancel has committed, so a failure here is logged, not returned; the
+	// start-up reconcile (reconcileStuckSteps) is the backstop.
 	if err := s.checkStepCompletion(ctx, prior.StepID, prior.JobID); err != nil {
 		s.logger.WarnContext(
 			ctx, "scheduler: cancel task: step completion failed",

@@ -2,7 +2,7 @@
 
 package scheduler
 
-// Tests for policy.go — item 8a of the test roadmap.
+// Tests for policy.go.
 //
 // policyGate is unexported so these tests live in package scheduler (white-box).
 // All tests use the fake store (newCheckedFake) — no NATS or real SQLite needed.

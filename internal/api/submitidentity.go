@@ -60,7 +60,7 @@ func newOwnerLookup(st store.Store, validate bool) ownerLookup {
 //
 // When auth is disabled the principal is the anonymous superuser: it holds
 // every permission and carries no username, so both client values pass through
-// verbatim and behavior is byte-for-byte what it was pre-B2. That passthrough
+// verbatim. That passthrough
 // is keyed on the principal actually being the anonymous/auth-off identity
 // (auth.KindAnonymous), never on an empty Username — a future authenticator
 // could hand back an authenticated, permission-bearing principal with no

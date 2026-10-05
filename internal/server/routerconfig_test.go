@@ -10,18 +10,16 @@ import (
 	"github.com/uberware/sqi/internal/openjd"
 )
 
-// TestRouterConfig_CarriesTheSubmissionDeadline covers the SECOND of the three
-// hops that carry EXPR sub-project H1's wall-clock backstop from the config
+// TestRouterConfig_CarriesTheSubmissionDeadline covers the second of the three
+// hops that carry the EXPR wall-clock submission deadline from the config
 // file to the handlers that enforce it: server.Config -> api.Config.
 //
 // Every other test of the deadline builds a handler with a literal duration, so
 // without this one the whole production path could be severed and the suite
 // would stay green: internal/config would still validate the range at startup,
 // internal/api would still map the error to a 503, and the server would still
-// boot -- with no deadline in force. That failure used to be invisible (while
-// EXPR was StatusInProgress no submission reached an expression evaluation);
-// since sub-project H2 flipped the status it is an unbounded request on a live
-// route, which is exactly the wrong way to discover a dropped assignment.
+// boot -- with no deadline in force, leaving every EXPR submission an
+// unbounded request on a live route.
 func TestRouterConfig_CarriesTheSubmissionDeadline(t *testing.T) {
 	const want = 37 * time.Second // non-default, so a stale default cannot pass
 	cfg := DefaultConfig()
@@ -48,16 +46,14 @@ func TestRouterConfig_DefaultCarriesTheConfigDefault(t *testing.T) {
 	}
 }
 
-// TestRouterConfig_CarriesTheExprLimits covers the same hop for the OTHER EXPR
+// TestRouterConfig_CarriesTheExprLimits covers the same hop for the other EXPR
 // bound the HTTP layer needs: the operator's four openjd.expr_* numbers.
 //
 // POST/PUT /api/v1/products validate a client-supplied template without going
 // through the Submitter, so they are the one production path that does not get
 // these limits from it. Dropped here, that route silently falls back to
 // openjd.DefaultExprLimits() — an operator who tightened the knobs would find
-// one of the three template-accepting routes ignoring them. While EXPR was
-// StatusInProgress the walk never ran, so nothing else could fail either; since
-// sub-project H2 the walk is live and this test guards a limit in real force.
+// one of the three template-accepting routes ignoring them.
 func TestRouterConfig_CarriesTheExprLimits(t *testing.T) {
 	want := openjd.ExprLimits{
 		SubmissionOperations:  4321, // all non-default, so a stale default cannot pass

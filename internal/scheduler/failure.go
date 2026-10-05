@@ -4,8 +4,8 @@ package scheduler
 
 // failure.go implements the auto-retry fork for worker-reported task failures.
 //
-// A "failed" TaskStatusMsg no longer routes straight to handleTaskTerminal.
-// Instead handleTaskFailed resolves the effective retry policy (job -> queue
+// A "failed" TaskStatusMsg does not route straight to handleTaskTerminal.
+// handleTaskFailed resolves the effective retry policy (job -> queue
 // -> farm -> server default, via ResolveRetryPolicy/RetryDefaults) and records
 // the genuine failure, then picks one of the first three outcomes below; a
 // shutdown report takes the fourth and records no failure:
@@ -110,8 +110,8 @@ func (s *Scheduler) handleTaskFailed(ctx context.Context, attempt store.TaskAtte
 	return s.handleTaskTerminal(ctx, attempt, m, store.TaskStatusFailed, store.AttemptStatusFailed, at)
 }
 
-// handleTaskShutdown applies a "failed"/"worker_shutdown" report as a reclaim
-// (H4a2 §4.4, spec D2): the task did nothing wrong, so it goes back to ready
+// handleTaskShutdown applies a "failed"/"worker_shutdown" report as a reclaim:
+// the task did nothing wrong, so it goes back to ready
 // with no retry consumed and no job failure counted, exactly as the offline
 // reclaim behind a deregister treats it. Whichever of the two the server
 // applies first does the work; the other finds the attempt closed and does

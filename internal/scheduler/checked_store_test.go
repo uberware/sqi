@@ -13,7 +13,7 @@ import (
 
 // newCheckedFake returns a fake store that asserts invariant I3 ("an active
 // usage claim exists iff its attempt is open") when the test ends, so every
-// scheduler test that uses it checks I3 for free (spec §8.3).
+// scheduler test that uses it checks I3.
 func newCheckedFake(t *testing.T) *fake.Store {
 	t.Helper()
 	st := fake.New()
@@ -45,8 +45,8 @@ func checkSQLiteClaimsAtEnd(t *testing.T, st *sqlite.Store) {
 }
 
 // fixtureWriter is the test fixture surface both concrete stores keep and
-// store.Store does not: writes with no production caller, kept until H4b
-// decides their fate.
+// store.Store does not: writes with no production caller, kept as test
+// fixture surface.
 type fixtureWriter interface {
 	UpdateTaskStatus(ctx context.Context, id string, status store.TaskStatus) error
 	UpdateTaskAttempt(ctx context.Context, attempt store.TaskAttempt) (store.TaskAttempt, error)

@@ -2,7 +2,7 @@
 
 package scheduler
 
-// Tests for taskstatus.go — item 8d of the test roadmap.
+// Tests for taskstatus.go.
 //
 // handleTaskStatusMessage and processTaskStatus are unexported methods on
 // *Scheduler, so these are white-box tests in package scheduler.
@@ -493,15 +493,13 @@ func TestProcessTaskStatus_Canceled_PersistsMessageAndReason(t *testing.T) {
 	}
 }
 
-// TestProcessTaskStatus_Canceled_EmptyWorkerEchoPreservesServerReason is the
-// regression for the bug where a user-canceled RUNNING task lost its
-// "canceled by user" reason. CancelTask/CancelJob set the task's
-// failure_reason up front, then kill the worker; the worker always echoes
-// back "canceled" with an empty Message (internal/worker/executor/run.go).
-// Before the fix, handleTaskTerminal unconditionally called
-// SetTaskFailureReason with the synthesized (empty, for canceled) reason,
-// clobbering the server-set one. The fix guards that write so an empty
-// synthesized reason never overwrites an existing reason.
+// TestProcessTaskStatus_Canceled_EmptyWorkerEchoPreservesServerReason pins
+// that a user-canceled running task keeps its "canceled by user" reason.
+// CancelTask/CancelJob set the task's failure_reason up front, then kill the
+// worker; the worker always echoes back "canceled" with an empty Message
+// (internal/worker/executor/run.go). handleTaskTerminal guards its
+// SetTaskFailureReason write so an empty synthesized reason never overwrites
+// an existing one.
 func TestProcessTaskStatus_Canceled_EmptyWorkerEchoPreservesServerReason(t *testing.T) {
 	st := newCheckedFake(t)
 	s := newStatusTestScheduler(st)

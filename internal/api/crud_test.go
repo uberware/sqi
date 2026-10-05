@@ -2,7 +2,7 @@
 
 package api
 
-// Unit tests for the task-81 CRUD handlers: farms, queues, storage-locations,
+// Unit tests for the CRUD handlers: farms, queues, storage-locations,
 // and usage-pools. Each test spins up a chi router with the fake in-memory
 // store so the database is never touched.
 

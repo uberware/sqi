@@ -230,7 +230,7 @@ func (s *Scheduler) handleTaskRunning(ctx context.Context, attempt store.TaskAtt
 	if !started {
 		// A stale report: its attempt was closed (reaped, reclaimed, canceled)
 		// or superseded by a newer lease. Redelivery cannot make it current, so
-		// it is acked and nothing is emitted (H4a2 §4.1).
+		// it is acked and nothing is emitted.
 		s.logger.InfoContext(
 			ctx, "scheduler: stale running report — discarding",
 			slog.String("task_id", m.TaskID),

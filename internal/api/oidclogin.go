@@ -2,7 +2,7 @@
 
 package api
 
-// OIDC/SSO login (Phase 3, component C2).
+// OIDC/SSO login.
 //
 //	GET /api/v1/auth/oidc/login    — start the authorization-code flow (public)
 //	GET /api/v1/auth/oidc/callback — finish it and mint the session  (public)

@@ -25,7 +25,7 @@ import (
 type leaseRequest struct {
 	WorkerID string `json:"worker_id"`
 	// InstanceID is the requesting worker process's instance ID, the one it
-	// sends in its registration (H4a2 §4.5). Empty from a worker that sends
+	// sends in its registration. Empty from a worker that sends
 	// none. See [Scheduler.leaseFromUnregisteredInstance].
 	InstanceID string `json:"instance_id,omitempty"`
 }

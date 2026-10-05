@@ -298,8 +298,8 @@ func TestRotatingFile_CloseAfterUnrecoveredReopenIsNil(t *testing.T) {
 	if _, err := w.Write([]byte("line2\n")); err == nil {
 		t.Fatal("write that hit a failed reopen returned nil")
 	}
-	// The opener is still failing: the next write must retry it (and fail
-	// honestly), not touch the closed file.
+	// The opener is still failing: the next write must retry it (and return
+	// the error), not touch the closed file.
 	if _, err := w.Write([]byte("line3\n")); err == nil {
 		t.Fatal("write with the opener still failing returned nil")
 	}

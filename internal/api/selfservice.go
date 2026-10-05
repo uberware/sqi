@@ -2,9 +2,9 @@
 
 package api
 
-// Self-service account endpoints (Phase 3, component B3). Both routes resolve
-// their target from the authenticated principal — there is no id in the path,
-// so cross-user access is structurally impossible rather than guarded against.
+// Self-service account endpoints. Both routes resolve their target from the
+// authenticated principal — there is no id in the path, so cross-user access
+// is structurally impossible rather than guarded against.
 //
 //	PUT   /api/v1/auth/password — change own password (re-issues the session)
 //	PATCH /api/v1/auth/me       — change own display name

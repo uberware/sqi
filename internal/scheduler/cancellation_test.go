@@ -2,7 +2,7 @@
 
 package scheduler
 
-// Tests for cancellation.go — item 8b of the test roadmap.
+// Tests for cancellation.go.
 //
 // CancelJob and CancelTask are methods on *Scheduler, so these are white-box
 // tests in package scheduler. A stubBus satisfies the busClient interface so
