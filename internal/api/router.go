@@ -302,6 +302,17 @@ func resolveCORSOrigins(cfg Config, logger *slog.Logger) []string {
 	return slices.DeleteFunc(slices.Clone(origins), func(o string) bool { return o == "*" })
 }
 
+// schedulerWaker returns sched as the worker handler's waker, or nil when no
+// scheduler is wired. A typed-nil *scheduler.Scheduler stored in the interface
+// would not itself be nil, so the handler's nil check would pass and the call
+// would panic.
+func schedulerWaker(sched *scheduler.Scheduler) workerWaker {
+	if sched == nil {
+		return nil
+	}
+	return sched
+}
+
 // NewRouter builds and returns the chi router that serves the full sqi-server
 // HTTP surface. The returned router is ready to be handed to http.Server.
 //
@@ -414,12 +425,7 @@ func NewRouter(cfg Config, deps Deps, logger *slog.Logger, m *metrics.Metrics, h
 	jobs := newJobHandler(deps.Store, deps.Submitter, deps.Scheduler, notifier, logger, retryDefaults,
 		cfg.ValidateJobOwner, cfg.ExprSubmissionDeadline)
 	tasks := newTaskHandler(deps.Store, deps.Scheduler, logger)
-	// Assigned only when non-nil, for the same reason as notifier above.
-	var waker workerWaker
-	if deps.Scheduler != nil {
-		waker = deps.Scheduler
-	}
-	workers := newWorkerHandler(deps.Store, notifier, deps.WorkerRevoker, waker, logger)
+	workers := newWorkerHandler(deps.Store, notifier, deps.WorkerRevoker, schedulerWaker(deps.Scheduler), logger)
 	farms := newFarmHandler(deps.Store, logger)
 	queues := newQueueHandler(deps.Store, logger)
 	storageLocs := newStorageLocationHandler(deps.Store, logger)
