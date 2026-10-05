@@ -17,9 +17,9 @@ type Kind string
 const (
 	// KindAnonymous is the stand-in identity injected when auth is disabled.
 	KindAnonymous Kind = "anonymous"
-	// KindUser is a human account (A1+).
+	// KindUser is a human account.
 	KindUser Kind = "user"
-	// KindAPIKey is a long-lived machine credential (A2+).
+	// KindAPIKey is a long-lived machine credential.
 	KindAPIKey Kind = "apikey"
 	// KindService is a reserved internal/service identity.
 	KindService Kind = "service"

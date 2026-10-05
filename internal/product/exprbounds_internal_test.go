@@ -2,19 +2,13 @@
 
 package product
 
-// Tests for EXPR sub-project H1's two additions to product template
-// validation: the operator's configured EXPR limits, and the wall-clock
-// deadline that bounds POST/PUT /api/v1/products.
+// Tests for two parts of product template validation: the operator's
+// configured EXPR limits, and the wall-clock deadline that bounds POST/PUT
+// /api/v1/products.
 //
-// They were INTERNAL tests because neither addition was observable from
-// outside this package while the EXPR registry entry was StatusInProgress: the
-// expression walk never ran, so no limit and no deadline could change any
-// outcome ValidateTemplate's exported signature could return, and the registry
-// is a package-level map in internal/openjd that only that package's own tests
-// can flip. Sub-project H2 made EXPR StatusSupported, so the deadline half now
-// drives the exported [ValidateTemplate] end to end. The file stays internal
-// for the two things still only visible from inside: the openjdOptions mapping
-// and the validateParsed tail.
+// The deadline tests drive the exported [ValidateTemplate] end to end. The
+// file is internal for the two things only visible from inside: the
+// openjdOptions mapping and the validateParsed tail.
 
 import (
 	"errors"
@@ -74,10 +68,10 @@ func TestValidateOptions_MapOntoOpenJD(t *testing.T) {
 	}
 }
 
-// TestValidateOptions_ZeroIsThePreH1Behavior pins that a caller offering no
+// TestValidateOptions_ZeroGivesDefaultLimitsAndNoDeadline pins that a caller offering no
 // configuration — ParseDefinition, loading built-ins from package init where no
-// config exists yet — is unchanged by H1.
-func TestValidateOptions_ZeroIsThePreH1Behavior(t *testing.T) {
+// config exists yet — gets default EXPR limits and no deadline.
+func TestValidateOptions_ZeroGivesDefaultLimitsAndNoDeadline(t *testing.T) {
 	got := ValidateOptions{EnforceLimits: true}.openjdOptions()
 	if got.ExprLimits != (openjd.ExprLimits{}) {
 		t.Errorf("ExprLimits = %+v, want the zero value (which openjd reads as its defaults)", got.ExprLimits)
@@ -91,18 +85,12 @@ func TestValidateOptions_ZeroIsThePreH1Behavior(t *testing.T) {
 // the options this package builds really do stop the walk, and the resulting
 // error is still matchable with errors.Is by the time it leaves this package.
 //
-// IT GOT STRONGER AT SUB-PROJECT H2. It used to call the unexported
-// validateParsed with openjd's since-deleted
-// CheckEXPRExpressionsWhileUnsupported forced on, because production could not
-// reach the walk at all: while EXPR was StatusInProgress, validateExtensions
-// rejected every EXPR-declaring template before a single expression was
-// evaluated, which is also why H1's deadline was INERT until H2 flipped the
-// status. It now drives the EXPORTED [ValidateTemplate] with nothing forced,
-// so what it pins is the whole path POST /api/v1/products takes: the raw
-// template, the parse, the ValidateOptions -> openjd.ValidateOptions mapping,
-// and the walk that mapping is supposed to bound.
+// It drives the EXPORTED [ValidateTemplate] with nothing forced, so what it
+// pins is the whole path POST /api/v1/products takes: the raw template, the
+// parse, the ValidateOptions -> openjd.ValidateOptions mapping, and the walk
+// that mapping is supposed to bound.
 //
-// The errors.Is assertion is the load-bearing half. internal/api tells a
+// The errors.Is assertion is the half that matters. internal/api tells a
 // deadline from a bad template STRUCTURALLY, on this sentinel; a wrapper here
 // that flattened the error to a string would turn every 503 into a 400 with
 // nothing failing.
@@ -172,18 +160,15 @@ steps: []`), openjd.FormatYAML)
 // TestParseDefinition_PassesOptionsThrough pins that [ParseDefinition]'s opts
 // argument actually reaches the validator.
 //
-// It exists because that argument was added by H1's whole-wave review, after
-// the preset install path (internal/presetlib, reached from
-// POST /api/v1/presets/{name}/install) was found still validating on
+// The preset install path (internal/presetlib, reached from
+// POST /api/v1/presets/{name}/install) reaches the validator through this
+// argument. An opts parameter that compiled but was dropped on the way to
+// ValidateTemplate would leave that path validating on
 // openjd.DefaultExprLimits() with no deadline while the sibling product route
-// had been fixed. An opts parameter that compiled but was dropped on the way to
-// ValidateTemplate would reproduce that defect exactly, and when this test was
-// written nothing else would have noticed: the EXPR limits and the deadline
-// were both unobservable while the expression walk was gated on EXPR being
-// StatusSupported.
+// honors the operator's configuration.
 //
-// EnforceLimits is the field used to detect the pass-through because it is the
-// one option with an observable effect TODAY. A template whose job name exceeds
+// EnforceLimits is the field used to detect the pass-through because it has an
+// observable effect on a plain base-spec template. A template whose job name exceeds
 // the 128-character limit is rejected only when limits are enforced, so the two
 // calls below must disagree.
 func TestParseDefinition_PassesOptionsThrough(t *testing.T) {

@@ -108,7 +108,7 @@ type enrollRequest struct {
 // existing credential file if one is present, and otherwise enrolling with
 // sqi-server over REST using a configured join token.
 //
-// The order follows the spec exactly: an existing seed is loaded first — an
+// The order is deliberate: an existing seed is loaded first — an
 // already-enrolled worker must never re-enroll just because a join token is
 // still configured — and only when no seed exists does enrollment happen,
 // using whichever token is configured. When neither a seed nor a token is

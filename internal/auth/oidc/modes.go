@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 // Package oidc authenticates sqi web UI logins against an OAuth2/OIDC identity
-// provider (Phase 3, C2).
+// provider.
 //
 // It provides the login-time half of the authorization-code flow with PKCE:
 //

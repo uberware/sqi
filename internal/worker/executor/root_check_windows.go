@@ -8,7 +8,7 @@ import "log/slog"
 
 // IsRunningAsRoot always returns false on Windows.  Administrator privilege
 // detection on Windows requires checking group membership via the Windows
-// security APIs, which is out of scope for Phase 1.  The root-user check is
+// security APIs, which is not implemented.  The root-user check is
 // a Linux/macOS concern (see docs/worker-configuration.md, "worker.allow_root").
 func IsRunningAsRoot() bool {
 	return false

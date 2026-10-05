@@ -65,9 +65,8 @@ func mustResolve(proc *windows.LazyProc) error {
 // This is not optional polish. CreateProcessAsUser does NOT load a profile:
 // without this call the task gets the .DEFAULT hive rather than its own
 // HKEY_CURRENT_USER, and an account that has never logged on interactively
-// has no profile directory at all — which is exactly the
-// GetUserProfileDirectory failure logonUserOS used to swallow into an empty
-// Home. Every DCC writes preferences, license caches, and crash dumps through
+// has no profile directory at all, so GetUserProfileDirectory fails for it.
+// Every DCC writes preferences, license caches, and crash dumps through
 // one or both of those.
 //
 // Requires SeBackupPrivilege and SeRestorePrivilege, which LocalSystem holds.

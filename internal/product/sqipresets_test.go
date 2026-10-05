@@ -15,9 +15,8 @@ import (
 // its catalog category, the convention-named parameters it must define, and the
 // OpenJD extensions it must declare.
 //
-// It exists because presets/sqi is no longer homogeneous. Until EXPR
-// sub-project I the directory held six render presets and this test asserted
-// "Rendering" and "TASK_CHUNKING" of every file in it; the ffmpeg presets are
+// It exists because presets/sqi is not homogeneous. The render presets are
+// "Rendering" and declare "TASK_CHUNKING"; the ffmpeg presets are
 // Transcoding, and the segmented ones deliberately do NOT chunk (their join
 // step names every intermediate file from the template, which is only possible
 // when slices map one-to-one onto tasks). Per-preset expectations keep the

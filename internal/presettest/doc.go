@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-// Package presettest is the preset validation harness (Phase 4, Program P, P1).
+// Package presettest is the preset validation harness.
 //
 // It answers one question about a shipped preset: for a stated set of job
 // parameters, what EXACTLY does each task run? [Capture] answers it by driving

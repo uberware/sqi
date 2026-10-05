@@ -2,11 +2,10 @@
 
 package fmtres_test
 
-// Tests for expres.go -- EXPR sub-project E4a, Task 4: rendering an
-// expression's value into a real command line for the first time in the
-// whole EXPR program.
+// Tests for expres.go: rendering an expression's value into a real command
+// line.
 //
-// Each test builds its symbol table with fmtres.TaskSymbols (Task 3), so
+// Each test builds its symbol table with fmtres.TaskSymbols, so
 // these exercise the real phase-3 table an actual assignment would produce,
 // not a hand-rolled expr.MapSymbols standing in for it -- except where a
 // test's whole point is a construct TaskSymbols cannot produce (a literal
@@ -29,12 +28,9 @@ import (
 // expr.WithPathMapping under expr.PathNative EXPLICITLY -- rather than Go's
 // os-specific path/filepath package (filepath.Join, ToSlash).
 //
-// FIX ROUND 1 (Task 4 review): the original versions of the tests below
-// hardcoded POSIX-separator expectations (some via a literal string, some
-// via filepath.ToSlash(filepath.Join(...))), which only happened to pass
-// because expr.PathNative resolves to expr.PathPOSIX on every host this
-// suite has ever run on -- a "two formulas that happen to agree today"
-// defect this codebase's own conventions flag repeatedly. Building the
+// Hardcoded POSIX-separator expectations (a literal string, or
+// filepath.ToSlash(filepath.Join(...))) would pass only because
+// expr.PathNative resolves to expr.PathPOSIX on a POSIX host. Building the
 // expectation through the SAME machinery the code under test uses (this
 // helper) means the two stay in agreement on any REAL host, POSIX or
 // Windows, because both resolve expr.PathNative via the identical
@@ -177,9 +173,9 @@ func TestResolveActionExpr_TaskParam(t *testing.T) {
 
 // TestResolveActionExpr_SessionWorkingDirectory exercises the "/" path-join
 // operator over a real concrete Session.WorkingDirectory value -- the
-// EXR sub-project C4/D construct a StepScript.let binding like
+// construct a StepScript.let binding like
 // "Session.WorkingDirectory / 'frames'" is meant to produce for real, on the
-// host, for the first time.
+// host.
 func TestResolveActionExpr_SessionWorkingDirectory(t *testing.T) {
 	const workDir = "/work/session1"
 	syms, err := fmtres.TaskSymbols(&protocol.AssignMsg{}, workDir, "", false, nil)
@@ -201,7 +197,7 @@ func TestResolveActionExpr_SessionWorkingDirectory(t *testing.T) {
 
 // TestResolveActionExpr_TaskFile exercises a materialized embedded-file path
 // -- AddFileVars' own computation, reached through TaskSymbols, rendered
-// into a real command for the first time.
+// into a real command.
 func TestResolveActionExpr_TaskFile(t *testing.T) {
 	const workDir = "/work/session1"
 	msg := &protocol.AssignMsg{
@@ -236,7 +232,7 @@ func TestResolveActionExpr_TaskFile(t *testing.T) {
 // diagnostic (an unknown-symbol message with a column position) -- matching
 // fmtres.go's existing ResolveAction/ResolveVars/ResolveEmbeddedFiles
 // wrapping convention (one field-context layer around the underlying
-// error), now extended to expr's own positioned errors.
+// error), applied to expr's own positioned errors.
 func TestResolveActionExpr_ErrorSurfacesWithContext(t *testing.T) {
 	action := &protocol.Action{Command: "{{ Task.Param.DoesNotExist }}"}
 	_, err := fmtres.ResolveActionExpr(action, expr.MapSymbols{}, nil, nil)
@@ -272,17 +268,16 @@ func TestResolveVarsExpr_ErrorNamesTheVariableKey(t *testing.T) {
 	}
 }
 
-// TestResolveActionExpr_UnresolvedFallbackErrorsInsteadOfPanicking is a
-// regression test for a real defect self-review caught while implementing
-// this file: exprsyms_test.go's own TestTaskSymbols_ChunkIntTaskParam_
+// TestResolveActionExpr_UnresolvedFallbackErrorsInsteadOfPanicking:
+// exprsyms_test.go's own TestTaskSymbols_ChunkIntTaskParam_
 // InvalidRangeFallsBackToUnresolved documents that an unparseable CHUNK[INT]
 // value stays expr.Unresolved rather than concrete. Reading that symbol
 // through expr.TString's own coercion (coerceUnresolved) returns ANOTHER
-// unresolved Value with NO error -- Eval succeeds -- so the first cut of
-// resolveFormatStringExpr called Value.AsStr() on it directly and PANICKED
-// ("expr: read string payload from a unresolved[string] value"). A worker
-// process must not crash rendering one task's command line; this pins the
-// fix (errUnresolvedValue) instead.
+// unresolved Value with NO error -- Eval succeeds -- so calling
+// Value.AsStr() on it directly would PANIC ("expr: read string payload from
+// a unresolved[string] value"). A worker process must not crash rendering
+// one task's command line; this pins that errUnresolvedValue is returned
+// instead.
 func TestResolveActionExpr_UnresolvedFallbackErrorsInsteadOfPanicking(t *testing.T) {
 	msg := &protocol.AssignMsg{
 		Parameters:     map[string]string{"Frames": "not-a-range"},
@@ -309,8 +304,8 @@ func TestResolveActionExpr_UnresolvedFallbackErrorsInsteadOfPanicking(t *testing
 
 // ── Metered evaluation ───────────────────────────────────────────────────────
 
-// TestResolveActionExpr_OverBudgetRejectedByOperationLimit is the test the
-// brief calls out by name: it must assert the NAMED limit sqi configured
+// TestResolveActionExpr_OverBudgetRejectedByOperationLimit must assert the
+// NAMED limit sqi configured
 // (fmtres's own ExprLimits.OperationLimit), not merely that some error occurred
 // -- a bare error assertion would still pass under expr.Eval's own
 // unconfigured 10,000,000-operation default and would pin nothing about
@@ -335,7 +330,7 @@ func TestResolveActionExpr_OverBudgetRejectedByOperationLimit(t *testing.T) {
 		t.Fatalf("error %q is not an operation-limit rejection", msg)
 	}
 	// The named limit itself must appear, discriminated from expr.Eval's own
-	// unconfigured default (10,000,000) -- FIX ROUND 1 (Task 4 review):
+	// unconfigured default (10,000,000):
 	// bare strings.Contains(msg, "1000000") is satisfied by "10000000" too,
 	// since "1000000" is a PREFIX of "10000000" and Contains does not check
 	// for a trailing digit boundary. meter.go's error format
@@ -350,13 +345,10 @@ func TestResolveActionExpr_OverBudgetRejectedByOperationLimit(t *testing.T) {
 	}
 }
 
-// ── apply_path_mapping: the session's real rules, for the first time ───────
+// ── apply_path_mapping: the session's real rules ───────────────────────────
 
-// TestResolveActionExpr_ApplyPathMapping is the test EXPR sub-project E4a's
-// brief calls out explicitly: sub-project D built the path-mapping engine
-// and E2 gated apply_path_mapping to host-context scopes, but nothing has
-// ever executed it against a real session rule end to end until this test.
-// ExprEvalOptions is what threads the assignment's PathMap field
+// TestResolveActionExpr_ApplyPathMapping executes apply_path_mapping against
+// a real session rule end to end. ExprEvalOptions is what threads the assignment's PathMap field
 // (fmtres.ConvertPathMapRules) into the evaluation via expr.WithPathMapping.
 func TestResolveActionExpr_ApplyPathMapping(t *testing.T) {
 	pathMap := []protocol.PathMapRule{
@@ -366,13 +358,13 @@ func TestResolveActionExpr_ApplyPathMapping(t *testing.T) {
 			DestinationPath:  "/local/cache",
 		},
 	}
-	// FIX ROUND 2 (item C): msg carries the SAME PathMap that is passed to
-	// ResolveActionExpr, so this exercises the real configuration Task 6
+	// msg carries the SAME PathMap that is passed to
+	// ResolveActionExpr, so this exercises the real configuration production
 	// produces (both TaskSymbols and the resolver read msg.PathMap) rather
 	// than the unreachable-in-production state of "symbols built without
 	// the rules, rules passed only to the resolver." Under that real
-	// configuration, Task.Param.Scene already binds MAPPED (FIX ROUND 1,
-	// item 1), so this explicit apply_path_mapping() call is a no-op on an
+	// configuration, Task.Param.Scene already binds MAPPED, so this explicit
+	// apply_path_mapping() call is a no-op on an
 	// already-mapped value -- it still must not double-map or corrupt it.
 	msg := &protocol.AssignMsg{
 		Parameters:     map[string]string{"Scene": "/mnt/shared/project/shot.ma"},
@@ -409,7 +401,7 @@ func TestResolveActionExpr_ApplyPathMapping(t *testing.T) {
 // reference no named storage location), apply_path_mapping must pass its
 // input through unchanged, normalized as a path in the evaluation's own
 // flavor -- expr.WithPathMapping's own documented "no rule rewrote it"
-// contract, now confirmed reachable from this package's real call path.
+// contract, confirmed reachable from this package's real call path.
 func TestResolveActionExpr_ApplyPathMappingNoRulesPassesThrough(t *testing.T) {
 	msg := &protocol.AssignMsg{
 		Parameters:     map[string]string{"Scene": "/mnt/shared/project/shot.ma"},
@@ -436,16 +428,14 @@ func TestResolveActionExpr_ApplyPathMappingNoRulesPassesThrough(t *testing.T) {
 // ── Path flavor: expr.PathNative is threaded, not left to expr.Eval's own
 //    default ─────────────────────────────────────────────────────────────
 
-// TestExprEvalOptions_CarriesNativePathFlavor pins the requirement EXPR
-// sub-project E4a's Task 3 recorded in the ledger for this wiring: every
+// TestExprEvalOptions_CarriesNativePathFlavor pins the requirement that every
 // phase-3 evaluation must pass expr.WithPathFormat(expr.PathNative), because
 // the worker runs ON the host a task executes on -- without it, a Windows
 // worker would evaluate a native-flavored Session.WorkingDirectory value
 // alongside POSIX-flavored path literals in the same expression.
 //
-// AN HONEST LIMITATION, stated because a half-true test claim here is worse
-// than an absent one: expr.PathNative RESOLVES to expr.PathPOSIX on every
-// host this suite runs on today (macOS, Linux CI) -- which is ALSO
+// LIMITATION: expr.PathNative RESOLVES to expr.PathPOSIX on every POSIX
+// host (macOS, Linux CI) -- which is ALSO
 // expr.Eval's own unconfigured default path format. So deleting
 // expr.WithPathFormat(pathFlavor) from ExprEvalOptions produces IDENTICAL
 // output on this host to leaving it in; no test running here, this one
@@ -461,9 +451,8 @@ func TestResolveActionExpr_ApplyPathMappingNoRulesPassesThrough(t *testing.T) {
 // flavor -- expr.PathPOSIX or expr.PathWindows hardcoded, say -- and that
 // drift becomes an OBSERVABLE, portable test failure the moment this suite
 // runs on a real Windows host, where expr.PathNative and expr.PathPOSIX
-// diverge for real. That is exactly the same reasoning EXPR sub-project
-// C4/D's own native-Windows validation pass (40c3011) already rests on: the
-// claim can only be checked on the host it is actually about.
+// diverge for real: the claim can only be checked on the host it is about.
+// expres_internal_test.go forces a flavor directly to cover the gap.
 func TestExprEvalOptions_CarriesNativePathFlavor(t *testing.T) {
 	const workDir = "/work/session1"
 	syms, err := fmtres.TaskSymbols(&protocol.AssignMsg{}, workDir, "", false, nil)
@@ -484,12 +473,11 @@ func TestExprEvalOptions_CarriesNativePathFlavor(t *testing.T) {
 
 // ── TargetArgItem: the two parallel copies must agree ──────────────────────
 
-// TestTargetArgItem_MatchesOpenjdsCopy closes the gap FIX ROUND 1 (Task 4
-// review) found: fmtres.TargetArgItem's own doc comment demands it stay in
-// step with openjd.TargetArgItem (exprcheck.go), but nothing enforced that
-// before this test. Importing internal/openjd from a _test.go file is safe
-// for the same reason exprsyms_test.go's TestPhase2Phase3Agreement already
-// does it (Task 3): test binaries never link into cmd/sqi-worker, so this
+// TestTargetArgItem_MatchesOpenjdsCopy enforces fmtres.TargetArgItem's own
+// doc comment: it must stay in step with openjd.TargetArgItem
+// (exprcheck.go). Importing internal/openjd from a _test.go file is safe
+// for the same reason exprsyms_test.go's TestPhase2Phase3Agreement
+// does it: test binaries never link into cmd/sqi-worker, so this
 // does not reintroduce the internal/store dependency the split into two
 // copies exists to avoid in PRODUCTION code.
 func TestTargetArgItem_MatchesOpenjdsCopy(t *testing.T) {
@@ -591,17 +579,13 @@ func TestResolveVarsExpr(t *testing.T) {
 // ── Float carry: the ruling section 1.3.4/§6 required ──────────────────────
 
 // TestResolveActionExpr_FloatCarryPreservedInReprAndSubstitution pins the
-// ruling internal/openjd/expr/value.go's fs field comment explicitly
-// deferred: "[w]hether repr_* should show a value's carried text or
-// canonicalise it is underspecified: ... Parked for sub-project E4 to
-// settle, not fixed here." That was written during sub-project E2, because
-// nothing could observe the difference until a renderer that turns an
-// expression's VALUE back into command-line TEXT existed -- which is
-// exactly what E4a's fmtres package is. It exists now, so this test settles
-// it.
+// ruling on whether repr_* and substitution show a float value's carried
+// text or canonicalise it, which the specification leaves underspecified
+// (see internal/openjd/expr/value.go's fs field comment). It is observable
+// only where an expression's VALUE is turned back into command-line TEXT,
+// which is this package.
 //
-// THE RULING, recorded here so the next reader sees a decision rather than
-// an accident: KEEP the carried text, do not canonicalise. Section 1.3.4
+// THE RULING: KEEP the carried text, do not canonicalise. Section 1.3.4
 // exists so a submitted "3.500" survives to the command line; canonicalising
 // inside a rendering function (repr_py, or plain substitution's own
 // string-coercion) would discard exactly the text 1.3.4 preserves it for.

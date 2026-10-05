@@ -17,7 +17,7 @@ import (
 // Exported (not just an internal CheckRootUser detail) because
 // cmd/sqi-worker also needs it to decide the default run-as-user session
 // root: /var/lib/sqi-worker-sessions when root (its ancestors are already
-// traversable), falling back to the pre-split location under
+// traversable), falling back to a location under
 // worker.data_dir otherwise. See cmd/sqi-worker's effectiveSessionRoot.
 func IsRunningAsRoot() bool {
 	return os.Geteuid() == 0

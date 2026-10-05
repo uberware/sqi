@@ -6,9 +6,8 @@
 // [Run] is the only thing the binaries' run commands call. When the Windows
 // Service Control Manager (SCM) started the process, Run hosts the command
 // under svc.Run and cancels its context on Stop or PreShutdown. Otherwise — a
-// console on Windows, or any other OS — it cancels on SIGINT/SIGTERM as the
-// signal.NotifyContext the commands used before this package existed did, so
-// non-service behavior does not change. Either way context.Cause names what
+// console on Windows, or any other OS — it cancels on SIGINT/SIGTERM as
+// signal.NotifyContext does. Either way context.Cause names what
 // stopped the command: the signal ("interrupt", "terminated"), or
 // "service stop" / "service preshutdown".
 //

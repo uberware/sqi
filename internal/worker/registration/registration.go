@@ -96,7 +96,7 @@ type Registrar struct {
 	workerID string
 	cfg      workerconfig.WorkerSettings
 
-	// instanceID is sent in every RegisterMsg (H4a2 §4.5). It is generated
+	// instanceID is sent in every RegisterMsg. It is generated
 	// once in New; a Registrar lives for the whole worker process.
 	instanceID string
 

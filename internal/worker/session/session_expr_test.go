@@ -16,7 +16,7 @@ import (
 	"github.com/uberware/sqi/internal/worker/protocol"
 )
 
-// ── EXPR sub-project E4a, Task 6: environment-path wiring ──────────────────
+// ── EXPR environment-path wiring ────────────────────────────────────────────
 //
 // These tests exercise enterOne/resolveEnvAction's EXPR-selection (msg.EXPR)
 // directly against the Session package, complementing the executor-level
@@ -74,9 +74,8 @@ func TestManagerCreate_EnterEnvironment_BaseSpec_ExpressionSyntaxStaysMalformed(
 // environment script's let: names are Script's children's to see (actions,
 // embeddedFiles), and Variables is a SIBLING of Script -- see
 // TestManagerCreate_EnterEnvironment_EXPR_VariablesCannotSeeEnvLet below,
-// and fmtres.ApplyEnvLet's doc comment. An earlier revision of this test
-// resolved MY_VAR from "{{greeting}}" and passed, which was itself the
-// divergence from phase 2 that the E4a whole-branch review recorded.
+// and fmtres.ApplyEnvLet's doc comment. Resolving MY_VAR from "{{greeting}}"
+// would itself be a divergence from phase 2.
 func TestManagerCreate_EnterEnvironment_EXPR_LetBindingSharedAcrossEnterAndFiles(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("test uses POSIX shell commands")
@@ -171,13 +170,13 @@ func TestManagerCreate_EnterEnvironment_EXPR_VariablesCannotSeeEnvLet(t *testing
 }
 
 // TestManagerCreate_EnterEnvironment_EXPR_StepEnvironmentSeesStepTemplateLet
-// is the E4a whole-branch review's Critical 1 reproducer, end to end: a step
-// template's let: block binds "outdir", and that step's stepEnvironments use
-// it in both a variable value and an onEnter argument. Template Schemas
-// §3.6.2 row 1 grants the name to the whole stepEnvironments subtree, and
-// phase 2 accepts the template with zero expression errors; before the fix,
-// phase 3 failed BOTH positions with unknown symbol "outdir", which failed
-// Manager.Create and therefore every task in the step.
+// runs end to end: a step template's let: block binds "outdir", and that
+// step's stepEnvironments use it in both a variable value and an onEnter
+// argument. Template Schemas §3.6.2 row 1 grants the name to the whole
+// stepEnvironments subtree, and phase 2 accepts the template with zero
+// expression errors; if phase 3 did not see the name, BOTH positions would
+// fail with unknown symbol "outdir", failing Manager.Create and therefore
+// every task in the step.
 func TestManagerCreate_EnterEnvironment_EXPR_StepEnvironmentSeesStepTemplateLet(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("test uses POSIX shell commands")
@@ -218,9 +217,9 @@ func TestManagerCreate_EnterEnvironment_EXPR_StepEnvironmentSeesStepTemplateLet(
 }
 
 // TestManagerCreate_EnterEnvironment_EXPR_JobEnvironmentIgnoresStepTemplateLet
-// is Critical 1's negative half: a JOB environment has no enclosing step, so
-// §3.6.2 row 1 grants it nothing -- sub-project E3's §2.2 ruling and the
-// 7.3.1--step-name-in-job-environment-let.invalid.yaml fixture require the
+// is the negative half of the test above: a JOB environment has no enclosing
+// step, so §3.6.2 row 1 grants it nothing -- the
+// 7.3.1--step-name-in-job-environment-let.invalid.yaml fixture requires the
 // step-template block to stay invisible here. AssignEnvironment.StepEnvironment
 // (absent/false below) is the only bit that distinguishes the two levels on
 // the wire.
@@ -309,7 +308,7 @@ func TestSession_ExitEnvironments_EXPR_LetBindingAppliedOnce(t *testing.T) {
 }
 
 // TestSession_ExitEnvironments_EXPR_StepEnvironmentSeesStepTemplateLet is
-// Critical 1's teardown half. resolveEnvAction builds a fresh table at exit
+// the teardown half. resolveEnvAction builds a fresh table at exit
 // time, so the step-template block has to be folded in there too — otherwise
 // an onExit action referencing a step-template binding fails with unknown
 // symbol and the session cannot tear down cleanly.

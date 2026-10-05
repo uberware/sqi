@@ -69,8 +69,8 @@ func TestSecureWorkDir_UnknownAccountFails(t *testing.T) {
 }
 
 // TestValidateTraversable_NoOpWithReason proves ValidateTraversable does not
-// block on Windows. Unlike the previous revision, this is no longer because
-// the feature is unimplemented: Windows grants Bypass traverse checking
+// block on Windows. This is not because the feature is unimplemented:
+// Windows grants Bypass traverse checking
 // (SeChangeNotifyPrivilege) to Everyone by default, which skips ancestor
 // checks entirely, so there is no POSIX-style traversable bit for a
 // path-based check to inspect. The equivalent guarantee is verified against
@@ -111,7 +111,7 @@ func TestWriteFileFchown_RefusesToWriteThroughAPreexistingEntry(t *testing.T) {
 // the ACL in isolation, applied here to what actually landed on disk. It
 // reads the security descriptor straight from the filesystem via
 // GetNamedSecurityInfo, independently of the openForACL/applyProtectedDACL
-// primitives production code used to write it, so a bug in those primitives
+// primitives production code uses to write it, so a bug in those primitives
 // can't hide from this assertion the way it could if the test reused the
 // same code path to verify itself.
 //
@@ -153,14 +153,13 @@ func assertSecured(t *testing.T, path string, sid *windows.SID) {
 // actually succeeds when it is invoked for real, not merely that
 // WriteFileFchown returns nil.
 //
-// Before the fix, the create went through os.OpenFile, which on Windows only
-// ever requests GENERIC_WRITE; that carries READ_CONTROL but not WRITE_DAC,
-// and Windows fixes a handle's access rights at open time, so
-// applyProtectedDACL failed ERROR_ACCESS_DENIED on the still-open descriptor
-// every single time cred was non-nil — WriteFileFchown returned that error
-// instead of nil. Both pre-existing WriteFileFchown tests above pass nil,
-// which is exactly why this went unnoticed. This test uses a credential
-// naming the account the test process is already running as: lookupUserSID
+// A create through os.OpenFile, which on Windows only ever requests
+// GENERIC_WRITE, carries READ_CONTROL but not WRITE_DAC, and Windows fixes a
+// handle's access rights at open time, so applyProtectedDACL would fail
+// ERROR_ACCESS_DENIED on the still-open descriptor every time cred was
+// non-nil. Both WriteFileFchown tests above pass nil, so they cannot see
+// that. This test uses a credential naming the account the test process is
+// already running as: lookupUserSID
 // resolves any real local account, and the process account always qualifies,
 // so the ACL path genuinely executes on an ordinary developer machine with no
 // fixture account required.
@@ -184,36 +183,33 @@ func TestWriteFileFchown_AppliesACLForRealCredential(t *testing.T) {
 // entry in root still gets ChownRecursive's DACL even when a reparse point
 // sorts lexically before it.
 //
-// The reviewer's own reproduction used a real NTFS symlink
-// (IO_REPARSE_TAG_SYMLINK) — what production code actually encounters — but
-// creating one needs SeCreateSymbolicLinkPrivilege (or Developer Mode), and
-// this session, which must not attempt to elevate, holds neither: verified
-// directly rather than assumed — both os.Symlink and `mklink` (no /j) fail
-// here with "A required privilege is not held by the client", and the
-// Developer Mode registry key
-// (HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\AppModelUnlock\
-// AllowDevelopmentWithoutDevLicense) does not exist on this host at all. So
-// this test cannot drive the defect through an actual symlink.
+// The natural reproduction uses a real NTFS symlink (IO_REPARSE_TAG_SYMLINK)
+// — what production code actually encounters — but creating one needs
+// SeCreateSymbolicLinkPrivilege (or Developer Mode), which an unelevated test
+// process does not hold: both os.Symlink and `mklink` (no /j) fail with "A
+// required privilege is not held by the client" unless the Developer Mode
+// registry key (HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\
+// AppModelUnlock\AllowDevelopmentWithoutDevLicense) is set. So this test
+// cannot drive the defect through an actual symlink.
 //
 // A directory JUNCTION (IO_REPARSE_TAG_MOUNT_POINT, `mklink /j`) needs no
-// privilege at all — but is exactly what the already-committed
+// privilege at all — but is exactly what
 // TestIsolationWindows_ChownRecursiveDoesNotFollowJunction
 // (test/integration/isolation_windows_test.go) already uses, and Go 1.23+
 // reports a junction as fs.ModeIrregular, not fs.ModeSymlink
 // (os/types_windows.go's isReparseTagNameSurrogate/mode split from the
 // pre-1.23 behavior): an unadorned junction never reaches the
-// ModeSymlink-gated branch the defect lived in, so a plain junction test
-// would pass against the buggy code exactly as it does against the fixed
-// code, proving nothing — precisely how this shipped uncaught.
+// ModeSymlink-gated branch the defect lives in, so a plain junction test
+// would pass against the buggy code exactly as it does against the correct
+// code, proving nothing.
 //
 // GODEBUG=winsymlink=0 restores the pre-Go-1.23 compatibility mode, in which
 // a junction DirEntry reports fs.ModeSymlink exactly like a real symlink does
-// by default (checked directly against os.ReadDir before writing this test).
-// That is the SAME DirEntry.Type() bit the buggy branch keyed off, so setting
-// it drives the actual conditional the defect lived in, through the real
-// ChownRecursive function and a real filepath.WalkDir, using only a
-// filesystem object any unprivileged account can create — the closest this
-// session can get to the reviewer's repro without elevating.
+// by default (checked against os.ReadDir). That is the SAME DirEntry.Type()
+// bit a buggy branch would key off, so setting it drives the actual
+// conditional, through the real ChownRecursive function and a real
+// filepath.WalkDir, using only a filesystem object any unprivileged account
+// can create — the closest an unelevated test can get to the symlink case.
 func TestChownRecursive_SecuresSiblingsAfterAReparsePoint(t *testing.T) {
 	t.Setenv("GODEBUG", "winsymlink=0")
 

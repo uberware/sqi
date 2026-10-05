@@ -108,9 +108,8 @@ func TestShippedDefinitions_DescriptionsAreShortPlainText(t *testing.T) {
 }
 
 // Readmes may use only the subset web/src/components/Markdown.tsx implements.
-// Anything else renders as literal text in the UI -- silently, with no error,
-// which is exactly how three shipped presets once shipped nested lists that
-// rendered as stray paragraphs.
+// Anything else renders as literal text in the UI -- silently, with no error:
+// a nested list, for example, renders as stray paragraphs.
 func TestShippedDefinitions_ReadmesUseTheSupportedSubset(t *testing.T) {
 	t.Parallel()
 	// Substring matching is too crude for these: `ffmpeg -ss <offset> -t ...`

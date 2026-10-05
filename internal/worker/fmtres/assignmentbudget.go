@@ -2,40 +2,38 @@
 
 package fmtres
 
-// EXPR sub-project E4c's Task 4: the worker's share of the template-wide
-// budget design spec §3 introduces server-side (internal/openjd/exprcheck.go's
-// templateBudget) -- a DIFFERENT budget, in a DIFFERENT process, for the
-// THIRD of the three walks the design spec's own table names: phase 3, this
-// package, running on the worker against an assignment's concrete values.
+// The worker's share of the template-wide budget the server enforces
+// (internal/openjd/exprcheck.go's templateBudget) -- a DIFFERENT budget, in a
+// DIFFERENT process, for the THIRD of the three evaluation walks: phase 3,
+// this package, running on the worker against an assignment's concrete
+// values.
 //
-// # What already existed, and the gap this closes
+// # The gap this closes
 //
-// EXPR sub-project E4a already bounds ONE symbol table's let: retention
-// (defaultLetRetainedBytes, exprsyms.go, 10 MB) and every individual
-// evaluation's own operation/memory cost ([ExprLimits.OperationLimit]/
-// [ExprLimits.MemoryLimit], expres.go). Neither bounds the ASSIGNMENT as a whole:
-// one assignment resolves MANY tables (the task's own TaskSymbols table, plus
-// one EnvSymbols table per environment ENTERED in the session -- a template
-// may declare many job and step environments) and, within each table, MANY
-// positions (a command, every Args entry, every embedded file's data, every
-// variable value). Before this task nothing summed any of that: an
-// assignment with, say, 20 environments each individually under
-// defaultLetRetainedBytes could ALLOCATE up to 20x that in aggregate over the
-// course of entering them (see defaultAssignmentRetainedBytes' own comment,
-// below, for why that is a claim about cumulative allocation across entry,
-// not simultaneously live memory), and an assignment with thousands of cheap
-// positions across many actions paid no aggregate cost at all -- both are
-// the same class of gap E4c Task 3 closed server-side (a per-position and
-// per-table bound that does not sum across the whole walk).
+// defaultLetRetainedBytes (exprsyms.go, 10 MB) bounds ONE symbol table's let:
+// retention, and [ExprLimits.OperationLimit]/[ExprLimits.MemoryLimit]
+// (expres.go) bound every individual evaluation's own cost. Neither bounds the
+// ASSIGNMENT as a whole: one assignment resolves MANY tables (the task's own
+// TaskSymbols table, plus one EnvSymbols table per environment ENTERED in the
+// session -- a template may declare many job and step environments) and,
+// within each table, MANY positions (a command, every Args entry, every
+// embedded file's data, every variable value). Without a sum, an assignment
+// with, say, 20 environments each individually under defaultLetRetainedBytes
+// could ALLOCATE up to 20x that in aggregate over the course of entering them
+// (see defaultAssignmentRetainedBytes' own comment, below, for why that is a
+// claim about cumulative allocation across entry, not simultaneously live
+// memory), and an assignment with thousands of cheap positions across many
+// actions would pay no aggregate cost at all -- the same class of gap the
+// server's template-wide budget closes (a per-position and per-table bound
+// that does not sum across the whole walk).
 //
-// Scoped to ENTRY only, not teardown: fix round 1 (post-implementation
-// review, Critical 2) found that charging teardown (session.go's
+// Scoped to ENTRY only, not teardown: charging teardown (session.go's
 // resolveEnvAction, reached via ExitEnvironments) against this same budget
-// let an assignment-wide cap intended to bound resource use become a
-// resource LEAK instead -- an exhausted budget at teardown time made
-// ExitEnvironments silently skip an environment's onExit entirely (it treats
-// a resolve error as a warning and continues), so license check-ins, daemon
-// shutdowns, and unmounts were dropped with only a log line. Teardown is
+// would turn an assignment-wide cap intended to bound resource use into a
+// resource LEAK -- an exhausted budget at teardown time would make
+// ExitEnvironments skip an environment's onExit entirely (it treats a
+// resolve error as a warning and continues), so license check-ins, daemon
+// shutdowns, and unmounts would be dropped with only a log line. Teardown is
 // therefore exempt from this budget entirely; see resolveEnvAction's own doc
 // comment in session.go for the full reasoning.
 //
@@ -61,8 +59,8 @@ package fmtres
 // allocates it once, before any environment is entered, and every table this
 // assignment builds (the task's own, and every environment's) shares that
 // SAME object, via session.Session's own accessor. This is deliberately
-// analogous to design spec §3.1's per-phase scoping server-side (Task 3's
-// templateBudget, fresh per checkTemplateExpressions call): a fresh budget
+// analogous to the server's per-phase scoping (templateBudget, fresh per
+// checkTemplateExpressions call): a fresh budget
 // per assignment is what keeps one task's cost from being charged against
 // another's, exactly as phase 1's budget must not be charged against phase
 // 2's -- see TestAssignmentBudget_FreshPerAssignment (assignmentbudget_test.go)
@@ -72,8 +70,7 @@ package fmtres
 // concurrently-running session on the worker). Building that correctly needs
 // a release step tied to session lifetime (Manager.Cleanup) and would let one
 // large but otherwise-compliant assignment starve every OTHER concurrently
-// running task's budget on the same host -- a much larger design change than
-// this task's brief scopes. Instead, [AssignmentBudget] is intentionally
+// running task's budget on the same host. Instead, [AssignmentBudget] is intentionally
 // small enough (see DefaultAssignmentPositions/defaultAssignmentRetainedBytes, below)
 // that CONCURRENCY is accounted for by the PRODUCT of the per-assignment cap
 // and the worker's own concurrent-task ceiling, not by a shared counter: "The
@@ -90,13 +87,12 @@ package fmtres
 // # Thread safety
 //
 // [AssignmentBudget] is safe for concurrent use (a mutex-guarded counter
-// pair), even though Phase 1 defers session reuse across tasks (session.go's
-// own package comment: today exactly one task ever runs in one session). Two
-// reasons this still matters now, not merely "for later": session.Session's
-// own type contract already promises "safe for concurrent use... multiple
-// tasks may execute within a single session simultaneously", and a session's
-// environment-teardown path (ExitEnvironments) can run concurrently with -- or
-// immediately after -- a still-finishing task action in today's code, both of
+// pair), even though sessions are not reused across tasks (session.go's own
+// package comment: exactly one task runs in one session). Two reasons:
+// session.Session's own type contract promises "safe for concurrent use...
+// multiple tasks may execute within a single session simultaneously", and a
+// session's environment-teardown path (ExitEnvironments) can run concurrently
+// with -- or immediately after -- a still-finishing task action, both of
 // which would charge the SAME AssignmentBudget from different goroutines.
 // TestAssignmentBudget_ConcurrentCharges (assignmentbudget_test.go) drives
 // concurrent charges under -race and asserts the total is exact -- not merely
@@ -117,26 +113,17 @@ const (
 	// assignment's phase-3 evaluation may resolve, summed across the task's
 	// own table and every environment's.
 	//
-	// WORKED CALCULATION, generous but plausible for a real session, and
-	// CORRECTED by fix round 1 (post-implementation review): an EARLIER
-	// version of this comment counted onEnter AND onExit as 21 positions
-	// each (42/environment) -- wrong in TWO ways the fix round's other
-	// change (Critical 2, session.go's resolveEnvAction) resolved together.
-	// First, it undercounted: Variables is resolved at BOTH entry
-	// (resolveEnvEntry) and exit (resolveEnvAction) in the pre-fix code, so
-	// the real PRE-FIX charge was onEnter(21) + onExit(21) + variables
-	// charged TWICE (10 + 10) + files(5) = 67, not 57. Second, and mooting
-	// the first: fix round 1's Critical 2 made resolveEnvAction's teardown
-	// path NOT charge this budget AT ALL (see that method's own doc comment
-	// in session.go for why a budget that cannot avert the memory it is
-	// charging for must not be allowed to block cleanup) -- so onExit's
-	// command/args and the SECOND (exit-time) variables resolution now
-	// contribute ZERO positions, not 21 or 10.
+	// WORKED CALCULATION, generous but plausible for a real session. The
+	// teardown path (session.go's resolveEnvAction) does NOT charge this
+	// budget (see that method's own doc comment for why a budget that cannot
+	// avert the memory it is charging for must not be allowed to block
+	// cleanup), so onExit's command/args and the exit-time variables
+	// resolution contribute ZERO positions.
 	//
-	// The CURRENT, accurate calculation: one task action (command + 30 args
-	// + 10 embedded files = 41, unaffected -- a task has no exit/teardown
+	// One task action (command + 30 args
+	// + 10 embedded files = 41 -- a task has no exit/teardown
 	// counterpart) plus up to 50 environments entered in one session (no
-	// structural cap on environment count exists today -- see
+	// structural cap on environment count exists -- see
 	// internal/openjd's own maxSteps comment for the analogous reasoning it
 	// applies to steps), each environment costing ONLY its entry-side work:
 	// onEnter (command + 20 args = 21) + 10 variables (entry only) + 5
@@ -145,35 +132,32 @@ const (
 	//
 	// THE VALUE IS NOT SIZED BY THAT CALCULATION ALONE. It is 10,000 because
 	// internal/openjd's own template-position default is 10,000, and this cap
-	// must never be the TIGHTER of the two -- raised from 5,000 by fix round 2
-	// (whole-branch review, IMPORTANT 1), which found the two constants had
-	// no stated relation, no test, and no mention of each other.
+	// must never be the TIGHTER of the two.
 	//
-	// E4d TASK 2 MADE BOTH SIDES CONFIGURABLE, so this constant is now only
-	// the DEFAULT: the enforced value is [ExprLimits.AssignmentPositions],
-	// carried on the assignment's own budget. It stays exported because
-	// internal/openjd's TestTemplateBudget_WorkerCapIsNotTighter is the only
-	// place that sees both sides of the relation and still needs to read it --
-	// but note that with both sides configurable, that test now compares two
-	// DEFAULTS and cannot see a farm whose YAML violates the relation. E4d
-	// Task 3 closed that at runtime, in internal/scheduler: the CONFIGURED
-	// value is advertised to the server at registration and an EXPR job is not
-	// dispatched to a worker whose value is below the server's (that gate
-	// identifies an EXPR job by a documented heuristic, not exactly -- see
-	// internal/scheduler/exprcaps.go's jobMayUseEXPR). What
-	// Task 2 did was make the relation SATISFIABLE at every legal setting, by
-	// giving this dimension the same ceiling as the server's (see
+	// Both sides are configurable, so this constant is only the DEFAULT: the
+	// enforced value is [ExprLimits.AssignmentPositions], carried on the
+	// assignment's own budget. It stays exported because internal/openjd's
+	// TestTemplateBudget_WorkerCapIsNotTighter is the only place that sees
+	// both sides of the relation and needs to read it -- but with both sides
+	// configurable, that test compares two DEFAULTS and cannot see a farm
+	// whose YAML violates the relation. internal/scheduler enforces it at
+	// runtime: the CONFIGURED value is advertised to the server at
+	// registration and an EXPR job is not dispatched to a worker whose value
+	// is below the server's (that gate identifies an EXPR job by a documented
+	// heuristic, not exactly -- see internal/scheduler/exprcaps.go's
+	// jobMayUseEXPR). The relation is SATISFIABLE at every legal setting
+	// because this dimension has the same ceiling as the server's (see
 	// MaxExprAssignmentPositions).
 	//
-	// WHY THE RELATION IS LOAD-BEARING: the server charges its 10,000-position
+	// WHY THE RELATION MATTERS: the server charges its 10,000-position
 	// template-wide budget at validate and submit; this budget is charged on
 	// the WORKER, after the job exists. The positions one assignment resolves
 	// -- its own step action and embedded files, plus every job and step
 	// environment the session enters -- are a SUBSET of the positions the
 	// server's walk already charged for the whole template. So a cap here
 	// BELOW the server's is reachable by a template the server ACCEPTED: one
-	// job environment with 5,000 Variables charged ~5,001 positions
-	// server-side (accepted, well under 10,000) and tripped the old 5,000 cap
+	// job environment with 5,000 Variables charges ~5,001 positions
+	// server-side (accepted, well under 10,000) and would trip a 5,000 cap
 	// here inside session.Manager.Create -- failing EVERY task in the job,
 	// one at a time, after submission, naming a budget the submitter was
 	// never shown. Post-submission per-task failure is the worst available
@@ -183,16 +167,16 @@ const (
 	// (internal/openjd/exprcheck_budget_test.go), which is where BOTH
 	// constants are visible.
 	//
-	// The alternative -- keeping 5,000 here and having the server charge a
-	// per-ASSIGNMENT sub-budget so the rejection happens at submit -- was
-	// rejected as the larger change: the server would have to model which of
-	// a template's positions land in one assignment (a task's own step plus
-	// the environments that task enters), which is a partition of the walk
-	// that nothing in internal/openjd computes today.
+	// The alternative -- a smaller cap here, with the server charging a
+	// per-ASSIGNMENT sub-budget so the rejection happens at submit -- is the
+	// larger change: the server would have to model which of a template's
+	// positions land in one assignment (a task's own step plus the
+	// environments that task enters), which is a partition of the walk that
+	// nothing in internal/openjd computes.
 	//
-	// The worked calculation above still stands as the FLOOR: 1,841 for a
-	// generous real session, so 10,000 leaves ~5.4x headroom rather than the
-	// ~2.7x that 5,000 gave. The wall-clock tradeoff of raising it is the
+	// The worked calculation above stands as the FLOOR: 1,841 for a
+	// generous real session, so 10,000 leaves ~5.4x headroom. The wall-clock
+	// tradeoff of raising it is the
 	// same one internal/openjd's own template-position limit records for the
 	// server, on a host that is executing one task rather than serving an
 	// API request.
@@ -200,7 +184,7 @@ const (
 	// ONE ASSUMPTION IS WORTH NAMING, because a future change could void it:
 	// "an assignment's positions are a subset of the template's" holds while
 	// exactly one task runs per session (see this file's "Scope" section and
-	// session.go's own package comment). If session reuse across tasks lands,
+	// session.go's own package comment). If sessions were reused across tasks,
 	// N tasks would share one budget and the subset argument becomes N x the
 	// per-task share -- at which point this cap, and the test pinning it,
 	// both need revisiting.
@@ -217,13 +201,11 @@ const (
 	// worth (the task's own, plus one environment's -- the common shape for a
 	// session that enters a handful of environments, not dozens with heavy
 	// let: blocks each) fits without pressure, while a session entering many
-	// MORE environments, each near its own 10 MB per-table ceiling, is now
+	// MORE environments, each near its own 10 MB per-table ceiling, is
 	// caught by THIS budget instead of accumulating unboundedly.
 	//
 	// THIS COUNTER MEASURES CUMULATIVE ALLOCATION ACROSS ONE SESSION'S
-	// ENTRY-TIME EVALUATION, NOT PEAK LIVE RETENTION AT ANY ONE INSTANT --
-	// corrected by fix round 1 (post-implementation review), which flagged
-	// an earlier revision of this comment for conflating the two. Each
+	// ENTRY-TIME EVALUATION, NOT PEAK LIVE RETENTION AT ANY ONE INSTANT. Each
 	// environment's phase-3 symbol table (EnvSymbols, built in
 	// resolveEnvEntry) is a LOCAL variable: it goes out of scope, and
 	// becomes eligible for GC, once that one environment's onEnter/
@@ -241,7 +223,7 @@ const (
 	// across the walk, not PEAK LIVE RETENTION at any one instant."
 	//
 	// THE CONCURRENCY ARGUMENT this number is chosen against, restated with
-	// that distinction now explicit (see this file's own package-level doc
+	// that distinction explicit (see this file's own package-level doc
 	// comment for the full account): worst-case worker-wide CUMULATIVE
 	// ALLOCATION THROUGHPUT from this mechanism, summed across every
 	// concurrently-creating session, is bounded by (concurrent session
@@ -253,13 +235,9 @@ const (
 	// heap -- an operator reading this constant should size against
 	// allocation/GC pressure proportional to core count, not against a
 	// claimed live-memory footprint, which this mechanism does not measure
-	// and did not, before this task, bound at all (the gap this task
-	// closes is the unbounded per-session ACCUMULATION, not a claim about
-	// instantaneous RAM). This is a real, standing tradeoff, not a proof of
-	// a tight global ceiling -- a genuine process-wide accounting is future
-	// work (E4d, operator configuration, is the natural place for a
-	// process-wide knob alongside a per-assignment one), recorded here
-	// rather than silently accepted as solved.
+	// (what it bounds is the per-session ACCUMULATION, not instantaneous
+	// RAM). This is a standing tradeoff, not a proof of a tight global
+	// ceiling -- process-wide accounting does not exist.
 	defaultAssignmentRetainedBytes int64 = 20_000_000
 )
 
@@ -297,9 +275,8 @@ type AssignmentBudget struct {
 //
 // The parameter is deliberately REQUIRED rather than an option: this
 // constructor is where an assignment acquires its limits, and a caller that
-// has operator configuration to supply but silently does not is the exact
-// failure E4d exists to prevent. Callers with nothing to say pass
-// ExprLimits{}.
+// has operator configuration to supply but does not would meter by the
+// defaults instead. Callers with nothing to say pass ExprLimits{}.
 func NewAssignmentBudget(lim ExprLimits) *AssignmentBudget {
 	return &AssignmentBudget{limits: lim.orDefaults()}
 }
@@ -316,12 +293,10 @@ func (b *AssignmentBudget) Limits() ExprLimits { return b.limits }
 // when b is nil.
 //
 // EVERY phase-3 entry point in this package takes its budget as a REQUIRED
-// parameter (E4d Task 2, fix round 1). It used to be a variadic tail, and that
-// shape is exactly what let executor.resolveAssignmentExpr meter every PATH
-// parameter against the compiled-in defaults for one commit: omitting the
-// argument compiled, ran, and produced no failure anywhere. A required
-// parameter cannot be omitted by accident; nil is a deliberate word a reviewer
-// can see.
+// parameter rather than a variadic tail: with a variadic tail, a caller that
+// omits the argument compiles, runs, and meters against the compiled-in
+// defaults with no failure anywhere. A required parameter cannot be omitted
+// by accident; nil is a deliberate, visible choice.
 //
 // nil is still ACCEPTED, and means "the built-in defaults" -- it is what this
 // package's own unit tests pass when the limits are not what they are testing,

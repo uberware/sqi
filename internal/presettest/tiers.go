@@ -23,7 +23,7 @@ type Tier1 struct {
 	// Caveat states what this Tier-1 claim does NOT prove, specifically. A
 	// Tier-1 golden proves the template expands to a reviewed command line; it
 	// does not prove the vendor's application accepts it. Empty is an error:
-	// the honesty requirement is machine-enforced rather than remembered.
+	// the requirement is machine-enforced rather than remembered.
 	Caveat string `yaml:"caveat"`
 }
 

@@ -328,7 +328,7 @@ func (s *Stager) stageOutEntry(ctx context.Context, root *os.Root, scratchDir st
 // branch of it, so a test can assert the specific path it exercises instead of
 // pattern-matching a message several branches happen to share.
 //
-// That distinction is load-bearing rather than tidiness. Two different things
+// That distinction matters. Two different things
 // refuse a junction: errStageOutReparse, when the advisory Root.Lstat below
 // saw a reparse point at rel's FINAL component, and errStageOutEscape, when
 // the kernel refused a lookup that met one ANYWHERE in rel. Both messages
@@ -414,9 +414,8 @@ func classifyStageOutOpenError(rel, rootName string, err error) error {
 //     a junction, and for the relative-symlink case that is followed.
 //   - There is no ".." to normalize away, so no escape by construction.
 //
-// Deliberate platform asymmetry, stated here rather than discovered later —
-// and stated by MECHANISM, because the mechanism is not the obvious one and
-// an earlier revision of this comment got it wrong.
+// Deliberate platform asymmetry, stated by MECHANISM, because the mechanism
+// is not the obvious one.
 //
 // Windows os.Root passes OBJ_DONT_REPARSE, so the kernel fails a lookup that
 // meets a reparse point anywhere in rel. Go does NOT stop there: it reads the
@@ -441,19 +440,16 @@ func classifyStageOutOpenError(rel, rootName string, err error) error {
 // an unprivileged isolated task does not hold, which is precisely why the
 // junction was the attack primitive. And it would be harmless if reached,
 // because the retried path is by construction still inside the root, so it
-// cannot leave scratch. Keep the conclusion; do not restore the wrong reason
-// for it.
+// cannot leave scratch.
 //
 // Either way the asymmetry is harmless for this caller — nothing legitimate
 // under scratch is ever a link (prepareEntries creates only directories, and
 // copyTree explicitly skips non-regular entries) — and the advisory Lstat
 // below means both platforms keep refusing a symlink (POSIX) or any reparse
-// point (Windows) at rel's FINAL component outright, preserving the pre-H3
-// behavior and wording.
+// point (Windows) at rel's FINAL component outright.
 //
-// On POSIX this is therefore NOT a pure strengthening, and should not be read
-// as one. Stage-out used to reach copyFile, whose O_NOFOLLOW refused ANY
-// symlink at the source's final component authoritatively, at the open. Now
+// On POSIX this is therefore weaker than copyFile's O_NOFOLLOW, which refuses
+// ANY symlink at the source's final component authoritatively, at the open.
 // Root.OpenFile FOLLOWS a symlink that stays inside the root, so the only
 // thing refusing an in-root symlink is the racy advisory Lstat above it. That
 // narrowing is accepted deliberately: it is not an escalation, because
@@ -461,10 +457,10 @@ func classifyStageOutOpenError(rel, rootName string, err error) error {
 // and task-writable (StageIn's ChownRecursive hands it over), so a task gains
 // nothing by symlinking one scratch path at another that it could not get by
 // writing the same bytes directly. Meanwhile the property that actually
-// matters — no escape from scratch — moved from a racy, and on Windows
-// simply wrong, filepath.EvalSymlinks computation to a kernel-enforced
-// lookup. A weaker check on something the task already controls, in exchange
-// for a sound one on the boundary.
+// matters — no escape from scratch — rests on a kernel-enforced lookup rather
+// than a racy, and on Windows wrong, filepath.EvalSymlinks computation. A
+// weaker check on something the task already controls, in exchange for a
+// sound one on the boundary.
 //
 // The remaining two checks run on the DESCRIPTOR, never on the path again:
 //
@@ -481,7 +477,8 @@ func classifyStageOutOpenError(rel, rootName string, err error) error {
 // sync_command receives path STRINGS and no descriptor, so its residual race
 // is structurally unclosable and stays documented in
 // docs/worker-configuration.md; what this function DOES give that mechanism
-// is refusal of the one-shot swap, which previously succeeded on Windows.
+// is refusal of the one-shot swap, which a path-based check lets through on
+// Windows.
 func openStageOutSource(root *os.Root, rel string) (*os.File, error) {
 	// ADVISORY ONLY, and deliberately so. Root.Lstat does not follow the
 	// final component, so this turns the two common attacks into a precise
@@ -584,7 +581,7 @@ func (s *Stager) runSync(ctx context.Context, src, dest, objectType string) erro
 // whole tree, a real regular file as a single file, anything else (symlink,
 // device node, FIFO, socket) is refused outright.
 //
-// Since H3 this is the STAGE-IN path only. Stage-out no longer routes through
+// This is the STAGE-IN path only. Stage-out does not route through
 // here at all: stageOutEntry hands openStageOutSource's validated descriptor
 // straight to copyFromFile, so there is no path-based mode decision left for
 // a task to race. Destination parents are created and the source file mode is
@@ -610,7 +607,7 @@ func builtinCopy(ctx context.Context, src, dest string) error {
 // copyFile opens src by path and copies it to dest, refusing to follow a
 // symlink at either end.
 //
-// Since H3 this is the STAGE-IN path (and copyTree's recursion) only —
+// This is the STAGE-IN path (and copyTree's recursion) only —
 // stage-out goes through openStageOutSource + copyFromFile, which never
 // re-opens by path. A stage-in source is a job-declared asset outside any
 // scratch directory, so there is no os.Root to open it through and
@@ -621,17 +618,14 @@ func builtinCopy(ctx context.Context, src, dest string) error {
 // why in.Stat()'s link count below runs on the OPENED DESCRIPTOR, pinning the
 // inode this call actually reads.
 //
-// BEHAVIOR CHANGE, WINDOWS, not free: hasExtraHardlinks used to return
-// (false, nil) unconditionally on Windows, so the link-count refusal below
-// was POSIX-only. It is now real on both platforms — which means a job INPUT
-// asset that happens to carry a second NTFS hardlink is refused at STAGE-IN
-// where it previously copied fine. Content-addressed or dedup asset stores
-// and "rsync --link-dest"-style delivery all produce exactly that. The
-// refusal is deliberate and kept (a hardlink IS the file: chowning the
-// scratch copy to the run-as-user identity chowns the original too, and
-// nothing downstream can separate them again — see
-// docs/worker-configuration.md), but it is a NEW refusal of previously
-// working legitimate work on Windows, not a no-cost parity win. Pinned by
+// The link-count refusal below is real on both platforms, which means a job
+// INPUT asset that happens to carry a second NTFS hardlink is refused at
+// STAGE-IN on Windows too. Content-addressed or dedup asset stores and
+// "rsync --link-dest"-style delivery all produce exactly that. The refusal is
+// deliberate (a hardlink IS the file: chowning the scratch copy to the
+// run-as-user identity chowns the original too, and nothing downstream can
+// separate them again — see docs/worker-configuration.md), but it does refuse
+// legitimate work. Pinned by
 // TestCopyFile_RefusesHardlinkedStageInSourceOnWindows.
 func copyFile(src, dest string, mode os.FileMode) error {
 	in, err := os.OpenFile(src, os.O_RDONLY|noFollowFlag, 0)

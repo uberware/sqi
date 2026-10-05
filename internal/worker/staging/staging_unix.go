@@ -15,7 +15,7 @@ import (
 // noFollowFlag is OR'd into every os.OpenFile call in copyFile that must not
 // traverse a final-component symlink — see that function's doc.
 //
-// Since H3, copyFile is the STAGE-IN path only: stage-out goes through
+// copyFile is the STAGE-IN path only: stage-out goes through
 // openStageOutSource, which opens via os.Root and needs no such flag because
 // the kernel refuses the lookup outright. This constant still matters because
 // a stage-in source is a job-declared asset outside any root, so there is no

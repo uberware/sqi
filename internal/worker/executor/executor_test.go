@@ -255,7 +255,7 @@ func newTestExecutor(t *testing.T, capture *captureOutput) (*executor.Executor, 
 }
 
 // newTestExecutorWithExprLimits is newTestExecutor with this host's phase-3
-// expression limits configured -- EXPR sub-project E4d's Task 2. Callers that
+// expression limits configured. Callers that
 // do not care about them keep using newTestExecutor, which passes the zero
 // value (the built-in defaults).
 func newTestExecutorWithExprLimits(t *testing.T, lim fmtres.ExprLimits) (*executor.Executor, *stubNATS, string) {
@@ -496,9 +496,9 @@ func TestExecutor_Dispatch_timeout(t *testing.T) {
 // with a zero grace period force-kills in-flight tasks and causes them to
 // publish a "failed"/"worker_shutdown" terminal status.
 //
-// An earlier version of this test canceled the worker context directly; the
-// current design decouples task execution from the signal context so that
-// tasks survive SIGINT/SIGTERM and are only killed by DrainAndShutdown.
+// It does not cancel the worker context directly: task execution is
+// decoupled from the signal context so that tasks survive SIGINT/SIGTERM and
+// are only killed by DrainAndShutdown.
 func TestExecutor_DrainAndShutdown_workerShutdown(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("subprocess test uses Unix-style exec")
@@ -1412,9 +1412,9 @@ func TestExecutor_Dispatch_embeddedFiles_writeFail(t *testing.T) {
 // Unlike the pre-exec failures above (which happen inside the task goroutine,
 // after Dispatch has already returned nil), these cover a failure in
 // session.Manager.Create itself — synchronous, inside Dispatch, before any
-// taskRun exists. Before the fix, Dispatch just returned the error to its
-// caller (the lease loop), which logged a warning and dropped it: no status
-// was ever published, so the task sat in "assigned" until the server's
+// taskRun exists. If Dispatch only returned the error to its caller (the
+// lease loop), which logs a warning and drops it, no status would be
+// published, so the task would sit in "assigned" until the server's
 // heartbeat/lease sweep reclaimed and retried it, eventually surfacing only
 // as a bare timeout instead of the actual reason.
 
@@ -1670,7 +1670,7 @@ func TestExecutor_Dispatch_stageScratchCleanedOnPipelineFailure(t *testing.T) {
 		// No Staging entries: StageIn creates the scratch dir but copies nothing.
 		// A PathMap rule with a non-empty SourcePath and empty DestinationPath
 		// causes pathmap.NewLookup to fail after StageIn has already created
-		// the scratch directory — the scenario that previously leaked the dir.
+		// the scratch directory — the scenario that would leak the dir.
 		PathMap: []protocol.PathMapRule{
 			{SourcePath: "/original/path", DestinationPath: ""},
 		},

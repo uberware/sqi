@@ -2,7 +2,7 @@
 
 package session
 
-// EXPR sub-project E4c's Task 4: the worker's assignment-wide budget
+// The worker's assignment-wide budget
 // (internal/worker/fmtres.AssignmentBudget), wired end to end through
 // Manager.Create -> enterEnvironments -> enterOne -> resolveEnvEntry ->
 // fmtres.ApplyEnvLet(..., s.exprBudget). The fmtres-package tests
@@ -104,22 +104,20 @@ func TestManagerCreate_EnterEnvironment_EXPR_AssignmentBudgetFreshPerSession(t *
 	}
 }
 
-// TestSession_ExitEnvironments_EXPR_AllOnExitRunAfterEntryNearsBudgetCap is
-// fix round 1's regression test for Critical 2: teardown must not silently
-// skip onExit actions merely because entry-time let bindings pushed the
-// assignment-wide budget close to (or, before the fix, at) its cap.
+// TestSession_ExitEnvironments_EXPR_AllOnExitRunAfterEntryNearsBudgetCap:
+// teardown must not silently skip onExit actions merely because entry-time
+// let bindings pushed the assignment-wide budget close to its cap.
 //
 // Two environments each let-bind a 7 MB string at ENTRY -- Manager.Create
 // succeeds at ~14,000,128 bytes, comfortably under the 20,000,000-byte
-// assignment-wide cap (the exact construction the coordinator's review
-// verified). BEFORE this fix, resolveEnvAction re-evaluated the SAME two
-// let: blocks a SECOND time at EXIT against the SAME shared budget, pushing
-// the cumulative total to ~21,000,192 bytes -- over the cap -- so
-// ExitEnvironments' second (later-entered) environment failed to resolve,
-// logged a warning, and skipped its onExit entirely, with only the FIRST
+// assignment-wide cap. If resolveEnvAction re-evaluated the SAME two let:
+// blocks a SECOND time at EXIT against the SAME shared budget, the
+// cumulative total would reach ~21,000,192 bytes -- over the cap -- so
+// ExitEnvironments' second (later-entered) environment would fail to
+// resolve, log a warning, and skip its onExit entirely, with only the FIRST
 // environment's onExit having already run via the earlier iteration. Both
-// onExit actions must run now: each writes its own witness file, and this
-// test asserts both exist and ExitEnvironments returns no error.
+// onExit actions must run: each writes its own witness file, and this test
+// asserts both exist and ExitEnvironments returns no error.
 func TestSession_ExitEnvironments_EXPR_AllOnExitRunAfterEntryNearsBudgetCap(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("test uses POSIX shell commands")

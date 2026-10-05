@@ -192,8 +192,8 @@ func (c commands) runInstall(cmd *cobra.Command, f installFlags) error {
 	return c.startAndReport(out, sc.Name, logPath)
 }
 
-// refuseExisting rejects an invalid name, or one a service already has (spec
-// §2: no overwrite), before install prompts for a password or changes
+// refuseExisting rejects an invalid name, or one a service already has (no
+// overwrite), before install prompts for a password or changes
 // anything. Otherwise the logon right, a credential check (a wrong password
 // counts toward the account's lockout) and an ACE on the log directory every
 // sqi service shares would all come first. Install's own probe still catches
@@ -347,7 +347,7 @@ func (c commands) stopWait(name string) time.Duration {
 }
 
 // commandWait is how long stop and uninstall wait for a service to stop: its
-// PreShutdown timeout (spec §2) plus ShutdownMargin for the process to exit,
+// PreShutdown timeout plus ShutdownMargin for the process to exit,
 // and never less than startWait. When the timeout could not be read it is
 // startWait; that is no reason to fail the command.
 func commandWait(preShutdown time.Duration, queryErr error) time.Duration {

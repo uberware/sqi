@@ -268,8 +268,8 @@ func TestRegister_StoresMessageInStream(t *testing.T) {
 	}
 }
 
-// TestRegister_AdvertisesConfiguredExprLimits pins the worker half of EXPR
-// sub-project E4d Task 3's cross-binary gate: the caps a worker will ENFORCE
+// TestRegister_AdvertisesConfiguredExprLimits pins the worker half of the
+// cross-binary EXPR limits gate: the caps a worker will ENFORCE
 // have to reach the server, or the server's dispatch gate has nothing to
 // compare against and silently falls back to assuming the defaults.
 //
@@ -434,7 +434,7 @@ func TestLastRegisteredAt_MonotonicallyIncreases(t *testing.T) {
 	}
 }
 
-// TestRegister_SendsAStablePerProcessInstanceID pins H4a2 §4.5 on the worker:
+// TestRegister_SendsAStablePerProcessInstanceID pins the instance ID on the worker:
 // the registration carries this process's instance ID, which is non-empty, is
 // the same in every registration the process makes (boot and a reconnect's
 // re-register), and differs between two processes (two Registrars).

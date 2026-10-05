@@ -212,9 +212,9 @@ func TestMessageWorkerShutdown_WireValue(t *testing.T) {
 }
 
 // TestRegisterMsg_InstanceIDWireKey pins the instance ID's wire key and that it
-// is omitted when empty, so a registration from a worker that sets none is
-// byte-for-byte what it was before the field existed (H4a2 §4.5: additive, no
-// ProtocolVersion bump).
+// is omitted when empty, so a registration from a worker that sets none
+// carries no instance_id key (the field is additive, with no ProtocolVersion
+// bump).
 func TestRegisterMsg_InstanceIDWireKey(t *testing.T) {
 	data, err := json.Marshal(protocol.RegisterMsg{WorkerID: "w1", InstanceID: "inst-1"})
 	if err != nil {

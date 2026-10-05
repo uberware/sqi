@@ -2,18 +2,17 @@
 
 package fmtres_test
 
-// Tests for exprlimits.go -- EXPR sub-project E4d's Task 2, the WORKER half
-// of "nine fixed Go constants become operator configuration".
+// Tests for exprlimits.go -- the WORKER half of the operator-configurable
+// expression limits.
 //
 // Two kinds of test live here, and they are deliberately different in shape:
 //
-//   - DEFAULTS-ARE-UNCHANGED. Every default must equal the constant it
-//     replaced, written as a LITERAL rather than as the constant itself --
-//     comparing defaultWorkerOperationLimit to itself would pass whatever it
-//     became.
+//   - DEFAULTS-ARE-PINNED. Every default is written as a LITERAL rather than
+//     as the constant itself -- comparing defaultWorkerOperationLimit to
+//     itself would pass whatever it became.
 //   - THE KNOB IS OBSERVED. Each of the five limits gets its own test that
 //     changes ONLY that value and watches the enforced bound move. "Read but
-//     not used" is this wave's characteristic failure and it is invisible to
+//     not used" is the characteristic failure of a config knob and it is invisible to
 //     any test that merely checks the value parses; the mutation target for
 //     each is named on the test.
 //
@@ -40,11 +39,10 @@ import (
 	"github.com/uberware/sqi/internal/fsutil"
 )
 
-// TestExprLimits_DefaultsMatchPreE4dConstants pins every default to the
-// literal value the package constant carried before E4d. A fresh worker with
-// no expr: block in its config file must meter exactly as every release
-// before this wave did.
-func TestExprLimits_DefaultsMatchPreE4dConstants(t *testing.T) {
+// TestExprLimits_DefaultsMatchLiteralValues pins every default to a
+// literal value: the numbers a fresh worker with no expr: block in its
+// config file meters by.
+func TestExprLimits_DefaultsMatchLiteralValues(t *testing.T) {
 	got := fmtres.DefaultExprLimits()
 	want := fmtres.ExprLimits{
 		OperationLimit:          1_000_000,
@@ -54,7 +52,7 @@ func TestExprLimits_DefaultsMatchPreE4dConstants(t *testing.T) {
 		LetRetainedBytes:        10_000_000,
 	}
 	if got != want {
-		t.Errorf("DefaultExprLimits() = %+v, want the pre-E4d constants %+v", got, want)
+		t.Errorf("DefaultExprLimits() = %+v, want the default constants %+v", got, want)
 	}
 	// DefaultAssignmentPositions is exported for internal/openjd's
 	// TestTemplateBudget_WorkerCapIsNotTighter (it is the only package that
@@ -66,8 +64,7 @@ func TestExprLimits_DefaultsMatchPreE4dConstants(t *testing.T) {
 	}
 }
 
-// TestExprLimits_ZeroValueNormalizesToDefaults pins the property that keeps
-// every pre-E4d call site in this package behaving unchanged: a zero
+// TestExprLimits_ZeroValueNormalizesToDefaults pins that a zero
 // ExprLimits means "unset, use the defaults", never "unlimited".
 func TestExprLimits_ZeroValueNormalizesToDefaults(t *testing.T) {
 	tests := []struct {
@@ -226,7 +223,7 @@ func TestExprLimits_KnobsAreIndependent(t *testing.T) {
 // through a REAL phase-3 resolution (ResolveActionExpr), because that is the
 // only way to see it: the number reaches the evaluator through
 // ExprEvalOptions, and an options slice that is built but never passed is
-// exactly the defect this wave must not ship.
+// the defect this test exists to catch.
 //
 // The construction is byte-CHEAP and operation-EXPENSIVE on purpose, so the
 // memory knob cannot be what produces the verdict.
@@ -387,10 +384,9 @@ func TestExprLimits_LetRetainedBytesIsObserved(t *testing.T) {
 // TestExprLimits_ReachSymbolBuilding pins the one phase-3 evaluation that is
 // NOT a format-string resolution: mapPathParamValue, the apply_path_mapping
 // call TaskSymbols/EnvSymbols make for every PATH-declared parameter. It is
-// metered by the same per-evaluation knobs, and before E4d it was the only
-// evaluator in this package a budget never reached at all -- so an operator
-// tightening memory would have seen every other position honor it and this
-// one silently keep the compiled-in default.
+// metered by the same per-evaluation knobs; if the budget did not reach it,
+// an operator tightening memory would see every other position honor it and
+// this one keep the compiled-in default.
 func TestExprLimits_ReachSymbolBuilding(t *testing.T) {
 	msg := &protocol.AssignMsg{
 		JobName:           "J",
@@ -568,9 +564,8 @@ func presetFiles(t *testing.T) []string {
 //
 // It DELIBERATELY MATCHES NO MESSAGE TEXT. It computes each preset's error
 // set under the DEFAULTS as a baseline and fails on any error the FLOORS add.
-// A message-matching version of this test (which is what E4d Task 1 shipped
-// first, and had to fix) silently ignores every dimension whose error it does
-// not happen to match; a set difference cannot.
+// A message-matching version of this test would ignore every dimension whose
+// error it does not happen to match; a set difference cannot.
 //
 // The baseline is needed rather than "expect zero errors" because these
 // presets are base-spec templates being pushed through the EXPR evaluator:
@@ -580,7 +575,7 @@ func presetFiles(t *testing.T) []string {
 // business. It does mean those six stop resolving at the offending args
 // entry, so their measured POSITION cost below is a lower bound on what the
 // whole step would charge -- which does not weaken the conclusion, because the
-// floor is sized from E4c's 1,841-position worked session rather than from
+// floor is sized from the 1,841-position worked session rather than from
 // these numbers.
 func TestExprLimits_FloorsAcceptReferencePresets(t *testing.T) {
 	floors := fmtres.ExprLimits{

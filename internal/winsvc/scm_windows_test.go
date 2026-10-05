@@ -318,8 +318,8 @@ func TestEnsureLogDir_GrantsAccountOnExistingProtectedDir(t *testing.T) {
 	}
 }
 
-// TestEnsureLogDir_CreatesProtectedDirForAccount pins spec §2 for a new
-// directory: a protected DACL with full control for SYSTEM, Administrators
+// TestEnsureLogDir_CreatesProtectedDirForAccount pins, for a new
+// directory, a protected DACL with full control for SYSTEM, Administrators
 // and the service account, and nobody else.
 func TestEnsureLogDir_CreatesProtectedDirForAccount(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "sqi", "logs")
@@ -363,7 +363,7 @@ func TestEnsureLogDir_KeepsUnprotectedDirUnprotected(t *testing.T) {
 	}
 }
 
-// TestEnsureLogDir_RefusesJunction pins the fix for a privilege-escalation
+// TestEnsureLogDir_RefusesJunction pins the refusal of a privilege-escalation
 // chain: any local user can create %ProgramData%\sqi and plant `logs` as a
 // junction (no privilege needed), and following it would hand the service
 // account Modify on the junction's target. EnsureLogDir must refuse, and the
@@ -445,7 +445,7 @@ func TestEnsureLogDir_RefusesReparsePointParentOnCreate(t *testing.T) {
 
 // TestEnsureLogDir_LocalSystemExistingDirUnchanged pins that a LocalSystem
 // install (no account) accepts an existing plain log directory and changes
-// nothing about it: an existing directory's ACL is left alone (spec §2).
+// nothing about it: an existing directory's ACL is left alone.
 func TestEnsureLogDir_LocalSystemExistingDirUnchanged(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "logs")
 	if err := os.Mkdir(dir, 0o750); err != nil {

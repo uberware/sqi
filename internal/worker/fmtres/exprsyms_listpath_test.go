@@ -44,12 +44,8 @@ func hostPathList(posix ...string) string {
 
 // TestTaskSymbols_ListPathIsMapped pins RFC 0007's requirement that
 // Param.<name> for a LIST[PATH] returns "a list[path] type value with path
-// mapping applied".
-//
-// Before sub-project F2 the mapping branch matched only a SCALAR path, on the
-// stated grounds that a concrete LIST[PATH] could never exist — true when
-// written, and made false by F1, which taught expr.ValueFromText to decode
-// lists. The value then took the unmapped branch silently.
+// mapping applied". A mapping branch that matched only a SCALAR path would
+// send a decoded LIST[PATH] down the unmapped branch.
 func TestTaskSymbols_ListPathIsMapped(t *testing.T) {
 	msg := &protocol.AssignMsg{
 		JobName: "J", StepName: "S",

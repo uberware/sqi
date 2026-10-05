@@ -137,7 +137,7 @@ func TestLoop_SkipsWrongVersionAssignmentButDispatchesRest(t *testing.T) {
 }
 
 // TestLoop_RequestCarriesTheInstanceID pins that every lease request carries
-// the process's instance ID from Config (H4a2 §4.5): the server holds work
+// the process's instance ID from Config: the server holds work
 // back from a process whose registration it has not applied yet, which it can
 // only do if the request says which process is asking.
 func TestLoop_RequestCarriesTheInstanceID(t *testing.T) {

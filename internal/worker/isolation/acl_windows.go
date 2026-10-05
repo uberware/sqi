@@ -78,8 +78,7 @@ func privilegedTrustees() ([]windows.EXPLICIT_ACCESS, error) {
 // the directory's actual current owner, i.e. whoever's Put call is running
 // right now. That would let ANY account able to create the isolation
 // directory — elevated or not — complete the entire provisioning flow,
-// silently reopening the exact credential-disclosure finding this ACL
-// exists to close. Machine-scope DPAPI is decryptable by anything on the
+// reopening the credential disclosure this ACL exists to prevent. Machine-scope DPAPI is decryptable by anything on the
 // host that can read the file, so this ACL, not the encryption, is the
 // actual security boundary for the stored password.
 func adminOnlyDACL() (*windows.ACL, error) {

@@ -74,15 +74,14 @@ func ChownRecursive(root string, cred *Credential) error {
 		// this callback to do beyond securing the entry itself, exactly like
 		// every other entry.
 		//
-		// An earlier revision returned filepath.SkipDir from a
-		// ModeSymlink-specific branch here, believing that was needed to
-		// stop descent. It was not, and it was actively wrong: SkipDir
+		// Returning filepath.SkipDir from a ModeSymlink-specific branch here
+		// to stop descent would be wrong: SkipDir
 		// returned for an entry whose IsDir() is false does not mean "don't
 		// descend" to filepath.WalkDir — it means "stop visiting the REST OF
 		// THE CURRENT DIRECTORY'S entries" (see the `for _, d1 := range
 		// dirs { … if err == SkipDir { break } }` loop in
 		// path/filepath/path.go). Since a reparse point sorts wherever its
-		// name falls, that silently abandoned every sibling sorting after it
+		// name falls, that would abandon every sibling sorting after it
 		// — a directory could look fully secured (ChownRecursive returning
 		// nil) while part of the tree still carried whatever ACL it
 		// inherited.
@@ -90,9 +89,8 @@ func ChownRecursive(root string, cred *Credential) error {
 	})
 }
 
-// ValidateTraversable is a no-op on Windows, and — unlike the previous
-// revision of this function — that is a property of the platform rather than
-// of an unfinished implementation.
+// ValidateTraversable is a no-op on Windows, and that is a property of the
+// platform rather than of an unfinished implementation.
 //
 // Windows grants "Bypass traverse checking" (SeChangeNotifyPrivilege) to
 // Everyone by default, which skips the access check on intermediate

@@ -25,8 +25,7 @@ func (f fakeStore) Secret(user string) (string, error) {
 	return s, nil
 }
 
-// TestLogonUserRefusesPrivilegedAccounts is the brief's own reproduction: a
-// privileged account name must be refused before any secret lookup or logon
+// TestLogonUserRefusesPrivilegedAccounts: a privileged account name must be refused before any secret lookup or logon
 // call, using the shared CheckNotPrivileged backstop rather than a
 // second, Windows-specific check.
 func TestLogonUserRefusesPrivilegedAccounts(t *testing.T) {

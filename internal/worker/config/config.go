@@ -68,14 +68,11 @@ type WorkerConfig struct {
 	Capabilities capabilities.CapabilitiesConfig `yaml:"capabilities"`
 
 	// Isolation controls running tasks as a queue-configured OS user
-	// (protocol.AssignMsg.Isolation). Auth/isolation is opt-in: a worker with
-	// a zero-value IsolationConfig behaves exactly as before this feature
-	// existed.
+	// (protocol.AssignMsg.Isolation). Isolation is opt-in.
 	Isolation IsolationConfig `yaml:"isolation"`
 
 	// Expr bounds what one assignment may spend evaluating OpenJD EXPR
-	// expressions on this host. Defaults reproduce the fixed limits every
-	// release before EXPR sub-project E4d compiled in.
+	// expressions on this host.
 	Expr ExprConfig `yaml:"expr"`
 }
 
@@ -188,8 +185,8 @@ const (
 // IsolationConfig controls running tasks as a queue-configured OS user.
 type IsolationConfig struct {
 	// Required makes the worker exit at boot when it cannot assume another
-	// identity. Default false, preserving pre-isolation behavior: a worker
-	// with no isolation capability keeps running ordinary queues.
+	// identity. Default false: a worker with no isolation capability keeps
+	// running ordinary queues.
 	// Env: SQI_WORKER_ISOLATION_REQUIRED
 	Required bool `yaml:"required"`
 
@@ -445,9 +442,8 @@ type WorkerSettings struct {
 	//     never nest; its ancestors, /var and /var/lib, are 0755 on every
 	//     real distribution, so nothing needs to be created or widened
 	//     specifically for this)
-	//   - otherwise: <DataDir>/sessions, the same location used before this
-	//     split existed — real run-as-user isolation cannot function without
-	//     root regardless of directory permissions, so there is nothing to
+	//   - otherwise: <DataDir>/sessions — real run-as-user isolation cannot
+	//     function without root regardless of directory permissions, so there is nothing to
 	//     protect by moving it.
 	// Env: SQI_WORKER_SESSION_DIR
 	SessionDir string `yaml:"session_dir"`

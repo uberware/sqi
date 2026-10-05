@@ -76,7 +76,7 @@ func TestValidateMetadata_ErrorNamesCapAndActual(t *testing.T) {
 }
 
 // The length cap applies to name, but the slug PATTERN stays on the definition
-// path only -- see the spec's post-approval finding. A pattern-invalid name is
+// path only. A pattern-invalid name is
 // therefore not ValidateMetadata's business.
 func TestValidateMetadata_IgnoresSlugPattern(t *testing.T) {
 	t.Parallel()

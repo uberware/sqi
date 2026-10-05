@@ -4,28 +4,25 @@ package fmtres
 
 // This file is the EXPR-aware counterpart of fmtres.go's ResolveAction,
 // ResolveEmbeddedFiles and ResolveVars: it evaluates an OpenJD expression
-// against Task 3's phase-3 symbol table (exprsyms.go's TaskSymbols/
-// EnvSymbols) instead of doing plain "{{Name}}" substitution. This is the
-// first point in the whole EXPR program where an expression's VALUE reaches
-// a real command line -- every earlier evaluation (phases 1 and 2, and
-// sub-project E3's let bindings) type-checked or bound a value and then
-// discarded it.
+// against the phase-3 symbol table (exprsyms.go's TaskSymbols/
+// EnvSymbols) instead of doing plain "{{Name}}" substitution. This is where
+// an expression's VALUE reaches a real command line -- every earlier
+// evaluation (phases 1 and 2, and server-side let bindings) type-checks or
+// binds a value and then discards it.
 //
 // It sits BESIDE fmtstring.Resolve, not instead of it: a template that does
 // not declare the EXPR extension must keep taking fmtstring.Resolve's exact
-// code path, byte for byte -- the design spec's section 4 states this
-// explicitly, mirroring the repo's own "auth-off path stays byte-for-byte
-// unchanged" rule. The caller (EXPR sub-project E4a's Task 6, not yet built)
-// picks between the two families using the assignment's own EXPR flag
-// (protocol.AssignMsg.EXPR), the same flag Task 3's symbol-table builders
-// already assume is true.
+// code path, byte for byte, mirroring the repo's own "auth-off path stays
+// byte-for-byte unchanged" rule. The caller (executor and session) picks
+// between the two families using the assignment's own EXPR flag
+// (protocol.AssignMsg.EXPR), the same flag the symbol-table builders assume
+// is true.
 //
 // # Lone versus embedded (section 1.3.2)
 //
 // internal/openjd's checkFormatString (exprcheck.go) is the shape this file
-// follows, deliberately: phases 2 and 3 differing in STRUCTURE, not just in
-// which symbols are concrete, is exactly what this sub-project exists to
-// avoid, per the design spec's own "one-code-path claim" (section 1.2). Both
+// follows, deliberately: phases 2 and 3 must not differ in STRUCTURE, only in
+// which symbols are concrete. Both
 // functions use fmtstring.LoneRef to ask the same question first -- is this
 // format string EXACTLY one reference with no surrounding text? -- and
 // answer it the same way:
@@ -54,10 +51,9 @@ package fmtres
 // checkFormatString stops at "does this evaluate without error" and
 // discards the result; this file's whole job is to keep the result and turn
 // it into wire text (or, for an args entry, into zero, one, or several
-// entries -- see TargetArgItem below), which is why it cannot simply call
+// entries -- see TargetArgItem below), which is why it cannot call
 // into that package (nor could it: internal/openjd pulls internal/store,
-// which cmd/sqi-worker must never depend on -- Task 3's own note on
-// exprsyms.go).
+// which cmd/sqi-worker must never depend on).
 //
 // One deliberate reading beyond what checkFormatString needs to decide,
 // because rendering forces the question in a way type-checking never does:
@@ -82,27 +78,26 @@ package fmtres
 // Unlike Command/embedded-file-data/variable-value (all TargetString, always
 // exactly one resulting string), a LONE args-entry reference can change how
 // many actual command-line arguments the entry produces -- this is the
-// first place in sqi that renders that behavior for real, since
-// checkFormatString only ever type-checked against TargetArgItem and threw
+// place in sqi that renders that behavior for real, since
+// checkFormatString only type-checks against TargetArgItem and throws
 // the result away.
 //
-// # Metering (design spec section 4.1)
+// # Metering
 //
 // Every evaluation in this file is metered by [ExprLimits.OperationLimit] and
 // [ExprLimits.MemoryLimit] -- never expr.Eval's own unconfigured defaults,
-// precisely so a caller cannot forget the budget the way an unmetered path
-// would. Phase 3 is the MORE expensive phase (E2's Task 10 measured ~40x one
+// so a caller cannot forget the budget the way an unmetered path
+// would. Phase 3 is the MORE expensive phase (measured at ~40x one
 // template's cost here versus phase 1, because concrete strings and paths
 // cost real bytes where a placeholder costs none), and the worker is a
 // shared, long-lived process evaluating untrusted templates -- not a request
 // handler that returns after one evaluation -- so an unmetered path here is a
-// worse liability than the one E2's whole-branch review found and fixed
-// server-side (a 183 KB template body reaching 6.9 GB).
+// worse liability than the server-side equivalent (a 183 KB template body
+// reaching 6.9 GB).
 //
-// EXPR sub-project E4d's Task 2 turned the two numbers into operator
-// configuration: they now arrive on the assignment's own [AssignmentBudget]
-// (exprlimits.go), whose defaults are the constants this file used to
-// hardcode. Every function below that evaluates anything takes that budget,
+// The two numbers are operator configuration: they arrive on the
+// assignment's own [AssignmentBudget] (exprlimits.go), whose defaults are the
+// constants below. Every function below that evaluates anything takes that budget,
 // so there is no way to reach the evaluator with some OTHER pair of numbers,
 // and no way to reach it with none.
 
@@ -118,9 +113,8 @@ import (
 // defaultWorkerOperationLimit and defaultWorkerMemoryLimit are the DEFAULTS
 // for the section 1.3.10/1.3.9 budgets every phase-3 evaluation in this file
 // is metered against ([ExprLimits.OperationLimit] and
-// [ExprLimits.MemoryLimit], reached via ExprEvalOptions). Before E4d's Task 2
-// they were the only possible values; an operator can now size them per host,
-// within the ranges exprlimits.go documents.
+// [ExprLimits.MemoryLimit], reached via ExprEvalOptions). An operator can
+// size them per host, within the ranges exprlimits.go documents.
 //
 // The two numbers are deliberately LOOSER than internal/openjd's
 // defaultSubmissionOperations/defaultSubmissionMemoryBytes (10,000 ops /
@@ -134,17 +128,13 @@ import (
 // requirement is that SOME budget applies, not that it is the tightest one in
 // the codebase.
 //
-// AN EARLIER REVISION OF THIS COMMENT CLAIMED BOTH NUMBERS "sit comfortably
-// UNDER internal/openjd/expr's own hard, non-configurable safety floors
-// (limits.go's maxElements and maxStringBytes, both 10,000,000)". THAT IS
-// FALSE FOR THE MEMORY LIMIT, which is 20,000,000 -- twice maxStringBytes --
-// and the argument behind it was wrong twice over: the two bound different
-// quantities (maxStringBytes caps one PRODUCED STRING, while section 1.3.9's
-// meter sums LIVE VALUES and recurses into containers, so a list of two 9 MB
-// strings holds ~18 MB with no fixed guard firing), and the operation limit
-// is a count of operations, not of elements, so comparing it to maxElements
-// compares nothing. The claim is withdrawn rather than repaired: neither
-// number is derived from a fixed guard.
+// Neither number is derived from internal/openjd/expr's fixed safety guards
+// (limits.go's maxElements and maxStringBytes, both 10,000,000), and the
+// memory limit is above maxStringBytes. The two bound different quantities:
+// maxStringBytes caps one PRODUCED STRING, while section 1.3.9's meter sums
+// LIVE VALUES and recurses into containers, so a list of two 9 MB strings
+// holds ~18 MB with no fixed guard firing; and the operation limit is a count
+// of operations, not of elements, so it is not comparable to maxElements.
 //
 // NEITHER OF THESE IS AN AGGREGATE BOUND, and for the one construct that
 // retains values across evaluations -- a let: block -- a per-Eval budget is
@@ -174,11 +164,9 @@ var TargetArgItem = expr.UnionOf(expr.OptionalOf(expr.TString), expr.ListOf(expr
 // session's real apply_path_mapping rules translated from the assignment's
 // wire format via ConvertPathMapRules.
 //
-// This is deliberately the ONE place all four settings are assembled: EXPR
-// sub-project E4a's Task 3 recorded expr.WithPathFormat(expr.PathNative) as
-// "a requirement for the wiring... wherever the options are assembled" --
-// this function is that place, so a later caller (Task 6) cannot wire the
-// resolvers in this file while forgetting it.
+// This is deliberately the ONE place all four settings are assembled, so a
+// caller cannot wire the resolvers in this file while forgetting
+// expr.WithPathFormat(expr.PathNative).
 //
 // ExprEvalOptions itself is a thin wrapper over exprEvalOptionsFor with
 // pathFlavor (this package's fixed choice, exprsyms.go); exprEvalOptionsFor
@@ -258,18 +246,16 @@ func convertPathMapSourceFormat(s string) expr.PathMapSourceFormat {
 // dst' true is the WRAPPER, pathMappingFuncs' apply_path_mapping ...
 // Callers wanting a path value must do the same rather than assume it."
 // Reusing the wrapper is also what keeps this from becoming a second,
-// independent implementation of the engine sub-project D already built --
-// exactly the "two formulas that happen to agree today" defect class this
-// codebase's own conventions call out repeatedly.
+// independent implementation of the path-mapping engine.
 //
 // raw is bound as a plain string SYMBOL rather than interpolated into the
 // expression source, so arbitrary path text -- quotes, backslashes,
 // non-ASCII -- can never be misparsed as expression syntax. opts comes from
 // [ExprEvalOptions] (metering, expr.PathNative, the converted rules), the SAME
-// options every other phase-3 evaluation in this package gets -- this is
-// exactly the "one place all four settings are assembled" ExprEvalOptions' own
-// doc comment already claims, now also true for symbol construction, not just
-// rendering. It is taken PRE-BUILT, rather than built here from lim and
+// options every other phase-3 evaluation in this package gets -- the "one
+// place all four settings are assembled" ExprEvalOptions' own doc comment
+// describes holds for symbol construction as well as rendering. It is taken
+// PRE-BUILT, rather than built here from lim and
 // pathMap, so a caller binding many parameters -- or many elements of one
 // LIST[PATH] -- assembles them once instead of once per value; every caller
 // still reaches them only through ExprEvalOptions, so there is still no
@@ -289,8 +275,8 @@ func mapPathParamValue(raw string, opts []expr.Option) (expr.Value, error) {
 // Parsed once, at package init, rather than per call: expr.Eval's own doc
 // comment says to ("Prefer Parse plus Expression.Eval when the same expression
 // is evaluated more than once"), and a LIST[PATH] parameter binds one value per
-// element, so the per-call spelling lexed and parsed this same literal once per
-// staged input file.
+// element, so a per-call spelling would lex and parse this same literal once
+// per staged input file.
 //
 // Reusing the parsed expression across calls -- and across goroutines, since
 // two task slots may build symbol tables concurrently -- is safe because
@@ -488,21 +474,20 @@ func resolveArgLoneRef(body string, syms expr.MapSymbols, opts []expr.Option) ([
 // the assignment's own PathMap field, forwarded to ExprEvalOptions to build
 // this call's options -- there is deliberately NO way to call this function
 // without metering, the worker's native path flavor, and the session's real
-// path-mapping rules all applying: FIX ROUND 1 (Task 4 review) replaced a
-// variadic opts ...expr.Option parameter with this one, because a variadic
-// tail compiles fine when the caller passes NOTHING, silently handing every
-// evaluation expr.Eval's own unconfigured defaults (10x the operations, 5x
-// the memory this package's own named limits choose) with no compiler error,
-// no lint, and no test failure to catch it. Taking the raw ingredient
-// (pathMap) rather than a pre-built []expr.Option closes that gap
-// completely, not merely narrows it: there is no longer an options value a
-// caller could construct, empty or otherwise, that skips metering.
+// path-mapping rules all applying. It takes pathMap rather than a variadic
+// opts ...expr.Option parameter, because a variadic tail compiles fine when
+// the caller passes NOTHING, handing every evaluation expr.Eval's own
+// unconfigured defaults (10x the operations, 5x the memory this package's own
+// named limits choose) with no compiler error, no lint, and no test failure
+// to catch it. Taking the raw ingredient (pathMap) rather than a pre-built
+// []expr.Option means there is no options value a caller could construct,
+// empty or otherwise, that skips metering.
 //
 // ResolveActionExpr returns a descriptive error -- naming the offending
 // field -- if any reference is malformed, evaluates to an error, or names a
 // symbol syms does not provide. The input action is never mutated.
 //
-// budget is EXPR sub-project E4c's Task 4 addition: charges one position for
+// budget is charged one position for
 // the command and one for each Args entry, BEFORE resolving it, so a budget
 // already exhausted by an earlier action/environment in this same assignment
 // stops the walk here without doing that entry's own evaluation work. See

@@ -16,8 +16,7 @@ import (
 // ── openjd.expr_* : defaults ────────────────────────────────────────────────
 
 // TestDefaultConfig_ExprLimits pins that a fresh install carries exactly the
-// four numbers internal/openjd enforced as constants before EXPR sub-project
-// E4d made them configurable. The cross-package half of this claim -- that
+// four default numbers internal/openjd defines. The cross-package half of this claim -- that
 // these equal internal/openjd's own DefaultExprLimits() -- is
 // TestExprLimits_ConfigMatchesOpenJD, in internal/server, because
 // internal/config must not import internal/openjd.
@@ -36,7 +35,7 @@ func TestDefaultConfig_ExprLimits(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			if tc.got != tc.want {
-				t.Errorf("openjd.%s = %d, want %d (a fresh install must reproduce the pre-E4d constant exactly)",
+				t.Errorf("openjd.%s = %d, want %d (a fresh install must reproduce the default exactly)",
 					tc.name, tc.got, tc.want)
 			}
 		})
@@ -255,8 +254,8 @@ func TestLoad_ExprLimitMalformedEnvIsAnError(t *testing.T) {
 
 // ── openjd.expr_submission_deadline ─────────────────────────────────────────
 
-// TestDefaultConfig_ExprSubmissionDeadline pins the shipped default of EXPR
-// sub-project H1's wall-clock backstop.
+// TestDefaultConfig_ExprSubmissionDeadline pins the shipped default of the
+// EXPR wall-clock backstop.
 //
 // It is deliberately NOT one of the four limits above, and the difference is
 // the whole point of the key: those four decide whether a template is VALID (a
@@ -403,9 +402,9 @@ func TestLoad_ExprSubmissionDeadlineMalformedEnvIsAnError(t *testing.T) {
 }
 
 // TestExampleConfig_ExprLimitsMatchDefaults keeps config/sqi-server.example.yaml
-// honest. The example file is what an operator copies, so a value in it that
-// drifts from the shipped default silently changes the behavior of anyone who
-// starts from it -- and nothing else in this repo reads that file, so nothing
+// in step with the defaults. The example file is what an operator copies, so
+// a value in it that drifts from the shipped default silently changes the
+// behavior of anyone who starts from it -- and nothing else in this repo reads that file, so nothing
 // else would notice. Only the openjd block is asserted; the rest of the example
 // deliberately demonstrates non-default values.
 func TestExampleConfig_ExprLimitsMatchDefaults(t *testing.T) {

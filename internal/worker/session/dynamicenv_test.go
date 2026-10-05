@@ -222,10 +222,10 @@ func TestDynamicEnv_LongLineDoesNotFailAction(t *testing.T) {
 
 	// The onEnter script:
 	//   1. Emits an openjd_env directive (must be applied to the session).
-	//   2. Emits a single 100 KB line of 'x' characters (exceeds the old 64 KB
-	//      bufio.Scanner default, confirming the regression is fixed).
+	//   2. Emits a single 100 KB line of 'x' characters (exceeds the 64 KB
+	//      bufio.Scanner default).
 	//   3. Exits 0.
-	// After the fix, Create must succeed and the directive must be visible to the
+	// Create must succeed and the directive must be visible to the
 	// subsequent environment's onEnter action.
 	msg := &protocol.AssignMsg{
 		JobID: "j",

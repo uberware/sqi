@@ -192,8 +192,8 @@ func refusingOps(t *testing.T) operations {
 	}
 }
 
-// TestNewCommand_ElevationCheckedBeforeAnyOperation pins spec §2's "every
-// subcommand checks for elevation first" at any elevation, CI's elevated
+// TestNewCommand_ElevationCheckedBeforeAnyOperation pins "every subcommand
+// checks for elevation first" at any elevation, CI's elevated
 // runners included: with the check failing, no subcommand may call another
 // operation, read its config's drain timeout, read stdin or print.
 func TestNewCommand_ElevationCheckedBeforeAnyOperation(t *testing.T) {
@@ -381,8 +381,8 @@ func TestInstall_WrongPasswordStopsBeforeInstall(t *testing.T) {
 	}
 }
 
-// TestInstall_ExistingServiceRefusedBeforeAnySideEffect pins spec §2's
-// refusal of an existing service: it comes straight after the elevation
+// TestInstall_ExistingServiceRefusedBeforeAnySideEffect pins the refusal of
+// an existing service: it comes straight after the elevation
 // check, before the password prompt, the logon right, the credential check
 // (a wrong password would count toward the account's lockout) and the shared
 // log directory's ACL. A probe that fails for another reason stops install
@@ -481,7 +481,7 @@ func TestInstall_StartWaitsForRunning(t *testing.T) {
 	}
 }
 
-// TestStartAndReport_FailurePrintsLogTail pins spec §2: a service that does
+// TestStartAndReport_FailurePrintsLogTail pins that a service that does
 // not start has the tail of its log printed.
 func TestStartAndReport_FailurePrintsLogTail(t *testing.T) {
 	logPath := filepath.Join(t.TempDir(), "sqi-test.log")
@@ -510,7 +510,7 @@ func TestStartAndReport_FailurePrintsLogTail(t *testing.T) {
 	}
 }
 
-// TestStopAndUninstall_WaitForPreShutdownTimeout pins spec §2: stop and
+// TestStopAndUninstall_WaitForPreShutdownTimeout pins that stop and
 // uninstall wait up to the service's own PreShutdown timeout.
 func TestStopAndUninstall_WaitForPreShutdownTimeout(t *testing.T) {
 	for _, sub := range []string{"stop", "uninstall"} {

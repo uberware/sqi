@@ -99,30 +99,28 @@ func TestCredentialClose_NeverCalledWhenCredentialNeverObtained(t *testing.T) {
 	}
 }
 
-// TestCredentialClose_ClosedExactlyOnceOnEnterEnvironmentsFailure used to
-// live here, exercising one of Manager.Create's own error paths (not just
-// the normal Cleanup path): a credential IS obtained (the account resolves),
-// but a later OnEnter action fails, so Create tears everything down itself —
-// including closing the credential — before returning the error.
+// One of Manager.Create's own error paths (not just the normal Cleanup path)
+// is NOT tested in this file: a credential IS obtained (the account
+// resolves), but a later OnEnter action fails, so Create tears everything
+// down itself — including closing the credential — before returning the
+// error.
 //
-// It is gone from this file, not merely un-skipped: unlike every other test
-// in this package, it drove the REAL applyCredential (isolation.Apply), not
-// a fake — Manager.Create's onEnter launch never had it replaced. Making the
-// engineered OnEnter failure ("sh -c exit 1") actually happen AS THE
-// RESOLVED ACCOUNT, rather than failing earlier with EPERM out of
-// isolation.Apply itself, requires a real setuid+setgroups transition to a
-// genuinely different uid — which requires real root. That is true on any
-// POSIX OS, not just a sandboxed one: exec.Cmd.SysProcAttr.Credential always
-// calls setgroups(2), which requires CAP_SETGID even to set a process's own
-// CURRENT supplementary group list unless the caller is already privileged —
-// so this test could never pass unprivileged, no matter how its temp
-// directory was rooted. That is exactly the condition this file's sibling
+// That path drives the REAL applyCredential (isolation.Apply), not a fake —
+// Manager.Create's onEnter launch does not replace it. Making the engineered
+// OnEnter failure ("sh -c exit 1") actually happen AS THE RESOLVED ACCOUNT,
+// rather than failing earlier with EPERM out of isolation.Apply itself,
+// requires a real setuid+setgroups transition to a different uid — which
+// requires real root. That is true on any POSIX OS, not just a sandboxed one:
+// exec.Cmd.SysProcAttr.Credential always calls setgroups(2), which requires
+// CAP_SETGID even to set a process's own CURRENT supplementary group list
+// unless the caller is already privileged — so such a test cannot pass
+// unprivileged, no matter how its temp directory is rooted. This file's
 // tests (TestCredentialClose_ClosedExactlyOnceOnNormalCleanup and
-// TestCredentialClose_NeverCalledWhenCredentialNeverObtained) avoid by
-// installing a same-uid fake account, resolved but never actually exec'd
-// under a switched identity.
+// TestCredentialClose_NeverCalledWhenCredentialNeverObtained) avoid that
+// condition by installing a same-uid fake account, resolved but never
+// actually exec'd under a switched identity.
 //
-// The real-root counterpart now lives at
+// The real-root test lives at
 // TestIsolation_CredentialClosedOnEnterEnvironmentsFailure in
 // test/integration/isolation_test.go (build tag integration, run by
 // `make test-isolation` as real root against a real, genuinely different

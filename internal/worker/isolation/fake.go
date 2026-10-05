@@ -55,8 +55,7 @@ func (f *fakeProvider) Resolve(_ context.Context, spec Spec) (*Credential, error
 	// validateAccountArg is the same gate the real POSIX provider applies
 	// before spec.User/spec.Group is used for anything. Skipping it here
 	// would mean a "-u"-shaped username passes the fake in tests and then
-	// fails only against the real provider — the fake/real divergence class
-	// a prior review round already had to close once.
+	// fails only against the real provider — a fake/real divergence.
 	if err := validateAccountArg(spec.User, "user"); err != nil {
 		return nil, err
 	}

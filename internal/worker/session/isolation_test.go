@@ -86,8 +86,8 @@ func testGID() uint32 {
 // On POSIX this is an arbitrary label — the fake credential switches purely
 // on uid/gid (see testUID/testGID), and no POSIX code path resolves a name
 // to anything. On Windows, Manager.Create really does call
-// isolation.SecureWorkDir now (Task 7 flips capableOS and this is no longer
-// skipped there), and that function resolves a Credential's identity by NAME
+// isolation.SecureWorkDir (capableOS is true there, so this is not
+// skipped), and that function resolves a Credential's identity by NAME
 // via the real Win32 LookupSID — an arbitrary name like "render" does not
 // exist as a local account and would fail that lookup, with no way for an
 // unprivileged test process to grant an invented name any access anyway.
@@ -272,8 +272,8 @@ func TestSessionBaseEnvFilteredOnceAtCreate(t *testing.T) {
 	}
 }
 
-// TestJobSuppliedEnvSurvivesFiltering is the regression guard for the
-// audit's core finding, expressed end to end: the allowlist governs ONLY what
+// TestJobSuppliedEnvSurvivesFiltering is the end-to-end regression guard for
+// the env_passthrough allowlist's scope: the allowlist governs ONLY what
 // is inherited from the daemon. A job's own dynamic openjd_env export must
 // never be filtered, no matter how narrow isolation.env_passthrough is.
 func TestJobSuppliedEnvSurvivesFiltering(t *testing.T) {
@@ -358,8 +358,7 @@ func TestManagerCreate_SessionRootModeDefaultsTo0711(t *testing.T) {
 
 // TestManagerCreate_SessionRootModeHonorsOption proves WithSessionRootMode
 // overrides the default: cmd/sqi-worker's effectiveSessionRoot picks 0750 for
-// the non-root DataDir fallback (the pre-split mode, restored for
-// byte-for-byte backward compatibility — see its own doc), and this is the
+// the non-root DataDir fallback (see its own doc), and this is the
 // mechanism that lets it do so without touching every other NewManager call
 // site in this codebase.
 func TestManagerCreate_SessionRootModeHonorsOption(t *testing.T) {

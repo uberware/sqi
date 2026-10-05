@@ -23,8 +23,8 @@ type Config struct {
 	WorkerID       string        // included in each request
 	// InstanceID is this worker process's instance ID (the one its
 	// registration carries), included in each request so the server can hold
-	// work back from a restarted process until its registration has landed
-	// (H4a2 §4.5). Empty sends none.
+	// work back from a restarted process until its registration has landed.
+	// Empty sends none.
 	InstanceID string
 }
 

@@ -79,8 +79,8 @@ func assertSecretRestricted(t *testing.T, path string) {
 	}
 }
 
-// TestSaveSeed_RestrictsAnExistingPermissiveFile no longer skips on Windows:
-// since fsutil.WriteSecret, SaveSeed restricts on both platforms, so
+// TestSaveSeed_RestrictsAnExistingPermissiveFile does not skip on Windows:
+// through fsutil.WriteSecret, SaveSeed restricts on both platforms, so
 // overwriting a permissive leftover must produce a restricted file on both.
 // Only the way the "permissive leftover" is CONSTRUCTED differs, and
 // os.WriteFile at 0644 constructs it on either — a real mode on POSIX,
@@ -194,14 +194,12 @@ func TestSaveSeed_NoTempFileSurvivesCreateFailure(t *testing.T) {
 // TestLoadSeed_RejectsPermissiveSeed proves the reader-side guard on EVERY
 // platform.
 //
-// It no longer skips on Windows. The old version wrote a restricted seed and
-// then chmod'd it to 0644 to make it permissive, which is a POSIX-only move —
-// os.Chmod on Windows toggles the read-only attribute and cannot widen read
-// access to anybody, so there was no way to construct the bad state and the
-// test simply skipped. Writing the seed with a plain os.WriteFile constructs it
-// on both: 0644 on POSIX, and on Windows a file that inherits its directory's
-// access instead of carrying a protected DACL. That is exactly the state every
-// Windows seed was in before fsutil.WriteSecret existed.
+// It does not skip on Windows. Writing a restricted seed and then chmod'ing it
+// to 0644 is a POSIX-only move — os.Chmod on Windows toggles the read-only
+// attribute and cannot widen read access to anybody. Writing the seed with a
+// plain os.WriteFile constructs the bad state on both: 0644 on POSIX, and on
+// Windows a file that inherits its directory's access instead of carrying a
+// protected DACL — the state a seed written without fsutil.WriteSecret is in.
 func TestLoadSeed_RejectsPermissiveSeed(t *testing.T) {
 	seed, _, err := brokerauth.GenerateSeed()
 	if err != nil {

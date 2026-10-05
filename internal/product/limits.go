@@ -15,12 +15,11 @@ import (
 //
 // The two interesting caps differ in kind. MaxDescriptionLen is a design
 // constraint -- description is rendered into an unclamped picker card and a
-// native Blender EnumProperty tooltip, and 500 is 1.5x the longest description
-// that survived commit a1e529e's hand-trim (329). It would have REJECTED the
-// 940-, 629- and 617-rune descriptions that forced that commit, which is the
-// test a cap should pass; a 1000 cap would have permitted all three.
+// native Blender EnumProperty tooltip, and 500 is 1.5x the longest shipped
+// description (329). It REJECTS 940-, 629- and 617-rune descriptions, which
+// is the test a cap should pass; a 1000 cap would permit all three.
 // MaxReadmeLen is only an abuse guard -- readme is detail-page-only, so nothing
-// downstream breaks; it simply should not be a novel.
+// downstream breaks; it should not be a novel.
 //
 // The rest have far more headroom than the shipped presets need (their maxima
 // are name 35, title 37, category 11). They exist because capping description
@@ -48,9 +47,8 @@ func checkLen(field, value string, maxRunes int) error {
 //
 // It is exported and deliberately called from BOTH doors into product data --
 // ParseDefinition and the REST create/update handler. Those are separate entry
-// points to the same data, and the comment on ValidateOptions records this exact
-// trap biting once already: the preset routes silently kept validating on
-// DefaultExprLimits() after the create/update route was fixed.
+// points to the same data, and the comment on ValidateOptions records the same
+// trap for the EXPR limits: two doors that must behave alike can drift apart.
 //
 // It checks LENGTH only. The slug pattern stays in validateName on the
 // definition path, because applying it to the REST route would tighten

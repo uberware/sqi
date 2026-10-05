@@ -20,10 +20,10 @@ var ErrCAExists = errors.New("certgen: CA already exists")
 // design — it is handed to every peer during a handshake — so it is written
 // with an ordinary mode and no ACL work.
 //
-// There is deliberately no keyMode constant any more. A private key goes
-// through fsutil.WriteSecret, because a POSIX mode alone protected these keys
-// on POSIX only: on Windows os.Chmod maps to the read-only ATTRIBUTE and
-// cannot deny read access to anybody, so ca.key and every leaf key landed with
+// There is deliberately no keyMode constant. A private key goes through
+// fsutil.WriteSecret, because a POSIX mode alone protects a key on POSIX
+// only: on Windows os.Chmod maps to the read-only ATTRIBUTE and cannot deny
+// read access to anybody, so ca.key and every leaf key would land with
 // whatever DACL they inherited. See that function's doc for the full account.
 const certMode os.FileMode = 0o644
 
