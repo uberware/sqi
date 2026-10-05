@@ -1027,7 +1027,7 @@ func TestH4a_SupersededAttemptLateReportIsIgnored(t *testing.T) {
 					}
 					fresh := res.Attempt
 					if tc.current == store.TaskStatusRunning {
-						if err := st.UpdateTaskStatus(t.Context(), task.ID, store.TaskStatusRunning); err != nil {
+						if err := fixtures(t, st).UpdateTaskStatus(t.Context(), task.ID, store.TaskStatusRunning); err != nil {
 							t.Fatalf("UpdateTaskStatus running: %v", err)
 						}
 					}

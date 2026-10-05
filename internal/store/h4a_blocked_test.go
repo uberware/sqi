@@ -161,7 +161,7 @@ func TestCancelBlockedJob_LeavesTerminalStepsAndKeepsReason(t *testing.T) {
 			if err := st.CreateJobDependencies(t.Context(), g.Job.ID, []string{up.Job.ID}); err != nil {
 				t.Fatalf("CreateJobDependencies: %v", err)
 			}
-			if err := st.SetTaskFailureReason(t.Context(), g.Tasks["open"][0].ID, "earlier reason"); err != nil {
+			if err := fixtures(t, st).SetTaskFailureReason(t.Context(), g.Tasks["open"][0].ID, "earlier reason"); err != nil {
 				t.Fatalf("SetTaskFailureReason: %v", err)
 			}
 			ok, tasks, err := st.CancelBlockedJob(t.Context(), g.Job.ID, store.FailureReasonUpstreamFailed, time.Now().UTC())

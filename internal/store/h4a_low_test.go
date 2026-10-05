@@ -74,7 +74,7 @@ func TestUpdateTaskAttempt_OnlyWhileRunning(t *testing.T) {
 			closed := seedAttempt(t, st, g.Tasks["a"][0], store.AttemptStatusSucceeded)
 			closed.SessionID = "late"
 			closed.Status = store.AttemptStatusFailed
-			if _, err := st.UpdateTaskAttempt(t.Context(), closed); !errors.Is(err, store.ErrConflict) {
+			if _, err := fixtures(t, st).UpdateTaskAttempt(t.Context(), closed); !errors.Is(err, store.ErrConflict) {
 				t.Fatalf("UpdateTaskAttempt on a closed attempt = %v, want ErrConflict (F16)", err)
 			}
 			got, err := st.GetTaskAttempt(t.Context(), closed.ID)
@@ -89,7 +89,7 @@ func TestUpdateTaskAttempt_OnlyWhileRunning(t *testing.T) {
 			// "running" report records its session.
 			running := seedAttempt(t, st, g.Tasks["a"][1], store.AttemptStatusRunning)
 			running.SessionID = "sess-1"
-			updated, err := st.UpdateTaskAttempt(t.Context(), running)
+			updated, err := fixtures(t, st).UpdateTaskAttempt(t.Context(), running)
 			if err != nil {
 				t.Fatalf("UpdateTaskAttempt on a running attempt: %v", err)
 			}
@@ -97,7 +97,7 @@ func TestUpdateTaskAttempt_OnlyWhileRunning(t *testing.T) {
 				t.Fatalf("running attempt after update = {status %q, session %q}, want {running, sess-1}", updated.Status, updated.SessionID)
 			}
 
-			if _, err := st.UpdateTaskAttempt(t.Context(), store.TaskAttempt{ID: "nope"}); !errors.Is(err, store.ErrNotFound) {
+			if _, err := fixtures(t, st).UpdateTaskAttempt(t.Context(), store.TaskAttempt{ID: "nope"}); !errors.Is(err, store.ErrNotFound) {
 				t.Fatalf("unknown attempt = %v, want ErrNotFound", err)
 			}
 		})

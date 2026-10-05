@@ -68,23 +68,4 @@ type TaskAttemptStore interface {
 	// ListTaskAttempts returns all attempts for the given task, ordered by
 	// AttemptNumber ascending.
 	ListTaskAttempts(ctx context.Context, taskID string) ([]TaskAttempt, error)
-
-	// UpdateTaskAttempt replaces the mutable fields of an existing attempt
-	// (Status, ExitCode, EndedAt; SessionID and Message only when non-empty).
-	// It writes only while the attempt is still running, evaluated inside the
-	// write, so a late or echoed report can never overwrite an attempt that
-	// something else already closed (F16). Returns [ErrConflict] when the
-	// attempt exists but is closed, and [ErrNotFound] if it does not exist.
-	//
-	// It must not be used to CLOSE an attempt: it will write a terminal Status,
-	// but it releases none of the attempt's usage claims, so the claims would
-	// stay active on a closed attempt (invariant I3). The closing paths are
-	// [TaskStore.CompleteTaskAttempt], [TaskStore.RecordTaskFailure], the
-	// cancels ([TaskStore.CancelJobExecution], [TaskStore.CancelTaskExecution]),
-	// the reaper ([TaskStore.ReclaimStaleAssignedTasks]) and the offline
-	// reclaims ([WorkerStore.OfflineStaleWorker], [WorkerStore.OfflineWorker]),
-	// each of which releases the claims in the same transaction. It has no
-	// production caller: [TaskStore.StartTaskAttempt] records a running
-	// attempt's session ID. It remains as test fixture surface.
-	UpdateTaskAttempt(ctx context.Context, attempt TaskAttempt) (TaskAttempt, error)
 }

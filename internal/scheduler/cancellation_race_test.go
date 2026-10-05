@@ -37,7 +37,7 @@ func (s *completeBeforeCancelStore) CancelTaskExecution(
 ) (store.Task, bool, error) {
 	if id == s.taskID {
 		// The worker's terminal report lands first.
-		if err := s.UpdateTaskStatus(ctx, id, s.terminal); err != nil {
+		if err := fixtures(s.t, s.Store).UpdateTaskStatus(ctx, id, s.terminal); err != nil {
 			s.t.Errorf("complete task in hook: %v", err)
 		}
 	}

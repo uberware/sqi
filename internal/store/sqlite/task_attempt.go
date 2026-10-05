@@ -191,6 +191,10 @@ func (s *Store) ListTaskAttempts(ctx context.Context, taskID string) ([]store.Ta
 // releases no usage claims (I3). The closing operations are CompleteTaskAttempt,
 // RecordTaskFailure, CancelJobExecution, CancelTaskExecution,
 // ReclaimStaleAssignedTasks, OfflineStaleWorker and OfflineWorker.
+//
+// Test fixture only: not part of store.Store, which has no caller for it since
+// H4a2 (StartTaskAttempt records a running attempt's session ID). H4b decides
+// its fate.
 func (s *Store) UpdateTaskAttempt(ctx context.Context, attempt store.TaskAttempt) (store.TaskAttempt, error) {
 	var exitCode sql.NullInt64
 	if attempt.ExitCode != nil {

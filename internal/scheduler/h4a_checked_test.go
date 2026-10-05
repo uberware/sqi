@@ -6,6 +6,7 @@ import (
 	"context"
 	"testing"
 
+	"github.com/uberware/sqi/internal/store"
 	"github.com/uberware/sqi/internal/store/fake"
 	"github.com/uberware/sqi/internal/store/sqlite"
 )
@@ -41,4 +42,24 @@ func checkSQLiteClaimsAtEnd(t *testing.T, st *sqlite.Store) {
 			t.Errorf("invariant I3 violated at test end (SQLite store): active claims on closed attempts or terminal tasks: %v", v)
 		}
 	})
+}
+
+// fixtureWriter is the test fixture surface both concrete stores keep and
+// store.Store does not: writes with no production caller, kept until H4b
+// decides their fate.
+type fixtureWriter interface {
+	UpdateTaskStatus(ctx context.Context, id string, status store.TaskStatus) error
+	UpdateTaskAttempt(ctx context.Context, attempt store.TaskAttempt) (store.TaskAttempt, error)
+	SetTaskFailureReason(ctx context.Context, id, reason string) error
+}
+
+// fixtures returns st's fixture writes; st must be a concrete store, not a
+// wrapper around one.
+func fixtures(t *testing.T, st store.Store) fixtureWriter {
+	t.Helper()
+	fw, ok := st.(fixtureWriter)
+	if !ok {
+		t.Fatalf("store %T has no fixture writes", st)
+	}
+	return fw
 }

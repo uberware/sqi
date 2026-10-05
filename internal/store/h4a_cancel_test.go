@@ -77,7 +77,7 @@ func TestCancelJobExecution_ReasonIsOnlyStampedWhenEmpty(t *testing.T) {
 				name: "a", status: store.StepStatusReady,
 				tasks: []store.TaskStatus{store.TaskStatusReady, store.TaskStatusReady},
 			})
-			if err := st.SetTaskFailureReason(t.Context(), g.Tasks["a"][0].ID, store.FailureReasonUpstreamFailed); err != nil {
+			if err := fixtures(t, st).SetTaskFailureReason(t.Context(), g.Tasks["a"][0].ID, store.FailureReasonUpstreamFailed); err != nil {
 				t.Fatalf("SetTaskFailureReason: %v", err)
 			}
 			if _, err := st.CancelJobExecution(t.Context(), g.Job.ID, store.FailureReasonCanceledByUser, time.Now().UTC()); err != nil {
@@ -193,7 +193,7 @@ func TestCancelTaskExecution_ReasonIsOnlyStampedWhenEmpty(t *testing.T) {
 				name: "a", status: store.StepStatusReady,
 				tasks: []store.TaskStatus{store.TaskStatusReady},
 			})
-			if err := st.SetTaskFailureReason(t.Context(), g.Tasks["a"][0].ID, store.FailureReasonUpstreamFailed); err != nil {
+			if err := fixtures(t, st).SetTaskFailureReason(t.Context(), g.Tasks["a"][0].ID, store.FailureReasonUpstreamFailed); err != nil {
 				t.Fatalf("SetTaskFailureReason: %v", err)
 			}
 			if _, ok, err := st.CancelTaskExecution(t.Context(), g.Tasks["a"][0].ID, store.FailureReasonCanceledByUser, time.Now().UTC()); err != nil || !ok {

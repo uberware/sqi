@@ -293,21 +293,14 @@ type WorkerStore interface {
 	// gauge.
 	CountIdleWorkers(ctx context.Context, farmID string) (int, error)
 
-	// DeleteWorker hard-deletes the worker record with the given ID. Returns
-	// [ErrNotFound] if no such worker exists. Task and task-attempt rows that
-	// reference the worker by ID are left intact (the ID lives on as a
-	// snapshot); callers are responsible for ensuring the worker has no
-	// in-flight work before removing it.
-	DeleteWorker(ctx context.Context, id string) error
-
 	// DeleteWorkerIfRemovable deletes the worker only while it is removable
 	// ([Worker.Removable]: offline, disabled or not), and only while no task is
 	// assigned to or running on it (H4a2 §5.4). The rule is evaluated inside
 	// the DELETE (invariant I1), so a worker that came back between the
 	// caller's read and this write keeps its row. Returns [ErrConflict] when
 	// the worker exists but is not removable and [ErrNotFound] when it does not
-	// exist. Like [WorkerStore.DeleteWorker], task and task-attempt rows that
-	// reference the worker by ID are left intact.
+	// exist. Task and task-attempt rows that reference the worker by ID are left
+	// intact (the ID lives on as a snapshot).
 	DeleteWorkerIfRemovable(ctx context.Context, id string) error
 
 	// DeleteOfflineWorkersBefore hard-deletes every enabled worker in

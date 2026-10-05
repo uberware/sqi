@@ -14,6 +14,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -71,11 +72,27 @@ func (f *fakeTaskCanceler) RetryTask(ctx context.Context, id string) error {
 			// RetryTasks lands on pending under a step that is not live; walk
 			// the legal pending → ready arrow when the test wants the
 			// post-resolution status (a no-op when it already landed ready).
-			return f.retryStore.UpdateTaskStatus(ctx, id, status)
+			return fixtureSetTaskStatus(ctx, f.retryStore, id, status)
 		}
 		return nil
 	}
 	return nil
+}
+
+// taskStatusFixture is the compare-and-set status write both concrete stores
+// keep as test fixture surface; store.Store does not carry it.
+type taskStatusFixture interface {
+	UpdateTaskStatus(ctx context.Context, id string, status store.TaskStatus) error
+}
+
+// fixtureSetTaskStatus writes a task's status through st's fixture write. st
+// must be a concrete store, or a wrapper that forwards UpdateTaskStatus.
+func fixtureSetTaskStatus(ctx context.Context, st store.Store, id string, status store.TaskStatus) error {
+	fx, ok := st.(taskStatusFixture)
+	if !ok {
+		return fmt.Errorf("store %T has no UpdateTaskStatus fixture", st)
+	}
+	return fx.UpdateTaskStatus(ctx, id, status)
 }
 
 func newTaskRouter(st store.Store) chi.Router {

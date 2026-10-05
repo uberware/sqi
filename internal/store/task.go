@@ -235,17 +235,6 @@ type TaskStore interface {
 	// passing it to ensure sensible defaults are applied.
 	ListTasks(ctx context.Context, opts ListTasksOptions) (Page[Task], error)
 
-	// UpdateTaskStatus transitions a task to a new status and updates
-	// UpdatedAt. The write is a compare-and-set (invariant I1): it is made only
-	// while the task still holds the status it was validated against, so a
-	// concurrent writer is never overwritten. Writing the status the task
-	// already holds is a no-op, not an error. Returns [ErrNotFound] if the task
-	// does not exist and [ErrInvalidTransition] if the state machine refuses the
-	// move. It has no production caller (worker reports go through
-	// StartTaskAttempt and CompleteTaskAttempt); it remains as test fixture
-	// surface.
-	UpdateTaskStatus(ctx context.Context, id string, status TaskStatus) error
-
 	// CompleteTaskAttempt applies a worker's terminal report in one
 	// transaction (invariant I3):
 	//  1. close the attempt if it is still running;
@@ -472,19 +461,6 @@ type TaskStore interface {
 	// longer ready, so a caller can skip any follow-up (an event) for a write
 	// that did not land. Returns ErrNotFound if id is unknown.
 	SetTaskUnschedulableReason(ctx context.Context, id, reason string) (written bool, err error)
-
-	// SetTaskFailureReason sets (or, with an empty string, clears) the
-	// human-readable reason the task reached a terminal non-success. Returns
-	// ErrNotFound if id is unknown.
-	SetTaskFailureReason(ctx context.Context, id, reason string) error
-
-	// SetTaskFailureReasonIfEmpty sets the failure reason only when the task
-	// currently has no reason recorded (an empty failure_reason). It is a
-	// legitimate no-op — not an error — when the task already carries a reason,
-	// so a more specific cause (e.g. a cascade-cancel) is never clobbered by a
-	// later, less specific one (e.g. a user cancel). A zero-row update (task
-	// unknown or already annotated) is NOT reported as ErrNotFound.
-	SetTaskFailureReasonIfEmpty(ctx context.Context, id, reason string) error
 
 	// CountUnschedulableTasksByJob returns the number of tasks for the given
 	// job that are currently in [TaskStatusReady] with a non-empty

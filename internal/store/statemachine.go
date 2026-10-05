@@ -45,7 +45,7 @@ var ErrInvalidTransition = errors.New("store: invalid state transition")
 //
 // A transition from a status to itself is not listed here and is not valid:
 // callers that must tolerate duplicate delivery treat same-status writes as a
-// no-op before consulting this table (see [TaskStore.UpdateTaskStatus]).
+// no-op before consulting this table (see [TaskStore.CompleteTaskAttempt]).
 var validTaskTransitions = map[TaskStatus]map[TaskStatus]struct{}{
 	TaskStatusPending: {
 		TaskStatusReady:    {},

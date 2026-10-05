@@ -405,7 +405,12 @@ func (s *Store) CountIdleWorkers(ctx context.Context, farmID string) (int, error
 	return n, mapErr(err)
 }
 
-// DeleteWorker implements [store.WorkerStore].
+// DeleteWorker hard-deletes the worker unconditionally. Returns
+// [store.ErrNotFound] if no such worker exists. Task and task-attempt rows that
+// reference the worker by ID are left intact.
+//
+// Test fixture only: an unguarded delete that is not part of store.Store;
+// removal goes through DeleteWorkerIfRemovable. H4b decides its fate.
 func (s *Store) DeleteWorker(ctx context.Context, id string) error {
 	res, err := s.stmtDeleteWorker.ExecContext(ctx, id)
 	if err != nil {

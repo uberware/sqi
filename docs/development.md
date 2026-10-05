@@ -746,8 +746,8 @@ compiling.
 > separate setter call after the status write is a second write that can land
 > on a task another writer has moved in between, which the store's
 > [invariants](architecture.md#store-invariants) rule out.
-> `SetTaskFailureReason` and `SetTaskFailureReasonIfEmpty` remain on
-> `TaskStore` but no production path calls them. See
+> `SetTaskFailureReason` and `SetTaskFailureReasonIfEmpty` are not part of
+> `store.Store`; both stores keep them only as test fixtures. See
 > [the durable-failure-reason table](architecture.md#5-status-ingestion) for
 > every existing path and its reason string.
 

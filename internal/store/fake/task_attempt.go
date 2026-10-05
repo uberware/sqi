@@ -176,6 +176,9 @@ func (s *Store) CancelJobAttempts(_ context.Context, jobID string, endedAt time.
 // (Status, ExitCode, EndedAt, and SessionID/Message if non-empty). It writes
 // only while the attempt is running: a closed attempt is [store.ErrConflict]
 // and is left untouched, as in SQLite (F16).
+//
+// Test fixture only: not part of store.Store, which has no caller for it since
+// H4a2. H4b decides its fate.
 func (s *Store) UpdateTaskAttempt(_ context.Context, attempt store.TaskAttempt) (store.TaskAttempt, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

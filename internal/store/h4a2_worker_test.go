@@ -254,7 +254,7 @@ func TestDeleteWorkerIfRemovable_RefusesAWorkerWithWorkInFlight(t *testing.T) {
 			if err := st.DeleteWorkerIfRemovable(ctx, fixtureWorkerID); !errors.Is(err, store.ErrConflict) {
 				t.Fatalf("delete with a running task: err = %v, want ErrConflict", err)
 			}
-			if err := st.UpdateTaskStatus(ctx, g.Tasks["a"][0].ID, store.TaskStatusSucceeded); err != nil {
+			if err := fixtures(t, st).UpdateTaskStatus(ctx, g.Tasks["a"][0].ID, store.TaskStatusSucceeded); err != nil {
 				t.Fatalf("UpdateTaskStatus: %v", err)
 			}
 			if err := st.DeleteWorkerIfRemovable(ctx, fixtureWorkerID); err != nil {

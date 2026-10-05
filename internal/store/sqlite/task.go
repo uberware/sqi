@@ -467,6 +467,9 @@ func (s *Store) ListTasks(ctx context.Context, opts store.ListTasksOptions) (sto
 // The write is a compare-and-set on the status that was read (invariant I1, see
 // [casTaskStatusTx]), so it is correct under concurrent writers rather than
 // only under SQLite's single write connection.
+//
+// Test fixture only: not part of store.Store, which has no caller for it since
+// H4a2. H4b decides its fate.
 func (s *Store) UpdateTaskStatus(ctx context.Context, id string, status store.TaskStatus) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -504,7 +507,11 @@ func (s *Store) SetTaskUnschedulableReason(ctx context.Context, id, reason strin
 	return false, nil // no longer ready: a guarded no-op (F15)
 }
 
-// SetTaskFailureReason implements [store.TaskStore]. An empty reason clears it.
+// SetTaskFailureReason sets the task's failure reason unconditionally. An empty
+// reason clears it. Returns [store.ErrNotFound] for an unknown task.
+//
+// Test fixture only: a blind write that is not part of store.Store (every
+// production reason is stamped inside the status write). H4b decides its fate.
 func (s *Store) SetTaskFailureReason(ctx context.Context, id, reason string) error {
 	res, err := s.stmtSetTaskFailureReason.ExecContext(ctx, reason, timeToText(time.Now().UTC()), id)
 	if err != nil {
@@ -513,8 +520,12 @@ func (s *Store) SetTaskFailureReason(ctx context.Context, id, reason string) err
 	return checkRowsAffected(res)
 }
 
-// SetTaskFailureReasonIfEmpty implements [store.TaskStore]. A zero-row update
-// (task unknown or already carrying a reason) is a legitimate no-op, not an error.
+// SetTaskFailureReasonIfEmpty sets the failure reason only when the task has
+// none. A zero-row update (task unknown or already carrying a reason) is a
+// legitimate no-op, not an error.
+//
+// Test fixture only: a blind write that is not part of store.Store (every
+// production reason is stamped inside the status write). H4b decides its fate.
 func (s *Store) SetTaskFailureReasonIfEmpty(ctx context.Context, id, reason string) error {
 	if _, err := s.stmtSetTaskFailureReasonIfEmpty.ExecContext(ctx, reason, timeToText(time.Now().UTC()), id); err != nil {
 		return mapErr(err)

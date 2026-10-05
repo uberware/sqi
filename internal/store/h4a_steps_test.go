@@ -150,7 +150,7 @@ func TestCancelPendingStep_KeepsMoreSpecificReason(t *testing.T) {
 				tasks: []store.TaskStatus{store.TaskStatusPending, store.TaskStatusPending},
 			})
 			const specific = "the earlier, more specific cause"
-			if err := st.SetTaskFailureReason(t.Context(), g.Tasks["a"][0].ID, specific); err != nil {
+			if err := fixtures(t, st).SetTaskFailureReason(t.Context(), g.Tasks["a"][0].ID, specific); err != nil {
 				t.Fatalf("SetTaskFailureReason: %v", err)
 			}
 			ok, tasks, err := st.CancelPendingStep(t.Context(), g.Steps["a"].ID, store.FailureReasonUpstreamFailed, time.Now().UTC())

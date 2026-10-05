@@ -255,7 +255,7 @@ func seedSupersededAttempt(t *testing.T, st store.Store, taskStatus store.TaskSt
 	req.WorkerID = supersededWorker
 	fresh := mustLease(t, st, req, store.LeaseLeased).Attempt
 	if taskStatus == store.TaskStatusRunning {
-		if err := st.UpdateTaskStatus(t.Context(), task.ID, store.TaskStatusRunning); err != nil {
+		if err := fixtures(t, st).UpdateTaskStatus(t.Context(), task.ID, store.TaskStatusRunning); err != nil {
 			t.Fatalf("UpdateTaskStatus running: %v", err)
 		}
 	}

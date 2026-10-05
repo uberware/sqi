@@ -583,8 +583,8 @@ a canceled task's late `canceled` echo cannot re-cancel a task that was
 retried in the meantime. `RequeueTaskForRetry` (the failure fork's requeue)
 likewise acts only while its attempt is the task's latest, so a reclaim and a
 new lease landing between `RecordTaskFailure` and the requeue leave the new
-lease alone. `UpdateTaskStatus`, which these reports used to go through, has no
-production caller any more.
+lease alone. `UpdateTaskStatus`, which these reports used to go through, is no
+longer part of `store.Store`; both stores keep it only as a test fixture.
 
 The one path the table does not describe is a manual retry: `RetryTasks`
 revives `failed` and `canceled` tasks in its own guarded SQL, to `pending`, or
@@ -820,9 +820,7 @@ write connection.
   filters, not the decision.
 
 Single-row rules are guarded the same way: `SetTaskUnschedulableReason` writes
-only while the task is `ready` (otherwise a no-op), `UpdateTaskAttempt` only
-while the attempt is `running` (a closed one is `store.ErrConflict`),
-`PauseJob` only while the job is `pending` or `running`, and
+only while the task is `ready` (otherwise a no-op), `PauseJob` only while the job is `pending` or `running`, and
 `DeleteWorkerIfRemovable` only while the worker is still removable **and holds
 no task**: the in-flight check (no task `assigned` or `running` on the worker)
 is part of the `DELETE` statement itself.

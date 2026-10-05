@@ -3,6 +3,7 @@
 package store_test
 
 import (
+	"context"
 	"errors"
 	"testing"
 	"time"
@@ -13,6 +14,25 @@ import (
 	"github.com/uberware/sqi/internal/store/fake"
 	"github.com/uberware/sqi/internal/store/sqlite"
 )
+
+// fixtureWriter is the test fixture surface both concrete stores keep and
+// store.Store does not: writes with no production caller, kept until H4b
+// decides their fate.
+type fixtureWriter interface {
+	UpdateTaskStatus(ctx context.Context, id string, status store.TaskStatus) error
+	UpdateTaskAttempt(ctx context.Context, attempt store.TaskAttempt) (store.TaskAttempt, error)
+	SetTaskFailureReason(ctx context.Context, id, reason string) error
+}
+
+// fixtures returns st's fixture writes. Every store newStores builds has them.
+func fixtures(t *testing.T, st store.Store) fixtureWriter {
+	t.Helper()
+	fw, ok := st.(fixtureWriter)
+	if !ok {
+		t.Fatalf("store %T has no fixture writes", st)
+	}
+	return fw
+}
 
 // fixtureWorkerID is the worker every in-flight fixture task is assigned to.
 const fixtureWorkerID = "w1"

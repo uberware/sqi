@@ -191,6 +191,9 @@ func (s *Store) CountIdleWorkers(_ context.Context, farmID string) (int, error) 
 }
 
 // DeleteWorker hard-deletes the worker with the given ID.
+//
+// Test fixture only: an unguarded delete that is not part of store.Store. H4b
+// decides its fate.
 func (s *Store) DeleteWorker(_ context.Context, id string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()

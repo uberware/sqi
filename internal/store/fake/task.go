@@ -71,6 +71,9 @@ func (s *Store) ListTasks(_ context.Context, opts store.ListTasksOptions) (store
 // at-least-once redelivery stays idempotent. Keeping the two implementations in
 // step matters: tests inject this fake, and a permissive fake would green-light
 // transitions production rejects.
+//
+// Test fixture only: not part of store.Store, which has no caller for it since
+// H4a2. H4b decides its fate.
 func (s *Store) UpdateTaskStatus(_ context.Context, id string, status store.TaskStatus) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -114,7 +117,11 @@ func (s *Store) SetTaskUnschedulableReason(_ context.Context, id, reason string)
 	return true, nil
 }
 
-// SetTaskFailureReason implements [store.TaskStore].
+// SetTaskFailureReason sets the task's failure reason unconditionally, as
+// SQLite's does.
+//
+// Test fixture only: a blind write that is not part of store.Store. H4b decides
+// its fate.
 func (s *Store) SetTaskFailureReason(_ context.Context, id, reason string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -129,9 +136,12 @@ func (s *Store) SetTaskFailureReason(_ context.Context, id, reason string) error
 	return nil
 }
 
-// SetTaskFailureReasonIfEmpty implements [store.TaskStore]. It writes the reason
-// only when the task currently has none; an unknown task or one that already
-// carries a reason is a legitimate no-op, not an error.
+// SetTaskFailureReasonIfEmpty writes the reason only when the task currently
+// has none; an unknown task or one that already carries a reason is a
+// legitimate no-op, not an error.
+//
+// Test fixture only: a blind write that is not part of store.Store. H4b decides
+// its fate.
 func (s *Store) SetTaskFailureReasonIfEmpty(_ context.Context, id, reason string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
