@@ -274,6 +274,14 @@ type DeregisterMsg struct {
 	// WorkerID identifies the departing worker.
 	WorkerID string `json:"worker_id"`
 
+	// InstanceID is the departing process's instance ID, the one it sends in
+	// every [RegisterMsg]. The server ignores a deregister whose instance ID
+	// differs from the one it last registered: that message comes from a
+	// process that has since been replaced (a late or redelivered message), and
+	// applying it would take the new process offline. Empty from a worker that
+	// sends none; the server then applies it as before.
+	InstanceID string `json:"instance_id,omitempty"`
+
 	// Reason is an optional human-readable explanation for the departure
 	// (e.g. "graceful shutdown", "maintenance").
 	Reason string `json:"reason,omitempty"`

@@ -1046,7 +1046,7 @@ func mustHeartbeat(t *testing.T, s *Store, id string, at time.Time) {
 // the heartbeat already recorded.
 func mustOffline(t *testing.T, s *Store, id string) {
 	t.Helper()
-	if _, err := s.OfflineWorker(ctx(), id, time.Now()); err != nil {
+	if _, _, err := s.OfflineWorker(ctx(), id, "", time.Now()); err != nil {
 		t.Fatalf("OfflineWorker(%q): %v", id, err)
 	}
 }

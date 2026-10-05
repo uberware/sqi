@@ -96,16 +96,22 @@ func TestDeregister_PublishesMessage(t *testing.T) {
 	}
 
 	var dm struct {
-		Version  string `json:"version"`
-		Type     string `json:"type"`
-		WorkerID string `json:"worker_id"`
-		Reason   string `json:"reason"`
+		Version    string `json:"version"`
+		Type       string `json:"type"`
+		WorkerID   string `json:"worker_id"`
+		InstanceID string `json:"instance_id"`
+		Reason     string `json:"reason"`
 	}
 	if err := json.Unmarshal(msg.Data, &dm); err != nil {
 		t.Fatalf("unmarshal DeregisterMsg: %v", err)
 	}
 	if dm.WorkerID != "worker-bye" {
 		t.Errorf("WorkerID = %q, want %q", dm.WorkerID, "worker-bye")
+	}
+	// The server ignores a deregister whose instance ID is not the one it last
+	// registered, so it must be the one this process registers with.
+	if dm.InstanceID == "" || dm.InstanceID != reg.InstanceID() {
+		t.Errorf("InstanceID = %q, want this process's %q", dm.InstanceID, reg.InstanceID())
 	}
 	if dm.Reason != "graceful shutdown" {
 		t.Errorf("Reason = %q, want %q", dm.Reason, "graceful shutdown")

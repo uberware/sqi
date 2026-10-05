@@ -235,7 +235,7 @@ func (h *failureHarness) reassignAndReportFailed(taskID, workerID string) {
 // failure.
 func (h *failureHarness) reclaimWorker(workerID string) {
 	h.t.Helper()
-	reclaimed, err := h.st.OfflineWorker(h.t.Context(), workerID, time.Now().UTC())
+	reclaimed, _, err := h.st.OfflineWorker(h.t.Context(), workerID, "", time.Now().UTC())
 	if err != nil {
 		h.t.Fatalf("OfflineWorker(%s): %v", workerID, err)
 	}

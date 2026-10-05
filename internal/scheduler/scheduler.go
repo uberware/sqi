@@ -1028,15 +1028,19 @@ func (s *Scheduler) touchWorkerCredential(ctx context.Context, workerID string, 
 // new assignments to it rather than waiting for the heartbeat-timeout sweep,
 // and returns its in-flight tasks to the ready queue, closing their attempts
 // and releasing their usage claims. The worker event carries the status the
-// store left the row in.
+// store left the row in. A deregister from a process the worker's latest
+// registration has replaced (its instance ID differs from the stored one) is
+// acked and ignored: applying it would take the new process offline and
+// reclaim the tasks it is running.
 //
 // subjectWorkerID is the worker the message's subject attributes it to.
 func (s *Scheduler) handleWorkerDeregister(ctx context.Context, msg jetstream.Msg, subjectWorkerID string) {
 	// DeregisterMsg mirrors protocol.DeregisterMsg; we decode only the
 	// fields the server needs without importing the worker protocol package.
 	var m struct {
-		WorkerID string `json:"worker_id"`
-		Reason   string `json:"reason,omitempty"`
+		WorkerID   string `json:"worker_id"`
+		InstanceID string `json:"instance_id,omitempty"`
+		Reason     string `json:"reason,omitempty"`
 	}
 	if err := json.Unmarshal(msg.Data(), &m); err != nil {
 		// The subject is the only identity left once the body will not decode.
@@ -1052,10 +1056,11 @@ func (s *Scheduler) handleWorkerDeregister(ctx context.Context, msg jetstream.Ms
 		return
 	}
 
-	// Unconditional, unlike the heartbeat sweep's guarded write: the worker told us
-	// it is leaving, so there is no heartbeat to re-check. The same store call
-	// closes its attempts, releases their claims and reclaims its tasks.
-	reclaimed, err := s.store.OfflineWorker(ctx, m.WorkerID, time.Now().UTC())
+	// Unlike the heartbeat sweep's guarded write, the heartbeat is not
+	// re-checked: the worker told us it is leaving. The one guard is the
+	// instance ID. The same store call closes its attempts, releases their
+	// claims and reclaims its tasks.
+	reclaimed, offlined, err := s.store.OfflineWorker(ctx, m.WorkerID, m.InstanceID, time.Now().UTC())
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			// Worker was never registered or already removed — benign race
@@ -1075,6 +1080,17 @@ func (s *Scheduler) handleWorkerDeregister(ctx context.Context, msg jetstream.Ms
 		// ack in all error cases — nacking would redeliver but neither a
 		// not-found nor a store error is likely to resolve on retry, and
 		// wedging the consumer would block all subsequent worker messages.
+		s.ackMsg(ctx, msg)
+		return
+	}
+	if !offlined {
+		// A late or redelivered deregister from a process that has since been
+		// replaced. Redelivery cannot make it current, so it is acked.
+		s.logger.InfoContext(
+			ctx, "scheduler: deregister from a superseded worker process — ignoring",
+			slog.String("worker_id", m.WorkerID),
+			slog.String("instance_id", m.InstanceID),
+		)
 		s.ackMsg(ctx, msg)
 		return
 	}

@@ -137,7 +137,7 @@ func TestH4a2_RequeueAfterReleaseLeavesTheNewLease(t *testing.T) {
 			var fresh store.TaskAttempt
 			st := &reclaimBeforeRequeueStore{Store: base}
 			st.hook = &once{fn: func() {
-				if _, err := base.OfflineWorker(context.Background(), statusTestWorkerID, time.Now().UTC()); err != nil {
+				if _, _, err := base.OfflineWorker(context.Background(), statusTestWorkerID, "", time.Now().UTC()); err != nil {
 					t.Errorf("OfflineWorker: %v", err)
 				}
 				res, err := base.LeaseTask(context.Background(), store.LeaseRequest{
@@ -197,7 +197,7 @@ func TestH4a2_ShutdownReportAndDeregisterAgreeInEitherOrder(t *testing.T) {
 				msg := terminalReport(t, task, attempt, "failed", protocol.MessageWorkerShutdown)
 				report := func() { s.handleTaskStatusMessage(msg) }
 				deregister := func() {
-					if _, err := st.OfflineWorker(t.Context(), statusTestWorkerID, time.Now().UTC()); err != nil {
+					if _, _, err := st.OfflineWorker(t.Context(), statusTestWorkerID, "", time.Now().UTC()); err != nil {
 						t.Fatalf("OfflineWorker: %v", err)
 					}
 				}

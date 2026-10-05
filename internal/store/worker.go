@@ -276,15 +276,23 @@ type WorkerStore interface {
 	// Postgres order.
 	OfflineStaleWorker(ctx context.Context, id string, cutoff, now time.Time) ([]Task, bool, error)
 
-	// OfflineWorker is the unconditional sibling of [WorkerStore.OfflineStaleWorker]
-	// for a graceful deregister: the worker is taken offline whatever its
-	// heartbeat (a disabled worker stays disabled, H4a2 §5.3), and its in-flight
-	// tasks are reclaimed exactly as OfflineStaleWorker reclaims them (attempts
-	// closed, claims released, tasks back to ready). It returns the reclaimed
-	// tasks as they are after the reset, or [ErrNotFound] for an unknown worker.
-	// A worker that is already offline is
-	// not an error: it has nothing left to reclaim and the call returns no tasks.
-	OfflineWorker(ctx context.Context, id string, now time.Time) ([]Task, error)
+	// OfflineWorker is the sibling of [WorkerStore.OfflineStaleWorker] for a
+	// graceful deregister: the worker is taken offline whatever its heartbeat
+	// (a disabled worker stays disabled, H4a2 §5.3), and its in-flight tasks are
+	// reclaimed exactly as OfflineStaleWorker reclaims them (attempts closed,
+	// claims released, tasks back to ready). It returns the reclaimed tasks as
+	// they are after the reset and true, or [ErrNotFound] for an unknown worker.
+	// A worker that is already offline is not an error: it has nothing left to
+	// reclaim and the call returns no tasks.
+	//
+	// instanceID is the deregistering process's instance ID. When it and the
+	// stored [Worker.InstanceID] are both non-empty and differ, the row belongs
+	// to a newer process of the same worker, whose registration has already
+	// landed: the deregister is from a superseded process (a late or redelivered
+	// message), and nothing is written; the call returns (nil, false, nil). The
+	// check is part of the guarded write (invariant I1). An empty ID on either
+	// side proves nothing, and the worker is taken offline as before.
+	OfflineWorker(ctx context.Context, id, instanceID string, now time.Time) ([]Task, bool, error)
 
 	// CountIdleWorkers returns the number of online, enabled workers in the
 	// given farm that have no task currently in [TaskStatusAssigned] or

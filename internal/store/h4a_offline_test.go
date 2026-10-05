@@ -249,7 +249,7 @@ func TestOfflineWorker(t *testing.T) {
 			pool := seedPool(t, st, 1)
 			seedClaim(t, st, pool.ID, seedAttempt(t, st, g.Tasks["a"][0], store.AttemptStatusRunning).ID)
 
-			tasks, err := st.OfflineWorker(t.Context(), fixtureWorkerID, now)
+			tasks, _, err := st.OfflineWorker(t.Context(), fixtureWorkerID, "", now)
 			if err != nil || len(tasks) != 1 {
 				t.Fatalf("OfflineWorker = (%d, %v), want (1, nil)", len(tasks), err)
 			}
@@ -265,7 +265,7 @@ func TestOfflineWorker(t *testing.T) {
 			if v := claimViolations(t, st); len(v) != 0 {
 				t.Fatalf("I3 violations: %v", v)
 			}
-			if _, err := st.OfflineWorker(t.Context(), "nope", now); !errorsIsNotFound(err) {
+			if _, _, err := st.OfflineWorker(t.Context(), "nope", "", now); !errorsIsNotFound(err) {
 				t.Fatalf("OfflineWorker(unknown) = %v, want ErrNotFound", err)
 			}
 		})
@@ -282,7 +282,7 @@ func TestOfflineWorker_AlreadyOfflineIsHarmless(t *testing.T) {
 			now := time.Now().UTC()
 			seedWorker(t, st, g.Farm.ID, store.WorkerStatusOffline, now.Add(-time.Hour))
 
-			tasks, err := st.OfflineWorker(t.Context(), fixtureWorkerID, now)
+			tasks, _, err := st.OfflineWorker(t.Context(), fixtureWorkerID, "", now)
 			if err != nil || len(tasks) != 0 {
 				t.Fatalf("OfflineWorker on an offline worker = (%d, %v), want (0, nil)", len(tasks), err)
 			}
@@ -313,7 +313,7 @@ func TestAttemptClose_MessageSemantics(t *testing.T) {
 			task: store.TaskStatusRunning,
 			close: func(t *testing.T, st store.Store, _ store.Task) {
 				t.Helper()
-				if _, err := st.OfflineWorker(t.Context(), fixtureWorkerID, time.Now().UTC()); err != nil {
+				if _, _, err := st.OfflineWorker(t.Context(), fixtureWorkerID, "", time.Now().UTC()); err != nil {
 					t.Fatalf("OfflineWorker: %v", err)
 				}
 			},

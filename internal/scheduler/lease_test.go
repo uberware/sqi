@@ -314,7 +314,7 @@ func TestReclaimOfflineWorkerTasks_WakesParkedWaiters(t *testing.T) {
 	if _, err := s.selectLeaseBatch(t.Context(), w); err != nil {
 		t.Fatalf("selectLeaseBatch: %v", err)
 	}
-	reclaimed, err := st.OfflineWorker(t.Context(), w.ID, time.Now().UTC())
+	reclaimed, _, err := st.OfflineWorker(t.Context(), w.ID, "", time.Now().UTC())
 	if err != nil || len(reclaimed) != 2 {
 		t.Fatalf("OfflineWorker = (%d tasks, %v), want the worker's 2 leased tasks", len(reclaimed), err)
 	}

@@ -288,10 +288,11 @@ func (r *Registrar) Deregister(reason string) {
 	ctx := context.Background()
 
 	msg := protocol.DeregisterMsg{
-		Version:  protocol.ProtocolVersion,
-		Type:     protocol.TypeDeregister,
-		WorkerID: r.workerID,
-		Reason:   reason,
+		Version:    protocol.ProtocolVersion,
+		Type:       protocol.TypeDeregister,
+		WorkerID:   r.workerID,
+		InstanceID: r.instanceID,
+		Reason:     reason,
 	}
 
 	data, err := json.Marshal(msg)

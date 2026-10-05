@@ -375,6 +375,44 @@ func TestHandleWorkerDeregister_Valid(t *testing.T) {
 	}
 }
 
+// TestHandleWorkerDeregister_IgnoresASupersededProcess pins the whole-branch
+// review's stale-deregister race: a deregister from a process the worker's
+// latest registration replaced (a late or redelivered message) is acked and
+// ignored, so the new process stays online and keeps the work it holds.
+func TestHandleWorkerDeregister_IgnoresASupersededProcess(t *testing.T) {
+	st := newCheckedFake(t)
+	notifier := &workerRecordingNotifier{}
+	s := newMetricsScheduler(st, &recordBus{}, "")
+	s.notifier = notifier
+
+	now := time.Now().UTC()
+	if _, _, err := st.RegisterWorker(t.Context(), store.Worker{
+		ID: "w-1", FarmID: "farm-1", Status: store.WorkerStatusOnline, LastHeartbeatAt: &now, InstanceID: "new",
+	}); err != nil {
+		t.Fatalf("RegisterWorker: %v", err)
+	}
+
+	msg := &fakeJSMsg{
+		subject: bus.WorkerDeregisterSubject("w-1"),
+		data:    workerMsgJSON(t, map[string]string{"worker_id": "w-1", "instance_id": "old", "reason": "shutdown"}),
+	}
+	s.handleWorkerMessage(msg)
+
+	if !msg.acked || msg.nacked {
+		t.Fatalf("a superseded deregister must be acked (acked=%v nacked=%v)", msg.acked, msg.nacked)
+	}
+	w, err := st.GetWorker(t.Context(), "w-1")
+	if err != nil {
+		t.Fatalf("GetWorker: %v", err)
+	}
+	if w.Status != store.WorkerStatusOnline {
+		t.Errorf("worker status = %q, want online (the deregister came from a replaced process)", w.Status)
+	}
+	if len(notifier.workers) != 0 {
+		t.Errorf("worker events = %+v, want none for an ignored deregister", notifier.workers)
+	}
+}
+
 // TestHandleWorkerDeregister_ReclaimsInFlightTasks verifies that a graceful
 // deregister returns the worker's assigned/running tasks to the ready queue and
 // closes their attempts. Without this, the heartbeat sweep (which only inspects

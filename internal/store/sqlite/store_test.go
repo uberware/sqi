@@ -644,7 +644,7 @@ func TestWorker_DeleteOfflineWorkersBefore(t *testing.T) {
 	if err := s.UpdateWorkerHeartbeat(ctx, "w1", old); err != nil {
 		t.Fatalf("heartbeat w1: %v", err)
 	}
-	if _, err := s.OfflineWorker(ctx, "w1", time.Now()); err != nil {
+	if _, _, err := s.OfflineWorker(ctx, "w1", "", time.Now()); err != nil {
 		t.Fatalf("offline w1: %v", err)
 	}
 	// w2: offline but recent heartbeat → kept.
@@ -652,7 +652,7 @@ func TestWorker_DeleteOfflineWorkersBefore(t *testing.T) {
 	if err := s.UpdateWorkerHeartbeat(ctx, "w2", recent); err != nil {
 		t.Fatalf("heartbeat w2: %v", err)
 	}
-	if _, err := s.OfflineWorker(ctx, "w2", time.Now()); err != nil {
+	if _, _, err := s.OfflineWorker(ctx, "w2", "", time.Now()); err != nil {
 		t.Fatalf("offline w2: %v", err)
 	}
 	// w3: offline + stale heartbeat but disabled → kept (an operator removes it).
@@ -660,7 +660,7 @@ func TestWorker_DeleteOfflineWorkersBefore(t *testing.T) {
 	if err := s.UpdateWorkerHeartbeat(ctx, "w3", old); err != nil {
 		t.Fatalf("heartbeat w3: %v", err)
 	}
-	if _, err := s.OfflineWorker(ctx, "w3", time.Now()); err != nil {
+	if _, _, err := s.OfflineWorker(ctx, "w3", "", time.Now()); err != nil {
 		t.Fatalf("offline w3: %v", err)
 	}
 	if _, err := s.SetWorkerDisabled(ctx, "w3", true); err != nil {
@@ -2033,7 +2033,7 @@ func TestWorker_ListWorkers_FilterByStatus(t *testing.T) {
 	insertWorker(t, s, "w1", "f1")
 	insertWorker(t, s, "w2", "f1")
 
-	if _, err := s.OfflineWorker(ctx, "w2", time.Now()); err != nil {
+	if _, _, err := s.OfflineWorker(ctx, "w2", "", time.Now()); err != nil {
 		t.Fatalf("OfflineWorker: %v", err)
 	}
 

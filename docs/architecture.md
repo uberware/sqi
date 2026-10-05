@@ -1022,6 +1022,15 @@ And from the lifecycle and report fixes:
   first, and a task leased to it before its registration landed would be
   reclaimed by that registration while the process runs it). The refusal is
   held for `leaseRefusalDelay`, as for a disabled worker.
+- A late or redelivered deregister can no longer take a restarted worker
+  offline. The deregister carries the same optional `instance_id`, and
+  `OfflineWorker` writes nothing when it and the stored one are both non-empty
+  and differ: the message comes from a process a later registration replaced,
+  and applying it would mark the live process offline and reclaim the tasks it
+  is running (the worker would then stay `offline`, since heartbeats never
+  restore `online`, while it went on leasing). The server acks it and emits no
+  event. An older worker sends no `instance_id`, and its deregister applies as
+  before.
 - A task interrupted by its worker shutting down (`failed` with the message
   `worker_shutdown`) no longer consumes a retry or counts toward the job's
   failure limit, whichever of the report and the deregister the server sees
@@ -1188,7 +1197,7 @@ Left by the lifecycle fixes:
 | `task.cancel.<task_id>` | JetStream (`SQI_CANCEL`, MaxAge 5 min) | server → worker | Cancellation signal; the worker holding the task interrupts the process |
 | `worker.register.<worker_id>` | JetStream (`SQI_WORKER`, MaxAge 2 min) | worker → server | Registration at startup and on reconnect; carries the worker process's `instance_id` (a changed one reclaims the previous process's tasks) |
 | `worker.heartbeat.<worker_id>` | JetStream (`SQI_WORKER`, MaxAge 2 min) | worker → server | Liveness heartbeat |
-| `worker.deregister.<worker_id>` | JetStream (`SQI_WORKER`, MaxAge 2 min) | worker → server | Graceful departure; marks the worker offline without waiting for heartbeat timeout (a disabled worker stays disabled) and reclaims its tasks |
+| `worker.deregister.<worker_id>` | JetStream (`SQI_WORKER`, MaxAge 2 min) | worker → server | Graceful departure; marks the worker offline without waiting for heartbeat timeout (a disabled worker stays disabled) and reclaims its tasks. Ignored when its `instance_id` names a process a later registration replaced |
 | `worker.diag.<workerID>` | Core NATS (best-effort) | worker → server | Diagnostic log records |
 
 Every worker → server subject carries the publishing worker's ID directly after

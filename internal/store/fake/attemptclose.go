@@ -273,16 +273,22 @@ func (s *Store) OfflineStaleWorker(_ context.Context, id string, cutoff, now tim
 }
 
 // OfflineWorker implements [store.WorkerStore]. An unknown worker is
-// [store.ErrNotFound], as SQLite's zero-row mark is; any known worker, whatever
-// its status, goes offline, and a disabled one stays disabled (H4a2 §5.3).
-func (s *Store) OfflineWorker(_ context.Context, id string, now time.Time) ([]store.Task, error) {
+// [store.ErrNotFound], as in SQLite. A known worker whose stored instance ID
+// and instanceID are both non-empty and differ is left untouched (false);
+// any other known worker, whatever its status, goes offline, and a disabled
+// one stays disabled (H4a2 §5.3).
+func (s *Store) OfflineWorker(_ context.Context, id, instanceID string, now time.Time) ([]store.Task, bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if _, ok := s.workers[id]; !ok {
-		return nil, store.ErrNotFound
+	w, ok := s.workers[id]
+	if !ok {
+		return nil, false, store.ErrNotFound
 	}
-	return s.offlineWorkerLocked(id, now), nil
+	if instanceID != "" && w.InstanceID != "" && w.InstanceID != instanceID {
+		return nil, false, nil
+	}
+	return s.offlineWorkerLocked(id, now), true, nil
 }
 
 // offlineWorkerLocked takes the worker offline (its disabled flag is left as

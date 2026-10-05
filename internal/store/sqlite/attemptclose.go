@@ -424,10 +424,14 @@ const (
 UPDATE workers SET status = 'offline', updated_at = ?
 WHERE  id = ? AND status = 'online' AND last_heartbeat_at < ?`
 
-	// sqlOfflineWorker is the unconditional write behind a graceful
-	// deregister. A disabled worker stays disabled (H4a2 §5.3): the flag is
-	// not written. Binds: updated_at, id.
-	sqlOfflineWorker = `UPDATE workers SET status = 'offline', updated_at = ? WHERE id = ?`
+	// sqlOfflineWorker is the write behind a graceful deregister. It ignores the
+	// heartbeat; its one guard is the instance ID, so a deregister from a
+	// superseded process cannot take a newer one offline (an empty ID on either
+	// side matches). A disabled worker stays disabled (H4a2 §5.3): the flag is
+	// not written. Binds: updated_at, id, instance id, instance id.
+	sqlOfflineWorker = `
+UPDATE workers SET status = 'offline', updated_at = ?
+WHERE  id = ? AND (? = '' OR instance_id = '' OR instance_id = ?)`
 
 	// sqlReclaimWorkerTasksReturning returns a worker's in-flight tasks to ready
 	// and RETURNING hands back exactly the rows it changed, as they are after the
@@ -450,15 +454,17 @@ func (s *Store) OfflineStaleWorker(ctx context.Context, id string, cutoff, now t
 }
 
 // OfflineWorker implements [store.WorkerStore].
-func (s *Store) OfflineWorker(ctx context.Context, id string, now time.Time) ([]store.Task, error) {
-	tasks, ok, err := s.offlineWorker(ctx, id, now, sqlOfflineWorker, timeToText(now.UTC()), id)
-	if err != nil {
-		return nil, err
+func (s *Store) OfflineWorker(ctx context.Context, id, instanceID string, now time.Time) ([]store.Task, bool, error) {
+	tasks, ok, err := s.offlineWorker(ctx, id, now, sqlOfflineWorker, timeToText(now.UTC()), id, instanceID, instanceID)
+	if err != nil || ok {
+		return tasks, ok, err
 	}
-	if !ok {
-		return nil, store.ErrNotFound
+	// The guard matched nothing: the worker is unknown, or its row belongs to
+	// another process. Only the first is an error.
+	if _, err := s.GetWorker(ctx, id); err != nil {
+		return nil, false, err
 	}
-	return tasks, nil
+	return nil, false, nil
 }
 
 // offlineWorker takes the worker offline with the given guarded statement and,
@@ -513,8 +519,8 @@ func (s *Store) offlineWorker(ctx context.Context, id string, now time.Time, mar
 		return nil, false, fmt.Errorf("sqlite: mark worker %s offline: %w", id, mapErr(err))
 	}
 	if n == 0 {
-		// The guard did not match (unknown worker, not online, or a fresh
-		// heartbeat): nothing was written and the deferred rollback ends the
+		// The guard did not match (unknown worker, not online, a fresh
+		// heartbeat, or another process's instance ID): nothing was written and the deferred rollback ends the
 		// transaction.
 		return nil, false, nil
 	}

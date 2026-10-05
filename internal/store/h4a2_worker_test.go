@@ -129,7 +129,7 @@ func TestDisabledWorker_StaysDisabledAndIsReclaimed(t *testing.T) {
 				t.Fatalf("RegisterWorker: %v", err)
 			}
 			wantWorker(t, st, store.WorkerStatusOnline, true, "after re-register")
-			if _, err := st.OfflineWorker(ctx, fixtureWorkerID, now); err != nil {
+			if _, _, err := st.OfflineWorker(ctx, fixtureWorkerID, "", now); err != nil {
 				t.Fatalf("OfflineWorker: %v", err)
 			}
 			wantWorker(t, st, store.WorkerStatusOffline, true, "after deregister")
@@ -261,5 +261,66 @@ func TestDeleteWorkerIfRemovable_RefusesAWorkerWithWorkInFlight(t *testing.T) {
 				t.Fatalf("delete once idle: %v", err)
 			}
 		})
+	}
+}
+
+// TestOfflineWorker_IgnoresASupersededInstance pins the whole-branch review's
+// stale-deregister race: a deregister from a process the worker's latest
+// registration replaced must not take the new process offline or reclaim the
+// task it is running. An empty instance ID on either side proves nothing, so
+// the deregister applies as it did before instance IDs existed.
+func TestOfflineWorker_IgnoresASupersededInstance(t *testing.T) {
+	cases := []struct {
+		name               string
+		stored, deregister string
+		wantOffline        bool
+	}{
+		{"same process", "i2", "i2", true},
+		{"superseded process", "i2", "i1", false},
+		{"deregister sends no ID", "i2", "", true},
+		{"row has no ID", "", "i1", true},
+	}
+	for _, tc := range cases {
+		for name, st := range newStores(t) {
+			t.Run(tc.name+"/"+name, func(t *testing.T) {
+				g := seedGraph(t, st, graphOpts{jobStatus: store.JobStatusRunning},
+					stepSpec{name: "a", status: store.StepStatusReady, tasks: []store.TaskStatus{store.TaskStatusRunning}})
+				task := g.Tasks["a"][0]
+				pool := seedPool(t, st, 1)
+				a := seedAttempt(t, st, task, store.AttemptStatusRunning)
+				seedClaim(t, st, pool.ID, a.ID)
+				registerInstance(t, st, g.Farm.ID, tc.stored)
+
+				reclaimed, offlined, err := st.OfflineWorker(t.Context(), fixtureWorkerID, tc.deregister, time.Now().UTC())
+				if err != nil {
+					t.Fatalf("OfflineWorker: %v", err)
+				}
+				if offlined != tc.wantOffline {
+					t.Fatalf("OfflineWorker offlined = %v, want %v", offlined, tc.wantOffline)
+				}
+				w, err := st.GetWorker(t.Context(), fixtureWorkerID)
+				if err != nil {
+					t.Fatalf("GetWorker: %v", err)
+				}
+				if !tc.wantOffline {
+					if len(reclaimed) != 0 || w.Status != store.WorkerStatusOnline {
+						t.Fatalf("superseded deregister: reclaimed %d, worker %q; want 0 and online", len(reclaimed), w.Status)
+					}
+					if got := mustTask(t, st, task.ID).Status; got != store.TaskStatusRunning {
+						t.Fatalf("task = %q, want still running", got)
+					}
+					if n := activeClaims(t, st, pool.ID); n != 1 {
+						t.Fatalf("active claims = %d, want 1", n)
+					}
+					return
+				}
+				if len(reclaimed) != 1 || w.Status != store.WorkerStatusOffline {
+					t.Fatalf("deregister: reclaimed %d, worker %q; want 1 and offline", len(reclaimed), w.Status)
+				}
+				if n := activeClaims(t, st, pool.ID); n != 0 {
+					t.Fatalf("active claims = %d, want 0", n)
+				}
+			})
+		}
 	}
 }
