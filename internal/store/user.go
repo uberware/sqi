@@ -18,7 +18,7 @@ const (
 )
 
 // User is a local account. PasswordHash is a Go-side field only; it is never
-// marshaled into a REST response. Role is stored but not enforced until B1.
+// marshaled into a REST response.
 type User struct {
 	ID           string
 	Username     string
@@ -80,9 +80,9 @@ type UserStore interface {
 	//
 	// The two must not be separate calls: a self-service password change tells
 	// the user their other devices have been signed out, so a failure after
-	// the password landed would make that claim a lie with no way to detect
-	// it. Atomicity means the caller can report failure honestly — nothing
-	// changed, retry.
+	// the password landed would make that claim false with no way to detect
+	// it. Because the call is atomic, a failure means nothing changed and the
+	// caller can say so and retry.
 	SetUserPasswordAndEvictSessions(ctx context.Context, id, passwordHash string) error
 	// SetUserDisplayName updates only the display name, returning the updated
 	// record. Returns [ErrNotFound] if id is unknown.

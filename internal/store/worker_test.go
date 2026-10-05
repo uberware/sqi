@@ -24,8 +24,10 @@ func registerInstance(t *testing.T, st store.Store, farmID, instance string) []s
 	return reclaimed
 }
 
-// TestRegisterWorker_ReclaimsAfterARestart pins item 9 viii (first half) and
-// Review Focus 2.
+// TestRegisterWorker_ReclaimsAfterARestart pins that a registration with a new
+// instance ID reclaims the worker's in-flight tasks, and that an empty or
+// unchanged instance ID, including the first registration that carries one,
+// reclaims nothing.
 func TestRegisterWorker_ReclaimsAfterARestart(t *testing.T) {
 	for name, st := range newStores(t) {
 		t.Run(name, func(t *testing.T) {
@@ -88,11 +90,11 @@ func TestRegisterWorker_ReclaimsAfterARestart(t *testing.T) {
 	}
 }
 
-// TestDisabledWorker_StaysDisabledAndIsReclaimed pins H4a2 §5.2 and §5.3 under
-// the disabled flag: a dead disabled worker is swept like any online worker (it
-// goes offline and its task is reclaimed) and stays disabled, an offline one is
-// not swept again, and neither a re-registration nor a graceful deregister
-// clears the flag. Liveness and the flag are separate facts.
+// TestDisabledWorker_StaysDisabledAndIsReclaimed pins the disabled flag's
+// independence from liveness: a dead disabled worker is swept like any online
+// worker (it goes offline and its task is reclaimed) and stays disabled, an
+// offline one is not swept again, and neither a re-registration nor a graceful
+// deregister clears the flag. Liveness and the flag are separate facts.
 func TestDisabledWorker_StaysDisabledAndIsReclaimed(t *testing.T) {
 	for name, st := range newStores(t) {
 		t.Run(name, func(t *testing.T) {
@@ -241,7 +243,7 @@ func TestListWorkers_FiltersByEffectiveStatus(t *testing.T) {
 	}
 }
 
-// TestDeleteWorkerIfRemovable_RefusesAWorkerWithWorkInFlight pins H4a2 §5.4: a
+// TestDeleteWorkerIfRemovable_RefusesAWorkerWithWorkInFlight pins that a
 // worker that is otherwise removable (offline) is refused while a task is still
 // running on it, and removed once it is not.
 func TestDeleteWorkerIfRemovable_RefusesAWorkerWithWorkInFlight(t *testing.T) {
@@ -264,11 +266,10 @@ func TestDeleteWorkerIfRemovable_RefusesAWorkerWithWorkInFlight(t *testing.T) {
 	}
 }
 
-// TestOfflineWorker_IgnoresASupersededInstance pins the whole-branch review's
-// stale-deregister race: a deregister from a process the worker's latest
-// registration replaced must not take the new process offline or reclaim the
-// task it is running. An empty instance ID on either side proves nothing, so
-// the deregister applies as it did before instance IDs existed.
+// TestOfflineWorker_IgnoresASupersededInstance pins the stale-deregister race:
+// a deregister from a process the worker's latest registration replaced must
+// not take the new process offline or reclaim the task it is running. An empty
+// instance ID on either side proves nothing, so the deregister applies.
 func TestOfflineWorker_IgnoresASupersededInstance(t *testing.T) {
 	cases := []struct {
 		name               string

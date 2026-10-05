@@ -98,10 +98,10 @@ func ValidateTaskTransition(from, to TaskStatus) error {
 
 // ── Job state machine ─────────────────────────────────────────────────────────
 
-// JobTransitions is the job lifecycle as sqi implements it. It is a TEST-TIME
-// SPECIFICATION (H4a, decision D4), not consulted at run time: every job write
-// is a named store operation guarded in its own SQL (invariant I1), and the
-// transition-table test asserts each operation's from-states are legal here.
+// JobTransitions is the job lifecycle as sqi implements it. It is a test-time
+// specification, not consulted at run time: every job write is a named store
+// operation guarded in its own SQL (invariant I1), and the transition-table
+// test asserts each operation's from-states are legal here.
 //
 // The arrows come from the operations themselves:
 //

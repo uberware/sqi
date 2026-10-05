@@ -68,12 +68,11 @@ func (s *Store) ListTasks(_ context.Context, opts store.ListTasksOptions) (store
 // Enforces the task state machine ([store.ValidateTaskTransition]) under the
 // same lock that performs the write, matching the SQLite store's transaction.
 // Writing the status a task already holds is a no-op, not an error, so
-// at-least-once redelivery stays idempotent. Keeping the two implementations in
-// step matters: tests inject this fake, and a permissive fake would green-light
+// at-least-once redelivery stays idempotent. The two implementations are kept
+// in step because tests inject this fake, and a permissive fake would accept
 // transitions production rejects.
 //
-// Test fixture only: not part of store.Store, which has no caller for it since
-// H4a2. H4b decides its fate.
+// Test fixture only: not part of store.Store, which has no caller for it.
 func (s *Store) UpdateTaskStatus(_ context.Context, id string, status store.TaskStatus) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -109,7 +108,7 @@ func (s *Store) SetTaskUnschedulableReason(_ context.Context, id, reason string)
 		return false, store.ErrNotFound
 	}
 	if task.Status != store.TaskStatusReady {
-		return false, nil // no longer ready: a guarded no-op (F15)
+		return false, nil // no longer ready: a guarded no-op
 	}
 	task.UnschedulableReason = reason
 	task.UpdatedAt = time.Now()
@@ -120,8 +119,7 @@ func (s *Store) SetTaskUnschedulableReason(_ context.Context, id, reason string)
 // SetTaskFailureReason sets the task's failure reason unconditionally, as
 // SQLite's does.
 //
-// Test fixture only: a blind write that is not part of store.Store. H4b decides
-// its fate.
+// Test fixture only: a blind write that is not part of store.Store.
 func (s *Store) SetTaskFailureReason(_ context.Context, id, reason string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -140,8 +138,7 @@ func (s *Store) SetTaskFailureReason(_ context.Context, id, reason string) error
 // has none; an unknown task or one that already carries a reason is a
 // legitimate no-op, not an error.
 //
-// Test fixture only: a blind write that is not part of store.Store. H4b decides
-// its fate.
+// Test fixture only: a blind write that is not part of store.Store.
 func (s *Store) SetTaskFailureReasonIfEmpty(_ context.Context, id, reason string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -160,7 +157,7 @@ func (s *Store) SetTaskFailureReasonIfEmpty(_ context.Context, id, reason string
 // updates UpdatedAt, stamps a non-empty failureReason on tasks that carry none,
 // and returns the affected tasks.
 //
-// Test fixture only: a blind write that is not part of store.Store (H4a). H4b decides its fate.
+// Test fixture only: a blind write that is not part of store.Store.
 func (s *Store) TransitionStepPendingTasks(_ context.Context, stepID string, to store.TaskStatus, failureReason string) ([]store.Task, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -211,7 +208,7 @@ func (s *Store) transitionPendingTasksWhereLocked(
 // exist. The scheduler takes tasks through [Store.LeaseTask], which guards the
 // same move.
 //
-// Test fixture only: a blind write that is not part of store.Store (H4a). H4b decides its fate.
+// Test fixture only: a blind write that is not part of store.Store.
 func (s *Store) AssignTask(_ context.Context, id, workerID string, assignedAt time.Time) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -235,7 +232,7 @@ func (s *Store) AssignTask(_ context.Context, id, workerID string, assignedAt ti
 // no attempts and releases no claims; a worker is taken offline through
 // [Store.OfflineStaleWorker] and [Store.OfflineWorker], which do all three.
 //
-// Test fixture only: a blind write that is not part of store.Store (H4a). H4b decides its fate.
+// Test fixture only: a blind write that is not part of store.Store.
 func (s *Store) ReclaimWorkerTasks(_ context.Context, workerID string) (int, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -269,8 +266,8 @@ func (s *Store) ReclaimStaleAssignedTasks(_ context.Context, cutoff time.Time) (
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	// Order mirrors SQLite's (spec 4.1): the tasks, then their attempts, then the
-	// claims. The store lock stands in for the row locks.
+	// Order mirrors SQLite's: the tasks, then their attempts, then the claims.
+	// The store lock stands in for the row locks.
 	return s.reclaimToReadyLocked(func(t store.Task) bool {
 		return t.Status == store.TaskStatusAssigned && t.AssignedAt != nil && t.AssignedAt.Before(cutoff)
 	}, "", time.Now().UTC()), nil
@@ -402,7 +399,7 @@ func (s *Store) activeTasksLocked(inScope func(store.Job) bool) int {
 // closes no attempts and releases no claims; a job is canceled through
 // [Store.CancelJobExecution], which does all three.
 //
-// Test fixture only: a blind write that is not part of store.Store (H4a). H4b decides its fate.
+// Test fixture only: a blind write that is not part of store.Store.
 func (s *Store) CancelJobTasks(_ context.Context, jobID string, now time.Time, reason string) ([]store.Task, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -501,10 +498,10 @@ func (s *Store) RetryTasks(_ context.Context, jobID string, taskIDs []string, no
 }
 
 // revivedStatusLocked is the status a retried task of stepID is revived into:
-// ready when its step is still ready (H4a2 §3.4), as SQLite's CASE does, and
-// pending otherwise. The legacy running step status counts as ready, for rows
-// written outside the store operations (no step is running, H4a D4). Caller
-// must hold s.mu.
+// ready when its step is still ready, as SQLite's CASE does, and pending
+// otherwise. The legacy running step status counts as ready, for rows written
+// outside the store operations (no store operation writes it). Caller must
+// hold s.mu.
 func (s *Store) revivedStatusLocked(stepID string) store.TaskStatus {
 	if st, ok := s.steps[stepID]; ok && (st.Status == store.StepStatusReady || st.Status == store.StepStatusRunning) {
 		return store.TaskStatusReady
@@ -678,7 +675,7 @@ func (s *Store) CommittedCores(_ context.Context, workerID string, fullMachineCo
 // check or a claim, and reports whether the task was still ready. The
 // scheduler leases through [Store.LeaseTask], which does all of that in one step.
 //
-// Test fixture only: a blind write that is not part of store.Store (H4a). H4b decides its fate.
+// Test fixture only: a blind write that is not part of store.Store.
 func (s *Store) LeaseReadyTask(_ context.Context, taskID, workerID string, now time.Time) (bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

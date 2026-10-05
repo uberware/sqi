@@ -48,11 +48,11 @@ RETURNING ` + jobCols
 	// overrides.
 	//
 	// declared_extensions is likewise excluded: it is derived from the template
-	// at submission and is not user-settable. raw_template is on the SET list
-	// only historically — the sole production caller (internal/api's PATCH
-	// handler) round-trips the value it just read — so the pair cannot drift
-	// today. A future caller that genuinely REWRITES raw_template here would
-	// have to write the extension list with it.
+	// at submission and is not user-settable. raw_template is on the SET list,
+	// but the sole production caller (internal/api's PATCH handler)
+	// round-trips the value it just read, so the pair cannot drift. A caller
+	// that rewrites raw_template here would have to write the extension list
+	// with it.
 	sqlUpdateJob = `
 UPDATE jobs
 SET farm_id = ?, queue_id = ?, name = ?, owner = ?, submitter = ?, priority = ?,
@@ -161,7 +161,7 @@ WHERE status IN (`
           AND d.status NOT IN ('completed', 'failed', 'canceled'))`
 
 	// sqlExpiredJobByID narrows the retention eligibility SELECT to one job,
-	// for the per-job re-check immediately before that job's cascade (G6).
+	// for the per-job re-check immediately before that job's cascade.
 	sqlExpiredJobByID = ` AND id = ?`
 
 	// sqlParkJob pauses a job and records why, but only while it is
@@ -315,7 +315,7 @@ func (s *Store) CreateJobSubmission(ctx context.Context, sub store.JobSubmission
 			return store.JobSubmission{}, fmt.Errorf("sqlite: create job dependency %s->%s: %w", sub.Job.ID, up, mapErr(err))
 		}
 	}
-	// F13: the edges are written first and checked after. job_dependencies has
+	// The edges are written first and checked after. job_dependencies has
 	// no foreign key on depends_on_job_id, so inserting an edge to a missing or
 	// doomed upstream is harmless, and an unsatisfiable one rolls the whole
 	// submission back with the deferred Rollback.
@@ -336,13 +336,14 @@ func (s *Store) CreateJobSubmission(ctx context.Context, sub store.JobSubmission
 }
 
 // checkUpstreamsTx re-checks, inside the submission's transaction, that every
-// upstream still exists and has not failed or been canceled (F13). It returns a
+// upstream still exists and has not failed or been canceled. It returns a
 // [*store.DependencyUnsatisfiableError] (which matches
 // [store.ErrDependencyUnsatisfiable]) naming the first upstream (in ID order)
 // that does not qualify and why. The other direction, where an upstream completes
 // after the submitter's read, is left to sweepBlockedJobs, which releases the
-// job within one sweep tick. H4c locks each upstream row FOR SHARE here, in ID
-// order so two submissions naming the same upstreams cannot deadlock.
+// job within one sweep tick. A PostgreSQL store locks each upstream row FOR
+// SHARE here, in ID order so two submissions naming the same upstreams cannot
+// deadlock.
 func checkUpstreamsTx(ctx context.Context, tx *sql.Tx, upstreams []string) error {
 	ids := slices.Clone(upstreams)
 	slices.Sort(ids)
@@ -424,8 +425,8 @@ func insertStepsTx(ctx context.Context, tx *sql.Tx, steps []store.Step) ([]store
 // insertTasksTx inserts every task inside tx, mirroring CreateTask's argument
 // order exactly — including its per-row time.Now().
 //
-// The per-row stamp is load-bearing, not incidental. Two consumers depend on
-// tasks within one step having DISTINCT created_at values:
+// The per-row stamp is deliberate. Two consumers depend on tasks within one
+// step having DISTINCT created_at values:
 //
 //   - sqlListReadyTasks (task.go) ends its ORDER BY with "t.created_at ASC",
 //     documented there as the stable tiebreaker within a step. One shared
@@ -667,7 +668,7 @@ func (s *Store) UpdateJob(ctx context.Context, job store.Job) (store.Job, error)
 // UpdateJobStatus sets a job's status unconditionally, stamping StartedAt on
 // the first transition to running and CompletedAt on every terminal status.
 //
-// Test fixture only: a blind write that is not part of store.Store (H4a). H4b decides its fate.
+// Test fixture only: a blind write that is not part of store.Store.
 func (s *Store) UpdateJobStatus(ctx context.Context, id string, status store.JobStatus) error {
 	now := time.Now().UTC()
 	nowText := timeToText(now)
@@ -737,8 +738,8 @@ func (s *Store) CancelJobStatus(ctx context.Context, id string) error {
 // job that has just been re-activated is never spuriously demoted. That is a
 // property of SQLite's single writer, not of the statement: under PostgreSQL
 // READ COMMITTED the NOT EXISTS subquery is not re-checked against a lease that
-// commits concurrently, and it takes no anchor. How H4c closes that is left open
-// (see "Store invariants" in docs/architecture.md).
+// commits concurrently, and it takes no anchor. How a PostgreSQL store closes
+// that is left open (see "Store invariants" in docs/architecture.md).
 func (s *Store) DemoteStalledJobs(ctx context.Context, now time.Time) ([]string, error) {
 	rows, err := s.db.QueryContext(ctx, sqlDemoteStalledJobs, timeToText(now.UTC()))
 	if err != nil {
@@ -761,17 +762,18 @@ func (s *Store) DemoteStalledJobs(ctx context.Context, now time.Time) ([]string,
 // job IDs first, then deletes each via the shared cascade, all inside one
 // transaction so a partially-applied sweep can never leave orphaned child rows.
 //
-// G6: the SELECT is a snapshot, and a retry can revive one of its jobs before
+// The SELECT is a snapshot, and a retry can revive one of its jobs before
 // that job's turn comes. So each job takes its own job anchor and is then
 // re-checked against the full eligibility predicate (terminal status, cutoff,
 // no live dependent) immediately before its cascade starts; a job that no
 // longer matches is skipped, neither deleted nor reported. On SQLite the
 // single write connection means the snapshot cannot go stale, so the re-check
-// never skips; it is the PostgreSQL store's (H4c) guard, where the job-row lock
-// is what makes it sound. The candidates are anchored in the order the SELECT
+// never skips; it is a PostgreSQL store's guard, where the job-row lock is
+// what makes it sound. The candidates are anchored in the order the SELECT
 // returns them, which has no ORDER BY, and the sweep holds every lock it takes
-// until its one commit, so H4c should sort the candidates by id (or commit per
-// job) to keep a lock order other job-anchored writers can agree with.
+// until its one commit, so a PostgreSQL store should sort the candidates by id
+// (or commit per job) to keep a lock order other job-anchored writers can
+// agree with.
 func (s *Store) DeleteTerminalJobsBefore(
 	ctx context.Context, cutoff time.Time, includeFailed bool,
 ) ([]store.DeletedJob, error) {
@@ -844,7 +846,8 @@ func selectExpiredJobsTx(ctx context.Context, tx *sql.Tx, query string, args []a
 // DELETE; the re-check comes before any child row is touched because the sweep
 // is one transaction and a half-purged job cannot be skipped after the fact. As
 // for [Store.DeleteJob], the anchor does not stop a log append or a lease from
-// inserting a child row mid-cascade, so H4c must retry on a foreign-key error.
+// inserting a child row mid-cascade, so a PostgreSQL store must retry on a
+// foreign-key error.
 func purgeExpiredJobTx(ctx context.Context, tx *sql.Tx, recheck string, args []any, id string) (bool, error) {
 	if err := lockAnchors(ctx, tx, jobAnchor(id)); err != nil {
 		return false, err
@@ -873,15 +876,14 @@ func purgeExpiredJobTx(ctx context.Context, tx *sql.Tx, recheck string, args []a
 // transaction; if the jobs-row delete affects zero rows the job did not exist
 // and the transaction is rolled back with [store.ErrNotFound].
 //
-// G7: the job anchor is taken first, which serializes the cascade against the
-// other job-anchored writers (cancel, retry, finalize, completion, retention).
-// It does not by itself stop a log append (CreateTaskLog, no transaction, no
+// The job anchor is taken first, which serializes the cascade against the other
+// job-anchored writers (cancel, retry, finalize, completion, retention). It
+// does not by itself stop a log append (CreateTaskLog, no transaction, no
 // anchor) or a lease (LeaseTask, which anchors only the queue, farm and pool
 // rows) from inserting a child row after its table was cleared, so on
 // PostgreSQL a later DELETE in the cascade (claims, logs, attempts, tasks,
-// steps, dependency edges, then the job row) can still fail on a foreign key.
-// Retrying the cascade on a foreign-key or deadlock error is H4c's job (spec
-// §5.4).
+// steps, dependency edges, then the job row) can still fail on a foreign key. A
+// PostgreSQL store must retry the cascade on a foreign-key or deadlock error.
 // SQLite cannot produce either error: its single write connection serializes
 // every writer.
 func (s *Store) DeleteJob(ctx context.Context, id string) error {

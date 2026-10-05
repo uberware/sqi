@@ -217,7 +217,7 @@ func (s *Store) ActiveClaimCount(ctx context.Context, poolID string) (int, error
 // [Store.LeaseTask], which counts each pool under that pool's anchor row; this
 // fixture takes no anchor.
 //
-// Test fixture only: a blind write that is not part of store.Store (H4a). H4b decides its fate.
+// Test fixture only: a blind write that is not part of store.Store.
 func (s *Store) TryClaimSlots(
 	ctx context.Context,
 	taskAttemptID string,
@@ -282,7 +282,7 @@ func (s *Store) ReleaseAttemptClaims(ctx context.Context, taskAttemptID string, 
 // is canceled through [Store.CancelJobExecution], which releases only the claims
 // of closed attempts and does so in the same transaction that closes them.
 //
-// Test fixture only: a blind write that is not part of store.Store (H4a). H4b decides its fate.
+// Test fixture only: a blind write that is not part of store.Store.
 func (s *Store) ReleaseJobClaims(ctx context.Context, jobID string, releasedAt time.Time) (int, error) {
 	res, err := s.stmtReleaseJobClaims.ExecContext(ctx, timeToText(releasedAt), jobID)
 	if err != nil {

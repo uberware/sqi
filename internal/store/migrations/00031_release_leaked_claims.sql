@@ -3,7 +3,7 @@
 -- +goose Up
 
 -- Restores invariant I3 ("an active usage claim exists iff its attempt is
--- open") on databases that hit the v0.3.0 claim leaks (H4a findings F2-F5):
+-- open") on databases that hit the v0.3.0 claim leaks:
 -- offline-worker reclaim, rejected terminal reports, lease-vs-cancel and the
 -- stale-assignment reaper all left claims active on closed attempts or
 -- terminal tasks, holding a licence slot until the job was deleted. Pure data

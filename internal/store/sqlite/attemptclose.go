@@ -135,16 +135,17 @@ func closeAttemptAndReleaseTx(ctx context.Context, tx *sql.Tx, c store.AttemptCo
 //
 // Anchor: the task's job row, the parent every job-level operation (cancel,
 // retry, finalize) locks, so this is ordered against them on Postgres. The
-// statements run in the order of spec 5.2: close the attempt, release its
-// claims, then move the task. The claims are released before the task row is
-// touched, and the release commits even when the task move is refused, so a
-// canceled task's late report still frees its pool slots. The latest-attempt
-// check runs after the release and before the task move. Here the single write
-// connection makes the check and the move one step. On Postgres it does not: a
-// LeaseTask committing between the check and the compare-and-set's read would
-// make a superseded report look current, and LeaseTask does not take the job
-// row, so H4c must lock the task row (FOR UPDATE, after the job anchor) before
-// the check, so that a lease in flight is waited for and its attempt is seen.
+// statements run in this order: close the attempt, release its claims, then
+// move the task. The claims are released before the task row is touched, and
+// the release commits even when the task move is refused, so a canceled task's
+// late report still frees its pool slots. The latest-attempt check runs after
+// the release and before the task move. Here the single write connection makes
+// the check and the move one step. On Postgres it does not: a LeaseTask
+// committing between the check and the compare-and-set's read would make a
+// superseded report look current, and LeaseTask does not take the job row, so a
+// PostgreSQL store must lock the task row (FOR UPDATE, after the job anchor)
+// before the check, so that a lease in flight is waited for and its attempt is
+// seen.
 func (s *Store) CompleteTaskAttempt(ctx context.Context, c store.AttemptCompletion) (store.CompletionResult, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -182,9 +183,9 @@ func (s *Store) CompleteTaskAttempt(ctx context.Context, c store.AttemptCompleti
 // and the legal arrow assigned/running -> succeeded/failed/canceled would
 // otherwise end the task while the new attempt is open and holds its claims
 // (I3), or undo a cancel-then-retry. A task out of flight (neither assigned nor
-// running, and not already at the reported status) is refused the same way
-// (H4a2 §4.2). Otherwise the task moves by compare-and-set, and the failure
-// reason is stamped only when it lands.
+// running, and not already at the reported status) is refused the same way.
+// Otherwise the task moves by compare-and-set, and the failure reason is
+// stamped only when it lands.
 func applyCompletionTx(ctx context.Context, tx *sql.Tx, c store.AttemptCompletion, now time.Time) (store.CompletionResult, error) {
 	var latest bool
 	if err := tx.QueryRowContext(ctx, sqlIsLatestAttempt, c.AttemptID, c.TaskID, c.TaskID).Scan(&latest); err != nil {
@@ -193,9 +194,9 @@ func applyCompletionTx(ctx context.Context, tx *sql.Tx, c store.AttemptCompletio
 	if !latest {
 		return store.CompletionResult{Rejected: true}, nil
 	}
-	// A worker report moves only a task in flight (H4a2 §4.2). A task already
-	// holding the reported status is a redelivery, or the echo of a server-side
-	// cancel, and goes on to the compare-and-set's same-status no-op; any other
+	// A worker report moves only a task in flight. A task already holding the
+	// reported status is a redelivery, or the echo of a server-side cancel, and
+	// goes on to the compare-and-set's same-status no-op; any other
 	// out-of-flight task (back in ready or pending through a retry, with no new
 	// lease) is refused, so a late cancel echo cannot re-cancel a retried task.
 	var current string
@@ -294,25 +295,24 @@ func closeTaskAttemptsTx(ctx context.Context, tx *sql.Tx, taskID string, status 
 // CancelJobExecution implements [store.TaskStore].
 //
 // Anchor: the job row, the parent every job-level operation locks. The anchor
-// comes before the SELECT that reports the active tasks (I2), and the writes run
-// in the order spec 4.1 requires on Postgres: the tasks are canceled first, and
-// only then are their attempts closed and their claims released. The job's steps
-// are finalized after that, and the job row itself is canceled last, under the
-// same guard as [Store.CancelJobStatus], so a job cancel is one write: no stop
-// or failed second write can leave a job live with all of its work canceled
-// (H4a2 final review). A LeaseTask
-// that holds one of the tasks is therefore waited for by the task UPDATE (whose
-// predicate matches the task both as ready and as assigned), and the attempt
-// and claims it committed are seen by the two statements after it. Closing
-// attempts first would miss an attempt a lease created in between.
+// comes before the SELECT that reports the active tasks (I2), and the writes
+// run in the order Postgres requires: the tasks are canceled first, and only
+// then are their attempts closed and their claims released. The job's steps are
+// finalized after that, and the job row itself is canceled last, under the same
+// guard as [Store.CancelJobStatus], so a job cancel is one write: no stop or
+// failed second write can leave a job live with all of its work canceled. A
+// LeaseTask that holds one of the tasks is therefore waited for by the task
+// UPDATE (whose predicate matches the task both as ready and as assigned), and
+// the attempt and claims it committed are seen by the two statements after it.
+// Closing attempts first would miss an attempt a lease created in between.
 //
 // The anchor does not make the reported set exact on Postgres. LeaseTask does
-// not take the job row, so a lease that commits between the SELECT and the
-// task UPDATE is canceled, and its attempt and claims closed, but it is not in
-// the returned set and its worker gets no cancel signal. H4c must close that:
-// either LeaseTask also anchors the job row, or the set comes from the
-// UPDATE itself. None of it can arise here, where the single write connection
-// serializes the lease against this whole transaction.
+// not take the job row, so a lease that commits between the SELECT and the task
+// UPDATE is canceled, and its attempt and claims closed, but it is not in the
+// returned set and its worker gets no cancel signal. A PostgreSQL store must
+// close that: either LeaseTask also anchors the job row, or the set comes from
+// the UPDATE itself. None of it can arise here, where the single write
+// connection serializes the lease against this whole transaction.
 func (s *Store) CancelJobExecution(ctx context.Context, jobID, reason string, now time.Time) ([]store.Task, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -320,9 +320,9 @@ func (s *Store) CancelJobExecution(ctx context.Context, jobID, reason string, no
 	}
 	defer func() { _ = tx.Rollback() }() //nolint:errcheck // rollback after commit is a no-op
 
-	// Order (spec 4.1): anchor, then the SELECT of the active set, then tasks,
-	// attempts, claims, steps, and the job row last. See the doc comment for why
-	// tasks come first.
+	// Order: anchor, then the SELECT of the active set, then tasks, attempts,
+	// claims, steps, and the job row last. See the doc comment for why tasks
+	// come first.
 	if err := lockAnchors(ctx, tx, jobAnchor(jobID)); err != nil {
 		return nil, err
 	}
@@ -340,8 +340,8 @@ func (s *Store) CancelJobExecution(ctx context.Context, jobID, reason string, no
 	if _, err := tx.ExecContext(ctx, sqlReleaseClosedJobClaims, nowText, jobID); err != nil {
 		return nil, fmt.Errorf("sqlite: release claims of job %s: %w", jobID, mapErr(err))
 	}
-	// Then the steps (H4a2 §3.2), last: the step write touches only steps,
-	// which no lease or report writes, so it adds no lock-order inversion.
+	// Then the steps: the step write touches only steps, which no lease or
+	// report writes, so it adds no lock-order inversion.
 	if _, err := tx.ExecContext(ctx, sqlCancelJobFinalizeSteps, nowText, jobID); err != nil {
 		return nil, fmt.Errorf("sqlite: finalize steps of job %s: %w", jobID, mapErr(err))
 	}
@@ -369,7 +369,7 @@ func (s *Store) CancelJobExecution(ctx context.Context, jobID, reason string, no
 // protected against a LeaseTask, which does not take the job row: on Postgres a
 // lease that commits between the read and the UPDATE is canceled while prior
 // still shows the task ready with no worker, so no cancel signal reaches that
-// worker. That is CancelJobExecution's gap, and H4c closes both the same way.
+// worker. That is CancelJobExecution's gap, and both close the same way.
 func (s *Store) CancelTaskExecution(ctx context.Context, taskID, reason string, now time.Time) (store.Task, bool, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -377,8 +377,8 @@ func (s *Store) CancelTaskExecution(ctx context.Context, taskID, reason string, 
 	}
 	defer func() { _ = tx.Rollback() }() //nolint:errcheck // rollback after commit is a no-op
 
-	// Order (spec 4.1): the task's job id, the anchor on that job row, the task
-	// as it is under the anchor, then task, attempt, claims. See the doc comment.
+	// Order: the task's job id, the anchor on that job row, the task as it is
+	// under the anchor, then task, attempt, claims. See the doc comment.
 	var jobID string
 	if err := tx.QueryRowContext(ctx, sqlTaskJobID, taskID).Scan(&jobID); err != nil {
 		return store.Task{}, false, mapErr(err) // sql.ErrNoRows is ErrNotFound
@@ -418,17 +418,17 @@ const (
 	// worker goes offline only while it is still online and its heartbeat is
 	// still older than the cutoff. A NULL heartbeat compares false, so a worker
 	// with no recorded heartbeat is never stale. The disabled flag is neither
-	// read nor written: a dead disabled worker goes offline and stays disabled
-	// (H4a2 §5.2). Binds: updated_at, id, cutoff.
+	// read nor written: a dead disabled worker goes offline and stays disabled.
+	// Binds: updated_at, id, cutoff.
 	sqlOfflineStaleWorker = `
 UPDATE workers SET status = 'offline', updated_at = ?
 WHERE  id = ? AND status = 'online' AND last_heartbeat_at < ?`
 
-	// sqlOfflineWorker is the write behind a graceful deregister. It ignores the
-	// heartbeat; its one guard is the instance ID, so a deregister from a
+	// sqlOfflineWorker is the write behind a graceful deregister. It ignores
+	// the heartbeat; its one guard is the instance ID, so a deregister from a
 	// superseded process cannot take a newer one offline (an empty ID on either
-	// side matches). A disabled worker stays disabled (H4a2 §5.3): the flag is
-	// not written. Binds: updated_at, id, instance id, instance id.
+	// side matches). A disabled worker stays disabled: the flag is not written.
+	// Binds: updated_at, id, instance id, instance id.
 	sqlOfflineWorker = `
 UPDATE workers SET status = 'offline', updated_at = ?
 WHERE  id = ? AND (? = '' OR instance_id = '' OR instance_id = ?)`
@@ -472,7 +472,7 @@ func (s *Store) OfflineWorker(ctx context.Context, id, instanceID string, now ti
 // releases their claims and returns the tasks to ready, all in one transaction
 // (invariants I1, I2 and I3). The bool is whether the worker was taken offline.
 //
-// Anchors and statement order (spec 4.1): the worker row first, then each job row
+// Anchors and statement order: the worker row first, then each job row
 // the worker's tasks belong to, sorted by id; the statements run worker, tasks,
 // then attempts and claims. The tasks are reclaimed before their attempts are
 // closed so that, on Postgres, a running or terminal report holding the row of an
@@ -484,17 +484,17 @@ func (s *Store) OfflineWorker(ctx context.Context, id, instanceID string, now ti
 // for: it is moving a ready row, which the reclaim's predicate does not match in
 // the version its snapshot sees, so the UPDATE skips that row. The gap that
 // leaves is the one described next (LeaseTask does not anchor the worker); until
-// H4c closes it, the stale-assignment reaper recovers a task a lease hands a
-// worker that has already gone offline.
+// a PostgreSQL store closes it, the stale-assignment reaper recovers a task a
+// lease hands a worker that has already gone offline.
 //
-// What H4c must do on Postgres. The marking UPDATE takes the worker row lock
+// What a PostgreSQL store must do. The marking UPDATE takes the worker row lock
 // itself, so the worker anchor is already first. The in-flight job IDs are read
 // UNLOCKED, after the worker row is held and before any task row is touched, and
 // the job rows are locked sorted before the reclaim UPDATE; a task row locked
 // before its job row is the inversion every job-level operation would deadlock
 // on. That read is only a candidate set: a task leased to this worker after it
 // has an unanchored job row, because LeaseTask does not take the worker row.
-// H4c must either have LeaseTask take the worker row FOR SHARE, or re-read the
+// It must either have LeaseTask take the worker row FOR SHARE, or re-read the
 // set once the worker row is held and repeat until it is stable. None of that
 // can arise here: the single write connection serializes every writer, so the
 // set read below cannot change before the reclaim, and lockAnchors does nothing.
@@ -505,8 +505,8 @@ func (s *Store) offlineWorker(ctx context.Context, id string, now time.Time, mar
 	}
 	defer func() { _ = tx.Rollback() }() //nolint:errcheck // rollback after commit is a no-op
 
-	// Order (spec 4.1): the worker row, then the guarded mark, then the job rows,
-	// then the tasks, attempts and claims. See the doc comment.
+	// Order: the worker row, then the guarded mark, then the job rows, then the
+	// tasks, attempts and claims. See the doc comment.
 	if err := lockAnchors(ctx, tx, workerAnchor(id)); err != nil {
 		return nil, false, err
 	}

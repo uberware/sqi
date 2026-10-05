@@ -523,7 +523,7 @@ func TestUserStore_SetUserDisplayName(t *testing.T) {
 				t.Errorf("username/password_hash changed: %+v", updated)
 			}
 
-			// The load-bearing property: an admin change that lands between a
+			// The property under test: an admin change that lands between a
 			// caller's read and their save must survive the save.
 			u.Role = "read-only"
 			u.Disabled = true

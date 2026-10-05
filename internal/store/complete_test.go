@@ -160,9 +160,9 @@ func TestCompleteTaskAttempt_TaskRowUsesServerTime(t *testing.T) {
 	}
 }
 
-// TestCompleteTaskAttempt_RejectedStillReleases pins F3: the task was canceled
-// while running; the worker's terminal report is rejected but the claim must
-// still be released and the attempt closed.
+// TestCompleteTaskAttempt_RejectedStillReleases pins that when the task was
+// canceled while running, the worker's terminal report is rejected but the
+// claim is still released and the attempt closed.
 func TestCompleteTaskAttempt_RejectedStillReleases(t *testing.T) {
 	for name, st := range newStores(t) {
 		t.Run(name, func(t *testing.T) {
@@ -182,7 +182,7 @@ func TestCompleteTaskAttempt_RejectedStillReleases(t *testing.T) {
 				t.Fatalf("failure reason = %q, want it left alone on a rejected report", got.FailureReason)
 			}
 			if n := activeClaims(t, st, pool.ID); n != 0 {
-				t.Fatalf("active claims = %d, want 0 (F3)", n)
+				t.Fatalf("active claims = %d, want 0", n)
 			}
 			if got := mustAttempt(t, st, a.ID); got.Status != store.AttemptStatusSucceeded || got.EndedAt == nil {
 				t.Fatalf("attempt = %+v, want it closed even though the task transition was rejected", got)
@@ -194,7 +194,8 @@ func TestCompleteTaskAttempt_RejectedStillReleases(t *testing.T) {
 	}
 }
 
-// TestCompleteTaskAttempt_Redelivery pins Review Focus #1.
+// TestCompleteTaskAttempt_Redelivery pins that a redelivered terminal report
+// is a no-op: it neither rewrites the closed attempt nor changes the task.
 func TestCompleteTaskAttempt_Redelivery(t *testing.T) {
 	for name, st := range newStores(t) {
 		t.Run(name, func(t *testing.T) {
@@ -339,9 +340,10 @@ func TestCompleteTaskAttempt_SupersededAttemptIsRejected(t *testing.T) {
 // latest-attempt check runs in: after the reporting attempt is closed and its
 // claims released, as on every path, so only the task move is refused. The
 // shape, an older attempt still open beside the latest one, cannot come from
-// H4a's operations (each closes a task's attempts whenever it takes the task
-// back), but it is what a v0.3.0 reaper race (F5) could leave behind, and the
-// old worker's report must release that attempt's slot rather than keep it.
+// the current store operations (each closes a task's attempts whenever it
+// takes the task back), but a reaper race in v0.3.0 could leave it behind, and
+// the old worker's report must release that attempt's slot rather than keep
+// it.
 func TestCompleteTaskAttempt_SupersededOpenAttemptIsClosed(t *testing.T) {
 	for name, st := range newStores(t) {
 		t.Run(name, func(t *testing.T) {

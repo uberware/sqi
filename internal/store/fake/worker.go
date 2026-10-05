@@ -13,11 +13,11 @@ import (
 
 // RegisterWorker implements [store.WorkerStore]: it inserts or replaces the
 // worker record for the given ID, except that an empty InstanceID keeps the
-// stored one and Disabled is never taken from the registration: a new worker
-// is enabled and an existing one keeps its flag (H4a2 §5.3), as SQLite's
-// upsert leaves the column alone. A non-empty stored InstanceID that differs
-// from a non-empty incoming one is a restarted worker process, whose assigned
-// and running tasks are reclaimed as the offline transitions reclaim them, with
+// stored one and Disabled is never taken from the registration: a new worker is
+// enabled and an existing one keeps its flag, as SQLite's upsert leaves the
+// column alone. A non-empty stored InstanceID that differs from a non-empty
+// incoming one is a restarted worker process, whose assigned and running tasks
+// are reclaimed as the offline transitions reclaim them, with
 // [store.FailureReasonWorkerRestarted]; the store lock stands in for SQLite's
 // worker-row and job-row anchors.
 func (s *Store) RegisterWorker(_ context.Context, worker store.Worker) (store.Worker, []store.Task, error) {
@@ -136,7 +136,7 @@ func (s *Store) UpdateWorkerHeartbeat(_ context.Context, id string, at time.Time
 }
 
 // ListStaleWorkers returns workers whose last heartbeat is older than before
-// and whose status is [store.WorkerStatusOnline], disabled or not (H4a2 §5.2).
+// and whose status is [store.WorkerStatusOnline], disabled or not.
 //
 // Unlike SQLite, where a NULL heartbeat never compares older, it also lists an
 // online worker that has never sent a heartbeat; TestListStaleWorkers pins
@@ -192,8 +192,7 @@ func (s *Store) CountIdleWorkers(_ context.Context, farmID string) (int, error) 
 
 // DeleteWorker hard-deletes the worker with the given ID.
 //
-// Test fixture only: an unguarded delete that is not part of store.Store. H4b
-// decides its fate.
+// Test fixture only: an unguarded delete that is not part of store.Store.
 func (s *Store) DeleteWorker(_ context.Context, id string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -207,7 +206,7 @@ func (s *Store) DeleteWorker(_ context.Context, id string) error {
 
 // DeleteWorkerIfRemovable implements [store.WorkerStore]. The rule is
 // [store.Worker.Removable], which SQLite restates in its DELETE, plus the
-// in-flight condition a Worker value cannot see (H4a2 §5.4).
+// in-flight condition a Worker value cannot see.
 func (s *Store) DeleteWorkerIfRemovable(_ context.Context, id string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()

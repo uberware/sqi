@@ -312,10 +312,10 @@ func TestStore_DeleteTerminalJobsBefore_KeepsUpstreamNeededByBlockedDependent(t 
 	}
 }
 
-// TestJob_BlockedStatusAndDependencyTable verifies the Task 1 deliverables in
-// isolation, before Task 2 adds CreateJobDependencies/ListJobDependencyIDs:
-// a job created with JobStatusBlocked round-trips through CreateJob/GetJob,
-// and the job_dependencies table exists and accepts rows shaped as designed.
+// TestJob_BlockedStatusAndDependencyTable verifies, without going through
+// CreateJobDependencies/ListJobDependencyIDs, that a job created with
+// JobStatusBlocked round-trips through CreateJob/GetJob, and that the
+// job_dependencies table exists and accepts rows of the expected shape.
 func TestJob_BlockedStatusAndDependencyTable(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
@@ -367,9 +367,9 @@ func TestJob_BlockedStatusAndDependencyTable(t *testing.T) {
 		t.Fatalf("unexpected sqlite_master name %q", name)
 	}
 
-	// A raw edge insert round-trips with the designed shape (job_id,
-	// depends_on_job_id, created_at), confirming the schema Task 2's
-	// CreateJobDependencies/ListJobDependencyIDs will build on.
+	// A raw edge insert round-trips with the expected shape (job_id,
+	// depends_on_job_id, created_at), confirming the schema
+	// CreateJobDependencies/ListJobDependencyIDs build on.
 	if _, err := st.db.ExecContext(
 		ctx,
 		`INSERT INTO job_dependencies (job_id, depends_on_job_id, created_at) VALUES (?, ?, ?)`,
@@ -560,7 +560,7 @@ func TestJob_ListJobDependencyIDs_OrderedByUpstreamID(t *testing.T) {
 	}
 }
 
-// TestStore_PurgeExpiredJobTx_SkipsAJobRevivedAfterTheSelect reaches the G6
+// TestStore_PurgeExpiredJobTx_SkipsAJobRevivedAfterTheSelect reaches the
 // re-check branch, which no black-box test can on SQLite: the single write
 // connection means a retry cannot commit between DeleteTerminalJobsBefore's
 // SELECT and its per-job delete. The test plays the retry itself, inside the

@@ -61,7 +61,7 @@ func TestOfflineStaleWorker(t *testing.T) {
 				t.Fatalf("attempt = %+v, want failed, ended, with the worker-offline message", a)
 			}
 			if n := activeClaims(t, st, pool.ID); n != 0 {
-				t.Fatalf("active claims = %d, want 0 (F2)", n)
+				t.Fatalf("active claims = %d, want 0", n)
 			}
 			if v := claimViolations(t, st); len(v) != 0 {
 				t.Fatalf("I3 violations: %v", v)
@@ -70,7 +70,8 @@ func TestOfflineStaleWorker(t *testing.T) {
 	}
 }
 
-// TestOfflineStaleWorker_FreshHeartbeatWins pins F1 at the store layer.
+// TestOfflineStaleWorker_FreshHeartbeatWins pins that a heartbeat landing
+// after the stale-worker listing keeps the worker online and its task running.
 func TestOfflineStaleWorker_FreshHeartbeatWins(t *testing.T) {
 	for name, st := range newStores(t) {
 		t.Run(name, func(t *testing.T) {
@@ -104,8 +105,8 @@ func TestOfflineStaleWorker_FreshHeartbeatWins(t *testing.T) {
 // TestOfflineStaleWorker_OnlyAnOnlineWorker pins the other half of the guard
 // for a stale worker holding a running task. An offline worker is left exactly
 // as it is, task and all. A disabled one is online underneath, so it goes
-// offline and is reclaimed like any other (H4a2 §5.2: its task returns to
-// ready), and it stays disabled: the sweep writes liveness, never the flag.
+// offline and is reclaimed like any other (its task returns to ready), and it
+// stays disabled: the sweep writes liveness, never the flag.
 func TestOfflineStaleWorker_OnlyAnOnlineWorker(t *testing.T) {
 	tests := []struct {
 		status    store.WorkerStatus
@@ -260,7 +261,7 @@ func TestOfflineWorker(t *testing.T) {
 				t.Fatalf("task = %+v, want reclaimed", got)
 			}
 			if n := activeClaims(t, st, pool.ID); n != 0 {
-				t.Fatalf("active claims = %d, want 0 (F2)", n)
+				t.Fatalf("active claims = %d, want 0", n)
 			}
 			if v := claimViolations(t, st); len(v) != 0 {
 				t.Fatalf("I3 violations: %v", v)

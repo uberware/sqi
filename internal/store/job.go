@@ -194,15 +194,13 @@ type JobStore interface {
 	// CreateJobSubmission atomically creates a job, its dependency edges, its
 	// steps and its tasks. On ANY error nothing is written.
 	//
-	// It exists because creating those rows through separate calls left two
-	// defects with no cure at the call site: a failed submission stranded a
-	// pending job that no sweep reaps, and a submission whose write failed
-	// after some steps were persisted produced a job whose missing steps made
-	// checkJobCompletion — which derives job status from the steps that exist —
-	// report it completed. The second needs a STORE failure specifically: an
-	// expansion failure left the step row too, because the old code wrote it
-	// before expanding its tasks, so that case hung pending rather than
-	// completing. Both are properties of partial creation, so both end here.
+	// Creating those rows through separate calls has two failure modes with no
+	// cure at the call site: a failed submission strands a pending job that no
+	// sweep reaps, and a submission whose write fails after some steps were
+	// persisted produces a job whose missing steps make checkJobCompletion —
+	// which derives job status from the steps that exist — report it
+	// completed. Both are properties of partial creation, which one
+	// transaction rules out.
 	//
 	// The returned JobSubmission carries the rows as stored, the way
 	// [JobStore.CreateJob], [StepStore.CreateStep] and [TaskStore.CreateTask]
@@ -231,7 +229,7 @@ type JobStore interface {
 	// CreateJobDependencies records that jobID waits on each ID in upstreamIDs
 	// (whole-job cross-job dependencies). Duplicate edges are ignored.
 	//
-	// Submission no longer calls this: the edges are written by
+	// Submission does not call this: the edges are written by
 	// [JobStore.CreateJobSubmission], in the same transaction as the job row
 	// whose blocked status they justify. See [JobStore.CreateJob] on what that
 	// leaves this method.
@@ -342,7 +340,7 @@ type JobStore interface {
 	// from inserting a child row mid-cascade, because neither takes the job
 	// anchor: on a store without a single writer such an insert can land after
 	// its table was cleared and make a later DELETE in the cascade fail on a
-	// foreign key. The PostgreSQL store (H4c) must therefore retry the cascade
+	// foreign key. A PostgreSQL store must therefore retry the cascade
 	// itself, inside DeleteJob, on a foreign-key or deadlock error; the REST
 	// handler that calls it does not retry. The SQLite store cannot produce
 	// either, because its single write connection serializes every writer.

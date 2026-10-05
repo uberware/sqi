@@ -257,12 +257,12 @@ func TestReadPool_ReadsSeeCommittedWrites(t *testing.T) {
 	}
 }
 
-// ── the point of the whole change ────────────────────────────────────────────
+// ── reads do not wait behind a write ─────────────────────────────────────────
 
 const (
 	// readDeadline is how long a read may take while a write is in flight.
 	// Generous next to the write it runs against, tight next to the 5s health
-	// checker timeout this change exists to protect.
+	// checker timeout the read pool exists to protect.
 	readDeadline = 500 * time.Millisecond
 	// heldWriteDuration is how long the deterministic test pins the single
 	// write connection.

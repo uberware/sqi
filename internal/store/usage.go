@@ -120,8 +120,8 @@ type UsageClaimStore interface {
 	// It has no production caller: every operation that closes an attempt
 	// releases that attempt's claims in its own transaction (invariant I3), so
 	// a separate release call is never needed and would reopen the window
-	// between the two writes. It stays on the interface as fixture surface
-	// (H4b decides its fate).
+	// between the two writes. It stays on the interface as test fixture
+	// surface.
 	//
 	// Returns the number of claims released (0 is not an error when the
 	// attempt held no claims).

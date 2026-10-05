@@ -51,8 +51,7 @@ type TaskAttemptStore interface {
 	// CreateTaskAttempt inserts a new attempt record. It has no production
 	// caller: every attempt the scheduler opens is inserted by
 	// [TaskStore.LeaseTask], in the same transaction as the lease and its usage
-	// claims. It stays on the interface as fixture surface (H4b decides its
-	// fate).
+	// claims. It stays on the interface as test fixture surface.
 	CreateTaskAttempt(ctx context.Context, attempt TaskAttempt) (TaskAttempt, error)
 
 	// GetTaskAttempt returns the attempt with the given ID, or [ErrNotFound].

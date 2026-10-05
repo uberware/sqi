@@ -5,9 +5,9 @@
 --   - All primary keys are TEXT (UUIDs) for portability to PostgreSQL.
 --   - JSON columns are TEXT; PostgreSQL migration can promote them to JSONB.
 --   - Timestamps are TEXT in ISO 8601 (YYYY-MM-DDTHH:MM:SS.sssZ).
---   - Schema avoids SQLite-specific type affinity quirks to ease future
---     migration to PostgreSQL (deferred Phase 4 work).
---   - Sessions are NOT a first-class table in Phase 1. The OpenJD session ID
+--   - Schema avoids SQLite-specific type affinity quirks to ease a future
+--     migration to PostgreSQL.
+--   - OpenJD sessions are not a first-class table. The OpenJD session ID
 --     is recorded as session_id on task_attempts for grouping/attribution.
 --     A dedicated sessions table should be added when session-reuse scheduling
 --     is implemented (see docs/architecture.md, "SQLite schema overview").

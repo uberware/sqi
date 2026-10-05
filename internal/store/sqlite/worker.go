@@ -30,7 +30,7 @@ const (
 	// ON CONFLICT preserves registered_at so re-registration does not reset it,
 	// and an empty instance_id (a worker that sends none) keeps the stored one.
 	// disabled is not in the column list, so a new worker is enabled and a
-	// re-registration never changes the flag (H4a2 §5.3).
+	// re-registration never changes the flag.
 	sqlUpsertWorker = `
 INSERT INTO workers (
 	id, farm_id, queue_id, name, hostname, ip_address, compute_location,
@@ -77,8 +77,7 @@ RETURNING ` + workerCols
 UPDATE workers SET last_heartbeat_at = ?, updated_at = ? WHERE id = ?`
 
 	// sqlListStaleWorkers lists the heartbeat sweep's candidates: online
-	// workers, disabled or not (H4a2 §5.2), whose heartbeat is older than the
-	// cutoff.
+	// workers, disabled or not, whose heartbeat is older than the cutoff.
 	sqlListStaleWorkers = `SELECT ` + workerCols + `
 FROM workers WHERE status = 'online' AND last_heartbeat_at < ?`
 
@@ -111,9 +110,9 @@ WHERE  w.status = 'online' AND w.disabled = 0
 	// the check and the delete are one statement (I1). It mirrors
 	// [store.Worker.Removable], the one Go statement of the rule: SQL cannot
 	// call Go, so the two are kept in step by hand and pinned against each
-	// other by TestDeleteWorkerIfRemovable. The in-flight arm (H4a2 §5.4) is
-	// the one condition a Worker value cannot see, so it is stated here and in
-	// the fake, not in Removable.
+	// other by TestDeleteWorkerIfRemovable. The in-flight arm is the one
+	// condition a Worker value cannot see, so it is stated here and in the
+	// fake, not in Removable.
 	sqlDeleteWorkerIfRemovable = `
 DELETE FROM workers
 WHERE id = ? AND status = 'offline'
@@ -206,7 +205,8 @@ func workerBindArgs(w store.Worker, now string) ([]any, error) {
 // RegisterWorker implements [store.WorkerStore].
 //
 // Anchor: the worker row, then (on a restart) the reclaim's job rows, the same
-// order as offlineWorker, and inheriting its H4c gap (handoff item 3b).
+// order as offlineWorker, and sharing the gap it leaves on PostgreSQL
+// (LeaseTask does not anchor the worker row).
 func (s *Store) RegisterWorker(ctx context.Context, worker store.Worker) (store.Worker, []store.Task, error) {
 	now := time.Now().UTC()
 	args, err := workerBindArgs(worker, timeToText(now))
@@ -410,7 +410,7 @@ func (s *Store) CountIdleWorkers(ctx context.Context, farmID string) (int, error
 // reference the worker by ID are left intact.
 //
 // Test fixture only: an unguarded delete that is not part of store.Store;
-// removal goes through DeleteWorkerIfRemovable. H4b decides its fate.
+// removal goes through DeleteWorkerIfRemovable.
 func (s *Store) DeleteWorker(ctx context.Context, id string) error {
 	res, err := s.stmtDeleteWorker.ExecContext(ctx, id)
 	if err != nil {

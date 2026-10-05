@@ -60,10 +60,9 @@ func TestStartTaskAttempt(t *testing.T) {
 	}
 }
 
-// TestCompleteTaskAttempt_RefusesATaskOutOfFlight pins item 9's second
-// late-report hole: a late terminal report from the latest attempt, after the
-// task left flight with no new lease (canceled then retried), must not move
-// it.
+// TestCompleteTaskAttempt_RefusesATaskOutOfFlight pins that a late terminal
+// report from the latest attempt, after the task left flight with no new lease
+// (canceled then retried), does not move it.
 func TestCompleteTaskAttempt_RefusesATaskOutOfFlight(t *testing.T) {
 	for _, current := range []store.TaskStatus{store.TaskStatusReady, store.TaskStatusPending} {
 		for name, st := range newStores(t) {
@@ -140,7 +139,7 @@ func TestReclaimTaskAttempt(t *testing.T) {
 			if ok, err := st.ReclaimTaskAttempt(ctx, a.ID, running.ID, now); err != nil || ok {
 				t.Fatalf("second ReclaimTaskAttempt = (%v, %v), want (false, nil)", ok, err)
 			}
-			// Review Focus 3: a task the user already canceled stays canceled.
+			// A task the user already canceled stays canceled.
 			c := seedAttempt(t, st, canceled, store.AttemptStatusCanceled)
 			if ok, err := st.ReclaimTaskAttempt(ctx, c.ID, canceled.ID, now); err != nil || ok {
 				t.Fatalf("ReclaimTaskAttempt(canceled) = (%v, %v), want (false, nil)", ok, err)

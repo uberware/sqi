@@ -107,21 +107,21 @@ func (s *Store) CreateJobSubmission(_ context.Context, sub store.JobSubmission) 
 // the fake reject what SQLite's schema and transaction would reject. Callers
 // must hold s.mu.
 //
-// It mirrors four constraints: the jobs primary key, the F13 upstream check
+// It mirrors four constraints: the jobs primary key, the upstream check
 // (see checkUpstreamsLocked), the steps_job_name_unique UNIQUE (job_id, name)
 // constraint, and the steps and tasks primary keys, each checked both within
 // the submission and against what is already stored. Without the primary-key
-// checks the fake does not merely accept a duplicate ID, it silently LOSES the
+// checks the fake does not merely accept a duplicate ID, it loses the
 // row (the map assignment overwrites) and still reports success, so a Submit
 // regression that reused an ID would be green through every fake-backed test
 // and ErrConflict only in production.
 //
 // It does NOT mirror SQLite's foreign keys: a submission naming a nonexistent
-// farm, queue or step is accepted here. That gap is pre-existing in CreateJob,
-// CreateStep and CreateTask and is deliberately left alone rather than closed
-// only on this one path. (job_dependencies.depends_on_job_id carries no FK
+// farm, queue or step is accepted here. CreateJob, CreateStep and CreateTask
+// have the same gap, and it is deliberately left open rather than closed only
+// on this one path. (job_dependencies.depends_on_job_id carries no FK
 // either, so an edge to a nonexistent upstream is not refused by the schema:
-// it is refused by the explicit F13 check, on both backends.)
+// it is refused by the explicit upstream check, on both backends.)
 //
 // The checks run in the order SQLite's transaction reaches them (job row,
 // then the upstream check, then steps, then tasks), so a submission that
@@ -140,7 +140,7 @@ func (s *Store) validateSubmission(sub store.JobSubmission) error {
 }
 
 // checkUpstreamsLocked is the in-memory counterpart of SQLite's
-// checkUpstreamsTx (F13): every DependsOn upstream must exist and must not have
+// checkUpstreamsTx: every DependsOn upstream must exist and must not have
 // failed or been canceled, else the submission is refused with a
 // [*store.DependencyUnsatisfiableError] (which matches
 // [store.ErrDependencyUnsatisfiable]) naming the first offender in ID order and
@@ -347,7 +347,7 @@ func (s *Store) UpdateJob(_ context.Context, job store.Job) (store.Job, error) {
 // If the new status is [store.JobStatusRunning] and StartedAt is nil, StartedAt
 // is set to the current time. Terminal statuses set CompletedAt.
 //
-// Test fixture only: a blind write that is not part of store.Store (H4a). H4b decides its fate.
+// Test fixture only: a blind write that is not part of store.Store.
 func (s *Store) UpdateJobStatus(_ context.Context, id string, status store.JobStatus) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -449,7 +449,7 @@ func (s *Store) CancelJobStatus(_ context.Context, id string) error {
 // Manual DeleteJob intentionally keeps the cancel-dependents behavior — this
 // guard only applies to the automatic retention sweep.
 //
-// G6: each candidate is re-checked against the full eligibility predicate
+// Each candidate is re-checked against the full eligibility predicate
 // immediately before it is deleted, and skipped (not deleted, not reported)
 // if it no longer matches. The whole sweep holds s.mu, so here the re-check can
 // never skip, exactly as on SQLite; it is kept so the two backends run the same

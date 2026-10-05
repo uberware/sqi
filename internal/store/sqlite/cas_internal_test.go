@@ -11,7 +11,7 @@ import (
 	"github.com/uberware/sqi/internal/store"
 )
 
-// TestCasTaskStatusTx_GuardsOnObservedStatus pins G1's write shape: the UPDATE
+// TestCasTaskStatusTx_GuardsOnObservedStatus pins the write shape: the UPDATE
 // is conditioned on the status that was read, so a concurrent change (which
 // SQLite cannot produce, but Postgres will) is detected instead of overwritten.
 func TestCasTaskStatusTx_GuardsOnObservedStatus(t *testing.T) {

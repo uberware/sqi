@@ -2,14 +2,13 @@
 
 -- +goose Up
 
--- Closes attempts earlier releases left open (H4a2 §5.5, tracker item 9 vii):
--- a running attempt whose task is not in flight (F4's orphan on a finished
--- task, or a task back in ready/pending), and a running attempt that is not its
--- task's latest (v0.3.0's F5 residue: the old reaper closed the newer attempt
--- and left the older one open). 00031 released claims only and could not reach
--- these. Each is closed as failed with server time, then every active claim
--- whose attempt is no longer running is released (00031's predicate). A
--- healthy database is unchanged.
+-- Closes attempts earlier releases left open: a running attempt whose task is
+-- not in flight (an orphan on a finished task, or a task back in
+-- ready/pending), and a running attempt that is not its task's latest (the
+-- v0.3.0 reaper closed the newer attempt and left the older one open). 00031
+-- released claims only and could not reach these. Each is closed as failed with
+-- server time, then every active claim whose attempt is no longer running is
+-- released (00031's predicate). A healthy database is unchanged.
 UPDATE task_attempts
 SET    status   = 'failed',
        ended_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),

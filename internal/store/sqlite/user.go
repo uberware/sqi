@@ -167,7 +167,7 @@ func (s *Store) SetUserPassword(ctx context.Context, id, passwordHash string) er
 }
 
 // SetUserPasswordAndEvictSessions implements [store.UserStore]. Both writes
-// share one transaction so a caller can report failure honestly.
+// share one transaction, so a failure means neither landed.
 func (s *Store) SetUserPasswordAndEvictSessions(ctx context.Context, id, passwordHash string) error {
 	now := timeToText(time.Now().UTC())
 
@@ -238,14 +238,14 @@ func (s *Store) DeleteUser(ctx context.Context, id string) error {
 // withAdminAnchors runs fn in a write transaction after taking the anchor
 // locks for the last-admin guard (invariant I4).
 //
-// Order (spec 4.1): every enabled admin's user row, sorted by id, then the
+// Order: every enabled admin's user row, sorted by id, then the
 // guarded write inside fn. The guard counts the OTHER enabled admins, so two
 // concurrent writes that each demote a different admin would each see the other
 // still enabled and both pass; holding the whole admin set serializes them, and
 // the fixed id order keeps two such transactions from deadlocking on PostgreSQL.
 // On SQLite lockAnchors does nothing and the single write connection provides
 // the serialization; the guard in the statement is what makes the answer right.
-// H4c: the admin set is read before its rows are locked, so on Postgres an
+// The admin set is read before its rows are locked, so on Postgres an
 // account made an enabled admin in between is not anchored; re-read the set
 // under the locks (and repeat until it is stable) or lock a wider range.
 func (s *Store) withAdminAnchors(ctx context.Context, fn func(*sql.Tx) error) error {

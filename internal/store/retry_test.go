@@ -9,7 +9,7 @@ import (
 	"github.com/uberware/sqi/internal/store"
 )
 
-// TestRetryTasks_RevivesReadyUnderAReadyStep pins item 9 vi: retrying a failed
+// TestRetryTasks_RevivesReadyUnderAReadyStep pins that retrying a failed
 // task while a sibling still runs (so its step is still ready) revives it
 // ready, because nothing will release a pending task in a ready step.
 // Under a terminal step the task is revived pending as before, and the step

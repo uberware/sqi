@@ -51,7 +51,7 @@ type WorkerCredentialStore interface {
 	// exists specifically to resolve that ambiguity to the one row that
 	// matters for authentication.
 	//
-	// It has NO production callers — it is test-only API surface used to
+	// It has no production callers: it is test-only API surface used to
 	// assert credential state directly, rather than through a code path that
 	// exercises it incidentally.
 	GetActiveWorkerCredentialByWorkerID(ctx context.Context, workerID string) (WorkerCredential, error)

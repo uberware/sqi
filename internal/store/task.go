@@ -243,9 +243,9 @@ type TaskStore interface {
 	//     attempt_number; an unknown attempt or another task's is not), stop:
 	//     the result is Rejected and the task is not touched;
 	//  4. move the task to c.TaskStatus by compare-and-set, and only while it is
-	//     assigned or running (H4a2): a task already holding the status is a
-	//     no-op (Applied), anything else (ready, pending, or another terminal
-	//     status) is Rejected;
+	//     assigned or running: a task already holding the status is a no-op
+	//     (Applied), anything else (ready, pending, or another terminal status)
+	//     is Rejected;
 	//  5. stamp c.FailureReason when the task ends up holding c.TaskStatus.
 	// Steps 1 and 2 commit even when step 3 or 4 rejects the report, so a
 	// canceled task's late report never leaks a usage slot. Step 3 is what
@@ -258,27 +258,25 @@ type TaskStore interface {
 	CompleteTaskAttempt(ctx context.Context, c AttemptCompletion) (CompletionResult, error)
 
 	// StartTaskAttempt applies a worker's "running" report in one transaction,
-	// behind the task's job-row anchor (H4a2 §4.1): it acts only while
-	// attemptID is still running (not closed) and is the task's latest attempt
-	// and the task is assigned or running. It then moves the task
-	// assigned -> running (a running task is left as is, so a redelivery is
-	// harmless) and records sessionID on the attempt when non-empty. started
-	// is false, with a nil error, when the report is stale: the attempt was
-	// closed by a reap, an offline reclaim or a cancel, or a newer lease
-	// superseded it. An unknown task is [ErrNotFound]. On Postgres (H4c) the
-	// task row must be locked FOR UPDATE after the anchor and before the
-	// latest-attempt check (handoff item 3h's reason).
+	// behind the task's job-row anchor: it acts only while attemptID is still
+	// running (not closed) and is the task's latest attempt and the task is
+	// assigned or running. It then moves the task assigned -> running (a
+	// running task is left as is, so a redelivery is harmless) and records
+	// sessionID on the attempt when non-empty. started is false, with a nil
+	// error, when the report is stale: the attempt was closed by a reap, an
+	// offline reclaim or a cancel, or a newer lease superseded it. An unknown
+	// task is [ErrNotFound]. On PostgreSQL the task row must be locked FOR
+	// UPDATE after the anchor and before the latest-attempt check.
 	StartTaskAttempt(ctx context.Context, attemptID, taskID, sessionID string, now time.Time) (started bool, err error)
 
-	// ReclaimTaskAttempt hands one task back as the offline reclaim does
-	// (H4a2 §4.4): it returns the task to ready with no worker, closes
-	// attemptID as failed with [FailureReasonWorkerShutdown] and releases its
-	// claims, without touching failed_attempts or the job's failure count. It
-	// acts only while attemptID is running and is the task's latest and the
-	// task is assigned or running; otherwise reclaimed is false and nothing
-	// changes. Anchor and statement order are the offline reclaim's: the job
-	// row, then the task, then the attempt and claims. Unknown task:
-	// [ErrNotFound].
+	// ReclaimTaskAttempt hands one task back as the offline reclaim does: it
+	// returns the task to ready with no worker, closes attemptID as failed with
+	// [FailureReasonWorkerShutdown] and releases its claims, without touching
+	// failed_attempts or the job's failure count. It acts only while attemptID
+	// is running and is the task's latest and the task is assigned or running;
+	// otherwise reclaimed is false and nothing changes. Anchor and statement
+	// order are the offline reclaim's: the job row, then the task, then the
+	// attempt and claims. Unknown task: [ErrNotFound].
 	ReclaimTaskAttempt(ctx context.Context, attemptID, taskID string, now time.Time) (reclaimed bool, err error)
 
 	// ListReadyTasks returns up to limit tasks in [TaskStatusReady] that
@@ -310,14 +308,14 @@ type TaskStore interface {
 	// they are after the reset: [TaskStatusReady] with an empty
 	// assigned_worker_id.
 	//
-	// Statement order (spec 4.1): the tasks are reset first, then their attempts
-	// are closed, then their claims released. A Postgres implementation must take
-	// its anchors (each candidate task's job row, sorted by id) BEFORE the UPDATE
-	// and without locking a task row first: read the candidates unlocked, lock
-	// their job rows, then run the UPDATE re-guarded on the candidate IDs, status
-	// assigned and the cutoff. Locking the task rows first, or anchoring after the
-	// UPDATE ... RETURNING, takes a task row before its job row, the reverse of
-	// every job-level operation's order.
+	// Statement order: the tasks are reset first, then their attempts are
+	// closed, then their claims released. A Postgres implementation must take
+	// its anchors (each candidate task's job row, sorted by id) BEFORE the
+	// UPDATE and without locking a task row first: read the candidates
+	// unlocked, lock their job rows, then run the UPDATE re-guarded on the
+	// candidate IDs, status assigned and the cutoff. Locking the task rows
+	// first, or anchoring after the UPDATE ... RETURNING, takes a task row
+	// before its job row, the reverse of every job-level operation's order.
 	ReclaimStaleAssignedTasks(ctx context.Context, cutoff time.Time) ([]Task, error)
 
 	// CountActiveTasksInQueue returns the number of tasks for the given queue
@@ -354,7 +352,7 @@ type TaskStore interface {
 	//     is no longer running;
 	//  4. finalize every open step of the job (a pending step, or one with no
 	//     tasks, becomes canceled; any other gets FinalizeStep's outcome), so
-	//     after a job cancel every step is terminal (H4a2);
+	//     after a job cancel every step is terminal;
 	//  5. move the job itself to [JobStatusCanceled], writing its CompletedAt
 	//     and UpdatedAt as now, under the same guard as
 	//     [JobStore.CancelJobStatus]: a completed, failed or already canceled
@@ -514,10 +512,9 @@ type TaskStore interface {
 	// actually requeued; false (task missing, not assigned/running, or
 	// attemptID not the task's latest) is a legitimate no-op, not an error.
 	//
-	// It acts only while attemptID is the task's latest attempt (H4a2 §4.3),
-	// so a reclaim and a new lease landing between RecordTaskFailure and this
-	// call leave the new lease alone. On Postgres (H4c) take the job-row anchor
-	// first.
+	// It acts only while attemptID is the task's latest attempt, so a reclaim
+	// and a new lease landing between RecordTaskFailure and this call leave the
+	// new lease alone. On PostgreSQL, take the job-row anchor first.
 	RequeueTaskForRetry(ctx context.Context, taskID, attemptID string, retryAfter, now time.Time) (bool, error)
 }
 

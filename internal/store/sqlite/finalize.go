@@ -55,14 +55,14 @@ WHERE  id = ?
 RETURNING status`
 
 	// sqlCancelJobFinalizeSteps finalizes every open step of a job a cancel has
-	// just emptied (H4a2 §3.2). A pending step, or one with no tasks, is
-	// canceled outright: it never ran in its current life, and finalizing a
-	// pending step by its tasks could write pending -> failed (a failed task
-	// can sit in a pending step only in the retry crash window, spec D5), which
-	// the step table does not allow. Every other open step gets sqlFinalizeStep's
-	// outcome. The NOT EXISTS guard is the same in-flight check: the cancel
-	// leaves no task in flight, so it always holds, but a step is never
-	// finalized while one is. Binds: updated_at, job id.
+	// just emptied. A pending step, or one with no tasks, is canceled outright:
+	// it never ran in its current life, and finalizing a pending step by its
+	// tasks could write pending -> failed (a failed task can sit in a pending
+	// step only in the retry crash window), which the step table does not
+	// allow. Every other open step gets sqlFinalizeStep's outcome. The NOT
+	// EXISTS guard is the same in-flight check: the cancel leaves no task in
+	// flight, so it always holds, but a step is never finalized while one is.
+	// Binds: updated_at, job id.
 	sqlCancelJobFinalizeSteps = `
 UPDATE steps
 SET    status = CASE
@@ -77,8 +77,8 @@ WHERE  job_id = ?
 	// sqlListStuckSteps selects the steps sqlFinalizeStep would finalize now,
 	// restricted to steps of a job that is not itself terminal. The job
 	// condition keeps a healthy farm quiet: a terminal job has no downstream
-	// that needs its steps finalized, and since H4a2 a job cancel finalizes its
-	// own steps (migration 00033 repairs those canceled before). Its cross-job
+	// that needs its steps finalized, and a job cancel finalizes its own steps
+	// (migration 00033 repairs those canceled by earlier releases). Its cross-job
 	// dependents follow the job's own status.
 	sqlListStuckSteps = `SELECT ` + stepCols + `
 FROM   steps
@@ -90,8 +90,8 @@ WHERE  status NOT IN ('completed', 'failed', 'canceled')
 ORDER BY job_id, step_order`
 
 	// sqlListJobIDsWithPendingSteps selects the jobs whose pending steps the
-	// start-up reconcile re-releases (H4a2 §3.5): live jobs, and not blocked,
-	// since a blocked job's steps wait on another job rather than on a step.
+	// start-up reconcile re-releases: live jobs, and not blocked, since a
+	// blocked job's steps wait on another job rather than on a step.
 	sqlListJobIDsWithPendingSteps = `
 SELECT DISTINCT j.id FROM jobs j JOIN steps s ON s.job_id = j.id
 WHERE  j.status NOT IN ('completed', 'failed', 'canceled', 'blocked')
@@ -105,7 +105,7 @@ ORDER BY j.id`
 // anchor and is used only to report an already-terminal step when the guarded
 // UPDATE writes nothing. On Postgres a finalize committing between that read
 // and the UPDATE makes it stale (the step is reported in flight rather than
-// terminal), so H4c should re-read it under the lock.
+// terminal), so a PostgreSQL store should re-read it under the lock.
 func (s *Store) FinalizeStep(ctx context.Context, id string, now time.Time) (store.StepStatus, bool, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -142,8 +142,8 @@ func (s *Store) FinalizeStep(ctx context.Context, id string, now time.Time) (sto
 // FinalizeJob implements [store.JobStore].
 //
 // Anchor: the job row. As in [Store.FinalizeStep], the current status is read
-// before the anchor, only to report an already-terminal job, and H4c should
-// re-read it under the lock.
+// before the anchor, only to report an already-terminal job, and a PostgreSQL
+// store should re-read it under the lock.
 func (s *Store) FinalizeJob(ctx context.Context, id string, now time.Time) (store.JobStatus, bool, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -362,9 +362,9 @@ RETURNING ` + taskCols
 
 // ReleaseBlockedJob implements [store.JobStore].
 //
-// Anchors: the job row, then each upstream job row (H4c locks those FOR
-// SHARE, so a concurrent finalize of an upstream is ordered against this
-// release). The write is one guarded UPDATE; see [sqlReleaseBlockedJob].
+// Anchors: the job row, then each upstream job row (a PostgreSQL store locks
+// those FOR SHARE, so a concurrent finalize of an upstream is ordered against
+// this release). The write is one guarded UPDATE; see [sqlReleaseBlockedJob].
 func (s *Store) ReleaseBlockedJob(ctx context.Context, id string, now time.Time) (bool, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {

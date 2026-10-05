@@ -13,9 +13,9 @@ import (
 	"github.com/uberware/sqi/internal/store"
 )
 
-// TestCreateJobSubmission_UnsatisfiableUpstream pins F13 at the store layer: a
-// submission whose upstream is missing, failed or canceled is refused inside
-// its own transaction, and nothing it would have written survives.
+// TestCreateJobSubmission_UnsatisfiableUpstream pins that a submission whose
+// upstream is missing, failed or canceled is refused inside its own
+// transaction, and nothing it would have written survives.
 func TestCreateJobSubmission_UnsatisfiableUpstream(t *testing.T) {
 	for _, up := range []store.JobStatus{store.JobStatusFailed, store.JobStatusCanceled} {
 		for name, st := range newStores(t) {
@@ -75,7 +75,7 @@ func assertDependencyError(t *testing.T, err error, upstreamID string, status st
 
 // TestCreateJobSubmission_SatisfiableUpstream is the converse of the test
 // above: an upstream that is still live or already completed is accepted, so
-// the F13 check cannot refuse a genuine submission.
+// the upstream check cannot refuse a genuine submission.
 func TestCreateJobSubmission_SatisfiableUpstream(t *testing.T) {
 	for _, up := range []store.JobStatus{store.JobStatusPending, store.JobStatusRunning, store.JobStatusCompleted} {
 		for name, st := range newStores(t) {
@@ -119,13 +119,13 @@ func assertSubmissionLeftNothing(t *testing.T, st store.Store, jobID, upstreamID
 	}
 }
 
-// TestDeleteTerminalJobsBefore_SkipsNonTerminal guards the G6 refactor: a job
-// that is not terminal is never purged nor reported.
+// TestDeleteTerminalJobsBefore_SkipsNonTerminal pins that a job that is not
+// terminal is never purged nor reported.
 //
 // It does NOT reach the re-check branch. On SQLite the store's single write
 // connection serializes the whole sweep, so a job cannot turn live between
 // the eligibility SELECT and its delete, and the fake holds one lock across
-// both. The re-check exists for the PostgreSQL store (H4c), where a concurrent
+// both. The re-check exists for a PostgreSQL store, where a concurrent
 // RetryTasks can commit in that window; here the live job is excluded by the
 // SELECT, so this test pins only the observable contract (only the terminal
 // job is deleted and reported, the live job and its rows survive).

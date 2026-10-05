@@ -17,8 +17,8 @@ func TestSetTaskUnschedulableReason_OnlyWhileReady(t *testing.T) {
 				stepSpec{name: "a", status: store.StepStatusReady, tasks: []store.TaskStatus{store.TaskStatusAssigned, store.TaskStatusReady}})
 			leased, ready := g.Tasks["a"][0].ID, g.Tasks["a"][1].ID
 
-			// A task a lease has just taken is a guarded no-op, not an error and not
-			// a write (F15), and the caller is told so: written is false.
+			// A task a lease has just taken is a guarded no-op, not an error
+			// and not a write, and the caller is told so: written is false.
 			written, err := st.SetTaskUnschedulableReason(t.Context(), leased, "no worker")
 			if err != nil {
 				t.Fatalf("SetTaskUnschedulableReason on assigned = %v, want nil no-op", err)
@@ -27,7 +27,7 @@ func TestSetTaskUnschedulableReason_OnlyWhileReady(t *testing.T) {
 				t.Fatal("written = true on a just-leased task, want false (the write declined)")
 			}
 			if got := mustTask(t, st, leased).UnschedulableReason; got != "" {
-				t.Fatalf("reason = %q on a just-leased task, want empty (F15)", got)
+				t.Fatalf("reason = %q on a just-leased task, want empty", got)
 			}
 
 			// A ready task takes the reason, and an empty string clears it.
@@ -69,13 +69,13 @@ func TestUpdateTaskAttempt_OnlyWhileRunning(t *testing.T) {
 			g := seedGraph(t, st, graphOpts{},
 				stepSpec{name: "a", status: store.StepStatusReady, tasks: []store.TaskStatus{store.TaskStatusSucceeded, store.TaskStatusRunning}})
 
-			// A closed attempt is never rewritten (F16): the write is a typed
+			// A closed attempt is never rewritten: the write is a typed
 			// ErrConflict and the row is untouched.
 			closed := seedAttempt(t, st, g.Tasks["a"][0], store.AttemptStatusSucceeded)
 			closed.SessionID = "late"
 			closed.Status = store.AttemptStatusFailed
 			if _, err := fixtures(t, st).UpdateTaskAttempt(t.Context(), closed); !errors.Is(err, store.ErrConflict) {
-				t.Fatalf("UpdateTaskAttempt on a closed attempt = %v, want ErrConflict (F16)", err)
+				t.Fatalf("UpdateTaskAttempt on a closed attempt = %v, want ErrConflict", err)
 			}
 			got, err := st.GetTaskAttempt(t.Context(), closed.ID)
 			if err != nil {

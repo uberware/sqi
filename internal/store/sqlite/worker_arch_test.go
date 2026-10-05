@@ -24,7 +24,7 @@ import (
 // as "matches no attr.worker.cpu.arch requirement" (scheduler.cpuArch). So a
 // round trip that quietly dropped the value would not error anywhere — it would
 // just stop that worker from ever being eligible for architecture-gated work,
-// which is precisely the bug this column exists to fix.
+// which is the failure this column exists to prevent.
 func TestWorker_ArchRoundTrip(t *testing.T) {
 	s := openTestStore(t)
 	ctx := context.Background()

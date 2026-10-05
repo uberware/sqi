@@ -16,8 +16,7 @@ import (
 )
 
 // fixtureWriter is the test fixture surface both concrete stores keep and
-// store.Store does not: writes with no production caller, kept until H4b
-// decides their fate.
+// store.Store does not: writes with no production caller.
 type fixtureWriter interface {
 	UpdateTaskStatus(ctx context.Context, id string, status store.TaskStatus) error
 	UpdateTaskAttempt(ctx context.Context, attempt store.TaskAttempt) (store.TaskAttempt, error)

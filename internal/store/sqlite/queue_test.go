@@ -185,40 +185,30 @@ func TestUpdateQueue_SettingRunAsGroupWhileUserPreservedEmpty_Rejected(t *testin
 	}
 }
 
-// TestUpdateQueue_ConcurrentPreserveAndSet_NoLostUpdate is the concurrency
-// regression test for the lost-update bug fixed alongside PreserveRunAsUser /
-// PreserveRunAsGroup: the API layer used to preserve run_as_user across an
-// isolation-omitting PUT by reading the existing queue (GetQueue) and then
-// writing the full row back (UpdateQueue) as two separate store calls. A
-// concurrent isolation-setting PUT (an admin's) could commit in the gap
-// between that read and that write, and the omitting request would then
-// write back the stale nil it had read, silently erasing the admin's write —
-// with no error and no audit trace.
+// TestUpdateQueue_ConcurrentPreserveAndSet_NoLostUpdate pins that an
+// isolation-omitting update cannot erase a concurrent isolation-setting one.
+// Preserving run_as_user by reading the queue (GetQueue) and writing the full
+// row back (UpdateQueue) as two separate store calls leaves a gap: a
+// concurrent isolation-setting PUT (an admin's) can commit between that read
+// and that write, and the omitting request then writes back the stale nil it
+// read, erasing the admin's write with no error and no audit trace.
+// PreserveRunAsUser/PreserveRunAsGroup instead let an "omitting" update leave
+// the column untouched inside the same atomic UPDATE statement (a
+// self-referential CASE WHEN) that writes everything else, so there is no
+// window in which a stale value can be captured.
 //
-// The fix removes the read entirely. PreserveRunAsUser/PreserveRunAsGroup let
-// an "omitting" update leave the column untouched inside the very same atomic
-// UPDATE statement (a self-referential CASE WHEN) that writes everything
-// else, so there is no window in which a stale value can be captured.
-//
-// A byte-for-byte reproduction of the original race is no longer possible:
-// the buggy GetQueue-then-UpdateQueue orchestration lived entirely in
-// internal/api/queues.go's resolveQueueIsolationFields, which this fix
-// deletes — store.UpdateQueue itself was never the buggy half, so there is no
-// "old" store call left to race against a "new" one. What this test asserts
-// instead is the invariant the fix establishes, directly against the new
-// single-statement path: run many genuinely concurrent iterations, each
-// pairing an isolation-omitting update (PreserveRunAsUser/Group: true,
-// mirroring an operator's ordinary PUT) against an isolation-setting update
-// (mirroring an admin's PUT setting run_as_user for the first time) on a
-// queue that starts unisolated, and confirm the set value is never silently
-// lost regardless of which goroutine's statement the SQLite driver executes
-// first. Run against the real store (not the fake) — the fake's single mutex
-// serializes at a granularity that can never exhibit a real read/write
-// interleaving — and under -race, which also confirms the store methods
-// themselves are concurrency-safe. If PreserveRunAsUser's CASE WHEN branches
-// were ever reversed (a plausible regression: preserving would silently
-// become clearing), this test would catch it whenever the preserving
-// goroutine's statement lands after the setting goroutine's commit.
+// The test runs many concurrent iterations, each pairing an isolation-omitting
+// update (PreserveRunAsUser/Group: true, as in an operator's ordinary PUT)
+// against an isolation-setting update (an admin's PUT setting run_as_user for
+// the first time) on a queue that starts unisolated, and confirms the set
+// value is never lost regardless of which goroutine's statement the SQLite
+// driver executes first. It runs against the real store (not the fake), whose
+// single mutex serializes at a granularity that can never exhibit a real
+// read/write interleaving, and under -race, which also confirms the store
+// methods themselves are concurrency-safe. If PreserveRunAsUser's CASE WHEN
+// branches were reversed (preserving would become clearing), this test would
+// catch it whenever the preserving goroutine's statement lands after the
+// setting goroutine's commit.
 func TestUpdateQueue_ConcurrentPreserveAndSet_NoLostUpdate(t *testing.T) {
 	db := t.TempDir() + "/test.db"
 	s := newTestStore(t, db)

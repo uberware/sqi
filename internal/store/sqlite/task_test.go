@@ -261,7 +261,7 @@ func TestRetryTasks_ResetsFailureCounters(t *testing.T) {
 }
 
 // TestRetryTasks_ClearsFailureReason asserts that a manual retry via RetryTasks
-// clears a task's stale failure_reason (Task 4) — a revived task must not carry
+// clears a task's stale failure_reason — a revived task must not carry
 // forward the reason from its prior terminal failure.
 func TestRetryTasks_ClearsFailureReason(t *testing.T) {
 	s := openTestStore(t)
@@ -351,8 +351,8 @@ func TestRecordTaskFailure_CountsEachAttempt(t *testing.T) {
 	}
 }
 
-// TestRecordTaskFailure_IdempotentPerAttempt is the IMP-1 regression: because a
-// worker's "failed" status message is delivered at-least-once, RecordTaskFailure
+// TestRecordTaskFailure_IdempotentPerAttempt pins that because a worker's
+// "failed" status message is delivered at-least-once, RecordTaskFailure
 // must count exactly once per attempt. The first call closes the running
 // attempt and increments both counters; a second call for the SAME attempt (a
 // redelivery) finds the attempt already terminal, returns the SAME counts, and
@@ -458,7 +458,7 @@ func TestRequeueTaskForRetry_ResetsAssignment(t *testing.T) {
 }
 
 // TestRequeueTaskForRetry_ClearsFailureReason asserts that the auto-retry path
-// clears a task's stale failure_reason (Task 4) — a requeued task must not
+// clears a task's stale failure_reason — a requeued task must not
 // carry forward the reason from its prior failed attempt.
 func TestRequeueTaskForRetry_ClearsFailureReason(t *testing.T) {
 	s := openTestStore(t)
@@ -702,10 +702,10 @@ func TestResumeJob_NotPausedAndNotFound(t *testing.T) {
 	}
 }
 
-// TestRetryTasks_UnparksAutoParkedJob asserts the spec §4.5 contract: a manual
-// retry of an AUTO-PARKED job (paused with a park_reason — not terminal)
-// resets the job to pending and clears its failure counter and park reason,
-// exactly as it does for a terminal job.
+// TestRetryTasks_UnparksAutoParkedJob asserts that a manual retry of an
+// AUTO-PARKED job (paused with a park_reason — not terminal) resets the job to
+// pending and clears its failure counter and park reason, exactly as it does
+// for a terminal job.
 func TestRetryTasks_UnparksAutoParkedJob(t *testing.T) {
 	s, ctx, now := recordFailureFixture(t)
 

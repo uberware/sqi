@@ -185,7 +185,7 @@ func TestLeaseTask_Lost(t *testing.T) {
 	}
 }
 
-// TestLeaseTask_PausedAfterListing pins Review Focus #3: the task's job or
+// TestLeaseTask_PausedAfterListing pins the case where the task's job or
 // queue is paused after ListReadyTasks chose it and before LeaseTask runs. The
 // lease must come back Lost with no attempt or claim rows.
 func TestLeaseTask_PausedAfterListing(t *testing.T) {
@@ -304,11 +304,11 @@ func TestLeaseTask_Caps(t *testing.T) {
 	}
 }
 
-// TestLeaseTask_PoolCapReadInTransaction pins Review Focus #4 and invariant
-// I5 for pools: the cap is the pool row's as read in the lease's transaction,
-// never the caller's copy (poolClaim says 999), so a pool deleted, or lowered
-// below its current use, after the eligibility check makes the lease PoolFull
-// with nothing written.
+// TestLeaseTask_PoolCapReadInTransaction pins invariant I5 for pools: the cap
+// is the pool row's as read in the lease's transaction, never the caller's
+// copy (poolClaim says 999), so a pool deleted, or lowered below its current
+// use, after the eligibility check makes the lease PoolFull with nothing
+// written.
 func TestLeaseTask_PoolCapReadInTransaction(t *testing.T) {
 	for name, st := range newStores(t) {
 		t.Run("at cap/"+name, func(t *testing.T) {

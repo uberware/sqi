@@ -1642,7 +1642,7 @@ func TestTask_SetUnschedulableReason(t *testing.T) {
 	insertJob(t, s, "j1", "f1", "q1")
 	insertStep(t, s, "s1", "j1", "S1", 0)
 	insertTask(t, s, "t1", "j1", "s1")
-	// The reason is only written while the task is ready (F15), so walk the
+	// The reason is only written while the task is ready, so walk the
 	// pending fixture to ready through the legal arrow first.
 	if err := s.UpdateTaskStatus(ctx, "t1", store.TaskStatusReady); err != nil {
 		t.Fatalf("UpdateTaskStatus ready: %v", err)

@@ -50,8 +50,8 @@ func TestMigration00035_ClosesOrphanAttempts(t *testing.T) {
 	path, s, poolID := openSeedable(t)
 	R, Fd := store.AttemptStatusRunning, store.AttemptStatusFailed
 	healthyA, healthyC := seedAttemptsOn(t, s, poolID, store.TaskStatusRunning, Fd, R)      // superseded closed, latest open
-	terminalA, terminalC := seedAttemptsOn(t, s, poolID, store.TaskStatusSucceeded, R)      // F4: open attempt on a finished task
-	supersededA, supersededC := seedAttemptsOn(t, s, poolID, store.TaskStatusRunning, R, R) // F5: an older attempt left open
+	terminalA, terminalC := seedAttemptsOn(t, s, poolID, store.TaskStatusSucceeded, R)      // an open attempt on a finished task
+	supersededA, supersededC := seedAttemptsOn(t, s, poolID, store.TaskStatusRunning, R, R) // an older attempt left open
 	readyA, readyC := seedAttemptsOn(t, s, poolID, store.TaskStatusReady, R)                // an open attempt on a task out of flight
 	assignedA, assignedC := seedAttemptsOn(t, s, poolID, store.TaskStatusAssigned, R)       // a fresh lease: the task is assigned, the attempt open
 	keptA, keptC := seedAttemptsOn(t, s, poolID, store.TaskStatusFailed, R)                 // an orphan an earlier path already gave a reason

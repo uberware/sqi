@@ -119,7 +119,7 @@ func (s *Store) ListSteps(ctx context.Context, jobID string) ([]store.Step, erro
 // UpdateStepStatus sets a step's status unconditionally. It returns
 // [store.ErrNotFound] when the step does not exist.
 //
-// Test fixture only: a blind write that is not part of store.Store (H4a). H4b decides its fate.
+// Test fixture only: a blind write that is not part of store.Store.
 func (s *Store) UpdateStepStatus(ctx context.Context, id string, status store.StepStatus) error {
 	res, err := s.stmtUpdateStepStatus.ExecContext(ctx, string(status), timeToText(time.Now().UTC()), id)
 	if err != nil {

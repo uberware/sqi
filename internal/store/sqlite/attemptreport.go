@@ -89,8 +89,9 @@ func (s *Store) StartTaskAttempt(ctx context.Context, attemptID, taskID, session
 	if current == store.TaskStatusAssigned {
 		// Under the job anchor and the single write connection the guarded
 		// write cannot miss here. It is still consulted, so the method stays
-		// correct on a store where it can (H4c): a miss means another writer
-		// moved the task after the read above, and the report is then stale.
+		// correct on a store where it can (PostgreSQL): a miss means another
+		// writer moved the task after the read above, and the report is then
+		// stale.
 		moved, err := casWriteTaskStatus(ctx, tx, taskID, store.TaskStatusAssigned, store.TaskStatusRunning, now)
 		if err != nil {
 			return false, err
@@ -120,7 +121,7 @@ WHERE  id = ? AND status IN ('assigned', 'running')`
 // (beginTaskTx), then the task, then its attempts and claims
 // (closeTaskAttemptsTx). No worker anchor is taken, because the worker row is
 // neither read nor written here. The task is written before its attempt is
-// closed for offlineWorker's reason. On Postgres (H4c) the task row must be
+// closed for offlineWorker's reason. On Postgres the task row must be
 // locked FOR UPDATE after the anchor and before the latest-attempt check, as
 // for StartTaskAttempt.
 func (s *Store) ReclaimTaskAttempt(ctx context.Context, attemptID, taskID string, now time.Time) (bool, error) {

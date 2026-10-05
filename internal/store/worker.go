@@ -31,7 +31,7 @@ const (
 
 // GPUInfo describes the GPU(s) available on a worker host.
 //
-// Phase 1 assumes a homogeneous GPU configuration: all GPUs on the host are
+// sqi assumes a homogeneous GPU configuration: all GPUs on the host are
 // the same model with the same VRAM. VRAMMb is the per-device VRAM capacity;
 // Count is the number of identical devices. Mixed-GPU workers (e.g. a render
 // card alongside a display adapter) are not modeled — workers with
@@ -48,40 +48,38 @@ type GPUInfo struct {
 }
 
 // WorkerExprLimits holds the OpenJD EXPR evaluation caps a worker self-reports
-// at registration -- its expr.* worker-configuration section, which EXPR
-// sub-project E4d Task 2 added and Task 3 (this type) taught it to advertise.
-// The server persists them so the scheduler can refuse to dispatch an EXPR job
-// to a worker that cannot run what the server accepted.
+// at registration: its expr.* worker-configuration section. The server
+// persists them so the scheduler can refuse to dispatch an EXPR job to a worker
+// that cannot run what the server accepted.
 //
-// WHY THE SERVER NEEDS THEM. Expressions in an EXPR template are metered twice:
-// against the server's openjd.expr_* limits when the template is submitted, and
-// again against the worker's expr.* limits when a task runs. If a worker's cap
-// is TIGHTER than the server's, a job is accepted, created and persisted and
-// then every task of it fails on that host, after submission, naming a budget
-// the submitter never saw. That failure was measured (EXPR design spec §2:
-// server 10,000 positions, worker 5,000). Both sides became operator
-// configuration in E4d, so the relation "worker cap >= server cap" can now be
-// broken by a YAML file; these fields are what let the server see it.
+// Expressions in an EXPR template are metered twice: against the server's
+// openjd.expr_* limits when the template is submitted, and again against the
+// worker's expr.* limits when a task runs. If a worker's cap is tighter than
+// the server's, a job is accepted, created and persisted and then every task of
+// it fails on that host, after submission, naming a budget the submitter never
+// saw (measured with the server at 10,000 positions and the worker at 5,000).
+// Both sides are operator configuration, so the relation "worker cap >= server
+// cap" can be broken by a YAML file; these fields are what let the server see
+// it.
 //
-// Every value is SELF-REPORTED, exactly like CPUCount, RAMMb and Tags. It is a
+// Every value is self-reported, like CPUCount, RAMMb and Tags. It is a
 // statement of what that worker will enforce, not a promise the server can
 // verify.
 //
-// A zero field means "not advertised": a worker built from E4d Task 3 onward
-// always reports a real value (its config layer rejects 0), so silence means an
-// older binary. The scheduler reads that as the compiled-in defaults, which is
-// exact for a pre-Task-2 binary and a documented guess for one built between
-// Tasks 2 and 3 — see internal/scheduler's legacyWorkerExprCaps.
+// A zero field means "not advertised": a current worker always reports a real
+// value (its config layer rejects 0), so silence means an older binary. The
+// scheduler reads that as the compiled-in defaults, which is exact for a binary
+// with no expr.* configuration and a documented guess for one that had the
+// configuration but did not advertise it — see internal/scheduler's
+// legacyWorkerExprCaps.
 //
-// All FIVE of the worker's expr.* keys are carried. The fifth,
-// LetRetainedBytes, was excluded when this type was written -- on the grounds
-// that the server has no PER-TABLE counterpart to compare it against, which is
-// true -- and the wave's final review showed the exclusion was reachable
-// through legal configuration: a worker at that key's floor rejects, once per
-// task, a let: block the server accepted under a raised
-// openjd.expr_template_retained_bytes. What the server does have is a bound on
-// the same VALUES at a wider scope, and a wider scope is a valid upper bound;
-// see internal/scheduler's exprCapShortfall for the comparison and for what it
+// All five of the worker's expr.* keys are carried. The server has no
+// per-table counterpart to compare LetRetainedBytes against, but leaving it
+// out is reachable through legal configuration: a worker at that key's floor
+// rejects, once per task, a let: block the server accepted under a raised
+// openjd.expr_template_retained_bytes. The server does bound the same values
+// at a wider scope, and a wider scope is a valid upper bound; see
+// internal/scheduler's exprCapShortfall for the comparison and for what it
 // still cannot promise.
 type WorkerExprLimits struct {
 	// OperationLimit is the worker's §1.3.10 operation budget for ONE
@@ -137,7 +135,7 @@ type Worker struct {
 	Version string
 	// InstanceID identifies the worker process that last registered. It
 	// changes when the worker restarts and is empty for a worker that does not
-	// send one (H4a2 §4.5).
+	// send one.
 	InstanceID string
 	CPUCount   int
 	RAMMb      int
@@ -177,7 +175,7 @@ func (w Worker) EffectiveStatus() WorkerStatus {
 // SQLite statement restates it in SQL, which cannot call Go, so a change here
 // must be made there too. The API's pre-check and the fake call this method.
 // The store adds one condition a Worker value alone cannot see: no task may be
-// assigned to or running on the worker (H4a2 §5.4), so a true here does not
+// assigned to or running on the worker, so a true here does not
 // guarantee the delete succeeds.
 func (w Worker) Removable() bool {
 	return w.Status == WorkerStatusOffline
@@ -201,14 +199,13 @@ const (
 // WorkerStore is the persistence interface for [Worker] records.
 type WorkerStore interface {
 	// RegisterWorker inserts or replaces the worker record for the given ID.
-	// Called by the server when a worker sends its registration message.
-	// If the worker ID already exists its record is updated in full, except
-	// that an empty InstanceID keeps the stored one and Disabled is never
-	// written: a disabled worker stays disabled (H4a2 §5.3), and a new one is
-	// enabled. When the
-	// stored InstanceID is non-empty and differs from a non-empty incoming one,
-	// the previous worker process is gone: in the same transaction its assigned
-	// and running tasks are reclaimed exactly as [WorkerStore.OfflineWorker]
+	// Called by the server when a worker sends its registration message. If the
+	// worker ID already exists its record is updated in full, except that an
+	// empty InstanceID keeps the stored one and Disabled is never written: a
+	// disabled worker stays disabled, and a new one is enabled. When the stored
+	// InstanceID is non-empty and differs from a non-empty incoming one, the
+	// previous worker process is gone: in the same transaction its assigned and
+	// running tasks are reclaimed exactly as [WorkerStore.OfflineWorker]
 	// reclaims them (attempts closed as failed with
 	// [FailureReasonWorkerRestarted], claims released, tasks ready) and
 	// returned as they are after the reset.
@@ -240,8 +237,8 @@ type WorkerStore interface {
 	UpdateWorkerHeartbeat(ctx context.Context, id string, at time.Time) error
 
 	// ListStaleWorkers returns workers whose last heartbeat is older than
-	// before and whose status is [WorkerStatusOnline], disabled or not (H4a2
-	// §5.2: a dead disabled worker is swept like any other). Used by the
+	// before and whose status is [WorkerStatusOnline], disabled or not (a dead
+	// disabled worker is swept like any other). Used by the
 	// heartbeat timeout sweep to find workers to mark offline. The result is a
 	// candidate list only; [WorkerStore.OfflineStaleWorker] re-checks the guard
 	// inside its own write.
@@ -253,7 +250,7 @@ type WorkerStore interface {
 	// re-registration that landed after the caller listed its candidates keeps
 	// the worker online and its tasks running (invariant I1). Disabled does not
 	// enter the guard and is not written: a disabled worker goes offline like
-	// any other and stays disabled (H4a2 §5.2).
+	// any other and stays disabled.
 	//
 	// When the guard matches, the same transaction closes the running attempts
 	// of the worker's [TaskStatusAssigned] and [TaskStatusRunning] tasks as
@@ -269,8 +266,8 @@ type WorkerStore interface {
 	// now stamps the worker's and the reclaimed tasks' updated_at, the closed
 	// attempts' ended_at and the released claims' released_at.
 	//
-	// Anchor rows and statement order (spec 4.1): the worker row first, then each
-	// affected job row sorted by id; within the transaction the worker is marked
+	// Anchor rows and statement order: the worker row first, then each affected
+	// job row sorted by id; within the transaction the worker is marked
 	// offline, the tasks are reclaimed, and only then are their attempts closed
 	// and their claims released. See the SQLite implementation for the exact
 	// Postgres order.
@@ -278,11 +275,11 @@ type WorkerStore interface {
 
 	// OfflineWorker is the sibling of [WorkerStore.OfflineStaleWorker] for a
 	// graceful deregister: the worker is taken offline whatever its heartbeat
-	// (a disabled worker stays disabled, H4a2 §5.3), and its in-flight tasks are
-	// reclaimed exactly as OfflineStaleWorker reclaims them (attempts closed,
-	// claims released, tasks back to ready). It returns the reclaimed tasks as
-	// they are after the reset and true, or [ErrNotFound] for an unknown worker.
-	// A worker that is already offline is not an error: it has nothing left to
+	// (a disabled worker stays disabled), and its in-flight tasks are reclaimed
+	// exactly as OfflineStaleWorker reclaims them (attempts closed, claims
+	// released, tasks back to ready). It returns the reclaimed tasks as they
+	// are after the reset and true, or [ErrNotFound] for an unknown worker. A
+	// worker that is already offline is not an error: it has nothing left to
 	// reclaim and the call returns no tasks.
 	//
 	// instanceID is the deregistering process's instance ID. When it and the
@@ -303,12 +300,12 @@ type WorkerStore interface {
 
 	// DeleteWorkerIfRemovable deletes the worker only while it is removable
 	// ([Worker.Removable]: offline, disabled or not), and only while no task is
-	// assigned to or running on it (H4a2 §5.4). The rule is evaluated inside
-	// the DELETE (invariant I1), so a worker that came back between the
-	// caller's read and this write keeps its row. Returns [ErrConflict] when
-	// the worker exists but is not removable and [ErrNotFound] when it does not
-	// exist. Task and task-attempt rows that reference the worker by ID are left
-	// intact (the ID lives on as a snapshot).
+	// assigned to or running on it. The rule is evaluated inside the DELETE
+	// (invariant I1), so a worker that came back between the caller's read and
+	// this write keeps its row. Returns [ErrConflict] when the worker exists
+	// but is not removable and [ErrNotFound] when it does not exist. Task and
+	// task-attempt rows that reference the worker by ID are left intact (the ID
+	// lives on as a snapshot).
 	DeleteWorkerIfRemovable(ctx context.Context, id string) error
 
 	// DeleteOfflineWorkersBefore hard-deletes every enabled worker in

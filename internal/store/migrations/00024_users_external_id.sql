@@ -1,7 +1,7 @@
 -- SPDX-License-Identifier: AGPL-3.0-or-later
--- Stable per-source identity for externally-authenticated accounts (Phase 3,
--- component C2). Holds the OIDC 'sub' claim, or the directory attribute named
--- by auth.ldap.unique_id_attr (objectGUID on AD, entryUUID elsewhere).
+-- Stable per-source identity for externally-authenticated accounts. Holds the
+-- OIDC 'sub' claim, or the directory attribute named by
+-- auth.ldap.unique_id_attr (objectGUID on AD, entryUUID elsewhere).
 --
 -- Accounts are matched on (auth_source, external_id), never on username.
 -- Matching on a name lets a recycled email address inherit a departed user's

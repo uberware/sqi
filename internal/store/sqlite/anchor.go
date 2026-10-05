@@ -28,7 +28,7 @@ func userAnchor(id string) anchor   { return anchor{table: "users", id: id} }
 // lockAnchors is the hook point for invariants I3, I4 and I5. It deliberately
 // does nothing on SQLite: the store's single write connection
 // (SetMaxOpenConns(1)) already serializes every write transaction, so a row
-// lock would add nothing. The PostgreSQL store (H4c) implements the same call
+// lock would add nothing. A PostgreSQL store implements the same call
 // as SELECT ... FOR UPDATE on each anchor, in the order given (FOR SHARE for
 // the upstream job rows, which needs a lock mode this type does not carry
 // yet). Callers pass anchors in the order the anchor-row table specifies, so

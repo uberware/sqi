@@ -2,10 +2,10 @@
 
 -- +goose Up
 
--- The worker process's instance ID (H4a2 §4.5). A worker sends a fresh one per
+-- The worker process's instance ID. A worker sends a fresh one per
 -- process in every registration (boot and NATS reconnect alike); a change
 -- means the previous process is gone and its in-flight tasks are reclaimed.
--- Empty means unknown: a worker built before H4a2 sends none.
+-- Empty means unknown: an older worker sends none.
 ALTER TABLE workers ADD COLUMN instance_id TEXT NOT NULL DEFAULT '';
 
 -- +goose Down

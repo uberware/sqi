@@ -2,9 +2,9 @@
 
 -- +goose Up
 
--- Finalizes the open steps of jobs that are already terminal (H4a2 §3.3).
--- Until H4a2 a job cancel wrote its tasks and its job row but never its steps,
--- so every job canceled under v0.3.0 or H4a kept open steps, and a later
+-- Finalizes the open steps of jobs that are already terminal. In v0.3.0 and
+-- earlier a job cancel wrote its tasks and its job row but never its steps, so
+-- every job canceled under those releases kept open steps, and a later
 -- RetryJob revived its tasks to pending under a step nothing would release.
 -- The rule is CancelJobExecution's (sqlCancelJobFinalizeSteps in
 -- internal/store/sqlite/finalize.go): a pending step, or one with no tasks,

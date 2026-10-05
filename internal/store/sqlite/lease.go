@@ -76,7 +76,7 @@ func (s *Store) LeaseTask(ctx context.Context, req store.LeaseRequest) (store.Le
 // leaseTx runs the lease's statements inside tx. The caller commits only a
 // Leased result.
 //
-// Statement order (spec §4.1). The anchors are the queue row and the farm row,
+// Statement order. The anchors are the queue row and the farm row,
 // each only when it has a cap, then every requested pool row in pool-ID order:
 // the anchor table's order, so two leases lock the rows they share in the same
 // order and cannot deadlock on Postgres. The scope read precedes them only
@@ -86,7 +86,7 @@ func (s *Store) LeaseTask(ctx context.Context, req store.LeaseRequest) (store.Le
 // after it includes the task itself. The queue, farm and pool counts each run
 // under their anchor, so no other lease can change them between this count
 // and this write (I5). The attempt is inserted before its claims, which
-// reference it. H4c: the queue and farm caps used here were read before the
+// reference it. The queue and farm caps used here were read before the
 // anchors were taken, so on Postgres they must be re-read under the anchor
 // locks, and a queue or farm read as uncapped is not anchored at all, so a cap
 // set on it concurrently is not seen by this lease. The pool caps are read
@@ -144,9 +144,9 @@ func readLeaseScopeTx(ctx context.Context, tx *sql.Tx, taskID string) (scope lea
 	return scope, true, nil
 }
 
-// anchors lists the lease's anchor rows in the spec §4.1 lock order: the queue
-// and the farm, each only when capped, then each pool in the order of claims,
-// which the caller has sorted by pool ID.
+// anchors lists the lease's anchor rows in lock order: the queue and the farm,
+// each only when capped, then each pool in the order of claims, which the
+// caller has sorted by pool ID.
 func (sc leaseScope) anchors(claims []store.UsagePoolClaim) []anchor {
 	out := make([]anchor, 0, 2+len(claims))
 	if sc.queueCap > 0 {

@@ -203,7 +203,7 @@ func (s *Store) activeClaimsLocked(poolID string) int {
 // whole check-and-insert, mirroring the SQLite implementation. The scheduler
 // claims through [Store.LeaseTask], which reads the caps itself.
 //
-// Test fixture only: a blind write that is not part of store.Store (H4a). H4b decides its fate.
+// Test fixture only: a blind write that is not part of store.Store.
 func (s *Store) TryClaimSlots(
 	_ context.Context,
 	taskAttemptID string,
@@ -251,7 +251,7 @@ func (s *Store) ReleaseAttemptClaims(_ context.Context, taskAttemptID string, re
 // job is canceled through [Store.CancelJobExecution], which releases only the
 // claims of closed attempts, in the same step that closes them.
 //
-// Test fixture only: a blind write that is not part of store.Store (H4a). H4b decides its fate.
+// Test fixture only: a blind write that is not part of store.Store.
 func (s *Store) ReleaseJobClaims(_ context.Context, jobID string, releasedAt time.Time) (int, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

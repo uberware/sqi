@@ -46,7 +46,7 @@ func TestFinalizeStep_Outcomes(t *testing.T) {
 	}
 }
 
-// TestFinalizeStep_AlreadyTerminal pins Review Focus #2: a redelivery after a
+// TestFinalizeStep_AlreadyTerminal pins that a redelivery after a
 // committed finalize gets the terminal status back with changed=false, so the
 // caller still runs (idempotent) propagation.
 func TestFinalizeStep_AlreadyTerminal(t *testing.T) {
@@ -64,11 +64,12 @@ func TestFinalizeStep_AlreadyTerminal(t *testing.T) {
 	}
 }
 
-// TestFinalizeStep_MoreThanMaxLimitTasks pins F6 at the store layer. The
-// decisive task is the LAST one, index MaxLimit, so it lies beyond the first
-// page: an implementation that reads only MaxLimit tasks sees all-succeeded and
-// reports the wrong outcome. The all-succeeded case is the plain regression
-// guard and cannot tell a paged read from a full one on its own.
+// TestFinalizeStep_MoreThanMaxLimitTasks pins that FinalizeStep reads every
+// task of the step, not one page. The decisive task is the LAST one, index
+// MaxLimit, so it lies beyond the first page: an implementation that reads only
+// MaxLimit tasks sees all-succeeded and reports the wrong outcome. The
+// all-succeeded case is the plain regression guard and cannot tell a paged read
+// from a full one on its own.
 func TestFinalizeStep_MoreThanMaxLimitTasks(t *testing.T) {
 	cases := []struct {
 		name    string
@@ -167,7 +168,7 @@ func TestFinalizeJob_NotFound(t *testing.T) {
 	}
 }
 
-// TestListStuckSteps pins Review Focus #5: zero-task steps are not stuck.
+// TestListStuckSteps pins that zero-task steps are not stuck.
 func TestListStuckSteps(t *testing.T) {
 	for name, st := range newStores(t) {
 		t.Run(name, func(t *testing.T) {
@@ -191,14 +192,14 @@ func TestListStuckSteps(t *testing.T) {
 
 // TestListStuckSteps_OnlyStepsOfLiveJobs pins the job condition: a step that
 // looks stuck by its tasks alone is listed only when its job is not terminal.
-// Since H4a2 a job cancel finalizes the job's steps in its own transaction, and
+// A job cancel finalizes the job's steps in its own transaction, and
 // migration 00033 finalized the steps of jobs canceled by earlier releases, so
 // a terminal job carries an open step only in a database that has not been
 // through that repair. A completed or failed job can carry the same shape. None
 // of them has downstream work that needs its steps finalized, and the terminal
 // jobs are the migration's to repair, not this start-up pass's, which on a
-// healthy farm must stay one query and no writes. A running job (the F6 case)
-// and a paused one are live and ARE listed.
+// healthy farm must stay one query and no writes. A running job and a paused
+// one are live and are listed.
 func TestListStuckSteps_OnlyStepsOfLiveJobs(t *testing.T) {
 	cases := []struct {
 		jobStatus store.JobStatus
@@ -207,7 +208,7 @@ func TestListStuckSteps_OnlyStepsOfLiveJobs(t *testing.T) {
 	}{
 		{store.JobStatusRunning, store.TaskStatusSucceeded, true},
 		{store.JobStatusPaused, store.TaskStatusSucceeded, true},
-		{store.JobStatusCanceled, store.TaskStatusCanceled, false}, // what releases before H4a2 left behind (migration 00033 repairs it)
+		{store.JobStatusCanceled, store.TaskStatusCanceled, false}, // what earlier releases left behind (migration 00033 repairs it)
 		{store.JobStatusCompleted, store.TaskStatusSucceeded, false},
 		{store.JobStatusFailed, store.TaskStatusFailed, false},
 	}

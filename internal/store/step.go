@@ -16,9 +16,9 @@ const (
 	// StepStatusReady means all dependencies have succeeded; tasks can be scheduled.
 	StepStatusReady StepStatus = "ready"
 	// StepStatusRunning is reserved and never written: no store operation moves
-	// a step to running, so a step with running tasks stays ready (H4a decision
-	// D4). It survives for the wire types and for rows written outside the store
-	// operations (test fixtures, through CreateStep or the concrete stores'
+	// a step to running, so a step with running tasks stays ready. It survives
+	// for the wire types and for rows written outside the store operations
+	// (test fixtures, through CreateStep or the concrete stores'
 	// UpdateStepStatus), which FinalizeStep can still finish.
 	StepStatusRunning StepStatus = "running"
 	// StepStatusCompleted means all tasks in this step succeeded.
@@ -184,7 +184,7 @@ type StepStore interface {
 	// FinalizeStep would finalize but that no future task report will ever
 	// trigger. Used once at scheduler start. Ordered by job ID, then step order.
 	//
-	// The job condition is deliberate. Since H4a2 a job cancel finalizes the
+	// The job condition is deliberate. A job cancel finalizes the
 	// job's steps in its own transaction (CancelJobExecution), and migration
 	// 00033 repaired the jobs canceled by earlier releases, so a terminal job
 	// carries open steps only in a database that skipped that repair; those are
@@ -200,7 +200,7 @@ type StepStore interface {
 	// not terminal and not blocked and that have at least one pending step.
 	// Used once at scheduler start to re-run dependency resolution, so a step a
 	// retry reset to pending but never released (the server stopped between
-	// RetryTasks and ResolveDependencies) is released or cascade-canceled
-	// (H4a2 §3.5). A blocked job is excluded: its steps wait on another job.
+	// RetryTasks and ResolveDependencies) is released or cascade-canceled. A
+	// blocked job is excluded: its steps wait on another job.
 	ListJobIDsWithPendingSteps(ctx context.Context) ([]string, error)
 }

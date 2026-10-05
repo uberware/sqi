@@ -3,17 +3,13 @@
 --
 -- Separate from `description` because the two serve incompatible jobs.
 -- `description` must fit a picker card and a native Blender EnumProperty
--- tooltip, which is why commit a1e529e shortened every shipped preset's
--- description by hand -- the longest, 940 characters on
--- ffmpeg-segment-transcode-expr, was documentation wearing a blurb's clothes.
--- Markdown in `description` would not have helped: it adds formatting, not
+-- tooltip. Markdown in `description` would not help: it adds formatting, not
 -- length budget. So the blurb stays short, plain and searchable, and the
--- documentation moves here.
+-- documentation lives here.
 --
--- `readme` is deliberately NOT searched. That is what keeps the change small:
--- with no search over it, no markdown stripper is needed in either TypeScript
--- or Python, and presetlib.IndexEntry needs no readme field, so the remote
--- preset-index format is unchanged.
+-- `readme` is deliberately not searched. With no search over it, no markdown
+-- stripper is needed in either TypeScript or Python, and presetlib.IndexEntry
+-- needs no readme field, so the remote preset-index format is unchanged.
 --
 -- NOT NULL DEFAULT '' matches `description` and every other late-added string
 -- column in this schema (see 00028's note): scanProduct reads it into a plain

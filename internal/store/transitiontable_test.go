@@ -9,7 +9,7 @@ import (
 	"github.com/uberware/sqi/internal/store"
 )
 
-// TestJobOperations_FromStatesAreLegal pins decision D4: each named job
+// TestJobOperations_FromStatesAreLegal pins that each named job
 // operation's from-states, exactly as written in its SQL guard, must be legal
 // sources for its target in store.JobTransitions. Update this table in the same
 // change as any guard.

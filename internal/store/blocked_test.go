@@ -80,7 +80,8 @@ func TestReleaseBlockedJob_RequiresEveryUpstream(t *testing.T) {
 	}
 }
 
-// TestReleaseBlockedJob_DoesNotUndoCancel pins F9 at the store layer.
+// TestReleaseBlockedJob_DoesNotUndoCancel pins that releasing a blocked job
+// the user has already canceled leaves it canceled.
 func TestReleaseBlockedJob_DoesNotUndoCancel(t *testing.T) {
 	for name, st := range newStores(t) {
 		t.Run(name, func(t *testing.T) {

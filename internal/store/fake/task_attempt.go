@@ -107,7 +107,7 @@ func (s *Store) ListTaskAttempts(_ context.Context, taskID string) ([]store.Task
 // claims and leaves the tasks alone; a worker is taken offline through
 // [Store.OfflineStaleWorker] and [Store.OfflineWorker], which do all three.
 //
-// Test fixture only: a blind write that is not part of store.Store (H4a). H4b decides its fate.
+// Test fixture only: a blind write that is not part of store.Store.
 func (s *Store) TerminateWorkerAttempts(_ context.Context, workerID string, status store.AttemptStatus, endedAt time.Time) (int, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -143,7 +143,7 @@ func (s *Store) TerminateWorkerAttempts(_ context.Context, workerID string, stat
 // claims and leaves the tasks alone; a job is canceled through
 // [Store.CancelJobExecution], which does all three.
 //
-// Test fixture only: a blind write that is not part of store.Store (H4a). H4b decides its fate.
+// Test fixture only: a blind write that is not part of store.Store.
 func (s *Store) CancelJobAttempts(_ context.Context, jobID string, endedAt time.Time) (int, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -175,10 +175,9 @@ func (s *Store) CancelJobAttempts(_ context.Context, jobID string, endedAt time.
 // UpdateTaskAttempt replaces the mutable fields of an existing attempt
 // (Status, ExitCode, EndedAt, and SessionID/Message if non-empty). It writes
 // only while the attempt is running: a closed attempt is [store.ErrConflict]
-// and is left untouched, as in SQLite (F16).
+// and is left untouched, as in SQLite.
 //
-// Test fixture only: not part of store.Store, which has no caller for it since
-// H4a2. H4b decides its fate.
+// Test fixture only: not part of store.Store, which has no caller for it.
 func (s *Store) UpdateTaskAttempt(_ context.Context, attempt store.TaskAttempt) (store.TaskAttempt, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

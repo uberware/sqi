@@ -1,5 +1,5 @@
 -- SPDX-License-Identifier: AGPL-3.0-or-later
--- Worker-advertised OpenJD EXPR evaluation caps (EXPR sub-project E4d Task 3).
+-- Worker-advertised OpenJD EXPR evaluation caps.
 --
 -- A worker reports the expr.* limits it will enforce at task execution; the
 -- scheduler compares them against the server's own openjd.expr_* limits and

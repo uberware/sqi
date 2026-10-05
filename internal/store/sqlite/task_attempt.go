@@ -25,7 +25,7 @@ func (s *Store) LatestTaskAttempt(ctx context.Context, taskID string) (store.Tas
 // offline through [Store.OfflineStaleWorker] and [Store.OfflineWorker], which do
 // all three in one transaction.
 //
-// Test fixture only: a blind write that is not part of store.Store (H4a). H4b decides its fate.
+// Test fixture only: a blind write that is not part of store.Store.
 func (s *Store) TerminateWorkerAttempts(ctx context.Context, workerID string, status store.AttemptStatus, endedAt time.Time) (int, error) {
 	res, err := s.stmtTerminateWorkerAttempts.ExecContext(ctx, string(status), timeToText(endedAt), store.FailureReasonWorkerOffline, workerID)
 	if err != nil {
@@ -40,7 +40,7 @@ func (s *Store) TerminateWorkerAttempts(ctx context.Context, workerID string, st
 // leaves the tasks alone; a job is canceled through [Store.CancelJobExecution],
 // which does all three in one transaction.
 //
-// Test fixture only: a blind write that is not part of store.Store (H4a). H4b decides its fate.
+// Test fixture only: a blind write that is not part of store.Store.
 func (s *Store) CancelJobAttempts(ctx context.Context, jobID string, endedAt time.Time) (int, error) {
 	res, err := s.stmtCancelJobAttempts.ExecContext(ctx, timeToText(endedAt), jobID)
 	if err != nil {
@@ -75,7 +75,7 @@ ORDER BY attempt_number ASC`
 
 	// sqlUpdateAttempt writes only while the attempt is still running, so a
 	// late or echoed report can never overwrite an attempt something else
-	// already closed (F16). The status test is evaluated inside the UPDATE (I1).
+	// already closed. The status test is evaluated inside the UPDATE (I1).
 	// It is [sqlCloseRunningAttempt], the same guarded write with the same
 	// binds, returning the row it wrote.
 	sqlUpdateAttempt = sqlCloseRunningAttempt + `
@@ -192,9 +192,8 @@ func (s *Store) ListTaskAttempts(ctx context.Context, taskID string) ([]store.Ta
 // RecordTaskFailure, CancelJobExecution, CancelTaskExecution,
 // ReclaimStaleAssignedTasks, OfflineStaleWorker and OfflineWorker.
 //
-// Test fixture only: not part of store.Store, which has no caller for it since
-// H4a2 (StartTaskAttempt records a running attempt's session ID). H4b decides
-// its fate.
+// Test fixture only: not part of store.Store, which has no caller for it
+// (StartTaskAttempt records a running attempt's session ID).
 func (s *Store) UpdateTaskAttempt(ctx context.Context, attempt store.TaskAttempt) (store.TaskAttempt, error) {
 	var exitCode sql.NullInt64
 	if attempt.ExitCode != nil {
@@ -210,7 +209,7 @@ func (s *Store) UpdateTaskAttempt(ctx context.Context, attempt store.TaskAttempt
 		if _, gerr := s.GetTaskAttempt(ctx, attempt.ID); gerr != nil {
 			return store.TaskAttempt{}, gerr // ErrNotFound
 		}
-		return store.TaskAttempt{}, store.ErrConflict // closed: never rewritten (F16)
+		return store.TaskAttempt{}, store.ErrConflict // closed: never rewritten
 	}
 	return out, mapErr(err)
 }

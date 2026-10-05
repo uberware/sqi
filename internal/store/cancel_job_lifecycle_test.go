@@ -12,10 +12,10 @@ import (
 	"github.com/uberware/sqi/internal/store"
 )
 
-// TestCancelJobExecution_FinalizesEveryStep pins H4a2 §3.2: after a job cancel
-// every step of the job is terminal, so RetryJob's step reset (failed/canceled
-// -> pending) and ResolveDependencies can revive it. v0.3.0 and H4a left the
-// steps open, and a later RetryJob stranded the revived tasks in pending.
+// TestCancelJobExecution_FinalizesEveryStep pins that after a job cancel every
+// step of the job is terminal, so RetryJob's step reset (failed/canceled ->
+// pending) and ResolveDependencies can revive it. A step left open would
+// strand a later RetryJob's revived tasks in pending.
 func TestCancelJobExecution_FinalizesEveryStep(t *testing.T) {
 	S, F, C, R, P, A := store.TaskStatusSucceeded, store.TaskStatusFailed, store.TaskStatusCanceled,
 		store.TaskStatusRunning, store.TaskStatusPending, store.TaskStatusReady
@@ -28,7 +28,7 @@ func TestCancelJobExecution_FinalizesEveryStep(t *testing.T) {
 				stepSpec{name: "bad", status: store.StepStatusReady, tasks: []store.TaskStatus{F, A}},
 				stepSpec{name: "later", status: store.StepStatusPending, dependsOn: []string{"mid"}, tasks: []store.TaskStatus{P}},
 				// A pending step holding a failed task exists only in the retry
-				// crash window (spec D5); a job cancel must still not write
+				// crash window; a job cancel must still not write
 				// pending -> failed, which the step table does not allow.
 				stepSpec{name: "window", status: store.StepStatusPending, tasks: []store.TaskStatus{F, P}},
 				stepSpec{name: "empty", status: store.StepStatusReady},
@@ -129,8 +129,8 @@ func TestCancelJobExecution_LeavesATerminalJobRowAlone(t *testing.T) {
 	}
 }
 
-// TestCancelJobExecution_FinalizesAStepOverMaxLimit is Review Focus 1: the
-// cancel's step write is one statement over the step's tasks, never a page.
+// TestCancelJobExecution_FinalizesAStepOverMaxLimit pins that the cancel's
+// step write is one statement over the step's tasks, never a page.
 func TestCancelJobExecution_FinalizesAStepOverMaxLimit(t *testing.T) {
 	for name, st := range newStores(t) {
 		t.Run(name, func(t *testing.T) {
