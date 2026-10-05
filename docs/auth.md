@@ -154,13 +154,19 @@ that is already revoked is treated the same way.
 
 The ordering matters: removability is decided by an earlier check, so in the
 common case the delete cannot be refused and revoking first never wastes a
-revocation on a delete that was always going to be refused. The delete itself
-is guarded — it applies the same removability rule inside its own write — so
-a worker that comes back between the revoke and the guarded delete keeps its
-row and gets a 409 Conflict, with its credential already revoked. That window
-is documented rather than closed, and it errs the safe way: access is cut,
-the worker row is kept, and the worker can be enrolled again under a new key
-(see below). If the revoke fails, nothing has happened yet: the worker row is
+revocation on a delete that was always going to be refused. That earlier
+check looks only at the worker's status (offline). The delete itself is
+guarded: inside its own write it applies the same rule and also refuses a
+worker that still holds an assigned or running task. So the delete can still
+be refused after the revoke, in two ways. A worker that comes back between the
+revoke and the guarded delete keeps its row and gets a 409 Conflict. So does
+an offline worker that still holds a task. Going offline reclaims a worker's
+tasks, so this takes an offline worker that was leased a task afterwards. In
+both cases its credential is already revoked. Those windows are documented
+rather than closed (see the known gaps in
+[architecture.md](architecture.md#known-gaps)), and they err the safe way:
+access is cut, the worker row is kept, and the worker can be enrolled again
+under a new key (see below). If the revoke fails, nothing has happened yet: the worker row is
 intact, the request answers 500, and it is safe to retry. If the delete then
 fails after a successful revoke, the worker row survives but its broker access
 is already cut — the safe direction to fail in — and retrying `DELETE
