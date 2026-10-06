@@ -16,6 +16,7 @@ import (
 
 	"github.com/uberware/sqi/internal/store"
 	fakestore "github.com/uberware/sqi/internal/store/fake"
+	"github.com/uberware/sqi/internal/store/storetest"
 	"github.com/uberware/sqi/internal/ws"
 )
 
@@ -79,31 +80,31 @@ func newTestSchedulerWithNotifier(t *testing.T, st store.Store) (*Scheduler, *re
 // s2 (canceled, depends on s1) → t2 (canceled), job status failed.
 func seedRetryFixture(t *testing.T, st *fakestore.Store) {
 	t.Helper()
-	ctx := context.Background()
-	if _, err := st.CreateFarm(ctx, store.Farm{ID: "f1", Name: "f1"}); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := st.CreateQueue(ctx, store.Queue{ID: "q1", FarmID: "f1", Name: "q1"}); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := st.CreateJob(ctx, store.Job{ID: "j1", FarmID: "f1", QueueID: "q1", Name: "j1", Status: store.JobStatusFailed}); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := st.CreateStep(ctx, store.Step{ID: "s1", JobID: "j1", Name: "s1", Status: store.StepStatusFailed}); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := st.CreateStep(ctx, store.Step{ID: "s2", JobID: "j1", Name: "s2", Status: store.StepStatusCanceled, DependsOn: []string{"s1"}}); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := st.CreateTask(ctx, store.Task{ID: "t1", JobID: "j1", StepID: "s1", Name: "t1", Status: store.TaskStatusFailed}); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := st.CreateTask(ctx, store.Task{ID: "t2", JobID: "j1", StepID: "s2", Name: "t2", Status: store.TaskStatusCanceled}); err != nil {
-		t.Fatal(err)
-	}
+	submitRetryJob(t, st, store.JobSubmission{
+		Job: store.Job{ID: "j1", FarmID: "f1", QueueID: "q1", Name: "j1", Status: store.JobStatusFailed},
+		Steps: []store.Step{
+			{ID: "s1", JobID: "j1", Name: "s1", Status: store.StepStatusFailed},
+			{ID: "s2", JobID: "j1", Name: "s2", Status: store.StepStatusCanceled, DependsOn: []string{"s1"}},
+		},
+		Tasks: []store.Task{
+			{ID: "t1", JobID: "j1", StepID: "s1", Name: "t1", Status: store.TaskStatusFailed},
+			{ID: "t2", JobID: "j1", StepID: "s2", Name: "t2", Status: store.TaskStatusCanceled},
+		},
+	})
 }
 
 func seedCompletedJob(t *testing.T, st *fakestore.Store) {
+	t.Helper()
+	submitRetryJob(t, st, store.JobSubmission{
+		Job:   store.Job{ID: "j1", FarmID: "f1", QueueID: "q1", Name: "j1", Status: store.JobStatusCompleted},
+		Steps: []store.Step{{ID: "s1", JobID: "j1", Name: "s1", Status: store.StepStatusCompleted}},
+		Tasks: []store.Task{{ID: "t1", JobID: "j1", StepID: "s1", Name: "t1", Status: store.TaskStatusSucceeded}},
+	})
+}
+
+// submitRetryJob creates farm f1 and queue q1 and submits sub into them, in
+// the statuses it carries, through the one-transaction submission path.
+func submitRetryJob(t *testing.T, st *fakestore.Store, sub store.JobSubmission) {
 	t.Helper()
 	ctx := context.Background()
 	if _, err := st.CreateFarm(ctx, store.Farm{ID: "f1", Name: "f1"}); err != nil {
@@ -112,15 +113,7 @@ func seedCompletedJob(t *testing.T, st *fakestore.Store) {
 	if _, err := st.CreateQueue(ctx, store.Queue{ID: "q1", FarmID: "f1", Name: "q1"}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := st.CreateJob(ctx, store.Job{ID: "j1", FarmID: "f1", QueueID: "q1", Name: "j1", Status: store.JobStatusCompleted}); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := st.CreateStep(ctx, store.Step{ID: "s1", JobID: "j1", Name: "s1", Status: store.StepStatusCompleted}); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := st.CreateTask(ctx, store.Task{ID: "t1", JobID: "j1", StepID: "s1", Name: "t1", Status: store.TaskStatusSucceeded}); err != nil {
-		t.Fatal(err)
-	}
+	storetest.Submit(t, st, sub)
 }
 
 // ── RetryJob tests ────────────────────────────────────────────────────────────

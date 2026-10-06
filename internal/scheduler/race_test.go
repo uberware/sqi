@@ -342,20 +342,9 @@ func seedStaleWorkerWithClaim(t *testing.T, st store.Store, age time.Duration) (
 	workerID, taskID, attemptID string, pool store.UsagePool,
 ) {
 	t.Helper()
-	workerID = "w-stale"
 	p := newPool(t, st, 1)
-	g := seedStatusJob(t, st, statusJob{worker: workerID, pool: p, steps: []statusStep{
-		{name: "s", status: store.StepStatusRunning, tasks: []store.TaskStatus{store.TaskStatusRunning}},
-	}})
-	stale := time.Now().UTC().Add(-age)
-	if _, _, err := st.RegisterWorker(t.Context(), store.Worker{
-		ID: workerID, FarmID: "farm-1", Hostname: "node-stale",
-		Status: store.WorkerStatusOnline, LastHeartbeatAt: &stale,
-	}); err != nil {
-		t.Fatalf("RegisterWorker: %v", err)
-	}
-	task := g.tasks[0][0]
-	return workerID, task.ID, g.attempts[task.ID].ID, *p
+	workerID, taskID, attemptID = seedStaleWorker(t, st, age, p)
+	return workerID, taskID, attemptID, *p
 }
 
 // activeClaimsOf returns the number of active claims on pool.

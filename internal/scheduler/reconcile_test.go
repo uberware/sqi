@@ -35,6 +35,7 @@ import (
 
 	"github.com/uberware/sqi/internal/metrics"
 	"github.com/uberware/sqi/internal/store"
+	"github.com/uberware/sqi/internal/store/storetest"
 	"github.com/uberware/sqi/internal/ws"
 )
 
@@ -257,9 +258,15 @@ func reconcileTasks(jobID, stepID string, statuses ...store.TaskStatus) []store.
 // v0.3.0 submission followed by a full run leaves.
 func submitReconcile(t *testing.T, st store.Store, sub store.JobSubmission) {
 	t.Helper()
-	if _, err := st.CreateJobSubmission(t.Context(), sub); err != nil {
-		t.Fatalf("CreateJobSubmission %q: %v", sub.Job.Name, err)
-	}
+	storetest.Submit(t, st, sub)
+}
+
+// runReconcileTask leases task to a worker and starts it, so it is running
+// with the attempt a real lease opens. A task is never submitted running:
+// a running task with no attempt is a state production cannot reach.
+func runReconcileTask(t *testing.T, st store.Store, task store.Task) {
+	t.Helper()
+	storetest.Running(t, st, store.LeaseRequest{TaskID: task.ID, WorkerID: "w-reconcile"})
 }
 
 // stuckFarm names the rows seedStuckFarm creates.
@@ -371,11 +378,14 @@ func seedHealthyFarm(t *testing.T, st store.Store) healthyFarm {
 	render := newReconcileStep(live.ID, "Render", 0, store.StepStatusRunning)
 	empty := newReconcileStep(live.ID, "Empty", 1, store.StepStatusReady)
 	later := newReconcileStep(live.ID, "Later", 2, store.StepStatusPending, "Render")
-	liveTasks := reconcileTasks(live.ID, render.ID, store.TaskStatusRunning, store.TaskStatusSucceeded, store.TaskStatusReady)
+	// The first task is the one in flight: submitted ready, then leased and
+	// started.
+	liveTasks := reconcileTasks(live.ID, render.ID, store.TaskStatusReady, store.TaskStatusSucceeded, store.TaskStatusReady)
 	submitReconcile(t, st, store.JobSubmission{
 		Job: live, Steps: []store.Step{render, empty, later},
 		Tasks: append(liveTasks, newReconcileTask(live.ID, later.ID, 0, store.TaskStatusPending)),
 	})
+	runReconcileTask(t, st, liveTasks[0])
 	f.jobs = append(f.jobs, live.ID)
 
 	done := newReconcileJob("done", store.JobStatusCompleted)
@@ -412,11 +422,14 @@ func seedHealthyFarm(t *testing.T, st store.Store) healthyFarm {
 	userCanceled := newReconcileJob("user-canceled", store.JobStatusRunning)
 	cancelRender := newReconcileStep(userCanceled.ID, "Render", 0, store.StepStatusRunning)
 	cancelLater := newReconcileStep(userCanceled.ID, "Later", 1, store.StepStatusPending, "Render")
-	cancelTasks := reconcileTasks(userCanceled.ID, cancelRender.ID, store.TaskStatusRunning, store.TaskStatusReady)
+	// The first task is in flight when the user cancels: submitted ready, then
+	// leased and started.
+	cancelTasks := reconcileTasks(userCanceled.ID, cancelRender.ID, store.TaskStatusReady, store.TaskStatusReady)
 	cancelTasks = append(cancelTasks, newReconcileTask(userCanceled.ID, cancelLater.ID, 0, store.TaskStatusPending))
 	submitReconcile(t, st, store.JobSubmission{
 		Job: userCanceled, Steps: []store.Step{cancelRender, cancelLater}, Tasks: cancelTasks,
 	})
+	runReconcileTask(t, st, cancelTasks[0])
 	canceler := newReconcileScheduler(st, &recordBus{}, ws.NoopNotifier{})
 	if err := canceler.CancelJob(t.Context(), userCanceled.ID); err != nil {
 		t.Fatalf("CancelJob: %v", err)

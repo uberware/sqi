@@ -17,6 +17,7 @@ import (
 	"github.com/uberware/sqi/internal/openjd"
 	"github.com/uberware/sqi/internal/store"
 	"github.com/uberware/sqi/internal/store/fake"
+	"github.com/uberware/sqi/internal/store/storetest"
 	"github.com/uberware/sqi/internal/worker/fmtres"
 	"github.com/uberware/sqi/internal/worker/protocol"
 	"github.com/uberware/sqi/internal/ws"
@@ -106,28 +107,20 @@ func seedExprLeaseFixtureJob(
 	}
 	seed.ID, seed.FarmID, seed.QueueID, seed.Name = uuid.NewString(), "f1", "q1", "j"
 	seed.Status, seed.TemplateFormat = store.JobStatusRunning, store.TemplateFormatJSON
-	seed.CreatedAt, seed.UpdatedAt = now, now
-	job, err := st.CreateJob(ctx, seed)
-	if err != nil {
-		t.Fatal(err)
-	}
-	step, err := st.CreateStep(ctx, store.Step{
-		ID: uuid.NewString(), JobID: job.ID, Name: "render",
-		Status: store.StepStatusReady, CreatedAt: now, UpdatedAt: now,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	stepID := uuid.NewString()
 	one := 1
-	tk, err := st.CreateTask(ctx, store.Task{
-		ID: uuid.NewString(), JobID: job.ID, StepID: step.ID,
-		Name: "t", Status: store.TaskStatusReady, Parameters: map[string]string{},
-		RequiredCores: &one, CreatedAt: now, UpdatedAt: now,
+	sub := storetest.Submit(t, st, store.JobSubmission{
+		Job: seed,
+		Steps: []store.Step{{
+			ID: stepID, JobID: seed.ID, Name: "render", Status: store.StepStatusReady,
+		}},
+		Tasks: []store.Task{{
+			ID: uuid.NewString(), JobID: seed.ID, StepID: stepID,
+			Name: "t", Status: store.TaskStatusReady, Parameters: map[string]string{},
+			RequiredCores: &one,
+		}},
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	return w, tk.ID
+	return w, sub.Tasks[0].ID
 }
 
 // schedulerWithExprLimits returns a scheduler whose server-side expression

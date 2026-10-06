@@ -94,6 +94,19 @@ func newLogTestScheduler(st store.Store) *Scheduler {
 	)
 }
 
+// seedLogAttempt submits a running job whose one task is leased to
+// logTestWorkerID and started, through production writes, and returns the
+// job, the task's ID and the ID of the attempt the lease opened: the live
+// attempt a log chunk is persisted against.
+func seedLogAttempt(t *testing.T, st store.Store) (job store.Job, taskID, attemptID string) {
+	t.Helper()
+	g := seedStatusJob(t, st, statusJob{worker: logTestWorkerID, steps: []statusStep{
+		{name: "s1", status: store.StepStatusRunning, tasks: []store.TaskStatus{store.TaskStatusRunning}},
+	}})
+	task := g.tasks[0][0]
+	return g.job, task.ID, g.attempts[task.ID].ID
+}
+
 // ── handleLogChunk tests ──────────────────────────────────────────────────────
 
 func TestHandleLogChunk_ValidStdout(t *testing.T) {
@@ -101,16 +114,8 @@ func TestHandleLogChunk_ValidStdout(t *testing.T) {
 	s := newLogTestScheduler(st)
 	s.ctx = t.Context()
 
-	attemptID := uuid.NewString()
-	taskID := uuid.NewString()
+	_, taskID, attemptID := seedLogAttempt(t, st)
 	now := time.Now().UTC()
-
-	if _, err := st.CreateTaskAttempt(t.Context(), store.TaskAttempt{
-		ID: attemptID, TaskID: taskID, WorkerID: logTestWorkerID,
-		AttemptNumber: 1, Status: store.AttemptStatusRunning, StartedAt: now,
-	}); err != nil {
-		t.Fatalf("CreateTaskAttempt: %v", err)
-	}
 
 	msg := &fakeJSMsg{
 		subject: bus.TaskLogsSubject(logTestWorkerID, taskID),
@@ -155,15 +160,8 @@ func TestHandleLogChunk_ValidStderr(t *testing.T) {
 	s := newLogTestScheduler(st)
 	s.ctx = t.Context()
 
-	attemptID := uuid.NewString()
-	taskID := uuid.NewString()
+	_, taskID, attemptID := seedLogAttempt(t, st)
 	now := time.Now().UTC()
-	if _, err := st.CreateTaskAttempt(t.Context(), store.TaskAttempt{
-		ID: attemptID, TaskID: taskID, WorkerID: logTestWorkerID,
-		AttemptNumber: 1, Status: store.AttemptStatusRunning, StartedAt: now,
-	}); err != nil {
-		t.Fatalf("CreateTaskAttempt: %v", err)
-	}
 
 	msg := &fakeJSMsg{
 		subject: bus.TaskLogsSubject(logTestWorkerID, taskID),
@@ -198,14 +196,7 @@ func TestHandleLogChunk_ZeroAtUsesServerTime(t *testing.T) {
 	s.ctx = t.Context()
 
 	before := time.Now().UTC()
-	attemptID := uuid.NewString()
-	taskID := uuid.NewString()
-	if _, err := st.CreateTaskAttempt(t.Context(), store.TaskAttempt{
-		ID: attemptID, TaskID: taskID, WorkerID: logTestWorkerID,
-		AttemptNumber: 1, Status: store.AttemptStatusRunning, StartedAt: before,
-	}); err != nil {
-		t.Fatalf("CreateTaskAttempt: %v", err)
-	}
+	_, taskID, attemptID := seedLogAttempt(t, st)
 
 	msg := &fakeJSMsg{
 		subject: bus.TaskLogsSubject(logTestWorkerID, taskID),
@@ -293,14 +284,7 @@ func TestHandleLogChunk_MissingAttemptID_Acked(t *testing.T) {
 
 func TestHandleLogChunk_StoreFailure_Nacked(t *testing.T) {
 	inner := newCheckedFake(t)
-	taskID := uuid.NewString()
-	attemptID := uuid.NewString()
-	if _, err := inner.CreateTaskAttempt(t.Context(), store.TaskAttempt{
-		ID: attemptID, TaskID: taskID, WorkerID: logTestWorkerID,
-		AttemptNumber: 1, Status: store.AttemptStatusRunning, StartedAt: time.Now().UTC(),
-	}); err != nil {
-		t.Fatalf("CreateTaskAttempt: %v", err)
-	}
+	_, taskID, attemptID := seedLogAttempt(t, inner)
 	est := &logIngestErrSt{Store: inner}
 	s := newLogTestScheduler(est)
 	s.ctx = t.Context()
@@ -333,14 +317,7 @@ func TestHandleLogChunk_MetadataError_NATSSeqZero(t *testing.T) {
 	s := newLogTestScheduler(st)
 	s.ctx = t.Context()
 
-	attemptID := uuid.NewString()
-	taskID := uuid.NewString()
-	if _, err := st.CreateTaskAttempt(t.Context(), store.TaskAttempt{
-		ID: attemptID, TaskID: taskID, WorkerID: logTestWorkerID,
-		AttemptNumber: 1, Status: store.AttemptStatusRunning, StartedAt: time.Now().UTC(),
-	}); err != nil {
-		t.Fatalf("CreateTaskAttempt: %v", err)
-	}
+	_, taskID, attemptID := seedLogAttempt(t, st)
 
 	msg := &fakeJSMsg{
 		subject: bus.TaskLogsSubject(logTestWorkerID, taskID),
@@ -395,15 +372,9 @@ func TestHandleLogChunk_RepeatedChunk_CachedAfterFirstRead(t *testing.T) {
 	s := newLogTestScheduler(cst)
 	s.ctx = t.Context()
 
-	attemptID := uuid.NewString()
-	taskID := uuid.NewString()
+	// Seeded through the wrapped store, so the seed's reads are not counted.
+	_, taskID, attemptID := seedLogAttempt(t, cst.Store)
 	now := time.Now().UTC()
-	if _, err := cst.CreateTaskAttempt(t.Context(), store.TaskAttempt{
-		ID: attemptID, TaskID: taskID, WorkerID: logTestWorkerID,
-		AttemptNumber: 1, Status: store.AttemptStatusRunning, StartedAt: now,
-	}); err != nil {
-		t.Fatalf("CreateTaskAttempt: %v", err)
-	}
 
 	newChunk := func(seq int64) *fakeJSMsg {
 		return &fakeJSMsg{
@@ -534,50 +505,15 @@ func TestHandleLogChunk_CacheHit_DeletedAttempt_SelfHeals(t *testing.T) {
 	ctx := t.Context()
 	now := time.Now().UTC()
 
-	if _, err := base.CreateFarm(ctx, store.Farm{ID: "farm-1", Name: "farm-1"}); err != nil {
-		t.Fatalf("CreateFarm: %v", err)
-	}
-	if _, err := base.CreateQueue(ctx, store.Queue{ID: "queue-1", FarmID: "farm-1", Name: "queue-1"}); err != nil {
-		t.Fatalf("CreateQueue: %v", err)
-	}
-	job, err := base.CreateJob(ctx, store.Job{
-		ID: uuid.NewString(), FarmID: "farm-1", QueueID: "queue-1", Name: "job",
-		Status: store.JobStatusRunning, TemplateFormat: store.TemplateFormatJSON,
-		CreatedAt: now, UpdatedAt: now,
-	})
-	if err != nil {
-		t.Fatalf("CreateJob: %v", err)
-	}
-	step, err := base.CreateStep(ctx, store.Step{
-		ID: uuid.NewString(), JobID: job.ID, Name: "s1",
-		Status: store.StepStatusRunning, CreatedAt: now, UpdatedAt: now,
-	})
-	if err != nil {
-		t.Fatalf("CreateStep: %v", err)
-	}
-	task, err := base.CreateTask(ctx, store.Task{
-		ID: uuid.NewString(), JobID: job.ID, StepID: step.ID, Name: "t1",
-		Status: store.TaskStatusRunning, AssignedWorkerID: logTestWorkerID,
-		CreatedAt: now, UpdatedAt: now,
-	})
-	if err != nil {
-		t.Fatalf("CreateTask: %v", err)
-	}
-	attempt, err := base.CreateTaskAttempt(ctx, store.TaskAttempt{
-		ID: uuid.NewString(), TaskID: task.ID, WorkerID: logTestWorkerID,
-		AttemptNumber: 1, Status: store.AttemptStatusRunning, StartedAt: now, CreatedAt: now,
-	})
-	if err != nil {
-		t.Fatalf("CreateTaskAttempt: %v", err)
-	}
+	job, taskID, attemptID := seedLogAttempt(t, base)
 
 	newChunk := func(seq int64) *fakeJSMsg {
 		return &fakeJSMsg{
-			subject: bus.TaskLogsSubject(logTestWorkerID, task.ID),
+			subject: bus.TaskLogsSubject(logTestWorkerID, taskID),
 			natsSeq: uint64(seq), // test data, small positive constant
 			data: msgJSON(t, protocol.LogChunkMsg{
-				TaskID:    task.ID,
-				AttemptID: attempt.ID,
+				TaskID:    taskID,
+				AttemptID: attemptID,
 				SeqNum:    seq,
 				At:        now,
 				Stream:    "stdout",
@@ -592,7 +528,7 @@ func TestHandleLogChunk_CacheHit_DeletedAttempt_SelfHeals(t *testing.T) {
 	if !first.acked {
 		t.Fatal("expected first chunk to be acked")
 	}
-	if _, ok := s.attemptCache.get(attempt.ID); !ok {
+	if _, ok := s.attemptCache.get(attemptID); !ok {
 		t.Fatal("expected first chunk to populate the attempt-owner cache")
 	}
 
@@ -602,7 +538,7 @@ func TestHandleLogChunk_CacheHit_DeletedAttempt_SelfHeals(t *testing.T) {
 	if err := base.DeleteJob(ctx, job.ID); err != nil {
 		t.Fatalf("DeleteJob: %v", err)
 	}
-	if _, ok := s.attemptCache.get(attempt.ID); !ok {
+	if _, ok := s.attemptCache.get(attemptID); !ok {
 		t.Fatal("test setup invariant broken: cache entry should still be present after DeleteJob")
 	}
 
@@ -617,7 +553,7 @@ func TestHandleLogChunk_CacheHit_DeletedAttempt_SelfHeals(t *testing.T) {
 	if second.acked {
 		t.Error("second chunk should not be acked when the write fails")
 	}
-	if _, ok := s.attemptCache.get(attempt.ID); ok {
+	if _, ok := s.attemptCache.get(attemptID); ok {
 		t.Fatal("expected the failed write to evict the stale cache entry")
 	}
 

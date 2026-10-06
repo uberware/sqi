@@ -14,6 +14,7 @@ import (
 
 	"github.com/uberware/sqi/internal/bus"
 	"github.com/uberware/sqi/internal/store"
+	"github.com/uberware/sqi/internal/store/storetest"
 )
 
 // TestHandleLeaseRequest_QueuelessWorkerWildcardToken reproduces the
@@ -109,34 +110,26 @@ func seedLeaseFixtureWith(
 	if err != nil {
 		t.Fatal(err)
 	}
-	job, err := st.CreateJob(ctx, store.Job{
+	sub := store.JobSubmission{Job: store.Job{
 		ID: uuid.NewString(), FarmID: "f1", QueueID: "q1", Name: "j",
 		Status: store.JobStatusRunning, TemplateFormat: store.TemplateFormatJSON,
 		RawTemplate: minimalRenderJSON,
-		CreatedAt:   now, UpdatedAt: now,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	step, err := st.CreateStep(ctx, store.Step{
-		ID: uuid.NewString(), JobID: job.ID, Name: "render",
-		Status: store.StepStatusReady, HostRequirements: hostReqs, CreatedAt: now, UpdatedAt: now,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	}}
+	sub.Steps = []store.Step{{
+		ID: uuid.NewString(), JobID: sub.Job.ID, Name: "render",
+		Status: store.StepStatusReady, HostRequirements: hostReqs,
+	}}
 	var ids []string
-	for i, c := range coresPerTask {
-		tk, err := st.CreateTask(ctx, store.Task{
-			ID: uuid.NewString(), JobID: job.ID, StepID: step.ID,
+	for _, c := range coresPerTask {
+		tk := store.Task{
+			ID: uuid.NewString(), JobID: sub.Job.ID, StepID: sub.Steps[0].ID,
 			Name: "t", Status: store.TaskStatusReady, Parameters: map[string]string{},
-			RequiredCores: c, CreatedAt: now.Add(time.Duration(i) * time.Millisecond), UpdatedAt: now,
-		})
-		if err != nil {
-			t.Fatal(err)
+			RequiredCores: c,
 		}
+		sub.Tasks = append(sub.Tasks, tk)
 		ids = append(ids, tk.ID)
 	}
+	storetest.Submit(t, st, sub)
 	return w, ids
 }
 

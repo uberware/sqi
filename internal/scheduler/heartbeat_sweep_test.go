@@ -13,11 +13,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/google/uuid"
-
 	"github.com/uberware/sqi/internal/metrics"
 	"github.com/uberware/sqi/internal/store"
 	"github.com/uberware/sqi/internal/store/fake"
+	"github.com/uberware/sqi/internal/store/storetest"
 	"github.com/uberware/sqi/internal/ws"
 )
 
@@ -47,61 +46,32 @@ func (n *jobRecordingNotifier) hasJobStatus(jobID, status string) bool {
 // a running task and a running attempt on that worker, in farm-1 and queue-1.
 // It works on any backend, so it creates the farm and queue rows a real SQLite
 // store's foreign keys need. Returns the worker, task and attempt IDs.
+//
+// The task is leased to the worker and started through production writes (see
+// [seedStatusJob]), so the attempt is the one that lease opened.
 func seedStaleWorkerWithTask(t *testing.T, st store.Store, age time.Duration) (workerID, taskID, attemptID string) {
 	t.Helper()
-	ctx := t.Context()
-	now := time.Now().UTC()
-	stale := now.Add(-age)
+	return seedStaleWorker(t, st, age, nil)
+}
 
-	if _, err := st.CreateFarm(ctx, store.Farm{ID: "farm-1", Name: "farm-1"}); err != nil {
-		t.Fatalf("CreateFarm: %v", err)
-	}
-	if _, err := st.CreateQueue(ctx, store.Queue{ID: "queue-1", FarmID: "farm-1", Name: "queue-1"}); err != nil {
-		t.Fatalf("CreateQueue: %v", err)
-	}
-
+// seedStaleWorker builds seedStaleWorkerWithTask's world, and
+// [seedStaleWorkerWithClaim]'s: pool, when non-nil, is a usage pool the lease
+// claims one slot of, as a lease of a step that requires the pool writes it.
+func seedStaleWorker(t *testing.T, st store.Store, age time.Duration, pool *store.UsagePool) (workerID, taskID, attemptID string) {
+	t.Helper()
 	workerID = "w-stale"
-	if _, _, err := st.RegisterWorker(ctx, store.Worker{
+	g := seedStatusJob(t, st, statusJob{worker: workerID, pool: pool, steps: []statusStep{
+		{name: "s", status: store.StepStatusRunning, tasks: []store.TaskStatus{store.TaskStatusRunning}},
+	}})
+	stale := time.Now().UTC().Add(-age)
+	if _, _, err := st.RegisterWorker(t.Context(), store.Worker{
 		ID: workerID, FarmID: "farm-1", Hostname: "node-stale",
 		Status: store.WorkerStatusOnline, LastHeartbeatAt: &stale,
 	}); err != nil {
 		t.Fatalf("RegisterWorker: %v", err)
 	}
-
-	job, err := st.CreateJob(ctx, store.Job{
-		ID: uuid.NewString(), FarmID: "farm-1", QueueID: "queue-1", Name: "j",
-		Status: store.JobStatusRunning, TemplateFormat: store.TemplateFormatJSON,
-		CreatedAt: now, UpdatedAt: now,
-	})
-	if err != nil {
-		t.Fatalf("CreateJob: %v", err)
-	}
-	step, err := st.CreateStep(ctx, store.Step{
-		ID: uuid.NewString(), JobID: job.ID, Name: "s",
-		Status: store.StepStatusRunning, CreatedAt: now, UpdatedAt: now,
-	})
-	if err != nil {
-		t.Fatalf("CreateStep: %v", err)
-	}
-	task, err := st.CreateTask(ctx, store.Task{
-		ID: uuid.NewString(), JobID: job.ID, StepID: step.ID, Name: "t",
-		Status: store.TaskStatusRunning, AssignedWorkerID: workerID,
-		CreatedAt: now, UpdatedAt: now,
-	})
-	if err != nil {
-		t.Fatalf("CreateTask: %v", err)
-	}
-	taskID = task.ID
-
-	attempt, err := st.CreateTaskAttempt(ctx, store.TaskAttempt{
-		ID: uuid.NewString(), TaskID: task.ID, WorkerID: workerID, AttemptNumber: 1,
-		Status: store.AttemptStatusRunning, StartedAt: now, CreatedAt: now,
-	})
-	if err != nil {
-		t.Fatalf("CreateTaskAttempt: %v", err)
-	}
-	attemptID = attempt.ID
-	return workerID, taskID, attemptID
+	task := g.tasks[0][0]
+	return workerID, task.ID, g.attempts[task.ID].ID
 }
 
 func TestSweepStaleWorkers_ReclaimsAndTerminates(t *testing.T) {
@@ -155,43 +125,40 @@ func TestSweepStaleWorkers_ReclaimsAndTerminates(t *testing.T) {
 
 // seedAssignedTask seeds a job/step/task in 'assigned' on a (live) worker with
 // the given assigned_at age, plus an open running attempt. Returns task/attempt IDs.
+//
+// The task is submitted ready and leased to w-live with the lease's Now set
+// age in the past, the stale assignment a real lease leaves when the worker
+// never reports the task running.
 func seedAssignedTask(t *testing.T, st *fake.Store, age time.Duration) (taskID, attemptID string) {
 	t.Helper()
-	ctx := t.Context()
-	now := time.Now().UTC()
-	assignedAt := now.Add(-age)
+	ensureStatusFarm(t, st)
+	spec := statusJob{worker: "w-live", leasedAt: time.Now().UTC().Add(-age), steps: []statusStep{
+		{name: "s", status: store.StepStatusRunning, tasks: []store.TaskStatus{store.TaskStatusAssigned}},
+	}}
+	sub, inflight := statusSubmission(t, spec)
+	storetest.Submit(t, st, sub)
+	attempts := map[string]store.TaskAttempt{}
+	leaseStatusTasks(t, st, spec, inflight, attempts)
+	taskID = sub.Tasks[0].ID
+	return taskID, attempts[taskID].ID
+}
 
-	job, err := st.CreateJob(ctx, store.Job{
-		ID: uuid.NewString(), FarmID: "farm-1", QueueID: "queue-1", Name: "j",
-		Status: store.JobStatusRunning, TemplateFormat: store.TemplateFormatJSON,
-		CreatedAt: now, UpdatedAt: now,
-	})
-	if err != nil {
-		t.Fatalf("CreateJob: %v", err)
+// ensureStatusFarm creates farm-1 and queue-1, the rows [statusSubmission]'s
+// jobs live in, unless an earlier seed in the same test already did.
+func ensureStatusFarm(t *testing.T, st store.Store) {
+	t.Helper()
+	ctx := t.Context()
+	if _, err := st.GetFarm(ctx, "farm-1"); err == nil {
+		return
+	} else if !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("GetFarm: %v", err)
 	}
-	step, err := st.CreateStep(ctx, store.Step{
-		ID: uuid.NewString(), JobID: job.ID, Name: "s",
-		Status: store.StepStatusRunning, CreatedAt: now, UpdatedAt: now,
-	})
-	if err != nil {
-		t.Fatalf("CreateStep: %v", err)
+	if _, err := st.CreateFarm(ctx, store.Farm{ID: "farm-1", Name: "farm-1"}); err != nil {
+		t.Fatalf("CreateFarm: %v", err)
 	}
-	task, err := st.CreateTask(ctx, store.Task{
-		ID: uuid.NewString(), JobID: job.ID, StepID: step.ID, Name: "t",
-		Status: store.TaskStatusAssigned, AssignedWorkerID: "w-live", AssignedAt: &assignedAt,
-		CreatedAt: now, UpdatedAt: now,
-	})
-	if err != nil {
-		t.Fatalf("CreateTask: %v", err)
+	if _, err := st.CreateQueue(ctx, store.Queue{ID: "queue-1", FarmID: "farm-1", Name: "queue-1"}); err != nil {
+		t.Fatalf("CreateQueue: %v", err)
 	}
-	attempt, err := st.CreateTaskAttempt(ctx, store.TaskAttempt{
-		ID: uuid.NewString(), TaskID: task.ID, WorkerID: "w-live", AttemptNumber: 1,
-		Status: store.AttemptStatusRunning, StartedAt: assignedAt, CreatedAt: assignedAt,
-	})
-	if err != nil {
-		t.Fatalf("CreateTaskAttempt: %v", err)
-	}
-	return task.ID, attempt.ID
 }
 
 // TestReapStaleAssignedTasks_ReclaimsStuckTask verifies that a task stranded in
@@ -412,12 +379,10 @@ func TestScheduler_SweepRetiredJobs(t *testing.T) {
 	st := newCheckedFake(t)
 	old := time.Now().UTC().Add(-48 * time.Hour)
 	c := old
-	if _, err := st.CreateJob(ctx, store.Job{
-		ID: "old-completed", Status: store.JobStatusCompleted, CompletedAt: &c, UpdatedAt: old,
+	storetest.Submit(t, st, store.JobSubmission{Job: store.Job{
+		ID: "old-completed", Status: store.JobStatusCompleted, CompletedAt: &c,
 		TemplateFormat: store.TemplateFormatJSON,
-	}); err != nil {
-		t.Fatalf("CreateJob: %v", err)
-	}
+	}})
 
 	rec := &jobRecordingNotifier{}
 	s := newJobRetentionScheduler(st, 24*time.Hour, false, rec)
@@ -442,12 +407,10 @@ func TestScheduler_SweepRetiredJobs_DisabledWhenZero(t *testing.T) {
 	st := newCheckedFake(t)
 	old := time.Now().UTC().Add(-720 * time.Hour)
 	c := old
-	if _, err := st.CreateJob(ctx, store.Job{
-		ID: "old-completed", Status: store.JobStatusCompleted, CompletedAt: &c, UpdatedAt: old,
+	storetest.Submit(t, st, store.JobSubmission{Job: store.Job{
+		ID: "old-completed", Status: store.JobStatusCompleted, CompletedAt: &c,
 		TemplateFormat: store.TemplateFormatJSON,
-	}); err != nil {
-		t.Fatalf("CreateJob: %v", err)
-	}
+	}})
 
 	rec := &jobRecordingNotifier{}
 	s := newJobRetentionScheduler(st, 0, false, rec)
