@@ -10,29 +10,50 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/uberware/sqi/internal/store"
+	"github.com/uberware/sqi/internal/store/storetest"
 )
 
 // seedClaimedAttempt seeds task t1 in the given status with a running attempt
 // that holds one claim on a fresh pool, and returns the attempt and the claim.
+//
+// A running task is leased holding the claim, the way production makes one. A
+// canceled task cannot be built that way: a cancel closes the task's attempts
+// and releases their claims in the same write, so a running attempt and an
+// active claim behind a canceled task is a state production never produces. It
+// is what a report that arrives after the cancel is written against, so that
+// case injects the attempt and the claim.
 func seedClaimedAttempt(t *testing.T, s *Store, status store.TaskStatus) (store.TaskAttempt, store.UsageClaim) {
 	t.Helper()
 	ctx := t.Context()
-	seedCASTask(t, s, "t1", status)
-	now := time.Now().UTC()
-	a, err := s.CreateTaskAttempt(ctx, store.TaskAttempt{
-		ID: uuid.NewString(), TaskID: "t1", WorkerID: "w", AttemptNumber: 1,
-		Status: store.AttemptStatusRunning, StartedAt: now, CreatedAt: now,
-	})
-	if err != nil {
-		t.Fatalf("CreateTaskAttempt: %v", err)
-	}
 	pool, err := s.CreateUsagePool(ctx, store.UsagePool{ID: uuid.NewString(), Name: uuid.NewString(), MaxConcurrent: 1})
 	if err != nil {
 		t.Fatalf("CreateUsagePool: %v", err)
 	}
-	claim, err := s.CreateClaim(ctx, store.UsageClaim{ID: uuid.NewString(), PoolID: pool.ID, TaskAttemptID: a.ID, ClaimedAt: now})
+	claimID := uuid.NewString()
+
+	if status == store.TaskStatusRunning {
+		// Submit the task ready, then lease it here so the claim rides on the
+		// lease: seedCASTask's own lease holds no claim.
+		seedCASTask(t, s, "t1", store.TaskStatusReady)
+		a := storetest.Running(t, s, store.LeaseRequest{
+			TaskID: "t1", WorkerID: "w",
+			Claims: []store.UsagePoolClaim{{ClaimID: claimID, PoolID: pool.ID, PoolName: pool.Name}},
+		})
+		return a, store.UsageClaim{ID: claimID, PoolID: pool.ID, TaskAttemptID: a.ID}
+	}
+
+	seedCASTask(t, s, "t1", status)
+	now := time.Now().UTC()
+	a, err := s.InjectTaskAttempt(ctx, store.TaskAttempt{
+		ID: uuid.NewString(), TaskID: "t1", WorkerID: "w", AttemptNumber: 1,
+		Status: store.AttemptStatusRunning, StartedAt: now, CreatedAt: now,
+	})
 	if err != nil {
-		t.Fatalf("CreateClaim: %v", err)
+		t.Fatalf("InjectTaskAttempt: %v", err)
+	}
+	claim, err := s.InjectClaim(ctx, store.UsageClaim{ID: claimID, PoolID: pool.ID, TaskAttemptID: a.ID})
+	if err != nil {
+		t.Fatalf("InjectClaim: %v", err)
 	}
 	return a, claim
 }

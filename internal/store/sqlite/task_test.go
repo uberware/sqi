@@ -5,11 +5,13 @@ package sqlite_test
 import (
 	"context"
 	"errors"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/uberware/sqi/internal/store"
 	"github.com/uberware/sqi/internal/store/sqlite"
+	"github.com/uberware/sqi/internal/store/storetest"
 )
 
 func TestRetryTasks_SQLite(t *testing.T) {
@@ -18,20 +20,12 @@ func TestRetryTasks_SQLite(t *testing.T) {
 
 	insertFarm(t, s, "f1", "F1")
 	insertQueue(t, s, "q1", "f1", "Q1")
-	insertJob(t, s, "j1", "f1", "q1")
-	if err := s.UpdateJobStatus(ctx, "j1", store.JobStatusFailed); err != nil {
-		t.Fatalf("UpdateJobStatus failed: %v", err)
-	}
-	insertStep(t, s, "s1", "j1", "S1", 0)
-	if err := s.UpdateStepStatus(ctx, "s1", store.StepStatusFailed); err != nil {
-		t.Fatalf("UpdateStepStatus failed: %v", err)
-	}
-	insertTask(t, s, "t-failed", "j1", "s1")
-	walkTaskTo(t, s, "t-failed", store.TaskStatusFailed)
-	insertTask(t, s, "t-canceled", "j1", "s1")
-	walkTaskTo(t, s, "t-canceled", store.TaskStatusCanceled)
-	insertTask(t, s, "t-ok", "j1", "s1")
-	walkTaskTo(t, s, "t-ok", store.TaskStatusSucceeded)
+	newJob("j1", "f1", "q1").as(store.JobStatusFailed).
+		stepAs("s1", "S1", 0, store.StepStatusFailed).
+		task("t-failed", "s1", store.TaskStatusFailed).
+		task("t-canceled", "s1", store.TaskStatusCanceled).
+		task("t-ok", "s1", store.TaskStatusSucceeded).
+		submit(t, s)
 
 	revived, err := s.RetryTasks(ctx, "j1", nil, time.Now().UTC())
 	if err != nil {
@@ -95,16 +89,10 @@ func TestRetryTasks_EmptySliceRevivesNothing(t *testing.T) {
 
 	insertFarm(t, s, "f1", "F1")
 	insertQueue(t, s, "q1", "f1", "Q1")
-	insertJob(t, s, "j1", "f1", "q1")
-	if err := s.UpdateJobStatus(ctx, "j1", store.JobStatusFailed); err != nil {
-		t.Fatalf("UpdateJobStatus: %v", err)
-	}
-	insertStep(t, s, "s1", "j1", "S1", 0)
-	if err := s.UpdateStepStatus(ctx, "s1", store.StepStatusFailed); err != nil {
-		t.Fatalf("UpdateStepStatus: %v", err)
-	}
-	insertTask(t, s, "t-failed", "j1", "s1")
-	walkTaskTo(t, s, "t-failed", store.TaskStatusFailed)
+	newJob("j1", "f1", "q1").as(store.JobStatusFailed).
+		stepAs("s1", "S1", 0, store.StepStatusFailed).
+		task("t-failed", "s1", store.TaskStatusFailed).
+		submit(t, s)
 
 	// Non-nil but empty slice: "filter to exactly these (zero) IDs" → revive nothing.
 	revived, err := s.RetryTasks(ctx, "j1", []string{}, time.Now().UTC())
@@ -135,18 +123,11 @@ func TestRetryTasks_MixedStateStep(t *testing.T) {
 
 	insertFarm(t, s, "f1", "F1")
 	insertQueue(t, s, "q1", "f1", "Q1")
-	insertJob(t, s, "j1", "f1", "q1")
-	if err := s.UpdateJobStatus(ctx, "j1", store.JobStatusFailed); err != nil {
-		t.Fatalf("UpdateJobStatus: %v", err)
-	}
-	insertStep(t, s, "s1", "j1", "S1", 0)
-	if err := s.UpdateStepStatus(ctx, "s1", store.StepStatusFailed); err != nil {
-		t.Fatalf("UpdateStepStatus: %v", err)
-	}
-	insertTask(t, s, "ta", "j1", "s1")
-	walkTaskTo(t, s, "ta", store.TaskStatusFailed)
-	insertTask(t, s, "tb", "j1", "s1")
-	walkTaskTo(t, s, "tb", store.TaskStatusFailed)
+	newJob("j1", "f1", "q1").as(store.JobStatusFailed).
+		stepAs("s1", "S1", 0, store.StepStatusFailed).
+		task("ta", "s1", store.TaskStatusFailed).
+		task("tb", "s1", store.TaskStatusFailed).
+		submit(t, s)
 
 	// Retry only "ta" from the subset.
 	revived, err := s.RetryTasks(ctx, "j1", []string{"ta"}, time.Now().UTC())
@@ -187,11 +168,6 @@ func TestRetryTasks_MixedStateStep(t *testing.T) {
 	}
 }
 
-// TestRetryTasks_ResetsFailureCounters asserts that a manual retry via
-// RetryTasks clears the genuine-failure state Tasks 1-3 introduced: a revived
-// task's FailedAttempts and RetryAfter are zeroed/cleared, and — when the
-// retry resets a terminal job back to pending — the job's FailedAttempts and
-// ParkReason are cleared too.
 func TestRetryTasks_ResetsFailureCounters(t *testing.T) {
 	s := openTestStore(t)
 	ctx := context.Background()
@@ -199,33 +175,35 @@ func TestRetryTasks_ResetsFailureCounters(t *testing.T) {
 
 	insertFarm(t, s, "f1", "F1")
 	insertQueue(t, s, "q1", "f1", "Q1")
-	insertJob(t, s, "j1", "f1", "q1")
-	if err := s.UpdateJobStatus(ctx, "j1", store.JobStatusRunning); err != nil {
-		t.Fatalf("UpdateJobStatus: %v", err)
-	}
-	insertStep(t, s, "s1", "j1", "S1", 0)
-	insertTask(t, s, "t1", "j1", "s1")
-	walkTaskTo(t, s, "t1", store.TaskStatusRunning)
+	newJob("j1", "f1", "q1").as(store.JobStatusRunning).
+		stepAs("s1", "S1", 0, store.StepStatusReady).
+		task("t1", "s1", store.TaskStatusReady).
+		submit(t, s)
 
 	// Drive genuine-failure bookkeeping: a failed attempt bumps both counters
-	// and stamps a backoff; enough failures park the job with a reason.
-	att := insertAttempt(t, s, "t1", "w1", 1)
+	// and stamps a backoff on the requeued task.
+	att := leaseTask(t, s, "t1", "w1")
 	if _, _, _, err := s.RecordTaskFailure(ctx, att.ID, "t1", nil, "", "", now); err != nil {
 		t.Fatalf("RecordTaskFailure: %v", err)
 	}
 	if requeued, err := s.RequeueTaskForRetry(ctx, "t1", att.ID, now.Add(time.Minute), now); err != nil || !requeued {
 		t.Fatalf("RequeueTaskForRetry: requeued=%v err=%v", requeued, err)
 	}
+
+	// The retry runs once the backoff has elapsed and fails for good, which
+	// finalizes the step. The job is parked (enough failures park it with a
+	// reason) and then finalized failed — the terminal state RetryTasks
+	// operates on, reached the way the production failure sweep reaches it.
+	retry := storetest.Running(t, s, store.LeaseRequest{TaskID: "t1", WorkerID: "w1", Now: now.Add(2 * time.Minute)})
+	completeAttempt(t, s, retry, store.TaskStatusFailed, store.AttemptStatusFailed)
+	if status, ok, err := s.FinalizeStep(ctx, "s1", now); err != nil || !ok || status != store.StepStatusFailed {
+		t.Fatalf("FinalizeStep = (%v, %v, %v), want failed", status, ok, err)
+	}
 	if err := s.ParkJob(ctx, "j1", "failure limit reached (1)", now); err != nil {
 		t.Fatalf("ParkJob: %v", err)
 	}
-
-	// Drive the task and job to the terminal states RetryTasks operates on
-	// (park leaves the job paused, not terminal — so move both to failed
-	// directly, as the production failure sweep would eventually do).
-	walkTaskTo(t, s, "t1", store.TaskStatusFailed)
-	if err := s.UpdateJobStatus(ctx, "j1", store.JobStatusFailed); err != nil {
-		t.Fatalf("UpdateJobStatus(failed): %v", err)
+	if status, ok, err := s.FinalizeJob(ctx, "j1", now); err != nil || !ok || status != store.JobStatusFailed {
+		t.Fatalf("FinalizeJob = (%v, %v, %v), want failed", status, ok, err)
 	}
 
 	// Sanity-check the fixture actually has nonzero state before retrying.
@@ -269,16 +247,9 @@ func TestRetryTasks_ClearsFailureReason(t *testing.T) {
 
 	insertFarm(t, s, "f1", "F1")
 	insertQueue(t, s, "q1", "f1", "Q1")
-	insertJob(t, s, "j1", "f1", "q1")
-	if err := s.UpdateJobStatus(ctx, "j1", store.JobStatusFailed); err != nil {
-		t.Fatalf("UpdateJobStatus: %v", err)
-	}
-	insertStep(t, s, "s1", "j1", "S1", 0)
-	insertTask(t, s, "t1", "j1", "s1")
-	walkTaskTo(t, s, "t1", store.TaskStatusFailed)
-	if err := s.SetTaskFailureReason(ctx, "t1", "boom"); err != nil {
-		t.Fatalf("SetTaskFailureReason: %v", err)
-	}
+	newJob("j1", "f1", "q1").as(store.JobStatusFailed).step("s1", "S1", 0).
+		taskRow(store.Task{ID: "t1", StepID: "s1", Status: store.TaskStatusFailed, FailureReason: "boom"}).
+		submit(t, s)
 
 	if _, err := s.RetryTasks(ctx, "j1", nil, time.Now().UTC()); err != nil {
 		t.Fatalf("RetryTasks: %v", err)
@@ -293,9 +264,6 @@ func TestRetryTasks_ClearsFailureReason(t *testing.T) {
 	}
 }
 
-// recordFailureFixture seeds a running farm/queue/job/step/task and returns the
-// store, ctx, and a now stamp — the shared setup for the RecordTaskFailure
-// tests below.
 func recordFailureFixture(t *testing.T) (*sqlite.Store, context.Context, time.Time) {
 	t.Helper()
 	s := openTestStore(t)
@@ -304,31 +272,27 @@ func recordFailureFixture(t *testing.T) (*sqlite.Store, context.Context, time.Ti
 
 	insertFarm(t, s, "f1", "F1")
 	insertQueue(t, s, "q1", "f1", "Q1")
-	insertJob(t, s, "j1", "f1", "q1")
-	if err := s.UpdateJobStatus(ctx, "j1", store.JobStatusRunning); err != nil {
-		t.Fatalf("UpdateJobStatus: %v", err)
-	}
-	insertStep(t, s, "s1", "j1", "S1", 0)
-	insertTask(t, s, "t1", "j1", "s1")
-	if err := s.UpdateTaskStatus(ctx, "t1", store.TaskStatusReady); err != nil {
-		t.Fatalf("UpdateTaskStatus: %v", err)
-	}
+	newJob("j1", "f1", "q1").as(store.JobStatusRunning).
+		step("s1", "S1", 0).
+		task("t1", "s1", store.TaskStatusReady).
+		submit(t, s)
 	return s, ctx, now
 }
 
-// TestRecordTaskFailure_CountsEachAttempt asserts that RecordTaskFailure
-// increments the task's and job's failed_attempts counters once per DISTINCT
-// attempt: two genuine attempts of the same task raise both counters to two.
 func TestRecordTaskFailure_CountsEachAttempt(t *testing.T) {
 	s, ctx, now := recordFailureFixture(t)
 
-	a1 := insertAttempt(t, s, "t1", "w1", 1)
+	a1 := leaseTask(t, s, "t1", "w1")
 	tf, jf, first, err := s.RecordTaskFailure(ctx, a1.ID, "t1", nil, "", "", now)
 	if err != nil || tf != 1 || jf != 1 || !first {
 		t.Fatalf("first attempt: tf=%d jf=%d first=%v err=%v", tf, jf, first, err)
 	}
 
-	a2 := insertAttempt(t, s, "t1", "w1", 2)
+	// The task goes back to ready with its backoff elapsed, and is leased again.
+	if requeued, err := s.RequeueTaskForRetry(ctx, "t1", a1.ID, now.Add(-time.Minute), now); err != nil || !requeued {
+		t.Fatalf("RequeueTaskForRetry: requeued=%v err=%v", requeued, err)
+	}
+	a2 := leaseTask(t, s, "t1", "w1")
 	tf, jf, first, err = s.RecordTaskFailure(ctx, a2.ID, "t1", nil, "", "", now)
 	if err != nil || tf != 2 || jf != 2 || !first {
 		t.Fatalf("second attempt: tf=%d jf=%d first=%v err=%v", tf, jf, first, err)
@@ -360,7 +324,7 @@ func TestRecordTaskFailure_CountsEachAttempt(t *testing.T) {
 func TestRecordTaskFailure_IdempotentPerAttempt(t *testing.T) {
 	s, ctx, now := recordFailureFixture(t)
 
-	att := insertAttempt(t, s, "t1", "w1", 1)
+	att := leaseTask(t, s, "t1", "w1")
 	exit := 7
 	sess := "sess-1"
 
@@ -424,9 +388,6 @@ func TestRecordTaskFailure_NotFound(t *testing.T) {
 	}
 }
 
-// TestRequeueTaskForRetry_ResetsAssignment asserts that RequeueTaskForRetry
-// returns an assigned task to ready, clears its worker assignment, and stamps
-// retry_after with the supplied backoff time.
 func TestRequeueTaskForRetry_ResetsAssignment(t *testing.T) {
 	s := openTestStore(t)
 	ctx := context.Background()
@@ -434,15 +395,10 @@ func TestRequeueTaskForRetry_ResetsAssignment(t *testing.T) {
 
 	insertFarm(t, s, "f1", "F1")
 	insertQueue(t, s, "q1", "f1", "Q1")
-	insertJob(t, s, "j1", "f1", "q1")
-	insertStep(t, s, "s1", "j1", "S1", 0)
 	insertWorker(t, s, "w1", "f1")
-	insertTask(t, s, "t1", "j1", "s1")
-	if err := s.AssignTask(ctx, "t1", "w1", now); err != nil {
-		t.Fatalf("AssignTask: %v", err)
-	}
+	newJob("j1", "f1", "q1").step("s1", "S1", 0).task("t1", "s1", store.TaskStatusReady).submit(t, s)
 
-	att := insertAttempt(t, s, "t1", "w1", 1)
+	att := leaseTask(t, s, "t1", "w1")
 
 	future := now.Add(30 * time.Second)
 	if requeued, err := s.RequeueTaskForRetry(ctx, "t1", att.ID, future, now); err != nil || !requeued {
@@ -457,9 +413,6 @@ func TestRequeueTaskForRetry_ResetsAssignment(t *testing.T) {
 	}
 }
 
-// TestRequeueTaskForRetry_ClearsFailureReason asserts that the auto-retry path
-// clears a task's stale failure_reason — a requeued task must not
-// carry forward the reason from its prior failed attempt.
 func TestRequeueTaskForRetry_ClearsFailureReason(t *testing.T) {
 	s := openTestStore(t)
 	ctx := context.Background()
@@ -467,18 +420,19 @@ func TestRequeueTaskForRetry_ClearsFailureReason(t *testing.T) {
 
 	insertFarm(t, s, "f1", "F1")
 	insertQueue(t, s, "q1", "f1", "Q1")
-	insertJob(t, s, "j1", "f1", "q1")
-	insertStep(t, s, "s1", "j1", "S1", 0)
 	insertWorker(t, s, "w1", "f1")
-	insertTask(t, s, "t1", "j1", "s1")
-	if err := s.AssignTask(ctx, "t1", "w1", now); err != nil {
-		t.Fatalf("AssignTask: %v", err)
-	}
-	if err := s.SetTaskFailureReason(ctx, "t1", "boom"); err != nil {
-		t.Fatalf("SetTaskFailureReason: %v", err)
-	}
+	// A failure reason on a task that is about to be requeued is a stale one, a
+	// state production never builds up on an in-flight task, so it is written
+	// at create and the lease leaves it alone: the requeue's clearing is what
+	// the test observes.
+	newJob("j1", "f1", "q1").step("s1", "S1", 0).
+		taskRow(store.Task{ID: "t1", StepID: "s1", Status: store.TaskStatusReady, FailureReason: "boom"}).
+		submit(t, s)
 
-	att := insertAttempt(t, s, "t1", "w1", 1)
+	att := leaseTask(t, s, "t1", "w1")
+	if got, err := s.GetTask(ctx, "t1"); err != nil || got.FailureReason != "boom" {
+		t.Fatalf("leased task = (%+v, %v), want the seeded failure reason kept", got, err)
+	}
 
 	if requeued, err := s.RequeueTaskForRetry(ctx, "t1", att.ID, now.Add(30*time.Second), now); err != nil || !requeued {
 		t.Fatalf("RequeueTaskForRetry: requeued=%v err=%v", requeued, err)
@@ -493,12 +447,6 @@ func TestRequeueTaskForRetry_ClearsFailureReason(t *testing.T) {
 	}
 }
 
-// TestRequeueTaskForRetry_GuardedToInFlight asserts the status guard: only an
-// assigned/running task is requeued. A missing task and — critically — a task
-// that has since been canceled, succeeded, or already returned to ready are
-// legitimate no-ops (false, nil), never a resurrection: a stale or redelivered
-// failure report must not flip a terminal task back to ready or clear its
-// failure reason.
 func TestRequeueTaskForRetry_GuardedToInFlight(t *testing.T) {
 	s := openTestStore(t)
 	ctx := context.Background()
@@ -506,30 +454,28 @@ func TestRequeueTaskForRetry_GuardedToInFlight(t *testing.T) {
 
 	insertFarm(t, s, "f1", "F1")
 	insertQueue(t, s, "q1", "f1", "Q1")
-	insertJob(t, s, "j1", "f1", "q1")
-	insertStep(t, s, "s1", "j1", "S1", 0)
 
-	if requeued, err := s.RequeueTaskForRetry(ctx, "missing", "no-attempt", now.Add(time.Second), now); err != nil || requeued {
-		t.Fatalf("missing task: requeued=%v err=%v, want false,nil", requeued, err)
-	}
-
-	for i, tc := range []struct {
+	cases := []struct {
 		status store.TaskStatus
 		reason string
 	}{
 		{store.TaskStatusCanceled, store.FailureReasonCanceledByUser},
 		{store.TaskStatusSucceeded, ""},
 		{store.TaskStatusReady, ""},
-	} {
+	}
+	seed := newJob("j1", "f1", "q1").step("s1", "S1", 0)
+	for i, tc := range cases {
+		seed.taskRow(store.Task{ID: "t" + string(rune('1'+i)), StepID: "s1", Status: tc.status, FailureReason: tc.reason})
+	}
+	seed.submit(t, s)
+
+	if requeued, err := s.RequeueTaskForRetry(ctx, "missing", "no-attempt", now.Add(time.Second), now); err != nil || requeued {
+		t.Fatalf("missing task: requeued=%v err=%v, want false,nil", requeued, err)
+	}
+
+	for i, tc := range cases {
 		t.Run(string(tc.status), func(t *testing.T) {
 			id := "t" + string(rune('1'+i))
-			insertTask(t, s, id, "j1", "s1")
-			walkTaskTo(t, s, id, tc.status)
-			if tc.reason != "" {
-				if err := s.SetTaskFailureReason(ctx, id, tc.reason); err != nil {
-					t.Fatalf("SetTaskFailureReason: %v", err)
-				}
-			}
 
 			requeued, err := s.RequeueTaskForRetry(ctx, id, "no-attempt", now.Add(time.Second), now)
 			if err != nil || requeued {
@@ -553,9 +499,6 @@ func TestRequeueTaskForRetry_GuardedToInFlight(t *testing.T) {
 	}
 }
 
-// TestParkJob_SkipsTerminal asserts that ParkJob transitions a non-terminal
-// job to paused with a reason, but is a no-op (not an error) once the job has
-// reached a terminal status.
 func TestParkJob_SkipsTerminal(t *testing.T) {
 	s := openTestStore(t)
 	ctx := context.Background()
@@ -563,10 +506,8 @@ func TestParkJob_SkipsTerminal(t *testing.T) {
 
 	insertFarm(t, s, "f1", "F1")
 	insertQueue(t, s, "q1", "f1", "Q1")
-	insertJob(t, s, "j1", "f1", "q1")
-	if err := s.UpdateJobStatus(ctx, "j1", store.JobStatusRunning); err != nil {
-		t.Fatalf("UpdateJobStatus: %v", err)
-	}
+	newJob("j1", "f1", "q1").as(store.JobStatusRunning).submit(t, s)
+	newJob("j2", "f1", "q1").as(store.JobStatusFailed).submit(t, s)
 
 	if err := s.ParkJob(ctx, "j1", "failure limit reached (2)", now); err != nil {
 		t.Fatalf("park: %v", err)
@@ -580,17 +521,14 @@ func TestParkJob_SkipsTerminal(t *testing.T) {
 	}
 
 	// A terminal job is left untouched — no error, no state change.
-	if err := s.UpdateJobStatus(ctx, "j1", store.JobStatusFailed); err != nil {
-		t.Fatalf("UpdateJobStatus(failed): %v", err)
-	}
-	if err := s.ParkJob(ctx, "j1", "x", now); err != nil {
+	if err := s.ParkJob(ctx, "j2", "x", now); err != nil {
 		t.Fatalf("park terminal (expected no-op, no error): %v", err)
 	}
-	got, err = s.GetJob(ctx, "j1")
+	got, err = s.GetJob(ctx, "j2")
 	if err != nil {
 		t.Fatalf("GetJob: %v", err)
 	}
-	if got.Status != store.JobStatusFailed {
+	if got.Status != store.JobStatusFailed || got.ParkReason != "" {
 		t.Fatalf("terminal job should not be parked: %+v", got)
 	}
 }
@@ -615,7 +553,7 @@ func TestResumeJob_AutoParked_ClearsParkStateAndCounter(t *testing.T) {
 	s, ctx, now := recordFailureFixture(t)
 
 	// One genuine failure gives the job a nonzero counter, then park it.
-	att := insertAttempt(t, s, "t1", "w1", 1)
+	att := leaseTask(t, s, "t1", "w1")
 	if _, _, _, err := s.RecordTaskFailure(ctx, att.ID, "t1", nil, "", "", now); err != nil {
 		t.Fatalf("RecordTaskFailure: %v", err)
 	}
@@ -642,18 +580,15 @@ func TestResumeJob_AutoParked_ClearsParkStateAndCounter(t *testing.T) {
 	}
 }
 
-// TestResumeJob_ManualPause_KeepsCounter asserts that resuming a MANUALLY
-// paused job (empty park_reason) does not touch its accumulated failure
-// counter — only an auto-park reset is implied by resume.
 func TestResumeJob_ManualPause_KeepsCounter(t *testing.T) {
 	s, ctx, now := recordFailureFixture(t)
 
-	att := insertAttempt(t, s, "t1", "w1", 1)
+	att := leaseTask(t, s, "t1", "w1")
 	if _, _, _, err := s.RecordTaskFailure(ctx, att.ID, "t1", nil, "", "", now); err != nil {
 		t.Fatalf("RecordTaskFailure: %v", err)
 	}
-	if err := s.UpdateJobStatus(ctx, "j1", store.JobStatusPaused); err != nil {
-		t.Fatalf("UpdateJobStatus(paused): %v", err)
+	if err := s.PauseJob(ctx, "j1", now); err != nil {
+		t.Fatalf("PauseJob: %v", err)
 	}
 
 	if err := s.ResumeJob(ctx, "j1", now); err != nil {
@@ -681,10 +616,7 @@ func TestResumeJob_NotPausedAndNotFound(t *testing.T) {
 
 	insertFarm(t, s, "f1", "F1")
 	insertQueue(t, s, "q1", "f1", "Q1")
-	insertJob(t, s, "j1", "f1", "q1")
-	if err := s.UpdateJobStatus(ctx, "j1", store.JobStatusRunning); err != nil {
-		t.Fatalf("UpdateJobStatus: %v", err)
-	}
+	newJob("j1", "f1", "q1").as(store.JobStatusRunning).submit(t, s)
 
 	if err := s.ResumeJob(ctx, "j1", now); err != nil {
 		t.Fatalf("resume of non-paused job should be a no-op, got %v", err)
@@ -709,12 +641,12 @@ func TestResumeJob_NotPausedAndNotFound(t *testing.T) {
 func TestRetryTasks_UnparksAutoParkedJob(t *testing.T) {
 	s, ctx, now := recordFailureFixture(t)
 
-	att := insertAttempt(t, s, "t1", "w1", 1)
+	att := leaseTask(t, s, "t1", "w1")
 	if _, _, _, err := s.RecordTaskFailure(ctx, att.ID, "t1", nil, "", "", now); err != nil {
 		t.Fatalf("RecordTaskFailure: %v", err)
 	}
 	// The tripping task went terminal-failed and the job parked.
-	walkTaskTo(t, s, "t1", store.TaskStatusFailed)
+	completeAttempt(t, s, att, store.TaskStatusFailed, store.AttemptStatusFailed)
 	if err := s.ParkJob(ctx, "j1", "failure limit reached (1)", now); err != nil {
 		t.Fatalf("ParkJob: %v", err)
 	}
@@ -736,15 +668,12 @@ func TestRetryTasks_UnparksAutoParkedJob(t *testing.T) {
 	}
 }
 
-// TestRetryTasks_LeavesManualPauseAlone asserts the counterpart guard: a
-// manually paused job (no park_reason) is NOT un-paused by retrying its tasks
-// — the operator's pause outranks the retry.
 func TestRetryTasks_LeavesManualPauseAlone(t *testing.T) {
 	s, ctx, now := recordFailureFixture(t)
 
-	walkTaskTo(t, s, "t1", store.TaskStatusFailed)
-	if err := s.UpdateJobStatus(ctx, "j1", store.JobStatusPaused); err != nil {
-		t.Fatalf("UpdateJobStatus(paused): %v", err)
+	completeAttempt(t, s, leaseTask(t, s, "t1", "w1"), store.TaskStatusFailed, store.AttemptStatusFailed)
+	if err := s.PauseJob(ctx, "j1", now); err != nil {
+		t.Fatalf("PauseJob: %v", err)
 	}
 
 	if _, err := s.RetryTasks(ctx, "j1", nil, now); err != nil {
@@ -760,164 +689,17 @@ func TestRetryTasks_LeavesManualPauseAlone(t *testing.T) {
 	}
 }
 
-// TestSetTaskFailureReason_RoundTrip asserts that SetTaskFailureReason
-// persists a reason and that a subsequent call with an empty string clears it.
-func TestSetTaskFailureReason_RoundTrip(t *testing.T) {
-	s := openTestStore(t)
-	ctx := context.Background()
-
-	insertFarm(t, s, "f1", "F1")
-	insertQueue(t, s, "q1", "f1", "Q1")
-	insertJob(t, s, "j1", "f1", "q1")
-	insertStep(t, s, "s1", "j1", "S1", 0)
-	insertTask(t, s, "t1", "j1", "s1")
-	if err := s.UpdateTaskStatus(ctx, "t1", store.TaskStatusReady); err != nil {
-		t.Fatalf("UpdateTaskStatus: %v", err)
-	}
-
-	if err := s.SetTaskFailureReason(ctx, "t1", "boom"); err != nil {
-		t.Fatalf("SetTaskFailureReason: %v", err)
-	}
-	got, err := s.GetTask(ctx, "t1")
-	if err != nil {
-		t.Fatalf("GetTask: %v", err)
-	}
-	if got.FailureReason != "boom" {
-		t.Fatalf("FailureReason = %q, want %q", got.FailureReason, "boom")
-	}
-
-	if err := s.SetTaskFailureReason(ctx, "t1", ""); err != nil {
-		t.Fatalf("SetTaskFailureReason (clear): %v", err)
-	}
-	got, err = s.GetTask(ctx, "t1")
-	if err != nil {
-		t.Fatalf("GetTask: %v", err)
-	}
-	if got.FailureReason != "" {
-		t.Fatalf("FailureReason not cleared: %q", got.FailureReason)
-	}
-}
-
-// TestSetTaskFailureReason_NotFound asserts that setting the failure reason of
-// an unknown task returns [store.ErrNotFound].
-func TestSetTaskFailureReason_NotFound(t *testing.T) {
-	s := openTestStore(t)
-	ctx := context.Background()
-
-	err := s.SetTaskFailureReason(ctx, "missing", "x")
-	if !errors.Is(err, store.ErrNotFound) {
-		t.Fatalf("err = %v, want ErrNotFound", err)
-	}
-}
-
-// TestSetTaskFailureReasonIfEmpty asserts the guarded setter writes when the
-// task has no reason yet and is a no-op (preserving the existing reason) when
-// one is already recorded — the invariant that lets a cascade-cancel reason
-// survive a later user-cancel.
-func TestSetTaskFailureReasonIfEmpty(t *testing.T) {
-	s := openTestStore(t)
-	ctx := context.Background()
-
-	insertFarm(t, s, "f1", "F1")
-	insertQueue(t, s, "q1", "f1", "Q1")
-	insertJob(t, s, "j1", "f1", "q1")
-	insertStep(t, s, "s1", "j1", "S1", 0)
-	insertTask(t, s, "t1", "j1", "s1")
-
-	// Empty → sets.
-	if err := s.SetTaskFailureReasonIfEmpty(ctx, "t1", "canceled by user"); err != nil {
-		t.Fatalf("SetTaskFailureReasonIfEmpty (empty): %v", err)
-	}
-	got, err := s.GetTask(ctx, "t1")
-	if err != nil {
-		t.Fatalf("GetTask: %v", err)
-	}
-	if got.FailureReason != "canceled by user" {
-		t.Fatalf("FailureReason = %q, want %q", got.FailureReason, "canceled by user")
-	}
-
-	// Non-empty → no-op, existing reason preserved.
-	if err := s.SetTaskFailureReasonIfEmpty(ctx, "t1", "something else"); err != nil {
-		t.Fatalf("SetTaskFailureReasonIfEmpty (non-empty): %v", err)
-	}
-	got, err = s.GetTask(ctx, "t1")
-	if err != nil {
-		t.Fatalf("GetTask: %v", err)
-	}
-	if got.FailureReason != "canceled by user" {
-		t.Fatalf("FailureReason overwritten: got %q, want %q", got.FailureReason, "canceled by user")
-	}
-
-	// Unknown task → legitimate no-op, not an error.
-	if err := s.SetTaskFailureReasonIfEmpty(ctx, "missing", "x"); err != nil {
-		t.Fatalf("SetTaskFailureReasonIfEmpty (missing) = %v, want nil", err)
-	}
-}
-
-// TestTaskAttempt_MessageRoundTrip asserts that a TaskAttempt's Message
-// persists through CreateTaskAttempt and can be set via UpdateTaskAttempt.
-func TestTaskAttempt_MessageRoundTrip(t *testing.T) {
-	s := openTestStore(t)
-	ctx := context.Background()
-
-	insertFarm(t, s, "f1", "F1")
-	insertQueue(t, s, "q1", "f1", "Q1")
-	insertJob(t, s, "j1", "f1", "q1")
-	insertStep(t, s, "s1", "j1", "S1", 0)
-	insertTask(t, s, "t1", "j1", "s1")
-
-	a := insertAttempt(t, s, "t1", "w1", 1)
-	if a.Message != "" {
-		t.Fatalf("new attempt Message = %q, want empty", a.Message)
-	}
-
-	a.Status = store.AttemptStatusFailed
-	end := time.Now().UTC()
-	a.EndedAt = &end
-	a.Message = "execution timeout after 120s"
-	updated, err := s.UpdateTaskAttempt(ctx, a)
-	if err != nil {
-		t.Fatalf("UpdateTaskAttempt: %v", err)
-	}
-	if updated.Message != "execution timeout after 120s" {
-		t.Fatalf("updated.Message = %q, want %q", updated.Message, "execution timeout after 120s")
-	}
-
-	got, err := s.GetTaskAttempt(ctx, a.ID)
-	if err != nil {
-		t.Fatalf("GetTaskAttempt: %v", err)
-	}
-	if got.Message != "execution timeout after 120s" {
-		t.Fatalf("GetTaskAttempt Message = %q, want %q", got.Message, "execution timeout after 120s")
-	}
-}
-
-// failedTaskWithReason creates a task in [store.TaskStatusFailed] carrying
-// the given failure_reason.
-func failedTaskWithReason(t *testing.T, s *sqlite.Store, id, jobID, stepID, reason string) {
-	t.Helper()
-	insertTask(t, s, id, jobID, stepID)
-	ctx := context.Background()
-	walkTaskTo(t, s, id, store.TaskStatusFailed)
-	if err := s.SetTaskFailureReason(ctx, id, reason); err != nil {
-		t.Fatalf("SetTaskFailureReason(%q): %v", id, err)
-	}
-}
-
-// TestFailureReasonSummary_Mixed asserts the summary counts failed tasks
-// grouped by reason and picks the most frequent reason as dominant.
 func TestFailureReasonSummary_Mixed(t *testing.T) {
 	s := openTestStore(t)
 	ctx := context.Background()
 
 	insertFarm(t, s, "f1", "F1")
 	insertQueue(t, s, "q1", "f1", "Q1")
-	insertJob(t, s, "j1", "f1", "q1")
-	insertStep(t, s, "s1", "j1", "S1", 0)
-
-	failedTaskWithReason(t, s, "t0", "j1", "s1", "staging")
-	failedTaskWithReason(t, s, "t1", "j1", "s1", "staging")
-	failedTaskWithReason(t, s, "t2", "j1", "s1", "timeout")
+	newJob("j1", "f1", "q1").step("s1", "S1", 0).
+		taskRow(store.Task{ID: "t0", StepID: "s1", Status: store.TaskStatusFailed, FailureReason: "staging"}).
+		taskRow(store.Task{ID: "t1", StepID: "s1", Status: store.TaskStatusFailed, FailureReason: "staging"}).
+		taskRow(store.Task{ID: "t2", StepID: "s1", Status: store.TaskStatusFailed, FailureReason: "timeout"}).
+		submit(t, s)
 
 	sum, err := s.FailureReasonSummary(ctx, "j1")
 	if err != nil {
@@ -928,20 +710,16 @@ func TestFailureReasonSummary_Mixed(t *testing.T) {
 	}
 }
 
-// TestFailureReasonSummary_Tie asserts that when two reasons tie on
-// frequency, the dominant reason is the lexicographically smaller one —
-// deterministic regardless of insertion order.
 func TestFailureReasonSummary_Tie(t *testing.T) {
 	s := openTestStore(t)
 	ctx := context.Background()
 
 	insertFarm(t, s, "f1", "F1")
 	insertQueue(t, s, "q1", "f1", "Q1")
-	insertJob(t, s, "j1", "f1", "q1")
-	insertStep(t, s, "s1", "j1", "S1", 0)
-
-	failedTaskWithReason(t, s, "t0", "j1", "s1", "timeout")
-	failedTaskWithReason(t, s, "t1", "j1", "s1", "staging")
+	newJob("j1", "f1", "q1").step("s1", "S1", 0).
+		taskRow(store.Task{ID: "t0", StepID: "s1", Status: store.TaskStatusFailed, FailureReason: "timeout"}).
+		taskRow(store.Task{ID: "t1", StepID: "s1", Status: store.TaskStatusFailed, FailureReason: "staging"}).
+		submit(t, s)
 
 	sum, err := s.FailureReasonSummary(ctx, "j1")
 	if err != nil {
@@ -952,18 +730,13 @@ func TestFailureReasonSummary_Tie(t *testing.T) {
 	}
 }
 
-// TestFailureReasonSummary_Empty asserts a job with no failed tasks (or no
-// failure_reason recorded) returns the zero-value summary and no error.
 func TestFailureReasonSummary_Empty(t *testing.T) {
 	s := openTestStore(t)
 	ctx := context.Background()
 
 	insertFarm(t, s, "f1", "F1")
 	insertQueue(t, s, "q1", "f1", "Q1")
-	insertJob(t, s, "j1", "f1", "q1")
-	insertStep(t, s, "s1", "j1", "S1", 0)
-	insertTask(t, s, "t0", "j1", "s1")
-	walkTaskTo(t, s, "t0", store.TaskStatusSucceeded)
+	newJob("j1", "f1", "q1").step("s1", "S1", 0).task("t0", "s1", store.TaskStatusSucceeded).submit(t, s)
 
 	sum, err := s.FailureReasonSummary(ctx, "j1")
 	if err != nil {
@@ -971,5 +744,71 @@ func TestFailureReasonSummary_Empty(t *testing.T) {
 	}
 	if (sum != store.FailureSummary{}) {
 		t.Fatalf("got %+v, want zero value", sum)
+	}
+}
+
+// TestCompleteTaskAttempt_ConcurrentReportsHaveOneWinner is the reason the
+// terminal move is a compare-and-set. Two goroutines report the same running
+// attempt's task as succeeded and as failed; exactly one report may be applied
+// and the other must be rejected, never both applied. It carries over the race
+// the per-row status writer's test pinned, which the report path superseded.
+func TestCompleteTaskAttempt_ConcurrentReportsHaveOneWinner(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+	insertFarm(t, s, "f1", "F1")
+	insertQueue(t, s, "q1", "f1", "Q1")
+	newJob("j1", "f1", "q1").as(store.JobStatusRunning).
+		stepAs("s1", "S1", 0, store.StepStatusReady).
+		task("t1", "s1", store.TaskStatusReady).
+		submit(t, s)
+	att := runTask(t, s, "t1", "w1")
+
+	targets := []struct {
+		task    store.TaskStatus
+		attempt store.AttemptStatus
+	}{
+		{store.TaskStatusSucceeded, store.AttemptStatusSucceeded},
+		{store.TaskStatusFailed, store.AttemptStatusFailed},
+	}
+	results := make([]store.CompletionResult, len(targets))
+	errs := make([]error, len(targets))
+	var wg sync.WaitGroup
+	wg.Add(len(targets))
+	for i, target := range targets {
+		go func() {
+			defer wg.Done()
+			results[i], errs[i] = s.CompleteTaskAttempt(ctx, store.AttemptCompletion{
+				AttemptID: att.ID, TaskID: "t1", TaskStatus: target.task,
+				AttemptStatus: target.attempt, EndedAt: time.Now().UTC(),
+			})
+		}()
+	}
+	wg.Wait()
+
+	winner := store.TaskStatus("")
+	for i, res := range results {
+		switch {
+		case errs[i] != nil:
+			t.Fatalf("CompleteTaskAttempt(%s): unexpected error: %v", targets[i].task, errs[i])
+		case res.Applied && res.Rejected:
+			t.Fatalf("CompleteTaskAttempt(%s) = %+v, want exactly one of applied or rejected", targets[i].task, res)
+		case res.Applied:
+			if winner != "" {
+				t.Fatalf("both terminal reports were applied (%s and %s), want exactly one", winner, targets[i].task)
+			}
+			winner = targets[i].task
+		case !res.Rejected:
+			t.Fatalf("CompleteTaskAttempt(%s) = %+v, want applied or rejected", targets[i].task, res)
+		}
+	}
+	if winner == "" {
+		t.Fatal("no terminal report was applied, want exactly one")
+	}
+	got, err := s.GetTask(ctx, "t1")
+	if err != nil {
+		t.Fatalf("GetTask: %v", err)
+	}
+	if got.Status != winner {
+		t.Errorf("task status = %q, want the winning report's %q", got.Status, winner)
 	}
 }

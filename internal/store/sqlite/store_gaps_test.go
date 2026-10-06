@@ -5,11 +5,8 @@ package sqlite_test
 // Gap tests: methods not covered by store_test.go.
 //
 // Adds tests for:
-//   - task_attempt.go: CreateTaskAttempt, GetTaskAttempt, LatestTaskAttempt,
-//     UpdateTaskAttempt, CancelJobAttempts, TerminateWorkerAttempts, ListTaskAttempts
-//   - usage.go (claim side): CreateClaim, ReleaseClaim,
-//     ActiveClaimCount, TryClaimSlots, ReleaseAttemptClaims,
-//     ReleaseJobClaims
+//   - task_attempt.go: GetTaskAttempt, LatestTaskAttempt, ListTaskAttempts
+//   - usage.go (claim side): ListUsagePoolUtilization
 //   - task_log.go: CreateTaskLog, ListTaskLogs (offset pagination)
 //   - audit.go: AppendAuditEntry, ListAuditEntries
 //   - job.go: UpdateJob, CancelJobStatus
@@ -24,68 +21,10 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/uberware/sqi/internal/store"
-	"github.com/uberware/sqi/internal/store/sqlite"
+	"github.com/uberware/sqi/internal/store/storetest"
 )
 
-// ── helpers ───────────────────────────────────────────────────────────────────
-
-// insertAttempt creates a running TaskAttempt for the given task and returns it.
-func insertAttempt(t *testing.T, s *sqlite.Store, taskID, workerID string, num int) store.TaskAttempt {
-	t.Helper()
-	now := time.Now().UTC().Truncate(time.Millisecond)
-	a, err := s.CreateTaskAttempt(context.Background(), store.TaskAttempt{
-		ID:            uuid.NewString(),
-		TaskID:        taskID,
-		WorkerID:      workerID,
-		AttemptNumber: num,
-		Status:        store.AttemptStatusRunning,
-		StartedAt:     now,
-	})
-	if err != nil {
-		t.Fatalf("CreateTaskAttempt: %v", err)
-	}
-	return a
-}
-
 // ── TaskAttempt ───────────────────────────────────────────────────────────────
-
-func TestTaskAttempt_CreateAndGet(t *testing.T) {
-	s := openTestStore(t)
-	ctx := context.Background()
-	insertFarm(t, s, "f1", "F1")
-	insertQueue(t, s, "q1", "f1", "Q1")
-	insertWorker(t, s, "w1", "f1")
-	insertJob(t, s, "j1", "f1", "q1")
-	insertStep(t, s, "s1", "j1", "S1", 0)
-	insertTask(t, s, "t1", "j1", "s1")
-
-	now := time.Now().UTC().Truncate(time.Millisecond)
-	attempt, err := s.CreateTaskAttempt(ctx, store.TaskAttempt{
-		ID:            "a1",
-		TaskID:        "t1",
-		WorkerID:      "w1",
-		AttemptNumber: 1,
-		Status:        store.AttemptStatusRunning,
-		StartedAt:     now,
-	})
-	if err != nil {
-		t.Fatalf("CreateTaskAttempt: %v", err)
-	}
-	if attempt.ID != "a1" {
-		t.Errorf("ID: got %q", attempt.ID)
-	}
-
-	got, err := s.GetTaskAttempt(ctx, "a1")
-	if err != nil {
-		t.Fatalf("GetTaskAttempt: %v", err)
-	}
-	if got.TaskID != "t1" {
-		t.Errorf("TaskID: got %q", got.TaskID)
-	}
-	if got.Status != store.AttemptStatusRunning {
-		t.Errorf("Status: got %q", got.Status)
-	}
-}
 
 func TestTaskAttempt_GetNotFound(t *testing.T) {
 	s := openTestStore(t)
@@ -101,13 +40,12 @@ func TestTaskAttempt_LatestTaskAttempt(t *testing.T) {
 	insertFarm(t, s, "f1", "F1")
 	insertQueue(t, s, "q1", "f1", "Q1")
 	insertWorker(t, s, "w1", "f1")
-	insertJob(t, s, "j1", "f1", "q1")
-	insertStep(t, s, "s1", "j1", "S1", 0)
-	insertTask(t, s, "t1", "j1", "s1")
+	newJob("j1", "f1", "q1").step("s1", "S1", 0).task("t1", "s1", store.TaskStatusReady).submit(t, s)
 
-	// Insert two attempts; latest should be AttemptNumber=2.
-	insertAttempt(t, s, "t1", "w1", 1)
-	a2 := insertAttempt(t, s, "t1", "w1", 2)
+	// Two attempts; latest should be AttemptNumber=2. The first fails and its
+	// task is requeued, so the second lease is the retry.
+	failAndRequeue(t, s, "t1", "w1")
+	a2 := leaseTask(t, s, "t1", "w1")
 
 	latest, err := s.LatestTaskAttempt(ctx, "t1")
 	if err != nil {
@@ -129,55 +67,16 @@ func TestTaskAttempt_LatestTaskAttempt_NotFound(t *testing.T) {
 	}
 }
 
-func TestTaskAttempt_UpdateTaskAttempt(t *testing.T) {
-	s := openTestStore(t)
-	ctx := context.Background()
-	insertFarm(t, s, "f1", "F1")
-	insertQueue(t, s, "q1", "f1", "Q1")
-	insertWorker(t, s, "w1", "f1")
-	insertJob(t, s, "j1", "f1", "q1")
-	insertStep(t, s, "s1", "j1", "S1", 0)
-	insertTask(t, s, "t1", "j1", "s1")
-
-	a := insertAttempt(t, s, "t1", "w1", 1)
-
-	now := time.Now().UTC().Truncate(time.Millisecond)
-	exitCode := 0
-	a.Status = store.AttemptStatusSucceeded
-	a.EndedAt = &now
-	a.ExitCode = &exitCode
-	a.SessionID = "session-xyz"
-
-	updated, err := s.UpdateTaskAttempt(ctx, a)
-	if err != nil {
-		t.Fatalf("UpdateTaskAttempt: %v", err)
-	}
-	if updated.Status != store.AttemptStatusSucceeded {
-		t.Errorf("Status: got %q", updated.Status)
-	}
-	if updated.EndedAt == nil {
-		t.Error("EndedAt: should not be nil after update")
-	}
-	if updated.ExitCode == nil || *updated.ExitCode != 0 {
-		t.Errorf("ExitCode: got %v", updated.ExitCode)
-	}
-	if updated.SessionID != "session-xyz" {
-		t.Errorf("SessionID: got %q", updated.SessionID)
-	}
-}
-
 func TestTaskAttempt_ListTaskAttempts(t *testing.T) {
 	s := openTestStore(t)
 	ctx := context.Background()
 	insertFarm(t, s, "f1", "F1")
 	insertQueue(t, s, "q1", "f1", "Q1")
 	insertWorker(t, s, "w1", "f1")
-	insertJob(t, s, "j1", "f1", "q1")
-	insertStep(t, s, "s1", "j1", "S1", 0)
-	insertTask(t, s, "t1", "j1", "s1")
+	newJob("j1", "f1", "q1").step("s1", "S1", 0).task("t1", "s1", store.TaskStatusReady).submit(t, s)
 
-	insertAttempt(t, s, "t1", "w1", 1)
-	insertAttempt(t, s, "t1", "w1", 2)
+	failAndRequeue(t, s, "t1", "w1")
+	leaseTask(t, s, "t1", "w1")
 
 	attempts, err := s.ListTaskAttempts(ctx, "t1")
 	if err != nil {
@@ -192,318 +91,7 @@ func TestTaskAttempt_ListTaskAttempts(t *testing.T) {
 	}
 }
 
-func TestTaskAttempt_CancelJobAttempts(t *testing.T) {
-	s := openTestStore(t)
-	ctx := context.Background()
-	insertFarm(t, s, "f1", "F1")
-	insertQueue(t, s, "q1", "f1", "Q1")
-	insertWorker(t, s, "w1", "f1")
-	insertJob(t, s, "j1", "f1", "q1")
-	insertStep(t, s, "s1", "j1", "S1", 0)
-	insertTask(t, s, "t1", "j1", "s1")
-	insertTask(t, s, "t2", "j1", "s1")
-
-	insertAttempt(t, s, "t1", "w1", 1)
-	insertAttempt(t, s, "t2", "w1", 1)
-
-	now := time.Now().UTC()
-	n, err := s.CancelJobAttempts(ctx, "j1", now)
-	if err != nil {
-		t.Fatalf("CancelJobAttempts: %v", err)
-	}
-	if n != 2 {
-		t.Errorf("canceled: got %d, want 2", n)
-	}
-
-	// Both attempts should be canceled with EndedAt set.
-	a1, err := s.LatestTaskAttempt(ctx, "t1")
-	if err != nil {
-		t.Fatalf("LatestTaskAttempt t1: %v", err)
-	}
-	if a1.Status != store.AttemptStatusCanceled {
-		t.Errorf("t1 attempt status: got %q, want canceled", a1.Status)
-	}
-	if a1.EndedAt == nil {
-		t.Error("t1 EndedAt should be set after cancel")
-	}
-}
-
-func TestTaskAttempt_TerminateWorkerAttempts(t *testing.T) {
-	s := openTestStore(t)
-	ctx := context.Background()
-	insertFarm(t, s, "f1", "F1")
-	insertQueue(t, s, "q1", "f1", "Q1")
-	insertWorker(t, s, "w1", "f1")
-	insertWorker(t, s, "w2", "f1")
-	insertJob(t, s, "j1", "f1", "q1")
-	insertStep(t, s, "s1", "j1", "S1", 0)
-	insertTask(t, s, "t1", "j1", "s1")
-	insertTask(t, s, "t2", "j1", "s1")
-
-	// TerminateWorkerAttempts looks for tasks with assigned_worker_id = workerID
-	// and status IN ('assigned','running'), so we must assign the tasks first.
-	if err := s.AssignTask(ctx, "t1", "w1", time.Now()); err != nil {
-		t.Fatalf("AssignTask t1: %v", err)
-	}
-	if err := s.AssignTask(ctx, "t2", "w2", time.Now()); err != nil {
-		t.Fatalf("AssignTask t2: %v", err)
-	}
-
-	insertAttempt(t, s, "t1", "w1", 1) // will be terminated
-	insertAttempt(t, s, "t2", "w2", 1) // different worker — untouched
-
-	now := time.Now().UTC()
-	n, err := s.TerminateWorkerAttempts(ctx, "w1", store.AttemptStatusFailed, now)
-	if err != nil {
-		t.Fatalf("TerminateWorkerAttempts: %v", err)
-	}
-	if n != 1 {
-		t.Errorf("terminated: got %d, want 1", n)
-	}
-
-	a1, err := s.LatestTaskAttempt(ctx, "t1")
-	if err != nil {
-		t.Fatalf("LatestTaskAttempt t1: %v", err)
-	}
-	if a1.Status != store.AttemptStatusFailed {
-		t.Errorf("status: got %q, want failed", a1.Status)
-	}
-
-	// t2's attempt (on w2) should be unchanged.
-	a2, err := s.LatestTaskAttempt(ctx, "t2")
-	if err != nil {
-		t.Fatalf("LatestTaskAttempt t2: %v", err)
-	}
-	if a2.Status != store.AttemptStatusRunning {
-		t.Errorf("t2 status should still be running, got %q", a2.Status)
-	}
-}
-
 // ── Usage claims ──────────────────────────────────────────────────────────────
-
-func TestUsage_CreateAndReleaseClaim(t *testing.T) {
-	s := openTestStore(t)
-	ctx := context.Background()
-	insertFarm(t, s, "f1", "F1")
-	insertQueue(t, s, "q1", "f1", "Q1")
-	insertWorker(t, s, "w1", "f1")
-	insertJob(t, s, "j1", "f1", "q1")
-	insertStep(t, s, "s1", "j1", "S1", 0)
-	insertTask(t, s, "t1", "j1", "s1")
-
-	pool, err := s.CreateUsagePool(ctx, store.UsagePool{
-		ID:            "p1",
-		Name:          "arnold",
-		MaxConcurrent: 5,
-	})
-	if err != nil {
-		t.Fatalf("CreateUsagePool: %v", err)
-	}
-
-	a := insertAttempt(t, s, "t1", "w1", 1)
-
-	now := time.Now().UTC().Truncate(time.Millisecond)
-	claim, err := s.CreateClaim(ctx, store.UsageClaim{
-		ID:            uuid.NewString(),
-		PoolID:        pool.ID,
-		TaskAttemptID: a.ID,
-		ClaimedAt:     now,
-	})
-	if err != nil {
-		t.Fatalf("CreateClaim: %v", err)
-	}
-	if claim.PoolID != pool.ID {
-		t.Errorf("PoolID: got %q", claim.PoolID)
-	}
-
-	// Active count should now be 1.
-	n, err := s.ActiveClaimCount(ctx, pool.ID)
-	if err != nil {
-		t.Fatalf("ActiveClaimCount: %v", err)
-	}
-	if n != 1 {
-		t.Errorf("active count: got %d, want 1", n)
-	}
-
-	// Release the claim.
-	if err := s.ReleaseClaim(ctx, claim.ID, time.Now().UTC()); err != nil {
-		t.Fatalf("ReleaseClaim: %v", err)
-	}
-
-	// Active count should now be 0.
-	n, err = s.ActiveClaimCount(ctx, pool.ID)
-	if err != nil {
-		t.Fatalf("ActiveClaimCount after release: %v", err)
-	}
-	if n != 0 {
-		t.Errorf("active count after release: got %d, want 0", n)
-	}
-}
-
-func TestUsage_TryClaimSlots_UnderCapacity(t *testing.T) {
-	s := openTestStore(t)
-	ctx := context.Background()
-	insertFarm(t, s, "f1", "F1")
-	insertQueue(t, s, "q1", "f1", "Q1")
-	insertWorker(t, s, "w1", "f1")
-	insertJob(t, s, "j1", "f1", "q1")
-	insertStep(t, s, "s1", "j1", "S1", 0)
-	insertTask(t, s, "t1", "j1", "s1")
-
-	pool, err := s.CreateUsagePool(ctx, store.UsagePool{
-		ID: "p1", Name: "maya", MaxConcurrent: 2,
-	})
-	if err != nil {
-		t.Fatalf("CreateUsagePool: %v", err)
-	}
-
-	a := insertAttempt(t, s, "t1", "w1", 1)
-
-	claims := []store.UsagePoolClaim{{
-		ClaimID:       uuid.NewString(),
-		PoolID:        pool.ID,
-		PoolName:      pool.Name,
-		MaxConcurrent: pool.MaxConcurrent,
-	}}
-	if err := s.TryClaimSlots(ctx, a.ID, claims, time.Now().UTC()); err != nil {
-		t.Fatalf("TryClaimSlots: %v", err)
-	}
-
-	n, err := s.ActiveClaimCount(ctx, pool.ID)
-	if err != nil {
-		t.Fatalf("ActiveClaimCount: %v", err)
-	}
-	if n != 1 {
-		t.Errorf("active claims: got %d, want 1", n)
-	}
-}
-
-func TestUsage_TryClaimSlots_AtCapacity(t *testing.T) {
-	s := openTestStore(t)
-	ctx := context.Background()
-	insertFarm(t, s, "f1", "F1")
-	insertQueue(t, s, "q1", "f1", "Q1")
-	insertWorker(t, s, "w1", "f1")
-	insertJob(t, s, "j1", "f1", "q1")
-	insertStep(t, s, "s1", "j1", "S1", 0)
-	insertTask(t, s, "t1", "j1", "s1")
-	insertTask(t, s, "t2", "j1", "s1")
-
-	pool, err := s.CreateUsagePool(ctx, store.UsagePool{
-		ID: "p1", Name: "nuke", MaxConcurrent: 1,
-	})
-	if err != nil {
-		t.Fatalf("CreateUsagePool: %v", err)
-	}
-
-	a1 := insertAttempt(t, s, "t1", "w1", 1)
-	a2 := insertAttempt(t, s, "t2", "w1", 1)
-
-	claim := []store.UsagePoolClaim{{
-		ClaimID:       uuid.NewString(),
-		PoolID:        pool.ID,
-		PoolName:      pool.Name,
-		MaxConcurrent: pool.MaxConcurrent,
-	}}
-	// First claim succeeds.
-	if err := s.TryClaimSlots(ctx, a1.ID, claim, time.Now().UTC()); err != nil {
-		t.Fatalf("first TryClaimSlots: %v", err)
-	}
-
-	// Second claim should fail with ErrUsageAtCapacity.
-	claim[0].ClaimID = uuid.NewString()
-	err = s.TryClaimSlots(ctx, a2.ID, claim, time.Now().UTC())
-	if !errors.Is(err, store.ErrUsageAtCapacity) {
-		t.Errorf("expected ErrUsageAtCapacity, got %v", err)
-	}
-}
-
-func TestUsage_ReleaseAttemptClaims(t *testing.T) {
-	s := openTestStore(t)
-	ctx := context.Background()
-	insertFarm(t, s, "f1", "F1")
-	insertQueue(t, s, "q1", "f1", "Q1")
-	insertWorker(t, s, "w1", "f1")
-	insertJob(t, s, "j1", "f1", "q1")
-	insertStep(t, s, "s1", "j1", "S1", 0)
-	insertTask(t, s, "t1", "j1", "s1")
-
-	pool, err := s.CreateUsagePool(ctx, store.UsagePool{
-		ID: "p1", Name: "houdini", MaxConcurrent: 5,
-	})
-	if err != nil {
-		t.Fatalf("CreateUsagePool: %v", err)
-	}
-
-	a := insertAttempt(t, s, "t1", "w1", 1)
-	claim := []store.UsagePoolClaim{{
-		ClaimID:       uuid.NewString(),
-		PoolID:        pool.ID,
-		PoolName:      pool.Name,
-		MaxConcurrent: pool.MaxConcurrent,
-	}}
-	if err := s.TryClaimSlots(ctx, a.ID, claim, time.Now().UTC()); err != nil {
-		t.Fatalf("TryClaimSlots: %v", err)
-	}
-
-	n, err := s.ReleaseAttemptClaims(ctx, a.ID, time.Now().UTC())
-	if err != nil {
-		t.Fatalf("ReleaseAttemptClaims: %v", err)
-	}
-	if n != 1 {
-		t.Errorf("released: got %d, want 1", n)
-	}
-
-	count, err := s.ActiveClaimCount(ctx, pool.ID)
-	if err != nil {
-		t.Fatalf("ActiveClaimCount: %v", err)
-	}
-	if count != 0 {
-		t.Errorf("active after release: got %d, want 0", count)
-	}
-}
-
-func TestUsage_ReleaseJobClaims(t *testing.T) {
-	s := openTestStore(t)
-	ctx := context.Background()
-	insertFarm(t, s, "f1", "F1")
-	insertQueue(t, s, "q1", "f1", "Q1")
-	insertWorker(t, s, "w1", "f1")
-	insertJob(t, s, "j1", "f1", "q1")
-	insertStep(t, s, "s1", "j1", "S1", 0)
-	insertTask(t, s, "t1", "j1", "s1")
-	insertTask(t, s, "t2", "j1", "s1")
-
-	pool, err := s.CreateUsagePool(ctx, store.UsagePool{
-		ID: "p1", Name: "vray", MaxConcurrent: 10,
-	})
-	if err != nil {
-		t.Fatalf("CreateUsagePool: %v", err)
-	}
-
-	a1 := insertAttempt(t, s, "t1", "w1", 1)
-	a2 := insertAttempt(t, s, "t2", "w1", 1)
-
-	for _, aID := range []string{a1.ID, a2.ID} {
-		claim := []store.UsagePoolClaim{{
-			ClaimID:       uuid.NewString(),
-			PoolID:        pool.ID,
-			PoolName:      pool.Name,
-			MaxConcurrent: pool.MaxConcurrent,
-		}}
-		if err := s.TryClaimSlots(ctx, aID, claim, time.Now().UTC()); err != nil {
-			t.Fatalf("TryClaimSlots: %v", err)
-		}
-	}
-
-	n, err := s.ReleaseJobClaims(ctx, "j1", time.Now().UTC())
-	if err != nil {
-		t.Fatalf("ReleaseJobClaims: %v", err)
-	}
-	if n != 2 {
-		t.Errorf("released: got %d, want 2", n)
-	}
-}
 
 func TestUsage_ListUsagePoolUtilization(t *testing.T) {
 	s := openTestStore(t)
@@ -511,10 +99,11 @@ func TestUsage_ListUsagePoolUtilization(t *testing.T) {
 	insertFarm(t, s, "f1", "F1")
 	insertQueue(t, s, "q1", "f1", "Q1")
 	insertWorker(t, s, "w1", "f1")
-	insertJob(t, s, "j1", "f1", "q1")
-	insertStep(t, s, "s1", "j1", "S1", 0)
-	insertTask(t, s, "t1", "j1", "s1")
-	insertTask(t, s, "t2", "j1", "s1")
+	newJob("j1", "f1", "q1").step("s1", "S1", 0).
+		task("t1", "s1", store.TaskStatusReady).
+		task("t2", "s1", store.TaskStatusReady).
+		task("t3", "s1", store.TaskStatusReady).
+		submit(t, s)
 
 	// "arnold": 5 seats, will have 2 active + 1 released → in use 2.
 	arnold, err := s.CreateUsagePool(ctx, store.UsagePool{
@@ -530,30 +119,17 @@ func TestUsage_ListUsagePoolUtilization(t *testing.T) {
 		t.Fatalf("CreateUsagePool maya: %v", err)
 	}
 
-	a1 := insertAttempt(t, s, "t1", "w1", 1)
-	a2 := insertAttempt(t, s, "t2", "w1", 1)
-
-	mkClaim := func() []store.UsagePoolClaim {
-		return []store.UsagePoolClaim{{
-			ClaimID: uuid.NewString(), PoolID: arnold.ID,
-			PoolName: arnold.Name, MaxConcurrent: arnold.MaxConcurrent,
-		}}
+	// Each lease holds one arnold seat.
+	leaseHolding := func(taskID string) store.TaskAttempt {
+		return storetest.Lease(t, s, store.LeaseRequest{
+			TaskID: taskID, WorkerID: "w1",
+			Claims: []store.UsagePoolClaim{{ClaimID: uuid.NewString(), PoolID: arnold.ID, PoolName: arnold.Name}},
+		})
 	}
-	if err := s.TryClaimSlots(ctx, a1.ID, mkClaim(), time.Now().UTC()); err != nil {
-		t.Fatalf("claim a1: %v", err)
-	}
-	if err := s.TryClaimSlots(ctx, a2.ID, mkClaim(), time.Now().UTC()); err != nil {
-		t.Fatalf("claim a2: %v", err)
-	}
-	// Release a3's claim so it does not count toward in-use.
-	insertTask(t, s, "t3", "j1", "s1")
-	a3 := insertAttempt(t, s, "t3", "w1", 1)
-	if err := s.TryClaimSlots(ctx, a3.ID, mkClaim(), time.Now().UTC()); err != nil {
-		t.Fatalf("claim a3: %v", err)
-	}
-	if _, err := s.ReleaseAttemptClaims(ctx, a3.ID, time.Now().UTC()); err != nil {
-		t.Fatalf("release a3: %v", err)
-	}
+	leaseHolding("t1")
+	leaseHolding("t2")
+	// t3's attempt ends, which releases its seat, so it does not count toward in-use.
+	completeAttempt(t, s, leaseHolding("t3"), store.TaskStatusSucceeded, store.AttemptStatusSucceeded)
 
 	usage, err := s.ListUsagePoolUtilization(ctx)
 	if err != nil {
@@ -579,10 +155,8 @@ func TestTaskLog_CreateAndList(t *testing.T) {
 	insertFarm(t, s, "f1", "F1")
 	insertQueue(t, s, "q1", "f1", "Q1")
 	insertWorker(t, s, "w1", "f1")
-	insertJob(t, s, "j1", "f1", "q1")
-	insertStep(t, s, "s1", "j1", "S1", 0)
-	insertTask(t, s, "t1", "j1", "s1")
-	a := insertAttempt(t, s, "t1", "w1", 1)
+	newJob("j1", "f1", "q1").step("s1", "S1", 0).task("t1", "s1", store.TaskStatusReady).submit(t, s)
+	a := leaseTask(t, s, "t1", "w1")
 
 	now := time.Now().UTC().Truncate(time.Millisecond)
 	for i := range 3 {
@@ -621,10 +195,8 @@ func TestTaskLog_ListTaskLogs_OffsetPagination(t *testing.T) {
 	insertFarm(t, s, "f1", "F1")
 	insertQueue(t, s, "q1", "f1", "Q1")
 	insertWorker(t, s, "w1", "f1")
-	insertJob(t, s, "j1", "f1", "q1")
-	insertStep(t, s, "s1", "j1", "S1", 0)
-	insertTask(t, s, "t1", "j1", "s1")
-	a := insertAttempt(t, s, "t1", "w1", 1)
+	newJob("j1", "f1", "q1").step("s1", "S1", 0).task("t1", "s1", store.TaskStatusReady).submit(t, s)
+	a := leaseTask(t, s, "t1", "w1")
 
 	now := time.Now().UTC().Truncate(time.Millisecond)
 	for i := range 5 {
@@ -671,10 +243,8 @@ func TestTaskLog_StderrStream(t *testing.T) {
 	insertFarm(t, s, "f1", "F1")
 	insertQueue(t, s, "q1", "f1", "Q1")
 	insertWorker(t, s, "w1", "f1")
-	insertJob(t, s, "j1", "f1", "q1")
-	insertStep(t, s, "s1", "j1", "S1", 0)
-	insertTask(t, s, "t1", "j1", "s1")
-	a := insertAttempt(t, s, "t1", "w1", 1)
+	newJob("j1", "f1", "q1").step("s1", "S1", 0).task("t1", "s1", store.TaskStatusReady).submit(t, s)
+	a := leaseTask(t, s, "t1", "w1")
 
 	now := time.Now().UTC().Truncate(time.Millisecond)
 	if _, err := s.CreateTaskLog(ctx, store.TaskLog{
@@ -792,7 +362,7 @@ func TestJob_UpdateJob(t *testing.T) {
 	ctx := context.Background()
 	insertFarm(t, s, "f1", "F1")
 	insertQueue(t, s, "q1", "f1", "Q1")
-	j := insertJob(t, s, "j1", "f1", "q1")
+	j := newJob("j1", "f1", "q1").submit(t, s).Job
 
 	j.Priority = 99
 	j.Owner = "bob"
@@ -825,7 +395,7 @@ func TestJob_UpdateJob_RetryPolicy(t *testing.T) {
 	ctx := context.Background()
 	insertFarm(t, s, "f1", "F1")
 	insertQueue(t, s, "q1", "f1", "Q1")
-	j := insertJob(t, s, "j1", "f1", "q1")
+	j := newJob("j1", "f1", "q1").submit(t, s).Job
 
 	maxAttempts, delay, limit := 7, 30, 40
 	j.MaxAttempts = &maxAttempts
@@ -877,12 +447,9 @@ func TestJob_CancelJobStatus(t *testing.T) {
 	ctx := context.Background()
 	insertFarm(t, s, "f1", "F1")
 	insertQueue(t, s, "q1", "f1", "Q1")
-	insertJob(t, s, "j1", "f1", "q1")
 
-	// Transition to running first (so cancel has something to do).
-	if err := s.UpdateJobStatus(ctx, "j1", store.JobStatusRunning); err != nil {
-		t.Fatalf("UpdateJobStatus: %v", err)
-	}
+	// A running job, so cancel has something to do.
+	newJob("j1", "f1", "q1").as(store.JobStatusRunning).submit(t, s)
 
 	if err := s.CancelJobStatus(ctx, "j1"); err != nil {
 		t.Fatalf("CancelJobStatus: %v", err)
@@ -903,11 +470,7 @@ func TestJob_CancelJobStatus_AlreadyTerminal_Conflict(t *testing.T) {
 	ctx := context.Background()
 	insertFarm(t, s, "f1", "F1")
 	insertQueue(t, s, "q1", "f1", "Q1")
-	insertJob(t, s, "j1", "f1", "q1")
-
-	if err := s.UpdateJobStatus(ctx, "j1", store.JobStatusCompleted); err != nil {
-		t.Fatalf("UpdateJobStatus: %v", err)
-	}
+	newJob("j1", "f1", "q1").as(store.JobStatusCompleted).submit(t, s)
 
 	err := s.CancelJobStatus(ctx, "j1")
 	if !errors.Is(err, store.ErrConflict) {

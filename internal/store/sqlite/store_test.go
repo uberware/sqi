@@ -14,6 +14,7 @@ import (
 	"github.com/uberware/sqi/internal/store"
 	"github.com/uberware/sqi/internal/store/fake"
 	"github.com/uberware/sqi/internal/store/sqlite"
+	"github.com/uberware/sqi/internal/store/storetest"
 )
 
 // ── test helpers ──────────────────────────────────────────────────────────────
@@ -85,10 +86,20 @@ func insertWorker(t *testing.T, s *sqlite.Store, id, farmID string) store.Worker
 	return w
 }
 
-// insertJob inserts a minimal job and returns the created record.
-func insertJob(t *testing.T, s *sqlite.Store, id, farmID, queueID string) store.Job {
-	t.Helper()
-	j, err := s.CreateJob(context.Background(), store.Job{
+// jobSeed is one job's whole graph — the job, its steps and its tasks — which
+// submit writes with a single CreateJobSubmission, the only way production
+// creates a job. Rows default to a pending job at priority 50 with pending
+// steps and tasks; the chained methods change that, and a row is written in
+// whatever status it is given, exactly as CreateJobSubmission writes it.
+//
+// A task that must be in flight is not seeded assigned or running: seed it
+// ready, then lease it with leaseTask or runTask, so it carries the attempt a
+// real lease makes.
+type jobSeed struct{ sub store.JobSubmission }
+
+// newJob starts a pending job, with no steps and no tasks yet.
+func newJob(id, farmID, queueID string) *jobSeed {
+	return &jobSeed{sub: store.JobSubmission{Job: store.Job{
 		ID:             id,
 		FarmID:         farmID,
 		QueueID:        queueID,
@@ -96,77 +107,108 @@ func insertJob(t *testing.T, s *sqlite.Store, id, farmID, queueID string) store.
 		Status:         store.JobStatusPending,
 		Priority:       50,
 		TemplateFormat: store.TemplateFormatYAML,
-	})
-	if err != nil {
-		t.Fatalf("CreateJob(%q): %v", id, err)
+	}}}
+}
+
+// as sets the job's status, stamping the timestamps a job in that status
+// carries: started_at once it has run, completed_at once it is terminal.
+func (j *jobSeed) as(status store.JobStatus) *jobSeed {
+	now := time.Now().UTC()
+	j.sub.Job.Status = status
+	switch status {
+	case store.JobStatusRunning:
+		j.sub.Job.StartedAt = &now
+	case store.JobStatusCompleted, store.JobStatusFailed, store.JobStatusCanceled:
+		j.sub.Job.CompletedAt = &now
 	}
 	return j
 }
 
-// insertStep inserts a minimal step and returns the created record.
-func insertStep(t *testing.T, s *sqlite.Store, id, jobID, name string, order int) store.Step {
-	t.Helper()
-	step, err := s.CreateStep(context.Background(), store.Step{
+// step adds a pending step.
+func (j *jobSeed) step(id, name string, order int) *jobSeed {
+	return j.stepAs(id, name, order, store.StepStatusPending)
+}
+
+// stepAs adds a step in the given status.
+func (j *jobSeed) stepAs(id, name string, order int, status store.StepStatus) *jobSeed {
+	j.sub.Steps = append(j.sub.Steps, store.Step{
 		ID:        id,
-		JobID:     jobID,
+		JobID:     j.sub.Job.ID,
 		Name:      name,
 		StepOrder: order,
-		Status:    store.StepStatusPending,
+		Status:    status,
 		DependsOn: []string{},
 	})
-	if err != nil {
-		t.Fatalf("CreateStep(%q): %v", id, err)
-	}
-	return step
+	return j
 }
 
-// insertTask inserts a minimal task and returns the created record.
-func insertTask(t *testing.T, s *sqlite.Store, id, jobID, stepID string) store.Task {
+// task adds a task of stepID in the given status.
+func (j *jobSeed) task(id, stepID string, status store.TaskStatus) *jobSeed {
+	return j.taskRow(store.Task{ID: id, StepID: stepID, Status: status})
+}
+
+// taskRow adds the given task, filling in the job, a name and empty parameters
+// when it has none.
+func (j *jobSeed) taskRow(task store.Task) *jobSeed {
+	task.JobID = j.sub.Job.ID
+	if task.Name == "" {
+		task.Name = "task-" + task.ID
+	}
+	if task.Parameters == nil {
+		task.Parameters = map[string]string{}
+	}
+	j.sub.Tasks = append(j.sub.Tasks, task)
+	return j
+}
+
+// submit writes the whole graph and returns what the store wrote.
+func (j *jobSeed) submit(t *testing.T, s *sqlite.Store) store.JobSubmission {
 	t.Helper()
-	task, err := s.CreateTask(context.Background(), store.Task{
-		ID:         id,
-		JobID:      jobID,
-		StepID:     stepID,
-		Name:       "task-" + id,
-		Status:     store.TaskStatusPending,
-		Parameters: map[string]string{},
+	return storetest.Submit(t, s, j.sub)
+}
+
+// leaseTask leases the ready task taskID to workerID, through the production
+// lease, and returns the attempt the lease made.
+func leaseTask(t *testing.T, s *sqlite.Store, taskID, workerID string) store.TaskAttempt {
+	t.Helper()
+	return storetest.Lease(t, s, store.LeaseRequest{TaskID: taskID, WorkerID: workerID, Now: time.Now().UTC()})
+}
+
+// runTask leases the ready task taskID to workerID and starts it, leaving it
+// running, and returns its attempt.
+func runTask(t *testing.T, s *sqlite.Store, taskID, workerID string) store.TaskAttempt {
+	t.Helper()
+	return storetest.Running(t, s, store.LeaseRequest{TaskID: taskID, WorkerID: workerID, Now: time.Now().UTC()})
+}
+
+// completeAttempt ends attempt the way a worker's report does: the attempt and
+// the task both reach their terminal status, through CompleteTaskAttempt.
+func completeAttempt(t *testing.T, s *sqlite.Store, a store.TaskAttempt, taskStatus store.TaskStatus, attemptStatus store.AttemptStatus) {
+	t.Helper()
+	res, err := s.CompleteTaskAttempt(t.Context(), store.AttemptCompletion{
+		AttemptID: a.ID, TaskID: a.TaskID, TaskStatus: taskStatus,
+		AttemptStatus: attemptStatus, EndedAt: time.Now().UTC(),
 	})
-	if err != nil {
-		t.Fatalf("CreateTask(%q): %v", id, err)
+	if err != nil || !res.Applied {
+		t.Fatalf("CompleteTaskAttempt(%s -> %s) = (%+v, %v), want applied", a.TaskID, taskStatus, res, err)
 	}
-	return task
 }
 
-// walkTaskTo drives a freshly-inserted (pending) task to the wanted status
-// along legal arrows only, so the fixture itself never depends on the
-// enforcement being absent.
-func walkTaskTo(t *testing.T, s *sqlite.Store, taskID string, want store.TaskStatus) {
+// failAndRequeue leases the ready task taskID, records the attempt as failed
+// and requeues the task with its backoff already elapsed: one failed attempt
+// behind a ready task, the way a worker-reported failure leaves it. It returns
+// the failed attempt.
+func failAndRequeue(t *testing.T, s *sqlite.Store, taskID, workerID string) store.TaskAttempt {
 	t.Helper()
-	ctx := context.Background()
-
-	var path []store.TaskStatus
-	switch want {
-	case store.TaskStatusPending:
-		return
-	case store.TaskStatusReady:
-		path = []store.TaskStatus{store.TaskStatusReady}
-	case store.TaskStatusAssigned:
-		path = []store.TaskStatus{store.TaskStatusReady, store.TaskStatusAssigned}
-	case store.TaskStatusRunning:
-		path = []store.TaskStatus{store.TaskStatusReady, store.TaskStatusAssigned, store.TaskStatusRunning}
-	case store.TaskStatusSucceeded, store.TaskStatusFailed, store.TaskStatusCanceled:
-		path = []store.TaskStatus{
-			store.TaskStatusReady, store.TaskStatusAssigned, store.TaskStatusRunning, want,
-		}
-	default:
-		t.Fatalf("walkTaskTo: unsupported target status %q", want)
+	now := time.Now().UTC()
+	a := storetest.Lease(t, s, store.LeaseRequest{TaskID: taskID, WorkerID: workerID, Now: now})
+	if _, _, first, err := s.RecordTaskFailure(t.Context(), a.ID, taskID, nil, "", "", now); err != nil || !first {
+		t.Fatalf("RecordTaskFailure = (first %v, %v), want the first close", first, err)
 	}
-
-	for _, st := range path {
-		if err := s.UpdateTaskStatus(ctx, taskID, st); err != nil {
-			t.Fatalf("walkTaskTo(%q): UpdateTaskStatus(%q): %v", want, st, err)
-		}
+	if ok, err := s.RequeueTaskForRetry(t.Context(), taskID, a.ID, now.Add(-time.Minute), now); err != nil || !ok {
+		t.Fatalf("RequeueTaskForRetry = (%v, %v), want requeued", ok, err)
 	}
+	return a
 }
 
 // ── Farm CRUD ─────────────────────────────────────────────────────────────────
@@ -562,75 +604,6 @@ func TestWorker_ListStale(t *testing.T) {
 	}
 }
 
-func TestWorker_Delete(t *testing.T) {
-	s := openTestStore(t)
-	ctx := context.Background()
-	insertFarm(t, s, "f1", "F1")
-	insertWorker(t, s, "w1", "f1")
-
-	if err := s.DeleteWorker(ctx, "w1"); err != nil {
-		t.Fatalf("DeleteWorker: %v", err)
-	}
-	if _, err := s.GetWorker(ctx, "w1"); !errors.Is(err, store.ErrNotFound) {
-		t.Errorf("GetWorker after delete: got %v, want ErrNotFound", err)
-	}
-}
-
-func TestWorker_Delete_NotFound(t *testing.T) {
-	s := openTestStore(t)
-	if err := s.DeleteWorker(context.Background(), "nope"); !errors.Is(err, store.ErrNotFound) {
-		t.Errorf("DeleteWorker(missing): got %v, want ErrNotFound", err)
-	}
-}
-
-// TestWorker_Delete_WithAttemptHistory proves migration 00012 relaxed the
-// foreign keys: a worker referenced by tasks (assigned_worker_id) and
-// task_attempts (worker_id) can still be hard-deleted, and those rows survive.
-func TestWorker_Delete_WithAttemptHistory(t *testing.T) {
-	s := openTestStore(t)
-	ctx := context.Background()
-	insertFarm(t, s, "f1", "F1")
-	insertQueue(t, s, "q1", "f1", "Q1")
-	insertWorker(t, s, "w1", "f1")
-	insertJob(t, s, "j1", "f1", "q1")
-	insertStep(t, s, "s1", "j1", "step", 0)
-	if _, err := s.CreateTask(ctx, store.Task{
-		ID: "t1", JobID: "j1", StepID: "s1", Name: "task-t1",
-		Status: store.TaskStatusReady, Parameters: map[string]string{},
-	}); err != nil {
-		t.Fatalf("CreateTask: %v", err)
-	}
-
-	// Point a task (assigned_worker_id) and an attempt (worker_id) at the worker.
-	if err := s.AssignTask(ctx, "t1", "w1", time.Now().UTC()); err != nil {
-		t.Fatalf("AssignTask: %v", err)
-	}
-	if _, err := s.CreateTaskAttempt(ctx, store.TaskAttempt{
-		ID:            "a1",
-		TaskID:        "t1",
-		WorkerID:      "w1",
-		AttemptNumber: 1,
-		Status:        store.AttemptStatusRunning,
-		StartedAt:     time.Now().UTC(),
-		CreatedAt:     time.Now().UTC(),
-	}); err != nil {
-		t.Fatalf("CreateTaskAttempt: %v", err)
-	}
-
-	if err := s.DeleteWorker(ctx, "w1"); err != nil {
-		t.Fatalf("DeleteWorker with attempt history: %v", err)
-	}
-
-	// The attempt row (and its worker_id snapshot) must survive the deletion.
-	att, err := s.GetTaskAttempt(ctx, "a1")
-	if err != nil {
-		t.Fatalf("GetTaskAttempt after worker delete: %v", err)
-	}
-	if att.WorkerID != "w1" {
-		t.Errorf("attempt WorkerID snapshot: got %q, want w1", att.WorkerID)
-	}
-}
-
 func TestWorker_DeleteOfflineWorkersBefore(t *testing.T) {
 	s := openTestStore(t)
 	ctx := context.Background()
@@ -718,7 +691,7 @@ func TestJob_CreateAndGet(t *testing.T) {
 	insertFarm(t, s, "f1", "F1")
 	insertQueue(t, s, "q1", "f1", "Q1")
 
-	j, err := s.CreateJob(ctx, store.Job{
+	j := storetest.Submit(t, s, store.JobSubmission{Job: store.Job{
 		ID:             "j1",
 		FarmID:         "f1",
 		QueueID:        "q1",
@@ -728,10 +701,7 @@ func TestJob_CreateAndGet(t *testing.T) {
 		Status:         store.JobStatusPending,
 		TemplateFormat: store.TemplateFormatYAML,
 		RawTemplate:    "specificationVersion: jobtemplate-2023-09",
-	})
-	if err != nil {
-		t.Fatalf("CreateJob: %v", err)
-	}
+	}}).Job
 	if j.Priority != 75 {
 		t.Errorf("Priority: got %d", j.Priority)
 	}
@@ -760,7 +730,7 @@ func TestJob_Parameters_RoundTrip(t *testing.T) {
 	insertQueue(t, s, "q1", "f1", "Q1")
 
 	want := map[string]string{"Frame": "42", "Quality": "high"}
-	j, err := s.CreateJob(ctx, store.Job{
+	j := storetest.Submit(t, s, store.JobSubmission{Job: store.Job{
 		ID:             "j1",
 		FarmID:         "f1",
 		QueueID:        "q1",
@@ -769,12 +739,9 @@ func TestJob_Parameters_RoundTrip(t *testing.T) {
 		Priority:       50,
 		TemplateFormat: store.TemplateFormatYAML,
 		Parameters:     want,
-	})
-	if err != nil {
-		t.Fatalf("CreateJob: %v", err)
-	}
+	}}).Job
 	if len(j.Parameters) != len(want) {
-		t.Errorf("CreateJob returned Parameters len %d, want %d", len(j.Parameters), len(want))
+		t.Errorf("CreateJobSubmission returned Parameters len %d, want %d", len(j.Parameters), len(want))
 	}
 
 	got, err := s.GetJob(ctx, "j1")
@@ -794,7 +761,7 @@ func TestJob_Parameters_NilRoundTrip(t *testing.T) {
 	insertFarm(t, s, "f1", "F1")
 	insertQueue(t, s, "q1", "f1", "Q1")
 
-	j, err := s.CreateJob(ctx, store.Job{
+	j := storetest.Submit(t, s, store.JobSubmission{Job: store.Job{
 		ID:             "j1",
 		FarmID:         "f1",
 		QueueID:        "q1",
@@ -803,10 +770,7 @@ func TestJob_Parameters_NilRoundTrip(t *testing.T) {
 		Priority:       50,
 		TemplateFormat: store.TemplateFormatYAML,
 		Parameters:     nil,
-	})
-	if err != nil {
-		t.Fatalf("CreateJob with nil Parameters: %v", err)
-	}
+	}}).Job
 
 	got, err := s.GetJob(ctx, j.ID)
 	if err != nil {
@@ -825,7 +789,7 @@ func TestStore_Job_RetryPolicyRoundTrip(t *testing.T) {
 	insertQueue(t, s, "q1", "f1", "Q1")
 
 	two, sixty, fifteen := 2, 60, 15
-	j, err := s.CreateJob(ctx, store.Job{
+	j := storetest.Submit(t, s, store.JobSubmission{Job: store.Job{
 		ID:                "j1",
 		FarmID:            "f1",
 		QueueID:           "q1",
@@ -838,10 +802,7 @@ func TestStore_Job_RetryPolicyRoundTrip(t *testing.T) {
 		RetryDelaySeconds: &sixty,
 		FailureLimit:      &fifteen,
 		ParkReason:        "failure limit reached (15)",
-	})
-	if err != nil {
-		t.Fatalf("CreateJob: %v", err)
-	}
+	}}).Job
 	if j.FailedAttempts != 1 {
 		t.Errorf("FailedAttempts: got %d, want 1", j.FailedAttempts)
 	}
@@ -870,13 +831,10 @@ func TestStore_Job_RetryPolicyRoundTrip(t *testing.T) {
 
 	// A job with no retry-policy overrides persists nil (inherit) and an empty
 	// park reason.
-	j2, err := s.CreateJob(ctx, store.Job{
+	j2 := storetest.Submit(t, s, store.JobSubmission{Job: store.Job{
 		ID: "j2", FarmID: "f1", QueueID: "q1", Name: "PlainJob",
 		Status: store.JobStatusPending, Priority: 50, TemplateFormat: store.TemplateFormatYAML,
-	})
-	if err != nil {
-		t.Fatalf("CreateJob j2: %v", err)
-	}
+	}}).Job
 	if j2.MaxAttempts != nil || j2.RetryDelaySeconds != nil || j2.FailureLimit != nil {
 		t.Errorf("j2 policy fields should be nil (inherit): %+v", j2)
 	}
@@ -885,60 +843,13 @@ func TestStore_Job_RetryPolicyRoundTrip(t *testing.T) {
 	}
 }
 
-func TestJob_UpdateStatus(t *testing.T) {
-	s := openTestStore(t)
-	ctx := context.Background()
-	insertFarm(t, s, "f1", "F1")
-	insertQueue(t, s, "q1", "f1", "Q1")
-	insertJob(t, s, "j1", "f1", "q1")
-
-	cases := []struct {
-		status       store.JobStatus
-		wantStarted  bool
-		wantFinished bool
-	}{
-		{store.JobStatusRunning, true, false},
-		{store.JobStatusCompleted, true, true},
-	}
-	for _, tc := range cases {
-		if err := s.UpdateJobStatus(ctx, "j1", tc.status); err != nil {
-			t.Fatalf("UpdateJobStatus(%q): %v", tc.status, err)
-		}
-		j, err := s.GetJob(ctx, "j1")
-		if err != nil {
-			t.Fatalf("GetJob: %v", err)
-		}
-		if j.Status != tc.status {
-			t.Errorf("Status: got %q, want %q", j.Status, tc.status)
-		}
-		if tc.wantStarted && j.StartedAt == nil {
-			t.Errorf("StartedAt: should be set for status %q", tc.status)
-		}
-		if tc.wantFinished && j.CompletedAt == nil {
-			t.Errorf("CompletedAt: should be set for status %q", tc.status)
-		}
-	}
-}
-
-func TestJob_UpdateStatus_NotFound(t *testing.T) {
-	s := openTestStore(t)
-	err := s.UpdateJobStatus(context.Background(), "nope", store.JobStatusRunning)
-	if !errors.Is(err, store.ErrNotFound) {
-		t.Errorf("expected ErrNotFound, got %v", err)
-	}
-}
-
 func TestJob_ListJobs_FilterByStatus(t *testing.T) {
 	s := openTestStore(t)
 	ctx := context.Background()
 	insertFarm(t, s, "f1", "F1")
 	insertQueue(t, s, "q1", "f1", "Q1")
-	insertJob(t, s, "j1", "f1", "q1")
-	insertJob(t, s, "j2", "f1", "q1")
-
-	if err := s.UpdateJobStatus(ctx, "j2", store.JobStatusRunning); err != nil {
-		t.Fatalf("UpdateJobStatus: %v", err)
-	}
+	newJob("j1", "f1", "q1").submit(t, s)
+	newJob("j2", "f1", "q1").as(store.JobStatusRunning).submit(t, s)
 
 	page, err := s.ListJobs(ctx, store.ListJobsOptions{Status: store.JobStatusPending})
 	if err != nil {
@@ -955,13 +866,11 @@ func TestJob_ListJobs_Search(t *testing.T) {
 	insertFarm(t, s, "f1", "F1")
 	insertQueue(t, s, "q1", "f1", "Q1")
 	mk := func(id, name, owner, project string) {
-		if _, err := s.CreateJob(ctx, store.Job{
+		storetest.Submit(t, s, store.JobSubmission{Job: store.Job{
 			ID: id, FarmID: "f1", QueueID: "q1", Name: name, Owner: owner,
 			Project: project, Status: store.JobStatusPending, Priority: 50,
 			TemplateFormat: store.TemplateFormatYAML,
-		}); err != nil {
-			t.Fatalf("CreateJob(%q): %v", id, err)
-		}
+		}})
 	}
 	mk("render-night", "Nightly Render", "alice", "moonshot")
 	mk("comp-day", "Daytime Comp", "bob", "sunrise")
@@ -1003,20 +912,9 @@ func TestStep_CreateAndGet(t *testing.T) {
 	ctx := context.Background()
 	insertFarm(t, s, "f1", "F1")
 	insertQueue(t, s, "q1", "f1", "Q1")
-	insertJob(t, s, "j1", "f1", "q1")
 
-	step, err := s.CreateStep(ctx, store.Step{
-		ID:        "s1",
-		JobID:     "j1",
-		Name:      "Render",
-		StepOrder: 0,
-		Status:    store.StepStatusPending,
-		DependsOn: []string{},
-	})
-	if err != nil {
-		t.Fatalf("CreateStep: %v", err)
-	}
-	if step.Name != "Render" {
+	sub := newJob("j1", "f1", "q1").step("s1", "Render", 0).submit(t, s)
+	if step := sub.Steps[0]; step.Name != "Render" {
 		t.Errorf("Name: got %q", step.Name)
 	}
 
@@ -1034,9 +932,7 @@ func TestStep_ListSteps_OrderByStepOrder(t *testing.T) {
 	ctx := context.Background()
 	insertFarm(t, s, "f1", "F1")
 	insertQueue(t, s, "q1", "f1", "Q1")
-	insertJob(t, s, "j1", "f1", "q1")
-	insertStep(t, s, "s2", "j1", "Composite", 1)
-	insertStep(t, s, "s1", "j1", "Render", 0)
+	newJob("j1", "f1", "q1").step("s2", "Composite", 1).step("s1", "Render", 0).submit(t, s)
 
 	steps, err := s.ListSteps(ctx, "j1")
 	if err != nil {
@@ -1050,26 +946,6 @@ func TestStep_ListSteps_OrderByStepOrder(t *testing.T) {
 	}
 }
 
-func TestStep_UpdateStatus(t *testing.T) {
-	s := openTestStore(t)
-	ctx := context.Background()
-	insertFarm(t, s, "f1", "F1")
-	insertQueue(t, s, "q1", "f1", "Q1")
-	insertJob(t, s, "j1", "f1", "q1")
-	insertStep(t, s, "s1", "j1", "S1", 0)
-
-	if err := s.UpdateStepStatus(ctx, "s1", store.StepStatusRunning); err != nil {
-		t.Fatalf("UpdateStepStatus: %v", err)
-	}
-	step, err := s.GetStep(ctx, "s1")
-	if err != nil {
-		t.Fatalf("GetStep: %v", err)
-	}
-	if step.Status != store.StepStatusRunning {
-		t.Errorf("Status: got %q", step.Status)
-	}
-}
-
 // ── Task CRUD ─────────────────────────────────────────────────────────────────
 
 func TestTask_CreateAndGet(t *testing.T) {
@@ -1077,21 +953,15 @@ func TestTask_CreateAndGet(t *testing.T) {
 	ctx := context.Background()
 	insertFarm(t, s, "f1", "F1")
 	insertQueue(t, s, "q1", "f1", "Q1")
-	insertJob(t, s, "j1", "f1", "q1")
-	insertStep(t, s, "s1", "j1", "S1", 0)
 
-	task, err := s.CreateTask(ctx, store.Task{
+	sub := newJob("j1", "f1", "q1").step("s1", "S1", 0).taskRow(store.Task{
 		ID:         "t1",
-		JobID:      "j1",
 		StepID:     "s1",
 		Name:       "frame-001",
 		Status:     store.TaskStatusReady,
 		Parameters: map[string]string{"Frame": "1"},
-	})
-	if err != nil {
-		t.Fatalf("CreateTask: %v", err)
-	}
-	if task.Parameters["Frame"] != "1" {
+	}).submit(t, s)
+	if task := sub.Tasks[0]; task.Parameters["Frame"] != "1" {
 		t.Errorf("Parameters[Frame]: got %q", task.Parameters["Frame"])
 	}
 
@@ -1112,76 +982,17 @@ func TestTask_GetNotFound(t *testing.T) {
 	}
 }
 
-func TestTask_UpdateStatus(t *testing.T) {
-	s := openTestStore(t)
-	ctx := context.Background()
-	insertFarm(t, s, "f1", "F1")
-	insertQueue(t, s, "q1", "f1", "Q1")
-	insertJob(t, s, "j1", "f1", "q1")
-	insertStep(t, s, "s1", "j1", "S1", 0)
-	insertTask(t, s, "t1", "j1", "s1")
-
-	walkTaskTo(t, s, "t1", store.TaskStatusRunning)
-	task, err := s.GetTask(ctx, "t1")
-	if err != nil {
-		t.Fatalf("GetTask: %v", err)
-	}
-	if task.Status != store.TaskStatusRunning {
-		t.Errorf("Status: got %q", task.Status)
-	}
-}
-
-func TestTask_AssignTask(t *testing.T) {
-	s := openTestStore(t)
-	ctx := context.Background()
-	insertFarm(t, s, "f1", "F1")
-	insertQueue(t, s, "q1", "f1", "Q1")
-	insertWorker(t, s, "w1", "f1")
-	insertJob(t, s, "j1", "f1", "q1")
-	insertStep(t, s, "s1", "j1", "S1", 0)
-	insertTask(t, s, "t1", "j1", "s1")
-
-	at := time.Now().UTC().Truncate(time.Second)
-	if err := s.AssignTask(ctx, "t1", "w1", at); err != nil {
-		t.Fatalf("AssignTask: %v", err)
-	}
-	task, err := s.GetTask(ctx, "t1")
-	if err != nil {
-		t.Fatalf("GetTask: %v", err)
-	}
-	if task.AssignedWorkerID != "w1" {
-		t.Errorf("AssignedWorkerID: got %q", task.AssignedWorkerID)
-	}
-	if task.Status != store.TaskStatusAssigned {
-		t.Errorf("Status: got %q", task.Status)
-	}
-}
-
 func TestTask_ListReadyTasks(t *testing.T) {
 	s := openTestStore(t)
 	ctx := context.Background()
 	insertFarm(t, s, "f1", "F1")
 	insertQueue(t, s, "q1", "f1", "Q1")
-	insertJob(t, s, "j1", "f1", "q1")
-	insertStep(t, s, "s1", "j1", "S1", 0)
 
-	// Insert two tasks: one ready, one pending.
-	_, err := s.CreateTask(ctx, store.Task{
-		ID: "t1", JobID: "j1", StepID: "s1",
-		Name: "ready-task", Status: store.TaskStatusReady,
-		Parameters: map[string]string{},
-	})
-	if err != nil {
-		t.Fatalf("CreateTask t1: %v", err)
-	}
-	_, err = s.CreateTask(ctx, store.Task{
-		ID: "t2", JobID: "j1", StepID: "s1",
-		Name: "pending-task", Status: store.TaskStatusPending,
-		Parameters: map[string]string{},
-	})
-	if err != nil {
-		t.Fatalf("CreateTask t2: %v", err)
-	}
+	// Two tasks: one ready, one pending.
+	newJob("j1", "f1", "q1").step("s1", "S1", 0).
+		taskRow(store.Task{ID: "t1", StepID: "s1", Name: "ready-task", Status: store.TaskStatusReady}).
+		taskRow(store.Task{ID: "t2", StepID: "s1", Name: "pending-task", Status: store.TaskStatusPending}).
+		submit(t, s)
 
 	ready, err := s.ListReadyTasks(ctx, "f1", time.Now().UTC(), 10)
 	if err != nil {
@@ -1200,16 +1011,9 @@ func TestTask_ListReadyTasks_PausedQueue(t *testing.T) {
 	if _, err := s.CreateQueue(ctx, q); err != nil {
 		t.Fatalf("CreateQueue: %v", err)
 	}
-	insertJob(t, s, "j1", "f1", "q1")
-	insertStep(t, s, "s1", "j1", "S1", 0)
-	_, err := s.CreateTask(ctx, store.Task{
-		ID: "t1", JobID: "j1", StepID: "s1",
-		Name: "t", Status: store.TaskStatusReady,
-		Parameters: map[string]string{},
-	})
-	if err != nil {
-		t.Fatalf("CreateTask: %v", err)
-	}
+	newJob("j1", "f1", "q1").step("s1", "S1", 0).
+		taskRow(store.Task{ID: "t1", StepID: "s1", Name: "t", Status: store.TaskStatusReady}).
+		submit(t, s)
 
 	ready, err := s.ListReadyTasks(ctx, "f1", time.Now().UTC(), 10)
 	if err != nil {
@@ -1226,42 +1030,24 @@ func TestTask_ListReadyTasks_SkipsBackoffAndPausedJobs(t *testing.T) {
 	insertFarm(t, s, "f1", "F1")
 	insertQueue(t, s, "q1", "f1", "Q1")
 
-	// j1 stays pending (a non-terminal, non-paused status): its ready task
-	// is eligible.
-	insertJob(t, s, "j1", "f1", "q1")
-	insertStep(t, s, "s1", "j1", "S1", 0)
-	if _, err := s.CreateTask(ctx, store.Task{
-		ID: "t-ready", JobID: "j1", StepID: "s1",
-		Name: "ready", Status: store.TaskStatusReady,
-		Parameters: map[string]string{},
-	}); err != nil {
-		t.Fatalf("CreateTask t-ready: %v", err)
-	}
-
 	// t-backoff is ready but its retry_after is in the future.
 	now := time.Date(2026, 7, 10, 12, 0, 0, 0, time.UTC)
 	future := now.Add(time.Minute)
-	if _, err := s.CreateTask(ctx, store.Task{
-		ID: "t-backoff", JobID: "j1", StepID: "s1",
-		Name: "backoff", Status: store.TaskStatusReady,
-		Parameters: map[string]string{}, RetryAfter: &future,
-	}); err != nil {
-		t.Fatalf("CreateTask t-backoff: %v", err)
-	}
+
+	// j1 stays pending (a non-terminal, non-paused status): its ready task
+	// is eligible.
+	newJob("j1", "f1", "q1").step("s1", "S1", 0).
+		taskRow(store.Task{ID: "t-ready", StepID: "s1", Name: "ready", Status: store.TaskStatusReady}).
+		taskRow(store.Task{ID: "t-backoff", StepID: "s1", Name: "backoff", Status: store.TaskStatusReady, RetryAfter: &future}).
+		submit(t, s)
 
 	// j2 is paused: its ready task must be excluded even though the task
 	// itself is otherwise eligible.
-	insertJob(t, s, "j2", "f1", "q1")
-	insertStep(t, s, "s2", "j2", "S2", 0)
-	if err := s.UpdateJobStatus(ctx, "j2", store.JobStatusPaused); err != nil {
-		t.Fatalf("UpdateJobStatus j2: %v", err)
-	}
-	if _, err := s.CreateTask(ctx, store.Task{
-		ID: "t-paused", JobID: "j2", StepID: "s2",
-		Name: "paused", Status: store.TaskStatusReady,
-		Parameters: map[string]string{},
-	}); err != nil {
-		t.Fatalf("CreateTask t-paused: %v", err)
+	newJob("j2", "f1", "q1").step("s2", "S2", 0).
+		taskRow(store.Task{ID: "t-paused", StepID: "s2", Name: "paused", Status: store.TaskStatusReady}).
+		submit(t, s)
+	if err := s.PauseJob(ctx, "j2", now); err != nil {
+		t.Fatalf("PauseJob j2: %v", err)
 	}
 
 	ready, err := s.ListReadyTasks(ctx, "f1", now, 50)
@@ -1286,57 +1072,19 @@ func TestTask_ListReadyTasks_SkipsBackoffAndPausedJobs(t *testing.T) {
 	}
 }
 
-func TestTask_ReclaimWorkerTasks(t *testing.T) {
-	s := openTestStore(t)
-	ctx := context.Background()
-	insertFarm(t, s, "f1", "F1")
-	insertQueue(t, s, "q1", "f1", "Q1")
-	insertWorker(t, s, "w1", "f1")
-	insertJob(t, s, "j1", "f1", "q1")
-	insertStep(t, s, "s1", "j1", "S1", 0)
-	insertTask(t, s, "t1", "j1", "s1")
-	insertTask(t, s, "t2", "j1", "s1")
-
-	if err := s.AssignTask(ctx, "t1", "w1", time.Now()); err != nil {
-		t.Fatalf("AssignTask t1: %v", err)
-	}
-
-	n, err := s.ReclaimWorkerTasks(ctx, "w1")
-	if err != nil {
-		t.Fatalf("ReclaimWorkerTasks: %v", err)
-	}
-	if n != 1 {
-		t.Errorf("reclaimed: got %d, want 1", n)
-	}
-	task, err := s.GetTask(ctx, "t1")
-	if err != nil {
-		t.Fatalf("GetTask: %v", err)
-	}
-	if task.Status != store.TaskStatusReady {
-		t.Errorf("Status after reclaim: got %q", task.Status)
-	}
-	if task.AssignedWorkerID != "" {
-		t.Errorf("AssignedWorkerID after reclaim: got %q", task.AssignedWorkerID)
-	}
-}
-
 func TestTask_ReclaimStaleAssignedTasks(t *testing.T) {
 	s := openTestStore(t)
 	ctx := context.Background()
 	insertFarm(t, s, "f1", "F1")
 	insertQueue(t, s, "q1", "f1", "Q1")
 	insertWorker(t, s, "w1", "f1")
-	insertJob(t, s, "j1", "f1", "q1")
-	insertStep(t, s, "s1", "j1", "S1", 0)
-	insertTask(t, s, "t1", "j1", "s1") // stale assignment
-	insertTask(t, s, "t2", "j1", "s1") // fresh assignment
+	newJob("j1", "f1", "q1").step("s1", "S1", 0).
+		task("t1", "s1", store.TaskStatusReady). // stale assignment
+		task("t2", "s1", store.TaskStatusReady). // fresh assignment
+		submit(t, s)
 
-	if err := s.AssignTask(ctx, "t1", "w1", time.Now().Add(-time.Hour)); err != nil {
-		t.Fatalf("AssignTask t1: %v", err)
-	}
-	if err := s.AssignTask(ctx, "t2", "w1", time.Now()); err != nil {
-		t.Fatalf("AssignTask t2: %v", err)
-	}
+	storetest.Lease(t, s, store.LeaseRequest{TaskID: "t1", WorkerID: "w1", Now: time.Now().Add(-time.Hour)})
+	leaseTask(t, s, "t2", "w1")
 
 	cutoff := time.Now().Add(-30 * time.Minute)
 	reclaimed, err := s.ReclaimStaleAssignedTasks(ctx, cutoff)
@@ -1382,14 +1130,12 @@ func TestTask_CountActiveTasksInQueue(t *testing.T) {
 	insertFarm(t, s, "f1", "F1")
 	insertQueue(t, s, "q1", "f1", "Q1")
 	insertWorker(t, s, "w1", "f1")
-	insertJob(t, s, "j1", "f1", "q1")
-	insertStep(t, s, "s1", "j1", "S1", 0)
-	insertTask(t, s, "t1", "j1", "s1")
-	insertTask(t, s, "t2", "j1", "s1")
+	newJob("j1", "f1", "q1").step("s1", "S1", 0).
+		task("t1", "s1", store.TaskStatusReady).
+		task("t2", "s1", store.TaskStatusReady).
+		submit(t, s)
 
-	if err := s.AssignTask(ctx, "t1", "w1", time.Now()); err != nil {
-		t.Fatalf("AssignTask: %v", err)
-	}
+	leaseTask(t, s, "t1", "w1")
 
 	n, err := s.CountActiveTasksInQueue(ctx, "q1")
 	if err != nil {
@@ -1405,25 +1151,19 @@ func TestTask_CountUnschedulableTasksByJob(t *testing.T) {
 	ctx := context.Background()
 	insertFarm(t, s, "f1", "F1")
 	insertQueue(t, s, "q1", "f1", "Q1")
-	insertJob(t, s, "j1", "f1", "q1")
-	insertStep(t, s, "s1", "j1", "S1", 0)
-	insertTask(t, s, "t1", "j1", "s1")
-	insertTask(t, s, "t2", "j1", "s1")
-	insertTask(t, s, "t3", "j1", "s1")
+	newJob("j1", "f1", "q1").step("s1", "S1", 0).
+		task("t1", "s1", store.TaskStatusReady).
+		task("t2", "s1", store.TaskStatusReady).
+		task("t3", "s1", store.TaskStatusReady).
+		submit(t, s)
 
 	// t1, t2: ready with an unschedulable reason set — counted.
 	for _, id := range []string{"t1", "t2"} {
-		if err := s.UpdateTaskStatus(ctx, id, store.TaskStatusReady); err != nil {
-			t.Fatalf("UpdateTaskStatus(%q): %v", id, err)
-		}
 		if _, err := s.SetTaskUnschedulableReason(ctx, id, "no worker matches required capability"); err != nil {
 			t.Fatalf("SetTaskUnschedulableReason(%q): %v", id, err)
 		}
 	}
 	// t3: ready but schedulable (no reason) — not counted.
-	if err := s.UpdateTaskStatus(ctx, "t3", store.TaskStatusReady); err != nil {
-		t.Fatalf("UpdateTaskStatus(t3): %v", err)
-	}
 
 	n, err := s.CountUnschedulableTasksByJob(ctx, "j1")
 	if err != nil {
@@ -1454,19 +1194,11 @@ func TestTask_CountActiveTasksInFarm(t *testing.T) {
 	insertQueue(t, s, "q1", "f1", "Q1")
 	insertQueue(t, s, "q2", "f1", "Q2")
 	insertWorker(t, s, "w1", "f1")
-	insertJob(t, s, "j1", "f1", "q1")
-	insertJob(t, s, "j2", "f1", "q2")
-	insertStep(t, s, "s1", "j1", "S1", 0)
-	insertStep(t, s, "s2", "j2", "S2", 0)
-	insertTask(t, s, "t1", "j1", "s1")
-	insertTask(t, s, "t2", "j2", "s2")
+	newJob("j1", "f1", "q1").step("s1", "S1", 0).task("t1", "s1", store.TaskStatusReady).submit(t, s)
+	newJob("j2", "f1", "q2").step("s2", "S2", 0).task("t2", "s2", store.TaskStatusReady).submit(t, s)
 
-	if err := s.AssignTask(ctx, "t1", "w1", time.Now()); err != nil {
-		t.Fatalf("AssignTask: %v", err)
-	}
-	if err := s.AssignTask(ctx, "t2", "w1", time.Now()); err != nil {
-		t.Fatalf("AssignTask: %v", err)
-	}
+	leaseTask(t, s, "t1", "w1")
+	leaseTask(t, s, "t2", "w1")
 
 	n, err := s.CountActiveTasksInFarm(ctx, "f1")
 	if err != nil {
@@ -1483,51 +1215,24 @@ func TestTask_CountReadyTasksByQueue(t *testing.T) {
 	insertFarm(t, s, "f1", "F1")
 	insertQueue(t, s, "q1", "f1", "Q1")
 	insertQueue(t, s, "q2", "f1", "Q2")
-	insertJob(t, s, "j1", "f1", "q1")
-	insertJob(t, s, "j2", "f1", "q2")
-	insertStep(t, s, "s1", "j1", "S1", 0)
-	insertStep(t, s, "s2", "j2", "S2", 0)
-
-	for i, id := range []string{"t1", "t2"} {
-		_, err := s.CreateTask(ctx, store.Task{
-			ID: id, JobID: "j1", StepID: "s1",
-			Name: id, Status: store.TaskStatusReady,
-			Parameters: map[string]string{"i": string(rune('0' + i))},
-		})
-		if err != nil {
-			t.Fatalf("CreateTask %q: %v", id, err)
-		}
-	}
-	_, err := s.CreateTask(ctx, store.Task{
-		ID: "t3", JobID: "j2", StepID: "s2",
-		Name: "t3", Status: store.TaskStatusReady,
-		Parameters: map[string]string{},
-	})
-	if err != nil {
-		t.Fatalf("CreateTask t3: %v", err)
-	}
 
 	now := time.Now().UTC()
 
 	// Ineligible ready tasks must not be counted (or wake lease waiters):
-	// a task still backing off, and a task under an auto-parked (paused) job.
+	// a task still backing off (t4), and a task under an auto-parked (paused)
+	// job (t5).
 	backoff := now.Add(time.Minute)
-	if _, err := s.CreateTask(ctx, store.Task{
-		ID: "t4", JobID: "j1", StepID: "s1",
-		Name: "t4", Status: store.TaskStatusReady,
-		Parameters: map[string]string{}, RetryAfter: &backoff,
-	}); err != nil {
-		t.Fatalf("CreateTask t4: %v", err)
-	}
-	insertJob(t, s, "j3", "f1", "q1")
-	insertStep(t, s, "s3", "j3", "S3", 0)
-	if _, err := s.CreateTask(ctx, store.Task{
-		ID: "t5", JobID: "j3", StepID: "s3",
-		Name: "t5", Status: store.TaskStatusReady,
-		Parameters: map[string]string{},
-	}); err != nil {
-		t.Fatalf("CreateTask t5: %v", err)
-	}
+	newJob("j1", "f1", "q1").step("s1", "S1", 0).
+		taskRow(store.Task{ID: "t1", StepID: "s1", Name: "t1", Status: store.TaskStatusReady, Parameters: map[string]string{"i": "0"}}).
+		taskRow(store.Task{ID: "t2", StepID: "s1", Name: "t2", Status: store.TaskStatusReady, Parameters: map[string]string{"i": "1"}}).
+		taskRow(store.Task{ID: "t4", StepID: "s1", Name: "t4", Status: store.TaskStatusReady, RetryAfter: &backoff}).
+		submit(t, s)
+	newJob("j2", "f1", "q2").step("s2", "S2", 0).
+		taskRow(store.Task{ID: "t3", StepID: "s2", Name: "t3", Status: store.TaskStatusReady}).
+		submit(t, s)
+	newJob("j3", "f1", "q1").step("s3", "S3", 0).
+		taskRow(store.Task{ID: "t5", StepID: "s3", Name: "t5", Status: store.TaskStatusReady}).
+		submit(t, s)
 	if err := s.ParkJob(ctx, "j3", "failure limit reached (2)", now); err != nil {
 		t.Fatalf("ParkJob: %v", err)
 	}
@@ -1544,109 +1249,13 @@ func TestTask_CountReadyTasksByQueue(t *testing.T) {
 	}
 }
 
-func TestTask_CancelJobTasks(t *testing.T) {
-	s := openTestStore(t)
-	ctx := context.Background()
-	insertFarm(t, s, "f1", "F1")
-	insertQueue(t, s, "q1", "f1", "Q1")
-	insertWorker(t, s, "w1", "f1")
-	insertJob(t, s, "j1", "f1", "q1")
-	insertStep(t, s, "s1", "j1", "S1", 0)
-	insertTask(t, s, "t1", "j1", "s1") // will be assigned
-	insertTask(t, s, "t2", "j1", "s1") // ready
-
-	if err := s.AssignTask(ctx, "t1", "w1", time.Now()); err != nil {
-		t.Fatalf("AssignTask: %v", err)
-	}
-	if err := s.UpdateTaskStatus(ctx, "t2", store.TaskStatusReady); err != nil {
-		t.Fatalf("UpdateTaskStatus t2: %v", err)
-	}
-
-	active, err := s.CancelJobTasks(ctx, "j1", time.Now(), "")
-	if err != nil {
-		t.Fatalf("CancelJobTasks: %v", err)
-	}
-	// Only t1 was assigned → one active task returned.
-	if len(active) != 1 || active[0].ID != "t1" {
-		t.Errorf("active tasks returned: got %v", active)
-	}
-	// Both tasks should now be canceled.
-	for _, id := range []string{"t1", "t2"} {
-		task, err := s.GetTask(ctx, id)
-		if err != nil {
-			t.Fatalf("GetTask %q: %v", id, err)
-		}
-		if task.Status != store.TaskStatusCanceled {
-			t.Errorf("%s status: got %q, want canceled", id, task.Status)
-		}
-	}
-}
-
-func TestTask_TransitionStepPendingTasks(t *testing.T) {
-	s := openTestStore(t)
-	ctx := context.Background()
-	insertFarm(t, s, "f1", "F1")
-	insertQueue(t, s, "q1", "f1", "Q1")
-	insertJob(t, s, "j1", "f1", "q1")
-	insertStep(t, s, "s1", "j1", "S1", 0)
-	insertStep(t, s, "s2", "j1", "S2", 1)
-	insertTask(t, s, "t1", "j1", "s1") // pending, step s1
-	insertTask(t, s, "t2", "j1", "s1") // pending, step s1
-	insertTask(t, s, "t3", "j1", "s2") // pending, but different step
-
-	// A non-pending task in s1 must be left untouched.
-	insertTask(t, s, "t4", "j1", "s1")
-	if err := s.UpdateTaskStatus(ctx, "t4", store.TaskStatusReady); err != nil {
-		t.Fatalf("UpdateTaskStatus t4: %v", err)
-	}
-
-	affected, err := s.TransitionStepPendingTasks(ctx, "s1", store.TaskStatusCanceled, "")
-	if err != nil {
-		t.Fatalf("TransitionStepPendingTasks: %v", err)
-	}
-
-	// Only the two pending tasks of s1 are affected and returned.
-	gotIDs := make(map[string]bool)
-	for _, task := range affected {
-		gotIDs[task.ID] = true
-		if task.Status != store.TaskStatusCanceled {
-			t.Errorf("returned task %s status = %q, want canceled", task.ID, task.Status)
-		}
-	}
-	if len(affected) != 2 || !gotIDs["t1"] || !gotIDs["t2"] {
-		t.Errorf("affected = %v, want exactly t1 and t2", gotIDs)
-	}
-
-	// Persisted state matches.
-	for id, want := range map[string]store.TaskStatus{
-		"t1": store.TaskStatusCanceled,
-		"t2": store.TaskStatusCanceled,
-		"t3": store.TaskStatusPending, // other step, unchanged
-		"t4": store.TaskStatusReady,   // not pending, unchanged
-	} {
-		task, err := s.GetTask(ctx, id)
-		if err != nil {
-			t.Fatalf("GetTask %q: %v", id, err)
-		}
-		if task.Status != want {
-			t.Errorf("%s status = %q, want %q", id, task.Status, want)
-		}
-	}
-}
-
 func TestTask_SetUnschedulableReason(t *testing.T) {
 	s := openTestStore(t)
 	ctx := context.Background()
 	insertFarm(t, s, "f1", "F1")
 	insertQueue(t, s, "q1", "f1", "Q1")
-	insertJob(t, s, "j1", "f1", "q1")
-	insertStep(t, s, "s1", "j1", "S1", 0)
-	insertTask(t, s, "t1", "j1", "s1")
-	// The reason is only written while the task is ready, so walk the
-	// pending fixture to ready through the legal arrow first.
-	if err := s.UpdateTaskStatus(ctx, "t1", store.TaskStatusReady); err != nil {
-		t.Fatalf("UpdateTaskStatus ready: %v", err)
-	}
+	// The reason is only written while the task is ready.
+	newJob("j1", "f1", "q1").step("s1", "S1", 0).task("t1", "s1", store.TaskStatusReady).submit(t, s)
 
 	if _, err := s.SetTaskUnschedulableReason(ctx, "t1", "no eligible online worker: attribute requirement not met"); err != nil {
 		t.Fatalf("SetTaskUnschedulableReason: %v", err)
@@ -1677,97 +1286,78 @@ func TestTask_SetUnschedulableReason(t *testing.T) {
 	}
 }
 
-// TestUnschedulableReason_ClearedOnAssign verifies that AssignTask clears a
-// stale unschedulable_reason left over from the scheduler's sweep — the
-// reason is only meaningful while a task is ready, and AssignTask moves it to
-// assigned.
-func TestUnschedulableReason_ClearedOnAssign(t *testing.T) {
+// TestUnschedulableReason_ClearedOnLease verifies that a lease clears a stale
+// unschedulable_reason left over from the scheduler's sweep — the reason is
+// only meaningful while a task is ready, and a lease moves the task to
+// assigned. It replaces the same-named property of the per-row assignment
+// write, which the lease superseded.
+func TestUnschedulableReason_ClearedOnLease(t *testing.T) {
 	s := openTestStore(t)
 	ctx := context.Background()
 	insertFarm(t, s, "f1", "F1")
 	insertQueue(t, s, "q1", "f1", "Q1")
 	insertWorker(t, s, "w1", "f1")
-	insertJob(t, s, "j1", "f1", "q1")
-	insertStep(t, s, "s1", "j1", "S1", 0)
-	insertTask(t, s, "t1", "j1", "s1")
+	newJob("j1", "f1", "q1").step("s1", "S1", 0).task("t1", "s1", store.TaskStatusReady).submit(t, s)
 
-	if err := s.UpdateTaskStatus(ctx, "t1", store.TaskStatusReady); err != nil {
-		t.Fatalf("UpdateTaskStatus: %v", err)
-	}
 	if _, err := s.SetTaskUnschedulableReason(ctx, "t1", "no eligible online worker"); err != nil {
 		t.Fatalf("SetTaskUnschedulableReason: %v", err)
 	}
 
-	if err := s.AssignTask(ctx, "t1", "w1", time.Now().UTC()); err != nil {
-		t.Fatalf("AssignTask: %v", err)
-	}
+	leaseTask(t, s, "t1", "w1")
 
 	got, err := s.GetTask(ctx, "t1")
 	if err != nil {
 		t.Fatalf("GetTask: %v", err)
 	}
 	if got.UnschedulableReason != "" {
-		t.Errorf("UnschedulableReason after AssignTask: got %q, want empty", got.UnschedulableReason)
+		t.Errorf("UnschedulableReason after LeaseTask: got %q, want empty", got.UnschedulableReason)
 	}
 }
 
-// TestUnschedulableReason_ClearedOnCancel verifies that CancelJobTasks clears
-// a stale unschedulable_reason on the tasks it cancels.
+// TestUnschedulableReason_ClearedOnCancel verifies that both cancel paths clear
+// a stale unschedulable_reason on the tasks they cancel. It replaces the
+// same-named property of the per-row cancel write and of the blind status
+// write, which the two execution cancels superseded.
 func TestUnschedulableReason_ClearedOnCancel(t *testing.T) {
-	s := openTestStore(t)
-	ctx := context.Background()
-	insertFarm(t, s, "f1", "F1")
-	insertQueue(t, s, "q1", "f1", "Q1")
-	insertJob(t, s, "j1", "f1", "q1")
-	insertStep(t, s, "s1", "j1", "S1", 0)
-	insertTask(t, s, "t1", "j1", "s1")
+	cancels := map[string]func(t *testing.T, s *sqlite.Store){
+		"CancelJobExecution": func(t *testing.T, s *sqlite.Store) {
+			t.Helper()
+			if _, err := s.CancelJobExecution(context.Background(), "j1", "", time.Now().UTC()); err != nil {
+				t.Fatalf("CancelJobExecution: %v", err)
+			}
+		},
+		"CancelTaskExecution": func(t *testing.T, s *sqlite.Store) {
+			t.Helper()
+			if _, ok, err := s.CancelTaskExecution(context.Background(), "t1", "", time.Now().UTC()); err != nil || !ok {
+				t.Fatalf("CancelTaskExecution = (%v, %v), want canceled", ok, err)
+			}
+		},
+	}
+	for name, cancel := range cancels {
+		t.Run(name, func(t *testing.T) {
+			s := openTestStore(t)
+			ctx := context.Background()
+			insertFarm(t, s, "f1", "F1")
+			insertQueue(t, s, "q1", "f1", "Q1")
+			newJob("j1", "f1", "q1").step("s1", "S1", 0).task("t1", "s1", store.TaskStatusReady).submit(t, s)
 
-	if err := s.UpdateTaskStatus(ctx, "t1", store.TaskStatusReady); err != nil {
-		t.Fatalf("UpdateTaskStatus: %v", err)
-	}
-	if _, err := s.SetTaskUnschedulableReason(ctx, "t1", "no eligible online worker"); err != nil {
-		t.Fatalf("SetTaskUnschedulableReason: %v", err)
-	}
+			if _, err := s.SetTaskUnschedulableReason(ctx, "t1", "no eligible online worker"); err != nil {
+				t.Fatalf("SetTaskUnschedulableReason: %v", err)
+			}
 
-	if _, err := s.CancelJobTasks(ctx, "j1", time.Now(), ""); err != nil {
-		t.Fatalf("CancelJobTasks: %v", err)
-	}
+			cancel(t, s)
 
-	got, err := s.GetTask(ctx, "t1")
-	if err != nil {
-		t.Fatalf("GetTask: %v", err)
-	}
-	if got.UnschedulableReason != "" {
-		t.Errorf("UnschedulableReason after CancelJobTasks: got %q, want empty", got.UnschedulableReason)
-	}
-}
-
-// TestUnschedulableReason_ClearedOnUpdateStatus verifies that UpdateTaskStatus
-// clears a stale unschedulable_reason on any status transition out of ready.
-func TestUnschedulableReason_ClearedOnUpdateStatus(t *testing.T) {
-	s := openTestStore(t)
-	ctx := context.Background()
-	insertFarm(t, s, "f1", "F1")
-	insertQueue(t, s, "q1", "f1", "Q1")
-	insertJob(t, s, "j1", "f1", "q1")
-	insertStep(t, s, "s1", "j1", "S1", 0)
-	insertTask(t, s, "t1", "j1", "s1")
-
-	if err := s.UpdateTaskStatus(ctx, "t1", store.TaskStatusReady); err != nil {
-		t.Fatalf("UpdateTaskStatus ready: %v", err)
-	}
-	if _, err := s.SetTaskUnschedulableReason(ctx, "t1", "no eligible online worker"); err != nil {
-		t.Fatalf("SetTaskUnschedulableReason: %v", err)
-	}
-
-	walkTaskTo(t, s, "t1", store.TaskStatusRunning)
-
-	got, err := s.GetTask(ctx, "t1")
-	if err != nil {
-		t.Fatalf("GetTask: %v", err)
-	}
-	if got.UnschedulableReason != "" {
-		t.Errorf("UnschedulableReason after UpdateTaskStatus: got %q, want empty", got.UnschedulableReason)
+			got, err := s.GetTask(ctx, "t1")
+			if err != nil {
+				t.Fatalf("GetTask: %v", err)
+			}
+			if got.Status != store.TaskStatusCanceled {
+				t.Fatalf("task status = %q, want canceled", got.Status)
+			}
+			if got.UnschedulableReason != "" {
+				t.Errorf("UnschedulableReason after %s: got %q, want empty", name, got.UnschedulableReason)
+			}
+		})
 	}
 }
 
@@ -1873,14 +1463,6 @@ func TestErrNotFound_GetStep(t *testing.T) {
 	}
 }
 
-func TestErrNotFound_UpdateTaskStatus(t *testing.T) {
-	s := openTestStore(t)
-	err := s.UpdateTaskStatus(context.Background(), "missing", store.TaskStatusRunning)
-	if !errors.Is(err, store.ErrNotFound) {
-		t.Errorf("UpdateTaskStatus missing: expected ErrNotFound, got %v", err)
-	}
-}
-
 // ── ListJobs sort and pagination ──────────────────────────────────────────────
 
 func TestJob_ListJobs_Pagination(t *testing.T) {
@@ -1889,7 +1471,7 @@ func TestJob_ListJobs_Pagination(t *testing.T) {
 	insertFarm(t, s, "f1", "F1")
 	insertQueue(t, s, "q1", "f1", "Q1")
 	for _, id := range []string{"j1", "j2", "j3"} {
-		insertJob(t, s, id, "f1", "q1")
+		newJob(id, "f1", "q1").submit(t, s)
 	}
 
 	page, err := s.ListJobs(ctx, store.ListJobsOptions{
@@ -2096,27 +1678,26 @@ func TestWorker_ListWorkers_Search(t *testing.T) {
 
 // ── DemoteStalledJobs ─────────────────────────────────────────────────────────
 
-// seedJobWithTasks creates a job (in the given status) with one step and a task
-// per status in taskStatuses. Returns the job ID.
 func seedJobWithTasks(t *testing.T, s *sqlite.Store, jobID string, jobStatus store.JobStatus, taskStatuses ...store.TaskStatus) string {
 	t.Helper()
-	ctx := context.Background()
-	insertJob(t, s, jobID, "f1", "q1")
-	step := insertStep(t, s, jobID+"-step", jobID, "render", 0)
+	stepID := jobID + "-step"
+	seed := newJob(jobID, "f1", "q1").as(jobStatus).step(stepID, "render", 0)
+	taskID := func(i int) string { return fmt.Sprintf("%s-t%d", jobID, i) }
 	for i, ts := range taskStatuses {
-		if _, err := s.CreateTask(ctx, store.Task{
-			ID:         fmt.Sprintf("%s-t%d", jobID, i),
-			JobID:      jobID,
-			StepID:     step.ID,
-			Name:       fmt.Sprintf("task-%d", i),
-			Status:     ts,
-			Parameters: map[string]string{},
-		}); err != nil {
-			t.Fatalf("CreateTask: %v", err)
+		created := ts
+		if ts == store.TaskStatusAssigned || ts == store.TaskStatusRunning {
+			created = store.TaskStatusReady // leased below, so it carries a real attempt
 		}
+		seed.taskRow(store.Task{ID: taskID(i), StepID: stepID, Name: fmt.Sprintf("task-%d", i), Status: created})
 	}
-	if err := s.UpdateJobStatus(ctx, jobID, jobStatus); err != nil {
-		t.Fatalf("UpdateJobStatus(%q): %v", jobStatus, err)
+	seed.submit(t, s)
+	for i, ts := range taskStatuses {
+		switch ts {
+		case store.TaskStatusAssigned:
+			leaseTask(t, s, taskID(i), "w1")
+		case store.TaskStatusRunning:
+			runTask(t, s, taskID(i), "w1")
+		}
 	}
 	return jobID
 }
@@ -2200,36 +1781,37 @@ func TestCommittedCores(t *testing.T) {
 	ctx := context.Background()
 	insertFarm(t, s, "f1", "F1")
 	insertQueue(t, s, "q1", "f1", "Q1")
-	insertJob(t, s, "j1", "f1", "q1")
-	step := insertStep(t, s, "s1", "j1", "render", 0)
-
-	mk := func(id string, status store.TaskStatus, cores *int, worker string) {
-		tk, err := s.CreateTask(ctx, store.Task{
-			ID: id, JobID: "j1", StepID: step.ID, Name: id,
-			Status: store.TaskStatusPending, Parameters: map[string]string{},
-			RequiredCores: cores,
-		})
-		if err != nil {
-			t.Fatalf("CreateTask %s: %v", id, err)
-		}
-		if worker != "" {
-			if err := s.AssignTask(ctx, tk.ID, worker, time.Now().UTC()); err != nil {
-				t.Fatalf("AssignTask %s: %v", id, err)
-			}
-			if err := s.UpdateTaskStatus(ctx, tk.ID, status); err != nil {
-				t.Fatalf("UpdateTaskStatus %s: %v", id, err)
-			}
-		}
-	}
 	insertWorker(t, s, "w1", "f1")
 	insertWorker(t, s, "w2", "f1")
 
 	one, two := 1, 2
-	mk("a", store.TaskStatusRunning, &two, "w1")   // 2 cores
-	mk("b", store.TaskStatusAssigned, &one, "w1")  // 1 core
-	mk("c", store.TaskStatusRunning, nil, "w1")    // undeclared -> fullMachineCost (4)
-	mk("d", store.TaskStatusSucceeded, &two, "w1") // terminal -> not counted
-	mk("e", store.TaskStatusRunning, &one, "w2")   // other worker -> not counted
+	cases := []struct {
+		id     string
+		status store.TaskStatus
+		cores  *int
+		worker string
+	}{
+		{"a", store.TaskStatusRunning, &two, "w1"},   // 2 cores
+		{"b", store.TaskStatusAssigned, &one, "w1"},  // 1 core
+		{"c", store.TaskStatusRunning, nil, "w1"},    // undeclared -> fullMachineCost (4)
+		{"d", store.TaskStatusSucceeded, &two, "w1"}, // terminal -> not counted
+		{"e", store.TaskStatusRunning, &one, "w2"},   // other worker -> not counted
+	}
+	seed := newJob("j1", "f1", "q1").step("s1", "render", 0)
+	for _, c := range cases {
+		seed.taskRow(store.Task{ID: c.id, StepID: "s1", Name: c.id, Status: store.TaskStatusReady, RequiredCores: c.cores})
+	}
+	seed.submit(t, s)
+	for _, c := range cases {
+		switch c.status {
+		case store.TaskStatusAssigned:
+			leaseTask(t, s, c.id, c.worker)
+		case store.TaskStatusRunning:
+			runTask(t, s, c.id, c.worker)
+		case store.TaskStatusSucceeded:
+			completeAttempt(t, s, leaseTask(t, s, c.id, c.worker), store.TaskStatusSucceeded, store.AttemptStatusSucceeded)
+		}
+	}
 
 	got, err := s.CommittedCores(ctx, "w1", 4)
 	if err != nil {
@@ -2250,19 +1832,19 @@ func TestTask_RequiredCoresRoundTrip(t *testing.T) {
 	ctx := context.Background()
 	insertFarm(t, s, "f1", "F1")
 	insertQueue(t, s, "q1", "f1", "Q1")
-	insertJob(t, s, "j1", "f1", "q1")
-	step := insertStep(t, s, "s1", "j1", "render", 0)
 
 	four := 4
-	created, err := s.CreateTask(ctx, store.Task{
-		ID: "t1", JobID: "j1", StepID: step.ID, Name: "t1",
-		Status: store.TaskStatusPending, Parameters: map[string]string{},
-		RequiredCores: &four,
-	})
-	if err != nil {
-		t.Fatalf("CreateTask: %v", err)
+	sub := newJob("j1", "f1", "q1").step("s1", "render", 0).
+		taskRow(store.Task{ID: "t1", StepID: "s1", Name: "t1", Status: store.TaskStatusPending, RequiredCores: &four}).
+		// Undeclared stays nil.
+		taskRow(store.Task{ID: "t2", StepID: "s1", Name: "t2", Status: store.TaskStatusPending}).
+		submit(t, s)
+	byID := map[string]store.Task{}
+	for _, task := range sub.Tasks {
+		byID[task.ID] = task
 	}
-	if created.RequiredCores == nil || *created.RequiredCores != 4 {
+
+	if created := byID["t1"]; created.RequiredCores == nil || *created.RequiredCores != 4 {
 		t.Fatalf("created RequiredCores = %v, want 4", created.RequiredCores)
 	}
 
@@ -2274,13 +1856,6 @@ func TestTask_RequiredCoresRoundTrip(t *testing.T) {
 		t.Errorf("GetTask RequiredCores = %v, want 4", got.RequiredCores)
 	}
 
-	// Undeclared stays nil.
-	if _, err := s.CreateTask(ctx, store.Task{
-		ID: "t2", JobID: "j1", StepID: step.ID, Name: "t2",
-		Status: store.TaskStatusPending, Parameters: map[string]string{},
-	}); err != nil {
-		t.Fatalf("CreateTask t2: %v", err)
-	}
 	got2, err := s.GetTask(ctx, "t2")
 	if err != nil {
 		t.Fatalf("GetTask t2: %v", err)
@@ -2295,18 +1870,22 @@ func TestStore_Task_RetryPolicyRoundTrip(t *testing.T) {
 	ctx := context.Background()
 	insertFarm(t, s, "f1", "F1")
 	insertQueue(t, s, "q1", "f1", "Q1")
-	insertJob(t, s, "j1", "f1", "q1")
-	step := insertStep(t, s, "s1", "j1", "render", 0)
 
 	retryAfter := time.Now().UTC().Add(5 * time.Minute).Truncate(time.Second)
-	created, err := s.CreateTask(ctx, store.Task{
-		ID: "t1", JobID: "j1", StepID: step.ID, Name: "t1",
-		Status: store.TaskStatusReady, Parameters: map[string]string{},
-		FailedAttempts: 2, RetryAfter: &retryAfter,
-	})
-	if err != nil {
-		t.Fatalf("CreateTask: %v", err)
+	sub := newJob("j1", "f1", "q1").step("s1", "render", 0).
+		taskRow(store.Task{
+			ID: "t1", StepID: "s1", Name: "t1", Status: store.TaskStatusReady,
+			FailedAttempts: 2, RetryAfter: &retryAfter,
+		}).
+		// Undeclared stays nil / zero.
+		taskRow(store.Task{ID: "t2", StepID: "s1", Name: "t2", Status: store.TaskStatusPending}).
+		submit(t, s)
+	byID := map[string]store.Task{}
+	for _, task := range sub.Tasks {
+		byID[task.ID] = task
 	}
+
+	created := byID["t1"]
 	if created.FailedAttempts != 2 {
 		t.Errorf("created FailedAttempts = %d, want 2", created.FailedAttempts)
 	}
@@ -2325,13 +1904,6 @@ func TestStore_Task_RetryPolicyRoundTrip(t *testing.T) {
 		t.Errorf("GetTask RetryAfter = %v, want %v", got.RetryAfter, retryAfter)
 	}
 
-	// Undeclared stays nil / zero.
-	if _, err := s.CreateTask(ctx, store.Task{
-		ID: "t2", JobID: "j1", StepID: step.ID, Name: "t2",
-		Status: store.TaskStatusPending, Parameters: map[string]string{},
-	}); err != nil {
-		t.Fatalf("CreateTask t2: %v", err)
-	}
 	got2, err := s.GetTask(ctx, "t2")
 	if err != nil {
 		t.Fatalf("GetTask t2: %v", err)
@@ -2341,43 +1913,6 @@ func TestStore_Task_RetryPolicyRoundTrip(t *testing.T) {
 	}
 	if got2.RetryAfter != nil {
 		t.Errorf("undeclared RetryAfter = %v, want nil", got2.RetryAfter)
-	}
-}
-
-func TestLeaseReadyTask(t *testing.T) {
-	s := openTestStore(t)
-	ctx := context.Background()
-	insertFarm(t, s, "f1", "F1")
-	insertQueue(t, s, "q1", "f1", "Q1")
-	insertJob(t, s, "j1", "f1", "q1")
-	step := insertStep(t, s, "s1", "j1", "render", 0)
-	insertWorker(t, s, "w1", "f1")
-	insertWorker(t, s, "w2", "f1")
-	tk, err := s.CreateTask(ctx, store.Task{
-		ID: "t1", JobID: "j1", StepID: step.ID, Name: "t1",
-		Status: store.TaskStatusReady, Parameters: map[string]string{},
-	})
-	if err != nil {
-		t.Fatalf("CreateTask t1: %v", err)
-	}
-
-	now := time.Now().UTC()
-	ok, err := s.LeaseReadyTask(ctx, tk.ID, "w1", now)
-	if err != nil || !ok {
-		t.Fatalf("first lease = %v, %v, want true, nil", ok, err)
-	}
-	got, err := s.GetTask(ctx, "t1")
-	if err != nil {
-		t.Fatalf("GetTask t1: %v", err)
-	}
-	if got.Status != store.TaskStatusAssigned || got.AssignedWorkerID != "w1" || got.AssignedAt == nil {
-		t.Fatalf("after lease: status=%q worker=%q at=%v", got.Status, got.AssignedWorkerID, got.AssignedAt)
-	}
-
-	// Second lease loses the race (no longer ready).
-	ok2, err := s.LeaseReadyTask(ctx, tk.ID, "w2", now)
-	if err != nil || ok2 {
-		t.Errorf("second lease = %v, %v, want false, nil", ok2, err)
 	}
 }
 
