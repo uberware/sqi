@@ -11,12 +11,8 @@ import (
 )
 
 // CreateTaskAttempt inserts a new attempt record.
-func (s *Store) CreateTaskAttempt(_ context.Context, attempt store.TaskAttempt) (store.TaskAttempt, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	s.taskAttempts[attempt.ID] = attempt
-	return attempt, nil
+func (s *Store) CreateTaskAttempt(ctx context.Context, attempt store.TaskAttempt) (store.TaskAttempt, error) {
+	return s.InjectTaskAttempt(ctx, attempt)
 }
 
 // GetTaskAttempt returns the attempt with the given ID, or [store.ErrNotFound].

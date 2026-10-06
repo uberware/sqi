@@ -137,19 +137,7 @@ func scanAttempt(row scanner) (store.TaskAttempt, error) {
 
 // CreateTaskAttempt implements [store.TaskAttemptStore].
 func (s *Store) CreateTaskAttempt(ctx context.Context, attempt store.TaskAttempt) (store.TaskAttempt, error) {
-	now := timeToText(time.Now().UTC())
-
-	var exitCode sql.NullInt64
-	if attempt.ExitCode != nil {
-		exitCode = sql.NullInt64{Int64: int64(*attempt.ExitCode), Valid: true}
-	}
-
-	row := s.stmtInsertAttempt.QueryRowContext(ctx,
-		attempt.ID, attempt.TaskID, attempt.WorkerID,
-		nullString(attempt.SessionID), attempt.AttemptNumber, string(attempt.Status),
-		exitCode, timeToText(attempt.StartedAt), nullTimeToText(attempt.EndedAt), now, attempt.Message)
-	out, err := scanAttempt(row)
-	return out, mapErr(err)
+	return s.InjectTaskAttempt(ctx, attempt)
 }
 
 // GetTaskAttempt implements [store.TaskAttemptStore].

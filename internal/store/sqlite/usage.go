@@ -177,15 +177,7 @@ WHERE  released_at IS NULL
 
 // CreateClaim implements [store.UsageClaimStore].
 func (s *Store) CreateClaim(ctx context.Context, claim store.UsageClaim) (store.UsageClaim, error) {
-	now := timeToText(time.Now().UTC())
-	_, err := s.stmtInsertClaim.ExecContext(ctx,
-		claim.ID, claim.PoolID, claim.TaskAttemptID, now)
-	if err != nil {
-		return store.UsageClaim{}, mapErr(err)
-	}
-	claim.ClaimedAt = time.Now().UTC()
-	claim.ReleasedAt = nil
-	return claim, nil
+	return s.InjectClaim(ctx, claim)
 }
 
 // ReleaseClaim implements [store.UsageClaimStore].

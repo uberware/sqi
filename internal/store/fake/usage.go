@@ -144,20 +144,8 @@ func (s *Store) DeleteUsagePool(_ context.Context, id string) error {
 // CreateClaim inserts a new active claim for the given pool and task
 // attempt. The (TaskAttemptID, PoolID) pair must be unique; returns
 // [store.ErrConflict] if violated.
-func (s *Store) CreateClaim(_ context.Context, claim store.UsageClaim) (store.UsageClaim, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	for _, existing := range s.usageClaims {
-		if existing.TaskAttemptID == claim.TaskAttemptID &&
-			existing.PoolID == claim.PoolID &&
-			existing.ReleasedAt == nil {
-			return store.UsageClaim{}, store.ErrConflict
-		}
-	}
-
-	s.usageClaims[claim.ID] = claim
-	return claim, nil
+func (s *Store) CreateClaim(ctx context.Context, claim store.UsageClaim) (store.UsageClaim, error) {
+	return s.InjectClaim(ctx, claim)
 }
 
 // ReleaseClaim sets ReleasedAt on the claim with the given ID, marking
