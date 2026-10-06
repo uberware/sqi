@@ -742,8 +742,9 @@ compiling.
 > separate setter call after the status write is a second write that can land
 > on a task another writer has moved in between, which the store's
 > [invariants](architecture.md#store-invariants) rule out.
-> `SetTaskFailureReason` and `SetTaskFailureReasonIfEmpty` are not part of
-> `store.Store`; both stores keep them only as test fixtures. See
+> There is no standalone setter for the reason on `store.Store`; a test that
+> needs a task with a `FailureReason` seeds it in the `CreateJobSubmission` or
+> drives the real failure or cancel write. See
 > [the durable-failure-reason table](architecture.md#5-status-ingestion) for
 > every existing path and its reason string.
 
@@ -819,6 +820,28 @@ func TestListSteps(t *testing.T) {
 ```
 
 Run the tests: `go test -race ./internal/api/...`
+
+**Seed store state through the production writes.** A test that needs jobs,
+steps or tasks in some state builds them with `internal/store/storetest`, which
+is written against `store.Store` so the same test runs on the SQLite store and
+the in-memory fake:
+
+- `storetest.Submit` creates a whole job (job, `DependsOn` edges, steps and
+  tasks) in one `CreateJobSubmission`, the call production makes. Put every
+  status and field the test needs in that one submission.
+- `storetest.Lease`, `storetest.Start` and `storetest.Running` put a task in
+  flight through `LeaseTask` and `StartTaskAttempt`, so the attempt and its
+  usage-pool claims are real. To test what happens after a transition, drive
+  it (`CompleteTaskAttempt`, `CancelJobExecution`, `OfflineWorker` and so on)
+  rather than writing the resulting state.
+- `storetest.InjectorFor(t, concreteStore)` returns the two injectors,
+  `InjectTaskAttempt` and `InjectClaim`, which write a row exactly as given
+  with no state checks. They live on the concrete stores, not on `store.Store`,
+  and are for states production cannot reach (an open attempt on a terminal
+  task, a claim on a closed attempt). Never use one to build a state a
+  production write can produce. A wrapper that embeds `store.Store` does not
+  expose them, and `InjectorFor` fails the test naming the wrapper type; pass
+  the store the wrapper wraps.
 
 ### Step 6 — Run lint and format
 

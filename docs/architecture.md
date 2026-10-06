@@ -580,8 +580,8 @@ a canceled task's late `canceled` echo cannot re-cancel a task that was
 retried in the meantime. `RequeueTaskForRetry` (the failure fork's requeue)
 likewise acts only while its attempt is the task's latest, so a reclaim and a
 new lease landing between `RecordTaskFailure` and the requeue leave the new
-lease alone. `UpdateTaskStatus` is not part of `store.Store`; both stores keep
-it only as a test fixture.
+lease alone. `store.Store` has no general-purpose task-status setter: a task
+changes status only through the named, guarded operations described here.
 
 The one path the table does not describe is a manual retry: `RetryTasks`
 revives `failed` and `canceled` tasks in its own guarded SQL, to `pending`, or
@@ -672,9 +672,10 @@ move tasks for the server's own reasons: `LeaseTask`, `RetryTasks`,
 `ReleaseStep` / `CancelPendingStep`, `CancelBlockedJob`, `CancelJobExecution` /
 `CancelTaskExecution`, and the reclaim operations (`ReclaimStaleAssignedTasks`,
 `OfflineStaleWorker`, `OfflineWorker`, `ReclaimTaskAttempt`, and the restart
-reclaim inside `RegisterWorker`). None of them route through
-`UpdateTaskStatus`, and each writes only the rows its own `WHERE` still
-matches (see [Store invariants](#store-invariants)).
+reclaim inside `RegisterWorker`). None of them consults the transition table (only
+`CompleteTaskAttempt` does); each carries its own guard in SQL and writes only
+the rows its own `WHERE` still matches (see
+[Store invariants](#store-invariants)).
 
 ### Auto-retry on worker-reported failure
 
