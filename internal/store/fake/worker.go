@@ -190,20 +190,6 @@ func (s *Store) CountIdleWorkers(_ context.Context, farmID string) (int, error) 
 	return count, nil
 }
 
-// DeleteWorker hard-deletes the worker with the given ID.
-//
-// Test fixture only: an unguarded delete that is not part of store.Store.
-func (s *Store) DeleteWorker(_ context.Context, id string) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	if _, ok := s.workers[id]; !ok {
-		return store.ErrNotFound
-	}
-	delete(s.workers, id)
-	return nil
-}
-
 // DeleteWorkerIfRemovable implements [store.WorkerStore]. The rule is
 // [store.Worker.Removable], which SQLite restates in its DELETE, plus the
 // in-flight condition a Worker value cannot see.

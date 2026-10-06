@@ -62,16 +62,6 @@ SET farm_id = ?, queue_id = ?, name = ?, owner = ?, submitter = ?, priority = ?,
 WHERE id = ?
 RETURNING ` + jobCols
 
-	// COALESCE(started_at, ?) sets started_at on first transition to 'running';
-	// subsequent calls preserve the original value.
-	sqlUpdateJobStatus = `
-UPDATE jobs
-SET status      = ?,
-	started_at  = COALESCE(started_at, ?),
-	completed_at = ?,
-	updated_at  = ?
-WHERE id = ?`
-
 	// sqlCancelJobStatus transitions a job to 'canceled' only when it is not
 	// already in a terminal state.  Zero rows affected means the job was either
 	// not found or already terminal; the caller distinguishes these two cases by
@@ -258,43 +248,20 @@ func scanJob(row scanner) (store.Job, error) {
 	return j, nil
 }
 
-// CreateJob implements [store.JobStore].
-func (s *Store) CreateJob(ctx context.Context, job store.Job) (store.Job, error) {
-	paramsJSON, err := marshalJSON(job.Parameters)
-	if err != nil {
-		return store.Job{}, err
-	}
-	declaredExts, err := encodeDeclaredExtensions(job)
-	if err != nil {
-		return store.Job{}, err
-	}
-	now := timeToText(time.Now().UTC())
-	row := s.stmtInsertJob.QueryRowContext(ctx,
-		job.ID, job.FarmID, job.QueueID, job.Name, job.Owner, job.Submitter,
-		job.Priority, string(job.Status), job.Project,
-		job.RawTemplate, string(job.TemplateFormat), paramsJSON,
-		now, now,
-		nullTimeToText(job.StartedAt), nullTimeToText(job.CompletedAt),
-		job.FailedAttempts, nullInt(job.MaxAttempts), nullInt(job.RetryDelaySeconds), nullInt(job.FailureLimit),
-		job.ParkReason, declaredExts)
-	out, err := scanJob(row)
-	return out, mapErr(err)
-}
-
 // CreateJobSubmission implements [store.JobStore]. Every row one submission
 // creates — the job, its dependency edges, its steps and its tasks — is
 // written in a single transaction, so a failure at any point leaves nothing
 // behind.
 //
 // Rows are inserted in foreign-key order (job, edges, steps, tasks) and each
-// insert uses raw SQL via tx rather than the prepared statements the per-row
-// creators use: a statement bound into a transaction with tx.StmtContext must
-// itself be closed, and the other transactional writers here take the same
-// approach (see casWriteTaskStatus in attemptclose.go).
+// insert uses raw SQL via tx rather than a prepared statement: a statement
+// bound into a transaction with tx.StmtContext must itself be closed, and the
+// other transactional writers here take the same approach (see
+// casWriteTaskStatus in attemptclose.go).
 //
-// Each step and task row is stamped with its OWN time.Now(), exactly as
-// CreateStep and CreateTask do — see insertTasksTx for why sharing one
-// timestamp across the batch would be a behavior change, not an optimization.
+// Each step and task row is stamped with its OWN time.Now() — see
+// insertTasksTx for why sharing one timestamp across the batch would be a
+// behavior change, not an optimization.
 func (s *Store) CreateJobSubmission(ctx context.Context, sub store.JobSubmission) (store.JobSubmission, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -371,8 +338,7 @@ func checkUpstreamsTx(ctx context.Context, tx *sql.Tx, upstreams []string) error
 	return nil
 }
 
-// insertJobTx inserts one job row inside tx, mirroring CreateJob's argument
-// order exactly.
+// insertJobTx inserts one job row inside tx.
 func insertJobTx(ctx context.Context, tx *sql.Tx, job store.Job, now string) (store.Job, error) {
 	paramsJSON, err := marshalJSON(job.Parameters)
 	if err != nil {
@@ -394,8 +360,8 @@ func insertJobTx(ctx context.Context, tx *sql.Tx, job store.Job, now string) (st
 	return out, mapErr(err)
 }
 
-// insertStepsTx inserts every step inside tx, mirroring CreateStep's argument
-// order exactly — including its per-row time.Now() (see insertTasksTx).
+// insertStepsTx inserts every step inside tx, stamping each row with its own
+// time.Now() (see insertTasksTx).
 func insertStepsTx(ctx context.Context, tx *sql.Tx, steps []store.Step) ([]store.Step, error) {
 	out := make([]store.Step, 0, len(steps))
 	for _, step := range steps {
@@ -422,8 +388,8 @@ func insertStepsTx(ctx context.Context, tx *sql.Tx, steps []store.Step) ([]store
 	return out, nil
 }
 
-// insertTasksTx inserts every task inside tx, mirroring CreateTask's argument
-// order exactly — including its per-row time.Now().
+// insertTasksTx inserts every task inside tx, stamping each row with its own
+// time.Now().
 //
 // The per-row stamp is deliberate. Two consumers depend on tasks within one
 // step having DISTINCT created_at values:
@@ -439,8 +405,8 @@ func insertStepsTx(ctx context.Context, tx *sql.Tx, steps []store.Step) ([]store
 //
 // A UUID tiebreaker in the SQL would be deterministic but would order frames
 // randomly rather than in expansion order, which is a different behavior
-// change wearing the same clothes. Stamping per row is what preserves today's
-// behavior, since CreateTask calls time.Now() per row.
+// change wearing the same clothes. Stamping per row is what preserves the
+// behavior submission has always had.
 func insertTasksTx(ctx context.Context, tx *sql.Tx, tasks []store.Task) ([]store.Task, error) {
 	out := make([]store.Task, 0, len(tasks))
 	for _, task := range tasks {
@@ -481,29 +447,6 @@ func (s *Store) GetJob(ctx context.Context, id string) (store.Job, error) {
 	out.DependsOn = deps
 
 	return out, nil
-}
-
-// CreateJobDependencies implements [store.JobStore]. It records that jobID
-// waits on each upstream ID; duplicate edges (job_id, depends_on_job_id) are
-// silently ignored via INSERT OR IGNORE.
-func (s *Store) CreateJobDependencies(ctx context.Context, jobID string, upstreamIDs []string) error {
-	if len(upstreamIDs) == 0 {
-		return nil
-	}
-	now := time.Now().UTC()
-
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return mapErr(err)
-	}
-	defer func() { _ = tx.Rollback() }() //nolint:errcheck // rollback after commit is a no-op
-
-	for _, up := range upstreamIDs {
-		if _, err := tx.ExecContext(ctx, sqlInsertJobDependency, jobID, up, timeToText(now)); err != nil {
-			return fmt.Errorf("sqlite: create job dependency %s->%s: %w", jobID, up, mapErr(err))
-		}
-	}
-	return mapErr(tx.Commit())
 }
 
 // ListJobDependencyIDs implements [store.JobStore]. It returns the upstream
@@ -663,36 +606,6 @@ func (s *Store) UpdateJob(ctx context.Context, job store.Job) (store.Job, error)
 		now, job.ID)
 	out, err := scanJob(row)
 	return out, mapErr(err)
-}
-
-// UpdateJobStatus sets a job's status unconditionally, stamping StartedAt on
-// the first transition to running and CompletedAt on every terminal status.
-//
-// Test fixture only: a blind write that is not part of store.Store.
-func (s *Store) UpdateJobStatus(ctx context.Context, id string, status store.JobStatus) error {
-	now := time.Now().UTC()
-	nowText := timeToText(now)
-
-	// maybeStarted is non-null only when transitioning to running, so
-	// COALESCE(started_at, ?) sets it on first transition and preserves it thereafter.
-	var maybeStarted sql.NullString
-	if status == store.JobStatusRunning {
-		maybeStarted = sql.NullString{String: nowText, Valid: true}
-	}
-
-	// maybeCompleted is non-null for all terminal states.
-	var maybeCompleted sql.NullString
-	switch status {
-	case store.JobStatusCompleted, store.JobStatusFailed, store.JobStatusCanceled:
-		maybeCompleted = sql.NullString{String: nowText, Valid: true}
-	}
-
-	res, err := s.stmtUpdateJobStatus.ExecContext(ctx,
-		string(status), maybeStarted, maybeCompleted, nowText, id)
-	if err != nil {
-		return mapErr(err)
-	}
-	return checkRowsAffected(res)
 }
 
 // CancelJobStatus implements [store.JobStore].

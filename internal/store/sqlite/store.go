@@ -168,11 +168,8 @@ type Store struct {
 	stmtDeletePool    *sql.Stmt
 
 	// ── usage_claims ─────────────────────────────────────────────────────
-	stmtInsertClaim          *sql.Stmt
-	stmtReleaseClaim         *sql.Stmt
-	stmtActiveClaimCount     *sql.Stmt
-	stmtReleaseAttemptClaims *sql.Stmt
-	stmtReleaseJobClaims     *sql.Stmt
+	stmtInsertClaim      *sql.Stmt
+	stmtActiveClaimCount *sql.Stmt
 
 	// ── workers ──────────────────────────────────────────────────────────
 	stmtUpsertWorker             *sql.Stmt
@@ -183,30 +180,20 @@ type Store struct {
 	stmtListStaleWorkers         *sql.Stmt
 	stmtCountIdleWorkers         *sql.Stmt
 	stmtCountIdleWorkersAllFarms *sql.Stmt
-	stmtDeleteWorker             *sql.Stmt
 	stmtDeleteOfflineWorkers     *sql.Stmt
 
 	// ── jobs ─────────────────────────────────────────────────────────────
-	stmtInsertJob       *sql.Stmt
-	stmtGetJob          *sql.Stmt
-	stmtUpdateJob       *sql.Stmt
-	stmtUpdateJobStatus *sql.Stmt
+	stmtGetJob    *sql.Stmt
+	stmtUpdateJob *sql.Stmt
 
 	// ── steps ────────────────────────────────────────────────────────────
-	stmtInsertStep       *sql.Stmt
-	stmtGetStep          *sql.Stmt
-	stmtListSteps        *sql.Stmt
-	stmtUpdateStepStatus *sql.Stmt
+	stmtGetStep   *sql.Stmt
+	stmtListSteps *sql.Stmt
 
 	// ── tasks ────────────────────────────────────────────────────────────
-	stmtInsertTask                   *sql.Stmt
 	stmtGetTask                      *sql.Stmt
 	stmtSetTaskUnschedulableReason   *sql.Stmt
-	stmtSetTaskFailureReason         *sql.Stmt
-	stmtSetTaskFailureReasonIfEmpty  *sql.Stmt
-	stmtAssignTask                   *sql.Stmt
 	stmtListReadyTasks               *sql.Stmt
-	stmtReclaimWorkerTasks           *sql.Stmt
 	stmtCountActiveTasksInQueue      *sql.Stmt
 	stmtCountActiveTasksInFarm       *sql.Stmt
 	stmtCountReadyTasksByQueue       *sql.Stmt
@@ -214,13 +201,10 @@ type Store struct {
 	stmtCountUnschedulableTasksByJob *sql.Stmt
 
 	// ── task_attempts ────────────────────────────────────────────────────
-	stmtInsertAttempt           *sql.Stmt
-	stmtGetAttempt              *sql.Stmt
-	stmtLatestAttempt           *sql.Stmt
-	stmtListAttempts            *sql.Stmt
-	stmtUpdateAttempt           *sql.Stmt
-	stmtTerminateWorkerAttempts *sql.Stmt
-	stmtCancelJobAttempts       *sql.Stmt
+	stmtInsertAttempt *sql.Stmt
+	stmtGetAttempt    *sql.Stmt
+	stmtLatestAttempt *sql.Stmt
+	stmtListAttempts  *sql.Stmt
 
 	// ── task_logs ────────────────────────────────────────────────────────
 	stmtInsertTaskLog *sql.Stmt
@@ -239,7 +223,6 @@ type Store struct {
 	stmtSetUserPassword     *sql.Stmt
 	stmtSetUserDisplayName  *sql.Stmt
 	stmtCountUsers          *sql.Stmt
-	stmtCountAdmins         *sql.Stmt
 
 	// ── sessions ─────────────────────────────────────────────────────────
 	stmtInsertSession             *sql.Stmt
@@ -604,16 +587,7 @@ func (s *Store) prepareAll(ctx context.Context) error {
 	if s.stmtInsertClaim, err = s.prepare(ctx, sqlInsertClaim); err != nil {
 		return err
 	}
-	if s.stmtReleaseClaim, err = s.prepare(ctx, sqlReleaseClaim); err != nil {
-		return err
-	}
 	if s.stmtActiveClaimCount, err = s.prepare(ctx, sqlActiveClaimCount); err != nil {
-		return err
-	}
-	if s.stmtReleaseAttemptClaims, err = s.prepare(ctx, sqlReleaseAttemptClaims); err != nil {
-		return err
-	}
-	if s.stmtReleaseJobClaims, err = s.prepare(ctx, sqlReleaseJobClaims); err != nil {
 		return err
 	}
 
@@ -642,64 +616,34 @@ func (s *Store) prepareAll(ctx context.Context) error {
 	if s.stmtCountIdleWorkersAllFarms, err = s.prepare(ctx, sqlCountIdleWorkersAllFarms); err != nil {
 		return err
 	}
-	if s.stmtDeleteWorker, err = s.prepare(ctx, sqlDeleteWorker); err != nil {
-		return err
-	}
 	if s.stmtDeleteOfflineWorkers, err = s.prepare(ctx, sqlDeleteOfflineWorkersBefore); err != nil {
 		return err
 	}
 
 	// ── jobs ──────────────────────────────────────────────────────────────
-	if s.stmtInsertJob, err = s.prepare(ctx, sqlInsertJob); err != nil {
-		return err
-	}
 	if s.stmtGetJob, err = s.prepare(ctx, sqlGetJob); err != nil {
 		return err
 	}
 	if s.stmtUpdateJob, err = s.prepare(ctx, sqlUpdateJob); err != nil {
 		return err
 	}
-	if s.stmtUpdateJobStatus, err = s.prepare(ctx, sqlUpdateJobStatus); err != nil {
-		return err
-	}
 
 	// ── steps ─────────────────────────────────────────────────────────────
-	if s.stmtInsertStep, err = s.prepare(ctx, sqlInsertStep); err != nil {
-		return err
-	}
 	if s.stmtGetStep, err = s.prepare(ctx, sqlGetStep); err != nil {
 		return err
 	}
 	if s.stmtListSteps, err = s.prepare(ctx, sqlListSteps); err != nil {
 		return err
 	}
-	if s.stmtUpdateStepStatus, err = s.prepare(ctx, sqlUpdateStepStatus); err != nil {
-		return err
-	}
 
 	// ── tasks ─────────────────────────────────────────────────────────────
-	if s.stmtInsertTask, err = s.prepare(ctx, sqlInsertTask); err != nil {
-		return err
-	}
 	if s.stmtGetTask, err = s.prepare(ctx, sqlGetTask); err != nil {
 		return err
 	}
 	if s.stmtSetTaskUnschedulableReason, err = s.prepare(ctx, sqlSetTaskUnschedulableReason); err != nil {
 		return err
 	}
-	if s.stmtSetTaskFailureReason, err = s.prepare(ctx, sqlSetTaskFailureReason); err != nil {
-		return err
-	}
-	if s.stmtSetTaskFailureReasonIfEmpty, err = s.prepare(ctx, sqlSetTaskFailureReasonIfEmpty); err != nil {
-		return err
-	}
-	if s.stmtAssignTask, err = s.prepare(ctx, sqlAssignTask); err != nil {
-		return err
-	}
 	if s.stmtListReadyTasks, err = s.prepare(ctx, sqlListReadyTasks); err != nil {
-		return err
-	}
-	if s.stmtReclaimWorkerTasks, err = s.prepare(ctx, sqlReclaimWorkerTasks); err != nil {
 		return err
 	}
 	if s.stmtCountActiveTasksInQueue, err = s.prepare(ctx, sqlCountActiveTasksInQueue); err != nil {
@@ -729,15 +673,6 @@ func (s *Store) prepareAll(ctx context.Context) error {
 		return err
 	}
 	if s.stmtListAttempts, err = s.prepare(ctx, sqlListAttempts); err != nil {
-		return err
-	}
-	if s.stmtUpdateAttempt, err = s.prepare(ctx, sqlUpdateAttempt); err != nil {
-		return err
-	}
-	if s.stmtTerminateWorkerAttempts, err = s.prepare(ctx, sqlTerminateWorkerAttempts); err != nil {
-		return err
-	}
-	if s.stmtCancelJobAttempts, err = s.prepare(ctx, sqlCancelJobAttempts); err != nil {
 		return err
 	}
 
@@ -780,9 +715,6 @@ func (s *Store) prepareAll(ctx context.Context) error {
 		return err
 	}
 	if s.stmtCountUsers, err = s.prepare(ctx, sqlCountUsers); err != nil {
-		return err
-	}
-	if s.stmtCountAdmins, err = s.prepare(ctx, sqlCountAdmins); err != nil {
 		return err
 	}
 

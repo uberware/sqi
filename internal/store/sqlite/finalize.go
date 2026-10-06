@@ -215,8 +215,7 @@ func (s *Store) ListJobIDsWithPendingSteps(ctx context.Context) ([]string, error
 // sqlGuardStepPending is the I1 guard for releasing or canceling a step: it
 // writes only a step that is still pending, so a step another writer already
 // moved (finalized, canceled by a job cancel) is never overwritten. The task
-// half of the move is [sqlTransitionStepPendingTasks], shared with
-// [Store.TransitionStepPendingTasks] so the two cannot drift.
+// half of the move is [sqlTransitionStepPendingTasks].
 const sqlGuardStepPending = `
 UPDATE steps SET status = ?, updated_at = ? WHERE id = ? AND status = 'pending'`
 

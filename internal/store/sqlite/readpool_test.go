@@ -124,7 +124,7 @@ func TestPoolFor_RoutesEveryPreparedStatement(t *testing.T) {
 		"sqlUpdateComputeLoc":           sqlUpdateComputeLoc,           // UPDATE ... RETURNING
 		"sqlDemoteStalledJobs":          sqlDemoteStalledJobs,          // UPDATE ... RETURNING
 		"sqlTransitionStepPendingTasks": sqlTransitionStepPendingTasks, // UPDATE ... RETURNING
-		"sqlLeaseReadyTask":             sqlLeaseReadyTask,
+		"sqlLeaseTaskGuarded":           sqlLeaseTaskGuarded,
 		"sqlRetryTasksPrefix":           sqlRetryTasksPrefix,
 	}
 

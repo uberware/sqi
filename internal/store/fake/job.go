@@ -12,16 +12,6 @@ import (
 	"github.com/uberware/sqi/internal/store"
 )
 
-// CreateJob inserts a new job with all fields populated by the caller.
-func (s *Store) CreateJob(_ context.Context, job store.Job) (store.Job, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	job = normalizeDeclaredExtensions(job)
-	s.jobs[job.ID] = job
-	return job, nil
-}
-
 // normalizeDeclaredExtensions mirrors what a round trip through the SQLite
 // declared_extensions column does to the pair of fields carrying a job's
 // declared OpenJD extensions.
@@ -117,11 +107,10 @@ func (s *Store) CreateJobSubmission(_ context.Context, sub store.JobSubmission) 
 // and ErrConflict only in production.
 //
 // It does NOT mirror SQLite's foreign keys: a submission naming a nonexistent
-// farm, queue or step is accepted here. CreateJob, CreateStep and CreateTask
-// have the same gap, and it is deliberately left open rather than closed only
-// on this one path. (job_dependencies.depends_on_job_id carries no FK
-// either, so an edge to a nonexistent upstream is not refused by the schema:
-// it is refused by the explicit upstream check, on both backends.)
+// farm, queue or step is accepted here. That gap is deliberately left open
+// rather than closed only on this one path. (job_dependencies.depends_on_job_id
+// carries no FK either, so an edge to a nonexistent upstream is not refused by
+// the schema: it is refused by the explicit upstream check, on both backends.)
 //
 // The checks run in the order SQLite's transaction reaches them (job row,
 // then the upstream check, then steps, then tasks), so a submission that
@@ -229,23 +218,6 @@ func (s *Store) GetJob(_ context.Context, id string) (store.Job, error) {
 	return job, nil
 }
 
-// CreateJobDependencies records that jobID waits on each upstream ID.
-// Duplicate edges (already-recorded upstream IDs) are ignored.
-func (s *Store) CreateJobDependencies(_ context.Context, jobID string, upstreamIDs []string) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	existing := s.jobDependencies[jobID]
-	for _, up := range upstreamIDs {
-		if slices.Contains(existing, up) {
-			continue
-		}
-		existing = append(existing, up)
-	}
-	s.jobDependencies[jobID] = existing
-	return nil
-}
-
 // ListJobDependencyIDs returns the upstream job IDs jobID waits on, ordered
 // by upstream job ID (matching the SQLite implementation's ORDER BY).
 func (s *Store) ListJobDependencyIDs(_ context.Context, jobID string) ([]string, error) {
@@ -341,38 +313,6 @@ func (s *Store) UpdateJob(_ context.Context, job store.Job) (store.Job, error) {
 	job.UpdatedAt = time.Now()
 	s.jobs[job.ID] = job
 	return job, nil
-}
-
-// UpdateJobStatus transitions a job to a new status and updates UpdatedAt.
-// If the new status is [store.JobStatusRunning] and StartedAt is nil, StartedAt
-// is set to the current time. Terminal statuses set CompletedAt.
-//
-// Test fixture only: a blind write that is not part of store.Store.
-func (s *Store) UpdateJobStatus(_ context.Context, id string, status store.JobStatus) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	job, ok := s.jobs[id]
-	if !ok {
-		return store.ErrNotFound
-	}
-
-	now := time.Now()
-	job.Status = status
-	job.UpdatedAt = now
-
-	if status == store.JobStatusRunning && job.StartedAt == nil {
-		job.StartedAt = &now
-	}
-
-	if status == store.JobStatusCompleted ||
-		status == store.JobStatusFailed ||
-		status == store.JobStatusCanceled {
-		job.CompletedAt = &now
-	}
-
-	s.jobs[id] = job
-	return nil
 }
 
 // DemoteStalledJobs implements [store.JobStore]. It returns every running job

@@ -4,15 +4,8 @@ package store
 
 import (
 	"context"
-	"errors"
 	"time"
 )
-
-// ErrUsageAtCapacity is returned by the stores' TryClaimSlots test fixture when
-// one or more required usage pools are saturated (active claims have reached
-// MaxConcurrent). [TaskStore.LeaseTask] does not return it: a full pool is the
-// [LeasePoolFull] outcome there.
-var ErrUsageAtCapacity = errors.New("store: usage pool at capacity")
 
 // UsagePoolClaim describes a single usage pool slot to be claimed
 // atomically by [TaskStore.LeaseTask] (see [LeaseRequest.Claims]).
@@ -25,7 +18,7 @@ type UsagePoolClaim struct {
 	PoolName string
 	// MaxConcurrent is the pool's limit as the caller last saw it.
 	// [TaskStore.LeaseTask] ignores it and re-reads the stored limit inside its
-	// transaction; only the TryClaimSlots test fixture uses it as given.
+	// transaction.
 	MaxConcurrent int
 }
 
@@ -99,31 +92,8 @@ type UsagePoolStore interface {
 // is the primary caller and only needs claim operations, not pool
 // CRUD.
 type UsageClaimStore interface {
-	// CreateClaim inserts a new active claim for the given pool and task
-	// attempt. The (TaskAttemptID, PoolID) pair must be unique; returns
-	// [ErrConflict] if violated.
-	CreateClaim(ctx context.Context, claim UsageClaim) (UsageClaim, error)
-
-	// ReleaseClaim sets ReleasedAt on the claim with the given ID,
-	// marking it as no longer active. Returns [ErrNotFound] if it does not
-	// exist.
-	ReleaseClaim(ctx context.Context, id string, releasedAt time.Time) error
-
 	// ActiveClaimCount returns the number of claims for the given pool
 	// where ReleasedAt IS NULL. Used by the scheduler's admission check before
 	// assigning a task that requires the pool.
 	ActiveClaimCount(ctx context.Context, poolID string) (int, error)
-
-	// ReleaseAttemptClaims sets ReleasedAt on every active claim
-	// (released_at IS NULL) for the given taskAttemptID.
-	//
-	// It has no production caller: every operation that closes an attempt
-	// releases that attempt's claims in its own transaction (invariant I3), so
-	// a separate release call is never needed and would reopen the window
-	// between the two writes. It stays on the interface as test fixture
-	// surface.
-	//
-	// Returns the number of claims released (0 is not an error when the
-	// attempt held no claims).
-	ReleaseAttemptClaims(ctx context.Context, taskAttemptID string, releasedAt time.Time) (int, error)
 }

@@ -104,8 +104,6 @@ WHERE  w.status = 'online' AND w.disabled = 0
            AND  t.status IN ('assigned', 'running')
        )`
 
-	sqlDeleteWorker = `DELETE FROM workers WHERE id = ?`
-
 	// sqlDeleteWorkerIfRemovable carries the removability rule in its WHERE so
 	// the check and the delete are one statement (I1). It mirrors
 	// [store.Worker.Removable], the one Go statement of the rule: SQL cannot
@@ -403,20 +401,6 @@ func (s *Store) CountIdleWorkers(ctx context.Context, farmID string) (int, error
 		err = s.stmtCountIdleWorkers.QueryRowContext(ctx, farmID).Scan(&n)
 	}
 	return n, mapErr(err)
-}
-
-// DeleteWorker hard-deletes the worker unconditionally. Returns
-// [store.ErrNotFound] if no such worker exists. Task and task-attempt rows that
-// reference the worker by ID are left intact.
-//
-// Test fixture only: an unguarded delete that is not part of store.Store;
-// removal goes through DeleteWorkerIfRemovable.
-func (s *Store) DeleteWorker(ctx context.Context, id string) error {
-	res, err := s.stmtDeleteWorker.ExecContext(ctx, id)
-	if err != nil {
-		return mapErr(err)
-	}
-	return checkRowsAffected(res)
 }
 
 // DeleteWorkerIfRemovable implements [store.WorkerStore].
