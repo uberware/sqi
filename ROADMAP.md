@@ -143,8 +143,9 @@ roots:
 sqi is a thin layer with respect to S3: it validates `s3://bucket[/prefix]`
 roots, derives a storage location's `type` from its roots
 (`filesystem`/`s3`/`mixed`), and translates/stages paths at run time. It embeds
-no S3 client, stores no credentials or endpoint addresses, and moves no bytes
-itself.
+no S3 client, stores no credentials or endpoint addresses, and never reads or
+writes object storage itself (its built-in staging copy works on filesystem
+paths only).
 
 S3-backed data reaches a worker via two paths: (1) **mounted** — a FUSE tool
 (mountpoint-s3, goofys, rclone mount) exposes the bucket as a plain filesystem
