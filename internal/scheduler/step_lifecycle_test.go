@@ -4,7 +4,6 @@ package scheduler
 
 import (
 	"context"
-	"fmt"
 	"log/slog"
 	"testing"
 	"time"
@@ -12,6 +11,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/uberware/sqi/internal/store"
+	"github.com/uberware/sqi/internal/store/storetest"
 )
 
 // TestCancelLastOpenTaskFinalizesStepAndJob pins that canceling a job's last
@@ -22,14 +22,11 @@ import (
 func TestCancelLastOpenTaskFinalizesStepAndJob(t *testing.T) {
 	for name, st := range raceBackends(t) {
 		t.Run(name, func(t *testing.T) {
-			job, step, task, _ := seedStatusFixture(t, st, store.TaskStatusRunning)
-			now := time.Now()
-			if _, err := st.CreateTask(t.Context(), store.Task{
-				ID: uuid.NewString(), JobID: job.ID, StepID: step.ID, Name: "task-sibling",
-				Status: store.TaskStatusSucceeded, CreatedAt: now, UpdatedAt: now,
-			}); err != nil {
-				t.Fatalf("CreateTask (succeeded sibling): %v", err)
-			}
+			g := seedStatusJob(t, st, statusJob{steps: []statusStep{{
+				name: "Step1", status: store.StepStatusRunning,
+				tasks: []store.TaskStatus{store.TaskStatusRunning, store.TaskStatusSucceeded}, // a succeeded sibling
+			}}})
+			job, step, task := g.job, g.steps[0], g.tasks[0][0]
 			notifier := &jobRecordingNotifier{}
 			s := New(
 				DefaultConfig(), st, &stubBus{}, nil,
@@ -93,21 +90,12 @@ func TestCancelJobThenRetryJobRunsAgain(t *testing.T) {
 func TestCancelEchoAfterJobCancelKeepsTheJobCanceled(t *testing.T) {
 	for name, st := range raceBackends(t) {
 		t.Run(name, func(t *testing.T) {
-			job, _, task, attempt := seedStatusFixture(t, st, store.TaskStatusRunning)
-			now := time.Now()
-			bad, err := st.CreateStep(t.Context(), store.Step{
-				ID: uuid.NewString(), JobID: job.ID, Name: "Bad", StepOrder: 1,
-				Status: store.StepStatusRunning, CreatedAt: now, UpdatedAt: now,
-			})
-			if err != nil {
-				t.Fatalf("CreateStep: %v", err)
-			}
-			if _, err := st.CreateTask(t.Context(), store.Task{
-				ID: uuid.NewString(), JobID: job.ID, StepID: bad.ID, Name: "t-failed",
-				Status: store.TaskStatusFailed, CreatedAt: now, UpdatedAt: now,
-			}); err != nil {
-				t.Fatalf("CreateTask (failed): %v", err)
-			}
+			g := seedStatusJob(t, st, statusJob{steps: []statusStep{
+				{name: "Step1", status: store.StepStatusRunning, tasks: []store.TaskStatus{store.TaskStatusRunning}},
+				{name: "Bad", status: store.StepStatusRunning, tasks: []store.TaskStatus{store.TaskStatusFailed}},
+			}})
+			job, task := g.job, g.tasks[0][0]
+			attempt := g.attempts[task.ID]
 			s := newTestScheduler(st, &stubBus{})
 			s.ctx = t.Context()
 			if err := s.CancelJob(t.Context(), job.ID); err != nil {
@@ -134,15 +122,11 @@ func TestCancelEchoAfterJobCancelKeepsTheJobCanceled(t *testing.T) {
 func TestRetryFailedTaskWhileSiblingRunsIsLeasable(t *testing.T) {
 	for name, st := range raceBackends(t) {
 		t.Run(name, func(t *testing.T) {
-			job, step, running, _ := seedStatusFixture(t, st, store.TaskStatusRunning)
-			now := time.Now()
-			failed, err := st.CreateTask(t.Context(), store.Task{
-				ID: uuid.NewString(), JobID: job.ID, StepID: step.ID, Name: "t-failed",
-				Status: store.TaskStatusFailed, CreatedAt: now, UpdatedAt: now,
-			})
-			if err != nil {
-				t.Fatalf("CreateTask: %v", err)
-			}
+			g := seedStatusJob(t, st, statusJob{steps: []statusStep{{
+				name: "Step1", status: store.StepStatusRunning,
+				tasks: []store.TaskStatus{store.TaskStatusRunning, store.TaskStatusFailed},
+			}}})
+			running, failed := g.tasks[0][0], g.tasks[0][1]
 			s := newTestScheduler(st, &stubBus{})
 			if err := s.RetryTask(t.Context(), failed.ID); err != nil {
 				t.Fatalf("RetryTask: %v", err)
@@ -157,20 +141,6 @@ func TestRetryFailedTaskWhileSiblingRunsIsLeasable(t *testing.T) {
 	}
 }
 
-// forceStepStatus is the fixture-only blind step write both concrete stores
-// keep and store.Store does not.
-type fixtureStepStatus interface {
-	UpdateStepStatus(ctx context.Context, id string, status store.StepStatus) error
-}
-
-func forceStepStatus(st store.Store, stepID string, status store.StepStatus) error {
-	f, ok := st.(fixtureStepStatus)
-	if !ok {
-		return fmt.Errorf("%T has no fixture UpdateStepStatus", st)
-	}
-	return f.UpdateStepStatus(context.Background(), stepID, status)
-}
-
 // TestStartupReleasesAStrandedPendingStep pins that a step a retry reset to
 // pending and never released (the server stopped first) is released, with its
 // task, at the next start. A blocked job that also holds a pending,
@@ -180,34 +150,21 @@ func forceStepStatus(st store.Store, stepID string, status store.StepStatus) err
 func TestStartupReleasesAStrandedPendingStep(t *testing.T) {
 	for name, st := range raceBackends(t) {
 		t.Run(name, func(t *testing.T) {
-			_, step, task, _ := seedStatusFixture(t, st, store.TaskStatusPending)
-			if err := forceStepStatus(st, step.ID, store.StepStatusPending); err != nil {
-				t.Fatalf("force step pending: %v", err)
-			}
+			// The step as a retry left it: pending, with its task pending.
+			g := seedStatusJob(t, st, statusJob{steps: []statusStep{{
+				name: "Step1", status: store.StepStatusPending, tasks: []store.TaskStatus{store.TaskStatusPending},
+			}}})
+			step, task := g.steps[0], g.tasks[0][0]
 
-			now := time.Now()
-			blocked, err := st.CreateJob(t.Context(), store.Job{
+			blocked := store.Job{
 				ID: uuid.NewString(), FarmID: "farm-1", QueueID: "queue-1", Name: "blocked",
 				Status: store.JobStatusBlocked, TemplateFormat: store.TemplateFormatJSON,
-				CreatedAt: now, UpdatedAt: now,
-			})
-			if err != nil {
-				t.Fatalf("CreateJob (blocked): %v", err)
 			}
-			blockedStep, err := st.CreateStep(t.Context(), store.Step{
-				ID: uuid.NewString(), JobID: blocked.ID, Name: "Step1",
-				Status: store.StepStatusPending, CreatedAt: now, UpdatedAt: now,
-			})
-			if err != nil {
-				t.Fatalf("CreateStep (blocked): %v", err)
+			blockedStep := store.Step{ID: uuid.NewString(), JobID: blocked.ID, Name: "Step1", Status: store.StepStatusPending}
+			blockedTask := store.Task{
+				ID: uuid.NewString(), JobID: blocked.ID, StepID: blockedStep.ID, Name: "task-0", Status: store.TaskStatusPending,
 			}
-			blockedTask, err := st.CreateTask(t.Context(), store.Task{
-				ID: uuid.NewString(), JobID: blocked.ID, StepID: blockedStep.ID, Name: "task-0",
-				Status: store.TaskStatusPending, CreatedAt: now, UpdatedAt: now,
-			})
-			if err != nil {
-				t.Fatalf("CreateTask (blocked): %v", err)
-			}
+			storetest.Submit(t, st, store.JobSubmission{Job: blocked, Steps: []store.Step{blockedStep}, Tasks: []store.Task{blockedTask}})
 
 			s := newTestScheduler(st, &stubBus{})
 			s.reconcilePendingSteps(t.Context())
@@ -238,25 +195,11 @@ func TestStartupReleasesAStrandedPendingStep(t *testing.T) {
 func TestStartupCancelsAndFinalizesBehindAFailedUpstream(t *testing.T) {
 	for name, st := range raceBackends(t) {
 		t.Run(name, func(t *testing.T) {
-			job, upstream, _, _ := seedStatusFixture(t, st, store.TaskStatusFailed)
-			if err := forceStepStatus(st, upstream.ID, store.StepStatusFailed); err != nil {
-				t.Fatalf("force upstream failed: %v", err)
-			}
-			now := time.Now()
-			down, err := st.CreateStep(t.Context(), store.Step{
-				ID: uuid.NewString(), JobID: job.ID, Name: "Step2", DependsOn: []string{upstream.Name},
-				Status: store.StepStatusPending, CreatedAt: now, UpdatedAt: now,
-			})
-			if err != nil {
-				t.Fatalf("CreateStep (downstream): %v", err)
-			}
-			downTask, err := st.CreateTask(t.Context(), store.Task{
-				ID: uuid.NewString(), JobID: job.ID, StepID: down.ID, Name: "task-0",
-				Status: store.TaskStatusPending, CreatedAt: now, UpdatedAt: now,
-			})
-			if err != nil {
-				t.Fatalf("CreateTask (downstream): %v", err)
-			}
+			g := seedStatusJob(t, st, statusJob{steps: []statusStep{
+				{name: "Step1", status: store.StepStatusFailed, tasks: []store.TaskStatus{store.TaskStatusFailed}},
+				{name: "Step2", status: store.StepStatusPending, dependsOn: []string{"Step1"}, tasks: []store.TaskStatus{store.TaskStatusPending}},
+			}})
+			job, down, downTask := g.job, g.steps[1], g.tasks[1][0]
 
 			s := newTestScheduler(st, &stubBus{})
 			s.reconcilePendingSteps(t.Context())
@@ -305,22 +248,10 @@ func (s *retryBeforeCascadeStore) CancelPendingStep(ctx context.Context, id, rea
 func TestRetryBeforeTheCascadeKeepsTheDownstreamStep(t *testing.T) {
 	for name, inner := range raceBackends(t) {
 		t.Run(name, func(t *testing.T) {
-			job, upstream, task, attempt := seedStatusFixture(t, inner, store.TaskStatusRunning)
-			now := time.Now()
-			down, err := inner.CreateStep(t.Context(), store.Step{
-				ID: uuid.NewString(), JobID: job.ID, Name: "Step2", DependsOn: []string{upstream.Name},
-				StepOrder: 1, Status: store.StepStatusPending, CreatedAt: now, UpdatedAt: now,
-			})
-			if err != nil {
-				t.Fatalf("CreateStep (downstream): %v", err)
-			}
-			downTask, err := inner.CreateTask(t.Context(), store.Task{
-				ID: uuid.NewString(), JobID: job.ID, StepID: down.ID, Name: "task-down",
-				Status: store.TaskStatusPending, CreatedAt: now, UpdatedAt: now,
-			})
-			if err != nil {
-				t.Fatalf("CreateTask (downstream): %v", err)
-			}
+			g := seedDependentStepJob(t, inner)
+			job, down := g.job, g.steps[1]
+			task, downTask := g.tasks[0][0], g.tasks[1][0]
+			attempt := g.attempts[task.ID]
 			st := &retryBeforeCascadeStore{Store: inner, jobID: job.ID, stepID: down.ID, t: t}
 			s := newStatusTestScheduler(st)
 			s.ctx = t.Context()

@@ -15,8 +15,8 @@ package scheduler
 
 import (
 	"context"
-	"fmt"
 	"log/slog"
+	"slices"
 	"sync"
 	"testing"
 	"time"
@@ -28,6 +28,7 @@ import (
 	"github.com/uberware/sqi/internal/store"
 	"github.com/uberware/sqi/internal/store/fake"
 	"github.com/uberware/sqi/internal/store/sqlite"
+	"github.com/uberware/sqi/internal/store/storetest"
 	"github.com/uberware/sqi/internal/worker/protocol"
 	"github.com/uberware/sqi/internal/ws"
 )
@@ -48,25 +49,6 @@ func raceBackends(t *testing.T) map[string]store.Store {
 	})
 	checkSQLiteClaimsAtEnd(t, sq)
 	return map[string]store.Store{"fake": newCheckedFake(t), "sqlite": sq}
-}
-
-// fixtureAssigner is the fixture-only AssignTask both concrete stores keep and
-// store.Store does not. The race tests hold a store.Store, so they reach it
-// through this narrow assertion.
-type fixtureAssigner interface {
-	AssignTask(ctx context.Context, id, workerID string, assignedAt time.Time) error
-}
-
-// forceAssign force-assigns a task to workerID at assignedAt, standing in
-// for "some other lease took it" or "this assignment is old" without the
-// attempt and claims a real lease would write. It fails when the store has no
-// fixture AssignTask.
-func forceAssign(st store.Store, taskID, workerID string, assignedAt time.Time) error {
-	a, ok := st.(fixtureAssigner)
-	if !ok {
-		return fmt.Errorf("%T has no fixture AssignTask", st)
-	}
-	return a.AssignTask(context.Background(), taskID, workerID, assignedAt)
 }
 
 // once runs fn the first time it is called and never again.
@@ -95,16 +77,11 @@ func mustStep(t *testing.T, st store.Store, id string) store.Step {
 func TestStepOverMaxLimitCompletes(t *testing.T) {
 	for name, st := range raceBackends(t) {
 		t.Run(name, func(t *testing.T) {
-			job, step, _, _ := seedStatusFixture(t, st, store.TaskStatusSucceeded)
-			now := time.Now()
-			for range store.MaxLimit {
-				if _, err := st.CreateTask(t.Context(), store.Task{
-					ID: uuid.NewString(), JobID: job.ID, StepID: step.ID, Name: "t",
-					Status: store.TaskStatusSucceeded, CreatedAt: now, UpdatedAt: now,
-				}); err != nil {
-					t.Fatalf("CreateTask: %v", err)
-				}
-			}
+			g := seedStatusJob(t, st, statusJob{steps: []statusStep{{
+				name: "Step1", status: store.StepStatusRunning,
+				tasks: slices.Repeat([]store.TaskStatus{store.TaskStatusSucceeded}, store.MaxLimit+1),
+			}}})
+			job, step := g.job, g.steps[0]
 			s := newStatusTestScheduler(st)
 			if err := s.checkStepCompletion(t.Context(), step.ID, job.ID); err != nil {
 				t.Fatalf("checkStepCompletion over %d tasks: %v", store.MaxLimit+1, err)
@@ -144,15 +121,11 @@ func (s *retryDuringCompletionStore) FinalizeStep(ctx context.Context, id string
 func TestCompletionDoesNotOverwriteRetry(t *testing.T) {
 	for name, st := range raceBackends(t) {
 		t.Run(name, func(t *testing.T) {
-			job, step, _, _ := seedStatusFixture(t, st, store.TaskStatusSucceeded)
-			now := time.Now()
-			failed, err := st.CreateTask(t.Context(), store.Task{
-				ID: uuid.NewString(), JobID: job.ID, StepID: step.ID, Name: "t1",
-				Status: store.TaskStatusFailed, CreatedAt: now, UpdatedAt: now,
-			})
-			if err != nil {
-				t.Fatalf("CreateTask: %v", err)
-			}
+			g := seedStatusJob(t, st, statusJob{steps: []statusStep{{
+				name: "Step1", status: store.StepStatusRunning,
+				tasks: []store.TaskStatus{store.TaskStatusSucceeded, store.TaskStatusFailed},
+			}}})
+			job, step, failed := g.job, g.steps[0], g.tasks[0][1]
 			wrapped := &retryDuringCompletionStore{Store: st, hook: &once{fn: func() {
 				if _, err := st.RetryTasks(context.Background(), job.ID, []string{failed.ID}, time.Now()); err != nil {
 					t.Errorf("RetryTasks in hook: %v", err)
@@ -177,21 +150,12 @@ func TestCompletionDoesNotOverwriteRetry(t *testing.T) {
 func TestRedeliveredCompletionStillPropagates(t *testing.T) {
 	for name, st := range raceBackends(t) {
 		t.Run(name, func(t *testing.T) {
-			job, step, _, _ := seedStatusFixture(t, st, store.TaskStatusSucceeded)
+			g := seedStatusJob(t, st, statusJob{steps: []statusStep{
+				{name: "Step1", status: store.StepStatusRunning, tasks: []store.TaskStatus{store.TaskStatusSucceeded}},
+				{name: "Step2", status: store.StepStatusPending, dependsOn: []string{"Step1"}, tasks: []store.TaskStatus{store.TaskStatusPending}},
+			}})
+			job, step, dep := g.job, g.steps[0], g.steps[1]
 			now := time.Now()
-			dep, err := st.CreateStep(t.Context(), store.Step{
-				ID: uuid.NewString(), JobID: job.ID, Name: "Step2", DependsOn: []string{step.Name},
-				StepOrder: 1, Status: store.StepStatusPending, CreatedAt: now, UpdatedAt: now,
-			})
-			if err != nil {
-				t.Fatalf("CreateStep: %v", err)
-			}
-			if _, err := st.CreateTask(t.Context(), store.Task{
-				ID: uuid.NewString(), JobID: job.ID, StepID: dep.ID, Name: "d",
-				Status: store.TaskStatusPending, CreatedAt: now, UpdatedAt: now,
-			}); err != nil {
-				t.Fatalf("CreateTask: %v", err)
-			}
 			// The first delivery finalized the step and then died before propagating.
 			if _, _, err := st.FinalizeStep(t.Context(), step.ID, now); err != nil {
 				t.Fatalf("FinalizeStep: %v", err)
@@ -228,17 +192,13 @@ func TestReconcileDoesNotUndoUserCancel(t *testing.T) {
 	for name, st := range raceBackends(t) {
 		t.Run(name, func(t *testing.T) {
 			up, _, _, _ := seedStatusFixtureWithJobStatus(t, st, store.JobStatusCompleted, store.TaskStatusSucceeded)
-			now := time.Now()
-			dep, err := st.CreateJob(t.Context(), store.Job{
-				ID: uuid.NewString(), FarmID: "farm-1", QueueID: "queue-1", Name: "dep",
-				Status: store.JobStatusBlocked, TemplateFormat: store.TemplateFormatJSON, CreatedAt: now, UpdatedAt: now,
-			})
-			if err != nil {
-				t.Fatalf("CreateJob: %v", err)
-			}
-			if err := st.CreateJobDependencies(t.Context(), dep.ID, []string{up.ID}); err != nil {
-				t.Fatalf("CreateJobDependencies: %v", err)
-			}
+			dep := storetest.Submit(t, st, store.JobSubmission{
+				Job: store.Job{
+					ID: uuid.NewString(), FarmID: "farm-1", QueueID: "queue-1", Name: "dep",
+					Status: store.JobStatusBlocked, TemplateFormat: store.TemplateFormatJSON,
+				},
+				DependsOn: []string{up.ID},
+			}).Job
 			wrapped := &cancelDuringReconcileStore{Store: st, hook: &once{fn: func() {
 				if err := st.CancelJobStatus(context.Background(), dep.ID); err != nil {
 					t.Errorf("CancelJobStatus in hook: %v", err)
@@ -317,17 +277,85 @@ func claimViolations(t *testing.T, st store.Store) []string {
 }
 
 // seedPoolClaim creates a one-slot usage pool and an active claim on attempt,
-// and returns the pool.
+// and returns the pool. The claim is injected, so it is only for an attempt no
+// lease wrote (see [injectOpenAttempt]); a claim held by in-flight work comes
+// from its lease, through [statusJob]'s pool.
 func seedPoolClaim(t *testing.T, st store.Store, attemptID string) store.UsagePool {
 	t.Helper()
-	pool, err := st.CreateUsagePool(t.Context(), store.UsagePool{ID: uuid.NewString(), Name: uuid.NewString(), MaxConcurrent: 1})
+	pool := newPool(t, st, 1)
+	if _, err := storetest.InjectorFor(t, st).InjectClaim(t.Context(), store.UsageClaim{
+		ID: uuid.NewString(), PoolID: pool.ID, TaskAttemptID: attemptID, ClaimedAt: time.Now().UTC(),
+	}); err != nil {
+		t.Fatalf("InjectClaim: %v", err)
+	}
+	return *pool
+}
+
+// newPool creates a usage pool of maxConcurrent slots under a unique name.
+func newPool(t *testing.T, st store.Store, maxConcurrent int) *store.UsagePool {
+	t.Helper()
+	pool, err := st.CreateUsagePool(t.Context(), store.UsagePool{ID: uuid.NewString(), Name: uuid.NewString(), MaxConcurrent: maxConcurrent})
 	if err != nil {
 		t.Fatalf("CreateUsagePool: %v", err)
 	}
-	if _, err := st.CreateClaim(t.Context(), store.UsageClaim{ID: uuid.NewString(), PoolID: pool.ID, TaskAttemptID: attemptID}); err != nil {
-		t.Fatalf("CreateClaim: %v", err)
+	return &pool
+}
+
+// injectOpenAttempt injects a running attempt on task for statusTestWorkerID.
+// The tests that use it put it on a canceled task, a state production cannot
+// reach: CancelTaskExecution and CancelJobExecution close the attempt and
+// release its claims in the cancel's own transaction. They pin that a worker
+// report meeting that state still closes the attempt and frees its slots.
+func injectOpenAttempt(t *testing.T, st store.Store, task store.Task) store.TaskAttempt {
+	t.Helper()
+	now := time.Now().UTC()
+	a, err := storetest.InjectorFor(t, st).InjectTaskAttempt(t.Context(), store.TaskAttempt{
+		ID: uuid.NewString(), TaskID: task.ID, WorkerID: statusTestWorkerID, AttemptNumber: 1,
+		Status: store.AttemptStatusRunning, StartedAt: now, CreatedAt: now,
+	})
+	if err != nil {
+		t.Fatalf("InjectTaskAttempt: %v", err)
 	}
-	return pool
+	return a
+}
+
+// seedClaimedFixture is seedStatusFixture's job with its task leased to
+// statusTestWorkerID (and, for running, started) by a lease that claims the
+// one slot of a fresh usage pool, which it returns.
+func seedClaimedFixture(t *testing.T, st store.Store, taskStatus store.TaskStatus) (
+	job store.Job, task store.Task, attempt store.TaskAttempt, pool store.UsagePool,
+) {
+	t.Helper()
+	p := newPool(t, st, 1)
+	g := seedStatusJob(t, st, statusJob{pool: p, steps: []statusStep{
+		{name: "Step1", status: store.StepStatusRunning, tasks: []store.TaskStatus{taskStatus}},
+	}})
+	task = g.tasks[0][0]
+	return g.job, task, g.attempts[task.ID], *p
+}
+
+// seedStaleWorkerWithClaim is seedStaleWorkerWithTask with a usage claim: the
+// worker's running task is leased with a claim on the one slot of a fresh
+// usage pool, as a lease of a step that requires the pool writes it. Returns
+// the worker, task and attempt IDs and the pool.
+func seedStaleWorkerWithClaim(t *testing.T, st store.Store, age time.Duration) (
+	workerID, taskID, attemptID string, pool store.UsagePool,
+) {
+	t.Helper()
+	workerID = "w-stale"
+	p := newPool(t, st, 1)
+	g := seedStatusJob(t, st, statusJob{worker: workerID, pool: p, steps: []statusStep{
+		{name: "s", status: store.StepStatusRunning, tasks: []store.TaskStatus{store.TaskStatusRunning}},
+	}})
+	stale := time.Now().UTC().Add(-age)
+	if _, _, err := st.RegisterWorker(t.Context(), store.Worker{
+		ID: workerID, FarmID: "farm-1", Hostname: "node-stale",
+		Status: store.WorkerStatusOnline, LastHeartbeatAt: &stale,
+	}); err != nil {
+		t.Fatalf("RegisterWorker: %v", err)
+	}
+	task := g.tasks[0][0]
+	return workerID, task.ID, g.attempts[task.ID].ID, *p
 }
 
 // activeClaimsOf returns the number of active claims on pool.
@@ -402,7 +430,8 @@ func parkWaiter(t *testing.T, s *Scheduler, queueID string) <-chan bool {
 func TestRejectedTerminalReportReleasesClaims(t *testing.T) {
 	for name, st := range raceBackends(t) {
 		t.Run(name, func(t *testing.T) {
-			_, _, task, attempt := seedStatusFixture(t, st, store.TaskStatusCanceled)
+			_, _, task, _ := seedStatusFixture(t, st, store.TaskStatusCanceled)
+			attempt := injectOpenAttempt(t, st, task)
 			pool := seedPoolClaim(t, st, attempt.ID)
 			s := newStatusTestScheduler(st)
 			s.ctx = t.Context()
@@ -435,7 +464,8 @@ func TestRejectedTerminalReportReleasesClaims(t *testing.T) {
 func TestRejectedTerminalReportWakesLeaseWaiters(t *testing.T) {
 	for name, st := range raceBackends(t) {
 		t.Run(name, func(t *testing.T) {
-			job, _, task, attempt := seedStatusFixture(t, st, store.TaskStatusCanceled)
+			job, _, task, _ := seedStatusFixture(t, st, store.TaskStatusCanceled)
+			attempt := injectOpenAttempt(t, st, task)
 			s := newStatusTestScheduler(st)
 			s.ctx = t.Context()
 			woke := parkWaiter(t, s, job.QueueID)
@@ -459,8 +489,7 @@ func TestRejectedTerminalReportWakesLeaseWaiters(t *testing.T) {
 func TestRedeliveredTerminalReportIsNoOp(t *testing.T) {
 	for name, st := range raceBackends(t) {
 		t.Run(name, func(t *testing.T) {
-			_, _, task, attempt := seedStatusFixture(t, st, store.TaskStatusRunning)
-			pool := seedPoolClaim(t, st, attempt.ID)
+			_, task, attempt, pool := seedClaimedFixture(t, st, store.TaskStatusRunning)
 			s := newStatusTestScheduler(st)
 			s.ctx = t.Context()
 			payload := terminalReport(t, task, attempt, "succeeded", "").data
@@ -517,8 +546,7 @@ func TestFailedReportReleasesClaims(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			for name, st := range raceBackends(t) {
 				t.Run(name, func(t *testing.T) {
-					_, _, task, attempt := seedStatusFixture(t, st, store.TaskStatusRunning)
-					pool := seedPoolClaim(t, st, attempt.ID)
+					_, task, attempt, pool := seedClaimedFixture(t, st, store.TaskStatusRunning)
 					cfg := DefaultConfig()
 					cfg.DefaultMaxAttempts = tc.maxAttempts
 					cfg.RetryDelay = 0
@@ -645,9 +673,7 @@ func TestCapsHoldUnderParallelLease(t *testing.T) {
 					taskA := mustTaskOf(t, st, ids[0])
 					wrapped := &leaseDuringPolicyStore{Store: st, hook: &once{fn: func() {
 						// Another lease wins task B between the policy count and this lease.
-						if err := forceAssign(st, ids[1], "w-other", time.Now()); err != nil {
-							t.Errorf("AssignTask in hook: %v", err)
-						}
+						storetest.Lease(t, st, store.LeaseRequest{TaskID: ids[1], WorkerID: "w-other"})
 					}}}
 					s := newMetricsScheduler(wrapped, &recordBus{}, "f1")
 
@@ -674,18 +700,13 @@ func TestCapsHoldUnderParallelLease(t *testing.T) {
 // ── A cancel racing a lease must not leave a running attempt behind ─────────
 
 // racingLeaseStore fires its hook at the point where a lease has decided to go
-// ahead but has not yet written its attempt: CreateTaskAttempt (a three-call
-// lease, after LeaseReadyTask has already committed the assignment) and
-// LeaseTask (the one-transaction lease).
+// ahead but has not yet written its attempt: before LeaseTask (the
+// one-transaction lease; a three-call lease would already have committed the
+// assignment at that point).
 type racingLeaseStore struct {
 	store.Store
 
 	hook *once
-}
-
-func (s *racingLeaseStore) CreateTaskAttempt(ctx context.Context, a store.TaskAttempt) (store.TaskAttempt, error) {
-	s.hook.fire()
-	return s.Store.CreateTaskAttempt(ctx, a)
 }
 
 func (s *racingLeaseStore) LeaseTask(ctx context.Context, req store.LeaseRequest) (store.LeaseResult, error) {
@@ -744,18 +765,12 @@ func TestCancelRacingLease(t *testing.T) {
 }
 
 // cancelAfterLeaseStore fires its hook right after a lease has committed: after
-// CreateTaskAttempt (a three-call lease) and after LeaseTask (the
-// one-transaction lease).
+// LeaseTask (the one-transaction lease; for a three-call lease, the point was
+// after its attempt write).
 type cancelAfterLeaseStore struct {
 	store.Store
 
 	hook *once
-}
-
-func (s *cancelAfterLeaseStore) CreateTaskAttempt(ctx context.Context, a store.TaskAttempt) (store.TaskAttempt, error) {
-	out, err := s.Store.CreateTaskAttempt(ctx, a)
-	s.hook.fire()
-	return out, err
 }
 
 func (s *cancelAfterLeaseStore) LeaseTask(ctx context.Context, req store.LeaseRequest) (store.LeaseResult, error) {
@@ -836,17 +851,24 @@ func TestTryLeaseTask_NonLeasedOutcomesWriteNothing(t *testing.T) {
 		race       func(t *testing.T, st store.Store, worker store.Worker, ids []string, pool store.UsagePool)
 		wantStatus store.TaskStatus
 		wantClaims int
+		// wantAttempts is the number of attempt rows on task A: the competing
+		// lease's own when it took task A, and never one of the refused lease.
+		wantAttempts int
 	}{
 		{
 			name: "lost to another lease",
-			race: func(t *testing.T, st store.Store, _ store.Worker, ids []string, _ store.UsagePool) {
+			race: func(t *testing.T, st store.Store, _ store.Worker, ids []string, pool store.UsagePool) {
 				t.Helper()
-				if err := forceAssign(st, ids[0], "w-other", time.Now()); err != nil {
-					t.Errorf("AssignTask in hook: %v", err)
-				}
+				storetest.Lease(t, st, store.LeaseRequest{
+					TaskID: ids[0], WorkerID: "w-other",
+					Claims: []store.UsagePoolClaim{{
+						ClaimID: uuid.NewString(), PoolID: pool.ID, PoolName: pool.Name, MaxConcurrent: pool.MaxConcurrent,
+					}},
+				})
 			},
-			wantStatus: store.TaskStatusAssigned,
-			wantClaims: 0,
+			wantStatus:   store.TaskStatusAssigned,
+			wantClaims:   1, // the competing lease's own claim, and only that
+			wantAttempts: 1, // the competing lease's own attempt, and only that
 		},
 		{
 			name: "pool filled by another lease",
@@ -895,8 +917,13 @@ func TestTryLeaseTask_NonLeasedOutcomesWriteNothing(t *testing.T) {
 					if err != nil {
 						t.Fatalf("ListTaskAttempts: %v", err)
 					}
-					if len(attempts) != 0 {
-						t.Fatalf("task has %d attempt rows after a refused lease, want 0", len(attempts))
+					if len(attempts) != tc.wantAttempts {
+						t.Fatalf("task has %d attempt rows after a refused lease, want %d", len(attempts), tc.wantAttempts)
+					}
+					for _, a := range attempts {
+						if a.WorkerID == worker.ID {
+							t.Fatalf("attempt %s on task A belongs to the refused lease's worker %s", a.ID, a.WorkerID)
+						}
 					}
 					if n := activeClaimsOf(t, st, pool.ID); n != tc.wantClaims {
 						t.Fatalf("active claims = %d, want %d", n, tc.wantClaims)
@@ -937,17 +964,11 @@ func (s *leaseAfterReapStore) ReclaimStaleAssignedTasks(ctx context.Context, cut
 func TestReaperDoesNotCloseReleasedAttempt(t *testing.T) {
 	for name, st := range raceBackends(t) {
 		t.Run(name, func(t *testing.T) {
-			_, _, task, stale := seedStatusFixture(t, st, store.TaskStatusAssigned)
-			if err := forceAssign(st, task.ID, "w-old", time.Now().Add(-time.Hour)); err != nil { // stale assigned_at
-				t.Fatalf("AssignTask: %v", err)
-			}
 			pool, err := st.CreateUsagePool(t.Context(), store.UsagePool{ID: uuid.NewString(), Name: "lic", MaxConcurrent: 2})
 			if err != nil {
 				t.Fatalf("CreateUsagePool: %v", err)
 			}
-			if _, err := st.CreateClaim(t.Context(), store.UsageClaim{ID: uuid.NewString(), PoolID: pool.ID, TaskAttemptID: stale.ID}); err != nil {
-				t.Fatalf("CreateClaim: %v", err)
-			}
+			_, task, stale := seedStaleAssignment(t, st, "w-old", &pool) // stale assigned_at
 			var fresh store.TaskAttempt
 			wrapped := &leaseAfterReapStore{Store: st, hook: &once{fn: func() {
 				res, err := st.LeaseTask(context.Background(), store.LeaseRequest{
@@ -1011,11 +1032,8 @@ func TestSupersededAttemptLateReportIsIgnored(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			for name, st := range raceBackends(t) {
 				t.Run(name, func(t *testing.T) {
-					job, _, task, stale := seedStatusFixture(t, st, store.TaskStatusAssigned)
-					if err := forceAssign(st, task.ID, statusTestWorkerID, time.Now().Add(-time.Hour)); err != nil { // stale assigned_at
-						t.Fatalf("AssignTask: %v", err)
-					}
-					pool := seedPoolClaim(t, st, stale.ID)
+					pool := newPool(t, st, 1)
+					job, task, stale := seedStaleAssignment(t, st, statusTestWorkerID, pool) // stale assigned_at
 					s := newStatusTestScheduler(st)
 					s.ctx = t.Context()
 					s.cfg.AssignedTaskTimeout = time.Minute
@@ -1030,9 +1048,7 @@ func TestSupersededAttemptLateReportIsIgnored(t *testing.T) {
 					}
 					fresh := res.Attempt
 					if tc.current == store.TaskStatusRunning {
-						if err := fixtures(t, st).UpdateTaskStatus(t.Context(), task.ID, store.TaskStatusRunning); err != nil {
-							t.Fatalf("UpdateTaskStatus running: %v", err)
-						}
+						storetest.Start(t, st, fresh, "", time.Now().UTC())
 					}
 					woke := parkWaiter(t, s, job.QueueID)
 
@@ -1100,8 +1116,7 @@ func (s *heartbeatDuringSweepStore) ListStaleWorkers(ctx context.Context, before
 func TestHeartbeatDuringSweepKeepsWorkerOnline(t *testing.T) {
 	for name, st := range raceBackends(t) {
 		t.Run(name, func(t *testing.T) {
-			workerID, taskID, attemptID := seedStaleWorkerWithTask(t, st, 10*time.Minute)
-			pool := seedPoolClaim(t, st, attemptID)
+			workerID, taskID, attemptID, pool := seedStaleWorkerWithClaim(t, st, 10*time.Minute)
 			// fired proves the heartbeat landed inside the race window: every
 			// assertion below also holds if the worker was never a candidate.
 			fired := false
@@ -1157,8 +1172,7 @@ func TestHeartbeatDuringSweepKeepsWorkerOnline(t *testing.T) {
 func TestOfflineReclaimReleasesClaims(t *testing.T) {
 	for name, st := range raceBackends(t) {
 		t.Run(name, func(t *testing.T) {
-			_, taskID, attemptID := seedStaleWorkerWithTask(t, st, 10*time.Minute)
-			pool := seedPoolClaim(t, st, attemptID)
+			_, taskID, attemptID, pool := seedStaleWorkerWithClaim(t, st, 10*time.Minute)
 			s := newRetentionScheduler(st, time.Hour, ws.NoopNotifier{})
 
 			s.sweepStaleWorkers(t.Context())
@@ -1184,8 +1198,7 @@ func TestOfflineReclaimReleasesClaims(t *testing.T) {
 func TestDeregisterReleasesClaims(t *testing.T) {
 	for name, st := range raceBackends(t) {
 		t.Run(name, func(t *testing.T) {
-			workerID, taskID, attemptID := seedStaleWorkerWithTask(t, st, 0) // a live worker
-			pool := seedPoolClaim(t, st, attemptID)
+			workerID, taskID, _, pool := seedStaleWorkerWithClaim(t, st, 0) // a live worker
 			s := newRetentionScheduler(st, time.Hour, ws.NoopNotifier{})
 
 			msg := &fakeJSMsg{

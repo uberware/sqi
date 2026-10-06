@@ -13,7 +13,6 @@ import (
 	"errors"
 	"log/slog"
 	"testing"
-	"time"
 
 	"github.com/google/uuid"
 	nats "github.com/nats-io/nats.go"
@@ -21,6 +20,7 @@ import (
 
 	"github.com/uberware/sqi/internal/store"
 	"github.com/uberware/sqi/internal/store/fake"
+	"github.com/uberware/sqi/internal/store/storetest"
 	"github.com/uberware/sqi/internal/ws"
 )
 
@@ -74,10 +74,24 @@ func newTestScheduler(st store.Store, bus busClient) *Scheduler {
 
 // ── seed helpers ──────────────────────────────────────────────────────────────
 
-func seedCancelJob(t *testing.T, st *fake.Store) store.Job {
+// cancelTask is one task of a job [seedCancelJob] builds.
+type cancelTask struct {
+	status store.TaskStatus
+	// worker is the worker an assigned or running task is leased to.
+	worker string
+	// reason is the FailureReason the task is submitted with.
+	reason string
+}
+
+// seedCancelJob builds a running job in a farm and queue of its own, with one
+// step per task, in a single submission. Assigned and running tasks are
+// submitted ready and then leased to their worker (and, for running, started)
+// through production writes, so each holds the attempt a real lease writes.
+// It returns the job, and the tasks and their attempts in tasks order; the
+// attempt is the zero value for a task that was not leased.
+func seedCancelJob(t *testing.T, st *fake.Store, tasks ...cancelTask) (store.Job, []store.Task, []store.TaskAttempt) {
 	t.Helper()
 	ctx := t.Context()
-	now := time.Now()
 	farm, err := st.CreateFarm(ctx, store.Farm{ID: uuid.NewString(), Name: "f"})
 	if err != nil {
 		t.Fatalf("CreateFarm: %v", err)
@@ -86,47 +100,38 @@ func seedCancelJob(t *testing.T, st *fake.Store) store.Job {
 	if err != nil {
 		t.Fatalf("CreateQueue: %v", err)
 	}
-	job, err := st.CreateJob(ctx, store.Job{
+	sub := store.JobSubmission{Job: store.Job{
 		ID:             uuid.NewString(),
 		FarmID:         farm.ID,
 		QueueID:        queue.ID,
 		Name:           "test-job",
 		Status:         store.JobStatusRunning,
 		TemplateFormat: store.TemplateFormatJSON,
-		CreatedAt:      now,
-		UpdatedAt:      now,
-	})
-	if err != nil {
-		t.Fatalf("CreateJob: %v", err)
+	}}
+	for _, ct := range tasks {
+		step := store.Step{ID: uuid.NewString(), JobID: sub.Job.ID, Name: uuid.NewString(), Status: store.StepStatusRunning}
+		task := store.Task{ID: uuid.NewString(), JobID: sub.Job.ID, StepID: step.ID, Name: "t", Status: ct.status, FailureReason: ct.reason}
+		if ct.status == store.TaskStatusAssigned || ct.status == store.TaskStatusRunning {
+			task.Status = store.TaskStatusReady
+		}
+		sub.Steps = append(sub.Steps, step)
+		sub.Tasks = append(sub.Tasks, task)
 	}
-	return job
-}
+	job := storetest.Submit(t, st, sub).Job
 
-func seedTaskForJob(t *testing.T, st *fake.Store, job store.Job, workerID string, status store.TaskStatus) store.Task {
-	t.Helper()
-	ctx := t.Context()
-	now := time.Now()
-	step, err := st.CreateStep(ctx, store.Step{
-		ID: uuid.NewString(), JobID: job.ID, Name: uuid.NewString(),
-		Status: store.StepStatusRunning, CreatedAt: now, UpdatedAt: now,
-	})
-	if err != nil {
-		t.Fatalf("CreateStep: %v", err)
+	out := make([]store.Task, len(tasks))
+	attempts := make([]store.TaskAttempt, len(tasks))
+	for i, ct := range tasks {
+		req := store.LeaseRequest{TaskID: sub.Tasks[i].ID, WorkerID: ct.worker}
+		switch ct.status {
+		case store.TaskStatusAssigned:
+			attempts[i] = storetest.Lease(t, st, req)
+		case store.TaskStatusRunning:
+			attempts[i] = storetest.Running(t, st, req)
+		}
+		out[i] = mustTaskOf(t, st, sub.Tasks[i].ID)
 	}
-	task, err := st.CreateTask(ctx, store.Task{
-		ID:               uuid.NewString(),
-		JobID:            job.ID,
-		StepID:           step.ID,
-		Name:             "t",
-		Status:           status,
-		AssignedWorkerID: workerID,
-		CreatedAt:        now,
-		UpdatedAt:        now,
-	})
-	if err != nil {
-		t.Fatalf("CreateTask: %v", err)
-	}
-	return task
+	return job, out, attempts
 }
 
 // ── CancelJob tests ───────────────────────────────────────────────────────────
@@ -136,7 +141,7 @@ func TestCancelJob_NoActiveTasks(t *testing.T) {
 	bus := &stubBus{}
 	s := newTestScheduler(st, bus)
 
-	job := seedCancelJob(t, st)
+	job, _, _ := seedCancelJob(t, st)
 	// No tasks at all → no NATS publishes.
 	if err := s.CancelJob(t.Context(), job.ID); err != nil {
 		t.Fatalf("CancelJob: %v", err)
@@ -151,10 +156,12 @@ func TestCancelJob_WithAssignedWorkers(t *testing.T) {
 	bus := &stubBus{}
 	s := newTestScheduler(st, bus)
 
-	job := seedCancelJob(t, st)
 	// Two tasks with different workers.
-	seedTaskForJob(t, st, job, "worker-1", store.TaskStatusRunning)
-	seedTaskForJob(t, st, job, "worker-2", store.TaskStatusAssigned)
+	job, _, _ := seedCancelJob(
+		t, st,
+		cancelTask{status: store.TaskStatusRunning, worker: "worker-1"},
+		cancelTask{status: store.TaskStatusAssigned, worker: "worker-2"},
+	)
 
 	if err := s.CancelJob(t.Context(), job.ID); err != nil {
 		t.Fatalf("CancelJob: %v", err)
@@ -171,8 +178,7 @@ func TestCancelJob_NATSPublishFailure_NonFatal(t *testing.T) {
 	bus := &stubBus{cancelErr: errors.New("nats: unavailable")}
 	s := newTestScheduler(st, bus)
 
-	job := seedCancelJob(t, st)
-	seedTaskForJob(t, st, job, "worker-1", store.TaskStatusRunning)
+	job, _, _ := seedCancelJob(t, st, cancelTask{status: store.TaskStatusRunning, worker: "worker-1"})
 
 	if err := s.CancelJob(t.Context(), job.ID); err != nil {
 		t.Fatalf("expected nil despite NATS failure, got %v", err)
@@ -183,8 +189,8 @@ func TestCancelJob_TasksAreCanceledInStore(t *testing.T) {
 	st := newCheckedFake(t)
 	s := newTestScheduler(st, &stubBus{})
 
-	job := seedCancelJob(t, st)
-	tk := seedTaskForJob(t, st, job, "", store.TaskStatusRunning)
+	job, tasks, _ := seedCancelJob(t, st, cancelTask{status: store.TaskStatusRunning, worker: "worker-1"})
+	tk := tasks[0]
 
 	if err := s.CancelJob(t.Context(), job.ID); err != nil {
 		t.Fatalf("CancelJob: %v", err)
@@ -211,13 +217,11 @@ func TestCancelJob_DoesNotClobberCascadeReason(t *testing.T) {
 	st := newCheckedFake(t)
 	s := newTestScheduler(st, &stubBus{})
 
-	job := seedCancelJob(t, st)
-	tk := seedTaskForJob(t, st, job, "", store.TaskStatusRunning)
-
 	// A cascade-cancel already recorded the specific cause.
-	if err := st.SetTaskFailureReason(t.Context(), tk.ID, "canceled: upstream step failed"); err != nil {
-		t.Fatalf("pre-set cascade reason: %v", err)
-	}
+	job, tasks, _ := seedCancelJob(t, st, cancelTask{
+		status: store.TaskStatusRunning, worker: "worker-1", reason: "canceled: upstream step failed",
+	})
+	tk := tasks[0]
 
 	if err := s.CancelJob(t.Context(), job.ID); err != nil {
 		t.Fatalf("CancelJob: %v", err)
@@ -255,8 +259,8 @@ func TestCancelTask_AlreadyTerminal_NoOp(t *testing.T) {
 			st := newCheckedFake(t)
 			bus := &stubBus{}
 			s := newTestScheduler(st, bus)
-			job := seedCancelJob(t, st)
-			tk := seedTaskForJob(t, st, job, "", status)
+			_, tasks, _ := seedCancelJob(t, st, cancelTask{status: status})
+			tk := tasks[0]
 
 			if err := s.CancelTask(t.Context(), tk.ID); err != nil {
 				t.Fatalf("CancelTask on terminal task: %v", err)
@@ -281,8 +285,8 @@ func TestCancelTask_AssignedTask_CanceledAndSignaled(t *testing.T) {
 	bus := &stubBus{}
 	s := newTestScheduler(st, bus)
 
-	job := seedCancelJob(t, st)
-	tk := seedTaskForJob(t, st, job, "worker-99", store.TaskStatusAssigned)
+	_, tasks, _ := seedCancelJob(t, st, cancelTask{status: store.TaskStatusAssigned, worker: "worker-99"})
+	tk := tasks[0]
 
 	if err := s.CancelTask(t.Context(), tk.ID); err != nil {
 		t.Fatalf("CancelTask: %v", err)
@@ -309,12 +313,10 @@ func TestCancelTask_DoesNotClobberCascadeReason(t *testing.T) {
 	st := newCheckedFake(t)
 	s := newTestScheduler(st, &stubBus{})
 
-	job := seedCancelJob(t, st)
-	tk := seedTaskForJob(t, st, job, "worker-1", store.TaskStatusRunning)
-
-	if err := st.SetTaskFailureReason(t.Context(), tk.ID, "canceled: upstream step failed"); err != nil {
-		t.Fatalf("pre-set cascade reason: %v", err)
-	}
+	_, tasks, _ := seedCancelJob(t, st, cancelTask{
+		status: store.TaskStatusRunning, worker: "worker-1", reason: "canceled: upstream step failed",
+	})
+	tk := tasks[0]
 
 	if err := s.CancelTask(t.Context(), tk.ID); err != nil {
 		t.Fatalf("CancelTask: %v", err)
@@ -335,8 +337,8 @@ func TestCancelTask_ReadyTask_NoNATSSignal(t *testing.T) {
 	bus := &stubBus{}
 	s := newTestScheduler(st, bus)
 
-	job := seedCancelJob(t, st)
-	tk := seedTaskForJob(t, st, job, "", store.TaskStatusReady)
+	_, tasks, _ := seedCancelJob(t, st, cancelTask{status: store.TaskStatusReady})
+	tk := tasks[0]
 
 	if err := s.CancelTask(t.Context(), tk.ID); err != nil {
 		t.Fatalf("CancelTask: %v", err)
