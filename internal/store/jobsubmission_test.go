@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/uberware/sqi/internal/store"
+	"github.com/uberware/sqi/internal/store/storetest"
 )
 
 // submissionFixture builds a two-step, three-task submission on a fresh farm
@@ -116,7 +117,7 @@ func TestJobStore_CreateJobSubmission_WritesEverything(t *testing.T) {
 // steps.
 //
 // The induced failure is a duplicate step name, which violates the (JobID,
-// Name) uniqueness both backends enforce (see store/step.go's CreateStep doc).
+// Name) uniqueness both backends enforce on steps.
 // It fires on the SECOND step, so the job row and the first step have already
 // been written inside the transaction when it hits.
 //
@@ -168,9 +169,7 @@ func TestJobStore_CreateJobSubmission_WritesDependencyEdges(t *testing.T) {
 			upstream := sub.Job
 			upstream.ID = "job-upstream"
 			upstream.Name = "up"
-			if _, err := st.CreateJob(ctx, upstream); err != nil {
-				t.Fatalf("CreateJob(upstream): %v", err)
-			}
+			storetest.Submit(t, st, store.JobSubmission{Job: upstream})
 
 			sub.Job.Status = store.JobStatusBlocked
 			sub.DependsOn = []string{"job-upstream"}
@@ -213,9 +212,9 @@ func TestJobStore_CreateJobSubmission_DoesNotAliasCallerMemory(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			ctx := context.Background()
 			sub := submissionFixture(ctx, t, st)
-			// Job.Parameters is here because the fake's copyMap on it is one of
-			// the deviations from its own per-row CreateJob, which copies
-			// nothing; without this the deviation would be untested.
+			// Job.Parameters is here because the fake's copyMap on it is a
+			// defensive copy its older per-row job creator never made; without
+			// this that copy would be untested.
 			sub.Job.Parameters = map[string]string{"k": "v"}
 			sub.Steps[1].DependsOn = []string{"a"}
 			sub.Tasks[0].Parameters = map[string]string{"frame": "1"}

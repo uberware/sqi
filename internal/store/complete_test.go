@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/uberware/sqi/internal/store"
+	"github.com/uberware/sqi/internal/store/storetest"
 )
 
 func completion(task store.Task, a store.TaskAttempt, ts store.TaskStatus, as store.AttemptStatus) store.AttemptCompletion {
@@ -33,13 +34,22 @@ func mustAttempt(t *testing.T, st store.Store, id string) store.TaskAttempt {
 }
 
 // seedRunningTask seeds a ready step holding one task in the given status with
-// a running attempt and one active claim on a fresh pool.
+// a running attempt and one active claim on a fresh pool. An assigned or
+// running task is leased with the claim. A terminal task still holding an open
+// attempt and its claim is unreachable through production (a cancel or a
+// failure closes both), so that attempt and claim are injected: the shape a
+// report racing a cancel, or a crash, leaves behind.
 func seedRunningTask(t *testing.T, st store.Store, status store.TaskStatus) (store.Task, store.TaskAttempt, store.UsagePool) {
 	t.Helper()
+	pool := seedPool(t, st, 1)
+	if status == store.TaskStatusAssigned || status == store.TaskStatusRunning {
+		g := seedGraph(t, st, graphOpts{}, stepSpec{name: "a", status: store.StepStatusReady, tasks: []store.TaskStatus{store.TaskStatusReady}})
+		a := leaseClaiming(t, st, g.Tasks["a"][0].ID, status == store.TaskStatusRunning, pool)
+		return mustTask(t, st, g.Tasks["a"][0].ID), a, pool
+	}
 	g := seedGraph(t, st, graphOpts{}, stepSpec{name: "a", status: store.StepStatusReady, tasks: []store.TaskStatus{status}})
 	task := g.Tasks["a"][0]
 	a := seedAttempt(t, st, task, store.AttemptStatusRunning)
-	pool := seedPool(t, st, 1)
 	seedClaim(t, st, pool.ID, a.ID)
 	return task, a, pool
 }
@@ -121,7 +131,7 @@ func TestCompleteTaskAttempt_RecordsAttemptDetails(t *testing.T) {
 // TestCompleteTaskAttempt_TaskRowUsesServerTime pins that EndedAt, which comes
 // from the worker's clock, is the attempt's end time only: the task row's
 // updated_at (what TaskSortByUpdatedAt orders by) is stamped with server time,
-// as UpdateTaskStatus does, so worker clock skew cannot reorder tasks. The
+// as every status write does, so worker clock skew cannot reorder tasks. The
 // released claim's released_at is server time too; neither backend exposes a
 // claim read, so that is pinned by TestCompleteTaskAttempt_ClaimReleasedAtUsesServerTime
 // in each backend's own package (internal/store/sqlite and internal/store/fake).
@@ -256,9 +266,7 @@ func seedSupersededAttempt(t *testing.T, st store.Store, taskStatus store.TaskSt
 	req.WorkerID = supersededWorker
 	fresh := mustLease(t, st, req, store.LeaseLeased).Attempt
 	if taskStatus == store.TaskStatusRunning {
-		if err := fixtures(t, st).UpdateTaskStatus(t.Context(), task.ID, store.TaskStatusRunning); err != nil {
-			t.Fatalf("UpdateTaskStatus running: %v", err)
-		}
+		storetest.Start(t, st, fresh, "", time.Now().UTC())
 	}
 	return task, old, fresh, pool
 }
@@ -347,11 +355,12 @@ func TestCompleteTaskAttempt_SupersededAttemptIsRejected(t *testing.T) {
 func TestCompleteTaskAttempt_SupersededOpenAttemptIsClosed(t *testing.T) {
 	for name, st := range newStores(t) {
 		t.Run(name, func(t *testing.T) {
-			g := seedGraph(t, st, graphOpts{}, stepSpec{name: "a", status: store.StepStatusReady, tasks: []store.TaskStatus{store.TaskStatusRunning}})
-			task := g.Tasks["a"][0]
+			g := seedGraph(t, st, graphOpts{}, stepSpec{name: "a", status: store.StepStatusReady, tasks: []store.TaskStatus{store.TaskStatusReady}})
 			pool := seedPool(t, st, 2)
-			old := seedAttempt(t, st, task, store.AttemptStatusRunning)
-			seedClaim(t, st, pool.ID, old.ID)
+			old := leaseClaiming(t, st, g.Tasks["a"][0].ID, true, pool)
+			task := mustTask(t, st, g.Tasks["a"][0].ID)
+			// Unreachable through production, so injected: a second open
+			// attempt, with its claim, beside the leased one.
 			fresh := seedAttempt(t, st, task, store.AttemptStatusRunning)
 			seedClaim(t, st, pool.ID, fresh.ID)
 

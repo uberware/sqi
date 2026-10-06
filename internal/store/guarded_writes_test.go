@@ -63,47 +63,6 @@ func TestSetTaskUnschedulableReason_OnlyWhileReady(t *testing.T) {
 	}
 }
 
-func TestUpdateTaskAttempt_OnlyWhileRunning(t *testing.T) {
-	for name, st := range newStores(t) {
-		t.Run(name, func(t *testing.T) {
-			g := seedGraph(t, st, graphOpts{},
-				stepSpec{name: "a", status: store.StepStatusReady, tasks: []store.TaskStatus{store.TaskStatusSucceeded, store.TaskStatusRunning}})
-
-			// A closed attempt is never rewritten: the write is a typed
-			// ErrConflict and the row is untouched.
-			closed := seedAttempt(t, st, g.Tasks["a"][0], store.AttemptStatusSucceeded)
-			closed.SessionID = "late"
-			closed.Status = store.AttemptStatusFailed
-			if _, err := fixtures(t, st).UpdateTaskAttempt(t.Context(), closed); !errors.Is(err, store.ErrConflict) {
-				t.Fatalf("UpdateTaskAttempt on a closed attempt = %v, want ErrConflict", err)
-			}
-			got, err := st.GetTaskAttempt(t.Context(), closed.ID)
-			if err != nil {
-				t.Fatalf("GetTaskAttempt: %v", err)
-			}
-			if got.Status != store.AttemptStatusSucceeded || got.SessionID != "" {
-				t.Fatalf("closed attempt = {status %q, session %q}, want it untouched", got.Status, got.SessionID)
-			}
-
-			// A running attempt still takes the write, which is how a worker's
-			// "running" report records its session.
-			running := seedAttempt(t, st, g.Tasks["a"][1], store.AttemptStatusRunning)
-			running.SessionID = "sess-1"
-			updated, err := fixtures(t, st).UpdateTaskAttempt(t.Context(), running)
-			if err != nil {
-				t.Fatalf("UpdateTaskAttempt on a running attempt: %v", err)
-			}
-			if updated.SessionID != "sess-1" || updated.Status != store.AttemptStatusRunning {
-				t.Fatalf("running attempt after update = {status %q, session %q}, want {running, sess-1}", updated.Status, updated.SessionID)
-			}
-
-			if _, err := fixtures(t, st).UpdateTaskAttempt(t.Context(), store.TaskAttempt{ID: "nope"}); !errors.Is(err, store.ErrNotFound) {
-				t.Fatalf("unknown attempt = %v, want ErrNotFound", err)
-			}
-		})
-	}
-}
-
 // TestWorker_Removable pins the one Go statement of the removability rule that
 // the API's pre-check and the fake's guarded delete both call: a worker is
 // removable exactly when it is offline, disabled or not. A disabled worker that
@@ -181,4 +140,37 @@ func TestDeleteWorkerIfRemovable(t *testing.T) {
 			})
 		}
 	})
+}
+
+// TestDeleteWorkerIfRemovable_KeepsAttemptHistory pins that removing a worker
+// keeps the attempts it ran: task_attempts.worker_id is a snapshot, not a
+// foreign key (migration 00012).
+func TestDeleteWorkerIfRemovable_KeepsAttemptHistory(t *testing.T) {
+	for name, st := range newStores(t) {
+		t.Run(name, func(t *testing.T) {
+			ctx := t.Context()
+			now := time.Now().UTC()
+			g := seedGraph(t, st, graphOpts{},
+				stepSpec{name: "a", status: store.StepStatusReady, tasks: []store.TaskStatus{store.TaskStatusRunning}})
+			task := g.Tasks["a"][0]
+			a := g.Attempts[task.ID]
+			if _, err := st.CompleteTaskAttempt(ctx, store.AttemptCompletion{
+				AttemptID: a.ID, TaskID: task.ID, TaskStatus: store.TaskStatusSucceeded,
+				AttemptStatus: store.AttemptStatusSucceeded, EndedAt: now,
+			}); err != nil {
+				t.Fatalf("CompleteTaskAttempt: %v", err)
+			}
+			seedWorker(t, st, g.Farm.ID, store.WorkerStatusOffline, now)
+			if err := st.DeleteWorkerIfRemovable(ctx, fixtureWorkerID); err != nil {
+				t.Fatalf("DeleteWorkerIfRemovable: %v", err)
+			}
+			got, err := st.GetTaskAttempt(ctx, a.ID)
+			if err != nil {
+				t.Fatalf("GetTaskAttempt after the worker was deleted: %v", err)
+			}
+			if got.WorkerID != fixtureWorkerID {
+				t.Fatalf("attempt worker = %q, want %q kept", got.WorkerID, fixtureWorkerID)
+			}
+		})
+	}
 }

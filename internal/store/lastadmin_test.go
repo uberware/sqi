@@ -74,8 +74,8 @@ func TestLastAdminGuard(t *testing.T) {
 				t.Fatalf("after the plain demotion: role=%q display=%q, want viewer, %q",
 					got.Role, got.DisplayName, demoted.DisplayName)
 			}
-			if n, err := st.CountAdmins(ctx); err != nil || n != 0 {
-				t.Fatalf("enabled admins after directory sync demoted the last one = %d, %v; want 0, nil", n, err)
+			if n := countAdmins(t, st); n != 0 {
+				t.Fatalf("enabled admins after directory sync demoted the last one = %d, want 0", n)
 			}
 		})
 	}
@@ -198,9 +198,26 @@ func TestLastAdminGuard_Concurrent(t *testing.T) {
 			if refused != 1 || removed != admins-1 {
 				t.Fatalf("removed %d, refused %d; want %d removed and exactly 1 refused", removed, refused, admins-1)
 			}
-			if n, err := st.CountAdmins(ctx); err != nil || n != 1 {
-				t.Fatalf("enabled admins = %d, %v; want 1, nil", n, err)
+			if n := countAdmins(t, st); n != 1 {
+				t.Fatalf("enabled admins = %d, want 1", n)
 			}
 		})
 	}
+}
+
+// countAdmins counts enabled admin accounts, the accounts the last-admin guard
+// protects.
+func countAdmins(t *testing.T, st store.Store) int {
+	t.Helper()
+	users, err := st.ListUsers(t.Context())
+	if err != nil {
+		t.Fatalf("ListUsers: %v", err)
+	}
+	n := 0
+	for _, u := range users {
+		if u.Role == "admin" && !u.Disabled {
+			n++
+		}
+	}
+	return n
 }

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/uberware/sqi/internal/store"
+	"github.com/uberware/sqi/internal/store/storetest"
 )
 
 func TestStartTaskAttempt(t *testing.T) {
@@ -15,11 +16,11 @@ func TestStartTaskAttempt(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			ctx, now := t.Context(), time.Now().UTC()
 			g := seedGraph(t, st, graphOpts{jobStatus: store.JobStatusRunning},
-				stepSpec{name: "a", status: store.StepStatusReady, tasks: []store.TaskStatus{store.TaskStatusAssigned, store.TaskStatusAssigned, store.TaskStatusReady}})
+				stepSpec{name: "a", status: store.StepStatusReady, tasks: []store.TaskStatus{store.TaskStatusAssigned, store.TaskStatusReady, store.TaskStatusReady}})
 			live, superseded, reclaimed := g.Tasks["a"][0], g.Tasks["a"][1], g.Tasks["a"][2]
 
 			// The live attempt: the task moves assigned -> running and the session is recorded.
-			a := seedAttempt(t, st, live, store.AttemptStatusRunning)
+			a := g.Attempts[live.ID]
 			if ok, err := st.StartTaskAttempt(ctx, a.ID, live.ID, "sess-1", now); err != nil || !ok {
 				t.Fatalf("StartTaskAttempt(live) = (%v, %v), want (true, nil)", ok, err)
 			}
@@ -35,8 +36,8 @@ func TestStartTaskAttempt(t *testing.T) {
 			}
 
 			// A superseded attempt: attempt 1 closed, attempt 2 open on a new lease.
-			old := seedAttempt(t, st, superseded, store.AttemptStatusFailed)
-			seedAttempt(t, st, superseded, store.AttemptStatusRunning)
+			old := failAndRequeue(t, st, superseded.ID)
+			storetest.Lease(t, st, store.LeaseRequest{TaskID: superseded.ID, WorkerID: fixtureWorkerID})
 			if ok, err := st.StartTaskAttempt(ctx, old.ID, superseded.ID, "sess-old", now); err != nil || ok {
 				t.Fatalf("StartTaskAttempt(superseded) = (%v, %v), want (false, nil)", ok, err)
 			}
@@ -45,7 +46,7 @@ func TestStartTaskAttempt(t *testing.T) {
 			}
 
 			// The latest attempt, but closed and the task reclaimed to ready.
-			closed := seedAttempt(t, st, reclaimed, store.AttemptStatusFailed)
+			closed := failAndRequeue(t, st, reclaimed.ID)
 			if ok, err := st.StartTaskAttempt(ctx, closed.ID, reclaimed.ID, "", now); err != nil || ok {
 				t.Fatalf("StartTaskAttempt(closed) = (%v, %v), want (false, nil)", ok, err)
 			}
@@ -68,9 +69,9 @@ func TestCompleteTaskAttempt_RefusesATaskOutOfFlight(t *testing.T) {
 		for name, st := range newStores(t) {
 			t.Run(string(current)+"/"+name, func(t *testing.T) {
 				g := seedGraph(t, st, graphOpts{jobStatus: store.JobStatusRunning},
-					stepSpec{name: "a", status: store.StepStatusReady, tasks: []store.TaskStatus{current}})
+					stepSpec{name: "a", status: store.StepStatusReady, tasks: []store.TaskStatus{store.TaskStatusAssigned}})
 				task := g.Tasks["a"][0]
-				a := seedAttempt(t, st, task, store.AttemptStatusCanceled)
+				a := cancelThenRetry(t, st, g, current)
 				res, err := st.CompleteTaskAttempt(t.Context(), store.AttemptCompletion{
 					AttemptID: a.ID, TaskID: task.ID, TaskStatus: store.TaskStatusCanceled,
 					AttemptStatus: store.AttemptStatusCanceled, EndedAt: time.Now().UTC(),
@@ -86,15 +87,42 @@ func TestCompleteTaskAttempt_RefusesATaskOutOfFlight(t *testing.T) {
 	}
 }
 
+// cancelThenRetry cancels g's one leased task in step "a", closing its attempt
+// as canceled, and retries it so it comes back in want: ready while its step is
+// still ready, pending once the step was finalized first. It returns the
+// canceled attempt, still the task's latest.
+func cancelThenRetry(t *testing.T, st store.Store, g jobGraph, want store.TaskStatus) store.TaskAttempt {
+	t.Helper()
+	ctx, now := t.Context(), time.Now().UTC()
+	task := g.Tasks["a"][0]
+	if _, ok, err := st.CancelTaskExecution(ctx, task.ID, store.FailureReasonCanceledByUser, now); err != nil || !ok {
+		t.Fatalf("CancelTaskExecution = (%v, %v), want canceled", ok, err)
+	}
+	if want == store.TaskStatusPending {
+		if status, _, err := st.FinalizeStep(ctx, g.Steps["a"].ID, now); err != nil || status != store.StepStatusCanceled {
+			t.Fatalf("FinalizeStep = (%s, %v), want canceled", status, err)
+		}
+	}
+	revived, err := st.RetryTasks(ctx, g.Job.ID, []string{task.ID}, now)
+	if err != nil || len(revived) != 1 || revived[0].Status != want {
+		t.Fatalf("RetryTasks = (%+v, %v), want the task revived %s", revived, err, want)
+	}
+	a := mustAttempt(t, st, g.Attempts[task.ID].ID)
+	if a.Status != store.AttemptStatusCanceled {
+		t.Fatalf("attempt = %q, want canceled", a.Status)
+	}
+	return a
+}
+
 func TestRequeueTaskForRetry_GuardsOnTheLatestAttempt(t *testing.T) {
 	for name, st := range newStores(t) {
 		t.Run(name, func(t *testing.T) {
 			ctx, now := t.Context(), time.Now().UTC()
 			g := seedGraph(t, st, graphOpts{jobStatus: store.JobStatusRunning},
-				stepSpec{name: "a", status: store.StepStatusReady, tasks: []store.TaskStatus{store.TaskStatusAssigned}})
+				stepSpec{name: "a", status: store.StepStatusReady, tasks: []store.TaskStatus{store.TaskStatusReady}})
 			task := g.Tasks["a"][0]
-			failed := seedAttempt(t, st, task, store.AttemptStatusFailed)
-			fresh := seedAttempt(t, st, task, store.AttemptStatusRunning) // a new lease
+			failed := failAndRequeue(t, st, task.ID)
+			fresh := storetest.Lease(t, st, store.LeaseRequest{TaskID: task.ID, WorkerID: fixtureWorkerID}) // a new lease
 			if ok, err := st.RequeueTaskForRetry(ctx, task.ID, failed.ID, now, now); err != nil || ok {
 				t.Fatalf("requeue on a superseded attempt = (%v, %v), want (false, nil)", ok, err)
 			}
@@ -113,11 +141,10 @@ func TestReclaimTaskAttempt(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			ctx, now := t.Context(), time.Now().UTC()
 			g := seedGraph(t, st, graphOpts{jobStatus: store.JobStatusRunning},
-				stepSpec{name: "a", status: store.StepStatusReady, tasks: []store.TaskStatus{store.TaskStatusRunning, store.TaskStatusCanceled, store.TaskStatusRunning}})
+				stepSpec{name: "a", status: store.StepStatusReady, tasks: []store.TaskStatus{store.TaskStatusReady, store.TaskStatusAssigned, store.TaskStatusRunning}})
 			running, canceled, userCanceled := g.Tasks["a"][0], g.Tasks["a"][1], g.Tasks["a"][2]
 			pool := seedPool(t, st, 1)
-			a := seedAttempt(t, st, running, store.AttemptStatusRunning)
-			seedClaim(t, st, pool.ID, a.ID)
+			a := leaseClaiming(t, st, running.ID, true, pool)
 
 			if ok, err := st.ReclaimTaskAttempt(ctx, a.ID, running.ID, now); err != nil || !ok {
 				t.Fatalf("ReclaimTaskAttempt = (%v, %v), want (true, nil)", ok, err)
@@ -139,8 +166,11 @@ func TestReclaimTaskAttempt(t *testing.T) {
 			if ok, err := st.ReclaimTaskAttempt(ctx, a.ID, running.ID, now); err != nil || ok {
 				t.Fatalf("second ReclaimTaskAttempt = (%v, %v), want (false, nil)", ok, err)
 			}
-			// A task the user already canceled stays canceled.
-			c := seedAttempt(t, st, canceled, store.AttemptStatusCanceled)
+			// A task the user already canceled before it started stays canceled.
+			c := g.Attempts[canceled.ID]
+			if _, ok, err := st.CancelTaskExecution(ctx, canceled.ID, store.FailureReasonCanceledByUser, now); err != nil || !ok {
+				t.Fatalf("CancelTaskExecution(assigned) = (%v, %v), want (true, nil)", ok, err)
+			}
 			if ok, err := st.ReclaimTaskAttempt(ctx, c.ID, canceled.ID, now); err != nil || ok {
 				t.Fatalf("ReclaimTaskAttempt(canceled) = (%v, %v), want (false, nil)", ok, err)
 			}
@@ -153,7 +183,7 @@ func TestReclaimTaskAttempt(t *testing.T) {
 			// The same through the real cancel path: the user cancels a running
 			// task, then its worker's shutdown report arrives for the attempt the
 			// cancel closed.
-			u := seedAttempt(t, st, userCanceled, store.AttemptStatusRunning)
+			u := g.Attempts[userCanceled.ID]
 			if _, ok, err := st.CancelTaskExecution(ctx, userCanceled.ID, store.FailureReasonCanceledByUser, now); err != nil || !ok {
 				t.Fatalf("CancelTaskExecution = (%v, %v), want (true, nil)", ok, err)
 			}

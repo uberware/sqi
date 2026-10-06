@@ -3,7 +3,6 @@
 package store_test
 
 import (
-	"context"
 	"errors"
 	"testing"
 	"time"
@@ -13,25 +12,8 @@ import (
 	"github.com/uberware/sqi/internal/store"
 	"github.com/uberware/sqi/internal/store/fake"
 	"github.com/uberware/sqi/internal/store/sqlite"
+	"github.com/uberware/sqi/internal/store/storetest"
 )
-
-// fixtureWriter is the test fixture surface both concrete stores keep and
-// store.Store does not: writes with no production caller.
-type fixtureWriter interface {
-	UpdateTaskStatus(ctx context.Context, id string, status store.TaskStatus) error
-	UpdateTaskAttempt(ctx context.Context, attempt store.TaskAttempt) (store.TaskAttempt, error)
-	SetTaskFailureReason(ctx context.Context, id, reason string) error
-}
-
-// fixtures returns st's fixture writes. Every store newStores builds has them.
-func fixtures(t *testing.T, st store.Store) fixtureWriter {
-	t.Helper()
-	fw, ok := st.(fixtureWriter)
-	if !ok {
-		t.Fatalf("store %T has no fixture writes", st)
-	}
-	return fw
-}
 
 // fixtureWorkerID is the worker every in-flight fixture task is assigned to.
 const fixtureWorkerID = "w1"
@@ -46,106 +28,204 @@ type graphOpts struct {
 	// share, when non-nil, reuses that graph's farm and queue so two jobs can
 	// compete for the same caps.
 	share *jobGraph
+	// dependsOn are the job's upstream job IDs, written as the submission's
+	// dependency edges.
+	dependsOn []string
 }
 
-// stepSpec describes one step of a seeded job. The per-row creators accept
-// any status, so a test places rows in exactly the state it needs without
-// walking the state machine.
+// stepSpec describes one step of a seeded job. Tasks are created in the given
+// status, except that assigned and running tasks are created ready and then
+// leased (and, for running, started) through production writes, so each comes
+// with the attempt a real lease makes.
 type stepSpec struct {
 	name      string
 	status    store.StepStatus
 	dependsOn []string
 	tasks     []store.TaskStatus
+	// reasons, by index into tasks, is the FailureReason each task is
+	// submitted with; a shorter slice leaves the rest empty.
+	reasons []string
 }
 
 // jobGraph is what seedGraph built.
 type jobGraph struct {
-	Farm  store.Farm
-	Queue store.Queue
-	Job   store.Job
-	Steps map[string]store.Step   // by step name
-	Tasks map[string][]store.Task // by step name, in creation order
+	Farm     store.Farm
+	Queue    store.Queue
+	Job      store.Job
+	Steps    map[string]store.Step        // by step name
+	Tasks    map[string][]store.Task      // by step name, in creation order
+	Attempts map[string]store.TaskAttempt // by task ID, for each task seedGraph leased
 }
 
 func seedGraph(t *testing.T, st store.Store, opts graphOpts, specs ...stepSpec) jobGraph {
 	t.Helper()
-	ctx := t.Context()
 	now := time.Now().UTC()
-	g := jobGraph{Steps: map[string]store.Step{}, Tasks: map[string][]store.Task{}}
+	g := jobGraph{Steps: map[string]store.Step{}, Tasks: map[string][]store.Task{}, Attempts: map[string]store.TaskAttempt{}}
+	seedScope(t, st, &g, opts)
 
-	if opts.share != nil {
-		g.Farm, g.Queue = opts.share.Farm, opts.share.Queue
-	} else {
-		var err error
-		if g.Farm, err = st.CreateFarm(ctx, store.Farm{ID: uuid.NewString(), Name: uuid.NewString(), MaxConcurrentTasks: opts.farmCap}); err != nil {
-			t.Fatalf("CreateFarm: %v", err)
-		}
-		if g.Queue, err = st.CreateQueue(ctx, store.Queue{
-			ID: uuid.NewString(), FarmID: g.Farm.ID, Name: uuid.NewString(),
-			MaxConcurrentTasks: opts.queueCap, Paused: opts.queuePaused,
-		}); err != nil {
-			t.Fatalf("CreateQueue: %v", err)
+	sub, inflight := graphSubmission(t, &g, opts, specs)
+	out := storetest.Submit(t, st, sub)
+	g.Job = out.Job
+	for _, step := range out.Steps {
+		g.Steps[step.Name] = step
+	}
+	for _, task := range inflight {
+		req := store.LeaseRequest{TaskID: task.id, WorkerID: fixtureWorkerID, Now: now}
+		if task.running {
+			g.Attempts[task.id] = storetest.Running(t, st, req)
+		} else {
+			g.Attempts[task.id] = storetest.Lease(t, st, req)
 		}
 	}
-	status := opts.jobStatus
-	if status == "" {
-		status = store.JobStatusPending
-	}
-	var err error
-	if g.Job, err = st.CreateJob(ctx, store.Job{
-		ID: uuid.NewString(), FarmID: g.Farm.ID, QueueID: g.Queue.ID, Name: "job",
-		Status: status, TemplateFormat: store.TemplateFormatJSON, CreatedAt: now, UpdatedAt: now,
-	}); err != nil {
-		t.Fatalf("CreateJob: %v", err)
-	}
-	for i, sp := range specs {
-		step, err := st.CreateStep(ctx, store.Step{
-			ID: uuid.NewString(), JobID: g.Job.ID, Name: sp.name, DependsOn: sp.dependsOn,
-			StepOrder: i, Status: sp.status, CreatedAt: now, UpdatedAt: now,
-		})
-		if err != nil {
-			t.Fatalf("CreateStep %s: %v", sp.name, err)
-		}
-		g.Steps[sp.name] = step
-		for j, ts := range sp.tasks {
-			task := store.Task{
-				ID: uuid.NewString(), JobID: g.Job.ID, StepID: step.ID,
-				Name: sp.name + "-" + uuid.NewString()[:4], Status: ts,
-				CreatedAt: now.Add(time.Duration(j) * time.Microsecond), UpdatedAt: now,
-			}
-			if ts == store.TaskStatusAssigned || ts == store.TaskStatusRunning {
-				at := now
-				task.AssignedWorkerID, task.AssignedAt = fixtureWorkerID, &at
-			}
-			created, err := st.CreateTask(ctx, task)
-			if err != nil {
-				t.Fatalf("CreateTask: %v", err)
-			}
-			g.Tasks[sp.name] = append(g.Tasks[sp.name], created)
+	applyCapsAndPause(t, st, &g, opts, now)
+	for _, sp := range specs {
+		for i, task := range g.Tasks[sp.name] {
+			g.Tasks[sp.name][i] = mustTask(t, st, task.ID)
 		}
 	}
 	return g
 }
 
+// seedScope creates the graph's farm and queue uncapped and unpaused (caps and
+// the pause are applied after the in-flight tasks are leased), or reuses the
+// shared graph's.
+func seedScope(t *testing.T, st store.Store, g *jobGraph, opts graphOpts) {
+	t.Helper()
+	if opts.share != nil {
+		g.Farm, g.Queue = opts.share.Farm, opts.share.Queue
+		return
+	}
+	var err error
+	if g.Farm, err = st.CreateFarm(t.Context(), store.Farm{ID: uuid.NewString(), Name: uuid.NewString()}); err != nil {
+		t.Fatalf("CreateFarm: %v", err)
+	}
+	if g.Queue, err = st.CreateQueue(t.Context(), store.Queue{ID: uuid.NewString(), FarmID: g.Farm.ID, Name: uuid.NewString()}); err != nil {
+		t.Fatalf("CreateQueue: %v", err)
+	}
+}
+
+type inflightTask struct {
+	id      string
+	running bool
+}
+
+// graphSubmission builds the job's submission and lists the tasks to lease.
+// A job that will be paused is submitted pending (PauseJob moves it); a
+// terminal job cannot hold leased work, so asking for one is a test bug.
+func graphSubmission(t *testing.T, g *jobGraph, opts graphOpts, specs []stepSpec) (store.JobSubmission, []inflightTask) {
+	t.Helper()
+	status := opts.jobStatus
+	if status == "" || status == store.JobStatusPaused {
+		status = store.JobStatusPending
+	}
+	sub := store.JobSubmission{Job: store.Job{
+		ID: uuid.NewString(), FarmID: g.Farm.ID, QueueID: g.Queue.ID, Name: "job",
+		Status: status, TemplateFormat: store.TemplateFormatJSON,
+	}, DependsOn: opts.dependsOn}
+	var inflight []inflightTask
+	for i, sp := range specs {
+		step := store.Step{ID: uuid.NewString(), JobID: sub.Job.ID, Name: sp.name, DependsOn: sp.dependsOn, StepOrder: i, Status: sp.status}
+		sub.Steps = append(sub.Steps, step)
+		for j, ts := range sp.tasks {
+			task := store.Task{ID: uuid.NewString(), JobID: sub.Job.ID, StepID: step.ID, Name: sp.name + "-" + uuid.NewString()[:4], Status: ts}
+			if j < len(sp.reasons) {
+				task.FailureReason = sp.reasons[j]
+			}
+			if ts == store.TaskStatusAssigned || ts == store.TaskStatusRunning {
+				task.Status = store.TaskStatusReady
+				inflight = append(inflight, inflightTask{id: task.ID, running: ts == store.TaskStatusRunning})
+			}
+			sub.Tasks = append(sub.Tasks, task)
+			g.Tasks[sp.name] = append(g.Tasks[sp.name], task)
+		}
+	}
+	switch status {
+	case store.JobStatusCompleted, store.JobStatusFailed, store.JobStatusCanceled:
+		if len(inflight) > 0 {
+			t.Fatalf("seedGraph: a %s job cannot hold assigned or running tasks through production writes; build that state explicitly with storetest.InjectorFor", status)
+		}
+	}
+	return sub, inflight
+}
+
+// applyCapsAndPause applies opts' caps and pauses after the leases, the state an
+// operator lowering a cap or pausing a queue or job produces.
+func applyCapsAndPause(t *testing.T, st store.Store, g *jobGraph, opts graphOpts, now time.Time) {
+	t.Helper()
+	ctx := t.Context()
+	var err error
+	if opts.share == nil && opts.farmCap > 0 {
+		g.Farm.MaxConcurrentTasks = opts.farmCap
+		if g.Farm, err = st.UpdateFarm(ctx, g.Farm); err != nil {
+			t.Fatalf("UpdateFarm: %v", err)
+		}
+	}
+	if opts.share == nil && (opts.queueCap > 0 || opts.queuePaused) {
+		g.Queue.MaxConcurrentTasks, g.Queue.Paused = opts.queueCap, opts.queuePaused
+		if g.Queue, err = st.UpdateQueue(ctx, g.Queue); err != nil {
+			t.Fatalf("UpdateQueue: %v", err)
+		}
+	}
+	if opts.jobStatus == store.JobStatusPaused {
+		if err := st.PauseJob(ctx, g.Job.ID, now); err != nil {
+			t.Fatalf("PauseJob: %v", err)
+		}
+	}
+	if g.Job, err = st.GetJob(ctx, g.Job.ID); err != nil {
+		t.Fatalf("GetJob: %v", err)
+	}
+}
+
+// seedAttempt injects an attempt on task in the given status. Only for states
+// production cannot reach (a second open attempt, an open attempt on a terminal
+// task, a closed attempt that never ran): an assigned or running task from
+// seedGraph already has its leased attempt in jobGraph.Attempts.
 func seedAttempt(t *testing.T, st store.Store, task store.Task, status store.AttemptStatus) store.TaskAttempt {
 	t.Helper()
 	worker := task.AssignedWorkerID
 	if worker == "" {
 		worker = fixtureWorkerID
 	}
-	latest, err := st.ListTaskAttempts(t.Context(), task.ID)
+	existing, err := st.ListTaskAttempts(t.Context(), task.ID)
 	if err != nil {
 		t.Fatalf("ListTaskAttempts: %v", err)
 	}
 	now := time.Now().UTC()
-	a, err := st.CreateTaskAttempt(t.Context(), store.TaskAttempt{
-		ID: uuid.NewString(), TaskID: task.ID, WorkerID: worker, AttemptNumber: len(latest) + 1,
+	a, err := storetest.InjectorFor(t, st).InjectTaskAttempt(t.Context(), store.TaskAttempt{
+		ID: uuid.NewString(), TaskID: task.ID, WorkerID: worker, AttemptNumber: len(existing) + 1,
 		Status: status, StartedAt: now, CreatedAt: now,
 	})
 	if err != nil {
-		t.Fatalf("CreateTaskAttempt: %v", err)
+		t.Fatalf("InjectTaskAttempt: %v", err)
 	}
 	return a
+}
+
+// leaseClaiming leases taskID, which must be ready, to the fixture worker
+// holding one slot in each of pools, and starts it when running is set: claimed
+// in-flight work, leased the way the scheduler leases it.
+func leaseClaiming(t *testing.T, st store.Store, taskID string, running bool, pools ...store.UsagePool) store.TaskAttempt {
+	t.Helper()
+	req := store.LeaseRequest{TaskID: taskID, WorkerID: fixtureWorkerID, Now: time.Now().UTC()}
+	for _, p := range pools {
+		req.Claims = append(req.Claims, store.UsagePoolClaim{ClaimID: uuid.NewString(), PoolID: p.ID, PoolName: p.Name})
+	}
+	if running {
+		return storetest.Running(t, st, req)
+	}
+	return storetest.Lease(t, st, req)
+}
+
+// seedClaim injects an active claim on attemptID. Only for states production
+// cannot reach (a claim on a closed attempt); a claim held by in-flight work
+// comes from LeaseRequest.Claims.
+func seedClaim(t *testing.T, st store.Store, poolID, attemptID string) store.UsageClaim {
+	t.Helper()
+	c, err := storetest.InjectorFor(t, st).InjectClaim(t.Context(), store.UsageClaim{ID: uuid.NewString(), PoolID: poolID, TaskAttemptID: attemptID})
+	if err != nil {
+		t.Fatalf("InjectClaim: %v", err)
+	}
+	return c
 }
 
 func seedPool(t *testing.T, st store.Store, maxConcurrent int) store.UsagePool {
@@ -155,15 +235,6 @@ func seedPool(t *testing.T, st store.Store, maxConcurrent int) store.UsagePool {
 		t.Fatalf("CreateUsagePool: %v", err)
 	}
 	return p
-}
-
-func seedClaim(t *testing.T, st store.Store, poolID, attemptID string) store.UsageClaim {
-	t.Helper()
-	c, err := st.CreateClaim(t.Context(), store.UsageClaim{ID: uuid.NewString(), PoolID: poolID, TaskAttemptID: attemptID})
-	if err != nil {
-		t.Fatalf("CreateClaim: %v", err)
-	}
-	return c
 }
 
 // seedWorker registers the fixture worker in the given status. RegisterWorker
@@ -238,3 +309,40 @@ func mustJob(t *testing.T, st store.Store, id string) store.Job {
 }
 
 func errorsIsNotFound(err error) bool { return errors.Is(err, store.ErrNotFound) }
+
+func TestSeedGraph_PausedQueueAndJobKeepLeasedTasks(t *testing.T) {
+	for name, st := range newStores(t) {
+		t.Run(name, func(t *testing.T) {
+			g := seedGraph(t, st, graphOpts{jobStatus: store.JobStatusPaused, queuePaused: true},
+				stepSpec{name: "a", status: store.StepStatusReady, tasks: []store.TaskStatus{store.TaskStatusAssigned, store.TaskStatusRunning}})
+			if !g.Queue.Paused || g.Job.Status != store.JobStatusPaused {
+				t.Fatalf("queue paused=%v job=%s, want paused/paused", g.Queue.Paused, g.Job.Status)
+			}
+			for i, want := range []store.TaskStatus{store.TaskStatusAssigned, store.TaskStatusRunning} {
+				task := g.Tasks["a"][i]
+				if task.Status != want {
+					t.Fatalf("task %d status = %s, want %s", i, task.Status, want)
+				}
+				a, ok := g.Attempts[task.ID]
+				if !ok || a.Status != store.AttemptStatusRunning || a.AttemptNumber != 1 {
+					t.Fatalf("task %d attempt = %+v (found %v), want a running attempt #1", i, a, ok)
+				}
+			}
+		})
+	}
+}
+
+func TestSeedGraph_InFlightBeyondCaps(t *testing.T) {
+	for name, st := range newStores(t) {
+		t.Run(name, func(t *testing.T) {
+			g := seedGraph(t, st, graphOpts{queueCap: 1, farmCap: 1},
+				stepSpec{name: "a", status: store.StepStatusReady, tasks: []store.TaskStatus{store.TaskStatusRunning, store.TaskStatusRunning}})
+			if g.Queue.MaxConcurrentTasks != 1 || g.Farm.MaxConcurrentTasks != 1 {
+				t.Fatalf("caps = queue %d farm %d, want 1/1", g.Queue.MaxConcurrentTasks, g.Farm.MaxConcurrentTasks)
+			}
+			if n, err := st.CountActiveTasksInQueue(t.Context(), g.Queue.ID); err != nil || n != 2 {
+				t.Fatalf("CountActiveTasksInQueue = %d, %v; want 2 (over the cap)", n, err)
+			}
+		})
+	}
+}

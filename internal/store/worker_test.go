@@ -32,11 +32,10 @@ func TestRegisterWorker_ReclaimsAfterARestart(t *testing.T) {
 	for name, st := range newStores(t) {
 		t.Run(name, func(t *testing.T) {
 			g := seedGraph(t, st, graphOpts{jobStatus: store.JobStatusRunning},
-				stepSpec{name: "a", status: store.StepStatusReady, tasks: []store.TaskStatus{store.TaskStatusRunning}})
+				stepSpec{name: "a", status: store.StepStatusReady, tasks: []store.TaskStatus{store.TaskStatusReady}})
 			task := g.Tasks["a"][0]
 			pool := seedPool(t, st, 1)
-			a := seedAttempt(t, st, task, store.AttemptStatusRunning)
-			seedClaim(t, st, pool.ID, a.ID)
+			a := leaseClaiming(t, st, task.ID, true, pool)
 
 			// A legacy registration (no instance ID), then the first one with an
 			// ID: nothing proves a restart, so nothing is reclaimed.
@@ -101,7 +100,6 @@ func TestDisabledWorker_StaysDisabledAndIsReclaimed(t *testing.T) {
 			ctx, now := t.Context(), time.Now().UTC()
 			g := seedGraph(t, st, graphOpts{jobStatus: store.JobStatusRunning},
 				stepSpec{name: "a", status: store.StepStatusReady, tasks: []store.TaskStatus{store.TaskStatusRunning}})
-			seedAttempt(t, st, g.Tasks["a"][0], store.AttemptStatusRunning)
 			seedWorker(t, st, g.Farm.ID, store.WorkerStatusDisabled, now.Add(-time.Hour))
 			cutoff := now.Add(-time.Minute)
 
@@ -256,8 +254,9 @@ func TestDeleteWorkerIfRemovable_RefusesAWorkerWithWorkInFlight(t *testing.T) {
 			if err := st.DeleteWorkerIfRemovable(ctx, fixtureWorkerID); !errors.Is(err, store.ErrConflict) {
 				t.Fatalf("delete with a running task: err = %v, want ErrConflict", err)
 			}
-			if err := fixtures(t, st).UpdateTaskStatus(ctx, g.Tasks["a"][0].ID, store.TaskStatusSucceeded); err != nil {
-				t.Fatalf("UpdateTaskStatus: %v", err)
+			task := g.Tasks["a"][0]
+			if _, err := st.CompleteTaskAttempt(ctx, completion(task, g.Attempts[task.ID], store.TaskStatusSucceeded, store.AttemptStatusSucceeded)); err != nil {
+				t.Fatalf("CompleteTaskAttempt: %v", err)
 			}
 			if err := st.DeleteWorkerIfRemovable(ctx, fixtureWorkerID); err != nil {
 				t.Fatalf("delete once idle: %v", err)
@@ -285,11 +284,10 @@ func TestOfflineWorker_IgnoresASupersededInstance(t *testing.T) {
 		for name, st := range newStores(t) {
 			t.Run(tc.name+"/"+name, func(t *testing.T) {
 				g := seedGraph(t, st, graphOpts{jobStatus: store.JobStatusRunning},
-					stepSpec{name: "a", status: store.StepStatusReady, tasks: []store.TaskStatus{store.TaskStatusRunning}})
+					stepSpec{name: "a", status: store.StepStatusReady, tasks: []store.TaskStatus{store.TaskStatusReady}})
 				task := g.Tasks["a"][0]
 				pool := seedPool(t, st, 1)
-				a := seedAttempt(t, st, task, store.AttemptStatusRunning)
-				seedClaim(t, st, pool.ID, a.ID)
+				leaseClaiming(t, st, task.ID, true, pool)
 				registerInstance(t, st, g.Farm.ID, tc.stored)
 
 				reclaimed, offlined, err := st.OfflineWorker(t.Context(), fixtureWorkerID, tc.deregister, time.Now().UTC())
