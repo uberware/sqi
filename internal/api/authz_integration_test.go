@@ -24,6 +24,7 @@ import (
 	"github.com/uberware/sqi/internal/product"
 	"github.com/uberware/sqi/internal/store"
 	"github.com/uberware/sqi/internal/store/fake"
+	"github.com/uberware/sqi/internal/store/storetest"
 )
 
 func TestAuthz_MatrixOverRealRouter(t *testing.T) {
@@ -521,16 +522,12 @@ func seedOwnershipObject(t *testing.T, st *fake.Store, idSuffix, owner string, f
 	t.Helper()
 	jobID = "ownsweep-job-" + idSuffix
 	taskID = "ownsweep-task-" + idSuffix
-	if _, err := st.CreateJob(t.Context(), store.Job{
-		ID: jobID, Name: jobID, Owner: owner, Status: f.jobStatus, CreatedAt: time.Now().UTC(),
-	}); err != nil {
-		t.Fatalf("CreateJob(%s): %v", jobID, err)
-	}
-	if _, err := st.CreateTask(t.Context(), store.Task{
-		ID: taskID, JobID: jobID, Status: f.taskStatus,
-	}); err != nil {
-		t.Fatalf("CreateTask(%s): %v", taskID, err)
-	}
+	stepID := "ownsweep-step-" + idSuffix
+	storetest.Submit(t, st, store.JobSubmission{
+		Job:   store.Job{ID: jobID, Name: jobID, Owner: owner, Status: f.jobStatus},
+		Steps: []store.Step{{ID: stepID, JobID: jobID, Name: "Step1", Status: store.StepStatusReady}},
+		Tasks: []store.Task{{ID: taskID, JobID: jobID, StepID: stepID, Name: taskID, Status: f.taskStatus}},
+	})
 	return jobID, taskID
 }
 

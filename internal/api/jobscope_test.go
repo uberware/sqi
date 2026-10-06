@@ -9,7 +9,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
-	"time"
 
 	"github.com/go-chi/chi/v5"
 
@@ -17,6 +16,7 @@ import (
 	"github.com/uberware/sqi/internal/openjd"
 	"github.com/uberware/sqi/internal/store"
 	"github.com/uberware/sqi/internal/store/fake"
+	"github.com/uberware/sqi/internal/store/storetest"
 	"github.com/uberware/sqi/internal/ws"
 )
 
@@ -176,15 +176,26 @@ func TestListJobsUnscopedSeesAll(t *testing.T) {
 // Reusing that name would not compile.
 func seedOwnedJob(t *testing.T, st *fake.Store, id, owner string) {
 	t.Helper()
-	if _, err := st.CreateJob(t.Context(), store.Job{
-		ID:        id,
-		Name:      id,
-		Owner:     owner,
-		Status:    store.JobStatusPending,
-		CreatedAt: time.Now().UTC(),
-	}); err != nil {
-		t.Fatalf("CreateJob(%s): %v", id, err)
-	}
+	storetest.Submit(t, st, store.JobSubmission{Job: store.Job{
+		ID:     id,
+		Name:   id,
+		Owner:  owner,
+		Status: store.JobStatusPending,
+	}})
+}
+
+// seedOwnedJobWithTask inserts a minimal job owned by owner with one ready
+// task, taskID, under one step, in a single submission. A task cannot be added
+// to a job that already exists, so a test that needs a task seeds the job
+// through this instead of seedOwnedJob.
+func seedOwnedJobWithTask(t *testing.T, st *fake.Store, id, owner, taskID string) {
+	t.Helper()
+	step := store.Step{ID: "step-" + id, JobID: id, Name: "Step1", Status: store.StepStatusReady}
+	storetest.Submit(t, st, store.JobSubmission{
+		Job:   store.Job{ID: id, Name: id, Owner: owner, Status: store.JobStatusPending},
+		Steps: []store.Step{step},
+		Tasks: []store.Task{{ID: taskID, JobID: id, StepID: step.ID, Name: taskID, Status: store.TaskStatusReady}},
+	})
 }
 
 func TestRequireJobAccess(t *testing.T) {
@@ -261,12 +272,7 @@ func TestRequireJobAccess(t *testing.T) {
 // A task route resolves ownership through the task's parent job.
 func TestRequireJobAccessViaTask(t *testing.T) {
 	st := fake.New()
-	seedOwnedJob(t, st, "job-1", "bob")
-	if _, err := st.CreateTask(context.Background(), store.Task{
-		ID: "task-1", JobID: "job-1", Status: store.TaskStatusReady,
-	}); err != nil {
-		t.Fatalf("CreateTask: %v", err)
-	}
+	seedOwnedJobWithTask(t, st, "job-1", "bob", "task-1")
 	az := newAuthz(st, slog.New(slog.DiscardHandler))
 
 	h := az.requireJobAccessByTaskID()(http.HandlerFunc(
@@ -292,12 +298,7 @@ func TestRequireJobAccessViaTask(t *testing.T) {
 // instead (GetJob(taskID) -> 404).
 func TestRequireJobAccessViaTaskChildRoute(t *testing.T) {
 	st := fake.New()
-	seedOwnedJob(t, st, "job-1", "bob")
-	if _, err := st.CreateTask(context.Background(), store.Task{
-		ID: "task-1", JobID: "job-1", Status: store.TaskStatusReady,
-	}); err != nil {
-		t.Fatalf("CreateTask: %v", err)
-	}
+	seedOwnedJobWithTask(t, st, "job-1", "bob", "task-1")
 	az := newAuthz(st, slog.New(slog.DiscardHandler))
 
 	h := az.requireJobAccessByTaskID()(http.HandlerFunc(

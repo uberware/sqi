@@ -13,8 +13,7 @@ import (
 )
 
 // lastAdminRaceStore lets a second request win the race at the decision point
-// of the request under test: right after CountAdmins (where a check-then-write
-// guard would decide) or right before the guarded write (DeleteUser,
+// of the request under test: right before the guarded write (DeleteUser,
 // UpdateUserKeepingAdmin). hook runs once, and only once armed, so the auth
 // middleware's own store calls during login cannot trigger it early.
 type lastAdminRaceStore struct {
@@ -30,12 +29,6 @@ func (s *lastAdminRaceStore) fire() {
 		return
 	}
 	s.once.Do(s.hook)
-}
-
-func (s *lastAdminRaceStore) CountAdmins(ctx context.Context) (int, error) {
-	n, err := s.Store.CountAdmins(ctx)
-	s.fire()
-	return n, err
 }
 
 func (s *lastAdminRaceStore) DeleteUser(ctx context.Context, id string) error {
@@ -131,9 +124,15 @@ func TestConcurrentRemovalsKeepOneAdmin(t *testing.T) {
 // assertLiveAdmins fails unless exactly want enabled admins exist.
 func assertLiveAdmins(t *testing.T, st store.Store, want int) {
 	t.Helper()
-	n, err := st.CountAdmins(t.Context())
+	users, err := st.ListUsers(t.Context())
 	if err != nil {
-		t.Fatalf("CountAdmins: %v", err)
+		t.Fatalf("ListUsers: %v", err)
+	}
+	n := 0
+	for _, u := range users {
+		if u.Role == "admin" && !u.Disabled {
+			n++
+		}
 	}
 	if n != want {
 		t.Fatalf("enabled admins = %d, want %d (last-admin lockout)", n, want)

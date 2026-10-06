@@ -14,7 +14,6 @@ package api
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -25,6 +24,7 @@ import (
 
 	"github.com/uberware/sqi/internal/store"
 	"github.com/uberware/sqi/internal/store/fake"
+	"github.com/uberware/sqi/internal/store/storetest"
 )
 
 // ── router helper ─────────────────────────────────────────────────────────────
@@ -55,12 +55,9 @@ func (f *fakeTaskCanceler) RetryTask(ctx context.Context, id string) error {
 			status = store.TaskStatusReady
 		}
 		// Revive through RetryTasks, the same store call the real scheduler
-		// makes. UpdateTaskStatus would be wrong here: it enforces the task
-		// state machine, and failed → ready is not an arrow — production
+		// makes: failed → ready is not a task state-machine arrow, production
 		// revives inside RetryTasks (ready under a live step, else pending) and
-		// then promotes pending to ready via dependency resolution. Using
-		// UpdateTaskStatus made this double exercise a transition the real
-		// store rejects.
+		// then promotes pending to ready via dependency resolution.
 		task, err := f.retryStore.GetTask(ctx, id)
 		if err != nil {
 			return err
@@ -69,30 +66,16 @@ func (f *fakeTaskCanceler) RetryTask(ctx context.Context, id string) error {
 			return err
 		}
 		if status != store.TaskStatusPending {
-			// RetryTasks lands on pending under a step that is not live; walk
-			// the legal pending → ready arrow when the test wants the
+			// RetryTasks lands on pending under a step that is not live; release
+			// the step, as dependency resolution does once the task's
+			// dependencies are satisfied, when the test wants the
 			// post-resolution status (a no-op when it already landed ready).
-			return fixtureSetTaskStatus(ctx, f.retryStore, id, status)
+			_, _, err := f.retryStore.ReleaseStep(ctx, task.StepID, time.Now())
+			return err
 		}
 		return nil
 	}
 	return nil
-}
-
-// taskStatusFixture is the compare-and-set status write both concrete stores
-// keep as test fixture surface; store.Store does not carry it.
-type taskStatusFixture interface {
-	UpdateTaskStatus(ctx context.Context, id string, status store.TaskStatus) error
-}
-
-// fixtureSetTaskStatus writes a task's status through st's fixture write. st
-// must be a concrete store, or a wrapper that forwards UpdateTaskStatus.
-func fixtureSetTaskStatus(ctx context.Context, st store.Store, id string, status store.TaskStatus) error {
-	fx, ok := st.(taskStatusFixture)
-	if !ok {
-		return fmt.Errorf("store %T has no UpdateTaskStatus fixture", st)
-	}
-	return fx.UpdateTaskStatus(ctx, id, status)
 }
 
 func newTaskRouter(st store.Store) chi.Router {
@@ -116,9 +99,33 @@ func newTaskRouterCanceler(st store.Store, sched taskCanceler) chi.Router {
 // seedTask inserts a minimal job + task into st, returning both.
 func seedTask(t *testing.T, st *fake.Store, taskStatus store.TaskStatus) (store.Job, store.Task) {
 	t.Helper()
-	ctx := t.Context()
+	job, task, _ := seedTaskWith(t, st, seedTaskSpec{status: taskStatus})
+	return job, task
+}
 
-	now := time.Now()
+// seedTaskSpec configures [seedTaskWith].
+type seedTaskSpec struct {
+	// status is the task's status. An assigned or running task is submitted
+	// ready and then leased (see [submitLeasing]), so it comes with the attempt
+	// a real lease writes.
+	status store.TaskStatus
+	// stepStatus is the step's status; "" is running, the legacy live status.
+	stepStatus store.StepStatus
+	// failureReason is the FailureReason the task is submitted with.
+	failureReason string
+}
+
+// seedTaskWith inserts a minimal job, one step and one task into st in a single
+// submission, returning all three and the attempt a leased task holds (the zero
+// value for any other task status).
+func seedTaskWith(t *testing.T, st *fake.Store, spec seedTaskSpec) (store.Job, store.Task, store.TaskAttempt) {
+	t.Helper()
+	seedFarmQueue(t, st)
+
+	stepStatus := spec.stepStatus
+	if stepStatus == "" {
+		stepStatus = store.StepStatusRunning
+	}
 	job := store.Job{
 		ID:             uuid.NewString(),
 		FarmID:         "farm-1",
@@ -127,43 +134,26 @@ func seedTask(t *testing.T, st *fake.Store, taskStatus store.TaskStatus) (store.
 		Priority:       50,
 		Status:         store.JobStatusRunning,
 		TemplateFormat: store.TemplateFormatJSON,
-		CreatedAt:      now,
-		UpdatedAt:      now,
 	}
-	j, err := st.CreateJob(ctx, job)
-	if err != nil {
-		t.Fatalf("seedTask: CreateJob: %v", err)
-	}
-
 	step := store.Step{
 		ID:        uuid.NewString(),
-		JobID:     j.ID,
+		JobID:     job.ID,
 		Name:      "Step1",
 		StepOrder: 0,
-		Status:    store.StepStatusRunning,
-		CreatedAt: now,
-		UpdatedAt: now,
+		Status:    stepStatus,
 	}
-	s, err := st.CreateStep(ctx, step)
-	if err != nil {
-		t.Fatalf("seedTask: CreateStep: %v", err)
-	}
-
 	task := store.Task{
-		ID:        uuid.NewString(),
-		JobID:     j.ID,
-		StepID:    s.ID,
-		Name:      "task-0",
-		Status:    taskStatus,
-		CreatedAt: now,
-		UpdatedAt: now,
+		ID:            uuid.NewString(),
+		JobID:         job.ID,
+		StepID:        step.ID,
+		Name:          "task-0",
+		Status:        spec.status,
+		FailureReason: spec.failureReason,
 	}
-	tk, err := st.CreateTask(ctx, task)
-	if err != nil {
-		t.Fatalf("seedTask: CreateTask: %v", err)
-	}
-
-	return j, tk
+	out, attempts := submitLeasing(t, st, store.JobSubmission{
+		Job: job, Steps: []store.Step{step}, Tasks: []store.Task{task},
+	}, "")
+	return out.Job, out.Tasks[0], attempts[task.ID]
 }
 
 // ── GET /api/v1/jobs/{id}/tasks ───────────────────────────────────────────────
@@ -319,16 +309,9 @@ func TestGetTask(t *testing.T) {
 		st := fake.New()
 		r := newTaskRouter(st)
 		// Running: RequeueTaskForRetry only transitions an in-flight task.
-		_, tk := seedTask(t, st, store.TaskStatusRunning)
+		_, tk, att := seedTaskWith(t, st, seedTaskSpec{status: store.TaskStatusRunning})
 
 		now := time.Now()
-		att, err := st.CreateTaskAttempt(t.Context(), store.TaskAttempt{
-			ID: uuid.NewString(), TaskID: tk.ID, WorkerID: "w1",
-			AttemptNumber: 1, Status: store.AttemptStatusRunning, StartedAt: now,
-		})
-		if err != nil {
-			t.Fatalf("CreateTaskAttempt: %v", err)
-		}
 		if _, _, _, err := st.RecordTaskFailure(t.Context(), att.ID, tk.ID, nil, "", "", now); err != nil {
 			t.Fatalf("RecordTaskFailure: %v", err)
 		}
@@ -359,12 +342,8 @@ func TestGetTask(t *testing.T) {
 	t.Run("includes failure_reason when set", func(t *testing.T) {
 		st := fake.New()
 		r := newTaskRouter(st)
-		_, tk := seedTask(t, st, store.TaskStatusFailed)
-
 		const reason = "staging"
-		if err := st.SetTaskFailureReason(t.Context(), tk.ID, reason); err != nil {
-			t.Fatalf("SetTaskFailureReason: %v", err)
-		}
+		_, tk, _ := seedTaskWith(t, st, seedTaskSpec{status: store.TaskStatusFailed, failureReason: reason})
 
 		req := newReq(t, http.MethodGet, "/api/v1/tasks/"+tk.ID, nil)
 		rr := httptest.NewRecorder()
@@ -422,23 +401,10 @@ func TestGetTaskLogs(t *testing.T) {
 		st := fake.New()
 		r := newTaskRouter(st)
 		ctx := t.Context()
-		_, tk := seedTask(t, st, store.TaskStatusRunning)
+		// The running task's lease wrote its attempt; insert two log chunks.
+		_, tk, attempt := seedTaskWith(t, st, seedTaskSpec{status: store.TaskStatusRunning})
 
-		// Insert a task attempt and two log chunks.
 		now := time.Now()
-		attempt := store.TaskAttempt{
-			ID:            uuid.NewString(),
-			TaskID:        tk.ID,
-			AttemptNumber: 1,
-			Status:        store.AttemptStatusRunning,
-			StartedAt:     now,
-			CreatedAt:     now,
-		}
-		attempt, err := st.CreateTaskAttempt(ctx, attempt)
-		if err != nil {
-			t.Fatalf("CreateTaskAttempt: %v", err)
-		}
-
 		for i, msg := range []string{"line one", "line two"} {
 			_, err := st.CreateTaskLog(ctx, store.TaskLog{
 				ID:         uuid.NewString(),
@@ -479,20 +445,9 @@ func TestGetTaskLogs(t *testing.T) {
 		st := fake.New()
 		r := newTaskRouter(st)
 		ctx := t.Context()
-		_, tk := seedTask(t, st, store.TaskStatusRunning)
+		_, tk, attempt := seedTaskWith(t, st, seedTaskSpec{status: store.TaskStatusRunning})
 
 		now := time.Now()
-		attempt, err := st.CreateTaskAttempt(ctx, store.TaskAttempt{
-			ID:            uuid.NewString(),
-			TaskID:        tk.ID,
-			AttemptNumber: 1,
-			Status:        store.AttemptStatusRunning,
-			StartedAt:     now,
-			CreatedAt:     now,
-		})
-		if err != nil {
-			t.Fatalf("CreateTaskAttempt: %v", err)
-		}
 		for _, seq := range []int64{5, 9, 12} {
 			if _, err := st.CreateTaskLog(ctx, store.TaskLog{
 				ID:         uuid.NewString(),
@@ -547,47 +502,23 @@ func TestGetTaskAttempts(t *testing.T) {
 		st := fake.New()
 		r := newTaskRouter(st)
 		ctx := t.Context()
-		_, tk := seedTask(t, st, store.TaskStatusRunning)
+		_, tk, attempt1 := seedTaskWith(t, st, seedTaskSpec{status: store.TaskStatusRunning})
 
-		// Attempt 1: failed with a message and exit code.
-		startedAt1 := time.Now().Add(-time.Hour)
-		endedAt1 := startedAt1.Add(time.Minute)
-		attempt1 := store.TaskAttempt{
-			ID:            uuid.NewString(),
-			TaskID:        tk.ID,
-			WorkerID:      "worker-1",
-			AttemptNumber: 1,
-			Status:        store.AttemptStatusRunning,
-			StartedAt:     startedAt1,
-			CreatedAt:     startedAt1,
-		}
-		attempt1, err := st.CreateTaskAttempt(ctx, attempt1)
-		if err != nil {
-			t.Fatalf("CreateTaskAttempt: %v", err)
-		}
+		// Attempt 1: failed with a message and exit code, then requeued for a
+		// retry — what the scheduler does with a genuine failure.
+		failedAt := time.Now()
 		exitCode := 1
-		attempt1.Status = store.AttemptStatusFailed
-		attempt1.ExitCode = &exitCode
-		attempt1.Message = "worker not configured for staging"
-		attempt1.EndedAt = &endedAt1
-		if _, err := st.UpdateTaskAttempt(ctx, attempt1); err != nil {
-			t.Fatalf("UpdateTaskAttempt: %v", err)
+		if _, _, _, err := st.RecordTaskFailure(ctx, attempt1.ID, tk.ID, &exitCode, "",
+			"worker not configured for staging", failedAt); err != nil {
+			t.Fatalf("RecordTaskFailure: %v", err)
+		}
+		if requeued, err := st.RequeueTaskForRetry(ctx, tk.ID, attempt1.ID, failedAt, failedAt); err != nil || !requeued {
+			t.Fatalf("RequeueTaskForRetry: requeued=%v err=%v", requeued, err)
 		}
 
-		// Attempt 2: still running, no exit code or end time.
-		startedAt2 := time.Now()
-		attempt2 := store.TaskAttempt{
-			ID:            uuid.NewString(),
-			TaskID:        tk.ID,
-			WorkerID:      "worker-2",
-			AttemptNumber: 2,
-			Status:        store.AttemptStatusRunning,
-			StartedAt:     startedAt2,
-			CreatedAt:     startedAt2,
-		}
-		if _, err := st.CreateTaskAttempt(ctx, attempt2); err != nil {
-			t.Fatalf("CreateTaskAttempt: %v", err)
-		}
+		// Attempt 2: leased by another worker and still running, no exit code
+		// or end time.
+		storetest.Running(t, st, store.LeaseRequest{TaskID: tk.ID, WorkerID: "worker-2"})
 
 		req := newReq(t, http.MethodGet, "/api/v1/tasks/"+tk.ID+"/attempts", nil)
 		rr := httptest.NewRecorder()
@@ -757,12 +688,10 @@ func TestRetryTask(t *testing.T) {
 		st := fake.New()
 		sched := &fakeTaskCanceler{retryStore: st, retryStatus: store.TaskStatusPending}
 		r := newTaskRouterCanceler(st, sched)
-		_, tk := seedTask(t, st, store.TaskStatusFailed)
-		// A task whose dependencies are unsatisfied sits under a pending step,
-		// where RetryTasks revives it pending for ResolveDependencies to gate.
-		if err := st.UpdateStepStatus(t.Context(), tk.StepID, store.StepStatusPending); err != nil {
-			t.Fatalf("UpdateStepStatus: %v", err)
-		}
+		// The failed task's step failed with it. RetryTasks resets that step to
+		// pending and, because the step is no longer live, revives the task
+		// pending too, for ResolveDependencies to gate.
+		_, tk, _ := seedTaskWith(t, st, seedTaskSpec{status: store.TaskStatusFailed, stepStatus: store.StepStatusFailed})
 
 		req := newReq(t, http.MethodPost, "/api/v1/tasks/"+tk.ID+"/retry", nil)
 		rr := httptest.NewRecorder()

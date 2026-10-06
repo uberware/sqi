@@ -32,6 +32,7 @@ import (
 
 	"github.com/uberware/sqi/internal/store"
 	"github.com/uberware/sqi/internal/store/fake"
+	"github.com/uberware/sqi/internal/store/storetest"
 )
 
 // ── POST /api/v1/jobs — fuzz the request body ─────────────────────────────────
@@ -149,7 +150,7 @@ func FuzzPatchJobPayload(f *testing.F) {
 		}
 
 		// Seed a pending job to patch.
-		job := store.Job{
+		storetest.Submit(t, st, store.JobSubmission{Job: store.Job{
 			ID:             "fuzz-job",
 			FarmID:         "fuzz-farm",
 			QueueID:        "fuzz-queue",
@@ -157,12 +158,7 @@ func FuzzPatchJobPayload(f *testing.F) {
 			Priority:       50,
 			Status:         store.JobStatusPending,
 			TemplateFormat: store.TemplateFormatJSON,
-			CreatedAt:      now,
-			UpdatedAt:      now,
-		}
-		if _, err := st.CreateJob(ctx, job); err != nil {
-			t.Fatalf("setup CreateJob: %v", err)
-		}
+		}})
 
 		r := newJobRouter(st, &fakeScheduler{})
 

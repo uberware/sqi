@@ -16,6 +16,7 @@ import (
 
 	"github.com/uberware/sqi/internal/store"
 	"github.com/uberware/sqi/internal/store/fake"
+	"github.com/uberware/sqi/internal/store/storetest"
 	"github.com/uberware/sqi/internal/ws"
 )
 
@@ -24,15 +25,7 @@ import (
 // cannot be resolved.
 func TestWsJobOwnerResolver(t *testing.T) {
 	st := fake.New()
-	if _, err := st.CreateJob(context.Background(), store.Job{
-		ID:        "job-1",
-		Name:      "job-1",
-		Owner:     "alice",
-		Status:    store.JobStatusPending,
-		CreatedAt: time.Now().UTC(),
-	}); err != nil {
-		t.Fatalf("CreateJob: %v", err)
-	}
+	seedTestJob(t, st, "job-1", "alice")
 
 	resolve := wsJobOwnerResolver(st)
 
@@ -98,15 +91,12 @@ func TestNewWSHub_ScopedClientReceivesOwnJobEventsOnly(t *testing.T) {
 // seedTestJob inserts a minimal job owned by owner.
 func seedTestJob(t *testing.T, st store.Store, id, owner string) {
 	t.Helper()
-	if _, err := st.CreateJob(context.Background(), store.Job{
-		ID:        id,
-		Name:      id,
-		Owner:     owner,
-		Status:    store.JobStatusPending,
-		CreatedAt: time.Now().UTC(),
-	}); err != nil {
-		t.Fatalf("CreateJob(%s): %v", id, err)
-	}
+	storetest.Submit(t, st, store.JobSubmission{Job: store.Job{
+		ID:     id,
+		Name:   id,
+		Owner:  owner,
+		Status: store.JobStatusPending,
+	}})
 }
 
 // countingStore wraps a store.Store and counts calls to GetJob, so tests can

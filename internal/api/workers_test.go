@@ -112,6 +112,8 @@ func seedDisabledWorker(t *testing.T, st *fake.Store, liveness store.WorkerStatu
 	return w
 }
 
+// seedWorkerTask seeds a job of its own holding one task, name, that workerID
+// holds in status. See [seedWorkerTaskForJob].
 func seedWorkerTask(
 	t *testing.T,
 	st *fake.Store,
@@ -120,53 +122,51 @@ func seedWorkerTask(
 	name string,
 ) store.Task {
 	t.Helper()
-	now := time.Now()
-	task := store.Task{
-		ID:               uuid.NewString(),
-		JobID:            "job-" + uuid.NewString()[:8],
-		StepID:           "step-" + uuid.NewString()[:8],
-		Name:             name,
-		Status:           status,
-		AssignedWorkerID: workerID,
-		AssignedAt:       &now,
-		CreatedAt:        now,
-		UpdatedAt:        now,
-	}
-	created, err := st.CreateTask(t.Context(), task)
-	if err != nil {
-		t.Fatalf("seedWorkerTask: %v", err)
-	}
-	return created
+	return seedWorkerTaskForJob(t, st, workerID, "job-"+uuid.NewString()[:8], "", status, name)
 }
 
-// seedWorkerTaskForJob is like seedWorkerTask but pins the task to a specific
-// (already-seeded) job id, so owner-scoping tests can look up the job's real
-// owner via store.GetJob.
+// seedWorkerTaskForJob is like seedWorkerTask but names the job and its owner,
+// so owner-scoping tests can look up the job's real owner via store.GetJob. The
+// job, its step and its task are one submission: a task cannot be added to a
+// job that already exists. An assigned or running task is leased to workerID
+// (see [submitLeasing]); a succeeded one is run to completion on workerID, so
+// it stays attributed to the worker the way a finished task is.
 func seedWorkerTaskForJob(
 	t *testing.T,
 	st *fake.Store,
-	workerID, jobID string,
+	workerID, jobID, owner string,
 	status store.TaskStatus,
 	name string,
 ) store.Task {
 	t.Helper()
-	now := time.Now()
-	task := store.Task{
-		ID:               uuid.NewString(),
-		JobID:            jobID,
-		StepID:           "step-" + uuid.NewString()[:8],
-		Name:             name,
-		Status:           status,
-		AssignedWorkerID: workerID,
-		AssignedAt:       &now,
-		CreatedAt:        now,
-		UpdatedAt:        now,
+	farm, queue := seedFarmQueue(t, st)
+	stepID, taskID := "step-"+uuid.NewString()[:8], uuid.NewString()
+	seeded := status
+	if status == store.TaskStatusSucceeded {
+		seeded = store.TaskStatusRunning
 	}
-	created, err := st.CreateTask(t.Context(), task)
+	out, attempts := submitLeasing(t, st, store.JobSubmission{
+		Job: store.Job{
+			ID: jobID, FarmID: farm.ID, QueueID: queue.ID, Name: jobID, Owner: owner,
+			Priority: 50, Status: store.JobStatusRunning, TemplateFormat: store.TemplateFormatJSON,
+		},
+		Steps: []store.Step{{ID: stepID, JobID: jobID, Name: "Step1", Status: store.StepStatusRunning}},
+		Tasks: []store.Task{{ID: taskID, JobID: jobID, StepID: stepID, Name: name, Status: seeded}},
+	}, workerID)
+	if status != store.TaskStatusSucceeded {
+		return out.Tasks[0]
+	}
+	if res, err := st.CompleteTaskAttempt(t.Context(), store.AttemptCompletion{
+		AttemptID: attempts[taskID].ID, TaskID: taskID, TaskStatus: store.TaskStatusSucceeded,
+		AttemptStatus: store.AttemptStatusSucceeded, EndedAt: time.Now().UTC(),
+	}); err != nil || !res.Applied {
+		t.Fatalf("seedWorkerTaskForJob: CompleteTaskAttempt = (%+v, %v), want applied", res, err)
+	}
+	task, err := st.GetTask(t.Context(), taskID)
 	if err != nil {
-		t.Fatalf("seedWorkerTaskForJob: %v", err)
+		t.Fatalf("seedWorkerTaskForJob: GetTask: %v", err)
 	}
-	return created
+	return task
 }
 
 // ── GET /api/v1/workers ───────────────────────────────────────────────────────
@@ -430,11 +430,9 @@ func TestGetWorker_OwnerScoping(t *testing.T) {
 	newSeededRouter := func(t *testing.T) (chi.Router, store.Worker) {
 		t.Helper()
 		st := fake.New()
-		seedOwnedJob(t, st, "job-alice", "alice")
-		seedOwnedJob(t, st, "job-bob", "bob")
 		w := seedWorker(t, st, store.WorkerStatusOnline)
-		seedWorkerTaskForJob(t, st, w.ID, "job-alice", store.TaskStatusRunning, "alice-task")
-		seedWorkerTaskForJob(t, st, w.ID, "job-bob", store.TaskStatusRunning, "bob-task")
+		seedWorkerTaskForJob(t, st, w.ID, "job-alice", "alice", store.TaskStatusRunning, "alice-task")
+		seedWorkerTaskForJob(t, st, w.ID, "job-bob", "bob", store.TaskStatusRunning, "bob-task")
 		return newWorkerRouter(st), w
 	}
 
@@ -754,8 +752,15 @@ func TestRemoveWorker(t *testing.T) {
 			t.Fatalf("worker should survive a refused remove: GetWorker: %v", err)
 		}
 
-		if err := st.UpdateTaskStatus(t.Context(), task.ID, store.TaskStatusSucceeded); err != nil {
-			t.Fatalf("UpdateTaskStatus: %v", err)
+		attempt, err := st.LatestTaskAttempt(t.Context(), task.ID)
+		if err != nil {
+			t.Fatalf("LatestTaskAttempt: %v", err)
+		}
+		if res, err := st.CompleteTaskAttempt(t.Context(), store.AttemptCompletion{
+			AttemptID: attempt.ID, TaskID: task.ID, TaskStatus: store.TaskStatusSucceeded,
+			AttemptStatus: store.AttemptStatusSucceeded, EndedAt: time.Now().UTC(),
+		}); err != nil || !res.Applied {
+			t.Fatalf("CompleteTaskAttempt = (%+v, %v), want applied", res, err)
 		}
 		rr = httptest.NewRecorder()
 		r.ServeHTTP(rr, newReq(t, http.MethodDelete, "/api/v1/workers/"+w.ID, nil))
