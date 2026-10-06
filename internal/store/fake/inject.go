@@ -23,10 +23,12 @@ func (s *Store) InjectTaskAttempt(_ context.Context, attempt store.TaskAttempt) 
 	return attempt, nil
 }
 
-// InjectClaim stores an active claim exactly as given. Same contract as
-// [Store.InjectTaskAttempt]. The (TaskAttemptID, PoolID) pair must be unique
-// among active claims, as SQLite's index requires; it returns
-// [store.ErrConflict] if it is not.
+// InjectClaim stores claim exactly as given. Same contract as
+// [Store.InjectTaskAttempt]. Unlike SQLite, it stamps nothing: ClaimedAt is
+// kept as given, and so is ReleasedAt, so a caller passing one gets a released
+// claim (SQLite always inserts the claim active, stamped claimed now). The
+// (TaskAttemptID, PoolID) pair must be unique among active claims, as SQLite's
+// index requires; it returns [store.ErrConflict] if it is not.
 func (s *Store) InjectClaim(_ context.Context, claim store.UsageClaim) (store.UsageClaim, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

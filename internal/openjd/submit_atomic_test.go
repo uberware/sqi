@@ -42,7 +42,8 @@ type submitSpy struct {
 	// have no store-wide listing, so this is the only handle on which job's
 	// steps to look for.
 	jobIDs []string
-	// writes counts every attempted row-creating call of any kind.
+	// writes is deliberately kept equal to submissions: CreateJobSubmission is
+	// the only row-creating call left, so it counts the same calls.
 	writes int
 	// submissions counts CreateJobSubmission calls specifically.
 	submissions int

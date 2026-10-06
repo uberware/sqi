@@ -944,9 +944,10 @@ func newSubmitFixture(t *testing.T) submitFixture {
 // finishUpstream drives the one-task job up (a minimalJSON submission) to the
 // terminal status want, completed or failed, through the store writes a worker
 // report and the scheduler's completion path make: the task is leased and
-// started, reported succeeded, or failed (the failure recorded, then the
-// attempt closed, as a worker-reported failure does), and its step and the job
-// are finalized. A dependent submitted afterwards sees the upstream the way it
+// started, then reported succeeded, or failed (RecordTaskFailure, which closes
+// the running attempt as failed, then CompleteTaskAttempt, which moves the task
+// to failed, as a worker-reported failure does), and its step and the job are
+// finalized. A dependent submitted afterwards sees the upstream the way it
 // would in production.
 func finishUpstream(t *testing.T, st store.Store, up *openjd.SubmitResult, want store.JobStatus) {
 	t.Helper()
@@ -960,6 +961,8 @@ func finishUpstream(t *testing.T, st store.Store, up *openjd.SubmitResult, want 
 	taskStatus, attemptStatus, wantStep := store.TaskStatusSucceeded, store.AttemptStatusSucceeded, store.StepStatusCompleted
 	if want == store.JobStatusFailed {
 		taskStatus, attemptStatus, wantStep = store.TaskStatusFailed, store.AttemptStatusFailed, store.StepStatusFailed
+		// nil, "", "" are the exit code, session ID and message; each left empty
+		// leaves the attempt's value unchanged.
 		if _, _, _, err := st.RecordTaskFailure(ctx, attempt.ID, task.ID, nil, "", "", now); err != nil {
 			t.Fatalf("RecordTaskFailure: %v", err)
 		}

@@ -57,7 +57,7 @@ func assertFreshTimestamps(t *testing.T, what string, createdAt, updatedAt time.
 
 // TestJobStore_CreateJobSubmission_WritesEverything pins the happy path on both
 // backends: one call produces the job, its steps and its tasks, and returns
-// them populated the way the per-row creators do.
+// them populated, with the store's own timestamps.
 func TestJobStore_CreateJobSubmission_WritesEverything(t *testing.T) {
 	for name, st := range newStores(t) {
 		t.Run(name, func(t *testing.T) {
@@ -78,11 +78,10 @@ func TestJobStore_CreateJobSubmission_WritesEverything(t *testing.T) {
 			if len(out.Tasks) != 3 {
 				t.Errorf("returned %d tasks, want 3", len(out.Tasks))
 			}
-			// The rows come back the way the per-row creators return theirs:
-			// timestamps populated by the store, not the caller's zero values.
-			// A non-zero check alone would pass on a value a century off, or
-			// on a CreatedAt stamped without its UpdatedAt, so both backends
-			// are held to "now, and the same on both fields".
+			// The rows come back with the store's timestamps, not the caller's
+			// zero values. A non-zero check alone would pass on a value a
+			// century off, or on a CreatedAt stamped without its UpdatedAt, so
+			// both backends are held to "now, and the same on both fields".
 			assertFreshTimestamps(t, "job "+out.Job.ID, out.Job.CreatedAt, out.Job.UpdatedAt)
 			for _, s := range out.Steps {
 				assertFreshTimestamps(t, "step "+s.ID, s.CreatedAt, s.UpdatedAt)
@@ -197,9 +196,9 @@ func TestJobStore_CreateJobSubmission_WritesDependencyEdges(t *testing.T) {
 	}
 }
 
-// TestJobStore_CreateJobSubmission_DoesNotAliasCallerMemory pins the defensive
-// copying the per-row creators already do: mutating the slices and maps handed
-// to CreateJobSubmission after it returns must not change what is stored.
+// TestJobStore_CreateJobSubmission_DoesNotAliasCallerMemory pins that the
+// store copies what it is handed: mutating the slices and maps given to
+// CreateJobSubmission after it returns must not change what is stored.
 //
 // This is effectively a FAKE-ONLY test wearing a cross-backend harness, and a
 // later reader should not over-trust the fact that it passes on both. SQLite
@@ -212,9 +211,8 @@ func TestJobStore_CreateJobSubmission_DoesNotAliasCallerMemory(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			ctx := context.Background()
 			sub := submissionFixture(ctx, t, st)
-			// Job.Parameters is here because the fake's copyMap on it is a
-			// defensive copy its older per-row job creator never made; without
-			// this that copy would be untested.
+			// Job.Parameters is here so the fake's copyMap on it is covered;
+			// without it that defensive copy would be untested.
 			sub.Job.Parameters = map[string]string{"k": "v"}
 			sub.Steps[1].DependsOn = []string{"a"}
 			sub.Tasks[0].Parameters = map[string]string{"frame": "1"}

@@ -180,9 +180,9 @@ func TestReclaimTaskAttempt(t *testing.T) {
 			if at := mustAttempt(t, st, c.ID); at.Status != store.AttemptStatusCanceled || at.Message == store.FailureReasonWorkerShutdown {
 				t.Fatalf("canceled attempt = %+v, want canceled and untouched", at)
 			}
-			// The same through the real cancel path: the user cancels a running
-			// task, then its worker's shutdown report arrives for the attempt the
-			// cancel closed.
+			// The same again for a running task (the case above was assigned):
+			// the user cancels it, then its worker's shutdown report arrives for
+			// the attempt the cancel closed.
 			u := g.Attempts[userCanceled.ID]
 			if _, ok, err := st.CancelTaskExecution(ctx, userCanceled.ID, store.FailureReasonCanceledByUser, now); err != nil || !ok {
 				t.Fatalf("CancelTaskExecution = (%v, %v), want (true, nil)", ok, err)

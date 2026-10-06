@@ -743,7 +743,7 @@ compiling.
 > on a task another writer has moved in between, which the store's
 > [invariants](architecture.md#store-invariants) rule out.
 > There is no standalone setter for the reason on `store.Store`; a test that
-> needs a task with a `FailureReason` seeds it in the `CreateJobSubmission` or
+> needs a task with a `FailureReason` seeds it in its `storetest.Submit` call or
 > drives the real failure or cancel write. See
 > [the durable-failure-reason table](architecture.md#5-status-ingestion) for
 > every existing path and its reason string.
@@ -828,7 +828,8 @@ the in-memory fake:
 
 - `storetest.Submit` creates a whole job (job, `DependsOn` edges, steps and
   tasks) in one `CreateJobSubmission`, the call production makes. Put every
-  status and field the test needs in that one submission.
+  status and field the test needs in that one submission, except a task's
+  `assigned` and `running`, which are leased (next bullet).
 - `storetest.Lease`, `storetest.Start` and `storetest.Running` put a task in
   flight through `LeaseTask` and `StartTaskAttempt`, so the attempt and its
   usage-pool claims are real. To test what happens after a transition, drive

@@ -10,7 +10,10 @@ import (
 	"github.com/uberware/sqi/internal/store"
 )
 
-// InjectTaskAttempt inserts attempt exactly as given, with no state checks.
+// InjectTaskAttempt inserts attempt exactly as given, with no state checks,
+// except that created_at is stamped now, as every insert's is: attempt.CreatedAt
+// is ignored, so a caller cannot back-date an attempt on SQLite (the fake
+// keeps the value it is given).
 //
 // Corruption injection for invariant, recovery and repair tests: it exists to
 // build states production cannot reach, and must never be used to seed a

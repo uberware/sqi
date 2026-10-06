@@ -78,6 +78,12 @@ func Running(t testing.TB, st store.Store, req store.LeaseRequest) store.TaskAtt
 // Injector writes rows exactly as given, with no state checks. Both concrete
 // stores implement it; store.Store does not. It exists only to build states
 // production cannot reach.
+//
+// "As given" has an exception, and the backends differ in it: SQLite stamps an
+// attempt's created_at and a claim's claimed_at now, and always inserts a claim
+// active, ignoring the CreatedAt, ClaimedAt and ReleasedAt it was passed; the
+// fake keeps the values given. A test that runs on both backends must not
+// assert on those fields.
 type Injector interface {
 	InjectTaskAttempt(ctx context.Context, attempt store.TaskAttempt) (store.TaskAttempt, error)
 	InjectClaim(ctx context.Context, claim store.UsageClaim) (store.UsageClaim, error)

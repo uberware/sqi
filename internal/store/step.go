@@ -17,8 +17,9 @@ const (
 	StepStatusReady StepStatus = "ready"
 	// StepStatusRunning is reserved and never written: no store operation moves
 	// a step to running, so a step with running tasks stays ready. It survives
-	// for the wire types and for rows written outside the store operations,
-	// which FinalizeStep can still finish.
+	// for the wire types and for a submission written at that status (test
+	// fixtures, through CreateJobSubmission), which FinalizeStep can still
+	// finish.
 	StepStatusRunning StepStatus = "running"
 	// StepStatusCompleted means all tasks in this step succeeded.
 	StepStatusCompleted StepStatus = "completed"
