@@ -20,6 +20,7 @@ import (
 	"github.com/uberware/sqi/internal/openjd"
 	"github.com/uberware/sqi/internal/store"
 	"github.com/uberware/sqi/internal/store/fake"
+	"github.com/uberware/sqi/internal/store/storetest"
 )
 
 // ── helpers ───────────────────────────────────────────────────────────────────
@@ -940,6 +941,42 @@ func newSubmitFixture(t *testing.T) submitFixture {
 	}
 }
 
+// finishUpstream drives the one-task job up (a minimalJSON submission) to the
+// terminal status want, completed or failed, through the store writes a worker
+// report and the scheduler's completion path make: the task is leased and
+// started, reported succeeded, or failed (the failure recorded, then the
+// attempt closed, as a worker-reported failure does), and its step and the job
+// are finalized. A dependent submitted afterwards sees the upstream the way it
+// would in production.
+func finishUpstream(t *testing.T, st store.Store, up *openjd.SubmitResult, want store.JobStatus) {
+	t.Helper()
+	ctx := t.Context()
+	if len(up.Tasks) != 1 {
+		t.Fatalf("upstream has %d tasks, want 1", len(up.Tasks))
+	}
+	task := up.Tasks[0]
+	now := time.Now().UTC()
+	attempt := storetest.Running(t, st, store.LeaseRequest{TaskID: task.ID, WorkerID: "worker-1"})
+	taskStatus, attemptStatus, wantStep := store.TaskStatusSucceeded, store.AttemptStatusSucceeded, store.StepStatusCompleted
+	if want == store.JobStatusFailed {
+		taskStatus, attemptStatus, wantStep = store.TaskStatusFailed, store.AttemptStatusFailed, store.StepStatusFailed
+		if _, _, _, err := st.RecordTaskFailure(ctx, attempt.ID, task.ID, nil, "", "", now); err != nil {
+			t.Fatalf("RecordTaskFailure: %v", err)
+		}
+	}
+	if res, err := st.CompleteTaskAttempt(ctx, store.AttemptCompletion{
+		AttemptID: attempt.ID, TaskID: task.ID, TaskStatus: taskStatus, AttemptStatus: attemptStatus, EndedAt: now,
+	}); err != nil || !res.Applied {
+		t.Fatalf("CompleteTaskAttempt = (%+v, %v), want applied", res, err)
+	}
+	if got, _, err := st.FinalizeStep(ctx, task.StepID, now); err != nil || got != wantStep {
+		t.Fatalf("FinalizeStep = (%q, %v), want %q", got, err, wantStep)
+	}
+	if got, _, err := st.FinalizeJob(ctx, up.Job.ID, now); err != nil || got != want {
+		t.Fatalf("FinalizeJob = (%q, %v), want %q", got, err, want)
+	}
+}
+
 func TestSubmit_DependsOn_BlocksWhenUpstreamPending(t *testing.T) {
 	ctx := context.Background()
 	f := newSubmitFixture(t)
@@ -983,9 +1020,7 @@ func TestSubmit_DependsOn_RunsWhenUpstreamAlreadyCompleted(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := f.store.UpdateJobStatus(ctx, up.Job.ID, store.JobStatusCompleted); err != nil {
-		t.Fatal(err)
-	}
+	finishUpstream(t, f.store, up, store.JobStatusCompleted)
 
 	res, err := f.submitter.Submit(ctx, f.template, f.format, openjd.SubmitOptions{
 		FarmID: f.farmID, QueueID: f.queueID, DependsOn: []string{up.Job.ID},
@@ -1017,9 +1052,7 @@ func TestSubmit_DependsOn_Rejections(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := f.store.UpdateJobStatus(ctx, up.Job.ID, store.JobStatusFailed); err != nil {
-		t.Fatal(err)
-	}
+	finishUpstream(t, f.store, up, store.JobStatusFailed)
 	_, err = f.submitter.Submit(ctx, f.template, f.format, openjd.SubmitOptions{
 		FarmID: f.farmID, QueueID: f.queueID, DependsOn: []string{up.Job.ID},
 	})

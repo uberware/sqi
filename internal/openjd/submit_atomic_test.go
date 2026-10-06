@@ -15,18 +15,20 @@ import (
 
 // ── helpers ───────────────────────────────────────────────────────────────────
 
-// submitSpy wraps the fake store and records five of its methods: the row
-// creators a submission could use — CreateJob, CreateJobDependencies,
-// CreateStep, CreateTask, CreateJobSubmission. It delegates each one, so the
-// store still behaves exactly like the fake; the counters only observe.
+// submitSpy wraps the fake store and records its one row-creating method,
+// CreateJobSubmission. It delegates it, so the store still behaves exactly
+// like the fake; the counters only observe.
 //
 // It is NOT a general write recorder. It embeds [fake.Store], so every other
 // method reaches the fake untouched and is invisible to `writes`: a regression
 // that persisted something through some other store method would leave the
-// counters unchanged and TestSubmit_PersistsInASingleCall green. The four
-// per-row creators are the ones a non-atomic Submit would use, which is what
-// the counters exist to detect; CreateJobSubmission is the one Submit uses.
-// A separate job-status write is not among them: [store.Store] has no
+// counters unchanged and TestSubmit_PersistsInASingleCall green. The per-row
+// creators a non-atomic Submit would have used (one each for the job row, its
+// dependency edges, a step and a task) no longer exist on [store.Store] —
+// nothing in production called them — so a Submit cannot spread a submission
+// over several calls at all, and CreateJobSubmission is the only row-creating
+// call left to count, which makes `writes` and `submissions` move together.
+// A separate job-status write is likewise not among them: [store.Store] has no
 // generic job-status writer, so a Submit holding one cannot call it at all.
 //
 // It exists because a failed submission must leave no rows AND, once expansion
@@ -36,9 +38,9 @@ import (
 type submitSpy struct {
 	*fake.Store
 
-	// jobIDs collects the ID of every job whose creation was attempted, by
-	// either the per-row or the bulk path. Steps have no store-wide listing, so
-	// this is the only handle on which job's steps to look for.
+	// jobIDs collects the ID of every job whose creation was attempted. Steps
+	// have no store-wide listing, so this is the only handle on which job's
+	// steps to look for.
 	jobIDs []string
 	// writes counts every attempted row-creating call of any kind.
 	writes int
@@ -57,35 +59,6 @@ type submitSpy struct {
 	// CreateJobSubmission, before it delegates. It is how a test changes the
 	// world between Submit's dependency pre-read and the submission write.
 	beforeSubmission func()
-}
-
-func (s *submitSpy) CreateJob(ctx context.Context, job store.Job) (store.Job, error) {
-	s.jobIDs = append(s.jobIDs, job.ID)
-	s.writes++
-	return s.Store.CreateJob(ctx, job)
-}
-
-func (s *submitSpy) CreateJobDependencies(ctx context.Context, jobID string, dependsOn []string) error {
-	s.writes++
-	return s.Store.CreateJobDependencies(ctx, jobID, dependsOn)
-}
-
-func (s *submitSpy) CreateStep(ctx context.Context, step store.Step) (store.Step, error) {
-	// Record the job ID here too, not just in CreateJob/CreateJobSubmission.
-	//
-	// Without this, a regression that writes steps per-step and never reaches
-	// the bulk call leaves jobIDs EMPTY, so the surviving-step-rows loop in
-	// TestSubmit_FailedSubmissionLeavesNoRows never executes and the test
-	// passes while a step row survives.
-	s.jobIDs = append(s.jobIDs, step.JobID)
-	s.writes++
-	return s.Store.CreateStep(ctx, step)
-}
-
-func (s *submitSpy) CreateTask(ctx context.Context, task store.Task) (store.Task, error) {
-	s.jobIDs = append(s.jobIDs, task.JobID)
-	s.writes++
-	return s.Store.CreateTask(ctx, task)
 }
 
 func (s *submitSpy) CreateJobSubmission(ctx context.Context, sub store.JobSubmission) (store.JobSubmission, error) {
