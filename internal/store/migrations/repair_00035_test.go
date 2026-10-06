@@ -7,53 +7,72 @@ import (
 	"testing"
 	"time"
 
-	"github.com/google/uuid"
 	"github.com/pressly/goose/v3"
 
 	"github.com/uberware/sqi/internal/store"
 	"github.com/uberware/sqi/internal/store/sqlite"
+	"github.com/uberware/sqi/internal/store/storetest"
 )
 
 // seedAttemptsOn creates a task (taskStatus) with one attempt per given status,
 // numbered 1.., each holding one active claim on poolID. It returns the
-// attempt and claim IDs in order.
+// attempt and claim IDs in order. The task is submitted in taskStatus and every
+// attempt and claim is injected, because each caller plants a state production
+// cannot reach: an open attempt on a task that is out of flight or finished, a
+// second open attempt on one task, or an active claim on a closed attempt. A
+// task is submitted running only because its injected attempts follow at once;
+// a state a lease can reach is seedRetriedAttempts' or seedAssignedAttempt's.
 func seedAttemptsOn(t *testing.T, s *sqlite.Store, poolID string, taskStatus store.TaskStatus, attempts ...store.AttemptStatus) (attemptIDs, claimIDs []string) {
 	t.Helper()
-	ctx := t.Context()
-	now := time.Now().UTC()
-	stepID := seedStep(t, s, store.JobStatusRunning, store.StepStatusReady)
-	step, err := s.GetStep(ctx, stepID)
-	if err != nil {
-		t.Fatalf("GetStep: %v", err)
-	}
-	task, err := s.CreateTask(ctx, store.Task{ID: uuid.NewString(), JobID: step.JobID, StepID: stepID, Name: "t", Status: taskStatus, CreatedAt: now, UpdatedAt: now})
-	if err != nil {
-		t.Fatalf("CreateTask: %v", err)
-	}
+	task := submitJob(t, s, store.JobStatusRunning, store.StepStatusReady, taskStatus).Tasks[0]
 	for i, as := range attempts {
-		a, err := s.CreateTaskAttempt(ctx, store.TaskAttempt{
-			ID: uuid.NewString(), TaskID: task.ID, WorkerID: "w", AttemptNumber: i + 1, Status: as, StartedAt: now, CreatedAt: now,
-		})
-		if err != nil {
-			t.Fatalf("CreateTaskAttempt: %v", err)
-		}
-		c, err := s.CreateClaim(ctx, store.UsageClaim{ID: uuid.NewString(), PoolID: poolID, TaskAttemptID: a.ID})
-		if err != nil {
-			t.Fatalf("CreateClaim: %v", err)
-		}
-		attemptIDs, claimIDs = append(attemptIDs, a.ID), append(claimIDs, c.ID)
+		a := injectAttempt(t, s, task.ID, i+1, as)
+		attemptIDs, claimIDs = append(attemptIDs, a.ID), append(claimIDs, injectClaim(t, s, poolID, a.ID))
 	}
 	return attemptIDs, claimIDs
 }
 
+// seedRetriedAttempts creates a task on its second attempt through production
+// writes: the first attempt is leased, started and reclaimed (closed as failed,
+// its claim released, the task back to ready), then the task is leased again
+// and started. It returns both attempt and claim IDs in order. This is the
+// healthy twin of the superseded-attempt orphan: an older closed attempt behind
+// a running latest one.
+func seedRetriedAttempts(t *testing.T, s *sqlite.Store, poolID string) (attemptIDs, claimIDs []string) {
+	t.Helper()
+	task := submitJob(t, s, store.JobStatusRunning, store.StepStatusReady, store.TaskStatusReady).Tasks[0]
+	first, firstClaim := leaseWithClaim(t, s, task.ID, poolID)
+	storetest.Start(t, s, first, "", first.StartedAt)
+	reclaimed, err := s.ReclaimTaskAttempt(t.Context(), first.ID, task.ID, time.Now().UTC())
+	if err != nil || !reclaimed {
+		t.Fatalf("ReclaimTaskAttempt = %v, %v; want it reclaimed", reclaimed, err)
+	}
+	second, secondClaim := leaseWithClaim(t, s, task.ID, poolID)
+	if second.AttemptNumber != first.AttemptNumber+1 {
+		t.Fatalf("second attempt is number %d after %d, want the next number", second.AttemptNumber, first.AttemptNumber)
+	}
+	storetest.Start(t, s, second, "", second.StartedAt)
+	return []string{first.ID, second.ID}, []string{firstClaim, secondClaim}
+}
+
+// seedAssignedAttempt creates a task freshly leased through production writes:
+// the task is assigned, its first attempt is open, and the lease holds one
+// active claim on poolID. It returns the attempt and claim IDs.
+func seedAssignedAttempt(t *testing.T, s *sqlite.Store, poolID string) (attemptID, claimID string) {
+	t.Helper()
+	task := submitJob(t, s, store.JobStatusRunning, store.StepStatusReady, store.TaskStatusReady).Tasks[0]
+	attempt, claimID := leaseWithClaim(t, s, task.ID, poolID)
+	return attempt.ID, claimID
+}
+
 func TestMigration00035_ClosesOrphanAttempts(t *testing.T) {
 	path, s, poolID := openSeedable(t)
-	R, Fd := store.AttemptStatusRunning, store.AttemptStatusFailed
-	healthyA, healthyC := seedAttemptsOn(t, s, poolID, store.TaskStatusRunning, Fd, R)      // superseded closed, latest open
+	R := store.AttemptStatusRunning
+	healthyA, healthyC := seedRetriedAttempts(t, s, poolID)                                 // superseded closed, latest open
 	terminalA, terminalC := seedAttemptsOn(t, s, poolID, store.TaskStatusSucceeded, R)      // an open attempt on a finished task
 	supersededA, supersededC := seedAttemptsOn(t, s, poolID, store.TaskStatusRunning, R, R) // an older attempt left open
 	readyA, readyC := seedAttemptsOn(t, s, poolID, store.TaskStatusReady, R)                // an open attempt on a task out of flight
-	assignedA, assignedC := seedAttemptsOn(t, s, poolID, store.TaskStatusAssigned, R)       // a fresh lease: the task is assigned, the attempt open
+	assignedA, assignedC := seedAssignedAttempt(t, s, poolID)                               // a fresh lease: the task is assigned, the attempt open
 	keptA, keptC := seedAttemptsOn(t, s, poolID, store.TaskStatusFailed, R)                 // an orphan an earlier path already gave a reason
 	if err := s.Close(); err != nil {
 		t.Fatalf("Close: %v", err)
@@ -84,7 +103,7 @@ func TestMigration00035_ClosesOrphanAttempts(t *testing.T) {
 		{"superseded older", supersededA[0], supersededC[0], false},
 		{"superseded latest", supersededA[1], supersededC[1], true},
 		{"ready task", readyA[0], readyC[0], false},
-		{"assigned task", assignedA[0], assignedC[0], true},
+		{"assigned task", assignedA, assignedC, true},
 		{"orphan with a reason", keptA[0], keptC[0], false},
 	} {
 		status, message, endedAt := attemptRow(c.attempt)
