@@ -63,7 +63,7 @@ func (e *Expression) Root() Node { return e.root }
 // Interface defines as "the external symbols referenced by the expression as
 // full dotted paths including properties" — so "Param.File.stem" is collected
 // whole, trailing property and all. Callers use it to decide which symbols an
-// expression needs before evaluating it; sub-project E uses it to scope-check a
+// expression needs before evaluating it, for example to scope-check a
 // template's expressions without binding values.
 //
 // Two kinds of identifier are therefore NOT names, and are excluded rather than
@@ -74,8 +74,7 @@ func (e *Expression) Root() Node { return e.root }
 //     dropped: "len(Param.Items)" collects {"Param.Items"} and
 //     "Param.Name.upper()" collects {"Param.Name"}, not {"len"} and
 //     {"Param.Name.upper"}. The spec's called_functions set is CalledFunctions
-//     below, added by sub-project D; it collects exactly the segment this one
-//     drops.
+//     below; it collects exactly the segment this one drops.
 //   - A COMPREHENSION LOOP VARIABLE, and anything rooted at one. Section
 //     1.3.7 binds it inside the comprehension, so it is not external:
 //     "[x for x in Param.Items]" collects {"Param.Items"} and
@@ -150,9 +149,9 @@ func (e *Expression) Names() []string {
 // again. (Names diverges from the reference implementation on that last point
 // and explains why above; the same reading applies here.)
 //
-// Its stated use is sub-project E's: spotting a host-context call (notably
-// apply_path_mapping) in a submission-time scope, which E rejects. This package
-// enforces no such rule itself — see pathMappingFuncs.
+// internal/openjd's template checker uses it, with CallsAny, to spot a
+// host-context call (notably apply_path_mapping) in a submission-time scope and
+// reject it. This package enforces no such rule itself — see pathMappingFuncs.
 func (e *Expression) CalledFunctions() []string {
 	seen := map[string]bool{}
 	var out []string
@@ -204,9 +203,10 @@ func (e *Expression) CalledFunctions() []string {
 // It exists because the only consumer is a predicate. internal/openjd's checker
 // asks "does this call a host-only function?" once per expression on the
 // submission path, against a set with a single member (apply_path_mapping), and
-// CalledFunctions answered it by walking the whole tree into a de-duplicating
-// map, allocating a slice, and sorting it. This walks with early termination —
-// it stops at the first match — and allocates nothing but the walk stack.
+// CalledFunctions would answer it by walking the whole tree into a
+// de-duplicating map, allocating a slice, and sorting it. This walks with early
+// termination — it stops at the first match — and allocates nothing but the
+// walk stack.
 //
 // An empty or nil set is false without walking anything.
 func (e *Expression) CallsAny(names map[string]struct{}) bool {
@@ -262,8 +262,8 @@ type parser struct {
 //     exponent with parseUnary (which is what makes "**" right-associative),
 //     and parseUnary falls through to parsePower whenever the next token is not
 //     a sign. Neither of the two guards above closes that loop — parseUnary's
-//     sits on the sign branch, which this cycle never takes — so "2**2**2**…"
-//     was unbounded until parsePower was guarded too, and killed the process
+//     sits on the sign branch, which this cycle never takes — so without
+//     parsePower's own guard "2**2**2**…" is unbounded and kills the process
 //     with a stack overflow at a million operators. parsePostfix's guard does
 //     not help either: its defer has already run by the time parsePower reads
 //     the "**".
@@ -278,8 +278,8 @@ type parser struct {
 // chain with no back edge, so they take part in no cycle except through
 // parseExpr, and need no guard of their own.
 //
-// The limit is reported as an ordinary *Error carrying a position, which is the
-// whole point: a stack overflow is a runtime.throw that recover() cannot catch,
+// The limit is reported as an ordinary *Error carrying a position because a
+// stack overflow is a runtime.throw that recover() cannot catch,
 // so it has to be turned into a value before it happens, not handled after.
 func (p *parser) enter(tok token) (func(), error) {
 	if p.depth >= maxParseDepth {
@@ -586,8 +586,8 @@ func (p *parser) parsePower() (Node, error) {
 // <Call> | "." <Identifier>)*.
 //
 // It is a LOOP because the grammar's trailer group repeats: "x[0][1]" is a
-// subscript of a subscript. Sub-project B3 attaches <Call> and the property
-// trailer to the same loop.
+// subscript of a subscript. <Call> and the property trailer attach to the same
+// loop.
 func (p *parser) parsePostfix() (Node, error) {
 	leave, err := p.enter(p.peek())
 	if err != nil {
@@ -797,13 +797,13 @@ func (p *parser) parseListLiteral() (Node, error) {
 // the "for" keyword have been seen, through the closing bracket. Implements
 // <ListComp> (spec section 1.1.2) with the semantics of section 1.3.7.
 //
-// The ITERABLE and the FILTER are parsed with parseOr, not parseExpr, and that
-// is load-bearing rather than a shortcut. Section 1.1.2 writes both as
-// <ConditionalExpr>, which is ambiguous against the optional ("if"
-// <ConditionalExpr>) filter: parseConditional consumes an "if" and then demands
-// an "else", so "[x for x in y if c]" would fail at the "]" looking for one.
-// Python resolves the same ambiguity the same way — comp_for and comp_if both
-// take an or_test — so a conditional in either position needs parentheses.
+// The ITERABLE and the FILTER are parsed with parseOr, not parseExpr,
+// deliberately. Section 1.1.2 writes both as <ConditionalExpr>, which is
+// ambiguous against the optional ("if" <ConditionalExpr>) filter:
+// parseConditional consumes an "if" and then demands an "else", so "[x for x in
+// y if c]" would fail at the "]" looking for one. Python resolves the same
+// ambiguity the same way — comp_for and comp_if both take an or_test — so a
+// conditional in either position needs parentheses.
 func (p *parser) parseComprehensionRest(offset int, elem Node) (Node, error) {
 	p.advance() // the "for"
 	comp := &ListComp{Offset: offset, Elem: elem}

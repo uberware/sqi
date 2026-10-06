@@ -5,7 +5,6 @@ package sqlite
 import (
 	"context"
 	"database/sql"
-	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -29,19 +28,18 @@ RETURNING ` + taskCols
 
 	sqlGetTask = `SELECT ` + taskCols + ` FROM tasks WHERE id = ?`
 
-	// unschedulable_reason is only meaningful while a task is ready (set by the
-	// scheduler sweep); it is cleared here so a task carries no stale
-	// annotation once it leaves ready for any reason.
-	sqlUpdateTaskStatus = `
-UPDATE tasks SET status = ?, updated_at = ?, unschedulable_reason = '' WHERE id = ?`
-
-	// sqlSelectTaskStatus reads the current status inside UpdateTaskStatus's
-	// transaction so the state-machine check and the write are indivisible.
+	// sqlSelectTaskStatus reads the current status inside the transaction of a
+	// compare-and-set ([casTaskStatusTx]), so the state-machine check and the
+	// guarded write share one transaction.
 	sqlSelectTaskStatus = `
 SELECT status FROM tasks WHERE id = ?`
 
+	// sqlSetTaskUnschedulableReason writes only while the task is ready: the
+	// sweep reads its candidates before it writes, and a task a lease took in
+	// between must not be stamped with a reason that says it cannot be
+	// scheduled. The status test is evaluated inside the UPDATE (I1).
 	sqlSetTaskUnschedulableReason = `
-UPDATE tasks SET unschedulable_reason = ?, updated_at = ? WHERE id = ?`
+UPDATE tasks SET unschedulable_reason = ?, updated_at = ? WHERE id = ? AND status = 'ready'`
 
 	sqlSetTaskFailureReason = `
 UPDATE tasks SET failure_reason = ?, updated_at = ? WHERE id = ?`
@@ -63,7 +61,7 @@ WHERE id = ?`
 	//   3. s.step_order ASC       — within a job, earlier steps run first
 	//   4. t.created_at ASC       — stable tiebreaker within a step
 	//
-	// All task columns are fully qualified (t.) to avoid ambiguity now that
+	// All task columns are fully qualified (t.) to avoid ambiguity because
 	// the steps join introduces columns with overlapping names (name, status,
 	// created_at, updated_at, job_id).
 	// sqlListReadyTasks fetches tasks eligible for assignment.
@@ -79,32 +77,41 @@ FROM   tasks  t
 JOIN   jobs   j ON t.job_id   = j.id
 JOIN   queues q ON j.queue_id = q.id
 JOIN   steps  s ON t.step_id  = s.id
-WHERE  t.status  = 'ready'
-  AND  (? = '' OR j.farm_id = ?)
-  AND  q.paused  = 0
-  AND  j.status NOT IN ('paused','completed','failed','canceled')
-  AND  (t.retry_after IS NULL OR t.retry_after <= ?)
+WHERE  (? = '' OR j.farm_id = ?)
+  AND  ` + sqlLeasableTask + `
 ORDER BY j.priority DESC, j.created_at ASC, s.step_order ASC, t.created_at ASC
 LIMIT ?`
 
-	sqlReclaimWorkerTasks = `
+	// sqlLeasableTask is the eligibility predicate a task must pass to be
+	// leased, over the aliases t (tasks), j (jobs) and q (queues): the task is
+	// ready and its backoff has elapsed (its one bind parameter is now), its
+	// queue is unpaused, and its job is neither paused nor terminal.
+	// sqlListReadyTasks, sqlCountReadyTasksByQueue and sqlLeaseTaskGuarded
+	// (lease.go) all embed it, so the lease's guard cannot drift from the list
+	// the scheduler chose the task from.
+	sqlLeasableTask = `t.status  = 'ready'
+  AND  q.paused  = 0
+  AND  j.status NOT IN ('paused','completed','failed','canceled')
+  AND  (t.retry_after IS NULL OR t.retry_after <= ?)`
+
+	// sqlReclaimTaskSet is the reset every reclaim writes: the task goes back to
+	// ready with no worker. Its one bind parameter is updated_at.
+	sqlReclaimTaskSet = `
 UPDATE tasks
-SET status = 'ready', assigned_worker_id = NULL, assigned_at = NULL, updated_at = ?, unschedulable_reason = ''
+SET    status = 'ready', assigned_worker_id = NULL, assigned_at = NULL, updated_at = ?, unschedulable_reason = ''`
+
+	sqlReclaimWorkerTasks = sqlReclaimTaskSet + `
 WHERE assigned_worker_id = ?
   AND status IN ('assigned', 'running')`
 
-	// Selects tasks stuck in 'assigned' past the cutoff so the reaper can return
-	// the affected rows to the caller. Only 'assigned' (never 'running') so an
-	// in-progress task is never disturbed by the timer.
-	sqlSelectStaleAssignedTasks = `
-SELECT ` + taskCols + `
-FROM   tasks
-WHERE  status = 'assigned' AND assigned_at IS NOT NULL AND assigned_at < ?`
-
-	sqlReclaimStaleAssignedTasks = `
-UPDATE tasks
-SET    status = 'ready', assigned_worker_id = NULL, assigned_at = NULL, updated_at = ?, unschedulable_reason = ''
-WHERE  status = 'assigned' AND assigned_at IS NOT NULL AND assigned_at < ?`
+	// sqlReclaimStaleAssignedTasks returns tasks stuck in 'assigned' past the
+	// cutoff to ready, and RETURNING hands back exactly the rows this statement
+	// changed, as they are after the reset (invariant I2). Only 'assigned'
+	// (never 'running') so an in-progress task is never disturbed by the timer.
+	// Its binds are updated_at, then cutoff.
+	sqlReclaimStaleAssignedTasks = sqlReclaimTaskSet + `
+WHERE  status = 'assigned' AND assigned_at IS NOT NULL AND assigned_at < ?
+RETURNING ` + taskCols
 
 	// Counts tasks in 'assigned' or 'running' state for per-queue policy.
 	// Joins to jobs so we can filter by queue_id.
@@ -123,11 +130,11 @@ JOIN   jobs  j ON t.job_id = j.id
 WHERE  j.farm_id = ?
   AND  t.status IN ('assigned', 'running')`
 
-	// Per-queue count of LEASABLE ready tasks for a given farm — same
-	// eligibility predicate as sqlListReadyTasks (backoff elapsed, queue
-	// unpaused, job schedulable), so the sweep neither reports depth for nor
-	// wakes lease waiters on queues whose only ready work is backing off or
-	// held under a paused/parked job.
+	// Per-queue count of LEASABLE ready tasks for a given farm — the same
+	// eligibility predicate as sqlListReadyTasks (sqlLeasableTask: backoff
+	// elapsed, queue unpaused, job schedulable), so the sweep neither reports
+	// depth for nor wakes lease waiters on queues whose only ready work is
+	// backing off or held under a paused/parked job.
 	// Used for the sqi_scheduler_queue_depth Prometheus gauge and the
 	// heartbeat-sweep queue wake. farmID = '' means "all farms".
 	sqlCountReadyTasksByQueue = `
@@ -135,11 +142,8 @@ SELECT j.queue_id, COUNT(*)
 FROM   tasks  t
 JOIN   jobs   j ON t.job_id   = j.id
 JOIN   queues q ON j.queue_id = q.id
-WHERE  t.status  = 'ready'
-  AND  (? = '' OR j.farm_id = ?)
-  AND  q.paused  = 0
-  AND  j.status NOT IN ('paused','completed','failed','canceled')
-  AND  (t.retry_after IS NULL OR t.retry_after <= ?)
+WHERE  (? = '' OR j.farm_id = ?)
+  AND  ` + sqlLeasableTask + `
 GROUP BY j.queue_id`
 
 	// Counts tasks for a given job grouped by status.
@@ -168,9 +172,10 @@ WHERE  job_id = ? AND status = 'failed' AND failure_reason != ''
 GROUP  BY failure_reason
 ORDER  BY n DESC, failure_reason ASC`
 
-	// Cancels all non-terminal tasks for a job and returns the number of rows
-	// updated. The caller first SELECTs active tasks within the same
-	// transaction to capture worker IDs before this UPDATE clears them.
+	// Cancels all non-terminal tasks for a job. Both [Store.CancelJobExecution]
+	// and the [Store.CancelJobTasks] fixture run it, each first SELECTing the
+	// active tasks within the same transaction to capture worker IDs before this
+	// UPDATE clears them.
 	// The reason is stamped only on rows with no failure_reason yet, so a more
 	// specific cause recorded earlier (e.g. a cascade-cancel) survives.
 	sqlCancelJobTasks = `
@@ -198,10 +203,16 @@ FROM   tasks
 WHERE  assigned_worker_id = ?
   AND  status IN ('assigned', 'running')`
 
-	sqlLeaseReadyTask = `
-UPDATE tasks
+	// sqlLeaseTaskWrite is the ready → assigned write shared by
+	// sqlLeaseReadyTask and sqlLeaseTaskGuarded (lease.go), which differ only
+	// in the guard they append to it. The target is aliased t so a guard can
+	// use sqlLeasableTask's t.-qualified columns.
+	sqlLeaseTaskWrite = `
+UPDATE tasks AS t
 SET    status = 'assigned', assigned_worker_id = ?, assigned_at = ?, updated_at = ?, unschedulable_reason = ''
-WHERE  id = ? AND status = 'ready'`
+WHERE  t.id = ?`
+
+	sqlLeaseReadyTask = sqlLeaseTaskWrite + ` AND t.status = 'ready'`
 
 	// sqlCloseAttemptAsFailed closes a running attempt as failed, stamping
 	// ended_at, and coalescing exit_code/session_id/message so a nil exit code
@@ -239,30 +250,40 @@ WHERE  t.id = ?`
 	// until the backoff elapses. Guarded to assigned/running — the only states
 	// a genuine in-flight failure can arrive from — so a stale or redelivered
 	// failure report can never resurrect a canceled/succeeded task or yank a
-	// task that has already been returned to ready.
+	// task that has already been returned to ready. Also guarded on the
+	// reporting attempt still being the task's latest (sqlIsLatestAttempt,
+	// embedded): a reclaim and a new lease landing between RecordTaskFailure
+	// and this statement must not return the new lease to ready. The attempt
+	// need not still be running: a crash-recovery redelivery finds it already
+	// closed as failed by the first delivery, yet still the latest, and must
+	// requeue.
 	sqlRequeueTaskForRetry = `
 UPDATE tasks
 SET status = 'ready', assigned_worker_id = NULL, assigned_at = NULL,
     retry_after = ?, updated_at = ?, failure_reason = ''
-WHERE id = ? AND status IN ('assigned', 'running')`
+WHERE id = ? AND status IN ('assigned', 'running')
+  AND (` + sqlIsLatestAttempt + `)`
 
-	// sqlSelectRetryableTasksPrefix selects the failed/canceled tasks of a job
-	// that a retry will revive. The optional "AND id IN (?, …)" suffix is
-	// appended at call time when a task-ID subset is supplied.
-	sqlSelectRetryableTasksPrefix = `
-SELECT ` + taskCols + `
-FROM   tasks
-WHERE  job_id = ? AND status IN ('failed', 'canceled')`
-
-	// sqlRetryTasksPrefix reverts the selected tasks to pending, clearing the
-	// genuine-failure state (Tasks 1-3) a manual retry gives a clean slate:
-	// failed_attempts back to zero and any backoff stamp removed.
-	// The optional "AND id IN (?, …)" suffix is appended at call time.
+	// sqlRetryTasksPrefix revives the selected failed/canceled tasks, clearing
+	// the genuine-failure state a manual retry gives a clean slate:
+	// failed_attempts back to zero and any backoff stamp removed. A task whose
+	// step is still ready (a sibling in flight) is revived ready, since nothing
+	// releases a pending task in a ready step; any other is revived pending for
+	// ResolveDependencies to release. 'running' is treated as ready for rows
+	// written outside the store operations (no store operation writes it). The
+	// optional "AND id IN (?, …)" suffix and sqlRetryTasksReturning are
+	// appended at call time.
 	sqlRetryTasksPrefix = `
 UPDATE tasks
-SET    status = 'pending', updated_at = ?, unschedulable_reason = '',
+SET    status = CASE WHEN (SELECT s.status FROM steps s WHERE s.id = tasks.step_id) IN ('ready', 'running')
+                     THEN 'ready' ELSE 'pending' END,
+       updated_at = ?, unschedulable_reason = '',
        failed_attempts = 0, retry_after = NULL, failure_reason = ''
 WHERE  job_id = ? AND status IN ('failed', 'canceled')`
+
+	// sqlRetryTasksReturning hands back exactly the revived rows, as they are
+	// after the update (I2).
+	sqlRetryTasksReturning = ` RETURNING ` + taskCols
 
 	// sqlRetryResetSteps resets any terminal step that now owns a pending task
 	// (i.e. a task this retry just revived) back to pending.
@@ -443,9 +464,11 @@ func (s *Store) ListTasks(ctx context.Context, opts store.ListTasksOptions) (sto
 // arrives over JetStream, which is at-least-once, so a redelivered message must
 // not fail — the consumer would Nak it and redeliver forever.
 //
-// The read and the write share a transaction, serialized by the
-// single-connection pool (SetMaxOpenConns(1)), so no other goroutine can move
-// the task between the check and the update. Mirrors [Store.TryClaimSlots].
+// The write is a compare-and-set on the status that was read (invariant I1, see
+// [casTaskStatusTx]), so it is correct under concurrent writers rather than
+// only under SQLite's single write connection.
+//
+// Test fixture only: not part of store.Store, which has no caller for it.
 func (s *Store) UpdateTaskStatus(ctx context.Context, id string, status store.TaskStatus) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -453,30 +476,7 @@ func (s *Store) UpdateTaskStatus(ctx context.Context, id string, status store.Ta
 	}
 	defer func() { _ = tx.Rollback() }() //nolint:errcheck // rollback is best-effort after commit
 
-	var current string
-	if err = tx.QueryRowContext(ctx, sqlSelectTaskStatus, id).Scan(&current); err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return store.ErrNotFound
-		}
-		return fmt.Errorf("sqlite: select task status: %w", mapErr(err))
-	}
-
-	if store.TaskStatus(current) == status {
-		return nil // idempotent redelivery; nothing to write
-	}
-	if err = store.ValidateTaskTransition(store.TaskStatus(current), status); err != nil {
-		return fmt.Errorf("sqlite: task %s: %w", id, err)
-	}
-
-	// Raw SQL rather than the prepared s.stmtUpdateTaskStatus: a statement
-	// bound into a transaction with tx.StmtContext must itself be closed, and
-	// the other transactional writers here use tx.ExecContext for the same
-	// reason.
-	res, err := tx.ExecContext(ctx, sqlUpdateTaskStatus, string(status), timeToText(time.Now().UTC()), id)
-	if err != nil {
-		return mapErr(err)
-	}
-	if err := checkRowsAffected(res); err != nil {
+	if _, err = casTaskStatusTx(ctx, tx, id, status, time.Now().UTC()); err != nil {
 		return err
 	}
 	if err = tx.Commit(); err != nil {
@@ -485,16 +485,32 @@ func (s *Store) UpdateTaskStatus(ctx context.Context, id string, status store.Ta
 	return nil
 }
 
-// SetTaskUnschedulableReason implements [store.TaskStore].
-func (s *Store) SetTaskUnschedulableReason(ctx context.Context, id, reason string) error {
+// SetTaskUnschedulableReason implements [store.TaskStore]. A task that is no
+// longer ready is a guarded no-op returning (false, nil); only an unknown task
+// is an error.
+func (s *Store) SetTaskUnschedulableReason(ctx context.Context, id, reason string) (bool, error) {
 	res, err := s.stmtSetTaskUnschedulableReason.ExecContext(ctx, reason, timeToText(time.Now().UTC()), id)
 	if err != nil {
-		return mapErr(err)
+		return false, mapErr(err)
 	}
-	return checkRowsAffected(res)
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+	if n == 1 {
+		return true, nil
+	}
+	if _, err := s.GetTask(ctx, id); err != nil {
+		return false, err // ErrNotFound
+	}
+	return false, nil // no longer ready: a guarded no-op
 }
 
-// SetTaskFailureReason implements [store.TaskStore]. An empty reason clears it.
+// SetTaskFailureReason sets the task's failure reason unconditionally. An empty
+// reason clears it. Returns [store.ErrNotFound] for an unknown task.
+//
+// Test fixture only: a blind write that is not part of store.Store (every
+// production reason is stamped inside the status write).
 func (s *Store) SetTaskFailureReason(ctx context.Context, id, reason string) error {
 	res, err := s.stmtSetTaskFailureReason.ExecContext(ctx, reason, timeToText(time.Now().UTC()), id)
 	if err != nil {
@@ -503,8 +519,12 @@ func (s *Store) SetTaskFailureReason(ctx context.Context, id, reason string) err
 	return checkRowsAffected(res)
 }
 
-// SetTaskFailureReasonIfEmpty implements [store.TaskStore]. A zero-row update
-// (task unknown or already carrying a reason) is a legitimate no-op, not an error.
+// SetTaskFailureReasonIfEmpty sets the failure reason only when the task has
+// none. A zero-row update (task unknown or already carrying a reason) is a
+// legitimate no-op, not an error.
+//
+// Test fixture only: a blind write that is not part of store.Store (every
+// production reason is stamped inside the status write).
 func (s *Store) SetTaskFailureReasonIfEmpty(ctx context.Context, id, reason string) error {
 	if _, err := s.stmtSetTaskFailureReasonIfEmpty.ExecContext(ctx, reason, timeToText(time.Now().UTC()), id); err != nil {
 		return mapErr(err)
@@ -512,7 +532,12 @@ func (s *Store) SetTaskFailureReasonIfEmpty(ctx context.Context, id, reason stri
 	return nil
 }
 
-// AssignTask implements [store.TaskStore].
+// AssignTask sets a task's worker, assignment time and status to assigned
+// unconditionally and clears its unschedulable reason. It returns
+// [store.ErrNotFound] when the task does not exist. The scheduler takes tasks
+// through [Store.LeaseTask], which guards the same move.
+//
+// Test fixture only: a blind write that is not part of store.Store.
 func (s *Store) AssignTask(ctx context.Context, id, workerID string, assignedAt time.Time) error {
 	now := timeToText(time.Now().UTC())
 	res, err := s.stmtAssignTask.ExecContext(ctx, workerID, timeToText(assignedAt), now, id)
@@ -522,7 +547,12 @@ func (s *Store) AssignTask(ctx context.Context, id, workerID string, assignedAt 
 	return checkRowsAffected(res)
 }
 
-// ReclaimWorkerTasks implements [store.TaskStore].
+// ReclaimWorkerTasks returns every assigned or running task of workerID to
+// ready and returns how many it reset. It closes no attempts and releases no
+// claims; a worker is taken offline through [Store.OfflineStaleWorker] and
+// [Store.OfflineWorker], which do all three in one transaction.
+//
+// Test fixture only: a blind write that is not part of store.Store.
 func (s *Store) ReclaimWorkerTasks(ctx context.Context, workerID string) (int, error) {
 	now := timeToText(time.Now().UTC())
 	res, err := s.stmtReclaimWorkerTasks.ExecContext(ctx, now, workerID)
@@ -535,53 +565,61 @@ func (s *Store) ReclaimWorkerTasks(ctx context.Context, workerID string) (int, e
 
 // ReclaimStaleAssignedTasks implements [store.TaskStore].
 //
-// The SELECT and UPDATE run inside a single SQLite transaction so a concurrent
-// "running" status update cannot slip a task out of 'assigned' between the
-// observation and the reset; the UPDATE's status guard keeps the returned set
-// and the reclaimed set identical. Mirrors [Store.CancelJobTasks].
+// One transaction returns the stale assignments to ready, then closes each
+// reclaimed task's running attempts as failed and releases those attempts'
+// claims (invariant I3). The returned set is the UPDATE's RETURNING set, so it
+// is exactly the tasks this call reset (invariant I2); the scheduler never has
+// to look an attempt up after the fact, so it cannot close the new attempt of a
+// task that has been leased again in between.
+//
+// Statement order: the tasks are reset first and only then are their
+// attempts closed and their claims released, the order CancelJobExecution uses.
+// The writer this order guards against is the worker's own report on a stale
+// assigned task. On Postgres the UPDATE takes each task's row lock, so a running
+// or terminal report already holding the row is waited for, and the UPDATE then
+// re-checks status = 'assigned' against the committed row and skips a task the
+// report moved on. Closing attempts first would let a report move the task
+// (assigned to running, say) after its attempt was already closed as failed. A
+// LeaseTask is not a competitor here: it moves a ready row, which this UPDATE's
+// predicate does not match, and the task it leaves assigned is not stale.
+//
+// Anchors: none are taken, deliberately. A PostgreSQL store must take them
+// BEFORE the UPDATE, and without locking any task row first: read the candidate
+// task IDs and their job IDs UNLOCKED, take the job-row anchors sorted by id,
+// then run the UPDATE re-guarded as WHERE id IN (candidates) AND status =
+// 'assigned' AND assigned_at < cutoff RETURNING. Locking the task rows first
+// (SELECT ... FOR UPDATE on tasks) or anchoring after the UPDATE ... RETURNING
+// both take a task row before its job row, and every job-level operation locks
+// the job row before its tasks, so the two orders can deadlock. The anchors are
+// also what orders the reaper against CompleteTaskAttempt, which writes the
+// attempt row before the task row, the reverse of this function: both under the
+// same job-row lock, they cannot interleave.
 func (s *Store) ReclaimStaleAssignedTasks(ctx context.Context, cutoff time.Time) ([]store.Task, error) {
-	cutoffText := timeToText(cutoff.UTC())
-
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
-		return nil, fmt.Errorf("sqlite: begin tx for reclaim stale assigned tasks: %w", err)
+		return nil, fmt.Errorf("sqlite: begin tx for reclaim stale assigned tasks: %w", mapErr(err))
 	}
-	defer func() { _ = tx.Rollback() }() //nolint:errcheck // rollback is best-effort after commit
+	defer func() { _ = tx.Rollback() }() //nolint:errcheck // rollback after commit is a no-op
 
-	// Read matching rows into a slice before the UPDATE so the cursor is closed
-	// by the time we write (single-connection pool).
-	stale, err := func() ([]store.Task, error) {
-		rows, queryErr := tx.QueryContext(ctx, sqlSelectStaleAssignedTasks, cutoffText)
-		if queryErr != nil {
-			return nil, fmt.Errorf("sqlite: select stale assigned tasks: %w", mapErr(queryErr))
-		}
-		defer rows.Close()
-
-		var tasks []store.Task
-		for rows.Next() {
-			t, scanErr := scanTask(rows)
-			if scanErr != nil {
-				return nil, scanErr
-			}
-			tasks = append(tasks, t)
-		}
-		return tasks, rows.Err()
-	}()
+	// Order: the tasks, then each one's attempts and claims. Server time stamps
+	// updated_at, ended_at and released_at alike.
+	nowText := timeToText(time.Now().UTC())
+	reclaimed, err := queryTasksTx(ctx, tx, sqlReclaimStaleAssignedTasks, nowText, timeToText(cutoff.UTC()))
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("sqlite: reclaim stale assigned tasks: %w", err)
 	}
-
-	if len(stale) == 0 {
-		return nil, nil // nothing to reclaim; no write needed
+	if len(reclaimed) == 0 {
+		return nil, nil // nothing was stale; the deferred rollback ends the empty transaction
 	}
-
-	if _, err = tx.ExecContext(ctx, sqlReclaimStaleAssignedTasks, timeToText(time.Now().UTC()), cutoffText); err != nil {
-		return nil, fmt.Errorf("sqlite: reclaim stale assigned tasks: %w", mapErr(err))
+	for _, t := range reclaimed {
+		if err := closeTaskAttemptsTx(ctx, tx, t.ID, store.AttemptStatusFailed, "", nowText); err != nil {
+			return nil, err
+		}
 	}
-	if err = tx.Commit(); err != nil {
+	if err := tx.Commit(); err != nil {
 		return nil, fmt.Errorf("sqlite: commit reclaim stale assigned tasks: %w", mapErr(err))
 	}
-	return stale, nil
+	return reclaimed, nil
 }
 
 // ListReadyTasks implements [store.TaskStore].
@@ -639,13 +677,20 @@ func (s *Store) CountReadyTasksByQueue(ctx context.Context, farmID string, now t
 	return counts, rows.Err()
 }
 
-// CancelJobTasks implements [store.TaskStore].
+// CancelJobTasks cancels every non-terminal task of the job, clearing the worker
+// assignment, and returns the ones that were assigned or running with their
+// worker intact. It closes no attempts and releases no claims; a job is
+// canceled through [Store.CancelJobExecution], which does all three in one
+// transaction.
 //
 // The SELECT and UPDATE execute inside a single SQLite transaction so no
 // concurrent scheduler tick can assign a task between observation and
-// cancellation.  The rows cursor is closed inside a helper closure before the
-// UPDATE runs, which avoids any potential cursor/write contention on the
+// cancellation. The SELECT is [sqlSelectActiveJobTasks], the one
+// [Store.CancelJobExecution] runs, and [queryTasksTx] closes its cursor before
+// the UPDATE runs, which avoids any cursor/write contention on the
 // single-connection pool.
+//
+// Test fixture only: a blind write that is not part of store.Store.
 func (s *Store) CancelJobTasks(ctx context.Context, jobID string, now time.Time, reason string) ([]store.Task, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -654,33 +699,11 @@ func (s *Store) CancelJobTasks(ctx context.Context, jobID string, now time.Time,
 	defer func() { _ = tx.Rollback() }() //nolint:errcheck // rollback is best-effort after commit
 
 	// Capture tasks that are currently assigned or running so the scheduler can
-	// publish cancel signals to their workers.  We read into a slice before the
-	// UPDATE so the cursor is closed by the time we write.
-	active, err := func() ([]store.Task, error) {
-		rows, queryErr := tx.QueryContext(ctx, `
-SELECT id, job_id, step_id, name, parameters, status,
-       assigned_worker_id, assigned_at, created_at, updated_at, required_cores,
-       unschedulable_reason, failed_attempts, retry_after, failure_reason
-FROM   tasks
-WHERE  job_id = ?
-  AND  status IN ('assigned', 'running')`, jobID)
-		if queryErr != nil {
-			return nil, fmt.Errorf("sqlite: select active tasks for job %s: %w", jobID, mapErr(queryErr))
-		}
-		defer rows.Close()
-
-		var tasks []store.Task
-		for rows.Next() {
-			t, scanErr := scanTask(rows)
-			if scanErr != nil {
-				return nil, scanErr
-			}
-			tasks = append(tasks, t)
-		}
-		return tasks, rows.Err()
-	}()
+	// publish cancel signals to their workers. They are read into a slice before
+	// the UPDATE, so the cursor is closed by the time we write.
+	active, err := queryTasksTx(ctx, tx, sqlSelectActiveJobTasks, jobID)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("sqlite: select active tasks for job %s: %w", jobID, err)
 	}
 
 	// Transition all non-terminal tasks to canceled, clearing the worker
@@ -721,28 +744,17 @@ func (s *Store) RetryTasks(ctx context.Context, jobID string, taskIDs []string, 
 	}
 	defer func() { _ = tx.Rollback() }() //nolint:errcheck // rollback is best-effort after commit
 
-	// Capture the tasks to revive before the UPDATE so we can return them.
-	revived, err := func() ([]store.Task, error) {
-		args := append([]any{jobID}, idArgs...)
-		rows, qErr := tx.QueryContext(ctx, sqlSelectRetryableTasksPrefix+inSuffix, args...)
-		if qErr != nil {
-			return nil, fmt.Errorf("sqlite: select retryable tasks for job %s: %w", jobID, mapErr(qErr))
-		}
-		defer rows.Close()
-
-		var out []store.Task
-		for rows.Next() {
-			t, sErr := scanTask(rows)
-			if sErr != nil {
-				return nil, sErr
-			}
-			t.Status = store.TaskStatusPending // reflect the post-update state
-			out = append(out, t)
-		}
-		return out, rows.Err()
-	}()
-	if err != nil {
+	// The anchor is the job row, taken first. The revive UPDATE ... RETURNING
+	// is the returned set (I2), so there is no SELECT for a concurrent writer to
+	// slip in behind.
+	if err := lockAnchors(ctx, tx, jobAnchor(jobID)); err != nil {
 		return nil, err
+	}
+
+	updArgs := append([]any{nowText, jobID}, idArgs...)
+	revived, err := queryTasksTx(ctx, tx, sqlRetryTasksPrefix+inSuffix+sqlRetryTasksReturning, updArgs...)
+	if err != nil {
+		return nil, fmt.Errorf("sqlite: retry tasks for job %s: %w", jobID, err)
 	}
 	if len(revived) == 0 {
 		if err = tx.Commit(); err != nil {
@@ -751,10 +763,6 @@ func (s *Store) RetryTasks(ctx context.Context, jobID string, taskIDs []string, 
 		return nil, nil
 	}
 
-	updArgs := append([]any{nowText, jobID}, idArgs...)
-	if _, err = tx.ExecContext(ctx, sqlRetryTasksPrefix+inSuffix, updArgs...); err != nil {
-		return nil, fmt.Errorf("sqlite: retry tasks for job %s: %w", jobID, mapErr(err))
-	}
 	if _, err = tx.ExecContext(ctx, sqlRetryResetSteps, nowText, jobID); err != nil {
 		return nil, fmt.Errorf("sqlite: reset steps for job %s: %w", jobID, mapErr(err))
 	}
@@ -768,10 +776,12 @@ func (s *Store) RetryTasks(ctx context.Context, jobID string, taskIDs []string, 
 	return revived, nil
 }
 
-// TransitionStepPendingTasks implements [store.TaskStore].
+// TransitionStepPendingTasks moves every pending task of the step to `to`
+// without touching the step or its job. The UPDATE ... RETURNING runs as one
+// statement so the transition is atomic and covers every pending task of the
+// step regardless of count.
 //
-// The UPDATE ... RETURNING runs as one statement so the transition is atomic and
-// covers every pending task of the step regardless of count.
+// Test fixture only: a blind write that is not part of store.Store.
 func (s *Store) TransitionStepPendingTasks(ctx context.Context, stepID string, to store.TaskStatus, failureReason string) ([]store.Task, error) {
 	rows, err := s.db.QueryContext(ctx, sqlTransitionStepPendingTasks, string(to), timeToText(time.Now().UTC()), failureReason, stepID)
 	if err != nil {
@@ -855,7 +865,11 @@ func (s *Store) CommittedCores(ctx context.Context, workerID string, fullMachine
 	return n, mapErr(err)
 }
 
-// LeaseReadyTask implements [store.TaskStore].
+// LeaseReadyTask moves a ready task to assigned without an attempt, a cap
+// check or a claim, and reports whether the task was still ready. The
+// scheduler leases through [Store.LeaseTask], which does all of that in one step.
+//
+// Test fixture only: a blind write that is not part of store.Store.
 func (s *Store) LeaseReadyTask(ctx context.Context, taskID, workerID string, now time.Time) (bool, error) {
 	nowText := timeToText(now.UTC())
 	res, err := s.db.ExecContext(ctx, sqlLeaseReadyTask, workerID, nowText, nowText, taskID)
@@ -879,6 +893,11 @@ func (s *Store) LeaseReadyTask(ctx context.Context, taskID, workerID string, now
 // rows, skips both increments, and returns the current counts instead. This
 // makes the failure count exactly-once per attempt, and keeps the two counters
 // in lockstep: either both increment or neither does.
+//
+// Invariant I3: the same transaction releases the attempt's claims, so a
+// closed attempt never keeps a usage slot. Anchor: the task's job row, taken
+// before the first write. The statements run attempt close, claim release, then
+// the counters; the claim release does not depend on the counters.
 func (s *Store) RecordTaskFailure(
 	ctx context.Context,
 	attemptID, taskID string,
@@ -894,6 +913,14 @@ func (s *Store) RecordTaskFailure(
 	}
 	defer func() { _ = tx.Rollback() }() //nolint:errcheck // rollback after commit is a no-op
 
+	var anchorJobID string
+	if err = tx.QueryRowContext(ctx, sqlTaskJobID, taskID).Scan(&anchorJobID); err != nil {
+		return 0, 0, false, mapErr(err) // no such task => ErrNotFound
+	}
+	if err := lockAnchors(ctx, tx, jobAnchor(anchorJobID)); err != nil {
+		return 0, 0, false, err
+	}
+
 	res, err := tx.ExecContext(ctx, sqlCloseAttemptAsFailed, nowText, nullInt(exitCode), sessionID, message, attemptID)
 	if err != nil {
 		return 0, 0, false, mapErr(err)
@@ -901,6 +928,12 @@ func (s *Store) RecordTaskFailure(
 	closed, err := res.RowsAffected()
 	if err != nil {
 		return 0, 0, false, err
+	}
+	// Invariant I3: a closed attempt holds no claims. Released unconditionally,
+	// so a redelivery is also safe; the UPDATE is a no-op when nothing is active.
+	// released_at is server time, not the caller's now (a worker-reported time).
+	if _, err = tx.ExecContext(ctx, sqlReleaseAttemptClaims, timeToText(time.Now().UTC()), attemptID); err != nil {
+		return 0, 0, false, mapErr(err)
 	}
 
 	if closed == 0 {
@@ -931,11 +964,13 @@ func (s *Store) RecordTaskFailure(
 	return taskFailed, jobFailed, true, nil
 }
 
-// RequeueTaskForRetry implements [store.TaskStore]. Zero rows (task missing
-// or no longer assigned/running) is a legitimate no-op reported as false —
-// NOT an error, so a stale redelivery never naks into a redelivery loop.
-func (s *Store) RequeueTaskForRetry(ctx context.Context, taskID string, retryAfter, now time.Time) (bool, error) {
-	res, err := s.db.ExecContext(ctx, sqlRequeueTaskForRetry, timeToText(retryAfter.UTC()), timeToText(now.UTC()), taskID)
+// RequeueTaskForRetry implements [store.TaskStore]. Zero rows (task missing,
+// no longer assigned/running, or attemptID not the task's latest attempt) is a
+// legitimate no-op reported as false — NOT an error, so a stale redelivery
+// never naks into a redelivery loop.
+func (s *Store) RequeueTaskForRetry(ctx context.Context, taskID, attemptID string, retryAfter, now time.Time) (bool, error) {
+	res, err := s.db.ExecContext(ctx, sqlRequeueTaskForRetry,
+		timeToText(retryAfter.UTC()), timeToText(now.UTC()), taskID, attemptID, taskID, taskID)
 	if err != nil {
 		return false, mapErr(err)
 	}

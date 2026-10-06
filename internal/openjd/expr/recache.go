@@ -6,8 +6,7 @@ import "regexp"
 
 // maxCachedPatterns is how many compiled patterns ONE evaluation's cache may
 // hold. Past it the cache stops storing and every further pattern is compiled
-// as it was before the cache existed: nothing is evicted, and the map never
-// grows again.
+// uncached: nothing is evicted, and the map never grows again.
 //
 // A cap is not optional here, and the reason is the same one that put every
 // other bound in this package there. A pattern is an ARBITRARY STRING from a
@@ -20,13 +19,13 @@ import "regexp"
 // it can add to an evaluation's peak is a CONSTANT multiple of the single
 // compile that already happened without it — not a multiple of the list length.
 //
-// The value is 8, which is four times the largest count that exists in any
-// template sqi has seen. Every expression in the vendored conformance fixtures,
-// sqi's own reference presets and the differential corpus was measured for
-// regex CALL SITES — the only way an evaluation reaches a distinct literal
-// pattern — and the most any one expression contains is TWO. Real templates
-// therefore never approach this, and the miss path past it is a correctness
-// no-op rather than a failure.
+// The value is 8, which is four times the largest count found in real
+// templates. Every expression in the vendored conformance fixtures, sqi's own
+// reference presets and the differential corpus was measured for regex CALL
+// SITES — the only way an evaluation reaches a distinct literal pattern — and
+// the most any one expression contains is TWO. Real templates therefore never
+// approach this, and the miss path past it is a correctness no-op rather than a
+// failure.
 //
 // IT IS NOT A SEMANTIC BOUND, which is why it lives here rather than in
 // limits.go with the five that are. Every one of those decides whether an
@@ -37,12 +36,12 @@ const maxCachedPatterns = 8
 
 // reCache is ONE evaluation's compiled-pattern cache.
 //
-// Per-evaluation rather than process-wide, and that is the design rather than a
-// simplification of it. It dies with the evaluation that created it, so it needs
-// no eviction policy, no expiry and no lock, and it cannot carry state — or a
-// compile's cost — between requests, templates or tenants. What it captures is
-// the dominant win: a pattern written once in the source and evaluated once per
-// element of a comprehension, which before this compiled once per element.
+// Per-evaluation rather than process-wide, by design. It dies with the
+// evaluation that created it, so it needs no eviction policy, no expiry and no
+// lock, and it cannot carry state — or a compile's cost — between requests,
+// templates or tenants. What it captures is the dominant win: a pattern written
+// once in the source and evaluated once per element of a comprehension, which
+// would otherwise compile once per element.
 //
 // It is held by POINTER on evalCtx for the reason meter's own comment gives at
 // length: evalCtx flows by VALUE through some thirty parameter positions, so a
@@ -54,15 +53,15 @@ const maxCachedPatterns = 8
 // IT DOES NOT PARTICIPATE IN METERING, and must not start to. Section 1.3.10's
 // charges are applied by callShape (ops.go) around the whole call, before any
 // Fn runs, so a cached compile is charged exactly what an uncached one is. The
-// differential oracle compares operation counts, and not one of them may move
-// for a change whose only claim is speed.
+// differential oracle compares operation counts, and caching must not move any
+// of them.
 type reCache struct {
 	// entries maps a RAW spec-dialect pattern — the string the template wrote,
 	// not the translated Go one — to what compiling it produced. A failure is
 	// cached too, so a bad pattern inside a comprehension is translated and
 	// rejected once rather than once per element; the error value is returned
 	// unchanged on every hit, so the message a caller sees is byte-for-byte what
-	// it was before this existed.
+	// an uncached compile gives.
 	entries map[string]reResult
 	// compiles counts the patterns that actually reached compilePattern. Nothing
 	// in production reads it: it exists so the tests can assert that a constant
@@ -81,7 +80,7 @@ type reResult struct {
 // evaluation's earlier answer when there is one.
 //
 // A nil receiver compiles without caching, so a context built without a cache
-// still behaves exactly as the package did before one existed.
+// still produces identical results.
 func (c *reCache) compile(pattern string) (*regexp.Regexp, error) {
 	if c == nil {
 		return compilePattern(pattern)

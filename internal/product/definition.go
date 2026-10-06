@@ -48,35 +48,32 @@ func validateName(name string) error {
 // take both too. The built-in loader runs from package init, where no
 // configuration exists at all, and can take neither.
 //
-// The zero value reproduces the pre-H1 behavior exactly: limit enforcement off,
-// default EXPR limits, no deadline.
+// The zero value means limit enforcement off, default EXPR limits, no
+// deadline.
 type ValidateOptions struct {
 	// EnforceLimits gates OpenJD's quantitative limit checks; see
 	// [openjd.ValidateOptions].
 	EnforceLimits bool
 
 	// ExprLimits is the operator's configured bound on what this template's
-	// EXPR expression walk may spend (sub-project E4d).
+	// EXPR expression walk may spend.
 	//
 	// The zero value means "use the defaults", which is what every caller with
-	// no operator configuration to offer gets. Before EXPR sub-project H1 that
-	// was the ONLY thing this path could get, so an operator who tightened the
-	// four knobs found product template validation still running on the
-	// defaults -- invisible while the walk is gated on EXPR being
-	// StatusSupported, and live the moment H2 flips it.
+	// no operator configuration to offer gets. A caller that has operator
+	// configuration and leaves this zero validates product templates on the
+	// defaults even though the operator tightened the four knobs.
 	//
-	// EVERY ROUTE THAT REACHES THIS PACKAGE FROM AN HTTP REQUEST MUST SET IT.
-	// H1's own whole-branch review found the preset install path still on the
-	// defaults after the create/update route was fixed -- two routes behind the
-	// same permission (policy.ProductsManage), both ending in a catalog write,
-	// behaving differently. The limits question is not about who supplies the
-	// content: an operator who tightened a knob asked for it to be enforced
-	// wherever validation happens.
+	// EVERY ROUTE THAT REACHES THIS PACKAGE FROM AN HTTP REQUEST MUST SET IT --
+	// the product create/update route and the preset install route are behind
+	// the same permission (policy.ProductsManage), both end in a catalog
+	// write, and must behave the same. The limits question is not about who
+	// supplies the content: an operator who tightened a knob asked for it to
+	// be enforced wherever validation happens.
 	ExprLimits openjd.ExprLimits
 
 	// Deadline, when non-zero, is an absolute wall-clock instant after which
 	// validation stops and [ValidateTemplate] returns an error wrapping
-	// [expr.ErrDeadlineExceeded] -- H1's backstop.
+	// [expr.ErrDeadlineExceeded] -- the wall-clock backstop.
 	//
 	// PER REQUEST, never stored: it is computed from a configured duration at
 	// the top of one HTTP request. See [openjd.ExprLimits]' Deadline field for
@@ -127,15 +124,8 @@ func ValidateTemplate(rawTemplate string, format store.TemplateFormat, opts Vali
 // validateParsed runs the validation tail shared by [ValidateTemplate] and its
 // tests.
 //
-// It was split out as a seam so a test could drive the validation tail with an
-// already-parsed template while the expression walk was still gated off in
-// production (openjd.ValidateOptions' since-deleted
-// CheckEXPRExpressionsWhileUnsupported). Sub-project H2 made EXPR
-// StatusSupported, so [ValidateTemplate] now reaches the same walk on its own
-// and the tests that needed the override drive the exported entry point
-// instead. The seam is kept because it is still the cheapest way to assert on
-// the tail alone, with a template a test built rather than a string it had to
-// serialize.
+// It is a seam because it is the cheapest way to assert on the tail alone,
+// with a template a test built rather than a string it had to serialize.
 func validateParsed(tmpl *openjd.JobTemplate, o openjd.ValidateOptions) error {
 	errs, ferr := openjd.ValidateWithBudget(tmpl, o)
 	if ferr != nil {
@@ -169,9 +159,9 @@ type definitionFile struct {
 // told apart).
 //
 // opts is a REQUIRED argument rather than an implicit default because the
-// callers differ in what they can and must supply, and an implicit default is
-// how the preset routes silently kept validating on openjd.DefaultExprLimits()
-// after the create/update route was fixed:
+// callers differ in what they can and must supply, and an implicit default
+// would let the preset routes validate on openjd.DefaultExprLimits() while the
+// create/update route honors the operator's configuration:
 //
 //   - [LoadBuiltins], from package init, has no configuration to offer and
 //     passes only EnforceLimits. That one is a genuine exemption.

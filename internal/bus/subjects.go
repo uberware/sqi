@@ -62,8 +62,8 @@ const (
 	// SubjectWorkerDeregisterPrefix is the prefix workers publish under on
 	// graceful shutdown so the server can mark the worker offline immediately
 	// rather than waiting for heartbeat timeout. The server handler for these
-	// subjects calls [store.WorkerStore.UpdateWorkerStatus] with
-	// WorkerStatusOffline.
+	// subjects calls [store.WorkerStore.OfflineWorker], which marks the worker
+	// offline and returns its in-flight tasks to the ready queue.
 	// Full subject: SubjectWorkerDeregisterPrefix + "." + workerID.
 	SubjectWorkerDeregisterPrefix = "worker.deregister"
 

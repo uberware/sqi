@@ -101,7 +101,7 @@ func envInt(name string, fallback int) int {
 // passes /readyz.  Cleanup is registered on tb.
 //
 // It reuses freePort / waitForTCP / waitForReadyz from harness_test.go, which
-// were widened to accept testing.TB.
+// accept testing.TB.
 func startLoadServer(tb testing.TB) *testServer {
 	tb.Helper()
 
@@ -191,7 +191,7 @@ type loadWorker struct {
 
 // newLoadWorker dials NATS and returns a load worker that requests work leases
 // on work.lease.<workerID>.<queue>.  Multiple load workers request independently; the
-// server's atomic LeaseReadyTask distributes ready tasks among them.
+// server's atomic LeaseTask distributes ready tasks among them.
 func newLoadWorker(tb testing.TB, natsURL, workerID, farmID, queueID string) *loadWorker {
 	tb.Helper()
 

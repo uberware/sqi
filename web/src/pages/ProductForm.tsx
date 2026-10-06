@@ -35,7 +35,7 @@ export interface ProductDuplicateState {
   duplicateFrom: Defaults
 }
 
-// A1 slug: lowercase letters/digits/_/- with one optional "/" segment.
+// Product slug: lowercase letters/digits/_/- with one optional "/" segment.
 const NAME_PATTERN = /^[a-z0-9][a-z0-9_-]*(\/[a-z0-9][a-z0-9_-]*)?$/
 
 const EMPTY_DEFAULTS: Defaults = {

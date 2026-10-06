@@ -62,7 +62,7 @@ func TestLeaseRequestReply_WildcardTokenRoutes(t *testing.T) {
 		t.Errorf("wildcard reply = %q, want got:%s", reply, WildcardQueueToken)
 	}
 
-	// Empty queue token does NOT route — this is the bug the wildcard token fixes.
+	// An empty queue token does not route; the wildcard token exists for that case.
 	if _, err := worker.RequestLease(context.Background(), "w1", "", []byte("payload"), 300*time.Millisecond); err == nil {
 		t.Error("empty-queue RequestLease unexpectedly succeeded; an empty queue token must not route to the server")
 	}

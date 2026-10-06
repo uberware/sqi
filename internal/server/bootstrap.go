@@ -25,8 +25,8 @@ type BootstrapParams struct {
 // exist. It is idempotent and never overwrites an existing account: once the
 // users table is non-empty it is a no-op, even if p carries credentials. With
 // no credentials configured on an empty table it logs a warning and leaves
-// the server usable but unable to authenticate as anyone yet — matching A0's
-// no-fail-closed philosophy — until an operator sets the bootstrap env vars
+// the server usable but unable to authenticate as anyone yet — the auth gate
+// does not fail closed — until an operator sets the bootstrap env vars
 // and restarts.
 func bootstrapAdmin(ctx context.Context, st store.Store, p BootstrapParams, logger *slog.Logger) error {
 	n, err := st.CountUsers(ctx)

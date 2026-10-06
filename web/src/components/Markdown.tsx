@@ -12,9 +12,9 @@ const SAFE_SCHEMES = ['http:', 'https:', 'mailto:']
  * to the extracted scheme for the allowlist comparison, never to the
  * returned string -- the caller renders this return value directly, so the
  * string that is checked and the string that reaches the DOM are the same
- * value, not merely argued-equivalent. Whitespace and control characters are
- * stripped before matching: `java\tscript:` is a spelling browsers have
- * historically accepted, and a naive prefix test would miss it. */
+ * value. Whitespace and control characters are stripped before matching:
+ * `java\tscript:` is a spelling browsers have historically accepted, and a
+ * naive prefix test would miss it. */
 function safeHref(href: string): string | null {
   // Strips every character at or below U+0020 -- space, tab, newline and
   // the C0 controls. A class such as /[ -]/ would strip spaces and hyphens

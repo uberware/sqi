@@ -12,24 +12,15 @@ import (
 // resolveFormatStringExpr's lone-reference branch against the panic
 // Value.AsStr raises (Value.mustBe) for any payload code other than string.
 //
-// EXPR sub-project E4b Task 2's fix-round review found the original
-// implementation called v.AsStr() there. That was unreachable in production
-// AT THE TIME only because every caller then passed a target that either
-// evaluated a string (resolveRangeListEntry's old, uniform TargetString) or
-// never reached the lone branch at all for the target it passed
-// (resolveRangeExprField's non-lone RangeExpr call always supplies a raw
-// value fmtstring.LoneRef has already rejected as non-lone). But loneTarget
-// is a caller-supplied PARAMETER, not a constant baked into this function —
-// it exists precisely so a future caller can vary it, which is exactly what
-// EXPR sub-project E4b Task 3 (design spec §3) then did:
-// resolveRangeListEntry now targets rangeExprElemType(typ) -- TInt, TFloat or
-// TPath for an INT, FLOAT or PATH entry, not always TString -- so a parameter
-// that exists to be varied must not crash the process — inside a synchronous
-// submit handler, no less — the first time it actually is varied.
-// Value.String() is total over every Value and is already what
-// evalRangeExprField's elements use; this test pins that resolveFormatStringExpr
-// never regresses back to AsStr, for every scalar/list shape a target might
-// plausibly produce.
+// loneTarget is a caller-supplied PARAMETER, not a constant baked into this
+// function, and callers do vary it: resolveRangeListEntry targets
+// rangeExprElemType(typ) -- TInt, TFloat or TPath for an INT, FLOAT or PATH
+// entry, not always TString. Calling v.AsStr() on the lone branch would
+// therefore crash the process, inside a synchronous submit handler, for any
+// non-string target. Value.String() is total over every Value and is already
+// what evalRangeExprField's elements use; this test pins that
+// resolveFormatStringExpr uses it rather than AsStr, for every scalar/list
+// shape a target might plausibly produce.
 func TestResolveFormatStringExpr_NonStringLoneTargetDoesNotPanic(t *testing.T) {
 	for _, tc := range []struct {
 		name   string

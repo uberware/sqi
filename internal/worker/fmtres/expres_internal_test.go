@@ -8,12 +8,12 @@ import (
 	"github.com/uberware/sqi/internal/openjd/expr"
 )
 
-// White-box test for FIX ROUND 2, item A: expres_test.go's
+// White-box test for the path flavor in ExprEvalOptions: expres_test.go's
 // TestExprEvalOptions_CarriesNativePathFlavor (package fmtres_test) can only
 // build its expectation through expr.WithPathFormat(expr.PathNative), which
-// resolves to expr.PathPOSIX on every host this suite runs on -- the SAME
+// resolves to expr.PathPOSIX on every POSIX host -- the SAME
 // resolution expr.Eval's own unconfigured default uses. That test's own doc
-// comment discloses, honestly, that deleting expr.WithPathFormat(pathFlavor)
+// comment states that deleting expr.WithPathFormat(pathFlavor)
 // from ExprEvalOptions produces IDENTICAL output on this host either way, so
 // it cannot behaviorally prove the call survives.
 //

@@ -146,9 +146,10 @@ func newJobRouter(st store.Store, sched jobCanceler) chi.Router {
 	return r
 }
 
-// seedJob pre-populates the fake store with one farm, one queue, and one job.
-// Returns the seeded job for use in subsequent assertions.
-func seedJob(t *testing.T, st *fake.Store, status store.JobStatus) store.Job {
+// seedJob pre-populates a store (the fake, or a real backend for the race
+// tests) with one farm, one queue, and one job. Returns the seeded job for use
+// in subsequent assertions.
+func seedJob(t *testing.T, st store.Store, status store.JobStatus) store.Job {
 	t.Helper()
 	ctx := t.Context()
 
@@ -617,7 +618,7 @@ func TestListJobs(t *testing.T) {
 			if err != nil {
 				t.Fatalf("CreateTask: %v", err)
 			}
-			if err := st.SetTaskUnschedulableReason(ctx, tk.ID, "no worker matches"); err != nil {
+			if _, err := st.SetTaskUnschedulableReason(ctx, tk.ID, "no worker matches"); err != nil {
 				t.Fatalf("SetTaskUnschedulableReason: %v", err)
 			}
 		}
@@ -794,7 +795,7 @@ func TestGetJob(t *testing.T) {
 			if err != nil {
 				t.Fatalf("CreateTask: %v", err)
 			}
-			if err := st.SetTaskUnschedulableReason(ctx, tk.ID, "no worker matches"); err != nil {
+			if _, err := st.SetTaskUnschedulableReason(ctx, tk.ID, "no worker matches"); err != nil {
 				t.Fatalf("SetTaskUnschedulableReason: %v", err)
 			}
 		}
@@ -1269,9 +1270,9 @@ type recordingJobNotifier struct {
 
 func (n *recordingJobNotifier) NotifyJob(e ws.JobEvent) { n.events = append(n.events, e) }
 
-// TestJobHandler_DeleteJob_NotifiesWithOwner is the regression test for I-2:
-// the delete handler deletes the row before emitting the removal event, so
-// the event must carry Owner explicitly (from the job it already loaded)
+// TestJobHandler_DeleteJob_NotifiesWithOwner pins the owner on a delete
+// event: the delete handler deletes the row before emitting the removal event,
+// so the event must carry Owner explicitly (from the job it already loaded)
 // rather than relying on the hub's ownerCache fallback, which would try (and
 // fail) to GetJob a row that no longer exists — dropping the envelope for
 // every owner-scoped subscriber, including the job's own owner.

@@ -78,12 +78,10 @@ func TestStager_StageOut_RefusesSymlinkSource(t *testing.T) {
 // independently of it.
 //
 // THIS TEST IS POSIX-ONLY, and not because of the primitive. It carries no
-// runtime.GOOS guard of its own — one was removed during H3 on the theory
-// that NTFS hardlinks make it portable, which is true of os.Link but not of
-// this test — because it still skips on Windows inside fakeSync, whose
-// fixture is a POSIX "#!/bin/sh" script Windows cannot exec (see fakeSync's
-// own doc in staging_test.go). Removing that guard was therefore a no-op, and
-// re-deriving the fact costs a `go test -v -run` every time. Do NOT "fix" it
+// runtime.GOOS guard of its own (NTFS hardlinks make os.Link portable, but
+// not this test): it skips on Windows inside fakeSync, whose fixture is a
+// POSIX "#!/bin/sh" script Windows cannot exec (see fakeSync's own doc in
+// staging_test.go). Do NOT "fix" it
 // by making fakeSync cross-platform for this test's sake: Windows coverage of
 // the same check already exists as
 // TestStageOut_RefusesHardlinkedSourceOnWindows in staging_windows_test.go,

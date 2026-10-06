@@ -25,8 +25,8 @@ import (
 // A junction (IO_REPARSE_TAG_MOUNT_POINT) is the whole reason this file
 // exists: unlike an NTFS symlink, creating one requires NO privilege at all —
 // not SeCreateSymbolicLinkPrivilege, not Developer Mode. It is therefore the
-// primitive an ordinary run-as-user task actually has, and the one every
-// guard in staging.go historically missed, because os.Lstat reports a
+// primitive an ordinary run-as-user task actually has, and the one a
+// path-based guard misses, because os.Lstat reports a
 // junction as fs.ModeIrregular rather than fs.ModeSymlink and
 // filepath.EvalSymlinks does not resolve it.
 func mklinkJunction(t *testing.T, link, target string) {
@@ -39,7 +39,7 @@ func mklinkJunction(t *testing.T, link, target string) {
 
 // There is deliberately NO Windows test asserting that the copy layer itself
 // refuses a reparse-point source, and a reader must not assume one exists.
-// Since H3 the stage-out copy layer takes an already-open, already-validated
+// The stage-out copy layer takes an already-open, already-validated
 // descriptor (copyFromFile), so there is no path for a junction to be planted
 // at — the refusal lives entirely in openStageOutSource, which every test
 // below drives. copyFile, the by-path opener, is the STAGE-IN path only; its
@@ -49,12 +49,12 @@ func mklinkJunction(t *testing.T, link, target string) {
 // than exercising any reparse check, and an NTFS FILE symlink needs
 // SeCreateSymbolicLinkPrivilege, which an ordinary task does not hold and
 // this suite therefore never creates. A test named for the copy layer that
-// actually called openStageOutSource used to live here; it was a near-exact
-// duplicate of TestStageOut_RefusesJunctionedScratchSubdir wearing a name
-// that claimed coverage it did not provide, and was removed rather than
-// renamed.
+// actually called openStageOutSource would duplicate
+// TestStageOut_RefusesJunctionedScratchSubdir under a name claiming coverage
+// it does not provide.
 
-// TestStageOut_RefusesJunctionedScratchSubdir is the primary H3 regression.
+// TestStageOut_RefusesJunctionedScratchSubdir is the primary junction-escape
+// regression test.
 //
 // A task owns its per-entry scratch subdirectory (StageIn's ChownRecursive
 // hands it over, and on Windows isolation genuinely ACL-secures it to the
@@ -64,7 +64,7 @@ func mklinkJunction(t *testing.T, link, target string) {
 // and the ELEVATED daemon copies those bytes to the job's real output path.
 //
 // This is not a race and needs no privilege: it is one-shot and
-// deterministic. Before the fix this test fails by finding the secret's
+// deterministic. Without the guard this test fails by finding the secret's
 // contents at outOrig.
 func TestStageOut_RefusesJunctionedScratchSubdir(t *testing.T) {
 	scratch := t.TempDir()
@@ -241,7 +241,7 @@ func TestStageOut_RefusesHardlinkedSourceOnWindows(t *testing.T) {
 //
 // The property under test is that copyFromFile reads the DESCRIPTOR
 // openStageOutSource validated, so a swap at the path cannot change what is
-// copied. Step 3's assertion (a fresh path read now yields the attacker's
+// copied. The post-swap check (a fresh path read yields the attacker's
 // bytes) is what stops this test from being vacuous.
 func TestStageOut_SwapAfterValidateIsRefused(t *testing.T) {
 	scratch := t.TempDir()
@@ -296,7 +296,7 @@ func TestStageOut_SwapAfterValidateIsRefused(t *testing.T) {
 }
 
 // TestStageOut_OrdinaryFileUnaffected is the named default-configuration
-// regression test for H3: the adversarial checks must not cost the normal
+// regression test for stage-out: the adversarial checks must not cost the normal
 // path anything. An ordinary staged output still copies back byte for byte
 // with the built-in copy, which is what a worker with no staging
 // configuration uses.
@@ -324,8 +324,8 @@ func TestStageOut_OrdinaryFileUnaffected(t *testing.T) {
 	}
 }
 
-// TestStageOut_SharingViolationIsNotReportedAsEscape covers the honest-error
-// branch: a stage-out source the daemon simply cannot open right now must not
+// TestStageOut_SharingViolationIsNotReportedAsEscape covers the access-error
+// branch: a stage-out source the daemon cannot open right now must not
 // be reported as a containment breach.
 //
 // This is not hypothetical on Windows. Nothing kills a task's process group on
@@ -402,20 +402,17 @@ func TestStageOut_SharingViolationIsNotReportedAsEscape(t *testing.T) {
 	}
 }
 
-// TestCopyFile_RefusesHardlinkedStageInSourceOnWindows pins a real BEHAVIOR
-// CHANGE H3 made to Windows STAGE-IN, so that it stands on the record as a
-// decision rather than surviving as an accident nobody wrote down.
+// TestCopyFile_RefusesHardlinkedStageInSourceOnWindows pins a deliberate
+// Windows STAGE-IN behavior.
 //
-// hasExtraHardlinks used to return (false, nil) unconditionally on Windows.
-// Making it real gave the link-count refusal to BOTH its callers at once —
-// openStageOutSource, which is adversarial and is the point of H3, and
-// copyFile, which is the built-in stage-in copy and is not adversarial at
-// all. So a job INPUT asset that happens to carry a second NTFS hardlink is
-// now refused on Windows where it previously staged in fine: content-
-// addressed and dedup asset stores, and "rsync --link-dest"-style delivery,
-// all produce multiply linked files routinely. The refusal is deliberate,
-// is POSIX parity, and is kept — but if this test ever has to change, THAT
-// is the conversation to have first, not a quiet edit to the check.
+// hasExtraHardlinks applies the link-count refusal to BOTH its callers —
+// openStageOutSource, which is adversarial, and copyFile, which is the
+// built-in stage-in copy and is not adversarial at all. So a job INPUT asset
+// that happens to carry a second NTFS hardlink is refused on Windows:
+// content-addressed and dedup asset stores, and "rsync --link-dest"-style
+// delivery, all produce multiply linked files routinely. The refusal is
+// deliberate and is POSIX parity — if this test ever has to change, that
+// decision comes first, not a quiet edit to the check.
 //
 // Deliberately distinct from TestCopyFile_RefusesSourceWithExtraHardlink in
 // staging_copy_test.go, which frames the same check as a TOCTOU defense and
@@ -441,7 +438,7 @@ func TestCopyFile_RefusesHardlinkedStageInSourceOnWindows(t *testing.T) {
 	err := builtinCopy(context.Background(), src, dest)
 	if err == nil {
 		t.Fatal("want stage-in to refuse an input carrying a second hardlink on Windows " +
-			"(pre-H3 this copied: hasExtraHardlinks was a stub here)")
+			"(hasExtraHardlinks must be a real check here, not a stub)")
 	}
 	if !strings.Contains(err.Error(), "hardlink") {
 		t.Errorf("err = %v, want the operator-facing message to name the hardlink refusal", err)

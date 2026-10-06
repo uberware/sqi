@@ -281,15 +281,13 @@ func jobParamDefsOfType(jobParams map[string]string, typ openjd.JobParamType) []
 }
 
 // TestResolveParameterSpaceParams_WholeFieldListExpression covers section
-// 1.3.12's extended range field (design spec
-// docs/superpowers/specs/2026-08-09-expr-server-substitution-design.md,
-// section 2): a whole-field range that is a LONE {{...}} expression
-// evaluating to a list (or, for INT, a range_expr) becomes RangeList, with
-// RangeExpr cleared so expand.go's expandTaskParam takes the list branch.
+// 1.3.12's extended range field: a whole-field range that is a LONE {{...}}
+// expression evaluating to a list (or, for INT, a range_expr) becomes
+// RangeList, with RangeExpr cleared so expand.go's expandTaskParam takes the
+// list branch.
 //
-// The FLOAT case's want values ("5.0", "3.0") are not a guess copied from the
-// task brief — see evalRangeExprField's own doc comment (resolve.go) for the
-// verification (spec citation + a throwaway empirical check) behind them.
+// See evalRangeExprField's doc comment (resolve.go) for why the FLOAT case's
+// want values are "5.0" and "3.0".
 func TestResolveParameterSpaceParams_WholeFieldListExpression(t *testing.T) {
 	for _, tc := range []struct {
 		name, typ, rangeExpr string
@@ -320,11 +318,10 @@ func TestResolveParameterSpaceParams_WholeFieldListExpression(t *testing.T) {
 			// a function call instead of a literal. A GENUINE range_expr value
 			// (from range_expr(), which the language's own list(range_expr)
 			// conversion and this package's evalRangeExprField both handle via
-			// coerce.go's range_expr -> list[int] rule) is what section 2.1's
-			// trap is actually about, and it is NOT exercised by this table at
-			// all — see TestResolveParameterSpaceParams_RangeExprKeepsExpressionPolicy,
-			// below, which pins policy-divergent range_expr shapes this rename
-			// exists to stop misrepresenting.
+			// coerce.go's range_expr -> list[int] rule) is what the re-parse
+			// trap is about, and it is NOT exercised by this table at all —
+			// see TestResolveParameterSpaceParams_RangeExprKeepsExpressionPolicy,
+			// below, which pins policy-divergent range_expr shapes.
 			name: "INT list[int] result (range() returns list[int] directly)",
 			typ:  "INT", rangeExpr: "{{ range(1, 4) }}",
 			want: []string{"1", "2", "3"},
@@ -339,8 +336,7 @@ func TestResolveParameterSpaceParams_WholeFieldListExpression(t *testing.T) {
 			// case) is a bare re-tag with no normalization at all — so each
 			// entry survives byte for byte: no "//" collapsing, no "."
 			// resolution, and the backslash stays a literal character rather
-			// than becoming a POSIX separator. Confirmed empirically before
-			// writing this case.
+			// than becoming a POSIX separator.
 			want: []string{"a//b", "c/./d", "e\\f"},
 		},
 	} {
@@ -383,9 +379,9 @@ func TestResolveParameterSpaceParams_WholeFieldListExpression(t *testing.T) {
 	}
 }
 
-// TestResolveParameterSpaceParams_RangeExprKeepsExpressionPolicy is the
-// design spec's section 2.1 trap, pinned directly rather than argued in
-// prose: a GENUINE range_expr-typed value (from range_expr(), which — unlike
+// TestResolveParameterSpaceParams_RangeExprKeepsExpressionPolicy pins the
+// re-parse trap directly: a GENUINE range_expr-typed value (from
+// range_expr(), which — unlike
 // range(), the "INT list[int] result" case above — really does produce
 // expr.CodeRangeExpr) must expand under internal/openjd/expr's OWN policy
 // (the zero intrange.Policy: start may exceed end, a step may be negative,
@@ -401,16 +397,12 @@ func TestResolveParameterSpaceParams_WholeFieldListExpression(t *testing.T) {
 // pins the SAME three range texts, written as literal <IntRangeExpr>
 // strings, still doing exactly that. If this function's production code were
 // ever "simplified" to render the evaluated value with .String() and hand
-// the resulting <IntRangeExpr> text back through RangeExpr — the exact
-// mistake section 2.1 exists to prevent — every OTHER test in this file
-// keeps passing (range(1,4)'s literal round-trip, "1-3", expands to [1,2,3]
-// either way), but this test starts failing: "5-1" would be rejected instead
-// of expanding to [5], "10-1:-2" would be rejected instead of expanding to
-// [2,4,6,8,10], and "10-15:2,1-5" would come back first-seen
-// ([10,12,14,1,2,3,4,5]) instead of increasing ([1,2,3,4,5,10,12,14].
-// Verified by performing exactly that mutation against this task's own code,
-// confirming this test fails, and reverting — see task-1-report.md's "Fix
-// round 1" section.
+// the resulting <IntRangeExpr> text back through RangeExpr, every OTHER test
+// in this file keeps passing (range(1,4)'s literal round-trip, "1-3",
+// expands to [1,2,3] either way), but this test fails: "5-1" would be
+// rejected instead of expanding to [5], "10-1:-2" would be rejected instead
+// of expanding to [2,4,6,8,10], and "10-15:2,1-5" would come back first-seen
+// ([10,12,14,1,2,3,4,5]) instead of increasing ([1,2,3,4,5,10,12,14]).
 func TestResolveParameterSpaceParams_RangeExprKeepsExpressionPolicy(t *testing.T) {
 	for _, tc := range []struct {
 		name, call string
@@ -472,9 +464,9 @@ func TestResolveParameterSpaceParams_RangeExprKeepsExpressionPolicy(t *testing.T
 // internal/openjd's OWN stricter policy (range.go's parseIntRangeExpr,
 // invoked from expand.go's expandTaskParam — NOT from this package's
 // resolve.go, which never parses a literal range's semantics, only
-// substitutes {{...}} references in its text). This is the proof that the
-// two policies are genuinely two different code paths reached by two
-// genuinely different inputs, not the same code path merely described twice.
+// substitutes {{...}} references in its text). Together the two tests show
+// the two policies are two different code paths reached by two different
+// inputs.
 func TestResolveParameterSpaceParams_LiteralIntRangeKeepsOpenJDPolicy(t *testing.T) {
 	tmpl := &openjd.JobTemplate{Extensions: []string{"EXPR"}}
 
@@ -548,11 +540,8 @@ func TestResolveParameterSpaceParams_LiteralIntRangeKeepsOpenJDPolicy(t *testing
 // expression position, not expr.Eval's own looser unconfigured defaults.
 // Dropping the metering options from evalRangeExprField's expr.Eval call
 // leaves every OTHER test in this file passing (none of them evaluates
-// anything expensive enough to trip a 10,000-operation/1MB budget) — this is
-// the one test that would catch it, the same gap EXPR sub-project E3's own
-// review found and fixed for checkLetBindings. Verified by dropping
-// the lim.evalOptions()... tail from the call, confirming this test fails, and
-// restoring it — see task-1-report.md's "Fix round 1" section.
+// anything expensive enough to trip a 10,000-operation/1MB budget), so this
+// is the one test that catches it. checkLetBindings had the same gap.
 func TestResolveParameterSpaceParams_WholeFieldExpressionMetered(t *testing.T) {
 	tmpl := &openjd.JobTemplate{Extensions: []string{"EXPR"}}
 	ps := &openjd.StepParameterSpace{
@@ -577,10 +566,10 @@ func TestResolveParameterSpaceParams_WholeFieldExpressionMetered(t *testing.T) {
 	}
 }
 
-// TestResolveParameterSpaceParams_BaseSpecUnchanged is this task's proof for
-// the base-spec guarantee (task-1-brief.md's Step 4): a template that does
-// NOT declare EXPR must take fmtstring.Resolve's exact path, byte for byte —
-// not a new path that happens to produce the same answer.
+// TestResolveParameterSpaceParams_BaseSpecUnchanged pins the base-spec
+// guarantee: a template that does NOT declare EXPR must take
+// fmtstring.Resolve's exact path, byte for byte — not a new path that happens
+// to produce the same answer.
 //
 // The range body below ("[Param.A, Param.B]") is valid EXPR syntax — it is
 // exactly the STRING case's body from
@@ -591,13 +580,13 @@ func TestResolveParameterSpaceParams_WholeFieldExpressionMetered(t *testing.T) {
 // its caller) were ever rerouted to the EXPR-aware branch regardless of
 // tmpl's declared extensions, this test would wrongly SUCCEED with
 // RangeList == []string{"x", "y"} instead of failing here — the same
-// detector shape EXPR sub-project E4a's Task 6 used at both worker call
-// sites (internal/worker/executor/resolve_expr_test.go's
+// detector shape the worker uses at both of its call sites
+// (internal/worker/executor/resolve_expr_test.go's
 // TestExecutor_Dispatch_BaseSpec_ExpressionSyntaxStaysMalformed).
 //
-// tmpl is nil, the common case (a step's parameter space is resolved without
-// re-parsing its own template), AND its own sibling case, a non-nil tmpl that
-// simply does not list "EXPR", is covered too — both must reject identically.
+// A nil tmpl is the common case (a step's parameter space is resolved without
+// re-parsing its own template); a non-nil tmpl that does not list "EXPR" is
+// covered too — both must reject identically.
 func TestResolveParameterSpaceParams_BaseSpecUnchanged(t *testing.T) {
 	jobParams := map[string]string{"A": "x", "B": "y"}
 	ps := &openjd.StepParameterSpace{
@@ -642,17 +631,16 @@ func TestResolveParameterSpaceParams_BaseSpecUnchanged(t *testing.T) {
 // input/output pair again with EXPR declared, proving the two branches agree
 // on this shape's VALUE.
 //
-// As of EXPR sub-project E4b Task 2's checker/resolver-drift fix, this is NO
-// LONGER the identical CODE PATH as the non-EXPR case: an EXPR-declared
-// template now resolves this shape through resolveFormatStringExpr (each
+// It is not the same CODE PATH as the non-EXPR case: an EXPR-declared
+// template resolves this shape through resolveFormatStringExpr (each
 // embedded reference evaluated as an expression, expr.TAny, rendered with
 // Value.String()), not fmtstring.Resolve (each reference read only as a bare
 // dotted-identifier lookup). Both a plain "Param.Start" lookup and an
 // expr.TAny evaluation of the expression "Param.Start" produce the same text
-// for a concrete int value, which is exactly what this test demonstrates —
-// see TestResolveParameterSpaceParams_NonLoneRangeExprEmbeddedExpression,
-// below, for a case (an actual operator, not a bare reference) the base-spec
-// path cannot resolve at all, which is the whole point of the fix.
+// for a concrete int value, which is what this test demonstrates — see
+// TestResolveParameterSpaceParams_NonLoneRangeExprEmbeddedExpression, below,
+// for a case (an actual operator, not a bare reference) the base-spec path
+// cannot resolve at all.
 func TestResolveParameterSpaceParams_NonLoneRefStaysBaseSpecEvenWithEXPR(t *testing.T) {
 	tmpl := &openjd.JobTemplate{
 		Extensions: []string{"EXPR"},
@@ -716,9 +704,9 @@ func TestResolveParameterSpaceParams_WholeFieldExpressionError(t *testing.T) {
 	}
 }
 
-// TestResolveParameterSpaceParams_RangeListEntryExpressions is EXPR
-// sub-project E4b Task 2's Step 1: an entry that is a lone {{expr}}, one with
-// an expression embedded in surrounding text, and one per element type
+// TestResolveParameterSpaceParams_RangeListEntryExpressions covers RangeList
+// entry expressions: an entry that is a lone {{expr}}, one with an
+// expression embedded in surrounding text, and one per element type
 // (FLOAT/STRING/PATH keep list[... | FormatString] per §1.3.12; INT/CHUNK[INT]
 // may also carry a RangeList per TaskParamDefinition's own doc comment).
 // Asserts each resolves to the right VALUE and the right RENDERING for its
@@ -729,8 +717,9 @@ func TestResolveParameterSpaceParams_WholeFieldExpressionError(t *testing.T) {
 // RangeListEntryFloatIsRenormalizedByExpand, immediately below, which pins
 // what a caller reading the FULLY expanded parameter space (this function
 // PLUS expand.go's ExpandParameterSpace) actually receives, and records why
-// §2.3's rendering question is moot for a FLOAT range value reached through
-// either the whole-field list form (Task 1) or this per-entry form.
+// the string form of a computed float does not matter for a FLOAT range
+// value reached through either the whole-field list form or this per-entry
+// form.
 func TestResolveParameterSpaceParams_RangeListEntryExpressions(t *testing.T) {
 	for _, tc := range []struct {
 		name      string
@@ -809,8 +798,8 @@ func TestResolveParameterSpaceParams_RangeListEntryExpressions(t *testing.T) {
 }
 
 // TestResolveParameterSpaceParams_RangeListEntryFloatIsRenormalizedByExpand
-// is EXPR sub-project E4b Task 2's fix-round item 4: the FLOAT case above
-// asserts resolve.go's own output ("5.0" for "{{ Param.Scale * 2 }}",
+// pins what a worker receives for a computed FLOAT entry. The FLOAT case
+// above asserts resolve.go's own output ("5.0" for "{{ Param.Scale * 2 }}",
 // Scale=2.5) and stops there, which does NOT pin what a worker actually
 // receives — expand.go's validateFloatList re-canonicalizes every FLOAT
 // RangeList entry with strconv.FormatFloat(f, 'g', -1, 64), which drops the
@@ -819,15 +808,12 @@ func TestResolveParameterSpaceParams_RangeListEntryExpressions(t *testing.T) {
 // (ResolveParameterSpaceParams + ExpandParameterSpace) and pins the value
 // that actually reaches a task row: "5", not "5.0".
 //
-// This makes §2.3's rendering-rule question (which of two competing string
-// forms for a computed float is "correct") MOOT for a FLOAT range value
-// specifically, in EITHER form (Task 1's whole-field list expression or
-// this task's per-entry expression): whatever evalRangeExprField/
+// So which of two competing string forms for a computed float is "correct"
+// does not matter for a FLOAT range value, in EITHER form (the whole-field
+// list expression or a per-entry expression): whatever evalRangeExprField/
 // resolveFormatStringExpr render, expand.go normalizes away before it
-// reaches a task's Parameters map, and it already did so for a literal
-// (non-EXPR) FLOAT RangeList entry too — this is pre-existing behavior this
-// task's own per-entry evaluation did not introduce, only newly made
-// reachable through an EXPR-computed entry.
+// reaches a task's Parameters map, exactly as it does for a literal
+// (non-EXPR) FLOAT RangeList entry.
 func TestResolveParameterSpaceParams_RangeListEntryFloatIsRenormalizedByExpand(t *testing.T) {
 	tmpl := &openjd.JobTemplate{
 		Extensions:           []string{"EXPR"},
@@ -865,22 +851,18 @@ func TestResolveParameterSpaceParams_RangeListEntryFloatIsRenormalizedByExpand(t
 	}
 }
 
-// TestResolveParameterSpaceParams_RangeListEntryINTScaleFix is design spec
-// §3's own worked example, and the reason EXPR sub-project E4b Task 2's
-// review amended Task 3's plan to move both layers in one commit: an INT
-// RangeList entry "{{ Param.Scale * 2 }}" with Scale=2.5 evaluates to the
-// float 5.0, which is exactly representable as an int. Once
-// checkParameterSpaceExpressions targets TInt for this position (this
-// task), the checker ACCEPTS it — float -> int is a legal §1.2.3 coercion
-// and 5.0 is integral. Before this test's own fix (threading
-// rangeExprElemType(def.Type) into resolveRangeListEntry's loneTarget too),
-// this function still targeted TargetString and would have rendered "5.0",
-// which expand.go's validateIntList rejects outright ("invalid integer
-// \"5.0\""): checker accepts, expansion fails — design spec §4's drift
-// class. This test proves the fix closes it: resolveRangeListEntry now
-// performs the SAME float -> int coercion the checker verified would
-// succeed, landing on the canonical int text "5" (not "5.0", and not an
-// error), and ExpandParameterSpace accepts that text end to end.
+// TestResolveParameterSpaceParams_RangeListEntryINTScaleFix pins that the
+// checker and the resolver agree on an INT RangeList entry
+// "{{ Param.Scale * 2 }}" with Scale=2.5. It evaluates to the float 5.0,
+// which is exactly representable as an int. checkParameterSpaceExpressions
+// targets TInt for this position, so the checker ACCEPTS it — float -> int
+// is a legal §1.2.3 coercion and 5.0 is integral. If resolveRangeListEntry's
+// loneTarget were TargetString instead of rangeExprElemType(def.Type), it
+// would render "5.0", which expand.go's validateIntList rejects outright
+// ("invalid integer \"5.0\""): the checker accepts and expansion fails.
+// resolveRangeListEntry performs the SAME float -> int coercion the checker
+// verified would succeed, landing on the canonical int text "5" (not "5.0",
+// and not an error), and ExpandParameterSpace accepts that text end to end.
 func TestResolveParameterSpaceParams_RangeListEntryINTScaleFix(t *testing.T) {
 	tmpl := &openjd.JobTemplate{
 		Extensions:           []string{"EXPR"},
@@ -906,7 +888,7 @@ func TestResolveParameterSpaceParams_RangeListEntryINTScaleFix(t *testing.T) {
 
 	rows, err := openjd.ExpandParameterSpace(resolved)
 	if err != nil {
-		t.Fatalf("ExpandParameterSpace: %v -- the checker accepts this range under the tightened TInt target, so expansion must too", err)
+		t.Fatalf("ExpandParameterSpace: %v -- the checker accepts this range under the TInt target, so expansion must too", err)
 	}
 	if len(rows) != 1 || rows[0]["P"] != "5" {
 		t.Errorf("expanded rows = %v, want exactly one row with P=5", rows)
@@ -915,19 +897,17 @@ func TestResolveParameterSpaceParams_RangeListEntryINTScaleFix(t *testing.T) {
 
 // TestResolveParameterSpaceParams_RangeListEntryINTNonIntegralRejected is
 // TestResolveParameterSpaceParams_RangeListEntryINTScaleFix's other half —
-// design spec §4's agreement instrument requires BOTH directions, not just
-// "the checker's accept resolves cleanly": a NON-integral float entry must
-// now be REJECTED by the resolver too, matching
-// checkParameterSpaceExpressions's own TInt target
+// checker/resolver agreement needs BOTH directions, not just "the checker's
+// accept resolves cleanly": a NON-integral float entry must be REJECTED by
+// the resolver too, matching checkParameterSpaceExpressions's own TInt target
 // (TestCheckParameterSpaceExpressions_RangeTargetTypes's INT "entry rejected
-// (wrong scalar type)" row, exprcheck_test.go). Before this task, the
-// permissive TargetString target accepted any scalar unconditionally and
-// would have rendered "2.5" here, silently producing a range value
-// validateIntList rejects only later, at ExpandParameterSpace — never
+// (wrong scalar type)" row, exprcheck_test.go). A permissive TargetString
+// target would accept any scalar and render "2.5" here, producing a range
+// value validateIntList rejects only later, at ExpandParameterSpace — never
 // reached by this test, which calls ResolveParameterSpaceParams alone. A
-// range the checker rejects must never reach expansion; proving the
-// resolver itself already refuses it, at the entry's own pointer, is what
-// makes that true regardless of whether a caller checks first.
+// range the checker rejects must never reach expansion; the resolver
+// refusing it itself, at the entry's own pointer, makes that true regardless
+// of whether a caller checks first.
 func TestResolveParameterSpaceParams_RangeListEntryINTNonIntegralRejected(t *testing.T) {
 	tmpl := &openjd.JobTemplate{
 		Extensions:           []string{"EXPR"},
@@ -963,10 +943,9 @@ func TestResolveParameterSpaceParams_RangeListEntryINTNonIntegralRejected(t *tes
 // "entry rejected (wrong scalar type)" table (exprcheck_test.go): for FLOAT
 // and PATH entries too (INT/CHUNK[INT] is the dedicated pair of tests above),
 // a value TargetString would have accepted but rangeExprElemType(typ) does
-// not must now be rejected by the resolver, at the entry's own pointer —
-// design spec §4's "a range the checker rejects must never reach expansion"
-// proven from the resolver's own side, not inferred from the checker table
-// agreeing in principle.
+// not must be rejected by the resolver, at the entry's own pointer — "a
+// range the checker rejects must never reach expansion" proven from the
+// resolver's own side, not inferred from the checker table.
 func TestResolveParameterSpaceParams_RangeListEntryElementTypeRejections(t *testing.T) {
 	for _, tc := range []struct {
 		name  string
@@ -1073,9 +1052,9 @@ func TestResolveParameterSpaceParams_RangeListEntryError(t *testing.T) {
 // TestResolveParameterSpaceParams_RangeListEntryMetered proves a per-entry
 // expression is evaluated under the same submission-time budget
 // ([openjd.ExprLimits]'s evalOptions, exprlimits.go) as every other submit-time expression
-// position — the same gap TestResolveParameterSpaceParams_
-// WholeFieldExpressionMetered (above) closed for the whole-field form,
-// now closed for resolveFormatStringExpr's own new Eval call sites too.
+// position — what TestResolveParameterSpaceParams_
+// WholeFieldExpressionMetered (above) pins for the whole-field form, pinned
+// here for resolveFormatStringExpr's Eval call sites.
 func TestResolveParameterSpaceParams_RangeListEntryMetered(t *testing.T) {
 	tmpl := &openjd.JobTemplate{Extensions: []string{"EXPR"}}
 	ps := &openjd.StepParameterSpace{
@@ -1100,29 +1079,29 @@ func TestResolveParameterSpaceParams_RangeListEntryMetered(t *testing.T) {
 	}
 }
 
-// TestResolveParameterSpaceParams_NonLoneRangeExprEmbeddedExpression is EXPR
-// sub-project E4b Task 2's plan amendment: with extensions: [EXPR], a
-// non-lone whole-field RangeString may now contain an embedded expression,
-// per §1.3.12 ("it is a format string, it can now contain an expression").
-// Before this task, checkParameterSpaceExpressions (exprcheck.go) accepted
-// this shape at both phase 1 and phase 2 (checkFormatString evaluates every
-// segment as an expression, lone or not), while resolveRangeExprField routed
-// it to base-spec fmtstring.Resolve, which rejects "Param.End * 2" outright
-// as "not a valid dotted identifier" — a template that validated twice and
-// then failed at submit naming a construct the extension itself allows.
+// TestResolveParameterSpaceParams_NonLoneRangeExprEmbeddedExpression pins
+// that, with extensions: [EXPR], a non-lone whole-field RangeString may
+// contain an embedded expression, per §1.3.12 ("it is a format string, it
+// can now contain an expression"). checkParameterSpaceExpressions
+// (exprcheck.go) accepts this shape at both phase 1 and phase 2
+// (checkFormatString evaluates every segment as an expression, lone or not);
+// if resolveRangeExprField routed it to base-spec fmtstring.Resolve, which
+// rejects "Param.End * 2" outright as "not a valid dotted identifier", a
+// template would validate twice and then fail at submit naming a construct
+// the extension itself allows.
 //
-// This test proves the checker and resolver now agree: the SAME template
-// that passes checkParameterSpaceExpressions (proven indirectly — this is
+// This test shows the checker and resolver agree: the SAME template that
+// passes checkParameterSpaceExpressions (shown indirectly — this is
 // resolve.go's own package, not a submission end-to-end test, but
-// checkFormatString's non-lone branch and this function's new
+// checkFormatString's non-lone branch and this function's
 // resolveFormatStringExpr call are, by construction, the identical
-// expr.TAny/Segments walk) now also resolves successfully here.
+// expr.TAny/Segments walk) also resolves successfully here.
 //
-// It also proves the §2.1-adjacent claim in resolveRangeExprField's doc
-// comment: the resolved text ("1-10") is handed to ExpandParameterSpace,
-// which takes it through expand.go's parseIntRangeExpr — internal/openjd's
-// OWN <IntRangeExpr> grammar reader — and it expands correctly. That is
-// legitimate, not section 2.1's trap: the user wrote range SYNTAX with an
+// It also proves a claim in resolveRangeExprField's doc comment: the
+// resolved text ("1-10") is handed to ExpandParameterSpace, which takes it
+// through expand.go's parseIntRangeExpr — internal/openjd's OWN
+// <IntRangeExpr> grammar reader — and it expands correctly. That is
+// legitimate, not the re-parse trap: the user wrote range SYNTAX with an
 // expression embedded in one piece of it, not an expression that PRODUCES a
 // range_expr value, so there is no range_expr VALUE here to mis-stringify
 // and re-parse under a mismatched policy — only ordinary text, exactly as if
@@ -1212,12 +1191,11 @@ func TestResolveParameterSpaceParams_NonLoneRangeExprError(t *testing.T) {
 	}
 }
 
-// TestResolveParameterSpaceParams_NonLoneRangeExprMetered proves the new
-// non-lone whole-field embedded-expression path is evaluated under
-// the same lim.evalOptions() tail too — the third new expr.Eval call site this task
-// introduces (per-entry lone, per-entry embedded, and this one all funnel
-// through resolveFormatStringExpr, so this one test covers the shared
-// function's metering, exercised via the whole-field position).
+// TestResolveParameterSpaceParams_NonLoneRangeExprMetered proves the
+// non-lone whole-field embedded-expression path is evaluated under the same
+// lim.evalOptions() tail too. Per-entry lone, per-entry embedded, and this
+// one all funnel through resolveFormatStringExpr, so this one test covers
+// the shared function's metering, exercised via the whole-field position.
 func TestResolveParameterSpaceParams_NonLoneRangeExprMetered(t *testing.T) {
 	tmpl := &openjd.JobTemplate{Extensions: []string{"EXPR"}}
 	ps := &openjd.StepParameterSpace{
@@ -1242,28 +1220,22 @@ func TestResolveParameterSpaceParams_NonLoneRangeExprMetered(t *testing.T) {
 	}
 }
 
-// TestResolveParameterSpaceParams_NonLoneRangeExprEmbeddedRangeExprValue is
-// EXPR sub-project E4b Task 2's fix-round item 1: an embedded reference in a
-// non-lone whole-field RangeExpr CAN legitimately evaluate to a genuine
-// range_expr-typed value — range_expr("10-15:2,1-5") — and Value.String()
-// renders that value back to ITS OWN <IntRangeExpr> text (rangeexpr.go: the
-// value's payload IS the text range_expr() was called with, unmodified).
-// This is the case an earlier version of resolveRangeExprField's doc comment
-// incorrectly claimed could not happen ("there is no range_expr-typed VALUE
-// anywhere in this branch to mis-stringify") — coordinator review found the
-// claim false, verified all three rows below directly against the running
-// code, and ruled the resulting behavior CORRECT (see resolveRangeExprField's
-// doc comment for the ruling and its reasoning, restated briefly in each
-// case's own comment below). This test is what pins that ruling so it cannot
-// silently change.
+// TestResolveParameterSpaceParams_NonLoneRangeExprEmbeddedRangeExprValue
+// pins what happens when an embedded reference in a non-lone whole-field
+// RangeExpr evaluates to a genuine range_expr-typed value —
+// range_expr("10-15:2,1-5") — which Value.String() renders back to ITS OWN
+// <IntRangeExpr> text (rangeexpr.go: the value's payload IS the text
+// range_expr() was called with, unmodified). The resulting behavior is
+// correct; see resolveRangeExprField's doc comment for the reasoning,
+// restated briefly in each case's own comment below.
 //
 // All three cases share one shape: an embedded range_expr(...) call,
 // followed by a literal ",<n>" — deliberately non-lone (fmtstring.LoneRef
 // requires the ENTIRE field to be one reference; the trailing literal rules
-// that out), so all three exercise this task's new
-// resolveFormatStringExpr/checkFormatString-agreement machinery, not
-// evalRangeExprField's whole-field-lone path (which remains genuinely
-// section-2.1-safe, per its own doc comment, and is untouched by this case).
+// that out), so all three exercise the resolveFormatStringExpr/
+// checkFormatString-agreement path, not evalRangeExprField's
+// whole-field-lone path (which avoids the re-parse trap, per its own doc
+// comment, and is untouched by this case).
 func TestResolveParameterSpaceParams_NonLoneRangeExprEmbeddedRangeExprValue(t *testing.T) {
 	for _, tc := range []struct {
 		name           string
@@ -1299,10 +1271,8 @@ func TestResolveParameterSpaceParams_NonLoneRangeExprEmbeddedRangeExprValue(t *t
 		},
 		{
 			// The THIRD divergence — first-seen vs. ascending order — does
-			// not reject, it silently REORDERS, which is exactly why this
-			// case needs a pinned test rather than an argument: without one,
-			// nothing stops a future change from reordering back to
-			// ascending and no test would notice. range_expr("10-15:2,1-5")
+			// not reject, it REORDERS, so without this case a change to
+			// ascending order would go unnoticed. range_expr("10-15:2,1-5")
 			// is [1,2,3,4,5,10,12,14] at the expression layer (this repo's
 			// own TestResolveParameterSpaceParams_RangeExprKeepsExpressionPolicy
 			// pins exactly that for the LONE whole-field form). Spliced into
@@ -1368,26 +1338,22 @@ func TestResolveParameterSpaceParams_NonLoneRangeExprEmbeddedRangeExprValue(t *t
 	}
 }
 
-// TestResolveParameterSpaceParams_NonRangeTextIsRejectedAtResolve pins where a
-// scalar that COERCES into an INT range field but does not spell a range is
-// caught.
+// TestExpandParameterSpace_NonRangeTextIsRejected pins where a scalar that
+// COERCES into an INT range field but does not spell a range is caught.
 //
-// openjd-specifications#175 moved that boundary. The whole-field target for an
-// INT parameter is "int | string | range_expr | list[int]", and under the old
-// coercion rules a bool reached none of those members, so "{{ true }}" was
-// rejected by the expression CHECKER at upload. Under the merged rules bool's
-// destination is string, the target offers string, and the checker now accepts
-// it -- exactly as it has always accepted "{{ 'abc' }}", which is equally not a
-// range.
+// The whole-field target for an INT parameter is
+// "int | string | range_expr | list[int]". Under openjd-specifications#175's
+// coercion rules bool's destination is string, the target offers string, and
+// the checker accepts "{{ true }}" -- exactly as it accepts "{{ 'abc' }}",
+// which is equally not a range.
 //
-// So the rejection has to still happen further along. It does, and NOT where
-// the first draft of this test looked: ResolveParameterSpaceParams substitutes
-// the expression and leaves the TEXT in RangeExpr without parsing it -- it
-// accepts "{{ true }}" and "{{ 'abc' }}" alike, and always has for the string.
-// The parse is ExpandParameterSpace's, through range.go's parseIntRangeExpr.
-// So the layering is: the checker rules on the TYPE, resolve substitutes the
-// TEXT, and expansion is the only place that reads it. This test asserts the
-// last of those, for both scalars, so the boundary #175 moved stays covered.
+// So the rejection has to happen further along. ResolveParameterSpaceParams
+// substitutes the expression and leaves the TEXT in RangeExpr without parsing
+// it -- it accepts "{{ true }}" and "{{ 'abc' }}" alike. The parse is
+// ExpandParameterSpace's, through range.go's parseIntRangeExpr. So the
+// layering is: the checker rules on the TYPE, resolve substitutes the TEXT,
+// and expansion is the only place that reads it. This test asserts the last
+// of those, for both scalars.
 func TestExpandParameterSpace_NonRangeTextIsRejected(t *testing.T) {
 	for _, tc := range []struct {
 		name, body string

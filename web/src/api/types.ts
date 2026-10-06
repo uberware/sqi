@@ -267,9 +267,9 @@ export interface Worker {
   status: WorkerStatus
   /**
    * Server-authoritative flag: true when the worker may be hard-deleted via
-   * DELETE /workers/{id} — offline workers, and disabled workers whose last
-   * heartbeat is older than the heartbeat-timeout window (the machine is gone).
-   * Online and live-disabled workers are never removable.
+   * DELETE /workers/{id} — offline workers, disabled or not (a disabled worker
+   * counts as offline once the heartbeat sweep finds it gone). Online workers,
+   * disabled or not, are never removable.
    */
   removable: boolean
   last_heartbeat_at?: string

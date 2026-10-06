@@ -2,7 +2,7 @@
 
 package openjd_test
 
-// Tests for E3 task 2: a let: block requires the EXPR extension. This is the
+// Tests that a let: block requires the EXPR extension. This is the
 // one let rule that fires on the base-spec path -- see validateLetExtension's
 // doc comment in validate.go for why it cannot live in exprcheck.go alongside
 // every other let rule.
@@ -122,7 +122,7 @@ steps:
 	}
 }
 
-// TestValidate_LetStructuralConstraints covers E3 task 4: Template Schemas
+// TestValidate_LetStructuralConstraints covers Template Schemas
 // 3.6's element-count bounds on a let: block -- "If defined, then there must
 // be at least one element in this list" and "Maximum number of items: 50."
 // The 50/51 boundary rows are the point of this test: a cap that only checked

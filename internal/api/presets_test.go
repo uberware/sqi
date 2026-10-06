@@ -528,29 +528,23 @@ func TestPresets_InstallConflict(t *testing.T) {
 	}
 }
 
-// ── EXPR bounds on the preset routes (sub-project H1, whole-wave review) ─────
+// ── EXPR bounds on the preset routes ─────────────────────────────────────────
 
 // TestPresets_ValidationCarriesOperatorLimitsAndDeadline pins that a preset
-// definition is validated under the OPERATOR's EXPR budget and this request's
+// definition is validated under the operator's EXPR budget and this request's
 // wall-clock allowance, not openjd.DefaultExprLimits() with no deadline.
 //
-// H1 fixed POST/PUT /api/v1/products and left these routes on the defaults, on
-// the argument that a preset body is sha256-pinned against an operator's index
-// and therefore not attacker-chosen. That argument covers the DEADLINE at best:
-// the limits are operator configuration, and an operator who tightened a knob
-// asked for it to be enforced wherever a template is validated. Both routes sit
-// behind the same permission as POST /api/v1/products (policy.ProductsManage),
-// which policy.Can grants to everyone while auth is off.
+// A preset body is sha256-pinned against an operator's index and therefore not
+// attacker-chosen, but that argues at most against the deadline: the limits are
+// operator configuration, and an operator who tightened a knob asked for it to
+// be enforced wherever a template is validated. Both routes sit behind the same
+// permission as POST /api/v1/products (policy.ProductsManage), which
+// policy.Can grants to everyone while auth is off.
 //
-// Asserting on the options the handler passes — rather than on an observable
-// verdict — was originally forced: while EXPR was StatusInProgress the walk
-// never ran, so no limit and no deadline could change any response body, and
-// there was nothing else to observe. Sub-project H2 flipped the status, so an
-// observable-verdict test is now possible for these two routes (it would need
-// a fake preset library serving an EXPR definition expensive enough to breach
-// a limit). This test is kept as-is regardless: it pins the hop that carries
-// the operator's configuration, which a verdict test would only cover
-// incidentally.
+// It asserts on the options the handler passes rather than on an observable
+// verdict. A verdict test would need a fake preset library serving an EXPR
+// definition expensive enough to breach a limit, and would cover the hop that
+// carries the operator's configuration only incidentally.
 func TestPresets_ValidationCarriesOperatorLimitsAndDeadline(t *testing.T) {
 	limits := openjd.ExprLimits{
 		SubmissionOperations:  1_234,
@@ -600,8 +594,8 @@ func TestPresets_ValidationCarriesOperatorLimitsAndDeadline(t *testing.T) {
 	}
 }
 
-// TestPresets_DeadlineIsA503NotA422 pins the same 503-vs-4xx split H1 applied
-// to every other route that validates a template: a wall-clock stop means this
+// TestPresets_DeadlineIsA503NotA422 pins the same 503-vs-4xx split every other
+// route that validates a template applies: a wall-clock stop means this
 // server gave up on a body that would validate on an idle machine, so it must
 // not be reported as an unprocessable definition.
 //
@@ -645,10 +639,8 @@ func TestPresets_DeadlineIsA503NotA422(t *testing.T) {
 // shape the two tests above depend on.
 //
 // They synthesize what the pipeline returns rather than driving a real
-// evaluation, which was forced while EXPR was StatusInProgress (no preset
-// definition could reach an expression evaluation) and is now a choice: the
-// two routes reach a real walk since sub-project H2, but driving one needs a
-// fake preset library. errors.Is is what the handler uses, so the
+// evaluation, which would need a fake preset library serving an expensive
+// EXPR definition. errors.Is is what the handler uses, so the
 // wrapping in defErr must actually satisfy it — if a future refactor stopped
 // wrapping the sentinel, both tests above would go on passing against a shape
 // production no longer produces.

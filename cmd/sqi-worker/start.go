@@ -249,9 +249,8 @@ func runWorker(ctx context.Context, cmd *cobra.Command) error {
 		return fmt.Errorf("build registrar: %w", err)
 	}
 
-	// Wire re-registration into the NATS reconnect callback.
-	// This replaces the reconnect logging that was previously in natsclient;
-	// the new handler logs the reconnect and re-registers in one step.
+	// Wire re-registration into the NATS reconnect callback. The handler
+	// logs the reconnect and re-registers in one step.
 	reg.SetupReconnectHook(ctx)
 
 	// Publish the initial registration. This blocks until the server's
@@ -296,9 +295,9 @@ func runWorker(ctx context.Context, cmd *cobra.Command) error {
 	// daemon environment variables an isolated session may inherit.
 	// sessionRootMode (see effectiveSessionRoot) is 0711 when sessionRoot was
 	// resolved to a location that must be traversable by another identity, or
-	// 0750 (the pre-split mode) for the non-root fallback under DataDir.
-	// cfg.Expr is this host's operator-configured phase-3 expression budget
-	// (EXPR sub-project E4d, Task 2). It reaches every phase-3 evaluation
+	// 0750 for the non-root fallback under DataDir.
+	// cfg.Expr is this host's operator-configured phase-3 expression budget.
+	// It reaches every phase-3 evaluation
 	// through the AssignmentBudget the Manager builds per session — this call
 	// is the only wiring point, so an omission here would silently meter the
 	// whole worker against the built-in defaults.
@@ -400,10 +399,7 @@ func runWorker(ctx context.Context, cmd *cobra.Command) error {
 	leaseLoop := lease.New(
 		leaseTransport{nc: nc}, // adapts *nats.Conn to lease.Transport
 		exec,                   // *executor.Executor implements lease.Dispatcher
-		lease.Config{
-			QueueIDs: leaseQueueIDs(cfg.Worker.QueueIDs),
-			WorkerID: workerID,
-		},
+		leaseConfig(cfg.Worker.QueueIDs, workerID, reg.InstanceID()),
 		logger,
 	)
 	go leaseLoop.Run(ctx)
@@ -716,6 +712,18 @@ func leaseQueueIDs(configured []string) []string {
 		return []string{bus.WildcardQueueToken}
 	}
 	return configured
+}
+
+// leaseConfig builds the lease loop's configuration. Every lease request
+// carries the same instance ID as this process's registration, so the server
+// can tell a request from a process whose registration it has not applied
+// yet.
+func leaseConfig(queueIDs []string, workerID, instanceID string) lease.Config {
+	return lease.Config{
+		QueueIDs:   leaseQueueIDs(queueIDs),
+		WorkerID:   workerID,
+		InstanceID: instanceID,
+	}
 }
 
 // flagOverrides returns a [workerconfig.FlagOverrides] populated only from

@@ -4,8 +4,7 @@ This runbook captures the complete maintainer procedure for cutting a versioned
 `sqi` release. Follow the steps in order. Each external action has a **Verify:**
 line — do not proceed past a step until verification passes.
 
-The step numbering below is historical (it follows the original release-plan
-task order) and starts at Step 2. Steps 2, 3, 3b, 6b and 7 are one-time setup;
+The step numbering starts at Step 2. Steps 2, 3, 3b, 6b and 7 are one-time setup;
 Steps 4-9 are the per-release procedure.
 
 ---
@@ -95,7 +94,7 @@ once.
 2. If the `sqi-submitter` project does not yet exist on PyPI, claim the name
    with a one-time manual placeholder upload (a pending trusted publisher
    alone does not reserve the name against a `python -m build` from a local
-   checkout — verified free 2026-07-05):
+   checkout):
 
    ```bash
    cd clients/submitter

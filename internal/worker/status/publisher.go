@@ -200,7 +200,7 @@ func (p *Publisher) ShutdownFailed(ctx context.Context, tasks []ShutdownTask) {
 			SessionID: t.SessionID,
 			WorkerID:  p.cfg.WorkerID,
 			At:        time.Now(),
-			Message:   "worker_shutdown",
+			Message:   protocol.MessageWorkerShutdown,
 		}
 		p.publishWithRetry(ctx, sm)
 	}

@@ -165,10 +165,9 @@ worker:
   #     so a 0700 data_dir can never end up an ancestor of the session root.
   #     Its ancestors are 0755 on every real distribution, so nothing needs
   #     widening.
-  #   - otherwise: <data_dir>/sessions (0750), the pre-split location and
-  #     mode — real run-as-user isolation cannot function without root
-  #     regardless of directory permissions, so there is nothing to protect
-  #     here.
+  #   - otherwise: <data_dir>/sessions (0750) — real run-as-user isolation
+  #     cannot function without root regardless of directory permissions, so
+  #     there is nothing to protect here.
   # Type: string   Env: SQI_WORKER_SESSION_DIR
   session_dir: ""
 
@@ -249,7 +248,7 @@ worker:
 
   # DEPRECATED. Accepted by the config loader for backwards compatibility, but
   # it has NO EFFECT in the current lease-based worker — changing it tunes
-  # nothing. Idle backoff is no longer needed: the worker's lease request
+  # nothing. Idle backoff is not needed: the worker's lease request
   # long-polls on the server (~30 s hold) and re-issues immediately on return,
   # so there is no tight polling loop to throttle. Only a negative value is
   # still rejected at load.
@@ -258,7 +257,7 @@ worker:
 
   # DEPRECATED. Accepted by the config loader for backwards compatibility, but
   # it has NO EFFECT in the current lease-based worker — changing it tunes
-  # nothing. Pre-execution NACKs no longer apply: the server validates
+  # nothing. Pre-execution NACKs do not apply: the server validates
   # eligibility before leasing, so the worker runs what it is given. Only a
   # negative value is still rejected at load.
   # Type: duration   Env: SQI_WORKER_PULL_NACK_DELAY
@@ -419,8 +418,7 @@ diagnostics:
 #   # When true (the default), an otherwise-unconfigured worker still runs
 #   # stage_locally jobs via TEMP scratch + the built-in copy above (one-time
 #   # WARN logged). Set false to make an unconfigured worker fail stage_locally
-#   # jobs immediately instead — the behavior every worker had before this key
-#   # existed.
+#   # jobs immediately instead.
 #   # Type: bool   Env: SQI_STAGING_DEFAULTS
 #   defaults: true
 

@@ -2,7 +2,7 @@
 
 package scheduler
 
-// Tests for assign.go — item 8c of the test roadmap.
+// Tests for assign.go.
 //
 // buildAssignPayload is a pure package-level function with no NATS or bus
 // dependency. Tests live in package scheduler (white-box) to access the
@@ -19,7 +19,6 @@ import (
 
 	"github.com/uberware/sqi/internal/openjd"
 	"github.com/uberware/sqi/internal/store"
-	"github.com/uberware/sqi/internal/store/fake"
 	"github.com/uberware/sqi/internal/worker/protocol"
 )
 
@@ -102,7 +101,7 @@ func buildFixture(
 // ── Minimal template ──────────────────────────────────────────────────────────
 
 func TestBuildAssignPayload_Minimal(t *testing.T) {
-	st := fake.New()
+	st := newCheckedFake(t)
 	task, worker, job, step, queue := buildFixture(t, minimalJobJSON, store.TemplateFormatJSON, "Render")
 
 	data, err := buildAssignPayload(t.Context(), task, worker, job, step, queue, uuid.NewString(), st)
@@ -153,7 +152,7 @@ func TestBuildAssignPayload_EnvironmentOrdering(t *testing.T) {
     }
   ]
 }`
-	st := fake.New()
+	st := newCheckedFake(t)
 	task, worker, job, step, queue := buildFixture(t, tmpl, store.TemplateFormatJSON, "Step1")
 
 	data, err := buildAssignPayload(t.Context(), task, worker, job, step, queue, uuid.NewString(), st)
@@ -179,7 +178,7 @@ func TestBuildAssignPayload_EnvironmentOrdering(t *testing.T) {
 // ── JSON format template is parsed correctly ──────────────────────────────────
 
 func TestBuildAssignPayload_JSONFormat(t *testing.T) {
-	st := fake.New()
+	st := newCheckedFake(t)
 	task, worker, job, step, queue := buildFixture(t, minimalJobJSON, store.TemplateFormatJSON, "Render")
 
 	data, err := buildAssignPayload(t.Context(), task, worker, job, step, queue, uuid.NewString(), st)
@@ -209,7 +208,7 @@ steps:
           command: composite
           args: ["--output", "out.exr"]
 `
-	st := fake.New()
+	st := newCheckedFake(t)
 	task, worker, job, step, queue := buildFixture(t, yaml, store.TemplateFormatYAML, "Composite")
 
 	data, err := buildAssignPayload(t.Context(), task, worker, job, step, queue, uuid.NewString(), st)
@@ -228,7 +227,7 @@ steps:
 // ── Step not found returns an error ──────────────────────────────────────────
 
 func TestBuildAssignPayload_StepNotFound(t *testing.T) {
-	st := fake.New()
+	st := newCheckedFake(t)
 	task, worker, job, step, queue := buildFixture(t, minimalJobJSON, store.TemplateFormatJSON, "Render")
 	step.Name = "NonExistentStep" // doesn't match anything in the template
 
@@ -359,7 +358,7 @@ func TestBuildAssignPayload_EXPRFields(t *testing.T) {
 // assignment with none of the nine new EXPR-phase-3 fields anywhere on the
 // wire — the requirement that motivates marking every one of them omitempty.
 func TestBuildAssignPayload_BaseSpecWireBytesUnchanged(t *testing.T) {
-	st := fake.New()
+	st := newCheckedFake(t)
 	task, worker, job, step, queue := buildFixture(t, minimalJobJSON, store.TemplateFormatJSON, "Render")
 
 	data, err := buildAssignPayload(t.Context(), task, worker, job, step, queue, uuid.NewString(), st)
@@ -423,7 +422,7 @@ func TestBuildAssignPayload_LocURIResolved(t *testing.T) {
     }
   ]
 }`
-	st := fake.New()
+	st := newCheckedFake(t)
 	// Register the storage location so loc:// can be resolved.
 	if _, err := st.CreateStorageLocation(t.Context(), store.StorageLocation{
 		ID:    uuid.NewString(),
@@ -483,7 +482,7 @@ const templateWithJobParam = `{
 // job.Parameters is non-empty (persisted at submit), the assignment carries
 // those values — not just the template defaults.
 func TestBuildAssignPayload_JobParametersFromPersistedValues(t *testing.T) {
-	st := fake.New()
+	st := newCheckedFake(t)
 	task, worker, job, step, queue := buildFixture(t, templateWithJobParam, store.TemplateFormatJSON, "Render")
 
 	// Simulate a job submitted with a non-default value for Frame.
@@ -511,7 +510,7 @@ func TestBuildAssignPayload_JobParametersFromPersistedValues(t *testing.T) {
 // job.Parameters is empty (pre-migration jobs), the assignment falls back to
 // extracting defaults from the template.
 func TestBuildAssignPayload_JobParametersFallbackToDefaults(t *testing.T) {
-	st := fake.New()
+	st := newCheckedFake(t)
 	task, worker, job, step, queue := buildFixture(t, templateWithJobParam, store.TemplateFormatJSON, "Render")
 
 	// job.Parameters is nil — simulate a pre-migration job.
@@ -540,7 +539,7 @@ func TestBuildAssignPayload_JobParametersFallbackToDefaults(t *testing.T) {
 // never substitutes a raw loc:// URI into a {{Param.*}} expansion), and that the
 // resolution does NOT mutate the caller's job.Parameters map.
 func TestBuildAssignPayload_JobParameterLocURIResolved(t *testing.T) {
-	st := fake.New()
+	st := newCheckedFake(t)
 	if _, err := st.CreateStorageLocation(t.Context(), store.StorageLocation{
 		ID:    uuid.NewString(),
 		Name:  "nas_shows",
@@ -592,7 +591,7 @@ func TestBuildAssignPayload_UnregisteredLocURI(t *testing.T) {
     }
   ]
 }`
-	st := fake.New() // no storage locations registered
+	st := newCheckedFake(t) // no storage locations registered
 	task, worker, job, step, queue := buildFixture(t, tmpl, store.TemplateFormatJSON, "Render")
 
 	_, err := buildAssignPayload(t.Context(), task, worker, job, step, queue, uuid.NewString(), st)
@@ -697,7 +696,7 @@ func TestBuildPathMap(t *testing.T) {
 // jobParams is set as job.Parameters; nil is a valid (empty) value.
 func buildAssignForTemplate(t *testing.T, templateYAML string, jobParams map[string]string) protocol.AssignMsg {
 	t.Helper()
-	st := fake.New()
+	st := newCheckedFake(t)
 	task, worker, job, step, queue := buildFixture(t, templateYAML, store.TemplateFormatYAML, "S")
 	if len(jobParams) > 0 {
 		job.Parameters = jobParams
@@ -761,12 +760,12 @@ steps:
 }
 
 // TestBuildAssignPayload_ListPathParamLocURIsStagedThroughFullSeam is the
-// F2 whole-branch review's IMPORTANT-2 composition-seam test. Every other
+// composition-seam test for LIST[PATH] loc:// resolution. Every other
 // test of the LIST[*] loc:// and staging behavior calls
 // resolveLocURIsInParamValue/buildStagingManifest directly, passing the
 // declared type by hand — nothing exercises the actual wiring:
 // populateEXPRFields must have populated msg.JobParameterTypes from the EXPR
-// template BEFORE resolveLocURIsInMsg reads it, or LIST[PATH] silently falls
+// template before resolveLocURIsInMsg reads it, or LIST[PATH] falls
 // back to whole-string substitution, which corrupts a Windows destination
 // root (backslashes are not legal JSON escapes, so the re-decoded value stops
 // parsing entirely). This test goes through buildAssignPayload end to end —
@@ -792,7 +791,7 @@ steps:
         onRun:
           command: render
 `
-	st := fake.New()
+	st := newCheckedFake(t)
 	// A storage location with a WINDOWS compute-location root — the case
 	// that corrupts under whole-string substitution (backslashes inside a
 	// JSON string literal) but survives element-wise decode/resolve/re-encode.
@@ -897,7 +896,7 @@ func TestDetectPathFormat(t *testing.T) {
 // RunAsUser/RunAsGroup set produces a non-nil AssignMsg.Isolation carrying
 // those values.
 func TestBuildAssignPayload_CarriesQueueIsolation(t *testing.T) {
-	st := fake.New()
+	st := newCheckedFake(t)
 	task, worker, job, step, queue := buildFixture(t, minimalJobJSON, store.TemplateFormatJSON, "Render")
 	user := "render-svc"
 	group := "render-grp"
@@ -928,7 +927,7 @@ func TestBuildAssignPayload_CarriesQueueIsolation(t *testing.T) {
 // with no RunAsUser produces a nil AssignMsg.Isolation — nil means no
 // isolation end to end, not an empty struct with a blank username.
 func TestBuildAssignPayload_OmitsIsolationWhenQueueHasNone(t *testing.T) {
-	st := fake.New()
+	st := newCheckedFake(t)
 	task, worker, job, step, queue := buildFixture(t, minimalJobJSON, store.TemplateFormatJSON, "Render")
 	// queue.RunAsUser is nil by default from buildFixture.
 

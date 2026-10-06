@@ -92,16 +92,12 @@ func TestRunCase(t *testing.T) {
 }
 
 // TestRunCase_BlanksReasonOnAPass pins the property several
-// TestConformance_*ProtectedFixtures doc comments in suite_test.go depend on:
+// TestConformance_*Fixtures doc comments in suite_test.go depend on:
 // Result.Reason is EMPTY once Passed is true, so a correctly-rejected
 // ".invalid" fixture carries no record of WHICH rule rejected it. That is why
 // those tests can assert only res.Passed, and why
-// TestConformance_E3ProtectedFixtures has to re-run the validation pipeline on
-// the side (e3ProtectedReason) to name a mechanism at all.
-//
-// It was pinned by exprcase_test.go until sub-project H2 deleted the
-// expression-level scoring path; the assertion moves here rather than being
-// lost with it.
+// TestConformance_LetBindingFixtures has to re-run the validation pipeline on
+// the side (letFixtureReason) to name a mechanism at all.
 func TestRunCase_BlanksReasonOnAPass(t *testing.T) {
 	tc := conformance.ParseTestCase("base/job_templates/2.1--missing-name.invalid.yaml")
 	got := conformance.RunCase(tc, conformance.StateLive, []byte(invalidTemplate))
@@ -140,11 +136,11 @@ func TestRunCase_NotApplicableNeverPasses(t *testing.T) {
 // implement standalone environment-2023-09 templates at all: every
 // env_templates fixture — including under "base", which is otherwise always
 // live — is rejected on "/specificationVersion: unsupported version", never
-// on the fixture's own encoded defect. A naive classifier that only looked at
-// the extension directory (as this package's did before this fix) would call
-// "base" always live, so every "base/env_templates/*.invalid.yaml" fixture
-// would score as a pass for the wrong reason: 24 fixtures reported green
-// before sqi understood a single line of the environment document format.
+// on the fixture's own encoded defect. A classifier that only looked at the
+// extension directory would call "base" always live, so every
+// "base/env_templates/*.invalid.yaml" fixture would score as a pass for the
+// wrong reason: 24 fixtures green with no support for the environment
+// document format.
 //
 // This test drives the real path production code takes — ExtensionFor +
 // KindFor feeding Classify — rather than passing StateNotApplicable directly,

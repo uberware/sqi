@@ -452,7 +452,7 @@ steps:
           anyOf: ["true"]
 ```
 
-This is the real syntax the nine DCC reference products under `presets/sqi/`
+This is the syntax the nine DCC reference products under `presets/sqi/`
 use — see [`docs/dcc-submitters.md`](dcc-submitters.md#reference-presets).
 (`presets/sqi/` also ships `Transcoding`-category ffmpeg presets that gate on
 `attr.worker.tag.ffmpeg` instead — see [`docs/preset-library.md`](preset-library.md#transcoding-reference-presets).)

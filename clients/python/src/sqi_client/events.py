@@ -93,8 +93,8 @@ class SqiEventStream:
     Args:
         ws_url: Full WebSocket endpoint URL, e.g.
             ``ws://localhost:8080/api/v1/ws``.
-        headers: Extra headers to send on the upgrade request (the Phase 3 auth
-            hook). A ``User-Agent`` here overrides the websockets default.
+        headers: Extra headers to send on the upgrade request (e.g. auth
+            headers). A ``User-Agent`` here overrides the websockets default.
         reconnect: Auto-reconnect and resubscribe on disconnect (default true).
         open_timeout: Seconds to wait for the connection to open (default 10).
         reconnect_attempts: Reconnect tries before giving up (default 5).

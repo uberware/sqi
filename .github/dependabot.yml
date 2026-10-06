@@ -48,8 +48,7 @@ updates:
     open-pull-requests-limit: 5
 
   # ── npm (web UI) ──────────────────────────────────────────────────────────────
-  # Silently skipped until web/package.json exists; will activate automatically
-  # once the TypeScript/React web UI work begins.
+  # Opens PRs to bump the web UI's dependencies in web/package.json.
   - package-ecosystem: npm
     directory: /web
     schedule:

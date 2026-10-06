@@ -8,11 +8,7 @@ import (
 )
 
 // listFuncs is RFC 0006's list-function group: range, flatten, sorted,
-// reversed, unique, any, all. A later sub-project never edits this table — C2,
-// C3 and C4 add their own groups in their own files (funcsstrcase.go,
-// funcsstrfind.go, funcsstrsplit.go, funcsstrpad.go, funcsre.go,
-// funcsrepr.go, funcspath.go) and their own entry in funcs.go's mergeFuncs
-// call.
+// reversed, unique, any, all.
 //
 // Note the group is distinct from the CONVERSION named list() in funcsconv.go,
 // which turns a range_expr into a list[int]. mergeFuncs panics on a duplicate
@@ -40,11 +36,11 @@ var listFuncs = map[string][]Shape{
 			return rangeList(ec, args[0].AsInt(), args[1].AsInt(), args[2].AsInt())
 		}},
 	},
-	// ORDER IS LOAD-BEARING HERE, and this is the first table in the package
-	// where it is. "flatten([[1],[2]])" matches BOTH rows at cost 0 — the
-	// nested row binding T to int, the flat row binding T to list[int] — and
-	// matchShapesExactFirst breaks an exact tie to the EARLIEST shape. Putting
-	// the flat row first would make flatten the identity on every argument.
+	// ROW ORDER MATTERS HERE. "flatten([[1],[2]])" matches BOTH rows at cost 0
+	// — the nested row binding T to int, the flat row binding T to list[int] —
+	// and matchShapesExactFirst breaks an exact tie to the EARLIEST shape.
+	// Putting the flat row first would make flatten the identity on every
+	// argument.
 	// flatten is named explicitly by rule 2. Its three rows do NOT share one
 	// Cost, because they charge different quantities:
 	//
@@ -72,9 +68,8 @@ var listFuncs = map[string][]Shape{
 			return args[0], nil
 		}},
 		// RFC 0006 lists list[nulltype] separately, and the row stays for
-		// spec fidelity, but this comment used to wrongly claim it is reached
-		// the same way the min table's list[nulltype] row is (that reasoning
-		// IS correct there, because min's rivals are list[int]/list[float],
+		// spec fidelity, but it is not reached the way the min table's
+		// list[nulltype] row is (min's rivals are list[int]/list[float],
 		// concrete types that cost 1 to widen into). Here the sibling is
 		// list[varT] — an unbound type variable — and argCostList's own
 		// carve-out scores an empty argument as an EXACT match (cost 0)
@@ -82,13 +77,12 @@ var listFuncs = map[string][]Shape{
 		// list[nulltype] parameter. So an empty list literal TIES the two
 		// rows at cost 0, and matchShapesExactFirst resolves that tie to the
 		// EARLIEST shape — the list[varT] row above, never this one. The tie
-		// is harmless today only because both rows return args[0] unchanged
-		// and both Ret substitute to list[nulltype] for an empty argument, so
-		// it is unobservable which row actually ran. It would stop being
-		// harmless the moment a later wave gave THIS row a different Fn or
-		// Ret from its list[varT] sibling: registered in this order, the
-		// list[varT] row would still win the tie and this row's behavior
-		// would never run.
+		// is harmless only because both rows return args[0] unchanged and
+		// both Ret substitute to list[nulltype] for an empty argument, so it
+		// is unobservable which row actually ran. Giving THIS row a different
+		// Fn or Ret from its list[varT] sibling would have no effect:
+		// registered in this order, the list[varT] row would still win the
+		// tie and this row's behavior would never run.
 		//
 		// No Cost here (rather than the flat row's ArgElements{0}): a
 		// list[nulltype] argument is empty BY TYPE, so its element count is
@@ -151,13 +145,10 @@ var listFuncs = map[string][]Shape{
 	// element, all() at the first false one), so its measured count tracks
 	// how many elements were actually visited, not the list's length.
 	//
-	// PROBED, comma-separated literal lists (copy-paste-runnable as printed —
-	// NOT "[True]*10" list-repetition syntax, which is itself a rule-2-charged
-	// operation, Task 5's OpMul row, so a probe of "any([True]*10)" measures
-	// any() PLUS the repetition's own charge baked into the total, 13 rather
-	// than 2; a prior revision of this comment printed that inflated number
-	// next to the isolated one and did not reproduce on re-running it —
-	// caught in review):
+	// PROBED, comma-separated literal lists (NOT "[True]*10" list-repetition
+	// syntax, which is itself a rule-2-charged operation, ops.go's OpMul row,
+	// so a probe of "any([True]*10)" measures any() PLUS the repetition's own
+	// charge, 13 rather than 2):
 	//
 	//	 6  any([False,False,False,False,False])                1+5, forced to scan all of them
 	//	 2  any([True,True,True,True,True,True,True,True,True,True])  1+1, stops at the FIRST element
@@ -172,27 +163,24 @@ var listFuncs = map[string][]Shape{
 	// the full length is a SAFE over-approximation in the direction section
 	// 1.3.10 exists to enforce (it never lets short-circuited work escape the
 	// bound; it only ever charges more than the reference, never less), and
-	// is the same shape of tradeoff the brief's own standing ruling makes for
-	// unique()'s O(n^2) scan.
+	// is the same shape of tradeoff made for unique()'s O(n^2) scan.
 	//
-	// It is also more than merely conservative: this package already has
-	// direct evidence that the reference's own short-circuiting here is NOT
-	// the textually-mandated reading of rule 2, rather than sqi settling for
-	// a weaker, safety-only argument. Rule 2 names "contains()" — the "in"
-	// operator (see the OpIn/OpNotIn Cost comment in ops.go and RFC 0005's
-	// dunder-transform table) — under the exact same "iterates through every
-	// element of a list" sentence any()/all() fall under, and
-	// TestOperationCount_InOperator (cost_ops_internal_test.go) already
-	// pinned that the reference charges "in" by the FULL container length
-	// with NO early exit: "1 in [1,2,3,4,5,6,7,8,9,10]" measures 12 even
-	// though the match is the very first element scanned. The reference is
-	// therefore internally inconsistent about whether rule 2's list-iterating
-	// functions short-circuit — full-length for "in", first-match for
-	// any()/all() — which means its any()/all() short-circuit is the
-	// reference's own implementation choice, not something rule 2's text
-	// requires. Charging the full length here is sqi picking the SAME
-	// reading of rule 2 it already uses for "in", not an unrelated
-	// concession. See TestOperationCount_AnyAllDivergeOnShortCircuit.
+	// It is also the textual reading of rule 2, not only a conservative one:
+	// the reference's own short-circuiting here is NOT what rule 2 mandates.
+	// Rule 2 names "contains()" — the "in" operator (see the OpIn/OpNotIn Cost
+	// comment in ops.go and RFC 0005's dunder-transform table) — under the
+	// exact same "iterates through every element of a list" sentence
+	// any()/all() fall under, and TestOperationCount_InOperator
+	// (cost_ops_internal_test.go) pins that the reference charges "in" by the
+	// FULL container length with NO early exit: "1 in [1,2,3,4,5,6,7,8,9,10]"
+	// measures 12 even though the match is the very first element scanned. The
+	// reference is therefore internally inconsistent about whether rule 2's
+	// list-iterating functions short-circuit — full-length for "in",
+	// first-match for any()/all() — which means its any()/all() short-circuit
+	// is the reference's own implementation choice, not something rule 2's text
+	// requires. Charging the full length here is sqi picking the SAME reading
+	// of rule 2 it already uses for "in", not an unrelated concession. See
+	// TestOperationCount_AnyAllDivergeOnShortCircuit.
 	"any": {
 		// No Cost: a list[nulltype] argument is empty BY TYPE (see the
 		// identical situation and reasoning on flatten's list[nulltype] row
@@ -271,14 +259,13 @@ func rangeList(ec evalCtx, start, stop, step int64) (Value, error) {
 // number that looks like a legitimate answer.
 //
 // It works in uint64, not int64, for the SPAN between start and stop: the
-// true span between two arbitrary int64 values can be as large as
-// math.MaxInt64 - math.MinInt64, i.e. 2^64-1, which does not always fit in an
-// int64. Forming it as plain int64 subtraction ("stop - start") can wrap —
-// exactly the defect this replaces, where "range(-9223372036854775807,
-// 9223372036854775807, 9223372036854775807)" silently computed a span of -1
-// and returned an empty list instead of erroring or answering 2. uint64 has
-// exactly enough range (2^64 values) to hold that span exactly, with no
-// wraparound possible, once the DIRECTION is known.
+// true span between two arbitrary int64 values can be as large as math.MaxInt64
+// - math.MinInt64, i.e. 2^64-1, which does not always fit in an int64. Forming
+// it as plain int64 subtraction ("stop - start") can wrap:
+// "range(-9223372036854775807, 9223372036854775807, 9223372036854775807)" would
+// compute a span of -1 and return an empty list instead of erroring or
+// answering 2. uint64 has exactly enough range (2^64 values) to hold that span
+// exactly, with no wraparound possible, once the DIRECTION is known.
 //
 // The direction is decided first, by a plain signed comparison (step > 0 &&
 // stop > start, or its mirror): comparing two int64 values is always exact
@@ -411,18 +398,16 @@ func sortedList(args []Value) (Value, error) {
 // comparisons are CHARGED: section 1.3.10's operation limit sees the real
 // work, not just the input length.
 //
-// This is FnCtx rather than Fn for exactly that reason, and it was decided by
-// RUNNING, not by reasoning about it: TestUnique_IsBoundedByTheOperationLimit
-// (carried_internal_test.go) first ran against a version of this function
-// charged only by the registry row's old Cost{ArgElements: {0}} — the linear
-// input length — and unique(range(20000)) returned successfully in under 4
-// seconds with 4*10^8 comparisons run and NO errOperationLimit, because 20001
-// charged operations never approached the 10-million default limit while the
-// real work sailed past it uncounted. Charging per comparison here, and
-// removing the registry row's Cost so the input length is not ALSO charged
-// declaratively (which would double-count it against this function's own
-// charge), is what makes the same call fail fast with errOperationLimit
-// instead.
+// This is FnCtx rather than Fn for exactly that reason. Charged only by a
+// linear Cost{ArgElements: {0}} on the registry row — the input length —
+// unique(range(20000)) returns successfully in under 4 seconds with 4*10^8
+// comparisons run and NO errOperationLimit, because 20001 charged operations
+// never approach the 10-million default limit while the real work goes
+// uncounted. Charging per comparison here, with no Cost on the registry row
+// (which would double-count the input length against this function's own
+// charge), makes the same call fail fast with errOperationLimit.
+// TestUnique_IsBoundedByTheOperationLimit (carried_internal_test.go) pins
+// this.
 func uniqueList(ec evalCtx, args []Value) (Value, error) {
 	in := args[0].AsList()
 	out := make([]Value, 0, len(in))

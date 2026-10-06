@@ -21,11 +21,10 @@ var (
 // unicodeSpaceSet is the CONTENTS of a character class matching Unicode's
 // White_Space property, which is what RFC 0006 means by \s.
 //
-// It is written out because \p{White_Space} does NOT work: Go's regexp
-// supports Unicode categories and scripts, not properties, and rejects that
-// escape outright — measured during design. \p{Zs} covers the space
-// separators; the rest of White_Space is the C0 controls U+0009-U+000D plus
-// U+0085, U+2028 and U+2029.
+// It is written out because \p{White_Space} does NOT work: Go's regexp supports
+// Unicode categories and scripts, not properties, and rejects that escape
+// outright (measured). \p{Zs} covers the space separators; the rest of
+// White_Space is the C0 controls U+0009-U+000D plus U+0085, U+2028 and U+2029.
 //
 // TestUnicodeSpaceSet_MatchesWhiteSpace checks every member and three
 // non-members, so a drift from the real property fails loudly.
@@ -33,23 +32,23 @@ const unicodeSpaceSet = `\t\n\v\f\r\x{0085}\x{2028}\x{2029}\p{Zs}`
 
 // unicodeWordSet is the same thing for \w: letters, numbers and underscore.
 //
-// The underscore sits BETWEEN the two \p{...} escapes on purpose, not at
-// either end. \d, \D and \s are safe as class CONTENTS because their
-// expansions end in a class or property, so a "-" the SOURCE places next to
-// the escape stays literal; \w is the one shorthand whose union includes a
-// bare literal character, and a bare literal at either edge of this string can
-// combine with adjacent source text into an unintended range. Putting "_" at
-// the end let "[\w-a]" translate to "[\p{L}\p{N}_-a]", where Go reads "_-a" as
-// the range U+005F..U+0061 — silently matching the backtick, which is neither
-// a word character nor "a" under any reading of the source; putting it at the
+// The underscore sits BETWEEN the two \p{...} escapes on purpose, not at either
+// end. \d, \D and \s are safe as class CONTENTS because their expansions end in
+// a class or property, so a "-" the SOURCE places next to the escape stays
+// literal; \w is the one shorthand whose union includes a bare literal
+// character, and a bare literal at either edge of this string can combine with
+// adjacent source text into an unintended range. Putting "_" at the end would
+// let "[\w-a]" translate to "[\p{L}\p{N}_-a]", where Go reads "_-a" as the
+// range U+005F..U+0061 — silently matching the backtick, which is neither a
+// word character nor "a" under any reading of the source; putting it at the
 // FRONT merely moves the hazard to the other side ("[!-\w]" would then read
-// "!-_" as the range U+0021..U+005F). Sandwiched, "_" can never be the first
-// or last byte of what gets spliced in, so it can never directly abut
-// whatever sits next to the \w escape on either side — verified for both
-// directions in TestTranslatePattern_WordShorthandAdjacentDash. Python and the
-// reference both reject the shapes this used to mismatch on outright ("bad
-// character range \w-a" / "regex parse error"); Go instead now either matches
-// correctly or fails to compile, never silently wrong.
+// "!-_" as the range U+0021..U+005F). Sandwiched, "_" can never be the first or
+// last byte of what gets spliced in, so it can never directly abut whatever
+// sits next to the \w escape on either side — verified for both directions in
+// TestTranslatePattern_WordShorthandAdjacentDash. Python and the reference both
+// reject these shapes outright ("bad character range \w-a" / "regex parse
+// error"); Go either matches correctly or fails to compile, never silently
+// wrong.
 const unicodeWordSet = `\p{L}_\p{N}`
 
 // translatePattern converts a pattern written in RFC 0006's dialect into an
@@ -70,16 +69,15 @@ const unicodeWordSet = `\p{L}_\p{N}`
 //     Measured: Go's "\d" does not match "٣"; the reference's does.
 //
 // The scanner carries two bits of state, in-class and after-backslash, and both
-// are load-bearing rather than defensive. "[[\p{L}]]" COMPILES in Go and
-// matches the wrong thing rather than erroring, so a context-blind rewrite
-// fails silently. That single fact is why this is a scanner and not a
-// strings.ReplaceAll.
+// are needed, not defensive. "[[\p{L}]]" COMPILES in Go and matches the wrong
+// thing rather than erroring, so a context-blind rewrite fails silently. That
+// single fact is why this is a scanner and not a strings.ReplaceAll.
 //
-// The translation half is now fully in place: the Unicode shorthands (\d,
-// \D, \w, \W, \s, \S) and the \u/\U fixed-width Unicode escapes are all
-// rewritten by scanEscape below, and a positive class holding \W or \S is
-// rebuilt into an alternation by scanClass — the one rewrite that replaces a
-// whole enclosing construct rather than a single escape.
+// The translation half: the Unicode shorthands (\d, \D, \w, \W, \s, \S) and the
+// \u/\U fixed-width Unicode escapes are all rewritten by scanEscape below, and
+// a positive class holding \W or \S is rebuilt into an alternation by scanClass
+// — the one rewrite that replaces a whole enclosing construct rather than a
+// single escape.
 func translatePattern(pattern string) (string, error) {
 	if pattern == "" {
 		return "", errEmptyPattern
@@ -161,18 +159,17 @@ func scanClass(out *strings.Builder, pattern string, i int) (int, error) {
 // repo's cap.
 //
 // It also refuses a POSIX bracket expression — "[:alpha:]" and friends —
-// WHEREVER it appears in the class, not only when it opens one. The check
-// used to be scanClass testing only strings.HasPrefix(pattern[i:], "[[:"),
-// which is POSITIONAL: it caught "[[:alpha:]]" but not "[^[:alpha:]]" (the
-// idiomatic negated spelling, and the common case, not a corner one) or
-// "[a[:alpha:]]", both of which used to sail through untranslated into Go,
-// which — unlike Python's `re`, which reads "[:...:]" as literal characters —
-// gives POSIX classes their special meaning nested inside a bracket
-// expression. Scanning for "[:" as part of the same byte-by-byte walk that
-// already finds the class's members catches it at any position, and does so
-// without the false positive an escaped bracket would otherwise cause:
-// "\[" is consumed whole by the backslash arm above this check, so the
-// literal "[" it produces is never seen by the "[:" test that follows.
+// WHEREVER it appears in the class, not only when it opens one. A POSITIONAL
+// test such as strings.HasPrefix(pattern[i:], "[[:") would catch "[[:alpha:]]"
+// but not "[^[:alpha:]]" (the idiomatic negated spelling, and the common case,
+// not a corner one) or "[a[:alpha:]]", both of which would pass untranslated
+// into Go, which — unlike Python's `re`, which reads "[:...:]" as literal
+// characters — gives POSIX classes their special meaning nested inside a
+// bracket expression. Scanning for "[:" as part of the same byte-by-byte walk
+// that already finds the class's members catches it at any position, and does
+// so without the false positive an escaped bracket would otherwise cause: "\["
+// is consumed whole by the backslash arm above this check, so the literal "["
+// it produces is never seen by the "[:" test that follows.
 func scanClassBody(pattern string, i int) (body string, negated bool, consumed int, err error) {
 	j := i + 1
 	if j < len(pattern) && pattern[j] == '^' {
@@ -332,21 +329,21 @@ func translateClassBody(out *strings.Builder, body string) error {
 // every distinct shorthand present in it, so nothing is left un-accounted
 // for; dropping an occurrence that happens not to exist is a no-op.
 //
-// Dropping a lifted shorthand SPLICES its two former neighbors together,
-// and if one of them is a literal "-" the splice can form a character RANGE
-// the source never wrote: "[a\W-c]" drops "\W" and used to leave "a-c"
-// behind, which Go reads as the range a..c even though the source's "-" sat
-// between "\W" and "c", never between "a" and "c" — measured to silently
-// MATCH "b", which is outside every reading of the source (code-review
-// finding). This is the same defect SHAPE escapeLeadingCaret already guards
-// for "^" on this same rebuilt class — an in-class rewrite changing the
-// meaning of a metacharacter that becomes newly adjacent once the shorthand
-// between it and its neighbor is gone. dashesAdjacentToDroppedShorthand
-// finds every bare "-" that sat immediately next to a dropped occurrence, on
-// either side, and this function escapes exactly those — including a "-"
-// that is genuinely trailing ("[\W-]", "[a\W-]"): "\-" and a bare "-"
-// denote the same literal, so escaping is always safe, and deciding
-// whether a given dash is trailing is not worth a separate rule.
+// Dropping a lifted shorthand SPLICES its two former neighbors together, and if
+// one of them is a literal "-" the splice can form a character RANGE the source
+// never wrote: "[a\W-c]" drops "\W" and would leave "a-c" behind, which Go
+// reads as the range a..c even though the source's "-" sat between "\W" and
+// "c", never between "a" and "c" — measured to silently MATCH "b", which is
+// outside every reading of the source. This is the same hazard
+// escapeLeadingCaret guards for "^" on this same rebuilt class — an in-class
+// rewrite changing the meaning of a metacharacter that becomes newly adjacent
+// once the shorthand between it and its neighbor is gone.
+// dashesAdjacentToDroppedShorthand finds every bare "-" that sat immediately
+// next to a dropped occurrence, on either side, and this function escapes
+// exactly those — including a "-" that is genuinely trailing ("[\W-]",
+// "[a\W-]"): "\-" and a bare "-" denote the same literal, so escaping is always
+// safe, and deciding whether a given dash is trailing is not worth a separate
+// rule.
 func classBodyWithout(body string) (string, error) {
 	escapeDash := dashesAdjacentToDroppedShorthand(body)
 	var out strings.Builder
@@ -437,8 +434,8 @@ func scanEscape(out *strings.Builder, pattern string, i int, inClass bool) (int,
 	switch c {
 	// \u and \U: the two escapes the specification REQUIRES that Go's regexp
 	// cannot parse at all (see scanFixedHex). Ordered ahead of the Unicode
-	// shorthand rewrites below since both groups are translations, not
-	// rejections, and this pair was the last one Task 3 added.
+	// shorthand rewrites below; both groups are translations, not
+	// rejections.
 	case 'u':
 		return scanFixedHex(out, pattern, i, 4)
 	case 'U':
@@ -474,7 +471,7 @@ func scanEscape(out *strings.Builder, pattern string, i int, inClass bool) (int,
 // what to do with it.
 //
 // This does NOT reject \W or \S inside a class — that is entirely
-// scanClass's concern now, via classNeedsAlternation: a negated class
+// scanClass's concern, via classNeedsAlternation: a negated class
 // containing either is rejected there directly, and a positive class's \W/\S
 // never reaches scanEscape at all (translateClassBody only ever runs on a
 // body classNeedsAlternation has already confirmed holds neither — see
@@ -498,13 +495,12 @@ func rejectUnsupportedEscape(pattern string, i int, c byte) error {
 // contents when it is contributing to an enclosing class.
 //
 // A NEGATED set is only ever reached outside a class, and that is enforced by
-// construction rather than by a runtime check: scanEscape's \W/\S arms are
-// only ever exercised with inClass true from two call sites,
-// translateClassBody and classBodyWithout, and NEITHER can hand them a real
-// \W/\S — translateClassBody only ever runs on a body classNeedsAlternation
-// has already confirmed holds no \W/\S (see scanClass), and classBodyWithout
-// drops every \W/\S itself before it ever calls scanEscape. The reason the
-// invariant matters regardless of how it ends up enforced: there IS no way to
+// construction rather than by a runtime check: scanEscape's \W/\S arms are only
+// ever exercised with inClass true from two call sites, translateClassBody and
+// classBodyWithout, and NEITHER can hand them a real \W/\S — translateClassBody
+// only ever runs on a body classNeedsAlternation has already confirmed holds no
+// \W/\S (see scanClass), and classBodyWithout drops every \W/\S itself before
+// it ever calls scanEscape. The invariant matters because there IS no way to
 // write a negated set as class CONTENTS — so if this were ever reached with
 // inClass and negate both true it would emit the positive set and silently
 // invert the match. It panics instead.

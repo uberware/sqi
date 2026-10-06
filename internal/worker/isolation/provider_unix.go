@@ -243,7 +243,7 @@ func (p unixProvider) groupsViaNSS(ctx context.Context, name string) ([]uint32, 
 
 // homeViaNSS runs `getent passwd <name>` for the home directory. Failure —
 // including getent(1) not existing at all, which is expected on macOS — is
-// logged and swallowed: home is left empty and the caller (Task 8's HOME
+// logged and swallowed: home is left empty and the caller (the HOME
 // rewrite) decides what to do with that, rather than this failing the whole
 // identity resolution over a directory it can still function without.
 func (p unixProvider) homeViaNSS(ctx context.Context, name string) string {
@@ -367,8 +367,8 @@ func finalizeGroups(ident userIdentity, gid uint32) []uint32 {
 // platform ("root" on Linux, "wheel" on macOS/BSD). GroupIds()/`id -G` pass a
 // target account's supplementary memberships through completely unfiltered;
 // the primary gid already gets its own uid-0-style backstop (resolveGID's
-// "primaryGID == 0" refusal), but nothing previously closed the same hole in
-// the supplementary set — an account whose supplementary groups happened to
+// "primaryGID == 0" refusal), and this closes the same hole in the
+// supplementary set — an account whose supplementary groups happened to
 // include gid 0 would hand the child process gid-0 group membership even
 // though every other check in this file refuses gid 0 as an explicit target.
 //

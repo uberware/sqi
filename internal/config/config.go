@@ -297,7 +297,7 @@ type DiscoveryConfig struct {
 	InstanceName string `yaml:"instance_name"`
 }
 
-// AuthConfig controls the opt-in authentication gate (Phase 3).
+// AuthConfig controls the opt-in authentication gate.
 type AuthConfig struct {
 	// Enabled turns on the authentication gate. Default false — the server is
 	// open on a trusted local network.
@@ -309,8 +309,8 @@ type AuthConfig struct {
 	// visibility: the user role's job listings are filtered by owner, so a
 	// typo'd owner yields a job invisible to the person who actually owns it
 	// and missed by an admin filtering on them. It would likewise be the key
-	// for any future per-user concurrency cap (deferred, see Wave D of the
-	// Phase 3 tracker). Disable it when owners come from a directory that has
+	// for any future per-user concurrency cap. Disable it when owners come
+	// from a directory that has
 	// not yet provisioned local records.
 	// Env: SQI_AUTH_VALIDATE_JOB_OWNER
 	ValidateJobOwner bool `yaml:"validate_job_owner"`
@@ -384,7 +384,7 @@ func (b BootstrapConfig) MarshalYAML() (any, error) {
 	return out, nil
 }
 
-// LDAPConfig configures LDAP/Active Directory authentication (Phase 3, C1).
+// LDAPConfig configures LDAP/Active Directory authentication.
 //
 // LDAP is a login-time credential verifier, not a per-request authenticator:
 // an account whose users.auth_source is "ldap" has its password checked
@@ -508,7 +508,7 @@ type RoleMappingConfig struct {
 	Role  string `yaml:"role"`
 }
 
-// OIDCConfig configures OAuth2/OIDC single sign-on (Phase 3, C2).
+// OIDCConfig configures OAuth2/OIDC single sign-on.
 //
 // OIDC is a login-time verifier, not a per-request authenticator: the
 // callback validates the ID token once and then mints the same server-side
@@ -675,10 +675,9 @@ type OpenJDConfig struct {
 	//
 	// Raising it permits proportionally more memory per evaluation on an
 	// unauthenticated request path; the ceiling is one order of magnitude above
-	// the default for that reason. (An earlier revision of this comment claimed
-	// a fixed internal guard made a larger value inert. It does not -- that was
-	// measured and disproved. Treat the ceiling as a deliberate policy limit,
-	// not as a point beyond which the setting stops working.)
+	// the default for that reason. No fixed internal guard makes a larger value
+	// inert (measured). Treat the ceiling as a deliberate policy limit, not as
+	// a point beyond which the setting stops working.
 	// Range: [MinOpenJDExprMemoryLimit, MaxOpenJDExprMemoryLimit].
 	// Env: SQI_OPENJD_EXPR_MEMORY_LIMIT
 	ExprMemoryLimit int64 `yaml:"expr_memory_limit"`
@@ -764,8 +763,8 @@ const (
 )
 
 // The default and the operator-configurable range for
-// [OpenJDConfig.ExprSubmissionDeadline], EXPR sub-project H1's wall-clock
-// backstop.
+// [OpenJDConfig.ExprSubmissionDeadline], the wall-clock backstop for EXPR
+// evaluation.
 //
 // Unlike the four above, these are NOT duplicated from internal/openjd: the
 // deadline is a per-request absolute instant computed here from this duration,

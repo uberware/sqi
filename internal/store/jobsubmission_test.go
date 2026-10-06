@@ -108,14 +108,12 @@ func TestJobStore_CreateJobSubmission_WritesEverything(t *testing.T) {
 	}
 }
 
-// TestJobStore_CreateJobSubmission_RollsBackEntirely is the whole point of the
-// method, and of this change.
-//
-// A submission that fails partway must leave NOTHING: not the job row, not the
-// steps that already inserted, not their tasks. Before this method existed,
-// Submit wrote those rows one call at a time and a mid-way failure stranded a
-// pending job that no sweep reaps and that checkJobCompletion would later mark
-// completed despite missing steps.
+// TestJobStore_CreateJobSubmission_RollsBackEntirely pins the method's main
+// guarantee: a submission that fails partway leaves nothing, not the job row,
+// not the steps that already inserted, not their tasks. Writing those rows one
+// call at a time, a mid-way failure strands a pending job that no sweep reaps
+// and that checkJobCompletion would later mark completed despite missing
+// steps.
 //
 // The induced failure is a duplicate step name, which violates the (JobID,
 // Name) uniqueness both backends enforce (see store/step.go's CreateStep doc).
@@ -125,7 +123,7 @@ func TestJobStore_CreateJobSubmission_WritesEverything(t *testing.T) {
 // The sqlite subtest carries the whole test. Sabotaged by replacing SQLite's
 // deferred Rollback with a Commit, it fails with the job row and exactly ONE
 // step row surviving — which is what proves the conflict fires after real
-// writes rather than before any. The fake subtest is VACUOUS BY CONSTRUCTION
+// writes rather than before any. The fake subtest is vacuous by construction
 // and stays green under that same sabotage: validateSubmission runs to
 // completion before the first map assignment, so on the failing path the fake
 // never wrote anything to roll back. That is the fake's intended design, not
@@ -158,7 +156,7 @@ func TestJobStore_CreateJobSubmission_RollsBackEntirely(t *testing.T) {
 
 // TestJobStore_CreateJobSubmission_WritesDependencyEdges pins that the
 // dependency edges are part of the same atomic write, which is what lets the
-// job be created directly in blocked status (see Task 3): a sweep can never
+// job be created directly in blocked status: a sweep can never
 // observe a blocked job with zero edges if both commit together.
 func TestJobStore_CreateJobSubmission_WritesDependencyEdges(t *testing.T) {
 	for name, st := range newStores(t) {
@@ -262,13 +260,13 @@ func TestJobStore_CreateJobSubmission_DoesNotAliasCallerMemory(t *testing.T) {
 // reusing a step or task ID is REJECTED rather than accepted with rows
 // silently dropped.
 //
-// SQLite gets this from the steps and tasks PRIMARY KEY. The fake had to be
-// taught it: its maps are keyed by ID, so a duplicate overwrote, and the call
-// returned a JobSubmission of the submitted length while ListSteps returned
-// one fewer — reporting success having lost a row. A Submit regression that
-// reused an ID would have been green through every fake-backed test in
-// internal/openjd, internal/api and internal/scheduler, and ErrConflict only
-// in production.
+// SQLite gets this from the steps and tasks PRIMARY KEY. The fake checks it
+// explicitly: its maps are keyed by ID, so without the check a duplicate
+// overwrites, and the call returns a JobSubmission of the submitted length
+// while ListSteps returns one fewer — reporting success having lost a row. A
+// Submit regression that reused an ID would then be green through every
+// fake-backed test in internal/openjd, internal/api and internal/scheduler,
+// and ErrConflict only in production.
 func TestJobStore_CreateJobSubmission_RejectsDuplicateIDs(t *testing.T) {
 	cases := map[string]func(sub *store.JobSubmission){
 		"duplicate step ID": func(sub *store.JobSubmission) { sub.Steps[1].ID = sub.Steps[0].ID },

@@ -881,7 +881,7 @@ export function useRevokeApiKey() {
   })
 }
 
-// ── Self-service account changes (B3) ─────────────────────────────────────────
+// ── Self-service account changes ──────────────────────────────────────────────
 
 export async function fetchChangePassword(input: ChangePasswordInput): Promise<void> {
   await apiFetch('/auth/password', {

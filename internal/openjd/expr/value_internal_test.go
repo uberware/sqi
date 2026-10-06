@@ -175,9 +175,8 @@ func TestUnresolved(t *testing.T) {
 }
 
 func TestUnresolved_CarriesNoPayload(t *testing.T) {
-	// A placeholder has a type but no value. This is what sub-project A's
-	// separation of the type tag from the payload was built to allow, and it is
-	// what lets B1 type-check a list-typed parameter with no list machinery.
+	// A placeholder has a type but no value. Separating the type tag from the
+	// payload is what allows this.
 	v := Unresolved(TInt)
 	if !v.Equal(Unresolved(TInt)) {
 		t.Error("two placeholders with the same constraint are not Equal")
@@ -324,21 +323,14 @@ func TestValueString_ListElementsAreQuoted(t *testing.T) {
 }
 
 // TestValueString_VersusStringFunction asserts that the two renderings AGREE
-// -- byte-for-byte, quoting and escaping both -- on every case below, now
-// that both quote a list's string elements. This is the durable regression
-// check doc.go's BOUNDED EVALUATION bullet cites by name; do not let the two
-// drift apart again without updating that citation.
+// -- byte-for-byte, quoting and escaping both -- on every case below. doc.go
+// cites this test by name; update that citation if the two ever drift apart.
 //
 // The assertion compares the two outputs to EACH OTHER rather than against a
 // hand-typed expected string on purpose: transcribing an escaped literal by
-// hand is exactly the failure mode this sub-project keeps finding in itself
-// (see the sub-project's own ledger), and the property under test IS "these
-// two agree", which a direct comparison states without needing to predict
-// either side's exact spelling.
-//
-// This does not mean the two agree UNIVERSALLY -- see
-// TestValueString_DivergesFromStringFunctionOutsideMeasuredSet immediately
-// below, which pins four classes of input where they provably do not.
+// hand is error-prone, and the property under test IS "these two agree",
+// which a direct comparison states without needing to predict either side's
+// exact spelling.
 func TestValueString_VersusStringFunction(t *testing.T) {
 	tests := []struct {
 		name string
@@ -384,16 +376,10 @@ func TestValueString_VersusStringFunction(t *testing.T) {
 // same conversion", so `"items: {{ MyList }}"` and `"items: " + string(MyList)`
 // agree.
 //
-// This test REPLACES TestValueString_DivergesFromStringFunctionOutsideMeasuredSet,
-// which pinned the opposite: six classes of input where Value.String()
-// (strconv.Quote, GO syntax) and string(list)'s JSON row provably did not
-// agree. That divergence was defensible while the specification only said
-// "the JSON string representation" of the string() row and said nothing at
-// all about the interpolation row; #176 states both, and Go's spelling of a
-// control character -- "\x01", and "\a"/"\v" for two JSON does not name --
-// is not JSON at all. So each of those six now has one right answer, and the
-// old test's own closing instruction ("update doc.go's divergence claim if
-// this is now correct") is what is being carried out here.
+// Each row is a class of input where strconv.Quote (Go syntax) and JSON
+// disagree. #176 states both the string() row and the interpolation row, and
+// Go's spelling of a control character -- "\x01", and "\a"/"\v" for two JSON
+// does not name -- is not JSON at all, so each row has one right answer.
 //
 // Constructed through the List/String value constructors rather than through
 // Eval: an EXPR source string must itself be valid UTF-8, so the invalid-UTF-8
@@ -450,9 +436,10 @@ func TestValueString_ListQuotingIsJSONEverywhere(t *testing.T) {
 // It is transcribed rather than scored because sqi's conformance harness
 // collects job_templates and env_templates only -- the jobs/ suite executes a
 // real task and asserts its stdout, which the harness has no runner for. That
-// makes these rows the same kind of ground truth sub-project D's 31
-// apply_path_mapping expectations are: authored by the specification, checked
-// here by hand, and invisible to every automated suite otherwise.
+// makes these rows the same kind of ground truth as the 31 apply_path_mapping
+// expectations in TestApplyPathMapping_VendoredFixtureExpectations: authored
+// by the specification, checked here by hand, and invisible to every
+// automated suite otherwise.
 //
 // The PATHS rows matter most, because they pin the INTERPOLATED rendering
 // rather than string()'s: the fixture writes "{{ paths }}" with no call, which

@@ -103,7 +103,7 @@ The `name` slug constrains to `^[a-z0-9][a-z0-9_-]*(/[a-z0-9][a-z0-9_-]*)?$`.
 The inline template is re-serialized and fully validated (via `openjd.Parse` +
 `openjd.ValidateWithBudget`) when the definition is parsed — a malformed
 template is rejected at load time. Validation is bounded: `ParseDefinition` and
-`ValidateTemplate` take a **required** `product.ValidateOptions` carrying the
+`ValidateTemplate` take a required `product.ValidateOptions` carrying the
 operator's configured EXPR limits (`openjd.expr_*`) and a per-request wall-clock
 deadline (`openjd.expr_submission_deadline`). Every HTTP route that reaches this
 package sets both. Two callers pass `EnforceLimits` alone, and neither is a
@@ -116,9 +116,9 @@ server.
 ### Writing a `readme`
 
 `readme` must use a YAML **literal** block (`|`), not the folded block (`>-`)
-that `description` uses. A folded scalar collapses newlines, which silently
-destroys paragraph breaks and list structure — the result is one run-on
-paragraph, with no error to tell you:
+that `description` uses. A folded scalar collapses newlines, which destroys
+paragraph breaks and list structure — the result is one run-on paragraph, with
+no error:
 
 ```yaml
 description: >-
@@ -151,10 +151,9 @@ and `[links](https://example.com)` using `http:`, `https:` or `mailto:` only.
 **Lists are single-level only — nesting is not supported.** The renderer
 (`web/src/components/Markdown.tsx`) matches list items with a regular
 expression anchored at column 0. An item indented under another list item
-does not become a nested list; it silently renders as an ordinary paragraph
-with a stray leading `-` or `1.`, with no error or warning. This has already
-caught one author on this branch — write every list flat, with no indented
-sub-items.
+does not become a nested list; it renders as an ordinary paragraph with a
+stray leading `-` or `1.`, with no error or warning. Write every list flat,
+with no indented sub-items.
 
 **Not supported,** and rendered as literal text: images, tables, blockquotes,
 reference links, raw HTML, and nesting of any kind. Images are excluded
@@ -366,8 +365,8 @@ Key points about installed products:
 `name` is the stable identity of a product across its lifetime. The `version`
 string (e.g. `1.0.0`) is stored alongside the template and is available for
 future tooling to detect when an installed product's template has been
-superseded by a newer release. No automatic update behavior is implemented in
-Phase 2; `version` is a label only.
+superseded by a newer release. No automatic update behavior is implemented;
+`version` is a label only.
 
 ---
 
@@ -554,8 +553,7 @@ It rides the `SQI_PATH_TRANSLATION` extension and offers five delivery mechanism
 
 Deliveries execute in fixed order and are mutually compatible — a product can
 declare all five simultaneously. The first two (`swap_in_place`, `translation_file`)
-are the default when no `SQI_PATH_TRANSLATION` extension is declared, preserving
-existing behavior.
+are the default when no `SQI_PATH_TRANSLATION` extension is declared.
 
 **Relationship to native OpenJD:** The base OpenJD spec provides the `{{Session.PathMappingRulesFile}}`
 format string for apps that read a mapping file. Use it (via `translation_file`).

@@ -1,7 +1,6 @@
 -- SPDX-License-Identifier: AGPL-3.0-or-later
--- Local user accounts and server-side sessions (Phase 3, component A1).
--- Both tables exist regardless of auth.enabled; they are simply unused when
--- auth is disabled. Roles are stored but not enforced until B1.
+-- Local user accounts and server-side sessions. Both tables exist regardless
+-- of auth.enabled; they are unused when auth is disabled.
 
 -- +goose Up
 CREATE TABLE users (

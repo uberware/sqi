@@ -1,22 +1,20 @@
 # Authentication (Phase 3)
 
 sqi ships with **authentication off by default** — on a trusted local network,
-every request is served as an anonymous superuser and nothing is gated. This is
-the pre-Phase-3 behavior and remains the default.
+every request is served as an anonymous superuser and nothing is gated.
 
 ## The opt-in gate
 
 The single switch is `auth.enabled` (config file `auth.enabled`, env
 `SQI_AUTH_ENABLED`, flag `--auth-enabled`; default `false`).
 
-As of component A1, the gate is live: flipping `auth.enabled` to `true` and
-restarting actually locks the server down. Every REST request and the
-WebSocket upgrade now require a valid credential — a session cookie or a
-Bearer API key (`auth.Chain(apikey, session)`); there is no more
-"scaffolding only" caveat. See [Local accounts](#local-accounts),
-[Login & sessions](#login--sessions) and [API keys](#api-keys) for what that
-means in practice, and [First-admin bootstrap](#first-admin-bootstrap) for
-how to get your first credential.
+Setting `auth.enabled` to `true` and restarting locks the server down. Every
+REST request and the WebSocket upgrade require a valid credential — a session
+cookie or a Bearer API key (`auth.Chain(apikey, session)`). See
+[Local accounts](#local-accounts), [Login & sessions](#login--sessions) and
+[API keys](#api-keys) for what that means in practice, and
+[First-admin bootstrap](#first-admin-bootstrap) for how to get your first
+credential.
 
 ## Broker authentication (transport)
 
@@ -149,18 +147,29 @@ split is deliberate, so that the ability to delete a worker never doubles as
 the ability to mint join tokens — and without the cascade, an operator who
 can decommission a machine would have no way at all to cut its broker
 access. A worker with no credential (broker authentication disabled, or a
-worker that was never enrolled) is deleted exactly as before; a credential
+worker that was never enrolled) is deleted with nothing to revoke; a credential
 that is already revoked is treated the same way.
 
-The ordering matters: `store.DeleteWorker` never rejects with a conflict —
-removability was already decided by an earlier check — so revoking first
-never wastes a revocation on a delete that was always going to be refused.
-If the revoke fails, nothing has happened yet: the worker row is intact, the
-request answers 500, and it is safe to retry. If the delete then fails after
-a successful revoke, the worker row survives but its broker access is
-already cut — the safe direction to fail in — and retrying `DELETE
-/workers/{id}` simply re-revokes (a no-op the second time) and tries the
-delete again. Deleting first and revoking after was tried and rejected: a
+The ordering matters: removability is decided by an earlier check, so in the
+common case the delete cannot be refused and revoking first never wastes a
+revocation on a delete that was always going to be refused. That earlier
+check looks only at the worker's status (offline). The delete itself is
+guarded: inside its own write it applies the same rule and also refuses a
+worker that still holds an assigned or running task. So the delete can still
+be refused after the revoke, in two ways. A worker that comes back between the
+revoke and the guarded delete keeps its row and gets a 409 Conflict. So does
+an offline worker that still holds a task. Going offline reclaims a worker's
+tasks, so this takes an offline worker that was leased a task afterwards. In
+both cases its credential is already revoked. Those windows are documented
+rather than closed (see the known gaps in
+[architecture.md](architecture.md#known-gaps)), and they err the safe way:
+access is cut, the worker row is kept, and the worker can be enrolled again
+under a new key (see below). If the revoke fails, nothing has happened yet: the worker row is
+intact, the request answers 500, and it is safe to retry. If the delete then
+fails after a successful revoke, the worker row survives but its broker access
+is already cut — the safe direction to fail in — and retrying `DELETE
+/workers/{id}` re-revokes (a no-op the second time) and tries the
+delete again. Deleting first and revoking after would be worse: a
 failure in the revoke's own store write, not just a broker-reload failure,
 would leave the worker row gone, the credential never revoked, and nothing
 left to reap it — the operator would be told 204 while the machine kept live
@@ -242,7 +251,7 @@ is still present as a token in every worker-to-server subject (see
 under any worker ID it chooses. The scheduler still parses that ID out of
 the subject and compares it against the task attempt's recorded owner, and
 still discards a mismatch — but with authentication off, that check is not a
-security boundary. It catches **honest bugs**, not attackers: a stale
+security boundary. It catches bugs, not attackers: a stale
 worker, a version mismatch, a client publishing to the wrong subject by
 accident. Do not read those provenance checks as proof that cross-worker
 forgery is prevented in the default configuration — it is not. Only
@@ -264,9 +273,8 @@ narrower than the whole `task.cancel.>` subtree — there is no way to grant
 reload on every assignment, or a NATS auth callout. The practical effect:
 **any enrolled worker can observe the cancel signal for any task**, not only
 its own. This is accepted as low severity — a cancel message for a task the
-worker does not hold is simply inert, it triggers no action — but it is a
-real, deliberate gap rather than an oversight, and is recorded here rather
-than left to be rediscovered.
+worker does not hold is inert, it triggers no action — but it is a
+deliberate gap, not an oversight.
 
 ## Model
 
@@ -278,8 +286,8 @@ only non-anonymous `Authenticator`s are the session-cookie and API-key ones
 described below.
 
 Externally-verified credentials do **not** implement that interface.
-[LDAP/AD](#ldap--active-directory) (C1) attaches at `POST /auth/login`, and
-[OIDC/SSO](#oidc--sso) (C2) attaches at its own callback route; both verify the
+[LDAP/AD](#ldap--active-directory) attaches at `POST /auth/login`, and
+[OIDC/SSO](#oidc--sso) attaches at its own callback route; both verify the
 credential once and then mint an ordinary session, so no request path binds
 against an external identity provider. See [It attaches at login, not at every
 request](#it-attaches-at-login-not-at-every-request).
@@ -290,13 +298,13 @@ and `Superuser`.
 
 `GET /auth/me` returns both `roles` and `permissions`. Clients should gate on
 `permissions`: it is computed server-side from the policy matrix, so an
-externally-mapped role from an LDAP or OIDC provider (C1/C2) needs no
+externally-mapped role from an LDAP or OIDC provider needs no
 client-side change. A superuser principal — the anonymous identity used when
 auth is disabled — reports the full permission set, which is what keeps every
 control enabled in an auth-off deployment.
 
 A `Principal`'s `roles` field is populated (a user's single stored role, e.g.
-`["admin"]`) and, as of component B1, **is enforced**: every mutating route
+`["admin"]`) and is enforced: every mutating route
 and several read routes are gated by a role→permission policy. See
 [Roles & permissions](#roles--permissions) for the matrix.
 
@@ -347,9 +355,8 @@ bad password. Deleting a user cascades to its sessions — see
 
 ## Roles & permissions
 
-As of component B1, every mutating route and several read routes are gated by a
-role→permission policy. There are four
-built-in roles (no custom-role builder — YAGNI):
+Every mutating route and several read routes are gated by a role→permission
+policy. There are four built-in roles (there is no custom-role builder):
 
 - **admin** — full access, including user management, API-key management for
   any account, and configuration-adjacent surfaces.
@@ -391,8 +398,7 @@ built-in roles (no custom-role builder — YAGNI):
 A denied request returns **403** with an RFC-7807 problem-details body, and
 is recorded to the audit log (`AuditEntry.Actor`) as well as the server's own
 diagnostic log. With `auth.enabled=false` (the default), the anonymous
-superuser principal bypasses every check — unchanged behavior from before
-B1.
+superuser principal bypasses every check.
 
 **Last-admin guard.** The last *enabled* admin account can't be deleted,
 disabled, or demoted to a non-admin role — any of those requests fail with
@@ -424,9 +430,9 @@ Three choices worth knowing:
 - **Changing a password evicts every session for the account, then
   re-issues one for the caller** — other devices are signed out while the
   device that made the change stays signed in. **API keys are deliberately
-  not revoked**: they are an independent credential, and silently killing a
-  user's automation because they rotated a password would be a nasty
-  surprise. Revoke them explicitly if that is what you want.
+  not revoked**: they are an independent credential, and breaking a user's
+  automation because they rotated a password would be unexpected. Revoke
+  them explicitly if that is what you want.
 
 With `auth.enabled=false` both routes return **409 Conflict** — the
 anonymous superuser has no account record to change — and the web hides the
@@ -491,8 +497,8 @@ environment-allowlist mechanics.
 
 **Before enabling `run_as_user` on any queue, see the worker upgrade requirement
 documented in [`docs/configuration.md`](configuration.md#important-worker-upgrade-required):**
-old workers silently ignore isolation, creating partial and silent enforcement
-across a mixed-version farm.
+old workers ignore isolation without reporting it, so a mixed-version farm
+enforces it only partially.
 
 ### `isolation.manage` is a separate, admin-only permission
 
@@ -519,9 +525,8 @@ a concurrent admin write.)
 
 ### Enabling isolation raises the worker daemon's own privilege
 
-**This is the single most important fact about this feature, and it is
-counter-intuitive: turning isolation on makes the worker's own daemon process
-*more* privileged, not less.** On POSIX, dropping privileges to become another
+**Turning isolation on makes the worker's own daemon process *more*
+privileged, not less.** On POSIX, dropping privileges to become another
 user (`setuid`/`setgid`/`setgroups`) is itself an operation that requires
 starting as root — `isolation.Provider.Capable()` returns an error unless the
 worker's effective uid is 0. An operator who runs `sqi-worker` unprivileged
@@ -574,10 +579,9 @@ named group the account already belongs to — `docker`, `disk`, `shadow`, or
 any in-house privileged group. This is by design, not an
 oversight: those memberships are the account's own, pre-existing access, and
 supplementary groups on a render-farm account typically exist specifically to
-grant project-storage access (an NFS-exported group, for example). Silently
-stripping every named group to be "safe" would silently break exactly the
-access those groups exist to provide, on every job, with no way to tell
-whether a given group was load-bearing.
+grant project-storage access (an NFS-exported group, for example). Stripping
+every named group would break the access those groups exist to provide, on
+every job, with no way to tell whether a given group was needed.
 
 The consequence is the operator's to manage, not sqi's: **do not point a
 queue's `run_as_user` at an OS account that belongs to `docker`** — group
@@ -701,8 +705,8 @@ Bootstrap behavior:
 - **Empty and unconfigured does not fail closed.** If auth is enabled, the
   table is empty, and *neither* bootstrap variable is set, the server logs a
   `WARN` ("auth is enabled but no users exist and no bootstrap credentials
-  are configured…") and **still boots successfully**. There is simply no one
-  who can log in yet — the server is up but practically unusable for any
+  are configured…") and **still boots successfully**. No one can log in
+  yet — the server is up but practically unusable for any
   authenticated route until an operator sets the bootstrap env vars and
   restarts, or otherwise seeds a user directly.
 - **A half-set pair is a startup validation error**, not a warning: setting
@@ -803,7 +807,7 @@ to the same-origin path: it resolves the request's scheme from `r.TLS` or
 `X-Forwarded-Proto`, so a proxy that does not set that header makes a genuinely
 same-origin `https://` request look cross-origin.
 
-Leaving the list empty keeps the previous default of `["*"]`. **The
+Leaving the list empty uses the default, `["*"]`. **The
 wildcard-drop above still applies**: with auth enabled, `"*"` — whether
 explicit or defaulted — is dropped and credentialed cross-origin requests
 are refused. A separately-hosted UI must therefore name its origin
@@ -811,12 +815,12 @@ explicitly here. Same-origin deployments need none of this.
 
 ## Headless / SDK auth
 
-As of component A2, sqi has an issuable headless credential: **API keys**,
-covered in full below. `internal/server/server.go`'s `selectAuth` now wires
+sqi's headless credential is the **API key**, covered in full below.
+`internal/server/server.go`'s `selectAuth` wires
 `auth.Chain(keyAuthn, sessAuthn)` — a Bearer API key is tried first, and the
 session cookie is the fallback for browser requests.
 
-The Python SDK (`clients/python`) was already wired ahead of time for this:
+The Python SDK (`clients/python`) supports this:
 `SqiClient(base_url, token=...)` sends `Authorization: Bearer <token>`,
 falling back to the `$SQI_TOKEN` then `$SQI_API_KEY` environment variables
 when `token` isn't passed explicitly, and a 401/403 response raises the typed
@@ -913,7 +917,7 @@ Bearer-authenticated request has nothing for it to check.
 
 ## LDAP / Active Directory
 
-As of component C1, `sqi-server` can verify passwords against an LDAP or
+`sqi-server` can verify passwords against an LDAP or
 Active Directory server instead of its own store. Enable it with
 `auth.ldap.enabled` on top of `auth.enabled` — LDAP is an addition to the
 auth system, not an alternative to it, and an auth-off server never contacts
@@ -922,10 +926,9 @@ a directory whatever `auth.ldap.*` says. Every field is catalogued in
 
 ### It attaches at login, not at every request
 
-LDAP is a **login-time credential verifier**, not an `Authenticator`. This is
-a deliberate departure from the obvious design (an `Authenticator`
-implementation alongside the session and API-key ones): a per-request
-authenticator would mean a directory bind on *every API call*, which turns
+LDAP is a **login-time credential verifier**, not an `Authenticator`
+alongside the session and API-key ones: a per-request authenticator would
+mean a directory bind on *every API call*, which turns
 the DC into a hard dependency of every page load and every SDK poll.
 
 Instead, `POST /api/v1/auth/login` checks the password against the directory
@@ -940,8 +943,8 @@ The practical consequence is [revocation lag](#revocation-lag), below.
 
 ### Per-account routing
 
-Each account carries `users.auth_source` — `local`, `ldap`, or (from C2)
-`oidc`. It is set when the account is created and is **immutable** — no route
+Each account carries `users.auth_source` — `local`, `ldap`, or `oidc`. It is
+set when the account is created and is **immutable** — no route
 can change it. `POST /auth/login` reads it and consults exactly one backend:
 the stored argon2id hash, or the directory. Never both, never in sequence. An
 `oidc` account has no password path at all; it signs in through
@@ -991,7 +994,7 @@ would otherwise log straight into that admin's account — same role, same owned
 jobs, no error anywhere. A rename at the directory is the mirror failure, and
 would orphan the account and provision a duplicate.
 
-Two consequences worth stating plainly:
+Two consequences:
 
 - **A directory rename is transparent.** The entry keeps its identifier, so
   the same sqi account is reached under the new name.
@@ -1087,7 +1090,7 @@ and since accounts match on the identifier rather than the name, that holds
 across a directory rename too.
 
 **`username_attr` should still name a directory-controlled, unique attribute.**
-It is no longer what sqi matches an account on — `unique_id_attr` is — but it
+It is not what sqi matches an account on — `unique_id_attr` is — but it
 is the value written to `users.username`, which is unique in sqi's own store,
 and it is what binds to `Job.Owner`/`Job.Submitter`. Point it at something
 *users can edit themselves* — `mail` is the obvious trap — and one user can
@@ -1177,8 +1180,8 @@ sign in at all. The default is `read-only`.
 | `directory` (default) | Recomputed from groups on **every** login | **409 Conflict** |
 | `local` | Seeded from groups at JIT-create only | Allowed |
 
-One value drives both halves, and it must stay that way. Splitting them
-produces the worst outcome available here: an admin edits a role, the API
+One value drives both halves. Splitting them would allow this: an admin
+edits a role, the API
 returns 200, and the next login silently reverts it with nothing to indicate
 which value is real.
 
@@ -1257,7 +1260,7 @@ account, and nothing distinguishes `/auth/login` from a job listing.
 
 Twenty per second is roughly **1.7 million login attempts per day, per source
 IP**. Treat that as no brute-force control at all. It is a capacity guard
-that keeps one client from saturating the API; it was never a credential
+that keeps one client from saturating the API; it is not a credential
 defense and does not become one because the login route sits behind it.
 
 **Failed logins against directory accounts hit your directory.** For an
@@ -1271,7 +1274,7 @@ local accounts, reached instead through the front door.
 
 **Unknown usernames also cost the directory.** With LDAP enabled, an
 unrecognized username takes the just-in-time provisioning path, which
-consults the directory before failing. So `/auth/login` will happily convert
+consults the directory before failing. So `/auth/login` converts
 unauthenticated HTTP requests into domain-controller round trips — an
 amplifier aimed at your DC.
 
@@ -1288,8 +1291,8 @@ go-ldap offers no context-aware dial, so a login in progress **cannot be
 aborted by request cancellation** — a client that gives up does not free the
 server-side attempt. What bounds it is `auth.ldap.timeout` (default `10s`),
 applied to the TCP connect and to each subsequent request leg. Set it to
-something you are willing to have a request block for; the default is not a
-generous one by accident.
+something you are willing to have a request block for; the default is
+deliberately not generous.
 
 ### Directory accounts have no local password
 
@@ -1309,10 +1312,10 @@ the users API reports as `password_editable` — the companion to
 letting someone type a password and discover the 409. Field and guard are
 computed from one server-side predicate and cannot drift apart.
 
-The admin-side 409 also closes a real hole: without it, an admin could write
-a genuine argon2id hash onto a directory account. Login routes on
-`auth_source` and would not consult it today, but leaving a usable credential
-lying in the row is the kind of thing a future refactor turns into a bypass.
+The admin-side 409 also stops an admin writing a genuine argon2id hash onto a
+directory account. Login routes on `auth_source` and does not consult it, but
+a usable credential left in the row would become a bypass if that routing
+changed.
 
 `PATCH /auth/me` is deliberately *not* guarded, for the reason given under
 [just-in-time provisioning](#just-in-time-provisioning): the display name is
@@ -1335,9 +1338,7 @@ The account is unusable and unrepairable in place. **Delete and recreate it
 as a local account** — that is the only remedy, and it is deliberate: there
 is no conversion endpoint, because flipping an account's `auth_source` is
 exactly the operation that would let a directory entry inherit a local
-account's privileges (see [per-account routing](#per-account-routing)). A
-missing convenience is the correct trade against a privilege-escalation
-primitive.
+account's privileges (see [per-account routing](#per-account-routing)).
 
 Note that display names and role assignments do not survive that round trip,
 and the user's sessions die with the old row. If you are migrating away from
@@ -1367,10 +1368,10 @@ Point it at a directory you already have — including a real Active Directory �
 with `SQI_TEST_LDAP_URL`, and it uses that instead of starting a container. The
 fixture tree it expects is the `seedLDIF` constant in that file.
 
-That suite exists because of a bug it now guards: OpenLDAP does not reject the
-AD-only nested-group matching rule, it answers *success with zero entries*, and
-an earlier revision let that empty result replace a user's real groups and
-silently demote them. No fake reproduced it.
+OpenLDAP does not reject the AD-only nested-group matching rule; it answers
+*success with zero entries*. Letting that empty result replace a user's real
+groups would demote them to `default_role` with no error. The suite guards
+against that, and no fake reproduces it.
 
 **Still test a new deployment against your own directory before relying on
 it.** Directories differ in exactly the places this integration is sensitive
@@ -1379,7 +1380,7 @@ read, and how an unsupported matching rule is answered.
 
 ## OIDC / SSO
 
-As of component C2, `sqi-server` can sign users into the **web UI** through an
+`sqi-server` can sign users into the **web UI** through an
 OAuth2/OpenID Connect identity provider — Keycloak, Microsoft Entra ID, Okta,
 or anything else that publishes a discovery document. Enable it with
 `auth.oidc.enabled` on top of `auth.enabled`; the block is inert unless both
@@ -1431,8 +1432,8 @@ boot — a missing `client_id` fails validation, an unreachable issuer does not.
 
 ### A worked setup (Keycloak)
 
-Keycloak is the provider sqi's integration test actually drives, so it is the
-one worked here. Register a confidential client in your realm with the standard
+Keycloak is the provider sqi's integration test drives, so it is the one
+worked here. Register a confidential client in your realm with the standard
 flow enabled, a redirect URI of `https://sqi.example.com/api/v1/auth/oidc/callback`,
 and — this part is easy to miss — **a protocol mapper that puts group
 membership into the `groups` claim**. Keycloak emits no groups at all without
@@ -1486,8 +1487,8 @@ a provider-side mapper, or both varies by provider, and there is no error when
 it is absent — the token validates and the user lands on `default_role`. If
 every SSO user is arriving with your `default_role`, check the claim before
 anything else. (This is the OIDC counterpart of LDAP's
-[`memberOf` trap](#your-directory-must-populate-memberof), and it fails the
-same silent way.)
+[`memberOf` trap](#your-directory-must-populate-memberof), and fails the
+same way, with no error.)
 
 ### Just-in-time provisioning and identity
 
@@ -1526,7 +1527,7 @@ it.
 `role_editable` field the users API returns is computed per account from
 whichever source owns it.
 
-**Keep a local admin account.** Every word of
+**Keep a local admin account.**
 [Keep a local admin account](#keep-a-local-admin-account) applies here: rename
 the admin group at the provider and, in `directory` mode, every SSO admin is
 demoted to `default_role` at their next login, with role edits on those
@@ -1535,8 +1536,7 @@ is the only thing unaffected by a provider-side change.
 
 ### Re-authentication and logout are two different things
 
-They answer different problems and are configured independently. Conflating
-them is the usual mistake.
+They answer different problems and are configured independently.
 
 **`reauth_mode`** decides whether the *next* SSO login is allowed to be silent
 — it sends `prompt=login` to the provider.
@@ -1549,7 +1549,7 @@ them is the usual mistake.
 
 This — not `logout_mode` — is the answer to the shared-workstation problem.
 Without it, clearing sqi's session while the provider still considers the
-person signed in is precisely how the next person at that machine gets signed
+person signed in is how the next person at that machine gets signed
 in as the last one.
 
 **`logout_mode`** decides whether logging out of sqi also ends the session *at
@@ -1571,23 +1571,22 @@ advertised endpoint does not parse, sqi **degrades to a local logout and logs
 at `ERROR`** — never silently.
 
 **sqi does not store ID tokens**, so the end-session request uses `client_id` +
-`post_logout_redirect_uri` and never `id_token_hint`. That is deliberate, and
-measurement strengthened the case rather than weakening it:
+`post_logout_redirect_uri` and never `id_token_hint`. That is deliberate:
 
 - The token would be the **first recoverable secret in the schema**. Session
   tokens are stored as hashes, passwords as argon2id hashes. "Nothing in this
   database can be read back out and used" is an invariant worth more than a
   logout convenience.
 - **Keycloak accepts an expired ID token as a hint** — verified well past
-  `exp`, and the session still died silently. A stored token is therefore a
+  `exp`, and the session still ended without a prompt. A stored token is
+  therefore a
   session-termination capability that **does not decay**; "it expires in
   minutes" is not a mitigation.
 - **The hint works from a client holding no provider cookies.** A leaked token
   can end that user's provider session from anywhere, by anyone holding it.
 - **The realistic leak path is accident, not theft** — a debug log line
   dumping a session row, or a future session-listing endpoint. Avoiding it
-  would require a redaction rule every future contributor remembers, which is
-  where this class of leak actually originates.
+  would require a redaction rule every future contributor remembers.
 
 The cost is stated under
 [Provider logout is weaker than it looks](#provider-logout-is-weaker-than-it-looks).
@@ -1628,7 +1627,7 @@ provider logout.** Measured against Keycloak 26.0.7 by `make test-oidc`:
   (verified independently with a `prompt=none` probe that still returned a
   code). The session ends only once a human posts that confirmation.
 
-This is not a security hole — sqi's own session is genuinely revoked either
+This is not a security hole — sqi's own session is revoked either
 way, and it is revoked before the redirect is ever handed to the browser — but
 it is weaker than an operator would infer from the option's name. In practice
 `logout_mode: provider` ends the sqi session immediately and then takes the
@@ -1640,7 +1639,7 @@ tool.
 end-session request carrying only a client identifier could have been
 constructed by anyone, so Keycloak asks the human before acting on it.
 `id_token_hint` is the proof that the caller was party to the session, and
-supplying it is exactly what buys the skip: with the hint, Keycloak answers
+supplying it skips the prompt: with the hint, Keycloak answers
 `302` straight to the post-logout URI and the session is dead with no
 interaction at all (`client_id` is not even required alongside it). sqi does
 not hold that proof, by choice — see the reasons under
@@ -1651,8 +1650,7 @@ oversight.
 
 **Entra ID and Okta have not been measured.** Whether either completes an
 end-session request without an `id_token_hint` is **unverified here**; Okta has
-historically been reported to require the hint, but that is recollection, not
-an observation, and it is not a claim this document is willing to make. Test
+been reported to require the hint, but that has not been observed here. Test
 your own provider before relying on `logout_mode: provider`, and treat
 `reauth_mode` as the control that actually protects a shared workstation.
 
@@ -1675,16 +1673,15 @@ resolve it.
 
 Refusal is the intended outcome, not a gap. Auto-disambiguating (`alice2`)
 would create accounts whose names no longer match the provider — and since the
-username is what binds to `Job.Owner`, that is a mismatch that quietly spreads
-into job ownership. Adopting the existing account is worse still: it is
-username matching, the thing identifier matching exists to remove. An error an
-operator can act on beats both.
+username is what binds to `Job.Owner`, that mismatch spreads into job
+ownership. Adopting the existing account is worse still: it is username
+matching, the thing identifier matching exists to remove.
 
 #### Only the open-source providers are covered by CI
 
 `make test-oidc` runs the whole SSO path against a **real Keycloak** in a
 throwaway container, and `make test-ldap` runs the LDAP path against a **real
-OpenLDAP**. Both run in CI on every change. That is the honest extent of it:
+OpenLDAP**. Both run in CI on every change. Coverage stops there:
 
 - **Active Directory's `objectGUID` path is not proven by the OpenLDAP
   container.** OpenLDAP is exercised with `entryUUID`; AD's binary `objectGUID`
@@ -1705,7 +1702,7 @@ validation mistake surfaces — but a fake returns whatever the test asks for, s
 it cannot show what a *real* provider omits. That is the gap
 `test/integration/oidc_test.go` closes, driving a real browser-shaped flow
 against a real Keycloak: the authorization-code round trip and group → role
-mapping (including the silent `default_role` downgrade when the groups mapper
+mapping (including the `default_role` downgrade when the groups mapper
 is missing), a rename at the provider keeping the same account, state-mismatch
 refusal, `prompt=login` forcing re-authentication, and the end-session behavior
 recorded above.
@@ -1724,7 +1721,7 @@ provider](development.md#testing-against-a-real-directory-or-identity-provider) 
   not a placeholder for a later phase.** See
   [Broker authentication (transport)](#broker-authentication-transport)
   above for the full model: the credential, both enrollment paths,
-  revocation, key rotation, and — stated plainly there — the asymmetry that
+  revocation, key rotation, and the asymmetry that
   while `nats.auth.enabled` is off, the worker ID carried in every subject is
   unenforced, so the scheduler's provenance checks catch bugs rather than
   attackers, and any host that can reach the embedded NATS broker's port
@@ -1734,7 +1731,7 @@ provider](development.md#testing-against-a-real-directory-or-identity-provider) 
   is also configured ([`docs/tls.md`](tls.md)); the two settings are
   independent and address different threats.
   `sqi-server` emits a startup WARN when the broker address is non-loopback
-  and broker auth is off, precisely because an operator reading "I flipped
+  and broker auth is off, because an operator reading "I flipped
   `auth.enabled` to `true`, so the server is now locked down" should not
   assume that also locked down the worker transport — the two flags are
   independent and both must be set.
@@ -1745,8 +1742,8 @@ provider](development.md#testing-against-a-real-directory-or-identity-provider) 
   run against real OS accounts — `make test-isolation` as root in a container,
   `make test-isolation-windows` against real local accounts with its privileged
   tier as SYSTEM — and both pass. The POSIX NSS (LDAP/AD-backed account)
-  fallback path, however, has only ever been exercised against canned command
-  output, never a real directory server — see
+  fallback path, however, has been exercised only against canned command
+  output, not a real directory server — see
   [`docs/worker-configuration.md`](worker-configuration.md) for that caveat in
   full.
 - **`DELETE /workers/{id}/credential` stays mounted with `auth.enabled=false`.**
@@ -1763,8 +1760,8 @@ provider](development.md#testing-against-a-real-directory-or-identity-provider) 
   in that configuration. Carving out this one route would break the rule
   that auth-off behavior matches pre-auth sqi, so it is accepted rather than
   special-cased.
-- **Per-user concurrent task caps.** A hard per-owner ceiling on running tasks was scoped for
-  Phase 3 and deferred (2026-07-20) with no driver behind it. Nothing bounds a single user's
-  farm consumption today: `max_concurrent_tasks` on farms and queues caps the container, not the
+- **Per-user concurrent task caps.** There is no per-owner ceiling on running tasks, so
+  nothing bounds a single user's farm consumption: `max_concurrent_tasks` on farms and
+  queues caps the container, not the
   person, so one user can still fill a queue's whole allowance. If that becomes a real problem,
   it is worth deciding between a hard cap and fair-share scheduling before building either.

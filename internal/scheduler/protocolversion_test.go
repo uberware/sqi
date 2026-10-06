@@ -30,7 +30,6 @@ import (
 
 	"github.com/uberware/sqi/internal/bus"
 	"github.com/uberware/sqi/internal/store"
-	"github.com/uberware/sqi/internal/store/fake"
 	"github.com/uberware/sqi/internal/worker/protocol"
 )
 
@@ -53,7 +52,7 @@ var mismatchedVersions = []string{"2", "4", ""}
 func TestHandleWorkerRegister_VersionMismatch_Discarded(t *testing.T) {
 	for _, v := range mismatchedVersions {
 		t.Run("version="+v, func(t *testing.T) {
-			st := fake.New()
+			st := newCheckedFake(t)
 			s := newMetricsScheduler(st, &recordBus{}, "")
 
 			msg := &fakeJSMsg{
@@ -98,11 +97,11 @@ func TestHandleWorkerRegister_VersionMismatch_Discarded(t *testing.T) {
 func TestHandleWorkerHeartbeat_VersionMismatch_Discarded(t *testing.T) {
 	for _, v := range mismatchedVersions {
 		t.Run("version="+v, func(t *testing.T) {
-			st := fake.New()
+			st := newCheckedFake(t)
 			s := newMetricsScheduler(st, &recordBus{}, "")
 
 			seeded := time.Now().UTC().Add(-time.Hour)
-			if _, err := st.RegisterWorker(t.Context(), store.Worker{
+			if _, _, err := st.RegisterWorker(t.Context(), store.Worker{
 				ID: "w-1", FarmID: "farm-1",
 				Status: store.WorkerStatusOnline, LastHeartbeatAt: &seeded,
 			}); err != nil {
@@ -150,7 +149,7 @@ func TestHandleWorkerHeartbeat_VersionMismatch_Discarded(t *testing.T) {
 func TestHandleTaskStatusMessage_VersionMismatch_Discarded(t *testing.T) {
 	for _, v := range mismatchedVersions {
 		t.Run("version="+v, func(t *testing.T) {
-			st := fake.New()
+			st := newCheckedFake(t)
 			s := newStatusTestScheduler(st)
 			job, _, task, attempt := seedStatusFixture(t, st, store.TaskStatusAssigned)
 

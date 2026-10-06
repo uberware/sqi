@@ -165,8 +165,8 @@ func TestParseGetentPasswdHome(t *testing.T) {
 	}
 }
 
-// TestParseGetentPasswdHomeRejectsNameMismatch is the reproduction from the
-// review: a getent line that parses fine but names a DIFFERENT account than
+// TestParseGetentPasswdHomeRejectsNameMismatch: a getent line that parses
+// fine but names a DIFFERENT account than
 // the one requested must not be accepted — that's an NSS-aliasing bug (or
 // attack surface) handing back the wrong account's home directory under the
 // requested name.
@@ -176,12 +176,12 @@ func TestParseGetentPasswdHomeRejectsNameMismatch(t *testing.T) {
 	}
 }
 
-// TestParseGetentPasswdHomeAcceptsCaseDifferingName is the Important-2 fix's
-// reproduction: AD and many LDAP backends are case-insensitive and
+// TestParseGetentPasswdHomeAcceptsCaseDifferingName: AD and many LDAP
+// backends are case-insensitive and
 // canonicalize the name they return, so `getent passwd RenderSvc` can
 // legitimately answer with a differently-cased "rendersvc:...". Refusing
 // that as a name mismatch would fail a correctly-configured AD-backed farm —
-// the exact deployment the NSS fallback exists to serve.
+// the deployment the NSS fallback exists to serve.
 func TestParseGetentPasswdHomeAcceptsCaseDifferingName(t *testing.T) {
 	home, ok := parseGetentPasswdHome("rendersvc:x:1001:2001::/home/rendersvc:/bin/bash\n", "RenderSvc")
 	if !ok || home != "/home/rendersvc" {
@@ -199,9 +199,8 @@ func TestParseGetentGroupGID(t *testing.T) {
 	}
 }
 
-// TestParseGetentGroupGIDRejectsNameMismatch is the review's confirmed
-// repro ("C: ACCEPTED gid=2010 from a getent line naming a different
-// group"): a syntactically valid getent group line for the WRONG group must
+// TestParseGetentGroupGIDRejectsNameMismatch: a syntactically valid getent
+// group line for the WRONG group must
 // not be accepted as an answer for the requested one.
 func TestParseGetentGroupGIDRejectsNameMismatch(t *testing.T) {
 	if _, ok := parseGetentGroupGID("other-group:x:2010:someone\n", "render"); ok {
@@ -209,11 +208,10 @@ func TestParseGetentGroupGIDRejectsNameMismatch(t *testing.T) {
 	}
 }
 
-// TestParseGetentGroupGIDAcceptsCaseDifferingName is the Important-2 fix's
-// direct reproduction of the review's confirmed repro ("K: REFUSED ...
-// lookup group \"Renderers\": could not parse getent group output"):
-// `getent group Renderers` legitimately answering "renderers:x:3000:" on an
-// AD/LDAP-backed system must be accepted, not refused as a name mismatch.
+// TestParseGetentGroupGIDAcceptsCaseDifferingName: `getent group Renderers`
+// legitimately answering "renderers:x:3000:" on an
+// AD/LDAP-backed system must be accepted, not refused as a name mismatch
+// ("could not parse getent group output").
 func TestParseGetentGroupGIDAcceptsCaseDifferingName(t *testing.T) {
 	gid, ok := parseGetentGroupGID("renderers:x:3000:\n", "Renderers")
 	if !ok || gid != 3000 {
@@ -385,11 +383,10 @@ func TestUnixProviderFallbackGroupUnavailableFailsClosed(t *testing.T) {
 	}
 }
 
-// --- primary gid 0 (Critical 1) ---------------------------------------------
+// --- primary gid 0 ---------------------------------------------------------
 
-// TestResolveGIDRefusesPrimaryGIDZero is the direct unit reproduction of the
-// review's confirmed repro ("A: ACCEPTED uid=1001 GID=0 groups=[0 2010]"): an
-// account whose PRIMARY group is gid 0, with no explicit Spec.Group involved
+// TestResolveGIDRefusesPrimaryGIDZero: an account whose PRIMARY group is
+// gid 0 (uid=1001 GID=0 groups=[0 2010]), with no explicit Spec.Group involved
 // at all, must be refused.
 func TestResolveGIDRefusesPrimaryGIDZero(t *testing.T) {
 	p := newFallbackTestProvider(fakeRunner(t, nil))
@@ -401,7 +398,7 @@ func TestResolveGIDRefusesPrimaryGIDZero(t *testing.T) {
 }
 
 // TestResolveGIDAllowsOrdinaryStaffStylePrimaryGID guards against
-// over-correcting Critical 1: "staff" is on privilegedGroupNames (it's the
+// over-correcting the primary-gid-0 refusal: "staff" is on privilegedGroupNames (it's the
 // macOS admin-equivalent group when granted as an explicit target) AND is
 // the ordinary primary group of every regular macOS user account. Running
 // the full name-based CheckGroupNotPrivileged on the primary-gid branch
@@ -423,8 +420,8 @@ func TestResolveGIDAllowsOrdinaryStaffStylePrimaryGID(t *testing.T) {
 
 // TestUnixProviderFallbackRefusesPrimaryGIDZero proves the same refusal end
 // to end through Resolve via the NSS fallback path (id -g), not just at the
-// resolveGID unit level — matching the review's exact repro shape: no
-// explicit group requested, primary gid resolves to 0.
+// resolveGID unit level: no explicit group requested, primary gid resolves
+// to 0.
 func TestUnixProviderFallbackRefusesPrimaryGIDZero(t *testing.T) {
 	run := fakeRunner(t, map[string]nssResponse{
 		"id -u " + fallbackUser:         {out: "1001\n"},
@@ -442,7 +439,8 @@ func TestUnixProviderFallbackRefusesPrimaryGIDZero(t *testing.T) {
 
 // TestUnixProviderFallbackAllowsOrdinaryStaffStylePrimaryGID is the Resolve-
 // level companion to TestResolveGIDAllowsOrdinaryStaffStylePrimaryGID,
-// proving the fix doesn't over-correct through the full fallback path either.
+// proving the primary-gid-0 refusal doesn't over-correct through the full
+// fallback path either.
 func TestUnixProviderFallbackAllowsOrdinaryStaffStylePrimaryGID(t *testing.T) {
 	const macOSStaffGID = "20"
 	run := fakeRunner(t, map[string]nssResponse{
@@ -462,11 +460,10 @@ func TestUnixProviderFallbackAllowsOrdinaryStaffStylePrimaryGID(t *testing.T) {
 	}
 }
 
-// --- NSS group-list implausible-empty judgement (Important 2) --------------
+// --- NSS group-list implausible-empty judgement -----------------------------
 
-// TestGroupsViaNSSRejectsEmptyOutput is the direct unit reproduction of the
-// review's confirmed repro ("B: ACCEPTED with groups=[2001] (empty id -G
-// silently accepted)"): id -G producing entirely empty output means the tool
+// TestGroupsViaNSSRejectsEmptyOutput: id -G producing entirely empty output
+// (which would otherwise be accepted as groups=[2001]) means the tool
 // misbehaved (a real id(1) always reports at least the primary gid), and
 // must surface as an error rather than a silently-accepted empty group list.
 func TestGroupsViaNSSRejectsEmptyOutput(t *testing.T) {
@@ -498,7 +495,7 @@ func TestUnixProviderFallbackRejectsEmptyGroupList(t *testing.T) {
 	}
 }
 
-// --- absolute NSS tool paths (Important 3) ----------------------------------
+// --- absolute NSS tool paths ------------------------------------------------
 
 func TestResolveToolPathPrefersExistingCandidate(t *testing.T) {
 	dir := t.TempDir()
@@ -561,12 +558,12 @@ func TestRunNSSCommandCapsOutput(t *testing.T) {
 	}
 }
 
-// --- getent runErr not discarded (Minor 7) ----------------------------------
+// --- getent runErr not discarded --------------------------------------------
 
 // TestGroupGIDIncludesGetentFailureReason proves the getent(1) failure
 // reason reaches the returned error rather than being discarded in favor of
 // only the pure-Go os/user.LookupGroup error, which — for a group that only
-// exists in a directory getent can't see either — previously surfaced no
+// exists in a directory getent can't see either — would surface no
 // information about why the fallback itself failed.
 func TestGroupGIDIncludesGetentFailureReason(t *testing.T) {
 	const wantSubstring = "getent backend exploded"
@@ -585,11 +582,11 @@ func TestGroupGIDIncludesGetentFailureReason(t *testing.T) {
 }
 
 // TestGroupGIDAcceptsCaseDifferingGetentAnswer is the end-to-end companion to
-// TestParseGetentGroupGIDAcceptsCaseDifferingName, proving the fix through
+// TestParseGetentGroupGIDAcceptsCaseDifferingName, proving it through
 // groupGID's actual getent fallback wiring: a group name that pure-Go
 // os/user.LookupGroup can't resolve (forcing the getent fallback), answered
 // by getent(1) with a differently-cased, canonicalized name — the AD/LDAP
-// case from the review — must resolve successfully rather than fail with
+// case — must resolve successfully rather than fail with
 // "could not parse getent group output".
 func TestGroupGIDAcceptsCaseDifferingGetentAnswer(t *testing.T) {
 	const group = "sqi-test-no-such-group-Renderers"
@@ -607,7 +604,7 @@ func TestGroupGIDAcceptsCaseDifferingGetentAnswer(t *testing.T) {
 	}
 }
 
-// --- id(1)/getent(1) sentinel id rejection (Minor 8) ------------------------
+// --- id(1)/getent(1) sentinel id rejection ----------------------------------
 
 func TestParseIDRejectsInvalidSentinel(t *testing.T) {
 	if _, err := parseID("4294967295", "uid"); err == nil {
@@ -636,7 +633,7 @@ func TestUnixProviderFallbackRejectsSentinelUID(t *testing.T) {
 	}
 }
 
-// --- zero-value provider does not panic (Minor 10) --------------------------
+// --- zero-value provider does not panic -------------------------------------
 
 // TestZeroValueProviderDoesNotPanic proves a unixProvider{} (nil run, nil
 // logger) fails cleanly on the fallback path instead of a nil-pointer panic
@@ -651,13 +648,13 @@ func TestZeroValueProviderDoesNotPanic(t *testing.T) {
 	}
 }
 
-// --- stderr captured on a failing NSS command (Minor 3) ---------------------
+// --- stderr captured on a failing NSS command -------------------------------
 
 // TestRunNSSCommandIncludesStderrInError proves a failing id(1)/getent(1)
-// invocation's own error text reaches the caller. Before this fix,
-// runNSSCommand set cmd.Stdout to a custom writer but left cmd.Stderr nil,
-// which — unlike cmd.Output() — means *exec.ExitError.Stderr is never
-// populated, so a failing tool logged strictly less than it used to.
+// invocation's own error text reaches the caller. runNSSCommand sets
+// cmd.Stdout to a custom writer; leaving cmd.Stderr nil would — unlike
+// cmd.Output() — mean *exec.ExitError.Stderr is never populated, so a failing
+// tool would log less than cmd.Output() reports.
 func TestRunNSSCommandIncludesStderrInError(t *testing.T) {
 	dir := t.TempDir()
 	script := filepath.Join(dir, "fail.sh")
@@ -675,12 +672,11 @@ func TestRunNSSCommandIncludesStderrInError(t *testing.T) {
 	}
 }
 
-// --- supplementary-group gid-0 stripping (Important 1) ----------------------
+// --- supplementary-group gid-0 stripping ------------------------------------
 //
-// ident.groups (from GroupIds() or `id -G`) previously passed through
-// finalizeGroups completely unfiltered, so an account whose supplementary
-// groups happened to include gid 0 handed the child process gid-0 group
-// membership even though every other check in this package refuses gid 0 as
+// ident.groups (from GroupIds() or `id -G`) passed through finalizeGroups
+// unfiltered would let an account whose supplementary groups happen to
+// include gid 0 hand the child process gid-0 group membership even though every other check in this package refuses gid 0 as
 // an explicit target. These tests pin: gid 0 is dropped unconditionally, an
 // ordinary non-privileged supplementary gid survives untouched, and — the
 // deliberate part of the decision, not an oversight — a privileged NAMED
@@ -688,9 +684,8 @@ func TestRunNSSCommandIncludesStderrInError(t *testing.T) {
 // later reader does not "fix" that away. See stripGID0FromSupplementary's
 // doc comment in provider_unix.go for the full rationale.
 
-// TestStripGID0FromSupplementary is the direct unit reproduction of the
-// review's confirmed repro shapes ("E: ACCEPTED gid=2001 Groups=[2001 0
-// 2010]" and "F: ACCEPTED Groups=[2001 999]"): it exercises the single
+// TestStripGID0FromSupplementary covers the shapes gid=2001
+// Groups=[2001 0 2010] and Groups=[2001 999]: it exercises the single
 // function both the pure-Go (resolveIdentityFromOSUser) and NSS-aware
 // (resolveIdentityViaNSS) identity paths funnel through via finalizeGroups
 // before Resolve ever builds a Credential, so this one test covers both.
@@ -727,7 +722,7 @@ func TestStripGID0FromSupplementary(t *testing.T) {
 
 // TestUnixProviderFallbackStripsGID0FromSupplementaryGroups proves the strip
 // end to end through Resolve via the NSS-aware fallback path (`id -G`
-// reporting "2001 0 2010"), matching the review's exact repro shape E.
+// reporting "2001 0 2010").
 func TestUnixProviderFallbackStripsGID0FromSupplementaryGroups(t *testing.T) {
 	run := fakeRunner(t, map[string]nssResponse{
 		"id -u " + fallbackUser:         {out: "1001\n"},
@@ -760,7 +755,7 @@ func TestUnixProviderFallbackStripsGID0FromSupplementaryGroups(t *testing.T) {
 // TestUnixProviderFallbackPreservesPrivilegedNamedGroupGID is the Resolve-
 // level companion proving the deliberate half of the decision: a
 // supplementary gid that happens to belong to a privileged NAMED group
-// (999, matching repro F) is NOT stripped — only literal gid 0 is.
+// (999, as in Groups=[2001 999]) is NOT stripped — only literal gid 0 is.
 func TestUnixProviderFallbackPreservesPrivilegedNamedGroupGID(t *testing.T) {
 	run := fakeRunner(t, map[string]nssResponse{
 		"id -u " + fallbackUser:         {out: "1001\n"},

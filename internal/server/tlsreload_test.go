@@ -15,9 +15,9 @@ import (
 	"github.com/uberware/sqi/internal/store/fake"
 )
 
-// TestRevokeWorker_TLSSurvivesCredentialReload pins the one behavior that
-// lives only at the seam between H1 and H2, and that neither component's own
-// tests would ever exercise.
+// TestRevokeWorker_TLSSurvivesCredentialReload pins a behavior that lives
+// only where broker authentication meets TLS, and that neither feature's own
+// tests exercise.
 //
 // RevokeWorker calls bus.Broker.ReloadCredentials, which clones the pristine
 // boot Options and hands them to nats-server's ReloadOptions. Options.Clone()

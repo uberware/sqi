@@ -43,16 +43,25 @@ func (n *jobRecordingNotifier) hasJobStatus(jobID, status string) bool {
 }
 
 // seedStaleWorkerWithTask registers an online worker whose last heartbeat is
-// older than the given cutoff age, plus an assigned task and a running attempt
-// on that worker. Returns the worker and task IDs.
-func seedStaleWorkerWithTask(t *testing.T, st *fake.Store, age time.Duration) (workerID, taskID, attemptID string) {
+// older than the given age (an age of 0 is a heartbeat that just arrived), plus
+// a running task and a running attempt on that worker, in farm-1 and queue-1.
+// It works on any backend, so it creates the farm and queue rows a real SQLite
+// store's foreign keys need. Returns the worker, task and attempt IDs.
+func seedStaleWorkerWithTask(t *testing.T, st store.Store, age time.Duration) (workerID, taskID, attemptID string) {
 	t.Helper()
 	ctx := t.Context()
 	now := time.Now().UTC()
 	stale := now.Add(-age)
 
+	if _, err := st.CreateFarm(ctx, store.Farm{ID: "farm-1", Name: "farm-1"}); err != nil {
+		t.Fatalf("CreateFarm: %v", err)
+	}
+	if _, err := st.CreateQueue(ctx, store.Queue{ID: "queue-1", FarmID: "farm-1", Name: "queue-1"}); err != nil {
+		t.Fatalf("CreateQueue: %v", err)
+	}
+
 	workerID = "w-stale"
-	if _, err := st.RegisterWorker(ctx, store.Worker{
+	if _, _, err := st.RegisterWorker(ctx, store.Worker{
 		ID: workerID, FarmID: "farm-1", Hostname: "node-stale",
 		Status: store.WorkerStatusOnline, LastHeartbeatAt: &stale,
 	}); err != nil {
@@ -96,7 +105,7 @@ func seedStaleWorkerWithTask(t *testing.T, st *fake.Store, age time.Duration) (w
 }
 
 func TestSweepStaleWorkers_ReclaimsAndTerminates(t *testing.T) {
-	st := fake.New()
+	st := newCheckedFake(t)
 	s := newMetricsScheduler(st, &recordBus{}, "farm-1")
 	// WorkerTimeout default is 30s; age the heartbeat well beyond it.
 	workerID, taskID, attemptID := seedStaleWorkerWithTask(t, st, time.Hour)
@@ -189,7 +198,7 @@ func seedAssignedTask(t *testing.T, st *fake.Store, age time.Duration) (taskID, 
 // 'assigned' longer than AssignedTaskTimeout is returned to the ready queue and
 // its provisional attempt is closed — independent of any worker's liveness.
 func TestReapStaleAssignedTasks_ReclaimsStuckTask(t *testing.T) {
-	st := fake.New()
+	st := newCheckedFake(t)
 	s := newMetricsScheduler(st, &recordBus{}, "farm-1")
 	// AssignedTaskTimeout default is 10m; age the assignment well beyond it.
 	taskID, attemptID := seedAssignedTask(t, st, time.Hour)
@@ -218,10 +227,31 @@ func TestReapStaleAssignedTasks_ReclaimsStuckTask(t *testing.T) {
 	}
 }
 
+// TestReapStaleAssignedTasks_NotifiesReclaimedTask pins what the reaper still
+// reports now that the store does the cleanup: one ready TaskEvent per task the
+// store says it reclaimed, and nothing for a task it left alone.
+func TestReapStaleAssignedTasks_NotifiesReclaimedTask(t *testing.T) {
+	st := newCheckedFake(t)
+	s := newMetricsScheduler(st, &recordBus{}, "farm-1")
+	notifier := &recordingNotifier{}
+	s.notifier = notifier
+	staleID, _ := seedAssignedTask(t, st, time.Hour)
+	seedAssignedTask(t, st, 5*time.Second) // fresh: the reaper must leave it alone
+
+	s.reapStaleAssignedTasks(t.Context())
+
+	if len(notifier.tasks) != 1 {
+		t.Fatalf("task events = %+v, want exactly one (the reaped task)", notifier.tasks)
+	}
+	if e := notifier.tasks[0]; e.TaskID != staleID || e.Status != string(store.TaskStatusReady) {
+		t.Errorf("task event = %+v, want task %s ready", e, staleID)
+	}
+}
+
 // TestReapStaleAssignedTasks_LeavesFreshAssignment verifies that a recently
 // assigned task (within AssignedTaskTimeout) is not disturbed by the reaper.
 func TestReapStaleAssignedTasks_LeavesFreshAssignment(t *testing.T) {
-	st := fake.New()
+	st := newCheckedFake(t)
 	s := newMetricsScheduler(st, &recordBus{}, "farm-1")
 	taskID, _ := seedAssignedTask(t, st, 5*time.Second)
 
@@ -237,12 +267,12 @@ func TestReapStaleAssignedTasks_LeavesFreshAssignment(t *testing.T) {
 }
 
 func TestSweepStaleWorkers_NoStaleWorkers_NoOp(t *testing.T) {
-	st := fake.New()
+	st := newCheckedFake(t)
 	s := newMetricsScheduler(st, &recordBus{}, "farm-1")
 
 	// Fresh worker: heartbeat now, well within the timeout window.
 	now := time.Now().UTC()
-	if _, err := st.RegisterWorker(t.Context(), store.Worker{
+	if _, _, err := st.RegisterWorker(t.Context(), store.Worker{
 		ID: "w-fresh", FarmID: "farm-1", Status: store.WorkerStatusOnline, LastHeartbeatAt: &now,
 	}); err != nil {
 		t.Fatalf("RegisterWorker: %v", err)
@@ -279,22 +309,26 @@ func (n *workerRecordingNotifier) NotifyWorker(e ws.WorkerEvent) {
 	n.workers = append(n.workers, e)
 }
 
-// seedWorkerWithHeartbeat registers a worker with the given status and a last
-// heartbeat aged by age (0 = never).
+// seedWorkerWithHeartbeat registers a worker with the given effective status
+// and a last heartbeat aged by age (0 = never). A disabled status seeds a
+// disabled worker that has gone offline: the one retention must still keep.
 func seedWorkerWithHeartbeat(t *testing.T, st *fake.Store, id string, status store.WorkerStatus, age time.Duration) {
 	t.Helper()
-	w := store.Worker{ID: id, FarmID: "farm-1", Hostname: id, Status: status}
+	liveness := status
+	if status == store.WorkerStatusDisabled {
+		liveness = store.WorkerStatusOffline
+	}
+	w := store.Worker{ID: id, FarmID: "farm-1", Hostname: id, Status: liveness}
 	if age > 0 {
 		at := time.Now().UTC().Add(-age)
 		w.LastHeartbeatAt = &at
 	}
-	if _, err := st.RegisterWorker(t.Context(), w); err != nil {
+	if _, _, err := st.RegisterWorker(t.Context(), w); err != nil {
 		t.Fatalf("RegisterWorker(%q): %v", id, err)
 	}
-	// RegisterWorker forces status online; set the intended status explicitly.
-	if status != store.WorkerStatusOnline {
-		if err := st.UpdateWorkerStatus(t.Context(), id, status); err != nil {
-			t.Fatalf("UpdateWorkerStatus(%q): %v", id, err)
+	if status == store.WorkerStatusDisabled {
+		if _, err := st.SetWorkerDisabled(t.Context(), id, true); err != nil {
+			t.Fatalf("SetWorkerDisabled(%q): %v", id, err)
 		}
 	}
 }
@@ -314,7 +348,7 @@ func newRetentionScheduler(st store.Store, retention time.Duration, n ws.Notifie
 // hard-deletes offline workers older than the retention window, leaves recent
 // offline and stale disabled workers alone, and emits a "removed" WS event.
 func TestSweepRetiredWorkers_RemovesStaleOffline(t *testing.T) {
-	st := fake.New()
+	st := newCheckedFake(t)
 	rec := &workerRecordingNotifier{}
 	s := newRetentionScheduler(st, time.Hour, rec)
 
@@ -341,7 +375,7 @@ func TestSweepRetiredWorkers_RemovesStaleOffline(t *testing.T) {
 // TestSweepRetiredWorkers_DisabledByZeroRetention verifies a non-positive
 // retention disables the sweep entirely.
 func TestSweepRetiredWorkers_DisabledByZeroRetention(t *testing.T) {
-	st := fake.New()
+	st := newCheckedFake(t)
 	rec := &workerRecordingNotifier{}
 	s := newRetentionScheduler(st, 0, rec)
 
@@ -375,7 +409,7 @@ func TestScheduler_SweepRetiredJobs(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 
-	st := fake.New()
+	st := newCheckedFake(t)
 	old := time.Now().UTC().Add(-48 * time.Hour)
 	c := old
 	if _, err := st.CreateJob(ctx, store.Job{
@@ -405,7 +439,7 @@ func TestScheduler_SweepRetiredJobs_DisabledWhenZero(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 
-	st := fake.New()
+	st := newCheckedFake(t)
 	old := time.Now().UTC().Add(-720 * time.Hour)
 	c := old
 	if _, err := st.CreateJob(ctx, store.Job{
@@ -429,11 +463,10 @@ func TestScheduler_SweepRetiredJobs_DisabledWhenZero(t *testing.T) {
 }
 
 // TestDefaultConfig_AssignedTaskTimeoutTightened verifies that AssignedTaskTimeout
-// is now <= 60 s, since "assigned" is a brief leased->running window and no longer
-// needs to accommodate the removed SQI_WORK stream's MaxAge.
+// is <= 60 s, since "assigned" is a brief leased->running window.
 func TestDefaultConfig_AssignedTaskTimeoutTightened(t *testing.T) {
 	if got := DefaultConfig().AssignedTaskTimeout; got > 60*time.Second {
-		t.Errorf("AssignedTaskTimeout = %v, want <= 60s after lease cutover", got)
+		t.Errorf("AssignedTaskTimeout = %v, want <= 60s", got)
 	}
 }
 
@@ -459,7 +492,7 @@ func TestDefaultConfig_RetryDefaults(t *testing.T) {
 // DefaultFailureLimit are left at 0 since 0 is a legitimate setting for both
 // ("immediate" retry and "off", respectively — mirrors UnschedulableGrace).
 func TestNew_RetryDefaults_ZeroValueCoercedUp(t *testing.T) {
-	st := fake.New()
+	st := newCheckedFake(t)
 	s := New(Config{}, st, &recordBus{}, metrics.New(), slog.New(slog.DiscardHandler), nil, nil)
 
 	if s.cfg.DefaultMaxAttempts != DefaultConfig().DefaultMaxAttempts {
@@ -478,7 +511,7 @@ func TestNew_RetryDefaults_ZeroValueCoercedUp(t *testing.T) {
 // rejects it — but New must not misbehave defensively) is coerced to the
 // default rather than left negative.
 func TestNew_RetryDefaults_NegativeRetryDelayCoercedUp(t *testing.T) {
-	st := fake.New()
+	st := newCheckedFake(t)
 	cfg := Config{DefaultMaxAttempts: 7, RetryDelay: -time.Second, DefaultFailureLimit: 5}
 	s := New(cfg, st, &recordBus{}, metrics.New(), slog.New(slog.DiscardHandler), nil, nil)
 
@@ -494,7 +527,7 @@ func TestNew_RetryDefaults_NegativeRetryDelayCoercedUp(t *testing.T) {
 }
 
 func TestSweepStaleWorkers_ListError_ReturnsQuietly(t *testing.T) {
-	st := &listStaleErrSt{Store: fake.New()}
+	st := &listStaleErrSt{Store: newCheckedFake(t)}
 	s := newMetricsScheduler(st, &recordBus{}, "farm-1")
 
 	// Should not panic and should simply return on the store error.
@@ -507,7 +540,7 @@ func TestSweepStaleWorkers_ListError_ReturnsQuietly(t *testing.T) {
 // marked 'running'. The heartbeat-sweep tick runs sweep then demote, so the job
 // is reconciled back to 'pending' and a JobEvent is emitted.
 func TestSweepThenDemote_StalledJobReturnsToPending(t *testing.T) {
-	st := fake.New()
+	st := newCheckedFake(t)
 	s := newMetricsScheduler(st, &recordBus{}, "farm-1")
 	notifier := &jobRecordingNotifier{}
 	s.notifier = notifier
@@ -551,5 +584,51 @@ func TestSweepThenDemote_StalledJobReturnsToPending(t *testing.T) {
 	}
 	if !found {
 		t.Errorf("no pending JobEvent emitted for %q; events = %+v", jobID, notifier.jobs)
+	}
+}
+
+// offlineErrSt makes OfflineStaleWorker fail for one worker, to exercise the
+// sweep's per-worker error path.
+type offlineErrSt struct {
+	store.Store
+
+	failFor string
+}
+
+func (s *offlineErrSt) OfflineStaleWorker(ctx context.Context, id string, cutoff, now time.Time) ([]store.Task, bool, error) {
+	if id == s.failFor {
+		return nil, false, errors.New("store unavailable")
+	}
+	return s.Store.OfflineStaleWorker(ctx, id, cutoff, now)
+}
+
+// TestSweepStaleWorkers_AnnouncesOnlyWorkersTakenOffline pins what the sweep
+// reports. A worker the store took offline is announced with its identity; a
+// worker whose offline transition failed is left online, not announced, and does
+// not stop the sweep from handling the next one.
+func TestSweepStaleWorkers_AnnouncesOnlyWorkersTakenOffline(t *testing.T) {
+	st := newCheckedFake(t)
+	rec := &workerRecordingNotifier{}
+	s := newRetentionScheduler(&offlineErrSt{Store: st, failFor: "w-broken"}, time.Hour, rec)
+
+	seedWorkerWithHeartbeat(t, st, "w-broken", store.WorkerStatusOnline, time.Hour)
+	seedWorkerWithHeartbeat(t, st, "w-dead", store.WorkerStatusOnline, time.Hour)
+
+	s.sweepStaleWorkers(t.Context())
+
+	for id, want := range map[string]store.WorkerStatus{"w-broken": store.WorkerStatusOnline, "w-dead": store.WorkerStatusOffline} {
+		w, err := st.GetWorker(t.Context(), id)
+		if err != nil {
+			t.Fatalf("GetWorker %s: %v", id, err)
+		}
+		if w.Status != want {
+			t.Errorf("worker %s = %q, want %q", id, w.Status, want)
+		}
+	}
+	if len(rec.workers) != 1 {
+		t.Fatalf("worker events = %+v, want exactly one, for the worker taken offline", rec.workers)
+	}
+	if e := rec.workers[0]; e.WorkerID != "w-dead" || e.Hostname != "w-dead" || e.FarmID != "farm-1" || e.Status != string(store.WorkerStatusOffline) {
+		t.Errorf("worker event = %+v, want an offline event for w-dead carrying its hostname and farm", e)
 	}
 }

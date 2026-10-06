@@ -277,8 +277,8 @@ a real farm rather than reviewed tier by tier. The tiers are:
   resolution, or the preset's own template shows up as a golden diff someone
   has to look at.
 
-  **What it does NOT prove: that the vendor's application accepts that
-  command line.** No Maya, Nuke, Houdini, Blender, or Mistika installation
+  **What it does not prove:** that the vendor's application accepts that
+  command line. No Maya, Nuke, Houdini, Blender, or Mistika installation
   executes anything at Tier 1 — the argv is correct only insofar as the
   documentation it was derived from is correct and current. What the goldens
   do pin for the frame-range presets follows from their `CONTIGUOUS` chunks,
@@ -304,8 +304,8 @@ a real farm rather than reviewed tier by tier. The tiers are:
   The five ffmpeg presets *are* Tier 2: ffmpeg is freely available, so each of
   their registry entries carries a `tier2` block, and
   `test/integration/ffmpeg_presets_test.go` runs real ffmpeg end to end and
-  decodes the produced file — real Tier-2-grade evidence, checked against the
-  registry the same way Tier 1 and Tier 3 are.
+  decodes the produced file, checked against the registry the same way Tier 1
+  and Tier 3 are.
 
 - **Tier 3 — real pipeline, no vendor license.** A real `sqi-server` and
   `sqi-worker`, wired together exactly as in production, execute the preset
@@ -323,12 +323,11 @@ a real farm rather than reviewed tier by tier. The tiers are:
 **The registry is verified, not maintained by hand.** Every claim in
 `presets/validation-tiers.yaml` is checked by
 `test/integration/preset_tiers_test.go`'s `TestZZPresetTierRegistrySatisfied`
-against what the suite actually ran — not what the file merely asserts. A
-Tier-1 claim needs a fixture case and a golden that exist; a Tier-3 claim
-needs a named test that actually ran, and **a Tier-3 case that skipped on a
-platform listed in that entry's `required_on` is a registry failure**, not a
-quiet no-op — every container-backed target in this repo can exit 0 while
-running nothing, and this is enforced in Go rather than by a CI job asserting
+against what the suite actually ran. A Tier-1 claim needs a fixture case and a
+golden that exist; a Tier-3 claim needs a named test that actually ran, and a
+Tier-3 case that skipped on a platform listed in that entry's `required_on` is
+a registry failure, not a no-op — every container-backed target in this repo
+can exit 0 while running nothing, and this is enforced in Go rather than by a CI job asserting
 test names by hand. An entry's `tier3.required_on` need not name every
 platform: it may leave out a platform the preset itself is gated against, so a
 skip there is expected rather than a registry failure. For example, `script`
@@ -371,10 +370,9 @@ harmless no-op.
 
 Tier 3 runs on Windows exactly as it does on Linux and macOS — a real
 `sqi-server` and `sqi-worker`, wired together, executing every preset end to
-end against `test/stubproc` in place of the vendor executable — and CI proves
-it in a dedicated job (`preset-harness-windows`) rather than assuming a
-Linux-passing suite behaves the same way on another host. Of the 21 entries in
-`presets/validation-tiers.yaml`, 16 require **all three** platforms
+end against `test/stubproc` in place of the vendor executable — and CI runs
+it in a dedicated job (`preset-harness-windows`). Of the 21 entries in
+`presets/validation-tiers.yaml`, 16 require all three platforms
 (`tier3.required_on: [linux, darwin, windows]`), so a skip on Windows is a
 registry failure for every one of them, not a harmless no-op. The other 5 are
 gated to a narrower platform subset, because their Tier 3 case cannot run
@@ -383,9 +381,8 @@ everywhere by construction. Two are POSIX-only (`required_on: [linux, darwin]`):
 (`required_on: [windows]`): `script-powershell`, `command-sequence-powershell`
 and `ffmpeg-segment-transcode-powershell` (gated on
 `attr.worker.os.family anyOf ["windows"]`). The Windows-only three still name
-`windows` and are required to run on this Windows job — they simply aren't
-required anywhere else. That is a rule, not a convention:
-`TestPresetTier3RequiredOnMatchesOSGate` fails any entry whose
+`windows` and are required to run on this Windows job; they are not required
+anywhere else. `TestPresetTier3RequiredOnMatchesOSGate` fails any entry whose
 `tier3.required_on` differs from the platforms its template's
 `attr.worker.os.family` requirements admit.
 `script-powershell` is `script`'s Windows counterpart: where `script` invokes

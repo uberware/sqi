@@ -25,8 +25,7 @@
 // specification in different languages, agree on a corpus of expressions. That
 // catches a class of defect no single-implementation test can: a
 // misreading of the spec that is applied consistently, and so looks correct
-// from the inside. sqi's own plans were wrong against this spec repeatedly, and
-// every one of those was a consistent misreading.
+// from the inside.
 //
 // It does NOT prove conformance. The official conformance suite does that, and
 // it is already wired up — see test/conformance and `make test-conformance`.

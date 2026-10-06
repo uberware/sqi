@@ -14,6 +14,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -56,9 +57,10 @@ func (f *fakeTaskCanceler) RetryTask(ctx context.Context, id string) error {
 		// Revive through RetryTasks, the same store call the real scheduler
 		// makes. UpdateTaskStatus would be wrong here: it enforces the task
 		// state machine, and failed → ready is not an arrow — production
-		// revives failed → pending inside RetryTasks and then promotes to ready
-		// via dependency resolution. Using UpdateTaskStatus made this double
-		// exercise a transition the real store rejects.
+		// revives inside RetryTasks (ready under a live step, else pending) and
+		// then promotes pending to ready via dependency resolution. Using
+		// UpdateTaskStatus made this double exercise a transition the real
+		// store rejects.
 		task, err := f.retryStore.GetTask(ctx, id)
 		if err != nil {
 			return err
@@ -67,13 +69,30 @@ func (f *fakeTaskCanceler) RetryTask(ctx context.Context, id string) error {
 			return err
 		}
 		if status != store.TaskStatusPending {
-			// RetryTasks lands on pending; walk the legal pending → ready arrow
-			// when the test wants the post-resolution status.
-			return f.retryStore.UpdateTaskStatus(ctx, id, status)
+			// RetryTasks lands on pending under a step that is not live; walk
+			// the legal pending → ready arrow when the test wants the
+			// post-resolution status (a no-op when it already landed ready).
+			return fixtureSetTaskStatus(ctx, f.retryStore, id, status)
 		}
 		return nil
 	}
 	return nil
+}
+
+// taskStatusFixture is the compare-and-set status write both concrete stores
+// keep as test fixture surface; store.Store does not carry it.
+type taskStatusFixture interface {
+	UpdateTaskStatus(ctx context.Context, id string, status store.TaskStatus) error
+}
+
+// fixtureSetTaskStatus writes a task's status through st's fixture write. st
+// must be a concrete store, or a wrapper that forwards UpdateTaskStatus.
+func fixtureSetTaskStatus(ctx context.Context, st store.Store, id string, status store.TaskStatus) error {
+	fx, ok := st.(taskStatusFixture)
+	if !ok {
+		return fmt.Errorf("store %T has no UpdateTaskStatus fixture", st)
+	}
+	return fx.UpdateTaskStatus(ctx, id, status)
 }
 
 func newTaskRouter(st store.Store) chi.Router {
@@ -276,7 +295,7 @@ func TestGetTask(t *testing.T) {
 		_, tk := seedTask(t, st, store.TaskStatusReady)
 
 		const reason = "no online worker satisfies required capabilities"
-		if err := st.SetTaskUnschedulableReason(t.Context(), tk.ID, reason); err != nil {
+		if _, err := st.SetTaskUnschedulableReason(t.Context(), tk.ID, reason); err != nil {
 			t.Fatalf("SetTaskUnschedulableReason: %v", err)
 		}
 
@@ -314,7 +333,7 @@ func TestGetTask(t *testing.T) {
 			t.Fatalf("RecordTaskFailure: %v", err)
 		}
 		retryAfter := now.Add(30 * time.Second)
-		if requeued, err := st.RequeueTaskForRetry(t.Context(), tk.ID, retryAfter, now); err != nil || !requeued {
+		if requeued, err := st.RequeueTaskForRetry(t.Context(), tk.ID, att.ID, retryAfter, now); err != nil || !requeued {
 			t.Fatalf("RequeueTaskForRetry: requeued=%v err=%v", requeued, err)
 		}
 
@@ -710,11 +729,40 @@ func TestRetryTask(t *testing.T) {
 		}
 	})
 
+	t.Run("retry under a live step returns ready status", func(t *testing.T) {
+		// seedTask's step is running (the legacy live status), so RetryTasks
+		// revives the task ready: nothing would release it from pending there.
+		st := fake.New()
+		sched := &fakeTaskCanceler{retryStore: st, retryStatus: store.TaskStatusPending}
+		r := newTaskRouterCanceler(st, sched)
+		_, tk := seedTask(t, st, store.TaskStatusFailed)
+
+		req := newReq(t, http.MethodPost, "/api/v1/tasks/"+tk.ID+"/retry", nil)
+		rr := httptest.NewRecorder()
+		r.ServeHTTP(rr, req)
+
+		if rr.Code != http.StatusAccepted {
+			t.Fatalf("expected 202, got %d — body: %s", rr.Code, rr.Body)
+		}
+		var resp retryResponse
+		if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		if resp.Status != "ready" {
+			t.Errorf("status = %q, want ready", resp.Status)
+		}
+	})
+
 	t.Run("retry with unsatisfied deps returns pending status", func(t *testing.T) {
 		st := fake.New()
 		sched := &fakeTaskCanceler{retryStore: st, retryStatus: store.TaskStatusPending}
 		r := newTaskRouterCanceler(st, sched)
 		_, tk := seedTask(t, st, store.TaskStatusFailed)
+		// A task whose dependencies are unsatisfied sits under a pending step,
+		// where RetryTasks revives it pending for ResolveDependencies to gate.
+		if err := st.UpdateStepStatus(t.Context(), tk.StepID, store.StepStatusPending); err != nil {
+			t.Fatalf("UpdateStepStatus: %v", err)
+		}
 
 		req := newReq(t, http.MethodPost, "/api/v1/tasks/"+tk.ID+"/retry", nil)
 		rr := httptest.NewRecorder()

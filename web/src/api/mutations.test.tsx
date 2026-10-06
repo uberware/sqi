@@ -894,9 +894,9 @@ describe('useLogout', () => {
   })
 })
 
-// ── B3 self-service and admin key mutations ───────────────────────────────────
+// ── Self-service and admin key mutations ──────────────────────────────────────
 
-describe('B3 self-service and admin key mutations', () => {
+describe('self-service and admin key mutations', () => {
   it('fetchChangePassword PUTs /auth/password with the body', async () => {
     fetchMock.mockResolvedValueOnce(new Response(null, { status: 204 }))
 

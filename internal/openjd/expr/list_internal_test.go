@@ -27,10 +27,10 @@ func TestEvalListLit_InferenceWithoutTarget(t *testing.T) {
 		{"nested with an empty list", "[[], [1]]", "list[list[int]]", "[[], [1]]"},
 		{"computed elements", "[1 + 1, 2 * 2]", "list[int]", "[2, 4]"},
 		// Section 1.2.6 rule 3 (a mix of path and string is list[string]) and
-		// rule 5 (rule 3 one level down), which no row above reached:
-		// every other case here is int/float/bool/string, so unifyElemPair's
-		// isPathStringPair branch had no direct coverage at all. The coercion
-		// tests exercise path -> string through a different code path
+		// rule 5 (rule 3 one level down): every other case here is
+		// int/float/bool/string, so these rows are the direct coverage of
+		// unifyElemPair's isPathStringPair branch. The coercion tests
+		// exercise path -> string through a different code path
 		// (coercible), not through unification.
 		{"mixed string and path", "['a', Param.Dir]", "list[string]", `["a", "/tmp"]`},
 		{"all path", "[Param.Dir, Param.Dir]", "list[path]", `["/tmp", "/tmp"]`},
@@ -247,13 +247,12 @@ func TestEvalIndex_Unresolved(t *testing.T) {
 // TestEvalIndexAndSlice_UnionReceiver pins the union arm of indexResultType and
 // sliceResultType.
 //
-// Every case here was a FALSE REJECTION before that arm existed — a type error
-// reported for an expression that cannot fail at runtime, which for a template
-// author means a rejected job. The first is self-inflicted: sliceResultType
-// deliberately types a range_expr slice as "range_expr | list[int]", and the
-// subscript function could not then consume the union its own package
-// manufactures. The rest come from condResult (eval.go) typing a conditional
-// with an unknown condition as the union of both branches, per section 1.3.1.
+// Without that arm every case here is a FALSE REJECTION: a type error reported
+// for an expression that cannot fail at runtime, which for a template author
+// means a rejected job. The first case's union comes from sliceResultType,
+// which deliberately types a range_expr slice as "range_expr | list[int]". The
+// rest come from condResult (eval.go) typing a conditional with an unknown
+// condition as the union of both branches, per section 1.3.1.
 //
 // The expected types are asserted, not merely the absence of an error: the
 // point of the arm is that the result is USABLE downstream, which it is only if

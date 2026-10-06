@@ -2,55 +2,38 @@
 
 package openjd
 
-// EXPR sub-project E4c's Task 4: the resolver's share of the template-wide
-// budget (design spec §3/§3.1, exprcheck.go's templateBudget -- Task 3
-// applied it to phase 1 only). This file proves:
+// The resolver's share of the template-wide budget (exprcheck.go's
+// templateBudget). This file proves:
 //
 //   - ResolveParameterSpaceParams (resolve.go) is bounded on its own, in both
-//     dimensions, exactly like checkTemplateExpressions is -- a template that
-//     was previously caught only by the checker's own walk (or not caught at
-//     all, since the resolver had no budget whatsoever before this task) is
-//     now also caught here.
+//     dimensions, exactly like checkTemplateExpressions is -- a template the
+//     checker's own walk catches is also caught here.
 //   - submit.go's Submit gives the checker's phase-2 re-check
 //     (checkExpressionsAtSubmit) and every step's ResolveParameterSpaceParams
 //     call TWO SEPARATE budgets for one submission, not one shared budget.
 //
-// FIX ROUND 1 (post-implementation review, Critical 1): the original design
-// shared ONE budget between checkExpressionsAtSubmit and every step's
-// resolver call, reasoning that "these positions are evaluated twice" (EXPR
-// sub-project E4b's finding) meant the two walks' cost should be pooled. That
-// was wrong: the two walks charge the IDENTICAL range positions and let
-// bytes for the SAME submission, so pooling them silently HALVED the
-// effective cap for those classes -- a template ValidateWithOptions (phase 1)
-// accepted outright could be rejected by Submit (phase 2) purely because two
-// walks shared one allowance, with no way for the submitter to see why
-// (design spec §3.1's own failure mode, one level down from where Task 3
-// closed it for phase 1 vs. phase 2). Verified with two constructions before
-// the fix (both now used by TestSubmit_ValidateAcceptsMustNotRejectOnBudgetAlone,
-// below, to prove the FIX):
+// The two walks charge the IDENTICAL range positions and let bytes for the
+// SAME submission (these positions are evaluated twice), so pooling them in
+// one budget would HALVE the effective cap for those classes -- a template
+// ValidateWithOptions (phase 1) accepted outright could be rejected by Submit
+// (phase 2) purely because two walks shared one allowance, with no way for
+// the submitter to see why. Two constructions show it, both used by
+// TestSubmit_ValidateAcceptsMustNotRejectOnBudgetAlone below; with a shared
+// budget:
 //
 //   - 1 step, 6 let bindings x 900,000 bytes each (~5.4 MB, comfortably under
-//     the 10 MB per-walk cap ALONE) -- ValidateWithOptions accepted; Submit
-//     rejected with "... reached 10800768" -- 5.4 MB counted TWICE.
+//     the 10 MB per-walk cap ALONE) -- ValidateWithOptions accepts; Submit
+//     rejects with "... reached 10800768" -- 5.4 MB counted TWICE.
 //   - 6 task-parameter definitions x 1,000 trivial RangeList entries (6,000
 //     positions, comfortably under the 10,000 per-walk cap ALONE) --
-//     ValidateWithOptions accepted; Submit rejected with "... reached 10001"
+//     ValidateWithOptions accepts; Submit rejects with "... reached 10001"
 //     -- 6,000 counted twice plus the job name.
 //
-// The tests below that predate fix round 1 and previously asserted the BUGGY
-// behavior (a shared budget rejecting these constructions) have been
-// rewritten to assert the FIXED behavior instead -- see
-// TestPhase2Budget_CheckerAndResolverHaveIndependentBudgets and
-// TestSubmit_PhaseTwoBudget_ChecksAndResolverEachGetOwnAllowance, both
-// renamed from their original forms rather than deleted, since their "each
-// walk alone accepts" subtests remain useful evidence.
-//
-// HOW TO MUTATION-TEST THESE, carried forward from exprcheck_budget_test.go's
-// own note and updated for E4d: set the KNOB -- pass
-// newTemplateBudget(ExprLimits{TemplatePositions: n}) (or
+// HOW TO MUTATION-TEST THESE (as in exprcheck_budget_test.go): set the KNOB
+// -- pass newTemplateBudget(ExprLimits{TemplatePositions: n}) (or
 // TemplateRetainedBytes) as the threaded budget -- or neuter the comparison
 // inside templateBudget.chargePositions/chargeRetainedBytes (exprcheck.go,
-// now reading b.limits.TemplatePositions). Do NOT raise
+// reading b.limits.TemplatePositions). Do NOT raise
 // defaultTemplatePositions/defaultTemplateRetainedBytes: several tests below
 // size their own construction from those live constants, and raising them
 // makes the construction try to allocate on the order of the raised value
@@ -102,16 +85,15 @@ func singleStepParamSpaceTemplate(ps *StepParameterSpace, let []string) *JobTemp
 // TestResolveParameterSpaceParams_TemplateWideBudget_PositionsDimension
 // isolates the POSITIONS dimension for the resolver called ON ITS OWN (no
 // external budget threaded in -- ResolveParameterSpaceParams' own
-// templateBudgetOrFresh gives it a fresh allowance): EXPR sub-project E4b's
-// own measured construction (16 task-parameter definitions x 1024 RangeList
-// entries, one step), reused directly from
-// TestCheckTemplateExpressions_TemplateWideBudget_E4bConstruction
+// templateBudgetOrFresh gives it a fresh allowance): the measured
+// construction (16 task-parameter definitions x 1024 RangeList entries, one
+// step), reused directly from
+// TestCheckTemplateExpressions_TemplateWideBudget_CatchesWhatThePreWalkGuardAdmits
 // (exprcheck_budget_test.go) because it is already proven to sit WITHIN
-// every structural cap (parameterSpaceOverCaps, maxSteps) -- the template-
-// wide budget was, before this task, the ONLY thing in the CHECKER that could
-// still catch it; the RESOLVER had no budget of any kind, so this exact
-// construction reached ResolveParameterSpaceParams (and, in production,
-// ExpandParameterSpace beyond it) completely unbounded.
+// every structural cap (parameterSpaceOverCaps, maxSteps). The template-wide
+// budget is the ONLY thing that can still catch it; without one in the
+// resolver, this exact construction would reach ResolveParameterSpaceParams
+// (and, in production, ExpandParameterSpace beyond it) completely unbounded.
 //
 // Mutation target: commenting out chargePositions' cap check (or raising
 // defaultTemplatePositions past this construction's size) must make this
@@ -218,11 +200,11 @@ func TestResolveParameterSpaceParams_TemplateWideBudget_RetainedBytesDimension(t
 }
 
 // TestResolveParameterSpaceParams_TemplateWideBudget_FreshPerCall pins the
-// same "one budget per call, not a shared/leaked one" property Task 3's own
-// FreshPerCall test pins for checkTemplateExpressions, here for
-// ResolveParameterSpaceParams called with no external budget (every
-// pre-Task-4 caller's shape): a template sized just under the position cap
-// must be accepted on every independent call.
+// same "one budget per call, not a shared/leaked one" property
+// TestCheckTemplateExpressions_TemplateWideBudget_FreshPerCall pins for
+// checkTemplateExpressions, here for ResolveParameterSpaceParams called with
+// no external budget: a template sized just under the position cap must be
+// accepted on every independent call.
 func TestResolveParameterSpaceParams_TemplateWideBudget_FreshPerCall(t *testing.T) {
 	n := int(defaultTemplatePositions) - 10 // comfortably under the cap
 	ps := &StepParameterSpace{TaskParameterDefinitions: []TaskParamDefinition{{
@@ -240,7 +222,7 @@ func TestResolveParameterSpaceParams_TemplateWideBudget_FreshPerCall(t *testing.
 }
 
 // TestResolveParameterSpaceParams_TemplateWideBudget_BaseSpecUnaffected pins
-// design spec §6's floor for the resolver, mirroring the checker's own: a
+// the base-spec cost floor for the resolver, mirroring the checker's own: a
 // template that does not declare extensions: [EXPR] takes the resolver's
 // exact base-spec substitution path, with no budget interaction of any kind
 // -- a construction that WOULD trip the positions budget under EXPR must
@@ -274,28 +256,20 @@ func TestResolveParameterSpaceParams_TemplateWideBudget_BaseSpecUnaffected(t *te
 	}
 }
 
-// TestPhase2Budget_CheckerAndResolverHaveIndependentBudgets is this task's
-// central proof, corrected by fix round 1 (Critical 1): the checker's
-// phase-2 re-check and every step's resolver call get TWO SEPARATE budgets
-// for one submission, not one shared budget -- design spec §3.1 sanctions
-// exactly two budgets per request (one per walk), and Task 3's own "one
-// budget per phase" reasoning applies here as "one budget per WALK per
-// phase", not "one budget for the whole phase, however many walks it has".
-//
-// Renamed from TestPhase2Budget_ResolverSharesCheckerBudget, which asserted
-// the OPPOSITE (and buggy) behavior before this fix -- kept, not deleted,
-// because its "each walk alone accepts" subtests remain the right evidence;
-// only the final subtest's expectation changed.
+// TestPhase2Budget_CheckerAndResolverHaveIndependentBudgets is the central
+// unit-level proof that the checker's phase-2 re-check and every step's
+// resolver call get TWO SEPARATE budgets for one submission, not one shared
+// budget: "one budget per phase" means one budget per WALK per phase, not
+// "one budget for the whole phase, however many walks it has".
 //
 // The construction -- 6 task-parameter definitions x 1,000 trivial RangeList
 // entries, one step -- is sized so EACH walk, run alone, comfortably fits
 // under defaultTemplatePositions (10,000): the checker's own phase-2 walk
 // charges ~6,001 positions (6,000 range entries plus the job name), and the
-// resolver's walk charges ~6,000 (the same 6,000 range entries, re-walked --
-// EXPR sub-project E4b's own finding that these positions are evaluated
-// TWICE). Run through TWO SEPARATE budgets, exactly as submit.go's Submit
-// now does, both walks must still accept -- proving the two do not interfere
-// with each other's allowance.
+// resolver's walk charges ~6,000 (the same 6,000 range entries, re-walked:
+// these positions are evaluated TWICE). Run through TWO SEPARATE budgets,
+// exactly as submit.go's Submit does, both walks must still accept --
+// proving the two do not interfere with each other's allowance.
 func TestPhase2Budget_CheckerAndResolverHaveIndependentBudgets(t *testing.T) {
 	const numDefs = 6
 	const numValues = 1000
@@ -414,28 +388,19 @@ func letBytesTemplateYAML(name string, bindingCount, bytesEach int) string {
 }
 
 // TestSubmit_PhaseTwoBudget_ChecksAndResolverEachGetOwnAllowance is the
-// end-to-end proof, through the public Submitter.Submit API, that fix round
-// 1's split budgets are live in production. Renamed from
-// TestSubmit_PhaseTwoBudget_RejectsCombinedConstruction, which asserted the
-// OPPOSITE (buggy, pre-fix) outcome for this exact construction -- a
-// submission whose checker walk and resolver walk EACH individually fit
-// under the 10,000-position cap must now SUCCEED, not fail, because
-// prepareTemplate gives them two separate budgets instead of one shared one.
-//
-// It used to mirror TestSubmit_PhaseDistinction_ThroughRealSubmit's
-// registry-flip pattern (submit_exprcheck_test.go), because while the EXPR
-// extension was registered but not yet StatusSupported ValidateWithOptions
-// (phase 1) rejected every EXPR-declaring template before parameter binding was
-// reached. Sub-project H2 made EXPR StatusSupported, so the flip is gone and
-// the construction reaches phase 2 the way a submitted template does.
+// end-to-end proof, through the public Submitter.Submit API, that the split
+// phase-2 budgets are live in production: a submission whose checker walk
+// and resolver walk EACH individually fit under the 10,000-position cap must
+// SUCCEED, not fail, because prepareTemplate gives them two separate budgets
+// instead of one shared one.
 func TestSubmit_PhaseTwoBudget_ChecksAndResolverEachGetOwnAllowance(t *testing.T) {
 	ctx := context.Background()
 	st := fake.New()
-	farm, err := st.CreateFarm(ctx, store.Farm{ID: uuid.NewString(), Name: "t4-farm"})
+	farm, err := st.CreateFarm(ctx, store.Farm{ID: uuid.NewString(), Name: "budget-farm"})
 	if err != nil {
 		t.Fatalf("CreateFarm: %v", err)
 	}
-	queue, err := st.CreateQueue(ctx, store.Queue{ID: uuid.NewString(), FarmID: farm.ID, Name: "t4-queue"})
+	queue, err := st.CreateQueue(ctx, store.Queue{ID: uuid.NewString(), FarmID: farm.ID, Name: "budget-queue"})
 	if err != nil {
 		t.Fatalf("CreateQueue: %v", err)
 	}
@@ -456,15 +421,14 @@ func TestSubmit_PhaseTwoBudget_ChecksAndResolverEachGetOwnAllowance(t *testing.T
 	}
 }
 
-// TestSubmit_Phase1SpendDoesNotCarryIntoPhase2 is this task's Step 3 proof,
-// through the public Submitter.Submit API rather than the lower-level
-// checker/resolver functions TestPhase2Budget_ResolverSharesCheckerBudget
-// already exercises directly: a template that spends CLOSE TO THE FULL
-// position cap in phase 1 (ValidateWithOptions, inside prepareTemplate) must
+// TestSubmit_Phase1SpendDoesNotCarryIntoPhase2 proves, through the public
+// Submitter.Submit API rather than the lower-level checker/resolver
+// functions TestPhase2Budget_CheckerAndResolverHaveIndependentBudgets
+// exercises directly, that a template that spends CLOSE TO THE FULL
+// position cap in phase 1 (ValidateWithOptions, inside prepareTemplate) does
 // not fail phase 2 (checkExpressionsAtSubmit plus every step's
-// ResolveParameterSpaceParams, sharing prepareTemplate's ONE submitBudget)
-// merely because phase 1 already spent that budget -- design spec §3.1, the
-// property per-phase scoping exists to guarantee.
+// ResolveParameterSpaceParams) merely because phase 1 already spent that
+// budget -- the property per-phase scoping exists to guarantee.
 //
 // The construction deliberately spends its near-cap position count on ARGS
 // entries, NOT range positions: an args entry is a CHECKER-ONLY position (the
@@ -518,15 +482,15 @@ func TestSubmit_Phase1SpendDoesNotCarryIntoPhase2(t *testing.T) {
 	}
 }
 
-// TestSubmit_ValidateAcceptsMustNotRejectOnBudgetAlone is fix round 1's
-// direct property test, added at the reviewer's request: for a template
-// [ValidateWithOptions] (phase 1) accepts, [Submitter.Submit] (phase 2) must
-// not reject it purely because phase 2 has two walks sharing one budget --
-// design spec §3.1's own words, one level down from where Task 3 already
-// proved it for phase 1 vs. phase 2.
+// TestSubmit_ValidateAcceptsMustNotRejectOnBudgetAlone is the direct
+// property test: for a template [ValidateWithOptions] (phase 1) accepts,
+// [Submitter.Submit] (phase 2) must not reject it purely because phase 2 has
+// two walks sharing one budget -- the same property
+// TestSubmit_Phase1SpendDoesNotCarryIntoPhase2 proves for phase 1 vs. phase 2,
+// one level down.
 //
-// Both ready-made constructions from this task's fix-round-1 bug report are
-// exercised, one per dimension, each in its own subtest:
+// Both constructions from this file's header are exercised, one per
+// dimension, each in its own subtest:
 //
 //   - "let bytes": one step, 6 let bindings x 900,000 bytes each (~5.4 MB,
 //     under the 10 MB per-walk cap ALONE, over it if the checker's and the
@@ -579,8 +543,8 @@ func TestSubmit_ValidateAcceptsMustNotRejectOnBudgetAlone(t *testing.T) {
 			if err != nil {
 				t.Fatalf("ValidateWithOptions accepted this template, but Submit rejected it: %v -- "+
 					"a phase-2 rejection here can only be about the budget (nothing else differs "+
-					"between phase 1 and phase 2 for this construction), which is exactly the "+
-					"failure design spec §3.1 forbids", err)
+					"between phase 1 and phase 2 for this construction), and an accepted template "+
+					"must not be rejected on budget alone", err)
 			}
 		})
 	}

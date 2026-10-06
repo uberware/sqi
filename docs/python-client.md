@@ -267,7 +267,7 @@ for chunk in sqi.tail_task_logs(task_id, follow=True):
 | `get_worker(worker_id) -> Worker` | Worker detail, including `current_tasks`. |
 | `disable_worker(worker_id) -> WorkerAction \| None` | Drain and stop new assignments. |
 | `enable_worker(worker_id) -> WorkerAction \| None` | Re-enable a disabled worker. |
-| `remove_worker(worker_id) -> None` | Hard-delete a worker record; `204` → `None`. Only offline workers, or disabled workers whose last heartbeat is older than the heartbeat-timeout window, are removable — an online or live-disabled worker raises `ConflictError`. |
+| `remove_worker(worker_id) -> None` | Hard-delete a worker record; `204` → `None`. Only offline workers, disabled or not, are removable — an online worker (disabled or not) raises `ConflictError`. |
 
 ```python
 for worker in sqi.iter_workers(status="online"):
@@ -388,7 +388,7 @@ be paused indefinitely.
 
 `submit_and_wait(template, *, farm_id, queue_id, owner=None, priority=None, project=None, max_attempts=None, retry_delay_seconds=None, failure_limit=None, depends_on=None, poll_interval=2.0, timeout=None) -> Job`
 composes `submit_job` + `wait_for_job` for the simplest pipeline script (a
-`depends_on`-blocked job simply polls through `blocked` → `pending` →
+`depends_on`-blocked job polls through `blocked` → `pending` →
 `running` → terminal like any other):
 
 ```python

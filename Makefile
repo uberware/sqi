@@ -29,15 +29,15 @@ BUILD_DIR           := ./bin
 # Every $(shell ...) below runs a POSIX one-liner, and make runs it through its
 # shell — cmd.exe on Windows, which understands none of them (no grep, no awk,
 # no /dev/null, and its internal DATE command prompts for a new system date).
-# With `:=` all of them run at parse time, on *every* make invocation, so
+# With `:=` all of them would run at parse time, on *every* make invocation, so
 # `make test-isolation-windows` — the one target meant to be run from a Windows
-# shell, and one that references none of these — printed four unrelated shell
-# errors before doing anything. `=` defers each value until a recipe actually
-# references it, which keeps the errors on the targets that genuinely need a
+# shell, and one that references none of these — would print four unrelated
+# shell errors before doing anything. `=` defers each value until a recipe
+# actually references it, which keeps the errors on the targets that need a
 # POSIX shell.
 #
 # The `$(eval X := ...)` wrapper caches the result on first reference so each
-# command still runs at most once per make run, as `:=` did. That is not just
+# command still runs at most once per make run, as with `:=`. That is not just
 # an optimization: without it BUILD_DATE would be re-evaluated per reference
 # and sqi-server and sqi-worker could be stamped with different timestamps.
 #
@@ -64,14 +64,14 @@ else
 endif
 
 # Per-package timeout for `make test` and `make test-cover`. go test's default
-# is 10m, and ./test/integration/ now runs every preset's Tier-3 case and the
+# is 10m, and ./test/integration/ runs every preset's Tier-3 case and the
 # real-ffmpeg Tier-2 cases untagged, under -race, in one package.
 TEST_TIMEOUT ?= 20m
 
 COVERAGE_OUT := coverage.out
 # Raise in 5-point increments as new test suites land.
-# 2026-06-13: measured 74.5% (race) after the phase-1 unit-test backfill;
-# gate set ~5 points below for headroom against per-platform fluctuation.
+# 2026-06-13: measured 74.5% (race); gate set ~5 points below for headroom
+# against per-platform fluctuation.
 COVERAGE_MIN ?= 70
 
 # ── Default ───────────────────────────────────────────────────────────────────
@@ -226,16 +226,15 @@ test-conformance: ## Run the official OpenJD conformance suite (needs the pinned
 OPENJD_MODEL_VERSION ?= 0.11.5
 ORACLE_VENV := .venv-oracle
 
-# The interpreter INSIDE that venv. `python3 -m venv` puts it in bin/ on POSIX
-# and in Scripts/ on Windows, so this path is a function of the HOST, not of the
-# venv -- and hardcoding bin/python3 made every target here unrunnable on a
-# Windows development host. Both halves failed in the same silent direction:
-# creation died with `CreateProcess ... failed` before pip ever ran, and the
-# staleness check below tested a path that cannot exist there, so it found
-# nothing to compare and reinstalled nothing. The suite then fell through to
-# test/oracle/oracle_test.go's own probe -- which DOES know both layouts -- and
-# spoke to whatever that Scripts/ venv happened to hold. Only
-# SQI_EXPR_ORACLE_EXPECT_VERSION caught it, by failing the test outright.
+# The interpreter inside that venv. `python3 -m venv` puts it in bin/ on POSIX
+# and in Scripts/ on Windows, so this path depends on the host, not on the
+# venv. A hardcoded bin/python3 makes every target here unrunnable on a Windows
+# development host: creation dies with `CreateProcess ... failed` before pip
+# runs, and the staleness check below tests a path that cannot exist there, so
+# it finds nothing to compare and reinstalls nothing. The suite then falls
+# through to test/oracle/oracle_test.go's own probe -- which knows both
+# layouts -- and talks to whatever that Scripts/ venv holds. Only
+# SQI_EXPR_ORACLE_EXPECT_VERSION would catch that, by failing the test.
 ifeq ($(OS),Windows_NT)
 ORACLE_PY := $(ORACLE_VENV)/Scripts/python.exe
 else
@@ -250,8 +249,8 @@ expr-oracle-venv: ## Create the venv holding the pinned OpenJD reference impleme
 	@echo "reference implementation ready: openjd-model $(OPENJD_MODEL_VERSION) in $(ORACLE_VENV)"
 
 # Differential test against the reference implementation. Like test-isolation,
-# this exits 0 when its dependency is absent, so A LOCAL PASS PROVES NOTHING
-# ON ITS OWN — look for the "--- PASS: TestExprOracle" line. CI asserts it by
+# this exits 0 when its dependency is absent, so a local pass proves nothing
+# on its own — look for the "--- PASS: TestExprOracle" line. CI asserts it by
 # name for that reason.
 .PHONY: test-expr-oracle
 test-expr-oracle: ## Differential-test the EXPR evaluator against the OpenJD reference (needs python3)
@@ -262,10 +261,10 @@ test-expr-oracle: ## Differential-test the EXPR evaluator against the OpenJD ref
 	  $(MAKE) --no-print-directory expr-oracle-venv || \
 	    { echo "could not install the reference implementation — skipping the expression oracle"; exit 0; }; \
 	fi
-# An EXISTING venv is not evidence of the RIGHT venv: the guard above only
-# creates one when it is missing, so before this check a raised
-# OPENJD_MODEL_VERSION left the suite grading against the previous reference
-# with nothing red to say so. Reinstall on mismatch, and let the test itself
+# An existing venv is not evidence of the right venv: the guard above only
+# creates one when it is missing, so without this check a raised
+# OPENJD_MODEL_VERSION would leave the suite grading against the previous
+# reference with nothing red to say so. Reinstall on mismatch, and let the test itself
 # assert the version it actually spoke to (SQI_EXPR_ORACLE_EXPECT_VERSION) so
 # the guarantee survives a hand-run `go test` too. Skipped entirely when
 # SQI_EXPR_ORACLE_PYTHON points the harness at an interpreter we do not own.
@@ -281,16 +280,15 @@ test-expr-oracle: ## Differential-test the EXPR evaluator against the OpenJD ref
 	SQI_EXPR_ORACLE_EXPECT_VERSION=$$([ -n "$$SQI_EXPR_ORACLE_PYTHON" ] || echo $(OPENJD_MODEL_VERSION)) \
 	  go test $(TEST_FLAGS) -tags oracle -run 'TestExprOracle' -v -timeout 5m ./test/oracle/
 
-# Validates the PUBLISHED preset library against the validator in this working
-# tree. It exists because a validator change can silently invalidate content
-# already published: 2cdef4f tightened parameter-control validation and fixed
-# every preset in this repo, but the copy at uberware.github.io/sqi-presets is
-# only refreshed on release, so every preset there failed to load in between --
-# with no signal until a user clicked one.
+# Validates the published preset library against the validator in this working
+# tree. A validator change can invalidate content already published: a change
+# that tightens validation and fixes every preset in this repo still leaves the
+# copy at uberware.github.io/sqi-presets, which is only refreshed on release,
+# failing to load until then -- with no signal until a user clicks one.
 #
-# Needs the network. SKIPS when the library is unreachable and FAILS when it is
+# Needs the network. Skips when the library is unreachable and fails when it is
 # reachable but invalid, so an offline runner never masks a real breakage. A
-# SKIP VERIFIES NOTHING -- look for the "--- PASS: TestPublishedPresets" line.
+# skip verifies nothing -- look for the "--- PASS: TestPublishedPresets" line.
 # CI asserts it by name for that reason.
 #
 # SQI_TEST_PRESET_LIBRARY_URL points it at a staging index instead.
@@ -298,13 +296,13 @@ test-expr-oracle: ## Differential-test the EXPR evaluator against the OpenJD ref
 test-preset-library: ## Validate the published preset library against this tree (needs network)
 	go test $(TEST_FLAGS) -tags presetlib -run 'TestPublishedPresets' -v -timeout 5m ./test/presetlib/
 
-# ONE `go test` call, deliberately. TestZZPresetTierRegistrySatisfied asserts on
-# what the tier tests recorded IN THIS PROCESS (internal/presettest's outcome
+# One `go test` call. TestZZPresetTierRegistrySatisfied asserts on
+# what the tier tests recorded in this process (internal/presettest's outcome
 # sink), so splitting the tiers across two invocations makes the registry check
 # fail with "never reported" in both. ffmpeg must be on PATH: the registry's
 # tier2 blocks require it, and a skip on a required platform is a failure.
 .PHONY: test-preset-harness
-test-preset-harness: ## Run the whole preset validation harness (tiers 1-3 + registry) in ONE process
+test-preset-harness: ## Run the whole preset validation harness (tiers 1-3 + registry) in one process
 	go test $(TEST_FLAGS) -count=1 -run 'TestPreset|TestZZPreset|TestFFmpegPreset|TestScriptPowerShell' -v -timeout 1800s ./test/integration/
 
 .PHONY: test-ldap
@@ -315,44 +313,42 @@ test-ldap: ## Run the LDAP tests against a real directory in a container (needs 
 test-oidc: ## Run the SSO tests against a real Keycloak in a container (needs Docker)
 	go test $(TEST_FLAGS) -tags integration -run 'TestOIDC_' -v -timeout 15m ./test/integration/
 
-# Unlike test-ldap/test-oidc (which run natively on the host and connect OUT to
-# a container), test-isolation must run the go test binary ITSELF as root
-# inside the container: the whole point is exercising real setuid/setgid
-# transitions, real directory permission bits, and a real symlink-preserving
-# rsync against real unprivileged accounts, none of which a fake Provider can
-# see (internal/worker/isolation/fake.go).
+# Unlike test-ldap/test-oidc (which run natively on the host and connect out to
+# a container), test-isolation must run the go test binary itself as root
+# inside the container: it exercises real setuid/setgid transitions, real
+# directory permission bits, and a real symlink-preserving rsync against real
+# unprivileged accounts, none of which a fake Provider can see
+# (internal/worker/isolation/fake.go).
 #
-# The image is built from a STAGED COPY of the repo (rsync'd into a scratch
+# The image is built from a staged copy of the repo (rsync'd into a scratch
 # directory, filtered by test/integration/isolation/.dockerignore, then passed
 # to `docker build` as the context) rather than either (a) bind-mounting the
 # repo at `docker run` time, or (b) using the repo root directly as the build
-# context. (a) broke outright on this project's own dev machines: Colima
-# (common on macOS) only virtiofs-shares $HOME by default, so a repo living
-# elsewhere (e.g. /Volumes/...) resolves to an EMPTY bind mount and `go test`
-# fails with "go.mod file not found" before a single test runs — `docker
-# build`, by contrast, has no such dependency, since the CLI reads its context
-# from wherever it runs and streams it to the daemon regardless of what the
-# daemon's host shares. (b) doesn't work either: the repo-root .dockerignore
-# (shared with deploy/docker/Dockerfile's production build) excludes test/
-# entirely, and this image needs test/integration/**; the classic
-# (non-BuildKit) builder this project's Docker install runs has no per-
-# Dockerfile ignore-file override to give this build its own rules on that
-# same context. A staged copy sidesteps both problems at once — PROVIDED the
-# repo-root .dockerignore is not itself staged into the copy: rsync -a copies
-# dotfiles, so a naive staged copy carries the repo-root .dockerignore along
-# to $ctx/.dockerignore, and Docker auto-discovers a context-root
-# .dockerignore from a directory the same way regardless of which Dockerfile
-# is building it — silently re-excluding test/ from the staged copy exactly as
-# it would from the repo root directly. The recipe below excludes every
-# .dockerignore from the rsync and then places
+# context. (a) fails under Colima (common on macOS), which only virtiofs-shares
+# $HOME by default, so a repo living elsewhere (e.g. /Volumes/...) resolves to
+# an empty bind mount and `go test` fails with "go.mod file not found" before a
+# single test runs — `docker build`, by contrast, has no such dependency, since
+# the CLI reads its context from wherever it runs and streams it to the daemon
+# regardless of what the daemon's host shares. (b) doesn't work either: the
+# repo-root .dockerignore (shared with deploy/docker/Dockerfile's production
+# build) excludes test/ entirely, and this image needs test/integration/**; the
+# classic (non-BuildKit) builder this project's Docker install runs has no
+# per-Dockerfile ignore-file override to give this build its own rules on that
+# same context. A staged copy avoids both problems, provided the repo-root
+# .dockerignore is not itself staged into the copy: rsync -a copies dotfiles,
+# so a naive staged copy carries the repo-root .dockerignore along to
+# $ctx/.dockerignore, and Docker auto-discovers a context-root .dockerignore
+# the same way regardless of which Dockerfile is building it — re-excluding
+# test/ from the staged copy just as it would from the repo root. The recipe
+# below excludes every .dockerignore from the rsync and then places
 # test/integration/isolation/.dockerignore at the staged root explicitly, so
-# Docker's own (real, no-trick) context-root ignore-file discovery sees only
-# this image's small, correct exclusion list.
+# Docker's context-root ignore-file discovery sees only this image's exclusion
+# list.
 #
 # --init runs a real init (tini) as container PID 1: without it, the `go
 # test` process itself is PID 1, which never reaps re-parented grandchildren
-# after a process-group kill — a container-hygiene artifact of the TEST
-# HARNESS, not of isolation.Apply, but one that produces a false failure in
+# after a process-group kill — a container-hygiene artifact of the test
+# harness, not of isolation.Apply, but one that produces a false failure in
 # TestIsolation_ProcessGroupKillReapsPrivilegeDroppedGrandchild without it.
 .PHONY: test-isolation
 test-isolation: ## Run run-as-user isolation tests as root against real OS accounts in a container (needs Docker)
@@ -366,7 +362,7 @@ test-isolation: ## Run run-as-user isolation tests as root against real OS accou
 	  go test $(TEST_FLAGS) -tags integration -run 'TestIsolation_' -v -timeout 15m ./test/integration/
 
 .PHONY: test-discovery
-test-discovery: ## Run the mDNS discovery tests over REAL multicast (fails rather than skips if multicast is unavailable)
+test-discovery: ## Run the mDNS discovery tests over real multicast (fails rather than skips if multicast is unavailable)
 	@echo "note: advertisements are restricted to loopback, so nothing is announced"
 	@echo "      on your network. One test (RealBinary...) binds the test broker to"
 	@echo "      all interfaces for ~10s; make test-integration skips that one."
@@ -382,7 +378,7 @@ test-isolation-windows: ## Run windows run-as-user isolation tests as SYSTEM aga
 
 # Installs, starts, stops and deletes real Windows services, and creates (then
 # deletes) one throwaway local account. Unelevated, the suite prints a "not
-# elevated" line and exits 0 WITHOUT running anything — a skip verifies
+# elevated" line and exits 0 without running anything — a skip verifies
 # nothing, so confirm the six `--- PASS: TestWinService_` lines.
 .PHONY: test-service-windows
 test-service-windows: ## Run the Windows service tests against the real SCM (needs an elevated shell on Windows)

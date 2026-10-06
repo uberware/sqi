@@ -418,12 +418,12 @@ func TestStager_Configured(t *testing.T) {
 // TestStager_StageIn_AncestorModeDecidedPerWorker proves the scratch base and
 // job directory's mode is a per-WORKER decision made once at construction
 // ([staging.WithIsolationCapable]), not a per-assignment one keyed on this
-// particular call's cred — the fix for the shared-scratch-base ordering bug:
-// a worker capable of isolation must get the traversable-from-birth 0711
-// regardless of which job type happens to land FIRST on a fresh scratch base
-// (previously, a non-isolated attempt landing first pinned the base at 0750
-// forever, failing every isolated attempt after it). A worker never marked
-// capable keeps the narrower pre-isolation 0750 default even if an assignment
+// particular call's cred: a worker capable of isolation must get the
+// traversable-from-birth 0711 regardless of which job type happens to land
+// FIRST on a fresh scratch base (a per-assignment decision would let a
+// non-isolated attempt landing first pin the base at 0750 forever, failing
+// every isolated attempt after it). A worker never marked capable keeps the
+// narrower 0750 default even if an assignment
 // somehow carries a credential anyway — it can never actually isolate, so it
 // must not gain a needless traversable-by-anyone directory.
 func TestStager_StageIn_AncestorModeDecidedPerWorker(t *testing.T) {

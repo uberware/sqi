@@ -104,30 +104,68 @@ func (s *Store) CreateJobSubmission(_ context.Context, sub store.JobSubmission) 
 }
 
 // validateSubmission runs, before any mutation happens, the checks that make
-// the fake reject what SQLite's schema would reject. Callers must hold s.mu.
+// the fake reject what SQLite's schema and transaction would reject. Callers
+// must hold s.mu.
 //
-// It mirrors exactly three constraints: the jobs primary key, the
-// steps_job_name_unique UNIQUE (job_id, name) constraint, and the steps and
-// tasks primary keys — each checked both within the submission and against
-// what is already stored. Without the primary-key checks the fake does not
-// merely accept a duplicate ID, it silently LOSES the row (the map assignment
-// overwrites) and still reports success, so a Submit regression that reused an
-// ID would be green through every fake-backed test and ErrConflict only in
-// production.
+// It mirrors four constraints: the jobs primary key, the upstream check
+// (see checkUpstreamsLocked), the steps_job_name_unique UNIQUE (job_id, name)
+// constraint, and the steps and tasks primary keys, each checked both within
+// the submission and against what is already stored. Without the primary-key
+// checks the fake does not merely accept a duplicate ID, it loses the
+// row (the map assignment overwrites) and still reports success, so a Submit
+// regression that reused an ID would be green through every fake-backed test
+// and ErrConflict only in production.
 //
 // It does NOT mirror SQLite's foreign keys: a submission naming a nonexistent
-// farm, queue or step is accepted here. That gap is pre-existing in CreateJob,
-// CreateStep and CreateTask and is deliberately left alone rather than closed
-// only on this one path. (job_dependencies.depends_on_job_id carries no FK at
-// all, so accepting an edge to a nonexistent upstream job is correct parity.)
+// farm, queue or step is accepted here. CreateJob, CreateStep and CreateTask
+// have the same gap, and it is deliberately left open rather than closed only
+// on this one path. (job_dependencies.depends_on_job_id carries no FK
+// either, so an edge to a nonexistent upstream is not refused by the schema:
+// it is refused by the explicit upstream check, on both backends.)
+//
+// The checks run in the order SQLite's transaction reaches them (job row,
+// then the upstream check, then steps, then tasks), so a submission that
+// breaks more than one rule is refused with the same error on both backends.
 func (s *Store) validateSubmission(sub store.JobSubmission) error {
 	if _, exists := s.jobs[sub.Job.ID]; exists {
 		return store.ErrConflict
+	}
+	if err := s.checkUpstreamsLocked(sub); err != nil {
+		return err
 	}
 	if err := s.validateSubmissionSteps(sub.Steps); err != nil {
 		return err
 	}
 	return s.validateSubmissionTasks(sub.Tasks)
+}
+
+// checkUpstreamsLocked is the in-memory counterpart of SQLite's
+// checkUpstreamsTx: every DependsOn upstream must exist and must not have
+// failed or been canceled, else the submission is refused with a
+// [*store.DependencyUnsatisfiableError] (which matches
+// [store.ErrDependencyUnsatisfiable]) naming the first offender in ID order and
+// why (an empty Status means the upstream does not exist).
+// SQLite has already inserted the new job's row when it checks, so an edge to
+// the new job itself is judged by the new job's own status. Callers must hold
+// s.mu.
+func (s *Store) checkUpstreamsLocked(sub store.JobSubmission) error {
+	ids := slices.Clone(sub.DependsOn)
+	slices.Sort(ids)
+	for _, up := range slices.Compact(ids) {
+		status, exists := sub.Job.Status, up == sub.Job.ID
+		if !exists {
+			var upstream store.Job
+			upstream, exists = s.jobs[up]
+			status = upstream.Status
+		}
+		if !exists {
+			return &store.DependencyUnsatisfiableError{UpstreamID: up}
+		}
+		if status == store.JobStatusFailed || status == store.JobStatusCanceled {
+			return &store.DependencyUnsatisfiableError{UpstreamID: up, Status: status}
+		}
+	}
+	return nil
 }
 
 // validateSubmissionTasks rejects a task ID that collides within the
@@ -289,8 +327,8 @@ func (s *Store) UpdateJob(_ context.Context, job store.Job) (store.Job, error) {
 		return store.Job{}, store.ErrNotFound
 	}
 
-	// Preserve lifecycle fields — these are owned by UpdateJobStatus /
-	// CancelJobStatus, not by UpdateJob.
+	// Preserve lifecycle fields — these are owned by the status operations
+	// (FinalizeJob, CancelJobStatus, ...), not by UpdateJob.
 	job.Status = existing.Status
 	job.StartedAt = existing.StartedAt
 	job.CompletedAt = existing.CompletedAt
@@ -308,6 +346,8 @@ func (s *Store) UpdateJob(_ context.Context, job store.Job) (store.Job, error) {
 // UpdateJobStatus transitions a job to a new status and updates UpdatedAt.
 // If the new status is [store.JobStatusRunning] and StartedAt is nil, StartedAt
 // is set to the current time. Terminal statuses set CompletedAt.
+//
+// Test fixture only: a blind write that is not part of store.Store.
 func (s *Store) UpdateJobStatus(_ context.Context, id string, status store.JobStatus) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -394,11 +434,7 @@ func (s *Store) CancelJobStatus(_ context.Context, id string) error {
 		return store.ErrConflict
 	}
 
-	now := time.Now()
-	job.Status = store.JobStatusCanceled
-	job.CompletedAt = &now
-	job.UpdatedAt = now
-	s.jobs[id] = job
+	s.cancelJobRowLocked(id, time.Now().UTC())
 	return nil
 }
 
@@ -412,42 +448,51 @@ func (s *Store) CancelJobStatus(_ context.Context, id string) error {
 // succeeded, which it treats as "missing" and wrongly cancels the dependent.
 // Manual DeleteJob intentionally keeps the cancel-dependents behavior — this
 // guard only applies to the automatic retention sweep.
+//
+// Each candidate is re-checked against the full eligibility predicate
+// immediately before it is deleted, and skipped (not deleted, not reported)
+// if it no longer matches. The whole sweep holds s.mu, so here the re-check can
+// never skip, exactly as on SQLite; it is kept so the two backends run the same
+// steps.
 func (s *Store) DeleteTerminalJobsBefore(
-	ctx context.Context, cutoff time.Time, includeFailed bool,
+	_ context.Context, cutoff time.Time, includeFailed bool,
 ) ([]store.DeletedJob, error) {
 	s.mu.Lock()
+	defer s.mu.Unlock()
+
 	var ids []string
 	for id, j := range s.jobs {
-		if !terminalJobEligible(j.Status, includeFailed) {
-			continue
+		if s.expiredJobLocked(j, cutoff, includeFailed) {
+			ids = append(ids, id)
 		}
-		completed := j.UpdatedAt
-		if j.CompletedAt != nil {
-			completed = *j.CompletedAt
-		}
-		if !completed.Before(cutoff) {
-			continue
-		}
-		if s.neededByNonTerminalDependentLocked(id) {
-			continue
-		}
-		ids = append(ids, id)
 	}
-	s.mu.Unlock()
 
 	var deleted []store.DeletedJob
 	for _, id := range ids {
-		s.mu.Lock()
-		j := s.jobs[id]
-		s.mu.Unlock()
-		if err := s.DeleteJob(ctx, id); err != nil {
-			return nil, err
+		j, ok := s.jobs[id]
+		if !ok || !s.expiredJobLocked(j, cutoff, includeFailed) {
+			continue
 		}
+		s.deleteJobLocked(id)
 		deleted = append(deleted, store.DeletedJob{
 			ID: j.ID, Name: j.Name, FarmID: j.FarmID, QueueID: j.QueueID,
 		})
 	}
 	return deleted, nil
+}
+
+// expiredJobLocked reports whether j is eligible for the retention sweep: a
+// terminal status the sweep covers, completed before cutoff, and not needed as
+// an upstream by a non-terminal dependent. Callers must hold s.mu.
+func (s *Store) expiredJobLocked(j store.Job, cutoff time.Time, includeFailed bool) bool {
+	if !terminalJobEligible(j.Status, includeFailed) {
+		return false
+	}
+	completed := j.UpdatedAt
+	if j.CompletedAt != nil {
+		completed = *j.CompletedAt
+	}
+	return completed.Before(cutoff) && !s.neededByNonTerminalDependentLocked(j.ID)
 }
 
 // neededByNonTerminalDependentLocked reports whether candidateID is recorded
@@ -490,7 +535,13 @@ func (s *Store) DeleteJob(_ context.Context, id string) error {
 	if _, ok := s.jobs[id]; !ok {
 		return store.ErrNotFound
 	}
+	s.deleteJobLocked(id)
+	return nil
+}
 
+// deleteJobLocked removes the job and every row that belongs to it. The job
+// must exist. Callers must hold s.mu.
+func (s *Store) deleteJobLocked(id string) {
 	// Collect this job's task IDs, then its attempt IDs.
 	taskIDs := make(map[string]struct{})
 	for tid, t := range s.tasks {
@@ -535,7 +586,6 @@ func (s *Store) DeleteJob(_ context.Context, id string) error {
 	// depending on id) are deliberately left for the reconciler.
 	delete(s.jobDependencies, id)
 	delete(s.jobs, id)
-	return nil
 }
 
 // ParkJob implements [store.JobStore]. It transitions the job to

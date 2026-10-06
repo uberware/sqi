@@ -354,8 +354,8 @@ steps:
 
 // TestProductParameters_ExposesItemConstraints pins that a LIST[*] parameter's
 // per-element constraints reach the client. The web form validates an element
-// against them, and cannot do so if they are not serialized — before this,
-// productParameterResponse carried only the list-LEVEL bounds.
+// against them, and cannot do so if they are not serialized: the list-level
+// bounds alone are not enough.
 func TestProductParameters_ExposesItemConstraints(t *testing.T) {
 	p := openjd.JobParameter{
 		Name: "Counts",

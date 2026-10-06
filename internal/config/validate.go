@@ -775,8 +775,8 @@ func validateOIDCClaims(cfg OIDCConfig) []ValidationError {
 }
 
 // validateOIDCModes checks reauth_mode and logout_mode against the mode
-// constants defined in internal/auth/oidc — the same package that will read
-// them once the callback route consumes this config (Task 6).
+// constants defined in internal/auth/oidc — the same package that reads
+// them.
 func validateOIDCModes(cfg OIDCConfig) []ValidationError {
 	var errs []ValidationError
 	switch cfg.ReauthMode {

@@ -47,10 +47,8 @@ const ANONYMOUS_PRINCIPAL = {
 
 /**
  * Every other query the shell fires (jobs, workers, farms, usage pools, …)
- * is left to fail fast with a network-style error — mirroring how these
- * tests behaved before this file mocked fetch at all (real fetch calls to a
- * non-existent server also just failed), and letting the components' own
- * tolerance for failed queries carry the rest.
+ * is left to fail fast with a network-style error, letting the components'
+ * own tolerance for failed queries carry the rest.
  */
 function stubAuthMe(response: Response) {
   fetchMock.mockImplementation((input) => {
@@ -138,7 +136,7 @@ describe('App', () => {
     })
   })
 
-  describe('auth-off regression (/auth/me returns 200 with the anonymous principal)', () => {
+  describe('auth off (/auth/me returns 200 with the anonymous principal)', () => {
     beforeEach(() => {
       stubAuthMe(jsonResponse(200, ANONYMOUS_PRINCIPAL, 'application/json'))
     })

@@ -13,11 +13,6 @@ import "testing"
 // first list destination in the union's normalized member order" -- an order
 // the RFC defines outright (type parameters sorted alphabetically, nulltype
 // last), so it is a rule and not an implementation detail.
-//
-// The old reading had no list-destination ORDER because it had no notion of
-// more than one list destination: listElem() reports a target naming two
-// different list types as not list-shaped at all, which is why the cases below
-// either failed or, worse, passed the value through unconverted.
 func TestCoerceListDestinations(t *testing.T) {
 	tests := []struct {
 		name   string

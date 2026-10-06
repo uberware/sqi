@@ -2,13 +2,11 @@
 
 package server
 
-// Tests for the WebSocket-hub wiring the Task-8 review found had zero
-// coverage: wsJobOwnerResolver itself, and newWSHub — the small wrapper
-// around ws.NewHub that (*Server).start calls. Without a test exercising
-// newWSHub, a regression that silently reverted its body back to
-// ws.NewHub(logger, nil) (the pre-Task-8 placeholder) would pass every other
-// test in this package, since nothing else constructs the hub with a real
-// store-backed resolver.
+// Tests for the WebSocket-hub wiring: wsJobOwnerResolver itself, and
+// newWSHub — the small wrapper around ws.NewHub that (*Server).start calls.
+// Without a test exercising newWSHub, a regression that reverted its body to
+// ws.NewHub(logger, nil) would pass every other test in this package, since
+// nothing else constructs the hub with a real store-backed resolver.
 
 import (
 	"context"
@@ -140,7 +138,7 @@ func TestNewWSHub_AuthDisabled_ResolverNeverReadsStore(t *testing.T) {
 
 	hub := newWSHub(testLogger(), st, false)
 
-	// Zero registered clients, matching the reviewer's measurement setup.
+	// Zero registered clients.
 	for range 10 {
 		hub.NotifyTask(ws.TaskEvent{JobID: "job-1", TaskID: "t1", Status: "running"})
 		hub.NotifyJob(ws.JobEvent{JobID: "job-1", Status: "running"})
@@ -154,10 +152,9 @@ func TestNewWSHub_AuthDisabled_ResolverNeverReadsStore(t *testing.T) {
 
 // TestNewWSHub_AuthEnabled_OwnerlessJobResolvesOnce pins the auth-on
 // counterpart. A job with no owner — every job submitted before auth was
-// enabled — used to re-query the store on *every* task event, because the
-// owner cache refused to memoize an empty owner (it could not distinguish "no
-// owner" from "lookup failed"). The resolver now returns an error for the
-// latter only, so the empty owner is cached after the first read.
+// enabled — must not re-query the store on every task event. The resolver
+// returns an error only for a failed lookup, so the owner cache can tell "no
+// owner" from "lookup failed" and caches the empty owner after the first read.
 func TestNewWSHub_AuthEnabled_OwnerlessJobResolvesOnce(t *testing.T) {
 	st := &countingStore{Store: fake.New()}
 	seedTestJob(t, st, "job-1", "") // owner-less: a pre-auth job

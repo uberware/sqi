@@ -182,19 +182,28 @@ func (s *Store) ActiveClaimCount(_ context.Context, poolID string) (int, error) 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	count := 0
-	for _, claim := range s.usageClaims {
-		if claim.PoolID == poolID && claim.ReleasedAt == nil {
-			count++
-		}
-	}
-	return count, nil
+	return s.activeClaimsLocked(poolID), nil
 }
 
-// TryClaimSlots atomically checks pool capacity and creates claim
-// records for each claim. The fake implementation holds the mutex for the
-// duration of the check-and-insert, mirroring the transactional semantics of
-// the SQLite implementation.
+// activeClaimsLocked counts poolID's active (unreleased) claims. Caller holds
+// s.mu.
+func (s *Store) activeClaimsLocked(poolID string) int {
+	n := 0
+	for _, claim := range s.usageClaims {
+		if claim.PoolID == poolID && claim.ReleasedAt == nil {
+			n++
+		}
+	}
+	return n
+}
+
+// TryClaimSlots atomically checks pool capacity, using the caller's copy of each
+// pool's MaxConcurrent, and creates a claim record for each claim, or returns
+// [store.ErrUsageAtCapacity] and writes nothing. It holds the mutex for the
+// whole check-and-insert, mirroring the SQLite implementation. The scheduler
+// claims through [Store.LeaseTask], which reads the caps itself.
+//
+// Test fixture only: a blind write that is not part of store.Store.
 func (s *Store) TryClaimSlots(
 	_ context.Context,
 	taskAttemptID string,
@@ -209,13 +218,7 @@ func (s *Store) TryClaimSlots(
 		if c.MaxConcurrent <= 0 {
 			continue // unlimited
 		}
-		active := 0
-		for _, co := range s.usageClaims {
-			if co.PoolID == c.PoolID && co.ReleasedAt == nil {
-				active++
-			}
-		}
-		if active >= c.MaxConcurrent {
+		if s.activeClaimsLocked(c.PoolID) >= c.MaxConcurrent {
 			return store.ErrUsageAtCapacity
 		}
 	}
@@ -240,19 +243,15 @@ func (s *Store) ReleaseAttemptClaims(_ context.Context, taskAttemptID string, re
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	n := 0
-	for id, co := range s.usageClaims {
-		if co.TaskAttemptID == taskAttemptID && co.ReleasedAt == nil {
-			co.ReleasedAt = &releasedAt
-			s.usageClaims[id] = co
-			n++
-		}
-	}
-	return n, nil
+	return s.releaseAttemptClaimsLocked(taskAttemptID, releasedAt), nil
 }
 
 // ReleaseJobClaims sets ReleasedAt on every active claim held by any
-// attempt for tasks belonging to the given job. Returns the number released.
+// attempt for tasks belonging to the given job. Returns the number released. A
+// job is canceled through [Store.CancelJobExecution], which releases only the
+// claims of closed attempts, in the same step that closes them.
+//
+// Test fixture only: a blind write that is not part of store.Store.
 func (s *Store) ReleaseJobClaims(_ context.Context, jobID string, releasedAt time.Time) (int, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

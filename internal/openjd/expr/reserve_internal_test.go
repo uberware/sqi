@@ -11,26 +11,25 @@ import (
 // This file pins meter.reserve: the rule that a BULK operation must be
 // refused BEFORE it allocates, not billed after it has.
 //
-// The defect it exists to prevent (EXPR sub-project E4c, whole-branch review,
-// Critical 1): every Cost.ResultElements/Cost.ResultBytes charge is levied by
-// chargeResult (ops.go) once the produced value exists, so under the server's
-// submission budget of 10,000 operations, "[0] * 10000000" materialized ten
+// Every Cost.ResultElements/Cost.ResultBytes charge is levied by chargeResult
+// (ops.go) once the produced value exists. Without reserve, under the server's
+// submission budget of 10,000 operations, "[0] * 10000000" materializes ten
 // million elements -- 1.1 GB of allocator traffic, 108 ms -- and only THEN
-// reported "10000001 operations exceeds the limit of 10000". The limit
-// overshot by a factor of a THOUSAND, and the only thing that actually stopped
-// the expression was limits.go's fixed maxElements floor three orders of
-// magnitude above it. The template-wide budget (internal/openjd/exprcheck.go)
-// derives its cumulative operation ceiling from that per-evaluation limit, so
-// the derived ceiling was false by the same factor.
+// reports "10000001 operations exceeds the limit of 10000". The limit
+// overshoots by a factor of a THOUSAND, and the only thing that stops the
+// expression is limits.go's fixed maxElements floor three orders of magnitude
+// above it. The template-wide budget (internal/openjd/exprcheck.go) derives
+// its cumulative operation ceiling from that per-evaluation limit, so the
+// derived ceiling would be false by the same factor.
 //
-// TWO PROPERTIES ARE PINNED, and they are separate tests on purpose:
+// Two properties are pinned, as separate tests:
 //
 //   - a refusal costs no allocation (TestReserve_BulkOperationsRefuseBeforeAllocating)
-//   - a SUCCESS is charged exactly what it was charged before reserve existed
+//   - a SUCCESS is charged exactly what it would be charged without reserve
 //     (TestReserve_DoesNotChangeSuccessfulCounts)
 //
-// The second is the one that keeps this change invisible to the differential
-// oracle (test/oracle), whose operation counts are compared only on cases
+// The second keeps reserve invisible to the differential oracle
+// (test/oracle), whose operation counts are compared only on cases
 // whose values agree -- i.e. only on successful evaluations. reserve adds
 // nothing to the running total; it only refuses when a later charge of the
 // same figure would have refused anyway.
@@ -46,10 +45,10 @@ const (
 )
 
 // allocCeilingBytes is the per-expression allocation budget the refusal test
-// allows. The pre-fix figures for these expressions were 1.1-1.6 GB; the
-// post-fix figures are under 1 MB. 16 MB sits two orders of magnitude below
-// the defect and one above the fix, so this asserts the DEFECT is gone
-// without pinning an exact allocator figure that a Go release could move.
+// allows. Without reserve these expressions allocate 1.1-1.6 GB; with it,
+// under 1 MB. 16 MB sits two orders of magnitude below the first and one above
+// the second, so this asserts the allocation is refused without pinning an
+// exact allocator figure that a Go release could move.
 const allocCeilingBytes = 16 << 20
 
 func TestReserve_BulkOperationsRefuseBeforeAllocating(t *testing.T) {
@@ -106,8 +105,8 @@ func TestReserve_DoesNotChangeSuccessfulCounts(t *testing.T) {
 		{`range(0, 10, 2)`, 6},             // 1 call + 5 produced elements
 		{`list(range_expr("1-100"))`, 102}, // 1 (range_expr) + 1 (list call) + 100 elements
 		// 1 (range call) + 5 (range's produced elements) + 5 (the
-		// comprehension iterating them). Each of the three figures below was
-		// read off the PRE-FIX evaluator and is reproduced here unchanged.
+		// comprehension iterating them). Each of the three figures below is
+		// what the evaluator charges with no reserve step at all.
 		{`[x for x in range(0, 5)]`, 11},
 		{`"ab" * 3`, 2},       // 1 call + ceil(6/256)
 		{`"a".ljust(300)`, 3}, // 1 call + ceil(300/256) + the receiver's own byte charge
@@ -126,11 +125,10 @@ func TestReserve_DoesNotChangeSuccessfulCounts(t *testing.T) {
 	}
 }
 
-// TestReserve_DoesNotTightenTheLanguage pins the other half of the bargain:
-// the point of reserve is to stop the OVERSHOOT, not to make the language
-// stricter. An expression that genuinely needs millions of operations must
-// still succeed under the specification's own default limit (10,000,000
-// operations, section 1.3.10), exactly as it did before.
+// TestReserve_DoesNotTightenTheLanguage pins that reserve stops the OVERSHOOT
+// without making the language stricter. An expression that genuinely needs
+// millions of operations must still succeed under the specification's own
+// default limit (10,000,000 operations, section 1.3.10).
 func TestReserve_DoesNotTightenTheLanguage(t *testing.T) {
 	v, ops, err := EvalWithMetrics(`sum(range(0, 1000000))`, MapSymbols(nil), TAny)
 	if err != nil {

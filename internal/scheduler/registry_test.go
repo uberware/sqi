@@ -22,7 +22,6 @@ import (
 	"github.com/uberware/sqi/internal/bus"
 	"github.com/uberware/sqi/internal/metrics"
 	"github.com/uberware/sqi/internal/store"
-	"github.com/uberware/sqi/internal/store/fake"
 	"github.com/uberware/sqi/internal/worker/protocol"
 	"github.com/uberware/sqi/internal/ws"
 )
@@ -40,7 +39,7 @@ func workerMsgJSON(t *testing.T, v any) []byte {
 // ── handleWorkerRegister ──────────────────────────────────────────────────────
 
 func TestHandleWorkerRegister_Valid(t *testing.T) {
-	st := fake.New()
+	st := newCheckedFake(t)
 	s := newMetricsScheduler(st, &recordBus{}, "")
 
 	msg := &fakeJSMsg{
@@ -75,7 +74,7 @@ func TestHandleWorkerRegister_Valid(t *testing.T) {
 }
 
 func TestHandleWorkerRegister_MalformedJSON_Acked(t *testing.T) {
-	st := fake.New()
+	st := newCheckedFake(t)
 	s := newMetricsScheduler(st, &recordBus{}, "")
 
 	msg := &fakeJSMsg{subject: bus.WorkerRegisterSubject("w-1"), data: []byte("{bad")}
@@ -93,7 +92,7 @@ func TestHandleWorkerRegister_MalformedJSON_Acked(t *testing.T) {
 // the subject/payload mismatch check first and is discarded through that
 // branch.
 func TestHandleWorkerRegister_EmptyPayloadWorkerID_Acked(t *testing.T) {
-	st := fake.New()
+	st := newCheckedFake(t)
 	s := newMetricsScheduler(st, &recordBus{}, "")
 
 	msg := &fakeJSMsg{
@@ -115,12 +114,12 @@ type registerErrSt struct {
 	store.Store
 }
 
-func (*registerErrSt) RegisterWorker(_ context.Context, _ store.Worker) (store.Worker, error) {
-	return store.Worker{}, context.DeadlineExceeded
+func (*registerErrSt) RegisterWorker(_ context.Context, _ store.Worker) (store.Worker, []store.Task, error) {
+	return store.Worker{}, nil, context.DeadlineExceeded
 }
 
 func TestHandleWorkerRegister_StoreError_Nacked(t *testing.T) {
-	st := &registerErrSt{Store: fake.New()}
+	st := &registerErrSt{Store: newCheckedFake(t)}
 	s := newMetricsScheduler(st, &recordBus{}, "")
 
 	msg := &fakeJSMsg{
@@ -155,7 +154,7 @@ func (s *touchRecordingStore) TouchWorkerCredential(ctx context.Context, workerI
 // that registering a worker with an active broker credential sets
 // LastSeenAt, and only when broker authentication is enabled.
 func TestHandleWorkerRegister_TouchesActiveCredential_WhenAuthEnabled(t *testing.T) {
-	fk := fake.New()
+	fk := newCheckedFake(t)
 	if _, err := fk.CreateWorkerCredential(t.Context(), store.WorkerCredential{
 		ID: uuid.NewString(), WorkerID: "w-1", PublicKey: "pub1", EnrolledAt: time.Now().UTC(),
 	}); err != nil {
@@ -196,7 +195,7 @@ func TestHandleWorkerRegister_TouchesActiveCredential_WhenAuthEnabled(t *testing
 // auth-off default path does no extra store work: no credential rows exist
 // on an auth-off farm, and the touch call must not even be attempted.
 func TestHandleWorkerRegister_NoTouchCall_WhenAuthDisabled(t *testing.T) {
-	st := &touchRecordingStore{Store: fake.New()}
+	st := &touchRecordingStore{Store: newCheckedFake(t)}
 	s := newMetricsScheduler(st, &recordBus{}, "") // DefaultConfig: NATSAuthEnabled false
 
 	msg := &fakeJSMsg{
@@ -220,7 +219,7 @@ func TestHandleWorkerRegister_NoTouchCall_WhenAuthDisabled(t *testing.T) {
 // credential (store.ErrNotFound) never fails registration: the message is
 // still acked and the worker is still registered.
 func TestHandleWorkerRegister_NoActiveCredential_StillAcked(t *testing.T) {
-	st := fake.New()
+	st := newCheckedFake(t)
 	cfg := DefaultConfig()
 	cfg.NATSAuthEnabled = true
 	s := New(cfg, st, &recordBus{}, metrics.New(), slog.New(slog.DiscardHandler), ws.NoopNotifier{}, nil)
@@ -246,11 +245,11 @@ func TestHandleWorkerRegister_NoActiveCredential_StillAcked(t *testing.T) {
 // ── handleWorkerHeartbeat ─────────────────────────────────────────────────────
 
 func TestHandleWorkerHeartbeat_Valid(t *testing.T) {
-	st := fake.New()
+	st := newCheckedFake(t)
 	s := newMetricsScheduler(st, &recordBus{}, "")
 
 	now := time.Now().UTC()
-	if _, err := st.RegisterWorker(t.Context(), store.Worker{
+	if _, _, err := st.RegisterWorker(t.Context(), store.Worker{
 		ID: "w-1", FarmID: "farm-1", Status: store.WorkerStatusOnline, LastHeartbeatAt: &now,
 	}); err != nil {
 		t.Fatalf("RegisterWorker: %v", err)
@@ -276,12 +275,12 @@ func TestHandleWorkerHeartbeat_Valid(t *testing.T) {
 }
 
 func TestHandleWorkerHeartbeat_ZeroAt_UsesServerTime(t *testing.T) {
-	st := fake.New()
+	st := newCheckedFake(t)
 	s := newMetricsScheduler(st, &recordBus{}, "")
 
 	before := time.Now().UTC()
 	old := before.Add(-time.Hour)
-	if _, err := st.RegisterWorker(t.Context(), store.Worker{
+	if _, _, err := st.RegisterWorker(t.Context(), store.Worker{
 		ID: "w-1", FarmID: "farm-1", Status: store.WorkerStatusOnline, LastHeartbeatAt: &old,
 	}); err != nil {
 		t.Fatalf("RegisterWorker: %v", err)
@@ -303,7 +302,7 @@ func TestHandleWorkerHeartbeat_ZeroAt_UsesServerTime(t *testing.T) {
 }
 
 func TestHandleWorkerHeartbeat_UnknownWorker_Nacked(t *testing.T) {
-	st := fake.New()
+	st := newCheckedFake(t)
 	s := newMetricsScheduler(st, &recordBus{}, "")
 
 	msg := &fakeJSMsg{
@@ -334,7 +333,7 @@ func TestHandleWorkerHeartbeat_MalformedAndEmptyPayloadID_Acked(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			st := fake.New()
+			st := newCheckedFake(t)
 			s := newMetricsScheduler(st, &recordBus{}, "")
 			msg := &fakeJSMsg{subject: bus.WorkerHeartbeatSubject("w-1"), data: tt.data}
 			s.handleWorkerMessage(msg)
@@ -348,11 +347,11 @@ func TestHandleWorkerHeartbeat_MalformedAndEmptyPayloadID_Acked(t *testing.T) {
 // ── handleWorkerDeregister ────────────────────────────────────────────────────
 
 func TestHandleWorkerDeregister_Valid(t *testing.T) {
-	st := fake.New()
+	st := newCheckedFake(t)
 	s := newMetricsScheduler(st, &recordBus{}, "")
 
 	now := time.Now().UTC()
-	if _, err := st.RegisterWorker(t.Context(), store.Worker{
+	if _, _, err := st.RegisterWorker(t.Context(), store.Worker{
 		ID: "w-1", FarmID: "farm-1", Status: store.WorkerStatusOnline, LastHeartbeatAt: &now,
 	}); err != nil {
 		t.Fatalf("RegisterWorker: %v", err)
@@ -376,18 +375,56 @@ func TestHandleWorkerDeregister_Valid(t *testing.T) {
 	}
 }
 
+// TestHandleWorkerDeregister_IgnoresASupersededProcess pins the
+// stale-deregister race: a deregister from a process the worker's
+// latest registration replaced (a late or redelivered message) is acked and
+// ignored, so the new process stays online and keeps the work it holds.
+func TestHandleWorkerDeregister_IgnoresASupersededProcess(t *testing.T) {
+	st := newCheckedFake(t)
+	notifier := &workerRecordingNotifier{}
+	s := newMetricsScheduler(st, &recordBus{}, "")
+	s.notifier = notifier
+
+	now := time.Now().UTC()
+	if _, _, err := st.RegisterWorker(t.Context(), store.Worker{
+		ID: "w-1", FarmID: "farm-1", Status: store.WorkerStatusOnline, LastHeartbeatAt: &now, InstanceID: "new",
+	}); err != nil {
+		t.Fatalf("RegisterWorker: %v", err)
+	}
+
+	msg := &fakeJSMsg{
+		subject: bus.WorkerDeregisterSubject("w-1"),
+		data:    workerMsgJSON(t, map[string]string{"worker_id": "w-1", "instance_id": "old", "reason": "shutdown"}),
+	}
+	s.handleWorkerMessage(msg)
+
+	if !msg.acked || msg.nacked {
+		t.Fatalf("a superseded deregister must be acked (acked=%v nacked=%v)", msg.acked, msg.nacked)
+	}
+	w, err := st.GetWorker(t.Context(), "w-1")
+	if err != nil {
+		t.Fatalf("GetWorker: %v", err)
+	}
+	if w.Status != store.WorkerStatusOnline {
+		t.Errorf("worker status = %q, want online (the deregister came from a replaced process)", w.Status)
+	}
+	if len(notifier.workers) != 0 {
+		t.Errorf("worker events = %+v, want none for an ignored deregister", notifier.workers)
+	}
+}
+
 // TestHandleWorkerDeregister_ReclaimsInFlightTasks verifies that a graceful
 // deregister returns the worker's assigned/running tasks to the ready queue and
 // closes their attempts. Without this, the heartbeat sweep (which only inspects
 // online workers) would never recover them, stranding the tasks in 'assigned'.
 func TestHandleWorkerDeregister_ReclaimsInFlightTasks(t *testing.T) {
-	st := fake.New()
+	st := newCheckedFake(t)
 	s := newMetricsScheduler(st, &recordBus{}, "")
 	ctx := t.Context()
 	now := time.Now().UTC()
 
 	const workerID = "w-bye"
-	if _, err := st.RegisterWorker(ctx, store.Worker{
+	if _, _, err := st.RegisterWorker(ctx, store.Worker{
 		ID: workerID, FarmID: "farm-1", Hostname: "node-bye",
 		Status: store.WorkerStatusOnline, LastHeartbeatAt: &now,
 	}); err != nil {
@@ -450,7 +487,7 @@ func TestHandleWorkerDeregister_ReclaimsInFlightTasks(t *testing.T) {
 }
 
 func TestHandleWorkerDeregister_UnknownWorker_Acked(t *testing.T) {
-	st := fake.New()
+	st := newCheckedFake(t)
 	s := newMetricsScheduler(st, &recordBus{}, "")
 
 	msg := &fakeJSMsg{
@@ -479,7 +516,7 @@ func TestHandleWorkerDeregister_MalformedAndEmptyPayloadID_Acked(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			st := fake.New()
+			st := newCheckedFake(t)
 			s := newMetricsScheduler(st, &recordBus{}, "")
 			msg := &fakeJSMsg{subject: bus.WorkerDeregisterSubject("w-1"), data: tt.data}
 			s.handleWorkerMessage(msg)
@@ -494,7 +531,7 @@ func TestHandleWorkerDeregister_MalformedAndEmptyPayloadID_Acked(t *testing.T) {
 
 func TestRegistration_AutoRegistersComputeLocation(t *testing.T) {
 	ctx := context.Background()
-	st := fake.New()
+	st := newCheckedFake(t)
 	s := newMetricsScheduler(st, &recordBus{}, "")
 
 	// Case 1: end-to-end — register a worker with a new location via
@@ -553,7 +590,7 @@ func TestRegistration_AutoRegistersComputeLocation(t *testing.T) {
 // error during ensureComputeLocation does not prevent registration from
 // succeeding (best-effort).
 func TestRegistration_EnsureComputeLocation_StoreError(t *testing.T) {
-	st := &computeLocationErrSt{Store: fake.New()}
+	st := &computeLocationErrSt{Store: newCheckedFake(t)}
 	s := newMetricsScheduler(st, &recordBus{}, "")
 
 	msg := &fakeJSMsg{
@@ -606,7 +643,7 @@ func (*computeLocationLookupErrSt) GetComputeLocationByName(_ context.Context, _
 // failure in ensureComputeLocation does not prevent the worker registration
 // from succeeding (best-effort).
 func TestRegistration_EnsureComputeLocation_LookupError(t *testing.T) {
-	st := &computeLocationLookupErrSt{Store: fake.New()}
+	st := &computeLocationLookupErrSt{Store: newCheckedFake(t)}
 	s := newMetricsScheduler(st, &recordBus{}, "")
 
 	msg := &fakeJSMsg{
@@ -630,7 +667,7 @@ func TestRegistration_EnsureComputeLocation_LookupError(t *testing.T) {
 // ── handleWorkerMessage routing ───────────────────────────────────────────────
 
 func TestHandleWorkerMessage_UnknownSubject_Acked(t *testing.T) {
-	st := fake.New()
+	st := newCheckedFake(t)
 	s := newMetricsScheduler(st, &recordBus{}, "")
 
 	msg := &fakeJSMsg{subject: "worker.bogus", data: []byte("{}")}
@@ -645,7 +682,7 @@ func TestHandleWorkerMessage_RegisterID(t *testing.T) {
 	// Sanity check that the subject constants used in routing are distinct and
 	// the register path actually creates a worker via the router (not a direct
 	// handler call).
-	st := fake.New()
+	st := newCheckedFake(t)
 	s := newMetricsScheduler(st, &recordBus{}, "")
 	id := uuid.NewString()
 

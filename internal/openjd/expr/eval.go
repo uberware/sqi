@@ -72,17 +72,16 @@ func (e *Expression) Eval(syms Symbols, target Type, opts ...Option) (Value, err
 // left unchecked.
 //
 // This exists because section 1.2.3's range_expr -> list[int] conversion
-// (coerce.go's coerceList) can turn a small live range_expr into an
-// arbitrarily large list -- and this boundary coercion runs OUTSIDE evalNode,
-// after the single allocation point, so without this it was never checked
-// against WithMemoryLimit at all, only against the fixed and much larger
-// maxElements floor (limits.go). See
+// (coerce.go's coerceByListDestination) can turn a small live range_expr into
+// an arbitrarily large list -- and this boundary coercion runs OUTSIDE
+// evalNode, after the single allocation point, so without this it would never
+// be checked against WithMemoryLimit at all, only against the fixed and much
+// larger maxElements floor (limits.go). See
 // TestMemoryLimit_CatchesTopLevelCoercion.
 func coerceTop(ec evalCtx, src string, root Node, v Value, target Type) (Value, error) {
 	// A range_expr meeting a list[int] TARGET expands, and nothing charges
-	// for it: the result's own alloc below is what used to catch it, after
-	// 2768 MB had already been built. See reserveRangeExprCoercion
-	// (rangeexpr.go).
+	// for it: the result's own alloc below would catch it only after 2768 MB
+	// had been built. See reserveRangeExprCoercion (rangeexpr.go).
 	if err := reserveRangeExprCoercion(ec, v, target); err != nil {
 		return Value{}, wrapAt(src, root.Pos(), err)
 	}
@@ -112,9 +111,9 @@ func Eval(src string, syms Symbols, target Type, opts ...Option) (Value, error) 
 // PathFormat selects the semantics the path type uses during evaluation.
 //
 // The specification makes this an evaluator setting rather than a property of
-// the host, and that distinction is load-bearing here: sqi parses templates
-// server-side, so deriving it from the running machine would let one template
-// expand into different tasks depending on which OS submitted it.
+// the host. sqi parses templates server-side, so deriving it from the running
+// machine would let one template expand into different tasks depending on
+// which OS submitted it.
 type PathFormat int
 
 const (
@@ -127,7 +126,8 @@ const (
 	// PathWindows is Python's PureWindowsPath.
 	PathWindows
 	// PathNative is the specification's own default: the host's semantics.
-	// Nothing in sqi selects it yet; sub-project E does, for host contexts.
+	// The worker selects it for host-context evaluation
+	// (internal/worker/fmtres).
 	PathNative
 )
 
@@ -145,9 +145,8 @@ func (f PathFormat) resolve() PathFormat {
 
 // Option configures one evaluation.
 //
-// It is variadic so that existing three-argument calls keep compiling, and so
-// sub-project E can add the section 1.3.9 and 1.3.10 limits through the same
-// channel rather than changing the signature a second time.
+// It is variadic so that a call needing no settings passes none, and so every
+// setting, the section 1.3.9 and 1.3.10 limits included, shares one channel.
 type Option func(*evalCtx)
 
 // WithPathFormat selects the path semantics for this evaluation.
@@ -159,9 +158,8 @@ func WithPathFormat(f PathFormat) Option {
 // Absent, apply_path_mapping passes its input through, NORMALIZED as a path value
 // in the evaluation's flavor — passthrough means "no rule rewrote it", not "the
 // text is returned verbatim", so '/a//b/' still comes back as the path "/a/b".
-// Sub-project E injects the rules per host-context scope; before E, no production
-// caller sets this, so apply_path_mapping is passthrough everywhere it is
-// currently reached.
+// The worker's host-context evaluation (internal/worker/fmtres) supplies the
+// session's rules; no other production caller sets this.
 func WithPathMapping(rules []PathMapRule) Option {
 	return func(ec *evalCtx) { ec.pathMapping = rules }
 }
@@ -213,10 +211,9 @@ func WithOperationLimit(ops int64) Option {
 // every budget error to 422.
 //
 // The wrapped message adds HOW FAR PAST the deadline the check landed and
-// nothing else ("... exceeded by 1.2s"). It must keep adding information rather
-// than restating this sentence: %w concatenates the two, and an earlier
-// revision rendered as "expr: evaluation deadline exceeded: evaluation exceeded
-// its wall-clock deadline", which a 503 body would have shown verbatim.
+// nothing else ("... exceeded by 1.2s"). It must add information rather than
+// restate this sentence: %w concatenates the two, and a 503 body shows the
+// result verbatim.
 var ErrDeadlineExceeded = errors.New("expr: evaluation deadline exceeded")
 
 // WithDeadline sets an absolute wall-clock deadline for this evaluation.
@@ -242,20 +239,11 @@ func WithClock(now func() time.Time) Option {
 
 // evalCtx is the state one evaluation threads through every node.
 //
-// It bundles what used to be two parameters on seventeen functions. The point
-// is not brevity: sub-project E must thread operation and memory counters the
-// same way.
-//
-// CORRECTION (sub-project E1): an earlier revision of this comment said that
-// sub-project E would thread its operation and memory counters here and that
-// "a struct absorbs those as fields instead of as another sweep over every
-// signature". The first half is right and the second is WRONG, and the error
-// was not harmless. evalCtx flows by VALUE, so a counter stored as a plain
-// field would be incremented on a copy and discarded when the callee returned:
-// the counter would read near zero however much work an expression did, and
-// every test written against it would pass. The counters live behind the
-// POINTER field m instead, which is what makes them accumulate without the
-// signature sweep the original claim was trying to avoid.
+// evalCtx flows by VALUE, so a counter stored as a plain field would be
+// incremented on a copy and discarded when the callee returned: the counter
+// would read near zero however much work an expression did, and every test
+// written against it would pass. The operation and memory counters therefore
+// live behind the POINTER field m, which is what makes them accumulate.
 type evalCtx struct {
 	src        string
 	syms       Symbols
@@ -299,10 +287,10 @@ func newEvalCtx(src string, syms Symbols, opts []Option) evalCtx {
 // parser no recursion at all — parseBinaryLevel and parseLogicalLevel build one
 // in a LOOP — so "true or true or true or …" and "1 + 1 + 1 + …" parse happily
 // at any length and then overflow the Go stack here, in evalBinary's and
-// evalLogical's descent into their left operand. Measured before this guard
-// existed: both died with "fatal error: stack overflow" between 500,000 and
-// 600,000 operators, which is a runtime.throw that recover() cannot catch, so it
-// has to be turned into a value before it happens. See maxEvalDepth.
+// evalLogical's descent into their left operand. Without this guard both die
+// with "fatal error: stack overflow" between 500,000 and 600,000 operators,
+// which is a runtime.throw that recover() cannot catch, so it has to be turned
+// into a value before it happens. See maxEvalDepth.
 //
 // target is the type the surrounding context expects (section 1.3.1). It is
 // forwarded ONLY by the node kinds whose result IS a sub-expression's value —
@@ -318,16 +306,13 @@ func newEvalCtx(src string, syms Symbols, opts []Option) evalCtx {
 // evalCall's receiver and argument descents (call.go), and every descent in
 // comp.go instead pass depth+1, so a chain of Access, Call or comprehension
 // nodes costs TWO units per level rather than one — an "Access chain" ~5,000
-// deep reaches maxEvalDepth where a subscript chain needs ~10,000. This split
-// was inherited, not designed: it was not unified when Access, Call and the
-// comprehension were added, and is left as found rather than fixed here now
-// that it has been noticed, because the effect is strictly
+// deep reaches maxEvalDepth where a subscript chain needs ~10,000. The split
+// is not designed, and is left in place because the effect is strictly
 // CONSERVATIVE (it can only reject a legal-depth expression earlier, never let
 // one past the point where the Go stack would actually be at risk — see the
-// measurements above), and unifying it touches three files' worth of already
-// well-tested recursion accounting for a correctness property nothing
-// currently depends on. Revisit if sub-project E's own configurable depth
-// limit makes the discrepancy user-visible.
+// measurements above), and unifying it touches three files' worth of
+// recursion accounting for a property nothing currently depends on. Revisit
+// if the depth limit ever becomes configurable.
 func evalNode(n Node, ec evalCtx, target Type, depth int) (Value, error) {
 	if depth >= maxEvalDepth {
 		return Value{}, errorAt(ec.src, n.Pos(), "this expression is nested too deeply to evaluate")
@@ -350,10 +335,9 @@ func evalNode(n Node, ec evalCtx, target Type, depth int) (Value, error) {
 // the dispatch each stay under the repo's complexity cap. Call evalNode, never
 // this: entering here does not count the frame.
 //
-// The five leaf literal kinds are peeled off into evalLiteral first — adding
-// *ListComp as a fifteenth case here pushed the switch itself over cyclop's
-// cap, so the literals (which need none of this function's parameters beyond
-// n) move out rather than the cap moving up.
+// The five leaf literal kinds are peeled off into evalLiteral first to keep
+// the switch under cyclop's cap; the literals need none of this function's
+// parameters beyond n.
 func evalDispatch(n Node, ec evalCtx, target Type, depth int) (Value, error) {
 	if v, ok := evalLiteral(n); ok {
 		return v, nil

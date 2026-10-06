@@ -28,8 +28,7 @@
 # This is not a rendering difference — the reference reports the TYPE as float —
 # so it cannot be explained by the float pass-through rule, and the same query
 # with a positive ndigits returns a float correctly. The specification outranks
-# the reference (openjd-expr is Beta), and reported upstream alongside the
-# call-argument target pushdown.
+# the reference (openjd-expr is Beta). Reported upstream.
 
 # round(x, ndigits <= 0): reference widens to 1230.0 : float, sqi returns
 # 1230 : int per RFC 0006's signature table — see the shared explanation above.
@@ -56,13 +55,12 @@ int | float :: round(3.5, -400)
 # the result here is 2.0 and 1e300 respectively.
 #
 # sqi computes the identity directly in that window rather than discovering it
-# through an Inf, which is the same move its own negative-ndigits branch
-# already made. The reference reports "Float operation produced infinity".
+# through an Inf, as its negative-ndigits branch does. The reference reports
+# "Float operation produced infinity".
 #
-# Note the reference gets ndigits >= 309 RIGHT (round(2.0, 309) returns
-# 2.000...0 on both sides, and that case is in the corpus above agreeing) —
-# it fails only in the narrower window where the scale is finite but the
-# product is not, which is why this looks arbitrary from the outside.
+# The reference gets ndigits >= 309 right (round(2.0, 309) returns 2.000...0 on
+# both sides, and that case is in the corpus and agrees) — it fails only in the
+# narrower window where the scale is finite but the product is not.
 
 # The scale (1e308) is finite but 2.0*1e308 overflows. Answer is 2.0.
 int | float :: round(2.0, 308)
@@ -80,8 +78,8 @@ int | float :: round(1e300, 300)
 #
 # The reference answers 0. As a float64, 5000000000000000001 IS 5e18 — the
 # trailing 1 is not representable — so it sees an exact tie and rounds to the
-# even quotient. roundIntToDigits exists precisely to avoid that: its own doc
-# comment says it rounds "without going through float64 and its precision".
+# even quotient. roundIntToDigits avoids that: its doc comment says it rounds
+# "without going through float64 and its precision".
 #
 # The neighbouring cases agree on both sides, which isolates the cause:
 # round(5000000000000000000, -19) is a genuine tie and gives 0 on both, and
@@ -97,8 +95,7 @@ int :: round(5000000000000000001, -19)
 # reports "1-9:2", correcting the declared end (10) to the actual last
 # generated value (9).
 #
-# Investigated directly against openjd-model 0.11.1 rather than assumed. The
-# reference's correction is NOT the same "flatten every value and greedily
+# Measured against openjd-model 0.11.1. The reference's correction is NOT the same "flatten every value and greedily
 # collapse constant-delta runs" algorithm internal/openjd/expr already uses for
 # range_expr(list[int]) (canonicalRange in rangeexpr.go) — that algorithm
 # agrees with the reference on every range_expr([...]) case in this corpus, so
@@ -124,14 +121,13 @@ int :: round(5000000000000000001, -19)
 # range_expr) — it does not apply here, where the target admits range_expr and
 # no coercion occurs.
 #
-# Replicating the reference's specific, unspecified re-grouping algorithm would
-# be matching Beta reference behavior with no spec backing, which the project
-# rule is to never do. sqi's rangeexpr.go already documents the design
-# deliberately: "The TEXT is what the value carries; the integers are expanded
-# only when an operation needs them" (avoiding the cost of expanding a
-# potentially huge range just to store a value nothing may ever read). This
-# entry documents the resulting text divergence rather than chasing an
-# undocumented algorithm.
+# Replicating the reference's unspecified re-grouping algorithm would be
+# matching Beta reference behavior with no spec backing, which the project
+# never does. sqi's rangeexpr.go documents the design: "The TEXT is what the
+# value carries; the integers are expanded only when an operation needs them"
+# (avoiding the cost of expanding a potentially huge range just to store a
+# value nothing may ever read). This entry records the resulting text
+# divergence.
 
 # range_expr(string) text: sqi keeps "1-10:2" verbatim, the reference reports
 # "1-9:2" (end corrected to the actual last generated value) — see the shared
@@ -140,8 +136,8 @@ range_expr | string :: range_expr("1-10:2")
 
 # ── known gap in sqi: range_expr -> string does not canonicalize ────────────
 #
-# This is the OPPOSITE adjudication from the entry directly above, and the
-# difference is exactly which path is exercised. The entry above
+# This is the opposite adjudication from the entry directly above, and the
+# difference is which path is exercised. The entry above
 # (`range_expr | string :: range_expr("1-10:2")`) admits range_expr in its
 # target, so no coercion occurs — the bare VALUE's text is genuinely
 # unspecified by the base spec (3.4.1.1.1 defines only a value set, no
@@ -168,33 +164,28 @@ range_expr | string :: range_expr("1-10:2")
 # This is not a missing algorithm — internal/openjd/expr already has one:
 # canonicalRange (rangeexpr.go), applied to range_expr("1-10:2")'s expanded
 # integers ([1,3,5,7,9]), produces exactly "1-9:2", the reference's answer.
-# It is simply not wired into the range_expr -> string coercion (coerceScalar
-# in coerce.go, which calls v.String() and gets the raw payload text back) or
+# It is not wired into the range_expr -> string coercion (coerceScalar in
+# coerce.go, which calls v.String() and gets the raw payload text back) or
 # into the string operator rows (ops.go's OpAdd, same underlying conversion).
 #
-# Not fixed here: sub-project E owns the definitive interpolated string form
-# for every type, and Value.String()'s own doc comment in value.go already
-# defers this exact question to it — the identical reasoning that put the
-# list-of-strings JSON-quoting gap in this file rather than fixing it in B2.
-# Wiring canonicalRange into range_expr -> string needs to happen ONCE, for
+# Wiring canonicalRange into range_expr -> string has to happen once, for
 # every range_expr -> string path together (the coercion, both __add__ rows,
 # and the explicit string() function, which share the same conversion) —
-# doing it piecemeal for one call site here would leave the others
-# inconsistent with whichever one got fixed first.
+# fixing one call site alone would leave the others inconsistent with it.
 
 # range_expr -> string coercion: sqi returns the raw payload "1-10:2", the
 # reference returns the spec-mandated canonical form "1-9:2" — see the shared
-# explanation above. Known gap, deferred to sub-project E.
+# explanation above. Known gap.
 string | range_expr :: string(range_expr("1-10:2"))
 
 # range_expr -> string via the "+" operator (range_expr operand): sqi returns
 # "1-10:2!", the reference returns "1-9:2!" — see the shared explanation
-# above. Known gap, deferred to sub-project E.
+# above. Known gap.
 string | range_expr :: range_expr("1-10:2") + "!"
 
 # range_expr -> string via the "+" operator (range_expr as the right
 # operand): sqi returns "!1-10:2", the reference returns "!1-9:2" — see the
-# shared explanation above. Known gap, deferred to sub-project E.
+# shared explanation above. Known gap.
 string | range_expr :: "!" + range_expr("1-10:2")
 
 # ── sqi is right: isalnum composes, the reference contradicts itself ─────────
@@ -250,14 +241,14 @@ list[string] | string | nulltype :: re_search('ab', r'(?<n>a)b')
 # alphabetic characters and 'a' is a member of it. Python's re has no
 # POSIX-class support at all and instead reads "[:...:]" as ordinary literal
 # characters — the two engines disagree on what the construct MEANS, not
-# merely on whether it compiles, which is exactly why it sits outside the
+# merely on whether it compiles, which is why it sits outside the
 # intersection. See the shared explanation above.
 list[string] | string | nulltype :: re_search('a', r'[[:alpha:]]')
 
 # Intersection-rule refusal, negated form: [^[:alpha:]] is the idiomatic
-# spelling, not a corner case, and a POSITIONAL check used to miss it (only
-# "[[:" at the very start was caught). sqi now rejects it wherever "[:...:]"
-# appears in the class. The reference applies the REAL negated POSIX class —
+# spelling, not a corner case, and a check for "[[:" at the very start alone
+# would miss it. sqi rejects it wherever "[:...:]" appears in the class. The
+# reference applies the REAL negated POSIX class —
 # not-alphabetic, per the shared explanation above — so 'a' (which IS
 # alphabetic) is excluded: null (no match), not an error. Measured directly on
 # a string the two mechanisms actually distinguish: re_search(':',
@@ -265,9 +256,9 @@ list[string] | string | nulltype :: re_search('a', r'[[:alpha:]]')
 # negated POSIX class makes possible.
 list[string] | string | nulltype :: re_search('a', r'[^[:alpha:]]')
 
-# Intersection-rule refusal, POSIX class not the first member: same
-# positional-check gap as the negated form above, the other spelling that
-# used to sail through untranslated. The reference matches because it applies
+# Intersection-rule refusal, POSIX class not the first member: the other
+# spelling a check for "[[:" at the start alone would miss, as with the
+# negated form above. The reference matches because it applies
 # the REAL POSIX class again — the class is 'a' unioned with alphabetic, and
 # 'a' is a member of both. It is NOT a literal reading: under a literal
 # reading of "[a[:alpha:]]", 'a' alone does not match at all — verified
@@ -285,15 +276,15 @@ list[string] | string | nulltype :: re_search('a', r'[a[:alpha:]]')
 # construct; the reference's RE2-backed engine has the identical limitation but
 # resolves it by treating the whole class as never matching rather than
 # refusing to compile, so it returns null (no match) for a pattern that is not
-# well-formed in the dialect at all. This is a stated compliance gap, narrowed
-# during design from "any bracket" to negated brackets only — [\Wa] (no
-# negation) is rewritten as an alternation and works.
+# well-formed in the dialect at all. This is a stated compliance gap, limited
+# to negated brackets — [\Wa] (no negation) is rewritten as an alternation and
+# works.
 
 # [^\Wa] set-subtraction refusal: sqi rejects, the reference silently reports
 # no match. See the shared explanation above.
 list[string] | string | nulltype :: re_search('a!', r'[^\Wa]')
 
-# ── sqi is right: \W/\S next to a dash no longer forms an accidental range ───
+# ── sqi is right: \W/\S next to a dash does not form an accidental range ─────
 #
 # \W and \S are the two shorthands scanClass must LIFT out of a positive
 # class into an alternation branch, because Go cannot union a negated set
@@ -301,34 +292,33 @@ list[string] | string | nulltype :: re_search('a!', r'[^\Wa]')
 # shorthand's bytes from the class body (classBodyWithout), and dropping it
 # SPLICES its two former neighbours together — if one of them was a literal
 # "-", the splice could form a character RANGE the source never wrote.
-# "[a\W-c]" used to translate to "(?:[^\p{L}_\p{N}]|[a-c])", where Go reads
-# "a-c" as the range a..c and silently MATCHES "b"; "[0\W-9]" matched "5" the
-# same way. Neither character is a member under ANY reading of the source —
-# the source's own "-" sat between "\W" and "c" (or "0" and "9"), never
-# between the two literals that ended up flanking the range (code-review
-# finding). This is the same defect SHAPE escapeLeadingCaret already guards
-# on this same rebuilt class, for "^" instead of a range: dropping the
-# shorthand can promote an adjacent metacharacter into a new, unintended
-# meaning.
+# Translated naively, "[a\W-c]" becomes "(?:[^\p{L}_\p{N}]|[a-c])", where Go
+# reads "a-c" as the range a..c and matches "b"; "[0\W-9]" would match "5"
+# the same way. Neither character is a member under ANY reading of the
+# source — the source's own "-" sat between "\W" and "c" (or "0" and "9"),
+# never between the two literals that would end up flanking the range.
+# escapeLeadingCaret guards the same shape on this rebuilt class, for "^"
+# instead of a range: dropping the shorthand can promote an adjacent
+# metacharacter into a new, unintended meaning.
 #
-# The fix (classBodyWithout's own doc, via dashesAdjacentToDroppedShorthand)
-# escapes any "-" that sat immediately next to a dropped occurrence, so the
-# class reads as sqi's own permissive union instead — for "[a\W-c]":
+# classBodyWithout (via dashesAdjacentToDroppedShorthand) escapes any "-"
+# that sat immediately next to a dropped occurrence, so the class reads as
+# sqi's own permissive union instead — for "[a\W-c]":
 # {not-a-word-char} ∪ {a} ∪ {-} ∪ {c}, which does NOT contain "b". That
-# ruling covers the MATCH SET only: it says the fix is sound once sqi
-# accepts "[a\W-c]" or "[0\W-9]" at all. Whether sqi should accept either
-# pattern in the first place is a separate, still-open question — neither
-# Python's re nor the reference parses "[a\W-c]" or "[0\W-9]", so sqi
-# accepting them is a gap in the intersection rule's enforcement, not a
-# ruling in sqi's favour. That question is filed below, under "sqi
-# under-enforces the intersection", alongside the rest of the
-# shorthand-adjacent-to-dash family — see the corpus entries there.
+# ruling covers the MATCH SET only: the escaping is sound once sqi accepts
+# "[a\W-c]" or "[0\W-9]" at all. Whether sqi should accept either pattern in
+# the first place is a separate, open question — neither Python's re nor the
+# reference parses "[a\W-c]" or "[0\W-9]", so sqi accepting them is a gap in
+# the intersection rule's enforcement, not a ruling in sqi's favour. That
+# question is filed below, under "sqi under-enforces the intersection",
+# alongside the rest of the shorthand-adjacent-to-dash family — see the
+# corpus entries there.
 
 # ── sqi under-enforces the intersection: a shorthand adjacent to "-" ─────────
 #
 # This is NOT an affirmative ruling in sqi's favour, unlike the headings
-# above and below it — a future reader must not take the question as
-# settled. It is an unenforced corner of the intersection rule, shared by
+# above and below it, and the question is not settled. It is an unenforced
+# corner of the intersection rule, shared by
 # every one of the six Unicode shorthands (\d, \D, \s, \S, \w, \W), of
 # which \w is corpused in full below, \W is corpused for its mid-class form
 # only ("[a\W-c]", "[0\W-9]" below — its leading form "[\W-a]" is not), and
@@ -345,7 +335,7 @@ list[string] | string | nulltype :: re_search('a!', r'[^\Wa]')
 # different: classNeedsAlternation LIFTS them out of the class entirely
 # (see the "[a\W-c]"/"[0\W-9]" entries below), so nothing at all precedes
 # the "-" in the rebuilt class — the dash is safe there only because
-# dashesAdjacentToDroppedShorthand (classBodyWithout's own fix) escapes it,
+# dashesAdjacentToDroppedShorthand (in classBodyWithout) escapes it,
 # not because of Go's class-range rule. Neither Python's re nor the
 # reference accepts ANY of the six: both raise "bad character range" /
 # "regex parse error" on all of them, without exception. RFC 0006 defines
@@ -362,22 +352,18 @@ list[string] | string | nulltype :: re_search('a!', r'[^\Wa]')
 # translatePattern("[\w-a]") gives "[\p{L}_\p{N}-a]" today, and Go's own
 # class-range rule refuses to start a range after "\p{N}" the same way it
 # does after \d/\D/\s's own trailing property or class (\W/\S get their
-# protection a different way, from classBodyWithout's dash-escaping fix
-# instead — see the "[a\W-c]"/"[0\W-9]" entries below). sqi used to
-# translate "[\w-a]" into "[\p{L}\p{N}_-a]" — "_" LAST instead of
-# sandwiched — where Go reads "_-a" as the RANGE U+005F..U+0061 — silently
-# matching the backtick, which is neither a word character nor "a" under
-# any reading of the source (an earlier code-review finding, fixed by
-# moving "_" to the middle of the set, between the two \p{...} escapes, so
-# it can never be the first or last byte of what gets spliced in and can
-# never abut source text on either side — see unicodeWordSet's own doc in
-# repattern.go). The ordering is load-bearing, not incidental: putting "_"
-# back at either edge — alphabetizing the set, say — would re-create an
-# accidental range on that side and reopen this exact defect. That fix
-# stopped the silent wrong match; it did not, and was never meant to, make
-# sqi refuse the shape the way Python and the reference do. Closing the
-# family — for all six shorthands, refusing a bare "-" immediately
-# adjacent to any of them — is deferred to a later sub-project.
+# protection a different way, from classBodyWithout's dash escaping
+# instead — see the "[a\W-c]"/"[0\W-9]" entries below). With "_" LAST
+# ("[\p{L}\p{N}_-a]"), Go would read "_-a" as the RANGE U+005F..U+0061 and
+# match the backtick, which is neither a word character nor "a" under any
+# reading of the source. "_" sits in the middle of the set, between the two
+# \p{...} escapes, so it can never be the first or last byte of what gets
+# spliced in and can never abut source text on either side — see
+# unicodeWordSet's own doc in repattern.go. Putting "_" at either edge —
+# alphabetizing the set, say — would re-create an accidental range on that
+# side. The ordering prevents the wrong match; it does not make sqi refuse
+# the shape the way Python and the reference do. Refusing a bare "-"
+# immediately adjacent to any of the six shorthands is a known gap.
 #
 # [\w-a] compiles as \w's set unioned with "-" and "a": sqi returns null (no
 # match) for the backtick, which is in none of those three members; the
@@ -388,7 +374,7 @@ list[string] | string | nulltype :: re_search('`', r'[\w-a]')
 # 'a', the reference refuses to parse the pattern at all.
 list[string] | string | nulltype :: re_search('a', r'[\w-a]')
 
-# [a\W-c] no longer matches "b": sqi returns null (no match, "b" is in none
+# [a\W-c] does not match "b": sqi returns null (no match, "b" is in none
 # of the union's four members), the reference refuses to parse the pattern
 # at all.
 list[string] | string | nulltype :: re_search('b', r'[a\W-c]')
@@ -397,7 +383,7 @@ list[string] | string | nulltype :: re_search('b', r'[a\W-c]')
 # 'a', the reference refuses to parse the pattern at all.
 list[string] | string | nulltype :: re_search('a', r'[a\W-c]')
 
-# [0\W-9] no longer matches "5": same divergence as the [a\W-c] entry above,
+# [0\W-9] does not match "5": same divergence as the [a\W-c] entry above,
 # with digits either side of the dropped shorthand instead of letters.
 list[string] | string | nulltype :: re_search('5', r'[0\W-9]')
 
@@ -412,7 +398,7 @@ list[string] | string | nulltype :: re_search('0', r'[0\W-9]')
 # and escapes each embedded single quote as '"'"' (close the quote, emit a
 # literal single quote inside double quotes, reopen the quote). The reference
 # produces different text — a strategy splicing double- and single-quoted
-# segments together. That output is shell-equivalent and safe; it is simply
+# segments together. That output is shell-equivalent and safe; it is
 # not the named algorithm.
 
 # repr_sh quoting: sqi gives 'it'"'"'s' (shlex.quote's algorithm), the
@@ -434,7 +420,7 @@ string :: repr_sh("it's")
 # shared explanation above.
 string :: repr_py("it's")
 
-# ═══ C4: the path family ═════════════════════════════════════════════════════
+# ═══ The path family ═════════════════════════════════════════════════════════
 #
 # Everything below is a path case. The reference implementation's path family
 # evaluates under ITS OWN path_format, which is POSIX, so the corpus carries no
@@ -471,18 +457,17 @@ bool | path | list[string] | string :: path(path('//a/b').parts) == path('//a/b'
 # "s3://bucket/" therefore has parts ["s3://bucket", ""], exactly as
 # "s3://bucket/dir/" has ["s3://bucket", "dir", ""].
 #
-# THE REFERENCE CONTRADICTS ITSELF HERE, which is what makes this a defect
-# rather than a second reading. It renders "s3://bucket/" with the slash
+# The reference contradicts itself here, which makes this a defect rather than
+# a second reading. It renders "s3://bucket/" with the slash
 # intact, reports its parts as ["s3://bucket"] WITHOUT the empty component, and
 # reports "s3://bucket//" as ["s3://bucket", "", ""] — so one trailing slash
 # yields no component and two yield two. Its own parts consequently break RFC
 # 0006 line 767's path(p.parts) == p guarantee for this shape.
 #
-# sqi answered "s3://bucket" for the render until this task, which was a real
-# defect of its own (found by this corpus, fixed here): a path Value is
-# normalized at construction, so path("s3://bucket/") + "key" produced
-# "s3://bucketkey" — a different and entirely legitimate-looking bucket. The
-# render now agrees with the reference and only parts disagree.
+# Both sides render "s3://bucket/" with the slash; only parts disagree. The
+# render must keep it: a path Value is normalized at construction, so a render
+# of "s3://bucket" would make path("s3://bucket/") + "key" produce
+# "s3://bucketkey" — a different and legitimate-looking bucket.
 
 # A URI's trailing slash in parts: sqi keeps the empty component
 # ("s3://bucket|"), the reference drops it. See the explanation above.
@@ -522,11 +507,9 @@ bool | path | list[string] | string :: path(path('s3://bucket/').parts) == path(
 # contradiction, and the reference has it too: measured at openjd-model 0.11.1,
 # the reference's own parts for path('/a/\b/c') are ["/", "a", "\b", "c"] —
 # the backslash kept as an ordinary component — while its as_posix answers
-# "/a//b/c", a path with different parts. One value cannot be both. sqi's
-# engine makes the same two claims, so it had the same contradiction until this
-# was fixed; the fix is to make as_posix agree with parts, not the reverse. It
-# also restores agreement with sqi's own "a URI NORMALIZES NOTHING" ruling
-# recorded further up this file.
+# "/a//b/c", a path with different parts. One value cannot be both. sqi makes
+# as_posix agree with parts, not the reverse, which is also consistent with
+# the "a URI normalizes nothing" ruling recorded further up this file.
 
 # as_posix under POSIX: sqi is the identity (a backslash is an ordinary POSIX
 # filename character, and sqi's own parts say so), the reference rewrites it to
@@ -590,13 +573,12 @@ string | list[string] | path :: join(path('a.').suffixes, '|')
 #
 # The reference lets a '#' run swallow the remainder of the stem, which in one
 # of the rows below DESTROYS a literal character that was in the input:
-# with_number("##a3", 7) comes back "07" there, and the "a" is simply gone.
+# with_number("##a3", 7) comes back "07" there, and the "a" is gone.
 # That is a reference defect against its own specification's wording, not a
-# second valid reading of it, and it was adjudicated as such during C4 Task 8's
-# review. Do not change sqi to match it. corpus.txt deliberately also carries
-# the rows where the two AGREE ("##b##", "3###", "#3#", "%04d3", "##%04d"), so
-# a later change that overcorrects toward the reference fails on those instead
-# of silently trading one set of answers for the other.
+# second valid reading of it. Do not change sqi to match it. corpus.txt also
+# carries the rows where the two AGREE ("##b##", "3###", "#3#", "%04d3",
+# "##%04d"), so a later change that overcorrects toward the reference fails on
+# those instead of trading one set of answers for the other.
 
 # Hash run then digits: sqi replaces only the digit run ("###007"), the
 # reference swallows the hashes too ("007"). See the explanation above.
@@ -629,8 +611,7 @@ string | int :: with_number('12##34', 7)
 
 # A hash run with a NON-digit and no candidate after it: sqi "07a" keeps the
 # trailing "a", the reference drops it ("07"). The same swallow rule as the
-# rows above, on the shape C4 Task 8 left unmeasured. See the explanation
-# above.
+# rows above. See the explanation above.
 string | int :: with_number('##a', 7)
 
 # ── sqi is right: an oversized %0Nd width is an error ────────────────────────
@@ -657,12 +638,12 @@ string | int :: with_number('f_%0999999999999999999999d.exr', 1)
 # "a/b"). The reference answers false, and errors from relative_to, for every
 # receiver against ".", relative ones included. Measured on python3 3.14.6.
 #
-# The ABSOLUTE direction of the same question was a genuine sqi defect this
-# corpus found and this task fixed: an unguarded prefix test over parts() made
-# every path relative to the part-less ".", so path("/a/b").relative_to(path(
-# ".")) answered "/a/b" — a "relative" result that is absolute. sqi now agrees
-# with CPython and the reference on those rows, and they are in corpus.txt as
-# agreements rather than here.
+# The ABSOLUTE direction of the same question needs a guard: an unguarded
+# prefix test over parts() would make every path relative to the part-less
+# ".", so path("/a/b").relative_to(path(".")) would answer "/a/b" — a
+# "relative" result that is absolute. sqi agrees with CPython and the
+# reference on those rows, and they are in corpus.txt as agreements rather
+# than here.
 
 # A relative receiver against ".": sqi true (CPython's answer), the reference
 # false. See the explanation above.
@@ -688,7 +669,7 @@ path | string :: path('a/b').relative_to(path('.'))
 # Expression-Language section 2.1.5 says the join matches pathlib, and in this
 # engine a path Value is normalized BY CONSTRUCTION — Value.Path re-parses — so
 # a non-normalizing join would break the path(p.parts) == p guarantee the whole
-# path engine is built on. Ruled a reference defect during C4 Task 9; sqi
+# path engine is built on. The reference's behavior is a defect; sqi
 # normalizes. Every sqi answer below was verified against CPython 3.14.6.
 
 # Three leading slashes on the child: sqi "/b" (PurePosixPath collapses three
@@ -738,10 +719,9 @@ path | string :: path('//') / 'x'
 
 # ── sqi is right: a trailing slash on the JOIN'S CHILD is not a part ─────────
 #
-# NOT the same defect as the join-normalization family above, and it was
-# checked rather than assumed: for a URI the reference is internally consistent
-# here (its .parts reports the trailing "" too), so the self-contradiction that
-# convicted the family above is absent.
+# NOT the same defect as the join-normalization family above: for a URI the
+# reference is internally consistent here (its .parts reports the trailing ""
+# too), so the self-contradiction that decided the family above is absent.
 #
 # The specification has exactly ONE sentence on this, identical at
 # Expression-Language line 1249 and RFC 0006 line 204:
@@ -750,24 +730,19 @@ path | string :: path('//') / 'x'
 #   `pathlib` behavior), so `path("s3://bucket/dir/") / "file"` produces
 #   `s3://bucket/dir/file`."
 #
-# It is NOT decisive on its own, and two earlier revisions of this reason each
-# got that wrong in a different direction: the first claimed the worked example
-# settled it (the example is that sentence's own "so" tail, and both it and the
-# sentence rule on the LEFT operand, while these cases are about the CHILD);
-# the second quoted a "general clause beside it" that does not exist — the same
-# sentence with "on the left operand" excised.
+# It is NOT decisive on its own: the worked example is that sentence's own "so"
+# tail, and both rule on the LEFT operand, while these cases are about the
+# CHILD. There is no general clause beside it covering either operand.
 #
-# What actually settles it is the parenthetical, "matching `pathlib`
-# behavior". pathlib normalizes a trailing slash on EITHER operand:
-# PurePosixPath("/a/b") / "c/" is PurePosixPath("/a/b/c"), exactly as
-# PurePosixPath("/a/b/") / "c" is. The sentence names the left operand because
-# that is the side its example needs; the behavior it defers to does not
-# distinguish them. A trailing slash on the child is therefore not a component
-# either, so
-# path("s3://b/d/") / "a/" is "s3://b/d/a". Adjudicated in sqi's favor during
-# C4 Task 9's review. Note this rules on a trailing slash the JOIN consumes;
-# the one a URI carries through path() alone is a component, and is kept — see
-# the "s3://bucket/" entries higher up.
+# What settles it is the parenthetical, "matching `pathlib` behavior". pathlib
+# normalizes a trailing slash on EITHER operand: PurePosixPath("/a/b") / "c/"
+# is PurePosixPath("/a/b/c"), exactly as PurePosixPath("/a/b/") / "c" is. The
+# sentence names the left operand because that is the side its example needs;
+# the behavior it defers to does not distinguish them. A trailing slash on the
+# child is therefore not a component either, so path("s3://b/d/") / "a/" is
+# "s3://b/d/a". Note this rules on a trailing slash the JOIN consumes; the one
+# a URI carries through path() alone is a component, and is kept — see the
+# "s3://bucket/" entries higher up.
 
 # A child with a trailing slash: sqi consumes it per section 2.1.5, the
 # reference keeps "s3://b/d/a/". See the explanation above.
@@ -778,7 +753,7 @@ path | string :: path('s3://b/d/') / 'a/'
 path | string :: path('s3://b/d/') / 'a//b'
 
 # The joined value's parts, which is where the reference is self-consistent and
-# the two simply disagree about whether the child's trailing slash was a
+# the two disagree about whether the child's trailing slash was a
 # component: sqi "s3://b|d|a", the reference "s3://b|d|a|". See the explanation
 # above.
 string | list[string] | path :: join((path('s3://b/d/') / 'a/').parts, '|')
@@ -828,31 +803,30 @@ path | string :: path('/a/b') + path('c')
 # textually either: it correctly answers false for "s3://bb/d" against the base
 # "s3://b", which a string-prefix test would call true.
 #
-# THE ONE SPEC SENTENCE THAT CUTS AGAINST THIS, stated rather than passed over.
-# Expression-Language's PathMappingRule section says: "For `URI` rules,
+# One spec sentence cuts against this. Expression-Language's PathMappingRule
+# section says: "For `URI` rules,
 # matching uses string prefix comparison on path boundaries — the input must
 # start with the source URI and the next character (if any) must be `/`." Read
 # as a general rule that would decide the self case for the reference:
 # "s3://b" does not start with "s3://b/". It is not a general rule. It is
 # scoped to PathMappingRule — a session-time transformation whose source is a
 # literal string, whose whole point is to preserve "the exact URI content
-# without normalization", and which is sub-project D's, not this function
-# library's. RFC 0006's own row for is_relative_to says only "checks prefix
+# without normalization", and which belongs to path mapping, not this function
+# library. RFC 0006's own row for is_relative_to says only "checks prefix
 # match on the full URI" and says nothing about boundaries or about the next
 # character. Applying the mapping-rule sentence to these two functions would
 # also make them the ONLY path operations in the library that do not consume a
 # trailing separator, contradicting section 2.1.5's treatment of the same kind
-# of operand. So: cited, weighed, and ruled inapplicable — not unnoticed.
+# of operand. It is therefore ruled inapplicable here.
 #
 # The same clause SUPPORTS the entries below about a bare "scheme://" base, and
 # is cited there too.
 #
 # The RUN entries below are the same ruling reached by a base terminated by
-# SEVERAL separators. They exist because round 1 changed behavior for that
-# whole class and covered none of it: every base in that round's grid ended in
-# at most one separator, so a one-step trim of the base stayed green
-# everywhere. The reference requires the receiver to start with the base's
-# literal text, so it refuses each of them.
+# SEVERAL separators. They cover what a one-step trim of the base would get
+# wrong while every single-separator case still agreed. The reference requires
+# the receiver to start with the base's literal text, so it refuses each of
+# them.
 
 # The base's trailing slash consumed, self case: sqi true, the reference false
 # even though it consumes the same slash for every deeper receiver. See the
@@ -922,8 +896,7 @@ path | string :: path('s3://b/d/').relative_to(path('s3://b'))
 # parts[0] ("s3://bucket"). path("s3://").parts is ["s3://"] on both sides —
 # measured — so the base's sole part is "s3://" and the receiver's first part
 # is "s3://b", and those are not equal. An opaque identifier is not a container
-# of its own substrings, which is the entire reason the specification calls it
-# opaque.
+# of its own substrings, which is why the specification calls it opaque.
 #
 # The reference reports these as prefix matches, contradicting the parts it
 # itself computes for the same two values — the same shape as its
@@ -933,16 +906,16 @@ path | string :: path('s3://b/d/').relative_to(path('s3://b'))
 # consequence of the reference's answer is that a base naming NO bucket matches
 # every bucket in the scheme.
 #
-# The specification's ONLY explicit statement about URI prefix matching agrees
-# with sqi here, and is worth citing even though it is scoped to a different
-# feature. Expression-Language's PathMappingRule section: "For `URI` rules,
-# matching uses string prefix comparison on path boundaries — the input must
-# start with the source URI and the next character (if any) must be `/`."
-# "s3://b/d" does start with "s3://", but the next character is "b", not "/",
-# so even the most textual reading available in the specification refuses these.
-# (That clause is PathMappingRule's and therefore sub-project D's, so it is not
-# decisive on its own — see the entries further up, where it cuts the other way
-# and is ruled inapplicable for the same reason.)
+# The specification's only explicit statement about URI prefix matching agrees
+# with sqi here, though it is scoped to a different feature.
+# Expression-Language's PathMappingRule section: "For `URI` rules, matching
+# uses string prefix comparison on path boundaries — the input must start with
+# the source URI and the next character (if any) must be `/`." "s3://b/d" does
+# start with "s3://", but the next character is "b", not "/", so even the most
+# textual reading available in the specification refuses these. (That clause
+# is scoped to PathMappingRule, so it is not decisive on its own — see the
+# entries further up, where it cuts the other way and is ruled inapplicable
+# for the same reason.)
 
 # An empty authority as a base: sqi false (the authorities differ), the
 # reference true. See the explanation above.
@@ -971,7 +944,7 @@ path | string :: path('s3://b').relative_to(path('s3://'))
 # .with_stem('x') is '/a/x', .with_suffix('.x') is '/a/..b.x', .with_suffix('')
 # is '/a/..b', PurePosixPath('/a/b.').with_stem('x') is '/a/x.', .with_suffix(
 # '.x') is '/a/b.x', .with_suffix('') is '/a/b' — not derived from the property
-# rule and assumed to carry over.
+# rule.
 #
 # Note the third row: this is the one place in the whole path family where the
 # REFERENCE ERRORS and sqi returns a value. Its pre-3.14 split makes '..b' a
@@ -1055,5 +1028,5 @@ path | string :: path('s3://b/d.').with_suffix('')
 
 # The suffixes property for a bare trailing dot: sqi reports ['.'], the
 # reference reports []. Wrapped in join() so this compares the VALUES rather
-# than the list-of-strings rendering gap. See the explanation above.
+# than the list-of-strings rendering. See the explanation above.
 string | list[string] | path :: join(path('b.').suffixes, '|')

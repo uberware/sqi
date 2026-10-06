@@ -5,11 +5,9 @@ package fmtres
 // This file builds the EXPR phase-3 symbol table: the worker-side analog of
 // internal/openjd's symbolsFor (exprcheck.go), which the worker cannot call
 // directly (it takes a *openjd.JobTemplate, and the worker has no template —
-// only the assignment). See EXPR sub-project E4a's design spec, section 3,
-// whose table is the contract every family below implements, and section
-// 3.1 for why parameter TYPES travel on the assignment (protocol.AssignMsg's
-// JobParameterTypes/ParameterTypes fields) rather than being inferred from
-// value text.
+// only the assignment). Parameter TYPES travel on the assignment
+// (protocol.AssignMsg's JobParameterTypes/ParameterTypes fields) rather than
+// being inferred from value text.
 //
 // Two builders, mirroring the split TaskScope/EnvScope already establish for
 // the base-spec (non-EXPR) resolution path in fmtres.go:
@@ -32,10 +30,8 @@ package fmtres
 // one thing that distinguishes phase 3 from phases 1 and 2: "the same walk
 // with a different table," now with every placeholder replaced by a value.
 //
-// THREE DIVERGENCES FROM PHASE 2 ARE CORRECT AND INTENDED, written down here
-// and in docs/openjd-extensions/expr.md ("Deliberate phase-2/phase-3
-// divergences") so a reviewer does not have to re-derive them and conclude
-// they are bugs:
+// THREE DIVERGENCES FROM PHASE 2 ARE INTENDED (also listed in
+// docs/openjd-extensions/expr.md, "Deliberate phase-2/phase-3 divergences"):
 //
 //  1. Session.PathMappingRulesFile is bound CONDITIONALLY (only when the
 //     session has rules), matching the pre-EXPR addPathMappingKeys rule --
@@ -46,22 +42,17 @@ package fmtres
 //     Section 1.2.2 requires it; phase 2 has no session, hence no rules, to
 //     apply -- paramValueForBinding below.
 //
-// FIX ROUND 1 (Task 4 review): Param.<name>/Task.Param.<name> for a PATH-
-// declared parameter are now bound with the assignment's PathMap rules
-// ALREADY APPLIED, via [mapPathParamValue] (expres.go) -- section 1.2.2:
-// "Param.<name> ... path mapping rules already applied", RawParam carrying
-// "the original unmapped value". Earlier revisions of this file bound BOTH
-// from identical, unmapped raw text, which is silently wrong on every
-// platform (path mapping never applied to a PATH parameter reached through
-// Param./Task.Param. at all, apply_path_mapping() being the only way to
-// invoke it) and additionally wrong in a Windows-specific way had mapping
-// been bolted on at the TEMPLATE level instead of here: matching a rule
-// against an already-host-flavor-rendered string (a PathNative Value's
-// stringified form) rather than the untouched submitted text would make a
-// POSIX-sourced rule silently fail to match on a Windows worker. Binding the
-// mapped value from raw, submitted text -- before any flavor-specific
-// rendering happens -- avoids that: SourceFormat matching happens on the
-// form the rule itself declares, not on a re-rendered value.
+// Param.<name>/Task.Param.<name> for a PATH-declared parameter are bound with
+// the assignment's PathMap rules ALREADY APPLIED, via [mapPathParamValue]
+// (expres.go) -- section 1.2.2: "Param.<name> ... path mapping rules already
+// applied", RawParam carrying "the original unmapped value". The mapping is
+// applied here, to the raw submitted text, rather than at the TEMPLATE level:
+// matching a rule against an already-host-flavor-rendered string (a
+// PathNative Value's stringified form) would make a POSIX-sourced rule fail
+// to match on a Windows worker. Binding the mapped value from raw, submitted
+// text -- before any flavor-specific rendering happens -- avoids that:
+// SourceFormat matching happens on the form the rule itself declares, not on
+// a re-rendered value.
 
 import (
 	"encoding/json"
@@ -88,10 +79,7 @@ import (
 // (SESSION and TASK scopes), the semantics match the host's operating
 // system." Phase 3 IS a host context -- it runs ON THE WORKER HOST, against
 // a real session directory -- so the flavor is the host's, and phase 2, which
-// runs at TEMPLATE scope, correctly keeps POSIX. (expr.PathFormat's own doc
-// comment anticipates this -- "Nothing in sqi selects [PathNative] yet;
-// sub-project E does, for host contexts" -- but it is a note about sqi's
-// wiring, not the authority; section 1.2.1 is.)
+// runs at TEMPLATE scope, correctly keeps POSIX.
 //
 // Using PathNative here means a worker running on
 // Windows gets Windows path semantics for its own session paths, matching
@@ -130,16 +118,13 @@ const pathFlavor = expr.PathNative
 // invalid -- see [EmbeddedFileName] -- or when a PATH parameter's value
 // cannot be mapped.
 //
-// budget is EXPR sub-project E4d's Task 2 addition, and it is used here
-// PURELY AS THE LIMITS CARRIER: nothing in symbol building charges positions
-// or retained bytes (those dimensions belong to the callers that resolve
-// fields and evaluate let: blocks), but binding a PATH parameter runs a real
-// apply_path_mapping evaluation through [mapPathParamValue], and that
-// evaluation must be metered by the SAME operator-configured per-evaluation
-// limits as every other one in this package. Before Task 2 it was the one
-// evaluator here that no budget reached, so an operator tightening the memory
-// limit would have seen every other position honor it and this one silently
-// keep the compiled-in default. It is a REQUIRED parameter; passing nil (this
+// budget is used here PURELY AS THE LIMITS CARRIER: nothing in symbol
+// building charges positions or retained bytes (those dimensions belong to
+// the callers that resolve fields and evaluate let: blocks), but binding a
+// PATH parameter runs a real apply_path_mapping evaluation through
+// [mapPathParamValue], and that evaluation must be metered by the SAME
+// operator-configured per-evaluation limits as every other one in this
+// package. It is a REQUIRED parameter; passing nil (this
 // package's own unit tests) meters against the defaults -- see
 // [budgetOrDefault], which also documents why a production caller must not.
 func TaskSymbols(
@@ -193,24 +178,23 @@ func TaskSymbols(
 // entry came from), so this function trusts it directly rather than
 // guessing.
 //
-// FIX ROUND 2 (E4a whole-branch review, Critical 1): msg.StepTemplateLet is
-// evaluated and folded in here, for a step environment only. Template
+// msg.StepTemplateLet is evaluated and folded in here, for a step environment
+// only. Template
 // Schemas section 3.6.2 row 1 makes a <StepTemplate>.let binding's names
 // available in stepEnvironments, hostRequirements, parameterSpace AND
 // script -- not only in the script -- and section 3.6's prose states the
 // same rule from the other side ("a let binding in a <StepTemplate>'s
 // stepEnvironments cannot shadow a binding from that step's let block").
-// Phase 2 already implements it: checkStepExpressions passes stepLet as
+// Phase 2 implements it too: checkStepExpressions passes stepLet as
 // checkEnvironmentExpressions' outerLet, which folds it into baseSyms
 // BEFORE anything else and therefore behind variables, embedded files,
-// onEnter and onExit alike. Phase 3 did not, so a template phase 2 accepted
-// with zero errors failed every task in the step with unknown symbol
+// onEnter and onExit alike. Without it here, a template phase 2 accepted
+// with zero errors would fail every task in the step with unknown symbol
 // "<name>" at enterOne -- naming a symbol the submitter had been told was
-// valid -- and failed teardown the same way on the exit path.
+// valid -- and fail teardown the same way on the exit path.
 //
 // It is folded in HERE, inside the table builder, rather than exposed as a
-// second "apply" step the caller could forget, precisely because forgetting
-// it is the defect being fixed. That also mirrors phase 2 structurally:
+// second "apply" step the caller could forget. That also mirrors phase 2 structurally:
 // checkEnvironmentExpressions treats outerLet as part of the table an
 // environment STARTS from (baseSyms := clone(outerLet); then symbolsFor's
 // own additions), not as a let: block the environment itself evaluates. The
@@ -220,9 +204,8 @@ func TaskSymbols(
 // observable.
 //
 // JOB environments get NOTHING from this: they have no enclosing step, so
-// there is no step-template let block in scope, and sub-project E3's
-// section 2.2 ruling plus the
-// 7.3.1--step-name-in-job-environment-let.invalid.yaml fixture require the
+// there is no step-template let block in scope, and the
+// 7.3.1--step-name-in-job-environment-let.invalid.yaml fixture requires the
 // negative half to hold. env.StepEnvironment is the same bit Step.Name
 // keys off, for the same reason.
 //
@@ -262,7 +245,7 @@ func EnvSymbols(
 // bindJobParamSymbols binds Param.<name> and RawParam.<name> for every entry
 // in msg.JobParameters, typed from msg.JobParameterTypes[name] via
 // expr.JobParamTypes -- the SAME mapping internal/openjd's phase-2
-// symbolsFor uses (exprcheck.go's jobParamTypes now delegates to it), so a
+// symbolsFor uses (exprcheck.go's jobParamTypes delegates to it), so a
 // declared type cannot type differently between the two phases. A name
 // missing from JobParameterTypes floors to expr.TAny via the same
 // unrecognized-spelling rule expr.JobParamTypes applies to any unparseable
@@ -281,8 +264,8 @@ func EnvSymbols(
 // bindTaskParamSymbols below.
 //
 // An error is returned only when mapping a PATH parameter's value fails --
-// see [mapPathParamValue]; ordinary INT/FLOAT/STRING parsing failures still
-// fall back to expr.Unresolved exactly as before, unchanged.
+// see [mapPathParamValue]; ordinary INT/FLOAT/STRING parsing failures fall
+// back to expr.Unresolved.
 func bindJobParamSymbols(msg *protocol.AssignMsg, syms expr.MapSymbols, opts []expr.Option) error {
 	return bindParamSymbols(
 		syms, "job", "Param.", "RawParam.",
@@ -295,20 +278,18 @@ func bindJobParamSymbols(msg *protocol.AssignMsg, syms expr.MapSymbols, opts []e
 // expr.TaskParamType.
 //
 // Unlike job parameters, sqi's assignment carries only ONE value per
-// task-parameter name (no separate raw-vs-path-mapped wire variant), so
-// before this fix round Task.Param and Task.RawParam were bound from
-// IDENTICAL raw text. That was always wrong for a PATH-declared task
-// parameter -- section 1.2.2 gives Task.RawParam the SAME type as
-// Task.Param (unlike the job-parameter pair, which degrades to string) but
-// still distinguishes them by whether mapping was applied -- and is fixed
-// the same way as bindJobParamSymbols: Task.Param.<name> goes through
-// [paramValueForBinding] (mapped when t is TPath), Task.RawParam.<name>
+// task-parameter name (no separate raw-vs-path-mapped wire variant). For a
+// PATH-declared task parameter, section 1.2.2 gives Task.RawParam the SAME
+// type as Task.Param (unlike the job-parameter pair, which degrades to
+// string) but still distinguishes them by whether mapping was applied, so
+// this works the same way as bindJobParamSymbols: Task.Param.<name> goes
+// through [paramValueForBinding] (mapped when t is TPath), Task.RawParam.<name>
 // stays built straight from raw (unmapped), even when both share the exact
 // same declared TYPE.
 //
 // That last sentence is the ONLY thing separating this function from
 // [bindJobParamSymbols], and the types func it passes to [bindParamSymbols] is
-// where it is now written down: returning expr.TaskParamType's one type TWICE
+// where it is written down: returning expr.TaskParamType's one type TWICE
 // renders §1.2.2's "a task parameter's RawParam keeps the declared type; a
 // job parameter's degrades to string" as one visible line, rather than as a
 // difference a reader has to spot between two loops.
@@ -329,10 +310,6 @@ func bindTaskParamSymbols(msg *protocol.AssignMsg, syms expr.MapSymbols, opts []
 // the [paramValueForBinding] call for the mapped Param twin, the
 // expr.ValueFromText call for the unmapped Raw twin, and the error wrapping are
 // identical for both families.
-//
-// It is one function because the two were both WRONG IN THE SAME WAY and had to
-// be fixed twice -- this file's FIX ROUND 1 note records binding both twins
-// from identical unmapped text in each of them.
 //
 // values maps a parameter name to its raw submitted text; declaredTypes maps
 // the same names to their declared type spellings; types turns one spelling
@@ -375,15 +352,9 @@ func bindParamSymbols(
 // Equal, not Code alone, so a bare path[T]-shaped union or unresolved wrapper
 // does not accidentally match a scalar-only branch.
 //
-// This comment used to continue: "LIST[PATH] job parameters stay
-// expr.Unresolved regardless (sqi's template model cannot declare a concrete
-// list value yet), so there is no concrete LIST[PATH] value for path mapping
-// to ever run against today." That was true when written and was falsified by
-// EXPR sub-project F1, which taught expr.ValueFromText to decode lists. The
-// consequence was a real defect -- a LIST[PATH] resolved UNMAPPED, silently,
-// against RFC 0007 -- and mapListPathParamValue below is the fix. Kept rather
-// than deleted because it is the record of a correct claim outliving its
-// premise.
+// A LIST[PATH] parameter is mapped element by element through
+// [mapListPathParamValue]; RFC 0007 requires it, and without that branch a
+// LIST[PATH] would resolve UNMAPPED.
 //
 // opts is the pre-built [ExprEvalOptions] slice for this table -- see
 // [mapPathParamValue] for why it is passed down rather than rebuilt per value.
@@ -485,22 +456,19 @@ func bindFileSymbols(syms expr.MapSymbols, prefix string, files []protocol.Embed
 	return nil
 }
 
-// ─── let bindings (EXPR sub-project E4a, Task 5) ────────────────────────────
+// ─── let bindings ───────────────────────────────────────────────────────────
 //
-// Section 2 of the design spec (docs/superpowers/specs/
-// 2026-08-09-expr-phase3-worker-design.md) explains why a let: block cannot
-// be pre-resolved server-side: a StepScript or EnvironmentScript binding may
-// reference Task.Param.*, Task.File.*, Env.File.* or Session.* -- none of
-// which exist until a session directory has been created on a specific
-// worker host. So Task 2 shipped the RAW binding strings on the wire
-// (AssignMsg.StepTemplateLet/StepScriptLet, AssignEnvironment.Let), and this
-// section re-evaluates them here, against the phase-3 tables TaskSymbols/
-// EnvSymbols already build -- the same "re-evaluate, don't transport a
-// value" shape phase 2 already uses for job/task parameters.
+// A let: block cannot be pre-resolved server-side: a StepScript or
+// EnvironmentScript binding may reference Task.Param.*, Task.File.*,
+// Env.File.* or Session.* -- none of which exist until a session directory
+// has been created on a specific worker host. So the RAW binding strings
+// travel on the wire (AssignMsg.StepTemplateLet/StepScriptLet,
+// AssignEnvironment.Let), and this section re-evaluates them here, against
+// the phase-3 tables TaskSymbols/EnvSymbols build -- the same "re-evaluate,
+// don't transport a value" shape phase 2 uses for job/task parameters.
 //
 // The mechanism mirrors internal/openjd/exprcheck.go's checkLetBindings,
-// which is this function's phase-1/phase-2 counterpart and was read first,
-// as the brief for this task requires: bindings are evaluated in DECLARATION
+// which is this function's phase-1/phase-2 counterpart: bindings are evaluated in DECLARATION
 // ORDER, each successful result is inserted into syms so a LATER binding (in
 // the same block, or -- for the step-level pair -- the following block) can
 // reference it, a FAILED binding is not inserted (so a later reference to it
@@ -515,21 +483,17 @@ func bindFileSymbols(syms expr.MapSymbols, prefix string, files []protocol.Embed
 // <UserIdentifier> grammar keeps the two namespaces disjoint, and
 // splitLetBinding deliberately does not re-check that grammar on wire data).
 //
-// FIX ROUND 2 (whole-branch review, Important 3): the lookup is against the
-// table the results are MERGED INTO, which for the step-template block is
-// NOT the (narrowed) table the block is evaluated against. Fix round 1 added
-// the ScopeStepTemplate narrowing and left the shadow check keyed off the
-// narrowed view, which re-opened a hole a previous reviewer had verified
-// closed: a binding named for a spec symbol OUTSIDE the projection --
-// "Session.WorkingDirectory = \"/pwned\"", "Task.Param.N = 999" -- passed the
-// check (the projection does not hold those keys) and then OVERWROTE the real
-// symbol on merge, so an onRun rendered "/pwned" and "999" with no error at
-// all. Only "Step.Name", which the projection does hold, was reported.
-// evalLetBindings therefore takes the merge target separately, as outer.
-// No privilege boundary moved -- a submitted template cannot reach this,
-// parseLetBinding rejecting a dotted name at submit -- but the invariant
-// "a let binding never silently replaces a spec symbol" is not one to hold
-// only by accident of which table was handy.
+// The lookup is against the table the results are MERGED INTO, which for the
+// step-template block is NOT the (narrowed) table the block is evaluated
+// against. Keyed off the narrowed view, a binding named for a spec symbol
+// OUTSIDE the projection -- "Session.WorkingDirectory = \"/pwned\"",
+// "Task.Param.N = 999" -- would pass the check (the projection does not hold
+// those keys) and then OVERWRITE the real symbol on merge, so an onRun would
+// render "/pwned" and "999" with no error at all. evalLetBindings therefore
+// takes the merge target separately. No privilege boundary depends on it -- a
+// submitted template cannot reach this, parseLetBinding rejecting a dotted
+// name at submit -- but the invariant "a let binding never silently replaces
+// a spec symbol" should not hold only by accident of which table was handy.
 //
 // Three deliberate differences from checkLetBindings, all because phase 3 is
 // an EXECUTION phase with no author to hand a JSON-pointer-keyed diagnostic
@@ -537,19 +501,13 @@ func bindFileSymbols(syms expr.MapSymbols, prefix string, files []protocol.Embed
 //
 //  1. checkHostOnlyFunctions has no counterpart here.
 //
-//     FIX ROUND 1 (Task 5 review): an earlier revision of this comment
-//     claimed phase 3 is "always a host context in the sense
-//     Scope.IsHostContext means" -- that is FALSE and was corrected.
-//     IsHostContext (scope.go) is a POSITIVE list of ScopeJobEnvironment,
-//     ScopeStepEnvironment and ScopeStepScript; ScopeStepTemplate --
-//     StepTemplateLet's own phase-1/2 scope, and that constant's own doc
-//     comment names it as exactly the case that exposed an earlier
-//     negation-based IsHostContext as wrong -- returns false. A
-//     StepTemplateLet binding is evaluated at submission time server-side,
-//     specifically BECAUSE it must not see host state, and this file's own
-//     stepTemplateLetScope (below) now enforces that at phase 3 too, so the
-//     claim "there is no non-host-context phase-3 position" was simply
-//     wrong on its own terms even before considering functions.
+//     Phase 3 is NOT always a host context in the sense Scope.IsHostContext
+//     means. IsHostContext (scope.go) is a POSITIVE list of
+//     ScopeJobEnvironment, ScopeStepEnvironment and ScopeStepScript;
+//     ScopeStepTemplate -- StepTemplateLet's own phase-1/2 scope -- returns
+//     false. A StepTemplateLet binding is evaluated at submission time
+//     server-side, specifically BECAUSE it must not see host state, and this
+//     file's own stepTemplateLetScope (below) enforces that at phase 3 too.
 //
 //     The missing gate is still safe, for a narrower reason: hostOnlyFunctions
 //     (exprcheck.go) has exactly one member, apply_path_mapping, which is
@@ -557,11 +515,11 @@ func bindFileSymbols(syms expr.MapSymbols, prefix string, files []protocol.Embed
 //     anything), and anyone able to forge StepTemplateLet already controls
 //     Command/Args on the same unauthenticated AssignMsg -- gating THIS one
 //     function here would not shrink what a forged assignment can already
-//     do. STANDING CAVEAT: if a second, side-effecting function ever joins
+//     do. CAVEAT: if a second, side-effecting function ever joins
 //     hostOnlyFunctions, this reasoning stops holding and this file gains no
-//     gate of its own automatically -- nothing here would fail, silently.
-//     Revisit this comment (and consider a real checkHostOnlyFunctions
-//     counterpart) the day hostOnlyFunctions grows a second member.
+//     gate of its own automatically -- nothing here would fail. Revisit this
+//     comment (and consider a real checkHostOnlyFunctions counterpart) if
+//     hostOnlyFunctions grows a second member.
 //  2. Errors are collected and returned as ONE joined error (errors.Join),
 //     not a ValidationErrors slice keyed by JSON pointer. A worker task fails
 //     with a single error message, not a structured multi-error report meant
@@ -581,13 +539,12 @@ func bindFileSymbols(syms expr.MapSymbols, prefix string, files []protocol.Embed
 //
 // The 50-binding cap (maxLetBindings, mirroring internal/openjd/validate.go's
 // constant of the same name) is enforced here exactly as checkLetBindings
-// enforces it, for the identical reason: sub-project E3's whole-branch review
-// found a 183 KB template body reaching 6.9 GB in 1.45s because the cap was
-// REPORTED (validateLetElementCounts) but never ENFORCED at the evaluator
-// that actually retains the bindings' values.
+// enforces it, for the identical reason: a cap that is REPORTED
+// (validateLetElementCounts) but not ENFORCED at the evaluator that retains
+// the bindings' values let a 183 KB template body reach 6.9 GB in 1.45s.
 //
-// Which of the two server-side halves does what matters, and an earlier
-// revision of this comment got it backwards. checkLetBindings' enforcement
+// Which of the two server-side halves does what matters.
+// checkLetBindings' enforcement
 // TRUNCATES: it evaluates the first 50 and silently drops the rest, exactly
 // as this function does, which is a COST bound, not a rejection.
 // validateLetElementCounts is what actually REJECTS the template -- and
@@ -610,17 +567,15 @@ const maxLetBindings = 50
 // defaultLetRetainedBytes is the DEFAULT cap on the total section 1.3.9 size
 // of everything ONE phase-3 symbol table holds live, measured across every
 // let: block evaluated into it. The enforced value is
-// [ExprLimits.LetRetainedBytes], carried on the assignment's own budget --
-// EXPR sub-project E4d's Task 2 made it operator configuration, which is
-// exactly what the "TWO ROUGH EDGES" paragraph at the end of this comment
-// asked for.
+// [ExprLimits.LetRetainedBytes], carried on the assignment's own budget and
+// configurable by the operator.
 //
-// EXPR sub-project E4a whole-branch review, Critical 2. expres.go's
-// [ExprLimits.OperationLimit]/[ExprLimits.MemoryLimit] are PER-Eval budgets, and a let:
-// block is the one construct in this package that RETAINS a result rather
-// than rendering it and dropping it: every binding got a fresh 20 MB budget
-// it was then allowed to keep. maxLetBindings bounds the COUNT, so the
-// structural ceiling was maxLetBindings x [ExprLimits.MemoryLimit] = 1 GB per block,
+// expres.go's [ExprLimits.OperationLimit]/[ExprLimits.MemoryLimit] are
+// PER-Eval budgets, and a let: block is the one construct in this package
+// that RETAINS a result rather than rendering it and dropping it: without
+// this bound every binding gets a fresh 20 MB budget it is then allowed to
+// keep. maxLetBindings bounds the COUNT, so the structural ceiling would be
+// maxLetBindings x [ExprLimits.MemoryLimit] = 1 GB per block,
 // two blocks per task table plus one per environment table, all of them live
 // concurrently across a worker's task slots. Measured through the real
 // ApplyTaskLet, 50 bindings of `a<i> = "x" * (Task.Param.N * 100000)` with
@@ -629,12 +584,11 @@ const maxLetBindings = 50
 // unresolved` costs nothing under the server's own per-evaluation
 // submission limits. An ordinary jobs.write
 // user could therefore OOM-kill sqi-worker and take down every unrelated
-// task on the host. That is E3's server-side Critical transposed and worse:
-// server-side the same gap is bounded by a 50 MB request-scoped table in a
-// process whose death is one restart.
+// task on the host. Server-side the same gap is bounded by a 50 MB
+// request-scoped table in a process whose death is one restart.
 //
-// This is the worker-LOCAL bound; the general, template-wide cumulative
-// budget remains sub-project E4c's. It is deliberately a RETAINED-BYTES
+// This is the worker-LOCAL bound; the assignment-wide cumulative budget is
+// [AssignmentBudget]. It is deliberately a RETAINED-BYTES
 // bound rather than an operation bound, because the construction above
 // spends almost no operations -- an operation budget would not have caught
 // it.
@@ -646,8 +600,8 @@ const maxLetBindings = 50
 // step-template names are in the table ApplyEnvLet measures. Nothing has to
 // remember to pass a budget along. The table measured is always the one the
 // bindings LAND in, never the narrower one a block may resolve against --
-// see evalLetBindings' mergeTarget, and fix round 3's note there for the
-// measurement that showed why the distinction is load-bearing.
+// see evalLetBindings' mergeTarget for the measurement that shows why the
+// distinction matters.
 //
 // 10 MB is the number: generous for any legitimate block (bindings are
 // derived from parameters and path text, and phase 2 type-checks the whole
@@ -655,20 +609,15 @@ const maxLetBindings = 50
 // operator can be handed 10 MB retained plus at most one in-flight
 // evaluation's [ExprLimits.MemoryLimit] -- 30 MB per table, not 2 GB.
 //
-// TWO ROUGH EDGES, both recorded for E4d (operator configuration) and both
-// now ANSWERED BY A KNOB rather than by a different number -- E4d Task 2 was
-// required to leave every default byte-for-byte unchanged, so the edges
-// remain in the DEFAULT and the way past either of them is configuration:
+// TWO ROUGH EDGES in the DEFAULT; the way past either of them is
+// configuration:
 //
 //  1. 10,000,000 is EXACTLY limits.go's maxStringBytes, so the largest single
 //     string the evaluator can produce at all can never be bound, even into
 //     an otherwise empty table (the check is retained+size > limit, and a
 //     10,000,000-byte string measures slightly more than that once its value
 //     header is counted). That is a coincidence of two independently chosen
-//     round numbers, not a designed relationship. E4a said the day the limit
-//     became configurable it should not default to sitting exactly on another
-//     bound; it still does, because moving a default is a behavior change
-//     E4d was not permitted to make.
+//     round numbers, not a designed relationship.
 //  2. Because the accounting measures the whole table (tableRetainedBytes),
 //     a job whose own parameters are already large -- a big LIST[PATH], a
 //     multi-megabyte STRING -- spends budget its let: block never asked for,
@@ -676,7 +625,7 @@ const maxLetBindings = 50
 //     submitter. Metering only let-bound names would trade that for the
 //     opposite defect (a table could then hold parameters plus a full budget
 //     of bindings), so the whole-table measurement is the right one here;
-//     what it needs is a knob, not a different formula.
+//     the adjustment is the knob, not a different formula.
 const defaultLetRetainedBytes int64 = 10_000_000
 
 // splitLetBinding splits one raw "<name> = <expression>" binding into its
@@ -732,15 +681,13 @@ func splitLetBinding(raw string) (name, exprSrc string, err error) {
 //   - the RETAINED-BYTES accounting, or the budget is measured against a
 //     table smaller than the one the bytes end up in, and the stated
 //     invariant ("no phase-3 symbol table retains more than
-//     defaultLetRetainedBytes bytes") is simply false.
+//     defaultLetRetainedBytes bytes") is false.
 //
-// FIX ROUND 3 (re-review): fix round 2 introduced mergeTarget for the shadow
-// half only and left the byte accounting on syms, which is the identical
-// defect one instance further on. Measured: a task table holding a 3 MB
-// STRING task parameter starts at 6.00 MB; the step-template block measured
-// only the 0.00 MB projection, admitted a 9 MB binding, and merged it, so the
-// table held 15.00 MB against a 10 MB limit. The real ceiling was
-// "defaultLetRetainedBytes plus whatever the projection excludes", which is
+// Measured with the byte accounting on syms instead: a task table holding a
+// 3 MB STRING task parameter starts at 6.00 MB; the step-template block
+// measured only the 0.00 MB projection, admitted a 9 MB binding, and merged
+// it, so the table held 15.00 MB against a 10 MB limit. The real ceiling would
+// be "defaultLetRetainedBytes plus whatever the projection excludes", which is
 // not a bound at all -- Task.Param./Task.RawParam./Task.File./Session./
 // Env.File. are all outside the projection.
 //
@@ -749,12 +696,11 @@ func splitLetBinding(raw string) (name, exprSrc string, err error) {
 // (possibly truncated) block evaluated successfully. The one exception is
 // the retained-bytes bound, which stops the block; see defaultLetRetainedBytes.
 //
-// budget is EXPR sub-project E4c's Task 4 addition: charged the SAME size
-// (expr.SizeOf(v)) already computed for the per-table defaultLetRetainedBytes
+// budget is charged the SAME size (expr.SizeOf(v)) already computed for the per-table defaultLetRetainedBytes
 // check, immediately after that check passes -- so a binding that survives
 // its own table's 10 MB ceiling but would push the WHOLE ASSIGNMENT'S
 // retained bytes (task table plus every environment's) over
-// assignmentMaxRetainedBytes still stops the block, exactly as the per-table
+// [ExprLimits.AssignmentRetainedBytes] still stops the block, exactly as the per-table
 // check does, just against a wider ledger. See [AssignmentBudget]'s own doc
 // comment for the full account. It is a REQUIRED parameter; passing nil (this
 // package's own unit tests) charges a fresh, default-limited throwaway budget
@@ -857,10 +803,10 @@ func evalLetBindings(
 // evalLetBindings' mergeTarget. Cost is O(len(syms)) once per let: block --
 // a few dozen entries.
 //
-// Note the consequence, which is deliberate and belongs to E4d: a job whose
-// own parameters are already large consumes budget its let: block never asked
-// for, and can fail at execution with no phase-2 counterpart. Operator
-// configuration of the limit is where that gets a knob.
+// Note the consequence, which is deliberate: a job whose own parameters are
+// already large consumes budget its let: block never asked for, and can fail
+// at execution with no phase-2 counterpart. The limit is operator
+// configuration ([ExprLimits.LetRetainedBytes]) for that reason.
 func tableRetainedBytes(syms expr.MapSymbols) int64 {
 	var total int64
 	for _, v := range syms {
@@ -879,18 +825,13 @@ func tableRetainedBytes(syms expr.MapSymbols) int64 {
 // SUBMISSION time, before any session or task exists, so a
 // StepTemplateLet binding referencing Session.WorkingDirectory or
 // Task.Param.* is an unknown-symbol error at phase 2, and phase 3 must
-// reject it the identical way -- not silently resolve it just because the
+// reject it the identical way -- not resolve it just because the
 // full TaskSymbols table happens to have the value available by the time a
 // worker runs it.
 //
-// FIX ROUND 1 (Task 5 review): this function did not exist in the first
-// round. ApplyTaskLet evaluated BOTH msg.StepTemplateLet and
-// msg.StepScriptLet against the one full table, so a StepTemplateLet
-// binding could see (and phase 2 would reject) Session.*/Task.*/*.File.* --
-// the "one walk, different table" claim did not hold for this block. See
-// ApplyTaskLet's own doc comment for how the diff this function enables gets
-// carried forward into the script's block, mirroring checkStepExpressions'
-// preLetKeys/stepLet mechanism (exprcheck.go) exactly.
+// See ApplyTaskLet's own doc comment for how the diff this function enables
+// gets carried forward into the script's block, mirroring
+// checkStepExpressions' preLetKeys/stepLet mechanism (exprcheck.go) exactly.
 //
 // Filtering the ALREADY-BUILT full table -- rather than re-deriving
 // Param./RawParam./Job.Name/Step.Name a second time from msg -- keeps this
@@ -899,8 +840,8 @@ func tableRetainedBytes(syms expr.MapSymbols) int64 {
 // second, independently maintained construction that could drift from
 // TaskSymbols' own.
 //
-// FIX ROUND 2 (whole-branch review, Important 3): the table returned here is
-// what the block RESOLVES against, and nothing more. It is NOT what the
+// The table returned here is what the block RESOLVES against, and nothing
+// more. It is NOT what the
 // block's shadow check consults -- that must be the merge target, or a
 // binding named for a spec symbol this projection drops passes the check and
 // then overwrites the real symbol. [applyStepTemplateLet] passes both.
@@ -927,9 +868,7 @@ func stepTemplateLetScope(full expr.MapSymbols) expr.MapSymbols {
 // comment on StepTemplateLet/StepScriptLet makes the same point).
 //
 // The two blocks do NOT share one table outright, mirroring
-// checkStepExpressions (exprcheck.go) exactly rather than the simpler
-// "evaluate both over syms" a first attempt at this function used (see
-// stepTemplateLetScope's own doc comment for that history): the template's
+// checkStepExpressions (exprcheck.go) exactly: the template's
 // block is evaluated against [stepTemplateLetScope]'s NARROWER view of syms,
 // then only the names it successfully bound are merged into the full syms
 // before the script's block -- which DOES see the full table -- runs. A name
@@ -950,7 +889,7 @@ func stepTemplateLetScope(full expr.MapSymbols) expr.MapSymbols {
 // Callers pass the result of TaskSymbols as syms -- ApplyTaskLet is a
 // SEPARATE step from building the base table, not folded into TaskSymbols
 // itself. Two reasons: TaskSymbols has its own callers that want the base
-// job/task/session table alone, with no let: block involved (Task 3's own
+// job/task/session table alone, with no let: block involved (TaskSymbols' own
 // tests, and TestPhase2Phase3Agreement's key-set comparison against
 // SymbolsFor, which likewise never touches let); and the LET evaluation
 // needs the metering options (below) that only a caller resolving pathMap
@@ -968,8 +907,7 @@ func stepTemplateLetScope(full expr.MapSymbols) expr.MapSymbols {
 // walk; see this section's own doc comment for why continuing past a
 // failure, rather than aborting, is the intended behavior.
 //
-// budget is EXPR sub-project E4c's Task 4 addition: forwarded verbatim to
-// both blocks' evalLetBindings calls, so the task's own let: retention is
+// budget is forwarded verbatim to both blocks' evalLetBindings calls, so the task's own let: retention is
 // charged against the SAME [AssignmentBudget] every environment table this
 // assignment builds shares -- see session.Session's own accessor for how the
 // one budget object reaches every phase-3 call site for one assignment.
@@ -989,8 +927,7 @@ func ApplyTaskLet(
 // [ApplyTaskLet] and [EnvSymbols]: Template Schemas section 3.6.2 row 1 makes
 // the SAME block's names visible to a step's script AND to its
 // stepEnvironments, and evaluating it from one function is what keeps those
-// two positions from drifting apart the way they did before the E4a
-// whole-branch review (see EnvSymbols' own doc comment).
+// two positions from drifting apart (see EnvSymbols' own doc comment).
 //
 // The merge is a set-difference, not a wholesale copy of the narrowed table:
 // the narrowed table also holds Job.Name/Step.Name/Param.*/RawParam.*, which

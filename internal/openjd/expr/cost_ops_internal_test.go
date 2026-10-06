@@ -7,13 +7,12 @@ import (
 	"testing"
 )
 
-// PROBE (sub-project E1, Task 5), .venv-oracle/bin/python -c "..." against
-// openjd-model 0.11.1 -- see the brief's Step 1 command. Pasted verbatim as
-// evidence, per "the method every one of these four tasks follows": run
-// something first, decide against the spec text second, and only ADOPT the
-// reference's number where the spec text agrees with it.
+// PROBE: .venv-oracle/bin/python -c "..." against openjd-model 0.11.1. Pasted
+// verbatim as evidence: run something first, decide against the spec text
+// second, and only ADOPT the reference's number where the spec text agrees
+// with it.
 //
-// Brief's own command:
+// Initial command:
 //
 //	1  1 + 2
 //	4  [1,2] + [3]
@@ -27,10 +26,7 @@ import (
 //	4  path("/a") / "b"
 //
 // Follow-up probes run to resolve the 'ab' + 'cd' ambiguity and to check
-// whether the same question applies to path "/" and "+" (the brief's top
-// table states ArgBytes for both, but does not mark them ambiguous the way
-// it marks the string row -- these follow-ups show that claim does not
-// survive contact with the reference and must not be taken on faith):
+// whether the same question applies to path "/" and "+":
 //
 //	ArgBytes{0,1} predicts 'ab'+'cd' = 1(call) + ceil(2/256) + ceil(2/256) = 3.
 //	ResultBytes predicts 'ab'+'cd' = 1(call) + ceil(4/256) = 2.
@@ -63,23 +59,21 @@ import (
 //	    12  (path("/a"*300) + "b")                       append alone: matches
 //	    16  (path("/a"*300) + ("b"*300))                  append alone: matches
 //
-//	Both path rows are ResultBytes too. The brief's top-table "ArgBytes{0,1}"
-//	entries for string+string and for path / and + are the same kind of
-//	plausible-but-wrong first guess the brief explicitly calls out for the
-//	'ab'+'cd' row -- it just didn't say so for these two. Measuring settles
-//	it the same way in both cases.
+//	Both path rows are ResultBytes too. ArgBytes{0,1} is the same
+//	plausible-but-wrong first guess for string+string and for path / and +;
+//	measuring settles it the same way in every case.
 //
 // Rule 2 (list) has no equivalent ambiguity: unlike ceil(x/256), plain
 // element counts are additive, so ArgElements{0,1} and a hypothetical
 // "ResultElements" always agree for concatenation (len(a)+len(b) IS
 // len(result)) and cannot be told apart by any probe. ArgElements{0,1} is
-// used because it is what the brief specifies and what section 1.3.10's own
-// wording most directly describes ("iterates through every element of A
-// list" -- each operand is a list the evaluator iterates).
+// used because it is what section 1.3.10's own wording most directly
+// describes ("iterates through every element of A list" -- each operand is a
+// list the evaluator iterates).
 //
 // range_expr + range_expr (concatRanges) and the range-admitting
-// list[int] + list[int] row were not in the brief's table but are the same
-// operator under different signatures, so they were probed too:
+// list[int] + list[int] row are the same operator under different
+// signatures, so they were probed too:
 //
 //	1  range_expr("1-3")                (baseline: a bare call, no extra charge)
 //	8  range_expr("1-3") + range_expr("4-5")   op alone: 8-1-1=6 = 1(call)+3(elems)+2(elems)
@@ -102,53 +96,32 @@ import (
 // do not: sqi charges 1 + the left operand's element count, which happens to
 // equal 2 at length one. See test/oracle/baseline-ops.txt.)
 //
-// CORRECTION (final whole-branch review, sub-project E1). An earlier revision
-// of this paragraph justified those rows differently, and both halves of that
-// justification have since been withdrawn. It said: "section 1.3.10 rules 2
-// and 3 each end their operator list with an explicit, CLOSED enumeration
-// ('This applies to: ...') that does not name ordering or 'not' anywhere ...
-// Extending either rule to an operator the text does not name is not
-// supported by the text."
-//
-// First, the enumeration is OPEN, not closed. The two specification documents
-// disagree about it -- the wiki says "such as", RFC 0005 says "This applies
-// to:" -- and doc.go settles it as open, the wiki being the specification and
-// RFC 0005 the proposal behind it. "Not named" is therefore not a reason for
-// anything on its own.
-//
-// Second, the conclusion did not even hold under the closed reading: the
-// list/list ORDERING row now charges Cost{ArgElements: {0}} (ops.go), because
-// compareLists walks every element exactly as listsEqual does, and equality
-// was already charged for that same walk. Only the scalar rows stay
+// That an operator is not named in section 1.3.10 rules 2 and 3 is not a
+// reason on its own: the enumeration is OPEN, not closed. The two
+// specification documents disagree about it -- the wiki says "such as", RFC
+// 0005 says "This applies to:" -- and doc.go settles it as open, the wiki
+// being the specification and RFC 0005 the proposal behind it. Even under a
+// closed reading, the list/list ORDERING row charges Cost{ArgElements: {0}}
+// (ops.go), because compareLists walks every element exactly as listsEqual
+// does, and equality is charged for that same walk. Only the scalar rows stay
 // uncharged, and the reason above is why.
 //
-// CORRECTION (review finding on this task): "in"/"not in" were originally
-// grouped with ordering/"not" above on the same "not named by rule 2/3"
-// reasoning, and that was wrong. Rule 2's own text names "contains()" --
-// RFC 0005's dunder-transform table (lines 1445-1446) is explicit that
-// "In -> __contains__, NotIn -> __not_contains__ ... x in y becomes
+// "in"/"not in" charge too. Rule 2's own text names "contains()" -- RFC
+// 0005's dunder-transform table (lines 1445-1446) is explicit that "In ->
+// __contains__, NotIn -> __not_contains__ ... x in y becomes
 // __contains__(y, x)": "contains()" in rule 2's list IS the "in" operator,
 // named by its dunder rather than its surface syntax, not a functionShapes
-// registry entry (there is no function named "contains" anywhere in the
-// spec or sqi's registry -- confirmed by `rg '"contains"'
-// internal/openjd/expr/`). So the string and list rows of OpIn/OpNotIn DO
-// charge; see TestOperationCount_InOperator below.
+// registry entry (there is no function named "contains" anywhere in the spec
+// or sqi's registry). So the string and list rows of OpIn/OpNotIn charge; see
+// TestOperationCount_InOperator below.
 //
-// CORRECTION (final whole-branch review, sub-project E1). That fix stopped one
-// row short, and this paragraph used to record the omission as settled: "Only
-// the range_expr row stays uncharged, and for a different, evidence-based
-// reason: the reference's own count does not scale with the range's size, so
-// nothing supports a per-range charge there."
-//
-// The observation about the reference is accurate and still holds. The
-// conclusion was wrong for the same reason the "not named" argument above was:
-// the reference is subordinate to the specification, and it was the SOLE
-// stated ground. The specification's own test is what the row failed --
-// containsRangeInt calls rangeInts, which fully EXPANDS the range, so "a
-// function ... iterates through every element of a list" is satisfied
-// outright. Measured before the fix, "1 in Param.R" with R =
-// range_expr("1-1000000") charged 1 operation while expanding a million
-// integers. All three OpIn/OpNotIn rows now charge; see ops.go.
+// The range_expr row charges as well, although the reference's own count does
+// not scale with the range's size: the reference is subordinate to the
+// specification, and containsRangeInt calls rangeInts, which fully EXPANDS the
+// range, so "a function ... iterates through every element of a list" is
+// satisfied outright. Left uncharged, "1 in Param.R" with R =
+// range_expr("1-1000000") would charge 1 operation while expanding a million
+// integers. All three OpIn/OpNotIn rows charge; see ops.go.
 func TestOperationCount_Operators(t *testing.T) {
 	tests := []struct {
 		src  string
@@ -237,8 +210,8 @@ func TestOperationCount_StringConcatenationBytes(t *testing.T) {
 }
 
 // TestOperationCount_RangeExprConcatenation covers OpAdd's two other
-// list/range-producing rows, neither named directly in the brief's table but
-// both the same "list concatenation" operator section 1.3.10 rule 2 names,
+// list/range-producing rows, both the same "list concatenation" operator
+// section 1.3.10 rule 2 names,
 // under signatures the generic list[T]+list[T1] row cannot admit (a bare
 // range_expr operand). See the probe comment on TestOperationCount_Operators.
 func TestOperationCount_RangeExprConcatenation(t *testing.T) {
@@ -280,8 +253,8 @@ func TestOperationCount_RangeExprConcatenation(t *testing.T) {
 	})
 }
 
-// TestOperationCount_InOperator covers the review correction: OpIn/OpNotIn's
-// string/string and elem/list rows charge the CONTAINER (Params[1] -- the
+// TestOperationCount_InOperator pins that OpIn/OpNotIn's string/string and
+// elem/list rows charge the CONTAINER (Params[1] -- the
 // item is Params[0], see the comment on OpIn in ops.go), because rule 2's
 // "contains()" and rule 3's implicit coverage of "in" are the __contains__/
 // __not_contains__ dunder this operator transforms to (RFC 0005 lines
@@ -302,24 +275,16 @@ func TestOperationCount_RangeExprConcatenation(t *testing.T) {
 //	 7  "z" in ("a"*300)                     2  "" in ""
 //	 3  1 in range_expr("1-3")               3  1 in range_expr("1-100")
 //
-// CORRECTION (final whole-branch review, sub-project E1): the "z" in ("a"*10)
-// entry was transcribed as 3 and is 5, re-measured live. It sat on the same
-// printed line as an entry that DOES use the in-expression reading, so a
-// reader comparing 3 -> 7 across the two would have inferred the wrong
-// scaling shape from two different notations. No `want` value in this file
-// was ever computed from the transcribed number -- they come from sqi's own
-// formula -- so no assertion moved; the probe block exists to be auditable,
-// which is reason enough to correct it.
+// No `want` value in this file is computed from these probe numbers -- they
+// come from sqi's own formula; the probe block exists to be auditable.
 //
 // The list and string rows clearly SCALE with the container's size (3, 5, 12
 // track container lengths 1, 3, 10 exactly; 5 vs 7 tracks byte length
 // crossing a 256 boundary once the repetition's own charge is subtracted).
 // The reference's range_expr row does NOT scale (3 regardless of range size)
-// -- and sqi charges it anyway. That was the one row this probe originally
-// left uncharged on the strength of the reference's flatness; the final
-// whole-branch review overturned it, because sqi's own containsRangeInt
-// expands the range in full via rangeInts and rule 2's text is therefore
-// satisfied whatever the reference does. See ops.go's OpIn rows.
+// -- and sqi charges it anyway, because sqi's own containsRangeInt expands
+// the range in full via rangeInts and rule 2's text is therefore satisfied
+// whatever the reference does. See ops.go's OpIn rows.
 //
 // The reference's own absolute totals are NOT reproduced exactly and are not
 // the target: they run a flat 1-2 operations higher than 1(call)+N predicts
@@ -377,8 +342,8 @@ func TestOperationCount_InOperator(t *testing.T) {
 		}
 		// 1 (call) + ceil(10/256) = 1. An uncharged row would also read 1 here
 		// -- this case alone cannot discriminate, which is why the 300-byte
-		// case below is required too (a <=256-byte-only test is exactly how
-		// this was missed the first time).
+		// case below is required too (a <=256-byte-only test cannot tell a
+		// charged row from an uncharged one).
 		if ec.m.ops != 2 {
 			t.Errorf("ops = %d; want 2 (1 call + ceil(10/256)=1 container byte unit)", ec.m.ops)
 		}
@@ -404,12 +369,9 @@ func TestOperationCount_InOperator(t *testing.T) {
 		}
 	})
 
-	// This subtest previously asserted the range_expr row "stays uncharged
-	// regardless of range size", at a flat 1. The final whole-branch review
-	// overturned that: containsRangeInt calls rangeInts, which expands the
-	// range in full, so the row scales with the container exactly as the
-	// string and list rows above do. The reference's own flatness here is
-	// unchanged and stays baselined.
+	// containsRangeInt calls rangeInts, which expands the range in full, so
+	// the row scales with the container exactly as the string and list rows
+	// above do. The reference's own flatness here stays baselined.
 	t.Run("int/range_expr charges the container's element count", func(t *testing.T) {
 		small, err := RangeExpr("1-3")
 		if err != nil {
@@ -455,13 +417,12 @@ func TestOperationCount_InOperator(t *testing.T) {
 // comparison of two lists charges its elementwise walk, exactly as the
 // equality comparison of the same operands does.
 //
-// The list/list ordering row was uncharged until the final whole-branch
-// review, on the sole ground that section 1.3.10 rule 2 names "list/range
-// equality comparisons" by token and does not name ordering. doc.go settles
-// the enumeration as OPEN, which removes that ground: "<" and "==" run the
-// same walk over the same operands (compareLists and valuesEqual are both
-// elementwise), and charging only one produced a measured 1,666x discrepancy
-// on the identical expression shape. Both are charged on the LEFT operand.
+// Section 1.3.10 rule 2 names "list/range equality comparisons" by token and
+// does not name ordering, but doc.go settles the enumeration as OPEN: "<" and
+// "==" run the same walk over the same operands (compareLists and valuesEqual
+// are both elementwise), and charging only one gives a measured 1,666x
+// discrepancy on the identical expression shape. Both are charged on the LEFT
+// operand.
 func TestOperationCount_ListOrderingChargesItsWalk(t *testing.T) {
 	three := func() Value { return List(TInt, []Value{Int(1), Int(2), Int(3)}) }
 	for _, op := range []Op{OpLt, OpGt, OpLe, OpGe} {
@@ -474,7 +435,7 @@ func TestOperationCount_ListOrderingChargesItsWalk(t *testing.T) {
 		}
 	}
 	// The equality form of the same comparison agrees by construction, which
-	// is the whole point of the correction.
+	// is the point.
 	ec := testCtx()
 	if _, err := applyBinary(ec, OpEq, three(), three()); err != nil {
 		t.Fatalf("applyBinary(==): %v", err)
@@ -497,14 +458,12 @@ func TestOperationCount_ListOrderingChargesItsWalk(t *testing.T) {
 // it charges rule 1 and nothing else, regardless of what the reference
 // happens to report for it.
 //
-// The membership test is what "scalar" means here, and it is the one the
-// final whole-branch review substituted for the old one. This table
-// previously admitted any row "NOT named by section 1.3.10 rule 2 or rule 3"
-// and so also held the list/list ordering row and both OpIn/OpNotIn
-// range_expr rows -- three rows that do O(receiver) work. All three now
-// charge (see TestOperationCount_ListOrderingChargesItsWalk and
-// TestOperationCount_InOperator), and "unnamed by the enumeration" is no
-// longer a criterion for anything: doc.go settles the enumeration as OPEN.
+// Membership is by operand type: "NOT named by section 1.3.10 rule 2 or rule
+// 3" is not a criterion, since doc.go settles the enumeration as OPEN. The
+// list/list ordering row and both OpIn/OpNotIn range_expr rows are unnamed
+// but do O(receiver) work, so they are not scalar rows and they charge (see
+// TestOperationCount_ListOrderingChargesItsWalk and
+// TestOperationCount_InOperator).
 func TestOperationCount_ScalarRowsChargeNothing(t *testing.T) {
 	tests := []struct {
 		name string

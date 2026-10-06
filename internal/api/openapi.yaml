@@ -755,14 +755,20 @@ components:
         status:
           type: string
           enum: [online, offline, disabled]
+          description: >-
+            `disabled` while an operator has the worker disabled, whatever its
+            liveness; otherwise `online` or `offline`. A disabled worker still
+            goes online and offline underneath, and stays disabled through
+            both.
         removable:
           type: boolean
           description: >-
             Server-authoritative flag indicating the worker may be hard-deleted
-            via DELETE /workers/{id}: true for offline workers and for disabled
-            workers whose last heartbeat is older than the heartbeat-timeout
-            window (the machine is gone). Online and live-disabled workers are
-            never removable.
+            via DELETE /workers/{id}: true for an offline worker, disabled or
+            not (a disabled worker counts as offline once the heartbeat sweep
+            finds it gone). Online workers, disabled or not, are never
+            removable. The flag cannot see tasks: a worker that still has a
+            task assigned or running is refused with 409 even when it is true.
         last_heartbeat_at:
           type: string
           format: date-time
@@ -2716,11 +2722,13 @@ paths:
       tags: [workers]
       description: |
         Hard-deletes a worker record. Only removable workers are accepted:
-        offline workers, or disabled workers whose last heartbeat is older than
-        the heartbeat-timeout window (the machine is gone). Online and
-        live-disabled workers are rejected with `409`. Task and attempt history
-        referencing the worker is preserved by ID. A removed worker that
-        reconnects simply re-registers.
+        offline workers, disabled or not, and only while the worker has no
+        task assigned or running. Online workers, disabled or not, and any
+        worker that still holds a task, are rejected with `409`. A disabled
+        worker becomes removable once the heartbeat sweep finds it gone and
+        marks it offline. Task and attempt history referencing the worker
+        is preserved by ID. A removed worker that reconnects simply
+        re-registers.
 
         Also revokes the worker's broker credential, if it has one, BEFORE
         the worker record is deleted, so a decommissioned machine loses
@@ -2779,8 +2787,11 @@ paths:
       summary: Enable a worker
       tags: [workers]
       description: |
-        Re-enables a disabled worker.  Online or offline workers are accepted
-        idempotently; their status is returned unchanged.
+        Re-enables a disabled worker. Enabling never changes liveness, so the
+        returned status is the worker's liveness: `online`, or `offline` for a
+        disabled worker that has gone away (it stays offline until it
+        registers again). A worker that is not disabled is accepted
+        idempotently.
       responses:
         "200":
           description: Worker status after the operation.
@@ -3770,8 +3781,8 @@ paths:
         "503":
           description: >-
             Preset library not configured, or the definition's expression
-            evaluation exceeded openjd.expr_submission_deadline (EXPR
-            sub-project H1's wall-clock backstop). The second is not a verdict
+            evaluation exceeded openjd.expr_submission_deadline (the
+            wall-clock backstop). The second is not a verdict
             on the definition -- the same body would validate on an idle
             server -- so a retry may succeed.
 
@@ -3815,8 +3826,8 @@ paths:
         "503":
           description: >-
             Preset library not configured, or the definition's expression
-            evaluation exceeded openjd.expr_submission_deadline (EXPR
-            sub-project H1's wall-clock backstop). The second is not a verdict
+            evaluation exceeded openjd.expr_submission_deadline (the
+            wall-clock backstop). The second is not a verdict
             on the definition -- the same body would validate on an idle
             server -- so a retry may succeed.
 
@@ -4037,7 +4048,7 @@ paths:
         "400":
           description: Bad request — missing or invalid upgrade headers.
         "401":
-          description: Unauthorized — invalid or missing credentials (Phase 3+).
+          description: Unauthorized — invalid or missing credentials.
         "500":
           $ref: "#/components/responses/InternalServerError"
 

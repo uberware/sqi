@@ -24,7 +24,7 @@ import (
 // as "matches no attr.worker.cpu.arch requirement" (scheduler.cpuArch). So a
 // round trip that quietly dropped the value would not error anywhere — it would
 // just stop that worker from ever being eligible for architecture-gated work,
-// which is precisely the bug this column exists to fix.
+// which is the failure this column exists to prevent.
 func TestWorker_ArchRoundTrip(t *testing.T) {
 	s := openTestStore(t)
 	ctx := context.Background()
@@ -34,7 +34,7 @@ func TestWorker_ArchRoundTrip(t *testing.T) {
 	// reported, and internal/scheduler translates on the read side.
 	const want = "arm64"
 
-	registered, err := s.RegisterWorker(ctx, store.Worker{
+	registered, _, err := s.RegisterWorker(ctx, store.Worker{
 		ID: "w1", FarmID: "f1", Hostname: "h1", Status: store.WorkerStatusOnline,
 		Tags: map[string]string{}, Arch: want,
 	})
@@ -58,7 +58,7 @@ func TestWorker_ArchRoundTrip(t *testing.T) {
 	// report arch is replaced by one that does — the stale value would make the
 	// worker eligible for work its CPU cannot run.
 	const changed = "amd64"
-	if _, err := s.RegisterWorker(ctx, store.Worker{
+	if _, _, err := s.RegisterWorker(ctx, store.Worker{
 		ID: "w1", FarmID: "f1", Hostname: "h1", Status: store.WorkerStatusOnline,
 		Tags: map[string]string{}, Arch: changed,
 	}); err != nil {
@@ -101,7 +101,7 @@ func TestWorker_ArchDefaultsEmpty(t *testing.T) {
 	ctx := context.Background()
 	insertFarm(t, s, "f1", "F1")
 
-	if _, err := s.RegisterWorker(ctx, store.Worker{
+	if _, _, err := s.RegisterWorker(ctx, store.Worker{
 		ID: "w1", FarmID: "f1", Hostname: "h1", Status: store.WorkerStatusOnline,
 		Tags: map[string]string{},
 	}); err != nil {

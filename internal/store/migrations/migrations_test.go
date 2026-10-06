@@ -5,6 +5,7 @@ package migrations_test
 import (
 	"database/sql"
 	"errors"
+	"fmt"
 	"io/fs"
 	"strings"
 	"testing"
@@ -257,6 +258,183 @@ func TestMigrations_00027_JobDeclaredExtensionsDownUp(t *testing.T) {
 			"(\"not recorded\"); %q would mean \"recorded, declares nothing\" and would "+
 			"ungate every EXPR job submitted before the upgrade", declared, "", "[]")
 	}
+}
+
+// TestMigrations_00032_TasksStepStatusIndexDownUp pins 00032 in both directions:
+// Up creates the tasks(step_id, status) index that step finalization reads
+// (pinned against the query plans by the sqlite package's
+// TestStepFinalizationQueries_UseStepStatusIndex), Down drops it, and a re-Up
+// creates it again.
+func TestMigrations_00032_TasksStepStatusIndexDownUp(t *testing.T) {
+	dbPath := t.TempDir() + "/test.db"
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("sql.Open: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	goose.SetBaseFS(migrations.FS)
+	if err := goose.SetDialect("sqlite3"); err != nil {
+		t.Fatalf("SetDialect: %v", err)
+	}
+	if err := goose.Up(db, "."); err != nil {
+		t.Fatalf("goose.Up: %v", err)
+	}
+	if !hasIndex(t, db, "tasks", "tasks_step_status") {
+		t.Fatal("tasks_step_status index missing after Up")
+	}
+
+	if err := goose.DownTo(db, ".", 31); err != nil {
+		t.Fatalf("goose.DownTo(31): %v", err)
+	}
+	if hasIndex(t, db, "tasks", "tasks_step_status") {
+		t.Fatal("tasks_step_status index still present after Down")
+	}
+
+	if err := goose.Up(db, "."); err != nil {
+		t.Fatalf("goose.Up (re-apply): %v", err)
+	}
+	if !hasIndex(t, db, "tasks", "tasks_step_status") {
+		t.Fatal("tasks_step_status index missing after re-Up")
+	}
+}
+
+// TestMigrations_00034_WorkerInstanceIDDownUp pins 00034 in both directions, and
+// pins the DEFAULT. A worker row that predates the column must read back empty
+// ("unknown"), never NULL (scanWorker reads it into a plain string) and never a
+// value: RegisterWorker reclaims a worker's tasks only when the STORED instance
+// ID is non-empty and differs from the incoming one, so the empty default is
+// what keeps the first registration after an upgrade from reclaiming the tasks
+// of a worker that never restarted.
+//
+// Down is pinned for the same reason 00026's is: SQLite refuses ALTER TABLE
+// DROP COLUMN on a column referenced by a CHECK constraint or an index.
+func TestMigrations_00034_WorkerInstanceIDDownUp(t *testing.T) {
+	dbPath := t.TempDir() + "/test.db"
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("sql.Open: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	goose.SetBaseFS(migrations.FS)
+	if err := goose.SetDialect("sqlite3"); err != nil {
+		t.Fatalf("SetDialect: %v", err)
+	}
+	if err := goose.Up(db, "."); err != nil {
+		t.Fatalf("goose.Up: %v", err)
+	}
+	if !hasColumn(t, db, "workers", "instance_id") {
+		t.Fatal("instance_id column missing after Up")
+	}
+
+	// A row written before the Down, carrying an instance ID: the Down drops
+	// the value with the column, and the re-Up must bring the column back with
+	// its '' default rather than NULL.
+	if _, err := db.ExecContext(
+		t.Context(),
+		`INSERT INTO workers (id, hostname, os, status, registered_at, updated_at, instance_id)
+		 VALUES ('w-1', 'h', 'linux', 'online', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', 'i-1')`,
+	); err != nil {
+		t.Fatalf("insert worker: %v", err)
+	}
+
+	if err := goose.DownTo(db, ".", 33); err != nil {
+		t.Fatalf("goose.DownTo(33): %v", err)
+	}
+	if hasColumn(t, db, "workers", "instance_id") {
+		t.Fatal("instance_id column still present after Down")
+	}
+
+	if err := goose.Up(db, "."); err != nil {
+		t.Fatalf("goose.Up (re-apply): %v", err)
+	}
+	if !hasColumn(t, db, "workers", "instance_id") {
+		t.Fatal("instance_id column missing after re-Up")
+	}
+	var instanceID string
+	if err := db.QueryRowContext(t.Context(),
+		`SELECT instance_id FROM workers WHERE id = 'w-1'`).Scan(&instanceID); err != nil {
+		t.Fatalf("select instance_id after re-Up: %v (a NULL here is a scanWorker failure "+
+			"for every pre-existing worker row)", err)
+	}
+	if instanceID != "" {
+		t.Errorf("instance_id = %q for a row that predates the column, want %q (\"unknown\")", instanceID, "")
+	}
+}
+
+// TestMigrations_00036_WorkerDisabledFlagDownUp pins 00036 in both directions.
+// Up moves "disabled" out of the liveness column into the flag: a disabled row
+// becomes online (the heartbeat sweep takes it offline if its heartbeat is
+// stale, reclaiming any task it holds) with disabled = 1, and every other row
+// keeps its status with disabled = 0. Down folds the flag back into the
+// status, so a disabled worker is disabled again whatever its liveness.
+func TestMigrations_00036_WorkerDisabledFlagDownUp(t *testing.T) {
+	dbPath := t.TempDir() + "/test.db"
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("sql.Open: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	goose.SetBaseFS(migrations.FS)
+	if err := goose.SetDialect("sqlite3"); err != nil {
+		t.Fatalf("SetDialect: %v", err)
+	}
+	if err := goose.UpTo(db, ".", 35); err != nil {
+		t.Fatalf("goose.UpTo(35): %v", err)
+	}
+	for id, status := range map[string]string{"w-on": "online", "w-off": "offline", "w-dis": "disabled"} {
+		if _, err := db.ExecContext(t.Context(),
+			`INSERT INTO workers (id, hostname, os, status, registered_at, updated_at)
+			 VALUES (?, 'h', 'linux', ?, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')`, id, status); err != nil {
+			t.Fatalf("insert worker %s: %v", id, err)
+		}
+	}
+
+	if err := goose.Up(db, "."); err != nil {
+		t.Fatalf("goose.Up: %v", err)
+	}
+	want := map[string]string{"w-on": "online/0", "w-off": "offline/0", "w-dis": "online/1"}
+	for id, w := range want {
+		var status string
+		var disabled int
+		if err := db.QueryRowContext(t.Context(),
+			`SELECT status, disabled FROM workers WHERE id = ?`, id).Scan(&status, &disabled); err != nil {
+			t.Fatalf("select %s: %v", id, err)
+		}
+		if got := fmt.Sprintf("%s/%d", status, disabled); got != w {
+			t.Errorf("after Up: %s = %s, want %s", id, got, w)
+		}
+	}
+
+	if err := goose.DownTo(db, ".", 35); err != nil {
+		t.Fatalf("goose.DownTo(35): %v", err)
+	}
+	if hasColumn(t, db, "workers", "disabled") {
+		t.Fatal("disabled column still present after Down")
+	}
+	var status string
+	if err := db.QueryRowContext(t.Context(), `SELECT status FROM workers WHERE id = 'w-dis'`).Scan(&status); err != nil {
+		t.Fatalf("select w-dis after Down: %v", err)
+	}
+	if status != "disabled" {
+		t.Errorf("after Down: w-dis status = %q, want disabled", status)
+	}
+	if err := goose.Up(db, "."); err != nil {
+		t.Fatalf("goose.Up (re-apply): %v", err)
+	}
+}
+
+// hasIndex reports whether table has an index named index.
+func hasIndex(t *testing.T, db *sql.DB, table, index string) bool {
+	t.Helper()
+	var n int
+	if err := db.QueryRowContext(t.Context(),
+		`SELECT count(*) FROM sqlite_master WHERE type = 'index' AND tbl_name = ? AND name = ?`, table, index).Scan(&n); err != nil {
+		t.Fatalf("look up index %s on %s: %v", index, table, err)
+	}
+	return n == 1
 }
 
 // seedJobRowWithoutExtensions inserts the farm, queue and job a pre-migration

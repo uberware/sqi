@@ -5,6 +5,7 @@ package openjd
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/uberware/sqi/internal/store"
 )
@@ -46,23 +47,17 @@ func ResolveDependencies(ctx context.Context, st store.Store, jobID string) (int
 			continue
 		}
 
-		// All deps are satisfied — promote the step.
-		if err := st.UpdateStepStatus(ctx, step.ID, store.StepStatusReady); err != nil {
-			return promoted, fmt.Errorf(
-				"openjd: resolve deps for job %s: update step %s to ready: %w",
-				jobID, step.ID, err,
-			)
+		// All deps are satisfied — promote the step and its pending tasks in
+		// one guarded transaction. A step another writer already moved (for
+		// example canceled by a job cancel) is not revived: the store declines
+		// and it is not counted.
+		released, _, err := st.ReleaseStep(ctx, step.ID, time.Now().UTC())
+		if err != nil {
+			return promoted, fmt.Errorf("openjd: resolve deps for job %s: release step %s: %w", jobID, step.ID, err)
 		}
-
-		// Promote every pending task in this step.
-		if _, err := st.TransitionStepPendingTasks(ctx, step.ID, store.TaskStatusReady, ""); err != nil {
-			return promoted, fmt.Errorf(
-				"openjd: resolve deps for job %s: ready pending tasks for step %s: %w",
-				jobID, step.ID, err,
-			)
+		if released {
+			promoted++
 		}
-
-		promoted++
 	}
 
 	return promoted, nil
@@ -119,20 +114,24 @@ func CancelDependents(ctx context.Context, st store.Store, jobID string) (int, [
 		return 0, nil, fmt.Errorf("openjd: cancel dependents for job %s: list steps: %w", jobID, err)
 	}
 
-	// Build name→status lookup. Dependency edges are immutable and this function
-	// is the only writer of the statuses it inspects, so we list once and keep the
-	// map authoritative as we cancel — updating it in place lets a later pass see
-	// a step we just canceled, which is how transitive chains resolve.
+	// Build name→status lookup. Dependency edges are immutable, so we list once
+	// and keep the map updated as we cancel — updating it in place lets a later
+	// pass see a step we just canceled, which is how transitive chains resolve.
+	// The map is a decision aid, not the source of truth: each cancel is guarded
+	// in the store (invariant I1), so a step another writer moved first is
+	// skipped rather than overwritten.
 	statusByName := stepStatusByName(steps)
 
 	var (
 		canceled      int
 		canceledTasks []store.Task
 	)
-	// Loop until a full pass cancels nothing more. Each cancellation can unblock
+	// Loop until a full pass settles nothing more. Each settled step can unblock
 	// further cancellations downstream, so we repeat until the graph is stable.
+	// Progress is tracked separately from `canceled`: a guarded cancel that
+	// declines still settles the step in the map and may unblock its dependents.
 	for {
-		before := canceled
+		progressed := false
 		for _, step := range steps {
 			if statusByName[step.Name] != store.StepStatusPending {
 				continue
@@ -142,27 +141,29 @@ func CancelDependents(ctx context.Context, st store.Store, jobID string) (int, [
 				continue
 			}
 
-			// A dependency can never complete — cancel the step and its pending tasks.
-			if err := st.UpdateStepStatus(ctx, step.ID, store.StepStatusCanceled); err != nil {
-				return canceled, canceledTasks, fmt.Errorf(
-					"openjd: cancel dependents for job %s: cancel step %s: %w",
-					jobID, step.ID, err,
-				)
-			}
-			tasks, err := st.TransitionStepPendingTasks(ctx, step.ID, store.TaskStatusCanceled, store.FailureReasonUpstreamFailed)
+			// A dependency can never complete — cancel the step and its pending tasks
+			// in one guarded transaction.
+			canceledStep, tasks, err := st.CancelPendingStep(ctx, step.ID, store.FailureReasonUpstreamFailed, time.Now().UTC())
 			if err != nil {
 				return canceled, canceledTasks, fmt.Errorf(
-					"openjd: cancel dependents for job %s: cancel pending tasks for step %s: %w",
-					jobID, step.ID, err,
+					"openjd: cancel dependents for job %s: cancel step %s: %w", jobID, step.ID, err,
 				)
 			}
 			canceledTasks = append(canceledTasks, tasks...)
-
+			// Record the step as no longer pending either way. When the guarded
+			// cancel declined, another writer moved the step first, or a retry
+			// revived the failed upstream after the read above (the store
+			// re-checks the upstream, invariant I4); leaving it "pending" here
+			// would make the fixpoint loop retry it forever. Its own dependents
+			// are then offered a cancel the store declines in the same way.
 			statusByName[step.Name] = store.StepStatusCanceled
-			canceled++
+			progressed = true
+			if canceledStep {
+				canceled++
+			}
 		}
 
-		if canceled == before {
+		if !progressed {
 			return canceled, canceledTasks, nil
 		}
 	}

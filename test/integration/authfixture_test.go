@@ -7,9 +7,9 @@ package integration
 // authfixture_test.go — the pieces ldap_test.go and oidc_test.go share.
 //
 // Both suites boot a container holding a real identity backend and an
-// sqi-server wired to it, and they were doing so with two verbatim copies of
-// the same code. The copies are here instead. Note that the "the shared harness
-// is untagged, this file is not" argument that justifies keeping these variants
+// sqi-server wired to it, and the code that does so lives here. Note that the
+// "the shared harness is untagged, this file is not" argument that justifies
+// keeping these variants
 // out of harness_test.go does NOT apply between the two suites: both are
 // //go:build integration in this same package, so a helper tagged the same way
 // is theirs to share.

@@ -105,7 +105,7 @@ func TestEval_NilSymbolsIsAnEmptyTable(t *testing.T) {
 
 func TestEval_ErrorBlamesTheOperator(t *testing.T) {
 	// The offset must point at the operator that failed, not at the start of
-	// the expression. This is the whole reason offsets ride on tree nodes.
+	// the expression. This is why offsets ride on tree nodes.
 	_, err := evalSrc(t, "Param.A + Param.B", MapSymbols{
 		"Param.A": String("x"),
 		"Param.B": Int(1),
@@ -375,12 +375,9 @@ func TestEval_LogicalShortCircuits(t *testing.T) {
 }
 
 func TestTruthy_PlaceholderIsNotFalsy(t *testing.T) {
-	// truthy used to read a vestigial second type-tag field, which Unresolved
-	// left at its zero value — indistinguishable from a concrete null — so a
-	// placeholder was silently misread as null and treated as falsy. Task 13
-	// still owns the real semantics (a placeholder should union with the other
-	// operand's type), but this narrow property — a placeholder is not
-	// mistaken for null — must survive that rework.
+	// A placeholder must not be mistaken for a concrete null and treated as
+	// falsy. The union with the other operand's type is handled elsewhere;
+	// this pins only that narrow property of truthy.
 	tests := []struct {
 		name string
 		v    Value
@@ -618,8 +615,8 @@ func TestEvalCond_UnknownConditionWithBothBranchesFailing(t *testing.T) {
 }
 
 func TestEvalCond_ResolvedConditionIsUnchanged(t *testing.T) {
-	// Sub-project A's behavior must survive exactly: one branch evaluated, no
-	// unioning, and section 1.3.5's bool-only rule intact.
+	// A resolved condition evaluates one branch, with no unioning, and keeps
+	// section 1.3.5's bool-only rule.
 	tests := []struct {
 		name    string
 		src     string
@@ -764,23 +761,21 @@ func TestEvalCompare_UnknownLink(t *testing.T) {
 //
 // Like that test, a regression here does not fail the assertion — it takes the
 // test binary down with "fatal error: stack overflow", which recover() cannot
-// catch. Both inputs were verified to do exactly that, at 600,000 operators,
-// before maxEvalDepth existed. The depths used here are just past the bound, so
-// the test measures the guard rather than the stack.
+// catch. Without maxEvalDepth, both inputs do exactly that at 600,000
+// operators. The depths used here are just past the bound, so the test
+// measures the guard rather than the stack.
 //
-// IT NO LONGER GOES THROUGH Parse, AND THAT IS A REAL CHANGE IN WHAT IS
-// REACHABLE, not a test convenience. maxSourceBytes (limits.go, 10,000 bytes)
-// bounds one expression's SOURCE, and the cheapest chain source can express
-// costs two bytes an operator, so the deepest tree any PARSEABLE expression
-// can now produce is about 5,000 — half of maxEvalDepth. Every case below
-// used to be written as source and each is now built as a tree directly,
-// which exercises the identical evalNode guard on the identical shape.
+// The trees are built directly rather than through Parse, because Parse cannot
+// reach these depths: maxSourceBytes (limits.go, 10,000 bytes) bounds one
+// expression's SOURCE, and the cheapest chain source can express costs two
+// bytes an operator, so the deepest tree any PARSEABLE expression can produce
+// is about 5,000 — half of maxEvalDepth. Building the tree exercises the
+// identical evalNode guard on the identical shape.
 //
-// maxEvalDepth is kept rather than deleted, for two reasons. It is the floor
-// that catches a deep tree however it arrives, and Parse is not the only way
-// a tree can be built (this test is itself the proof). And deleting a guard
-// because a newer, outer guard happens to hide it today is how the original
-// hazard comes back the moment the outer one moves.
+// maxEvalDepth is still needed. It is the floor that catches a deep tree
+// however it arrives, and Parse is not the only way a tree can be built (this
+// test is itself the proof). Relying on the outer source bound alone would
+// bring the hazard back the moment that bound moves.
 func TestEval_RecursionDepthIsBounded(t *testing.T) {
 	// deepChain builds a left-deep tree of n operators, the shape a flat
 	// left-associative run parses into.
@@ -847,14 +842,13 @@ func TestEval_RecursionWithinTheBoundStillEvaluates(t *testing.T) {
 	}
 }
 
-// TestEvalOptions_DefaultAndOverride pins the option plumbing before anything
-// consumes it.
+// TestEvalOptions_DefaultAndOverride pins the option plumbing.
 //
 // The default is POSIX and NOT the specification's own default of host-native.
 // sqi parses templates server-side, so a host-native default would let the same
 // template expand into different tasks depending on which OS submitted it —
-// a failure that surfaces only in a mixed-OS deployment. Sub-project E selects
-// native explicitly for host contexts.
+// a failure that surfaces only in a mixed-OS deployment. Host-context
+// evaluation (internal/worker/fmtres) selects the host's flavor explicitly.
 func TestEvalOptions_DefaultAndOverride(t *testing.T) {
 	if got := newEvalCtx("", nil, nil).pathFormat; got != PathPOSIX {
 		t.Errorf("default pathFormat = %v, want PathPOSIX", got)
@@ -880,8 +874,8 @@ func TestPathNative_ResolvesToARealFlavour(t *testing.T) {
 	}
 }
 
-// TestEvalOptions_ExistingCallSitesUnchanged is the whole point of making the
-// option variadic: the three-argument form must keep compiling and behaving.
+// TestEvalOptions_ExistingCallSitesUnchanged pins why the option is variadic:
+// the three-argument form must keep compiling and behaving.
 func TestEvalOptions_ExistingCallSites(t *testing.T) {
 	v, err := Eval(`1 + 1`, MapSymbols{}, TAny)
 	if err != nil {

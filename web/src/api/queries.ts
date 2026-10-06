@@ -39,7 +39,7 @@ const USAGE_POOL_REFETCH_MS = 5000
  * worker's `current_tasks` are derived server-side from its assigned/running
  * tasks, but no WebSocket event fires when those assignments change (the
  * `workers` subject only carries online/offline transitions). Polling keeps the
- * Active Tasks list current — picking up new tasks and, crucially, clearing
+ * Active Tasks list current — picking up new tasks and clearing
  * finished ones so their live "Elapsed" stops ticking.
  */
 const WORKER_DETAIL_REFETCH_MS = 5000

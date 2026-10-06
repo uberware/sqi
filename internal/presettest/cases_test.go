@@ -76,12 +76,13 @@ func TestPresetTemplate_LoadsBothSources(t *testing.T) {
 	}
 }
 
-// TestLoadCases_StubInner pins the fixture field that replaced an inference.
+// TestLoadCases_StubInner pins a fixture field that states what could
+// otherwise be inferred.
 //
-// The shape used to be derived from filepath.IsAbs(command), which is FALSE on
-// Windows for "/bin/sh" because it carries no volume name -- so the inference
-// inverted on the one platform that made it matter. A fixture states it
-// instead.
+// Deriving the shape from filepath.IsAbs(command) would be wrong: it is FALSE
+// on Windows for "/bin/sh" because it carries no volume name -- so the
+// inference inverts on the one platform that makes it matter. A fixture
+// states it instead.
 func TestLoadCases_StubInner(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "cases.yaml")

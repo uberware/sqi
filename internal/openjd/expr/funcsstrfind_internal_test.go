@@ -57,7 +57,7 @@ func TestTrimAndAffix(t *testing.T) {
 
 // TestSearchFunctions covers startswith/endswith/count/find/rfind/index/rindex.
 //
-// The non-ASCII rows are load-bearing. Indices are CODEPOINT offsets, matching
+// The non-ASCII rows check that indices are CODEPOINT offsets, matching
 // len(s) (utf8.RuneCountInString, funcsconv.go) and s[i] (rune-indexed,
 // list.go:302). A byte-offset implementation answers 3 for find('héllo','l')
 // instead of 2 — a plausible-looking wrong answer that no ASCII test can see.
@@ -72,9 +72,9 @@ func TestSearchFunctions(t *testing.T) {
 		{"startswith no", `startswith('abcdef', 'z')`, "false", "bool"},
 		{"startswith empty is true", `startswith('abc', '')`, "true", "bool"},
 		{"endswith yes", `endswith('abcdef', 'def')`, "true", "bool"},
-		// endswith's FALSE path, the twin of "startswith no" above — until
-		// this row, nothing in the unit table or the oracle corpus exercised
-		// endswith returning false for a non-matching suffix.
+		// endswith's FALSE path, the twin of "startswith no" above; nothing
+		// else in the unit table or the oracle corpus exercises endswith
+		// returning false for a non-matching suffix.
 		{"endswith no", `endswith('abcdef', 'z')`, "false", "bool"},
 		{"endswith empty is true", `endswith('abc', '')`, "true", "bool"},
 		{"count simple", `count('banana', 'a')`, "3", "int"},
@@ -110,9 +110,8 @@ func TestSearchFunctions(t *testing.T) {
 }
 
 // TestSearchFunctions_Reject pins the two error conditions RFC 0006 states
-// explicitly. Both back conformance fixtures — expr2.2.4--count-empty-substring,
-// --find-empty-substring, --index-not-found and --rindex-not-found — which pass
-// today only because the function is unknown.
+// explicitly. Both back conformance fixtures: expr2.2.4--count-empty-substring,
+// --find-empty-substring, --index-not-found and --rindex-not-found.
 func TestSearchFunctions_Reject(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -167,9 +166,9 @@ func TestReplace(t *testing.T) {
 	}
 }
 
-// TestReplace_BoundsGrowth checks the bound AT the limit rather than near it.
-// C1's float-to-int narrowing defect was found this way and only this way: a
-// test that stops short of the boundary proves the happy path and nothing else.
+// TestReplace_BoundsGrowth checks the bound AT the limit rather than near it:
+// a test that stops short of the boundary proves only the happy path, and a
+// defect such as a float-to-int narrowing shows only at the boundary.
 func TestReplace_BoundsGrowth(t *testing.T) {
 	// 'a' * 1000 replaced by a 20000-byte string is 20,000,000 bytes — twice
 	// maxStringBytes — so it must be refused rather than allocated.

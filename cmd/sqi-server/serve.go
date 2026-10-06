@@ -200,7 +200,7 @@ func serverConfig(cfg config.Config, schedCfg scheduler.Config) server.Config {
 		AuthLDAP:                          cfg.Auth.LDAP,
 		AuthOIDC:                          cfg.Auth.OIDC,
 		Scheduler:                         schedCfg,
-		// Phase 1: always seed. Replace with cfg.Store.SeedDefaults when
+		// Always seed. Replace with cfg.Store.SeedDefaults when
 		// internal/config grows a setting for it.
 		SeedDefaults: true,
 	}

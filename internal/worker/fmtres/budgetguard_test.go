@@ -2,19 +2,17 @@
 
 package fmtres_test
 
-// EXPR sub-project E4d, Task 2, fix round 1: the guard that makes "a
-// production path must never resolve phase-3 expressions on the built-in
-// default limits" a BUILD FAILURE rather than a comment asking people to
-// remember.
+// The guard that makes "a production path must never resolve phase-3
+// expressions on the built-in default limits" a TEST FAILURE rather than a
+// comment asking people to remember.
 //
-// WHY IT EXISTS. Task 2's first round gave the seven phase-3 entry points a
-// variadic `budget ...*AssignmentBudget` tail. That shape let
-// executor.resolveAssignmentExpr build its symbol table with the argument
-// simply omitted -- it compiled, ran, and metered every PATH parameter's
-// apply_path_mapping evaluation against the compiled-in defaults on a host
-// configured otherwise, with every other test in this package green. Fix
-// round 1 made the parameter REQUIRED, which stops an accidental omission;
-// this test stops the remaining spelling, a deliberate `nil`.
+// WHY IT EXISTS. With a variadic `budget ...*AssignmentBudget` tail, a caller
+// such as executor.resolveAssignmentExpr could build its symbol table with
+// the argument omitted -- it would compile, run, and meter every PATH
+// parameter's apply_path_mapping evaluation against the compiled-in defaults
+// on a host configured otherwise, with every other test in this package
+// green. The parameter is REQUIRED, which stops an accidental omission; this
+// test stops the remaining spelling, a deliberate `nil`.
 //
 // It parses the worker's two phase-3 consumer packages rather than grepping,
 // so a call split across lines, renamed through an import alias, or nested
@@ -89,8 +87,8 @@ var phase3EntryPoints = map[string]bool{
 // are not what this test is about"). It is never legitimate in production: the
 // operator's configured limits reach phase 3 only through the budget, so a nil
 // there is a host silently metering against numbers its operator did not
-// choose -- invisible at runtime, since nothing fails, the task simply runs
-// under the wrong bounds.
+// choose -- invisible at runtime, since nothing fails; the task runs under
+// the wrong bounds.
 func TestPhase3EntryPoints_ProductionCallersAlwaysPassABudget(t *testing.T) {
 	for _, dir := range []string{
 		filepath.Join("..", "session"),

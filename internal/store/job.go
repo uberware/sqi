@@ -194,15 +194,13 @@ type JobStore interface {
 	// CreateJobSubmission atomically creates a job, its dependency edges, its
 	// steps and its tasks. On ANY error nothing is written.
 	//
-	// It exists because creating those rows through separate calls left two
-	// defects with no cure at the call site: a failed submission stranded a
-	// pending job that no sweep reaps, and a submission whose write failed
-	// after some steps were persisted produced a job whose missing steps made
-	// checkJobCompletion — which derives job status from the steps that exist —
-	// report it completed. The second needs a STORE failure specifically: an
-	// expansion failure left the step row too, because the old code wrote it
-	// before expanding its tasks, so that case hung pending rather than
-	// completing. Both are properties of partial creation, so both end here.
+	// Creating those rows through separate calls has two failure modes with no
+	// cure at the call site: a failed submission strands a pending job that no
+	// sweep reaps, and a submission whose write fails after some steps were
+	// persisted produces a job whose missing steps make checkJobCompletion —
+	// which derives job status from the steps that exist — report it
+	// completed. Both are properties of partial creation, which one
+	// transaction rules out.
 	//
 	// The returned JobSubmission carries the rows as stored, the way
 	// [JobStore.CreateJob], [StepStore.CreateStep] and [TaskStore.CreateTask]
@@ -211,6 +209,18 @@ type JobStore interface {
 	// insert, which does not join the edge table, so Job.DependsOn is
 	// backend-dependent and must not be relied on. Only [JobStore.GetJob]
 	// populates it.
+	//
+	// Before it commits, it re-checks inside its own transaction that every
+	// DependsOn upstream still exists and has not failed or been canceled, and
+	// returns a [*DependencyUnsatisfiableError] (which matches
+	// [ErrDependencyUnsatisfiable] under errors.Is) naming the first such
+	// upstream, in ID order, if one has: UpstreamID is its ID and Status its
+	// status (failed or canceled), empty when it was deleted. A backend must
+	// fill both, because the submitter words its 422 from them. The
+	// submitter's own pre-read ran before the transaction, so an upstream can
+	// change in between. The other direction,
+	// an upstream completing in that window, is not refused: the job is
+	// created blocked and sweepBlockedJobs releases it on its next tick.
 	CreateJobSubmission(ctx context.Context, sub JobSubmission) (JobSubmission, error)
 
 	// GetJob returns the job with the given ID, or [ErrNotFound].
@@ -219,7 +229,7 @@ type JobStore interface {
 	// CreateJobDependencies records that jobID waits on each ID in upstreamIDs
 	// (whole-job cross-job dependencies). Duplicate edges are ignored.
 	//
-	// Submission no longer calls this: the edges are written by
+	// Submission does not call this: the edges are written by
 	// [JobStore.CreateJobSubmission], in the same transaction as the job row
 	// whose blocked status they justify. See [JobStore.CreateJob] on what that
 	// leaves this method.
@@ -251,18 +261,12 @@ type JobStore interface {
 	// failure_limit) and updates UpdatedAt.
 	//
 	// status, started_at, completed_at, failed_attempts, and park_reason are
-	// lifecycle columns and are intentionally excluded — use [UpdateJobStatus],
-	// [CancelJobStatus], or the scheduler's failure-limit sweep for those. The
+	// lifecycle columns and are intentionally excluded — use [CancelJobStatus],
+	// [FinalizeJob], or the scheduler's failure-limit sweep for those. The
 	// returned Job reflects the current DB state of all columns.
 	//
 	// Returns [ErrNotFound] if the job does not exist.
 	UpdateJob(ctx context.Context, job Job) (Job, error)
-
-	// UpdateJobStatus transitions a job to a new status and updates UpdatedAt.
-	// If the new status is [JobStatusRunning] and StartedAt is nil, StartedAt
-	// is set to the current time. Terminal statuses set CompletedAt.
-	// Returns [ErrNotFound] if the job does not exist.
-	UpdateJobStatus(ctx context.Context, id string, status JobStatus) error
 
 	// CancelJobStatus transitions a job to [JobStatusCanceled] only when the
 	// job is not already in a terminal state, preventing a race where a
@@ -273,6 +277,39 @@ type JobStore interface {
 	//   - Already completed or failed → returns [ErrConflict].
 	//   - Job not found → returns [ErrNotFound].
 	CancelJobStatus(ctx context.Context, id string) error
+
+	// PromoteJobRunning moves a pending job to running, stamping StartedAt on
+	// first start. Guarded on pending (invariant I1), so a late running report
+	// can never un-pause, un-cancel or revive a job. Returns false, writing
+	// nothing, for any other status (an unknown job included).
+	PromoteJobRunning(ctx context.Context, id string, now time.Time) (bool, error)
+
+	// PauseJob administratively pauses a pending or running job. Guarded in the
+	// write (invariant I1): a job in any other status is left untouched and
+	// [ErrConflict] is returned. [ErrNotFound] for an unknown job.
+	PauseJob(ctx context.Context, id string, now time.Time) error
+
+	// FinalizeJob derives the job's terminal status from its steps and writes
+	// it in one statement (invariant I4): failed if any step failed, else
+	// canceled if any was canceled, else completed, stamping CompletedAt. The
+	// return contract matches [StepStore.FinalizeStep]. Returns ErrNotFound for
+	// an unknown job.
+	FinalizeJob(ctx context.Context, id string, now time.Time) (JobStatus, bool, error)
+
+	// ReleaseBlockedJob moves a blocked job to pending, but only while every
+	// one of its upstream edges points at an existing completed job. The check
+	// is evaluated inside the write (invariant I4). Returns false, writing
+	// nothing, when the job is not blocked or an upstream is not completed, so
+	// a job another writer already canceled is never revived (invariant I1).
+	// Returns ErrNotFound for an unknown job.
+	ReleaseBlockedJob(ctx context.Context, id string, now time.Time) (bool, error)
+
+	// CancelBlockedJob cancels a blocked job together with every non-terminal
+	// step and every pending task it owns, stamping reason on tasks that carry
+	// none, in one transaction. Guarded on the job being blocked; otherwise it
+	// returns (false, nil, nil) and writes nothing. Returns the canceled tasks,
+	// and ErrNotFound for an unknown job.
+	CancelBlockedJob(ctx context.Context, id, reason string, now time.Time) (bool, []Task, error)
 
 	// DemoteStalledJobs returns any job in [JobStatusRunning] that currently has
 	// no task in [TaskStatusAssigned] or [TaskStatusRunning] — yet still has at
@@ -295,6 +332,18 @@ type JobStore interface {
 	// deleted". Returns [ErrNotFound] when the job does not exist. The
 	// audit_log is left intact (it references entities by id, not by foreign
 	// key).
+	//
+	// The job's anchor row is locked first, which serializes the cascade
+	// against the other job-anchored writers (cancel, retry, finalize,
+	// completion, retention). It does NOT by itself stop a concurrent log
+	// append ([TaskLogStore.CreateTaskLog]) or a lease ([TaskStore.LeaseTask])
+	// from inserting a child row mid-cascade, because neither takes the job
+	// anchor: on a store without a single writer such an insert can land after
+	// its table was cleared and make a later DELETE in the cascade fail on a
+	// foreign key. A PostgreSQL store must therefore retry the cascade
+	// itself, inside DeleteJob, on a foreign-key or deadlock error; the REST
+	// handler that calls it does not retry. The SQLite store cannot produce
+	// either, because its single write connection serializes every writer.
 	DeleteJob(ctx context.Context, id string) error
 
 	// DeleteTerminalJobsBefore hard-deletes terminal jobs whose completion time
@@ -303,6 +352,11 @@ type JobStore interface {
 	// always eligible; failed jobs are included only when includeFailed is true.
 	// Active jobs are never removed. Each removed job's children are deleted via
 	// the same cascade as [DeleteJob].
+	//
+	// Each job is re-checked against that eligibility rule, under its anchor
+	// lock, immediately before its cascade starts. A job that a concurrent
+	// retry has made live since the eligibility read is skipped: it is neither
+	// deleted nor included in the returned summary.
 	DeleteTerminalJobsBefore(ctx context.Context, cutoff time.Time, includeFailed bool) ([]DeletedJob, error)
 
 	// ParkJob transitions a job to [JobStatusPaused] and records reason in

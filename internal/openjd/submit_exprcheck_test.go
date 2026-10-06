@@ -2,31 +2,16 @@
 
 package openjd
 
-// Test for sub-project E2's Task 10: wiring checkTemplateExpressions
-// (sub-project E2's own phase-1/phase-2 checker, see exprcheck.go) into
-// Submit as phase 2 of the specification's Progressive Expression
-// Evaluation model, via the checkExpressionsAtSubmit helper in submit.go.
+// Tests for wiring checkTemplateExpressions (the phase-1/phase-2 checker, see
+// exprcheck.go) into Submit as phase 2 of the specification's Progressive
+// Expression Evaluation model, via the checkExpressionsAtSubmit helper in
+// submit.go.
 //
 // This is a package-openjd (white-box) file, not an addition to
 // submit_test.go's package-openjd_test suite, because
 // TestCheckExpressionsAtSubmit_PhaseDistinction and
 // TestCheckExpressionsAtSubmit_NoOpWithoutEXPR call checkExpressionsAtSubmit
 // directly -- an unexported function.
-//
-// There was a SECOND reason until sub-project H2:
-// TestSubmit_PhaseDistinction_ThroughRealSubmit had to reach the unexported
-// registry var (extension.go) and temporarily flip the EXPR extension to
-// StatusSupported, because Submit's own phase 1 call (ValidateWithOptions)
-// otherwise rejected every EXPR-declaring template outright, before parameter
-// binding was ever reached. H2 flipped that status for real, so the flip and
-// its t.Cleanup are gone and the test drives the production path.
-//
-// An earlier version of this file claimed a Submit()-level proof of the
-// phase-1/phase-2 distinction was "impossible today" because of that gate.
-// A review disproved that by writing TestSubmit_PhaseDistinction_ThroughRealSubmit
-// below; that claim is withdrawn. See the report's "Fix round 1" section for
-// the mutation-test evidence (deleting the checkExpressionsAtSubmit call
-// from prepareTemplate makes that test fail).
 
 import (
 	"context"
@@ -40,8 +25,8 @@ import (
 	"github.com/uberware/sqi/internal/store/fake"
 )
 
-// TestCheckExpressionsAtSubmit_PhaseDistinction is the test the task brief
-// asks for: an expression valid with Param.N unresolved but invalid once
+// TestCheckExpressionsAtSubmit_PhaseDistinction pins an expression that is
+// valid with Param.N unresolved but invalid once
 // Param.N is concrete. "{{ 10 / Param.N }}" type-checks fine against an
 // unresolved INT placeholder (phase 1 has no value to divide by, so nothing
 // to fail on) but divides by zero once N is submitted as "0" (phase 2).
@@ -117,30 +102,25 @@ func TestCheckExpressionsAtSubmit_NoOpWithoutEXPR(t *testing.T) {
 }
 
 // TestSubmit_PhaseDistinction_ThroughRealSubmit is the end-to-end proof that
-// Task 10's wiring works when driven through the public Submitter.Submit API
+// the phase-2 check works when driven through the public Submitter.Submit API
 // -- not merely that checkExpressionsAtSubmit behaves correctly in isolation
 // (TestCheckExpressionsAtSubmit_PhaseDistinction, above, already covers
-// that). Until sub-project H2 it had to flip the EXPR extension's registry
-// entry (extension.go) to StatusSupported for the duration of the test, so the
-// brief's own division-by-zero template could clear ValidateWithOptions's
-// phase 1 call and reach parameter binding; EXPR is StatusSupported for real
-// now, so the template clears phase 1 exactly as a submitted one does.
+// that). The division-by-zero template clears ValidateWithOptions's phase 1
+// call exactly as a submitted one does and reaches parameter binding.
 //
-// Submitting with N="0" must fail at the new phase 2 call with a
+// Submitting with N="0" must fail at the phase 2 call with a
 // division-by-zero *SubmitValidationError; submitting the same template with
-// N="2" must succeed. This was verified by mutation: temporarily removing
-// the checkExpressionsAtSubmit call from prepareTemplate (submit.go) makes
-// the N=0 case return a nil error instead, failing this test; restoring the
-// call makes it pass again. See the report's "Fix round 1" section for both
-// observations.
+// N="2" must succeed. Removing the checkExpressionsAtSubmit call from
+// prepareTemplate (submit.go) makes the N=0 case return a nil error instead,
+// failing this test.
 func TestSubmit_PhaseDistinction_ThroughRealSubmit(t *testing.T) {
 	ctx := context.Background()
 	st := fake.New()
-	farm, err := st.CreateFarm(ctx, store.Farm{ID: uuid.NewString(), Name: "t10-farm"})
+	farm, err := st.CreateFarm(ctx, store.Farm{ID: uuid.NewString(), Name: "exprcheck-farm"})
 	if err != nil {
 		t.Fatalf("CreateFarm: %v", err)
 	}
-	queue, err := st.CreateQueue(ctx, store.Queue{ID: uuid.NewString(), FarmID: farm.ID, Name: "t10-queue"})
+	queue, err := st.CreateQueue(ctx, store.Queue{ID: uuid.NewString(), FarmID: farm.ID, Name: "exprcheck-queue"})
 	if err != nil {
 		t.Fatalf("CreateQueue: %v", err)
 	}

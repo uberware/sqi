@@ -39,14 +39,14 @@ type SubmitterOptions struct {
 	EnforceLimits bool
 
 	// ExprLimits carries the operator-configured EXPR expression limits
-	// (sub-project E4d) into BOTH phases this pipeline runs: phase 1, through
+	// into BOTH phases this pipeline runs: phase 1, through
 	// the [ValidateOptions] prepareTemplate builds, and phase 2, through the
 	// two [templateBudget]s it allocates for checkExpressionsAtSubmit and for
 	// every step's ResolveParameterSpaceParams call.
 	//
 	// The zero value means "use the defaults" ([ExprLimits.orDefaults]), so
-	// [NewSubmitter] and every existing SubmitterOptions literal keep the
-	// pre-E4d behavior unchanged.
+	// [NewSubmitter] and every SubmitterOptions literal that omits it get the
+	// default limits.
 	//
 	// DO NOT SET [ExprLimits.Deadline] HERE. It is the one field of ExprLimits
 	// that is per-REQUEST rather than operator configuration -- an ABSOLUTE
@@ -57,10 +57,10 @@ type SubmitterOptions struct {
 	// deadline set here would be one absolute instant computed at boot: every
 	// submission arriving after it would fail with expr.ErrDeadlineExceeded
 	// forever, and every submission before it would get a budget shrinking
-	// toward zero. It is also the shortest-looking way to satisfy H1's Task 3,
-	// which is why this warning is here rather than left to be discovered.
+	// toward zero. It looks like the shortest way to add a deadline, which is
+	// why this warning is here.
 	//
-	// The deadline lives on the per-call path instead, and already does:
+	// The deadline lives on the per-call path instead:
 	// [SubmitOptions.Deadline], threaded through [Submitter.prepareTemplate]
 	// and copied onto the ExprLimits behind phase 1's [ValidateWithBudget]
 	// call and behind both phase-2 budgets. internal/api computes it from the
@@ -69,8 +69,8 @@ type SubmitterOptions struct {
 	// As the code stands a Deadline set here is INERT rather than harmful --
 	// every one of those three copies overwrites the field with the request's
 	// own value, zero included -- but that is a property of three call sites,
-	// not a guarantee, and the failure it would cause if one of them stopped
-	// overwriting is silent and total. Leave it zero.
+	// not a guarantee, and if one of them stopped overwriting, every later
+	// submission would fail with no obvious cause. Leave it zero.
 	ExprLimits ExprLimits
 }
 
@@ -125,8 +125,7 @@ type SubmitOptions struct {
 	FailureLimit      *int
 	// Deadline, when non-zero, is an absolute wall-clock time after which this
 	// submission's expression evaluation stops and [Submitter.Submit] returns
-	// an error wrapping [expr.ErrDeadlineExceeded] -- EXPR sub-project H1's
-	// backstop.
+	// an error wrapping [expr.ErrDeadlineExceeded] -- a wall-clock backstop.
 	//
 	// It lives HERE, on the per-call options, and not on
 	// [SubmitterOptions.ExprLimits], because it is an ABSOLUTE instant and a
@@ -189,12 +188,11 @@ func declaredExtensions(tmpl *JobTemplate) []string {
 // validate (phase 1 of the expression evaluator, unresolved parameters),
 // validate named storage location coverage, bind job parameters against the
 // caller-supplied values, and re-check expressions with those now-concrete
-// parameters (phase 2, sub-project E2's Task 10). Each step's error is
-// wrapped as a *SubmitValidationError, matching Submit's existing contract.
-// Extracted from Submit to keep its cyclomatic complexity within bounds.
+// parameters (phase 2). Each step's error is wrapped as a
+// *SubmitValidationError, matching Submit's existing contract. Extracted from
+// Submit to keep its cyclomatic complexity within bounds.
 //
-// resolverBudget is EXPR sub-project E4c's Task 4 addition, corrected by fix
-// round 1 (post-implementation review, Critical 1): it is the ONE
+// resolverBudget is the ONE
 // [templateBudget] every step's ResolveParameterSpaceParams call spends
 // against for this ONE submission -- allocated fresh here (a local variable,
 // never a Submitter field, exactly for the same "fresh per call" reason
@@ -205,18 +203,15 @@ func declaredExtensions(tmpl *JobTemplate) []string {
 // It is a SEPARATE object from the budget checkExpressionsAtSubmit spends
 // below (checkerBudget, a purely local variable never returned) --
 // deliberately NOT shared between the two, even though both walks run for
-// the same submission. Fix round 1 found the original design (one budget
-// shared by BOTH the checker's re-check and every step's resolver call) was
-// wrong: the resolver re-charges the EXACT SAME range positions and let
-// bytes checkTemplateExpressions already charged, in the SAME phase, so
-// sharing one allowance between them silently HALVED the effective cap for
-// those classes -- ValidateWithOptions (phase 1, its own independent budget)
-// would accept a template that Submit then rejected purely because phase 2's
-// two walks were drawing from one pool instead of two. Design spec §3.1
-// sanctions exactly two budgets per request (one per walk); this is that.
-// See TestSubmit_ValidateAcceptsMustNotRejectOnBudgetAlone
-// (resolve_budget_test.go) for the constructions that proved the bug and now
-// prove the fix.
+// the same submission. The resolver re-charges the EXACT SAME range
+// positions and let bytes checkTemplateExpressions already charged, in the
+// SAME phase, so sharing one allowance between them would HALVE the
+// effective cap for those classes -- ValidateWithOptions (phase 1, its own
+// independent budget) would accept a template that Submit then rejected
+// purely because phase 2's two walks were drawing from one pool instead of
+// two. Each walk gets its own budget. See
+// TestSubmit_ValidateAcceptsMustNotRejectOnBudgetAlone
+// (resolve_budget_test.go) for the constructions that show it.
 //
 // resolverBudget is nil whenever err != nil: a caller that gets an error has
 // nothing to do with the budget, and returning it only on success avoids
@@ -248,9 +243,8 @@ func (s *Submitter) prepareTemplate(
 	// ValidateWithBudget, not ValidateWithOptions: the latter DISCARDS the
 	// second return value, which is the only channel a deadline breach travels
 	// on. Called through the wrapper, an expired deadline would stop this walk
-	// silently and the submission would proceed past a phase-1 check nobody
-	// finished -- reported as a clean validation, which is the one failure mode
-	// this whole sub-project exists to prevent.
+	// with no error and the submission would proceed past a phase-1 check
+	// nobody finished -- reported as a clean validation.
 	validateErrs, deadlineErr := ValidateWithBudget(tmpl, ValidateOptions{
 		EnforceLimits: s.enforceLimits,
 		ExprLimits:    s.exprLimits,
@@ -296,9 +290,8 @@ func (s *Submitter) prepareTemplate(
 	// template this check would have rejected.
 	//
 	// checkerBudget is spent HERE and only here -- it is not returned, and
-	// resolverBudget (below) is a genuinely separate object; see this
-	// function's own doc comment (fix round 1, Critical 1) for why they must
-	// not be the same budget.
+	// resolverBudget (below) is a separate object; see this function's own
+	// doc comment for why they must not be the same budget.
 	// Both phase-2 budgets carry the request's deadline. They are separate
 	// allowances by design (see this function's doc comment) but share one
 	// backstop: the deadline bounds the REQUEST, not any single walk, so
@@ -421,7 +414,7 @@ func (s *Submitter) Submit(
 	// [maxTasksPerStep] again and bound nothing new.
 	//
 	// It is charged from countCombNode's arithmetic BEFORE any row is built, so
-	// with expansion now preceding the single write, an over-cap job neither
+	// with expansion preceding the single write, an over-cap job neither
 	// materializes its tasks nor writes anything.
 	jobTasks := &jobTaskBudget{}
 	steps := make([]store.Step, 0, len(tmpl.Steps))
@@ -441,25 +434,24 @@ func (s *Submitter) Submit(
 	//
 	// The blocked status travels with the dependency edges, deliberately.
 	//
-	// It used to be written last, by a separate UpdateJobStatus after
-	// everything else was durable, because Submit was not transactional and the
-	// heartbeat sweep (scheduler.sweepBlockedJobs) scans for status=blocked jobs
-	// and releases any whose edges are all satisfied. Creating the job
-	// already-blocked let a sweep tick land in the window after the job row
-	// existed but before its edges were written, see a blocked job with ZERO
-	// edges, read that as "nothing left to wait on", and release it to pending.
-	// Submit would then write the edges and pending tasks anyway, leaving a job
-	// that is neither blocked nor scheduled — the sweep never revisits a
-	// non-blocked job, so it hung forever.
+	// The heartbeat sweep (scheduler.sweepBlockedJobs) scans for
+	// status=blocked jobs and releases any whose edges are all satisfied. If
+	// the job row were created already-blocked before its edges were written,
+	// a sweep tick landing in between would see a blocked job with ZERO edges,
+	// read that as "nothing left to wait on", and release it to pending;
+	// Submit would then write the edges and pending tasks anyway, leaving a
+	// job that is neither blocked nor scheduled — the sweep never revisits a
+	// non-blocked job, so it hangs forever.
 	//
-	// That window cannot exist now: the job row and its edges commit together,
-	// so no sweep can observe one without the other, and the status write that
-	// used to close the window is gone. It had a failure mode of its own —
-	// succeeding here and then failing left the job stranded in pending with
-	// pending tasks, which reconcileBlockedJob skips (it early-returns unless
-	// the status is blocked) and the scheduler never leases.
+	// Writing the blocked status last, as a separate status update, has a
+	// failure mode of its own: the rest succeeding and that write failing
+	// strands the job in pending with pending tasks, which reconcileBlockedJob
+	// skips (it early-returns unless the status is blocked) and the scheduler
+	// never leases.
 	//
-	// Splitting this back into separate writes recreates one hang or the other.
+	// The job row and its edges commit together, so no sweep can observe one
+	// without the other. Splitting this into separate writes recreates one
+	// hang or the other.
 	out, err := s.st.CreateJobSubmission(ctx, store.JobSubmission{
 		Job:       job,
 		DependsOn: opts.DependsOn,
@@ -467,6 +459,12 @@ func (s *Submitter) Submit(
 		Tasks:     tasks,
 	})
 	if err != nil {
+		if dep, ok := errors.AsType[*store.DependencyUnsatisfiableError](err); ok {
+			// An upstream failed, was canceled or was deleted after
+			// resolveDependencies read it: the same client-visible validation
+			// error, in the same words.
+			return nil, unsatisfiedDependency(dep)
+		}
 		return nil, fmt.Errorf("openjd: submit: create job: %w", err)
 	}
 
@@ -591,8 +589,7 @@ func (s *Submitter) expandStepTaskParams(
 	// ONE submission shares ONE allowance with each OTHER -- not with
 	// checkExpressionsAtSubmit's own budget (prepareTemplate), which is a
 	// separate object; see ResolveParameterSpaceParams' own doc comment and
-	// prepareTemplate's (fix round 1, Critical 1) for why the two must not be
-	// the same budget.
+	// prepareTemplate's for why the two must not be the same budget.
 	resolvedPS, resolveErrs := ResolveParameterSpaceParams(tmpl, &stepTmpl, stepTmpl.ParameterSpace, boundParams, resolverBudget)
 	// Checked BEFORE resolveErrs, and never wrapped in a SubmitValidationError:
 	// a wall-clock stop is not the submitter's fault, and the resolver reports
@@ -645,8 +642,8 @@ func (s *Submitter) expandStepTaskParams(
 	return taskParamList, nil
 }
 
-// checkExpressionsAtSubmit re-runs checkTemplateExpressions (sub-project E2's
-// Task 9) with boundParams now concrete -- phase 2 of the specification's
+// checkExpressionsAtSubmit re-runs checkTemplateExpressions with boundParams
+// now concrete -- phase 2 of the specification's
 // Progressive Expression Evaluation model, called from Submit right after
 // parameter binding (step 2c) and before any per-step call to
 // ResolveParameterSpaceParams. It is a free function, not a Submitter method,
@@ -655,22 +652,14 @@ func (s *Submitter) expandStepTaskParams(
 //
 // checkTemplateExpressions itself no-ops for a template that does not declare
 // the EXPR extension, so this call is inert for every template that does not
-// use it -- unchanged behavior for the auth-off, EXPR-off common case.
+// use it.
 //
 // Extracted to a standalone function (rather than inlined in Submit) so it
 // can be unit-tested directly against a *JobTemplate value without going
-// through Submit's own phase 1 call (ValidateWithOptions, step 2 above):
-// today that call rejects EVERY EXPR-declaring template outright, for a
-// reason unrelated to expressions -- the EXPR extension is registered but
-// not yet StatusSupported (extension.go), and validateExtensions enforces
-// that unconditionally. Submit therefore never reaches parameter binding for
-// such a template, and this function is correspondingly unreachable via
-// Submit until sub-project H flips that status. See
-// TestCheckExpressionsAtSubmit_PhaseDistinction (submit_exprcheck_test.go)
-// for the direct-call proof, and this task's report for the full account.
+// through Submit's own phase 1 call (ValidateWithOptions, step 2 above). See
+// TestCheckExpressionsAtSubmit_PhaseDistinction (submit_exprcheck_test.go).
 //
-// budget is EXPR sub-project E4c's Task 4 addition (its scope corrected by
-// fix round 1, Critical 1): prepareTemplate builds ONE [templateBudget] just
+// budget: prepareTemplate builds ONE [templateBudget] just
 // for this call (checkerBudget, a local variable, never returned or shared
 // with the resolver's own budget) and passes it here so this call's
 // position/retained-byte spend is charged against an allowance that is
@@ -678,8 +667,8 @@ func (s *Submitter) expandStepTaskParams(
 // call (resolve.go) -- see prepareTemplate's own doc comment for why the two
 // must NOT share one allowance: they charge the identical range positions and
 // let bytes, and sharing halves the effective cap for those classes. Test
-// call sites that omit it (as every pre-Task-4 test does) get a fresh,
-// throwaway allowance instead -- see [templateBudgetOrFresh].
+// call sites that omit it get a fresh, throwaway allowance instead -- see
+// [templateBudgetOrFresh].
 func checkExpressionsAtSubmit(tmpl *JobTemplate, boundParams map[string]string, budget ...*templateBudget) error {
 	errs := checkTemplateExpressions(tmpl, boundParams, budget...)
 
@@ -719,7 +708,7 @@ func (s *Submitter) resolveDependencies(ctx context.Context, dependsOn []string,
 
 		up, gerr := s.st.GetJob(ctx, id)
 		if errors.Is(gerr, store.ErrNotFound) {
-			return false, &SubmitValidationError{Cause: fmt.Errorf("openjd: submit: depends_on job %q not found", id)}
+			return false, &SubmitValidationError{Cause: fmt.Errorf(dependsOnNotFoundFmt, id)}
 		}
 		if gerr != nil {
 			return false, fmt.Errorf("openjd: submit: look up depends_on job %q: %w", id, gerr)
@@ -729,7 +718,7 @@ func (s *Submitter) resolveDependencies(ctx context.Context, dependsOn []string,
 		}
 		switch up.Status {
 		case store.JobStatusFailed, store.JobStatusCanceled:
-			return false, &SubmitValidationError{Cause: fmt.Errorf("openjd: submit: depends_on job %q already terminated unsuccessfully (%s)", id, up.Status)}
+			return false, &SubmitValidationError{Cause: fmt.Errorf(dependsOnTerminatedFmt, id, up.Status)}
 		case store.JobStatusCompleted:
 			// already satisfied — does not block
 		default:
@@ -737,6 +726,40 @@ func (s *Submitter) resolveDependencies(ctx context.Context, dependsOn []string,
 		}
 	}
 	return blocked, nil
+}
+
+// The two causes a dependency can be unsatisfiable for, worded once so the
+// pre-read in [Submitter.resolveDependencies] and the race path in
+// [unsatisfiedDependency] cannot drift apart.
+const (
+	dependsOnNotFoundFmt   = "openjd: submit: depends_on job %q not found"
+	dependsOnTerminatedFmt = "openjd: submit: depends_on job %q already terminated unsuccessfully (%s)"
+)
+
+// unsatisfiedDependencyError is the Cause of the *SubmitValidationError the
+// race path returns. Its text is exactly the pre-read's wording for the same
+// cause, and it unwraps to the store's typed error, so the 422 body reads like
+// the pre-check's while errors.Is(err, [store.ErrDependencyUnsatisfiable]) and
+// errors.As to [*store.DependencyUnsatisfiableError] still hold on Submit's
+// result.
+type unsatisfiedDependencyError struct {
+	msg string
+	dep *store.DependencyUnsatisfiableError
+}
+
+func (c *unsatisfiedDependencyError) Error() string { return c.msg }
+func (c *unsatisfiedDependencyError) Unwrap() error { return c.dep }
+
+// unsatisfiedDependency words a dependency the store found unsatisfiable inside
+// the submission's write exactly as resolveDependencies words the same cause
+// when its pre-read finds it, so a client cannot tell the race from the
+// pre-check.
+func unsatisfiedDependency(e *store.DependencyUnsatisfiableError) error {
+	msg := fmt.Sprintf(dependsOnTerminatedFmt, e.UpstreamID, e.Status)
+	if e.Status == "" {
+		msg = fmt.Sprintf(dependsOnNotFoundFmt, e.UpstreamID)
+	}
+	return &SubmitValidationError{Cause: &unsatisfiedDependencyError{msg: msg, dep: e}}
 }
 
 // ── Storage location validation ────────────────────────────────────

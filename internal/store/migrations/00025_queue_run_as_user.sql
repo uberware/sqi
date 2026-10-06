@@ -1,6 +1,6 @@
 -- SPDX-License-Identifier: AGPL-3.0-or-later
--- Queue-scoped OS identity for task isolation (Phase 3, Wave E). NULL means no
--- isolation, preserving pre-isolation behaviour for every existing queue.
+-- Queue-scoped OS identity for task isolation. NULL means no isolation, which
+-- is what every existing queue gets.
 --
 -- Deliberately no CHECK constraint: SQLite refuses ALTER TABLE DROP COLUMN on a
 -- column referenced by one, which would make the Down migration impossible

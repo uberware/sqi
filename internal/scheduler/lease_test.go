@@ -14,7 +14,6 @@ import (
 
 	"github.com/uberware/sqi/internal/bus"
 	"github.com/uberware/sqi/internal/store"
-	"github.com/uberware/sqi/internal/store/fake"
 )
 
 // TestHandleLeaseRequest_QueuelessWorkerWildcardToken reproduces the
@@ -23,7 +22,7 @@ import (
 // tasks (selection is farm-wide + eligibility, and an empty-QueueID worker is
 // eligible for any queue).
 func TestHandleLeaseRequest_QueuelessWorkerWildcardToken(t *testing.T) {
-	st := fake.New()
+	st := newCheckedFake(t)
 	s := newMetricsScheduler(st, &recordBus{}, "f1")
 	s.leaseHoldTimeout = 50 * time.Millisecond
 	one := 1
@@ -48,7 +47,7 @@ func TestHandleLeaseRequest_QueuelessWorkerWildcardToken(t *testing.T) {
 // queue-unaffiliated workers parked under the wildcard token, so a queueless
 // worker is leased newly-submitted work promptly rather than after a full hold.
 func TestWakeQueue_WakesWildcardParkedWorkers(t *testing.T) {
-	s := newMetricsScheduler(fake.New(), &recordBus{}, "f1")
+	s := newMetricsScheduler(newCheckedFake(t), &recordBus{}, "f1")
 
 	woke := make(chan bool, 1)
 	go func() { woke <- s.waiters.wait(context.Background(), bus.WildcardQueueToken, time.Second) }()
@@ -82,7 +81,18 @@ const minimalRenderJSON = `{
   ]
 }`
 
-func seedLeaseFixture(t *testing.T, st *fake.Store, coresPerTask []*int) (store.Worker, []string) {
+// seedLeaseFixture seeds farm f1, queue q1, a 4-core worker w1, a running job
+// and a ready "render" step with one ready task per entry of coresPerTask.
+func seedLeaseFixture(t *testing.T, st store.Store, coresPerTask []*int) (store.Worker, []string) {
+	t.Helper()
+	return seedLeaseFixtureWith(t, st, coresPerTask, nil)
+}
+
+// seedLeaseFixtureWith is seedLeaseFixture with host requirements on the step,
+// so a test can make the lease carry usage-pool claims. Pass nil for none.
+func seedLeaseFixtureWith(
+	t *testing.T, st store.Store, coresPerTask []*int, hostReqs *store.StepHostRequirements,
+) (store.Worker, []string) {
 	t.Helper()
 	ctx := t.Context()
 	now := time.Now().UTC()
@@ -92,7 +102,7 @@ func seedLeaseFixture(t *testing.T, st *fake.Store, coresPerTask []*int) (store.
 	if _, err := st.CreateQueue(ctx, store.Queue{ID: "q1", FarmID: "f1", Name: "Q1"}); err != nil {
 		t.Fatal(err)
 	}
-	w, err := st.RegisterWorker(ctx, store.Worker{
+	w, _, err := st.RegisterWorker(ctx, store.Worker{
 		ID: "w1", FarmID: "f1", Hostname: "h1", Status: store.WorkerStatusOnline,
 		CPUCount: 4, LastHeartbeatAt: &now, Tags: map[string]string{},
 	})
@@ -110,7 +120,7 @@ func seedLeaseFixture(t *testing.T, st *fake.Store, coresPerTask []*int) (store.
 	}
 	step, err := st.CreateStep(ctx, store.Step{
 		ID: uuid.NewString(), JobID: job.ID, Name: "render",
-		Status: store.StepStatusReady, CreatedAt: now, UpdatedAt: now,
+		Status: store.StepStatusReady, HostRequirements: hostReqs, CreatedAt: now, UpdatedAt: now,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -131,7 +141,7 @@ func seedLeaseFixture(t *testing.T, st *fake.Store, coresPerTask []*int) (store.
 }
 
 func TestSelectLeaseBatch_FillsFreeCores(t *testing.T) {
-	st := fake.New()
+	st := newCheckedFake(t)
 	s := newMetricsScheduler(st, &recordBus{}, "f1")
 	one := 1
 	// four 1-core tasks on a 4-core worker -> all four fit in one batch.
@@ -156,7 +166,7 @@ func TestSelectLeaseBatch_FillsFreeCores(t *testing.T) {
 }
 
 func TestSelectLeaseBatch_RespectsCapacity(t *testing.T) {
-	st := fake.New()
+	st := newCheckedFake(t)
 	s := newMetricsScheduler(st, &recordBus{}, "f1")
 	three, two := 3, 2
 	// 3-core + 2-core ready on a 4-core worker: only the 3-core fits (2-core would total 5).
@@ -172,7 +182,7 @@ func TestSelectLeaseBatch_RespectsCapacity(t *testing.T) {
 }
 
 func TestSelectLeaseBatch_UndeclaredIsFullMachine(t *testing.T) {
-	st := fake.New()
+	st := newCheckedFake(t)
 	s := newMetricsScheduler(st, &recordBus{}, "f1")
 	// one undeclared task + one 1-core task on a 4-core worker: undeclared needs
 	// the whole machine, so it is taken alone (1-core would not also fit).
@@ -192,7 +202,7 @@ func TestSelectLeaseBatch_UndeclaredIsFullMachine(t *testing.T) {
 // error from CountActiveTasksInQueue (inside policyGate) is not swallowed as a
 // silent skip but is instead returned as an error from selectLeaseBatch.
 func TestSelectLeaseBatch_PolicyStoreErrorPropagates(t *testing.T) {
-	inner := fake.New()
+	inner := newCheckedFake(t)
 	one := 1
 	w, _ := seedLeaseFixture(t, inner, []*int{&one})
 
@@ -232,7 +242,7 @@ func (s *policyErrStore) CountActiveTasksInQueue(_ context.Context, _ string) (i
 }
 
 func TestHandleLeaseRequest_ReturnsBatch(t *testing.T) {
-	st := fake.New()
+	st := newCheckedFake(t)
 	s := newMetricsScheduler(st, &recordBus{}, "f1")
 	s.leaseHoldTimeout = 50 * time.Millisecond
 	one := 1
@@ -259,7 +269,7 @@ func TestHandleLeaseRequest_ReturnsBatch(t *testing.T) {
 // the same committed-core count and each lease up to free, over-committing the
 // worker. Total leased cores must stay ≤ worker.CPUCount. Run with -race.
 func TestHandleLeaseRequest_ConcurrentSameWorkerDoesNotOverLease(t *testing.T) {
-	st := fake.New()
+	st := newCheckedFake(t)
 	s := newMetricsScheduler(st, &recordBus{}, "f1")
 	s.leaseHoldTimeout = 50 * time.Millisecond
 	// 4-core worker, six 1-core ready tasks (6 cores of demand > 4 capacity).
@@ -295,21 +305,25 @@ func TestHandleLeaseRequest_ConcurrentSameWorkerDoesNotOverLease(t *testing.T) {
 // reclaim that returns tasks to ready broadcasts a wake so parked workers
 // re-lease without waiting out leaseHoldTimeout.
 func TestReclaimOfflineWorkerTasks_WakesParkedWaiters(t *testing.T) {
-	st := fake.New()
+	st := newCheckedFake(t)
 	s := newMetricsScheduler(st, &recordBus{}, "f1")
 	one := 1
 	w, _ := seedLeaseFixture(t, st, []*int{&one, &one})
 
-	// Assign the worker's tasks so reclaim has work to return (n > 0).
+	// Assign the worker's tasks so the offline transition has work to return.
 	if _, err := s.selectLeaseBatch(t.Context(), w); err != nil {
 		t.Fatalf("selectLeaseBatch: %v", err)
+	}
+	reclaimed, _, err := st.OfflineWorker(t.Context(), w.ID, "", time.Now().UTC())
+	if err != nil || len(reclaimed) != 2 {
+		t.Fatalf("OfflineWorker = (%d tasks, %v), want the worker's 2 leased tasks", len(reclaimed), err)
 	}
 
 	woke := make(chan bool, 1)
 	go func() { woke <- s.waiters.wait(context.Background(), "q1", time.Second) }()
 	time.Sleep(20 * time.Millisecond) // let the waiter park
 
-	s.reclaimOfflineWorkerTasks(t.Context(), w.ID, w.Hostname)
+	s.reclaimOfflineWorkerTasks(t.Context(), w.ID, w.Hostname, reclaimOffline, reclaimed)
 
 	select {
 	case got := <-woke:
@@ -321,11 +335,31 @@ func TestReclaimOfflineWorkerTasks_WakesParkedWaiters(t *testing.T) {
 	}
 }
 
+// TestReclaimOfflineWorkerTasks_NothingReclaimedDoesNotWake pins the other
+// branch: a worker that went offline holding nothing returns no tasks to the
+// ready queue, so there is nothing for a parked waiter to re-lease and no wake.
+func TestReclaimOfflineWorkerTasks_NothingReclaimedDoesNotWake(t *testing.T) {
+	st := newCheckedFake(t)
+	s := newMetricsScheduler(st, &recordBus{}, "f1")
+	one := 1
+	w, _ := seedLeaseFixture(t, st, []*int{&one})
+
+	woke := parkWaiter(t, s, "q1")
+
+	s.reclaimOfflineWorkerTasks(t.Context(), w.ID, w.Hostname, reclaimOffline, nil)
+
+	select {
+	case <-woke:
+		t.Fatal("a waiter was woken although no task came back to ready")
+	case <-time.After(100 * time.Millisecond):
+	}
+}
+
 // TestSelectLeaseBatch_OversizedTaskNotLeased verifies that a ready task whose
 // RequiredCores exceeds the worker's total CPUCount is not leased (it can never
 // fit on this worker regardless of current load).
 func TestSelectLeaseBatch_OversizedTaskNotLeased(t *testing.T) {
-	st := fake.New()
+	st := newCheckedFake(t)
 	s := newMetricsScheduler(st, &recordBus{}, "f1")
 	// Worker has 4 cores; task requires 8 — permanently unschedulable here.
 	eight := 8
@@ -352,7 +386,7 @@ func TestSelectLeaseBatch_OversizedTaskNotLeased(t *testing.T) {
 }
 
 func TestHandleLeaseRequest_EmptyTimesOut(t *testing.T) {
-	st := fake.New()
+	st := newCheckedFake(t)
 	s := newMetricsScheduler(st, &recordBus{}, "f1")
 	s.leaseHoldTimeout = 40 * time.Millisecond
 	// Register a worker but seed no ready tasks.
@@ -363,7 +397,7 @@ func TestHandleLeaseRequest_EmptyTimesOut(t *testing.T) {
 	if _, err := st.CreateQueue(t.Context(), store.Queue{ID: "q1", FarmID: "f1", Name: "Q1"}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := st.RegisterWorker(t.Context(), store.Worker{
+	if _, _, err := st.RegisterWorker(t.Context(), store.Worker{
 		ID: "w1", FarmID: "f1", Status: store.WorkerStatusOnline, CPUCount: 4,
 		LastHeartbeatAt: &now, Tags: map[string]string{},
 	}); err != nil {

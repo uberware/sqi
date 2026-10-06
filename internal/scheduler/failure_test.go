@@ -45,7 +45,7 @@ type failureHarness struct {
 
 func newFailureHarness(t *testing.T, policy RetryPolicy) *failureHarness {
 	t.Helper()
-	st := fake.New()
+	st := newCheckedFake(t)
 
 	cfg := DefaultConfig()
 	cfg.DefaultMaxAttempts = policy.MaxAttempts
@@ -84,7 +84,7 @@ func (h *failureHarness) seedRunningTask(jobID, taskID, workerID string) {
 	ctx := h.t.Context()
 	now := time.Now().UTC()
 
-	if _, err := h.st.RegisterWorker(ctx, store.Worker{
+	if _, _, err := h.st.RegisterWorker(ctx, store.Worker{
 		ID: workerID, FarmID: "farm-1", Hostname: workerID,
 		Status: store.WorkerStatusOnline, CPUCount: 4,
 	}); err != nil {
@@ -228,12 +228,18 @@ func (h *failureHarness) reassignAndReportFailed(taskID, workerID string) {
 	h.reportFailed(taskID)
 }
 
-// reclaimWorker drives the existing offline-worker reclaim path directly
-// (the same call sweepStaleWorkers makes once a worker's heartbeat goes
-// stale) — a "lost work" event distinct from a worker-reported failure.
+// reclaimWorker takes the worker offline through the store call the graceful
+// deregister makes (the same transition sweepStaleWorkers makes once a worker's
+// heartbeat goes stale, minus the staleness guard), then reports the reclaim as
+// the scheduler does: a "lost work" event distinct from a worker-reported
+// failure.
 func (h *failureHarness) reclaimWorker(workerID string) {
 	h.t.Helper()
-	h.s.reclaimOfflineWorkerTasks(h.t.Context(), workerID, workerID)
+	reclaimed, _, err := h.st.OfflineWorker(h.t.Context(), workerID, "", time.Now().UTC())
+	if err != nil {
+		h.t.Fatalf("OfflineWorker(%s): %v", workerID, err)
+	}
+	h.s.reclaimOfflineWorkerTasks(h.t.Context(), workerID, workerID, reclaimOffline, reclaimed)
 }
 
 func (h *failureHarness) taskStatus(taskID string) store.TaskStatus {
@@ -474,7 +480,7 @@ func TestLeaseGatesPass_SkipsPausedJob(t *testing.T) {
 	ctx := t.Context()
 	now := time.Now().UTC()
 
-	worker, err := h.st.RegisterWorker(ctx, store.Worker{
+	worker, _, err := h.st.RegisterWorker(ctx, store.Worker{
 		ID: "w1", FarmID: "farm-1", Hostname: "w1",
 		Status: store.WorkerStatusOnline, CPUCount: 4,
 	})
@@ -568,19 +574,10 @@ func TestHandleTaskFailed_CancelRace_DoesNotResurrectTask(t *testing.T) {
 	ctx := t.Context()
 	now := time.Now().UTC()
 
-	// The CancelTask sequence lands first: close the attempt as canceled,
-	// cancel the task, stamp the durable reason.
-	att := h.current["t1"]
-	att.Status = store.AttemptStatusCanceled
-	att.EndedAt = &now
-	if _, err := h.st.UpdateTaskAttempt(ctx, att); err != nil {
-		t.Fatalf("UpdateTaskAttempt: %v", err)
-	}
-	if err := h.st.UpdateTaskStatus(ctx, "t1", store.TaskStatusCanceled); err != nil {
-		t.Fatalf("UpdateTaskStatus: %v", err)
-	}
-	if err := h.st.SetTaskFailureReasonIfEmpty(ctx, "t1", store.FailureReasonCanceledByUser); err != nil {
-		t.Fatalf("SetTaskFailureReasonIfEmpty: %v", err)
+	// The cancel lands first: one store operation closes the attempt as
+	// canceled, cancels the task and stamps the durable reason.
+	if _, canceled, err := h.st.CancelTaskExecution(ctx, "t1", store.FailureReasonCanceledByUser, now); err != nil || !canceled {
+		t.Fatalf("CancelTaskExecution = (%v, %v), want canceled", canceled, err)
 	}
 
 	// The worker's in-flight "failed" report is processed afterwards.

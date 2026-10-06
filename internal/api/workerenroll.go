@@ -258,7 +258,7 @@ func (h *workerEnrollHandler) enroll(w http.ResponseWriter, r *http.Request) {
 // [store.ErrConflict] is returned to the caller as-is, distinct from every
 // other failure, so enroll can answer 409 rather than folding it into
 // errInvalidJoinToken's 401 — the same distinction CreateWorkerCredential's
-// own conflict used to draw when this was two separate calls.
+// own conflict draws on the reusable-token path.
 func (h *workerEnrollHandler) redeemSingleUse(ctx context.Context, hash string, now time.Time, cred store.WorkerCredential) (store.WorkerCredential, error) {
 	created, err := h.store.RedeemWorkerJoinToken(ctx, hash, now, cred)
 	if err != nil && !errors.Is(err, store.ErrNotFound) && !errors.Is(err, store.ErrConflict) {

@@ -35,16 +35,13 @@ type presetHandler struct {
 	// (openjd.expr_submission_deadline; zero disables it).
 	//
 	// A preset body is sha256-pinned against an operator-configured index, so
-	// unlike POST /api/v1/products it is not client-chosen content — which is
-	// why EXPR sub-project H1 originally left this path on
-	// openjd.DefaultExprLimits() with no deadline. H1's whole-branch review
-	// rejected that: POST /api/v1/presets/{name}/install is behind the SAME
+	// unlike POST /api/v1/products it is not client-chosen content. Both are
+	// bounded anyway: POST /api/v1/presets/{name}/install is behind the same
 	// permission as POST /api/v1/products (policy.ProductsManage), both end in
-	// a catalog write, and policy.Can grants everything with auth off — so the
-	// two routes differed for no reason a reader could act on. The limits are
-	// operator configuration and must be honored wherever validation happens;
-	// the deadline bounds a walk that an anonymous caller can trigger as often
-	// as it likes, GET /api/v1/presets/{name} included.
+	// a catalog write, and policy.Can grants everything with auth off. The
+	// limits are operator configuration and must be honored wherever
+	// validation happens; the deadline bounds a walk that an anonymous caller
+	// can trigger as often as it likes, GET /api/v1/presets/{name} included.
 	exprLimits   openjd.ExprLimits
 	exprDeadline time.Duration
 }

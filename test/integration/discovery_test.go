@@ -6,12 +6,11 @@ package integration
 
 // End-to-end coverage of the mDNS discovery path over REAL multicast.
 //
-// Everything else in this suite sets DiscoveryEnabled: false, so until these
-// tests existed the discovery path had unit coverage on both halves and
-// nothing joining them: the server advertised TXT records that no test ever
-// received, and the worker parsed TXT records that no test ever sent. The
-// specific gap that mattered was the TLS records — the server advertised
-// nats_tls=1 and, for a while, nothing on the worker read it at all.
+// Everything else in this suite sets DiscoveryEnabled: false, and the unit
+// tests cover the two halves separately: the server's advertised TXT records
+// and the worker's parsing of them. These tests join the halves, in
+// particular for the TLS records: a server advertising nats_tls=1 achieves
+// nothing unless the worker reads it.
 //
 // These tests use real multicast on a real interface. See multicast_test.go
 // for the preflight and for why a foreign sqi-server on the network makes the
@@ -114,10 +113,9 @@ func TestDiscovery_TLSRecordsCrossTheWire(t *testing.T) {
 // chain over real multicast: server config → TXT records → wire → parse →
 // the worker's TLS decision.
 //
-// This is the regression that matters. The records were advertised for a
-// while with nothing reading them, so a worker discovering a TLS farm
-// attempted plaintext and failed with an error naming neither the cause nor
-// the setting that fixes it.
+// If nothing reads the advertised records, a worker discovering a TLS farm
+// attempts plaintext and fails with an error naming neither the cause nor the
+// setting that fixes it.
 func TestDiscovery_AdvertisedBrokerTLSReachesWorkerConfig(t *testing.T) {
 	requireMulticast(t)
 	noForeignServer(t)
@@ -163,8 +161,8 @@ func TestDiscovery_RealBinaryFindsItsServerOverMDNS(t *testing.T) {
 	// It cannot avoid the listener. The advertisement carries this machine's
 	// HOSTNAME (entryToResult prefers entry.HostName), so the worker dials that
 	// name whatever interface the announcement went out on, and a
-	// loopback-bound broker is unreachable there. Verified by trying: bound to
-	// 127.0.0.1 the worker discovers the server and then fails with "no servers
+	// loopback-bound broker is unreachable there: bound to 127.0.0.1, the
+	// worker discovers the server and then fails with "no servers
 	// available". Changing the product to advertise a loopback literal would be
 	// bending production behavior to suit a test.
 	if !multicastRequired() {

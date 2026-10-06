@@ -47,8 +47,8 @@ func TestRound(t *testing.T) {
 }
 
 // TestRound_CarryIsRoundOnlyAndDoesNotPropagate pins all three invariants of
-// the rendered-form field at once. It is the reason the field is safe to add to
-// a type every other file in the package builds.
+// the rendered-form field at once. Those invariants are what make the field
+// safe on a type every other file in the package builds.
 func TestRound_CarryIsRoundOnlyAndDoesNotPropagate(t *testing.T) {
 	tests := []struct {
 		name string
@@ -231,11 +231,11 @@ func TestSum_ReportsOverflow(t *testing.T) {
 
 // TestMinMax_EmptyList_SelectsNoReturnRow pins the REAL behavior behind
 // TestMinMax_EmptyList's error text, which a defect could satisfy by accident:
-// a prior revision of shape.go's argCostList scored list[nulltype] against
-// EVERY concrete-element list row (list[int], list[float], and the dedicated
-// list[nulltype] row itself) as the same cost-1 widen, so the three rows tied
-// and matchShapesExactFirst's earliest-wins tiebreak picked list[int] — never
-// the dedicated noreturn row. That was invisible from the error text alone
+// if shape.go's argCostList scored list[nulltype] against EVERY
+// concrete-element list row (list[int], list[float], and the dedicated
+// list[nulltype] row itself) as the same cost-1 widen, the three rows would tie
+// and matchShapesExactFirst's earliest-wins tiebreak would pick list[int] —
+// never the dedicated noreturn row. That is invisible from the error text alone
 // because extremumInt independently raises the identical RFC 0006 wording for
 // an empty []Value. Asserting on the matched Shape's Ret — TNoReturn only the
 // dedicated row declares — is the only way to tell the two rows apart.
@@ -257,7 +257,7 @@ func TestMinMax_EmptyList_SelectsNoReturnRow(t *testing.T) {
 // TestSum_EmptyListIsOrderIndependent pins that sum([]) returns int because
 // its list[nulltype] row wins ON COST against the list[int]/list[float] rows
 // (shape.go's argCostList scores list[nulltype] vs list[nulltype] as an exact
-// match now, cost 0, against those rows' cost-1 widen) — not because it
+// match, cost 0, against those rows' cost-1 widen) — not because it
 // happens to be registered first. Reordering the rows must not change the
 // result; if it did, the selection would be a position-dependent tie rather
 // than a real cost win, which is exactly the defect this guards against.
@@ -291,7 +291,7 @@ func TestSum_EmptyListIsOrderIndependent(t *testing.T) {
 // "int64(f)" conversion gives for such a value: measured on the same source,
 // math.MaxInt64 on arm64 and math.MinInt64 on amd64 for the exact same input.
 // floatToInt (funcsmath.go) is the shared guard all three (and roundToDigits's
-// non-positive-ndigits branch, covered separately below) now go through.
+// non-positive-ndigits branch, covered separately below) go through.
 func TestFloorCeilRound_RejectAnUnrepresentableFloat(t *testing.T) {
 	tests := []struct {
 		name string
@@ -347,10 +347,10 @@ func TestFloorCeilRound_AcceptTheExactBoundary(t *testing.T) {
 
 // TestRoundIntToDigits_RejectsMultiplyOverflow pins that the final q*scale
 // multiplication in roundIntToDigits (funcsmath.go) is checked. Both cases are
-// plain int64 literals — no float involved — and both used to return the
-// same wrong, sign-flipped -9223372036854775806 on every architecture: the
-// half-adjustment and the scale accumulation were each individually guarded,
-// but the multiplication that combines them was not.
+// plain int64 literals — no float involved — and unchecked, both return the
+// same wrong, sign-flipped -9223372036854775806 on every architecture:
+// guarding the half-adjustment and the scale accumulation individually does
+// not cover the multiplication that combines them.
 func TestRoundIntToDigits_RejectsMultiplyOverflow(t *testing.T) {
 	tests := []struct {
 		name string
@@ -374,11 +374,11 @@ func TestRoundIntToDigits_RejectsMultiplyOverflow(t *testing.T) {
 
 // TestRoundToDigits_NegativeNdigitsBeyondFloatRange pins roundToDigits's
 // negative-ndigits branch against math.Pow(10, 400) silently overflowing to
-// +Inf: f/Inf gives 0, and 0*Inf gives NaN, whose narrowing to int64 used to
-// be 0 on arm64 but math.MinInt64 on amd64 — sqi's primary deployment arch —
-// for the exact same source. The fix bounds the scale accumulation the same
-// way roundIntToDigits already bounds its own, so this now computes 0
-// directly rather than discovering it through a NaN.
+// +Inf: f/Inf gives 0, and 0*Inf gives NaN, whose narrowing to int64 is 0 on
+// arm64 but math.MinInt64 on amd64 — sqi's primary deployment arch — for the
+// exact same source. roundToDigits bounds the scale accumulation the same way
+// roundIntToDigits bounds its own, so this computes 0 directly rather than
+// discovering it through a NaN.
 func TestRoundToDigits_NegativeNdigitsBeyondFloatRange(t *testing.T) {
 	tests := []struct {
 		name string
@@ -404,8 +404,7 @@ func TestRoundToDigits_NegativeNdigitsBeyondFloatRange(t *testing.T) {
 }
 
 // TestRoundToDigits_PositiveNdigitsBeyondFloatRange is the positive-ndigits
-// counterpart to TestRoundToDigits_NegativeNdigitsBeyondFloatRange above, and
-// it exists because only the negative branch was ever guarded.
+// counterpart to TestRoundToDigits_NegativeNdigitsBeyondFloatRange above.
 //
 // The positive branch scales by math.Pow(10, ndigits), which is +Inf from
 // ndigits 309 up; f*Inf is then ±Inf (NaN when f is 0), and dividing that by
@@ -456,9 +455,9 @@ func TestRoundToDigits_PositiveNdigitsBeyondFloatRange(t *testing.T) {
 	}
 }
 
-// TestRoundToDigits_PositiveNdigitsRoundsBelowTheOverflow guards the fix above
-// from being written as "return f whenever ndigits is large": inside the range
-// where the scale is usable, round must still round.
+// TestRoundToDigits_PositiveNdigitsRoundsBelowTheOverflow guards the handling
+// above from being written as "return f whenever ndigits is large": inside the
+// range where the scale is usable, round must still round.
 func TestRoundToDigits_PositiveNdigitsRoundsBelowTheOverflow(t *testing.T) {
 	tests := []struct {
 		name string
@@ -484,15 +483,14 @@ func TestRoundToDigits_PositiveNdigitsRoundsBelowTheOverflow(t *testing.T) {
 }
 
 // TestRoundIntToDigits_CoarserThanTheValueIsZeroNotOverflow is the int
-// counterpart to the float branch's "compute the answer directly" rule, and it
-// covers the one place the two disagreed.
+// counterpart to the float branch's "compute the answer directly" rule.
 //
 // roundIntToDigits bounds its scale accumulation to avoid an int64 multiply
-// overflow, but bailed out with errIntOverflow as soon as the scale itself
-// grew past MaxInt64 — even though rounding a small value at a place that
-// coarse has an exact, representable answer: 0. roundToDigits' own negative
-// branch already returns 0 for round(3.5, -400); this made round(1234, -19)
-// an error for the same shape of question.
+// overflow, but must not bail out with errIntOverflow just because the scale
+// itself grows past MaxInt64: rounding a small value at a place that coarse
+// has an exact, representable answer, 0. roundToDigits' own negative branch
+// returns 0 for round(3.5, -400), and round(1234, -19) is the same shape of
+// question.
 //
 // A genuine overflow is still an overflow: a value at or above half the scale
 // rounds away from zero to ±scale, which is not representable.

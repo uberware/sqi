@@ -2,7 +2,7 @@
 
 package integration
 
-// preset_exec_test.go — Tier 3 of the preset validation harness (Phase 4, P1).
+// preset_exec_test.go — Tier 3 of the preset validation harness.
 //
 // Runs every preset the registry claims Tier 3 for through a REAL server and a
 // REAL sqi-worker subprocess with the vendor command replaced by test/stubproc
@@ -200,7 +200,7 @@ func TestPresetTier3(t *testing.T) {
 			})
 		}
 		// A tier3.case naming a case the fixture does not define would otherwise
-		// leave the claim silently unexecuted -- the precise failure mode
+		// leave the claim silently unexecuted -- the failure mode
 		// RecordOutcome exists to make visible.
 		if !claimed {
 			t.Errorf("%s: tier3 claims case %q but %s.yaml defines no such case",
@@ -213,10 +213,11 @@ func TestPresetTier3(t *testing.T) {
 // re-marks it as SKIPPED if anything below this call skips the test. Every
 // test the registry names (tier 2 and tier 3) calls it first.
 //
-// A bare RecordOutcome recorded {Ran: true, Skipped: false} and left it there,
-// so a t.Skip from any helper -- the worker start, the stub build, the
-// toolchain check -- read back as a successful run. That is the registry's own
-// failure mode ("a skipped test verifies nothing") reproduced one level down.
+// A bare RecordOutcome records {Ran: true, Skipped: false} and leaves it
+// there, so a t.Skip from any helper -- the worker start, the stub build, the
+// toolchain check -- would read back as a successful run. That is the
+// registry's own failure mode ("a skipped test verifies nothing") reproduced
+// one level down.
 func trackOutcome(t *testing.T, caseName string) {
 	t.Helper()
 	presettest.RecordOutcome(caseName, false, "")
@@ -298,8 +299,8 @@ func runTier3Case(t *testing.T, entry presettest.Entry, c presettest.Case, caseN
 	}
 }
 
-// TestTrackOutcome_ReportsAHelperSkip pins the thing the outcome sink
-// could not see: a case that records "running" and is then skipped by a helper
+// TestTrackOutcome_ReportsAHelperSkip pins what a bare outcome record cannot
+// see: a case that records "running" and is then skipped by a helper
 // BELOW that record. Every execution-tier helper in this file can skip on its
 // own -- startRealWorkerWithOptions on an unsupported platform, newTier3Env
 // with no Go toolchain, buildWorkerBinary on a build failure -- and without the
@@ -382,8 +383,8 @@ func hostAttributeRequirements(t *testing.T, entry presettest.Entry) []openjd.At
 // capabilities.MergeManualTags as presence-only (Tags["maya"] = ""), and
 // scheduler/matcher.go's workerAttributeValue hands that empty string to the
 // requirement's anyOf list, so "maya" alone never satisfies
-// `attr.worker.tag.maya anyOf ["true"]`. Task 10 found that the slow way: the
-// job sat `pending` for the full 90s timeout with no worker ever matching.
+// `attr.worker.tag.maya anyOf ["true"]`, and the job sits `pending` for the
+// full 90s timeout with no worker ever matching.
 func workerTagEnv(t *testing.T, entry presettest.Entry) []string {
 	t.Helper()
 	const prefix = "attr.worker.tag."
@@ -426,7 +427,7 @@ func requiredAttributeValue(attr openjd.AttributeRequirement) string {
 // environment can fake: the worker reports runtime.GOOS at
 // registration (capabilities.Detect) and the scheduler translates it
 // (internal/scheduler/matcher.go osFamily) — unlike a capability tag, which
-// SQI_WORKER_CAPABILITY_TAGS can simply assert. Without this gate such a preset's
+// SQI_WORKER_CAPABILITY_TAGS can assert. Without this gate such a preset's
 // job never leaves `pending` and the case fails on the 90s timeout with nothing
 // naming the cause.
 //
@@ -472,7 +473,7 @@ func hostOSFamily() string {
 //
 // It prints both maps on failure: "ffmpeg ran 2 times" is not actionable
 // without knowing the fixture said 3, and a segmented preset that silently
-// transcodes one slice fewer is exactly the bug this tier exists to catch.
+// transcodes one slice fewer is the bug this tier exists to catch.
 func assertInvocationCounts(t *testing.T, c presettest.Case, recs []stubrecord.Record) {
 	t.Helper()
 	if len(c.ExpectInvocations) == 0 {
@@ -516,7 +517,7 @@ func assertInvocationCounts(t *testing.T, c presettest.Case, recs []stubrecord.R
 // temp directory in presettest's computed pipeline than in the real worker's
 // session root. Comparing them raw would fail for every preset that delivers a
 // script or a concat list — python, houdini-rop-render, and both runnable
-// segment-transcode variants — i.e. exactly the presets whose argv most needs
+// segment-transcode variants — i.e. the presets whose argv most needs
 // an independent witness.
 func assertObservedMatchesComputed(t *testing.T, snap presettest.Snapshot, recs []stubrecord.Record) {
 	t.Helper()
@@ -635,7 +636,7 @@ func TestScriptPowerShell_ExitStatus(t *testing.T) {
 		// successful cmdlet does not hide the failure.
 		{"native failure before a cmdlet", "cmd /c exit 3; Write-Host done", "failed"},
 		// The reason the command is a file and not -Command text: a trailing
-		// comment on a `;`-joined line swallowed the wrapper and exited 0.
+		// comment on a `;`-joined line swallows the wrapper and exits 0.
 		{"trailing comment", "cmd /c exit 3 # trailing comment", "failed"},
 		{"comment on the last line", "cmd /c exit 3\n# done", "failed"},
 		{"thrown exception", "throw 'boom'; Write-Host after", "failed"},

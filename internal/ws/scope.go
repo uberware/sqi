@@ -45,12 +45,12 @@ func (s Scope) allows(env Envelope) bool {
 //
 // The lookup distinguishes "this job definitively has no owner" (nil error,
 // empty string — a job submitted before auth was enabled) from "the store
-// could not answer" (non-nil error). Only the former is cached. That
-// distinction is load-bearing: task events are the highest-frequency event in
-// the system, so caching only non-empty owners would re-query the store on
-// *every* task transition of *every* pre-auth job, forever, on the scheduler's
-// goroutine. Caching the error case instead would be worse — a transient
-// failure would pin the job as invisible for the process's lifetime.
+// could not answer" (non-nil error). Only the former is cached. Task events
+// are the highest-frequency event in the system, so caching only non-empty
+// owners would re-query the store on every task transition of every pre-auth
+// job, forever, on the scheduler's goroutine. Caching the error case would
+// pin the job as invisible for the process's lifetime after one transient
+// failure.
 //
 // A failed lookup is instead suppressed for failureCooldown before being
 // retried. Retrying on every event would let a degraded store stall the

@@ -15,16 +15,34 @@ const (
 	StepStatusPending StepStatus = "pending"
 	// StepStatusReady means all dependencies have succeeded; tasks can be scheduled.
 	StepStatusReady StepStatus = "ready"
-	// StepStatusRunning means at least one task in this step is running.
+	// StepStatusRunning is reserved and never written: no store operation moves
+	// a step to running, so a step with running tasks stays ready. It survives
+	// for the wire types and for rows written outside the store operations
+	// (test fixtures, through CreateStep or the concrete stores'
+	// UpdateStepStatus), which FinalizeStep can still finish.
 	StepStatusRunning StepStatus = "running"
 	// StepStatusCompleted means all tasks in this step succeeded.
 	StepStatusCompleted StepStatus = "completed"
 	// StepStatusFailed means one or more tasks failed.
 	StepStatusFailed StepStatus = "failed"
-	// StepStatusCanceled means the step was canceled, typically because the
-	// parent job was canceled.
+	// StepStatusCanceled means the step was canceled. A step reaches it through
+	// CancelPendingStep (the cascade from a failed or canceled upstream step),
+	// CancelBlockedJob (a blocked job canceled before it ran), or FinalizeStep
+	// once all its tasks are terminal and a canceled one is among them with no
+	// failed one. A job cancel (CancelJobExecution) also finalizes every open
+	// step of the job.
 	StepStatusCanceled StepStatus = "canceled"
 )
+
+// IsTerminal reports whether s is a terminal step state (completed, failed,
+// canceled).
+func (s StepStatus) IsTerminal() bool {
+	switch s {
+	case StepStatusCompleted, StepStatusFailed, StepStatusCanceled:
+		return true
+	}
+	return false
+}
 
 // Step is one stage within a [Job]. Steps may depend on other steps; a step's
 // tasks are not scheduled until all its dependencies have reached
@@ -132,7 +150,57 @@ type StepStore interface {
 	// ascending.
 	ListSteps(ctx context.Context, jobID string) ([]Step, error)
 
-	// UpdateStepStatus transitions a step to a new status and updates
-	// UpdatedAt. Returns [ErrNotFound] if the step does not exist.
-	UpdateStepStatus(ctx context.Context, id string, status StepStatus) error
+	// FinalizeStep derives the step's terminal status from its tasks and writes
+	// it in one statement (invariant I4): failed if any task failed, else
+	// canceled if any was canceled, else completed. It returns the step's
+	// terminal status and whether THIS call wrote it. While any task is
+	// non-terminal it returns ("", false, nil) and writes nothing. A step that
+	// is already terminal returns its status with false, so a redelivered
+	// completion still drives the caller's idempotent propagation. A step with
+	// no tasks completes. Not bounded by MaxLimit. Returns ErrNotFound for an
+	// unknown step.
+	FinalizeStep(ctx context.Context, id string, now time.Time) (StepStatus, bool, error)
+
+	// ReleaseStep moves a pending step to ready and every one of its pending
+	// tasks to ready, in one transaction. Guarded on the step being pending
+	// (invariant I1): if it is not, nothing is written and it returns
+	// (false, nil, nil). Returns the promoted tasks. ErrNotFound for an unknown
+	// step.
+	ReleaseStep(ctx context.Context, id string, now time.Time) (bool, []Task, error)
+
+	// CancelPendingStep moves a pending step to canceled and every one of its
+	// pending tasks to canceled, stamping reason on tasks that carry none, in
+	// one transaction. Guarded on the step being pending and, decided inside
+	// the same transaction (invariant I4), on at least one of its upstream
+	// steps being failed or canceled; otherwise nothing is written and it
+	// returns (false, nil, nil). The second guard is what makes the failure
+	// cascade safe against a retry that revives the upstream after the caller
+	// read the step list. Returns the canceled tasks. ErrNotFound for an
+	// unknown step.
+	CancelPendingStep(ctx context.Context, id, reason string, now time.Time) (bool, []Task, error)
+
+	// ListStuckSteps returns every non-terminal step that has at least one task
+	// and no non-terminal task, and whose job is not terminal: steps
+	// FinalizeStep would finalize but that no future task report will ever
+	// trigger. Used once at scheduler start. Ordered by job ID, then step order.
+	//
+	// The job condition is deliberate. A job cancel finalizes the
+	// job's steps in its own transaction (CancelJobExecution), and migration
+	// 00033 repaired the jobs canceled by earlier releases, so a terminal job
+	// carries open steps only in a database that skipped that repair; those are
+	// the migration's to finalize, not this start-up pass's, which on a healthy
+	// farm must stay one query and no writes. The repair target is a live job
+	// whose step never finalized (so the job never completed); a terminal job
+	// has no downstream that needs its steps finalized, and jobs blocked on it
+	// follow its job status. A paused job is live and is listed. A step whose
+	// job row is missing is not listed.
+	ListStuckSteps(ctx context.Context) ([]Step, error)
+
+	// ListJobIDsWithPendingSteps returns, ascending, the IDs of jobs that are
+	// not terminal and not blocked and that have at least one pending step.
+	// Used once at scheduler start to re-run dependency resolution, so a step a
+	// retry reset to pending but never released (the server stopped between
+	// RetryTasks and ResolveDependencies) is released or cascade-canceled. A
+	// blocked job is excluded: its steps wait on another job.
+	ListJobIDsWithPendingSteps(ctx context.Context) ([]string, error)
 }

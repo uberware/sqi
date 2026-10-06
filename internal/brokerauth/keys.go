@@ -99,10 +99,10 @@ func SaveSeed(path string, seed []byte) error {
 	// os.CreateTemp reserves a unique name; it is closed immediately and the
 	// seed goes in through fsutil.WriteSecret, which reopens with the access
 	// rights needed to set an ACL and applies that ACL BEFORE the first byte
-	// is written. Chmod(0o600) on the CreateTemp handle — what this used to do
-	// — is a no-op on Windows, where os.Chmod maps only to the read-only
-	// attribute and cannot deny read access to anyone, so the nkey seed landed
-	// with whatever DACL it inherited. The empty placeholder that exists in
+	// is written. Chmod(0o600) on the CreateTemp handle would be a no-op on
+	// Windows, where os.Chmod maps only to the read-only attribute and cannot
+	// deny read access to anyone, so the nkey seed would land with whatever
+	// DACL it inherited. The empty placeholder that exists in
 	// between carries no secret, so its inherited access discloses nothing.
 	tmp, err := os.CreateTemp(dir, "."+filepath.Base(path)+".tmp-*")
 	if err != nil {
@@ -132,17 +132,15 @@ func SaveSeed(path string, seed []byte) error {
 
 // LoadSeed reads a seed file, refusing one that is readable beyond its owner.
 //
-// The check is a real one, not hygiene theater: this seed IS the worker's
+// The check is a real one: this seed IS the worker's
 // identity, and a seed readable by other accounts on a shared render node hands
 // that identity to every one of them.
 //
-// It runs on EVERY platform. An earlier revision skipped it on Windows on the
-// grounds that "POSIX bits do not carry the same meaning there" — true of the
-// bits, and the wrong conclusion: the property being asserted is not "the mode
-// is 0600", it is "nobody else can read this". Windows expresses that through a
-// DACL instead, and skipping meant the one platform where SaveSeed could not
-// actually restrict the file was also the one that never checked. The writer
-// and the reader shared a blind spot, so nothing in the system could report it.
+// It runs on EVERY platform. POSIX bits do not carry the same meaning on
+// Windows, but the property being asserted is not "the mode is 0600", it is
+// "nobody else can read this". Windows expresses that through a DACL instead,
+// and skipping the check there would leave the platform where SaveSeed is
+// least able to restrict the file as the one that never checks.
 // fsutil.IsRestricted answers the real question on both.
 func LoadSeed(path string) ([]byte, error) {
 	if _, err := os.Stat(path); err != nil {
@@ -184,11 +182,7 @@ func ValidatePublicKey(pk string) error {
 // that is readable beyond its owner.
 //
 // Only the ADVICE is platform-specific. The check itself
-// (fsutil.IsRestricted) is not, and deliberately so: an earlier revision
-// skipped the whole check on Windows, which meant the one platform where
-// SaveSeed could not actually restrict the file was also the one that never
-// verified it — the writer and the reader had the same blind spot, so nothing
-// could report it.
+// (fsutil.IsRestricted) is not, and deliberately so: see LoadSeed.
 func restrictHint(path string) string {
 	if runtime.GOOS == "windows" {
 		return fmt.Sprintf(

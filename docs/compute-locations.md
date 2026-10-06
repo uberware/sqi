@@ -35,7 +35,7 @@ The auto-registration is:
   including any description you have curated.
 - **Best-effort** — a failure to auto-register (for example, a transient
   database error or a create that races another registration) is logged and
-  silently ignored; it never blocks or fails the worker registration itself.
+  ignored; it never blocks or fails the worker registration itself.
 
 This behavior is implemented in `ensureComputeLocation` in
 `internal/scheduler/scheduler.go`, called on every successful worker
@@ -111,13 +111,10 @@ only.
 The compute-location registry does **not** gate scheduling. A worker whose
 `compute_location` value does not appear in the registry is still eligible for
 tasks that match that value; a registry entry that has no matching worker
-simply has `worker_count: 0`. What matters to the scheduler is the string a
+has `worker_count: 0`. What matters to the scheduler is the string a
 worker self-reports at registration and the string a step declares in its host
-requirement — the registry has no influence on either.
-
-The scheduler matcher was not changed by the A2 feature that introduced the
-registry. The matcher keys on the raw `step.ComputeLocation` string exactly
-as it did in Phase 1.
+requirement — the registry has no influence on either. The matcher keys on the
+raw `step.ComputeLocation` string.
 
 ## REST endpoints
 

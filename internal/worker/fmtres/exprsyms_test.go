@@ -2,22 +2,21 @@
 
 package fmtres_test
 
-// Tests for exprsyms.go — EXPR sub-project E4a, Task 3 (the phase-3 symbol
-// table) and Task 5 (re-evaluating let: bindings against it).
+// Tests for exprsyms.go — the phase-3 symbol table, and re-evaluating let:
+// bindings against it.
 //
-// Design spec §3's table is the contract for TestTaskSymbols_* and
-// TestEnvSymbols_*: every row present with the right TYPE (not just
-// presence — a Param.Count bound as string when the parameter is declared
-// INT is the defect this file exists to catch) and the right concrete
-// value. TestPhase2Phase3Agreement is Task 3's real deliverable: it runs a
+// TestTaskSymbols_* and TestEnvSymbols_* check every symbol is present with
+// the right TYPE (not just presence — a Param.Count bound as string when the
+// parameter is declared INT is the defect this file exists to catch) and the
+// right concrete value. TestPhase2Phase3Agreement is the central test: it runs a
 // real template's declared parameters through internal/openjd's real
 // phase-2 checker (openjd.SymbolsFor) and through this package's phase-3
 // builder, and asserts the types agree — proving, rather than assuming,
 // that phase 3 is "the same walk with a different table."
 //
-// TestApplyTaskLet_* / TestApplyEnvLet_* are Task 5's tests for
+// TestApplyTaskLet_* / TestApplyEnvLet_* test
 // ApplyTaskLet/ApplyEnvLet, and TestPhase2Phase3Agreement_LetBindings is
-// Task 5's own agreement test: the same claim TestPhase2Phase3Agreement
+// their agreement test: the same claim TestPhase2Phase3Agreement
 // makes for the base symbol table, extended to a let: block's bound names,
 // whose types are the natural result of evaluating each binding rather than
 // a table row copied from a spec.
@@ -104,23 +103,15 @@ func TestTaskSymbols_JobParamTypes(t *testing.T) {
 		t.Errorf("RawParam.Scene = %+v, want string", rawScene)
 	}
 
-	// LIST[PATH] RESOLVES CONCRETELY as of EXPR sub-project F1.
-	//
-	// This assertion used to require Unresolved, and said so for a reason
-	// that has now been discharged rather than disproved: expr.ValueFromText
-	// had no list case, so a list parameter stayed a placeholder even in
-	// phase 3, and sqi's template model could not declare one anyway. F1
-	// added both halves -- the LIST[*] job-parameter types and
-	// ValueFromText's list decode -- so the value is now real. The TYPE
-	// assertion is unchanged, because the type was never the thing that was
-	// missing.
+	// LIST[PATH] RESOLVES CONCRETELY: the LIST[*] job-parameter types exist
+	// and expr.ValueFromText decodes lists, so the value is real in phase 3.
 	locs, ok := syms.Lookup("Param.Locs")
 	if !ok || !locs.Type.Equal(expr.ListOf(expr.TPath)) {
 		t.Errorf("Param.Locs = %+v, want list[path]", locs)
 	}
 	if locs.IsUnresolved() {
-		t.Error("Param.Locs is still Unresolved; F1 added expr.ValueFromText's " +
-			"list case precisely so a list parameter resolves in phase 3")
+		t.Error("Param.Locs is still Unresolved; expr.ValueFromText's " +
+			"list case exists so a list parameter resolves in phase 3")
 	}
 	// RawParam is list[string] for a LIST[PATH]: path mapping applies per
 	// element, so the raw form drops to the unmapped strings.
@@ -181,17 +172,15 @@ func TestTaskSymbols_TaskParamTypes(t *testing.T) {
 	}
 }
 
-// ── PATH parameters: mapping rules applied at bind time (FIX ROUND 1, Task 4
-//    review) ─────────────────────────────────────────────────────────────
+// ── PATH parameters: mapping rules applied at bind time ────────────────────
 
 // TestTaskSymbols_JobPathParamIsMappedAtBindTime pins section 1.2.2's rule
 // that Param.<name> for a PATH-declared job parameter carries the value
 // with path mapping rules ALREADY APPLIED, while RawParam.<name> carries
-// "the original unmapped value". Earlier revisions of TaskSymbols bound
-// BOTH from identical, unmapped raw text -- silently wrong on every
-// platform, since Param./Task.Param. were the only way most templates would
-// ever reach a path-mapped value (apply_path_mapping() being the sole
-// explicit alternative).
+// "the original unmapped value". Param./Task.Param. are the only way most
+// templates reach a path-mapped value (apply_path_mapping() being the sole
+// explicit alternative), so binding BOTH from identical, unmapped raw text
+// would be wrong on every platform.
 func TestTaskSymbols_JobPathParamIsMappedAtBindTime(t *testing.T) {
 	msg := &protocol.AssignMsg{
 		JobParameters:     map[string]string{"Scene": "/mnt/shared/project/shot.ma"},
@@ -209,7 +198,7 @@ func TestTaskSymbols_JobPathParamIsMappedAtBindTime(t *testing.T) {
 	if !ok || !param.Type.Equal(expr.TPath) {
 		t.Fatalf("Param.Scene = %+v, want path", param)
 	}
-	// FIX ROUND 2 (item B): built through the SAME machinery
+	// Built through the SAME machinery
 	// mapPathParamValue (expres.go) uses -- expr.Eval("apply_path_mapping(src)")
 	// under expr.PathNative EXPLICITLY -- rather than a hardcoded
 	// POSIX-separator literal, which only agreed with production by
@@ -255,7 +244,7 @@ func TestTaskSymbols_TaskPathParamIsMappedAtBindTime(t *testing.T) {
 	if !ok || !param.Type.Equal(expr.TPath) {
 		t.Fatalf("Task.Param.Scene = %+v, want path", param)
 	}
-	// FIX ROUND 2 (item B): built through the SAME machinery
+	// Built through the SAME machinery
 	// mapPathParamValue (expres.go) uses, rather than a hardcoded
 	// POSIX-separator literal -- see the JobPathParam test above.
 	wantParam := wantPathText(t, "apply_path_mapping(src)",
@@ -281,8 +270,8 @@ func TestTaskSymbols_TaskPathParamIsMappedAtBindTime(t *testing.T) {
 // TestTaskSymbols_PathParamNoRulesPassesThrough confirms the common case --
 // most tasks reference no named storage location -- is unaffected: with no
 // PathMap entries, Param.<name> still binds to a concrete path built from
-// the raw text, exactly as before this fix round (apply_path_mapping's own
-// documented passthrough contract, now also true at bind time).
+// the raw text (apply_path_mapping's own documented passthrough contract,
+// which holds at bind time too).
 func TestTaskSymbols_PathParamNoRulesPassesThrough(t *testing.T) {
 	msg := &protocol.AssignMsg{
 		JobParameters:     map[string]string{"Scene": "/mnt/shared/project/shot.ma"},
@@ -293,8 +282,8 @@ func TestTaskSymbols_PathParamNoRulesPassesThrough(t *testing.T) {
 		t.Fatalf("TaskSymbols: %v", err)
 	}
 	param, ok := syms.Lookup("Param.Scene")
-	// FIX ROUND 2 (item B): built through the SAME machinery
-	// mapPathParamValue calls with no rules, rather than the original raw
+	// Built through the SAME machinery
+	// mapPathParamValue calls with no rules, rather than the raw
 	// text hardcoded -- see the JobPathParam test above.
 	wantParam := wantPathText(t, "apply_path_mapping(src)",
 		expr.MapSymbols{"src": expr.String("/mnt/shared/project/shot.ma")})
@@ -320,7 +309,7 @@ func TestTaskSymbols_ChunkIntTaskParam(t *testing.T) {
 	// expanded. Unlike BOOL/LIST[*], CHUNK[INT] IS declarable today and
 	// phase 3 has the actual value (expand.go stores a chunked task
 	// parameter's value as a range-expression string), so it must go
-	// CONCRETE — the brief's contract is "every symbol concrete," and an
+	// CONCRETE — phase 3's contract is "every symbol concrete," and an
 	// Unresolved Task.Param.Frames here would mean a chunked render's
 	// frame range never reaches the command line on a real worker.
 	if got.IsUnresolved() || !got.Type.Equal(expr.TRangeExpr) {
@@ -431,7 +420,7 @@ func TestTaskSymbols_TaskFile(t *testing.T) {
 	if !ok || !f.Type.Equal(expr.TPath) {
 		t.Fatalf("Task.File.Script = %+v, want path", f)
 	}
-	// FIX ROUND 2 (item B): AddFileVars' own on-disk-path computation
+	// AddFileVars' own on-disk-path computation
 	// (filepath.Join) is genuinely host-OS-driven and not this package's
 	// concern; what IS this package's concern -- and what must be built the
 	// same way bindFileSymbols builds it -- is the re-render of that string
@@ -498,7 +487,7 @@ func TestEnvSymbols_ExposesParamAndEnvFile(t *testing.T) {
 	if !ok || !f.Type.Equal(expr.TPath) {
 		t.Fatalf("Env.File.Config = %+v, want path", f)
 	}
-	// FIX ROUND 2 (item B): see TestTaskSymbols_TaskFile's identical fix,
+	// See TestTaskSymbols_TaskFile's identical construction,
 	// above -- built via wantPathText rather than a hardcoded literal.
 	want := wantPathText(t, "F", expr.MapSymbols{"F": expr.Path(filepath.Join("/work", "Config"), expr.PathNative)})
 	if f.String() != want {
@@ -572,7 +561,7 @@ func TestEnvSymbols_EmbeddedFileNameError(t *testing.T) {
 	}
 }
 
-// ── Phase 2 / phase 3 agreement — the task's real deliverable ──────────────
+// ── Phase 2 / phase 3 agreement ─────────────────────────────────────────────
 
 // exprAgreementYAML declares extensions: [EXPR] and exercises one job
 // parameter and one task parameter of each declared type the base spec
@@ -594,7 +583,7 @@ parameterDefinitions:
   - name: JPath
     type: PATH
     default: "/x"
-  # RFC 0007's types (EXPR sub-project F1). Every one is here because the
+  # RFC 0007's types. Every one is here because the
   # section 1.2.2 mapping and the value decode both live in
   # internal/openjd/expr, shared by phase 2 and phase 3 -- so a type that
   # resolves in one and not the other is a drift this test exists to catch.
@@ -855,12 +844,12 @@ func TestPhase2Phase3Agreement_NoPathMappingOmitsRulesFile(t *testing.T) {
 	}
 }
 
-// ── ApplyTaskLet / ApplyEnvLet — Task 5 ─────────────────────────────────────
+// ── ApplyTaskLet / ApplyEnvLet ──────────────────────────────────────────────
 
 // TestApplyTaskLet_SequentialPropagation pins the core mechanism
 // checkLetBindings implements and ApplyTaskLet mirrors: bindings evaluate in
 // declaration order, each result inserted so a LATER binding sees it — both
-// within the step template's own block and, crucially, across the boundary
+// within the step template's own block and across the boundary
 // into the step script's block (section 3.6.2 row 1/2's ordering).
 func TestApplyTaskLet_SequentialPropagation(t *testing.T) {
 	msg := &protocol.AssignMsg{
@@ -887,21 +876,19 @@ func TestApplyTaskLet_SequentialPropagation(t *testing.T) {
 	}
 }
 
-// TestApplyTaskLet_HostOnlySymbol is the design spec's own headline example
-// (§1, "a <StepScript>.let binding over Session.WorkingDirectory produces a
-// path a command actually uses"): a host-only symbol phase 1/2 could only
-// ever bind as a placeholder is, at phase 3, a REAL concrete value, because
-// this function runs against TaskSymbols' table on the worker host itself.
+// TestApplyTaskLet_HostOnlySymbol: a <StepScript>.let binding over
+// Session.WorkingDirectory produces a path a command actually uses. A
+// host-only symbol phase 1/2 could only ever bind as a placeholder is, at
+// phase 3, a REAL concrete value, because this function runs against
+// TaskSymbols' table on the worker host itself.
 //
-// FIX ROUND 1 (Task 5 review): this binding moved from StepTemplateLet to
-// StepScriptLet. Section 3.6.2 row 1 evaluates a step TEMPLATE's own let:
-// block at ScopeStepTemplate, which grants NO Session.* symbols at all
-// (scope.go's scopeFixed) -- only the step SCRIPT's block (row 2,
-// ScopeStepScript) may reference Session.WorkingDirectory. The version of
-// this test that bound it via StepTemplateLet passed only because
-// ApplyTaskLet's first implementation evaluated both blocks against one
-// undifferentiated table; see TestApplyTaskLet_StepTemplateLetCannotSeeHostSymbols,
-// below, for the negative this move makes room for.
+// The binding is in StepScriptLet, not StepTemplateLet: section 3.6.2 row 1
+// evaluates a step TEMPLATE's own let: block at ScopeStepTemplate, which
+// grants NO Session.* symbols at all (scope.go's scopeFixed) -- only the
+// step SCRIPT's block (row 2, ScopeStepScript) may reference
+// Session.WorkingDirectory. See
+// TestApplyTaskLet_StepTemplateLetCannotSeeHostSymbols, below, for the
+// negative.
 func TestApplyTaskLet_HostOnlySymbol(t *testing.T) {
 	msg := &protocol.AssignMsg{
 		StepScriptLet: []string{"wd = Session.WorkingDirectory"},
@@ -924,13 +911,11 @@ func TestApplyTaskLet_HostOnlySymbol(t *testing.T) {
 	}
 }
 
-// TestApplyTaskLet_StepTemplateLetCannotSeeHostSymbols is FIX ROUND 1's
-// regression test for the review's item 1: a StepTemplateLet binding that
-// references a host-only symbol (Session.*) or a task-scoped symbol
-// (Task.Param.*) must fail as an unknown symbol, exactly as
+// TestApplyTaskLet_StepTemplateLetCannotSeeHostSymbols: a StepTemplateLet
+// binding that references a host-only symbol (Session.*) or a task-scoped
+// symbol (Task.Param.*) must fail as an unknown symbol, exactly as
 // internal/openjd's checkStepExpressions rejects the same reference at
-// ScopeStepTemplate server-side -- proven directly against the real checker
-// in the review (col 1: unknown symbol "Session.WorkingDirectory" /
+// ScopeStepTemplate server-side (unknown symbol "Session.WorkingDirectory" /
 // "Task.Param.TChunk" at scope=step template). A StepScriptLet binding
 // referencing the SAME symbols must succeed, pinning that the restriction is
 // scoped to the template block only, not the whole step.
@@ -1059,9 +1044,9 @@ func TestApplyTaskLet_WithinBlockShadowingRejected(t *testing.T) {
 	}
 }
 
-// TestApplyTaskLet_FailureSurfacesWithoutHidingOthers is the brief's own
-// requirement: "a binding failure surfacing without taking down the whole
-// resolution silently". A binding that fails (here, an unknown symbol) must
+// TestApplyTaskLet_FailureSurfacesWithoutHidingOthers: a binding failure
+// must surface without silently taking down the whole resolution. A binding
+// that fails (here, an unknown symbol) must
 // (a) produce a non-nil error rather than being swallowed, (b) not be
 // inserted into syms, and (c) not prevent OTHER, independent bindings in the
 // same block from evaluating and being bound — mirroring checkLetBindings'
@@ -1088,8 +1073,8 @@ func TestApplyTaskLet_FailureSurfacesWithoutHidingOthers(t *testing.T) {
 	}
 }
 
-// TestApplyTaskLet_CapEnforced pins the 50-binding cap: this task's brief
-// calls it out by name as "not optional", because the worker has no
+// TestApplyTaskLet_CapEnforced pins the 50-binding cap, which is not
+// optional because the worker has no
 // validateLetElementCounts of its own to report an over-count — the
 // evaluator's own truncation IS the only bound on this path. See
 // TestApplyTaskLet_CapEnforced_MutationCheck, below, for the mutation-tested
@@ -1124,7 +1109,7 @@ func makeLetSequence(n int) []string {
 
 // TestApplyEnvLet_BasicAndNil covers ApplyEnvLet's own wiring: a real
 // environment binding is evaluated against EnvSymbols' table (proving it is
-// not simply an alias for ApplyTaskLet against the wrong field), and a nil
+// not an alias for ApplyTaskLet against the wrong field), and a nil
 // env is a safe no-op, matching EnvSymbols' own nil handling.
 func TestApplyEnvLet_BasicAndNil(t *testing.T) {
 	env := &protocol.AssignEnvironment{
@@ -1179,11 +1164,10 @@ func TestApplyEnvLet_ShadowRejected(t *testing.T) {
 // above is not merely "a test that happens to pass" — it independently
 // proves the SAME scenario would FAIL without the guard, by exercising
 // exactly what the guard bounds (the truncation itself) rather than
-// re-deriving it. This is not a substitute for the hands-on mutation the
-// brief requires (commenting out evalLetBindings' own truncation and
-// re-running go test) — that was done manually and is recorded in the task
-// report — but it keeps a permanent, automated version of the same
-// assertion in the suite: with 51 independent bindings, exactly 50 must be
+// re-deriving it. It is not a substitute for a hands-on mutation
+// (commenting out evalLetBindings' own truncation and re-running go test),
+// but it keeps a permanent, automated version of the same assertion in the
+// suite: with 51 independent bindings, exactly 50 must be
 // bound, never 51.
 func TestApplyTaskLet_CapEnforced_MutationCheck(t *testing.T) {
 	syms, err := fmtres.TaskSymbols(&protocol.AssignMsg{}, "/work", "", false, nil)
@@ -1206,7 +1190,7 @@ func TestApplyTaskLet_CapEnforced_MutationCheck(t *testing.T) {
 	}
 }
 
-// ── Phase 2 / phase 3 agreement for let bindings — Task 5's real deliverable ─
+// ── Phase 2 / phase 3 agreement for let bindings ────────────────────────────
 
 // letNameAndSrc is a minimal, test-only "name = expression" split, used only
 // to derive the two halves of one of exprAgreementYAML's OWN let: strings so
@@ -1288,8 +1272,8 @@ func TestPhase2Phase3Agreement_LetBindings(t *testing.T) {
 		phase2Let[name] = v
 	}
 
-	// Phase 3: the SAME raw strings, shipped verbatim on the wire exactly
-	// as Task 2 designed (StepScriptLet carries step.Script.Let unchanged),
+	// Phase 3: the SAME raw strings, shipped verbatim on the wire
+	// (StepScriptLet carries step.Script.Let unchanged),
 	// evaluated via ApplyTaskLet against TaskSymbols' table.
 	msg := buildAgreementMsg(jobParams)
 	msg.StepScriptLet = step.Script.Let
@@ -1320,14 +1304,13 @@ func TestPhase2Phase3Agreement_LetBindings(t *testing.T) {
 
 // ── EnvSymbols and the enclosing step template's let: block ─────────────────
 //
-// EXPR sub-project E4a whole-branch review, Critical 1. Template Schemas
-// §3.6.2 row 1 makes a <StepTemplate>.let binding's names available in
-// stepEnvironments as well as in the step's script, and §3.6's prose says it
-// from the other side ("a let binding in a <StepTemplate>'s stepEnvironments
-// cannot shadow a binding from that step's let block"). Phase 2 has always
-// implemented it (checkStepExpressions hands stepLet to
-// checkEnvironmentExpressions as outerLet); phase 3 did not, so a template
-// phase 2 accepted failed every task in the step.
+// Template Schemas §3.6.2 row 1 makes a <StepTemplate>.let binding's names
+// available in stepEnvironments as well as in the step's script, and §3.6's
+// prose says it from the other side ("a let binding in a <StepTemplate>'s
+// stepEnvironments cannot shadow a binding from that step's let block").
+// Phase 2 implements it (checkStepExpressions hands stepLet to
+// checkEnvironmentExpressions as outerLet); without it at phase 3, a
+// template phase 2 accepted would fail every task in the step.
 
 // stepEnvMsg builds an AssignMsg carrying a step-template let: block, shared
 // by the tests below.
@@ -1407,9 +1390,9 @@ func TestEnvSymbols_StepTemplateLetCannotSeeEnvSymbols(t *testing.T) {
 
 // TestApplyEnvLet_ShadowsStepTemplateLetRejected is §3.6's shadow rule across
 // the two blocks: "a let binding in a <StepTemplate>'s stepEnvironments
-// cannot shadow a binding from that step's let block". Before Critical 1's
-// fix phase 3 could not even SEE the step-template name, so it could not
-// reject the collision.
+// cannot shadow a binding from that step's let block". Phase 3 can reject
+// the collision only because EnvSymbols makes the step-template name
+// visible.
 func TestApplyEnvLet_ShadowsStepTemplateLetRejected(t *testing.T) {
 	msg := stepEnvMsg(`outdir = "/tmp/out"`)
 	env := &protocol.AssignEnvironment{
@@ -1434,17 +1417,11 @@ func TestApplyEnvLet_ShadowsStepTemplateLetRejected(t *testing.T) {
 	}
 }
 
-// TestPhase2Phase3Agreement_StepEnvironmentLet is Critical 1's agreement
-// proof, run against the REAL phase-2 checker: the same template that phase 2
-// accepts with zero expression errors must resolve at phase 3 with none
-// either.
-//
-// It used to pass openjd.ValidateWithOptions the since-deleted
-// CheckEXPRExpressionsWhileUnsupported so the expression walk would run at all,
-// and had to tolerate one error -- the EXPR status gate's, at /extensions/0.
-// Sub-project H2 made EXPR StatusSupported, so the walk runs on the default
-// options and NO error is tolerated: the fixture must be phase-2 clean, full
-// stop.
+// TestPhase2Phase3Agreement_StepEnvironmentLet is the step-environment let
+// agreement proof, run against the REAL phase-2 checker: the same template
+// that phase 2 accepts with zero expression errors must resolve at phase 3
+// with none either. The walk runs on the default options and NO error is
+// tolerated: the fixture must be phase-2 clean.
 func TestPhase2Phase3Agreement_StepEnvironmentLet(t *testing.T) {
 	const yaml = `specificationVersion: jobtemplate-2023-09
 extensions: [EXPR]
@@ -1514,7 +1491,7 @@ steps:
 	}
 }
 
-// ── Retained-bytes bound (whole-branch review, Critical 2) ──────────────────
+// ── Retained-bytes bound ────────────────────────────────────────────────────
 
 // bigLetSequence builds n bindings that each construct roughly 9.9 MB of
 // string -- comfortably under expres.go's per-Eval memory limit (ExprLimits.MemoryLimit), which
@@ -1554,11 +1531,11 @@ func tableBytes(syms expr.MapSymbols) int64 {
 	return total
 }
 
-// TestApplyTaskLet_RetainedBytesBounded is Critical 2's regression test. At
-// HEAD before the fix this bound all 50 values and retained 495 MB in 49 ms
-// with no error -- one task, on a shared, long-lived worker process, from a
-// template phase 2 accepts. The bound must now stop the block and leave the
-// table under the limit.
+// TestApplyTaskLet_RetainedBytesBounded: without the retained-bytes bound
+// this binds all 50 values and retains 495 MB in 49 ms with no error -- one
+// task, on a shared, long-lived worker process, from a template phase 2
+// accepts. The bound must stop the block and leave the table under the
+// limit.
 func TestApplyTaskLet_RetainedBytesBounded(t *testing.T) {
 	msg := bigLetMsg(50)
 	syms, err := fmtres.TaskSymbols(msg, "/work", "", false, nil)
@@ -1664,13 +1641,12 @@ func TestApplyTaskLet_RetainedBytesAllowsOrdinaryBlocks(t *testing.T) {
 	}
 }
 
-// TestApplyTaskLet_StepTemplateLetCannotOverwriteSpecSymbols is the
-// whole-branch review's Important 3 regression. The step-template block is
-// evaluated against a ScopeStepTemplate PROJECTION of the table but merged
-// into the FULL one, so a shadow check keyed off the projection lets a
-// binding named for any spec symbol outside it -- Session.*, Task.* --
-// through, and the merge then silently replaces the real symbol. Measured at
-// the time: the error named only "Step.Name", and onRun rendered
+// TestApplyTaskLet_StepTemplateLetCannotOverwriteSpecSymbols: the
+// step-template block is evaluated against a ScopeStepTemplate PROJECTION of
+// the table but merged into the FULL one, so a shadow check keyed off the
+// projection would let a binding named for any spec symbol outside it --
+// Session.*, Task.* -- through, and the merge would then replace the real
+// symbol: the error would name only "Step.Name", and onRun would render
 // "[/pwned 999]" with err = nil.
 //
 // Not reachable from a submitted template (§3.6.1's <UserIdentifier> grammar
@@ -1721,20 +1697,19 @@ func TestApplyTaskLet_StepTemplateLetCannotOverwriteSpecSymbols(t *testing.T) {
 	}
 }
 
-// TestApplyTaskLet_RetainedBytesCountsNonProjectedSymbols is fix round 3's
-// regression, and it is Important 3's defect one instance further on: the
-// step-template block RESOLVES against a ScopeStepTemplate projection but
-// MERGES into the full table, so metering the projection measures a table
-// that excludes Task.Param.*, Task.RawParam.*, Task.File.*, Session.* and
-// Env.File.* -- everything the projection drops -- and then lets the bytes
-// land in the full one anyway.
+// TestApplyTaskLet_RetainedBytesCountsNonProjectedSymbols is the byte
+// accounting counterpart of the test above: the step-template block RESOLVES
+// against a ScopeStepTemplate projection but MERGES into the full table, so
+// metering the projection would measure a table that excludes Task.Param.*,
+// Task.RawParam.*, Task.File.*, Session.* and Env.File.* -- everything the
+// projection drops -- and then let the bytes land in the full one anyway.
 //
-// Measured before the fix, with this exact fixture: the table started at
-// 6.00 MB, the projection measured 0.00 MB, the 9 MB binding was admitted and
-// merged, and the table held 15.00 MB against a 10 MB limit. The step-script
-// block then correctly refused to add more, so the real ceiling was
-// "LetRetainedBytes plus whatever the projection excludes" -- not a
-// bound. After the fix the table stays at 6.00 MB and both blocks refuse.
+// Metering the projection, with this exact fixture: the table starts at
+// 6.00 MB, the projection measures 0.00 MB, the 9 MB binding is admitted and
+// merged, and the table holds 15.00 MB against a 10 MB limit, so the real
+// ceiling would be "LetRetainedBytes plus whatever the projection excludes"
+// -- not a bound. Metering the merge target, the table stays at 6.00 MB and
+// both blocks refuse.
 func TestApplyTaskLet_RetainedBytesCountsNonProjectedSymbols(t *testing.T) {
 	// A 3 MB STRING task parameter: bound twice (Task.Param./Task.RawParam.),
 	// and BOTH keys are outside stepTemplateLetScope's projection.

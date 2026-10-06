@@ -26,8 +26,7 @@ func TestRollup(t *testing.T) {
 	groups := conformance.Rollup(results, baseline)
 
 	// d.yaml fails and is NOT in the baseline, so it is a regression; c.yaml
-	// fails and is, so it is adjudicated. A tally that cannot tell them apart
-	// is the defect this split exists to fix.
+	// fails and is, so it is adjudicated. The tally must tell them apart.
 	want := []conformance.Group{
 		{Name: "EXPR/job_templates", NotApplicable: 2},
 		{Name: "base/env_templates", Regressed: 1},
@@ -45,11 +44,9 @@ func TestRollup(t *testing.T) {
 
 // TestRollup_AgreesWithDiffBaseline is the invariant behind the split: the
 // rollup's regression count and the REGRESSION lines the suite prints beneath it
-// come from the same judgement, so they can never contradict each other.
-//
-// They did contradict each other before, which is why this test exists: the
-// rollup labeled every failure "baselined" no matter what the diff said, so a
-// genuine regression was summarized as an accepted divergence one line above the
+// come from the same judgement, so they can never contradict each other. If the
+// rollup labeled every failure "baselined" regardless of the diff, a genuine
+// regression would be summarized as an accepted divergence one line above the
 // text calling it a regression.
 func TestRollup_AgreesWithDiffBaseline(t *testing.T) {
 	results := []conformance.Result{
@@ -93,10 +90,9 @@ func TestFormatRollup_ShowsNotApplicableSeparately(t *testing.T) {
 	}
 }
 
-// TestFormatRollup_UnbaselinedFailureIsNotCalledBaselined pins the line that
-// misled a reader on 2026-08-19: a new upstream fixture regressed and the
-// summary read "449/450 pass  1 baselined" while the diff below it correctly
-// said REGRESSION. The gate was sound; the sentence was false.
+// TestFormatRollup_UnbaselinedFailureIsNotCalledBaselined pins that an
+// unbaselined failure is not summarized as "449/450 pass  1 baselined" while
+// the diff below it says REGRESSION.
 func TestFormatRollup_UnbaselinedFailureIsNotCalledBaselined(t *testing.T) {
 	out := conformance.FormatRollup([]conformance.Group{
 		{Name: "base/job_templates", Passed: 449, Regressed: 1},

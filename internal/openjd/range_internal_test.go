@@ -133,11 +133,10 @@ func TestValidateIntRangeExpr_LargeInBoundsNoMaterialize(t *testing.T) {
 // strings parseIntRangeExpr and validateIntRangeExpr have always produced, as
 // literals — not merely against each other the way
 // TestValidateIntRangeExpr_MatchesParse does. That test compares the two
-// functions to EACH OTHER, so it stays green even if both drifted together
-// (e.g. during the range.go / internal/openjd/intrange rewire); this test
-// exists so such a drift is caught. The strings were captured from the
-// pre-rewire implementation and must remain byte-identical, since callers
-// (e.g. job submission validation) surface them verbatim.
+// functions to EACH OTHER, so it stays green even if both drift together
+// (e.g. in a change to range.go or internal/openjd/intrange); this test
+// exists so such a drift is caught. The strings must remain byte-identical,
+// since callers (e.g. job submission validation) surface them verbatim.
 func TestParseAndValidateIntRangeExpr_ErrorStringsUnchanged(t *testing.T) {
 	cases := []struct {
 		expr string
@@ -151,15 +150,10 @@ func TestParseAndValidateIntRangeExpr_ErrorStringsUnchanged(t *testing.T) {
 		{"1-10:-2", `openjd: range expression "1-10:-2": invalid step "-2": must be a positive integer`},
 		{"1-10:x", `openjd: range expression "1-10:x": invalid step "x": must be a positive integer`},
 		{"7:2", `openjd: range expression "7:2": step (2) requires a range, not a single value`},
-		// CHANGED DELIBERATELY, and the only string in this table that has
-		// ever changed. It read "openjd: range expression
-		// \"1-2000000000\": openjd: range expression expands to too many
-		// values (limit 10000000)", doubling both the package prefix and the
-		// words "range expression", because errRangeTooLarge carried a prefix
-		// its call sites add already. The message a caller surfaces is the
-		// improvement; this table is updated in the same commit because it
-		// pins the strings byte-for-byte on purpose, so an intentional change
-		// has to be recorded here or nowhere.
+		// errRangeTooLarge carries no "openjd: range expression" prefix of
+		// its own, because its call sites add one; otherwise the prefix
+		// would appear twice. An intentional change to any string in this
+		// table has to be recorded here.
 		{"1-2000000000", `openjd: range expression "1-2000000000": expands to too many values (limit 10000000)`},
 	}
 	for _, tc := range cases {

@@ -2,44 +2,46 @@
 
 package scheduler
 
-// CancelTask's "already terminal" guard is a read followed by a separate write,
-// so a task can reach a terminal state in between: the guard sees `running` and
-// lets the cancel through, but by the time UpdateTaskStatus runs the row is
-// `succeeded` and the state machine rejects the write.
+// A task can reach a terminal state while a cancel for it is in flight. The
+// documented contract is that canceling an already-terminal task is a silent
+// no-op, so losing that race must behave the same way it would have if the
+// cancel had arrived afterwards: return nil, publish nothing, and leave the
+// terminal status alone. It must not surface a 500 to the caller.
 //
-// The documented contract is that canceling an already-terminal task is a
-// silent no-op. Losing that race must therefore behave the same way it would
-// have if the guard had seen the newer value — return nil — not surface a 500
-// to the caller.
-//
-// staleReadStore reproduces the race deterministically. The underlying task is
-// already terminal; the wrapper's GetTask hands back the pre-completion status,
-// standing in for a guard that read a moment too early. No sleeps, no
-// goroutines, no flakiness.
+// CancelTask makes its decision inside a single store operation
+// ([store.TaskStore.CancelTaskExecution]), which reports a terminal task as
+// "not canceled" rather than as an error. completeBeforeCancelStore reproduces
+// the race deterministically: the task is running when CancelTask starts, and
+// the wrapper completes it immediately before the store operation runs. No
+// sleeps, no goroutines, no flakiness.
 
 import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/uberware/sqi/internal/store"
-	"github.com/uberware/sqi/internal/store/fake"
 )
 
-type staleReadStore struct {
+type completeBeforeCancelStore struct {
 	store.Store
 
-	taskID      string
-	staleStatus store.TaskStatus
+	taskID   string
+	terminal store.TaskStatus
+	t        *testing.T
 }
 
-func (s *staleReadStore) GetTask(ctx context.Context, id string) (store.Task, error) {
-	task, err := s.Store.GetTask(ctx, id)
-	if err != nil || id != s.taskID {
-		return task, err
+func (s *completeBeforeCancelStore) CancelTaskExecution(
+	ctx context.Context, id, reason string, now time.Time,
+) (store.Task, bool, error) {
+	if id == s.taskID {
+		// The worker's terminal report lands first.
+		if err := fixtures(s.t, s.Store).UpdateTaskStatus(ctx, id, s.terminal); err != nil {
+			s.t.Errorf("complete task in hook: %v", err)
+		}
 	}
-	task.Status = s.staleStatus // what the guard would have read pre-completion
-	return task, nil
+	return s.Store.CancelTaskExecution(ctx, id, reason, now)
 }
 
 func TestCancelTask_LosesRaceToCompletion_IsNoOp(t *testing.T) {
@@ -48,17 +50,12 @@ func TestCancelTask_LosesRaceToCompletion_IsNoOp(t *testing.T) {
 		store.TaskStatusFailed,
 	} {
 		t.Run(string(terminal), func(t *testing.T) {
-			st := fake.New()
+			st := newCheckedFake(t)
 			bus := &stubBus{}
 			job := seedCancelJob(t, st)
-			tk := seedTaskForJob(t, st, job, "w1", terminal)
+			tk := seedTaskForJob(t, st, job, "w1", store.TaskStatusRunning)
 
-			// The guard reads "running"; the row is already terminal.
-			s := newTestScheduler(&staleReadStore{
-				Store:       st,
-				taskID:      tk.ID,
-				staleStatus: store.TaskStatusRunning,
-			}, bus)
+			s := newTestScheduler(&completeBeforeCancelStore{Store: st, taskID: tk.ID, terminal: terminal, t: t}, bus)
 
 			if err := s.CancelTask(t.Context(), tk.ID); err != nil {
 				t.Fatalf("CancelTask losing the race to completion = %v, want nil (no-op)", err)
@@ -72,40 +69,54 @@ func TestCancelTask_LosesRaceToCompletion_IsNoOp(t *testing.T) {
 				t.Errorf("status = %q, want %q — a completed task must not be overwritten by a losing cancel",
 					stored.Status, terminal)
 			}
+			if len(bus.cancelCalls) != 0 {
+				t.Errorf("cancel signals = %v, want none for a task that completed first", bus.cancelCalls)
+			}
 		})
 	}
 }
 
-// TestCancelTask_RealErrorStillPropagates guards against the fix being written
-// as a blanket "swallow every error from UpdateTaskStatus".
+// TestCancelTask_RealErrorStillPropagates pins that CancelTask treats only
+// ErrInvalidTransition as a no-op and does not swallow every error from the
+// cancel operation.
 func TestCancelTask_RealErrorStillPropagates(t *testing.T) {
-	st := fake.New()
+	st := newCheckedFake(t)
 	bus := &stubBus{}
 	job := seedCancelJob(t, st)
 	tk := seedTaskForJob(t, st, job, "w1", store.TaskStatusRunning)
 
-	s := newTestScheduler(&failingUpdateStore{Store: st, taskID: tk.ID}, bus)
+	s := newTestScheduler(&failingCancelStore{Store: st, taskID: tk.ID}, bus)
 
 	err := s.CancelTask(t.Context(), tk.ID)
 	if err == nil {
 		t.Fatal("CancelTask = nil, want the underlying store error to propagate")
 	}
+	if !errors.Is(err, errStoreUnavailable) {
+		t.Errorf("error = %v, want the store failure", err)
+	}
 	if errors.Is(err, store.ErrInvalidTransition) {
 		t.Errorf("error = %v, want the store failure, not ErrInvalidTransition", err)
+	}
+	if len(bus.cancelCalls) != 0 {
+		t.Errorf("cancel signals = %v, want none when the store failed", bus.cancelCalls)
 	}
 }
 
 var errStoreUnavailable = errors.New("store unavailable")
 
-type failingUpdateStore struct {
+// failingCancelStore fails CancelTaskExecution for one task, standing in for a
+// store outage during the cancel.
+type failingCancelStore struct {
 	store.Store
 
 	taskID string
 }
 
-func (s *failingUpdateStore) UpdateTaskStatus(ctx context.Context, id string, status store.TaskStatus) error {
+func (s *failingCancelStore) CancelTaskExecution(
+	ctx context.Context, id, reason string, now time.Time,
+) (store.Task, bool, error) {
 	if id == s.taskID {
-		return errStoreUnavailable
+		return store.Task{}, false, errStoreUnavailable
 	}
-	return s.Store.UpdateTaskStatus(ctx, id, status)
+	return s.Store.CancelTaskExecution(ctx, id, reason, now)
 }

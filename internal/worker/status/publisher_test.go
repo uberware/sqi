@@ -249,8 +249,8 @@ func TestShutdownFailed_PublishesForEachTask(t *testing.T) {
 		if m.Status != "failed" {
 			t.Errorf("[%d] Status = %q, want %q", idx, m.Status, "failed")
 		}
-		if m.Message != "worker_shutdown" {
-			t.Errorf("[%d] Message = %q, want %q", idx, m.Message, "worker_shutdown")
+		if m.Message != protocol.MessageWorkerShutdown {
+			t.Errorf("[%d] Message = %q, want %q", idx, m.Message, protocol.MessageWorkerShutdown)
 		}
 		if m.WorkerID != "worker-abc" {
 			t.Errorf("[%d] WorkerID = %q, want %q", idx, m.WorkerID, "worker-abc")

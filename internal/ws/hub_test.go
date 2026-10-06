@@ -168,12 +168,12 @@ func TestHub_NotifyJob_FansToSubscribersOnly(t *testing.T) {
 	}
 }
 
-// TestHub_NotifyJob_FallsBackToOwnerCacheWhenEventOwnerEmpty pins a Task-8
-// review finding: 7 of the 9 production NotifyJob call sites never populate
-// JobEvent.Owner (only internal/scheduler/retry.go does). Without a fallback
-// to the owner cache — the same fallback NotifyTask already had — a scoped
-// client's own job-status events would be silently dropped by Scope.allows
-// because env.owner == "" matches no real username. The hub must resolve
+// TestHub_NotifyJob_FallsBackToOwnerCacheWhenEventOwnerEmpty pins the owner
+// fallback for job events: 7 of the 9 production NotifyJob call sites never
+// populate JobEvent.Owner (only internal/scheduler/retry.go does). Without a
+// fallback to the owner cache — the same fallback NotifyTask has — a scoped
+// client's own job-status events would be dropped by Scope.allows because
+// env.owner == "" matches no real username. The hub must resolve
 // ownership via the injected jobOwner lookup exactly as NotifyTask does.
 func TestHub_NotifyJob_FallsBackToOwnerCacheWhenEventOwnerEmpty(t *testing.T) {
 	h := NewHub(slog.New(slog.DiscardHandler), HubOptions{
@@ -321,7 +321,7 @@ func TestHub_NotifyTask_TaskPushCarriesUnschedulableReason(t *testing.T) {
 // This guarantee is specifically the auth-on one: it exists so a scoped
 // client that subscribes moments after the event can still replay it. With
 // auth off (no owner resolver) there is no such thing as a scoped client, and
-// the hub instead falls back to the pre-B2 hasSubscribers guard to keep the
+// the hub instead falls back to the hasSubscribers guard to keep the
 // zero-subscriber hot path cheap (see TestHub_NotifyJob_AuthOff_NoSubscribers_RingsNothing).
 // So this test needs a hub WITH an owner resolver to exercise the guarantee
 // it names, unlike the plain newTestHub() used elsewhere in this file.
@@ -350,15 +350,14 @@ func TestHub_NotifyTask_JobsPushBuffersInRingWithoutSubscribers(t *testing.T) {
 	}
 }
 
-// TestHub_NotifyJob_AuthOff_NoSubscribers_RingsNothing is the regression test
-// for I-4: with auth disabled (HubOptions{} — no owner scoping, same
-// as newTestHub()) and zero connected clients, NotifyJob and NotifyTask must
-// not populate the SubjectJobs ring at all — mirroring the pre-B2 hasSubscribers
-// guard. A late subscriber with since_seq: 0 (what web/src/ws/client.ts always
-// sends) must therefore replay nothing, not the events that fired before it
-// connected. Before this fix 5 NotifyJob + 5 NotifyTask calls with nobody
-// connected produced 10 replayed envelopes for the first-ever subscriber;
-// pre-B2 (and after this fix) it produces 0.
+// TestHub_NotifyJob_AuthOff_NoSubscribers_RingsNothing pins that with auth
+// disabled (HubOptions{} — no owner scoping, same as newTestHub()) and zero
+// connected clients, NotifyJob and NotifyTask do not populate the SubjectJobs
+// ring at all — the hasSubscribers guard. A late subscriber with since_seq: 0
+// (what web/src/ws/client.ts always sends) must therefore replay nothing, not
+// the events that fired before it connected: 5 NotifyJob + 5 NotifyTask calls
+// with nobody connected produce 0 replayed envelopes for the first-ever
+// subscriber, not 10.
 func TestHub_NotifyJob_AuthOff_NoSubscribers_RingsNothing(t *testing.T) {
 	h := newTestHub() // HubOptions{} — no owner scoping, i.e. auth off
 
@@ -381,8 +380,7 @@ func TestHub_NotifyJob_AuthOff_NoSubscribers_RingsNothing(t *testing.T) {
 // counterpart to TestHub_NotifyJob_AuthOff_NoSubscribers_RingsNothing: when
 // the hub has an owner resolver (auth on), NotifyJob and NotifyTask must keep
 // ringing the SubjectJobs buffer even with zero clients connected, so a
-// scoped client that subscribes moments later can still replay the events —
-// the behavior B2 introduced and that this fix must not regress.
+// scoped client that subscribes moments later can still replay the events.
 func TestHub_NotifyJob_AuthOn_NoSubscribers_StillRingsForReplay(t *testing.T) {
 	h := NewHub(slog.New(slog.DiscardHandler), HubOptions{
 		OwnerScoping: true,

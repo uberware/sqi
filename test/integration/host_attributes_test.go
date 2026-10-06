@@ -6,14 +6,14 @@ package integration
 // vocabulary differs from Go's actually schedule work, end to end, through a
 // real sqi-worker.
 //
-// Both were broken in the same way and neither was caught by a unit test,
-// because the unit tests set store.Worker fields directly and so could not see
-// that the value never reached the store at all:
+// Both can break in a way no unit test catches, because the unit tests set
+// store.Worker fields directly and so cannot see whether the value reaches
+// the store at all:
 //
-//   - attr.worker.os.family compared a template's "macos" against a worker's
-//     runtime.GOOS "darwin", so no Mac could ever be matched.
-//   - attr.worker.cpu.arch had no case in the matcher AND no field on the
-//     worker, so it resolved to "" and matched nothing on any platform.
+//   - attr.worker.os.family: comparing a template's "macos" against a
+//     worker's runtime.GOOS "darwin" matches no Mac.
+//   - attr.worker.cpu.arch: with no case in the matcher or no field on the
+//     worker, it resolves to "" and matches nothing on any platform.
 //
 // A regression in either shows up here as a job that never leaves ready and
 // times out, which is why these assert on completion rather than on a value.
@@ -115,8 +115,8 @@ func runHostAttributeJob(t *testing.T, attribute, value string) {
 }
 
 // TestHostAttribute_OSFamilyMatchesThisHost is the end-to-end guard for the
-// darwin/macos translation. On a Mac it is the whole point of the test; on
-// Linux and Windows it is a cheap regression check that the pass-through cases
+// darwin/macos translation. On a Mac it exercises the translation; on Linux
+// and Windows it is a cheap regression check that the pass-through cases
 // still work.
 func TestHostAttribute_OSFamilyMatchesThisHost(t *testing.T) {
 	osFamily, _ := specHostAttributes(t)
@@ -127,8 +127,8 @@ func TestHostAttribute_OSFamilyMatchesThisHost(t *testing.T) {
 // attr.worker.cpu.arch. It covers the whole chain the unit tests cannot: the
 // worker probing runtime.GOARCH, advertising it in its registration payload,
 // the server persisting it, and the matcher translating it back into the
-// specification's token. Before that chain existed this job could not schedule
-// on any host at all.
+// specification's token. Without that chain this job cannot schedule on any
+// host at all.
 func TestHostAttribute_CPUArchMatchesThisHost(t *testing.T) {
 	_, cpuArch := specHostAttributes(t)
 	runHostAttributeJob(t, "attr.worker.cpu.arch", cpuArch)

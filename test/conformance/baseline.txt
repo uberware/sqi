@@ -16,15 +16,11 @@
 # env_templates/ directory is StateNotApplicable (see classify.go) and is
 # never scored — it cannot regress or go stale, so it has no baseline entry.
 #
-# 2026-08-14, sub-project H2: this file was EMPTY until now, and the three
-# entries below are its first. They arrived not because anything regressed but
-# because EXPR became a supported extension: EXPR/job_templates used to be
-# scored by a second, temporary path with a baseline file of its own
-# (baseline-expr.txt, deleted with that path), and these three came across
-# unchanged when TestConformance_Templates took the directory over. The score
-# is identical on both paths — 206/209 pass, 3 baselined.
+# The three EXPR/job_templates entries below are scored by
+# TestConformance_Templates like every other live directory: 206/209 pass,
+# 3 baselined.
 #
-# ALL THREE FAIL FOR THE SAME UNDERLYING REASON, AND IT IS NOT EXPR'S: each
+# All three fail for the same underlying reason, and it is not EXPR's: each
 # declares FEATURE_BUNDLE_1, a separate official OpenJD extension (RFC 0004)
 # that sqi does not register, so validateExtensions rejects the template on the
 # extension name alone. Each also USES that extension's `bash:` SimpleAction in
@@ -34,25 +30,21 @@
 # ".invalid" suffix): the spec says accept them, sqi rejects them, so they fail.
 # They come off this list when sqi implements FEATURE_BUNDLE_1, or not at all.
 #
-# The per-fixture errors below were MEASURED on this branch through
-# openjd.Parse + openjd.ValidateWithOptions(EnforceLimits: true), not inferred
-# from the filenames.
+# The per-fixture errors below were MEASURED through openjd.Parse +
+# openjd.ValidateWithOptions(EnforceLimits: true), not inferred from the
+# filenames.
 #
-# NOTE, because the record used to say otherwise: 3.6--let-bindings.yaml was
-# previously described as blocked first by its LIST[INT] job parameter, which
-# openjd.Parse rejected before validation ran. Sub-project F implemented the
-# RFC 0007 parameter types, so that is no longer true — it now parses, and only
-# the FEATURE_BUNDLE_1 gap remains. (Same correction applies to the five
-# 3.6--let-comprehension-shadows*.invalid.yaml fixtures, which are NOT
-# baselined: four of them are now rejected by section 1.3.7's real
-# loop-variable-shadowing rule instead of at parse time. See
-# TestConformance_B3ProtectedFixtures.)
+# 3.6--let-bindings.yaml's LIST[INT] job parameter parses (RFC 0007 parameter
+# types are implemented); only the FEATURE_BUNDLE_1 gap remains. The five
+# 3.6--let-comprehension-shadows*.invalid.yaml fixtures are NOT baselined: four
+# of them are rejected by section 1.3.7's loop-variable-shadowing rule. See
+# TestConformance_ComprehensionAndCallFixtures.
 
 # Rejected on `/extensions/1: unsupported extension "FEATURE_BUNDLE_1"` and
 # `/steps/2/script: required` — its third step, StepWithSimpleAction, is a
 # `bash:` SimpleAction. Nothing to do with `let`: the fixture's own subject,
 # let bindings at all four scoping levels, is implemented and exercised by the
-# eleven fixtures TestConformance_E3ProtectedFixtures pins.
+# eleven fixtures TestConformance_LetBindingFixtures pins.
 EXPR/job_templates/3.6--let-bindings.yaml
 
 # Rejected on `/extensions/1: unsupported extension "FEATURE_BUNDLE_1"` plus
@@ -67,31 +59,28 @@ EXPR/job_templates/3.6--let-host-context-symbols.yaml
 # and <StepScript>.let, is accepted; only the SimpleAction half is unreachable.
 EXPR/job_templates/7.3.1--job-step-name-in-step-let.yaml
 
-# 2026-08-19, submodule bump 42a1fb6 -> be0aefb: this fixture is NEW upstream,
-# added by openjd-specifications PR #172 ("do not cap <IntRangeExpr> expansion
-# at the list-form limit"), which also rewrote 3.4--max-range-items.yaml and
-# 3.4--too-many-range-items.invalid.yaml to use explicit LISTS of 1024 / 1025
-# values (both still pass here — only the new range-EXPRESSION case fails).
+# Added upstream by openjd-specifications PR #172 ("do not cap <IntRangeExpr>
+# expansion at the list-form limit"), which also rewrote 3.4--max-range-items.yaml
+# and 3.4--too-many-range-items.invalid.yaml to use explicit LISTS of 1024 / 1025
+# values (both pass here — only the range-EXPRESSION case fails).
 #
 # The change is a base-spec acceptance widening: §3.4's "at most 1024 values"
-# now bounds the LIST form only, so `range: "1-5000"` — one <IntRangeExpr>
-# naming 5000 values — is valid where it previously was not. The bump also
-# added the normative sentence behind it, at
+# bounds the LIST form only, so `range: "1-5000"` — one <IntRangeExpr> naming
+# 5000 values — is valid. The normative sentence behind it is at
 # wiki/2023-09-Template-Schemas.md:1155: the number of values an <IntRangeExpr>
 # expands to "is not constrained by this specification", and an implementation
 # needing to bound Step size "is expected to do so with its own limit on the
-# Task count, not by constraining this expression". sqi already HAS those
-# count limits — maxTasksPerStep and maxTasksPerJob — which is what makes the
-# fix tractable, and also what makes it a policy decision rather than a typo. sqi applies the
-# cap to BOTH forms: taskParamValueCount (validate.go) counts a RangeExpr
-# arithmetically and hands the same maxTaskParamValues (1024) gate the count,
-# so the fixture is rejected on
+# Task count, not by constraining this expression". sqi has those count limits
+# — maxTasksPerStep and maxTasksPerJob — so the fix is tractable, but it is a
+# policy decision. sqi applies the cap to BOTH forms: taskParamValueCount
+# (validate.go) counts a RangeExpr arithmetically and hands the same
+# maxTaskParamValues (1024) gate the count, so the fixture is rejected on
 # `/steps/0/parameterSpace/taskParameterDefinitions/0/range: at most 1024
 # values are allowed per task parameter (got 5000)` — MEASURED, not inferred.
 #
-# Deliberately NOT fixed in passing. Lifting the cap for the expression form is
-# an acceptance change in internal/openjd — templates rejected today would start
-# producing tasks — and it lands on the same policy surface as maxTasksPerStep
-# and maxTasksPerJob, which is exactly the reasoning CLAUDE.md records for the
-# three intrange divergences. It wants its own decision, not a drive-by.
+# Not fixed here. Lifting the cap for the expression form is an acceptance
+# change in internal/openjd — templates rejected today would start producing
+# tasks — and it lands on the same policy surface as maxTasksPerStep and
+# maxTasksPerJob, the same reasoning that keeps internal/openjd's three
+# integer-range divergences from the spec. It needs its own decision.
 base/job_templates/3.4--wide-int-range-expression.yaml

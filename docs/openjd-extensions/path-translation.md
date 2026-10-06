@@ -51,17 +51,16 @@ back after, via `staging.sync_command` when the operator has configured one.
 The other deliveries advertise the effective (post-staging) mappings.
 `command_flags` appends `pattern` rendered per pair; `environment` sets
 `variable` to `src=dest` pairs joined by the OS path-list separator. When the
-extension is absent, the default is `swap_in_place` + `translation_file`
-(today's behavior, unchanged).
+extension is absent, the default is `swap_in_place` + `translation_file`.
 
-`stage_locally` now works with **no worker configuration**: an unconfigured
+`stage_locally` works with no worker configuration: an unconfigured
 worker falls back to a TEMP scratch directory
 (`<os.TempDir()>/sqi-staging`) and sqi's own built-in copy in place of a shell
 `sync_command`, logging a one-time WARN the first time it does so
 (`staging.defaults`, on by default — see
 [Worker configuration → `staging`](../worker-configuration.md#staging--local-path-staging-stage_locally-delivery)).
-Set `staging.defaults: false` to restore the previous fail-hard behavior for
-an unconfigured worker.
+Set `staging.defaults: false` to make staging fail hard on an unconfigured
+worker instead.
 
 The built-in copy only moves bytes the worker can already reach (local disk,
 or a filesystem already shared/mounted on that worker) — it is a local/dev

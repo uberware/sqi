@@ -124,8 +124,8 @@ func TestSearchBind_NestedGroupsFallsBackOnSearchError(t *testing.T) {
 // The failure mode with no error to key on: the nested search succeeds and
 // returns zero entries. That is what a base_dn scoped to the user subtree
 // produces when groups live elsewhere — a completely normal, successful
-// search. Before this, the empty slice replaced the flat memberOf values and
-// every user silently landed on default_role.
+// search. If the empty slice replaced the flat memberOf values, every user
+// would silently land on default_role.
 func TestSearchBind_NestedGroupsFallsBackOnEmptyResult(t *testing.T) {
 	cfg := searchCfg()
 	cfg.NestedGroups = true
@@ -448,8 +448,7 @@ func TestSearchBind_MemberOfIsCaseInsensitive(t *testing.T) {
 }
 
 // firstAttr shares the same case-insensitive lookup as the memberOf
-// resolution above it, rather than the byte-for-byte match it used to be — so
-// a directory that echoes UsernameAttr or DisplayNameAttr back in a different
+// resolution above it, rather than a byte-for-byte match — so a directory that echoes UsernameAttr or DisplayNameAttr back in a different
 // case still populates Identity.Username and Identity.DisplayName.
 func TestSearchBind_UsernameAndDisplayNameAreCaseInsensitive(t *testing.T) {
 	e := entry("CN=Alice,OU=People,DC=example,DC=com", map[string][]string{

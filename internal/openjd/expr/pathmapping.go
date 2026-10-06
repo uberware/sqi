@@ -25,7 +25,7 @@ const (
 
 // PathMapRule is one source→destination path-mapping rule. It mirrors the
 // OpenJD pathmapping-1.0 schema but is independent of internal/worker/protocol,
-// which this leaf package cannot import; sub-project E translates a
+// which this leaf package cannot import; internal/worker/fmtres translates a
 // protocol.PathMapRule into this type at the injection boundary.
 type PathMapRule struct {
 	SourceFormat    PathMapSourceFormat
@@ -84,14 +84,12 @@ func applyRule(s string, r PathMapRule, dst PathFormat) (string, bool) {
 // The matching itself is relativeParts (funcspath.go), the SAME function
 // is_relative_to/relative_to use to answer the identical question ("are
 // other's parts a full prefix of p's, and what remains?"), rather than a
-// second hand-written prefix loop beside it — precisely the "two formulas
-// that happen to agree today" duplication this package's own doc comments
-// (pathval.go's String(), pathJoin) name as its signature defect class. The
-// only thing this caller varies is the comparator: relativeParts takes an eq
-// function, and this passes strings.EqualFold for a WINDOWS source (C4's
-// Windows parser already accepts both separators, so separator-insensitivity
-// falls out of parsePath itself) and byteEqual otherwise. This is
-// deliberately distinct from C4's byte-exact, case-SENSITIVE path equality
+// second hand-written prefix loop beside it. The only thing this caller
+// varies is the comparator: relativeParts takes an eq function, and this
+// passes strings.EqualFold for a WINDOWS source (the Windows parser already
+// accepts both separators, so separator-insensitivity falls out of
+// parsePath itself) and byteEqual otherwise. This is deliberately distinct
+// from the byte-exact, case-SENSITIVE path equality
 // (==) that relativeParts' OTHER two callers always use: source MATCHING and
 // path EQUALITY are different operations, and eq is the one place that
 // difference is expressed — relativeParts' other rules (the anchorless-other
@@ -112,10 +110,8 @@ func applyFileRule(s string, r PathMapRule, dst PathFormat) (string, bool) {
 	// backing array is not shared with the parsedPath it came from. But
 	// relying on that invariant here — appending remainder straight onto the
 	// value parts() hands back — would tie this call's safety to an
-	// implementation detail of a function it does not control, which is the
-	// exact shape of aliasing defect C4 had to close repeatedly in this
-	// package (pathJoin's doc comment above catalogs three of them). Building
-	// a fresh slice explicitly keeps this call correct regardless of how
+	// implementation detail of a function it does not control. Building a
+	// fresh slice explicitly keeps this call correct regardless of how
 	// parts() is implemented.
 	dstParts := parsePath(r.DestinationPath, dst).parts()
 	resultParts := make([]string, 0, len(dstParts)+len(remainder))
@@ -139,35 +135,33 @@ func applyURIRule(s string, r PathMapRule) (string, bool) {
 	return "", false
 }
 
-// pathMappingFuncs is sub-project D's group: the single host-context function
-// apply_path_mapping, co-located with the engine it wraps. It is a SEPARATE
-// group from C4's pathFuncs because the codebase convention is that a wave adds
-// its own table and never edits another's (see funcs.go's mergeFuncs).
+// pathMappingFuncs is the group holding the single host-context function
+// apply_path_mapping, co-located with the engine it wraps and kept separate
+// from pathFuncs (see funcs.go's mergeFuncs).
 //
 // There is NO leaf-level host-context gate: the function is always resolvable
 // and, with no rules, passes through. Host-context availability (the function is
-// valid only in @fmtstring[host] scopes) is enforced by sub-project E, which is
-// the only layer with a scope model; E uses Expression.CalledFunctions to spot
-// the call. A leaf gate would also break the deliberate conformance regression
-// this registration causes — see the design doc §5 and §6.
-// COST (sub-project E1, Task 8): apply_path_mapping walks the rule list and
-// matches/rewrites its argument against each source path, which is rule 3's
-// "processes a string or path value" applied to that argument — so
-// Cost{ArgBytes: {0}} on its one row, charging the INPUT text being mapped,
-// consistent with every other row in this package that processes a single
-// string/path argument (funcspath.go's ArgBytes-on-input rows).
+// valid only in @fmtstring[host] scopes) is enforced by internal/openjd's
+// template checker, the only layer with a scope model, which uses
+// Expression.CallsAny and Expression.CalledFunctions to spot the call.
+//
+// COST: apply_path_mapping walks the rule list and matches/rewrites its
+// argument against each source path, which is rule 3's "processes a string or
+// path value" applied to that argument — so Cost{ArgBytes: {0}} on its one row,
+// charging the INPUT text being mapped, consistent with every other row in this
+// package that processes a single string/path argument (funcspath.go's
+// ArgBytes-on-input rows).
 //
 // This charge has NO ORACLE COVERAGE and cannot get any: scripts/expr-oracle.py
-// invokes the reference with only `src` and `target_type` (see its own
-// doc/the sub-project's tracker), with no channel for session path-mapping
-// rules — evaluate_with_metrics's own keyword arguments (values, profile,
-// target_type, path_format, memory_limit, operation_limit; confirmed via
-// inspect.signature against openjd-model 0.11.1) carry no host_context
-// parameter either, so apply_path_mapping is not even RESOLVABLE through the
-// oracle's entry point (it raises "Unknown function: 'apply_path_mapping'").
-// This charge is pinned by unit test alone (cost_misc_internal_test.go's
-// TestOperationCount_ApplyPathMapping), not cross-checked against any
-// external ground truth.
+// invokes the reference with only `src` and `target_type` (see its own doc),
+// with no channel for session path-mapping rules — evaluate_with_metrics's own
+// keyword arguments (values, profile, target_type, path_format, memory_limit,
+// operation_limit; confirmed via inspect.signature against openjd-model 0.11.1)
+// carry no host_context parameter either, so apply_path_mapping is not even
+// RESOLVABLE through the oracle's entry point (it raises "Unknown function:
+// 'apply_path_mapping'"). This charge is pinned by unit test alone
+// (cost_misc_internal_test.go's TestOperationCount_ApplyPathMapping), not
+// cross-checked against any external ground truth.
 var pathMappingFuncs = map[string][]Shape{
 	"apply_path_mapping": {
 		{Params: []Type{TString}, Ret: TPath, Cost: Cost{ArgBytes: []int{0}}, FnCtx: func(ec evalCtx, args []Value) (Value, error) {

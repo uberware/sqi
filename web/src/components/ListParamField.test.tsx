@@ -149,7 +149,7 @@ describe('ListParamField', () => {
   it('renders a checkbox as checked for every accepted truthy spelling', () => {
     // parseBoolParamValue (internal/openjd/validate_paramtypes.go) accepts
     // true/1/1.0/"yes" (case-insensitive) as well as the literal `true` --
-    // checked={element === true} only recognised the last of those.
+    // checked={element === true} would recognise only the last of those.
     render(
       <ListParamField
         param={param({ type: 'LIST[BOOL]' })}

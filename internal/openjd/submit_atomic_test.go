@@ -15,18 +15,19 @@ import (
 
 // ── helpers ───────────────────────────────────────────────────────────────────
 
-// submitSpy wraps the fake store and records six of its methods: the five row
+// submitSpy wraps the fake store and records five of its methods: the row
 // creators a submission could use — CreateJob, CreateJobDependencies,
-// CreateStep, CreateTask, CreateJobSubmission — and UpdateJobStatus. It
-// delegates each one, so the store still behaves exactly like the fake; the
-// counters only observe.
+// CreateStep, CreateTask, CreateJobSubmission. It delegates each one, so the
+// store still behaves exactly like the fake; the counters only observe.
 //
 // It is NOT a general write recorder. It embeds [fake.Store], so every other
 // method reaches the fake untouched and is invisible to `writes`: a regression
 // that persisted something through some other store method would leave the
-// counters unchanged and TestSubmit_PersistsInASingleCall green. The six are
-// the ones the pre-atomic Submit used, plus the one that replaced them, which
-// is what the counters exist to detect a return to.
+// counters unchanged and TestSubmit_PersistsInASingleCall green. The four
+// per-row creators are the ones a non-atomic Submit would use, which is what
+// the counters exist to detect; CreateJobSubmission is the one Submit uses.
+// A separate job-status write is not among them: [store.Store] has no
+// generic job-status writer, so a Submit holding one cannot call it at all.
 //
 // It exists because a failed submission must leave no rows AND, once expansion
 // runs to completion first, must not have attempted a write at all. The former
@@ -47,18 +48,15 @@ type submitSpy struct {
 	// call. It is how a test inspects what Submit asked the store to write, as
 	// opposed to what the store then made of it.
 	lastSubmission store.JobSubmission
-	// statusUpdates counts UpdateJobStatus calls. A submission must make none:
-	// every status a submission decides is part of the one atomic write.
-	statusUpdates int
-	// failStatusUpdate, when non-nil, is returned by UpdateJobStatus instead of
-	// delegating. It injects the failure of the write that used to run after
-	// the atomic one.
-	failStatusUpdate error
 	// failSubmission, when non-nil, is returned by CreateJobSubmission instead
 	// of delegating. It injects a store failure during the submission write --
 	// a client disconnect, a full disk, a transient DB error -- which is the
 	// only way to fail a submission that has already passed expansion.
 	failSubmission error
+	// beforeSubmission, when non-nil, runs once at the top of
+	// CreateJobSubmission, before it delegates. It is how a test changes the
+	// world between Submit's dependency pre-read and the submission write.
+	beforeSubmission func()
 }
 
 func (s *submitSpy) CreateJob(ctx context.Context, job store.Job) (store.Job, error) {
@@ -78,8 +76,7 @@ func (s *submitSpy) CreateStep(ctx context.Context, step store.Step) (store.Step
 	// Without this, a regression that writes steps per-step and never reaches
 	// the bulk call leaves jobIDs EMPTY, so the surviving-step-rows loop in
 	// TestSubmit_FailedSubmissionLeavesNoRows never executes and the test
-	// passes while a step row genuinely survives -- defect 2 exactly. That was
-	// demonstrated by sabotage during review, not theorized.
+	// passes while a step row survives.
 	s.jobIDs = append(s.jobIDs, step.JobID)
 	s.writes++
 	return s.Store.CreateStep(ctx, step)
@@ -96,25 +93,20 @@ func (s *submitSpy) CreateJobSubmission(ctx context.Context, sub store.JobSubmis
 	s.writes++
 	s.submissions++
 	s.lastSubmission = sub
+	if s.beforeSubmission != nil {
+		s.beforeSubmission()
+	}
 	if s.failSubmission != nil {
 		return store.JobSubmission{}, s.failSubmission
 	}
 	return s.Store.CreateJobSubmission(ctx, sub)
 }
 
-func (s *submitSpy) UpdateJobStatus(ctx context.Context, id string, status store.JobStatus) error {
-	s.statusUpdates++
-	if s.failStatusUpdate != nil {
-		return s.failStatusUpdate
-	}
-	return s.Store.UpdateJobStatus(ctx, id, status)
-}
-
 // twoStepsSecondOverTaskCap returns a two-step template whose SECOND step
 // cannot expand.
 //
 // The over-cap step must fail at EXPANSION, not at validation, or the test
-// proves nothing: validation already precedes every write today, so a template
+// proves nothing: validation precedes every write, so a template
 // rejected there never reaches the store either way. Two INT parameters of
 // 1024 values each are individually legal — maxTaskParamValues is 1024 and the
 // check is "greater than" — but their Cartesian product is 1,048,576, over
@@ -167,24 +159,22 @@ func twoStepsBothValid(name string) string {
 
 // ── tests ─────────────────────────────────────────────────────────────────────
 
-// TestSubmit_FailedSubmissionLeavesNoRows drives the failure mode of DEFECT 1,
-// orphaned pending jobs: a submission that failed partway used to leave a job
-// row that no sweep reaps — retention deletes only terminal statuses,
+// TestSubmit_FailedSubmissionLeavesNoRows drives the orphaned-pending-job
+// failure mode: a submission that fails partway must not leave a job row,
+// because no sweep reaps one — retention deletes only terminal statuses,
 // demoteStalledJobs needs a running job with live tasks, and the handler never
 // learns the job ID because Submit returns nil on error.
 //
-// Be precise about what this fixture demonstrates and what it does not.
-// Measured against main, an expansion failure on step 2 left BOTH step rows,
-// not one: createStepWithTasks wrote each step row BEFORE expanding its tasks,
-// so the job persisted with all its steps and Step2 simply had no tasks — an
-// orphan hung in pending, which is defect 1. It is NOT defect 2's mechanism;
-// reaching a job that checkJobCompletion mis-reports as completed needs a step
-// row to be missing entirely, which needs a STORE failure. That case is
+// An expansion failure on step 2 under per-step writes, where each step row
+// is written BEFORE its tasks are expanded, would leave BOTH step rows, with
+// Step2 having no tasks — an orphan hung in pending. It would not produce a
+// job that checkJobCompletion mis-reports as completed: that needs a step row
+// to be missing entirely, which needs a STORE failure. That case is
 // TestSubmit_StoreFailureLeavesNoRows below.
 //
-// Both defects are properties of partial creation, and the assertion here is
-// the general one that closes them: a failed submission leaves ZERO rows. A
-// step-count guard would only prove the guard works.
+// Both failure modes are properties of partial creation, and the assertion
+// here is the general one that rules them out: a failed submission leaves
+// ZERO rows. A step-count guard would only prove the guard works.
 func TestSubmit_FailedSubmissionLeavesNoRows(t *testing.T) {
 	inner := fake.New()
 	farmID, queueID := seedSubmitPrereqs(t, inner)
@@ -237,33 +227,27 @@ func TestSubmit_FailedSubmissionLeavesNoRows(t *testing.T) {
 	}
 }
 
-// TestSubmit_StoreFailureLeavesNoRows drives the failure DEFECT 2 actually
-// needs: the store failing during the write, as a client disconnect, a full
+// TestSubmit_StoreFailureLeavesNoRows drives the failure mode that loses a
+// step: the store failing during the write, as a client disconnect, a full
 // disk or a transient DB error would. An expansion failure cannot produce it
-// (see TestSubmit_FailedSubmissionLeavesNoRows), which is why this exists as a
-// separate case rather than as prose attached to that one.
+// (see TestSubmit_FailedSubmissionLeavesNoRows).
 //
-// Reproduced on main by failing the second CreateStep:
+// With per-row writes, a store failure on the second step's write would leave
+// a job with only Step1 persisted. checkJobCompletion derives job status from
+// the steps that EXIST, so that job would be reported completed having lost
+// Step2's work.
 //
-//	SUBMIT err=openjd: submit: create step "Step2": injected store failure
-//	template declares 2 steps; 1 persisted: "Step1" status="ready"
-//	DEFECT 2: job that silently lost Step2 has final status = "completed"
-//
-// checkJobCompletion derives job status from the steps that EXIST, so a job
-// missing Step2 entirely was reported completed having silently lost work.
-//
-// What this pins on HEAD is the property that makes that unconstructible: a
-// store failure surfaces to the caller and leaves no job, step or task row, so
-// there is no truncated job for checkJobCompletion to see. The rollback itself
-// is proven at the store layer on both backends by
+// This pins the property that makes that unconstructible: a store failure
+// surfaces to the caller and leaves no job, step or task row, so there is no
+// truncated job for checkJobCompletion to see. The rollback itself is proven
+// at the store layer on both backends by
 // TestJobStore_CreateJobSubmission_RollsBackEntirely; what is proven here is
 // that Submit routes the entire submission through that one guarded call, so a
 // store failure has nothing partial to leave behind.
 //
-// The injection is on CreateJobSubmission, which also keeps the test honest
-// against a regression: a Submit that went back to per-row writes would never
-// call it, would therefore SUCCEED, and would trip the fatal below rather than
-// passing vacuously.
+// The injection is on CreateJobSubmission, so a Submit that went back to
+// per-row writes would never call it, would therefore SUCCEED, and would trip
+// the fatal below rather than passing vacuously.
 func TestSubmit_StoreFailureLeavesNoRows(t *testing.T) {
 	inner := fake.New()
 	farmID, queueID := seedSubmitPrereqs(t, inner)
@@ -317,19 +301,19 @@ func TestSubmit_StoreFailureLeavesNoRows(t *testing.T) {
 	}
 	// The step rows the failed write would have created must have been part of
 	// that one call, not written ahead of it: a job persisted with fewer steps
-	// than its template declares is precisely defect 2.
+	// than its template declares is the step-losing failure mode above.
 	if got := len(st.lastSubmission.Steps); got != 2 {
 		t.Errorf("the submission handed to the store carried %d steps, want both", got)
 	}
 }
 
 // TestSubmit_ExpansionFailureNeverTouchesTheStore pins the ordering property
-// that makes the above hold for free: expansion now completes entirely before
-// the single write, so the common bad-template case never reaches the store.
+// that makes the above hold for free: expansion completes entirely before the
+// single write, so the common bad-template case never reaches the store.
 //
-// Without this, a future change could restore per-step writes and still pass
-// the test above by getting the rollback right — while reintroducing the long
-// window this ordering removes.
+// Without this, a change could restore per-step writes and still pass the
+// test above by getting the rollback right — while reopening the long window
+// this ordering closes.
 func TestSubmit_ExpansionFailureNeverTouchesTheStore(t *testing.T) {
 	inner := fake.New()
 	farmID, queueID := seedSubmitPrereqs(t, inner)
@@ -411,14 +395,19 @@ func newBlockedSubmitFixture(t *testing.T) (st *submitSpy, sub *openjd.Submitter
 // is decided: inside the single [store.JobStore.CreateJobSubmission] call, next
 // to the dependency edges that justify it.
 //
-// It used to be a separate UpdateJobStatus issued after that call, so the two
-// halves of one decision — "this job is blocked" and "here is what it is
-// blocked on" — committed independently. Asserting that Submit issues no status
-// update at all is what makes the coupling structural rather than incidental: a
-// change that reintroduces the second write fails here even if it happens to
-// leave the end state correct.
+// A separate status write issued after that call would commit the two halves
+// of one decision — "this job is blocked" and "here is what it is blocked on"
+// — independently. [store.Store] has no generic job-status writer, so Submit
+// cannot issue one. What is observable is the other half of the coupling: the
+// submission handed to the store carries the blocked status, and it is the
+// ONLY row-creating call Submit makes, so no second write can exist to carry
+// a status of its own. A change that adds one fails here even if it happens
+// to leave the end state correct.
 func TestSubmit_BlockedStatusIsPartOfTheAtomicWrite(t *testing.T) {
 	st, sub, farmID, queueID, upstreamID := newBlockedSubmitFixture(t)
+
+	// The fixture's own upstream submission has already been counted.
+	writesBefore, submissionsBefore := st.writes, st.submissions
 
 	result, err := sub.Submit(t.Context(), minimalJSON("BlockedJob"), store.TemplateFormatJSON, openjd.SubmitOptions{
 		FarmID:    farmID,
@@ -435,86 +424,150 @@ func TestSubmit_BlockedStatusIsPartOfTheAtomicWrite(t *testing.T) {
 	if got := st.lastSubmission.DependsOn; len(got) != 1 || got[0] != upstreamID {
 		t.Errorf("the submission handed to the store carried DependsOn %v, want [%s]", got, upstreamID)
 	}
-	if st.statusUpdates != 0 {
-		t.Errorf("Submit issued %d UpdateJobStatus calls, want 0 (the status belongs to the atomic write)", st.statusUpdates)
+	if writes, submissions := st.writes-writesBefore, st.submissions-submissionsBefore; writes != 1 || submissions != 1 {
+		t.Errorf("Submit made %d row-creating calls (%d of them CreateJobSubmission), want exactly 1: the status belongs to the atomic write",
+			writes, submissions)
 	}
 	if result.Job.Status != store.JobStatusBlocked {
 		t.Errorf("result job status = %q, want blocked", result.Job.Status)
 	}
 }
 
-// TestSubmit_BlockedStatusIsAtomicWithTheRows is the failure-mode test, and the
-// reason folding the status write in was mandatory rather than tidy.
+// TestSubmit_BlockedStatusIsAtomicWithTheRows is the failure-mode test for
+// the blocked status.
 //
-// While the status was written separately, a failure of that write left the
-// job, its edges, its steps and its tasks all durable with the job stranded in
-// pending — and stranded is literal. buildStepWithTasks creates every task
-// pending whenever the job is held, so nothing runs; reconcileBlockedJob
+// If the status were written separately, a failure of that write would leave
+// the job, its edges, its steps and its tasks all durable with the job
+// stranded in pending. buildStepWithTasks creates every task pending whenever
+// the job is held, so nothing runs; reconcileBlockedJob
 // (internal/scheduler/jobdeps.go) early-returns unless status is blocked, so
 // neither sweepBlockedJobs nor ReconcileDependents ever revisits the row; and
 // the scheduler leases only ready tasks. The job hangs until an operator
 // intervenes.
 //
-// That is why the assertion here is that NO row for the job exists. A test
-// written to the failure mode this one was first thought to have — "assert the
-// tasks are not ready" — passes without the fix, because they were never ready.
+// That is why the assertion here is that NO row for the job exists. "Assert
+// the tasks are not ready" would pass even with the stranded job, because
+// they are never ready.
 //
-// What it actually exercises on HEAD, stated plainly: the injected failure is on
-// UpdateJobStatus, which Submit no longer calls, so err is always nil here and
-// the err != nil branch — the zero-rows assertion — is DEAD CODE today. The live
-// assertion is the success branch: the submission completed and the persisted
-// job is blocked. The dead branch is kept deliberately, as the guard for a
-// regression that reintroduces a separate status write: such a change would make
-// this injection fire again, and the branch would then assert what it was
-// written to assert. Either branch is atomic; a job row surviving in the wrong
-// status is not.
+// The two subtests assert this through CreateJobSubmission, the one write
+// call Submit makes: when it succeeds the persisted job is blocked and whole,
+// and when it fails Submit leaves no job row behind, because it has no second
+// write path (a compensating status write, a per-row fallback) that could
+// strand one. The injected failure
+// is returned by the spy without delegating, so nothing is written by the store
+// either way; what the failure case pins is that Submit itself writes nothing
+// else. The rollback proper is proven at the store layer by
+// TestJobStore_CreateJobSubmission_RollsBackEntirely.
 func TestSubmit_BlockedStatusIsAtomicWithTheRows(t *testing.T) {
-	st, sub, farmID, queueID, upstreamID := newBlockedSubmitFixture(t)
-	st.failStatusUpdate = errors.New("status write failed")
+	t.Run("success is whole", func(t *testing.T) {
+		st, sub, farmID, queueID, upstreamID := newBlockedSubmitFixture(t)
 
-	result, err := sub.Submit(t.Context(), minimalJSON("BlockedJob"), store.TemplateFormatJSON, openjd.SubmitOptions{
-		FarmID:    farmID,
-		QueueID:   queueID,
-		DependsOn: []string{upstreamID},
+		result, err := sub.Submit(t.Context(), minimalJSON("BlockedJob"), store.TemplateFormatJSON, openjd.SubmitOptions{
+			FarmID:    farmID,
+			QueueID:   queueID,
+			DependsOn: []string{upstreamID},
+		})
+		if err != nil {
+			t.Fatalf("Submit: %v", err)
+		}
+
+		job, gerr := st.GetJob(t.Context(), result.Job.ID)
+		if gerr != nil {
+			t.Fatalf("GetJob(%s): %v", result.Job.ID, gerr)
+		}
+		if job.Status != store.JobStatusBlocked {
+			t.Errorf("persisted job status = %q, want blocked", job.Status)
+		}
+		if result.Job.Status != store.JobStatusBlocked {
+			t.Errorf("result job status = %q, want blocked", result.Job.Status)
+		}
 	})
 
-	// The job ID is taken from the spy rather than the result, because a failed
-	// Submit returns nil and the caller never learns which row to look for --
-	// which is exactly why a stranded row could not be cleaned up.
-	jobID := st.lastSubmission.Job.ID
-	if jobID == "" {
-		t.Fatal("Submit never reached the store; the test cannot observe what it left behind")
-	}
+	t.Run("failure leaves no rows", func(t *testing.T) {
+		st, sub, farmID, queueID, upstreamID := newBlockedSubmitFixture(t)
+		st.failSubmission = errors.New("submission write failed")
 
-	if err != nil {
+		_, err := sub.Submit(t.Context(), minimalJSON("BlockedJob"), store.TemplateFormatJSON, openjd.SubmitOptions{
+			FarmID:    farmID,
+			QueueID:   queueID,
+			DependsOn: []string{upstreamID},
+		})
+		if err == nil {
+			t.Fatal("Submit reported success although the store failed the write")
+		}
+
+		// The job ID is taken from the spy rather than the result, because a
+		// failed Submit returns nil and the caller never learns which row to
+		// look for -- which is why a stranded row could not be cleaned up.
+		jobID := st.lastSubmission.Job.ID
+		if jobID == "" {
+			t.Fatal("Submit never reached the store; the test cannot observe what it left behind")
+		}
 		if _, gerr := st.GetJob(t.Context(), jobID); !errors.Is(gerr, store.ErrNotFound) {
 			t.Fatalf("a job row survived a failed submission (GetJob(%s) = %v), want ErrNotFound", jobID, gerr)
 		}
-		return
-	}
+		edges, lerr := st.ListJobDependencyIDs(t.Context(), jobID)
+		if lerr != nil {
+			t.Fatalf("ListJobDependencyIDs: %v", lerr)
+		}
+		if len(edges) != 0 {
+			t.Errorf("dependency edges %v survived a failed submission, want none", edges)
+		}
+	})
+}
 
-	// The status write is gone, so the submission succeeded: it must be whole.
-	job, gerr := st.GetJob(t.Context(), jobID)
-	if gerr != nil {
-		t.Fatalf("GetJob(%s): %v", jobID, gerr)
-	}
-	if job.Status != store.JobStatusBlocked {
-		t.Errorf("persisted job status = %q, want blocked", job.Status)
-	}
-	if result.Job.Status != store.JobStatusBlocked {
-		t.Errorf("result job status = %q, want blocked", result.Job.Status)
+// TestSubmit_UpstreamLostBeforeTheWrite_IsAValidationError pins the
+// submitter's handling of an upstream lost mid-submission: resolveDependencies
+// reads each upstream before the submission transaction, so an upstream can be
+// canceled or deleted in between. The store
+// refuses the write with [store.ErrDependencyUnsatisfiable], and Submit reports
+// it as a *SubmitValidationError, the same client-fault class (HTTP 400) that
+// resolveDependencies itself uses, rather than as an internal error (HTTP 500).
+func TestSubmit_UpstreamLostBeforeTheWrite_IsAValidationError(t *testing.T) {
+	for name, lose := range map[string]func(t *testing.T, st *submitSpy, upstreamID string){
+		"canceled": func(t *testing.T, st *submitSpy, upstreamID string) {
+			t.Helper()
+			if err := st.CancelJobStatus(t.Context(), upstreamID); err != nil {
+				t.Fatalf("CancelJobStatus: %v", err)
+			}
+		},
+		"deleted": func(t *testing.T, st *submitSpy, upstreamID string) {
+			t.Helper()
+			if err := st.DeleteJob(t.Context(), upstreamID); err != nil {
+				t.Fatalf("DeleteJob: %v", err)
+			}
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			st, sub, farmID, queueID, upstreamID := newBlockedSubmitFixture(t)
+			st.beforeSubmission = func() { lose(t, st, upstreamID) }
+
+			_, err := sub.Submit(t.Context(), minimalJSON("BlockedJob"), store.TemplateFormatJSON, openjd.SubmitOptions{
+				FarmID:    farmID,
+				QueueID:   queueID,
+				DependsOn: []string{upstreamID},
+			})
+			if _, ok := errors.AsType[*openjd.SubmitValidationError](err); !ok {
+				t.Fatalf("Submit = %v, want a *SubmitValidationError", err)
+			}
+			if !errors.Is(err, store.ErrDependencyUnsatisfiable) {
+				t.Errorf("Submit = %v, want it to wrap ErrDependencyUnsatisfiable", err)
+			}
+			if _, gerr := st.GetJob(t.Context(), st.lastSubmission.Job.ID); !errors.Is(gerr, store.ErrNotFound) {
+				t.Errorf("a job row survived the refused submission (GetJob = %v)", gerr)
+			}
+		})
 	}
 }
 
-// TestSubmit_BlockedJobIsNeverObservableWithoutItsEdges pins the end state that
-// the old ordering existed to protect.
+// TestSubmit_BlockedJobIsNeverObservableWithoutItsEdges pins that a blocked
+// job and its dependency edges are never observed apart.
 //
-// Creating a job already-blocked used to let a sweepBlockedJobs tick land after
-// the job row existed but before its edges were written, see a blocked job with
-// ZERO edges, read that as "nothing left to wait on", and release it — leaving a
-// job neither blocked nor scheduled, which the sweep never revisits. Writing the
-// status last is how that was avoided; writing status and edges in one
-// transaction is how it is avoided now.
+// If a job were created already-blocked before its edges were written, a
+// sweepBlockedJobs tick could land in between, see a blocked job with ZERO
+// edges, read that as "nothing left to wait on", and release it — leaving a
+// job neither blocked nor scheduled, which the sweep never revisits. Writing
+// status and edges in one transaction prevents that.
 //
 // The window itself is not observable from a single-threaded test. What is
 // observable, and what this asserts, is that the two always arrive together:

@@ -2,7 +2,7 @@
 
 package integration
 
-// preset_argv_test.go — Tier 1 of the preset validation harness (Phase 4, P1).
+// preset_argv_test.go — Tier 1 of the preset validation harness.
 //
 // For every preset in presets/validation-tiers.yaml, for every case in its
 // fixture file, this expands and resolves the template through the real
@@ -66,8 +66,8 @@ func TestPresetTier1Argv(t *testing.T) {
 	}
 }
 
-// assertRegistryCasesMatchFixture keeps the registry honest in both directions:
-// a case claimed but absent, and a case present but unclaimed.
+// assertRegistryCasesMatchFixture checks the registry against the fixture in
+// both directions: a case claimed but absent, and a case present but unclaimed.
 func assertRegistryCasesMatchFixture(t *testing.T, entry presettest.Entry, cases []presettest.Case, casePath string) {
 	t.Helper()
 	have := make(map[string]bool, len(cases))

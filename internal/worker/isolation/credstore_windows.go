@@ -83,9 +83,9 @@ func (s *fileStore) Put(user, secret string) error {
 // unconditionally by Put, whether dir is newly created or already existed
 // from a previous run: MkdirAll's 0o700 mode argument is inert on NTFS (Go
 // maps it only to the read-only attribute, never to an ACL), so it grants
-// no protection on its own, and a directory that predates this fix — or one
-// an administrator created by hand — is not otherwise guaranteed to carry
-// the right ACL.
+// no protection on its own, and a directory left by an older install — or
+// one an administrator created by hand — is not otherwise guaranteed to
+// carry the right ACL.
 //
 // This is also what closes writeSecured's file-level window, not the
 // MkdirAll mode: adminOnlyDACL's entries carry

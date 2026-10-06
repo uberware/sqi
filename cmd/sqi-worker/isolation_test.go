@@ -111,10 +111,9 @@ func TestEffectiveSessionRoot_NonRootFallsBackUnderDataDir(t *testing.T) {
 // creates DataDir at 0700 by design; if the session root nested under it,
 // this package's own boot-time isolation.ValidateTraversable would walk up
 // from the session root, hit DataDir at 0700, and refuse to start over a
-// directory sqi itself had just created — naming the exact self-inflicted bug
-// an earlier revision of the POSIX default (/var/lib/sqi-worker/sessions,
-// nesting under the HOME-unset DataDir fallback /var/lib/sqi-worker)
-// introduced.
+// directory sqi itself had just created (as a POSIX default of
+// /var/lib/sqi-worker/sessions, nesting under the HOME-unset DataDir fallback
+// /var/lib/sqi-worker, would).
 func TestDefaultSessionRootNeverNestsUnderDefaultDataDir(t *testing.T) {
 	cases := []struct {
 		name string

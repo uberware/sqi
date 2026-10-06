@@ -25,25 +25,22 @@ func bigNonOverlappingIntRangeExpr(n int) string {
 	return b.String()
 }
 
-// TestParameterSpaceOverCaps_DoesNotRunOverlapScan is a white-box regression
-// test for a cost defect a review caught in E4c Task 1: an earlier revision
-// of [parameterSpaceOverCaps] called [validateParameterSpaceLimits]
+// TestParameterSpaceOverCaps_DoesNotRunOverlapScan is a white-box test that
+// [parameterSpaceOverCaps] does not call [validateParameterSpaceLimits]
 // wholesale, which also runs [intRangeHasOverlap] -- an O(n^2) pairwise scan
 // over an INT range's sub-ranges, with no early exit once a count cap has
 // already fired. A caller that reaches both parameterSpaceOverCaps (gating
 // the expression walk, unconditionally) AND validateLimits (under
-// EnforceLimits: true) paid that scan TWICE. Measured with the bug present:
-// 8,000 non-overlapping sub-ranges went from 84ms to 148ms under
-// EnforceLimits: true (roughly 2x), and 32,000 sub-ranges (186 KB) went from
-// ~0 to ~1.97s under EnforceLimits: false, where nothing used to run here at
-// all.
+// EnforceLimits: true) would pay that scan TWICE. Measured that way:
+// 8,000 non-overlapping sub-ranges go from 84ms to 148ms under
+// EnforceLimits: true (roughly 2x), and 32,000 sub-ranges (186 KB) go from
+// ~0 to ~1.97s under EnforceLimits: false, where nothing else runs here.
 //
 // Asserts an ALLOCATION ratio, not a wall-clock threshold -- this package's
 // own established technique for a cost property that must not flake on
-// shared CI (see validate_exprgate_test.go's totalAllocDelta).
-// parseIntRangeElements allocates a slice proportional to the sub-range
-// count on every call it services, so running the parse-and-scan TWICE
-// (the pre-narrowing shape) costs roughly double the parse allocation that
+// shared CI. parseIntRangeElements allocates a slice proportional to the
+// sub-range count on every call it services, so running the parse-and-scan
+// TWICE (the wholesale shape) costs roughly double the parse allocation that
 // validateParameterSpaceLimits pays on its own; a ratio well under that is
 // direct evidence the narrowed parameterSpaceOverCaps never reaches
 // intRangeHasOverlap at all.
@@ -80,7 +77,7 @@ func TestParameterSpaceOverCaps_DoesNotRunOverlapScan(t *testing.T) {
 		t.Fatalf("validateParameterSpaceLimits must not flag %d non-overlapping single-value sub-ranges either, got %v", n, errs)
 	}
 
-	// A regression to the pre-narrowing shape (parameterSpaceOverCaps calling
+	// A regression to the wholesale shape (parameterSpaceOverCaps calling
 	// validateParameterSpaceLimits wholesale, paying the parse-and-scan
 	// twice per caller) would make overCapAlloc close to fullAlloc. The
 	// narrowed shape -- two O(n) count checks, one parse via

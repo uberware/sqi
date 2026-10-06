@@ -79,7 +79,7 @@ func seedOnlineWorker(t *testing.T, st *fake.Store, tags map[string]string) stor
 	t.Helper()
 	unschedulableWorkerSeq++
 	id := fmt.Sprintf("w-unsched-%d", unschedulableWorkerSeq)
-	w, err := st.RegisterWorker(t.Context(), store.Worker{
+	w, _, err := st.RegisterWorker(t.Context(), store.Worker{
 		ID: id, FarmID: "farm-1", Hostname: id, Tags: tags,
 		Status: store.WorkerStatusOnline,
 	})
@@ -109,7 +109,7 @@ func backdateTaskReady(t *testing.T, st *fake.Store, taskID string, delta time.D
 // with no eligible online worker gets flagged, and that the flag clears on the
 // next sweep once a matching worker registers.
 func TestSweepUnschedulable_FlagsAndClears(t *testing.T) {
-	st := fake.New()
+	st := newCheckedFake(t)
 	s := newMetricsScheduler(st, &recordBus{}, "farm-1")
 	s.cfg.UnschedulableGrace = time.Millisecond
 
@@ -144,7 +144,7 @@ func TestSweepUnschedulable_FlagsAndClears(t *testing.T) {
 // <= 0 disables the sweep entirely — an unschedulable task past any age is left
 // untouched.
 func TestSweepUnschedulable_DisabledWhenGraceZero(t *testing.T) {
-	st := fake.New()
+	st := newCheckedFake(t)
 	s := newMetricsScheduler(st, &recordBus{}, "farm-1")
 	s.cfg.UnschedulableGrace = 0
 
@@ -167,7 +167,7 @@ func TestSweepUnschedulable_DisabledWhenGraceZero(t *testing.T) {
 // still within the grace window is left alone even though no worker is
 // eligible yet — avoids flapping the flag on freshly-submitted work.
 func TestSweepUnschedulable_WithinGrace_NotYetFlagged(t *testing.T) {
-	st := fake.New()
+	st := newCheckedFake(t)
 	s := newMetricsScheduler(st, &recordBus{}, "farm-1")
 	s.cfg.UnschedulableGrace = time.Hour
 
@@ -189,7 +189,7 @@ func TestSweepUnschedulable_WithinGrace_NotYetFlagged(t *testing.T) {
 // TestSweepUnschedulable_NoOnlineWorkers verifies the "no online workers"
 // reason is used when the farm has no online workers at all.
 func TestSweepUnschedulable_NoOnlineWorkers(t *testing.T) {
-	st := fake.New()
+	st := newCheckedFake(t)
 	s := newMetricsScheduler(st, &recordBus{}, "farm-1")
 	s.cfg.UnschedulableGrace = time.Millisecond
 

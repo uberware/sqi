@@ -123,10 +123,46 @@ func (s *Store) ListUsers(_ context.Context) ([]store.User, error) {
 	return users, nil
 }
 
-// UpdateUser implements [store.UserStore].
+// lastLiveAdminLocked reports whether id is an enabled admin and the only one,
+// mirroring sqlLastLiveAdmin in the SQLite store. Caller holds s.mu.
+func (s *Store) lastLiveAdminLocked(id string) bool {
+	u, ok := s.users[id]
+	if !ok || u.Role != "admin" || u.Disabled {
+		return false
+	}
+	for oid, o := range s.users {
+		if oid != id && o.Role == "admin" && !o.Disabled {
+			return false
+		}
+	}
+	return true
+}
+
+// UpdateUser implements [store.UserStore]. It is deliberately unguarded; see
+// [Store.UpdateUserKeepingAdmin].
 func (s *Store) UpdateUser(_ context.Context, u store.User) (store.User, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	return s.updateUserLocked(u)
+}
+
+// UpdateUserKeepingAdmin implements [store.UserStore]. The guard and the write
+// run under one lock hold, so no other writer can slip between them.
+func (s *Store) UpdateUserKeepingAdmin(_ context.Context, u store.User) (store.User, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, ok := s.users[u.ID]; !ok {
+		return store.User{}, store.ErrNotFound
+	}
+	if s.lastLiveAdminLocked(u.ID) && (u.Role != "admin" || u.Disabled) {
+		return store.User{}, store.ErrLastAdmin
+	}
+	return s.updateUserLocked(u)
+}
+
+// updateUserLocked is the write shared by UpdateUser and
+// UpdateUserKeepingAdmin. Caller holds s.mu.
+func (s *Store) updateUserLocked(u store.User) (store.User, error) {
 	ex, ok := s.users[u.ID]
 	if !ok {
 		return store.User{}, store.ErrNotFound
@@ -196,6 +232,9 @@ func (s *Store) DeleteUser(_ context.Context, id string) error {
 	defer s.mu.Unlock()
 	if _, ok := s.users[id]; !ok {
 		return store.ErrNotFound
+	}
+	if s.lastLiveAdminLocked(id) {
+		return store.ErrLastAdmin
 	}
 	delete(s.users, id)
 	// Cascade sessions (mirrors the SQLite ON DELETE CASCADE).

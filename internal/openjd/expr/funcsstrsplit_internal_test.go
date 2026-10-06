@@ -15,8 +15,7 @@ import (
 //   - split('   ') with no separator is [], because the whitespace form strips
 //     the ends before splitting.
 //   - a NEGATIVE maxsplit means unlimited. The reference answers [] instead,
-//     which is a defect; it will be recorded as a baselined divergence once
-//     the oracle corpus lands.
+//     which is a defect.
 func TestSplitAndJoin(t *testing.T) {
 	tests := []struct {
 		name string
@@ -102,9 +101,8 @@ func TestSplit_RejectsAnEmptySeparator(t *testing.T) {
 // produces byte-identical output for this input. Which overload the matcher
 // actually selected is not observable here.
 //
-// Consequently: if a later wave ever gives the list[nulltype] row behavior
-// that diverges from its siblings, it must add a test that can tell the rows
-// apart, because this one structurally cannot.
+// If the list[nulltype] row ever diverges from its siblings, that change needs
+// a test that can tell the rows apart, because this one structurally cannot.
 func TestJoin_AcceptsAnEmptyList(t *testing.T) {
 	for _, src := range []string{`join([], ',')`, `[].join(',')`} {
 		t.Run(src, func(t *testing.T) {
@@ -122,9 +120,8 @@ func TestJoin_AcceptsAnEmptyList(t *testing.T) {
 	}
 }
 
-// TestJoin_AcceptsAPathList covers RFC 0006's third join row. A path list
-// cannot be built by a literal before sub-project C4 ships path(), so the
-// values come from the symbol table.
+// TestJoin_AcceptsAPathList covers RFC 0006's third join row, with the path
+// list taken from the symbol table.
 func TestJoin_AcceptsAPathList(t *testing.T) {
 	syms := MapSymbols{"Param.Dirs": List(TPath, []Value{
 		{Type: TPath, s: "/a"},

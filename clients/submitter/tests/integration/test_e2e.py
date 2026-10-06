@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
-"""End-to-end seams the unit mocks cannot prove (spec: integration test 1+3)."""
+"""End-to-end seams the unit mocks cannot prove."""
 
 from __future__ import annotations
 
@@ -93,7 +93,7 @@ def test_preset_round_trip(
 def test_blender_full_pipeline_renders_a_frame(
     session: SubmitterSession, farm_and_queue: tuple[str, str]
 ) -> None:
-    """Real server + worker + blender: one frame renders to disk (spec test 3).
+    """Real server + worker + blender: one frame renders to disk.
 
     Requires: a worker registered with capability tag blender=true and
     blender on PATH, sharing this machine's filesystem.

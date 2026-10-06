@@ -52,19 +52,13 @@ type jobCanceler interface {
 // use. Keeping it an interface — the same reason [jobCanceler] is one, and the
 // same reason [Deps.Store] is store.Store rather than *sqlite.Store — lets the
 // handlers' error mapping be tested without driving the whole OpenJD pipeline.
-// That mattered most for the one error the pipeline could not produce: while
-// the EXPR extension was StatusInProgress an EXPR template was rejected before
-// any expression was evaluated, so a wall-clock deadline breach was unreachable
-// end to end. Sub-project H2 flipped the status and the real path is now
-// covered directly (submitdeadline_test.go's end-to-end cases); the stub
-// remains the cheap way to pin the status mapping alone.
+// The real deadline path is covered end to end in submitdeadline_test.go; the
+// stub is the cheap way to pin the status mapping alone.
 //
-// It is EXPORTED, and [Deps.Submitter] is typed as it rather than as
+// It is exported, and [Deps.Submitter] is typed as it rather than as
 // *openjd.Submitter, so that a test can drive a router built by [NewRouter]
-// with a recording stub. Without that, nothing could observe the
-// Config → handler hop that carries the submission deadline: the value would
-// reach a real Submitter and vanish into a pipeline that cannot currently
-// spend it.
+// with a recording stub and observe the Config → handler hop that carries
+// the submission deadline.
 type JobSubmitter interface {
 	Submit(
 		ctx context.Context, rawTemplate string, format store.TemplateFormat, opts openjd.SubmitOptions,
@@ -700,7 +694,9 @@ func (*jobHandler) resolveAction(
 // It writes an error response and returns a non-nil error when persistence fails.
 // A resume goes through [store.JobStore.ResumeJob] so an auto-parked job also
 // has its park reason cleared and failure counter reset (re-arming the failure
-// limit); other transitions use the plain status update.
+// limit); a pause goes through [store.JobStore.PauseJob], which is guarded in
+// the write, so a job that completed, failed or was canceled after the
+// handler's status read answers 409 instead of being overwritten.
 func (h *jobHandler) applyStatusChange(
 	w http.ResponseWriter,
 	r *http.Request,
@@ -709,12 +705,22 @@ func (h *jobHandler) applyStatusChange(
 	job store.Job,
 ) (store.Job, error) {
 	var err error
-	if action == "resume" {
+	switch action {
+	case "resume":
 		err = h.store.ResumeJob(r.Context(), id, time.Now().UTC())
-	} else {
-		err = h.store.UpdateJobStatus(r.Context(), id, newStatus)
+	case "pause":
+		err = h.store.PauseJob(r.Context(), id, time.Now().UTC())
 	}
-	if err != nil {
+	switch {
+	case errors.Is(err, store.ErrConflict):
+		// The job left pending/running between the handler's read and the
+		// guarded write (invariant I1).
+		writeProblem(w, r, http.StatusConflict, "job cannot be paused in its current state")
+		return job, err
+	case errors.Is(err, store.ErrNotFound):
+		writeProblem(w, r, http.StatusNotFound, "job not found")
+		return job, err
+	case err != nil:
 		h.logger.ErrorContext(
 			r.Context(), "jobs: patch status update failed",
 			slog.String("id", id),
@@ -764,8 +770,9 @@ func (h *jobHandler) cancelJob(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Fast-path: already canceled → idempotent 204; completed/failed → 409.
-	// This check also runs inside CancelJobStatus (atomic SQL guard), so a
-	// concurrent transition that races past here is still safe.
+	// The store's cancel applies the same guard to the job row inside its
+	// transaction, so a concurrent transition that races past here is still
+	// safe.
 	switch job.Status {
 	case store.JobStatusCanceled:
 		w.WriteHeader(http.StatusNoContent)
@@ -775,20 +782,23 @@ func (h *jobHandler) cancelJob(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// CancelJob handles task cancellation and NATS signal dispatch.
+	// CancelJob cancels the tasks, finalizes the steps and cancels the job row
+	// in one store transaction, then sends the workers their cancel signals.
 	if err = h.sched.CancelJob(ctx, id); err != nil {
 		h.logger.ErrorContext(ctx, "jobs: cancel scheduler failed", slog.String("id", id), slog.Any("error", err))
 		writeProblem(w, r, http.StatusInternalServerError, "failed to cancel job tasks")
 		return
 	}
 
-	// CancelJobStatus uses a conditional UPDATE (WHERE status NOT IN terminal
-	// states) so a concurrent scheduler transition that completed the job
-	// between the GetJob check above and this call is not overwritten.
+	// CancelJobStatus is now a confirmation: the job row was canceled above, so
+	// it returns nil for that job. Its conditional UPDATE (WHERE status NOT IN
+	// terminal states) still reports a job that a concurrent scheduler
+	// transition completed or failed between the GetJob check above and the
+	// cancel, which the cancel left as it was.
 	if err = h.store.CancelJobStatus(ctx, id); err != nil {
 		if errors.Is(err, store.ErrConflict) {
 			// Job reached a terminal state (completed/failed) concurrently.
-			// Tasks were already canceled above; treat as a conflict.
+			// Any task still open was canceled above; treat as a conflict.
 			writeProblem(w, r, http.StatusConflict, "job completed before cancellation could be applied")
 			return
 		}
@@ -1073,13 +1083,12 @@ func isSubmitValidationError(err error) bool {
 }
 
 // isSubmitDeadlineError reports whether err is the submission pipeline's
-// wall-clock backstop tripping (EXPR sub-project H1) rather than any verdict
-// about the template.
+// wall-clock backstop (openjd.expr_submission_deadline) tripping rather than
+// any verdict about the template.
 //
-// Matched STRUCTURALLY, on the exported sentinel, never by reading a message:
-// a budget breach and a deadline travel the same return path, and the whole
-// point of the sentinel is that the two are tellable apart without string
-// matching. The pipeline never wraps a deadline in a
+// Matched on the exported sentinel, never by reading a message: a budget
+// breach and a deadline travel the same return path, and the sentinel lets
+// the two be told apart without string matching. The pipeline never wraps a deadline in a
 // [openjd.SubmitValidationError], so this and [isSubmitValidationError] cannot
 // both be true.
 func isSubmitDeadlineError(err error) bool {
@@ -1087,7 +1096,7 @@ func isSubmitDeadlineError(err error) bool {
 }
 
 // exprDeadlineProblemDetail is the 503 body every route that walks a
-// client-supplied OpenJD TEMPLATE returns when the wall-clock backstop trips.
+// client-supplied OpenJD template returns when the wall-clock backstop trips.
 // It names the configuration key deliberately: nothing about the submitted body
 // is wrong, so the only actions available are retrying or asking the operator
 // to widen the budget. (The preset route sends its own wording because what the
@@ -1118,21 +1127,20 @@ func exprDeadlineAt(d time.Duration) time.Time {
 // applies unchanged.
 //
 // It is one function because the 503-vs-4xx split is a single contract shared by
-// every route that walks a client-supplied template, and four copies of it had
-// already begun to drift. Callers keep their own guard ordering: the deadline
-// must be tested BEFORE any validation branch, since a breach and a verdict
-// travel the same return path.
+// every route that walks a client-supplied template. Callers keep their own
+// guard ordering: the deadline must be tested before any validation branch,
+// since a breach and a verdict travel the same return path.
 //
-// 503, NEVER a 4xx. A 4xx says the body is wrong and retrying is pointless,
+// It is a 503, never a 4xx. A 4xx says the body is wrong and retrying is pointless,
 // while this says the server gave up on a body that might be perfectly valid —
 // the same bytes would validate on an idle host. Reporting a load-dependent
 // outcome as the caller's fault would make acceptance depend on machine load,
 // which no client can reason about or retry sensibly.
 //
-// WARN, NOT ERROR. Nothing is broken: the server met a bound it was configured
-// to meet, on a request the client is explicitly told to retry. Error is also
-// the wrong level for a CLIENT-PROVOKABLE, LOAD-DEPENDENT event on an anonymous
-// path — every occurrence takes a slot in the bounded diagnostics ring buffer
+// It logs at warn, not error. Nothing is broken: the server met a bound it was
+// configured to meet, on a request the client is explicitly told to retry.
+// Error is also the wrong level for a client-provokable, load-dependent event
+// on an anonymous path — every occurrence takes a slot in the bounded diagnostics ring buffer
 // (internal/diag), so a run of deadlines would evict the genuine server errors
 // an operator opened that buffer to find. The scheduler's protocol-version gate
 // logs repeating heartbeat mismatches at debug for exactly this reason; see
@@ -1141,8 +1149,7 @@ func exprDeadlineAt(d time.Duration) time.Time {
 //
 // logMsg names the route, detail is the client-facing body (see
 // [exprDeadlineProblemDetail]), and extra carries any route-specific log
-// attributes — logged ahead of the deadline and the error, so each call site
-// keeps the attribute order it had.
+// attributes, logged ahead of the deadline and the error.
 func writeExprDeadlineProblem(
 	w http.ResponseWriter, r *http.Request, logger *slog.Logger,
 	err error, logMsg, detail string, deadline time.Duration, extra ...any,

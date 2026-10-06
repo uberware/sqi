@@ -69,7 +69,7 @@ func (c Code) String() string {
 // Because Params is a slice, Type is NOT comparable — "==" on two Types is a
 // compile error and a struct containing a Type cannot be a Go map key. Use
 // Equal. That single fact is why operator dispatch is a list of shapes
-// (shape.go) rather than the map keyed on kinds that sub-project A used.
+// (shape.go) rather than a map keyed on kinds.
 //
 // Construct Types through the constructors below rather than as literals: they
 // normalize, and everything downstream relies on structural equality being
@@ -462,15 +462,11 @@ func checkListElem(elem Type) error {
 // carrying something other than exactly one constraint.
 //
 // This and unwrapUnresolved below are the ONE definition of "look through an
-// unresolved wrapper". The test was hand-inlined as
-// "t.Code == CodeUnresolved && len(t.Params) == 1" in a dozen places across
-// coercion, shape matching, the list code and this file, while
-// unwrapUnresolved already existed in list.go and was used elsewhere — two
-// spellings of one rule, which is one more than can stay in step. Both live
-// here now rather than in list.go, because the rule is a property of Type and
-// every part of the package asks it.
+// unresolved wrapper"; do not hand-inline
+// "t.Code == CodeUnresolved && len(t.Params) == 1". Both live here because the
+// rule is a property of Type and every part of the package asks it.
 //
-// The length check is not decoration, which is why the guard form stays a
+// The length check matters, which is why the guard form stays a
 // function of its own rather than being folded away: UnresolvedOf normalizes
 // to exactly one parameter, so a Type failing it was hand-built and is
 // malformed, and every call site deliberately declines to look through such a

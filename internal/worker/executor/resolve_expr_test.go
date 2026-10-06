@@ -14,8 +14,8 @@ import (
 )
 
 // TestExecutor_Dispatch_BaseSpec_ExpressionSyntaxStaysMalformed proves the
-// pre-EXPR (base-spec) resolution path in resolveAssignment is byte-for-byte
-// unchanged by EXPR sub-project E4a's Task 6 wiring: msg.EXPR is unset (the
+// base-spec resolution path in resolveAssignment is not routed through the
+// EXPR evaluator: msg.EXPR is unset (the
 // zero value, false), and the {{...}} reference below is not a valid dotted
 // OpenJD identifier -- it is only meaningful as an EXPR expression. Plain
 // substitution (fmtstring.Resolve) rejects it as a malformed reference before
@@ -107,8 +107,8 @@ func TestExecutor_Dispatch_EXPR_ResolvesExpressionInArgs(t *testing.T) {
 // call, reusing the same symbol table for both the OnRun action and the step
 // embedded file -- not once per resolution. ApplyTaskLet's own doc comment
 // warns that calling it a second time over the same table makes every
-// binding fail the shadow check ("doubled" already present as a key); had
-// Task 6 wired ApplyTaskLet before EACH resolution instead of once before
+// binding fail the shadow check ("doubled" already present as a key); were
+// ApplyTaskLet called before EACH resolution instead of once before
 // both, the second call here would return a shadow error and the task would
 // fail pre-execution instead of succeeding with the expected output.
 func TestExecutor_Dispatch_EXPR_LetBindingAppliedOnceSharedByActionAndFile(t *testing.T) {
@@ -154,16 +154,16 @@ func TestExecutor_Dispatch_EXPR_LetBindingAppliedOnceSharedByActionAndFile(t *te
 	}
 }
 
-// TestExecutor_Dispatch_EXPR_ConfiguredLimitsReachSymbolBuilding is E4d Task
-// 2's end-to-end wiring proof for the ONE phase-3 evaluation that is not a
+// TestExecutor_Dispatch_EXPR_ConfiguredLimitsReachSymbolBuilding is the
+// end-to-end wiring proof for the ONE phase-3 evaluation that is not a
 // format-string resolution: the apply_path_mapping call fmtres.TaskSymbols
 // makes for every PATH-declared parameter.
 //
 // It is here rather than in fmtres because the defect it catches is an
-// ORDERING one that only this file can have: resolveAssignmentExpr built the
-// symbol table BEFORE obtaining sess.ExprBudget(), so the table's evaluation
-// silently used the compiled-in defaults on a host configured otherwise --
-// with every fmtres-level test green. Moving the TaskSymbols call back above
+// ORDERING one that only this file can have: if resolveAssignmentExpr built
+// the symbol table BEFORE obtaining sess.ExprBudget(), the table's evaluation
+// would use the compiled-in defaults on a host configured otherwise --
+// with every fmtres-level test green. Moving the TaskSymbols call above
 // `budget := sess.ExprBudget()` (or dropping the budget argument) must turn
 // this red.
 //

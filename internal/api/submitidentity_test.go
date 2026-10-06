@@ -225,13 +225,12 @@ func TestBindSubmitIdentitySelfOwnerSkipsLookup(t *testing.T) {
 	}
 }
 
-// TestBindSubmitIdentityCanonicalizesOwnerCasing is the regression test for
-// M-1: a submit-as override must persist the stored user's canonical casing,
-// not whatever casing the client supplied, exactly like the self path already
-// does. ownerLookup discarding the looked-up User and returning only nil/err
-// let a case variant (e.g. "ALICE" for a user stored as "alice") through
-// verbatim, which internal/config/config.go's ValidateJobOwner doc says must
-// not happen: Job.Owner is meant to be a trustworthy key for owner-scoped
+// TestBindSubmitIdentityCanonicalizesOwnerCasing pins that a submit-as
+// override persists the stored user's canonical casing, not whatever casing
+// the client supplied, exactly like the self path does. An ownerLookup that
+// discarded the looked-up User and returned only nil/err would let a case
+// variant (e.g. "ALICE" for a user stored as "alice") through verbatim, which
+// internal/config/config.go's ValidateJobOwner doc says must not happen: Job.Owner is meant to be a trustworthy key for owner-scoped
 // visibility, and a case variant splits one user across two owner buckets —
 // hiding the job from its real owner on any owner-filtered listing.
 func TestBindSubmitIdentityCanonicalizesOwnerCasing(t *testing.T) {
@@ -303,12 +302,12 @@ func TestSubmitJobOperatorSubmitAsCanonicalizesOwnerCasing(t *testing.T) {
 	}
 }
 
-// Hardening (raised against Task 5): the auth-off passthrough must be keyed
-// on the principal actually being the anonymous/auth-off identity, never on
-// an empty Username. An authenticated (non-anonymous) principal with no
-// Username is a latent possibility (a future LDAP/OIDC authenticator, or
-// auth.KindService) and must still be run through the jobs.submit_as check
-// rather than silently bypassing it via the old `p.Username == ""` proxy.
+// The auth-off passthrough must be keyed on the principal actually being the
+// anonymous/auth-off identity, never on an empty Username. An authenticated
+// (non-anonymous) principal with no Username is a latent possibility (a
+// future LDAP/OIDC authenticator, or auth.KindService) and must still be run
+// through the jobs.submit_as check rather than bypassing it through a
+// `p.Username == ""` test.
 func TestBindSubmitIdentityAuthenticatedEmptyUsernameStillEnforcesSubmitAs(t *testing.T) {
 	ctx := auth.NewContext(context.Background(), auth.Principal{
 		Kind: auth.KindUser, Roles: []string{"user"}, // no jobs.submit_as

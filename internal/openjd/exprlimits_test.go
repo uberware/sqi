@@ -20,12 +20,11 @@ import (
 	"github.com/uberware/sqi/internal/store/fake"
 )
 
-// EXPR sub-project E4d, Task 1: the four numbers that bound the server-side
-// expression checker became operator configuration. These tests exist to catch
-// the two failure modes that configuration introduces and that no existing
-// test can see:
+// The four numbers that bound the server-side expression checker are operator
+// configuration (ExprLimits). These tests catch the two failure modes that
+// configuration introduces:
 //
-//  1. A DEFAULT that drifts from the constant it replaced, silently changing
+//  1. A DEFAULT that drifts from its established value, silently changing
 //     what a fresh install accepts.
 //  2. A knob that is READ but NOT USED -- parsed out of YAML, stored in a
 //     struct, and never consulted by the code that enforces the bound. That is
@@ -35,11 +34,11 @@ import (
 
 // ── defaults ────────────────────────────────────────────────────────────────
 
-// TestExprLimits_DefaultsMatchPreE4dConstants pins each default to the literal
-// value this package hard-coded before E4d. Deliberately written as literals
-// rather than as the constants themselves: comparing defaultTemplatePositions
-// to defaultTemplatePositions would pass no matter what either became.
-func TestExprLimits_DefaultsMatchPreE4dConstants(t *testing.T) {
+// TestExprLimits_DefaultsMatchLiteralValues pins each default to its
+// established literal value. Deliberately written as literals rather than as
+// the constants themselves: comparing defaultTemplatePositions to
+// defaultTemplatePositions would pass no matter what either became.
+func TestExprLimits_DefaultsMatchLiteralValues(t *testing.T) {
 	got := DefaultExprLimits()
 	tests := []struct {
 		name string
@@ -54,8 +53,8 @@ func TestExprLimits_DefaultsMatchPreE4dConstants(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			if tc.got != tc.want {
-				t.Errorf("DefaultExprLimits().%s = %d, want %d -- the pre-E4d constant. "+
-					"A fresh install must behave exactly as every release before E4d did.",
+				t.Errorf("DefaultExprLimits().%s = %d, want %d -- the established default. "+
+					"A fresh install's limits must not drift.",
 					tc.name, tc.got, tc.want)
 			}
 		})
@@ -136,17 +135,16 @@ func TestExprLimits_OrDefaults(t *testing.T) {
 // SHAPE (how many format-string-bearing fields it has and what they
 // evaluate), not of which extension it declares.
 //
-// HOW IT ASSERTS, and why it changed in fix round 1: the first version looked
-// for the string "template-wide expression budget exceeded", which only two of
-// the four dimensions ever produce. A per-EVALUATION trip under the floors
-// reports "operation limit exceeded" / "memory limit exceeded" instead and was
-// silently ignored, so MinExprSubmissionOperations and
-// MinExprSubmissionMemoryBytes were asserted by nothing -- a future preset
-// gaining a comprehension or a case mapping would have been rejected by sqi's
-// own floor with this test green. It now matches NO message at all. It
-// compares the error set produced under the floors against the error set
-// produced under the DEFAULTS: any error the floors introduce is a floor-induced
-// rejection, whichever dimension caused it. The presets do produce a couple of
+// HOW IT ASSERTS: it matches NO message at all. Matching the string
+// "template-wide expression budget exceeded" would see only two of the four
+// dimensions: a per-EVALUATION trip under the floors reports "operation limit
+// exceeded" / "memory limit exceeded" instead, so MinExprSubmissionOperations
+// and MinExprSubmissionMemoryBytes would be asserted by nothing -- a preset
+// gaining a comprehension or a case mapping could be rejected by sqi's own
+// floor with this test green. Instead it compares the error set produced
+// under the floors against the error set produced under the DEFAULTS: any
+// error the floors introduce is a floor-induced rejection, whichever
+// dimension caused it. The presets do produce a couple of
 // unrelated errors of their own (a TASK_CHUNKING range_expr property access
 // that EXPR's checker does not accept), which is exactly why the baseline is a
 // diff rather than "expect zero errors".
@@ -556,15 +554,9 @@ func TestExprLimits_KnobsAreIndependent(t *testing.T) {
 
 // TestValidateWithOptions_ExprLimitsReachTheWalk closes the gap between "the
 // budget observes the limit" (every test above) and "the limit an OPERATOR set
-// reaches the budget". ValidateWithOptions is the carrier this task chose --
-// see the task report -- and this is the test that fails if it stops threading
-// the value through.
-//
-// It used to need ValidateOptions.CheckEXPRExpressionsWhileUnsupported to force
-// the walk on, because EXPR was StatusInProgress and without the override the
-// walk did not run at all -- so the test would have passed on a completely
-// unwired knob. Sub-project H2 made EXPR StatusSupported, so this now drives
-// the same production path an operator's configuration reaches.
+// reaches the budget". ValidateWithOptions is the carrier, and this is the
+// test that fails if it stops threading the value through. It drives the
+// same production path an operator's configuration reaches.
 func TestValidateWithOptions_ExprLimitsReachTheWalk(t *testing.T) {
 	const args = 300
 	const cost = args + 2
@@ -576,7 +568,7 @@ func TestValidateWithOptions_ExprLimitsReachTheWalk(t *testing.T) {
 		limits ExprLimits
 		reject bool
 	}{
-		{"zero value behaves as the pre-E4d default", ExprLimits{}, false},
+		{"zero value behaves as the default", ExprLimits{}, false},
 		{"explicit default", DefaultExprLimits(), false},
 		{"tightened below the template's cost", ExprLimits{TemplatePositions: cost - 1}, true},
 	}
@@ -598,18 +590,11 @@ func TestValidateWithOptions_ExprLimitsReachTheWalk(t *testing.T) {
 // TestSubmit_ExprLimitsAreEnforcedThroughTheSubmitter is the submit
 // pipeline's carrier test, end to end through the real [Submitter.Submit].
 //
-// FIX ROUND 1 REPLACED A MUCH WEAKER TEST HERE, and the mistake is worth
-// recording because this very file's sibling (submit_exprcheck_test.go) warns
-// against it in its own header. The first version asserted only that
-// NewSubmitterWithOptions stored the struct and that newTemplateBudget
-// normalized it; it never called prepareTemplate, so reverting either budget
-// in submit.go to newTemplateBudget(ExprLimits{}) -- or dropping ExprLimits
-// from the phase-1 ValidateOptions -- left it green. The report described it
-// as pinning something it did not pin. It also claimed a real end-to-end test
-// was impossible while EXPR was StatusInProgress; that was false even then --
-// TestSubmit_PhaseDistinction_ThroughRealSubmit had already shown the way, by
-// temporarily flipping the registry entry to StatusSupported. Sub-project H2
-// flipped it for real, so no test in this file flips anything any more.
+// It must go through prepareTemplate: a test that only checks that
+// NewSubmitterWithOptions stores the struct and that newTemplateBudget
+// normalizes it stays green when either budget in submit.go is reverted to
+// newTemplateBudget(ExprLimits{}), or when ExprLimits is dropped from the
+// phase-1 ValidateOptions.
 //
 // The three wiring points and what covers each:
 //
@@ -625,8 +610,8 @@ func TestValidateWithOptions_ExprLimitsReachTheWalk(t *testing.T) {
 //     placeholder costs almost nothing at phase 1, while the same expression
 //     over a CONCRETE 300,000-byte value costs 300,064 live bytes at phase 2
 //     (measured -- the meter does not hold the bound value and the .upper()
-//     copy simultaneously, so it is not the doubling an earlier draft of this
-//     comment assumed). Tightened to 200,000, phase 1 passes and phase 2
+//     copy simultaneously, so the cost is not doubled). Tightened to 200,000,
+//     phase 1 passes and phase 2
 //     rejects -- so only the phase-2 budget can be what refused it.
 //   - The RESOLVER budget (prepareTemplate's resolverBudget): the
 //     "resolver budget carries them" sub-test, which calls prepareTemplate
@@ -680,7 +665,7 @@ steps:
 
 	t.Run("defaults accept it", func(t *testing.T) {
 		if err := submitWith(t, ExprLimits{}, bigParam); err != nil {
-			t.Fatalf("the pre-E4d defaults must accept this submission: %v", err)
+			t.Fatalf("the defaults must accept this submission: %v", err)
 		}
 	})
 

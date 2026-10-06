@@ -16,7 +16,7 @@ import (
 // errors".
 var errGroupReference = errors.New("group references in a replacement string are not supported")
 
-// reFuncs is sub-project C3's regular-expression group.
+// reFuncs is RFC 0006's regular-expression group.
 //
 // Every pattern goes through translatePattern (repattern.go) before it reaches
 // Go's engine. That is not a convenience: Go's regexp is neither Python's re
@@ -30,18 +30,17 @@ var errGroupReference = errors.New("group references in a replacement string are
 // (ops.go) around the whole call, so a cached compile costs exactly what an
 // uncached one costs.
 //
-// COST (sub-project E1, Task 8): section 1.3.10 rule 3 names "regex functions"
-// outright, so every row here declares Cost{ArgBytes: []int{0}} on the SUBJECT
-// string (the value being matched against), never the pattern or the
-// replacement/repl text — confirmed against the reference by holding the
-// subject fixed and growing the pattern (re_match, unaffected) and by holding
-// the pattern fixed and growing repl (re_sub, unaffected): only the subject's
-// length moves the count. re_findall and re_split each produce a LIST, and
-// their own probe (varying subject length at a FIXED match/split density, so
-// element count and byte count diverge) shows ArgBytes-on-the-subject alone
-// already accounts for the total — no additional ResultElements charge is
-// present in the reference for either. See cost_misc_internal_test.go's PROBE
-// comment for the transcribed measurements.
+// COST: section 1.3.10 rule 3 names "regex functions" outright, so every row
+// here declares Cost{ArgBytes: []int{0}} on the SUBJECT string (the value being
+// matched against), never the pattern or the replacement/repl text — confirmed
+// against the reference by holding the subject fixed and growing the pattern
+// (re_match, unaffected) and by holding the pattern fixed and growing repl
+// (re_sub, unaffected): only the subject's length moves the count. re_findall
+// and re_split each produce a LIST, and their own probe (varying subject length
+// at a FIXED match/split density, so element count and byte count diverge)
+// shows ArgBytes-on-the-subject alone already accounts for the total — no
+// additional ResultElements charge is present in the reference for either. See
+// cost_misc_internal_test.go's PROBE comment for the transcribed measurements.
 var reFuncs = map[string][]Shape{
 	// re_match and re_search differ only in anchoring. Both return the full
 	// match at index 0 followed by the capture groups, or null.
@@ -107,7 +106,7 @@ var reFuncs = map[string][]Shape{
 // character class. re_escape('a-z') fed back into a class, "[" + ... + "]",
 // must produce a class holding the three literal characters 'a', '-' and
 // 'z', not the RANGE a-z — measured: re_search('b', '[' + re_escape('a-z') +
-// ']') must not match, and with regexp.QuoteMeta's escaping it did.
+// ']') must not match, and with regexp.QuoteMeta's escaping it does.
 const pySpecialChars = "()[]{}?*+-|^$\\.&~# \t\n\r\v\f"
 
 // reEscape is RFC 0006's re_escape: "escape regex metacharacters for literal
@@ -127,14 +126,13 @@ func reEscape(s string) string {
 	return b.String()
 }
 
-// reSplitUnlimited is what the two-argument re_split shape (no maxsplit
-// given) passes for "unlimited splits". It has to be a sentinel distinct
-// from every maxsplit a template can actually pass: RFC 0006 says "at most
-// maxsplit times", and a NEGATIVE maxsplit now means Python's re.split rule
-// — no split at all, not unlimited — so -1 can no longer double as the
-// unlimited marker the way it used to before that ruling. math.MaxInt64 is
-// never clamped down to by any real string length, so it always takes the
-// "no explicit limit" path in reSplit below.
+// reSplitUnlimited is what the two-argument re_split shape (no maxsplit given)
+// passes for "unlimited splits". It has to be a sentinel distinct from every
+// maxsplit a template can actually pass: RFC 0006 says "at most maxsplit
+// times", and a NEGATIVE maxsplit means Python's re.split rule — no split at
+// all, not unlimited — so -1 cannot double as the unlimited marker.
+// math.MaxInt64 is never clamped down to by any real string length, so it
+// always takes the "no explicit limit" path in reSplit below.
 const reSplitUnlimited int64 = math.MaxInt64
 
 // compilePattern translates and compiles, so no caller ever hands Go a raw
@@ -314,7 +312,7 @@ func isDigitByte(b byte) bool { return b >= '0' && b <= '9' }
 // means NO split at all.
 //
 // This deliberately DIFFERS FROM — do not "fix" one to match the other —
-// C2's split()/rsplit() (funcsstrfind.go), where a negative maxsplit DOES
+// split()/rsplit() (funcsstrsplit.go), where a negative maxsplit DOES
 // mean unlimited. That is correct there because those functions follow
 // str.split's own convention, a different Python method with a different
 // rule for the same-shaped argument. The reference discards the string

@@ -75,8 +75,8 @@ func cjkIdeographByName(name string) (rune, bool) {
 	}
 	// The range check runs on v, before the conversion to rune, so a name
 	// encoding a value near the uint32 ceiling cannot wrap around int32 and
-	// slip past the check (see writeHexEscape in lexer.go for the same
-	// ordering and the bug it repairs).
+	// slip past the check (writeHexEscape in lexer.go uses the same
+	// ordering).
 	r := rune(v)
 	if !strings.HasPrefix(runenames.Name(r), "<CJK") {
 		return 0, false

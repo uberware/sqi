@@ -8,27 +8,32 @@ package scheduler
 // This file implements the task-status consumer — the counterpart of the
 // worker-register and worker-heartbeat consumers already in scheduler.go.
 // When a worker publishes a protocol.TaskStatusMsg to task.status.<worker>.<job>,
-// handleTaskStatusMessage updates the store, closes the attempt record,
-// releases usage pool slots, and drives step/job completion logic.
+// handleTaskStatusMessage updates the store (closing the attempt record,
+// releasing usage pool slots and moving the task in one write), and drives
+// step/job completion logic.
 //
 // Flow for each TaskStatusMsg:
 //
 //  1. Decode protocol.TaskStatusMsg.
 //  2. Load the task attempt from the store to verify AttemptID.
-//  3. For "running": update task status and record session ID on the attempt.
+//  3. For "running": in one store write (StartTaskAttempt), move the task to
+//     running and record the session ID on the attempt, only while the
+//     reporting attempt is still the task's live one.
 //  4. For terminal states (succeeded/failed/canceled):
-//     a. Close the attempt (EndedAt, Status, ExitCode).
-//     b. Transition the task to the matching terminal status.
-//     c. Release any held usage pool slots.
-//     d. Check whether the enclosing step is now complete.
-//     e. If the step completed successfully, call ResolveDependencies to
+//     a. In one store write (CompleteTaskAttempt): close the attempt (EndedAt,
+//        Status, ExitCode), release any held usage pool slots, and transition
+//        the task to the matching terminal status. The close and the release
+//        commit even when the task transition is refused, which it also is
+//        when a newer lease has superseded the reporting attempt.
+//     b. Check whether the enclosing step is now complete.
+//     c. If the step completed successfully, call ResolveDependencies to
 //        unblock downstream steps.
-//     f. Check whether the enclosing job is now complete.
+//     d. Check whether the enclosing job is now complete.
 //
-// Step and job completion checks use simple list scans over the step's tasks
-// and the job's steps.  This is acceptable for Phase 1 workloads; large jobs
-// with many thousands of tasks per step would benefit from a counter-based
-// approach added as a schema migration.
+// Step and job completion are decided inside the store (FinalizeStep and
+// FinalizeJob, invariant I4), computed from the child rows in the same
+// statement that writes the status, so they have no page limit and cannot be
+// outrun by a concurrent retry.
 
 import (
 	"context"
@@ -214,27 +219,24 @@ func (s *Scheduler) processTaskStatus(ctx context.Context, subjectWorkerID strin
 	}
 }
 
-// handleTaskRunning handles a "running" TaskStatusMsg: updates the task row to
-// [store.TaskStatusRunning] and records the OpenJD session ID on the attempt.
+// handleTaskRunning applies a "running" report through
+// [store.TaskStore.StartTaskAttempt], which moves the task and records the
+// session ID only while the report's attempt is still the live one.
 func (s *Scheduler) handleTaskRunning(ctx context.Context, attempt store.TaskAttempt, m protocol.TaskStatusMsg) error {
-	// Update task status to running.
-	if err := s.store.UpdateTaskStatus(ctx, m.TaskID, store.TaskStatusRunning); err != nil {
+	started, err := s.store.StartTaskAttempt(ctx, attempt.ID, m.TaskID, m.SessionID, time.Now().UTC())
+	if err != nil {
 		return err
 	}
-
-	// Record the session ID on the attempt (COALESCE-safe: ignored if empty).
-	if m.SessionID != "" {
-		updated := attempt
-		updated.SessionID = m.SessionID
-		if _, err := s.store.UpdateTaskAttempt(ctx, updated); err != nil {
-			// Non-fatal: the task is running; losing the session ID is a minor
-			// attribution issue, not a correctness problem.
-			s.logger.WarnContext(
-				ctx, "scheduler: update attempt session_id failed",
-				slog.String("attempt_id", attempt.ID),
-				slog.Any("error", err),
-			)
-		}
+	if !started {
+		// A stale report: its attempt was closed (reaped, reclaimed, canceled)
+		// or superseded by a newer lease. Redelivery cannot make it current, so
+		// it is acked and nothing is emitted.
+		s.logger.InfoContext(
+			ctx, "scheduler: stale running report — discarding",
+			slog.String("task_id", m.TaskID),
+			slog.String("attempt_id", m.AttemptID),
+		)
+		return nil
 	}
 
 	s.logger.InfoContext(
@@ -257,49 +259,50 @@ func (s *Scheduler) handleTaskRunning(ctx context.Context, attempt store.TaskAtt
 		})
 
 		// Promote the enclosing job to running on its first running task. This
-		// stamps the job's StartedAt via the store's COALESCE-on-running logic;
-		// without it the job would stay pending and never record a start time.
+		// stamps the job's StartedAt in the store's guarded promotion; without it
+		// the job would stay pending and never record a start time.
 		s.maybePromoteJobRunning(ctx, task.JobID)
 	}
 	return nil
 }
 
-// maybePromoteJobRunning transitions a job from pending to running, which the
-// store uses to stamp StartedAt. It is a no-op for any non-pending status so a
-// late task report cannot un-pause a paused job or revive a terminal one.
-// Best-effort: failures are logged, not propagated, since the task itself has
+// maybePromoteJobRunning moves a pending job to running on its first running
+// task, which stamps StartedAt. store.PromoteJobRunning is guarded on pending
+// (invariant I1), so a late report can never un-pause or revive a job.
+// Best-effort: a failure is logged, not propagated, since the task itself has
 // already been recorded running and a subsequent running report will retry.
 func (s *Scheduler) maybePromoteJobRunning(ctx context.Context, jobID string) {
-	job, err := s.store.GetJob(ctx, jobID)
+	now := time.Now().UTC()
+	promoted, err := s.store.PromoteJobRunning(ctx, jobID, now)
 	if err != nil {
 		s.logger.WarnContext(
-			ctx, "scheduler: promote job running: get job failed",
+			ctx, "scheduler: promote job running failed",
 			slog.String("job_id", jobID),
 			slog.Any("error", err),
 		)
 		return
 	}
-	if job.Status != store.JobStatusPending {
-		return
-	}
-	if err := s.store.UpdateJobStatus(ctx, jobID, store.JobStatusRunning); err != nil {
-		s.logger.WarnContext(
-			ctx, "scheduler: promote job running: update status failed",
-			slog.String("job_id", jobID),
-			slog.Any("error", err),
-		)
+	if !promoted {
 		return
 	}
 	s.notifier.NotifyJob(ws.JobEvent{
 		JobID:     jobID,
 		Status:    string(store.JobStatusRunning),
-		UpdatedAt: time.Now().UTC(),
+		UpdatedAt: now,
 	})
 }
 
 // handleTaskTerminal handles a terminal TaskStatusMsg (succeeded/failed/canceled):
-// closes the attempt, updates the task, releases usage slots, and checks step/job
-// completion.
+// closes the attempt, releases its usage slots and moves the task in one store
+// write ([store.TaskStore.CompleteTaskAttempt]), then checks step/job completion.
+//
+// A report the store refuses (CompleteTaskAttempt's in-flight guard moves the
+// task only from assigned or running, so it refuses a task that already
+// reached a different terminal status or went back to ready or pending
+// through a reap, an offline reclaim or a retry; or the report's attempt is
+// no longer the task's latest because a new lease superseded it) still closes
+// the attempt and frees its slots; it returns [store.ErrInvalidTransition] so
+// the consumer acks it.
 func (s *Scheduler) handleTaskTerminal(
 	ctx context.Context,
 	attempt store.TaskAttempt,
@@ -308,59 +311,55 @@ func (s *Scheduler) handleTaskTerminal(
 	attemptStatus store.AttemptStatus,
 	at time.Time,
 ) error {
-	// ── Close the attempt record ──────────────────────────────────────────
-	// Skipped for failed: that path only arrives here via handleTaskFailed,
-	// whose RecordTaskFailure already closed the attempt (same status, end
-	// time, exit code, session, and message) inside its transaction.
-	if attemptStatus != store.AttemptStatusFailed {
-		updated := attempt
-		updated.Status = attemptStatus
-		updated.SessionID = m.SessionID // empty = no-change via COALESCE in SQL
-		updated.EndedAt = &at
-		updated.Message = m.Message
-		if m.ExitCode != nil {
-			code := *m.ExitCode
-			updated.ExitCode = &code
-		}
-		if _, err := s.store.UpdateTaskAttempt(ctx, updated); err != nil {
-			return err
-		}
+	// ── Attempt, claims and task in one write (invariant I3) ──────────────
+	// The attempt close is a guarded no-op on the failed path, whose
+	// RecordTaskFailure already closed it; the claim release is unconditional, and
+	// so is its commit: a refused task transition (below) still frees the slot.
+	var reason string
+	if taskStatus == store.TaskStatusFailed || taskStatus == store.TaskStatusCanceled {
+		// An empty synthesized reason (worker "canceled" echoes always carry an
+		// empty Message, see internal/worker/executor/run.go) is not stamped, so it
+		// can never overwrite a server-set reason such as CancelTask/CancelJob's
+		// "canceled by user" or the cascade's "canceled: upstream step failed".
+		reason = failureReasonOrFallback(m.Message, m.ExitCode, taskStatus)
+	}
+	res, err := s.store.CompleteTaskAttempt(ctx, store.AttemptCompletion{
+		AttemptID: attempt.ID, TaskID: m.TaskID, TaskStatus: taskStatus, AttemptStatus: attemptStatus,
+		ExitCode: m.ExitCode, SessionID: m.SessionID, Message: m.Message, FailureReason: reason, EndedAt: at,
+	})
+	if err != nil {
+		return err
 	}
 	// The attempt is now terminal (closed above, or already closed by
-	// RecordTaskFailure for the failed path), so no further log chunks will
-	// be produced for it and its cached ownership entry is no longer needed.
+	// RecordTaskFailure for the failed path), so no further log chunks will be
+	// produced for it and its cached ownership entry is no longer needed.
 	// SQI_LOGS and SQI_STATUS are separate streams, so a chunk published just
-	// before this status can still be consumed after it — that is harmless,
-	// since a cache miss falls back to the store and re-reads correctly.
+	// before this status can still be consumed after it; that is harmless, since
+	// a cache miss falls back to the store and re-reads correctly.
 	s.attemptCache.evict(attempt.ID)
 
-	// ── Transition the task ───────────────────────────────────────────────
-	if err := s.store.UpdateTaskStatus(ctx, m.TaskID, taskStatus); err != nil {
+	// Fetch the task to get its StepID and JobID.
+	task, err := s.store.GetTask(ctx, m.TaskID)
+	if err != nil {
 		return err
 	}
 
-	// ── Durable per-task failure reason for terminal non-success ─────────
-	// An empty synthesized reason (worker "canceled" echoes always carry an
-	// empty Message — see internal/worker/executor/run.go) must never
-	// overwrite an existing, server-set reason (e.g. CancelTask/CancelJob's
-	// "canceled by user" or the cascade's "canceled: upstream step failed").
-	if taskStatus == store.TaskStatusFailed || taskStatus == store.TaskStatusCanceled {
-		if reason := failureReasonOrFallback(m.Message, m.ExitCode, taskStatus); reason != "" {
-			if err := s.store.SetTaskFailureReason(ctx, m.TaskID, reason); err != nil {
-				return err
-			}
-		}
-	}
+	// Wake any parked lease waiters: the attempt's usage claims were released
+	// whether or not the task moved, and a completed task frees the worker's
+	// cores, so pending tasks may now fit.
+	s.notifyQueueForJob(ctx, task.JobID)
 
-	// ── Release usage pool slots ──────────────────────────────────────────
-	if err := s.ReleaseTaskUsage(ctx, attempt.ID); err != nil {
-		// Non-fatal: a leaked slot is recovered by the next usage count
-		// check, and the job is not blocked.
-		s.logger.WarnContext(
-			ctx, "scheduler: release task usage claims failed",
-			slog.String("attempt_id", attempt.ID),
-			slog.Any("error", err),
-		)
+	if res.Rejected {
+		// The task no longer holds a status this report can move it from, so
+		// CompleteTaskAttempt's in-flight guard (assigned or running only)
+		// refused it: it reached a different terminal status (a cancel), or it
+		// went back to ready or pending (a reap, an offline reclaim, or a retry
+		// that raced this report). Or the report is a late one from an attempt a
+		// newer lease superseded, which must not end that lease. The claims were released
+		// above, so nothing leaks. Returned as ErrInvalidTransition so the consumer
+		// acks the message instead of redelivering a report that can never
+		// become legal.
+		return fmt.Errorf("scheduler: task %s: %w", m.TaskID, store.ErrInvalidTransition)
 	}
 
 	s.logger.InfoContext(
@@ -369,17 +368,6 @@ func (s *Scheduler) handleTaskTerminal(
 		slog.String("status", m.Status),
 		slog.String("attempt_id", m.AttemptID),
 	)
-
-	// ── Step / job completion ─────────────────────────────────────────────
-	// Fetch the task to get its StepID and JobID.
-	task, err := s.store.GetTask(ctx, m.TaskID)
-	if err != nil {
-		return err
-	}
-
-	// Wake any parked lease waiters: a completed task frees the worker's cores
-	// so pending tasks may now fit.
-	s.notifyQueueForJob(ctx, task.JobID)
 
 	// Notify WebSocket hub of the terminal status change.
 	s.notifier.NotifyTask(ws.TaskEvent{
@@ -395,8 +383,10 @@ func (s *Scheduler) handleTaskTerminal(
 }
 
 // failureReasonOrFallback returns m.Message, or a synthesized fallback so a
-// terminal non-success is never blank. Canceled with no message stays blank
-// (server-originated cancels set their own reason via SetTaskFailureReason).
+// terminal non-success is never blank. Canceled with no message stays blank:
+// a server-originated cancel stamps its own reason, only on a task with none
+// yet, inside the store write that cancels the task (CancelJobExecution,
+// CancelTaskExecution, CancelPendingStep or CancelBlockedJob).
 func failureReasonOrFallback(msg string, exitCode *int, status store.TaskStatus) string {
 	if msg != "" {
 		return msg
@@ -412,87 +402,32 @@ func failureReasonOrFallback(msg string, exitCode *int, status store.TaskStatus)
 
 // ── Step and job completion ───────────────────────────────────────────────────
 
-// checkStepCompletion inspects the task statuses of all tasks in the step.
-// If every task has reached a terminal state it transitions the step and then
-// calls [checkJobCompletion].  If all tasks succeeded it also calls
-// [openjd.ResolveDependencies] to unblock any downstream steps.
+// checkStepCompletion finalizes the step when every task is terminal
+// (store.FinalizeStep computes the outcome inside the write, invariant I4, with
+// no page limit), then propagates dependencies and finalizes the job.
 //
-// For Phase 1 workloads (steps with up to a few thousand tasks) a single
-// [store.MaxLimit] page is sufficient. Steps with more than [store.MaxLimit]
-// tasks would need multiple pages — that path is left as a TODO since it is
-// not expected to be exercised in Phase 1.
+// Propagation runs whenever the step is terminal, not only when this call
+// wrote it: a redelivered completion whose first delivery finalized the step
+// and then died must still release or cancel dependents. Every step involved
+// is idempotent.
 func (s *Scheduler) checkStepCompletion(ctx context.Context, stepID, jobID string) error {
-	page, err := s.store.ListTasks(ctx, store.ListTasksOptions{
-		StepID: stepID,
-		Pagination: store.Pagination{
-			Limit: store.MaxLimit,
-		},
-	})
+	status, changed, err := s.store.FinalizeStep(ctx, stepID, time.Now().UTC())
 	if err != nil {
 		return err
 	}
-
-	// Guard against silent truncation: if the step has more tasks than a single
-	// MaxLimit page can return, the completion check would only see the first
-	// MaxLimit tasks and might incorrectly mark a step complete while others are
-	// still pending.  Return an error rather than silently computing a wrong result.
-	if page.Total > store.MaxLimit {
-		s.logger.WarnContext(
-			ctx, "scheduler: checkStepCompletion: step exceeds MaxLimit — skipping to avoid incorrect completion",
+	if status == "" {
+		return nil // a task is still in flight
+	}
+	if changed {
+		s.logger.InfoContext(
+			ctx, "scheduler: step complete",
 			slog.String("step_id", stepID),
-			slog.Int("total", page.Total),
-			slog.Int("max_limit", store.MaxLimit),
+			slog.String("status", string(status)),
 		)
-		return fmt.Errorf("step %q has %d tasks, exceeding MaxLimit (%d): pagination required for correct completion check",
-			stepID, page.Total, store.MaxLimit)
 	}
-
-	allDone := true
-	anyFailed := false
-	anyCanceled := false
-
-	for _, t := range page.Items {
-		if !isTerminalTaskStatus(t.Status) {
-			allDone = false
-			break
-		}
-		switch t.Status {
-		case store.TaskStatusFailed:
-			anyFailed = true
-		case store.TaskStatusCanceled:
-			anyCanceled = true
-		}
-	}
-
-	if !allDone {
-		// Step is still running; nothing to do.
-		return nil
-	}
-
-	var newStepStatus store.StepStatus
-	switch {
-	case anyFailed:
-		newStepStatus = store.StepStatusFailed
-	case anyCanceled:
-		newStepStatus = store.StepStatusCanceled
-	default:
-		newStepStatus = store.StepStatusCompleted
-	}
-
-	if err := s.store.UpdateStepStatus(ctx, stepID, newStepStatus); err != nil {
+	if err := s.propagateStepDependencies(ctx, jobID, status); err != nil {
 		return err
 	}
-
-	s.logger.InfoContext(
-		ctx, "scheduler: step complete",
-		slog.String("step_id", stepID),
-		slog.String("status", string(newStepStatus)),
-	)
-
-	if err := s.propagateStepDependencies(ctx, jobID, newStepStatus); err != nil {
-		return err
-	}
-
 	return s.checkJobCompletion(ctx, jobID)
 }
 
@@ -555,61 +490,33 @@ func (s *Scheduler) propagateStepDependencies(ctx context.Context, jobID string,
 	return nil
 }
 
-// checkJobCompletion inspects all steps in the job.  If every step has reached
-// a terminal state it transitions the job to the matching terminal status.
+// checkJobCompletion finalizes the job when every step is terminal
+// (store.FinalizeJob, invariant I4). The job event is emitted only by the call
+// that wrote the status; dependents are reconciled whenever the job is terminal,
+// because ReconcileDependents is idempotent and a redelivery must not strand
+// them.
 func (s *Scheduler) checkJobCompletion(ctx context.Context, jobID string) error {
-	steps, err := s.store.ListSteps(ctx, jobID)
+	status, changed, err := s.store.FinalizeJob(ctx, jobID, time.Now().UTC())
 	if err != nil {
 		return err
 	}
-
-	allDone := true
-	anyFailed := false
-	anyCanceled := false
-
-	for _, st := range steps {
-		if !isTerminalStepStatus(st.Status) {
-			allDone = false
-			break
-		}
-		switch st.Status {
-		case store.StepStatusFailed:
-			anyFailed = true
-		case store.StepStatusCanceled:
-			anyCanceled = true
-		}
+	if status == "" {
+		return nil // a step is still in flight
 	}
+	if changed {
+		s.logger.InfoContext(
+			ctx, "scheduler: job complete",
+			slog.String("job_id", jobID),
+			slog.String("status", string(status)),
+		)
 
-	if !allDone {
-		return nil
+		// Notify WebSocket hub of the job completion event.
+		s.notifier.NotifyJob(ws.JobEvent{
+			JobID:     jobID,
+			Status:    string(status),
+			UpdatedAt: time.Now().UTC(),
+		})
 	}
-
-	var newJobStatus store.JobStatus
-	switch {
-	case anyFailed:
-		newJobStatus = store.JobStatusFailed
-	case anyCanceled:
-		newJobStatus = store.JobStatusCanceled
-	default:
-		newJobStatus = store.JobStatusCompleted
-	}
-
-	if err := s.store.UpdateJobStatus(ctx, jobID, newJobStatus); err != nil {
-		return err
-	}
-
-	s.logger.InfoContext(
-		ctx, "scheduler: job complete",
-		slog.String("job_id", jobID),
-		slog.String("status", string(newJobStatus)),
-	)
-
-	// Notify WebSocket hub of the job completion event.
-	s.notifier.NotifyJob(ws.JobEvent{
-		JobID:     jobID,
-		Status:    string(newJobStatus),
-		UpdatedAt: time.Now().UTC(),
-	})
 
 	// Release or cancel any jobs blocked on this one now that it is terminal.
 	// Non-fatal: the periodic sweep is the backstop, so a failure here must not
@@ -619,24 +526,4 @@ func (s *Scheduler) checkJobCompletion(ctx context.Context, jobID string) error 
 			slog.String("job_id", jobID), slog.Any("error", err))
 	}
 	return nil
-}
-
-// ── Terminal-state helpers ────────────────────────────────────────────────────
-
-// isTerminalTaskStatus reports whether s is a terminal task state.
-func isTerminalTaskStatus(s store.TaskStatus) bool {
-	switch s {
-	case store.TaskStatusSucceeded, store.TaskStatusFailed, store.TaskStatusCanceled:
-		return true
-	}
-	return false
-}
-
-// isTerminalStepStatus reports whether s is a terminal step state.
-func isTerminalStepStatus(s store.StepStatus) bool {
-	switch s {
-	case store.StepStatusCompleted, store.StepStatusFailed, store.StepStatusCanceled:
-		return true
-	}
-	return false
 }

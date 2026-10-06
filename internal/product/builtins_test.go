@@ -183,7 +183,7 @@ func declaresOSFamily(step openjd.StepTemplate) bool {
 
 // command-sequence-powershell's command.ps1 ends with the exit-status trailer
 // script-powershell's does, and TestScriptPowerShell_ExitStatus exercises only
-// script-powershell's. OpenJD has no include, so this keeps the copy honest: a
+// script-powershell's. OpenJD has no include, so this keeps the copies in step: a
 // fix to one trailer that misses the other fails here.
 func TestBuiltins_PowerShellExitTrailersMatch(t *testing.T) {
 	trailer := func(name string) string {

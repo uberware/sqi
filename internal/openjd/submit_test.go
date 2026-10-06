@@ -2,7 +2,7 @@
 
 package openjd_test
 
-// Tests for submit.go — item 7 of the test roadmap.
+// Tests for submit.go.
 //
 // Submitter.Submit exercises the full parse→validate→expand→persist pipeline.
 // All tests use fake.New() as the store so no real database is required.
@@ -1028,40 +1028,20 @@ func TestSubmit_DependsOn_Rejections(t *testing.T) {
 	}
 }
 
-// ── Sub-project E2's Task 10: submit-time expression re-check ───────────────
+// ── Submit-time expression re-check ─────────────────────────────────────────
 //
-// The real, end-to-end proof that Submit's phase-2 wiring works -- driving
-// the brief's own division-by-zero template through the public Submit API,
-// with the EXPR extension's registry entry temporarily flipped to
-// StatusSupported -- lives in submit_exprcheck_test.go's package-openjd
-// (white-box) tests, because only that file can reach the unexported
-// registry var to perform the flip. A first draft of this file asserted that
-// such a test was "impossible today"; a review disproved that by writing it,
-// and that claim is withdrawn (see the report's "Fix round 1" section).
-//
-// SUB-PROJECT H2 MADE THAT TEMPORARY FLIP UNNECESSARY: EXPR is StatusSupported
-// in the real registry, so the external-API tests below drive the production
-// path with no registry surgery at all.
-//
-// The two tests below cover what Submit does for an EXPR template and for the
+// The tests below cover what Submit does for an EXPR template and for the
 // common EXPR-off case: that the phase-2 re-check with concrete parameters
 // surfaces as a SubmitValidationError, and that the same call site is inert --
 // no false rejection -- without the extension declared, even when a job
-// parameter used in a format string is submitted as "0".
+// parameter used in a format string is submitted as "0". The white-box tests
+// of the same wiring are in submit_exprcheck_test.go.
 
-// TestSubmitter_Submit_EXPRTemplateRejectedByPhase2Recheck drives the brief's
-// own division-by-zero template through the public Submit API and asserts the
+// TestSubmitter_Submit_EXPRTemplateRejectedByPhase2Recheck drives a
+// division-by-zero template through the public Submit API and asserts the
 // rejection comes from the submit-time expression re-check with concrete
-// parameters -- Param.N bound to "0", which only phase 2 can see.
-//
-// It asserted the exact opposite until sub-project H2. Under the unflipped
-// registry the same template was rejected at /extensions/0 for the
-// extension-registration reason, before parameter binding ran at all, and this
-// test pinned that message so "a change unblocking EXPR at some later date is
-// required to touch (and re-examine) this test." That change is H2, this is
-// that re-examination, and the test is strictly stronger for it: it now proves
-// the phase-2 wiring end to end through the public API, which is what the
-// header above says only a white-box test with a temporary flip could do.
+// parameters -- Param.N bound to "0", which only phase 2 can see. This proves
+// the phase-2 wiring end to end through the public API.
 func TestSubmitter_Submit_EXPRTemplateRejectedByPhase2Recheck(t *testing.T) {
 	st := fake.New()
 	farmID, queueID := seedSubmitPrereqs(t, st)
@@ -1104,7 +1084,7 @@ steps:
 	}
 }
 
-// TestSubmitter_Submit_ParamZeroWithoutEXPRUnaffected confirms the new
+// TestSubmitter_Submit_ParamZeroWithoutEXPRUnaffected confirms the
 // checkExpressionsAtSubmit call site does not change behavior for a template
 // that does not declare EXPR: a job parameter referenced in a base-spec
 // format string and submitted as "0" -- the same value that trips the
@@ -1154,9 +1134,9 @@ func TestSubmitter_Submit_ParamZeroWithoutEXPRUnaffected(t *testing.T) {
 // a JSON escape is the same value here as a plain one.
 //
 // The scheduler reads it per candidate task per lease request to decide whether
-// a job needs a worker capable of phase-3 expression evaluation. Before this it
-// scanned the raw template for the bytes "EXPR" -- wrong in both directions,
-// which is what makes writing the field at submission worth a column.
+// a job needs a worker capable of phase-3 expression evaluation. Scanning the
+// raw template for the bytes "EXPR" instead would be wrong in both
+// directions, as the escaped and HOUDINI_EXPR_CACHE cases below show.
 func TestSubmit_RecordsDeclaredExtensions(t *testing.T) {
 	tests := []struct {
 		name string

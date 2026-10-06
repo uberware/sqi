@@ -155,8 +155,7 @@ func TestTemplateBind_MemberOfIsCaseInsensitive(t *testing.T) {
 }
 
 // firstAttr shares the same case-insensitive lookup as the memberOf
-// resolution above it, rather than the byte-for-byte match it used to be — so
-// a directory that echoes UsernameAttr or DisplayNameAttr back in a different
+// resolution above it, rather than a byte-for-byte match — so a directory that echoes UsernameAttr or DisplayNameAttr back in a different
 // case still populates Identity.Username and Identity.DisplayName.
 func TestTemplateBind_UsernameAndDisplayNameAreCaseInsensitive(t *testing.T) {
 	fc := &fakeConn{searchResult: &ldapv3.SearchResult{Entries: []*ldapv3.Entry{

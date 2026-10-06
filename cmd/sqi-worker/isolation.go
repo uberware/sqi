@@ -37,10 +37,8 @@ import (
 //     so Windows isolation capability is a privilege check
 //     (isolation.Provider.Capable), not a uid check, and the session root
 //     must not depend on a signal that never fires there.
-//   - Otherwise (POSIX, not root) falls back to the pre-split location under
-//     worker.data_dir, at 0750 — the exact mode that location was created at
-//     before this split existed (a byproduct of the single MkdirAll call
-//     session.Manager used to make): real run-as-user isolation cannot
+//   - Otherwise (POSIX, not root) falls back to a location under
+//     worker.data_dir, at 0750: real run-as-user isolation cannot
 //     function without root regardless of directory permissions (see
 //     isolation.unixProvider.Capable), so a fresh non-root deployment gains
 //     nothing from the wider 0711 and should not silently get `other +x` it

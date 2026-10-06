@@ -109,7 +109,7 @@ func TestSmoke(t *testing.T) {
 		Status:   store.WorkerStatusOnline,
 		Tags:     map[string]string{"tag1": "value1"},
 	}
-	createdWorker, err := s.RegisterWorker(ctx, worker)
+	createdWorker, _, err := s.RegisterWorker(ctx, worker)
 	if err != nil {
 		t.Fatalf("RegisterWorker: %v", err)
 	}

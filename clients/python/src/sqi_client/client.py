@@ -468,7 +468,7 @@ class SqiClient:
                 Setting it to anyone other than yourself requires the
                 ``jobs.submit_as`` permission and raises
                 :class:`SqiAuthError` (403) without it. When the server has auth
-                disabled this is a free-form label, as before.
+                disabled this is a free-form label.
             priority: Optional scheduling priority (higher runs sooner); the
                 server defaults to 50 when omitted.
             project: Optional project label for later filtering.
@@ -1063,16 +1063,16 @@ class SqiClient:
     def remove_worker(self, worker_id: str) -> None:
         """Hard-delete a worker. Returns ``None`` on success (HTTP 204).
 
-        Only removable workers are accepted: offline workers, or disabled
-        workers whose last heartbeat is older than the heartbeat-timeout window
-        (the machine is gone). Check :attr:`Worker.removable` first to avoid a
+        Only removable workers are accepted: offline workers, disabled or not
+        (a disabled worker counts as offline once the heartbeat sweep finds it
+        gone). Check :attr:`Worker.removable` first to avoid a
         ``ConflictError``. Task and attempt history referencing the worker is
-        preserved by ID; a removed worker that reconnects simply re-registers.
+        preserved by ID; a removed worker that reconnects re-registers.
 
         Raises:
             NotFoundError: No worker with that ID exists (HTTP 404).
-            ConflictError: The worker is not removable — it is online or a
-                still-heartbeating disabled worker (HTTP 409).
+            ConflictError: The worker is not removable — it is online
+                (disabled or not), or still holds a task (HTTP 409).
         """
         self._request("DELETE", f"/workers/{quote(worker_id, safe='')}")
 
@@ -1536,8 +1536,8 @@ class SqiClient:
     ) -> Product:
         """Replace a custom product's fields (PUT, full replacement) and return it.
 
-        Full replace: an omitted ``readme`` is CLEARED, not preserved, exactly
-        as ``description`` already behaves.
+        Full replace: an omitted ``readme`` is cleared, not preserved, as
+        ``description`` is.
         """
         return self._products.update(
             name,

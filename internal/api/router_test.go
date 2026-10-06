@@ -47,7 +47,7 @@ func TestRouter_RESTRouteGatedByAuth_WSAndHealthzNotGated(t *testing.T) {
 		t.Errorf("/healthz status = %d, want 200", code)
 	}
 	// /ws is not gated by middleware.Auth (its own hook uses the same failing
-	// authenticator, so it also 401s here — but crucially not with a problem+json
+	// authenticator, so it also 401s here — but not with a problem+json
 	// body from the REST group). Assert it is reachable as a route (401 from the
 	// WS hook, not 404).
 	if code := getStatus(t, srv.URL+"/api/v1/ws"); code == http.StatusNotFound {
@@ -145,10 +145,9 @@ func TestRouter_AuthOn_ExplicitOrigin_AllowedWithCredentials(t *testing.T) {
 }
 
 // TestRouter_AuthOff_CORSAndWSUnchanged is the auth-off regression test: with
-// AuthEnabled false (the pre-A1 default), CORS must still be the wildcard,
-// uncredentialed configuration that shipped before A1, and the /ws upgrade
-// must still accept any Origin (InsecureSkipVerify, unaffected by
-// wsOriginConfig).
+// AuthEnabled false (the default), CORS must be the wildcard, uncredentialed
+// configuration, and the /ws upgrade must accept any Origin
+// (InsecureSkipVerify, unaffected by wsOriginConfig).
 func TestRouter_AuthOff_CORSAndWSUnchanged(t *testing.T) {
 	deps := Deps{Store: fake.New(), Auth: auth.Anonymous()}
 	r := NewRouter(
@@ -165,7 +164,7 @@ func TestRouter_AuthOff_CORSAndWSUnchanged(t *testing.T) {
 	defer resp.Body.Close()
 
 	if got := resp.Header.Get("Access-Control-Allow-Origin"); got != "*" {
-		t.Errorf("auth-off Access-Control-Allow-Origin = %q, want \"*\" (unchanged pre-A1 default)", got)
+		t.Errorf("auth-off Access-Control-Allow-Origin = %q, want \"*\" (unchanged auth-off default)", got)
 	}
 	if got := resp.Header.Get("Access-Control-Allow-Credentials"); got != "" {
 		t.Errorf("auth-off Access-Control-Allow-Credentials = %q, want empty", got)
@@ -264,7 +263,7 @@ func TestRouter_AuthOn_ExplicitWildcard_LogsWarn(t *testing.T) {
 	}
 }
 
-// Auth off is the pre-A1 wildcard configuration and is not noteworthy at all.
+// Auth off is the default wildcard configuration and is not noteworthy at all.
 func TestRouter_AuthOff_NoCORSLog(t *testing.T) {
 	if rec := corsLogRecord(t, Config{}); rec.Message != "" {
 		t.Errorf("unexpected cors: record with auth disabled: %q", rec.Message)

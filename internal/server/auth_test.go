@@ -27,10 +27,10 @@ func anonymousRequest() *http.Request {
 	return httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/", nil)
 }
 
-// TestSelectAuth_Disabled is the auth-off regression test: it must be
-// byte-for-byte pre-A1 behavior. Even with bootstrap credentials configured,
-// auth disabled must select the anonymous superuser authenticator and must
-// NOT create any user or touch the store at all.
+// TestSelectAuth_Disabled is the auth-off regression test: it must behave
+// byte-for-byte as a server without auth. Even with bootstrap credentials
+// configured, auth disabled must select the anonymous superuser authenticator
+// and must NOT create any user or touch the store at all.
 func TestSelectAuth_Disabled(t *testing.T) {
 	st := fake.New()
 	s := &Server{
@@ -160,8 +160,8 @@ func TestSelectAuth_AuthenticatesAPIKey(t *testing.T) {
 }
 
 // TestSelectAuth_LDAPDisabledInjectsNoVerifier asserts that leaving
-// auth.ldap.enabled off produces no verifier at all, so the login path keeps
-// its pre-C1 behavior rather than merely being configured not to use it.
+// auth.ldap.enabled off produces no verifier at all, so the login path accepts
+// only local accounts rather than merely being configured not to use LDAP.
 func TestSelectAuth_LDAPDisabledInjectsNoVerifier(t *testing.T) {
 	s := &Server{
 		cfg:    Config{AuthEnabled: true},

@@ -12,7 +12,7 @@ import (
 // These tests exist because the highest-risk code in this package —
 // dpapiProtect/dpapiUnprotect (unsafe.Slice over an OS-allocated buffer with
 // a deferred LocalFree) and writeSecured/secureDir (real SetSecurityInfo
-// calls) — was previously covered only by
+// calls) — is otherwise covered only by
 // TestIsolationWindows_CredentialRoundTrip
 // (test/integration/isolation_windows_test.go), which needs
 // SQI_TEST_ISOLATION_WINDOWS=1 and an elevation harness and therefore never
@@ -95,17 +95,17 @@ func TestDpapiUnprotect_EmptyBlobDoesNotPanic(t *testing.T) {
 
 // The directory- and file-ACL shape Put() produces is asserted in
 // TestIsolationWindows_CredentialDirectoryExcludesUnprivilegedTrustees
-// (test/integration/isolation_windows_test.go), not here. It used to live in
-// this package, but adminOnlyDACL (acl_windows.go) now grants the isolation
-// directory to SYSTEM and Administrators only — no CREATOR OWNER placeholder
-// standing in for whoever happens to create it — so an unelevated process
-// can no longer complete Put() at all: os.WriteFile against a
+// (test/integration/isolation_windows_test.go), not here: adminOnlyDACL
+// (acl_windows.go) grants the isolation directory to SYSTEM and
+// Administrators only — no CREATOR OWNER placeholder standing in for whoever
+// happens to create it — so an unelevated process cannot complete Put() at
+// all: os.WriteFile against a
 // SYSTEM+Administrators-only directory fails for anyone without an enabled
 // Administrators SID in their token, which an ordinary `go test` run does
-// not have. That is the point of the fix (finding 1's real caller is always
-// an elevated Administrator, so nothing legitimate is lost), but it does mean
-// the assertion now belongs in the elevated tier alongside the rest of the
-// isolation integration suite.
+// not have. That is intended (Put's real caller is always an elevated
+// Administrator, so nothing legitimate is lost), but it does mean the
+// assertion belongs in the elevated tier alongside the rest of the isolation
+// integration suite.
 
 // TestFileStore_SecretDecryptsWhatPutWrites proves Secret() is wired
 // correctly to dpapiUnprotect end to end: given a real DPAPI blob produced
@@ -114,8 +114,8 @@ func TestDpapiUnprotect_EmptyBlobDoesNotPanic(t *testing.T) {
 // Secret() reads it back and decrypts it to the original secret.
 //
 // This deliberately does not chain directly after a call to Put(), and
-// that is not a shortcut: an unprivileged Put() call can no longer even
-// complete now that adminOnlyDACL locks the directory to SYSTEM and
+// that is not a shortcut: an unprivileged Put() call cannot complete,
+// because adminOnlyDACL locks the directory to SYSTEM and
 // Administrators only (see the file-level doc comment above), and
 // TestIsolationWindows_CredentialDirectoryExcludesUnprivilegedTrustees
 // (test/integration/isolation_windows_test.go) proves for real, in the
@@ -125,10 +125,10 @@ func TestDpapiUnprotect_EmptyBlobDoesNotPanic(t *testing.T) {
 // access beyond what its DACL says; there is no "owner override" for
 // WRITE_DAC despite folklore to the contrary). Proving Secret() can decrypt
 // a real Put-produced file from this same unprivileged process would
-// therefore require either elevating (forbidden by this task) or grabbing
-// access this process was never granted — and if either worked, THAT would
-// itself be the security bug finding 1 exists to close, not a legitimate
-// test setup step. Writing the identical bytes without Put's restrictive
+// therefore require either elevating (which this unelevated test tier must
+// not do) or grabbing access this process was never granted — and if either
+// worked, THAT would itself be the credential-disclosure bug the ACL exists
+// to prevent, not a legitimate test setup step. Writing the identical bytes without Put's restrictive
 // DACL isolates exactly the property this test needs to prove — that
 // Secret()'s read-plus-decrypt path is correct — from the ACL property
 // already proven directly, for real, elsewhere.

@@ -2,8 +2,7 @@
 # Cross-Platform Validation Guide
 
 This guide is the manual procedure for confirming `sqi` works on **Linux, macOS,
-and Windows**. It closes the Phase 1 verification items that CI cannot fully
-prove on its own:
+and Windows**. It covers what CI cannot fully prove on its own:
 
 - **Cross-platform runtime:** the cross-compiled binaries actually *start and
   register*, not just compile.
@@ -58,7 +57,7 @@ That whole flow runs **three times**, back to back: once on the default path
 enrolling via a join token, and once with TLS on end to end (HTTPS REST, `wss://`
 gateway, TLS broker) against certificates from `sqi-server tls init`. The plain
 run always goes first, so a failure before the `MODE 2/3` banner means the
-default path regressed — much the most serious of the three.
+default path failed, the most serious of the three.
 
 ### A.1 Linux / macOS
 
@@ -84,7 +83,7 @@ Each mode prints its own `SMOKE TEST PASSED (mode=…)` block — `noauth`,
 `brokerauth`, then `tls`. Only the final `IN ALL THREE MODES` line means the
 whole run passed.
 
-The EXPR line is the newest leg: a second job declaring `extensions: [EXPR]`
+The EXPR line covers a second job declaring `extensions: [EXPR]`
 whose `onRun` args the worker resolves at phase 3, asserted on the resolved text
 rather than on the job completing.
 
@@ -238,13 +237,12 @@ Chrome/Edge, Firefox, and Safari (Safari on macOS only):
 
 ## Known caveats (read before validating)
 
-- **Deep links / page refresh now work (fixed 2026-06-13).** The embedded server
-  serves the SPA shell for any extensionless non-asset path (`/jobs`, `/submit`,
-  `/workers/{id}`, …), so loading or refreshing a sub-route URL directly now
-  hydrates the app instead of returning a 404. Asset-looking misses (a path with a
-  file extension, e.g. a stale `/assets/old.js`) still correctly 404. If you are
-  validating an **older binary**, deep links may still 404 — always start at `/`
-  there.
+- **Deep links / page refresh.** The embedded server serves the SPA shell for
+  any extensionless non-asset path (`/jobs`, `/submit`, `/workers/{id}`, …), so
+  loading or refreshing a sub-route URL directly hydrates the app instead of
+  returning a 404. Asset-looking misses (a path with a file extension, e.g. a
+  stale `/assets/old.js`) still 404. In a binary built before 2026-06-13, deep
+  links may 404 — always start at `/` there.
 - **Windows process teardown.** Playwright self-boot teardown uses a negative-PID
   signal (POSIX only). Use external-server mode (`SQI_BASE_URL`) on Windows
   (§B.2).

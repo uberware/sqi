@@ -48,37 +48,23 @@ type TaskAttempt struct {
 
 // TaskAttemptStore is the persistence interface for [TaskAttempt] records.
 type TaskAttemptStore interface {
-	// CreateTaskAttempt inserts a new attempt record. Called when the server
-	// assigns a task to a worker and the worker acknowledges it.
+	// CreateTaskAttempt inserts a new attempt record. It has no production
+	// caller: every attempt the scheduler opens is inserted by
+	// [TaskStore.LeaseTask], in the same transaction as the lease and its usage
+	// claims. It stays on the interface as test fixture surface.
 	CreateTaskAttempt(ctx context.Context, attempt TaskAttempt) (TaskAttempt, error)
 
 	// GetTaskAttempt returns the attempt with the given ID, or [ErrNotFound].
 	GetTaskAttempt(ctx context.Context, id string) (TaskAttempt, error)
 
 	// LatestTaskAttempt returns the attempt with the highest AttemptNumber for
-	// the given task, or [ErrNotFound] if no attempts exist yet. Used by the
-	// scheduler to determine the correct AttemptNumber when creating a retry.
+	// the given task, or [ErrNotFound] if no attempts exist yet. The REST layer
+	// reads it, and the scheduler uses it to tell whether a failure report's
+	// attempt is still the task's latest. Attempt numbers are assigned inside
+	// [TaskStore.LeaseTask], not from this read.
 	LatestTaskAttempt(ctx context.Context, taskID string) (TaskAttempt, error)
 
 	// ListTaskAttempts returns all attempts for the given task, ordered by
 	// AttemptNumber ascending.
 	ListTaskAttempts(ctx context.Context, taskID string) ([]TaskAttempt, error)
-
-	// UpdateTaskAttempt replaces the mutable fields of an existing attempt
-	// (Status, ExitCode, EndedAt). Returns [ErrNotFound] if it does not exist.
-	UpdateTaskAttempt(ctx context.Context, attempt TaskAttempt) (TaskAttempt, error)
-
-	// TerminateWorkerAttempts marks all running [TaskAttempt] records for tasks
-	// currently assigned to workerID as the given terminal status with the
-	// supplied end time. Called by the heartbeat sweep before reclaiming tasks
-	// from an offline worker so that each attempt has a closed EndedAt.
-	// Returns the number of attempts updated.
-	TerminateWorkerAttempts(ctx context.Context, workerID string, status AttemptStatus, endedAt time.Time) (int, error)
-
-	// CancelJobAttempts marks all running [TaskAttempt] records for tasks
-	// belonging to the given job as [AttemptStatusCanceled] with the supplied
-	// end time. Should be called before [TaskStore.CancelJobTasks] so
-	// that attempts are closed while the tasks still carry their assigned worker.
-	// Returns the number of attempts updated.
-	CancelJobAttempts(ctx context.Context, jobID string, endedAt time.Time) (int, error)
 }

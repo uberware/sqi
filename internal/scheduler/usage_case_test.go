@@ -8,14 +8,13 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/uberware/sqi/internal/store"
-	"github.com/uberware/sqi/internal/store/fake"
 )
 
 // A usage-pool name is the trailing segment of a (case-insensitive) capability
 // name, so a step requirement must match a registered pool regardless of case:
 // an operator pool "Maya" satisfies a template requirement "maya".
 func TestUsageContext_PoolNameCaseInsensitive(t *testing.T) {
-	st := fake.New()
+	st := newCheckedFake(t)
 	s := newMetricsScheduler(st, &recordBus{}, "")
 
 	if _, err := st.CreateUsagePool(

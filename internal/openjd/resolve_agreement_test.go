@@ -8,12 +8,11 @@ import (
 	"testing"
 )
 
-// EXPR sub-project E4b Task 4: the agreement instrument design spec §4
-// describes and the task brief calls "the wave's only real instrument".
+// The checker/resolver agreement tests for parameter-space ranges.
 //
 // Conformance cannot judge section 1.3.12's extended range: the suite scores
 // job_templates, which is parse-and-validate, and never expands a parameter
-// space (design spec §6). So the checker (checkParameterSpaceExpressions,
+// space. So the checker (checkParameterSpaceExpressions,
 // exprcheck.go) and the resolver (ResolveParameterSpaceParams + Expand-
 // ParameterSpace, resolve.go/expand.go) could disagree about a range's
 // validity and the score would not move. This file is the thing that would
@@ -52,14 +51,12 @@ func buildRangeAgreementTemplate(typ TaskParamType, rangeList []string, rangeExp
 // step template's own let: block filled in (section 3.6.2 row 1: the names it
 // binds are visible in parameterSpace).
 //
-// It exists because the table above had NO Let field, and that blind spot is
-// exactly what let EXPR sub-project E4b ship a checker that saw a step's let
-// names at the range position and a resolver that did not -- a template that
-// validated at upload, passed the phase-2 re-check, and then died in
-// expandStepTaskParams with unknown symbol "base". A test table cannot catch
-// a divergence in a field it cannot express, so the field is here now and
-// TestRangeCheckerResolverAgreement_StepLet exercises all three range shapes
-// through it.
+// A test table cannot catch a divergence in a field it cannot express: without
+// a Let field, a checker that sees a step's let names at the range position
+// and a resolver that does not would pass -- a template that validates at
+// upload, passes the phase-2 re-check, and then dies in expandStepTaskParams
+// with unknown symbol "base". TestRangeCheckerResolverAgreement_StepLet
+// exercises all three range shapes through this builder.
 func buildRangeAgreementTemplateWithLet(
 	typ TaskParamType, rangeList []string, rangeExpr *string, jobParams []JobParameter, let []string,
 ) *JobTemplate {
@@ -87,9 +84,9 @@ func buildRangeAgreementTemplateWithLet(
 // against tmpl's one task-parameter definition and fails t unless ALL THREE
 // agree the range is valid: the checker reports no error, the resolver
 // reports no error (agreement's accept-side claim), and the resolved space
-// expands without error (design spec §4's "must resolve and expand without
-// error"). It returns the resolved space and the expanded rows so callers
-// that pin an exact value (order, count, canonical text) can assert further.
+// expands without error. It returns the resolved space and the expanded rows
+// so callers that pin an exact value (order, count, canonical text) can
+// assert further.
 func assertRowAccepted(t *testing.T, tmpl *JobTemplate, boundParams map[string]string) (*StepParameterSpace, []TaskParams) {
 	t.Helper()
 	ps := tmpl.Steps[0].ParameterSpace
@@ -114,8 +111,8 @@ func assertRowAccepted(t *testing.T, tmpl *JobTemplate, boundParams map[string]s
 	return resolved, rows
 }
 
-// assertRowRejected is assertRowAccepted's sibling for design spec §4's other
-// direction: fails t unless the checker reports an error AND the resolver,
+// assertRowRejected is assertRowAccepted's sibling for the other direction:
+// fails t unless the checker reports an error AND the resolver,
 // run independently and directly (not gated behind the checker's verdict, the
 // way production submit.go's call ordering would gate it), ALSO reports an
 // error and returns a nil space -- so there is nothing for a caller to hand
@@ -140,15 +137,14 @@ func assertRowRejected(t *testing.T, tmpl *JobTemplate, boundParams map[string]s
 	}
 
 	// Same verdict is not enough: the two layers must say the SAME THING.
-	// EXPR sub-project E4b's whole-branch review found them reporting
-	// "cannot be coerced to list[int] | range_expr" at validate-time and
-	// "cannot be coerced to list[int]" at submit-time for one and the same
-	// template -- a symptom of two separately-chosen targets, which is the
-	// disease this file exists to detect. Now that both layers call
-	// rangeExprFieldType/rangeExprElemType, the message is one message; this
-	// assertion is what keeps it that way. Only the pointer differs, by
-	// design: the checker walks from the template root, the resolver from the
-	// step (submit.go prefixes "/steps/<i>").
+	// Two separately-chosen targets show up as, e.g., "cannot be coerced to
+	// list[int] | range_expr" at validate-time and "cannot be coerced to
+	// list[int]" at submit-time for one and the same template -- the
+	// divergence this file exists to detect. Both layers call
+	// rangeExprFieldType/rangeExprElemType, so the message is one message;
+	// this assertion keeps it that way. Only the pointer differs, by design:
+	// the checker walks from the template root, the resolver from the step
+	// (submit.go prefixes "/steps/<i>").
 	checkMsgs := make([]string, len(checkErrs))
 	for i, e := range checkErrs {
 		checkMsgs[i] = e.Message
@@ -165,9 +161,8 @@ func assertRowRejected(t *testing.T, tmpl *JobTemplate, boundParams map[string]s
 	}
 }
 
-// TestRangeCheckerResolverAgreement_INTWholeFieldRangeString is the
-// regression test for EXPR sub-project E4b's whole-branch review Critical 1:
-// the INT whole-field target omitted two required union members.
+// TestRangeCheckerResolverAgreement_INTWholeFieldRangeString pins that the
+// INT whole-field target includes all four required union members.
 //
 // Section 1.3.12 leaves the INT row "(unchanged, but see RangeString note
 // below)" and that note extends the RangeString with an expression evaluating
@@ -179,18 +174,17 @@ func assertRowRejected(t *testing.T, tmpl *JobTemplate, boundParams map[string]s
 // way through to expanded task rows, which the fixture's job-execution suite
 // does and sqi's job_templates conformance scoring structurally cannot.
 //
-// Measured at the reviewed HEAD, the first four rows were REJECTED, and
-// rejected at PHASE 1 (template upload, params still unresolved), with
+// A target of only "list[int] | range_expr" rejects the first four rows at
+// PHASE 1 (template upload, params still unresolved), with
 // "unresolved[string] cannot be coerced to list[int] | range_expr". Declaring
-// EXPR therefore REMOVED base-spec capability at this field: the identical
-// template without extensions: [EXPR] expanded correctly, and all six of this
+// EXPR would then REMOVE base-spec capability at this field: the identical
+// template without extensions: [EXPR] expands correctly, and all six of this
 // repo's own reference render presets (presets/sqi/*.yaml) use exactly the
 // first row's shape -- range: "{{Param.Frames}}" with a STRING Frames.
 //
-// Phase 1 is asserted separately and deliberately: a fix that only made
-// phase 2 pass would leave every such template rejected at upload, which is
-// where the presets actually failed. That half needed its own fix, in
-// expr/coerce.go's coerceUnresolved -- see the carve-out comment there.
+// Phase 1 is asserted separately: a checker that passes only phase 2 would
+// still reject every such template at upload, which is where the presets
+// fail. Phase 1 acceptance depends on expr/coerce.go's coerceUnresolved.
 func TestRangeCheckerResolverAgreement_INTWholeFieldRangeString(t *testing.T) {
 	tests := []struct {
 		name      string
@@ -241,8 +235,7 @@ func TestRangeCheckerResolverAgreement_INTWholeFieldRangeString(t *testing.T) {
 		},
 		{
 			// Fixture case 3, with range_expr() standing in for the fixture's
-			// RANGE_EXPR job-parameter type (section 1.2.2's job-parameter
-			// types are sub-project F's, not shipped).
+			// RANGE_EXPR job-parameter type.
 			name:          "range_expr member",
 			body:          `{{ range_expr("10-11") }}`,
 			wantRangeList: []string{"10", "11"},
@@ -264,8 +257,8 @@ func TestRangeCheckerResolverAgreement_INTWholeFieldRangeString(t *testing.T) {
 					tmpl := buildRangeAgreementTemplate(typ, nil, new(tc.body), tc.jobParams)
 
 					// Phase 1: template upload, every job parameter still an
-					// unresolved placeholder. This is where the reviewed HEAD
-					// rejected, so it is asserted on its own.
+					// unresolved placeholder. Asserted on its own (see the doc
+					// comment above).
 					if errs := checkTemplateExpressions(tmpl, nil); len(errs) != 0 {
 						t.Fatalf("phase 1 (upload) rejected %q: %v", tc.body, errs)
 					}
@@ -321,22 +314,17 @@ func expandedValues(rows []TaskParams, name string, _ TaskParamType) []string {
 	return out
 }
 
-// TestRangeCheckerResolverAgreement_StepLet is the regression test for EXPR
-// sub-project E4b's whole-branch review Critical 2: a step template's let:
-// names were visible to the CHECKER at the parameterSpace position (section
-// 3.6.2 row 1, which exprcheck.go implemented) and invisible to the RESOLVER,
-// which was never handed the step at all.
+// TestRangeCheckerResolverAgreement_StepLet pins that a step template's let:
+// names, visible to the CHECKER at the parameterSpace position (section
+// 3.6.2 row 1, implemented in exprcheck.go), are visible to the RESOLVER
+// too, which therefore must be handed the step.
 //
-// Measured at the reviewed HEAD with step let: ["base = 10"], all three range
-// shapes: the checker reported no errors and the resolver reported
-// unknown symbol "base". The template validated at upload, passed the phase-2
-// re-check, and then died in expandStepTaskParams naming a symbol the checker
-// had just certified -- E4a's Critical repeated one sub-project later, at the
-// position E4b owns.
-//
-// The table above could not have caught it, because buildRangeAgreementTemplate
-// had no Let field at all; that is why buildRangeAgreementTemplateWithLet now
-// exists.
+// With step let: ["base = 10"] and a resolver that is not handed the step,
+// all three range shapes below pass the checker and fail the resolver with
+// unknown symbol "base": the template validates at upload, passes the
+// phase-2 re-check, and then dies in expandStepTaskParams naming a symbol
+// the checker had just certified. buildRangeAgreementTemplate has no Let
+// field, so this uses buildRangeAgreementTemplateWithLet.
 func TestRangeCheckerResolverAgreement_StepLet(t *testing.T) {
 	tests := []struct {
 		name      string
@@ -376,9 +364,10 @@ func TestRangeCheckerResolverAgreement_StepLet(t *testing.T) {
 }
 
 // TestRangeCheckerResolverAgreement_StepLetRejectionsAgree is the other half
-// of Critical 2: threading the step in must not make the resolver ACCEPT more
-// than the checker does either. A name no let: binds is still unknown at both
-// layers, and a let: binding that cannot be evaluated is reported by both --
+// of the step-let agreement: threading the step in must not make the
+// resolver ACCEPT more than the checker does either. A name no let: binds is
+// still unknown at both layers, and a let: binding that cannot be evaluated
+// is reported by both --
 // the resolver at its own /let/<i> pointer rather than as a downstream
 // "unknown symbol" on every range that referenced it.
 func TestRangeCheckerResolverAgreement_StepLetRejectionsAgree(t *testing.T) {
@@ -402,12 +391,10 @@ func TestRangeCheckerResolverAgreement_StepLetRejectionsAgree(t *testing.T) {
 	})
 }
 
-// TestRangeCheckerResolverAgreement_PerType is the table the task brief asks
-// for: "one row per declared type, each with an accepted and a rejected
-// expression" (Step 1), at BOTH positions section 1.3.12 defines -- the
-// whole-field RangeExpr and a single RangeList entry -- for every declared
-// task-parameter type (design spec §3's table: INT, CHUNK[INT], FLOAT,
-// STRING, PATH).
+// TestRangeCheckerResolverAgreement_PerType has one row per declared
+// task-parameter type (INT, CHUNK[INT], FLOAT, STRING, PATH), each with an
+// accepted and a rejected expression, at BOTH positions section 1.3.12
+// defines -- the whole-field RangeExpr and a single RangeList entry.
 //
 // The accept/reject bodies mirror exprcheck_test.go's
 // TestCheckParameterSpaceExpressions_RangeTargetTypes on purpose: that test
@@ -430,12 +417,12 @@ func TestRangeCheckerResolverAgreement_PerType(t *testing.T) {
 			name: "INT", typ: TaskParamTypeInt,
 			wholeAccept: "{{ [1, 2, 3] }}",
 			wholeReject: "{{ ['a'] }}",
-			// design spec §4 / task brief's own distinguishing case: before
-			// Task 3 the checker (TargetString) accepted this and expansion
-			// failed with "invalid integer \"5.0\"". The checker now targets
-			// TInt, under which 5.0 is a legal, exact float->int coercion, so
-			// this row proves the fix: checker accepts, resolver renders the
-			// canonical int text "5" (not "5.0"), and expansion succeeds.
+			// The distinguishing case: a checker targeting TargetString
+			// accepts this and expansion fails with "invalid integer
+			// \"5.0\"". The checker targets TInt, under which 5.0 is a legal,
+			// exact float->int coercion, so the checker accepts, the resolver
+			// renders the canonical int text "5" (not "5.0"), and expansion
+			// succeeds.
 			entryAccept: "{{ 5.0 }}",
 			// 2.5 is not integral -- TInt's float->int coercion rejects it
 			// exactly (not merely widened to a string TargetString would have
@@ -508,13 +495,12 @@ func TestRangeCheckerResolverAgreement_PerType(t *testing.T) {
 	}
 }
 
-// TestRangeCheckerResolverAgreement_LoneRangeExprPolicy pins Task 1's own
-// whole-field guarantee (task brief): a LONE {{ range_expr(...) }} whole-field
-// expression is section 1.3.12's extended form, evaluated as a VALUE under
-// internal/openjd/expr's OWN policy (the zero intrange.Policy) -- never
-// re-parsed as literal <IntRangeExpr> text under internal/openjd's stricter
-// one (design spec §2.1's trap). Both texts below are cases where the two
-// policies genuinely diverge (resolve_test.go's
+// TestRangeCheckerResolverAgreement_LoneRangeExprPolicy pins the whole-field
+// guarantee: a LONE {{ range_expr(...) }} whole-field expression is section
+// 1.3.12's extended form, evaluated as a VALUE under internal/openjd/expr's
+// OWN policy (the zero intrange.Policy) -- never re-parsed as literal
+// <IntRangeExpr> text under internal/openjd's stricter one. Both texts below
+// are cases where the two policies genuinely diverge (resolve_test.go's
 // TestResolveParameterSpaceParams_RangeExprKeepsExpressionPolicy /
 // TestResolveParameterSpaceParams_LiteralIntRangeKeepsOpenJDPolicy already
 // pin the resolver side of this fact alone); here the point is that the
@@ -550,7 +536,7 @@ func TestRangeCheckerResolverAgreement_LoneRangeExprPolicy(t *testing.T) {
 
 			def := resolved.TaskParameterDefinitions[0]
 			if def.RangeExpr != nil {
-				t.Errorf("RangeExpr = %q, want nil (cleared per design spec §2)", *def.RangeExpr)
+				t.Errorf("RangeExpr = %q, want nil (cleared for a list result)", *def.RangeExpr)
 			}
 			if len(def.RangeList) != len(tc.want) {
 				t.Fatalf("RangeList = %v, want %v", def.RangeList, tc.want)
@@ -572,8 +558,8 @@ func TestRangeCheckerResolverAgreement_LoneRangeExprPolicy(t *testing.T) {
 	}
 }
 
-// TestRangeCheckerResolverAgreement_NonLoneRangeString pins Task 2's
-// non-lone RangeString guarantee (task brief): with EXPR declared,
+// TestRangeCheckerResolverAgreement_NonLoneRangeString pins the non-lone
+// RangeString guarantee: with EXPR declared,
 // range: "1-{{ Param.End * 2 }}" is section 1.3.2's ordinary format string,
 // not section 1.3.12's whole-field list form (the reference is embedded in
 // surrounding text, so fmtstring.LoneRef is false) -- accepted at both layers
@@ -615,15 +601,14 @@ func TestRangeCheckerResolverAgreement_NonLoneRangeString(t *testing.T) {
 }
 
 // TestRangeCheckerResolverAgreement_EmbeddedRangeExprReorder pins the
-// embedded range_expr() case the task brief names explicitly: a NON-lone
-// whole-field RangeString whose embedded reference itself evaluates to a
-// genuine range_expr value. resolveRangeExprField's own doc comment rules
-// this is CORRECT, not a defect, and the task brief is equally direct: "that
-// reorder is deliberate and ruled on -- it must stay pinned, not be 'fixed'."
+// embedded range_expr() case: a NON-lone whole-field RangeString whose
+// embedded reference itself evaluates to a genuine range_expr value.
+// resolveRangeExprField's own doc comment rules this is CORRECT, not a
+// defect: the reorder is deliberate and must stay pinned, not be "fixed".
 //
 // {{ range_expr("10-15:2,1-5") }},7 composes to the literal text
-// "10-15:2,1-5,7", which is section 2.1's whole point: Value.String() renders
-// the embedded range_expr value back to ITS OWN <IntRangeExpr> text, and the
+// "10-15:2,1-5,7": Value.String() renders the embedded range_expr value back
+// to ITS OWN <IntRangeExpr> text, and the
 // COMPOSED result is ordinary base-spec range syntax a human could have typed
 // by hand -- so it is parsed by internal/openjd's OWN parseIntRangeExpr
 // (first-seen order), not internal/openjd/expr's (increasing order). This is
@@ -654,13 +639,11 @@ func TestRangeCheckerResolverAgreement_EmbeddedRangeExprReorder(t *testing.T) {
 // claim the rest of this file proves -- NOT agreement failures, and not rows
 // for assertRowAccepted/assertRowRejected's generic contract.
 //
-// THE CONTRACT, RESTATED. An earlier revision of this comment said these were
-// "properties of the NON-LONE position specifically", which implied the LONE
-// whole-field position was exception-free. It is not, and EXPR sub-project
-// E4b's whole-branch review found the counterexample (Minor 1): lone
-// range: "{{ [] }}" is accepted by both layers at every type and then fails
-// expansion with "range list is empty". The true statement is one line, and
-// it covers every case in this function:
+// THE CONTRACT. These are not properties of the NON-LONE position alone: the
+// LONE whole-field position has exceptions too -- lone range: "{{ [] }}" is
+// accepted by both layers at every type and then fails expansion with
+// "range list is empty". The one-line statement covers every case in this
+// function:
 //
 //	THE CHECKER JUDGES AN EXPRESSION'S TYPE. IT NEVER JUDGES THE SYNTAX,
 //	LENGTH OR VALUE OF THE RANGE TEXT OR RANGE LIST THAT EXPRESSION PRODUCES.
@@ -676,9 +659,9 @@ func TestRangeCheckerResolverAgreement_EmbeddedRangeExprReorder(t *testing.T) {
 //     regardless of its value's type). "No error" therefore means only "every
 //     embedded reference evaluated", never "the composed text is valid range
 //     syntax for this parameter's type".
-//  2. LONE, TEXT ARM. Since this fix widened the INT/CHUNK[INT] whole-field
-//     target to section 1.3.12's full "int | string | range_expr | list[int]"
-//     (rangeExprFieldType), a lone expression may now legitimately produce
+//  2. LONE, TEXT ARM. The INT/CHUNK[INT] whole-field target is section
+//     1.3.12's full "int | string | range_expr | list[int]"
+//     (rangeExprFieldType), so a lone expression may legitimately produce
 //     range TEXT -- and the checker judges only that the result IS an int or
 //     a string, not that the text parses as <IntRangeExpr>. So
 //     range: "{{ 'abc' }}" type-checks and fails at expansion.
@@ -686,7 +669,7 @@ func TestRangeCheckerResolverAgreement_EmbeddedRangeExprReorder(t *testing.T) {
 //     list[int]/list[float]/list[string]/list[path]. Its LENGTH is what is
 //     wrong, and length is not a type.
 //
-// WHY NONE OF THE THREE IS "FIXED" HERE, which is a ruling, not an omission.
+// WHY NONE OF THE THREE IS "FIXED" HERE (deliberately, not an omission).
 // Every one of them is base-spec-equivalent: a template with the literal text
 // the expression computes fails the same way, with the same message. Measured
 // for shapes 2 and 3 -- base-spec range: "abc" is rejected at VALIDATE with
@@ -699,15 +682,12 @@ func TestRangeCheckerResolverAgreement_EmbeddedRangeExprReorder(t *testing.T) {
 // Closing them properly means giving the checker something it does not have
 // and was deliberately not built with -- the evaluated VALUE (checkFormatString
 // discards it) -- and even then it would only work at phase 2, since at phase
-// 1 a symbol-dependent expression has no value to inspect. That is a real
-// design change with a real cost, not a patch: the reviewer's own suggestion
-// (re-running validateRangeListValues on the RESOLVED space alongside
-// submit.go's validateParameterSpaceLimits) would close shapes 2 and 3 and
-// the PATH-empty gap together, and it belongs in a change that owns that
-// decision, gated correctly -- validateParameterSpaceLimits sits behind
-// Submitter.enforceLimits, which is the wrong gate for a structural check.
-// Recorded here so the next reader inherits the ruling rather than
-// rediscovering the symptom.
+// 1 a symbol-dependent expression has no value to inspect. That is a design
+// change with a cost, not a patch: re-running validateRangeListValues on the
+// RESOLVED space alongside submit.go's validateParameterSpaceLimits would
+// close shapes 2 and 3 and the PATH-empty gap together, but it needs its own
+// gate -- validateParameterSpaceLimits sits behind Submitter.enforceLimits,
+// which is the wrong gate for a structural check.
 func TestRangeCheckerResolverAgreement_KnownNonLoneDivergences(t *testing.T) {
 	// INT entry "x{{ 2.5 }}": the "x" prefix makes this non-lone, so the
 	// embedded 2.5 is rendered with Value.String() ("2.5") and concatenated,
@@ -739,7 +719,7 @@ func TestRangeCheckerResolverAgreement_KnownNonLoneDivergences(t *testing.T) {
 	// expandTaskParam reads RangeList, never RangeExpr, for these three
 	// types (only INT/CHUNK[INT] ever consult RangeExpr at expansion). A
 	// base-spec literal range: "1-3" on a FLOAT/STRING/PATH parameter sets
-	// RangeExpr the same way (design spec §1.1) and fails identically.
+	// RangeExpr the same way and fails identically.
 	for _, typ := range []TaskParamType{TaskParamTypeFloat, TaskParamTypeString, TaskParamTypePath} {
 		t.Run(string(typ)+` whole-field "1-{{ Param.S }}": checker+resolver accept, expansion fails (base-spec-equivalent)`, func(t *testing.T) {
 			jobParams := []JobParameter{{Name: "S", Type: JobParamTypeString}}
@@ -803,13 +783,12 @@ func TestRangeCheckerResolverAgreement_KnownNonLoneDivergences(t *testing.T) {
 		})
 	}
 
-	// Shape 3, LONE EMPTY LIST -- the review's Minor 1, at every declared
-	// type. An empty list is well-typed at every one of them, so no target
-	// this checker could name would reject it; "range list is empty" is a
-	// LENGTH check, and expand.go is where lengths are checked.
+	// Shape 3, LONE EMPTY LIST, at every declared type. An empty list is
+	// well-typed at every one of them, so no target this checker could name
+	// would reject it; "range list is empty" is a LENGTH check, and expand.go
+	// is where lengths are checked.
 	//
-	// NOT because base-spec range: [] fails at expansion -- an earlier
-	// revision of this comment said so and it is wrong. A literal range: []
+	// Base-spec range: [] does NOT fail at expansion: a literal range: []
 	// is rejected at VALIDATE with "required" (validate.go's
 	// validateTaskParamRangeAndChunks) and never reaches expand.go at all. So
 	// base-spec is strictly EARLIER and stricter here; the shared property is

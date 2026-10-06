@@ -36,40 +36,37 @@ type workerHandler struct {
 	// this interface — never on internal/bus or internal/server — the same
 	// seam workerEnrollHandler uses for the same reason.
 	revoker WorkerRevoker
-	// offlineThreshold is the heartbeat-timeout window used to decide whether a
-	// disabled worker is dead — and therefore removable — from its last
-	// heartbeat age. It mirrors the scheduler's WorkerTimeout.
-	offlineThreshold time.Duration
-	logger           *slog.Logger
+	// waker wakes an enabled worker's parked lease requests. May be nil (no
+	// scheduler wired): the worker is then leased work when its parked request
+	// times out instead.
+	waker  workerWaker
+	logger *slog.Logger
+}
+
+// workerWaker is the subset of [scheduler.Scheduler] the worker handler uses:
+// a disabled worker's lease requests are parked, and enabling it wakes them so
+// it is leased work at once.
+type workerWaker interface {
+	WakeWorker(workerID string)
 }
 
 // newWorkerHandler returns a workerHandler wired to the given store. notifier
-// may be nil in tests that do not exercise WebSocket push.
-func newWorkerHandler(st store.Store, notifier ws.Notifier, revoker WorkerRevoker, offlineThreshold time.Duration, logger *slog.Logger) *workerHandler {
+// and waker may be nil in tests that do not exercise WebSocket push or the
+// scheduler.
+func newWorkerHandler(st store.Store, notifier ws.Notifier, revoker WorkerRevoker, waker workerWaker, logger *slog.Logger) *workerHandler {
 	return &workerHandler{
-		store:            st,
-		notifier:         notifier,
-		revoker:          revoker,
-		offlineThreshold: offlineThreshold,
-		logger:           logger,
+		store:    st,
+		notifier: notifier,
+		revoker:  revoker,
+		waker:    waker,
+		logger:   logger,
 	}
 }
 
-// workerRemovable reports whether a worker may be hard-deleted: it is offline,
-// or it is administratively disabled but its last heartbeat is older than the
-// offline threshold (i.e. the machine is actually gone, not merely paused). A
-// live disabled worker is never removable — removing it would let it
-// re-register as online, silently undoing the operator's Disable.
-func workerRemovable(wk store.Worker, threshold time.Duration, now time.Time) bool {
-	switch wk.Status {
-	case store.WorkerStatusOffline:
-		return true
-	case store.WorkerStatusDisabled:
-		return wk.LastHeartbeatAt != nil && wk.LastHeartbeatAt.Before(now.Add(-threshold))
-	default:
-		return false
-	}
-}
+// workerNotRemovableMsg is the 409 detail for a worker that is not removable,
+// whether the pre-check or the guarded delete found it so.
+const workerNotRemovableMsg = "worker is not removable: only an offline worker can be removed, " +
+	"and only while it has no task assigned or running"
 
 // ── Wire-format types ─────────────────────────────────────────────────────────
 
@@ -189,7 +186,7 @@ func (h *workerHandler) listWorkers(w http.ResponseWriter, r *http.Request) {
 		Offset: page.Offset,
 	}
 	for i, wk := range page.Items {
-		resp.Items[i] = h.toWorkerResponse(wk)
+		resp.Items[i] = toWorkerResponse(wk)
 	}
 
 	writeJSON(w, http.StatusOK, resp)
@@ -215,7 +212,7 @@ func (h *workerHandler) getWorker(w http.ResponseWriter, r *http.Request) {
 	}
 
 	resp := workerDetailResponse{
-		workerResponse: h.toWorkerResponse(wk),
+		workerResponse: toWorkerResponse(wk),
 		CurrentTasks:   []currentTaskResponse{},
 	}
 
@@ -250,7 +247,7 @@ func (h *workerHandler) getWorker(w http.ResponseWriter, r *http.Request) {
 // owner-scoped (lacks jobs.read.all). A worker runs few concurrent tasks at
 // once, so the per-job owner lookups here (deduped by job id) are cheap; an
 // unscoped caller (including the auth-off anonymous superuser) pays no extra
-// lookups at all and sees every task exactly as before B2.
+// lookups at all and sees every task.
 func (h *workerHandler) visibleCurrentTasks(ctx context.Context, tasks []store.Task) []currentTaskResponse {
 	owner, scoped := scopeFilter(ctx)
 
@@ -290,96 +287,97 @@ func (h *workerHandler) visibleCurrentTasks(ctx context.Context, tasks []store.T
 // ── POST /api/v1/workers/{id}/disable ────────────────────────────────────────
 
 // disableWorker administratively pauses a worker so it receives no new task
-// assignments. Workers already in [store.WorkerStatusDisabled] are accepted
-// idempotently and return 200 with the current status.
+// assignments. A worker that is already disabled is accepted idempotently. The
+// response carries the worker's effective status, disabled.
 func (h *workerHandler) disableWorker(w http.ResponseWriter, r *http.Request) {
-	h.setWorkerStatus(w, r, store.WorkerStatusDisabled)
+	h.setWorkerDisabled(w, r, true)
 }
 
 // ── POST /api/v1/workers/{id}/enable ─────────────────────────────────────────
 
-// enableWorker re-enables a disabled worker. Online or offline workers are
-// accepted idempotently (their status is left unchanged) and the current status
-// is returned.
+// enableWorker re-enables a disabled worker. A worker that is not disabled is
+// accepted idempotently. The response carries the worker's effective status,
+// which is its liveness: online, or offline for a machine that has gone away,
+// which stays offline until it registers again.
 func (h *workerHandler) enableWorker(w http.ResponseWriter, r *http.Request) {
-	h.setWorkerStatus(w, r, store.WorkerStatusOnline)
+	h.setWorkerDisabled(w, r, false)
 }
 
-// setWorkerStatus is the shared implementation for disable and enable. It
-// resolves the transition according to the table below and writes the result.
-//
-// For disable (target = WorkerStatusDisabled):
-//   - online  → disabled  (200)
-//   - offline → disabled  (200)
-//   - disabled → disabled (200, idempotent)
-//
-// For enable (target = WorkerStatusOnline):
-//   - disabled → online (200)
-//   - online   → online (200, idempotent)
-//   - offline  → online (200, idempotent — worker will move to offline again on
-//     next heartbeat sweep if it stays quiet)
-func (h *workerHandler) setWorkerStatus(w http.ResponseWriter, r *http.Request, target store.WorkerStatus) {
+// setWorkerDisabled is the shared implementation for disable and enable: it
+// sets or clears the worker's disabled flag, never its liveness, and returns
+// the effective status the write left. An enable also wakes the worker's
+// parked lease requests, so it is leased work without waiting out their hold.
+func (h *workerHandler) setWorkerDisabled(w http.ResponseWriter, r *http.Request, disabled bool) {
 	ctx := r.Context()
 	id := chi.URLParam(r, "id")
 
-	if _, err := h.store.GetWorker(ctx, id); err != nil {
+	wk, err := h.store.SetWorkerDisabled(ctx, id, disabled)
+	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			writeProblem(w, r, http.StatusNotFound, "worker not found")
 			return
 		}
-		h.logger.ErrorContext(ctx, "workers: get for status update failed",
-			slog.String("id", id), slog.Any("error", err))
-		writeProblem(w, r, http.StatusInternalServerError, "failed to retrieve worker")
-		return
-	}
-
-	if err := h.store.UpdateWorkerStatus(ctx, id, target); err != nil {
 		h.logger.ErrorContext(ctx, "workers: status update failed",
 			slog.String("id", id),
-			slog.String("target_status", string(target)),
+			slog.Bool("disabled", disabled),
 			slog.Any("error", err))
 		writeProblem(w, r, http.StatusInternalServerError, "failed to update worker status")
 		return
 	}
+	if !disabled && h.waker != nil {
+		h.waker.WakeWorker(id)
+	}
 
 	writeJSON(w, http.StatusOK, workerActionResponse{
 		ID:     id,
-		Status: string(target),
+		Status: string(wk.EffectiveStatus()),
 	})
 }
 
 // ── DELETE /api/v1/workers/{id} ──────────────────────────────────────────────
 
 // removeWorker hard-deletes a worker record. Only removable workers are
-// accepted: offline workers, or disabled workers whose last heartbeat is older
-// than the offline threshold (the machine is gone). Online and live-disabled
-// workers return 409 Conflict. Offline workers already had their in-flight tasks
-// reclaimed when they went offline, so no reclaim is needed here.
+// accepted: offline workers, disabled or not ([store.Worker.Removable]), and
+// only while the worker has no task assigned or running. Online
+// workers, disabled or not, and any worker that still holds a task, return 409
+// Conflict. A disabled worker that is still online is a paused machine, and
+// removing it would only let it re-register, so it is refused. Offline workers
+// already had their in-flight tasks reclaimed when they went offline, so no
+// reclaim is needed here.
 //
 // Revokes the worker's broker credential, if it has one, through the
 // injected [WorkerRevoker] — the same path DELETE
-// /api/v1/workers/{id}/credential uses — BEFORE deleting the worker row.
+// /api/v1/workers/{id}/credential uses — before deleting the worker row.
 // Without this, decommissioning a machine from the farm would leave it able
 // to connect to the broker, lease work and execute job code: WorkersManage
 // (which this route requires) does not imply WorkersEnroll, so an operator
 // who can delete a worker is not otherwise able to revoke what it can still
 // do.
 //
-// Revoke-then-delete, not the reverse: store.DeleteWorker never returns
-// ErrConflict in either backend (removability was already decided above via
-// GetWorker + workerRemovable), so revoking first can never waste a
-// revocation on a delete that was going to be legitimately rejected. A
-// revoke failure then means nothing happened at all — worker row intact, a
-// clean 500, safely retryable. Deleting first would instead let a failure
-// of the revoke's own store write (not just a broker-reload failure — a
-// documented, recoverable degraded mode) leave the worker row gone, the
-// credential never revoked, and nothing left to reap it: the caller who
-// holds WorkersManage without WorkersEnroll has no other way to revoke it,
-// and would be told 204 while the machine kept live broker access
-// permanently. A delete failure after a successful revoke leaves access cut
-// and the row present — the safe direction — and a retried removeWorker
-// re-invokes RevokeWorker, which is a correct no-op the second time via
-// ErrNotFound.
+// Revoke-then-delete, not the reverse: removability was already decided
+// above via GetWorker + Removable, so in the common case the delete cannot be
+// refused. The pre-check cannot see tasks, though: an offline worker that
+// still holds a task (one leased to it after the offline transition reclaimed
+// the rest) passes it, has its credential revoked, and only then is refused by
+// the guarded delete's in-flight check, so revoking first can waste a
+// revocation on a delete that is then rejected. A revoke failure then means
+// nothing happened at all — worker row intact, a clean 500, safely
+// retryable. Deleting first would instead let a failure of the revoke's own
+// store write (not just a broker-reload failure — a documented, recoverable
+// degraded mode) leave the worker row gone, the credential never revoked,
+// and nothing left to reap it: the caller who holds WorkersManage without
+// WorkersEnroll has no other way to revoke it, and would be told 204 while
+// the machine kept live broker access permanently. A delete failure after a
+// successful revoke leaves access cut and the row present — the safe
+// direction — and a retried removeWorker re-invokes RevokeWorker, which is a
+// correct no-op the second time via ErrNotFound.
+//
+// The delete is [store.WorkerStore.DeleteWorkerIfRemovable], which applies
+// the same removability rule inside its own write, so a worker that came
+// back between the GetWorker above and the delete is never removed on a
+// stale read. A worker that comes back between the revoke and the guarded
+// delete keeps its row and gets a 409, with its credential already revoked:
+// the safe direction, accepted rather than closed.
 func (h *workerHandler) removeWorker(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	id := chi.URLParam(r, "id")
@@ -396,9 +394,8 @@ func (h *workerHandler) removeWorker(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if !workerRemovable(wk, h.offlineThreshold, time.Now()) {
-		writeProblem(w, r, http.StatusConflict,
-			"worker is not removable: only offline or dead disabled workers can be removed")
+	if !wk.Removable() {
+		writeProblem(w, r, http.StatusConflict, workerNotRemovableMsg)
 		return
 	}
 
@@ -414,9 +411,16 @@ func (h *workerHandler) removeWorker(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := h.store.DeleteWorker(ctx, id); err != nil {
+	if err := h.store.DeleteWorkerIfRemovable(ctx, id); err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			writeProblem(w, r, http.StatusNotFound, "worker not found")
+			return
+		}
+		if errors.Is(err, store.ErrConflict) {
+			// The worker became non-removable after the pre-check above, or
+			// still has a task assigned or running, which only the guarded
+			// delete checks.
+			writeProblem(w, r, http.StatusConflict, workerNotRemovableMsg)
 			return
 		}
 		h.logger.ErrorContext(ctx, "workers: delete failed",
@@ -440,22 +444,11 @@ func (h *workerHandler) removeWorker(w http.ResponseWriter, r *http.Request) {
 
 // ── Conversion helpers ────────────────────────────────────────────────────────
 
-// toWorkerResponse converts a [store.Worker] into the API wire type, stamping
-// the server-authoritative Removable flag from the worker's current liveness.
-func (h *workerHandler) toWorkerResponse(wk store.Worker) workerResponse {
-	return h.toWorkerResponseAt(wk, time.Now())
-}
-
-// toWorkerResponseAt is toWorkerResponse with an explicit clock, for tests.
-func (h *workerHandler) toWorkerResponseAt(wk store.Worker, now time.Time) workerResponse {
-	resp := buildWorkerResponse(wk)
-	resp.Removable = workerRemovable(wk, h.offlineThreshold, now)
-	return resp
-}
-
-// buildWorkerResponse maps the static worker fields; the Removable flag is
-// stamped by the handler since it depends on the configured threshold.
-func buildWorkerResponse(wk store.Worker) workerResponse {
+// toWorkerResponse converts a [store.Worker] into the API wire type. Status is
+// the worker's effective status ([store.Worker.EffectiveStatus]), so a
+// disabled worker reads "disabled" whatever its liveness, and Removable is the
+// server-authoritative [store.Worker.Removable].
+func toWorkerResponse(wk store.Worker) workerResponse {
 	return workerResponse{
 		ID:              wk.ID,
 		FarmID:          wk.FarmID,
@@ -477,7 +470,8 @@ func buildWorkerResponse(wk store.Worker) workerResponse {
 			Count:  wk.GPUInfo.Count,
 		},
 		Tags:            wk.Tags,
-		Status:          string(wk.Status),
+		Status:          string(wk.EffectiveStatus()),
+		Removable:       wk.Removable(),
 		LastHeartbeatAt: wk.LastHeartbeatAt,
 		RegisteredAt:    wk.RegisteredAt,
 		UpdatedAt:       wk.UpdatedAt,

@@ -126,7 +126,7 @@ func seedCompletedJob(t *testing.T, st *fakestore.Store) {
 // ── RetryJob tests ────────────────────────────────────────────────────────────
 
 func TestRetryJob_RevivesAndResolves(t *testing.T) {
-	st := fakestore.New()
+	st := newCheckedFake(t)
 	defer st.Close()
 	ctx := context.Background()
 
@@ -177,7 +177,7 @@ func TestRetryJob_RevivesAndResolves(t *testing.T) {
 }
 
 func TestRetryJob_NoEligibleTasks(t *testing.T) {
-	st := fakestore.New()
+	st := newCheckedFake(t)
 	defer st.Close()
 	ctx := context.Background()
 	seedCompletedJob(t, st) // all tasks succeeded
@@ -195,7 +195,7 @@ func TestRetryJob_NoEligibleTasks(t *testing.T) {
 // ── RetryTask tests ───────────────────────────────────────────────────────────
 
 func TestRetryTask_RevivesSingleTask(t *testing.T) {
-	st := fakestore.New()
+	st := newCheckedFake(t)
 	defer st.Close()
 	ctx := context.Background()
 
@@ -233,7 +233,7 @@ func TestRetryTask_RevivesSingleTask(t *testing.T) {
 }
 
 func TestRetryTask_GetTaskError(t *testing.T) {
-	st := fakestore.New()
+	st := newCheckedFake(t)
 	defer st.Close()
 	ctx := context.Background()
 
@@ -251,7 +251,7 @@ func TestRetryTask_GetTaskError(t *testing.T) {
 // is still blocked on the failed s1), and checkJobCompletion must finalize the
 // job back to failed.
 func TestRetryTask_BlockedDownstreamReconcilesToFailed(t *testing.T) {
-	st := fakestore.New()
+	st := newCheckedFake(t)
 	defer st.Close()
 	ctx := context.Background()
 

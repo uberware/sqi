@@ -4,13 +4,12 @@ package fmtres
 
 // ─── operator-configurable expression limits (worker side) ──────────────────
 //
-// EXPR sub-project E4d's Task 2: the five numbers that bound what ONE
-// assignment may spend inside phase-3 evaluation on a worker host, lifted out
-// of package constants so an operator can size them per host. The server's
-// four equivalents are internal/openjd's [openjd.ExprLimits]; the two config
-// systems are independent by design (design spec §1) -- each worker reads its
-// own file, which is what lets a heterogeneous farm size limits to each host's
-// real memory.
+// The five numbers that bound what ONE assignment may spend inside phase-3
+// evaluation on a worker host, configurable so an operator can size them per
+// host. The server's four equivalents are internal/openjd's
+// [openjd.ExprLimits]; the two config systems are independent by design --
+// each worker reads its own file, which is what lets a heterogeneous farm size
+// limits to each host's real memory.
 //
 // WHERE THE VALUES COME FROM AND WHERE THEY GO. An operator writes them in the
 // worker's expr: block (internal/worker/config's ExprConfig, which validates
@@ -43,17 +42,17 @@ import "github.com/uberware/sqi/internal/openjd/expr"
 // The ranges an OPERATOR may choose from are not enforced by this type. They
 // live in the Min/Max constants below (and are mirrored, deliberately, by
 // internal/worker/config, which must not import this package), so that a test
-// can set an absurd value to prove a knob is genuinely wired -- which is
-// exactly how this wave's mutation tests work.
+// can set an absurd value to prove a knob is wired, which is how this
+// package's mutation tests work.
 type ExprLimits struct {
 	// OperationLimit is the section 1.3.10 operation budget for ONE phase-3
 	// expression evaluation.
 	//
 	// POLICY BOUND. No measured worker-side catastrophe is attributable to
-	// this dimension: E4a's Critical 2 (50 let bindings retaining 495 MB in
-	// 49 ms, an OOM-kill of sqi-worker and with it every unrelated task on the
-	// host) was a MEMORY construction that "spends almost no operations", and
-	// E4c's own note says an operation budget would not have caught it. What
+	// this dimension: the measured let: OOM (50 let bindings retaining 495 MB
+	// in 49 ms, an OOM-kill of sqi-worker and with it every unrelated task on
+	// the host) was a MEMORY construction that spends almost no operations, so
+	// an operation budget would not have caught it. What
 	// this number bounds is CPU inside one evaluation, charged to the task
 	// slot the assignment already occupies -- so an operator who raises it is
 	// lengthening their own worst assignment, not exposing the host to a fault
@@ -64,17 +63,16 @@ type ExprLimits struct {
 	// bound for an assignment (AssignmentPositions x OperationLimit), and
 	// nothing here bounds wall clock: section 1.3.10 prices 256 bytes at one
 	// operation, so a raised value buys proportionally more byte-heavy work
-	// per position. Design spec §4 caveats 1 and 3 apply to this knob on the
-	// worker exactly as they do to the server's.
+	// per position. The same caveats apply to the server's operation limit.
 	OperationLimit int64
 
 	// MemoryLimit is the section 1.3.9 live-byte budget for ONE phase-3
 	// expression evaluation.
 	//
-	// CATASTROPHE BOUND. It is the multiplicand of the measured OOM: E4a's
-	// Critical 2 measured 50 bindings of `a<i> = "x" * (Task.Param.N * 100000)`
-	// retaining 495 MB in 49 ms, and recorded the structural ceiling as
-	// maxLetBindings x this number = 1 GB per block -- on a shared, long-lived
+	// CATASTROPHE BOUND. It is the multiplicand of the measured OOM: 50
+	// bindings of `a<i> = "x" * (Task.Param.N * 100000)` retained 495 MB in
+	// 49 ms, and the structural ceiling is maxLetBindings x this number = 1 GB
+	// per block -- on a shared, long-lived
 	// process whose death takes every unrelated task on the host with it, and
 	// which phase 2 CANNOT reject (Task.Param.N is unresolved at submission,
 	// so `"x" * unresolved` costs nothing there). Raising it raises that
@@ -87,11 +85,7 @@ type ExprLimits struct {
 	// default is already ABOVE it. maxStringBytes bounds one PRODUCED STRING;
 	// section 1.3.9's meter bounds the SUM of live values and recurses into
 	// containers, so a list of two 9 MB strings holds
-	// 18,000,128 bytes live with no fixed guard firing (measured). An earlier
-	// revision of expres.go's own comment claimed both worker limits "sit
-	// comfortably UNDER" the fixed guards;
-	// that was false for this one (20,000,000 > 10,000,000) and has been
-	// withdrawn.
+	// 18,000,128 bytes live with no fixed guard firing (measured).
 	MemoryLimit int64
 
 	// AssignmentPositions is how many format-string positions -- a command,
@@ -99,8 +93,8 @@ type ExprLimits struct {
 	// may resolve, summed across the task's own symbol table and every
 	// environment table the session enters.
 	//
-	// POLICY BOUND, sized against what a real session plausibly needs:
-	// E4c's own worked calculation for a generous session (one task action
+	// POLICY BOUND, sized against what a real session plausibly needs: a
+	// worked calculation for a generous session (one task action
 	// with 30 args and 10 embedded files, plus 50 entered environments at 36
 	// entry-side positions each) is 1,841 positions, and the default of 10,000
 	// leaves ~5.4x headroom over that. Nothing measured a catastrophe in this
@@ -112,10 +106,10 @@ type ExprLimits struct {
 	// assignment's positions are a SUBSET of its template's, so a value here
 	// BELOW the server's own template-position cap is reachable by a template
 	// the server ACCEPTED -- failing every task in the job after submission,
-	// naming a budget the submitter never saw. E4c pinned that with
-	// TestTemplateBudget_WorkerCapIsNotTighter comparing two CONSTANTS. With
-	// both sides configurable the relation became breakable through YAML, and
-	// E4d Task 3 re-closed it OUTSIDE this package: this value is advertised
+	// naming a budget the submitter never saw.
+	// TestTemplateBudget_WorkerCapIsNotTighter compares the two DEFAULTS, but
+	// with both sides configurable the relation is breakable through YAML, so
+	// it is enforced OUTSIDE this package: this value is advertised
 	// to the server in the worker's registration message
 	// (protocol.ExprLimits), and internal/scheduler refuses to dispatch an
 	// EXPR job to a worker whose advertised value is below the server's
@@ -139,48 +133,40 @@ type ExprLimits struct {
 	// that environment finishes resolving) -- see [AssignmentBudget]'s own doc
 	// comment, which states the distinction at length. An operator sizing host
 	// RAM against this number over-provisions, and sizing this number against
-	// an observed RSS under-bounds it. That is design spec §4 caveat 2, and it
-	// belongs in the operator documentation, not only here.
+	// an observed RSS under-bounds it.
 	AssignmentRetainedBytes int64
 
 	// LetRetainedBytes is the total section 1.3.9 size of everything ONE
 	// phase-3 symbol table holds live, measured across every let: block
 	// evaluated into it.
 	//
-	// CATASTROPHE BOUND, and the most direct one of the five: it IS the bound
-	// E4a's Critical 2 added in response to the measured 495 MB / 49 ms
-	// OOM construction described on MemoryLimit. Its absence is not
-	// hypothetical.
+	// CATASTROPHE BOUND, and the most direct one of the five: it is the bound
+	// against the measured 495 MB / 49 ms OOM construction described on
+	// MemoryLimit.
 	//
 	// IT IS ADVERTISED AND COMPARED, against the server's TEMPLATE-wide
 	// retained-bytes budget. There is no per-table quantity on the server to
 	// pair it with, but a template-wide sum is a valid upper bound on any one
-	// of that template's tables, and comparing against it is what closed the
-	// configuration the wave's final review found: a worker at this field's
-	// floor rejecting, once per task, a let: block the server had accepted.
+	// of that template's tables, and comparing against it prevents a worker at
+	// this field's floor from rejecting, once per task, a let: block the
+	// server had accepted.
 	// internal/scheduler/exprcaps.go carries the full argument, including why
 	// comparing against the server's per-EVALUATION memory limit instead
 	// would have been unsound.
 	//
-	// TWO PROPERTIES OF THE DEFAULT WORTH KNOWING BEFORE MOVING IT, both
-	// inherited unchanged from the constant it replaces (this wave changes no
-	// default, by requirement):
+	// TWO PROPERTIES OF THE DEFAULT WORTH KNOWING BEFORE MOVING IT:
 	//
 	//  1. 10,000,000 is exactly internal/openjd/expr's maxStringBytes, so the
 	//     largest single string the evaluator can produce cannot be bound at
 	//     all, even into an empty table (the check is retained+size > limit,
 	//     and a 10,000,000-byte string measures slightly more than that once
-	//     its value header is counted). E4a recorded that coincidence and said
-	//     the day the limit became configurable it should not default to
-	//     sitting exactly on another bound. It still does -- moving the
-	//     DEFAULT is a behavior change this wave is not permitted to make.
-	//     The knob is now the way out for an operator who needs one.
+	//     its value header is counted). Raising this knob is the way out for
+	//     an operator who needs to bind such a string.
 	//  2. The accounting measures the WHOLE table, not only let-bound names,
 	//     so a job whose own parameters are large spends budget its let: block
 	//     never asked for. That is deliberate (metering only let names would
-	//     let a table hold parameters PLUS a full budget of bindings), and E4a
-	//     said what it needed was "a knob, not a different formula". This is
-	//     the knob.
+	//     let a table hold parameters PLUS a full budget of bindings); this
+	//     knob is the adjustment for it.
 	LetRetainedBytes int64
 }
 
@@ -191,7 +177,7 @@ type ExprLimits struct {
 // leaf) and is pinned to them by cmd/sqi-worker's TestExprLimitsBounds_MatchFmtres,
 // the one place that may import both.
 //
-// The CEILINGS encode design spec §3's distinction between a catastrophe bound
+// The CEILINGS encode the distinction between a catastrophe bound
 // (tight, tied to a measurement) and a policy bound (wide but finite, sized
 // against what a legitimate template plausibly needs). Which of the five is
 // which, and why, is on each [ExprLimits] field. All three catastrophe
@@ -201,30 +187,27 @@ type ExprLimits struct {
 // The FLOORS follow one principle that does NOT apply on the server: a limit
 // tightened too far on a worker rejects work AFTER the job was accepted, once
 // per task, naming a budget the submitter never saw. That is the worst failure
-// shape available (design spec §2 records it as a measured incident), so no
-// floor here is sized against the smallest value this repo's own presets
-// happen to cost. TestExprLimits_PresetCostsLeaveFloorHeadroom measures the
-// presets on every run and fails if any of them comes within 4x of a floor.
+// shape available, so no floor here is sized against the smallest value this
+// repo's own presets happen to cost.
+// TestExprLimits_PresetCostsLeaveFloorHeadroom measures the presets on every
+// run and fails if any of them comes within 4x of a floor.
 //
-// WHAT THE FLOORS DO NOT PROMISE, stated here because an earlier revision of
-// this paragraph claimed it and it is false: they are NOT "at least the
-// largest value a legitimately accepted assignment could need". Two of the
-// five (MinExprOperationLimit, MinExprMemoryLimit) are sized against the
-// server's DEFAULTS, and E4d Task 1 -- the same wave -- made those two
-// configurable too, up to 10x their defaults. An operator who raises
+// WHAT THE FLOORS DO NOT PROMISE: they are NOT "at least the largest value a
+// legitimately accepted assignment could need". Two of the five
+// (MinExprOperationLimit, MinExprMemoryLimit) are sized against the server's
+// DEFAULTS, and those two are configurable on the server too, up to 10x their
+// defaults. An operator who raises
 // openjd.expr_operation_limit to 100,000 and leaves a worker at its floor gets
 // a worker 10x tighter than what the server accepted, which is the
 // post-acceptance per-task failure this whole paragraph is about. Sizing these
 // floors from the server's configured value is still impossible here (the
 // worker does not read the server's config, and by choice does not receive
-// it). What E4d Task 3 added is the other direction: the worker ADVERTISES
+// it). The check runs in the other direction instead: the worker ADVERTISES
 // its caps at registration and the server withholds EXPR work from a worker
 // that is short in ANY compared dimension -- so the consequence of a floor
-// that is too low for a given server is now "this host runs no EXPR jobs",
-// not "every task of an accepted job fails here". ALL FIVE are advertised and
-// compared: Task 3 shipped with four, and the wave's final review found the
-// fifth (LetRetainedBytes) reachable through legal configuration and added it.
-// The floors themselves still promise nothing about a particular server. Each
+// that is too low for a given server is "this host runs no EXPR jobs", not
+// "every task of an accepted job fails here". ALL FIVE are advertised and
+// compared. The floors themselves promise nothing about a particular server. Each
 // affected field says so in its own comment; do not re-generalize the promise
 // here.
 const (
@@ -236,21 +219,21 @@ const (
 	// worker would reject at execution an expression the server type-checked
 	// at submit under its own defaults.
 	//
-	// TWO WAYS THAT IS LESS THAN PARITY, both real:
+	// TWO WAYS THAT IS LESS THAN PARITY:
 	//
 	//  1. It is the server's DEFAULT, not the server's configured value, and
-	//     E4d Task 1 made the latter configurable up to 100,000. A farm that
+	//     the latter is configurable up to 100,000. A farm that
 	//     raises openjd.expr_operation_limit and leaves a worker at this floor
 	//     has a worker tighter than what the server accepts -- the same
 	//     cross-binary breakage AssignmentPositions carries, which no
-	//     compile-time test can see. E4d Task 3 made the server DETECT it from
-	//     this worker's advertised caps and withhold EXPR work
-	//     (internal/scheduler/exprcaps.go); it did not, and could not, make
-	//     this floor track a server it cannot read.
+	//     compile-time test can see. The server DETECTS it from
+	//     this worker's advertised caps and withholds EXPR work
+	//     (internal/scheduler/exprcaps.go); this floor cannot track a server
+	//     it cannot read.
 	//  2. Even at parity it would not guarantee acceptance: phase 3 evaluates
-	//     the same expressions against CONCRETE values and E2's Task 10
-	//     measured it at ~40x phase 1's cost. That is why the DEFAULT here is
-	//     100x the server's rather than equal to it.
+	//     the same expressions against CONCRETE values, measured at ~40x
+	//     phase 1's cost. That is why the DEFAULT here is 100x the server's
+	//     rather than equal to it.
 	//
 	// Ceiling: one order of magnitude above the default. Policy, not
 	// catastrophe -- but not open-ended either, because nothing meters wall
@@ -284,7 +267,7 @@ const (
 	// MinExprAssignmentPositions / MaxExprAssignmentPositions bound
 	// [ExprLimits.AssignmentPositions].
 	//
-	// Floor: 2,000, just above E4c's own worked figure of 1,841 positions for
+	// Floor: 2,000, just above the worked figure of 1,841 positions for
 	// a generous-but-plausible real session (see [ExprLimits.AssignmentPositions]).
 	// Sizing it against this repo's reference presets instead would have given
 	// something near 12, which is exactly the kind of floor that lets an
@@ -292,10 +275,10 @@ const (
 	//
 	// Ceiling: 100,000, which is BOTH one order of magnitude above the default
 	// AND exactly internal/openjd's MaxExprTemplatePositions. The second
-	// reason is the load-bearing one: the worker's cap must be able to reach
+	// reason is the one that matters: the worker's cap must be able to reach
 	// the highest value an operator can legally give the server, or the
-	// cross-binary relation of design spec §2 would be unsatisfiable by
-	// configuration. THE INVARIANT IS >=, NOT EQUALITY -- this ceiling must
+	// cross-binary relation (worker cap >= server cap) would be unsatisfiable
+	// by configuration. THE INVARIANT IS >=, NOT EQUALITY -- this ceiling must
 	// never fall below the server's, and that is what
 	// TestTemplateBudget_WorkerCapIsNotTighter asserts. The two being equal
 	// today is a value, not the rule.
@@ -310,7 +293,7 @@ const (
 	// table): the assignment-wide cap should never be the tighter of the two
 	// merely because an operator moved one end of one range. An operator MAY
 	// still configure it tighter than the per-table cap -- that is allowed and
-	// coherent (the tighter of the two simply becomes the effective one), and
+	// coherent (the tighter of the two becomes the effective one), and
 	// deliberately not rejected at load, because tightening is the safe
 	// direction and a cross-field rule would make one knob's legal range
 	// depend on another's value.
@@ -328,7 +311,7 @@ const (
 	// accepted work.
 	//
 	// IT IS A TENTH OF THE SERVER'S DEFAULT template-wide retained-bytes
-	// budget, which is not an oversight but the same shape as the operation
+	// budget, which is deliberate and the same shape as the operation
 	// and memory floors above: they track the server's DEFAULTS and cannot
 	// track its configured values. One binding is the least a table can
 	// usefully hold; a server accepts a whole template's worth. A worker left
@@ -337,11 +320,11 @@ const (
 	// openjd.expr_template_retained_bytes is lowered to meet it. That is
 	// visible -- a registration WARN naming both keys, and an unschedulable
 	// reason on the task -- rather than a per-task failure after acceptance,
-	// which is what internal/scheduler's fifth comparison bought.
+	// because internal/scheduler compares this dimension too.
 	//
 	// Ceiling: one order of magnitude above the default, and equal to
 	// internal/openjd's MaxExprTemplateRetainedBytes -- which, as with
-	// AssignmentPositions above, is the load-bearing half: the server
+	// AssignmentPositions above, is the half that matters: the server
 	// compares this value against openjd.expr_template_retained_bytes, so
 	// this ceiling must be able to reach the highest value that key can
 	// legally take, or the relation would be unsatisfiable by configuration.
@@ -353,9 +336,8 @@ const (
 	MaxExprLetRetainedBytes int64 = 100_000_000
 )
 
-// DefaultExprLimits returns the five values this package used as fixed
-// constants before E4d. A worker started with no expr: configuration meters
-// exactly as every release before E4d did.
+// DefaultExprLimits returns the default value of each of the five limits, the
+// values a worker started with no expr: configuration meters by.
 func DefaultExprLimits() ExprLimits {
 	return ExprLimits{
 		OperationLimit:          defaultWorkerOperationLimit,
@@ -403,8 +385,8 @@ func (l ExprLimits) orDefaults() ExprLimits {
 
 // evalOptions builds the metering half of the [expr.Option] slice every
 // phase-3 evaluation runs under. [ExprEvalOptions] adds the path flavor and
-// the session's path-mapping rules; this method exists so the two numbers that
-// are now CONFIGURATION are assembled in exactly one place.
+// the session's path-mapping rules; this method exists so the two configured
+// numbers are assembled in exactly one place.
 func (l ExprLimits) evalOptions() []expr.Option {
 	return []expr.Option{
 		expr.WithOperationLimit(l.OperationLimit),

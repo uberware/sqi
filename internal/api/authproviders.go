@@ -10,8 +10,8 @@ package api
 // who loads the page. It exposes neither the issuer nor the client secret.
 //
 // This endpoint exists because /auth/me distinguishes only anonymous from
-// authenticated; before C2 the web had no channel at all for asking what login
-// methods a deployment offers.
+// authenticated; it gives the web a way to ask what login methods a
+// deployment offers.
 
 import "net/http"
 

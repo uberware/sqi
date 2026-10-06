@@ -8,13 +8,13 @@ import (
 	"time"
 )
 
-// TestLenRangeExpr_DoesNotMaterialize pins section 8.2 of the E1 design.
+// TestLenRangeExpr_DoesNotMaterialize pins that len of a range_expr is
+// computed, not counted by expansion.
 //
 // len(range_expr('1-20000000')) has an arithmetic answer that intrange already
-// computes without allocating anything. Before this fix it expanded the range to
-// count it and failed the element bound, refusing a legitimate query. The
-// reference answers the same shape of query in 2 operations, which is direct
-// evidence it does not expand either.
+// computes without allocating anything. Expanding the range to count it would
+// fail the element bound and refuse a legitimate query. The reference answers
+// the same shape of query in 2 operations, so it does not expand either.
 func TestLenRangeExpr_DoesNotMaterialize(t *testing.T) {
 	v, err := Eval("len(range_expr('1-20000000'))", nil, TInt)
 	if err != nil {
@@ -47,20 +47,20 @@ func TestLenRangeExpr_SmallCasesUnchanged(t *testing.T) {
 	}
 }
 
-// TestUnique_IsBoundedByTheOperationLimit is the test C1 asked for by name.
+// TestUnique_IsBoundedByTheOperationLimit pins that unique's O(n^2) scan is
+// stopped by the operation limit.
 //
 // unique's scan is O(n^2) in valuesEqual calls. This asserts that a large input
-// fails with errOperationLimit in bounded time rather than hanging. The deadline
-// is what makes it a real test: without it, a hang looks like a slow pass.
+// fails with errOperationLimit in bounded time rather than hanging. Without the
+// deadline, a hang looks like a slow pass.
 //
-// THE DEADLINE IS DELIBERATELY GENEROUS, and was raised from 30s after CI
-// failed on it. What the test distinguishes is "bounded" from "hangs forever",
-// and a hang is unbounded — so any finite deadline serves, while a tight one
-// only adds a way to fail for reasons that have nothing to do with the bound.
-// The operation limit lets ~10 million valuesEqual calls run before it fires;
-// that is ~2s locally under -race and was over 30s on a loaded CI runner. Do
-// not tighten this back down to "make the test faster": it does not run long
-// unless something is already wrong, because the limit stops it either way.
+// The deadline is deliberately generous. The test distinguishes "bounded" from
+// "hangs forever", so any finite deadline serves, while a tight one only adds a
+// way to fail for reasons that have nothing to do with the bound. The operation
+// limit lets ~10 million valuesEqual calls run before it fires; that is ~2s
+// locally under -race and over 30s on a loaded CI runner. Tightening it does
+// not make the test faster: it does not run long unless something is already
+// wrong, because the limit stops it either way.
 func TestUnique_IsBoundedByTheOperationLimit(t *testing.T) {
 	done := make(chan error, 1)
 	go func() {

@@ -101,7 +101,7 @@ func TestWinService_WorkerLifecycle(t *testing.T) {
 // TestWinService_StartupFailureLeavesTrace installs a server whose config
 // fails validation. The service reports Running before serve loads and
 // validates its config, so `service start` may see either Running or the stop
-// that follows (spec §2: it waits for "Running or a stop"); the test therefore
+// that follows (it waits for "Running or a stop"); the test therefore
 // accepts either outcome and waits for Stopped instead.
 func TestWinService_StartupFailureLeavesTrace(t *testing.T) {
 	dir := testDir(t)
@@ -127,9 +127,8 @@ func TestWinService_StartupFailureLeavesTrace(t *testing.T) {
 	}
 }
 
-// TestWinService_HandRegisteredNewService is the regression test for the
-// original report: a worker registered with New-Service exactly as the old
-// docs said must now start.
+// TestWinService_HandRegisteredNewService pins that a worker registered by hand
+// with New-Service, rather than with `service install`, starts.
 func TestWinService_HandRegisteredNewService(t *testing.T) {
 	f := startServer(t)
 	dir := testDir(t)

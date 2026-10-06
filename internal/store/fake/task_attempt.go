@@ -37,6 +37,16 @@ func (s *Store) LatestTaskAttempt(_ context.Context, taskID string) (store.TaskA
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	found, exists := s.latestAttemptLocked(taskID)
+	if !exists {
+		return store.TaskAttempt{}, store.ErrNotFound
+	}
+	return found, nil
+}
+
+// latestAttemptLocked returns taskID's attempt with the highest AttemptNumber,
+// and false when the task has none. Caller holds s.mu.
+func (s *Store) latestAttemptLocked(taskID string) (store.TaskAttempt, bool) {
 	var found store.TaskAttempt
 	var exists bool
 	for _, a := range s.taskAttempts {
@@ -48,10 +58,21 @@ func (s *Store) LatestTaskAttempt(_ context.Context, taskID string) (store.TaskA
 			exists = true
 		}
 	}
-	if !exists {
-		return store.TaskAttempt{}, store.ErrNotFound
+	return found, exists
+}
+
+// isLatestAttemptLocked reports whether attemptID is one of taskID's attempts
+// with the highest AttemptNumber, as SQLite's sqlIsLatestAttempt does: the
+// numbers are compared, not the IDs, so two attempts sharing the highest number
+// are both latest there and here. An attempt that does not exist, or that
+// belongs to another task, is not. Caller holds s.mu.
+func (s *Store) isLatestAttemptLocked(taskID, attemptID string) bool {
+	a, ok := s.taskAttempts[attemptID]
+	if !ok || a.TaskID != taskID {
+		return false
 	}
-	return found, nil
+	latest, _ := s.latestAttemptLocked(taskID) // exists: a is one of the task's attempts
+	return a.AttemptNumber == latest.AttemptNumber
 }
 
 // ListTaskAttempts returns all attempts for the given task, ordered by
@@ -81,7 +102,12 @@ func (s *Store) ListTaskAttempts(_ context.Context, taskID string) ([]store.Task
 }
 
 // TerminateWorkerAttempts marks all running attempts for tasks currently
-// assigned to workerID as the given terminal status with the supplied end time.
+// assigned to workerID as the given terminal status with the supplied end time,
+// recording [store.FailureReasonWorkerOffline] as the message. It releases no
+// claims and leaves the tasks alone; a worker is taken offline through
+// [Store.OfflineStaleWorker] and [Store.OfflineWorker], which do all three.
+//
+// Test fixture only: a blind write that is not part of store.Store.
 func (s *Store) TerminateWorkerAttempts(_ context.Context, workerID string, status store.AttemptStatus, endedAt time.Time) (int, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -113,7 +139,11 @@ func (s *Store) TerminateWorkerAttempts(_ context.Context, workerID string, stat
 }
 
 // CancelJobAttempts marks all running [store.TaskAttempt] records for tasks
-// belonging to the given job as [store.AttemptStatusCanceled].
+// belonging to the given job as [store.AttemptStatusCanceled]. It releases no
+// claims and leaves the tasks alone; a job is canceled through
+// [Store.CancelJobExecution], which does all three.
+//
+// Test fixture only: a blind write that is not part of store.Store.
 func (s *Store) CancelJobAttempts(_ context.Context, jobID string, endedAt time.Time) (int, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -143,7 +173,11 @@ func (s *Store) CancelJobAttempts(_ context.Context, jobID string, endedAt time.
 }
 
 // UpdateTaskAttempt replaces the mutable fields of an existing attempt
-// (Status, ExitCode, EndedAt, and SessionID/Message if non-empty).
+// (Status, ExitCode, EndedAt, and SessionID/Message if non-empty). It writes
+// only while the attempt is running: a closed attempt is [store.ErrConflict]
+// and is left untouched, as in SQLite.
+//
+// Test fixture only: not part of store.Store, which has no caller for it.
 func (s *Store) UpdateTaskAttempt(_ context.Context, attempt store.TaskAttempt) (store.TaskAttempt, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -151,6 +185,9 @@ func (s *Store) UpdateTaskAttempt(_ context.Context, attempt store.TaskAttempt) 
 	existing, ok := s.taskAttempts[attempt.ID]
 	if !ok {
 		return store.TaskAttempt{}, store.ErrNotFound
+	}
+	if existing.Status != store.AttemptStatusRunning {
+		return store.TaskAttempt{}, store.ErrConflict
 	}
 
 	existing.Status = attempt.Status

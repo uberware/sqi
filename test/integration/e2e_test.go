@@ -268,7 +268,7 @@ func firstTaskID(t *testing.T, ts *testServer, jobID string) string {
 //  3. Connect a mock worker and publish a RegisterMsg.
 //  4. Verify the worker appears online via GET /api/v1/workers.
 //  5. Submit a minimal OpenJD job via POST /api/v1/jobs.
-//  6. Mock worker pulls the task assignment from the work.assign.<queue> consumer.
+//  6. Mock worker requests work on work.lease.<worker>.<queue> and receives the assignment.
 //  7. Mock worker publishes a "running" TaskStatusMsg.
 //  8. Mock worker publishes a log chunk.
 //  9. Mock worker publishes a "succeeded" TaskStatusMsg.

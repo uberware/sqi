@@ -4,17 +4,15 @@ package expr
 
 import "testing"
 
-// TestCoerceDestinationOrder pins RFC 0005's "Implicit Type Coercion" as it was
-// restated by openjd-specifications#175 (merged 2026-08-19): coercion asks
-// SATISFACTION first, and only then converts toward the target's DESTINATIONS,
-// in an order fixed by the result's type.
+// TestCoerceDestinationOrder pins RFC 0005's "Implicit Type Coercion" as
+// restated by openjd-specifications#175: coercion asks SATISFACTION first, and
+// only then converts toward the target's DESTINATIONS, in an order fixed by the
+// result's type.
 //
-// The old wording had no answer when a target offered more than one candidate
-// of the same kind, and sqi's reading of it -- singleScalarTarget, which gives
-// up the moment two members disagree -- therefore REJECTED those targets
-// outright. Every "converts" case below is one the merged text accepts and this
-// package used to refuse, so this test is an acceptance-widening test: nothing
-// sqi accepts today may start failing.
+// Every "converts" case below has a target offering more than one candidate of
+// the same kind, which the restated text accepts and the earlier wording left
+// unanswered. The cases only widen acceptance: nothing the earlier reading
+// accepted may start failing.
 //
 // Each case is either quoted from the merged section's own examples or derived
 // from its destination-order table, and the "why" column says which.

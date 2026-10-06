@@ -264,7 +264,7 @@ func (e *Executor) runTask(ctx context.Context, msg *protocol.AssignMsg, sess *s
 				slog.Int("pid", result.PID),
 				slog.Duration("duration", result.duration()),
 			)
-			e.statusPub.Terminal(context.Background(), msg, sess.ID, "failed", nil, "worker_shutdown", lp, result.EndedAt)
+			e.statusPub.Terminal(context.Background(), msg, sess.ID, "failed", nil, protocol.MessageWorkerShutdown, lp, result.EndedAt)
 			e.m.TasksTotal.WithLabelValues("failed").Inc()
 			e.m.ExecDuration.WithLabelValues("failed").Observe(result.duration().Seconds())
 		} else {
@@ -372,9 +372,8 @@ func (e *Executor) runTask(ctx context.Context, msg *protocol.AssignMsg, sess *s
 // and the step embedded files with their data resolved, or a descriptive error
 // naming the offending reference.
 //
-// msg.EXPR selects the resolution family (EXPR sub-project E4a, Task 6): a
-// base-spec assignment (EXPR false, the zero value) takes exactly the
-// fmtstring.Resolve-backed path this function has always taken, byte for
+// msg.EXPR selects the resolution family: a base-spec assignment (EXPR
+// false, the zero value) takes the fmtstring.Resolve-backed path, byte for
 // byte -- see resolveAssignmentBaseSpec. Only when EXPR is true does this
 // function build the phase-3 symbol table (fmtres.TaskSymbols) and resolve
 // through the EXPR-aware evaluator (fmtres.ResolveActionExpr /
@@ -386,8 +385,8 @@ func resolveAssignment(msg *protocol.AssignMsg, sess *session.Session) (*protoco
 	return resolveAssignmentExpr(msg, sess)
 }
 
-// resolveAssignmentBaseSpec is resolveAssignment's pre-EXPR implementation,
-// UNCHANGED from before Task 6: plain "{{...}}" substitution via
+// resolveAssignmentBaseSpec is resolveAssignment's base-spec implementation:
+// plain "{{...}}" substitution via
 // fmtstring.Resolve (through fmtres.TaskScope/ResolveAction/
 // ResolveEmbeddedFiles). This is the code path every base-spec assignment
 // must keep taking byte for byte -- see resolveAssignment's own doc comment.
@@ -422,24 +421,23 @@ func resolveAssignmentBaseSpec(msg *protocol.AssignMsg, sess *session.Session) (
 	return resolvedRun, resolvedEnvVars, resolvedFiles, nil
 }
 
-// resolveAssignmentExpr is resolveAssignment's EXPR-aware implementation
-// (EXPR sub-project E4a, Task 6): it builds the phase-3 symbol table
+// resolveAssignmentExpr is resolveAssignment's EXPR-aware implementation:
+// it builds the phase-3 symbol table
 // (fmtres.TaskSymbols), evaluates the task's let: bindings into it EXACTLY
 // ONCE (fmtres.ApplyTaskLet -- see that function's own doc comment: calling
 // it a second time over the same table makes every binding fail the shadow
 // check), and then resolves OnRun and the step embedded files against that
-// ONE table via ResolveActionExpr/ResolveEmbeddedFilesExpr. This is the first
-// point in the whole EXPR program where an expression's value reaches a real
-// command line.
+// ONE table via ResolveActionExpr/ResolveEmbeddedFilesExpr. This is where an
+// expression's value reaches a real command line.
 func resolveAssignmentExpr(msg *protocol.AssignMsg, sess *session.Session) (*protocol.Action, map[string]string, []protocol.EmbeddedFile, error) {
 	workDir := sess.WorkDir
 	pathMapFile := sess.PathMappingRulesFile()
 	hasPathMap := sess.HasPathMappingRules()
 
-	// budget is EXPR sub-project E4c's Task 4 addition: sess.ExprBudget() is
-	// the ONE fmtres.AssignmentBudget this whole assignment shares -- every
-	// environment table this session already entered (session.go's enterOne)
-	// charged the SAME object, and this task's own table now does too, so
+	// sess.ExprBudget() is the ONE fmtres.AssignmentBudget this whole
+	// assignment shares -- every environment table this session already
+	// entered (session.go's enterOne) charged the SAME object, and this
+	// task's own table does too, so
 	// the assignment's total resolved-position and retained-byte spend,
 	// across every table it builds, is bounded together. See
 	// fmtres.AssignmentBudget's own doc comment.
@@ -451,12 +449,12 @@ func resolveAssignmentExpr(msg *protocol.AssignMsg, sess *session.Session) (*pro
 	// bindTaskParamSymbols). Inheriting the narrower label would send an
 	// operator to look at embeddedFiles for a PATH-parameter fault.
 	//
-	// budget is passed here for its LIMITS, not to charge it (E4d Task 2):
-	// binding a PATH parameter runs a real apply_path_mapping evaluation, and
-	// it must be metered by the same operator-configured numbers as every
-	// other evaluation below. Building the table BEFORE obtaining the budget
-	// -- which is what this function did until Task 2 -- left that one
-	// evaluation on the compiled-in defaults on a host configured otherwise.
+	// budget is passed here for its LIMITS, not to charge it: binding a PATH
+	// parameter runs a real apply_path_mapping evaluation, and it must be
+	// metered by the same operator-configured numbers as every other
+	// evaluation below. Building the table BEFORE obtaining the budget would
+	// leave that one evaluation on the compiled-in defaults on a host
+	// configured otherwise.
 	syms, err := fmtres.TaskSymbols(msg, workDir, pathMapFile, hasPathMap, budget)
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("build expression symbols: %w", err)

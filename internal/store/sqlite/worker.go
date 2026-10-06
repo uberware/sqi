@@ -5,6 +5,8 @@ package sqlite
 import (
 	"context"
 	"database/sql"
+	"errors"
+	"fmt"
 	"time"
 
 	"github.com/uberware/sqi/internal/store"
@@ -13,16 +15,28 @@ import (
 const workerCols = `
 	id, farm_id, queue_id, name, hostname, ip_address, compute_location,
 	os, os_version, arch, version, cpu_count, ram_mb, gpu_info, tags, expr_limits, status,
-	last_heartbeat_at, registered_at, updated_at`
+	last_heartbeat_at, registered_at, updated_at, instance_id, disabled`
+
+// sqlWorkerHasWorkInFlight is true when the worker row's id holds an assigned
+// or running task. It is a fragment for a WHERE clause over workers.
+const sqlWorkerHasWorkInFlight = `EXISTS (SELECT 1 FROM tasks t
+  WHERE t.assigned_worker_id = workers.id AND t.status IN ('assigned', 'running'))`
+
+// sqlWorkerEffectiveStatus is [store.Worker.EffectiveStatus] in SQL, for the
+// status filter and sort: 'disabled' while the flag is set, else the liveness.
+const sqlWorkerEffectiveStatus = `CASE WHEN disabled = 1 THEN 'disabled' ELSE status END`
 
 const (
-	// ON CONFLICT preserves registered_at so re-registration does not reset it.
+	// ON CONFLICT preserves registered_at so re-registration does not reset it,
+	// and an empty instance_id (a worker that sends none) keeps the stored one.
+	// disabled is not in the column list, so a new worker is enabled and a
+	// re-registration never changes the flag.
 	sqlUpsertWorker = `
 INSERT INTO workers (
 	id, farm_id, queue_id, name, hostname, ip_address, compute_location,
 	os, os_version, arch, version, cpu_count, ram_mb, gpu_info, tags, expr_limits, status,
-	last_heartbeat_at, registered_at, updated_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	last_heartbeat_at, registered_at, updated_at, instance_id)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT (id) DO UPDATE SET
 	farm_id           = excluded.farm_id,
 	queue_id          = excluded.queue_id,
@@ -41,7 +55,8 @@ ON CONFLICT (id) DO UPDATE SET
 	expr_limits       = excluded.expr_limits,
 	status            = excluded.status,
 	last_heartbeat_at = excluded.last_heartbeat_at,
-	updated_at        = excluded.updated_at
+	updated_at        = excluded.updated_at,
+	instance_id       = CASE WHEN excluded.instance_id = '' THEN workers.instance_id ELSE excluded.instance_id END
 RETURNING ` + workerCols
 
 	sqlGetWorker = `SELECT ` + workerCols + ` FROM workers WHERE id = ?`
@@ -54,22 +69,25 @@ SET farm_id = ?, queue_id = ?, name = ?, hostname = ?, ip_address = ?, compute_l
 WHERE id = ?
 RETURNING ` + workerCols
 
-	sqlUpdateWorkerStatus = `
-UPDATE workers SET status = ?, updated_at = ? WHERE id = ?`
+	sqlSetWorkerDisabled = `
+UPDATE workers SET disabled = ?, updated_at = ? WHERE id = ?
+RETURNING ` + workerCols
 
 	sqlUpdateWorkerHeartbeat = `
 UPDATE workers SET last_heartbeat_at = ?, updated_at = ? WHERE id = ?`
 
+	// sqlListStaleWorkers lists the heartbeat sweep's candidates: online
+	// workers, disabled or not, whose heartbeat is older than the cutoff.
 	sqlListStaleWorkers = `SELECT ` + workerCols + `
 FROM workers WHERE status = 'online' AND last_heartbeat_at < ?`
 
-	// Online workers with no active (assigned or running) task.
+	// Online, enabled workers with no active (assigned or running) task.
 	// An empty farmID is handled in Go by choosing the appropriate variant.
 	sqlCountIdleWorkers = `
 SELECT COUNT(*)
 FROM   workers w
 WHERE  w.farm_id = ?
-  AND  w.status  = 'online'
+  AND  w.status  = 'online' AND w.disabled = 0
   AND  NOT EXISTS (
          SELECT 1 FROM tasks t
          WHERE  t.assigned_worker_id = w.id
@@ -79,7 +97,7 @@ WHERE  w.farm_id = ?
 	sqlCountIdleWorkersAllFarms = `
 SELECT COUNT(*)
 FROM   workers w
-WHERE  w.status = 'online'
+WHERE  w.status = 'online' AND w.disabled = 0
   AND  NOT EXISTS (
          SELECT 1 FROM tasks t
          WHERE  t.assigned_worker_id = w.id
@@ -88,12 +106,25 @@ WHERE  w.status = 'online'
 
 	sqlDeleteWorker = `DELETE FROM workers WHERE id = ?`
 
-	// Deletes offline workers last seen before the cutoff and returns the
-	// removed rows so the caller can emit notifications. NULL last_heartbeat_at
-	// never matches (NULL < ? is NULL), so a never-seen worker is left alone.
+	// sqlDeleteWorkerIfRemovable carries the removability rule in its WHERE so
+	// the check and the delete are one statement (I1). It mirrors
+	// [store.Worker.Removable], the one Go statement of the rule: SQL cannot
+	// call Go, so the two are kept in step by hand and pinned against each
+	// other by TestDeleteWorkerIfRemovable. The in-flight arm is the one
+	// condition a Worker value cannot see, so it is stated here and in the
+	// fake, not in Removable.
+	sqlDeleteWorkerIfRemovable = `
+DELETE FROM workers
+WHERE id = ? AND status = 'offline'
+  AND NOT ` + sqlWorkerHasWorkInFlight
+
+	// Deletes enabled offline workers last seen before the cutoff and returns
+	// the removed rows so the caller can emit notifications. A disabled worker
+	// is kept until an operator removes it. NULL last_heartbeat_at never
+	// matches (NULL < ? is NULL), so a never-seen worker is left alone.
 	sqlDeleteOfflineWorkersBefore = `
 DELETE FROM workers
-WHERE status = 'offline' AND last_heartbeat_at < ?
+WHERE status = 'offline' AND disabled = 0 AND last_heartbeat_at < ?
 RETURNING ` + workerCols
 )
 
@@ -106,7 +137,7 @@ func scanWorker(row scanner) (store.Worker, error) {
 	if err := row.Scan(
 		&w.ID, &farmID, &queueID, &w.Name, &w.Hostname, &w.IPAddress, &w.ComputeLocation,
 		&w.OS, &w.OSVersion, &w.Arch, &w.Version, &w.CPUCount, &w.RAMMb, &gpuJSON, &tagsJSON, &exprJSON, &status,
-		&lastHeartbeat, &registeredAt, &updatedAt,
+		&lastHeartbeat, &registeredAt, &updatedAt, &w.InstanceID, &w.Disabled,
 	); err != nil {
 		return store.Worker{}, err
 	}
@@ -172,15 +203,48 @@ func workerBindArgs(w store.Worker, now string) ([]any, error) {
 }
 
 // RegisterWorker implements [store.WorkerStore].
-func (s *Store) RegisterWorker(ctx context.Context, worker store.Worker) (store.Worker, error) {
-	now := timeToText(time.Now().UTC())
-	args, err := workerBindArgs(worker, now)
+//
+// Anchor: the worker row, then (on a restart) the reclaim's job rows, the same
+// order as offlineWorker, and sharing the gap it leaves on PostgreSQL
+// (LeaseTask does not anchor the worker row).
+func (s *Store) RegisterWorker(ctx context.Context, worker store.Worker) (store.Worker, []store.Task, error) {
+	now := time.Now().UTC()
+	args, err := workerBindArgs(worker, timeToText(now))
 	if err != nil {
-		return store.Worker{}, err
+		return store.Worker{}, nil, err
 	}
-	row := s.stmtUpsertWorker.QueryRowContext(ctx, args...)
-	out, err := scanWorker(row)
-	return out, mapErr(err)
+	args = append(args, worker.InstanceID)
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return store.Worker{}, nil, fmt.Errorf("sqlite: begin register worker: %w", mapErr(err))
+	}
+	defer func() { _ = tx.Rollback() }() //nolint:errcheck // rollback after commit is a no-op
+
+	if err := lockAnchors(ctx, tx, workerAnchor(worker.ID)); err != nil {
+		return store.Worker{}, nil, err
+	}
+	var prior string
+	err = tx.QueryRowContext(ctx, `SELECT instance_id FROM workers WHERE id = ?`, worker.ID).Scan(&prior)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return store.Worker{}, nil, fmt.Errorf("sqlite: read worker %s instance: %w", worker.ID, mapErr(err))
+	}
+	upsert := tx.StmtContext(ctx, s.stmtUpsertWorker)
+	defer upsert.Close()
+	out, err := scanWorker(upsert.QueryRowContext(ctx, args...))
+	if err != nil {
+		return store.Worker{}, nil, mapErr(err)
+	}
+	var reclaimed []store.Task
+	if prior != "" && worker.InstanceID != "" && prior != worker.InstanceID {
+		if reclaimed, err = reclaimWorkerTasksTx(ctx, tx, worker.ID, store.FailureReasonWorkerRestarted, now); err != nil {
+			return store.Worker{}, nil, err
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return store.Worker{}, nil, fmt.Errorf("sqlite: commit register worker: %w", mapErr(err))
+	}
+	return out, reclaimed, nil
 }
 
 // GetWorker implements [store.WorkerStore].
@@ -193,7 +257,7 @@ func (s *Store) GetWorker(ctx context.Context, id string) (store.Worker, error) 
 // workerSortColumns maps [store.WorkerSortField] values to safe SQL column names.
 var workerSortColumns = map[store.WorkerSortField]string{
 	store.WorkerSortByHostname:        "hostname",
-	store.WorkerSortByStatus:          "status",
+	store.WorkerSortByStatus:          sqlWorkerEffectiveStatus,
 	store.WorkerSortByRegisteredAt:    "registered_at",
 	store.WorkerSortByLastHeartbeatAt: "last_heartbeat_at",
 }
@@ -225,7 +289,7 @@ func (s *Store) ListWorkers(ctx context.Context, opts store.ListWorkersOptions) 
 		args = append(args, opts.ComputeLocation)
 	}
 	if opts.Status != "" {
-		where += ` AND status = ?`
+		where += ` AND ` + sqlWorkerEffectiveStatus + ` = ?`
 		args = append(args, string(opts.Status))
 	}
 	if frag, sargs := searchClause([]string{"name", "hostname", "id", "compute_location"}, opts.Search); frag != "" {
@@ -290,13 +354,11 @@ func (s *Store) UpdateWorker(ctx context.Context, worker store.Worker) (store.Wo
 	return out, mapErr(err)
 }
 
-// UpdateWorkerStatus implements [store.WorkerStore].
-func (s *Store) UpdateWorkerStatus(ctx context.Context, id string, status store.WorkerStatus) error {
-	res, err := s.stmtUpdateWorkerStatus.ExecContext(ctx, string(status), timeToText(time.Now().UTC()), id)
-	if err != nil {
-		return mapErr(err)
-	}
-	return checkRowsAffected(res)
+// SetWorkerDisabled implements [store.WorkerStore].
+func (s *Store) SetWorkerDisabled(ctx context.Context, id string, disabled bool) (store.Worker, error) {
+	row := s.stmtSetWorkerDisabled.QueryRowContext(ctx, disabled, timeToText(time.Now().UTC()), id)
+	out, err := scanWorker(row)
+	return out, mapErr(err)
 }
 
 // UpdateWorkerHeartbeat implements [store.WorkerStore].
@@ -343,13 +405,38 @@ func (s *Store) CountIdleWorkers(ctx context.Context, farmID string) (int, error
 	return n, mapErr(err)
 }
 
-// DeleteWorker implements [store.WorkerStore].
+// DeleteWorker hard-deletes the worker unconditionally. Returns
+// [store.ErrNotFound] if no such worker exists. Task and task-attempt rows that
+// reference the worker by ID are left intact.
+//
+// Test fixture only: an unguarded delete that is not part of store.Store;
+// removal goes through DeleteWorkerIfRemovable.
 func (s *Store) DeleteWorker(ctx context.Context, id string) error {
 	res, err := s.stmtDeleteWorker.ExecContext(ctx, id)
 	if err != nil {
 		return mapErr(err)
 	}
 	return checkRowsAffected(res)
+}
+
+// DeleteWorkerIfRemovable implements [store.WorkerStore].
+//
+// The zero-rows case is told apart by a read AFTER the delete: a worker that
+// exists but did not match is [store.ErrConflict], one that is gone is
+// [store.ErrNotFound]. A concurrent change between the two statements can only
+// move the answer between those two errors, never delete a row the rule refused.
+func (s *Store) DeleteWorkerIfRemovable(ctx context.Context, id string) error {
+	res, err := s.db.ExecContext(ctx, sqlDeleteWorkerIfRemovable, id)
+	if err != nil {
+		return mapErr(err)
+	}
+	if n, err := res.RowsAffected(); err != nil || n == 1 {
+		return err
+	}
+	if _, err := s.GetWorker(ctx, id); err != nil {
+		return err // ErrNotFound
+	}
+	return store.ErrConflict
 }
 
 // DeleteOfflineWorkersBefore implements [store.WorkerStore].

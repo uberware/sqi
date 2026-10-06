@@ -236,8 +236,8 @@ func TestUpdateMe(t *testing.T) {
 		}
 	})
 
-	// The highest-value test in B3: a self-service route that can reach `role`
-	// is a privilege-escalation hole. `role`, `disabled`, and `username` are
+	// A self-service route that can reach `role` is a privilege-escalation
+	// hole. `role`, `disabled`, and `username` are
 	// absent from the request struct, so a body carrying them must be inert.
 	t.Run("cannot escalate role, rename, or re-enable the account", func(t *testing.T) {
 		st := fake.New()
@@ -286,9 +286,9 @@ func TestUpdateMe(t *testing.T) {
 		}
 	})
 
-	// The reviewer's race is a read-modify-write window that cannot be opened
+	// The race here is a read-modify-write window that cannot be opened
 	// deterministically from outside the handler, so this pins the property
-	// that closes it instead: updateMe must reach the store ONLY through the
+	// that closes it instead: updateMe must reach the store only through the
 	// single-column SetUserDisplayName. UpdateUser writes display_name, role,
 	// and disabled together, so any call to it here is a route by which a
 	// concurrent admin demotion could be reverted.

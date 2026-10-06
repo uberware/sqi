@@ -11,14 +11,12 @@ package expr
 // __property_p__, registered under that name.
 //
 // The table is assembled from one map per RFC 0006 category rather than written
-// as a single literal, because the function library is delivered in waves —
-// sub-project C1 registers the general, validation, math and list groups; C2
-// adds the string library across four files (case and classification, trim and
-// search, split and join, padding), C3 regular expressions and the repr_*
-// family, C4 the path engine and its properties and functions, and D the single
-// session-dependent function apply_path_mapping (pathmapping.go), which
-// completes the library. A wave adds a file and one argument here, and never
-// edits a table another wave owns.
+// as a single literal: the general, validation, math and list groups; the
+// string library across four files (case and classification, trim and search,
+// split and join, padding); regular expressions and the repr_* family; the path
+// engine and its properties and functions; and the single session-dependent
+// function apply_path_mapping (pathmapping.go). A new category adds a file and
+// one argument here.
 var functionShapes = mergeFuncs(
 	convFuncs, mathFuncs, listFuncs,
 	strCaseFuncs, strFindFuncs, strSplitFuncs, strPadFuncs,
@@ -29,8 +27,8 @@ var functionShapes = mergeFuncs(
 
 // mergeFuncs folds the per-category tables into one registry.
 //
-// It PANICS on a duplicate name rather than letting one table quietly win. Five
-// waves write into a single namespace, and RFC 0006 reuses names across
+// It PANICS on a duplicate name rather than letting one table quietly win.
+// Several tables write into a single namespace, and RFC 0006 reuses names across
 // categories in ways that are easy to misread — "string" is a conversion while
 // "str"-prefixed helpers are not, "list" is a conversion while the list
 // FUNCTIONS are a separate group. A silent last-write-wins would delete a whole

@@ -16,6 +16,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"testing"
 	"time"
 
@@ -27,10 +28,6 @@ import (
 	"github.com/uberware/sqi/internal/store/fake"
 	"github.com/uberware/sqi/internal/ws"
 )
-
-// testOfflineThreshold is the heartbeat-timeout window used by the worker
-// handler under test to decide whether a disabled worker is dead.
-const testOfflineThreshold = 30 * time.Second
 
 // recordingNotifier captures NotifyWorker events for assertions.
 type recordingNotifier struct {
@@ -48,15 +45,20 @@ func newWorkerRouter(st store.Store) chi.Router {
 }
 
 func newWorkerRouterWithNotifier(st store.Store, notifier ws.Notifier) chi.Router {
-	return newWorkerRouterWith(st, notifier, storeRevoker{store: st})
+	return newWorkerRouterWith(st, notifier, storeRevoker{store: st}, nil)
 }
 
 func newWorkerRouterWithRevoker(st store.Store, revoker WorkerRevoker) chi.Router {
-	return newWorkerRouterWith(st, nil, revoker)
+	return newWorkerRouterWith(st, nil, revoker, nil)
 }
 
-func newWorkerRouterWith(st store.Store, notifier ws.Notifier, revoker WorkerRevoker) chi.Router {
-	h := newWorkerHandler(st, notifier, revoker, testOfflineThreshold, newTestLogger())
+// recordingWaker records the workers the handler asked the scheduler to wake.
+type recordingWaker struct{ woken []string }
+
+func (w *recordingWaker) WakeWorker(id string) { w.woken = append(w.woken, id) }
+
+func newWorkerRouterWith(st store.Store, notifier ws.Notifier, revoker WorkerRevoker, waker workerWaker) chi.Router {
+	h := newWorkerHandler(st, notifier, revoker, waker, newTestLogger())
 	r := chi.NewRouter()
 	r.Get("/api/v1/workers", h.listWorkers)
 	r.Get("/api/v1/workers/{id}", h.getWorker)
@@ -68,8 +70,14 @@ func newWorkerRouterWith(st store.Store, notifier ws.Notifier, revoker WorkerRev
 
 // ── seed helper ───────────────────────────────────────────────────────────────
 
+// seedWorker registers a worker with the given effective status. A disabled
+// status is an online worker an operator then disabled; seedDisabledWorker
+// seeds one with a chosen liveness.
 func seedWorker(t *testing.T, st *fake.Store, status store.WorkerStatus) store.Worker {
 	t.Helper()
+	if status == store.WorkerStatusDisabled {
+		return seedDisabledWorker(t, st, store.WorkerStatusOnline)
+	}
 	now := time.Now()
 	w := store.Worker{
 		ID:           uuid.NewString(),
@@ -85,11 +93,23 @@ func seedWorker(t *testing.T, st *fake.Store, status store.WorkerStatus) store.W
 		RegisteredAt: now,
 		UpdatedAt:    now,
 	}
-	created, err := st.RegisterWorker(t.Context(), w)
+	created, _, err := st.RegisterWorker(t.Context(), w)
 	if err != nil {
 		t.Fatalf("seedWorker: %v", err)
 	}
 	return created
+}
+
+// seedDisabledWorker seeds a disabled worker whose liveness is online (a paused
+// machine) or offline (one that has since gone away).
+func seedDisabledWorker(t *testing.T, st *fake.Store, liveness store.WorkerStatus) store.Worker {
+	t.Helper()
+	w := seedWorker(t, st, liveness)
+	w, err := st.SetWorkerDisabled(t.Context(), w.ID, true)
+	if err != nil {
+		t.Fatalf("SetWorkerDisabled: %v", err)
+	}
+	return w
 }
 
 func seedWorkerTask(
@@ -221,7 +241,7 @@ func TestListWorkers(t *testing.T) {
 
 		// Insert a worker in a different farm.
 		now := time.Now()
-		if _, err := st.RegisterWorker(t.Context(), store.Worker{
+		if _, _, err := st.RegisterWorker(t.Context(), store.Worker{
 			ID:           uuid.NewString(),
 			FarmID:       "farm-other",
 			Hostname:     "other-node",
@@ -286,7 +306,7 @@ func TestListWorkers_SearchParam(t *testing.T) {
 		{ID: "w1", Hostname: "alpha.local", Status: store.WorkerStatusOnline, Tags: map[string]string{}},
 		{ID: "w2", Hostname: "beta.local", Status: store.WorkerStatusOnline, Tags: map[string]string{}},
 	} {
-		if _, err := st.RegisterWorker(ctx, w); err != nil {
+		if _, _, err := st.RegisterWorker(ctx, w); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -401,12 +421,11 @@ func TestGetWorker(t *testing.T) {
 	})
 }
 
-// TestGetWorker_OwnerScoping is the regression test for I-1: an owner-scoped
-// caller (no jobs.read.all) must not see another owner's task — including its
-// name, which for an expanded OpenJD task can carry parameter values such as
-// scene paths — in current_tasks. Unscoped principals (operator, and the
-// auth-off anonymous superuser) must keep seeing every current task exactly
-// as before this fix.
+// TestGetWorker_OwnerScoping pins that an owner-scoped caller (no
+// jobs.read.all) must not see another owner's task — including its name,
+// which for an expanded OpenJD task can carry parameter values such as scene
+// paths — in current_tasks. Unscoped principals (operator, and the auth-off
+// anonymous superuser) must keep seeing every current task.
 func TestGetWorker_OwnerScoping(t *testing.T) {
 	newSeededRouter := func(t *testing.T) (chi.Router, store.Worker) {
 		t.Helper()
@@ -500,13 +519,13 @@ func TestDisableWorker(t *testing.T) {
 		if resp.ID != w.ID {
 			t.Errorf("id = %q, want %q", resp.ID, w.ID)
 		}
-		// Confirm store state.
+		// Confirm store state: disabled, liveness untouched.
 		stored, err := st.GetWorker(t.Context(), w.ID)
 		if err != nil {
 			t.Fatalf("GetWorker: %v", err)
 		}
-		if stored.Status != store.WorkerStatusDisabled {
-			t.Errorf("stored status = %q, want disabled", stored.Status)
+		if !stored.Disabled || stored.Status != store.WorkerStatusOnline {
+			t.Errorf("stored = %q disabled=%v, want online disabled", stored.Status, stored.Disabled)
 		}
 	})
 
@@ -561,8 +580,37 @@ func TestEnableWorker(t *testing.T) {
 		if err != nil {
 			t.Fatalf("GetWorker: %v", err)
 		}
-		if stored.Status != store.WorkerStatusOnline {
-			t.Errorf("stored status = %q, want online", stored.Status)
+		if stored.Disabled || stored.Status != store.WorkerStatusOnline {
+			t.Errorf("stored = %q disabled=%v, want online enabled", stored.Status, stored.Disabled)
+		}
+	})
+
+	t.Run("enabling a disabled worker that went offline leaves it offline", func(t *testing.T) {
+		// Enable clears the operator's flag and nothing else: liveness is the
+		// worker's to report, so a machine that is gone stays offline until it
+		// registers again.
+		st := fake.New()
+		r := newWorkerRouter(st)
+		w := seedDisabledWorker(t, st, store.WorkerStatusOffline)
+
+		rr := httptest.NewRecorder()
+		r.ServeHTTP(rr, newReq(t, http.MethodPost, "/api/v1/workers/"+w.ID+"/enable", nil))
+		if rr.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d — body: %s", rr.Code, rr.Body)
+		}
+		var resp workerActionResponse
+		if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		if resp.Status != "offline" {
+			t.Errorf("status = %q, want offline", resp.Status)
+		}
+		stored, err := st.GetWorker(t.Context(), w.ID)
+		if err != nil {
+			t.Fatalf("GetWorker: %v", err)
+		}
+		if stored.Disabled || stored.Status != store.WorkerStatusOffline {
+			t.Errorf("stored = %q disabled=%v, want offline enabled", stored.Status, stored.Disabled)
 		}
 	})
 
@@ -591,24 +639,37 @@ func TestEnableWorker(t *testing.T) {
 	})
 }
 
-// ── DELETE /api/v1/workers/{id} ──────────────────────────────────────────────
+// TestEnableWorker_WakesItsParkedLeases pins that enabling a worker wakes the
+// lease requests the scheduler parked while it was disabled, so it is leased
+// work at once rather than after the rest of the hold; disabling wakes nothing,
+// and neither does an enable that fails.
+func TestEnableWorker_WakesItsParkedLeases(t *testing.T) {
+	st := fake.New()
+	waker := &recordingWaker{}
+	r := newWorkerRouterWith(st, nil, storeRevoker{store: st}, waker)
+	w := seedWorker(t, st, store.WorkerStatusOnline)
 
-// seedWorkerWithHeartbeat seeds a worker in the given status with a heartbeat
-// aged by age (0 = none).
-func seedWorkerWithHeartbeat(t *testing.T, st *fake.Store, status store.WorkerStatus, age time.Duration) store.Worker {
-	t.Helper()
-	w := seedWorker(t, st, status)
-	if age > 0 {
-		if err := st.UpdateWorkerHeartbeat(t.Context(), w.ID, time.Now().Add(-age)); err != nil {
-			t.Fatalf("UpdateWorkerHeartbeat: %v", err)
+	for _, step := range []struct {
+		path      string
+		wantCode  int
+		wantWoken []string
+	}{
+		{"/api/v1/workers/" + w.ID + "/disable", http.StatusOK, nil},
+		{"/api/v1/workers/" + w.ID + "/enable", http.StatusOK, []string{w.ID}},
+		{"/api/v1/workers/ghost/enable", http.StatusNotFound, []string{w.ID}},
+	} {
+		rr := httptest.NewRecorder()
+		r.ServeHTTP(rr, newReq(t, http.MethodPost, step.path, nil))
+		if rr.Code != step.wantCode {
+			t.Fatalf("POST %s: expected %d, got %d — body: %s", step.path, step.wantCode, rr.Code, rr.Body)
 		}
-		// UpdateWorkerHeartbeat does not change status; keep the seeded one.
-		if err := st.UpdateWorkerStatus(t.Context(), w.ID, status); err != nil {
-			t.Fatalf("UpdateWorkerStatus: %v", err)
+		if !slices.Equal(waker.woken, step.wantWoken) {
+			t.Fatalf("after POST %s: woken = %v, want %v", step.path, waker.woken, step.wantWoken)
 		}
 	}
-	return w
 }
+
+// ── DELETE /api/v1/workers/{id} ──────────────────────────────────────────────
 
 func TestRemoveWorker(t *testing.T) {
 	t.Run("offline worker is removed (204) and emits a removed event", func(t *testing.T) {
@@ -635,7 +696,7 @@ func TestRemoveWorker(t *testing.T) {
 	t.Run("dead disabled worker is removed (204)", func(t *testing.T) {
 		st := fake.New()
 		r := newWorkerRouter(st)
-		w := seedWorkerWithHeartbeat(t, st, store.WorkerStatusDisabled, time.Hour)
+		w := seedDisabledWorker(t, st, store.WorkerStatusOffline)
 
 		req := newReq(t, http.MethodDelete, "/api/v1/workers/"+w.ID, nil)
 		rr := httptest.NewRecorder()
@@ -664,14 +725,42 @@ func TestRemoveWorker(t *testing.T) {
 	t.Run("live disabled worker returns 409", func(t *testing.T) {
 		st := fake.New()
 		r := newWorkerRouter(st)
-		// Heartbeat well within the threshold → still alive.
-		w := seedWorkerWithHeartbeat(t, st, store.WorkerStatusDisabled, time.Second)
+		// Still online: a paused machine, not a gone one.
+		w := seedDisabledWorker(t, st, store.WorkerStatusOnline)
 
 		req := newReq(t, http.MethodDelete, "/api/v1/workers/"+w.ID, nil)
 		rr := httptest.NewRecorder()
 		r.ServeHTTP(rr, req)
 		if rr.Code != http.StatusConflict {
 			t.Fatalf("expected 409, got %d", rr.Code)
+		}
+	})
+
+	t.Run("offline worker with a running task returns 409 until it is idle", func(t *testing.T) {
+		// The guarded delete refuses a worker with work in flight, which the
+		// status-only pre-check cannot see.
+		st := fake.New()
+		r := newWorkerRouter(st)
+		w := seedWorker(t, st, store.WorkerStatusOffline)
+		task := seedWorkerTask(t, st, w.ID, store.TaskStatusRunning, "busy")
+
+		req := newReq(t, http.MethodDelete, "/api/v1/workers/"+w.ID, nil)
+		rr := httptest.NewRecorder()
+		r.ServeHTTP(rr, req)
+		if rr.Code != http.StatusConflict {
+			t.Fatalf("expected 409, got %d — body: %s", rr.Code, rr.Body)
+		}
+		if _, err := st.GetWorker(t.Context(), w.ID); err != nil {
+			t.Fatalf("worker should survive a refused remove: GetWorker: %v", err)
+		}
+
+		if err := st.UpdateTaskStatus(t.Context(), task.ID, store.TaskStatusSucceeded); err != nil {
+			t.Fatalf("UpdateTaskStatus: %v", err)
+		}
+		rr = httptest.NewRecorder()
+		r.ServeHTTP(rr, newReq(t, http.MethodDelete, "/api/v1/workers/"+w.ID, nil))
+		if rr.Code != http.StatusNoContent {
+			t.Fatalf("once idle: expected 204, got %d — body: %s", rr.Code, rr.Body)
 		}
 	})
 
@@ -771,21 +860,27 @@ func TestRemoveWorker(t *testing.T) {
 // for each status/liveness combination via the detail endpoint.
 func TestWorkerResponse_Removable(t *testing.T) {
 	cases := []struct {
-		name   string
-		status store.WorkerStatus
-		age    time.Duration
-		want   bool
+		name       string
+		liveness   store.WorkerStatus
+		disabled   bool
+		wantStatus string
+		want       bool
 	}{
-		{"offline", store.WorkerStatusOffline, 0, true},
-		{"online", store.WorkerStatusOnline, 0, false},
-		{"disabled dead", store.WorkerStatusDisabled, time.Hour, true},
-		{"disabled live", store.WorkerStatusDisabled, time.Second, false},
+		{"offline", store.WorkerStatusOffline, false, "offline", true},
+		{"online", store.WorkerStatusOnline, false, "online", false},
+		{"disabled dead", store.WorkerStatusOffline, true, "disabled", true},
+		{"disabled live", store.WorkerStatusOnline, true, "disabled", false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			st := fake.New()
 			r := newWorkerRouter(st)
-			w := seedWorkerWithHeartbeat(t, st, tc.status, tc.age)
+			var w store.Worker
+			if tc.disabled {
+				w = seedDisabledWorker(t, st, tc.liveness)
+			} else {
+				w = seedWorker(t, st, tc.liveness)
+			}
 
 			req := newReq(t, http.MethodGet, "/api/v1/workers/"+w.ID, nil)
 			rr := httptest.NewRecorder()
@@ -799,6 +894,9 @@ func TestWorkerResponse_Removable(t *testing.T) {
 			}
 			if resp.Removable != tc.want {
 				t.Errorf("removable = %v, want %v", resp.Removable, tc.want)
+			}
+			if resp.Status != tc.wantStatus {
+				t.Errorf("status = %q, want %q", resp.Status, tc.wantStatus)
 			}
 		})
 	}

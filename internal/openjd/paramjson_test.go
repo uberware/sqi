@@ -69,7 +69,7 @@ func TestEncodeListDefault_Rejects(t *testing.T) {
 // encoding/json's default. json.Marshal escapes the three characters <, > and
 // & into their \u form so the output is safe to embed in HTML — irrelevant
 // here, and it would mean a template author who writes ["a<b"] reads back an
-// escaped form from the API in sub-project F2. Both are valid JSON and decode
+// escaped form from the API. Both are valid JSON and decode
 // identically; the unescaped one is what a human recognizes as what they
 // typed.
 func TestEncodeListDefault_DoesNotEscapeHTML(t *testing.T) {
@@ -158,17 +158,15 @@ func TestListDefault_ListTypeWithoutEXPRStillRejected(t *testing.T) {
 }
 
 // TestListDefault_JSONVersusValueString pins what paramjson.go's header
-// describes: the stored form and the interpolated form now share their
-// element QUOTING and still differ in their SEPARATOR.
+// describes: the stored form and the interpolated form share their element
+// QUOTING and differ in their SEPARATOR.
 //
-// The quoting half used to be a divergence -- the stored form was JSON while
-// expr.Value.String() used strconv.Quote, so a control character came out
-// \x00 on one side and \u0000 on the other, and \x00 is not valid JSON at
-// all. openjd-specifications#176 removed that freedom by requiring the
-// interpolated form to parse as JSON and to match string()'s conversion, and
-// expr now renders through the same encoder. The separator half is untouched:
-// canonical JSON has no space after the comma and section 2.2.1's rendering
-// does.
+// openjd-specifications#176 requires the interpolated form to parse as JSON
+// and to match string()'s conversion, so expr renders through the same
+// encoder as the stored form; a control character comes out \u0000 on both
+// sides (Go's strconv.Quote would give \x00, which is not valid JSON). The
+// separator differs: canonical JSON has no space after the comma and section
+// 2.2.1's rendering does.
 func TestListDefault_JSONVersusValueString(t *testing.T) {
 	const nul = "a\x00b"
 
@@ -178,9 +176,8 @@ func TestListDefault_JSONVersusValueString(t *testing.T) {
 	}
 	rendered := expr.List(expr.TString, []expr.Value{expr.String(nul)}).String()
 
-	// One element: no separator to disagree about, so the two forms must now
-	// be byte-identical. This is the assertion that would have failed before
-	// the #176 fix.
+	// One element: no separator to disagree about, so the two forms must be
+	// byte-identical.
 	if stored != rendered {
 		t.Errorf("stored = %s, interpolated = %s; a single-element list must render "+
 			"identically now that both quote through encoding/json", stored, rendered)

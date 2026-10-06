@@ -48,7 +48,7 @@ record as a JSON `DiagLogMsg` to the core-NATS subject
 arriving records in its buffer. The server's own slog records bypass NATS and
 feed the same buffer in-process via a fan-out handler. Core NATS is used (not
 JetStream) because diagnostic records are best-effort — a brief network blip
-simply means some lines are missing from the UI, which is acceptable for
+means some lines are missing from the UI, which is acceptable for
 operational logs.
 
 ---
@@ -59,7 +59,7 @@ operational logs.
 
 Under the lease model, `assigned` is a brief handoff window: the worker that
 just requested work is expected to transition the task to `running` within
-seconds. A task that lingers in `assigned` is a genuine anomaly — the worker
+seconds. A task that lingers in `assigned` is an anomaly — the worker
 leased it but never reported `running`.
 
 The scheduler's **stale-assigned reaper** runs on every heartbeat-sweep tick
@@ -94,7 +94,7 @@ The server infers worker health from two signals:
 
 Unlike `assigned` lingering (an anomaly on an otherwise-progressing task),
 "unschedulable" answers the more common operator question: a `ready` task
-just never gets picked up. It means no currently-online worker can satisfy
+never gets picked up. It means no currently-online worker can satisfy
 that task's requirements — a farm/queue/compute-location mismatch, an unmet
 hardware amount or capability-attribute requirement, or a usage pool at
 capacity — and it has been waiting long enough that this isn't just a
@@ -137,12 +137,11 @@ mismatch rather than a capacity shortfall.
 **The `worker EXPR limits are tighter…` reason is a configuration mismatch,
 not a capacity one.** The scheduler withholds EXPR work from any worker whose
 advertised `expr.*` caps undercut the limits this server accepts templates
-under, and it names both numbers and both config keys. Two things are worth
-knowing before chasing it:
+under, and it names both numbers and both config keys. Before chasing it:
 
 - **On a job submitted since the upgrade, the answer is exact.** The gate reads
   the extension list recorded on the job row at submission, so a job flagged
-  with this reason really does declare `EXPR`. The fix is to raise the workers'
+  with this reason declares `EXPR`. The fix is to raise the workers'
   `expr.*` keys, or lower the server's `openjd.expr_*` keys. See
   [Server → EXPR expression limits](configuration.md#4-every-worker-must-be-at-least-as-generous-as-this-server).
 - **On a job that predates the upgrade, you may still see it on a job that uses
@@ -155,7 +154,7 @@ knowing before chasing it:
   this reason. It resolves on its own as those jobs age out; the fix meanwhile
   is the same either way.
 - **With the sweep disabled (`scheduler.unschedulable_grace` ≤ `0`) this
-  reason is never written at all.** A withheld task simply sits `ready` with
+  reason is never written at all.** A withheld task sits `ready` with
   nothing on it, and the one-off `WARN` the server logs when the short worker
   registers — which may well predate the job — becomes the only signal. Look
   for it under [Admin → Server log](#admin--server-log) (component `server`),

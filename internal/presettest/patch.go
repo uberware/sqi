@@ -11,7 +11,7 @@ import (
 )
 
 // ApplyChunkPatch returns rawTemplate with p applied. The ChunkPatch type is
-// declared in snapshot.go -- see Task 2.
+// declared in snapshot.go.
 //
 // It edits the YAML node tree rather than the text: a regex over
 // "defaultTaskCount: 1" would hit the wrong step in any template with more than

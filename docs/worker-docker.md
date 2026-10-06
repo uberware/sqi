@@ -159,8 +159,9 @@ docker run \
 
 For **staged** access to object storage (the `stage_locally` path-translation
 mode — see [S3-compatible storage](storage-s3.md)), the worker invokes an
-operator-provided `staging.sync_command` before and after each task. sqi moves
-no bytes itself, so that sync tool (`aws`, `rclone`, `mc`, `rsync`, …) must be
+operator-provided `staging.sync_command` before and after each task. sqi has no
+S3 client, and its built-in staging copy works on filesystem paths only, so for
+object storage that sync tool (`aws`, `rclone`, `mc`, `rsync`, …) must be
 present in the image — add it to a custom image built `FROM` this one — and the
 `staging.scratch_dir` / `staging.sync_command` settings must come from a mounted
 config file (they have no environment-variable form).

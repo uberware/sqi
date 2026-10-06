@@ -46,11 +46,10 @@ func (s *scopedSymbols) Lookup(name string) (Value, bool) {
 // different question. listElem SKIPS a union's non-list members, so it calls
 // "list[int] | nulltype" a list and "range_expr | list[string]" a
 // list[string] — the second of those is not loose acceptance but a WRONG
-// INFERRED TYPE, since the value may be a range_expr yielding int. Delegating
-// was a deliberate consolidation, and it was the wrong instrument: what it
-// fixed was the rejection of "range_expr | list[int]", the union this package
-// manufactures itself for a sliced range_expr (sliceResultType), and that case
-// falls out of the every-member rule below anyway — both members yield int.
+// INFERRED TYPE, since the value may be a range_expr yielding int.
+// "range_expr | list[int]", the union this package manufactures for a sliced
+// range_expr (sliceResultType), passes the every-member rule below: both
+// members yield int.
 func iterableElem(t Type) (Type, bool) {
 	t = unwrapUnresolved(t)
 	switch t.Code {
@@ -136,21 +135,19 @@ func evalListComp(n *ListComp, ec evalCtx, target Type, depth int) (Value, error
 	// RESERVE rule 2's per-element charge before iterItems expands anything.
 	// runComp charges it below, but only once the items exist, and for a
 	// range_expr iterable "exist" means a full expansion: [x for x in
-	// range_expr("1-10000000")] materialized 1.6 GB in 97 ms and only then
-	// reported 10,000,001 operations against a limit of 10,000.
+	// range_expr("1-10000000")] would materialize 1.6 GB in 97 ms and only
+	// then report 10,000,001 operations against a limit of 10,000.
 	//
-	// reserveIterable, NOT elementCount. The first revision of this
-	// reservation called elementCount, which for a MULTI-sub-range range_expr
-	// expands to produce its answer -- so the reservation's own input did the
-	// work it was meant to avert, and on the SUCCESS path the expansion then
-	// happened a second time inside iterItems: +72 MB and +36 ms per call on
-	// [x for x in range_expr("1-500000,2000000-2400000")], a regression no
-	// operation count could see because the counts were identical.
-	// reserveIterable is arithmetic (rangeexpr.go).
+	// reserveIterable, NOT elementCount: elementCount expands a MULTI-sub-range
+	// range_expr to produce its answer, so the reservation itself would do the
+	// work it is meant to avert, and on the SUCCESS path iterItems would expand
+	// it a second time: +72 MB and +36 ms per call on
+	// [x for x in range_expr("1-500000,2000000-2400000")], with identical
+	// operation counts. reserveIterable is arithmetic (rangeexpr.go).
 	//
 	// The CHARGE still comes from runComp's own chargeElements(len(items)),
 	// which is exact, so an evaluation that survives this is charged the same
-	// total it always was -- see meter.reserve.
+	// total as without the reservation -- see meter.reserve.
 	if err := reserveIterable(ec, iter); err != nil {
 		return Value{}, wrapAt(ec.src, n.Iter.Pos(), err)
 	}

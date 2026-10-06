@@ -1809,7 +1809,8 @@ func TestValidate_AuthLDAP(t *testing.T) {
 		}, true},
 		// unique_id_attr is the account-matching key. Unlike the other two it
 		// has no default to fall back on, so an unset value is the state an
-		// operator upgrading from C1 arrives in — and starting anyway would
+		// operator upgrading an existing LDAP configuration arrives in — and
+		// starting anyway would
 		// mean every login presents an empty identifier.
 		{"empty unique_id_attr", func(c *config.Config) {
 			l := validSearchLDAP()
@@ -1863,8 +1864,8 @@ func validSearchLDAP() config.LDAPConfig {
 }
 
 // The unset-unique_id_attr error must name its own field and both correct
-// values. This is the one config error an operator upgrading from C1 is
-// guaranteed to hit, and a generic "invalid ldap config" would leave them
+// values. This is the one config error an operator upgrading an existing
+// LDAP configuration is guaranteed to hit, and a generic "invalid ldap config" would leave them
 // guessing between two attribute names, only one of which works on their
 // server.
 func TestValidate_AuthLDAPUniqueIDAttrErrorIsActionable(t *testing.T) {

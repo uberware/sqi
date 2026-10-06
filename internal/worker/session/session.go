@@ -17,12 +17,13 @@
 // (consistent with the session_id column on task_attempts; see
 // docs/architecture.md, "SQLite schema overview").
 //
-// # Phase 1 scope
+// # Scope
 //
-// In Phase 1, sessions are not stored as database rows — they are worker-side
-// runtime constructs. The server records the session ID only on task_attempts.
-// A dedicated sessions table (for session-reuse scheduling) is deferred to
-// Phase 2; see docs/architecture.md ("SQLite schema overview").
+// Sessions are not stored as database rows — they are worker-side runtime
+// constructs. The server records the session ID only on task_attempts. There
+// is no dedicated sessions table (for session-reuse scheduling), and a
+// session runs exactly one task; see docs/architecture.md ("SQLite schema
+// overview").
 //
 // # Usage
 //
@@ -120,10 +121,10 @@ type Session struct {
 	// exposed to format strings as Session.HasPathMappingRules.
 	hasPathMap bool
 
-	// msg is the assignment that created this session (the first, and today
-	// the only, task ever dispatched into it -- Phase 1 defers session reuse
-	// across tasks, see this file's package comment). enterOne and
-	// resolveEnvParts (EXPR sub-project E4a, Task 6) read msg.EXPR to select
+	// msg is the assignment that created this session (the only task ever
+	// dispatched into it -- sessions are not reused across tasks, see this
+	// file's package comment). enterOne and
+	// resolveEnvParts read msg.EXPR to select
 	// between the pre-EXPR fmtres.EnvScope/ResolveAction path and the
 	// phase-3 fmtres.EnvSymbols/ResolveActionExpr path, and read msg.PathMap
 	// for the EXPR path's metering/path-mapping options. Never mutated after
@@ -137,8 +138,7 @@ type Session struct {
 	// cannot be in.
 	msg *protocol.AssignMsg
 
-	// exprBudget is EXPR sub-project E4c's Task 4 addition: the ONE
-	// [fmtres.AssignmentBudget] this whole assignment's LIVE, entry-time
+	// exprBudget is the ONE [fmtres.AssignmentBudget] this whole assignment's LIVE, entry-time
 	// phase-3 tables share -- allocated once, here, in Manager.Create, BEFORE
 	// enterEnvironments runs (so every environment table entered during
 	// session creation already shares it), and reused by the executor's own
@@ -151,7 +151,7 @@ type Session struct {
 	// process-wide) is the deliberate scope and how worker concurrency
 	// factors into its size.
 	//
-	// FIX ROUND 1 (Critical 2): resolveEnvAction's OWN calls (the teardown
+	// resolveEnvAction's OWN calls (the teardown
 	// path, reached only via ExitEnvironments) deliberately do NOT charge
 	// this budget -- see that method's own doc comment for why a table that
 	// is rebuilt and immediately discarded at exit must not be charged a
@@ -213,8 +213,8 @@ type Session struct {
 	// time via envutil.BuildFromBase and are NEVER filtered — only what is
 	// inherited from the daemon is subject to the allowlist. Equal to the full
 	// (unfiltered) daemon environment when the assignment carries no
-	// run_as_user isolation, so the no-isolation path is byte-for-byte
-	// unchanged from before this field existed.
+	// run_as_user isolation, so the no-isolation path inherits the daemon
+	// environment byte for byte.
 	baseEnv map[string]string
 }
 
@@ -235,8 +235,7 @@ func (s *Session) HasPathMappingRules() bool { return s.hasPathMap }
 // this SAME object to every fmtres phase-3 call so the assignment's total
 // LIVE resolved-position and retained-byte spend is charged in one place.
 // resolveEnvAction (the EXIT/teardown path, via ExitEnvironments)
-// deliberately does NOT use it -- see that method's own doc comment
-// (fix round 1, Critical 2).
+// deliberately does NOT use it -- see that method's own doc comment.
 func (s *Session) ExprBudget() *fmtres.AssignmentBudget { return s.exprBudget }
 
 // WriteEmbeddedFiles materializes files into the session working directory.
@@ -374,11 +373,10 @@ type Manager struct {
 	sessionRoot string
 	// sessionRootMode is the mode sessionRoot is created at when it does not
 	// already exist (os.MkdirAll never touches an existing directory's mode —
-	// see prepareSessionsDir). Defaults to 0711 (traversable-from-birth,
-	// matching every call site that predates this field) unless overridden via
+	// see prepareSessionsDir). Defaults to 0711 (traversable-from-birth)
+	// unless overridden via
 	// WithSessionRootMode — see cmd/sqi-worker's effectiveSessionRoot for why
-	// production chooses 0750 instead for the non-root DataDir fallback (the
-	// pre-split mode, restored for byte-for-byte backward compatibility: real
+	// production chooses 0750 instead for the non-root DataDir fallback (real
 	// isolation cannot function without root regardless of directory
 	// permissions, so that location gains nothing from the wider 0711).
 	sessionRootMode    os.FileMode
@@ -392,13 +390,12 @@ type Manager struct {
 	// Provider) govern worker boot behavior and provider selection, handled
 	// by the caller before NewManager is invoked.
 	isolationCfg workerconfig.IsolationConfig
-	// exprLimits is the operator's phase-3 expression budget for this host
-	// (EXPR sub-project E4d, Task 2). Every session this Manager creates gets
-	// its own [fmtres.AssignmentBudget] built from it, and every phase-3
-	// evaluation the session performs reads its limits back off that budget.
-	// The zero value normalizes to fmtres.DefaultExprLimits(), so a caller
-	// with no configuration to offer behaves exactly as it did before this
-	// field existed.
+	// exprLimits is the operator's phase-3 expression budget for this host.
+	// Every session this Manager creates gets its own
+	// [fmtres.AssignmentBudget] built from it, and every phase-3 evaluation
+	// the session performs reads its limits back off that budget. The zero
+	// value normalizes to fmtres.DefaultExprLimits(), so a caller with no
+	// configuration to offer meters by the defaults.
 	exprLimits fmtres.ExprLimits
 	logger     *slog.Logger
 }
@@ -470,9 +467,9 @@ func (m *Manager) resolveCredential(ctx context.Context, msg *protocol.AssignMsg
 	if err := isolation.SecureWorkDir(workDir, cred); err != nil {
 		// cred was already obtained above; this function is returning an
 		// error instead of the credential, so it owns closing it here — the
-		// caller never sees it to close it itself (Task 8's Credential
-		// lifecycle: every path that obtains one either returns it for the
-		// session to own and close, or closes it itself before erroring out).
+		// caller never sees it to close it itself (the Credential lifecycle:
+		// every path that obtains one either returns it for the session to
+		// own and close, or closes it itself before erroring out).
 		closeCredential(ctx, cred, sessionID, m.logger)
 		if rmErr := os.RemoveAll(workDir); rmErr != nil {
 			m.logger.WarnContext(ctx, "session: cleanup after secure-workdir failure",
@@ -668,7 +665,7 @@ func (m *Manager) Create(ctx context.Context, msg *protocol.AssignMsg) (*Session
 	// Write the OpenJD path-mapping file once, here at session creation, so that
 	// BOTH environment actions (entered below) and the task action (run later by
 	// the executor) can rely on Session.PathMappingRulesFile pointing at a real
-	// file. The executor no longer writes it, avoiding a double-write.
+	// file. The executor does not write it, avoiding a double-write.
 	// Write the OpenJD path-mapping file only when the translation_file delivery
 	// is enabled (or, for legacy assignments with no delivery set, fall back to
 	// "write if rules exist" to preserve prior behavior).
@@ -904,15 +901,15 @@ type envFileResolver func([]protocol.EmbeddedFile) ([]protocol.EmbeddedFile, err
 // the variable values against ONE environment-action scope/table and returns a
 // closure that resolves embedded-file data against that same scope/table.
 //
-// THE TWO PATHS ARE ONE FUNCTION ON PURPOSE. They were two, and they drifted:
-// [fmtres.EnvSymbols]' own doc comment records the step-template let: fold
-// being added at entry and missed at teardown, so an onExit referencing a
-// step-template binding failed as an unknown symbol — and teardown is the path
-// whose failures [Session.ExitEnvironments] logs as a warning and swallows, so
-// the divergence was quiet. Any future §3.6.2 ordering constraint now lands in
-// exactly one place.
+// THE TWO PATHS ARE ONE FUNCTION ON PURPOSE. As two, they can drift: a
+// change such as the step-template let: fold ([fmtres.EnvSymbols]) applied
+// at entry and missed at teardown makes an onExit referencing a step-template
+// binding fail as an unknown symbol — and teardown is the path whose failures
+// [Session.ExitEnvironments] logs as a warning and swallows, so the
+// divergence would be quiet. Any §3.6.2 ordering constraint lands in exactly
+// one place.
 //
-// s.msg.EXPR selects the resolution family (EXPR sub-project E4a, Task 6): a
+// s.msg.EXPR selects the resolution family: a
 // base-spec assignment (EXPR false, the zero value) takes exactly the
 // fmtres.EnvScope/ResolveAction/ResolveVars/ResolveEmbeddedFiles path this
 // package has always taken, byte for byte — mirroring
@@ -1045,8 +1042,7 @@ func (s *Session) resolveEnvEntry(env protocol.AssignEnvironment) (*protocol.Act
 // variable map (nil when vars is nil), or an error naming the offending
 // reference when any value cannot be resolved.
 //
-// FIX ROUND 1 (post-implementation review, Critical 2): this method's EXPR
-// path deliberately does NOT pass s.exprBudget to ApplyEnvLet/ResolveVarsExpr/
+// This method's EXPR path deliberately does NOT pass s.exprBudget to ApplyEnvLet/ResolveVarsExpr/
 // ResolveActionExpr, even though resolveEnvEntry's (entry-side) calls do.
 // resolveEnvAction is called ONLY from [Session.ExitEnvironments] (this
 // method's own doc comment above), which builds a FRESH table here and
@@ -1054,12 +1050,12 @@ func (s *Session) resolveEnvEntry(env protocol.AssignEnvironment) (*protocol.Act
 // charging it against the shared assignment budget double-counts bytes that
 // were already charged once at entry, for a table that no longer exists by
 // the time this one is built (the entry-time syms went out of scope when
-// resolveEnvEntry returned). Verified: two environments each let-binding
+// resolveEnvEntry returned). Two environments each let-binding
 // 7 MB enter successfully at 14 MB, under the 20 MB assignment cap; teardown
 // re-evaluating both blocks a second time would re-charge to ~21 MB and trip
-// the budget -- but ExitEnvironments (session.go) treats a resolve error as
-// a WARNING and continues, so an exhausted budget did not merely fail the
-// task, it silently SKIPPED every remaining environment's onExit (license
+// the budget -- and ExitEnvironments (session.go) treats a resolve error as
+// a WARNING and continues, so an exhausted budget would not merely fail the
+// task, it would SKIP every remaining environment's onExit (license
 // check-ins, daemon shutdowns, unmounts) with only a log line. A budget that
 // cannot avert the memory it is charging for -- the allocation happens
 // whether or not the charge is accepted -- must not be allowed to block
@@ -1070,16 +1066,14 @@ func (s *Session) resolveEnvEntry(env protocol.AssignEnvironment) (*protocol.Act
 // TestSession_ExitEnvironments_EXPR_AllOnExitRunAfterEntryNearsBudgetCap
 // (session_expr_budget_test.go) for the regression test.
 //
-// E4d TASK 2, FIX ROUND 1: what this path passes is [Session.teardownBudget],
-// a FRESH budget PER CALL carrying the host's configured LIMITS. Task 2's
-// first round built one budget for the whole method and passed it to all four
-// calls, which re-created fix round 1's Critical 2 in a new place: the four
-// calls' POSITION charges then accumulated against a single cap, so an
-// environment with 9,000 variables and a 1,500-arg onExit entered fine
-// (9,001 positions) and then failed teardown at position 10,001 -- and
-// ExitEnvironments logs a resolve failure and CONTINUES, so the onExit was
-// silently skipped. Before Task 2 each call got its own throwaway ledger,
-// which is the behavior teardownBudget restores.
+// What this path passes is [Session.teardownBudget], a FRESH budget PER CALL
+// carrying the host's configured LIMITS. One budget for the whole method,
+// passed to all four calls, would recreate the same skip in a new place: the
+// four calls' POSITION charges would accumulate against a single cap, so an
+// environment with 9,000 variables and a 1,500-arg onExit enters fine
+// (9,001 positions) and then fails teardown at position 10,001 -- and
+// ExitEnvironments logs a resolve failure and CONTINUES, so the onExit is
+// skipped.
 //
 // PASSING THE METHOD VALUE [Session.teardownBudget] -- rather than one budget
 // it produced -- is what carries both of the paragraphs above through
@@ -1099,8 +1093,7 @@ func (s *Session) resolveEnvAction(
 // host's configured expression LIMITS and an EMPTY ledger, for one
 // environment-teardown evaluation.
 //
-// CALL IT ONCE PER EVALUATION, never once per method. Both halves matter and
-// each has already been a defect:
+// CALL IT ONCE PER EVALUATION, never once per method. Both halves matter:
 //
 //   - SAME LIMITS. Passing nil instead would meter teardown against the
 //     built-in defaults rather than the operator's expr: configuration --

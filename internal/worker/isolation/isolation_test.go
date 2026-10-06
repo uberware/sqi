@@ -112,8 +112,8 @@ func TestFakeProviderRejectsInvalidGroup(t *testing.T) {
 	}
 }
 
-// TestFakeProviderRejectsPrimaryGIDZero mirrors Critical 1's real-provider
-// fix (TestResolveGIDRefusesPrimaryGIDZero) in the fake, so a test written
+// TestFakeProviderRejectsPrimaryGIDZero mirrors the real provider's
+// primary-gid-0 refusal (TestResolveGIDRefusesPrimaryGIDZero) in the fake, so a test written
 // against the fake proves something about an account whose primary group is
 // gid 0 instead of silently accepting it.
 func TestFakeProviderRejectsPrimaryGIDZero(t *testing.T) {

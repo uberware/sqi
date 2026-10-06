@@ -2,8 +2,8 @@
 
 package openjd
 
-// Tests for the job-wide task cap ([maxTasksPerJob]) -- EXPR sub-project H1,
-// task 4. The cap is base-spec, always-on, and summed across a job's steps;
+// Tests for the job-wide task cap ([maxTasksPerJob]). The cap is base-spec,
+// always-on, and summed across a job's steps;
 // none of these templates declare any extension.
 //
 // package openjd (not openjd_test) on purpose: the boundary test drives the
@@ -26,7 +26,7 @@ import (
 // Every EXISTING limit is respected: 1,000 values per parameter is under
 // maxTaskParamValues (1024), 1,000,000 tasks in one step is exactly
 // maxTasksPerStep, and 2 steps is far under maxSteps. Only the job-wide sum is
-// over. That is the whole point -- this template is legal without the cap.
+// over, so this template is legal without the cap.
 //
 // Step order matters for the test's cost: "Tiny" materializes its single row,
 // then "Huge" is rejected ARITHMETICALLY, before any of its million rows is

@@ -10,14 +10,13 @@ const CONTROL_WIDGET: Record<string, Widget> = {
   CHECK_BOX: 'checkbox',
   SPIN_BOX: 'number',
   HIDDEN: 'hidden',
-  // No file-picker widget exists yet; these render as text inputs, which is
-  // exactly what these fields rendered as before the controls were recognised.
+  // No file-picker widget exists yet; these render as text inputs.
   CHOOSE_INPUT_FILE: 'text',
   CHOOSE_OUTPUT_FILE: 'text',
   CHOOSE_DIRECTORY: 'text',
   // RFC 0007's list controls. The three CHOOSE_*_LIST variants map to the same
-  // row editor as the others rather than to a file dialog, following the
-  // precedent set by their scalar counterparts three lines above.
+  // row editor as the others rather than to a file dialog, like their scalar
+  // counterparts above.
   LINE_EDIT_LIST: 'list',
   SPIN_BOX_LIST: 'list',
   CHECK_BOX_LIST: 'list',
@@ -85,12 +84,11 @@ export function productLabel(product: Product): string {
  * the booleans true/false, the numbers 1/1.0 and 0/0.0, and the
  * case-insensitive strings true/yes/on/1/1.0 and false/no/off/0/0.0.
  *
- * This is deliberately NOT validation. Sub-project G's design refused to
- * duplicate the accepted-values table for validation -- the server owns
- * that, and a second copy is a drift hazard. But a checkbox that cannot
- * render the correct state for a value the server accepts is a different
- * problem: this copy is display-only and never decides whether a value is
- * accepted. */
+ * This is deliberately NOT validation. The accepted-values table is not
+ * duplicated for validation -- the server owns that, and a second copy is a
+ * drift hazard. But a checkbox that cannot render the correct state for a
+ * value the server accepts is a different problem: this copy is
+ * display-only and never decides whether a value is accepted. */
 export function isBoolTruthy(v: unknown): boolean {
   if (typeof v === 'boolean') return v
   if (typeof v === 'number') return v === 1

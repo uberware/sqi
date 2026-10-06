@@ -12,14 +12,14 @@ import (
 	"github.com/uberware/sqi/internal/worker/isolation"
 )
 
-// TestFakeProviderStripsGID0FromSupplementaryGroups is the Minor-6 fix: the
-// fake previously populated no Groups at all on the returned Credential, so
-// supplementary-group behavior — including the Important-1 gid-0 strip — was
-// structurally invisible to every fake-based test. This proves the fake now
-// applies the same stripGID0FromSupplementary logic the real provider does.
+// TestFakeProviderStripsGID0FromSupplementaryGroups proves the fake populates
+// Groups on the returned Credential and applies the same
+// stripGID0FromSupplementary logic the real provider does; a fake with no
+// Groups would make supplementary-group behavior — including the gid-0 strip
+// — structurally invisible to every fake-based test.
 //
-// Moved here (from isolation_test.go, which carries no build tag) because it
-// asserts through cmd.SysProcAttr.Credential — a POSIX-only field that does
+// It lives here (not in isolation_test.go, which carries no build tag)
+// because it asserts through cmd.SysProcAttr.Credential — a POSIX-only field that does
 // not exist on Windows's syscall.SysProcAttr — so this test can only ever
 // compile against the POSIX Credential shape.
 func TestFakeProviderStripsGID0FromSupplementaryGroups(t *testing.T) {

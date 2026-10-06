@@ -82,8 +82,7 @@ Configuration cascades: farm defaults → queue overrides, with retry policy (ma
     request to `work.lease.<worker>.<queue>`. The server computes free cores
     (`CPUCount − Σ committed`), selects a priority-ordered batch that fits,
     atomically transitions the batch `ready → assigned` (stamping `assigned_at`
-    only now), and replies. The `SQI_WORK` JetStream stream, `work.assign.<queue>`
-    subject, and server dispatch loop are removed.
+    at that moment), and replies.
  - *CPU capacity:* `amount.worker.vcpu` `min` is a consumable per-task
     reservation; omitting it reserves the whole machine (one task per worker).
     The server tracks committed cores in the database; the ledger rebuilds
@@ -98,7 +97,7 @@ Configuration cascades: farm defaults → queue overrides, with retry policy (ma
 `sqi` adopts the [Open Job Description](https://github.com/OpenJobDescription/openjd-specifications) (OpenJD) format as its native job execution format.
 
 **Benefits:**
-- Studios authoring jobs for other OpenJD-compatible systems can submit to `sqi` unchanged, provided the template does not opt into an extension `sqi` has not implemented — those are rejected by design rather than accepted and misinterpreted (the official `EXPR` expression-language extension **is** implemented and supported) — `sqi` accepts every valid base-spec template in the official conformance suite, though it is still more permissive than the spec about rejecting *invalid* ones (tracked in `test/conformance/baseline.txt`, measured in [`docs/openjd-conformance.md`](docs/openjd-conformance.md))
+- Studios authoring jobs for other OpenJD-compatible systems can submit to `sqi` unchanged, provided the template does not opt into an extension `sqi` has not implemented — those are rejected by design rather than accepted and misinterpreted (the official `EXPR` expression-language extension **is** implemented and supported) — and the remaining gaps against the official conformance suite are tracked in `test/conformance/baseline.txt` and measured in [`docs/openjd-conformance.md`](docs/openjd-conformance.md)
 - Standardized path mapping, parameter spaces, and execution semantics
 - Clear separation between job description and job authoring (the product system)
 
@@ -144,12 +143,13 @@ roots:
 sqi is a thin layer with respect to S3: it validates `s3://bucket[/prefix]`
 roots, derives a storage location's `type` from its roots
 (`filesystem`/`s3`/`mixed`), and translates/stages paths at run time. It embeds
-no S3 client, stores no credentials or endpoint addresses, and moves no bytes
-itself.
+no S3 client, stores no credentials or endpoint addresses, and never reads or
+writes object storage itself (its built-in staging copy works on filesystem
+paths only).
 
 S3-backed data reaches a worker via two paths: (1) **mounted** — a FUSE tool
 (mountpoint-s3, goofys, rclone mount) exposes the bucket as a plain filesystem
-path, already supported with no extra configuration; or (2) **staged** — B4
+path, already supported with no extra configuration; or (2) **staged** —
 `stage_locally` invokes the operator's `staging.sync_command` (e.g.
 `aws s3 cp {src} {dest}`, `rclone copy {src} {dest}`, `mc cp {src} {dest}`) to
 copy inputs to worker-local scratch before each task and outputs back after.
@@ -274,17 +274,16 @@ before Phase 3. See [docs/auth.md](docs/auth.md) for the model and setup.
 ### Also in v0.3: OpenJD `EXPR` and expanded reference presets ✅ Released
 
 - **OpenJD `EXPR` extension** — the official expression-language extension is
-  fully implemented and `StatusSupported`: expression core, type system,
+  fully implemented and supported: expression core, type system,
   collections, comprehensions, the ~100-function standard library, path
   mapping, template integration (scopes, `let` bindings, bounded evaluation
   with operator-configurable limits), RFC 0007 extended parameter types, and
   the web `*_LIST` widgets. EXPR templates are accepted, submitted, dispatched
-  and executed, with expressions resolved on the worker at phase 3. See
+  and executed, with host-context expressions resolved on the worker. See
   [`docs/openjd-extensions/expr.md`](docs/openjd-extensions/expr.md).
 - **ffmpeg reference presets** — transcode, sequence-encode, and
-  segment-transcode (bash/PowerShell/EXPR) added to `presets/sqi/`; the
-  segment-transcode EXPR variant is the first shipped preset to declare
-  `extensions: [EXPR]`.
+  segment-transcode (bash/PowerShell/EXPR) added to `presets/sqi/`; all but
+  the transcode preset declare `extensions: [EXPR]`.
 - **Mistika reference presets** — Boutique, VR, and Workflows render presets
   added to `presets/sqi/`, each using the `SQI_CHUNK_BOUNDS` extension.
 
@@ -295,13 +294,6 @@ before Phase 3. See [docs/auth.md](docs/auth.md) for the model and setup.
 - Distributed NATS cluster
 - Worker auto-scaling hooks (AWS, GCP, Azure)
 - Installer packages (Linux, macOS, Windows)
-- **Reference-preset frame ranges** ✅ Resolved by gap-aware chunking. A
-  `CONTIGUOUS` chunk is always a plain `start-end` run of consecutive frames,
-  so Nuke's `-F` never receives an OpenJD step (`1-19:2`, where Foundry
-  documents `1-19x2`), and a stepped range no longer widens to its contiguous
-  span through `SQI_CHUNK_BOUNDS`. See
-  [docs/openjd-extensions/sqi-chunk-bounds.md](docs/openjd-extensions/sqi-chunk-bounds.md)
-  and [docs/preset-library.md](docs/preset-library.md).
 
 ### Phase 5: LLM Plugin and Polish (v0.5 — RC)
 

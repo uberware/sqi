@@ -18,11 +18,10 @@ createRoot(rootElement).render(
         {/*
           AuthProvider sits inside QueryClientProvider (useAuthMe needs a
           query client) and outside ThemeProvider so the login page is
-          themed too. WebSocketProvider used to live here, connecting
-          unconditionally on mount; App now owns it instead, scoped to the
-          authed shell branch — connecting a socket before the app knows
-          whether anyone is logged in has no use, since it would just be
-          torn down and reopened once the login page hands off. When auth is
+          themed too. WebSocketProvider is not here: App owns it, scoped to
+          the authed shell branch, because a socket opened before the app
+          knows whether anyone is logged in would just be torn down and
+          reopened once the login page hands off. When auth is
           disabled server-side, /auth/me resolves 'authed' with the
           anonymous principal immediately, so this costs nothing in that
           (default) mode.

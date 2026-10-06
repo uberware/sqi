@@ -95,7 +95,7 @@ def _install_fake_bpy_props(fake_host_module: Any) -> Any:
 
 
 def test_settings_class_annotations_are_runtime_properties(fake_host_module: Any) -> None:
-    # Regression: `from __future__ import annotations` stringifies class-body
+    # `from __future__ import annotations` stringifies class-body
     # annotations, so the settings PropertyGroup must be built with a runtime
     # __annotations__ dict of real bpy.props objects — never annotation syntax.
     _install_fake_bpy_props(fake_host_module)

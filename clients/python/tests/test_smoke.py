@@ -2,9 +2,7 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 """Smoke tests for the package skeleton.
 
-These assert the package imports cleanly and exposes a single-sourced version,
-giving the bootstrap check suite (``make py-check``) something to collect before
-any feature modules exist.
+These assert the package imports cleanly and exposes a single-sourced version.
 """
 
 from __future__ import annotations

@@ -50,8 +50,8 @@ const fetchMock = vi.fn<typeof fetch>()
 beforeEach(() => {
   fetchMock.mockReset()
   vi.stubGlobal('fetch', fetchMock)
-  // Default every test to an operator principal so pre-existing control
-  // assertions keep working unchanged; the read-only gating test overrides
+  // Default every test to an operator principal so the gated
+  // controls render; the read-only gating test overrides
   // this via setPrincipal(READONLY_PRINCIPAL).
   setPrincipal(OPERATOR_PRINCIPAL)
 })
@@ -171,7 +171,7 @@ describe('ProductList', () => {
 
   // readme is deliberately NOT part of the search haystack. Keeping it out is
   // what lets sqi skip a markdown stripper in both TypeScript and Python, and
-  // keeps the remote preset index unchanged. Read the spec before changing this.
+  // keeps the remote preset index unchanged.
   it('does not match a term that appears only in the readme', async () => {
     fetchMock.mockResolvedValueOnce(
       ok([makeProduct({ name: 'alpha', title: 'Alpha', description: '', readme: 'zzunique' })]),

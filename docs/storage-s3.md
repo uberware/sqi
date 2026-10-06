@@ -1,9 +1,12 @@
 # S3-compatible storage
 
 sqi is a **thin layer** with respect to S3. It stores no credentials, embeds no
-S3 client library, and moves no bytes itself. Object-store data reaches a worker
-through the same two paths already used for on-premises storage: **mounted** or
-**staged**.
+S3 client library, and never reads or writes object storage itself: staged S3
+transfers run through the operator's `staging.sync_command`. The worker's
+built-in staging copy, used when no `sync_command` is set, copies between
+filesystem paths only and cannot reach an `s3://` root. Object-store data
+reaches a worker through the same two paths already used for on-premises
+storage: **mounted** or **staged**.
 
 ## Mount vs stage: choose one per root
 
@@ -22,7 +25,7 @@ roots:
 
 sqi sees an ordinary path. No `stage_locally`, no sync command, nothing extra.
 
-### Staged access (B4 `stage_locally`)
+### Staged access (`stage_locally`)
 
 Use an `s3://` root and the `SQI_PATH_TRANSLATION` extension with `stage_locally`.
 Before each task the worker invokes the operator-configured `staging.sync_command`

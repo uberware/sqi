@@ -2,10 +2,10 @@
 
 package api
 
-// API-key REST handlers (Phase 3, component A2). These routes are self-scoped
-// to the caller; the admin-broad list/revoke routes live in apikeys_admin.go
-// behind apikeys.admin. The raw key is returned exactly once, in the create
-// response; it is never stored in clear or logged.
+// API-key REST handlers. These routes are self-scoped to the caller; the
+// admin-broad list/revoke routes live in apikeys_admin.go behind
+// apikeys.admin. The raw key is returned exactly once, in the create response;
+// it is never stored in clear or logged.
 //
 //	POST   /api/v1/api-keys        — issue a key for the caller (secret shown once)
 //	GET    /api/v1/api-keys        — list the caller's keys (no secret)

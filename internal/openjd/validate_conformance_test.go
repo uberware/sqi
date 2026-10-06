@@ -159,9 +159,9 @@ steps:
 	}
 }
 
-// Structural host-requirement checks must survive EnforceLimits: false. Before
-// this task they lived in validateHostRequirementLimits, reachable only from
-// validateLimits, so disabling limits silently disabled correctness too.
+// Structural host-requirement checks must survive EnforceLimits: false. If
+// they lived in validateHostRequirementLimits, reachable only from
+// validateLimits, disabling limits would disable correctness too.
 func TestValidate_HostRequirementStructuralChecksSurviveDisabledLimits(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -321,9 +321,9 @@ steps:
 	}
 }
 
-// TestValidate_HostRequirementCapabilityNameLengthStaysGated proves the move
-// took only the reserved-value checks and left a genuinely quantitative cap
-// (capability name length) behind the EnforceLimits gate. The name here is
+// TestValidate_HostRequirementCapabilityNameLengthStaysGated proves only the
+// reserved-value checks are ungated, leaving a quantitative cap (capability
+// name length) behind the EnforceLimits gate. The name here is
 // not a reserved capability name, so only the length cap could fire.
 func TestValidate_HostRequirementCapabilityNameLengthStaysGated(t *testing.T) {
 	longName := "amount." + strings.Repeat("x", 101)

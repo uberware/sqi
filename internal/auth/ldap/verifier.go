@@ -114,7 +114,7 @@ func realDialer(cfg Config) (dialFunc, error) {
 // operator wrote. Config validation only requires timeout > 0, so sub-second
 // values are reachable. Anything positive therefore floors to 1 second, the
 // smallest limit the protocol can express. A non-positive duration keeps 0,
-// where "no limit" is the honest reading of an unset timeout.
+// where "no limit" is the correct reading of an unset timeout.
 //
 // The client-side deadline set by conn.SetTimeout still enforces the exact
 // configured duration; this only governs the limit the server is asked for.

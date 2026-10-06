@@ -3,7 +3,7 @@
 
 -- +goose Up
 -- A usage-pool name is the trailing segment of an OpenJD capability name
--- (amount.worker.usagepool.<name>), which the spec defines as case-insensitive.
+-- (amount.worker.usagepool.<name>), which OpenJD defines as case-insensitive.
 -- The scheduler matches pool requirements case-insensitively, so two pools whose
 -- names differ only in case would be the same capability and match ambiguously.
 -- This NOCASE unique index rejects such a pair at creation; it subsumes the

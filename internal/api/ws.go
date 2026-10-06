@@ -103,9 +103,8 @@ const wsIdleTimeout = 5 * time.Minute
 // wsOriginConfig controls WebSocket Origin enforcement (CSWSH hardening).
 //
 // When Enabled is false (auth off), origin checking is disabled entirely
-// (InsecureSkipVerify: true) — byte-for-byte the pre-A1 behavior, since with
-// no session cookie there is no ambient credential for a hostile page to
-// ride.  When true (auth on), AllowedOrigins (converted to coder/websocket's
+// (InsecureSkipVerify: true), since with no session cookie there is no
+// ambient credential for a hostile page to ride.  When true (auth on), AllowedOrigins (converted to coder/websocket's
 // host-pattern form by [originPatterns]) is passed as OriginPatterns; the
 // request's own host is always implicitly authorized by the library, so an
 // empty AllowedOrigins still permits same-origin connections (the embedded
@@ -161,9 +160,9 @@ func (h *wsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		// same-origin embedded UI works even with an empty allow-list.
 		acceptOpts.OriginPatterns = originPatterns(h.origin.AllowedOrigins)
 	} else {
-		// Auth off: no cookie, no ambient-credential surface to protect —
-		// byte-for-byte the pre-A1 behavior (InsecureSkipVerify skips the
-		// Origin header check; it does not affect TLS verification).
+		// Auth off: no cookie, no ambient-credential surface to protect
+		// (InsecureSkipVerify skips the Origin header check; it does not
+		// affect TLS verification).
 		acceptOpts.InsecureSkipVerify = true
 	}
 	conn, acceptErr := websocket.Accept(w, r, acceptOpts)

@@ -58,7 +58,7 @@ func ChownRecursive(root string, cred *Credential) error {
 		// were swapped for a symlink between WalkDir's stat and this call,
 		// Lchown still only ever changes the symlink entry's own ownership,
 		// never a target it might point at. Using Lchown instead of Chown is
-		// the fix for exactly this class of risk (see the doc comment above),
+		// the guard against this class of risk (see the doc comment above),
 		// not an instance of it.
 		if chErr := os.Lchown(path, uid, gid); chErr != nil { //nolint:gosec // Lchown does not follow symlinks; see comment above
 			return fmt.Errorf("chown %q: %w", path, chErr)
@@ -73,10 +73,9 @@ func ChownRecursive(root string, cred *Credential) error {
 // execute ("search") bit for others, returning an actionable error naming the
 // first offending directory instead of silently widening it.
 //
-// It NEVER chmod's anything — an earlier revision of this package's
-// EnsureTraversable helper widened an existing directory's mode to make it
-// traversable, which is exactly the anti-pattern this validation replaces:
-// creating a directory 0711 from birth (see session.Manager's session root,
+// It NEVER chmod's anything — widening an existing directory's mode to make
+// it traversable is the anti-pattern this validation replaces: creating a
+// directory 0711 from birth (see session.Manager's session root,
 // staging's scratch base) is a different, safe operation, since it can only
 // ever affect a directory the creating call itself is making for the first
 // time. An operator-chosen path may sit under a directory that is

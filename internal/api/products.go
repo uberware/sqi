@@ -29,7 +29,7 @@ type productHandler struct {
 	//
 	// This route submits an operator-installed template rather than a
 	// client-supplied one, so the 4 MiB arbitrary-template exposure POST
-	// /api/v1/jobs carries is not the same here — but the PARAMETERS are the
+	// /api/v1/jobs carries is not the same here — but the parameters are the
 	// client's, and phase 2 re-evaluates every expression with them bound. The
 	// backstop therefore applies to both routes, on the same terms.
 	exprDeadline time.Duration
@@ -38,15 +38,15 @@ type productHandler struct {
 	// client-supplied product template on POST/PUT /api/v1/products.
 	//
 	// The job routes get theirs from the Submitter built at boot; this route
-	// does not go through a Submitter at all, so before H1 it silently
-	// validated on openjd.DefaultExprLimits() whatever the operator had
-	// configured. The zero value still means "the defaults".
+	// does not go through a Submitter at all, so without this field it would
+	// validate on openjd.DefaultExprLimits() whatever the operator had
+	// configured. The zero value means "the defaults".
 	//
-	// NEVER SET [openjd.ExprLimits.Deadline] ON THIS FIELD. It is built once by
+	// Do not set [openjd.ExprLimits.Deadline] on this field. It is built once by
 	// productHandlerFor and reused for every request, so a deadline stored here
 	// would be a single absolute instant that refuses everything once it
-	// passed — the same trap [openjd.SubmitterOptions] carries, and the reason
-	// exprDeadline above is a DURATION. It is inert today only because
+	// passed — the same hazard [openjd.SubmitterOptions] carries, and the reason
+	// exprDeadline above is a duration. It is inert today only because
 	// [openjd.ValidateWithBudget] overwrites the field from
 	// ValidateOptions.Deadline, which is a property of that call site rather
 	// than a guarantee. templateValidateOptions computes the instant per
@@ -85,8 +85,8 @@ func newProductHandler(
 // a test. NewRouter returns a chi.Mux and nothing else, so a cfg field dropped
 // from that call site is invisible to every test in this package — and two of
 // the fields it passes, ExprSubmissionDeadline and ExprLimits, control bounds
-// whose absence changes no observable behavior until sub-project H2 flips EXPR
-// to StatusSupported. Same reasoning as internal/server's routerConfig.
+// whose absence only shows on an EXPR template expensive enough to reach them.
+// Same reasoning as internal/server's routerConfig.
 func productHandlerFor(cfg Config, deps Deps, logger *slog.Logger) *productHandler {
 	return newProductHandler(deps.Products, deps.Submitter, deps.Scheduler, deps.Store, logger,
 		cfg.ValidateJobOwner, cfg.ExprSubmissionDeadline, cfg.ExprLimits)
@@ -100,8 +100,7 @@ func productHandlerFor(cfg Config, deps Deps, logger *slog.Logger) *productHandl
 // that accepts an arbitrary template body, alongside the two job-submission
 // routes — and with auth off (the default) they are anonymous. Without the
 // deadline this route would be the one place a template could be walked with no
-// bound on elapsed time at all, which is precisely the exposure sub-project H1
-// exists to close.
+// bound on elapsed time at all.
 func (h *productHandler) templateValidateOptions() product.ValidateOptions {
 	return product.ValidateOptions{
 		EnforceLimits: true,
@@ -467,7 +466,7 @@ func (h *productHandler) submitProductJob(w http.ResponseWriter, r *http.Request
 // nameOverride is non-empty (update), it replaces the body's name with the path
 // name. It writes the error response and returns ok=false on failure.
 //
-// A method since H1: the template it validates is client-supplied, so the
+// It is a method because the template it validates is client-supplied, so the
 // validation is bounded by the handler's configured EXPR limits and this
 // request's deadline.
 func (h *productHandler) decodeProductBody(w http.ResponseWriter, r *http.Request, nameOverride string) (store.Product, bool) {

@@ -10,7 +10,7 @@
 //     ([handleLeaseRequest]). Idle workers ask for work; the scheduler selects a
 //     priority-ordered batch of ready tasks the worker is eligible for that fits
 //     its free CPU cores ([selectLeaseBatch]), atomically leases each
-//     ([store.TaskStore.LeaseReadyTask]), and replies with the assignment
+//     ([store.TaskStore.LeaseTask]), and replies with the assignment
 //     payloads. When no work is available the request parks in the waiter
 //     registry until new work appears or the hold elapses, then replies.
 //
@@ -20,22 +20,25 @@
 //
 //  3. Heartbeat sweep: a NATS push-consumer that updates each worker's
 //     LastHeartbeatAt on worker.heartbeat messages, paired with a periodic
-//     timer that marks workers offline once their heartbeat goes stale
-//     ([store.WorkerStore.ListStaleWorkers]), terminates their open attempts
-//     ([store.TaskAttemptStore.TerminateWorkerAttempts]), and returns their
-//     in-flight tasks to the ready queue ([store.TaskStore.ReclaimWorkerTasks]).
+//     timer that finds workers whose heartbeat has gone stale
+//     ([store.WorkerStore.ListStaleWorkers], a candidate list only) and takes
+//     each offline with [store.WorkerStore.OfflineStaleWorker], which re-checks
+//     the heartbeat inside its write, closes the worker's open attempts,
+//     releases their usage claims and returns its in-flight tasks to the ready
+//     queue in one transaction.
 //     The same tick refreshes the queue-depth, idle-worker, and usage-claim
 //     Prometheus gauges.
 //
 // Worker selection. A task is matched to a worker by capability tags,
 // compute-location affinity, and queue/farm filtering ([WorkerEligible]),
 // subject to per-queue and per-farm maximum-concurrent-task limits
-// ([policyGate]). Once a worker is chosen, a provisional [store.TaskAttempt] is
-// created and any required usage pool slots are claimed atomically
-// ([store.UsageClaimStore.TryClaimSlots]); if the pool is saturated
-// the assignment is rolled back and the task stays ready for the next tick.
-// Attempt numbers come from [store.TaskAttemptStore.LatestTaskAttempt] — 1 for
-// a fresh task, N+1 on retry.
+// ([policyGate]). Those checks are early filters. Once a worker is chosen,
+// [store.TaskStore.LeaseTask] makes the real decision in one transaction: it
+// moves the task to assigned, re-checks the queue, farm and usage-pool caps
+// against their current values, creates the provisional [store.TaskAttempt] and
+// claims any required usage pool slots. If a cap filled in the meantime nothing
+// is written and the task stays ready for the next lease request. Attempt numbers
+// are computed by the same transaction — 1 for a fresh task, N+1 on retry.
 //
 // Assignment payload. [buildAssignPayload] re-parses the job's raw OpenJD
 // template to extract the matching step's OnRun action, embedded files, and
@@ -53,9 +56,10 @@
 // the log-tail pagination cursor.
 //
 // Cancellation. [CancelJob] and [CancelTask] are the server-side entry points
-// called by the REST layer: they close running attempts, transition tasks to
-// [store.TaskStatusCanceled], publish task.cancel.<taskID> signals to assigned
-// workers ([bus.Client.PublishTaskCancel]), and release held usage pool slots. The
+// called by the REST layer: each makes one store call that transitions tasks to
+// [store.TaskStatusCanceled], closes their running attempts and releases their
+// usage pool slots in a single transaction, then publishes task.cancel.<taskID>
+// signals to the workers that held them ([bus.Client.PublishTaskCancel]). The
 // logic lives in cancellation.go; the SQI_CANCEL stream and publish helper live
 // in the bus package.
 //
@@ -73,6 +77,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -249,6 +254,10 @@ type Scheduler struct {
 	// waiters parks long-poll lease requests per queue; woken by wake triggers.
 	waiters *waiterRegistry
 
+	// disabledWaiters parks a disabled worker's lease requests, keyed by worker
+	// ID; [Scheduler.WakeWorker] wakes them when the worker is enabled.
+	disabledWaiters *waiterRegistry
+
 	// attemptCache holds recently-seen task-attempt ownership (workerID,
 	// taskID), consulted by handleLogChunk before it reads the store. See
 	// [attemptOwnerCache].
@@ -269,9 +278,33 @@ type Scheduler struct {
 	// this process -- bounded, not pruned, and gone on restart.
 	exprCapWarned sync.Map // workerID -> string
 
+	// instanceRefusals counts, per worker process, the lease requests refused
+	// in a row because that process's registration has not landed, so one
+	// that never lands is reported at Warn (see
+	// [Scheduler.noteInstanceRefusal]). An entry is dropped when that
+	// process's request is next served. A process that is refused and then
+	// gone for good leaves its entry until this server restarts: one small
+	// record per such process.
+	instanceRefusals sync.Map // instanceRefusalKey -> *instanceRefusal
+
+	// instanceRefusalWarnAfter and instanceRefusalWarnEvery set when that Warn
+	// fires: once a process has been refused this many times in a row, then at
+	// most once per interval while it goes on. Overridable in tests.
+	instanceRefusalWarnAfter int
+	instanceRefusalWarnEvery time.Duration
+
 	// leaseHoldTimeout bounds how long an unfulfillable lease request parks
 	// before replying empty. Overridable in tests.
 	leaseHoldTimeout time.Duration
+
+	// leaseRefusalDelay is how long a lease request from a worker process
+	// whose registration has not landed is held before its empty reply (see
+	// [Scheduler.leaseFromUnregisteredInstance]). The worker re-requests as
+	// soon as a reply arrives, so answering at once would make its lease loop
+	// spin. It is short because the registration normally lands within it; a
+	// disabled worker's request is held for leaseHoldTimeout instead. Overridable
+	// in tests.
+	leaseRefusalDelay time.Duration
 
 	// wg tracks all internal goroutines so [Run] can wait for clean exit.
 	wg sync.WaitGroup
@@ -334,29 +367,28 @@ func New(cfg Config, st store.Store, busClient busClient, m *metrics.Metrics, lo
 		n = ws.NoopNotifier{}
 	}
 	return &Scheduler{
-		cfg:              cfg,
-		store:            st,
-		bus:              busClient,
-		metrics:          m,
-		logger:           logger,
-		notifier:         n,
-		diagBuf:          diagBuf,
-		waiters:          newWaiterRegistry(),
-		attemptCache:     newAttemptOwnerCache(),
-		leaseHoldTimeout: 30 * time.Second,
-		retryWakeTimers:  make(map[*time.Timer]struct{}),
+		cfg:               cfg,
+		store:             st,
+		bus:               busClient,
+		metrics:           m,
+		logger:            logger,
+		notifier:          n,
+		diagBuf:           diagBuf,
+		waiters:           newWaiterRegistry(),
+		disabledWaiters:   newWaiterRegistry(),
+		attemptCache:      newAttemptOwnerCache(),
+		leaseHoldTimeout:  30 * time.Second,
+		leaseRefusalDelay: time.Second,
+		// About half a minute of refusals at leaseRefusalDelay on one queue:
+		// far longer than a registration takes to land.
+		instanceRefusalWarnAfter: 30,
+		instanceRefusalWarnEvery: 5 * time.Minute,
+		retryWakeTimers:          make(map[*time.Timer]struct{}),
 		// ctx is overwritten with the derived cancellable context in Run.
 		// The background fallback ensures NATS callbacks can't nil-panic if
 		// somehow invoked before Run (e.g. in a partial test setup).
 		ctx: context.Background(),
 	}
-}
-
-// WorkerTimeout returns the effective heartbeat-timeout threshold after
-// normalization. The API layer uses it to decide whether a disabled worker is
-// dead (and therefore removable) from its last-heartbeat age.
-func (s *Scheduler) WorkerTimeout() time.Duration {
-	return s.cfg.WorkerTimeout
 }
 
 // Run starts all scheduler goroutines and blocks until ctx is canceled.
@@ -419,6 +451,17 @@ func (s *Scheduler) Run(ctx context.Context) error {
 		s.logger.InfoContext(ctx, "scheduler: diagnostic-log consumer started")
 	}
 
+	// ── Stuck-step repair ─────────────────────────────────────────
+	// Finalize, once, the steps earlier releases left stuck (see
+	// reconcileStuckSteps). Then release pending steps a retry reset but never
+	// released (reconcilePendingSteps). Both run before the lease subscriber
+	// starts, so no work is leased while the repair is still releasing or
+	// canceling steps, and before the sweeps begin. The task-status consumer is
+	// already running, so a report arriving concurrently is safe: every write on
+	// the completion path is guarded and idempotent.
+	s.reconcileStuckSteps(ctx)
+	s.reconcilePendingSteps(ctx)
+
 	// ── Lease subscriber ──────────────────────────────────────────
 	// A core-NATS request-reply subscriber that handles worker lease requests.
 	// Workers ask for work; handleLeaseRequest selects a batch or parks until
@@ -474,110 +517,131 @@ func (s *Scheduler) Stop() {
 	}
 }
 
-// errNoWorkerAvailable signals that a task could not be leased because no
-// eligible worker/capacity was available (or a usage pool was saturated). It is
-// a skip signal, not a logged warning — the task simply stays ready for the next
-// lease request. Used by the lease path (lease.go) and the usage-claim helper.
-var errNoWorkerAvailable = errors.New("no worker available")
-
-// createAttemptAndClaimUsage creates a provisional [store.TaskAttempt] for
-// the assignment and atomically claims any required usage pool slots.
+// reconcileStuckSteps finalizes, once at start, every step of a live
+// (non-terminal) job whose tasks are all terminal but which was never
+// finalized, and which no future task report will ever finalize. Two things
+// leave such steps behind. v0.3.0 left them when a step had more than
+// [store.MaxLimit] tasks: completion decided from one page of tasks and never
+// decided at all. Older releases also stranded a step when a single-task
+// cancel hit a job's last open task; [Scheduler.CancelTask] now drives
+// completion, and this pass repairs steps stranded that way too.
+// Nothing reports on those tasks again, so without this pass the step, its
+// job, the steps behind it and the jobs blocked on it would stay stuck.
 //
-// If either operation fails the task's status is reverted to
-// [store.TaskStatusReady] so it is re-queued on the next lease request.
-// [errNoWorkerAvailable] is returned when a usage pool is at capacity so
-// the caller skips logging a warning.
-func (s *Scheduler) createAttemptAndClaimUsage(
-	ctx context.Context,
-	task store.Task,
-	worker store.Worker,
-	step store.Step,
-	pools map[string]store.UsagePool,
-	now time.Time,
-) (store.TaskAttempt, error) {
-	// The attempt record must exist before usage claims can be created
-	// (FK constraint). Determine the next AttemptNumber from the latest existing
-	// attempt so that retries are numbered correctly (1 for a fresh task, N+1
-	// on each subsequent retry).
-	nextNum, err := s.nextAttemptNumber(ctx, task.ID)
+// The repair is deliberately not a data migration. Finalizing a step has
+// downstream effects (dependency propagation keyed on step names, the
+// transitive cancel cascade, job finalization, cross-job dependents and
+// WebSocket events), and doing that in SQL would be a second copy of the
+// completion logic that could drift from the first and could not emit events.
+// Each step instead goes through [Scheduler.checkStepCompletion], the path a
+// task report takes, so the repair cannot differ from normal completion.
+//
+// It is idempotent: every write on that path is guarded, and on a farm with no
+// such steps the one [store.StepStore.ListStuckSteps] query returns nothing and
+// nothing is written. Steps of jobs that are already terminal are ignored: a
+// job cancel finalizes its own steps, and migration 00033 finalized those of
+// jobs canceled by older releases. A step that fails is logged and skipped so
+// one bad row cannot block the rest, and it stays stuck, so the next start
+// retries it. Cross-job dependents of a job this pass finalizes are reconciled
+// by the same completion path, with [Scheduler.sweepBlockedJobs] as its
+// backstop.
+func (s *Scheduler) reconcileStuckSteps(ctx context.Context) {
+	steps, err := s.store.ListStuckSteps(ctx)
 	if err != nil {
-		s.revertTaskToReady(ctx, task.ID, "attempt number lookup error")
-		return store.TaskAttempt{}, fmt.Errorf("next attempt number for task %s: %w", task.ID, err)
-	}
-
-	attempt, err := s.store.CreateTaskAttempt(ctx, store.TaskAttempt{
-		ID:            uuid.NewString(),
-		TaskID:        task.ID,
-		WorkerID:      worker.ID,
-		AttemptNumber: nextNum,
-		Status:        store.AttemptStatusRunning,
-		StartedAt:     now,
-		CreatedAt:     now,
-	})
-	if err != nil {
-		s.revertTaskToReady(ctx, task.ID, "attempt creation error")
-		return store.TaskAttempt{}, fmt.Errorf("create task attempt for task %s: %w", task.ID, err)
-	}
-	// The scheduler already knows both fields the log-ingest path needs, so
-	// populate the cache now rather than waiting for the first log chunk to
-	// pay for a store read.
-	s.attemptCache.put(attempt.ID, attempt.WorkerID, attempt.TaskID)
-
-	// Re-check pool availability and create claim rows inside a single DB
-	// transaction so no concurrent assignment can over-subscribe a pool.
-	claims := buildUsageClaims(step, pools)
-	if len(claims) == 0 {
-		return attempt, nil
-	}
-
-	if err := s.store.TryClaimSlots(ctx, attempt.ID, claims, now); err != nil {
-		s.revertTaskToReady(ctx, task.ID, "usage claim error")
-		// The attempt row survives this failure with no terminal status ever
-		// coming for it, so nothing else would evict its cache entry. Drop it
-		// now rather than let it sit as a stale, never-reused hit.
-		s.attemptCache.evict(attempt.ID)
-		if errors.Is(err, store.ErrUsageAtCapacity) {
-			s.logger.DebugContext(
-				ctx, "scheduler: usage pool at capacity — deferring assignment",
-				slog.String("task_id", task.ID),
-				slog.String("attempt_id", attempt.ID),
-			)
-			return store.TaskAttempt{}, errNoWorkerAvailable
+		if !errors.Is(err, context.Canceled) {
+			s.logger.WarnContext(ctx, "scheduler: list stuck steps failed", slog.Any("error", err))
 		}
-		return store.TaskAttempt{}, fmt.Errorf("claim usage slots for attempt %s: %w", attempt.ID, err)
+		return
 	}
-	return attempt, nil
+	for _, step := range steps {
+		if ctx.Err() != nil {
+			return // shutting down: whatever is left is picked up by the next start
+		}
+		if err := s.checkStepCompletion(ctx, step.ID, step.JobID); err != nil {
+			if !errors.Is(err, context.Canceled) {
+				s.logger.WarnContext(ctx, "scheduler: reconcile stuck step failed",
+					slog.String("step_id", step.ID), slog.String("job_id", step.JobID), slog.Any("error", err))
+			}
+			continue
+		}
+		s.logger.InfoContext(ctx, "scheduler: reconciled a step of a live job whose tasks were all terminal but never finalized",
+			slog.String("step_id", step.ID), slog.String("job_id", step.JobID))
+	}
 }
 
-// revertTaskToReady resets a task's status back to ready after a failed
-// assignment step. Logs a warning if the revert itself fails.
-func (s *Scheduler) revertTaskToReady(ctx context.Context, taskID, reason string) {
-	if err := s.store.UpdateTaskStatus(ctx, taskID, store.TaskStatusReady); err != nil {
-		s.logger.WarnContext(
-			ctx, "scheduler: revert task assignment failed",
-			slog.String("task_id", taskID),
-			slog.String("during", reason),
-			slog.Any("error", err),
-		)
-	}
-}
-
-// nextAttemptNumber returns the AttemptNumber to use for a new [store.TaskAttempt]
-// on the given task. It is 1 for a task with no prior attempts, and
-// latest.AttemptNumber+1 on each retry.
-func (s *Scheduler) nextAttemptNumber(ctx context.Context, taskID string) (int, error) {
-	latest, err := s.store.LatestTaskAttempt(ctx, taskID)
-	if errors.Is(err, store.ErrNotFound) {
-		return 1, nil
-	}
+// reconcilePendingSteps re-runs dependency resolution, once at start, for every
+// live, non-blocked job that has a pending step. A retry commits
+// its revived tasks and the step reset before ResolveDependencies runs, so a
+// server that stops in between leaves a pending step nothing would release.
+// Release and cascade are idempotent and write only what is releasable or can
+// never be satisfied, and the job is finalized only when no step of it is left
+// open, so a healthy job (a step waiting on a running upstream) is read and
+// left alone: a start on a healthy farm makes no completion-path write. A job
+// that fails is logged and skipped; the next start retries it.
+func (s *Scheduler) reconcilePendingSteps(ctx context.Context) {
+	ids, err := s.store.ListJobIDsWithPendingSteps(ctx)
 	if err != nil {
-		return 0, err
+		if !errors.Is(err, context.Canceled) {
+			s.logger.WarnContext(ctx, "scheduler: list jobs with pending steps failed", slog.Any("error", err))
+		}
+		return
 	}
-	return latest.AttemptNumber + 1, nil
+	for _, jobID := range ids {
+		if ctx.Err() != nil {
+			return // shutting down: whatever is left is picked up by the next start
+		}
+		s.reconcilePendingJob(ctx, jobID)
+	}
+}
+
+// reconcilePendingJob releases what is releasable and cascade-cancels what can
+// never run in one job, then finalizes the job if that left every step
+// terminal. Releasing runs [Scheduler.propagateStepDependencies] as a completed
+// upstream would (ResolveDependencies); the cascade runs it as a failed one
+// would (CancelDependents). Calling both is exactly "release what is
+// releasable, cancel what never can be".
+func (s *Scheduler) reconcilePendingJob(ctx context.Context, jobID string) {
+	if err := s.propagateStepDependencies(ctx, jobID, store.StepStatusCompleted); err != nil {
+		s.logger.WarnContext(ctx, "scheduler: reconcile pending steps: release failed",
+			slog.String("job_id", jobID), slog.Any("error", err))
+		return
+	}
+	if err := s.propagateStepDependencies(ctx, jobID, store.StepStatusFailed); err != nil {
+		s.logger.WarnContext(ctx, "scheduler: reconcile pending steps: cascade failed",
+			slog.String("job_id", jobID), slog.Any("error", err))
+		return
+	}
+	// Only a cascade can leave a job with every step terminal here, and
+	// FinalizeJob is a write transaction even when it changes nothing, so it is
+	// asked only once a read shows nothing is left open.
+	open, err := s.jobHasOpenStep(ctx, jobID)
+	if err != nil {
+		s.logger.WarnContext(ctx, "scheduler: reconcile pending steps: list steps failed",
+			slog.String("job_id", jobID), slog.Any("error", err))
+		return
+	}
+	if open {
+		return
+	}
+	if err := s.checkJobCompletion(ctx, jobID); err != nil {
+		s.logger.WarnContext(ctx, "scheduler: reconcile pending steps: job completion failed",
+			slog.String("job_id", jobID), slog.Any("error", err))
+	}
+}
+
+// jobHasOpenStep reports whether any step of the job is not yet terminal. It is
+// a gate, not a decision: [store.JobStore.FinalizeJob] still computes the
+// outcome inside its own write (invariant I4).
+func (s *Scheduler) jobHasOpenStep(ctx context.Context, jobID string) (bool, error) {
+	steps, err := s.store.ListSteps(ctx, jobID)
+	if err != nil {
+		return false, err
+	}
+	return slices.ContainsFunc(steps, func(st store.Step) bool { return !st.Status.IsTerminal() }), nil
 }
 
 // buildUsageClaims converts the step's usage pool requirements into
-// [store.UsagePoolClaim] values ready for [store.UsageClaimStore.TryClaimSlots].
+// [store.UsagePoolClaim] values for [store.LeaseRequest.Claims].
 // Each claim gets a fresh UUID as its claim ID.
 // Pools not found in the pools map are skipped (the matcher already rejected
 // workers when the pool was missing, so this path is unreachable in practice).
@@ -649,36 +713,6 @@ func (s *Scheduler) buildUsageContext(
 }
 
 // buildAssignPayload is implemented in assign.go.
-
-// ── Usage release ────────────────────────────────────────────────────
-
-// ReleaseTaskUsage releases all active usage-pool claims for the given task
-// attempt. It is called when a task attempt transitions to a terminal state
-// (succeeded, failed, or canceled), freeing the usage pool slots for other tasks.
-//
-// This method is safe to call with an empty attemptID — it returns nil without
-// querying the store. It is idempotent: releasing an already-released claim
-// is a no-op in the underlying SQL.
-//
-// The worker wire protocol calls this method when terminal task
-// status messages arrive from workers.
-func (s *Scheduler) ReleaseTaskUsage(ctx context.Context, attemptID string) error {
-	if attemptID == "" {
-		return nil
-	}
-	n, err := s.store.ReleaseAttemptClaims(ctx, attemptID, time.Now().UTC())
-	if err != nil {
-		return fmt.Errorf("release usage claims for attempt %s: %w", attemptID, err)
-	}
-	if n > 0 {
-		s.logger.DebugContext(
-			ctx, "scheduler: released usage-pool claims",
-			slog.String("attempt_id", attemptID),
-			slog.Int("count", n),
-		)
-	}
-	return nil
-}
 
 // ── Worker NATS consumer ─────────────────────────────────────────────
 
@@ -813,8 +847,9 @@ func (s *Scheduler) discardOnIdentityMismatch(ctx context.Context, msg jetstream
 }
 
 // handleWorkerRegister processes a worker.register message:
-// decodes the payload, upserts the worker in the store, and refreshes the
-// WorkersTotal Prometheus gauge.
+// decodes the payload, upserts the worker in the store, reports any tasks the
+// store reclaimed because the worker restarted (a new instance ID),
+// and refreshes the WorkersTotal Prometheus gauge.
 //
 // subjectWorkerID is the worker the message's subject attributes it to.
 func (s *Scheduler) handleWorkerRegister(ctx context.Context, msg jetstream.Msg, subjectWorkerID string) {
@@ -837,19 +872,17 @@ func (s *Scheduler) handleWorkerRegister(ctx context.Context, msg jetstream.Msg,
 		return
 	}
 
-	// The two struct conversions below (GPUInfo, ExprLimits) are what replaced
-	// a hand-maintained duplicate of protocol.RegisterMsg that used to live in
-	// this file, related to the real one by nothing but matching json tags: a
-	// rename on either side decoded to the zero value on every registration,
-	// silently and forever, which is exactly what happened to expr_limits once.
-	// A Go struct conversion is compile-checked on field name, type AND
-	// declaration order, so the same drift is now a build failure. The
-	// top-level copy is still by hand, which is what
+	// The two struct conversions below (GPUInfo, ExprLimits) are
+	// compile-checked on field name, type and declaration order, so drift
+	// between the wire type and the store type is a build failure rather than
+	// a field that decodes to the zero value on every registration. The
+	// top-level copy is by hand, which is what
 	// TestHandleWorkerRegister_EveryWireFieldReachesTheStore and its field
 	// counts guard.
 	now := time.Now().UTC()
 	w := store.Worker{
 		ID:              m.WorkerID,
+		InstanceID:      m.InstanceID,
 		FarmID:          m.FarmID,
 		QueueID:         m.QueueID,
 		Name:            m.Name,
@@ -869,7 +902,8 @@ func (s *Scheduler) handleWorkerRegister(ctx context.Context, msg jetstream.Msg,
 		LastHeartbeatAt: &now,
 	}
 
-	if _, err := s.store.RegisterWorker(ctx, w); err != nil {
+	stored, reclaimed, err := s.store.RegisterWorker(ctx, w)
+	if err != nil {
 		s.logger.ErrorContext(
 			ctx, "scheduler: persist worker registration failed",
 			slog.String("worker_id", m.WorkerID),
@@ -877,6 +911,11 @@ func (s *Scheduler) handleWorkerRegister(ctx context.Context, msg jetstream.Msg,
 		)
 		s.nakMsg(ctx, msg)
 		return
+	}
+	if len(reclaimed) > 0 {
+		// A new worker process: the previous one's in-flight tasks went back to
+		// ready inside the registration write.
+		s.reclaimOfflineWorkerTasks(ctx, m.WorkerID, m.Hostname, reclaimRestart, reclaimed)
 	}
 
 	s.ensureComputeLocation(ctx, m.ComputeLocation)
@@ -904,7 +943,9 @@ func (s *Scheduler) handleWorkerRegister(ctx context.Context, msg jetstream.Msg,
 		Name:     m.Name,
 		Hostname: m.Hostname,
 		FarmID:   m.FarmID,
-		Status:   string(store.WorkerStatusOnline),
+		// The stored row's effective status, which is not always the online
+		// this registration asked for (a disabled worker stays disabled).
+		Status: string(stored.EffectiveStatus()),
 	})
 	s.refreshWorkerGauge(ctx)
 	s.ackMsg(ctx, msg)
@@ -1004,17 +1045,24 @@ func (s *Scheduler) touchWorkerCredential(ctx context.Context, workerID string, 
 }
 
 // handleWorkerDeregister processes a worker.deregister message published by a
-// worker on graceful shutdown. It marks the worker offline immediately so the
-// scheduler stops dispatching new assignments to it rather than waiting for
-// the heartbeat-timeout sweep.
+// worker on graceful shutdown. It marks the worker offline immediately (a
+// disabled worker stays disabled) so the scheduler stops dispatching
+// new assignments to it rather than waiting for the heartbeat-timeout sweep,
+// and returns its in-flight tasks to the ready queue, closing their attempts
+// and releasing their usage claims. The worker event carries the status the
+// store left the row in. A deregister from a process the worker's latest
+// registration has replaced (its instance ID differs from the stored one) is
+// acked and ignored: applying it would take the new process offline and
+// reclaim the tasks it is running.
 //
 // subjectWorkerID is the worker the message's subject attributes it to.
 func (s *Scheduler) handleWorkerDeregister(ctx context.Context, msg jetstream.Msg, subjectWorkerID string) {
 	// DeregisterMsg mirrors protocol.DeregisterMsg; we decode only the
 	// fields the server needs without importing the worker protocol package.
 	var m struct {
-		WorkerID string `json:"worker_id"`
-		Reason   string `json:"reason,omitempty"`
+		WorkerID   string `json:"worker_id"`
+		InstanceID string `json:"instance_id,omitempty"`
+		Reason     string `json:"reason,omitempty"`
 	}
 	if err := json.Unmarshal(msg.Data(), &m); err != nil {
 		// The subject is the only identity left once the body will not decode.
@@ -1030,7 +1078,12 @@ func (s *Scheduler) handleWorkerDeregister(ctx context.Context, msg jetstream.Ms
 		return
 	}
 
-	if err := s.store.UpdateWorkerStatus(ctx, m.WorkerID, store.WorkerStatusOffline); err != nil {
+	// Unlike the heartbeat sweep's guarded write, the heartbeat is not
+	// re-checked: the worker told us it is leaving. The one guard is the
+	// instance ID. The same store call closes its attempts, releases their
+	// claims and reclaims its tasks.
+	reclaimed, offlined, err := s.store.OfflineWorker(ctx, m.WorkerID, m.InstanceID, time.Now().UTC())
+	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			// Worker was never registered or already removed — benign race
 			// (e.g., deregister arrived before the registration was processed,
@@ -1052,6 +1105,17 @@ func (s *Scheduler) handleWorkerDeregister(ctx context.Context, msg jetstream.Ms
 		s.ackMsg(ctx, msg)
 		return
 	}
+	if !offlined {
+		// A late or redelivered deregister from a process that has since been
+		// replaced. Redelivery cannot make it current, so it is acked.
+		s.logger.InfoContext(
+			ctx, "scheduler: deregister from a superseded worker process — ignoring",
+			slog.String("worker_id", m.WorkerID),
+			slog.String("instance_id", m.InstanceID),
+		)
+		s.ackMsg(ctx, msg)
+		return
+	}
 
 	s.logger.InfoContext(
 		ctx, "scheduler: worker deregistered",
@@ -1059,15 +1123,20 @@ func (s *Scheduler) handleWorkerDeregister(ctx context.Context, msg jetstream.Ms
 		slog.String("reason", m.Reason),
 	)
 
-	// A gracefully-deregistered worker is now offline and the heartbeat sweep
-	// (which only inspects workers still marked online) will never look at it
-	// again. Reclaim its in-flight tasks here so they return to the ready queue
-	// instead of being stranded in 'assigned'/'running'.
-	s.reclaimOfflineWorkerTasks(ctx, m.WorkerID, "")
+	// A gracefully-deregistered worker is now offline with nothing in flight,
+	// so the heartbeat sweep (which only inspects online workers) will not look
+	// at it again. Its in-flight tasks were returned to the ready queue by the
+	// store call above instead of being stranded in 'assigned'/'running'; report
+	// them.
+	s.reclaimOfflineWorkerTasks(ctx, m.WorkerID, "", reclaimOffline, reclaimed)
 
+	status := store.WorkerStatusOffline
+	if w, err := s.store.GetWorker(ctx, m.WorkerID); err == nil {
+		status = w.EffectiveStatus() // a disabled worker stays disabled
+	}
 	s.notifier.NotifyWorker(ws.WorkerEvent{
 		WorkerID: m.WorkerID,
-		Status:   string(store.WorkerStatusOffline),
+		Status:   string(status),
 	})
 	s.refreshWorkerGauge(ctx)
 	s.ackMsg(ctx, msg)
@@ -1205,8 +1274,11 @@ func (s *Scheduler) demoteStalledJobs(ctx context.Context) {
 // not key on worker liveness: a task can be lost in 'assigned' on a worker that
 // is still happily heartbeating (e.g. the assignment message expired from the
 // work stream before the worker had a free slot to pull it), and nothing else
-// in the system would ever recover it. For each reclaimed task it closes the
-// provisional attempt and releases any usage-pool claims it held.
+// in the system would ever recover it. The store closes each reclaimed task's
+// attempt and releases its usage-pool claims inside the same transaction that
+// returns the task to ready (invariant I3), and reports exactly the tasks it
+// reclaimed, so a task that is leased again right afterwards keeps its new
+// attempt and claims.
 func (s *Scheduler) reapStaleAssignedTasks(ctx context.Context) {
 	cutoff := time.Now().UTC().Add(-s.cfg.AssignedTaskTimeout)
 	reclaimed, err := s.store.ReclaimStaleAssignedTasks(ctx, cutoff)
@@ -1228,63 +1300,37 @@ func (s *Scheduler) reapStaleAssignedTasks(ctx context.Context) {
 
 	now := time.Now().UTC()
 	for _, task := range reclaimed {
-		s.cleanupReapedAttempt(ctx, task, now)
-		s.notifier.NotifyTask(ws.TaskEvent{
-			JobID:     task.JobID,
-			TaskID:    task.ID,
-			Name:      task.Name,
-			Status:    string(store.TaskStatusReady),
-			UpdatedAt: now,
-		})
-		s.notifyQueueForJob(ctx, task.JobID)
+		s.notifyTaskReclaimed(ctx, task, now)
 	}
 }
 
-// cleanupReapedAttempt closes the provisional attempt for a reaped task and
-// releases its usage-pool claims. Both steps are best-effort: the task is
-// already back in the ready queue, so a cleanup failure leaks an attempt record
-// or pool slot but never blocks rescheduling.
-func (s *Scheduler) cleanupReapedAttempt(ctx context.Context, task store.Task, now time.Time) {
-	attempt, err := s.store.LatestTaskAttempt(ctx, task.ID)
-	if errors.Is(err, store.ErrNotFound) {
-		return
-	}
-	if err != nil {
-		s.logger.WarnContext(
-			ctx, "scheduler: reap cleanup: latest attempt lookup failed",
-			slog.String("task_id", task.ID),
-			slog.Any("error", err),
-		)
-		return
-	}
-	// Only the open provisional attempt needs closing; a terminal attempt is
-	// already accounted for.
-	if attempt.Status == store.AttemptStatusRunning {
-		closed := attempt
-		closed.Status = store.AttemptStatusFailed
-		closed.EndedAt = &now
-		if _, err := s.store.UpdateTaskAttempt(ctx, closed); err != nil {
-			s.logger.WarnContext(
-				ctx, "scheduler: reap cleanup: close attempt failed",
-				slog.String("task_id", task.ID),
-				slog.String("attempt_id", attempt.ID),
-				slog.Any("error", err),
-			)
-		}
-	}
-	if err := s.ReleaseTaskUsage(ctx, attempt.ID); err != nil {
-		s.logger.WarnContext(
-			ctx, "scheduler: reap cleanup: release usage failed",
-			slog.String("task_id", task.ID),
-			slog.String("attempt_id", attempt.ID),
-			slog.Any("error", err),
-		)
-	}
+// notifyTaskReclaimed announces a task a reclaim returned to ready and wakes
+// the lease waiters on its job's queue.
+func (s *Scheduler) notifyTaskReclaimed(ctx context.Context, task store.Task, now time.Time) {
+	s.notifier.NotifyTask(ws.TaskEvent{
+		JobID:     task.JobID,
+		TaskID:    task.ID,
+		Name:      task.Name,
+		Status:    string(store.TaskStatusReady),
+		UpdatedAt: now,
+	})
+	s.notifyQueueForJob(ctx, task.JobID)
 }
 
 // sweepStaleWorkers finds workers whose heartbeat has expired, marks them
 // offline, reclaims their assigned/running tasks, and refreshes the
-// WorkersTotal gauge.
+// WorkersTotal gauge. A disabled worker is swept like any other and stays
+// disabled, so its event carries its effective status, disabled,
+// not offline: the event still tells clients it changed (it is now
+// removable).
+//
+// The list of stale workers is only a hint. By the time each candidate is
+// handled its heartbeat may have arrived, or it may have re-registered, so the
+// offline transition is [store.WorkerStore.OfflineStaleWorker], which re-checks
+// the heartbeat inside its own write and leaves such a worker online with its
+// tasks running. Only a worker the store actually took offline is announced
+// and has its reclaim reported; the attempts, claims and tasks are handled by
+// that same store call.
 func (s *Scheduler) sweepStaleWorkers(ctx context.Context) {
 	cutoff := time.Now().UTC().Add(-s.cfg.WorkerTimeout)
 	stale, err := s.store.ListStaleWorkers(ctx, cutoff)
@@ -1304,8 +1350,13 @@ func (s *Scheduler) sweepStaleWorkers(ctx context.Context) {
 	)
 
 	for _, w := range stale {
-		// Mark the worker offline.
-		if err := s.store.UpdateWorkerStatus(ctx, w.ID, store.WorkerStatusOffline); err != nil {
+		// Mark the worker offline and hand its in-flight work back in one store
+		// call. The guard re-checks the heartbeat against the same cutoff the list
+		// used, so a heartbeat or a re-registration that landed after the list
+		// keeps the worker online (invariant I1) instead of being declared dead
+		// while its tasks are still running.
+		reclaimed, marked, err := s.store.OfflineStaleWorker(ctx, w.ID, cutoff, time.Now().UTC())
+		if err != nil {
 			s.logger.WarnContext(
 				ctx, "scheduler: mark worker offline failed",
 				slog.String("worker_id", w.ID),
@@ -1313,17 +1364,26 @@ func (s *Scheduler) sweepStaleWorkers(ctx context.Context) {
 			)
 			continue
 		}
+		if !marked {
+			s.logger.DebugContext(
+				ctx, "scheduler: worker no longer a stale candidate, left as is",
+				slog.String("worker_id", w.ID),
+			)
+			continue
+		}
+		// The flag is the one listed: an enable or disable racing the sweep is
+		// reported by its own endpoint's response, and the store is correct.
+		offline := w
+		offline.Status = store.WorkerStatusOffline
 		s.notifier.NotifyWorker(ws.WorkerEvent{
 			WorkerID: w.ID,
 			Name:     w.Name,
 			Hostname: w.Hostname,
 			FarmID:   w.FarmID,
-			Status:   string(store.WorkerStatusOffline),
+			Status:   string(offline.EffectiveStatus()),
 		})
 
-		// Close out running attempts and return the worker's in-flight tasks to
-		// the ready queue so they can be reassigned.
-		s.reclaimOfflineWorkerTasks(ctx, w.ID, w.Hostname)
+		s.reclaimOfflineWorkerTasks(ctx, w.ID, w.Hostname, reclaimOffline, reclaimed)
 	}
 
 	s.refreshWorkerGauge(ctx)
@@ -1407,60 +1467,57 @@ func (s *Scheduler) sweepRetiredJobs(ctx context.Context) {
 	}
 }
 
-// reclaimOfflineWorkerTasks closes any running attempt records for workerID and
-// returns its assigned/running tasks to the ready queue. It is shared by the
-// heartbeat sweep and the graceful-deregister handler: both mark a worker
-// offline and must hand its in-flight work back to the scheduler, otherwise the
-// tasks are orphaned in 'assigned'/'running' forever (the heartbeat sweep only
-// considers workers still marked online, so it cannot recover them afterwards).
-func (s *Scheduler) reclaimOfflineWorkerTasks(ctx context.Context, workerID, hostname string) {
-	// Close out any running attempt records before the task assignment is
-	// cleared by ReclaimWorkerTasks. The subquery in TerminateWorkerAttempts
-	// joins on assigned_worker_id, which is still set at this point.
-	now := time.Now().UTC()
-	nAttempts, err := s.store.TerminateWorkerAttempts(ctx, workerID, store.AttemptStatusFailed, now)
-	if err != nil {
-		s.logger.WarnContext(
-			ctx, "scheduler: terminate worker attempts failed",
-			slog.String("worker_id", workerID),
-			slog.Any("error", err),
-		)
-		// Non-fatal: continue to reclaim tasks so the farm keeps running.
-	} else if nAttempts > 0 {
-		s.logger.InfoContext(
-			ctx, "scheduler: closed running attempts for offline worker",
-			slog.String("worker_id", workerID),
-			slog.String("hostname", hostname),
-			slog.Int("attempts_closed", nAttempts),
-		)
-	}
+// reclaimCause says why the store reclaimed a worker's tasks. It selects only
+// the wording [Scheduler.reclaimOfflineWorkerTasks] logs; the reporting is the
+// same for every cause.
+type reclaimCause int
 
-	// Reclaim tasks that were assigned to or running on the now-offline worker.
-	n, err := s.store.ReclaimWorkerTasks(ctx, workerID)
-	switch {
-	case err != nil:
-		s.logger.WarnContext(
-			ctx, "scheduler: reclaim worker tasks failed",
-			slog.String("worker_id", workerID),
-			slog.Any("error", err),
-		)
-	case n > 0:
-		s.logger.InfoContext(
-			ctx, "scheduler: reclaimed tasks from offline worker",
-			slog.String("worker_id", workerID),
-			slog.String("hostname", hostname),
-			slog.Int("tasks_reclaimed", n),
-		)
-		// Reclaimed tasks are back to ready but we have no jobIDs to scope a
-		// per-queue wake; broadcast so parked workers re-lease promptly.
-		s.waiters.notifyAll()
-	default:
-		s.logger.InfoContext(
-			ctx, "scheduler: worker marked offline (no tasks to reclaim)",
-			slog.String("worker_id", workerID),
-			slog.String("hostname", hostname),
-		)
+const (
+	// reclaimOffline: the worker was taken offline (heartbeat sweep or
+	// graceful deregister).
+	reclaimOffline reclaimCause = iota
+	// reclaimRestart: the worker re-registered from a new process (a changed
+	// instance ID) and stays online; only its previous process's
+	// tasks were reclaimed.
+	reclaimRestart
+)
+
+// reclaimOfflineWorkerTasks reports the tasks the store returned to the ready
+// queue when it took workerID offline (the heartbeat sweep and the
+// graceful-deregister handler, cause reclaimOffline) or when the worker
+// re-registered from a new process (the register handler, cause
+// reclaimRestart). By the time it runs the store has already closed the
+// worker's running attempts, released their usage claims and returned its
+// assigned/running tasks to ready, all in the transaction that marked the
+// worker offline or recorded its new instance (invariant I3). The tasks
+// therefore cannot be orphaned in 'assigned'/'running' (the heartbeat sweep
+// only considers workers still marked online, so it could never recover them
+// afterwards, and a restarted worker's new process never reports on them), and
+// no license slot stays held on behalf of a worker process that is gone.
+func (s *Scheduler) reclaimOfflineWorkerTasks(ctx context.Context, workerID, hostname string, cause reclaimCause, reclaimed []store.Task) {
+	if len(reclaimed) == 0 {
+		if cause == reclaimOffline {
+			s.logger.InfoContext(
+				ctx, "scheduler: worker marked offline (no tasks to reclaim)",
+				slog.String("worker_id", workerID),
+				slog.String("hostname", hostname),
+			)
+		}
+		return
 	}
+	msg := "scheduler: reclaimed tasks from offline worker"
+	if cause == reclaimRestart {
+		msg = "scheduler: reclaimed tasks from a restarted worker"
+	}
+	s.logger.InfoContext(
+		ctx, msg,
+		slog.String("worker_id", workerID),
+		slog.String("hostname", hostname),
+		slog.Int("tasks_reclaimed", len(reclaimed)),
+	)
+	// Reclaimed tasks are back to ready but we have no jobIDs to scope a
+	// per-queue wake; broadcast so parked workers re-lease promptly.
+	s.waiters.notifyAll()
 }
 
 // WakeQueue wakes any parked lease waiters on queueID. Called by the API job
@@ -1473,6 +1530,15 @@ func (s *Scheduler) WakeQueue(queueID string) {
 	if queueID != bus.WildcardQueueToken {
 		s.waiters.notify(bus.WildcardQueueToken)
 	}
+}
+
+// WakeWorker wakes the lease requests a disabled worker has parked, so a worker
+// that was just enabled is leased work at once rather than after the rest of
+// its leaseHoldTimeout. Called by the API's enable handler after the write. A
+// woken request re-reads the worker, so a wake for a worker that is still
+// disabled leases nothing.
+func (s *Scheduler) WakeWorker(workerID string) {
+	s.disabledWaiters.notify(workerID)
 }
 
 // notifyQueueForJob wakes any parked lease waiters on the job's queue (and any

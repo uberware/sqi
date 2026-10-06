@@ -72,7 +72,7 @@ func insertQueue(t *testing.T, s *sqlite.Store, id, farmID, name string) store.Q
 // insertWorker inserts a minimal worker and returns the created record.
 func insertWorker(t *testing.T, s *sqlite.Store, id, farmID string) store.Worker {
 	t.Helper()
-	w, err := s.RegisterWorker(context.Background(), store.Worker{
+	w, _, err := s.RegisterWorker(context.Background(), store.Worker{
 		ID:       id,
 		FarmID:   farmID,
 		Hostname: "host-" + id,
@@ -450,7 +450,7 @@ func TestWorker_RegisterAndGet(t *testing.T) {
 		Tags:            map[string]string{"env": "prod"},
 		Status:          store.WorkerStatusOnline,
 	}
-	got, err := s.RegisterWorker(ctx, w)
+	got, _, err := s.RegisterWorker(ctx, w)
 	if err != nil {
 		t.Fatalf("RegisterWorker: %v", err)
 	}
@@ -495,12 +495,12 @@ func TestWorker_Upsert(t *testing.T) {
 	ctx := context.Background()
 	insertFarm(t, s, "f1", "F1")
 
-	w1, err := s.RegisterWorker(ctx, store.Worker{ID: "w1", FarmID: "f1", Hostname: "a", Status: store.WorkerStatusOnline, Tags: map[string]string{}})
+	w1, _, err := s.RegisterWorker(ctx, store.Worker{ID: "w1", FarmID: "f1", Hostname: "a", Status: store.WorkerStatusOnline, Tags: map[string]string{}})
 	if err != nil {
 		t.Fatalf("first register: %v", err)
 	}
 	// Re-register with updated hostname — should update, not fail.
-	w2, err := s.RegisterWorker(ctx, store.Worker{ID: "w1", FarmID: "f1", Hostname: "b", Status: store.WorkerStatusOnline, Tags: map[string]string{}})
+	w2, _, err := s.RegisterWorker(ctx, store.Worker{ID: "w1", FarmID: "f1", Hostname: "b", Status: store.WorkerStatusOnline, Tags: map[string]string{}})
 	if err != nil {
 		t.Fatalf("upsert register: %v", err)
 	}
@@ -510,24 +510,6 @@ func TestWorker_Upsert(t *testing.T) {
 	// RegisteredAt must be preserved.
 	if !w2.RegisteredAt.Equal(w1.RegisteredAt) {
 		t.Errorf("RegisteredAt changed: was %v, now %v", w1.RegisteredAt, w2.RegisteredAt)
-	}
-}
-
-func TestWorker_UpdateStatus(t *testing.T) {
-	s := openTestStore(t)
-	ctx := context.Background()
-	insertFarm(t, s, "f1", "F1")
-	insertWorker(t, s, "w1", "f1")
-
-	if err := s.UpdateWorkerStatus(ctx, "w1", store.WorkerStatusOffline); err != nil {
-		t.Fatalf("UpdateWorkerStatus: %v", err)
-	}
-	w, err := s.GetWorker(ctx, "w1")
-	if err != nil {
-		t.Fatalf("GetWorker: %v", err)
-	}
-	if w.Status != store.WorkerStatusOffline {
-		t.Errorf("Status: got %q", w.Status)
 	}
 }
 
@@ -662,24 +644,27 @@ func TestWorker_DeleteOfflineWorkersBefore(t *testing.T) {
 	if err := s.UpdateWorkerHeartbeat(ctx, "w1", old); err != nil {
 		t.Fatalf("heartbeat w1: %v", err)
 	}
-	if err := s.UpdateWorkerStatus(ctx, "w1", store.WorkerStatusOffline); err != nil {
-		t.Fatalf("status w1: %v", err)
+	if _, _, err := s.OfflineWorker(ctx, "w1", "", time.Now()); err != nil {
+		t.Fatalf("offline w1: %v", err)
 	}
 	// w2: offline but recent heartbeat → kept.
 	insertWorker(t, s, "w2", "f1")
 	if err := s.UpdateWorkerHeartbeat(ctx, "w2", recent); err != nil {
 		t.Fatalf("heartbeat w2: %v", err)
 	}
-	if err := s.UpdateWorkerStatus(ctx, "w2", store.WorkerStatusOffline); err != nil {
-		t.Fatalf("status w2: %v", err)
+	if _, _, err := s.OfflineWorker(ctx, "w2", "", time.Now()); err != nil {
+		t.Fatalf("offline w2: %v", err)
 	}
-	// w3: disabled + stale heartbeat → kept (status filter protects it).
+	// w3: offline + stale heartbeat but disabled → kept (an operator removes it).
 	insertWorker(t, s, "w3", "f1")
 	if err := s.UpdateWorkerHeartbeat(ctx, "w3", old); err != nil {
 		t.Fatalf("heartbeat w3: %v", err)
 	}
-	if err := s.UpdateWorkerStatus(ctx, "w3", store.WorkerStatusDisabled); err != nil {
-		t.Fatalf("status w3: %v", err)
+	if _, _, err := s.OfflineWorker(ctx, "w3", "", time.Now()); err != nil {
+		t.Fatalf("offline w3: %v", err)
+	}
+	if _, err := s.SetWorkerDisabled(ctx, "w3", true); err != nil {
+		t.Fatalf("disable w3: %v", err)
 	}
 
 	removed, err := s.DeleteOfflineWorkersBefore(ctx, time.Now().Add(-time.Hour))
@@ -1364,10 +1349,11 @@ func TestTask_ReclaimStaleAssignedTasks(t *testing.T) {
 	if reclaimed[0].ID != "t1" {
 		t.Errorf("reclaimed task: got %q, want t1", reclaimed[0].ID)
 	}
-	// The returned snapshot must retain the pre-reset worker so the caller can
-	// close attempts and release usage claims.
-	if reclaimed[0].AssignedWorkerID != "w1" {
-		t.Errorf("reclaimed AssignedWorkerID: got %q, want w1", reclaimed[0].AssignedWorkerID)
+	// The returned rows are the rows the UPDATE left (RETURNING), so the reset
+	// worker is already gone: the attempts and claims were closed inside the call.
+	if reclaimed[0].AssignedWorkerID != "" || reclaimed[0].Status != store.TaskStatusReady {
+		t.Errorf("reclaimed row: got status %q worker %q, want the post-reset row (ready, no worker)",
+			reclaimed[0].Status, reclaimed[0].AssignedWorkerID)
 	}
 
 	t1, err := s.GetTask(ctx, "t1")
@@ -1430,7 +1416,7 @@ func TestTask_CountUnschedulableTasksByJob(t *testing.T) {
 		if err := s.UpdateTaskStatus(ctx, id, store.TaskStatusReady); err != nil {
 			t.Fatalf("UpdateTaskStatus(%q): %v", id, err)
 		}
-		if err := s.SetTaskUnschedulableReason(ctx, id, "no worker matches required capability"); err != nil {
+		if _, err := s.SetTaskUnschedulableReason(ctx, id, "no worker matches required capability"); err != nil {
 			t.Fatalf("SetTaskUnschedulableReason(%q): %v", id, err)
 		}
 	}
@@ -1449,7 +1435,7 @@ func TestTask_CountUnschedulableTasksByJob(t *testing.T) {
 
 	// Clearing the reason on t1 (as the scheduler does when it becomes
 	// schedulable again) drops the count.
-	if err := s.SetTaskUnschedulableReason(ctx, "t1", ""); err != nil {
+	if _, err := s.SetTaskUnschedulableReason(ctx, "t1", ""); err != nil {
 		t.Fatalf("SetTaskUnschedulableReason(clear): %v", err)
 	}
 	n, err = s.CountUnschedulableTasksByJob(ctx, "j1")
@@ -1656,8 +1642,13 @@ func TestTask_SetUnschedulableReason(t *testing.T) {
 	insertJob(t, s, "j1", "f1", "q1")
 	insertStep(t, s, "s1", "j1", "S1", 0)
 	insertTask(t, s, "t1", "j1", "s1")
+	// The reason is only written while the task is ready, so walk the
+	// pending fixture to ready through the legal arrow first.
+	if err := s.UpdateTaskStatus(ctx, "t1", store.TaskStatusReady); err != nil {
+		t.Fatalf("UpdateTaskStatus ready: %v", err)
+	}
 
-	if err := s.SetTaskUnschedulableReason(ctx, "t1", "no eligible online worker: attribute requirement not met"); err != nil {
+	if _, err := s.SetTaskUnschedulableReason(ctx, "t1", "no eligible online worker: attribute requirement not met"); err != nil {
 		t.Fatalf("SetTaskUnschedulableReason: %v", err)
 	}
 	got, err := s.GetTask(ctx, "t1")
@@ -1669,7 +1660,7 @@ func TestTask_SetUnschedulableReason(t *testing.T) {
 	}
 
 	// Clearing.
-	if err := s.SetTaskUnschedulableReason(ctx, "t1", ""); err != nil {
+	if _, err := s.SetTaskUnschedulableReason(ctx, "t1", ""); err != nil {
 		t.Fatalf("SetTaskUnschedulableReason clear: %v", err)
 	}
 	got, err = s.GetTask(ctx, "t1")
@@ -1681,7 +1672,7 @@ func TestTask_SetUnschedulableReason(t *testing.T) {
 	}
 
 	// Unknown id.
-	if err := s.SetTaskUnschedulableReason(ctx, "nope", "x"); !errors.Is(err, store.ErrNotFound) {
+	if _, err := s.SetTaskUnschedulableReason(ctx, "nope", "x"); !errors.Is(err, store.ErrNotFound) {
 		t.Errorf("expected ErrNotFound for unknown task id, got %v", err)
 	}
 }
@@ -1703,7 +1694,7 @@ func TestUnschedulableReason_ClearedOnAssign(t *testing.T) {
 	if err := s.UpdateTaskStatus(ctx, "t1", store.TaskStatusReady); err != nil {
 		t.Fatalf("UpdateTaskStatus: %v", err)
 	}
-	if err := s.SetTaskUnschedulableReason(ctx, "t1", "no eligible online worker"); err != nil {
+	if _, err := s.SetTaskUnschedulableReason(ctx, "t1", "no eligible online worker"); err != nil {
 		t.Fatalf("SetTaskUnschedulableReason: %v", err)
 	}
 
@@ -1734,7 +1725,7 @@ func TestUnschedulableReason_ClearedOnCancel(t *testing.T) {
 	if err := s.UpdateTaskStatus(ctx, "t1", store.TaskStatusReady); err != nil {
 		t.Fatalf("UpdateTaskStatus: %v", err)
 	}
-	if err := s.SetTaskUnschedulableReason(ctx, "t1", "no eligible online worker"); err != nil {
+	if _, err := s.SetTaskUnschedulableReason(ctx, "t1", "no eligible online worker"); err != nil {
 		t.Fatalf("SetTaskUnschedulableReason: %v", err)
 	}
 
@@ -1765,7 +1756,7 @@ func TestUnschedulableReason_ClearedOnUpdateStatus(t *testing.T) {
 	if err := s.UpdateTaskStatus(ctx, "t1", store.TaskStatusReady); err != nil {
 		t.Fatalf("UpdateTaskStatus ready: %v", err)
 	}
-	if err := s.SetTaskUnschedulableReason(ctx, "t1", "no eligible online worker"); err != nil {
+	if _, err := s.SetTaskUnschedulableReason(ctx, "t1", "no eligible online worker"); err != nil {
 		t.Fatalf("SetTaskUnschedulableReason: %v", err)
 	}
 
@@ -1866,11 +1857,11 @@ func TestErrNotFound_GetWorker(t *testing.T) {
 	}
 }
 
-func TestErrNotFound_UpdateWorkerStatus(t *testing.T) {
+func TestErrNotFound_SetWorkerDisabled(t *testing.T) {
 	s := openTestStore(t)
-	err := s.UpdateWorkerStatus(context.Background(), "missing", store.WorkerStatusOffline)
+	_, err := s.SetWorkerDisabled(context.Background(), "missing", true)
 	if !errors.Is(err, store.ErrNotFound) {
-		t.Errorf("UpdateWorkerStatus missing: expected ErrNotFound, got %v", err)
+		t.Errorf("SetWorkerDisabled missing: expected ErrNotFound, got %v", err)
 	}
 }
 
@@ -2042,8 +2033,8 @@ func TestWorker_ListWorkers_FilterByStatus(t *testing.T) {
 	insertWorker(t, s, "w1", "f1")
 	insertWorker(t, s, "w2", "f1")
 
-	if err := s.UpdateWorkerStatus(ctx, "w2", store.WorkerStatusOffline); err != nil {
-		t.Fatalf("UpdateWorkerStatus: %v", err)
+	if _, _, err := s.OfflineWorker(ctx, "w2", "", time.Now()); err != nil {
+		t.Fatalf("OfflineWorker: %v", err)
 	}
 
 	page, err := s.ListWorkers(ctx, store.ListWorkersOptions{Status: store.WorkerStatusOnline})
@@ -2063,7 +2054,7 @@ func TestWorker_ListWorkers_Search(t *testing.T) {
 	ctx := context.Background()
 	insertFarm(t, s, "f1", "F1")
 	mk := func(id, name, host, loc string) {
-		if _, err := s.RegisterWorker(ctx, store.Worker{
+		if _, _, err := s.RegisterWorker(ctx, store.Worker{
 			ID: id, FarmID: "f1", Name: name, Hostname: host,
 			ComputeLocation: loc, Status: store.WorkerStatusOnline,
 			Tags: map[string]string{},

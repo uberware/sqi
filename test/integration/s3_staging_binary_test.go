@@ -189,8 +189,8 @@ steps:
 }
 
 // createS3StorageLocation creates a storage location whose default root is the
-// given s3://bucket URI. It sends NO `type` field (Task 2 derives it and rejects
-// an explicit type).
+// given s3://bucket URI. It sends NO `type` field (the server derives it from
+// the roots and rejects an explicit type).
 func createS3StorageLocation(t *testing.T, ts *testServer, name, bucket string) {
 	t.Helper()
 	body := fmt.Sprintf(`{"name":%q,"roots":{"default":"s3://%s"}}`, name, bucket)

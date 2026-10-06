@@ -2,7 +2,7 @@
 
 package sqlite_test
 
-// Gap tests for item 9 — methods not covered by store_test.go.
+// Gap tests: methods not covered by store_test.go.
 //
 // Adds tests for:
 //   - task_attempt.go: CreateTaskAttempt, GetTaskAttempt, LatestTaskAttempt,
@@ -817,8 +817,8 @@ func TestJob_UpdateJob(t *testing.T) {
 }
 
 // TestJob_UpdateJob_RetryPolicy verifies that UpdateJob persists the per-job
-// retry-policy overrides (max_attempts, retry_delay_seconds, failure_limit)
-// added in Task 8, and that it never touches failed_attempts or park_reason —
+// retry-policy overrides (max_attempts, retry_delay_seconds, failure_limit),
+// and that it never touches failed_attempts or park_reason —
 // those are lifecycle-managed by the scheduler.
 func TestJob_UpdateJob_RetryPolicy(t *testing.T) {
 	s := openTestStore(t)

@@ -165,7 +165,7 @@ func TestCopyFile_RefusesSymlinkDest(t *testing.T) {
 // TestCopyFile_RefusesSourceWithExtraHardlink proves copyFile's own fd-based
 // re-check refuses a source with an extra hardlink ENTIRELY ON ITS OWN, with
 // no upstream guard (openStageOutSource) involved at all — which is what
-// matters now that copyFile is the STAGE-IN path, where there is no os.Root
+// matters because copyFile is the STAGE-IN path, where there is no os.Root
 // above it to enforce anything. O_NOFOLLOW closes the symlink half of the
 // TOCTOU (a symlink swapped in after an upstream Lstat cannot be traversed),
 // but a hardlink IS a regular file — O_NOFOLLOW opens it successfully — so

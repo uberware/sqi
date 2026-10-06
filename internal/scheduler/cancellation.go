@@ -5,18 +5,27 @@ package scheduler
 // Cancellation propagation.
 //
 // CancelJob and CancelTask are the server-side entry points for explicit
-// cancellation (triggered by the REST API layer). Both
-// methods follow the same sequence used by the heartbeat sweep:
+// cancellation (triggered by the REST API layer). Each is one store operation
+// followed by the worker signals:
 //
-//  1. Close running task attempts ([store.TaskAttemptStore.CancelJobAttempts]).
-//  2. Transition all non-terminal tasks to [store.TaskStatusCanceled]
-//     ([store.TaskStore.CancelJobTasks]).
-//  3. Publish a task.cancel.<taskID> NATS signal to each worker that was
-//     actively executing a task ([bus.Client.PublishTaskCancel]) so the worker
-//     can interrupt the running process without waiting for the next heartbeat
-//     timeout.
-//  4. Release all usage pool slots held by the job
-//     ([store.UsageClaimStore.ReleaseJobClaims]).
+//  1. [store.TaskStore.CancelJobExecution] / [store.TaskStore.CancelTaskExecution]
+//     cancels the non-terminal tasks, closes their running attempts and
+//     releases those attempts' usage claims in ONE transaction (invariant I3),
+//     and returns the tasks that were assigned or running together with the
+//     worker each held.
+//  2. A task.cancel.<taskID> NATS signal is published to each of those workers
+//     ([bus.Client.PublishTaskCancel]) so the worker can interrupt the running
+//     process without waiting for the next heartbeat timeout.
+//
+//  3. CancelTask then drives step and job completion
+//     ([Scheduler.checkStepCompletion]), as a terminal worker report does,
+//     because canceling a job's last open task finishes its step. CancelJob
+//     needs no such call: the store finalizes the job's steps, and cancels the
+//     job row itself, inside the same transaction that cancels its tasks.
+//
+// Because the claims are released in the same transaction that closes the
+// attempts, there is no window in which a canceled task still holds a usage
+// slot, and nothing that has to be cleaned up afterwards.
 //
 // NATS publish failures are non-fatal: the scheduler logs a warning and
 // continues.  Workers that miss the cancel signal will eventually be reclaimed
@@ -25,7 +34,6 @@ package scheduler
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"log/slog"
 	"time"
@@ -41,65 +49,33 @@ type cancelPayload struct {
 	CanceledAt time.Time `json:"canceled_at"`
 }
 
-// CancelJob transitions all non-terminal tasks for the given job to canceled,
-// closes any running task attempts, releases held usage pool slots, and publishes
-// a task.cancel.<taskID> signal to each worker that was actively executing a
-// task at the time of cancellation.
+// CancelJob cancels every non-terminal task of the given job, closes their
+// running attempts and releases their usage claims in one store transaction
+// (invariant I3), then publishes a task.cancel.<taskID> signal to each worker
+// that was actively executing one of the tasks.
 //
-// CancelJob does NOT update the job's own status; that is the caller's
-// responsibility (typically the REST handler that also calls
-// [store.JobStore.UpdateJobStatus]).
+// The durable "canceled by user" reason is stamped in the same transaction,
+// only on tasks with no reason yet, so a more specific cause already recorded
+// (e.g. a cascade-cancel's "canceled: upstream step failed") is never
+// clobbered.
+//
+// The same transaction also finalizes the job's steps and moves the job itself
+// to canceled, unless it is already completed, failed or canceled, so a job
+// cancel is one write. A caller's later [store.JobStore.CancelJobStatus] (the
+// REST handler makes one) is an idempotent confirmation that reports a job that
+// had already completed or failed.
 //
 // The method is idempotent: if all tasks are already in terminal states the
-// store operations are no-ops and no NATS messages are published.
+// store operation changes nothing and no NATS messages are published.
 func (s *Scheduler) CancelJob(ctx context.Context, jobID string) error {
 	now := time.Now().UTC()
 
-	// Step 1: close running attempts before canceling the task rows so that
-	// the attempt EndedAt is recorded while the tasks still carry their
-	// assigned_worker_id (mirrors the heartbeat sweep pattern).
-	nAttempts, err := s.store.CancelJobAttempts(ctx, jobID, now)
+	activeTasks, err := s.store.CancelJobExecution(ctx, jobID, store.FailureReasonCanceledByUser, now)
 	if err != nil {
-		return fmt.Errorf("scheduler: cancel attempts for job %s: %w", jobID, err)
-	}
-	if nAttempts > 0 {
-		s.logger.InfoContext(
-			ctx, "scheduler: closed running attempts for canceled job",
-			slog.String("job_id", jobID),
-			slog.Int("attempts_closed", nAttempts),
-		)
+		return fmt.Errorf("scheduler: cancel job %s: %w", jobID, err)
 	}
 
-	// Step 2: cancel all non-terminal tasks; capture the previously active
-	// tasks so we know which workers to notify. The durable "canceled by user"
-	// reason rides the same UPDATE, stamped only on tasks with no reason yet so
-	// a more specific cause already recorded (e.g. a cascade-cancel's
-	// "canceled: upstream step failed") is never clobbered.
-	activeTasks, err := s.store.CancelJobTasks(ctx, jobID, now, store.FailureReasonCanceledByUser)
-	if err != nil {
-		return fmt.Errorf("scheduler: cancel tasks for job %s: %w", jobID, err)
-	}
-
-	// Step 3: publish cancel signals to all workers that had active tasks.
 	s.publishCancelSignals(ctx, activeTasks, now)
-
-	// Step 4: release all usage pool slots held by the job.
-	n, err := s.store.ReleaseJobClaims(ctx, jobID, now)
-	if err != nil {
-		// Non-fatal: log and continue — claims will be cleaned up when the
-		// worker next tries to claim a slot and finds the attempt gone.
-		s.logger.WarnContext(
-			ctx, "scheduler: release job usage claims failed",
-			slog.String("job_id", jobID),
-			slog.Any("error", err),
-		)
-	} else if n > 0 {
-		s.logger.InfoContext(
-			ctx, "scheduler: released usage claims for canceled job",
-			slog.String("job_id", jobID),
-			slog.Int("claims_released", n),
-		)
-	}
 
 	s.logger.InfoContext(
 		ctx, "scheduler: job cancellation complete",
@@ -109,100 +85,45 @@ func (s *Scheduler) CancelJob(ctx context.Context, jobID string) error {
 	return nil
 }
 
-// CancelTask transitions a single task to [store.TaskStatusCanceled], closes
-// its running attempt if any, releases held usage pool slots, and publishes a
-// task.cancel.<taskID> signal to the assigned worker.
+// CancelTask cancels a single task, closes its running attempt and releases
+// its usage claims in one store transaction (invariant I3), then publishes a
+// task.cancel.<taskID> signal to the worker that held the task at that moment.
 //
 // If the task is already in a terminal state (succeeded, failed, canceled),
 // CancelTask returns nil without modifying any state. That holds whether the
 // terminal state was visible up front or the task reached it mid-cancel: the
-// guard below and the status write are separate operations, and losing that
-// race is reported the same way as never having had it.
+// store decides inside its transaction and reports a terminal task as "not
+// canceled", so losing that race is reported the same way as never having had
+// it. Any other store failure propagates. It then drives step and job
+// completion, as a terminal report does.
 func (s *Scheduler) CancelTask(ctx context.Context, taskID string) error {
 	now := time.Now().UTC()
 
-	task, err := s.store.GetTask(ctx, taskID)
+	prior, canceled, err := s.store.CancelTaskExecution(ctx, taskID, store.FailureReasonCanceledByUser, now)
 	if err != nil {
-		return fmt.Errorf("scheduler: get task %s: %w", taskID, err)
+		return fmt.Errorf("scheduler: cancel task %s: %w", taskID, err)
 	}
-
-	// No-op if already terminal.
-	switch task.Status {
-	case store.TaskStatusSucceeded, store.TaskStatusFailed, store.TaskStatusCanceled:
+	if !canceled {
 		s.logger.DebugContext(
 			ctx, "scheduler: cancel task — already terminal",
 			slog.String("task_id", taskID),
-			slog.String("status", string(task.Status)),
+			slog.String("status", string(prior.Status)),
 		)
 		return nil
 	}
 
-	workerID := task.AssignedWorkerID
-	jobID := task.JobID
+	// Publish a cancel signal to the worker that held the task (if any).
+	s.publishCancelSignals(ctx, []store.Task{prior}, now)
 
-	// Close the latest running attempt before updating the task status.
-	if closeErr := s.closeSingleTaskAttempt(ctx, taskID, now); closeErr != nil {
+	// Finish the step and job as a terminal worker report would: otherwise a
+	// cancel of a job's last open task leaves both open until the next start.
+	// The cancel has committed, so a failure here is logged, not returned; the
+	// start-up reconcile (reconcileStuckSteps) is the backstop.
+	if err := s.checkStepCompletion(ctx, prior.StepID, prior.JobID); err != nil {
 		s.logger.WarnContext(
-			ctx, "scheduler: close task attempt on cancel failed",
+			ctx, "scheduler: cancel task: step completion failed",
 			slog.String("task_id", taskID),
-			slog.Any("error", closeErr),
-		)
-		// Non-fatal: continue with task cancellation.
-	}
-
-	if err = s.store.UpdateTaskStatus(ctx, taskID, store.TaskStatusCanceled); err != nil {
-		// Losing a race to completion is a no-op, not a failure. The terminal
-		// guard above is a separate read, so the task can finish between that
-		// read and this write; the state machine then rejects it. Canceling an
-		// already-terminal task is documented to return nil, and which side of
-		// the race the caller landed on must not change that.
-		//
-		// Narrow by construction: every non-terminal status has a legal arrow
-		// to canceled, so ErrInvalidTransition on *this* write can only mean
-		// the task is already terminal. Any other store failure still
-		// propagates.
-		if errors.Is(err, store.ErrInvalidTransition) {
-			s.logger.DebugContext(
-				ctx, "scheduler: cancel task — reached terminal state first",
-				slog.String("task_id", taskID),
-				slog.Any("error", err),
-			)
-			return nil
-		}
-		return fmt.Errorf("scheduler: transition task %s to canceled: %w", taskID, err)
-	}
-
-	// Annotate the durable failure reason. Guarded (IfEmpty) so a concurrent
-	// cascade-cancel's more specific reason is never clobbered. Best-effort:
-	// does not roll back the cancellation itself — the reason is an annotation.
-	if err = s.store.SetTaskFailureReasonIfEmpty(ctx, taskID, store.FailureReasonCanceledByUser); err != nil {
-		s.logger.WarnContext(
-			ctx, "scheduler: set failure reason for canceled task failed",
-			slog.String("task_id", taskID),
-			slog.Any("error", err),
-		)
-	}
-
-	// Publish a cancel signal to the assigned worker (if any).
-	if workerID != "" {
-		s.publishCancelSignals(ctx, []store.Task{task}, now)
-	}
-
-	// Release any usage pool slots held by this task's latest attempt.
-	attempt, err := s.store.LatestTaskAttempt(ctx, taskID)
-	if err == nil {
-		if releaseErr := s.ReleaseTaskUsage(ctx, attempt.ID); releaseErr != nil {
-			s.logger.WarnContext(
-				ctx, "scheduler: release usage claims after task cancel failed",
-				slog.String("task_id", taskID),
-				slog.String("attempt_id", attempt.ID),
-				slog.Any("error", releaseErr),
-			)
-		}
-	} else if !errors.Is(err, store.ErrNotFound) {
-		s.logger.WarnContext(
-			ctx, "scheduler: latest attempt lookup failed during task cancel",
-			slog.String("task_id", taskID),
+			slog.String("step_id", prior.StepID),
 			slog.Any("error", err),
 		)
 	}
@@ -210,8 +131,8 @@ func (s *Scheduler) CancelTask(ctx context.Context, taskID string) error {
 	s.logger.InfoContext(
 		ctx, "scheduler: task canceled",
 		slog.String("task_id", taskID),
-		slog.String("job_id", jobID),
-		slog.String("worker_id", workerID),
+		slog.String("job_id", prior.JobID),
+		slog.String("worker_id", prior.AssignedWorkerID),
 	)
 	return nil
 }
@@ -257,25 +178,4 @@ func (s *Scheduler) publishCancelSignals(ctx context.Context, activeTasks []stor
 			slog.String("worker_id", t.AssignedWorkerID),
 		)
 	}
-}
-
-// closeSingleTaskAttempt marks the latest running attempt for taskID as
-// canceled.  It is a no-op when no running attempt exists.
-func (s *Scheduler) closeSingleTaskAttempt(ctx context.Context, taskID string, now time.Time) error {
-	attempt, err := s.store.LatestTaskAttempt(ctx, taskID)
-	if errors.Is(err, store.ErrNotFound) {
-		return nil
-	}
-	if err != nil {
-		return fmt.Errorf("latest attempt for task %s: %w", taskID, err)
-	}
-	if attempt.Status != store.AttemptStatusRunning {
-		return nil
-	}
-	attempt.Status = store.AttemptStatusCanceled
-	attempt.EndedAt = &now
-	if _, err = s.store.UpdateTaskAttempt(ctx, attempt); err != nil {
-		return fmt.Errorf("close attempt %s: %w", attempt.ID, err)
-	}
-	return nil
 }

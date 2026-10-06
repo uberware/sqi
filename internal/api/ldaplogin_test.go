@@ -353,10 +353,9 @@ func TestLogin_ProvisioningConflictRejected(t *testing.T) {
 // "alice@example.com" but the row is "alice" — must be recognized on every
 // login, not just the first.
 //
-// Scope, stated honestly: this test does NOT pin the alias mechanism. Its
-// assertions — one row, the same row, role re-synced — hold under username
-// matching too, so it would survive a revert of C2 unnoticed. What it actually
-// proves is idempotence (a repeated login neither duplicates the row nor
+// Scope: this test does not pin the alias mechanism. Its assertions — one
+// row, the same row, role re-synced — hold under username matching too, so it
+// would not notice a return to username matching. What it actually proves is idempotence (a repeated login neither duplicates the row nor
 // disturbs it) and role re-sync. That is worth keeping, but it is not the
 // guard for identity matching; externallogin_test.go covers that, and
 // TestLDAP_StableIdentifierSurvivesRename in test/integration covers it
@@ -398,11 +397,10 @@ func TestLogin_AliasLoginRecognizesExistingLDAPAccount(t *testing.T) {
 // directory itself provisioned is fine; taking over a local one is the
 // privilege-escalation this defense exists to stop.
 //
-// Under C2 the refusal comes from a different place — the local row has no
-// external_id, so the identity lookup cannot find it and provisioning is left
-// to collide on the username, which is refused outright rather than adopted.
-// The guarantee is the same and is stated the same way: 401, and the local row
-// untouched.
+// The refusal comes from provisioning: the local row has no external_id, so
+// the identity lookup cannot find it and provisioning is left to collide on
+// the username, which is refused outright rather than adopted. The guarantee
+// is 401, and the local row untouched.
 func TestLogin_AliasLoginDoesNotAdoptLocalAccount(t *testing.T) {
 	st := fake.New()
 	seedAuthUser(t, st, "alice", "localpass", "admin")
@@ -471,8 +469,8 @@ func TestLogin_DirectoryUserWithoutVerifierRejected(t *testing.T) {
 	seedLDAPUser(t, st, store.User{Username: "alice", Role: "admin"})
 	srv := newLDAPServer(t, st, nil, ldap.Config{})
 
-	// "!ldap" is the placeholder C1 wrote and pre-C2 rows still carry; both it
-	// and the current one must be unusable as a password.
+	// "!ldap" is the placeholder legacy LDAP rows still carry; both it and the
+	// current one must be unusable as a password.
 	for _, pw := range []string{"pw", externalPlaceholderHash, "!ldap", ""} {
 		if code, body := postLogin(t, srv, "alice", pw); code != http.StatusUnauthorized {
 			t.Fatalf("password %q: got %d, want 401: %s", pw, code, body)
@@ -498,7 +496,8 @@ func TestLogin_NoRoleMatchWithEmptyDefaultRejects(t *testing.T) {
 	}
 }
 
-// With LDAP off, an unknown username behaves exactly as before C1.
+// With LDAP off, an unknown username gets a plain 401 and nothing is
+// provisioned.
 func TestLogin_LDAPDisabledUnknownUserStill401(t *testing.T) {
 	st := fake.New()
 	srv := newLDAPServer(t, st, nil, ldap.Config{}) // nil verifier = LDAP off
@@ -536,10 +535,10 @@ func authDisabledRouter(st store.Store) chi.Router {
 	)
 }
 
-// With auth disabled, nothing in C1 may be reachable: there is no principal to
-// provision against and every pre-C1 login behavior must hold. An unknown
-// username returns the same equalized 401 it returned before the directory
-// path existed, and no account appears in the store.
+// With auth disabled, no LDAP path may be reachable: there is no principal to
+// provision against and login must behave as it does without a directory. An
+// unknown username returns the equalized 401 and no account appears in the
+// store.
 //
 // No verifier is wired here, deliberately: authDisabledRouter is the thing
 // under test, and an auth-disabled router builds no verifier at all. "The
@@ -829,8 +828,8 @@ func newLDAPServerLogging(
 	return srv, &buf
 }
 
-// seedPreC2LDAPUser creates the shape C1 left behind: an LDAP account with no
-// external_id at all. seedLDAPUser cannot express it — it stamps an identifier
+// seedPreC2LDAPUser creates a legacy LDAP row, provisioned before
+// stable-identifier matching: an LDAP account with no external_id at all. seedLDAPUser cannot express it — it stamps an identifier
 // by design — and UpdateUser cannot clear one, since external_id is immutable
 // through it. Writing the row directly is the only way to reproduce what an
 // upgrading deployment actually has in its database.
@@ -840,26 +839,26 @@ func seedPreC2LDAPUser(t *testing.T, st store.Store, username string) store.User
 		ID:           uuid.NewString(),
 		Username:     username,
 		Role:         "admin",
-		PasswordHash: "!ldap", // the C1 placeholder, not C2's "!external"
+		PasswordHash: "!ldap", // the legacy placeholder, not the current "!external"
 		AuthSource:   store.AuthSourceLDAP,
 	})
 	if err != nil {
 		t.Fatalf("seedPreC2LDAPUser: %v", err)
 	}
 	if u.ExternalID != "" {
-		t.Fatalf("fixture is not a pre-C2 row: external_id = %q", u.ExternalID)
+		t.Fatalf("fixture is not a legacy row: external_id = %q", u.ExternalID)
 	}
 	return u
 }
 
-// A row provisioned by C1 carries an empty external_id. Once C2 matches on the
-// identifier, such a user can never log in again: the identity lookup misses
-// the empty stored value, provisioning then collides on the username, and the
-// result is a permanent 401.
+// A legacy LDAP row carries an empty external_id. Since accounts are matched
+// on the identifier, such a user can never log in again: the identity lookup
+// misses the empty stored value, provisioning then collides on the username,
+// and the result is a permanent 401.
 //
-// That outcome is INTENTIONAL and must not be "fixed". Adopting a row whose
+// That outcome is intentional and must not be "fixed". Adopting a row whose
 // stored identifier is empty is username matching under another name, and
-// would keep the recycled-identity hazard alive forever. The operator's
+// would keep the recycled-identity hazard. The operator's
 // remedy is to recreate the account.
 //
 // What is not acceptable is failing silently. This pins the diagnostic: the
@@ -874,7 +873,7 @@ func TestLogin_PreC2LDAPRowIsRefusedLoudly(t *testing.T) {
 
 	code, _ := postLogin(t, srv, "alice", "pw")
 	if code != http.StatusUnauthorized {
-		t.Fatalf("login: got %d, want 401 — a pre-C2 row must NOT be adopted", code)
+		t.Fatalf("login: got %d, want 401 — a legacy row must not be adopted", code)
 	}
 
 	got := logs.String()
@@ -889,12 +888,12 @@ func TestLogin_PreC2LDAPRowIsRefusedLoudly(t *testing.T) {
 	}
 }
 
-// The same pre-C2 row, but reached under an alias: the caller types the UPN
+// The same legacy row, but reached under an alias: the caller types the UPN
 // "alice@example.com" while the row (and the directory) spell the account
 // "alice". The typed-name lookup in login() misses it, so loginLDAP is called
-// with existing=nil — the shape that, before this fix, made the pre-C2
-// diagnostic silently not fire even though docs/auth.md promises the log is
-// "the only signal" for this failure, with no carve-out for aliases.
+// with existing=nil, and the diagnostic must still fire: docs/auth.md promises
+// the log is "the only signal" for this failure, with no carve-out for
+// aliases.
 func TestLogin_PreC2LDAPRowByAliasIsRefusedLoudly(t *testing.T) {
 	st := fake.New()
 	seedPreC2LDAPUser(t, st, "alice") // directory spelling; the alias is never stored
@@ -904,20 +903,20 @@ func TestLogin_PreC2LDAPRowByAliasIsRefusedLoudly(t *testing.T) {
 
 	code, _ := postLogin(t, srv, "alice@example.com", "pw")
 	if code != http.StatusUnauthorized {
-		t.Fatalf("login: got %d, want 401 — a pre-C2 row must NOT be adopted", code)
+		t.Fatalf("login: got %d, want 401 — a legacy row must not be adopted", code)
 	}
 
 	got := logs.String()
 	for _, want := range []string{"alice", "recreate"} {
 		if !strings.Contains(got, want) {
-			t.Errorf("server log does not mention %q for an alias-reached pre-C2 row, so "+
+			t.Errorf("server log does not mention %q for an alias-reached legacy row, so "+
 				"the failure is effectively silent:\n%s", want, got)
 		}
 	}
 }
 
 // The diagnostic is server-side only. The 401 an unauthenticated caller sees
-// must stay byte-identical to every other failure, or the pre-C2 state becomes
+// must stay byte-identical to every other failure, or the legacy state becomes
 // an oracle telling an attacker which usernames exist in the directory.
 func TestLogin_PreC2LDAPRowResponseIsIndistinguishable(t *testing.T) {
 	st := fake.New()
@@ -932,13 +931,13 @@ func TestLogin_PreC2LDAPRowResponseIsIndistinguishable(t *testing.T) {
 	baseCode, baseBody := postLogin(t, baselineSrv, "nosuchuser", "pw")
 
 	if preC2Code != baseCode {
-		t.Fatalf("status: pre-C2 row got %d, plain rejection got %d", preC2Code, baseCode)
+		t.Fatalf("status: legacy row got %d, plain rejection got %d", preC2Code, baseCode)
 	}
 	// "instance" is a per-request correlation id and differs by construction;
 	// every other field must match exactly.
 	if got, want := problemFields(t, preC2Body), problemFields(t, baseBody); got != want {
-		t.Fatalf("the pre-C2 refusal is distinguishable from a plain rejection, which "+
-			"makes login an enumeration oracle:\n pre-C2:   %s\n baseline: %s", got, want)
+		t.Fatalf("the legacy-row refusal is distinguishable from a plain rejection, which "+
+			"makes login an enumeration oracle:\n legacy:   %s\n baseline: %s", got, want)
 	}
 }
 
@@ -959,7 +958,7 @@ func problemFields(t *testing.T, body string) string {
 	return string(out)
 }
 
-// The pre-C2 diagnostic must not fire for an unrelated collision. A directory
+// The legacy-row diagnostic must not fire for an unrelated collision. A directory
 // identity colliding with a LOCAL account is a different problem with a
 // different fix (rename one of them), and telling the operator to recreate the
 // local account would be actively wrong advice.
@@ -983,17 +982,17 @@ func TestLogin_LocalCollisionDoesNotClaimPreC2(t *testing.T) {
 		t.Fatalf("login: got %d, want 401", code)
 	}
 	if strings.Contains(logs.String(), "recreate") {
-		t.Errorf("a local-account collision was misreported as a pre-C2 row:\n%s", logs.String())
+		t.Errorf("a local-account collision was misreported as a legacy row:\n%s", logs.String())
 	}
 }
 
-// The pre-C2 diagnostic must also not fire for a POST-C2 row colliding on a
-// recycled username: a new hire is handed a departed employee's directory
+// The legacy-row diagnostic must also not fire for a current row (one with an
+// external_id) colliding on a recycled username: a new hire is handed a departed employee's directory
 // name, so the directory issues a fresh external_id under the same username.
 // The existing row (the departed user's, still perfectly valid) has
 // AuthSource=ldap and a non-empty ExternalID — the shape the gate at
-// logPreC2Account's second check exists to exclude. Misreporting this as
-// pre-C2 would tell the operator to delete and recreate the WRONG account:
+// logPreC2Account's second check exists to exclude. Misreporting this as a
+// legacy row would tell the operator to delete and recreate the wrong account:
 // the departed user's still-live one, not the new hire's non-existent one.
 // The correct remedy is a rename, not a recreate.
 func TestLogin_RecycledUsernameDoesNotClaimPreC2(t *testing.T) {
@@ -1010,7 +1009,7 @@ func TestLogin_RecycledUsernameDoesNotClaimPreC2(t *testing.T) {
 		t.Fatalf("login: got %d, want 401", code)
 	}
 	if strings.Contains(logs.String(), "recreate") {
-		t.Errorf("a recycled-username collision on a post-C2 row was misreported as pre-C2, "+
+		t.Errorf("a recycled-username collision on a current row was misreported as a legacy row, "+
 			"which would tell the operator to delete and recreate the departed user's still-valid "+
 			"account instead of renaming one of the two:\n%s", logs.String())
 	}

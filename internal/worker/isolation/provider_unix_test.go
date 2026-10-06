@@ -71,13 +71,12 @@ func TestUnixProviderUnknownGroup(t *testing.T) {
 	}
 }
 
-// TestUnixProviderRefusesPrivilegedGroup is the empirical reproduction from
-// the review: resolving a legitimate, unprivileged user with an explicit
+// TestUnixProviderRefusesPrivilegedGroup: resolving a legitimate, unprivileged user with an explicit
 // privileged group must be refused. gid 0's group name is platform-dependent
 // ("wheel" on macOS/BSD, "root" on Linux) but is always in privilegedGroupNames
 // either way, so looking it up dynamically keeps this test portable while
-// still proving the exact bypass ("Group: wheel" / "Group: docker" style
-// requests) is now closed in the real provider, not just in CheckGroupNotPrivileged.
+// still proving the bypass ("Group: wheel" / "Group: docker" style
+// requests) is closed in the real provider, not just in CheckGroupNotPrivileged.
 func TestUnixProviderRefusesPrivilegedGroup(t *testing.T) {
 	g, err := user.LookupGroupId("0")
 	if err != nil {

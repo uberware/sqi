@@ -33,7 +33,7 @@ func TestCreateLogDir_MissingDirGetsProtectedDACL(t *testing.T) {
 	assertOnlyFullControl(t, aclEntries(t, acl), me)
 }
 
-// TestCreateLogDir_ExistingDirIsUntouched pins spec §2: an existing log
+// TestCreateLogDir_ExistingDirIsUntouched pins that an existing log
 // directory's ACL is left alone.
 func TestCreateLogDir_ExistingDirIsUntouched(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "logs")

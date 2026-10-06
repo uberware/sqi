@@ -67,7 +67,7 @@ func TestValidate_CapabilityNamePrefix_Structural(t *testing.T) {
 		},
 		{
 			// Capability names are case-insensitive (OpenJD jobtemplate-2023-09)
-			// and the matcher now resolves them case-insensitively, so a mixed-case
+			// and the matcher resolves them case-insensitively, so a mixed-case
 			// namespace is valid — validation must accept it.
 			name: "mixed-case namespace prefix accepted",
 			mutate: func(tp *openjd.JobTemplate) {

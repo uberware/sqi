@@ -24,10 +24,9 @@ import (
 // test of the enforcing code builds its own value directly — so a dropped or
 // renamed line in this literal leaves a server that starts cleanly, reports the
 // operator's configuration on `sqi-server config print`, and enforces NOTHING.
-// The deadline is the acute case: it is EXPR sub-project H1's only bound on
-// wall-clock time. While the EXPR extension was StatusInProgress no submission
-// exercised it at all; since H2 flipped the status every EXPR submission does,
-// so its absence would now surface as an outage rather than as a test failure.
+// The deadline is the acute case: it is the only bound on EXPR evaluation
+// wall-clock time, and every EXPR submission exercises it, so its absence
+// would surface as an outage rather than as a test failure.
 func TestServerConfig_CarriesTheExprCostBounds(t *testing.T) {
 	// Deliberately distinct, non-default values: these are same-typed fields
 	// crossing a struct boundary, where a transposition compiles and starts.
@@ -176,7 +175,7 @@ func TestServerConfig_BrokerAuthDefaultsAreTheConfigDefaults(t *testing.T) {
 	}
 }
 
-// TestServe_ConfigErrorReturnedThroughRun pins that config validation now runs
+// TestServe_ConfigErrorReturnedThroughRun pins that config validation runs
 // inside winsvc.Run (so a service's early failure reaches the trace) and still
 // surfaces to the console caller unchanged.
 func TestServe_ConfigErrorReturnedThroughRun(t *testing.T) {

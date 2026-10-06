@@ -39,7 +39,7 @@
 // affecting state on its own — the worst case is a log line persisted or a
 // worker marked offline slightly early.
 //
-// This simple major-version gate is sufficient for Phase 1; a more nuanced
+// This simple major-version gate is sufficient for now; a more nuanced
 // compatibility matrix can be added when a breaking change is required.
 //
 // # Encoding
@@ -99,6 +99,11 @@ const (
 	TypeTaskCancel = "task_cancel" // server → worker
 )
 
+// MessageWorkerShutdown is the Message of the "failed" TaskStatusMsg a worker
+// publishes for each task it abandons on a forced shutdown. The server treats
+// it as a reclaim, not a genuine failure.
+const MessageWorkerShutdown = "worker_shutdown"
+
 // ── RegisterMsg ───────────────────────────────────────────────────────────────
 
 // RegisterMsg is the JSON payload workers publish to worker.register.<worker>.
@@ -117,6 +122,13 @@ type RegisterMsg struct {
 	// Workers MUST use the same ID across restarts so that re-registration
 	// updates the existing record rather than creating a duplicate.
 	WorkerID string `json:"worker_id"`
+
+	// InstanceID is a random identifier generated once per worker process and
+	// sent unchanged in every registration it makes (boot and NATS reconnect).
+	// A new value tells the server the previous process is gone, so its
+	// in-flight tasks are reclaimed. Optional: a server that does not know it
+	// ignores it, and an empty value means "unknown".
+	InstanceID string `json:"instance_id,omitempty"`
 
 	// FarmID is the farm this worker belongs to.  Required.
 	FarmID string `json:"farm_id"`
@@ -168,8 +180,8 @@ type RegisterMsg struct {
 
 	// MaxConcurrentTasks is the maximum number of tasks this worker will
 	// execute simultaneously. Advertised to the server for informational
-	// purposes and future server-side admission control. In Phase 1 the server
-	// does not persist or enforce this value; the worker enforces it locally
+	// purposes and future server-side admission control. The server does not
+	// persist or enforce this value; the worker enforces it locally
 	// via a semaphore in the pull loop.
 	MaxConcurrentTasks int `json:"max_concurrent_tasks,omitempty"`
 
@@ -183,13 +195,11 @@ type RegisterMsg struct {
 	// that is tighter — see [ExprLimits], which also names the two tests that
 	// keep this key and its five inner keys matching the server's duplicate.
 	//
-	// Adding it was deliberately a REGISTRATION-payload change and not a
-	// [ProtocolVersion] bump: nothing about an assignment changed, and at the
-	// time the only version gate was the worker's own check on AssignMsg.  A
-	// server that does not know this field ignores it; a worker that does not
-	// send it reports zeroes, which the server reads as "not advertised".
-	// Note that the same move is no longer available in the same way now that
-	// the server gates registrations too — an additive field is still fine,
+	// It is a REGISTRATION-payload field, not a [ProtocolVersion] change:
+	// nothing about an assignment depends on it. A server that does not know
+	// this field ignores it; a worker that does not send it reports zeroes,
+	// which the server reads as "not advertised". Because the server gates
+	// registrations on the version, an additive field like this one is fine,
 	// but a RENAMED one must bump the version, because old and new workers
 	// would otherwise disagree about the key with nothing to notice it.
 	ExprLimits ExprLimits `json:"expr_limits,omitzero"`
@@ -209,8 +219,8 @@ type RegisterMsg struct {
 // round-tripping a populated message into the server's duplicate struct.
 //
 // Zero means "not advertised".  A current worker always populates every field
-// (its config layer rejects 0), so only a binary older than EXPR sub-project
-// E4d Task 3 — the change that added this field — sends zeroes.
+// (its config layer rejects 0), so only a worker binary that predates this
+// field sends zeroes.
 type ExprLimits struct {
 	// OperationLimit is the §1.3.10 operation budget for ONE evaluation
 	// (expr.operation_limit).
@@ -225,11 +235,10 @@ type ExprLimits struct {
 	// across one assignment (expr.assignment_retained_bytes).
 	AssignmentRetainedBytes int64 `json:"assignment_retained_bytes,omitempty"`
 	// LetRetainedBytes is how many bytes ONE symbol table may hold live
-	// (expr.let_retained_bytes). Added after the other four: E4d Task 3
-	// excluded it on the grounds that the server has no per-table
-	// counterpart, and the wave's final review showed the exclusion was
-	// reachable through legal configuration — see
-	// internal/scheduler/exprcaps.go for the comparison it feeds.
+	// (expr.let_retained_bytes). The server has no per-table counterpart,
+	// but a worker set too low here rejects work the server accepted, so it
+	// is compared too — see internal/scheduler/exprcaps.go for the
+	// comparison it feeds.
 	LetRetainedBytes int64 `json:"let_retained_bytes,omitempty"`
 }
 
@@ -261,6 +270,14 @@ type DeregisterMsg struct {
 
 	// WorkerID identifies the departing worker.
 	WorkerID string `json:"worker_id"`
+
+	// InstanceID is the departing process's instance ID, the one it sends in
+	// every [RegisterMsg]. The server ignores a deregister whose instance ID
+	// differs from the one it last registered: that message comes from a
+	// process that has since been replaced (a late or redelivered message), and
+	// applying it would take the new process offline. Empty from a worker that
+	// sends none; the server then applies it as before.
+	InstanceID string `json:"instance_id,omitempty"`
 
 	// Reason is an optional human-readable explanation for the departure
 	// (e.g. "graceful shutdown", "maintenance").
@@ -322,13 +339,10 @@ type HeartbeatMsg struct {
 
 // ── AssignMsg ─────────────────────────────────────────────────────────────────
 
-// AssignMsg is the JSON payload the server publishes to work.assign.<queue>.
-// It carries the full execution specification the worker needs to run the
-// assigned task without making additional network calls to the server.
-//
-// Workers pull this message via their per-queue durable JetStream consumer,
-// acknowledge it, and begin execution.  If a worker cannot accept the task
-// it must nack immediately so NATS redelivers to another worker.
+// AssignMsg is one assignment in the server's reply to a worker's
+// work.lease.<worker>.<queue> request. It carries the full execution
+// specification the worker needs to run the assigned task without making
+// additional network calls to the server.
 type AssignMsg struct {
 	// Version must equal [ProtocolVersion].
 	Version string `json:"version"`
@@ -420,9 +434,8 @@ type AssignMsg struct {
 	// its own to inspect, so this flag is what it must use to choose between
 	// the existing plain-substitution fmtstring.Resolve path and an
 	// EXPR-aware evaluator: a template that does not declare EXPR must take
-	// exactly the code path it took before this field existed, byte for
-	// byte. False (the zero value) is omitted, so a base-spec assignment's
-	// wire bytes are unchanged.
+	// the plain-substitution path, byte for byte. False (the zero value) is
+	// omitted, so a base-spec assignment's wire bytes do not carry it.
 	EXPR bool `json:"expr,omitempty"`
 
 	// StepTemplateLet holds the step template's own let: block (Template

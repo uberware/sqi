@@ -14,10 +14,7 @@ import (
 //     center('ab',7) is '   ab  ' — three spaces left, two right — rather than
 //     the floor split's '  ab   '. It only shows up when the padding and the
 //     width are both odd; center('abc',4) and center('é',5) are the same under
-//     either rule. sqi used the floor split until 2026-08-19 for one reason
-//     only, recorded in funcsstrpad.go: the reference did, and matching CPython
-//     would have manufactured an oracle divergence. openjd-expr 0.3.0 moved to
-//     CPython's rule, so that reason now argues the other way.
+//     either rule. The reference (openjd-expr 0.3.0) uses CPython's rule too.
 //   - a width at or below the current length returns the input UNCHANGED, which
 //     is what makes a negative width a harmless no-op. The reference panics on
 //     a negative width instead.

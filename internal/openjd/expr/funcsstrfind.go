@@ -18,44 +18,45 @@ var (
 	// separate because the two map onto separate conformance fixtures
 	// (expr2.2.4--replace-empty-old vs expr2.2.4--split-empty-separator) and
 	// because "substring" is the wrong word for a separator. Declared here so
-	// funcsstrsplit.go (Task 5) can consume it without a second sentinel.
+	// funcsstrsplit.go uses it rather than a second sentinel.
 	errEmptySeparator = errors.New("the separator must not be empty")
 	// errSubstringNotFound is index and rindex's failure. find and rfind
 	// return -1 for the same condition; only the index pair raises.
 	errSubstringNotFound = errors.New("substring not found")
 )
 
-// strFindFuncs is sub-project C2's second group: RFC 0006 section 2.2.4's trim
-// and affix functions, and (from Task 4) its search functions and replace.
+// strFindFuncs is the second string-function group: RFC 0006 section 2.2.4's
+// trim and affix functions, its search functions and replace.
 // They share this file because they share the empty-argument sentinels and the
 // codepoint-index conversion.
 //
-// Section 1.3.10 rule 3 (sub-project E1, Task 7): every row in this file
-// declares Cost{ArgBytes: []int{0}} -- the RECEIVER's (arg0's) own byte
-// length ONLY. None of the second or third string arguments (a cutset,
-// prefix, needle, "old" or "new") ever contribute, confirmed by holding the
-// receiver fixed and growing the other argument from 10 to 300 bytes without
-// moving the count (cost_string_internal_test.go's
+// Section 1.3.10 rule 3: every row in this file declares Cost{ArgBytes:
+// []int{0}} -- the RECEIVER's (arg0's) own byte length ONLY. None of the second
+// or third string arguments (a cutset, prefix, needle, "old" or "new") ever
+// contribute, confirmed by holding the receiver fixed and growing the other
+// argument from 10 to 300 bytes without moving the count
+// (cost_string_internal_test.go's
 // TestOperationCount_StripCutsetDoesNotAffectCost,
 // TestOperationCount_AffixArgumentDoesNotAffectRemoveprefixCost,
 // TestOperationCount_NeedleLengthDoesNotAffectFindCost). startswith/endswith
 // charge the FULL receiver even though a real implementation only needs the
 // prefix/suffix span -- the reference does, and rule 3's general clause does
-// not carve out an exception for a function whose real work is smaller than
-// its receiver.
+// not carve out an exception for a function whose real work is smaller than its
+// receiver.
 //
-// replace() is the one row here worth a specific note: it can balloon a
-// small receiver into an enormous result (old shorter than new, many
-// occurrences), and the reference's own operation count does not move when
-// that happens -- confirmed with a 100-byte receiver and a 300-byte "new",
-// producing a ~30000-byte result at an unchanged count
+// replace() is the one row here worth a specific note: it can balloon a small
+// receiver into an enormous result (old shorter than new, many occurrences),
+// and the reference's own operation count does not move when that happens --
+// confirmed with a 100-byte receiver and a 300-byte "new", producing a
+// ~30000-byte result at an unchanged count
 // (TestOperationCount_ReplaceDoesNotChargeTheProducedResult). sqi follows the
-// reference here rather than diverging (unlike join/zfill below in this
-// task): rule 3 groups replace() in the SAME sentence as upper()/lower()/
-// strip(), which are all confirmed receiver-driven (see funcsstrcase.go's own
-// Cost comment), and the growth this exposes is independently bounded by
-// maxStringBytes (replaceAll's own checkRepeat call, below) -- a SEPARATE
-// limit (section 1.3.9) from the one this Cost declares (section 1.3.10).
+// reference here rather than diverging (unlike join and zfill, in
+// funcsstrsplit.go and funcsstrpad.go): rule 3 groups replace() in the SAME
+// sentence as upper()/lower()/ strip(), which are all confirmed receiver-driven
+// (see funcsstrcase.go's own Cost comment), and the growth this exposes is
+// independently bounded by maxStringBytes (replaceAll's own checkRepeat call,
+// below) -- a SEPARATE limit (section 1.3.9) from the one this Cost declares
+// (section 1.3.10).
 var strFindFuncs = map[string][]Shape{
 	// The two-argument forms take a SET of runes, not a substring:
 	// lstrip("xxayx", "xy") is "ayx", not "xayx". strings.Trim and its
@@ -202,7 +203,7 @@ func foundIndex(s, sub string, last bool) (Value, error) {
 // product is exactly the quantity being bounded, so computing it and checking
 // afterward is not a check at all — for a large enough count it wraps int64 and
 // sails past the comparison. checkRepeat's own doc comment carries the full
-// argument; this is the same hazard C1 hit in range().
+// argument; range() (rangeCount, funcslist.go) has the same hazard.
 func replaceAll(s, old, repl string) (Value, error) {
 	if old == "" {
 		return Value{}, errEmptySubstring

@@ -1,6 +1,6 @@
 -- SPDX-License-Identifier: AGPL-3.0-or-later
--- Record which credential backend verifies each account (Phase 3, component
--- C1). 'local' means the stored password hash; 'ldap' means the directory.
+-- Record which credential backend verifies each account. 'local' means the
+-- stored password hash; 'ldap' means the directory.
 -- Existing rows are local by definition, which the DEFAULT supplies.
 --
 -- Deliberately no CHECK constraint: SQLite refuses ALTER TABLE DROP COLUMN on

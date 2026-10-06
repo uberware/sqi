@@ -37,20 +37,19 @@ func WorkerIDFilePath(dataDir string) string {
 // An error is returned if the directory cannot be created, the file cannot be
 // read or written, or the stored value is not a valid UUID.
 //
-// dataDir holds ONLY worker.id and is NEVER widened for run-as-user
-// traversal: it used to also be the shared ancestor of every session working
-// directory (<dataDir>/sessions/<sessionID>), which forced it to be chmod'd
+// dataDir is NEVER widened for run-as-user traversal. As the shared ancestor
+// of isolated session working directories it would have to be chmod'd
 // traversable (0711) for isolated tasks to chdir into their own session — Go's
 // forkAndExecInChild sets the child's process credentials BEFORE chdir. That
-// coupling is exactly backwards: worker.id is the worker's persistent,
+// coupling is backwards: worker.id is the worker's persistent,
 // server-correlated identity and must stay private (0700) and byte-for-byte
-// stable, while session scratch is ephemeral and needs to be
-// world-traversable when isolation is in play. Session working directories
-// now live under a separate root (see cmd/sqi-worker's effectiveSessionRoot
-// and session.Manager), created traversable FROM BIRTH where that is needed —
-// never by mutating an existing directory's mode, which is the anti-pattern
-// this split eliminates. dataDir stays exactly 0700, created once and never
-// touched again by anything in this codebase.
+// stable, while session scratch is ephemeral and needs to be world-traversable
+// when isolation is in play. So a worker that can isolate (running as root, or
+// on Windows) keeps its session working directories under a separate root,
+// created traversable FROM BIRTH; only a non-root worker, which cannot isolate,
+// keeps them under <dataDir>/sessions (see cmd/sqi-worker's
+// effectiveSessionRoot and session.Manager). dataDir is created 0700 and its
+// mode is never changed afterwards.
 func LoadOrCreateWorkerID(dataDir string) (string, error) {
 	if dataDir == "" {
 		return "", errors.New("worker.data_dir must not be empty")

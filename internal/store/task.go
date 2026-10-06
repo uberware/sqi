@@ -46,6 +46,13 @@ const (
 	// FailureReasonWorkerOffline is the attempt message recorded when the
 	// heartbeat sweep terminates attempts of a worker that went offline.
 	FailureReasonWorkerOffline = "worker went offline"
+	// FailureReasonWorkerShutdown is the attempt message recorded when a
+	// worker's forced shutdown abandons a task and it is reclaimed.
+	FailureReasonWorkerShutdown = "worker shut down"
+	// FailureReasonWorkerRestarted is the attempt message recorded when a
+	// worker re-registers from a new process and its previous process's tasks
+	// are reclaimed.
+	FailureReasonWorkerRestarted = "worker restarted"
 )
 
 // Task is the atomic unit of work — one process on one worker. Tasks are
@@ -114,6 +121,102 @@ const (
 	TaskSortByName TaskSortField = "name"
 )
 
+// AttemptCompletion is a worker's terminal report for one attempt.
+type AttemptCompletion struct {
+	// AttemptID is the attempt the worker is reporting on.
+	AttemptID string
+	// TaskID is the task the attempt belongs to.
+	TaskID string
+	// TaskStatus is the status the task should end up in: succeeded, failed or
+	// canceled.
+	TaskStatus TaskStatus
+	// AttemptStatus is the attempt's terminal status.
+	AttemptStatus AttemptStatus
+	// ExitCode is the process exit code, or nil when there is none.
+	ExitCode *int
+	// SessionID is the OpenJD session ID; "" leaves the stored value unchanged.
+	SessionID string
+	// Message is the attempt's human-readable outcome; "" leaves the stored
+	// value unchanged.
+	Message string
+	// FailureReason, when non-empty, is stamped on the task if the task ends up
+	// holding TaskStatus. It is never stamped by a Rejected report, including
+	// one from a superseded attempt. Callers pass "" for a success.
+	FailureReason string
+	// EndedAt is when the attempt ended, as the worker reports it. It feeds only
+	// the attempt's ended_at: the task row's updated_at and the released claims'
+	// released_at are stamped with server time.
+	EndedAt time.Time
+}
+
+// CompletionResult reports what [TaskStore.CompleteTaskAttempt] did to the
+// task. The attempt is closed and its claims released in every non-error case.
+type CompletionResult struct {
+	// Applied is true when the task now holds the requested status (it moved
+	// there, or was already there on a redelivery).
+	Applied bool
+	// Rejected is true when the task was not moved, for one of two reasons.
+	// Either the report's attempt is not the task's latest (the highest
+	// attempt_number): the reaper or an offline sweep closed it and a new lease
+	// replaced it, so the old worker's late report must not end the new lease.
+	// Or the state machine refused the transition: the task no longer holds a
+	// status the report can move it from, because it reached a different
+	// terminal status (a cancel, say) or went back to ready or pending (a reap,
+	// an offline reclaim, an auto-retry requeue or a manual retry). Either way
+	// the failure reason is not stamped, and the caller acks the report.
+	Rejected bool
+}
+
+// LeaseOutcome says what [TaskStore.LeaseTask] did. Every outcome other than
+// [LeaseLeased] wrote nothing.
+type LeaseOutcome string
+
+const (
+	// LeaseLeased means the task is now assigned to the worker, with a running
+	// attempt and every requested usage claim.
+	LeaseLeased LeaseOutcome = "leased"
+	// LeaseLost means the task is no longer leasable: it is unknown, another
+	// lease took it, it is still backing off, or its job or queue is paused or
+	// its job is terminal.
+	LeaseLost LeaseOutcome = "lost"
+	// LeaseQueueFull means the task's queue is at its MaxConcurrentTasks.
+	LeaseQueueFull LeaseOutcome = "queue_full"
+	// LeaseFarmFull means the task's farm is at its MaxConcurrentTasks.
+	LeaseFarmFull LeaseOutcome = "farm_full"
+	// LeasePoolFull means a requested usage pool is at its max_concurrent, or
+	// no longer exists. [LeaseResult.FullPool] names it.
+	LeasePoolFull LeaseOutcome = "pool_full"
+)
+
+// LeaseRequest asks [TaskStore.LeaseTask] to lease one task to one worker.
+type LeaseRequest struct {
+	// TaskID is the task to lease.
+	TaskID string
+	// WorkerID is the worker the task is assigned to and the attempt runs on.
+	WorkerID string
+	// AttemptID is the caller-generated ID of the attempt the lease creates.
+	AttemptID string
+	// Now stamps the assignment, the attempt's start and the claims, and is
+	// the instant a retry backoff is compared against.
+	Now time.Time
+	// Claims are the usage-pool slots the attempt must hold. ClaimID, PoolID
+	// and PoolName are used; MaxConcurrent is ignored, because the pool's cap
+	// is read in the lease's own transaction.
+	Claims []UsagePoolClaim
+}
+
+// LeaseResult is what [TaskStore.LeaseTask] did.
+type LeaseResult struct {
+	// Outcome is the lease's outcome.
+	Outcome LeaseOutcome
+	// Attempt is the attempt the lease created. It is set only when Outcome is
+	// [LeaseLeased].
+	Attempt TaskAttempt
+	// FullPool is the name of the full or missing pool when Outcome is
+	// [LeasePoolFull].
+	FullPool string
+}
+
 // TaskStore is the persistence interface for [Task] records.
 type TaskStore interface {
 	// CreateTask inserts a new task. The caller must populate all fields
@@ -132,14 +235,49 @@ type TaskStore interface {
 	// passing it to ensure sensible defaults are applied.
 	ListTasks(ctx context.Context, opts ListTasksOptions) (Page[Task], error)
 
-	// UpdateTaskStatus transitions a task to a new status and updates
-	// UpdatedAt. Returns [ErrNotFound] if the task does not exist.
-	UpdateTaskStatus(ctx context.Context, id string, status TaskStatus) error
+	// CompleteTaskAttempt applies a worker's terminal report in one
+	// transaction (invariant I3):
+	//  1. close the attempt if it is still running;
+	//  2. release every active claim the attempt holds;
+	//  3. if c.AttemptID is not the task's latest attempt (the highest
+	//     attempt_number; an unknown attempt or another task's is not), stop:
+	//     the result is Rejected and the task is not touched;
+	//  4. move the task to c.TaskStatus by compare-and-set, and only while it is
+	//     assigned or running: a task already holding the status is a no-op
+	//     (Applied), anything else (ready, pending, or another terminal status)
+	//     is Rejected;
+	//  5. stamp c.FailureReason when the task ends up holding c.TaskStatus.
+	// Steps 1 and 2 commit even when step 3 or 4 rejects the report, so a
+	// canceled task's late report never leaks a usage slot. Step 3 is what
+	// stops a superseded attempt's late report (its attempt reaped or its
+	// worker taken offline, the task leased again) from ending the task by a
+	// legal arrow while the new attempt is open and holds its claims. Returns
+	// ErrNotFound for an unknown task. A redelivery is safe: the attempt is
+	// already closed, so it is not rewritten, and a task already holding
+	// c.TaskStatus is a no-op, provided the attempt is still the latest.
+	CompleteTaskAttempt(ctx context.Context, c AttemptCompletion) (CompletionResult, error)
 
-	// AssignTask atomically sets AssignedWorkerID, AssignedAt, and Status to
-	// [TaskStatusAssigned] for the given task. Returns [ErrNotFound] if the
-	// task does not exist.
-	AssignTask(ctx context.Context, id, workerID string, assignedAt time.Time) error
+	// StartTaskAttempt applies a worker's "running" report in one transaction,
+	// behind the task's job-row anchor: it acts only while attemptID is still
+	// running (not closed) and is the task's latest attempt and the task is
+	// assigned or running. It then moves the task assigned -> running (a
+	// running task is left as is, so a redelivery is harmless) and records
+	// sessionID on the attempt when non-empty. started is false, with a nil
+	// error, when the report is stale: the attempt was closed by a reap, an
+	// offline reclaim or a cancel, or a newer lease superseded it. An unknown
+	// task is [ErrNotFound]. On PostgreSQL the task row must be locked FOR
+	// UPDATE after the anchor and before the latest-attempt check.
+	StartTaskAttempt(ctx context.Context, attemptID, taskID, sessionID string, now time.Time) (started bool, err error)
+
+	// ReclaimTaskAttempt hands one task back as the offline reclaim does: it
+	// returns the task to ready with no worker, closes attemptID as failed with
+	// [FailureReasonWorkerShutdown] and releases its claims, without touching
+	// failed_attempts or the job's failure count. It acts only while attemptID
+	// is running and is the task's latest and the task is assigned or running;
+	// otherwise reclaimed is false and nothing changes. Anchor and statement
+	// order are the offline reclaim's: the job row, then the task, then the
+	// attempt and claims. Unknown task: [ErrNotFound].
+	ReclaimTaskAttempt(ctx context.Context, attemptID, taskID string, now time.Time) (reclaimed bool, err error)
 
 	// ListReadyTasks returns up to limit tasks in [TaskStatusReady] that
 	// belong to non-paused queues within the given farm, excluding:
@@ -155,21 +293,29 @@ type TaskStore interface {
 	// Used by the scheduler's assignment loop.
 	ListReadyTasks(ctx context.Context, farmID string, now time.Time, limit int) ([]Task, error)
 
-	// ReclaimWorkerTasks resets all tasks assigned to workerID that are still
-	// in [TaskStatusAssigned] or [TaskStatusRunning] back to [TaskStatusReady]
-	// so they can be reassigned by the scheduler. Called by the heartbeat
-	// timeout sweep after a worker is marked offline.
-	// Returns the number of tasks reclaimed.
-	ReclaimWorkerTasks(ctx context.Context, workerID string) (int, error)
-
 	// ReclaimStaleAssignedTasks returns tasks stuck in [TaskStatusAssigned] whose
 	// assigned_at is older than cutoff to [TaskStatusReady], clearing
 	// assigned_worker_id and assigned_at so the scheduler can reassign them.
 	// Tasks in [TaskStatusRunning] are left untouched — only assignments that
 	// never started are reclaimed (e.g. the assignment message expired from the
-	// work stream before the worker pulled it). Returns the reclaimed tasks,
-	// each still carrying its pre-reset assigned_worker_id, so the caller can
-	// close their attempts and release usage-pool claims.
+	// work stream before the worker pulled it).
+	//
+	// Inside the same transaction it closes each reclaimed task's running
+	// attempts as [AttemptStatusFailed] and releases the claims of the task's
+	// closed attempts (invariant I3), so the caller never looks an attempt up
+	// afterwards: a task leased again after this call keeps its new attempt and
+	// claims. Returns exactly the tasks this call reclaimed (invariant I2), as
+	// they are after the reset: [TaskStatusReady] with an empty
+	// assigned_worker_id.
+	//
+	// Statement order: the tasks are reset first, then their attempts are
+	// closed, then their claims released. A Postgres implementation must take
+	// its anchors (each candidate task's job row, sorted by id) BEFORE the
+	// UPDATE and without locking a task row first: read the candidates
+	// unlocked, lock their job rows, then run the UPDATE re-guarded on the
+	// candidate IDs, status assigned and the cutoff. Locking the task rows
+	// first, or anchoring after the UPDATE ... RETURNING, takes a task row
+	// before its job row, the reverse of every job-level operation's order.
 	ReclaimStaleAssignedTasks(ctx context.Context, cutoff time.Time) ([]Task, error)
 
 	// CountActiveTasksInQueue returns the number of tasks for the given queue
@@ -193,55 +339,89 @@ type TaskStore interface {
 	// still backing off, or under an auto-parked job).
 	CountReadyTasksByQueue(ctx context.Context, farmID string, now time.Time) (map[string]int, error)
 
-	// CancelJobTasks transitions all non-terminal tasks for the given job to
-	// [TaskStatusCanceled], clearing AssignedWorkerID and AssignedAt on each,
-	// and returns the subset that were in [TaskStatusAssigned] or
-	// [TaskStatusRunning] at the time of the call (with their AssignedWorkerID
-	// intact) so the caller can publish NATS cancel signals to the appropriate
-	// workers.
+	// CancelJobExecution cancels a job's work in one transaction (invariant I3),
+	// in this statement order:
+	//  1. move every non-terminal task of the job (pending, ready, assigned or
+	//     running) to [TaskStatusCanceled], clearing AssignedWorkerID and
+	//     AssignedAt, and stamp reason as FailureReason on each task that has
+	//     none yet, so a more specific cause recorded earlier (e.g. a
+	//     cascade-cancel) is never clobbered;
+	//  2. close every running attempt of the job's tasks as
+	//     [AttemptStatusCanceled], ended at now;
+	//  3. release every active claim held by an attempt of the job's tasks that
+	//     is no longer running;
+	//  4. finalize every open step of the job (a pending step, or one with no
+	//     tasks, becomes canceled; any other gets FinalizeStep's outcome), so
+	//     after a job cancel every step is terminal;
+	//  5. move the job itself to [JobStatusCanceled], writing its CompletedAt
+	//     and UpdatedAt as now, under the same guard as
+	//     [JobStore.CancelJobStatus]: a completed, failed or already canceled
+	//     job is left exactly as it is. A job cancel is therefore one write, and
+	//     no stop or failed second write can leave the job live with all of its
+	//     work canceled.
+	// It returns the tasks that were in [TaskStatusAssigned] or
+	// [TaskStatusRunning] when step 1 ran, each as it was before the cancel (its
+	// AssignedWorkerID intact), so the caller can signal the workers. Tasks
+	// already terminal are not modified, and a job with nothing left to cancel
+	// returns no tasks and no error. now stamps the tasks, the attempts, the
+	// claims, the steps and the job. A later [JobStore.CancelJobStatus] is an
+	// idempotent confirmation: nil for the job this call canceled, [ErrConflict]
+	// for a job that was already completed or failed.
 	//
-	// A non-empty reason is stamped as FailureReason on each canceled task
-	// unless the task already carries one, so a more specific cause recorded
-	// earlier (e.g. a cascade-cancel) is never clobbered.
+	// Statement order is part of the contract on Postgres: tasks are canceled
+	// first, then attempts closed and claims released, so a concurrent LeaseTask
+	// holding a task row is waited for and its attempt and claims are seen. The
+	// returned set is read before step 1 under the job-row anchor only, and
+	// LeaseTask does not take the job row, so on Postgres a lease that commits
+	// between that read and step 1 is canceled (and its attempt and claims
+	// closed) but not returned, and its worker gets no cancel signal. A Postgres
+	// implementation must close that gap (see "Store invariants" in
+	// docs/architecture.md).
+	CancelJobExecution(ctx context.Context, jobID, reason string, now time.Time) ([]Task, error)
+
+	// CancelTaskExecution cancels one task in one transaction (invariant I3),
+	// in the same statement order as [TaskStore.CancelJobExecution]: move the
+	// task to [TaskStatusCanceled] (stamping reason only if it has none), close
+	// its running attempt as [AttemptStatusCanceled], then release the claims
+	// of its closed attempts. Unlike the job-wide cancel it leaves
+	// AssignedWorkerID and AssignedAt in place, so a canceled task still shows
+	// the worker that held it.
 	//
-	// The SELECT and UPDATE run inside a single database transaction so no
-	// concurrent assignment can race between observation and cancellation.
-	// Tasks already in a terminal state (succeeded, failed, canceled) are not
-	// modified.
-	CancelJobTasks(ctx context.Context, jobID string, now time.Time, reason string) ([]Task, error)
+	// It returns the task as it was before the cancel, and whether it was
+	// canceled. A task that is already terminal, whether it was when the call
+	// started or it completed first, is returned unchanged with false and a
+	// nil error: that is the "lost the race to completion" outcome, not a
+	// failure. An unknown task is [ErrNotFound]. The same statement-order
+	// contract applies on Postgres, and so does CancelJobExecution's gap: the
+	// prior task is read under the job-row anchor, which a LeaseTask does not
+	// take, so a lease committing between that read and the cancel's write is
+	// canceled while the returned task still shows it ready with no worker.
+	CancelTaskExecution(ctx context.Context, taskID, reason string, now time.Time) (Task, bool, error)
 
 	// RetryTasks revives failed/canceled tasks so they can run again. It
-	// transitions every task of jobID in [TaskStatusFailed] or
+	// revives every task of jobID in [TaskStatusFailed] or
 	// [TaskStatusCanceled] — or, when taskIDs is non-nil, only those of the
-	// given IDs that are failed/canceled — back to [TaskStatusPending],
-	// clearing each revived task's genuine-failure state (FailedAttempts reset
-	// to zero, RetryAfter cleared). Any of their enclosing steps that are
+	// given IDs that are failed/canceled — clearing each revived task's
+	// genuine-failure state (FailedAttempts reset to zero, RetryAfter
+	// cleared). Each revived task becomes [TaskStatusReady] when its step is
+	// ready (a sibling still in flight; a step recorded as the legacy running
+	// status counts as ready too) and [TaskStatusPending] otherwise; the
+	// returned tasks carry that status. Any of their enclosing steps that are
 	// currently in a terminal status are reset to [StepStatusPending], and the
 	// job itself is reset to [JobStatusPending] when it is currently terminal
 	// (failed/canceled) — likewise clearing the job's FailedAttempts and
 	// ParkReason; a non-terminal job is left unchanged. All updates run in a
 	// single transaction.
 	//
-	// Resetting to pending (rather than ready) lets the caller re-run
-	// [openjd.ResolveDependencies] to re-gate the revived tasks in dependency
-	// order. Tasks not in a terminal-retryable state are not modified. Returns
-	// the revived task rows (each with Status == pending), or an empty slice
-	// when nothing matched.
+	// A task revived pending lets the caller re-run
+	// [openjd.ResolveDependencies] to re-gate it in dependency order; a task
+	// in a ready step is revived ready because nothing would release it from
+	// pending there. Tasks not in a terminal-retryable state are not modified.
+	// Returns the revived task rows, or an empty slice when nothing matched.
+	// The returned set is exactly the set of rows the call changed: it takes
+	// the job's anchor lock first, so a concurrent cancel cannot add a
+	// failed/canceled task between the read and the write.
 	RetryTasks(ctx context.Context, jobID string, taskIDs []string, now time.Time) ([]Task, error)
-
-	// TransitionStepPendingTasks transitions every task of the given step that is
-	// currently in [TaskStatusPending] to status `to`, updates UpdatedAt, and
-	// returns the affected task rows. It is used to promote a step's tasks to
-	// [TaskStatusReady] once its dependencies resolve, and to cancel them when an
-	// upstream dependency fails.
-	//
-	// A non-empty failureReason is stamped on each transitioned task unless it
-	// already carries one (used by cascade-cancel; pass "" when promoting).
-	//
-	// The transition is applied as a single statement covering all matching rows
-	// regardless of count, so it is not subject to the [MaxLimit] pagination
-	// ceiling. Tasks not in pending state are not modified.
-	TransitionStepPendingTasks(ctx context.Context, stepID string, to TaskStatus, failureReason string) ([]Task, error)
 
 	// CountTasksByJob returns the number of tasks for the given job keyed by
 	// status. Statuses with zero tasks are omitted from the returned map.
@@ -254,29 +434,31 @@ type TaskStore interface {
 	// an undeclared task (required_cores NULL) counts as the whole machine.
 	CommittedCores(ctx context.Context, workerID string, fullMachineCost int) (int, error)
 
-	// LeaseReadyTask atomically transitions a task from [TaskStatusReady] to
-	// [TaskStatusAssigned], setting assigned_worker_id and assigned_at. It
-	// returns true iff the task was still ready (exactly one row changed); a
-	// false return means another worker leased it first. This is the race guard
-	// for concurrent lease requests.
-	LeaseReadyTask(ctx context.Context, taskID, workerID string, now time.Time) (bool, error)
+	// LeaseTask leases one ready task to a worker in a single transaction
+	// (invariants I3 and I5):
+	//  1. move the task ready → assigned, guarded on the same eligibility
+	//     predicate as ListReadyTasks (queue not paused, job not paused or
+	//     terminal, backoff elapsed);
+	//  2. re-check the queue's and farm's MaxConcurrentTasks against values read
+	//     in the transaction;
+	//  3. insert the attempt, numbered MAX(attempt_number)+1;
+	//  4. for each claim, in pool-ID order, re-check the pool's max_concurrent
+	//     as read in the transaction (a deleted pool counts as full) and insert
+	//     the claim.
+	// Any outcome other than LeaseLeased writes nothing at all, so there is no
+	// rollback path for the caller. An unknown task is LeaseLost, not an error.
+	LeaseTask(ctx context.Context, req LeaseRequest) (LeaseResult, error)
 
 	// SetTaskUnschedulableReason sets (or, with an empty string, clears) the
-	// reason a ready task cannot be scheduled. Returns ErrNotFound if id is unknown.
-	SetTaskUnschedulableReason(ctx context.Context, id, reason string) error
-
-	// SetTaskFailureReason sets (or, with an empty string, clears) the
-	// human-readable reason the task reached a terminal non-success. Returns
-	// ErrNotFound if id is unknown.
-	SetTaskFailureReason(ctx context.Context, id, reason string) error
-
-	// SetTaskFailureReasonIfEmpty sets the failure reason only when the task
-	// currently has no reason recorded (an empty failure_reason). It is a
-	// legitimate no-op — not an error — when the task already carries a reason,
-	// so a more specific cause (e.g. a cascade-cancel) is never clobbered by a
-	// later, less specific one (e.g. a user cancel). A zero-row update (task
-	// unknown or already annotated) is NOT reported as ErrNotFound.
-	SetTaskFailureReasonIfEmpty(ctx context.Context, id, reason string) error
+	// reason a ready task cannot be scheduled. It writes only while the task is
+	// [TaskStatusReady], evaluated inside the write: the scheduler's sweep reads
+	// its candidates before it writes, and a task a lease took in between is left
+	// alone rather than stamped with a reason that no longer applies. A task that
+	// is not ready is therefore a no-op, not an error: written reports whether
+	// the reason was stored, and is false (with a nil error) when the task is no
+	// longer ready, so a caller can skip any follow-up (an event) for a write
+	// that did not land. Returns ErrNotFound if id is unknown.
+	SetTaskUnschedulableReason(ctx context.Context, id, reason string) (written bool, err error)
 
 	// CountUnschedulableTasksByJob returns the number of tasks for the given
 	// job that are currently in [TaskStatusReady] with a non-empty
@@ -310,8 +492,13 @@ type TaskStore interface {
 	// job FailedAttempts values, plus firstClose — true iff this call performed
 	// the running→failed close (i.e. this is the first delivery, so retry/park
 	// ACTIONS are authorized; a redelivery must first check that the attempt is
-	// still relevant before re-driving them). Returns [ErrNotFound] if the task
-	// does not exist.
+	// still relevant before re-driving them). The same transaction releases
+	// every active usage claim the attempt holds (invariant I3), on a
+	// redelivery too. now stamps the attempt's ended_at and the task's and
+	// job's updated_at; the released claims' released_at is server time, never
+	// now, because now is the worker's reported time and a skewed worker clock
+	// could otherwise put a release before its claim. Returns [ErrNotFound] if
+	// the task does not exist.
 	RecordTaskFailure(ctx context.Context, attemptID, taskID string, exitCode *int, sessionID, message string, now time.Time) (taskFailed, jobFailed int, firstClose bool, err error)
 
 	// RequeueTaskForRetry transitions a task back to [TaskStatusReady],
@@ -322,9 +509,13 @@ type TaskStore interface {
 	// or [TaskStatusRunning] is requeued, so a stale or redelivered failure
 	// report can never resurrect a task that has since been canceled,
 	// succeeded, or already returned to ready. It reports whether the task was
-	// actually requeued; false (task missing or not assigned/running) is a
-	// legitimate no-op, not an error.
-	RequeueTaskForRetry(ctx context.Context, taskID string, retryAfter, now time.Time) (bool, error)
+	// actually requeued; false (task missing, not assigned/running, or
+	// attemptID not the task's latest) is a legitimate no-op, not an error.
+	//
+	// It acts only while attemptID is the task's latest attempt, so a reclaim
+	// and a new lease landing between RecordTaskFailure and this call leave the
+	// new lease alone. On PostgreSQL, take the job-row anchor first.
+	RequeueTaskForRetry(ctx context.Context, taskID, attemptID string, retryAfter, now time.Time) (bool, error)
 }
 
 // ListTasksOptions filters and orders [TaskStore.ListTasks] results.

@@ -296,7 +296,7 @@ def test_get_task_logs_encodes_cursor_and_limit(make_client: ClientFactory) -> N
     params = route.calls.last.request.url.params
     assert params["limit"] == "50"
     assert params["after_nats_seq"] == "7"
-    # Phase 1 uses only the non-streaming JSON path: never request tail=true.
+    # The client uses only the non-streaming JSON path: never request tail=true.
     assert "tail" not in params
 
 

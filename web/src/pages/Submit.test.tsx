@@ -12,10 +12,9 @@ import type { Farm, Queue, Job, ListResponse, Principal } from '@/api/types'
 
 // ── Auth mock ─────────────────────────────────────────────────────────────────
 // Submit reads useAuth() to gate the Owner field behind 'jobs.submit_as', the
-// same pattern ProductSubmit.test.tsx already uses. Default every test to an
-// operator principal (holds jobs.submit_as) so every pre-existing assertion,
-// which predates permission gating, keeps seeing the Owner field unchanged;
-// the gating tests below override via renderWithAuth.
+// same pattern ProductSubmit.test.tsx uses. Default every test to an
+// operator principal (holds jobs.submit_as) so the Owner field renders; the
+// gating tests below override via renderWithAuth.
 
 const OPERATOR_PRINCIPAL: Principal = {
   subject: 'u-operator',
@@ -130,7 +129,7 @@ function jobsResponse(jobs: Job[]): ListResponse<Job> {
 /**
  * Set (or cleared in `beforeEach`) by {@link mockJobSubmit} to answer the
  * `POST /jobs` submission call. Routed by method rather than call order
- * because the Submit page now fires the farms+queues query and the
+ * because the Submit page fires the farms+queues query and the
  * depends-on candidate-jobs query independently — their relative timing
  * isn't guaranteed, so a strictly-ordered `mockResolvedValueOnce` queue could
  * have an early GET consume the response meant for the POST.
@@ -203,9 +202,8 @@ beforeEach(() => {
   // Reset call tracking without clearing the store (already cleared above).
   localStorageMock.getItem.mockClear()
   localStorageMock.setItem.mockClear()
-  // Default every test to an operator principal (holds jobs.submit_as) so
-  // pre-existing assertions, which predate permission gating, keep seeing the
-  // Owner field unchanged; the gating tests below override via renderWithAuth.
+  // Default every test to an operator principal (holds jobs.submit_as) so the
+  // Owner field renders; the gating tests below override via renderWithAuth.
   ;(useAuth as unknown as ReturnType<typeof vi.fn>).mockReturnValue({
     principal: OPERATOR_PRINCIPAL,
     status: 'authed',

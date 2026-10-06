@@ -3,23 +3,21 @@
 
 name: Preset library
 
-# Validates the PUBLISHED preset library against the validator on this branch.
+# Validates the published preset library against the validator on this branch.
 #
-# Why this exists: a validator change can silently invalidate content that is
-# already published. Commit 2cdef4f tightened parameter-control validation to
-# match the base spec and corrected every preset in this repo in the same
-# change -- but the copy at uberware.github.io/sqi-presets is only regenerated
-# by the release workflow, so from that commit until the next release every
-# published preset failed to load. Nothing reported it: the list page renders
-# from the index, which needs no validation, and only the detail page parses.
-# The first signal was a user clicking a preset and getting an error.
+# A validator change can invalidate content that is already published. A change
+# that tightens validation and corrects every preset in this repo still leaves
+# the copy at uberware.github.io/sqi-presets stale, because only the release
+# workflow regenerates it, so every published preset can fail to load until the
+# next release. Nothing else reports that: the list page renders from the
+# index, which needs no validation, and only the detail page parses, so the
+# first signal would be a user clicking a preset and getting an error.
 #
-# Deliberately NOT part of ci.yml. It reaches the network, so putting it on
-# every pull request would make unrelated work hostage to an outage. Instead it
-# runs where it is actually informative:
+# Not part of ci.yml. It reaches the network, so putting it on every pull
+# request would make unrelated work hostage to an outage. Instead it runs:
 #
 #   - on a schedule, so drift is found within a day rather than by a user;
-#   - when the presets or the validator change, which is exactly when
+#   - when the presets or the validator change, which is when
 #     already-published content can become invalid;
 #   - on demand.
 on:
@@ -73,8 +71,8 @@ jobs:
 
       # The target exits 0 when the library is unreachable, because an offline
       # runner is not evidence that the content is bad. That means a green step
-      # alone proves nothing -- assert the test actually ran and passed. A SKIP
-      # fails here on purpose: it means this check verified nothing, and the
+      # alone proves nothing -- assert the test actually ran and passed. A skip
+      # fails here: it means this check verified nothing, and the
       # cause (network, or a repointed URL) needs a human.
       - name: Assert the check actually ran
         run: |

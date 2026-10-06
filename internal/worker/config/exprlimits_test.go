@@ -2,11 +2,11 @@
 
 package config
 
-// Tests for the expr: section -- EXPR sub-project E4d's Task 2.
+// Tests for the expr: section.
 //
 // Three properties, and the third is the one that is easy to get wrong:
 //
-//  1. the defaults are the pre-E4d constants, written as literals;
+//  1. the defaults are pinned as literals;
 //  2. a value set in the file or the environment actually arrives;
 //  3. an out-of-range value is REJECTED, boundary-exactly. A test that only
 //     tries 1 and 10^9 passes with an off-by-one at either end, so every knob
@@ -22,8 +22,7 @@ import (
 
 // defaultExprConfig is the expr: block a worker with no configuration runs
 // with, spelled as LITERALS rather than as the Default* constants -- comparing
-// a constant to itself would pass whatever it became. These five numbers are
-// the fixed limits every release before E4d compiled in.
+// a constant to itself would pass whatever it became.
 var defaultExprConfig = ExprConfig{
 	OperationLimit:          1_000_000,
 	MemoryLimit:             20_000_000,
@@ -34,7 +33,7 @@ var defaultExprConfig = ExprConfig{
 
 func TestDefault_ExprLimits(t *testing.T) {
 	if got := Default().Expr; got != defaultExprConfig {
-		t.Errorf("Default().Expr = %+v, want the pre-E4d constants %+v", got, defaultExprConfig)
+		t.Errorf("Default().Expr = %+v, want the default constants %+v", got, defaultExprConfig)
 	}
 	if errs := Validate(Default()); len(errs) != 0 {
 		t.Errorf("the built-in defaults must be in range: %v", errs)
@@ -278,9 +277,9 @@ func TestValidate_ExprLimitsAreIndependent(t *testing.T) {
 }
 
 // TestExampleConfig_ExprLimitsMatchDefaults keeps config/sqi-worker.example.yaml
-// honest. The example is what an operator copies, so a value in it that drifts
-// from the shipped default silently changes the behavior of everyone who
-// starts from it -- and nothing else in this repo reads that file, so nothing
+// in step with the defaults. The example is what an operator copies, so a
+// value in it that drifts from the shipped default silently changes the
+// behavior of everyone who starts from it -- and nothing else in this repo reads that file, so nothing
 // else would notice.
 func TestExampleConfig_ExprLimitsMatchDefaults(t *testing.T) {
 	path := filepath.Join("..", "..", "..", "config", "sqi-worker.example.yaml")

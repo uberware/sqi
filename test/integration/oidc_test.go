@@ -4,21 +4,21 @@
 
 package integration
 
-// oidc_test.go — the real-provider regression guard for SSO (Phase 3, C2).
+// oidc_test.go — the real-provider regression guard for SSO.
 //
 // # Why this file exists
 //
 // The unit tests drive a fake provider (internal/auth/oidc/fakeidp_test.go).
-// It is stronger than C1's fake conn in one respect — it signs real tokens, so
-// a validation mistake surfaces — but it shares the fake's fundamental blind
-// spot: it returns whatever the test tells it to, so it cannot show what a real
-// provider OMITS.
+// It is stronger than the LDAP tests' fake conn in one respect — it signs
+// real tokens, so a validation mistake surfaces — but it shares the fake's
+// fundamental blind spot: it returns whatever the test tells it to, so it
+// cannot show what a real provider OMITS.
 //
 // The concrete trap: Keycloak does not put group memberships in a token unless
 // a protocol mapper is configured for them. Without one, every login succeeds
 // carrying zero groups, so every user silently lands on default_role — a
-// privilege downgrade with no error anywhere. That is structurally the same bug
-// as LDAP's operational-attribute trap, and no fake would think to reproduce it.
+// privilege downgrade with no error anywhere. That has the same shape as LDAP's
+// operational-attribute trap, and a fake does not reproduce it.
 //
 // It also settles two vendor claims the logout design rests on: whether
 // end_session_endpoint is honored with client_id and no id_token_hint, and
@@ -65,11 +65,10 @@ import (
 // ── Provider fixture ──────────────────────────────────────────────────────────
 
 const (
-	// keycloakImage is pinned, not floating on :latest, for a reason stronger
-	// than the usual reproducibility argument: the browser leg below SCRAPES
-	// Keycloak's login form out of its HTML. A vendor UI refresh changes that
-	// markup, and pinning means it breaks here — loudly, in the one test whose
-	// job is to notice — instead of somewhere downstream at upgrade time.
+	// keycloakImage is pinned, not floating on :latest, because the browser
+	// leg below SCRAPES Keycloak's login form out of its HTML. A vendor UI
+	// refresh changes that markup, and pinning means it breaks here instead
+	// of somewhere downstream at upgrade time.
 	keycloakImage = "quay.io/keycloak/keycloak:26.0.7"
 
 	kcAdminUser = "admin"
@@ -194,8 +193,7 @@ func bootKeycloak(port int) (*keycloak, error) {
 	name := fmt.Sprintf("sqi-oidc-it-%d", port)
 
 	// --rm so an aborted run (SIGINT, panic) does not leak a container; the
-	// explicit remove in TestMain then becomes a no-op rather than the only
-	// thing standing between this test and a pile of orphans.
+	// explicit remove in TestMain then becomes a no-op.
 	//
 	// start-dev rather than start: it skips the production hostname/HTTPS
 	// checks that would otherwise refuse to serve on plain HTTP, and leaves the
@@ -374,7 +372,7 @@ func (k *keycloak) admin(t *testing.T, method, path string, payload any, wantSta
 // bob   → artists     (maps to user)
 // carol → no group    (falls through to default_role)
 //
-// The groups protocol mapper on the client is the point of the whole file.
+// The groups protocol mapper on the client is what this file exists to check.
 // Keycloak emits NO group claim without one: the login still succeeds, the
 // token still validates, and every user silently lands on default_role. Delete
 // the mapper below and TestOIDC_AuthCodeRoundTripMapsGroups must go red — if it
@@ -388,7 +386,7 @@ func (k *keycloak) seed(t *testing.T, redirectURI, postLogoutURI string) {
 		// Keycloak treats username as read-only unless a realm opts into
 		// renames, rejecting the change with error-user-attribute-read-only.
 		// TestOIDC_RenameAtProviderKeepsAccount needs a rename to be possible at
-		// all, and a realm that permits them is exactly the deployment whose
+		// all, and a realm that permits them is the deployment whose
 		// users can outgrow their login name — the case that test is about.
 		"editUsernameAllowed": true,
 	}, http.StatusCreated)
@@ -519,7 +517,7 @@ func baseOIDCConfig(issuer, sqiAddr string) config.OIDCConfig {
 // The sqi port is chosen FIRST, because the redirect URI and the post-logout
 // redirect URI have to be registered with the client at seeding time. Keycloak
 // rejects both if they were not registered, so "pick the port later" is not an
-// option — and registering a wildcard instead would switch off the very
+// option — and registering a wildcard instead would switch off the
 // validation a real deployment relies on.
 func newOIDCFixture(t *testing.T, mutate func(*config.OIDCConfig)) *oidcFixture {
 	t.Helper()
@@ -899,8 +897,7 @@ func (f *oidcFixture) sqiLoginIsSilent(b *browser) bool {
 // this question after a logout: sqi sets prompt=login under
 // reauth_mode=after_logout, so the provider presents a credential form whether
 // or not its own session survived, and a probe built on that would read every
-// forced re-prompt as a terminated session. That confusion is exactly what made
-// the end-session experiment below report the wrong result at first.
+// forced re-prompt as a terminated session.
 func (f *oidcFixture) providerSessionLive(b *browser) bool {
 	b.t.Helper()
 	q := url.Values{
@@ -937,8 +934,8 @@ func (f *oidcFixture) providerSessionLive(b *browser) bool {
 
 // TestOIDC_AuthCodeRoundTripMapsGroups is the mapper guard: it asserts the user
 // lands on the MAPPED role, not on default_role. Asserting only "login
-// succeeded" would pass with zero groups and prove nothing — which is exactly
-// what a Keycloak with no groups protocol mapper produces.
+// succeeded" would pass with zero groups and prove nothing — which is what a
+// Keycloak with no groups protocol mapper produces.
 func TestOIDC_AuthCodeRoundTripMapsGroups(t *testing.T) {
 	f := newOIDCFixture(t, nil)
 
@@ -1104,13 +1101,12 @@ func TestOIDC_StateMismatchRejected(t *testing.T) {
 // sqi deliberately does not store ID tokens: doing so would put the first
 // plaintext bearer secret into a schema that otherwise holds only hashes, and
 // the realistic leak path is an accidental log line or a future session-listing
-// endpoint. The accepted cost was that provider logout uses client_id and
+// endpoint. The cost is that provider logout uses client_id and
 // post_logout_redirect_uri with NO id_token_hint.
 //
-// # What this test actually found
+// # Observed behavior
 //
-// The belief being checked was "that works on Keycloak". Observed on
-// keycloakImage, it is only half true, and the half that is false matters:
+// On keycloakImage:
 //
 //   - Keycloak ACCEPTS the request. No error, no rejection — the client_id and
 //     the registered post_logout_redirect_uri are honored.
@@ -1120,10 +1116,9 @@ func TestOIDC_StateMismatchRejected(t *testing.T) {
 //     does Keycloak end the session and redirect to post_logout_redirect_uri.
 //
 // So logout_mode=provider on Keycloak is a confirmation prompt, not a silent
-// provider logout. The assertions below pin that observed behavior rather than
-// the belief, so a future Keycloak that changes either half breaks here. Fixing
-// it by storing the ID token would silently reverse the design decision above
-// and is out of scope for this test — see the report accompanying it.
+// provider logout. The assertions below pin that observed behavior, so a
+// future Keycloak that changes either half breaks here. Avoiding the prompt by
+// storing the ID token would reverse the decision above.
 func TestOIDC_EndSessionAcceptsClientIDWithoutTokenHint(t *testing.T) {
 	f := newOIDCFixture(t, func(c *config.OIDCConfig) { c.LogoutMode = oidc.LogoutProvider })
 	b := newBrowser(t)
@@ -1163,9 +1158,9 @@ func TestOIDC_EndSessionAcceptsClientIDWithoutTokenHint(t *testing.T) {
 		t.Fatalf("the provider answered an end-session error page:\n%s", truncate(got.Body, 1500))
 	}
 
-	// Claim under test, part two — the half that turned out to be false. The
-	// redirect alone does NOT end the session; Keycloak interposes a
-	// confirmation page and keeps the session live behind it.
+	// Claim under test, part two: the redirect alone does NOT end the
+	// session; Keycloak interposes a confirmation page and keeps the session
+	// live behind it.
 	if !strings.Contains(got.Body, "logout-confirm") {
 		t.Fatalf("expected an interactive logout-confirmation page from %s.\n"+
 			"If this provider now logs out without confirmation, that is GOOD news and the "+
@@ -1243,7 +1238,7 @@ func TestOIDC_PromptLoginForcesReauth(t *testing.T) {
 	//
 	// Re-authenticating as the SAME user, not a different one: Keycloak treats
 	// prompt=login against a live session as "prove you are still alice", and
-	// answering it with bob's credentials simply re-renders the form. Switching
+	// answering it with bob's credentials re-renders the form. Switching
 	// users is a logout-then-login, which is a different flow from this one.
 	f.submitCredentials(b, p, "alice", "alicepass")
 	if got := f.me(b).Username; got != "alice" {

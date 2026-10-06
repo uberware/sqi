@@ -2,7 +2,7 @@
 
 package api
 
-// Additional unit tests for job REST handlers — item 5 of the test roadmap.
+// Additional unit tests for job REST handlers.
 //
 // These tests cover the error and filter paths not reached by jobs_test.go.
 // An storeErr wrapper is used to inject store-level errors without touching
@@ -86,7 +86,7 @@ func (e *storeErr) UpdateTaskStatus(ctx context.Context, id string, status store
 	if e.updateTaskErr != nil {
 		return e.updateTaskErr
 	}
-	return e.Store.UpdateTaskStatus(ctx, id, status)
+	return fixtureSetTaskStatus(ctx, e.Store, id, status)
 }
 
 func (e *storeErr) LatestTaskAttempt(ctx context.Context, taskID string) (store.TaskAttempt, error) {

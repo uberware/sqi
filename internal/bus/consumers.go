@@ -14,7 +14,7 @@ import (
 
 // taskStatusConsumerName is the durable name for the server-side push consumer
 // that processes task-status transitions.  One server process runs this
-// consumer at a time; in Phase 4 HA deployments, leader election gates startup.
+// consumer at a time.
 const taskStatusConsumerName = "sqi-task-status-srv"
 
 // taskLogsConsumerName is the durable name for the server-side push consumer

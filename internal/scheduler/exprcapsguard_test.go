@@ -34,16 +34,16 @@ func TestDispatchHasOneGatedPath(t *testing.T) {
 		t.Fatal("found no production caller of buildAssignPayload: this guard has stopped " +
 			"guarding anything (renamed function? changed package layout?)")
 	}
-	// BuildAssignPayload is internal/scheduler/seam.go's reviewed, pure-delegation export
+	// BuildAssignPayload is internal/scheduler/seam.go's pure-delegation export
 	// for the preset test harness (internal/presettest) to call the real production path.
 	// It is not a second dispatch path; tryLeaseTask remains the only production entry.
 	if len(callers) != 2 || !slices.Contains(callers, "tryLeaseTask") || !slices.Contains(callers, "BuildAssignPayload") {
 		t.Fatalf("buildAssignPayload is called from %v; want exactly [tryLeaseTask BuildAssignPayload].\n"+
-			"tryLeaseTask is the production dispatch path, and BuildAssignPayload (seam.go) is its reviewed\n"+
+			"tryLeaseTask is the production dispatch path, and BuildAssignPayload (seam.go) is its\n"+
 			"test harness export. Every path that hands an assignment to a worker must first pass the EXPR "+
 			"capability gate in leaseGatesPass (exprcaps.go), or a worker whose advertised "+
 			"EXPR caps are below this server's will be given work it cannot run — the "+
-			"accepted-then-failed-per-task incident design spec §2 records.", callers)
+			"accepted-then-failed-per-task incident.", callers)
 	}
 
 	gates := productionCallersOf(t, "leaseGatesPass")
@@ -61,13 +61,13 @@ func TestDispatchHasOneGatedPath(t *testing.T) {
 			"operator sees", blocked)
 	}
 
-	// exprCapShortfall is the single implementation of the four comparisons.
-	// Post-review the lease path hoists it out of the candidate loop, so the
-	// two gate call sites reach it by different routes -- selectLeaseBatch
-	// computes it once per batch and passes it down, evaluateSchedulability
-	// computes it per worker. warnOnExprCapShortfall is the third caller: it
+	// exprCapShortfall is the single implementation of the comparisons. The
+	// lease path hoists it out of the candidate loop, so the two gate call
+	// sites reach it by different routes -- selectLeaseBatch computes it once
+	// per batch and passes it down, evaluateSchedulability computes it per
+	// worker. warnOnExprCapShortfall is the third caller: it
 	// computes a shortfall for its diagnostic warning only, not as a bound.
-	// All three must still go through THIS accessor.
+	// All three must go through this accessor.
 	if short := productionCallersOf(t, "workerExprShortfall"); len(short) != 3 ||
 		!slices.Contains(short, "selectLeaseBatch") || !slices.Contains(short, "evaluateSchedulability") ||
 		!slices.Contains(short, "warnOnExprCapShortfall") {

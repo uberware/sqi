@@ -23,8 +23,8 @@ import (
 // the external test package, where these unexported sentinels are not
 // visible) cannot tell which branch answered. Deleting the advisory block
 // would leave them green, because a symlink pointing OUT of scratch then
-// simply gets refused by the open instead, with a message that also says
-// "symlink". Asserting on the sentinel is what makes each branch load-bearing.
+// gets refused by the open instead, with a message that also says
+// "symlink". Asserting on the sentinel is what makes each branch tested.
 
 // TestStageOut_SymlinkSourceRefusedByAdvisoryLstat pins the advisory branch:
 // root.Lstat does not follow the final component, so it sees the symlink
@@ -107,7 +107,7 @@ func TestStageOut_EscapeRefusedByOpen(t *testing.T) {
 		t.Errorf("err = %v, want the OPEN to have refused this, not the advisory Lstat", err)
 	}
 	// An escape must never be classified as a mundane access failure, or the
-	// honest wording added for the permission case would swallow a real attack.
+	// wording for the permission case would swallow a real attack.
 	if errors.Is(err, errStageOutUnreadable) {
 		t.Errorf("err = %v, want a containment refusal, not an access/I/O failure", err)
 	}

@@ -21,8 +21,7 @@ const (
 	// all (standalone "environment-2023-09" templates — env_templates). Its
 	// result is reported separately and NEVER counted as a pass.
 	//
-	// This distinction is load-bearing, and it now guards against two
-	// distinct false-green failure modes:
+	// This distinction guards against two false-green failure modes:
 	//
 	//  1. sqi rejects templates declaring an unregistered extension, which is
 	//     correct behavior — but it means every ".invalid" fixture for such
@@ -36,8 +35,8 @@ const (
 	//     therefore rejected for the wrong reason too, and would score as a
 	//     pass the same way an unregistered-extension fixture does — this is
 	//     the same bug class, just keyed on document kind instead of
-	//     extension. base/env_templates alone had 24 fixtures scoring as
-	//     false passes this way before Classify took kind into account.
+	//     extension. base/env_templates alone has 24 fixtures that would score
+	//     as false passes this way if Classify ignored kind.
 	StateNotApplicable
 )
 
@@ -82,10 +81,7 @@ func KindFor(path string) string {
 // A registered-but-in-progress extension does not count as live: validateExtensions
 // rejects every such template on the status gate alone, so scoring its fixtures
 // through this path would report a false failure for every valid one and a
-// false pass for every ".invalid" one, instead of the honest "not applicable".
-// EXPR was exactly that case until sub-project H2 marked it supported; it is
-// live now, and EXPR/job_templates is scored by TestConformance_Templates like
-// every other live directory.
+// false pass for every ".invalid" one, instead of "not applicable".
 func Classify(extension, kind string) State {
 	if kind == "env_templates" {
 		return StateNotApplicable

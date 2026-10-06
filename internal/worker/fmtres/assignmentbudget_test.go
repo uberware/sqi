@@ -2,8 +2,8 @@
 
 package fmtres_test
 
-// Tests for assignmentbudget.go -- EXPR sub-project E4c's Task 4, the
-// worker's share of the template-wide budget design spec §3 introduces.
+// Tests for assignmentbudget.go -- the worker's share of the template-wide
+// expression budget.
 //
 // Two dimensions, asserted through SEPARATE tests exactly as
 // internal/openjd/exprcheck_budget_test.go's own note requires ("two
@@ -14,8 +14,8 @@ package fmtres_test
 // note: the correct way to mutation-test either bound is to comment out the
 // threshold check inside AssignmentBudget.ChargePositions/
 // ChargeRetainedBytes (assignmentbudget.go), not to raise
-// MaxAssignmentPositions/assignmentMaxRetainedBytes -- several tests below
-// size their own construction from those live constants.
+// DefaultAssignmentPositions/defaultAssignmentRetainedBytes -- several tests
+// below size their own construction from those live constants.
 
 import (
 	"fmt"
@@ -29,18 +29,12 @@ import (
 )
 
 // wantAssignmentMaxPositions is assignmentbudget.go's own cap, read from the
-// package rather than mirrored as a literal.
+// package rather than mirrored as a literal that could drift from it (it is
+// exported because internal/openjd's TestTemplateBudget_WorkerCapIsNotTighter
+// reads it to pin the server/worker relation).
 //
-// It WAS a hand-copied 5,000, with a comment explaining that an external test
-// package (fmtres_test) cannot see an unexported constant. Fix round 2
-// (whole-branch review, IMPORTANT 1) exported the constant -- because
-// internal/openjd's own TestTemplateBudget_WorkerCapIsNotTighter has to read
-// it to pin the server/worker relation, and once it is exported there is no
-// reason for this file to carry a copy that can drift from it.
-//
-// E4d Task 2 renamed it [fmtres.DefaultAssignmentPositions]: it is now the
-// DEFAULT for a configurable limit rather than the only possible value. The
-// tests in this file all construct their budget with ExprLimits{}, so they
+// [fmtres.DefaultAssignmentPositions] is the DEFAULT for a configurable limit.
+// The tests in this file all construct their budget with ExprLimits{}, so they
 // exercise exactly that default; the configured value is exercised by
 // exprlimits_test.go instead.
 const wantAssignmentMaxPositions = fmtres.DefaultAssignmentPositions
@@ -127,7 +121,7 @@ func TestAssignmentBudget_RetainedBytesDimension(t *testing.T) {
 }
 
 // TestAssignmentBudget_FreshPerAssignment pins "one budget per assignment,
-// not a shared/leaked one" -- the same property Task 3's
+// not a shared/leaked one" -- the same property
 // TestCheckTemplateExpressions_TemplateWideBudget_FreshPerCall pins
 // server-side. session.Manager.Create allocates a NEW AssignmentBudget every
 // call (session.go), so two independent sessions -- and therefore two
@@ -144,7 +138,7 @@ func TestAssignmentBudget_FreshPerAssignment(t *testing.T) {
 
 // TestAssignmentBudget_ConcurrentCharges proves [fmtres.AssignmentBudget] is
 // safe under concurrent use -- see that type's own doc comment for why this
-// matters even though Phase 1 defers session reuse across TASKS: a session's
+// matters even though sessions are not reused across TASKS: a session's
 // own environment entry/exit and its task-table resolution can still race
 // each other charging the same object, and a plain unsynchronized counter
 // would corrupt updates under concurrent access (or fail -race even if this
@@ -197,11 +191,10 @@ func simpleTaskLetMsg(name string, n int) *protocol.AssignMsg {
 	}
 }
 
-// TestAssignmentBudget_AcrossTables_RetainedBytes is this task's central
-// proof for the retained-bytes dimension: EXPR sub-project E4a's per-table
-// bound (LetRetainedBytes, 10 MB) already bounds ONE table; this asserts the
-// NEW bound sums across SEVERAL tables the SAME assignment builds, which
-// nothing bounded before this task.
+// TestAssignmentBudget_AcrossTables_RetainedBytes is the central proof for
+// the retained-bytes dimension: the per-table bound (LetRetainedBytes,
+// 10 MB) bounds ONE table; this asserts the assignment-wide bound sums across
+// SEVERAL tables the SAME assignment builds.
 //
 // Three tables (mirroring a task table plus two environment tables one
 // session might enter), each retaining ~7,000,064 bytes -- individually
@@ -372,9 +365,8 @@ func TestResolveVarsExpr_ChargesOnePerVar(t *testing.T) {
 // [budgetOrDefault] documents for a nil budget: the DEFAULT limits, on a
 // ledger that is FRESH for that one call.
 //
-// E4d Task 2 fix round 1 made the budget a REQUIRED parameter at every phase-3
-// entry point, so this is no longer "the call shape that omits it" -- omitting
-// it does not compile. nil is what this package's own tests pass when the
+// The budget is a REQUIRED parameter at every phase-3 entry point, so
+// omitting it does not compile. nil is what this package's own tests pass when the
 // limits are not what they are testing, and roughly seventy call sites in this
 // package depend on it behaving exactly like an unspent default budget.
 //

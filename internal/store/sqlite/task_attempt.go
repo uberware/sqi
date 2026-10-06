@@ -5,6 +5,7 @@ package sqlite
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"time"
 
 	"github.com/uberware/sqi/internal/store"
@@ -17,7 +18,14 @@ func (s *Store) LatestTaskAttempt(ctx context.Context, taskID string) (store.Tas
 	return out, mapErr(err)
 }
 
-// TerminateWorkerAttempts implements [store.TaskAttemptStore].
+// TerminateWorkerAttempts closes every running attempt of the tasks currently
+// assigned to workerID with the given status and end time, recording
+// [store.FailureReasonWorkerOffline] as the message, and returns how many it
+// closed. It releases no claims and leaves the tasks alone; a worker is taken
+// offline through [Store.OfflineStaleWorker] and [Store.OfflineWorker], which do
+// all three in one transaction.
+//
+// Test fixture only: a blind write that is not part of store.Store.
 func (s *Store) TerminateWorkerAttempts(ctx context.Context, workerID string, status store.AttemptStatus, endedAt time.Time) (int, error) {
 	res, err := s.stmtTerminateWorkerAttempts.ExecContext(ctx, string(status), timeToText(endedAt), store.FailureReasonWorkerOffline, workerID)
 	if err != nil {
@@ -27,7 +35,12 @@ func (s *Store) TerminateWorkerAttempts(ctx context.Context, workerID string, st
 	return int(n), err
 }
 
-// CancelJobAttempts implements [store.TaskAttemptStore].
+// CancelJobAttempts closes every running attempt of the job's tasks as canceled,
+// ended at endedAt, and returns how many it closed. It releases no claims and
+// leaves the tasks alone; a job is canceled through [Store.CancelJobExecution],
+// which does all three in one transaction.
+//
+// Test fixture only: a blind write that is not part of store.Store.
 func (s *Store) CancelJobAttempts(ctx context.Context, jobID string, endedAt time.Time) (int, error) {
 	res, err := s.stmtCancelJobAttempts.ExecContext(ctx, timeToText(endedAt), jobID)
 	if err != nil {
@@ -60,14 +73,12 @@ LIMIT 1`
 FROM task_attempts WHERE task_id = ?
 ORDER BY attempt_number ASC`
 
-	sqlUpdateAttempt = `
-UPDATE task_attempts
-SET status    = ?,
-    exit_code = ?,
-    ended_at  = ?,
-    session_id = COALESCE(NULLIF(?, ''), session_id),
-    message = COALESCE(NULLIF(?, ''), message)
-WHERE id = ?
+	// sqlUpdateAttempt writes only while the attempt is still running, so a
+	// late or echoed report can never overwrite an attempt something else
+	// already closed. The status test is evaluated inside the UPDATE (I1).
+	// It is [sqlCloseRunningAttempt], the same guarded write with the same
+	// binds, returning the row it wrote.
+	sqlUpdateAttempt = sqlCloseRunningAttempt + `
 RETURNING ` + attemptCols
 
 	// sqlTerminateWorkerAttempts closes out all running attempts for tasks
@@ -85,8 +96,10 @@ WHERE status = 'running'
   )`
 
 	// sqlCancelJobAttempts closes out all running attempts for tasks belonging
-	// to the given job. Should be called before CancelJobTasks so
-	// that task_attempts.ended_at is recorded before the task rows are updated.
+	// to the given job, not only those of tasks a cancel just moved: an attempt
+	// left open on a task that is already terminal is the same leak. It is the
+	// one statement behind both [Store.CancelJobExecution], which runs it after
+	// the tasks are canceled, and the [Store.CancelJobAttempts] fixture.
 	sqlCancelJobAttempts = `
 UPDATE task_attempts
 SET    status = 'canceled', ended_at = ?
@@ -167,8 +180,20 @@ func (s *Store) ListTaskAttempts(ctx context.Context, taskID string) ([]store.Ta
 
 // UpdateTaskAttempt implements [store.TaskAttemptStore].
 // If attempt.SessionID is non-empty it is written to the record; an empty
-// value is treated as "no change" via COALESCE so callers that do not have
-// a session ID (e.g. the cancellation path) do not overwrite an existing one.
+// value is treated as "no change" via COALESCE so a caller that has no
+// session ID to record does not overwrite an existing one.
+//
+// The write applies only while the attempt is running. A zero-row result is
+// told apart by a read afterwards: an attempt that exists but is closed is
+// [store.ErrConflict], one that does not exist is [store.ErrNotFound].
+//
+// It must not be used to close an attempt: it can write a terminal status but
+// releases no usage claims (I3). The closing operations are CompleteTaskAttempt,
+// RecordTaskFailure, CancelJobExecution, CancelTaskExecution,
+// ReclaimStaleAssignedTasks, OfflineStaleWorker and OfflineWorker.
+//
+// Test fixture only: not part of store.Store, which has no caller for it
+// (StartTaskAttempt records a running attempt's session ID).
 func (s *Store) UpdateTaskAttempt(ctx context.Context, attempt store.TaskAttempt) (store.TaskAttempt, error) {
 	var exitCode sql.NullInt64
 	if attempt.ExitCode != nil {
@@ -180,5 +205,11 @@ func (s *Store) UpdateTaskAttempt(ctx context.Context, attempt store.TaskAttempt
 		attempt.Message,   // COALESCE(NULLIF(?, ''), message)
 		attempt.ID)
 	out, err := scanAttempt(row)
+	if errors.Is(err, sql.ErrNoRows) {
+		if _, gerr := s.GetTaskAttempt(ctx, attempt.ID); gerr != nil {
+			return store.TaskAttempt{}, gerr // ErrNotFound
+		}
+		return store.TaskAttempt{}, store.ErrConflict // closed: never rewritten
+	}
 	return out, mapErr(err)
 }

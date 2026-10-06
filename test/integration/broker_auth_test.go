@@ -427,7 +427,7 @@ func pollWorkerOffline(t *testing.T, ts *testServer, workerID string, timeout ti
 }
 
 // TestWorkerDeletion_RevokesCredentialAndDisconnects proves the cascade DELETE
-// /api/v1/workers/{id} is now expected to perform: removing a worker record
+// /api/v1/workers/{id} performs: removing a worker record
 // also revokes its broker credential, through the SAME synchronous
 // store-write-then-broker-reload path DELETE /workers/{id}/credential uses.
 // Without it, a machine an operator has just decommissioned from the farm
@@ -480,9 +480,9 @@ func TestWorkerDeletion_RevokesCredentialAndDisconnects(t *testing.T) {
 	mustDoJSON(t, http.MethodGet, apiURL(ts, "/api/v1/workers/worker-a"), nil, "", http.StatusNotFound, nil)
 }
 
-// TestEnrollment_ConnectsToRunningBrokerWithoutRestart guards against the
-// broker's authorized-key set ever again going unreloaded after POST
-// /workers/enroll creates a credential. loadBrokerAuthConfig only ever runs
+// TestEnrollment_ConnectsToRunningBrokerWithoutRestart guards that the
+// broker's authorized-key set is reloaded after POST /workers/enroll creates
+// a credential. loadBrokerAuthConfig only ever runs
 // once, at Start, so without an explicit reload a worker enrolled against a
 // RUNNING server could not actually connect: nats-server would refuse it
 // with "Authorization Violation", and the real sqi-worker binary exits
@@ -549,15 +549,15 @@ func listActiveWorkerCredentials(t *testing.T, dbPath string) []store.WorkerCred
 	return creds
 }
 
-// TestDefaultConfig_NoBrokerAuth is the load-bearing regression for the
-// whole component: a server and worker started with NO broker-auth
-// configuration must behave exactly as they did before broker
-// authentication existed. Every other test in this file proves the new
-// capability works; this one proves it costs nothing when unused.
+// TestDefaultConfig_NoBrokerAuth is the regression guard for the default
+// path: a server and worker started with NO broker-auth configuration must
+// behave as if broker authentication did not exist. Every other test in this
+// file proves the capability works; this one proves it costs nothing when
+// unused.
 //
 // If this test fails, the default path has regressed. Fix the cause — never
 // adjust the test to accommodate the regression. Every operator who has
-// never heard of broker authentication meets this exact path on day one.
+// never configured broker authentication runs this path.
 //
 // This is one half of a two-part proof. The other half — that
 // internal/config's own zero-configuration default carries nats.auth.enabled
@@ -565,8 +565,8 @@ func listActiveWorkerCredentials(t *testing.T, dbPath string) []store.WorkerCred
 // the unit level by TestServerConfig_DefaultsAreTheConfigDefaults and
 // TestServerConfig_CarriesTheBrokerAuthSettings in cmd/sqi-server, which
 // exercise the exact config.Config -> server.Config mapping function the
-// serve subcommand uses. This test starts from that already-proven
-// conclusion (asserted below as a guard, not re-derived) and proves the
+// serve subcommand uses. This test starts from that conclusion (asserted
+// below as a guard, not re-derived) and proves the
 // RUNTIME behavior it implies: a real sqi-worker subprocess with no
 // credential file and no join token registers, is leased a task, runs it to
 // completion, and the worker-credential table -- which only broker auth
@@ -588,9 +588,9 @@ func TestDefaultConfig_NoBrokerAuth(t *testing.T) {
 	farmID, queueID := seedFarmAndQueue(t, ts)
 
 	// A real sqi-worker subprocess. startRealWorker sets no join-token,
-	// credential-file, or server-url environment variable at all -- exactly
-	// as every worker invocation looked before broker auth existed -- and
-	// blocks until the worker is visible online, which is this test's proof
+	// credential-file, or server-url environment variable at all -- a worker
+	// invocation with no broker-auth configuration -- and blocks until the
+	// worker is visible online, which is this test's proof
 	// of criterion 1: the worker registers with no credential.
 	startRealWorker(t, ts, farmID, queueID)
 

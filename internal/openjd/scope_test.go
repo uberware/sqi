@@ -85,11 +85,8 @@ func TestScopeHostContext(t *testing.T) {
 }
 
 // TestScopeStepScriptExcludesEnvFile pins the rule scopeFamilies' own
-// ScopeStepScript case already encodes structurally (Task 5's refactor
-// deleted the old stepScriptRefs literal, whose comment used to state this
-// in words: "Env.File is NOT among them -- an environment's attachments
-// belong to the environment"; scope.go now expresses it only by which
-// symbolFamily entries each scope's case appends): an environment's
+// ScopeStepScript case encodes structurally (scope.go expresses it only by
+// which symbolFamily entries each scope's case appends): an environment's
 // attachments belong to the environment, not to a step's script.
 func TestScopeStepScriptExcludesEnvFile(t *testing.T) {
 	for _, f := range scopeFamilies(ScopeStepScript) {
@@ -102,7 +99,7 @@ func TestScopeStepScriptExcludesEnvFile(t *testing.T) {
 
 // TestScopeFixed_PerScopeMembership pins, per scope, exactly which fixed
 // symbols scopeFixed exposes -- both presence AND absence, and each one's
-// type. Absence is the load-bearing half: it is what makes Step.Name illegal
+// type. Absence is the half that matters: it is what makes Step.Name illegal
 // in a job environment while legal in a step environment, which is the entire
 // reason the four-scope split exists. derivedPrefixes cannot assert this,
 // because every fixed symbol is EXPR-only and so all four are filtered out of
@@ -176,9 +173,9 @@ func TestScopeFixed_PerScopeMembership(t *testing.T) {
 // TestScopeFixed_AllEXPROnly guards the invariant derivedPrefixes' correctness
 // depends on: every fixed symbol must be EXPROnly, because derivedPrefixes
 // only excludes EXPR-only entries from the base-spec prefix list. If a future
-// fixed symbol were added without the flag, derivedPrefixes would silently
-// gain a prefix and a base-spec template would start accepting a reference it
-// used to reject, with nothing to catch it. Asserted as an invariant over
+// fixed symbol were added without the flag, derivedPrefixes would gain a
+// prefix and a base-spec template would start accepting a reference it
+// should reject, with nothing to catch it. Asserted as an invariant over
 // scopeFixed for every scope, so a new entry is covered automatically rather
 // than needing its own line here.
 func TestScopeFixed_AllEXPROnly(t *testing.T) {
@@ -253,8 +250,8 @@ func TestScopeString_CoversEveryScope(t *testing.T) {
 
 // TestDerivedPrefixes_StepTemplateHasNoBaseSpecExistence pins the decision
 // derivedPrefixes makes for ScopeStepTemplate: nil, not a derived list. A
-// <StepTemplate>.let block cannot appear without the EXPR extension (Task 2
-// enforces this in validate.go before ScopeStepTemplate is ever consulted),
+// <StepTemplate>.let block cannot appear without the EXPR extension
+// (validate.go enforces this before ScopeStepTemplate is ever consulted),
 // so this scope has no base-spec "allowed: ..." message to produce -- unlike
 // every other scope, which all have real base-spec positions.
 func TestDerivedPrefixes_StepTemplateHasNoBaseSpecExistence(t *testing.T) {

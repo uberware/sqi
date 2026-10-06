@@ -2,11 +2,11 @@
 
 package session
 
-// EXPR sub-project E4d's Task 2: the operator's configured phase-3 limits must
+// The operator's configured phase-3 limits must
 // travel worker config -> Manager -> Session -> AssignmentBudget -> every
 // phase-3 evaluation.
 //
-// The fmtres tests prove each limit is genuinely enforced; these prove the
+// The fmtres tests prove each limit is enforced; these prove the
 // WIRING, which is the half that can silently degrade to "the defaults" with
 // every one of those tests still green.
 
@@ -114,8 +114,8 @@ func TestManagerCreate_ConfiguredLimitRejectsEnvironmentEntry(t *testing.T) {
 // TestResolveEnvAction_TeardownUsesTheConfiguredLimits pins the one path that
 // is deliberately exempt from the assignment-wide LEDGER: environment
 // teardown. It must still be metered by the operator's LIMITS. Passing no
-// budget at all -- which is what the code did before E4d Task 2, and the
-// obvious way to preserve the ledger exemption -- would silently meter
+// budget at all -- the obvious way to preserve the ledger exemption --
+// would silently meter
 // teardown against the built-in defaults on a host configured otherwise.
 //
 // The construction is chosen so the two are DISTINGUISHABLE, which required
@@ -127,8 +127,7 @@ func TestManagerCreate_ConfiguredLimitRejectsEnvironmentEntry(t *testing.T) {
 //
 // It also pins the FRESH half of "fresh ledger, same limits": entry already
 // charged ~12 MB against the 20 MB assignment-wide default, so a teardown that
-// re-used the entry ledger would trip at ~24 MB -- the exact regression fix
-// round 1 of E4c fixed, which must survive Task 2's change.
+// re-used the entry ledger would trip at ~24 MB.
 func TestResolveEnvAction_TeardownUsesTheConfiguredLimits(t *testing.T) {
 	dataDir := t.TempDir()
 	mgr := NewManager(
@@ -157,27 +156,23 @@ func TestResolveEnvAction_TeardownUsesTheConfiguredLimits(t *testing.T) {
 	}
 }
 
-// TestResolveEnvAction_TeardownBudgetIsFreshPerEvaluation is the reviewer's
-// construction from E4d Task 2's fix round 1, kept as a regression test.
+// TestResolveEnvAction_TeardownBudgetIsFreshPerEvaluation pins that each of
+// resolveEnvAction's four evaluations (EnvSymbols, ResolveVarsExpr,
+// ApplyEnvLet, ResolveActionExpr) gets its own budget. With ONE budget passed
+// to all four, their POSITION charges would accumulate against a single
+// 10,000 cap.
 //
-// THE DEFECT: Task 2's first round built ONE budget in resolveEnvAction and
-// passed it to all four of its evaluations (EnvSymbols, ResolveVarsExpr,
-// ApplyEnvLet, ResolveActionExpr), so their POSITION charges accumulated
-// against a single 10,000 cap. Before Task 2, each call got its own throwaway
-// ledger and nothing accumulated.
-//
-// THE CONSEQUENCE, and why this is not merely tidiness: an environment with
-// 9,000 variables and a 1,500-arg onExit ENTERS successfully (9,001 positions
-// against the assignment-wide ledger) and then fails at TEARDOWN --
-// 9,000 variables + 1 command + 1,500 args = 10,501 against one shared cap.
-// [Session.ExitEnvironments] treats a resolve failure as a WARNING and
-// continues, so the onExit is silently SKIPPED: the license check-in, daemon
-// shutdown or unmount never runs. That is exactly the leak E4c's fix round 1
-// Critical 2 exists to prevent, re-created one level down.
+// THE CONSEQUENCE: an environment with 9,000 variables and a 1,500-arg onExit
+// ENTERS successfully (9,001 positions against the assignment-wide ledger)
+// and then fails at TEARDOWN -- 9,000 variables + 1 command + 1,500 args =
+// 10,501 against one shared cap. [Session.ExitEnvironments] treats a resolve
+// failure as a WARNING and continues, so the onExit is SKIPPED: the license
+// check-in, daemon shutdown or unmount never runs -- the same leak the
+// teardown exemption from the assignment-wide ledger exists to prevent.
 //
 // It is reachable at the shipped defaults, and more easily once an operator
-// raises the server's openjd.expr_template_positions (Task 1 made values up to
-// 100,000 legal), because the template budget is not gated by EnforceLimits.
+// raises the server's openjd.expr_template_positions (values up to 100,000
+// are legal), because the template budget is not gated by EnforceLimits.
 //
 // Mutation: replace the four s.teardownBudget() calls with one shared budget
 // and this test fails, naming the assignment-wide budget.

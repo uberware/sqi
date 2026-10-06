@@ -56,6 +56,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/google/uuid"
 	nats "github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 
@@ -94,6 +95,10 @@ type Registrar struct {
 
 	workerID string
 	cfg      workerconfig.WorkerSettings
+
+	// instanceID is sent in every RegisterMsg. It is generated
+	// once in New; a Registrar lives for the whole worker process.
+	instanceID string
 
 	// exprLimits are the EXPR evaluation caps this worker enforces, advertised
 	// in every RegisterMsg so the server can refuse to send it work it cannot
@@ -139,6 +144,7 @@ func New(
 		nc:         nc,
 		js:         js,
 		workerID:   workerID,
+		instanceID: uuid.NewString(),
 		cfg:        cfg,
 		exprLimits: exprLimits.Normalized(),
 		caps:       caps,
@@ -171,6 +177,7 @@ func (r *Registrar) Register(ctx context.Context) error {
 		Version:         protocol.ProtocolVersion,
 		Type:            protocol.TypeRegister,
 		WorkerID:        r.workerID,
+		InstanceID:      r.instanceID,
 		FarmID:          r.cfg.FarmID,
 		QueueID:         queueID,
 		Name:            r.cfg.Name,
@@ -281,10 +288,11 @@ func (r *Registrar) Deregister(reason string) {
 	ctx := context.Background()
 
 	msg := protocol.DeregisterMsg{
-		Version:  protocol.ProtocolVersion,
-		Type:     protocol.TypeDeregister,
-		WorkerID: r.workerID,
-		Reason:   reason,
+		Version:    protocol.ProtocolVersion,
+		Type:       protocol.TypeDeregister,
+		WorkerID:   r.workerID,
+		InstanceID: r.instanceID,
+		Reason:     reason,
 	}
 
 	data, err := json.Marshal(msg)
@@ -348,6 +356,9 @@ func (r *Registrar) LastRegisteredAt() time.Time {
 	}
 	return time.Unix(0, ns)
 }
+
+// InstanceID returns the identifier this process sends in every registration.
+func (r *Registrar) InstanceID() string { return r.instanceID }
 
 // Capabilities returns the merged capability set stored at construction time.
 // The returned value is a copy; mutations do not affect the Registrar's state.

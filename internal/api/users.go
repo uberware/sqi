@@ -2,11 +2,13 @@
 
 package api
 
-// User-admin REST handlers (Phase 3, component A1). Routes require
-// users.read (GET) or users.manage (create/update/set-password/delete), both
-// admin-only in the built-in role matrix (internal/auth/policy). Mutations
-// that would disable, demote, or delete the last enabled admin are rejected
-// (409) so the user store can never lock itself out of admin access.
+// User-admin REST handlers. Routes require users.read (GET) or users.manage
+// (create/update/set-password/delete), both admin-only in the built-in role
+// matrix (internal/auth/policy). Mutations that would disable, demote, or
+// delete the last enabled admin are rejected (409) so the user store can never
+// lock itself out of admin access. The check itself lives inside the store
+// write (UpdateUserKeepingAdmin, DeleteUser), so two concurrent requests
+// cannot both pass it.
 //
 //	POST   /api/v1/users              — create
 //	GET    /api/v1/users              — list
@@ -16,7 +18,6 @@ package api
 //	DELETE /api/v1/users/{id}         — delete
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -177,14 +178,13 @@ func (h *usersHandler) update(w http.ResponseWriter, r *http.Request) {
 	if req.Disabled != nil {
 		u.Disabled = *req.Disabled
 	}
-	if last, err := h.wouldRemoveLastAdmin(ctx, orig, u.Role == "admin" && !u.Disabled); err != nil {
-		h.notFoundOr500(w, r, err, "update")
-		return
-	} else if last {
+	// The last-admin guard runs inside the write (store invariant I4), not in a
+	// check beforehand that a concurrent request could invalidate.
+	updated, err := h.store.UpdateUserKeepingAdmin(ctx, u)
+	if errors.Is(err, store.ErrLastAdmin) {
 		writeProblem(w, r, http.StatusConflict, "cannot remove the last admin")
 		return
 	}
-	updated, err := h.store.UpdateUser(ctx, u)
 	if err != nil {
 		h.notFoundOr500(w, r, err, "update")
 		return
@@ -225,40 +225,19 @@ func (h *usersHandler) setPassword(w http.ResponseWriter, r *http.Request) {
 func (h *usersHandler) delete(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	id := chi.URLParam(r, "id")
-	target, err := h.store.GetUser(ctx, id)
-	if err != nil {
-		h.notFoundOr500(w, r, err, "delete")
-		return
-	}
-	if last, err := h.wouldRemoveLastAdmin(ctx, target, false); err != nil {
-		h.notFoundOr500(w, r, err, "delete")
-		return
-	} else if last {
+	// An unknown id comes back from DeleteUser as ErrNotFound, and the last-admin
+	// guard runs inside the DELETE (store invariant I4), so no read is needed
+	// first.
+	err := h.store.DeleteUser(ctx, id)
+	if errors.Is(err, store.ErrLastAdmin) {
 		writeProblem(w, r, http.StatusConflict, "cannot remove the last admin")
 		return
 	}
-	if err := h.store.DeleteUser(ctx, id); err != nil {
+	if err != nil {
 		h.notFoundOr500(w, r, err, "delete")
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
-}
-
-// wouldRemoveLastAdmin reports whether changing/removing target would drop the
-// enabled-admin count to zero. isStillAdmin is the target's admin status AFTER
-// the pending change (false for delete, disable, or demotion away from admin).
-func (h *usersHandler) wouldRemoveLastAdmin(ctx context.Context, target store.User, isStillAdmin bool) (bool, error) {
-	if target.Role != "admin" || target.Disabled {
-		return false, nil // target isn't a live admin; removing it changes nothing
-	}
-	if isStillAdmin {
-		return false, nil // still a live admin after the change
-	}
-	n, err := h.store.CountAdmins(ctx)
-	if err != nil {
-		return false, err
-	}
-	return n <= 1, nil
 }
 
 // directoryOwnsRole reports whether u's role is recomputed from an external

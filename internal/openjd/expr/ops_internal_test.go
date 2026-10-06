@@ -10,10 +10,9 @@ import (
 )
 
 // testCtx returns a bare evaluation context for the tests in this file that
-// call applyBinary/applyUnary directly rather than through Eval. Task 2
-// (sub-project E1) added the ec parameter these calls now require; this file
-// predates that and asserts nothing about ec.m itself, so a fresh, unshared
-// context per call site is all that is needed here.
+// call applyBinary/applyUnary directly rather than through Eval. They assert
+// nothing about ec.m itself, so a fresh, unshared context per call site is all
+// that is needed here.
 func testCtx() evalCtx {
 	return newEvalCtx("", nil, nil)
 }
@@ -103,9 +102,8 @@ func TestApplyUnary_Int(t *testing.T) {
 
 func TestApplyBinary_UnsupportedOperands(t *testing.T) {
 	// Section 2.1.1: "when mixing int and float operands, the int is promoted
-	// to float and the float overload is used." Sub-project A reported this as
-	// unsupported, same-type-only dispatch having no int/float coercion; B1's
-	// coercing shape match now supplies exactly that promotion.
+	// to float and the float overload is used." The coercing shape match
+	// supplies exactly that promotion.
 	got, err := applyBinary(testCtx(), OpAdd, Int(1), Float(2.5))
 	if err != nil {
 		t.Fatalf("applyBinary(+, 1, 2.5): %v", err)
@@ -245,10 +243,8 @@ func TestApplyBinary_StringOperators(t *testing.T) {
 }
 
 func TestApplyBinary_StringRepetitionNowBounded(t *testing.T) {
-	// String repetition was deferred until limits.go's size bound existed to
-	// cap an unbounded repeat count; this task implements it now that the
-	// bound exists. Confirm both that a modest repeat succeeds and that it is
-	// not exempt from the bound.
+	// limits.go's size bound caps an unbounded repeat count. Confirm both that
+	// a modest repeat succeeds and that it is not exempt from the bound.
 	got, err := applyBinary(testCtx(), OpMul, String("x"), Int(3))
 	if err != nil {
 		t.Fatalf("applyBinary: %v", err)
@@ -453,10 +449,10 @@ func TestApplyBinary_EqualitySelfEquality(t *testing.T) {
 // driven from it exercise every scalar type Value can carry.
 func sampleValues(t *testing.T) []Value {
 	t.Helper()
-	// CodeRangeExpr is now present: range_expr expansion exists (rangeInts,
-	// rangeexpr.go) and listOrRangeEqual (ops.go) decides range_expr vs
+	// CodeRangeExpr: listOrRangeEqual (ops.go) decides range_expr vs
 	// range_expr equality by comparing text first, then falling back to
-	// expanding both sides — which is what makes this sample equal itself.
+	// expanding both sides (rangeInts, rangeexpr.go) — which is what makes
+	// this sample equal itself.
 	scalarCodes := []Code{CodeNull, CodeBool, CodeInt, CodeFloat, CodeString, CodePath, CodeRangeExpr}
 	samples := map[Code]Value{
 		CodeNull:   Null(),
@@ -576,9 +572,8 @@ func TestUnaryShapes_DeclaredReturnTypes(t *testing.T) {
 
 func TestApplyBinary_PromotesAMixedNumericPair(t *testing.T) {
 	// Section 2.1.1: mixing int and float promotes the int and uses the float
-	// overload. Sub-project A reported this as unsupported; cost-ranked shape
-	// matching now handles it, and this is the single most visible behavior
-	// change in B1. Each operator is exercised in both operand orders.
+	// overload, which cost-ranked shape matching handles. Each operator is
+	// exercised in both operand orders.
 	tests := []struct {
 		name string
 		op   Op
@@ -828,17 +823,16 @@ func TestListOperators_Errors(t *testing.T) {
 		{"[1] + 1", "unsupported operand types"},
 		{"[0] * 100000000", "too large"},
 		{"'x' * 100000000", "too large"},
-		// String CONCATENATION was unbounded while repetition was not, so a
-		// chain of individually-legal repetitions walked straight past
-		// maxStringBytes. Each term here is well inside the bound on its own;
-		// only the sum is over it, which is exactly what concatStrings now
-		// checks.
+		// String CONCATENATION must be bounded like repetition, or a chain of
+		// individually-legal repetitions walks straight past maxStringBytes.
+		// Each term here is well inside the bound on its own; only the sum is
+		// over it, which is exactly what concatStrings checks.
 		{"'xxxxxxxxxx' * 900000 + 'xxxxxxxxxx' * 900000", "too large"},
 		// The empty-list literal's provisional type-variable binding is
 		// replaceable only by a type that has a list layer wherever the binding
-		// did. Without that restriction "[] < [1]"'s fix would also make this
-		// match, and it would then fail inside coerce() instead of being
-		// reported as an unsupported operand pair.
+		// did. Without that restriction the rule that lets "[] < [1]" match
+		// would also make this match, and it would then fail inside coerce()
+		// instead of being reported as an unsupported operand pair.
 		{"[[]] < [1]", "unsupported operand types"},
 		// The rest of the fence around that exception, in both operand orders.
 		// Widening it far enough to order "[[1]] < [[]]" must not turn any of
@@ -850,7 +844,7 @@ func TestListOperators_Errors(t *testing.T) {
 		{"[1] < [[]]", "unsupported operand types"},
 		{"[] < 1", "unsupported operand types"},
 		{"1 < []", "unsupported operand types"},
-		// Section 2.1.4's compatible pairs ARE now applied elementwise (see
+		// Section 2.1.4's compatible pairs ARE applied elementwise (see
 		// orderingUnified, shape.go, and TestListOrdering_CompatiblePairs
 		// below), which widens what list ordering admits — so every row above
 		// is also the fence around that widening. int/float and string/path
@@ -875,8 +869,8 @@ func TestListOperators_Errors(t *testing.T) {
 // range_expr -> string coercion is granted to the operators whose tables name a
 // range_expr row, and to no others.
 //
-// "Param.Range * 2" used to evaluate to the string "1-101-10" — the range
-// coerced to its own text and repeated — which is spec-legal only if that
+// "Param.Range * 2" would otherwise evaluate to the string "1-101-10" — the
+// range coerced to its own text and repeated — which is spec-legal only if that
 // coercion fires during operator overload selection wherever a string
 // parameter appears. It does not: section 2.1.2 writes out
 // __add__(string, range_expr) and __add__(range_expr, string) as explicit rows,
@@ -896,10 +890,10 @@ func TestRangeExpr_TextCoercionIsAddOnly(t *testing.T) {
 	rejected := []string{
 		// Section 2.1.2's __mul__(string, int) must not swallow a range_expr.
 		"Param.Range * 2",
-		// A non-positive count took the same route and produced "".
+		// A non-positive count would take the same route and produce "".
 		"Param.Range * 0",
 		// Section 2.1.2's __contains__(string, string) must not either: this
-		// asked whether "1" is a SUBSTRING of "1-10", which it is, rather than
+		// would ask whether "1" is a SUBSTRING of "1-10", which it is, rather than
 		// the membership question section 2.1.3 defines.
 		"'1' in Param.Range",
 		"'1' not in Param.Range",
@@ -944,8 +938,8 @@ func TestRangeExpr_TextCoercionIsAddOnly(t *testing.T) {
 	}
 }
 
-// TestListOperators_RepeatOverflow pins the class of bug a Critical review
-// found in repeatList/repeatString: computing unitSize*n and checking the
+// TestListOperators_RepeatOverflow pins repeatList/repeatString against an
+// overflow class of bug: computing unitSize*n and checking the
 // PRODUCT — rather than checking the operands first — lets int64
 // multiplication overflow and wrap, silently defeating the bound. Every case
 // here is chosen so the WRAPPED product would slip past a naive "product >
@@ -957,15 +951,14 @@ func TestRangeExpr_TextCoercionIsAddOnly(t *testing.T) {
 //
 // Deliberately NOT included: a list wrap-to-ZERO case (the string one below,
 // "wraps to zero", has a list analog: "([0] * 1048576) * 17592186044416").
-// Unlike every case actually here, that one is not safe to run against a
-// reverted fix: repeatList's own loop ("for range n { append }") has no
+// Unlike every case actually here, that one is not safe to run if the guard
+// regresses: repeatList's own loop ("for range n { append }") has no
 // built-in guard the way strings.Repeat and make()'s capacity check do, so
-// on a revert it does not panic — a second re-review confirmed by actually
-// running it that it grows past 13GB resident and is still climbing after 15
-// seconds, with no panic and no termination. A test that OOM-kills the
-// process instead of failing cleanly when the thing it guards regresses is
-// worse than no test at all — it turns a caught regression into an outage,
-// and invites someone to delete it rather than read it. TestCheckRepeat_
+// without checkRepeat it does not panic — run that way, it grows past 13GB
+// resident and is still climbing after 15 seconds, with no panic and no
+// termination. A test that OOM-kills the process instead of failing cleanly
+// when the thing it guards regresses is worse than no test at all — it turns
+// a caught regression into an outage. TestCheckRepeat_
 // OverflowSafe (limits_internal_test.go) already covers this exact wrap-to-
 // zero arithmetic directly against checkRepeat, which cannot allocate at
 // all since it never calls the operator; do not re-add an end-to-end list
@@ -976,14 +969,15 @@ func TestListOperators_RepeatOverflow(t *testing.T) {
 		src  string
 	}{
 		// 2 * 9223372036854775807 (math.MaxInt64) overflows int64 and wraps
-		// to a NEGATIVE number. Safe on a revert: make([]Value, 0, total)
-		// panics on the negative capacity.
+		// to a NEGATIVE number. Safe if the guard regresses:
+		// make([]Value, 0, total) panics on the negative capacity.
 		{"list: wraps to negative", "[0, 0] * 9223372036854775807"},
 		{"string: wraps to negative", "'xx' * 9223372036854775807"},
 		// 1048576 (2^20) * 17592186044416 (2^44) is exactly 2^64, which
 		// wraps to ZERO — the smallest possible positive-check bypass. Safe
-		// on a revert for the STRING case specifically: strings.Repeat has
-		// its own internal overflow guard and panics rather than looping.
+		// if the guard regresses for the STRING case specifically:
+		// strings.Repeat has its own internal overflow guard and panics
+		// rather than looping.
 		// The inner "* 1048576" is itself well within the limit and builds
 		// instantly.
 		{"string: wraps to zero", "('x' * 1048576) * 17592186044416"},
@@ -1012,19 +1006,19 @@ func TestListOperators_Unresolved(t *testing.T) {
 		{"[1] * Param.N", "unresolved[list[int]]"},
 		{"1 in Param.Items", "unresolved[bool]"},
 		// Concatenation's declared result must not depend on operand ORDER.
-		// It did: the shape's Ret was list[T] with T bound from the left
-		// operand, so an empty left operand answered list[nulltype] — no
-		// runtime value was wrong, because concatLists recomputes the element
-		// type, but that path never runs when an operand has no value, which
-		// is precisely when the declared type is all there is. Indexed as
-		// well, since the element type is what the mistyping loses.
+		// A shape Ret of list[T] with T bound from the left operand would
+		// answer list[nulltype] for an empty left operand — no runtime value
+		// would be wrong, because concatLists recomputes the element type,
+		// but that path never runs when an operand has no value, which is
+		// precisely when the declared type is all there is. Indexed as well,
+		// since the element type is what the mistyping loses.
 		{"[] + Param.Items", "unresolved[list[int]]"},
 		{"Param.Items + []", "unresolved[list[int]]"},
 		{"([] + Param.Items)[0]", "unresolved[int]"},
 		{"(Param.Items + [])[0]", "unresolved[int]"},
 		// The same unification, now with a type to FIND rather than adopt:
 		// section 2.1.3's common type of int and float is float, in either
-		// order, and substituting the left binding into Ret could not say so.
+		// order, which substituting the left binding into Ret cannot say.
 		{"Param.Items + [2.0]", "unresolved[list[float]]"},
 		{"[2.0] + Param.Items", "unresolved[list[float]]"},
 	}
@@ -1072,20 +1066,17 @@ func TestListEqualityAndOrdering(t *testing.T) {
 		{"[1, 2] >= [1, 2]", "true"},
 		{"['a'] < ['b']", "true"},
 		// Section 1.2.5's "if all compared elements are equal, the shorter list
-		// is considered less than the longer one", with the shorter list EMPTY —
-		// which this table had no case for at all, and which was order-dependent
-		// as a result: "[1] < []" was already false, while "[] < [1]" errored
-		// out at shape matching because the empty literal's list[nulltype] had
-		// pinned the shared type variable to nulltype before int arrived. The
-		// nested row is the same defect one level down, where the provisional
-		// binding is list[nulltype] rather than nulltype.
+		// is considered less than the longer one", with the shorter list EMPTY.
+		// This is order-dependent if handled naively: the empty literal's
+		// list[nulltype] can pin the shared type variable to nulltype before
+		// int arrives, so "[] < [1]" errors at shape matching while "[1] < []"
+		// is false. The nested row is the same shape one level down, where the
+		// provisional binding is list[nulltype] rather than nulltype.
 		//
-		// Both directions of both depths are listed, because fixing one
-		// direction is what caused the second defect: the nested case worked
-		// with the empty list on the LEFT and errored with it on the right,
-		// since the exception was written for an empty BINDING meeting a real
-		// argument and not for the reverse. A row for one direction alone
-		// cannot see that.
+		// Both directions of both depths are listed: an exception written only
+		// for an empty BINDING meeting a real argument, and not for the
+		// reverse, works with the empty list on the LEFT and errors with it on
+		// the right. A row for one direction alone cannot see that.
 		{"[] < [1]", "true"},
 		{"[] <= [1]", "true"},
 		{"[[]] < [[1]]", "true"},
@@ -1112,15 +1103,15 @@ func TestListEqualityAndOrdering(t *testing.T) {
 	}
 }
 
-// TestListOrdering_CompatiblePairs pins the second adjudication of this wave:
-// section 2.1.4's compatible pairs (int/float and string/path) apply
-// ELEMENTWISE to list ordering, so "[1] < [1.0]" is false rather than the
-// "unsupported operand types" error it used to be.
+// TestListOrdering_CompatiblePairs pins an adjudication: section 2.1.4's
+// compatible pairs (int/float and string/path) apply ELEMENTWISE to list
+// ordering, so "[1] < [1.0]" is false rather than an "unsupported operand
+// types" error.
 //
 // The reasoning is in orderingUnified (shape.go) and rests on composing two
 // spec sections: 1.2.5 defines list ordering elementwise and says nothing about
 // the elements' types, and 2.1.4 permits an ordering operator's operands to
-// differ for exactly those two pairs. The error was an artifact of the shape's
+// differ for exactly those two pairs. Such an error would be an artifact of a
 // single shared type variable, which requires exact equality by construction.
 //
 // Every case was also queried against the reference implementation. It agrees
@@ -1134,10 +1125,10 @@ func TestListEqualityAndOrdering(t *testing.T) {
 // corpus (path has no literal syntax here and the corpus supplies no symbols),
 // so there is no baseline entry to add — it is recorded here instead.
 //
-// The same-type path rows found a real gap while this was being written:
-// list[path] against list[path] matches the ordering shape EXACTLY, so nothing
-// coerced its elements and compareValues had no path row to compare them with.
-// That is fixed here too (ops.go), since section 2.1.4 lists path as orderable.
+// The same-type path rows cover a separate gap: list[path] against list[path]
+// matches the ordering shape EXACTLY, so nothing coerces its elements, and
+// compareValues needs its own path row to compare them (ops.go), since section
+// 2.1.4 lists path as orderable.
 func TestListOrdering_CompatiblePairs(t *testing.T) {
 	syms := MapSymbols{
 		"Param.Dir":   Value{Type: TPath, s: "/a"},
@@ -1186,12 +1177,12 @@ func TestListOrdering_CompatiblePairs(t *testing.T) {
 	}
 }
 
-// TestRangeExprEquality_SelfEquality pins the fix for a previously PARKED
-// bug (see listOrRangeEqual, ops.go): a range_expr must equal itself even
-// though two range_exprs are not producible from EXPR source syntax alone —
-// RangeExpr is an exported constructor, so a caller's symbol table can hand
-// the evaluator two range_expr operands directly, and Param.R == Param.R was
-// false before this fix. It also exercises the differently-spelled-but-
+// TestRangeExprEquality_SelfEquality pins that a range_expr equals itself
+// (see listOrRangeEqual, ops.go), even though two range_exprs are not
+// producible from EXPR source syntax alone — RangeExpr is an exported
+// constructor, so a caller's symbol table can hand the evaluator two
+// range_expr operands directly, and Param.R == Param.R must be true. It also
+// exercises the differently-spelled-but-
 // equal path (two range_exprs with different text that expand to the same
 // integers) and a genuine inequality.
 func TestRangeExprEquality_SelfEquality(t *testing.T) {
@@ -1249,13 +1240,13 @@ func TestPathOperators(t *testing.T) {
 	}
 }
 
-// TestPathPlus_BeatsTheCoercedStringRow is the guard on a behavior CHANGE.
+// TestPathPlus_BeatsTheCoercedStringRow pins that "P + 'x'" is a PATH.
 //
-// Before this task, "P + 'x'" evaluated to the STRING "/a/bx", because
-// __add__(string, string) accepts a path by coercion. RFC 0006 requires a path.
-// A test asserting only the text would pass on the old behavior, so this
-// asserts the type — and asserts it through a symbol as well as a literal,
-// since a symbol is how a real template supplies a path.
+// __add__(string, string) also accepts a path by coercion and would produce
+// the STRING "/a/bx"; RFC 0006 requires a path. A test asserting only the text
+// would pass either way, so this asserts the type — and asserts it through a
+// symbol as well as a literal, since a symbol is how a real template supplies
+// a path.
 func TestPathPlus_BeatsTheCoercedStringRow(t *testing.T) {
 	syms := MapSymbols{"Param.Dir": Path("/a/b", PathPOSIX)}
 	for _, src := range []string{`path('/a/b') + 'x'`, `Param.Dir + 'x'`} {
@@ -1269,8 +1260,8 @@ func TestPathPlus_BeatsTheCoercedStringRow(t *testing.T) {
 	}
 }
 
-// TestPathOperators_POSIXEdges pins the shapes the brief's happy path does not
-// reach, every one of them probed against the reference implementation first.
+// TestPathOperators_POSIXEdges pins edge shapes beyond the plain join, every
+// one of them probed against the reference implementation first.
 //
 // The result of a join is a path VALUE, and every path value in this package is
 // normalized on construction (Value.Path re-parses), so the join normalizes too:
@@ -1280,8 +1271,7 @@ func TestPathPlus_BeatsTheCoercedStringRow(t *testing.T) {
 // "/a/b/." and "/a/b/c/" respectively, while simultaneously reporting the
 // SAME joined value's .parts and .name as if it had normalized. That is a
 // reference defect (its own two views of one value disagree), and RFC 0006
-// says this family matches pathlib, so these follow pathlib. See
-// task-9-report.md.
+// says this family matches pathlib, so these follow pathlib.
 func TestPathOperators_POSIXEdges(t *testing.T) {
 	tests := []struct{ src, want, wantType string }{
 		{`path('/a/b') / ''`, "/a/b", "path"},
@@ -1340,7 +1330,7 @@ func TestPathOperators_URI(t *testing.T) {
 		{`path('s3://b/d//') / 'f'`, "s3://b/d/f", "path"},
 		{`path('s3://b/d///') / 'f'`, "s3://b/d/f", "path"},
 		// Interior empty components are opaque and survive, which is the
-		// whole point of the URI flavor.
+		// defining property of the URI flavor.
 		{`path('s3://b/d//x') / 'f'`, "s3://b/d//x/f", "path"},
 		// UNRESOLVED — the specification and the reference disagree here, and
 		// this pins the SPECIFICATION's reading. Section 2.1.5 says "for URI
@@ -1352,9 +1342,8 @@ func TestPathOperators_URI(t *testing.T) {
 		// "s3://b/d/a/" and "s3://b/d/a//b" — and unlike its other
 		// non-normalizing join answers this is NOT the same defect, since a
 		// URI parse would preserve those separators even if the reference
-		// re-parsed its own result. Flagged in task-9-report.md for the final
-		// review; reversing the ruling means parsing a URI parent's child as
-		// URI segments rather than as a path.
+		// re-parsed its own result. Reversing the ruling would mean parsing a
+		// URI parent's child as URI segments rather than as a path.
 		{`path('s3://b/d/') / 'a/'`, "s3://b/d/a", "path"},
 		{`path('s3://b/d/') / 'a//b'`, "s3://b/d/a/b", "path"},
 		{`path('s3://b/d/') + 'x'`, "s3://b/d/x", "path"},
@@ -1380,10 +1369,10 @@ func TestPathOperators_URI(t *testing.T) {
 	}
 }
 
-// TestPathOperators_Windows is the flavor the reference implementation cannot
-// answer for — its path family is POSIX-only — so every expectation here is
-// CPython's, read from PureWindowsPath on the machine this was written on,
-// which is the same source parseWindows and splitRootWindows were ported from.
+// TestPathOperators_Windows covers a flavor the oracle does not evaluate (it
+// runs the reference under POSIX only), so every expectation here is
+// CPython's, read from PureWindowsPath, which is the same source parseWindows
+// and splitRootWindows were ported from.
 //
 // The four cases that matter are the ones a rule keyed on is_absolute() alone
 // gets wrong, because a Windows child can anchor itself WITHOUT being
@@ -1404,11 +1393,11 @@ func TestPathOperators_Windows(t *testing.T) {
 		{`path('C:/a') / '//host/share'`, `\\host\share\`},
 		{`path('C:/a') / '//host/share/x'`, `\\host\share\x`},
 		{`path('//srv/share') / 'b'`, `\\srv\share\b`},
-		// A BARE UNC server, with no share — the anchor shape the original
-		// table omitted, and the one that broke. Its drive ("\\srv") carries
-		// no separator of its own, so the components glued straight onto the
-		// server name and "path('//nas') / 'renders'" silently addressed a
-		// DIFFERENT host ("\\nasrenders"). ntpath.join's final block inserts
+		// A BARE UNC server, with no share. Its drive ("\\srv") carries no
+		// separator of its own, so without an inserted separator the
+		// components glue straight onto the server name and
+		// "path('//nas') / 'renders'" addresses a DIFFERENT host
+		// ("\\nasrenders"). ntpath.join's final block inserts
 		// the separator; see pathJoin. The trailing separator CPython leaves
 		// on two of these is not a typo: "\\srv\b" re-parses as a
 		// server+share pair, which pathlib credits with a root.
@@ -1444,7 +1433,7 @@ func TestPathOperators_Windows(t *testing.T) {
 
 // TestPathJoin_URIAuthorityIsNeverInheritedAsADrive pins the guard
 // anchorParts's own doc comment names as the thing that "must never happen",
-// and which nothing exercised until the final fix wave: a URI's
+// and which nothing else exercises: a URI's
 // scheme+authority is reported as a ROOT, never as a drive, because pathJoin
 // lets a rootless child INHERIT its parent's drive.
 //
@@ -1467,7 +1456,7 @@ func TestPathJoin_URIAuthorityIsNeverInheritedAsADrive(t *testing.T) {
 		{`path('C://b') / 'x'`, PathWindows, "C://b/x"},
 		{`path('C://b') / 'x'`, PathPOSIX, "C://b/x"},
 		{`path('C://b/d') / 'x'`, PathWindows, "C://b/d/x"},
-		// A multi-letter scheme reaches the same arm and always did — kept so
+		// A multi-letter scheme reaches the same arm — kept so
 		// the drive-shaped row above is visibly the SAME rule and not a
 		// special case.
 		{`path('s3://b') / 'x'`, PathWindows, "s3://b/x"},

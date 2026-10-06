@@ -1,7 +1,7 @@
 -- SPDX-License-Identifier: AGPL-3.0-or-later
--- Long-lived API keys (Phase 3, component A2). Machine/SDK credential owned by
--- a user; the raw key is never stored, only its SHA-256 hash. The table exists
--- regardless of auth.enabled and is simply unused when auth is disabled.
+-- Long-lived API keys. Machine/SDK credential owned by a user; the raw key is
+-- never stored, only its SHA-256 hash. The table exists regardless of
+-- auth.enabled and is unused when auth is disabled.
 
 -- +goose Up
 CREATE TABLE api_keys (

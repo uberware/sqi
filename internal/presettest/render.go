@@ -122,8 +122,7 @@ func normalize(hostPaths *strings.Replacer, s string) string {
 // inside the generated concat list -- converts along with it.
 //
 // On a POSIX host filepath.FromSlash is the identity, so every pair is dropped
-// and this returns nil: the rendered text there is byte-for-byte what it was
-// before this existed.
+// and this returns nil: the rendered text there is left unchanged.
 func hostPathReplacer(params map[string]string) *strings.Replacer {
 	type rewrite struct{ host, posix string }
 	var rewrites []rewrite

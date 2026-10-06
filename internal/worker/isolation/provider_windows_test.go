@@ -16,7 +16,7 @@ import (
 // held a token (the shape a zero-value Credential has — e.g. one built by a
 // logon seam that failed before producing anything usable) is a safe no-op,
 // matching the contract every other platform's Credential.Close already
-// satisfies. newFakeCredential no longer produces this shape itself (it
+// satisfies. newFakeCredential does not produce this shape itself (it
 // carries fakeCredentialToken, precisely so a fake credential can still pass
 // through apply's zero-token guard in tests — see that constant's doc), but
 // the zero-token shape remains a real one Close must still handle.

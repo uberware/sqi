@@ -23,7 +23,7 @@ guides for extending the worker.
 `gofumpt`, `goimports`, and `golangci-lint` are required at commit time via
 pre-commit hooks. Install them before running `make hooks`.
 
-**`golangci-lint` 2.13.0 is a hard floor, not a suggestion.** `.golangci.yml`
+**`golangci-lint` 2.13.0 is a required minimum.** `.golangci.yml`
 excludes `errors.AsType` from `errcheck` by function name, and `errcheck` before
 2.13.0 cannot resolve a *generic* function's name — it reports `Error return
 value is not checked` with no name at all, so the exclusion never matches and
@@ -122,10 +122,10 @@ unavailable natively.
 
 What it covers that unit tests cannot: the server decides its TXT records from
 its own config, they cross the wire, and the worker parses them back and acts on
-them. The halves were each unit-tested for a while with nothing joining them,
-which is how `nats_tls` came to be advertised by the server and read by nobody.
-`TestDiscovery_RealBinaryFindsItsServerOverMDNS` goes furthest: a real
-`sqi-worker` subprocess with **no** `nats.url` at all has to find its server,
+them. Unit tests of each half cannot catch a record one side advertises and the
+other never reads, such as `nats_tls` advertised by the server with no worker
+acting on it. `TestDiscovery_RealBinaryFindsItsServerOverMDNS` goes furthest: a
+real `sqi-worker` subprocess with **no** `nats.url` at all has to find its server,
 learn from the advertisement that the broker needs TLS, and register.
 
 ### It does not advertise on your network
@@ -133,9 +133,8 @@ learn from the advertisement that the broker needs TLS, and register.
 Every advertisement these tests make is restricted to **loopback**. A browser
 listening on all interfaces still receives it — that is verified rather than
 assumed — so the coverage is unaffected, and a test run never announces a
-service on the LAN it happens to be attached to. This is an invariant, not a
-preference: where loopback cannot carry multicast the tests refuse to run rather
-than quietly falling back to a real interface.
+service on the LAN it happens to be attached to. Where loopback cannot carry
+multicast the tests refuse to run rather than fall back to a real interface.
 
 Linux loopback needs two things macOS lo0 has by default, and the tests state
 each one when it is missing:
@@ -150,7 +149,7 @@ records from the advertising interface's own addresses and **discards loopback
 ones**, so on Linux — whose `lo` carries only `127.0.0.1` and `::1` — there is
 nothing left to advertise and registration fails outright with "Could not
 determine host IP addresses", multicast flag or no multicast flag. macOS lo0
-also carries `fe80::1`, which is the whole reason this is invisible on a Mac.
+also carries `fe80::1`, which is why the problem does not appear on a Mac.
 Adding that same link-local address makes the two hosts behave alike; it is
 scoped to the link and is not routed anywhere.
 
@@ -232,7 +231,7 @@ scope, a misnamed attribute, a filter a real server rejects. `make test-ldap`
 closes that: it boots a throwaway OpenLDAP container and drives the whole login
 path against it in every supported bind mode. It runs in CI on every change
 (the `ldap-integration` job), on **both amd64 and arm64** — the container image
-is multi-arch and its variants have already proven not to be equivalent.
+is multi-arch and its variants do not behave identically.
 
 It **skips**, rather than fails, when Docker is unavailable, so it never blocks
 a contributor who has not installed it — but a skip verifies nothing, so run it
@@ -260,7 +259,8 @@ SQI_TEST_LDAP_PLATFORM=linux/amd64 make test-ldap
 
 It runs under emulation, so expect it to be several times slower than native —
 worth it when CI is red and your machine is green.
-Two fixture properties are load-bearing and easy to get wrong:
+
+Two fixture properties are required and easy to get wrong:
 
 - **`memberOf` must be populated.** AD does this natively; OpenLDAP needs the
   `memberof` overlay, and the overlay's `olcMemberOfGroupOC` must match the
@@ -280,8 +280,8 @@ mistake surfaces — but a fake returns whatever the test asks for, so it cannot
 show what a *real* provider **omits**. Keycloak emits no group membership at all
 unless a protocol mapper is configured for it, and a token carrying no groups
 still validates: every user then lands on `default_role`, a silent privilege
-downgrade with no error anywhere. `make test-oidc` is what makes that class of
-bug fail before it merges.
+downgrade with no error anywhere. `make test-oidc` makes that class of bug fail
+before it merges.
 
 ```sh
 make test-oidc
@@ -298,9 +298,9 @@ of the HTTP or token behavior this job asserts on is architecture-dependent.
 
 It **skips**, rather than fails, when Docker is unavailable. **A skip verifies
 nothing**, so run it — and confirm it ran — before touching anything under
-`internal/auth/oidc/` or the SSO routes in `internal/api/`. Go's test cache will
-happily replay a previous result; `GOFLAGS=-count=1 make test-oidc` and a check
-for `--- PASS` on each `TestOIDC_` is the only honest confirmation.
+`internal/auth/oidc/` or the SSO routes in `internal/api/`. Go's test cache can
+replay a previous result; `GOFLAGS=-count=1 make test-oidc` and a check for
+`--- PASS` on each `TestOIDC_` is the only reliable confirmation.
 
 To point it at a realm you already have instead of starting a container, set
 `SQI_TEST_OIDC_ISSUER`:
@@ -321,9 +321,9 @@ unconditionally; Go's cookie jar exempts loopback from that rule, which is why
 the container fixture works over plain HTTP on `127.0.0.1`, but a **non**-loopback
 issuer over `http://` would hide the provider's session from the test client.
 
-The Keycloak image tag is **pinned, not floating on `:latest`**, and the pin is
-load-bearing: the test scrapes Keycloak's own login and logout-confirmation
-markup. It appears in two places that must stay in step — `keycloakImage` in
+The Keycloak image tag is pinned, not floating on `:latest`, because the test
+scrapes Keycloak's own login and logout-confirmation markup. It appears in two
+places that must stay in step — `keycloakImage` in
 `test/integration/oidc_test.go` and the `docker pull` in
 `.github/workflows/ci.yml`.
 
@@ -431,16 +431,15 @@ Moving parts:
 | `scripts/expr-oracle.py` | Feeds the corpus to the reference over JSON lines. |
 | `test/oracle/oracle_test.go` | Runs both sides and compares (build tag `oracle`). |
 
-**The oracle grades the same on every host**, and two deliberate pins are what
-make that true rather than incidental. `scripts/expr-oracle.py` reads and writes
-UTF-8 explicitly, because Python otherwise picks the locale encoding and Windows
-hands it the ANSI code page — which silently answered every non-ASCII corpus
-case for a mangled expression. And it passes `path_format=PathFormat.POSIX`
-rather than letting the reference follow the specification's host-native
-default: sqi's own `expr.WithPathFormat` defaults to POSIX on purpose, so
-without that pin every path case in the corpus diverges on a Windows host and
-none of it means anything. Both are no-ops on Linux and macOS, and
-`make expr-oracle-venv` likewise resolves the venv's interpreter per host
+**The oracle grades the same on every host** because of two deliberate pins.
+`scripts/expr-oracle.py` reads and writes UTF-8 explicitly, because Python
+otherwise picks the locale encoding and Windows hands it the ANSI code page —
+which makes the reference answer every non-ASCII corpus case for a mangled
+expression. And it passes `path_format=PathFormat.POSIX` rather than letting
+the reference follow the specification's host-native default: sqi's own
+`expr.WithPathFormat` defaults to POSIX on purpose, so without that pin every
+path case in the corpus would diverge on a Windows host. Both are no-ops on
+Linux and macOS, and `make expr-oracle-venv` likewise resolves the venv's interpreter per host
 (`bin/python3` or `Scripts/python.exe`).
 
 **The reference is not the authority.** Despite living in the `openjd.expr`
@@ -450,11 +449,9 @@ on the 0.x line, where breaking changes are permitted in minor bumps. The
 specification outranks it. When the two disagree, read
 `third_party/openjd-specifications/` and decide; do not change sqi to match the
 reference. **Most** baselined entries are cases where **the reference is
-wrong** — the corpus currently scores 930/1063 agreeing with 133 baselined
-divergences, and each one's reasoning is argued in `test/oracle/baseline.txt`,
-which is the authority on any individual ruling (an earlier revision of this
-paragraph said "three of the five", a count that went stale several waves ago
-and is corrected here rather than re-pinned). Two have been reported upstream:
+wrong** — each baselined divergence's reasoning is argued in
+`test/oracle/baseline.txt`, which is the authority on any individual ruling.
+Divergences found this way are reported upstream, for example
 [openjd-rs#291](https://github.com/OpenJobDescription/openjd-rs/issues/291) (a
 `target_type` inherited by operands that must not have it, including the
 operand `and`/`or` discards per section 2.1.6) and
@@ -462,13 +459,12 @@ operand `and`/`or` discards per section 2.1.6) and
 (a `path` as the **left** operand of an ordering operator inverts the
 comparison).
 
-**The oracle cannot see the Windows path flavor at all.** The reference's path
-family is POSIX-only — it accepts a backslash in a replacement name and never
-switches on a drive letter — so `test/oracle/corpus.txt` carries no
-Windows-flavor case, and every Windows expectation in `internal/openjd/expr` is
-pinned by that package's own unit tests against CPython's `PureWindowsPath`
-instead. URI behavior *is* oracle-measurable, because a URI is detected under
-the reference's POSIX format too.
+**The oracle does not cover the Windows path flavor.** `scripts/expr-oracle.py`
+evaluates every case with `path_format=PathFormat.POSIX`, so
+`test/oracle/corpus.txt` carries no Windows-flavor case, and every Windows
+expectation in `internal/openjd/expr` is pinned by that package's own unit
+tests against CPython's `PureWindowsPath` instead. URI behavior *is* oracle-measurable, because a URI is detected under
+the POSIX format too.
 
 `OPENJD_MODEL_VERSION` in the `Makefile` pins the reference. It is pinned
 deliberately: unpinned, an upstream release could turn this red with no sqi
@@ -476,7 +472,7 @@ commit behind it, and a divergence report means little without knowing which
 build produced it.
 
 **A skip proves nothing.** The target exits 0 when no interpreter has the
-package importable, and the test skips — exactly as `make test-isolation` does
+package importable, and the test skips — as `make test-isolation` does
 without Docker. Confirm it actually ran by looking for
 `--- PASS: TestExprOracle_MatchesReferenceImplementation`. CI (`expr-oracle`)
 asserts that line by name for this reason.
@@ -496,7 +492,7 @@ tier does and does not prove.
 ```sh
 # Run the whole harness: Tier 1 (argv goldens), Tier 2 (real ffmpeg), Tier 3
 # (stub execution), and the registry-verification test that checks all three
-# actually ran — in ONE go test invocation, which TestZZPresetTierRegistrySatisfied
+# actually ran — in one go test invocation, which TestZZPresetTierRegistrySatisfied
 # requires (it asserts on an in-process outcome sink, so splitting the tiers
 # across invocations makes it fail with "never reported" in both).
 make test-preset-harness
@@ -697,7 +693,7 @@ statement.
 
 **A wholly new aggregate — a new table, not just a new method on an
 existing one — needs a migration.** Add a numbered SQL file to
-`internal/store/migrations/` (e.g. `00031_my_feature.sql`, continuing the
+`internal/store/migrations/` (e.g. `00037_my_feature.sql`, continuing the
 existing sequence), with `+goose Up`/`+goose Down` sections following the
 pattern of the surrounding files. A new column or index on an existing
 table needs one too. A new method on an *existing* table (like
@@ -712,11 +708,11 @@ aggregate (see `internal/store/fake/workercredential.go` for what a new
 aggregate's fake looks like end to end). Stub it so existing tests keep
 compiling.
 
-> **Not every new store method is REST-triggered.** The auto-retry +
-> failure-limit feature added `RecordTaskFailure`, `RequeueTaskForRetry`
-> (`internal/store/sqlite/task.go`), and `ParkJob`
-> (`internal/store/sqlite/job.go`) purely for the scheduler's own internal
-> use (`internal/scheduler/failure.go`'s `handleTaskFailed`) — no handler in
+> **Not every new store method is REST-triggered.** `RecordTaskFailure`,
+> `RequeueTaskForRetry` (`internal/store/sqlite/task.go`), and `ParkJob`
+> (`internal/store/sqlite/job.go`) exist purely for the scheduler's auto-retry
+> and failure-limit handling (`internal/scheduler/failure.go`'s
+> `handleTaskFailed`) — no handler in
 > `internal/api/` calls them directly. They still follow the same shape as
 > REST-triggered methods: declared on the relevant sub-interface
 > (`TaskStore`/`JobStore`), implemented in `internal/store/sqlite/`, and
@@ -731,24 +727,29 @@ compiling.
 > **Every terminal non-success must leave a reason.** `task_attempts.message`
 > is the per-attempt reason (next to `exit_code`); `tasks.failure_reason`
 > denormalizes the latest terminal reason onto the task (mirroring
-> `unschedulable_reason`), cleared on retry. Two `TaskStore` methods write it:
-> `SetTaskFailureReason(ctx, id, reason)` (unconditional) and
-> `SetTaskFailureReasonIfEmpty(ctx, id, reason)` (a no-op, not an error, when
-> the task already carries a reason). `FailureReasonSummary(ctx, jobID)`
+> `unschedulable_reason`), cleared on retry. The reason is written by the same
+> guarded store operation that moves the task to its terminal status, never by
+> a separate call afterwards: `CompleteTaskAttempt` stamps a worker report's
+> `FailureReason`, and `CancelJobExecution`, `CancelTaskExecution`,
+> `CancelPendingStep` and `CancelBlockedJob` stamp their `reason` argument only
+> on a task that has none yet, so a cascade-cancel's more specific reason
+> always wins regardless of ordering. `FailureReasonSummary(ctx, jobID)`
 > aggregates a job's failed tasks by reason (`FailedCount`, `DominantReason`,
 > `DistinctReasons`) for the job-detail failure banner. **The rule for new
 > code:** any new code path that drives a task to a terminal `failed` or
-> `canceled` must call one of the two setters — reach for
-> `SetTaskFailureReasonIfEmpty` whenever a more-specific reason may already be
-> set by another path (the pattern cascade-cancel and user-cancel use so
-> cascade always wins regardless of ordering), and the unconditional
-> `SetTaskFailureReason` only when your path is authoritative. See
+> `canceled` stamps its reason inside the write that moves the task, and only
+> on a task with no reason when a more specific one may already be set. A
+> separate setter call after the status write is a second write that can land
+> on a task another writer has moved in between, which the store's
+> [invariants](architecture.md#store-invariants) rule out.
+> `SetTaskFailureReason` and `SetTaskFailureReasonIfEmpty` are not part of
+> `store.Store`; both stores keep them only as test fixtures. See
 > [the durable-failure-reason table](architecture.md#5-status-ingestion) for
 > every existing path and its reason string.
 
 ### Step 3b — Gate it with a permission (if the route is not public)
 
-A new permission lands in **two** places or it silently half-works:
+A new permission must be added in **two** places:
 
 1. **Server** — add the permission constant and its role grants to
    `internal/auth/policy/policy.go`, then mount the route behind the matching

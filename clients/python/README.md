@@ -5,8 +5,8 @@ task and render farm manager.
 
 `sqi-sdk` (import name `sqi_client`) is a pure-Python library for programmatic
 job submission, status queries, and management. It covers the same operations as
-the web UI via the REST API, and is the foundation for the Phase 2 DCC
-submitters and for pipeline automation scripts (see [`../../ROADMAP.md`](../../ROADMAP.md)).
+the web UI via the REST API, and is the foundation for the DCC submitters
+and for pipeline automation scripts (see [`../../ROADMAP.md`](../../ROADMAP.md)).
 
 It talks to a running `sqi-server` over its REST API, with an optional WebSocket
 extra for live event streaming. The only required dependency is
@@ -79,8 +79,8 @@ idempotent GETs with backoff.
 
 `sqi-server` can optionally require authentication (`auth.enabled`, off by
 default — see [`docs/auth.md`](https://github.com/uberware/sqi/blob/main/docs/auth.md)).
-`SqiClient` already has bearer-token support wired in for when a server
-requires it:
+`SqiClient` supports bearer-token authentication for a server that requires
+it:
 
 ```python
 from sqi_client import SqiAuthError, SqiClient

@@ -193,10 +193,10 @@ describe('UserForm (edit)', () => {
     expect(patchCalls.length).toBe(0)
   })
 
-  // The symmetric case to the role tests below. The set-password form used to
-  // render unconditionally, so an admin could type a password for an SSO
-  // account and get a 409 toast; password_editable is the server saying up
-  // front that it will refuse.
+  // The symmetric case to the role tests below. A set-password form rendered
+  // unconditionally would let an admin type a password for an SSO account and
+  // get a 409 toast; password_editable is the server saying up front that it
+  // will refuse.
   it('disables the set-password control when the server says the password is not editable', async () => {
     fetchMock.mockResolvedValueOnce(
       ok(user({ id: 'u4', username: 'dave', auth_source: 'oidc', password_editable: false })),
@@ -263,10 +263,9 @@ describe('UserForm (edit)', () => {
     expect(await screen.findByLabelText('Role')).toBeEnabled()
   })
 
-  // The regression this guards: the control used to be derived from
-  // auth_source alone, which disabled it for every LDAP account. Under
-  // auth.ldap.role_source=local the server accepts the role change, so the
-  // only correct source is the server's own role_editable.
+  // Deriving the control from auth_source alone would disable it for every
+  // LDAP account. Under auth.ldap.role_source=local the server accepts the
+  // role change, so the only correct source is the server's own role_editable.
   it('leaves the role control enabled for an ldap account the server says is editable', async () => {
     fetchMock.mockResolvedValueOnce(
       ok({

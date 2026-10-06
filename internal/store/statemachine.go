@@ -45,7 +45,7 @@ var ErrInvalidTransition = errors.New("store: invalid state transition")
 //
 // A transition from a status to itself is not listed here and is not valid:
 // callers that must tolerate duplicate delivery treat same-status writes as a
-// no-op before consulting this table (see [TaskStore.UpdateTaskStatus]).
+// no-op before consulting this table (see [TaskStore.CompleteTaskAttempt]).
 var validTaskTransitions = map[TaskStatus]map[TaskStatus]struct{}{
 	TaskStatusPending: {
 		TaskStatusReady:    {},
@@ -94,4 +94,44 @@ func ValidateTaskTransition(from, to TaskStatus) error {
 		return nil
 	}
 	return fmt.Errorf("%w: task %q → %q not permitted", ErrInvalidTransition, from, to)
+}
+
+// ── Job state machine ─────────────────────────────────────────────────────────
+
+// JobTransitions is the job lifecycle as sqi implements it. It is a test-time
+// specification, not consulted at run time: every job write is a named store
+// operation guarded in its own SQL (invariant I1), and the transition-table
+// test asserts each operation's from-states are legal here.
+//
+// The arrows come from the operations themselves:
+//
+//	pending → running                 PromoteJobRunning, on the first running report
+//	pending/running/paused → terminal FinalizeJob, derived from the steps
+//	running → pending                 DemoteStalledJobs
+//	paused → pending                  ResumeJob, and RetryTasks on an auto-parked job
+//	blocked → pending                 ReleaseBlockedJob
+//	failed/canceled → pending         RetryTasks
+//	any non-terminal → paused         ParkJob (PauseJob for pending and running)
+//	any non-terminal → canceled       CancelJobExecution and CancelJobStatus
+//	                                  (CancelBlockedJob for blocked)
+//
+// FinalizeJob's pending → completed is real: a task can reach assigned →
+// succeeded with its running report dropped, so the job is never promoted. Its
+// SQL guard also admits blocked, and a blocked job can be finalized: canceling
+// the only task of its only step (CancelTask) finalizes that step pending →
+// canceled, and FinalizeJob then moves the job blocked → canceled, an arrow the
+// table already lists. blocked → completed and blocked → failed cannot happen,
+// because a blocked job's tasks are never leased, so none of them succeeds or
+// fails.
+//
+// A write to a job's current status is a no-op, not a transition, so no status
+// lists itself.
+var JobTransitions = map[JobStatus][]JobStatus{
+	JobStatusPending:   {JobStatusRunning, JobStatusPaused, JobStatusCompleted, JobStatusFailed, JobStatusCanceled},
+	JobStatusRunning:   {JobStatusPending, JobStatusPaused, JobStatusCompleted, JobStatusFailed, JobStatusCanceled},
+	JobStatusPaused:    {JobStatusPending, JobStatusCompleted, JobStatusFailed, JobStatusCanceled},
+	JobStatusBlocked:   {JobStatusPending, JobStatusPaused, JobStatusCanceled},
+	JobStatusCompleted: {},
+	JobStatusFailed:    {JobStatusPending},
+	JobStatusCanceled:  {JobStatusPending},
 }

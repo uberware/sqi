@@ -54,7 +54,7 @@ func TestReprPy(t *testing.T) {
 // Two rows encode why this does NOT share writeJSONValue (funcsconv.go, used by
 // string(list)): Go's encoding/json escapes "<", ">" and "&" as < and
 // friends, and does NOT escape non-ASCII. json.dumps does exactly the reverse,
-// and so does the reference. Measured during design.
+// and so does the reference.
 func TestReprJSON(t *testing.T) {
 	tests := []struct {
 		name string
@@ -94,18 +94,17 @@ func TestReprJSON(t *testing.T) {
 // produce for null, path and range_expr — not which Shape row produces it.
 //
 // repr_py and repr_json each pair a type-variable catch-all with specific
-// nulltype, range_expr and path rows, which looks like C1's flatten hazard
+// nulltype, range_expr and path rows, which looks like a row-order hazard
 // (matchShapesExactFirst breaks an exact cost tie to the EARLIEST shape). It
 // is not observable here: pyRepr and jsonRepr each switch on v.Type.Code
 // directly, so the catch-all's Fn renders CodeNull/CodePath/CodeRangeExpr
-// exactly the same way the dedicated rows do. Reordering the rows so the
-// catch-all runs first was tried during development and this test kept
-// passing — confirmed by re-running it with the rows swapped, not asserted.
+// exactly the same way the dedicated rows do, and this test passes with the
+// rows swapped so the catch-all runs first.
 //
-// Consequently: if a later change ever gives pyRepr/jsonRepr's catch-all
-// branch behavior that diverges from the dedicated null/path/range_expr
-// rows (for example, by narrowing that switch), it must add a test that can
-// tell the rows apart, because this one structurally cannot.
+// If pyRepr/jsonRepr's catch-all branch ever diverges from the dedicated
+// null/path/range_expr rows (for example, by narrowing that switch), that
+// change needs a test that can tell the rows apart, because this one
+// structurally cannot.
 func TestReprData_RendersSpecificTypes(t *testing.T) {
 	syms := MapSymbols{
 		"Param.Dir":    Value{Type: TPath, s: "/a/b"},
@@ -122,8 +121,8 @@ func TestReprData_RendersSpecificTypes(t *testing.T) {
 		{`repr_json(Param.Dir)`, `"/a/b"`},
 		{`repr_py(Param.Frames)`, "'1-10'"},
 		{`repr_json(Param.Frames)`, `"1-10"`},
-		// Previously untested registered row: repr_json's list[path] shape
-		// (it has no dedicated list[path] row of its own — this exercises
+		// repr_json's list[path] shape (it has no dedicated list[path] row
+		// of its own — this exercises
 		// the varT catch-all rendering a list of paths via jsonRepr's
 		// CodeList case, each element through the CodePath case).
 		{`repr_json(Param.Dirs)`, `["/a", "/b"]`},

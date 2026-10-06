@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 // Package rolemap resolves an external identity's group memberships to one of
-// B1's roles.
+// sqi's RBAC roles.
 //
 // Shared by LDAP (group DNs) and OIDC (a groups claim) so the precedence rule
 // cannot drift between them: an operator who reorders auth.ldap.role_map

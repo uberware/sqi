@@ -59,15 +59,9 @@ var (
 // env binds no Env.File symbols, the same way a nil step binds no Task.File
 // or Task.Param symbols.
 //
-// The type-mapping rules (PATH, LIST[PATH], CHUNK[INT], and the ParseType
-// floor) were originally written twice: once here, from the parsed model and
-// scope-aware, and once in the conformance harness's own DeclaredSymbols, from
-// an unparsed YAML document and scope-blind. The harness copy existed only
-// while EXPR was unsupported and the suite needed a scoring path that did not
-// go through this one; sub-project H2 deleted it (test/conformance/exprcase.go)
-// when EXPR became supported, exactly as that arrangement always said it
-// would. This is now the only copy on the server side — see jobParamTypes for
-// the one on the worker side, which cannot import this package.
+// This is the only server-side copy of the type-mapping rules (PATH,
+// LIST[PATH], CHUNK[INT], and the ParseType floor) — see jobParamTypes for
+// the one the worker shares, since it cannot import this package.
 func symbolsFor(
 	tmpl *JobTemplate, step *StepTemplate, env *Environment, scope Scope, params map[string]string,
 ) expr.MapSymbols {
@@ -107,11 +101,9 @@ func symbolsFor(
 // SymbolsFor is the exported counterpart of symbolsFor, for the one caller
 // outside this package that needs to drive the SAME phase-1/phase-2
 // symbol-table construction this package uses internally:
-// internal/worker/fmtres's phase-3 "agreement" test (EXPR sub-project E4a),
-// which proves the worker's own phase-3 table types a template's declared
-// parameters identically to this package's phase-2 table -- the design
-// spec's own claim that phases 1-3 are "the same walk with a different
-// table" gets its sharpest test here, and that test needs the REAL
+// internal/worker/fmtres's phase-3 "agreement" test, which proves the
+// worker's own phase-3 table types a template's declared parameters
+// identically to this package's phase-2 table. That test needs the real
 // phase-2 table, not a hand-reconstructed approximation of it.
 //
 // This is a direct, unwrapped call -- see symbolsFor's own doc comment for
@@ -152,17 +144,12 @@ func bindJobParamSymbols(tmpl *JobTemplate, params map[string]string, syms expr.
 // This is a thin wrapper over expr.JobParamTypes, the shared definition of
 // the mapping -- see that function's doc comment for the full rationale
 // (including why RawParam is NOT uniformly string) and for why the mapping
-// lives in internal/openjd/expr rather than here: EXPR sub-project E4a's
-// worker-side phase-3 symbol table (internal/worker/fmtres/exprsyms.go)
-// needs the identical mapping and cannot import this package (internal/
-// openjd pulls in internal/store, which the worker binary must never depend
-// on), so a single copy in the one package both sides already share is what
-// keeps phase 2 and phase 3 from typing the same declared parameter two
-// different ways.
-//
-// (test/conformance/exprcase.go used to keep a THIRD, deliberately separate
-// copy for the conformance harness; sub-project H2 deleted it along with the
-// EXPR-only scoring path it served. See symbolsFor's doc comment.)
+// lives in internal/openjd/expr rather than here: the worker-side phase-3
+// symbol table (internal/worker/fmtres/exprsyms.go) needs the identical
+// mapping and cannot import this package (internal/openjd pulls in
+// internal/store, which the worker binary must never depend on), so a single
+// copy in the one package both sides already share keeps phase 2 and phase 3
+// from typing the same declared parameter two different ways.
 func jobParamTypes(declared string) (paramType, rawType expr.Type) {
 	return expr.JobParamTypes(declared)
 }
@@ -171,10 +158,9 @@ func jobParamTypes(declared string) (paramType, rawType expr.Type) {
 // of type t. Thin wrapper over expr.ValueFromText -- see that function's doc
 // comment for the two distinct situations where it returns Unresolved(t)
 // (parse failure vs. by-construction) and for the section 1.3.4 float-text
-// rationale. Symbolic drift between this package's phase 2 and the worker's
-// phase 3 is exactly what sharing the one definition in internal/openjd/expr
-// prevents; see jobParamTypes' doc comment just above for the fuller
-// argument.
+// rationale. Sharing the one definition in internal/openjd/expr keeps this
+// package's phase 2 and the worker's phase 3 from drifting apart; see
+// jobParamTypes.
 //
 // PathPOSIX is hardcoded here rather than threading a PathFormat from the
 // caller. That is harmless today -- nothing calls symbolsFor with a non-
@@ -221,9 +207,9 @@ func taskParamType(declared TaskParamType) expr.Type {
 // script the caller identifies (env.Script.EmbeddedFiles) -- they are
 // DIFFERENT sources, unlike DeclaredSymbols' scope-blind stepSymbols, which
 // binds both families from a step's script alone because it has no separate
-// environment context to draw on. Conflating the two here previously bound
+// environment context to draw on. Conflating the two would bind
 // Env.File.<name> from a step's task-script files rather than the
-// environment's own -- fixed by requiring the caller to pass the right slice.
+// environment's own, so the caller must pass the right slice.
 func bindEmbeddedFileSymbols(files []EmbeddedFile, prefix string, syms expr.MapSymbols) {
 	for _, f := range files {
 		if f.Name == "" {
@@ -321,20 +307,18 @@ func checkHostOnlyFunctions(e *expr.Expression, scope Scope, ptr string) Validat
 // scope where the state it would read does not exist.
 //
 // Every Eval call runs under [templateBudget.evalOptions] -- the section
-// 1.3.9/1.3.10 limits (expr.WithMemoryLimit, expr.WithOperationLimit) plus H1's
-// deadline -- taken from b rather than from a parameter, deliberately tighter
-// than expr.Eval's own execution-time defaults, because this function runs at
-// TEMPLATE VALIDATION time, reachable synchronously from POST /api/v1/jobs once
-// the EXPR extension is registered. This used to be an `opts ...expr.Option`
-// tail every call site hand-wrote from the very budget already being passed;
-// see [templateBudget.evalOptions] for why a variadic tail was the wrong shape
-// for it.
+// 1.3.9/1.3.10 limits (expr.WithMemoryLimit, expr.WithOperationLimit) plus the
+// submission deadline -- taken from b rather than from a parameter,
+// deliberately tighter than expr.Eval's own execution-time defaults, because
+// this function runs at TEMPLATE VALIDATION time, reachable synchronously from
+// POST /api/v1/jobs. See [templateBudget.evalOptions] for why the options are
+// not a variadic parameter.
 //
 // b is the walk's [templateBudget], and this function needs it for TWO reasons.
 // The first is those limits. The second is to divert a wall-clock deadline
 // breach away from the ValidationErrors it returns and onto the budget, where it
 // stops the rest of the walk and reaches [ValidateWithBudget] as an error -- see
-// [templateBudget.recordDeadline] for why that distinction is not cosmetic. It
+// [templateBudget.recordDeadline] for why that distinction matters. It
 // may be nil -- direct unit-test callers pass nil -- in which case nothing is
 // diverted and the DEFAULT submission limits apply; no committed test's
 // expression does enough real work to notice the difference between those and
@@ -398,10 +382,10 @@ func checkFormatString(
 //
 // It MUTATES syms. That is the whole mechanism: section 3.6 says "Later
 // bindings can reference names from earlier bindings in the same let block",
-// and because E2's symbol table holds VALUES rather than types, inserting the
+// and because the symbol table holds VALUES rather than types, inserting the
 // evaluated result gives section 3.6.1's "the type of the binding is the
 // natural result type of the expression" and phase-2 concreteness at once,
-// through the same code path E2 already uses for every other position.
+// through the same code path every other position uses.
 //
 // A failed binding is NOT inserted, so a later position reports an unknown name
 // rather than a second copy of the same fault. Evaluation continues to the next
@@ -435,33 +419,26 @@ func checkFormatString(
 // The guard lives here rather than as a short-circuit in ValidateWithOptions
 // because this function is the only place the cost is actually incurred, so
 // bounding it here is independent of upstream ordering and of EnforceLimits --
-// and it also covers the unit tests that call this leaf directly.
+// and it also covers the unit tests that call this leaf directly. (Phase 2,
+// checkExpressionsAtSubmit in submit.go, does not bypass
+// validateLetElementCounts: prepareTemplate runs ValidateWithOptions first and
+// returns on any error, so an over-cap block aborts before phase 2.)
 //
-// An earlier revision of this comment justified the placement by claiming
-// phase 2 (checkExpressionsAtSubmit, submit.go) reaches checkTemplateExpressions
-// without going through validateLetElementCounts. That is FALSE and was
-// retracted: prepareTemplate runs ValidateWithOptions first and returns on any
-// error, and validateLetElementCounts runs unconditionally within it, so an
-// over-cap block aborts before phase 2 is ever reached. A short-circuit
-// upstream would have bounded both production phases too. The placement is
-// still the better one, for the independence reasons above -- not for a
-// reachability reason that does not exist.
-//
-// let is the first construct in this checker that RETAINS values across
+// let is the only construct in this checker that RETAINS values across
 // evaluations. Every other position goes through checkFormatString, which
-// discards each result -- which is why a per-Eval budget
-// ([ExprLimits.evalOptions]) was sufficient there. Here, syms[name] = v accumulates one live value
-// per binding in a table no per-Eval limit measures: each binding may
-// legitimately allocate just under defaultSubmissionMemoryBytes and KEEP it, so N
-// bindings cost N budgets of live memory with nothing counting the sum.
-// Measured through the real Parse + ValidateWithOptions path before this
-// guard existed: 2,000 bindings of `a<i> = "x" * 900000` -- a 57 KB template
-// body -- allocated 1,725 MB in 335 ms and still returned the same 2 errors,
-// because sqi had already declared the block invalid and then evaluated every
-// binding anyway. At the 4 MiB request-body cap (internal/api/jobs.go) that
+// discards each result, so a per-Eval budget ([ExprLimits.evalOptions]) is
+// sufficient there. Here, syms[name] = v accumulates one live value per
+// binding in a table no per-Eval limit measures: each binding may
+// legitimately allocate just under defaultSubmissionMemoryBytes and KEEP it,
+// so N bindings cost N budgets of live memory with nothing counting the sum.
+// Measured through the real Parse + ValidateWithOptions path without this
+// guard: 2,000 bindings of `a<i> = "x" * 900000` -- a 57 KB template body --
+// allocated 1,725 MB in 335 ms and still returned the same 2 errors, because
+// the block had already been declared invalid and every binding was evaluated
+// anyway. At the 4 MiB request-body cap (internal/api/jobs.go) that
 // extrapolates to ~190,000 bindings and an out-of-memory kill. A
-// template-wide OPERATION budget (sub-project E4) would not catch it: the
-// construction spends almost no operations.
+// template-wide OPERATION budget would not catch it: the construction spends
+// almost no operations.
 //
 // Truncating rather than abandoning the whole walk is also the friendlier
 // answer: a template with 51 bindings still gets every OTHER expression error
@@ -471,23 +448,16 @@ func checkFormatString(
 // Every Eval call runs under [templateBudget.evalOptions], exactly as
 // [checkFormatString]'s do: that is where section 1.3.9/1.3.10's limits come
 // from, and taking them from the budget rather than from the caller is what
-// keeps the two evaluators in this file impossible to configure differently.
-// The options used to arrive as an `opts ...expr.Option` tail, which itself
-// replaced building them internally -- the tail existed so sub-project E4, which
-// owns the specification's CONFIGURABLE limits, had ONE place to thread an
-// operator-supplied budget rather than two to remember: reaching every
-// format-string position through checkFormatString would otherwise have silently
-// missed every let binding, the one position where budgets ACCUMULATE. Reading
-// them off the budget both evaluators already receive keeps that single point
-// and removes the tail a call site could forget; see
-// [templateBudget.evalOptions].
+// keeps the two evaluators in this file impossible to configure differently:
+// operator-configured limits reach every let binding, the one position where
+// budgets ACCUMULATE, through the same single point as every format string.
+// See [templateBudget.evalOptions].
 //
 // b is the walk's [templateBudget], nil-able, and carries a wall-clock deadline
 // breach out of this function exactly as it does out of [checkFormatString] --
-// with one difference that makes it matter more here. This function's failure
-// path APPENDS AND CONTINUES on purpose, so that one malformed binding does not
-// hide the rest of the block; for a deadline that is precisely wrong, and the
-// loop returns instead. See [templateBudget.recordDeadline].
+// with one difference. This function's failure path APPENDS AND CONTINUES on
+// purpose, so that one malformed binding does not hide the rest of the block;
+// for a deadline that is wrong, and the loop returns instead. See [templateBudget.recordDeadline].
 func checkLetBindings(
 	b *templateBudget, lets []string, base string, scope Scope, syms expr.MapSymbols,
 ) ValidationErrors {
@@ -552,8 +522,7 @@ func checkLetBindings(
 // (10,000,000 operations / 100,000,000 bytes).
 //
 // Why tighter: checkTemplateExpressions runs at TEMPLATE VALIDATION time --
-// reachable synchronously from POST /api/v1/jobs the moment the EXPR
-// extension is registered (sub-project H) -- not at task execution time on a
+// reachable synchronously from POST /api/v1/jobs -- not at task execution time on a
 // worker, where a multi-second evaluation is merely one task among many. The
 // specification's own operation-count budget does not bound WALL CLOCK: rule
 // 3 prices string work at ceil(len/256), so a single 10,000-character
@@ -563,8 +532,8 @@ func checkLetBindings(
 // expensive. Confirmed directly: EXPR/job_templates/expr1.3.10--string-
 // operation-limit-exceeded.invalid.yaml (a 117,700-iteration comprehension,
 // each iteration building and upper-casing a 10,000-character string) took
-// 15.6s to evaluate at the default limits -- correctly rejected, but
-// catastrophically slow for a synchronous request path.
+// 15.6s to evaluate at the default limits -- correctly rejected, but far too
+// slow for a synchronous request path.
 //
 // Why THESE numbers, not tighter or looser -- both picked to avoid the
 // opposite failure, a false rejection of a legitimate template that would
@@ -581,8 +550,8 @@ func checkLetBindings(
 //     construct sections 1.3.9/1.3.10 exist to bound, not something a
 //     legitimate template needs at a submission-time position (a job name, a
 //     host requirement value, a command).
-//   - Phase 2 (checkExpressionsAtSubmit, submit.go, sub-project E2's Task 10,
-//     called after job parameters are bound) re-runs the SAME walk with
+//   - Phase 2 (checkExpressionsAtSubmit, submit.go, called after job
+//     parameters are bound) re-runs the SAME walk with
 //     Param./RawParam. symbols now bound to their concrete submitted values --
 //     so referencing one is NO LONGER free: a large submitted value costs
 //     real bytes and real per-character operations, same as a literal would.
@@ -606,15 +575,14 @@ func checkLetBindings(
 //     the tens-to-low-hundreds of operations -- while bounding the
 //     pathological case above to ~119 loop iterations before it trips
 //     (10,000 / 84 operations-per-iteration), well under 20ms measured
-//     directly (see the report for Task 9's timings).
+//     directly.
 //   - defaultSubmissionMemoryBytes (1,000,000 bytes = 1MB) is similarly generous for
 //     real template text (a job name, command, or args entry is realistically
 //     well under a few KB) while bounding any single large literal
 //     allocation far below limits.go's fixed, non-configurable maxStringBytes
 //     floor (10,000,000 bytes) -- so a large SINGLE-STRING literal is caught
 //     by THIS limit first, before it can allocate anywhere close to that
-//     floor. Note the scope of that claim, which E4d Task 1's review had to
-//     narrow: maxStringBytes bounds one PRODUCED STRING, while this limit
+//     floor. Note the scope of that claim: maxStringBytes bounds one PRODUCED STRING, while this limit
 //     bounds the SUM of live values and recurses into containers, so a LIST
 //     of individually-legal strings can hold far more than maxStringBytes
 //     with no fixed guard firing -- this limit is the only thing bounding it.
@@ -628,7 +596,8 @@ func checkLetBindings(
 // (phase 2) was already relying on computation heavy enough to be a
 // submission-time liability; rejecting it here is the intended outcome, not
 // a false positive.
-// SINCE E4d THESE TWO ARE DEFAULTS, NOT THE LIMIT ITSELF. The value actually
+//
+// THESE TWO ARE DEFAULTS, NOT THE LIMIT ITSELF. The value actually
 // enforced comes from [ExprLimits] (exprlimits.go), threaded in from
 // internal/config through [ValidateOptions.ExprLimits] /
 // [SubmitterOptions.ExprLimits] and carried to every consumption point by the
@@ -637,8 +606,8 @@ func checkLetBindings(
 // were sized around these numbers, why an operator may raise EITHER by only
 // one order of magnitude. Neither ceiling is derived from a fixed guard
 // firing first; both are deliberate policy limits. See
-// [ExprLimits.SubmissionMemoryBytes] for the measurement that removed the
-// derivation this comment used to offer for the memory ceiling.
+// [ExprLimits.SubmissionMemoryBytes] for the measurement behind the memory
+// ceiling.
 const (
 	defaultSubmissionOperations  int64 = 10_000
 	defaultSubmissionMemoryBytes int64 = 1_000_000
@@ -648,38 +617,30 @@ const (
 
 // defaultTemplatePositions and defaultTemplateRetainedBytes are the two
 // dimensions of the per-CALL budget checkTemplateExpressions enforces across
-// its own walk -- design spec §3, §3.1 ("EXPR E4c -- The template-wide
-// cumulative budget"). Both are cumulative across the WHOLE walk, not
-// per-position: defaultSubmissionOperations/defaultSubmissionMemoryBytes (above) bound
-// what ONE expression may cost; these two bound what the ENTIRE template may
-// cost, closing the gap three separate sub-projects (E2, E3, E4b) each found
-// independently and each fixed only locally -- see the design spec's §1.1
-// table.
+// its own walk. Both are cumulative across the WHOLE walk, not per-position:
+// defaultSubmissionOperations/defaultSubmissionMemoryBytes (above) bound what
+// ONE expression may cost; these two bound what the ENTIRE template may cost.
+// Without them, a template could stay inside every per-expression bound and
+// still cost unbounded work in the scope checker, in let: blocks and in the
+// resolver.
 //
 // A THIRD dimension, operations, is deliberately NOT tracked here. With a
 // position cap of defaultTemplatePositions and the existing per-position
 // operation cap (defaultSubmissionOperations, above), the cumulative operation
 // ceiling is bounded at defaultTemplatePositions * defaultSubmissionOperations
 // (10,000 x 10,000 = 10^8) -- no operation counter needs to cross into
-// internal/openjd. State this plainly rather than implying a precise
-// operation accounting that does not exist: the derived ceiling is only as
-// tight as defaultTemplatePositions is chosen, and it is an upper BOUND, not
-// a measurement -- nothing here counts a single operation.
+// internal/openjd. The derived ceiling is only as tight as
+// defaultTemplatePositions is chosen, and it is an upper BOUND, not a
+// measurement -- nothing here counts a single operation.
 //
-// THAT DERIVATION WAS FALSE BY A FACTOR OF A THOUSAND until fix round 2
-// (whole-branch review, Critical 1), and the correction lives in
-// internal/openjd/expr, not here. Every Cost.ResultElements/ResultBytes
-// charge is levied by chargeResult AFTER the produced value exists, so
-// "[0] * 10000000" materialized ten million elements (1.1 GB, 108 ms) and
-// only THEN reported 10,000,001 operations against a limit of 10,000. The
-// per-position cap did not bound the work; limits.go's fixed maxElements
-// floor did, three orders of magnitude higher, putting the real ceiling at
-// defaultTemplatePositions x maxElements ~= 10^11. meter.reserve now refuses
-// such an operation on its ARITHMETIC count before allocating, which is what
-// makes the multiplication above an actual bound rather than a hope. An
-// EARLIER revision of this comment claimed the ceiling held "BY
-// CONSTRUCTION" while resting on that same false premise; the construction
-// it named is only now the construction that exists.
+// That derivation holds only because internal/openjd/expr refuses a bulk
+// operation on its ARITHMETIC count before allocating (meter.reserve). A
+// Cost.ResultElements/ResultBytes charge levied by chargeResult AFTER the
+// produced value exists does not bound the work: "[0] * 10000000" would
+// materialize ten million elements (1.1 GB, 108 ms) and only THEN report
+// 10,000,001 operations against a limit of 10,000, leaving limits.go's fixed
+// maxElements floor as the real bound -- a ceiling of defaultTemplatePositions
+// x maxElements ~= 10^11, three orders of magnitude higher.
 //
 // WHAT THE OPERATION CEILING STILL DOES NOT BOUND is WALL TIME, because an
 // operation's cost is not uniform: section 1.3.10 rule 3 prices 256 bytes of
@@ -689,9 +650,8 @@ const (
 // (re_findall) 3,519 operations for ~50 ms and a case mapping (.title())
 // 7,034 for ~57 ms -- four orders of magnitude more wall time per
 // operation than scalar arithmetic. See the measured figures on
-// defaultTemplatePositions below. Bounding THAT needs a template-wide
-// operation budget sized in wall time, which is sub-project E4d's
-// operator-configuration question, not this constant's.
+// defaultTemplatePositions below. Wall time is bounded separately, by the
+// submission deadline ([ExprLimits.Deadline]).
 const (
 	// defaultTemplatePositions caps the number of format-string/let-binding
 	// positions ONE call to checkTemplateExpressions may check -- one unit
@@ -701,34 +661,28 @@ const (
 	// not the possibly-larger count the template declared).
 	//
 	// 10,000 is chosen the way maxSteps was (validate.go, "WHAT THIS DOES
-	// BOUND"): with a WORKED calculation, not a round guess, and with real
-	// headroom above it -- fix round 1 (post-implementation review) found an
-	// earlier value of 2,000 had a crossover of exactly 20 positions per
-	// step against maxSteps (100), and its own doc comment's illustrative
-	// example ("a handful of let bindings ... a few args") landed on the
-	// ACCEPTED side while a plausible worked example landed on the
-	// REJECTED side -- a comment whose own example straddles the cap is not
-	// a justification.
+	// BOUND"): with a worked calculation, not a round guess, and with real
+	// headroom above it. A value of 2,000 would cross over at exactly 20
+	// positions per step against maxSteps (100), which a plausible worked
+	// example exceeds.
 	//
 	// THE CROSSOVER: defaultTemplatePositions / maxSteps = 100 positions
 	// available per step, on average, before a template is rejected purely
 	// on count. There is no cap on Action.Args, EmbeddedFiles, or
-	// Environment.Variables in this package (checked directly; none
-	// exists), so a real template's per-step position count is not bounded
-	// by any OTHER constant this cap can lean on.
+	// Environment.Variables in this package, so a real template's per-step
+	// position count is not bounded by any OTHER constant this cap can lean
+	// on.
 	//
-	// THAT RATIO ASSUMES BOTH TERMS ARE IN FORCE, AND ONLY ONE ALWAYS IS --
-	// stated explicitly by fix round 2 (whole-branch review, MINOR 3),
-	// because E4d will size an operator knob from it. THIS budget is
-	// always-on: it is a resource-exhaustion guard, reached whether or not
-	// opts.EnforceLimits is set. maxSteps is NOT -- it sits inside
-	// validateLimits, behind EnforceLimits (validate.go). Under the
-	// operator opt-out (enforce_limits: false) the denominator simply
-	// vanishes: step count is unbounded, "positions per step" stops meaning
-	// anything, and the only thing still bounding the walk is this cap's own
-	// absolute value. Not a defect -- the cap holds either way, which is the
-	// property that matters -- but the JUSTIFICATION above is conditional in
-	// a way the number it justifies is not.
+	// THAT RATIO ASSUMES BOTH TERMS ARE IN FORCE, AND ONLY ONE ALWAYS IS.
+	// THIS budget is always-on: it is a resource-exhaustion guard, reached
+	// whether or not opts.EnforceLimits is set. maxSteps is NOT -- it sits
+	// inside validateLimits, behind EnforceLimits (validate.go). Under the
+	// operator opt-out (enforce_limits: false) the denominator vanishes:
+	// step count is unbounded, "positions per step" stops meaning anything,
+	// and the only thing still bounding the walk is this cap's own absolute
+	// value. The cap holds either way, but the justification above is
+	// conditional in a way the number it justifies is not -- keep that in
+	// mind when sizing the operator setting from it.
 	//
 	// THE WORKED CALCULATION -- one step, generous but plausible for a real,
 	// hand-authored render-pipeline step (not maximal against every
@@ -754,47 +708,36 @@ const (
 	// 10,000 gives that calculation ~1.4x headroom on its own, ~4.8x
 	// headroom over a MORE MODEST real-world shape (a command, 15 args, 3
 	// environment variables and 2 embedded files per step, no let/host-
-	// requirements/range use at all -- 21 x 100 = 2,100 -- the exact shape
-	// fix round 1's review used to show 2,000 was too tight), and stays at
+	// requirements/range use at all -- 21 x 100 = 2,100), and stays at
 	// 61% of the hard ceiling this cap exists to stay under: a SINGLE
 	// step's task-parameter range positions can reach 16,384 by
 	// construction at the existing per-field caps
-	// (maxTaskParameterDefinitions x maxTaskParamValues, EXPR sub-project
-	// E4b's own finding, design spec §1.1) -- a construction that sits
-	// WITHIN every structural cap Task 1/2 of this sub-project added
-	// (parameterSpaceOverCaps, maxSteps), so this budget is the only thing
-	// that still catches it. 10,000 still catches it, in the low tens of
-	// thousands of positions rather than at 16,384 -- see
-	// TestCheckTemplateExpressions_TemplateWideBudget_E4bConstruction.
+	// (maxTaskParameterDefinitions x maxTaskParamValues) -- a construction
+	// that sits WITHIN every structural cap (parameterSpaceOverCaps,
+	// maxSteps), so this budget is the only thing that still catches it.
+	// 10,000 still catches it, in the low tens of thousands of positions
+	// rather than at 16,384 -- see
+	// TestCheckTemplateExpressions_TemplateWideBudget_CatchesWhatThePreWalkGuardAdmits.
 	//
-	// WHAT THIS STILL EXCLUDES, stated plainly rather than left implicit: a
-	// 100-step template that uses EVERY category above at generous levels
-	// in EVERY step simultaneously (the full ~70-position shape, not a
-	// realistic subset of it, repeated 100 times with no step lighter than
-	// another) sits close to this cap's floor and a template meaningfully
+	// WHAT THIS STILL EXCLUDES: a 100-step template that uses EVERY
+	// category above at generous levels in EVERY step simultaneously (the
+	// full ~70-position shape, repeated 100 times with no step lighter than
+	// another) sits close to this cap's floor, and a template meaningfully
 	// past that shape -- more like TWO of everything above, or maximal
 	// per-field host requirements (maxHostRequirements = 50) used in most
-	// steps -- is still rejected. That is a real, standing tradeoff this
-	// wave accepts on purpose: per the reviewer, "a false rejection post-H
-	// is worse than a bound E4d can tighten later," and E4d (operator
-	// configuration of these limits, "Not in this wave") is where that
-	// tradeoff gets a knob rather than a recompiled constant.
+	// steps -- is rejected. That tradeoff is accepted on purpose: a false
+	// rejection is worse than a bound the operator can tighten, and the
+	// operator setting ([ExprLimits.TemplatePositions]) is where it gets a
+	// knob rather than a recompiled constant.
 	//
-	// THE COST TRADEOFF THIS RAISE ACCEPTS, restated in fix round 2
-	// (whole-branch review, Critical 1) with END-TO-END MEASUREMENTS rather
-	// than the per-expression estimate it carried before. An earlier
-	// revision claimed "10,000 x ~6ms =~ 60s ... a categorical improvement
-	// over E2's ~9 minutes", extrapolated from `("x" * 900000).upper()`.
-	// Both halves were wrong: that expression is not the worst case, and
-	// the construction the reviewer actually ran -- one step, 10,000 args
-	// entries of `{{ [0] * 10000000 }}` -- cost 9m09s and 2.4 GB of peak
-	// heap, which is E2's own figure to within 2%.
+	// THE COST TRADEOFF THIS ACCEPTS, measured end to end on this
+	// repository's development machine: 10,000 args positions in one step,
+	// timing checkTemplateExpressions alone, scaled x10 from a
+	// 1,000-position run. "unreserved" is the cost when a bulk expansion is
+	// charged only after it is built; "reserved" is the cost now that
+	// internal/openjd/expr reserves it from arithmetic bounds first.
 	//
-	// MEASURED on this repository's development machine: 10,000 args
-	// positions in one step, timing checkTemplateExpressions alone, scaled
-	// x10 from a 1,000-position run.
-	//
-	//	payload                                    before         after
+	//	payload                                    unreserved     reserved
 	//	{{ [1] == range_expr("1-5e6,6e6-9e6") }}   ~6510s        ~80ms
 	//	{{ len(range_expr("1-5e6,6e6-9e6")) }}     ~6450s        ~60ms
 	//	{{ sorted([1] + range_expr("1-1e7")) }}    ~3050s        ~80ms
@@ -811,74 +754,61 @@ const (
 	// payload at 71 ms rather than 57.1, i.e. ~715 s -- treat every figure
 	// here as an order, not a digit.)
 	//
-	// ROW 5 IS NOT THE WORST, and saying it was is how this comment's
-	// headline figure came to be too low a THIRD time. E4d's whole-branch
-	// review measured the new row above it: the same regex, twice, inside a
-	// comprehension, charges 7,048 of the 10,000 permitted operations at 14.6
-	// us each for ~103 ms -- ~1,030 s over 10,000 positions, and ~1,460 s if
-	// a position spends the whole budget at that rate. .title() reaches only
-	// 8.2 us per operation and leaves ~3,000 of them unspent, so it was never
-	// the maximum; it was merely the payload that had been measured. What the
-	// operation budget bounds is COUNT, and the cost per operation varies by
-	// ~17x among these payloads alone.
+	// Row 5 is the worst measured, not a proven worst case: the same regex,
+	// twice, inside a comprehension, charges 7,048 of the 10,000 permitted
+	// operations at 14.6 us each for ~103 ms -- ~1,030 s over 10,000
+	// positions, and ~1,460 s if a position spends the whole budget at that
+	// rate. .title() reaches only 8.2 us per operation and leaves ~3,000 of
+	// them unspent. What the operation budget bounds is COUNT, and the cost
+	// per operation varies by ~17x among these payloads alone.
 	//
-	// ROWS 1-3 ARE THE ONES THAT MOVED LAST, and they are why this table was
-	// wrong TWICE. A range_expr expands to a list, and three separate things
-	// could reach that expansion with nothing in front of them: counting a
+	// Rows 1-3 are range_expr expansions. A range_expr expands to a list,
+	// and three separate things can reach that expansion: counting a
 	// MULTI-sub-range one (rangeExprCount expands to count), comparing
 	// against one on the RIGHT of == (section 1.3.10 charges list equality
 	// against the LEFT operand only, an adjudicated ruling), and COERCING one
-	// to list[int] (a coercion is not a call, so no charge site exists at
-	// all). Each ran to completion first: 645-651 ms and 1.6-2.8 GB per
-	// position, one to two orders of magnitude past whatever this table then
-	// named as the worst case. All are fixed in internal/openjd/expr, which
-	// now bounds every such expansion from arithmetic bounds
-	// (reserveRangeExprExpansion, rangeexpr.go) before performing it.
+	// to list[int] (a coercion is not a call, so it has no charge site of
+	// its own). Unreserved, each runs to completion first: 645-651 ms and
+	// 1.6-2.8 GB per position. internal/openjd/expr bounds every such
+	// expansion from arithmetic bounds (reserveRangeExprExpansion,
+	// rangeexpr.go) before performing it.
 	//
-	// So the BULK-MATERIALIZATION class is gone from every path measured to
+	// So the BULK-MATERIALIZATION class is bounded on every path measured to
 	// reach it -- rows 1 to 4, four to five orders of magnitude each, and
 	// with them the multi-gigabyte heap -- while the WALL-CLOCK worst case
 	// remains in the tens of minutes (~17 measured, ~24 at the budget
-	// ceiling), because it is set by op-cheap, byte-heavy
-	// work over the ~900 KB string defaultSubmissionMemoryBytes allows to be
-	// live. MEASURED, and the two payloads differ -- an EARLIER revision of
-	// this comment gave one figure for both, understating the case mapping by
-	// 2x: re_findall("x", "x"*900000) spends 3,519 of the 10,000 permitted
-	// operations for ~50 ms of CPU, and ("x"*900000).title() spends 7,034 for
-	// ~57 ms (which is the .title() row in the table above: 57.1 ms x 10,000
-	// positions = ~571 s -- not the worst row, see above).
-	// ("x"*900000).upper() is charged the IDENTICAL 7,034
-	// for ~6 ms, which is the sharpest statement of why operations do not
-	// bound time. Every per-Eval budget is respected throughout.
+	// ceiling), because it is set by op-cheap, byte-heavy work over the
+	// ~900 KB string defaultSubmissionMemoryBytes allows to be live. The two
+	// byte-heavy payloads differ: re_findall("x", "x"*900000) spends 3,519
+	// of the 10,000 permitted operations for ~50 ms of CPU, and
+	// ("x"*900000).title() spends 7,034 for ~57 ms (the .title() row above:
+	// 57.1 ms x 10,000 positions = ~571 s). ("x"*900000).upper() is charged
+	// the IDENTICAL 7,034 for ~6 ms, which is the sharpest statement of why
+	// operations do not bound time. Every per-Eval budget is respected
+	// throughout.
 	//
-	// "EVERY PATH MEASURED TO REACH IT" is deliberate wording. Three times now
-	// a stronger claim here was falsified by a construction nobody had
-	// measured, so the enumeration lives in tests that can be extended and
-	// re-run -- internal/openjd/expr/reservework_internal_test.go -- rather
-	// than in an assertion in this comment.
+	// "EVERY PATH MEASURED TO REACH IT" is deliberate wording: the
+	// enumeration lives in tests that can be extended and re-run --
+	// internal/openjd/expr/reservework_internal_test.go -- rather than in an
+	// assertion in this comment. Treat any worst case stated here as a floor.
 	//
-	// Recorded plainly rather than smoothed over: this cap is NOT a
-	// wall-time bound, and no value of it can be one while an operation's
-	// cost varies by four orders of magnitude between scalar arithmetic and
-	// a regex over a megabyte. Bounding wall time needs a template-wide
-	// budget denominated in something closer to time, which is E4d's
-	// operator-configuration question. The choice standing in the meantime
-	// is fix round 1's: avoiding a false rejection of a legitimate template
-	// matters more than tightening this particular worst case by lowering
-	// the cap.
+	// This cap is NOT a wall-time bound, and no value of it can be one while
+	// an operation's cost varies by four orders of magnitude between scalar
+	// arithmetic and a regex over a megabyte; the submission deadline
+	// ([ExprLimits.Deadline]) bounds time. Avoiding a false rejection of a
+	// legitimate template matters more than tightening this particular worst
+	// case by lowering the cap.
 	//
 	// THE WORKER'S CAP IS TIED TO THIS ONE, and the tie is asserted rather
-	// than assumed. internal/worker/fmtres' MaxAssignmentPositions bounds the
-	// same quantity for phase 3, on the worker, per assignment -- and an
+	// than assumed. internal/worker/fmtres' DefaultAssignmentPositions bounds
+	// the same quantity for phase 3, on the worker, per assignment -- and an
 	// assignment's positions are a SUBSET of its template's, so a worker cap
 	// BELOW this value is reachable by a template this package ACCEPTED, and
 	// fails every task in the job after submission instead of failing the one
-	// request that could have reported it. That was the state until fix round
-	// 2 (whole-branch review, IMPORTANT 1): 10,000 here, 5,000 there, no
-	// stated relation and no test. Lowering THIS constant is not the way to
-	// restore the relation -- see the paragraph above on why it was raised.
+	// request that could have reported it. Lowering THIS constant is not the
+	// way to keep the relation -- see above on why it is 10,000.
 	// TestTemplateBudget_WorkerCapIsNotTighter (exprcheck_budget_test.go)
-	// fails the build if the two ever drift apart again.
+	// fails the build if the two drift apart.
 	defaultTemplatePositions int64 = 10_000
 
 	// defaultTemplateRetainedBytes caps the cumulative section 1.3.9 size
@@ -891,34 +821,30 @@ const (
 	// for where each of the three let: positions (step template, step
 	// script, environment script) is charged.
 	//
-	// 10,000,000 (10 MB) is chosen to MATCH workerLetRetainedLimit
-	// (internal/worker/fmtres/exprsyms.go), not by coincidence: design spec
-	// §4 ("The asymmetry this wave should also close") requires the server
-	// and the worker to agree that retained let bytes are bounded, and using
-	// the identical figure is what makes that agreement legible rather than
+	// 10,000,000 (10 MB) is chosen to MATCH defaultLetRetainedBytes
+	// (internal/worker/fmtres/exprsyms.go), not by coincidence: the server
+	// and the worker must agree that retained let bytes are bounded, and
+	// using the identical figure makes that agreement legible rather than
 	// two independently-tuned numbers that happen to land in the same
-	// ballpark. It also SUBSUMES the server's own pre-existing gap:
-	// checkLetBindings' 50-binding cap (maxLetBindings) bounds one BLOCK's
-	// count but nothing bounded the BYTES those 50 could retain -- and
-	// because this counter is cumulative rather than reset per table, many
-	// blocks that are each individually compliant but cumulatively large
-	// also trip it, which a per-table-only bound (the worker's own shape)
-	// would not catch. See this task's report for the construction that
-	// proves that.
+	// ballpark. It also covers what checkLetBindings' 50-binding cap
+	// (maxLetBindings) does not: that cap bounds one BLOCK's count but not
+	// the BYTES those 50 can retain -- and because this counter is
+	// cumulative rather than reset per table, many blocks that are each
+	// individually compliant but cumulatively large also trip it, which a
+	// per-table-only bound (the worker's own shape) would not catch.
 	//
-	// NOT identical to a dedicated per-table 10 MB bound, corrected by fix
-	// round 1 (post-implementation review): the charge is applied ONCE per
-	// let: block, AFTER checkLetBindings finishes evaluating it (the
-	// before/after-delta or stepLetSymbols-diff technique the call sites
-	// use), not per binding WITHIN it. A single block can therefore
-	// transiently retain up to maxLetBindings x defaultSubmissionMemoryBytes =
-	// 50 x 1,000,000 = 50,000,000 bytes (50 MB) before this counter ever
-	// sees it and rejects -- the true single-block ceiling this budget
-	// enforces, not 10 MB. It IS still bounded, and the template as a whole
-	// is still rejected the moment that block's full charge lands; it is
-	// bounded by a larger number than a mid-block check (the worker's own
-	// shape, which stops WITHIN a block once the running total crosses its
-	// limit) would allow.
+	// NOT identical to a dedicated per-table 10 MB bound: the charge is
+	// applied ONCE per let: block, AFTER checkLetBindings finishes
+	// evaluating it (the before/after-delta or stepLetSymbols-diff technique
+	// the call sites use), not per binding WITHIN it. A single block can
+	// therefore transiently retain up to maxLetBindings x
+	// defaultSubmissionMemoryBytes = 50 x 1,000,000 = 50,000,000 bytes
+	// (50 MB) before this counter sees it and rejects -- the true
+	// single-block ceiling this budget enforces, not 10 MB. It IS still
+	// bounded, and the template as a whole is rejected the moment that
+	// block's full charge lands; it is bounded by a larger number than a
+	// mid-block check (the worker's own shape, which stops WITHIN a block
+	// once the running total crosses its limit) would allow.
 	//
 	// This counter also measures CUMULATIVE ALLOCATION across the walk, not
 	// PEAK LIVE RETENTION at any one instant -- intentional, and simpler to
@@ -926,8 +852,8 @@ const (
 	// reclaim an earlier block's now-unreferenced values: a template whose
 	// blocks never hold more than a few MB live at once but which declares
 	// many such blocks in sequence is still charged for their sum, and is
-	// still rejected once that sum crosses the limit, exactly as a template
-	// that held all of it live simultaneously would be.
+	// rejected once that sum crosses the limit, exactly as a template that
+	// held all of it live simultaneously would be.
 	defaultTemplateRetainedBytes int64 = 10_000_000
 )
 
@@ -936,7 +862,7 @@ const (
 // FRESH templateBudget at the top of every call -- see that function -- so
 // phase 1 (ValidateWithOptions, params == nil) and phase 2
 // (checkExpressionsAtSubmit, boundParams concrete) each get their own
-// allowance, per design spec §3.1: they are separate calls with separate
+// allowance: they are separate calls with separate
 // symbol tables, and a budget shared across them would make phase 2's
 // verdict depend on what phase 1 already spent, with no way for the
 // submitter to see why.
@@ -946,13 +872,13 @@ const (
 // further work on ok() or on a charge call's own return value so the walk
 // stops doing real work (parsing, evaluating) once the budget is spent, not
 // merely stops reporting once it is spent.
-// SINCE E4d the budget also CARRIES the four operator-configured limits
+//
+// The budget also CARRIES the four operator-configured limits
 // ([ExprLimits], exprlimits.go) for the walk it belongs to. It is the natural
 // carrier because it is already threaded to every point that needs one: the
 // two per-walk dimensions are its own counters, and `b` is in scope at every
-// call site that used to call the package-level submissionLimits() -- see
-// [ExprLimits.evalOptions], the method that replaced it, and
-// [templateBudget.evalOptions], which is how every position in the walk now
+// evaluation site -- see [ExprLimits.evalOptions] and
+// [templateBudget.evalOptions], which is how every position in the walk
 // reaches it. limits is normalized by [newTemplateBudget] and is never the zero
 // value on a live budget.
 type templateBudget struct {
@@ -972,9 +898,9 @@ type templateBudget struct {
 	//
 	// It is safe to SHARE because expr treats an option slice as read-only: the
 	// options are applied to a fresh evalCtx per evaluation and the slice is
-	// never appended to. Before this was cached, ~18 per-position call sites
-	// each built their own slice plus two or three closures, several of them
-	// inside per-entry loops.
+	// never appended to. Caching it saves ~18 per-position call sites from
+	// each building their own slice plus two or three closures, several of
+	// them inside per-entry loops.
 	evalOpts []expr.Option
 	err      *ValidationError
 	// deadlineErr holds the FIRST [expr.ErrDeadlineExceeded] any evaluation in
@@ -985,28 +911,23 @@ type templateBudget struct {
 
 // newTemplateBudget returns a fresh budget bounded by lim, with every unset
 // field of lim replaced by its default ([ExprLimits.orDefaults]) -- so
-// newTemplateBudget(ExprLimits{}) is exactly the allowance this package
-// enforced before E4d made the four numbers configurable.
+// newTemplateBudget(ExprLimits{}) is exactly the default allowance.
 func newTemplateBudget(lim ExprLimits) *templateBudget {
 	lim = lim.orDefaults()
 	return &templateBudget{limits: lim, evalOpts: lim.evalOptions()}
 }
 
 // templateBudgetOrFresh returns budget[0] when the caller supplied one
-// (EXPR sub-project E4c's Task 4: a shared budget threaded in from outside,
-// e.g. submit.go's ONE phase-2 budget spanning both checkTemplateExpressions
-// and every step's ResolveParameterSpaceParams call for the same submission),
-// or a brand-new [templateBudget] otherwise -- the exact allowance
-// checkTemplateExpressions has always allocated for itself.
+// (a shared budget threaded in from outside, e.g. submit.go's ONE phase-2
+// budget spanning both checkTemplateExpressions and every step's
+// ResolveParameterSpaceParams call for the same submission), or a brand-new
+// [templateBudget] otherwise -- the allowance checkTemplateExpressions
+// allocates for itself.
 //
-// This is the mechanism that keeps every existing call site (validate.go's
-// checkTemplateExpressions(t, nil), every direct unit-test call in this
-// package, and every pre-Task-4 caller of [ResolveParameterSpaceParams])
-// compiling and behaving byte for byte unchanged: a trailing variadic
-// parameter with zero arguments supplied is indistinguishable, at the call
-// site, from a function that never took the parameter at all. Only Task 4's
-// two NEW callers -- submit.go's prepareTemplate/Submit -- ever pass a
-// non-nil budget.
+// The trailing variadic parameter lets callers that have no budget to share
+// (validate.go's checkTemplateExpressions(t, nil), every direct unit-test
+// call in this package, and direct callers of [ResolveParameterSpaceParams])
+// omit it. Only submit.go's prepareTemplate/Submit pass a non-nil budget.
 //
 // budget[0] == nil (an explicit nil passed where a *templateBudget was
 // expected) is treated the same as "no budget supplied": a nil budget must
@@ -1014,14 +935,14 @@ func newTemplateBudget(lim ExprLimits) *templateBudget {
 // through the pointer unconditionally.
 //
 // The FRESH budget it manufactures carries DEFAULT limits, not configured
-// ones: this function has no access to operator configuration, and by E4d's
-// design the budget is the only thing that carries it. A caller that wants
+// ones: this function has no access to operator configuration, and the budget
+// is the only thing that carries it. A caller that wants
 // configured limits must therefore supply a budget -- which every production
 // path does (validate.go's ValidateWithOptions and submit.go's
 // prepareTemplate both build one from their own options). The remaining
 // no-budget callers are this package's unit tests and any direct caller of
 // [ResolveParameterSpaceParams] outside the submit pipeline, for whom the
-// pre-E4d defaults are exactly the right answer.
+// defaults are the right answer.
 func templateBudgetOrFresh(budget []*templateBudget) *templateBudget {
 	if len(budget) > 0 && budget[0] != nil {
 		return budget[0]
@@ -1035,14 +956,13 @@ func templateBudgetOrFresh(budget []*templateBudget) *templateBudget {
 // A nil budget is ok. Only this package's unit tests pass one (the leaf
 // checkers take a *templateBudget that production always supplies and a direct
 // caller may leave nil -- see [checkFormatString]), and a test that supplies no
-// budget is asking for the unbounded pre-H1 behavior it always had.
+// budget gets no template-wide bound and no deadline.
 func (b *templateBudget) ok() bool { return b == nil || (b.err == nil && b.deadlineErr == nil) }
 
 // deadline returns the wall-clock breach this walk recorded, or nil. It is
 // nil-safe so a caller holding an optional budget can ask without a guard.
 //
-// EVERY POINT THAT CAN OBSERVE A BUDGET MUST CONSULT IT, and that is not a
-// style rule. A recorded deadline stops the walk WITHOUT adding a
+// EVERY POINT THAT CAN OBSERVE A BUDGET MUST CONSULT IT. A recorded deadline stops the walk WITHOUT adding a
 // ValidationError, so a caller that only tests len(errs) sees an empty error
 // slice and reads it as "nothing wrong" -- a partial result reported as a
 // complete success. [ValidateWithBudget], [checkExpressionsAtSubmit] and
@@ -1059,11 +979,10 @@ func (b *templateBudget) deadline() error {
 //
 // Reading b.limits directly is the ONE thing a nil-able *templateBudget cannot
 // do, and it is easy to write by accident because every other budget method
-// here is nil-safe. [stepLetSymbols] did exactly that and would have panicked on
-// the nil its two siblings ([checkFormatString], [checkLetBindings]) document as
-// legal -- caught in review, not by a caller, because no production caller
-// passes nil. This exists so the nil contract is uniform across the three
-// rather than uniform-except-one.
+// here is nil-safe: it would panic on the nil that [checkFormatString],
+// [checkLetBindings] and [stepLetSymbols] document as legal, and no
+// production caller passes nil to expose it. This keeps the nil contract
+// uniform across the three.
 func (b *templateBudget) limitsOrDefaults() ExprLimits {
 	if b == nil {
 		return ExprLimits{}.orDefaults()
@@ -1072,28 +991,22 @@ func (b *templateBudget) limitsOrDefaults() ExprLimits {
 }
 
 // evalOptions returns the [expr.Option] tail every evaluation in this walk runs
-// under: the section 1.3.9/1.3.10 limits this budget carries, plus H1's
+// under: the section 1.3.9/1.3.10 limits this budget carries, plus the
 // wall-clock deadline when one is set.
 //
-// THE THREE LEAF CHECKERS CALL THIS INSTEAD OF TAKING AN opts TAIL, and that is
-// the point of it. checkFormatString, checkLetBindings and stepLetSymbols each
-// used to take `opts ...expr.Option` ALONGSIDE the budget those options were
-// derived from, so all ~16 production call sites hand-wrote
-// `b.limits.evalOptions()...`. A variadic tail compiles, lints and tests clean
-// when a caller passes NOTHING -- silently swapping the operator-configured
-// budget for expr.Eval's own much looser package defaults and dropping the
-// deadline with it, since [ExprLimits.Deadline] rides on the same slice. The
-// worker's identical shape (internal/worker/fmtres) closed this trap the same
-// way; the server side kept the tail, and it had already drifted -- one call
-// site passed limitsOrDefaults' options while the other fifteen read b.limits
-// directly, which panics on the nil budget those leaves document as legal.
+// THE THREE LEAF CHECKERS CALL THIS INSTEAD OF TAKING AN opts PARAMETER.
+// checkFormatString, checkLetBindings and stepLetSymbols derive their options
+// from the budget they already receive. A variadic `opts ...expr.Option`
+// alongside the budget would compile, lint and test clean when a caller
+// passed NOTHING -- swapping the operator-configured budget for expr.Eval's
+// own much looser package defaults and dropping the deadline with it, since
+// [ExprLimits.Deadline] rides on the same slice. The worker
+// (internal/worker/fmtres) has the same shape.
 //
 // A nil budget -- legal at all three leaves, and only ever passed by this
 // package's own unit tests -- gets the DEFAULT submission options rather than
 // no options at all, which is the same answer [templateBudget.limitsOrDefaults]
-// gives for the numbers alone. That is tighter than the pre-existing "pass
-// nothing, get expr.Eval's defaults" behavior a direct test caller used to see,
-// and it is what limitsOrDefaults' nil contract already promised.
+// gives for the numbers alone.
 //
 // A non-nil budget returns the slice [newTemplateBudget] cached; see the
 // evalOpts field for why caching and sharing it are safe. The evalOpts == nil
@@ -1110,25 +1023,23 @@ func (b *templateBudget) evalOptions() []expr.Option {
 // recordDeadline reports whether err is a wall-clock deadline breach and, if
 // it is, records it on the budget so the rest of the walk stops.
 //
-// IT IS THE ONE PLACE THE 503/422 DISTINCTION IS DRAWN, and the reason it
-// exists at all. Every other evaluation failure in this checker is turned into
+// IT IS THE ONE PLACE THE 503/422 DISTINCTION IS DRAWN. Every other evaluation failure in this checker is turned into
 // a ValidationError -- a verdict that the template is INVALID, which a caller
 // reports as a 422 and a submitter reads as "retrying is pointless". A deadline
 // is not that: it says this server ran out of time, the same body would
-// validate on an idle machine, and the honest answer is a 503. Converting it to
-// a ValidationError would make acceptance depend on machine load.
+// validate on an idle machine, and the correct answer is a 503. Converting it
+// to a ValidationError would make acceptance depend on machine load.
 //
 // It is also what STOPS the walk. Recording it makes [templateBudget.ok] false,
 // and every caller in this file already gates further work on ok() -- which is
 // why this is the right carrier and a local return at each conversion site
-// would not have been enough. [checkLetBindings] is the case that proves it:
-// its failure path appends and CONTINUES to the next binding, so without a
-// shared carrier a deadline there would keep evaluating the rest of the block,
-// which is the exact opposite of what a backstop is for.
+// would not be enough. [checkLetBindings] is the case that shows it: its
+// failure path appends and CONTINUES to the next binding, so without a shared
+// carrier a deadline there would keep evaluating the rest of the block.
 //
 // The FIRST deadline error wins; later ones cannot say anything new. A nil
-// budget records nothing and reports false, so a direct unit-test caller keeps
-// seeing the error as a ValidationError exactly as it did before H1.
+// budget records nothing and reports false, so a direct unit-test caller sees
+// the error as a ValidationError.
 func (b *templateBudget) recordDeadline(err error) bool {
 	if !errors.Is(err, expr.ErrDeadlineExceeded) {
 		return false
@@ -1148,7 +1059,7 @@ func (b *templateBudget) recordDeadline(err error) bool {
 // represent -- false either because this call itself tripped the budget or
 // because an earlier call (either dimension) already had.
 func (b *templateBudget) chargePositions(n int64, ptr string) bool {
-	// !b.ok() rather than b.err != nil: since H1 the budget also carries a
+	// !b.ok() rather than b.err != nil: the budget also carries a
 	// wall-clock deadline breach, which must stop the walk exactly as an
 	// exhausted dimension does even though it is not a ValidationError.
 	if !b.ok() {
@@ -1220,7 +1131,7 @@ func letPositions(n int) int64 {
 
 // templateExprRetainedBytes is the section 1.3.9 size of every value a
 // symbol table currently holds live, summed -- internal/worker/fmtres's
-// tableRetainedBytes (EXPR sub-project E4a), copied here rather than shared:
+// tableRetainedBytes, copied here rather than shared:
 // internal/openjd cannot depend on internal/worker (see jobParamTypes' doc
 // comment, above, for the established reason internal/openjd/expr's mapping
 // helpers live where they do rather than here) and internal/worker cannot
@@ -1255,26 +1166,19 @@ func templateExprRetainedBytes(syms expr.MapSymbols) int64 {
 // walk to happen: ValidateWithOptions additionally skips this call for a
 // parameter space over parameterSpaceOverCaps' two count caps, a
 // cost guard whose verdict phase 2 does not inherit (see that call site).
-// Until sub-project H2 there was a second gate, on the EXPR registry entry's
-// status: while EXPR was StatusInProgress the template had already been
-// rejected by validateExtensions, and this walk -- whose operation and byte
-// budgets are per expression position -- would only have burned CPU on a
-// verdict it could not change. EXPR is StatusSupported now, so that gate is
-// gone along with the ValidateOptions field that let a caller override it.
 // Calling this function directly, as the unit tests in exprcheck_test.go do,
 // bypasses the cost guard on purpose: it tests the checker, not the decision
 // to invoke it.
 //
 // params is nil for phase 1 (every job-parameter symbol unresolved, called
 // from ValidateWithOptions) and holds concrete values for phase 2 (called
-// from submit.go's checkExpressionsAtSubmit, sub-project E2's Task 10, once
-// job parameters are bound) -- see symbolsFor's own doc comment for what
+// from submit.go's checkExpressionsAtSubmit once job parameters are bound) -- see symbolsFor's own doc comment for what
 // params changes.
 //
 // The walk mirrors validate.go's traversal (ValidateWithOptions ->
 // validateStep -> validateEnvironments/validateParameterSpace/
 // validateHostRequirements -> validateAction/validateScriptRefs) position
-// for position, per the table in this sub-project's task brief:
+// for position:
 //
 //	job name                          ScopeJob                TargetString
 //	host requirement values           ScopeJob + step let     TargetString
@@ -1300,13 +1204,9 @@ func templateExprRetainedBytes(syms expr.MapSymbols) int64 {
 //     and resolve.go targets the identical types at the identical positions.
 //     See checkParameterSpaceExpressions.
 //
-// Host requirement values and task-parameter range entries are two of the
-// three positions that had NO format-string scope validation at all before
-// this task (validate.go's parallel checks are new in the same commit); the
-// third, action timeout, is wired here too but is inert for a real template
-// today -- decodeAction (parse.go) decodes "timeout" as a strict integer, so
-// no format-string body can ever reach this position until that decoder is
-// changed, which is a separate, later gap this task does not close.
+// Action timeout is wired here but is inert for a real template:
+// decodeAction (parse.go) decodes "timeout" as a strict integer, so no
+// format-string body can reach this position unless that decoder changes.
 func checkTemplateExpressions(tmpl *JobTemplate, params map[string]string, budget ...*templateBudget) ValidationErrors {
 	if tmpl == nil || !tmpl.hasExtension("EXPR") {
 		return nil
@@ -1314,10 +1214,9 @@ func checkTemplateExpressions(tmpl *JobTemplate, params map[string]string, budge
 
 	// b is this CALL's budget -- fresh every time UNLESS the caller threads
 	// one in (templateBudgetOrFresh), which is what gives phase 1 and phase 2
-	// their own separate allowance (design spec §3.1; see templateBudget's
-	// own doc comment). ValidateWithOptions (phase 1) never passes one, so it
-	// is unaffected by this parameter's addition -- Task 4 lets
-	// checkExpressionsAtSubmit (phase 2) share this call's budget with the
+	// their own separate allowance (see templateBudget's own doc comment).
+	// ValidateWithOptions (phase 1) never passes one;
+	// checkExpressionsAtSubmit (phase 2) shares this call's budget with the
 	// SAME submission's ResolveParameterSpaceParams calls (resolve.go),
 	// because both walk the SAME parameter-space range positions and
 	// together represent one submission's total re-check cost -- see
@@ -1430,19 +1329,17 @@ func checkStepExpressions(b *templateBudget, tmpl *JobTemplate, s StepTemplate, 
 	// merged in below) while keeping ScopeJob's own fixed/family set exactly
 	// as symbolsFor(..., ScopeJob, ...) built it, so a let name bound by the
 	// step template IS visible here and a task-level symbol is not. Scope and
-	// symbol table are separate things, and conflating them here was the
-	// mistake this function existed to avoid before let: made it worth
-	// restating.
+	// symbol table are separate things.
 	//
-	// KNOWN GAP, pre-existing since sub-project E2, NOT settled by the above.
+	// KNOWN GAP, NOT settled by the above.
 	// ScopeJob's fixed symbols (scopeFixed) are nil, so a bare Job.Name or
 	// Step.Name is currently rejected at both positions -- and per section
 	// 7.3.1 that is WRONG. 7.3.1's symbol table says Step.Name is "Available
 	// within the Step Template scope: stepEnvironments, hostRequirements,
 	// parameterSpace, and script", and Job.Name is "Available in every Format
 	// String in the Job Template, except the name field of the Job Template
-	// itself". Both of these positions are inside that grant. Reproduced at
-	// HEAD, all three verbatim:
+	// itself". Both of these positions are inside that grant. The three
+	// rejections, verbatim:
 	//
 	//	/steps/0/hostRequirements/attributes/0/anyOf/0: col 1: unknown symbol "Step.Name"
 	//	/steps/0/hostRequirements/attributes/0/anyOf/0: col 1: unknown symbol "Job.Name"
@@ -1450,16 +1347,12 @@ func checkStepExpressions(b *templateBudget, tmpl *JobTemplate, s StepTemplate, 
 	//
 	// Section 3.6.2 does NOT authorize that rejection and must not be cited
 	// for it: 3.6.2 governs where LET NAMES are visible and is silent on the
-	// fixed symbols. An earlier revision of this comment read the two as one
-	// rule and certified "a bare Job.Name or Step.Name STAYS ILLEGAL at this
-	// position" as correct; it is not, and the true statement about 3.6.2 did
-	// not make it so.
+	// fixed symbols, so it does not make the rejection correct.
 	//
 	// Deliberately NOT fixed here. Correcting it means either splitting
 	// scopeFixed(ScopeJob) or introducing a distinct scope for these two
 	// positions, which can move conformance scoring and deserves its own
-	// analysis -- see docs/openjd-conformance.md. No fixture covers it today,
-	// which is why it survived E2 and E3 unnoticed.
+	// analysis -- see docs/openjd-conformance.md. No fixture covers it.
 	jobSyms := rangeScopeSymbols(tmpl, stepLet, params)
 
 	if b.ok() && s.ParameterSpace != nil {
@@ -1489,32 +1382,23 @@ func checkStepExpressions(b *templateBudget, tmpl *JobTemplate, s StepTemplate, 
 //
 // This is shared, rather than duplicated, on purpose. It has TWO callers --
 // the checker (checkStepExpressions) and the resolver
-// (ResolveParameterSpaceParams) -- and them building the table differently is
-// precisely the defect EXPR sub-project E4b's whole-branch review found: the
-// checker merged stepLet and the resolver did not, so a step-level
-// let: ["base = 10"] plus range: "{{ [base, base + 1] }}" validated at upload,
-// passed the phase-2 re-check, and then died in expandStepTaskParams with
-// unknown symbol "base" -- a symbol the checker had just certified. One
-// function means the two tables cannot drift again without the compiler
-// noticing.
+// (ResolveParameterSpaceParams) -- and if they built the table differently
+// (the checker merging stepLet and the resolver not), a step-level
+// let: ["base = 10"] plus range: "{{ [base, base + 1] }}" would validate at
+// upload, pass the phase-2 re-check, and then die in expandStepTaskParams
+// with unknown symbol "base" -- a symbol the checker had just certified. One
+// function means the two tables cannot drift apart.
 //
-// b is the walk's [templateBudget]. It used to be that budget's [ExprLimits]
-// alone; it is the whole budget since H1, because checkLetBindings now reports
-// a wall-clock deadline breach THROUGH it rather than as a ValidationError, and
-// a helper handed only the numbers could not carry that back. Both callers
-// already had one in hand.
+// b is the walk's [templateBudget] rather than just its [ExprLimits],
+// because checkLetBindings reports a wall-clock deadline breach THROUGH it
+// rather than as a ValidationError, and a helper handed only the numbers
+// could not carry that back.
 //
-// It is NIL-ABLE, matching [checkFormatString] and [checkLetBindings] -- the two
-// siblings that took the same new parameter in the same change -- so that the
-// three cannot disagree about what a nil budget means. A nil b gives the
-// DEFAULT limits ([templateBudget.evalOptions], which is nil-safe through
-// limitsOrDefaults) and diverts nothing, which is what a direct unit-test caller
-// is asking for. No production caller passes nil; this exists so that one does
-// not have to read three functions to find out that only two of them tolerate
-// it. It is also why this function no longer builds an option tail of its own:
-// it was the one of the three that reached for limitsOrDefaults while the other
-// two read b.limits directly, and that split is what [templateBudget.evalOptions]
-// exists to make unrepeatable.
+// It is NIL-ABLE, matching [checkFormatString] and [checkLetBindings], so
+// that the three cannot disagree about what a nil budget means. A nil b gives
+// the DEFAULT limits ([templateBudget.evalOptions], which is nil-safe through
+// limitsOrDefaults) and diverts nothing, which is what a direct unit-test
+// caller is asking for. No production caller passes nil.
 func stepLetSymbols(
 	b *templateBudget, tmpl *JobTemplate, s *StepTemplate, params map[string]string, base string,
 ) (expr.MapSymbols, ValidationErrors) {
@@ -1548,8 +1432,8 @@ func stepLetSymbols(
 // Section 3.6.2 row 1 changes the TABLE, not the scope: a name the step
 // template's let: bound IS visible here, and a task-level symbol
 // (Task.Param./Task.RawParam./Task.File.) still is not, because ScopeJob's
-// families never included them. See checkStepExpressions' own comment for the
-// pre-existing Job.Name/Step.Name gap this does not close.
+// families never include them. See checkStepExpressions' own comment for the
+// Job.Name/Step.Name gap this does not close.
 //
 // Shared with resolve.go for the same reason stepLetSymbols is.
 func rangeScopeSymbols(tmpl *JobTemplate, stepLet expr.MapSymbols, params map[string]string) expr.MapSymbols {
@@ -1627,22 +1511,16 @@ func checkEnvironmentExpressions(
 
 		// scriptSyms is a clone of baseSyms, but -- unlike syms's clone of
 		// stepLet in checkStepExpressions, or baseSyms's own clone of
-		// outerLet just above -- mutation-tested and confirmed to have NO
-		// OBSERVABLE EFFECT today, under either the unit tests or the full
-		// conformance suite: baseSyms is allocated fresh every loop
-		// iteration (nothing else in this call reads it afterward), and the
-		// variables loop that consults it runs BEFORE this line, not after.
-		// Removing this clone (aliasing scriptSyms := baseSyms) changes
-		// nothing a test can currently see.
+		// outerLet just above -- it has NO OBSERVABLE EFFECT today (checked by
+		// mutation against the unit tests and the full conformance suite):
+		// baseSyms is allocated fresh every loop iteration (nothing else in
+		// this call reads it afterward), and the variables loop that consults
+		// it runs BEFORE this line, not after.
 		//
-		// Kept anyway, as ORDERING INSURANCE, not a live behavioral
-		// guarantee: it is one reordering away from mattering (moving the
-		// variables loop below this line, or adding a second consumer of
-		// baseSyms after it) and cloning here costs one small map allocation
-		// against that risk. A future edit that removes it should not read
-		// this comment as evidence something depends on it today -- verify
-		// by mutation before either keeping or removing it, the same way
-		// this note was produced.
+		// Kept as ORDERING INSURANCE, not a live behavioral guarantee: it is
+		// one reordering away from mattering (moving the variables loop below
+		// this line, or adding a second consumer of baseSyms after it) and
+		// cloning here costs one small map allocation against that risk.
 		scriptSyms := maps.Clone(baseSyms)
 		if e.Script != nil && b.ok() {
 			// Before/after delta, exactly as checkStepExpressions' own script
@@ -1705,35 +1583,27 @@ func checkScriptRefExpressions(
 //
 // args uses TargetArgItem, not TargetString: section 1.3.2's list-item rule
 // for an args entry, where a string is one argument, None drops it, and a
-// list[string] flattens inline -- this is the first real caller of
-// TargetArgItem; exprcheck_test.go's direct checkFormatString calls establish
-// the contract, this wires it into the walk.
+// list[string] flattens inline.
 //
-// PLAIN STATEMENT, so nobody reads "timeout is validated" into this: the
-// timeout call below is WIRED BUT UNREACHABLE FROM A REAL TEMPLATE. It is not
-// a live check today, only the shape of one. decodeAction (parse.go) decodes
+// The timeout call below is WIRED BUT UNREACHABLE FROM A REAL TEMPLATE. It is
+// not a live check, only the shape of one. decodeAction (parse.go) decodes
 // "timeout" via a strict integer parse (intFieldStrict/scalarToInt) for EVERY
 // template, EXPR or not -- there is no code path by which a.TimeoutSeconds
 // ever holds anything but an already-resolved int, so re-rendering it with
 // strconv.Itoa below and running it through checkFormatString ALWAYS produces
 // a plain decimal literal with zero "{{" references, and checkFormatString is
-// a guaranteed no-op on that input. Confirmed directly: parsing
+// a guaranteed no-op on that input. Parsing
 // EXPR/job_templates/7.3--apply-path-mapping-in-timeout.invalid.yaml
 // (timeout: "{{ len(apply_path_mapping(Param.Val)) }}") fails at
 // openjd.Parse itself with "openjd: timeout must be an integer", before
 // ValidateWithOptions -- and therefore this function -- ever runs; that
-// fixture is one of this sub-project's thirteen target fixtures and it
-// passes CONFORMANCE (correctly rejected) entirely incidentally, for a
-// decode-time reason unrelated to scope checking. Making this position
-// actually live requires changing decodeAction to accept a format-string
-// body for "timeout", which has its own blast radius (every existing
-// template's timeout becomes format-string-capable, base-spec included) and
-// is deliberately NOT part of this task -- out of the file list
-// (validate.go, exprcheck.go, baseline-expr.txt) this task was scoped to.
-// The call stays here, unconditional when TimeoutSet, so the position is
-// wired for the day that decoder changes without a second pass over the
-// walk; until then, reading this comment is the only way to know it does
-// nothing.
+// fixture passes conformance (correctly rejected) for a decode-time reason
+// unrelated to scope checking. Making this position live requires changing
+// decodeAction to accept a format-string body for "timeout", which has its
+// own blast radius (every existing template's timeout becomes
+// format-string-capable, base-spec included). The call stays here,
+// unconditional when TimeoutSet, so the position is wired if that decoder
+// changes.
 func checkActionExpressions(b *templateBudget, a Action, ptr string, scope Scope, syms expr.MapSymbols) ValidationErrors {
 	var errs ValidationErrors
 	cmdPtr := ptr + "/command"
@@ -1767,10 +1637,8 @@ func checkActionExpressions(b *templateBudget, a Action, ptr string, scope Scope
 
 // checkHostRequirementExpressions checks a step's host requirement values --
 // every amount's min/max and every attribute's anyOf/allOf entries -- against
-// the ScopeJob symbol table syms. This is one of the two positions that had
-// NO format-string scope validation at all before sub-project E2's Task 9;
-// validate.go's validateHostRequirements gained the parallel base-spec check
-// in the same commit.
+// the ScopeJob symbol table syms. validate.go's validateHostRequirements is
+// the parallel base-spec check.
 func checkHostRequirementExpressions(b *templateBudget, hr HostRequirements, base string, syms expr.MapSymbols) ValidationErrors {
 	var errs ValidationErrors
 	for i, a := range hr.Amounts {
@@ -1790,8 +1658,7 @@ func checkHostRequirementExpressions(b *templateBudget, hr HostRequirements, bas
 
 // checkHostRequirementAmount checks one amount's min/max, extracted from
 // checkHostRequirementExpressions to keep that function's cyclomatic
-// complexity within the repo's lint budget (see CLAUDE.md's "Lint is
-// strict" convention).
+// complexity within the repo's lint budget.
 func checkHostRequirementAmount(b *templateBudget, a AmountRequirement, amtPtr string, syms expr.MapSymbols) ValidationErrors {
 	var errs ValidationErrors
 	if a.Min != nil {
@@ -1843,41 +1710,30 @@ func checkHostRequirementAttribute(b *templateBudget, a AttributeRequirement, at
 }
 
 // checkParameterSpaceExpressions checks a step's task-parameter range
-// entries -- the other position with no format-string scope validation
-// before Task 9 -- in both of the field's two shapes: each RANGE LIST entry
-// and the whole-field RANGE EXPR alternative. Both now target section
-// 1.3.12's real types (design spec §3) instead of the permissive
-// TargetString/expr.TAny this function used before that section's positions
-// had a consumer: a RangeList entry targets rangeExprElemType(tp.Type) (int,
-// float, string or path) and a whole-field RangeExpr targets
+// entries in both of the field's two shapes: each RANGE LIST entry and the
+// whole-field RANGE EXPR alternative. Both target section 1.3.12's real
+// types: a RangeList entry targets rangeExprElemType(tp.Type) (int, float,
+// string or path) and a whole-field RangeExpr targets
 // rangeExprFieldType(tp.Type) (int | string | range_expr | list[int] for
 // INT/CHUNK[INT], list[<elem>] otherwise).
 //
 // resolve.go calls THE SAME TWO FUNCTIONS at the same two positions
 // (resolveRangeListEntry and evalRangeExprField) -- not a separate target
-// argued to be equivalent, the identical Type value. An earlier revision of
-// this comment pointed at rangeExprFieldType "for why the checker's union
-// differs from the resolver's plain list[elem] while still agreeing on every
-// verdict"; they agreed only because both were equally wrong, and while they
-// agreed on the verdict they reported DIFFERENT MESSAGES for it (validate:
-// "cannot be coerced to list[int] | range_expr", submit: "cannot be coerced
-// to list[int]"). One function per position is what makes both the verdict
-// and the message one thing, and assertRowRejected
-// (resolve_agreement_test.go) now asserts the messages match, not merely the
-// verdicts.
+// argued to be equivalent, the identical Type value. One function per
+// position makes both the verdict and the rejection message one thing, and
+// assertRowRejected (resolve_agreement_test.go) asserts the messages match,
+// not merely the verdicts.
 //
 // exprcheck.go and resolve.go MUST agree on both targets, or the checker's
-// verdict and the resolver's actual coercion drift apart -- design spec §4's
-// agreement instrument exists precisely to catch that: a range the checker
+// verdict and the resolver's actual coercion drift apart --
+// resolve_agreement_test.go exists to catch that: a range the checker
 // accepts must resolve and expand without error, and a range the checker
 // rejects must never reach expansion. A checker that accepted anything
-// (expr.TAny/TargetString, this function's own shape before this task) could
-// never disagree with a resolver, which is also why that permissive choice
-// was never actually validating section 1.3.12's types in the first place.
+// (expr.TAny/TargetString) could never disagree with a resolver, and would
+// not validate section 1.3.12's types at all.
 //
-// Neither target change weakens scope checking: an out-of-scope symbol fails
-// at evaluation's symbol lookup, before target coercion ever runs, exactly as
-// it did when the target was expr.TAny.
+// The typed targets do not weaken scope checking: an out-of-scope symbol
+// fails at evaluation's symbol lookup, before target coercion ever runs.
 func checkParameterSpaceExpressions(b *templateBudget, ps StepParameterSpace, base string, syms expr.MapSymbols) ValidationErrors {
 	var errs ValidationErrors
 	for i, tp := range ps.TaskParameterDefinitions {
@@ -1910,8 +1766,7 @@ func checkParameterSpaceExpressions(b *templateBudget, ps StepParameterSpace, ba
 
 // rangeExprFieldType maps a task-parameter's declared type to the target
 // checkParameterSpaceExpressions verifies a whole-field RangeExpr's lone
-// {{...}} reference against, per section 1.3.12's extended-range table
-// (design spec §3):
+// {{...}} reference against, per section 1.3.12's extended-range table:
 //
 //	INT / CHUNK[INT]   int | string | range_expr | list[int]
 //	FLOAT              list[float]
@@ -1919,14 +1774,13 @@ func checkParameterSpaceExpressions(b *templateBudget, ps StepParameterSpace, ba
 //	PATH               list[path]
 //
 // resolve.go's evalRangeExprField targets THE SAME TYPE, from this same
-// function -- there is no longer a checker target and a separate resolver
-// target to reconcile, and the two layers therefore produce byte-identical
+// function -- there is no checker target and separate resolver target to
+// reconcile, and the two layers therefore produce byte-identical
 // rejection messages for the same input. What differs between them is only
 // what each does with the RESULT: the checker discards it, while the resolver
 // dispatches on which union member it landed in (see evalRangeExprField).
 //
-// WHY int AND string ARE MEMBERS, which is the correction this row needed.
-// Section 1.3.12 leaves the INT row "(unchanged, but see RangeString note
+// WHY int AND string ARE MEMBERS. Section 1.3.12 leaves the INT row "(unchanged, but see RangeString note
 // below)", and that note extends the RangeString with an expression
 // evaluating to a range_expr or a list[int] "in addition to the original
 // <IntRangeExpr> grammar" -- IN ADDITION TO, not instead of. A RangeString is
@@ -1940,17 +1794,16 @@ func checkParameterSpaceExpressions(b *templateBudget, ps StepParameterSpace, ba
 // "1-3" expanding to tasks 1, 2, 3 and "{{ Param.IntCount + 1 }}" with
 // IntCount = 7 expanding to the single task 8.
 //
-// A narrower union (range_expr | list[int], this function's shape before EXPR
-// sub-project E4b's whole-branch review) inverted the section's own promise:
-// it made DECLARING the extension REMOVE capability at this field, rejecting
-// range: "{{Param.Frames}}" with a STRING Frames -- the exact shape all six
-// of this repo's own reference render presets use (presets/sqi/*.yaml) --
-// while the identical template WITHOUT extensions: [EXPR] expanded correctly.
+// A narrower union (range_expr | list[int]) would invert the section's own
+// promise: DECLARING the extension would REMOVE capability at this field,
+// rejecting range: "{{Param.Frames}}" with a STRING Frames -- the shape all
+// six of this repo's own reference render presets use (presets/sqi/*.yaml) --
+// while the identical template WITHOUT extensions: [EXPR] expands correctly.
 //
-// The union's member ORDER is not load-bearing here: expr.UnionOf sorts
-// members into a canonical order anyway, and section 1.2.3's match-first rule
-// is implemented by coerce.go's directUnionMember, which compares whole types
-// and so is order-independent. Order IS load-bearing one layer down, in
+// The union's member ORDER does not matter here: expr.UnionOf sorts members
+// into a canonical order anyway, and section 1.2.3's match-first rule is
+// implemented by coerce.go's directUnionMember, which compares whole types
+// and so is order-independent. Order DOES matter one layer down, in
 // evalRangeExprField's dispatch on the result -- see that function.
 //
 // FLOAT/STRING/PATH stay a plain list: their rows extend the field with a

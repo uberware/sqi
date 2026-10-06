@@ -7,13 +7,12 @@ import (
 	"testing"
 )
 
-// PROBE (sub-project E1, Task 6), .venv-oracle/bin/python -c "..." against
-// openjd-model 0.11.1 -- the brief's own Step 1 command, plus follow-ups run
-// to resolve every row this task owns (funcsconv.go's 19 rows, funcslist.go's
-// 13). Pasted verbatim as evidence, per "run something first, decide against
-// the spec text second."
+// PROBE: .venv-oracle/bin/python -c "..." against openjd-model 0.11.1 -- an
+// initial command plus follow-ups run to resolve every row of funcsconv.go
+// (19 rows) and funcslist.go (13). Pasted verbatim as evidence: run something
+// first, decide against the spec text second.
 //
-// Brief's own command:
+// Initial command:
 //
 //	  1  len([1,2,3])
 //	  1  len("abc")
@@ -30,25 +29,23 @@ import (
 //	  1  float("1.5")
 //	  1  range_expr("1-100")
 //
-// sum/min/max are funcsmath.go rows (Task 8's), out of scope here despite
-// appearing in the brief's probe command; the other twelve resolve rows this
-// task owns.
+// sum/min/max are funcsmath.go rows, out of scope here despite appearing in
+// the probe command; the other twelve resolve rows covered in this file.
 //
 // Follow-ups, len() and the other exemption-shaped conversions -- confirming
 // the exemption does not depend on WHAT is inside, and that int/float/bool
 // are flat regardless of input size (see the divergence-free rows below):
 //
 //	3  len(path("/a/b"))                (path()'s own construction cost
-//	                                      is Task 8's, not yet declared --
+//	                                      is declared in funcspath.go --
 //	                                      see the len(path(...)) case in
-//	                                      TestOperationCount_ConversionAndListFunctions
-//	                                      for what sqi computes instead)
+//	                                      TestOperationCount_ConversionAndListFunctions)
 //	1  int(5)
 //	1  bool(True)  /  bool(1)  /  bool("true")
 //	7  float("1"+"2"*300)                isolates to 1: the 301-byte
-//	                                      string's own build cost (a
-//	                                      already-charged "*" then "+",
-//	                                      Task 5) is 6, leaving float()
+//	                                      string's own build cost (an
+//	                                      already-charged "*" then "+")
+//	                                      is 6, leaving float()
 //	                                      itself at 7-6=1
 //	5  int("0"*250+"5")                  isolates to 1 the same way
 //	6  string("a"*1000)                  isolates to 1 the same way
@@ -63,10 +60,8 @@ import (
 //	                                      alone is 1, regardless of the
 //	                                      range's span)
 //
-// list() and range_expr(list[int]) -- confirmed to charge, the second NOT in
-// the brief's own "rows that must charge" list, found only by probing this
-// row per the task's instruction to probe every row rather than trust the
-// brief's starting point:
+// list() and range_expr(list[int]) -- confirmed to charge; the second shows
+// up only by probing every row:
 //
 //	 4  range_expr([1,2,3])               1 (call) + 3 (elements)
 //	11  range_expr([1,2,3,4,5,6,7,8,9,10]) 1 (call) + 10 (elements):
@@ -114,40 +109,37 @@ import (
 //	 4  unique([1,1,2])                     1 + 3
 //	11  unique([1,1,1,1,1,1,1,1,1,1])       1 + 10
 //
-// unique's own two numbers above are the REFERENCE's, unchanged by Task 12
-// and reproducible today by rerunning the same probe -- the reference charges
-// unique() by input length alone, with no accounting for its comparison
-// count. sqi's own unique() deliberately no longer matches them: Task 12
-// found, by RUNNING TestUnique_IsBoundedByTheOperationLimit before making any
-// change, that a linear charge lets unique()'s real O(n^2) valuesEqual scan
-// run uncounted underneath it -- unique(range(20000)) returned successfully
-// in under 4 seconds with 4*10^8 comparisons actually performed and only
-// ~20001 operations charged, nowhere near the 10-million default limit. sqi
-// now charges one operation per valuesEqual call instead (uniqueList,
-// funcslist.go, FnCtx), which is what makes the SAME call fail fast with
-// errOperationLimit. See TestOperationCount_ConversionAndListFunctions's
+// unique's own two numbers above are the REFERENCE's, reproducible by
+// rerunning the same probe -- the reference charges unique() by input length
+// alone, with no accounting for its comparison count. sqi's own unique()
+// deliberately does not match them: a linear charge lets unique()'s real
+// O(n^2) valuesEqual scan run uncounted underneath it -- charged linearly,
+// unique(range(20000)) returns successfully in under 4 seconds with 4*10^8
+// comparisons actually performed and only ~20001 operations charged, nowhere
+// near the 10-million default limit. sqi charges one operation per
+// valuesEqual call instead (uniqueList, funcslist.go, FnCtx), which is what
+// makes the SAME call fail fast with errOperationLimit
+// (TestUnique_IsBoundedByTheOperationLimit). See
+// TestOperationCount_ConversionAndListFunctions's
 // unique() row below for sqi's own resulting count, and
 // test/oracle/baseline-ops.txt for the adjudication of this divergence
 // against the oracle.
 //
 // any/all -- the reference SHORT-CIRCUITS, so its own count does not equal
 // "1 + list length" once the answer is decided early; this is the one
-// divergence in this task that is NOT "the reference failed to charge
+// divergence here that is NOT "the reference failed to charge
 // something", but "the reference charges LESS than a flat per-call Cost can
 // express" -- see the Cost comment on the any/all list[bool] rows in
 // funcslist.go and TestOperationCount_AnyAllDivergeOnShortCircuit. All six
 // lines below are the COMMA-SEPARATED LITERAL form, copy-paste-runnable as
 // printed. Deliberately NOT written with "*" list-repetition syntax --
-// "[True]*10" is itself a rule-2-charged operation (Task 5's OpMul row,
+// "[True]*10" is itself a rule-2-charged operation (the OpMul row,
 // ArgElements/ResultElements over the repeated-out list), so a probe of
 // "any([True]*10)" measures any() PLUS the repetition's own charge baked
-// in (13, not 2) and "all([True]*10)" measures 22, not 11. A prior revision
-// of this comment printed those inflated totals next to the isolated
-// any()/all()-only numbers below, which does not reproduce by re-running it
-// -- caught in review. The literal form has no such extra charge to strip
-// out, which is also why TestOperationCount_AnyAllDivergeOnShortCircuit
-// builds its lists directly via a boolList helper rather than parsing a
-// source string with "*" in it.
+// in (13, not 2) and "all([True]*10)" measures 22, not 11. The literal form
+// has no such extra charge to strip out, which is also why
+// TestOperationCount_AnyAllDivergeOnShortCircuit builds its lists directly
+// via a boolList helper rather than parsing a source string with "*" in it.
 //
 //	 1  any([])                             list[nulltype] row, trivial
 //	 6  any([False,False,False,False,False])          1 + 5, forced to
@@ -175,14 +167,13 @@ func TestOperationCount_ConversionAndListFunctions(t *testing.T) {
 		{"len('abc')", 1, "len is exempt from rule 3"},
 		// len(range_expr(...)) is 2: one call for range_expr(), one for
 		// len(). len itself charges nothing, and in particular does NOT
-		// expand the range to count it -- see Task 12.
+		// expand the range to count it -- see TestLenRangeExpr_DoesNotMaterialize.
 		{"len(range_expr('1-100'))", 2, "range_expr() call + len() call, no expansion"},
-		// UPDATED by Task 8, as anticipated above: path(string) now declares
-		// Cost{ArgBytes: {0}} (funcspath.go), so path('/a/b') itself costs
-		// 1 call + ceil(4/256)=1 = 2, matching the reference's own 3 exactly
-		// once len()'s own call (1, still adding nothing -- len's exemption is
-		// unchanged) is added: 2 + 1 = 3.
-		{"len(path('/a/b'))", 3, "path() call (now ArgBytes-charged by Task 8) + len() call, len itself still adds nothing"},
+		// path(string) declares Cost{ArgBytes: {0}} (funcspath.go), so
+		// path('/a/b') itself costs 1 call + ceil(4/256)=1 = 2, matching the
+		// reference's own 3 exactly once len()'s own call (1, adding nothing
+		// further -- len stays exempt) is added: 2 + 1 = 3.
+		{"len(path('/a/b'))", 3, "path() call (ArgBytes-charged) + len() call, len itself adds nothing"},
 
 		// bool()/int()/float() carry no Cost anywhere -- neither rule names
 		// them, and probing shows their own work does not scale with input
@@ -207,8 +198,7 @@ func TestOperationCount_ConversionAndListFunctions(t *testing.T) {
 		// expanded count.
 		{"range_expr('1-100')", 1, "range_expr(string) parses compact text, not proportional to the expanded count"},
 		// range_expr(list[int]) DOES charge: it must scan the whole input
-		// list to sort and de-duplicate it. Not in the brief's own "rows
-		// that must charge" list -- found by probing this row anyway.
+		// list to sort and de-duplicate it.
 		{"range_expr([1,2,3])", 4, "range_expr(list) scans every input element (1 call + 3 elements)"},
 
 		// list() over a range_expr materializes every value: charged by the
@@ -225,8 +215,8 @@ func TestOperationCount_ConversionAndListFunctions(t *testing.T) {
 		// any/all).
 		{"sorted([3,1,2])", 4, "sorted(): 1 call + 3 elements"},
 		{"reversed([1,2,3,4,5])", 6, "reversed(): 1 call + 5 elements"},
-		// Task 12: unique() no longer declares Cost{ArgElements: {0}} at all --
-		// it charges itself, per valuesEqual comparison, via FnCtx. For
+		// unique() declares no Cost{ArgElements: {0}} at all -- it charges
+		// itself, per valuesEqual comparison, via FnCtx. For
 		// [1,1,2]: comparing the second 1 against the kept [1] costs 1
 		// comparison and finds a duplicate; comparing 2 against the kept [1]
 		// costs 1 more and finds none. 1 call + 2 comparisons = 3. This is a
@@ -252,12 +242,11 @@ func TestOperationCount_ConversionAndListFunctions(t *testing.T) {
 
 // TestOperationCount_IntFloatBoolStayFlatOverBigInput isolates int(), float()
 // and string()'s own charge from the ALREADY-CHARGED cost of building a
-// large operand (string repetition/concatenation, Task 5), using callFunction
+// large operand (string repetition/concatenation), using callFunction
 // directly so no other operator's charge is mixed in. A sub-256-byte probe
 // cannot discriminate "charges nothing" from "charges nothing because the
-// input happened to be small" -- see the brief's own warning about this
-// exact trap with string "+". These use inputs over 256 bytes and confirm
-// the count does not move.
+// input happened to be small" (the same trap applies to string "+"). These
+// use inputs over 256 bytes and confirm the count does not move.
 func TestOperationCount_IntFloatBoolStayFlatOverBigInput(t *testing.T) {
 	t.Run("float() over a 301-byte numeric string", func(t *testing.T) {
 		ec := testCtx()
@@ -324,7 +313,7 @@ func TestOperationCount_StringOverListDivergesFromReference(t *testing.T) {
 }
 
 // TestOperationCount_AnyAllDivergeOnShortCircuit pins the OTHER kind of
-// divergence in this task: unlike every other row, the reference charges
+// divergence: unlike every other row, the reference charges
 // LESS than sqi's flat "1 + list length" here, because it short-circuits.
 // sqi's declarative Cost mechanism charges arguments before Fn ever runs
 // (chargeArgs in callShape, ops.go), so it cannot know how many elements a
@@ -404,12 +393,12 @@ func TestOperationCount_AnyAllListNullRowChargesNothing(t *testing.T) {
 }
 
 // TestOperationCount_UnresolvedListArgumentChargesRuleOneOnly covers the
-// standing ruling that binds this task: "an unresolved operand charges rule
-// 1 only -- no element or byte charges, since no values were processed."
-// chargeArgs (ops.go) reads elementCount off a real Value, and an unresolved
-// placeholder is never a CodeList value, so elementCount already returns 0
-// for it structurally; this test exists to pin that behavior for one of this
-// task's own charging rows rather than assume it holds.
+// ruling "an unresolved operand charges rule 1 only -- no element or byte
+// charges, since no values were processed." chargeArgs (ops.go) reads
+// elementCount off a real Value, and an unresolved placeholder is never a
+// CodeList value, so elementCount already returns 0 for it structurally;
+// this test pins that behavior for one of the list-function charging rows
+// rather than assume it holds.
 func TestOperationCount_UnresolvedListArgumentChargesRuleOneOnly(t *testing.T) {
 	ec := testCtx()
 	if _, err := callFunction(ec, "sorted", []Value{Unresolved(ListOf(TInt))}, false); err != nil {

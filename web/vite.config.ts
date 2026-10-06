@@ -48,8 +48,8 @@ export default defineConfig({
         '**/*.d.ts',
         '**/._*',
       ],
-      // 2026-06-13: measured 86.8% stmts / 91.5% lines after the phase-1
-      // component-test backfill; gates set ~5 points below for headroom.
+      // Measured 86.8% stmts / 91.5% lines on 2026-06-13; gates set ~5 points
+      // below for headroom.
       thresholds: {
         lines: 85,
         functions: 82,

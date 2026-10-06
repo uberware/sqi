@@ -9,7 +9,7 @@ package fake
 //                   CountActiveTasksInQueue, CountActiveTasksInFarm,
 //                   CancelJobTasks, CountReadyTasksByQueue, CountTasksByJob,
 //                   ListTasks (sort fields), filterTask edge cases
-//   worker.go     — UpdateWorker, UpdateWorkerStatus, UpdateWorkerHeartbeat,
+//   worker.go     — UpdateWorker, UpdateWorkerHeartbeat,
 //                   ListStaleWorkers, CountIdleWorkers, ListWorkers (sort/filter)
 //   job.go        — UpdateJob, UpdateJobStatus, CancelJobStatus,
 //                   ListJobs (sort/filter)
@@ -80,7 +80,7 @@ func mustCreateTask(t *testing.T, s *Store, id, jobID, stepID string, status sto
 
 func mustCreateWorker(t *testing.T, s *Store, id, farmID string, status store.WorkerStatus) store.Worker {
 	t.Helper()
-	w, err := s.RegisterWorker(ctx(), store.Worker{
+	w, _, err := s.RegisterWorker(ctx(), store.Worker{
 		ID: id, FarmID: farmID, Hostname: id,
 		Status: status, RegisteredAt: time.Now(),
 	})
@@ -218,7 +218,7 @@ func TestSetTaskUnschedulableReason(t *testing.T) {
 	mustCreateJob(t, s, "j1", "farm-f1", "q1")
 	mustCreateTask(t, s, "t1", "j1", "s1", store.TaskStatusReady)
 
-	if err := s.SetTaskUnschedulableReason(ctx(), "t1", "no eligible online worker: attribute requirement not met"); err != nil {
+	if _, err := s.SetTaskUnschedulableReason(ctx(), "t1", "no eligible online worker: attribute requirement not met"); err != nil {
 		t.Fatalf("SetTaskUnschedulableReason: %v", err)
 	}
 	tk := mustGetTask(t, s, "t1")
@@ -227,7 +227,7 @@ func TestSetTaskUnschedulableReason(t *testing.T) {
 	}
 
 	// Clearing.
-	if err := s.SetTaskUnschedulableReason(ctx(), "t1", ""); err != nil {
+	if _, err := s.SetTaskUnschedulableReason(ctx(), "t1", ""); err != nil {
 		t.Fatalf("SetTaskUnschedulableReason clear: %v", err)
 	}
 	tk = mustGetTask(t, s, "t1")
@@ -236,7 +236,7 @@ func TestSetTaskUnschedulableReason(t *testing.T) {
 	}
 
 	// Unknown id.
-	if err := s.SetTaskUnschedulableReason(ctx(), "nope", "x"); !errors.Is(err, store.ErrNotFound) {
+	if _, err := s.SetTaskUnschedulableReason(ctx(), "nope", "x"); !errors.Is(err, store.ErrNotFound) {
 		t.Errorf("expected ErrNotFound for unknown task id, got %v", err)
 	}
 }
@@ -254,7 +254,7 @@ func TestUnschedulableReason_ClearedOnAssign(t *testing.T) {
 	mustCreateJob(t, s, "j1", "farm-f1", "q1")
 	mustCreateTask(t, s, "t1", "j1", "s1", store.TaskStatusReady)
 
-	if err := s.SetTaskUnschedulableReason(ctx(), "t1", "no eligible online worker"); err != nil {
+	if _, err := s.SetTaskUnschedulableReason(ctx(), "t1", "no eligible online worker"); err != nil {
 		t.Fatalf("SetTaskUnschedulableReason: %v", err)
 	}
 
@@ -279,7 +279,7 @@ func TestUnschedulableReason_ClearedOnCancel(t *testing.T) {
 	mustCreateJob(t, s, "j1", "farm-f1", "q1")
 	mustCreateTask(t, s, "t1", "j1", "s1", store.TaskStatusReady)
 
-	if err := s.SetTaskUnschedulableReason(ctx(), "t1", "no eligible online worker"); err != nil {
+	if _, err := s.SetTaskUnschedulableReason(ctx(), "t1", "no eligible online worker"); err != nil {
 		t.Fatalf("SetTaskUnschedulableReason: %v", err)
 	}
 
@@ -304,7 +304,7 @@ func TestUnschedulableReason_ClearedOnUpdateStatus(t *testing.T) {
 	mustCreateJob(t, s, "j1", "farm-f1", "q1")
 	mustCreateTask(t, s, "t1", "j1", "s1", store.TaskStatusReady)
 
-	if err := s.SetTaskUnschedulableReason(ctx(), "t1", "no eligible online worker"); err != nil {
+	if _, err := s.SetTaskUnschedulableReason(ctx(), "t1", "no eligible online worker"); err != nil {
 		t.Fatalf("SetTaskUnschedulableReason: %v", err)
 	}
 
@@ -533,9 +533,12 @@ func TestCountReadyTasksByQueue_ExcludesIneligible(t *testing.T) {
 	mustCreateTask(t, s, "t-ok", "j1", "s1", store.TaskStatusReady)
 
 	// Backing off: ready but retry_after has not elapsed (requeued from
-	// running through the real auto-retry path).
+	// running, as the auto-retry path does). The requeue is guarded on the
+	// reporting attempt being the task's latest, so this seeds the task's live
+	// (running) attempt for the guard to pass.
 	mustCreateTask(t, s, "t-backoff", "j1", "s1", store.TaskStatusRunning)
-	if requeued, err := s.RequeueTaskForRetry(ctx(), "t-backoff", now.Add(time.Minute), now); err != nil || !requeued {
+	backoffAttempt := mustCreateAttempt(t, s, "a-backoff", "t-backoff", 1, store.AttemptStatusRunning)
+	if requeued, err := s.RequeueTaskForRetry(ctx(), "t-backoff", backoffAttempt.ID, now.Add(time.Minute), now); err != nil || !requeued {
 		t.Fatalf("RequeueTaskForRetry: requeued=%v err=%v", requeued, err)
 	}
 
@@ -650,7 +653,7 @@ func TestCountUnschedulableTasksByJob(t *testing.T) {
 	mustCreateTask(t, s, "t3", "j1", "s1", store.TaskStatusReady)
 
 	for _, id := range []string{"t1", "t2"} {
-		if err := s.SetTaskUnschedulableReason(ctx(), id, "no worker matches required capability"); err != nil {
+		if _, err := s.SetTaskUnschedulableReason(ctx(), id, "no worker matches required capability"); err != nil {
 			t.Fatalf("SetTaskUnschedulableReason(%q): %v", id, err)
 		}
 	}
@@ -663,7 +666,7 @@ func TestCountUnschedulableTasksByJob(t *testing.T) {
 		t.Errorf("count = %d, want 2", n)
 	}
 
-	if err := s.SetTaskUnschedulableReason(ctx(), "t1", ""); err != nil {
+	if _, err := s.SetTaskUnschedulableReason(ctx(), "t1", ""); err != nil {
 		t.Fatalf("SetTaskUnschedulableReason(clear): %v", err)
 	}
 	n, err = s.CountUnschedulableTasksByJob(ctx(), "j1")
@@ -971,29 +974,6 @@ func TestUpdateWorker_NotFound(t *testing.T) {
 	}
 }
 
-func TestUpdateWorkerStatus(t *testing.T) {
-	s := New()
-	defer s.Close()
-	mustCreateWorker(t, s, "w1", "f1", store.WorkerStatusOnline)
-
-	if err := s.UpdateWorkerStatus(ctx(), "w1", store.WorkerStatusOffline); err != nil {
-		t.Fatalf("UpdateWorkerStatus: %v", err)
-	}
-	w := mustGetWorker(t, s, "w1")
-	if w.Status != store.WorkerStatusOffline {
-		t.Errorf("status = %v, want offline", w.Status)
-	}
-}
-
-func TestUpdateWorkerStatus_NotFound(t *testing.T) {
-	s := New()
-	defer s.Close()
-	err := s.UpdateWorkerStatus(ctx(), "ghost", store.WorkerStatusOffline)
-	if !errors.Is(err, store.ErrNotFound) {
-		t.Fatalf("want ErrNotFound, got %v", err)
-	}
-}
-
 func TestDeleteWorker(t *testing.T) {
 	s := New()
 	defer s.Close()
@@ -1025,15 +1005,18 @@ func TestDeleteOfflineWorkersBefore(t *testing.T) {
 	// w1: offline + stale → removed.
 	mustCreateWorker(t, s, "w1", "f1", store.WorkerStatusOnline)
 	mustHeartbeat(t, s, "w1", old)
-	mustStatus(t, s, "w1", store.WorkerStatusOffline)
+	mustOffline(t, s, "w1")
 	// w2: offline + recent → kept.
 	mustCreateWorker(t, s, "w2", "f1", store.WorkerStatusOnline)
 	mustHeartbeat(t, s, "w2", recent)
-	mustStatus(t, s, "w2", store.WorkerStatusOffline)
-	// w3: disabled + stale → kept (status filter).
+	mustOffline(t, s, "w2")
+	// w3: offline + stale but disabled → kept (an operator removes it).
 	mustCreateWorker(t, s, "w3", "f1", store.WorkerStatusOnline)
 	mustHeartbeat(t, s, "w3", old)
-	mustStatus(t, s, "w3", store.WorkerStatusDisabled)
+	mustOffline(t, s, "w3")
+	if _, err := s.SetWorkerDisabled(ctx(), "w3", true); err != nil {
+		t.Fatalf("SetWorkerDisabled: %v", err)
+	}
 
 	removed, err := s.DeleteOfflineWorkersBefore(ctx(), time.Now().Add(-time.Hour))
 	if err != nil {
@@ -1059,10 +1042,12 @@ func mustHeartbeat(t *testing.T, s *Store, id string, at time.Time) {
 	}
 }
 
-func mustStatus(t *testing.T, s *Store, id string, status store.WorkerStatus) {
+// mustOffline takes the worker offline as a graceful deregister does; it keeps
+// the heartbeat already recorded.
+func mustOffline(t *testing.T, s *Store, id string) {
 	t.Helper()
-	if err := s.UpdateWorkerStatus(ctx(), id, status); err != nil {
-		t.Fatalf("UpdateWorkerStatus(%q): %v", id, err)
+	if _, _, err := s.OfflineWorker(ctx(), id, "", time.Now()); err != nil {
+		t.Fatalf("OfflineWorker(%q): %v", id, err)
 	}
 }
 
@@ -1202,7 +1187,7 @@ func TestListWorkers_SortAndFilter(t *testing.T) {
 func TestListWorkers_Search(t *testing.T) {
 	st := New()
 	mk := func(id, name, host, loc string) {
-		if _, err := st.RegisterWorker(ctx(), store.Worker{
+		if _, _, err := st.RegisterWorker(ctx(), store.Worker{
 			ID: id, Name: name, Hostname: host, ComputeLocation: loc,
 			Status: store.WorkerStatusOnline, Tags: map[string]string{},
 		}); err != nil {

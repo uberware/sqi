@@ -4,7 +4,7 @@
 // (operational) log records gathered from sqi-server itself and from connected
 // workers.  It is deliberately bounded and ephemeral: it provides a "recent
 // glance" in the web UI, not a durable searchable archive.  The buffer is lost
-// on server restart by design (see the design spec, transport choice A1).
+// on server restart by design.
 package diag
 
 import (

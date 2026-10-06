@@ -120,7 +120,7 @@ func contains(haystack, needle string) bool {
 	}()
 }
 
-// TestCapture_RefusesTemplateWithEnvironments is the §3.4 guard.
+// TestCapture_RefusesTemplateWithEnvironments is the environments guard.
 // session.Manager.Create EXECUTES environment onEnter actions; a preset that
 // declares one would silently run a vendor command inside a unit test. No
 // shipped template declares environments today, so this must fail loudly the

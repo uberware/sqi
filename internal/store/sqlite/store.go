@@ -40,6 +40,17 @@
 //
 // Transactions always run on the write pool.
 //
+// Correctness under concurrent writers is not left to the single write
+// connection: every multi-row invariant is a single store operation (see
+// "Store invariants" in docs/architecture.md), and most of them name their
+// anchor rows via lockAnchors, a no-op here because the one write connection
+// already serializes every write transaction. A store with concurrent writers
+// must lock those rows instead, but the anchors alone are not yet enough
+// there: ReclaimStaleAssignedTasks and DemoteStalledJobs name none, and the
+// architecture doc lists the gaps the anchor table leaves open. Single-row
+// writes carry their own precondition in their WHERE clause on either kind of
+// store.
+//
 // An in-memory or temporary database gets one pool for both roles: a second
 // [sql.Open] on ":memory:" would open a different, empty database.
 //
@@ -167,7 +178,7 @@ type Store struct {
 	stmtUpsertWorker             *sql.Stmt
 	stmtGetWorker                *sql.Stmt
 	stmtUpdateWorker             *sql.Stmt
-	stmtUpdateWorkerStatus       *sql.Stmt
+	stmtSetWorkerDisabled        *sql.Stmt
 	stmtUpdateWorkerHeartbeat    *sql.Stmt
 	stmtListStaleWorkers         *sql.Stmt
 	stmtCountIdleWorkers         *sql.Stmt
@@ -190,7 +201,6 @@ type Store struct {
 	// ── tasks ────────────────────────────────────────────────────────────
 	stmtInsertTask                   *sql.Stmt
 	stmtGetTask                      *sql.Stmt
-	stmtUpdateTaskStatus             *sql.Stmt
 	stmtSetTaskUnschedulableReason   *sql.Stmt
 	stmtSetTaskFailureReason         *sql.Stmt
 	stmtSetTaskFailureReasonIfEmpty  *sql.Stmt
@@ -228,7 +238,6 @@ type Store struct {
 	stmtUpdateUser          *sql.Stmt
 	stmtSetUserPassword     *sql.Stmt
 	stmtSetUserDisplayName  *sql.Stmt
-	stmtDeleteUser          *sql.Stmt
 	stmtCountUsers          *sql.Stmt
 	stmtCountAdmins         *sql.Stmt
 
@@ -618,7 +627,7 @@ func (s *Store) prepareAll(ctx context.Context) error {
 	if s.stmtUpdateWorker, err = s.prepare(ctx, sqlUpdateWorker); err != nil {
 		return err
 	}
-	if s.stmtUpdateWorkerStatus, err = s.prepare(ctx, sqlUpdateWorkerStatus); err != nil {
+	if s.stmtSetWorkerDisabled, err = s.prepare(ctx, sqlSetWorkerDisabled); err != nil {
 		return err
 	}
 	if s.stmtUpdateWorkerHeartbeat, err = s.prepare(ctx, sqlUpdateWorkerHeartbeat); err != nil {
@@ -673,9 +682,6 @@ func (s *Store) prepareAll(ctx context.Context) error {
 		return err
 	}
 	if s.stmtGetTask, err = s.prepare(ctx, sqlGetTask); err != nil {
-		return err
-	}
-	if s.stmtUpdateTaskStatus, err = s.prepare(ctx, sqlUpdateTaskStatus); err != nil {
 		return err
 	}
 	if s.stmtSetTaskUnschedulableReason, err = s.prepare(ctx, sqlSetTaskUnschedulableReason); err != nil {
@@ -771,9 +777,6 @@ func (s *Store) prepareAll(ctx context.Context) error {
 		return err
 	}
 	if s.stmtSetUserDisplayName, err = s.prepare(ctx, sqlSetUserDisplayName); err != nil {
-		return err
-	}
-	if s.stmtDeleteUser, err = s.prepare(ctx, sqlDeleteUser); err != nil {
 		return err
 	}
 	if s.stmtCountUsers, err = s.prepare(ctx, sqlCountUsers); err != nil {

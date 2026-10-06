@@ -46,9 +46,7 @@ func resolveName(n *Name, syms Symbols) (resolved, bool) {
 
 // evalProperty resolves a property access. Section 1.3.3 defines a property p
 // as the function __property_p__, so this routes into the function registry.
-// C1 registers no property at all (its four groups are general conversions,
-// validation, math and list functions); the path engine's properties are
-// sub-project C4's.
+// The only registered properties are the path engine's (funcspath.go).
 //
 // callFunction can fail three ways: the function is not registered at all, no
 // registered signature accepts the receiver, or the matched signature's own
@@ -81,8 +79,7 @@ func evalProperty(recv Value, attr string, ec evalCtx, offset int) (Value, error
 // This is the one place that walk lives. evalName (a plain dotted name's
 // trailing properties) and Call.nameTarget (a method call's receiver walk,
 // every resolved segment but the last) are the same loop over a different
-// slice of the same resolved.Rest, and were duplicated before this helper
-// existed.
+// slice of the same resolved.Rest.
 func evalProperties(v Value, attrs []string, ec evalCtx, offset int) (Value, error) {
 	for _, attr := range attrs {
 		var err error
@@ -99,12 +96,13 @@ func evalProperties(v Value, attrs []string, ec evalCtx, offset int) (Value, err
 // package initialization from the registry itself rather than concatenated per
 // access.
 //
-// The concatenation it replaces was on a hot path: every property access built
-// a fresh string, and a comprehension applies one per element --
-// "[p.stem for p in Param.Files]" allocated a key per file. Deriving the table
-// from functionShapes rather than writing it out keeps it from drifting: a
-// property registered without an entry here still resolves, through the
-// fallback in propertyFuncName, at the old cost and with the old behavior.
+// Concatenating per access would sit on a hot path: every property access
+// would build a fresh string, and a comprehension applies one per element --
+// "[p.stem for p in Param.Files]" would allocate a key per file. Deriving the
+// table from functionShapes rather than writing it out keeps it from drifting:
+// a property registered without an entry here still resolves, through the
+// fallback in propertyFuncName, at the cost of a concatenation and with the
+// same behavior.
 var propertyFuncNames = internPropertyFuncNames()
 
 func internPropertyFuncNames() map[string]string {
@@ -126,9 +124,9 @@ func internPropertyFuncNames() map[string]string {
 // The fallback is not dead weight: functionShapes is a package-level map that
 // tests add rows to after initialization (withTestFunction, call.go's tests),
 // so a name absent from the interned table must still resolve to exactly the
-// key it would have before -- and a genuinely unregistered property must still
-// reach callFunction and come back as errUnknownFunction, which is what
-// evalProperty rewords into "unknown property".
+// same key -- and a genuinely unregistered property must still reach
+// callFunction and come back as errUnknownFunction, which is what evalProperty
+// rewords into "unknown property".
 func propertyFuncName(attr string) string {
 	if name, ok := propertyFuncNames[attr]; ok {
 		return name

@@ -12,8 +12,8 @@ export default function App() {
 
   // `status` is the one signal gating the whole shell. It is 'authed' both
   // for a real user session AND for the anonymous principal auth-off returns
-  // from GET /auth/me (kind: 'anonymous') — so the shell renders exactly as
-  // it always has when auth is disabled, with no separate feature flag.
+  // from GET /auth/me (kind: 'anonymous') — so the shell renders unchanged
+  // when auth is disabled, with no separate feature flag.
   if (status === 'loading') {
     return <div className={styles.loading}>Loading…</div>
   }

@@ -697,9 +697,8 @@ func TestUsers_ResponseIncludesAuthSource(t *testing.T) {
 // role_editable is the server telling the client what its own PATCH guard
 // will do. The client cannot compute it: the guard is two conditions and
 // role_source is on neither the user record nor any endpoint. Getting the
-// role_source=local row wrong is the exact bug this field exists to prevent —
-// the UI disabled the role control for every LDAP account, including the ones
-// the server happily accepts edits for.
+// role_source=local row wrong would have the UI disable the role control for
+// every LDAP account, including the ones the server accepts edits for.
 func TestUsers_ResponseRoleEditable(t *testing.T) {
 	tests := []struct {
 		name       string

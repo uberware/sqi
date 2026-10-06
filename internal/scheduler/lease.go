@@ -16,12 +16,18 @@ import (
 	"sync"
 	"time"
 
+	"github.com/google/uuid"
+
 	"github.com/uberware/sqi/internal/store"
 )
 
 // leaseRequest is the worker's work-lease request payload.
 type leaseRequest struct {
 	WorkerID string `json:"worker_id"`
+	// InstanceID is the requesting worker process's instance ID, the one it
+	// sends in its registration. Empty from a worker that sends
+	// none. See [Scheduler.leaseFromUnregisteredInstance].
+	InstanceID string `json:"instance_id,omitempty"`
 }
 
 // leaseReply is the server's batch response. Assignments holds marshaled
@@ -70,15 +76,28 @@ func (s *Scheduler) handleLeaseRequest(workerID, queueID string, data []byte) []
 	if err != nil {
 		return marshalLeaseReply(nil)
 	}
+	// A disabled worker drains: it finishes the tasks it holds and is leased
+	// nothing new (docs/api.md). A disable that lands between this check and
+	// the lease can still let one batch through, which is the documented drain.
+	// Neither refusal is answered at once: see holdDisabledLease and
+	// refuseLeaseAfterDelay. A disabled worker is refused without the
+	// instance-mismatch check or its Debug log.
+	if worker.Disabled {
+		return marshalLeaseReply(s.holdDisabledLease(ctx, workerID, req.InstanceID))
+	}
+	if s.leaseFromUnregisteredInstance(ctx, worker, req.InstanceID) {
+		return s.refuseLeaseAfterDelay(ctx)
+	}
+	s.instanceRefusals.Delete(instanceRefusalKey{workerID, req.InstanceID})
 
 	batch, err := s.selectLeaseBatchLocked(ctx, worker)
 	if err != nil {
-		s.logger.WarnContext(
-			ctx, "scheduler: lease selection failed",
-			slog.String("worker_id", workerID),
-			slog.Any("error", err),
-		)
-		return marshalLeaseReply(nil)
+		// A store error part way through a batch still delivers what was leased
+		// before it: those tasks are committed as assigned, and dropping them
+		// would strand them with nobody running them until the assigned-task
+		// timeout.
+		s.logLeaseSelectionFailure(ctx, workerID, len(batch), err)
+		return marshalLeaseReply(batch)
 	}
 	if len(batch) > 0 {
 		return marshalLeaseReply(batch)
@@ -88,13 +107,158 @@ func (s *Scheduler) handleLeaseRequest(workerID, queueID string, data []byte) []
 	// The park happens OUTSIDE the per-worker lock; only the selection below is
 	// serialized, so a re-woken request reads the up-to-date committed cores.
 	if s.waiters.wait(ctx, queueID, s.leaseHoldTimeout) {
-		if w2, err2 := s.store.GetWorker(ctx, workerID); err2 == nil {
-			if batch2, err2 := s.selectLeaseBatchLocked(ctx, w2); err2 == nil {
-				return marshalLeaseReply(batch2)
-			}
-		}
+		return marshalLeaseReply(s.leaseAfterPark(ctx, workerID, req.InstanceID))
 	}
 	return marshalLeaseReply(nil)
+}
+
+// holdDisabledLease answers a disabled worker's lease request. A worker
+// re-requests as soon as a reply arrives and can stay disabled for days, so the
+// request is parked for leaseHoldTimeout, as an idle worker's is, rather than
+// refused at once (which would spin its lease loop) or after a short delay
+// (which would still have it ask about once a second per queue for as long as
+// it stays disabled). [Scheduler.WakeWorker], called when the worker is
+// enabled, ends the park early, and the request then makes the one retry a
+// parked request makes, which leases work only if the worker is enabled by
+// then. It holds no lock while parked.
+func (s *Scheduler) holdDisabledLease(ctx context.Context, workerID, instanceID string) [][]byte {
+	if s.disabledWaiters.wait(ctx, workerID, s.leaseHoldTimeout) {
+		return s.leaseAfterPark(ctx, workerID, instanceID)
+	}
+	return nil
+}
+
+// refuseLeaseAfterDelay answers a lease request from a worker process whose
+// registration has not landed: an empty batch, held for leaseRefusalDelay (or
+// until ctx ends). The worker re-requests as soon as a reply arrives, so an
+// immediate answer would spin its lease loop for as long as the registration
+// takes. It holds no lock and touches nothing; each request runs on its own
+// goroutine and a worker keeps one request outstanding per queue, so a process
+// holds at most one of these per queue.
+func (s *Scheduler) refuseLeaseAfterDelay(ctx context.Context) []byte {
+	t := time.NewTimer(s.leaseRefusalDelay)
+	defer t.Stop()
+	select {
+	case <-ctx.Done():
+	case <-t.C:
+	}
+	return marshalLeaseReply(nil)
+}
+
+// leaseAfterPark is the one retry a parked lease request makes once woken: it
+// re-reads the worker and, unless the worker was disabled, taken offline, or
+// re-registered from another process while the request was parked, selects a
+// batch. A failure to read the worker is an empty batch; a failure part way
+// through selection returns the tasks already leased, which must reach the
+// worker (see [Scheduler.selectLeaseBatch]).
+//
+// The offline check is here and not at the front of the handler. A worker
+// that went offline while its request was parked (a graceful deregister, or
+// the heartbeat sweep) has usually gone, and a task leased to it would wait in
+// a dead inbox until the stale-assignment reaper took it back. At the front, a
+// live worker the sweep took offline would be refused for good, since
+// heartbeats never bring a worker back online; here it is refused once, and
+// its next request is served (the offline-worker known gap in
+// docs/architecture.md).
+func (s *Scheduler) leaseAfterPark(ctx context.Context, workerID, instanceID string) [][]byte {
+	w, err := s.store.GetWorker(ctx, workerID)
+	if err != nil || w.Disabled || w.Status == store.WorkerStatusOffline ||
+		s.leaseFromUnregisteredInstance(ctx, w, instanceID) {
+		return nil
+	}
+	batch, err := s.selectLeaseBatchLocked(ctx, w)
+	if err != nil {
+		s.logLeaseSelectionFailure(ctx, workerID, len(batch), err)
+	}
+	return batch
+}
+
+// logLeaseSelectionFailure records a store error during lease selection and how
+// many tasks leased before it are still delivered.
+func (s *Scheduler) logLeaseSelectionFailure(ctx context.Context, workerID string, delivered int, err error) {
+	s.logger.WarnContext(
+		ctx, "scheduler: lease selection failed",
+		slog.String("worker_id", workerID),
+		slog.Int("delivered", delivered),
+		slog.Any("error", err),
+	)
+}
+
+// leaseFromUnregisteredInstance reports whether a lease request comes from a
+// worker process other than the one whose registration the store last applied:
+// both instance IDs are known and they differ. Such a request gets an empty
+// batch, without parking and without touching a task. The common case is a
+// restarted worker that asks for work before the server has consumed its new
+// registration (the register message goes through JetStream asynchronously,
+// the lease is core-NATS request/reply); a task leased to it then would match
+// the registration's restart reclaim, which goes by worker ID, and be handed
+// back to ready while this process runs it. Its next request, after the
+// registration lands, is served. The refusal at the front of the handler is
+// held for leaseRefusalDelay (see [Scheduler.refuseLeaseAfterDelay]); the one
+// after a park is not, since the park already waited. An empty ID on either
+// side (a worker that sends none, or a row no ID-sending process has
+// registered yet) proves nothing, and the request is served as before.
+func (s *Scheduler) leaseFromUnregisteredInstance(ctx context.Context, w store.Worker, instanceID string) bool {
+	if w.InstanceID == "" || instanceID == "" || w.InstanceID == instanceID {
+		return false
+	}
+	// Debug: a restarted worker asks once per queue until its registration
+	// lands, and an unauthenticated broker lets anything publish here.
+	s.logger.DebugContext(
+		ctx, "scheduler: lease request from a worker process whose registration has not landed — no work",
+		slog.String("worker_id", w.ID),
+		slog.String("registered_instance_id", w.InstanceID),
+		slog.String("request_instance_id", instanceID),
+	)
+	s.noteInstanceRefusal(ctx, w, instanceID)
+	return true
+}
+
+// instanceRefusalKey names one worker process: a worker ID and the instance ID
+// its lease requests carry.
+type instanceRefusalKey struct{ workerID, instanceID string }
+
+// instanceRefusal is one worker process's run of refused lease requests.
+type instanceRefusal struct {
+	mu       sync.Mutex
+	count    int
+	lastWarn time.Time
+}
+
+// noteInstanceRefusal counts one more refusal of a lease request from the
+// worker process instanceID and, once that process has been refused
+// instanceRefusalWarnAfter times in a row, logs a Warn, at most once per
+// instanceRefusalWarnEvery while it goes on. A restarted process is refused
+// only until its registration lands, which the Debug line in
+// [Scheduler.leaseFromUnregisteredInstance] covers. Refusals that go on mean
+// the worker gets no work until something changes: its registration was lost
+// (a store error on every redelivery, or the message aged out of the stream),
+// or a second live process registered under the same worker ID. Counting per
+// process rather than per worker keeps the second case visible while the other
+// process is served. It is rate-limited, and only a worker the store knows
+// reaches it, so an unauthenticated broker cannot flood the log through it.
+func (s *Scheduler) noteInstanceRefusal(ctx context.Context, w store.Worker, instanceID string) {
+	v, _ := s.instanceRefusals.LoadOrStore(instanceRefusalKey{w.ID, instanceID}, &instanceRefusal{})
+	r := v.(*instanceRefusal) //nolint:errcheck,forcetypeassert // value type is always *instanceRefusal
+	r.mu.Lock()
+	r.count++
+	refused := r.count
+	warn := refused >= s.instanceRefusalWarnAfter && time.Since(r.lastWarn) >= s.instanceRefusalWarnEvery
+	if warn {
+		r.lastWarn = time.Now()
+	}
+	r.mu.Unlock()
+	if !warn {
+		return
+	}
+	s.logger.WarnContext(
+		ctx, "scheduler: a worker process keeps asking for work before its registration has landed — no work until it does; "+
+			"its registration may have been lost (restart the worker) or another live process may share this worker ID",
+		slog.String("worker_id", w.ID),
+		slog.String("registered_instance_id", w.InstanceID),
+		slog.String("request_instance_id", instanceID),
+		slog.Int("refused_in_a_row", refused),
+	)
 }
 
 // selectLeaseBatchLocked runs selectLeaseBatch while holding the per-worker
@@ -138,6 +302,9 @@ type leaseGateData struct {
 // in the store's priority order (first-fit, skip-and-continue). Each leased task
 // is transitioned ready->assigned, given an open attempt, and has its usage-pool
 // claims held; the returned slice holds the marshaled AssignMsg payloads.
+//
+// On a store error it returns the assignments already leased together with the
+// error: those tasks are committed as assigned, so they must reach the worker.
 func (s *Scheduler) selectLeaseBatch(ctx context.Context, worker store.Worker) ([][]byte, error) {
 	full := worker.CPUCount
 	if full <= 0 {
@@ -170,7 +337,7 @@ func (s *Scheduler) selectLeaseBatch(ctx context.Context, worker store.Worker) (
 		}
 		payload, cost, ok, err := s.tryLeaseTask(ctx, task, worker, free, exprShortfall)
 		if err != nil {
-			return nil, err
+			return batch, err
 		}
 		if !ok {
 			continue // ineligible, didn't fit, lost the race, or policy/usage blocked
@@ -255,7 +422,9 @@ func (s *Scheduler) leaseGatesPass(
 
 // tryLeaseTask attempts to lease one task to worker if it is eligible and fits
 // free cores. Returns (payload, coreCost, true, nil) on success; (nil, 0, false,
-// nil) when skipped; a non-nil error only on an unexpected store failure.
+// nil) when skipped, including when the lease transaction refuses it because a
+// parallel lease changed the picture after the gates passed; a non-nil error only
+// on an unexpected store failure.
 func (s *Scheduler) tryLeaseTask(
 	ctx context.Context,
 	task store.Task,
@@ -285,34 +454,54 @@ func (s *Scheduler) tryLeaseTask(
 		return nil, 0, false, nil
 	}
 
-	// Win the race for this still-ready task.
-	now := time.Now().UTC()
-	leased, err := s.store.LeaseReadyTask(ctx, task.ID, worker.ID, now)
+	// The gates above are cheap early filters over values read a moment ago.
+	// This call is the decision: one transaction leases the task, re-checks the
+	// queue, farm and pool caps against their current values, and writes the
+	// attempt and its claims (invariants I3 and I5). Every outcome other than
+	// Leased writes nothing, so there is nothing to revert and the task simply
+	// stays ready (or is no longer ours) for the next lease request.
+	res, err := s.store.LeaseTask(ctx, store.LeaseRequest{
+		TaskID:    task.ID,
+		WorkerID:  worker.ID,
+		AttemptID: uuid.NewString(),
+		Now:       time.Now().UTC(),
+		Claims:    buildUsageClaims(gd.step, gd.pools),
+	})
 	if err != nil {
 		return nil, 0, false, fmt.Errorf("lease: lease task %s: %w", task.ID, err)
 	}
-	if !leased {
-		return nil, 0, false, nil // another worker got it
+	if res.Outcome != store.LeaseLeased {
+		s.logLeaseRefused(ctx, task.ID, res)
+		return nil, 0, false, nil // skip, do not propagate: a lost race is not an error
 	}
-
-	// Attempt + usage claim (reverts task to ready on failure internally).
-	attempt, claimErr := s.createAttemptAndClaimUsage(ctx, task, worker, gd.step, gd.pools, now)
-	if claimErr != nil {
-		if !errors.Is(claimErr, errNoWorkerAvailable) {
-			s.logger.WarnContext(
-				ctx, "lease: createAttemptAndClaimUsage failed — task reverted to ready",
-				slog.String("task_id", task.ID),
-				slog.Any("error", claimErr),
-			)
-		}
-		return nil, 0, false, nil // task already reverted internally; skip, do not propagate
-	}
+	attempt := res.Attempt
+	// The scheduler already knows both fields the log-ingest path needs, so
+	// populate the cache now rather than waiting for the first log chunk to
+	// pay for a store read.
+	s.attemptCache.put(attempt.ID, attempt.WorkerID, attempt.TaskID)
 
 	payload, err = buildAssignPayload(ctx, task, worker, gd.job, gd.step, gd.queue, attempt.ID, s.store)
 	if err != nil {
 		return nil, 0, false, fmt.Errorf("lease: build payload for %s: %w", task.ID, err)
 	}
 	return payload, cost, true, nil
+}
+
+// logLeaseRefused records why [store.TaskStore.LeaseTask] did not lease a task.
+// Every refusal is a skip, never an error: another lease took the task or it
+// stopped being leasable (LeaseLost), or a cap filled between the gates and the
+// lease (LeaseQueueFull, LeaseFarmFull, LeasePoolFull). Only a full usage pool is
+// logged, because the policy gate and the lost-race skip have always been silent
+// and a pool name is the one thing an operator can act on.
+func (s *Scheduler) logLeaseRefused(ctx context.Context, taskID string, res store.LeaseResult) {
+	if res.Outcome != store.LeasePoolFull {
+		return
+	}
+	s.logger.DebugContext(
+		ctx, "scheduler: usage pool at capacity — deferring assignment",
+		slog.String("task_id", taskID),
+		slog.String("pool", res.FullPool),
+	)
 }
 
 // fullMachineCost returns a task's effective CPU cost for worker: its declared

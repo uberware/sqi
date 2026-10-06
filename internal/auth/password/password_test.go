@@ -166,9 +166,9 @@ func TestVerifyRejectsMalformedHashes(t *testing.T) {
 			encoded: fmt.Sprintf("$argon2id$v=19$m=19456,t=2,p=1$%s$%s", salt[:len(salt)-2], key),
 		},
 		{
-			// A 1-byte (base64 "AA") key field. Before the fix, Verify
-			// derived a comparison key of length len(want), so this would
-			// make ConstantTimeCompare guard only ~8 bits instead of 256.
+			// A 1-byte (base64 "AA") key field. If Verify derived a
+			// comparison key of length len(want), this would make
+			// ConstantTimeCompare guard only ~8 bits instead of 256.
 			name:    "wrong-length key (1 byte)",
 			encoded: fmt.Sprintf("$argon2id$v=19$m=19456,t=2,p=1$%s$AA", salt),
 		},

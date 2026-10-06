@@ -9,36 +9,35 @@ import (
 	"unicode/utf8"
 )
 
-// reprDataFuncs is sub-project C3's SERIALIZATION group: repr_py and
+// reprDataFuncs is the repr_* SERIALIZATION group: repr_py and
 // repr_json. See funcsreprshell.go for why the shell quoting functions live
 // apart from these.
 //
-// Each table pairs a type-variable catch-all with specific nulltype,
-// range_expr and path rows, which LOOKS like C1's flatten hazard a third
-// time — matchShapesExactFirst breaks an exact cost tie to the EARLIEST
-// shape, so a specific row ahead of a catch-all matters when the two can tie.
-// Here they cannot: row order is declared this way for spec fidelity (RFC
-// 0006 calls out null/range_expr/path by name), but pyRepr and jsonRepr each
-// switch on v.Type.Code directly, so the catch-all's Fn renders
-// CodeNull/CodePath/CodeRangeExpr exactly the same way the dedicated rows do
-// — reordering the rows was tried during development and every test still
-// passed. TestReprData_RendersSpecificTypes pins the OUTPUT, not the row
-// order, and says so in its own doc: that test structurally CANNOT tell the
-// rows apart. If a future change ever gives the catch-all branch behavior
-// that diverges from the dedicated rows (for example, by narrowing that
-// switch), it must add a test that can — this one can't.
-// COST (sub-project E1, Task 8): rule 2 names repr_py() and repr_json() by
-// name; rule 3 does not name either (only repr_sh()), but the reference's own
-// measured count SCALES with a string argument's byte length for both
-// (10/300/600 bytes -> 2/3/4) -- rule 3's "and similar" catch-all covers work
-// that is proportional to string length even where the enumeration is silent,
-// the same reading Task 6 and Task 7 already established. So the catch-all
-// varT row below declares BOTH Cost{ArgElements: {0}} (rule 2, over a list --
-// a DIVERGENCE, see below) and Cost{ArgBytes: {0}} (rule 3, over a string):
-// chargeArgs reads args[0].s for the byte charge (empty, hence zero, for a
-// list/int/float/bool argument -- only a string populates it) and
-// elementCount for the element charge (zero for anything but a list/
-// range_expr), so declaring both on the SAME row is safe and never
+// Each table pairs a type-variable catch-all with specific nulltype, range_expr
+// and path rows, which LOOKS like flatten's row-order hazard (funcslist.go) —
+// matchShapesExactFirst breaks an exact cost tie to the EARLIEST shape, so a
+// specific row ahead of a catch-all matters when the two can tie. Here they
+// cannot: row order is declared this way for spec fidelity (RFC 0006 calls out
+// null/range_expr/path by name), but pyRepr and jsonRepr each switch on
+// v.Type.Code directly, so the catch-all's Fn renders
+// CodeNull/CodePath/CodeRangeExpr exactly the same way the dedicated rows do —
+// reordering the rows changes nothing. TestReprData_RendersSpecificTypes pins
+// the OUTPUT, not the row order, and says so in its own doc: that test
+// structurally CANNOT tell the rows apart. If a future change ever gives the
+// catch-all branch behavior that diverges from the dedicated rows (for example,
+// by narrowing that switch), it must add a test that can — this one can't.
+//
+// COST: rule 2 names repr_py() and repr_json() by name; rule 3 does not name
+// either (only repr_sh()), but the reference's own measured count SCALES with a
+// string argument's byte length for both (10/300/600 bytes -> 2/3/4) -- rule
+// 3's "and similar" catch-all covers work that is proportional to string length
+// even where the enumeration is silent, the same reading the string functions
+// use. So the catch-all varT row below declares BOTH Cost{ArgElements: {0}}
+// (rule 2, over a list -- a DIVERGENCE, see below) and Cost{ArgBytes: {0}}
+// (rule 3, over a string): chargeArgs reads args[0].s for the byte charge
+// (empty, hence zero, for a list/int/float/bool argument -- only a string
+// populates it) and elementCount for the element charge (zero for anything but
+// a list/range_expr), so declaring both on the SAME row is safe and never
 // double-charges a single argument.
 //
 // The DIVERGENCE: the reference's own count for a LIST argument to repr_py or

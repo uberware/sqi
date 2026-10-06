@@ -2,15 +2,15 @@
 
 package integration
 
-// preset_tiers_test.go — the tier registry's verification (Phase 4, P1 §6).
+// preset_tiers_test.go — the tier registry's verification.
 //
 // presets/validation-tiers.yaml states which validation tier each preset
 // reached. This file makes each of those statements a FACT rather than an
 // intention, by refusing five kinds of unearned claim. Rule 3 is the important
 // one: a Tier-3 claim whose case skipped on a platform the entry lists in
 // required_on FAILS. Every container-backed target in this repo can exit 0
-// while running nothing, and the answer everywhere else has been a CI job
-// asserting test names by hand; here it is enforced in Go instead.
+// while running nothing; elsewhere a CI job asserts test names by hand, and
+// here it is enforced in Go instead.
 
 import (
 	"fmt"

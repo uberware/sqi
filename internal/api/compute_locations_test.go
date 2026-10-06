@@ -155,7 +155,7 @@ func TestListComputeLocations_WorkerCount(t *testing.T) {
 	}
 
 	// Seed an online worker at that location.
-	if _, err := st.RegisterWorker(t.Context(), store.Worker{
+	if _, _, err := st.RegisterWorker(t.Context(), store.Worker{
 		ID:              "w1",
 		ComputeLocation: "on-prem",
 		Status:          store.WorkerStatusOnline,

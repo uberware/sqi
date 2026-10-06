@@ -16,7 +16,6 @@ import (
 	"testing"
 
 	"github.com/uberware/sqi/internal/store"
-	"github.com/uberware/sqi/internal/store/fake"
 	"github.com/uberware/sqi/internal/worker/protocol"
 )
 
@@ -24,7 +23,7 @@ import (
 // message at a task that has already succeeded — the shape of a redelivered
 // message arriving after the task reached a terminal state.
 func TestHandleTaskStatusMessage_InvalidTransitionIsAcked(t *testing.T) {
-	st := fake.New()
+	st := newCheckedFake(t)
 	s := newStatusTestScheduler(st)
 	s.ctx = t.Context()
 
@@ -67,7 +66,7 @@ func TestHandleTaskStatusMessage_InvalidTransitionIsAcked(t *testing.T) {
 // at-least-once case: the same "running" message delivered twice must ack both
 // times, because a same-status write is a no-op rather than an error.
 func TestHandleTaskStatusMessage_DuplicateRunningIsAcked(t *testing.T) {
-	st := fake.New()
+	st := newCheckedFake(t)
 	s := newStatusTestScheduler(st)
 	s.ctx = t.Context()
 

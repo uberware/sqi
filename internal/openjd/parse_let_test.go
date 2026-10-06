@@ -2,10 +2,10 @@
 
 package openjd_test
 
-// Tests for the EXPR let: block decoder — E3 task 1. These cover parsing
-// only: the raw <LetBinding> strings land on StepTemplate.Let, StepScript.Let,
-// and EnvironmentScript.Let, with LetSet distinguishing an omitted let: from
-// one declared but empty. Nothing reads these fields yet.
+// Tests for the EXPR let: block decoder. These cover parsing only: the raw
+// <LetBinding> strings land on StepTemplate.Let, StepScript.Let, and
+// EnvironmentScript.Let, with LetSet distinguishing an omitted let: from one
+// declared but empty.
 
 import (
 	"fmt"

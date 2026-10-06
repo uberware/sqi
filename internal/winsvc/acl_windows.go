@@ -34,7 +34,7 @@ const (
 //
 // A missing dir is created with a protected DACL granting full control to
 // SYSTEM, Administrators and account only — service logs can carry job and
-// environment detail (spec §2).
+// environment detail.
 //
 // An existing dir keeps its DACL and its protection state. When account is
 // set, one inheritable Modify ACE for it is added: a LocalSystem service

@@ -160,8 +160,9 @@ SET released_at = ?
 WHERE task_attempt_id = ? AND released_at IS NULL`
 
 	// Releases all active claims held by any attempt belonging to the given
-	// job. Used during job cancellation to free all usage pool slots in
-	// a single UPDATE rather than iterating through individual attempts.
+	// job, whatever the attempt's status. It backs only the [Store.ReleaseJobClaims]
+	// fixture; the job cancel runs [sqlReleaseClosedJobClaims], which releases
+	// only the claims of attempts that are no longer running.
 	sqlReleaseJobClaims = `
 UPDATE usage_claims
 SET    released_at = ?
@@ -203,15 +204,20 @@ func (s *Store) ActiveClaimCount(ctx context.Context, poolID string) (int, error
 	return n, mapErr(err)
 }
 
-// TryClaimSlots implements [store.UsageClaimStore].
+// TryClaimSlots opens a transaction, counts active claims for each pool in
+// claims against the caller's copy of its MaxConcurrent, and either inserts all
+// claim rows (all pools have capacity) or rolls back and returns
+// [store.ErrUsageAtCapacity] (at least one pool is saturated). The scheduler
+// claims through [Store.LeaseTask], which reads the caps itself.
 //
-// It opens a transaction, counts active claims for each pool in claims, and
-// either inserts all claim rows (all pools have capacity) or rolls back and
-// returns [store.ErrUsageAtCapacity] (at least one pool is saturated).
+// The count and the inserts are safe together only because the single write
+// connection serializes every write transaction here: under concurrent writers
+// two calls can both see a pool one short of its cap and both insert. Invariant
+// I5 (see "Store invariants" in docs/architecture.md) is upheld by
+// [Store.LeaseTask], which counts each pool under that pool's anchor row; this
+// fixture takes no anchor.
 //
-// The transaction is serialized by the single-connection pool (SetMaxOpenConns(1))
-// so no other goroutine can modify claim counts between the count check and
-// the inserts.
+// Test fixture only: a blind write that is not part of store.Store.
 func (s *Store) TryClaimSlots(
 	ctx context.Context,
 	taskAttemptID string,
@@ -271,7 +277,12 @@ func (s *Store) ReleaseAttemptClaims(ctx context.Context, taskAttemptID string, 
 	return int(n), err
 }
 
-// ReleaseJobClaims implements [store.UsageClaimStore].
+// ReleaseJobClaims releases every active claim held by an attempt of the job's
+// tasks, whatever the attempt's status, and returns how many it released. A job
+// is canceled through [Store.CancelJobExecution], which releases only the claims
+// of closed attempts and does so in the same transaction that closes them.
+//
+// Test fixture only: a blind write that is not part of store.Store.
 func (s *Store) ReleaseJobClaims(ctx context.Context, jobID string, releasedAt time.Time) (int, error) {
 	res, err := s.stmtReleaseJobClaims.ExecContext(ctx, timeToText(releasedAt), jobID)
 	if err != nil {

@@ -2,10 +2,10 @@
 
 package api
 
-// Shared account resolution for externally-authenticated logins (Phase 3,
-// components C1 and C2). LDAP and OIDC differ in how they verify a credential;
-// they do not differ in what happens afterwards, so provisioning, role re-sync
-// and collision refusal live here once.
+// Shared account resolution for externally-authenticated logins (LDAP and
+// OIDC). The two differ in how they verify a credential; they do not differ in
+// what happens afterwards, so provisioning, role re-sync and collision refusal
+// live here once.
 //
 // Accounts are matched on (auth_source, external_id), never on username. A
 // name is not a stable identity: providers recycle email addresses, so a new
@@ -43,9 +43,9 @@ type externalIdentity struct {
 // always fails — meaning even a future code path that mistakenly ran a local
 // password check on such an account could not be satisfied by any password.
 //
-// Rows provisioned before C2 carry "!ldap" instead. No migration rewrites
-// them: the property that matters is "not a valid argon2id encoding", which
-// both satisfy.
+// LDAP rows provisioned before stable-identifier matching carry "!ldap"
+// instead. No migration rewrites them: the property that matters is "not a
+// valid argon2id encoding", which both satisfy.
 const externalPlaceholderHash = "!external"
 
 // Refusal reasons from resolveExternalUser. They are compared with errors.Is,

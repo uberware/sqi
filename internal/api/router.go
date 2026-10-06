@@ -79,18 +79,12 @@ type Config struct {
 	// concurrent requests to share one bucket and trigger 429s.
 	DisableRateLimit bool
 
-	// WorkerOfflineThreshold is the heartbeat-timeout window used to decide
-	// whether a disabled worker is dead (and thus removable). It mirrors the
-	// scheduler's WorkerTimeout. Zero is treated as "no grace" (a disabled
-	// worker with any past heartbeat is considered dead).
-	WorkerOfflineThreshold time.Duration
-
 	// AuthEnabled reflects config.AuthConfig.Enabled. When true, the session
 	// cookie is in play and this router activates the browser-security
 	// surface it requires: CORS AllowCredentials, the Origin-based CSRF guard
 	// on the authenticated route group, and WebSocket Origin enforcement
-	// (OriginPatterns instead of InsecureSkipVerify). When false, all three
-	// are byte-for-byte unchanged from pre-A1 behavior.
+	// (OriginPatterns instead of InsecureSkipVerify). When false, none of
+	// the three is active.
 	AuthEnabled bool
 
 	// ValidateJobOwner mirrors config.AuthConfig.ValidateJobOwner: when true,
@@ -99,14 +93,12 @@ type Config struct {
 	ValidateJobOwner bool
 
 	// ExprSubmissionDeadline mirrors config.OpenJDConfig.ExprSubmissionDeadline:
-	// how long the OpenJD expression checker may work on ONE submission before
-	// this server gives up and answers 503 (EXPR sub-project H1's wall-clock
-	// backstop). The submission handlers turn it into an absolute instant per
-	// request.
+	// how long the OpenJD expression checker may work on one submission before
+	// this server gives up and answers 503 (the wall-clock backstop). The
+	// submission handlers turn it into an absolute instant per request.
 	//
 	// The zero value means no backstop, which is what a router built without
-	// it — every test in this package — gets, and it reproduces the
-	// pre-H1 behavior exactly.
+	// it — every test in this package — gets.
 	ExprSubmissionDeadline time.Duration
 
 	// ExprLimits mirrors the operator's four openjd.expr_* settings, for the
@@ -116,18 +108,17 @@ type Config struct {
 	// sha256-pinned body from the operator's index). Every other production
 	// path reads these off the Submitter built at boot.
 	//
-	// The zero value means openjd's defaults, so a router built without it
-	// behaves exactly as it did before EXPR sub-project H1.
+	// The zero value means openjd's defaults.
 	//
-	// NEVER SET [openjd.ExprLimits.Deadline] ON THIS FIELD. It is exported and
+	// Do not set [openjd.ExprLimits.Deadline] on this field. It is exported and
 	// embedder-settable, and a Config is built once per server: a deadline
 	// stored here would be one absolute instant that every later request is
 	// measured against, refusing everything once it passed. It is inert today
 	// only because [openjd.ValidateWithBudget] overwrites the field from
 	// ValidateOptions.Deadline at every call site that matters — a property of
 	// those call sites, not a guarantee this type makes. Both handlers that
-	// read this field turn the configured DURATION
-	// (ExprSubmissionDeadline) into an instant per request instead.
+	// read this field turn the configured duration (ExprSubmissionDeadline)
+	// into an instant per request instead.
 	ExprLimits openjd.ExprLimits
 }
 
@@ -194,7 +185,7 @@ type Deps struct {
 
 	// LDAPVerifier authenticates accounts whose AuthSource is
 	// store.AuthSourceLDAP. Nil when directory auth is disabled, in which
-	// case login behaves exactly as it did before C1.
+	// case only local accounts can log in.
 	LDAPVerifier ldap.Verifier
 
 	// LDAPConfig supplies the role mapping and role-source mode. Only read
@@ -306,6 +297,17 @@ func resolveCORSOrigins(cfg Config, logger *slog.Logger) []string {
 		)
 	}
 	return slices.DeleteFunc(slices.Clone(origins), func(o string) bool { return o == "*" })
+}
+
+// schedulerWaker returns sched as the worker handler's waker, or nil when no
+// scheduler is wired. A typed-nil *scheduler.Scheduler stored in the interface
+// would not itself be nil, so the handler's nil check would pass and the call
+// would panic.
+func schedulerWaker(sched *scheduler.Scheduler) workerWaker {
+	if sched == nil {
+		return nil
+	}
+	return sched
 }
 
 // NewRouter builds and returns the chi router that serves the full sqi-server
@@ -420,7 +422,7 @@ func NewRouter(cfg Config, deps Deps, logger *slog.Logger, m *metrics.Metrics, h
 	jobs := newJobHandler(deps.Store, deps.Submitter, deps.Scheduler, notifier, logger, retryDefaults,
 		cfg.ValidateJobOwner, cfg.ExprSubmissionDeadline)
 	tasks := newTaskHandler(deps.Store, deps.Scheduler, logger)
-	workers := newWorkerHandler(deps.Store, notifier, deps.WorkerRevoker, cfg.WorkerOfflineThreshold, logger)
+	workers := newWorkerHandler(deps.Store, notifier, deps.WorkerRevoker, schedulerWaker(deps.Scheduler), logger)
 	farms := newFarmHandler(deps.Store, logger)
 	queues := newQueueHandler(deps.Store, logger)
 	storageLocs := newStorageLocationHandler(deps.Store, logger)
@@ -601,8 +603,8 @@ func NewRouter(cfg Config, deps Deps, logger *slog.Logger, m *metrics.Metrics, h
 				// handler (see submitidentity.go).
 				g.Post("/jobs", jobs.submitJob)
 				g.Post("/products/{name}/jobs", products.submitProductJob)
-				// Object routes: owner-enforced. This is what closes B1's
-				// carried-forward gap, where a `user` could cancel any job.
+				// Object routes: owner-enforced, so a `user` cannot cancel
+				// or modify another owner's job.
 				g.With(az.requireJobAccessByJobID()).Patch("/jobs/{id}", jobs.patchJob)
 				g.With(az.requireJobAccessByJobID()).Post("/jobs/{id}/cancel", jobs.cancelJob)
 				g.With(az.requireJobAccessByJobID()).Post("/jobs/{id}/retry", jobs.retryJob)
@@ -649,7 +651,7 @@ func NewRouter(cfg Config, deps Deps, logger *slog.Logger, m *metrics.Metrics, h
 			// broker one worker at a time. The risk it does not carry is
 			// escalation: revoke only removes access already granted, it
 			// cannot attach compute or obtain a credential. That is an
-			// AVAILABILITY exposure, deliberately accepted here because
+			// availability exposure, deliberately accepted here because
 			// carving out this one route would break the rule that auth-off
 			// behavior matches pre-auth sqi, and because every other
 			// destructive worker route (disable, delete) is exposed exactly

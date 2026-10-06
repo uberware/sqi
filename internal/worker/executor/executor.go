@@ -146,7 +146,7 @@ type Config struct {
 	// worker force-shutdown (DrainAndShutdown). Defaults to 10 s when zero or
 	// negative.
 	//
-	// Note: per-task timeout and per-task cancellation no longer use this value;
+	// Note: per-task timeout and per-task cancellation do not use this value;
 	// they follow the assignment's OpenJD Action.cancelation method (TERMINATE =
 	// immediate SIGKILL; NOTIFY_THEN_TERMINATE = SIGTERM then the action's notify
 	// period). KillGracePeriod governs only the worker-shutdown grace window.

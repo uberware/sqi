@@ -232,12 +232,12 @@ func TestLogin_InvalidCredentialsIndistinguishable(t *testing.T) {
 	}
 }
 
-// TestDummyHash_MatchesPasswordPackageParams guards the fix for the
+// TestDummyHash_MatchesPasswordPackageParams guards the defense against the
 // unknown-user timing side channel: login's unknown-user branch calls
 // password.Verify(dummyHash, ...) so that path costs the same as the
 // known-user branch, which always calls password.Verify for real. Timing
 // itself is not asserted here (that would be flaky); instead this pins the
-// structural guarantee that makes the fix work — dummyHash is a genuine,
+// structural guarantee that makes the defense work — dummyHash is a genuine,
 // verifiable argon2id hash whose cost parameters match whatever
 // password.Hash currently produces (not a stale hardcoded literal that
 // could silently drift out of sync if the parameters are ever raised).
@@ -464,7 +464,7 @@ func TestLogout_LocalModeReturnsNoRedirect(t *testing.T) {
 }
 
 // TestLogout_ReauthMarkerCookie pins the marker cookie's own attributes. The
-// Path is the load-bearing one: forceReauth reads the cookie back on
+// Path matters most: forceReauth reads the cookie back on
 // /auth/oidc/login, and a marker written at any other scope is invisible to it,
 // which turns reauth_mode=after_logout into reauth_mode=never with no error
 // anywhere.

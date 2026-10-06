@@ -14,15 +14,24 @@ import (
 )
 
 type fakeTransport struct {
-	mu      sync.Mutex
-	replies [][]byte
-	calls   int
+	mu       sync.Mutex
+	replies  [][]byte
+	calls    int
+	requests [][]byte // the first maxRecordedRequests request bodies, in order
 }
 
-func (f *fakeTransport) RequestLease(_ context.Context, _, _ string, _ []byte, _ time.Duration) ([]byte, error) {
+// maxRecordedRequests caps fakeTransport.requests: a loop against an
+// always-empty fake re-requests without pause, so recording every body would
+// grow without bound for as long as the loop runs.
+const maxRecordedRequests = 8
+
+func (f *fakeTransport) RequestLease(_ context.Context, _, _ string, data []byte, _ time.Duration) ([]byte, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.calls++
+	if len(f.requests) < maxRecordedRequests {
+		f.requests = append(f.requests, data)
+	}
 	if len(f.replies) == 0 {
 		out, _ := json.Marshal(reply{}) //nolint:errcheck // simple struct, never fails
 		return out, nil
@@ -124,5 +133,36 @@ func TestLoop_SkipsWrongVersionAssignmentButDispatchesRest(t *testing.T) {
 	defer d.mu.Unlock()
 	if len(d.got) != 1 || d.got[0] != "good" {
 		t.Fatalf("dispatched = %v, want [good]", d.got)
+	}
+}
+
+// TestLoop_RequestCarriesTheInstanceID pins that every lease request carries
+// the process's instance ID from Config: the server holds work
+// back from a process whose registration it has not applied yet, which it can
+// only do if the request says which process is asking.
+func TestLoop_RequestCarriesTheInstanceID(t *testing.T) {
+	tr := &fakeTransport{}
+	l := New(tr, &recDispatcher{}, Config{
+		QueueIDs: []string{"q1"}, RequestTimeout: 50 * time.Millisecond,
+		WorkerID: "w1", InstanceID: "inst-1",
+	}, nil)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	l.Run(ctx)
+
+	tr.mu.Lock()
+	defer tr.mu.Unlock()
+	if len(tr.requests) == 0 {
+		t.Fatal("no lease request was sent")
+	}
+	for i, data := range tr.requests {
+		var got request
+		if err := json.Unmarshal(data, &got); err != nil {
+			t.Fatalf("request %d: unmarshal: %v", i, err)
+		}
+		if got.WorkerID != "w1" || got.InstanceID != "inst-1" {
+			t.Fatalf("request %d = %s, want worker_id w1 and instance_id inst-1", i, data)
+		}
 	}
 }
