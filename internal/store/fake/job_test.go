@@ -9,25 +9,22 @@ import (
 	"github.com/uberware/sqi/internal/store"
 )
 
-// TestJob_ListDependentsAndBlocked exercises CreateJobDependencies,
-// ListDependents, ListBlockedJobs, and GetJob's DependsOn population together,
-// mirroring the equivalent SQLite test.
+// TestJob_ListDependentsAndBlocked exercises the dependency edges a submission
+// writes, ListDependents, ListBlockedJobs, and GetJob's DependsOn population
+// together, mirroring the equivalent SQLite test.
 func TestJob_ListDependentsAndBlocked(t *testing.T) {
 	s := New()
 	farm := mustCreateFarm(t, s, "listdeps")
 	queue := mustCreateQueue(t, s, farm.ID, "queue-listdeps", "listdeps")
 
-	up := mustCreateJob(t, s, "up-listdeps", farm.ID, queue.ID)
-	down := store.Job{
-		ID: "down-listdeps", FarmID: farm.ID, QueueID: queue.ID, Name: "down",
-		Priority: 50, Status: store.JobStatusBlocked,
-	}
-	if _, err := s.CreateJob(ctx(), down); err != nil {
-		t.Fatalf("CreateJob(down): %v", err)
-	}
-	if err := s.CreateJobDependencies(ctx(), down.ID, []string{up.ID}); err != nil {
-		t.Fatalf("CreateJobDependencies: %v", err)
-	}
+	up := newJob("up-listdeps", farm.ID, queue.ID).submit(t, s).Job
+	down := mustSubmit(t, s, store.JobSubmission{
+		Job: store.Job{
+			ID: "down-listdeps", FarmID: farm.ID, QueueID: queue.ID, Name: "down",
+			Priority: 50, Status: store.JobStatusBlocked,
+		},
+		DependsOn: []string{up.ID},
+	}).Job
 
 	deps, err := s.ListDependents(ctx(), up.ID)
 	if err != nil {
@@ -64,17 +61,14 @@ func TestJob_DeleteJob_RemovesOutgoingEdgesKeepsIncoming(t *testing.T) {
 	farm := mustCreateFarm(t, s, "delcascade")
 	queue := mustCreateQueue(t, s, farm.ID, "queue-delcascade", "delcascade")
 
-	up := mustCreateJob(t, s, "up-delcascade", farm.ID, queue.ID)
-	down := store.Job{
-		ID: "down-delcascade", FarmID: farm.ID, QueueID: queue.ID, Name: "down",
-		Priority: 50, Status: store.JobStatusBlocked,
-	}
-	if _, err := s.CreateJob(ctx(), down); err != nil {
-		t.Fatalf("CreateJob(down): %v", err)
-	}
-	if err := s.CreateJobDependencies(ctx(), down.ID, []string{up.ID}); err != nil {
-		t.Fatalf("CreateJobDependencies: %v", err)
-	}
+	up := newJob("up-delcascade", farm.ID, queue.ID).submit(t, s).Job
+	down := mustSubmit(t, s, store.JobSubmission{
+		Job: store.Job{
+			ID: "down-delcascade", FarmID: farm.ID, QueueID: queue.ID, Name: "down",
+			Priority: 50, Status: store.JobStatusBlocked,
+		},
+		DependsOn: []string{up.ID},
+	}).Job
 
 	// Deleting the UPSTREAM must NOT delete the edge (no FK on depends_on_job_id):
 	if err := s.DeleteJob(ctx(), up.ID); err != nil {
@@ -101,32 +95,24 @@ func TestJob_DeleteJob_RemovesOutgoingEdgesKeepsIncoming(t *testing.T) {
 	}
 }
 
-// TestJob_CreateJobDependencies_Dedup verifies that calling
-// CreateJobDependencies twice with an overlapping upstream ID does not
-// produce a duplicate edge — the slices.Contains guard makes the operation
-// idempotent, mirroring SQLite's INSERT OR IGNORE + primary key.
-func TestJob_CreateJobDependencies_Dedup(t *testing.T) {
+// TestJob_CreateJobSubmission_DuplicateDependencyIsIgnored verifies that a
+// submission naming the same upstream twice neither fails nor produces a
+// duplicate edge — the slices.Contains guard makes the edge write idempotent,
+// mirroring SQLite's INSERT OR IGNORE + primary key. It replaces the dedup test
+// of the per-row edge writer, which a submission's DependsOn has superseded.
+func TestJob_CreateJobSubmission_DuplicateDependencyIsIgnored(t *testing.T) {
 	s := New()
 	farm := mustCreateFarm(t, s, "dedup")
 	queue := mustCreateQueue(t, s, farm.ID, "queue-dedup", "dedup")
 
-	up1 := mustCreateJob(t, s, "up1-dedup", farm.ID, queue.ID)
-	up2 := mustCreateJob(t, s, "up2-dedup", farm.ID, queue.ID)
+	up1 := newJob("up1-dedup", farm.ID, queue.ID).submit(t, s).Job
+	up2 := newJob("up2-dedup", farm.ID, queue.ID).submit(t, s).Job
 	down := store.Job{
 		ID: "down-dedup", FarmID: farm.ID, QueueID: queue.ID, Name: "down",
 		Priority: 50, Status: store.JobStatusBlocked,
 	}
-	if _, err := s.CreateJob(ctx(), down); err != nil {
-		t.Fatalf("CreateJob(down): %v", err)
-	}
-
-	if err := s.CreateJobDependencies(ctx(), down.ID, []string{up1.ID}); err != nil {
-		t.Fatalf("CreateJobDependencies (first call): %v", err)
-	}
-	// Second call repeats up1 (already recorded) and adds up2.
-	if err := s.CreateJobDependencies(ctx(), down.ID, []string{up1.ID, up2.ID}); err != nil {
-		t.Fatalf("CreateJobDependencies (second call): %v", err)
-	}
+	// up1 is named twice.
+	mustSubmit(t, s, store.JobSubmission{Job: down, DependsOn: []string{up1.ID, up1.ID, up2.ID}})
 
 	deps, err := s.ListJobDependencyIDs(ctx(), down.ID)
 	if err != nil {
@@ -141,28 +127,22 @@ func TestJob_CreateJobDependencies_Dedup(t *testing.T) {
 
 // TestJob_ListJobDependencyIDs_OrderedByUpstreamID locks in the ordering fix:
 // ListJobDependencyIDs must return upstream IDs sorted by ID, regardless of
-// the order they were passed to CreateJobDependencies or created in,
-// mirroring the equivalent SQLite test.
+// the order they were passed in the submission or created in, mirroring the
+// equivalent SQLite test.
 func TestJob_ListJobDependencyIDs_OrderedByUpstreamID(t *testing.T) {
 	s := New()
 	farm := mustCreateFarm(t, s, "order")
 	queue := mustCreateQueue(t, s, farm.ID, "queue-order", "order")
 
-	zeta := mustCreateJob(t, s, "zeta-order", farm.ID, queue.ID)
-	alpha := mustCreateJob(t, s, "alpha-order", farm.ID, queue.ID)
-	mike := mustCreateJob(t, s, "mike-order", farm.ID, queue.ID)
+	zeta := newJob("zeta-order", farm.ID, queue.ID).submit(t, s).Job
+	alpha := newJob("alpha-order", farm.ID, queue.ID).submit(t, s).Job
+	mike := newJob("mike-order", farm.ID, queue.ID).submit(t, s).Job
 	down := store.Job{
 		ID: "down-order", FarmID: farm.ID, QueueID: queue.ID, Name: "down",
 		Priority: 50, Status: store.JobStatusBlocked,
 	}
-	if _, err := s.CreateJob(ctx(), down); err != nil {
-		t.Fatalf("CreateJob(down): %v", err)
-	}
-
 	// Deliberately not alphabetical.
-	if err := s.CreateJobDependencies(ctx(), down.ID, []string{zeta.ID, alpha.ID, mike.ID}); err != nil {
-		t.Fatalf("CreateJobDependencies: %v", err)
-	}
+	mustSubmit(t, s, store.JobSubmission{Job: down, DependsOn: []string{zeta.ID, alpha.ID, mike.ID}})
 
 	deps, err := s.ListJobDependencyIDs(ctx(), down.ID)
 	if err != nil {
