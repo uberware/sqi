@@ -1678,6 +1678,8 @@ func TestWorker_ListWorkers_Search(t *testing.T) {
 
 // ── DemoteStalledJobs ─────────────────────────────────────────────────────────
 
+// seedJobWithTasks creates a job (in the given status) with one step and a task
+// per status in taskStatuses. Returns the job ID.
 func seedJobWithTasks(t *testing.T, s *sqlite.Store, jobID string, jobStatus store.JobStatus, taskStatuses ...store.TaskStatus) string {
 	t.Helper()
 	stepID := jobID + "-step"

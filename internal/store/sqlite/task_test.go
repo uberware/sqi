@@ -168,6 +168,11 @@ func TestRetryTasks_MixedStateStep(t *testing.T) {
 	}
 }
 
+// TestRetryTasks_ResetsFailureCounters asserts that a manual retry via
+// RetryTasks clears the genuine-failure state Tasks 1-3 introduced: a revived
+// task's FailedAttempts and RetryAfter are zeroed/cleared, and — when the
+// retry resets a terminal job back to pending — the job's FailedAttempts and
+// ParkReason are cleared too.
 func TestRetryTasks_ResetsFailureCounters(t *testing.T) {
 	s := openTestStore(t)
 	ctx := context.Background()
@@ -264,6 +269,9 @@ func TestRetryTasks_ClearsFailureReason(t *testing.T) {
 	}
 }
 
+// recordFailureFixture seeds a running farm/queue/job/step/task and returns the
+// store, ctx, and a now stamp — the shared setup for the RecordTaskFailure
+// tests below.
 func recordFailureFixture(t *testing.T) (*sqlite.Store, context.Context, time.Time) {
 	t.Helper()
 	s := openTestStore(t)
@@ -279,6 +287,9 @@ func recordFailureFixture(t *testing.T) (*sqlite.Store, context.Context, time.Ti
 	return s, ctx, now
 }
 
+// TestRecordTaskFailure_CountsEachAttempt asserts that RecordTaskFailure
+// increments the task's and job's failed_attempts counters once per DISTINCT
+// attempt: two genuine attempts of the same task raise both counters to two.
 func TestRecordTaskFailure_CountsEachAttempt(t *testing.T) {
 	s, ctx, now := recordFailureFixture(t)
 
@@ -388,6 +399,9 @@ func TestRecordTaskFailure_NotFound(t *testing.T) {
 	}
 }
 
+// TestRequeueTaskForRetry_ResetsAssignment asserts that RequeueTaskForRetry
+// returns an assigned task to ready, clears its worker assignment, and stamps
+// retry_after with the supplied backoff time.
 func TestRequeueTaskForRetry_ResetsAssignment(t *testing.T) {
 	s := openTestStore(t)
 	ctx := context.Background()
@@ -413,6 +427,9 @@ func TestRequeueTaskForRetry_ResetsAssignment(t *testing.T) {
 	}
 }
 
+// TestRequeueTaskForRetry_ClearsFailureReason asserts that the auto-retry path
+// clears a task's stale failure_reason — a requeued task must not
+// carry forward the reason from its prior failed attempt.
 func TestRequeueTaskForRetry_ClearsFailureReason(t *testing.T) {
 	s := openTestStore(t)
 	ctx := context.Background()
@@ -447,6 +464,12 @@ func TestRequeueTaskForRetry_ClearsFailureReason(t *testing.T) {
 	}
 }
 
+// TestRequeueTaskForRetry_GuardedToInFlight asserts the status guard: only an
+// assigned/running task is requeued. A missing task and — critically — a task
+// that has since been canceled, succeeded, or already returned to ready are
+// legitimate no-ops (false, nil), never a resurrection: a stale or redelivered
+// failure report must not flip a terminal task back to ready or clear its
+// failure reason.
 func TestRequeueTaskForRetry_GuardedToInFlight(t *testing.T) {
 	s := openTestStore(t)
 	ctx := context.Background()
@@ -499,6 +522,9 @@ func TestRequeueTaskForRetry_GuardedToInFlight(t *testing.T) {
 	}
 }
 
+// TestParkJob_SkipsTerminal asserts that ParkJob transitions a non-terminal
+// job to paused with a reason, but is a no-op (not an error) once the job has
+// reached a terminal status.
 func TestParkJob_SkipsTerminal(t *testing.T) {
 	s := openTestStore(t)
 	ctx := context.Background()
@@ -580,6 +606,9 @@ func TestResumeJob_AutoParked_ClearsParkStateAndCounter(t *testing.T) {
 	}
 }
 
+// TestResumeJob_ManualPause_KeepsCounter asserts that resuming a MANUALLY
+// paused job (empty park_reason) does not touch its accumulated failure
+// counter — only an auto-park reset is implied by resume.
 func TestResumeJob_ManualPause_KeepsCounter(t *testing.T) {
 	s, ctx, now := recordFailureFixture(t)
 
@@ -668,6 +697,9 @@ func TestRetryTasks_UnparksAutoParkedJob(t *testing.T) {
 	}
 }
 
+// TestRetryTasks_LeavesManualPauseAlone asserts the counterpart guard: a
+// manually paused job (no park_reason) is NOT un-paused by retrying its tasks
+// — the operator's pause outranks the retry.
 func TestRetryTasks_LeavesManualPauseAlone(t *testing.T) {
 	s, ctx, now := recordFailureFixture(t)
 
@@ -689,6 +721,8 @@ func TestRetryTasks_LeavesManualPauseAlone(t *testing.T) {
 	}
 }
 
+// TestFailureReasonSummary_Mixed asserts the summary counts failed tasks
+// grouped by reason and picks the most frequent reason as dominant.
 func TestFailureReasonSummary_Mixed(t *testing.T) {
 	s := openTestStore(t)
 	ctx := context.Background()
@@ -710,6 +744,9 @@ func TestFailureReasonSummary_Mixed(t *testing.T) {
 	}
 }
 
+// TestFailureReasonSummary_Tie asserts that when two reasons tie on
+// frequency, the dominant reason is the lexicographically smaller one —
+// deterministic regardless of insertion order.
 func TestFailureReasonSummary_Tie(t *testing.T) {
 	s := openTestStore(t)
 	ctx := context.Background()
@@ -730,6 +767,8 @@ func TestFailureReasonSummary_Tie(t *testing.T) {
 	}
 }
 
+// TestFailureReasonSummary_Empty asserts a job with no failed tasks (or no
+// failure_reason recorded) returns the zero-value summary and no error.
 func TestFailureReasonSummary_Empty(t *testing.T) {
 	s := openTestStore(t)
 	ctx := context.Background()
