@@ -830,6 +830,9 @@ the in-memory fake:
   tasks) in one `CreateJobSubmission`, the call production makes. Put every
   status and field the test needs in that one submission, except a task's
   `assigned` and `running`, which are leased (next bullet).
+  `storetest.NewJob(id, farm, queue)` builds that submission by chaining
+  `.As`, `.Step` and `.Task`, then writes it with `.Submit` or
+  `.SubmitLeasing`.
 - `storetest.SubmitLeasing` is `Submit` for a job with work in flight: each task
   asking to be `assigned` or `running` is submitted ready and then leased (and
   started) for real. `storetest.Lease`, `storetest.Start` and

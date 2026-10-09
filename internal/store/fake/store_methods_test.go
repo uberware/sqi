@@ -18,7 +18,7 @@ package fake
 //   usage.go      — ActiveClaimCount, UpdateUsagePool, DeleteUsagePool
 //
 // Fixtures reach their state through the production write path: a job's whole
-// graph in one CreateJobSubmission (jobSeed), work in flight through
+// graph in one CreateJobSubmission (storetest.JobSeed), work in flight through
 // LeaseTask. The one state production cannot reach that a test here needs, a
 // duplicate active claim, comes from the fake's injector.
 
@@ -55,83 +55,6 @@ func mustCreateQueue(t *testing.T, s *Store, farmID, id, name string) store.Queu
 	return q
 }
 
-// jobSeed is one job's whole graph — the job, its steps and its tasks — which
-// submit writes with a single CreateJobSubmission. A job starts running at
-// priority 50 with no steps and no tasks; the chained methods add to it, and a
-// row is written in whatever status it is given, exactly as CreateJobSubmission
-// writes it.
-//
-// A task that must be in flight is not seeded assigned or running: seed it
-// ready, then lease it with leaseTask or runTask, so it carries the attempt and
-// the worker a real lease makes.
-type jobSeed struct{ sub store.JobSubmission }
-
-// newJob starts a running job at priority 50, named after its ID.
-func newJob(id, farmID, queueID string) *jobSeed {
-	return &jobSeed{sub: store.JobSubmission{Job: store.Job{
-		ID: id, FarmID: farmID, QueueID: queueID, Name: id,
-		Status: store.JobStatusRunning, Priority: 50,
-	}}}
-}
-
-// as sets the job's status, stamping the timestamp a job in that status
-// carries: started_at once it has run, completed_at once it is terminal.
-func (j *jobSeed) as(status store.JobStatus) *jobSeed {
-	now := time.Now().UTC()
-	j.sub.Job.Status = status
-	switch status {
-	case store.JobStatusRunning:
-		j.sub.Job.StartedAt = &now
-	case store.JobStatusCompleted, store.JobStatusFailed, store.JobStatusCanceled:
-		j.sub.Job.CompletedAt = &now
-	}
-	return j
-}
-
-// step adds a step in the given status, or sets the status of the step the job
-// already holds under that ID. Its name is its ID.
-func (j *jobSeed) step(id string, status store.StepStatus) *jobSeed {
-	for i := range j.sub.Steps {
-		if j.sub.Steps[i].ID == id {
-			j.sub.Steps[i].Status = status
-			return j
-		}
-	}
-	j.sub.Steps = append(j.sub.Steps, store.Step{
-		ID: id, JobID: j.sub.Job.ID, Name: id, StepOrder: len(j.sub.Steps),
-		Status: status, DependsOn: []string{},
-	})
-	return j
-}
-
-// task adds a task of stepID in the given status. A task and its step are one
-// submission, so a pending step is added when the job holds none by that ID;
-// call step first to give the step another status. Step IDs are unique across
-// jobs, as in the store, so two jobs in one test name different steps.
-func (j *jobSeed) task(id, stepID string, status store.TaskStatus) *jobSeed {
-	return j.taskRow(store.Task{ID: id, StepID: stepID, Status: status})
-}
-
-// taskRow adds the given task, filling in its job, its name (its ID) and its
-// step, as task does.
-func (j *jobSeed) taskRow(task store.Task) *jobSeed {
-	task.JobID = j.sub.Job.ID
-	if task.Name == "" {
-		task.Name = task.ID
-	}
-	if !slices.ContainsFunc(j.sub.Steps, func(s store.Step) bool { return s.ID == task.StepID }) {
-		j.step(task.StepID, store.StepStatusPending)
-	}
-	j.sub.Tasks = append(j.sub.Tasks, task)
-	return j
-}
-
-// submit writes the whole graph and returns what the store wrote.
-func (j *jobSeed) submit(t *testing.T, s *Store) store.JobSubmission {
-	t.Helper()
-	return storetest.Submit(t, s, j.sub)
-}
-
 // leaseTask leases the ready task taskID to workerID through the production
 // lease and returns the attempt the lease made. The lease needs the task's
 // job, queue and farm rows to exist; it needs no registered worker.
@@ -153,7 +76,7 @@ func seedReadyTask(t *testing.T, s *Store) {
 	t.Helper()
 	mustCreateFarm(t, s, "f1")
 	mustCreateQueue(t, s, "farm-f1", "q1", "q1")
-	newJob("j1", "farm-f1", "q1").task("t1", "s1", store.TaskStatusReady).submit(t, s)
+	storetest.NewJob("j1", "farm-f1", "q1").Task("t1", "s1", store.TaskStatusReady).Submit(t, s)
 }
 
 func mustCreateWorker(t *testing.T, s *Store, id, farmID string, status store.WorkerStatus) store.Worker {
@@ -233,7 +156,7 @@ func TestSetTaskUnschedulableReason(t *testing.T) {
 
 	mustCreateFarm(t, s, "f1")
 	mustCreateQueue(t, s, "farm-f1", "q1", "q1")
-	newJob("j1", "farm-f1", "q1").task("t1", "s1", store.TaskStatusReady).submit(t, s)
+	storetest.NewJob("j1", "farm-f1", "q1").Task("t1", "s1", store.TaskStatusReady).Submit(t, s)
 
 	if _, err := s.SetTaskUnschedulableReason(ctx(), "t1", "no eligible online worker: attribute requirement not met"); err != nil {
 		t.Fatalf("SetTaskUnschedulableReason: %v", err)
@@ -269,7 +192,7 @@ func TestUnschedulableReason_ClearedOnLease(t *testing.T) {
 
 	mustCreateFarm(t, s, "f1")
 	mustCreateQueue(t, s, "farm-f1", "q1", "q1")
-	newJob("j1", "farm-f1", "q1").task("t1", "s1", store.TaskStatusReady).submit(t, s)
+	storetest.NewJob("j1", "farm-f1", "q1").Task("t1", "s1", store.TaskStatusReady).Submit(t, s)
 
 	if _, err := s.SetTaskUnschedulableReason(ctx(), "t1", "no eligible online worker"); err != nil {
 		t.Fatalf("SetTaskUnschedulableReason: %v", err)
@@ -309,7 +232,7 @@ func TestUnschedulableReason_ClearedOnCancel(t *testing.T) {
 
 			mustCreateFarm(t, s, "f1")
 			mustCreateQueue(t, s, "farm-f1", "q1", "q1")
-			newJob("j1", "farm-f1", "q1").task("t1", "s1", store.TaskStatusReady).submit(t, s)
+			storetest.NewJob("j1", "farm-f1", "q1").Task("t1", "s1", store.TaskStatusReady).Submit(t, s)
 
 			if _, err := s.SetTaskUnschedulableReason(ctx(), "t1", "no eligible online worker"); err != nil {
 				t.Fatalf("SetTaskUnschedulableReason: %v", err)
@@ -333,10 +256,10 @@ func TestListReadyTasks(t *testing.T) {
 	defer s.Close()
 	mustCreateFarm(t, s, "f1")
 	mustCreateQueue(t, s, "farm-f1", "q1", "q1")
-	newJob("j1", "farm-f1", "q1").
-		task("t-ready", "s1", store.TaskStatusReady).
-		task("t-running", "s1", store.TaskStatusReady).
-		submit(t, s)
+	storetest.NewJob("j1", "farm-f1", "q1").
+		Task("t-ready", "s1", store.TaskStatusReady).
+		Task("t-running", "s1", store.TaskStatusReady).
+		Submit(t, s)
 	runTask(t, s, "t-running", "w1")
 
 	tasks, err := s.ListReadyTasks(ctx(), "farm-f1", time.Now(), 10)
@@ -355,13 +278,13 @@ func TestListReadyTasks_SkipsBackoffAndPausedJobs(t *testing.T) {
 	mustCreateQueue(t, s, "farm-f1", "q1", "q1")
 	now := time.Now()
 	future := now.Add(time.Minute)
-	newJob("j1", "farm-f1", "q1").
-		task("t-ready", "s1", store.TaskStatusReady).
-		taskRow(store.Task{ID: "t-backoff", StepID: "s1", Status: store.TaskStatusReady, RetryAfter: &future}).
-		submit(t, s)
-	newJob("j2", "farm-f1", "q1").as(store.JobStatusPaused).
-		task("t-paused", "s2", store.TaskStatusReady).
-		submit(t, s)
+	storetest.NewJob("j1", "farm-f1", "q1").
+		Task("t-ready", "s1", store.TaskStatusReady).
+		TaskRow(store.Task{ID: "t-backoff", StepID: "s1", Status: store.TaskStatusReady, RetryAfter: &future}).
+		Submit(t, s)
+	storetest.NewJob("j2", "farm-f1", "q1").As(store.JobStatusPaused).
+		Task("t-paused", "s2", store.TaskStatusReady).
+		Submit(t, s)
 
 	tasks, err := s.ListReadyTasks(ctx(), "farm-f1", now, 10)
 	if err != nil {
@@ -384,7 +307,7 @@ func TestListReadyTasks_AllFarms(t *testing.T) {
 	defer s.Close()
 	mustCreateFarm(t, s, "f1")
 	mustCreateQueue(t, s, "farm-f1", "q1", "q1")
-	newJob("j1", "farm-f1", "q1").task("t1", "s1", store.TaskStatusReady).submit(t, s)
+	storetest.NewJob("j1", "farm-f1", "q1").Task("t1", "s1", store.TaskStatusReady).Submit(t, s)
 
 	tasks, err := s.ListReadyTasks(ctx(), "", time.Now(), 10)
 	if err != nil {
@@ -400,11 +323,11 @@ func TestCountActiveTasksInQueue(t *testing.T) {
 	defer s.Close()
 	mustCreateFarm(t, s, "f1")
 	mustCreateQueue(t, s, "farm-f1", "q1", "q1")
-	newJob("j1", "farm-f1", "q1").
-		task("t1", "s1", store.TaskStatusReady).
-		task("t2", "s1", store.TaskStatusReady).
-		task("t3", "s1", store.TaskStatusSucceeded).
-		submit(t, s)
+	storetest.NewJob("j1", "farm-f1", "q1").
+		Task("t1", "s1", store.TaskStatusReady).
+		Task("t2", "s1", store.TaskStatusReady).
+		Task("t3", "s1", store.TaskStatusSucceeded).
+		Submit(t, s)
 	runTask(t, s, "t1", "w1")
 	leaseTask(t, s, "t2", "w1")
 
@@ -422,10 +345,10 @@ func TestCountActiveTasksInFarm(t *testing.T) {
 	defer s.Close()
 	mustCreateFarm(t, s, "f1")
 	mustCreateQueue(t, s, "farm-f1", "q1", "q1")
-	newJob("j1", "farm-f1", "q1").
-		task("t1", "s1", store.TaskStatusReady).
-		task("t2", "s1", store.TaskStatusReady).
-		submit(t, s)
+	storetest.NewJob("j1", "farm-f1", "q1").
+		Task("t1", "s1", store.TaskStatusReady).
+		Task("t2", "s1", store.TaskStatusReady).
+		Submit(t, s)
 	leaseTask(t, s, "t1", "w1")
 
 	n, err := s.CountActiveTasksInFarm(ctx(), "farm-f1")
@@ -442,11 +365,11 @@ func TestCountReadyTasksByQueue(t *testing.T) {
 	defer s.Close()
 	mustCreateFarm(t, s, "f1")
 	mustCreateQueue(t, s, "farm-f1", "q1", "q1")
-	newJob("j1", "farm-f1", "q1").
-		task("t1", "s1", store.TaskStatusReady).
-		task("t2", "s1", store.TaskStatusReady).
-		task("t3", "s1", store.TaskStatusReady).
-		submit(t, s)
+	storetest.NewJob("j1", "farm-f1", "q1").
+		Task("t1", "s1", store.TaskStatusReady).
+		Task("t2", "s1", store.TaskStatusReady).
+		Task("t3", "s1", store.TaskStatusReady).
+		Submit(t, s)
 	runTask(t, s, "t3", "w1")
 
 	counts, err := s.CountReadyTasksByQueue(ctx(), "farm-f1", time.Now().UTC())
@@ -469,10 +392,10 @@ func TestCountReadyTasksByQueue_ExcludesIneligible(t *testing.T) {
 	now := time.Now().UTC()
 	mustCreateFarm(t, s, "f1")
 	mustCreateQueue(t, s, "farm-f1", "q1", "q1")
-	newJob("j1", "farm-f1", "q1").
-		task("t-ok", "s1", store.TaskStatusReady).
-		task("t-backoff", "s1", store.TaskStatusReady).
-		submit(t, s)
+	storetest.NewJob("j1", "farm-f1", "q1").
+		Task("t-ok", "s1", store.TaskStatusReady).
+		Task("t-backoff", "s1", store.TaskStatusReady).
+		Submit(t, s)
 
 	// Backing off: ready but retry_after has not elapsed (requeued from
 	// running, as the auto-retry path does). The requeue is guarded on the
@@ -481,7 +404,7 @@ func TestCountReadyTasksByQueue_ExcludesIneligible(t *testing.T) {
 	storetest.FailAndRequeue(t, s, store.LeaseRequest{TaskID: "t-backoff", WorkerID: "w1"}, now.Add(time.Minute))
 
 	// Under an auto-parked job.
-	newJob("j-parked", "farm-f1", "q1").task("t-parked", "s2", store.TaskStatusReady).submit(t, s)
+	storetest.NewJob("j-parked", "farm-f1", "q1").Task("t-parked", "s2", store.TaskStatusReady).Submit(t, s)
 	if err := s.ParkJob(ctx(), "j-parked", "failure limit reached (2)", now); err != nil {
 		t.Fatalf("ParkJob: %v", err)
 	}
@@ -515,7 +438,7 @@ func TestResumeJob_Fake(t *testing.T) {
 	mustCreateQueue(t, s, "farm-f1", "q1", "q1")
 
 	// Auto-parked: reset everything.
-	parked := newJob("j-parked", "farm-f1", "q1").submit(t, s).Job
+	parked := storetest.NewJob("j-parked", "farm-f1", "q1").Submit(t, s).Job
 	parked.FailedAttempts = 3
 	if _, err := s.UpdateJob(ctx(), parked); err != nil {
 		t.Fatalf("UpdateJob: %v", err)
@@ -532,7 +455,7 @@ func TestResumeJob_Fake(t *testing.T) {
 	}
 
 	// Manual pause: counter survives.
-	manual := newJob("j-manual", "farm-f1", "q1").submit(t, s).Job
+	manual := storetest.NewJob("j-manual", "farm-f1", "q1").Submit(t, s).Job
 	manual.FailedAttempts = 2
 	if _, err := s.UpdateJob(ctx(), manual); err != nil {
 		t.Fatalf("UpdateJob: %v", err)
@@ -562,11 +485,11 @@ func TestCountTasksByJob(t *testing.T) {
 	defer s.Close()
 	mustCreateFarm(t, s, "f1")
 	mustCreateQueue(t, s, "farm-f1", "q1", "q1")
-	newJob("j1", "farm-f1", "q1").
-		task("t1", "s1", store.TaskStatusReady).
-		task("t2", "s1", store.TaskStatusReady).
-		task("t3", "s1", store.TaskStatusSucceeded).
-		submit(t, s)
+	storetest.NewJob("j1", "farm-f1", "q1").
+		Task("t1", "s1", store.TaskStatusReady).
+		Task("t2", "s1", store.TaskStatusReady).
+		Task("t3", "s1", store.TaskStatusSucceeded).
+		Submit(t, s)
 
 	counts, err := s.CountTasksByJob(ctx(), "j1")
 	if err != nil {
@@ -585,11 +508,11 @@ func TestCountUnschedulableTasksByJob(t *testing.T) {
 	defer s.Close()
 	mustCreateFarm(t, s, "f1")
 	mustCreateQueue(t, s, "farm-f1", "q1", "q1")
-	newJob("j1", "farm-f1", "q1").
-		task("t1", "s1", store.TaskStatusReady).
-		task("t2", "s1", store.TaskStatusReady).
-		task("t3", "s1", store.TaskStatusReady).
-		submit(t, s)
+	storetest.NewJob("j1", "farm-f1", "q1").
+		Task("t1", "s1", store.TaskStatusReady).
+		Task("t2", "s1", store.TaskStatusReady).
+		Task("t3", "s1", store.TaskStatusReady).
+		Submit(t, s)
 
 	for _, id := range []string{"t1", "t2"} {
 		if _, err := s.SetTaskUnschedulableReason(ctx(), id, "no worker matches required capability"); err != nil {
@@ -626,12 +549,12 @@ func TestFailureReasonSummary(t *testing.T) {
 	// A succeeded task must never count, even with a stray reason. No production
 	// write leaves a reason on a succeeded task, so t3 is seeded with one at
 	// create, which is the only way to build that state.
-	newJob("j1", "farm-f1", "q1").
-		taskRow(store.Task{ID: "t0", StepID: "s1", Status: store.TaskStatusFailed, FailureReason: "staging"}).
-		taskRow(store.Task{ID: "t1", StepID: "s1", Status: store.TaskStatusFailed, FailureReason: "staging"}).
-		taskRow(store.Task{ID: "t2", StepID: "s1", Status: store.TaskStatusFailed, FailureReason: "timeout"}).
-		taskRow(store.Task{ID: "t3", StepID: "s1", Status: store.TaskStatusSucceeded, FailureReason: "staging"}).
-		submit(t, s)
+	storetest.NewJob("j1", "farm-f1", "q1").
+		TaskRow(store.Task{ID: "t0", StepID: "s1", Status: store.TaskStatusFailed, FailureReason: "staging"}).
+		TaskRow(store.Task{ID: "t1", StepID: "s1", Status: store.TaskStatusFailed, FailureReason: "staging"}).
+		TaskRow(store.Task{ID: "t2", StepID: "s1", Status: store.TaskStatusFailed, FailureReason: "timeout"}).
+		TaskRow(store.Task{ID: "t3", StepID: "s1", Status: store.TaskStatusSucceeded, FailureReason: "staging"}).
+		Submit(t, s)
 
 	sum, err := s.FailureReasonSummary(ctx(), "j1")
 	if err != nil {
@@ -643,10 +566,10 @@ func TestFailureReasonSummary(t *testing.T) {
 
 	// Tie case: two reasons each with count 1 — dominant is the
 	// lexicographically smaller reason, deterministically.
-	newJob("j2", "farm-f1", "q1").
-		taskRow(store.Task{ID: "u0", StepID: "s2", Status: store.TaskStatusFailed, FailureReason: "timeout"}).
-		taskRow(store.Task{ID: "u1", StepID: "s2", Status: store.TaskStatusFailed, FailureReason: "staging"}).
-		submit(t, s)
+	storetest.NewJob("j2", "farm-f1", "q1").
+		TaskRow(store.Task{ID: "u0", StepID: "s2", Status: store.TaskStatusFailed, FailureReason: "timeout"}).
+		TaskRow(store.Task{ID: "u1", StepID: "s2", Status: store.TaskStatusFailed, FailureReason: "staging"}).
+		Submit(t, s)
 	sum, err = s.FailureReasonSummary(ctx(), "j2")
 	if err != nil {
 		t.Fatalf("FailureReasonSummary(j2): %v", err)
@@ -656,7 +579,7 @@ func TestFailureReasonSummary(t *testing.T) {
 	}
 
 	// Empty case: a job with no failed tasks carrying a reason.
-	newJob("j3", "farm-f1", "q1").task("v0", "s3", store.TaskStatusSucceeded).submit(t, s)
+	storetest.NewJob("j3", "farm-f1", "q1").Task("v0", "s3", store.TaskStatusSucceeded).Submit(t, s)
 	sum, err = s.FailureReasonSummary(ctx(), "j3")
 	if err != nil {
 		t.Fatalf("FailureReasonSummary(j3): %v", err)
@@ -671,10 +594,10 @@ func TestListTasks_SortFields(t *testing.T) {
 	defer s.Close()
 	mustCreateFarm(t, s, "f1")
 	mustCreateQueue(t, s, "farm-f1", "q1", "q1")
-	newJob("j1", "farm-f1", "q1").
-		task("b-task", "s1", store.TaskStatusReady).
-		task("a-task", "s1", store.TaskStatusFailed).
-		submit(t, s)
+	storetest.NewJob("j1", "farm-f1", "q1").
+		Task("b-task", "s1", store.TaskStatusReady).
+		Task("a-task", "s1", store.TaskStatusFailed).
+		Submit(t, s)
 	runTask(t, s, "b-task", "w1")
 
 	for _, field := range []store.TaskSortField{
@@ -702,7 +625,7 @@ func TestListTasks_FilterByWorkerID(t *testing.T) {
 	defer s.Close()
 	mustCreateFarm(t, s, "f1")
 	mustCreateQueue(t, s, "farm-f1", "q1", "q1")
-	newJob("j1", "farm-f1", "q1").task("t1", "s1", store.TaskStatusReady).submit(t, s)
+	storetest.NewJob("j1", "farm-f1", "q1").Task("t1", "s1", store.TaskStatusReady).Submit(t, s)
 	leaseTask(t, s, "t1", "w1")
 
 	page, err := s.ListTasks(ctx(), store.ListTasksOptions{
@@ -722,11 +645,11 @@ func TestListTasks_FilterByStatuses(t *testing.T) {
 	defer s.Close()
 	mustCreateFarm(t, s, "f1")
 	mustCreateQueue(t, s, "farm-f1", "q1", "q1")
-	newJob("j1", "farm-f1", "q1").
-		task("t-failed", "s1", store.TaskStatusFailed).
-		task("t-canceled", "s1", store.TaskStatusCanceled).
-		task("t-ready", "s1", store.TaskStatusReady).
-		submit(t, s)
+	storetest.NewJob("j1", "farm-f1", "q1").
+		Task("t-failed", "s1", store.TaskStatusFailed).
+		Task("t-canceled", "s1", store.TaskStatusCanceled).
+		Task("t-ready", "s1", store.TaskStatusReady).
+		Submit(t, s)
 
 	page, err := s.ListTasks(ctx(), store.ListTasksOptions{
 		Statuses:   []store.TaskStatus{store.TaskStatusFailed, store.TaskStatusCanceled},
@@ -746,12 +669,12 @@ func TestRetryTasks_AllInJob(t *testing.T) {
 	mustCreateFarm(t, s, "f1")
 	mustCreateQueue(t, s, "farm-f1", "q1", "q1")
 	// The job is terminal, to prove revival resets it.
-	newJob("j1", "farm-f1", "q1").as(store.JobStatusFailed).
-		step("s1", store.StepStatusFailed).
-		task("t-failed", "s1", store.TaskStatusFailed).
-		task("t-canceled", "s1", store.TaskStatusCanceled).
-		task("t-ok", "s1", store.TaskStatusSucceeded).
-		submit(t, s)
+	storetest.NewJob("j1", "farm-f1", "q1").As(store.JobStatusFailed).
+		Step("s1", store.StepStatusFailed).
+		Task("t-failed", "s1", store.TaskStatusFailed).
+		Task("t-canceled", "s1", store.TaskStatusCanceled).
+		Task("t-ok", "s1", store.TaskStatusSucceeded).
+		Submit(t, s)
 
 	revived, err := s.RetryTasks(ctx(), "j1", nil, time.Now())
 	if err != nil {
@@ -787,11 +710,11 @@ func TestRetryTasks_SubsetAndNonTerminalJobUntouched(t *testing.T) {
 	mustCreateFarm(t, s, "f1")
 	mustCreateQueue(t, s, "farm-f1", "q1", "q1")
 	// The job stays running (non-terminal).
-	newJob("j1", "farm-f1", "q1").
-		step("s1", store.StepStatusFailed).
-		task("t1", "s1", store.TaskStatusFailed).
-		task("t2", "s1", store.TaskStatusFailed).
-		submit(t, s)
+	storetest.NewJob("j1", "farm-f1", "q1").As(store.JobStatusRunning).
+		Step("s1", store.StepStatusFailed).
+		Task("t1", "s1", store.TaskStatusFailed).
+		Task("t2", "s1", store.TaskStatusFailed).
+		Submit(t, s)
 
 	revived, err := s.RetryTasks(ctx(), "j1", []string{"t1"}, time.Now())
 	if err != nil {
@@ -821,15 +744,15 @@ func TestRetryTasks_ResetsFailureCounters(t *testing.T) {
 	mustCreateFarm(t, s, "f1")
 	mustCreateQueue(t, s, "farm-f1", "q1", "q1")
 
-	seed := newJob("j1", "farm-f1", "q1").as(store.JobStatusFailed)
-	seed.sub.Job.FailedAttempts, seed.sub.Job.ParkReason = 1, "failure limit reached (1)"
+	seed := storetest.NewJob("j1", "farm-f1", "q1").As(store.JobStatusFailed)
+	seed.Sub.Job.FailedAttempts, seed.Sub.Job.ParkReason = 1, "failure limit reached (1)"
 	retryAfter := time.Now().Add(time.Minute)
-	j := seed.step("s1", store.StepStatusFailed).
-		taskRow(store.Task{
+	j := seed.Step("s1", store.StepStatusFailed).
+		TaskRow(store.Task{
 			ID: "t1", StepID: "s1", Status: store.TaskStatusFailed,
 			FailedAttempts: 1, RetryAfter: &retryAfter,
 		}).
-		submit(t, s).Job
+		Submit(t, s).Job
 
 	revived, err := s.RetryTasks(ctx(), j.ID, nil, time.Now())
 	if err != nil || len(revived) != 1 {
@@ -851,10 +774,10 @@ func TestRetryTasks_NothingEligible(t *testing.T) {
 	defer s.Close()
 	mustCreateFarm(t, s, "f1")
 	mustCreateQueue(t, s, "farm-f1", "q1", "q1")
-	newJob("j1", "farm-f1", "q1").
-		step("s1", store.StepStatusCompleted).
-		task("t-ok", "s1", store.TaskStatusSucceeded).
-		submit(t, s)
+	storetest.NewJob("j1", "farm-f1", "q1").
+		Step("s1", store.StepStatusCompleted).
+		Task("t-ok", "s1", store.TaskStatusSucceeded).
+		Submit(t, s)
 
 	revived, err := s.RetryTasks(ctx(), "j1", nil, time.Now())
 	if err != nil {
@@ -1000,7 +923,7 @@ func TestCountIdleWorkers(t *testing.T) {
 	defer s.Close()
 	mustCreateFarm(t, s, "f1")
 	mustCreateQueue(t, s, "farm-f1", "q1", "q1")
-	newJob("j1", "farm-f1", "q1").task("t1", "s1", store.TaskStatusReady).submit(t, s)
+	storetest.NewJob("j1", "farm-f1", "q1").Task("t1", "s1", store.TaskStatusReady).Submit(t, s)
 	mustCreateWorker(t, s, "w-idle", "farm-f1", store.WorkerStatusOnline)
 	mustCreateWorker(t, s, "w-busy", "farm-f1", store.WorkerStatusOnline)
 
@@ -1105,7 +1028,7 @@ func TestUpdateJob(t *testing.T) {
 	defer s.Close()
 	mustCreateFarm(t, s, "f1")
 	mustCreateQueue(t, s, "farm-f1", "q1", "q1")
-	newJob("j1", "farm-f1", "q1").submit(t, s)
+	storetest.NewJob("j1", "farm-f1", "q1").As(store.JobStatusRunning).Submit(t, s)
 
 	updated, err := s.UpdateJob(ctx(), store.Job{
 		ID: "j1", FarmID: "farm-f1", QueueID: "q1",
@@ -1137,7 +1060,7 @@ func TestCancelJobStatus(t *testing.T) {
 	defer s.Close()
 	mustCreateFarm(t, s, "f1")
 	mustCreateQueue(t, s, "farm-f1", "q1", "q1")
-	newJob("j1", "farm-f1", "q1").submit(t, s)
+	storetest.NewJob("j1", "farm-f1", "q1").Submit(t, s)
 
 	if err := s.CancelJobStatus(ctx(), "j1"); err != nil {
 		t.Fatalf("CancelJobStatus: %v", err)
@@ -1157,7 +1080,7 @@ func TestCancelJobStatus_CompletedConflict(t *testing.T) {
 	defer s.Close()
 	mustCreateFarm(t, s, "f1")
 	mustCreateQueue(t, s, "farm-f1", "q1", "q1")
-	newJob("j1", "farm-f1", "q1").as(store.JobStatusCompleted).submit(t, s)
+	storetest.NewJob("j1", "farm-f1", "q1").As(store.JobStatusCompleted).Submit(t, s)
 
 	err := s.CancelJobStatus(ctx(), "j1")
 	if !errors.Is(err, store.ErrConflict) {
@@ -1179,8 +1102,8 @@ func TestListJobs_SortAndFilter(t *testing.T) {
 	defer s.Close()
 	mustCreateFarm(t, s, "f1")
 	mustCreateQueue(t, s, "farm-f1", "q1", "q1")
-	newJob("j1", "farm-f1", "q1").submit(t, s)
-	newJob("j2", "farm-f1", "q1").submit(t, s)
+	storetest.NewJob("j1", "farm-f1", "q1").As(store.JobStatusRunning).Submit(t, s)
+	storetest.NewJob("j2", "farm-f1", "q1").As(store.JobStatusRunning).Submit(t, s)
 
 	for _, field := range []store.JobSortField{
 		store.JobSortByCreatedAt,
@@ -1404,10 +1327,10 @@ func TestActiveClaimCount(t *testing.T) {
 	mustCreateFarm(t, s, "f1")
 	mustCreateQueue(t, s, "farm-f1", "q1", "q1")
 	pool := mustCreatePool(t, s, "p1", 0)
-	newJob("j1", "farm-f1", "q1").
-		task("t1", "s1", store.TaskStatusReady).
-		task("t2", "s1", store.TaskStatusReady).
-		submit(t, s)
+	storetest.NewJob("j1", "farm-f1", "q1").
+		Task("t1", "s1", store.TaskStatusReady).
+		Task("t2", "s1", store.TaskStatusReady).
+		Submit(t, s)
 
 	claimOn(t, s, "t1", "co1", pool)
 	claimOn(t, s, "t2", "co2", pool)
@@ -1422,11 +1345,11 @@ func TestListUsagePoolUtilization(t *testing.T) {
 	defer s.Close()
 	mustCreateFarm(t, s, "f1")
 	mustCreateQueue(t, s, "farm-f1", "q1", "q1")
-	newJob("j1", "farm-f1", "q1").
-		task("t1", "s1", store.TaskStatusReady).
-		task("t2", "s1", store.TaskStatusReady).
-		task("t3", "s1", store.TaskStatusReady).
-		submit(t, s)
+	storetest.NewJob("j1", "farm-f1", "q1").
+		Task("t1", "s1", store.TaskStatusReady).
+		Task("t2", "s1", store.TaskStatusReady).
+		Task("t3", "s1", store.TaskStatusReady).
+		Submit(t, s)
 
 	arnold, err := s.CreateUsagePool(ctx(), store.UsagePool{ID: "p-arnold", Name: "arnold", MaxConcurrent: 5})
 	if err != nil {
@@ -1508,7 +1431,7 @@ func TestFakeStore_DeleteJob(t *testing.T) {
 	mustCreateFarm(t, st, "f1")
 	mustCreateQueue(t, st, "farm-f1", "q1", "q1")
 	mustCreatePool(t, st, "pool1", 0)
-	newJob(jobID, "farm-f1", "q1").step("s1", store.StepStatusPending).task("t1", "s1", store.TaskStatusReady).submit(t, st)
+	storetest.NewJob(jobID, "farm-f1", "q1").Task("t1", "s1", store.TaskStatusReady).Submit(t, st)
 	storetest.Lease(t, st, store.LeaseRequest{
 		TaskID: "t1", WorkerID: "w1", AttemptID: "a1",
 		Claims: []store.UsagePoolClaim{{ClaimID: "cl1", PoolID: "pool1", PoolName: "pool1"}},

@@ -20,12 +20,12 @@ func TestRetryTasks_SQLite(t *testing.T) {
 
 	insertFarm(t, s, "f1", "F1")
 	insertQueue(t, s, "q1", "f1", "Q1")
-	newJob("j1", "f1", "q1").as(store.JobStatusFailed).
-		stepAs("s1", "S1", 0, store.StepStatusFailed).
-		task("t-failed", "s1", store.TaskStatusFailed).
-		task("t-canceled", "s1", store.TaskStatusCanceled).
-		task("t-ok", "s1", store.TaskStatusSucceeded).
-		submit(t, s)
+	storetest.NewJob("j1", "f1", "q1").As(store.JobStatusFailed).
+		Step("s1", store.StepStatusFailed).
+		Task("t-failed", "s1", store.TaskStatusFailed).
+		Task("t-canceled", "s1", store.TaskStatusCanceled).
+		Task("t-ok", "s1", store.TaskStatusSucceeded).
+		Submit(t, s)
 
 	revived, err := s.RetryTasks(ctx, "j1", nil, time.Now().UTC())
 	if err != nil {
@@ -89,10 +89,10 @@ func TestRetryTasks_EmptySliceRevivesNothing(t *testing.T) {
 
 	insertFarm(t, s, "f1", "F1")
 	insertQueue(t, s, "q1", "f1", "Q1")
-	newJob("j1", "f1", "q1").as(store.JobStatusFailed).
-		stepAs("s1", "S1", 0, store.StepStatusFailed).
-		task("t-failed", "s1", store.TaskStatusFailed).
-		submit(t, s)
+	storetest.NewJob("j1", "f1", "q1").As(store.JobStatusFailed).
+		Step("s1", store.StepStatusFailed).
+		Task("t-failed", "s1", store.TaskStatusFailed).
+		Submit(t, s)
 
 	// Non-nil but empty slice: "filter to exactly these (zero) IDs" → revive nothing.
 	revived, err := s.RetryTasks(ctx, "j1", []string{}, time.Now().UTC())
@@ -123,11 +123,11 @@ func TestRetryTasks_MixedStateStep(t *testing.T) {
 
 	insertFarm(t, s, "f1", "F1")
 	insertQueue(t, s, "q1", "f1", "Q1")
-	newJob("j1", "f1", "q1").as(store.JobStatusFailed).
-		stepAs("s1", "S1", 0, store.StepStatusFailed).
-		task("ta", "s1", store.TaskStatusFailed).
-		task("tb", "s1", store.TaskStatusFailed).
-		submit(t, s)
+	storetest.NewJob("j1", "f1", "q1").As(store.JobStatusFailed).
+		Step("s1", store.StepStatusFailed).
+		Task("ta", "s1", store.TaskStatusFailed).
+		Task("tb", "s1", store.TaskStatusFailed).
+		Submit(t, s)
 
 	// Retry only "ta" from the subset.
 	revived, err := s.RetryTasks(ctx, "j1", []string{"ta"}, time.Now().UTC())
@@ -180,10 +180,10 @@ func TestRetryTasks_ResetsFailureCounters(t *testing.T) {
 
 	insertFarm(t, s, "f1", "F1")
 	insertQueue(t, s, "q1", "f1", "Q1")
-	newJob("j1", "f1", "q1").as(store.JobStatusRunning).
-		stepAs("s1", "S1", 0, store.StepStatusReady).
-		task("t1", "s1", store.TaskStatusReady).
-		submit(t, s)
+	storetest.NewJob("j1", "f1", "q1").As(store.JobStatusRunning).
+		Step("s1", store.StepStatusReady).
+		Task("t1", "s1", store.TaskStatusReady).
+		Submit(t, s)
 
 	// Drive genuine-failure bookkeeping: a failed attempt bumps both counters
 	// and stamps a backoff on the requeued task.
@@ -246,9 +246,9 @@ func TestRetryTasks_ClearsFailureReason(t *testing.T) {
 
 	insertFarm(t, s, "f1", "F1")
 	insertQueue(t, s, "q1", "f1", "Q1")
-	newJob("j1", "f1", "q1").as(store.JobStatusFailed).step("s1", "S1", 0).
-		taskRow(store.Task{ID: "t1", StepID: "s1", Status: store.TaskStatusFailed, FailureReason: "boom"}).
-		submit(t, s)
+	storetest.NewJob("j1", "f1", "q1").As(store.JobStatusFailed).Step("s1", store.StepStatusPending).
+		TaskRow(store.Task{ID: "t1", StepID: "s1", Status: store.TaskStatusFailed, FailureReason: "boom"}).
+		Submit(t, s)
 
 	if _, err := s.RetryTasks(ctx, "j1", nil, time.Now().UTC()); err != nil {
 		t.Fatalf("RetryTasks: %v", err)
@@ -274,10 +274,10 @@ func recordFailureFixture(t *testing.T) (*sqlite.Store, context.Context, time.Ti
 
 	insertFarm(t, s, "f1", "F1")
 	insertQueue(t, s, "q1", "f1", "Q1")
-	newJob("j1", "f1", "q1").as(store.JobStatusRunning).
-		step("s1", "S1", 0).
-		task("t1", "s1", store.TaskStatusReady).
-		submit(t, s)
+	storetest.NewJob("j1", "f1", "q1").As(store.JobStatusRunning).
+		Step("s1", store.StepStatusPending).
+		Task("t1", "s1", store.TaskStatusReady).
+		Submit(t, s)
 	return s, ctx, now
 }
 
@@ -404,7 +404,7 @@ func TestRequeueTaskForRetry_ResetsAssignment(t *testing.T) {
 	insertFarm(t, s, "f1", "F1")
 	insertQueue(t, s, "q1", "f1", "Q1")
 	insertWorker(t, s, "w1", "f1")
-	newJob("j1", "f1", "q1").step("s1", "S1", 0).task("t1", "s1", store.TaskStatusReady).submit(t, s)
+	storetest.NewJob("j1", "f1", "q1").Task("t1", "s1", store.TaskStatusReady).Submit(t, s)
 
 	att := leaseTask(t, s, "t1", "w1")
 
@@ -436,9 +436,9 @@ func TestRequeueTaskForRetry_ClearsFailureReason(t *testing.T) {
 	// state production never builds up on an in-flight task, so it is written
 	// at create and the lease leaves it alone: the requeue's clearing is what
 	// the test observes.
-	newJob("j1", "f1", "q1").step("s1", "S1", 0).
-		taskRow(store.Task{ID: "t1", StepID: "s1", Status: store.TaskStatusReady, FailureReason: "boom"}).
-		submit(t, s)
+	storetest.NewJob("j1", "f1", "q1").Step("s1", store.StepStatusPending).
+		TaskRow(store.Task{ID: "t1", StepID: "s1", Status: store.TaskStatusReady, FailureReason: "boom"}).
+		Submit(t, s)
 
 	att := leaseTask(t, s, "t1", "w1")
 	if got, err := s.GetTask(ctx, "t1"); err != nil || got.FailureReason != "boom" {
@@ -480,11 +480,11 @@ func TestRequeueTaskForRetry_GuardedToInFlight(t *testing.T) {
 		{store.TaskStatusSucceeded, ""},
 		{store.TaskStatusReady, ""},
 	}
-	seed := newJob("j1", "f1", "q1").step("s1", "S1", 0)
+	seed := storetest.NewJob("j1", "f1", "q1").Step("s1", store.StepStatusPending)
 	for i, tc := range cases {
-		seed.taskRow(store.Task{ID: "t" + string(rune('1'+i)), StepID: "s1", Status: tc.status, FailureReason: tc.reason})
+		seed.TaskRow(store.Task{ID: "t" + string(rune('1'+i)), StepID: "s1", Status: tc.status, FailureReason: tc.reason})
 	}
-	seed.submit(t, s)
+	seed.Submit(t, s)
 
 	if requeued, err := s.RequeueTaskForRetry(ctx, "missing", "no-attempt", now.Add(time.Second), now); err != nil || requeued {
 		t.Fatalf("missing task: requeued=%v err=%v, want false,nil", requeued, err)
@@ -526,8 +526,8 @@ func TestParkJob_SkipsTerminal(t *testing.T) {
 
 	insertFarm(t, s, "f1", "F1")
 	insertQueue(t, s, "q1", "f1", "Q1")
-	newJob("j1", "f1", "q1").as(store.JobStatusRunning).submit(t, s)
-	newJob("j2", "f1", "q1").as(store.JobStatusFailed).submit(t, s)
+	storetest.NewJob("j1", "f1", "q1").As(store.JobStatusRunning).Submit(t, s)
+	storetest.NewJob("j2", "f1", "q1").As(store.JobStatusFailed).Submit(t, s)
 
 	if err := s.ParkJob(ctx, "j1", "failure limit reached (2)", now); err != nil {
 		t.Fatalf("park: %v", err)
@@ -639,7 +639,7 @@ func TestResumeJob_NotPausedAndNotFound(t *testing.T) {
 
 	insertFarm(t, s, "f1", "F1")
 	insertQueue(t, s, "q1", "f1", "Q1")
-	newJob("j1", "f1", "q1").as(store.JobStatusRunning).submit(t, s)
+	storetest.NewJob("j1", "f1", "q1").As(store.JobStatusRunning).Submit(t, s)
 
 	if err := s.ResumeJob(ctx, "j1", now); err != nil {
 		t.Fatalf("resume of non-paused job should be a no-op, got %v", err)
@@ -723,11 +723,11 @@ func TestFailureReasonSummary_Mixed(t *testing.T) {
 
 	insertFarm(t, s, "f1", "F1")
 	insertQueue(t, s, "q1", "f1", "Q1")
-	newJob("j1", "f1", "q1").step("s1", "S1", 0).
-		taskRow(store.Task{ID: "t0", StepID: "s1", Status: store.TaskStatusFailed, FailureReason: "staging"}).
-		taskRow(store.Task{ID: "t1", StepID: "s1", Status: store.TaskStatusFailed, FailureReason: "staging"}).
-		taskRow(store.Task{ID: "t2", StepID: "s1", Status: store.TaskStatusFailed, FailureReason: "timeout"}).
-		submit(t, s)
+	storetest.NewJob("j1", "f1", "q1").Step("s1", store.StepStatusPending).
+		TaskRow(store.Task{ID: "t0", StepID: "s1", Status: store.TaskStatusFailed, FailureReason: "staging"}).
+		TaskRow(store.Task{ID: "t1", StepID: "s1", Status: store.TaskStatusFailed, FailureReason: "staging"}).
+		TaskRow(store.Task{ID: "t2", StepID: "s1", Status: store.TaskStatusFailed, FailureReason: "timeout"}).
+		Submit(t, s)
 
 	sum, err := s.FailureReasonSummary(ctx, "j1")
 	if err != nil {
@@ -747,10 +747,10 @@ func TestFailureReasonSummary_Tie(t *testing.T) {
 
 	insertFarm(t, s, "f1", "F1")
 	insertQueue(t, s, "q1", "f1", "Q1")
-	newJob("j1", "f1", "q1").step("s1", "S1", 0).
-		taskRow(store.Task{ID: "t0", StepID: "s1", Status: store.TaskStatusFailed, FailureReason: "timeout"}).
-		taskRow(store.Task{ID: "t1", StepID: "s1", Status: store.TaskStatusFailed, FailureReason: "staging"}).
-		submit(t, s)
+	storetest.NewJob("j1", "f1", "q1").Step("s1", store.StepStatusPending).
+		TaskRow(store.Task{ID: "t0", StepID: "s1", Status: store.TaskStatusFailed, FailureReason: "timeout"}).
+		TaskRow(store.Task{ID: "t1", StepID: "s1", Status: store.TaskStatusFailed, FailureReason: "staging"}).
+		Submit(t, s)
 
 	sum, err := s.FailureReasonSummary(ctx, "j1")
 	if err != nil {
@@ -769,7 +769,7 @@ func TestFailureReasonSummary_Empty(t *testing.T) {
 
 	insertFarm(t, s, "f1", "F1")
 	insertQueue(t, s, "q1", "f1", "Q1")
-	newJob("j1", "f1", "q1").step("s1", "S1", 0).task("t0", "s1", store.TaskStatusSucceeded).submit(t, s)
+	storetest.NewJob("j1", "f1", "q1").Task("t0", "s1", store.TaskStatusSucceeded).Submit(t, s)
 
 	sum, err := s.FailureReasonSummary(ctx, "j1")
 	if err != nil {
@@ -790,10 +790,10 @@ func TestCompleteTaskAttempt_ConcurrentReportsHaveOneWinner(t *testing.T) {
 	ctx := context.Background()
 	insertFarm(t, s, "f1", "F1")
 	insertQueue(t, s, "q1", "f1", "Q1")
-	newJob("j1", "f1", "q1").as(store.JobStatusRunning).
-		stepAs("s1", "S1", 0, store.StepStatusReady).
-		task("t1", "s1", store.TaskStatusReady).
-		submit(t, s)
+	storetest.NewJob("j1", "f1", "q1").As(store.JobStatusRunning).
+		Step("s1", store.StepStatusReady).
+		Task("t1", "s1", store.TaskStatusReady).
+		Submit(t, s)
 	att := runTask(t, s, "t1", "w1")
 
 	targets := []struct {

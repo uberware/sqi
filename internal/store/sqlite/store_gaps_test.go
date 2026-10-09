@@ -40,7 +40,7 @@ func TestTaskAttempt_LatestTaskAttempt(t *testing.T) {
 	insertFarm(t, s, "f1", "F1")
 	insertQueue(t, s, "q1", "f1", "Q1")
 	insertWorker(t, s, "w1", "f1")
-	newJob("j1", "f1", "q1").step("s1", "S1", 0).task("t1", "s1", store.TaskStatusReady).submit(t, s)
+	storetest.NewJob("j1", "f1", "q1").Task("t1", "s1", store.TaskStatusReady).Submit(t, s)
 
 	// Two attempts; latest should be AttemptNumber=2. The first fails and its
 	// task is requeued, so the second lease is the retry.
@@ -73,7 +73,7 @@ func TestTaskAttempt_ListTaskAttempts(t *testing.T) {
 	insertFarm(t, s, "f1", "F1")
 	insertQueue(t, s, "q1", "f1", "Q1")
 	insertWorker(t, s, "w1", "f1")
-	newJob("j1", "f1", "q1").step("s1", "S1", 0).task("t1", "s1", store.TaskStatusReady).submit(t, s)
+	storetest.NewJob("j1", "f1", "q1").Task("t1", "s1", store.TaskStatusReady).Submit(t, s)
 
 	storetest.FailAndRequeue(t, s, store.LeaseRequest{TaskID: "t1", WorkerID: "w1"}, time.Now().UTC().Add(-time.Minute))
 	leaseTask(t, s, "t1", "w1")
@@ -99,11 +99,11 @@ func TestUsage_ListUsagePoolUtilization(t *testing.T) {
 	insertFarm(t, s, "f1", "F1")
 	insertQueue(t, s, "q1", "f1", "Q1")
 	insertWorker(t, s, "w1", "f1")
-	newJob("j1", "f1", "q1").step("s1", "S1", 0).
-		task("t1", "s1", store.TaskStatusReady).
-		task("t2", "s1", store.TaskStatusReady).
-		task("t3", "s1", store.TaskStatusReady).
-		submit(t, s)
+	storetest.NewJob("j1", "f1", "q1").Step("s1", store.StepStatusPending).
+		Task("t1", "s1", store.TaskStatusReady).
+		Task("t2", "s1", store.TaskStatusReady).
+		Task("t3", "s1", store.TaskStatusReady).
+		Submit(t, s)
 
 	// "arnold": 5 seats, will have 2 active + 1 released → in use 2.
 	arnold, err := s.CreateUsagePool(ctx, store.UsagePool{
@@ -155,7 +155,7 @@ func TestTaskLog_CreateAndList(t *testing.T) {
 	insertFarm(t, s, "f1", "F1")
 	insertQueue(t, s, "q1", "f1", "Q1")
 	insertWorker(t, s, "w1", "f1")
-	newJob("j1", "f1", "q1").step("s1", "S1", 0).task("t1", "s1", store.TaskStatusReady).submit(t, s)
+	storetest.NewJob("j1", "f1", "q1").Task("t1", "s1", store.TaskStatusReady).Submit(t, s)
 	a := leaseTask(t, s, "t1", "w1")
 
 	now := time.Now().UTC().Truncate(time.Millisecond)
@@ -195,7 +195,7 @@ func TestTaskLog_ListTaskLogs_OffsetPagination(t *testing.T) {
 	insertFarm(t, s, "f1", "F1")
 	insertQueue(t, s, "q1", "f1", "Q1")
 	insertWorker(t, s, "w1", "f1")
-	newJob("j1", "f1", "q1").step("s1", "S1", 0).task("t1", "s1", store.TaskStatusReady).submit(t, s)
+	storetest.NewJob("j1", "f1", "q1").Task("t1", "s1", store.TaskStatusReady).Submit(t, s)
 	a := leaseTask(t, s, "t1", "w1")
 
 	now := time.Now().UTC().Truncate(time.Millisecond)
@@ -243,7 +243,7 @@ func TestTaskLog_StderrStream(t *testing.T) {
 	insertFarm(t, s, "f1", "F1")
 	insertQueue(t, s, "q1", "f1", "Q1")
 	insertWorker(t, s, "w1", "f1")
-	newJob("j1", "f1", "q1").step("s1", "S1", 0).task("t1", "s1", store.TaskStatusReady).submit(t, s)
+	storetest.NewJob("j1", "f1", "q1").Task("t1", "s1", store.TaskStatusReady).Submit(t, s)
 	a := leaseTask(t, s, "t1", "w1")
 
 	now := time.Now().UTC().Truncate(time.Millisecond)
@@ -362,7 +362,7 @@ func TestJob_UpdateJob(t *testing.T) {
 	ctx := context.Background()
 	insertFarm(t, s, "f1", "F1")
 	insertQueue(t, s, "q1", "f1", "Q1")
-	j := newJob("j1", "f1", "q1").submit(t, s).Job
+	j := storetest.NewJob("j1", "f1", "q1").Submit(t, s).Job
 
 	j.Priority = 99
 	j.Owner = "bob"
@@ -395,7 +395,7 @@ func TestJob_UpdateJob_RetryPolicy(t *testing.T) {
 	ctx := context.Background()
 	insertFarm(t, s, "f1", "F1")
 	insertQueue(t, s, "q1", "f1", "Q1")
-	j := newJob("j1", "f1", "q1").submit(t, s).Job
+	j := storetest.NewJob("j1", "f1", "q1").Submit(t, s).Job
 
 	maxAttempts, delay, limit := 7, 30, 40
 	j.MaxAttempts = &maxAttempts
@@ -449,7 +449,7 @@ func TestJob_CancelJobStatus(t *testing.T) {
 	insertQueue(t, s, "q1", "f1", "Q1")
 
 	// A running job, so cancel has something to do.
-	newJob("j1", "f1", "q1").as(store.JobStatusRunning).submit(t, s)
+	storetest.NewJob("j1", "f1", "q1").As(store.JobStatusRunning).Submit(t, s)
 
 	if err := s.CancelJobStatus(ctx, "j1"); err != nil {
 		t.Fatalf("CancelJobStatus: %v", err)
@@ -470,7 +470,7 @@ func TestJob_CancelJobStatus_AlreadyTerminal_Conflict(t *testing.T) {
 	ctx := context.Background()
 	insertFarm(t, s, "f1", "F1")
 	insertQueue(t, s, "q1", "f1", "Q1")
-	newJob("j1", "f1", "q1").as(store.JobStatusCompleted).submit(t, s)
+	storetest.NewJob("j1", "f1", "q1").As(store.JobStatusCompleted).Submit(t, s)
 
 	err := s.CancelJobStatus(ctx, "j1")
 	if !errors.Is(err, store.ErrConflict) {

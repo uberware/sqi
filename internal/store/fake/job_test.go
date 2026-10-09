@@ -18,7 +18,7 @@ func TestJob_ListDependentsAndBlocked(t *testing.T) {
 	farm := mustCreateFarm(t, s, "listdeps")
 	queue := mustCreateQueue(t, s, farm.ID, "queue-listdeps", "listdeps")
 
-	up := newJob("up-listdeps", farm.ID, queue.ID).submit(t, s).Job
+	up := storetest.NewJob("up-listdeps", farm.ID, queue.ID).Submit(t, s).Job
 	down := storetest.Submit(t, s, store.JobSubmission{
 		Job: store.Job{
 			ID: "down-listdeps", FarmID: farm.ID, QueueID: queue.ID, Name: "down",
@@ -62,7 +62,7 @@ func TestJob_DeleteJob_RemovesOutgoingEdgesKeepsIncoming(t *testing.T) {
 	farm := mustCreateFarm(t, s, "delcascade")
 	queue := mustCreateQueue(t, s, farm.ID, "queue-delcascade", "delcascade")
 
-	up := newJob("up-delcascade", farm.ID, queue.ID).submit(t, s).Job
+	up := storetest.NewJob("up-delcascade", farm.ID, queue.ID).Submit(t, s).Job
 	down := storetest.Submit(t, s, store.JobSubmission{
 		Job: store.Job{
 			ID: "down-delcascade", FarmID: farm.ID, QueueID: queue.ID, Name: "down",
@@ -106,8 +106,8 @@ func TestJob_CreateJobSubmission_DuplicateDependencyIsIgnored(t *testing.T) {
 	farm := mustCreateFarm(t, s, "dedup")
 	queue := mustCreateQueue(t, s, farm.ID, "queue-dedup", "dedup")
 
-	up1 := newJob("up1-dedup", farm.ID, queue.ID).submit(t, s).Job
-	up2 := newJob("up2-dedup", farm.ID, queue.ID).submit(t, s).Job
+	up1 := storetest.NewJob("up1-dedup", farm.ID, queue.ID).Submit(t, s).Job
+	up2 := storetest.NewJob("up2-dedup", farm.ID, queue.ID).Submit(t, s).Job
 	down := store.Job{
 		ID: "down-dedup", FarmID: farm.ID, QueueID: queue.ID, Name: "down",
 		Priority: 50, Status: store.JobStatusBlocked,
@@ -135,9 +135,9 @@ func TestJob_ListJobDependencyIDs_OrderedByUpstreamID(t *testing.T) {
 	farm := mustCreateFarm(t, s, "order")
 	queue := mustCreateQueue(t, s, farm.ID, "queue-order", "order")
 
-	zeta := newJob("zeta-order", farm.ID, queue.ID).submit(t, s).Job
-	alpha := newJob("alpha-order", farm.ID, queue.ID).submit(t, s).Job
-	mike := newJob("mike-order", farm.ID, queue.ID).submit(t, s).Job
+	zeta := storetest.NewJob("zeta-order", farm.ID, queue.ID).Submit(t, s).Job
+	alpha := storetest.NewJob("alpha-order", farm.ID, queue.ID).Submit(t, s).Job
+	mike := storetest.NewJob("mike-order", farm.ID, queue.ID).Submit(t, s).Job
 	down := store.Job{
 		ID: "down-order", FarmID: farm.ID, QueueID: queue.ID, Name: "down",
 		Priority: 50, Status: store.JobStatusBlocked,

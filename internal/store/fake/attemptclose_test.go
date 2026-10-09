@@ -19,7 +19,7 @@ func seedClaimedAttempt(t *testing.T, s *Store) (store.TaskAttempt, string) {
 	mustCreateFarm(t, s, "f1")
 	mustCreateQueue(t, s, "farm-f1", "q1", "q1")
 	pool := mustCreatePool(t, s, "p1", 0)
-	newJob("j1", "farm-f1", "q1").task("t1", "s1", store.TaskStatusReady).submit(t, s)
+	storetest.NewJob("j1", "farm-f1", "q1").Task("t1", "s1", store.TaskStatusReady).Submit(t, s)
 	a := claimOn(t, s, "t1", "c1", pool)
 	storetest.Start(t, s, a)
 	return a, "c1"
@@ -38,7 +38,7 @@ func seedClaimedAttemptOnCanceledTask(t *testing.T, s *Store) (store.TaskAttempt
 	t.Helper()
 	mustCreateFarm(t, s, "f1")
 	mustCreateQueue(t, s, "farm-f1", "q1", "q1")
-	newJob("j1", "farm-f1", "q1").task("t1", "s1", store.TaskStatusCanceled).submit(t, s)
+	storetest.NewJob("j1", "farm-f1", "q1").Task("t1", "s1", store.TaskStatusCanceled).Submit(t, s)
 	a := storetest.InjectAttempt(t, s, store.TaskAttempt{
 		ID: "a1", TaskID: "t1", WorkerID: "w1", AttemptNumber: 1, Status: store.AttemptStatusRunning,
 	})

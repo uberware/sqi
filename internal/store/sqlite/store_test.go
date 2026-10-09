@@ -86,87 +86,6 @@ func insertWorker(t *testing.T, s *sqlite.Store, id, farmID string) store.Worker
 	return w
 }
 
-// jobSeed is one job's whole graph — the job, its steps and its tasks — which
-// submit writes with a single CreateJobSubmission, the only way production
-// creates a job. Rows default to a pending job at priority 50 with pending
-// steps and tasks; the chained methods change that, and a row is written in
-// whatever status it is given, exactly as CreateJobSubmission writes it.
-//
-// A task that must be in flight is not seeded assigned or running: seed it
-// ready, then lease it with leaseTask or runTask, so it carries the attempt a
-// real lease makes.
-type jobSeed struct{ sub store.JobSubmission }
-
-// newJob starts a pending job, with no steps and no tasks yet.
-func newJob(id, farmID, queueID string) *jobSeed {
-	return &jobSeed{sub: store.JobSubmission{Job: store.Job{
-		ID:             id,
-		FarmID:         farmID,
-		QueueID:        queueID,
-		Name:           "job-" + id,
-		Status:         store.JobStatusPending,
-		Priority:       50,
-		TemplateFormat: store.TemplateFormatYAML,
-	}}}
-}
-
-// as sets the job's status, stamping the timestamps a job in that status
-// carries: started_at once it has run, completed_at once it is terminal.
-func (j *jobSeed) as(status store.JobStatus) *jobSeed {
-	now := time.Now().UTC()
-	j.sub.Job.Status = status
-	switch status {
-	case store.JobStatusRunning:
-		j.sub.Job.StartedAt = &now
-	case store.JobStatusCompleted, store.JobStatusFailed, store.JobStatusCanceled:
-		j.sub.Job.CompletedAt = &now
-	}
-	return j
-}
-
-// step adds a pending step.
-func (j *jobSeed) step(id, name string, order int) *jobSeed {
-	return j.stepAs(id, name, order, store.StepStatusPending)
-}
-
-// stepAs adds a step in the given status.
-func (j *jobSeed) stepAs(id, name string, order int, status store.StepStatus) *jobSeed {
-	j.sub.Steps = append(j.sub.Steps, store.Step{
-		ID:        id,
-		JobID:     j.sub.Job.ID,
-		Name:      name,
-		StepOrder: order,
-		Status:    status,
-		DependsOn: []string{},
-	})
-	return j
-}
-
-// task adds a task of stepID in the given status.
-func (j *jobSeed) task(id, stepID string, status store.TaskStatus) *jobSeed {
-	return j.taskRow(store.Task{ID: id, StepID: stepID, Status: status})
-}
-
-// taskRow adds the given task, filling in the job, a name and empty parameters
-// when it has none.
-func (j *jobSeed) taskRow(task store.Task) *jobSeed {
-	task.JobID = j.sub.Job.ID
-	if task.Name == "" {
-		task.Name = "task-" + task.ID
-	}
-	if task.Parameters == nil {
-		task.Parameters = map[string]string{}
-	}
-	j.sub.Tasks = append(j.sub.Tasks, task)
-	return j
-}
-
-// submit writes the whole graph and returns what the store wrote.
-func (j *jobSeed) submit(t *testing.T, s *sqlite.Store) store.JobSubmission {
-	t.Helper()
-	return storetest.Submit(t, s, j.sub)
-}
-
 // leaseTask leases the ready task taskID to workerID, through the production
 // lease, and returns the attempt the lease made.
 func leaseTask(t *testing.T, s *sqlite.Store, taskID, workerID string) store.TaskAttempt {
@@ -818,8 +737,8 @@ func TestJob_ListJobs_FilterByStatus(t *testing.T) {
 	ctx := context.Background()
 	insertFarm(t, s, "f1", "F1")
 	insertQueue(t, s, "q1", "f1", "Q1")
-	newJob("j1", "f1", "q1").submit(t, s)
-	newJob("j2", "f1", "q1").as(store.JobStatusRunning).submit(t, s)
+	storetest.NewJob("j1", "f1", "q1").Submit(t, s)
+	storetest.NewJob("j2", "f1", "q1").As(store.JobStatusRunning).Submit(t, s)
 
 	page, err := s.ListJobs(ctx, store.ListJobsOptions{Status: store.JobStatusPending})
 	if err != nil {
@@ -883,7 +802,7 @@ func TestStep_CreateAndGet(t *testing.T) {
 	insertFarm(t, s, "f1", "F1")
 	insertQueue(t, s, "q1", "f1", "Q1")
 
-	sub := newJob("j1", "f1", "q1").step("s1", "Render", 0).submit(t, s)
+	sub := storetest.NewJob("j1", "f1", "q1").StepRow(store.Step{ID: "s1", Name: "Render", Status: store.StepStatusPending}).Submit(t, s)
 	if step := sub.Steps[0]; step.Name != "Render" {
 		t.Errorf("Name: got %q", step.Name)
 	}
@@ -902,7 +821,10 @@ func TestStep_ListSteps_OrderByStepOrder(t *testing.T) {
 	ctx := context.Background()
 	insertFarm(t, s, "f1", "F1")
 	insertQueue(t, s, "q1", "f1", "Q1")
-	newJob("j1", "f1", "q1").step("s2", "Composite", 1).step("s1", "Render", 0).submit(t, s)
+	storetest.NewJob("j1", "f1", "q1").
+		StepRow(store.Step{ID: "s2", Name: "Composite", StepOrder: 1, Status: store.StepStatusPending}).
+		StepRow(store.Step{ID: "s1", Name: "Render", StepOrder: 0, Status: store.StepStatusPending}).
+		Submit(t, s)
 
 	steps, err := s.ListSteps(ctx, "j1")
 	if err != nil {
@@ -924,13 +846,13 @@ func TestTask_CreateAndGet(t *testing.T) {
 	insertFarm(t, s, "f1", "F1")
 	insertQueue(t, s, "q1", "f1", "Q1")
 
-	sub := newJob("j1", "f1", "q1").step("s1", "S1", 0).taskRow(store.Task{
+	sub := storetest.NewJob("j1", "f1", "q1").Step("s1", store.StepStatusPending).TaskRow(store.Task{
 		ID:         "t1",
 		StepID:     "s1",
 		Name:       "frame-001",
 		Status:     store.TaskStatusReady,
 		Parameters: map[string]string{"Frame": "1"},
-	}).submit(t, s)
+	}).Submit(t, s)
 	if task := sub.Tasks[0]; task.Parameters["Frame"] != "1" {
 		t.Errorf("Parameters[Frame]: got %q", task.Parameters["Frame"])
 	}
@@ -959,10 +881,10 @@ func TestTask_ListReadyTasks(t *testing.T) {
 	insertQueue(t, s, "q1", "f1", "Q1")
 
 	// Two tasks: one ready, one pending.
-	newJob("j1", "f1", "q1").step("s1", "S1", 0).
-		taskRow(store.Task{ID: "t1", StepID: "s1", Name: "ready-task", Status: store.TaskStatusReady}).
-		taskRow(store.Task{ID: "t2", StepID: "s1", Name: "pending-task", Status: store.TaskStatusPending}).
-		submit(t, s)
+	storetest.NewJob("j1", "f1", "q1").Step("s1", store.StepStatusPending).
+		TaskRow(store.Task{ID: "t1", StepID: "s1", Name: "ready-task", Status: store.TaskStatusReady}).
+		TaskRow(store.Task{ID: "t2", StepID: "s1", Name: "pending-task", Status: store.TaskStatusPending}).
+		Submit(t, s)
 
 	ready, err := s.ListReadyTasks(ctx, "f1", time.Now().UTC(), 10)
 	if err != nil {
@@ -981,9 +903,9 @@ func TestTask_ListReadyTasks_PausedQueue(t *testing.T) {
 	if _, err := s.CreateQueue(ctx, q); err != nil {
 		t.Fatalf("CreateQueue: %v", err)
 	}
-	newJob("j1", "f1", "q1").step("s1", "S1", 0).
-		taskRow(store.Task{ID: "t1", StepID: "s1", Name: "t", Status: store.TaskStatusReady}).
-		submit(t, s)
+	storetest.NewJob("j1", "f1", "q1").Step("s1", store.StepStatusPending).
+		TaskRow(store.Task{ID: "t1", StepID: "s1", Name: "t", Status: store.TaskStatusReady}).
+		Submit(t, s)
 
 	ready, err := s.ListReadyTasks(ctx, "f1", time.Now().UTC(), 10)
 	if err != nil {
@@ -1006,16 +928,16 @@ func TestTask_ListReadyTasks_SkipsBackoffAndPausedJobs(t *testing.T) {
 
 	// j1 stays pending (a non-terminal, non-paused status): its ready task
 	// is eligible.
-	newJob("j1", "f1", "q1").step("s1", "S1", 0).
-		taskRow(store.Task{ID: "t-ready", StepID: "s1", Name: "ready", Status: store.TaskStatusReady}).
-		taskRow(store.Task{ID: "t-backoff", StepID: "s1", Name: "backoff", Status: store.TaskStatusReady, RetryAfter: &future}).
-		submit(t, s)
+	storetest.NewJob("j1", "f1", "q1").Step("s1", store.StepStatusPending).
+		TaskRow(store.Task{ID: "t-ready", StepID: "s1", Name: "ready", Status: store.TaskStatusReady}).
+		TaskRow(store.Task{ID: "t-backoff", StepID: "s1", Name: "backoff", Status: store.TaskStatusReady, RetryAfter: &future}).
+		Submit(t, s)
 
 	// j2 is paused: its ready task must be excluded even though the task
 	// itself is otherwise eligible.
-	newJob("j2", "f1", "q1").step("s2", "S2", 0).
-		taskRow(store.Task{ID: "t-paused", StepID: "s2", Name: "paused", Status: store.TaskStatusReady}).
-		submit(t, s)
+	storetest.NewJob("j2", "f1", "q1").Step("s2", store.StepStatusPending).
+		TaskRow(store.Task{ID: "t-paused", StepID: "s2", Name: "paused", Status: store.TaskStatusReady}).
+		Submit(t, s)
 	if err := s.PauseJob(ctx, "j2", now); err != nil {
 		t.Fatalf("PauseJob j2: %v", err)
 	}
@@ -1048,10 +970,10 @@ func TestTask_ReclaimStaleAssignedTasks(t *testing.T) {
 	insertFarm(t, s, "f1", "F1")
 	insertQueue(t, s, "q1", "f1", "Q1")
 	insertWorker(t, s, "w1", "f1")
-	newJob("j1", "f1", "q1").step("s1", "S1", 0).
-		task("t1", "s1", store.TaskStatusReady). // stale assignment
-		task("t2", "s1", store.TaskStatusReady). // fresh assignment
-		submit(t, s)
+	storetest.NewJob("j1", "f1", "q1").Step("s1", store.StepStatusPending).
+		Task("t1", "s1", store.TaskStatusReady). // stale assignment
+		Task("t2", "s1", store.TaskStatusReady). // fresh assignment
+		Submit(t, s)
 
 	storetest.Lease(t, s, store.LeaseRequest{TaskID: "t1", WorkerID: "w1", Now: time.Now().Add(-time.Hour)})
 	leaseTask(t, s, "t2", "w1")
@@ -1100,10 +1022,10 @@ func TestTask_CountActiveTasksInQueue(t *testing.T) {
 	insertFarm(t, s, "f1", "F1")
 	insertQueue(t, s, "q1", "f1", "Q1")
 	insertWorker(t, s, "w1", "f1")
-	newJob("j1", "f1", "q1").step("s1", "S1", 0).
-		task("t1", "s1", store.TaskStatusReady).
-		task("t2", "s1", store.TaskStatusReady).
-		submit(t, s)
+	storetest.NewJob("j1", "f1", "q1").Step("s1", store.StepStatusPending).
+		Task("t1", "s1", store.TaskStatusReady).
+		Task("t2", "s1", store.TaskStatusReady).
+		Submit(t, s)
 
 	leaseTask(t, s, "t1", "w1")
 
@@ -1121,11 +1043,11 @@ func TestTask_CountUnschedulableTasksByJob(t *testing.T) {
 	ctx := context.Background()
 	insertFarm(t, s, "f1", "F1")
 	insertQueue(t, s, "q1", "f1", "Q1")
-	newJob("j1", "f1", "q1").step("s1", "S1", 0).
-		task("t1", "s1", store.TaskStatusReady).
-		task("t2", "s1", store.TaskStatusReady).
-		task("t3", "s1", store.TaskStatusReady).
-		submit(t, s)
+	storetest.NewJob("j1", "f1", "q1").Step("s1", store.StepStatusPending).
+		Task("t1", "s1", store.TaskStatusReady).
+		Task("t2", "s1", store.TaskStatusReady).
+		Task("t3", "s1", store.TaskStatusReady).
+		Submit(t, s)
 
 	// t1, t2: ready with an unschedulable reason set — counted.
 	for _, id := range []string{"t1", "t2"} {
@@ -1164,8 +1086,8 @@ func TestTask_CountActiveTasksInFarm(t *testing.T) {
 	insertQueue(t, s, "q1", "f1", "Q1")
 	insertQueue(t, s, "q2", "f1", "Q2")
 	insertWorker(t, s, "w1", "f1")
-	newJob("j1", "f1", "q1").step("s1", "S1", 0).task("t1", "s1", store.TaskStatusReady).submit(t, s)
-	newJob("j2", "f1", "q2").step("s2", "S2", 0).task("t2", "s2", store.TaskStatusReady).submit(t, s)
+	storetest.NewJob("j1", "f1", "q1").Task("t1", "s1", store.TaskStatusReady).Submit(t, s)
+	storetest.NewJob("j2", "f1", "q2").Task("t2", "s2", store.TaskStatusReady).Submit(t, s)
 
 	leaseTask(t, s, "t1", "w1")
 	leaseTask(t, s, "t2", "w1")
@@ -1192,17 +1114,17 @@ func TestTask_CountReadyTasksByQueue(t *testing.T) {
 	// a task still backing off (t4), and a task under an auto-parked (paused)
 	// job (t5).
 	backoff := now.Add(time.Minute)
-	newJob("j1", "f1", "q1").step("s1", "S1", 0).
-		taskRow(store.Task{ID: "t1", StepID: "s1", Name: "t1", Status: store.TaskStatusReady, Parameters: map[string]string{"i": "0"}}).
-		taskRow(store.Task{ID: "t2", StepID: "s1", Name: "t2", Status: store.TaskStatusReady, Parameters: map[string]string{"i": "1"}}).
-		taskRow(store.Task{ID: "t4", StepID: "s1", Name: "t4", Status: store.TaskStatusReady, RetryAfter: &backoff}).
-		submit(t, s)
-	newJob("j2", "f1", "q2").step("s2", "S2", 0).
-		taskRow(store.Task{ID: "t3", StepID: "s2", Name: "t3", Status: store.TaskStatusReady}).
-		submit(t, s)
-	newJob("j3", "f1", "q1").step("s3", "S3", 0).
-		taskRow(store.Task{ID: "t5", StepID: "s3", Name: "t5", Status: store.TaskStatusReady}).
-		submit(t, s)
+	storetest.NewJob("j1", "f1", "q1").Step("s1", store.StepStatusPending).
+		TaskRow(store.Task{ID: "t1", StepID: "s1", Name: "t1", Status: store.TaskStatusReady, Parameters: map[string]string{"i": "0"}}).
+		TaskRow(store.Task{ID: "t2", StepID: "s1", Name: "t2", Status: store.TaskStatusReady, Parameters: map[string]string{"i": "1"}}).
+		TaskRow(store.Task{ID: "t4", StepID: "s1", Name: "t4", Status: store.TaskStatusReady, RetryAfter: &backoff}).
+		Submit(t, s)
+	storetest.NewJob("j2", "f1", "q2").Step("s2", store.StepStatusPending).
+		TaskRow(store.Task{ID: "t3", StepID: "s2", Name: "t3", Status: store.TaskStatusReady}).
+		Submit(t, s)
+	storetest.NewJob("j3", "f1", "q1").Step("s3", store.StepStatusPending).
+		TaskRow(store.Task{ID: "t5", StepID: "s3", Name: "t5", Status: store.TaskStatusReady}).
+		Submit(t, s)
 	if err := s.ParkJob(ctx, "j3", "failure limit reached (2)", now); err != nil {
 		t.Fatalf("ParkJob: %v", err)
 	}
@@ -1225,7 +1147,7 @@ func TestTask_SetUnschedulableReason(t *testing.T) {
 	insertFarm(t, s, "f1", "F1")
 	insertQueue(t, s, "q1", "f1", "Q1")
 	// The reason is only written while the task is ready.
-	newJob("j1", "f1", "q1").step("s1", "S1", 0).task("t1", "s1", store.TaskStatusReady).submit(t, s)
+	storetest.NewJob("j1", "f1", "q1").Task("t1", "s1", store.TaskStatusReady).Submit(t, s)
 
 	if _, err := s.SetTaskUnschedulableReason(ctx, "t1", "no eligible online worker: attribute requirement not met"); err != nil {
 		t.Fatalf("SetTaskUnschedulableReason: %v", err)
@@ -1267,7 +1189,7 @@ func TestUnschedulableReason_ClearedOnLease(t *testing.T) {
 	insertFarm(t, s, "f1", "F1")
 	insertQueue(t, s, "q1", "f1", "Q1")
 	insertWorker(t, s, "w1", "f1")
-	newJob("j1", "f1", "q1").step("s1", "S1", 0).task("t1", "s1", store.TaskStatusReady).submit(t, s)
+	storetest.NewJob("j1", "f1", "q1").Task("t1", "s1", store.TaskStatusReady).Submit(t, s)
 
 	if _, err := s.SetTaskUnschedulableReason(ctx, "t1", "no eligible online worker"); err != nil {
 		t.Fatalf("SetTaskUnschedulableReason: %v", err)
@@ -1309,7 +1231,7 @@ func TestUnschedulableReason_ClearedOnCancel(t *testing.T) {
 			ctx := context.Background()
 			insertFarm(t, s, "f1", "F1")
 			insertQueue(t, s, "q1", "f1", "Q1")
-			newJob("j1", "f1", "q1").step("s1", "S1", 0).task("t1", "s1", store.TaskStatusReady).submit(t, s)
+			storetest.NewJob("j1", "f1", "q1").Task("t1", "s1", store.TaskStatusReady).Submit(t, s)
 
 			if _, err := s.SetTaskUnschedulableReason(ctx, "t1", "no eligible online worker"); err != nil {
 				t.Fatalf("SetTaskUnschedulableReason: %v", err)
@@ -1441,7 +1363,7 @@ func TestJob_ListJobs_Pagination(t *testing.T) {
 	insertFarm(t, s, "f1", "F1")
 	insertQueue(t, s, "q1", "f1", "Q1")
 	for _, id := range []string{"j1", "j2", "j3"} {
-		newJob(id, "f1", "q1").submit(t, s)
+		storetest.NewJob(id, "f1", "q1").Submit(t, s)
 	}
 
 	page, err := s.ListJobs(ctx, store.ListJobsOptions{
@@ -1653,12 +1575,12 @@ func TestWorker_ListWorkers_Search(t *testing.T) {
 func seedJobWithTasks(t *testing.T, s *sqlite.Store, jobID string, jobStatus store.JobStatus, taskStatuses ...store.TaskStatus) string {
 	t.Helper()
 	stepID := jobID + "-step"
-	seed := newJob(jobID, "f1", "q1").as(jobStatus).step(stepID, "render", 0)
+	seed := storetest.NewJob(jobID, "f1", "q1").As(jobStatus).Step(stepID, store.StepStatusPending)
 	for i, ts := range taskStatuses {
-		seed.taskRow(store.Task{ID: fmt.Sprintf("%s-t%d", jobID, i), StepID: stepID, Name: fmt.Sprintf("task-%d", i), Status: ts})
+		seed.TaskRow(store.Task{ID: fmt.Sprintf("%s-t%d", jobID, i), StepID: stepID, Name: fmt.Sprintf("task-%d", i), Status: ts})
 	}
 	// Assigned and running tasks are leased to w1, so they carry a real attempt.
-	storetest.SubmitLeasing(t, s, seed.sub, storetest.LeaseTo("w1"))
+	seed.SubmitLeasing(t, s, "w1")
 	return jobID
 }
 
@@ -1757,11 +1679,11 @@ func TestCommittedCores(t *testing.T) {
 		{"d", store.TaskStatusSucceeded, &two, "w1"}, // terminal -> not counted
 		{"e", store.TaskStatusRunning, &one, "w2"},   // other worker -> not counted
 	}
-	seed := newJob("j1", "f1", "q1").step("s1", "render", 0)
+	seed := storetest.NewJob("j1", "f1", "q1").Step("s1", store.StepStatusPending)
 	for _, c := range cases {
-		seed.taskRow(store.Task{ID: c.id, StepID: "s1", Name: c.id, Status: store.TaskStatusReady, RequiredCores: c.cores})
+		seed.TaskRow(store.Task{ID: c.id, StepID: "s1", Name: c.id, Status: store.TaskStatusReady, RequiredCores: c.cores})
 	}
-	seed.submit(t, s)
+	seed.Submit(t, s)
 	for _, c := range cases {
 		switch c.status {
 		case store.TaskStatusAssigned:
@@ -1794,11 +1716,11 @@ func TestTask_RequiredCoresRoundTrip(t *testing.T) {
 	insertQueue(t, s, "q1", "f1", "Q1")
 
 	four := 4
-	sub := newJob("j1", "f1", "q1").step("s1", "render", 0).
-		taskRow(store.Task{ID: "t1", StepID: "s1", Name: "t1", Status: store.TaskStatusPending, RequiredCores: &four}).
+	sub := storetest.NewJob("j1", "f1", "q1").Step("s1", store.StepStatusPending).
+		TaskRow(store.Task{ID: "t1", StepID: "s1", Name: "t1", Status: store.TaskStatusPending, RequiredCores: &four}).
 		// Undeclared stays nil.
-		taskRow(store.Task{ID: "t2", StepID: "s1", Name: "t2", Status: store.TaskStatusPending}).
-		submit(t, s)
+		TaskRow(store.Task{ID: "t2", StepID: "s1", Name: "t2", Status: store.TaskStatusPending}).
+		Submit(t, s)
 	byID := map[string]store.Task{}
 	for _, task := range sub.Tasks {
 		byID[task.ID] = task
@@ -1832,14 +1754,14 @@ func TestStore_Task_RetryPolicyRoundTrip(t *testing.T) {
 	insertQueue(t, s, "q1", "f1", "Q1")
 
 	retryAfter := time.Now().UTC().Add(5 * time.Minute).Truncate(time.Second)
-	sub := newJob("j1", "f1", "q1").step("s1", "render", 0).
-		taskRow(store.Task{
+	sub := storetest.NewJob("j1", "f1", "q1").Step("s1", store.StepStatusPending).
+		TaskRow(store.Task{
 			ID: "t1", StepID: "s1", Name: "t1", Status: store.TaskStatusReady,
 			FailedAttempts: 2, RetryAfter: &retryAfter,
 		}).
 		// Undeclared stays nil / zero.
-		taskRow(store.Task{ID: "t2", StepID: "s1", Name: "t2", Status: store.TaskStatusPending}).
-		submit(t, s)
+		TaskRow(store.Task{ID: "t2", StepID: "s1", Name: "t2", Status: store.TaskStatusPending}).
+		Submit(t, s)
 	byID := map[string]store.Task{}
 	for _, task := range sub.Tasks {
 		byID[task.ID] = task

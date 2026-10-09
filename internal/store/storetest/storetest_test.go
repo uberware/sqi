@@ -278,3 +278,30 @@ func TestInjectors_KeepGivenTimestamps(t *testing.T) {
 		})
 	}
 }
+
+func TestJobSeed_BuildsAndLeasesAWholeGraph(t *testing.T) {
+	for name, st := range newStores(t) {
+		t.Run(name, func(t *testing.T) {
+			farm, err := st.CreateFarm(t.Context(), store.Farm{ID: uuid.NewString(), Name: uuid.NewString()})
+			if err != nil {
+				t.Fatalf("CreateFarm: %v", err)
+			}
+			queue, err := st.CreateQueue(t.Context(), store.Queue{ID: uuid.NewString(), FarmID: farm.ID, Name: uuid.NewString()})
+			if err != nil {
+				t.Fatalf("CreateQueue: %v", err)
+			}
+			job := uuid.NewString()
+			out, attempts := storetest.NewJob(job, farm.ID, queue.ID).As(store.JobStatusRunning).
+				Step(job+"-a", store.StepStatusReady).
+				Task(job+"-t1", job+"-a", store.TaskStatusRunning).
+				Task(job+"-t2", job+"-b", store.TaskStatusReady).
+				SubmitLeasing(t, st, "w1")
+			if len(out.Steps) != 2 || out.Steps[1].Status != store.StepStatusPending || out.Steps[1].StepOrder != 1 {
+				t.Fatalf("steps = %+v, want the task's missing step added pending, second", out.Steps)
+			}
+			if out.Tasks[0].Status != store.TaskStatusRunning || attempts[out.Tasks[0].ID].WorkerID != "w1" {
+				t.Fatalf("task 0 = %s, attempts %+v; want running on w1", out.Tasks[0].Status, attempts)
+			}
+		})
+	}
+}
