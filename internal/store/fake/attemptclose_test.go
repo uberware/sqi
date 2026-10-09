@@ -21,7 +21,7 @@ func seedClaimedAttempt(t *testing.T, s *Store) (store.TaskAttempt, string) {
 	pool := mustCreatePool(t, s, "p1", 0)
 	newJob("j1", "farm-f1", "q1").task("t1", "s1", store.TaskStatusReady).submit(t, s)
 	a := claimOn(t, s, "t1", "c1", pool)
-	storetest.Start(t, s, a, "", a.StartedAt)
+	storetest.Start(t, s, a)
 	return a, "c1"
 }
 
@@ -39,17 +39,10 @@ func seedClaimedAttemptOnCanceledTask(t *testing.T, s *Store) (store.TaskAttempt
 	mustCreateFarm(t, s, "f1")
 	mustCreateQueue(t, s, "farm-f1", "q1", "q1")
 	newJob("j1", "farm-f1", "q1").task("t1", "s1", store.TaskStatusCanceled).submit(t, s)
-	now := time.Now().UTC()
-	a, err := s.InjectTaskAttempt(ctx(), store.TaskAttempt{
-		ID: "a1", TaskID: "t1", WorkerID: "w1", AttemptNumber: 1,
-		Status: store.AttemptStatusRunning, StartedAt: now, CreatedAt: now,
+	a := storetest.InjectAttempt(t, s, store.TaskAttempt{
+		ID: "a1", TaskID: "t1", WorkerID: "w1", AttemptNumber: 1, Status: store.AttemptStatusRunning,
 	})
-	if err != nil {
-		t.Fatalf("InjectTaskAttempt: %v", err)
-	}
-	if _, err := s.InjectClaim(ctx(), store.UsageClaim{ID: "c1", PoolID: "p1", TaskAttemptID: a.ID, ClaimedAt: now}); err != nil {
-		t.Fatalf("InjectClaim: %v", err)
-	}
+	storetest.InjectClaim(t, s, store.UsageClaim{ID: "c1", PoolID: "p1", TaskAttemptID: a.ID})
 	return a, "c1"
 }
 

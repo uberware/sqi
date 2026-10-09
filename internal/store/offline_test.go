@@ -308,13 +308,10 @@ func seedOpenAttemptWithMessage(t *testing.T, st store.Store, status store.TaskS
 		AssignedWorkerID: fixtureWorkerID, AssignedAt: &now,
 	}
 	storetest.Submit(t, st, store.JobSubmission{Job: job, Steps: []store.Step{step}, Tasks: []store.Task{task}})
-	attempt, err := storetest.InjectorFor(t, st).InjectTaskAttempt(t.Context(), store.TaskAttempt{
-		ID: uuid.NewString(), TaskID: task.ID, WorkerID: fixtureWorkerID, AttemptNumber: 1,
+	attempt := storetest.InjectAttempt(t, st, store.TaskAttempt{
+		TaskID: task.ID, WorkerID: fixtureWorkerID, AttemptNumber: 1,
 		Status: store.AttemptStatusRunning, StartedAt: now, CreatedAt: now, Message: message,
 	})
-	if err != nil {
-		t.Fatalf("InjectTaskAttempt: %v", err)
-	}
 	return mustTask(t, st, task.ID), attempt
 }
 

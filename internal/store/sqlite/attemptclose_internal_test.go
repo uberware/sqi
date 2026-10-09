@@ -43,18 +43,10 @@ func seedClaimedAttempt(t *testing.T, s *Store, status store.TaskStatus) (store.
 	}
 
 	seedCASTask(t, s, "t1", status)
-	now := time.Now().UTC()
-	a, err := s.InjectTaskAttempt(ctx, store.TaskAttempt{
-		ID: uuid.NewString(), TaskID: "t1", WorkerID: "w", AttemptNumber: 1,
-		Status: store.AttemptStatusRunning, StartedAt: now, CreatedAt: now,
+	a := storetest.InjectAttempt(t, s, store.TaskAttempt{
+		TaskID: "t1", WorkerID: "w", AttemptNumber: 1, Status: store.AttemptStatusRunning,
 	})
-	if err != nil {
-		t.Fatalf("InjectTaskAttempt: %v", err)
-	}
-	claim, err := s.InjectClaim(ctx, store.UsageClaim{ID: claimID, PoolID: pool.ID, TaskAttemptID: a.ID})
-	if err != nil {
-		t.Fatalf("InjectClaim: %v", err)
-	}
+	claim := storetest.InjectClaim(t, s, store.UsageClaim{ID: claimID, PoolID: pool.ID, TaskAttemptID: a.ID})
 	return a, claim
 }
 

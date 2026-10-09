@@ -119,8 +119,8 @@ func TestReclaimStaleAssignedTasks_ReleasesLeakedClaimOfClosedAttempt(t *testing
 			// A failed first attempt and a second lease, through production;
 			// then the claim the first attempt's close leaked, which production
 			// cannot leave behind and is therefore injected.
-			earlier := failAndRequeue(t, st, task.ID)
-			storetest.Lease(t, st, store.LeaseRequest{TaskID: task.ID, WorkerID: fixtureWorkerID, Now: time.Now().UTC()})
+			earlier := storetest.FailAndRequeue(t, st, leaseReq(task), time.Now().UTC().Add(-time.Minute))
+			storetest.Lease(t, st, store.LeaseRequest{TaskID: task.ID, WorkerID: fixtureWorkerID})
 			seedClaim(t, st, pool.ID, earlier.ID)
 			if n := activeClaims(t, st, pool.ID); n != 1 {
 				t.Fatalf("fixture: active claims = %d, want 1", n)

@@ -24,7 +24,6 @@ import (
 	"github.com/uberware/sqi/internal/product"
 	"github.com/uberware/sqi/internal/store"
 	"github.com/uberware/sqi/internal/store/fake"
-	"github.com/uberware/sqi/internal/store/storetest"
 )
 
 func TestAuthz_MatrixOverRealRouter(t *testing.T) {
@@ -515,22 +514,6 @@ func ownershipFixtureFor(method, pattern string) ownershipFixture {
 	return f
 }
 
-// seedOwnershipObject creates a job (and a task under it) owned by owner,
-// with IDs unique to idSuffix so each sweep case mutates only its own
-// scratch objects.
-func seedOwnershipObject(t *testing.T, st *fake.Store, idSuffix, owner string, f ownershipFixture) (jobID, taskID string) {
-	t.Helper()
-	jobID = "ownsweep-job-" + idSuffix
-	taskID = "ownsweep-task-" + idSuffix
-	stepID := "ownsweep-step-" + idSuffix
-	storetest.Submit(t, st, store.JobSubmission{
-		Job:   store.Job{ID: jobID, Name: jobID, Owner: owner, Status: f.jobStatus},
-		Steps: []store.Step{{ID: stepID, JobID: jobID, Name: "Step1", Status: store.StepStatusReady}},
-		Tasks: []store.Task{{ID: taskID, JobID: jobID, StepID: stepID, Name: taskID, Status: f.taskStatus}},
-	})
-	return jobID, taskID
-}
-
 // ownershipPath substitutes pattern's "{id}" with the task id when pattern
 // addresses a task object and the job id otherwise.
 //
@@ -557,14 +540,16 @@ func assertOwnershipGate(t *testing.T, st *fake.Store, srv *httptest.Server, coo
 	t.Helper()
 	f := ownershipFixtureFor(e.method, e.pattern)
 
-	ownJobID, ownTaskID := seedOwnershipObject(t, st, fmt.Sprintf("own-%d", idx), "ownsweep-alice", f)
+	ownJobID, ownTaskID := fmt.Sprintf("ownsweep-job-own-%d", idx), fmt.Sprintf("ownsweep-task-own-%d", idx)
+	seedOwnedJobWithTask(t, st, ownJobID, "ownsweep-alice", ownTaskID, f.jobStatus, f.taskStatus)
 	ownResp := doRequest(t, e.method, srv.URL+ownershipPath(e.pattern, ownJobID, ownTaskID), requestBodyFor(e.method), cookie)
 	defer ownResp.Body.Close()
 	if ownResp.StatusCode == http.StatusForbidden {
 		t.Errorf("alice on her own object (%s %s): got 403, want non-403", e.method, e.pattern)
 	}
 
-	otherJobID, otherTaskID := seedOwnershipObject(t, st, fmt.Sprintf("other-%d", idx), "ownsweep-bob", f)
+	otherJobID, otherTaskID := fmt.Sprintf("ownsweep-job-other-%d", idx), fmt.Sprintf("ownsweep-task-other-%d", idx)
+	seedOwnedJobWithTask(t, st, otherJobID, "ownsweep-bob", otherTaskID, f.jobStatus, f.taskStatus)
 	otherResp := doRequest(t, e.method, srv.URL+ownershipPath(e.pattern, otherJobID, otherTaskID), requestBodyFor(e.method), cookie)
 	defer otherResp.Body.Close()
 	if otherResp.StatusCode != http.StatusForbidden {

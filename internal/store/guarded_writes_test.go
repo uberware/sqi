@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/uberware/sqi/internal/store"
+	"github.com/uberware/sqi/internal/store/storetest"
 )
 
 func TestSetTaskUnschedulableReason_OnlyWhileReady(t *testing.T) {
@@ -154,12 +155,7 @@ func TestDeleteWorkerIfRemovable_KeepsAttemptHistory(t *testing.T) {
 				stepSpec{name: "a", status: store.StepStatusReady, tasks: []store.TaskStatus{store.TaskStatusRunning}})
 			task := g.Tasks["a"][0]
 			a := g.Attempts[task.ID]
-			if _, err := st.CompleteTaskAttempt(ctx, store.AttemptCompletion{
-				AttemptID: a.ID, TaskID: task.ID, TaskStatus: store.TaskStatusSucceeded,
-				AttemptStatus: store.AttemptStatusSucceeded, EndedAt: now,
-			}); err != nil {
-				t.Fatalf("CompleteTaskAttempt: %v", err)
-			}
+			storetest.Complete(t, st, a, store.TaskStatusSucceeded)
 			seedWorker(t, st, g.Farm.ID, store.WorkerStatusOffline, now)
 			if err := st.DeleteWorkerIfRemovable(ctx, fixtureWorkerID); err != nil {
 				t.Fatalf("DeleteWorkerIfRemovable: %v", err)

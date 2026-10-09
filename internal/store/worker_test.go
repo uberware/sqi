@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/uberware/sqi/internal/store"
+	"github.com/uberware/sqi/internal/store/storetest"
 )
 
 func registerInstance(t *testing.T, st store.Store, farmID, instance string) []store.Task {
@@ -255,9 +256,7 @@ func TestDeleteWorkerIfRemovable_RefusesAWorkerWithWorkInFlight(t *testing.T) {
 				t.Fatalf("delete with a running task: err = %v, want ErrConflict", err)
 			}
 			task := g.Tasks["a"][0]
-			if _, err := st.CompleteTaskAttempt(ctx, completion(task, g.Attempts[task.ID], store.TaskStatusSucceeded, store.AttemptStatusSucceeded)); err != nil {
-				t.Fatalf("CompleteTaskAttempt: %v", err)
-			}
+			storetest.Complete(t, st, g.Attempts[task.ID], store.TaskStatusSucceeded)
 			if err := st.DeleteWorkerIfRemovable(ctx, fixtureWorkerID); err != nil {
 				t.Fatalf("delete once idle: %v", err)
 			}

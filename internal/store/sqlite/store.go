@@ -168,7 +168,6 @@ type Store struct {
 	stmtDeletePool    *sql.Stmt
 
 	// ── usage_claims ─────────────────────────────────────────────────────
-	stmtInsertClaim      *sql.Stmt
 	stmtActiveClaimCount *sql.Stmt
 
 	// ── workers ──────────────────────────────────────────────────────────
@@ -201,7 +200,6 @@ type Store struct {
 	stmtCountUnschedulableTasksByJob *sql.Stmt
 
 	// ── task_attempts ────────────────────────────────────────────────────
-	stmtInsertAttempt *sql.Stmt
 	stmtGetAttempt    *sql.Stmt
 	stmtLatestAttempt *sql.Stmt
 	stmtListAttempts  *sql.Stmt
@@ -584,9 +582,6 @@ func (s *Store) prepareAll(ctx context.Context) error {
 	}
 
 	// ── usage_claims ──────────────────────────────────────────────────────
-	if s.stmtInsertClaim, err = s.prepare(ctx, sqlInsertClaim); err != nil {
-		return err
-	}
 	if s.stmtActiveClaimCount, err = s.prepare(ctx, sqlActiveClaimCount); err != nil {
 		return err
 	}
@@ -663,9 +658,6 @@ func (s *Store) prepareAll(ctx context.Context) error {
 	}
 
 	// ── task_attempts ─────────────────────────────────────────────────────
-	if s.stmtInsertAttempt, err = s.prepare(ctx, sqlInsertAttempt); err != nil {
-		return err
-	}
 	if s.stmtGetAttempt, err = s.prepare(ctx, sqlGetAttempt); err != nil {
 		return err
 	}

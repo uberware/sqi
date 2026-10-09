@@ -52,8 +52,8 @@ func newFakeJetStreamMsg(_ *testing.T, subject string, data []byte) *fakeJSMsg {
 // duplicate Name) so a test that needs two independent workers — each with
 // its own task — can call this twice without a spurious ErrConflict.
 //
-// The job is one submission with the task ready; the task is then leased to
-// workerID and started through production writes, so the attempt is the one
+// The job goes through [storetest.SubmitLeasing], which leases the task to
+// workerID and starts it through production writes, so the attempt is the one
 // that lease opened.
 func seedRunnableTask(t *testing.T, st *fake.Store, workerID string) (store.Job, store.Step, store.Task, store.TaskAttempt) {
 	t.Helper()
@@ -76,7 +76,7 @@ func seedRunnableTask(t *testing.T, st *fake.Store, workerID string) (store.Job,
 		t.Fatalf("RegisterWorker: %v", err)
 	}
 	jobID, stepID, taskID := uuid.NewString(), uuid.NewString(), uuid.NewString()
-	sub := storetest.Submit(t, st, store.JobSubmission{
+	sub, attempts := storetest.SubmitLeasing(t, st, store.JobSubmission{
 		Job: store.Job{
 			ID:             jobID,
 			FarmID:         farm.ID,
@@ -86,14 +86,9 @@ func seedRunnableTask(t *testing.T, st *fake.Store, workerID string) (store.Job,
 			TemplateFormat: store.TemplateFormatJSON,
 		},
 		Steps: []store.Step{{ID: stepID, JobID: jobID, Name: "step", Status: store.StepStatusRunning}},
-		Tasks: []store.Task{{ID: taskID, JobID: jobID, StepID: stepID, Name: "task", Status: store.TaskStatusReady}},
-	})
-	attempt := storetest.Running(t, st, store.LeaseRequest{TaskID: taskID, WorkerID: workerID})
-	task, err := st.GetTask(ctx, taskID)
-	if err != nil {
-		t.Fatalf("GetTask: %v", err)
-	}
-	return sub.Job, sub.Steps[0], task, attempt
+		Tasks: []store.Task{{ID: taskID, JobID: jobID, StepID: stepID, Name: "task", Status: store.TaskStatusRunning}},
+	}, storetest.LeaseTo(workerID))
+	return sub.Job, sub.Steps[0], sub.Tasks[0], attempts[taskID]
 }
 
 // ── task.status ────────────────────────────────────────────────────────────

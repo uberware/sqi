@@ -187,20 +187,14 @@ func TestRetryTasks_ResetsFailureCounters(t *testing.T) {
 
 	// Drive genuine-failure bookkeeping: a failed attempt bumps both counters
 	// and stamps a backoff on the requeued task.
-	att := leaseTask(t, s, "t1", "w1")
-	if _, _, _, err := s.RecordTaskFailure(ctx, att.ID, "t1", nil, "", "", now); err != nil {
-		t.Fatalf("RecordTaskFailure: %v", err)
-	}
-	if requeued, err := s.RequeueTaskForRetry(ctx, "t1", att.ID, now.Add(time.Minute), now); err != nil || !requeued {
-		t.Fatalf("RequeueTaskForRetry: requeued=%v err=%v", requeued, err)
-	}
+	storetest.FailAndRequeue(t, s, store.LeaseRequest{TaskID: "t1", WorkerID: "w1"}, now.Add(time.Minute))
 
 	// The retry runs once the backoff has elapsed and fails for good, which
 	// finalizes the step. The job is parked (enough failures park it with a
 	// reason) and then finalized failed — the terminal state RetryTasks
 	// operates on, reached the way the production failure sweep reaches it.
 	retry := storetest.Running(t, s, store.LeaseRequest{TaskID: "t1", WorkerID: "w1", Now: now.Add(2 * time.Minute)})
-	completeAttempt(t, s, retry, store.TaskStatusFailed, store.AttemptStatusFailed)
+	storetest.Complete(t, s, retry, store.TaskStatusFailed)
 	if status, ok, err := s.FinalizeStep(ctx, "s1", now); err != nil || !ok || status != store.StepStatusFailed {
 		t.Fatalf("FinalizeStep = (%v, %v, %v), want failed", status, ok, err)
 	}
@@ -675,7 +669,7 @@ func TestRetryTasks_UnparksAutoParkedJob(t *testing.T) {
 		t.Fatalf("RecordTaskFailure: %v", err)
 	}
 	// The tripping task went terminal-failed and the job parked.
-	completeAttempt(t, s, att, store.TaskStatusFailed, store.AttemptStatusFailed)
+	storetest.Complete(t, s, att, store.TaskStatusFailed)
 	if err := s.ParkJob(ctx, "j1", "failure limit reached (1)", now); err != nil {
 		t.Fatalf("ParkJob: %v", err)
 	}
@@ -703,7 +697,7 @@ func TestRetryTasks_UnparksAutoParkedJob(t *testing.T) {
 func TestRetryTasks_LeavesManualPauseAlone(t *testing.T) {
 	s, ctx, now := recordFailureFixture(t)
 
-	completeAttempt(t, s, leaseTask(t, s, "t1", "w1"), store.TaskStatusFailed, store.AttemptStatusFailed)
+	storetest.Complete(t, s, leaseTask(t, s, "t1", "w1"), store.TaskStatusFailed)
 	if err := s.PauseJob(ctx, "j1", now); err != nil {
 		t.Fatalf("PauseJob: %v", err)
 	}

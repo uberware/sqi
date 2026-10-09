@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/uberware/sqi/internal/store"
+	"github.com/uberware/sqi/internal/store/storetest"
 )
 
 func TestSmoke(t *testing.T) {
@@ -126,7 +127,7 @@ func TestSmoke(t *testing.T) {
 	jobID := "job-1"
 	stepID := "step-1"
 	taskID := "task-1"
-	submitted := mustSubmit(t, s, store.JobSubmission{
+	submitted := storetest.Submit(t, s, store.JobSubmission{
 		Job: store.Job{
 			ID:       jobID,
 			FarmID:   farmID,
@@ -213,7 +214,7 @@ func TestSmoke(t *testing.T) {
 		Priority:   50,
 		Parameters: map[string]string{"Frame": "42", "Quality": "high"},
 	}
-	createdParamJob := mustSubmit(t, s, store.JobSubmission{Job: jobWithParams}).Job
+	createdParamJob := storetest.Submit(t, s, store.JobSubmission{Job: jobWithParams}).Job
 	readParamJob, err := s.GetJob(ctx, "job-params")
 	if err != nil {
 		t.Fatalf("GetJob with params: %v", err)
@@ -259,7 +260,7 @@ func TestFakeJob_UpdateJobPreservesParameters(t *testing.T) {
 		Priority:   50,
 		Parameters: originalParams,
 	}
-	createdJob := mustSubmit(t, s, store.JobSubmission{Job: job}).Job
+	createdJob := storetest.Submit(t, s, store.JobSubmission{Job: job}).Job
 
 	// Verify Parameters were stored
 	if createdJob.Parameters["Frame"] != "42" {

@@ -958,20 +958,16 @@ func finishUpstream(t *testing.T, st store.Store, up *openjd.SubmitResult, want 
 	task := up.Tasks[0]
 	now := time.Now().UTC()
 	attempt := storetest.Running(t, st, store.LeaseRequest{TaskID: task.ID, WorkerID: "worker-1"})
-	taskStatus, attemptStatus, wantStep := store.TaskStatusSucceeded, store.AttemptStatusSucceeded, store.StepStatusCompleted
+	taskStatus, wantStep := store.TaskStatusSucceeded, store.StepStatusCompleted
 	if want == store.JobStatusFailed {
-		taskStatus, attemptStatus, wantStep = store.TaskStatusFailed, store.AttemptStatusFailed, store.StepStatusFailed
+		taskStatus, wantStep = store.TaskStatusFailed, store.StepStatusFailed
 		// nil, "", "" are the exit code, session ID and message; each left empty
 		// leaves the attempt's value unchanged.
 		if _, _, _, err := st.RecordTaskFailure(ctx, attempt.ID, task.ID, nil, "", "", now); err != nil {
 			t.Fatalf("RecordTaskFailure: %v", err)
 		}
 	}
-	if res, err := st.CompleteTaskAttempt(ctx, store.AttemptCompletion{
-		AttemptID: attempt.ID, TaskID: task.ID, TaskStatus: taskStatus, AttemptStatus: attemptStatus, EndedAt: now,
-	}); err != nil || !res.Applied {
-		t.Fatalf("CompleteTaskAttempt = (%+v, %v), want applied", res, err)
-	}
+	storetest.Complete(t, st, attempt, taskStatus)
 	if got, _, err := st.FinalizeStep(ctx, task.StepID, now); err != nil || got != wantStep {
 		t.Fatalf("FinalizeStep = (%q, %v), want %q", got, err, wantStep)
 	}

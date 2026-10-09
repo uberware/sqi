@@ -119,7 +119,7 @@ func TestRunning_StartsTheTask(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			sub := oneTaskJob(t, st, store.TaskStatusReady)
 			storetest.Submit(t, st, sub)
-			storetest.Running(t, st, store.LeaseRequest{TaskID: sub.Tasks[0].ID, WorkerID: "w1", Now: time.Now().UTC()})
+			storetest.Running(t, st, store.LeaseRequest{TaskID: sub.Tasks[0].ID, WorkerID: "w1"})
 			task, err := st.GetTask(t.Context(), sub.Tasks[0].ID)
 			if err != nil {
 				t.Fatalf("GetTask: %v", err)
@@ -138,14 +138,10 @@ func TestInjectTaskAttempt_WritesAnUnreachableState(t *testing.T) {
 			// production write produces it.
 			sub := oneTaskJob(t, st, store.TaskStatusCanceled)
 			storetest.Submit(t, st, sub)
-			now := time.Now().UTC()
-			in := store.TaskAttempt{
-				ID: uuid.NewString(), TaskID: sub.Tasks[0].ID, WorkerID: "w1", AttemptNumber: 1,
-				Status: store.AttemptStatusRunning, StartedAt: now, CreatedAt: now, Message: "stale",
-			}
-			if _, err := storetest.InjectorFor(t, st).InjectTaskAttempt(t.Context(), in); err != nil {
-				t.Fatalf("InjectTaskAttempt: %v", err)
-			}
+			in := storetest.InjectAttempt(t, st, store.TaskAttempt{
+				TaskID: sub.Tasks[0].ID, WorkerID: "w1", AttemptNumber: 1,
+				Status: store.AttemptStatusRunning, Message: "stale",
+			})
 			got, err := st.GetTaskAttempt(t.Context(), in.ID)
 			if err != nil {
 				t.Fatalf("GetTaskAttempt: %v", err)
@@ -163,21 +159,15 @@ func TestInjectClaim_OnAClosedAttempt(t *testing.T) {
 			sub := oneTaskJob(t, st, store.TaskStatusSucceeded)
 			storetest.Submit(t, st, sub)
 			now := time.Now().UTC()
-			inj := storetest.InjectorFor(t, st)
-			a, err := inj.InjectTaskAttempt(t.Context(), store.TaskAttempt{
-				ID: uuid.NewString(), TaskID: sub.Tasks[0].ID, WorkerID: "w1", AttemptNumber: 1,
-				Status: store.AttemptStatusSucceeded, StartedAt: now, EndedAt: &now, CreatedAt: now,
+			a := storetest.InjectAttempt(t, st, store.TaskAttempt{
+				TaskID: sub.Tasks[0].ID, WorkerID: "w1", AttemptNumber: 1,
+				Status: store.AttemptStatusSucceeded, EndedAt: &now,
 			})
-			if err != nil {
-				t.Fatalf("InjectTaskAttempt: %v", err)
-			}
 			pool, err := st.CreateUsagePool(t.Context(), store.UsagePool{ID: uuid.NewString(), Name: "p", MaxConcurrent: 1})
 			if err != nil {
 				t.Fatalf("CreateUsagePool: %v", err)
 			}
-			if _, err := inj.InjectClaim(t.Context(), store.UsageClaim{ID: uuid.NewString(), PoolID: pool.ID, TaskAttemptID: a.ID}); err != nil {
-				t.Fatalf("InjectClaim: %v", err)
-			}
+			storetest.InjectClaim(t, st, store.UsageClaim{PoolID: pool.ID, TaskAttemptID: a.ID})
 			if n, err := st.ActiveClaimCount(t.Context(), pool.ID); err != nil || n != 1 {
 				t.Fatalf("ActiveClaimCount = %d, %v; want the leaked claim counted", n, err)
 			}
@@ -198,18 +188,92 @@ func TestInjectClaim_SQLiteKeepsForeignKeys(t *testing.T) {
 	}
 }
 
-// wrapper embeds store.Store the way the scheduler's checked and racing stores
-// do, so it satisfies store.Store but not Injector.
-type wrapper struct{ store.Store }
+var (
+	_ storetest.Injector = (*sqlite.Store)(nil)
+	_ storetest.Injector = (*fake.Store)(nil)
+)
 
-func TestAsInjector_WrapperIsNotAnInjector(t *testing.T) {
+func TestSubmitLeasing_LeasesInFlightTasks(t *testing.T) {
 	for name, st := range newStores(t) {
 		t.Run(name, func(t *testing.T) {
-			if _, ok := storetest.AsInjector(st); !ok {
-				t.Fatalf("%T is not an Injector", st)
+			sub := oneTaskJob(t, st, store.TaskStatusRunning)
+			sub.Tasks = append(
+				sub.Tasks,
+				store.Task{ID: uuid.NewString(), JobID: sub.Job.ID, StepID: sub.Steps[0].ID, Name: "a", Status: store.TaskStatusAssigned},
+				store.Task{ID: uuid.NewString(), JobID: sub.Job.ID, StepID: sub.Steps[0].ID, Name: "r", Status: store.TaskStatusReady},
+			)
+			out, attempts := storetest.SubmitLeasing(t, st, sub, storetest.LeaseTo("w1"))
+			want := []store.TaskStatus{store.TaskStatusRunning, store.TaskStatusAssigned, store.TaskStatusReady}
+			for i, task := range out.Tasks {
+				if task.Status != want[i] {
+					t.Errorf("task %d status = %s, want %s", i, task.Status, want[i])
+				}
 			}
-			if _, ok := storetest.AsInjector(wrapper{st}); ok {
-				t.Fatal("a wrapper embedding store.Store must not be an Injector")
+			if len(attempts) != 2 || attempts[out.Tasks[0].ID].WorkerID != "w1" || attempts[out.Tasks[1].ID].WorkerID != "w1" {
+				t.Fatalf("attempts = %+v, want one on w1 for each in-flight task", attempts)
+			}
+		})
+	}
+}
+
+func TestComplete_EndsTaskAndAttempt(t *testing.T) {
+	for name, st := range newStores(t) {
+		t.Run(name, func(t *testing.T) {
+			sub := oneTaskJob(t, st, store.TaskStatusReady)
+			storetest.Submit(t, st, sub)
+			a := storetest.Running(t, st, store.LeaseRequest{TaskID: sub.Tasks[0].ID, WorkerID: "w1"})
+			storetest.Complete(t, st, a, store.TaskStatusSucceeded)
+			got, err := st.GetTaskAttempt(t.Context(), a.ID)
+			if err != nil {
+				t.Fatalf("GetTaskAttempt: %v", err)
+			}
+			if got.Status != store.AttemptStatusSucceeded {
+				t.Fatalf("attempt status = %s, want succeeded", got.Status)
+			}
+		})
+	}
+}
+
+func TestFailAndRequeue_LeavesTheTaskReady(t *testing.T) {
+	for name, st := range newStores(t) {
+		t.Run(name, func(t *testing.T) {
+			sub := oneTaskJob(t, st, store.TaskStatusReady)
+			storetest.Submit(t, st, sub)
+			a := storetest.FailAndRequeue(t, st, store.LeaseRequest{TaskID: sub.Tasks[0].ID, WorkerID: "w1"}, time.Now().UTC())
+			task, err := st.GetTask(t.Context(), a.TaskID)
+			if err != nil {
+				t.Fatalf("GetTask: %v", err)
+			}
+			if task.Status != store.TaskStatusReady {
+				t.Fatalf("task status = %s, want ready", task.Status)
+			}
+		})
+	}
+}
+
+func TestInjectors_KeepGivenTimestamps(t *testing.T) {
+	for name, st := range newStores(t) {
+		t.Run(name, func(t *testing.T) {
+			sub := oneTaskJob(t, st, store.TaskStatusSucceeded)
+			storetest.Submit(t, st, sub)
+			then := time.Now().UTC().Add(-time.Hour).Truncate(time.Second)
+			a := storetest.InjectAttempt(t, st, store.TaskAttempt{
+				TaskID: sub.Tasks[0].ID, WorkerID: "w1", AttemptNumber: 1,
+				Status: store.AttemptStatusRunning, CreatedAt: then,
+			})
+			if !a.CreatedAt.Equal(then) {
+				t.Errorf("attempt CreatedAt = %v, want %v", a.CreatedAt, then)
+			}
+			pool, err := st.CreateUsagePool(t.Context(), store.UsagePool{ID: uuid.NewString(), Name: "p", MaxConcurrent: 1})
+			if err != nil {
+				t.Fatalf("CreateUsagePool: %v", err)
+			}
+			c := storetest.InjectClaim(t, st, store.UsageClaim{PoolID: pool.ID, TaskAttemptID: a.ID, ClaimedAt: then, ReleasedAt: &then})
+			if !c.ClaimedAt.Equal(then) || c.ReleasedAt != nil {
+				t.Errorf("claim = claimed %v released %v, want claimed %v and active", c.ClaimedAt, c.ReleasedAt, then)
+			}
+			if n, err := st.ActiveClaimCount(t.Context(), pool.ID); err != nil || n != 1 {
+				t.Fatalf("ActiveClaimCount = %d, %v; want the injected claim active", n, err)
 			}
 		})
 	}

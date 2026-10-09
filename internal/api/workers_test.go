@@ -26,6 +26,7 @@ import (
 	"github.com/uberware/sqi/internal/auth"
 	"github.com/uberware/sqi/internal/store"
 	"github.com/uberware/sqi/internal/store/fake"
+	"github.com/uberware/sqi/internal/store/storetest"
 	"github.com/uberware/sqi/internal/ws"
 )
 
@@ -129,7 +130,7 @@ func seedWorkerTask(
 // so owner-scoping tests can look up the job's real owner via store.GetJob. The
 // job, its step and its task are one submission: a task cannot be added to a
 // job that already exists. An assigned or running task is leased to workerID
-// (see [submitLeasing]); a succeeded one is run to completion on workerID, so
+// (see [storetest.SubmitLeasing]); a succeeded one is run to completion on workerID, so
 // it stays attributed to the worker the way a finished task is.
 func seedWorkerTaskForJob(
 	t *testing.T,
@@ -145,23 +146,18 @@ func seedWorkerTaskForJob(
 	if status == store.TaskStatusSucceeded {
 		seeded = store.TaskStatusRunning
 	}
-	out, attempts := submitLeasing(t, st, store.JobSubmission{
+	out, attempts := storetest.SubmitLeasing(t, st, store.JobSubmission{
 		Job: store.Job{
 			ID: jobID, FarmID: farm.ID, QueueID: queue.ID, Name: jobID, Owner: owner,
 			Priority: 50, Status: store.JobStatusRunning, TemplateFormat: store.TemplateFormatJSON,
 		},
 		Steps: []store.Step{{ID: stepID, JobID: jobID, Name: "Step1", Status: store.StepStatusRunning}},
 		Tasks: []store.Task{{ID: taskID, JobID: jobID, StepID: stepID, Name: name, Status: seeded}},
-	}, workerID)
+	}, storetest.LeaseTo(workerID))
 	if status != store.TaskStatusSucceeded {
 		return out.Tasks[0]
 	}
-	if res, err := st.CompleteTaskAttempt(t.Context(), store.AttemptCompletion{
-		AttemptID: attempts[taskID].ID, TaskID: taskID, TaskStatus: store.TaskStatusSucceeded,
-		AttemptStatus: store.AttemptStatusSucceeded, EndedAt: time.Now().UTC(),
-	}); err != nil || !res.Applied {
-		t.Fatalf("seedWorkerTaskForJob: CompleteTaskAttempt = (%+v, %v), want applied", res, err)
-	}
+	storetest.Complete(t, st, attempts[taskID], store.TaskStatusSucceeded)
 	task, err := st.GetTask(t.Context(), taskID)
 	if err != nil {
 		t.Fatalf("seedWorkerTaskForJob: GetTask: %v", err)
@@ -756,12 +752,7 @@ func TestRemoveWorker(t *testing.T) {
 		if err != nil {
 			t.Fatalf("LatestTaskAttempt: %v", err)
 		}
-		if res, err := st.CompleteTaskAttempt(t.Context(), store.AttemptCompletion{
-			AttemptID: attempt.ID, TaskID: task.ID, TaskStatus: store.TaskStatusSucceeded,
-			AttemptStatus: store.AttemptStatusSucceeded, EndedAt: time.Now().UTC(),
-		}); err != nil || !res.Applied {
-			t.Fatalf("CompleteTaskAttempt = (%+v, %v), want applied", res, err)
-		}
+		storetest.Complete(t, st, attempt, store.TaskStatusSucceeded)
 		rr = httptest.NewRecorder()
 		r.ServeHTTP(rr, newReq(t, http.MethodDelete, "/api/v1/workers/"+w.ID, nil))
 		if rr.Code != http.StatusNoContent {

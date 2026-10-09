@@ -14,9 +14,9 @@ package scheduler
 
 import (
 	"testing"
-	"time"
 
 	"github.com/uberware/sqi/internal/store"
+	"github.com/uberware/sqi/internal/store/storetest"
 	"github.com/uberware/sqi/internal/worker/protocol"
 )
 
@@ -33,13 +33,7 @@ func TestHandleTaskStatusMessage_InvalidTransitionIsAcked(t *testing.T) {
 	_, _, task, attempt := seedStatusFixture(t, st, store.TaskStatusRunning)
 
 	// Drive the task to a terminal state first.
-	exit := 0
-	if res, err := st.CompleteTaskAttempt(t.Context(), store.AttemptCompletion{
-		AttemptID: attempt.ID, TaskID: task.ID, TaskStatus: store.TaskStatusSucceeded,
-		AttemptStatus: store.AttemptStatusSucceeded, ExitCode: &exit, EndedAt: time.Now().UTC(),
-	}); err != nil || !res.Applied {
-		t.Fatalf("CompleteTaskAttempt(running → succeeded) = (%+v, %v), want applied", res, err)
-	}
+	storetest.Complete(t, st, attempt, store.TaskStatusSucceeded)
 
 	msg := &fakeJSMsg{
 		subject: statusTestSubject,

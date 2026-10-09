@@ -16,10 +16,6 @@ type UsagePoolClaim struct {
 	PoolID string
 	// PoolName is used in error messages and debug logging only.
 	PoolName string
-	// MaxConcurrent is the pool's limit as the caller last saw it.
-	// [TaskStore.LeaseTask] ignores it and re-reads the stored limit inside its
-	// transaction.
-	MaxConcurrent int
 }
 
 // UsagePool represents a tracked named concurrency limit.

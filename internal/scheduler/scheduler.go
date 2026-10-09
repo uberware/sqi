@@ -656,10 +656,9 @@ func buildUsageClaims(step store.Step, pools map[string]store.UsagePool) []store
 			continue
 		}
 		claims = append(claims, store.UsagePoolClaim{
-			ClaimID:       uuid.NewString(),
-			PoolID:        pool.ID,
-			PoolName:      pool.Name,
-			MaxConcurrent: pool.MaxConcurrent,
+			ClaimID:  uuid.NewString(),
+			PoolID:   pool.ID,
+			PoolName: pool.Name,
 		})
 	}
 	return claims

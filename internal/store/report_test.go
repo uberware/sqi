@@ -36,7 +36,7 @@ func TestStartTaskAttempt(t *testing.T) {
 			}
 
 			// A superseded attempt: attempt 1 closed, attempt 2 open on a new lease.
-			old := failAndRequeue(t, st, superseded.ID)
+			old := storetest.FailAndRequeue(t, st, leaseReq(superseded), now.Add(-time.Minute))
 			storetest.Lease(t, st, store.LeaseRequest{TaskID: superseded.ID, WorkerID: fixtureWorkerID})
 			if ok, err := st.StartTaskAttempt(ctx, old.ID, superseded.ID, "sess-old", now); err != nil || ok {
 				t.Fatalf("StartTaskAttempt(superseded) = (%v, %v), want (false, nil)", ok, err)
@@ -46,7 +46,7 @@ func TestStartTaskAttempt(t *testing.T) {
 			}
 
 			// The latest attempt, but closed and the task reclaimed to ready.
-			closed := failAndRequeue(t, st, reclaimed.ID)
+			closed := storetest.FailAndRequeue(t, st, leaseReq(reclaimed), now.Add(-time.Minute))
 			if ok, err := st.StartTaskAttempt(ctx, closed.ID, reclaimed.ID, "", now); err != nil || ok {
 				t.Fatalf("StartTaskAttempt(closed) = (%v, %v), want (false, nil)", ok, err)
 			}
@@ -121,7 +121,7 @@ func TestRequeueTaskForRetry_GuardsOnTheLatestAttempt(t *testing.T) {
 			g := seedGraph(t, st, graphOpts{jobStatus: store.JobStatusRunning},
 				stepSpec{name: "a", status: store.StepStatusReady, tasks: []store.TaskStatus{store.TaskStatusReady}})
 			task := g.Tasks["a"][0]
-			failed := failAndRequeue(t, st, task.ID)
+			failed := storetest.FailAndRequeue(t, st, leaseReq(task), now.Add(-time.Minute))
 			fresh := storetest.Lease(t, st, store.LeaseRequest{TaskID: task.ID, WorkerID: fixtureWorkerID}) // a new lease
 			if ok, err := st.RequeueTaskForRetry(ctx, task.ID, failed.ID, now, now); err != nil || ok {
 				t.Fatalf("requeue on a superseded attempt = (%v, %v), want (false, nil)", ok, err)

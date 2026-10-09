@@ -60,29 +60,22 @@ type jobGraph struct {
 func seedGraph(t *testing.T, st store.Store, opts graphOpts, specs ...stepSpec) jobGraph {
 	t.Helper()
 	now := time.Now().UTC()
-	g := jobGraph{Steps: map[string]store.Step{}, Tasks: map[string][]store.Task{}, Attempts: map[string]store.TaskAttempt{}}
+	g := jobGraph{Steps: map[string]store.Step{}, Tasks: map[string][]store.Task{}}
 	seedScope(t, st, &g, opts)
 
-	sub, inflight := graphSubmission(t, &g, opts, specs)
-	out := storetest.Submit(t, st, sub)
-	g.Job = out.Job
+	out, attempts := storetest.SubmitLeasing(t, st, graphSubmission(g, opts, specs), func(store.Task) store.LeaseRequest {
+		return store.LeaseRequest{WorkerID: fixtureWorkerID, Now: now}
+	})
+	g.Job, g.Attempts = out.Job, attempts
+	stepNames := make(map[string]string, len(out.Steps)) // step ID -> name
 	for _, step := range out.Steps {
 		g.Steps[step.Name] = step
+		stepNames[step.ID] = step.Name
 	}
-	for _, task := range inflight {
-		req := store.LeaseRequest{TaskID: task.id, WorkerID: fixtureWorkerID, Now: now}
-		if task.running {
-			g.Attempts[task.id] = storetest.Running(t, st, req)
-		} else {
-			g.Attempts[task.id] = storetest.Lease(t, st, req)
-		}
+	for _, task := range out.Tasks {
+		g.Tasks[stepNames[task.StepID]] = append(g.Tasks[stepNames[task.StepID]], task)
 	}
 	applyCapsAndPause(t, st, &g, opts, now)
-	for _, sp := range specs {
-		for i, task := range g.Tasks[sp.name] {
-			g.Tasks[sp.name][i] = mustTask(t, st, task.ID)
-		}
-	}
 	return g
 }
 
@@ -104,16 +97,9 @@ func seedScope(t *testing.T, st store.Store, g *jobGraph, opts graphOpts) {
 	}
 }
 
-type inflightTask struct {
-	id      string
-	running bool
-}
-
-// graphSubmission builds the job's submission and lists the tasks to lease.
-// A job that will be paused is submitted pending (PauseJob moves it); a
-// terminal job cannot hold leased work, so asking for one is a test bug.
-func graphSubmission(t *testing.T, g *jobGraph, opts graphOpts, specs []stepSpec) (store.JobSubmission, []inflightTask) {
-	t.Helper()
+// graphSubmission builds the job's submission. A job that will be paused is
+// submitted pending (PauseJob moves it after the leases).
+func graphSubmission(g jobGraph, opts graphOpts, specs []stepSpec) store.JobSubmission {
 	status := opts.jobStatus
 	if status == "" || status == store.JobStatusPaused {
 		status = store.JobStatusPending
@@ -122,7 +108,6 @@ func graphSubmission(t *testing.T, g *jobGraph, opts graphOpts, specs []stepSpec
 		ID: uuid.NewString(), FarmID: g.Farm.ID, QueueID: g.Queue.ID, Name: "job",
 		Status: status, TemplateFormat: store.TemplateFormatJSON,
 	}, DependsOn: opts.dependsOn}
-	var inflight []inflightTask
 	for i, sp := range specs {
 		step := store.Step{ID: uuid.NewString(), JobID: sub.Job.ID, Name: sp.name, DependsOn: sp.dependsOn, StepOrder: i, Status: sp.status}
 		sub.Steps = append(sub.Steps, step)
@@ -131,21 +116,10 @@ func graphSubmission(t *testing.T, g *jobGraph, opts graphOpts, specs []stepSpec
 			if j < len(sp.reasons) {
 				task.FailureReason = sp.reasons[j]
 			}
-			if ts == store.TaskStatusAssigned || ts == store.TaskStatusRunning {
-				task.Status = store.TaskStatusReady
-				inflight = append(inflight, inflightTask{id: task.ID, running: ts == store.TaskStatusRunning})
-			}
 			sub.Tasks = append(sub.Tasks, task)
-			g.Tasks[sp.name] = append(g.Tasks[sp.name], task)
 		}
 	}
-	switch status {
-	case store.JobStatusCompleted, store.JobStatusFailed, store.JobStatusCanceled:
-		if len(inflight) > 0 {
-			t.Fatalf("seedGraph: a %s job cannot hold assigned or running tasks through production writes; build that state explicitly with storetest.InjectorFor", status)
-		}
-	}
-	return sub, inflight
+	return sub
 }
 
 // applyCapsAndPause applies opts' caps and pauses after the leases, the state an
@@ -190,15 +164,9 @@ func seedAttempt(t *testing.T, st store.Store, task store.Task, status store.Att
 	if err != nil {
 		t.Fatalf("ListTaskAttempts: %v", err)
 	}
-	now := time.Now().UTC()
-	a, err := storetest.InjectorFor(t, st).InjectTaskAttempt(t.Context(), store.TaskAttempt{
-		ID: uuid.NewString(), TaskID: task.ID, WorkerID: worker, AttemptNumber: len(existing) + 1,
-		Status: status, StartedAt: now, CreatedAt: now,
+	return storetest.InjectAttempt(t, st, store.TaskAttempt{
+		TaskID: task.ID, WorkerID: worker, AttemptNumber: len(existing) + 1, Status: status,
 	})
-	if err != nil {
-		t.Fatalf("InjectTaskAttempt: %v", err)
-	}
-	return a
 }
 
 // leaseClaiming leases taskID, which must be ready, to the fixture worker
@@ -206,7 +174,7 @@ func seedAttempt(t *testing.T, st store.Store, task store.Task, status store.Att
 // in-flight work, leased the way the scheduler leases it.
 func leaseClaiming(t *testing.T, st store.Store, taskID string, running bool, pools ...store.UsagePool) store.TaskAttempt {
 	t.Helper()
-	req := store.LeaseRequest{TaskID: taskID, WorkerID: fixtureWorkerID, Now: time.Now().UTC()}
+	req := store.LeaseRequest{TaskID: taskID, WorkerID: fixtureWorkerID}
 	for _, p := range pools {
 		req.Claims = append(req.Claims, store.UsagePoolClaim{ClaimID: uuid.NewString(), PoolID: p.ID, PoolName: p.Name})
 	}
@@ -221,11 +189,7 @@ func leaseClaiming(t *testing.T, st store.Store, taskID string, running bool, po
 // comes from LeaseRequest.Claims.
 func seedClaim(t *testing.T, st store.Store, poolID, attemptID string) store.UsageClaim {
 	t.Helper()
-	c, err := storetest.InjectorFor(t, st).InjectClaim(t.Context(), store.UsageClaim{ID: uuid.NewString(), PoolID: poolID, TaskAttemptID: attemptID})
-	if err != nil {
-		t.Fatalf("InjectClaim: %v", err)
-	}
-	return c
+	return storetest.InjectClaim(t, st, store.UsageClaim{PoolID: poolID, TaskAttemptID: attemptID})
 }
 
 func seedPool(t *testing.T, st store.Store, maxConcurrent int) store.UsagePool {
@@ -237,9 +201,6 @@ func seedPool(t *testing.T, st store.Store, maxConcurrent int) store.UsagePool {
 	return p
 }
 
-// seedWorker registers the fixture worker in the given status. RegisterWorker
-// stores the status given, except that an existing disabled worker stays
-// disabled; a fresh fixture worker has none.
 // seedWorker registers the fixture worker with the given effective status. A
 // disabled status is an online worker an operator then disabled: disabled is a
 // flag over liveness, not a liveness of its own.

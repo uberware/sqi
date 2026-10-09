@@ -921,7 +921,7 @@ func TestWSSubscribeJobSubjectsEnforceOwnership(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			st := fake.New()
-			seedOwnedJobWithTask(t, st, "job-bob", "bob", "task-bob")
+			seedOwnedJobWithTask(t, st, "job-bob", "bob", "task-bob", store.JobStatusPending, store.TaskStatusReady)
 			seedOwnedJob(t, st, "job-alice", "alice")
 
 			hub := internalws.NewHub(newTestLogger(), internalws.HubOptions{})

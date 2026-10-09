@@ -55,15 +55,6 @@ func mustCreateQueue(t *testing.T, s *Store, farmID, id, name string) store.Queu
 	return q
 }
 
-// mustSubmit creates sub through CreateJobSubmission, the only way production
-// creates a job, by way of storetest.Submit. The job, its dependency edges, its
-// steps and all of its tasks go in one submission: a second submission of the
-// same job ID is a duplicate-ID error, so a test builds the whole graph first.
-func mustSubmit(t *testing.T, s *Store, sub store.JobSubmission) store.JobSubmission {
-	t.Helper()
-	return storetest.Submit(t, s, sub)
-}
-
 // jobSeed is one job's whole graph — the job, its steps and its tasks — which
 // submit writes with a single CreateJobSubmission. A job starts running at
 // priority 50 with no steps and no tasks; the chained methods add to it, and a
@@ -138,7 +129,7 @@ func (j *jobSeed) taskRow(task store.Task) *jobSeed {
 // submit writes the whole graph and returns what the store wrote.
 func (j *jobSeed) submit(t *testing.T, s *Store) store.JobSubmission {
 	t.Helper()
-	return mustSubmit(t, s, j.sub)
+	return storetest.Submit(t, s, j.sub)
 }
 
 // leaseTask leases the ready task taskID to workerID through the production
@@ -146,31 +137,14 @@ func (j *jobSeed) submit(t *testing.T, s *Store) store.JobSubmission {
 // job, queue and farm rows to exist; it needs no registered worker.
 func leaseTask(t *testing.T, s *Store, taskID, workerID string) store.TaskAttempt {
 	t.Helper()
-	return storetest.Lease(t, s, store.LeaseRequest{TaskID: taskID, WorkerID: workerID, Now: time.Now().UTC()})
+	return storetest.Lease(t, s, store.LeaseRequest{TaskID: taskID, WorkerID: workerID})
 }
 
 // runTask leases the ready task taskID to workerID and starts it, leaving it
 // running, and returns its attempt.
 func runTask(t *testing.T, s *Store, taskID, workerID string) store.TaskAttempt {
 	t.Helper()
-	return storetest.Running(t, s, store.LeaseRequest{TaskID: taskID, WorkerID: workerID, Now: time.Now().UTC()})
-}
-
-// failAndRequeue leases the ready task taskID, records the attempt as failed
-// and requeues the task to run again at retryAfter: one failed attempt behind a
-// ready task, the way a worker-reported failure leaves it. It returns the failed
-// attempt.
-func failAndRequeue(t *testing.T, s *Store, taskID, workerID string, retryAfter time.Time) store.TaskAttempt {
-	t.Helper()
-	now := time.Now().UTC()
-	a := storetest.Lease(t, s, store.LeaseRequest{TaskID: taskID, WorkerID: workerID, Now: now})
-	if _, _, first, err := s.RecordTaskFailure(ctx(), a.ID, taskID, nil, "", "boom", now); err != nil || !first {
-		t.Fatalf("RecordTaskFailure = (first %v, %v), want the first close", first, err)
-	}
-	if ok, err := s.RequeueTaskForRetry(ctx(), taskID, a.ID, retryAfter, now); err != nil || !ok {
-		t.Fatalf("RequeueTaskForRetry = (%v, %v), want requeued", ok, err)
-	}
-	return a
+	return storetest.Running(t, s, store.LeaseRequest{TaskID: taskID, WorkerID: workerID})
 }
 
 // seedReadyTask seeds farm "farm-f1", queue "q1" and job "j1" holding one ready
@@ -237,7 +211,7 @@ func mustCreatePool(t *testing.T, s *Store, id string, maxConcurrent int) store.
 func claimOn(t *testing.T, s *Store, taskID, claimID string, pool store.UsagePool) store.TaskAttempt {
 	t.Helper()
 	return storetest.Lease(t, s, store.LeaseRequest{
-		TaskID: taskID, WorkerID: "w1", Now: time.Now().UTC(),
+		TaskID: taskID, WorkerID: "w1",
 		Claims: []store.UsagePoolClaim{{ClaimID: claimID, PoolID: pool.ID, PoolName: pool.Name}},
 	})
 }
@@ -504,7 +478,7 @@ func TestCountReadyTasksByQueue_ExcludesIneligible(t *testing.T) {
 	// running, as the auto-retry path does). The requeue is guarded on the
 	// reporting attempt being the task's latest, so the task is leased and its
 	// attempt failed first, as a worker's failure report does.
-	failAndRequeue(t, s, "t-backoff", "w1", now.Add(time.Minute))
+	storetest.FailAndRequeue(t, s, store.LeaseRequest{TaskID: "t-backoff", WorkerID: "w1"}, now.Add(time.Minute))
 
 	// Under an auto-parked job.
 	newJob("j-parked", "farm-f1", "q1").task("t-parked", "s2", store.TaskStatusReady).submit(t, s)
@@ -1246,7 +1220,7 @@ func TestListJobs_Search(t *testing.T) {
 		t.Fatal(err)
 	}
 	mk := func(id, name, owner, project string) {
-		mustSubmit(t, st, store.JobSubmission{Job: store.Job{
+		storetest.Submit(t, st, store.JobSubmission{Job: store.Job{
 			ID: id, FarmID: "f1", QueueID: "q1", Name: name, Owner: owner,
 			Project: project, Status: store.JobStatusPending, Priority: 50,
 			TemplateFormat: store.TemplateFormatYAML,
@@ -1294,7 +1268,7 @@ func TestLatestTaskAttempt_Multiple(t *testing.T) {
 	s := New()
 	defer s.Close()
 	seedReadyTask(t, s)
-	failAndRequeue(t, s, "t1", "w1", time.Now().UTC().Add(-time.Minute))
+	storetest.FailAndRequeue(t, s, store.LeaseRequest{TaskID: "t1", WorkerID: "w1"}, time.Now().UTC().Add(-time.Minute))
 	second := leaseTask(t, s, "t1", "w1")
 
 	a, err := s.LatestTaskAttempt(ctx(), "t1")
@@ -1319,7 +1293,7 @@ func TestListTaskAttempts(t *testing.T) {
 	s := New()
 	defer s.Close()
 	seedReadyTask(t, s)
-	failAndRequeue(t, s, "t1", "w1", time.Now().UTC().Add(-time.Minute))
+	storetest.FailAndRequeue(t, s, store.LeaseRequest{TaskID: "t1", WorkerID: "w1"}, time.Now().UTC().Add(-time.Minute))
 	leaseTask(t, s, "t1", "w1")
 
 	attempts, err := s.ListTaskAttempts(ctx(), "t1")
@@ -1468,12 +1442,7 @@ func TestListUsagePoolUtilization(t *testing.T) {
 	claimOn(t, s, "t1", "co1", arnold)
 	claimOn(t, s, "t2", "co2", arnold)
 	done := claimOn(t, s, "t3", "co3", arnold)
-	if res, err := s.CompleteTaskAttempt(ctx(), store.AttemptCompletion{
-		AttemptID: done.ID, TaskID: "t3", TaskStatus: store.TaskStatusSucceeded,
-		AttemptStatus: store.AttemptStatusSucceeded, EndedAt: time.Now().UTC(),
-	}); err != nil || !res.Applied {
-		t.Fatalf("CompleteTaskAttempt = (%+v, %v), want applied", res, err)
-	}
+	storetest.Complete(t, s, done, store.TaskStatusSucceeded)
 
 	usage, err := s.ListUsagePoolUtilization(ctx())
 	if err != nil {
@@ -1541,7 +1510,7 @@ func TestFakeStore_DeleteJob(t *testing.T) {
 	mustCreatePool(t, st, "pool1", 0)
 	newJob(jobID, "farm-f1", "q1").step("s1", store.StepStatusPending).task("t1", "s1", store.TaskStatusReady).submit(t, st)
 	storetest.Lease(t, st, store.LeaseRequest{
-		TaskID: "t1", WorkerID: "w1", AttemptID: "a1", Now: time.Now().UTC(),
+		TaskID: "t1", WorkerID: "w1", AttemptID: "a1",
 		Claims: []store.UsagePoolClaim{{ClaimID: "cl1", PoolID: "pool1", PoolName: "pool1"}},
 	})
 	if n := mustActiveClaimCount(t, st, "pool1"); n != 1 {
@@ -1623,7 +1592,7 @@ func TestFakeStore_DeleteTerminalJobsBefore(t *testing.T) {
 	st := New()
 	mkJob := func(id string, status store.JobStatus, completed time.Time) {
 		c := completed
-		mustSubmit(t, st, store.JobSubmission{Job: store.Job{ID: id, Status: status, CompletedAt: &c}})
+		storetest.Submit(t, st, store.JobSubmission{Job: store.Job{ID: id, Status: status, CompletedAt: &c}})
 	}
 	mkJob("c", store.JobStatusCompleted, old)
 	mkJob("x", store.JobStatusCanceled, old)
@@ -1655,8 +1624,8 @@ func TestFakeStore_DeleteTerminalJobsBefore_KeepsUpstreamNeededByBlockedDependen
 
 	st := New()
 	c := old
-	mustSubmit(t, st, store.JobSubmission{Job: store.Job{ID: "upstream-old", Status: store.JobStatusCompleted, CompletedAt: &c}})
-	mustSubmit(t, st, store.JobSubmission{
+	storetest.Submit(t, st, store.JobSubmission{Job: store.Job{ID: "upstream-old", Status: store.JobStatusCompleted, CompletedAt: &c}})
+	storetest.Submit(t, st, store.JobSubmission{
 		Job:       store.Job{ID: "dependent-blocked", Status: store.JobStatusBlocked},
 		DependsOn: []string{"upstream-old"},
 	})

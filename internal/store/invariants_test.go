@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/uberware/sqi/internal/store"
+	"github.com/uberware/sqi/internal/store/storetest"
 )
 
 // TestClaimInvariantViolations pins the I3 checker itself: an active claim on
@@ -29,9 +30,7 @@ func TestClaimInvariantViolations(t *testing.T) {
 			// left active on it cannot, so it is injected.
 			done := g.Tasks["a"][1]
 			dead := g.Attempts[done.ID]
-			if _, err := st.CompleteTaskAttempt(t.Context(), completion(done, dead, store.TaskStatusSucceeded, store.AttemptStatusSucceeded)); err != nil {
-				t.Fatalf("CompleteTaskAttempt: %v", err)
-			}
+			storetest.Complete(t, st, dead, store.TaskStatusSucceeded)
 			seedClaim(t, st, pool.ID, dead.ID)
 			if v := claimViolations(t, st); len(v) != 1 {
 				t.Fatalf("violations = %v, want exactly the claim on the closed attempt", v)

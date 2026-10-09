@@ -283,11 +283,7 @@ func claimViolations(t *testing.T, st store.Store) []string {
 func seedPoolClaim(t *testing.T, st store.Store, attemptID string) store.UsagePool {
 	t.Helper()
 	pool := newPool(t, st, 1)
-	if _, err := storetest.InjectorFor(t, st).InjectClaim(t.Context(), store.UsageClaim{
-		ID: uuid.NewString(), PoolID: pool.ID, TaskAttemptID: attemptID, ClaimedAt: time.Now().UTC(),
-	}); err != nil {
-		t.Fatalf("InjectClaim: %v", err)
-	}
+	storetest.InjectClaim(t, st, store.UsageClaim{PoolID: pool.ID, TaskAttemptID: attemptID})
 	return *pool
 }
 
@@ -308,15 +304,9 @@ func newPool(t *testing.T, st store.Store, maxConcurrent int) *store.UsagePool {
 // report meeting that state still closes the attempt and frees its slots.
 func injectOpenAttempt(t *testing.T, st store.Store, task store.Task) store.TaskAttempt {
 	t.Helper()
-	now := time.Now().UTC()
-	a, err := storetest.InjectorFor(t, st).InjectTaskAttempt(t.Context(), store.TaskAttempt{
-		ID: uuid.NewString(), TaskID: task.ID, WorkerID: statusTestWorkerID, AttemptNumber: 1,
-		Status: store.AttemptStatusRunning, StartedAt: now, CreatedAt: now,
+	return storetest.InjectAttempt(t, st, store.TaskAttempt{
+		TaskID: task.ID, WorkerID: statusTestWorkerID, AttemptNumber: 1, Status: store.AttemptStatusRunning,
 	})
-	if err != nil {
-		t.Fatalf("InjectTaskAttempt: %v", err)
-	}
-	return a
 }
 
 // seedClaimedFixture is seedStatusFixture's job with its task leased to
@@ -851,7 +841,7 @@ func TestTryLeaseTask_NonLeasedOutcomesWriteNothing(t *testing.T) {
 				storetest.Lease(t, st, store.LeaseRequest{
 					TaskID: ids[0], WorkerID: "w-other",
 					Claims: []store.UsagePoolClaim{{
-						ClaimID: uuid.NewString(), PoolID: pool.ID, PoolName: pool.Name, MaxConcurrent: pool.MaxConcurrent,
+						ClaimID: uuid.NewString(), PoolID: pool.ID, PoolName: pool.Name,
 					}},
 				})
 			},
@@ -866,7 +856,7 @@ func TestTryLeaseTask_NonLeasedOutcomesWriteNothing(t *testing.T) {
 				res, err := st.LeaseTask(context.Background(), store.LeaseRequest{
 					TaskID: ids[1], WorkerID: worker.ID, AttemptID: uuid.NewString(), Now: time.Now().UTC(),
 					Claims: []store.UsagePoolClaim{{
-						ClaimID: uuid.NewString(), PoolID: pool.ID, PoolName: pool.Name, MaxConcurrent: pool.MaxConcurrent,
+						ClaimID: uuid.NewString(), PoolID: pool.ID, PoolName: pool.Name,
 					}},
 				})
 				if err != nil || res.Outcome != store.LeaseLeased {
@@ -962,7 +952,7 @@ func TestReaperDoesNotCloseReleasedAttempt(t *testing.T) {
 			wrapped := &leaseAfterReapStore{Store: st, hook: &once{fn: func() {
 				res, err := st.LeaseTask(context.Background(), store.LeaseRequest{
 					TaskID: task.ID, WorkerID: "w-new", AttemptID: uuid.NewString(), Now: time.Now().UTC(),
-					Claims: []store.UsagePoolClaim{{ClaimID: uuid.NewString(), PoolID: pool.ID, PoolName: pool.Name, MaxConcurrent: pool.MaxConcurrent}},
+					Claims: []store.UsagePoolClaim{{ClaimID: uuid.NewString(), PoolID: pool.ID, PoolName: pool.Name}},
 				})
 				if err != nil || res.Outcome != store.LeaseLeased {
 					t.Errorf("re-lease in hook = (%+v, %v), want leased", res, err)
@@ -1028,16 +1018,12 @@ func TestSupersededAttemptLateReportIsIgnored(t *testing.T) {
 					s.cfg.AssignedTaskTimeout = time.Minute
 
 					s.reapStaleAssignedTasks(t.Context())
-					res, err := st.LeaseTask(t.Context(), store.LeaseRequest{
-						TaskID: task.ID, WorkerID: "w-new", AttemptID: uuid.NewString(), Now: time.Now().UTC(),
+					fresh := storetest.Lease(t, st, store.LeaseRequest{
+						TaskID: task.ID, WorkerID: "w-new",
 						Claims: []store.UsagePoolClaim{{ClaimID: uuid.NewString(), PoolID: pool.ID, PoolName: pool.Name}},
 					})
-					if err != nil || res.Outcome != store.LeaseLeased {
-						t.Fatalf("re-lease after the reap = (%+v, %v), want leased", res, err)
-					}
-					fresh := res.Attempt
 					if tc.current == store.TaskStatusRunning {
-						storetest.Start(t, st, fresh, "", time.Now().UTC())
+						storetest.Start(t, st, fresh)
 					}
 					woke := parkWaiter(t, s, job.QueueID)
 

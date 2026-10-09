@@ -13,6 +13,7 @@ import (
 
 	"github.com/uberware/sqi/internal/metrics"
 	"github.com/uberware/sqi/internal/store"
+	"github.com/uberware/sqi/internal/store/storetest"
 	"github.com/uberware/sqi/internal/worker/protocol"
 	"github.com/uberware/sqi/internal/ws"
 )
@@ -32,13 +33,7 @@ func releaseToNewWorker(t *testing.T, st store.Store, s *Scheduler, task store.T
 	t.Helper()
 	s.cfg.AssignedTaskTimeout = time.Minute
 	s.reapStaleAssignedTasks(t.Context())
-	res, err := st.LeaseTask(t.Context(), store.LeaseRequest{
-		TaskID: task.ID, WorkerID: "w-new", AttemptID: uuid.NewString(), Now: time.Now().UTC(),
-	})
-	if err != nil || res.Outcome != store.LeaseLeased {
-		t.Fatalf("re-lease = (%+v, %v), want leased", res, err)
-	}
-	return res.Attempt
+	return storetest.Lease(t, st, store.LeaseRequest{TaskID: task.ID, WorkerID: "w-new"})
 }
 
 // TestSupersededRunningReportIsIgnored pins that a superseded attempt's

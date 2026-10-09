@@ -43,7 +43,7 @@ func seedClaimOn(t *testing.T, s *sqlite.Store, seed claimSeed, poolID string) s
 	}
 	task := submitJob(t, s, store.JobStatusRunning, store.StepStatusReady, store.TaskStatusReady).Tasks[0]
 	attempt, claimID := leaseWithClaim(t, s, task.ID, poolID)
-	storetest.Start(t, s, attempt, "", attempt.StartedAt)
+	storetest.Start(t, s, attempt)
 	if !seed.released {
 		return claimID
 	}
@@ -65,7 +65,7 @@ func seedLeakedClaim(t *testing.T, s *sqlite.Store, seed claimSeed, poolID strin
 	t.Helper()
 	task := submitJob(t, s, store.JobStatusRunning, store.StepStatusReady, seed.taskStatus).Tasks[0]
 	attempt := injectAttempt(t, s, task.ID, 1, seed.attemptStatus)
-	return injectClaim(t, s, poolID, attempt.ID)
+	return storetest.InjectClaim(t, s, store.UsageClaim{PoolID: poolID, TaskAttemptID: attempt.ID}).ID
 }
 
 // leaseWithClaim leases taskID to a worker with one claim on poolID, the way
@@ -88,30 +88,11 @@ func leaseWithClaim(t *testing.T, s *sqlite.Store, taskID, poolID string) (attem
 func injectAttempt(t *testing.T, s *sqlite.Store, taskID string, number int, status store.AttemptStatus) store.TaskAttempt {
 	t.Helper()
 	now := time.Now().UTC()
-	attempt := store.TaskAttempt{
-		ID: uuid.NewString(), TaskID: taskID, WorkerID: "w", AttemptNumber: number,
-		Status: status, StartedAt: now, CreatedAt: now,
-	}
+	attempt := store.TaskAttempt{TaskID: taskID, WorkerID: "w", AttemptNumber: number, Status: status, StartedAt: now}
 	if status != store.AttemptStatusRunning {
 		attempt.EndedAt = &now
 	}
-	out, err := storetest.InjectorFor(t, s).InjectTaskAttempt(t.Context(), attempt)
-	if err != nil {
-		t.Fatalf("InjectTaskAttempt: %v", err)
-	}
-	return out
-}
-
-// injectClaim writes an active claim on poolID for attemptID through the
-// store's injector, whatever state the attempt is in, and returns its ID.
-func injectClaim(t *testing.T, s *sqlite.Store, poolID, attemptID string) string {
-	t.Helper()
-	claim, err := storetest.InjectorFor(t, s).InjectClaim(t.Context(),
-		store.UsageClaim{ID: uuid.NewString(), PoolID: poolID, TaskAttemptID: attemptID})
-	if err != nil {
-		t.Fatalf("InjectClaim: %v", err)
-	}
-	return claim.ID
+	return storetest.InjectAttempt(t, s, attempt)
 }
 
 // openSeedable opens a fresh migrated store, which carries every migration the

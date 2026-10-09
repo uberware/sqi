@@ -11,6 +11,7 @@ package scheduler
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"slices"
@@ -150,50 +151,69 @@ type statusGraph struct {
 	attempts map[string]store.TaskAttempt // by task ID, for each leased task
 }
 
-// seedStatusJob creates farm-1 and queue-1 and submits one job into them in a
-// single submission, then leases its assigned and running tasks. A terminal
-// job cannot hold leased work through production writes, so asking for one is
-// a test bug.
+// seedStatusJob submits one job into farm-1 and queue-1 (creating them unless
+// an earlier seed in the same test did) through [storetest.SubmitLeasing],
+// leasing its assigned and running tasks. A terminal job cannot hold leased
+// work through production writes, so asking for one is a test bug.
 func seedStatusJob(t *testing.T, st store.Store, spec statusJob) statusGraph {
 	t.Helper()
-	ctx := t.Context()
 
 	// handleTaskFailed resolves retry policy via GetQueue/GetFarm, so a real
 	// job needs real farm/queue rows behind its FarmID/QueueID below.
+	ensureStatusFarm(t, st)
+
+	worker := spec.worker
+	if worker == "" {
+		worker = statusTestWorkerID
+	}
+	out, attempts := storetest.SubmitLeasing(t, st, statusSubmission(spec), func(store.Task) store.LeaseRequest {
+		req := store.LeaseRequest{WorkerID: worker, Now: spec.leasedAt}
+		if spec.pool != nil {
+			req.Claims = []store.UsagePoolClaim{{
+				ClaimID: uuid.NewString(), PoolID: spec.pool.ID, PoolName: spec.pool.Name,
+			}}
+		}
+		return req
+	})
+	g := statusGraph{job: out.Job, steps: out.Steps, attempts: attempts}
+	// Leases write no job or step row, so out holds them as stored; a pause
+	// writes only the job.
+	if spec.jobStatus == store.JobStatusPaused {
+		if err := st.PauseJob(t.Context(), g.job.ID, time.Now().UTC()); err != nil {
+			t.Fatalf("PauseJob: %v", err)
+		}
+		g.job = mustJob(t, st, g.job.ID)
+	}
+	g.tasks = make([][]store.Task, len(g.steps))
+	for _, task := range out.Tasks {
+		i := slices.IndexFunc(g.steps, func(s store.Step) bool { return s.ID == task.StepID })
+		g.tasks[i] = append(g.tasks[i], task)
+	}
+	return g
+}
+
+// ensureStatusFarm creates farm-1 and queue-1, the rows [statusSubmission]'s
+// jobs live in, unless an earlier seed in the same test already did.
+func ensureStatusFarm(t *testing.T, st store.Store) {
+	t.Helper()
+	ctx := t.Context()
+	if _, err := st.GetFarm(ctx, "farm-1"); err == nil {
+		return
+	} else if !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("GetFarm: %v", err)
+	}
 	if _, err := st.CreateFarm(ctx, store.Farm{ID: "farm-1", Name: "farm-1"}); err != nil {
 		t.Fatalf("CreateFarm: %v", err)
 	}
 	if _, err := st.CreateQueue(ctx, store.Queue{ID: "queue-1", FarmID: "farm-1", Name: "queue-1"}); err != nil {
 		t.Fatalf("CreateQueue: %v", err)
 	}
-
-	sub, inflight := statusSubmission(t, spec)
-	out := storetest.Submit(t, st, sub)
-	g := statusGraph{job: out.Job, attempts: map[string]store.TaskAttempt{}}
-	leaseStatusTasks(t, st, spec, inflight, g.attempts)
-	if spec.jobStatus == store.JobStatusPaused {
-		if err := st.PauseJob(ctx, g.job.ID, time.Now().UTC()); err != nil {
-			t.Fatalf("PauseJob: %v", err)
-		}
-	}
-	g.job = mustJob(t, st, g.job.ID)
-	for _, step := range sub.Steps {
-		g.steps = append(g.steps, mustStep(t, st, step.ID))
-	}
-	for _, task := range sub.Tasks {
-		i := slices.IndexFunc(g.steps, func(s store.Step) bool { return s.ID == task.StepID })
-		for len(g.tasks) <= i {
-			g.tasks = append(g.tasks, nil)
-		}
-		g.tasks[i] = append(g.tasks[i], mustTaskOf(t, st, task.ID))
-	}
-	return g
 }
 
-// statusSubmission builds seedStatusJob's submission and returns it with the
-// tasks to lease, each mapped to whether it must also be started.
-func statusSubmission(t *testing.T, spec statusJob) (store.JobSubmission, map[string]bool) {
-	t.Helper()
+// statusSubmission builds seedStatusJob's submission, with every task in the
+// status spec asks for; [storetest.SubmitLeasing] submits the in-flight ones
+// ready and leases them.
+func statusSubmission(spec statusJob) store.JobSubmission {
 	status := spec.jobStatus
 	switch status {
 	case "", store.JobStatusPaused:
@@ -203,7 +223,6 @@ func statusSubmission(t *testing.T, spec statusJob) (store.JobSubmission, map[st
 		ID: uuid.NewString(), FarmID: "farm-1", QueueID: "queue-1", Name: "job",
 		Status: status, TemplateFormat: store.TemplateFormatJSON,
 	}}
-	inflight := map[string]bool{}
 	for i, sp := range spec.steps {
 		step := store.Step{
 			ID: uuid.NewString(), JobID: sub.Job.ID, Name: sp.name, Status: sp.status,
@@ -218,40 +237,10 @@ func statusSubmission(t *testing.T, spec statusJob) (store.JobSubmission, map[st
 			if j < len(sp.reasons) {
 				task.FailureReason = sp.reasons[j]
 			}
-			if ts == store.TaskStatusAssigned || ts == store.TaskStatusRunning {
-				task.Status = store.TaskStatusReady
-				inflight[task.ID] = ts == store.TaskStatusRunning
-			}
 			sub.Tasks = append(sub.Tasks, task)
 		}
 	}
-	if status.IsTerminal() && len(inflight) > 0 {
-		t.Fatalf("seedStatusJob: a %s job cannot hold assigned or running tasks through production writes", status)
-	}
-	return sub, inflight
-}
-
-// leaseStatusTasks leases each of inflight's tasks to spec's worker (starting
-// those that must run) and records the attempts in attempts.
-func leaseStatusTasks(t *testing.T, st store.Store, spec statusJob, inflight map[string]bool, attempts map[string]store.TaskAttempt) {
-	t.Helper()
-	worker := spec.worker
-	if worker == "" {
-		worker = statusTestWorkerID
-	}
-	for id, running := range inflight {
-		req := store.LeaseRequest{TaskID: id, WorkerID: worker, Now: spec.leasedAt}
-		if spec.pool != nil {
-			req.Claims = []store.UsagePoolClaim{{
-				ClaimID: uuid.NewString(), PoolID: spec.pool.ID, PoolName: spec.pool.Name, MaxConcurrent: spec.pool.MaxConcurrent,
-			}}
-		}
-		if running {
-			attempts[id] = storetest.Running(t, st, req)
-		} else {
-			attempts[id] = storetest.Lease(t, st, req)
-		}
-	}
+	return sub
 }
 
 // seedStaleAssignment is seedStatusFixture's job with its task leased to

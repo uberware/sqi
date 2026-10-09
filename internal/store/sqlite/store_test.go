@@ -171,44 +171,14 @@ func (j *jobSeed) submit(t *testing.T, s *sqlite.Store) store.JobSubmission {
 // lease, and returns the attempt the lease made.
 func leaseTask(t *testing.T, s *sqlite.Store, taskID, workerID string) store.TaskAttempt {
 	t.Helper()
-	return storetest.Lease(t, s, store.LeaseRequest{TaskID: taskID, WorkerID: workerID, Now: time.Now().UTC()})
+	return storetest.Lease(t, s, store.LeaseRequest{TaskID: taskID, WorkerID: workerID})
 }
 
 // runTask leases the ready task taskID to workerID and starts it, leaving it
 // running, and returns its attempt.
 func runTask(t *testing.T, s *sqlite.Store, taskID, workerID string) store.TaskAttempt {
 	t.Helper()
-	return storetest.Running(t, s, store.LeaseRequest{TaskID: taskID, WorkerID: workerID, Now: time.Now().UTC()})
-}
-
-// completeAttempt ends attempt the way a worker's report does: the attempt and
-// the task both reach their terminal status, through CompleteTaskAttempt.
-func completeAttempt(t *testing.T, s *sqlite.Store, a store.TaskAttempt, taskStatus store.TaskStatus, attemptStatus store.AttemptStatus) {
-	t.Helper()
-	res, err := s.CompleteTaskAttempt(t.Context(), store.AttemptCompletion{
-		AttemptID: a.ID, TaskID: a.TaskID, TaskStatus: taskStatus,
-		AttemptStatus: attemptStatus, EndedAt: time.Now().UTC(),
-	})
-	if err != nil || !res.Applied {
-		t.Fatalf("CompleteTaskAttempt(%s -> %s) = (%+v, %v), want applied", a.TaskID, taskStatus, res, err)
-	}
-}
-
-// failAndRequeue leases the ready task taskID, records the attempt as failed
-// and requeues the task with its backoff already elapsed: one failed attempt
-// behind a ready task, the way a worker-reported failure leaves it. It returns
-// the failed attempt.
-func failAndRequeue(t *testing.T, s *sqlite.Store, taskID, workerID string) store.TaskAttempt {
-	t.Helper()
-	now := time.Now().UTC()
-	a := storetest.Lease(t, s, store.LeaseRequest{TaskID: taskID, WorkerID: workerID, Now: now})
-	if _, _, first, err := s.RecordTaskFailure(t.Context(), a.ID, taskID, nil, "", "", now); err != nil || !first {
-		t.Fatalf("RecordTaskFailure = (first %v, %v), want the first close", first, err)
-	}
-	if ok, err := s.RequeueTaskForRetry(t.Context(), taskID, a.ID, now.Add(-time.Minute), now); err != nil || !ok {
-		t.Fatalf("RequeueTaskForRetry = (%v, %v), want requeued", ok, err)
-	}
-	return a
+	return storetest.Running(t, s, store.LeaseRequest{TaskID: taskID, WorkerID: workerID})
 }
 
 // ── Farm CRUD ─────────────────────────────────────────────────────────────────
@@ -1684,23 +1654,11 @@ func seedJobWithTasks(t *testing.T, s *sqlite.Store, jobID string, jobStatus sto
 	t.Helper()
 	stepID := jobID + "-step"
 	seed := newJob(jobID, "f1", "q1").as(jobStatus).step(stepID, "render", 0)
-	taskID := func(i int) string { return fmt.Sprintf("%s-t%d", jobID, i) }
 	for i, ts := range taskStatuses {
-		created := ts
-		if ts == store.TaskStatusAssigned || ts == store.TaskStatusRunning {
-			created = store.TaskStatusReady // leased below, so it carries a real attempt
-		}
-		seed.taskRow(store.Task{ID: taskID(i), StepID: stepID, Name: fmt.Sprintf("task-%d", i), Status: created})
+		seed.taskRow(store.Task{ID: fmt.Sprintf("%s-t%d", jobID, i), StepID: stepID, Name: fmt.Sprintf("task-%d", i), Status: ts})
 	}
-	seed.submit(t, s)
-	for i, ts := range taskStatuses {
-		switch ts {
-		case store.TaskStatusAssigned:
-			leaseTask(t, s, taskID(i), "w1")
-		case store.TaskStatusRunning:
-			runTask(t, s, taskID(i), "w1")
-		}
-	}
+	// Assigned and running tasks are leased to w1, so they carry a real attempt.
+	storetest.SubmitLeasing(t, s, seed.sub, storetest.LeaseTo("w1"))
 	return jobID
 }
 
@@ -1811,7 +1769,7 @@ func TestCommittedCores(t *testing.T) {
 		case store.TaskStatusRunning:
 			runTask(t, s, c.id, c.worker)
 		case store.TaskStatusSucceeded:
-			completeAttempt(t, s, leaseTask(t, s, c.id, c.worker), store.TaskStatusSucceeded, store.AttemptStatusSucceeded)
+			storetest.Complete(t, s, leaseTask(t, s, c.id, c.worker), store.TaskStatusSucceeded)
 		}
 	}
 

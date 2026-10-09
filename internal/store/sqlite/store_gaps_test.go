@@ -44,7 +44,7 @@ func TestTaskAttempt_LatestTaskAttempt(t *testing.T) {
 
 	// Two attempts; latest should be AttemptNumber=2. The first fails and its
 	// task is requeued, so the second lease is the retry.
-	failAndRequeue(t, s, "t1", "w1")
+	storetest.FailAndRequeue(t, s, store.LeaseRequest{TaskID: "t1", WorkerID: "w1"}, time.Now().UTC().Add(-time.Minute))
 	a2 := leaseTask(t, s, "t1", "w1")
 
 	latest, err := s.LatestTaskAttempt(ctx, "t1")
@@ -75,7 +75,7 @@ func TestTaskAttempt_ListTaskAttempts(t *testing.T) {
 	insertWorker(t, s, "w1", "f1")
 	newJob("j1", "f1", "q1").step("s1", "S1", 0).task("t1", "s1", store.TaskStatusReady).submit(t, s)
 
-	failAndRequeue(t, s, "t1", "w1")
+	storetest.FailAndRequeue(t, s, store.LeaseRequest{TaskID: "t1", WorkerID: "w1"}, time.Now().UTC().Add(-time.Minute))
 	leaseTask(t, s, "t1", "w1")
 
 	attempts, err := s.ListTaskAttempts(ctx, "t1")
@@ -129,7 +129,7 @@ func TestUsage_ListUsagePoolUtilization(t *testing.T) {
 	leaseHolding("t1")
 	leaseHolding("t2")
 	// t3's attempt ends, which releases its seat, so it does not count toward in-use.
-	completeAttempt(t, s, leaseHolding("t3"), store.TaskStatusSucceeded, store.AttemptStatusSucceeded)
+	storetest.Complete(t, s, leaseHolding("t3"), store.TaskStatusSucceeded)
 
 	usage, err := s.ListUsagePoolUtilization(ctx)
 	if err != nil {

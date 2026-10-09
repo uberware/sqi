@@ -130,18 +130,6 @@ func seedAssignFixture(t *testing.T, st *fake.Store, mutate func(*assignFixture)
 	return f
 }
 
-// injectOrphanClaim injects an active claim on poolID held by attempt "a1",
-// which has no row: an invariant I3 violation no production write produces,
-// which is why the tests that use it run on an unchecked fake.New.
-func injectOrphanClaim(t *testing.T, st *fake.Store, poolID string) {
-	t.Helper()
-	if _, err := storetest.InjectorFor(t, st).InjectClaim(t.Context(), store.UsageClaim{
-		ID: uuid.NewString(), PoolID: poolID, TaskAttemptID: "a1", ClaimedAt: time.Now().UTC(),
-	}); err != nil {
-		t.Fatalf("seed claim: %v", err)
-	}
-}
-
 // ── buildUsageContext / buildUsageClaims units ────────────────────────────────
 
 func TestBuildUsageContext_NoRequirements(t *testing.T) {
@@ -165,7 +153,7 @@ func TestBuildUsageContext_WithPool(t *testing.T) {
 	if _, err := st.CreateUsagePool(t.Context(), store.UsagePool{ID: poolID, Name: "maya", MaxConcurrent: 2}); err != nil {
 		t.Fatalf("CreateUsagePool: %v", err)
 	}
-	injectOrphanClaim(t, st, poolID)
+	storetest.InjectClaim(t, st, store.UsageClaim{PoolID: poolID, TaskAttemptID: "a1"})
 
 	step := store.Step{HostRequirements: &store.StepHostRequirements{UsagePools: []string{"maya"}}}
 	pools, counts, err := s.buildUsageContext(t.Context(), step)
@@ -224,7 +212,7 @@ func TestRefreshGauges_Smoke(t *testing.T) {
 	if _, err := st.CreateUsagePool(t.Context(), store.UsagePool{ID: poolID, Name: "maya", MaxConcurrent: 2}); err != nil {
 		t.Fatalf("CreateUsagePool: %v", err)
 	}
-	injectOrphanClaim(t, st, poolID)
+	storetest.InjectClaim(t, st, store.UsageClaim{PoolID: poolID, TaskAttemptID: "a1"})
 
 	// Each refresh helper should complete without panic and read the store.
 	s.refreshQueueDepthGauge(t.Context())

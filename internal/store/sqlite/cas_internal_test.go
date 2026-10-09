@@ -107,23 +107,12 @@ func seedCASTask(t *testing.T, s *Store, id string, status store.TaskStatus) {
 	if _, err := s.CreateQueue(ctx, store.Queue{ID: "q", FarmID: "f", Name: "q"}); err != nil {
 		t.Fatal(err)
 	}
-	created := status
-	if status == store.TaskStatusAssigned || status == store.TaskStatusRunning {
-		created = store.TaskStatusReady
-	}
-	storetest.Submit(t, s, store.JobSubmission{
+	storetest.SubmitLeasing(t, s, store.JobSubmission{
 		Job: store.Job{
 			ID: "j", FarmID: "f", QueueID: "q", Name: "j",
 			Status: store.JobStatusRunning, TemplateFormat: store.TemplateFormatJSON,
 		},
 		Steps: []store.Step{{ID: "s", JobID: "j", Name: "s", Status: store.StepStatusReady}},
-		Tasks: []store.Task{{ID: id, JobID: "j", StepID: "s", Name: "t", Status: created}},
-	})
-	req := store.LeaseRequest{TaskID: id, WorkerID: "w"}
-	switch status {
-	case store.TaskStatusAssigned:
-		storetest.Lease(t, s, req)
-	case store.TaskStatusRunning:
-		storetest.Running(t, s, req)
-	}
+		Tasks: []store.Task{{ID: id, JobID: "j", StepID: "s", Name: "t", Status: status}},
+	}, storetest.LeaseTo("w"))
 }

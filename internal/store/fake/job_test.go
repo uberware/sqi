@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/uberware/sqi/internal/store"
+	"github.com/uberware/sqi/internal/store/storetest"
 )
 
 // TestJob_ListDependentsAndBlocked exercises the dependency edges a submission
@@ -18,7 +19,7 @@ func TestJob_ListDependentsAndBlocked(t *testing.T) {
 	queue := mustCreateQueue(t, s, farm.ID, "queue-listdeps", "listdeps")
 
 	up := newJob("up-listdeps", farm.ID, queue.ID).submit(t, s).Job
-	down := mustSubmit(t, s, store.JobSubmission{
+	down := storetest.Submit(t, s, store.JobSubmission{
 		Job: store.Job{
 			ID: "down-listdeps", FarmID: farm.ID, QueueID: queue.ID, Name: "down",
 			Priority: 50, Status: store.JobStatusBlocked,
@@ -62,7 +63,7 @@ func TestJob_DeleteJob_RemovesOutgoingEdgesKeepsIncoming(t *testing.T) {
 	queue := mustCreateQueue(t, s, farm.ID, "queue-delcascade", "delcascade")
 
 	up := newJob("up-delcascade", farm.ID, queue.ID).submit(t, s).Job
-	down := mustSubmit(t, s, store.JobSubmission{
+	down := storetest.Submit(t, s, store.JobSubmission{
 		Job: store.Job{
 			ID: "down-delcascade", FarmID: farm.ID, QueueID: queue.ID, Name: "down",
 			Priority: 50, Status: store.JobStatusBlocked,
@@ -112,7 +113,7 @@ func TestJob_CreateJobSubmission_DuplicateDependencyIsIgnored(t *testing.T) {
 		Priority: 50, Status: store.JobStatusBlocked,
 	}
 	// up1 is named twice.
-	mustSubmit(t, s, store.JobSubmission{Job: down, DependsOn: []string{up1.ID, up1.ID, up2.ID}})
+	storetest.Submit(t, s, store.JobSubmission{Job: down, DependsOn: []string{up1.ID, up1.ID, up2.ID}})
 
 	deps, err := s.ListJobDependencyIDs(ctx(), down.ID)
 	if err != nil {
@@ -142,7 +143,7 @@ func TestJob_ListJobDependencyIDs_OrderedByUpstreamID(t *testing.T) {
 		Priority: 50, Status: store.JobStatusBlocked,
 	}
 	// Deliberately not alphabetical.
-	mustSubmit(t, s, store.JobSubmission{Job: down, DependsOn: []string{zeta.ID, alpha.ID, mike.ID}})
+	storetest.Submit(t, s, store.JobSubmission{Job: down, DependsOn: []string{zeta.ID, alpha.ID, mike.ID}})
 
 	deps, err := s.ListJobDependencyIDs(ctx(), down.ID)
 	if err != nil {

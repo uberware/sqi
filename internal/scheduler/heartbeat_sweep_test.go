@@ -124,41 +124,16 @@ func TestSweepStaleWorkers_ReclaimsAndTerminates(t *testing.T) {
 }
 
 // seedAssignedTask seeds a job/step/task in 'assigned' on a (live) worker with
-// the given assigned_at age, plus an open running attempt. Returns task/attempt IDs.
-//
-// The task is submitted ready and leased to w-live with the lease's Now set
-// age in the past, the stale assignment a real lease leaves when the worker
-// never reports the task running.
+// the given assigned_at age, plus its open running attempt: the stale
+// assignment a real lease leaves when the worker never reports the task
+// running. Returns task/attempt IDs.
 func seedAssignedTask(t *testing.T, st *fake.Store, age time.Duration) (taskID, attemptID string) {
 	t.Helper()
-	ensureStatusFarm(t, st)
-	spec := statusJob{worker: "w-live", leasedAt: time.Now().UTC().Add(-age), steps: []statusStep{
+	g := seedStatusJob(t, st, statusJob{worker: "w-live", leasedAt: time.Now().UTC().Add(-age), steps: []statusStep{
 		{name: "s", status: store.StepStatusRunning, tasks: []store.TaskStatus{store.TaskStatusAssigned}},
-	}}
-	sub, inflight := statusSubmission(t, spec)
-	storetest.Submit(t, st, sub)
-	attempts := map[string]store.TaskAttempt{}
-	leaseStatusTasks(t, st, spec, inflight, attempts)
-	taskID = sub.Tasks[0].ID
-	return taskID, attempts[taskID].ID
-}
-
-// ensureStatusFarm creates farm-1 and queue-1, the rows [statusSubmission]'s
-// jobs live in, unless an earlier seed in the same test already did.
-func ensureStatusFarm(t *testing.T, st store.Store) {
-	t.Helper()
-	ctx := t.Context()
-	if _, err := st.GetFarm(ctx, "farm-1"); err == nil {
-		return
-	} else if !errors.Is(err, store.ErrNotFound) {
-		t.Fatalf("GetFarm: %v", err)
-	}
-	if _, err := st.CreateFarm(ctx, store.Farm{ID: "farm-1", Name: "farm-1"}); err != nil {
-		t.Fatalf("CreateFarm: %v", err)
-	}
-	if _, err := st.CreateQueue(ctx, store.Queue{ID: "queue-1", FarmID: "farm-1", Name: "queue-1"}); err != nil {
-		t.Fatalf("CreateQueue: %v", err)
-	}
+	}})
+	taskID = g.tasks[0][0].ID
+	return taskID, g.attempts[taskID].ID
 }
 
 // TestReapStaleAssignedTasks_ReclaimsStuckTask verifies that a task stranded in

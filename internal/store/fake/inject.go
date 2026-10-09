@@ -4,11 +4,13 @@ package fake
 
 import (
 	"context"
+	"time"
 
 	"github.com/uberware/sqi/internal/store"
 )
 
-// InjectTaskAttempt stores attempt exactly as given, with no state checks.
+// InjectTaskAttempt stores attempt as given, with no state checks; a zero
+// CreatedAt is stamped now.
 //
 // Corruption injection for invariant, recovery and repair tests: it exists to
 // build states production cannot reach, and must never be used to seed a
@@ -19,16 +21,18 @@ func (s *Store) InjectTaskAttempt(_ context.Context, attempt store.TaskAttempt) 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	if attempt.CreatedAt.IsZero() {
+		attempt.CreatedAt = time.Now().UTC()
+	}
 	s.taskAttempts[attempt.ID] = attempt
 	return attempt, nil
 }
 
-// InjectClaim stores claim exactly as given. Same contract as
-// [Store.InjectTaskAttempt]. Unlike SQLite, it stamps nothing: ClaimedAt is
-// kept as given, and so is ReleasedAt, so a caller passing one gets a released
-// claim (SQLite always inserts the claim active, stamped claimed now). The
-// (TaskAttemptID, PoolID) pair must be unique among active claims, as SQLite's
-// index requires; it returns [store.ErrConflict] if it is not.
+// InjectClaim stores claim active, as SQLite inserts it: a zero ClaimedAt is
+// stamped now and ReleasedAt is ignored. Same contract as
+// [Store.InjectTaskAttempt]. The (TaskAttemptID, PoolID) pair must be unique
+// among active claims, as SQLite's index requires; it returns
+// [store.ErrConflict] if it is not.
 func (s *Store) InjectClaim(_ context.Context, claim store.UsageClaim) (store.UsageClaim, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -38,6 +42,10 @@ func (s *Store) InjectClaim(_ context.Context, claim store.UsageClaim) (store.Us
 			return store.UsageClaim{}, store.ErrConflict
 		}
 	}
+	if claim.ClaimedAt.IsZero() {
+		claim.ClaimedAt = time.Now().UTC()
+	}
+	claim.ReleasedAt = nil
 	s.usageClaims[claim.ID] = claim
 	return claim, nil
 }

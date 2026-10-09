@@ -830,19 +830,23 @@ the in-memory fake:
   tasks) in one `CreateJobSubmission`, the call production makes. Put every
   status and field the test needs in that one submission, except a task's
   `assigned` and `running`, which are leased (next bullet).
-- `storetest.Lease`, `storetest.Start` and `storetest.Running` put a task in
-  flight through `LeaseTask` and `StartTaskAttempt`, so the attempt and its
-  usage-pool claims are real. To test what happens after a transition, drive
-  it (`CompleteTaskAttempt`, `CancelJobExecution`, `OfflineWorker` and so on)
-  rather than writing the resulting state.
-- `storetest.InjectorFor(t, concreteStore)` returns the two injectors,
-  `InjectTaskAttempt` and `InjectClaim`, which write a row exactly as given
-  with no state checks. They live on the concrete stores, not on `store.Store`,
-  and are for states production cannot reach (an open attempt on a terminal
-  task, a claim on a closed attempt). Never use one to build a state a
-  production write can produce. A wrapper that embeds `store.Store` does not
-  expose them, and `InjectorFor` fails the test naming the wrapper type; pass
-  the store the wrapper wraps.
+- `storetest.SubmitLeasing` is `Submit` for a job with work in flight: each task
+  asking to be `assigned` or `running` is submitted ready and then leased (and
+  started) for real. `storetest.Lease`, `storetest.Start` and
+  `storetest.Running` do the same for one task, through `LeaseTask` and
+  `StartTaskAttempt`, so the attempt and its usage-pool claims are real.
+- To test what happens after a transition, drive it rather than writing the
+  resulting state: `storetest.Complete` and `storetest.FailAndRequeue` cover the
+  common worker reports; call `CancelJobExecution`, `OfflineWorker` and so on
+  for the rest.
+- `storetest.InjectAttempt` and `storetest.InjectClaim` write a row with no
+  state checks, through injectors that live on the concrete stores, not on
+  `store.Store` (`storetest.InjectorFor` returns them, for a test that asserts
+  on an injector's error). They are for states production cannot reach (an
+  open attempt on a terminal task, a claim on a closed attempt). Never use one
+  to build a state a production write can produce. A wrapper that embeds
+  `store.Store` does not expose them, and the test fails naming the wrapper
+  type; pass the store the wrapper wraps.
 
 ### Step 6 — Run lint and format
 

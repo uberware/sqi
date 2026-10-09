@@ -266,7 +266,7 @@ func seedSupersededAttempt(t *testing.T, st store.Store, taskStatus store.TaskSt
 	req.WorkerID = supersededWorker
 	fresh := mustLease(t, st, req, store.LeaseLeased).Attempt
 	if taskStatus == store.TaskStatusRunning {
-		storetest.Start(t, st, fresh, "", time.Now().UTC())
+		storetest.Start(t, st, fresh)
 	}
 	return task, old, fresh, pool
 }

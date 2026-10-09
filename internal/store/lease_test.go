@@ -19,11 +19,10 @@ func leaseReq(task store.Task, claims ...store.UsagePoolClaim) store.LeaseReques
 	return store.LeaseRequest{TaskID: task.ID, WorkerID: fixtureWorkerID, AttemptID: uuid.NewString(), Now: time.Now().UTC(), Claims: claims}
 }
 
-// poolClaim builds a claim on p whose MaxConcurrent is deliberately wrong:
-// LeaseTask must read the pool's cap in its own transaction, never trust the
-// caller's copy.
+// poolClaim builds a claim on p. It carries no cap: LeaseTask reads the pool's
+// cap in its own transaction.
 func poolClaim(p store.UsagePool) store.UsagePoolClaim {
-	return store.UsagePoolClaim{ClaimID: uuid.NewString(), PoolID: p.ID, PoolName: p.Name, MaxConcurrent: 999}
+	return store.UsagePoolClaim{ClaimID: uuid.NewString(), PoolID: p.ID, PoolName: p.Name}
 }
 
 func mustAttempts(t *testing.T, st store.Store, taskID string) []store.TaskAttempt {
@@ -113,22 +112,6 @@ func holdClaims(t *testing.T, st store.Store, pool store.UsagePool, tasks ...sto
 	}
 }
 
-// failAndRequeue leases a ready task, fails its attempt and requeues it with
-// its backoff already elapsed: one failed attempt behind a ready task, the way
-// a worker-reported failure leaves it. It returns the failed attempt.
-func failAndRequeue(t *testing.T, st store.Store, taskID string) store.TaskAttempt {
-	t.Helper()
-	now := time.Now().UTC()
-	a := storetest.Lease(t, st, store.LeaseRequest{TaskID: taskID, WorkerID: fixtureWorkerID, Now: now})
-	if _, _, first, err := st.RecordTaskFailure(t.Context(), a.ID, taskID, nil, "", "boom", now); err != nil || !first {
-		t.Fatalf("RecordTaskFailure = (%v, %v), want the first close", first, err)
-	}
-	if ok, err := st.RequeueTaskForRetry(t.Context(), taskID, a.ID, now.Add(-time.Minute), now); err != nil || !ok {
-		t.Fatalf("RequeueTaskForRetry = (%v, %v), want requeued", ok, err)
-	}
-	return a
-}
-
 func TestLeaseTask_Leased(t *testing.T) {
 	cases := []struct {
 		name  string
@@ -145,7 +128,7 @@ func TestLeaseTask_Leased(t *testing.T) {
 				task := g.Tasks["a"][0]
 				pool := seedPool(t, st, 1)
 				for range tc.prior {
-					failAndRequeue(t, st, task.ID)
+					storetest.FailAndRequeue(t, st, leaseReq(task), time.Now().UTC().Add(-time.Minute))
 				}
 				req := leaseReq(task, poolClaim(pool))
 
@@ -333,10 +316,9 @@ func TestLeaseTask_Caps(t *testing.T) {
 }
 
 // TestLeaseTask_PoolCapReadInTransaction pins invariant I5 for pools: the cap
-// is the pool row's as read in the lease's transaction, never the caller's
-// copy (poolClaim says 999), so a pool deleted, or lowered below its current
-// use, after the eligibility check makes the lease PoolFull with nothing
-// written.
+// is the pool row's as read in the lease's transaction, so a pool deleted, or
+// lowered below its current use, after the eligibility check makes the lease
+// PoolFull with nothing written.
 func TestLeaseTask_PoolCapReadInTransaction(t *testing.T) {
 	for name, st := range newStores(t) {
 		t.Run("at cap/"+name, func(t *testing.T) {

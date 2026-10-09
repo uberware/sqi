@@ -84,9 +84,9 @@ type cancelTask struct {
 }
 
 // seedCancelJob builds a running job in a farm and queue of its own, with one
-// step per task, in a single submission. Assigned and running tasks are
-// submitted ready and then leased to their worker (and, for running, started)
-// through production writes, so each holds the attempt a real lease writes.
+// step per task, through [storetest.SubmitLeasing], so each assigned or
+// running task is leased to its worker and holds the attempt a real lease
+// writes.
 // It returns the job, and the tasks and their attempts in tasks order; the
 // attempt is the zero value for a task that was not leased.
 func seedCancelJob(t *testing.T, st *fake.Store, tasks ...cancelTask) (store.Job, []store.Task, []store.TaskAttempt) {
@@ -108,30 +108,23 @@ func seedCancelJob(t *testing.T, st *fake.Store, tasks ...cancelTask) (store.Job
 		Status:         store.JobStatusRunning,
 		TemplateFormat: store.TemplateFormatJSON,
 	}}
+	workers := make(map[string]string, len(tasks)) // task ID -> worker
 	for _, ct := range tasks {
 		step := store.Step{ID: uuid.NewString(), JobID: sub.Job.ID, Name: uuid.NewString(), Status: store.StepStatusRunning}
 		task := store.Task{ID: uuid.NewString(), JobID: sub.Job.ID, StepID: step.ID, Name: "t", Status: ct.status, FailureReason: ct.reason}
-		if ct.status == store.TaskStatusAssigned || ct.status == store.TaskStatusRunning {
-			task.Status = store.TaskStatusReady
-		}
+		workers[task.ID] = ct.worker
 		sub.Steps = append(sub.Steps, step)
 		sub.Tasks = append(sub.Tasks, task)
 	}
-	job := storetest.Submit(t, st, sub).Job
+	out, leased := storetest.SubmitLeasing(t, st, sub, func(task store.Task) store.LeaseRequest {
+		return store.LeaseRequest{WorkerID: workers[task.ID]}
+	})
 
-	out := make([]store.Task, len(tasks))
-	attempts := make([]store.TaskAttempt, len(tasks))
-	for i, ct := range tasks {
-		req := store.LeaseRequest{TaskID: sub.Tasks[i].ID, WorkerID: ct.worker}
-		switch ct.status {
-		case store.TaskStatusAssigned:
-			attempts[i] = storetest.Lease(t, st, req)
-		case store.TaskStatusRunning:
-			attempts[i] = storetest.Running(t, st, req)
-		}
-		out[i] = mustTaskOf(t, st, sub.Tasks[i].ID)
+	attempts := make([]store.TaskAttempt, len(out.Tasks))
+	for i, task := range out.Tasks {
+		attempts[i] = leased[task.ID]
 	}
-	return job, out, attempts
+	return out.Job, out.Tasks, attempts
 }
 
 // ── CancelJob tests ───────────────────────────────────────────────────────────

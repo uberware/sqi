@@ -138,8 +138,8 @@ func (h *jobDepsHarness) seedBlockedJobDependingOn(t *testing.T, upstreamIDs ...
 // running task, and an open attempt on it — the fixture needed to drive the
 // job to completion through the same status-handling path a worker uses (see
 // completeJob), rather than mutating job status directly. The task is
-// submitted ready and leased to jobDepsWorkerID and started, so the attempt
-// is the one that lease opened.
+// leased to jobDepsWorkerID and started through [storetest.SubmitLeasing], so
+// the attempt is the one that lease opened.
 func (h *jobDepsHarness) seedRunnableJob(t *testing.T) store.Job {
 	t.Helper()
 	return h.seedRunnableJobIn(t, h.queueID)
@@ -149,7 +149,7 @@ func (h *jobDepsHarness) seedRunnableJob(t *testing.T) store.Job {
 func (h *jobDepsHarness) seedRunnableJobIn(t *testing.T, queueID string) store.Job {
 	t.Helper()
 	jobID, stepID, taskID := uuid.NewString(), uuid.NewString(), uuid.NewString()
-	job := storetest.Submit(t, h.store, store.JobSubmission{
+	sub, attempts := storetest.SubmitLeasing(t, h.store, store.JobSubmission{
 		Job: store.Job{
 			ID:             jobID,
 			FarmID:         h.farmID,
@@ -159,15 +159,10 @@ func (h *jobDepsHarness) seedRunnableJobIn(t *testing.T, queueID string) store.J
 			TemplateFormat: store.TemplateFormatJSON,
 		},
 		Steps: []store.Step{{ID: stepID, JobID: jobID, Name: "s1", Status: store.StepStatusRunning}},
-		Tasks: []store.Task{{ID: taskID, JobID: jobID, StepID: stepID, Name: "t1", Status: store.TaskStatusReady}},
-	}).Job
-	attempt := storetest.Running(t, h.store, store.LeaseRequest{TaskID: taskID, WorkerID: jobDepsWorkerID})
-	task, err := h.store.GetTask(context.Background(), taskID)
-	if err != nil {
-		t.Fatalf("GetTask: %v", err)
-	}
-	h.runs[jobID] = jobDepsRun{task: task, attempt: attempt}
-	return job
+		Tasks: []store.Task{{ID: taskID, JobID: jobID, StepID: stepID, Name: "t1", Status: store.TaskStatusRunning}},
+	}, storetest.LeaseTo(jobDepsWorkerID))
+	h.runs[jobID] = jobDepsRun{task: sub.Tasks[0], attempt: attempts[taskID]}
+	return sub.Job
 }
 
 // failJob fails the job seeded by seedRunnableJob through the store writes an
@@ -187,12 +182,7 @@ func (h *jobDepsHarness) failJob(t *testing.T, jobID string) {
 	if _, _, _, err := h.store.RecordTaskFailure(ctx, run.attempt.ID, run.task.ID, nil, "", "", now); err != nil {
 		t.Fatalf("RecordTaskFailure: %v", err)
 	}
-	if res, err := h.store.CompleteTaskAttempt(ctx, store.AttemptCompletion{
-		AttemptID: run.attempt.ID, TaskID: run.task.ID, TaskStatus: store.TaskStatusFailed,
-		AttemptStatus: store.AttemptStatusFailed, EndedAt: now,
-	}); err != nil || !res.Applied {
-		t.Fatalf("CompleteTaskAttempt = (%+v, %v), want applied", res, err)
-	}
+	storetest.Complete(t, h.store, run.attempt, store.TaskStatusFailed)
 	if status, _, err := h.store.FinalizeStep(ctx, run.task.StepID, now); err != nil || status != store.StepStatusFailed {
 		t.Fatalf("FinalizeStep = (%q, %v), want failed", status, err)
 	}

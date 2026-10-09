@@ -106,7 +106,7 @@ func seedTask(t *testing.T, st *fake.Store, taskStatus store.TaskStatus) (store.
 // seedTaskSpec configures [seedTaskWith].
 type seedTaskSpec struct {
 	// status is the task's status. An assigned or running task is submitted
-	// ready and then leased (see [submitLeasing]), so it comes with the attempt
+	// ready and then leased (see [storetest.SubmitLeasing]), so it comes with the attempt
 	// a real lease writes.
 	status store.TaskStatus
 	// stepStatus is the step's status; "" is running, the legacy live status.
@@ -150,9 +150,9 @@ func seedTaskWith(t *testing.T, st *fake.Store, spec seedTaskSpec) (store.Job, s
 		Status:        spec.status,
 		FailureReason: spec.failureReason,
 	}
-	out, attempts := submitLeasing(t, st, store.JobSubmission{
+	out, attempts := storetest.SubmitLeasing(t, st, store.JobSubmission{
 		Job: job, Steps: []store.Step{step}, Tasks: []store.Task{task},
-	}, "")
+	}, storetest.LeaseTo("worker-1"))
 	return out.Job, out.Tasks[0], attempts[task.ID]
 }
 
@@ -308,17 +308,9 @@ func TestGetTask(t *testing.T) {
 	t.Run("includes failed_attempts and retry_after when set", func(t *testing.T) {
 		st := fake.New()
 		r := newTaskRouter(st)
-		// Running: RequeueTaskForRetry only transitions an in-flight task.
-		_, tk, att := seedTaskWith(t, st, seedTaskSpec{status: store.TaskStatusRunning})
-
-		now := time.Now()
-		if _, _, _, err := st.RecordTaskFailure(t.Context(), att.ID, tk.ID, nil, "", "", now); err != nil {
-			t.Fatalf("RecordTaskFailure: %v", err)
-		}
-		retryAfter := now.Add(30 * time.Second)
-		if requeued, err := st.RequeueTaskForRetry(t.Context(), tk.ID, att.ID, retryAfter, now); err != nil || !requeued {
-			t.Fatalf("RequeueTaskForRetry: requeued=%v err=%v", requeued, err)
-		}
+		_, tk := seedTask(t, st, store.TaskStatusReady)
+		retryAfter := time.Now().Add(30 * time.Second)
+		storetest.FailAndRequeue(t, st, store.LeaseRequest{TaskID: tk.ID, WorkerID: "worker-1"}, retryAfter)
 
 		req := newReq(t, http.MethodGet, "/api/v1/tasks/"+tk.ID, nil)
 		rr := httptest.NewRecorder()
