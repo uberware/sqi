@@ -259,9 +259,9 @@ func scanJob(row scanner) (store.Job, error) {
 // other transactional writers here take the same approach (see
 // casWriteTaskStatus in attemptclose.go).
 //
-// Each step and task row is stamped with its OWN time.Now() — see
-// insertTasksTx for why sharing one timestamp across the batch would be a
-// behavior change, not an optimization.
+// Each step and task row is stamped with its own, strictly later time from one
+// [rowClock] — see insertTasksTx for why sharing one timestamp across the batch
+// would be a behavior change, not an optimization.
 func (s *Store) CreateJobSubmission(ctx context.Context, sub store.JobSubmission) (store.JobSubmission, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -289,10 +289,11 @@ func (s *Store) CreateJobSubmission(ctx context.Context, sub store.JobSubmission
 	if err := checkUpstreamsTx(ctx, tx, sub.DependsOn); err != nil {
 		return store.JobSubmission{}, err
 	}
-	if out.Steps, err = insertStepsTx(ctx, tx, sub.Steps); err != nil {
+	var clock rowClock
+	if out.Steps, err = insertStepsTx(ctx, tx, &clock, sub.Steps); err != nil {
 		return store.JobSubmission{}, err
 	}
-	if out.Tasks, err = insertTasksTx(ctx, tx, sub.Tasks); err != nil {
+	if out.Tasks, err = insertTasksTx(ctx, tx, &clock, sub.Tasks); err != nil {
 		return store.JobSubmission{}, err
 	}
 
@@ -360,9 +361,31 @@ func insertJobTx(ctx context.Context, tx *sql.Tx, job store.Job, now string) (st
 	return out, mapErr(err)
 }
 
+// rowClockLayout is RFC 3339 with all nine fractional digits kept. SQLite
+// orders created_at as TEXT, and [timeLayout] trims trailing zeros, so its text
+// order is not time order: ".1Z" sorts after ".12Z". At a fixed width the two
+// agree. textToTime parses either form.
+const rowClockLayout = "2006-01-02T15:04:05.000000000Z07:00"
+
+// rowClock stamps the rows of one submission with strictly increasing times,
+// formatted so their text sorts in the same order. time.Now alone does not
+// increase: Windows advances the wall clock in coarse steps, so consecutive
+// rows read the same instant far more often than not. When the clock has not
+// moved past the previous stamp, next returns that stamp plus a nanosecond.
+type rowClock struct{ last time.Time }
+
+func (c *rowClock) next() string {
+	now := time.Now().UTC()
+	if !now.After(c.last) {
+		now = c.last.Add(time.Nanosecond)
+	}
+	c.last = now
+	return now.Format(rowClockLayout)
+}
+
 // insertStepsTx inserts every step inside tx, stamping each row with its own
-// time.Now() (see insertTasksTx).
-func insertStepsTx(ctx context.Context, tx *sql.Tx, steps []store.Step) ([]store.Step, error) {
+// time from clock (see insertTasksTx).
+func insertStepsTx(ctx context.Context, tx *sql.Tx, clock *rowClock, steps []store.Step) ([]store.Step, error) {
 	out := make([]store.Step, 0, len(steps))
 	for _, step := range steps {
 		dependsOnJSON, err := marshalJSON(step.DependsOn)
@@ -373,7 +396,7 @@ func insertStepsTx(ctx context.Context, tx *sql.Tx, steps []store.Step) ([]store
 		if err != nil {
 			return nil, err
 		}
-		now := timeToText(time.Now().UTC())
+		now := clock.next()
 		row := tx.QueryRowContext(ctx, sqlInsertStep,
 			step.ID, step.JobID, step.Name, dependsOnJSON,
 			step.StepOrder, string(step.Status),
@@ -389,7 +412,7 @@ func insertStepsTx(ctx context.Context, tx *sql.Tx, steps []store.Step) ([]store
 }
 
 // insertTasksTx inserts every task inside tx, stamping each row with its own
-// time.Now().
+// time from clock, later than every row stamped before it.
 //
 // The per-row stamp is deliberate. Two consumers depend on tasks within one
 // step having DISTINCT created_at values:
@@ -407,7 +430,7 @@ func insertStepsTx(ctx context.Context, tx *sql.Tx, steps []store.Step) ([]store
 // randomly rather than in expansion order, which is a different behavior
 // change wearing the same clothes. Stamping per row is what preserves the
 // behavior submission has always had.
-func insertTasksTx(ctx context.Context, tx *sql.Tx, tasks []store.Task) ([]store.Task, error) {
+func insertTasksTx(ctx context.Context, tx *sql.Tx, clock *rowClock, tasks []store.Task) ([]store.Task, error) {
 	out := make([]store.Task, 0, len(tasks))
 	for _, task := range tasks {
 		paramsJSON, err := marshalJSON(task.Parameters)
@@ -418,7 +441,7 @@ func insertTasksTx(ctx context.Context, tx *sql.Tx, tasks []store.Task) ([]store
 		if task.RequiredCores != nil {
 			reqCores = sql.NullInt64{Int64: int64(*task.RequiredCores), Valid: true}
 		}
-		now := timeToText(time.Now().UTC())
+		now := clock.next()
 		row := tx.QueryRowContext(ctx, sqlInsertTask,
 			task.ID, task.JobID, task.StepID, task.Name, paramsJSON, string(task.Status),
 			nullString(task.AssignedWorkerID), nullTimeToText(task.AssignedAt), now, now, reqCores,
