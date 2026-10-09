@@ -71,19 +71,30 @@ func (s *Store) CreateJobSubmission(_ context.Context, sub store.JobSubmission) 
 		s.jobDependencies[job.ID] = existing
 	}
 
-	// Each step and task is stamped with its own time.Now(), mirroring the
-	// SQLite implementation, where tasks within a step sharing one created_at
-	// would silently disable the ready-task ordering tiebreaker and destabilize
-	// ListTasks paging (see insertTasksTx in sqlite/job.go).
+	// Each step and task is stamped with its own, strictly later time,
+	// mirroring the SQLite implementation (rowClock in sqlite/job.go), where
+	// tasks within a step sharing one created_at would silently disable the
+	// ready-task ordering tiebreaker and destabilize ListTasks paging. A coarse
+	// wall clock returns the same instant for consecutive rows, so a row the
+	// clock has not moved past is stamped a nanosecond after the one before.
+	var last time.Time
+	stamp := func() time.Time {
+		now := time.Now().UTC()
+		if !now.After(last) {
+			now = last.Add(time.Nanosecond)
+		}
+		last = now
+		return now
+	}
 	for _, step := range sub.Steps {
-		rowNow := time.Now().UTC()
+		rowNow := stamp()
 		step.DependsOn = copySlice(step.DependsOn)
 		step.CreatedAt, step.UpdatedAt = rowNow, rowNow
 		s.steps[step.ID] = step
 		out.Steps = append(out.Steps, step)
 	}
 	for _, task := range sub.Tasks {
-		rowNow := time.Now().UTC()
+		rowNow := stamp()
 		task.Parameters = copyMap(task.Parameters)
 		task.CreatedAt, task.UpdatedAt = rowNow, rowNow
 		s.tasks[task.ID] = task

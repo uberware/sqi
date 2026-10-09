@@ -2,13 +2,15 @@
 
 // Package storetest builds store state for tests through the production write
 // path: CreateJobSubmission for rows, LeaseTask and StartTaskAttempt for work
-// in flight, CompleteTaskAttempt and RecordTaskFailure for work that ended. It is written only against store.Store, so the same helpers run
-// on every backend.
+// in flight, CompleteTaskAttempt and RecordTaskFailure for work that ended. It
+// is written only against store.Store, so the same helpers run on every
+// backend.
 //
 // States production cannot reach — an open attempt on a terminal task, a claim
 // on a closed attempt — come from the backend's injectors, reached through
-// [InjectAttempt], [InjectClaim] and [InjectorFor]. Never use an injector for a state a production write can
-// produce: a fixture that bypasses the real path drifts from it unnoticed.
+// [InjectAttempt], [InjectClaim] and [InjectorFor]. Never use an injector for a
+// state a production write can produce: a fixture that bypasses the real path
+// drifts from it unnoticed.
 package storetest
 
 import (

@@ -189,8 +189,8 @@ func seedJob(t *testing.T, st store.Store, status store.JobStatus) store.Job {
 // of tasks, all written by one submission. Only an entry's Name, Status and
 // FailureReason are used; the IDs are filled in and a missing name is "t". A
 // task seeded assigned or running is submitted ready and then leased (see
-// [storetest.SubmitLeasing]), so it comes with the attempt a real lease writes. The
-// returned tasks are as stored after the leases, in the order given.
+// [storetest.SubmitLeasing]), so it comes with the attempt a real lease writes.
+// The returned tasks are as stored after the leases, in the order given.
 func seedJobTasks(t *testing.T, st store.Store, status store.JobStatus, tasks ...store.Task) (store.Job, []store.Task) {
 	t.Helper()
 	farm, queue := seedFarmQueue(t, st)

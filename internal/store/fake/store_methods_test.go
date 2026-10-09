@@ -437,14 +437,21 @@ func TestResumeJob_Fake(t *testing.T) {
 	mustCreateFarm(t, s, "f1")
 	mustCreateQueue(t, s, "farm-f1", "q1", "q1")
 
+	// Both jobs start running, so a resume that lands them pending shows the
+	// pause or park took effect: a job submitted pending would end pending
+	// whether or not it did.
+
 	// Auto-parked: reset everything.
-	parked := storetest.NewJob("j-parked", "farm-f1", "q1").Submit(t, s).Job
+	parked := storetest.NewJob("j-parked", "farm-f1", "q1").As(store.JobStatusRunning).Submit(t, s).Job
 	parked.FailedAttempts = 3
 	if _, err := s.UpdateJob(ctx(), parked); err != nil {
 		t.Fatalf("UpdateJob: %v", err)
 	}
 	if err := s.ParkJob(ctx(), "j-parked", "failure limit reached (3)", now); err != nil {
 		t.Fatalf("ParkJob: %v", err)
+	}
+	if got := mustGetJob(t, s, "j-parked"); got.Status != store.JobStatusPaused {
+		t.Fatalf("after ParkJob: status %s, want paused", got.Status)
 	}
 	if err := s.ResumeJob(ctx(), "j-parked", now); err != nil {
 		t.Fatalf("ResumeJob: %v", err)
@@ -455,13 +462,16 @@ func TestResumeJob_Fake(t *testing.T) {
 	}
 
 	// Manual pause: counter survives.
-	manual := storetest.NewJob("j-manual", "farm-f1", "q1").Submit(t, s).Job
+	manual := storetest.NewJob("j-manual", "farm-f1", "q1").As(store.JobStatusRunning).Submit(t, s).Job
 	manual.FailedAttempts = 2
 	if _, err := s.UpdateJob(ctx(), manual); err != nil {
 		t.Fatalf("UpdateJob: %v", err)
 	}
 	if err := s.PauseJob(ctx(), "j-manual", now); err != nil {
 		t.Fatalf("PauseJob: %v", err)
+	}
+	if got := mustGetJob(t, s, "j-manual"); got.Status != store.JobStatusPaused {
+		t.Fatalf("after PauseJob: status %s, want paused", got.Status)
 	}
 	if err := s.ResumeJob(ctx(), "j-manual", now); err != nil {
 		t.Fatalf("ResumeJob: %v", err)

@@ -4,6 +4,7 @@ package store_test
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 
@@ -296,20 +297,26 @@ func TestJobStore_CreateJobSubmission_RejectsDuplicateIDs(t *testing.T) {
 // TestJobStore_CreateJobSubmission_StampsDistinctRowTimestamps pins that every
 // step and task in one submission gets its OWN created_at.
 //
-// It is sqlite-only on purpose. Two SQLite consumers depend on this — the
-// t.created_at tiebreaker in sqlListReadyTasks and ListTasks' single-column
-// ORDER BY with LIMIT, which has no secondary key and therefore no stable page
-// boundaries when the sort key ties (see insertTasksTx). Neither exists in the
-// fake, whose insert loop is also far faster than this platform's wall clock
-// advances, so asserting distinctness there would be flaky for no benefit.
+// Two SQLite consumers depend on this — the t.created_at tiebreaker in
+// sqlListReadyTasks and ListTasks' single-column ORDER BY with LIMIT, which has
+// no secondary key and therefore no stable page boundaries when the sort key
+// ties (see insertTasksTx) — and the fake mirrors it. A coarse wall clock
+// (observed on Windows) returns one instant for consecutive rows, so distinct
+// stamps come from each submission's strictly increasing clock, not from
+// time.Now alone.
 //
 // A future reintroduction of one shared timestamp for the whole batch must
 // fail here rather than pass and quietly change dispatch order.
 func TestJobStore_CreateJobSubmission_StampsDistinctRowTimestamps(t *testing.T) {
-	st, ok := newStores(t)["sqlite"]
-	if !ok {
-		t.Fatal("newStores did not provide a sqlite backend")
+	for name, st := range newStores(t) {
+		t.Run(name, func(t *testing.T) {
+			assertDistinctRowTimestamps(t, st)
+		})
 	}
+}
+
+func assertDistinctRowTimestamps(t *testing.T, st store.Store) {
+	t.Helper()
 	ctx := context.Background()
 	sub := submissionFixture(ctx, t, st)
 
@@ -348,5 +355,45 @@ func TestJobStore_CreateJobSubmission_StampsDistinctRowTimestamps(t *testing.T) 
 			t.Errorf("stored tasks %s and %s share created_at %v", other, tk.ID, tk.CreatedAt)
 		}
 		storedTimes[tk.CreatedAt] = tk.ID
+	}
+}
+
+// TestJobStore_CreateJobSubmission_ListsTasksInSubmissionOrder pins that tasks
+// sorted by created_at come back in the order they were submitted. On SQLite
+// the sort is over TEXT, so this also needs every stamp written at a fixed
+// width: RFC3339Nano trims trailing zeros, and ".1Z" sorts after ".12Z".
+func TestJobStore_CreateJobSubmission_ListsTasksInSubmissionOrder(t *testing.T) {
+	const n = 500
+	for name, st := range newStores(t) {
+		t.Run(name, func(t *testing.T) {
+			ctx := t.Context()
+			if _, err := st.CreateFarm(ctx, store.Farm{ID: "farm-1", Name: "f"}); err != nil {
+				t.Fatalf("CreateFarm: %v", err)
+			}
+			if _, err := st.CreateQueue(ctx, store.Queue{ID: "queue-1", FarmID: "farm-1", Name: "q"}); err != nil {
+				t.Fatalf("CreateQueue: %v", err)
+			}
+			seed := storetest.NewJob("job-1", "farm-1", "queue-1")
+			for i := range n {
+				seed.Task(fmt.Sprintf("task-%04d", i), "step-1", store.TaskStatusReady)
+			}
+			out := seed.Submit(t, st)
+
+			got, err := st.ListTasks(ctx, store.ListTasksOptions{
+				JobID: "job-1", SortBy: store.TaskSortByCreatedAt, SortDir: store.SortAsc,
+				Pagination: store.Pagination{Limit: n},
+			})
+			if err != nil {
+				t.Fatalf("ListTasks: %v", err)
+			}
+			if len(got.Items) != n {
+				t.Fatalf("ListTasks returned %d tasks, want %d", len(got.Items), n)
+			}
+			for i, task := range got.Items {
+				if task.ID != out.Tasks[i].ID {
+					t.Fatalf("task %d by created_at is %s, want %s (submission order)", i, task.ID, out.Tasks[i].ID)
+				}
+			}
+		})
 	}
 }
