@@ -103,7 +103,10 @@ func TestMigration00037_RewritesEveryStoredForm(t *testing.T) {
 // TestMigration00037_DownUpNormalizesRowsAnOlderBinaryWrote pins the recovery
 // docs/architecture.md documents for a downgrade excursion: an older release
 // writes trimmed timestamps into a database 00037 has already rewritten, and
-// taking 00037 down (a no-op) and up again re-runs it over them.
+// the CLI's `migrate down` (goose.Down, one step: 00037's no-op) followed by
+// `migrate up` re-runs 00037 over them. That holds only while 00037 is the
+// newest migration, which the version check pins: when a later migration
+// lands, it fails, and the documented recovery needs rewording.
 func TestMigration00037_DownUpNormalizesRowsAnOlderBinaryWrote(t *testing.T) {
 	path, s, _ := openSeedable(t)
 	farm, err := s.CreateFarm(t.Context(), store.Farm{ID: uuid.NewString(), Name: uuid.NewString()})
@@ -113,14 +116,21 @@ func TestMigration00037_DownUpNormalizesRowsAnOlderBinaryWrote(t *testing.T) {
 	if err := s.Close(); err != nil {
 		t.Fatalf("Close: %v", err)
 	}
-	db := rewindTo(t, path, 36)
+	db := openRaw(t, path)
+	if v, err := goose.GetDBVersion(db); err != nil || v != 37 {
+		t.Fatalf("database version = %d, %v; want 37. A later migration makes `migrate down` "+
+			"roll that one back instead: reword the recovery in docs/architecture.md, then this test", v, err)
+	}
 	// What an older release writes after a downgrade.
 	if _, err := db.ExecContext(t.Context(),
 		`UPDATE farms SET created_at = '2026-10-10T12:00:05.5Z' WHERE id = ?`, farm.ID); err != nil {
 		t.Fatalf("plant: %v", err)
 	}
-	if err := goose.UpTo(db, ".", 37); err != nil {
-		t.Fatalf("UpTo(37): %v", err)
+	if err := goose.Down(db, "."); err != nil {
+		t.Fatalf("goose.Down: %v", err)
+	}
+	if err := goose.Up(db, "."); err != nil {
+		t.Fatalf("goose.Up: %v", err)
 	}
 	var created string
 	if err := db.QueryRowContext(t.Context(), `SELECT created_at FROM farms WHERE id = ?`, farm.ID).Scan(&created); err != nil {
@@ -131,10 +141,28 @@ func TestMigration00037_DownUpNormalizesRowsAnOlderBinaryWrote(t *testing.T) {
 	}
 }
 
+// shortStamp matches a strftime format ending in a zone right after seconds or
+// after strftime's three fractional digits: "%SZ" writes 20 characters and
+// "%fZ" 24, and both sort wrong against the 30-character stored form.
+var shortStamp = regexp.MustCompile(`%[fS]Z`)
+
+// sqlCode returns body with every "--" comment removed, so a migration may
+// mention a forbidden form in prose. No migration puts "--" inside a string.
+func sqlCode(body string) string {
+	lines := strings.Split(body, "\n")
+	for i, line := range lines {
+		if before, _, found := strings.Cut(line, "--"); found {
+			lines[i] = before
+		}
+	}
+	return strings.Join(lines, "\n")
+}
+
 // TestMigrations_StampTimesInTheStoredForm keeps SQL that stamps a time from
-// writing strftime's three fractional digits ('%fZ'), which sort wrong against
-// the 30-character form every other write uses. Only the three repair
-// migrations written before 00037 normalized their output may contain it.
+// writing anything but the 30-character stored form. The three repair
+// migrations written before 00037 normalized their output are allowed their
+// three-digit strftime, and must still need the allowance: a rewritten one
+// that no longer does fails here until it leaves the list.
 func TestMigrations_StampTimesInTheStoredForm(t *testing.T) {
 	allowed := []string{
 		"00031_release_leaked_claims.sql",
@@ -150,9 +178,13 @@ func TestMigrations_StampTimesInTheStoredForm(t *testing.T) {
 		if err != nil {
 			t.Fatalf("read %s: %v", name, err)
 		}
-		if strings.Contains(string(body), "%fZ") && !slices.Contains(allowed, name) {
-			t.Errorf("%s stamps a time with strftime's three digits ('%%fZ'); write "+
+		short := shortStamp.MatchString(sqlCode(string(body)))
+		switch isAllowed := slices.Contains(allowed, name); {
+		case short && !isAllowed:
+			t.Errorf("%s stamps a time with strftime's %%SZ or %%fZ; write "+
 				"strftime('%%Y-%%m-%%dT%%H:%%M:%%f', 'now') || '000000Z', the 30-character stored form", name)
+		case !short && isAllowed:
+			t.Errorf("%s is allowed a short strftime but no longer uses one; remove it from the list", name)
 		}
 	}
 }

@@ -1047,8 +1047,8 @@ start after upgrade, and an earlier release reads the new form unchanged. The
 rewrite holds the write connection for the whole migration, roughly 5–7 s per
 million rows on a desktop, and `task_logs` (one row per log chunk) is usually
 the largest table it touches, so a large farm's first start after upgrade can
-spend minutes in it before the server listens; goose logs
-`OK 00037_fixed_width_timestamps.sql` when it is done. An earlier release run
+spend minutes in it before the server listens; goose prints
+`OK   00037_fixed_width_timestamps.sql (<duration>)` to stderr when it is done. An earlier release run
 against a migrated database after a downgrade writes the old trimmed form again,
 and upgrading again does not re-run `00037`. While `00037` is the newest applied
 migration, `sqi-server migrate down` followed by `sqi-server migrate up`, with
@@ -1235,8 +1235,8 @@ one 30-character form: RFC 3339 in UTC with all nine fractional digits
 is time order, which every cutoff comparison and every `ORDER BY *_at` relies
 on. Go code writes through `timeToText`; SQL that stamps a time itself writes
 `strftime('%Y-%m-%dT%H:%M:%f', 'now') || '000000Z'`, and
-`TestMigrations_StampTimesInTheStoredForm` fails on a migration that uses
-strftime's three-digit form. Reads accept the older forms too.
+`TestMigrations_StampTimesInTheStoredForm` fails on a migration whose SQL,
+comments aside, uses strftime's `%SZ` or `%fZ`. Reads accept the older forms too.
 
 The primary tables are:
 
