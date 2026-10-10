@@ -72,7 +72,7 @@ func TestCompleteTaskAttempt_Success(t *testing.T) {
 			if n := activeClaims(t, st, pool.ID); n != 0 {
 				t.Fatalf("active claims = %d, want 0", n)
 			}
-			if v := claimViolations(t, st); len(v) != 0 {
+			if v := storetest.ClaimViolations(t, st); len(v) != 0 {
 				t.Fatalf("I3 violations: %v", v)
 			}
 		})
@@ -197,7 +197,7 @@ func TestCompleteTaskAttempt_RejectedStillReleases(t *testing.T) {
 			if got := mustAttempt(t, st, a.ID); got.Status != store.AttemptStatusSucceeded || got.EndedAt == nil {
 				t.Fatalf("attempt = %+v, want it closed even though the task transition was rejected", got)
 			}
-			if v := claimViolations(t, st); len(v) != 0 {
+			if v := storetest.ClaimViolations(t, st); len(v) != 0 {
 				t.Fatalf("I3 violations: %v", v)
 			}
 		})
@@ -239,7 +239,7 @@ func TestCompleteTaskAttempt_Redelivery(t *testing.T) {
 			if n := activeClaims(t, st, pool.ID); n != 0 {
 				t.Fatalf("active claims = %d, want 0", n)
 			}
-			if v := claimViolations(t, st); len(v) != 0 {
+			if v := storetest.ClaimViolations(t, st); len(v) != 0 {
 				t.Fatalf("I3 violations: %v", v)
 			}
 		})
@@ -318,7 +318,7 @@ func TestCompleteTaskAttempt_SupersededAttemptIsRejected(t *testing.T) {
 				if n := activeClaims(t, st, pool.ID); n != 1 {
 					t.Fatalf("active claims = %d, want 1 (the new attempt's)", n)
 				}
-				if v := claimViolations(t, st); len(v) != 0 {
+				if v := storetest.ClaimViolations(t, st); len(v) != 0 {
 					t.Fatalf("I3 violations: %v", v)
 				}
 
@@ -335,7 +335,7 @@ func TestCompleteTaskAttempt_SupersededAttemptIsRejected(t *testing.T) {
 					if n := activeClaims(t, st, pool.ID); n != 0 {
 						t.Fatalf("delivery %d: active claims = %d, want 0", i+1, n)
 					}
-					if v := claimViolations(t, st); len(v) != 0 {
+					if v := storetest.ClaimViolations(t, st); len(v) != 0 {
 						t.Fatalf("delivery %d: I3 violations: %v", i+1, v)
 					}
 				}
@@ -380,7 +380,7 @@ func TestCompleteTaskAttempt_SupersededOpenAttemptIsClosed(t *testing.T) {
 			if n := activeClaims(t, st, pool.ID); n != 1 {
 				t.Fatalf("active claims = %d, want 1 (only the latest attempt's)", n)
 			}
-			if v := claimViolations(t, st); len(v) != 0 {
+			if v := storetest.ClaimViolations(t, st); len(v) != 0 {
 				t.Fatalf("I3 violations: %v", v)
 			}
 		})
@@ -423,7 +423,7 @@ func TestRecordTaskFailure_ReleasesClaims(t *testing.T) {
 			if n := activeClaims(t, st, pool.ID); n != 0 {
 				t.Fatalf("active claims = %d, want 0", n)
 			}
-			if v := claimViolations(t, st); len(v) != 0 {
+			if v := storetest.ClaimViolations(t, st); len(v) != 0 {
 				t.Fatalf("I3 violations: %v", v)
 			}
 

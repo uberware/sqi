@@ -10,8 +10,6 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/uberware/sqi/internal/store"
-	"github.com/uberware/sqi/internal/store/fake"
-	"github.com/uberware/sqi/internal/store/sqlite"
 	"github.com/uberware/sqi/internal/store/storetest"
 )
 
@@ -222,24 +220,6 @@ func seedWorker(t *testing.T, st store.Store, farmID string, status store.Worker
 		}
 	}
 	return w
-}
-
-// claimViolations runs the backend's I3 diagnostic.
-func claimViolations(t *testing.T, st store.Store) []string {
-	t.Helper()
-	switch s := st.(type) {
-	case *fake.Store:
-		return s.ClaimInvariantViolations()
-	case *sqlite.Store:
-		v, err := s.ClaimInvariantViolations(t.Context())
-		if err != nil {
-			t.Fatalf("ClaimInvariantViolations: %v", err)
-		}
-		return v
-	default:
-		t.Fatalf("claimViolations: unsupported store %T", st)
-		return nil
-	}
 }
 
 func mustTask(t *testing.T, st store.Store, id string) store.Task {

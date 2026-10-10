@@ -171,6 +171,9 @@ func TestInjectClaim_OnAClosedAttempt(t *testing.T) {
 			if n, err := st.ActiveClaimCount(t.Context(), pool.ID); err != nil || n != 1 {
 				t.Fatalf("ActiveClaimCount = %d, %v; want the leaked claim counted", n, err)
 			}
+			if v := storetest.ClaimViolations(t, st); len(v) != 1 {
+				t.Fatalf("ClaimViolations = %v, want the leaked claim reported", v)
+			}
 		})
 	}
 }
@@ -189,8 +192,10 @@ func TestInjectClaim_SQLiteKeepsForeignKeys(t *testing.T) {
 }
 
 var (
-	_ storetest.Injector = (*sqlite.Store)(nil)
-	_ storetest.Injector = (*fake.Store)(nil)
+	_ storetest.Injector         = (*sqlite.Store)(nil)
+	_ storetest.Injector         = (*fake.Store)(nil)
+	_ storetest.InvariantChecker = (*sqlite.Store)(nil)
+	_ storetest.InvariantChecker = (*fake.Store)(nil)
 )
 
 func TestSubmitLeasing_LeasesInFlightTasks(t *testing.T) {

@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/uberware/sqi/internal/store"
+	"github.com/uberware/sqi/internal/store/storetest"
 )
 
 func TestCancelJobExecution(t *testing.T) {
@@ -55,7 +56,7 @@ func TestCancelJobExecution(t *testing.T) {
 			if n := activeClaims(t, st, pool.ID); n != 0 {
 				t.Fatalf("active claims = %d, want 0", n)
 			}
-			if v := claimViolations(t, st); len(v) != 0 {
+			if v := storetest.ClaimViolations(t, st); len(v) != 0 {
 				t.Fatalf("I3 violations: %v", v)
 			}
 

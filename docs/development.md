@@ -850,6 +850,10 @@ the in-memory fake:
   to build a state a production write can produce. A wrapper that embeds
   `store.Store` does not expose them, and the test fails naming the wrapper
   type; pass the store the wrapper wraps.
+- `storetest.ClaimViolations(t, st)` runs the concrete store's check of
+  invariant I3 (no active usage claim on a closed attempt or a terminal task)
+  and returns the offending claim IDs. Assert it is empty after any write that
+  should release claims.
 
 ### Step 6 — Run lint and format
 

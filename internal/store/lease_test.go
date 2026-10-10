@@ -152,7 +152,7 @@ func TestLeaseTask_Leased(t *testing.T) {
 					t.Fatalf("active claims = %d, want 1", n)
 				}
 				// A claim on the wrong (failed) attempt would show up here.
-				if v := claimViolations(t, st); len(v) != 0 {
+				if v := storetest.ClaimViolations(t, st); len(v) != 0 {
 					t.Fatalf("I3 violations: %v", v)
 				}
 			})

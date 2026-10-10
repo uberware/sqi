@@ -22,7 +22,7 @@ func TestClaimInvariantViolations(t *testing.T) {
 			pool := seedPool(t, st, 0)
 
 			leaseClaiming(t, st, g.Tasks["a"][0].ID, true, pool)
-			if v := claimViolations(t, st); len(v) != 0 {
+			if v := storetest.ClaimViolations(t, st); len(v) != 0 {
 				t.Fatalf("healthy claim reported as violation: %v", v)
 			}
 
@@ -32,7 +32,7 @@ func TestClaimInvariantViolations(t *testing.T) {
 			dead := g.Attempts[done.ID]
 			storetest.Complete(t, st, dead, store.TaskStatusSucceeded)
 			seedClaim(t, st, pool.ID, dead.ID)
-			if v := claimViolations(t, st); len(v) != 1 {
+			if v := storetest.ClaimViolations(t, st); len(v) != 1 {
 				t.Fatalf("violations = %v, want exactly the claim on the closed attempt", v)
 			}
 		})

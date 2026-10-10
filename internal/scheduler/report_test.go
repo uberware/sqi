@@ -148,7 +148,7 @@ func TestRequeueAfterReleaseLeavesTheNewLease(t *testing.T) {
 			if a := mustAttemptOf(t, base, fresh.ID); a.Status != store.AttemptStatusRunning {
 				t.Fatalf("new attempt = %q, want running", a.Status)
 			}
-			if v := claimViolations(t, base); len(v) != 0 {
+			if v := storetest.ClaimViolations(t, base); len(v) != 0 {
 				t.Fatalf("I3 violations: %v", v)
 			}
 		})

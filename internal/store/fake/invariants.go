@@ -3,6 +3,7 @@
 package fake
 
 import (
+	"context"
 	"slices"
 
 	"github.com/uberware/sqi/internal/store"
@@ -10,9 +11,10 @@ import (
 
 // ClaimInvariantViolations returns the IDs of active usage claims that break
 // invariant I3: the attempt is missing or not running, or its task is
-// terminal. Mirrors the SQLite diagnostic of the same name. Not part of
-// store.Store.
-func (s *Store) ClaimInvariantViolations() []string {
+// terminal. Mirrors the SQLite diagnostic of the same name, signature
+// included, so a test can call it on either backend; the error is always nil.
+// Not part of store.Store.
+func (s *Store) ClaimInvariantViolations(_ context.Context) ([]string, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	var ids []string
@@ -31,5 +33,5 @@ func (s *Store) ClaimInvariantViolations() []string {
 		}
 	}
 	slices.Sort(ids)
-	return ids
+	return ids, nil
 }

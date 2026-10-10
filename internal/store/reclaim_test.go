@@ -34,7 +34,7 @@ func TestReclaimStaleAssignedTasks_ClosesAndReleases(t *testing.T) {
 			if n := activeClaims(t, st, pool.ID); n != 1 {
 				t.Fatalf("active claims = %d, want 1 (only the running task's)", n)
 			}
-			if v := claimViolations(t, st); len(v) != 0 {
+			if v := storetest.ClaimViolations(t, st); len(v) != 0 {
 				t.Fatalf("I3 violations: %v", v)
 			}
 		})

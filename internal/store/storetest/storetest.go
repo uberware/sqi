@@ -218,3 +218,29 @@ func InjectClaim(t testing.TB, st store.Store, claim store.UsageClaim) store.Usa
 	}
 	return out
 }
+
+// InvariantChecker runs a backend's diagnostic for invariant I3 ("an active
+// usage claim exists iff its attempt is open"). Both concrete stores implement
+// it; store.Store does not.
+type InvariantChecker interface {
+	// ClaimInvariantViolations returns the IDs of active claims whose attempt
+	// is missing or not running, or whose task is terminal. Empty means I3
+	// holds.
+	ClaimInvariantViolations(ctx context.Context) ([]string, error)
+}
+
+// ClaimViolations returns st's I3 violations, failing the test on error or
+// when st has no checker. A wrapper that embeds store.Store has none: pass the
+// store it wraps.
+func ClaimViolations(t testing.TB, st store.Store) []string {
+	t.Helper()
+	c, ok := st.(InvariantChecker)
+	if !ok {
+		t.Fatalf("store %T has no I3 checker; pass the concrete store, not a wrapper", st)
+	}
+	v, err := c.ClaimInvariantViolations(t.Context())
+	if err != nil {
+		t.Fatalf("ClaimInvariantViolations: %v", err)
+	}
+	return v
+}

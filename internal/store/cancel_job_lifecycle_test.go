@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/uberware/sqi/internal/store"
+	"github.com/uberware/sqi/internal/store/storetest"
 )
 
 // TestCancelJobExecution_FinalizesEveryStep pins that after a job cancel every
@@ -46,7 +47,7 @@ func TestCancelJobExecution_FinalizesEveryStep(t *testing.T) {
 					t.Errorf("step %s = %q, want %q", stepName, got, w)
 				}
 			}
-			if v := claimViolations(t, st); len(v) != 0 {
+			if v := storetest.ClaimViolations(t, st); len(v) != 0 {
 				t.Fatalf("I3 violations: %v", v)
 			}
 		})

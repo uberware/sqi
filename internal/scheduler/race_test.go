@@ -26,7 +26,6 @@ import (
 	"github.com/uberware/sqi/internal/bus"
 	"github.com/uberware/sqi/internal/metrics"
 	"github.com/uberware/sqi/internal/store"
-	"github.com/uberware/sqi/internal/store/fake"
 	"github.com/uberware/sqi/internal/store/sqlite"
 	"github.com/uberware/sqi/internal/store/storetest"
 	"github.com/uberware/sqi/internal/worker/protocol"
@@ -47,7 +46,7 @@ func raceBackends(t *testing.T) map[string]store.Store {
 			t.Errorf("close sqlite store: %v", err)
 		}
 	})
-	checkSQLiteClaimsAtEnd(t, sq)
+	checkClaimsAtEnd(t, sq)
 	return map[string]store.Store{"fake": newCheckedFake(t), "sqlite": sq}
 }
 
@@ -257,25 +256,6 @@ func TestPromoteDoesNotOverwritePause(t *testing.T) {
 
 // ── A canceled task's terminal report must release its claims ───────────────
 
-// claimViolations runs the backend's I3 diagnostic (an active claim on a closed
-// attempt or on a task that is no longer in flight).
-func claimViolations(t *testing.T, st store.Store) []string {
-	t.Helper()
-	switch s := st.(type) {
-	case *fake.Store:
-		return s.ClaimInvariantViolations()
-	case *sqlite.Store:
-		v, err := s.ClaimInvariantViolations(t.Context())
-		if err != nil {
-			t.Fatalf("ClaimInvariantViolations: %v", err)
-		}
-		return v
-	default:
-		t.Fatalf("claimViolations: unsupported store %T", st)
-		return nil
-	}
-}
-
 // seedPoolClaim creates a one-slot usage pool and an active claim on attempt,
 // and returns the pool. The claim is injected, so it is only for an attempt no
 // lease wrote (see [injectOpenAttempt]); a claim held by in-flight work comes
@@ -424,7 +404,7 @@ func TestRejectedTerminalReportReleasesClaims(t *testing.T) {
 			if n := activeClaimsOf(t, st, pool.ID); n != 0 {
 				t.Fatalf("active claims = %d, want 0 (claim leak)", n)
 			}
-			if v := claimViolations(t, st); len(v) != 0 {
+			if v := storetest.ClaimViolations(t, st); len(v) != 0 {
 				t.Fatalf("I3 violations: %v", v)
 			}
 			if got := mustAttemptOf(t, st, attempt.ID); got.Status != store.AttemptStatusSucceeded || got.EndedAt == nil {
@@ -486,7 +466,7 @@ func TestRedeliveredTerminalReportIsNoOp(t *testing.T) {
 				if n := activeClaimsOf(t, st, pool.ID); n != 0 {
 					t.Fatalf("delivery %d: active claims = %d, want 0", i+1, n)
 				}
-				if v := claimViolations(t, st); len(v) != 0 {
+				if v := storetest.ClaimViolations(t, st); len(v) != 0 {
 					t.Fatalf("delivery %d: I3 violations: %v", i+1, v)
 				}
 				got := mustAttemptOf(t, st, attempt.ID)
@@ -541,7 +521,7 @@ func TestFailedReportReleasesClaims(t *testing.T) {
 					if n := activeClaimsOf(t, st, pool.ID); n != 0 {
 						t.Fatalf("active claims = %d, want 0", n)
 					}
-					if v := claimViolations(t, st); len(v) != 0 {
+					if v := storetest.ClaimViolations(t, st); len(v) != 0 {
 						t.Fatalf("I3 violations: %v", v)
 					}
 					got := mustTaskOf(t, st, task.ID)
@@ -733,7 +713,7 @@ func TestCancelRacingLease(t *testing.T) {
 					t.Errorf("attempt %s is running on a canceled task", a.ID)
 				}
 			}
-			if v := claimViolations(t, st); len(v) != 0 {
+			if v := storetest.ClaimViolations(t, st); len(v) != 0 {
 				t.Errorf("I3 violations: %v", v)
 			}
 			if n := activeClaimsOf(t, st, pool.ID); n != 0 {
@@ -804,7 +784,7 @@ func TestLeaseDuringCancelLeaksNothing(t *testing.T) {
 			if attempts[0].Status != store.AttemptStatusCanceled {
 				t.Errorf("attempt = %q, want canceled", attempts[0].Status)
 			}
-			if v := claimViolations(t, st); len(v) != 0 {
+			if v := storetest.ClaimViolations(t, st); len(v) != 0 {
 				t.Errorf("I3 violations after cancel-vs-lease: %v (claim leak)", v)
 			}
 			if n := activeClaimsOf(t, st, pool.ID); n != 0 {
@@ -907,7 +887,7 @@ func TestTryLeaseTask_NonLeasedOutcomesWriteNothing(t *testing.T) {
 					if n := activeClaimsOf(t, st, pool.ID); n != tc.wantClaims {
 						t.Fatalf("active claims = %d, want %d", n, tc.wantClaims)
 					}
-					if v := claimViolations(t, st); len(v) != 0 {
+					if v := storetest.ClaimViolations(t, st); len(v) != 0 {
 						t.Fatalf("I3 violations: %v", v)
 					}
 				})
@@ -980,7 +960,7 @@ func TestReaperDoesNotCloseReleasedAttempt(t *testing.T) {
 			if n := activeClaimsOf(t, st, pool.ID); n != 1 {
 				t.Fatalf("active claims = %d, want 1 (the re-lease's own; the reaped attempt's is released)", n)
 			}
-			if v := claimViolations(t, st); len(v) != 0 {
+			if v := storetest.ClaimViolations(t, st); len(v) != 0 {
 				t.Fatalf("I3 violations: %v", v)
 			}
 		})
@@ -1043,7 +1023,7 @@ func TestSupersededAttemptLateReportIsIgnored(t *testing.T) {
 					if n := activeClaimsOf(t, st, pool.ID); n != 1 {
 						t.Fatalf("active claims = %d, want 1 (the new attempt's)", n)
 					}
-					if v := claimViolations(t, st); len(v) != 0 {
+					if v := storetest.ClaimViolations(t, st); len(v) != 0 {
 						t.Fatalf("I3 violations: %v", v)
 					}
 					select {
@@ -1161,7 +1141,7 @@ func TestOfflineReclaimReleasesClaims(t *testing.T) {
 			if n := activeClaimsOf(t, st, pool.ID); n != 0 {
 				t.Fatalf("active claims = %d, want 0: the dead worker's license slot is still held", n)
 			}
-			if v := claimViolations(t, st); len(v) != 0 {
+			if v := storetest.ClaimViolations(t, st); len(v) != 0 {
 				t.Fatalf("I3 violations: %v", v)
 			}
 		})
@@ -1194,7 +1174,7 @@ func TestDeregisterReleasesClaims(t *testing.T) {
 			if n := activeClaimsOf(t, st, pool.ID); n != 0 {
 				t.Fatalf("active claims = %d, want 0: a deregistered worker's license slot is still held", n)
 			}
-			if v := claimViolations(t, st); len(v) != 0 {
+			if v := storetest.ClaimViolations(t, st); len(v) != 0 {
 				t.Fatalf("I3 violations: %v", v)
 			}
 		})

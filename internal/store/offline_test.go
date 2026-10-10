@@ -63,7 +63,7 @@ func TestOfflineStaleWorker(t *testing.T) {
 			if n := activeClaims(t, st, pool.ID); n != 0 {
 				t.Fatalf("active claims = %d, want 0", n)
 			}
-			if v := claimViolations(t, st); len(v) != 0 {
+			if v := storetest.ClaimViolations(t, st); len(v) != 0 {
 				t.Fatalf("I3 violations: %v", v)
 			}
 		})
@@ -229,7 +229,7 @@ func TestOfflineStaleWorker_ReclaimsOnlyItsOwnInFlightTasks(t *testing.T) {
 			if n := activeClaims(t, st, pool.ID); n != 1 {
 				t.Fatalf("active claims = %d, want only the other worker's 1", n)
 			}
-			if v := claimViolations(t, st); len(v) != 0 {
+			if v := storetest.ClaimViolations(t, st); len(v) != 0 {
 				t.Fatalf("I3 violations: %v", v)
 			}
 		})
@@ -258,7 +258,7 @@ func TestOfflineWorker(t *testing.T) {
 			if n := activeClaims(t, st, pool.ID); n != 0 {
 				t.Fatalf("active claims = %d, want 0", n)
 			}
-			if v := claimViolations(t, st); len(v) != 0 {
+			if v := storetest.ClaimViolations(t, st); len(v) != 0 {
 				t.Fatalf("I3 violations: %v", v)
 			}
 			if _, _, err := st.OfflineWorker(t.Context(), "nope", "", now); !errorsIsNotFound(err) {
