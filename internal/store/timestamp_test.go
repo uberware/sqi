@@ -204,6 +204,38 @@ func TestSubSecond_StaleAssignment(t *testing.T) {
 	}
 }
 
+// TestListStaleWorkers_SkipsANeverHeartbeatedWorker pins the backends' shared
+// rule: a worker with no recorded heartbeat has no age to compare, so it is not
+// stale (SQLite's NULL comparison; OfflineStaleWorker already agrees on both).
+// The scheduler stamps a heartbeat at registration, so production never has
+// such a worker; the rule is about the backends agreeing.
+func TestListStaleWorkers_SkipsANeverHeartbeatedWorker(t *testing.T) {
+	for name, st := range newStores(t) {
+		t.Run(name, func(t *testing.T) {
+			t0, t1 := subSecond()
+			farm := subSecondFarm(t, st)
+			registerAt(t, st, farm.ID, "w-stale", &t0)
+			registerAt(t, st, farm.ID, "w-silent", nil)
+			fresh := t1.Add(time.Minute)
+			registerAt(t, st, farm.ID, "w-fresh", &fresh)
+			// An offline worker is never stale, however old its heartbeat.
+			if _, _, err := st.RegisterWorker(t.Context(), store.Worker{
+				ID: "w-offline", FarmID: farm.ID, Hostname: "w-offline", Status: store.WorkerStatusOffline, LastHeartbeatAt: &t0,
+			}); err != nil {
+				t.Fatalf("RegisterWorker w-offline: %v", err)
+			}
+
+			stale, err := st.ListStaleWorkers(t.Context(), t1)
+			if err != nil {
+				t.Fatalf("ListStaleWorkers: %v", err)
+			}
+			if got := workerIDs(stale); !slices.Equal(got, []string{"w-stale"}) {
+				t.Fatalf("ListStaleWorkers(%v) = %v, want [w-stale]", t1, got)
+			}
+		})
+	}
+}
+
 // TestSubSecond_NanosecondsRoundTrip pins that a stored time keeps every
 // digit: the fake keeps times exactly, so SQLite must keep all nine fractional
 // digits or the two backends disagree about equality.

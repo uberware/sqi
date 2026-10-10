@@ -880,29 +880,6 @@ func TestUpdateWorkerHeartbeat_NotFound(t *testing.T) {
 	}
 }
 
-func TestListStaleWorkers(t *testing.T) {
-	s := New()
-	defer s.Close()
-	mustCreateWorker(t, s, "w-fresh", "f1", store.WorkerStatusOnline)
-	mustCreateWorker(t, s, "w-stale", "f1", store.WorkerStatusOnline)
-	mustCreateWorker(t, s, "w-offline", "f1", store.WorkerStatusOffline)
-
-	// Give w-fresh a recent heartbeat.
-	now := time.Now()
-	if err := s.UpdateWorkerHeartbeat(ctx(), "w-fresh", now); err != nil {
-		t.Fatalf("UpdateWorkerHeartbeat: %v", err)
-	}
-
-	stale, err := s.ListStaleWorkers(ctx(), now.Add(-time.Second))
-	if err != nil {
-		t.Fatalf("ListStaleWorkers: %v", err)
-	}
-	// w-stale has no heartbeat, w-offline is skipped.
-	if len(stale) != 1 || stale[0].ID != "w-stale" {
-		t.Errorf("stale workers = %v, want [w-stale]", stale)
-	}
-}
-
 func TestCountIdleWorkers(t *testing.T) {
 	s := New()
 	defer s.Close()
