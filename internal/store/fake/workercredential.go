@@ -33,18 +33,6 @@ func (s *Store) CreateWorkerCredential(_ context.Context, c store.WorkerCredenti
 	return c, nil
 }
 
-// GetActiveWorkerCredentialByWorkerID implements [store.WorkerCredentialStore].
-func (s *Store) GetActiveWorkerCredentialByWorkerID(_ context.Context, workerID string) (store.WorkerCredential, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	for _, c := range s.workerCredentials {
-		if c.WorkerID == workerID && c.RevokedAt == nil {
-			return c, nil
-		}
-	}
-	return store.WorkerCredential{}, store.ErrNotFound
-}
-
 // ListActiveWorkerCredentials implements [store.WorkerCredentialStore].
 func (s *Store) ListActiveWorkerCredentials(_ context.Context) ([]store.WorkerCredential, error) {
 	s.mu.Lock()

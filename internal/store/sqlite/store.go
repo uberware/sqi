@@ -236,14 +236,13 @@ type Store struct {
 	stmtTouchAPIKeyLastUsed      *sql.Stmt
 
 	// ── worker credentials & join tokens ────────────────────────────────────
-	stmtInsertWorkerCredential              *sql.Stmt
-	stmtGetActiveWorkerCredentialByWorkerID *sql.Stmt
-	stmtListActiveWorkerCredentials         *sql.Stmt
-	stmtRevokeWorkerCredential              *sql.Stmt
-	stmtTouchWorkerCredential               *sql.Stmt
-	stmtInsertWorkerJoinToken               *sql.Stmt
-	stmtGetWorkerJoinTokenByHash            *sql.Stmt
-	stmtMarkWorkerJoinTokenUsed             *sql.Stmt
+	stmtInsertWorkerCredential      *sql.Stmt
+	stmtListActiveWorkerCredentials *sql.Stmt
+	stmtRevokeWorkerCredential      *sql.Stmt
+	stmtTouchWorkerCredential       *sql.Stmt
+	stmtInsertWorkerJoinToken       *sql.Stmt
+	stmtGetWorkerJoinTokenByHash    *sql.Stmt
+	stmtMarkWorkerJoinTokenUsed     *sql.Stmt
 }
 
 // Open opens (or creates) the SQLite database at path, applies connection
@@ -740,9 +739,6 @@ func (s *Store) prepareAll(ctx context.Context) error {
 
 	// ── worker credentials & join tokens ─────────────────────────────────────
 	if s.stmtInsertWorkerCredential, err = s.prepare(ctx, sqlInsertWorkerCredential); err != nil {
-		return err
-	}
-	if s.stmtGetActiveWorkerCredentialByWorkerID, err = s.prepare(ctx, sqlGetActiveWorkerCredentialByWorkerID); err != nil {
 		return err
 	}
 	if s.stmtListActiveWorkerCredentials, err = s.prepare(ctx, sqlListActiveWorkerCredentials); err != nil {

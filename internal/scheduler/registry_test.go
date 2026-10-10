@@ -22,6 +22,7 @@ import (
 	"github.com/uberware/sqi/internal/bus"
 	"github.com/uberware/sqi/internal/metrics"
 	"github.com/uberware/sqi/internal/store"
+	"github.com/uberware/sqi/internal/store/storetest"
 	"github.com/uberware/sqi/internal/worker/protocol"
 	"github.com/uberware/sqi/internal/ws"
 )
@@ -182,9 +183,9 @@ func TestHandleWorkerRegister_TouchesActiveCredential_WhenAuthEnabled(t *testing
 	if len(st.touched) != 1 || st.touched[0] != "w-1" {
 		t.Errorf("touched = %v, want exactly one call for w-1", st.touched)
 	}
-	cred, err := fk.GetActiveWorkerCredentialByWorkerID(t.Context(), "w-1")
+	cred, err := storetest.ActiveWorkerCredential(t.Context(), fk, "w-1")
 	if err != nil {
-		t.Fatalf("GetActiveWorkerCredentialByWorkerID: %v", err)
+		t.Fatalf("ActiveWorkerCredential: %v", err)
 	}
 	if cred.LastSeenAt == nil {
 		t.Error("expected LastSeenAt to be set after registration")

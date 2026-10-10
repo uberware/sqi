@@ -787,8 +787,8 @@ func TestRemoveWorker(t *testing.T) {
 		if rr.Code != http.StatusNoContent {
 			t.Fatalf("expected 204, got %d — body: %s", rr.Code, rr.Body)
 		}
-		if _, err := st.GetActiveWorkerCredentialByWorkerID(t.Context(), w.ID); !errors.Is(err, store.ErrNotFound) {
-			t.Errorf("GetActiveWorkerCredentialByWorkerID after delete = %v, want store.ErrNotFound (credential revoked)", err)
+		if _, err := storetest.ActiveWorkerCredential(t.Context(), st, w.ID); !errors.Is(err, store.ErrNotFound) {
+			t.Errorf("ActiveWorkerCredential after delete = %v, want store.ErrNotFound (credential revoked)", err)
 		}
 	})
 
