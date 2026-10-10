@@ -1227,7 +1227,18 @@ request loop cannot spin.
 
 ## SQLite schema overview
 
-Full DDL lives in `internal/store/migrations/`. The primary tables are:
+Full DDL lives in `internal/store/migrations/`.
+
+**Timestamps** are TEXT, compared and ordered as text, and always stored in
+one 30-character form: RFC 3339 in UTC with all nine fractional digits
+(`timeLayout` in `internal/store/sqlite/scan.go`). At a fixed width text order
+is time order, which every cutoff comparison and every `ORDER BY *_at` relies
+on. Go code writes through `timeToText`; SQL that stamps a time itself writes
+`strftime('%Y-%m-%dT%H:%M:%f', 'now') || '000000Z'`, and
+`TestMigrations_StampTimesInTheStoredForm` fails on a migration that uses
+strftime's three-digit form. Reads accept the older forms too.
+
+The primary tables are:
 
 | Table | Purpose |
 |---|---|

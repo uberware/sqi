@@ -7,10 +7,6 @@ import (
 	"time"
 )
 
-// storedWidth is the length of every timestamp the store writes. A fixed
-// width is what makes SQLite's TEXT comparison agree with time order.
-const storedWidth = len("2006-01-02T15:04:05.000000000Z")
-
 func TestTimeToText_IsFixedWidthUTC(t *testing.T) {
 	base := time.Date(2026, 10, 10, 12, 0, 5, 0, time.UTC)
 	cases := []struct {
@@ -30,17 +26,14 @@ func TestTimeToText_IsFixedWidthUTC(t *testing.T) {
 			if got != c.want {
 				t.Fatalf("timeToText(%v) = %q, want %q", c.in, got, c.want)
 			}
-			if len(got) != storedWidth {
-				t.Fatalf("timeToText(%v) = %q, %d characters, want %d", c.in, got, len(got), storedWidth)
-			}
 		})
 	}
 }
 
 // TestTextToTime_ReadsEveryStoredForm pins the lenient read: every form an
 // earlier release stored, and the form this one stores, read back as the same
-// instant. parseLayout is time.RFC3339Nano, the layout every earlier release
-// parses with, so the nine-digit case is also the downgrade guarantee.
+// instant. textToTime parses with time.RFC3339Nano, the layout every earlier
+// release parses with, so the nine-digit case is also the downgrade guarantee.
 func TestTextToTime_ReadsEveryStoredForm(t *testing.T) {
 	half := time.Date(2026, 10, 10, 12, 0, 5, 500_000_000, time.UTC)
 	whole := time.Date(2026, 10, 10, 12, 0, 5, 0, time.UTC)

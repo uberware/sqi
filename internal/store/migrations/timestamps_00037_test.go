@@ -103,7 +103,7 @@ func TestMigration00037_RewritesEveryStoredForm(t *testing.T) {
 // TestMigration00037_DownUpNormalizesRowsAnOlderBinaryWrote pins the recovery
 // docs/architecture.md documents for a downgrade excursion: an older release
 // writes trimmed timestamps into a database 00037 has already rewritten, and
-// one step down (a no-op) and back up re-runs 00037 over them.
+// taking 00037 down (a no-op) and up again re-runs it over them.
 func TestMigration00037_DownUpNormalizesRowsAnOlderBinaryWrote(t *testing.T) {
 	path, s, _ := openSeedable(t)
 	farm, err := s.CreateFarm(t.Context(), store.Farm{ID: uuid.NewString(), Name: uuid.NewString()})
@@ -113,29 +113,14 @@ func TestMigration00037_DownUpNormalizesRowsAnOlderBinaryWrote(t *testing.T) {
 	if err := s.Close(); err != nil {
 		t.Fatalf("Close: %v", err)
 	}
-	db, err := sql.Open("sqlite", path)
-	if err != nil {
-		t.Fatalf("sql.Open: %v", err)
-	}
-	t.Cleanup(func() { _ = db.Close() })
-	if v, err := goose.GetDBVersion(db); err != nil || v != 37 {
-		t.Fatalf("database version = %d, %v; want 37, the newest migration this test is about", v, err)
-	}
+	db := rewindTo(t, path, 36)
 	// What an older release writes after a downgrade.
 	if _, err := db.ExecContext(t.Context(),
 		`UPDATE farms SET created_at = '2026-10-10T12:00:05.5Z' WHERE id = ?`, farm.ID); err != nil {
 		t.Fatalf("plant: %v", err)
 	}
-
-	goose.SetBaseFS(migrations.FS)
-	if err := goose.SetDialect("sqlite3"); err != nil {
-		t.Fatalf("SetDialect: %v", err)
-	}
-	if err := goose.Down(db, "."); err != nil {
-		t.Fatalf("goose.Down: %v", err)
-	}
-	if err := goose.Up(db, "."); err != nil {
-		t.Fatalf("goose.Up: %v", err)
+	if err := goose.UpTo(db, ".", 37); err != nil {
+		t.Fatalf("UpTo(37): %v", err)
 	}
 	var created string
 	if err := db.QueryRowContext(t.Context(), `SELECT created_at FROM farms WHERE id = ?`, farm.ID).Scan(&created); err != nil {
@@ -143,6 +128,32 @@ func TestMigration00037_DownUpNormalizesRowsAnOlderBinaryWrote(t *testing.T) {
 	}
 	if want := "2026-10-10T12:00:05.500000000Z"; created != want {
 		t.Fatalf("created_at after down and up = %q, want %q", created, want)
+	}
+}
+
+// TestMigrations_StampTimesInTheStoredForm keeps SQL that stamps a time from
+// writing strftime's three fractional digits ('%fZ'), which sort wrong against
+// the 30-character form every other write uses. Only the three repair
+// migrations written before 00037 normalized their output may contain it.
+func TestMigrations_StampTimesInTheStoredForm(t *testing.T) {
+	allowed := []string{
+		"00031_release_leaked_claims.sql",
+		"00033_finalize_canceled_job_steps.sql",
+		"00035_close_orphan_attempts.sql",
+	}
+	names, err := fs.Glob(migrations.FS, "*.sql")
+	if err != nil || len(names) == 0 {
+		t.Fatalf("list migrations = %v, %v", names, err)
+	}
+	for _, name := range names {
+		body, err := fs.ReadFile(migrations.FS, name)
+		if err != nil {
+			t.Fatalf("read %s: %v", name, err)
+		}
+		if strings.Contains(string(body), "%fZ") && !slices.Contains(allowed, name) {
+			t.Errorf("%s stamps a time with strftime's three digits ('%%fZ'); write "+
+				"strftime('%%Y-%%m-%%dT%%H:%%M:%%f', 'now') || '000000Z', the 30-character stored form", name)
+		}
 	}
 }
 
@@ -161,13 +172,11 @@ func TestMigration00037_CoversEveryTimestampColumn(t *testing.T) {
 	if err := s.Close(); err != nil {
 		t.Fatalf("Close: %v", err)
 	}
-	db, err := sql.Open("sqlite", path)
-	if err != nil {
-		t.Fatalf("sql.Open: %v", err)
-	}
-	t.Cleanup(func() { _ = db.Close() })
-
-	schema := schemaTimestampColumns(t, db)
+	schema := queryStrings(t, openRaw(t, path), `
+SELECT m.name || '.' || p.name
+FROM   sqlite_master m JOIN pragma_table_info(m.name) p
+WHERE  m.type = 'table' AND m.name NOT LIKE 'sqlite_%' AND m.name <> 'goose_db_version'
+  AND  (p.name IN ('at', 'retry_after') OR p.name LIKE '%\_at' ESCAPE '\')`)
 	rewritten := migrationColumns(t)
 	for _, c := range schema {
 		if !slices.Contains(rewritten, c) {
@@ -182,32 +191,6 @@ func TestMigration00037_CoversEveryTimestampColumn(t *testing.T) {
 	if len(schema) == 0 {
 		t.Fatal("found no timestamp columns; the comparison would be vacuous")
 	}
-}
-
-func schemaTimestampColumns(t *testing.T, db *sql.DB) []string {
-	t.Helper()
-	rows, err := db.QueryContext(t.Context(), `
-SELECT m.name, p.name
-FROM   sqlite_master m JOIN pragma_table_info(m.name) p
-WHERE  m.type = 'table' AND m.name NOT LIKE 'sqlite_%' AND m.name <> 'goose_db_version'`)
-	if err != nil {
-		t.Fatalf("list columns: %v", err)
-	}
-	defer rows.Close()
-	var cols []string
-	for rows.Next() {
-		var table, col string
-		if err := rows.Scan(&table, &col); err != nil {
-			t.Fatalf("scan column: %v", err)
-		}
-		if col == "at" || col == "retry_after" || strings.HasSuffix(col, "_at") {
-			cols = append(cols, table+"."+col)
-		}
-	}
-	if err := rows.Err(); err != nil {
-		t.Fatalf("list columns: %v", err)
-	}
-	return cols
 }
 
 // migrationColumns reads table.column for every CASE in 00037's Up section.

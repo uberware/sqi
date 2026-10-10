@@ -41,20 +41,18 @@ func (p prefixScanner) Scan(dest ...any) error {
 // order. Trimmed RFC3339Nano is not: "…:05Z" sorts after "…:05.5Z".
 const timeLayout = "2006-01-02T15:04:05.000000000Z07:00"
 
-// parseLayout reads every form a timestamp has been stored in: this release's
-// nine digits, the trimmed RFC3339Nano earlier releases wrote, and the three
-// digits of the repair migrations' strftime. Migration 00037 rewrites the
-// older forms, so a value only reaches here in one if it escaped it.
-const parseLayout = time.RFC3339Nano
-
 // timeToText formats t in UTC as [timeLayout] for storage in a TEXT column.
 func timeToText(t time.Time) string {
 	return t.UTC().Format(timeLayout)
 }
 
-// textToTime parses a timestamp read from a TEXT column.
+// textToTime parses a timestamp read from a TEXT column. It parses with
+// time.RFC3339Nano, which reads every form a timestamp has been stored in:
+// this release's nine digits, the trimmed form earlier releases wrote, and the
+// three digits of the repair migrations' strftime. Migration 00037 rewrites
+// the older forms, so a value only arrives in one if it escaped it.
 func textToTime(s string) (time.Time, error) {
-	t, err := time.Parse(parseLayout, s)
+	t, err := time.Parse(time.RFC3339Nano, s)
 	if err != nil {
 		return time.Time{}, fmt.Errorf("parse time %q: %w", s, err)
 	}

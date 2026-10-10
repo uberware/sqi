@@ -266,7 +266,7 @@ func (s *Store) OfflineStaleWorker(_ context.Context, id string, cutoff, now tim
 	defer s.mu.Unlock()
 
 	w, ok := s.workers[id]
-	if !ok || w.Status != store.WorkerStatusOnline || w.LastHeartbeatAt == nil || !w.LastHeartbeatAt.Before(cutoff) {
+	if !ok || w.Status != store.WorkerStatusOnline || !heartbeatBefore(w, cutoff) {
 		return nil, false, nil
 	}
 	return s.offlineWorkerLocked(id, now), true, nil

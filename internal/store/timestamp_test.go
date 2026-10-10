@@ -24,21 +24,12 @@ func subSecond() (t0, t1 time.Time) {
 	return t0, t0.Add(500 * time.Millisecond)
 }
 
-func subSecondFarm(t *testing.T, st store.Store) store.Farm {
-	t.Helper()
-	f, err := st.CreateFarm(t.Context(), store.Farm{ID: uuid.NewString(), Name: uuid.NewString()})
-	if err != nil {
-		t.Fatalf("CreateFarm: %v", err)
-	}
-	return f
-}
-
-// registerAt registers an online worker with the given last heartbeat; nil
+// registerAt registers a worker in status with the given last heartbeat; nil
 // registers one that has never heartbeated.
-func registerAt(t *testing.T, st store.Store, farmID, id string, heartbeat *time.Time) {
+func registerAt(t *testing.T, st store.Store, farmID, id string, status store.WorkerStatus, heartbeat *time.Time) {
 	t.Helper()
 	if _, _, err := st.RegisterWorker(t.Context(), store.Worker{
-		ID: id, FarmID: farmID, Hostname: id, Status: store.WorkerStatusOnline, LastHeartbeatAt: heartbeat,
+		ID: id, FarmID: farmID, Hostname: id, Status: status, LastHeartbeatAt: heartbeat,
 	}); err != nil {
 		t.Fatalf("RegisterWorker %s: %v", id, err)
 	}
@@ -52,20 +43,16 @@ func workerIDs(ws []store.Worker) []string {
 	return ids
 }
 
-func TestSubSecond_StaleHeartbeat(t *testing.T) {
+// TestSubSecond_StaleHeartbeatIsTakenOffline is the offline half of the
+// sub-second heartbeat comparison; ListStaleWorkers' half is
+// TestListStaleWorkers_SkipsANeverHeartbeatedWorker.
+func TestSubSecond_StaleHeartbeatIsTakenOffline(t *testing.T) {
 	for name, st := range newStores(t) {
 		t.Run(name, func(t *testing.T) {
 			t0, t1 := subSecond()
-			farm := subSecondFarm(t, st)
-			registerAt(t, st, farm.ID, "w-stale", &t0)
+			farm := seedGraph(t, st, graphOpts{}).Farm
+			registerAt(t, st, farm.ID, "w-stale", store.WorkerStatusOnline, &t0)
 
-			stale, err := st.ListStaleWorkers(t.Context(), t1)
-			if err != nil {
-				t.Fatalf("ListStaleWorkers: %v", err)
-			}
-			if !slices.Contains(workerIDs(stale), "w-stale") {
-				t.Fatalf("ListStaleWorkers(%v) = %v, want w-stale (heartbeat %v)", t1, workerIDs(stale), t0)
-			}
 			if _, ok, err := st.OfflineStaleWorker(t.Context(), "w-stale", t1, t1); err != nil || !ok {
 				t.Fatalf("OfflineStaleWorker(cutoff %v) = (%v, %v), want taken offline (heartbeat %v)", t1, ok, err, t0)
 			}
@@ -77,9 +64,9 @@ func TestSubSecond_HeartbeatOrdering(t *testing.T) {
 	for name, st := range newStores(t) {
 		t.Run(name, func(t *testing.T) {
 			t0, t1 := subSecond()
-			farm := subSecondFarm(t, st)
-			registerAt(t, st, farm.ID, "w-later", &t1)
-			registerAt(t, st, farm.ID, "w-earlier", &t0)
+			farm := seedGraph(t, st, graphOpts{}).Farm
+			registerAt(t, st, farm.ID, "w-later", store.WorkerStatusOnline, &t1)
+			registerAt(t, st, farm.ID, "w-earlier", store.WorkerStatusOnline, &t0)
 
 			page, err := st.ListWorkers(t.Context(), store.ListWorkersOptions{
 				FarmID: farm.ID, SortBy: store.WorkerSortByLastHeartbeatAt, SortDir: store.SortAsc,
@@ -213,17 +200,13 @@ func TestListStaleWorkers_SkipsANeverHeartbeatedWorker(t *testing.T) {
 	for name, st := range newStores(t) {
 		t.Run(name, func(t *testing.T) {
 			t0, t1 := subSecond()
-			farm := subSecondFarm(t, st)
-			registerAt(t, st, farm.ID, "w-stale", &t0)
-			registerAt(t, st, farm.ID, "w-silent", nil)
+			farm := seedGraph(t, st, graphOpts{}).Farm
+			registerAt(t, st, farm.ID, "w-stale", store.WorkerStatusOnline, &t0)
+			registerAt(t, st, farm.ID, "w-silent", store.WorkerStatusOnline, nil)
 			fresh := t1.Add(time.Minute)
-			registerAt(t, st, farm.ID, "w-fresh", &fresh)
+			registerAt(t, st, farm.ID, "w-fresh", store.WorkerStatusOnline, &fresh)
 			// An offline worker is never stale, however old its heartbeat.
-			if _, _, err := st.RegisterWorker(t.Context(), store.Worker{
-				ID: "w-offline", FarmID: farm.ID, Hostname: "w-offline", Status: store.WorkerStatusOffline, LastHeartbeatAt: &t0,
-			}); err != nil {
-				t.Fatalf("RegisterWorker w-offline: %v", err)
-			}
+			registerAt(t, st, farm.ID, "w-offline", store.WorkerStatusOffline, &t0)
 
 			stale, err := st.ListStaleWorkers(t.Context(), t1)
 			if err != nil {
