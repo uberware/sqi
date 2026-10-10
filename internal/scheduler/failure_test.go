@@ -594,6 +594,53 @@ func TestHandleTaskFailed_SupersededAttempt_LeavesReleasedTaskAlone(t *testing.T
 	}
 }
 
+// TestHandleTaskFailed_StaleReportDoesNotPark pins the stale-report gate on its
+// own. The other stale-report tests land on the retry branch, where
+// RequeueTaskForRetry's guard also refuses a superseded attempt, so they stay
+// green with the gate removed. The park branch has no such guard: ParkJob pauses
+// the job whichever attempt asked. Here the server restarts with a lower failure
+// limit and JetStream redelivers the failure report of an attempt a retry has
+// already superseded; without the gate, that redelivery parks a job whose task
+// is running fine on another worker.
+func TestHandleTaskFailed_StaleReportDoesNotPark(t *testing.T) {
+	h := newFailureHarness(t, RetryPolicy{MaxAttempts: 5, RetryDelay: 0})
+	h.seedRunningTask("j1", "t1", "wA")
+
+	// A genuine failure: counted once, and the task retried.
+	stale := h.current["t1"]
+	h.reportFailed("t1")
+	if got := h.taskStatus("t1"); got != store.TaskStatusReady {
+		t.Fatalf("fixture: failed task should be requeued, got %s", got)
+	}
+	fresh := h.run("t1", "wB")
+
+	// The restart lowers the limit to the job's failure count, then the old
+	// attempt's report is delivered again.
+	h.s.cfg.DefaultFailureLimit = 1
+	exitCode := 1
+	err := h.s.processTaskStatus(t.Context(), stale.WorkerID, protocol.TaskStatusMsg{
+		Version: protocol.ProtocolVersion, TaskID: "t1", AttemptID: stale.ID,
+		Status: "failed", ExitCode: &exitCode, At: time.Now().UTC(),
+	})
+
+	if got := h.jobStatus("j1"); got != store.JobStatusRunning {
+		t.Fatalf("stale report changed the job: status = %s, want running", got)
+	}
+	if err != nil {
+		t.Fatalf("processTaskStatus(stale failed): %v", err)
+	}
+	task, err := h.st.GetTask(t.Context(), "t1")
+	if err != nil {
+		t.Fatalf("GetTask: %v", err)
+	}
+	if task.Status != store.TaskStatusRunning || task.AssignedWorkerID != "wB" {
+		t.Fatalf("task = %s on %q, want running on wB", task.Status, task.AssignedWorkerID)
+	}
+	if a := mustAttemptOf(t, h.st, fresh.ID); a.Status != store.AttemptStatusRunning {
+		t.Fatalf("re-leased attempt = %s, want running", a.Status)
+	}
+}
+
 // TestHandleTaskFailed_CrashRecoveryRedelivery_StillRequeues pins the
 // crash-recovery contract the stale-report gate must NOT break: the server
 // committed RecordTaskFailure (attempt closed, counters incremented) but died
