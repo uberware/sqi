@@ -4,6 +4,8 @@ package storetest_test
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -186,8 +188,52 @@ func TestInjectClaim_SQLiteKeepsForeignKeys(t *testing.T) {
 	}
 	_, err = storetest.InjectorFor(t, st).InjectClaim(t.Context(),
 		store.UsageClaim{ID: uuid.NewString(), PoolID: pool.ID, TaskAttemptID: "no-such-attempt"})
-	if err == nil {
-		t.Fatal("InjectClaim with a missing attempt succeeded on SQLite; want a foreign-key error")
+	if !errors.Is(err, store.ErrConflict) {
+		t.Fatalf("InjectClaim with a missing attempt = %v on SQLite; want a foreign-key store.ErrConflict", err)
+	}
+}
+
+// TestInjectors_RefuseADuplicateID pins the fake to SQLite's primary keys: an
+// injector reusing an ID is a conflict that leaves the existing row as it was,
+// not a silent overwrite.
+func TestInjectors_RefuseADuplicateID(t *testing.T) {
+	for name, st := range newStores(t) {
+		t.Run(name, func(t *testing.T) {
+			sub := oneTaskJob(t, st, store.TaskStatusCanceled)
+			storetest.Submit(t, st, sub)
+			inj := storetest.InjectorFor(t, st)
+			first := storetest.InjectAttempt(t, st, store.TaskAttempt{
+				TaskID: sub.Tasks[0].ID, WorkerID: "w1", AttemptNumber: 1,
+				Status: store.AttemptStatusRunning, Message: "first",
+			})
+			again := first
+			again.AttemptNumber, again.Message = 2, "second"
+			if _, err := inj.InjectTaskAttempt(t.Context(), again); !errors.Is(err, store.ErrConflict) {
+				t.Fatalf("InjectTaskAttempt with a reused ID = %v, want store.ErrConflict", err)
+			}
+			if got, err := st.GetTaskAttempt(t.Context(), first.ID); err != nil || got.Message != "first" {
+				t.Fatalf("attempt after the refused injection = %q, %v; want the first row kept", got.Message, err)
+			}
+
+			var pools [2]store.UsagePool
+			for i := range pools {
+				p, err := st.CreateUsagePool(t.Context(), store.UsagePool{ID: uuid.NewString(), Name: fmt.Sprintf("p%d", i), MaxConcurrent: 1})
+				if err != nil {
+					t.Fatalf("CreateUsagePool: %v", err)
+				}
+				pools[i] = p
+			}
+			claim := storetest.InjectClaim(t, st, store.UsageClaim{PoolID: pools[0].ID, TaskAttemptID: first.ID})
+			claim.PoolID = pools[1].ID
+			if _, err := inj.InjectClaim(t.Context(), claim); !errors.Is(err, store.ErrConflict) {
+				t.Fatalf("InjectClaim with a reused ID = %v, want store.ErrConflict", err)
+			}
+			for i, want := range []int{1, 0} {
+				if n, err := st.ActiveClaimCount(t.Context(), pools[i].ID); err != nil || n != want {
+					t.Fatalf("ActiveClaimCount(p%d) = %d, %v; want %d (the first claim kept)", i, n, err, want)
+				}
+			}
+		})
 	}
 }
 
