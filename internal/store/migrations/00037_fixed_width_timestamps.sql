@@ -2,19 +2,17 @@
 
 -- +goose Up
 
--- Rewrites every stored timestamp to the one form the store now writes:
--- RFC 3339 in UTC with all nine fractional digits, 30 characters
+-- Rewrites every stored timestamp to the form the store writes: RFC 3339 in
+-- UTC with all nine fractional digits, 30 characters
 -- (YYYY-MM-DDTHH:MM:SS.nnnnnnnnnZ; sqlite.timeLayout). SQLite compares and
--- orders these columns as TEXT, and earlier releases stored three forms that
--- sort wrong against each other within one second: trimmed RFC3339Nano
--- ("…:05Z" sorts after "…:05.5Z"), three digits from the repair migrations'
--- strftime, and nine digits from submission's row clock.
+-- orders these columns as TEXT, and the shorter forms sort wrong against it
+-- within one second ("…:05Z" sorts after "…:05.5Z").
 --
--- Two shapes are recognized: "…SSZ" gains ".000000000", and "…SS.<1-8
+-- Two shapes are rewritten: "…SSZ" gains ".000000000", and "…SS.<1-8
 -- digits>Z" has its fraction padded with zeros to nine. Both keep the same
--- instant. Anything else (NULL, a value of any other shape) is left exactly as
--- it was, and a 30-character value is not touched, so applying this twice
--- changes nothing. One UPDATE per table, so a table is scanned once.
+-- instant. NULL, a 30-character value and a value of any other shape are left
+-- as they are, so applying this twice changes nothing. Each table is updated
+-- in one statement, so it is scanned once.
 
 UPDATE api_keys SET
     expires_at = CASE
@@ -414,6 +412,5 @@ WHERE length(last_heartbeat_at) <> 30 OR length(registered_at) <> 30 OR length(u
 
 -- +goose Down
 
--- Nothing to undo: every release parses the nine-digit form, so a downgraded
--- binary reads these rows correctly, and re-trimming them would only bring
--- back the mis-ordering this fixed.
+-- No-op: every release parses the nine-digit form, and trimming the values
+-- again would make them sort wrong.

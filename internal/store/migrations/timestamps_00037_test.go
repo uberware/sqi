@@ -100,13 +100,13 @@ func TestMigration00037_RewritesEveryStoredForm(t *testing.T) {
 	}
 }
 
-// TestMigration00037_DownUpNormalizesRowsAnOlderBinaryWrote pins the recovery
-// docs/architecture.md documents for a downgrade excursion: an older release
-// writes trimmed timestamps into a database 00037 has already rewritten, and
-// the CLI's `migrate down` (goose.Down, one step: 00037's no-op) followed by
-// `migrate up` re-runs 00037 over them. That holds only while 00037 is the
-// newest migration, which the version check pins: when a later migration
-// lands, it fails, and the documented recovery needs rewording.
+// TestMigration00037_DownUpNormalizesRowsAnOlderBinaryWrote covers the
+// downgrade recovery in docs/architecture.md: an older release writes trimmed
+// timestamps into a database at version 37, and the CLI's `migrate down`
+// (goose.Down, one step, a no-op for 00037) followed by `migrate up` re-runs
+// 00037 over them. The recovery works only while 00037 is the newest
+// migration; the version check fails once a later one exists, and the
+// documentation must then change.
 func TestMigration00037_DownUpNormalizesRowsAnOlderBinaryWrote(t *testing.T) {
 	path, s, _ := openSeedable(t)
 	farm, err := s.CreateFarm(t.Context(), store.Farm{ID: uuid.NewString(), Name: uuid.NewString()})
@@ -146,8 +146,9 @@ func TestMigration00037_DownUpNormalizesRowsAnOlderBinaryWrote(t *testing.T) {
 // "%fZ" 24, and both sort wrong against the 30-character stored form.
 var shortStamp = regexp.MustCompile(`%[fS]Z`)
 
-// sqlCode returns body with every "--" comment removed, so a migration may
-// mention a forbidden form in prose. No migration puts "--" inside a string.
+// sqlCode returns body with every "--" comment removed, so a comment may
+// mention a forbidden form. It assumes no migration has "--" inside a string
+// literal.
 func sqlCode(body string) string {
 	lines := strings.Split(body, "\n")
 	for i, line := range lines {
@@ -158,11 +159,10 @@ func sqlCode(body string) string {
 	return strings.Join(lines, "\n")
 }
 
-// TestMigrations_StampTimesInTheStoredForm keeps SQL that stamps a time from
-// writing anything but the 30-character stored form. The three repair
-// migrations written before 00037 normalized their output are allowed their
-// three-digit strftime, and must still need the allowance: a rewritten one
-// that no longer does fails here until it leaves the list.
+// TestMigrations_StampTimesInTheStoredForm fails on a migration whose SQL
+// stamps a time in a form other than the 30-character stored form. 00031,
+// 00033 and 00035 run before 00037 and may use the three-digit form; an
+// allowed file that no longer uses it also fails, so the list stays exact.
 func TestMigrations_StampTimesInTheStoredForm(t *testing.T) {
 	allowed := []string{
 		"00031_release_leaked_claims.sql",

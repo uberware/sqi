@@ -16,9 +16,8 @@ import (
 
 // subSecond returns two instants inside one second: t0 on the whole second,
 // which trimmed RFC3339Nano text writes as "…:05Z", and t1 half a second later,
-// "…:05.5Z". 'Z' sorts after '.', so trimmed text orders t0 after t1; every
-// comparison these tests make was wrong on SQLite until timestamps were stored
-// at a fixed width.
+// "…:05.5Z". 'Z' sorts after '.', so in trimmed text t0 sorts after t1, and
+// the comparisons these tests make hold on SQLite only at a fixed width.
 func subSecond() (t0, t1 time.Time) {
 	t0 = time.Now().UTC().Truncate(time.Second)
 	return t0, t0.Add(500 * time.Millisecond)
@@ -191,11 +190,10 @@ func TestSubSecond_StaleAssignment(t *testing.T) {
 	}
 }
 
-// TestListStaleWorkers_SkipsANeverHeartbeatedWorker pins the backends' shared
-// rule: a worker with no recorded heartbeat has no age to compare, so it is not
-// stale (SQLite's NULL comparison; OfflineStaleWorker already agrees on both).
-// The scheduler stamps a heartbeat at registration, so production never has
-// such a worker; the rule is about the backends agreeing.
+// TestListStaleWorkers_SkipsANeverHeartbeatedWorker checks that both backends
+// treat a worker with no recorded heartbeat as not stale, as SQLite's NULL
+// comparison does. The scheduler stamps a heartbeat at registration, so this
+// state occurs only in tests.
 func TestListStaleWorkers_SkipsANeverHeartbeatedWorker(t *testing.T) {
 	for name, st := range newStores(t) {
 		t.Run(name, func(t *testing.T) {

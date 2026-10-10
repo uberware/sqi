@@ -362,11 +362,10 @@ func insertJobTx(ctx context.Context, tx *sql.Tx, job store.Job, now string) (st
 }
 
 // rowClock stamps the rows of one submission with strictly increasing times.
-// time.Now alone does not increase: Windows advances the wall clock in coarse
-// steps, so consecutive rows read the same instant far more often than not.
-// When the clock has not moved past the previous stamp, next returns that
-// stamp plus a nanosecond. [timeLayout] keeps all nine digits, so the text of
-// each stamp also sorts after the one before.
+// Consecutive time.Now calls can return the same instant (Windows advances the
+// wall clock in coarse steps), so when the clock has not moved past the
+// previous stamp, next returns that stamp plus a nanosecond. [timeLayout] keeps
+// all nine digits, so each stamp's text also sorts after the one before.
 type rowClock struct{ last time.Time }
 
 func (c *rowClock) next() string {

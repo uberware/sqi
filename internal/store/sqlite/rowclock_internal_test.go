@@ -7,7 +7,7 @@ import "testing"
 // TestRowClock_TextStrictlyIncreases pins what insertTasksTx relies on: every
 // stamp is later than the one before, and its text sorts after it too, since
 // SQLite orders created_at as TEXT. Back-to-back calls read the same wall-clock
-// instant on Windows, so most stamps are the previous one plus a nanosecond.
+// instant on Windows, so many stamps are the previous one plus a nanosecond.
 func TestRowClock_TextStrictlyIncreases(t *testing.T) {
 	var c rowClock
 	prev := c.next()

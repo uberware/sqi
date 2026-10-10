@@ -1038,30 +1038,29 @@ Upgrading from v0.3.0 changes the following behaviour.
   depends_on job "<id>" not found`).
 
 Timestamp values are unchanged from v0.3.0, though the writes that stamp them
-moved. SQLite stores every timestamp in one form, RFC 3339 in UTC with all nine
-fractional digits (`2026-10-10T12:00:05.500000000Z`, always 30 characters), so
-comparing or ordering the text agrees with time order. Earlier releases trimmed
-trailing zeros, which mis-ordered values within a second (`"…:05Z"` sorted after
-`"…:05.5Z"`); migration `00037` rewrites every value they stored, on the first
-start after upgrade, and an earlier release reads the new form unchanged. The
-rewrite holds the write connection for the whole migration, roughly 5–7 s per
-million rows on a desktop, and `task_logs` (one row per log chunk) is usually
-the largest table it touches, so a large farm's first start after upgrade can
-spend minutes in it before the server listens; goose prints
-`OK   00037_fixed_width_timestamps.sql (<duration>)` to stderr when it is done. An earlier release run
-against a migrated database after a downgrade writes the old trimmed form again,
-and upgrading again does not re-run `00037`. While `00037` is the newest applied
-migration, `sqi-server migrate down` followed by `sqi-server migrate up`, with
-the server stopped, re-runs it (its down is a no-op and it skips rows already
-in the fixed form); the old binary's rows otherwise keep sorting wrong within
-their second.
-A released claim's `released_at` is always server time. A terminal report
+moved. A released claim's `released_at` is always server time. A terminal report
 applied through `CompleteTaskAttempt` stamps the task row's `updated_at` with
 server time and the attempt's `ended_at` with the worker's reported time. The
 failure path still uses the worker's reported time: `RecordTaskFailure` stamps
 the attempt's `ended_at` and the task's and job's `updated_at` with it, an
 auto-retry requeue stamps the task's `updated_at` with it and computes
 `retry_after` from it, and an auto-park stamps the job's `updated_at` with it.
+
+**Stored timestamp form.** SQLite stores every timestamp as 30-character text
+with nine fractional digits (`2026-10-10T12:00:05.500000000Z`), so text order
+is time order (see "Timestamps" under the SQLite schema overview). Earlier
+releases trimmed trailing zeros, which sorted values within one second wrongly
+(`"…:05Z"` after `"…:05.5Z"`). Migration `00037` rewrites those values on the
+first start after upgrade. It holds the write connection until it finishes, at
+about 5–7 s per million rows, and `task_logs` is usually the largest table, so
+a large farm's first start can take minutes before the server listens. goose
+prints `OK   00037_fixed_width_timestamps.sql (<duration>)` to stderr when the
+migration finishes.
+
+An earlier release reads the new form. After a downgrade it writes the old form
+again, and upgrading again does not re-run `00037`. While `00037` is the newest
+applied migration, stopping the server and running `sqi-server migrate down`
+then `sqi-server migrate up` re-runs it.
 
 **Upgrade repair.** A v0.3.0 database can hold damage these invariants
 prevent, which the code changes alone do not undo, so it is repaired in four

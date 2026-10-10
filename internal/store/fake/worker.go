@@ -113,9 +113,9 @@ func (s *Store) UpdateWorkerHeartbeat(_ context.Context, id string, at time.Time
 }
 
 // heartbeatBefore reports whether w's last heartbeat is strictly older than
-// cutoff. A worker that has never sent a heartbeat has no age to compare, so
-// it is never older, as SQLite's `last_heartbeat_at < ?` has it for NULL.
-// Every staleness and retention check goes through it.
+// cutoff. A worker that has never sent a heartbeat is never older, matching
+// SQLite, where `last_heartbeat_at < ?` is not true for NULL. The fake's
+// staleness and retention checks all use it.
 func heartbeatBefore(w store.Worker, cutoff time.Time) bool {
 	return w.LastHeartbeatAt != nil && w.LastHeartbeatAt.Before(cutoff)
 }
