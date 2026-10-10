@@ -854,6 +854,13 @@ the in-memory fake:
   invariant I3 (no active usage claim on a closed attempt or a terminal task)
   and returns the offending claim IDs. Assert it is empty after any write that
   should release claims.
+- Two reads exist only for tests, because nothing in production makes them.
+  `storetest.ActiveWorkerCredential(ctx, st, workerID)` finds a worker's
+  active credential in `ListActiveWorkerCredentials`, the set the broker's keys
+  are rebuilt from. `ListAuditEntries` lives on the concrete stores (the
+  `storetest.AuditReader` interface), not on `store.Store`. Do not add a read
+  method to `store.Store` that only tests call: every backend would have to
+  implement it.
 
 ### Step 6 — Run lint and format
 

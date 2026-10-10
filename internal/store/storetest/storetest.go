@@ -229,6 +229,15 @@ type InvariantChecker interface {
 	ClaimInvariantViolations(ctx context.Context) ([]string, error)
 }
 
+// AuditReader reads a backend's audit log. Nothing in production reads it, so
+// store.Store does not carry it; both concrete stores implement it so tests can
+// assert that an action was audited.
+type AuditReader interface {
+	// ListAuditEntries returns the audit entries for entityType and entityID,
+	// oldest first. Empty strings match any value.
+	ListAuditEntries(ctx context.Context, entityType, entityID string) ([]store.AuditEntry, error)
+}
+
 // ClaimViolations returns st's I3 violations, failing the test on error or
 // when st has no checker. A wrapper that embeds store.Store has none: pass the
 // store it wraps.

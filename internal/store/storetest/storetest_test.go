@@ -196,6 +196,8 @@ var (
 	_ storetest.Injector         = (*fake.Store)(nil)
 	_ storetest.InvariantChecker = (*sqlite.Store)(nil)
 	_ storetest.InvariantChecker = (*fake.Store)(nil)
+	_ storetest.AuditReader      = (*sqlite.Store)(nil)
+	_ storetest.AuditReader      = (*fake.Store)(nil)
 )
 
 func TestSubmitLeasing_LeasesInFlightTasks(t *testing.T) {
