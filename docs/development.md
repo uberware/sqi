@@ -693,12 +693,17 @@ statement.
 
 **A wholly new aggregate — a new table, not just a new method on an
 existing one — needs a migration.** Add a numbered SQL file to
-`internal/store/migrations/` (e.g. `00037_my_feature.sql`, continuing the
+`internal/store/migrations/` (e.g. `00038_my_feature.sql`, continuing the
 existing sequence), with `+goose Up`/`+goose Down` sections following the
-pattern of the surrounding files. A new column or index on an existing
-table needs one too. A new method on an *existing* table (like
-`ListStepsForJob` above, assuming `steps` already exists) needs no schema
-change at all.
+pattern of the surrounding files. A new column or index on an existing table
+needs one too. A new method on an *existing* table (like `ListStepsForJob`
+above, assuming `steps` already exists) needs no schema change at all.
+
+SQL that stamps a time itself must write the store's 30-character form,
+`strftime('%Y-%m-%dT%H:%M:%f', 'now') || '000000Z'` (see "Timestamps" under
+the SQLite schema overview in `docs/architecture.md`).
+`TestMigrations_StampTimesInTheStoredForm` fails on a migration whose SQL,
+comments aside, uses strftime's `%SZ` or `%fZ`.
 
 Finally, add a corresponding stub to the in-memory fake. The fake is split
 per aggregate, mirroring `internal/store/sqlite/`, not one

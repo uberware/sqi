@@ -112,13 +112,17 @@ func (s *Store) UpdateWorkerHeartbeat(_ context.Context, id string, at time.Time
 	return nil
 }
 
+// heartbeatBefore reports whether w's last heartbeat is strictly older than
+// cutoff. A worker that has never sent a heartbeat is never older, matching
+// SQLite, where `last_heartbeat_at < ?` is not true for NULL. The fake's
+// staleness and retention checks all use it.
+func heartbeatBefore(w store.Worker, cutoff time.Time) bool {
+	return w.LastHeartbeatAt != nil && w.LastHeartbeatAt.Before(cutoff)
+}
+
 // ListStaleWorkers returns workers whose last heartbeat is older than before
-// and whose status is [store.WorkerStatusOnline], disabled or not.
-//
-// Unlike SQLite, where a NULL heartbeat never compares older, it also lists an
-// online worker that has never sent a heartbeat; TestListStaleWorkers pins
-// that. The list is only a candidate source: [Store.OfflineStaleWorker] applies
-// SQLite's rule, so such a worker is never taken offline on either backend.
+// (see [heartbeatBefore]) and whose status is [store.WorkerStatusOnline],
+// disabled or not.
 func (s *Store) ListStaleWorkers(_ context.Context, before time.Time) ([]store.Worker, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -128,7 +132,7 @@ func (s *Store) ListStaleWorkers(_ context.Context, before time.Time) ([]store.W
 		if w.Status != store.WorkerStatusOnline {
 			continue
 		}
-		if w.LastHeartbeatAt == nil || w.LastHeartbeatAt.Before(before) {
+		if heartbeatBefore(w, before) {
 			w.Tags = copyMap(w.Tags)
 			workers = append(workers, w)
 		}
@@ -209,7 +213,7 @@ func (s *Store) DeleteOfflineWorkersBefore(_ context.Context, cutoff time.Time) 
 		if w.Status != store.WorkerStatusOffline || w.Disabled {
 			continue
 		}
-		if w.LastHeartbeatAt == nil || !w.LastHeartbeatAt.Before(cutoff) {
+		if !heartbeatBefore(w, cutoff) {
 			continue
 		}
 		w.Tags = copyMap(w.Tags)

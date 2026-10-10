@@ -195,12 +195,9 @@ func claimReleasedAt(t *testing.T, db *sql.DB, id string) sql.NullString {
 	return released
 }
 
-// rewindTo reopens the database file raw and runs goose back to version, so the
-// next goose.Up re-applies every later migration to whatever was seeded. Every
-// later migration's Down must leave the rows dumpTables compares untouched:
-// 00032 drops and 00034 re-adds only an index or a column, and the data
-// repairs' Downs are no-ops.
-func rewindTo(t *testing.T, path string, version int64) *sql.DB {
+// openRaw opens the database file without the store, closed when the test
+// ends, with goose pointed at the embedded migrations.
+func openRaw(t *testing.T, path string) *sql.DB {
 	t.Helper()
 	db, err := sql.Open("sqlite", path)
 	if err != nil {
@@ -211,6 +208,17 @@ func rewindTo(t *testing.T, path string, version int64) *sql.DB {
 	if err := goose.SetDialect("sqlite3"); err != nil {
 		t.Fatalf("SetDialect: %v", err)
 	}
+	return db
+}
+
+// rewindTo reopens the database file raw and runs goose back to version, so the
+// next goose.Up re-applies every later migration to whatever was seeded. Every
+// later migration's Down must leave the rows dumpTables compares untouched:
+// 00032 drops and 00034 re-adds only an index or a column, and the data
+// repairs' Downs are no-ops.
+func rewindTo(t *testing.T, path string, version int64) *sql.DB {
+	t.Helper()
+	db := openRaw(t, path)
 	if err := goose.DownTo(db, ".", version); err != nil {
 		t.Fatalf("DownTo(%d): %v", version, err)
 	}

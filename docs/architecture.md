@@ -1038,16 +1038,29 @@ Upgrading from v0.3.0 changes the following behaviour.
   depends_on job "<id>" not found`).
 
 Timestamp values are unchanged from v0.3.0, though the writes that stamp them
-moved. One stored form changed: SQLite now writes a new submission's step and
-task `created_at` (and initial `updated_at`) with all nine fractional digits,
-where v0.3.0 trimmed trailing zeros; both forms read back as the same time.
-A released claim's `released_at` is always server time. A terminal report
+moved. A released claim's `released_at` is always server time. A terminal report
 applied through `CompleteTaskAttempt` stamps the task row's `updated_at` with
 server time and the attempt's `ended_at` with the worker's reported time. The
 failure path still uses the worker's reported time: `RecordTaskFailure` stamps
 the attempt's `ended_at` and the task's and job's `updated_at` with it, an
 auto-retry requeue stamps the task's `updated_at` with it and computes
 `retry_after` from it, and an auto-park stamps the job's `updated_at` with it.
+
+**Stored timestamp form.** SQLite stores every timestamp as 30-character text
+with nine fractional digits (`2026-10-10T12:00:05.500000000Z`), so text order
+is time order (see "Timestamps" under the SQLite schema overview). Earlier
+releases trimmed trailing zeros, which sorted values within one second wrongly
+(`"…:05Z"` after `"…:05.5Z"`). Migration `00037` rewrites those values on the
+first start after upgrade. It holds the write connection until it finishes, at
+about 5–7 s per million rows, and `task_logs` is usually the largest table, so
+a large farm's first start can take minutes before the server listens. goose
+prints `OK   00037_fixed_width_timestamps.sql (<duration>)` to stderr when the
+migration finishes.
+
+An earlier release reads the new form. After a downgrade it writes the old form
+again, and upgrading again does not re-run `00037`. While `00037` is the newest
+applied migration, stopping the server and running `sqi-server migrate down`
+then `sqi-server migrate up` re-runs it.
 
 **Upgrade repair.** A v0.3.0 database can hold damage these invariants
 prevent, which the code changes alone do not undo, so it is repaired in four
@@ -1110,16 +1123,6 @@ The store does not close these yet.
   rather than leased a task, so a departed process's last request does not take
   a task into a dead inbox for the stale-assignment reaper to recover. A live worker that hits this is refused once, and its
   next request is served.
-- **Heartbeat timestamps compare as text.** SQLite stores timestamps as
-  RFC3339Nano text, which mis-orders within a second (`"…:05Z"` sorts after
-  `"…:05.5Z"`). The one exception is the `created_at` and first `updated_at` of
-  the step and task rows a submission writes: those are stamped strictly
-  increasing at a fixed nine fractional digits, so tasks within a step order by
-  submission. A heartbeat is not, so its staleness comparison is wrong below
-  one second while the in-memory fake compares exactly. The fake's `ListStaleWorkers` also
-  lists a worker that has never heartbeated as stale, where SQLite never does
-  (pinned by `TestListStaleWorkers`; `OfflineStaleWorker` follows SQLite on
-  both). Fixing both needs fixed-width timestamps.
 - **A `LeaseTask` that commits is not always delivered.** If building the
   assignment payload fails after `LeaseTask` committed (a deterministic error:
   the job's template no longer parses, or its step is gone), that task stays
@@ -1223,7 +1226,18 @@ request loop cannot spin.
 
 ## SQLite schema overview
 
-Full DDL lives in `internal/store/migrations/`. The primary tables are:
+Full DDL lives in `internal/store/migrations/`.
+
+**Timestamps** are TEXT, compared and ordered as text, and always stored in
+one 30-character form: RFC 3339 in UTC with all nine fractional digits
+(`timeLayout` in `internal/store/sqlite/scan.go`). At a fixed width text order
+is time order, which every cutoff comparison and every `ORDER BY *_at` relies
+on. Go code writes through `timeToText`; SQL that stamps a time itself writes
+`strftime('%Y-%m-%dT%H:%M:%f', 'now') || '000000Z'`, and
+`TestMigrations_StampTimesInTheStoredForm` fails on a migration whose SQL,
+comments aside, uses strftime's `%SZ` or `%fZ`. Reads accept the older forms too.
+
+The primary tables are:
 
 | Table | Purpose |
 |---|---|

@@ -35,16 +35,21 @@ func (p prefixScanner) Scan(dest ...any) error {
 
 // ── Time helpers ─────────────────────────────────────────────────────────────
 
-const timeLayout = time.RFC3339Nano
+// timeLayout is the form SQLite stores every timestamp in: RFC 3339 in UTC
+// with all nine fractional digits, always 30 characters. SQLite compares and
+// orders these columns as TEXT, and at a fixed width text order is time order.
+const timeLayout = "2006-01-02T15:04:05.000000000Z07:00"
 
-// timeToText formats t as an ISO 8601 string for storage in SQLite TEXT columns.
+// timeToText formats t in UTC as [timeLayout] for storage in a TEXT column.
 func timeToText(t time.Time) string {
 	return t.UTC().Format(timeLayout)
 }
 
-// textToTime parses an ISO 8601 string read from a SQLite TEXT column.
+// textToTime parses a timestamp read from a TEXT column. time.RFC3339Nano
+// accepts any number of fractional digits, so it also reads the trimmed and
+// three-digit forms earlier releases stored.
 func textToTime(s string) (time.Time, error) {
-	t, err := time.Parse(timeLayout, s)
+	t, err := time.Parse(time.RFC3339Nano, s)
 	if err != nil {
 		return time.Time{}, fmt.Errorf("parse time %q: %w", s, err)
 	}
