@@ -219,11 +219,6 @@ type WorkerStore interface {
 	// passing it to ensure sensible defaults are applied.
 	ListWorkers(ctx context.Context, opts ListWorkersOptions) (Page[Worker], error)
 
-	// UpdateWorker replaces the mutable capability fields of an existing
-	// worker (everything except ID, RegisteredAt, InstanceID and Disabled) and
-	// updates UpdatedAt. Returns [ErrNotFound] if the worker does not exist.
-	UpdateWorker(ctx context.Context, worker Worker) (Worker, error)
-
 	// SetWorkerDisabled sets or clears the worker's [Worker.Disabled] flag,
 	// updates UpdatedAt and returns the stored worker. It is the admin
 	// enable/disable path and the only writer of the flag; it never changes

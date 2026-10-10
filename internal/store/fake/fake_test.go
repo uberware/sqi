@@ -4,7 +4,6 @@ package fake
 
 import (
 	"context"
-	"errors"
 	"testing"
 	"time"
 
@@ -233,13 +232,6 @@ func TestSmoke(t *testing.T) {
 	err = s.Close()
 	if err != nil {
 		t.Fatalf("Close: %v", err)
-	}
-
-	// Test Reset
-	s.Reset()
-	_, err = s.GetFarm(ctx, farmID)
-	if !errors.Is(err, store.ErrNotFound) {
-		t.Errorf("Expected ErrNotFound after Reset, got %v", err)
 	}
 }
 

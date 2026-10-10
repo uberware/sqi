@@ -173,7 +173,6 @@ type Store struct {
 	// ── workers ──────────────────────────────────────────────────────────
 	stmtUpsertWorker             *sql.Stmt
 	stmtGetWorker                *sql.Stmt
-	stmtUpdateWorker             *sql.Stmt
 	stmtSetWorkerDisabled        *sql.Stmt
 	stmtUpdateWorkerHeartbeat    *sql.Stmt
 	stmtListStaleWorkers         *sql.Stmt
@@ -591,9 +590,6 @@ func (s *Store) prepareAll(ctx context.Context) error {
 		return err
 	}
 	if s.stmtGetWorker, err = s.prepare(ctx, sqlGetWorker); err != nil {
-		return err
-	}
-	if s.stmtUpdateWorker, err = s.prepare(ctx, sqlUpdateWorker); err != nil {
 		return err
 	}
 	if s.stmtSetWorkerDisabled, err = s.prepare(ctx, sqlSetWorkerDisabled); err != nil {

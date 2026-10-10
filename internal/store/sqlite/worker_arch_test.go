@@ -9,16 +9,14 @@ import (
 	"github.com/uberware/sqi/internal/store"
 )
 
-// TestWorker_ArchRoundTrip pins migration 00028 and the four SQL sites that
-// carry a worker's CPU architecture through SQLite.
+// TestWorker_ArchRoundTrip pins migration 00028 and the SQL sites that carry a
+// worker's CPU architecture through SQLite.
 //
-// It exercises all three accessors deliberately. The arch column had to be
-// added to the shared column list, the INSERT, the ON CONFLICT DO UPDATE, the
-// standalone UPDATE, the scan and two argument lists — and a miss in any ONE of
-// them is silent in a way the compiler cannot see: the value is a plain string
-// passed positionally, so an omission reads back as "" rather than failing.
-// UpdateWorker in particular has its own statement that no other test here
-// covers for this field.
+// It exercises both accessors deliberately. The arch column had to be added to
+// the shared column list, the INSERT, the ON CONFLICT DO UPDATE, the scan and
+// the argument list — and a miss in any ONE of them is silent in a way the
+// compiler cannot see: the value is a plain string passed positionally, so an
+// omission reads back as "" rather than failing.
 //
 // "" is what a worker predating this field reports, and the scheduler treats it
 // as "matches no attr.worker.cpu.arch requirement" (scheduler.cpuArch). So a
@@ -70,25 +68,6 @@ func TestWorker_ArchRoundTrip(t *testing.T) {
 	}
 	if again.Arch != changed {
 		t.Errorf("after re-registration Arch = %q, want %q", again.Arch, changed)
-	}
-
-	// UpdateWorker is a separate statement from the upsert above and is the one
-	// most easily missed, since nothing else in this file exercises it.
-	again.Arch = want
-	updated, err := s.UpdateWorker(ctx, again)
-	if err != nil {
-		t.Fatalf("UpdateWorker: %v", err)
-	}
-	if updated.Arch != want {
-		t.Errorf("UpdateWorker returned Arch = %q, want %q", updated.Arch, want)
-	}
-	refetched, err := s.GetWorker(ctx, "w1")
-	if err != nil {
-		t.Fatalf("GetWorker after update: %v", err)
-	}
-	if refetched.Arch != want {
-		t.Errorf("after UpdateWorker Arch = %q, want %q -- the UPDATE statement "+
-			"or its argument list is missing the column", refetched.Arch, want)
 	}
 }
 

@@ -61,14 +61,6 @@ RETURNING ` + workerCols
 
 	sqlGetWorker = `SELECT ` + workerCols + ` FROM workers WHERE id = ?`
 
-	sqlUpdateWorker = `
-UPDATE workers
-SET farm_id = ?, queue_id = ?, name = ?, hostname = ?, ip_address = ?, compute_location = ?,
-	os = ?, os_version = ?, arch = ?, version = ?, cpu_count = ?, ram_mb = ?, gpu_info = ?, tags = ?,
-	expr_limits = ?, status = ?, last_heartbeat_at = ?, updated_at = ?
-WHERE id = ?
-RETURNING ` + workerCols
-
 	sqlSetWorkerDisabled = `
 UPDATE workers SET disabled = ?, updated_at = ? WHERE id = ?
 RETURNING ` + workerCols
@@ -334,22 +326,6 @@ func (s *Store) ListWorkers(ctx context.Context, opts store.ListWorkersOptions) 
 		Limit:  opts.Pagination.Limit,
 		Offset: opts.Pagination.Offset,
 	}, nil
-}
-
-// UpdateWorker implements [store.WorkerStore].
-func (s *Store) UpdateWorker(ctx context.Context, worker store.Worker) (store.Worker, error) {
-	gpuJSON, tagsJSON, exprJSON, err := workerJSONCols(worker)
-	if err != nil {
-		return store.Worker{}, err
-	}
-	now := timeToText(time.Now().UTC())
-	row := s.stmtUpdateWorker.QueryRowContext(ctx,
-		nullString(worker.FarmID), nullString(worker.QueueID), worker.Name, worker.Hostname, worker.IPAddress,
-		worker.ComputeLocation, worker.OS, worker.OSVersion, worker.Arch, worker.Version, worker.CPUCount, worker.RAMMb,
-		gpuJSON, tagsJSON, exprJSON, string(worker.Status), nullTimeToText(worker.LastHeartbeatAt),
-		now, worker.ID)
-	out, err := scanWorker(row)
-	return out, mapErr(err)
 }
 
 // SetWorkerDisabled implements [store.WorkerStore].

@@ -9,7 +9,7 @@ package fake
 //                   CountActiveTasksInFarm, CountReadyTasksByQueue,
 //                   CountTasksByJob, ListTasks (sort fields), filterTask edge
 //                   cases
-//   worker.go     — UpdateWorker, UpdateWorkerHeartbeat,
+//   worker.go     — UpdateWorkerHeartbeat,
 //                   ListStaleWorkers, CountIdleWorkers, ListWorkers (sort/filter)
 //   job.go        — UpdateJob, CancelJobStatus, ListJobs (sort/filter)
 //   task_attempt.go — GetTaskAttempt, LatestTaskAttempt, ListTaskAttempts
@@ -799,31 +799,6 @@ func TestRetryTasks_NothingEligible(t *testing.T) {
 }
 
 // ── worker.go ─────────────────────────────────────────────────────────────────
-
-func TestUpdateWorker(t *testing.T) {
-	s := New()
-	defer s.Close()
-	mustCreateWorker(t, s, "w1", "farm-f1", store.WorkerStatusOnline)
-
-	updated, err := s.UpdateWorker(ctx(), store.Worker{
-		ID: "w1", FarmID: "farm-f1", Hostname: "new-host", Status: store.WorkerStatusOnline,
-	})
-	if err != nil {
-		t.Fatalf("UpdateWorker: %v", err)
-	}
-	if updated.Hostname != "new-host" {
-		t.Errorf("hostname = %q, want new-host", updated.Hostname)
-	}
-}
-
-func TestUpdateWorker_NotFound(t *testing.T) {
-	s := New()
-	defer s.Close()
-	_, err := s.UpdateWorker(ctx(), store.Worker{ID: "ghost"})
-	if !errors.Is(err, store.ErrNotFound) {
-		t.Fatalf("want ErrNotFound, got %v", err)
-	}
-}
 
 func TestDeleteOfflineWorkersBefore(t *testing.T) {
 	s := New()
