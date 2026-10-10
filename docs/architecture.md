@@ -1043,7 +1043,18 @@ fractional digits (`2026-10-10T12:00:05.500000000Z`, always 30 characters), so
 comparing or ordering the text agrees with time order. Earlier releases trimmed
 trailing zeros, which mis-ordered values within a second (`"…:05Z"` sorted after
 `"…:05.5Z"`); migration `00037` rewrites every value they stored, on the first
-start after upgrade, and an earlier release reads the new form unchanged.
+start after upgrade, and an earlier release reads the new form unchanged. The
+rewrite holds the write connection for the whole migration, roughly 5–7 s per
+million rows on a desktop, and `task_logs` (one row per log chunk) is usually
+the largest table it touches, so a large farm's first start after upgrade can
+spend minutes in it before the server listens; goose logs
+`OK 00037_fixed_width_timestamps.sql` when it is done. An earlier release run
+against a migrated database after a downgrade writes the old trimmed form again,
+and upgrading again does not re-run `00037`. While `00037` is the newest applied
+migration, `sqi-server migrate down` followed by `sqi-server migrate up`, with
+the server stopped, re-runs it (its down is a no-op and it skips rows already
+in the fixed form); the old binary's rows otherwise keep sorting wrong within
+their second.
 A released claim's `released_at` is always server time. A terminal report
 applied through `CompleteTaskAttempt` stamps the task row's `updated_at` with
 server time and the attempt's `ended_at` with the worker's reported time. The

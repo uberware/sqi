@@ -693,9 +693,14 @@ statement.
 
 **A wholly new aggregate — a new table, not just a new method on an
 existing one — needs a migration.** Add a numbered SQL file to
-`internal/store/migrations/` (e.g. `00037_my_feature.sql`, continuing the
+`internal/store/migrations/` (e.g. `00038_my_feature.sql`, continuing the
 existing sequence), with `+goose Up`/`+goose Down` sections following the
-pattern of the surrounding files. A new column or index on an existing
+pattern of the surrounding files. SQLite stores every timestamp as 30-character
+text with nine fractional digits (`timeLayout` in
+`internal/store/sqlite/scan.go`), and compares it as text, so SQL that stamps a
+time itself must write that form: `strftime('%Y-%m-%dT%H:%M:%f', 'now') ||
+'000000Z'`, not the three-digit `strftime('%Y-%m-%dT%H:%M:%fZ', 'now')` that
+migrations `00031`, `00033` and `00035` used before `00037` normalized it. A new column or index on an existing
 table needs one too. A new method on an *existing* table (like
 `ListStepsForJob` above, assuming `steps` already exists) needs no schema
 change at all.

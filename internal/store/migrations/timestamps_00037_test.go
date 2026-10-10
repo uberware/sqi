@@ -100,6 +100,52 @@ func TestMigration00037_RewritesEveryStoredForm(t *testing.T) {
 	}
 }
 
+// TestMigration00037_DownUpNormalizesRowsAnOlderBinaryWrote pins the recovery
+// docs/architecture.md documents for a downgrade excursion: an older release
+// writes trimmed timestamps into a database 00037 has already rewritten, and
+// one step down (a no-op) and back up re-runs 00037 over them.
+func TestMigration00037_DownUpNormalizesRowsAnOlderBinaryWrote(t *testing.T) {
+	path, s, _ := openSeedable(t)
+	farm, err := s.CreateFarm(t.Context(), store.Farm{ID: uuid.NewString(), Name: uuid.NewString()})
+	if err != nil {
+		t.Fatalf("CreateFarm: %v", err)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatalf("sql.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	if v, err := goose.GetDBVersion(db); err != nil || v != 37 {
+		t.Fatalf("database version = %d, %v; want 37, the newest migration this test is about", v, err)
+	}
+	// What an older release writes after a downgrade.
+	if _, err := db.ExecContext(t.Context(),
+		`UPDATE farms SET created_at = '2026-10-10T12:00:05.5Z' WHERE id = ?`, farm.ID); err != nil {
+		t.Fatalf("plant: %v", err)
+	}
+
+	goose.SetBaseFS(migrations.FS)
+	if err := goose.SetDialect("sqlite3"); err != nil {
+		t.Fatalf("SetDialect: %v", err)
+	}
+	if err := goose.Down(db, "."); err != nil {
+		t.Fatalf("goose.Down: %v", err)
+	}
+	if err := goose.Up(db, "."); err != nil {
+		t.Fatalf("goose.Up: %v", err)
+	}
+	var created string
+	if err := db.QueryRowContext(t.Context(), `SELECT created_at FROM farms WHERE id = ?`, farm.ID).Scan(&created); err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if want := "2026-10-10T12:00:05.500000000Z"; created != want {
+		t.Fatalf("created_at after down and up = %q, want %q", created, want)
+	}
+}
+
 var (
 	updateTableLine = regexp.MustCompile(`^UPDATE (\w+) SET$`)
 	caseColumnLine  = regexp.MustCompile(`^    (\w+) = CASE$`)

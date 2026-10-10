@@ -15,6 +15,10 @@
 -- instant. Anything else (NULL, a value of any other shape) is left exactly as
 -- it was, and a 30-character value is not touched, so applying this twice
 -- changes nothing. One UPDATE per table, so a table is scanned once.
+--
+-- A later migration that stamps a time itself must write the same form:
+-- strftime('%Y-%m-%dT%H:%M:%f', 'now') || '000000Z', not the three digits
+-- of strftime('%Y-%m-%dT%H:%M:%fZ', 'now') that 00031, 00033 and 00035 used.
 
 UPDATE api_keys SET
     expires_at = CASE
