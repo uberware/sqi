@@ -361,17 +361,12 @@ func insertJobTx(ctx context.Context, tx *sql.Tx, job store.Job, now string) (st
 	return out, mapErr(err)
 }
 
-// rowClockLayout is RFC 3339 with all nine fractional digits kept. SQLite
-// orders created_at as TEXT, and [timeLayout] trims trailing zeros, so its text
-// order is not time order: ".1Z" sorts after ".12Z". At a fixed width the two
-// agree. textToTime parses either form.
-const rowClockLayout = "2006-01-02T15:04:05.000000000Z07:00"
-
-// rowClock stamps the rows of one submission with strictly increasing times,
-// formatted so their text sorts in the same order. time.Now alone does not
-// increase: Windows advances the wall clock in coarse steps, so consecutive
-// rows read the same instant far more often than not. When the clock has not
-// moved past the previous stamp, next returns that stamp plus a nanosecond.
+// rowClock stamps the rows of one submission with strictly increasing times.
+// time.Now alone does not increase: Windows advances the wall clock in coarse
+// steps, so consecutive rows read the same instant far more often than not.
+// When the clock has not moved past the previous stamp, next returns that
+// stamp plus a nanosecond. [timeLayout] keeps all nine digits, so the text of
+// each stamp also sorts after the one before.
 type rowClock struct{ last time.Time }
 
 func (c *rowClock) next() string {
@@ -380,7 +375,7 @@ func (c *rowClock) next() string {
 		now = c.last.Add(time.Nanosecond)
 	}
 	c.last = now
-	return now.Format(rowClockLayout)
+	return timeToText(now)
 }
 
 // insertStepsTx inserts every step inside tx, stamping each row with its own

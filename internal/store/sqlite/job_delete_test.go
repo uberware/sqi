@@ -375,7 +375,7 @@ func TestJob_BlockedStatusAndDependencyTable(t *testing.T) {
 	if _, err := st.db.ExecContext(
 		ctx,
 		`INSERT INTO job_dependencies (job_id, depends_on_job_id, created_at) VALUES (?, ?, ?)`,
-		"blocked", upstream.ID, time.Now().UTC(),
+		"blocked", upstream.ID, timeToText(time.Now().UTC()),
 	); err != nil {
 		t.Fatalf("raw insert into job_dependencies: %v", err)
 	}
