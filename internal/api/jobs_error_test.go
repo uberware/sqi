@@ -14,12 +14,12 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
-	"time"
 
 	"github.com/google/uuid"
 
 	"github.com/uberware/sqi/internal/store"
 	"github.com/uberware/sqi/internal/store/fake"
+	"github.com/uberware/sqi/internal/store/storetest"
 )
 
 // ── storeErr: a store.Store wrapper with per-method error injection ────────────
@@ -35,7 +35,6 @@ type storeErr struct {
 	cancelJobErr     error
 	listTasksErr     error
 	getTaskErr       error
-	updateTaskErr    error
 	latestAttemptErr error
 	listLogsErr      error
 }
@@ -80,13 +79,6 @@ func (e *storeErr) GetTask(ctx context.Context, id string) (store.Task, error) {
 		return store.Task{}, e.getTaskErr
 	}
 	return e.Store.GetTask(ctx, id)
-}
-
-func (e *storeErr) UpdateTaskStatus(ctx context.Context, id string, status store.TaskStatus) error {
-	if e.updateTaskErr != nil {
-		return e.updateTaskErr
-	}
-	return fixtureSetTaskStatus(ctx, e.Store, id, status)
 }
 
 func (e *storeErr) LatestTaskAttempt(ctx context.Context, taskID string) (store.TaskAttempt, error) {
@@ -276,7 +268,6 @@ func TestCancelJob_TerminalAndConflict(t *testing.T) {
 	t.Run("CancelJobStatus ErrConflict returns 409", func(t *testing.T) {
 		inner := fake.New()
 		// Seed a pending job in the inner store so GetJob succeeds.
-		now := time.Now()
 		j := store.Job{
 			ID:             uuid.NewString(),
 			FarmID:         "farm-x",
@@ -285,12 +276,8 @@ func TestCancelJob_TerminalAndConflict(t *testing.T) {
 			Priority:       50,
 			Status:         store.JobStatusPending,
 			TemplateFormat: store.TemplateFormatJSON,
-			CreatedAt:      now,
-			UpdatedAt:      now,
 		}
-		if _, err := inner.CreateJob(t.Context(), j); err != nil {
-			t.Fatalf("CreateJob: %v", err)
-		}
+		storetest.Submit(t, inner, store.JobSubmission{Job: j})
 		est := &storeErr{Store: inner, cancelJobErr: store.ErrConflict}
 		r := newJobRouter(est, &fakeScheduler{})
 

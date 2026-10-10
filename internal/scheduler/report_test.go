@@ -13,6 +13,7 @@ import (
 
 	"github.com/uberware/sqi/internal/metrics"
 	"github.com/uberware/sqi/internal/store"
+	"github.com/uberware/sqi/internal/store/storetest"
 	"github.com/uberware/sqi/internal/worker/protocol"
 	"github.com/uberware/sqi/internal/ws"
 )
@@ -30,18 +31,9 @@ func runningReport(t *testing.T, task store.Task, attempt store.TaskAttempt) *fa
 // w-new, returning the new attempt.
 func releaseToNewWorker(t *testing.T, st store.Store, s *Scheduler, task store.Task) store.TaskAttempt {
 	t.Helper()
-	if err := forceAssign(st, task.ID, statusTestWorkerID, time.Now().Add(-time.Hour)); err != nil {
-		t.Fatalf("AssignTask: %v", err)
-	}
 	s.cfg.AssignedTaskTimeout = time.Minute
 	s.reapStaleAssignedTasks(t.Context())
-	res, err := st.LeaseTask(t.Context(), store.LeaseRequest{
-		TaskID: task.ID, WorkerID: "w-new", AttemptID: uuid.NewString(), Now: time.Now().UTC(),
-	})
-	if err != nil || res.Outcome != store.LeaseLeased {
-		t.Fatalf("re-lease = (%+v, %v), want leased", res, err)
-	}
-	return res.Attempt
+	return storetest.Lease(t, st, store.LeaseRequest{TaskID: task.ID, WorkerID: "w-new"})
 }
 
 // TestSupersededRunningReportIsIgnored pins that a superseded attempt's
@@ -50,7 +42,7 @@ func releaseToNewWorker(t *testing.T, st store.Store, s *Scheduler, task store.T
 func TestSupersededRunningReportIsIgnored(t *testing.T) {
 	for name, st := range raceBackends(t) {
 		t.Run(name, func(t *testing.T) {
-			_, _, task, stale := seedStatusFixture(t, st, store.TaskStatusAssigned)
+			_, task, stale := seedStaleAssignment(t, st, statusTestWorkerID, nil)
 			notifier := &recordingNotifier{}
 			s := newStatusTestSchedulerWithNotifier(st, notifier)
 			s.ctx = t.Context()
@@ -124,11 +116,6 @@ func TestRequeueAfterReleaseLeavesTheNewLease(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			_, _, task, attempt := seedStatusFixture(t, base, store.TaskStatusAssigned)
 			now := time.Now().UTC()
-			// The offline reclaim matches on assigned_worker_id, which the
-			// status fixture leaves empty.
-			if err := forceAssign(base, task.ID, statusTestWorkerID, now); err != nil {
-				t.Fatalf("AssignTask: %v", err)
-			}
 			if _, _, err := base.RegisterWorker(t.Context(), store.Worker{
 				ID: statusTestWorkerID, FarmID: "farm-1", Hostname: "h", Status: store.WorkerStatusOnline, LastHeartbeatAt: &now,
 			}); err != nil {
@@ -161,7 +148,7 @@ func TestRequeueAfterReleaseLeavesTheNewLease(t *testing.T) {
 			if a := mustAttemptOf(t, base, fresh.ID); a.Status != store.AttemptStatusRunning {
 				t.Fatalf("new attempt = %q, want running", a.Status)
 			}
-			if v := claimViolations(t, base); len(v) != 0 {
+			if v := storetest.ClaimViolations(t, base); len(v) != 0 {
 				t.Fatalf("I3 violations: %v", v)
 			}
 		})
@@ -176,19 +163,13 @@ func TestShutdownReportAndDeregisterAgreeInEitherOrder(t *testing.T) {
 	for _, reportFirst := range []bool{true, false} {
 		for name, st := range raceBackends(t) {
 			t.Run(fmt.Sprintf("reportFirst=%v/%s", reportFirst, name), func(t *testing.T) {
-				job, _, task, attempt := seedStatusFixture(t, st, store.TaskStatusAssigned)
+				job, task, attempt, pool := seedClaimedFixture(t, st, store.TaskStatusAssigned)
 				now := time.Now().UTC()
-				// The offline reclaim matches on assigned_worker_id, which the
-				// status fixture leaves empty.
-				if err := forceAssign(st, task.ID, statusTestWorkerID, now); err != nil {
-					t.Fatalf("AssignTask: %v", err)
-				}
 				if _, _, err := st.RegisterWorker(t.Context(), store.Worker{
 					ID: statusTestWorkerID, FarmID: "farm-1", Hostname: "h", Status: store.WorkerStatusOnline, LastHeartbeatAt: &now,
 				}); err != nil {
 					t.Fatalf("RegisterWorker: %v", err)
 				}
-				pool := seedPoolClaim(t, st, attempt.ID)
 				cfg := DefaultConfig()
 				cfg.DefaultMaxAttempts = 3
 				s := New(cfg, st, nil, metrics.New(), slog.New(slog.DiscardHandler), ws.NoopNotifier{}, nil)

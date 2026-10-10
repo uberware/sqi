@@ -16,12 +16,12 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/go-chi/chi/v5"
 
 	"github.com/uberware/sqi/internal/store"
 	"github.com/uberware/sqi/internal/store/fake"
+	"github.com/uberware/sqi/internal/store/storetest"
 )
 
 // ── helpers ───────────────────────────────────────────────────────────────────
@@ -538,14 +538,21 @@ func TestUsagePoolUtilizationReporting(t *testing.T) {
 		t.Fatalf("CreateUsagePool: %v", err)
 	}
 
-	// Two active claims → in_use 2, available 1.
-	for _, id := range []string{"co1", "co2"} {
-		if _, err := st.CreateClaim(ctx, store.UsageClaim{
-			ID: id, PoolID: pool.ID, TaskAttemptID: "a-" + id, ClaimedAt: time.Now(),
-		}); err != nil {
-			t.Fatalf("CreateClaim %s: %v", id, err)
-		}
+	// Each claim is held by a real lease of a ready task that requires the pool.
+	_, tasks := seedJobTasks(t, st, store.JobStatusRunning,
+		store.Task{Status: store.TaskStatusReady}, store.Task{Status: store.TaskStatusReady},
+		store.Task{Status: store.TaskStatusReady}, store.Task{Status: store.TaskStatusReady})
+	lease := func(task store.Task, claimID string) {
+		t.Helper()
+		storetest.Lease(t, st, store.LeaseRequest{
+			TaskID: task.ID, WorkerID: "worker-1",
+			Claims: []store.UsagePoolClaim{{ClaimID: claimID, PoolID: pool.ID, PoolName: pool.Name}},
+		})
 	}
+
+	// Two active claims → in_use 2, available 1.
+	lease(tasks[0], "co1")
+	lease(tasks[1], "co2")
 
 	t.Run("list reports usage", func(t *testing.T) {
 		req := newReq(t, http.MethodGet, "/usage-pools", nil)
@@ -578,13 +585,20 @@ func TestUsagePoolUtilizationReporting(t *testing.T) {
 
 	t.Run("available floors at zero", func(t *testing.T) {
 		// Add two more claims (4 total) against a max of 3 → available 0, not -1.
-		for _, id := range []string{"co3", "co4"} {
-			if _, err := st.CreateClaim(ctx, store.UsageClaim{
-				ID: id, PoolID: pool.ID, TaskAttemptID: "a-" + id, ClaimedAt: time.Now(),
-			}); err != nil {
-				t.Fatalf("CreateClaim %s: %v", id, err)
+		// A lease refuses to exceed the cap, so the two leases land under a
+		// raised cap and the operator then lowers it back, the state a lowered
+		// cap leaves behind with work already in flight.
+		setMax := func(n int) {
+			t.Helper()
+			pool.MaxConcurrent = n
+			if _, err := st.UpdateUsagePool(ctx, pool); err != nil {
+				t.Fatalf("UpdateUsagePool(max %d): %v", n, err)
 			}
 		}
+		setMax(4)
+		lease(tasks[2], "co3")
+		lease(tasks[3], "co4")
+		setMax(3)
 		req := newReq(t, http.MethodGet, "/usage-pools/p1", nil)
 		rr := httptest.NewRecorder()
 		r.ServeHTTP(rr, req)

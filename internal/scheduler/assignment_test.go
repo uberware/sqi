@@ -25,6 +25,7 @@ import (
 	"github.com/uberware/sqi/internal/metrics"
 	"github.com/uberware/sqi/internal/store"
 	"github.com/uberware/sqi/internal/store/fake"
+	"github.com/uberware/sqi/internal/store/storetest"
 	"github.com/uberware/sqi/internal/ws"
 )
 
@@ -122,15 +123,7 @@ func seedAssignFixture(t *testing.T, st *fake.Store, mutate func(*assignFixture)
 	if _, err := st.CreateQueue(ctx, f.queue); err != nil {
 		t.Fatalf("CreateQueue: %v", err)
 	}
-	if _, err := st.CreateJob(ctx, f.job); err != nil {
-		t.Fatalf("CreateJob: %v", err)
-	}
-	if _, err := st.CreateStep(ctx, f.step); err != nil {
-		t.Fatalf("CreateStep: %v", err)
-	}
-	if _, err := st.CreateTask(ctx, f.task); err != nil {
-		t.Fatalf("CreateTask: %v", err)
-	}
+	storetest.Submit(t, st, store.JobSubmission{Job: f.job, Steps: []store.Step{f.step}, Tasks: []store.Task{f.task}})
 	if _, _, err := st.RegisterWorker(ctx, f.worker); err != nil {
 		t.Fatalf("RegisterWorker: %v", err)
 	}
@@ -160,11 +153,7 @@ func TestBuildUsageContext_WithPool(t *testing.T) {
 	if _, err := st.CreateUsagePool(t.Context(), store.UsagePool{ID: poolID, Name: "maya", MaxConcurrent: 2}); err != nil {
 		t.Fatalf("CreateUsagePool: %v", err)
 	}
-	if err := st.TryClaimSlots(t.Context(), "a1",
-		[]store.UsagePoolClaim{{ClaimID: uuid.NewString(), PoolID: poolID, PoolName: "maya", MaxConcurrent: 2}},
-		time.Now()); err != nil {
-		t.Fatalf("seed claim: %v", err)
-	}
+	storetest.InjectClaim(t, st, store.UsageClaim{PoolID: poolID, TaskAttemptID: "a1"})
 
 	step := store.Step{HostRequirements: &store.StepHostRequirements{UsagePools: []string{"maya"}}}
 	pools, counts, err := s.buildUsageContext(t.Context(), step)
@@ -223,11 +212,7 @@ func TestRefreshGauges_Smoke(t *testing.T) {
 	if _, err := st.CreateUsagePool(t.Context(), store.UsagePool{ID: poolID, Name: "maya", MaxConcurrent: 2}); err != nil {
 		t.Fatalf("CreateUsagePool: %v", err)
 	}
-	if err := st.TryClaimSlots(t.Context(), "a1",
-		[]store.UsagePoolClaim{{ClaimID: uuid.NewString(), PoolID: poolID, PoolName: "maya", MaxConcurrent: 2}},
-		time.Now()); err != nil {
-		t.Fatalf("seed claim: %v", err)
-	}
+	storetest.InjectClaim(t, st, store.UsageClaim{PoolID: poolID, TaskAttemptID: "a1"})
 
 	// Each refresh helper should complete without panic and read the store.
 	s.refreshQueueDepthGauge(t.Context())

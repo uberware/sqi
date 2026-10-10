@@ -36,6 +36,7 @@ import (
 	"github.com/uberware/sqi/internal/metrics"
 	"github.com/uberware/sqi/internal/store"
 	"github.com/uberware/sqi/internal/store/sqlite"
+	"github.com/uberware/sqi/internal/store/storetest"
 	"github.com/uberware/sqi/internal/worker/protocol"
 	"github.com/uberware/sqi/internal/ws"
 )
@@ -80,9 +81,10 @@ var stressHistoryDDL = []string{
 }
 
 // stressRetryArrows are the task arrows the history may contain beyond
-// [store.ValidateTaskTransition]'s table. The table is the arrow set of
-// UpdateTaskStatus, which never revives a terminal task ("terminal states have
-// no outgoing transitions"). RetryTasks is the one bulk path that does, by
+// [store.ValidateTaskTransition]'s table. The table is the arrow set a
+// single-task status write is checked against (CompleteTaskAttempt's), which
+// never revives a terminal task ("terminal states have no outgoing
+// transitions"). RetryTasks is the one bulk path that does, by
 // design: it revives failed and canceled tasks, pending under a step that
 // ResolveDependencies will release and ready under a step that is already ready
 // ([store.TaskStore.RetryTasks]). Every other bulk path (reclaim,
@@ -947,30 +949,21 @@ func seedStressJob(t *testing.T, st *sqlite.Store, n int) stressFixture {
 		}
 		fx.pools = append(fx.pools, pool)
 	}
-	job, err := st.CreateJob(ctx, store.Job{
+	sub := store.JobSubmission{Job: store.Job{
 		ID: uuid.NewString(), FarmID: farm.ID, QueueID: queue.ID, Name: "stress",
-		Status: store.JobStatusPending, TemplateFormat: store.TemplateFormatJSON, CreatedAt: now, UpdatedAt: now,
-	})
-	if err != nil {
-		t.Fatalf("CreateJob: %v", err)
-	}
-	step, err := st.CreateStep(ctx, store.Step{
-		ID: uuid.NewString(), JobID: job.ID, Name: "s", Status: store.StepStatusReady, CreatedAt: now, UpdatedAt: now,
-	})
-	if err != nil {
-		t.Fatalf("CreateStep: %v", err)
-	}
-	fx.jobID, fx.stepID = job.ID, step.ID
+		Status: store.JobStatusPending, TemplateFormat: store.TemplateFormatJSON,
+	}}
+	sub.Steps = []store.Step{{ID: uuid.NewString(), JobID: sub.Job.ID, Name: "s", Status: store.StepStatusReady}}
+	fx.jobID, fx.stepID = sub.Job.ID, sub.Steps[0].ID
 	for i := range n {
-		task, err := st.CreateTask(ctx, store.Task{
-			ID: uuid.NewString(), JobID: job.ID, StepID: step.ID, Name: fmt.Sprintf("t%d", i),
-			Status: store.TaskStatusReady, CreatedAt: now.Add(time.Duration(i) * time.Microsecond), UpdatedAt: now,
-		})
-		if err != nil {
-			t.Fatalf("CreateTask: %v", err)
+		task := store.Task{
+			ID: uuid.NewString(), JobID: sub.Job.ID, StepID: fx.stepID, Name: fmt.Sprintf("t%d", i),
+			Status: store.TaskStatusReady,
 		}
+		sub.Tasks = append(sub.Tasks, task)
 		fx.taskIDs = append(fx.taskIDs, task.ID)
 	}
+	storetest.Submit(t, st, sub)
 	for i := range 4 {
 		id := fmt.Sprintf("stress-w%d", i)
 		if _, _, err := st.RegisterWorker(ctx, store.Worker{

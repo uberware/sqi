@@ -4,22 +4,25 @@ package migrations_test
 
 import (
 	"testing"
-	"time"
 
 	"github.com/google/uuid"
 	"github.com/pressly/goose/v3"
 
 	"github.com/uberware/sqi/internal/store"
 	"github.com/uberware/sqi/internal/store/sqlite"
+	"github.com/uberware/sqi/internal/store/storetest"
 )
 
-// seedStep creates a job (jobStatus) with one step (stepStatus) holding tasks
-// in the given statuses, using the raw creators: the point is a combination
-// the guarded operations no longer produce.
-func seedStep(t *testing.T, s *sqlite.Store, jobStatus store.JobStatus, stepStatus store.StepStatus, tasks ...store.TaskStatus) string {
+// submitJob creates a farm and queue and submits, in one storetest.Submit, a
+// job (jobStatus) with one step (stepStatus) holding tasks in the given
+// statuses, returning the submission. Submit writes every status as given, so
+// a task submitted ready can then be leased through the real path, and a task
+// submitted in a terminal status needs no attempt. Never submit a task as
+// assigned or running without also injecting its attempt: that pair is a state
+// production cannot reach.
+func submitJob(t *testing.T, s *sqlite.Store, jobStatus store.JobStatus, stepStatus store.StepStatus, tasks ...store.TaskStatus) store.JobSubmission {
 	t.Helper()
 	ctx := t.Context()
-	now := time.Now().UTC()
 	farm, err := s.CreateFarm(ctx, store.Farm{ID: uuid.NewString(), Name: uuid.NewString()})
 	if err != nil {
 		t.Fatalf("CreateFarm: %v", err)
@@ -28,25 +31,25 @@ func seedStep(t *testing.T, s *sqlite.Store, jobStatus store.JobStatus, stepStat
 	if err != nil {
 		t.Fatalf("CreateQueue: %v", err)
 	}
-	job, err := s.CreateJob(ctx, store.Job{
+	job := store.Job{
 		ID: uuid.NewString(), FarmID: farm.ID, QueueID: queue.ID, Name: "j",
-		Status: jobStatus, TemplateFormat: store.TemplateFormatJSON, CreatedAt: now, UpdatedAt: now,
-	})
-	if err != nil {
-		t.Fatalf("CreateJob: %v", err)
+		Status: jobStatus, TemplateFormat: store.TemplateFormatJSON,
 	}
-	step, err := s.CreateStep(ctx, store.Step{ID: uuid.NewString(), JobID: job.ID, Name: "s", Status: stepStatus, CreatedAt: now, UpdatedAt: now})
-	if err != nil {
-		t.Fatalf("CreateStep: %v", err)
-	}
+	step := store.Step{ID: uuid.NewString(), JobID: job.ID, Name: "s", Status: stepStatus}
+	sub := store.JobSubmission{Job: job, Steps: []store.Step{step}}
 	for _, ts := range tasks {
-		if _, err := s.CreateTask(ctx, store.Task{
-			ID: uuid.NewString(), JobID: job.ID, StepID: step.ID, Name: "t", Status: ts, CreatedAt: now, UpdatedAt: now,
-		}); err != nil {
-			t.Fatalf("CreateTask: %v", err)
-		}
+		sub.Tasks = append(sub.Tasks, store.Task{ID: uuid.NewString(), JobID: job.ID, StepID: step.ID, Name: "t", Status: ts})
 	}
-	return step.ID
+	return storetest.Submit(t, s, sub)
+}
+
+// seedStep creates a job (jobStatus) with one step (stepStatus) holding tasks
+// in the given statuses through one submission: the point is a combination
+// the guarded operations no longer produce. No caller passes a task in flight
+// (assigned or running), so none needs an attempt.
+func seedStep(t *testing.T, s *sqlite.Store, jobStatus store.JobStatus, stepStatus store.StepStatus, tasks ...store.TaskStatus) string {
+	t.Helper()
+	return submitJob(t, s, jobStatus, stepStatus, tasks...).Steps[0].ID
 }
 
 func TestMigration00033_FinalizesOpenStepsOfTerminalJobs(t *testing.T) {

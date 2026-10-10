@@ -4,11 +4,11 @@ package fake
 
 import (
 	"context"
-	"errors"
 	"testing"
 	"time"
 
 	"github.com/uberware/sqi/internal/store"
+	"github.com/uberware/sqi/internal/store/storetest"
 )
 
 func TestSmoke(t *testing.T) {
@@ -121,22 +121,40 @@ func TestSmoke(t *testing.T) {
 		t.Errorf("Worker mismatch: %q != %q", readWorker.Hostname, createdWorker.Hostname)
 	}
 
-	// Test Job
+	// Seed a job, its step and its task. They are one submission, as production
+	// creates a job; the store stamps their timestamps.
 	jobID := "job-1"
-	job := store.Job{
-		ID:        jobID,
-		FarmID:    farmID,
-		QueueID:   queueID,
-		Name:      "test-job",
-		Status:    store.JobStatusPending,
-		Priority:  50,
-		CreatedAt: time.Now(),
-		UpdatedAt: time.Now(),
-	}
-	createdJob, err := s.CreateJob(ctx, job)
-	if err != nil {
-		t.Fatalf("CreateJob: %v", err)
-	}
+	stepID := "step-1"
+	taskID := "task-1"
+	submitted := storetest.Submit(t, s, store.JobSubmission{
+		Job: store.Job{
+			ID:       jobID,
+			FarmID:   farmID,
+			QueueID:  queueID,
+			Name:     "test-job",
+			Status:   store.JobStatusPending,
+			Priority: 50,
+		},
+		Steps: []store.Step{{
+			ID:        stepID,
+			JobID:     jobID,
+			Name:      "test-step",
+			Status:    store.StepStatusPending,
+			StepOrder: 0,
+			DependsOn: []string{},
+		}},
+		Tasks: []store.Task{{
+			ID:         taskID,
+			JobID:      jobID,
+			StepID:     stepID,
+			Name:       "test-task",
+			Status:     store.TaskStatusPending,
+			Parameters: map[string]string{"param1": "value1"},
+		}},
+	})
+	createdJob, createdStep, createdTask := submitted.Job, submitted.Steps[0], submitted.Tasks[0]
+
+	// Test Job
 	readJob, err := s.GetJob(ctx, jobID)
 	if err != nil {
 		t.Fatalf("GetJob: %v", err)
@@ -146,21 +164,6 @@ func TestSmoke(t *testing.T) {
 	}
 
 	// Test Step
-	stepID := "step-1"
-	step := store.Step{
-		ID:        stepID,
-		JobID:     jobID,
-		Name:      "test-step",
-		Status:    store.StepStatusPending,
-		StepOrder: 0,
-		DependsOn: []string{},
-		CreatedAt: time.Now(),
-		UpdatedAt: time.Now(),
-	}
-	createdStep, err := s.CreateStep(ctx, step)
-	if err != nil {
-		t.Fatalf("CreateStep: %v", err)
-	}
 	readStep, err := s.GetStep(ctx, stepID)
 	if err != nil {
 		t.Fatalf("GetStep: %v", err)
@@ -170,69 +173,12 @@ func TestSmoke(t *testing.T) {
 	}
 
 	// Test Task
-	taskID := "task-1"
-	task := store.Task{
-		ID:         taskID,
-		JobID:      jobID,
-		StepID:     stepID,
-		Name:       "test-task",
-		Status:     store.TaskStatusPending,
-		Parameters: map[string]string{"param1": "value1"},
-		CreatedAt:  time.Now(),
-		UpdatedAt:  time.Now(),
-	}
-	createdTask, err := s.CreateTask(ctx, task)
-	if err != nil {
-		t.Fatalf("CreateTask: %v", err)
-	}
 	readTask, err := s.GetTask(ctx, taskID)
 	if err != nil {
 		t.Fatalf("GetTask: %v", err)
 	}
 	if readTask.Name != createdTask.Name {
 		t.Errorf("Task mismatch: %q != %q", readTask.Name, createdTask.Name)
-	}
-
-	// Test TaskAttempt
-	attemptID := "attempt-1"
-	attempt := store.TaskAttempt{
-		ID:            attemptID,
-		TaskID:        taskID,
-		WorkerID:      workerID,
-		AttemptNumber: 1,
-		Status:        store.AttemptStatusRunning,
-		StartedAt:     time.Now(),
-		CreatedAt:     time.Now(),
-	}
-	createdAttempt, err := s.CreateTaskAttempt(ctx, attempt)
-	if err != nil {
-		t.Fatalf("CreateTaskAttempt: %v", err)
-	}
-	readAttempt, err := s.GetTaskAttempt(ctx, attemptID)
-	if err != nil {
-		t.Fatalf("GetTaskAttempt: %v", err)
-	}
-	if readAttempt.AttemptNumber != createdAttempt.AttemptNumber {
-		t.Errorf("TaskAttempt mismatch: %d != %d", readAttempt.AttemptNumber, createdAttempt.AttemptNumber)
-	}
-
-	// Test UsageClaim
-	claim := store.UsageClaim{
-		ID:            "claim-1",
-		PoolID:        poolID,
-		TaskAttemptID: attemptID,
-		ClaimedAt:     time.Now(),
-	}
-	_, err = s.CreateClaim(ctx, claim)
-	if err != nil {
-		t.Fatalf("CreateClaim: %v", err)
-	}
-	activeCount, err := s.ActiveClaimCount(ctx, poolID)
-	if err != nil {
-		t.Fatalf("ActiveClaimCount: %v", err)
-	}
-	if activeCount != 1 {
-		t.Errorf("Expected 1 active claim, got %d", activeCount)
 	}
 
 	// Test AuditEntry
@@ -266,19 +212,14 @@ func TestSmoke(t *testing.T) {
 		Status:     store.JobStatusPending,
 		Priority:   50,
 		Parameters: map[string]string{"Frame": "42", "Quality": "high"},
-		CreatedAt:  time.Now(),
-		UpdatedAt:  time.Now(),
 	}
-	createdParamJob, err := s.CreateJob(ctx, jobWithParams)
-	if err != nil {
-		t.Fatalf("CreateJob with params: %v", err)
-	}
+	createdParamJob := storetest.Submit(t, s, store.JobSubmission{Job: jobWithParams}).Job
 	readParamJob, err := s.GetJob(ctx, "job-params")
 	if err != nil {
 		t.Fatalf("GetJob with params: %v", err)
 	}
 	if createdParamJob.Parameters["Frame"] != "42" {
-		t.Errorf("CreateJob Parameters[Frame] = %q, want 42", createdParamJob.Parameters["Frame"])
+		t.Errorf("submitted Parameters[Frame] = %q, want 42", createdParamJob.Parameters["Frame"])
 	}
 	if readParamJob.Parameters["Frame"] != "42" {
 		t.Errorf("GetJob Parameters[Frame] = %q, want 42", readParamJob.Parameters["Frame"])
@@ -291,13 +232,6 @@ func TestSmoke(t *testing.T) {
 	err = s.Close()
 	if err != nil {
 		t.Fatalf("Close: %v", err)
-	}
-
-	// Test Reset
-	s.Reset()
-	_, err = s.GetFarm(ctx, farmID)
-	if !errors.Is(err, store.ErrNotFound) {
-		t.Errorf("Expected ErrNotFound after Reset, got %v", err)
 	}
 }
 
@@ -317,17 +251,12 @@ func TestFakeJob_UpdateJobPreservesParameters(t *testing.T) {
 		Status:     store.JobStatusPending,
 		Priority:   50,
 		Parameters: originalParams,
-		CreatedAt:  time.Now(),
-		UpdatedAt:  time.Now(),
 	}
-	createdJob, err := s.CreateJob(ctx, job)
-	if err != nil {
-		t.Fatalf("CreateJob: %v", err)
-	}
+	createdJob := storetest.Submit(t, s, store.JobSubmission{Job: job}).Job
 
 	// Verify Parameters were stored
 	if createdJob.Parameters["Frame"] != "42" {
-		t.Errorf("CreateJob Parameters[Frame] = %q, want 42", createdJob.Parameters["Frame"])
+		t.Errorf("submitted Parameters[Frame] = %q, want 42", createdJob.Parameters["Frame"])
 	}
 
 	// Call UpdateJob with a nil Parameters field and different Name/Priority

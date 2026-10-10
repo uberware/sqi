@@ -294,24 +294,11 @@ func TestResolveDependencies_NoDeps(t *testing.T) {
 	ctx := context.Background()
 
 	// Create a minimal job with one step (no dependencies) in pending state.
-	if _, err := s.CreateJob(ctx, store.Job{
-		ID: "j1", Name: "j1",
-		Status: store.JobStatusRunning,
-	}); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := s.CreateStep(ctx, store.Step{
-		ID: "step1", JobID: "j1", Name: "Step1",
-		Status: store.StepStatusPending,
-	}); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := s.CreateTask(ctx, store.Task{
-		ID: "t1", JobID: "j1", StepID: "step1",
-		Status: store.TaskStatusPending,
-	}); err != nil {
-		t.Fatal(err)
-	}
+	submitSteps(
+		t, s,
+		[]store.Step{{ID: "step1", Name: "Step1", Status: store.StepStatusPending}},
+		store.Task{ID: "t1", StepID: "step1", Status: store.TaskStatusPending},
+	)
 
 	n, err := openjd.ResolveDependencies(ctx, s, "j1")
 	if err != nil {
@@ -342,23 +329,11 @@ func TestResolveDependencies_BlockedStep(t *testing.T) {
 	defer s.Close()
 	ctx := context.Background()
 
-	if _, err := s.CreateJob(ctx, store.Job{ID: "j1", Name: "j1", Status: store.JobStatusRunning}); err != nil {
-		t.Fatal(err)
-	}
 	// step1 is not completed — step2 depends on it.
-	if _, err := s.CreateStep(ctx, store.Step{
-		ID: "step1", JobID: "j1", Name: "Step1",
-		Status: store.StepStatusRunning,
-	}); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := s.CreateStep(ctx, store.Step{
-		ID: "step2", JobID: "j1", Name: "Step2",
-		Status:    store.StepStatusPending,
-		DependsOn: []string{"Step1"},
-	}); err != nil {
-		t.Fatal(err)
-	}
+	submitSteps(t, s, []store.Step{
+		{ID: "step1", Name: "Step1", Status: store.StepStatusRunning},
+		{ID: "step2", Name: "Step2", Status: store.StepStatusPending, DependsOn: []string{"Step1"}},
+	})
 
 	n, err := openjd.ResolveDependencies(ctx, s, "j1")
 	if err != nil {
@@ -374,28 +349,14 @@ func TestResolveDependencies_DepsCompleted(t *testing.T) {
 	defer s.Close()
 	ctx := context.Background()
 
-	if _, err := s.CreateJob(ctx, store.Job{ID: "j1", Name: "j1", Status: store.JobStatusRunning}); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := s.CreateStep(ctx, store.Step{
-		ID: "step1", JobID: "j1", Name: "Step1",
-		Status: store.StepStatusCompleted,
-	}); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := s.CreateStep(ctx, store.Step{
-		ID: "step2", JobID: "j1", Name: "Step2",
-		Status:    store.StepStatusPending,
-		DependsOn: []string{"Step1"},
-	}); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := s.CreateTask(ctx, store.Task{
-		ID: "t2", JobID: "j1", StepID: "step2",
-		Status: store.TaskStatusPending,
-	}); err != nil {
-		t.Fatal(err)
-	}
+	submitSteps(
+		t, s,
+		[]store.Step{
+			{ID: "step1", Name: "Step1", Status: store.StepStatusCompleted},
+			{ID: "step2", Name: "Step2", Status: store.StepStatusPending, DependsOn: []string{"Step1"}},
+		},
+		store.Task{ID: "t2", StepID: "step2", Status: store.TaskStatusPending},
+	)
 
 	n, err := openjd.ResolveDependencies(ctx, s, "j1")
 	if err != nil {
@@ -411,15 +372,9 @@ func TestResolveDependencies_SkipsNonPending(t *testing.T) {
 	defer s.Close()
 	ctx := context.Background()
 
-	if _, err := s.CreateJob(ctx, store.Job{ID: "j1", Name: "j1", Status: store.JobStatusRunning}); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := s.CreateStep(ctx, store.Step{
-		ID: "step1", JobID: "j1", Name: "Step1",
-		Status: store.StepStatusRunning, // already running, not pending
-	}); err != nil {
-		t.Fatal(err)
-	}
+	submitSteps(t, s, []store.Step{
+		{ID: "step1", Name: "Step1", Status: store.StepStatusRunning}, // already running, not pending
+	})
 
 	n, err := openjd.ResolveDependencies(ctx, s, "j1")
 	if err != nil {
@@ -437,29 +392,15 @@ func TestCancelDependents_FailedDep_CancelsPendingDependentAndTasks(t *testing.T
 	defer s.Close()
 	ctx := context.Background()
 
-	if _, err := s.CreateJob(ctx, store.Job{ID: "j1", Name: "j1", Status: store.JobStatusRunning}); err != nil {
-		t.Fatal(err)
-	}
 	// step1 failed; step2 (pending) depends on it and can never run.
-	if _, err := s.CreateStep(ctx, store.Step{
-		ID: "step1", JobID: "j1", Name: "Step1",
-		Status: store.StepStatusFailed,
-	}); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := s.CreateStep(ctx, store.Step{
-		ID: "step2", JobID: "j1", Name: "Step2",
-		Status:    store.StepStatusPending,
-		DependsOn: []string{"Step1"},
-	}); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := s.CreateTask(ctx, store.Task{
-		ID: "t2", JobID: "j1", StepID: "step2",
-		Status: store.TaskStatusPending,
-	}); err != nil {
-		t.Fatal(err)
-	}
+	submitSteps(
+		t, s,
+		[]store.Step{
+			{ID: "step1", Name: "Step1", Status: store.StepStatusFailed},
+			{ID: "step2", Name: "Step2", Status: store.StepStatusPending, DependsOn: []string{"Step1"}},
+		},
+		store.Task{ID: "t2", StepID: "step2", Status: store.TaskStatusPending},
+	)
 
 	n, tasks, err := openjd.CancelDependents(ctx, s, "j1")
 	if err != nil {
@@ -494,22 +435,10 @@ func TestCancelDependents_CanceledDep_CancelsPendingDependent(t *testing.T) {
 	defer s.Close()
 	ctx := context.Background()
 
-	if _, err := s.CreateJob(ctx, store.Job{ID: "j1", Name: "j1", Status: store.JobStatusRunning}); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := s.CreateStep(ctx, store.Step{
-		ID: "step1", JobID: "j1", Name: "Step1",
-		Status: store.StepStatusCanceled,
-	}); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := s.CreateStep(ctx, store.Step{
-		ID: "step2", JobID: "j1", Name: "Step2",
-		Status:    store.StepStatusPending,
-		DependsOn: []string{"Step1"},
-	}); err != nil {
-		t.Fatal(err)
-	}
+	submitSteps(t, s, []store.Step{
+		{ID: "step1", Name: "Step1", Status: store.StepStatusCanceled},
+		{ID: "step2", Name: "Step2", Status: store.StepStatusPending, DependsOn: []string{"Step1"}},
+	})
 
 	n, _, err := openjd.CancelDependents(ctx, s, "j1")
 	if err != nil {
@@ -525,27 +454,13 @@ func TestCancelDependents_PartialFailure_CancelsWhenAnyDepFailed(t *testing.T) {
 	defer s.Close()
 	ctx := context.Background()
 
-	if _, err := s.CreateJob(ctx, store.Job{ID: "j1", Name: "j1", Status: store.JobStatusRunning}); err != nil {
-		t.Fatal(err)
-	}
 	// step3 depends on TWO steps: one completed, one failed. A single failed
 	// dependency means step3 can never become ready, so it must be canceled.
-	if _, err := s.CreateStep(ctx, store.Step{
-		ID: "step1", JobID: "j1", Name: "Step1", Status: store.StepStatusCompleted,
-	}); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := s.CreateStep(ctx, store.Step{
-		ID: "step2", JobID: "j1", Name: "Step2", Status: store.StepStatusFailed,
-	}); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := s.CreateStep(ctx, store.Step{
-		ID: "step3", JobID: "j1", Name: "Step3",
-		Status: store.StepStatusPending, DependsOn: []string{"Step1", "Step2"},
-	}); err != nil {
-		t.Fatal(err)
-	}
+	submitSteps(t, s, []store.Step{
+		{ID: "step1", Name: "Step1", Status: store.StepStatusCompleted},
+		{ID: "step2", Name: "Step2", Status: store.StepStatusFailed},
+		{ID: "step3", Name: "Step3", Status: store.StepStatusPending, DependsOn: []string{"Step1", "Step2"}},
+	})
 
 	n, _, err := openjd.CancelDependents(ctx, s, "j1")
 	if err != nil {
@@ -568,34 +483,14 @@ func TestCancelDependents_Diamond(t *testing.T) {
 	defer s.Close()
 	ctx := context.Background()
 
-	if _, err := s.CreateJob(ctx, store.Job{ID: "j1", Name: "j1", Status: store.JobStatusRunning}); err != nil {
-		t.Fatal(err)
-	}
 	// Diamond: A → {B, C} → D. A fails; B and C are direct dependents, D depends
 	// on both. One call must cancel B, C and D (D via its now-canceled deps).
-	if _, err := s.CreateStep(ctx, store.Step{
-		ID: "a", JobID: "j1", Name: "A", Status: store.StepStatusFailed,
-	}); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := s.CreateStep(ctx, store.Step{
-		ID: "b", JobID: "j1", Name: "B",
-		Status: store.StepStatusPending, DependsOn: []string{"A"},
-	}); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := s.CreateStep(ctx, store.Step{
-		ID: "c", JobID: "j1", Name: "C",
-		Status: store.StepStatusPending, DependsOn: []string{"A"},
-	}); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := s.CreateStep(ctx, store.Step{
-		ID: "d", JobID: "j1", Name: "D",
-		Status: store.StepStatusPending, DependsOn: []string{"B", "C"},
-	}); err != nil {
-		t.Fatal(err)
-	}
+	submitSteps(t, s, []store.Step{
+		{ID: "a", Name: "A", Status: store.StepStatusFailed},
+		{ID: "b", Name: "B", Status: store.StepStatusPending, DependsOn: []string{"A"}},
+		{ID: "c", Name: "C", Status: store.StepStatusPending, DependsOn: []string{"A"}},
+		{ID: "d", Name: "D", Status: store.StepStatusPending, DependsOn: []string{"B", "C"}},
+	})
 
 	n, _, err := openjd.CancelDependents(ctx, s, "j1")
 	if err != nil {
@@ -620,20 +515,10 @@ func TestCancelDependents_Idempotent(t *testing.T) {
 	defer s.Close()
 	ctx := context.Background()
 
-	if _, err := s.CreateJob(ctx, store.Job{ID: "j1", Name: "j1", Status: store.JobStatusRunning}); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := s.CreateStep(ctx, store.Step{
-		ID: "step1", JobID: "j1", Name: "Step1", Status: store.StepStatusFailed,
-	}); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := s.CreateStep(ctx, store.Step{
-		ID: "step2", JobID: "j1", Name: "Step2",
-		Status: store.StepStatusPending, DependsOn: []string{"Step1"},
-	}); err != nil {
-		t.Fatal(err)
-	}
+	submitSteps(t, s, []store.Step{
+		{ID: "step1", Name: "Step1", Status: store.StepStatusFailed},
+		{ID: "step2", Name: "Step2", Status: store.StepStatusPending, DependsOn: []string{"Step1"}},
+	})
 
 	if _, _, err := openjd.CancelDependents(ctx, s, "j1"); err != nil {
 		t.Fatalf("CancelDependents (first): %v", err)
@@ -697,34 +582,14 @@ func TestCancelDependents_LeavesHealthyAndNonPendingSteps(t *testing.T) {
 	defer s.Close()
 	ctx := context.Background()
 
-	if _, err := s.CreateJob(ctx, store.Job{ID: "j1", Name: "j1", Status: store.JobStatusRunning}); err != nil {
-		t.Fatal(err)
-	}
-	// step1 completed (healthy) — its dependent must NOT be canceled.
-	if _, err := s.CreateStep(ctx, store.Step{
-		ID: "step1", JobID: "j1", Name: "Step1",
-		Status: store.StepStatusCompleted,
-	}); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := s.CreateStep(ctx, store.Step{
-		ID: "step2", JobID: "j1", Name: "Step2",
-		Status: store.StepStatusPending, DependsOn: []string{"Step1"},
-	}); err != nil {
-		t.Fatal(err)
-	}
-	// A running step depending on a failed one is not pending — must be left alone.
-	if _, err := s.CreateStep(ctx, store.Step{
-		ID: "step3", JobID: "j1", Name: "Step3", Status: store.StepStatusFailed,
-	}); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := s.CreateStep(ctx, store.Step{
-		ID: "step4", JobID: "j1", Name: "Step4",
-		Status: store.StepStatusRunning, DependsOn: []string{"Step3"},
-	}); err != nil {
-		t.Fatal(err)
-	}
+	submitSteps(t, s, []store.Step{
+		// step1 completed (healthy) — its dependent must NOT be canceled.
+		{ID: "step1", Name: "Step1", Status: store.StepStatusCompleted},
+		{ID: "step2", Name: "Step2", Status: store.StepStatusPending, DependsOn: []string{"Step1"}},
+		// A running step depending on a failed one is not pending — must be left alone.
+		{ID: "step3", Name: "Step3", Status: store.StepStatusFailed},
+		{ID: "step4", Name: "Step4", Status: store.StepStatusRunning, DependsOn: []string{"Step3"}},
+	})
 
 	n, _, err := openjd.CancelDependents(ctx, s, "j1")
 	if err != nil {

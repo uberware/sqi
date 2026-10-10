@@ -54,8 +54,7 @@ RETURNING id, username, display_name, password_hash, role, auth_source, external
 UPDATE users SET display_name = ?, updated_at = ?
 WHERE id = ?
 RETURNING id, username, display_name, password_hash, role, auth_source, external_id, disabled, created_at, updated_at`
-	sqlCountUsers  = `SELECT COUNT(*) FROM users`
-	sqlCountAdmins = `SELECT COUNT(*) FROM users WHERE role = 'admin' AND disabled = 0`
+	sqlCountUsers = `SELECT COUNT(*) FROM users`
 
 	// sqlLastLiveAdmin is true for the row being written when it is an enabled
 	// admin and no other enabled admin exists (invariant I4). The count
@@ -305,12 +304,5 @@ func userMissingOrLastAdmin(ctx context.Context, tx *sql.Tx, id string) error {
 func (s *Store) CountUsers(ctx context.Context) (int, error) {
 	var n int
 	err := s.stmtCountUsers.QueryRowContext(ctx).Scan(&n)
-	return n, mapErr(err)
-}
-
-// CountAdmins implements [store.UserStore].
-func (s *Store) CountAdmins(ctx context.Context) (int, error) {
-	var n int
-	err := s.stmtCountAdmins.QueryRowContext(ctx).Scan(&n)
 	return n, mapErr(err)
 }

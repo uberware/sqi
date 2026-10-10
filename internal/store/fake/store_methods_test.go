@@ -5,22 +5,22 @@ package fake
 // Tests for the previously uncovered fake store methods.
 //
 // Covered here:
-//   task.go       — AssignTask, ReclaimWorkerTasks, ListReadyTasks,
-//                   CountActiveTasksInQueue, CountActiveTasksInFarm,
-//                   CancelJobTasks, CountReadyTasksByQueue, CountTasksByJob,
-//                   ListTasks (sort fields), filterTask edge cases
-//   worker.go     — UpdateWorker, UpdateWorkerHeartbeat,
+//   task.go       — ListReadyTasks, CountActiveTasksInQueue,
+//                   CountActiveTasksInFarm, CountReadyTasksByQueue,
+//                   CountTasksByJob, ListTasks (sort fields), filterTask edge
+//                   cases
+//   worker.go     — UpdateWorkerHeartbeat,
 //                   ListStaleWorkers, CountIdleWorkers, ListWorkers (sort/filter)
-//   job.go        — UpdateJob, UpdateJobStatus, CancelJobStatus,
-//                   ListJobs (sort/filter)
-//   task_attempt.go — GetTaskAttempt, LatestTaskAttempt, ListTaskAttempts,
-//                     TerminateWorkerAttempts, CancelJobAttempts,
-//                     UpdateTaskAttempt
+//   job.go        — UpdateJob, CancelJobStatus, ListJobs (sort/filter)
+//   task_attempt.go — GetTaskAttempt, LatestTaskAttempt, ListTaskAttempts
 //   queue.go      — UpdateQueue (conflict/not-found), DeleteQueue, ListQueues
 //                   (sort/filter/paused)
-//   usage.go      — CreateClaim, ReleaseClaim, ActiveClaimCount,
-//                   TryClaimSlots, ReleaseAttemptClaims,
-//                   ReleaseJobClaims, UpdateUsagePool, DeleteUsagePool
+//   usage.go      — ActiveClaimCount, UpdateUsagePool, DeleteUsagePool
+//
+// Fixtures reach their state through the production write path: a job's whole
+// graph in one CreateJobSubmission (storetest.JobSeed), work in flight through
+// LeaseTask. The one state production cannot reach that a test here needs, a
+// duplicate active claim, comes from the fake's injector.
 
 import (
 	"context"
@@ -30,6 +30,7 @@ import (
 	"time"
 
 	"github.com/uberware/sqi/internal/store"
+	"github.com/uberware/sqi/internal/store/storetest"
 )
 
 // ── helpers ───────────────────────────────────────────────────────────────────
@@ -54,28 +55,28 @@ func mustCreateQueue(t *testing.T, s *Store, farmID, id, name string) store.Queu
 	return q
 }
 
-func mustCreateJob(t *testing.T, s *Store, id, farmID, queueID string) store.Job {
+// leaseTask leases the ready task taskID to workerID through the production
+// lease and returns the attempt the lease made. The lease needs the task's
+// job, queue and farm rows to exist; it needs no registered worker.
+func leaseTask(t *testing.T, s *Store, taskID, workerID string) store.TaskAttempt {
 	t.Helper()
-	j, err := s.CreateJob(ctx(), store.Job{
-		ID: id, FarmID: farmID, QueueID: queueID, Name: id,
-		Status: store.JobStatusRunning, Priority: 50,
-	})
-	if err != nil {
-		t.Fatalf("CreateJob(%q): %v", id, err)
-	}
-	return j
+	return storetest.Lease(t, s, store.LeaseRequest{TaskID: taskID, WorkerID: workerID})
 }
 
-func mustCreateTask(t *testing.T, s *Store, id, jobID, stepID string, status store.TaskStatus) store.Task {
+// runTask leases the ready task taskID to workerID and starts it, leaving it
+// running, and returns its attempt.
+func runTask(t *testing.T, s *Store, taskID, workerID string) store.TaskAttempt {
 	t.Helper()
-	tk, err := s.CreateTask(ctx(), store.Task{
-		ID: id, JobID: jobID, StepID: stepID, Name: id,
-		Status: status, CreatedAt: time.Now(), UpdatedAt: time.Now(),
-	})
-	if err != nil {
-		t.Fatalf("CreateTask(%q): %v", id, err)
-	}
-	return tk
+	return storetest.Running(t, s, store.LeaseRequest{TaskID: taskID, WorkerID: workerID})
+}
+
+// seedReadyTask seeds farm "farm-f1", queue "q1" and job "j1" holding one ready
+// task, "t1", which a lease can take.
+func seedReadyTask(t *testing.T, s *Store) {
+	t.Helper()
+	mustCreateFarm(t, s, "f1")
+	mustCreateQueue(t, s, "farm-f1", "q1", "q1")
+	storetest.NewJob("j1", "farm-f1", "q1").Task("t1", "s1", store.TaskStatusReady).Submit(t, s)
 }
 
 func mustCreateWorker(t *testing.T, s *Store, id, farmID string, status store.WorkerStatus) store.Worker {
@@ -88,18 +89,6 @@ func mustCreateWorker(t *testing.T, s *Store, id, farmID string, status store.Wo
 		t.Fatalf("RegisterWorker(%q): %v", id, err)
 	}
 	return w
-}
-
-func mustCreateAttempt(t *testing.T, s *Store, id, taskID string, n int, status store.AttemptStatus) store.TaskAttempt {
-	t.Helper()
-	a, err := s.CreateTaskAttempt(ctx(), store.TaskAttempt{
-		ID: id, TaskID: taskID, AttemptNumber: n,
-		Status: status, StartedAt: time.Now(), CreatedAt: time.Now(),
-	})
-	if err != nil {
-		t.Fatalf("CreateTaskAttempt(%q): %v", id, err)
-	}
-	return a
 }
 
 func mustGetTask(t *testing.T, s *Store, id string) store.Task {
@@ -129,22 +118,25 @@ func mustGetJob(t *testing.T, s *Store, id string) store.Job {
 	return j
 }
 
-func mustGetAttempt(t *testing.T, s *Store, id string) store.TaskAttempt {
+// mustCreatePool creates the usage pool a lease's claim names: LeaseTask reads
+// the pool's cap itself, and treats a pool that does not exist as full.
+func mustCreatePool(t *testing.T, s *Store, id string, maxConcurrent int) store.UsagePool {
 	t.Helper()
-	a, err := s.GetTaskAttempt(ctx(), id)
+	p, err := s.CreateUsagePool(ctx(), store.UsagePool{ID: id, Name: id, MaxConcurrent: maxConcurrent})
 	if err != nil {
-		t.Fatalf("GetTaskAttempt(%q): %v", id, err)
+		t.Fatalf("CreateUsagePool(%q): %v", id, err)
 	}
-	return a
+	return p
 }
 
-func mustCreateClaim(t *testing.T, s *Store, co store.UsageClaim) store.UsageClaim {
+// claimOn leases the ready task taskID to w1, holding one claim, claimID, on
+// pool, and returns the attempt the lease made.
+func claimOn(t *testing.T, s *Store, taskID, claimID string, pool store.UsagePool) store.TaskAttempt {
 	t.Helper()
-	created, err := s.CreateClaim(ctx(), co)
-	if err != nil {
-		t.Fatalf("CreateClaim(%q): %v", co.ID, err)
-	}
-	return created
+	return storetest.Lease(t, s, store.LeaseRequest{
+		TaskID: taskID, WorkerID: "w1",
+		Claims: []store.UsagePoolClaim{{ClaimID: claimID, PoolID: pool.ID, PoolName: pool.Name}},
+	})
 }
 
 func mustActiveClaimCount(t *testing.T, s *Store, poolID string) int {
@@ -156,58 +148,7 @@ func mustActiveClaimCount(t *testing.T, s *Store, poolID string) int {
 	return n
 }
 
-func mustUpdateTaskAttempt(t *testing.T, s *Store, a store.TaskAttempt) store.TaskAttempt {
-	t.Helper()
-	updated, err := s.UpdateTaskAttempt(ctx(), a)
-	if err != nil {
-		t.Fatalf("UpdateTaskAttempt(%q): %v", a.ID, err)
-	}
-	return updated
-}
-
-func mustCreateStep(t *testing.T, s *Store, id, jobID string, status store.StepStatus, dependsOn ...string) store.Step {
-	t.Helper()
-	st, err := s.CreateStep(ctx(), store.Step{
-		ID: id, JobID: jobID, Name: id, Status: status, DependsOn: dependsOn,
-	})
-	if err != nil {
-		t.Fatalf("CreateStep(%q): %v", id, err)
-	}
-	return st
-}
-
 // ── task.go ───────────────────────────────────────────────────────────────────
-
-func TestAssignTask(t *testing.T) {
-	s := New()
-	defer s.Close()
-
-	mustCreateFarm(t, s, "f1")
-	mustCreateQueue(t, s, "farm-f1", "q1", "q1")
-	mustCreateJob(t, s, "j1", "farm-f1", "q1")
-	mustCreateTask(t, s, "t1", "j1", "s1", store.TaskStatusReady)
-
-	now := time.Now()
-	if err := s.AssignTask(ctx(), "t1", "worker-1", now); err != nil {
-		t.Fatalf("AssignTask: %v", err)
-	}
-	tk := mustGetTask(t, s, "t1")
-	if tk.Status != store.TaskStatusAssigned {
-		t.Errorf("status = %v, want assigned", tk.Status)
-	}
-	if tk.AssignedWorkerID != "worker-1" {
-		t.Errorf("worker = %q, want worker-1", tk.AssignedWorkerID)
-	}
-}
-
-func TestAssignTask_NotFound(t *testing.T) {
-	s := New()
-	defer s.Close()
-	err := s.AssignTask(ctx(), "nope", "w", time.Now())
-	if !errors.Is(err, store.ErrNotFound) {
-		t.Fatalf("want ErrNotFound, got %v", err)
-	}
-}
 
 func TestSetTaskUnschedulableReason(t *testing.T) {
 	s := New()
@@ -215,8 +156,7 @@ func TestSetTaskUnschedulableReason(t *testing.T) {
 
 	mustCreateFarm(t, s, "f1")
 	mustCreateQueue(t, s, "farm-f1", "q1", "q1")
-	mustCreateJob(t, s, "j1", "farm-f1", "q1")
-	mustCreateTask(t, s, "t1", "j1", "s1", store.TaskStatusReady)
+	storetest.NewJob("j1", "farm-f1", "q1").Task("t1", "s1", store.TaskStatusReady).Submit(t, s)
 
 	if _, err := s.SetTaskUnschedulableReason(ctx(), "t1", "no eligible online worker: attribute requirement not met"); err != nil {
 		t.Fatalf("SetTaskUnschedulableReason: %v", err)
@@ -241,119 +181,73 @@ func TestSetTaskUnschedulableReason(t *testing.T) {
 	}
 }
 
-// TestUnschedulableReason_ClearedOnAssign verifies that AssignTask clears a
-// stale unschedulable_reason left over from the scheduler's sweep — the
-// reason is only meaningful while a task is ready, and AssignTask moves it to
-// assigned.
-func TestUnschedulableReason_ClearedOnAssign(t *testing.T) {
+// TestUnschedulableReason_ClearedOnLease verifies that a lease clears a stale
+// unschedulable_reason left over from the scheduler's sweep — the reason is
+// only meaningful while a task is ready, and a lease moves the task to
+// assigned. It replaces the same-named property of the per-row assignment
+// write, which the lease superseded.
+func TestUnschedulableReason_ClearedOnLease(t *testing.T) {
 	s := New()
 	defer s.Close()
 
 	mustCreateFarm(t, s, "f1")
 	mustCreateQueue(t, s, "farm-f1", "q1", "q1")
-	mustCreateJob(t, s, "j1", "farm-f1", "q1")
-	mustCreateTask(t, s, "t1", "j1", "s1", store.TaskStatusReady)
+	storetest.NewJob("j1", "farm-f1", "q1").Task("t1", "s1", store.TaskStatusReady).Submit(t, s)
 
 	if _, err := s.SetTaskUnschedulableReason(ctx(), "t1", "no eligible online worker"); err != nil {
 		t.Fatalf("SetTaskUnschedulableReason: %v", err)
 	}
 
-	if err := s.AssignTask(ctx(), "t1", "worker-1", time.Now()); err != nil {
-		t.Fatalf("AssignTask: %v", err)
-	}
+	leaseTask(t, s, "t1", "worker-1")
 
 	tk := mustGetTask(t, s, "t1")
 	if tk.UnschedulableReason != "" {
-		t.Errorf("UnschedulableReason after AssignTask: got %q, want empty", tk.UnschedulableReason)
+		t.Errorf("UnschedulableReason after LeaseTask: got %q, want empty", tk.UnschedulableReason)
 	}
 }
 
-// TestUnschedulableReason_ClearedOnCancel verifies that CancelJobTasks clears
-// a stale unschedulable_reason on the tasks it cancels.
+// TestUnschedulableReason_ClearedOnCancel verifies that both cancel paths clear
+// a stale unschedulable_reason on the tasks they cancel. It replaces the
+// same-named property of the per-row cancel write and of the blind status
+// write, which the two execution cancels superseded.
 func TestUnschedulableReason_ClearedOnCancel(t *testing.T) {
-	s := New()
-	defer s.Close()
-
-	mustCreateFarm(t, s, "f1")
-	mustCreateQueue(t, s, "farm-f1", "q1", "q1")
-	mustCreateJob(t, s, "j1", "farm-f1", "q1")
-	mustCreateTask(t, s, "t1", "j1", "s1", store.TaskStatusReady)
-
-	if _, err := s.SetTaskUnschedulableReason(ctx(), "t1", "no eligible online worker"); err != nil {
-		t.Fatalf("SetTaskUnschedulableReason: %v", err)
+	cancels := map[string]func(t *testing.T, s *Store){
+		"CancelJobExecution": func(t *testing.T, s *Store) {
+			t.Helper()
+			if _, err := s.CancelJobExecution(ctx(), "j1", "", time.Now().UTC()); err != nil {
+				t.Fatalf("CancelJobExecution: %v", err)
+			}
+		},
+		"CancelTaskExecution": func(t *testing.T, s *Store) {
+			t.Helper()
+			if _, ok, err := s.CancelTaskExecution(ctx(), "t1", "", time.Now().UTC()); err != nil || !ok {
+				t.Fatalf("CancelTaskExecution = (%v, %v), want canceled", ok, err)
+			}
+		},
 	}
+	for name, cancel := range cancels {
+		t.Run(name, func(t *testing.T) {
+			s := New()
+			defer s.Close()
 
-	if _, err := s.CancelJobTasks(ctx(), "j1", time.Now(), ""); err != nil {
-		t.Fatalf("CancelJobTasks: %v", err)
-	}
+			mustCreateFarm(t, s, "f1")
+			mustCreateQueue(t, s, "farm-f1", "q1", "q1")
+			storetest.NewJob("j1", "farm-f1", "q1").Task("t1", "s1", store.TaskStatusReady).Submit(t, s)
 
-	tk := mustGetTask(t, s, "t1")
-	if tk.UnschedulableReason != "" {
-		t.Errorf("UnschedulableReason after CancelJobTasks: got %q, want empty", tk.UnschedulableReason)
-	}
-}
+			if _, err := s.SetTaskUnschedulableReason(ctx(), "t1", "no eligible online worker"); err != nil {
+				t.Fatalf("SetTaskUnschedulableReason: %v", err)
+			}
 
-// TestUnschedulableReason_ClearedOnUpdateStatus verifies that UpdateTaskStatus
-// clears a stale unschedulable_reason on any status transition out of ready.
-func TestUnschedulableReason_ClearedOnUpdateStatus(t *testing.T) {
-	s := New()
-	defer s.Close()
+			cancel(t, s)
 
-	mustCreateFarm(t, s, "f1")
-	mustCreateQueue(t, s, "farm-f1", "q1", "q1")
-	mustCreateJob(t, s, "j1", "farm-f1", "q1")
-	mustCreateTask(t, s, "t1", "j1", "s1", store.TaskStatusReady)
-
-	if _, err := s.SetTaskUnschedulableReason(ctx(), "t1", "no eligible online worker"); err != nil {
-		t.Fatalf("SetTaskUnschedulableReason: %v", err)
-	}
-
-	// ready → assigned is the legal arrow out of ready; the point of the test is
-	// that any status change clears the reason, not which status it lands on.
-	if err := s.UpdateTaskStatus(ctx(), "t1", store.TaskStatusAssigned); err != nil {
-		t.Fatalf("UpdateTaskStatus: %v", err)
-	}
-
-	tk := mustGetTask(t, s, "t1")
-	if tk.UnschedulableReason != "" {
-		t.Errorf("UnschedulableReason after UpdateTaskStatus: got %q, want empty", tk.UnschedulableReason)
-	}
-}
-
-func TestReclaimWorkerTasks(t *testing.T) {
-	s := New()
-	defer s.Close()
-	mustCreateFarm(t, s, "f1")
-	mustCreateQueue(t, s, "farm-f1", "q1", "q1")
-	mustCreateJob(t, s, "j1", "farm-f1", "q1")
-	mustCreateTask(t, s, "t1", "j1", "s1", store.TaskStatusAssigned)
-	mustCreateTask(t, s, "t2", "j1", "s1", store.TaskStatusRunning)
-	mustCreateTask(t, s, "t3", "j1", "s1", store.TaskStatusSucceeded)
-
-	// Manually set assigned worker on t1 and t2.
-	if err := s.AssignTask(ctx(), "t1", "w1", time.Now()); err != nil {
-		t.Fatalf("AssignTask t1: %v", err)
-	}
-	if err := s.UpdateTaskStatus(ctx(), "t2", store.TaskStatusRunning); err != nil {
-		t.Fatalf("UpdateTaskStatus t2: %v", err)
-	}
-	// t2 has no assigned worker set — but we manually fix that.
-	s.mu.Lock()
-	tk := s.tasks["t2"]
-	tk.AssignedWorkerID = "w1"
-	s.tasks["t2"] = tk
-	s.mu.Unlock()
-
-	n, err := s.ReclaimWorkerTasks(ctx(), "w1")
-	if err != nil {
-		t.Fatalf("ReclaimWorkerTasks: %v", err)
-	}
-	if n != 2 {
-		t.Errorf("reclaimed = %d, want 2", n)
-	}
-	tk1 := mustGetTask(t, s, "t1")
-	if tk1.Status != store.TaskStatusReady {
-		t.Errorf("t1 status = %v, want ready", tk1.Status)
+			tk := mustGetTask(t, s, "t1")
+			if tk.Status != store.TaskStatusCanceled {
+				t.Fatalf("task status = %q, want canceled", tk.Status)
+			}
+			if tk.UnschedulableReason != "" {
+				t.Errorf("UnschedulableReason after %s: got %q, want empty", name, tk.UnschedulableReason)
+			}
+		})
 	}
 }
 
@@ -362,9 +256,11 @@ func TestListReadyTasks(t *testing.T) {
 	defer s.Close()
 	mustCreateFarm(t, s, "f1")
 	mustCreateQueue(t, s, "farm-f1", "q1", "q1")
-	mustCreateJob(t, s, "j1", "farm-f1", "q1")
-	mustCreateTask(t, s, "t-ready", "j1", "s1", store.TaskStatusReady)
-	mustCreateTask(t, s, "t-running", "j1", "s1", store.TaskStatusRunning)
+	storetest.NewJob("j1", "farm-f1", "q1").
+		Task("t-ready", "s1", store.TaskStatusReady).
+		Task("t-running", "s1", store.TaskStatusReady).
+		Submit(t, s)
+	runTask(t, s, "t-running", "w1")
 
 	tasks, err := s.ListReadyTasks(ctx(), "farm-f1", time.Now(), 10)
 	if err != nil {
@@ -380,25 +276,15 @@ func TestListReadyTasks_SkipsBackoffAndPausedJobs(t *testing.T) {
 	defer s.Close()
 	mustCreateFarm(t, s, "f1")
 	mustCreateQueue(t, s, "farm-f1", "q1", "q1")
-	mustCreateJob(t, s, "j1", "farm-f1", "q1")
-	mustCreateTask(t, s, "t-ready", "j1", "s1", store.TaskStatusReady)
-
 	now := time.Now()
 	future := now.Add(time.Minute)
-	backoff := mustCreateTask(t, s, "t-backoff", "j1", "s1", store.TaskStatusReady)
-	backoff.RetryAfter = &future
-	s.mu.Lock()
-	s.tasks[backoff.ID] = backoff
-	s.mu.Unlock()
-
-	j2, err := s.CreateJob(ctx(), store.Job{
-		ID: "j2", FarmID: "farm-f1", QueueID: "q1", Name: "j2",
-		Status: store.JobStatusPaused, Priority: 50,
-	})
-	if err != nil {
-		t.Fatalf("CreateJob(j2): %v", err)
-	}
-	mustCreateTask(t, s, "t-paused", j2.ID, "s1", store.TaskStatusReady)
+	storetest.NewJob("j1", "farm-f1", "q1").
+		Task("t-ready", "s1", store.TaskStatusReady).
+		TaskRow(store.Task{ID: "t-backoff", StepID: "s1", Status: store.TaskStatusReady, RetryAfter: &future}).
+		Submit(t, s)
+	storetest.NewJob("j2", "farm-f1", "q1").As(store.JobStatusPaused).
+		Task("t-paused", "s2", store.TaskStatusReady).
+		Submit(t, s)
 
 	tasks, err := s.ListReadyTasks(ctx(), "farm-f1", now, 10)
 	if err != nil {
@@ -421,8 +307,7 @@ func TestListReadyTasks_AllFarms(t *testing.T) {
 	defer s.Close()
 	mustCreateFarm(t, s, "f1")
 	mustCreateQueue(t, s, "farm-f1", "q1", "q1")
-	mustCreateJob(t, s, "j1", "farm-f1", "q1")
-	mustCreateTask(t, s, "t1", "j1", "s1", store.TaskStatusReady)
+	storetest.NewJob("j1", "farm-f1", "q1").Task("t1", "s1", store.TaskStatusReady).Submit(t, s)
 
 	tasks, err := s.ListReadyTasks(ctx(), "", time.Now(), 10)
 	if err != nil {
@@ -438,10 +323,13 @@ func TestCountActiveTasksInQueue(t *testing.T) {
 	defer s.Close()
 	mustCreateFarm(t, s, "f1")
 	mustCreateQueue(t, s, "farm-f1", "q1", "q1")
-	mustCreateJob(t, s, "j1", "farm-f1", "q1")
-	mustCreateTask(t, s, "t1", "j1", "s1", store.TaskStatusRunning)
-	mustCreateTask(t, s, "t2", "j1", "s1", store.TaskStatusAssigned)
-	mustCreateTask(t, s, "t3", "j1", "s1", store.TaskStatusSucceeded)
+	storetest.NewJob("j1", "farm-f1", "q1").
+		Task("t1", "s1", store.TaskStatusReady).
+		Task("t2", "s1", store.TaskStatusReady).
+		Task("t3", "s1", store.TaskStatusSucceeded).
+		Submit(t, s)
+	runTask(t, s, "t1", "w1")
+	leaseTask(t, s, "t2", "w1")
 
 	n, err := s.CountActiveTasksInQueue(ctx(), "q1")
 	if err != nil {
@@ -457,9 +345,11 @@ func TestCountActiveTasksInFarm(t *testing.T) {
 	defer s.Close()
 	mustCreateFarm(t, s, "f1")
 	mustCreateQueue(t, s, "farm-f1", "q1", "q1")
-	mustCreateJob(t, s, "j1", "farm-f1", "q1")
-	mustCreateTask(t, s, "t1", "j1", "s1", store.TaskStatusAssigned)
-	mustCreateTask(t, s, "t2", "j1", "s1", store.TaskStatusReady)
+	storetest.NewJob("j1", "farm-f1", "q1").
+		Task("t1", "s1", store.TaskStatusReady).
+		Task("t2", "s1", store.TaskStatusReady).
+		Submit(t, s)
+	leaseTask(t, s, "t1", "w1")
 
 	n, err := s.CountActiveTasksInFarm(ctx(), "farm-f1")
 	if err != nil {
@@ -470,44 +360,17 @@ func TestCountActiveTasksInFarm(t *testing.T) {
 	}
 }
 
-func TestCancelJobTasks(t *testing.T) {
-	s := New()
-	defer s.Close()
-	mustCreateFarm(t, s, "f1")
-	mustCreateQueue(t, s, "farm-f1", "q1", "q1")
-	mustCreateJob(t, s, "j1", "farm-f1", "q1")
-	mustCreateTask(t, s, "t-ready", "j1", "s1", store.TaskStatusReady)
-	mustCreateTask(t, s, "t-running", "j1", "s1", store.TaskStatusRunning)
-	mustCreateTask(t, s, "t-done", "j1", "s1", store.TaskStatusSucceeded)
-
-	active, err := s.CancelJobTasks(ctx(), "j1", time.Now(), "")
-	if err != nil {
-		t.Fatalf("CancelJobTasks: %v", err)
-	}
-	// Only the running task was active.
-	if len(active) != 1 {
-		t.Errorf("active = %d, want 1", len(active))
-	}
-
-	tk := mustGetTask(t, s, "t-ready")
-	if tk.Status != store.TaskStatusCanceled {
-		t.Errorf("t-ready status = %v, want canceled", tk.Status)
-	}
-	done := mustGetTask(t, s, "t-done")
-	if done.Status != store.TaskStatusSucceeded {
-		t.Error("terminal task should not be changed")
-	}
-}
-
 func TestCountReadyTasksByQueue(t *testing.T) {
 	s := New()
 	defer s.Close()
 	mustCreateFarm(t, s, "f1")
 	mustCreateQueue(t, s, "farm-f1", "q1", "q1")
-	mustCreateJob(t, s, "j1", "farm-f1", "q1")
-	mustCreateTask(t, s, "t1", "j1", "s1", store.TaskStatusReady)
-	mustCreateTask(t, s, "t2", "j1", "s1", store.TaskStatusReady)
-	mustCreateTask(t, s, "t3", "j1", "s1", store.TaskStatusRunning)
+	storetest.NewJob("j1", "farm-f1", "q1").
+		Task("t1", "s1", store.TaskStatusReady).
+		Task("t2", "s1", store.TaskStatusReady).
+		Task("t3", "s1", store.TaskStatusReady).
+		Submit(t, s)
+	runTask(t, s, "t3", "w1")
 
 	counts, err := s.CountReadyTasksByQueue(ctx(), "farm-f1", time.Now().UTC())
 	if err != nil {
@@ -529,22 +392,19 @@ func TestCountReadyTasksByQueue_ExcludesIneligible(t *testing.T) {
 	now := time.Now().UTC()
 	mustCreateFarm(t, s, "f1")
 	mustCreateQueue(t, s, "farm-f1", "q1", "q1")
-	mustCreateJob(t, s, "j1", "farm-f1", "q1")
-	mustCreateTask(t, s, "t-ok", "j1", "s1", store.TaskStatusReady)
+	storetest.NewJob("j1", "farm-f1", "q1").
+		Task("t-ok", "s1", store.TaskStatusReady).
+		Task("t-backoff", "s1", store.TaskStatusReady).
+		Submit(t, s)
 
 	// Backing off: ready but retry_after has not elapsed (requeued from
 	// running, as the auto-retry path does). The requeue is guarded on the
-	// reporting attempt being the task's latest, so this seeds the task's live
-	// (running) attempt for the guard to pass.
-	mustCreateTask(t, s, "t-backoff", "j1", "s1", store.TaskStatusRunning)
-	backoffAttempt := mustCreateAttempt(t, s, "a-backoff", "t-backoff", 1, store.AttemptStatusRunning)
-	if requeued, err := s.RequeueTaskForRetry(ctx(), "t-backoff", backoffAttempt.ID, now.Add(time.Minute), now); err != nil || !requeued {
-		t.Fatalf("RequeueTaskForRetry: requeued=%v err=%v", requeued, err)
-	}
+	// reporting attempt being the task's latest, so the task is leased and its
+	// attempt failed first, as a worker's failure report does.
+	storetest.FailAndRequeue(t, s, store.LeaseRequest{TaskID: "t-backoff", WorkerID: "w1"}, now.Add(time.Minute))
 
 	// Under an auto-parked job.
-	mustCreateJob(t, s, "j-parked", "farm-f1", "q1")
-	mustCreateTask(t, s, "t-parked", "j-parked", "s1", store.TaskStatusReady)
+	storetest.NewJob("j-parked", "farm-f1", "q1").Task("t-parked", "s2", store.TaskStatusReady).Submit(t, s)
 	if err := s.ParkJob(ctx(), "j-parked", "failure limit reached (2)", now); err != nil {
 		t.Fatalf("ParkJob: %v", err)
 	}
@@ -577,14 +437,21 @@ func TestResumeJob_Fake(t *testing.T) {
 	mustCreateFarm(t, s, "f1")
 	mustCreateQueue(t, s, "farm-f1", "q1", "q1")
 
+	// Both jobs start running, so a resume that lands them pending shows the
+	// pause or park took effect: a job submitted pending would end pending
+	// whether or not it did.
+
 	// Auto-parked: reset everything.
-	parked := mustCreateJob(t, s, "j-parked", "farm-f1", "q1")
+	parked := storetest.NewJob("j-parked", "farm-f1", "q1").As(store.JobStatusRunning).Submit(t, s).Job
 	parked.FailedAttempts = 3
 	if _, err := s.UpdateJob(ctx(), parked); err != nil {
 		t.Fatalf("UpdateJob: %v", err)
 	}
 	if err := s.ParkJob(ctx(), "j-parked", "failure limit reached (3)", now); err != nil {
 		t.Fatalf("ParkJob: %v", err)
+	}
+	if got := mustGetJob(t, s, "j-parked"); got.Status != store.JobStatusPaused {
+		t.Fatalf("after ParkJob: status %s, want paused", got.Status)
 	}
 	if err := s.ResumeJob(ctx(), "j-parked", now); err != nil {
 		t.Fatalf("ResumeJob: %v", err)
@@ -595,13 +462,16 @@ func TestResumeJob_Fake(t *testing.T) {
 	}
 
 	// Manual pause: counter survives.
-	manual := mustCreateJob(t, s, "j-manual", "farm-f1", "q1")
+	manual := storetest.NewJob("j-manual", "farm-f1", "q1").As(store.JobStatusRunning).Submit(t, s).Job
 	manual.FailedAttempts = 2
 	if _, err := s.UpdateJob(ctx(), manual); err != nil {
 		t.Fatalf("UpdateJob: %v", err)
 	}
-	if err := s.UpdateJobStatus(ctx(), "j-manual", store.JobStatusPaused); err != nil {
-		t.Fatalf("UpdateJobStatus: %v", err)
+	if err := s.PauseJob(ctx(), "j-manual", now); err != nil {
+		t.Fatalf("PauseJob: %v", err)
+	}
+	if got := mustGetJob(t, s, "j-manual"); got.Status != store.JobStatusPaused {
+		t.Fatalf("after PauseJob: status %s, want paused", got.Status)
 	}
 	if err := s.ResumeJob(ctx(), "j-manual", now); err != nil {
 		t.Fatalf("ResumeJob: %v", err)
@@ -625,10 +495,11 @@ func TestCountTasksByJob(t *testing.T) {
 	defer s.Close()
 	mustCreateFarm(t, s, "f1")
 	mustCreateQueue(t, s, "farm-f1", "q1", "q1")
-	mustCreateJob(t, s, "j1", "farm-f1", "q1")
-	mustCreateTask(t, s, "t1", "j1", "s1", store.TaskStatusReady)
-	mustCreateTask(t, s, "t2", "j1", "s1", store.TaskStatusReady)
-	mustCreateTask(t, s, "t3", "j1", "s1", store.TaskStatusSucceeded)
+	storetest.NewJob("j1", "farm-f1", "q1").
+		Task("t1", "s1", store.TaskStatusReady).
+		Task("t2", "s1", store.TaskStatusReady).
+		Task("t3", "s1", store.TaskStatusSucceeded).
+		Submit(t, s)
 
 	counts, err := s.CountTasksByJob(ctx(), "j1")
 	if err != nil {
@@ -647,10 +518,11 @@ func TestCountUnschedulableTasksByJob(t *testing.T) {
 	defer s.Close()
 	mustCreateFarm(t, s, "f1")
 	mustCreateQueue(t, s, "farm-f1", "q1", "q1")
-	mustCreateJob(t, s, "j1", "farm-f1", "q1")
-	mustCreateTask(t, s, "t1", "j1", "s1", store.TaskStatusReady)
-	mustCreateTask(t, s, "t2", "j1", "s1", store.TaskStatusReady)
-	mustCreateTask(t, s, "t3", "j1", "s1", store.TaskStatusReady)
+	storetest.NewJob("j1", "farm-f1", "q1").
+		Task("t1", "s1", store.TaskStatusReady).
+		Task("t2", "s1", store.TaskStatusReady).
+		Task("t3", "s1", store.TaskStatusReady).
+		Submit(t, s)
 
 	for _, id := range []string{"t1", "t2"} {
 		if _, err := s.SetTaskUnschedulableReason(ctx(), id, "no worker matches required capability"); err != nil {
@@ -683,24 +555,16 @@ func TestFailureReasonSummary(t *testing.T) {
 	defer s.Close()
 	mustCreateFarm(t, s, "f1")
 	mustCreateQueue(t, s, "farm-f1", "q1", "q1")
-	mustCreateJob(t, s, "j1", "farm-f1", "q1")
-
 	// Mixed reasons: staging x2, timeout x1 — staging dominates.
-	mustCreateTask(t, s, "t0", "j1", "s1", store.TaskStatusFailed)
-	mustCreateTask(t, s, "t1", "j1", "s1", store.TaskStatusFailed)
-	mustCreateTask(t, s, "t2", "j1", "s1", store.TaskStatusFailed)
-	for _, tc := range []struct{ id, reason string }{
-		{"t0", "staging"}, {"t1", "staging"}, {"t2", "timeout"},
-	} {
-		if err := s.SetTaskFailureReason(ctx(), tc.id, tc.reason); err != nil {
-			t.Fatalf("SetTaskFailureReason(%q): %v", tc.id, err)
-		}
-	}
-	// A succeeded task must never count, even with a stray reason.
-	succ := mustCreateTask(t, s, "t3", "j1", "s1", store.TaskStatusSucceeded)
-	if err := s.SetTaskFailureReason(ctx(), succ.ID, "staging"); err != nil {
-		t.Fatalf("SetTaskFailureReason(%q): %v", succ.ID, err)
-	}
+	// A succeeded task must never count, even with a stray reason. No production
+	// write leaves a reason on a succeeded task, so t3 is seeded with one at
+	// create, which is the only way to build that state.
+	storetest.NewJob("j1", "farm-f1", "q1").
+		TaskRow(store.Task{ID: "t0", StepID: "s1", Status: store.TaskStatusFailed, FailureReason: "staging"}).
+		TaskRow(store.Task{ID: "t1", StepID: "s1", Status: store.TaskStatusFailed, FailureReason: "staging"}).
+		TaskRow(store.Task{ID: "t2", StepID: "s1", Status: store.TaskStatusFailed, FailureReason: "timeout"}).
+		TaskRow(store.Task{ID: "t3", StepID: "s1", Status: store.TaskStatusSucceeded, FailureReason: "staging"}).
+		Submit(t, s)
 
 	sum, err := s.FailureReasonSummary(ctx(), "j1")
 	if err != nil {
@@ -712,15 +576,10 @@ func TestFailureReasonSummary(t *testing.T) {
 
 	// Tie case: two reasons each with count 1 — dominant is the
 	// lexicographically smaller reason, deterministically.
-	mustCreateJob(t, s, "j2", "farm-f1", "q1")
-	mustCreateTask(t, s, "u0", "j2", "s1", store.TaskStatusFailed)
-	mustCreateTask(t, s, "u1", "j2", "s1", store.TaskStatusFailed)
-	if err := s.SetTaskFailureReason(ctx(), "u0", "timeout"); err != nil {
-		t.Fatalf("SetTaskFailureReason(u0): %v", err)
-	}
-	if err := s.SetTaskFailureReason(ctx(), "u1", "staging"); err != nil {
-		t.Fatalf("SetTaskFailureReason(u1): %v", err)
-	}
+	storetest.NewJob("j2", "farm-f1", "q1").
+		TaskRow(store.Task{ID: "u0", StepID: "s2", Status: store.TaskStatusFailed, FailureReason: "timeout"}).
+		TaskRow(store.Task{ID: "u1", StepID: "s2", Status: store.TaskStatusFailed, FailureReason: "staging"}).
+		Submit(t, s)
 	sum, err = s.FailureReasonSummary(ctx(), "j2")
 	if err != nil {
 		t.Fatalf("FailureReasonSummary(j2): %v", err)
@@ -730,8 +589,7 @@ func TestFailureReasonSummary(t *testing.T) {
 	}
 
 	// Empty case: a job with no failed tasks carrying a reason.
-	mustCreateJob(t, s, "j3", "farm-f1", "q1")
-	mustCreateTask(t, s, "v0", "j3", "s1", store.TaskStatusSucceeded)
+	storetest.NewJob("j3", "farm-f1", "q1").Task("v0", "s3", store.TaskStatusSucceeded).Submit(t, s)
 	sum, err = s.FailureReasonSummary(ctx(), "j3")
 	if err != nil {
 		t.Fatalf("FailureReasonSummary(j3): %v", err)
@@ -746,9 +604,11 @@ func TestListTasks_SortFields(t *testing.T) {
 	defer s.Close()
 	mustCreateFarm(t, s, "f1")
 	mustCreateQueue(t, s, "farm-f1", "q1", "q1")
-	mustCreateJob(t, s, "j1", "farm-f1", "q1")
-	mustCreateTask(t, s, "b-task", "j1", "s1", store.TaskStatusRunning)
-	mustCreateTask(t, s, "a-task", "j1", "s1", store.TaskStatusFailed)
+	storetest.NewJob("j1", "farm-f1", "q1").
+		Task("b-task", "s1", store.TaskStatusReady).
+		Task("a-task", "s1", store.TaskStatusFailed).
+		Submit(t, s)
+	runTask(t, s, "b-task", "w1")
 
 	for _, field := range []store.TaskSortField{
 		store.TaskSortByStatus,
@@ -775,11 +635,8 @@ func TestListTasks_FilterByWorkerID(t *testing.T) {
 	defer s.Close()
 	mustCreateFarm(t, s, "f1")
 	mustCreateQueue(t, s, "farm-f1", "q1", "q1")
-	mustCreateJob(t, s, "j1", "farm-f1", "q1")
-	mustCreateTask(t, s, "t1", "j1", "s1", store.TaskStatusAssigned)
-	if err := s.AssignTask(ctx(), "t1", "w1", time.Now()); err != nil {
-		t.Fatalf("AssignTask: %v", err)
-	}
+	storetest.NewJob("j1", "farm-f1", "q1").Task("t1", "s1", store.TaskStatusReady).Submit(t, s)
+	leaseTask(t, s, "t1", "w1")
 
 	page, err := s.ListTasks(ctx(), store.ListTasksOptions{
 		WorkerID:   "w1",
@@ -798,10 +655,11 @@ func TestListTasks_FilterByStatuses(t *testing.T) {
 	defer s.Close()
 	mustCreateFarm(t, s, "f1")
 	mustCreateQueue(t, s, "farm-f1", "q1", "q1")
-	mustCreateJob(t, s, "j1", "farm-f1", "q1")
-	mustCreateTask(t, s, "t-failed", "j1", "s1", store.TaskStatusFailed)
-	mustCreateTask(t, s, "t-canceled", "j1", "s1", store.TaskStatusCanceled)
-	mustCreateTask(t, s, "t-ready", "j1", "s1", store.TaskStatusReady)
+	storetest.NewJob("j1", "farm-f1", "q1").
+		Task("t-failed", "s1", store.TaskStatusFailed).
+		Task("t-canceled", "s1", store.TaskStatusCanceled).
+		Task("t-ready", "s1", store.TaskStatusReady).
+		Submit(t, s)
 
 	page, err := s.ListTasks(ctx(), store.ListTasksOptions{
 		Statuses:   []store.TaskStatus{store.TaskStatusFailed, store.TaskStatusCanceled},
@@ -820,15 +678,13 @@ func TestRetryTasks_AllInJob(t *testing.T) {
 	defer s.Close()
 	mustCreateFarm(t, s, "f1")
 	mustCreateQueue(t, s, "farm-f1", "q1", "q1")
-	j := mustCreateJob(t, s, "j1", "farm-f1", "q1")
-	// Mark the job terminal to prove revival resets it.
-	if err := s.UpdateJobStatus(ctx(), j.ID, store.JobStatusFailed); err != nil {
-		t.Fatalf("UpdateJobStatus: %v", err)
-	}
-	mustCreateStep(t, s, "s1", "j1", store.StepStatusFailed)
-	mustCreateTask(t, s, "t-failed", "j1", "s1", store.TaskStatusFailed)
-	mustCreateTask(t, s, "t-canceled", "j1", "s1", store.TaskStatusCanceled)
-	mustCreateTask(t, s, "t-ok", "j1", "s1", store.TaskStatusSucceeded)
+	// The job is terminal, to prove revival resets it.
+	storetest.NewJob("j1", "farm-f1", "q1").As(store.JobStatusFailed).
+		Step("s1", store.StepStatusFailed).
+		Task("t-failed", "s1", store.TaskStatusFailed).
+		Task("t-canceled", "s1", store.TaskStatusCanceled).
+		Task("t-ok", "s1", store.TaskStatusSucceeded).
+		Submit(t, s)
 
 	revived, err := s.RetryTasks(ctx(), "j1", nil, time.Now())
 	if err != nil {
@@ -863,10 +719,12 @@ func TestRetryTasks_SubsetAndNonTerminalJobUntouched(t *testing.T) {
 	defer s.Close()
 	mustCreateFarm(t, s, "f1")
 	mustCreateQueue(t, s, "farm-f1", "q1", "q1")
-	mustCreateJob(t, s, "j1", "farm-f1", "q1") // stays running (non-terminal)
-	mustCreateStep(t, s, "s1", "j1", store.StepStatusFailed)
-	mustCreateTask(t, s, "t1", "j1", "s1", store.TaskStatusFailed)
-	mustCreateTask(t, s, "t2", "j1", "s1", store.TaskStatusFailed)
+	// The job stays running (non-terminal).
+	storetest.NewJob("j1", "farm-f1", "q1").As(store.JobStatusRunning).
+		Step("s1", store.StepStatusFailed).
+		Task("t1", "s1", store.TaskStatusFailed).
+		Task("t2", "s1", store.TaskStatusFailed).
+		Submit(t, s)
 
 	revived, err := s.RetryTasks(ctx(), "j1", []string{"t1"}, time.Now())
 	if err != nil {
@@ -896,23 +754,15 @@ func TestRetryTasks_ResetsFailureCounters(t *testing.T) {
 	mustCreateFarm(t, s, "f1")
 	mustCreateQueue(t, s, "farm-f1", "q1", "q1")
 
-	j, err := s.CreateJob(ctx(), store.Job{
-		ID: "j1", FarmID: "farm-f1", QueueID: "q1", Name: "j1",
-		Status: store.JobStatusFailed, Priority: 50,
-		FailedAttempts: 1, ParkReason: "failure limit reached (1)",
-	})
-	if err != nil {
-		t.Fatalf("CreateJob: %v", err)
-	}
-	mustCreateStep(t, s, "s1", j.ID, store.StepStatusFailed)
+	seed := storetest.NewJob("j1", "farm-f1", "q1").As(store.JobStatusFailed)
+	seed.Sub.Job.FailedAttempts, seed.Sub.Job.ParkReason = 1, "failure limit reached (1)"
 	retryAfter := time.Now().Add(time.Minute)
-	if _, err := s.CreateTask(ctx(), store.Task{
-		ID: "t1", JobID: j.ID, StepID: "s1", Name: "t1",
-		Status: store.TaskStatusFailed, CreatedAt: time.Now(), UpdatedAt: time.Now(),
-		FailedAttempts: 1, RetryAfter: &retryAfter,
-	}); err != nil {
-		t.Fatalf("CreateTask: %v", err)
-	}
+	j := seed.Step("s1", store.StepStatusFailed).
+		TaskRow(store.Task{
+			ID: "t1", StepID: "s1", Status: store.TaskStatusFailed,
+			FailedAttempts: 1, RetryAfter: &retryAfter,
+		}).
+		Submit(t, s).Job
 
 	revived, err := s.RetryTasks(ctx(), j.ID, nil, time.Now())
 	if err != nil || len(revived) != 1 {
@@ -934,9 +784,10 @@ func TestRetryTasks_NothingEligible(t *testing.T) {
 	defer s.Close()
 	mustCreateFarm(t, s, "f1")
 	mustCreateQueue(t, s, "farm-f1", "q1", "q1")
-	mustCreateJob(t, s, "j1", "farm-f1", "q1")
-	mustCreateStep(t, s, "s1", "j1", store.StepStatusCompleted)
-	mustCreateTask(t, s, "t-ok", "j1", "s1", store.TaskStatusSucceeded)
+	storetest.NewJob("j1", "farm-f1", "q1").
+		Step("s1", store.StepStatusCompleted).
+		Task("t-ok", "s1", store.TaskStatusSucceeded).
+		Submit(t, s)
 
 	revived, err := s.RetryTasks(ctx(), "j1", nil, time.Now())
 	if err != nil {
@@ -948,52 +799,6 @@ func TestRetryTasks_NothingEligible(t *testing.T) {
 }
 
 // ── worker.go ─────────────────────────────────────────────────────────────────
-
-func TestUpdateWorker(t *testing.T) {
-	s := New()
-	defer s.Close()
-	mustCreateWorker(t, s, "w1", "farm-f1", store.WorkerStatusOnline)
-
-	updated, err := s.UpdateWorker(ctx(), store.Worker{
-		ID: "w1", FarmID: "farm-f1", Hostname: "new-host", Status: store.WorkerStatusOnline,
-	})
-	if err != nil {
-		t.Fatalf("UpdateWorker: %v", err)
-	}
-	if updated.Hostname != "new-host" {
-		t.Errorf("hostname = %q, want new-host", updated.Hostname)
-	}
-}
-
-func TestUpdateWorker_NotFound(t *testing.T) {
-	s := New()
-	defer s.Close()
-	_, err := s.UpdateWorker(ctx(), store.Worker{ID: "ghost"})
-	if !errors.Is(err, store.ErrNotFound) {
-		t.Fatalf("want ErrNotFound, got %v", err)
-	}
-}
-
-func TestDeleteWorker(t *testing.T) {
-	s := New()
-	defer s.Close()
-	mustCreateWorker(t, s, "w1", "f1", store.WorkerStatusOffline)
-
-	if err := s.DeleteWorker(ctx(), "w1"); err != nil {
-		t.Fatalf("DeleteWorker: %v", err)
-	}
-	if _, err := s.GetWorker(ctx(), "w1"); !errors.Is(err, store.ErrNotFound) {
-		t.Errorf("GetWorker after delete: want ErrNotFound, got %v", err)
-	}
-}
-
-func TestDeleteWorker_NotFound(t *testing.T) {
-	s := New()
-	defer s.Close()
-	if err := s.DeleteWorker(ctx(), "ghost"); !errors.Is(err, store.ErrNotFound) {
-		t.Fatalf("want ErrNotFound, got %v", err)
-	}
-}
 
 func TestDeleteOfflineWorkersBefore(t *testing.T) {
 	s := New()
@@ -1103,17 +908,12 @@ func TestCountIdleWorkers(t *testing.T) {
 	defer s.Close()
 	mustCreateFarm(t, s, "f1")
 	mustCreateQueue(t, s, "farm-f1", "q1", "q1")
-	mustCreateJob(t, s, "j1", "farm-f1", "q1")
+	storetest.NewJob("j1", "farm-f1", "q1").Task("t1", "s1", store.TaskStatusReady).Submit(t, s)
 	mustCreateWorker(t, s, "w-idle", "farm-f1", store.WorkerStatusOnline)
 	mustCreateWorker(t, s, "w-busy", "farm-f1", store.WorkerStatusOnline)
-	mustCreateTask(t, s, "t1", "j1", "s1", store.TaskStatusRunning)
 
-	// Mark w-busy as having a running task.
-	s.mu.Lock()
-	tk := s.tasks["t1"]
-	tk.AssignedWorkerID = "w-busy"
-	s.tasks["t1"] = tk
-	s.mu.Unlock()
+	// w-busy has a running task.
+	runTask(t, s, "t1", "w-busy")
 
 	n, err := s.CountIdleWorkers(ctx(), "farm-f1")
 	if err != nil {
@@ -1213,7 +1013,7 @@ func TestUpdateJob(t *testing.T) {
 	defer s.Close()
 	mustCreateFarm(t, s, "f1")
 	mustCreateQueue(t, s, "farm-f1", "q1", "q1")
-	mustCreateJob(t, s, "j1", "farm-f1", "q1")
+	storetest.NewJob("j1", "farm-f1", "q1").As(store.JobStatusRunning).Submit(t, s)
 
 	updated, err := s.UpdateJob(ctx(), store.Job{
 		ID: "j1", FarmID: "farm-f1", QueueID: "q1",
@@ -1240,61 +1040,12 @@ func TestUpdateJob_NotFound(t *testing.T) {
 	}
 }
 
-func TestUpdateJobStatus_RunningSetStartedAt(t *testing.T) {
-	s := New()
-	defer s.Close()
-	mustCreateFarm(t, s, "f1")
-	mustCreateQueue(t, s, "farm-f1", "q1", "q1")
-	j, err := s.CreateJob(ctx(), store.Job{ID: "j1", FarmID: "farm-f1", QueueID: "q1", Name: "j1", Status: store.JobStatusPending})
-	if err != nil {
-		t.Fatalf("CreateJob: %v", err)
-	}
-
-	if err := s.UpdateJobStatus(ctx(), j.ID, store.JobStatusRunning); err != nil {
-		t.Fatalf("UpdateJobStatus: %v", err)
-	}
-	got := mustGetJob(t, s, j.ID)
-	if got.StartedAt == nil {
-		t.Error("StartedAt should be set when transitioning to running")
-	}
-}
-
-func TestUpdateJobStatus_TerminalSetCompletedAt(t *testing.T) {
-	s := New()
-	defer s.Close()
-	mustCreateFarm(t, s, "f1")
-	mustCreateQueue(t, s, "farm-f1", "q1", "q1")
-	mustCreateJob(t, s, "j1", "farm-f1", "q1")
-
-	for _, status := range []store.JobStatus{store.JobStatusCompleted, store.JobStatusFailed, store.JobStatusCanceled} {
-		if err := s.UpdateJobStatus(ctx(), "j1", store.JobStatusRunning); err != nil {
-			t.Fatalf("reset to running: %v", err)
-		}
-		if err := s.UpdateJobStatus(ctx(), "j1", status); err != nil {
-			t.Fatalf("UpdateJobStatus(%v): %v", status, err)
-		}
-		got := mustGetJob(t, s, "j1")
-		if got.CompletedAt == nil {
-			t.Errorf("%v: CompletedAt should be set", status)
-		}
-	}
-}
-
-func TestUpdateJobStatus_NotFound(t *testing.T) {
-	s := New()
-	defer s.Close()
-	err := s.UpdateJobStatus(ctx(), "ghost", store.JobStatusFailed)
-	if !errors.Is(err, store.ErrNotFound) {
-		t.Fatalf("want ErrNotFound, got %v", err)
-	}
-}
-
 func TestCancelJobStatus(t *testing.T) {
 	s := New()
 	defer s.Close()
 	mustCreateFarm(t, s, "f1")
 	mustCreateQueue(t, s, "farm-f1", "q1", "q1")
-	mustCreateJob(t, s, "j1", "farm-f1", "q1")
+	storetest.NewJob("j1", "farm-f1", "q1").Submit(t, s)
 
 	if err := s.CancelJobStatus(ctx(), "j1"); err != nil {
 		t.Fatalf("CancelJobStatus: %v", err)
@@ -1314,10 +1065,7 @@ func TestCancelJobStatus_CompletedConflict(t *testing.T) {
 	defer s.Close()
 	mustCreateFarm(t, s, "f1")
 	mustCreateQueue(t, s, "farm-f1", "q1", "q1")
-	mustCreateJob(t, s, "j1", "farm-f1", "q1")
-	if err := s.UpdateJobStatus(ctx(), "j1", store.JobStatusCompleted); err != nil {
-		t.Fatalf("UpdateJobStatus: %v", err)
-	}
+	storetest.NewJob("j1", "farm-f1", "q1").As(store.JobStatusCompleted).Submit(t, s)
 
 	err := s.CancelJobStatus(ctx(), "j1")
 	if !errors.Is(err, store.ErrConflict) {
@@ -1339,8 +1087,8 @@ func TestListJobs_SortAndFilter(t *testing.T) {
 	defer s.Close()
 	mustCreateFarm(t, s, "f1")
 	mustCreateQueue(t, s, "farm-f1", "q1", "q1")
-	mustCreateJob(t, s, "j1", "farm-f1", "q1")
-	mustCreateJob(t, s, "j2", "farm-f1", "q1")
+	storetest.NewJob("j1", "farm-f1", "q1").As(store.JobStatusRunning).Submit(t, s)
+	storetest.NewJob("j2", "farm-f1", "q1").As(store.JobStatusRunning).Submit(t, s)
 
 	for _, field := range []store.JobSortField{
 		store.JobSortByCreatedAt,
@@ -1380,13 +1128,11 @@ func TestListJobs_Search(t *testing.T) {
 		t.Fatal(err)
 	}
 	mk := func(id, name, owner, project string) {
-		if _, err := st.CreateJob(ctx, store.Job{
+		storetest.Submit(t, st, store.JobSubmission{Job: store.Job{
 			ID: id, FarmID: "f1", QueueID: "q1", Name: name, Owner: owner,
 			Project: project, Status: store.JobStatusPending, Priority: 50,
 			TemplateFormat: store.TemplateFormatYAML,
-		}); err != nil {
-			t.Fatalf("CreateJob(%q): %v", id, err)
-		}
+		}})
 	}
 	mk("render-night", "Nightly Render", "alice", "moonshot")
 	mk("comp-day", "Daytime Comp", "bob", "sunrise")
@@ -1405,14 +1151,15 @@ func TestListJobs_Search(t *testing.T) {
 func TestGetTaskAttempt(t *testing.T) {
 	s := New()
 	defer s.Close()
-	mustCreateAttempt(t, s, "a1", "t1", 1, store.AttemptStatusRunning)
+	seedReadyTask(t, s)
+	leased := leaseTask(t, s, "t1", "w1")
 
-	a, err := s.GetTaskAttempt(ctx(), "a1")
+	a, err := s.GetTaskAttempt(ctx(), leased.ID)
 	if err != nil {
 		t.Fatalf("GetTaskAttempt: %v", err)
 	}
-	if a.ID != "a1" {
-		t.Errorf("id = %q, want a1", a.ID)
+	if a.ID != leased.ID {
+		t.Errorf("id = %q, want %q", a.ID, leased.ID)
 	}
 }
 
@@ -1428,15 +1175,16 @@ func TestGetTaskAttempt_NotFound(t *testing.T) {
 func TestLatestTaskAttempt_Multiple(t *testing.T) {
 	s := New()
 	defer s.Close()
-	mustCreateAttempt(t, s, "a1", "t1", 1, store.AttemptStatusFailed)
-	mustCreateAttempt(t, s, "a2", "t1", 2, store.AttemptStatusRunning)
+	seedReadyTask(t, s)
+	storetest.FailAndRequeue(t, s, store.LeaseRequest{TaskID: "t1", WorkerID: "w1"}, time.Now().UTC().Add(-time.Minute))
+	second := leaseTask(t, s, "t1", "w1")
 
 	a, err := s.LatestTaskAttempt(ctx(), "t1")
 	if err != nil {
 		t.Fatalf("LatestTaskAttempt: %v", err)
 	}
-	if a.ID != "a2" {
-		t.Errorf("latest = %q, want a2", a.ID)
+	if a.ID != second.ID || a.AttemptNumber != 2 {
+		t.Errorf("latest = %q (attempt %d), want %q (attempt 2)", a.ID, a.AttemptNumber, second.ID)
 	}
 }
 
@@ -1452,8 +1200,9 @@ func TestLatestTaskAttempt_NotFound(t *testing.T) {
 func TestListTaskAttempts(t *testing.T) {
 	s := New()
 	defer s.Close()
-	mustCreateAttempt(t, s, "a2", "t1", 2, store.AttemptStatusRunning)
-	mustCreateAttempt(t, s, "a1", "t1", 1, store.AttemptStatusFailed)
+	seedReadyTask(t, s)
+	storetest.FailAndRequeue(t, s, store.LeaseRequest{TaskID: "t1", WorkerID: "w1"}, time.Now().UTC().Add(-time.Minute))
+	leaseTask(t, s, "t1", "w1")
 
 	attempts, err := s.ListTaskAttempts(ctx(), "t1")
 	if err != nil {
@@ -1461,116 +1210,6 @@ func TestListTaskAttempts(t *testing.T) {
 	}
 	if len(attempts) != 2 || attempts[0].AttemptNumber != 1 {
 		t.Errorf("expected 2 attempts ordered asc; got %v", attempts)
-	}
-}
-
-func TestTerminateWorkerAttempts(t *testing.T) {
-	s := New()
-	defer s.Close()
-	mustCreateFarm(t, s, "f1")
-	mustCreateQueue(t, s, "farm-f1", "q1", "q1")
-	mustCreateJob(t, s, "j1", "farm-f1", "q1")
-	mustCreateTask(t, s, "t1", "j1", "s1", store.TaskStatusAssigned)
-	if err := s.AssignTask(ctx(), "t1", "w1", time.Now()); err != nil {
-		t.Fatalf("AssignTask: %v", err)
-	}
-	mustCreateAttempt(t, s, "a1", "t1", 1, store.AttemptStatusRunning)
-
-	now := time.Now()
-	n, err := s.TerminateWorkerAttempts(ctx(), "w1", store.AttemptStatusFailed, now)
-	if err != nil {
-		t.Fatalf("TerminateWorkerAttempts: %v", err)
-	}
-	if n != 1 {
-		t.Errorf("terminated = %d, want 1", n)
-	}
-	a := mustGetAttempt(t, s, "a1")
-	if a.Status != store.AttemptStatusFailed {
-		t.Errorf("status = %v, want failed", a.Status)
-	}
-}
-
-func TestCancelJobAttempts(t *testing.T) {
-	s := New()
-	defer s.Close()
-	mustCreateFarm(t, s, "f1")
-	mustCreateQueue(t, s, "farm-f1", "q1", "q1")
-	mustCreateJob(t, s, "j1", "farm-f1", "q1")
-	mustCreateTask(t, s, "t1", "j1", "s1", store.TaskStatusRunning)
-	mustCreateAttempt(t, s, "a1", "t1", 1, store.AttemptStatusRunning)
-
-	n, err := s.CancelJobAttempts(ctx(), "j1", time.Now())
-	if err != nil {
-		t.Fatalf("CancelJobAttempts: %v", err)
-	}
-	if n != 1 {
-		t.Errorf("canceled = %d, want 1", n)
-	}
-}
-
-func TestUpdateTaskAttempt(t *testing.T) {
-	s := New()
-	defer s.Close()
-	a := mustCreateAttempt(t, s, "a1", "t1", 1, store.AttemptStatusRunning)
-
-	now := time.Now()
-	a.Status = store.AttemptStatusSucceeded
-	a.EndedAt = &now
-	a.SessionID = "sess-123"
-
-	updated, err := s.UpdateTaskAttempt(ctx(), a)
-	if err != nil {
-		t.Fatalf("UpdateTaskAttempt: %v", err)
-	}
-	if updated.Status != store.AttemptStatusSucceeded {
-		t.Errorf("status = %v, want succeeded", updated.Status)
-	}
-	if updated.SessionID != "sess-123" {
-		t.Errorf("session_id = %q, want sess-123", updated.SessionID)
-	}
-}
-
-func TestUpdateTaskAttempt_SessionIDNotOverwrittenByEmpty(t *testing.T) {
-	s := New()
-	defer s.Close()
-	a := mustCreateAttempt(t, s, "a1", "t1", 1, store.AttemptStatusRunning)
-	// Set a session ID.
-	a.SessionID = "original"
-	mustUpdateTaskAttempt(t, s, a)
-
-	// Update with empty session ID — should not overwrite.
-	a.SessionID = ""
-	updated := mustUpdateTaskAttempt(t, s, a)
-	if updated.SessionID != "original" {
-		t.Errorf("session_id = %q, want original", updated.SessionID)
-	}
-}
-
-func TestUpdateTaskAttempt_MessageNotOverwrittenByEmpty(t *testing.T) {
-	s := New()
-	defer s.Close()
-	a := mustCreateAttempt(t, s, "a1", "t1", 1, store.AttemptStatusRunning)
-	// Set a message.
-	a.Message = "boom"
-	updated := mustUpdateTaskAttempt(t, s, a)
-	if updated.Message != "boom" {
-		t.Errorf("message = %q, want boom", updated.Message)
-	}
-
-	// Update with empty message — should not overwrite.
-	a.Message = ""
-	updated = mustUpdateTaskAttempt(t, s, a)
-	if updated.Message != "boom" {
-		t.Errorf("message = %q, want boom (not overwritten by empty)", updated.Message)
-	}
-}
-
-func TestUpdateTaskAttempt_NotFound(t *testing.T) {
-	s := New()
-	defer s.Close()
-	_, err := s.UpdateTaskAttempt(ctx(), store.TaskAttempt{ID: "ghost"})
-	if !errors.Is(err, store.ErrNotFound) {
-		t.Fatalf("want ErrNotFound, got %v", err)
 	}
 }
 
@@ -1633,18 +1272,21 @@ func TestListQueues_SortAndFilter(t *testing.T) {
 
 // ── usage.go ──────────────────────────────────────────────────────────────────
 
-func TestCreateClaim_ConflictOnDuplicate(t *testing.T) {
+// TestInjectClaim_ConflictOnDuplicateActiveClaim pins that the fake's injector
+// keeps the unique-active-claim check SQLite's (attempt, pool) index enforces,
+// so a fixture cannot build a state SQLite would refuse. It replaces the same
+// property of the per-row claim write, which the injector superseded. (The
+// lease's own duplicate-pool conflict is TestLeaseTask_SamePoolTwice.)
+func TestInjectClaim_ConflictOnDuplicateActiveClaim(t *testing.T) {
 	s := New()
-	defer s.Close()
-
-	co := store.UsageClaim{
-		ID: "co1", PoolID: "pool1", TaskAttemptID: "attempt1",
-		ClaimedAt: time.Now(),
+	ctx := t.Context()
+	c := store.UsageClaim{ID: "c1", PoolID: "p1", TaskAttemptID: "a1"}
+	if _, err := s.InjectClaim(ctx, c); err != nil {
+		t.Fatalf("first InjectClaim: %v", err)
 	}
-	mustCreateClaim(t, s, co)
-	_, err := s.CreateClaim(ctx(), co) // duplicate
-	if !errors.Is(err, store.ErrConflict) {
-		t.Fatalf("want ErrConflict on duplicate, got %v", err)
+	c.ID = "c2"
+	if _, err := s.InjectClaim(ctx, c); !errors.Is(err, store.ErrConflict) {
+		t.Fatalf("second InjectClaim error = %v, want ErrConflict", err)
 	}
 }
 
@@ -1664,42 +1306,19 @@ func TestCreateUsagePool_ConflictCaseInsensitive(t *testing.T) {
 	}
 }
 
-func TestReleaseClaim(t *testing.T) {
-	s := New()
-	defer s.Close()
-
-	co := store.UsageClaim{ID: "co1", PoolID: "p1", TaskAttemptID: "a1", ClaimedAt: time.Now()}
-	mustCreateClaim(t, s, co)
-
-	if err := s.ReleaseClaim(ctx(), "co1", time.Now()); err != nil {
-		t.Fatalf("ReleaseClaim: %v", err)
-	}
-	if n := mustActiveClaimCount(t, s, "p1"); n != 0 {
-		t.Errorf("active count = %d, want 0 after release", n)
-	}
-}
-
-func TestReleaseClaim_NotFound(t *testing.T) {
-	s := New()
-	defer s.Close()
-	err := s.ReleaseClaim(ctx(), "ghost", time.Now())
-	if !errors.Is(err, store.ErrNotFound) {
-		t.Fatalf("want ErrNotFound, got %v", err)
-	}
-}
-
 func TestActiveClaimCount(t *testing.T) {
 	s := New()
 	defer s.Close()
+	mustCreateFarm(t, s, "f1")
+	mustCreateQueue(t, s, "farm-f1", "q1", "q1")
+	pool := mustCreatePool(t, s, "p1", 0)
+	storetest.NewJob("j1", "farm-f1", "q1").
+		Task("t1", "s1", store.TaskStatusReady).
+		Task("t2", "s1", store.TaskStatusReady).
+		Submit(t, s)
 
-	for i, id := range []string{"co1", "co2"} {
-		co := store.UsageClaim{
-			ID: id, PoolID: "p1",
-			TaskAttemptID: "a" + string(rune('1'+i)),
-			ClaimedAt:     time.Now(),
-		}
-		mustCreateClaim(t, s, co)
-	}
+	claimOn(t, s, "t1", "co1", pool)
+	claimOn(t, s, "t2", "co2", pool)
 
 	if n := mustActiveClaimCount(t, s, "p1"); n != 2 {
 		t.Errorf("count = %d, want 2", n)
@@ -1709,21 +1328,29 @@ func TestActiveClaimCount(t *testing.T) {
 func TestListUsagePoolUtilization(t *testing.T) {
 	s := New()
 	defer s.Close()
+	mustCreateFarm(t, s, "f1")
+	mustCreateQueue(t, s, "farm-f1", "q1", "q1")
+	storetest.NewJob("j1", "farm-f1", "q1").
+		Task("t1", "s1", store.TaskStatusReady).
+		Task("t2", "s1", store.TaskStatusReady).
+		Task("t3", "s1", store.TaskStatusReady).
+		Submit(t, s)
 
-	if _, err := s.CreateUsagePool(ctx(), store.UsagePool{ID: "p-arnold", Name: "arnold", MaxConcurrent: 5}); err != nil {
+	arnold, err := s.CreateUsagePool(ctx(), store.UsagePool{ID: "p-arnold", Name: "arnold", MaxConcurrent: 5})
+	if err != nil {
 		t.Fatalf("CreateUsagePool arnold: %v", err)
 	}
 	if _, err := s.CreateUsagePool(ctx(), store.UsagePool{ID: "p-maya", Name: "maya", MaxConcurrent: 3}); err != nil {
 		t.Fatalf("CreateUsagePool maya: %v", err)
 	}
 
-	// Two active claims on arnold, one released (should not count).
-	mustCreateClaim(t, s, store.UsageClaim{ID: "co1", PoolID: "p-arnold", TaskAttemptID: "a1", ClaimedAt: time.Now()})
-	mustCreateClaim(t, s, store.UsageClaim{ID: "co2", PoolID: "p-arnold", TaskAttemptID: "a2", ClaimedAt: time.Now()})
-	mustCreateClaim(t, s, store.UsageClaim{ID: "co3", PoolID: "p-arnold", TaskAttemptID: "a3", ClaimedAt: time.Now()})
-	if err := s.ReleaseClaim(ctx(), "co3", time.Now()); err != nil {
-		t.Fatalf("ReleaseClaim: %v", err)
-	}
+	// Two active claims on arnold, one released (should not count). The third
+	// attempt completes, as a worker's success report does, which releases its
+	// claim.
+	claimOn(t, s, "t1", "co1", arnold)
+	claimOn(t, s, "t2", "co2", arnold)
+	done := claimOn(t, s, "t3", "co3", arnold)
+	storetest.Complete(t, s, done, store.TaskStatusSucceeded)
 
 	usage, err := s.ListUsagePoolUtilization(ctx())
 	if err != nil {
@@ -1737,80 +1364,6 @@ func TestListUsagePoolUtilization(t *testing.T) {
 	}
 	if usage[1].Name != "maya" || usage[1].InUse != 0 {
 		t.Errorf("maya: got %q/%d, want maya/0", usage[1].Name, usage[1].InUse)
-	}
-}
-
-func TestTryClaimSlots_AtCapacity(t *testing.T) {
-	s := New()
-	defer s.Close()
-
-	// Pool with max 1 slot; pre-claim it.
-	co := store.UsageClaim{ID: "co1", PoolID: "p1", TaskAttemptID: "a1", ClaimedAt: time.Now()}
-	mustCreateClaim(t, s, co)
-
-	err := s.TryClaimSlots(ctx(), "a2", []store.UsagePoolClaim{
-		{PoolID: "p1", MaxConcurrent: 1, ClaimID: "co2"},
-	}, time.Now())
-	if !errors.Is(err, store.ErrUsageAtCapacity) {
-		t.Fatalf("want ErrUsageAtCapacity, got %v", err)
-	}
-}
-
-func TestTryClaimSlots_Unlimited(t *testing.T) {
-	s := New()
-	defer s.Close()
-
-	err := s.TryClaimSlots(ctx(), "a1", []store.UsagePoolClaim{
-		{PoolID: "p1", MaxConcurrent: 0, ClaimID: "co1"}, // 0 = unlimited
-	}, time.Now())
-	if err != nil {
-		t.Fatalf("TryClaimSlots (unlimited): %v", err)
-	}
-}
-
-func TestReleaseAttemptClaims(t *testing.T) {
-	s := New()
-	defer s.Close()
-
-	// CreateClaim enforces uniqueness on (TaskAttemptID, PoolID) — use
-	// distinct pool IDs so both rows are accepted.
-	for i, id := range []string{"co1", "co2"} {
-		co := store.UsageClaim{
-			ID:            id,
-			PoolID:        "p" + string(rune('1'+i)), // p1, p2
-			TaskAttemptID: "a1",
-			ClaimedAt:     time.Now(),
-		}
-		mustCreateClaim(t, s, co)
-	}
-
-	n, err := s.ReleaseAttemptClaims(ctx(), "a1", time.Now())
-	if err != nil {
-		t.Fatalf("ReleaseAttemptClaims: %v", err)
-	}
-	if n != 2 {
-		t.Errorf("released = %d, want 2", n)
-	}
-}
-
-func TestReleaseJobClaims(t *testing.T) {
-	s := New()
-	defer s.Close()
-	mustCreateFarm(t, s, "f1")
-	mustCreateQueue(t, s, "farm-f1", "q1", "q1")
-	mustCreateJob(t, s, "j1", "farm-f1", "q1")
-	mustCreateTask(t, s, "t1", "j1", "s1", store.TaskStatusRunning)
-	mustCreateAttempt(t, s, "a1", "t1", 1, store.AttemptStatusRunning)
-
-	co := store.UsageClaim{ID: "co1", PoolID: "p1", TaskAttemptID: "a1", ClaimedAt: time.Now()}
-	mustCreateClaim(t, s, co)
-
-	n, err := s.ReleaseJobClaims(ctx(), "j1", time.Now())
-	if err != nil {
-		t.Fatalf("ReleaseJobClaims: %v", err)
-	}
-	if n != 1 {
-		t.Errorf("released = %d, want 1", n)
 	}
 }
 
@@ -1858,20 +1411,19 @@ func TestFakeStore_DeleteJob(t *testing.T) {
 
 	const jobID = "j-del"
 
-	// Seed job + children.
+	// Seed job + children. The task is leased holding a claim, so it has an
+	// attempt and an active claim for the delete to remove.
 	mustCreateFarm(t, st, "f1")
 	mustCreateQueue(t, st, "farm-f1", "q1", "q1")
-	mustCreateJob(t, st, jobID, "farm-f1", "q1")
-
-	if _, err := st.CreateStep(ctx, store.Step{
-		ID: "s1", JobID: jobID, Name: "s1",
-		Status: store.StepStatusPending, DependsOn: []string{},
-	}); err != nil {
-		t.Fatalf("CreateStep: %v", err)
+	mustCreatePool(t, st, "pool1", 0)
+	storetest.NewJob(jobID, "farm-f1", "q1").Task("t1", "s1", store.TaskStatusReady).Submit(t, st)
+	storetest.Lease(t, st, store.LeaseRequest{
+		TaskID: "t1", WorkerID: "w1", AttemptID: "a1",
+		Claims: []store.UsagePoolClaim{{ClaimID: "cl1", PoolID: "pool1", PoolName: "pool1"}},
+	})
+	if n := mustActiveClaimCount(t, st, "pool1"); n != 1 {
+		t.Fatalf("seeded active claims = %d, want 1, or the delete below proves nothing", n)
 	}
-
-	mustCreateTask(t, st, "t1", jobID, "s1", store.TaskStatusPending)
-	mustCreateAttempt(t, st, "a1", "t1", 1, store.AttemptStatusRunning)
 
 	if _, err := st.CreateTaskLog(ctx, store.TaskLog{
 		ID: "log1", TaskID: "t1", AttemptID: "a1",
@@ -1879,11 +1431,6 @@ func TestFakeStore_DeleteJob(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("CreateTaskLog: %v", err)
 	}
-
-	mustCreateClaim(t, st, store.UsageClaim{
-		ID: "cl1", PoolID: "pool1", TaskAttemptID: "a1",
-		ClaimedAt: time.Now(),
-	})
 
 	// Delete the job.
 	if err := st.DeleteJob(ctx, jobID); err != nil {
@@ -1953,9 +1500,7 @@ func TestFakeStore_DeleteTerminalJobsBefore(t *testing.T) {
 	st := New()
 	mkJob := func(id string, status store.JobStatus, completed time.Time) {
 		c := completed
-		if _, err := st.CreateJob(ctx, store.Job{ID: id, Status: status, CompletedAt: &c, UpdatedAt: completed}); err != nil {
-			t.Fatalf("mkJob %q: %v", id, err)
-		}
+		storetest.Submit(t, st, store.JobSubmission{Job: store.Job{ID: id, Status: status, CompletedAt: &c}})
 	}
 	mkJob("c", store.JobStatusCompleted, old)
 	mkJob("x", store.JobStatusCanceled, old)
@@ -1987,17 +1532,11 @@ func TestFakeStore_DeleteTerminalJobsBefore_KeepsUpstreamNeededByBlockedDependen
 
 	st := New()
 	c := old
-	if _, err := st.CreateJob(ctx, store.Job{
-		ID: "upstream-old", Status: store.JobStatusCompleted, CompletedAt: &c, UpdatedAt: old,
-	}); err != nil {
-		t.Fatalf("CreateJob(upstream-old): %v", err)
-	}
-	if _, err := st.CreateJob(ctx, store.Job{ID: "dependent-blocked", Status: store.JobStatusBlocked}); err != nil {
-		t.Fatalf("CreateJob(dependent-blocked): %v", err)
-	}
-	if err := st.CreateJobDependencies(ctx, "dependent-blocked", []string{"upstream-old"}); err != nil {
-		t.Fatalf("CreateJobDependencies: %v", err)
-	}
+	storetest.Submit(t, st, store.JobSubmission{Job: store.Job{ID: "upstream-old", Status: store.JobStatusCompleted, CompletedAt: &c}})
+	storetest.Submit(t, st, store.JobSubmission{
+		Job:       store.Job{ID: "dependent-blocked", Status: store.JobStatusBlocked},
+		DependsOn: []string{"upstream-old"},
+	})
 
 	got, err := st.DeleteTerminalJobsBefore(ctx, cutoff, false)
 	if err != nil {
@@ -2011,8 +1550,8 @@ func TestFakeStore_DeleteTerminalJobsBefore_KeepsUpstreamNeededByBlockedDependen
 	}
 
 	// Once the dependent is terminal, the upstream is no longer protected.
-	if err := st.UpdateJobStatus(ctx, "dependent-blocked", store.JobStatusCanceled); err != nil {
-		t.Fatalf("UpdateJobStatus(canceled): %v", err)
+	if canceled, _, err := st.CancelBlockedJob(ctx, "dependent-blocked", "test", time.Now().UTC()); err != nil || !canceled {
+		t.Fatalf("CancelBlockedJob = (%v, %v), want canceled", canceled, err)
 	}
 	got, err = st.DeleteTerminalJobsBefore(ctx, cutoff, false)
 	if err != nil {

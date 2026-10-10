@@ -10,8 +10,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
+
 	"github.com/uberware/sqi/internal/bus"
 	"github.com/uberware/sqi/internal/store"
+	"github.com/uberware/sqi/internal/store/storetest"
 	"github.com/uberware/sqi/internal/worker/protocol"
 )
 
@@ -482,20 +485,21 @@ func TestParkedLeaseOfAWorkerDisabledMeanwhileGetsNoWork(t *testing.T) {
 		time.Sleep(time.Millisecond)
 	}
 
-	// While it is parked the worker is disabled and a new task becomes ready.
+	// While it is parked the worker is disabled and a new task becomes ready:
+	// a second job, like the first, is submitted to the queue.
 	if _, err := st.SetWorkerDisabled(t.Context(), w.ID, true); err != nil {
 		t.Fatalf("SetWorkerDisabled: %v", err)
 	}
 	held := mustTaskOf(t, st, ids[0])
-	now := time.Now().UTC()
-	fresh, err := st.CreateTask(t.Context(), store.Task{
-		ID: "t-after-disable", JobID: held.JobID, StepID: held.StepID,
+	heldJob, heldStep := mustJob(t, st, held.JobID), mustStep(t, st, held.StepID)
+	heldJob.ID, heldStep.ID = uuid.NewString(), uuid.NewString()
+	heldStep.JobID = heldJob.ID
+	fresh := store.Task{
+		ID: "t-after-disable", JobID: heldJob.ID, StepID: heldStep.ID,
 		Name: "t", Status: store.TaskStatusReady, Parameters: map[string]string{},
-		RequiredCores: &one, CreatedAt: now, UpdatedAt: now,
-	})
-	if err != nil {
-		t.Fatalf("CreateTask: %v", err)
+		RequiredCores: &one,
 	}
+	storetest.Submit(t, st, store.JobSubmission{Job: heldJob, Steps: []store.Step{heldStep}, Tasks: []store.Task{fresh}})
 	s.waiters.notifyAll()
 
 	select {

@@ -18,6 +18,7 @@ import (
 	"github.com/uberware/sqi/internal/bus"
 	"github.com/uberware/sqi/internal/store"
 	fakestore "github.com/uberware/sqi/internal/store/fake"
+	"github.com/uberware/sqi/internal/store/storetest"
 	"github.com/uberware/sqi/internal/worker/protocol"
 )
 
@@ -38,8 +39,15 @@ type jobDepsHarness struct {
 	farmID  string
 	queueID string
 
-	// task/attempt back the single-task job built by seedRunnableJob, for
-	// completeJob to report succeeded on.
+	// runs holds, by job ID, the task and attempt backing each single-task job
+	// built by seedRunnableJob, for completeJob to report succeeded on and
+	// failJob to fail.
+	runs map[string]jobDepsRun
+}
+
+// jobDepsRun is the running task of a job seedRunnableJob built and the
+// attempt its lease opened.
+type jobDepsRun struct {
 	task    store.Task
 	attempt store.TaskAttempt
 }
@@ -71,141 +79,116 @@ func newJobDepsHarness(t *testing.T) *jobDepsHarness {
 		t.Fatalf("CreateQueue: %v", err)
 	}
 
-	return &jobDepsHarness{sched: sched, store: st, notif: n, farmID: farm.ID, queueID: queue.ID}
+	return &jobDepsHarness{
+		sched: sched, store: st, notif: n, farmID: farm.ID, queueID: queue.ID,
+		runs: map[string]jobDepsRun{},
+	}
 }
 
 // seedJob creates a job with the given status in the harness's farm/queue.
+// The job has no steps; a job a test later completes or fails comes from
+// seedRunnableJob instead, which has the task to do it through.
 func (h *jobDepsHarness) seedJob(t *testing.T, status store.JobStatus) store.Job {
 	t.Helper()
-	job, err := h.store.CreateJob(context.Background(), store.Job{
+	return storetest.Submit(t, h.store, store.JobSubmission{Job: store.Job{
 		ID:             uuid.NewString(),
 		FarmID:         h.farmID,
 		QueueID:        h.queueID,
 		Name:           "job-" + uuid.NewString(),
 		Status:         status,
 		TemplateFormat: store.TemplateFormatJSON,
-	})
-	if err != nil {
-		t.Fatalf("CreateJob: %v", err)
-	}
-	return job
+	}}).Job
 }
 
-// seedJobInNewQueue creates a job (with the given status) in its own new
-// queue within the harness's farm, so tests can prove reconciliation works
-// across queues.
-func (h *jobDepsHarness) seedJobInNewQueue(t *testing.T, status store.JobStatus) store.Job {
+// seedRunnableJobInNewQueue is seedRunnableJob in its own new queue within the
+// harness's farm, so tests can prove reconciliation works across queues.
+func (h *jobDepsHarness) seedRunnableJobInNewQueue(t *testing.T) store.Job {
 	t.Helper()
-	ctx := context.Background()
-	queue, err := h.store.CreateQueue(ctx, store.Queue{ID: uuid.NewString(), FarmID: h.farmID, Name: "q2"})
+	queue, err := h.store.CreateQueue(context.Background(), store.Queue{ID: uuid.NewString(), FarmID: h.farmID, Name: "q2"})
 	if err != nil {
 		t.Fatalf("CreateQueue: %v", err)
 	}
-	job, err := h.store.CreateJob(ctx, store.Job{
-		ID:             uuid.NewString(),
-		FarmID:         h.farmID,
-		QueueID:        queue.ID,
-		Name:           "job-" + uuid.NewString(),
-		Status:         status,
-		TemplateFormat: store.TemplateFormatJSON,
-	})
-	if err != nil {
-		t.Fatalf("CreateJob: %v", err)
-	}
-	return job
+	return h.seedRunnableJobIn(t, queue.ID)
 }
 
 // seedBlockedJobDependingOn creates a blocked job with one step (pending, no
-// intra-job dependencies) and one pending task, then records a cross-job
-// dependency edge on each of upstreamIDs.
+// intra-job dependencies) and one pending task, with a cross-job dependency
+// edge on each of upstreamIDs, in one submission.
 func (h *jobDepsHarness) seedBlockedJobDependingOn(t *testing.T, upstreamIDs ...string) store.Job {
 	t.Helper()
-	ctx := context.Background()
-	job, err := h.store.CreateJob(ctx, store.Job{
-		ID:             uuid.NewString(),
-		FarmID:         h.farmID,
-		QueueID:        h.queueID,
-		Name:           "down-" + uuid.NewString(),
-		Status:         store.JobStatusBlocked,
-		TemplateFormat: store.TemplateFormatJSON,
-	})
-	if err != nil {
-		t.Fatalf("CreateJob: %v", err)
-	}
-	step, err := h.store.CreateStep(ctx, store.Step{
-		ID:     uuid.NewString(),
-		JobID:  job.ID,
-		Name:   "s1",
-		Status: store.StepStatusPending,
-	})
-	if err != nil {
-		t.Fatalf("CreateStep: %v", err)
-	}
-	if _, err := h.store.CreateTask(ctx, store.Task{
-		ID:     uuid.NewString(),
-		JobID:  job.ID,
-		StepID: step.ID,
-		Name:   "t1",
-		Status: store.TaskStatusPending,
-	}); err != nil {
-		t.Fatalf("CreateTask: %v", err)
-	}
-	if err := h.store.CreateJobDependencies(ctx, job.ID, upstreamIDs); err != nil {
-		t.Fatalf("CreateJobDependencies: %v", err)
-	}
-	return job
+	jobID, stepID := uuid.NewString(), uuid.NewString()
+	return storetest.Submit(t, h.store, store.JobSubmission{
+		Job: store.Job{
+			ID:             jobID,
+			FarmID:         h.farmID,
+			QueueID:        h.queueID,
+			Name:           "down-" + uuid.NewString(),
+			Status:         store.JobStatusBlocked,
+			TemplateFormat: store.TemplateFormatJSON,
+		},
+		DependsOn: upstreamIDs,
+		Steps:     []store.Step{{ID: stepID, JobID: jobID, Name: "s1", Status: store.StepStatusPending}},
+		Tasks: []store.Task{{
+			ID: uuid.NewString(), JobID: jobID, StepID: stepID, Name: "t1", Status: store.TaskStatusPending,
+		}},
+	}).Job
 }
 
 // seedRunnableJob creates a real job with a single running step, a single
 // running task, and an open attempt on it — the fixture needed to drive the
 // job to completion through the same status-handling path a worker uses (see
-// completeJob), rather than mutating job status directly.
+// completeJob), rather than mutating job status directly. The task is
+// leased to jobDepsWorkerID and started through [storetest.SubmitLeasing], so
+// the attempt is the one that lease opened.
 func (h *jobDepsHarness) seedRunnableJob(t *testing.T) store.Job {
 	t.Helper()
+	return h.seedRunnableJobIn(t, h.queueID)
+}
+
+// seedRunnableJobIn is seedRunnableJob in queueID.
+func (h *jobDepsHarness) seedRunnableJobIn(t *testing.T, queueID string) store.Job {
+	t.Helper()
+	jobID, stepID, taskID := uuid.NewString(), uuid.NewString(), uuid.NewString()
+	sub, attempts := storetest.SubmitLeasing(t, h.store, store.JobSubmission{
+		Job: store.Job{
+			ID:             jobID,
+			FarmID:         h.farmID,
+			QueueID:        queueID,
+			Name:           "up-" + uuid.NewString(),
+			Status:         store.JobStatusRunning,
+			TemplateFormat: store.TemplateFormatJSON,
+		},
+		Steps: []store.Step{{ID: stepID, JobID: jobID, Name: "s1", Status: store.StepStatusRunning}},
+		Tasks: []store.Task{{ID: taskID, JobID: jobID, StepID: stepID, Name: "t1", Status: store.TaskStatusRunning}},
+	}, storetest.LeaseTo(jobDepsWorkerID))
+	h.runs[jobID] = jobDepsRun{task: sub.Tasks[0], attempt: attempts[taskID]}
+	return sub.Job
+}
+
+// failJob fails the job seeded by seedRunnableJob through the store writes an
+// exhausted worker failure and the completion path make — the failure
+// recorded and the task moved to failed (RecordTaskFailure, then
+// CompleteTaskAttempt, as handleTaskFailed does), then its step and the job
+// finalized — WITHOUT the scheduler's completion hook, so the test's own
+// ReconcileDependents call is what reacts to the failure.
+func (h *jobDepsHarness) failJob(t *testing.T, jobID string) {
+	t.Helper()
 	ctx := context.Background()
-	job, err := h.store.CreateJob(ctx, store.Job{
-		ID:             uuid.NewString(),
-		FarmID:         h.farmID,
-		QueueID:        h.queueID,
-		Name:           "up-" + uuid.NewString(),
-		Status:         store.JobStatusRunning,
-		TemplateFormat: store.TemplateFormatJSON,
-	})
-	if err != nil {
-		t.Fatalf("CreateJob: %v", err)
+	run, ok := h.runs[jobID]
+	if !ok {
+		t.Fatalf("failJob(%s): not a job seedRunnableJob built", jobID)
 	}
-	step, err := h.store.CreateStep(ctx, store.Step{
-		ID:     uuid.NewString(),
-		JobID:  job.ID,
-		Name:   "s1",
-		Status: store.StepStatusRunning,
-	})
-	if err != nil {
-		t.Fatalf("CreateStep: %v", err)
+	now := time.Now().UTC()
+	if _, _, _, err := h.store.RecordTaskFailure(ctx, run.attempt.ID, run.task.ID, nil, "", "", now); err != nil {
+		t.Fatalf("RecordTaskFailure: %v", err)
 	}
-	task, err := h.store.CreateTask(ctx, store.Task{
-		ID:     uuid.NewString(),
-		JobID:  job.ID,
-		StepID: step.ID,
-		Name:   "t1",
-		Status: store.TaskStatusRunning,
-	})
-	if err != nil {
-		t.Fatalf("CreateTask: %v", err)
+	storetest.Complete(t, h.store, run.attempt, store.TaskStatusFailed)
+	if status, _, err := h.store.FinalizeStep(ctx, run.task.StepID, now); err != nil || status != store.StepStatusFailed {
+		t.Fatalf("FinalizeStep = (%q, %v), want failed", status, err)
 	}
-	h.attempt, err = h.store.CreateTaskAttempt(ctx, store.TaskAttempt{
-		ID:            uuid.NewString(),
-		TaskID:        task.ID,
-		WorkerID:      jobDepsWorkerID,
-		AttemptNumber: 1,
-		Status:        store.AttemptStatusRunning,
-		StartedAt:     time.Now(),
-	})
-	if err != nil {
-		t.Fatalf("CreateTaskAttempt: %v", err)
+	if status, _, err := h.store.FinalizeJob(ctx, jobID, now); err != nil || status != store.JobStatusFailed {
+		t.Fatalf("FinalizeJob = (%q, %v), want failed", status, err)
 	}
-	h.task = task
-	return job
 }
 
 // completeJob drives the job seeded by seedRunnableJob to succeeded via the
@@ -218,13 +201,17 @@ func (h *jobDepsHarness) completeJob(t *testing.T, jobID string) {
 	if h.sched.ctx == nil {
 		h.sched.ctx = context.Background()
 	}
+	run, ok := h.runs[jobID]
+	if !ok {
+		t.Fatalf("completeJob(%s): not a job seedRunnableJob built", jobID)
+	}
 	exitCode := 0
 	msg := &fakeJSMsg{
-		subject: bus.TaskStatusSubject(jobDepsWorkerID, h.task.JobID),
+		subject: bus.TaskStatusSubject(jobDepsWorkerID, run.task.JobID),
 		data: taskStatusMsgJSON(t, protocol.TaskStatusMsg{
 			Version:   protocol.ProtocolVersion,
-			TaskID:    h.task.ID,
-			AttemptID: h.attempt.ID,
+			TaskID:    run.task.ID,
+			AttemptID: run.attempt.ID,
 			Status:    "succeeded",
 			ExitCode:  &exitCode,
 			At:        time.Now().UTC(),
@@ -244,12 +231,10 @@ func TestReconcile_ReleasesWhenAllUpstreamsCompleted(t *testing.T) {
 
 	// Upstream lives in a different queue than the dependent, proving
 	// reconciliation is cross-queue.
-	up := h.seedJobInNewQueue(t, store.JobStatusRunning)
+	up := h.seedRunnableJobInNewQueue(t)
 	down := h.seedBlockedJobDependingOn(t, up.ID)
 
-	if err := h.store.UpdateJobStatus(ctx, up.ID, store.JobStatusCompleted); err != nil {
-		t.Fatal(err)
-	}
+	h.completeJob(t, up.ID)
 	if err := h.sched.ReconcileDependents(ctx, up.ID); err != nil {
 		t.Fatal(err)
 	}
@@ -279,12 +264,12 @@ func TestReconcile_ReleasesWhenAllUpstreamsCompleted(t *testing.T) {
 func TestReconcile_CancelsWhenUpstreamFailed(t *testing.T) {
 	ctx := context.Background()
 	h := newJobDepsHarness(t)
-	up := h.seedJob(t, store.JobStatusRunning)
+	// The upstream is submitted live (a submission behind a failed upstream is
+	// refused) and fails after the dependent is in place.
+	up := h.seedRunnableJob(t)
 	down := h.seedBlockedJobDependingOn(t, up.ID)
 
-	if err := h.store.UpdateJobStatus(ctx, up.ID, store.JobStatusFailed); err != nil {
-		t.Fatal(err)
-	}
+	h.failJob(t, up.ID)
 	if err := h.sched.ReconcileDependents(ctx, up.ID); err != nil {
 		t.Fatal(err)
 	}
@@ -339,13 +324,11 @@ func TestReconcile_CancelsWhenUpstreamDeleted(t *testing.T) {
 func TestReconcile_FanInWaitsForLastUpstream(t *testing.T) {
 	ctx := context.Background()
 	h := newJobDepsHarness(t)
-	up1 := h.seedJob(t, store.JobStatusRunning)
-	up2 := h.seedJob(t, store.JobStatusRunning)
+	up1 := h.seedRunnableJob(t)
+	up2 := h.seedRunnableJob(t)
 	down := h.seedBlockedJobDependingOn(t, up1.ID, up2.ID)
 
-	if err := h.store.UpdateJobStatus(ctx, up1.ID, store.JobStatusCompleted); err != nil {
-		t.Fatal(err)
-	}
+	h.completeJob(t, up1.ID)
 	if err := h.sched.ReconcileDependents(ctx, up1.ID); err != nil {
 		t.Fatal(err)
 	}
@@ -355,9 +338,7 @@ func TestReconcile_FanInWaitsForLastUpstream(t *testing.T) {
 		t.Fatalf("after 1/2 upstreams: status = %q, want still blocked", got.Status)
 	}
 
-	if err := h.store.UpdateJobStatus(ctx, up2.ID, store.JobStatusCompleted); err != nil {
-		t.Fatal(err)
-	}
+	h.completeJob(t, up2.ID)
 	if err := h.sched.ReconcileDependents(ctx, up2.ID); err != nil {
 		t.Fatal(err)
 	}
@@ -376,9 +357,12 @@ func TestSweepBlockedJobs_ReleasesAndCancels(t *testing.T) {
 	up1 := h.seedJob(t, store.JobStatusCompleted)
 	down1 := h.seedBlockedJobDependingOn(t, up1.ID)
 
-	// down2 cancels: its upstream already failed before the sweep runs.
-	up2 := h.seedJob(t, store.JobStatusFailed)
+	// down2 cancels: its upstream already failed before the sweep runs. A
+	// submission behind a failed upstream is refused, so the upstream is
+	// submitted live and fails once the dependent is in place.
+	up2 := h.seedRunnableJob(t)
 	down2 := h.seedBlockedJobDependingOn(t, up2.ID)
+	h.failJob(t, up2.ID)
 
 	if err := h.sched.sweepBlockedJobs(ctx); err != nil {
 		t.Fatal(err)
@@ -399,16 +383,15 @@ func TestSweepBlockedJobs_ReleasesAndCancels(t *testing.T) {
 func TestReconcile_CascadesTransitivelyThroughChain(t *testing.T) {
 	// up (fails) -> mid (blocked on up) -> leaf (blocked on mid): the leaf
 	// must also end up canceled even though its own upstream (mid) never
-	// itself transitions via UpdateJobStatus — cancelAndCascade must drive it.
+	// itself transitions through a write the test makes — cancelAndCascade must
+	// drive it.
 	ctx := context.Background()
 	h := newJobDepsHarness(t)
-	up := h.seedJob(t, store.JobStatusRunning)
+	up := h.seedRunnableJob(t)
 	mid := h.seedBlockedJobDependingOn(t, up.ID)
 	leaf := h.seedBlockedJobDependingOn(t, mid.ID)
 
-	if err := h.store.UpdateJobStatus(ctx, up.ID, store.JobStatusFailed); err != nil {
-		t.Fatal(err)
-	}
+	h.failJob(t, up.ID)
 	if err := h.sched.ReconcileDependents(ctx, up.ID); err != nil {
 		t.Fatal(err)
 	}
@@ -428,12 +411,10 @@ func TestReconcile_CascadesTransitivelyThroughChain(t *testing.T) {
 func TestReconcile_NotifiesJobAndTaskEvents(t *testing.T) {
 	ctx := context.Background()
 	h := newJobDepsHarness(t)
-	up := h.seedJob(t, store.JobStatusRunning)
+	up := h.seedRunnableJob(t)
 	down := h.seedBlockedJobDependingOn(t, up.ID)
 
-	if err := h.store.UpdateJobStatus(ctx, up.ID, store.JobStatusFailed); err != nil {
-		t.Fatal(err)
-	}
+	h.failJob(t, up.ID)
 	if err := h.sched.ReconcileDependents(ctx, up.ID); err != nil {
 		t.Fatal(err)
 	}

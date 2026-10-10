@@ -33,8 +33,6 @@ type SessionStore interface {
 	GetSessionUserByTokenHash(ctx context.Context, tokenHash string, now time.Time) (User, error)
 	// DeleteSession removes a session by ID. Returns [ErrNotFound].
 	DeleteSession(ctx context.Context, id string) error
-	// DeleteSessionsForUser removes all sessions for a user.
-	DeleteSessionsForUser(ctx context.Context, userID string) error
 	// DeleteExpiredSessions removes sessions whose expiry is at or before now,
 	// returning the count removed.
 	DeleteExpiredSessions(ctx context.Context, now time.Time) (int, error)

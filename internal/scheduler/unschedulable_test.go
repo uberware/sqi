@@ -18,6 +18,7 @@ import (
 
 	"github.com/uberware/sqi/internal/store"
 	"github.com/uberware/sqi/internal/store/fake"
+	"github.com/uberware/sqi/internal/store/storetest"
 )
 
 // seedReadyTaskRequiringTag creates a farm/queue/job/step/ready-task in
@@ -26,7 +27,6 @@ import (
 func seedReadyTaskRequiringTag(t *testing.T, st *fake.Store, tag string) (store.Job, store.Step, store.Task) {
 	t.Helper()
 	ctx := t.Context()
-	now := time.Now().UTC()
 
 	if _, err := st.CreateFarm(ctx, store.Farm{ID: "farm-1", Name: "farm"}); err != nil {
 		t.Fatalf("CreateFarm: %v", err)
@@ -35,38 +35,28 @@ func seedReadyTaskRequiringTag(t *testing.T, st *fake.Store, tag string) (store.
 		t.Fatalf("CreateQueue: %v", err)
 	}
 
-	job, err := st.CreateJob(ctx, store.Job{
-		ID: uuid.NewString(), FarmID: "farm-1", QueueID: "queue-1", Name: "j",
-		Status: store.JobStatusRunning, TemplateFormat: store.TemplateFormatJSON,
-		CreatedAt: now, UpdatedAt: now,
-	})
-	if err != nil {
-		t.Fatalf("CreateJob: %v", err)
-	}
-
-	step, err := st.CreateStep(ctx, store.Step{
-		ID: uuid.NewString(), JobID: job.ID, Name: "s",
-		Status: store.StepStatusRunning,
-		HostRequirements: &store.StepHostRequirements{
-			Attributes: []store.StepAttributeRequirement{
-				{Name: "attr.worker.tag." + tag, AnyOf: []string{"true"}},
-			},
+	jobID, stepID := uuid.NewString(), uuid.NewString()
+	sub := storetest.Submit(t, st, store.JobSubmission{
+		Job: store.Job{
+			ID: jobID, FarmID: "farm-1", QueueID: "queue-1", Name: "j",
+			Status: store.JobStatusRunning, TemplateFormat: store.TemplateFormatJSON,
 		},
-		CreatedAt: now, UpdatedAt: now,
+		Steps: []store.Step{{
+			ID: stepID, JobID: jobID, Name: "s",
+			Status: store.StepStatusRunning,
+			HostRequirements: &store.StepHostRequirements{
+				Attributes: []store.StepAttributeRequirement{
+					{Name: "attr.worker.tag." + tag, AnyOf: []string{"true"}},
+				},
+			},
+		}},
+		Tasks: []store.Task{{
+			ID: uuid.NewString(), JobID: jobID, StepID: stepID, Name: "t",
+			Status: store.TaskStatusReady,
+		}},
 	})
-	if err != nil {
-		t.Fatalf("CreateStep: %v", err)
-	}
 
-	task, err := st.CreateTask(ctx, store.Task{
-		ID: uuid.NewString(), JobID: job.ID, StepID: step.ID, Name: "t",
-		Status: store.TaskStatusReady, CreatedAt: now, UpdatedAt: now,
-	})
-	if err != nil {
-		t.Fatalf("CreateTask: %v", err)
-	}
-
-	return job, step, task
+	return sub.Job, sub.Steps[0], sub.Tasks[0]
 }
 
 // unschedulableWorkerSeq gives each seedOnlineWorker call a unique worker ID
@@ -90,18 +80,23 @@ func seedOnlineWorker(t *testing.T, st *fake.Store, tags map[string]string) stor
 }
 
 // backdateTaskReady ages taskID's UpdatedAt by delta (negative to move it into
-// the past). Relies on fake.Store.CreateTask being an upsert keyed by ID —
-// the same trick sibling tests use to seed an already-aged AssignedAt.
+// the past). It does so through the writes a worker that took the task and
+// then shut down makes: the task is leased with the lease's Now delta from
+// now, and that attempt is reclaimed at the same instant, which returns the
+// task to ready stamped with that time — a task that has been waiting since.
 func backdateTaskReady(t *testing.T, st *fake.Store, taskID string, delta time.Duration) {
 	t.Helper()
-	ctx := t.Context()
-	task, err := st.GetTask(ctx, taskID)
+	at := time.Now().UTC().Add(delta)
+	attempt := storetest.Lease(t, st, store.LeaseRequest{TaskID: taskID, WorkerID: "w-gone", Now: at})
+	if reclaimed, err := st.ReclaimTaskAttempt(t.Context(), attempt.ID, taskID, at); err != nil || !reclaimed {
+		t.Fatalf("ReclaimTaskAttempt = (%v, %v), want reclaimed", reclaimed, err)
+	}
+	task, err := st.GetTask(t.Context(), taskID)
 	if err != nil {
 		t.Fatalf("GetTask: %v", err)
 	}
-	task.UpdatedAt = time.Now().UTC().Add(delta)
-	if _, err := st.CreateTask(ctx, task); err != nil {
-		t.Fatalf("backdate CreateTask: %v", err)
+	if task.Status != store.TaskStatusReady || !task.UpdatedAt.Equal(at) {
+		t.Fatalf("backdated task = %q updated %v, want ready updated %v", task.Status, task.UpdatedAt, at)
 	}
 }
 

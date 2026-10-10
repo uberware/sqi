@@ -72,21 +72,10 @@ func TestGetTaskLogs_ParamsAndErrors(t *testing.T) {
 		st := fake.New()
 		r := newTaskRouter(st)
 		ctx := t.Context()
-		_, tk := seedTask(t, st, store.TaskStatusRunning)
+		// The running task's lease wrote its attempt.
+		_, tk, attempt := seedTaskWith(t, st, seedTaskSpec{status: store.TaskStatusRunning})
 
 		now := time.Now()
-		attempt := store.TaskAttempt{
-			ID:            uuid.NewString(),
-			TaskID:        tk.ID,
-			AttemptNumber: 1,
-			Status:        store.AttemptStatusRunning,
-			StartedAt:     now,
-			CreatedAt:     now,
-		}
-		attempt, err := st.CreateTaskAttempt(ctx, attempt)
-		if err != nil {
-			t.Fatalf("CreateTaskAttempt: %v", err)
-		}
 		// Insert 3 log lines with NATSSeq 1, 2, 3.
 		for i := range 3 {
 			if _, err := st.CreateTaskLog(ctx, store.TaskLog{
@@ -142,21 +131,8 @@ func TestGetTaskLogs_ParamsAndErrors(t *testing.T) {
 
 	t.Run("ListTaskLogs store error returns 500", func(t *testing.T) {
 		inner := fake.New()
-		ctx := t.Context()
+		// The running task's lease wrote an attempt, so LatestTaskAttempt succeeds.
 		_, tk := seedTask(t, inner, store.TaskStatusRunning)
-
-		// Create an attempt so LatestTaskAttempt succeeds.
-		now := time.Now()
-		if _, err := inner.CreateTaskAttempt(ctx, store.TaskAttempt{
-			ID:            uuid.NewString(),
-			TaskID:        tk.ID,
-			AttemptNumber: 1,
-			Status:        store.AttemptStatusRunning,
-			StartedAt:     now,
-			CreatedAt:     now,
-		}); err != nil {
-			t.Fatalf("CreateTaskAttempt: %v", err)
-		}
 
 		est := &storeErr{Store: inner, listLogsErr: errInjected}
 		r := newTaskRouter(est)
@@ -186,17 +162,16 @@ func TestRetryTask_StoreErrors(t *testing.T) {
 		}
 	})
 
-	t.Run("UpdateTaskStatus store error returns 500", func(t *testing.T) {
-		inner := fake.New()
-		_, tk := seedTask(t, inner, store.TaskStatusFailed)
-		est := &storeErr{Store: inner, updateTaskErr: errInjected}
-		r := newTaskRouter(est)
+	t.Run("scheduler RetryTask error returns 500", func(t *testing.T) {
+		st := fake.New()
+		_, tk := seedTask(t, st, store.TaskStatusFailed)
+		r := newTaskRouterCanceler(st, &fakeTaskCanceler{retryErr: errInjected})
 
 		req := newReq(t, http.MethodPost, "/api/v1/tasks/"+tk.ID+"/retry", nil)
 		rr := httptest.NewRecorder()
 		r.ServeHTTP(rr, req)
 		if rr.Code != http.StatusInternalServerError {
-			t.Fatalf("expected 500 on UpdateTaskStatus error, got %d", rr.Code)
+			t.Fatalf("expected 500 on RetryTask error, got %d", rr.Code)
 		}
 	})
 }

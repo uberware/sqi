@@ -7,9 +7,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/google/uuid"
-
 	"github.com/uberware/sqi/internal/store"
+	"github.com/uberware/sqi/internal/store/storetest"
 )
 
 // TestCancelJobExecution_FinalizesEveryStep pins that after a job cancel every
@@ -35,8 +34,6 @@ func TestCancelJobExecution_FinalizesEveryStep(t *testing.T) {
 				stepSpec{name: "already", status: store.StepStatusCompleted, tasks: []store.TaskStatus{S}},
 				stepSpec{name: "prior", status: store.StepStatusCanceled, tasks: []store.TaskStatus{C}},
 			)
-			seedAttempt(t, st, g.Tasks["mid"][1], store.AttemptStatusRunning)
-
 			if _, err := st.CancelJobExecution(t.Context(), g.Job.ID, store.FailureReasonCanceledByUser, time.Now().UTC()); err != nil {
 				t.Fatalf("CancelJobExecution: %v", err)
 			}
@@ -50,7 +47,7 @@ func TestCancelJobExecution_FinalizesEveryStep(t *testing.T) {
 					t.Errorf("step %s = %q, want %q", stepName, got, w)
 				}
 			}
-			if v := claimViolations(t, st); len(v) != 0 {
+			if v := storetest.ClaimViolations(t, st); len(v) != 0 {
 				t.Fatalf("I3 violations: %v", v)
 			}
 		})
@@ -134,17 +131,13 @@ func TestCancelJobExecution_LeavesATerminalJobRowAlone(t *testing.T) {
 func TestCancelJobExecution_FinalizesAStepOverMaxLimit(t *testing.T) {
 	for name, st := range newStores(t) {
 		t.Run(name, func(t *testing.T) {
-			g := seedGraph(t, st, graphOpts{jobStatus: store.JobStatusRunning},
-				stepSpec{name: "big", status: store.StepStatusReady, tasks: []store.TaskStatus{store.TaskStatusSucceeded}})
-			now := time.Now().UTC()
+			tasks := []store.TaskStatus{store.TaskStatusSucceeded}
 			for range store.MaxLimit {
-				if _, err := st.CreateTask(t.Context(), store.Task{
-					ID: uuid.NewString(), JobID: g.Job.ID, StepID: g.Steps["big"].ID, Name: "t",
-					Status: store.TaskStatusReady, CreatedAt: now, UpdatedAt: now,
-				}); err != nil {
-					t.Fatalf("CreateTask: %v", err)
-				}
+				tasks = append(tasks, store.TaskStatusReady)
 			}
+			g := seedGraph(t, st, graphOpts{jobStatus: store.JobStatusRunning},
+				stepSpec{name: "big", status: store.StepStatusReady, tasks: tasks})
+			now := time.Now().UTC()
 			if _, err := st.CancelJobExecution(t.Context(), g.Job.ID, store.FailureReasonCanceledByUser, now); err != nil {
 				t.Fatalf("CancelJobExecution: %v", err)
 			}

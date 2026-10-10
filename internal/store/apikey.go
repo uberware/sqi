@@ -27,9 +27,6 @@ type APIKeyStore interface {
 	// CreateAPIKey inserts a new key. Returns [ErrConflict] on a token-hash or
 	// id collision.
 	CreateAPIKey(ctx context.Context, k APIKey) (APIKey, error)
-	// GetAPIKeyByTokenHash returns the active key for tokenHash, or
-	// [ErrNotFound] if it is missing, revoked, or expired at now.
-	GetAPIKeyByTokenHash(ctx context.Context, tokenHash string, now time.Time) (APIKey, error)
 	// GetAPIKeyUserByTokenHash returns the active key for tokenHash together
 	// with its owning user, or [ErrNotFound] if the key is missing, revoked,
 	// or expired at now.

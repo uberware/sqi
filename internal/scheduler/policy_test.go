@@ -10,22 +10,26 @@ package scheduler
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
-	"time"
 
 	"github.com/google/uuid"
 
 	"github.com/uberware/sqi/internal/store"
 	"github.com/uberware/sqi/internal/store/fake"
+	"github.com/uberware/sqi/internal/store/storetest"
 )
 
 // ── helpers ───────────────────────────────────────────────────────────────────
 
-// seedPolicy creates a farm, queue, and job with the given concurrency limits.
+// seedPolicy creates a farm, queue, and job with the given concurrency limits,
+// and active running tasks of that job, each leased and started through
+// production writes in the job's one step. The leases count against the caps,
+// so active must not exceed them.
 func seedPolicy(
 	t *testing.T,
 	st *fake.Store,
-	farmMax, queueMax int,
+	farmMax, queueMax, active int,
 ) (farm store.Farm, queue store.Queue, job store.Job) {
 	t.Helper()
 	ctx := t.Context()
@@ -47,8 +51,7 @@ func seedPolicy(
 	if err != nil {
 		t.Fatalf("CreateQueue: %v", err)
 	}
-	now := time.Now()
-	job, err = st.CreateJob(ctx, store.Job{
+	sub := store.JobSubmission{Job: store.Job{
 		ID:             uuid.NewString(),
 		FarmID:         farm.ID,
 		QueueID:        queue.ID,
@@ -56,52 +59,26 @@ func seedPolicy(
 		Priority:       50,
 		Status:         store.JobStatusRunning,
 		TemplateFormat: store.TemplateFormatJSON,
-		CreatedAt:      now,
-		UpdatedAt:      now,
-	})
-	if err != nil {
-		t.Fatalf("CreateJob: %v", err)
+	}}
+	sub.Steps = []store.Step{{ID: uuid.NewString(), JobID: sub.Job.ID, Name: "step", Status: store.StepStatusRunning}}
+	for i := range active {
+		sub.Tasks = append(sub.Tasks, store.Task{
+			ID: uuid.NewString(), JobID: sub.Job.ID, StepID: sub.Steps[0].ID,
+			Name: fmt.Sprintf("t%d", i), Status: store.TaskStatusReady,
+		})
+	}
+	job = storetest.Submit(t, st, sub).Job
+	for _, task := range sub.Tasks {
+		storetest.Running(t, st, store.LeaseRequest{TaskID: task.ID, WorkerID: "w-policy"})
 	}
 	return farm, queue, job
-}
-
-// addActiveTask inserts one running task for the given job into st.
-func addActiveTask(t *testing.T, st *fake.Store, job store.Job) {
-	t.Helper()
-	ctx := t.Context()
-	now := time.Now()
-	step, err := st.CreateStep(ctx, store.Step{
-		ID:        uuid.NewString(),
-		JobID:     job.ID,
-		Name:      uuid.NewString(), // unique per call — fake store enforces (JobID,Name) uniqueness
-		Status:    store.StepStatusRunning,
-		CreatedAt: now,
-		UpdatedAt: now,
-	})
-	if err != nil {
-		t.Fatalf("CreateStep: %v", err)
-	}
-	if _, err := st.CreateTask(ctx, store.Task{
-		ID:        uuid.NewString(),
-		JobID:     job.ID,
-		StepID:    step.ID,
-		Name:      "t",
-		Status:    store.TaskStatusRunning,
-		CreatedAt: now,
-		UpdatedAt: now,
-	}); err != nil {
-		t.Fatalf("CreateTask: %v", err)
-	}
 }
 
 // ── Queue limit ───────────────────────────────────────────────────────────────
 
 func TestPolicyGate_QueueUnlimited(t *testing.T) {
 	st := newCheckedFake(t)
-	farm, queue, job := seedPolicy(t, st, 0, 0)
-	for range 5 {
-		addActiveTask(t, st, job)
-	}
+	farm, queue, job := seedPolicy(t, st, 0, 0, 5)
 	if err := policyGate(t.Context(), st, job, queue, farm); err != nil {
 		t.Fatalf("expected nil for unlimited queue, got %v", err)
 	}
@@ -109,8 +86,7 @@ func TestPolicyGate_QueueUnlimited(t *testing.T) {
 
 func TestPolicyGate_QueueUnderLimit(t *testing.T) {
 	st := newCheckedFake(t)
-	farm, queue, job := seedPolicy(t, st, 0, 2) // limit=2
-	addActiveTask(t, st, job)                   // 1 active
+	farm, queue, job := seedPolicy(t, st, 0, 2, 1) // limit=2, 1 active
 	if err := policyGate(t.Context(), st, job, queue, farm); err != nil {
 		t.Fatalf("expected nil (1 active, limit 2), got %v", err)
 	}
@@ -118,9 +94,7 @@ func TestPolicyGate_QueueUnderLimit(t *testing.T) {
 
 func TestPolicyGate_QueueAtCapacity(t *testing.T) {
 	st := newCheckedFake(t)
-	farm, queue, job := seedPolicy(t, st, 0, 2)
-	addActiveTask(t, st, job) // 1
-	addActiveTask(t, st, job) // 2 — at limit
+	farm, queue, job := seedPolicy(t, st, 0, 2, 2) // 2 active — at limit
 	err := policyGate(t.Context(), st, job, queue, farm)
 	if err == nil {
 		t.Fatal("expected errPolicyBlocked, got nil")
@@ -134,10 +108,7 @@ func TestPolicyGate_QueueAtCapacity(t *testing.T) {
 
 func TestPolicyGate_FarmUnlimited(t *testing.T) {
 	st := newCheckedFake(t)
-	farm, queue, job := seedPolicy(t, st, 0, 0)
-	for range 5 {
-		addActiveTask(t, st, job)
-	}
+	farm, queue, job := seedPolicy(t, st, 0, 0, 5)
 	if err := policyGate(t.Context(), st, job, queue, farm); err != nil {
 		t.Fatalf("expected nil for unlimited farm, got %v", err)
 	}
@@ -145,8 +116,7 @@ func TestPolicyGate_FarmUnlimited(t *testing.T) {
 
 func TestPolicyGate_FarmAtCapacity(t *testing.T) {
 	st := newCheckedFake(t)
-	farm, queue, job := seedPolicy(t, st, 1, 0) // farm limit=1
-	addActiveTask(t, st, job)                   // 1 — farm at limit
+	farm, queue, job := seedPolicy(t, st, 1, 0, 1) // farm limit=1, 1 active — farm at limit
 	err := policyGate(t.Context(), st, job, queue, farm)
 	if err == nil {
 		t.Fatal("expected errPolicyBlocked for farm at capacity, got nil")
@@ -158,8 +128,7 @@ func TestPolicyGate_FarmAtCapacity(t *testing.T) {
 
 func TestPolicyGate_QueuePassesFarmBlocks(t *testing.T) {
 	st := newCheckedFake(t)
-	farm, queue, job := seedPolicy(t, st, 1, 10) // farm=1, queue=10
-	addActiveTask(t, st, job)                    // 1 — farm full
+	farm, queue, job := seedPolicy(t, st, 1, 10, 1) // farm=1, queue=10, 1 active — farm full
 	err := policyGate(t.Context(), st, job, queue, farm)
 	if err == nil {
 		t.Fatal("expected errPolicyBlocked when farm at capacity")
@@ -173,7 +142,7 @@ func TestPolicyGate_QueuePassesFarmBlocks(t *testing.T) {
 
 func TestPolicyGate_QueueCountError(t *testing.T) {
 	st := newCheckedFake(t)
-	farm, queue, job := seedPolicy(t, st, 0, 5) // non-zero limit triggers the count
+	farm, queue, job := seedPolicy(t, st, 0, 5, 0) // non-zero limit triggers the count
 	est := &policyErrSt{Store: st, queueErr: errors.New("db error")}
 	err := policyGate(t.Context(), est, job, queue, farm)
 	if err == nil {
@@ -187,7 +156,7 @@ func TestPolicyGate_QueueCountError(t *testing.T) {
 func TestPolicyGate_FarmCountError(t *testing.T) {
 	st := newCheckedFake(t)
 	// queue limit=0 (unlimited) so we skip queue check and hit farm check
-	farm, queue, job := seedPolicy(t, st, 5, 0)
+	farm, queue, job := seedPolicy(t, st, 5, 0, 0)
 	est := &policyErrSt{Store: st, farmErr: errors.New("db error")}
 	err := policyGate(t.Context(), est, job, queue, farm)
 	if err == nil {

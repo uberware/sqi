@@ -12,17 +12,17 @@ import (
 
 	"github.com/uberware/sqi/internal/store"
 	"github.com/uberware/sqi/internal/store/fake"
+	"github.com/uberware/sqi/internal/store/storetest"
 )
 
 func leaseReq(task store.Task, claims ...store.UsagePoolClaim) store.LeaseRequest {
 	return store.LeaseRequest{TaskID: task.ID, WorkerID: fixtureWorkerID, AttemptID: uuid.NewString(), Now: time.Now().UTC(), Claims: claims}
 }
 
-// poolClaim builds a claim on p whose MaxConcurrent is deliberately wrong:
-// LeaseTask must read the pool's cap in its own transaction, never trust the
-// caller's copy.
+// poolClaim builds a claim on p. It carries no cap: LeaseTask reads the pool's
+// cap in its own transaction.
 func poolClaim(p store.UsagePool) store.UsagePoolClaim {
-	return store.UsagePoolClaim{ClaimID: uuid.NewString(), PoolID: p.ID, PoolName: p.Name, MaxConcurrent: 999}
+	return store.UsagePoolClaim{ClaimID: uuid.NewString(), PoolID: p.ID, PoolName: p.Name}
 }
 
 func mustAttempts(t *testing.T, st store.Store, taskID string) []store.TaskAttempt {
@@ -53,9 +53,22 @@ func mustLease(t *testing.T, st store.Store, req store.LeaseRequest, want store.
 // has none, and each given pool (which had no active claims) still has none.
 func assertNothingWritten(t *testing.T, st store.Store, before store.Task, pools ...store.UsagePool) {
 	t.Helper()
+	assertNoNewAttempt(t, st, before, nil, pools...)
+}
+
+// assertNoNewAttempt is assertNothingWritten for a task that already had
+// attempts: they are still exactly priorAttempts, by ID and status.
+func assertNoNewAttempt(t *testing.T, st store.Store, before store.Task, priorAttempts []store.TaskAttempt, pools ...store.UsagePool) {
+	t.Helper()
 	assertTaskUntouched(t, st, before)
-	if as := mustAttempts(t, st, before.ID); len(as) != 0 {
-		t.Fatalf("attempts = %+v, want none", as)
+	as := mustAttempts(t, st, before.ID)
+	if len(as) != len(priorAttempts) {
+		t.Fatalf("attempts = %+v, want only %+v", as, priorAttempts)
+	}
+	for i, a := range as {
+		if a.ID != priorAttempts[i].ID || a.Status != priorAttempts[i].Status {
+			t.Fatalf("attempt %d = %+v, want %+v unchanged", i, a, priorAttempts[i])
+		}
 	}
 	for _, p := range pools {
 		if n := activeClaims(t, st, p.ID); n != 0 {
@@ -90,12 +103,12 @@ func seedStepA(t *testing.T, st store.Store, opts graphOpts, tasks ...store.Task
 	return seedGraph(t, st, opts, stepSpec{name: "a", status: store.StepStatusReady, tasks: tasks})
 }
 
-// holdClaims gives each task a running attempt holding a claim on pool, so
-// the pool has one active claim per task.
+// holdClaims leases each task, which must be ready, and starts it holding a
+// claim on pool, so the pool has one active claim per task.
 func holdClaims(t *testing.T, st store.Store, pool store.UsagePool, tasks ...store.Task) {
 	t.Helper()
 	for _, task := range tasks {
-		seedClaim(t, st, pool.ID, seedAttempt(t, st, task, store.AttemptStatusRunning).ID)
+		leaseClaiming(t, st, task.ID, true, pool)
 	}
 }
 
@@ -115,7 +128,7 @@ func TestLeaseTask_Leased(t *testing.T) {
 				task := g.Tasks["a"][0]
 				pool := seedPool(t, st, 1)
 				for range tc.prior {
-					seedAttempt(t, st, task, store.AttemptStatusFailed)
+					storetest.FailAndRequeue(t, st, leaseReq(task), time.Now().UTC().Add(-time.Minute))
 				}
 				req := leaseReq(task, poolClaim(pool))
 
@@ -139,7 +152,7 @@ func TestLeaseTask_Leased(t *testing.T) {
 					t.Fatalf("active claims = %d, want 1", n)
 				}
 				// A claim on the wrong (failed) attempt would show up here.
-				if v := claimViolations(t, st); len(v) != 0 {
+				if v := storetest.ClaimViolations(t, st); len(v) != 0 {
 					t.Fatalf("I3 violations: %v", v)
 				}
 			})
@@ -166,8 +179,10 @@ func TestLeaseTask_Lost(t *testing.T) {
 			t.Run(tc.name+"/"+name, func(t *testing.T) {
 				g := seedStepA(t, st, tc.opts, tc.task)
 				pool := seedPool(t, st, 0)
+				// An already assigned or running task holds its own lease's attempt.
+				prior := mustAttempts(t, st, g.Tasks["a"][0].ID)
 				mustLease(t, st, leaseReq(g.Tasks["a"][0], poolClaim(pool)), store.LeaseLost)
-				assertNothingWritten(t, st, g.Tasks["a"][0], pool)
+				assertNoNewAttempt(t, st, g.Tasks["a"][0], prior, pool)
 			})
 		}
 	}
@@ -247,9 +262,8 @@ func TestLeaseTask_Backoff(t *testing.T) {
 				g := seedStepA(t, st, graphOpts{}, store.TaskStatusAssigned)
 				now := time.Now().UTC()
 				// The requeue is guarded on the reporting attempt being the
-				// task's latest, so this seeds the task's live (running) attempt
-				// for the guard to pass.
-				failed := seedAttempt(t, st, g.Tasks["a"][0], store.AttemptStatusRunning)
+				// task's latest: the lease seedGraph made.
+				failed := g.Attempts[g.Tasks["a"][0].ID]
 				if ok, err := st.RequeueTaskForRetry(t.Context(), g.Tasks["a"][0].ID, failed.ID, now.Add(tc.after), now); err != nil || !ok {
 					t.Fatalf("RequeueTaskForRetry = (%v, %v), want requeued", ok, err)
 				}
@@ -257,11 +271,8 @@ func TestLeaseTask_Backoff(t *testing.T) {
 
 				mustLease(t, st, leaseReq(before), tc.want)
 				if tc.want == store.LeaseLost {
-					// assertNothingWritten demands no attempts; the seeded one stays, and no second is opened.
-					assertTaskUntouched(t, st, before)
-					if as := mustAttempts(t, st, before.ID); len(as) != 1 {
-						t.Fatalf("attempts = %+v, want only the seeded one", as)
-					}
+					// The leased attempt stays, and no second is opened.
+					assertNoNewAttempt(t, st, before, []store.TaskAttempt{mustAttempt(t, st, failed.ID)})
 				} else if got := mustTask(t, st, before.ID); got.Status != store.TaskStatusAssigned {
 					t.Fatalf("task = %q, want assigned", got.Status)
 				}
@@ -305,14 +316,13 @@ func TestLeaseTask_Caps(t *testing.T) {
 }
 
 // TestLeaseTask_PoolCapReadInTransaction pins invariant I5 for pools: the cap
-// is the pool row's as read in the lease's transaction, never the caller's
-// copy (poolClaim says 999), so a pool deleted, or lowered below its current
-// use, after the eligibility check makes the lease PoolFull with nothing
-// written.
+// is the pool row's as read in the lease's transaction, so a pool deleted, or
+// lowered below its current use, after the eligibility check makes the lease
+// PoolFull with nothing written.
 func TestLeaseTask_PoolCapReadInTransaction(t *testing.T) {
 	for name, st := range newStores(t) {
 		t.Run("at cap/"+name, func(t *testing.T) {
-			g := seedStepA(t, st, graphOpts{}, store.TaskStatusRunning, store.TaskStatusReady)
+			g := seedStepA(t, st, graphOpts{}, store.TaskStatusReady, store.TaskStatusReady)
 			pool := seedPool(t, st, 1)
 			holdClaims(t, st, pool, g.Tasks["a"][0])
 
@@ -326,7 +336,7 @@ func TestLeaseTask_PoolCapReadInTransaction(t *testing.T) {
 			}
 		})
 		t.Run("lowered below use/"+name, func(t *testing.T) {
-			g := seedStepA(t, st, graphOpts{}, store.TaskStatusRunning, store.TaskStatusRunning, store.TaskStatusReady)
+			g := seedStepA(t, st, graphOpts{}, store.TaskStatusReady, store.TaskStatusReady, store.TaskStatusReady)
 			pool := seedPool(t, st, 3)
 			holdClaims(t, st, pool, g.Tasks["a"][:2]...)
 			req := leaseReq(g.Tasks["a"][2], poolClaim(pool)) // built while the pool had room
@@ -359,7 +369,7 @@ func TestLeaseTask_PoolCapReadInTransaction(t *testing.T) {
 			assertNothingWritten(t, st, g.Tasks["a"][0])
 		})
 		t.Run("unlimited/"+name, func(t *testing.T) {
-			g := seedStepA(t, st, graphOpts{}, store.TaskStatusRunning, store.TaskStatusRunning, store.TaskStatusReady)
+			g := seedStepA(t, st, graphOpts{}, store.TaskStatusReady, store.TaskStatusReady, store.TaskStatusReady)
 			pool := seedPool(t, st, 0)
 			holdClaims(t, st, pool, g.Tasks["a"][:2]...)
 
@@ -389,7 +399,7 @@ func seedPoolWithID(t *testing.T, st store.Store, prefix string, maxConcurrent i
 func TestLeaseTask_PoolsVisitedInIDOrder(t *testing.T) {
 	for name, st := range newStores(t) {
 		t.Run("earlier claim rolled back/"+name, func(t *testing.T) {
-			g := seedStepA(t, st, graphOpts{}, store.TaskStatusRunning, store.TaskStatusReady)
+			g := seedStepA(t, st, graphOpts{}, store.TaskStatusReady, store.TaskStatusReady)
 			free := seedPoolWithID(t, st, "a-", 5)
 			full := seedPoolWithID(t, st, "b-", 1)
 			holdClaims(t, st, full, g.Tasks["a"][0])
@@ -401,7 +411,7 @@ func TestLeaseTask_PoolsVisitedInIDOrder(t *testing.T) {
 			assertNothingWritten(t, st, g.Tasks["a"][1], free)
 		})
 		t.Run("first full pool by ID/"+name, func(t *testing.T) {
-			g := seedStepA(t, st, graphOpts{}, store.TaskStatusRunning, store.TaskStatusRunning, store.TaskStatusReady)
+			g := seedStepA(t, st, graphOpts{}, store.TaskStatusReady, store.TaskStatusReady, store.TaskStatusReady)
 			first := seedPoolWithID(t, st, "a-", 1)
 			second := seedPoolWithID(t, st, "b-", 1)
 			holdClaims(t, st, first, g.Tasks["a"][0])

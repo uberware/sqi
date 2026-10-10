@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/uberware/sqi/internal/store"
+	"github.com/uberware/sqi/internal/store/storetest"
 )
 
 // TestCasTaskStatusTx_GuardsOnObservedStatus pins the write shape: the UPDATE
@@ -93,32 +94,25 @@ func rollbackOnCleanup(t *testing.T, tx *sql.Tx) {
 	})
 }
 
+// seedCASTask seeds a running job with one step and the task id in the given
+// status. An assigned or running task is submitted ready and then leased (and
+// started, for running) to worker "w", so it carries the attempt a real lease
+// makes; any other status is written as given.
 func seedCASTask(t *testing.T, s *Store, id string, status store.TaskStatus) {
 	t.Helper()
 	ctx := t.Context()
-	now := time.Now().UTC()
 	if _, err := s.CreateFarm(ctx, store.Farm{ID: "f", Name: "f"}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := s.CreateQueue(ctx, store.Queue{ID: "q", FarmID: "f", Name: "q"}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.CreateJob(ctx, store.Job{
-		ID: "j", FarmID: "f", QueueID: "q", Name: "j",
-		Status: store.JobStatusRunning, TemplateFormat: store.TemplateFormatJSON, CreatedAt: now, UpdatedAt: now,
-	}); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := s.CreateStep(ctx, store.Step{
-		ID: "s", JobID: "j", Name: "s", Status: store.StepStatusReady,
-		CreatedAt: now, UpdatedAt: now,
-	}); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := s.CreateTask(ctx, store.Task{
-		ID: id, JobID: "j", StepID: "s", Name: "t", Status: status,
-		CreatedAt: now, UpdatedAt: now,
-	}); err != nil {
-		t.Fatal(err)
-	}
+	storetest.SubmitLeasing(t, s, store.JobSubmission{
+		Job: store.Job{
+			ID: "j", FarmID: "f", QueueID: "q", Name: "j",
+			Status: store.JobStatusRunning, TemplateFormat: store.TemplateFormatJSON,
+		},
+		Steps: []store.Step{{ID: "s", JobID: "j", Name: "s", Status: store.StepStatusReady}},
+		Tasks: []store.Task{{ID: id, JobID: "j", StepID: "s", Name: "t", Status: status}},
+	}, storetest.LeaseTo("w"))
 }

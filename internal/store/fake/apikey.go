@@ -31,10 +31,25 @@ func (s *Store) CreateAPIKey(_ context.Context, k store.APIKey) (store.APIKey, e
 	return k, nil
 }
 
-// GetAPIKeyByTokenHash implements [store.APIKeyStore].
-func (s *Store) GetAPIKeyByTokenHash(_ context.Context, tokenHash string, now time.Time) (store.APIKey, error) {
+// GetAPIKeyUserByTokenHash implements [store.APIKeyStore]. It mirrors the
+// SQLite JOIN: a key whose user row is missing resolves to ErrNotFound.
+func (s *Store) GetAPIKeyUserByTokenHash(_ context.Context, tokenHash string, now time.Time) (store.APIKey, store.User, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	k, err := s.activeAPIKeyLocked(tokenHash, now)
+	if err != nil {
+		return store.APIKey{}, store.User{}, err
+	}
+	u, ok := s.users[k.UserID]
+	if !ok {
+		return store.APIKey{}, store.User{}, store.ErrNotFound
+	}
+	return k, u, nil
+}
+
+// activeAPIKeyLocked returns the key for tokenHash, or ErrNotFound if it is
+// missing, revoked, or expired at now. Callers hold s.mu.
+func (s *Store) activeAPIKeyLocked(tokenHash string, now time.Time) (store.APIKey, error) {
 	for _, k := range s.apiKeys {
 		if k.TokenHash != tokenHash {
 			continue
@@ -48,22 +63,6 @@ func (s *Store) GetAPIKeyByTokenHash(_ context.Context, tokenHash string, now ti
 		return k, nil
 	}
 	return store.APIKey{}, store.ErrNotFound
-}
-
-// GetAPIKeyUserByTokenHash implements [store.APIKeyStore]. It mirrors the
-// SQLite JOIN: a key whose user row is missing resolves to ErrNotFound.
-func (s *Store) GetAPIKeyUserByTokenHash(ctx context.Context, tokenHash string, now time.Time) (store.APIKey, store.User, error) {
-	k, err := s.GetAPIKeyByTokenHash(ctx, tokenHash, now)
-	if err != nil {
-		return store.APIKey{}, store.User{}, err
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	u, ok := s.users[k.UserID]
-	if !ok {
-		return store.APIKey{}, store.User{}, store.ErrNotFound
-	}
-	return k, u, nil
 }
 
 // ListAPIKeysForUser implements [store.APIKeyStore].

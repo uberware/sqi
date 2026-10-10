@@ -61,14 +61,6 @@ RETURNING ` + workerCols
 
 	sqlGetWorker = `SELECT ` + workerCols + ` FROM workers WHERE id = ?`
 
-	sqlUpdateWorker = `
-UPDATE workers
-SET farm_id = ?, queue_id = ?, name = ?, hostname = ?, ip_address = ?, compute_location = ?,
-	os = ?, os_version = ?, arch = ?, version = ?, cpu_count = ?, ram_mb = ?, gpu_info = ?, tags = ?,
-	expr_limits = ?, status = ?, last_heartbeat_at = ?, updated_at = ?
-WHERE id = ?
-RETURNING ` + workerCols
-
 	sqlSetWorkerDisabled = `
 UPDATE workers SET disabled = ?, updated_at = ? WHERE id = ?
 RETURNING ` + workerCols
@@ -103,8 +95,6 @@ WHERE  w.status = 'online' AND w.disabled = 0
          WHERE  t.assigned_worker_id = w.id
            AND  t.status IN ('assigned', 'running')
        )`
-
-	sqlDeleteWorker = `DELETE FROM workers WHERE id = ?`
 
 	// sqlDeleteWorkerIfRemovable carries the removability rule in its WHERE so
 	// the check and the delete are one statement (I1). It mirrors
@@ -338,22 +328,6 @@ func (s *Store) ListWorkers(ctx context.Context, opts store.ListWorkersOptions) 
 	}, nil
 }
 
-// UpdateWorker implements [store.WorkerStore].
-func (s *Store) UpdateWorker(ctx context.Context, worker store.Worker) (store.Worker, error) {
-	gpuJSON, tagsJSON, exprJSON, err := workerJSONCols(worker)
-	if err != nil {
-		return store.Worker{}, err
-	}
-	now := timeToText(time.Now().UTC())
-	row := s.stmtUpdateWorker.QueryRowContext(ctx,
-		nullString(worker.FarmID), nullString(worker.QueueID), worker.Name, worker.Hostname, worker.IPAddress,
-		worker.ComputeLocation, worker.OS, worker.OSVersion, worker.Arch, worker.Version, worker.CPUCount, worker.RAMMb,
-		gpuJSON, tagsJSON, exprJSON, string(worker.Status), nullTimeToText(worker.LastHeartbeatAt),
-		now, worker.ID)
-	out, err := scanWorker(row)
-	return out, mapErr(err)
-}
-
 // SetWorkerDisabled implements [store.WorkerStore].
 func (s *Store) SetWorkerDisabled(ctx context.Context, id string, disabled bool) (store.Worker, error) {
 	row := s.stmtSetWorkerDisabled.QueryRowContext(ctx, disabled, timeToText(time.Now().UTC()), id)
@@ -403,20 +377,6 @@ func (s *Store) CountIdleWorkers(ctx context.Context, farmID string) (int, error
 		err = s.stmtCountIdleWorkers.QueryRowContext(ctx, farmID).Scan(&n)
 	}
 	return n, mapErr(err)
-}
-
-// DeleteWorker hard-deletes the worker unconditionally. Returns
-// [store.ErrNotFound] if no such worker exists. Task and task-attempt rows that
-// reference the worker by ID are left intact.
-//
-// Test fixture only: an unguarded delete that is not part of store.Store;
-// removal goes through DeleteWorkerIfRemovable.
-func (s *Store) DeleteWorker(ctx context.Context, id string) error {
-	res, err := s.stmtDeleteWorker.ExecContext(ctx, id)
-	if err != nil {
-		return mapErr(err)
-	}
-	return checkRowsAffected(res)
 }
 
 // DeleteWorkerIfRemovable implements [store.WorkerStore].

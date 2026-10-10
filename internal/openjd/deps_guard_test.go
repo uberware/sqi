@@ -14,23 +14,60 @@ import (
 	"github.com/uberware/sqi/internal/openjd"
 	"github.com/uberware/sqi/internal/store"
 	"github.com/uberware/sqi/internal/store/fake"
+	"github.com/uberware/sqi/internal/store/storetest"
 )
 
-// seedDepsStep creates one step and, when taskStatus is non-empty, one task in it.
-func seedDepsStep(t *testing.T, s store.Store, id, name string, order int, status store.StepStatus, deps []string, taskStatus store.TaskStatus) {
+// depsJobID is the one job the deps-resolution tests build.
+const depsJobID = "j1"
+
+// submitSteps submits a running job "j1" holding steps and tasks in a single
+// CreateJobSubmission, the way a real submission writes them, and returns what
+// the store wrote. JobID is stamped on every step and task, so callers leave
+// it out. A job's whole graph goes in one call: a second submission of the
+// same job ID is a duplicate-ID error, so a step cannot be added to a job
+// that already exists.
+func submitSteps(t *testing.T, s store.Store, steps []store.Step, tasks ...store.Task) store.JobSubmission {
 	t.Helper()
-	ctx := t.Context()
-	if _, err := s.CreateStep(ctx, store.Step{
-		ID: id, JobID: "j1", Name: name, StepOrder: order, Status: status, DependsOn: deps,
-	}); err != nil {
-		t.Fatalf("CreateStep %s: %v", id, err)
+	for i := range steps {
+		steps[i].JobID = depsJobID
 	}
-	if taskStatus == "" {
-		return
+	for i := range tasks {
+		tasks[i].JobID = depsJobID
 	}
-	if _, err := s.CreateTask(ctx, store.Task{ID: "t-" + id, JobID: "j1", StepID: id, Status: taskStatus}); err != nil {
-		t.Fatalf("CreateTask %s: %v", id, err)
+	return storetest.Submit(t, s, store.JobSubmission{
+		Job:   store.Job{ID: depsJobID, Name: depsJobID, Status: store.JobStatusRunning},
+		Steps: steps,
+		Tasks: tasks,
+	})
+}
+
+// depsSeed is one step of a job seedDepsJob builds and, when taskStatus is
+// non-empty, the one task in it.
+type depsSeed struct {
+	id, name   string
+	order      int
+	status     store.StepStatus
+	deps       []string
+	taskStatus store.TaskStatus
+}
+
+// seedDepsJob submits job "j1" with one step per seed, and one task ("t-"+id)
+// in each step whose seed names a taskStatus, in a single submission.
+func seedDepsJob(t *testing.T, s store.Store, seeds ...depsSeed) {
+	t.Helper()
+	var (
+		steps []store.Step
+		tasks []store.Task
+	)
+	for _, sd := range seeds {
+		steps = append(steps, store.Step{
+			ID: sd.id, Name: sd.name, StepOrder: sd.order, Status: sd.status, DependsOn: sd.deps,
+		})
+		if sd.taskStatus != "" {
+			tasks = append(tasks, store.Task{ID: "t-" + sd.id, StepID: sd.id, Status: sd.taskStatus})
+		}
 	}
+	submitSteps(t, s, steps, tasks...)
 }
 
 func depsStepStatus(t *testing.T, s store.Store, id string) store.StepStatus {
@@ -73,11 +110,8 @@ func (s *staleListStore) ListSteps(ctx context.Context, jobID string) ([]store.S
 func TestResolveDependencies_StepMovedByAnotherWriterIsNotRevived(t *testing.T) {
 	inner := fake.New()
 	defer inner.Close()
-	if _, err := inner.CreateJob(t.Context(), store.Job{ID: "j1", Name: "j1", Status: store.JobStatusRunning}); err != nil {
-		t.Fatal(err)
-	}
 	// The job was canceled after ResolveDependencies listed the steps.
-	seedDepsStep(t, inner, "step1", "Step1", 0, store.StepStatusCanceled, nil, store.TaskStatusCanceled)
+	seedDepsJob(t, inner, depsSeed{"step1", "Step1", 0, store.StepStatusCanceled, nil, store.TaskStatusCanceled})
 	st := &staleListStore{Store: inner, stalePending: map[string]bool{"step1": true}}
 
 	n, err := openjd.ResolveDependencies(t.Context(), st, "j1")
@@ -98,12 +132,12 @@ func TestResolveDependencies_StepMovedByAnotherWriterIsNotRevived(t *testing.T) 
 func TestCancelDependents_StepMovedByAnotherWriterIsNotOverwritten(t *testing.T) {
 	inner := fake.New()
 	defer inner.Close()
-	if _, err := inner.CreateJob(t.Context(), store.Job{ID: "j1", Name: "j1", Status: store.JobStatusRunning}); err != nil {
-		t.Fatal(err)
-	}
-	seedDepsStep(t, inner, "step1", "Step1", 0, store.StepStatusFailed, nil, "")
-	// step2 was listed as pending but has since been released and completed.
-	seedDepsStep(t, inner, "step2", "Step2", 1, store.StepStatusCompleted, []string{"Step1"}, store.TaskStatusSucceeded)
+	seedDepsJob(
+		t, inner,
+		depsSeed{"step1", "Step1", 0, store.StepStatusFailed, nil, ""},
+		// step2 was listed as pending but has since been released and completed.
+		depsSeed{"step2", "Step2", 1, store.StepStatusCompleted, []string{"Step1"}, store.TaskStatusSucceeded},
+	)
 	st := &staleListStore{Store: inner, stalePending: map[string]bool{"step2": true}}
 
 	done := make(chan struct{})
@@ -140,15 +174,15 @@ func TestCancelDependents_StepMovedByAnotherWriterIsNotOverwritten(t *testing.T)
 func TestCancelDependents_DeclinedCancelStillUnblocksDependents(t *testing.T) {
 	inner := fake.New()
 	defer inner.Close()
-	if _, err := inner.CreateJob(t.Context(), store.Job{ID: "j1", Name: "j1", Status: store.JobStatusRunning}); err != nil {
-		t.Fatal(err)
-	}
 	// step3 (order 0) depends on step2 (order 1), which depends on failed step1.
-	seedDepsStep(t, inner, "step1", "Step1", 2, store.StepStatusFailed, nil, "")
-	seedDepsStep(t, inner, "step3", "Step3", 0, store.StepStatusPending, []string{"Step2"}, store.TaskStatusPending)
-	// step2 is already canceled in the store (another writer got there first)
-	// but is listed as pending.
-	seedDepsStep(t, inner, "step2", "Step2", 1, store.StepStatusCanceled, []string{"Step1"}, store.TaskStatusCanceled)
+	seedDepsJob(
+		t, inner,
+		depsSeed{"step1", "Step1", 2, store.StepStatusFailed, nil, ""},
+		depsSeed{"step3", "Step3", 0, store.StepStatusPending, []string{"Step2"}, store.TaskStatusPending},
+		// step2 is already canceled in the store (another writer got there first)
+		// but is listed as pending.
+		depsSeed{"step2", "Step2", 1, store.StepStatusCanceled, []string{"Step1"}, store.TaskStatusCanceled},
+	)
 	st := &staleListStore{Store: inner, stalePending: map[string]bool{"step2": true}}
 
 	n, tasks, err := openjd.CancelDependents(t.Context(), st, "j1")

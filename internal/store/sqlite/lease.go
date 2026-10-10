@@ -29,9 +29,9 @@ WHERE  t.id = ?`
 	// sqlLeasableTask, the predicate ListReadyTasks lists by, so a task that
 	// stopped being leasable after the scheduler chose it (leased by someone
 	// else, still backing off, its job or queue paused, its job terminal) is
-	// left alone and the lease is Lost. It is LeaseReadyTask's write
-	// (sqlLeaseTaskWrite) under that predicate, whose t.status and
-	// t.retry_after refer to the row being updated.
+	// left alone and the lease is Lost. It is sqlLeaseTaskWrite under that
+	// predicate, whose t.status and t.retry_after refer to the row being
+	// updated.
 	sqlLeaseTaskGuarded = sqlLeaseTaskWrite + `
   AND  EXISTS (SELECT 1
                FROM   jobs   j

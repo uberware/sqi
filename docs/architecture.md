@@ -580,8 +580,8 @@ a canceled task's late `canceled` echo cannot re-cancel a task that was
 retried in the meantime. `RequeueTaskForRetry` (the failure fork's requeue)
 likewise acts only while its attempt is the task's latest, so a reclaim and a
 new lease landing between `RecordTaskFailure` and the requeue leave the new
-lease alone. `UpdateTaskStatus` is not part of `store.Store`; both stores keep
-it only as a test fixture.
+lease alone. `store.Store` has no general-purpose task-status setter: a task
+changes status only through the named, guarded operations described here.
 
 The one path the table does not describe is a manual retry: `RetryTasks`
 revives `failed` and `canceled` tasks in its own guarded SQL, to `pending`, or
@@ -672,9 +672,10 @@ move tasks for the server's own reasons: `LeaseTask`, `RetryTasks`,
 `ReleaseStep` / `CancelPendingStep`, `CancelBlockedJob`, `CancelJobExecution` /
 `CancelTaskExecution`, and the reclaim operations (`ReclaimStaleAssignedTasks`,
 `OfflineStaleWorker`, `OfflineWorker`, `ReclaimTaskAttempt`, and the restart
-reclaim inside `RegisterWorker`). None of them route through
-`UpdateTaskStatus`, and each writes only the rows its own `WHERE` still
-matches (see [Store invariants](#store-invariants)).
+reclaim inside `RegisterWorker`). None of them consults the transition table (only
+`CompleteTaskAttempt` does); each carries its own guard in SQL and writes only
+the rows its own `WHERE` still matches (see
+[Store invariants](#store-invariants)).
 
 ### Auto-retry on worker-reported failure
 
@@ -1036,7 +1037,10 @@ Upgrading from v0.3.0 changes the following behaviour.
   "<id>" already terminated unsuccessfully (<status>)` or `openjd: submit:
   depends_on job "<id>" not found`).
 
-Timestamps are unchanged from v0.3.0, though the writes that stamp them moved.
+Timestamp values are unchanged from v0.3.0, though the writes that stamp them
+moved. One stored form changed: SQLite now writes a new submission's step and
+task `created_at` (and initial `updated_at`) with all nine fractional digits,
+where v0.3.0 trimmed trailing zeros; both forms read back as the same time.
 A released claim's `released_at` is always server time. A terminal report
 applied through `CompleteTaskAttempt` stamps the task row's `updated_at` with
 server time and the attempt's `ended_at` with the worker's reported time. The
@@ -1108,15 +1112,14 @@ The store does not close these yet.
   next request is served.
 - **Heartbeat timestamps compare as text.** SQLite stores timestamps as
   RFC3339Nano text, which mis-orders within a second (`"…:05Z"` sorts after
-  `"…:05.5Z"`), so its heartbeat-staleness comparison is wrong below one second
-  while the in-memory fake compares exactly. The fake's `ListStaleWorkers` also
+  `"…:05.5Z"`). The one exception is the `created_at` and first `updated_at` of
+  the step and task rows a submission writes: those are stamped strictly
+  increasing at a fixed nine fractional digits, so tasks within a step order by
+  submission. A heartbeat is not, so its staleness comparison is wrong below
+  one second while the in-memory fake compares exactly. The fake's `ListStaleWorkers` also
   lists a worker that has never heartbeated as stale, where SQLite never does
   (pinned by `TestListStaleWorkers`; `OfflineStaleWorker` follows SQLite on
   both). Fixing both needs fixed-width timestamps.
-- **A coarse wall clock fails a store test.** On a host whose clock resolution
-  is coarse (observed on Windows),
-  `TestJobStore_CreateJobSubmission_StampsDistinctRowTimestamps` fails because
-  two rows stamped in one tick are not distinct.
 - **A `LeaseTask` that commits is not always delivered.** If building the
   assignment payload fails after `LeaseTask` committed (a deterministic error:
   the job's template no longer parses, or its step is gone), that task stays

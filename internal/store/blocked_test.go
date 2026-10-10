@@ -9,15 +9,41 @@ import (
 	"github.com/uberware/sqi/internal/store"
 )
 
-// blockedOn creates a blocked job whose single edge points at upstream.
-func blockedOn(t *testing.T, st store.Store, upstream jobGraph) jobGraph {
+// blockedOn creates a blocked job with one edge per upstream, written by its
+// submission.
+func blockedOn(t *testing.T, st store.Store, upstreams ...jobGraph) jobGraph {
 	t.Helper()
-	g := seedGraph(t, st, graphOpts{jobStatus: store.JobStatusBlocked, share: &upstream},
-		stepSpec{name: "a", status: store.StepStatusPending, tasks: []store.TaskStatus{store.TaskStatusPending}})
-	if err := st.CreateJobDependencies(t.Context(), g.Job.ID, []string{upstream.Job.ID}); err != nil {
-		t.Fatalf("CreateJobDependencies: %v", err)
+	ids := make([]string, 0, len(upstreams))
+	for _, up := range upstreams {
+		ids = append(ids, up.Job.ID)
 	}
-	return g
+	return blockedWith(t, st, upstreams[0], ids,
+		stepSpec{name: "a", status: store.StepStatusPending, tasks: []store.TaskStatus{store.TaskStatusPending}})
+}
+
+// blockedWith creates a blocked job in share's farm and queue, waiting on
+// upstreamIDs, with the given steps.
+func blockedWith(t *testing.T, st store.Store, share jobGraph, upstreamIDs []string, specs ...stepSpec) jobGraph {
+	t.Helper()
+	return seedGraph(t, st, graphOpts{jobStatus: store.JobStatusBlocked, share: &share, dependsOn: upstreamIDs}, specs...)
+}
+
+// failingUpstream seeds a running job whose only step has already failed. It
+// is submitted alive because a submission refuses a failed upstream; failJob
+// fails it through FinalizeJob once its dependents are in.
+func failingUpstream(t *testing.T, st store.Store, opts graphOpts) jobGraph {
+	t.Helper()
+	opts.jobStatus = store.JobStatusRunning
+	return seedGraph(t, st, opts, stepSpec{name: "up", status: store.StepStatusFailed, tasks: []store.TaskStatus{store.TaskStatusFailed}})
+}
+
+// failJob finalizes a failingUpstream job, which fails it.
+func failJob(t *testing.T, st store.Store, g jobGraph) {
+	t.Helper()
+	status, _, err := st.FinalizeJob(t.Context(), g.Job.ID, time.Now().UTC())
+	if err != nil || status != store.JobStatusFailed {
+		t.Fatalf("FinalizeJob = (%s, %v), want failed", status, err)
+	}
 }
 
 func TestReleaseBlockedJob(t *testing.T) {
@@ -55,11 +81,9 @@ func TestReleaseBlockedJob_RequiresEveryUpstream(t *testing.T) {
 	for name, st := range newStores(t) {
 		t.Run(name, func(t *testing.T) {
 			done := seedGraph(t, st, graphOpts{jobStatus: store.JobStatusCompleted})
-			failed := seedGraph(t, st, graphOpts{jobStatus: store.JobStatusFailed, share: &done})
-			g := blockedOn(t, st, done)
-			if err := st.CreateJobDependencies(t.Context(), g.Job.ID, []string{failed.Job.ID}); err != nil {
-				t.Fatalf("CreateJobDependencies: %v", err)
-			}
+			failed := failingUpstream(t, st, graphOpts{share: &done})
+			g := blockedOn(t, st, done, failed)
+			failJob(t, st, failed)
 			if ok, err := st.ReleaseBlockedJob(t.Context(), g.Job.ID, time.Now().UTC()); err != nil || ok {
 				t.Fatalf("release with one failed upstream = (%v, %v), want (false, nil)", ok, err)
 			}
@@ -103,8 +127,9 @@ func TestReleaseBlockedJob_DoesNotUndoCancel(t *testing.T) {
 func TestCancelBlockedJob(t *testing.T) {
 	for name, st := range newStores(t) {
 		t.Run(name, func(t *testing.T) {
-			up := seedGraph(t, st, graphOpts{jobStatus: store.JobStatusFailed})
+			up := failingUpstream(t, st, graphOpts{})
 			g := blockedOn(t, st, up)
+			failJob(t, st, up)
 			ok, tasks, err := st.CancelBlockedJob(t.Context(), g.Job.ID, store.FailureReasonUpstreamFailed, time.Now().UTC())
 			if err != nil || !ok || len(tasks) != 1 {
 				t.Fatalf("CancelBlockedJob = (%v, %d, %v), want (true, 1, nil)", ok, len(tasks), err)
@@ -129,8 +154,9 @@ func TestCancelBlockedJob(t *testing.T) {
 func TestCancelBlockedJob_WritesNothingWhenNotBlocked(t *testing.T) {
 	for name, st := range newStores(t) {
 		t.Run(name, func(t *testing.T) {
-			up := seedGraph(t, st, graphOpts{jobStatus: store.JobStatusFailed})
+			up := failingUpstream(t, st, graphOpts{})
 			g := blockedOn(t, st, up)
+			failJob(t, st, up)
 			if err := st.CancelJobStatus(t.Context(), g.Job.ID); err != nil {
 				t.Fatalf("CancelJobStatus: %v", err)
 			}
@@ -155,16 +181,14 @@ func TestCancelBlockedJob_WritesNothingWhenNotBlocked(t *testing.T) {
 func TestCancelBlockedJob_LeavesTerminalStepsAndKeepsReason(t *testing.T) {
 	for name, st := range newStores(t) {
 		t.Run(name, func(t *testing.T) {
-			up := seedGraph(t, st, graphOpts{jobStatus: store.JobStatusFailed})
-			g := seedGraph(t, st, graphOpts{jobStatus: store.JobStatusBlocked, share: &up},
+			up := failingUpstream(t, st, graphOpts{})
+			g := blockedWith(t, st, up, []string{up.Job.ID},
 				stepSpec{name: "done", status: store.StepStatusCompleted, tasks: []store.TaskStatus{store.TaskStatusSucceeded}},
-				stepSpec{name: "open", status: store.StepStatusPending, tasks: []store.TaskStatus{store.TaskStatusPending}})
-			if err := st.CreateJobDependencies(t.Context(), g.Job.ID, []string{up.Job.ID}); err != nil {
-				t.Fatalf("CreateJobDependencies: %v", err)
-			}
-			if err := fixtures(t, st).SetTaskFailureReason(t.Context(), g.Tasks["open"][0].ID, "earlier reason"); err != nil {
-				t.Fatalf("SetTaskFailureReason: %v", err)
-			}
+				stepSpec{
+					name: "open", status: store.StepStatusPending,
+					tasks: []store.TaskStatus{store.TaskStatusPending}, reasons: []string{"earlier reason"},
+				})
+			failJob(t, st, up)
 			ok, tasks, err := st.CancelBlockedJob(t.Context(), g.Job.ID, store.FailureReasonUpstreamFailed, time.Now().UTC())
 			if err != nil || !ok || len(tasks) != 1 {
 				t.Fatalf("CancelBlockedJob = (%v, %d, %v), want (true, 1, nil)", ok, len(tasks), err)

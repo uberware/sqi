@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/uberware/sqi/internal/store"
+	"github.com/uberware/sqi/internal/store/storetest"
 )
 
 func TestWorkerCredential_CreateAndGet(t *testing.T) {
@@ -42,9 +43,9 @@ func TestWorkerCredential_CreateAndGet(t *testing.T) {
 		t.Errorf("RevokedAt: got %v, want nil", created.RevokedAt)
 	}
 
-	got, err := s.GetActiveWorkerCredentialByWorkerID(ctx, "w1")
+	got, err := storetest.ActiveWorkerCredential(ctx, s, "w1")
 	if err != nil {
-		t.Fatalf("GetActiveWorkerCredentialByWorkerID: %v", err)
+		t.Fatalf("ActiveWorkerCredential: %v", err)
 	}
 	if got.ID != c.ID || got.PublicKey != c.PublicKey || got.Name != c.Name {
 		t.Errorf("got %+v, want fields matching %+v", got, c)
@@ -53,7 +54,7 @@ func TestWorkerCredential_CreateAndGet(t *testing.T) {
 
 func TestWorkerCredential_GetNotFound(t *testing.T) {
 	s := openTestStore(t)
-	_, err := s.GetActiveWorkerCredentialByWorkerID(context.Background(), "nope")
+	_, err := storetest.ActiveWorkerCredential(context.Background(), s, "nope")
 	if !errors.Is(err, store.ErrNotFound) {
 		t.Errorf("expected ErrNotFound, got %v", err)
 	}
@@ -220,28 +221,28 @@ func TestWorkerCredential_RotateAfterRevoke(t *testing.T) {
 		t.Errorf("rotated credential RevokedAt = %v, want nil", created.RevokedAt)
 	}
 
-	// GetActiveWorkerCredentialByWorkerID's whole contract is to resolve this
-	// ambiguity: after a rotation there are two rows for w1, and it must
-	// return the active one (pub2), never the revoked one (pub1).
-	got, err := s.GetActiveWorkerCredentialByWorkerID(ctx, "w1")
+	// After a rotation there are two rows for w1, and the active set the
+	// broker's keys are rebuilt from must hold the active one (pub2), never
+	// the revoked one (pub1).
+	got, err := storetest.ActiveWorkerCredential(ctx, s, "w1")
 	if err != nil {
-		t.Fatalf("GetActiveWorkerCredentialByWorkerID: %v", err)
+		t.Fatalf("ActiveWorkerCredential: %v", err)
 	}
 	if got.WorkerID != "w1" {
-		t.Errorf("GetActiveWorkerCredentialByWorkerID WorkerID = %q, want %q", got.WorkerID, "w1")
+		t.Errorf("ActiveWorkerCredential WorkerID = %q, want %q", got.WorkerID, "w1")
 	}
 	if got.PublicKey != "pub2" {
-		t.Errorf("GetActiveWorkerCredentialByWorkerID PublicKey = %q, want %q (the active, rotated key)", got.PublicKey, "pub2")
+		t.Errorf("ActiveWorkerCredential PublicKey = %q, want %q (the active, rotated key)", got.PublicKey, "pub2")
 	}
 	if got.RevokedAt != nil {
-		t.Errorf("GetActiveWorkerCredentialByWorkerID RevokedAt = %v, want nil", got.RevokedAt)
+		t.Errorf("ActiveWorkerCredential RevokedAt = %v, want nil", got.RevokedAt)
 	}
 }
 
 // TestWorkerCredential_GetActiveOnly_RevokedOnlyReturnsNotFound verifies that
 // a worker whose only credential has been revoked (no rotation yet) is
-// reported as having no active credential — GetActiveWorkerCredentialByWorkerID
-// must never hand back a revoked row.
+// reported as having no active credential — the active set must never hold a
+// revoked row.
 func TestWorkerCredential_GetActiveOnly_RevokedOnlyReturnsNotFound(t *testing.T) {
 	s := openTestStore(t)
 	ctx := context.Background()
@@ -256,7 +257,7 @@ func TestWorkerCredential_GetActiveOnly_RevokedOnlyReturnsNotFound(t *testing.T)
 		t.Fatalf("RevokeWorkerCredential: %v", err)
 	}
 
-	_, err := s.GetActiveWorkerCredentialByWorkerID(ctx, "w1")
+	_, err := storetest.ActiveWorkerCredential(ctx, s, "w1")
 	if !errors.Is(err, store.ErrNotFound) {
 		t.Errorf("expected ErrNotFound for a worker with only a revoked credential, got %v", err)
 	}
@@ -286,9 +287,9 @@ func TestWorkerCredential_Touch(t *testing.T) {
 		t.Fatalf("TouchWorkerCredential: %v", err)
 	}
 
-	got, err := s.GetActiveWorkerCredentialByWorkerID(ctx, "w1")
+	got, err := storetest.ActiveWorkerCredential(ctx, s, "w1")
 	if err != nil {
-		t.Fatalf("GetActiveWorkerCredentialByWorkerID: %v", err)
+		t.Fatalf("ActiveWorkerCredential: %v", err)
 	}
 	if got.LastSeenAt == nil || !got.LastSeenAt.Equal(seenAt) {
 		t.Errorf("LastSeenAt = %v, want %v", got.LastSeenAt, seenAt)
@@ -448,9 +449,9 @@ func TestWorkerJoinToken_Redeem(t *testing.T) {
 		t.Errorf("UsedAt: got %v, want %v", *storedTok.UsedAt, claimedAt)
 	}
 
-	storedCred, err := s.GetActiveWorkerCredentialByWorkerID(ctx, "w1")
+	storedCred, err := storetest.ActiveWorkerCredential(ctx, s, "w1")
 	if err != nil {
-		t.Fatalf("GetActiveWorkerCredentialByWorkerID: %v", err)
+		t.Fatalf("ActiveWorkerCredential: %v", err)
 	}
 	if storedCred.PublicKey != "pub1" {
 		t.Errorf("PublicKey: got %q, want %q", storedCred.PublicKey, "pub1")
@@ -494,7 +495,7 @@ func TestWorkerJoinToken_RedeemExpired(t *testing.T) {
 	if stored.UsedAt != nil {
 		t.Error("a refused claim marked the token used")
 	}
-	if _, err := s.GetActiveWorkerCredentialByWorkerID(ctx, "w1"); !errors.Is(err, store.ErrNotFound) {
+	if _, err := storetest.ActiveWorkerCredential(ctx, s, "w1"); !errors.Is(err, store.ErrNotFound) {
 		t.Errorf("expected no credential to have been created, got %v", err)
 	}
 }

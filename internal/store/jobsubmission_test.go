@@ -4,10 +4,12 @@ package store_test
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 
 	"github.com/uberware/sqi/internal/store"
+	"github.com/uberware/sqi/internal/store/storetest"
 )
 
 // submissionFixture builds a two-step, three-task submission on a fresh farm
@@ -56,7 +58,7 @@ func assertFreshTimestamps(t *testing.T, what string, createdAt, updatedAt time.
 
 // TestJobStore_CreateJobSubmission_WritesEverything pins the happy path on both
 // backends: one call produces the job, its steps and its tasks, and returns
-// them populated the way the per-row creators do.
+// them populated, with the store's own timestamps.
 func TestJobStore_CreateJobSubmission_WritesEverything(t *testing.T) {
 	for name, st := range newStores(t) {
 		t.Run(name, func(t *testing.T) {
@@ -77,11 +79,10 @@ func TestJobStore_CreateJobSubmission_WritesEverything(t *testing.T) {
 			if len(out.Tasks) != 3 {
 				t.Errorf("returned %d tasks, want 3", len(out.Tasks))
 			}
-			// The rows come back the way the per-row creators return theirs:
-			// timestamps populated by the store, not the caller's zero values.
-			// A non-zero check alone would pass on a value a century off, or
-			// on a CreatedAt stamped without its UpdatedAt, so both backends
-			// are held to "now, and the same on both fields".
+			// The rows come back with the store's timestamps, not the caller's
+			// zero values. A non-zero check alone would pass on a value a
+			// century off, or on a CreatedAt stamped without its UpdatedAt, so
+			// both backends are held to "now, and the same on both fields".
 			assertFreshTimestamps(t, "job "+out.Job.ID, out.Job.CreatedAt, out.Job.UpdatedAt)
 			for _, s := range out.Steps {
 				assertFreshTimestamps(t, "step "+s.ID, s.CreatedAt, s.UpdatedAt)
@@ -116,7 +117,7 @@ func TestJobStore_CreateJobSubmission_WritesEverything(t *testing.T) {
 // steps.
 //
 // The induced failure is a duplicate step name, which violates the (JobID,
-// Name) uniqueness both backends enforce (see store/step.go's CreateStep doc).
+// Name) uniqueness both backends enforce on steps.
 // It fires on the SECOND step, so the job row and the first step have already
 // been written inside the transaction when it hits.
 //
@@ -168,9 +169,7 @@ func TestJobStore_CreateJobSubmission_WritesDependencyEdges(t *testing.T) {
 			upstream := sub.Job
 			upstream.ID = "job-upstream"
 			upstream.Name = "up"
-			if _, err := st.CreateJob(ctx, upstream); err != nil {
-				t.Fatalf("CreateJob(upstream): %v", err)
-			}
+			storetest.Submit(t, st, store.JobSubmission{Job: upstream})
 
 			sub.Job.Status = store.JobStatusBlocked
 			sub.DependsOn = []string{"job-upstream"}
@@ -198,9 +197,9 @@ func TestJobStore_CreateJobSubmission_WritesDependencyEdges(t *testing.T) {
 	}
 }
 
-// TestJobStore_CreateJobSubmission_DoesNotAliasCallerMemory pins the defensive
-// copying the per-row creators already do: mutating the slices and maps handed
-// to CreateJobSubmission after it returns must not change what is stored.
+// TestJobStore_CreateJobSubmission_DoesNotAliasCallerMemory pins that the
+// store copies what it is handed: mutating the slices and maps given to
+// CreateJobSubmission after it returns must not change what is stored.
 //
 // This is effectively a FAKE-ONLY test wearing a cross-backend harness, and a
 // later reader should not over-trust the fact that it passes on both. SQLite
@@ -213,9 +212,8 @@ func TestJobStore_CreateJobSubmission_DoesNotAliasCallerMemory(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			ctx := context.Background()
 			sub := submissionFixture(ctx, t, st)
-			// Job.Parameters is here because the fake's copyMap on it is one of
-			// the deviations from its own per-row CreateJob, which copies
-			// nothing; without this the deviation would be untested.
+			// Job.Parameters is here so the fake's copyMap on it is covered;
+			// without it that defensive copy would be untested.
 			sub.Job.Parameters = map[string]string{"k": "v"}
 			sub.Steps[1].DependsOn = []string{"a"}
 			sub.Tasks[0].Parameters = map[string]string{"frame": "1"}
@@ -299,20 +297,26 @@ func TestJobStore_CreateJobSubmission_RejectsDuplicateIDs(t *testing.T) {
 // TestJobStore_CreateJobSubmission_StampsDistinctRowTimestamps pins that every
 // step and task in one submission gets its OWN created_at.
 //
-// It is sqlite-only on purpose. Two SQLite consumers depend on this — the
-// t.created_at tiebreaker in sqlListReadyTasks and ListTasks' single-column
-// ORDER BY with LIMIT, which has no secondary key and therefore no stable page
-// boundaries when the sort key ties (see insertTasksTx). Neither exists in the
-// fake, whose insert loop is also far faster than this platform's wall clock
-// advances, so asserting distinctness there would be flaky for no benefit.
+// Two SQLite consumers depend on this — the t.created_at tiebreaker in
+// sqlListReadyTasks and ListTasks' single-column ORDER BY with LIMIT, which has
+// no secondary key and therefore no stable page boundaries when the sort key
+// ties (see insertTasksTx) — and the fake mirrors it. A coarse wall clock
+// (observed on Windows) returns one instant for consecutive rows, so distinct
+// stamps come from each submission's strictly increasing clock, not from
+// time.Now alone.
 //
 // A future reintroduction of one shared timestamp for the whole batch must
 // fail here rather than pass and quietly change dispatch order.
 func TestJobStore_CreateJobSubmission_StampsDistinctRowTimestamps(t *testing.T) {
-	st, ok := newStores(t)["sqlite"]
-	if !ok {
-		t.Fatal("newStores did not provide a sqlite backend")
+	for name, st := range newStores(t) {
+		t.Run(name, func(t *testing.T) {
+			assertDistinctRowTimestamps(t, st)
+		})
 	}
+}
+
+func assertDistinctRowTimestamps(t *testing.T, st store.Store) {
+	t.Helper()
 	ctx := context.Background()
 	sub := submissionFixture(ctx, t, st)
 
@@ -351,5 +355,45 @@ func TestJobStore_CreateJobSubmission_StampsDistinctRowTimestamps(t *testing.T) 
 			t.Errorf("stored tasks %s and %s share created_at %v", other, tk.ID, tk.CreatedAt)
 		}
 		storedTimes[tk.CreatedAt] = tk.ID
+	}
+}
+
+// TestJobStore_CreateJobSubmission_ListsTasksInSubmissionOrder pins that tasks
+// sorted by created_at come back in the order they were submitted. On SQLite
+// the sort is over TEXT, so this also needs every stamp written at a fixed
+// width: RFC3339Nano trims trailing zeros, and ".1Z" sorts after ".12Z".
+func TestJobStore_CreateJobSubmission_ListsTasksInSubmissionOrder(t *testing.T) {
+	const n = 500
+	for name, st := range newStores(t) {
+		t.Run(name, func(t *testing.T) {
+			ctx := t.Context()
+			if _, err := st.CreateFarm(ctx, store.Farm{ID: "farm-1", Name: "f"}); err != nil {
+				t.Fatalf("CreateFarm: %v", err)
+			}
+			if _, err := st.CreateQueue(ctx, store.Queue{ID: "queue-1", FarmID: "farm-1", Name: "q"}); err != nil {
+				t.Fatalf("CreateQueue: %v", err)
+			}
+			seed := storetest.NewJob("job-1", "farm-1", "queue-1")
+			for i := range n {
+				seed.Task(fmt.Sprintf("task-%04d", i), "step-1", store.TaskStatusReady)
+			}
+			out := seed.Submit(t, st)
+
+			got, err := st.ListTasks(ctx, store.ListTasksOptions{
+				JobID: "job-1", SortBy: store.TaskSortByCreatedAt, SortDir: store.SortAsc,
+				Pagination: store.Pagination{Limit: n},
+			})
+			if err != nil {
+				t.Fatalf("ListTasks: %v", err)
+			}
+			if len(got.Items) != n {
+				t.Fatalf("ListTasks returned %d tasks, want %d", len(got.Items), n)
+			}
+			for i, task := range got.Items {
+				if task.ID != out.Tasks[i].ID {
+					t.Fatalf("task %d by created_at is %s, want %s (submission order)", i, task.ID, out.Tasks[i].ID)
+				}
+			}
+		})
 	}
 }

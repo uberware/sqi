@@ -742,8 +742,9 @@ compiling.
 > separate setter call after the status write is a second write that can land
 > on a task another writer has moved in between, which the store's
 > [invariants](architecture.md#store-invariants) rule out.
-> `SetTaskFailureReason` and `SetTaskFailureReasonIfEmpty` are not part of
-> `store.Store`; both stores keep them only as test fixtures. See
+> There is no standalone setter for the reason on `store.Store`; a test that
+> needs a task with a `FailureReason` seeds it in its `storetest.Submit` call or
+> drives the real failure or cancel write. See
 > [the durable-failure-reason table](architecture.md#5-status-ingestion) for
 > every existing path and its reason string.
 
@@ -819,6 +820,47 @@ func TestListSteps(t *testing.T) {
 ```
 
 Run the tests: `go test -race ./internal/api/...`
+
+**Seed store state through the production writes.** A test that needs jobs,
+steps or tasks in some state builds them with `internal/store/storetest`, which
+is written against `store.Store` so the same test runs on the SQLite store and
+the in-memory fake:
+
+- `storetest.Submit` creates a whole job (job, `DependsOn` edges, steps and
+  tasks) in one `CreateJobSubmission`, the call production makes. Put every
+  status and field the test needs in that one submission, except a task's
+  `assigned` and `running`, which are leased (next bullet).
+  `storetest.NewJob(id, farm, queue)` builds that submission by chaining
+  `.As`, `.Step` and `.Task`, then writes it with `.Submit` or
+  `.SubmitLeasing`.
+- `storetest.SubmitLeasing` is `Submit` for a job with work in flight: each task
+  asking to be `assigned` or `running` is submitted ready and then leased (and
+  started) for real. `storetest.Lease`, `storetest.Start` and
+  `storetest.Running` do the same for one task, through `LeaseTask` and
+  `StartTaskAttempt`, so the attempt and its usage-pool claims are real.
+- To test what happens after a transition, drive it rather than writing the
+  resulting state: `storetest.Complete` and `storetest.FailAndRequeue` cover the
+  common worker reports; call `CancelJobExecution`, `OfflineWorker` and so on
+  for the rest.
+- `storetest.InjectAttempt` and `storetest.InjectClaim` write a row with no
+  state checks, through injectors that live on the concrete stores, not on
+  `store.Store` (`storetest.InjectorFor` returns them, for a test that asserts
+  on an injector's error). They are for states production cannot reach (an
+  open attempt on a terminal task, a claim on a closed attempt). Never use one
+  to build a state a production write can produce. A wrapper that embeds
+  `store.Store` does not expose them, and the test fails naming the wrapper
+  type; pass the store the wrapper wraps.
+- `storetest.ClaimViolations(t, st)` runs the concrete store's check of
+  invariant I3 (no active usage claim on a closed attempt or a terminal task)
+  and returns the offending claim IDs. Assert it is empty after any write that
+  should release claims.
+- Two reads exist only for tests, because nothing in production makes them.
+  `storetest.ActiveWorkerCredential(ctx, st, workerID)` finds a worker's
+  active credential in `ListActiveWorkerCredentials`, the set the broker's keys
+  are rebuilt from. `ListAuditEntries` lives on the concrete stores (the
+  `storetest.AuditReader` interface), not on `store.Store`. Do not add a read
+  method to `store.Store` that only tests call: every backend would have to
+  implement it.
 
 ### Step 6 — Run lint and format
 

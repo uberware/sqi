@@ -227,7 +227,6 @@ const (
 	// sqlSelectActiveJobTasks reads the tasks a job cancel is about to move out
 	// of assigned/running, with their worker still set: the UPDATE that follows
 	// clears it, and SQLite's RETURNING cannot report the pre-update value (I2).
-	// The [Store.CancelJobTasks] fixture reads its set with it too.
 	sqlSelectActiveJobTasks = `SELECT ` + taskCols + ` FROM tasks WHERE job_id = ? AND status IN ('assigned', 'running')`
 
 	// sqlReleaseClosedJobClaims releases the claims of the job's attempts that
@@ -240,10 +239,9 @@ WHERE  released_at IS NULL
                            WHERE t.job_id = ? AND ta.status != 'running')`
 
 	// sqlCancelOneTask is the single-task cancel. Unlike [sqlCancelJobTasks] it
-	// leaves assigned_worker_id and assigned_at in place, as a status write
-	// through [Store.UpdateTaskStatus] always has, so a canceled task still
-	// shows the worker that held it. The reason is stamped only on a task with
-	// none yet.
+	// leaves assigned_worker_id and assigned_at in place, so a canceled task
+	// still shows the worker that held it. The reason is stamped only on a task
+	// with none yet.
 	sqlCancelOneTask = `
 UPDATE tasks
 SET    status = 'canceled', updated_at = ?, unschedulable_reason = '',

@@ -5,7 +5,7 @@ package scheduler
 // The task status consumer must ACK a message whose transition the store
 // rejects, never Nak it.
 //
-// UpdateTaskStatus enforces the task state machine, so a stale or out-of-order
+// The store enforces the task state machine, so a stale or out-of-order
 // worker message can now legitimately fail. task.status is a JetStream subject
 // (at-least-once), and handleTaskStatusMessage Naks on error — so treating an
 // invalid transition as retryable would redeliver the same doomed message
@@ -16,12 +16,15 @@ import (
 	"testing"
 
 	"github.com/uberware/sqi/internal/store"
+	"github.com/uberware/sqi/internal/store/storetest"
 	"github.com/uberware/sqi/internal/worker/protocol"
 )
 
-// TestHandleTaskStatusMessage_InvalidTransitionIsAcked drives a "failed"
+// TestHandleTaskStatusMessage_InvalidTransitionIsAcked drives a "canceled"
 // message at a task that has already succeeded — the shape of a redelivered
-// message arriving after the task reached a terminal state.
+// message arriving after the task reached a terminal state. (A "failed" one
+// would not reach the state machine: its attempt is already closed, so the
+// failure path discards it first as a stale report.)
 func TestHandleTaskStatusMessage_InvalidTransitionIsAcked(t *testing.T) {
 	st := newCheckedFake(t)
 	s := newStatusTestScheduler(st)
@@ -30,9 +33,7 @@ func TestHandleTaskStatusMessage_InvalidTransitionIsAcked(t *testing.T) {
 	_, _, task, attempt := seedStatusFixture(t, st, store.TaskStatusRunning)
 
 	// Drive the task to a terminal state first.
-	if err := st.UpdateTaskStatus(t.Context(), task.ID, store.TaskStatusSucceeded); err != nil {
-		t.Fatalf("UpdateTaskStatus(running → succeeded): %v", err)
-	}
+	storetest.Complete(t, st, attempt, store.TaskStatusSucceeded)
 
 	msg := &fakeJSMsg{
 		subject: statusTestSubject,
@@ -40,7 +41,7 @@ func TestHandleTaskStatusMessage_InvalidTransitionIsAcked(t *testing.T) {
 			Version:   protocol.ProtocolVersion,
 			TaskID:    task.ID,
 			AttemptID: attempt.ID,
-			Status:    "failed",
+			Status:    "canceled",
 		}),
 	}
 	s.handleTaskStatusMessage(msg)

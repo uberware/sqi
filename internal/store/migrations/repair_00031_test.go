@@ -16,6 +16,7 @@ import (
 	"github.com/uberware/sqi/internal/store"
 	"github.com/uberware/sqi/internal/store/migrations"
 	"github.com/uberware/sqi/internal/store/sqlite"
+	"github.com/uberware/sqi/internal/store/storetest"
 )
 
 // claimSeed is one claim the 00031 tests plant: the state of the task and
@@ -28,58 +29,70 @@ type claimSeed struct {
 
 // seedClaimOn creates farm, queue, job, step, task (taskStatus), attempt
 // (attemptStatus) and a claim on the pool, returning the claim ID. The claim is
-// released afterwards when seed.released is set. The rows are written with raw
-// store creators on purpose: a leaked claim is exactly a combination the
-// guarded store operations no longer produce.
+// released afterwards when seed.released is set. A state production can reach
+// is reached through production writes: a healthy claim (a running task whose
+// attempt is running) is a lease and a start, and a released claim is that
+// lease driven to its terminal report, which releases it. Every other seed is a
+// leak, exactly a combination the guarded store operations no longer produce,
+// so seedLeakedClaim injects it.
 func seedClaimOn(t *testing.T, s *sqlite.Store, seed claimSeed, poolID string) string {
 	t.Helper()
-	ctx := t.Context()
-	now := time.Now().UTC()
+	healthy := seed.taskStatus == store.TaskStatusRunning && seed.attemptStatus == store.AttemptStatusRunning
+	if !seed.released && !healthy {
+		return seedLeakedClaim(t, s, seed, poolID)
+	}
+	task := submitJob(t, s, store.JobStatusRunning, store.StepStatusReady, store.TaskStatusReady).Tasks[0]
+	attempt, claimID := leaseWithClaim(t, s, task.ID, poolID)
+	storetest.Start(t, s, attempt)
+	if !seed.released {
+		return claimID
+	}
+	res, err := s.CompleteTaskAttempt(t.Context(), store.AttemptCompletion{
+		AttemptID: attempt.ID, TaskID: task.ID,
+		TaskStatus: seed.taskStatus, AttemptStatus: seed.attemptStatus, EndedAt: time.Now().UTC(),
+	})
+	if err != nil || !res.Applied {
+		t.Fatalf("CompleteTaskAttempt (%s, %s) = %+v, %v; want it applied", seed.taskStatus, seed.attemptStatus, res, err)
+	}
+	return claimID
+}
 
-	farm, err := s.CreateFarm(ctx, store.Farm{ID: uuid.NewString(), Name: uuid.NewString()})
-	if err != nil {
-		t.Fatalf("CreateFarm: %v", err)
-	}
-	queue, err := s.CreateQueue(ctx, store.Queue{ID: uuid.NewString(), FarmID: farm.ID, Name: uuid.NewString()})
-	if err != nil {
-		t.Fatalf("CreateQueue: %v", err)
-	}
-	job, err := s.CreateJob(ctx, store.Job{
-		ID: uuid.NewString(), FarmID: farm.ID, QueueID: queue.ID, Name: "j",
-		Status: store.JobStatusRunning, TemplateFormat: store.TemplateFormatJSON, CreatedAt: now, UpdatedAt: now,
+// seedLeakedClaim submits the job, step and task (taskStatus) and injects an
+// attempt (attemptStatus) with a claim still active on it: the leak 00031
+// repairs. The injectors are the only way to write it, because production
+// closes an attempt and releases its claims together.
+func seedLeakedClaim(t *testing.T, s *sqlite.Store, seed claimSeed, poolID string) string {
+	t.Helper()
+	task := submitJob(t, s, store.JobStatusRunning, store.StepStatusReady, seed.taskStatus).Tasks[0]
+	attempt := injectAttempt(t, s, task.ID, 1, seed.attemptStatus)
+	return storetest.InjectClaim(t, s, store.UsageClaim{PoolID: poolID, TaskAttemptID: attempt.ID}).ID
+}
+
+// leaseWithClaim leases taskID to a worker with one claim on poolID, the way
+// the scheduler does, and returns the attempt the lease created and the claim's
+// ID. The task is left assigned.
+func leaseWithClaim(t *testing.T, s *sqlite.Store, taskID, poolID string) (attempt store.TaskAttempt, claimID string) {
+	t.Helper()
+	claimID = uuid.NewString()
+	attempt = storetest.Lease(t, s, store.LeaseRequest{
+		TaskID: taskID, WorkerID: "w",
+		Claims: []store.UsagePoolClaim{{ClaimID: claimID, PoolID: poolID, PoolName: "lic"}},
 	})
-	if err != nil {
-		t.Fatalf("CreateJob: %v", err)
+	return attempt, claimID
+}
+
+// injectAttempt writes attempt number of taskID in the given status exactly as
+// given, through the store's injector: no lease, no state check. A closed
+// attempt carries the ended_at a production close stamps, so the only thing
+// unreachable about it is the combination it is planted in.
+func injectAttempt(t *testing.T, s *sqlite.Store, taskID string, number int, status store.AttemptStatus) store.TaskAttempt {
+	t.Helper()
+	now := time.Now().UTC()
+	attempt := store.TaskAttempt{TaskID: taskID, WorkerID: "w", AttemptNumber: number, Status: status, StartedAt: now}
+	if status != store.AttemptStatusRunning {
+		attempt.EndedAt = &now
 	}
-	step, err := s.CreateStep(ctx, store.Step{
-		ID: uuid.NewString(), JobID: job.ID, Name: "s", Status: store.StepStatusReady, CreatedAt: now, UpdatedAt: now,
-	})
-	if err != nil {
-		t.Fatalf("CreateStep: %v", err)
-	}
-	task, err := s.CreateTask(ctx, store.Task{
-		ID: uuid.NewString(), JobID: job.ID, StepID: step.ID, Name: "t", Status: seed.taskStatus, CreatedAt: now, UpdatedAt: now,
-	})
-	if err != nil {
-		t.Fatalf("CreateTask: %v", err)
-	}
-	attempt, err := s.CreateTaskAttempt(ctx, store.TaskAttempt{
-		ID: uuid.NewString(), TaskID: task.ID, WorkerID: "w", AttemptNumber: 1,
-		Status: seed.attemptStatus, StartedAt: now, CreatedAt: now,
-	})
-	if err != nil {
-		t.Fatalf("CreateTaskAttempt: %v", err)
-	}
-	claim, err := s.CreateClaim(ctx, store.UsageClaim{ID: uuid.NewString(), PoolID: poolID, TaskAttemptID: attempt.ID})
-	if err != nil {
-		t.Fatalf("CreateClaim: %v", err)
-	}
-	if seed.released {
-		if err := s.ReleaseClaim(ctx, claim.ID, now); err != nil {
-			t.Fatalf("ReleaseClaim: %v", err)
-		}
-	}
-	return claim.ID
+	return storetest.InjectAttempt(t, s, attempt)
 }
 
 // openSeedable opens a fresh migrated store, which carries every migration the
@@ -244,9 +257,14 @@ func TestMigration00031_ReleasesLeakedClaims(t *testing.T) {
 		t.Fatalf("seeded already-released claim %s has no released_at", alreadyReleased)
 	}
 
+	// Apply 00031 alone. A full goose.Up would also run 00035, whose second
+	// statement releases every active claim on a closed attempt (and whose
+	// first closes the open attempt of a terminal task), so it would repair
+	// these four leaks itself and this test would pass with 00031's UPDATE
+	// removed.
 	ranFrom := time.Now().UTC().Add(-time.Second)
-	if err := goose.Up(db, "."); err != nil {
-		t.Fatalf("goose.Up: %v", err)
+	if err := goose.UpTo(db, ".", 31); err != nil {
+		t.Fatalf("goose.UpTo(31): %v", err)
 	}
 	ranTo := time.Now().UTC().Add(time.Second)
 

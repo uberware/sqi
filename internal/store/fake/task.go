@@ -5,22 +5,11 @@ package fake
 import (
 	"cmp"
 	"context"
-	"fmt"
 	"slices"
 	"time"
 
 	"github.com/uberware/sqi/internal/store"
 )
-
-// CreateTask inserts a new task.
-func (s *Store) CreateTask(_ context.Context, task store.Task) (store.Task, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	task.Parameters = copyMap(task.Parameters)
-	s.tasks[task.ID] = task
-	return task, nil
-}
 
 // GetTask returns the task with the given ID, or [store.ErrNotFound].
 func (s *Store) GetTask(_ context.Context, id string) (store.Task, error) {
@@ -60,42 +49,6 @@ func (s *Store) ListTasks(_ context.Context, opts store.ListTasksOptions) (store
 	return applyPage(tasks, opts.Pagination), nil
 }
 
-// UpdateTaskStatus transitions a task to a new status and updates UpdatedAt.
-// unschedulable_reason is only meaningful while a task is ready (set by the
-// scheduler sweep), so it is cleared here regardless of the destination
-// status — harmless when it was already empty.
-//
-// Enforces the task state machine ([store.ValidateTaskTransition]) under the
-// same lock that performs the write, matching the SQLite store's transaction.
-// Writing the status a task already holds is a no-op, not an error, so
-// at-least-once redelivery stays idempotent. The two implementations are kept
-// in step because tests inject this fake, and a permissive fake would accept
-// transitions production rejects.
-//
-// Test fixture only: not part of store.Store, which has no caller for it.
-func (s *Store) UpdateTaskStatus(_ context.Context, id string, status store.TaskStatus) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	task, ok := s.tasks[id]
-	if !ok {
-		return store.ErrNotFound
-	}
-
-	if task.Status == status {
-		return nil // idempotent redelivery; nothing to write
-	}
-	if err := store.ValidateTaskTransition(task.Status, status); err != nil {
-		return fmt.Errorf("fake: task %s: %w", id, err)
-	}
-
-	task.Status = status
-	task.UnschedulableReason = ""
-	task.UpdatedAt = time.Now()
-	s.tasks[id] = task
-	return nil
-}
-
 // SetTaskUnschedulableReason implements [store.TaskStore]. A task that is no
 // longer ready is a guarded no-op returning (false, nil); only an unknown task
 // is an error.
@@ -116,61 +69,11 @@ func (s *Store) SetTaskUnschedulableReason(_ context.Context, id, reason string)
 	return true, nil
 }
 
-// SetTaskFailureReason sets the task's failure reason unconditionally, as
-// SQLite's does.
-//
-// Test fixture only: a blind write that is not part of store.Store.
-func (s *Store) SetTaskFailureReason(_ context.Context, id, reason string) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	task, ok := s.tasks[id]
-	if !ok {
-		return store.ErrNotFound
-	}
-	task.FailureReason = reason
-	task.UpdatedAt = time.Now()
-	s.tasks[id] = task
-	return nil
-}
-
-// SetTaskFailureReasonIfEmpty writes the reason only when the task currently
-// has none; an unknown task or one that already carries a reason is a
-// legitimate no-op, not an error.
-//
-// Test fixture only: a blind write that is not part of store.Store.
-func (s *Store) SetTaskFailureReasonIfEmpty(_ context.Context, id, reason string) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	task, ok := s.tasks[id]
-	if !ok || task.FailureReason != "" {
-		return nil
-	}
-	task.FailureReason = reason
-	task.UpdatedAt = time.Now()
-	s.tasks[id] = task
-	return nil
-}
-
-// TransitionStepPendingTasks transitions every pending task of the step to `to`,
-// updates UpdatedAt, stamps a non-empty failureReason on tasks that carry none,
-// and returns the affected tasks.
-//
-// Test fixture only: a blind write that is not part of store.Store.
-func (s *Store) TransitionStepPendingTasks(_ context.Context, stepID string, to store.TaskStatus, failureReason string) ([]store.Task, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	return s.transitionPendingTasksLocked(stepID, to, failureReason, time.Now()), nil
-}
-
 // transitionPendingTasksLocked is the task half of every pending-step move
-// ([Store.TransitionStepPendingTasks], [Store.ReleaseStep],
-// [Store.CancelPendingStep]): it moves every pending task of the step to `to`,
-// stamping updatedAt, clearing the unschedulable reason and stamping a
-// non-empty failureReason on tasks that carry none, and returns copies of the
-// moved tasks. The caller holds s.mu.
+// ([Store.ReleaseStep], [Store.CancelPendingStep]): it moves every pending task
+// of the step to `to`, stamping updatedAt, clearing the unschedulable reason
+// and stamping a non-empty failureReason on tasks that carry none, and returns
+// copies of the moved tasks. The caller holds s.mu.
 func (s *Store) transitionPendingTasksLocked(stepID string, to store.TaskStatus, failureReason string, updatedAt time.Time) []store.Task {
 	return s.transitionPendingTasksWhereLocked(func(t store.Task) bool { return t.StepID == stepID }, to, failureReason, updatedAt)
 }
@@ -200,61 +103,6 @@ func (s *Store) transitionPendingTasksWhereLocked(
 		affected = append(affected, out)
 	}
 	return affected
-}
-
-// AssignTask sets AssignedWorkerID, AssignedAt, and Status to
-// [store.TaskStatusAssigned] for the given task unconditionally and clears its
-// unschedulable reason. It returns [store.ErrNotFound] when the task does not
-// exist. The scheduler takes tasks through [Store.LeaseTask], which guards the
-// same move.
-//
-// Test fixture only: a blind write that is not part of store.Store.
-func (s *Store) AssignTask(_ context.Context, id, workerID string, assignedAt time.Time) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	task, ok := s.tasks[id]
-	if !ok {
-		return store.ErrNotFound
-	}
-
-	task.AssignedWorkerID = workerID
-	task.AssignedAt = &assignedAt
-	task.Status = store.TaskStatusAssigned
-	task.UnschedulableReason = ""
-	task.UpdatedAt = time.Now()
-	s.tasks[id] = task
-	return nil
-}
-
-// ReclaimWorkerTasks resets assigned/running tasks for the given worker back
-// to [store.TaskStatusReady] and returns the count of tasks reclaimed. It closes
-// no attempts and releases no claims; a worker is taken offline through
-// [Store.OfflineStaleWorker] and [Store.OfflineWorker], which do all three.
-//
-// Test fixture only: a blind write that is not part of store.Store.
-func (s *Store) ReclaimWorkerTasks(_ context.Context, workerID string) (int, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	now := time.Now()
-	var count int
-	for id, task := range s.tasks {
-		if task.AssignedWorkerID != workerID {
-			continue
-		}
-		if task.Status != store.TaskStatusAssigned && task.Status != store.TaskStatusRunning {
-			continue
-		}
-		task.Status = store.TaskStatusReady
-		task.AssignedWorkerID = ""
-		task.AssignedAt = nil
-		task.UnschedulableReason = ""
-		task.UpdatedAt = now
-		s.tasks[id] = task
-		count++
-	}
-	return count, nil
 }
 
 // ReclaimStaleAssignedTasks resets tasks stuck in [store.TaskStatusAssigned]
@@ -390,45 +238,6 @@ func (s *Store) activeTasksLocked(inScope func(store.Job) bool) int {
 		}
 	}
 	return n
-}
-
-// CancelJobTasks transitions all non-terminal tasks for the given job to
-// [store.TaskStatusCanceled], stamping a non-empty reason on tasks that carry
-// no failure reason yet, and returns those that were in
-// [store.TaskStatusAssigned] or [store.TaskStatusRunning] at call time. It
-// closes no attempts and releases no claims; a job is canceled through
-// [Store.CancelJobExecution], which does all three.
-//
-// Test fixture only: a blind write that is not part of store.Store.
-func (s *Store) CancelJobTasks(_ context.Context, jobID string, now time.Time, reason string) ([]store.Task, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	var active []store.Task
-	for id, task := range s.tasks {
-		if task.JobID != jobID {
-			continue
-		}
-		switch task.Status {
-		case store.TaskStatusSucceeded, store.TaskStatusFailed, store.TaskStatusCanceled:
-			// Already terminal; leave unchanged.
-			continue
-		}
-		// Capture assigned/running tasks before clearing the worker reference.
-		if task.Status == store.TaskStatusAssigned || task.Status == store.TaskStatusRunning {
-			active = append(active, task)
-		}
-		task.Status = store.TaskStatusCanceled
-		task.AssignedWorkerID = ""
-		task.AssignedAt = nil
-		task.UnschedulableReason = ""
-		if reason != "" && task.FailureReason == "" {
-			task.FailureReason = reason
-		}
-		task.UpdatedAt = now
-		s.tasks[id] = task
-	}
-	return active, nil
 }
 
 // RetryTasks revives failed/canceled tasks (ready under a ready step, else
@@ -669,32 +478,6 @@ func (s *Store) CommittedCores(_ context.Context, workerID string, fullMachineCo
 		}
 	}
 	return total, nil
-}
-
-// LeaseReadyTask moves a ready task to assigned without an attempt, a cap
-// check or a claim, and reports whether the task was still ready. The
-// scheduler leases through [Store.LeaseTask], which does all of that in one step.
-//
-// Test fixture only: a blind write that is not part of store.Store.
-func (s *Store) LeaseReadyTask(_ context.Context, taskID, workerID string, now time.Time) (bool, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	t, ok := s.tasks[taskID]
-	if !ok {
-		return false, store.ErrNotFound
-	}
-	if t.Status != store.TaskStatusReady {
-		return false, nil
-	}
-	t.Status = store.TaskStatusAssigned
-	t.AssignedWorkerID = workerID
-	at := now
-	t.AssignedAt = &at
-	t.UnschedulableReason = ""
-	t.UpdatedAt = now
-	s.tasks[taskID] = t
-	return true, nil
 }
 
 // RecordTaskFailure implements [store.TaskStore]. Under the store lock it

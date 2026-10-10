@@ -30,9 +30,4 @@ type AuditStore interface {
 	// AppendAuditEntry inserts a new audit log entry. The caller must populate
 	// all fields including a unique ID and CreatedAt.
 	AppendAuditEntry(ctx context.Context, entry AuditEntry) error
-
-	// ListAuditEntries returns all audit entries for the given entity,
-	// ordered by CreatedAt ascending. Pass empty strings to list all entries
-	// (for administrative views).
-	ListAuditEntries(ctx context.Context, entityType, entityID string) ([]AuditEntry, error)
 }

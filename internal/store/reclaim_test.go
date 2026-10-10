@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/uberware/sqi/internal/store"
+	"github.com/uberware/sqi/internal/store/storetest"
 )
 
 func TestReclaimStaleAssignedTasks_ClosesAndReleases(t *testing.T) {
@@ -14,13 +15,11 @@ func TestReclaimStaleAssignedTasks_ClosesAndReleases(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			g := seedGraph(t, st, graphOpts{}, stepSpec{
 				name: "a", status: store.StepStatusReady,
-				tasks: []store.TaskStatus{store.TaskStatusAssigned, store.TaskStatusRunning},
+				tasks: []store.TaskStatus{store.TaskStatusReady, store.TaskStatusReady},
 			})
 			pool := seedPool(t, st, 0)
-			stale := seedAttempt(t, st, g.Tasks["a"][0], store.AttemptStatusRunning)
-			seedClaim(t, st, pool.ID, stale.ID)
-			live := seedAttempt(t, st, g.Tasks["a"][1], store.AttemptStatusRunning)
-			seedClaim(t, st, pool.ID, live.ID)
+			stale := leaseClaiming(t, st, g.Tasks["a"][0].ID, false, pool)
+			live := leaseClaiming(t, st, g.Tasks["a"][1].ID, true, pool)
 
 			got, err := st.ReclaimStaleAssignedTasks(t.Context(), time.Now().UTC().Add(time.Minute))
 			if err != nil || len(got) != 1 || got[0].ID != g.Tasks["a"][0].ID {
@@ -35,7 +34,7 @@ func TestReclaimStaleAssignedTasks_ClosesAndReleases(t *testing.T) {
 			if n := activeClaims(t, st, pool.ID); n != 1 {
 				t.Fatalf("active claims = %d, want 1 (only the running task's)", n)
 			}
-			if v := claimViolations(t, st); len(v) != 0 {
+			if v := storetest.ClaimViolations(t, st); len(v) != 0 {
 				t.Fatalf("I3 violations: %v", v)
 			}
 		})
@@ -80,7 +79,7 @@ func TestReclaimStaleAssignedTasks_OnlyStaleAndOnlyAssigned(t *testing.T) {
 				name: "a", status: store.StepStatusReady,
 				tasks: []store.TaskStatus{store.TaskStatusAssigned, store.TaskStatusReady},
 			})
-			fresh := seedAttempt(t, st, g.Tasks["a"][0], store.AttemptStatusRunning)
+			fresh := g.Attempts[g.Tasks["a"][0].ID]
 
 			got, err := st.ReclaimStaleAssignedTasks(t.Context(), time.Now().UTC().Add(-time.Hour))
 			if err != nil || len(got) != 0 {
@@ -113,10 +112,15 @@ func TestReclaimStaleAssignedTasks_ReleasesLeakedClaimOfClosedAttempt(t *testing
 		t.Run(name, func(t *testing.T) {
 			g := seedGraph(t, st, graphOpts{}, stepSpec{
 				name: "a", status: store.StepStatusReady,
-				tasks: []store.TaskStatus{store.TaskStatusAssigned},
+				tasks: []store.TaskStatus{store.TaskStatusReady},
 			})
+			task := g.Tasks["a"][0]
 			pool := seedPool(t, st, 0)
-			earlier := seedAttempt(t, st, g.Tasks["a"][0], store.AttemptStatusFailed)
+			// A failed first attempt and a second lease, through production;
+			// then the claim the first attempt's close leaked, which production
+			// cannot leave behind and is therefore injected.
+			earlier := storetest.FailAndRequeue(t, st, leaseReq(task), time.Now().UTC().Add(-time.Minute))
+			storetest.Lease(t, st, store.LeaseRequest{TaskID: task.ID, WorkerID: fixtureWorkerID})
 			seedClaim(t, st, pool.ID, earlier.ID)
 			if n := activeClaims(t, st, pool.ID); n != 1 {
 				t.Fatalf("fixture: active claims = %d, want 1", n)

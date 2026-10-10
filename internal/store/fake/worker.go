@@ -79,29 +79,6 @@ func (s *Store) ListWorkers(_ context.Context, opts store.ListWorkersOptions) (s
 	return applyPage(workers, opts.Pagination), nil
 }
 
-// UpdateWorker replaces the mutable capability fields of an existing worker
-// (everything except ID, RegisteredAt, InstanceID and Disabled) and updates
-// UpdatedAt. InstanceID and Disabled are kept as SQLite's UPDATE keeps them: an
-// edit never changes which worker process the row belongs to, nor an
-// operator's disable.
-func (s *Store) UpdateWorker(_ context.Context, worker store.Worker) (store.Worker, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	existing, ok := s.workers[worker.ID]
-	if !ok {
-		return store.Worker{}, store.ErrNotFound
-	}
-
-	worker.RegisteredAt = existing.RegisteredAt
-	worker.InstanceID = existing.InstanceID
-	worker.Disabled = existing.Disabled
-	worker.UpdatedAt = time.Now()
-	worker.Tags = copyMap(worker.Tags)
-	s.workers[worker.ID] = worker
-	return worker, nil
-}
-
 // SetWorkerDisabled implements [store.WorkerStore].
 func (s *Store) SetWorkerDisabled(_ context.Context, id string, disabled bool) (store.Worker, error) {
 	s.mu.Lock()
@@ -188,20 +165,6 @@ func (s *Store) CountIdleWorkers(_ context.Context, farmID string) (int, error) 
 		}
 	}
 	return count, nil
-}
-
-// DeleteWorker hard-deletes the worker with the given ID.
-//
-// Test fixture only: an unguarded delete that is not part of store.Store.
-func (s *Store) DeleteWorker(_ context.Context, id string) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	if _, ok := s.workers[id]; !ok {
-		return store.ErrNotFound
-	}
-	delete(s.workers, id)
-	return nil
 }
 
 // DeleteWorkerIfRemovable implements [store.WorkerStore]. The rule is

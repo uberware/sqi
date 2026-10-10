@@ -4,7 +4,6 @@ package sqlite
 
 import (
 	"context"
-	"time"
 
 	"github.com/uberware/sqi/internal/store"
 )
@@ -30,9 +29,6 @@ RETURNING ` + stepCols
 	sqlListSteps = `SELECT ` + stepCols + `
 FROM steps WHERE job_id = ?
 ORDER BY step_order ASC`
-
-	sqlUpdateStepStatus = `
-UPDATE steps SET status = ?, updated_at = ? WHERE id = ?`
 )
 
 func scanStep(row scanner) (store.Step, error) {
@@ -68,28 +64,6 @@ func scanStep(row scanner) (store.Step, error) {
 	return step, nil
 }
 
-// CreateStep implements [store.StepStore].
-func (s *Store) CreateStep(ctx context.Context, step store.Step) (store.Step, error) {
-	dependsOnJSON, err := marshalJSON(step.DependsOn)
-	if err != nil {
-		return store.Step{}, err
-	}
-	// Serialize host_requirements; nil pointer marshals to "null" which matches
-	// the column default and is correctly round-tripped by unmarshalJSON.
-	hostReqJSON, err := marshalJSON(step.HostRequirements)
-	if err != nil {
-		return store.Step{}, err
-	}
-	now := timeToText(time.Now().UTC())
-	row := s.stmtInsertStep.QueryRowContext(ctx,
-		step.ID, step.JobID, step.Name, dependsOnJSON,
-		step.StepOrder, string(step.Status),
-		hostReqJSON, step.ComputeLocation,
-		now, now)
-	out, err := scanStep(row)
-	return out, mapErr(err)
-}
-
 // GetStep implements [store.StepStore].
 func (s *Store) GetStep(ctx context.Context, id string) (store.Step, error) {
 	row := s.stmtGetStep.QueryRowContext(ctx, id)
@@ -114,16 +88,4 @@ func (s *Store) ListSteps(ctx context.Context, jobID string) ([]store.Step, erro
 		steps = append(steps, step)
 	}
 	return steps, rows.Err()
-}
-
-// UpdateStepStatus sets a step's status unconditionally. It returns
-// [store.ErrNotFound] when the step does not exist.
-//
-// Test fixture only: a blind write that is not part of store.Store.
-func (s *Store) UpdateStepStatus(ctx context.Context, id string, status store.StepStatus) error {
-	res, err := s.stmtUpdateStepStatus.ExecContext(ctx, string(status), timeToText(time.Now().UTC()), id)
-	if err != nil {
-		return mapErr(err)
-	}
-	return checkRowsAffected(res)
 }

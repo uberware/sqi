@@ -65,8 +65,10 @@ func (s *Store) AppendAuditEntry(ctx context.Context, entry store.AuditEntry) er
 	return mapErr(err)
 }
 
-// ListAuditEntries implements [store.AuditStore].
-// Passing empty strings for both entityType and entityID returns all entries.
+// ListAuditEntries returns all audit entries for the given entity, ordered by
+// CreatedAt ascending. Passing empty strings for both entityType and entityID
+// returns all entries. A test oracle: nothing in production reads the audit
+// log, so it is not part of store.Store.
 func (s *Store) ListAuditEntries(ctx context.Context, entityType, entityID string) ([]store.AuditEntry, error) {
 	var (
 		rows *sql.Rows

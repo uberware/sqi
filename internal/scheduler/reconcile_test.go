@@ -35,6 +35,7 @@ import (
 
 	"github.com/uberware/sqi/internal/metrics"
 	"github.com/uberware/sqi/internal/store"
+	"github.com/uberware/sqi/internal/store/storetest"
 	"github.com/uberware/sqi/internal/ws"
 )
 
@@ -250,18 +251,6 @@ func reconcileTasks(jobID, stepID string, statuses ...store.TaskStatus) []store.
 	return out
 }
 
-// submitReconcile creates a whole job through the real one-transaction
-// submission path, which keeps the statuses it is given. That is how a
-// 1,001-task step is seeded without a thousand separate writes, and it is how
-// the stuck rows got there: the job, step and task rows are exactly what a
-// v0.3.0 submission followed by a full run leaves.
-func submitReconcile(t *testing.T, st store.Store, sub store.JobSubmission) {
-	t.Helper()
-	if _, err := st.CreateJobSubmission(t.Context(), sub); err != nil {
-		t.Fatalf("CreateJobSubmission %q: %v", sub.Job.Name, err)
-	}
-}
-
 // stuckFarm names the rows seedStuckFarm creates.
 //
 //	big job     "Big" (stuckStepTasks succeeded tasks) <- "After" (pending)
@@ -282,6 +271,12 @@ type stuckFarm struct {
 // seedStuckFarm seeds the damage a v0.3.0 database can hold, with bigTasks
 // tasks in the big step. Every stuck step is in status running with only
 // terminal tasks.
+//
+// Each job is created whole through the real one-transaction submission path,
+// which keeps the statuses it is given. That is how a 1,001-task step is
+// seeded without a thousand separate writes, and it is how the stuck rows got
+// there: the job, step and task rows are exactly what a v0.3.0 submission
+// followed by a full run leaves.
 func seedStuckFarm(t *testing.T, st store.Store, bigTasks int) stuckFarm {
 	t.Helper()
 	seedReconcileFarm(t, st)
@@ -296,7 +291,7 @@ func seedStuckFarm(t *testing.T, st store.Store, bigTasks int) stuckFarm {
 		bigTaskRows = append(bigTaskRows, newReconcileTask(big.ID, bigStep.ID, i, store.TaskStatusSucceeded))
 	}
 	afterTask := newReconcileTask(big.ID, afterStep.ID, 0, store.TaskStatusPending)
-	submitReconcile(t, st, store.JobSubmission{
+	storetest.Submit(t, st, store.JobSubmission{
 		Job: big, Steps: []store.Step{bigStep, afterStep}, Tasks: append(bigTaskRows, afterTask),
 	})
 	f.bigJob, f.bigStep, f.afterStep, f.afterTask = big.ID, bigStep.ID, afterStep.ID, afterTask.ID
@@ -315,7 +310,7 @@ func seedStuckFarm(t *testing.T, st store.Store, bigTasks int) stuckFarm {
 	downTask := newReconcileTask(bad.ID, downStep.ID, 0, store.TaskStatusPending)
 	tailTask := newReconcileTask(bad.ID, tailStep.ID, 0, store.TaskStatusPending)
 	badTasks := reconcileTasks(bad.ID, badStep.ID, store.TaskStatusSucceeded, store.TaskStatusFailed)
-	submitReconcile(t, st, store.JobSubmission{
+	storetest.Submit(t, st, store.JobSubmission{
 		Job: bad, Steps: []store.Step{badStep, downStep, tailStep}, Tasks: append(badTasks, downTask, tailTask),
 	})
 	f.badJob, f.badStep, f.downStep, f.downTask = bad.ID, badStep.ID, downStep.ID, downTask.ID
@@ -324,7 +319,7 @@ func seedStuckFarm(t *testing.T, st store.Store, bigTasks int) stuckFarm {
 	// A stuck step that is its job's only step: finalizing it finalizes the job.
 	solo := newReconcileJob("solo", store.JobStatusRunning)
 	soloStep := newReconcileStep(solo.ID, "Solo", 0, store.StepStatusRunning)
-	submitReconcile(t, st, store.JobSubmission{
+	storetest.Submit(t, st, store.JobSubmission{
 		Job: solo, Steps: []store.Step{soloStep},
 		Tasks: reconcileTasks(solo.ID, soloStep.ID, store.TaskStatusSucceeded, store.TaskStatusSucceeded),
 	})
@@ -335,7 +330,7 @@ func seedStuckFarm(t *testing.T, st store.Store, bigTasks int) stuckFarm {
 	released := newReconcileJob("released", store.JobStatusBlocked)
 	releasedStep := newReconcileStep(released.ID, "S", 0, store.StepStatusPending)
 	releasedTask := newReconcileTask(released.ID, releasedStep.ID, 0, store.TaskStatusPending)
-	submitReconcile(t, st, store.JobSubmission{
+	storetest.Submit(t, st, store.JobSubmission{
 		Job: released, DependsOn: []string{solo.ID},
 		Steps: []store.Step{releasedStep}, Tasks: []store.Task{releasedTask},
 	})
@@ -344,7 +339,7 @@ func seedStuckFarm(t *testing.T, st store.Store, bigTasks int) stuckFarm {
 	canceled := newReconcileJob("canceled", store.JobStatusBlocked)
 	canceledStep := newReconcileStep(canceled.ID, "S", 0, store.StepStatusPending)
 	canceledTask := newReconcileTask(canceled.ID, canceledStep.ID, 0, store.TaskStatusPending)
-	submitReconcile(t, st, store.JobSubmission{
+	storetest.Submit(t, st, store.JobSubmission{
 		Job: canceled, DependsOn: []string{bad.ID},
 		Steps: []store.Step{canceledStep}, Tasks: []store.Task{canceledTask},
 	})
@@ -371,16 +366,17 @@ func seedHealthyFarm(t *testing.T, st store.Store) healthyFarm {
 	render := newReconcileStep(live.ID, "Render", 0, store.StepStatusRunning)
 	empty := newReconcileStep(live.ID, "Empty", 1, store.StepStatusReady)
 	later := newReconcileStep(live.ID, "Later", 2, store.StepStatusPending, "Render")
+	// The first task is the one in flight, leased and started.
 	liveTasks := reconcileTasks(live.ID, render.ID, store.TaskStatusRunning, store.TaskStatusSucceeded, store.TaskStatusReady)
-	submitReconcile(t, st, store.JobSubmission{
+	storetest.SubmitLeasing(t, st, store.JobSubmission{
 		Job: live, Steps: []store.Step{render, empty, later},
 		Tasks: append(liveTasks, newReconcileTask(live.ID, later.ID, 0, store.TaskStatusPending)),
-	})
+	}, storetest.LeaseTo("w-reconcile"))
 	f.jobs = append(f.jobs, live.ID)
 
 	done := newReconcileJob("done", store.JobStatusCompleted)
 	doneStep := newReconcileStep(done.ID, "Done", 0, store.StepStatusCompleted)
-	submitReconcile(t, st, store.JobSubmission{
+	storetest.Submit(t, st, store.JobSubmission{
 		Job: done, Steps: []store.Step{doneStep},
 		Tasks: reconcileTasks(done.ID, doneStep.ID, store.TaskStatusSucceeded, store.TaskStatusSucceeded),
 	})
@@ -390,7 +386,7 @@ func seedHealthyFarm(t *testing.T, st store.Store) healthyFarm {
 	failedStep := newReconcileStep(failed.ID, "Bad", 0, store.StepStatusFailed)
 	skipped := newReconcileStep(failed.ID, "Skipped", 1, store.StepStatusCanceled, "Bad")
 	failedTasks := reconcileTasks(failed.ID, failedStep.ID, store.TaskStatusSucceeded, store.TaskStatusFailed)
-	submitReconcile(t, st, store.JobSubmission{
+	storetest.Submit(t, st, store.JobSubmission{
 		Job: failed, Steps: []store.Step{failedStep, skipped},
 		Tasks: append(failedTasks, newReconcileTask(failed.ID, skipped.ID, 0, store.TaskStatusCanceled)),
 	})
@@ -398,7 +394,7 @@ func seedHealthyFarm(t *testing.T, st store.Store) healthyFarm {
 
 	blocked := newReconcileJob("blocked", store.JobStatusBlocked)
 	blockedStep := newReconcileStep(blocked.ID, "S", 0, store.StepStatusPending)
-	submitReconcile(t, st, store.JobSubmission{
+	storetest.Submit(t, st, store.JobSubmission{
 		Job: blocked, DependsOn: []string{live.ID}, Steps: []store.Step{blockedStep},
 		Tasks: reconcileTasks(blocked.ID, blockedStep.ID, store.TaskStatusPending),
 	})
@@ -412,11 +408,12 @@ func seedHealthyFarm(t *testing.T, st store.Store) healthyFarm {
 	userCanceled := newReconcileJob("user-canceled", store.JobStatusRunning)
 	cancelRender := newReconcileStep(userCanceled.ID, "Render", 0, store.StepStatusRunning)
 	cancelLater := newReconcileStep(userCanceled.ID, "Later", 1, store.StepStatusPending, "Render")
+	// The first task is in flight, leased and started, when the user cancels.
 	cancelTasks := reconcileTasks(userCanceled.ID, cancelRender.ID, store.TaskStatusRunning, store.TaskStatusReady)
 	cancelTasks = append(cancelTasks, newReconcileTask(userCanceled.ID, cancelLater.ID, 0, store.TaskStatusPending))
-	submitReconcile(t, st, store.JobSubmission{
+	storetest.SubmitLeasing(t, st, store.JobSubmission{
 		Job: userCanceled, Steps: []store.Step{cancelRender, cancelLater}, Tasks: cancelTasks,
-	})
+	}, storetest.LeaseTo("w-reconcile"))
 	canceler := newReconcileScheduler(st, &recordBus{}, ws.NoopNotifier{})
 	if err := canceler.CancelJob(t.Context(), userCanceled.ID); err != nil {
 		t.Fatalf("CancelJob: %v", err)
@@ -437,7 +434,7 @@ func seedHealthyFarm(t *testing.T, st store.Store) healthyFarm {
 	// tasks. However it got that way, its job is terminal, so it is left alone.
 	orphaned := newReconcileJob("orphaned", store.JobStatusFailed)
 	orphanedStep := newReconcileStep(orphaned.ID, "Orphan", 0, store.StepStatusReady)
-	submitReconcile(t, st, store.JobSubmission{
+	storetest.Submit(t, st, store.JobSubmission{
 		Job: orphaned, Steps: []store.Step{orphanedStep},
 		Tasks: reconcileTasks(orphaned.ID, orphanedStep.ID, store.TaskStatusSucceeded, store.TaskStatusFailed),
 	})

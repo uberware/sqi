@@ -11,7 +11,10 @@ package scheduler
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"log/slog"
+	"slices"
 	"testing"
 	"time"
 
@@ -19,7 +22,7 @@ import (
 
 	"github.com/uberware/sqi/internal/bus"
 	"github.com/uberware/sqi/internal/store"
-	"github.com/uberware/sqi/internal/store/fake"
+	"github.com/uberware/sqi/internal/store/storetest"
 	"github.com/uberware/sqi/internal/worker/protocol"
 	"github.com/uberware/sqi/internal/ws"
 )
@@ -81,8 +84,10 @@ func taskStatusMsgJSON(t *testing.T, m protocol.TaskStatusMsg) []byte {
 	return b
 }
 
-// seedStatusFixture builds a complete job/step/task/attempt in the store with
-// the job already in the running state. Returns all four records.
+// seedStatusFixture builds a complete job/step/task in the store with the job
+// already in the running state, plus the attempt a real lease writes when
+// taskStatus is assigned or running (see [seedStatusJob]). Returns all four
+// records; the attempt is the zero value for any other task status.
 func seedStatusFixture(t *testing.T, st store.Store, taskStatus store.TaskStatus) (
 	job store.Job, step store.Step, task store.Task, attempt store.TaskAttempt,
 ) {
@@ -98,62 +103,159 @@ func seedStatusFixtureWithJobStatus(
 	job store.Job, step store.Step, task store.Task, attempt store.TaskAttempt,
 ) {
 	t.Helper()
-	ctx := t.Context()
-	now := time.Now()
+	g := seedStatusJob(t, st, statusJob{jobStatus: jobStatus, steps: []statusStep{
+		{name: "Step1", status: store.StepStatusRunning, tasks: []store.TaskStatus{taskStatus}},
+	}})
+	task = g.tasks[0][0]
+	return g.job, g.steps[0], task, g.attempts[task.ID]
+}
+
+// statusStep is one step of a job [seedStatusJob] builds. Tasks are submitted
+// in the given status, except that assigned and running tasks are submitted
+// ready and then leased (and, for running, started) through production writes,
+// so each comes with the attempt a real lease writes.
+type statusStep struct {
+	name      string
+	status    store.StepStatus
+	dependsOn []string
+	tasks     []store.TaskStatus
+	// reasons, by index into tasks, is the FailureReason each task is
+	// submitted with; a shorter slice leaves the rest empty.
+	reasons []string
+}
+
+// statusJob configures [seedStatusJob].
+type statusJob struct {
+	// jobStatus is the job's status; "" is running. A paused job is submitted
+	// running and paused after its tasks are leased, the state an operator
+	// pausing a job with work in flight produces.
+	jobStatus store.JobStatus
+	// worker is the worker every in-flight task is leased to; "" is
+	// statusTestWorkerID.
+	worker string
+	// leasedAt is when the in-flight tasks are leased; zero is now. A time
+	// past the reaper's timeout makes the assignments stale.
+	leasedAt time.Time
+	// pool, when set, is a usage pool each lease claims one slot of, as a
+	// lease of a step that requires the pool does.
+	pool  *store.UsagePool
+	steps []statusStep
+}
+
+// statusGraph is what [seedStatusJob] built. Tasks are as they are after the
+// leases.
+type statusGraph struct {
+	job      store.Job
+	steps    []store.Step                 // in statusJob.steps order
+	tasks    [][]store.Task               // by step index, in submission order
+	attempts map[string]store.TaskAttempt // by task ID, for each leased task
+}
+
+// seedStatusJob submits one job into farm-1 and queue-1 (creating them unless
+// an earlier seed in the same test did) through [storetest.SubmitLeasing],
+// leasing its assigned and running tasks. A terminal job cannot hold leased
+// work through production writes, so asking for one is a test bug.
+func seedStatusJob(t *testing.T, st store.Store, spec statusJob) statusGraph {
+	t.Helper()
 
 	// handleTaskFailed resolves retry policy via GetQueue/GetFarm, so a real
 	// job needs real farm/queue rows behind its FarmID/QueueID below.
+	ensureStatusFarm(t, st)
+
+	worker := spec.worker
+	if worker == "" {
+		worker = statusTestWorkerID
+	}
+	out, attempts := storetest.SubmitLeasing(t, st, statusSubmission(spec), func(store.Task) store.LeaseRequest {
+		req := store.LeaseRequest{WorkerID: worker, Now: spec.leasedAt}
+		if spec.pool != nil {
+			req.Claims = []store.UsagePoolClaim{{
+				ClaimID: uuid.NewString(), PoolID: spec.pool.ID, PoolName: spec.pool.Name,
+			}}
+		}
+		return req
+	})
+	g := statusGraph{job: out.Job, steps: out.Steps, attempts: attempts}
+	// Leases write no job or step row, so out holds them as stored; a pause
+	// writes only the job.
+	if spec.jobStatus == store.JobStatusPaused {
+		if err := st.PauseJob(t.Context(), g.job.ID, time.Now().UTC()); err != nil {
+			t.Fatalf("PauseJob: %v", err)
+		}
+		g.job = mustJob(t, st, g.job.ID)
+	}
+	g.tasks = make([][]store.Task, len(g.steps))
+	for _, task := range out.Tasks {
+		i := slices.IndexFunc(g.steps, func(s store.Step) bool { return s.ID == task.StepID })
+		g.tasks[i] = append(g.tasks[i], task)
+	}
+	return g
+}
+
+// ensureStatusFarm creates farm-1 and queue-1, the rows [statusSubmission]'s
+// jobs live in, unless an earlier seed in the same test already did.
+func ensureStatusFarm(t *testing.T, st store.Store) {
+	t.Helper()
+	ctx := t.Context()
+	if _, err := st.GetFarm(ctx, "farm-1"); err == nil {
+		return
+	} else if !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("GetFarm: %v", err)
+	}
 	if _, err := st.CreateFarm(ctx, store.Farm{ID: "farm-1", Name: "farm-1"}); err != nil {
 		t.Fatalf("CreateFarm: %v", err)
 	}
 	if _, err := st.CreateQueue(ctx, store.Queue{ID: "queue-1", FarmID: "farm-1", Name: "queue-1"}); err != nil {
 		t.Fatalf("CreateQueue: %v", err)
 	}
+}
 
-	job, err := st.CreateJob(ctx, store.Job{
-		ID:             uuid.NewString(),
-		FarmID:         "farm-1",
-		QueueID:        "queue-1",
-		Name:           "job",
-		Status:         jobStatus,
-		TemplateFormat: store.TemplateFormatJSON,
-		CreatedAt:      now,
-		UpdatedAt:      now,
-	})
-	if err != nil {
-		t.Fatalf("CreateJob: %v", err)
+// statusSubmission builds seedStatusJob's submission, with every task in the
+// status spec asks for; [storetest.SubmitLeasing] submits the in-flight ones
+// ready and leases them.
+func statusSubmission(spec statusJob) store.JobSubmission {
+	status := spec.jobStatus
+	switch status {
+	case "", store.JobStatusPaused:
+		status = store.JobStatusRunning
 	}
-
-	step, err = st.CreateStep(ctx, store.Step{
-		ID: uuid.NewString(), JobID: job.ID, Name: "Step1",
-		Status: store.StepStatusRunning, CreatedAt: now, UpdatedAt: now,
-	})
-	if err != nil {
-		t.Fatalf("CreateStep: %v", err)
+	sub := store.JobSubmission{Job: store.Job{
+		ID: uuid.NewString(), FarmID: "farm-1", QueueID: "queue-1", Name: "job",
+		Status: status, TemplateFormat: store.TemplateFormatJSON,
+	}}
+	for i, sp := range spec.steps {
+		step := store.Step{
+			ID: uuid.NewString(), JobID: sub.Job.ID, Name: sp.name, Status: sp.status,
+			StepOrder: i, DependsOn: sp.dependsOn,
+		}
+		sub.Steps = append(sub.Steps, step)
+		for j, ts := range sp.tasks {
+			task := store.Task{
+				ID: uuid.NewString(), JobID: sub.Job.ID, StepID: step.ID,
+				Name: fmt.Sprintf("task-%d", len(sub.Tasks)), Status: ts,
+			}
+			if j < len(sp.reasons) {
+				task.FailureReason = sp.reasons[j]
+			}
+			sub.Tasks = append(sub.Tasks, task)
+		}
 	}
+	return sub
+}
 
-	task, err = st.CreateTask(ctx, store.Task{
-		ID: uuid.NewString(), JobID: job.ID, StepID: step.ID,
-		Name: "task-0", Status: taskStatus, CreatedAt: now, UpdatedAt: now,
+// seedStaleAssignment is seedStatusFixture's job with its task leased to
+// worker an hour ago, past the reaper timeout the tests set, so the reaper
+// reclaims it. pool, when non-nil, is a usage pool the lease claims a slot of.
+func seedStaleAssignment(t *testing.T, st store.Store, worker string, pool *store.UsagePool) (
+	job store.Job, task store.Task, attempt store.TaskAttempt,
+) {
+	t.Helper()
+	g := seedStatusJob(t, st, statusJob{
+		worker: worker, leasedAt: time.Now().UTC().Add(-time.Hour), pool: pool,
+		steps: []statusStep{{name: "Step1", status: store.StepStatusRunning, tasks: []store.TaskStatus{store.TaskStatusAssigned}}},
 	})
-	if err != nil {
-		t.Fatalf("CreateTask: %v", err)
-	}
-
-	attempt, err = st.CreateTaskAttempt(ctx, store.TaskAttempt{
-		ID:            uuid.NewString(),
-		TaskID:        task.ID,
-		WorkerID:      statusTestWorkerID,
-		AttemptNumber: 1,
-		Status:        store.AttemptStatusRunning,
-		StartedAt:     now,
-		CreatedAt:     now,
-	})
-	if err != nil {
-		t.Fatalf("CreateTaskAttempt: %v", err)
-	}
-
-	return job, step, task, attempt
+	task = g.tasks[0][0]
+	return g.job, task, g.attempts[task.ID]
 }
 
 // ── handleTaskStatusMessage — routing and discard ─────────────────────────────
@@ -498,20 +600,21 @@ func TestProcessTaskStatus_Canceled_PersistsMessageAndReason(t *testing.T) {
 // CancelTask/CancelJob set the task's failure_reason up front, then kill the
 // worker; the worker always echoes back "canceled" with an empty Message
 // (internal/worker/executor/run.go). handleTaskTerminal guards its
-// SetTaskFailureReason write so an empty synthesized reason never overwrites
-// an existing one.
+// failure-reason write (CompleteTaskAttempt's FailureReason) so an empty
+// synthesized reason never overwrites an existing one.
 func TestProcessTaskStatus_Canceled_EmptyWorkerEchoPreservesServerReason(t *testing.T) {
 	st := newCheckedFake(t)
 	s := newStatusTestScheduler(st)
 	s.ctx = t.Context()
 
-	_, _, task, attempt := seedStatusFixture(t, st, store.TaskStatusRunning)
-
-	// Simulate what CancelTask/CancelJob did before killing the worker: stamp
-	// the authoritative reason directly via the store.
-	if err := st.SetTaskFailureReason(t.Context(), task.ID, "canceled by user"); err != nil {
-		t.Fatalf("SetTaskFailureReason: %v", err)
-	}
+	// Simulate what CancelTask/CancelJob did before killing the worker: the
+	// running task already carries the authoritative reason, submitted with it.
+	g := seedStatusJob(t, st, statusJob{steps: []statusStep{{
+		name: "Step1", status: store.StepStatusRunning,
+		tasks: []store.TaskStatus{store.TaskStatusRunning}, reasons: []string{"canceled by user"},
+	}}})
+	task := g.tasks[0][0]
+	attempt := g.attempts[task.ID]
 
 	// The killed worker's terminal echo always carries an empty Message.
 	msg := &fakeJSMsg{
@@ -628,70 +731,9 @@ func TestProcessTaskStatus_SucceededStep_UnblocksDependentStep(t *testing.T) {
 	ctx := t.Context()
 	now := time.Now()
 
-	job, err := st.CreateJob(ctx, store.Job{
-		ID:             uuid.NewString(),
-		FarmID:         "farm-1",
-		QueueID:        "queue-1",
-		Name:           "two-step-job",
-		Status:         store.JobStatusRunning,
-		TemplateFormat: store.TemplateFormatJSON,
-		CreatedAt:      now,
-		UpdatedAt:      now,
-	})
-	if err != nil {
-		t.Fatalf("CreateJob: %v", err)
-	}
-
-	step1, err := st.CreateStep(ctx, store.Step{
-		ID: uuid.NewString(), JobID: job.ID, Name: "Step1",
-		Status: store.StepStatusRunning, StepOrder: 0,
-		CreatedAt: now, UpdatedAt: now,
-	})
-	if err != nil {
-		t.Fatalf("CreateStep1: %v", err)
-	}
-
-	step2, err := st.CreateStep(ctx, store.Step{
-		ID: uuid.NewString(), JobID: job.ID, Name: "Step2",
-		Status: store.StepStatusPending, StepOrder: 1,
-		DependsOn: []string{"Step1"},
-		CreatedAt: now, UpdatedAt: now,
-	})
-	if err != nil {
-		t.Fatalf("CreateStep2: %v", err)
-	}
-
-	task1, err := st.CreateTask(ctx, store.Task{
-		ID: uuid.NewString(), JobID: job.ID, StepID: step1.ID,
-		Name: "t1", Status: store.TaskStatusRunning,
-		CreatedAt: now, UpdatedAt: now,
-	})
-	if err != nil {
-		t.Fatalf("CreateTask1: %v", err)
-	}
-
-	// Step2 task starts pending.
-	task2, err := st.CreateTask(ctx, store.Task{
-		ID: uuid.NewString(), JobID: job.ID, StepID: step2.ID,
-		Name: "t2", Status: store.TaskStatusPending,
-		CreatedAt: now, UpdatedAt: now,
-	})
-	if err != nil {
-		t.Fatalf("CreateTask2: %v", err)
-	}
-
-	attempt1, err := st.CreateTaskAttempt(ctx, store.TaskAttempt{
-		ID:            uuid.NewString(),
-		TaskID:        task1.ID,
-		WorkerID:      statusTestWorkerID,
-		AttemptNumber: 1,
-		Status:        store.AttemptStatusRunning,
-		StartedAt:     now,
-		CreatedAt:     now,
-	})
-	if err != nil {
-		t.Fatalf("CreateTaskAttempt: %v", err)
-	}
+	g := seedDependentStepJob(t, st)
+	task1, task2 := g.tasks[0][0], g.tasks[1][0]
+	attempt1 := g.attempts[task1.ID]
 
 	s := newStatusTestScheduler(st)
 	s.ctx = ctx
@@ -720,31 +762,15 @@ func TestProcessTaskStatus_SucceededStep_UnblocksDependentStep(t *testing.T) {
 	}
 }
 
-// seedDependentStep adds a pending Step2 (depending on the seedStatusFixture's
-// "Step1") plus a pending task to an existing job, returning both records.
-func seedDependentStep(t *testing.T, st *fake.Store, jobID string) (store.Step, store.Task) {
+// seedDependentStepJob builds a two-step job: Step1 holding one running task
+// (leased, with its attempt) and a pending Step2, depending on Step1, holding
+// one pending task.
+func seedDependentStepJob(t *testing.T, st store.Store) statusGraph {
 	t.Helper()
-	ctx := t.Context()
-	now := time.Now()
-
-	step2, err := st.CreateStep(ctx, store.Step{
-		ID: uuid.NewString(), JobID: jobID, Name: "Step2",
-		Status: store.StepStatusPending, StepOrder: 1,
-		DependsOn: []string{"Step1"},
-		CreatedAt: now, UpdatedAt: now,
-	})
-	if err != nil {
-		t.Fatalf("CreateStep2: %v", err)
-	}
-	task2, err := st.CreateTask(ctx, store.Task{
-		ID: uuid.NewString(), JobID: jobID, StepID: step2.ID,
-		Name: "t2", Status: store.TaskStatusPending,
-		CreatedAt: now, UpdatedAt: now,
-	})
-	if err != nil {
-		t.Fatalf("CreateTask2: %v", err)
-	}
-	return step2, task2
+	return seedStatusJob(t, st, statusJob{steps: []statusStep{
+		{name: "Step1", status: store.StepStatusRunning, tasks: []store.TaskStatus{store.TaskStatusRunning}},
+		{name: "Step2", status: store.StepStatusPending, dependsOn: []string{"Step1"}, tasks: []store.TaskStatus{store.TaskStatusPending}},
+	}})
 }
 
 func TestProcessTaskStatus_FailedStep_CascadeCancelsDependentAndCompletesJob(t *testing.T) {
@@ -755,8 +781,10 @@ func TestProcessTaskStatus_FailedStep_CascadeCancelsDependentAndCompletesJob(t *
 	st := newCheckedFake(t)
 	ctx := t.Context()
 
-	job, _, task1, attempt1 := seedStatusFixture(t, st, store.TaskStatusRunning)
-	step2, task2 := seedDependentStep(t, st, job.ID)
+	g := seedDependentStepJob(t, st)
+	job, step2 := g.job, g.steps[1]
+	task1, task2 := g.tasks[0][0], g.tasks[1][0]
+	attempt1 := g.attempts[task1.ID]
 
 	s := newStatusTestScheduler(st)
 	s.ctx = ctx
@@ -816,8 +844,9 @@ func TestProcessTaskStatus_CascadeCancel_NotifiesCanceledTasks(t *testing.T) {
 	st := newCheckedFake(t)
 	ctx := t.Context()
 
-	job, _, task1, attempt1 := seedStatusFixture(t, st, store.TaskStatusRunning)
-	_, task2 := seedDependentStep(t, st, job.ID)
+	g := seedDependentStepJob(t, st)
+	task1, task2 := g.tasks[0][0], g.tasks[1][0]
+	attempt1 := g.attempts[task1.ID]
 
 	notifier := &recordingNotifier{}
 	s := newStatusTestSchedulerWithNotifier(st, notifier)
@@ -860,8 +889,9 @@ func TestProcessTaskStatus_CascadeCancel_StoreError_Nacked(t *testing.T) {
 	inner := newCheckedFake(t)
 	ctx := t.Context()
 
-	job, _, task1, attempt1 := seedStatusFixture(t, inner, store.TaskStatusRunning)
-	seedDependentStep(t, inner, job.ID)
+	g := seedDependentStepJob(t, inner)
+	task1 := g.tasks[0][0]
+	attempt1 := g.attempts[task1.ID]
 
 	est := &cancelTasksErrSt{Store: inner}
 	s := newStatusTestScheduler(est)

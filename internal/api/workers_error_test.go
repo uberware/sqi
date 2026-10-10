@@ -19,6 +19,7 @@ import (
 
 	"github.com/uberware/sqi/internal/store"
 	"github.com/uberware/sqi/internal/store/fake"
+	"github.com/uberware/sqi/internal/store/storetest"
 )
 
 // ── workerErrStore: thin wrapper for worker store errors ──────────────────────
@@ -165,7 +166,7 @@ func TestRemoveWorker_DeleteFailsAfterSuccessfulRevoke(t *testing.T) {
 	if _, err := inner.GetWorker(t.Context(), w.ID); err != nil {
 		t.Errorf("worker row should survive a failed delete: GetWorker: %v", err)
 	}
-	if _, err := inner.GetActiveWorkerCredentialByWorkerID(t.Context(), w.ID); !errors.Is(err, store.ErrNotFound) {
+	if _, err := storetest.ActiveWorkerCredential(t.Context(), inner, w.ID); !errors.Is(err, store.ErrNotFound) {
 		t.Errorf("credential should already be revoked even though the delete failed: got %v, want store.ErrNotFound", err)
 	}
 }
@@ -197,7 +198,7 @@ func TestRemoveWorker_GuardedDeleteRefusesAfterRevoke(t *testing.T) {
 	if _, err := inner.GetWorker(t.Context(), w.ID); err != nil {
 		t.Errorf("worker row should survive a refused delete: GetWorker: %v", err)
 	}
-	if _, err := inner.GetActiveWorkerCredentialByWorkerID(t.Context(), w.ID); !errors.Is(err, store.ErrNotFound) {
+	if _, err := storetest.ActiveWorkerCredential(t.Context(), inner, w.ID); !errors.Is(err, store.ErrNotFound) {
 		t.Errorf("credential is revoked before the guarded delete runs: got %v, want store.ErrNotFound", err)
 	}
 }

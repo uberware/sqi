@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/uberware/sqi/internal/store"
+	"github.com/uberware/sqi/internal/store/storetest"
 )
 
 func TestCancelJobExecution(t *testing.T) {
@@ -14,14 +15,13 @@ func TestCancelJobExecution(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			g := seedGraph(t, st, graphOpts{jobStatus: store.JobStatusRunning}, stepSpec{
 				name: "a", status: store.StepStatusReady,
-				tasks: []store.TaskStatus{store.TaskStatusRunning, store.TaskStatusAssigned, store.TaskStatusReady, store.TaskStatusSucceeded},
+				tasks: []store.TaskStatus{store.TaskStatusReady, store.TaskStatusReady, store.TaskStatusReady, store.TaskStatusSucceeded},
 			})
 			pool := seedPool(t, st, 0)
-			var attempts []store.TaskAttempt
-			for _, tk := range g.Tasks["a"][:2] {
-				a := seedAttempt(t, st, tk, store.AttemptStatusRunning)
-				seedClaim(t, st, pool.ID, a.ID)
-				attempts = append(attempts, a)
+			// The first task runs and the second is assigned, each holding a claim.
+			attempts := []store.TaskAttempt{
+				leaseClaiming(t, st, g.Tasks["a"][0].ID, true, pool),
+				leaseClaiming(t, st, g.Tasks["a"][1].ID, false, pool),
 			}
 			active, err := st.CancelJobExecution(t.Context(), g.Job.ID, store.FailureReasonCanceledByUser, time.Now().UTC())
 			if err != nil {
@@ -56,7 +56,7 @@ func TestCancelJobExecution(t *testing.T) {
 			if n := activeClaims(t, st, pool.ID); n != 0 {
 				t.Fatalf("active claims = %d, want 0", n)
 			}
-			if v := claimViolations(t, st); len(v) != 0 {
+			if v := storetest.ClaimViolations(t, st); len(v) != 0 {
 				t.Fatalf("I3 violations: %v", v)
 			}
 
@@ -75,11 +75,9 @@ func TestCancelJobExecution_ReasonIsOnlyStampedWhenEmpty(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			g := seedGraph(t, st, graphOpts{jobStatus: store.JobStatusRunning}, stepSpec{
 				name: "a", status: store.StepStatusReady,
-				tasks: []store.TaskStatus{store.TaskStatusReady, store.TaskStatusReady},
+				tasks:   []store.TaskStatus{store.TaskStatusReady, store.TaskStatusReady},
+				reasons: []string{store.FailureReasonUpstreamFailed},
 			})
-			if err := fixtures(t, st).SetTaskFailureReason(t.Context(), g.Tasks["a"][0].ID, store.FailureReasonUpstreamFailed); err != nil {
-				t.Fatalf("SetTaskFailureReason: %v", err)
-			}
 			if _, err := st.CancelJobExecution(t.Context(), g.Job.ID, store.FailureReasonCanceledByUser, time.Now().UTC()); err != nil {
 				t.Fatalf("CancelJobExecution: %v", err)
 			}
@@ -106,13 +104,14 @@ func TestCancelJobExecution_ClosesEveryRunningAttemptOfTheJob(t *testing.T) {
 			})
 			other := seedGraph(t, st, graphOpts{jobStatus: store.JobStatusRunning}, stepSpec{
 				name: "a", status: store.StepStatusReady,
-				tasks: []store.TaskStatus{store.TaskStatusRunning},
+				tasks: []store.TaskStatus{store.TaskStatusReady},
 			})
 			pool := seedPool(t, st, 0)
+			// Unreachable through production (a running attempt and its claim
+			// on a succeeded task), so injected: the crash leftover I3 closes.
 			leaked := seedAttempt(t, st, g.Tasks["a"][0], store.AttemptStatusRunning)
 			seedClaim(t, st, pool.ID, leaked.ID)
-			live := seedAttempt(t, st, other.Tasks["a"][0], store.AttemptStatusRunning)
-			seedClaim(t, st, pool.ID, live.ID)
+			live := leaseClaiming(t, st, other.Tasks["a"][0].ID, true, pool)
 
 			if _, err := st.CancelJobExecution(t.Context(), g.Job.ID, store.FailureReasonCanceledByUser, time.Now().UTC()); err != nil {
 				t.Fatalf("CancelJobExecution: %v", err)
@@ -138,13 +137,11 @@ func TestCancelTaskExecution(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			g := seedGraph(t, st, graphOpts{}, stepSpec{
 				name: "a", status: store.StepStatusReady,
-				tasks: []store.TaskStatus{store.TaskStatusRunning, store.TaskStatusSucceeded, store.TaskStatusRunning},
+				tasks: []store.TaskStatus{store.TaskStatusReady, store.TaskStatusSucceeded, store.TaskStatusReady},
 			})
 			pool := seedPool(t, st, 0)
-			attempt := seedAttempt(t, st, g.Tasks["a"][0], store.AttemptStatusRunning)
-			seedClaim(t, st, pool.ID, attempt.ID)
-			sibling := seedAttempt(t, st, g.Tasks["a"][2], store.AttemptStatusRunning)
-			seedClaim(t, st, pool.ID, sibling.ID)
+			attempt := leaseClaiming(t, st, g.Tasks["a"][0].ID, true, pool)
+			sibling := leaseClaiming(t, st, g.Tasks["a"][2].ID, true, pool)
 
 			prior, ok, err := st.CancelTaskExecution(t.Context(), g.Tasks["a"][0].ID, store.FailureReasonCanceledByUser, time.Now().UTC())
 			if err != nil || !ok || prior.AssignedWorkerID != fixtureWorkerID || prior.Status != store.TaskStatusRunning {
@@ -191,11 +188,9 @@ func TestCancelTaskExecution_ReasonIsOnlyStampedWhenEmpty(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			g := seedGraph(t, st, graphOpts{}, stepSpec{
 				name: "a", status: store.StepStatusReady,
-				tasks: []store.TaskStatus{store.TaskStatusReady},
+				tasks:   []store.TaskStatus{store.TaskStatusReady},
+				reasons: []string{store.FailureReasonUpstreamFailed},
 			})
-			if err := fixtures(t, st).SetTaskFailureReason(t.Context(), g.Tasks["a"][0].ID, store.FailureReasonUpstreamFailed); err != nil {
-				t.Fatalf("SetTaskFailureReason: %v", err)
-			}
 			if _, ok, err := st.CancelTaskExecution(t.Context(), g.Tasks["a"][0].ID, store.FailureReasonCanceledByUser, time.Now().UTC()); err != nil || !ok {
 				t.Fatalf("CancelTaskExecution = (%v, %v), want canceled", ok, err)
 			}

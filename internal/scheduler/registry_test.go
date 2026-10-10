@@ -22,6 +22,7 @@ import (
 	"github.com/uberware/sqi/internal/bus"
 	"github.com/uberware/sqi/internal/metrics"
 	"github.com/uberware/sqi/internal/store"
+	"github.com/uberware/sqi/internal/store/storetest"
 	"github.com/uberware/sqi/internal/worker/protocol"
 	"github.com/uberware/sqi/internal/ws"
 )
@@ -182,9 +183,9 @@ func TestHandleWorkerRegister_TouchesActiveCredential_WhenAuthEnabled(t *testing
 	if len(st.touched) != 1 || st.touched[0] != "w-1" {
 		t.Errorf("touched = %v, want exactly one call for w-1", st.touched)
 	}
-	cred, err := fk.GetActiveWorkerCredentialByWorkerID(t.Context(), "w-1")
+	cred, err := storetest.ActiveWorkerCredential(t.Context(), fk, "w-1")
 	if err != nil {
-		t.Fatalf("GetActiveWorkerCredentialByWorkerID: %v", err)
+		t.Fatalf("ActiveWorkerCredential: %v", err)
 	}
 	if cred.LastSeenAt == nil {
 		t.Error("expected LastSeenAt to be set after registration")
@@ -424,41 +425,18 @@ func TestHandleWorkerDeregister_ReclaimsInFlightTasks(t *testing.T) {
 	now := time.Now().UTC()
 
 	const workerID = "w-bye"
+	// The task is leased to the worker through production writes, so it is
+	// assigned with the attempt that lease opened.
+	g := seedStatusJob(t, st, statusJob{worker: workerID, steps: []statusStep{
+		{name: "s", status: store.StepStatusRunning, tasks: []store.TaskStatus{store.TaskStatusAssigned}},
+	}})
+	task := g.tasks[0][0]
+	attempt := g.attempts[task.ID]
 	if _, _, err := st.RegisterWorker(ctx, store.Worker{
 		ID: workerID, FarmID: "farm-1", Hostname: "node-bye",
 		Status: store.WorkerStatusOnline, LastHeartbeatAt: &now,
 	}); err != nil {
 		t.Fatalf("RegisterWorker: %v", err)
-	}
-	job, err := st.CreateJob(ctx, store.Job{
-		ID: uuid.NewString(), FarmID: "farm-1", QueueID: "queue-1", Name: "j",
-		Status: store.JobStatusRunning, TemplateFormat: store.TemplateFormatJSON,
-		CreatedAt: now, UpdatedAt: now,
-	})
-	if err != nil {
-		t.Fatalf("CreateJob: %v", err)
-	}
-	step, err := st.CreateStep(ctx, store.Step{
-		ID: uuid.NewString(), JobID: job.ID, Name: "s",
-		Status: store.StepStatusRunning, CreatedAt: now, UpdatedAt: now,
-	})
-	if err != nil {
-		t.Fatalf("CreateStep: %v", err)
-	}
-	task, err := st.CreateTask(ctx, store.Task{
-		ID: uuid.NewString(), JobID: job.ID, StepID: step.ID, Name: "t",
-		Status: store.TaskStatusAssigned, AssignedWorkerID: workerID,
-		CreatedAt: now, UpdatedAt: now,
-	})
-	if err != nil {
-		t.Fatalf("CreateTask: %v", err)
-	}
-	attempt, err := st.CreateTaskAttempt(ctx, store.TaskAttempt{
-		ID: uuid.NewString(), TaskID: task.ID, WorkerID: workerID, AttemptNumber: 1,
-		Status: store.AttemptStatusRunning, StartedAt: now, CreatedAt: now,
-	})
-	if err != nil {
-		t.Fatalf("CreateTaskAttempt: %v", err)
 	}
 
 	msg := &fakeJSMsg{

@@ -4,7 +4,6 @@ package sqlite
 
 import (
 	"context"
-	"fmt"
 	"time"
 
 	"github.com/uberware/sqi/internal/store"
@@ -145,9 +144,6 @@ const (
 INSERT INTO usage_claims (id, pool_id, task_attempt_id, checked_out_at, released_at)
 VALUES (?, ?, ?, ?, NULL)`
 
-	sqlReleaseClaim = `
-UPDATE usage_claims SET released_at = ? WHERE id = ?`
-
 	// Counts claims where released_at IS NULL (active claim).
 	sqlActiveClaimCount = `
 SELECT COUNT(*) FROM usage_claims
@@ -158,136 +154,11 @@ WHERE pool_id = ? AND released_at IS NULL`
 UPDATE usage_claims
 SET released_at = ?
 WHERE task_attempt_id = ? AND released_at IS NULL`
-
-	// Releases all active claims held by any attempt belonging to the given
-	// job, whatever the attempt's status. It backs only the [Store.ReleaseJobClaims]
-	// fixture; the job cancel runs [sqlReleaseClosedJobClaims], which releases
-	// only the claims of attempts that are no longer running.
-	sqlReleaseJobClaims = `
-UPDATE usage_claims
-SET    released_at = ?
-WHERE  released_at IS NULL
-  AND  task_attempt_id IN (
-         SELECT ta.id
-         FROM   task_attempts ta
-         JOIN   tasks          t  ON ta.task_id = t.id
-         WHERE  t.job_id = ?
-       )`
 )
-
-// CreateClaim implements [store.UsageClaimStore].
-func (s *Store) CreateClaim(ctx context.Context, claim store.UsageClaim) (store.UsageClaim, error) {
-	now := timeToText(time.Now().UTC())
-	_, err := s.stmtInsertClaim.ExecContext(ctx,
-		claim.ID, claim.PoolID, claim.TaskAttemptID, now)
-	if err != nil {
-		return store.UsageClaim{}, mapErr(err)
-	}
-	claim.ClaimedAt = time.Now().UTC()
-	claim.ReleasedAt = nil
-	return claim, nil
-}
-
-// ReleaseClaim implements [store.UsageClaimStore].
-func (s *Store) ReleaseClaim(ctx context.Context, id string, releasedAt time.Time) error {
-	res, err := s.stmtReleaseClaim.ExecContext(ctx, timeToText(releasedAt), id)
-	if err != nil {
-		return mapErr(err)
-	}
-	return checkRowsAffected(res)
-}
 
 // ActiveClaimCount implements [store.UsageClaimStore].
 func (s *Store) ActiveClaimCount(ctx context.Context, poolID string) (int, error) {
 	var n int
 	err := s.stmtActiveClaimCount.QueryRowContext(ctx, poolID).Scan(&n)
 	return n, mapErr(err)
-}
-
-// TryClaimSlots opens a transaction, counts active claims for each pool in
-// claims against the caller's copy of its MaxConcurrent, and either inserts all
-// claim rows (all pools have capacity) or rolls back and returns
-// [store.ErrUsageAtCapacity] (at least one pool is saturated). The scheduler
-// claims through [Store.LeaseTask], which reads the caps itself.
-//
-// The count and the inserts are safe together only because the single write
-// connection serializes every write transaction here: under concurrent writers
-// two calls can both see a pool one short of its cap and both insert. Invariant
-// I5 (see "Store invariants" in docs/architecture.md) is upheld by
-// [Store.LeaseTask], which counts each pool under that pool's anchor row; this
-// fixture takes no anchor.
-//
-// Test fixture only: a blind write that is not part of store.Store.
-func (s *Store) TryClaimSlots(
-	ctx context.Context,
-	taskAttemptID string,
-	claims []store.UsagePoolClaim,
-	claimedAt time.Time,
-) error {
-	if len(claims) == 0 {
-		return nil
-	}
-
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return fmt.Errorf("sqlite: begin tx for usage claim: %w", err)
-	}
-	defer func() { _ = tx.Rollback() }() //nolint:errcheck // rollback is best-effort after commit
-
-	claimedAtText := timeToText(claimedAt)
-
-	for _, c := range claims {
-		if c.MaxConcurrent <= 0 {
-			// Pool is configured as unlimited; skip count check.
-			continue
-		}
-		var active int
-		row := tx.QueryRowContext(ctx,
-			`SELECT COUNT(*) FROM usage_claims WHERE pool_id = ? AND released_at IS NULL`,
-			c.PoolID)
-		if err = row.Scan(&active); err != nil {
-			return fmt.Errorf("sqlite: count active claims for pool %q: %w", c.PoolName, mapErr(err))
-		}
-		if active >= c.MaxConcurrent {
-			return store.ErrUsageAtCapacity
-		}
-	}
-
-	// All pools have capacity — insert the claim rows.
-	for _, c := range claims {
-		if _, err = tx.ExecContext(
-			ctx,
-			`INSERT INTO usage_claims (id, pool_id, task_attempt_id, checked_out_at, released_at) VALUES (?, ?, ?, ?, NULL)`,
-			c.ClaimID, c.PoolID, taskAttemptID, claimedAtText,
-		); err != nil {
-			return fmt.Errorf("sqlite: insert claim for pool %q: %w", c.PoolName, mapErr(err))
-		}
-	}
-
-	return tx.Commit()
-}
-
-// ReleaseAttemptClaims implements [store.UsageClaimStore].
-func (s *Store) ReleaseAttemptClaims(ctx context.Context, taskAttemptID string, releasedAt time.Time) (int, error) {
-	res, err := s.stmtReleaseAttemptClaims.ExecContext(ctx, timeToText(releasedAt), taskAttemptID)
-	if err != nil {
-		return 0, mapErr(err)
-	}
-	n, err := res.RowsAffected()
-	return int(n), err
-}
-
-// ReleaseJobClaims releases every active claim held by an attempt of the job's
-// tasks, whatever the attempt's status, and returns how many it released. A job
-// is canceled through [Store.CancelJobExecution], which releases only the claims
-// of closed attempts and does so in the same transaction that closes them.
-//
-// Test fixture only: a blind write that is not part of store.Store.
-func (s *Store) ReleaseJobClaims(ctx context.Context, jobID string, releasedAt time.Time) (int, error) {
-	res, err := s.stmtReleaseJobClaims.ExecContext(ctx, timeToText(releasedAt), jobID)
-	if err != nil {
-		return 0, mapErr(err)
-	}
-	n, err := res.RowsAffected()
-	return int(n), err
 }

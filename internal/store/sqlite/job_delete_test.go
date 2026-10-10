@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/uberware/sqi/internal/store"
+	"github.com/uberware/sqi/internal/store/storetest"
 )
 
 // openTestStoreWB opens a SQLite store for white-box tests that need access to
@@ -32,81 +33,101 @@ func openTestStoreWB(t *testing.T) *Store {
 	return s
 }
 
-// seedJob creates the minimal set of fixtures (farm → queue → job) needed
-// for job-level tests and returns the created job.
-func seedJob(t *testing.T, st *Store, id string) store.Job {
+// seedScope creates the farm and queue a job row references, named after id.
+func seedScope(t *testing.T, st *Store, id string) {
 	t.Helper()
 	ctx := context.Background()
 
 	if _, err := st.CreateFarm(ctx, store.Farm{
 		ID: id + "-farm", Name: id + "-farm",
 	}); err != nil {
-		t.Fatalf("seedJob CreateFarm(%q): %v", id, err)
+		t.Fatalf("seedScope CreateFarm(%q): %v", id, err)
 	}
 	if _, err := st.CreateQueue(ctx, store.Queue{
 		ID:     id + "-queue",
 		FarmID: id + "-farm",
 		Name:   id + "-queue",
 	}); err != nil {
-		t.Fatalf("seedJob CreateQueue(%q): %v", id, err)
+		t.Fatalf("seedScope CreateQueue(%q): %v", id, err)
 	}
-	j, err := st.CreateJob(ctx, store.Job{
+}
+
+// jobFor returns a minimal job in the scope seedScope made for id.
+func jobFor(id string, status store.JobStatus) store.Job {
+	return store.Job{
 		ID:             id,
 		FarmID:         id + "-farm",
 		QueueID:        id + "-queue",
 		Name:           id,
-		Status:         store.JobStatusPending,
+		Status:         status,
 		Priority:       50,
 		TemplateFormat: store.TemplateFormatYAML,
-	})
-	if err != nil {
-		t.Fatalf("seedJob CreateJob(%q): %v", id, err)
 	}
-	return j
+}
+
+// seedJob creates the minimal set of fixtures (farm → queue → job) needed
+// for job-level tests and returns the created job.
+func seedJob(t *testing.T, st *Store, id string) store.Job {
+	t.Helper()
+	return seedJobIn(t, st, id, store.JobStatusPending)
+}
+
+// seedJobIn is seedJob for a job written in the given status, with the given
+// steps. The job and its steps go in as one submission, the way production
+// creates them, so a step cannot be added to a job that already exists.
+func seedJobIn(t *testing.T, st *Store, id string, status store.JobStatus, steps ...store.Step) store.Job {
+	t.Helper()
+	seedScope(t, st, id)
+	return storetest.Submit(t, st, store.JobSubmission{Job: jobFor(id, status), Steps: steps}).Job
 }
 
 // seedJobWithChildren seeds a job with a step, task, task attempt, task log,
 // and usage claim (all the child rows the cascade must remove). Returns the job.
+//
+// The task is leased with a claim on a pool, which is how production gives a
+// task an attempt and a claim, so the attempt and claim are real ones.
 func seedJobWithChildren(t *testing.T, st *Store, id string) store.Job {
 	t.Helper()
 	ctx := context.Background()
-	j := seedJob(t, st, id)
+	seedScope(t, st, id)
 
-	if _, err := st.CreateStep(ctx, store.Step{
-		ID:        id + "-step",
-		JobID:     id,
-		Name:      "step",
-		StepOrder: 0,
-		Status:    store.StepStatusPending,
-		DependsOn: []string{},
+	// usage_claims.pool_id has an FK to usage_pools.id — create the pool first.
+	if _, err := st.CreateUsagePool(ctx, store.UsagePool{
+		ID:            id + "-pool",
+		Name:          id + "-pool",
+		MaxConcurrent: 1,
 	}); err != nil {
-		t.Fatalf("seedJobWithChildren CreateStep(%q): %v", id, err)
+		t.Fatalf("seedJobWithChildren CreateUsagePool(%q): %v", id, err)
 	}
 
-	if _, err := st.CreateTask(ctx, store.Task{
-		ID:         id + "-task",
-		JobID:      id,
-		StepID:     id + "-step",
-		Name:       "task",
-		Status:     store.TaskStatusPending,
-		Parameters: map[string]string{},
-	}); err != nil {
-		t.Fatalf("seedJobWithChildren CreateTask(%q): %v", id, err)
-	}
+	j := storetest.Submit(t, st, store.JobSubmission{
+		Job: jobFor(id, store.JobStatusPending),
+		Steps: []store.Step{{
+			ID:        id + "-step",
+			JobID:     id,
+			Name:      "step",
+			StepOrder: 0,
+			Status:    store.StepStatusPending,
+			DependsOn: []string{},
+		}},
+		Tasks: []store.Task{{
+			ID:         id + "-task",
+			JobID:      id,
+			StepID:     id + "-step",
+			Name:       "task",
+			Status:     store.TaskStatusReady,
+			Parameters: map[string]string{},
+		}},
+	}).Job
 
 	// task_attempts.worker_id FK to workers was relaxed in migration 00012, so
 	// any non-empty string is accepted without a matching workers row.
-	if _, err := st.CreateTaskAttempt(ctx, store.TaskAttempt{
-		ID:            id + "-attempt",
-		TaskID:        id + "-task",
-		WorkerID:      "worker-stub",
-		AttemptNumber: 1,
-		Status:        store.AttemptStatusRunning,
-		StartedAt:     time.Now().UTC(),
-		CreatedAt:     time.Now().UTC(),
-	}); err != nil {
-		t.Fatalf("seedJobWithChildren CreateTaskAttempt(%q): %v", id, err)
-	}
+	storetest.Lease(t, st, store.LeaseRequest{
+		TaskID:    id + "-task",
+		WorkerID:  "worker-stub",
+		AttemptID: id + "-attempt",
+		Claims:    []store.UsagePoolClaim{{ClaimID: id + "-claim", PoolID: id + "-pool", PoolName: id + "-pool"}},
+	})
 
 	if _, err := st.CreateTaskLog(ctx, store.TaskLog{
 		ID:        id + "-log",
@@ -119,24 +140,6 @@ func seedJobWithChildren(t *testing.T, st *Store, id string) store.Job {
 		Data:      "hello",
 	}); err != nil {
 		t.Fatalf("seedJobWithChildren CreateTaskLog(%q): %v", id, err)
-	}
-
-	// usage_claims.pool_id has an FK to usage_pools.id — create the pool first.
-	if _, err := st.CreateUsagePool(ctx, store.UsagePool{
-		ID:            id + "-pool",
-		Name:          id + "-pool",
-		MaxConcurrent: 1,
-	}); err != nil {
-		t.Fatalf("seedJobWithChildren CreateUsagePool(%q): %v", id, err)
-	}
-
-	if _, err := st.CreateClaim(ctx, store.UsageClaim{
-		ID:            id + "-claim",
-		PoolID:        id + "-pool",
-		TaskAttemptID: id + "-attempt",
-		ClaimedAt:     time.Now().UTC(),
-	}); err != nil {
-		t.Fatalf("seedJobWithChildren CreateClaim(%q): %v", id, err)
 	}
 
 	return j
@@ -188,16 +191,13 @@ func TestStore_DeleteJob_NotFound(t *testing.T) {
 	}
 }
 
-// seedTerminalJobAt creates a job, drives it to the given terminal status, then
-// backdates both completed_at and updated_at to ts so the COALESCE cutoff
-// comparison is deterministic.
-func seedTerminalJobAt(t *testing.T, st *Store, id string, status store.JobStatus, ts time.Time) {
+// seedTerminalJobAt creates a job in the given terminal status, with the given
+// steps, then backdates both completed_at and updated_at to ts so the COALESCE
+// cutoff comparison is deterministic.
+func seedTerminalJobAt(t *testing.T, st *Store, id string, status store.JobStatus, ts time.Time, steps ...store.Step) {
 	t.Helper()
 	ctx := context.Background()
-	seedJob(t, st, id)
-	if err := st.UpdateJobStatus(ctx, id, status); err != nil {
-		t.Fatalf("seedTerminalJobAt UpdateJobStatus(%q, %v): %v", id, status, err)
-	}
+	seedJobIn(t, st, id, status, steps...)
 	if _, err := st.db.ExecContext(
 		ctx,
 		`UPDATE jobs SET completed_at = ?, updated_at = ? WHERE id = ?`,
@@ -205,6 +205,17 @@ func seedTerminalJobAt(t *testing.T, st *Store, id string, status store.JobStatu
 	); err != nil {
 		t.Fatalf("seedTerminalJobAt backdate(%q): %v", id, err)
 	}
+}
+
+// seedBlockedJob creates a blocked job that waits on the given upstream jobs,
+// which must already exist. The job and its edges go in as one submission.
+func seedBlockedJob(t *testing.T, st *Store, id string, upstreams ...string) store.Job {
+	t.Helper()
+	seedScope(t, st, id)
+	return storetest.Submit(t, st, store.JobSubmission{
+		Job:       jobFor(id, store.JobStatusBlocked),
+		DependsOn: upstreams,
+	}).Job
 }
 
 // deletedJobIDs collects the IDs from a []store.DeletedJob slice, sorts them,
@@ -277,13 +288,7 @@ func TestStore_DeleteTerminalJobsBefore_KeepsUpstreamNeededByBlockedDependent(t 
 	old := cutoff.Add(-time.Hour)
 
 	seedTerminalJobAt(t, st, "upstream-old", store.JobStatusCompleted, old)
-	dependent := seedJob(t, st, "dependent-blocked")
-	if err := st.CreateJobDependencies(ctx, dependent.ID, []string{"upstream-old"}); err != nil {
-		t.Fatalf("CreateJobDependencies: %v", err)
-	}
-	if err := st.UpdateJobStatus(ctx, dependent.ID, store.JobStatusBlocked); err != nil {
-		t.Fatalf("UpdateJobStatus(blocked): %v", err)
-	}
+	dependent := seedBlockedJob(t, st, "dependent-blocked", "upstream-old")
 
 	got, err := st.DeleteTerminalJobsBefore(ctx, cutoff, false)
 	if err != nil {
@@ -297,8 +302,8 @@ func TestStore_DeleteTerminalJobsBefore_KeepsUpstreamNeededByBlockedDependent(t 
 	}
 
 	// Once the dependent is terminal, the upstream is no longer protected.
-	if err := st.UpdateJobStatus(ctx, dependent.ID, store.JobStatusCanceled); err != nil {
-		t.Fatalf("UpdateJobStatus(canceled): %v", err)
+	if canceled, _, err := st.CancelBlockedJob(ctx, dependent.ID, "test", time.Now().UTC()); err != nil || !canceled {
+		t.Fatalf("CancelBlockedJob = (%v, %v), want canceled", canceled, err)
 	}
 	got, err = st.DeleteTerminalJobsBefore(ctx, cutoff, false)
 	if err != nil {
@@ -313,9 +318,9 @@ func TestStore_DeleteTerminalJobsBefore_KeepsUpstreamNeededByBlockedDependent(t 
 }
 
 // TestJob_BlockedStatusAndDependencyTable verifies, without going through
-// CreateJobDependencies/ListJobDependencyIDs, that a job created with
-// JobStatusBlocked round-trips through CreateJob/GetJob, and that the
-// job_dependencies table exists and accepts rows of the expected shape.
+// ListJobDependencyIDs, that a job created with JobStatusBlocked round-trips
+// through CreateJobSubmission/GetJob, and that the job_dependencies table
+// exists and accepts rows of the expected shape.
 func TestJob_BlockedStatusAndDependencyTable(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
@@ -330,7 +335,7 @@ func TestJob_BlockedStatusAndDependencyTable(t *testing.T) {
 		t.Fatalf("CreateQueue: %v", err)
 	}
 
-	created, err := st.CreateJob(ctx, store.Job{
+	created := storetest.Submit(t, st, store.JobSubmission{Job: store.Job{
 		ID:             "blocked",
 		FarmID:         "blocked-farm",
 		QueueID:        "blocked-queue",
@@ -339,12 +344,9 @@ func TestJob_BlockedStatusAndDependencyTable(t *testing.T) {
 		Status:         store.JobStatusBlocked,
 		RawTemplate:    "{}",
 		TemplateFormat: store.TemplateFormatJSON,
-	})
-	if err != nil {
-		t.Fatalf("CreateJob(blocked): %v", err)
-	}
+	}}).Job
 	if created.Status != store.JobStatusBlocked {
-		t.Fatalf("CreateJob status = %q, want blocked", created.Status)
+		t.Fatalf("CreateJobSubmission status = %q, want blocked", created.Status)
 	}
 
 	got, err := st.GetJob(ctx, "blocked")
@@ -369,7 +371,7 @@ func TestJob_BlockedStatusAndDependencyTable(t *testing.T) {
 
 	// A raw edge insert round-trips with the expected shape (job_id,
 	// depends_on_job_id, created_at), confirming the schema
-	// CreateJobDependencies/ListJobDependencyIDs build on.
+	// CreateJobSubmission/ListJobDependencyIDs build on.
 	if _, err := st.db.ExecContext(
 		ctx,
 		`INSERT INTO job_dependencies (job_id, depends_on_job_id, created_at) VALUES (?, ?, ?)`,
@@ -390,7 +392,7 @@ func TestJob_BlockedStatusAndDependencyTable(t *testing.T) {
 	}
 }
 
-// TestJob_ListDependentsAndBlocked exercises CreateJobDependencies,
+// TestJob_ListDependentsAndBlocked exercises a submission's dependency edges,
 // ListDependents, ListBlockedJobs, and GetJob's DependsOn population together.
 func TestJob_ListDependentsAndBlocked(t *testing.T) {
 	// Not t.Parallel(): sqlite.Open calls goose.SetBaseFS/SetDialect, which
@@ -406,12 +408,7 @@ func TestJob_ListDependentsAndBlocked(t *testing.T) {
 		Priority: 50, Status: store.JobStatusBlocked, RawTemplate: "{}",
 		TemplateFormat: store.TemplateFormatJSON,
 	}
-	if _, err := st.CreateJob(ctx, down); err != nil {
-		t.Fatalf("CreateJob(down): %v", err)
-	}
-	if err := st.CreateJobDependencies(ctx, down.ID, []string{up.ID}); err != nil {
-		t.Fatalf("CreateJobDependencies: %v", err)
-	}
+	storetest.Submit(t, st, store.JobSubmission{Job: down, DependsOn: []string{up.ID}})
 
 	deps, err := st.ListDependents(ctx, up.ID)
 	if err != nil {
@@ -454,12 +451,7 @@ func TestJob_DeleteJob_RemovesOutgoingEdgesKeepsIncoming(t *testing.T) {
 		Priority: 50, Status: store.JobStatusBlocked, RawTemplate: "{}",
 		TemplateFormat: store.TemplateFormatJSON,
 	}
-	if _, err := st.CreateJob(ctx, down); err != nil {
-		t.Fatalf("CreateJob(down): %v", err)
-	}
-	if err := st.CreateJobDependencies(ctx, down.ID, []string{up.ID}); err != nil {
-		t.Fatalf("CreateJobDependencies: %v", err)
-	}
+	storetest.Submit(t, st, store.JobSubmission{Job: down, DependsOn: []string{up.ID}})
 
 	// Deleting the UPSTREAM must NOT delete the edge (no FK on depends_on_job_id):
 	if err := st.DeleteJob(ctx, up.ID); err != nil {
@@ -486,11 +478,12 @@ func TestJob_DeleteJob_RemovesOutgoingEdgesKeepsIncoming(t *testing.T) {
 	}
 }
 
-// TestJob_CreateJobDependencies_Dedup verifies that calling
-// CreateJobDependencies twice with an overlapping upstream ID does not
-// produce a duplicate edge — INSERT OR IGNORE plus the (job_id,
-// depends_on_job_id) primary key make the operation idempotent.
-func TestJob_CreateJobDependencies_Dedup(t *testing.T) {
+// TestJob_CreateJobSubmission_DuplicateDependencyIsIgnored verifies that a
+// submission naming the same upstream twice neither fails nor produces a
+// duplicate edge — INSERT OR IGNORE plus the (job_id, depends_on_job_id)
+// primary key make the edge write idempotent. It replaces the dedup test of
+// the per-row edge writer, which a submission's DependsOn has superseded.
+func TestJob_CreateJobSubmission_DuplicateDependencyIsIgnored(t *testing.T) {
 	// Not t.Parallel(): see comment in TestJob_ListDependentsAndBlocked.
 	ctx := context.Background()
 	st := openTestStoreWB(t)
@@ -502,17 +495,8 @@ func TestJob_CreateJobDependencies_Dedup(t *testing.T) {
 		Priority: 50, Status: store.JobStatusBlocked, RawTemplate: "{}",
 		TemplateFormat: store.TemplateFormatJSON,
 	}
-	if _, err := st.CreateJob(ctx, down); err != nil {
-		t.Fatalf("CreateJob(down): %v", err)
-	}
-
-	if err := st.CreateJobDependencies(ctx, down.ID, []string{up1.ID}); err != nil {
-		t.Fatalf("CreateJobDependencies (first call): %v", err)
-	}
-	// Second call repeats up1 (already recorded) and adds up2.
-	if err := st.CreateJobDependencies(ctx, down.ID, []string{up1.ID, up2.ID}); err != nil {
-		t.Fatalf("CreateJobDependencies (second call): %v", err)
-	}
+	// up1 is named twice.
+	storetest.Submit(t, st, store.JobSubmission{Job: down, DependsOn: []string{up1.ID, up1.ID, up2.ID}})
 
 	deps, err := st.ListJobDependencyIDs(ctx, down.ID)
 	if err != nil {
@@ -527,7 +511,7 @@ func TestJob_CreateJobDependencies_Dedup(t *testing.T) {
 
 // TestJob_ListJobDependencyIDs_OrderedByUpstreamID locks in the ordering fix:
 // ListJobDependencyIDs must return upstream IDs sorted by ID, regardless of
-// the order they were passed to CreateJobDependencies or created in.
+// the order they were passed in the submission or created in.
 func TestJob_ListJobDependencyIDs_OrderedByUpstreamID(t *testing.T) {
 	// Not t.Parallel(): see comment in TestJob_ListDependentsAndBlocked.
 	ctx := context.Background()
@@ -541,14 +525,8 @@ func TestJob_ListJobDependencyIDs_OrderedByUpstreamID(t *testing.T) {
 		Priority: 50, Status: store.JobStatusBlocked, RawTemplate: "{}",
 		TemplateFormat: store.TemplateFormatJSON,
 	}
-	if _, err := st.CreateJob(ctx, down); err != nil {
-		t.Fatalf("CreateJob(down): %v", err)
-	}
-
 	// Deliberately not alphabetical.
-	if err := st.CreateJobDependencies(ctx, down.ID, []string{zeta.ID, alpha.ID, mike.ID}); err != nil {
-		t.Fatalf("CreateJobDependencies: %v", err)
-	}
+	storetest.Submit(t, st, store.JobSubmission{Job: down, DependsOn: []string{zeta.ID, alpha.ID, mike.ID}})
 
 	deps, err := st.ListJobDependencyIDs(ctx, down.ID)
 	if err != nil {
@@ -573,14 +551,11 @@ func TestStore_PurgeExpiredJobTx_SkipsAJobRevivedAfterTheSelect(t *testing.T) {
 	st := openTestStoreWB(t)
 	cutoff := time.Date(2026, 6, 20, 12, 0, 0, 0, time.UTC)
 	old := cutoff.Add(-time.Hour)
-	seedTerminalJobAt(t, st, "revived", store.JobStatusFailed, old)
-	seedTerminalJobAt(t, st, "untouched", store.JobStatusFailed, old)
 	// The fixture's children are what a wrongful purge would destroy.
-	if _, err := st.CreateStep(ctx, store.Step{
+	seedTerminalJobAt(t, st, "revived", store.JobStatusFailed, old, store.Step{
 		ID: "revived-step", JobID: "revived", Name: "step", Status: store.StepStatusFailed, DependsOn: []string{},
-	}); err != nil {
-		t.Fatalf("CreateStep: %v", err)
-	}
+	})
+	seedTerminalJobAt(t, st, "untouched", store.JobStatusFailed, old)
 
 	query, args := expiredJobsQuery(cutoff, true)
 	tx, err := st.db.BeginTx(ctx, nil)

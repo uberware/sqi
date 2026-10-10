@@ -99,9 +99,4 @@ type UserStore interface {
 	DeleteUser(ctx context.Context, id string) error
 	// CountUsers returns the number of users (for the bootstrap gate).
 	CountUsers(ctx context.Context) (int, error)
-	// CountAdmins returns the number of enabled accounts with role "admin".
-	// It is a read, not a guard: the last-admin check lives inside
-	// [UserStore.DeleteUser] and [UserStore.UpdateUserKeepingAdmin], because a
-	// count taken before a write can be stale by the time the write lands.
-	CountAdmins(ctx context.Context) (int, error)
 }

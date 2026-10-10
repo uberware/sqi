@@ -17,6 +17,7 @@ import (
 	"github.com/uberware/sqi/internal/bus"
 	"github.com/uberware/sqi/internal/store"
 	"github.com/uberware/sqi/internal/store/fake"
+	"github.com/uberware/sqi/internal/store/storetest"
 )
 
 // Unit tests for [Server.RevokeWorker] — the method that turns DELETE
@@ -145,8 +146,8 @@ func TestRevokeWorker_NATSAuthDisabled_StoreWriteOnly(t *testing.T) {
 		t.Fatalf("RevokeWorker: %v", err)
 	}
 
-	if _, err := st.GetActiveWorkerCredentialByWorkerID(context.Background(), ref.WorkerID); !errors.Is(err, store.ErrNotFound) {
-		t.Fatalf("GetActiveWorkerCredentialByWorkerID after revoke: %v, want store.ErrNotFound", err)
+	if _, err := storetest.ActiveWorkerCredential(context.Background(), st, ref.WorkerID); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("ActiveWorkerCredential after revoke: %v, want store.ErrNotFound", err)
 	}
 }
 
@@ -200,10 +201,10 @@ func TestRevokeWorker_ReloadDisconnectsRevokedWorkerOnly(t *testing.T) {
 		t.Fatalf("worker B's connection unusable after A's revocation: %v", err)
 	}
 
-	if _, err := st.GetActiveWorkerCredentialByWorkerID(context.Background(), refA.WorkerID); !errors.Is(err, store.ErrNotFound) {
+	if _, err := storetest.ActiveWorkerCredential(context.Background(), st, refA.WorkerID); !errors.Is(err, store.ErrNotFound) {
 		t.Errorf("A's credential still active after revoke: %v, want store.ErrNotFound", err)
 	}
-	if _, err := st.GetActiveWorkerCredentialByWorkerID(context.Background(), refB.WorkerID); err != nil {
+	if _, err := storetest.ActiveWorkerCredential(context.Background(), st, refB.WorkerID); err != nil {
 		t.Errorf("B's credential was disturbed by A's revocation: %v", err)
 	}
 }
@@ -234,7 +235,7 @@ func TestRevokeWorker_ReloadFailure_StoreStaysRevoked(t *testing.T) {
 	// failure would leave a credential the operator explicitly revoked
 	// silently trusted again, which is worse than the reload simply not
 	// having taken effect yet.
-	if _, err := st.GetActiveWorkerCredentialByWorkerID(context.Background(), ref.WorkerID); !errors.Is(err, store.ErrNotFound) {
+	if _, err := storetest.ActiveWorkerCredential(context.Background(), st, ref.WorkerID); !errors.Is(err, store.ErrNotFound) {
 		t.Errorf("credential still active after a reload failure: %v, want store.ErrNotFound", err)
 	}
 }
@@ -348,10 +349,10 @@ func TestRevokeWorker_ConcurrentRevocationsOfDifferentWorkers_BothStayRevoked(t 
 	}
 
 	// Both must be gone from the store...
-	if _, err := st.GetActiveWorkerCredentialByWorkerID(context.Background(), refA.WorkerID); !errors.Is(err, store.ErrNotFound) {
+	if _, err := storetest.ActiveWorkerCredential(context.Background(), st, refA.WorkerID); !errors.Is(err, store.ErrNotFound) {
 		t.Errorf("worker A still active in the store: %v, want store.ErrNotFound", err)
 	}
-	if _, err := st.GetActiveWorkerCredentialByWorkerID(context.Background(), refB.WorkerID); !errors.Is(err, store.ErrNotFound) {
+	if _, err := storetest.ActiveWorkerCredential(context.Background(), st, refB.WorkerID); !errors.Is(err, store.ErrNotFound) {
 		t.Errorf("worker B still active in the store: %v, want store.ErrNotFound", err)
 	}
 

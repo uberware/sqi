@@ -19,11 +19,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/google/uuid"
-
 	"github.com/uberware/sqi/internal/metrics"
 	"github.com/uberware/sqi/internal/store"
 	"github.com/uberware/sqi/internal/store/fake"
+	"github.com/uberware/sqi/internal/store/storetest"
 	"github.com/uberware/sqi/internal/worker/protocol"
 	"github.com/uberware/sqi/internal/ws"
 )
@@ -79,81 +78,47 @@ func newFailureHarness(t *testing.T, policy RetryPolicy) *failureHarness {
 // an open running attempt on workerID, plus a registered worker record (so the
 // reclaim path used by TestHandleTaskFailed_LostWorkDoesNotCount has
 // something to reclaim from).
-func (h *failureHarness) seedRunningTask(jobID, taskID, workerID string) {
+//
+// siblingTaskIDs are further tasks of the same step, still ready. Because
+// they are non-terminal, the step (and therefore the job) is NOT complete when
+// taskID fails — which is exactly what a park must survive: holding a job that
+// still has work. The whole job is one submission; taskID is then leased and
+// started through production writes, so its attempt is the one that lease
+// opened.
+func (h *failureHarness) seedRunningTask(jobID, taskID, workerID string, siblingTaskIDs ...string) {
 	h.t.Helper()
-	ctx := h.t.Context()
-	now := time.Now().UTC()
 
-	if _, _, err := h.st.RegisterWorker(ctx, store.Worker{
+	if _, _, err := h.st.RegisterWorker(h.t.Context(), store.Worker{
 		ID: workerID, FarmID: "farm-1", Hostname: workerID,
 		Status: store.WorkerStatusOnline, CPUCount: 4,
 	}); err != nil {
 		h.t.Fatalf("RegisterWorker: %v", err)
 	}
 
-	if _, err := h.st.CreateJob(ctx, store.Job{
-		ID: jobID, FarmID: "farm-1", QueueID: "queue-1", Name: jobID,
-		Status: store.JobStatusRunning, TemplateFormat: store.TemplateFormatJSON,
-		CreatedAt: now, UpdatedAt: now,
-	}); err != nil {
-		h.t.Fatalf("CreateJob: %v", err)
+	stepID := taskID + "-step"
+	sub := store.JobSubmission{
+		Job: store.Job{
+			ID: jobID, FarmID: "farm-1", QueueID: "queue-1", Name: jobID,
+			Status: store.JobStatusRunning, TemplateFormat: store.TemplateFormatJSON,
+		},
+		Steps: []store.Step{{ID: stepID, JobID: jobID, Name: "Step1", Status: store.StepStatusRunning}},
 	}
-
-	step, err := h.st.CreateStep(ctx, store.Step{
-		ID: taskID + "-step", JobID: jobID, Name: "Step1",
-		Status: store.StepStatusRunning, CreatedAt: now, UpdatedAt: now,
-	})
-	if err != nil {
-		h.t.Fatalf("CreateStep: %v", err)
+	for _, id := range append([]string{taskID}, siblingTaskIDs...) {
+		sub.Tasks = append(sub.Tasks, store.Task{
+			ID: id, JobID: jobID, StepID: stepID, Name: id, Status: store.TaskStatusReady,
+		})
 	}
+	storetest.Submit(h.t, h.st, sub)
 
-	if _, err := h.st.CreateTask(ctx, store.Task{
-		ID: taskID, JobID: jobID, StepID: step.ID, Name: taskID,
-		Status: store.TaskStatusRunning, AssignedWorkerID: workerID,
-		CreatedAt: now, UpdatedAt: now,
-	}); err != nil {
-		h.t.Fatalf("CreateTask: %v", err)
-	}
-
-	h.newAttempt(taskID, workerID)
+	h.run(taskID, workerID)
 }
 
-// seedSiblingTask adds a second, still-ready task to the step already created
-// by seedRunningTask for parentTaskID. Because this task is non-terminal, the
-// step (and therefore the job) is NOT complete when parentTaskID fails — which
-// is exactly what a park must survive: holding a job that still has work.
-func (h *failureHarness) seedSiblingTask(parentTaskID, siblingTaskID string) {
+// run leases taskID to workerID and starts it, as a worker taking the task
+// does, and records the attempt the lease opened as the "current" attempt
+// reportFailed will target.
+func (h *failureHarness) run(taskID, workerID string) store.TaskAttempt {
 	h.t.Helper()
-	ctx := h.t.Context()
-	now := time.Now().UTC()
-
-	parent, err := h.st.GetTask(ctx, parentTaskID)
-	if err != nil {
-		h.t.Fatalf("GetTask(%s): %v", parentTaskID, err)
-	}
-	if _, err := h.st.CreateTask(ctx, store.Task{
-		ID: siblingTaskID, JobID: parent.JobID, StepID: parent.StepID, Name: siblingTaskID,
-		Status: store.TaskStatusReady, CreatedAt: now, UpdatedAt: now,
-	}); err != nil {
-		h.t.Fatalf("CreateTask(sibling): %v", err)
-	}
-}
-
-// newAttempt creates a fresh running attempt for taskID on workerID and
-// records it as the "current" attempt reportFailed will target.
-func (h *failureHarness) newAttempt(taskID, workerID string) store.TaskAttempt {
-	h.t.Helper()
-	ctx := h.t.Context()
-	now := time.Now().UTC()
-
-	attempt, err := h.st.CreateTaskAttempt(ctx, store.TaskAttempt{
-		ID: uuid.NewString(), TaskID: taskID, WorkerID: workerID,
-		AttemptNumber: len(h.current) + 1, Status: store.AttemptStatusRunning,
-		StartedAt: now, CreatedAt: now,
-	})
-	if err != nil {
-		h.t.Fatalf("CreateTaskAttempt: %v", err)
-	}
+	attempt := storetest.Running(h.t, h.st, store.LeaseRequest{TaskID: taskID, WorkerID: workerID})
 	h.current[taskID] = attempt
 	return attempt
 }
@@ -169,7 +134,7 @@ func (h *failureHarness) reportFailed(taskID string) {
 // reportFailedWithMessage is like reportFailed but sets the worker-reported
 // Message on the TaskStatusMsg, exercising the failure-reason persistence
 // path (RecordTaskFailure's attempt message and, on the terminal branch,
-// SetTaskFailureReason).
+// CompleteTaskAttempt's FailureReason).
 func (h *failureHarness) reportFailedWithMessage(taskID, message string) {
 	h.t.Helper()
 	attempt, ok := h.current[taskID]
@@ -195,36 +160,23 @@ func (h *failureHarness) reportFailedWithMessage(taskID, message string) {
 // opens a new attempt on workerID, then reports that attempt failed.
 // reassignAndReportFailed models a genuine second attempt: a task sitting in
 // ready after a retry is assigned to a worker and starts running before it
-// fails again. The assigned/running steps are not decoration — UpdateTaskStatus
+// fails again. The assigned/running steps are not decoration — the store
 // enforces the state machine, and ready → failed is not an arrow. Skipping them
 // would have this helper exercise a transition the store rejects (and rightly:
 // a "failed" landing on a ready task means a stale attempt's message was
 // redelivered after a retry already revived the task, which must not re-fail
-// it).
+// it). The lease takes the task ready → assigned and opens the new attempt,
+// and the start takes it assigned → running.
 func (h *failureHarness) reassignAndReportFailed(taskID, workerID string) {
 	h.t.Helper()
-	ctx := h.t.Context()
-	task, err := h.st.GetTask(ctx, taskID)
+	task, err := h.st.GetTask(h.t.Context(), taskID)
 	if err != nil {
 		h.t.Fatalf("reassignAndReportFailed: GetTask: %v", err)
 	}
-	var path []store.TaskStatus
-	switch task.Status {
-	case store.TaskStatusReady:
-		path = []store.TaskStatus{store.TaskStatusAssigned, store.TaskStatusRunning}
-	case store.TaskStatusAssigned:
-		path = []store.TaskStatus{store.TaskStatusRunning}
-	case store.TaskStatusRunning:
-		// already executing; the caller is driving a repeat failure
-	default:
+	if task.Status != store.TaskStatusReady {
 		h.t.Fatalf("reassignAndReportFailed: cannot reassign from %q", task.Status)
 	}
-	for _, st := range path {
-		if err := h.st.UpdateTaskStatus(ctx, taskID, st); err != nil {
-			h.t.Fatalf("reassignAndReportFailed: UpdateTaskStatus(%q): %v", st, err)
-		}
-	}
-	h.newAttempt(taskID, workerID)
+	h.run(taskID, workerID)
 	h.reportFailed(taskID)
 }
 
@@ -435,8 +387,7 @@ func TestHandleTaskFailed_ParksJobAtFailureLimit(t *testing.T) {
 	// step is therefore NOT complete when t1 fails, so checkStepCompletion /
 	// checkJobCompletion naturally no-op and the park holds without any guard.
 	h := newFailureHarness(t, RetryPolicy{MaxAttempts: 5, RetryDelay: 0, FailureLimit: 1})
-	h.seedRunningTask("j1", "t1", "w1")
-	h.seedSiblingTask("t1", "t2") // second task, still ready (non-terminal)
+	h.seedRunningTask("j1", "t1", "w1", "t2") // second task, still ready (non-terminal)
 
 	h.reportFailed("t1")
 
@@ -487,26 +438,22 @@ func TestLeaseGatesPass_SkipsPausedJob(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RegisterWorker: %v", err)
 	}
-	if _, err := h.st.CreateJob(ctx, store.Job{
-		ID: "jp", FarmID: "farm-1", QueueID: "queue-1", Name: "jp",
-		Status: store.JobStatusPaused, TemplateFormat: store.TemplateFormatJSON,
-		CreatedAt: now, UpdatedAt: now,
-	}); err != nil {
-		t.Fatalf("CreateJob: %v", err)
-	}
-	step, err := h.st.CreateStep(ctx, store.Step{
-		ID: "sp", JobID: "jp", Name: "Step1",
-		Status: store.StepStatusRunning, CreatedAt: now, UpdatedAt: now,
+	// The job is paused by the operator's write, after submission, with its
+	// task still ready.
+	storetest.Submit(t, h.st, store.JobSubmission{
+		Job: store.Job{
+			ID: "jp", FarmID: "farm-1", QueueID: "queue-1", Name: "jp",
+			Status: store.JobStatusRunning, TemplateFormat: store.TemplateFormatJSON,
+		},
+		Steps: []store.Step{{ID: "sp", JobID: "jp", Name: "Step1", Status: store.StepStatusRunning}},
+		Tasks: []store.Task{{ID: "tp", JobID: "jp", StepID: "sp", Name: "tp", Status: store.TaskStatusReady}},
 	})
-	if err != nil {
-		t.Fatalf("CreateStep: %v", err)
+	if err := h.st.PauseJob(ctx, "jp", now); err != nil {
+		t.Fatalf("PauseJob: %v", err)
 	}
-	task, err := h.st.CreateTask(ctx, store.Task{
-		ID: "tp", JobID: "jp", StepID: step.ID, Name: "tp",
-		Status: store.TaskStatusReady, CreatedAt: now, UpdatedAt: now,
-	})
+	task, err := h.st.GetTask(ctx, "tp")
 	if err != nil {
-		t.Fatalf("CreateTask: %v", err)
+		t.Fatalf("GetTask: %v", err)
 	}
 
 	// "" = no EXPR cap shortfall for this worker; the paused-job gate under
@@ -608,22 +555,15 @@ func TestHandleTaskFailed_SupersededAttempt_LeavesReleasedTaskAlone(t *testing.T
 	now := time.Now().UTC()
 
 	// The sweep closed worker A's attempt as failed (worker went offline)…
+	// ReclaimTaskAttempt is the offline reclaim for this one task: it closes
+	// the attempt as failed and returns the task to ready with no worker.
 	stale := h.current["t1"]
-	stale.Status = store.AttemptStatusFailed
-	stale.EndedAt = &now
-	stale.Message = store.FailureReasonWorkerOffline
-	if _, err := h.st.UpdateTaskAttempt(ctx, stale); err != nil {
-		t.Fatalf("UpdateTaskAttempt: %v", err)
+	if reclaimed, err := h.st.ReclaimTaskAttempt(ctx, stale.ID, "t1", now); err != nil || !reclaimed {
+		t.Fatalf("ReclaimTaskAttempt = (%v, %v), want reclaimed", reclaimed, err)
 	}
 
 	// …and the task was reclaimed, then re-leased to worker B (newer attempt).
-	if err := h.st.AssignTask(ctx, "t1", "wB", now); err != nil {
-		t.Fatalf("AssignTask: %v", err)
-	}
-	if err := h.st.UpdateTaskStatus(ctx, "t1", store.TaskStatusRunning); err != nil {
-		t.Fatalf("UpdateTaskStatus: %v", err)
-	}
-	h.newAttempt("t1", "wB")
+	h.run("t1", "wB")
 
 	// Worker A reconnects: its buffered "failed" for the stale attempt lands.
 	exitCode := 1
@@ -651,6 +591,53 @@ func TestHandleTaskFailed_SupersededAttempt_LeavesReleasedTaskAlone(t *testing.T
 	}
 	if task.RetryAfter != nil {
 		t.Fatal("stale report must not stamp retry_after on the re-leased task")
+	}
+}
+
+// TestHandleTaskFailed_StaleReportDoesNotPark pins the stale-report gate on its
+// own. The other stale-report tests land on the retry branch, where
+// RequeueTaskForRetry's guard also refuses a superseded attempt, so they stay
+// green with the gate removed. The park branch has no such guard: ParkJob pauses
+// the job whichever attempt asked. Here the server restarts with a lower failure
+// limit and JetStream redelivers the failure report of an attempt a retry has
+// already superseded; without the gate, that redelivery parks a job whose task
+// is running fine on another worker.
+func TestHandleTaskFailed_StaleReportDoesNotPark(t *testing.T) {
+	h := newFailureHarness(t, RetryPolicy{MaxAttempts: 5, RetryDelay: 0})
+	h.seedRunningTask("j1", "t1", "wA")
+
+	// A genuine failure: counted once, and the task retried.
+	stale := h.current["t1"]
+	h.reportFailed("t1")
+	if got := h.taskStatus("t1"); got != store.TaskStatusReady {
+		t.Fatalf("fixture: failed task should be requeued, got %s", got)
+	}
+	fresh := h.run("t1", "wB")
+
+	// The restart lowers the limit to the job's failure count, then the old
+	// attempt's report is delivered again.
+	h.s.cfg.DefaultFailureLimit = 1
+	exitCode := 1
+	err := h.s.processTaskStatus(t.Context(), stale.WorkerID, protocol.TaskStatusMsg{
+		Version: protocol.ProtocolVersion, TaskID: "t1", AttemptID: stale.ID,
+		Status: "failed", ExitCode: &exitCode, At: time.Now().UTC(),
+	})
+
+	if got := h.jobStatus("j1"); got != store.JobStatusRunning {
+		t.Fatalf("stale report changed the job: status = %s, want running", got)
+	}
+	if err != nil {
+		t.Fatalf("processTaskStatus(stale failed): %v", err)
+	}
+	task, err := h.st.GetTask(t.Context(), "t1")
+	if err != nil {
+		t.Fatalf("GetTask: %v", err)
+	}
+	if task.Status != store.TaskStatusRunning || task.AssignedWorkerID != "wB" {
+		t.Fatalf("task = %s on %q, want running on wB", task.Status, task.AssignedWorkerID)
+	}
+	if a := mustAttemptOf(t, h.st, fresh.ID); a.Status != store.AttemptStatusRunning {
+		t.Fatalf("re-leased attempt = %s, want running", a.Status)
 	}
 }
 
@@ -694,19 +681,12 @@ func TestHandleTaskFailed_CrashRecoveryRedelivery_StillRequeues(t *testing.T) {
 // therefore clear park_reason and reset the job's failure counter.
 func TestParkResume_RearmsFailureLimit(t *testing.T) {
 	h := newFailureHarness(t, RetryPolicy{MaxAttempts: 10, RetryDelay: 0, FailureLimit: 2})
-	h.seedRunningTask("j1", "t1", "w1")
-	h.seedSiblingTask("t1", "t2") // keeps the step/job non-terminal through the park
+	h.seedRunningTask("j1", "t1", "w1", "t2") // t2 keeps the step/job non-terminal through the park
 	ctx := t.Context()
 	now := time.Now().UTC()
 
 	// Two genuine failures trip the limit and park the job.
 	h.reportFailed("t1")
-	if err := h.st.AssignTask(ctx, "t1", "w1", now); err != nil {
-		t.Fatalf("AssignTask: %v", err)
-	}
-	if err := h.st.UpdateTaskStatus(ctx, "t1", store.TaskStatusRunning); err != nil {
-		t.Fatalf("UpdateTaskStatus: %v", err)
-	}
 	h.reassignAndReportFailed("t1", "w1")
 	if got := h.jobStatus("j1"); got != store.JobStatusPaused {
 		t.Fatalf("fixture: job should be parked, got %s", got)
@@ -730,13 +710,7 @@ func TestParkResume_RearmsFailureLimit(t *testing.T) {
 	}
 
 	// The next genuine failure retries normally — no instant re-park.
-	if err := h.st.AssignTask(ctx, "t2", "w1", now); err != nil {
-		t.Fatalf("AssignTask(t2): %v", err)
-	}
-	if err := h.st.UpdateTaskStatus(ctx, "t2", store.TaskStatusRunning); err != nil {
-		t.Fatalf("UpdateTaskStatus(t2): %v", err)
-	}
-	h.newAttempt("t2", "w1")
+	h.run("t2", "w1")
 	h.reportFailed("t2")
 
 	if got := h.jobStatus("j1"); got == store.JobStatusPaused {

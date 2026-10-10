@@ -68,31 +68,3 @@ func New() *Store {
 func (*Store) Close() error {
 	return nil
 }
-
-// Reset reinitializes all maps to empty. Convenience helper for tests that call
-// t.Cleanup(s.Reset) rather than constructing a new fake per sub-test.
-func (s *Store) Reset() {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	s.farms = make(map[string]store.Farm)
-	s.queues = make(map[string]store.Queue)
-	s.storageLocations = make(map[string]store.StorageLocation)
-	s.computeLocations = make(map[string]store.ComputeLocation)
-	s.products = make(map[string]store.Product)
-	s.usagePools = make(map[string]store.UsagePool)
-	s.usageClaims = make(map[string]store.UsageClaim)
-	s.workers = make(map[string]store.Worker)
-	s.jobs = make(map[string]store.Job)
-	s.jobDependencies = make(map[string][]string)
-	s.steps = make(map[string]store.Step)
-	s.tasks = make(map[string]store.Task)
-	s.taskAttempts = make(map[string]store.TaskAttempt)
-	s.taskLogs = make([]store.TaskLog, 0)
-	s.auditEntries = make([]store.AuditEntry, 0)
-	s.users = make(map[string]store.User)
-	s.sessions = make(map[string]store.Session)
-	s.apiKeys = make(map[string]store.APIKey)
-	s.workerCredentials = make(map[string]store.WorkerCredential)
-	s.workerJoinTokens = make(map[string]store.WorkerJoinToken)
-}

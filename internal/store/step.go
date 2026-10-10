@@ -17,9 +17,9 @@ const (
 	StepStatusReady StepStatus = "ready"
 	// StepStatusRunning is reserved and never written: no store operation moves
 	// a step to running, so a step with running tasks stays ready. It survives
-	// for the wire types and for rows written outside the store operations
-	// (test fixtures, through CreateStep or the concrete stores'
-	// UpdateStepStatus), which FinalizeStep can still finish.
+	// for the wire types and for a submission written at that status (test
+	// fixtures, through CreateJobSubmission), which FinalizeStep can still
+	// finish.
 	StepStatusRunning StepStatus = "running"
 	// StepStatusCompleted means all tasks in this step succeeded.
 	StepStatusCompleted StepStatus = "completed"
@@ -135,14 +135,6 @@ type StepAttributeRequirement struct {
 
 // StepStore is the persistence interface for [Step] records.
 type StepStore interface {
-	// CreateStep inserts a new step. The (JobID, Name) pair must be unique
-	// within the job; returns [ErrConflict] if violated.
-	//
-	// It has no production callers — submission writes steps through
-	// [JobStore.CreateJobSubmission]. See [JobStore.CreateJob] for what that
-	// means for anyone changing this method or building fixtures with it.
-	CreateStep(ctx context.Context, step Step) (Step, error)
-
 	// GetStep returns the step with the given ID, or [ErrNotFound].
 	GetStep(ctx context.Context, id string) (Step, error)
 

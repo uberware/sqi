@@ -42,19 +42,6 @@ type WorkerCredentialStore interface {
 	// CreateWorkerCredential inserts a new credential. Returns [ErrConflict]
 	// on a worker-id, public-key, or id collision.
 	CreateWorkerCredential(ctx context.Context, c WorkerCredential) (WorkerCredential, error)
-	// GetActiveWorkerCredentialByWorkerID returns the ACTIVE credential for
-	// workerID — the one with a nil RevokedAt — or [ErrNotFound] if the
-	// worker has none. A revoked credential is never retrievable through
-	// this method, even if it is the only credential the worker has ever
-	// had: after a key rotation (revoke, then re-enroll with a new key) a
-	// worker can have both a revoked row and an active one, and this method
-	// exists specifically to resolve that ambiguity to the one row that
-	// matters for authentication.
-	//
-	// It has no production callers: it is test-only API surface used to
-	// assert credential state directly, rather than through a code path that
-	// exercises it incidentally.
-	GetActiveWorkerCredentialByWorkerID(ctx context.Context, workerID string) (WorkerCredential, error)
 	// ListActiveWorkerCredentials returns every credential with a nil
 	// RevokedAt. It is what the broker's authorized-key set is rebuilt from,
 	// so a revoked credential must never appear in the result.

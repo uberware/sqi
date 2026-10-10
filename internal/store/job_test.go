@@ -16,6 +16,7 @@ import (
 	"testing"
 
 	"github.com/uberware/sqi/internal/store"
+	"github.com/uberware/sqi/internal/store/storetest"
 )
 
 func TestJobStore_ListJobs_OwnerCaseInsensitive(t *testing.T) {
@@ -33,9 +34,7 @@ func TestJobStore_ListJobs_OwnerCaseInsensitive(t *testing.T) {
 				{ID: "job-alice", FarmID: "farm-1", QueueID: "queue-1", Name: "Alice's job", Owner: "Alice", Status: store.JobStatusPending},
 				{ID: "job-bob", FarmID: "farm-1", QueueID: "queue-1", Name: "Bob's job", Owner: "bob", Status: store.JobStatusPending},
 			} {
-				if _, err := st.CreateJob(ctx, j); err != nil {
-					t.Fatalf("CreateJob(%s): %v", j.ID, err)
-				}
+				storetest.Submit(t, st, store.JobSubmission{Job: j})
 			}
 
 			page, err := st.ListJobs(ctx, store.ListJobsOptions{Owner: "aliCE"})
@@ -98,15 +97,12 @@ func TestJobStore_DeclaredExtensionsRoundTrip(t *testing.T) {
 
 			for _, tc := range cases {
 				t.Run(tc.id, func(t *testing.T) {
-					created, err := st.CreateJob(ctx, store.Job{
+					created := storetest.Submit(t, st, store.JobSubmission{Job: store.Job{
 						ID: tc.id, FarmID: "farm-1", QueueID: "queue-1", Name: tc.id,
 						Status: store.JobStatusPending, RawTemplate: "{}",
 						DeclaredExtensions: tc.declared, ExtensionsRecorded: tc.recorded,
-					})
-					if err != nil {
-						t.Fatalf("CreateJob: %v", err)
-					}
-					assertDeclaredExtensions(t, "CreateJob", created, tc.wantDeclared, tc.wantRecorded)
+					}}).Job
+					assertDeclaredExtensions(t, "CreateJobSubmission", created, tc.wantDeclared, tc.wantRecorded)
 
 					got, err := st.GetJob(ctx, tc.id)
 					if err != nil {

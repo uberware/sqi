@@ -171,26 +171,6 @@ type JobSubmission struct {
 
 // JobStore is the persistence interface for [Job] records.
 type JobStore interface {
-	// CreateJob inserts a new job with all fields populated by the caller.
-	//
-	// It has NO production callers. Submission was its only one and now goes
-	// through [JobStore.CreateJobSubmission]; the same is true of
-	// [JobStore.CreateJobDependencies], [StepStore.CreateStep] and
-	// [TaskStore.CreateTask]. All four are test-only API surface kept for
-	// fixture construction, with two consequences worth knowing:
-	//
-	//   - No production test exercises them, so they can drift from the path
-	//     production actually takes without anything going red. The fake's
-	//     CreateStep and CreateTask already differ: they do not stamp
-	//     CreatedAt/UpdatedAt, while its CreateJobSubmission does (per row, so
-	//     tasks within a step get distinct created_at values — SQLite relies on
-	//     that for the ready-task ordering tiebreaker and ListTasks paging).
-	//     A fixture built from these creators therefore has zero timestamps
-	//     where a real submission has meaningful ones.
-	//   - A behavior change made here does not reach production. Change
-	//     CreateJobSubmission too, or the change is cosmetic.
-	CreateJob(ctx context.Context, job Job) (Job, error)
-
 	// CreateJobSubmission atomically creates a job, its dependency edges, its
 	// steps and its tasks. On ANY error nothing is written.
 	//
@@ -202,13 +182,11 @@ type JobStore interface {
 	// completed. Both are properties of partial creation, which one
 	// transaction rules out.
 	//
-	// The returned JobSubmission carries the rows as stored, the way
-	// [JobStore.CreateJob], [StepStore.CreateStep] and [TaskStore.CreateTask]
-	// each return theirs. Read the edges back from its DependsOn field, not
-	// from its Job.DependsOn: the returned [Job] is scanned straight from the
-	// insert, which does not join the edge table, so Job.DependsOn is
-	// backend-dependent and must not be relied on. Only [JobStore.GetJob]
-	// populates it.
+	// The returned JobSubmission carries the rows as stored. Read the edges
+	// back from its DependsOn field, not from its Job.DependsOn: the returned
+	// [Job] is scanned straight from the insert, which does not join the edge
+	// table, so Job.DependsOn is backend-dependent and must not be relied on.
+	// Only [JobStore.GetJob] populates it.
 	//
 	// Before it commits, it re-checks inside its own transaction that every
 	// DependsOn upstream still exists and has not failed or been canceled, and
@@ -225,15 +203,6 @@ type JobStore interface {
 
 	// GetJob returns the job with the given ID, or [ErrNotFound].
 	GetJob(ctx context.Context, id string) (Job, error)
-
-	// CreateJobDependencies records that jobID waits on each ID in upstreamIDs
-	// (whole-job cross-job dependencies). Duplicate edges are ignored.
-	//
-	// Submission does not call this: the edges are written by
-	// [JobStore.CreateJobSubmission], in the same transaction as the job row
-	// whose blocked status they justify. See [JobStore.CreateJob] on what that
-	// leaves this method.
-	CreateJobDependencies(ctx context.Context, jobID string, upstreamIDs []string) error
 
 	// ListJobDependencyIDs returns the IDs of the upstream jobs jobID waits on,
 	// ordered by upstream job ID. Some IDs may reference jobs that have since

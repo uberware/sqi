@@ -32,6 +32,7 @@ import (
 	"github.com/uberware/sqi/internal/metrics"
 	"github.com/uberware/sqi/internal/store"
 	"github.com/uberware/sqi/internal/store/fake"
+	"github.com/uberware/sqi/internal/store/storetest"
 )
 
 // ── router helper ────────────────────────────────────────────────────────────
@@ -150,9 +151,9 @@ func TestWorkerEnroll_ValidTokenAndKey_Created(t *testing.T) {
 		t.Errorf("response = %+v, want worker_id=w1 public_key=%s name=render-01", resp, pub)
 	}
 
-	cred, err := st.GetActiveWorkerCredentialByWorkerID(t.Context(), "w1")
+	cred, err := storetest.ActiveWorkerCredential(t.Context(), st, "w1")
 	if err != nil {
-		t.Fatalf("GetActiveWorkerCredentialByWorkerID: %v", err)
+		t.Fatalf("ActiveWorkerCredential: %v", err)
 	}
 	if cred.PublicKey != pub {
 		t.Errorf("stored credential public key = %q, want %q", cred.PublicKey, pub)
@@ -215,7 +216,7 @@ func TestWorkerEnroll_ReloadFailure_StillCreated(t *testing.T) {
 	if reloader.calls != 1 {
 		t.Errorf("reloader.calls = %d, want 1", reloader.calls)
 	}
-	if _, err := st.GetActiveWorkerCredentialByWorkerID(t.Context(), "w1"); err != nil {
+	if _, err := storetest.ActiveWorkerCredential(t.Context(), st, "w1"); err != nil {
 		t.Errorf("credential was not durably created despite the reload failure: %v", err)
 	}
 	if strings.Contains(rr.Body.String(), "broker not started") {
@@ -593,10 +594,10 @@ func TestWorkerCredentialRevoke_EnrolledWorker_NoContent(t *testing.T) {
 		t.Fatalf("status = %d, want 204 — body: %s", rr.Code, rr.Body)
 	}
 
-	if _, err := st.GetActiveWorkerCredentialByWorkerID(t.Context(), "w1"); err == nil {
+	if _, err := storetest.ActiveWorkerCredential(t.Context(), st, "w1"); err == nil {
 		t.Error("credential still active after revoke")
 	} else if !errors.Is(err, store.ErrNotFound) {
-		t.Errorf("GetActiveWorkerCredentialByWorkerID after revoke: %v, want store.ErrNotFound", err)
+		t.Errorf("ActiveWorkerCredential after revoke: %v, want store.ErrNotFound", err)
 	}
 }
 

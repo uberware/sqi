@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/uberware/sqi/internal/store"
+	"github.com/uberware/sqi/internal/store/storetest"
 )
 
 // openFilePoolStore opens a file-backed store, which is the only kind that gets
@@ -123,7 +124,7 @@ func TestPoolFor_RoutesEveryPreparedStatement(t *testing.T) {
 		"sqlUpdateComputeLoc":           sqlUpdateComputeLoc,           // UPDATE ... RETURNING
 		"sqlDemoteStalledJobs":          sqlDemoteStalledJobs,          // UPDATE ... RETURNING
 		"sqlTransitionStepPendingTasks": sqlTransitionStepPendingTasks, // UPDATE ... RETURNING
-		"sqlLeaseReadyTask":             sqlLeaseReadyTask,
+		"sqlLeaseTaskGuarded":           sqlLeaseTaskGuarded,
 		"sqlRetryTasksPrefix":           sqlRetryTasksPrefix,
 	}
 
@@ -231,11 +232,9 @@ func TestReadPool_ReadsSeeCommittedWrites(t *testing.T) {
 
 	for i := range 3 {
 		id := fmt.Sprintf("j%d", i)
-		if _, err := s.CreateJob(ctx, store.Job{
+		storetest.Submit(t, s, store.JobSubmission{Job: store.Job{
 			ID: id, FarmID: "f1", QueueID: "q1", Name: id, Status: store.JobStatusPending,
-		}); err != nil {
-			t.Fatalf("CreateJob %s: %v", id, err)
-		}
+		}})
 
 		// Prepared SELECT (read pool).
 		got, err := s.GetJob(ctx, id)

@@ -10,6 +10,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/uberware/sqi/internal/store"
+	"github.com/uberware/sqi/internal/store/storetest"
 )
 
 // mustWorker reads a worker back, failing the test on any error.
@@ -36,12 +37,11 @@ func sortedTaskIDs(tasks []store.Task) []string {
 func TestOfflineStaleWorker(t *testing.T) {
 	for name, st := range newStores(t) {
 		t.Run(name, func(t *testing.T) {
-			g := seedGraph(t, st, graphOpts{}, stepSpec{name: "a", status: store.StepStatusReady, tasks: []store.TaskStatus{store.TaskStatusRunning}})
+			g := seedGraph(t, st, graphOpts{}, stepSpec{name: "a", status: store.StepStatusReady, tasks: []store.TaskStatus{store.TaskStatusReady}})
 			now := time.Now().UTC()
 			seedWorker(t, st, g.Farm.ID, store.WorkerStatusOnline, now.Add(-time.Hour))
 			pool := seedPool(t, st, 1)
-			attempt := seedAttempt(t, st, g.Tasks["a"][0], store.AttemptStatusRunning)
-			seedClaim(t, st, pool.ID, attempt.ID)
+			attempt := leaseClaiming(t, st, g.Tasks["a"][0].ID, true, pool)
 
 			tasks, ok, err := st.OfflineStaleWorker(t.Context(), fixtureWorkerID, now.Add(-time.Minute), now)
 			if err != nil || !ok || len(tasks) != 1 {
@@ -63,7 +63,7 @@ func TestOfflineStaleWorker(t *testing.T) {
 			if n := activeClaims(t, st, pool.ID); n != 0 {
 				t.Fatalf("active claims = %d, want 0", n)
 			}
-			if v := claimViolations(t, st); len(v) != 0 {
+			if v := storetest.ClaimViolations(t, st); len(v) != 0 {
 				t.Fatalf("I3 violations: %v", v)
 			}
 		})
@@ -75,12 +75,11 @@ func TestOfflineStaleWorker(t *testing.T) {
 func TestOfflineStaleWorker_FreshHeartbeatWins(t *testing.T) {
 	for name, st := range newStores(t) {
 		t.Run(name, func(t *testing.T) {
-			g := seedGraph(t, st, graphOpts{}, stepSpec{name: "a", status: store.StepStatusReady, tasks: []store.TaskStatus{store.TaskStatusRunning}})
+			g := seedGraph(t, st, graphOpts{}, stepSpec{name: "a", status: store.StepStatusReady, tasks: []store.TaskStatus{store.TaskStatusReady}})
 			now := time.Now().UTC()
 			seedWorker(t, st, g.Farm.ID, store.WorkerStatusOnline, now) // heartbeat just landed
 			pool := seedPool(t, st, 1)
-			attempt := seedAttempt(t, st, g.Tasks["a"][0], store.AttemptStatusRunning)
-			seedClaim(t, st, pool.ID, attempt.ID)
+			attempt := leaseClaiming(t, st, g.Tasks["a"][0].ID, true, pool)
 
 			tasks, ok, err := st.OfflineStaleWorker(t.Context(), fixtureWorkerID, now.Add(-time.Minute), now)
 			if err != nil || ok || len(tasks) != 0 {
@@ -188,7 +187,8 @@ func TestOfflineStaleWorker_ReclaimsOnlyItsOwnInFlightTasks(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			first := seedGraph(t, st, graphOpts{}, stepSpec{
 				name: "a", status: store.StepStatusReady,
-				tasks: []store.TaskStatus{store.TaskStatusAssigned, store.TaskStatusSucceeded},
+				// The third task is the other worker's.
+				tasks: []store.TaskStatus{store.TaskStatusReady, store.TaskStatusSucceeded, store.TaskStatusReady},
 			})
 			second := seedGraph(t, st, graphOpts{share: &first}, stepSpec{
 				name: "a", status: store.StepStatusReady, tasks: []store.TaskStatus{store.TaskStatusRunning},
@@ -200,18 +200,13 @@ func TestOfflineStaleWorker_ReclaimsOnlyItsOwnInFlightTasks(t *testing.T) {
 			}); err != nil {
 				t.Fatalf("RegisterWorker w2: %v", err)
 			}
-			otherTask, err := st.CreateTask(t.Context(), store.Task{
-				ID: uuid.NewString(), JobID: first.Job.ID, StepID: first.Steps["a"].ID, Name: "other",
-				Status: store.TaskStatusRunning, AssignedWorkerID: "w2", AssignedAt: &now, CreatedAt: now, UpdatedAt: now,
-			})
-			if err != nil {
-				t.Fatalf("CreateTask: %v", err)
-			}
+			otherTask := first.Tasks["a"][2]
 			pool := seedPool(t, st, 0)
-			ours := seedAttempt(t, st, first.Tasks["a"][0], store.AttemptStatusRunning)
-			seedClaim(t, st, pool.ID, ours.ID)
-			theirs := seedAttempt(t, st, otherTask, store.AttemptStatusRunning)
-			seedClaim(t, st, pool.ID, theirs.ID)
+			leaseClaiming(t, st, first.Tasks["a"][0].ID, false, pool)
+			theirs := storetest.Running(t, st, store.LeaseRequest{
+				TaskID: otherTask.ID, WorkerID: "w2", Now: now,
+				Claims: []store.UsagePoolClaim{{ClaimID: uuid.NewString(), PoolID: pool.ID, PoolName: pool.Name}},
+			})
 
 			tasks, ok, err := st.OfflineStaleWorker(t.Context(), fixtureWorkerID, now.Add(-time.Minute), now)
 			if err != nil || !ok {
@@ -234,7 +229,7 @@ func TestOfflineStaleWorker_ReclaimsOnlyItsOwnInFlightTasks(t *testing.T) {
 			if n := activeClaims(t, st, pool.ID); n != 1 {
 				t.Fatalf("active claims = %d, want only the other worker's 1", n)
 			}
-			if v := claimViolations(t, st); len(v) != 0 {
+			if v := storetest.ClaimViolations(t, st); len(v) != 0 {
 				t.Fatalf("I3 violations: %v", v)
 			}
 		})
@@ -244,11 +239,11 @@ func TestOfflineStaleWorker_ReclaimsOnlyItsOwnInFlightTasks(t *testing.T) {
 func TestOfflineWorker(t *testing.T) {
 	for name, st := range newStores(t) {
 		t.Run(name, func(t *testing.T) {
-			g := seedGraph(t, st, graphOpts{}, stepSpec{name: "a", status: store.StepStatusReady, tasks: []store.TaskStatus{store.TaskStatusAssigned}})
+			g := seedGraph(t, st, graphOpts{}, stepSpec{name: "a", status: store.StepStatusReady, tasks: []store.TaskStatus{store.TaskStatusReady}})
 			now := time.Now().UTC()
 			seedWorker(t, st, g.Farm.ID, store.WorkerStatusOnline, now)
 			pool := seedPool(t, st, 1)
-			seedClaim(t, st, pool.ID, seedAttempt(t, st, g.Tasks["a"][0], store.AttemptStatusRunning).ID)
+			leaseClaiming(t, st, g.Tasks["a"][0].ID, false, pool)
 
 			tasks, _, err := st.OfflineWorker(t.Context(), fixtureWorkerID, "", now)
 			if err != nil || len(tasks) != 1 {
@@ -263,7 +258,7 @@ func TestOfflineWorker(t *testing.T) {
 			if n := activeClaims(t, st, pool.ID); n != 0 {
 				t.Fatalf("active claims = %d, want 0", n)
 			}
-			if v := claimViolations(t, st); len(v) != 0 {
+			if v := storetest.ClaimViolations(t, st); len(v) != 0 {
 				t.Fatalf("I3 violations: %v", v)
 			}
 			if _, _, err := st.OfflineWorker(t.Context(), "nope", "", now); !errorsIsNotFound(err) {
@@ -292,6 +287,32 @@ func TestOfflineWorker_AlreadyOfflineIsHarmless(t *testing.T) {
 			}
 		})
 	}
+}
+
+// seedOpenAttemptWithMessage submits one task in status (assigned or running)
+// on the fixture worker, registers that worker online, and injects the task's
+// open attempt carrying message. No production write leaves a message on an
+// open attempt (a message is written only as an attempt closes), so the task
+// is submitted in flight with no lease and its attempt is injected.
+func seedOpenAttemptWithMessage(t *testing.T, st store.Store, status store.TaskStatus, message string, now time.Time) (store.Task, store.TaskAttempt) {
+	t.Helper()
+	scope := seedGraph(t, st, graphOpts{})
+	seedWorker(t, st, scope.Farm.ID, store.WorkerStatusOnline, now)
+	job := store.Job{
+		ID: uuid.NewString(), FarmID: scope.Farm.ID, QueueID: scope.Queue.ID, Name: "job",
+		Status: store.JobStatusRunning, TemplateFormat: store.TemplateFormatJSON,
+	}
+	step := store.Step{ID: uuid.NewString(), JobID: job.ID, Name: "a", Status: store.StepStatusReady}
+	task := store.Task{
+		ID: uuid.NewString(), JobID: job.ID, StepID: step.ID, Name: "a-0", Status: status,
+		AssignedWorkerID: fixtureWorkerID, AssignedAt: &now,
+	}
+	storetest.Submit(t, st, store.JobSubmission{Job: job, Steps: []store.Step{step}, Tasks: []store.Task{task}})
+	attempt := storetest.InjectAttempt(t, st, store.TaskAttempt{
+		TaskID: task.ID, WorkerID: fixtureWorkerID, AttemptNumber: 1,
+		Status: store.AttemptStatusRunning, StartedAt: now, CreatedAt: now, Message: message,
+	})
+	return mustTask(t, st, task.ID), attempt
 }
 
 // TestAttemptClose_MessageSemantics pins how a close treats an attempt's message,
@@ -347,17 +368,8 @@ func TestAttemptClose_MessageSemantics(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			for name, st := range newStores(t) {
 				t.Run(name, func(t *testing.T) {
-					g := seedGraph(t, st, graphOpts{}, stepSpec{name: "a", status: store.StepStatusReady, tasks: []store.TaskStatus{tc.task}})
 					now := time.Now().UTC()
-					seedWorker(t, st, g.Farm.ID, store.WorkerStatusOnline, now)
-					task := g.Tasks["a"][0]
-					attempt, err := st.CreateTaskAttempt(t.Context(), store.TaskAttempt{
-						ID: uuid.NewString(), TaskID: task.ID, WorkerID: fixtureWorkerID, AttemptNumber: 1,
-						Status: store.AttemptStatusRunning, StartedAt: now, CreatedAt: now, Message: existing,
-					})
-					if err != nil {
-						t.Fatalf("CreateTaskAttempt: %v", err)
-					}
+					task, attempt := seedOpenAttemptWithMessage(t, st, tc.task, existing, now)
 
 					tc.close(t, st, task)
 

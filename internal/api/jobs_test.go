@@ -26,6 +26,7 @@ import (
 	"github.com/uberware/sqi/internal/scheduler"
 	"github.com/uberware/sqi/internal/store"
 	"github.com/uberware/sqi/internal/store/fake"
+	"github.com/uberware/sqi/internal/store/storetest"
 	"github.com/uberware/sqi/internal/ws"
 )
 
@@ -67,20 +68,12 @@ func (f *fakeScheduler) ReconcileDependents(_ context.Context, upstreamJobID str
 
 func TestListJobs_SearchParam(t *testing.T) {
 	st := fake.New()
-	ctx := t.Context()
-	if _, err := st.CreateFarm(ctx, store.Farm{ID: "farm-1", Name: "f"}); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := st.CreateQueue(ctx, store.Queue{ID: "queue-1", FarmID: "farm-1", Name: "q"}); err != nil {
-		t.Fatal(err)
-	}
+	seedFarmQueue(t, st)
 	for _, j := range []store.Job{
 		{ID: "a", FarmID: "farm-1", QueueID: "queue-1", Name: "Alpha", Status: store.JobStatusPending, Priority: 50, TemplateFormat: store.TemplateFormatYAML},
 		{ID: "b", FarmID: "farm-1", QueueID: "queue-1", Name: "Beta", Status: store.JobStatusPending, Priority: 50, TemplateFormat: store.TemplateFormatYAML},
 	} {
-		if _, err := st.CreateJob(ctx, j); err != nil {
-			t.Fatal(err)
-		}
+		storetest.Submit(t, st, store.JobSubmission{Job: j})
 	}
 	r := newJobRouter(st, &fakeScheduler{})
 
@@ -146,19 +139,18 @@ func newJobRouter(st store.Store, sched jobCanceler) chi.Router {
 	return r
 }
 
-// seedJob pre-populates a store (the fake, or a real backend for the race
-// tests) with one farm, one queue, and one job. Returns the seeded job for use
-// in subsequent assertions.
-func seedJob(t *testing.T, st store.Store, status store.JobStatus) store.Job {
+// seedFarmQueue creates farm-1 and queue-1 in st, or returns the rows an
+// earlier seed in the same store already created.
+func seedFarmQueue(t *testing.T, st store.Store) (store.Farm, store.Queue) {
 	t.Helper()
 	ctx := t.Context()
 
 	farm, err := st.CreateFarm(ctx, store.Farm{ID: "farm-1", Name: "f"})
 	if err != nil {
-		// Farm may already exist from a prior seedJob call in the same store.
+		// Farm may already exist from a prior seed call in the same store.
 		farms, listErr := st.ListFarms(ctx)
 		if listErr != nil {
-			t.Fatalf("seedJob: ListFarms: %v", listErr)
+			t.Fatalf("seedFarmQueue: ListFarms: %v", listErr)
 		}
 		for _, f := range farms {
 			if f.ID == "farm-1" {
@@ -172,7 +164,7 @@ func seedJob(t *testing.T, st store.Store, status store.JobStatus) store.Job {
 	if err != nil {
 		page, listErr := st.ListQueues(ctx, store.ListQueuesOptions{})
 		if listErr != nil {
-			t.Fatalf("seedJob: ListQueues: %v", listErr)
+			t.Fatalf("seedFarmQueue: ListQueues: %v", listErr)
 		}
 		for _, q := range page.Items {
 			if q.ID == "queue-1" {
@@ -181,9 +173,29 @@ func seedJob(t *testing.T, st store.Store, status store.JobStatus) store.Job {
 			}
 		}
 	}
+	return farm, queue
+}
 
-	now := time.Now()
-	job := store.Job{
+// seedJob pre-populates a store (the fake, or a real backend for the race
+// tests) with one farm, one queue, and one job. Returns the seeded job for use
+// in subsequent assertions.
+func seedJob(t *testing.T, st store.Store, status store.JobStatus) store.Job {
+	t.Helper()
+	job, _ := seedJobTasks(t, st, status)
+	return job
+}
+
+// seedJobTasks is seedJob plus one running step holding a task for each entry
+// of tasks, all written by one submission. Only an entry's Name, Status and
+// FailureReason are used; the IDs are filled in and a missing name is "t". A
+// task seeded assigned or running is submitted ready and then leased (see
+// [storetest.SubmitLeasing]), so it comes with the attempt a real lease writes.
+// The returned tasks are as stored after the leases, in the order given.
+func seedJobTasks(t *testing.T, st store.Store, status store.JobStatus, tasks ...store.Task) (store.Job, []store.Task) {
+	t.Helper()
+	farm, queue := seedFarmQueue(t, st)
+
+	sub := store.JobSubmission{Job: store.Job{
 		ID:             uuid.NewString(),
 		FarmID:         farm.ID,
 		QueueID:        queue.ID,
@@ -192,14 +204,22 @@ func seedJob(t *testing.T, st store.Store, status store.JobStatus) store.Job {
 		Priority:       50,
 		Status:         status,
 		TemplateFormat: store.TemplateFormatJSON,
-		CreatedAt:      now,
-		UpdatedAt:      now,
+	}}
+	if len(tasks) > 0 {
+		step := store.Step{
+			ID: uuid.NewString(), JobID: sub.Job.ID, Name: "Step1", Status: store.StepStatusRunning,
+		}
+		sub.Steps = []store.Step{step}
+		for _, task := range tasks {
+			task.ID, task.JobID, task.StepID = uuid.NewString(), sub.Job.ID, step.ID
+			if task.Name == "" {
+				task.Name = "t"
+			}
+			sub.Tasks = append(sub.Tasks, task)
+		}
 	}
-	created, err := st.CreateJob(ctx, job)
-	if err != nil {
-		t.Fatalf("seedJob: %v", err)
-	}
-	return created
+	out, _ := storetest.SubmitLeasing(t, st, sub, storetest.LeaseTo("worker-1"))
+	return out.Job, out.Tasks
 }
 
 // minimalOpenJDJSON returns a minimal valid OpenJD template as a JSON string.
@@ -544,25 +564,8 @@ func TestListJobs(t *testing.T) {
 	t.Run("includes task_counts per item", func(t *testing.T) {
 		st := fake.New()
 		r := newJobRouter(st, &fakeScheduler{})
-		ctx := t.Context()
-		job := seedJob(t, st, store.JobStatusRunning)
-
-		now := time.Now()
-		step, err := st.CreateStep(ctx, store.Step{
-			ID: uuid.NewString(), JobID: job.ID, Name: "Step1",
-			Status: store.StepStatusRunning, CreatedAt: now, UpdatedAt: now,
-		})
-		if err != nil {
-			t.Fatalf("CreateStep: %v", err)
-		}
-		for _, ts := range []store.TaskStatus{store.TaskStatusSucceeded, store.TaskStatusRunning} {
-			if _, err := st.CreateTask(ctx, store.Task{
-				ID: uuid.NewString(), JobID: job.ID, StepID: step.ID,
-				Name: "t", Status: ts, CreatedAt: now, UpdatedAt: now,
-			}); err != nil {
-				t.Fatalf("CreateTask: %v", err)
-			}
-		}
+		job, _ := seedJobTasks(t, st, store.JobStatusRunning,
+			store.Task{Status: store.TaskStatusSucceeded}, store.Task{Status: store.TaskStatusRunning})
 
 		req := newUnscopedJobsReq(t, "/api/v1/jobs")
 		rr := httptest.NewRecorder()
@@ -599,34 +602,14 @@ func TestListJobs(t *testing.T) {
 		st := fake.New()
 		r := newJobRouter(st, &fakeScheduler{})
 		ctx := t.Context()
-		job := seedJob(t, st, store.JobStatusRunning)
-
-		now := time.Now()
-		step, err := st.CreateStep(ctx, store.Step{
-			ID: uuid.NewString(), JobID: job.ID, Name: "Step1",
-			Status: store.StepStatusRunning, CreatedAt: now, UpdatedAt: now,
-		})
-		if err != nil {
-			t.Fatalf("CreateStep: %v", err)
-		}
 		// Two ready-but-unschedulable tasks and one plain ready task.
-		for range 2 {
-			tk, err := st.CreateTask(ctx, store.Task{
-				ID: uuid.NewString(), JobID: job.ID, StepID: step.ID,
-				Name: "t", Status: store.TaskStatusReady, CreatedAt: now, UpdatedAt: now,
-			})
-			if err != nil {
-				t.Fatalf("CreateTask: %v", err)
-			}
+		job, tasks := seedJobTasks(t, st, store.JobStatusRunning,
+			store.Task{Status: store.TaskStatusReady}, store.Task{Status: store.TaskStatusReady},
+			store.Task{Status: store.TaskStatusReady})
+		for _, tk := range tasks[:2] {
 			if _, err := st.SetTaskUnschedulableReason(ctx, tk.ID, "no worker matches"); err != nil {
 				t.Fatalf("SetTaskUnschedulableReason: %v", err)
 			}
-		}
-		if _, err := st.CreateTask(ctx, store.Task{
-			ID: uuid.NewString(), JobID: job.ID, StepID: step.ID,
-			Name: "t", Status: store.TaskStatusReady, CreatedAt: now, UpdatedAt: now,
-		}); err != nil {
-			t.Fatalf("CreateTask: %v", err)
 		}
 
 		req := newUnscopedJobsReq(t, "/api/v1/jobs")
@@ -776,25 +759,11 @@ func TestGetJob(t *testing.T) {
 		st := fake.New()
 		r := newJobRouter(st, &fakeScheduler{})
 		ctx := t.Context()
-		job := seedJob(t, st, store.JobStatusRunning)
-
-		now := time.Now()
-		step, err := st.CreateStep(ctx, store.Step{
-			ID: uuid.NewString(), JobID: job.ID, Name: "Step1",
-			Status: store.StepStatusRunning, CreatedAt: now, UpdatedAt: now,
-		})
-		if err != nil {
-			t.Fatalf("CreateStep: %v", err)
-		}
 		const wantUnschedulable = 3
-		for range wantUnschedulable {
-			tk, err := st.CreateTask(ctx, store.Task{
-				ID: uuid.NewString(), JobID: job.ID, StepID: step.ID,
-				Name: "t", Status: store.TaskStatusReady, CreatedAt: now, UpdatedAt: now,
-			})
-			if err != nil {
-				t.Fatalf("CreateTask: %v", err)
-			}
+		job, tasks := seedJobTasks(t, st, store.JobStatusRunning,
+			store.Task{Status: store.TaskStatusReady}, store.Task{Status: store.TaskStatusReady},
+			store.Task{Status: store.TaskStatusReady})
+		for _, tk := range tasks {
 			if _, err := st.SetTaskUnschedulableReason(ctx, tk.ID, "no worker matches"); err != nil {
 				t.Fatalf("SetTaskUnschedulableReason: %v", err)
 			}
@@ -820,29 +789,9 @@ func TestJobDetail_FailureSummary(t *testing.T) {
 	t.Run("includes failure_summary when the job has failed tasks with reasons", func(t *testing.T) {
 		st := fake.New()
 		r := newJobRouter(st, &fakeScheduler{})
-		ctx := t.Context()
-		job := seedJob(t, st, store.JobStatusRunning)
-
-		now := time.Now()
-		step, err := st.CreateStep(ctx, store.Step{
-			ID: uuid.NewString(), JobID: job.ID, Name: "Step1",
-			Status: store.StepStatusRunning, CreatedAt: now, UpdatedAt: now,
-		})
-		if err != nil {
-			t.Fatalf("CreateStep: %v", err)
-		}
-		for range 2 {
-			tk, err := st.CreateTask(ctx, store.Task{
-				ID: uuid.NewString(), JobID: job.ID, StepID: step.ID,
-				Name: "t", Status: store.TaskStatusFailed, CreatedAt: now, UpdatedAt: now,
-			})
-			if err != nil {
-				t.Fatalf("CreateTask: %v", err)
-			}
-			if err := st.SetTaskFailureReason(ctx, tk.ID, "staging"); err != nil {
-				t.Fatalf("SetTaskFailureReason: %v", err)
-			}
-		}
+		job, _ := seedJobTasks(t, st, store.JobStatusRunning,
+			store.Task{Status: store.TaskStatusFailed, FailureReason: "staging"},
+			store.Task{Status: store.TaskStatusFailed, FailureReason: "staging"})
 
 		req := newReq(t, http.MethodGet, "/api/v1/jobs/"+job.ID, nil)
 		rr := httptest.NewRecorder()
@@ -1224,39 +1173,16 @@ func TestCancelJob(t *testing.T) {
 func TestJobHandler_DeleteJob_RemovesJob(t *testing.T) {
 	t.Parallel()
 	st := fake.New()
-	ctx := context.Background()
-
-	// Seed farm + queue + a terminal job with a known ID.
-	if _, err := st.CreateFarm(ctx, store.Farm{ID: "farm-1", Name: "f"}); err != nil {
-		t.Fatalf("CreateFarm: %v", err)
-	}
-	if _, err := st.CreateQueue(ctx, store.Queue{ID: "queue-1", FarmID: "farm-1", Name: "q"}); err != nil {
-		t.Fatalf("CreateQueue: %v", err)
-	}
-	now := time.Now()
-	if _, err := st.CreateJob(ctx, store.Job{
-		ID:             "job-1",
-		FarmID:         "farm-1",
-		QueueID:        "queue-1",
-		Name:           "test-job",
-		Owner:          "alice",
-		Priority:       50,
-		Status:         store.JobStatusCompleted,
-		TemplateFormat: store.TemplateFormatJSON,
-		CreatedAt:      now,
-		UpdatedAt:      now,
-	}); err != nil {
-		t.Fatalf("CreateJob: %v", err)
-	}
+	j := seedJob(t, st, store.JobStatusCompleted)
 
 	r := newJobRouter(st, &fakeScheduler{})
-	req := newReq(t, http.MethodDelete, "/api/v1/jobs/job-1", nil)
+	req := newReq(t, http.MethodDelete, "/api/v1/jobs/"+j.ID, nil)
 	rr := httptest.NewRecorder()
 	r.ServeHTTP(rr, req)
 	if rr.Code != http.StatusNoContent {
 		t.Fatalf("DELETE status = %d, want 204; body=%s", rr.Code, rr.Body)
 	}
-	if _, err := st.GetJob(ctx, "job-1"); !errors.Is(err, store.ErrNotFound) {
+	if _, err := st.GetJob(t.Context(), j.ID); !errors.Is(err, store.ErrNotFound) {
 		t.Fatalf("job still present after delete: err=%v", err)
 	}
 }
@@ -1279,29 +1205,7 @@ func (n *recordingJobNotifier) NotifyJob(e ws.JobEvent) { n.events = append(n.ev
 func TestJobHandler_DeleteJob_NotifiesWithOwner(t *testing.T) {
 	t.Parallel()
 	st := fake.New()
-	ctx := context.Background()
-
-	if _, err := st.CreateFarm(ctx, store.Farm{ID: "farm-1", Name: "f"}); err != nil {
-		t.Fatalf("CreateFarm: %v", err)
-	}
-	if _, err := st.CreateQueue(ctx, store.Queue{ID: "queue-1", FarmID: "farm-1", Name: "q"}); err != nil {
-		t.Fatalf("CreateQueue: %v", err)
-	}
-	now := time.Now()
-	if _, err := st.CreateJob(ctx, store.Job{
-		ID:             "job-1",
-		FarmID:         "farm-1",
-		QueueID:        "queue-1",
-		Name:           "test-job",
-		Owner:          "alice",
-		Priority:       50,
-		Status:         store.JobStatusCompleted,
-		TemplateFormat: store.TemplateFormatJSON,
-		CreatedAt:      now,
-		UpdatedAt:      now,
-	}); err != nil {
-		t.Fatalf("CreateJob: %v", err)
-	}
+	j := seedJob(t, st, store.JobStatusCompleted)
 
 	notifier := &recordingJobNotifier{}
 	sub := openjd.NewSubmitter(st)
@@ -1309,7 +1213,7 @@ func TestJobHandler_DeleteJob_NotifiesWithOwner(t *testing.T) {
 	r := chi.NewRouter()
 	r.Delete("/api/v1/jobs/{id}", h.deleteJob)
 
-	req := newReq(t, http.MethodDelete, "/api/v1/jobs/job-1", nil)
+	req := newReq(t, http.MethodDelete, "/api/v1/jobs/"+j.ID, nil)
 	rr := httptest.NewRecorder()
 	r.ServeHTTP(rr, req)
 	if rr.Code != http.StatusNoContent {
@@ -1326,8 +1230,8 @@ func TestJobHandler_DeleteJob_NotifiesWithOwner(t *testing.T) {
 	if got.Status != ws.JobStatusRemoved {
 		t.Errorf("JobEvent.Status = %q, want %q", got.Status, ws.JobStatusRemoved)
 	}
-	if got.JobID != "job-1" {
-		t.Errorf("JobEvent.JobID = %q, want job-1", got.JobID)
+	if got.JobID != j.ID {
+		t.Errorf("JobEvent.JobID = %q, want %q", got.JobID, j.ID)
 	}
 }
 
@@ -1351,40 +1255,18 @@ func TestJobHandler_DeleteJob_NotFound(t *testing.T) {
 func TestJobHandler_DeleteJob_ReconcilesDependents(t *testing.T) {
 	t.Parallel()
 	st := fake.New()
-	ctx := context.Background()
-
-	if _, err := st.CreateFarm(ctx, store.Farm{ID: "farm-1", Name: "f"}); err != nil {
-		t.Fatalf("CreateFarm: %v", err)
-	}
-	if _, err := st.CreateQueue(ctx, store.Queue{ID: "queue-1", FarmID: "farm-1", Name: "q"}); err != nil {
-		t.Fatalf("CreateQueue: %v", err)
-	}
-	now := time.Now()
-	if _, err := st.CreateJob(ctx, store.Job{
-		ID:             "job-up",
-		FarmID:         "farm-1",
-		QueueID:        "queue-1",
-		Name:           "upstream",
-		Owner:          "alice",
-		Priority:       50,
-		Status:         store.JobStatusCompleted,
-		TemplateFormat: store.TemplateFormatJSON,
-		CreatedAt:      now,
-		UpdatedAt:      now,
-	}); err != nil {
-		t.Fatalf("CreateJob: %v", err)
-	}
+	j := seedJob(t, st, store.JobStatusCompleted)
 
 	sched := &fakeScheduler{}
 	r := newJobRouter(st, sched)
-	req := newReq(t, http.MethodDelete, "/api/v1/jobs/job-up", nil)
+	req := newReq(t, http.MethodDelete, "/api/v1/jobs/"+j.ID, nil)
 	rr := httptest.NewRecorder()
 	r.ServeHTTP(rr, req)
 	if rr.Code != http.StatusNoContent {
 		t.Fatalf("DELETE status = %d, want 204; body=%s", rr.Code, rr.Body)
 	}
-	if len(sched.reconciledJobs) != 1 || sched.reconciledJobs[0] != "job-up" {
-		t.Errorf("ReconcileDependents calls = %v, want [job-up]", sched.reconciledJobs)
+	if len(sched.reconciledJobs) != 1 || sched.reconciledJobs[0] != j.ID {
+		t.Errorf("ReconcileDependents calls = %v, want [%s]", sched.reconciledJobs, j.ID)
 	}
 }
 
@@ -1397,73 +1279,28 @@ func TestJobHandler_DeleteJob_ReconcilesDependents(t *testing.T) {
 func TestJobHandler_CancelJob_ReconcilesDependents(t *testing.T) {
 	t.Parallel()
 	st := fake.New()
-	ctx := context.Background()
-
-	if _, err := st.CreateFarm(ctx, store.Farm{ID: "farm-1", Name: "f"}); err != nil {
-		t.Fatalf("CreateFarm: %v", err)
-	}
-	if _, err := st.CreateQueue(ctx, store.Queue{ID: "queue-1", FarmID: "farm-1", Name: "q"}); err != nil {
-		t.Fatalf("CreateQueue: %v", err)
-	}
-	now := time.Now()
-	if _, err := st.CreateJob(ctx, store.Job{
-		ID:             "job-up",
-		FarmID:         "farm-1",
-		QueueID:        "queue-1",
-		Name:           "upstream",
-		Owner:          "alice",
-		Priority:       50,
-		Status:         store.JobStatusRunning,
-		TemplateFormat: store.TemplateFormatJSON,
-		CreatedAt:      now,
-		UpdatedAt:      now,
-	}); err != nil {
-		t.Fatalf("CreateJob: %v", err)
-	}
+	j := seedJob(t, st, store.JobStatusRunning)
 
 	sched := &fakeScheduler{}
 	r := newJobRouter(st, sched)
-	req := newReq(t, http.MethodPost, "/api/v1/jobs/job-up/cancel", nil)
+	req := newReq(t, http.MethodPost, "/api/v1/jobs/"+j.ID+"/cancel", nil)
 	rr := httptest.NewRecorder()
 	r.ServeHTTP(rr, req)
 	if rr.Code != http.StatusNoContent {
 		t.Fatalf("cancel status = %d, want 204; body=%s", rr.Code, rr.Body)
 	}
-	if len(sched.reconciledJobs) != 1 || sched.reconciledJobs[0] != "job-up" {
-		t.Errorf("ReconcileDependents calls = %v, want [job-up]", sched.reconciledJobs)
+	if len(sched.reconciledJobs) != 1 || sched.reconciledJobs[0] != j.ID {
+		t.Errorf("ReconcileDependents calls = %v, want [%s]", sched.reconciledJobs, j.ID)
 	}
 }
 
 func TestJobHandler_CancelJob_NewRoute(t *testing.T) {
 	t.Parallel()
 	st := fake.New()
-	ctx := context.Background()
-
-	// Seed farm + queue + a running job with a known ID.
-	if _, err := st.CreateFarm(ctx, store.Farm{ID: "farm-1", Name: "f"}); err != nil {
-		t.Fatalf("CreateFarm: %v", err)
-	}
-	if _, err := st.CreateQueue(ctx, store.Queue{ID: "queue-1", FarmID: "farm-1", Name: "q"}); err != nil {
-		t.Fatalf("CreateQueue: %v", err)
-	}
-	now := time.Now()
-	if _, err := st.CreateJob(ctx, store.Job{
-		ID:             "job-run",
-		FarmID:         "farm-1",
-		QueueID:        "queue-1",
-		Name:           "running-job",
-		Owner:          "alice",
-		Priority:       50,
-		Status:         store.JobStatusRunning,
-		TemplateFormat: store.TemplateFormatJSON,
-		CreatedAt:      now,
-		UpdatedAt:      now,
-	}); err != nil {
-		t.Fatalf("CreateJob: %v", err)
-	}
+	j := seedJob(t, st, store.JobStatusRunning)
 
 	r := newJobRouter(st, &fakeScheduler{})
-	req := newReq(t, http.MethodPost, "/api/v1/jobs/job-run/cancel", nil)
+	req := newReq(t, http.MethodPost, "/api/v1/jobs/"+j.ID+"/cancel", nil)
 	rr := httptest.NewRecorder()
 	r.ServeHTTP(rr, req)
 	if rr.Code != http.StatusNoContent {
@@ -1477,29 +1314,12 @@ func TestJobHandler_CancelJob_NewRoute(t *testing.T) {
 // number of tasks revived.
 func TestRetryJob_OK(t *testing.T) {
 	st := fake.New()
-	ctx := t.Context()
-
-	if _, err := st.CreateFarm(ctx, store.Farm{ID: "farm-1", Name: "f"}); err != nil {
-		t.Fatalf("CreateFarm: %v", err)
-	}
-	if _, err := st.CreateQueue(ctx, store.Queue{ID: "queue-1", FarmID: "farm-1", Name: "q"}); err != nil {
-		t.Fatalf("CreateQueue: %v", err)
-	}
-	now := time.Now()
-	if _, err := st.CreateJob(ctx, store.Job{
-		ID: "j1", FarmID: "farm-1", QueueID: "queue-1",
-		Name: "failed-job", Owner: "alice", Priority: 50,
-		Status:         store.JobStatusFailed,
-		TemplateFormat: store.TemplateFormatJSON,
-		CreatedAt:      now, UpdatedAt: now,
-	}); err != nil {
-		t.Fatalf("CreateJob: %v", err)
-	}
+	j := seedJob(t, st, store.JobStatusFailed)
 
 	sched := &fakeScheduler{retryCount: 1}
 	r := newJobRouter(st, sched)
 	rr := httptest.NewRecorder()
-	req := newReq(t, http.MethodPost, "/api/v1/jobs/j1/retry", nil)
+	req := newReq(t, http.MethodPost, "/api/v1/jobs/"+j.ID+"/retry", nil)
 	r.ServeHTTP(rr, req)
 
 	if rr.Code != http.StatusOK {
@@ -1512,8 +1332,8 @@ func TestRetryJob_OK(t *testing.T) {
 	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
-	if resp.JobID != "j1" || resp.Retried != 1 {
-		t.Errorf("resp = %+v, want {j1 1}", resp)
+	if resp.JobID != j.ID || resp.Retried != 1 {
+		t.Errorf("resp = %+v, want {%s 1}", resp, j.ID)
 	}
 }
 
@@ -1533,28 +1353,11 @@ func TestRetryJob_NotFound(t *testing.T) {
 // failed/canceled tasks is idempotent and returns 200 with retried=0.
 func TestRetryJob_NoEligibleTasks(t *testing.T) {
 	st := fake.New()
-	ctx := t.Context()
-
-	if _, err := st.CreateFarm(ctx, store.Farm{ID: "farm-1", Name: "f"}); err != nil {
-		t.Fatalf("CreateFarm: %v", err)
-	}
-	if _, err := st.CreateQueue(ctx, store.Queue{ID: "queue-1", FarmID: "farm-1", Name: "q"}); err != nil {
-		t.Fatalf("CreateQueue: %v", err)
-	}
-	now := time.Now()
-	if _, err := st.CreateJob(ctx, store.Job{
-		ID: "j1", FarmID: "farm-1", QueueID: "queue-1",
-		Name: "completed-job", Owner: "alice", Priority: 50,
-		Status:         store.JobStatusCompleted,
-		TemplateFormat: store.TemplateFormatJSON,
-		CreatedAt:      now, UpdatedAt: now,
-	}); err != nil {
-		t.Fatalf("CreateJob: %v", err)
-	}
+	j := seedJob(t, st, store.JobStatusCompleted)
 
 	r := newJobRouter(st, &fakeScheduler{}) // retryCount defaults to 0
 	rr := httptest.NewRecorder()
-	req := newReq(t, http.MethodPost, "/api/v1/jobs/j1/retry", nil)
+	req := newReq(t, http.MethodPost, "/api/v1/jobs/"+j.ID+"/retry", nil)
 	r.ServeHTTP(rr, req)
 
 	if rr.Code != http.StatusOK {
@@ -1743,25 +1546,15 @@ func TestJobHandler_DeleteJob_ActiveJobCancelsAndDeletes(t *testing.T) {
 	st := fake.New()
 	ctx := t.Context()
 
-	if _, err := st.CreateFarm(ctx, store.Farm{ID: "farm-1", Name: "f"}); err != nil {
-		t.Fatalf("CreateFarm: %v", err)
-	}
-	if _, err := st.CreateQueue(ctx, store.Queue{ID: "queue-1", FarmID: "farm-1", Name: "q"}); err != nil {
-		t.Fatalf("CreateQueue: %v", err)
-	}
-	now := time.Now()
-	if _, err := st.CreateJob(ctx, store.Job{
+	seedFarmQueue(t, st)
+	storetest.Submit(t, st, store.JobSubmission{Job: store.Job{
 		ID:             "job-active",
 		FarmID:         "farm-1",
 		QueueID:        "queue-1",
 		Name:           "active-job",
 		Status:         store.JobStatusRunning,
 		TemplateFormat: store.TemplateFormatJSON,
-		CreatedAt:      now,
-		UpdatedAt:      now,
-	}); err != nil {
-		t.Fatalf("CreateJob: %v", err)
-	}
+	}})
 
 	r, sched := newJobRouterWithSched(st)
 	req := newReq(t, http.MethodDelete, "/api/v1/jobs/job-active", nil)
@@ -1787,25 +1580,15 @@ func TestJobHandler_DeleteJob_CancelFailureReturns500(t *testing.T) {
 	st := fake.New()
 	ctx := t.Context()
 
-	if _, err := st.CreateFarm(ctx, store.Farm{ID: "farm-1", Name: "f"}); err != nil {
-		t.Fatalf("CreateFarm: %v", err)
-	}
-	if _, err := st.CreateQueue(ctx, store.Queue{ID: "queue-1", FarmID: "farm-1", Name: "q"}); err != nil {
-		t.Fatalf("CreateQueue: %v", err)
-	}
-	now := time.Now()
-	if _, err := st.CreateJob(ctx, store.Job{
+	seedFarmQueue(t, st)
+	storetest.Submit(t, st, store.JobSubmission{Job: store.Job{
 		ID:             "job-run-fail",
 		FarmID:         "farm-1",
 		QueueID:        "queue-1",
 		Name:           "running-job",
 		Status:         store.JobStatusRunning,
 		TemplateFormat: store.TemplateFormatJSON,
-		CreatedAt:      now,
-		UpdatedAt:      now,
-	}); err != nil {
-		t.Fatalf("CreateJob: %v", err)
-	}
+	}})
 
 	sched := &fakeScheduler{cancelErr: errors.New("scheduler unavailable")}
 	r := newJobRouter(st, sched)

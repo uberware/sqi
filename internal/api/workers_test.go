@@ -26,6 +26,7 @@ import (
 	"github.com/uberware/sqi/internal/auth"
 	"github.com/uberware/sqi/internal/store"
 	"github.com/uberware/sqi/internal/store/fake"
+	"github.com/uberware/sqi/internal/store/storetest"
 	"github.com/uberware/sqi/internal/ws"
 )
 
@@ -112,6 +113,8 @@ func seedDisabledWorker(t *testing.T, st *fake.Store, liveness store.WorkerStatu
 	return w
 }
 
+// seedWorkerTask seeds a job of its own holding one task, name, that workerID
+// holds in status. See [seedWorkerTaskForJob].
 func seedWorkerTask(
 	t *testing.T,
 	st *fake.Store,
@@ -120,53 +123,46 @@ func seedWorkerTask(
 	name string,
 ) store.Task {
 	t.Helper()
-	now := time.Now()
-	task := store.Task{
-		ID:               uuid.NewString(),
-		JobID:            "job-" + uuid.NewString()[:8],
-		StepID:           "step-" + uuid.NewString()[:8],
-		Name:             name,
-		Status:           status,
-		AssignedWorkerID: workerID,
-		AssignedAt:       &now,
-		CreatedAt:        now,
-		UpdatedAt:        now,
-	}
-	created, err := st.CreateTask(t.Context(), task)
-	if err != nil {
-		t.Fatalf("seedWorkerTask: %v", err)
-	}
-	return created
+	return seedWorkerTaskForJob(t, st, workerID, "job-"+uuid.NewString()[:8], "", status, name)
 }
 
-// seedWorkerTaskForJob is like seedWorkerTask but pins the task to a specific
-// (already-seeded) job id, so owner-scoping tests can look up the job's real
-// owner via store.GetJob.
+// seedWorkerTaskForJob is like seedWorkerTask but names the job and its owner,
+// so owner-scoping tests can look up the job's real owner via store.GetJob. The
+// job, its step and its task are one submission: a task cannot be added to a
+// job that already exists. An assigned or running task is leased to workerID
+// (see [storetest.SubmitLeasing]); a succeeded one is run to completion on workerID, so
+// it stays attributed to the worker the way a finished task is.
 func seedWorkerTaskForJob(
 	t *testing.T,
 	st *fake.Store,
-	workerID, jobID string,
+	workerID, jobID, owner string,
 	status store.TaskStatus,
 	name string,
 ) store.Task {
 	t.Helper()
-	now := time.Now()
-	task := store.Task{
-		ID:               uuid.NewString(),
-		JobID:            jobID,
-		StepID:           "step-" + uuid.NewString()[:8],
-		Name:             name,
-		Status:           status,
-		AssignedWorkerID: workerID,
-		AssignedAt:       &now,
-		CreatedAt:        now,
-		UpdatedAt:        now,
+	farm, queue := seedFarmQueue(t, st)
+	stepID, taskID := "step-"+uuid.NewString()[:8], uuid.NewString()
+	seeded := status
+	if status == store.TaskStatusSucceeded {
+		seeded = store.TaskStatusRunning
 	}
-	created, err := st.CreateTask(t.Context(), task)
+	out, attempts := storetest.SubmitLeasing(t, st, store.JobSubmission{
+		Job: store.Job{
+			ID: jobID, FarmID: farm.ID, QueueID: queue.ID, Name: jobID, Owner: owner,
+			Priority: 50, Status: store.JobStatusRunning, TemplateFormat: store.TemplateFormatJSON,
+		},
+		Steps: []store.Step{{ID: stepID, JobID: jobID, Name: "Step1", Status: store.StepStatusRunning}},
+		Tasks: []store.Task{{ID: taskID, JobID: jobID, StepID: stepID, Name: name, Status: seeded}},
+	}, storetest.LeaseTo(workerID))
+	if status != store.TaskStatusSucceeded {
+		return out.Tasks[0]
+	}
+	storetest.Complete(t, st, attempts[taskID], store.TaskStatusSucceeded)
+	task, err := st.GetTask(t.Context(), taskID)
 	if err != nil {
-		t.Fatalf("seedWorkerTaskForJob: %v", err)
+		t.Fatalf("seedWorkerTaskForJob: GetTask: %v", err)
 	}
-	return created
+	return task
 }
 
 // ── GET /api/v1/workers ───────────────────────────────────────────────────────
@@ -430,11 +426,9 @@ func TestGetWorker_OwnerScoping(t *testing.T) {
 	newSeededRouter := func(t *testing.T) (chi.Router, store.Worker) {
 		t.Helper()
 		st := fake.New()
-		seedOwnedJob(t, st, "job-alice", "alice")
-		seedOwnedJob(t, st, "job-bob", "bob")
 		w := seedWorker(t, st, store.WorkerStatusOnline)
-		seedWorkerTaskForJob(t, st, w.ID, "job-alice", store.TaskStatusRunning, "alice-task")
-		seedWorkerTaskForJob(t, st, w.ID, "job-bob", store.TaskStatusRunning, "bob-task")
+		seedWorkerTaskForJob(t, st, w.ID, "job-alice", "alice", store.TaskStatusRunning, "alice-task")
+		seedWorkerTaskForJob(t, st, w.ID, "job-bob", "bob", store.TaskStatusRunning, "bob-task")
 		return newWorkerRouter(st), w
 	}
 
@@ -754,9 +748,11 @@ func TestRemoveWorker(t *testing.T) {
 			t.Fatalf("worker should survive a refused remove: GetWorker: %v", err)
 		}
 
-		if err := st.UpdateTaskStatus(t.Context(), task.ID, store.TaskStatusSucceeded); err != nil {
-			t.Fatalf("UpdateTaskStatus: %v", err)
+		attempt, err := st.LatestTaskAttempt(t.Context(), task.ID)
+		if err != nil {
+			t.Fatalf("LatestTaskAttempt: %v", err)
 		}
+		storetest.Complete(t, st, attempt, store.TaskStatusSucceeded)
 		rr = httptest.NewRecorder()
 		r.ServeHTTP(rr, newReq(t, http.MethodDelete, "/api/v1/workers/"+w.ID, nil))
 		if rr.Code != http.StatusNoContent {
@@ -791,8 +787,8 @@ func TestRemoveWorker(t *testing.T) {
 		if rr.Code != http.StatusNoContent {
 			t.Fatalf("expected 204, got %d — body: %s", rr.Code, rr.Body)
 		}
-		if _, err := st.GetActiveWorkerCredentialByWorkerID(t.Context(), w.ID); !errors.Is(err, store.ErrNotFound) {
-			t.Errorf("GetActiveWorkerCredentialByWorkerID after delete = %v, want store.ErrNotFound (credential revoked)", err)
+		if _, err := storetest.ActiveWorkerCredential(t.Context(), st, w.ID); !errors.Is(err, store.ErrNotFound) {
+			t.Errorf("ActiveWorkerCredential after delete = %v, want store.ErrNotFound (credential revoked)", err)
 		}
 	})
 

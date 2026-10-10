@@ -78,16 +78,6 @@ func TestWorker_ExprLimitsRoundTrip(t *testing.T) {
 		t.Errorf("after re-registration ExprLimits = %+v, want %+v", again.ExprLimits, tightened)
 	}
 
-	// UpdateWorker is the admin-edit path; it must not drop them either.
-	again.Name = "renamed"
-	updated, err := s.UpdateWorker(ctx, again)
-	if err != nil {
-		t.Fatalf("UpdateWorker: %v", err)
-	}
-	if updated.ExprLimits != tightened {
-		t.Errorf("UpdateWorker returned ExprLimits %+v, want %+v", updated.ExprLimits, tightened)
-	}
-
 	// The comparisons above are only as complete as the literals that feed
 	// them. A dimension left out of BOTH literals is zero on both sides of
 	// every == in this test, so it passes while nothing checks the column

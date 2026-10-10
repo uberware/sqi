@@ -27,7 +27,7 @@ import (
 type completeBeforeCancelStore struct {
 	store.Store
 
-	taskID   string
+	attempt  store.TaskAttempt
 	terminal store.TaskStatus
 	t        *testing.T
 }
@@ -35,13 +35,34 @@ type completeBeforeCancelStore struct {
 func (s *completeBeforeCancelStore) CancelTaskExecution(
 	ctx context.Context, id, reason string, now time.Time,
 ) (store.Task, bool, error) {
-	if id == s.taskID {
+	if id == s.attempt.TaskID {
 		// The worker's terminal report lands first.
-		if err := fixtures(s.t, s.Store).UpdateTaskStatus(ctx, id, s.terminal); err != nil {
-			s.t.Errorf("complete task in hook: %v", err)
-		}
+		s.reportTerminal(ctx)
 	}
 	return s.Store.CancelTaskExecution(ctx, id, reason, now)
+}
+
+// reportTerminal applies the worker's terminal report on the leased attempt
+// with the writes the status consumer makes for it: a success is one
+// CompleteTaskAttempt; a failure with no retry left is RecordTaskFailure,
+// which closes the attempt, then CompleteTaskAttempt, which ends the task.
+func (s *completeBeforeCancelStore) reportTerminal(ctx context.Context) {
+	now := time.Now().UTC()
+	exit := 0
+	attemptStatus := store.AttemptStatusSucceeded
+	if s.terminal == store.TaskStatusFailed {
+		exit, attemptStatus = 1, store.AttemptStatusFailed
+		if _, _, _, err := s.RecordTaskFailure(ctx, s.attempt.ID, s.attempt.TaskID, &exit, "", "boom", now); err != nil {
+			s.t.Errorf("RecordTaskFailure in hook: %v", err)
+		}
+	}
+	res, err := s.CompleteTaskAttempt(ctx, store.AttemptCompletion{
+		AttemptID: s.attempt.ID, TaskID: s.attempt.TaskID, TaskStatus: s.terminal, AttemptStatus: attemptStatus,
+		ExitCode: &exit, EndedAt: now,
+	})
+	if err != nil || !res.Applied {
+		s.t.Errorf("CompleteTaskAttempt in hook = (%+v, %v), want applied", res, err)
+	}
 }
 
 func TestCancelTask_LosesRaceToCompletion_IsNoOp(t *testing.T) {
@@ -52,10 +73,10 @@ func TestCancelTask_LosesRaceToCompletion_IsNoOp(t *testing.T) {
 		t.Run(string(terminal), func(t *testing.T) {
 			st := newCheckedFake(t)
 			bus := &stubBus{}
-			job := seedCancelJob(t, st)
-			tk := seedTaskForJob(t, st, job, "w1", store.TaskStatusRunning)
+			_, tasks, attempts := seedCancelJob(t, st, cancelTask{status: store.TaskStatusRunning, worker: "w1"})
+			tk := tasks[0]
 
-			s := newTestScheduler(&completeBeforeCancelStore{Store: st, taskID: tk.ID, terminal: terminal, t: t}, bus)
+			s := newTestScheduler(&completeBeforeCancelStore{Store: st, attempt: attempts[0], terminal: terminal, t: t}, bus)
 
 			if err := s.CancelTask(t.Context(), tk.ID); err != nil {
 				t.Fatalf("CancelTask losing the race to completion = %v, want nil (no-op)", err)
@@ -82,8 +103,8 @@ func TestCancelTask_LosesRaceToCompletion_IsNoOp(t *testing.T) {
 func TestCancelTask_RealErrorStillPropagates(t *testing.T) {
 	st := newCheckedFake(t)
 	bus := &stubBus{}
-	job := seedCancelJob(t, st)
-	tk := seedTaskForJob(t, st, job, "w1", store.TaskStatusRunning)
+	_, tasks, _ := seedCancelJob(t, st, cancelTask{status: store.TaskStatusRunning, worker: "w1"})
+	tk := tasks[0]
 
 	s := newTestScheduler(&failingCancelStore{Store: st, taskID: tk.ID}, bus)
 

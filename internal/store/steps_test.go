@@ -151,14 +151,12 @@ func TestCancelPendingStep_MovedStepIsNotOverwritten(t *testing.T) {
 func TestCancelPendingStep_KeepsMoreSpecificReason(t *testing.T) {
 	for name, st := range newStores(t) {
 		t.Run(name, func(t *testing.T) {
+			const specific = "the earlier, more specific cause"
 			g := seedGraph(t, st, graphOpts{}, failedUpstream, stepSpec{
 				name: "a", status: store.StepStatusPending, dependsOn: []string{"up"},
-				tasks: []store.TaskStatus{store.TaskStatusPending, store.TaskStatusPending},
+				tasks:   []store.TaskStatus{store.TaskStatusPending, store.TaskStatusPending},
+				reasons: []string{specific},
 			})
-			const specific = "the earlier, more specific cause"
-			if err := fixtures(t, st).SetTaskFailureReason(t.Context(), g.Tasks["a"][0].ID, specific); err != nil {
-				t.Fatalf("SetTaskFailureReason: %v", err)
-			}
 			ok, tasks, err := st.CancelPendingStep(t.Context(), g.Steps["a"].ID, store.FailureReasonUpstreamFailed, time.Now().UTC())
 			if err != nil || !ok || len(tasks) != 2 {
 				t.Fatalf("CancelPendingStep = (%v, %d, %v), want (true, 2, nil)", ok, len(tasks), err)

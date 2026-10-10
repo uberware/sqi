@@ -100,8 +100,8 @@ func (s *Store) CompleteTaskAttempt(_ context.Context, c store.AttemptCompletion
 	if rejected {
 		return store.CompletionResult{Rejected: true}, nil
 	}
-	// The task row's updated_at is server time, as UpdateTaskStatus stamps it:
-	// c.EndedAt comes from the worker's clock and belongs to the attempt only.
+	// The task row's updated_at is server time: c.EndedAt comes from the
+	// worker's clock and belongs to the attempt only.
 	now := time.Now().UTC()
 	if moves {
 		t.Status, t.UnschedulableReason, t.UpdatedAt = c.TaskStatus, "", now

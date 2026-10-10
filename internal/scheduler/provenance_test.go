@@ -21,6 +21,7 @@ import (
 	"github.com/uberware/sqi/internal/bus"
 	"github.com/uberware/sqi/internal/store"
 	"github.com/uberware/sqi/internal/store/fake"
+	"github.com/uberware/sqi/internal/store/storetest"
 	"github.com/uberware/sqi/internal/worker/protocol"
 )
 
@@ -45,12 +46,16 @@ func newFakeJetStreamMsg(_ *testing.T, subject string, data []byte) *fakeJSMsg {
 
 // seedRunnableTask creates a farm, queue, an online worker registered as
 // workerID, a running job/step, and a task assigned to and running on that
-// worker. Returns the job, step, and task.
+// worker. Returns the job, step, and task, and the task's live attempt.
 //
 // Farm/queue names are derived from workerID (fake.Store.CreateFarm rejects a
 // duplicate Name) so a test that needs two independent workers — each with
 // its own task — can call this twice without a spurious ErrConflict.
-func seedRunnableTask(t *testing.T, st *fake.Store, workerID string) (store.Job, store.Step, store.Task) {
+//
+// The job goes through [storetest.SubmitLeasing], which leases the task to
+// workerID and starts it through production writes, so the attempt is the one
+// that lease opened.
+func seedRunnableTask(t *testing.T, st *fake.Store, workerID string) (store.Job, store.Step, store.Task, store.TaskAttempt) {
 	t.Helper()
 	ctx := t.Context()
 	now := time.Now().UTC()
@@ -70,40 +75,20 @@ func seedRunnableTask(t *testing.T, st *fake.Store, workerID string) (store.Job,
 	}); err != nil {
 		t.Fatalf("RegisterWorker: %v", err)
 	}
-	job, err := st.CreateJob(ctx, store.Job{
-		ID:             uuid.NewString(),
-		FarmID:         farm.ID,
-		QueueID:        queue.ID,
-		Name:           "job",
-		Status:         store.JobStatusRunning,
-		TemplateFormat: store.TemplateFormatJSON,
-		CreatedAt:      now,
-		UpdatedAt:      now,
-	})
-	if err != nil {
-		t.Fatalf("CreateJob: %v", err)
-	}
-	step, err := st.CreateStep(ctx, store.Step{
-		ID: uuid.NewString(), JobID: job.ID, Name: "step",
-		Status: store.StepStatusRunning, CreatedAt: now, UpdatedAt: now,
-	})
-	if err != nil {
-		t.Fatalf("CreateStep: %v", err)
-	}
-	task, err := st.CreateTask(ctx, store.Task{
-		ID:               uuid.NewString(),
-		JobID:            job.ID,
-		StepID:           step.ID,
-		Name:             "task",
-		Status:           store.TaskStatusRunning,
-		AssignedWorkerID: workerID,
-		CreatedAt:        now,
-		UpdatedAt:        now,
-	})
-	if err != nil {
-		t.Fatalf("CreateTask: %v", err)
-	}
-	return job, step, task
+	jobID, stepID, taskID := uuid.NewString(), uuid.NewString(), uuid.NewString()
+	sub, attempts := storetest.SubmitLeasing(t, st, store.JobSubmission{
+		Job: store.Job{
+			ID:             jobID,
+			FarmID:         farm.ID,
+			QueueID:        queue.ID,
+			Name:           "job",
+			Status:         store.JobStatusRunning,
+			TemplateFormat: store.TemplateFormatJSON,
+		},
+		Steps: []store.Step{{ID: stepID, JobID: jobID, Name: "step", Status: store.StepStatusRunning}},
+		Tasks: []store.Task{{ID: taskID, JobID: jobID, StepID: stepID, Name: "task", Status: store.TaskStatusRunning}},
+	}, storetest.LeaseTo(workerID))
+	return sub.Job, sub.Steps[0], sub.Tasks[0], attempts[taskID]
 }
 
 // ── task.status ────────────────────────────────────────────────────────────
@@ -120,16 +105,7 @@ func TestProvenance_StatusFromWrongWorker(t *testing.T) {
 
 	// Two workers, a task held by B, and a live attempt for it.
 	const workerA, workerB = "worker-a", "worker-b"
-	job, _, task := seedRunnableTask(t, st, workerB) // helper above
-	attempt, err := st.CreateTaskAttempt(ctx, store.TaskAttempt{
-		ID:        uuid.NewString(),
-		TaskID:    task.ID,
-		WorkerID:  workerB,
-		StartedAt: time.Now().UTC(),
-	})
-	if err != nil {
-		t.Fatalf("CreateTaskAttempt: %v", err)
-	}
+	job, _, task, attempt := seedRunnableTask(t, st, workerB) // helper above
 
 	s := newTestScheduler(st, &stubBus{}) // existing helper in this package
 	s.ctx = ctx
@@ -184,16 +160,7 @@ func TestProvenance_LogsFromWrongWorker(t *testing.T) {
 	ctx := t.Context()
 
 	const workerA, workerB = "worker-a", "worker-b"
-	_, _, task := seedRunnableTask(t, st, workerB)
-	attempt, err := st.CreateTaskAttempt(ctx, store.TaskAttempt{
-		ID:        uuid.NewString(),
-		TaskID:    task.ID,
-		WorkerID:  workerB,
-		StartedAt: time.Now().UTC(),
-	})
-	if err != nil {
-		t.Fatalf("CreateTaskAttempt: %v", err)
-	}
+	_, _, task, attempt := seedRunnableTask(t, st, workerB)
 
 	s := newTestScheduler(st, &stubBus{})
 	s.ctx = ctx
@@ -244,19 +211,10 @@ func TestProvenance_LogsForAnotherWorkersTask(t *testing.T) {
 	ctx := t.Context()
 
 	const workerA, workerB = "worker-a", "worker-b"
-	_, _, taskA := seedRunnableTask(t, st, workerA)
-	attemptA, err := st.CreateTaskAttempt(ctx, store.TaskAttempt{
-		ID:        uuid.NewString(),
-		TaskID:    taskA.ID,
-		WorkerID:  workerA,
-		StartedAt: time.Now().UTC(),
-	})
-	if err != nil {
-		t.Fatalf("CreateTaskAttempt(A): %v", err)
-	}
+	_, _, _, attemptA := seedRunnableTask(t, st, workerA)
 	// Worker B's own task — uninvolved in the publish below except as the
 	// target the forged payload names.
-	_, _, taskB := seedRunnableTask(t, st, workerB)
+	_, _, taskB, _ := seedRunnableTask(t, st, workerB)
 
 	s := newTestScheduler(st, &stubBus{})
 	s.ctx = ctx

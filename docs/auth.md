@@ -872,7 +872,7 @@ revealing the secret. `last_used_at` is updated on successful authentication,
 throttled to at most once per minute per key so a busy key doesn't write on
 every request (`internal/auth/apikey.Authenticator`'s `touchThreshold`).
 Optional `expires_at` is enforced at authentication time, not just at
-creation: `GetAPIKeyByTokenHash` only matches rows that are unexpired (and
+creation: `GetAPIKeyUserByTokenHash` only matches rows that are unexpired (and
 unrevoked), so an expired key stops authenticating the instant it lapses,
 with no separate sweep required.
 
