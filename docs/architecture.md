@@ -1038,9 +1038,12 @@ Upgrading from v0.3.0 changes the following behaviour.
   depends_on job "<id>" not found`).
 
 Timestamp values are unchanged from v0.3.0, though the writes that stamp them
-moved. One stored form changed: SQLite now writes a new submission's step and
-task `created_at` (and initial `updated_at`) with all nine fractional digits,
-where v0.3.0 trimmed trailing zeros; both forms read back as the same time.
+moved. SQLite stores every timestamp in one form, RFC 3339 in UTC with all nine
+fractional digits (`2026-10-10T12:00:05.500000000Z`, always 30 characters), so
+comparing or ordering the text agrees with time order. Earlier releases trimmed
+trailing zeros, which mis-ordered values within a second (`"…:05Z"` sorted after
+`"…:05.5Z"`); migration `00037` rewrites every value they stored, on the first
+start after upgrade, and an earlier release reads the new form unchanged.
 A released claim's `released_at` is always server time. A terminal report
 applied through `CompleteTaskAttempt` stamps the task row's `updated_at` with
 server time and the attempt's `ended_at` with the worker's reported time. The
@@ -1110,16 +1113,6 @@ The store does not close these yet.
   rather than leased a task, so a departed process's last request does not take
   a task into a dead inbox for the stale-assignment reaper to recover. A live worker that hits this is refused once, and its
   next request is served.
-- **Heartbeat timestamps compare as text.** SQLite stores timestamps as
-  RFC3339Nano text, which mis-orders within a second (`"…:05Z"` sorts after
-  `"…:05.5Z"`). The one exception is the `created_at` and first `updated_at` of
-  the step and task rows a submission writes: those are stamped strictly
-  increasing at a fixed nine fractional digits, so tasks within a step order by
-  submission. A heartbeat is not, so its staleness comparison is wrong below
-  one second while the in-memory fake compares exactly. The fake's `ListStaleWorkers` also
-  lists a worker that has never heartbeated as stale, where SQLite never does
-  (pinned by `TestListStaleWorkers`; `OfflineStaleWorker` follows SQLite on
-  both). Fixing both needs fixed-width timestamps.
 - **A `LeaseTask` that commits is not always delivered.** If building the
   assignment payload fails after `LeaseTask` committed (a deterministic error:
   the job's template no longer parses, or its step is gone), that task stays
