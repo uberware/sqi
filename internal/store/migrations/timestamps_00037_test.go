@@ -20,8 +20,8 @@ import (
 const migration00037 = "00037_fixed_width_timestamps.sql"
 
 // TestMigration00037_RewritesEveryStoredForm plants each form a timestamp has
-// been stored in, and values of no recognised shape, in a database rewound to
-// 36, then migrates. Recognised forms become the 30-character form at the same
+// been stored in, and values of no recognized shape, in a database rewound to
+// 36, then migrates. Recognized forms become the 30-character form at the same
 // instant; everything else, NULL included, is left byte-for-byte.
 func TestMigration00037_RewritesEveryStoredForm(t *testing.T) {
 	cases := []struct{ name, stored, want string }{
@@ -87,7 +87,7 @@ func TestMigration00037_RewritesEveryStoredForm(t *testing.T) {
 	}
 
 	// Applying it again changes nothing: its down is a no-op and every row it
-	// recognised is now 30 characters, which it skips.
+	// recognized is now 30 characters, which it skips.
 	before := dumpTables(t, db)
 	if err := goose.DownTo(db, ".", 36); err != nil {
 		t.Fatalf("DownTo(36): %v", err)

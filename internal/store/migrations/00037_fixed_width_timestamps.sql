@@ -10,7 +10,7 @@
 -- ("…:05Z" sorts after "…:05.5Z"), three digits from the repair migrations'
 -- strftime, and nine digits from submission's row clock.
 --
--- Two shapes are recognised: "…SSZ" gains ".000000000", and "…SS.<1-8
+-- Two shapes are recognized: "…SSZ" gains ".000000000", and "…SS.<1-8
 -- digits>Z" has its fraction padded with zeros to nine. Both keep the same
 -- instant. Anything else (NULL, a value of any other shape) is left exactly as
 -- it was, and a 30-character value is not touched, so applying this twice
