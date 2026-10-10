@@ -74,12 +74,6 @@ func (s *Store) DeleteSession(ctx context.Context, id string) error {
 	return checkRowsAffected(res)
 }
 
-// DeleteSessionsForUser implements [store.SessionStore].
-func (s *Store) DeleteSessionsForUser(ctx context.Context, userID string) error {
-	_, err := s.stmtDeleteSessionsForUser.ExecContext(ctx, userID)
-	return mapErr(err)
-}
-
 // DeleteExpiredSessions implements [store.SessionStore].
 func (s *Store) DeleteExpiredSessions(ctx context.Context, now time.Time) (int, error) {
 	res, err := s.stmtDeleteExpiredSessions.ExecContext(ctx, timeToText(now))

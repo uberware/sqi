@@ -108,7 +108,7 @@ func TestSessionStore_CreateSession_DuplicateTokenHash(t *testing.T) {
 	}
 }
 
-func TestSessionStore_DeleteForUserAndExpired(t *testing.T) {
+func TestSessionStore_DeleteExpired(t *testing.T) {
 	for name, st := range newStores(t) {
 		t.Run(name, func(t *testing.T) {
 			ctx := context.Background()
@@ -130,11 +130,11 @@ func TestSessionStore_DeleteForUserAndExpired(t *testing.T) {
 			if err != nil || n != 1 {
 				t.Fatalf("DeleteExpiredSessions: n=%d err=%v", n, err)
 			}
-			if err := st.DeleteSessionsForUser(ctx, u.ID); err != nil {
-				t.Fatalf("DeleteSessionsForUser: %v", err)
+			if _, err := st.GetSessionByTokenHash(ctx, "live", now); err != nil {
+				t.Fatalf("live session should survive DeleteExpiredSessions, got %v", err)
 			}
-			if _, err := st.GetSessionByTokenHash(ctx, "live", now); !errors.Is(err, store.ErrNotFound) {
-				t.Fatalf("session should be gone after DeleteSessionsForUser, got %v", err)
+			if _, err := st.GetSessionByTokenHash(ctx, "dead", now.Add(-2*time.Hour)); !errors.Is(err, store.ErrNotFound) {
+				t.Fatalf("expired session should be gone after DeleteExpiredSessions, got %v", err)
 			}
 		})
 	}

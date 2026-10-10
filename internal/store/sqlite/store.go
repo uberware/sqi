@@ -226,7 +226,6 @@ type Store struct {
 	stmtGetSessionByTokenHash     *sql.Stmt
 	stmtGetSessionUserByTokenHash *sql.Stmt
 	stmtDeleteSession             *sql.Stmt
-	stmtDeleteSessionsForUser     *sql.Stmt
 	stmtDeleteExpiredSessions     *sql.Stmt
 
 	// ── api keys ─────────────────────────────────────────────────────────
@@ -717,9 +716,6 @@ func (s *Store) prepareAll(ctx context.Context) error {
 		return err
 	}
 	if s.stmtDeleteSession, err = s.prepare(ctx, sqlDeleteSession); err != nil {
-		return err
-	}
-	if s.stmtDeleteSessionsForUser, err = s.prepare(ctx, sqlDeleteSessionsForUser); err != nil {
 		return err
 	}
 	if s.stmtDeleteExpiredSessions, err = s.prepare(ctx, sqlDeleteExpiredSessions); err != nil {

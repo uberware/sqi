@@ -75,18 +75,6 @@ func (s *Store) DeleteSession(_ context.Context, id string) error {
 	return nil
 }
 
-// DeleteSessionsForUser implements [store.SessionStore].
-func (s *Store) DeleteSessionsForUser(_ context.Context, userID string) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	for id, sess := range s.sessions {
-		if sess.UserID == userID {
-			delete(s.sessions, id)
-		}
-	}
-	return nil
-}
-
 // DeleteExpiredSessions implements [store.SessionStore].
 func (s *Store) DeleteExpiredSessions(_ context.Context, now time.Time) (int, error) {
 	s.mu.Lock()
