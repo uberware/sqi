@@ -120,9 +120,9 @@ func TestAuthenticate_TouchesLastUsed_Throttled(t *testing.T) {
 	if _, err := a.Authenticate(reqWithBearer(t, raw)); err != nil {
 		t.Fatalf("auth 1: %v", err)
 	}
-	k1, err := st.GetAPIKeyByTokenHash(context.Background(), password.HashToken(raw), clock)
+	k1, _, err := st.GetAPIKeyUserByTokenHash(context.Background(), password.HashToken(raw), clock)
 	if err != nil {
-		t.Fatalf("GetAPIKeyByTokenHash (1): %v", err)
+		t.Fatalf("GetAPIKeyUserByTokenHash (1): %v", err)
 	}
 	if k1.LastUsedAt == nil || !k1.LastUsedAt.Equal(base) {
 		t.Fatalf("first use should set last_used_at to base, got %v", k1.LastUsedAt)
@@ -133,9 +133,9 @@ func TestAuthenticate_TouchesLastUsed_Throttled(t *testing.T) {
 	if _, err := a.Authenticate(reqWithBearer(t, raw)); err != nil {
 		t.Fatalf("auth 2: %v", err)
 	}
-	k2, err := st.GetAPIKeyByTokenHash(context.Background(), password.HashToken(raw), clock)
+	k2, _, err := st.GetAPIKeyUserByTokenHash(context.Background(), password.HashToken(raw), clock)
 	if err != nil {
-		t.Fatalf("GetAPIKeyByTokenHash (2): %v", err)
+		t.Fatalf("GetAPIKeyUserByTokenHash (2): %v", err)
 	}
 	if !k2.LastUsedAt.Equal(base) {
 		t.Fatalf("within-throttle use should not advance last_used_at, got %v", k2.LastUsedAt)
@@ -146,9 +146,9 @@ func TestAuthenticate_TouchesLastUsed_Throttled(t *testing.T) {
 	if _, err := a.Authenticate(reqWithBearer(t, raw)); err != nil {
 		t.Fatalf("auth 3: %v", err)
 	}
-	k3, err := st.GetAPIKeyByTokenHash(context.Background(), password.HashToken(raw), clock)
+	k3, _, err := st.GetAPIKeyUserByTokenHash(context.Background(), password.HashToken(raw), clock)
 	if err != nil {
-		t.Fatalf("GetAPIKeyByTokenHash (3): %v", err)
+		t.Fatalf("GetAPIKeyUserByTokenHash (3): %v", err)
 	}
 	if !k3.LastUsedAt.Equal(clock) {
 		t.Fatalf("post-throttle use should advance last_used_at to %v, got %v", clock, k3.LastUsedAt)

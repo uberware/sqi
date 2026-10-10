@@ -34,16 +34,16 @@ func TestAPIKeyStore_CreateGetRevoke(t *testing.T) {
 				t.Fatalf("CreateAPIKey: %v", err)
 			}
 
-			got, err := st.GetAPIKeyByTokenHash(ctx, k.TokenHash, now)
+			got, _, err := st.GetAPIKeyUserByTokenHash(ctx, k.TokenHash, now)
 			if err != nil || got.UserID != u.ID {
-				t.Fatalf("GetAPIKeyByTokenHash: %+v err=%v", got, err)
+				t.Fatalf("GetAPIKeyUserByTokenHash: %+v err=%v", got, err)
 			}
 
 			// Revoke (scoped to owner) → subsequent lookup is ErrNotFound.
 			if err := st.RevokeAPIKey(ctx, k.ID, u.ID, now); err != nil {
 				t.Fatalf("RevokeAPIKey: %v", err)
 			}
-			if _, err := st.GetAPIKeyByTokenHash(ctx, k.TokenHash, now); !errors.Is(err, store.ErrNotFound) {
+			if _, _, err := st.GetAPIKeyUserByTokenHash(ctx, k.TokenHash, now); !errors.Is(err, store.ErrNotFound) {
 				t.Fatalf("revoked key should be ErrNotFound, got %v", err)
 			}
 		})
@@ -72,7 +72,7 @@ func TestAPIKeyStore_ExpiryAndScope(t *testing.T) {
 			}
 
 			// Expired key is not returned.
-			if _, err := st.GetAPIKeyByTokenHash(ctx, ka.TokenHash, now.Add(2*time.Hour)); !errors.Is(err, store.ErrNotFound) {
+			if _, _, err := st.GetAPIKeyUserByTokenHash(ctx, ka.TokenHash, now.Add(2*time.Hour)); !errors.Is(err, store.ErrNotFound) {
 				t.Fatalf("expired key should be ErrNotFound, got %v", err)
 			}
 
@@ -80,7 +80,7 @@ func TestAPIKeyStore_ExpiryAndScope(t *testing.T) {
 			// treated as expired. Both backends use a strict comparison
 			// (sqlite `expires_at > ?`, fake `ExpiresAt.After(now)`), so
 			// equality means expired, not still-valid.
-			if _, err := st.GetAPIKeyByTokenHash(ctx, ka.TokenHash, exp); !errors.Is(err, store.ErrNotFound) {
+			if _, _, err := st.GetAPIKeyUserByTokenHash(ctx, ka.TokenHash, exp); !errors.Is(err, store.ErrNotFound) {
 				t.Fatalf("key at exact ExpiresAt boundary should be ErrNotFound, got %v", err)
 			}
 
@@ -147,7 +147,7 @@ func TestAPIKeyStore_TouchLastUsed(t *testing.T) {
 			if err := st.TouchAPIKeyLastUsed(ctx, k.ID, now); err != nil {
 				t.Fatalf("TouchAPIKeyLastUsed: %v", err)
 			}
-			got, err := st.GetAPIKeyByTokenHash(ctx, k.TokenHash, now)
+			got, _, err := st.GetAPIKeyUserByTokenHash(ctx, k.TokenHash, now)
 			if err != nil || got.LastUsedAt == nil || !got.LastUsedAt.Equal(now) {
 				t.Fatalf("last_used_at not set: %+v err=%v", got.LastUsedAt, err)
 			}

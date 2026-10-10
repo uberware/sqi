@@ -230,7 +230,6 @@ type Store struct {
 
 	// ── api keys ─────────────────────────────────────────────────────────
 	stmtInsertAPIKey             *sql.Stmt
-	stmtGetAPIKeyByTokenHash     *sql.Stmt
 	stmtGetAPIKeyUserByTokenHash *sql.Stmt
 	stmtListAPIKeysForUser       *sql.Stmt
 	stmtRevokeAPIKey             *sql.Stmt
@@ -724,9 +723,6 @@ func (s *Store) prepareAll(ctx context.Context) error {
 
 	// ── api keys ──────────────────────────────────────────────────────────
 	if s.stmtInsertAPIKey, err = s.prepare(ctx, sqlInsertAPIKey); err != nil {
-		return err
-	}
-	if s.stmtGetAPIKeyByTokenHash, err = s.prepare(ctx, sqlGetAPIKeyByTokenHash); err != nil {
 		return err
 	}
 	if s.stmtGetAPIKeyUserByTokenHash, err = s.prepare(ctx, sqlGetAPIKeyUserByTokenHash); err != nil {
