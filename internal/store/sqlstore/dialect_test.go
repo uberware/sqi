@@ -7,7 +7,6 @@ import (
 	"database/sql"
 	"errors"
 	"slices"
-	"strings"
 	"testing"
 	"time"
 
@@ -80,7 +79,7 @@ func TestWrappers_RebindAndBindEveryArgument(t *testing.T) {
 // Row.Scan (INSERT … RETURNING) is classified like one reported by Exec.
 func TestWrappers_ClassifyAtScan(t *testing.T) {
 	s := openTestStoreWB(t).Store
-	ins := `INSERT INTO farms (id, name, created_at, updated_at) VALUES (?, ?, '', '') RETURNING id`
+	ins := insertTxFarm + " RETURNING id"
 	var id string
 	if err := s.WritePool().QueryRowContext(t.Context(), ins, "f1", "one").Scan(&id); err != nil {
 		t.Fatalf("first insert: %v", err)
@@ -89,7 +88,7 @@ func TestWrappers_ClassifyAtScan(t *testing.T) {
 	if !errors.Is(sqlstore.MapErr(err), store.ErrConflict) {
 		t.Fatalf("duplicate via RETURNING: mapErr = %v, want ErrConflict", sqlstore.MapErr(err))
 	}
-	_, err = s.WritePool().ExecContext(t.Context(), strings.TrimSuffix(ins, " RETURNING id"), "f1", "three")
+	_, err = s.WritePool().ExecContext(t.Context(), insertTxFarm, "f1", "three")
 	if !errors.Is(sqlstore.MapErr(err), store.ErrConflict) {
 		t.Fatalf("duplicate via Exec: mapErr = %v, want ErrConflict", sqlstore.MapErr(err))
 	}

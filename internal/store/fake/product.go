@@ -47,20 +47,9 @@ func (s *Store) ListProducts(_ context.Context) ([]store.Product, error) {
 	}
 	slices.SortFunc(out, func(a, b store.Product) int {
 		// products.name is COLLATE NOCASE on SQLite, which folds ASCII letters only.
-		return strings.Compare(asciiLower(a.Name), asciiLower(b.Name))
+		return strings.Compare(asciiToLower(a.Name), asciiToLower(b.Name))
 	})
 	return out, nil
-}
-
-// asciiLower lowercases ASCII letters only, as SQLite's NOCASE collation does.
-func asciiLower(s string) string {
-	b := []byte(s)
-	for i, c := range b {
-		if 'A' <= c && c <= 'Z' {
-			b[i] = c + ('a' - 'A')
-		}
-	}
-	return string(b)
 }
 
 // UpdateProduct replaces mutable fields of the product with p.Name.

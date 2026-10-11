@@ -16,6 +16,15 @@ import (
 // fixtureWorkerID is the worker every in-flight fixture task is assigned to.
 const fixtureWorkerID = "w1"
 
+// project returns f applied to each element of xs, in order.
+func project[T, R any](xs []T, f func(T) R) []R {
+	out := make([]R, 0, len(xs))
+	for _, x := range xs {
+		out = append(out, f(x))
+	}
+	return out
+}
+
 // graphOpts configures seedGraph. The zero value is a pending job in an
 // uncapped queue and farm.
 type graphOpts struct {

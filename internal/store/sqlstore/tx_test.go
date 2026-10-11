@@ -6,19 +6,8 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/uberware/sqi/internal/store/sqlite"
 	"github.com/uberware/sqi/internal/store/sqlstore"
 )
-
-func openTxStore(t *testing.T) *sqlstore.Store {
-	t.Helper()
-	s, err := sqlite.Open(t.Context(), t.TempDir()+"/t.db", sqlite.DefaultOptions())
-	if err != nil {
-		t.Fatalf("Open: %v", err)
-	}
-	t.Cleanup(func() { _ = s.Close() })
-	return s.Store
-}
 
 func farmCount(t *testing.T, s *sqlstore.Store) int {
 	t.Helper()
@@ -32,7 +21,7 @@ func farmCount(t *testing.T, s *sqlstore.Store) int {
 const insertTxFarm = `INSERT INTO farms (id, name, created_at, updated_at) VALUES (?, ?, '', '')`
 
 func TestInTx_CommitOutcomeKeepsWrites(t *testing.T) {
-	s := openTxStore(t)
+	s := openTestStoreWB(t).Store
 	err := s.InTx(t.Context(), "test", func(tx *sqlstore.DBTx) (sqlstore.TxOutcome, error) {
 		_, err := tx.ExecContext(t.Context(), insertTxFarm, "f1", "one")
 		return sqlstore.TxCommit, err
@@ -45,7 +34,7 @@ func TestInTx_CommitOutcomeKeepsWrites(t *testing.T) {
 // TestInTx_RollbackOutcomeDiscardsWrites pins what LeaseTask relies on: a nil
 // error with txRollback discards writes that already ran.
 func TestInTx_RollbackOutcomeDiscardsWrites(t *testing.T) {
-	s := openTxStore(t)
+	s := openTestStoreWB(t).Store
 	err := s.InTx(t.Context(), "test", func(tx *sqlstore.DBTx) (sqlstore.TxOutcome, error) {
 		_, err := tx.ExecContext(t.Context(), insertTxFarm, "f1", "one")
 		return sqlstore.TxRollback, err
@@ -56,7 +45,7 @@ func TestInTx_RollbackOutcomeDiscardsWrites(t *testing.T) {
 }
 
 func TestInTx_ErrorDiscardsWrites(t *testing.T) {
-	s := openTxStore(t)
+	s := openTestStoreWB(t).Store
 	boom := errors.New("boom")
 	err := s.InTx(t.Context(), "test", func(tx *sqlstore.DBTx) (sqlstore.TxOutcome, error) {
 		if _, err := tx.ExecContext(t.Context(), insertTxFarm, "f1", "one"); err != nil {

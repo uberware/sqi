@@ -144,10 +144,7 @@ func TestParity_ListUsagePools(t *testing.T) {
 			if err != nil {
 				t.Fatalf("ListUsagePools: %v", err)
 			}
-			var names []string
-			for _, p := range got {
-				names = append(names, p.Name)
-			}
+			names := project(got, func(p store.UsagePool) string { return p.Name })
 			if want := []string{"houdini", "maya", "nuke"}; !slices.Equal(names, want) {
 				t.Fatalf("names = %v, want %v (ordered by name)", names, want)
 			}

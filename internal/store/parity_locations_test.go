@@ -88,10 +88,7 @@ func TestParity_ListComputeLocations(t *testing.T) {
 			if err != nil {
 				t.Fatalf("ListComputeLocations: %v", err)
 			}
-			var names []string
-			for _, l := range got {
-				names = append(names, l.Name)
-			}
+			names := project(got, func(l store.ComputeLocation) string { return l.Name })
 			if want := []string{"alpha", "bravo", "charlie"}; !slices.Equal(names, want) {
 				t.Fatalf("names = %v, want %v (ordered by name)", names, want)
 			}

@@ -285,7 +285,7 @@ func TestParity_DeleteJob(t *testing.T) {
 			pool := seedPool(t, st, 10)
 
 			// Create a job to delete (pending, not terminal, so it can be leased).
-			delWithDeps := storetest.NewJob(uuid.NewString(), g.Farm.ID, g.Queue.ID)
+			delWithDeps := jobIn(g)
 			delWithDeps.As(store.JobStatusPending) // Pending so it can be leased
 			delWithDeps.Sub.DependsOn = []string{upstream.ID}
 			delWithDeps.Step(uuid.NewString(), store.StepStatusReady)
@@ -300,12 +300,7 @@ func TestParity_DeleteJob(t *testing.T) {
 			attemptID := attempt.ID
 
 			// Create a task log for the attempt.
-			log := store.TaskLog{
-				ID: uuid.NewString(), TaskID: toDeleteTaskID, AttemptID: attemptID,
-				SeqNum: 1, NATSSeq: 1, At: time.Now().UTC().Truncate(time.Millisecond),
-				ReceivedAt: time.Now().UTC(), Stream: store.LogStreamStdout, Data: "test log\n",
-			}
-			if _, err := st.CreateTaskLog(ctx, log); err != nil {
+			if _, err := st.CreateTaskLog(ctx, mkTaskLog(attempt, 1, "test log\n")); err != nil {
 				t.Fatalf("CreateTaskLog: %v", err)
 			}
 

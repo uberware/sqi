@@ -84,6 +84,41 @@ func TestSQLiteDialect_Classify(t *testing.T) {
 	}
 }
 
+// TestClassifySQLite_ConstraintCodes provokes each constraint SQLite reports
+// and checks the SQLite dialect classifies it as a conflict; a syntax error
+// stays unclassified.
+func TestClassifySQLite_ConstraintCodes(t *testing.T) {
+	s := openFilePoolStore(t)
+	ctx := t.Context()
+	insFarm := `INSERT INTO farms (id, name, created_at, updated_at) VALUES (?, ?, '', '')`
+	if _, err := s.db.ExecContext(ctx, insFarm, "f1", "farm-one"); err != nil {
+		t.Fatalf("seed farm: %v", err)
+	}
+	_, pk := s.db.ExecContext(ctx, insFarm, "f1", "farm-two")
+	_, unique := s.db.ExecContext(ctx, insFarm, "f2", "farm-one")
+	_, fk := s.db.ExecContext(ctx,
+		`INSERT INTO queues (id, farm_id, name, created_at, updated_at) VALUES ('q1', 'no-such-farm', 'q', '', '')`)
+	_, syntax := s.db.ExecContext(ctx, `INSERT INTO`)
+
+	for name, c := range map[string]struct {
+		err  error
+		want sqlstore.ErrClass
+	}{
+		"primary key": {pk, sqlstore.ErrClassConflict},
+		"unique":      {unique, sqlstore.ErrClassConflict},
+		"foreign key": {fk, sqlstore.ErrClassConflict},
+		"syntax":      {syntax, sqlstore.ErrClassOther},
+		"no rows":     {sql.ErrNoRows, sqlstore.ErrClassNotFound},
+	} {
+		if c.err == nil {
+			t.Fatalf("%s: the statement succeeded; it must fail for this test", name)
+		}
+		if got := (sqliteDialect{}).Classify(c.err); got != c.want {
+			t.Errorf("%s: Classify(%v) = %d, want %d", name, c.err, got, c.want)
+		}
+	}
+}
+
 // TestSQLiteDialect_LockAnchorsDoesNothing passes no transaction: a dialect
 // that locked rows would dereference it.
 func TestSQLiteDialect_LockAnchorsDoesNothing(t *testing.T) {

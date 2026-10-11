@@ -43,14 +43,6 @@ func mustCreateQueue(t *testing.T, st store.Store, q store.Queue) store.Queue {
 	return out
 }
 
-func queueNames(qs []store.Queue) []string {
-	names := make([]string, 0, len(qs))
-	for _, q := range qs {
-		names = append(names, q.Name)
-	}
-	return names
-}
-
 func TestParity_CreateFarm(t *testing.T) {
 	for name, st := range newStores(t) {
 		t.Run(name, func(t *testing.T) {
@@ -182,10 +174,7 @@ func TestParity_ListFarms(t *testing.T) {
 			if err != nil {
 				t.Fatalf("ListFarms: %v", err)
 			}
-			var names []string
-			for _, f := range got {
-				names = append(names, f.Name)
-			}
+			names := project(got, func(f store.Farm) string { return f.Name })
 			if want := []string{"berlin", "lima", "tokyo"}; !slices.Equal(names, want) {
 				t.Fatalf("names = %v, want %v (ordered by name)", names, want)
 			}
@@ -374,7 +363,7 @@ func TestParity_ListQueues(t *testing.T) {
 				if err != nil {
 					t.Fatalf("ListQueues: %v", err)
 				}
-				if got := queueNames(page.Items); !slices.Equal(got, tc.want) || page.Total != tc.wantTotal {
+				if got := project(page.Items, func(q store.Queue) string { return q.Name }); !slices.Equal(got, tc.want) || page.Total != tc.wantTotal {
 					t.Fatalf("ListQueues = %v (total %d), want %v (total %d)", got, page.Total, tc.want, tc.wantTotal)
 				}
 				if page.Items == nil || page.Limit != opts.Pagination.Limit || page.Offset != opts.Pagination.Offset {

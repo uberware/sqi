@@ -23,20 +23,14 @@ func TestUpdatesStampFromTheCreatesClock(t *testing.T) {
 	s.lastStamp = time.Now().UTC().Add(time.Hour)
 	s.mu.Unlock()
 
-	farm, err := s.CreateFarm(ctx, store.Farm{ID: "f1", Name: "f1"})
-	if err != nil {
-		t.Fatalf("CreateFarm: %v", err)
-	}
+	farm := mustCreateFarm(t, s, "f1")
 	farm.Description = "updated"
 	farmUpd, err := s.UpdateFarm(ctx, farm)
 	if err != nil {
 		t.Fatalf("UpdateFarm: %v", err)
 	}
 
-	queue, err := s.CreateQueue(ctx, store.Queue{ID: "q1", FarmID: farm.ID, Name: "q1"})
-	if err != nil {
-		t.Fatalf("CreateQueue: %v", err)
-	}
+	queue := mustCreateQueue(t, s, farm.ID, "q1", "q1")
 	queue.Description = "updated"
 	queueUpd, err := s.UpdateQueue(ctx, queue)
 	if err != nil {
@@ -63,10 +57,7 @@ func TestUpdatesStampFromTheCreatesClock(t *testing.T) {
 		t.Fatalf("UpdateStorageLocation: %v", err)
 	}
 
-	pool, err := s.CreateUsagePool(ctx, store.UsagePool{ID: "p1", Name: "p1", MaxConcurrent: 1})
-	if err != nil {
-		t.Fatalf("CreateUsagePool: %v", err)
-	}
+	pool := mustCreatePool(t, s, "p1", 1)
 	pool.MaxConcurrent = 2
 	poolUpd, err := s.UpdateUsagePool(ctx, pool)
 	if err != nil {

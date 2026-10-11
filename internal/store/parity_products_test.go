@@ -80,10 +80,7 @@ func TestParity_ListProducts(t *testing.T) {
 			if err != nil {
 				t.Fatalf("ListProducts: %v", err)
 			}
-			var names []string
-			for _, p := range got {
-				names = append(names, p.Name)
-			}
+			names := project(got, func(p store.Product) string { return p.Name })
 			if want := []string{"blender", "studio/maya", "studio/nuke"}; !slices.Equal(names, want) {
 				t.Fatalf("names = %v, want %v (ordered by name)", names, want)
 			}
@@ -106,10 +103,7 @@ func TestParity_ListProducts_MixedCase(t *testing.T) {
 			if err != nil {
 				t.Fatalf("ListProducts: %v", err)
 			}
-			var names []string
-			for _, p := range got {
-				names = append(names, p.Name)
-			}
+			names := project(got, func(p store.Product) string { return p.Name })
 			if want := []string{"apple", "Banana"}; !slices.Equal(names, want) {
 				t.Fatalf("names = %v, want %v", names, want)
 			}
