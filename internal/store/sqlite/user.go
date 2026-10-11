@@ -170,24 +170,20 @@ func (s *Store) SetUserPassword(ctx context.Context, id, passwordHash string) er
 func (s *Store) SetUserPasswordAndEvictSessions(ctx context.Context, id, passwordHash string) error {
 	now := timeToText(time.Now().UTC())
 
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return mapErr(err)
-	}
-	defer func() { _ = tx.Rollback() }() //nolint:errcheck // rollback after commit is a no-op
-
-	res, err := tx.ExecContext(ctx, sqlSetUserPassword, passwordHash, now, id)
-	if err != nil {
-		return mapErr(err)
-	}
-	if err := checkRowsAffected(res); err != nil {
-		return err
-	}
-	// No rows is fine here: a user with no live sessions is normal.
-	if _, err := tx.ExecContext(ctx, sqlDeleteSessionsForUser, id); err != nil {
-		return mapErr(err)
-	}
-	return mapErr(tx.Commit())
+	return s.inTx(ctx, "set user password and evict sessions", func(tx *sql.Tx) (txOutcome, error) {
+		res, err := tx.ExecContext(ctx, sqlSetUserPassword, passwordHash, now, id)
+		if err != nil {
+			return txRollback, mapErr(err)
+		}
+		if err := checkRowsAffected(res); err != nil {
+			return txRollback, err
+		}
+		// No rows is fine here: a user with no live sessions is normal.
+		if _, err := tx.ExecContext(ctx, sqlDeleteSessionsForUser, id); err != nil {
+			return txRollback, mapErr(err)
+		}
+		return txCommit, nil
+	})
 }
 
 // SetUserDisplayName implements [store.UserStore].
@@ -248,23 +244,16 @@ func (s *Store) DeleteUser(ctx context.Context, id string) error {
 // account made an enabled admin in between is not anchored; re-read the set
 // under the locks (and repeat until it is stable) or lock a wider range.
 func (s *Store) withAdminAnchors(ctx context.Context, fn func(*sql.Tx) error) error {
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return mapErr(err)
-	}
-	defer func() { _ = tx.Rollback() }() //nolint:errcheck // rollback after commit is a no-op
-
-	anchors, err := liveAdminAnchorsTx(ctx, tx)
-	if err != nil {
-		return err
-	}
-	if err := lockAnchors(ctx, tx, anchors...); err != nil {
-		return err
-	}
-	if err := fn(tx); err != nil {
-		return err
-	}
-	return mapErr(tx.Commit())
+	return s.inTx(ctx, "admin-guarded user write", func(tx *sql.Tx) (txOutcome, error) {
+		anchors, err := liveAdminAnchorsTx(ctx, tx)
+		if err != nil {
+			return txRollback, err
+		}
+		if err := lockAnchors(ctx, tx, anchors...); err != nil {
+			return txRollback, err
+		}
+		return txCommit, fn(tx)
+	})
 }
 
 // liveAdminAnchorsTx returns the anchors of every enabled admin's user row,

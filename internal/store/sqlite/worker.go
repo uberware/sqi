@@ -207,34 +207,35 @@ func (s *Store) RegisterWorker(ctx context.Context, worker store.Worker) (store.
 	}
 	args = append(args, worker.InstanceID)
 
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return store.Worker{}, nil, fmt.Errorf("sqlite: begin register worker: %w", mapErr(err))
-	}
-	defer func() { _ = tx.Rollback() }() //nolint:errcheck // rollback after commit is a no-op
-
-	if err := lockAnchors(ctx, tx, workerAnchor(worker.ID)); err != nil {
-		return store.Worker{}, nil, err
-	}
-	var prior string
-	err = tx.QueryRowContext(ctx, `SELECT instance_id FROM workers WHERE id = ?`, worker.ID).Scan(&prior)
-	if err != nil && !errors.Is(err, sql.ErrNoRows) {
-		return store.Worker{}, nil, fmt.Errorf("sqlite: read worker %s instance: %w", worker.ID, mapErr(err))
-	}
-	upsert := tx.StmtContext(ctx, s.stmtUpsertWorker)
-	defer upsert.Close()
-	out, err := scanWorker(upsert.QueryRowContext(ctx, args...))
-	if err != nil {
-		return store.Worker{}, nil, mapErr(err)
-	}
-	var reclaimed []store.Task
-	if prior != "" && worker.InstanceID != "" && prior != worker.InstanceID {
-		if reclaimed, err = reclaimWorkerTasksTx(ctx, tx, worker.ID, store.FailureReasonWorkerRestarted, now); err != nil {
-			return store.Worker{}, nil, err
+	var (
+		out       store.Worker
+		reclaimed []store.Task
+	)
+	err = s.inTx(ctx, "register worker", func(tx *sql.Tx) (txOutcome, error) {
+		reclaimed = nil
+		if err := lockAnchors(ctx, tx, workerAnchor(worker.ID)); err != nil {
+			return txRollback, err
 		}
-	}
-	if err := tx.Commit(); err != nil {
-		return store.Worker{}, nil, fmt.Errorf("sqlite: commit register worker: %w", mapErr(err))
+		var prior string
+		err := tx.QueryRowContext(ctx, `SELECT instance_id FROM workers WHERE id = ?`, worker.ID).Scan(&prior)
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return txRollback, fmt.Errorf("sqlite: read worker %s instance: %w", worker.ID, mapErr(err))
+		}
+		upsert := tx.StmtContext(ctx, s.stmtUpsertWorker)
+		defer upsert.Close()
+		out, err = scanWorker(upsert.QueryRowContext(ctx, args...))
+		if err != nil {
+			return txRollback, mapErr(err)
+		}
+		if prior != "" && worker.InstanceID != "" && prior != worker.InstanceID {
+			if reclaimed, err = reclaimWorkerTasksTx(ctx, tx, worker.ID, store.FailureReasonWorkerRestarted, now); err != nil {
+				return txRollback, err
+			}
+		}
+		return txCommit, nil
+	})
+	if err != nil {
+		return store.Worker{}, nil, err
 	}
 	return out, reclaimed, nil
 }

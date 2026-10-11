@@ -145,17 +145,15 @@ func (s *Store) MarkWorkerJoinTokenUsed(ctx context.Context, id string, at time.
 // RedeemWorkerJoinToken implements [store.WorkerCredentialStore].
 //
 // Follows the same idiom as CreateJobSubmission (job.go): the whole
-// operation runs inside one transaction, using raw SQL via tx rather than
-// the prepared statements the standalone per-row methods use, and a
-// deferred Rollback that is a no-op after a successful Commit.
+// operation runs inside one transaction (inTx), using raw SQL via tx rather
+// than the prepared statements the standalone per-row methods use.
 //
 // The token claim reuses sqlConsumeWorkerJoinToken's text — a single
 // UPDATE ... RETURNING that carries both the validity check and the claim in
 // one statement, so an unknown token, an expired one, and one another
 // request claimed a moment earlier are all the same "matched no row"
-// outcome. If that claim fails, the transaction is rolled back (via the
-// deferred Rollback) and [store.ErrNotFound] is returned with the token
-// untouched.
+// outcome. If that claim fails, the transaction is rolled back and
+// [store.ErrNotFound] is returned with the token untouched.
 //
 // The credential insert happens inside the SAME transaction, so a conflict
 // there — a worker ID already bound to an active credential, or a public
@@ -163,27 +161,25 @@ func (s *Store) MarkWorkerJoinTokenUsed(ctx context.Context, id string, at time.
 // is NOT consumed, and remains redeemable by a later, non-conflicting
 // request.
 func (s *Store) RedeemWorkerJoinToken(ctx context.Context, hash string, now time.Time, cred store.WorkerCredential) (store.WorkerCredential, error) {
-	tx, err := s.db.BeginTx(ctx, nil)
+	var out store.WorkerCredential
+	err := s.inTx(ctx, "redeem worker join token", func(tx *sql.Tx) (txOutcome, error) {
+		nowText := timeToText(now)
+		tokRow := tx.QueryRowContext(ctx, sqlConsumeWorkerJoinToken, nowText, hash, nowText)
+		if _, err := scanWorkerJoinToken(tokRow); err != nil {
+			return txRollback, mapErr(err)
+		}
+
+		credRow := tx.QueryRowContext(ctx, sqlInsertWorkerCredential, cred.ID, cred.WorkerID, cred.PublicKey, cred.Name,
+			timeToText(cred.EnrolledAt), nullTimeToText(cred.LastSeenAt), nullTimeToText(cred.RevokedAt))
+		var err error
+		out, err = scanWorkerCredential(credRow)
+		if err != nil {
+			return txRollback, mapErr(err)
+		}
+		return txCommit, nil
+	})
 	if err != nil {
-		return store.WorkerCredential{}, mapErr(err)
-	}
-	defer func() { _ = tx.Rollback() }() //nolint:errcheck // rollback after commit is a no-op
-
-	nowText := timeToText(now)
-	tokRow := tx.QueryRowContext(ctx, sqlConsumeWorkerJoinToken, nowText, hash, nowText)
-	if _, err := scanWorkerJoinToken(tokRow); err != nil {
-		return store.WorkerCredential{}, mapErr(err)
-	}
-
-	credRow := tx.QueryRowContext(ctx, sqlInsertWorkerCredential, cred.ID, cred.WorkerID, cred.PublicKey, cred.Name,
-		timeToText(cred.EnrolledAt), nullTimeToText(cred.LastSeenAt), nullTimeToText(cred.RevokedAt))
-	out, err := scanWorkerCredential(credRow)
-	if err != nil {
-		return store.WorkerCredential{}, mapErr(err)
-	}
-
-	if err := tx.Commit(); err != nil {
-		return store.WorkerCredential{}, mapErr(err)
+		return store.WorkerCredential{}, err
 	}
 	return out, nil
 }

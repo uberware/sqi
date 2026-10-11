@@ -473,29 +473,29 @@ func (s *Store) SetTaskUnschedulableReason(ctx context.Context, id, reason strin
 // attempt row before the task row, the reverse of this function: both under the
 // same job-row lock, they cannot interleave.
 func (s *Store) ReclaimStaleAssignedTasks(ctx context.Context, cutoff time.Time) ([]store.Task, error) {
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return nil, fmt.Errorf("sqlite: begin tx for reclaim stale assigned tasks: %w", mapErr(err))
-	}
-	defer func() { _ = tx.Rollback() }() //nolint:errcheck // rollback after commit is a no-op
-
-	// Order: the tasks, then each one's attempts and claims. Server time stamps
-	// updated_at, ended_at and released_at alike.
-	nowText := timeToText(time.Now().UTC())
-	reclaimed, err := queryTasksTx(ctx, tx, sqlReclaimStaleAssignedTasks, nowText, timeToText(cutoff.UTC()))
-	if err != nil {
-		return nil, fmt.Errorf("sqlite: reclaim stale assigned tasks: %w", err)
-	}
-	if len(reclaimed) == 0 {
-		return nil, nil // nothing was stale; the deferred rollback ends the empty transaction
-	}
-	for _, t := range reclaimed {
-		if err := closeTaskAttemptsTx(ctx, tx, t.ID, store.AttemptStatusFailed, "", nowText); err != nil {
-			return nil, err
+	var reclaimed []store.Task
+	err := s.inTx(ctx, "reclaim stale assigned tasks", func(tx *sql.Tx) (txOutcome, error) {
+		// Order: the tasks, then each one's attempts and claims. Server time stamps
+		// updated_at, ended_at and released_at alike.
+		nowText := timeToText(time.Now().UTC())
+		var err error
+		reclaimed, err = queryTasksTx(ctx, tx, sqlReclaimStaleAssignedTasks, nowText, timeToText(cutoff.UTC()))
+		if err != nil {
+			return txRollback, fmt.Errorf("sqlite: reclaim stale assigned tasks: %w", err)
 		}
-	}
-	if err := tx.Commit(); err != nil {
-		return nil, fmt.Errorf("sqlite: commit reclaim stale assigned tasks: %w", mapErr(err))
+		if len(reclaimed) == 0 {
+			reclaimed = nil
+			return txRollback, nil // nothing was stale; the rollback ends the empty transaction
+		}
+		for _, t := range reclaimed {
+			if err := closeTaskAttemptsTx(ctx, tx, t.ID, store.AttemptStatusFailed, "", nowText); err != nil {
+				return txRollback, err
+			}
+		}
+		return txCommit, nil
+	})
+	if err != nil {
+		return nil, err
 	}
 	return reclaimed, nil
 }
@@ -575,40 +575,36 @@ func (s *Store) RetryTasks(ctx context.Context, jobID string, taskIDs []string, 
 		}
 	}
 
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return nil, fmt.Errorf("sqlite: begin tx for retry tasks: %w", err)
-	}
-	defer func() { _ = tx.Rollback() }() //nolint:errcheck // rollback is best-effort after commit
-
-	// The anchor is the job row, taken first. The revive UPDATE ... RETURNING
-	// is the returned set (I2), so there is no SELECT for a concurrent writer to
-	// slip in behind.
-	if err := lockAnchors(ctx, tx, jobAnchor(jobID)); err != nil {
-		return nil, err
-	}
-
-	updArgs := append([]any{nowText, jobID}, idArgs...)
-	revived, err := queryTasksTx(ctx, tx, sqlRetryTasksPrefix+inSuffix+sqlRetryTasksReturning, updArgs...)
-	if err != nil {
-		return nil, fmt.Errorf("sqlite: retry tasks for job %s: %w", jobID, err)
-	}
-	if len(revived) == 0 {
-		if err = tx.Commit(); err != nil {
-			return nil, fmt.Errorf("sqlite: commit retry tasks (no-op): %w", err)
+	var revived []store.Task
+	err := s.inTx(ctx, "retry tasks", func(tx *sql.Tx) (txOutcome, error) {
+		// The anchor is the job row, taken first. The revive UPDATE ... RETURNING
+		// is the returned set (I2), so there is no SELECT for a concurrent writer to
+		// slip in behind.
+		if err := lockAnchors(ctx, tx, jobAnchor(jobID)); err != nil {
+			return txRollback, err
 		}
-		return nil, nil
-	}
 
-	if _, err = tx.ExecContext(ctx, sqlRetryResetSteps, nowText, jobID); err != nil {
-		return nil, fmt.Errorf("sqlite: reset steps for job %s: %w", jobID, mapErr(err))
-	}
-	if _, err = tx.ExecContext(ctx, sqlRetryResetJob, nowText, jobID); err != nil {
-		return nil, fmt.Errorf("sqlite: reset job %s: %w", jobID, mapErr(err))
-	}
+		updArgs := append([]any{nowText, jobID}, idArgs...)
+		var err error
+		revived, err = queryTasksTx(ctx, tx, sqlRetryTasksPrefix+inSuffix+sqlRetryTasksReturning, updArgs...)
+		if err != nil {
+			return txRollback, fmt.Errorf("sqlite: retry tasks for job %s: %w", jobID, err)
+		}
+		if len(revived) == 0 {
+			revived = nil
+			return txCommit, nil
+		}
 
-	if err = tx.Commit(); err != nil {
-		return nil, fmt.Errorf("sqlite: commit retry tasks: %w", err)
+		if _, err = tx.ExecContext(ctx, sqlRetryResetSteps, nowText, jobID); err != nil {
+			return txRollback, fmt.Errorf("sqlite: reset steps for job %s: %w", jobID, mapErr(err))
+		}
+		if _, err = tx.ExecContext(ctx, sqlRetryResetJob, nowText, jobID); err != nil {
+			return txRollback, fmt.Errorf("sqlite: reset job %s: %w", jobID, mapErr(err))
+		}
+		return txCommit, nil
+	})
+	if err != nil {
+		return nil, err
 	}
 	return revived, nil
 }
@@ -702,61 +698,56 @@ func (s *Store) RecordTaskFailure(
 ) (taskFailed, jobFailed int, firstClose bool, err error) {
 	nowText := timeToText(now.UTC())
 
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return 0, 0, false, fmt.Errorf("sqlite: begin tx for record task failure: %w", mapErr(err))
-	}
-	defer func() { _ = tx.Rollback() }() //nolint:errcheck // rollback after commit is a no-op
+	err = s.inTx(ctx, "record task failure", func(tx *sql.Tx) (txOutcome, error) {
+		taskFailed, jobFailed, firstClose = 0, 0, false
+		var anchorJobID string
+		if err := tx.QueryRowContext(ctx, sqlTaskJobID, taskID).Scan(&anchorJobID); err != nil {
+			return txRollback, mapErr(err) // no such task => ErrNotFound
+		}
+		if err := lockAnchors(ctx, tx, jobAnchor(anchorJobID)); err != nil {
+			return txRollback, err
+		}
 
-	var anchorJobID string
-	if err = tx.QueryRowContext(ctx, sqlTaskJobID, taskID).Scan(&anchorJobID); err != nil {
-		return 0, 0, false, mapErr(err) // no such task => ErrNotFound
-	}
-	if err := lockAnchors(ctx, tx, jobAnchor(anchorJobID)); err != nil {
+		res, err := tx.ExecContext(ctx, sqlCloseAttemptAsFailed, nowText, nullInt(exitCode), sessionID, message, attemptID)
+		if err != nil {
+			return txRollback, mapErr(err)
+		}
+		closed, err := res.RowsAffected()
+		if err != nil {
+			return txRollback, err
+		}
+		// Invariant I3: a closed attempt holds no claims. Released unconditionally,
+		// so a redelivery is also safe; the UPDATE is a no-op when nothing is active.
+		// released_at is server time, not the caller's now (a worker-reported time).
+		if _, err = tx.ExecContext(ctx, sqlReleaseAttemptClaims, timeToText(time.Now().UTC()), attemptID); err != nil {
+			return txRollback, mapErr(err)
+		}
+
+		if closed == 0 {
+			// Redelivery (or unknown attempt): the attempt is already terminal, so
+			// do NOT re-count. Return the current counters so the caller's decision
+			// is identical to the first delivery. No matching task ⇒ ErrNotFound.
+			if err = tx.QueryRowContext(ctx, sqlReadFailureCounts, taskID).Scan(&taskFailed, &jobFailed); err != nil {
+				return txRollback, mapErr(err)
+			}
+			return txCommit, nil
+		}
+
+		// First close of this attempt: count the failure exactly once.
+		var jobID string
+		if err = tx.QueryRowContext(ctx, sqlRecordTaskFailure, nowText, taskID).Scan(&taskFailed, &jobID); err != nil {
+			return txRollback, mapErr(err)
+		}
+		if err = tx.QueryRowContext(ctx, sqlIncrementJobFailure, nowText, jobID).Scan(&jobFailed); err != nil {
+			return txRollback, mapErr(err)
+		}
+		firstClose = true
+		return txCommit, nil
+	})
+	if err != nil {
 		return 0, 0, false, err
 	}
-
-	res, err := tx.ExecContext(ctx, sqlCloseAttemptAsFailed, nowText, nullInt(exitCode), sessionID, message, attemptID)
-	if err != nil {
-		return 0, 0, false, mapErr(err)
-	}
-	closed, err := res.RowsAffected()
-	if err != nil {
-		return 0, 0, false, err
-	}
-	// Invariant I3: a closed attempt holds no claims. Released unconditionally,
-	// so a redelivery is also safe; the UPDATE is a no-op when nothing is active.
-	// released_at is server time, not the caller's now (a worker-reported time).
-	if _, err = tx.ExecContext(ctx, sqlReleaseAttemptClaims, timeToText(time.Now().UTC()), attemptID); err != nil {
-		return 0, 0, false, mapErr(err)
-	}
-
-	if closed == 0 {
-		// Redelivery (or unknown attempt): the attempt is already terminal, so
-		// do NOT re-count. Return the current counters so the caller's decision
-		// is identical to the first delivery. No matching task ⇒ ErrNotFound.
-		if err = tx.QueryRowContext(ctx, sqlReadFailureCounts, taskID).Scan(&taskFailed, &jobFailed); err != nil {
-			return 0, 0, false, mapErr(err)
-		}
-		if err = tx.Commit(); err != nil {
-			return 0, 0, false, fmt.Errorf("sqlite: commit record task failure: %w", mapErr(err))
-		}
-		return taskFailed, jobFailed, false, nil
-	}
-
-	// First close of this attempt: count the failure exactly once.
-	var jobID string
-	if err = tx.QueryRowContext(ctx, sqlRecordTaskFailure, nowText, taskID).Scan(&taskFailed, &jobID); err != nil {
-		return 0, 0, false, mapErr(err)
-	}
-	if err = tx.QueryRowContext(ctx, sqlIncrementJobFailure, nowText, jobID).Scan(&jobFailed); err != nil {
-		return 0, 0, false, mapErr(err)
-	}
-
-	if err = tx.Commit(); err != nil {
-		return 0, 0, false, fmt.Errorf("sqlite: commit record task failure: %w", mapErr(err))
-	}
-	return taskFailed, jobFailed, true, nil
+	return taskFailed, jobFailed, firstClose, nil
 }
 
 // RequeueTaskForRetry implements [store.TaskStore]. Zero rows (task missing,

@@ -54,21 +54,19 @@ type leaseScope struct {
 
 // LeaseTask implements [store.TaskStore].
 func (s *Store) LeaseTask(ctx context.Context, req store.LeaseRequest) (store.LeaseResult, error) {
-	tx, err := s.db.BeginTx(ctx, nil)
+	var res store.LeaseResult
+	err := s.inTx(ctx, "lease task", func(tx *sql.Tx) (txOutcome, error) {
+		var err error
+		res, err = leaseTx(ctx, tx, req)
+		if err != nil || res.Outcome != store.LeaseLeased {
+			// A non-leased outcome writes nothing, even when the task update or
+			// a claim insert had already run.
+			return txRollback, err
+		}
+		return txCommit, nil
+	})
 	if err != nil {
-		return store.LeaseResult{}, fmt.Errorf("sqlite: begin lease task: %w", mapErr(err))
-	}
-	defer func() { _ = tx.Rollback() }() //nolint:errcheck // rollback after commit is a no-op
-
-	res, err := leaseTx(ctx, tx, req)
-	if err != nil || res.Outcome != store.LeaseLeased {
-		// Returning without Commit rolls the transaction back, so an error or a
-		// non-leased outcome writes nothing, even when the task update or a
-		// claim insert had already run.
-		return res, err
-	}
-	if err := tx.Commit(); err != nil {
-		return store.LeaseResult{}, fmt.Errorf("sqlite: commit lease task: %w", mapErr(err))
+		return store.LeaseResult{}, err
 	}
 	return res, nil
 }

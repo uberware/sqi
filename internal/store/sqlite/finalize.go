@@ -107,36 +107,39 @@ ORDER BY j.id`
 // and the UPDATE makes it stale (the step is reported in flight rather than
 // terminal), so a PostgreSQL store should re-read it under the lock.
 func (s *Store) FinalizeStep(ctx context.Context, id string, now time.Time) (store.StepStatus, bool, error) {
-	tx, err := s.db.BeginTx(ctx, nil)
+	var (
+		status    store.StepStatus
+		finalized bool
+	)
+	err := s.inTx(ctx, "finalize step", func(tx *sql.Tx) (txOutcome, error) {
+		status, finalized = "", false
+		var jobID, current string
+		if err := tx.QueryRowContext(ctx, `SELECT job_id, status FROM steps WHERE id = ?`, id).Scan(&jobID, &current); err != nil {
+			return txRollback, mapErr(err)
+		}
+		if err := lockAnchors(ctx, tx, jobAnchor(jobID)); err != nil {
+			return txRollback, err
+		}
+		var written string
+		err := tx.QueryRowContext(ctx, sqlFinalizeStep, timeToText(now.UTC()), id).Scan(&written)
+		switch {
+		case errors.Is(err, sql.ErrNoRows):
+			// Not finalized now: either a task is still in flight, or the step was
+			// already terminal before this call.
+			if store.StepStatus(current).IsTerminal() {
+				status = store.StepStatus(current)
+			}
+			return txCommit, nil
+		case err != nil:
+			return txRollback, fmt.Errorf("sqlite: finalize step %s: %w", id, mapErr(err))
+		}
+		status, finalized = store.StepStatus(written), true
+		return txCommit, nil
+	})
 	if err != nil {
-		return "", false, fmt.Errorf("sqlite: begin finalize step: %w", mapErr(err))
-	}
-	defer func() { _ = tx.Rollback() }() //nolint:errcheck // rollback after commit is a no-op
-
-	var jobID, current string
-	if err := tx.QueryRowContext(ctx, `SELECT job_id, status FROM steps WHERE id = ?`, id).Scan(&jobID, &current); err != nil {
-		return "", false, mapErr(err)
-	}
-	if err := lockAnchors(ctx, tx, jobAnchor(jobID)); err != nil {
 		return "", false, err
 	}
-	var status string
-	err = tx.QueryRowContext(ctx, sqlFinalizeStep, timeToText(now.UTC()), id).Scan(&status)
-	switch {
-	case errors.Is(err, sql.ErrNoRows):
-		// Not finalized now: either a task is still in flight, or the step was
-		// already terminal before this call.
-		if store.StepStatus(current).IsTerminal() {
-			return store.StepStatus(current), false, tx.Commit()
-		}
-		return "", false, tx.Commit()
-	case err != nil:
-		return "", false, fmt.Errorf("sqlite: finalize step %s: %w", id, mapErr(err))
-	}
-	if err := tx.Commit(); err != nil {
-		return "", false, fmt.Errorf("sqlite: commit finalize step: %w", mapErr(err))
-	}
-	return store.StepStatus(status), true, nil
+	return status, finalized, nil
 }
 
 // FinalizeJob implements [store.JobStore].
@@ -145,35 +148,38 @@ func (s *Store) FinalizeStep(ctx context.Context, id string, now time.Time) (sto
 // before the anchor, only to report an already-terminal job, and a PostgreSQL
 // store should re-read it under the lock.
 func (s *Store) FinalizeJob(ctx context.Context, id string, now time.Time) (store.JobStatus, bool, error) {
-	tx, err := s.db.BeginTx(ctx, nil)
+	var (
+		status    store.JobStatus
+		finalized bool
+	)
+	err := s.inTx(ctx, "finalize job", func(tx *sql.Tx) (txOutcome, error) {
+		status, finalized = "", false
+		var current string
+		if err := tx.QueryRowContext(ctx, `SELECT status FROM jobs WHERE id = ?`, id).Scan(&current); err != nil {
+			return txRollback, mapErr(err)
+		}
+		if err := lockAnchors(ctx, tx, jobAnchor(id)); err != nil {
+			return txRollback, err
+		}
+		nowText := timeToText(now.UTC())
+		var written string
+		err := tx.QueryRowContext(ctx, sqlFinalizeJob, nowText, nowText, id).Scan(&written)
+		switch {
+		case errors.Is(err, sql.ErrNoRows):
+			if store.JobStatus(current).IsTerminal() {
+				status = store.JobStatus(current)
+			}
+			return txCommit, nil
+		case err != nil:
+			return txRollback, fmt.Errorf("sqlite: finalize job %s: %w", id, mapErr(err))
+		}
+		status, finalized = store.JobStatus(written), true
+		return txCommit, nil
+	})
 	if err != nil {
-		return "", false, fmt.Errorf("sqlite: begin finalize job: %w", mapErr(err))
-	}
-	defer func() { _ = tx.Rollback() }() //nolint:errcheck // rollback after commit is a no-op
-
-	var current string
-	if err := tx.QueryRowContext(ctx, `SELECT status FROM jobs WHERE id = ?`, id).Scan(&current); err != nil {
-		return "", false, mapErr(err)
-	}
-	if err := lockAnchors(ctx, tx, jobAnchor(id)); err != nil {
 		return "", false, err
 	}
-	nowText := timeToText(now.UTC())
-	var status string
-	err = tx.QueryRowContext(ctx, sqlFinalizeJob, nowText, nowText, id).Scan(&status)
-	switch {
-	case errors.Is(err, sql.ErrNoRows):
-		if store.JobStatus(current).IsTerminal() {
-			return store.JobStatus(current), false, tx.Commit()
-		}
-		return "", false, tx.Commit()
-	case err != nil:
-		return "", false, fmt.Errorf("sqlite: finalize job %s: %w", id, mapErr(err))
-	}
-	if err := tx.Commit(); err != nil {
-		return "", false, fmt.Errorf("sqlite: commit finalize job: %w", mapErr(err))
-	}
-	return store.JobStatus(status), true, nil
+	return status, finalized, nil
 }
 
 // ListStuckSteps implements [store.StepStore].
@@ -240,48 +246,51 @@ func (s *Store) CancelPendingStep(ctx context.Context, id, reason string, now ti
 func (s *Store) movePendingStep(
 	ctx context.Context, id string, stepTo store.StepStatus, taskTo store.TaskStatus, reason string, now time.Time,
 ) (bool, []store.Task, error) {
-	tx, err := s.db.BeginTx(ctx, nil)
+	var (
+		moved bool
+		tasks []store.Task
+	)
+	err := s.inTx(ctx, "move pending step", func(tx *sql.Tx) (txOutcome, error) {
+		moved, tasks = false, nil
+		var jobID, dependsOnJSON string
+		if err := tx.QueryRowContext(ctx, `SELECT job_id, depends_on FROM steps WHERE id = ?`, id).Scan(&jobID, &dependsOnJSON); err != nil {
+			return txRollback, mapErr(err)
+		}
+		if err := lockAnchors(ctx, tx, jobAnchor(jobID)); err != nil {
+			return txRollback, err
+		}
+		if stepTo == store.StepStatusCanceled {
+			failed, err := anyUpstreamUnsuccessfulTx(ctx, tx, jobID, dependsOnJSON)
+			if err != nil {
+				return txRollback, fmt.Errorf("sqlite: upstreams of step %s: %w", id, err)
+			}
+			if !failed {
+				return txRollback, nil
+			}
+		}
+		nowText := timeToText(now.UTC())
+		res, err := tx.ExecContext(ctx, sqlGuardStepPending, string(stepTo), nowText, id)
+		if err != nil {
+			return txRollback, fmt.Errorf("sqlite: move pending step %s: %w", id, mapErr(err))
+		}
+		n, err := res.RowsAffected()
+		if err != nil {
+			return txRollback, fmt.Errorf("sqlite: move pending step %s: %w", id, mapErr(err))
+		}
+		if n == 0 {
+			return txRollback, nil
+		}
+		tasks, err = queryTasksTx(ctx, tx, sqlTransitionStepPendingTasks, string(taskTo), nowText, reason, id)
+		if err != nil {
+			return txRollback, fmt.Errorf("sqlite: move pending tasks of step %s: %w", id, err)
+		}
+		moved = true
+		return txCommit, nil
+	})
 	if err != nil {
-		return false, nil, fmt.Errorf("sqlite: begin move pending step: %w", mapErr(err))
-	}
-	defer func() { _ = tx.Rollback() }() //nolint:errcheck // rollback after commit is a no-op
-
-	var jobID, dependsOnJSON string
-	if err := tx.QueryRowContext(ctx, `SELECT job_id, depends_on FROM steps WHERE id = ?`, id).Scan(&jobID, &dependsOnJSON); err != nil {
-		return false, nil, mapErr(err)
-	}
-	if err := lockAnchors(ctx, tx, jobAnchor(jobID)); err != nil {
 		return false, nil, err
 	}
-	if stepTo == store.StepStatusCanceled {
-		failed, err := anyUpstreamUnsuccessfulTx(ctx, tx, jobID, dependsOnJSON)
-		if err != nil {
-			return false, nil, fmt.Errorf("sqlite: upstreams of step %s: %w", id, err)
-		}
-		if !failed {
-			return false, nil, nil
-		}
-	}
-	nowText := timeToText(now.UTC())
-	res, err := tx.ExecContext(ctx, sqlGuardStepPending, string(stepTo), nowText, id)
-	if err != nil {
-		return false, nil, fmt.Errorf("sqlite: move pending step %s: %w", id, mapErr(err))
-	}
-	n, err := res.RowsAffected()
-	if err != nil {
-		return false, nil, fmt.Errorf("sqlite: move pending step %s: %w", id, mapErr(err))
-	}
-	if n == 0 {
-		return false, nil, nil
-	}
-	tasks, err := queryTasksTx(ctx, tx, sqlTransitionStepPendingTasks, string(taskTo), nowText, reason, id)
-	if err != nil {
-		return false, nil, fmt.Errorf("sqlite: move pending tasks of step %s: %w", id, err)
-	}
-	if err := tx.Commit(); err != nil {
-		return false, nil, fmt.Errorf("sqlite: commit move pending step: %w", mapErr(err))
-	}
-	return true, tasks, nil
+	return moved, tasks, nil
 }
 
 // anyUpstreamUnsuccessfulTx reports whether any step named in dependsOnJSON (a
@@ -365,31 +374,31 @@ RETURNING ` + taskCols
 // those FOR SHARE, so a concurrent finalize of an upstream is ordered against
 // this release). The write is one guarded UPDATE; see [sqlReleaseBlockedJob].
 func (s *Store) ReleaseBlockedJob(ctx context.Context, id string, now time.Time) (bool, error) {
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return false, fmt.Errorf("sqlite: begin release blocked job: %w", mapErr(err))
-	}
-	defer func() { _ = tx.Rollback() }() //nolint:errcheck // rollback after commit is a no-op
-
-	anchors, err := blockedJobAnchorsTx(ctx, tx, id)
+	var released bool
+	err := s.inTx(ctx, "release blocked job", func(tx *sql.Tx) (txOutcome, error) {
+		released = false
+		anchors, err := blockedJobAnchorsTx(ctx, tx, id)
+		if err != nil {
+			return txRollback, err
+		}
+		if err := lockAnchors(ctx, tx, anchors...); err != nil {
+			return txRollback, err
+		}
+		res, err := tx.ExecContext(ctx, sqlReleaseBlockedJob, timeToText(now.UTC()), id)
+		if err != nil {
+			return txRollback, fmt.Errorf("sqlite: release blocked job %s: %w", id, mapErr(err))
+		}
+		n, err := res.RowsAffected()
+		if err != nil {
+			return txRollback, fmt.Errorf("sqlite: release blocked job %s: %w", id, err)
+		}
+		released = n == 1
+		return txCommit, nil
+	})
 	if err != nil {
 		return false, err
 	}
-	if err := lockAnchors(ctx, tx, anchors...); err != nil {
-		return false, err
-	}
-	res, err := tx.ExecContext(ctx, sqlReleaseBlockedJob, timeToText(now.UTC()), id)
-	if err != nil {
-		return false, fmt.Errorf("sqlite: release blocked job %s: %w", id, mapErr(err))
-	}
-	n, err := res.RowsAffected()
-	if err != nil {
-		return false, fmt.Errorf("sqlite: release blocked job %s: %w", id, err)
-	}
-	if err := tx.Commit(); err != nil {
-		return false, fmt.Errorf("sqlite: commit release blocked job: %w", mapErr(err))
-	}
-	return n == 1, nil
+	return released, nil
 }
 
 // CancelBlockedJob implements [store.JobStore].
@@ -399,42 +408,45 @@ func (s *Store) ReleaseBlockedJob(ctx context.Context, id string, now time.Time)
 // all, otherwise its open steps and pending tasks follow in the same
 // transaction so a canceled job is never observed with live children.
 func (s *Store) CancelBlockedJob(ctx context.Context, id, reason string, now time.Time) (bool, []store.Task, error) {
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return false, nil, fmt.Errorf("sqlite: begin cancel blocked job: %w", mapErr(err))
-	}
-	defer func() { _ = tx.Rollback() }() //nolint:errcheck // rollback after commit is a no-op
-
-	anchors, err := blockedJobAnchorsTx(ctx, tx, id)
+	var (
+		canceled bool
+		tasks    []store.Task
+	)
+	err := s.inTx(ctx, "cancel blocked job", func(tx *sql.Tx) (txOutcome, error) {
+		canceled, tasks = false, nil
+		anchors, err := blockedJobAnchorsTx(ctx, tx, id)
+		if err != nil {
+			return txRollback, err
+		}
+		if err := lockAnchors(ctx, tx, anchors...); err != nil {
+			return txRollback, err
+		}
+		nowText := timeToText(now.UTC())
+		res, err := tx.ExecContext(ctx, sqlCancelBlockedJobRow, nowText, nowText, id)
+		if err != nil {
+			return txRollback, fmt.Errorf("sqlite: cancel blocked job %s: %w", id, mapErr(err))
+		}
+		n, err := res.RowsAffected()
+		if err != nil {
+			return txRollback, fmt.Errorf("sqlite: cancel blocked job %s: %w", id, err)
+		}
+		if n == 0 {
+			return txRollback, nil
+		}
+		if _, err := tx.ExecContext(ctx, sqlCancelJobOpenSteps, nowText, id); err != nil {
+			return txRollback, fmt.Errorf("sqlite: cancel steps of blocked job %s: %w", id, mapErr(err))
+		}
+		tasks, err = queryTasksTx(ctx, tx, sqlCancelJobPendingTasks, nowText, reason, id)
+		if err != nil {
+			return txRollback, fmt.Errorf("sqlite: cancel tasks of blocked job %s: %w", id, err)
+		}
+		canceled = true
+		return txCommit, nil
+	})
 	if err != nil {
 		return false, nil, err
 	}
-	if err := lockAnchors(ctx, tx, anchors...); err != nil {
-		return false, nil, err
-	}
-	nowText := timeToText(now.UTC())
-	res, err := tx.ExecContext(ctx, sqlCancelBlockedJobRow, nowText, nowText, id)
-	if err != nil {
-		return false, nil, fmt.Errorf("sqlite: cancel blocked job %s: %w", id, mapErr(err))
-	}
-	n, err := res.RowsAffected()
-	if err != nil {
-		return false, nil, fmt.Errorf("sqlite: cancel blocked job %s: %w", id, err)
-	}
-	if n == 0 {
-		return false, nil, nil
-	}
-	if _, err := tx.ExecContext(ctx, sqlCancelJobOpenSteps, nowText, id); err != nil {
-		return false, nil, fmt.Errorf("sqlite: cancel steps of blocked job %s: %w", id, mapErr(err))
-	}
-	tasks, err := queryTasksTx(ctx, tx, sqlCancelJobPendingTasks, nowText, reason, id)
-	if err != nil {
-		return false, nil, fmt.Errorf("sqlite: cancel tasks of blocked job %s: %w", id, err)
-	}
-	if err := tx.Commit(); err != nil {
-		return false, nil, fmt.Errorf("sqlite: commit cancel blocked job: %w", mapErr(err))
-	}
-	return true, tasks, nil
+	return canceled, tasks, nil
 }
 
 // blockedJobAnchorsTx returns the anchor list for a blocked-job operation: the

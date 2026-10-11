@@ -147,31 +147,27 @@ func closeAttemptAndReleaseTx(ctx context.Context, tx *sql.Tx, c store.AttemptCo
 // before the check, so that a lease in flight is waited for and its attempt is
 // seen.
 func (s *Store) CompleteTaskAttempt(ctx context.Context, c store.AttemptCompletion) (store.CompletionResult, error) {
-	tx, err := s.db.BeginTx(ctx, nil)
+	var result store.CompletionResult
+	err := s.inTx(ctx, "complete task attempt", func(tx *sql.Tx) (txOutcome, error) {
+		var jobID string
+		if err := tx.QueryRowContext(ctx, sqlTaskJobID, c.TaskID).Scan(&jobID); err != nil {
+			return txRollback, mapErr(err)
+		}
+		if err := lockAnchors(ctx, tx, jobAnchor(jobID)); err != nil {
+			return txRollback, err
+		}
+		// Server time stamps the claims' released_at and the task row's updated_at:
+		// c.EndedAt comes from the worker's clock and belongs to the attempt only.
+		now := time.Now().UTC()
+		if err := closeAttemptAndReleaseTx(ctx, tx, c, timeToText(c.EndedAt.UTC()), timeToText(now)); err != nil {
+			return txRollback, err
+		}
+		var err error
+		result, err = applyCompletionTx(ctx, tx, c, now)
+		return txCommit, err
+	})
 	if err != nil {
-		return store.CompletionResult{}, fmt.Errorf("sqlite: begin complete task attempt: %w", mapErr(err))
-	}
-	defer func() { _ = tx.Rollback() }() //nolint:errcheck // rollback after commit is a no-op
-
-	var jobID string
-	if err := tx.QueryRowContext(ctx, sqlTaskJobID, c.TaskID).Scan(&jobID); err != nil {
-		return store.CompletionResult{}, mapErr(err)
-	}
-	if err := lockAnchors(ctx, tx, jobAnchor(jobID)); err != nil {
 		return store.CompletionResult{}, err
-	}
-	// Server time stamps the claims' released_at and the task row's updated_at:
-	// c.EndedAt comes from the worker's clock and belongs to the attempt only.
-	now := time.Now().UTC()
-	if err := closeAttemptAndReleaseTx(ctx, tx, c, timeToText(c.EndedAt.UTC()), timeToText(now)); err != nil {
-		return store.CompletionResult{}, err
-	}
-	result, err := applyCompletionTx(ctx, tx, c, now)
-	if err != nil {
-		return store.CompletionResult{}, err
-	}
-	if err := tx.Commit(); err != nil {
-		return store.CompletionResult{}, fmt.Errorf("sqlite: commit complete task attempt: %w", mapErr(err))
 	}
 	return result, nil
 }
@@ -312,45 +308,44 @@ func closeTaskAttemptsTx(ctx context.Context, tx *sql.Tx, taskID string, status 
 // the UPDATE itself. None of it can arise here, where the single write
 // connection serializes the lease against this whole transaction.
 func (s *Store) CancelJobExecution(ctx context.Context, jobID, reason string, now time.Time) ([]store.Task, error) {
-	tx, err := s.db.BeginTx(ctx, nil)
+	var active []store.Task
+	err := s.inTx(ctx, "cancel job execution", func(tx *sql.Tx) (txOutcome, error) {
+		// Order: anchor, then the SELECT of the active set, then tasks, attempts,
+		// claims, steps, and the job row last. See the doc comment for why tasks
+		// come first.
+		if err := lockAnchors(ctx, tx, jobAnchor(jobID)); err != nil {
+			return txRollback, err
+		}
+		var err error
+		active, err = queryTasksTx(ctx, tx, sqlSelectActiveJobTasks, jobID)
+		if err != nil {
+			return txRollback, fmt.Errorf("sqlite: select active tasks of job %s: %w", jobID, err)
+		}
+		nowText := timeToText(now.UTC())
+		if _, err := tx.ExecContext(ctx, sqlCancelJobTasks, nowText, reason, jobID); err != nil {
+			return txRollback, fmt.Errorf("sqlite: cancel tasks of job %s: %w", jobID, mapErr(err))
+		}
+		if _, err := tx.ExecContext(ctx, sqlCancelJobAttempts, nowText, jobID); err != nil {
+			return txRollback, fmt.Errorf("sqlite: close attempts of job %s: %w", jobID, mapErr(err))
+		}
+		if _, err := tx.ExecContext(ctx, sqlReleaseClosedJobClaims, nowText, jobID); err != nil {
+			return txRollback, fmt.Errorf("sqlite: release claims of job %s: %w", jobID, mapErr(err))
+		}
+		// Then the steps: the step write touches only steps, which no lease or
+		// report writes, so it adds no lock-order inversion.
+		if _, err := tx.ExecContext(ctx, sqlCancelJobFinalizeSteps, nowText, jobID); err != nil {
+			return txRollback, fmt.Errorf("sqlite: finalize steps of job %s: %w", jobID, mapErr(err))
+		}
+		// Then the job row, last: CancelJobStatus's own guarded statement, so a
+		// completed, failed or already canceled job is left exactly as it is. The
+		// anchor already holds this row, so the write adds no lock.
+		if _, err := tx.ExecContext(ctx, sqlCancelJobStatus, nowText, nowText, jobID); err != nil {
+			return txRollback, fmt.Errorf("sqlite: cancel job %s: %w", jobID, mapErr(err))
+		}
+		return txCommit, nil
+	})
 	if err != nil {
-		return nil, fmt.Errorf("sqlite: begin cancel job execution: %w", mapErr(err))
-	}
-	defer func() { _ = tx.Rollback() }() //nolint:errcheck // rollback after commit is a no-op
-
-	// Order: anchor, then the SELECT of the active set, then tasks, attempts,
-	// claims, steps, and the job row last. See the doc comment for why tasks
-	// come first.
-	if err := lockAnchors(ctx, tx, jobAnchor(jobID)); err != nil {
 		return nil, err
-	}
-	active, err := queryTasksTx(ctx, tx, sqlSelectActiveJobTasks, jobID)
-	if err != nil {
-		return nil, fmt.Errorf("sqlite: select active tasks of job %s: %w", jobID, err)
-	}
-	nowText := timeToText(now.UTC())
-	if _, err := tx.ExecContext(ctx, sqlCancelJobTasks, nowText, reason, jobID); err != nil {
-		return nil, fmt.Errorf("sqlite: cancel tasks of job %s: %w", jobID, mapErr(err))
-	}
-	if _, err := tx.ExecContext(ctx, sqlCancelJobAttempts, nowText, jobID); err != nil {
-		return nil, fmt.Errorf("sqlite: close attempts of job %s: %w", jobID, mapErr(err))
-	}
-	if _, err := tx.ExecContext(ctx, sqlReleaseClosedJobClaims, nowText, jobID); err != nil {
-		return nil, fmt.Errorf("sqlite: release claims of job %s: %w", jobID, mapErr(err))
-	}
-	// Then the steps: the step write touches only steps, which no lease or
-	// report writes, so it adds no lock-order inversion.
-	if _, err := tx.ExecContext(ctx, sqlCancelJobFinalizeSteps, nowText, jobID); err != nil {
-		return nil, fmt.Errorf("sqlite: finalize steps of job %s: %w", jobID, mapErr(err))
-	}
-	// Then the job row, last: CancelJobStatus's own guarded statement, so a
-	// completed, failed or already canceled job is left exactly as it is. The
-	// anchor already holds this row, so the write adds no lock.
-	if _, err := tx.ExecContext(ctx, sqlCancelJobStatus, nowText, nowText, jobID); err != nil {
-		return nil, fmt.Errorf("sqlite: cancel job %s: %w", jobID, mapErr(err))
-	}
-	if err := tx.Commit(); err != nil {
-		return nil, fmt.Errorf("sqlite: commit cancel job execution: %w", mapErr(err))
 	}
 	return active, nil
 }
@@ -369,46 +364,50 @@ func (s *Store) CancelJobExecution(ctx context.Context, jobID, reason string, no
 // still shows the task ready with no worker, so no cancel signal reaches that
 // worker. That is CancelJobExecution's gap, and both close the same way.
 func (s *Store) CancelTaskExecution(ctx context.Context, taskID, reason string, now time.Time) (store.Task, bool, error) {
-	tx, err := s.db.BeginTx(ctx, nil)
+	var (
+		prior    store.Task
+		canceled bool
+	)
+	err := s.inTx(ctx, "cancel task execution", func(tx *sql.Tx) (txOutcome, error) {
+		canceled = false
+		// Order: the task's job id, the anchor on that job row, the task as it is
+		// under the anchor, then task, attempt, claims. See the doc comment.
+		var jobID string
+		if err := tx.QueryRowContext(ctx, sqlTaskJobID, taskID).Scan(&jobID); err != nil {
+			return txRollback, mapErr(err) // sql.ErrNoRows is ErrNotFound
+		}
+		if err := lockAnchors(ctx, tx, jobAnchor(jobID)); err != nil {
+			return txRollback, err
+		}
+		var err error
+		prior, err = scanTask(tx.QueryRowContext(ctx, sqlGetTask, taskID))
+		if err != nil {
+			return txRollback, mapErr(err)
+		}
+		nowText := timeToText(now.UTC())
+		res, err := tx.ExecContext(ctx, sqlCancelOneTask, nowText, reason, taskID)
+		if err != nil {
+			return txRollback, fmt.Errorf("sqlite: cancel task %s: %w", taskID, mapErr(err))
+		}
+		n, err := res.RowsAffected()
+		if err != nil {
+			return txRollback, fmt.Errorf("sqlite: cancel task %s: %w", taskID, mapErr(err))
+		}
+		if n == 0 {
+			// Already terminal: nothing was written, and the rollback leaves the
+			// attempts and claims for whatever closed the task.
+			return txRollback, nil
+		}
+		if err := closeTaskAttemptsTx(ctx, tx, taskID, store.AttemptStatusCanceled, "", nowText); err != nil {
+			return txRollback, err
+		}
+		canceled = true
+		return txCommit, nil
+	})
 	if err != nil {
-		return store.Task{}, false, fmt.Errorf("sqlite: begin cancel task execution: %w", mapErr(err))
-	}
-	defer func() { _ = tx.Rollback() }() //nolint:errcheck // rollback after commit is a no-op
-
-	// Order: the task's job id, the anchor on that job row, the task as it is
-	// under the anchor, then task, attempt, claims. See the doc comment.
-	var jobID string
-	if err := tx.QueryRowContext(ctx, sqlTaskJobID, taskID).Scan(&jobID); err != nil {
-		return store.Task{}, false, mapErr(err) // sql.ErrNoRows is ErrNotFound
-	}
-	if err := lockAnchors(ctx, tx, jobAnchor(jobID)); err != nil {
 		return store.Task{}, false, err
 	}
-	prior, err := scanTask(tx.QueryRowContext(ctx, sqlGetTask, taskID))
-	if err != nil {
-		return store.Task{}, false, mapErr(err)
-	}
-	nowText := timeToText(now.UTC())
-	res, err := tx.ExecContext(ctx, sqlCancelOneTask, nowText, reason, taskID)
-	if err != nil {
-		return store.Task{}, false, fmt.Errorf("sqlite: cancel task %s: %w", taskID, mapErr(err))
-	}
-	n, err := res.RowsAffected()
-	if err != nil {
-		return store.Task{}, false, fmt.Errorf("sqlite: cancel task %s: %w", taskID, mapErr(err))
-	}
-	if n == 0 {
-		// Already terminal: nothing was written, and the deferred rollback
-		// leaves the attempts and claims for whatever closed the task.
-		return prior, false, nil
-	}
-	if err := closeTaskAttemptsTx(ctx, tx, taskID, store.AttemptStatusCanceled, "", nowText); err != nil {
-		return store.Task{}, false, err
-	}
-	if err := tx.Commit(); err != nil {
-		return store.Task{}, false, fmt.Errorf("sqlite: commit cancel task execution: %w", mapErr(err))
-	}
-	return prior, true, nil
+	return prior, canceled, nil
 }
 
 const (
@@ -497,39 +496,42 @@ func (s *Store) OfflineWorker(ctx context.Context, id, instanceID string, now ti
 // can arise here: the single write connection serializes every writer, so the
 // set read below cannot change before the reclaim, and lockAnchors does nothing.
 func (s *Store) offlineWorker(ctx context.Context, id string, now time.Time, markSQL string, markArgs ...any) ([]store.Task, bool, error) {
-	tx, err := s.db.BeginTx(ctx, nil)
+	var (
+		reclaimed []store.Task
+		offline   bool
+	)
+	err := s.inTx(ctx, "offline worker", func(tx *sql.Tx) (txOutcome, error) {
+		reclaimed, offline = nil, false
+		// Order: the worker row, then the guarded mark, then the job rows, then the
+		// tasks, attempts and claims. See the doc comment.
+		if err := lockAnchors(ctx, tx, workerAnchor(id)); err != nil {
+			return txRollback, err
+		}
+		res, err := tx.ExecContext(ctx, markSQL, markArgs...)
+		if err != nil {
+			return txRollback, fmt.Errorf("sqlite: mark worker %s offline: %w", id, mapErr(err))
+		}
+		n, err := res.RowsAffected()
+		if err != nil {
+			return txRollback, fmt.Errorf("sqlite: mark worker %s offline: %w", id, mapErr(err))
+		}
+		if n == 0 {
+			// The guard did not match (unknown worker, not online, a fresh
+			// heartbeat, or another process's instance ID): nothing was written and the rollback ends the
+			// transaction.
+			return txRollback, nil
+		}
+		reclaimed, err = reclaimWorkerTasksTx(ctx, tx, id, store.FailureReasonWorkerOffline, now)
+		if err != nil {
+			return txRollback, err
+		}
+		offline = true
+		return txCommit, nil
+	})
 	if err != nil {
-		return nil, false, fmt.Errorf("sqlite: begin offline worker: %w", mapErr(err))
-	}
-	defer func() { _ = tx.Rollback() }() //nolint:errcheck // rollback after commit is a no-op
-
-	// Order: the worker row, then the guarded mark, then the job rows, then the
-	// tasks, attempts and claims. See the doc comment.
-	if err := lockAnchors(ctx, tx, workerAnchor(id)); err != nil {
 		return nil, false, err
 	}
-	res, err := tx.ExecContext(ctx, markSQL, markArgs...)
-	if err != nil {
-		return nil, false, fmt.Errorf("sqlite: mark worker %s offline: %w", id, mapErr(err))
-	}
-	n, err := res.RowsAffected()
-	if err != nil {
-		return nil, false, fmt.Errorf("sqlite: mark worker %s offline: %w", id, mapErr(err))
-	}
-	if n == 0 {
-		// The guard did not match (unknown worker, not online, a fresh
-		// heartbeat, or another process's instance ID): nothing was written and the deferred rollback ends the
-		// transaction.
-		return nil, false, nil
-	}
-	reclaimed, err := reclaimWorkerTasksTx(ctx, tx, id, store.FailureReasonWorkerOffline, now)
-	if err != nil {
-		return nil, false, err
-	}
-	if err := tx.Commit(); err != nil {
-		return nil, false, fmt.Errorf("sqlite: commit offline worker: %w", mapErr(err))
-	}
-	return reclaimed, true, nil
+	return reclaimed, offline, nil
 }
 
 // reclaimWorkerTasksTx reclaims the worker's assigned and running tasks inside

@@ -263,42 +263,40 @@ func scanJob(row scanner) (store.Job, error) {
 // [rowClock] — see insertTasksTx for why sharing one timestamp across the batch
 // would be a behavior change, not an optimization.
 func (s *Store) CreateJobSubmission(ctx context.Context, sub store.JobSubmission) (store.JobSubmission, error) {
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return store.JobSubmission{}, mapErr(err)
-	}
-	defer func() { _ = tx.Rollback() }() //nolint:errcheck // rollback after commit is a no-op
+	var out store.JobSubmission
+	err := s.inTx(ctx, "create job submission", func(tx *sql.Tx) (txOutcome, error) {
+		now := timeToText(time.Now().UTC())
 
-	now := timeToText(time.Now().UTC())
-
-	// DependsOn is cloned rather than aliased so a caller mutating the returned
-	// slice cannot reach back into its own input, matching the fake.
-	out := store.JobSubmission{DependsOn: slices.Clone(sub.DependsOn)}
-	if out.Job, err = insertJobTx(ctx, tx, sub.Job, now); err != nil {
-		return store.JobSubmission{}, err
-	}
-	for _, up := range sub.DependsOn {
-		if _, err := tx.ExecContext(ctx, sqlInsertJobDependency, sub.Job.ID, up, now); err != nil {
-			return store.JobSubmission{}, fmt.Errorf("sqlite: create job dependency %s->%s: %w", sub.Job.ID, up, mapErr(err))
+		// DependsOn is cloned rather than aliased so a caller mutating the returned
+		// slice cannot reach back into its own input, matching the fake.
+		out = store.JobSubmission{DependsOn: slices.Clone(sub.DependsOn)}
+		var err error
+		if out.Job, err = insertJobTx(ctx, tx, sub.Job, now); err != nil {
+			return txRollback, err
 		}
-	}
-	// The edges are written first and checked after. job_dependencies has
-	// no foreign key on depends_on_job_id, so inserting an edge to a missing or
-	// doomed upstream is harmless, and an unsatisfiable one rolls the whole
-	// submission back with the deferred Rollback.
-	if err := checkUpstreamsTx(ctx, tx, sub.DependsOn); err != nil {
+		for _, up := range sub.DependsOn {
+			if _, err := tx.ExecContext(ctx, sqlInsertJobDependency, sub.Job.ID, up, now); err != nil {
+				return txRollback, fmt.Errorf("sqlite: create job dependency %s->%s: %w", sub.Job.ID, up, mapErr(err))
+			}
+		}
+		// The edges are written first and checked after. job_dependencies has
+		// no foreign key on depends_on_job_id, so inserting an edge to a missing or
+		// doomed upstream is harmless, and an unsatisfiable one rolls the whole
+		// submission back.
+		if err := checkUpstreamsTx(ctx, tx, sub.DependsOn); err != nil {
+			return txRollback, err
+		}
+		var clock rowClock
+		if out.Steps, err = insertStepsTx(ctx, tx, &clock, sub.Steps); err != nil {
+			return txRollback, err
+		}
+		if out.Tasks, err = insertTasksTx(ctx, tx, &clock, sub.Tasks); err != nil {
+			return txRollback, err
+		}
+		return txCommit, nil
+	})
+	if err != nil {
 		return store.JobSubmission{}, err
-	}
-	var clock rowClock
-	if out.Steps, err = insertStepsTx(ctx, tx, &clock, sub.Steps); err != nil {
-		return store.JobSubmission{}, err
-	}
-	if out.Tasks, err = insertTasksTx(ctx, tx, &clock, sub.Tasks); err != nil {
-		return store.JobSubmission{}, err
-	}
-
-	if err := tx.Commit(); err != nil {
-		return store.JobSubmission{}, mapErr(err)
 	}
 	return out, nil
 }
@@ -712,28 +710,26 @@ func (s *Store) DeleteTerminalJobsBefore(
 	// constant and the id is bound.
 	recheck := query + sqlExpiredJobByID
 
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return nil, mapErr(err)
-	}
-	defer func() { _ = tx.Rollback() }() //nolint:errcheck // rollback after commit is a no-op
-
-	candidates, err := selectExpiredJobsTx(ctx, tx, query, args)
+	var deleted []store.DeletedJob
+	err := s.inTx(ctx, "delete terminal jobs", func(tx *sql.Tx) (txOutcome, error) {
+		candidates, err := selectExpiredJobsTx(ctx, tx, query, args)
+		if err != nil {
+			return txRollback, err
+		}
+		deleted = candidates[:0]
+		for _, d := range candidates {
+			purged, err := purgeExpiredJobTx(ctx, tx, recheck, args, d.ID)
+			if err != nil {
+				return txRollback, err
+			}
+			if purged {
+				deleted = append(deleted, d)
+			}
+		}
+		return txCommit, nil
+	})
 	if err != nil {
 		return nil, err
-	}
-	deleted := candidates[:0]
-	for _, d := range candidates {
-		purged, err := purgeExpiredJobTx(ctx, tx, recheck, args, d.ID)
-		if err != nil {
-			return nil, err
-		}
-		if purged {
-			deleted = append(deleted, d)
-		}
-	}
-	if err := tx.Commit(); err != nil {
-		return nil, mapErr(err)
 	}
 	return deleted, nil
 }
@@ -817,41 +813,37 @@ func purgeExpiredJobTx(ctx context.Context, tx *sql.Tx, recheck string, args []a
 // SQLite cannot produce either error: its single write connection serializes
 // every writer.
 func (s *Store) DeleteJob(ctx context.Context, id string) error {
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return mapErr(err)
-	}
-	defer func() { _ = tx.Rollback() }() //nolint:errcheck // rollback after commit is a no-op
-
-	if err := lockAnchors(ctx, tx, jobAnchor(id)); err != nil {
-		return err
-	}
-
-	for _, q := range []string{
-		sqlDeleteJobCheckouts,
-		sqlDeleteJobTaskLogs,
-		sqlDeleteJobAttempts,
-		sqlDeleteJobTasks,
-		sqlDeleteJobSteps,
-		sqlDeleteJobDependencies,
-	} {
-		if _, err := tx.ExecContext(ctx, q, id); err != nil {
-			return mapErr(err)
+	return s.inTx(ctx, "delete job", func(tx *sql.Tx) (txOutcome, error) {
+		if err := lockAnchors(ctx, tx, jobAnchor(id)); err != nil {
+			return txRollback, err
 		}
-	}
 
-	res, err := tx.ExecContext(ctx, sqlDeleteJobRow, id)
-	if err != nil {
-		return mapErr(err)
-	}
-	n, err := res.RowsAffected()
-	if err != nil {
-		return err
-	}
-	if n == 0 {
-		return store.ErrNotFound
-	}
-	return mapErr(tx.Commit())
+		for _, q := range []string{
+			sqlDeleteJobCheckouts,
+			sqlDeleteJobTaskLogs,
+			sqlDeleteJobAttempts,
+			sqlDeleteJobTasks,
+			sqlDeleteJobSteps,
+			sqlDeleteJobDependencies,
+		} {
+			if _, err := tx.ExecContext(ctx, q, id); err != nil {
+				return txRollback, mapErr(err)
+			}
+		}
+
+		res, err := tx.ExecContext(ctx, sqlDeleteJobRow, id)
+		if err != nil {
+			return txRollback, mapErr(err)
+		}
+		n, err := res.RowsAffected()
+		if err != nil {
+			return txRollback, err
+		}
+		if n == 0 {
+			return txRollback, store.ErrNotFound
+		}
+		return txCommit, nil
+	})
 }
 
 // ParkJob implements [store.JobStore].

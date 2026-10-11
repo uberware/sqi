@@ -175,30 +175,29 @@ func (s *Store) ListQueues(ctx context.Context, opts store.ListQueuesOptions) (s
 func (s *Store) UpdateQueue(ctx context.Context, queue store.Queue) (store.Queue, error) {
 	now := timeToText(time.Now().UTC())
 
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return store.Queue{}, err
-	}
-	defer tx.Rollback() //nolint:errcheck // no-op once committed
+	var out store.Queue
+	err := s.inTx(ctx, "update queue", func(tx *sql.Tx) (txOutcome, error) {
+		txStmt := tx.StmtContext(ctx, s.stmtUpdateQueue)
+		defer txStmt.Close()
 
-	txStmt := tx.StmtContext(ctx, s.stmtUpdateQueue)
-	defer txStmt.Close()
-
-	row := txStmt.QueryRowContext(ctx,
-		queue.FarmID, queue.Name, queue.Description,
-		queue.Priority, queue.MaxConcurrentTasks, queue.Paused,
-		nullInt(queue.MaxAttempts), nullInt(queue.RetryDelaySeconds), nullInt(queue.FailureLimit),
-		queue.PreserveRunAsUser, nullStrPtr(queue.RunAsUser),
-		queue.PreserveRunAsGroup, nullStrPtr(queue.RunAsGroup),
-		now, queue.ID)
-	out, err := scanQueue(row)
+		row := txStmt.QueryRowContext(ctx,
+			queue.FarmID, queue.Name, queue.Description,
+			queue.Priority, queue.MaxConcurrentTasks, queue.Paused,
+			nullInt(queue.MaxAttempts), nullInt(queue.RetryDelaySeconds), nullInt(queue.FailureLimit),
+			queue.PreserveRunAsUser, nullStrPtr(queue.RunAsUser),
+			queue.PreserveRunAsGroup, nullStrPtr(queue.RunAsGroup),
+			now, queue.ID)
+		var err error
+		out, err = scanQueue(row)
+		if err != nil {
+			return txRollback, mapErr(err)
+		}
+		if !store.RunAsComboValid(out.RunAsUser, out.RunAsGroup) {
+			return txRollback, store.ErrRunAsGroupWithoutUser
+		}
+		return txCommit, nil
+	})
 	if err != nil {
-		return store.Queue{}, mapErr(err)
-	}
-	if !store.RunAsComboValid(out.RunAsUser, out.RunAsGroup) {
-		return store.Queue{}, store.ErrRunAsGroupWithoutUser
-	}
-	if err := tx.Commit(); err != nil {
 		return store.Queue{}, err
 	}
 	return out, nil

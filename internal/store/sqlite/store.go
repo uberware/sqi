@@ -122,6 +122,8 @@ type Store struct {
 	// or temporary database it aliases db — see [Open].
 	rdb   *sql.DB
 	stmts []*sql.Stmt // all prepared statements; closed by Close
+	// classify reports what a driver error means; Open sets it to classifySQLite.
+	classify func(error) ErrClass
 
 	// ── farms ────────────────────────────────────────────────────────────
 	stmtInsertFarm *sql.Stmt
@@ -292,7 +294,7 @@ func Open(ctx context.Context, path string, opts Options) (*Store, error) {
 
 	// The read pool is opened only after migrations have run, so it can never
 	// prepare a statement against a half-migrated schema.
-	s := &Store{db: db}
+	s := &Store{db: db, classify: classifySQLite}
 	if s.rdb, err = openReadPool(path, db); err != nil {
 		_ = db.Close()
 		return nil, err
