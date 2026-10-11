@@ -616,7 +616,8 @@ func filterJob(j store.Job, opts store.ListJobsOptions) bool {
 
 // cmpJob returns a comparison value for two jobs by the given sort field and
 // direction. An empty field defaults to [store.JobSortByCreatedAt]; an empty
-// direction defaults to ascending.
+// direction defaults to ascending. Rows that tie on the field compare by ID
+// ascending, as the SQL stores order them.
 func cmpJob(a, b store.Job, field store.JobSortField, dir store.SortDir) int {
 	var n int
 	switch field {
@@ -632,7 +633,10 @@ func cmpJob(a, b store.Job, field store.JobSortField, dir store.SortDir) int {
 		n = a.CreatedAt.Compare(b.CreatedAt)
 	}
 	if dir == store.SortDesc {
-		return -n
+		n = -n
+	}
+	if n == 0 {
+		return cmp.Compare(a.ID, b.ID)
 	}
 	return n
 }

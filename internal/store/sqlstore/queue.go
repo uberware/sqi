@@ -129,9 +129,10 @@ func (s *Store) ListQueues(ctx context.Context, opts store.ListQueuesOptions) (s
 	dir := sortDirKeyword(opts.SortDir)
 
 	// col comes from queueSortColumns (hard-coded allow-list); dir is "ASC" or
-	// "DESC" from sortDirKeyword; where uses only ? placeholders for user values.
+	// "DESC" from sortDirKeyword; orderByClause renders both, with an id
+	// tie-break; where uses only ? placeholders for user values.
 	q := `SELECT ` + queueCols + ` FROM queues` + where +
-		` ORDER BY ` + col + ` ` + dir +
+		orderByClause(col, dir, false) +
 		` LIMIT ? OFFSET ?`
 	rows, err := s.r.QueryContext(ctx, q, append(args, opts.Pagination.Limit, opts.Pagination.Offset)...)
 	if err != nil {

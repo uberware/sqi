@@ -302,9 +302,10 @@ func (s *Store) ListWorkers(ctx context.Context, opts store.ListWorkersOptions) 
 	dir := sortDirKeyword(opts.SortDir)
 
 	// col comes from workerSortColumns (hard-coded allow-list); dir is "ASC" or
-	// "DESC" from sortDirKeyword; where uses only ? placeholders for user values.
+	// "DESC" from sortDirKeyword; orderByClause renders both, with an id
+	// tie-break; where uses only ? placeholders for user values.
 	q := `SELECT ` + workerCols + ` FROM workers` + where +
-		` ORDER BY ` + col + ` ` + dir +
+		orderByClause(col, dir, opts.SortBy == store.WorkerSortByLastHeartbeatAt) +
 		` LIMIT ? OFFSET ?`
 	rows, err := s.r.QueryContext(ctx, q, append(args, opts.Pagination.Limit, opts.Pagination.Offset)...)
 	if err != nil {

@@ -141,6 +141,22 @@ func sortDirKeyword(d store.SortDir) string {
 	return "ASC"
 }
 
+// orderByClause renders a list's ORDER BY: col in dir, then id ascending, so
+// rows that tie on col come back in one order on every backend and every page.
+// A nullable col sorts NULLs first ascending and last descending, which is
+// SQLite's default and the reverse of PostgreSQL's, written so both evaluate
+// it alike. col and dir come from the callers' allow-lists, never from input.
+func orderByClause(col, dir string, nullable bool) string {
+	if !nullable {
+		return " ORDER BY " + col + " " + dir + ", id ASC"
+	}
+	nulls := "DESC"
+	if dir == "DESC" {
+		nulls = "ASC"
+	}
+	return " ORDER BY (" + col + " IS NULL) " + nulls + ", " + col + " " + dir + ", id ASC"
+}
+
 // ── Bool helpers ──────────────────────────────────────────────────────────────
 
 // dbBool scans a boolean column, stored as an INTEGER 0/1 on SQLite and as a

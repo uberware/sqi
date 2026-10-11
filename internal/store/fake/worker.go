@@ -255,7 +255,8 @@ func workerMatchesSearch(w store.Worker, query string) bool {
 
 // cmpWorker returns a comparison value for two workers by the given sort field
 // and direction. An empty field defaults to [store.WorkerSortByHostname]; an
-// empty direction defaults to ascending.
+// empty direction defaults to ascending. Rows that tie on the field compare by
+// ID ascending, as the SQL stores order them.
 func cmpWorker(a, b store.Worker, field store.WorkerSortField, dir store.SortDir) int {
 	var n int
 	switch field {
@@ -276,7 +277,10 @@ func cmpWorker(a, b store.Worker, field store.WorkerSortField, dir store.SortDir
 		n = cmp.Compare(a.Hostname, b.Hostname)
 	}
 	if dir == store.SortDesc {
-		return -n
+		n = -n
+	}
+	if n == 0 {
+		return cmp.Compare(a.ID, b.ID)
 	}
 	return n
 }

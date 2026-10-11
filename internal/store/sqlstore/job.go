@@ -576,9 +576,10 @@ func (s *Store) ListJobs(ctx context.Context, opts store.ListJobsOptions) (store
 	dir := sortDirKeyword(opts.SortDir)
 
 	// col comes from jobSortColumns (hard-coded allow-list); dir is "ASC" or
-	// "DESC" from sortDirKeyword; where uses only ? placeholders for user values.
+	// "DESC" from sortDirKeyword; orderByClause renders both, with an id
+	// tie-break; where uses only ? placeholders for user values.
 	q := `SELECT ` + jobCols + ` FROM jobs` + where +
-		` ORDER BY ` + col + ` ` + dir +
+		orderByClause(col, dir, false) +
 		` LIMIT ? OFFSET ?`
 	rows, err := s.r.QueryContext(ctx, q, append(args, opts.Pagination.Limit, opts.Pagination.Offset)...)
 	if err != nil {
