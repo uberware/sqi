@@ -193,35 +193,67 @@ var concatAllowed = []string{
 	"string(placeholders)", // task.go ListTasks: a byte slice that only receives ',' and '?'
 	"inSuffix",             // task.go RetryTasks: "" or a literal around a "?" list
 	"query",                // job.go DeleteTerminalJobsBefore: expiredJobsQuery output, two literals around a "?" list
+	"frag",                 // job.go ListJobs, worker.go ListWorkers: searchClause (search.go) output, literals and Dialect.CILike over literal column lists, "?" for each term, which is bound
 }
 
 // sqlKeyword marks a string literal as SQL.
 var sqlKeyword = regexp.MustCompile(`(?i)\b(SELECT|UPDATE|DELETE|INSERT|WHERE|ORDER BY|AND|SET|FROM|LIMIT)\b`)
 
-// TestSQL_ConcatenatesOnlyAuditedPieces fails on a "+" that joins SQL text to
-// anything other than a constant or an audited operand. gosec cannot see SQL
-// built through the dialect wrappers, so this guard stands in for it.
+// TestSQL_ConcatenatesOnlyAuditedPieces fails on a "+" or "+=" that joins SQL
+// text to anything other than a constant or an audited operand. gosec cannot
+// see SQL built through the dialect wrappers, so this guard stands in for it.
+//
+// It covers the two concatenation operators only. A string assembled with
+// strings.Builder, fmt.Sprintf or strings.Join is not seen; the one Builder
+// in the package (searchClause) is audited by hand, and a new one needs the
+// same audit.
+//
+// "+" is checked when an operand is a SQL literal. "+=" is checked whenever a
+// string variable is appended to with a non-constant, because the right-hand
+// side of "where += frag" holds no SQL text to recognize: the variable it
+// extends is what makes it SQL.
 func TestSQL_ConcatenatesOnlyAuditedPieces(t *testing.T) {
 	fset, files, info := loadPackage(t)
+	audit := func(operands []ast.Expr) {
+		for _, op := range operands {
+			if tv := info.Types[op]; tv.Value != nil {
+				continue // a constant
+			}
+			src := exprString(fset, op)
+			if !slices.Contains(concatAllowed, src) {
+				t.Errorf("%s: SQL built from unaudited operand %q; add it to concatAllowed only after checking it cannot carry input",
+					fset.Position(op.Pos()), src)
+			}
+		}
+	}
 	for _, f := range files {
 		ast.Inspect(f, func(n ast.Node) bool {
-			be, ok := n.(*ast.BinaryExpr)
-			if !ok || be.Op != token.ADD || !isSQLConcat(be, info) {
-				return true
-			}
-			for _, op := range concatOperands(be) {
-				if tv := info.Types[op]; tv.Value != nil {
-					continue // a constant
+			switch n := n.(type) {
+			case *ast.BinaryExpr:
+				if n.Op != token.ADD || !isSQLConcat(n, info) {
+					return true
 				}
-				src := exprString(fset, op)
-				if !slices.Contains(concatAllowed, src) {
-					t.Errorf("%s: SQL built from unaudited operand %q; add it to concatAllowed only after checking it cannot carry input",
-						fset.Position(op.Pos()), src)
+				audit(concatOperands(n))
+				return false
+			case *ast.AssignStmt:
+				if n.Tok != token.ADD_ASSIGN || len(n.Lhs) != 1 || len(n.Rhs) != 1 || !isStringType(info.TypeOf(n.Lhs[0])) {
+					return true
 				}
+				audit(concatOperands(n.Rhs[0]))
+				return false
 			}
-			return false
+			return true
 		})
 	}
+}
+
+// isStringType reports whether t is string or a named type over it.
+func isStringType(t types.Type) bool {
+	if t == nil {
+		return false
+	}
+	b, ok := t.Underlying().(*types.Basic)
+	return ok && b.Info()&types.IsString != 0
 }
 
 // isSQLConcat reports whether be is a string concatenation with a SQL literal
