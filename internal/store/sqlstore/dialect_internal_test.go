@@ -3,7 +3,10 @@
 package sqlstore_test
 
 import (
+	"context"
+	"database/sql"
 	"errors"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -14,13 +17,15 @@ import (
 )
 
 // recordingDialect wraps the SQLite dialect and records every query and
-// argument the wrappers pass through.
+// argument the wrappers pass through, and the anchors each LockAnchors call
+// is asked to lock.
 type recordingDialect struct {
 	sqlstore.Dialect
 
 	queries []string
 	times   int
 	bools   int
+	anchors [][]sqlstore.Anchor
 }
 
 func (d *recordingDialect) Rebind(q string) string { d.queries = append(d.queries, q); return q }
@@ -29,6 +34,10 @@ func (d *recordingDialect) BindTime(t time.Time) any {
 	return d.Dialect.BindTime(t)
 }
 func (d *recordingDialect) BindBool(b bool) any { d.bools++; return d.Dialect.BindBool(b) }
+func (d *recordingDialect) LockAnchors(ctx context.Context, tx *sql.Tx, anchors ...sqlstore.Anchor) error {
+	d.anchors = append(d.anchors, slices.Clone(anchors))
+	return d.Dialect.LockAnchors(ctx, tx, anchors...)
+}
 
 // withDialect returns a store over base's pools whose statements run through
 // d. It is closed by t.Cleanup before base, which closes the pools again (a
