@@ -284,9 +284,12 @@ func TestParity_DeleteJob(t *testing.T) {
 			g := seedGraph(t, st, graphOpts{jobStatus: store.JobStatusRunning})
 			upstream := g.Job
 
-			// Create a job to delete (terminal, with steps and tasks).
+			// Create a pool for usage claims.
+			pool := seedPool(t, st, 10)
+
+			// Create a job to delete (pending, not terminal, so it can be leased).
 			delWithDeps := storetest.NewJob(uuid.NewString(), g.Farm.ID, g.Queue.ID)
-			delWithDeps.As(store.JobStatusCompleted)
+			delWithDeps.As(store.JobStatusPending) // Pending so it can be leased
 			delWithDeps.Sub.DependsOn = []string{upstream.ID}
 			delWithDeps.Step(uuid.NewString(), store.StepStatusReady)
 			delWithDeps.Task(uuid.NewString(), delWithDeps.Sub.Steps[0].ID, store.TaskStatusReady)
@@ -295,10 +298,49 @@ func TestParity_DeleteJob(t *testing.T) {
 			toDeleteStepID := delSub.Steps[0].ID
 			toDeleteTaskID := delSub.Tasks[0].ID
 
+			// Lease the task with a claim on the pool (creates TaskAttempt and UsageClaim).
+			attempt := leaseClaiming(t, st, toDeleteTaskID, false, pool)
+			attemptID := attempt.ID
+
+			// Create a task log for the attempt.
+			log := store.TaskLog{
+				ID: uuid.NewString(), TaskID: toDeleteTaskID, AttemptID: attemptID,
+				SeqNum: 1, NATSSeq: 1, At: time.Now().UTC().Truncate(time.Millisecond),
+				ReceivedAt: time.Now().UTC(), Stream: store.LogStreamStdout, Data: "test log\n",
+			}
+			if _, err := st.CreateTaskLog(ctx, log); err != nil {
+				t.Fatalf("CreateTaskLog: %v", err)
+			}
+
 			// Create a downstream job that depends on toDelete.
 			downstream := jobIn(g).As(store.JobStatusPending)
 			downstream.Sub.DependsOn = []string{toDelete.ID}
 			downstreamJob := downstream.Submit(t, st).Job
+
+			// BEFORE DELETE: assert attempts, claims and logs exist.
+			beforeAttempts, err := st.ListTaskAttempts(ctx, toDeleteTaskID)
+			if err != nil {
+				t.Fatalf("ListTaskAttempts before delete: %v", err)
+			}
+			if len(beforeAttempts) != 1 || beforeAttempts[0].ID != attemptID {
+				t.Fatalf("before delete: expected 1 attempt, got %d", len(beforeAttempts))
+			}
+
+			beforeClaimCount, err := st.ActiveClaimCount(ctx, pool.ID)
+			if err != nil {
+				t.Fatalf("ActiveClaimCount before delete: %v", err)
+			}
+			if beforeClaimCount != 1 {
+				t.Fatalf("before delete: expected 1 active claim, got %d", beforeClaimCount)
+			}
+
+			beforeLogs, err := st.ListTaskLogs(ctx, attemptID, 0, 100)
+			if err != nil {
+				t.Fatalf("ListTaskLogs before delete: %v", err)
+			}
+			if len(beforeLogs) != 1 {
+				t.Fatalf("before delete: expected 1 log, got %d", len(beforeLogs))
+			}
 
 			// Verify dependencies exist before delete.
 			beforeDeps, err := st.ListDependents(ctx, upstream.ID)
@@ -321,7 +363,7 @@ func TestParity_DeleteJob(t *testing.T) {
 				t.Fatalf("DeleteJob: %v", err)
 			}
 
-			// Cascade assertions: the job and its rows are gone.
+			// AFTER DELETE: assert job, steps, tasks, attempts, claims and logs are gone.
 			if _, err := st.GetJob(ctx, toDelete.ID); !errors.Is(err, store.ErrNotFound) {
 				t.Fatalf("GetJob after delete: err = %v, want ErrNotFound", err)
 			}
@@ -338,12 +380,32 @@ func TestParity_DeleteJob(t *testing.T) {
 			if _, err := st.GetTask(ctx, toDeleteTaskID); !errors.Is(err, store.ErrNotFound) {
 				t.Fatalf("GetTask after delete: err = %v, want ErrNotFound", err)
 			}
-			attempts, err := st.ListTaskAttempts(ctx, toDeleteTaskID)
+
+			// Cascade: attempts are deleted.
+			afterAttempts, err := st.ListTaskAttempts(ctx, toDeleteTaskID)
 			if err != nil {
-				t.Fatalf("ListTaskAttempts: %v", err)
+				t.Fatalf("ListTaskAttempts after delete: %v", err)
 			}
-			if len(attempts) != 0 {
-				t.Fatalf("ListTaskAttempts after delete: got %d, want 0", len(attempts))
+			if len(afterAttempts) != 0 {
+				t.Fatalf("ListTaskAttempts after delete: got %d, want 0", len(afterAttempts))
+			}
+
+			// Cascade: claims are released/deleted.
+			afterClaimCount, err := st.ActiveClaimCount(ctx, pool.ID)
+			if err != nil {
+				t.Fatalf("ActiveClaimCount after delete: %v", err)
+			}
+			if afterClaimCount != 0 {
+				t.Fatalf("after delete: expected 0 active claims, got %d", afterClaimCount)
+			}
+
+			// Cascade: logs are deleted.
+			afterLogs, err := st.ListTaskLogs(ctx, attemptID, 0, 100)
+			if err != nil {
+				t.Fatalf("ListTaskLogs after delete: %v", err)
+			}
+			if len(afterLogs) != 0 {
+				t.Fatalf("ListTaskLogs after delete: got %d, want 0", len(afterLogs))
 			}
 
 			// Outgoing edges are deleted.
