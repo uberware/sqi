@@ -5,9 +5,7 @@ package sqlite
 import (
 	"database/sql"
 	"encoding/json"
-	"errors"
 	"fmt"
-	"strings"
 	"time"
 
 	"github.com/uberware/sqi/internal/store"
@@ -191,29 +189,18 @@ func strPtr(n sql.NullString) *string {
 
 // ── Error mapping ─────────────────────────────────────────────────────────────
 
-// mapErr translates driver-level errors to the sentinel errors defined in
-// [store]. It covers:
-//   - [sql.ErrNoRows] → [store.ErrNotFound]
-//   - UNIQUE constraint violations → [store.ErrConflict]
-//   - FOREIGN KEY constraint violations → [store.ErrConflict]
-//
-// Constraint detection uses the error message string because
-// modernc.org/sqlite surfaces this reliably and consistently. If the driver
-// changes, revisit this check.
+// mapErr converts a driver error into the store's sentinel errors: no rows
+// becomes [store.ErrNotFound], and a unique, primary-key or foreign-key
+// violation becomes [store.ErrConflict]. Any other error is returned unchanged.
 func mapErr(err error) error {
-	if err == nil {
-		return nil
-	}
-	if errors.Is(err, sql.ErrNoRows) {
+	switch classifySQLite(err) {
+	case ErrClassNotFound:
 		return store.ErrNotFound
-	}
-	if strings.Contains(err.Error(), "UNIQUE constraint failed") {
+	case ErrClassConflict:
 		return fmt.Errorf("%w: %s", store.ErrConflict, err.Error())
+	default:
+		return err
 	}
-	if strings.Contains(err.Error(), "FOREIGN KEY constraint failed") {
-		return fmt.Errorf("%w: %s", store.ErrConflict, err.Error())
-	}
-	return err
 }
 
 // checkRowsAffected returns [store.ErrNotFound] when a DELETE or UPDATE that
