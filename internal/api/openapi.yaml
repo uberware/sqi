@@ -3164,6 +3164,7 @@ paths:
     delete:
       operationId: deleteFarm
       summary: Delete a farm
+      description: Refused with 409 while a queue, job or worker still references the farm.
       tags: [farms]
       responses:
         "204":
@@ -3172,6 +3173,8 @@ paths:
           $ref: "#/components/responses/Forbidden"
         "404":
           $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
         "500":
           $ref: "#/components/responses/InternalServerError"
 
@@ -3931,6 +3934,7 @@ paths:
     delete:
       operationId: deleteUsagePool
       summary: Delete a usage pool
+      description: Refused with 409 while any task claim, released or not, still references the pool.
       tags: [usage-pools]
       responses:
         "204":
@@ -3939,6 +3943,8 @@ paths:
           $ref: "#/components/responses/Forbidden"
         "404":
           $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
         "500":
           $ref: "#/components/responses/InternalServerError"
 

@@ -79,7 +79,8 @@ type UsagePoolStore interface {
 	UpdateUsagePool(ctx context.Context, pool UsagePool) (UsagePool, error)
 
 	// DeleteUsagePool removes a pool by ID. Returns [ErrNotFound] if it
-	// does not exist.
+	// does not exist, or [ErrConflict] while any claim, released or not,
+	// references the pool.
 	DeleteUsagePool(ctx context.Context, id string) error
 }
 

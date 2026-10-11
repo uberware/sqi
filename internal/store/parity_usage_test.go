@@ -187,3 +187,23 @@ func TestParity_ListUsagePoolUtilization(t *testing.T) {
 		})
 	}
 }
+
+// TestParity_DeleteUsagePoolStillReferenced pins that a pool any claim names,
+// released or not, is not deleted.
+func TestParity_DeleteUsagePoolStillReferenced(t *testing.T) {
+	for name, st := range newStores(t) {
+		t.Run(name, func(t *testing.T) {
+			g := seedStepA(t, st, graphOpts{}, store.TaskStatusReady)
+			pool := seedPool(t, st, 1)
+			attempt := leaseClaiming(t, st, g.Tasks["a"][0].ID, true, pool)
+			if err := st.DeleteUsagePool(t.Context(), pool.ID); !errors.Is(err, store.ErrConflict) {
+				t.Fatalf("DeleteUsagePool with an active claim = %v, want ErrConflict", err)
+			}
+			// Completing the attempt releases the claim; the row is still there.
+			storetest.Complete(t, st, attempt, store.TaskStatusSucceeded)
+			if err := st.DeleteUsagePool(t.Context(), pool.ID); !errors.Is(err, store.ErrConflict) {
+				t.Fatalf("DeleteUsagePool with a released claim = %v, want ErrConflict", err)
+			}
+		})
+	}
+}

@@ -210,6 +210,10 @@ func (h *usagePoolHandler) deleteUsagePool(w http.ResponseWriter, r *http.Reques
 			writeProblem(w, r, http.StatusNotFound, "usage pool not found")
 			return
 		}
+		if errors.Is(err, store.ErrConflict) {
+			writeProblem(w, r, http.StatusConflict, "usage pool is still referenced by task claims")
+			return
+		}
 		h.logger.ErrorContext(ctx, "usage-pools: delete failed", slog.String("id", id), slog.Any("error", err))
 		writeProblem(w, r, http.StatusInternalServerError, "failed to delete usage pool")
 		return

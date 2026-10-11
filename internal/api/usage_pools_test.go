@@ -15,6 +15,7 @@ import (
 
 	"github.com/uberware/sqi/internal/store"
 	"github.com/uberware/sqi/internal/store/fake"
+	"github.com/uberware/sqi/internal/store/storetest"
 )
 
 func newUsagePoolRouter(st store.Store) chi.Router {
@@ -278,5 +279,20 @@ func TestDeleteUsagePool_Success(t *testing.T) {
 
 	if rr.Code != http.StatusNoContent {
 		t.Fatalf("want 204, got %d", rr.Code)
+	}
+}
+
+func TestDeleteUsagePool_StillInUse(t *testing.T) {
+	st := fake.New()
+	defer st.Close()
+	pool := seedUsagePool(t, st)
+	attempt := storetest.InjectAttempt(t, st, store.TaskAttempt{TaskID: "t1", WorkerID: "w1", AttemptNumber: 1, Status: store.AttemptStatusRunning})
+	storetest.InjectClaim(t, st, store.UsageClaim{ID: "c1", PoolID: pool.ID, TaskAttemptID: attempt.ID})
+
+	rr := httptest.NewRecorder()
+	newUsagePoolRouter(st).ServeHTTP(rr, newReq(t, http.MethodDelete, "/api/v1/usage-pools/"+pool.ID, nil))
+
+	if rr.Code != http.StatusConflict {
+		t.Fatalf("want 409, got %d: %s", rr.Code, rr.Body.String())
 	}
 }

@@ -399,3 +399,19 @@ func TestParity_DeleteQueue(t *testing.T) {
 		})
 	}
 }
+
+// TestParity_DeleteFarmStillReferenced pins that a farm a queue still names is
+// not deleted: SQLite refuses on the foreign key, and the fake must agree.
+func TestParity_DeleteFarmStillReferenced(t *testing.T) {
+	for name, st := range newStores(t) {
+		t.Run(name, func(t *testing.T) {
+			farm, _ := seedFarmQueue(t, st)
+			if err := st.DeleteFarm(t.Context(), farm.ID); !errors.Is(err, store.ErrConflict) {
+				t.Fatalf("DeleteFarm with a queue = %v, want ErrConflict", err)
+			}
+			if _, err := st.GetFarm(t.Context(), farm.ID); err != nil {
+				t.Fatalf("farm gone after a refused delete: %v", err)
+			}
+		})
+	}
+}

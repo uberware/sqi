@@ -127,13 +127,21 @@ func (s *Store) UpdateUsagePool(_ context.Context, pool store.UsagePool) (store.
 }
 
 // DeleteUsagePool removes a pool by ID. Returns [store.ErrNotFound] if it
-// does not exist.
+// does not exist, and [store.ErrConflict] while any claim names it.
 func (s *Store) DeleteUsagePool(_ context.Context, id string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	if _, ok := s.usagePools[id]; !ok {
 		return store.ErrNotFound
+	}
+
+	// SQLite's foreign key refuses while any claim, released or not, names the
+	// pool; so does the fake.
+	for _, c := range s.usageClaims {
+		if c.PoolID == id {
+			return store.ErrConflict
+		}
 	}
 
 	delete(s.usagePools, id)

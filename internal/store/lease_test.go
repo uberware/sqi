@@ -11,7 +11,6 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/uberware/sqi/internal/store"
-	"github.com/uberware/sqi/internal/store/fake"
 	"github.com/uberware/sqi/internal/store/storetest"
 )
 
@@ -448,19 +447,4 @@ func TestLeaseTask_SamePoolTwice(t *testing.T) {
 			assertNothingWritten(t, st, g.Tasks["a"][0], pool)
 		})
 	}
-}
-
-// TestLeaseTask_MissingFarmIsLost pins the fake against SQLite, whose lease
-// joins the farm row: a task whose farm row is gone is Lost there. SQLite
-// itself cannot reach this state, because jobs.farm_id and queues.farm_id are
-// foreign keys, so DeleteFarm refuses while anything references the farm; the
-// fake enforces no foreign keys, so only the fake is exercised.
-func TestLeaseTask_MissingFarmIsLost(t *testing.T) {
-	st := fake.New()
-	g := seedStepA(t, st, graphOpts{}, store.TaskStatusReady)
-	if err := st.DeleteFarm(t.Context(), g.Farm.ID); err != nil {
-		t.Fatalf("DeleteFarm: %v", err)
-	}
-	mustLease(t, st, leaseReq(g.Tasks["a"][0]), store.LeaseLost)
-	assertNothingWritten(t, st, g.Tasks["a"][0])
 }
