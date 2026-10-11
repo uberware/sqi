@@ -72,7 +72,6 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/pressly/goose/v3"
 	_ "modernc.org/sqlite" // register the "sqlite" driver
 
 	"github.com/uberware/sqi/internal/store"
@@ -158,12 +157,12 @@ func Open(ctx context.Context, path string, opts Options) (*Store, error) {
 	}
 
 	if opts.AutoMigrate {
-		goose.SetBaseFS(migrations.FS)
-		if err = goose.SetDialect("sqlite3"); err != nil {
+		p, err := migrations.NewProvider(db, "sqlite")
+		if err != nil {
 			_ = db.Close()
-			return nil, fmt.Errorf("sqlite: set goose dialect: %w", err)
+			return nil, fmt.Errorf("sqlite: migrations: %w", err)
 		}
-		if err = goose.Up(db, "."); err != nil {
+		if _, err := p.Up(ctx); err != nil {
 			_ = db.Close()
 			return nil, fmt.Errorf("sqlite: migrate up: %w", err)
 		}

@@ -397,10 +397,11 @@ func TestJob_BlockedStatusAndDependencyTable(t *testing.T) {
 // TestJob_ListDependentsAndBlocked exercises a submission's dependency edges,
 // ListDependents, ListBlockedJobs, and GetJob's DependsOn population together.
 func TestJob_ListDependentsAndBlocked(t *testing.T) {
-	// Not t.Parallel(): sqlite.Open calls goose.SetBaseFS/SetDialect, which
-	// mutate package-level goose state; running concurrently with another
-	// parallel Open (e.g. TestJob_BlockedStatusAndDependencyTable in this
-	// same file) trips the race detector on that pre-existing global state.
+	// Not t.Parallel(): these tests were serialized when sqlite.Open mutated
+	// goose's package-level state (SetBaseFS/SetDialect), which tripped the
+	// race detector under a parallel Open. Open now migrates through its own
+	// goose provider and no longer touches that state, so the serialization is
+	// a leftover; it is kept as it is.
 	ctx := context.Background()
 	st := openTestStoreWB(t)
 
