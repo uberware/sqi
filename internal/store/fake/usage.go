@@ -6,7 +6,6 @@ import (
 	"context"
 	"slices"
 	"strings"
-	"time"
 
 	"github.com/uberware/sqi/internal/store"
 )
@@ -122,7 +121,7 @@ func (s *Store) UpdateUsagePool(_ context.Context, pool store.UsagePool) (store.
 	}
 
 	pool.CreatedAt = existing.CreatedAt
-	pool.UpdatedAt = time.Now()
+	pool.UpdatedAt = s.stampLocked()
 	s.usagePools[pool.ID] = pool
 	return pool, nil
 }

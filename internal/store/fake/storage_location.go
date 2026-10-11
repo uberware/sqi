@@ -5,7 +5,6 @@ package fake
 import (
 	"context"
 	"slices"
-	"time"
 
 	"github.com/uberware/sqi/internal/store"
 )
@@ -104,7 +103,7 @@ func (s *Store) UpdateStorageLocation(_ context.Context, loc store.StorageLocati
 	}
 
 	loc.CreatedAt = existing.CreatedAt
-	loc.UpdatedAt = time.Now()
+	loc.UpdatedAt = s.stampLocked()
 	loc.Roots = copyMap(loc.Roots)
 	s.storageLocations[loc.ID] = loc
 	return loc, nil
