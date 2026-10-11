@@ -280,21 +280,101 @@ func TestParity_DeleteJob(t *testing.T) {
 	for name, st := range newStores(t) {
 		t.Run(name, func(t *testing.T) {
 			ctx := t.Context()
-			g := seedGraph(t, st, graphOpts{jobStatus: store.JobStatusCompleted})
-			job := g.Job
-			keep := jobIn(g).As(store.JobStatusCompleted).Submit(t, st).Job
+			// Create an upstream job (terminal, for outgoing edge).
+			g := seedGraph(t, st, graphOpts{jobStatus: store.JobStatusRunning})
+			upstream := g.Job
 
-			if err := st.DeleteJob(ctx, job.ID); err != nil {
+			// Create a job to delete (terminal, with steps and tasks).
+			delWithDeps := storetest.NewJob(uuid.NewString(), g.Farm.ID, g.Queue.ID)
+			delWithDeps.As(store.JobStatusCompleted)
+			delWithDeps.Sub.DependsOn = []string{upstream.ID}
+			delWithDeps.Step(uuid.NewString(), store.StepStatusReady)
+			delWithDeps.Task(uuid.NewString(), delWithDeps.Sub.Steps[0].ID, store.TaskStatusReady)
+			delSub := delWithDeps.Submit(t, st)
+			toDelete := delSub.Job
+			toDeleteStepID := delSub.Steps[0].ID
+			toDeleteTaskID := delSub.Tasks[0].ID
+
+			// Create a downstream job that depends on toDelete.
+			downstream := jobIn(g).As(store.JobStatusPending)
+			downstream.Sub.DependsOn = []string{toDelete.ID}
+			downstreamJob := downstream.Submit(t, st).Job
+
+			// Verify dependencies exist before delete.
+			beforeDeps, err := st.ListDependents(ctx, upstream.ID)
+			if err != nil {
+				t.Fatalf("ListDependents: %v", err)
+			}
+			if !slices.Contains(beforeDeps, toDelete.ID) {
+				t.Fatalf("toDelete should be a dependent of upstream before delete")
+			}
+			downstreamDeps, err := st.ListJobDependencyIDs(ctx, downstreamJob.ID)
+			if err != nil {
+				t.Fatalf("ListJobDependencyIDs: %v", err)
+			}
+			if !slices.Contains(downstreamDeps, toDelete.ID) {
+				t.Fatalf("downstreamJob should depend on toDelete before delete")
+			}
+
+			// Delete the job.
+			if err := st.DeleteJob(ctx, toDelete.ID); err != nil {
 				t.Fatalf("DeleteJob: %v", err)
 			}
-			if _, err := st.GetJob(ctx, job.ID); !errors.Is(err, store.ErrNotFound) {
+
+			// Cascade assertions: the job and its rows are gone.
+			if _, err := st.GetJob(ctx, toDelete.ID); !errors.Is(err, store.ErrNotFound) {
 				t.Fatalf("GetJob after delete: err = %v, want ErrNotFound", err)
 			}
-			if err := st.DeleteJob(ctx, job.ID); !errors.Is(err, store.ErrNotFound) {
+			if _, err := st.GetStep(ctx, toDeleteStepID); !errors.Is(err, store.ErrNotFound) {
+				t.Fatalf("GetStep after delete: err = %v, want ErrNotFound", err)
+			}
+			steps, err := st.ListSteps(ctx, toDelete.ID)
+			if err != nil {
+				t.Fatalf("ListSteps: %v", err)
+			}
+			if len(steps) != 0 {
+				t.Fatalf("ListSteps after delete: got %d, want 0", len(steps))
+			}
+			if _, err := st.GetTask(ctx, toDeleteTaskID); !errors.Is(err, store.ErrNotFound) {
+				t.Fatalf("GetTask after delete: err = %v, want ErrNotFound", err)
+			}
+			attempts, err := st.ListTaskAttempts(ctx, toDeleteTaskID)
+			if err != nil {
+				t.Fatalf("ListTaskAttempts: %v", err)
+			}
+			if len(attempts) != 0 {
+				t.Fatalf("ListTaskAttempts after delete: got %d, want 0", len(attempts))
+			}
+
+			// Outgoing edges are deleted.
+			afterDeps, err := st.ListDependents(ctx, upstream.ID)
+			if err != nil {
+				t.Fatalf("ListDependents: %v", err)
+			}
+			if slices.Contains(afterDeps, toDelete.ID) {
+				t.Fatalf("toDelete should NOT be a dependent of upstream after delete (outgoing edge deleted)")
+			}
+
+			// Incoming edges are kept.
+			downstreamDepsAfter, err := st.ListJobDependencyIDs(ctx, downstreamJob.ID)
+			if err != nil {
+				t.Fatalf("ListJobDependencyIDs: %v", err)
+			}
+			if !slices.Contains(downstreamDepsAfter, toDelete.ID) {
+				t.Fatalf("downstreamJob should still depend on (deleted) toDelete after delete (incoming edge kept)")
+			}
+
+			// Second delete returns ErrNotFound.
+			if err := st.DeleteJob(ctx, toDelete.ID); !errors.Is(err, store.ErrNotFound) {
 				t.Fatalf("second delete: err = %v, want ErrNotFound", err)
 			}
-			if _, err := st.GetJob(ctx, keep.ID); err != nil {
-				t.Fatalf("other job: %v, want it kept", err)
+
+			// Other jobs are unaffected.
+			if _, err := st.GetJob(ctx, upstream.ID); err != nil {
+				t.Fatalf("upstream job: %v, want it kept", err)
+			}
+			if _, err := st.GetJob(ctx, downstreamJob.ID); err != nil {
+				t.Fatalf("downstream job: %v, want it kept", err)
 			}
 		})
 	}
