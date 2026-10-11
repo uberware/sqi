@@ -6,7 +6,6 @@ import (
 	"cmp"
 	"context"
 	"slices"
-	"time"
 
 	"github.com/uberware/sqi/internal/store"
 )
@@ -27,6 +26,8 @@ func (s *Store) CreateQueue(_ context.Context, queue store.Queue) (store.Queue, 
 		}
 	}
 
+	queue.CreatedAt = s.stampLocked()
+	queue.UpdatedAt = queue.CreatedAt
 	s.queues[queue.ID] = queue
 	return queue, nil
 }
@@ -88,7 +89,7 @@ func (s *Store) UpdateQueue(_ context.Context, queue store.Queue) (store.Queue, 
 	}
 
 	queue.CreatedAt = existing.CreatedAt
-	queue.UpdatedAt = time.Now()
+	queue.UpdatedAt = s.stampLocked()
 	// Mirror the SQLite CASE WHEN: a preserved column keeps its stored value
 	// regardless of what queue.RunAsUser/RunAsGroup carries, and the preserve
 	// flags themselves are write-only instructions, not stored state.

@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-// Package sqlite provides a SQLite-backed implementation of [store.Store].
+// Package sqlite provides the SQLite [store.Store]: it opens the database,
+// applies its PRAGMAs, runs migrations, and builds the shared SQL store
+// (internal/store/sqlstore) over its pools with the SQLite dialect. It also
+// holds the operations only SQLite has: Ping, backup and WAL checkpointing.
 //
 // # Usage
 //
@@ -24,17 +27,16 @@
 // write-write conflicts and avoids SQLITE_BUSY between concurrent goroutines.
 //
 // Reads go through a second pool of up to [readPoolMaxConns] connections. WAL
-// mode lets readers proceed concurrently with a writer, so a read need not
-// queue behind one — and must not: a single large [Store.CreateJobSubmission]
-// holds the write connection for as long as it takes to insert every task,
-// which at job sizes this server accepts is measured in seconds. With one
-// shared pool that stalls every other database user in the process, including
-// the health checker, so an ordinary large render job reads as an outage.
+// mode lets readers proceed alongside a writer, so a read does not queue
+// behind one. A single large [Store.CreateJobSubmission] holds the write
+// connection while it inserts every task, which takes seconds at the job sizes
+// this server accepts; with one shared pool every other database user in the
+// process, the health checker included, would stall for that long.
 //
-// The split is by statement, not by call site: anything whose SQL begins with
-// SELECT is a read, everything else is a write. Several writes here are
+// The shared store routes by statement, not by call site: anything whose SQL
+// begins with SELECT is a read, everything else is a write. Several writes are
 // INSERT/UPDATE/DELETE ... RETURNING issued through QueryRow, so classifying by
-// Go method would be wrong. Misclassifying a read as a write merely serializes
+// Go method would be wrong. Misclassifying a read as a write only serializes
 // it; misclassifying a write as a read puts it on a multi-connection pool, so
 // anything ambiguous (a CTE, say) stays on the write pool.
 //
@@ -43,13 +45,14 @@
 // Correctness under concurrent writers is not left to the single write
 // connection: every multi-row invariant is a single store operation (see
 // "Store invariants" in docs/architecture.md), and most of them name their
-// anchor rows via lockAnchors, a no-op here because the one write connection
-// already serializes every write transaction. A store with concurrent writers
-// must lock those rows instead, but the anchors alone are not yet enough
-// there: ReclaimStaleAssignedTasks and DemoteStalledJobs name none, and the
-// architecture doc lists the gaps the anchor table leaves open. Single-row
-// writes carry their own precondition in their WHERE clause on either kind of
-// store.
+// anchor rows via Dialect.LockAnchors, which the SQLite dialect leaves a
+// no-op because the one write connection already serializes every write
+// transaction. A store with concurrent writers must lock those rows instead,
+// and the anchors alone do not suffice there: ReclaimStaleAssignedTasks and
+// DemoteStalledJobs name none, and docs/architecture.md lists the gaps the
+// anchor table leaves open.
+// Single-row writes carry their own precondition in their WHERE clause on
+// either kind of store.
 //
 // An in-memory or temporary database gets one pool for both roles: a second
 // [sql.Open] on ":memory:" would open a different, empty database.
@@ -74,6 +77,7 @@ import (
 
 	"github.com/uberware/sqi/internal/store"
 	"github.com/uberware/sqi/internal/store/migrations"
+	"github.com/uberware/sqi/internal/store/sqlstore"
 )
 
 const (
@@ -111,138 +115,13 @@ func DefaultOptions() Options {
 	}
 }
 
-// Store is a SQLite-backed implementation of [store.Store].
-// Create one with [Open]; close it with [Close] when done.
+// Store is the SQLite state store: the shared SQL store over a single
+// write connection and a read pool, plus SQLite's own operations.
 type Store struct {
-	// db is the write pool: exactly one connection, so writes never conflict.
-	// Every transaction, and every statement that is not a SELECT, uses it.
-	db *sql.DB
-	// rdb is the read pool: up to readPoolMaxConns connections over the same
-	// file, so a SELECT does not queue behind a long write. For an in-memory
-	// or temporary database it aliases db — see [Open].
-	rdb   *sql.DB
-	stmts []*sql.Stmt // all prepared statements; closed by Close
+	*sqlstore.Store
 
-	// ── farms ────────────────────────────────────────────────────────────
-	stmtInsertFarm *sql.Stmt
-	stmtGetFarm    *sql.Stmt
-	stmtListFarms  *sql.Stmt
-	stmtUpdateFarm *sql.Stmt
-	stmtDeleteFarm *sql.Stmt
-
-	// ── queues ───────────────────────────────────────────────────────────
-	stmtInsertQueue *sql.Stmt
-	stmtGetQueue    *sql.Stmt
-	stmtUpdateQueue *sql.Stmt
-	stmtDeleteQueue *sql.Stmt
-
-	// ── storage_locations ────────────────────────────────────────────────
-	stmtInsertStorageLoc    *sql.Stmt
-	stmtGetStorageLoc       *sql.Stmt
-	stmtGetStorageLocByName *sql.Stmt
-	stmtListStorageLocs     *sql.Stmt
-	stmtUpdateStorageLoc    *sql.Stmt
-	stmtDeleteStorageLoc    *sql.Stmt
-
-	// ── compute_locations ────────────────────────────────────────────────────
-	stmtInsertComputeLoc    *sql.Stmt
-	stmtGetComputeLoc       *sql.Stmt
-	stmtGetComputeLocByName *sql.Stmt
-	stmtListComputeLocs     *sql.Stmt
-	stmtUpdateComputeLoc    *sql.Stmt
-	stmtDeleteComputeLoc    *sql.Stmt
-
-	// ── products ─────────────────────────────────────────────────────────────
-	stmtInsertProduct    *sql.Stmt
-	stmtGetProductByName *sql.Stmt
-	stmtListProducts     *sql.Stmt
-	stmtUpdateProduct    *sql.Stmt
-	stmtDeleteProduct    *sql.Stmt
-
-	// ── usage_pools ──────────────────────────────────────────────────────
-	stmtInsertPool    *sql.Stmt
-	stmtGetPool       *sql.Stmt
-	stmtListPools     *sql.Stmt
-	stmtListPoolUsage *sql.Stmt
-	stmtUpdatePool    *sql.Stmt
-	stmtDeletePool    *sql.Stmt
-
-	// ── usage_claims ─────────────────────────────────────────────────────
-	stmtActiveClaimCount *sql.Stmt
-
-	// ── workers ──────────────────────────────────────────────────────────
-	stmtUpsertWorker             *sql.Stmt
-	stmtGetWorker                *sql.Stmt
-	stmtSetWorkerDisabled        *sql.Stmt
-	stmtUpdateWorkerHeartbeat    *sql.Stmt
-	stmtListStaleWorkers         *sql.Stmt
-	stmtCountIdleWorkers         *sql.Stmt
-	stmtCountIdleWorkersAllFarms *sql.Stmt
-	stmtDeleteOfflineWorkers     *sql.Stmt
-
-	// ── jobs ─────────────────────────────────────────────────────────────
-	stmtGetJob    *sql.Stmt
-	stmtUpdateJob *sql.Stmt
-
-	// ── steps ────────────────────────────────────────────────────────────
-	stmtGetStep   *sql.Stmt
-	stmtListSteps *sql.Stmt
-
-	// ── tasks ────────────────────────────────────────────────────────────
-	stmtGetTask                      *sql.Stmt
-	stmtSetTaskUnschedulableReason   *sql.Stmt
-	stmtListReadyTasks               *sql.Stmt
-	stmtCountActiveTasksInQueue      *sql.Stmt
-	stmtCountActiveTasksInFarm       *sql.Stmt
-	stmtCountReadyTasksByQueue       *sql.Stmt
-	stmtCountTasksByJob              *sql.Stmt
-	stmtCountUnschedulableTasksByJob *sql.Stmt
-
-	// ── task_attempts ────────────────────────────────────────────────────
-	stmtGetAttempt    *sql.Stmt
-	stmtLatestAttempt *sql.Stmt
-	stmtListAttempts  *sql.Stmt
-
-	// ── task_logs ────────────────────────────────────────────────────────
-	stmtInsertTaskLog *sql.Stmt
-	stmtListTaskLogs  *sql.Stmt
-
-	// ── audit_log ────────────────────────────────────────────────────────
-	stmtInsertAudit *sql.Stmt
-
-	// ── users ────────────────────────────────────────────────────────────
-	stmtInsertUser          *sql.Stmt
-	stmtGetUser             *sql.Stmt
-	stmtGetUserByUsername   *sql.Stmt
-	stmtGetUserByExternalID *sql.Stmt
-	stmtListUsers           *sql.Stmt
-	stmtUpdateUser          *sql.Stmt
-	stmtSetUserPassword     *sql.Stmt
-	stmtSetUserDisplayName  *sql.Stmt
-	stmtCountUsers          *sql.Stmt
-
-	// ── sessions ─────────────────────────────────────────────────────────
-	stmtInsertSession             *sql.Stmt
-	stmtGetSessionByTokenHash     *sql.Stmt
-	stmtGetSessionUserByTokenHash *sql.Stmt
-	stmtDeleteSession             *sql.Stmt
-	stmtDeleteExpiredSessions     *sql.Stmt
-
-	// ── api keys ─────────────────────────────────────────────────────────
-	stmtInsertAPIKey             *sql.Stmt
-	stmtGetAPIKeyUserByTokenHash *sql.Stmt
-	stmtListAPIKeysForUser       *sql.Stmt
-	stmtRevokeAPIKey             *sql.Stmt
-	stmtTouchAPIKeyLastUsed      *sql.Stmt
-
-	// ── worker credentials & join tokens ────────────────────────────────────
-	stmtInsertWorkerCredential      *sql.Stmt
-	stmtListActiveWorkerCredentials *sql.Stmt
-	stmtRevokeWorkerCredential      *sql.Stmt
-	stmtTouchWorkerCredential       *sql.Stmt
-	stmtInsertWorkerJoinToken       *sql.Stmt
-	stmtGetWorkerJoinTokenByHash    *sql.Stmt
-	stmtMarkWorkerJoinTokenUsed     *sql.Stmt
+	db  *sql.DB // write pool, one connection
+	rdb *sql.DB // read pool; the write pool for an in-memory database
 }
 
 // Open opens (or creates) the SQLite database at path, applies connection
@@ -292,16 +171,16 @@ func Open(ctx context.Context, path string, opts Options) (*Store, error) {
 
 	// The read pool is opened only after migrations have run, so it can never
 	// prepare a statement against a half-migrated schema.
-	s := &Store{db: db}
-	if s.rdb, err = openReadPool(path, db); err != nil {
+	rdb, err := openReadPool(path, db)
+	if err != nil {
 		_ = db.Close()
 		return nil, err
 	}
-	if err = s.prepareAll(ctx); err != nil {
-		_ = s.Close()
+	shared, err := sqlstore.New(ctx, db, rdb, sqliteDialect{})
+	if err != nil {
 		return nil, err
 	}
-	return s, nil
+	return &Store{Store: shared, db: db, rdb: rdb}, nil
 }
 
 // openReadPool opens the second, multi-connection pool over the same database
@@ -342,9 +221,8 @@ func openReadPool(path string, write *sql.DB) (*sql.DB, error) {
 // (":memory:", "file::memory:", "mode=memory") and the anonymous temporary
 // database (an empty path) are private per connection, so they are not.
 //
-// "mode=memory&cache=shared" is technically reachable from a second pool, but
-// only while some connection stays open; it is treated as private rather than
-// relying on that.
+// "mode=memory&cache=shared" is reachable from a second pool only while some
+// connection stays open, so it is treated as private.
 func isSharedPath(path string) bool {
 	if path == "" || strings.Contains(path, ":memory:") {
 		return false
@@ -352,416 +230,12 @@ func isSharedPath(path string) bool {
 	return !strings.Contains(strings.ToLower(path), "mode=memory")
 }
 
-// Ping verifies the database connection is still alive. Used by health checks.
+// Ping verifies the database connection is still alive. Health checks use it.
 //
-// It deliberately pings the READ pool, not the write pool. Readiness must
-// report whether the database is reachable, and a large job submission holds
-// the sole write connection for seconds at a time; pinging through it would
-// turn a normal write into a failed health check. This is not an oversight —
-// the health checker is not meant to observe write-pool queuing.
+// It pings the read pool, not the write pool. Readiness reports whether the
+// database is reachable, and a large job submission holds the sole write
+// connection for seconds at a time; a ping queued behind it would turn a
+// normal write into a failed health check.
 func (s *Store) Ping(ctx context.Context) error {
 	return s.rdb.PingContext(ctx)
-}
-
-// Close closes all prepared statements and both connection pools.
-// It is safe to call Close more than once.
-func (s *Store) Close() error {
-	var errs []error
-	for _, stmt := range s.stmts {
-		if err := stmt.Close(); err != nil {
-			errs = append(errs, err)
-		}
-	}
-	// rdb aliases db for in-memory databases; closing it twice would error.
-	if s.rdb != nil && s.rdb != s.db {
-		if err := s.rdb.Close(); err != nil {
-			errs = append(errs, err)
-		}
-	}
-	if err := s.db.Close(); err != nil {
-		errs = append(errs, err)
-	}
-	return errors.Join(errs...)
-}
-
-// poolFor returns the pool a statement belongs on: the read pool for a SELECT,
-// the write pool for everything else.
-func (s *Store) poolFor(query string) *sql.DB {
-	if isReadStatement(query) {
-		return s.rdb
-	}
-	return s.db
-}
-
-// isReadStatement reports whether query is a plain SELECT, ignoring leading
-// whitespace and SQL comments.
-//
-// It fails safe: anything it cannot positively identify as a SELECT — a CTE
-// (WITH ... may wrap an INSERT or UPDATE just as easily as a SELECT), a
-// PRAGMA, an unterminated comment — is treated as a write. Sending a read to
-// the write pool only serializes it, which is what every statement did before
-// the read pool existed; sending a write to the read pool would put it on a
-// multi-connection pool and risk write-write conflicts.
-func isReadStatement(query string) bool {
-	const sel = "select"
-	s := trimSQLLeader(query)
-	if len(s) < len(sel) || !strings.EqualFold(s[:len(sel)], sel) {
-		return false
-	}
-	if len(s) == len(sel) {
-		return true
-	}
-	// Reject identifiers that merely start with "select" (SELECTED, ...).
-	switch s[len(sel)] {
-	case ' ', '\t', '\n', '\r', '\f', '\v', '(':
-		return true
-	default:
-		return false
-	}
-}
-
-// trimSQLLeader strips leading whitespace and SQL comments from query, so the
-// first token of the statement itself is at the front of the result. An
-// unterminated block comment consumes the rest of the string, which leaves
-// isReadStatement with nothing to match — the safe answer.
-func trimSQLLeader(query string) string {
-	for {
-		query = strings.TrimLeft(query, " \t\n\r\f\v")
-		switch {
-		case strings.HasPrefix(query, "--"):
-			nl := strings.IndexByte(query, '\n')
-			if nl < 0 {
-				return ""
-			}
-			query = query[nl+1:]
-		case strings.HasPrefix(query, "/*"):
-			end := strings.Index(query[2:], "*/")
-			if end < 0 {
-				return ""
-			}
-			query = query[2+end+2:]
-		default:
-			return query
-		}
-	}
-}
-
-// prepare compiles sql into a prepared statement on the pool [Store.poolFor]
-// selects, tracks it for Close, and returns it. On failure it returns an error
-// that includes the first 60 chars of the SQL for context.
-func (s *Store) prepare(ctx context.Context, query string) (*sql.Stmt, error) {
-	stmt, err := s.poolFor(query).PrepareContext(ctx, query)
-	if err != nil {
-		preview := query
-		if len(preview) > 60 {
-			preview = preview[:60] + "…"
-		}
-		return nil, fmt.Errorf("sqlite: prepare %q: %w", preview, err)
-	}
-	s.stmts = append(s.stmts, stmt)
-	return stmt, nil
-}
-
-// prepareAll compiles every SQL statement used by the store. Errors are
-// returned immediately; the caller (Open) releases resources via Close.
-//
-//nolint:cyclop,funlen // large but straightforward: one prepare call per query
-func (s *Store) prepareAll(ctx context.Context) error {
-	var err error
-
-	// ── farms ─────────────────────────────────────────────────────────────
-	if s.stmtInsertFarm, err = s.prepare(ctx, sqlInsertFarm); err != nil {
-		return err
-	}
-	if s.stmtGetFarm, err = s.prepare(ctx, sqlGetFarm); err != nil {
-		return err
-	}
-	if s.stmtListFarms, err = s.prepare(ctx, sqlListFarms); err != nil {
-		return err
-	}
-	if s.stmtUpdateFarm, err = s.prepare(ctx, sqlUpdateFarm); err != nil {
-		return err
-	}
-	if s.stmtDeleteFarm, err = s.prepare(ctx, sqlDeleteFarm); err != nil {
-		return err
-	}
-
-	// ── queues ────────────────────────────────────────────────────────────
-	if s.stmtInsertQueue, err = s.prepare(ctx, sqlInsertQueue); err != nil {
-		return err
-	}
-	if s.stmtGetQueue, err = s.prepare(ctx, sqlGetQueue); err != nil {
-		return err
-	}
-	if s.stmtUpdateQueue, err = s.prepare(ctx, sqlUpdateQueue); err != nil {
-		return err
-	}
-	if s.stmtDeleteQueue, err = s.prepare(ctx, sqlDeleteQueue); err != nil {
-		return err
-	}
-
-	// ── storage_locations ─────────────────────────────────────────────────
-	if s.stmtInsertStorageLoc, err = s.prepare(ctx, sqlInsertStorageLoc); err != nil {
-		return err
-	}
-	if s.stmtGetStorageLoc, err = s.prepare(ctx, sqlGetStorageLoc); err != nil {
-		return err
-	}
-	if s.stmtGetStorageLocByName, err = s.prepare(ctx, sqlGetStorageLocByName); err != nil {
-		return err
-	}
-	if s.stmtListStorageLocs, err = s.prepare(ctx, sqlListStorageLocs); err != nil {
-		return err
-	}
-	if s.stmtUpdateStorageLoc, err = s.prepare(ctx, sqlUpdateStorageLoc); err != nil {
-		return err
-	}
-	if s.stmtDeleteStorageLoc, err = s.prepare(ctx, sqlDeleteStorageLoc); err != nil {
-		return err
-	}
-
-	// ── compute_locations ─────────────────────────────────────────────────────
-	if s.stmtInsertComputeLoc, err = s.prepare(ctx, sqlInsertComputeLoc); err != nil {
-		return err
-	}
-	if s.stmtGetComputeLoc, err = s.prepare(ctx, sqlGetComputeLoc); err != nil {
-		return err
-	}
-	if s.stmtGetComputeLocByName, err = s.prepare(ctx, sqlGetComputeLocByName); err != nil {
-		return err
-	}
-	if s.stmtListComputeLocs, err = s.prepare(ctx, sqlListComputeLocs); err != nil {
-		return err
-	}
-	if s.stmtUpdateComputeLoc, err = s.prepare(ctx, sqlUpdateComputeLoc); err != nil {
-		return err
-	}
-	if s.stmtDeleteComputeLoc, err = s.prepare(ctx, sqlDeleteComputeLoc); err != nil {
-		return err
-	}
-
-	// ── products ──────────────────────────────────────────────────────────
-	if s.stmtInsertProduct, err = s.prepare(ctx, sqlInsertProduct); err != nil {
-		return err
-	}
-	if s.stmtGetProductByName, err = s.prepare(ctx, sqlGetProductByName); err != nil {
-		return err
-	}
-	if s.stmtListProducts, err = s.prepare(ctx, sqlListProducts); err != nil {
-		return err
-	}
-	if s.stmtUpdateProduct, err = s.prepare(ctx, sqlUpdateProduct); err != nil {
-		return err
-	}
-	if s.stmtDeleteProduct, err = s.prepare(ctx, sqlDeleteProduct); err != nil {
-		return err
-	}
-
-	// ── usage_pools ───────────────────────────────────────────────────────
-	if s.stmtInsertPool, err = s.prepare(ctx, sqlInsertPool); err != nil {
-		return err
-	}
-	if s.stmtGetPool, err = s.prepare(ctx, sqlGetPool); err != nil {
-		return err
-	}
-	if s.stmtListPools, err = s.prepare(ctx, sqlListPools); err != nil {
-		return err
-	}
-	if s.stmtListPoolUsage, err = s.prepare(ctx, sqlListPoolUsage); err != nil {
-		return err
-	}
-	if s.stmtUpdatePool, err = s.prepare(ctx, sqlUpdatePool); err != nil {
-		return err
-	}
-	if s.stmtDeletePool, err = s.prepare(ctx, sqlDeletePool); err != nil {
-		return err
-	}
-
-	// ── usage_claims ──────────────────────────────────────────────────────
-	if s.stmtActiveClaimCount, err = s.prepare(ctx, sqlActiveClaimCount); err != nil {
-		return err
-	}
-
-	// ── workers ───────────────────────────────────────────────────────────
-	if s.stmtUpsertWorker, err = s.prepare(ctx, sqlUpsertWorker); err != nil {
-		return err
-	}
-	if s.stmtGetWorker, err = s.prepare(ctx, sqlGetWorker); err != nil {
-		return err
-	}
-	if s.stmtSetWorkerDisabled, err = s.prepare(ctx, sqlSetWorkerDisabled); err != nil {
-		return err
-	}
-	if s.stmtUpdateWorkerHeartbeat, err = s.prepare(ctx, sqlUpdateWorkerHeartbeat); err != nil {
-		return err
-	}
-	if s.stmtListStaleWorkers, err = s.prepare(ctx, sqlListStaleWorkers); err != nil {
-		return err
-	}
-	if s.stmtCountIdleWorkers, err = s.prepare(ctx, sqlCountIdleWorkers); err != nil {
-		return err
-	}
-	if s.stmtCountIdleWorkersAllFarms, err = s.prepare(ctx, sqlCountIdleWorkersAllFarms); err != nil {
-		return err
-	}
-	if s.stmtDeleteOfflineWorkers, err = s.prepare(ctx, sqlDeleteOfflineWorkersBefore); err != nil {
-		return err
-	}
-
-	// ── jobs ──────────────────────────────────────────────────────────────
-	if s.stmtGetJob, err = s.prepare(ctx, sqlGetJob); err != nil {
-		return err
-	}
-	if s.stmtUpdateJob, err = s.prepare(ctx, sqlUpdateJob); err != nil {
-		return err
-	}
-
-	// ── steps ─────────────────────────────────────────────────────────────
-	if s.stmtGetStep, err = s.prepare(ctx, sqlGetStep); err != nil {
-		return err
-	}
-	if s.stmtListSteps, err = s.prepare(ctx, sqlListSteps); err != nil {
-		return err
-	}
-
-	// ── tasks ─────────────────────────────────────────────────────────────
-	if s.stmtGetTask, err = s.prepare(ctx, sqlGetTask); err != nil {
-		return err
-	}
-	if s.stmtSetTaskUnschedulableReason, err = s.prepare(ctx, sqlSetTaskUnschedulableReason); err != nil {
-		return err
-	}
-	if s.stmtListReadyTasks, err = s.prepare(ctx, sqlListReadyTasks); err != nil {
-		return err
-	}
-	if s.stmtCountActiveTasksInQueue, err = s.prepare(ctx, sqlCountActiveTasksInQueue); err != nil {
-		return err
-	}
-	if s.stmtCountActiveTasksInFarm, err = s.prepare(ctx, sqlCountActiveTasksInFarm); err != nil {
-		return err
-	}
-	if s.stmtCountReadyTasksByQueue, err = s.prepare(ctx, sqlCountReadyTasksByQueue); err != nil {
-		return err
-	}
-	if s.stmtCountTasksByJob, err = s.prepare(ctx, sqlCountTasksByJob); err != nil {
-		return err
-	}
-	if s.stmtCountUnschedulableTasksByJob, err = s.prepare(ctx, sqlCountUnschedulableTasksByJob); err != nil {
-		return err
-	}
-
-	// ── task_attempts ─────────────────────────────────────────────────────
-	if s.stmtGetAttempt, err = s.prepare(ctx, sqlGetAttempt); err != nil {
-		return err
-	}
-	if s.stmtLatestAttempt, err = s.prepare(ctx, sqlLatestAttempt); err != nil {
-		return err
-	}
-	if s.stmtListAttempts, err = s.prepare(ctx, sqlListAttempts); err != nil {
-		return err
-	}
-
-	// ── task_logs ─────────────────────────────────────────────────────────
-	if s.stmtInsertTaskLog, err = s.prepare(ctx, sqlInsertTaskLog); err != nil {
-		return err
-	}
-	if s.stmtListTaskLogs, err = s.prepare(ctx, sqlListTaskLogs); err != nil {
-		return err
-	}
-
-	// ── audit_log ─────────────────────────────────────────────────────────
-	if s.stmtInsertAudit, err = s.prepare(ctx, sqlInsertAudit); err != nil {
-		return err
-	}
-
-	// ── users ─────────────────────────────────────────────────────────────
-	if s.stmtInsertUser, err = s.prepare(ctx, sqlInsertUser); err != nil {
-		return err
-	}
-	if s.stmtGetUser, err = s.prepare(ctx, sqlGetUser); err != nil {
-		return err
-	}
-	if s.stmtGetUserByUsername, err = s.prepare(ctx, sqlGetUserByUsername); err != nil {
-		return err
-	}
-	if s.stmtGetUserByExternalID, err = s.prepare(ctx, sqlGetUserByExternalID); err != nil {
-		return err
-	}
-	if s.stmtListUsers, err = s.prepare(ctx, sqlListUsers); err != nil {
-		return err
-	}
-	if s.stmtUpdateUser, err = s.prepare(ctx, sqlUpdateUser); err != nil {
-		return err
-	}
-	if s.stmtSetUserPassword, err = s.prepare(ctx, sqlSetUserPassword); err != nil {
-		return err
-	}
-	if s.stmtSetUserDisplayName, err = s.prepare(ctx, sqlSetUserDisplayName); err != nil {
-		return err
-	}
-	if s.stmtCountUsers, err = s.prepare(ctx, sqlCountUsers); err != nil {
-		return err
-	}
-
-	// ── sessions ──────────────────────────────────────────────────────────
-	if s.stmtInsertSession, err = s.prepare(ctx, sqlInsertSession); err != nil {
-		return err
-	}
-	if s.stmtGetSessionByTokenHash, err = s.prepare(ctx, sqlGetSessionByTokenHash); err != nil {
-		return err
-	}
-	if s.stmtGetSessionUserByTokenHash, err = s.prepare(ctx, sqlGetSessionUserByTokenHash); err != nil {
-		return err
-	}
-	if s.stmtDeleteSession, err = s.prepare(ctx, sqlDeleteSession); err != nil {
-		return err
-	}
-	if s.stmtDeleteExpiredSessions, err = s.prepare(ctx, sqlDeleteExpiredSessions); err != nil {
-		return err
-	}
-
-	// ── api keys ──────────────────────────────────────────────────────────
-	if s.stmtInsertAPIKey, err = s.prepare(ctx, sqlInsertAPIKey); err != nil {
-		return err
-	}
-	if s.stmtGetAPIKeyUserByTokenHash, err = s.prepare(ctx, sqlGetAPIKeyUserByTokenHash); err != nil {
-		return err
-	}
-	if s.stmtListAPIKeysForUser, err = s.prepare(ctx, sqlListAPIKeysForUser); err != nil {
-		return err
-	}
-	if s.stmtRevokeAPIKey, err = s.prepare(ctx, sqlRevokeAPIKey); err != nil {
-		return err
-	}
-	if s.stmtTouchAPIKeyLastUsed, err = s.prepare(ctx, sqlTouchAPIKeyLastUsed); err != nil {
-		return err
-	}
-
-	// ── worker credentials & join tokens ─────────────────────────────────────
-	if s.stmtInsertWorkerCredential, err = s.prepare(ctx, sqlInsertWorkerCredential); err != nil {
-		return err
-	}
-	if s.stmtListActiveWorkerCredentials, err = s.prepare(ctx, sqlListActiveWorkerCredentials); err != nil {
-		return err
-	}
-	if s.stmtRevokeWorkerCredential, err = s.prepare(ctx, sqlRevokeWorkerCredential); err != nil {
-		return err
-	}
-	if s.stmtTouchWorkerCredential, err = s.prepare(ctx, sqlTouchWorkerCredential); err != nil {
-		return err
-	}
-	if s.stmtInsertWorkerJoinToken, err = s.prepare(ctx, sqlInsertWorkerJoinToken); err != nil {
-		return err
-	}
-	if s.stmtGetWorkerJoinTokenByHash, err = s.prepare(ctx, sqlGetWorkerJoinTokenByHash); err != nil {
-		return err
-	}
-	if s.stmtMarkWorkerJoinTokenUsed, err = s.prepare(ctx, sqlMarkWorkerJoinTokenUsed); err != nil {
-		return err
-	}
-	// sqlConsumeWorkerJoinToken has no prepared statement of its own: it is
-	// used only as raw SQL text inside RedeemWorkerJoinToken's transaction
-	// (workercredential.go), matching CreateJobSubmission's idiom.
-
-	return nil
 }

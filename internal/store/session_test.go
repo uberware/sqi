@@ -63,7 +63,7 @@ func TestSessionStore_IssueVerifyRevoke(t *testing.T) {
 // whose user_id references no user is rejected — SQLite via the `REFERENCES
 // users(id)` foreign key (PRAGMA foreign_keys=ON), the fake via an explicit
 // existence check. Both must surface store.ErrConflict (the FOREIGN KEY
-// violation is mapped to that sentinel in sqlite/scan.go).
+// violation is mapped to that sentinel by mapErr in sqlstore/scan.go).
 func TestSessionStore_CreateSession_OrphanUser(t *testing.T) {
 	for name, st := range newStores(t) {
 		t.Run(name, func(t *testing.T) {

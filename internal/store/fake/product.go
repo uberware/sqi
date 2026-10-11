@@ -19,6 +19,8 @@ func (s *Store) CreateProduct(_ context.Context, p store.Product) (store.Product
 			return store.Product{}, store.ErrConflict
 		}
 	}
+	p.CreatedAt = s.stampLocked()
+	p.UpdatedAt = p.CreatedAt
 	s.products[p.ID] = p
 	return p, nil
 }
@@ -44,13 +46,8 @@ func (s *Store) ListProducts(_ context.Context) ([]store.Product, error) {
 		out = append(out, p)
 	}
 	slices.SortFunc(out, func(a, b store.Product) int {
-		if a.Name < b.Name {
-			return -1
-		}
-		if a.Name > b.Name {
-			return 1
-		}
-		return 0
+		// products.name is COLLATE NOCASE on SQLite, which folds ASCII letters only.
+		return strings.Compare(asciiToLower(a.Name), asciiToLower(b.Name))
 	})
 	return out, nil
 }

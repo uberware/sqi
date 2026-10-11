@@ -5,7 +5,6 @@ package fake
 import (
 	"context"
 	"slices"
-	"time"
 
 	"github.com/uberware/sqi/internal/store"
 )
@@ -22,6 +21,8 @@ func (s *Store) CreateFarm(_ context.Context, farm store.Farm) (store.Farm, erro
 		}
 	}
 
+	farm.CreatedAt = s.stampLocked()
+	farm.UpdatedAt = farm.CreatedAt
 	s.farms[farm.ID] = farm
 	return farm, nil
 }
@@ -84,7 +85,7 @@ func (s *Store) UpdateFarm(_ context.Context, farm store.Farm) (store.Farm, erro
 	}
 
 	farm.CreatedAt = existing.CreatedAt
-	farm.UpdatedAt = time.Now()
+	farm.UpdatedAt = s.stampLocked()
 	s.farms[farm.ID] = farm
 	return farm, nil
 }

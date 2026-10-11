@@ -72,29 +72,21 @@ func (s *Store) CreateJobSubmission(_ context.Context, sub store.JobSubmission) 
 	}
 
 	// Each step and task is stamped with its own, strictly later time,
-	// mirroring the SQLite implementation (rowClock in sqlite/job.go), where
+	// mirroring the SQLite implementation (rowClock in sqlstore/job.go), where
 	// tasks within a step sharing one created_at would silently disable the
 	// ready-task ordering tiebreaker and destabilize ListTasks paging. A coarse
 	// wall clock returns the same instant for consecutive rows, so a row the
-	// clock has not moved past is stamped a nanosecond after the one before.
-	var last time.Time
-	stamp := func() time.Time {
-		now := time.Now().UTC()
-		if !now.After(last) {
-			now = last.Add(time.Nanosecond)
-		}
-		last = now
-		return now
-	}
+	// clock has not moved past is stamped a nanosecond after the one before
+	// (stampLocked, which the store's other Create methods share).
 	for _, step := range sub.Steps {
-		rowNow := stamp()
+		rowNow := s.stampLocked()
 		step.DependsOn = copySlice(step.DependsOn)
 		step.CreatedAt, step.UpdatedAt = rowNow, rowNow
 		s.steps[step.ID] = step
 		out.Steps = append(out.Steps, step)
 	}
 	for _, task := range sub.Tasks {
-		rowNow := stamp()
+		rowNow := s.stampLocked()
 		task.Parameters = copyMap(task.Parameters)
 		task.CreatedAt, task.UpdatedAt = rowNow, rowNow
 		s.tasks[task.ID] = task
@@ -298,9 +290,9 @@ func (s *Store) ListJobs(_ context.Context, opts store.ListJobsOptions) (store.P
 }
 
 // UpdateJob replaces only the mutable user-settable fields of an existing job.
-// status, started_at, completed_at, and parameters are preserved from the stored
-// record to match the sqlite implementation which excludes those columns.
-// parameters is persisted at submission time and is not mutable via UpdateJob.
+// Lifecycle and submission fields (status, started_at, completed_at,
+// created_at, parameters, declared extensions, failed_attempts, park_reason)
+// keep their stored values, as on SQLite, whose UPDATE does not set them.
 func (s *Store) UpdateJob(_ context.Context, job store.Job) (store.Job, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -321,6 +313,10 @@ func (s *Store) UpdateJob(_ context.Context, job store.Job) (store.Job, error) {
 	// submission and is not on sqlUpdateJob's SET list.
 	job.DeclaredExtensions = copySlice(existing.DeclaredExtensions)
 	job.ExtensionsRecorded = existing.ExtensionsRecorded
+	// The failure counter and park reason are written by RecordTaskFailure,
+	// ParkJob and ResumeJob, and are not on sqlUpdateJob's SET list.
+	job.FailedAttempts = existing.FailedAttempts
+	job.ParkReason = existing.ParkReason
 	job.UpdatedAt = time.Now()
 	s.jobs[job.ID] = job
 	return job, nil

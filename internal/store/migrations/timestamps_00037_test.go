@@ -198,7 +198,7 @@ var (
 // column the schema has and 00037 does not rewrite, or one 00037 rewrites that
 // the schema does not have. A timestamp column is one named at, retry_after or
 // *_at. It guards 00037's completeness only: a column a later migration adds is
-// written fixed-width by timeToText from the start and needs no rewrite.
+// written fixed-width by sqlstore.TimeText from the start and needs no rewrite.
 func TestMigration00037_CoversEveryTimestampColumn(t *testing.T) {
 	path, s, _ := openSeedable(t)
 	if err := s.Close(); err != nil {

@@ -35,11 +35,7 @@ func registerAt(t *testing.T, st store.Store, farmID, id string, status store.Wo
 }
 
 func workerIDs(ws []store.Worker) []string {
-	ids := make([]string, 0, len(ws))
-	for _, w := range ws {
-		ids = append(ids, w.ID)
-	}
-	return ids
+	return project(ws, func(w store.Worker) string { return w.ID })
 }
 
 // TestSubSecond_StaleHeartbeatIsTakenOffline is the offline half of the

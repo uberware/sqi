@@ -1,0 +1,618 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
+package sqlstore_test
+
+import (
+	"context"
+	"errors"
+	"slices"
+	"testing"
+	"time"
+
+	"github.com/uberware/sqi/internal/store"
+	"github.com/uberware/sqi/internal/store/sqlite"
+	"github.com/uberware/sqi/internal/store/sqlstore"
+	"github.com/uberware/sqi/internal/store/storetest"
+)
+
+// openTestStoreWB opens a SQLite store for tests that reach the shared store's
+// internals through export_test.go (e.g. st.WriteDB()). The store is
+// closed via t.Cleanup; callers must not close it themselves.
+//
+// File-backed, not ":memory:", for the reason internal/store/sqlite's
+// openTestStore documents: only a file-backed store gets the separate read pool.
+func openTestStoreWB(t *testing.T) *sqlite.Store {
+	t.Helper()
+	s, err := sqlite.Open(context.Background(), t.TempDir()+"/test.db", sqlite.DefaultOptions())
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	t.Cleanup(func() {
+		if closeErr := s.Close(); closeErr != nil {
+			t.Errorf("Close: %v", closeErr)
+		}
+	})
+	return s
+}
+
+// seedScope creates the farm and queue a job row references, named after id.
+func seedScope(t *testing.T, st *sqlite.Store, id string) {
+	t.Helper()
+	ctx := context.Background()
+
+	if _, err := st.CreateFarm(ctx, store.Farm{
+		ID: id + "-farm", Name: id + "-farm",
+	}); err != nil {
+		t.Fatalf("seedScope CreateFarm(%q): %v", id, err)
+	}
+	if _, err := st.CreateQueue(ctx, store.Queue{
+		ID:     id + "-queue",
+		FarmID: id + "-farm",
+		Name:   id + "-queue",
+	}); err != nil {
+		t.Fatalf("seedScope CreateQueue(%q): %v", id, err)
+	}
+}
+
+// jobFor returns a minimal job in the scope seedScope made for id.
+func jobFor(id string, status store.JobStatus) store.Job {
+	return store.Job{
+		ID:             id,
+		FarmID:         id + "-farm",
+		QueueID:        id + "-queue",
+		Name:           id,
+		Status:         status,
+		Priority:       50,
+		TemplateFormat: store.TemplateFormatYAML,
+	}
+}
+
+// seedJob creates the minimal set of fixtures (farm → queue → job) needed
+// for job-level tests and returns the created job.
+func seedJob(t *testing.T, st *sqlite.Store, id string) store.Job {
+	t.Helper()
+	return seedJobIn(t, st, id, store.JobStatusPending)
+}
+
+// seedJobIn is seedJob for a job written in the given status, with the given
+// steps. The job and its steps go in as one submission, the way production
+// creates them, so a step cannot be added to a job that already exists.
+func seedJobIn(t *testing.T, st *sqlite.Store, id string, status store.JobStatus, steps ...store.Step) store.Job {
+	t.Helper()
+	seedScope(t, st, id)
+	return storetest.Submit(t, st, store.JobSubmission{Job: jobFor(id, status), Steps: steps}).Job
+}
+
+// seedJobWithChildren seeds a job with a step, task, task attempt, task log,
+// and usage claim (all the child rows the cascade must remove). Returns the job.
+//
+// The task is leased with a claim on a pool, which is how production gives a
+// task an attempt and a claim, so the attempt and claim are real ones.
+func seedJobWithChildren(t *testing.T, st *sqlite.Store, id string) store.Job {
+	t.Helper()
+	ctx := context.Background()
+	seedScope(t, st, id)
+
+	// usage_claims.pool_id has an FK to usage_pools.id — create the pool first.
+	if _, err := st.CreateUsagePool(ctx, store.UsagePool{
+		ID:            id + "-pool",
+		Name:          id + "-pool",
+		MaxConcurrent: 1,
+	}); err != nil {
+		t.Fatalf("seedJobWithChildren CreateUsagePool(%q): %v", id, err)
+	}
+
+	j := storetest.Submit(t, st, store.JobSubmission{
+		Job: jobFor(id, store.JobStatusPending),
+		Steps: []store.Step{{
+			ID:        id + "-step",
+			JobID:     id,
+			Name:      "step",
+			StepOrder: 0,
+			Status:    store.StepStatusPending,
+			DependsOn: []string{},
+		}},
+		Tasks: []store.Task{{
+			ID:         id + "-task",
+			JobID:      id,
+			StepID:     id + "-step",
+			Name:       "task",
+			Status:     store.TaskStatusReady,
+			Parameters: map[string]string{},
+		}},
+	}).Job
+
+	// task_attempts.worker_id FK to workers was relaxed in migration 00012, so
+	// any non-empty string is accepted without a matching workers row.
+	storetest.Lease(t, st, store.LeaseRequest{
+		TaskID:    id + "-task",
+		WorkerID:  "worker-stub",
+		AttemptID: id + "-attempt",
+		Claims:    []store.UsagePoolClaim{{ClaimID: id + "-claim", PoolID: id + "-pool", PoolName: id + "-pool"}},
+	})
+
+	if _, err := st.CreateTaskLog(ctx, store.TaskLog{
+		ID:        id + "-log",
+		TaskID:    id + "-task",
+		AttemptID: id + "-attempt",
+		SeqNum:    1,
+		NATSSeq:   1,
+		At:        time.Now().UTC(),
+		Stream:    store.LogStreamStdout,
+		Data:      "hello",
+	}); err != nil {
+		t.Fatalf("seedJobWithChildren CreateTaskLog(%q): %v", id, err)
+	}
+
+	return j
+}
+
+// assertNoRows fails the test if the COUNT(*) query with the given arg returns
+// a non-zero result.
+func assertNoRows(t *testing.T, st *sqlite.Store, query, arg string) {
+	t.Helper()
+	var n int
+	if err := st.WriteDB().QueryRowContext(context.Background(), query, arg).Scan(&n); err != nil {
+		t.Fatalf("count query %q: %v", query, err)
+	}
+	if n != 0 {
+		t.Fatalf("query %q returned %d rows, want 0", query, n)
+	}
+}
+
+func TestStore_DeleteJob_CascadesAllChildren(t *testing.T) {
+	ctx := context.Background()
+	st := openTestStoreWB(t)
+
+	// Seed two jobs; only the first is deleted.
+	keep := seedJob(t, st, "job-keep")
+	del := seedJobWithChildren(t, st, "job-del")
+
+	if err := st.DeleteJob(ctx, del.ID); err != nil {
+		t.Fatalf("DeleteJob: %v", err)
+	}
+
+	if _, err := st.GetJob(ctx, del.ID); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("GetJob(deleted) = %v, want ErrNotFound", err)
+	}
+	// Child rows for the deleted job are gone.
+	assertNoRows(t, st, "SELECT COUNT(*) FROM steps WHERE job_id = ?", del.ID)
+	assertNoRows(t, st, "SELECT COUNT(*) FROM tasks WHERE job_id = ?", del.ID)
+	assertNoRows(t, st, "SELECT COUNT(*) FROM task_attempts WHERE task_id IN (SELECT id FROM tasks WHERE job_id = ?)", del.ID)
+	assertNoRows(t, st, "SELECT COUNT(*) FROM task_logs WHERE task_id IN (SELECT id FROM tasks WHERE job_id = ?)", del.ID)
+	// The kept job survives.
+	if _, err := st.GetJob(ctx, keep.ID); err != nil {
+		t.Fatalf("GetJob(keep): %v", err)
+	}
+}
+
+func TestStore_DeleteJob_NotFound(t *testing.T) {
+	st := openTestStoreWB(t)
+	if err := st.DeleteJob(context.Background(), "missing"); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("DeleteJob(missing) = %v, want ErrNotFound", err)
+	}
+}
+
+// seedTerminalJobAt creates a job in the given terminal status, with the given
+// steps, then backdates both completed_at and updated_at to ts so the COALESCE
+// cutoff comparison is deterministic.
+func seedTerminalJobAt(t *testing.T, st *sqlite.Store, id string, status store.JobStatus, ts time.Time, steps ...store.Step) {
+	t.Helper()
+	ctx := context.Background()
+	seedJobIn(t, st, id, status, steps...)
+	if _, err := st.WriteDB().ExecContext(
+		ctx,
+		`UPDATE jobs SET completed_at = ?, updated_at = ? WHERE id = ?`,
+		sqlstore.TimeText(ts.UTC()), sqlstore.TimeText(ts.UTC()), id,
+	); err != nil {
+		t.Fatalf("seedTerminalJobAt backdate(%q): %v", id, err)
+	}
+}
+
+// seedBlockedJob creates a blocked job that waits on the given upstream jobs,
+// which must already exist. The job and its edges go in as one submission.
+func seedBlockedJob(t *testing.T, st *sqlite.Store, id string, upstreams ...string) store.Job {
+	t.Helper()
+	seedScope(t, st, id)
+	return storetest.Submit(t, st, store.JobSubmission{
+		Job:       jobFor(id, store.JobStatusBlocked),
+		DependsOn: upstreams,
+	}).Job
+}
+
+// deletedJobIDs collects the IDs from a []store.DeletedJob slice, sorts them,
+// and returns them so callers can compare against a pre-sorted want slice.
+func deletedJobIDs(deleted []store.DeletedJob) []string {
+	ids := make([]string, len(deleted))
+	for i, d := range deleted {
+		ids[i] = d.ID
+	}
+	slices.Sort(ids)
+	return ids
+}
+
+func TestStore_DeleteTerminalJobsBefore(t *testing.T) {
+	ctx := context.Background()
+
+	cutoff := time.Date(2026, 6, 20, 12, 0, 0, 0, time.UTC)
+	old := cutoff.Add(-time.Hour)
+	recent := cutoff.Add(time.Hour)
+
+	tests := []struct {
+		name          string
+		includeFailed bool
+		wantDeleted   []string // job IDs expected removed (sorted)
+	}{
+		{name: "excludes failed by default", includeFailed: false, wantDeleted: []string{"canceled-old", "completed-old"}},
+		{name: "includes failed when set", includeFailed: true, wantDeleted: []string{"canceled-old", "completed-old", "failed-old"}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			st := openTestStoreWB(t)
+			// Seed: <status>-old at `old`, plus a recent completed and a running job that must survive.
+			seedTerminalJobAt(t, st, "completed-old", store.JobStatusCompleted, old)
+			seedTerminalJobAt(t, st, "canceled-old", store.JobStatusCanceled, old)
+			seedTerminalJobAt(t, st, "failed-old", store.JobStatusFailed, old)
+			seedTerminalJobAt(t, st, "completed-recent", store.JobStatusCompleted, recent)
+			seedJob(t, st, "running-active") // status pending; never terminal
+
+			got, err := st.DeleteTerminalJobsBefore(ctx, cutoff, tt.includeFailed)
+			if err != nil {
+				t.Fatalf("DeleteTerminalJobsBefore: %v", err)
+			}
+			gotIDs := deletedJobIDs(got)
+			if !slices.Equal(gotIDs, tt.wantDeleted) {
+				t.Fatalf("deleted = %v, want %v", gotIDs, tt.wantDeleted)
+			}
+			// Survivors still present.
+			for _, id := range []string{"completed-recent", "running-active"} {
+				if _, err := st.GetJob(ctx, id); err != nil {
+					t.Fatalf("GetJob(%s): %v", id, err)
+				}
+			}
+		})
+	}
+}
+
+// TestStore_DeleteTerminalJobsBefore_KeepsUpstreamNeededByBlockedDependent
+// verifies the retention-purge fix: a completed upstream older than the
+// cutoff must NOT be purged while a dependent still waits on it (blocked),
+// because the reconciler would read the purge as a missing upstream and
+// wrongly cancel the dependent even though the upstream actually succeeded.
+// Once the dependent reaches a terminal status, the upstream becomes
+// eligible for purge again.
+func TestStore_DeleteTerminalJobsBefore_KeepsUpstreamNeededByBlockedDependent(t *testing.T) {
+	ctx := context.Background()
+	st := openTestStoreWB(t)
+
+	cutoff := time.Date(2026, 6, 20, 12, 0, 0, 0, time.UTC)
+	old := cutoff.Add(-time.Hour)
+
+	seedTerminalJobAt(t, st, "upstream-old", store.JobStatusCompleted, old)
+	dependent := seedBlockedJob(t, st, "dependent-blocked", "upstream-old")
+
+	got, err := st.DeleteTerminalJobsBefore(ctx, cutoff, false)
+	if err != nil {
+		t.Fatalf("DeleteTerminalJobsBefore: %v", err)
+	}
+	if ids := deletedJobIDs(got); len(ids) != 0 {
+		t.Fatalf("deleted = %v, want none (upstream still needed by blocked dependent)", ids)
+	}
+	if _, err := st.GetJob(ctx, "upstream-old"); err != nil {
+		t.Fatalf("GetJob(upstream-old) after guarded sweep: %v", err)
+	}
+
+	// Once the dependent is terminal, the upstream is no longer protected.
+	if canceled, _, err := st.CancelBlockedJob(ctx, dependent.ID, "test", time.Now().UTC()); err != nil || !canceled {
+		t.Fatalf("CancelBlockedJob = (%v, %v), want canceled", canceled, err)
+	}
+	got, err = st.DeleteTerminalJobsBefore(ctx, cutoff, false)
+	if err != nil {
+		t.Fatalf("DeleteTerminalJobsBefore (2nd sweep): %v", err)
+	}
+	if ids := deletedJobIDs(got); !slices.Equal(ids, []string{"upstream-old"}) {
+		t.Fatalf("deleted = %v, want [upstream-old]", ids)
+	}
+	if _, err := st.GetJob(ctx, "upstream-old"); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("GetJob(upstream-old) after unblock sweep = %v, want ErrNotFound", err)
+	}
+}
+
+// TestJob_BlockedStatusAndDependencyTable verifies, without going through
+// ListJobDependencyIDs, that a job created with JobStatusBlocked round-trips
+// through CreateJobSubmission/GetJob, and that the job_dependencies table
+// exists and accepts rows of the expected shape.
+func TestJob_BlockedStatusAndDependencyTable(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	st := openTestStoreWB(t)
+
+	upstream := seedJob(t, st, "upstream")
+
+	if _, err := st.CreateFarm(ctx, store.Farm{ID: "blocked-farm", Name: "blocked-farm"}); err != nil {
+		t.Fatalf("CreateFarm: %v", err)
+	}
+	if _, err := st.CreateQueue(ctx, store.Queue{ID: "blocked-queue", FarmID: "blocked-farm", Name: "blocked-queue"}); err != nil {
+		t.Fatalf("CreateQueue: %v", err)
+	}
+
+	created := storetest.Submit(t, st, store.JobSubmission{Job: store.Job{
+		ID:             "blocked",
+		FarmID:         "blocked-farm",
+		QueueID:        "blocked-queue",
+		Name:           "comp",
+		Priority:       50,
+		Status:         store.JobStatusBlocked,
+		RawTemplate:    "{}",
+		TemplateFormat: store.TemplateFormatJSON,
+	}}).Job
+	if created.Status != store.JobStatusBlocked {
+		t.Fatalf("CreateJobSubmission status = %q, want blocked", created.Status)
+	}
+
+	got, err := st.GetJob(ctx, "blocked")
+	if err != nil {
+		t.Fatalf("GetJob: %v", err)
+	}
+	if got.Status != store.JobStatusBlocked {
+		t.Fatalf("GetJob status = %q, want blocked", got.Status)
+	}
+
+	// job_dependencies table exists (created by the 00020 migration).
+	var name string
+	if err := st.WriteDB().QueryRowContext(
+		ctx,
+		`SELECT name FROM sqlite_master WHERE type='table' AND name='job_dependencies'`,
+	).Scan(&name); err != nil {
+		t.Fatalf("job_dependencies table missing: %v", err)
+	}
+	if name != "job_dependencies" {
+		t.Fatalf("unexpected sqlite_master name %q", name)
+	}
+
+	// A raw edge insert round-trips with the expected shape (job_id,
+	// depends_on_job_id, created_at), confirming the schema
+	// CreateJobSubmission/ListJobDependencyIDs build on.
+	if _, err := st.WriteDB().ExecContext(
+		ctx,
+		`INSERT INTO job_dependencies (job_id, depends_on_job_id, created_at) VALUES (?, ?, ?)`,
+		"blocked", upstream.ID, sqlstore.TimeText(time.Now()),
+	); err != nil {
+		t.Fatalf("raw insert into job_dependencies: %v", err)
+	}
+
+	var depID string
+	if err := st.WriteDB().QueryRowContext(
+		ctx,
+		`SELECT depends_on_job_id FROM job_dependencies WHERE job_id = ?`, "blocked",
+	).Scan(&depID); err != nil {
+		t.Fatalf("query job_dependencies: %v", err)
+	}
+	if depID != upstream.ID {
+		t.Fatalf("depends_on_job_id = %q, want %q", depID, upstream.ID)
+	}
+}
+
+// TestJob_ListDependentsAndBlocked exercises a submission's dependency edges,
+// ListDependents, ListBlockedJobs, and GetJob's DependsOn population together.
+func TestJob_ListDependentsAndBlocked(t *testing.T) {
+	// Not t.Parallel(): sqlite.Open calls goose.SetBaseFS/SetDialect, which
+	// mutate package-level goose state; running concurrently with another
+	// parallel Open (e.g. TestJob_BlockedStatusAndDependencyTable in this
+	// same file) trips the race detector on that pre-existing global state.
+	ctx := context.Background()
+	st := openTestStoreWB(t)
+
+	up := seedJob(t, st, "up-listdeps")
+	down := store.Job{
+		ID: "down-listdeps", FarmID: up.FarmID, QueueID: up.QueueID, Name: "down",
+		Priority: 50, Status: store.JobStatusBlocked, RawTemplate: "{}",
+		TemplateFormat: store.TemplateFormatJSON,
+	}
+	storetest.Submit(t, st, store.JobSubmission{Job: down, DependsOn: []string{up.ID}})
+
+	deps, err := st.ListDependents(ctx, up.ID)
+	if err != nil {
+		t.Fatalf("ListDependents: %v", err)
+	}
+	if len(deps) != 1 || deps[0] != down.ID {
+		t.Fatalf("ListDependents = %v, want [%s]", deps, down.ID)
+	}
+
+	blocked, err := st.ListBlockedJobs(ctx)
+	if err != nil {
+		t.Fatalf("ListBlockedJobs: %v", err)
+	}
+	if len(blocked) != 1 || blocked[0].ID != down.ID {
+		t.Fatalf("ListBlockedJobs = %v, want [%s]", blocked, down.ID)
+	}
+
+	// GetJob populates DependsOn.
+	got, err := st.GetJob(ctx, down.ID)
+	if err != nil {
+		t.Fatalf("GetJob: %v", err)
+	}
+	if len(got.DependsOn) != 1 || got.DependsOn[0] != up.ID {
+		t.Fatalf("GetJob DependsOn = %v, want [%s]", got.DependsOn, up.ID)
+	}
+}
+
+// TestJob_DeleteJob_RemovesOutgoingEdgesKeepsIncoming verifies the asymmetric
+// delete behavior: deleting the downstream job removes its outgoing edges,
+// but deleting the upstream job leaves the (now-dangling) edge intact so the
+// reconciler can observe "upstream deleted".
+func TestJob_DeleteJob_RemovesOutgoingEdgesKeepsIncoming(t *testing.T) {
+	// Not t.Parallel(): see comment in TestJob_ListDependentsAndBlocked.
+	ctx := context.Background()
+	st := openTestStoreWB(t)
+
+	up := seedJob(t, st, "up-delcascade")
+	down := store.Job{
+		ID: "down-delcascade", FarmID: up.FarmID, QueueID: up.QueueID, Name: "down",
+		Priority: 50, Status: store.JobStatusBlocked, RawTemplate: "{}",
+		TemplateFormat: store.TemplateFormatJSON,
+	}
+	storetest.Submit(t, st, store.JobSubmission{Job: down, DependsOn: []string{up.ID}})
+
+	// Deleting the UPSTREAM must NOT delete the edge (no FK on depends_on_job_id):
+	if err := st.DeleteJob(ctx, up.ID); err != nil {
+		t.Fatalf("DeleteJob(up): %v", err)
+	}
+	deps, err := st.ListJobDependencyIDs(ctx, down.ID)
+	if err != nil {
+		t.Fatalf("ListJobDependencyIDs: %v", err)
+	}
+	if len(deps) != 1 || deps[0] != up.ID {
+		t.Fatalf("after upstream delete, edge should survive: got %v", deps)
+	}
+
+	// Deleting the DOWNSTREAM removes its outgoing edges (job_id cascade):
+	if err := st.DeleteJob(ctx, down.ID); err != nil {
+		t.Fatalf("DeleteJob(down): %v", err)
+	}
+	deps, err = st.ListDependents(ctx, up.ID)
+	if err != nil {
+		t.Fatalf("ListDependents: %v", err)
+	}
+	if len(deps) != 0 {
+		t.Fatalf("after downstream delete, no edges should remain: got %v", deps)
+	}
+}
+
+// TestJob_CreateJobSubmission_DuplicateDependencyIsIgnored verifies that a
+// submission naming the same upstream twice neither fails nor produces a
+// duplicate edge — INSERT ... ON CONFLICT DO NOTHING plus the (job_id,
+// depends_on_job_id) primary key make the edge write idempotent.
+func TestJob_CreateJobSubmission_DuplicateDependencyIsIgnored(t *testing.T) {
+	// Not t.Parallel(): see comment in TestJob_ListDependentsAndBlocked.
+	ctx := context.Background()
+	st := openTestStoreWB(t)
+
+	up1 := seedJob(t, st, "up1-dedup")
+	up2 := seedJob(t, st, "up2-dedup")
+	down := store.Job{
+		ID: "down-dedup", FarmID: up1.FarmID, QueueID: up1.QueueID, Name: "down",
+		Priority: 50, Status: store.JobStatusBlocked, RawTemplate: "{}",
+		TemplateFormat: store.TemplateFormatJSON,
+	}
+	// up1 is named twice.
+	storetest.Submit(t, st, store.JobSubmission{Job: down, DependsOn: []string{up1.ID, up1.ID, up2.ID}})
+
+	deps, err := st.ListJobDependencyIDs(ctx, down.ID)
+	if err != nil {
+		t.Fatalf("ListJobDependencyIDs: %v", err)
+	}
+	want := []string{up1.ID, up2.ID}
+	slices.Sort(want)
+	if !slices.Equal(deps, want) {
+		t.Fatalf("ListJobDependencyIDs = %v, want %v (no duplicate edge)", deps, want)
+	}
+}
+
+// TestJob_ListJobDependencyIDs_OrderedByUpstreamID locks in the ordering fix:
+// ListJobDependencyIDs must return upstream IDs sorted by ID, regardless of
+// the order they were passed in the submission or created in.
+func TestJob_ListJobDependencyIDs_OrderedByUpstreamID(t *testing.T) {
+	// Not t.Parallel(): see comment in TestJob_ListDependentsAndBlocked.
+	ctx := context.Background()
+	st := openTestStoreWB(t)
+
+	zeta := seedJob(t, st, "zeta-order")
+	alpha := seedJob(t, st, "alpha-order")
+	mike := seedJob(t, st, "mike-order")
+	down := store.Job{
+		ID: "down-order", FarmID: zeta.FarmID, QueueID: zeta.QueueID, Name: "down",
+		Priority: 50, Status: store.JobStatusBlocked, RawTemplate: "{}",
+		TemplateFormat: store.TemplateFormatJSON,
+	}
+	// Deliberately not alphabetical.
+	storetest.Submit(t, st, store.JobSubmission{Job: down, DependsOn: []string{zeta.ID, alpha.ID, mike.ID}})
+
+	deps, err := st.ListJobDependencyIDs(ctx, down.ID)
+	if err != nil {
+		t.Fatalf("ListJobDependencyIDs: %v", err)
+	}
+	want := []string{alpha.ID, mike.ID, zeta.ID}
+	if !slices.Equal(deps, want) {
+		t.Fatalf("ListJobDependencyIDs = %v, want %v", deps, want)
+	}
+}
+
+// TestStore_PurgeExpiredJobTx_SkipsAJobRevivedAfterTheSelect reaches the
+// re-check branch, which no black-box test can on SQLite: the single write
+// connection means a retry cannot commit between DeleteTerminalJobsBefore's
+// SELECT and its per-job delete. The test plays the retry itself, inside the
+// sweep's own transaction, between the two steps: the job is a candidate when
+// selected, is then revived, and must be neither deleted nor reported. A
+// second candidate that is left alone is purged, so the skip cannot be a
+// blanket refusal.
+func TestStore_PurgeExpiredJobTx_SkipsAJobRevivedAfterTheSelect(t *testing.T) {
+	ctx := context.Background()
+	st := openTestStoreWB(t)
+	cutoff := time.Date(2026, 6, 20, 12, 0, 0, 0, time.UTC)
+	old := cutoff.Add(-time.Hour)
+	// The fixture's children are what a wrongful purge would destroy.
+	seedTerminalJobAt(t, st, "revived", store.JobStatusFailed, old, store.Step{
+		ID: "revived-step", JobID: "revived", Name: "step", Status: store.StepStatusFailed, DependsOn: []string{},
+	})
+	seedTerminalJobAt(t, st, "untouched", store.JobStatusFailed, old)
+
+	query, args := sqlstore.ExpiredJobsQuery(cutoff, true)
+	tx, err := st.WriteDB().BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatalf("BeginTx: %v", err)
+	}
+	defer func() { _ = tx.Rollback() }() //nolint:errcheck // rollback after commit is a no-op
+	dtx := st.WrapTx(tx)
+
+	candidates, err := sqlstore.SelectExpiredJobsTx(ctx, dtx, query, args)
+	if err != nil {
+		t.Fatalf("selectExpiredJobsTx: %v", err)
+	}
+	if got := deletedJobIDs(candidates); !slices.Equal(got, []string{"revived", "untouched"}) {
+		t.Fatalf("candidates = %v, want both jobs", got)
+	}
+
+	// The retry: the job is live again before its turn comes.
+	if _, err := tx.ExecContext(
+		ctx,
+		`UPDATE jobs SET status = 'pending', completed_at = NULL, updated_at = ? WHERE id = 'revived'`,
+		sqlstore.TimeText(cutoff.Add(time.Hour)),
+	); err != nil {
+		t.Fatalf("revive: %v", err)
+	}
+
+	recheck := query + sqlstore.SQLExpiredJobByID
+	purged, err := sqlstore.PurgeExpiredJobTx(ctx, dtx, recheck, args, "revived")
+	if err != nil {
+		t.Fatalf("purgeExpiredJobTx(revived): %v", err)
+	}
+	if purged {
+		t.Fatal("a job revived after the SELECT was purged")
+	}
+	purged, err = sqlstore.PurgeExpiredJobTx(ctx, dtx, recheck, args, "untouched")
+	if err != nil {
+		t.Fatalf("purgeExpiredJobTx(untouched): %v", err)
+	}
+	if !purged {
+		t.Fatal("an unchanged candidate was skipped")
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatalf("Commit: %v", err)
+	}
+
+	if j, err := st.GetJob(ctx, "revived"); err != nil || j.Status != store.JobStatusPending {
+		t.Fatalf("GetJob(revived) = (%v, %v), want the live job intact", j.Status, err)
+	}
+	var steps int
+	if err := st.WriteDB().QueryRowContext(ctx, `SELECT COUNT(*) FROM steps WHERE job_id = 'revived'`).Scan(&steps); err != nil {
+		t.Fatalf("count steps: %v", err)
+	}
+	if steps != 1 {
+		t.Fatalf("steps of the revived job = %d, want 1: its children must survive", steps)
+	}
+	if _, err := st.GetJob(ctx, "untouched"); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("GetJob(untouched) = %v, want ErrNotFound", err)
+	}
+}

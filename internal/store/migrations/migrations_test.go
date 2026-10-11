@@ -262,7 +262,7 @@ func TestMigrations_00027_JobDeclaredExtensionsDownUp(t *testing.T) {
 
 // TestMigrations_00032_TasksStepStatusIndexDownUp pins 00032 in both directions:
 // Up creates the tasks(step_id, status) index that step finalization reads
-// (pinned against the query plans by the sqlite package's
+// (pinned against the query plans by the sqlstore package's
 // TestStepFinalizationQueries_UseStepStatusIndex), Down drops it, and a re-Up
 // creates it again.
 func TestMigrations_00032_TasksStepStatusIndexDownUp(t *testing.T) {

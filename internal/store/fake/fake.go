@@ -6,6 +6,7 @@ package fake
 
 import (
 	"sync"
+	"time"
 
 	"github.com/uberware/sqi/internal/store"
 )
@@ -13,7 +14,9 @@ import (
 // Store is an in-memory implementation of [store.Store] for unit tests that
 // must avoid touching the filesystem.
 type Store struct {
-	mu                sync.Mutex
+	mu sync.Mutex
+	// lastStamp is the last time stampLocked returned.
+	lastStamp         time.Time
 	farms             map[string]store.Farm
 	queues            map[string]store.Queue
 	storageLocations  map[string]store.StorageLocation
@@ -62,6 +65,18 @@ func New() *Store {
 		workerCredentials: make(map[string]store.WorkerCredential),
 		workerJoinTokens:  make(map[string]store.WorkerJoinToken),
 	}
+}
+
+// stampLocked returns the current UTC time, or a nanosecond after the
+// previous stamp when the clock has not moved past it, so rows created in
+// sequence order by creation time as they do on SQLite. The caller holds s.mu.
+func (s *Store) stampLocked() time.Time {
+	now := time.Now().UTC()
+	if !now.After(s.lastStamp) {
+		now = s.lastStamp.Add(time.Nanosecond)
+	}
+	s.lastStamp = now
+	return now
 }
 
 // Close implements io.Closer; it is a no-op for the in-memory store.

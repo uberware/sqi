@@ -115,7 +115,7 @@ func (s *Store) ListUsers(_ context.Context) ([]store.User, error) {
 		users = append(users, u)
 	}
 	// Case-insensitive to match SQLite's `ORDER BY username` over the
-	// COLLATE NOCASE column (see sqlListUsers in internal/store/sqlite/user.go).
+	// COLLATE NOCASE column (see sqlListUsers in internal/store/sqlstore/user.go).
 	// ASCII-only fold, mirroring SQLite's NOCASE collation.
 	slices.SortStableFunc(users, func(a, b store.User) int {
 		return strings.Compare(asciiToLower(a.Username), asciiToLower(b.Username))
@@ -124,7 +124,7 @@ func (s *Store) ListUsers(_ context.Context) ([]store.User, error) {
 }
 
 // lastLiveAdminLocked reports whether id is an enabled admin and the only one,
-// mirroring sqlLastLiveAdmin in the SQLite store. Caller holds s.mu.
+// mirroring sqlLastLiveAdmin in internal/store/sqlstore. Caller holds s.mu.
 func (s *Store) lastLiveAdminLocked(id string) bool {
 	u, ok := s.users[id]
 	if !ok || u.Role != "admin" || u.Disabled {

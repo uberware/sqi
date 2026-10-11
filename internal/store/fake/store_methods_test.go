@@ -442,11 +442,10 @@ func TestResumeJob_Fake(t *testing.T) {
 	// whether or not it did.
 
 	// Auto-parked: reset everything.
-	parked := storetest.NewJob("j-parked", "farm-f1", "q1").As(store.JobStatusRunning).Submit(t, s).Job
-	parked.FailedAttempts = 3
-	if _, err := s.UpdateJob(ctx(), parked); err != nil {
-		t.Fatalf("UpdateJob: %v", err)
-	}
+	// The counter is seeded in the submission: UpdateJob does not write it.
+	parked := storetest.NewJob("j-parked", "farm-f1", "q1").As(store.JobStatusRunning)
+	parked.Sub.Job.FailedAttempts = 3
+	parked.Submit(t, s)
 	if err := s.ParkJob(ctx(), "j-parked", "failure limit reached (3)", now); err != nil {
 		t.Fatalf("ParkJob: %v", err)
 	}
@@ -462,11 +461,9 @@ func TestResumeJob_Fake(t *testing.T) {
 	}
 
 	// Manual pause: counter survives.
-	manual := storetest.NewJob("j-manual", "farm-f1", "q1").As(store.JobStatusRunning).Submit(t, s).Job
-	manual.FailedAttempts = 2
-	if _, err := s.UpdateJob(ctx(), manual); err != nil {
-		t.Fatalf("UpdateJob: %v", err)
-	}
+	manual := storetest.NewJob("j-manual", "farm-f1", "q1").As(store.JobStatusRunning)
+	manual.Sub.Job.FailedAttempts = 2
+	manual.Submit(t, s)
 	if err := s.PauseJob(ctx(), "j-manual", now); err != nil {
 		t.Fatalf("PauseJob: %v", err)
 	}

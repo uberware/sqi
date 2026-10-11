@@ -282,8 +282,9 @@ func TestMigration00031_ReleasesLeakedClaims(t *testing.T) {
 	}
 
 	// Every repaired claim carries a released_at the Go scanners can read: the
-	// store parses timestamps with time.RFC3339Nano (see timeToText/textToTime),
-	// and the migration writes them from SQLite's own clock.
+	// store parses timestamps with time.RFC3339Nano (see
+	// sqlstore.TimeText/textToTime), and the migration writes them from
+	// SQLite's own clock.
 	for _, id := range leaked {
 		released := claimReleasedAt(t, db, id)
 		if !released.Valid {

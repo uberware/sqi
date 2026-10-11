@@ -6,7 +6,6 @@ import (
 	"context"
 	"slices"
 	"strings"
-	"time"
 
 	"github.com/uberware/sqi/internal/store"
 )
@@ -22,6 +21,8 @@ func (s *Store) CreateComputeLocation(_ context.Context, loc store.ComputeLocati
 			return store.ComputeLocation{}, store.ErrConflict
 		}
 	}
+	loc.CreatedAt = s.stampLocked()
+	loc.UpdatedAt = loc.CreatedAt
 	s.computeLocations[loc.ID] = loc
 	return loc, nil
 }
@@ -85,7 +86,7 @@ func (s *Store) UpdateComputeLocation(_ context.Context, loc store.ComputeLocati
 		}
 	}
 	loc.CreatedAt = existing.CreatedAt
-	loc.UpdatedAt = time.Now().UTC()
+	loc.UpdatedAt = s.stampLocked()
 	s.computeLocations[loc.ID] = loc
 	return loc, nil
 }
