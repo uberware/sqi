@@ -6,6 +6,7 @@ import (
 	"errors"
 	"slices"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -22,6 +23,97 @@ func mustCreatePool(t *testing.T, st store.Store, name string, maxConcurrent int
 		t.Fatalf("CreateUsagePool %s: %v", name, err)
 	}
 	return p
+}
+
+func TestParity_CreateUsagePool(t *testing.T) {
+	for name, st := range newStores(t) {
+		t.Run(name, func(t *testing.T) {
+			ctx := t.Context()
+			want := store.UsagePool{
+				ID: uuid.NewString(), Name: "nuke", ServerHint: "10.0.0.50:5053", MaxConcurrent: 4,
+			}
+			got, err := st.CreateUsagePool(ctx, want)
+			if err != nil {
+				t.Fatalf("CreateUsagePool: %v", err)
+			}
+			if got.ID != want.ID || got.Name != "nuke" || got.ServerHint != "10.0.0.50:5053" || got.MaxConcurrent != 4 {
+				t.Fatalf("CreateUsagePool returned (%+v), want fields persisted", got)
+			}
+			// Verify stored.
+			stored, err := st.GetUsagePool(ctx, want.ID)
+			if err != nil || stored.Name != "nuke" {
+				t.Fatalf("GetUsagePool after CreateUsagePool: %v / %s, want success and name nuke", err, stored.Name)
+			}
+			// Duplicate name: ErrConflict.
+			if _, err := st.CreateUsagePool(ctx, store.UsagePool{ID: uuid.NewString(), Name: "nuke", MaxConcurrent: 5}); !errors.Is(err, store.ErrConflict) {
+				t.Fatalf("duplicate name: err = %v, want ErrConflict", err)
+			}
+		})
+	}
+}
+
+func TestParity_UpdateUsagePool(t *testing.T) {
+	for name, st := range newStores(t) {
+		t.Run(name, func(t *testing.T) {
+			ctx := t.Context()
+			orig := mustCreatePool(t, st, "nuke", 4)
+			_, later := subSecond()
+			time.Sleep(time.Millisecond)
+
+			upd := orig
+			upd.Name = "nuke-updated"
+			upd.ServerHint = "10.0.0.100:5053"
+			upd.MaxConcurrent = 10
+			upd.UpdatedAt = later // Should be updated to a fresh time.
+
+			got, err := st.UpdateUsagePool(ctx, upd)
+			if err != nil {
+				t.Fatalf("UpdateUsagePool: %v", err)
+			}
+			if got.Name != "nuke-updated" || got.ServerHint != "10.0.0.100:5053" || got.MaxConcurrent != 10 {
+				t.Fatalf("UpdateUsagePool returned (%+v), want mutable fields updated", got)
+			}
+			if !got.CreatedAt.Equal(orig.CreatedAt) || got.UpdatedAt.Before(orig.UpdatedAt) {
+				t.Fatalf("UpdateUsagePool: CreatedAt changed or UpdatedAt not advanced")
+			}
+			// Verify stored.
+			stored, err := st.GetUsagePool(ctx, orig.ID)
+			if err != nil || stored.Name != "nuke-updated" {
+				t.Fatalf("GetUsagePool after UpdateUsagePool: %v / %s, want success and name nuke-updated", err, stored.Name)
+			}
+			// Unknown ID: ErrNotFound.
+			if _, err := st.UpdateUsagePool(ctx, store.UsagePool{ID: uuid.NewString(), Name: "foo", MaxConcurrent: 1}); !errors.Is(err, store.ErrNotFound) {
+				t.Fatalf("unknown id: err = %v, want ErrNotFound", err)
+			}
+			// Rename to conflicting name: ErrConflict.
+			mustCreatePool(t, st, "taken", 5)
+			if _, err := st.UpdateUsagePool(ctx, store.UsagePool{ID: orig.ID, Name: "taken", MaxConcurrent: 1}); !errors.Is(err, store.ErrConflict) {
+				t.Fatalf("rename to taken name: err = %v, want ErrConflict", err)
+			}
+		})
+	}
+}
+
+func TestParity_DeleteUsagePool(t *testing.T) {
+	for name, st := range newStores(t) {
+		t.Run(name, func(t *testing.T) {
+			ctx := t.Context()
+			pool := mustCreatePool(t, st, "nuke", 4)
+			keep := mustCreatePool(t, st, "kept", 5)
+			if err := st.DeleteUsagePool(ctx, pool.ID); err != nil {
+				t.Fatalf("DeleteUsagePool: %v", err)
+			}
+			if _, err := st.GetUsagePool(ctx, pool.ID); !errors.Is(err, store.ErrNotFound) {
+				t.Fatalf("GetUsagePool after delete: err = %v, want ErrNotFound", err)
+			}
+			if err := st.DeleteUsagePool(ctx, pool.ID); !errors.Is(err, store.ErrNotFound) {
+				t.Fatalf("second delete: err = %v, want ErrNotFound", err)
+			}
+			if _, err := st.GetUsagePool(ctx, keep.ID); err != nil {
+				t.Fatalf("other pool: %v, want it kept", err)
+			}
+		})
+	}
 }
 
 func TestParity_GetUsagePool(t *testing.T) {

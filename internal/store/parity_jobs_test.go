@@ -275,3 +275,68 @@ func TestParity_ResumeJob(t *testing.T) {
 		})
 	}
 }
+
+func TestParity_DeleteJob(t *testing.T) {
+	for name, st := range newStores(t) {
+		t.Run(name, func(t *testing.T) {
+			ctx := t.Context()
+			g := seedGraph(t, st, graphOpts{jobStatus: store.JobStatusCompleted})
+			job := g.Job
+			keep := jobIn(g).As(store.JobStatusCompleted).Submit(t, st).Job
+
+			if err := st.DeleteJob(ctx, job.ID); err != nil {
+				t.Fatalf("DeleteJob: %v", err)
+			}
+			if _, err := st.GetJob(ctx, job.ID); !errors.Is(err, store.ErrNotFound) {
+				t.Fatalf("GetJob after delete: err = %v, want ErrNotFound", err)
+			}
+			if err := st.DeleteJob(ctx, job.ID); !errors.Is(err, store.ErrNotFound) {
+				t.Fatalf("second delete: err = %v, want ErrNotFound", err)
+			}
+			if _, err := st.GetJob(ctx, keep.ID); err != nil {
+				t.Fatalf("other job: %v, want it kept", err)
+			}
+		})
+	}
+}
+
+func TestParity_ListDependents(t *testing.T) {
+	for name, st := range newStores(t) {
+		t.Run(name, func(t *testing.T) {
+			ctx := t.Context()
+			g := seedGraph(t, st, graphOpts{jobStatus: store.JobStatusRunning})
+			upstream := g.Job
+
+			// No dependents yet.
+			if got, err := st.ListDependents(ctx, upstream.ID); err != nil || len(got) != 0 {
+				t.Fatalf("no dependents: ListDependents = (%v, %v), want none", got, err)
+			}
+
+			// Create a dependent and a non-dependent.
+			dependent := jobIn(g).As(store.JobStatusPending)
+			dependent.Sub.DependsOn = []string{upstream.ID}
+			depJob := dependent.Submit(t, st).Job
+
+			unrelated := jobIn(g).As(store.JobStatusPending).Submit(t, st).Job
+
+			// Dependent should be listed; unrelated should not.
+			got, err := st.ListDependents(ctx, upstream.ID)
+			if err != nil {
+				t.Fatalf("ListDependents: %v", err)
+			}
+			if want := []string{depJob.ID}; !slices.Equal(sorted(got...), sorted(want...)) {
+				t.Fatalf("ListDependents = %v, want %v", sorted(got...), sorted(want...))
+			}
+
+			// Unrelated job has no dependents.
+			if got, err := st.ListDependents(ctx, unrelated.ID); err != nil || len(got) != 0 {
+				t.Fatalf("unrelated has no dependents: ListDependents = (%v, %v), want none", got, err)
+			}
+
+			// Unknown upstream ID: returns empty slice (documented behavior).
+			if got, err := st.ListDependents(ctx, uuid.NewString()); err != nil || len(got) != 0 {
+				t.Fatalf("unknown upstream: ListDependents = (%v, %v), want none", got, err)
+			}
+		})
+	}
+}

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"slices"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -17,6 +18,15 @@ func mustCreateFarm(t *testing.T, st store.Store, name string) store.Farm {
 	f, err := st.CreateFarm(t.Context(), store.Farm{ID: uuid.NewString(), Name: name})
 	if err != nil {
 		t.Fatalf("CreateFarm %s: %v", name, err)
+	}
+	return f
+}
+
+func mustGetFarm(t *testing.T, st store.Store, id string) store.Farm {
+	t.Helper()
+	f, err := st.GetFarm(t.Context(), id)
+	if err != nil {
+		t.Fatalf("GetFarm %s: %v", id, err)
 	}
 	return f
 }
@@ -39,6 +49,103 @@ func queueNames(qs []store.Queue) []string {
 		names = append(names, q.Name)
 	}
 	return names
+}
+
+func TestParity_CreateFarm(t *testing.T) {
+	for name, st := range newStores(t) {
+		t.Run(name, func(t *testing.T) {
+			ctx := t.Context()
+			delay := 30
+			want := store.Farm{ID: uuid.NewString(), Name: "main", Description: "the farm", MaxConcurrentTasks: 7, MaxAttempts: new(int), RetryDelaySeconds: &delay}
+			*want.MaxAttempts = 5
+			got, err := st.CreateFarm(ctx, want)
+			if err != nil {
+				t.Fatalf("CreateFarm: %v", err)
+			}
+			if got.ID != want.ID || got.Name != want.Name || got.Description != want.Description ||
+				got.MaxConcurrentTasks != 7 || got.MaxAttempts == nil || *got.MaxAttempts != 5 ||
+				got.RetryDelaySeconds == nil || *got.RetryDelaySeconds != 30 || got.FailureLimit != nil {
+				t.Fatalf("CreateFarm returned (%+v), want fields persisted", got)
+			}
+			// Verify stored.
+			stored, err := st.GetFarm(ctx, want.ID)
+			if err != nil || stored.Name != "main" {
+				t.Fatalf("GetFarm after CreateFarm: %v / %s, want success and name main", err, stored.Name)
+			}
+			// Duplicate name: ErrConflict.
+			if _, err := st.CreateFarm(ctx, store.Farm{ID: uuid.NewString(), Name: "main"}); !errors.Is(err, store.ErrConflict) {
+				t.Fatalf("duplicate name: err = %v, want ErrConflict", err)
+			}
+		})
+	}
+}
+
+func TestParity_UpdateFarm(t *testing.T) {
+	for name, st := range newStores(t) {
+		t.Run(name, func(t *testing.T) {
+			ctx := t.Context()
+			orig := mustCreateFarm(t, st, "main")
+			_, later := subSecond() // Ensure UpdatedAt can advance.
+			time.Sleep(time.Millisecond)
+
+			newAttempts := 9
+			upd := orig
+			upd.Name = "main-2"
+			upd.Description = "updated"
+			upd.MaxConcurrentTasks = 99
+			upd.MaxAttempts = &newAttempts
+			upd.CreatedAt = later // Should be ignored.
+			upd.UpdatedAt = later // Should be updated to a fresh time.
+
+			got, err := st.UpdateFarm(ctx, upd)
+			if err != nil {
+				t.Fatalf("UpdateFarm: %v", err)
+			}
+			if got.Name != "main-2" || got.Description != "updated" || got.MaxConcurrentTasks != 99 ||
+				got.MaxAttempts == nil || *got.MaxAttempts != 9 {
+				t.Fatalf("UpdateFarm returned (%+v), want mutable fields updated", got)
+			}
+			if !got.CreatedAt.Equal(orig.CreatedAt) || got.UpdatedAt.Before(orig.UpdatedAt) {
+				t.Fatalf("UpdateFarm: CreatedAt changed or UpdatedAt not advanced")
+			}
+			// Verify stored.
+			stored := mustGetFarm(t, st, orig.ID)
+			if stored.Name != "main-2" || stored.Description != "updated" {
+				t.Fatalf("GetFarm after UpdateFarm: %+v, want updates persisted", stored)
+			}
+			// Unknown ID: ErrNotFound.
+			if _, err := st.UpdateFarm(ctx, store.Farm{ID: uuid.NewString(), Name: "foo"}); !errors.Is(err, store.ErrNotFound) {
+				t.Fatalf("unknown id: err = %v, want ErrNotFound", err)
+			}
+			// Rename to conflicting name: ErrConflict.
+			mustCreateFarm(t, st, "taken")
+			if _, err := st.UpdateFarm(ctx, store.Farm{ID: orig.ID, Name: "taken", Description: "conflict"}); !errors.Is(err, store.ErrConflict) {
+				t.Fatalf("rename to taken name: err = %v, want ErrConflict", err)
+			}
+		})
+	}
+}
+
+func TestParity_DeleteFarm(t *testing.T) {
+	for name, st := range newStores(t) {
+		t.Run(name, func(t *testing.T) {
+			ctx := t.Context()
+			farm := mustCreateFarm(t, st, "main")
+			keep := mustCreateFarm(t, st, "kept")
+			if err := st.DeleteFarm(ctx, farm.ID); err != nil {
+				t.Fatalf("DeleteFarm: %v", err)
+			}
+			if _, err := st.GetFarm(ctx, farm.ID); !errors.Is(err, store.ErrNotFound) {
+				t.Fatalf("GetFarm after delete: err = %v, want ErrNotFound", err)
+			}
+			if err := st.DeleteFarm(ctx, farm.ID); !errors.Is(err, store.ErrNotFound) {
+				t.Fatalf("second delete: err = %v, want ErrNotFound", err)
+			}
+			if _, err := st.GetFarm(ctx, keep.ID); err != nil {
+				t.Fatalf("other farm: %v, want it kept", err)
+			}
+		})
+	}
 }
 
 func TestParity_GetFarm(t *testing.T) {
@@ -81,6 +188,93 @@ func TestParity_ListFarms(t *testing.T) {
 			}
 			if want := []string{"berlin", "lima", "tokyo"}; !slices.Equal(names, want) {
 				t.Fatalf("names = %v, want %v (ordered by name)", names, want)
+			}
+		})
+	}
+}
+
+func TestParity_CreateQueue(t *testing.T) {
+	for name, st := range newStores(t) {
+		t.Run(name, func(t *testing.T) {
+			ctx := t.Context()
+			farm := mustCreateFarm(t, st, "main")
+			user, limit := "render", 5
+			want := store.Queue{
+				ID: uuid.NewString(), FarmID: farm.ID, Name: "q", Description: "d", Priority: 40,
+				MaxConcurrentTasks: 3, Paused: true, FailureLimit: &limit, RunAsUser: &user,
+			}
+			got, err := st.CreateQueue(ctx, want)
+			if err != nil {
+				t.Fatalf("CreateQueue: %v", err)
+			}
+			if got.ID != want.ID || got.FarmID != farm.ID || got.Name != "q" || got.Description != "d" ||
+				got.Priority != 40 || got.MaxConcurrentTasks != 3 || !got.Paused ||
+				got.FailureLimit == nil || *got.FailureLimit != 5 || got.MaxAttempts != nil ||
+				got.RunAsUser == nil || *got.RunAsUser != "render" || got.RunAsGroup != nil {
+				t.Fatalf("CreateQueue returned (%+v), want fields persisted", got)
+			}
+			// Verify stored.
+			stored, err := st.GetQueue(ctx, want.ID)
+			if err != nil || stored.Name != "q" {
+				t.Fatalf("GetQueue after CreateQueue: %v / %s, want success and name q", err, stored.Name)
+			}
+			// Duplicate name in same farm: ErrConflict.
+			if _, err := st.CreateQueue(ctx, store.Queue{ID: uuid.NewString(), FarmID: farm.ID, Name: "q"}); !errors.Is(err, store.ErrConflict) {
+				t.Fatalf("duplicate name in farm: err = %v, want ErrConflict", err)
+			}
+			// Duplicate name in different farm: allowed.
+			farm2 := mustCreateFarm(t, st, "other")
+			if _, err := st.CreateQueue(ctx, store.Queue{ID: uuid.NewString(), FarmID: farm2.ID, Name: "q"}); err != nil {
+				t.Fatalf("same name in different farm: %v, want success", err)
+			}
+		})
+	}
+}
+
+func TestParity_UpdateQueue(t *testing.T) {
+	for name, st := range newStores(t) {
+		t.Run(name, func(t *testing.T) {
+			ctx := t.Context()
+			farm := mustCreateFarm(t, st, "main")
+			orig := mustCreateQueue(t, st, store.Queue{FarmID: farm.ID, Name: "q"})
+			_, later := subSecond()
+			time.Sleep(time.Millisecond)
+
+			newLimit := 9
+			upd := orig
+			upd.Name = "q-updated"
+			upd.Description = "new desc"
+			upd.Priority = 99
+			upd.MaxConcurrentTasks = 10
+			upd.Paused = true
+			upd.FailureLimit = &newLimit
+			upd.UpdatedAt = later // Should be updated to a fresh time.
+
+			got, err := st.UpdateQueue(ctx, upd)
+			if err != nil {
+				t.Fatalf("UpdateQueue: %v", err)
+			}
+			if got.Name != "q-updated" || got.Description != "new desc" || got.Priority != 99 ||
+				got.MaxConcurrentTasks != 10 || !got.Paused ||
+				got.FailureLimit == nil || *got.FailureLimit != 9 {
+				t.Fatalf("UpdateQueue returned (%+v), want mutable fields updated", got)
+			}
+			if !got.CreatedAt.Equal(orig.CreatedAt) || got.UpdatedAt.Before(orig.UpdatedAt) {
+				t.Fatalf("UpdateQueue: CreatedAt changed or UpdatedAt not advanced")
+			}
+			// Verify stored.
+			stored, err := st.GetQueue(ctx, orig.ID)
+			if err != nil || stored.Name != "q-updated" {
+				t.Fatalf("GetQueue after UpdateQueue: %v / %s, want success and name q-updated", err, stored.Name)
+			}
+			// Unknown ID: ErrNotFound.
+			if _, err := st.UpdateQueue(ctx, store.Queue{ID: uuid.NewString(), FarmID: farm.ID, Name: "foo"}); !errors.Is(err, store.ErrNotFound) {
+				t.Fatalf("unknown id: err = %v, want ErrNotFound", err)
+			}
+			// Rename to conflicting name in same farm: ErrConflict.
+			mustCreateQueue(t, st, store.Queue{FarmID: farm.ID, Name: "taken"})
+			if _, err := st.UpdateQueue(ctx, store.Queue{ID: orig.ID, FarmID: farm.ID, Name: "taken"}); !errors.Is(err, store.ErrConflict) {
+				t.Fatalf("rename to taken name: err = %v, want ErrConflict", err)
 			}
 		})
 	}
