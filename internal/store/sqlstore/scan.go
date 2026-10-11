@@ -74,7 +74,7 @@ func nullTimeToText(t *time.Time) sql.NullString {
 	return sql.NullString{String: TimeText(*t), Valid: true}
 }
 
-// nullInt converts a nullable Go int pointer to a value usable as a SQLite
+// nullInt converts a nullable Go int pointer to a value usable as a database
 // bind argument: nil becomes SQL NULL, otherwise the dereferenced int64.
 func nullInt(p *int) any {
 	if p == nil {
@@ -108,7 +108,7 @@ func nullTextToTime(s sql.NullString) *time.Time {
 
 // ── JSON helpers ─────────────────────────────────────────────────────────────
 
-// marshalJSON serializes v to a JSON string for storage in SQLite TEXT columns.
+// marshalJSON serializes v to a JSON string for storage in a TEXT column.
 func marshalJSON(v any) (string, error) {
 	b, err := json.Marshal(v)
 	if err != nil {
@@ -117,7 +117,7 @@ func marshalJSON(v any) (string, error) {
 	return string(b), nil
 }
 
-// unmarshalJSON deserializes a JSON string from a SQLite TEXT column into a
+// unmarshalJSON deserializes a JSON string from a TEXT column into a
 // value of type T. Returns def if s is empty or "null".
 func unmarshalJSON[T any](s string, def T) (T, error) {
 	if s == "" || s == "null" {
@@ -169,7 +169,7 @@ func nullString(s string) sql.NullString {
 }
 
 // nullStrPtr converts a nullable Go string pointer to a value usable as a
-// SQLite bind argument: nil becomes SQL NULL, otherwise the dereferenced
+// database bind argument: nil becomes SQL NULL, otherwise the dereferenced
 // string.
 func nullStrPtr(p *string) any {
 	if p == nil {

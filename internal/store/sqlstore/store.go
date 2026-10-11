@@ -9,7 +9,7 @@
 //
 // Reads and writes run on separate pools: [New] takes a write pool and a read
 // pool, and every statement goes to one or the other by its text (see
-// [Store.poolFor]). Transactions always run on the write pool.
+// poolFor). Transactions always run on the write pool.
 package sqlstore
 
 import (
@@ -265,7 +265,7 @@ func trimSQLLeader(query string) string {
 }
 
 // prepare compiles sql, rebound for the store's dialect, into a prepared
-// statement on the pool [Store.poolFor] selects (judged on the original text),
+// statement on the pool poolFor selects (judged on the original text),
 // tracks it for Close, and returns it. On failure it returns an error
 // that includes the first 60 chars of the SQL for context.
 func (s *Store) prepare(ctx context.Context, query string) (*dbStmt, error) {
@@ -283,7 +283,7 @@ func (s *Store) prepare(ctx context.Context, query string) (*dbStmt, error) {
 }
 
 // prepareAll compiles every SQL statement used by the store. Errors are
-// returned immediately; the caller (Open) releases resources via Close.
+// returned immediately; the caller (New) releases resources via Close.
 //
 //nolint:cyclop,funlen // large but straightforward: one prepare call per query
 func (s *Store) prepareAll(ctx context.Context) error {

@@ -556,7 +556,7 @@ sqi/
 │   ├── product/           Products/presets — the catalog layer over OpenJD templates
 │   ├── scheduler/         Assignment loop, worker registry, heartbeat sweep
 │   ├── server/            Process boot, graceful shutdown orchestration
-│   ├── store/             Store interface + SQLite implementation + migrations
+│   ├── store/             Store interface; sqlstore (shared SQL implementation) and sqlite (the SQLite database); migrations
 │   ├── ui/                Embeds web/dist; SPA fallback handler
 │   ├── version/           Build metadata (version, commit, date, Go version)
 │   ├── worker/            sqi-worker binary internals (executor, lease, heartbeat, capabilities, …); only worker/protocol is shared with the server

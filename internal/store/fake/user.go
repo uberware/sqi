@@ -124,7 +124,7 @@ func (s *Store) ListUsers(_ context.Context) ([]store.User, error) {
 }
 
 // lastLiveAdminLocked reports whether id is an enabled admin and the only one,
-// mirroring sqlLastLiveAdmin in the SQLite store. Caller holds s.mu.
+// mirroring sqlLastLiveAdmin in internal/store/sqlstore. Caller holds s.mu.
 func (s *Store) lastLiveAdminLocked(id string) bool {
 	u, ok := s.users[id]
 	if !ok || u.Role != "admin" || u.Disabled {
