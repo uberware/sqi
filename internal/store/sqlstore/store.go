@@ -17,7 +17,9 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
+	"sync/atomic"
 
 	"github.com/uberware/sqi/internal/store"
 )
@@ -37,6 +39,14 @@ type Store struct {
 	// raw pool may alias w's (an in-memory SQLite database has only one pool).
 	r     *dbPool
 	stmts []*dbStmt // all prepared statements; closed by Close
+
+	// retries counts transaction re-runs after an ErrClassRetry error.
+	retries atomic.Int64
+	// forceRetry makes inTx run every function once and roll it back before
+	// the real run: a test mode that proves each function is safe to re-run.
+	forceRetry bool
+	// log receives retry diagnostics; slog.Default() when nil.
+	log *slog.Logger
 
 	// ── farms ────────────────────────────────────────────────────────────
 	stmtInsertFarm *dbStmt
@@ -160,14 +170,35 @@ type Store struct {
 	stmtMarkWorkerJoinTokenUsed     *dbStmt
 }
 
+// Option configures [New].
+type Option func(*Store)
+
+// WithForcedRetry makes every transaction run its function twice, the first
+// run rolled back, as if the database had aborted it for a concurrent writer.
+// Tests only: it proves each function keeps no state from a failed run.
+func WithForcedRetry() Option { return func(s *Store) { s.forceRetry = true } }
+
+// WithLogger sets the logger retry diagnostics go to.
+func WithLogger(l *slog.Logger) Option { return func(s *Store) { s.log = l } }
+
+// TxRetries reports how many times a transaction was run again after the
+// database aborted it for a concurrent writer.
+func (s *Store) TxRetries() int64 { return s.retries.Load() }
+
 // New builds a Store over open write and read pools for dialect d and
 // prepares its statements. read may be write. Close releases the pools; on
 // error New closes them itself.
-func New(ctx context.Context, write, read *sql.DB, d Dialect) (*Store, error) {
+func New(ctx context.Context, write, read *sql.DB, d Dialect, opts ...Option) (*Store, error) {
 	s := &Store{
 		d: d,
 		w: newDBPool(write, d),
 		r: newDBPool(read, d),
+	}
+	for _, o := range opts {
+		o(s)
+	}
+	if s.log == nil {
+		s.log = slog.Default()
 	}
 	if err := s.prepareAll(ctx); err != nil {
 		_ = s.Close()
