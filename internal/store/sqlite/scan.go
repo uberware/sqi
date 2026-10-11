@@ -5,6 +5,7 @@ package sqlite
 import (
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
 
@@ -190,10 +191,19 @@ func strPtr(n sql.NullString) *string {
 // ── Error mapping ─────────────────────────────────────────────────────────────
 
 // mapErr converts a driver error into the store's sentinel errors: no rows
-// becomes [store.ErrNotFound], and a unique, primary-key or foreign-key
-// violation becomes [store.ErrConflict]. Any other error is returned unchanged.
+// becomes [store.ErrNotFound], and an error the dialect classified as a
+// conflict (a unique, primary-key or foreign-key violation) becomes
+// [store.ErrConflict]. Any other error is returned unchanged. It reads the
+// class the dbPool/dbTx/dbStmt/dbRow wrappers attached, so an error that did
+// not come through them carries none.
 func mapErr(err error) error {
-	switch classifySQLite(err) {
+	if err == nil {
+		return nil
+	}
+	if errors.Is(err, sql.ErrNoRows) {
+		return store.ErrNotFound
+	}
+	switch errClass(err) {
 	case ErrClassNotFound:
 		return store.ErrNotFound
 	case ErrClassConflict:

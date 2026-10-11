@@ -25,11 +25,11 @@ func TestCasTaskStatusTx_GuardsOnObservedStatus(t *testing.T) {
 		t.Fatal(err)
 	}
 	rollbackOnCleanup(t, tx)
-	ok, err := casWriteTaskStatus(ctx, tx, "t1", store.TaskStatusReady, store.TaskStatusRunning, time.Now())
+	ok, err := casWriteTaskStatus(ctx, &dbTx{tx: tx, d: s.d}, "t1", store.TaskStatusReady, store.TaskStatusRunning, time.Now())
 	if err != nil || ok {
 		t.Fatalf("CAS with a stale observed status = (%v, %v), want (false, nil)", ok, err)
 	}
-	ok, err = casWriteTaskStatus(ctx, tx, "t1", store.TaskStatusAssigned, store.TaskStatusRunning, time.Now())
+	ok, err = casWriteTaskStatus(ctx, &dbTx{tx: tx, d: s.d}, "t1", store.TaskStatusAssigned, store.TaskStatusRunning, time.Now())
 	if err != nil || !ok {
 		t.Fatalf("CAS with the current status = (%v, %v), want (true, nil)", ok, err)
 	}
@@ -64,7 +64,7 @@ func TestCasTaskStatusTx_Outcomes(t *testing.T) {
 				t.Fatal(err)
 			}
 			rollbackOnCleanup(t, tx)
-			got, err := casTaskStatusTx(ctx, tx, tc.id, tc.to, time.Now())
+			got, err := casTaskStatusTx(ctx, &dbTx{tx: tx, d: s.d}, tc.id, tc.to, time.Now())
 			if got != tc.want || !errors.Is(err, tc.wantErr) {
 				t.Fatalf("casTaskStatusTx = (%v, %v), want (%v, %v)", got, err, tc.want, tc.wantErr)
 			}

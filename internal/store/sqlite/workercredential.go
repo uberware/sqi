@@ -162,7 +162,7 @@ func (s *Store) MarkWorkerJoinTokenUsed(ctx context.Context, id string, at time.
 // request.
 func (s *Store) RedeemWorkerJoinToken(ctx context.Context, hash string, now time.Time, cred store.WorkerCredential) (store.WorkerCredential, error) {
 	var out store.WorkerCredential
-	err := s.inTx(ctx, "redeem worker join token", func(tx *sql.Tx) (txOutcome, error) {
+	err := s.inTx(ctx, "redeem worker join token", func(tx *dbTx) (txOutcome, error) {
 		nowText := timeToText(now)
 		tokRow := tx.QueryRowContext(ctx, sqlConsumeWorkerJoinToken, nowText, hash, nowText)
 		if _, err := scanWorkerJoinToken(tokRow); err != nil {

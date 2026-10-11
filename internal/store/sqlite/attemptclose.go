@@ -69,7 +69,7 @@ const (
 )
 
 // casWriteTaskStatus writes to only while the task still holds observed.
-func casWriteTaskStatus(ctx context.Context, tx *sql.Tx, id string, observed, to store.TaskStatus, now time.Time) (bool, error) {
+func casWriteTaskStatus(ctx context.Context, tx *dbTx, id string, observed, to store.TaskStatus, now time.Time) (bool, error) {
 	res, err := tx.ExecContext(ctx, sqlCASTaskStatus, string(to), timeToText(now.UTC()), id, string(observed))
 	if err != nil {
 		return false, mapErr(err)
@@ -87,7 +87,7 @@ func casWriteTaskStatus(ctx context.Context, tx *sql.Tx, id string, observed, to
 // an illegal arrow is casRejected, with the validation error returned
 // alongside it so callers can wrap it. An unknown task is casRejected with
 // [store.ErrNotFound].
-func casTaskStatusTx(ctx context.Context, tx *sql.Tx, id string, to store.TaskStatus, now time.Time) (casResult, error) {
+func casTaskStatusTx(ctx context.Context, tx *dbTx, id string, to store.TaskStatus, now time.Time) (casResult, error) {
 	for range casMaxAttempts {
 		var current string
 		if err := tx.QueryRowContext(ctx, sqlSelectTaskStatus, id).Scan(&current); err != nil {
@@ -120,7 +120,7 @@ func casTaskStatusTx(ctx context.Context, tx *sql.Tx, id string, to store.TaskSt
 // ended_at is the worker's c.EndedAt; the claims' released_at is server time
 // (releasedText), as every claim release has always been, so a skewed worker
 // clock can never put it before the claim's claimed_at.
-func closeAttemptAndReleaseTx(ctx context.Context, tx *sql.Tx, c store.AttemptCompletion, endedText, releasedText string) error {
+func closeAttemptAndReleaseTx(ctx context.Context, tx *dbTx, c store.AttemptCompletion, endedText, releasedText string) error {
 	if _, err := tx.ExecContext(ctx, sqlCloseRunningAttempt,
 		string(c.AttemptStatus), nullInt(c.ExitCode), endedText, c.SessionID, c.Message, c.AttemptID); err != nil {
 		return fmt.Errorf("sqlite: close attempt %s: %w", c.AttemptID, mapErr(err))
@@ -148,12 +148,12 @@ func closeAttemptAndReleaseTx(ctx context.Context, tx *sql.Tx, c store.AttemptCo
 // seen.
 func (s *Store) CompleteTaskAttempt(ctx context.Context, c store.AttemptCompletion) (store.CompletionResult, error) {
 	var result store.CompletionResult
-	err := s.inTx(ctx, "complete task attempt", func(tx *sql.Tx) (txOutcome, error) {
+	err := s.inTx(ctx, "complete task attempt", func(tx *dbTx) (txOutcome, error) {
 		var jobID string
 		if err := tx.QueryRowContext(ctx, sqlTaskJobID, c.TaskID).Scan(&jobID); err != nil {
 			return txRollback, mapErr(err)
 		}
-		if err := lockAnchors(ctx, tx, jobAnchor(jobID)); err != nil {
+		if err := s.d.LockAnchors(ctx, tx.tx, jobAnchor(jobID)); err != nil {
 			return txRollback, err
 		}
 		// Server time stamps the claims' released_at and the task row's updated_at:
@@ -185,7 +185,7 @@ func (s *Store) CompleteTaskAttempt(ctx context.Context, c store.AttemptCompleti
 // running, and not already at the reported status) is refused the same way.
 // Otherwise the task moves by compare-and-set, and the failure reason is
 // stamped only when it lands.
-func applyCompletionTx(ctx context.Context, tx *sql.Tx, c store.AttemptCompletion, now time.Time) (store.CompletionResult, error) {
+func applyCompletionTx(ctx context.Context, tx *dbTx, c store.AttemptCompletion, now time.Time) (store.CompletionResult, error) {
 	var latest bool
 	if err := tx.QueryRowContext(ctx, sqlIsLatestAttempt, c.AttemptID, c.TaskID, c.TaskID).Scan(&latest); err != nil {
 		return store.CompletionResult{}, fmt.Errorf("sqlite: latest attempt of task %s: %w", c.TaskID, mapErr(err))
@@ -279,7 +279,7 @@ WHERE  released_at IS NULL
 // row a lease is moving out of ready. A lease that starts after the write blocks
 // until commit and then opens a new attempt of its own, which this close never
 // sees.
-func closeTaskAttemptsTx(ctx context.Context, tx *sql.Tx, taskID string, status store.AttemptStatus, message, nowText string) error {
+func closeTaskAttemptsTx(ctx context.Context, tx *dbTx, taskID string, status store.AttemptStatus, message, nowText string) error {
 	if _, err := tx.ExecContext(ctx, sqlCloseTaskRunningAttempts, string(status), nowText, message, taskID); err != nil {
 		return fmt.Errorf("sqlite: close attempts of task %s: %w", taskID, mapErr(err))
 	}
@@ -312,11 +312,11 @@ func closeTaskAttemptsTx(ctx context.Context, tx *sql.Tx, taskID string, status 
 // connection serializes the lease against this whole transaction.
 func (s *Store) CancelJobExecution(ctx context.Context, jobID, reason string, now time.Time) ([]store.Task, error) {
 	var active []store.Task
-	err := s.inTx(ctx, "cancel job execution", func(tx *sql.Tx) (txOutcome, error) {
+	err := s.inTx(ctx, "cancel job execution", func(tx *dbTx) (txOutcome, error) {
 		// Order: anchor, then the SELECT of the active set, then tasks, attempts,
 		// claims, steps, and the job row last. See the doc comment for why tasks
 		// come first.
-		if err := lockAnchors(ctx, tx, jobAnchor(jobID)); err != nil {
+		if err := s.d.LockAnchors(ctx, tx.tx, jobAnchor(jobID)); err != nil {
 			return txRollback, err
 		}
 		var err error
@@ -371,7 +371,7 @@ func (s *Store) CancelTaskExecution(ctx context.Context, taskID, reason string, 
 		prior    store.Task
 		canceled bool
 	)
-	err := s.inTx(ctx, "cancel task execution", func(tx *sql.Tx) (txOutcome, error) {
+	err := s.inTx(ctx, "cancel task execution", func(tx *dbTx) (txOutcome, error) {
 		canceled = false
 		// Order: the task's job id, the anchor on that job row, the task as it is
 		// under the anchor, then task, attempt, claims. See the doc comment.
@@ -379,7 +379,7 @@ func (s *Store) CancelTaskExecution(ctx context.Context, taskID, reason string, 
 		if err := tx.QueryRowContext(ctx, sqlTaskJobID, taskID).Scan(&jobID); err != nil {
 			return txRollback, mapErr(err) // sql.ErrNoRows is ErrNotFound
 		}
-		if err := lockAnchors(ctx, tx, jobAnchor(jobID)); err != nil {
+		if err := s.d.LockAnchors(ctx, tx.tx, jobAnchor(jobID)); err != nil {
 			return txRollback, err
 		}
 		var err error
@@ -497,17 +497,17 @@ func (s *Store) OfflineWorker(ctx context.Context, id, instanceID string, now ti
 // It must either have LeaseTask take the worker row FOR SHARE, or re-read the
 // set once the worker row is held and repeat until it is stable. None of that
 // can arise here: the single write connection serializes every writer, so the
-// set read below cannot change before the reclaim, and lockAnchors does nothing.
+// set read below cannot change before the reclaim, and LockAnchors does nothing.
 func (s *Store) offlineWorker(ctx context.Context, id string, now time.Time, markSQL string, markArgs ...any) ([]store.Task, bool, error) {
 	var (
 		reclaimed []store.Task
 		offline   bool
 	)
-	err := s.inTx(ctx, "offline worker", func(tx *sql.Tx) (txOutcome, error) {
+	err := s.inTx(ctx, "offline worker", func(tx *dbTx) (txOutcome, error) {
 		reclaimed, offline = nil, false
 		// Order: the worker row, then the guarded mark, then the job rows, then the
 		// tasks, attempts and claims. See the doc comment.
-		if err := lockAnchors(ctx, tx, workerAnchor(id)); err != nil {
+		if err := s.d.LockAnchors(ctx, tx.tx, workerAnchor(id)); err != nil {
 			return txRollback, err
 		}
 		res, err := tx.ExecContext(ctx, markSQL, markArgs...)
@@ -542,12 +542,12 @@ func (s *Store) offlineWorker(ctx context.Context, id string, now time.Time, mar
 // their attempts closed as failed with message and their claims released. It
 // returns the tasks as they are after the reset. The caller holds the worker
 // row (its anchor, or the UPDATE that marked it).
-func reclaimWorkerTasksTx(ctx context.Context, tx *sql.Tx, workerID, message string, now time.Time) ([]store.Task, error) {
+func reclaimWorkerTasksTx(ctx context.Context, tx *dbTx, workerID, message string, now time.Time) ([]store.Task, error) {
 	jobAnchors, err := workerJobAnchorsTx(ctx, tx, workerID)
 	if err != nil {
 		return nil, err
 	}
-	if err := lockAnchors(ctx, tx, jobAnchors...); err != nil {
+	if err := tx.d.LockAnchors(ctx, tx.tx, jobAnchors...); err != nil {
 		return nil, err
 	}
 	nowText := timeToText(now.UTC())
@@ -565,13 +565,13 @@ func reclaimWorkerTasksTx(ctx context.Context, tx *sql.Tx, workerID, message str
 
 // workerJobAnchorsTx returns the job-row anchors of the jobs the worker's
 // assigned and running tasks belong to, sorted by id.
-func workerJobAnchorsTx(ctx context.Context, tx *sql.Tx, workerID string) ([]anchor, error) {
+func workerJobAnchorsTx(ctx context.Context, tx *dbTx, workerID string) ([]Anchor, error) {
 	rows, err := tx.QueryContext(ctx, sqlWorkerInFlightJobIDs, workerID)
 	if err != nil {
 		return nil, fmt.Errorf("sqlite: list in-flight jobs of worker %s: %w", workerID, mapErr(err))
 	}
 	defer rows.Close()
-	var anchors []anchor
+	var anchors []Anchor
 	for rows.Next() {
 		var jobID string
 		if err := rows.Scan(&jobID); err != nil {

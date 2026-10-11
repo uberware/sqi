@@ -33,7 +33,7 @@ UPDATE task_attempts SET session_id = ? WHERE id = ? AND status = 'running'`
 // taskID: the attempt is still running and is the task's latest attempt, and
 // the task is in flight (assigned or running). It also returns the task's
 // current status. sql.ErrNoRows on the task maps to store.ErrNotFound.
-func liveAttemptTx(ctx context.Context, tx *sql.Tx, attemptID, taskID string) (bool, store.TaskStatus, error) {
+func liveAttemptTx(ctx context.Context, tx *dbTx, attemptID, taskID string) (bool, store.TaskStatus, error) {
 	var current string
 	if err := tx.QueryRowContext(ctx, sqlSelectTaskStatus, taskID).Scan(&current); err != nil {
 		return false, "", mapErr(err)
@@ -54,18 +54,18 @@ func liveAttemptTx(ctx context.Context, tx *sql.Tx, attemptID, taskID string) (b
 }
 
 // lockTaskJobTx takes the task's job-row anchor inside tx.
-func lockTaskJobTx(ctx context.Context, tx *sql.Tx, taskID string) error {
+func lockTaskJobTx(ctx context.Context, tx *dbTx, taskID string) error {
 	var jobID string
 	if err := tx.QueryRowContext(ctx, sqlTaskJobID, taskID).Scan(&jobID); err != nil {
 		return mapErr(err)
 	}
-	return lockAnchors(ctx, tx, jobAnchor(jobID))
+	return tx.d.LockAnchors(ctx, tx.tx, jobAnchor(jobID))
 }
 
 // StartTaskAttempt implements [store.TaskStore].
 func (s *Store) StartTaskAttempt(ctx context.Context, attemptID, taskID, sessionID string, now time.Time) (bool, error) {
 	var started bool
-	err := s.inTx(ctx, "start task attempt", func(tx *sql.Tx) (txOutcome, error) {
+	err := s.inTx(ctx, "start task attempt", func(tx *dbTx) (txOutcome, error) {
 		started = false
 		if err := lockTaskJobTx(ctx, tx, taskID); err != nil {
 			return txRollback, err
@@ -120,7 +120,7 @@ WHERE  id = ? AND status IN ('assigned', 'running')`
 // for StartTaskAttempt.
 func (s *Store) ReclaimTaskAttempt(ctx context.Context, attemptID, taskID string, now time.Time) (bool, error) {
 	var reclaimed bool
-	err := s.inTx(ctx, "reclaim task attempt", func(tx *sql.Tx) (txOutcome, error) {
+	err := s.inTx(ctx, "reclaim task attempt", func(tx *dbTx) (txOutcome, error) {
 		reclaimed = false
 		if err := lockTaskJobTx(ctx, tx, taskID); err != nil {
 			return txRollback, err

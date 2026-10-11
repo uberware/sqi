@@ -23,7 +23,7 @@ FROM users WHERE id = ?`
 
 	sqlGetUserByUsername = `
 SELECT id, username, display_name, password_hash, role, auth_source, external_id, disabled, created_at, updated_at
-FROM users WHERE username = ? COLLATE NOCASE`
+FROM users WHERE ` // + Dialect.CIEqual("username"), appended in prepareAll
 
 	sqlGetUserByExternalID = `
 SELECT id, username, display_name, password_hash, role, auth_source, external_id, disabled, created_at, updated_at
@@ -170,7 +170,7 @@ func (s *Store) SetUserPassword(ctx context.Context, id, passwordHash string) er
 func (s *Store) SetUserPasswordAndEvictSessions(ctx context.Context, id, passwordHash string) error {
 	now := timeToText(time.Now().UTC())
 
-	return s.inTx(ctx, "set user password and evict sessions", func(tx *sql.Tx) (txOutcome, error) {
+	return s.inTx(ctx, "set user password and evict sessions", func(tx *dbTx) (txOutcome, error) {
 		res, err := tx.ExecContext(ctx, sqlSetUserPassword, passwordHash, now, id)
 		if err != nil {
 			return txRollback, mapErr(err)
@@ -197,7 +197,7 @@ func (s *Store) SetUserDisplayName(ctx context.Context, id, displayName string) 
 // UPDATE's WHERE clause, so the refusal and the write are one statement.
 func (s *Store) UpdateUserKeepingAdmin(ctx context.Context, u store.User) (store.User, error) {
 	var out store.User
-	err := s.withAdminAnchors(ctx, func(tx *sql.Tx) error {
+	err := s.withAdminAnchors(ctx, func(tx *dbTx) error {
 		// The guard's own two placeholders carry the NEW role and disabled values.
 		args := append(updateUserArgs(u, timeToText(time.Now().UTC())), u.Role, u.Disabled)
 		row := tx.QueryRowContext(ctx, sqlUpdateUserKeepingAdmin, args...)
@@ -214,7 +214,7 @@ func (s *Store) UpdateUserKeepingAdmin(ctx context.Context, u store.User) (store
 // DeleteUser implements [store.UserStore]. The guard is in the DELETE's WHERE
 // clause, so the refusal and the write are one statement.
 func (s *Store) DeleteUser(ctx context.Context, id string) error {
-	return s.withAdminAnchors(ctx, func(tx *sql.Tx) error {
+	return s.withAdminAnchors(ctx, func(tx *dbTx) error {
 		res, err := tx.ExecContext(ctx, sqlDeleteUserKeepingAdmin, id)
 		if err != nil {
 			return mapErr(err)
@@ -238,18 +238,18 @@ func (s *Store) DeleteUser(ctx context.Context, id string) error {
 // concurrent writes that each demote a different admin would each see the other
 // still enabled and both pass; holding the whole admin set serializes them, and
 // the fixed id order keeps two such transactions from deadlocking on PostgreSQL.
-// On SQLite lockAnchors does nothing and the single write connection provides
+// On SQLite LockAnchors does nothing and the single write connection provides
 // the serialization; the guard in the statement is what makes the answer right.
 // The admin set is read before its rows are locked, so on Postgres an
 // account made an enabled admin in between is not anchored; re-read the set
 // under the locks (and repeat until it is stable) or lock a wider range.
-func (s *Store) withAdminAnchors(ctx context.Context, fn func(*sql.Tx) error) error {
-	return s.inTx(ctx, "admin-guarded user write", func(tx *sql.Tx) (txOutcome, error) {
+func (s *Store) withAdminAnchors(ctx context.Context, fn func(*dbTx) error) error {
+	return s.inTx(ctx, "admin-guarded user write", func(tx *dbTx) (txOutcome, error) {
 		anchors, err := liveAdminAnchorsTx(ctx, tx)
 		if err != nil {
 			return txRollback, err
 		}
-		if err := lockAnchors(ctx, tx, anchors...); err != nil {
+		if err := s.d.LockAnchors(ctx, tx.tx, anchors...); err != nil {
 			return txRollback, err
 		}
 		return txCommit, fn(tx)
@@ -258,13 +258,13 @@ func (s *Store) withAdminAnchors(ctx context.Context, fn func(*sql.Tx) error) er
 
 // liveAdminAnchorsTx returns the anchors of every enabled admin's user row,
 // sorted by id.
-func liveAdminAnchorsTx(ctx context.Context, tx *sql.Tx) ([]anchor, error) {
+func liveAdminAnchorsTx(ctx context.Context, tx *dbTx) ([]Anchor, error) {
 	rows, err := tx.QueryContext(ctx, sqlListLiveAdminIDs)
 	if err != nil {
 		return nil, mapErr(err)
 	}
 	defer rows.Close()
-	var anchors []anchor
+	var anchors []Anchor
 	for rows.Next() {
 		var id string
 		if err := rows.Scan(&id); err != nil {
@@ -281,7 +281,7 @@ func liveAdminAnchorsTx(ctx context.Context, tx *sql.Tx) ([]anchor, error) {
 // userMissingOrLastAdmin explains a guarded write that touched no row: the id
 // is unknown ([store.ErrNotFound]) or the guard refused it
 // ([store.ErrLastAdmin]).
-func userMissingOrLastAdmin(ctx context.Context, tx *sql.Tx, id string) error {
+func userMissingOrLastAdmin(ctx context.Context, tx *dbTx, id string) error {
 	var one int
 	if err := tx.QueryRowContext(ctx, `SELECT 1 FROM users WHERE id = ?`, id).Scan(&one); err != nil {
 		return mapErr(err) // sql.ErrNoRows becomes ErrNotFound

@@ -115,8 +115,9 @@ WHERE task_id IN (SELECT id FROM tasks WHERE job_id = ?)`
 	sqlDeleteJobRow          = `DELETE FROM jobs WHERE id = ?`
 
 	sqlInsertJobDependency = `
-INSERT OR IGNORE INTO job_dependencies (job_id, depends_on_job_id, created_at)
-VALUES (?, ?, ?)`
+INSERT INTO job_dependencies (job_id, depends_on_job_id, created_at)
+VALUES (?, ?, ?)
+ON CONFLICT DO NOTHING`
 
 	sqlListJobDependencyIDs = `
 SELECT depends_on_job_id FROM job_dependencies
@@ -255,7 +256,7 @@ func scanJob(row scanner) (store.Job, error) {
 //
 // Rows are inserted in foreign-key order (job, edges, steps, tasks) and each
 // insert uses raw SQL via tx rather than a prepared statement: a statement
-// bound into a transaction with tx.StmtContext must itself be closed, and the
+// bound into a transaction with tx.Stmt must itself be closed, and the
 // other transactional writers here take the same approach (see
 // casWriteTaskStatus in attemptclose.go).
 //
@@ -264,7 +265,7 @@ func scanJob(row scanner) (store.Job, error) {
 // would be a behavior change, not an optimization.
 func (s *Store) CreateJobSubmission(ctx context.Context, sub store.JobSubmission) (store.JobSubmission, error) {
 	var out store.JobSubmission
-	err := s.inTx(ctx, "create job submission", func(tx *sql.Tx) (txOutcome, error) {
+	err := s.inTx(ctx, "create job submission", func(tx *dbTx) (txOutcome, error) {
 		now := timeToText(time.Now().UTC())
 
 		// DependsOn is cloned rather than aliased so a caller mutating the returned
@@ -310,15 +311,15 @@ func (s *Store) CreateJobSubmission(ctx context.Context, sub store.JobSubmission
 // job within one sweep tick. A PostgreSQL store locks each upstream row FOR
 // SHARE here, in ID order so two submissions naming the same upstreams cannot
 // deadlock.
-func checkUpstreamsTx(ctx context.Context, tx *sql.Tx, upstreams []string) error {
+func checkUpstreamsTx(ctx context.Context, tx *dbTx, upstreams []string) error {
 	ids := slices.Clone(upstreams)
 	slices.Sort(ids)
 	ids = slices.Compact(ids)
-	anchors := make([]anchor, 0, len(ids))
+	anchors := make([]Anchor, 0, len(ids))
 	for _, up := range ids {
-		anchors = append(anchors, jobAnchor(up))
+		anchors = append(anchors, sharedAnchor(jobAnchor(up)))
 	}
-	if err := lockAnchors(ctx, tx, anchors...); err != nil {
+	if err := tx.d.LockAnchors(ctx, tx.tx, anchors...); err != nil {
 		return err
 	}
 	for _, up := range ids {
@@ -338,7 +339,7 @@ func checkUpstreamsTx(ctx context.Context, tx *sql.Tx, upstreams []string) error
 }
 
 // insertJobTx inserts one job row inside tx.
-func insertJobTx(ctx context.Context, tx *sql.Tx, job store.Job, now string) (store.Job, error) {
+func insertJobTx(ctx context.Context, tx *dbTx, job store.Job, now string) (store.Job, error) {
 	paramsJSON, err := marshalJSON(job.Parameters)
 	if err != nil {
 		return store.Job{}, err
@@ -377,7 +378,7 @@ func (c *rowClock) next() string {
 
 // insertStepsTx inserts every step inside tx, stamping each row with its own
 // time from clock (see insertTasksTx).
-func insertStepsTx(ctx context.Context, tx *sql.Tx, clock *rowClock, steps []store.Step) ([]store.Step, error) {
+func insertStepsTx(ctx context.Context, tx *dbTx, clock *rowClock, steps []store.Step) ([]store.Step, error) {
 	out := make([]store.Step, 0, len(steps))
 	for _, step := range steps {
 		dependsOnJSON, err := marshalJSON(step.DependsOn)
@@ -422,7 +423,7 @@ func insertStepsTx(ctx context.Context, tx *sql.Tx, clock *rowClock, steps []sto
 // randomly rather than in expansion order, which is a different behavior
 // change wearing the same clothes. Stamping per row is what preserves the
 // behavior submission has always had.
-func insertTasksTx(ctx context.Context, tx *sql.Tx, clock *rowClock, tasks []store.Task) ([]store.Task, error) {
+func insertTasksTx(ctx context.Context, tx *dbTx, clock *rowClock, tasks []store.Task) ([]store.Task, error) {
 	out := make([]store.Task, 0, len(tasks))
 	for _, task := range tasks {
 		paramsJSON, err := marshalJSON(task.Parameters)
@@ -479,7 +480,7 @@ func (s *Store) ListDependents(ctx context.Context, upstreamJobID string) ([]str
 // ListBlockedJobs implements [store.JobStore]. It returns every job currently
 // in [store.JobStatusBlocked].
 func (s *Store) ListBlockedJobs(ctx context.Context) ([]store.Job, error) {
-	rows, err := s.rdb.QueryContext(ctx, sqlListBlockedJobs)
+	rows, err := s.r.QueryContext(ctx, sqlListBlockedJobs)
 	if err != nil {
 		return nil, fmt.Errorf("sqlite: list blocked jobs: %w", mapErr(err))
 	}
@@ -498,7 +499,7 @@ func (s *Store) ListBlockedJobs(ctx context.Context) ([]store.Job, error) {
 
 // queryIDs runs a single-column string query and returns the values.
 func (s *Store) queryIDs(ctx context.Context, query string, args ...any) ([]string, error) {
-	rows, err := s.rdb.QueryContext(ctx, query, args...)
+	rows, err := s.r.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("sqlite: query ids: %w", mapErr(err))
 	}
@@ -550,21 +551,21 @@ func (s *Store) ListJobs(ctx context.Context, opts store.ListJobsOptions) (store
 		args = append(args, string(opts.Status))
 	}
 	if opts.Owner != "" {
-		where += ` AND owner = ? COLLATE NOCASE`
+		where += " AND " + s.d.CIEqual("owner")
 		args = append(args, opts.Owner)
 	}
 	if opts.Project != "" {
 		where += ` AND project = ?`
 		args = append(args, opts.Project)
 	}
-	if frag, sargs := searchClause([]string{"name", "id", "owner", "project"}, opts.Search); frag != "" {
+	if frag, sargs := searchClause(s.d, []string{"name", "id", "owner", "project"}, opts.Search); frag != "" {
 		where += frag
 		args = append(args, sargs...)
 	}
 
 	// COUNT total matching rows (same WHERE, no ORDER/LIMIT).
 	var total int
-	if err := s.rdb.QueryRowContext(ctx, `SELECT COUNT(*) FROM jobs`+where, args...).Scan(&total); err != nil {
+	if err := s.r.QueryRowContext(ctx, `SELECT COUNT(*) FROM jobs`+where, args...).Scan(&total); err != nil {
 		return store.Page[store.Job]{}, mapErr(err)
 	}
 
@@ -577,10 +578,10 @@ func (s *Store) ListJobs(ctx context.Context, opts store.ListJobsOptions) (store
 
 	// col comes from jobSortColumns (hard-coded allow-list); dir is "ASC" or
 	// "DESC" from sortDirKeyword; where uses only ? placeholders for user values.
-	q := `SELECT ` + jobCols + ` FROM jobs` + where + //nolint:gosec // see comment above
+	q := `SELECT ` + jobCols + ` FROM jobs` + where +
 		` ORDER BY ` + col + ` ` + dir +
 		` LIMIT ? OFFSET ?`
-	rows, err := s.rdb.QueryContext(ctx, q, append(args, opts.Pagination.Limit, opts.Pagination.Offset)...)
+	rows, err := s.r.QueryContext(ctx, q, append(args, opts.Pagination.Limit, opts.Pagination.Offset)...)
 	if err != nil {
 		return store.Page[store.Job]{}, mapErr(err)
 	}
@@ -635,7 +636,7 @@ func (s *Store) CancelJobStatus(ctx context.Context, id string) error {
 	now := time.Now().UTC()
 	nowText := timeToText(now)
 
-	res, err := s.db.ExecContext(ctx, sqlCancelJobStatus, nowText, nowText, id)
+	res, err := s.w.ExecContext(ctx, sqlCancelJobStatus, nowText, nowText, id)
 	if err != nil {
 		return mapErr(err)
 	}
@@ -669,7 +670,7 @@ func (s *Store) CancelJobStatus(ctx context.Context, id string) error {
 // commits concurrently, and it takes no anchor. How a PostgreSQL store closes
 // that is left open (see "Store invariants" in docs/architecture.md).
 func (s *Store) DemoteStalledJobs(ctx context.Context, now time.Time) ([]string, error) {
-	rows, err := s.db.QueryContext(ctx, sqlDemoteStalledJobs, timeToText(now.UTC()))
+	rows, err := s.w.QueryContext(ctx, sqlDemoteStalledJobs, timeToText(now.UTC()))
 	if err != nil {
 		return nil, fmt.Errorf("sqlite: demote stalled jobs: %w", mapErr(err))
 	}
@@ -683,7 +684,8 @@ func (s *Store) DemoteStalledJobs(ctx context.Context, now time.Time) ([]string,
 		}
 		ids = append(ids, id)
 	}
-	return ids, mapErr(rows.Err())
+	// rows.Err is not a wrapper's error: classify it as queryTasksTx does.
+	return ids, mapErr(classifyErr(s.d, rows.Err()))
 }
 
 // DeleteTerminalJobsBefore implements [store.JobStore]. It selects the eligible
@@ -711,7 +713,7 @@ func (s *Store) DeleteTerminalJobsBefore(
 	recheck := query + sqlExpiredJobByID
 
 	var deleted []store.DeletedJob
-	err := s.inTx(ctx, "delete terminal jobs", func(tx *sql.Tx) (txOutcome, error) {
+	err := s.inTx(ctx, "delete terminal jobs", func(tx *dbTx) (txOutcome, error) {
 		candidates, err := selectExpiredJobsTx(ctx, tx, query, args)
 		if err != nil {
 			return txRollback, err
@@ -748,7 +750,7 @@ func expiredJobsQuery(cutoff time.Time, includeFailed bool) (query string, args 
 }
 
 // selectExpiredJobsTx runs the retention eligibility SELECT inside tx.
-func selectExpiredJobsTx(ctx context.Context, tx *sql.Tx, query string, args []any) ([]store.DeletedJob, error) {
+func selectExpiredJobsTx(ctx context.Context, tx *dbTx, query string, args []any) ([]store.DeletedJob, error) {
 	rows, err := tx.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, mapErr(err)
@@ -774,8 +776,8 @@ func selectExpiredJobsTx(ctx context.Context, tx *sql.Tx, query string, args []a
 // for [Store.DeleteJob], the anchor does not stop a log append or a lease from
 // inserting a child row mid-cascade, so a PostgreSQL store must retry on a
 // foreign-key error.
-func purgeExpiredJobTx(ctx context.Context, tx *sql.Tx, recheck string, args []any, id string) (bool, error) {
-	if err := lockAnchors(ctx, tx, jobAnchor(id)); err != nil {
+func purgeExpiredJobTx(ctx context.Context, tx *dbTx, recheck string, args []any, id string) (bool, error) {
+	if err := tx.d.LockAnchors(ctx, tx.tx, jobAnchor(id)); err != nil {
 		return false, err
 	}
 	var still store.DeletedJob
@@ -813,8 +815,8 @@ func purgeExpiredJobTx(ctx context.Context, tx *sql.Tx, recheck string, args []a
 // SQLite cannot produce either error: its single write connection serializes
 // every writer.
 func (s *Store) DeleteJob(ctx context.Context, id string) error {
-	return s.inTx(ctx, "delete job", func(tx *sql.Tx) (txOutcome, error) {
-		if err := lockAnchors(ctx, tx, jobAnchor(id)); err != nil {
+	return s.inTx(ctx, "delete job", func(tx *dbTx) (txOutcome, error) {
+		if err := s.d.LockAnchors(ctx, tx.tx, jobAnchor(id)); err != nil {
 			return txRollback, err
 		}
 
@@ -854,7 +856,7 @@ func (s *Store) DeleteJob(ctx context.Context, id string) error {
 func (s *Store) ParkJob(ctx context.Context, jobID, reason string, now time.Time) error {
 	nowText := timeToText(now.UTC())
 
-	res, err := s.db.ExecContext(ctx, sqlParkJob, reason, nowText, jobID)
+	res, err := s.w.ExecContext(ctx, sqlParkJob, reason, nowText, jobID)
 	if err != nil {
 		return mapErr(err)
 	}
@@ -879,7 +881,7 @@ func (s *Store) ParkJob(ctx context.Context, jobID, reason string, now time.Time
 // paused"; a follow-up GetJob disambiguates the same way [Store.ParkJob] does —
 // not-paused is a legitimate no-op (nil), missing propagates [store.ErrNotFound].
 func (s *Store) ResumeJob(ctx context.Context, jobID string, now time.Time) error {
-	res, err := s.db.ExecContext(ctx, sqlResumeJob, timeToText(now.UTC()), jobID)
+	res, err := s.w.ExecContext(ctx, sqlResumeJob, timeToText(now.UTC()), jobID)
 	if err != nil {
 		return mapErr(err)
 	}

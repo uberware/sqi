@@ -211,9 +211,9 @@ func (s *Store) RegisterWorker(ctx context.Context, worker store.Worker) (store.
 		out       store.Worker
 		reclaimed []store.Task
 	)
-	err = s.inTx(ctx, "register worker", func(tx *sql.Tx) (txOutcome, error) {
+	err = s.inTx(ctx, "register worker", func(tx *dbTx) (txOutcome, error) {
 		reclaimed = nil
-		if err := lockAnchors(ctx, tx, workerAnchor(worker.ID)); err != nil {
+		if err := s.d.LockAnchors(ctx, tx.tx, workerAnchor(worker.ID)); err != nil {
 			return txRollback, err
 		}
 		var prior string
@@ -221,7 +221,7 @@ func (s *Store) RegisterWorker(ctx context.Context, worker store.Worker) (store.
 		if err != nil && !errors.Is(err, sql.ErrNoRows) {
 			return txRollback, fmt.Errorf("sqlite: read worker %s instance: %w", worker.ID, mapErr(err))
 		}
-		upsert := tx.StmtContext(ctx, s.stmtUpsertWorker)
+		upsert := tx.Stmt(ctx, s.stmtUpsertWorker)
 		defer upsert.Close()
 		out, err = scanWorker(upsert.QueryRowContext(ctx, args...))
 		if err != nil {
@@ -285,13 +285,13 @@ func (s *Store) ListWorkers(ctx context.Context, opts store.ListWorkersOptions) 
 		where += ` AND ` + sqlWorkerEffectiveStatus + ` = ?`
 		args = append(args, string(opts.Status))
 	}
-	if frag, sargs := searchClause([]string{"name", "hostname", "id", "compute_location"}, opts.Search); frag != "" {
+	if frag, sargs := searchClause(s.d, []string{"name", "hostname", "id", "compute_location"}, opts.Search); frag != "" {
 		where += frag
 		args = append(args, sargs...)
 	}
 
 	var total int
-	if err := s.rdb.QueryRowContext(ctx, `SELECT COUNT(*) FROM workers`+where, args...).Scan(&total); err != nil {
+	if err := s.r.QueryRowContext(ctx, `SELECT COUNT(*) FROM workers`+where, args...).Scan(&total); err != nil {
 		return store.Page[store.Worker]{}, mapErr(err)
 	}
 
@@ -303,10 +303,10 @@ func (s *Store) ListWorkers(ctx context.Context, opts store.ListWorkersOptions) 
 
 	// col comes from workerSortColumns (hard-coded allow-list); dir is "ASC" or
 	// "DESC" from sortDirKeyword; where uses only ? placeholders for user values.
-	q := `SELECT ` + workerCols + ` FROM workers` + where + //nolint:gosec // see comment above
+	q := `SELECT ` + workerCols + ` FROM workers` + where +
 		` ORDER BY ` + col + ` ` + dir +
 		` LIMIT ? OFFSET ?`
-	rows, err := s.rdb.QueryContext(ctx, q, append(args, opts.Pagination.Limit, opts.Pagination.Offset)...)
+	rows, err := s.r.QueryContext(ctx, q, append(args, opts.Pagination.Limit, opts.Pagination.Offset)...)
 	if err != nil {
 		return store.Page[store.Worker]{}, mapErr(err)
 	}
@@ -389,7 +389,7 @@ func (s *Store) CountIdleWorkers(ctx context.Context, farmID string) (int, error
 // [store.ErrNotFound]. A concurrent change between the two statements can only
 // move the answer between those two errors, never delete a row the rule refused.
 func (s *Store) DeleteWorkerIfRemovable(ctx context.Context, id string) error {
-	res, err := s.db.ExecContext(ctx, sqlDeleteWorkerIfRemovable, id)
+	res, err := s.w.ExecContext(ctx, sqlDeleteWorkerIfRemovable, id)
 	if err != nil {
 		return mapErr(err)
 	}

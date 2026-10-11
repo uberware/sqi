@@ -11,8 +11,8 @@ import (
 )
 
 // TestClassifySQLite_ConstraintCodes provokes each constraint SQLite reports
-// and checks it is classified, and mapped, as a conflict; a syntax error stays
-// unclassified and unmapped.
+// and checks the SQLite dialect classifies it, and mapErr maps it, as a
+// conflict; a syntax error stays unclassified and unmapped.
 func TestClassifySQLite_ConstraintCodes(t *testing.T) {
 	s, err := Open(t.Context(), t.TempDir()+"/t.db", DefaultOptions())
 	if err != nil {
@@ -43,16 +43,16 @@ func TestClassifySQLite_ConstraintCodes(t *testing.T) {
 		if c.err == nil {
 			t.Fatalf("%s: the statement succeeded; it must fail for this test", name)
 		}
-		if got := classifySQLite(c.err); got != c.want {
-			t.Errorf("%s: classifySQLite(%v) = %d, want %d", name, c.err, got, c.want)
+		if got := (sqliteDialect{}).Classify(c.err); got != c.want {
+			t.Errorf("%s: Classify(%v) = %d, want %d", name, c.err, got, c.want)
 		}
 	}
 	for _, err := range []error{pk, unique, fk} {
-		if !errors.Is(mapErr(err), store.ErrConflict) {
+		if !errors.Is(mapErr(classifyErr(sqliteDialect{}, err)), store.ErrConflict) {
 			t.Errorf("mapErr(%v) is not ErrConflict", err)
 		}
 	}
-	if got := mapErr(syntax); !errors.Is(got, syntax) || errors.Is(got, store.ErrConflict) {
+	if got := mapErr(classifyErr(sqliteDialect{}, syntax)); !errors.Is(got, syntax) || errors.Is(got, store.ErrConflict) {
 		t.Errorf("mapErr(syntax) = %v, want the error unchanged", got)
 	}
 }

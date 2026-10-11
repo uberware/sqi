@@ -113,13 +113,13 @@ func (s *Store) FinalizeStep(ctx context.Context, id string, now time.Time) (sto
 		status, terminal store.StepStatus
 		finalized        bool
 	)
-	err := s.inTx(ctx, "finalize step", func(tx *sql.Tx) (txOutcome, error) {
+	err := s.inTx(ctx, "finalize step", func(tx *dbTx) (txOutcome, error) {
 		status, terminal, finalized = "", "", false
 		var jobID, current string
 		if err := tx.QueryRowContext(ctx, `SELECT job_id, status FROM steps WHERE id = ?`, id).Scan(&jobID, &current); err != nil {
 			return txRollback, mapErr(err)
 		}
-		if err := lockAnchors(ctx, tx, jobAnchor(jobID)); err != nil {
+		if err := s.d.LockAnchors(ctx, tx.tx, jobAnchor(jobID)); err != nil {
 			return txRollback, err
 		}
 		var written string
@@ -156,13 +156,13 @@ func (s *Store) FinalizeJob(ctx context.Context, id string, now time.Time) (stor
 		status, terminal store.JobStatus
 		finalized        bool
 	)
-	err := s.inTx(ctx, "finalize job", func(tx *sql.Tx) (txOutcome, error) {
+	err := s.inTx(ctx, "finalize job", func(tx *dbTx) (txOutcome, error) {
 		status, terminal, finalized = "", "", false
 		var current string
 		if err := tx.QueryRowContext(ctx, `SELECT status FROM jobs WHERE id = ?`, id).Scan(&current); err != nil {
 			return txRollback, mapErr(err)
 		}
-		if err := lockAnchors(ctx, tx, jobAnchor(id)); err != nil {
+		if err := s.d.LockAnchors(ctx, tx.tx, jobAnchor(id)); err != nil {
 			return txRollback, err
 		}
 		nowText := timeToText(now.UTC())
@@ -189,7 +189,7 @@ func (s *Store) FinalizeJob(ctx context.Context, id string, now time.Time) (stor
 
 // ListStuckSteps implements [store.StepStore].
 func (s *Store) ListStuckSteps(ctx context.Context) ([]store.Step, error) {
-	rows, err := s.rdb.QueryContext(ctx, sqlListStuckSteps)
+	rows, err := s.r.QueryContext(ctx, sqlListStuckSteps)
 	if err != nil {
 		return nil, fmt.Errorf("sqlite: list stuck steps: %w", mapErr(err))
 	}
@@ -207,7 +207,7 @@ func (s *Store) ListStuckSteps(ctx context.Context) ([]store.Step, error) {
 
 // ListJobIDsWithPendingSteps implements [store.StepStore].
 func (s *Store) ListJobIDsWithPendingSteps(ctx context.Context) ([]string, error) {
-	rows, err := s.rdb.QueryContext(ctx, sqlListJobIDsWithPendingSteps)
+	rows, err := s.r.QueryContext(ctx, sqlListJobIDsWithPendingSteps)
 	if err != nil {
 		return nil, fmt.Errorf("sqlite: list jobs with pending steps: %w", mapErr(err))
 	}
@@ -255,13 +255,13 @@ func (s *Store) movePendingStep(
 		moved bool
 		tasks []store.Task
 	)
-	err := s.inTx(ctx, "move pending step", func(tx *sql.Tx) (txOutcome, error) {
+	err := s.inTx(ctx, "move pending step", func(tx *dbTx) (txOutcome, error) {
 		moved, tasks = false, nil
 		var jobID, dependsOnJSON string
 		if err := tx.QueryRowContext(ctx, `SELECT job_id, depends_on FROM steps WHERE id = ?`, id).Scan(&jobID, &dependsOnJSON); err != nil {
 			return txRollback, mapErr(err)
 		}
-		if err := lockAnchors(ctx, tx, jobAnchor(jobID)); err != nil {
+		if err := s.d.LockAnchors(ctx, tx.tx, jobAnchor(jobID)); err != nil {
 			return txRollback, err
 		}
 		if stepTo == store.StepStatusCanceled {
@@ -300,7 +300,7 @@ func (s *Store) movePendingStep(
 
 // anyUpstreamUnsuccessfulTx reports whether any step named in dependsOnJSON (a
 // step's depends_on column) is, in jobID, failed or canceled as tx sees it.
-func anyUpstreamUnsuccessfulTx(ctx context.Context, tx *sql.Tx, jobID, dependsOnJSON string) (bool, error) {
+func anyUpstreamUnsuccessfulTx(ctx context.Context, tx *dbTx, jobID, dependsOnJSON string) (bool, error) {
 	deps, err := unmarshalJSON(dependsOnJSON, []string{})
 	if err != nil {
 		return false, err
@@ -323,7 +323,7 @@ func anyUpstreamUnsuccessfulTx(ctx context.Context, tx *sql.Tx, jobID, dependsOn
 }
 
 // queryTasksTx runs a task-returning statement inside tx and scans every row.
-func queryTasksTx(ctx context.Context, tx *sql.Tx, query string, args ...any) ([]store.Task, error) {
+func queryTasksTx(ctx context.Context, tx *dbTx, query string, args ...any) ([]store.Task, error) {
 	rows, err := tx.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, mapErr(err)
@@ -337,7 +337,9 @@ func queryTasksTx(ctx context.Context, tx *sql.Tx, query string, args ...any) ([
 		}
 		out = append(out, t)
 	}
-	return out, mapErr(rows.Err())
+	// rows.Err is not a wrapper's error: classify it here, since the statement
+	// is a write whose constraint error can surface while iterating.
+	return out, mapErr(classifyErr(tx.d, rows.Err()))
 }
 
 const (
@@ -380,13 +382,13 @@ RETURNING ` + taskCols
 // this release). The write is one guarded UPDATE; see [sqlReleaseBlockedJob].
 func (s *Store) ReleaseBlockedJob(ctx context.Context, id string, now time.Time) (bool, error) {
 	var released bool
-	err := s.inTx(ctx, "release blocked job", func(tx *sql.Tx) (txOutcome, error) {
+	err := s.inTx(ctx, "release blocked job", func(tx *dbTx) (txOutcome, error) {
 		released = false
 		anchors, err := blockedJobAnchorsTx(ctx, tx, id)
 		if err != nil {
 			return txRollback, err
 		}
-		if err := lockAnchors(ctx, tx, anchors...); err != nil {
+		if err := s.d.LockAnchors(ctx, tx.tx, anchors...); err != nil {
 			return txRollback, err
 		}
 		res, err := tx.ExecContext(ctx, sqlReleaseBlockedJob, timeToText(now.UTC()), id)
@@ -417,13 +419,13 @@ func (s *Store) CancelBlockedJob(ctx context.Context, id, reason string, now tim
 		canceled bool
 		tasks    []store.Task
 	)
-	err := s.inTx(ctx, "cancel blocked job", func(tx *sql.Tx) (txOutcome, error) {
+	err := s.inTx(ctx, "cancel blocked job", func(tx *dbTx) (txOutcome, error) {
 		canceled, tasks = false, nil
 		anchors, err := blockedJobAnchorsTx(ctx, tx, id)
 		if err != nil {
 			return txRollback, err
 		}
-		if err := lockAnchors(ctx, tx, anchors...); err != nil {
+		if err := s.d.LockAnchors(ctx, tx.tx, anchors...); err != nil {
 			return txRollback, err
 		}
 		nowText := timeToText(now.UTC())
@@ -457,7 +459,7 @@ func (s *Store) CancelBlockedJob(ctx context.Context, id, reason string, now tim
 // blockedJobAnchorsTx returns the anchor list for a blocked-job operation: the
 // job row, then each upstream job row in id order. It returns ErrNotFound for
 // an unknown job.
-func blockedJobAnchorsTx(ctx context.Context, tx *sql.Tx, id string) ([]anchor, error) {
+func blockedJobAnchorsTx(ctx context.Context, tx *dbTx, id string) ([]Anchor, error) {
 	var one int
 	if err := tx.QueryRowContext(ctx, `SELECT 1 FROM jobs WHERE id = ?`, id).Scan(&one); err != nil {
 		return nil, mapErr(err)
@@ -467,13 +469,13 @@ func blockedJobAnchorsTx(ctx context.Context, tx *sql.Tx, id string) ([]anchor, 
 		return nil, mapErr(err)
 	}
 	defer rows.Close()
-	anchors := []anchor{jobAnchor(id)}
+	anchors := []Anchor{jobAnchor(id)}
 	for rows.Next() {
 		var up string
 		if err := rows.Scan(&up); err != nil {
 			return nil, err
 		}
-		anchors = append(anchors, jobAnchor(up))
+		anchors = append(anchors, sharedAnchor(jobAnchor(up)))
 	}
 	if err := rows.Err(); err != nil {
 		return nil, mapErr(err)
@@ -501,7 +503,7 @@ WHERE id = ? AND status IN ('pending', 'running')`
 // nothing and return false.
 func (s *Store) PromoteJobRunning(ctx context.Context, id string, now time.Time) (bool, error) {
 	nowText := timeToText(now.UTC())
-	res, err := s.db.ExecContext(ctx, sqlPromoteJobRunning, nowText, nowText, id)
+	res, err := s.w.ExecContext(ctx, sqlPromoteJobRunning, nowText, nowText, id)
 	if err != nil {
 		return false, fmt.Errorf("sqlite: promote job %s running: %w", id, mapErr(err))
 	}
@@ -516,7 +518,7 @@ func (s *Store) PromoteJobRunning(ctx context.Context, id string, now time.Time)
 // zero-row result is ambiguous between an unknown job and one in another
 // status, and a follow-up read tells them apart.
 func (s *Store) PauseJob(ctx context.Context, id string, now time.Time) error {
-	res, err := s.db.ExecContext(ctx, sqlPauseJob, timeToText(now.UTC()), id)
+	res, err := s.w.ExecContext(ctx, sqlPauseJob, timeToText(now.UTC()), id)
 	if err != nil {
 		return fmt.Errorf("sqlite: pause job %s: %w", id, mapErr(err))
 	}

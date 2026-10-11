@@ -380,7 +380,7 @@ func (s *Store) ListTasks(ctx context.Context, opts store.ListTasksOptions) (sto
 	}
 
 	var total int
-	if err := s.rdb.QueryRowContext(ctx, `SELECT COUNT(*) FROM tasks`+where, args...).Scan(&total); err != nil {
+	if err := s.r.QueryRowContext(ctx, `SELECT COUNT(*) FROM tasks`+where, args...).Scan(&total); err != nil {
 		return store.Page[store.Task]{}, mapErr(err)
 	}
 
@@ -392,10 +392,10 @@ func (s *Store) ListTasks(ctx context.Context, opts store.ListTasksOptions) (sto
 
 	// col comes from taskSortColumns (hard-coded allow-list); dir is "ASC" or
 	// "DESC" from sortDirKeyword; where uses only ? placeholders for user values.
-	q := `SELECT ` + taskCols + ` FROM tasks` + where + //nolint:gosec // see comment above
+	q := `SELECT ` + taskCols + ` FROM tasks` + where +
 		` ORDER BY ` + col + ` ` + dir +
 		` LIMIT ? OFFSET ?`
-	rows, err := s.rdb.QueryContext(ctx, q, append(args, opts.Pagination.Limit, opts.Pagination.Offset)...)
+	rows, err := s.r.QueryContext(ctx, q, append(args, opts.Pagination.Limit, opts.Pagination.Offset)...)
 	if err != nil {
 		return store.Page[store.Task]{}, mapErr(err)
 	}
@@ -474,7 +474,7 @@ func (s *Store) SetTaskUnschedulableReason(ctx context.Context, id, reason strin
 // same job-row lock, they cannot interleave.
 func (s *Store) ReclaimStaleAssignedTasks(ctx context.Context, cutoff time.Time) ([]store.Task, error) {
 	var reclaimed []store.Task
-	err := s.inTx(ctx, "reclaim stale assigned tasks", func(tx *sql.Tx) (txOutcome, error) {
+	err := s.inTx(ctx, "reclaim stale assigned tasks", func(tx *dbTx) (txOutcome, error) {
 		// Order: the tasks, then each one's attempts and claims. Server time stamps
 		// updated_at, ended_at and released_at alike.
 		nowText := timeToText(time.Now().UTC())
@@ -576,11 +576,11 @@ func (s *Store) RetryTasks(ctx context.Context, jobID string, taskIDs []string, 
 	}
 
 	var revived []store.Task
-	err := s.inTx(ctx, "retry tasks", func(tx *sql.Tx) (txOutcome, error) {
+	err := s.inTx(ctx, "retry tasks", func(tx *dbTx) (txOutcome, error) {
 		// The anchor is the job row, taken first. The revive UPDATE ... RETURNING
 		// is the returned set (I2), so there is no SELECT for a concurrent writer to
 		// slip in behind.
-		if err := lockAnchors(ctx, tx, jobAnchor(jobID)); err != nil {
+		if err := s.d.LockAnchors(ctx, tx.tx, jobAnchor(jobID)); err != nil {
 			return txRollback, err
 		}
 
@@ -645,7 +645,7 @@ func (s *Store) CountUnschedulableTasksByJob(ctx context.Context, jobID string) 
 
 // FailureReasonSummary implements [store.TaskStore].
 func (s *Store) FailureReasonSummary(ctx context.Context, jobID string) (store.FailureSummary, error) {
-	rows, err := s.rdb.QueryContext(ctx, sqlFailureReasonSummary, jobID)
+	rows, err := s.r.QueryContext(ctx, sqlFailureReasonSummary, jobID)
 	if err != nil {
 		return store.FailureSummary{}, mapErr(err)
 	}
@@ -670,7 +670,7 @@ func (s *Store) FailureReasonSummary(ctx context.Context, jobID string) (store.F
 // CommittedCores implements [store.TaskStore].
 func (s *Store) CommittedCores(ctx context.Context, workerID string, fullMachineCost int) (int, error) {
 	var n int
-	err := s.rdb.QueryRowContext(ctx, sqlCommittedCores, fullMachineCost, workerID).Scan(&n)
+	err := s.r.QueryRowContext(ctx, sqlCommittedCores, fullMachineCost, workerID).Scan(&n)
 	return n, mapErr(err)
 }
 
@@ -698,13 +698,13 @@ func (s *Store) RecordTaskFailure(
 ) (taskFailed, jobFailed int, firstClose bool, err error) {
 	nowText := timeToText(now.UTC())
 
-	err = s.inTx(ctx, "record task failure", func(tx *sql.Tx) (txOutcome, error) {
+	err = s.inTx(ctx, "record task failure", func(tx *dbTx) (txOutcome, error) {
 		taskFailed, jobFailed, firstClose = 0, 0, false
 		var anchorJobID string
 		if err := tx.QueryRowContext(ctx, sqlTaskJobID, taskID).Scan(&anchorJobID); err != nil {
 			return txRollback, mapErr(err) // no such task => ErrNotFound
 		}
-		if err := lockAnchors(ctx, tx, jobAnchor(anchorJobID)); err != nil {
+		if err := s.d.LockAnchors(ctx, tx.tx, jobAnchor(anchorJobID)); err != nil {
 			return txRollback, err
 		}
 
@@ -755,7 +755,7 @@ func (s *Store) RecordTaskFailure(
 // legitimate no-op reported as false — NOT an error, so a stale redelivery
 // never naks into a redelivery loop.
 func (s *Store) RequeueTaskForRetry(ctx context.Context, taskID, attemptID string, retryAfter, now time.Time) (bool, error) {
-	res, err := s.db.ExecContext(ctx, sqlRequeueTaskForRetry,
+	res, err := s.w.ExecContext(ctx, sqlRequeueTaskForRetry,
 		timeToText(retryAfter.UTC()), timeToText(now.UTC()), taskID, attemptID, taskID, taskID)
 	if err != nil {
 		return false, mapErr(err)

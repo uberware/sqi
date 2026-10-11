@@ -480,8 +480,8 @@ func TestJob_DeleteJob_RemovesOutgoingEdgesKeepsIncoming(t *testing.T) {
 
 // TestJob_CreateJobSubmission_DuplicateDependencyIsIgnored verifies that a
 // submission naming the same upstream twice neither fails nor produces a
-// duplicate edge — INSERT OR IGNORE plus the (job_id, depends_on_job_id)
-// primary key make the edge write idempotent. It replaces the dedup test of
+// duplicate edge — INSERT ... ON CONFLICT DO NOTHING plus the (job_id,
+// depends_on_job_id) primary key make the edge write idempotent. It replaces the dedup test of
 // the per-row edge writer, which a submission's DependsOn has superseded.
 func TestJob_CreateJobSubmission_DuplicateDependencyIsIgnored(t *testing.T) {
 	// Not t.Parallel(): see comment in TestJob_ListDependentsAndBlocked.
@@ -563,8 +563,9 @@ func TestStore_PurgeExpiredJobTx_SkipsAJobRevivedAfterTheSelect(t *testing.T) {
 		t.Fatalf("BeginTx: %v", err)
 	}
 	defer func() { _ = tx.Rollback() }() //nolint:errcheck // rollback after commit is a no-op
+	dtx := &dbTx{tx: tx, d: st.d}
 
-	candidates, err := selectExpiredJobsTx(ctx, tx, query, args)
+	candidates, err := selectExpiredJobsTx(ctx, dtx, query, args)
 	if err != nil {
 		t.Fatalf("selectExpiredJobsTx: %v", err)
 	}
@@ -582,14 +583,14 @@ func TestStore_PurgeExpiredJobTx_SkipsAJobRevivedAfterTheSelect(t *testing.T) {
 	}
 
 	recheck := query + sqlExpiredJobByID
-	purged, err := purgeExpiredJobTx(ctx, tx, recheck, args, "revived")
+	purged, err := purgeExpiredJobTx(ctx, dtx, recheck, args, "revived")
 	if err != nil {
 		t.Fatalf("purgeExpiredJobTx(revived): %v", err)
 	}
 	if purged {
 		t.Fatal("a job revived after the SELECT was purged")
 	}
-	purged, err = purgeExpiredJobTx(ctx, tx, recheck, args, "untouched")
+	purged, err = purgeExpiredJobTx(ctx, dtx, recheck, args, "untouched")
 	if err != nil {
 		t.Fatalf("purgeExpiredJobTx(untouched): %v", err)
 	}

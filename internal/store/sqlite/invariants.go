@@ -24,7 +24,7 @@ ORDER BY c.id`
 // invariant I3. It is a diagnostic used by tests and is not part of
 // store.Store. An empty result means the invariant holds.
 func (s *Store) ClaimInvariantViolations(ctx context.Context) ([]string, error) {
-	rows, err := s.rdb.QueryContext(ctx, sqlClaimInvariantViolations)
+	rows, err := s.r.QueryContext(ctx, sqlClaimInvariantViolations)
 	if err != nil {
 		return nil, fmt.Errorf("sqlite: claim invariant violations: %w", mapErr(err))
 	}

@@ -118,7 +118,7 @@ func (s *Store) ListQueues(ctx context.Context, opts store.ListQueuesOptions) (s
 	}
 
 	var total int
-	if err := s.rdb.QueryRowContext(ctx, `SELECT COUNT(*) FROM queues`+where, args...).Scan(&total); err != nil {
+	if err := s.r.QueryRowContext(ctx, `SELECT COUNT(*) FROM queues`+where, args...).Scan(&total); err != nil {
 		return store.Page[store.Queue]{}, mapErr(err)
 	}
 
@@ -130,10 +130,10 @@ func (s *Store) ListQueues(ctx context.Context, opts store.ListQueuesOptions) (s
 
 	// col comes from queueSortColumns (hard-coded allow-list); dir is "ASC" or
 	// "DESC" from sortDirKeyword; where uses only ? placeholders for user values.
-	q := `SELECT ` + queueCols + ` FROM queues` + where + //nolint:gosec // see comment above
+	q := `SELECT ` + queueCols + ` FROM queues` + where +
 		` ORDER BY ` + col + ` ` + dir +
 		` LIMIT ? OFFSET ?`
-	rows, err := s.rdb.QueryContext(ctx, q, append(args, opts.Pagination.Limit, opts.Pagination.Offset)...)
+	rows, err := s.r.QueryContext(ctx, q, append(args, opts.Pagination.Limit, opts.Pagination.Offset)...)
 	if err != nil {
 		return store.Page[store.Queue]{}, mapErr(err)
 	}
@@ -176,8 +176,8 @@ func (s *Store) UpdateQueue(ctx context.Context, queue store.Queue) (store.Queue
 	now := timeToText(time.Now().UTC())
 
 	var out store.Queue
-	err := s.inTx(ctx, "update queue", func(tx *sql.Tx) (txOutcome, error) {
-		txStmt := tx.StmtContext(ctx, s.stmtUpdateQueue)
+	err := s.inTx(ctx, "update queue", func(tx *dbTx) (txOutcome, error) {
+		txStmt := tx.Stmt(ctx, s.stmtUpdateQueue)
 		defer txStmt.Close()
 
 		row := txStmt.QueryRowContext(ctx,

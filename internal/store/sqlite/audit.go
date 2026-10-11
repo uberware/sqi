@@ -76,9 +76,9 @@ func (s *Store) ListAuditEntries(ctx context.Context, entityType, entityID strin
 	)
 
 	if entityType == "" && entityID == "" {
-		rows, err = s.rdb.QueryContext(ctx, sqlListAuditAll)
+		rows, err = s.r.QueryContext(ctx, sqlListAuditAll)
 	} else {
-		rows, err = s.rdb.QueryContext(ctx, sqlListAuditByEntity, entityType, entityID)
+		rows, err = s.r.QueryContext(ctx, sqlListAuditByEntity, entityType, entityID)
 	}
 	if err != nil {
 		return nil, mapErr(err)

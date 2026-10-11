@@ -43,7 +43,7 @@
 // Correctness under concurrent writers is not left to the single write
 // connection: every multi-row invariant is a single store operation (see
 // "Store invariants" in docs/architecture.md), and most of them name their
-// anchor rows via lockAnchors, a no-op here because the one write connection
+// anchor rows via Dialect.LockAnchors, a no-op here because the one write connection
 // already serializes every write transaction. A store with concurrent writers
 // must lock those rows instead, but the anchors alone are not yet enough
 // there: ReclaimStaleAssignedTasks and DemoteStalledJobs name none, and the
@@ -120,131 +120,134 @@ type Store struct {
 	// rdb is the read pool: up to readPoolMaxConns connections over the same
 	// file, so a SELECT does not queue behind a long write. For an in-memory
 	// or temporary database it aliases db — see [Open].
-	rdb   *sql.DB
-	stmts []*sql.Stmt // all prepared statements; closed by Close
-	// classify reports what a driver error means; Open sets it to classifySQLite.
-	classify func(error) ErrClass
+	rdb *sql.DB
+	// d is the SQL dialect every statement goes through.
+	d Dialect
+	// w and r run statements on db and rdb through d: every query is rebound,
+	// every time and bool argument converted, every error classified.
+	w, r  *dbPool
+	stmts []*dbStmt // all prepared statements; closed by Close
 
 	// ── farms ────────────────────────────────────────────────────────────
-	stmtInsertFarm *sql.Stmt
-	stmtGetFarm    *sql.Stmt
-	stmtListFarms  *sql.Stmt
-	stmtUpdateFarm *sql.Stmt
-	stmtDeleteFarm *sql.Stmt
+	stmtInsertFarm *dbStmt
+	stmtGetFarm    *dbStmt
+	stmtListFarms  *dbStmt
+	stmtUpdateFarm *dbStmt
+	stmtDeleteFarm *dbStmt
 
 	// ── queues ───────────────────────────────────────────────────────────
-	stmtInsertQueue *sql.Stmt
-	stmtGetQueue    *sql.Stmt
-	stmtUpdateQueue *sql.Stmt
-	stmtDeleteQueue *sql.Stmt
+	stmtInsertQueue *dbStmt
+	stmtGetQueue    *dbStmt
+	stmtUpdateQueue *dbStmt
+	stmtDeleteQueue *dbStmt
 
 	// ── storage_locations ────────────────────────────────────────────────
-	stmtInsertStorageLoc    *sql.Stmt
-	stmtGetStorageLoc       *sql.Stmt
-	stmtGetStorageLocByName *sql.Stmt
-	stmtListStorageLocs     *sql.Stmt
-	stmtUpdateStorageLoc    *sql.Stmt
-	stmtDeleteStorageLoc    *sql.Stmt
+	stmtInsertStorageLoc    *dbStmt
+	stmtGetStorageLoc       *dbStmt
+	stmtGetStorageLocByName *dbStmt
+	stmtListStorageLocs     *dbStmt
+	stmtUpdateStorageLoc    *dbStmt
+	stmtDeleteStorageLoc    *dbStmt
 
 	// ── compute_locations ────────────────────────────────────────────────────
-	stmtInsertComputeLoc    *sql.Stmt
-	stmtGetComputeLoc       *sql.Stmt
-	stmtGetComputeLocByName *sql.Stmt
-	stmtListComputeLocs     *sql.Stmt
-	stmtUpdateComputeLoc    *sql.Stmt
-	stmtDeleteComputeLoc    *sql.Stmt
+	stmtInsertComputeLoc    *dbStmt
+	stmtGetComputeLoc       *dbStmt
+	stmtGetComputeLocByName *dbStmt
+	stmtListComputeLocs     *dbStmt
+	stmtUpdateComputeLoc    *dbStmt
+	stmtDeleteComputeLoc    *dbStmt
 
 	// ── products ─────────────────────────────────────────────────────────────
-	stmtInsertProduct    *sql.Stmt
-	stmtGetProductByName *sql.Stmt
-	stmtListProducts     *sql.Stmt
-	stmtUpdateProduct    *sql.Stmt
-	stmtDeleteProduct    *sql.Stmt
+	stmtInsertProduct    *dbStmt
+	stmtGetProductByName *dbStmt
+	stmtListProducts     *dbStmt
+	stmtUpdateProduct    *dbStmt
+	stmtDeleteProduct    *dbStmt
 
 	// ── usage_pools ──────────────────────────────────────────────────────
-	stmtInsertPool    *sql.Stmt
-	stmtGetPool       *sql.Stmt
-	stmtListPools     *sql.Stmt
-	stmtListPoolUsage *sql.Stmt
-	stmtUpdatePool    *sql.Stmt
-	stmtDeletePool    *sql.Stmt
+	stmtInsertPool    *dbStmt
+	stmtGetPool       *dbStmt
+	stmtListPools     *dbStmt
+	stmtListPoolUsage *dbStmt
+	stmtUpdatePool    *dbStmt
+	stmtDeletePool    *dbStmt
 
 	// ── usage_claims ─────────────────────────────────────────────────────
-	stmtActiveClaimCount *sql.Stmt
+	stmtActiveClaimCount *dbStmt
 
 	// ── workers ──────────────────────────────────────────────────────────
-	stmtUpsertWorker             *sql.Stmt
-	stmtGetWorker                *sql.Stmt
-	stmtSetWorkerDisabled        *sql.Stmt
-	stmtUpdateWorkerHeartbeat    *sql.Stmt
-	stmtListStaleWorkers         *sql.Stmt
-	stmtCountIdleWorkers         *sql.Stmt
-	stmtCountIdleWorkersAllFarms *sql.Stmt
-	stmtDeleteOfflineWorkers     *sql.Stmt
+	stmtUpsertWorker             *dbStmt
+	stmtGetWorker                *dbStmt
+	stmtSetWorkerDisabled        *dbStmt
+	stmtUpdateWorkerHeartbeat    *dbStmt
+	stmtListStaleWorkers         *dbStmt
+	stmtCountIdleWorkers         *dbStmt
+	stmtCountIdleWorkersAllFarms *dbStmt
+	stmtDeleteOfflineWorkers     *dbStmt
 
 	// ── jobs ─────────────────────────────────────────────────────────────
-	stmtGetJob    *sql.Stmt
-	stmtUpdateJob *sql.Stmt
+	stmtGetJob    *dbStmt
+	stmtUpdateJob *dbStmt
 
 	// ── steps ────────────────────────────────────────────────────────────
-	stmtGetStep   *sql.Stmt
-	stmtListSteps *sql.Stmt
+	stmtGetStep   *dbStmt
+	stmtListSteps *dbStmt
 
 	// ── tasks ────────────────────────────────────────────────────────────
-	stmtGetTask                      *sql.Stmt
-	stmtSetTaskUnschedulableReason   *sql.Stmt
-	stmtListReadyTasks               *sql.Stmt
-	stmtCountActiveTasksInQueue      *sql.Stmt
-	stmtCountActiveTasksInFarm       *sql.Stmt
-	stmtCountReadyTasksByQueue       *sql.Stmt
-	stmtCountTasksByJob              *sql.Stmt
-	stmtCountUnschedulableTasksByJob *sql.Stmt
+	stmtGetTask                      *dbStmt
+	stmtSetTaskUnschedulableReason   *dbStmt
+	stmtListReadyTasks               *dbStmt
+	stmtCountActiveTasksInQueue      *dbStmt
+	stmtCountActiveTasksInFarm       *dbStmt
+	stmtCountReadyTasksByQueue       *dbStmt
+	stmtCountTasksByJob              *dbStmt
+	stmtCountUnschedulableTasksByJob *dbStmt
 
 	// ── task_attempts ────────────────────────────────────────────────────
-	stmtGetAttempt    *sql.Stmt
-	stmtLatestAttempt *sql.Stmt
-	stmtListAttempts  *sql.Stmt
+	stmtGetAttempt    *dbStmt
+	stmtLatestAttempt *dbStmt
+	stmtListAttempts  *dbStmt
 
 	// ── task_logs ────────────────────────────────────────────────────────
-	stmtInsertTaskLog *sql.Stmt
-	stmtListTaskLogs  *sql.Stmt
+	stmtInsertTaskLog *dbStmt
+	stmtListTaskLogs  *dbStmt
 
 	// ── audit_log ────────────────────────────────────────────────────────
-	stmtInsertAudit *sql.Stmt
+	stmtInsertAudit *dbStmt
 
 	// ── users ────────────────────────────────────────────────────────────
-	stmtInsertUser          *sql.Stmt
-	stmtGetUser             *sql.Stmt
-	stmtGetUserByUsername   *sql.Stmt
-	stmtGetUserByExternalID *sql.Stmt
-	stmtListUsers           *sql.Stmt
-	stmtUpdateUser          *sql.Stmt
-	stmtSetUserPassword     *sql.Stmt
-	stmtSetUserDisplayName  *sql.Stmt
-	stmtCountUsers          *sql.Stmt
+	stmtInsertUser          *dbStmt
+	stmtGetUser             *dbStmt
+	stmtGetUserByUsername   *dbStmt
+	stmtGetUserByExternalID *dbStmt
+	stmtListUsers           *dbStmt
+	stmtUpdateUser          *dbStmt
+	stmtSetUserPassword     *dbStmt
+	stmtSetUserDisplayName  *dbStmt
+	stmtCountUsers          *dbStmt
 
 	// ── sessions ─────────────────────────────────────────────────────────
-	stmtInsertSession             *sql.Stmt
-	stmtGetSessionByTokenHash     *sql.Stmt
-	stmtGetSessionUserByTokenHash *sql.Stmt
-	stmtDeleteSession             *sql.Stmt
-	stmtDeleteExpiredSessions     *sql.Stmt
+	stmtInsertSession             *dbStmt
+	stmtGetSessionByTokenHash     *dbStmt
+	stmtGetSessionUserByTokenHash *dbStmt
+	stmtDeleteSession             *dbStmt
+	stmtDeleteExpiredSessions     *dbStmt
 
 	// ── api keys ─────────────────────────────────────────────────────────
-	stmtInsertAPIKey             *sql.Stmt
-	stmtGetAPIKeyUserByTokenHash *sql.Stmt
-	stmtListAPIKeysForUser       *sql.Stmt
-	stmtRevokeAPIKey             *sql.Stmt
-	stmtTouchAPIKeyLastUsed      *sql.Stmt
+	stmtInsertAPIKey             *dbStmt
+	stmtGetAPIKeyUserByTokenHash *dbStmt
+	stmtListAPIKeysForUser       *dbStmt
+	stmtRevokeAPIKey             *dbStmt
+	stmtTouchAPIKeyLastUsed      *dbStmt
 
 	// ── worker credentials & join tokens ────────────────────────────────────
-	stmtInsertWorkerCredential      *sql.Stmt
-	stmtListActiveWorkerCredentials *sql.Stmt
-	stmtRevokeWorkerCredential      *sql.Stmt
-	stmtTouchWorkerCredential       *sql.Stmt
-	stmtInsertWorkerJoinToken       *sql.Stmt
-	stmtGetWorkerJoinTokenByHash    *sql.Stmt
-	stmtMarkWorkerJoinTokenUsed     *sql.Stmt
+	stmtInsertWorkerCredential      *dbStmt
+	stmtListActiveWorkerCredentials *dbStmt
+	stmtRevokeWorkerCredential      *dbStmt
+	stmtTouchWorkerCredential       *dbStmt
+	stmtInsertWorkerJoinToken       *dbStmt
+	stmtGetWorkerJoinTokenByHash    *dbStmt
+	stmtMarkWorkerJoinTokenUsed     *dbStmt
 }
 
 // Open opens (or creates) the SQLite database at path, applies connection
@@ -253,6 +256,11 @@ type Store struct {
 //
 // Open returns an error and releases all resources if any step fails.
 func Open(ctx context.Context, path string, opts Options) (*Store, error) {
+	return openWith(ctx, path, opts, sqliteDialect{})
+}
+
+// openWith is [Open] with the statements run through dialect d.
+func openWith(ctx context.Context, path string, opts Options, d Dialect) (*Store, error) {
 	if path == "" {
 		return nil, errors.New("sqlite: path is empty")
 	}
@@ -294,12 +302,25 @@ func Open(ctx context.Context, path string, opts Options) (*Store, error) {
 
 	// The read pool is opened only after migrations have run, so it can never
 	// prepare a statement against a half-migrated schema.
-	s := &Store{db: db, classify: classifySQLite}
-	if s.rdb, err = openReadPool(path, db); err != nil {
+	rdb, err := openReadPool(path, db)
+	if err != nil {
 		_ = db.Close()
 		return nil, err
 	}
-	if err = s.prepareAll(ctx); err != nil {
+	return newStore(ctx, db, rdb, d)
+}
+
+// newStore builds a Store over open write and read pools for dialect d and
+// prepares its statements. Close releases the pools.
+func newStore(ctx context.Context, write, read *sql.DB, d Dialect) (*Store, error) {
+	s := &Store{
+		db:  write,
+		rdb: read,
+		d:   d,
+		w:   &dbPool{db: write, d: d},
+		r:   &dbPool{db: read, d: d},
+	}
+	if err := s.prepareAll(ctx); err != nil {
 		_ = s.Close()
 		return nil, err
 	}
@@ -448,11 +469,12 @@ func trimSQLLeader(query string) string {
 	}
 }
 
-// prepare compiles sql into a prepared statement on the pool [Store.poolFor]
-// selects, tracks it for Close, and returns it. On failure it returns an error
+// prepare compiles sql, rebound for the store's dialect, into a prepared
+// statement on the pool [Store.poolFor] selects (judged on the original text),
+// tracks it for Close, and returns it. On failure it returns an error
 // that includes the first 60 chars of the SQL for context.
-func (s *Store) prepare(ctx context.Context, query string) (*sql.Stmt, error) {
-	stmt, err := s.poolFor(query).PrepareContext(ctx, query)
+func (s *Store) prepare(ctx context.Context, query string) (*dbStmt, error) {
+	stmt, err := s.poolFor(query).PrepareContext(ctx, s.d.Rebind(query))
 	if err != nil {
 		preview := query
 		if len(preview) > 60 {
@@ -460,8 +482,9 @@ func (s *Store) prepare(ctx context.Context, query string) (*sql.Stmt, error) {
 		}
 		return nil, fmt.Errorf("sqlite: prepare %q: %w", preview, err)
 	}
-	s.stmts = append(s.stmts, stmt)
-	return stmt, nil
+	ds := &dbStmt{st: stmt, d: s.d}
+	s.stmts = append(s.stmts, ds)
+	return ds, nil
 }
 
 // prepareAll compiles every SQL statement used by the store. Errors are
@@ -683,7 +706,7 @@ func (s *Store) prepareAll(ctx context.Context) error {
 	if s.stmtGetUser, err = s.prepare(ctx, sqlGetUser); err != nil {
 		return err
 	}
-	if s.stmtGetUserByUsername, err = s.prepare(ctx, sqlGetUserByUsername); err != nil {
+	if s.stmtGetUserByUsername, err = s.prepare(ctx, sqlGetUserByUsername+s.d.CIEqual("username")); err != nil {
 		return err
 	}
 	if s.stmtGetUserByExternalID, err = s.prepare(ctx, sqlGetUserByExternalID); err != nil {

@@ -55,7 +55,7 @@ type leaseScope struct {
 // LeaseTask implements [store.TaskStore].
 func (s *Store) LeaseTask(ctx context.Context, req store.LeaseRequest) (store.LeaseResult, error) {
 	var res store.LeaseResult
-	err := s.inTx(ctx, "lease task", func(tx *sql.Tx) (txOutcome, error) {
+	err := s.inTx(ctx, "lease task", func(tx *dbTx) (txOutcome, error) {
 		var err error
 		res, err = leaseTx(ctx, tx, req)
 		if err != nil || res.Outcome != store.LeaseLeased {
@@ -91,7 +91,7 @@ func (s *Store) LeaseTask(ctx context.Context, req store.LeaseRequest) (store.Le
 // under their anchors already. The lease takes neither the task's job row nor
 // the worker row; "Store invariants" in docs/architecture.md lists what that
 // leaves open on Postgres.
-func leaseTx(ctx context.Context, tx *sql.Tx, req store.LeaseRequest) (store.LeaseResult, error) {
+func leaseTx(ctx context.Context, tx *dbTx, req store.LeaseRequest) (store.LeaseResult, error) {
 	lost := store.LeaseResult{Outcome: store.LeaseLost}
 	scope, found, err := readLeaseScopeTx(ctx, tx, req.TaskID)
 	if err != nil {
@@ -102,7 +102,7 @@ func leaseTx(ctx context.Context, tx *sql.Tx, req store.LeaseRequest) (store.Lea
 	}
 	claims := slices.Clone(req.Claims)
 	slices.SortStableFunc(claims, func(a, b store.UsagePoolClaim) int { return cmp.Compare(a.PoolID, b.PoolID) })
-	if err := lockAnchors(ctx, tx, scope.anchors(claims)...); err != nil {
+	if err := tx.d.LockAnchors(ctx, tx.tx, scope.anchors(claims)...); err != nil {
 		return store.LeaseResult{}, err
 	}
 
@@ -131,7 +131,7 @@ func leaseTx(ctx context.Context, tx *sql.Tx, req store.LeaseRequest) (store.Lea
 
 // readLeaseScopeTx reads the task's queue and farm and their caps. found is
 // false when the task, or its job, queue or farm row, does not exist.
-func readLeaseScopeTx(ctx context.Context, tx *sql.Tx, taskID string) (scope leaseScope, found bool, err error) {
+func readLeaseScopeTx(ctx context.Context, tx *dbTx, taskID string) (scope leaseScope, found bool, err error) {
 	err = tx.QueryRowContext(ctx, sqlLeaseScope, taskID).Scan(&scope.queueID, &scope.farmID, &scope.queueCap, &scope.farmCap)
 	if errors.Is(err, sql.ErrNoRows) {
 		return leaseScope{}, false, nil
@@ -145,8 +145,8 @@ func readLeaseScopeTx(ctx context.Context, tx *sql.Tx, taskID string) (scope lea
 // anchors lists the lease's anchor rows in lock order: the queue and the farm,
 // each only when capped, then each pool in the order of claims, which the
 // caller has sorted by pool ID.
-func (sc leaseScope) anchors(claims []store.UsagePoolClaim) []anchor {
-	out := make([]anchor, 0, 2+len(claims))
+func (sc leaseScope) anchors(claims []store.UsagePoolClaim) []Anchor {
+	out := make([]Anchor, 0, 2+len(claims))
 	if sc.queueCap > 0 {
 		out = append(out, queueAnchor(sc.queueID))
 	}
@@ -161,7 +161,7 @@ func (sc leaseScope) anchors(claims []store.UsagePoolClaim) []anchor {
 
 // leaseTaskRowTx makes the guarded ready → assigned write and reports whether
 // it landed.
-func leaseTaskRowTx(ctx context.Context, tx *sql.Tx, req store.LeaseRequest, nowText string) (bool, error) {
+func leaseTaskRowTx(ctx context.Context, tx *dbTx, req store.LeaseRequest, nowText string) (bool, error) {
 	res, err := tx.ExecContext(ctx, sqlLeaseTaskGuarded, req.WorkerID, nowText, nowText, req.TaskID, nowText)
 	if err != nil {
 		return false, fmt.Errorf("sqlite: lease task %s: %w", req.TaskID, mapErr(err))
@@ -178,7 +178,7 @@ func leaseTaskRowTx(ctx context.Context, tx *sql.Tx, req store.LeaseRequest, now
 // lease's own task update, so each count includes the task being leased: a
 // count above the cap means the task did not fit. It returns the outcome of
 // the first full one, queue before farm, or "" when both have room.
-func (sc leaseScope) fullTx(ctx context.Context, tx *sql.Tx) (store.LeaseOutcome, error) {
+func (sc leaseScope) fullTx(ctx context.Context, tx *dbTx) (store.LeaseOutcome, error) {
 	checks := []struct {
 		capacity  int
 		query, id string
@@ -204,7 +204,7 @@ func (sc leaseScope) fullTx(ctx context.Context, tx *sql.Tx) (store.LeaseOutcome
 
 // insertLeaseAttemptTx inserts the lease's running attempt, numbered by
 // sqlNextAttemptNumber.
-func insertLeaseAttemptTx(ctx context.Context, tx *sql.Tx, req store.LeaseRequest, nowText string) (store.TaskAttempt, error) {
+func insertLeaseAttemptTx(ctx context.Context, tx *dbTx, req store.LeaseRequest, nowText string) (store.TaskAttempt, error) {
 	var num int
 	if err := tx.QueryRowContext(ctx, sqlNextAttemptNumber, req.TaskID).Scan(&num); err != nil {
 		return store.TaskAttempt{}, fmt.Errorf("sqlite: number lease attempt of task %s: %w", req.TaskID, mapErr(err))
@@ -226,7 +226,7 @@ func insertLeaseAttemptTx(ctx context.Context, tx *sql.Tx, req store.LeaseReques
 // read here, in the lease's transaction, never taken from the caller's copy,
 // and a pool that no longer exists counts as full. It returns a zero result
 // when the claim was written and a PoolFull result naming the pool when not.
-func claimPoolTx(ctx context.Context, tx *sql.Tx, c store.UsagePoolClaim, attemptID, nowText string) (store.LeaseResult, error) {
+func claimPoolTx(ctx context.Context, tx *dbTx, c store.UsagePoolClaim, attemptID, nowText string) (store.LeaseResult, error) {
 	pool, err := scanPool(tx.QueryRowContext(ctx, sqlGetPool, c.PoolID))
 	if errors.Is(err, sql.ErrNoRows) {
 		// Deleted after the scheduler decided the task was eligible.
