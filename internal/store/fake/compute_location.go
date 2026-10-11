@@ -22,6 +22,8 @@ func (s *Store) CreateComputeLocation(_ context.Context, loc store.ComputeLocati
 			return store.ComputeLocation{}, store.ErrConflict
 		}
 	}
+	loc.CreatedAt = s.stampLocked()
+	loc.UpdatedAt = loc.CreatedAt
 	s.computeLocations[loc.ID] = loc
 	return loc, nil
 }

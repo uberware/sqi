@@ -27,6 +27,8 @@ func (s *Store) CreateUsagePool(_ context.Context, pool store.UsagePool) (store.
 		}
 	}
 
+	pool.CreatedAt = s.stampLocked()
+	pool.UpdatedAt = pool.CreatedAt
 	s.usagePools[pool.ID] = pool
 	return pool, nil
 }

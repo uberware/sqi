@@ -322,56 +322,50 @@ func TestParity_ListQueues(t *testing.T) {
 		opts      func(farmA store.Farm) store.ListQueuesOptions
 		want      []string
 		wantTotal int
-		// fakeSkip, when set, is a divergence the fake does not match.
-		fakeSkip string
 	}{
 		{
 			"all farms by name", func(store.Farm) store.ListQueuesOptions { return store.ListQueuesOptions{} },
 			[]string{"q-a", "q-b", "q-c", "q-d"},
-			4, "",
+			4,
 		},
 		{
 			"farm filter", func(f store.Farm) store.ListQueuesOptions { return store.ListQueuesOptions{FarmID: f.ID} },
 			[]string{"q-a", "q-b", "q-c"},
-			3, "",
+			3,
 		},
 		{"paused only", func(f store.Farm) store.ListQueuesOptions {
 			return store.ListQueuesOptions{FarmID: f.ID, Paused: &yes}
-		}, []string{"q-b"}, 1, ""},
+		}, []string{"q-b"}, 1},
 		{"active only", func(f store.Farm) store.ListQueuesOptions {
 			return store.ListQueuesOptions{FarmID: f.ID, Paused: &no}
-		}, []string{"q-a", "q-c"}, 2, ""},
+		}, []string{"q-a", "q-c"}, 2},
 		{"name desc", func(f store.Farm) store.ListQueuesOptions {
 			return store.ListQueuesOptions{FarmID: f.ID, SortBy: store.QueueSortByName, SortDir: store.SortDesc}
-		}, []string{"q-c", "q-b", "q-a"}, 3, ""},
+		}, []string{"q-c", "q-b", "q-a"}, 3},
 		{"priority desc", func(f store.Farm) store.ListQueuesOptions {
 			return store.ListQueuesOptions{FarmID: f.ID, SortBy: store.QueueSortByPriority, SortDir: store.SortDesc}
-		}, []string{"q-a", "q-c", "q-b"}, 3, ""},
+		}, []string{"q-a", "q-c", "q-b"}, 3},
 		{"priority asc", func(f store.Farm) store.ListQueuesOptions {
 			return store.ListQueuesOptions{FarmID: f.ID, SortBy: store.QueueSortByPriority}
-		}, []string{"q-b", "q-c", "q-a"}, 3, ""},
+		}, []string{"q-b", "q-c", "q-a"}, 3},
 		{
 			"created_at asc", func(f store.Farm) store.ListQueuesOptions {
 				return store.ListQueuesOptions{FarmID: f.ID, SortBy: store.QueueSortByCreatedAt}
 			},
 			[]string{"q-b", "q-a", "q-c"},
 			3,
-			"divergence: fake CreateQueue keeps the caller's (zero) CreatedAt, so created_at order is map order",
 		},
 		{"page", func(f store.Farm) store.ListQueuesOptions {
 			return store.ListQueuesOptions{FarmID: f.ID, Pagination: store.Pagination{Limit: 2, Offset: 1}}
-		}, []string{"q-b", "q-c"}, 3, ""},
+		}, []string{"q-b", "q-c"}, 3},
 		{"offset past the end", func(f store.Farm) store.ListQueuesOptions {
 			return store.ListQueuesOptions{FarmID: f.ID, Pagination: store.Pagination{Limit: 2, Offset: 5}}
-		}, []string{}, 3, ""},
+		}, []string{}, 3},
 	}
 	for name, st := range newStores(t) {
 		farmA, _ := seedQueues(t, st)
 		for _, tc := range cases {
 			t.Run(name+"/"+tc.name, func(t *testing.T) {
-				if name == "fake" && tc.fakeSkip != "" {
-					t.Skip(tc.fakeSkip)
-				}
 				opts := tc.opts(farmA)
 				if err := opts.Pagination.Validate(); err != nil {
 					t.Fatalf("Validate: %v", err)

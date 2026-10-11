@@ -19,6 +19,8 @@ func (s *Store) CreateProduct(_ context.Context, p store.Product) (store.Product
 			return store.Product{}, store.ErrConflict
 		}
 	}
+	p.CreatedAt = s.stampLocked()
+	p.UpdatedAt = p.CreatedAt
 	s.products[p.ID] = p
 	return p, nil
 }

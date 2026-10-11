@@ -22,6 +22,8 @@ func (s *Store) CreateFarm(_ context.Context, farm store.Farm) (store.Farm, erro
 		}
 	}
 
+	farm.CreatedAt = s.stampLocked()
+	farm.UpdatedAt = farm.CreatedAt
 	s.farms[farm.ID] = farm
 	return farm, nil
 }

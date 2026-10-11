@@ -76,25 +76,17 @@ func (s *Store) CreateJobSubmission(_ context.Context, sub store.JobSubmission) 
 	// tasks within a step sharing one created_at would silently disable the
 	// ready-task ordering tiebreaker and destabilize ListTasks paging. A coarse
 	// wall clock returns the same instant for consecutive rows, so a row the
-	// clock has not moved past is stamped a nanosecond after the one before.
-	var last time.Time
-	stamp := func() time.Time {
-		now := time.Now().UTC()
-		if !now.After(last) {
-			now = last.Add(time.Nanosecond)
-		}
-		last = now
-		return now
-	}
+	// clock has not moved past is stamped a nanosecond after the one before
+	// (stampLocked, which the store's other Create methods share).
 	for _, step := range sub.Steps {
-		rowNow := stamp()
+		rowNow := s.stampLocked()
 		step.DependsOn = copySlice(step.DependsOn)
 		step.CreatedAt, step.UpdatedAt = rowNow, rowNow
 		s.steps[step.ID] = step
 		out.Steps = append(out.Steps, step)
 	}
 	for _, task := range sub.Tasks {
-		rowNow := stamp()
+		rowNow := s.stampLocked()
 		task.Parameters = copyMap(task.Parameters)
 		task.CreatedAt, task.UpdatedAt = rowNow, rowNow
 		s.tasks[task.ID] = task

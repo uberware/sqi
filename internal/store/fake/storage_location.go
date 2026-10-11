@@ -23,6 +23,8 @@ func (s *Store) CreateStorageLocation(_ context.Context, loc store.StorageLocati
 	}
 
 	loc.Roots = copyMap(loc.Roots)
+	loc.CreatedAt = s.stampLocked()
+	loc.UpdatedAt = loc.CreatedAt
 	s.storageLocations[loc.ID] = loc
 	return loc, nil
 }

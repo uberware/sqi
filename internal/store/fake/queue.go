@@ -27,6 +27,8 @@ func (s *Store) CreateQueue(_ context.Context, queue store.Queue) (store.Queue, 
 		}
 	}
 
+	queue.CreatedAt = s.stampLocked()
+	queue.UpdatedAt = queue.CreatedAt
 	s.queues[queue.ID] = queue
 	return queue, nil
 }
