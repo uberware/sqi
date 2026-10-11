@@ -115,7 +115,7 @@ func (s *Store) ListUsers(_ context.Context) ([]store.User, error) {
 		users = append(users, u)
 	}
 	// Case-insensitive to match SQLite's `ORDER BY username` over the
-	// COLLATE NOCASE column (see sqlListUsers in internal/store/sqlite/user.go).
+	// COLLATE NOCASE column (see sqlListUsers in internal/store/sqlstore/user.go).
 	// ASCII-only fold, mirroring SQLite's NOCASE collation.
 	slices.SortStableFunc(users, func(a, b store.User) int {
 		return strings.Compare(asciiToLower(a.Username), asciiToLower(b.Username))

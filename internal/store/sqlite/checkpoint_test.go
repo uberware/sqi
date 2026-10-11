@@ -7,6 +7,8 @@ import (
 	"strconv"
 	"testing"
 	"time"
+
+	"github.com/uberware/sqi/internal/store/sqlstore"
 )
 
 // TestCheckpoint_DoesNotBlockOnAReader is the reason [Store.Checkpoint] runs in
@@ -27,7 +29,7 @@ import (
 // TRUNCATE does not make this slow — it makes it take the full 5s.
 func TestCheckpoint_DoesNotBlockOnAReader(t *testing.T) {
 	ctx := context.Background()
-	st := openTestStoreWB(t)
+	st := openFilePoolStore(t)
 
 	// Put frames in the WAL so the checkpoint has real work to do.
 	seedCheckpointRows(t, ctx, st)
@@ -69,7 +71,7 @@ func TestCheckpoint_DoesNotBlockOnAReader(t *testing.T) {
 // truncated to zero and can afford to wait for it.
 func TestCheckpointTruncate_IsStillAvailableForShutdown(t *testing.T) {
 	ctx := context.Background()
-	st := openTestStoreWB(t)
+	st := openFilePoolStore(t)
 	seedCheckpointRows(t, ctx, st)
 
 	wal, done, err := st.CheckpointTruncate(ctx)
@@ -91,7 +93,7 @@ func seedCheckpointRows(t *testing.T, ctx context.Context, st *Store) {
 		if _, err := st.db.ExecContext(
 			ctx,
 			`INSERT INTO farms (id, name, created_at, updated_at) VALUES (?, ?, ?, ?)`,
-			"farm-"+strconv.Itoa(i), "f"+strconv.Itoa(i), timeToText(time.Now().UTC()), timeToText(time.Now().UTC()),
+			"farm-"+strconv.Itoa(i), "f"+strconv.Itoa(i), sqlstore.TimeText(time.Now().UTC()), sqlstore.TimeText(time.Now().UTC()),
 		); err != nil {
 			t.Fatalf("seed farm %d: %v", i, err)
 		}

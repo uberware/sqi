@@ -112,7 +112,7 @@ func TestUserStore_CRUD(t *testing.T) {
 // TestUserStore_ListUsers verifies ListUsers returns users ordered
 // case-insensitively by username — matching SQLite's `ORDER BY username`
 // over the `username` column, which is declared COLLATE NOCASE (see
-// sqlListUsers in internal/store/sqlite/user.go). The fake store must sort
+// sqlListUsers in internal/store/sqlstore/user.go). The fake store must sort
 // the same way; a case-sensitive ASCII sort would put "Zeta" before "bob"
 // (since 'Z' < 'b' in ASCII), diverging from SQLite.
 func TestUserStore_ListUsers(t *testing.T) {
