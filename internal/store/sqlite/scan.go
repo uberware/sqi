@@ -144,12 +144,22 @@ func sortDirKeyword(d store.SortDir) string {
 
 // ── Bool helpers ──────────────────────────────────────────────────────────────
 
-// boolToInt converts a Go bool to 0/1 for SQLite INTEGER columns.
-func boolToInt(b bool) int {
-	if b {
-		return 1
+// dbBool scans a boolean column, stored as an INTEGER 0/1 on SQLite and as a
+// boolean on PostgreSQL. A NULL or any other type is an error: every boolean
+// column is NOT NULL.
+type dbBool bool
+
+// Scan implements [sql.Scanner].
+func (b *dbBool) Scan(src any) error {
+	switch v := src.(type) {
+	case int64:
+		*b = v != 0
+	case bool:
+		*b = dbBool(v)
+	default:
+		return fmt.Errorf("scan bool: unsupported %T", src)
 	}
-	return 0
+	return nil
 }
 
 // ── Null helpers ──────────────────────────────────────────────────────────────

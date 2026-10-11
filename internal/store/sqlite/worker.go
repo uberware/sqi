@@ -24,7 +24,7 @@ const sqlWorkerHasWorkInFlight = `EXISTS (SELECT 1 FROM tasks t
 
 // sqlWorkerEffectiveStatus is [store.Worker.EffectiveStatus] in SQL, for the
 // status filter and sort: 'disabled' while the flag is set, else the liveness.
-const sqlWorkerEffectiveStatus = `CASE WHEN disabled = 1 THEN 'disabled' ELSE status END`
+const sqlWorkerEffectiveStatus = `CASE WHEN disabled THEN 'disabled' ELSE status END`
 
 const (
 	// ON CONFLICT preserves registered_at so re-registration does not reset it,
@@ -79,7 +79,7 @@ FROM workers WHERE status = 'online' AND last_heartbeat_at < ?`
 SELECT COUNT(*)
 FROM   workers w
 WHERE  w.farm_id = ?
-  AND  w.status  = 'online' AND w.disabled = 0
+  AND  w.status  = 'online' AND NOT w.disabled
   AND  NOT EXISTS (
          SELECT 1 FROM tasks t
          WHERE  t.assigned_worker_id = w.id
@@ -89,7 +89,7 @@ WHERE  w.farm_id = ?
 	sqlCountIdleWorkersAllFarms = `
 SELECT COUNT(*)
 FROM   workers w
-WHERE  w.status = 'online' AND w.disabled = 0
+WHERE  w.status = 'online' AND NOT w.disabled
   AND  NOT EXISTS (
          SELECT 1 FROM tasks t
          WHERE  t.assigned_worker_id = w.id
@@ -114,7 +114,7 @@ WHERE id = ? AND status = 'offline'
 	// matches (NULL < ? is NULL), so a never-seen worker is left alone.
 	sqlDeleteOfflineWorkersBefore = `
 DELETE FROM workers
-WHERE status = 'offline' AND disabled = 0 AND last_heartbeat_at < ?
+WHERE status = 'offline' AND NOT disabled AND last_heartbeat_at < ?
 RETURNING ` + workerCols
 )
 
@@ -123,11 +123,12 @@ func scanWorker(row scanner) (store.Worker, error) {
 	var farmID, queueID, lastHeartbeat sql.NullString
 	var gpuJSON, tagsJSON, exprJSON, status string
 	var registeredAt, updatedAt string
+	var disabled dbBool
 
 	if err := row.Scan(
 		&w.ID, &farmID, &queueID, &w.Name, &w.Hostname, &w.IPAddress, &w.ComputeLocation,
 		&w.OS, &w.OSVersion, &w.Arch, &w.Version, &w.CPUCount, &w.RAMMb, &gpuJSON, &tagsJSON, &exprJSON, &status,
-		&lastHeartbeat, &registeredAt, &updatedAt, &w.InstanceID, &w.Disabled,
+		&lastHeartbeat, &registeredAt, &updatedAt, &w.InstanceID, &disabled,
 	); err != nil {
 		return store.Worker{}, err
 	}
@@ -138,6 +139,7 @@ func scanWorker(row scanner) (store.Worker, error) {
 	w.LastHeartbeatAt = nullTextToTime(lastHeartbeat)
 	w.RegisteredAt = mustTime(registeredAt)
 	w.UpdatedAt = mustTime(updatedAt)
+	w.Disabled = bool(disabled)
 
 	gpu, err := unmarshalJSON(gpuJSON, store.GPUInfo{})
 	if err != nil {

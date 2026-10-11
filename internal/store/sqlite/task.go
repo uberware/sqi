@@ -79,7 +79,7 @@ LIMIT ?`
 	// (lease.go) all embed it, so the lease's guard cannot drift from the list
 	// the scheduler chose the task from.
 	sqlLeasableTask = `t.status  = 'ready'
-  AND  q.paused  = 0
+  AND  NOT q.paused
   AND  j.status NOT IN ('paused','completed','failed','canceled')
   AND  (t.retry_after IS NULL OR t.retry_after <= ?)`
 

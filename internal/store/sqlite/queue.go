@@ -31,8 +31,9 @@ RETURNING ` + queueCols
 	// as every other field, rather than requiring a prior read of the current
 	// value (which would open a lost-update race against a concurrent write
 	// to that column — see [store.Queue.PreserveRunAsUser]). The two extra
-	// placeholders ahead of each value (?) are the preserve flags, bound as 0
-	// or 1: SQLite's CASE WHEN treats any nonzero integer as true.
+	// placeholders ahead of each value (?) are the preserve flags, bound as Go
+	// bools: SQLite stores them as 1 or 0 and its CASE WHEN treats any nonzero
+	// integer as true, and PostgreSQL's takes the boolean directly.
 	sqlUpdateQueue = `
 UPDATE queues
 SET farm_id = ?, name = ?, description = ?, priority = ?, max_concurrent_tasks = ?, paused = ?,
@@ -55,7 +56,7 @@ var queueSortColumns = map[store.QueueSortField]string{
 
 func scanQueue(row scanner) (store.Queue, error) {
 	var q store.Queue
-	var paused int
+	var paused dbBool
 	var createdAt, updatedAt string
 	var maxAtt, delay, failLim sql.NullInt64
 	var runAsUser, runAsGroup sql.NullString
@@ -67,7 +68,7 @@ func scanQueue(row scanner) (store.Queue, error) {
 	); err != nil {
 		return store.Queue{}, err
 	}
-	q.Paused = paused != 0
+	q.Paused = bool(paused)
 	q.MaxAttempts, q.RetryDelaySeconds, q.FailureLimit = intPtr(maxAtt), intPtr(delay), intPtr(failLim)
 	q.RunAsUser, q.RunAsGroup = strPtr(runAsUser), strPtr(runAsGroup)
 	q.CreatedAt = mustTime(createdAt)
@@ -83,7 +84,7 @@ func (s *Store) CreateQueue(ctx context.Context, queue store.Queue) (store.Queue
 	now := timeToText(time.Now().UTC())
 	row := s.stmtInsertQueue.QueryRowContext(ctx,
 		queue.ID, queue.FarmID, queue.Name, queue.Description,
-		queue.Priority, queue.MaxConcurrentTasks, boolToInt(queue.Paused),
+		queue.Priority, queue.MaxConcurrentTasks, queue.Paused,
 		nullInt(queue.MaxAttempts), nullInt(queue.RetryDelaySeconds), nullInt(queue.FailureLimit),
 		nullStrPtr(queue.RunAsUser), nullStrPtr(queue.RunAsGroup),
 		now, now)
@@ -113,7 +114,7 @@ func (s *Store) ListQueues(ctx context.Context, opts store.ListQueuesOptions) (s
 	}
 	if opts.Paused != nil {
 		where += ` AND paused = ?`
-		args = append(args, boolToInt(*opts.Paused))
+		args = append(args, *opts.Paused)
 	}
 
 	var total int
@@ -185,10 +186,10 @@ func (s *Store) UpdateQueue(ctx context.Context, queue store.Queue) (store.Queue
 
 	row := txStmt.QueryRowContext(ctx,
 		queue.FarmID, queue.Name, queue.Description,
-		queue.Priority, queue.MaxConcurrentTasks, boolToInt(queue.Paused),
+		queue.Priority, queue.MaxConcurrentTasks, queue.Paused,
 		nullInt(queue.MaxAttempts), nullInt(queue.RetryDelaySeconds), nullInt(queue.FailureLimit),
-		boolToInt(queue.PreserveRunAsUser), nullStrPtr(queue.RunAsUser),
-		boolToInt(queue.PreserveRunAsGroup), nullStrPtr(queue.RunAsGroup),
+		queue.PreserveRunAsUser, nullStrPtr(queue.RunAsUser),
+		queue.PreserveRunAsGroup, nullStrPtr(queue.RunAsGroup),
 		now, queue.ID)
 	out, err := scanQueue(row)
 	if err != nil {

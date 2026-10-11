@@ -61,8 +61,8 @@ RETURNING id, username, display_name, password_hash, role, auth_source, external
 	// includes the row itself, so "<= 1" means it is the only one. It names the
 	// row's own columns unqualified, so it is only valid inside a statement
 	// whose target table is users.
-	sqlLastLiveAdmin = `(role = 'admin' AND disabled = 0
-	AND (SELECT COUNT(*) FROM users o WHERE o.role = 'admin' AND o.disabled = 0) <= 1)`
+	sqlLastLiveAdmin = `(role = 'admin' AND NOT disabled
+	AND (SELECT COUNT(*) FROM users o WHERE o.role = 'admin' AND NOT o.disabled) <= 1)`
 
 	// sqlDeleteUserKeepingAdmin deletes the user unless it is the last enabled
 	// admin. Zero rows affected means unknown id or refused; the caller tells
@@ -75,20 +75,20 @@ RETURNING id, username, display_name, password_hash, role, auth_source, external
 	// are the NEW role and disabled values, so a harmless edit of the last
 	// admin still lands.
 	sqlUpdateUserKeepingAdmin = sqlUpdateUserHead + `
-  AND NOT (` + sqlLastLiveAdmin + ` AND NOT (? = 'admin' AND ? = 0))` + sqlUserReturning
+  AND NOT (` + sqlLastLiveAdmin + ` AND NOT (? = 'admin' AND NOT ?))` + sqlUserReturning
 
-	sqlListLiveAdminIDs = `SELECT id FROM users WHERE role = 'admin' AND disabled = 0 ORDER BY id`
+	sqlListLiveAdminIDs = `SELECT id FROM users WHERE role = 'admin' AND NOT disabled ORDER BY id`
 )
 
 func scanUser(row scanner) (store.User, error) {
 	var u store.User
-	var disabled int
+	var disabled dbBool
 	var createdAt, updatedAt string
 	if err := row.Scan(&u.ID, &u.Username, &u.DisplayName, &u.PasswordHash,
 		&u.Role, &u.AuthSource, &u.ExternalID, &disabled, &createdAt, &updatedAt); err != nil {
 		return store.User{}, err
 	}
-	u.Disabled = disabled != 0
+	u.Disabled = bool(disabled)
 	u.CreatedAt = mustTime(createdAt)
 	u.UpdatedAt = mustTime(updatedAt)
 	return u, nil
@@ -101,7 +101,7 @@ func (s *Store) CreateUser(ctx context.Context, u store.User) (store.User, error
 		u.AuthSource = store.AuthSourceLocal
 	}
 	row := s.stmtInsertUser.QueryRowContext(ctx, u.ID, u.Username, u.DisplayName,
-		u.PasswordHash, u.Role, u.AuthSource, u.ExternalID, boolToInt(u.Disabled), now, now)
+		u.PasswordHash, u.Role, u.AuthSource, u.ExternalID, u.Disabled, now, now)
 	out, err := scanUser(row)
 	return out, mapErr(err)
 }
@@ -152,7 +152,7 @@ func (s *Store) UpdateUser(ctx context.Context, u store.User) (store.User, error
 // updateUserArgs binds sqlUpdateUserHead's placeholders, in order. Plain and
 // guarded updates both take their arguments from here.
 func updateUserArgs(u store.User, now string) []any {
-	return []any{u.DisplayName, u.Role, boolToInt(u.Disabled), now, u.ID}
+	return []any{u.DisplayName, u.Role, u.Disabled, now, u.ID}
 }
 
 // SetUserPassword implements [store.UserStore].
@@ -203,7 +203,7 @@ func (s *Store) UpdateUserKeepingAdmin(ctx context.Context, u store.User) (store
 	var out store.User
 	err := s.withAdminAnchors(ctx, func(tx *sql.Tx) error {
 		// The guard's own two placeholders carry the NEW role and disabled values.
-		args := append(updateUserArgs(u, timeToText(time.Now().UTC())), u.Role, boolToInt(u.Disabled))
+		args := append(updateUserArgs(u, timeToText(time.Now().UTC())), u.Role, u.Disabled)
 		row := tx.QueryRowContext(ctx, sqlUpdateUserKeepingAdmin, args...)
 		var err error
 		out, err = scanUser(row)
