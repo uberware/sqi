@@ -298,9 +298,9 @@ func (s *Store) ListJobs(_ context.Context, opts store.ListJobsOptions) (store.P
 }
 
 // UpdateJob replaces only the mutable user-settable fields of an existing job.
-// status, started_at, completed_at, and parameters are preserved from the stored
-// record to match the sqlite implementation which excludes those columns.
-// parameters is persisted at submission time and is not mutable via UpdateJob.
+// Lifecycle and submission fields (status, started_at, completed_at,
+// created_at, parameters, declared extensions, failed_attempts, park_reason)
+// keep their stored values, as on SQLite, whose UPDATE does not set them.
 func (s *Store) UpdateJob(_ context.Context, job store.Job) (store.Job, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -321,6 +321,10 @@ func (s *Store) UpdateJob(_ context.Context, job store.Job) (store.Job, error) {
 	// submission and is not on sqlUpdateJob's SET list.
 	job.DeclaredExtensions = copySlice(existing.DeclaredExtensions)
 	job.ExtensionsRecorded = existing.ExtensionsRecorded
+	// The failure counter and park reason are written by RecordTaskFailure,
+	// ParkJob and ResumeJob, never by UpdateJob (sqlUpdateJob's SET list).
+	job.FailedAttempts = existing.FailedAttempts
+	job.ParkReason = existing.ParkReason
 	job.UpdatedAt = time.Now()
 	s.jobs[job.ID] = job
 	return job, nil

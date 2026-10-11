@@ -111,9 +111,6 @@ func TestParity_UpdateJob(t *testing.T) {
 func TestParity_UpdateJob_KeepsFailureCounters(t *testing.T) {
 	for name, st := range newStores(t) {
 		t.Run(name, func(t *testing.T) {
-			if name == "fake" {
-				t.Skip("divergence: fake UpdateJob writes the caller's FailedAttempts and ParkReason; SQLite keeps the stored values")
-			}
 			g := seedGraph(t, st, graphOpts{})
 			job := seedAutoParked(t, st, g)
 
