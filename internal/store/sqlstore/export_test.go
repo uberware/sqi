@@ -66,3 +66,6 @@ func (s *Store) InTx(ctx context.Context, op string, fn func(tx *DBTx) (TxOutcom
 
 // SearchClause is searchClause, for the tests that pin its output.
 var SearchClause = searchClause
+
+// StmtCount is the number of statements the store prepared.
+func (s *Store) StmtCount() int { return len(s.stmts) }

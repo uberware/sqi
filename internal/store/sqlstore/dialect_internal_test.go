@@ -48,8 +48,9 @@ func TestWrappers_RebindAndBindEveryArgument(t *testing.T) {
 	d := &recordingDialect{Dialect: base.Dialect()}
 	s := withDialect(t, base, d)
 	prepared := len(d.queries)
-	if prepared == 0 {
-		t.Fatal("no statement was rebound while preparing")
+	if prepared == 0 || prepared != s.StmtCount() {
+		t.Fatalf("rebound %d queries while preparing %d statements; want one Rebind per statement",
+			prepared, s.StmtCount())
 	}
 	now := time.Now()
 	if _, err := s.WritePool().ExecContext(t.Context(),
