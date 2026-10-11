@@ -11,8 +11,10 @@ import (
 )
 
 // rawCall matches a database/sql statement call made outside the wrappers,
-// which would skip Rebind, argument binding and error classification.
-var rawCall = regexp.MustCompile(`\b(s\.db|s\.rdb|db|rdb|q|tx\.tx|p\.db|st\.st)\.(Exec|Query|QueryRow|Prepare)(Context)?\(`)
+// which would skip Rebind, argument binding and error classification. The
+// receivers are the raw handles the wrappers hold: a pool's db, dbConn's q, a
+// transaction's tx and a prepared statement's st.
+var rawCall = regexp.MustCompile(`\b(s\.db|s\.rdb|db|rdb|q|tx\.tx|st\.st)\.(Exec|Query|QueryRow|Prepare)(Context)?\(`)
 
 // rawCallAllowed lists the files that may call database/sql directly: the
 // wrappers themselves (dialect.go) and the statement preparation (store.go).

@@ -57,7 +57,7 @@ func TestIsReadStatement(t *testing.T) {
 // poolFor only compares pool identities, so two distinct, never-opened pools
 // stand in for a file-backed store's write and read pools.
 func TestPoolFor_RoutesEveryPreparedStatement(t *testing.T) {
-	s := &Store{w: &dbPool{db: new(sql.DB)}, r: &dbPool{db: new(sql.DB)}}
+	s := &Store{w: newDBPool(new(sql.DB), nil), r: newDBPool(new(sql.DB), nil)}
 
 	reads := map[string]string{
 		"sqlGetJob":                       sqlGetJob,

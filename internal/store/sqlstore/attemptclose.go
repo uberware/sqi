@@ -150,7 +150,7 @@ func (s *Store) CompleteTaskAttempt(ctx context.Context, c store.AttemptCompleti
 	var result store.CompletionResult
 	err := s.inTx(ctx, "complete task attempt", func(tx *dbTx) (txOutcome, error) {
 		if err := lockTaskJobTx(ctx, tx, c.TaskID); err != nil {
-			return txRollback, err
+			return txRollback, err // no such task => ErrNotFound
 		}
 		// Server time stamps the claims' released_at and the task row's updated_at:
 		// c.EndedAt comes from the worker's clock and belongs to the attempt only.
