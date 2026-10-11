@@ -37,13 +37,13 @@ func (s *Store) inTx(ctx context.Context, op string, fn func(tx *dbTx) (txOutcom
 }
 
 func (s *Store) runTx(ctx context.Context, op string, fn func(tx *dbTx) (txOutcome, error)) error {
-	tx, err := s.db.BeginTx(ctx, nil)
+	tx, err := s.w.db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("store: begin %s: %w", op, mapErr(classifyErr(s.d, err)))
 	}
 	defer func() { _ = tx.Rollback() }() //nolint:errcheck // rollback after commit is a no-op
 
-	outcome, err := fn(&dbTx{tx: tx, d: s.d})
+	outcome, err := fn(newDBTx(tx, s.d))
 	if err != nil || outcome == txRollback {
 		return err
 	}

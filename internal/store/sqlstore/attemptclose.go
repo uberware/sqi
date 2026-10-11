@@ -149,11 +149,7 @@ func closeAttemptAndReleaseTx(ctx context.Context, tx *dbTx, c store.AttemptComp
 func (s *Store) CompleteTaskAttempt(ctx context.Context, c store.AttemptCompletion) (store.CompletionResult, error) {
 	var result store.CompletionResult
 	err := s.inTx(ctx, "complete task attempt", func(tx *dbTx) (txOutcome, error) {
-		var jobID string
-		if err := tx.QueryRowContext(ctx, sqlTaskJobID, c.TaskID).Scan(&jobID); err != nil {
-			return txRollback, mapErr(err)
-		}
-		if err := s.d.LockAnchors(ctx, tx.tx, jobAnchor(jobID)); err != nil {
+		if err := lockTaskJobTx(ctx, tx, c.TaskID); err != nil {
 			return txRollback, err
 		}
 		// Server time stamps the claims' released_at and the task row's updated_at:
@@ -316,7 +312,7 @@ func (s *Store) CancelJobExecution(ctx context.Context, jobID, reason string, no
 		// Order: anchor, then the SELECT of the active set, then tasks, attempts,
 		// claims, steps, and the job row last. See the doc comment for why tasks
 		// come first.
-		if err := s.d.LockAnchors(ctx, tx.tx, jobAnchor(jobID)); err != nil {
+		if err := tx.lockAnchors(ctx, jobAnchor(jobID)); err != nil {
 			return txRollback, err
 		}
 		var err error
@@ -375,12 +371,8 @@ func (s *Store) CancelTaskExecution(ctx context.Context, taskID, reason string, 
 		canceled = false
 		// Order: the task's job id, the anchor on that job row, the task as it is
 		// under the anchor, then task, attempt, claims. See the doc comment.
-		var jobID string
-		if err := tx.QueryRowContext(ctx, sqlTaskJobID, taskID).Scan(&jobID); err != nil {
-			return txRollback, mapErr(err) // sql.ErrNoRows is ErrNotFound
-		}
-		if err := s.d.LockAnchors(ctx, tx.tx, jobAnchor(jobID)); err != nil {
-			return txRollback, err
+		if err := lockTaskJobTx(ctx, tx, taskID); err != nil {
+			return txRollback, err // no such task => ErrNotFound
 		}
 		var err error
 		prior, err = scanTask(tx.QueryRowContext(ctx, sqlGetTask, taskID))
@@ -507,7 +499,7 @@ func (s *Store) offlineWorker(ctx context.Context, id string, now time.Time, mar
 		reclaimed, offline = nil, false
 		// Order: the worker row, then the guarded mark, then the job rows, then the
 		// tasks, attempts and claims. See the doc comment.
-		if err := s.d.LockAnchors(ctx, tx.tx, workerAnchor(id)); err != nil {
+		if err := tx.lockAnchors(ctx, workerAnchor(id)); err != nil {
 			return txRollback, err
 		}
 		res, err := tx.ExecContext(ctx, markSQL, markArgs...)
@@ -547,7 +539,7 @@ func reclaimWorkerTasksTx(ctx context.Context, tx *dbTx, workerID, message strin
 	if err != nil {
 		return nil, err
 	}
-	if err := tx.d.LockAnchors(ctx, tx.tx, jobAnchors...); err != nil {
+	if err := tx.lockAnchors(ctx, jobAnchors...); err != nil {
 		return nil, err
 	}
 	nowText := TimeText(now.UTC())

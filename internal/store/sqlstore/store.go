@@ -28,17 +28,14 @@ var _ store.Store = (*Store)(nil)
 // Store is the SQL implementation of [store.Store].
 // Create one with [New]; close it with [Store.Close] when done.
 type Store struct {
-	// db is the write pool. Every transaction, and every statement that is
-	// not a SELECT, uses it.
-	db *sql.DB
-	// rdb is the read pool, so a SELECT does not queue behind a long write. It
-	// may alias db (an in-memory SQLite database has only one pool).
-	rdb *sql.DB
 	// d is the SQL dialect every statement goes through.
 	d Dialect
-	// w and r run statements on db and rdb through d: every query is rebound,
-	// every time and bool argument converted, every error classified.
-	w, r  *dbPool
+	// w is the write pool. Every transaction, and every statement that is not
+	// a SELECT, uses it.
+	w *dbPool
+	// r is the read pool, so a SELECT does not queue behind a long write. Its
+	// raw pool may alias w's (an in-memory SQLite database has only one pool).
+	r     *dbPool
 	stmts []*dbStmt // all prepared statements; closed by Close
 
 	// ── farms ────────────────────────────────────────────────────────────
@@ -168,11 +165,9 @@ type Store struct {
 // error New closes them itself.
 func New(ctx context.Context, write, read *sql.DB, d Dialect) (*Store, error) {
 	s := &Store{
-		db:  write,
-		rdb: read,
-		d:   d,
-		w:   &dbPool{db: write, d: d},
-		r:   &dbPool{db: read, d: d},
+		d: d,
+		w: newDBPool(write, d),
+		r: newDBPool(read, d),
 	}
 	if err := s.prepareAll(ctx); err != nil {
 		_ = s.Close()
@@ -190,13 +185,14 @@ func (s *Store) Close() error {
 			errs = append(errs, err)
 		}
 	}
-	// rdb aliases db for in-memory databases; closing it twice would error.
-	if s.rdb != nil && s.rdb != s.db {
-		if err := s.rdb.Close(); err != nil {
+	// The read pool aliases the write pool for in-memory databases; closing it
+	// twice would error.
+	if s.r.db != nil && s.r.db != s.w.db {
+		if err := s.r.db.Close(); err != nil {
 			errs = append(errs, err)
 		}
 	}
-	if err := s.db.Close(); err != nil {
+	if err := s.w.db.Close(); err != nil {
 		errs = append(errs, err)
 	}
 	return errors.Join(errs...)
@@ -206,9 +202,9 @@ func (s *Store) Close() error {
 // the write pool for everything else.
 func (s *Store) poolFor(query string) *sql.DB {
 	if isReadStatement(query) {
-		return s.rdb
+		return s.r.db
 	}
-	return s.db
+	return s.w.db
 }
 
 // isReadStatement reports whether query is a plain SELECT, ignoring leading

@@ -580,7 +580,7 @@ func (s *Store) RetryTasks(ctx context.Context, jobID string, taskIDs []string, 
 		// The anchor is the job row, taken first. The revive UPDATE ... RETURNING
 		// is the returned set (I2), so there is no SELECT for a concurrent writer to
 		// slip in behind.
-		if err := s.d.LockAnchors(ctx, tx.tx, jobAnchor(jobID)); err != nil {
+		if err := tx.lockAnchors(ctx, jobAnchor(jobID)); err != nil {
 			return txRollback, err
 		}
 
@@ -700,12 +700,8 @@ func (s *Store) RecordTaskFailure(
 
 	err = s.inTx(ctx, "record task failure", func(tx *dbTx) (txOutcome, error) {
 		taskFailed, jobFailed, firstClose = 0, 0, false
-		var anchorJobID string
-		if err := tx.QueryRowContext(ctx, sqlTaskJobID, taskID).Scan(&anchorJobID); err != nil {
-			return txRollback, mapErr(err) // no such task => ErrNotFound
-		}
-		if err := s.d.LockAnchors(ctx, tx.tx, jobAnchor(anchorJobID)); err != nil {
-			return txRollback, err
+		if err := lockTaskJobTx(ctx, tx, taskID); err != nil {
+			return txRollback, err // no such task => ErrNotFound
 		}
 
 		res, err := tx.ExecContext(ctx, sqlCloseAttemptAsFailed, nowText, nullInt(exitCode), sessionID, message, attemptID)

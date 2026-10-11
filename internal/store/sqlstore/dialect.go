@@ -116,49 +116,67 @@ type dbRow struct {
 
 func (r *dbRow) Scan(dest ...any) error { return classifyErr(r.d, r.row.Scan(dest...)) }
 
-// dbPool runs statements on a connection pool through the dialect.
+// querier is the statement half of *sql.DB and *sql.Tx.
+type querier interface {
+	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
+	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
+	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
+}
+
+// dbConn runs statements on a pool or in a transaction through the dialect:
+// every query is rebound, every time and bool argument converted, every error
+// classified.
+type dbConn struct {
+	q querier
+	d Dialect
+}
+
+func (c *dbConn) ExecContext(ctx context.Context, q string, args ...any) (sql.Result, error) {
+	res, err := c.q.ExecContext(ctx, c.d.Rebind(q), bindArgs(c.d, args)...)
+	return res, classifyErr(c.d, err)
+}
+
+func (c *dbConn) QueryContext(ctx context.Context, q string, args ...any) (*sql.Rows, error) {
+	rows, err := c.q.QueryContext(ctx, c.d.Rebind(q), bindArgs(c.d, args)...)
+	return rows, classifyErr(c.d, err)
+}
+
+func (c *dbConn) QueryRowContext(ctx context.Context, q string, args ...any) *dbRow {
+	return &dbRow{row: c.q.QueryRowContext(ctx, c.d.Rebind(q), bindArgs(c.d, args)...), d: c.d}
+}
+
+// dbPool runs statements on a connection pool through the dialect. db is the
+// raw pool, for what the wrapper does not cover: Prepare, BeginTx and Close.
 type dbPool struct {
+	dbConn
+
 	db *sql.DB
-	d  Dialect
 }
 
-func (p *dbPool) ExecContext(ctx context.Context, q string, args ...any) (sql.Result, error) {
-	res, err := p.db.ExecContext(ctx, p.d.Rebind(q), bindArgs(p.d, args)...)
-	return res, classifyErr(p.d, err)
+func newDBPool(db *sql.DB, d Dialect) *dbPool {
+	return &dbPool{dbConn: dbConn{q: db, d: d}, db: db}
 }
 
-func (p *dbPool) QueryContext(ctx context.Context, q string, args ...any) (*sql.Rows, error) {
-	rows, err := p.db.QueryContext(ctx, p.d.Rebind(q), bindArgs(p.d, args)...)
-	return rows, classifyErr(p.d, err)
-}
-
-func (p *dbPool) QueryRowContext(ctx context.Context, q string, args ...any) *dbRow {
-	return &dbRow{row: p.db.QueryRowContext(ctx, p.d.Rebind(q), bindArgs(p.d, args)...), d: p.d}
-}
-
-// dbTx runs statements in a transaction through the dialect.
+// dbTx runs statements in a transaction through the dialect. tx is the raw
+// transaction, for Stmt and the anchor locks.
 type dbTx struct {
+	dbConn
+
 	tx *sql.Tx
-	d  Dialect
 }
 
-func (t *dbTx) ExecContext(ctx context.Context, q string, args ...any) (sql.Result, error) {
-	res, err := t.tx.ExecContext(ctx, t.d.Rebind(q), bindArgs(t.d, args)...)
-	return res, classifyErr(t.d, err)
-}
-
-func (t *dbTx) QueryContext(ctx context.Context, q string, args ...any) (*sql.Rows, error) {
-	rows, err := t.tx.QueryContext(ctx, t.d.Rebind(q), bindArgs(t.d, args)...)
-	return rows, classifyErr(t.d, err)
-}
-
-func (t *dbTx) QueryRowContext(ctx context.Context, q string, args ...any) *dbRow {
-	return &dbRow{row: t.tx.QueryRowContext(ctx, t.d.Rebind(q), bindArgs(t.d, args)...), d: t.d}
+func newDBTx(tx *sql.Tx, d Dialect) *dbTx {
+	return &dbTx{dbConn: dbConn{q: tx, d: d}, tx: tx}
 }
 
 // Stmt returns stmt bound to this transaction.
 func (t *dbTx) Stmt(ctx context.Context, stmt *dbStmt) *dbStmt {
 	return &dbStmt{st: t.tx.StmtContext(ctx, stmt.st), d: t.d}
+}
+
+// lockAnchors locks each anchor row, in the order given, in this transaction.
+func (t *dbTx) lockAnchors(ctx context.Context, anchors ...Anchor) error {
+	return t.d.LockAnchors(ctx, t.tx, anchors...)
 }
 
 // dbStmt is a prepared statement whose arguments and errors go through the

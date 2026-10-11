@@ -127,11 +127,6 @@ type Store struct {
 //
 // Open returns an error and releases all resources if any step fails.
 func Open(ctx context.Context, path string, opts Options) (*Store, error) {
-	return openWith(ctx, path, opts, sqliteDialect{})
-}
-
-// openWith is [Open] with the statements run through dialect d.
-func openWith(ctx context.Context, path string, opts Options, d sqlstore.Dialect) (*Store, error) {
 	if path == "" {
 		return nil, errors.New("sqlite: path is empty")
 	}
@@ -178,7 +173,7 @@ func openWith(ctx context.Context, path string, opts Options, d sqlstore.Dialect
 		_ = db.Close()
 		return nil, err
 	}
-	shared, err := sqlstore.New(ctx, db, rdb, d)
+	shared, err := sqlstore.New(ctx, db, rdb, sqliteDialect{})
 	if err != nil {
 		return nil, err
 	}

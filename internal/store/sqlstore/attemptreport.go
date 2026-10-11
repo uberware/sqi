@@ -59,7 +59,7 @@ func lockTaskJobTx(ctx context.Context, tx *dbTx, taskID string) error {
 	if err := tx.QueryRowContext(ctx, sqlTaskJobID, taskID).Scan(&jobID); err != nil {
 		return mapErr(err)
 	}
-	return tx.d.LockAnchors(ctx, tx.tx, jobAnchor(jobID))
+	return tx.lockAnchors(ctx, jobAnchor(jobID))
 }
 
 // StartTaskAttempt implements [store.TaskStore].

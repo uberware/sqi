@@ -249,7 +249,7 @@ func (s *Store) withAdminAnchors(ctx context.Context, fn func(*dbTx) error) erro
 		if err != nil {
 			return txRollback, err
 		}
-		if err := s.d.LockAnchors(ctx, tx.tx, anchors...); err != nil {
+		if err := tx.lockAnchors(ctx, anchors...); err != nil {
 			return txRollback, err
 		}
 		return txCommit, fn(tx)

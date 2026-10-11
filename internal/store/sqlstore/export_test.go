@@ -46,8 +46,8 @@ var (
 )
 
 // WriteDB and ReadDB return the store's write and read pools.
-func (s *Store) WriteDB() *sql.DB { return s.db }
-func (s *Store) ReadDB() *sql.DB  { return s.rdb }
+func (s *Store) WriteDB() *sql.DB { return s.w.db }
+func (s *Store) ReadDB() *sql.DB  { return s.r.db }
 
 // Dialect returns the dialect the store runs its statements through.
 func (s *Store) Dialect() Dialect { return s.d }
@@ -57,7 +57,7 @@ func (s *Store) WritePool() *DBPool { return s.w }
 func (s *Store) ReadPool() *DBPool  { return s.r }
 
 // WrapTx returns tx wrapped in the store's dialect.
-func (s *Store) WrapTx(tx *sql.Tx) *DBTx { return &dbTx{tx: tx, d: s.d} }
+func (s *Store) WrapTx(tx *sql.Tx) *DBTx { return newDBTx(tx, s.d) }
 
 // InTx runs fn in a transaction, as the store's operations do.
 func (s *Store) InTx(ctx context.Context, op string, fn func(tx *DBTx) (TxOutcome, error)) error {

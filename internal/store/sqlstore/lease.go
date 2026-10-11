@@ -102,7 +102,7 @@ func leaseTx(ctx context.Context, tx *dbTx, req store.LeaseRequest) (store.Lease
 	}
 	claims := slices.Clone(req.Claims)
 	slices.SortStableFunc(claims, func(a, b store.UsagePoolClaim) int { return cmp.Compare(a.PoolID, b.PoolID) })
-	if err := tx.d.LockAnchors(ctx, tx.tx, scope.anchors(claims)...); err != nil {
+	if err := tx.lockAnchors(ctx, scope.anchors(claims)...); err != nil {
 		return store.LeaseResult{}, err
 	}
 

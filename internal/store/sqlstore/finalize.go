@@ -119,7 +119,7 @@ func (s *Store) FinalizeStep(ctx context.Context, id string, now time.Time) (sto
 		if err := tx.QueryRowContext(ctx, `SELECT job_id, status FROM steps WHERE id = ?`, id).Scan(&jobID, &current); err != nil {
 			return txRollback, mapErr(err)
 		}
-		if err := s.d.LockAnchors(ctx, tx.tx, jobAnchor(jobID)); err != nil {
+		if err := tx.lockAnchors(ctx, jobAnchor(jobID)); err != nil {
 			return txRollback, err
 		}
 		var written string
@@ -162,7 +162,7 @@ func (s *Store) FinalizeJob(ctx context.Context, id string, now time.Time) (stor
 		if err := tx.QueryRowContext(ctx, `SELECT status FROM jobs WHERE id = ?`, id).Scan(&current); err != nil {
 			return txRollback, mapErr(err)
 		}
-		if err := s.d.LockAnchors(ctx, tx.tx, jobAnchor(id)); err != nil {
+		if err := tx.lockAnchors(ctx, jobAnchor(id)); err != nil {
 			return txRollback, err
 		}
 		nowText := TimeText(now.UTC())
@@ -261,7 +261,7 @@ func (s *Store) movePendingStep(
 		if err := tx.QueryRowContext(ctx, `SELECT job_id, depends_on FROM steps WHERE id = ?`, id).Scan(&jobID, &dependsOnJSON); err != nil {
 			return txRollback, mapErr(err)
 		}
-		if err := s.d.LockAnchors(ctx, tx.tx, jobAnchor(jobID)); err != nil {
+		if err := tx.lockAnchors(ctx, jobAnchor(jobID)); err != nil {
 			return txRollback, err
 		}
 		if stepTo == store.StepStatusCanceled {
@@ -388,7 +388,7 @@ func (s *Store) ReleaseBlockedJob(ctx context.Context, id string, now time.Time)
 		if err != nil {
 			return txRollback, err
 		}
-		if err := s.d.LockAnchors(ctx, tx.tx, anchors...); err != nil {
+		if err := tx.lockAnchors(ctx, anchors...); err != nil {
 			return txRollback, err
 		}
 		res, err := tx.ExecContext(ctx, sqlReleaseBlockedJob, TimeText(now.UTC()), id)
@@ -425,7 +425,7 @@ func (s *Store) CancelBlockedJob(ctx context.Context, id, reason string, now tim
 		if err != nil {
 			return txRollback, err
 		}
-		if err := s.d.LockAnchors(ctx, tx.tx, anchors...); err != nil {
+		if err := tx.lockAnchors(ctx, anchors...); err != nil {
 			return txRollback, err
 		}
 		nowText := TimeText(now.UTC())

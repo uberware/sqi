@@ -57,7 +57,7 @@ func TestIsReadStatement(t *testing.T) {
 // poolFor only compares pool identities, so two distinct, never-opened pools
 // stand in for a file-backed store's write and read pools.
 func TestPoolFor_RoutesEveryPreparedStatement(t *testing.T) {
-	s := &Store{db: new(sql.DB), rdb: new(sql.DB)}
+	s := &Store{w: &dbPool{db: new(sql.DB)}, r: &dbPool{db: new(sql.DB)}}
 
 	reads := map[string]string{
 		"sqlGetJob":                       sqlGetJob,
@@ -96,12 +96,12 @@ func TestPoolFor_RoutesEveryPreparedStatement(t *testing.T) {
 	}
 
 	for name, query := range reads {
-		if s.poolFor(query) != s.rdb {
+		if s.poolFor(query) != s.r.db {
 			t.Errorf("%s routed to the write pool, want the read pool", name)
 		}
 	}
 	for name, query := range writes {
-		if s.poolFor(query) != s.db {
+		if s.poolFor(query) != s.w.db {
 			t.Errorf("%s routed to the READ pool; a write on a multi-connection pool risks write-write conflicts", name)
 		}
 	}

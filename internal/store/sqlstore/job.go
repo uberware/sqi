@@ -319,7 +319,7 @@ func checkUpstreamsTx(ctx context.Context, tx *dbTx, upstreams []string) error {
 	for _, up := range ids {
 		anchors = append(anchors, sharedAnchor(jobAnchor(up)))
 	}
-	if err := tx.d.LockAnchors(ctx, tx.tx, anchors...); err != nil {
+	if err := tx.lockAnchors(ctx, anchors...); err != nil {
 		return err
 	}
 	for _, up := range ids {
@@ -777,7 +777,7 @@ func selectExpiredJobsTx(ctx context.Context, tx *dbTx, query string, args []any
 // inserting a child row mid-cascade, so a PostgreSQL store must retry on a
 // foreign-key error.
 func purgeExpiredJobTx(ctx context.Context, tx *dbTx, recheck string, args []any, id string) (bool, error) {
-	if err := tx.d.LockAnchors(ctx, tx.tx, jobAnchor(id)); err != nil {
+	if err := tx.lockAnchors(ctx, jobAnchor(id)); err != nil {
 		return false, err
 	}
 	var still store.DeletedJob
@@ -816,7 +816,7 @@ func purgeExpiredJobTx(ctx context.Context, tx *dbTx, recheck string, args []any
 // every writer.
 func (s *Store) DeleteJob(ctx context.Context, id string) error {
 	return s.inTx(ctx, "delete job", func(tx *dbTx) (txOutcome, error) {
-		if err := s.d.LockAnchors(ctx, tx.tx, jobAnchor(id)); err != nil {
+		if err := tx.lockAnchors(ctx, jobAnchor(id)); err != nil {
 			return txRollback, err
 		}
 

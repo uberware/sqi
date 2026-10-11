@@ -213,7 +213,7 @@ func (s *Store) RegisterWorker(ctx context.Context, worker store.Worker) (store.
 	)
 	err = s.inTx(ctx, "register worker", func(tx *dbTx) (txOutcome, error) {
 		reclaimed = nil
-		if err := s.d.LockAnchors(ctx, tx.tx, workerAnchor(worker.ID)); err != nil {
+		if err := tx.lockAnchors(ctx, workerAnchor(worker.ID)); err != nil {
 			return txRollback, err
 		}
 		var prior string
