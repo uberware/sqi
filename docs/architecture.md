@@ -849,7 +849,7 @@ before it reads, by calling `Dialect.LockAnchors`
 **On SQLite, I3–I5 hold because the write pool's single connection serializes
 every write transaction; the SQLite dialect's `LockAnchors` is a no-op. A
 PostgreSQL store must take the anchor locks to provide the same guarantee.**
-The anchors each operation passes today:
+The anchors each operation passes:
 
 | Operation | Anchor rows, in lock order | Notes |
 |---|---|---|

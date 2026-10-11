@@ -483,8 +483,7 @@ func TestJob_DeleteJob_RemovesOutgoingEdgesKeepsIncoming(t *testing.T) {
 // TestJob_CreateJobSubmission_DuplicateDependencyIsIgnored verifies that a
 // submission naming the same upstream twice neither fails nor produces a
 // duplicate edge — INSERT ... ON CONFLICT DO NOTHING plus the (job_id,
-// depends_on_job_id) primary key make the edge write idempotent. It replaces the dedup test of
-// the per-row edge writer, which a submission's DependsOn has superseded.
+// depends_on_job_id) primary key make the edge write idempotent.
 func TestJob_CreateJobSubmission_DuplicateDependencyIsIgnored(t *testing.T) {
 	// Not t.Parallel(): see comment in TestJob_ListDependentsAndBlocked.
 	ctx := context.Background()

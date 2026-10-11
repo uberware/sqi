@@ -58,8 +58,8 @@ func TestInTx_ErrorDiscardsWrites(t *testing.T) {
 	}
 }
 
-// TestInTx_RetriesARetryClassError runs fn again on an error the store
-// classifies as retryable, up to maxTxAttempts, and not on any other error.
+// TestInTx_RetriesARetryClassError checks that inTx runs fn again on an error
+// the dialect classifies as retryable, up to maxTxAttempts times in all.
 func TestInTx_RetriesARetryClassError(t *testing.T) {
 	retryable := errors.New("serialization failure")
 	base := openTestStoreWB(t)

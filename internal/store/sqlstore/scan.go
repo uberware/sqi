@@ -190,12 +190,12 @@ func strPtr(n sql.NullString) *string {
 
 // ── Error mapping ─────────────────────────────────────────────────────────────
 
-// mapErr converts a driver error into the store's sentinel errors: no rows
-// becomes [store.ErrNotFound], and an error the dialect classified as a
-// conflict (a unique, primary-key or foreign-key violation) becomes
-// [store.ErrConflict]. Any other error is returned unchanged. It reads the
-// class the dbPool/dbTx/dbStmt/dbRow wrappers attached, so an error that did
-// not come through them carries none.
+// mapErr converts a driver error into the store's sentinel errors: no rows, or
+// an error the dialect classified as not found, becomes [store.ErrNotFound],
+// and an error the dialect classified as a conflict (a unique, primary-key or
+// foreign-key violation) becomes [store.ErrConflict]. Any other error is
+// returned unchanged. It reads the class the dbPool/dbTx/dbStmt/dbRow wrappers
+// attached, so an error that did not come through them carries none.
 func mapErr(err error) error {
 	if err == nil {
 		return nil

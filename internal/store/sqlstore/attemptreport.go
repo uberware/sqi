@@ -78,11 +78,11 @@ func (s *Store) StartTaskAttempt(ctx context.Context, attemptID, taskID, session
 			return txCommit, nil
 		}
 		if current == store.TaskStatusAssigned {
-			// Under the job anchor and the single write connection the guarded
-			// write cannot miss here. It is still consulted, so the method stays
-			// correct on a store where it can (PostgreSQL): a miss means another
-			// writer moved the task after the read above, and the report is then
-			// stale.
+			// On SQLite, under the job anchor and the single write
+			// connection, the guarded write cannot miss. It is still
+			// consulted for a store where it can (PostgreSQL): a miss means
+			// another writer moved the task after the read above, and the
+			// report is then stale.
 			moved, err := casWriteTaskStatus(ctx, tx, taskID, store.TaskStatusAssigned, store.TaskStatusRunning, now)
 			if err != nil {
 				return txRollback, err

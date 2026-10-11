@@ -30,10 +30,10 @@ RETURNING ` + queueCols
 	// a "preserve this column" update stays inside the same atomic statement
 	// as every other field, rather than requiring a prior read of the current
 	// value (which would open a lost-update race against a concurrent write
-	// to that column — see [store.Queue.PreserveRunAsUser]). The two extra
-	// placeholders ahead of each value (?) are the preserve flags, bound as Go
-	// bools: SQLite stores them as 1 or 0 and its CASE WHEN treats any nonzero
-	// integer as true, and PostgreSQL's takes the boolean directly.
+	// to that column — see [store.Queue.PreserveRunAsUser]). The placeholder
+	// in each CASE WHEN is a preserve flag, bound as a Go bool: the SQLite
+	// dialect binds 1 or 0, which CASE WHEN reads as true or false, and
+	// PostgreSQL takes the boolean directly.
 	sqlUpdateQueue = `
 UPDATE queues
 SET farm_id = ?, name = ?, description = ?, priority = ?, max_concurrent_tasks = ?, paused = ?,

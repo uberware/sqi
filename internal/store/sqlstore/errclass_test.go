@@ -11,9 +11,9 @@ import (
 )
 
 // TestMapErr_SQLiteConstraintCodes provokes each constraint SQLite reports and
-// checks mapErr maps it, once classified, as a conflict; a syntax error stays
-// unmapped. TestClassifySQLite_ConstraintCodes (internal/store/sqlite) checks
-// the classification itself.
+// checks mapErr maps it, once classified, as a conflict; a syntax error is
+// returned unchanged. TestClassifySQLite_ConstraintCodes (internal/store/sqlite)
+// checks the classification itself.
 func TestMapErr_SQLiteConstraintCodes(t *testing.T) {
 	s := openTestStoreWB(t)
 	d := s.Dialect() // the SQLite dialect

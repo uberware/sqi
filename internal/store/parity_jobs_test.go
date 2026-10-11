@@ -277,16 +277,16 @@ func TestParity_DeleteJob(t *testing.T) {
 	for name, st := range newStores(t) {
 		t.Run(name, func(t *testing.T) {
 			ctx := t.Context()
-			// Create an upstream job (terminal, for outgoing edge).
+			// A running upstream job, for the outgoing edge.
 			g := seedGraph(t, st, graphOpts{jobStatus: store.JobStatusRunning})
 			upstream := g.Job
 
-			// Create a pool for usage claims.
+			// A pool for the usage claim.
 			pool := seedPool(t, st, 10)
 
-			// Create a job to delete (pending, not terminal, so it can be leased).
+			// The job to delete, pending so its task can be leased.
 			delWithDeps := jobIn(g)
-			delWithDeps.As(store.JobStatusPending) // Pending so it can be leased
+			delWithDeps.As(store.JobStatusPending)
 			delWithDeps.Sub.DependsOn = []string{upstream.ID}
 			delWithDeps.Step(uuid.NewString(), store.StepStatusReady)
 			delWithDeps.Task(uuid.NewString(), delWithDeps.Sub.Steps[0].ID, store.TaskStatusReady)
@@ -295,21 +295,21 @@ func TestParity_DeleteJob(t *testing.T) {
 			toDeleteStepID := delSub.Steps[0].ID
 			toDeleteTaskID := delSub.Tasks[0].ID
 
-			// Lease the task with a claim on the pool (creates TaskAttempt and UsageClaim).
+			// Leasing the task with a claim on the pool creates an attempt and a claim.
 			attempt := leaseClaiming(t, st, toDeleteTaskID, false, pool)
 			attemptID := attempt.ID
 
-			// Create a task log for the attempt.
+			// A task log for the attempt.
 			if _, err := st.CreateTaskLog(ctx, mkTaskLog(attempt, 1, "test log\n")); err != nil {
 				t.Fatalf("CreateTaskLog: %v", err)
 			}
 
-			// Create a downstream job that depends on toDelete.
+			// A downstream job that depends on toDelete.
 			downstream := jobIn(g).As(store.JobStatusPending)
 			downstream.Sub.DependsOn = []string{toDelete.ID}
 			downstreamJob := downstream.Submit(t, st).Job
 
-			// BEFORE DELETE: assert attempts, claims and logs exist.
+			// Before the delete, the attempt, the claim and the log exist.
 			beforeAttempts, err := st.ListTaskAttempts(ctx, toDeleteTaskID)
 			if err != nil {
 				t.Fatalf("ListTaskAttempts before delete: %v", err)
@@ -334,7 +334,7 @@ func TestParity_DeleteJob(t *testing.T) {
 				t.Fatalf("before delete: expected 1 log, got %d", len(beforeLogs))
 			}
 
-			// Verify dependencies exist before delete.
+			// Both edges exist before the delete.
 			beforeDeps, err := st.ListDependents(ctx, upstream.ID)
 			if err != nil {
 				t.Fatalf("ListDependents: %v", err)
@@ -350,12 +350,11 @@ func TestParity_DeleteJob(t *testing.T) {
 				t.Fatalf("downstreamJob should depend on toDelete before delete")
 			}
 
-			// Delete the job.
 			if err := st.DeleteJob(ctx, toDelete.ID); err != nil {
 				t.Fatalf("DeleteJob: %v", err)
 			}
 
-			// AFTER DELETE: assert job, steps, tasks, attempts, claims and logs are gone.
+			// After the delete, the job, its steps and its tasks are gone.
 			if _, err := st.GetJob(ctx, toDelete.ID); !errors.Is(err, store.ErrNotFound) {
 				t.Fatalf("GetJob after delete: err = %v, want ErrNotFound", err)
 			}
@@ -382,7 +381,7 @@ func TestParity_DeleteJob(t *testing.T) {
 				t.Fatalf("ListTaskAttempts after delete: got %d, want 0", len(afterAttempts))
 			}
 
-			// Cascade: claims are released/deleted.
+			// Cascade: the claim is no longer active.
 			afterClaimCount, err := st.ActiveClaimCount(ctx, pool.ID)
 			if err != nil {
 				t.Fatalf("ActiveClaimCount after delete: %v", err)
@@ -446,14 +445,14 @@ func TestParity_ListDependents(t *testing.T) {
 				t.Fatalf("no dependents: ListDependents = (%v, %v), want none", got, err)
 			}
 
-			// Create a dependent and a non-dependent.
+			// A dependent and an unrelated job.
 			dependent := jobIn(g).As(store.JobStatusPending)
 			dependent.Sub.DependsOn = []string{upstream.ID}
 			depJob := dependent.Submit(t, st).Job
 
 			unrelated := jobIn(g).As(store.JobStatusPending).Submit(t, st).Job
 
-			// Dependent should be listed; unrelated should not.
+			// The dependent is listed; the unrelated job is not.
 			got, err := st.ListDependents(ctx, upstream.ID)
 			if err != nil {
 				t.Fatalf("ListDependents: %v", err)
@@ -467,7 +466,7 @@ func TestParity_ListDependents(t *testing.T) {
 				t.Fatalf("unrelated has no dependents: ListDependents = (%v, %v), want none", got, err)
 			}
 
-			// Unknown upstream ID: returns empty slice (documented behavior).
+			// An unknown upstream ID has no dependents.
 			if got, err := st.ListDependents(ctx, uuid.NewString()); err != nil || len(got) != 0 {
 				t.Fatalf("unknown upstream: ListDependents = (%v, %v), want none", got, err)
 			}

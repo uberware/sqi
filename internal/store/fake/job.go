@@ -314,7 +314,7 @@ func (s *Store) UpdateJob(_ context.Context, job store.Job) (store.Job, error) {
 	job.DeclaredExtensions = copySlice(existing.DeclaredExtensions)
 	job.ExtensionsRecorded = existing.ExtensionsRecorded
 	// The failure counter and park reason are written by RecordTaskFailure,
-	// ParkJob and ResumeJob, never by UpdateJob (sqlUpdateJob's SET list).
+	// ParkJob and ResumeJob, and are not on sqlUpdateJob's SET list.
 	job.FailedAttempts = existing.FailedAttempts
 	job.ParkReason = existing.ParkReason
 	job.UpdatedAt = time.Now()

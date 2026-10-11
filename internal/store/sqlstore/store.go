@@ -260,10 +260,10 @@ func trimSQLLeader(query string) string {
 	}
 }
 
-// prepare compiles sql, rebound for the store's dialect, into a prepared
-// statement on the pool poolFor selects (judged on the original text),
-// tracks it for Close, and returns it. On failure it returns an error
-// that includes the first 60 chars of the SQL for context.
+// prepare compiles query, rebound for the store's dialect, into a prepared
+// statement on the pool poolFor selects from the original text, tracks it for
+// Close, and returns it. On failure it returns an error that includes the
+// first 60 bytes of the query.
 func (s *Store) prepare(ctx context.Context, query string) (*dbStmt, error) {
 	stmt, err := s.poolFor(query).PrepareContext(ctx, s.d.Rebind(query))
 	if err != nil {

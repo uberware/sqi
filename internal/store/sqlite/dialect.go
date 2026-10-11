@@ -14,8 +14,9 @@ import (
 	"github.com/uberware/sqi/internal/store/sqlstore"
 )
 
-// sqliteDialect is the SQLite (modernc.org/sqlite) dialect. Every method
-// produces exactly the SQL text or value this store has always sent SQLite.
+// sqliteDialect is the SQLite (modernc.org/sqlite) dialect. The values it
+// binds match the forms the schema stores: timestamps as 30-character text,
+// booleans as INTEGER 0 or 1.
 type sqliteDialect struct{}
 
 // Rebind returns query unchanged: SQLite takes "?" placeholders.

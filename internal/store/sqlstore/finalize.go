@@ -108,7 +108,7 @@ ORDER BY j.id`
 // terminal), so a PostgreSQL store should re-read it under the lock.
 func (s *Store) FinalizeStep(ctx context.Context, id string, now time.Time) (store.StepStatus, bool, error) {
 	// terminal is the already-terminal status the no-op branch reports. It is
-	// returned even when that branch's commit fails, as before inTx.
+	// returned even when that branch's commit fails.
 	var (
 		status, terminal store.StepStatus
 		finalized        bool

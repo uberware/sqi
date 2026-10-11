@@ -59,7 +59,7 @@ func TestParity_CreateFarm(t *testing.T) {
 				got.RetryDelaySeconds == nil || *got.RetryDelaySeconds != 30 || got.FailureLimit != nil {
 				t.Fatalf("CreateFarm returned (%+v), want fields persisted", got)
 			}
-			// Verify stored.
+			// Read it back.
 			stored, err := st.GetFarm(ctx, want.ID)
 			if err != nil || stored.Name != "main" {
 				t.Fatalf("GetFarm after CreateFarm: %v / %s, want success and name main", err, stored.Name)
@@ -77,7 +77,7 @@ func TestParity_UpdateFarm(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			ctx := t.Context()
 			orig := mustCreateFarm(t, st, "main")
-			_, later := subSecond() // Ensure UpdatedAt can advance.
+			_, later := subSecond() // so UpdatedAt can advance
 			time.Sleep(time.Millisecond)
 
 			newAttempts := 9
@@ -86,8 +86,8 @@ func TestParity_UpdateFarm(t *testing.T) {
 			upd.Description = "updated"
 			upd.MaxConcurrentTasks = 99
 			upd.MaxAttempts = &newAttempts
-			upd.CreatedAt = later // Should be ignored.
-			upd.UpdatedAt = later // Should be updated to a fresh time.
+			upd.CreatedAt = later // ignored: CreatedAt keeps its stored value
+			upd.UpdatedAt = later // ignored: the store stamps UpdatedAt itself
 
 			got, err := st.UpdateFarm(ctx, upd)
 			if err != nil {
@@ -100,7 +100,7 @@ func TestParity_UpdateFarm(t *testing.T) {
 			if !got.CreatedAt.Equal(orig.CreatedAt) || got.UpdatedAt.Before(orig.UpdatedAt) {
 				t.Fatalf("UpdateFarm: CreatedAt changed or UpdatedAt not advanced")
 			}
-			// Verify stored.
+			// Read it back.
 			stored := mustGetFarm(t, st, orig.ID)
 			if stored.Name != "main-2" || stored.Description != "updated" {
 				t.Fatalf("GetFarm after UpdateFarm: %+v, want updates persisted", stored)
@@ -202,7 +202,7 @@ func TestParity_CreateQueue(t *testing.T) {
 				got.RunAsUser == nil || *got.RunAsUser != "render" || got.RunAsGroup != nil {
 				t.Fatalf("CreateQueue returned (%+v), want fields persisted", got)
 			}
-			// Verify stored.
+			// Read it back.
 			stored, err := st.GetQueue(ctx, want.ID)
 			if err != nil || stored.Name != "q" {
 				t.Fatalf("GetQueue after CreateQueue: %v / %s, want success and name q", err, stored.Name)
@@ -237,7 +237,7 @@ func TestParity_UpdateQueue(t *testing.T) {
 			upd.MaxConcurrentTasks = 10
 			upd.Paused = true
 			upd.FailureLimit = &newLimit
-			upd.UpdatedAt = later // Should be updated to a fresh time.
+			upd.UpdatedAt = later // ignored: the store stamps UpdatedAt itself
 
 			got, err := st.UpdateQueue(ctx, upd)
 			if err != nil {
@@ -251,7 +251,7 @@ func TestParity_UpdateQueue(t *testing.T) {
 			if !got.CreatedAt.Equal(orig.CreatedAt) || got.UpdatedAt.Before(orig.UpdatedAt) {
 				t.Fatalf("UpdateQueue: CreatedAt changed or UpdatedAt not advanced")
 			}
-			// Verify stored.
+			// Read it back.
 			stored, err := st.GetQueue(ctx, orig.ID)
 			if err != nil || stored.Name != "q-updated" {
 				t.Fatalf("GetQueue after UpdateQueue: %v / %s, want success and name q-updated", err, stored.Name)

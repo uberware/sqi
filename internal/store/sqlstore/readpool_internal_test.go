@@ -50,11 +50,10 @@ func TestIsReadStatement(t *testing.T) {
 }
 
 // TestPoolFor_RoutesEveryPreparedStatement pins the routing of the actual SQL
-// this package prepares. Writes that read like reads (INSERT/UPDATE/DELETE ...
-// RETURNING, all issued through QueryRowContext) are the trap this guards: they
-// must stay on the single-connection write pool.
+// this package prepares. Writes that look like reads (INSERT/UPDATE/DELETE ...
+// RETURNING, issued through QueryRowContext) must stay on the write pool.
 //
-// poolFor only compares pool identities, so two distinct, never-opened pools
+// The test compares only pool identities, so two distinct, never-opened pools
 // stand in for a file-backed store's write and read pools.
 func TestPoolFor_RoutesEveryPreparedStatement(t *testing.T) {
 	s := &Store{w: newDBPool(new(sql.DB), nil), r: newDBPool(new(sql.DB), nil)}

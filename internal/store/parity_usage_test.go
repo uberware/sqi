@@ -39,7 +39,7 @@ func TestParity_CreateUsagePool(t *testing.T) {
 			if got.ID != want.ID || got.Name != "nuke" || got.ServerHint != "10.0.0.50:5053" || got.MaxConcurrent != 4 {
 				t.Fatalf("CreateUsagePool returned (%+v), want fields persisted", got)
 			}
-			// Verify stored.
+			// Read it back.
 			stored, err := st.GetUsagePool(ctx, want.ID)
 			if err != nil || stored.Name != "nuke" {
 				t.Fatalf("GetUsagePool after CreateUsagePool: %v / %s, want success and name nuke", err, stored.Name)
@@ -64,7 +64,7 @@ func TestParity_UpdateUsagePool(t *testing.T) {
 			upd.Name = "nuke-updated"
 			upd.ServerHint = "10.0.0.100:5053"
 			upd.MaxConcurrent = 10
-			upd.UpdatedAt = later // Should be updated to a fresh time.
+			upd.UpdatedAt = later // ignored: the store stamps UpdatedAt itself
 
 			got, err := st.UpdateUsagePool(ctx, upd)
 			if err != nil {
@@ -76,7 +76,7 @@ func TestParity_UpdateUsagePool(t *testing.T) {
 			if !got.CreatedAt.Equal(orig.CreatedAt) || got.UpdatedAt.Before(orig.UpdatedAt) {
 				t.Fatalf("UpdateUsagePool: CreatedAt changed or UpdatedAt not advanced")
 			}
-			// Verify stored.
+			// Read it back.
 			stored, err := st.GetUsagePool(ctx, orig.ID)
 			if err != nil || stored.Name != "nuke-updated" {
 				t.Fatalf("GetUsagePool after UpdateUsagePool: %v / %s, want success and name nuke-updated", err, stored.Name)

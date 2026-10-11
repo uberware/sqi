@@ -488,8 +488,9 @@ func (s *Store) OfflineWorker(ctx context.Context, id, instanceID string, now ti
 // has an unanchored job row, because LeaseTask does not take the worker row.
 // It must either have LeaseTask take the worker row FOR SHARE, or re-read the
 // set once the worker row is held and repeat until it is stable. None of that
-// can arise here: the single write connection serializes every writer, so the
-// set read below cannot change before the reclaim, and LockAnchors does nothing.
+// arises on SQLite: its single write connection serializes every writer, so
+// the set read below cannot change before the reclaim, and its LockAnchors
+// does nothing.
 func (s *Store) offlineWorker(ctx context.Context, id string, now time.Time, markSQL string, markArgs ...any) ([]store.Task, bool, error) {
 	var (
 		reclaimed []store.Task
@@ -512,8 +513,8 @@ func (s *Store) offlineWorker(ctx context.Context, id string, now time.Time, mar
 		}
 		if n == 0 {
 			// The guard did not match (unknown worker, not online, a fresh
-			// heartbeat, or another process's instance ID): nothing was written and the rollback ends the
-			// transaction.
+			// heartbeat, or another process's instance ID): nothing was
+			// written and the rollback ends the transaction.
 			return txRollback, nil
 		}
 		reclaimed, err = reclaimWorkerTasksTx(ctx, tx, id, store.FailureReasonWorkerOffline, now)

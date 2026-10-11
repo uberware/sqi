@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-// Package sqlite provides a SQLite-backed implementation of [store.Store].
+// Package sqlite provides the SQLite [store.Store]: it opens the database,
+// applies its PRAGMAs, runs migrations, and builds the shared SQL store
+// (internal/store/sqlstore) over its pools with the SQLite dialect. It also
+// holds the operations only SQLite has: Ping, backup and WAL checkpointing.
 //
 // # Usage
 //
@@ -24,17 +27,16 @@
 // write-write conflicts and avoids SQLITE_BUSY between concurrent goroutines.
 //
 // Reads go through a second pool of up to [readPoolMaxConns] connections. WAL
-// mode lets readers proceed concurrently with a writer, so a read need not
-// queue behind one — and must not: a single large [Store.CreateJobSubmission]
-// holds the write connection for as long as it takes to insert every task,
-// which at job sizes this server accepts is measured in seconds. With one
-// shared pool that stalls every other database user in the process, including
-// the health checker, so an ordinary large render job reads as an outage.
+// mode lets readers proceed alongside a writer, so a read does not queue
+// behind one. A single large [Store.CreateJobSubmission] holds the write
+// connection while it inserts every task, which takes seconds at the job sizes
+// this server accepts; with one shared pool every other database user in the
+// process, the health checker included, would stall for that long.
 //
-// The split is by statement, not by call site: anything whose SQL begins with
-// SELECT is a read, everything else is a write. Several writes here are
+// The shared store routes by statement, not by call site: anything whose SQL
+// begins with SELECT is a read, everything else is a write. Several writes are
 // INSERT/UPDATE/DELETE ... RETURNING issued through QueryRow, so classifying by
-// Go method would be wrong. Misclassifying a read as a write merely serializes
+// Go method would be wrong. Misclassifying a read as a write only serializes
 // it; misclassifying a write as a read puts it on a multi-connection pool, so
 // anything ambiguous (a CTE, say) stays on the write pool.
 //
@@ -43,11 +45,12 @@
 // Correctness under concurrent writers is not left to the single write
 // connection: every multi-row invariant is a single store operation (see
 // "Store invariants" in docs/architecture.md), and most of them name their
-// anchor rows via Dialect.LockAnchors, a no-op here because the one write
-// connection already serializes every write transaction. A store with
-// concurrent writers must lock those rows instead, but the anchors alone are
-// not yet enough there: ReclaimStaleAssignedTasks and DemoteStalledJobs name
-// none, and the architecture doc lists the gaps the anchor table leaves open.
+// anchor rows via Dialect.LockAnchors, which the SQLite dialect leaves a
+// no-op because the one write connection already serializes every write
+// transaction. A store with concurrent writers must lock those rows instead,
+// and the anchors alone do not suffice there: ReclaimStaleAssignedTasks and
+// DemoteStalledJobs name none, and docs/architecture.md lists the gaps the
+// anchor table leaves open.
 // Single-row writes carry their own precondition in their WHERE clause on
 // either kind of store.
 //
@@ -218,9 +221,8 @@ func openReadPool(path string, write *sql.DB) (*sql.DB, error) {
 // (":memory:", "file::memory:", "mode=memory") and the anonymous temporary
 // database (an empty path) are private per connection, so they are not.
 //
-// "mode=memory&cache=shared" is technically reachable from a second pool, but
-// only while some connection stays open; it is treated as private rather than
-// relying on that.
+// "mode=memory&cache=shared" is reachable from a second pool only while some
+// connection stays open, so it is treated as private.
 func isSharedPath(path string) bool {
 	if path == "" || strings.Contains(path, ":memory:") {
 		return false
@@ -228,13 +230,12 @@ func isSharedPath(path string) bool {
 	return !strings.Contains(strings.ToLower(path), "mode=memory")
 }
 
-// Ping verifies the database connection is still alive. Used by health checks.
+// Ping verifies the database connection is still alive. Health checks use it.
 //
-// It deliberately pings the READ pool, not the write pool. Readiness must
-// report whether the database is reachable, and a large job submission holds
-// the sole write connection for seconds at a time; pinging through it would
-// turn a normal write into a failed health check. This is not an oversight —
-// the health checker is not meant to observe write-pool queuing.
+// It pings the read pool, not the write pool. Readiness reports whether the
+// database is reachable, and a large job submission holds the sole write
+// connection for seconds at a time; a ping queued behind it would turn a
+// normal write into a failed health check.
 func (s *Store) Ping(ctx context.Context) error {
 	return s.rdb.PingContext(ctx)
 }

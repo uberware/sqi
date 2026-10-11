@@ -255,9 +255,8 @@ func scanJob(row scanner) (store.Job, error) {
 // behind.
 //
 // Rows are inserted in foreign-key order (job, edges, steps, tasks) and each
-// insert uses raw SQL via tx rather than a prepared statement: a statement
-// bound into a transaction with tx.Stmt must itself be closed, and the
-// other transactional writers here take the same approach (see
+// insert runs raw SQL in tx rather than a prepared statement bound to the
+// transaction with tx.Stmt, as the other transactional writers here do (see
 // casWriteTaskStatus in attemptclose.go).
 //
 // Each step and task row is stamped with its own, strictly later time from one
