@@ -97,9 +97,6 @@ func TestParity_ListProducts(t *testing.T) {
 func TestParity_ListProducts_MixedCase(t *testing.T) {
 	for name, st := range newStores(t) {
 		t.Run(name, func(t *testing.T) {
-			if name == "fake" {
-				t.Skip("divergence: fake ListProducts sorts names byte-wise; SQLite's NOCASE column orders them case-insensitively")
-			}
 			mustCreateProduct(t, st, "apple")
 			mustCreateProduct(t, st, "Banana")
 			if _, err := st.CreateProduct(t.Context(), mkProduct("APPLE")); !errors.Is(err, store.ErrConflict) {
