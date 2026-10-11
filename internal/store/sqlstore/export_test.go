@@ -63,3 +63,6 @@ func (s *Store) WrapTx(tx *sql.Tx) *DBTx { return &dbTx{tx: tx, d: s.d} }
 func (s *Store) InTx(ctx context.Context, op string, fn func(tx *DBTx) (TxOutcome, error)) error {
 	return s.inTx(ctx, op, fn)
 }
+
+// SearchClause is searchClause, for the tests that pin its output.
+var SearchClause = searchClause
