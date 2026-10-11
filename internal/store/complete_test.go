@@ -134,7 +134,7 @@ func TestCompleteTaskAttempt_RecordsAttemptDetails(t *testing.T) {
 // as every status write does, so worker clock skew cannot reorder tasks. The
 // released claim's released_at is server time too; neither backend exposes a
 // claim read, so that is pinned by TestCompleteTaskAttempt_ClaimReleasedAtUsesServerTime
-// in each backend's own package (internal/store/sqlite and internal/store/fake).
+// in each backend's own package (internal/store/sqlstore and internal/store/fake).
 func TestCompleteTaskAttempt_TaskRowUsesServerTime(t *testing.T) {
 	cases := []struct {
 		name   string

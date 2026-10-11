@@ -60,7 +60,7 @@ through scheduling, worker execution, and final state.
 | Auth | `internal/auth` | Opt-in authentication and authorization: `password` (argon2id local login), `session` (server-side cookie sessions), `apikey`, `policy` (RBAC), `rolemap`, `ldap`, `oidc`, plus the `Authenticator` interface and `chain` that select among them (see [`docs/auth.md`](auth.md)) |
 | Scheduler | `internal/scheduler` | Assignment loop, worker registry, heartbeat sweep, usage pool gating |
 | NATS bus | `internal/bus` | Typed JetStream client wrapper; stream, subject, and consumer definitions |
-| Store | `internal/store` | `Store` interface + SQLite implementation; migrations |
+| Store | `internal/store` | `Store` interface, the shared SQL implementation (`sqlstore`), the SQLite opener and dialect (`sqlite`), the in-memory fake, migrations (see [Store layout](#store-layout)) |
 | Diagnostics | `internal/diag` | Bounded, per-component in-memory ring buffer of server + worker operational log records; backs `GET /api/v1/diagnostics/logs` and the `diagnostics` WebSocket subject (see [`docs/observability.md`](observability.md)) |
 | Logging | `internal/log` | `slog` setup plus the fan-out `Handler`/`Sink` (`NewWithSink`) that tees every record to stderr *and* to a sink — the diag buffer on the server, the `worker.diag.<workerID>` publisher on a worker |
 | Products | `internal/product` | Product/preset catalog above OpenJD: embedded built-ins overlaid on stored `custom`/`installed` products |
@@ -210,10 +210,10 @@ that spans more than one row (a usage claim exists only while its attempt is
 open, a step finalizes only when every task is terminal, a pool never exceeds
 its cap) is enforced by a single store operation. On SQLite the write
 connection provides the serialization those operations rely on, and the
-anchor-lock hook most of them call (`lockAnchors`) is a no-op. A PostgreSQL
-store must take the anchor locks instead, and [Store invariants](#store-invariants)
-lists the operations that name no anchor yet and what the anchor table does
-not close.
+anchor-lock hook most of them call (`Dialect.LockAnchors`) is a no-op in the
+SQLite dialect. A PostgreSQL store must take the anchor locks instead, and
+[Store invariants](#store-invariants) lists the operations that name no anchor
+yet and what the anchor table does not close.
 
 **Cross-job dependencies (`depends_on`).** A submission — raw `POST /api/v1/jobs`
 or `POST /api/v1/products/{name}/jobs`, from the REST API, the web UI, or the
@@ -768,6 +768,21 @@ in the first place.
 
 ---
 
+## Store layout
+
+`internal/store` defines the `Store` interface. `internal/store/sqlstore`
+implements it: every store method's SQL lives there, written once with `?`
+placeholders. A `Dialect` supplies what differs between databases:
+placeholder rewriting (`Rebind`), error classes (`Classify`), anchor locking
+(`LockAnchors`, with `LockUpdate` or `LockShare` per anchor), time and boolean
+binding (`BindTime`, `BindBool`), and case-insensitive matching (`CIEqual`,
+`CILike`). `internal/store/sqlite` opens SQLite (the write and read pools,
+PRAGMAs, migrations), supplies the SQLite dialect, and holds what only SQLite
+has: `Ping`, backup and WAL checkpointing. `internal/store/fake` is the
+in-memory implementation that tests inject.
+
+---
+
 ## Store invariants
 
 Five rules hold across the store's rows. Each is enforced by **one store
@@ -827,12 +842,14 @@ Under PostgreSQL's default READ COMMITTED isolation, I1 and I2 hold as
 written, because a guarded single-row `UPDATE` re-checks its predicate against
 the row it locks. I3, I4 and I5 do not: their conditions read *other* rows.
 Each operation that guards one of them therefore names **anchor rows** to lock
-before it reads, by calling `lockAnchors` (`internal/store/sqlite/anchor.go`).
+before it reads, by calling `Dialect.LockAnchors`
+(`internal/store/sqlstore/dialect.go`). Each anchor carries a lock mode:
+`LockUpdate` (`FOR UPDATE`) or `LockShare` (`FOR SHARE`).
 
 **On SQLite, I3–I5 hold because the write pool's single connection serializes
-every write transaction; `lockAnchors` is a no-op there. A PostgreSQL store
-must take the anchor locks to provide the same guarantee.** The anchors each
-operation passes today:
+every write transaction; the SQLite dialect's `LockAnchors` is a no-op. A
+PostgreSQL store must take the anchor locks to provide the same guarantee.**
+The anchors each operation passes today:
 
 | Operation | Anchor rows, in lock order | Notes |
 |---|---|---|
@@ -844,7 +861,7 @@ operation passes today:
 | `RetryTasks` | the job row | |
 | `FinalizeStep`, `FinalizeJob` | the job row (the step's job, for a step) | The current status, used only to report "already terminal", is read before the lock. |
 | `ReleaseStep`, `CancelPendingStep` | the step's job row | |
-| `ReleaseBlockedJob`, `CancelBlockedJob` | the job row, then each upstream job row sorted by id, the upstream rows shared (`FOR SHARE`) | The anchor type carries no lock mode yet; the call sites document the shared one. |
+| `ReleaseBlockedJob`, `CancelBlockedJob` | the job row, then each upstream job row sorted by id, the upstream rows shared (`FOR SHARE`) | The upstream rows are anchored with `LockShare`. |
 | `CreateJobSubmission` (dependency re-check) | each upstream job row, sorted by id, shared | As above. |
 | `DeleteJob` | the job row | |
 | `DeleteTerminalJobsBefore` (retention) | each candidate's job row, taken just before that job's eligibility re-check | Candidates come in the eligibility query's order, unsorted, and every lock is held to the sweep's one commit. |
@@ -935,9 +952,7 @@ serializes every writer. A PostgreSQL store has to close each of them:
   superseded report look current. Lock the task row (after the job row)
   before the check; for `RequeueTaskForRetry`, which takes no anchor on SQLite,
   take the job row first as well.
-- **Upstream job rows want a shared lock**, which the anchor type cannot
-  express yet, and **retention should lock its candidates in id order** (or
-  commit per job).
+- **Retention should lock its candidates in id order** (or commit per job).
 
 ### What changed for operators
 
@@ -1230,10 +1245,10 @@ Full DDL lives in `internal/store/migrations/`.
 
 **Timestamps** are TEXT, compared and ordered as text, and always stored in
 one 30-character form: RFC 3339 in UTC with all nine fractional digits
-(`timeLayout` in `internal/store/sqlite/scan.go`). At a fixed width text order
-is time order, which every cutoff comparison and every `ORDER BY *_at` relies
-on. Go code writes through `timeToText`; SQL that stamps a time itself writes
-`strftime('%Y-%m-%dT%H:%M:%f', 'now') || '000000Z'`, and
+(`timeLayout` in `internal/store/sqlstore/scan.go`). At a fixed width text
+order is time order, which every cutoff comparison and every `ORDER BY *_at`
+relies on. Go code writes through `sqlstore.TimeText`; SQL that stamps a time
+itself writes `strftime('%Y-%m-%dT%H:%M:%f', 'now') || '000000Z'`, and
 `TestMigrations_StampTimesInTheStoredForm` fails on a migration whose SQL,
 comments aside, uses strftime's `%SZ` or `%fZ`. Reads accept the older forms too.
 

@@ -31,7 +31,7 @@ func (s *Store) releaseAttemptClaimsLocked(attemptID string, at time.Time) int {
 // does; the claim release is unconditional in both. Caller holds s.mu.
 func (s *Store) closeRunningAttemptLocked(c store.AttemptCompletion) {
 	if a, ok := s.taskAttempts[c.AttemptID]; ok && a.Status == store.AttemptStatusRunning {
-		ended := c.EndedAt.UTC() // SQLite stores timeToText(c.EndedAt.UTC())
+		ended := c.EndedAt.UTC() // SQLite stores sqlstore.TimeText(c.EndedAt.UTC())
 		a.Status, a.EndedAt, a.ExitCode = c.AttemptStatus, &ended, nil
 		if c.ExitCode != nil {
 			code := *c.ExitCode

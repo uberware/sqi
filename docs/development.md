@@ -688,8 +688,10 @@ sub-interface lives in its own file under `internal/store/` (e.g. `job.go`,
 ListStepsForJob(ctx context.Context, jobID string) ([]Step, error)
 ```
 
-Then implement it in `internal/store/sqlite/step.go` using a prepared
-statement.
+Then implement it in `internal/store/sqlstore/step.go` using a prepared
+statement. Write the SQL with `?` placeholders and run it through the
+`dbPool`/`dbTx`/`dbStmt` wrappers, never directly on `*sql.DB` or `*sql.Tx`;
+`TestNoRawStatementCalls` enforces this.
 
 **A wholly new aggregate — a new table, not just a new method on an
 existing one — needs a migration.** Add a numbered SQL file to
@@ -706,7 +708,7 @@ the SQLite schema overview in `docs/architecture.md`).
 comments aside, uses strftime's `%SZ` or `%fZ`.
 
 Finally, add a corresponding stub to the in-memory fake. The fake is split
-per aggregate, mirroring `internal/store/sqlite/`, not one
+per aggregate, mirroring `internal/store/sqlstore/`, not one
 `internal/store/fake/store.go` file — a `step.go` under `internal/store/fake/`
 for the `StepStore` methods above, or a new file named for a wholly new
 aggregate (see `internal/store/fake/workercredential.go` for what a new
@@ -714,13 +716,13 @@ aggregate's fake looks like end to end). Stub it so existing tests keep
 compiling.
 
 > **Not every new store method is REST-triggered.** `RecordTaskFailure`,
-> `RequeueTaskForRetry` (`internal/store/sqlite/task.go`), and `ParkJob`
-> (`internal/store/sqlite/job.go`) exist purely for the scheduler's auto-retry
+> `RequeueTaskForRetry` (`internal/store/sqlstore/task.go`), and `ParkJob`
+> (`internal/store/sqlstore/job.go`) exist purely for the scheduler's auto-retry
 > and failure-limit handling (`internal/scheduler/failure.go`'s
 > `handleTaskFailed`) — no handler in
 > `internal/api/` calls them directly. They still follow the same shape as
 > REST-triggered methods: declared on the relevant sub-interface
-> (`TaskStore`/`JobStore`), implemented in `internal/store/sqlite/`, and
+> (`TaskStore`/`JobStore`), implemented in `internal/store/sqlstore/`, and
 > stubbed in `internal/store/fake/` so scheduler tests can inject the fake.
 > Layered policy resolution that isn't itself a store method — e.g. picking
 > the effective retry policy from Job → Queue → Farm → server default — is a

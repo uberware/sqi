@@ -72,7 +72,7 @@ func (s *Store) CreateJobSubmission(_ context.Context, sub store.JobSubmission) 
 	}
 
 	// Each step and task is stamped with its own, strictly later time,
-	// mirroring the SQLite implementation (rowClock in sqlite/job.go), where
+	// mirroring the SQLite implementation (rowClock in sqlstore/job.go), where
 	// tasks within a step sharing one created_at would silently disable the
 	// ready-task ordering tiebreaker and destabilize ListTasks paging. A coarse
 	// wall clock returns the same instant for consecutive rows, so a row the
