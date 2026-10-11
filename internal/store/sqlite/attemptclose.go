@@ -164,7 +164,10 @@ func (s *Store) CompleteTaskAttempt(ctx context.Context, c store.AttemptCompleti
 		}
 		var err error
 		result, err = applyCompletionTx(ctx, tx, c, now)
-		return txCommit, err
+		if err != nil {
+			return txRollback, err
+		}
+		return txCommit, nil
 	})
 	if err != nil {
 		return store.CompletionResult{}, err

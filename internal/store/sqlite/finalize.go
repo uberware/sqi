@@ -107,12 +107,14 @@ ORDER BY j.id`
 // and the UPDATE makes it stale (the step is reported in flight rather than
 // terminal), so a PostgreSQL store should re-read it under the lock.
 func (s *Store) FinalizeStep(ctx context.Context, id string, now time.Time) (store.StepStatus, bool, error) {
+	// terminal is the already-terminal status the no-op branch reports. It is
+	// returned even when that branch's commit fails, as before inTx.
 	var (
-		status    store.StepStatus
-		finalized bool
+		status, terminal store.StepStatus
+		finalized        bool
 	)
 	err := s.inTx(ctx, "finalize step", func(tx *sql.Tx) (txOutcome, error) {
-		status, finalized = "", false
+		status, terminal, finalized = "", "", false
 		var jobID, current string
 		if err := tx.QueryRowContext(ctx, `SELECT job_id, status FROM steps WHERE id = ?`, id).Scan(&jobID, &current); err != nil {
 			return txRollback, mapErr(err)
@@ -127,7 +129,8 @@ func (s *Store) FinalizeStep(ctx context.Context, id string, now time.Time) (sto
 			// Not finalized now: either a task is still in flight, or the step was
 			// already terminal before this call.
 			if store.StepStatus(current).IsTerminal() {
-				status = store.StepStatus(current)
+				terminal = store.StepStatus(current)
+				status = terminal
 			}
 			return txCommit, nil
 		case err != nil:
@@ -137,7 +140,7 @@ func (s *Store) FinalizeStep(ctx context.Context, id string, now time.Time) (sto
 		return txCommit, nil
 	})
 	if err != nil {
-		return "", false, err
+		return terminal, false, err
 	}
 	return status, finalized, nil
 }
@@ -148,12 +151,13 @@ func (s *Store) FinalizeStep(ctx context.Context, id string, now time.Time) (sto
 // before the anchor, only to report an already-terminal job, and a PostgreSQL
 // store should re-read it under the lock.
 func (s *Store) FinalizeJob(ctx context.Context, id string, now time.Time) (store.JobStatus, bool, error) {
+	// terminal is as in [Store.FinalizeStep].
 	var (
-		status    store.JobStatus
-		finalized bool
+		status, terminal store.JobStatus
+		finalized        bool
 	)
 	err := s.inTx(ctx, "finalize job", func(tx *sql.Tx) (txOutcome, error) {
-		status, finalized = "", false
+		status, terminal, finalized = "", "", false
 		var current string
 		if err := tx.QueryRowContext(ctx, `SELECT status FROM jobs WHERE id = ?`, id).Scan(&current); err != nil {
 			return txRollback, mapErr(err)
@@ -167,7 +171,8 @@ func (s *Store) FinalizeJob(ctx context.Context, id string, now time.Time) (stor
 		switch {
 		case errors.Is(err, sql.ErrNoRows):
 			if store.JobStatus(current).IsTerminal() {
-				status = store.JobStatus(current)
+				terminal = store.JobStatus(current)
+				status = terminal
 			}
 			return txCommit, nil
 		case err != nil:
@@ -177,7 +182,7 @@ func (s *Store) FinalizeJob(ctx context.Context, id string, now time.Time) (stor
 		return txCommit, nil
 	})
 	if err != nil {
-		return "", false, err
+		return terminal, false, err
 	}
 	return status, finalized, nil
 }
