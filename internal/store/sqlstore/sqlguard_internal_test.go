@@ -200,6 +200,10 @@ var concatAllowed = []string{
 	// task joined by ",", only "?" marks, parentheses, commas and spaces; its
 	// argument is an int, so the length of a chunk of tasks is all that varies.
 	"taskRowsValues(len(chunk))",
+
+	// job.go lockJobLoggedTasksTx: Dialect.ForUpdate, a constant clause per
+	// dialect (" FOR UPDATE" on PostgreSQL; SQLite's "" is never appended).
+	"forUpdate",
 }
 
 // sqlKeyword marks a string literal as SQL.

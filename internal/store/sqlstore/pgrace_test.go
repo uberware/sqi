@@ -547,46 +547,35 @@ func TestPGRace_G6_RetentionSparesAJobRetriedMeanwhile(t *testing.T) {
 	}
 }
 
-// TestPGRace_G7_DeleteJobRetriesALogThatRaced: a log line appended after the
-// delete cleared the logs must not fail the delete; the cascade runs again and
-// removes it.
-func TestPGRace_G7_DeleteJobRetriesALogThatRaced(t *testing.T) {
+// TestPGRace_G7_DeleteJobHoldsOffALogThatRaced: a log line appended while a
+// delete is mid-cascade (its logs cleared, its attempts not yet) waits for the
+// delete, which locked the job's logged tasks, and then fails on its foreign
+// key. The delete commits on its first run: no log row landed mid-cascade, so
+// the cascade's retry backstop is not needed.
+func TestPGRace_G7_DeleteJobHoldsOffALogThatRaced(t *testing.T) {
 	st, p := pgRace(t)
 	w := seedWorld(t, st, 1, "w1")
 	a := storetest.Lease(t, st, leaseReq(w.Tasks[0], "w1"))
 	p.atStatement(sqlstore.SQLDeleteJobAttempts) // logs cleared, attempts not yet
-	derr, lerr, _ := interleave(t, p,
+	before := st.TxRetries()
+	derr, lerr, waited := interleave(t, p,
 		func() error { return st.DeleteJob(t.Context(), w.JobID) },
-		func() error {
-			_, err := st.CreateTaskLog(t.Context(), store.TaskLog{
-				ID: uuid.NewString(), TaskID: w.Tasks[0], AttemptID: a.ID, SeqNum: 1, NATSSeq: 1,
-				At: time.Now(), Stream: store.LogStreamStdout, Data: "late line",
-			})
-			return err
-		})
+		func() error { return appendLateLog(t, st, w.Tasks[0], a.ID) })
 	assertPausedAt(t, p, sqlstore.SQLDeleteJobAttempts)
-	if lerr != nil {
-		t.Fatalf("the log append failed, so no log line raced the delete: %v", lerr)
-	}
 	if derr != nil {
 		t.Fatalf("DeleteJob failed on a log line that raced it: %v", derr)
 	}
+	assertLogHeldOff(t, st, before, waited, lerr, a.ID)
 	if _, err := st.GetJob(t.Context(), w.JobID); !errors.Is(err, store.ErrNotFound) {
 		t.Fatalf("job still present after DeleteJob: %v", err)
 	}
-	logs, err := st.ListTaskLogs(t.Context(), a.ID, 0, 10)
-	if err != nil {
-		t.Fatalf("ListTaskLogs: %v", err)
-	}
-	if len(logs) != 0 {
-		t.Fatalf("%d log lines survive the deleted job", len(logs))
-	}
 }
 
-// TestPGRace_G7_RetentionRetriesALogThatRaced: the retention sweep's cascade
-// has the same hole as DeleteJob's. A log line appended after it cleared the
-// logs must not fail the sweep; the sweep runs again and purges the job.
-func TestPGRace_G7_RetentionRetriesALogThatRaced(t *testing.T) {
+// TestPGRace_G7_RetentionHoldsOffALogThatRaced: the retention sweep's cascade
+// locks the job's logged tasks as DeleteJob's does. A log line appended after
+// it cleared the logs waits for the sweep and fails on its foreign key, and
+// the sweep purges the job on its first run.
+func TestPGRace_G7_RetentionHoldsOffALogThatRaced(t *testing.T) {
 	st, p := pgRace(t)
 	w := seedWorld(t, st, 1, "w1")
 	a := storetest.Lease(t, st, leaseReq(w.Tasks[0], "w1"))
@@ -594,31 +583,58 @@ func TestPGRace_G7_RetentionRetriesALogThatRaced(t *testing.T) {
 		t.Fatalf("CancelJobExecution: %v", err)
 	}
 	p.atStatement(sqlstore.SQLDeleteJobAttempts) // logs cleared, attempts not yet
+	before := st.TxRetries()
 	var deleted []store.DeletedJob
-	serr, lerr, _ := interleave(t, p,
+	serr, lerr, waited := interleave(t, p,
 		func() (err error) {
 			deleted, err = st.DeleteTerminalJobsBefore(t.Context(), time.Now().Add(time.Hour), true)
 			return
 		},
-		func() error {
-			_, err := st.CreateTaskLog(t.Context(), store.TaskLog{
-				ID: uuid.NewString(), TaskID: w.Tasks[0], AttemptID: a.ID, SeqNum: 1, NATSSeq: 1,
-				At: time.Now(), Stream: store.LogStreamStdout, Data: "late line",
-			})
-			return err
-		})
+		func() error { return appendLateLog(t, st, w.Tasks[0], a.ID) })
 	assertPausedAt(t, p, sqlstore.SQLDeleteJobAttempts)
-	if lerr != nil {
-		t.Fatalf("the log append failed, so no log line raced the sweep: %v", lerr)
-	}
 	if serr != nil {
 		t.Fatalf("the retention sweep failed on a log line that raced it: %v", serr)
 	}
+	assertLogHeldOff(t, st, before, waited, lerr, a.ID)
 	if len(deleted) != 1 || deleted[0].ID != w.JobID {
 		t.Fatalf("retention purged %v, want exactly %s", deleted, w.JobID)
 	}
 	if _, err := st.GetJob(t.Context(), w.JobID); !errors.Is(err, store.ErrNotFound) {
 		t.Fatalf("job still present after the sweep: %v", err)
+	}
+}
+
+// appendLateLog appends one log line for attempt of task, as the log ingest
+// consumer does.
+func appendLateLog(t *testing.T, st *postgres.Store, task, attempt string) error {
+	_, err := st.CreateTaskLog(t.Context(), store.TaskLog{
+		ID: uuid.NewString(), TaskID: task, AttemptID: attempt, SeqNum: 1, NATSSeq: 1,
+		At: time.Now(), Stream: store.LogStreamStdout, Data: "late line",
+	})
+	return err
+}
+
+// assertLogHeldOff checks how a log append that raced a job's delete cascade
+// ended: it waited on a lock, failed on its foreign key once the delete
+// committed, left no line behind, and the delete ran no more than once (no
+// transaction retried since before).
+func assertLogHeldOff(t *testing.T, st *postgres.Store, before int64, waited bool, lerr error, attempt string) {
+	t.Helper()
+	if !waited {
+		t.Fatalf("the log append did not wait for the delete (err %v): the delete did not lock the job's logged tasks", lerr)
+	}
+	if !errors.Is(lerr, store.ErrConflict) {
+		t.Fatalf("log append = %v, want a foreign-key conflict once the delete committed", lerr)
+	}
+	if n := st.TxRetries() - before; n != 0 {
+		t.Errorf("%d transaction retries: the cascade ran again, so a log row landed mid-cascade", n)
+	}
+	logs, err := st.ListTaskLogs(t.Context(), attempt, 0, 10)
+	if err != nil {
+		t.Fatalf("ListTaskLogs: %v", err)
+	}
+	if len(logs) != 0 {
+		t.Fatalf("%d log lines survive the deleted job", len(logs))
 	}
 }
 

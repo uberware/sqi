@@ -1013,8 +1013,8 @@ jobs:
             TestPGRace_G4_CancelReportsALeaseThatRaced
             TestPGRace_G5_RetryAndCancelSerialize
             TestPGRace_G6_RetentionSparesAJobRetriedMeanwhile
-            TestPGRace_G7_DeleteJobRetriesALogThatRaced
-            TestPGRace_G7_RetentionRetriesALogThatRaced
+            TestPGRace_G7_DeleteJobHoldsOffALogThatRaced
+            TestPGRace_G7_RetentionHoldsOffALogThatRaced
             TestPGRace_G8_NoDemotionUnderALease
             TestPGRace_G9_OfflineReclaimsEveryTaskALeaseCommitted
             TestPGRace_G10_TwoAdminDeletionsLeaveOneAdmin

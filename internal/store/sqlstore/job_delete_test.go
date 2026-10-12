@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -615,5 +616,24 @@ func TestStore_PurgeExpiredJobTx_SkipsAJobRevivedAfterTheSelect(t *testing.T) {
 	}
 	if _, err := st.GetJob(ctx, "untouched"); !errors.Is(err, store.ErrNotFound) {
 		t.Fatalf("GetJob(untouched) = %v, want ErrNotFound", err)
+	}
+}
+
+// TestDeleteJob_SQLiteRunsNoRowLock pins that the lock DeleteJob takes on a
+// PostgreSQL store's logged tasks costs SQLite nothing: its dialect has no
+// FOR UPDATE, so the locking SELECT is not run and the cascade's SQL is what it
+// was.
+func TestDeleteJob_SQLiteRunsNoRowLock(t *testing.T) {
+	base := openTestStoreWB(t)
+	job := seedJobWithChildren(t, base, "dj")
+	d := &recordingDialect{Dialect: base.Dialect()}
+	st := withDialect(t, base, d)
+	if err := st.DeleteJob(t.Context(), job.ID); err != nil {
+		t.Fatalf("DeleteJob: %v", err)
+	}
+	for _, q := range d.queries {
+		if strings.HasPrefix(strings.TrimSpace(q), "SELECT 1 FROM tasks") || strings.Contains(q, "FOR UPDATE") {
+			t.Errorf("SQLite DeleteJob ran a row lock: %q", q)
+		}
 	}
 }

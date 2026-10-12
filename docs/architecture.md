@@ -1020,8 +1020,8 @@ lease, nor a lease for it. The anchors each operation takes:
 | `ReleaseStep`, `CancelPendingStep` | the step's job row | |
 | `ReleaseBlockedJob`, `CancelBlockedJob` | the job row, then each upstream job row sorted by id, shared | |
 | `CreateJobSubmission` (dependency re-check) | each upstream job row, sorted by id, shared | |
-| `DeleteJob` | the job row | The cascade is retried on a foreign-key violation (`23503`) or a deadlock (`40P01`); see [What the anchors leave open](#what-the-anchors-leave-open). |
-| `DeleteTerminalJobsBefore` (retention) | each candidate's job row, candidates sorted by id, each taken just before that job's eligibility re-check | Every lock is held to the sweep's one commit. A job that no longer qualifies under its lock (a retry revived it) is skipped. The cascade is retried as for `DeleteJob`. |
+| `DeleteJob` | the job row, then (not an anchor) each of the job's tasks that has an attempt, `FOR UPDATE` | The task locks hold off a log append, whose foreign-key check takes `FOR KEY SHARE` on its task row; see [What the anchors leave open](#what-the-anchors-leave-open). As a backstop the cascade is still retried on a foreign-key violation (`23503`) or a deadlock (`40P01`). |
+| `DeleteTerminalJobsBefore` (retention) | each candidate's job row, candidates sorted by id, each taken just before that job's eligibility re-check, then that job's tasks as for `DeleteJob` | Every lock is held to the sweep's one commit. A job that no longer qualifies under its lock (a retry revived it) is skipped. The cascade is retried as for `DeleteJob`. |
 | `ReclaimStaleAssignedTasks` | per batch of up to 500 candidates, the batch's job rows sorted by id, taken **before** the `UPDATE` | The candidates are read unlocked, then each batch runs `UPDATE … RETURNING` re-guarded on the candidate ids, `status = 'assigned'` and the cutoff, so no task row is locked before its job row. Each batch commits on its own; on an error the result lists the tasks earlier batches reclaimed. |
 | `DemoteStalledJobs` | each candidate's job row, one job per transaction, in id order | The candidates are read unlocked; each job is demoted only if the stalled predicate, re-run under its lock, still holds. A lease in flight holds the job row shared, so it is waited for and the task it assigned is seen. On an error the result lists the jobs already demoted. |
 | `OfflineStaleWorker`, `OfflineWorker` | the worker row, then the job row of each of the worker's assigned or running tasks, sorted by id | A lease holds the worker row shared, so the offline transition waits for a lease in flight and reclaims what it committed. |
@@ -1111,18 +1111,24 @@ None of the following can happen on SQLite, where the single write connection
 serializes every writer. On PostgreSQL they are left open on purpose:
 
 - **A log line that races a job delete is dropped.** `CreateTaskLog` runs
-  without a transaction and takes no anchor, so it can insert a log row after
-  `DeleteJob` or retention cleared that job's logs, and a later `DELETE` in the
-  cascade (claims, logs, attempts, tasks, steps, dependency edges, then the job
-  row) then fails on a foreign key. Both operations retry the cascade on a
-  foreign-key violation (`23503`) or a deadlock (`40P01`), within the same
-  5-attempt bound as any retry; inside those two operations a `23503` is
-  retried rather than reported as `store.ErrConflict`. The next run clears the
-  new log row too, and the delete completes. The log line itself, which
-  belongs to a job being deleted, is lost either way: the retried cascade
-  deletes it, or, arriving after its attempt is gone, its insert fails on its
-  own foreign key. The log ingest consumer logs that failure at Warn and Naks
-  the message, and discards the redelivery once it finds no attempt.
+  without a transaction and takes no anchor. `DeleteJob` and retention
+  therefore lock, after the job row, each of the job's tasks that has an
+  attempt `FOR UPDATE` before the cascade (claims, logs, attempts, tasks,
+  steps, dependency edges, then the job row). A log insert's foreign-key check
+  takes `FOR KEY SHARE` on its task row, so an append arriving from then on
+  waits for the delete and, once it commits, fails on that foreign key; one
+  already past the check commits first and the cascade deletes its row
+  (`TestPGRace_G7_DeleteJobHoldsOffALogThatRaced`). The task rows are locked
+  rather than the attempt rows because an insert checks its task before its
+  attempt: holding the attempts would let it hold its task while waiting, and
+  the cascade's delete of the tasks would then deadlock with it. As a
+  backstop both operations still retry the cascade on a foreign-key violation
+  (`23503`) or a deadlock (`40P01`), within the same 5-attempt bound as any
+  retry; inside those two operations a `23503` is retried rather than reported
+  as `store.ErrConflict`. The log line itself, which belongs to a job being
+  deleted, is lost either way. The log ingest consumer logs the failed insert
+  at Warn and Naks the message, and discards the redelivery once it finds no
+  attempt.
 - **A queue or farm read as uncapped stays unanchored.** The lease locks the
   queue and farm rows only when the scope read found a cap. A cap set
   concurrently on one read as uncapped orders after the lease, exactly as if

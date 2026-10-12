@@ -57,3 +57,7 @@ func (sqliteDialect) CIEqual(col string) string { return col + " = ? COLLATE NOC
 
 // CILike uses LIKE, which SQLite matches ASCII case-insensitively.
 func (sqliteDialect) CILike(col string) string { return col + " LIKE ?" }
+
+// ForUpdate returns "": SQLite has no row locks, and its single write
+// connection already serializes every write transaction.
+func (sqliteDialect) ForUpdate() string { return "" }

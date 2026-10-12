@@ -102,6 +102,13 @@ RETURNING id`
 	// Job-deletion cascade. Each statement scopes to one job via job_id (or a
 	// task subquery for grandchild tables). Run inside a single transaction in
 	// this exact order so enforced foreign keys never block a delete.
+	// sqlLockJobLoggedTasks selects each of a job's tasks that has an attempt:
+	// every task a log line can reference. With the dialect's ForUpdate clause
+	// appended it locks them (see lockJobLoggedTasksTx).
+	sqlLockJobLoggedTasks = `
+SELECT 1 FROM tasks t
+WHERE t.job_id = ? AND EXISTS (SELECT 1 FROM task_attempts ta WHERE ta.task_id = t.id)`
+
 	sqlDeleteJobCheckouts = `
 DELETE FROM usage_claims
 WHERE task_attempt_id IN (
@@ -970,10 +977,10 @@ func selectExpiredJobsTx(ctx context.Context, tx *dbTx, query string, args []any
 // other job-anchored writer can change the job's status before the final
 // DELETE; the re-check comes before any child row is touched because the sweep
 // is one transaction and a half-purged job cannot be skipped after the fact. As
-// for [Store.DeleteJob], the anchor does not stop a log append (which takes no
-// anchor) from inserting a child row mid-cascade; the cascade's foreign-key
-// error is reclassified as retryable ([cascadeErr]), so the sweep's
-// transaction runs again and the next run deletes the new row too.
+// for [Store.DeleteJob], the job's logged tasks are locked before the cascade
+// ([lockJobLoggedTasksTx]), so a log append waits for the sweep instead of
+// landing mid-cascade, and the cascade's foreign-key error stays retryable
+// ([cascadeErr]) as a backstop.
 func purgeExpiredJobTx(ctx context.Context, tx *dbTx, recheck string, args []any, id string) (bool, error) {
 	if err := tx.lockAnchors(ctx, jobAnchor(id)); err != nil {
 		return false, err
@@ -987,6 +994,9 @@ func purgeExpiredJobTx(ctx context.Context, tx *dbTx, recheck string, args []any
 	if err != nil {
 		return false, mapErr(err)
 	}
+	if err := lockJobLoggedTasksTx(ctx, tx, id); err != nil {
+		return false, err
+	}
 	for _, q := range []string{
 		sqlDeleteJobCheckouts, sqlDeleteJobTaskLogs, sqlDeleteJobAttempts,
 		sqlDeleteJobTasks, sqlDeleteJobSteps, sqlDeleteJobDependencies, sqlDeleteJobRow,
@@ -998,12 +1008,40 @@ func purgeExpiredJobTx(ctx context.Context, tx *dbTx, recheck string, args []any
 	return true, nil
 }
 
+// lockJobLoggedTasksTx locks, until the commit, every task of job id that a
+// log line can reference (each task with an attempt), on a database with row
+// locks. CreateTaskLog takes no anchor, but its insert's foreign-key check
+// takes FOR KEY SHARE on the line's task row, which FOR UPDATE excludes: an
+// append from here on waits for the delete and then fails on that foreign key,
+// and one already past the check commits before the lock is granted, so the
+// cascade's own DELETE of the logs removes it. Either way no log row lands
+// mid-cascade, and the cascade does not have to run again.
+//
+// It locks the task rows, not the attempt rows, because a log insert checks
+// its task_id foreign key before its attempt_id one (the triggers fire in
+// creation order). Holding the attempts would let an insert hold its task's
+// FOR KEY SHARE while it waits on the attempt, and the cascade's DELETE of the
+// tasks would then wait on the insert: a deadlock. No new attempt can appear
+// meanwhile: a lease holds the job row, which the caller has locked. On SQLite
+// it does nothing (the dialect's ForUpdate is "").
+func lockJobLoggedTasksTx(ctx context.Context, tx *dbTx, id string) error {
+	forUpdate := tx.d.ForUpdate()
+	if forUpdate == "" {
+		return nil
+	}
+	if _, err := tx.ExecContext(ctx, sqlLockJobLoggedTasks+forUpdate, id); err != nil {
+		return fmt.Errorf("store: lock job %s's tasks: %w", id, mapErr(err))
+	}
+	return nil
+}
+
 // cascadeErr reclassifies a foreign-key violation inside a job's delete
-// cascade as retryable. On PostgreSQL a child row inserted after its table was
-// cleared (a log line: CreateTaskLog takes no anchor) makes a later DELETE in
-// the cascade fail on its foreign key; running the cascade again deletes the
-// new row too, and inTx does that for a retryable error. SQLite's single
-// writer never produces the error.
+// cascade as retryable. [lockJobLoggedTasksTx] keeps a log line from landing
+// mid-cascade; this is the backstop for a child row inserted after its table
+// was cleared all the same, which makes a later DELETE in the cascade fail on
+// its foreign key: running the cascade again deletes the new row too, and inTx
+// does that for a retryable error. SQLite's single writer never produces the
+// error.
 func cascadeErr(err error) error {
 	if errClass(err) == ErrClassConflict {
 		return &classifiedError{class: ErrClassRetry, err: err}
@@ -1017,18 +1055,22 @@ func cascadeErr(err error) error {
 //
 // The job anchor is taken first, which serializes the cascade against the other
 // job-anchored writers (cancel, retry, finalize, completion, retention), and
-// against leases, which hold the job row FOR SHARE. It does not stop a log
-// append (CreateTaskLog, no transaction, no anchor) from inserting a child row
-// after its table was cleared, so on PostgreSQL a later DELETE in the cascade
-// (claims, logs, attempts, tasks, steps, dependency edges, then the job row)
-// can still fail on a foreign key. The store retries the cascade: a
-// foreign-key violation inside it is reclassified as retryable ([cascadeErr]),
+// against leases, which hold the job row FOR SHARE. A log append
+// (CreateTaskLog, no transaction, no anchor) is held off by the lock on the
+// job's logged tasks taken next ([lockJobLoggedTasksTx]): it waits for the
+// delete instead of inserting a child row after its table was cleared. As a
+// backstop the store still retries the cascade (claims, logs, attempts, tasks,
+// steps, dependency edges, then the job row) if a DELETE in it fails on a
+// foreign key: such a violation is reclassified as retryable ([cascadeErr]),
 // and the next run, which starts by clearing the logs again, deletes the new
 // row too. A deadlock is already retryable. SQLite cannot produce either
 // error: its single write connection serializes every writer.
 func (s *Store) DeleteJob(ctx context.Context, id string) error {
 	return s.inTx(ctx, "delete job", func(tx *dbTx) (txOutcome, error) {
 		if err := tx.lockAnchors(ctx, jobAnchor(id)); err != nil {
+			return txRollback, err
+		}
+		if err := lockJobLoggedTasksTx(ctx, tx, id); err != nil {
 			return txRollback, err
 		}
 

@@ -305,12 +305,12 @@ type JobStore interface {
 	//
 	// The job's anchor row is locked first, which serializes the cascade
 	// against the other job-anchored writers (cancel, retry, finalize,
-	// completion, retention) and against leases, which hold it FOR SHARE. It
-	// does NOT stop a concurrent log append ([TaskLogStore.CreateTaskLog]),
-	// which takes no anchor, from inserting a child row mid-cascade: on a
-	// store without a single writer such an insert can land after its table
-	// was cleared and make a later DELETE in the cascade fail on a foreign
-	// key. The SQL store therefore retries the cascade itself, inside
+	// completion, retention) and against leases, which hold it FOR SHARE. A
+	// concurrent log append ([TaskLogStore.CreateTaskLog]) takes no anchor;
+	// on a store without a single writer the SQL store also locks the job's
+	// tasks that have attempts, so such an append waits for the delete and
+	// then fails on its foreign key instead of inserting a child row
+	// mid-cascade. As a backstop it still retries the cascade itself, inside
 	// DeleteJob, on a foreign-key or deadlock error; the REST handler that
 	// calls it does not retry. SQLite cannot produce either error, because
 	// its single write connection serializes every writer.

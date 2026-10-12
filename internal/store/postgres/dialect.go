@@ -144,3 +144,6 @@ func (pgDialect) CIEqual(col string) string { return "lower(" + col + ") = lower
 // CILike matches case-insensitively with backslash taken literally: SQLite's
 // LIKE has no escape character, and a search for a Windows path must match.
 func (pgDialect) CILike(col string) string { return col + " ILIKE ? ESCAPE ''" }
+
+// ForUpdate locks the rows a SELECT reads until the transaction ends.
+func (pgDialect) ForUpdate() string { return " FOR UPDATE" }

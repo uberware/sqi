@@ -28,6 +28,12 @@ type Dialect interface {
 	// own form (PostgreSQL: "<col> ILIKE ? ESCAPE ''"). Like CIEqual it may carry
 	// only the column, a "?" and literals.
 	CILike(col string) string
+	// ForUpdate returns the clause that makes a SELECT lock the rows it reads
+	// until the transaction ends (PostgreSQL: " FOR UPDATE"), or "" where the
+	// database takes no row locks (SQLite, whose single write connection
+	// serializes every writer). A statement that exists only to take those
+	// locks is not run when it is "".
+	ForUpdate() string
 }
 
 // ErrClass is what a driver error means to the store.
