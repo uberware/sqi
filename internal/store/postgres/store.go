@@ -56,6 +56,7 @@ type Store struct {
 	db, rdb *sql.DB
 	lock    *serverLock // nil unless Options.ServerLock
 	dsn     string
+	log     *slog.Logger
 
 	closeMu sync.Mutex
 	closed  bool
@@ -87,7 +88,7 @@ func Open(ctx context.Context, dsn string, opts Options) (*Store, error) {
 		_ = db.Close()
 		return nil, fmt.Errorf("postgres: connect: %w", err)
 	}
-	s := &Store{db: db, dsn: dsn}
+	s := &Store{db: db, dsn: dsn, log: log}
 	fail := func(err error) (*Store, error) {
 		return nil, errors.Join(err, s.closePools())
 	}

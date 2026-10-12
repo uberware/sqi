@@ -73,6 +73,12 @@ func TestWithoutPassword_RefusesWhereRedactFailsClosed(t *testing.T) {
 		// A ";" splits a query pair to net/url of old, so this reads as a pair with
 		// no "=", which Redact refuses too.
 		"postgres://sqi@db/sqi?sslmode=require&password=hun;ter2",
+		// A ";" or a second "=" inside a value, which pgx rejects or reads as
+		// part of the value, but which hides a password key from a reader that
+		// splits differently.
+		"postgres://sqi@db/sqi?sslmode=require;password=hunter2",
+		"postgres://sqi@db/sqi?application_name=a=password=hunter2",
+		"postgres://sqi@db/sqi?application_name=x;sslpassword=hunter2",
 		"host=db password='hunter2 dbname=sqi",
 		`host=db password='hunter2\'`,
 		"host=db password=hunter2 \x00",
@@ -184,6 +190,7 @@ func TestSetsSSLPassword(t *testing.T) {
 		// A DSN that cannot be read reliably might carry one: fail closed.
 		{"postgres://sqi@db/sqi?ssl%70assword=secret", true},
 		{"host=db sslpassword='secret", true},
+		{"postgres://sqi@db/sqi?application_name=x;sslpassword=hunter2", true},
 	}
 	for _, tc := range tests {
 		if got := pgdsn.SetsSSLPassword(tc.dsn); got != tc.want {

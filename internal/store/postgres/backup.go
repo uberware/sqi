@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"log/slog"
 	"os"
 	"os/exec"
 	"regexp"
@@ -54,20 +55,48 @@ func (s *Store) Backup(ctx context.Context, out string) error {
 	if err := checkPgDumpVersion(dumpMajor, n); err != nil {
 		return err
 	}
+	return runPgDump(ctx, s.log, pgDump, args, env, out)
+}
+
+// runPgDump creates out exclusively, so a file that appeared after preflight
+// is refused rather than overwritten (pg_dump opens --file without O_EXCL),
+// then runs pg_dump with args and env added to the inherited environment. On
+// failure it removes out, which it created; pg_dump's stderr goes into the
+// error, or, on success, to log at warn level.
+func runPgDump(ctx context.Context, log *slog.Logger, pgDump string, args, env []string, out string) error {
+	f, err := os.OpenFile(out, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+	if errors.Is(err, fs.ErrExist) {
+		return fmt.Errorf("postgres: backup destination %s already exists", out)
+	} else if err != nil {
+		return fmt.Errorf("postgres: create backup destination %s: %w", out, err)
+	}
+	if err := f.Close(); err != nil {
+		return removeCreated(out, fmt.Errorf("postgres: create backup destination %s: %w", out, err))
+	}
 	cmd := exec.CommandContext(ctx, pgDump, args...)
 	// A later entry wins over an inherited PGPASSWORD (exec keeps the last).
 	cmd.Env = append(os.Environ(), env...)
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
-	if err := cmd.Run(); err != nil {
-		err = fmt.Errorf("postgres: pg_dump failed: %w: %s", err, strings.TrimSpace(stderr.String()))
+	err = cmd.Run()
+	msg := strings.TrimSpace(stderr.String())
+	if err != nil {
 		// Never leave a partial archive behind.
-		if rmErr := os.Remove(out); rmErr != nil && !errors.Is(rmErr, fs.ErrNotExist) {
-			err = errors.Join(err, fmt.Errorf("postgres: remove partial archive %s: %w", out, rmErr))
-		}
-		return err
+		return removeCreated(out, fmt.Errorf("postgres: pg_dump failed: %w: %s", err, msg))
+	}
+	if msg != "" {
+		log.WarnContext(ctx, "pg_dump wrote to stderr", "out", out, "stderr", msg)
 	}
 	return nil
+}
+
+// removeCreated removes out, a file this backup created, after err, and
+// returns err with any failure to remove it.
+func removeCreated(out string, err error) error {
+	if rmErr := os.Remove(out); rmErr != nil && !errors.Is(rmErr, fs.ErrNotExist) {
+		return errors.Join(err, fmt.Errorf("postgres: remove partial archive %s: %w", out, rmErr))
+	}
+	return err
 }
 
 // pgDumpInvocation returns pg_dump's arguments for dumping the database dsn
@@ -83,6 +112,8 @@ func (s *Store) Backup(ctx context.Context, out string) error {
 // reads the passphrase from no environment variable, so the only way to hand
 // it to pg_dump would be its command line.
 func pgDumpInvocation(dsn, out string) (args, env []string, err error) {
+	// ParseConfig must run first: it rejects every DSN pgx cannot read, and
+	// pgdsn's fail-closed checks are only proven against DSNs pgx accepts.
 	cfg, err := pgconn.ParseConfig(dsn)
 	if err != nil {
 		return nil, nil, fmt.Errorf("postgres: parse dsn: %w", err)

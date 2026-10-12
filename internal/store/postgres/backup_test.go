@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"testing"
 
@@ -43,6 +44,11 @@ func TestPostgres_BackupRestoreRoundTrip(t *testing.T) {
 	out := filepath.Join(t.TempDir(), "sqi.dump")
 	if err := src.Backup(t.Context(), out); err != nil {
 		t.Fatalf("Backup: %v", err)
+	}
+	// Backup creates the archive owner-only and pg_dump writes into it: the
+	// dump holds every account's password hash.
+	if fi, err := os.Stat(out); err != nil || (runtime.GOOS != "windows" && fi.Mode().Perm() != 0o600) {
+		t.Fatalf("archive = %v, %v; want mode 0600", fi, err)
 	}
 	if err := src.Backup(t.Context(), out); err == nil {
 		t.Fatal("Backup overwrote an existing archive")

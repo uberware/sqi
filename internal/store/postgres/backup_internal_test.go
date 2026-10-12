@@ -3,8 +3,14 @@
 package postgres
 
 import (
+	"bytes"
+	"errors"
+	"fmt"
+	"io/fs"
+	"log/slog"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"testing"
@@ -174,5 +180,96 @@ func TestPgDumpInvocation_RefusesEnvSSLPassword(t *testing.T) {
 	if _, _, err := pgDumpInvocation("host=db user=sqi dbname=sqi", "/b/sqi.dump"); err == nil ||
 		!strings.Contains(err.Error(), "PGSSLPASSWORD") {
 		t.Fatalf("pgDumpInvocation with PGSSLPASSWORD set = %v", err)
+	}
+}
+
+// fakePgDumpEnv makes the test binary act as pg_dump (see TestFakePgDump):
+// "ok" writes an archive and a warning, "fail" writes part of one and fails.
+const fakePgDumpEnv = "SQI_TEST_FAKE_PG_DUMP"
+
+// TestFakePgDump is not a test: run as a child with fakePgDumpEnv set, it
+// stands in for pg_dump, writing to the path its --file argument names.
+func TestFakePgDump(t *testing.T) {
+	mode := os.Getenv(fakePgDumpEnv)
+	if mode == "" {
+		t.Skip("helper process for the runPgDump tests")
+	}
+	var file string
+	for _, a := range os.Args {
+		if f, ok := strings.CutPrefix(a, "--file="); ok {
+			file = f
+		}
+	}
+	if err := os.WriteFile(file, []byte("PGDMP"), 0o600); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(3)
+	}
+	fmt.Fprintln(os.Stderr, "pg_dump: warning: fake "+mode)
+	if mode == "fail" {
+		os.Exit(1)
+	}
+	os.Exit(0)
+}
+
+// fakePgDump returns the command and leading arguments that run the test
+// binary as pg_dump in the given mode.
+func fakePgDump(t *testing.T, mode string) (string, []string) {
+	t.Helper()
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(fakePgDumpEnv, mode)
+	return exe, []string{"-test.run=^TestFakePgDump$", "--"}
+}
+
+func TestRunPgDump_LogsStderrOnSuccess(t *testing.T) {
+	exe, lead := fakePgDump(t, "ok")
+	out := filepath.Join(t.TempDir(), "sqi.dump")
+	var logs bytes.Buffer
+	log := slog.New(slog.NewTextHandler(&logs, nil))
+	if err := runPgDump(t.Context(), log, exe, append(lead, "--file="+out), nil, out); err != nil {
+		t.Fatalf("runPgDump: %v", err)
+	}
+	if b, err := os.ReadFile(out); err != nil || string(b) != "PGDMP" {
+		t.Fatalf("archive = %q, %v", b, err)
+	}
+	if !strings.Contains(logs.String(), "level=WARN") || !strings.Contains(logs.String(), "fake ok") {
+		t.Fatalf("pg_dump's stderr was not logged at warn: %q", logs.String())
+	}
+	if runtime.GOOS != "windows" {
+		if fi, err := os.Stat(out); err != nil || fi.Mode().Perm() != 0o600 {
+			t.Fatalf("archive mode = %v, %v; want 0600", fi.Mode().Perm(), err)
+		}
+	}
+}
+
+func TestRunPgDump_RemovesItsPartialArchive(t *testing.T) {
+	exe, lead := fakePgDump(t, "fail")
+	out := filepath.Join(t.TempDir(), "sqi.dump")
+	err := runPgDump(t.Context(), slog.New(slog.DiscardHandler), exe, append(lead, "--file="+out), nil, out)
+	if err == nil || !strings.Contains(err.Error(), "fake fail") {
+		t.Fatalf("runPgDump = %v, want pg_dump's failure with its stderr", err)
+	}
+	if _, err := os.Stat(out); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("partial archive left behind: %v", err)
+	}
+}
+
+// TestRunPgDump_LeavesAFileItDidNotCreate covers a destination that appeared
+// after preflight: runPgDump refuses it without running pg_dump, and neither
+// overwrites nor removes it.
+func TestRunPgDump_LeavesAFileItDidNotCreate(t *testing.T) {
+	exe, lead := fakePgDump(t, "ok")
+	out := filepath.Join(t.TempDir(), "sqi.dump")
+	if err := os.WriteFile(out, []byte("theirs"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	err := runPgDump(t.Context(), slog.New(slog.DiscardHandler), exe, append(lead, "--file="+out), nil, out)
+	if err == nil || !strings.Contains(err.Error(), "already exists") {
+		t.Fatalf("runPgDump over an existing file = %v", err)
+	}
+	if b, err := os.ReadFile(out); err != nil || string(b) != "theirs" {
+		t.Fatalf("existing file = %q, %v; want it untouched", b, err)
 	}
 }

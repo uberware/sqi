@@ -82,6 +82,12 @@ var secretDSNs = []struct{ in, secret string }{
 	{"host=db application_name=password= password =hunter2", "hunter2"},
 	// A query pair with no "=" is refused (pgx rejects the DSN anyway).
 	{"postgres://sqi@db/sqi?password=ab&cd", "&cd"},
+	// pgx and libpq split the query on "&" alone and reject a value holding a
+	// second "="; a ";" or "=" inside a value hides a password key from a
+	// reading that splits differently, so such a pair is refused.
+	{"postgres://sqi@db/sqi?sslmode=require;password=hunter2", "hunter2"},
+	{"postgres://sqi@db/sqi?application_name=a=password=hunter2", "hunter2"},
+	{"postgres://sqi@db/sqi?application_name=x;sslpassword=hunter2", "hunter2"},
 }
 
 func TestRedact(t *testing.T) {
@@ -119,6 +125,8 @@ func TestRedact_KeepsEverythingElse(t *testing.T) {
 		{"postgres://sqi:hunter2%zz@db/sqi", "postgres://<redacted>"},
 		{"postgres://db/sqi?application_name=a@b", "postgres://<redacted>"},
 		{"postgres://sqi@db/sqi?password=ab&cd", "postgres://<redacted>"},
+		{"postgres://sqi@db/sqi?sslmode=require;password=hunter2", "postgres://<redacted>"},
+		{"postgres://sqi@db/sqi?application_name=a=password=hunter2", "postgres://<redacted>"},
 		// A keyword/value DSN with a password is rebuilt from its pairs, quoting
 		// only the values that need it; one pgx cannot parse fails closed to the
 		// bare placeholder, as does one with a key no real setting has (which

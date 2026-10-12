@@ -242,8 +242,33 @@ func quoteKeywordValue(v string) string {
 //   - The authority is ambiguous (see [ambiguousAuthority]).
 //   - A query key is spelled so the regex cannot see it, or a query pair has
 //     no "=" (see [obscuredPasswordKey]).
+//   - A query value holds a separator another reading could split on (see
+//     [ambiguousQueryValue]).
 func urlDSNAmbiguous(u *url.URL, dsn string) bool {
-	return strings.Contains(dsn, "#") || ambiguousAuthority(u, dsn) || obscuredPasswordKey(dsn)
+	return strings.Contains(dsn, "#") || ambiguousAuthority(u, dsn) ||
+		obscuredPasswordKey(dsn) || ambiguousQueryValue(dsn)
+}
+
+// ambiguousQueryValue reports whether a pair of the DSN's query, split on "&"
+// as pgx and libpq split it, has a value holding "=" or ";". pgx and libpq
+// reject a second "=", and [obscuredPasswordKey] splits on ";" too, so either
+// can hide a password key from one reading while another sees it:
+// `?sslmode=require;password=x` has a literal password key to a ";" split and
+// none to the "&" split [queryPassword] and [WithoutPassword] use, and
+// `?application_name=a=password=x` has one only to a reader that splits a
+// pair at its last "=". Refusing both keeps every reading of the query the
+// same: one key, then one value, per "&" pair.
+func ambiguousQueryValue(dsn string) bool {
+	_, query, found := strings.Cut(dsn, "?")
+	if !found {
+		return false
+	}
+	for pair := range strings.SplitSeq(query, "&") {
+		if _, value, _ := strings.Cut(pair, "="); strings.ContainsAny(value, "=;") {
+			return true
+		}
+	}
+	return false
 }
 
 // obscuredPasswordKey reports whether the DSN's query has a password or
