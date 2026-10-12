@@ -983,7 +983,8 @@ jobs:
       # Does not trust a bare exit 0: a missing Docker or DSN would skip every
       # PostgreSQL test. Asserts the suite ran to its last line, that each named
       # test passed, that `/postgres` subtests really ran (a PASS line for at
-      # least one), and that none was skipped.
+      # least one), and that none was skipped, both over the whole run and
+      # within the forced-retry phase.
       #
       # The pattern's trailing space matters twice. It keeps a name from
       # matching a longer one that shares its prefix, and it makes a parent
@@ -1046,6 +1047,24 @@ jobs:
             echo "::error::no /postgres subtest passed; the PostgreSQL backend was not exercised"
             missing=1
           fi
+          # The forced-retry phase (every transaction rehearsed once, store
+          # packages only) is checked on its own: its /postgres subtests must
+          # have run there too. The race tests skip in it by design, and they
+          # are top-level tests, so they match neither pattern.
+          sed -n '/^== BEGIN FORCED-RETRY PHASE$/,/^== END FORCED-RETRY PHASE$/p' pg-output.log > pg-retry.log
+          if ! grep -q '^== END FORCED-RETRY PHASE$' pg-retry.log; then
+            echo "::error::the forced-retry phase did not run to its end"
+            missing=1
+          fi
+          retry_passes=$(grep -c -E -- '--- PASS: .*/postgres' pg-retry.log || true)
+          if [ "$retry_passes" -lt 1 ]; then
+            echo "::error::no /postgres subtest passed in the forced-retry phase"
+            missing=1
+          fi
+          if grep -E -- '--- SKIP: .*/postgres' pg-retry.log; then
+            echo "::error::a PostgreSQL subtest was skipped in the forced-retry phase"
+            missing=1
+          fi
           if ! grep -q "POSTGRES TESTS PASSED (PG_VERSION=${{ matrix.pg }})" pg-output.log; then
             echo "::error::the PostgreSQL suite did not reach its final line"
             missing=1
@@ -1055,7 +1074,7 @@ jobs:
             exit 1
           fi
 
-          echo "Confirmed the PostgreSQL ${{ matrix.pg }} suite passed, including ${#expected[@]} named tests."
+          echo "Confirmed the PostgreSQL ${{ matrix.pg }} suite passed, including ${#expected[@]} named tests and ${retry_passes} /postgres subtests under forced retry."
 
       # ── Smoke test with the server on PostgreSQL (18 only) ─────────────────
       # `make smoke` builds both binaries, web UI included, so it needs the same

@@ -59,8 +59,12 @@ echo "== PostgreSQL ${PG_VERSION}: store, scheduler, api, server and cmd package
 go test $RACE_FLAG -count=1 -v -timeout 30m \
   ./internal/store/... ./internal/scheduler/... ./internal/api/... ./internal/server/... ./cmd/...
 
+# -v, and the BEGIN/END lines around it, let CI find this phase's own PASS and
+# SKIP lines and check that its /postgres subtests really ran.
 echo "== PostgreSQL ${PG_VERSION}: store packages with every transaction rehearsed once"
-SQI_TEST_PG_FORCE_TX_RETRY=1 go test $RACE_FLAG -count=1 -timeout 30m ./internal/store/...
+echo "== BEGIN FORCED-RETRY PHASE"
+SQI_TEST_PG_FORCE_TX_RETRY=1 go test $RACE_FLAG -count=1 -v -timeout 30m ./internal/store/...
+echo "== END FORCED-RETRY PHASE"
 
 echo "== PostgreSQL ${PG_VERSION}: integration suite with the server on PostgreSQL"
 SQI_TEST_STORE_DRIVER=postgres go test $RACE_FLAG -count=1 -v -tags integration -timeout 20m \

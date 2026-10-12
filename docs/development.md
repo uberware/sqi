@@ -428,7 +428,10 @@ three passes:
 2. the store packages again with `SQI_TEST_PG_FORCE_TX_RETRY=1`, which runs
    every transaction once, rolls it back and runs it again, so a transaction
    body that keeps state from a failed attempt fails a test (the store retries
-   aborted transactions, so every body must be safe to re-run);
+   aborted transactions, so every body must be safe to re-run). It prints
+   `== BEGIN FORCED-RETRY PHASE` and `== END FORCED-RETRY PHASE` around this
+   pass, and CI checks between them that its `/postgres` subtests passed and
+   none was skipped;
 3. the integration suite (`-tags integration`, `./test/integration/`) with the
    server on PostgreSQL (`SQI_TEST_STORE_DRIVER=postgres`), skipping the LDAP,
    OIDC and isolation tests, which have targets of their own.
