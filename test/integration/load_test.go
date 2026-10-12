@@ -14,7 +14,7 @@ package integration
 //     fresh server) so `go test -bench` can compare scheduler throughput
 //     across revisions.
 //
-// Both entry points boot a full sqi-server (SQLite + embedded NATS +
+// Both entry points boot a full sqi-server (SQLite or PostgreSQL + embedded NATS +
 // scheduler + HTTP), register N mock workers, submit M jobs concurrently,
 // and drain completions while measuring:
 //
@@ -152,11 +152,11 @@ func startLoadServer(tb testing.TB) *testServer {
 
 	if !waitForTCP(tb, httpAddr, 15*time.Second) {
 		cancel()
-		tb.Fatalf("startLoadServer: HTTP not up on %s within 15s", httpAddr)
+		tb.Fatalf("startLoadServer: HTTP not up on %s (NATS %s) within 15s", httpAddr, natsAddr)
 	}
 	if !waitForReadyz(tb, httpAddr, 15*time.Second) {
 		cancel()
-		tb.Fatalf("startLoadServer: /readyz not ready within 15s")
+		tb.Fatalf("startLoadServer: /readyz not ready within 15s (HTTP %s, NATS %s)", httpAddr, natsAddr)
 	}
 
 	ts := &testServer{

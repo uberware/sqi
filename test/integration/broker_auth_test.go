@@ -136,14 +136,14 @@ func startBrokerAuthServer(t *testing.T, so backend.Options, mutate func(*server
 	})
 
 	if !waitForTCP(t, httpAddr, 10*time.Second) {
-		t.Fatal("startBrokerAuthServer: HTTP server did not start listening")
+		t.Fatalf("startBrokerAuthServer: HTTP server did not start listening on %s (NATS %s)", httpAddr, natsAddr)
 	}
 	// Readiness must be probed over whatever scheme this server is actually
 	// serving: an https:// listener answers a plaintext GET with a 400, which
 	// would look like "never became ready" forever. A TLS caller stamps
 	// ts.Scheme/ts.Client before this runs (see startTLSServer in tls_test.go).
 	if !waitForReadyzClient(t, clientFor(ts), apiURL(ts, "/readyz"), 10*time.Second) {
-		t.Fatal("startBrokerAuthServer: server did not become ready")
+		t.Fatalf("startBrokerAuthServer: server did not become ready (HTTP %s, NATS %s)", httpAddr, natsAddr)
 	}
 	return ts
 }

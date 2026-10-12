@@ -263,7 +263,7 @@ func firstTaskID(t *testing.T, ts *testServer, jobID string) string {
 // TestEndToEnd is the primary integration test.  It exercises the complete
 // lifecycle of a job:
 //
-//  1. Boot a full sqi-server (SQLite + embedded NATS + scheduler + HTTP).
+//  1. Boot a full sqi-server (SQLite or PostgreSQL + embedded NATS + scheduler + HTTP).
 //  2. Seed a farm and queue via REST.
 //  3. Connect a mock worker and publish a RegisterMsg.
 //  4. Verify the worker appears online via GET /api/v1/workers.

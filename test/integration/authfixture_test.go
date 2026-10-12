@@ -143,10 +143,10 @@ func startAuthServer(t *testing.T, httpAddr, dbName string, mutate func(*server.
 	})
 
 	if !waitForTCP(t, httpAddr, 20*time.Second) {
-		t.Fatal("HTTP server did not start listening")
+		t.Fatalf("HTTP server did not start listening on %s (NATS %s)", httpAddr, natsAddr)
 	}
 	if !waitForReadyz(t, httpAddr, 30*time.Second) {
-		t.Fatal("server did not become ready")
+		t.Fatalf("server did not become ready (HTTP %s, NATS %s)", httpAddr, natsAddr)
 	}
 	return ts
 }

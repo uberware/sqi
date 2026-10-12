@@ -32,6 +32,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"sync"
 	"testing"
 	"time"
 
@@ -53,12 +54,20 @@ import (
 // default, or, when SQI_TEST_STORE_DRIVER=postgres, a fresh PostgreSQL
 // database (make test-postgres sets both). It takes a [testing.TB] because
 // the load harness also serves benchmarks.
+//
+// A value other than "", "sqlite" or "postgres" fails the test: a typo must
+// not run SQLite under a PostgreSQL label.
 func storeFor(tb testing.TB, sqlitePath string) backend.Options {
 	tb.Helper()
-	if os.Getenv("SQI_TEST_STORE_DRIVER") == backend.DriverPostgres {
+	switch d := os.Getenv("SQI_TEST_STORE_DRIVER"); d {
+	case backend.DriverPostgres:
 		return backend.Options{Driver: backend.DriverPostgres, PostgresDSN: storetest.PostgresDSN(tb), MaxConns: 8}
+	case "", backend.DriverSQLite:
+		return backend.Options{Driver: backend.DriverSQLite, SQLitePath: sqlitePath}
+	default:
+		tb.Fatalf("SQI_TEST_STORE_DRIVER=%q: want %q or %q", d, backend.DriverSQLite, backend.DriverPostgres)
+		return backend.Options{} // unreachable
 	}
-	return backend.Options{Driver: backend.DriverSQLite, SQLitePath: sqlitePath}
 }
 
 // applyStore points a server config at o.
@@ -86,11 +95,41 @@ func openTestStore(tb testing.TB, o backend.Options) store.Store {
 
 // ── Port helpers ──────────────────────────────────────────────────────────────
 
+var (
+	handedOutMu    sync.Mutex
+	handedOutPorts = map[int]struct{}{}
+)
+
 // freePort asks the OS for an available TCP port on loopback and returns it.
 // The port is released immediately after being discovered, so there is a
 // tiny window where another process could claim it.  In practice this is
 // acceptable for integration tests on CI where ports are not heavily contested.
+//
+// It never returns the same port twice within a process. The kernel is free to
+// hand a just-released port out again, and two of a server's listeners (HTTP
+// and NATS) sharing one port makes the second bind fail while a TCP probe of
+// the first still succeeds, which reads as a server that never became ready.
 func freePort(tb testing.TB) int {
+	tb.Helper()
+	const maxDraws = 100
+	for range maxDraws {
+		port := drawPort(tb)
+		handedOutMu.Lock()
+		_, seen := handedOutPorts[port]
+		if !seen {
+			handedOutPorts[port] = struct{}{}
+		}
+		handedOutMu.Unlock()
+		if !seen {
+			return port
+		}
+	}
+	tb.Fatalf("freePort: %d draws all returned a port already handed out", maxDraws)
+	return 0 // unreachable
+}
+
+// drawPort binds loopback port 0, reads the port the OS chose, and releases it.
+func drawPort(tb testing.TB) int {
 	tb.Helper()
 	lc := &net.ListenConfig{}
 	ln, err := lc.Listen(context.Background(), "tcp", "127.0.0.1:0")
@@ -144,7 +183,9 @@ type testServer struct {
 	done   chan error
 }
 
-// startServer boots a full sqi-server with a temp SQLite file, temp NATS data
+// startServer boots a full sqi-server on the store storeFor picks (a temp
+// SQLite file, or a fresh PostgreSQL database under
+// SQI_TEST_STORE_DRIVER=postgres), a temp NATS data
 // directory, and scheduler tuned for fast test cycles.  It blocks until the
 // HTTP server is accepting connections and /readyz returns 200 (verifying NATS
 // is up and streams are provisioned), then returns a *testServer.
@@ -159,7 +200,8 @@ func startServer(t *testing.T) *testServer {
 	httpAddr := fmt.Sprintf("127.0.0.1:%d", httpPort)
 	natsAddr := fmt.Sprintf("127.0.0.1:%d", natsPort)
 
-	// Temp directories for SQLite and NATS JetStream storage.
+	// Temp directories for the SQLite file (when that is the store) and NATS
+	// JetStream storage.
 	tmpDir := t.TempDir()
 	so := storeFor(t, tmpDir+"/sqi-test.db")
 	natsDir := tmpDir + "/nats"
@@ -202,7 +244,7 @@ func startServer(t *testing.T) *testServer {
 		done <- srv.Run(ctx)
 	}()
 
-	// Detect early startup failure (e.g. port conflict, SQLite error) before
+	// Detect early startup failure (e.g. port conflict, store error) before
 	// spending time polling TCP.
 	select {
 	case err := <-done:
@@ -215,15 +257,15 @@ func startServer(t *testing.T) *testServer {
 	// Wait until the HTTP server is ready to accept connections.
 	if !waitForTCP(t, httpAddr, 10*time.Second) {
 		cancel()
-		t.Fatalf("startServer: HTTP server did not come up on %s within 10s", httpAddr)
+		t.Fatalf("startServer: HTTP server did not come up on %s (NATS %s) within 10s", httpAddr, natsAddr)
 	}
 
-	// Poll /readyz (which gates on NATS and SQLite being healthy) rather than
+	// Poll /readyz (which gates on NATS and the store being healthy) rather than
 	// sleeping a fixed duration.  This ensures JetStream streams are fully
 	// provisioned before the test starts publishing.
 	if !waitForReadyz(t, httpAddr, 10*time.Second) {
 		cancel()
-		t.Fatalf("startServer: server did not become ready (/readyz) within 10s")
+		t.Fatalf("startServer: server did not become ready (/readyz) within 10s (HTTP %s, NATS %s)", httpAddr, natsAddr)
 	}
 
 	ts := &testServer{
@@ -274,7 +316,7 @@ func waitForTCP(tb testing.TB, addr string, timeout time.Duration) bool {
 }
 
 // waitForReadyz polls GET /readyz until it returns 200 or timeout elapses.
-// This ensures both SQLite and the embedded NATS server (including JetStream
+// This ensures both the store and the embedded NATS server (including JetStream
 // stream provisioning) are fully up before tests start.
 func waitForReadyz(tb testing.TB, httpAddr string, timeout time.Duration) bool {
 	tb.Helper()
