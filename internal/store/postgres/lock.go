@@ -72,9 +72,16 @@ func (l *serverLock) watch(ctx context.Context, log *slog.Logger) {
 	}
 }
 
+// releaseTimeout bounds the unlock at shutdown. The lock dies with its session
+// anyway, so a connection that no longer answers (a dead network path) must
+// not hold the shutdown up.
+const releaseTimeout = 5 * time.Second
+
 func (l *serverLock) release() error {
 	close(l.stop)
 	<-l.done
-	_, err := l.conn.ExecContext(context.Background(), `SELECT pg_advisory_unlock($1)`, ServerLockKey)
+	ctx, cancel := context.WithTimeout(context.Background(), releaseTimeout)
+	defer cancel()
+	_, err := l.conn.ExecContext(ctx, `SELECT pg_advisory_unlock($1)`, ServerLockKey)
 	return errors.Join(err, l.conn.Close())
 }
