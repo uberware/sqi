@@ -168,3 +168,30 @@ func TestCreateJobSubmission_BatchedTaskInsertsFewShapes(t *testing.T) {
 		t.Errorf("%d distinct task INSERT texts across submissions of 1 to 15 tasks, want at most 4", len(texts))
 	}
 }
+
+// TestCreateJobSubmission_DoomedSubmissionInsertsNoStepsOrTasks pins that a
+// submission naming a failed upstream is refused before it inserts a step or a
+// task: an unlocked read of the upstreams runs before the inserts, and only
+// the locked re-check runs after them.
+func TestCreateJobSubmission_DoomedSubmissionInsertsNoStepsOrTasks(t *testing.T) {
+	st, d := storeWithBatch(t, 0)
+	up := jobFor("bj", store.JobStatusFailed)
+	up.ID = "bj-up"
+	if _, err := st.CreateJobSubmission(t.Context(), store.JobSubmission{Job: up}); err != nil {
+		t.Fatalf("seed upstream: %v", err)
+	}
+	d.queries = nil
+
+	sub := batchTasksSeed(4)
+	sub.Job.Status = store.JobStatusBlocked
+	sub.DependsOn = []string{up.ID}
+	_, err := st.CreateJobSubmission(t.Context(), sub)
+	if !errors.Is(err, store.ErrDependencyUnsatisfiable) {
+		t.Fatalf("CreateJobSubmission = %v, want ErrDependencyUnsatisfiable", err)
+	}
+	for _, q := range d.queries {
+		if q := strings.TrimSpace(q); strings.HasPrefix(q, "INSERT INTO steps") || strings.HasPrefix(q, "INSERT INTO tasks") {
+			t.Errorf("a doomed submission ran %.40q before failing", q)
+		}
+	}
+}

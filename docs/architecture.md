@@ -214,8 +214,11 @@ checkers and is not affected.
 **On PostgreSQL a submission holds one connection of the write pool**
 (`store.postgres.max_conns`), so other writers run on the rest, and only one
 kind ever waits for it, briefly: writers on an upstream job. A submission with
-`depends_on` re-checks its upstream jobs last, after every insert, and holds
-their rows `FOR SHARE` from that check to its commit. In that short window a
+`depends_on` reads its upstream jobs once without locking them, before it
+inserts a step or a task, so a submission naming a failed, canceled or missing
+upstream fails before doing that work (on both backends). It re-checks them
+last, after every insert, and holds their rows `FOR SHARE` from that check to
+its commit. In that short window a
 writer that locks an upstream job row exclusively (a completion, a cancel, a
 retry or a reap of one of its tasks, a finalize, a delete) waits for the
 commit. While the submission is still inserting, nothing on the upstream waits
