@@ -892,6 +892,228 @@ jobs:
 
           echo "Confirmed $pass_count/$expected TestIsolation_ tests passed."
 
+  # ── State store on PostgreSQL ────────────────────────────────────────────────
+  # Runs everything that needs a real PostgreSQL: the shared SQL layer's
+  # concurrency races, schema parity against the SQLite migrations, the
+  # atomic-submission and readiness tests, the pg_dump backup round trip, the
+  # scheduler stress test, and the whole integration suite with the server's
+  # state store on PostgreSQL. SQLite is no evidence for any of it: its single
+  # write connection serializes what PostgreSQL runs concurrently, so a
+  # lock-order or isolation mistake passes every SQLite run and shows up only
+  # here.
+  #
+  # Both ends of the supported range, 16 (the oldest) and 18 (the newest we
+  # test). They are not interchangeable: pg_dump must be at least the server's
+  # major version, and lock and planner behavior move between majors. Only the
+  # 18 leg also runs the smoke test (below): that adds a Node build and a
+  # second container, and what it checks, the shipped binaries booting on
+  # PostgreSQL, does not differ between the two.
+  #
+  # Docker is preinstalled on the ubuntu runners, and scripts/test-postgres.sh
+  # starts its own throwaway container. The image tags are pinned patch
+  # releases mirrored from that script: change them in both places.
+  #
+  # `make test-postgres` exits 0 with a message when Docker is unavailable, and
+  # every PostgreSQL test skips when it has no DSN, so a bare green here could
+  # mean nothing ran. This job therefore does not trust the target's exit code:
+  # it captures the output and fails unless the suite reached its last line,
+  # the named tests passed, and no PostgreSQL subtest was skipped. It asserts
+  # by name rather than by count because a count stays green when a test is
+  # renamed away or quietly stops running.
+  postgres-integration:
+    name: PostgreSQL integration (${{ matrix.pg }})
+    runs-on: ubuntu-latest
+    needs: test
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - pg: '16'
+            image: postgres:16.15 # keep in step with scripts/test-postgres.sh
+          - pg: '18'
+            image: postgres:18.6 # keep in step with scripts/test-postgres.sh
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+
+      # Pulled explicitly so an image-registry problem fails here, with a clear
+      # message, rather than inside the test where it would surface as a skip
+      # and leave this job green without having verified anything.
+      - name: Pull PostgreSQL image
+        run: docker pull ${{ matrix.image }}
+
+      # The backup test shells out to pg_dump and refuses one older than the
+      # server. The runner image ships its own PostgreSQL client, which is not
+      # necessarily the matrix major, so install the matching one from PGDG and
+      # put it first on PATH.
+      - name: Install PostgreSQL ${{ matrix.pg }} client tools
+        run: |
+          sudo install -d /usr/share/postgresql-common/pgdg
+          sudo curl -fsSo /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc https://www.postgresql.org/media/keys/ACCC4CF8.asc
+          echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] https://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" \
+            | sudo tee /etc/apt/sources.list.d/pgdg.list
+          sudo apt-get update
+          sudo apt-get install -y postgresql-client-${{ matrix.pg }}
+          echo "/usr/lib/postgresql/${{ matrix.pg }}/bin" >> "$GITHUB_PATH"
+
+      # Does not trust a bare exit 0: a missing Docker or DSN would skip every
+      # PostgreSQL test. Asserts the suite ran to its last line, that each named
+      # test passed, and that no `/postgres` subtest was skipped.
+      #
+      # The pattern's trailing space matters twice. It keeps a name from
+      # matching a longer one that shares its prefix, and it makes a parent
+      # test's own `--- PASS: Name (0.1s)` line the match: go test prints that
+      # line only when every one of the parent's subtests passed.
+      #
+      # G7 is listed twice on purpose: the race it describes has two call
+      # sites (DeleteJob and retention), each with its own test.
+      - name: Run PostgreSQL tests
+        run: |
+          set +e
+          make test-postgres PG_VERSION=${{ matrix.pg }} 2>&1 | tee pg-output.log
+          status=${PIPESTATUS[0]}
+          set -e
+
+          if grep -q "docker unavailable" pg-output.log; then
+            echo "::error::Docker was unavailable; the PostgreSQL suite did not run. A skip here proves nothing, so this is a hard failure."
+            exit 1
+          fi
+
+          expected=(
+            TestPGRace_G1_AReportedTaskIsNeverReaped
+            TestPGRace_G2_PoolCapHoldsUnderConcurrentLeases
+            TestPGRace_G3_ReaperReturnsExactlyWhatItReset
+            TestPGRace_G4_CancelReportsALeaseThatRaced
+            TestPGRace_G5_RetryAndCancelSerialize
+            TestPGRace_G6_RetentionSparesAJobRetriedMeanwhile
+            TestPGRace_G7_DeleteJobRetriesALogThatRaced
+            TestPGRace_G7_RetentionRetriesALogThatRaced
+            TestPGRace_G8_NoDemotionUnderALease
+            TestPGRace_G9_OfflineReclaimsEveryTaskALeaseCommitted
+            TestPGRace_G10_TwoAdminDeletionsLeaveOneAdmin
+            TestPGRace_G11_LateReportCannotEndATaskReLeasedMeanwhile
+            TestPGRace_G12_ReaperAndCompletionDoNotDeadlock
+            TestSchemaParity
+            TestJobStore_CreateJobSubmission_RollsBackEntirely
+            TestCreateJobSubmission_ConcurrentObserverSeesWholeJobs
+            TestPostgres_PingWhileLargeSubmission
+            TestPostgres_BackupRestoreRoundTrip
+            TestConcurrentStress_Postgres
+            TestEXPRJobEndToEnd
+          )
+          missing=0
+          for name in "${expected[@]}"; do
+            if ! grep -q -- "--- PASS: $name " pg-output.log; then
+              echo "::error::$name did not pass"
+              missing=1
+            fi
+          done
+          if grep -E -- '--- SKIP: .*/postgres' pg-output.log; then
+            echo "::error::a PostgreSQL subtest was skipped"
+            missing=1
+          fi
+          if ! grep -q "POSTGRES TESTS PASSED (PG_VERSION=${{ matrix.pg }})" pg-output.log; then
+            echo "::error::the PostgreSQL suite did not reach its final line"
+            missing=1
+          fi
+          if [ "$status" -ne 0 ] || [ "$missing" -ne 0 ]; then
+            echo "::error::the PostgreSQL suite did not all pass (exit=$status)."
+            exit 1
+          fi
+
+          echo "Confirmed the PostgreSQL ${{ matrix.pg }} suite passed, including ${#expected[@]} named tests."
+
+      # ── Smoke test with the server on PostgreSQL (18 only) ─────────────────
+      # `make smoke` builds both binaries, web UI included, so it needs the same
+      # Node and Python setup as cross-platform-runtime. The next three steps
+      # are copied from that job; keep them in step.
+      - name: Set up Node.js
+        if: ${{ matrix.pg == '18' }}
+        uses: actions/setup-node@v7
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      # Provides a python with `websockets` so the smoke script's WebSocket
+      # assertion runs for real (it otherwise degrades to a logged SKIP).
+      - name: Set up Python
+        if: ${{ matrix.pg == '18' }}
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.x"
+
+      - name: Install websockets for the WS smoke check
+        if: ${{ matrix.pg == '18' }}
+        run: python -m pip install --upgrade pip websockets
+
+      # A second container, separate from the one `make test-postgres` started
+      # and removed: the smoke run needs an empty database of its own (it
+      # creates a uniquely-named farm). scripts/smoke.sh runs its three SQLite
+      # modes and then, because SQI_SMOKE_POSTGRES_DSN is set, a fourth with the
+      # state store on PostgreSQL.
+      #
+      # The readiness probe goes over TCP (-h 127.0.0.1), not the default Unix
+      # socket: on first boot the image runs a temporary server that listens on
+      # the socket only, which the socket probe would mistake for the real one.
+      # Docker chooses the host port, read back with `docker port`.
+      - name: End-to-end smoke with the server on PostgreSQL
+        if: ${{ matrix.pg == '18' }}
+        run: |
+          name=sqi-smoke-pg
+          docker run -d --rm --name "$name" --tmpfs /var/lib/postgresql \
+            -e POSTGRES_PASSWORD=sqi -p 127.0.0.1::5432 ${{ matrix.image }}
+          trap 'docker rm -f "$name" >/dev/null 2>&1 || true' EXIT
+
+          ready=0
+          for _ in $(seq 1 60); do
+            if docker exec "$name" pg_isready -h 127.0.0.1 -U postgres >/dev/null 2>&1; then
+              ready=1
+              break
+            fi
+            sleep 1
+          done
+          if [ "$ready" -ne 1 ]; then
+            echo "::error::the smoke PostgreSQL container never became ready"
+            docker logs "$name" || true
+            exit 1
+          fi
+          port="$(docker port "$name" 5432/tcp | head -n 1 | sed 's/.*://')"
+
+          # Declare and assign separately so the command substitution's exit
+          # status is not masked by `export` (shellcheck SC2155).
+          SQI_SMOKE_PYTHON="$(command -v python)"
+          export SQI_SMOKE_PYTHON
+          export SQI_SMOKE_POSTGRES_DSN="postgres://postgres:sqi@127.0.0.1:${port}/postgres?sslmode=disable"
+
+          set +e
+          make smoke 2>&1 | tee smoke-pg.log
+          status=${PIPESTATUS[0]}
+          set -e
+
+          # Assert each mode reported a pass by name, as cross-platform-runtime
+          # does, so a regression that dropped the PostgreSQL mode (or any
+          # other) cannot leave this job green.
+          missing=0
+          for mode in noauth brokerauth tls postgres; do
+            if ! grep -q "SMOKE TEST PASSED (mode=$mode)" smoke-pg.log; then
+              echo "::error::smoke mode $mode did not report a pass"
+              missing=1
+            fi
+          done
+          if [ "$status" -ne 0 ] || [ "$missing" -ne 0 ]; then
+            echo "::error::the smoke test did not pass in all four modes (exit=$status)."
+            exit 1
+          fi
+          echo "Confirmed all four smoke modes passed, the last with the state store on PostgreSQL."
+
   # ── Task isolation: run-as-user integration (Windows) ────────────────────────
   # Runs the Windows run-as-user isolation suite against real local accounts,
   # with its privileged tier running as SYSTEM — the Windows counterpart to

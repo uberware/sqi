@@ -24,17 +24,30 @@
 # failure immediately says which mode broke: a failure before the "MODE 2/3"
 # banner is the default path regressing, the most serious of the three.
 #
+# A fourth run, with the server's state store on PostgreSQL instead of SQLite,
+# happens only when SQI_SMOKE_POSTGRES_DSN is set. It is opt-in because it needs
+# a PostgreSQL server the script does not provision: a developer without one
+# still gets the three modes, and CI supplies one in its postgres-integration
+# job. It runs last, so the three SQLite modes' results are never hidden by it.
+#
 # Usage:
 #   bash scripts/smoke.sh         # builds binaries if missing, runs all three modes
 #   make smoke                    # same, via the Makefile
+#   SQI_SMOKE_POSTGRES_DSN='postgres://postgres:sqi@127.0.0.1:5432/postgres?sslmode=disable' \
+#     make smoke                  # the three modes, then the PostgreSQL one
 #
 # Environment overrides:
 #   SQI_SERVER_BIN   path to a prebuilt sqi-server (default: <repo>/bin/sqi-server)
 #   SQI_WORKER_BIN   path to a prebuilt sqi-worker (default: <repo>/bin/sqi-worker)
 #   SQI_SMOKE_PYTHON python interpreter for the WS check (auto-detected otherwise)
+#   SQI_SMOKE_POSTGRES_DSN
+#                    DSN of a PostgreSQL database to add the fourth mode. It must
+#                    be EMPTY and disposable: the run creates a farm named "smoke
+#                    farm", and farm names are unique, so a second run against
+#                    the same database fails with a duplicate-name error.
 #
-# Exit status: 0 only if every assertion passed in all three modes; non-zero with a
-# clear message (and the relevant server/worker log tail) otherwise.
+# Exit status: 0 only if every assertion passed in every mode that ran; non-zero
+# with a clear message (and the relevant server/worker log tail) otherwise.
 
 set -euo pipefail
 
@@ -188,7 +201,8 @@ fi
 # no mode-specific env set), "tls" (TLS on every listener, against
 # `sqi-server tls init` output) or "brokerauth" (nats.auth.enabled=true,
 # with a join token minted before the server starts and handed to the worker
-# instead of nothing).
+# instead of nothing) or "postgres" (broker auth and TLS off like noauth, but
+# the state store on the PostgreSQL database named by SQI_SMOKE_POSTGRES_DSN).
 #
 # Called as ( run_smoke_flow MODE ) — in a subshell — once per mode, from the
 # bottom of this file. That gives each run its own temp workspace, ports,
@@ -303,6 +317,13 @@ case "$mode" in
     export SQI_NATS_TLS_ENABLED="true"
     export SQI_NATS_TLS_CERT_FILE="${CERT_DIR}/server.crt"
     export SQI_NATS_TLS_KEY_FILE="${CERT_DIR}/server.key"
+    ;;
+  postgres)
+    # SQI_STORE_SQLITE_PATH above stays set but is never opened: with the
+    # driver on postgres the server reads no SQLite file, and the flow below
+    # touches the database only through the REST API.
+    export SQI_STORE_DRIVER="postgres"
+    export SQI_STORE_POSTGRES_DSN="${SQI_SMOKE_POSTGRES_DSN}"
     ;;
 esac
 "$SERVER_BIN" serve >"$SERVER_LOG" 2>&1 &
@@ -711,21 +732,40 @@ exit 0
 # the other. Auth-off goes first, unconditionally: if it fails, mode 2 never
 # starts, and the last banner printed is the one that broke.
 
+# The banners count the modes that will actually run, so a run with the
+# PostgreSQL mode reads 1/4 ... 4/4 rather than 1/3 ... 4/4.
+MODES_TOTAL=3
+if [ -n "${SQI_SMOKE_POSTGRES_DSN:-}" ]; then
+  MODES_TOTAL=4
+fi
+
 log "=================================================================="
-log "MODE 1/3: broker auth OFF, no TLS -- the default path, unmodified"
+log "MODE 1/${MODES_TOTAL}: broker auth OFF, no TLS -- the default path, unmodified"
 log "=================================================================="
 ( run_smoke_flow noauth )
 
 log "=================================================================="
-log "MODE 2/3: broker auth ON, worker enrolled via a join token"
+log "MODE 2/${MODES_TOTAL}: broker auth ON, worker enrolled via a join token"
 log "=================================================================="
 ( run_smoke_flow brokerauth )
 
 log "=================================================================="
-log "MODE 3/3: TLS ON -- HTTPS REST, WSS gateway, TLS broker"
+log "MODE 3/${MODES_TOTAL}: TLS ON -- HTTPS REST, WSS gateway, TLS broker"
 log "=================================================================="
 ( run_smoke_flow tls )
 
-log "=================================================================="
-log "SMOKE TEST PASSED IN ALL THREE MODES"
-log "=================================================================="
+# The PostgreSQL mode is opt-in (see the header) and goes last.
+if [ -n "${SQI_SMOKE_POSTGRES_DSN:-}" ]; then
+  log "=================================================================="
+  log "MODE 4/${MODES_TOTAL}: store on PostgreSQL (SQI_SMOKE_POSTGRES_DSN)"
+  log "=================================================================="
+  ( run_smoke_flow postgres )
+
+  log "=================================================================="
+  log "SMOKE TEST PASSED IN ALL FOUR MODES"
+  log "=================================================================="
+else
+  log "=================================================================="
+  log "SMOKE TEST PASSED IN ALL THREE MODES"
+  log "=================================================================="
+fi
