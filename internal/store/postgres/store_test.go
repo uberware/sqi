@@ -197,8 +197,16 @@ func TestLockAnchors_LocksExistingRowsOnly(t *testing.T) {
 		anchors               []sqlstore.Anchor
 		wantErr               string // substring; empty means no error
 		wantUpdate, wantShare bool   // whether FOR UPDATE / FOR SHARE NOWAIT is then refused
+		wantKeyShare          bool   // whether FOR KEY SHARE NOWAIT (a foreign-key check's lock) is refused
 	}{
-		{name: "existing row, exclusive", anchors: []sqlstore.Anchor{farm}, wantUpdate: true, wantShare: true},
+		{name: "existing row, exclusive", anchors: []sqlstore.Anchor{farm}, wantUpdate: true, wantShare: true, wantKeyShare: true},
+		{
+			// A capacity anchor: exclusive against writers and other anchors, but
+			// not against an insert that only references the row.
+			name:       "existing row, no key update",
+			anchors:    []sqlstore.Anchor{{Table: "farms", ID: "f", Mode: sqlstore.LockNoKeyUpdate}},
+			wantUpdate: true, wantShare: true,
+		},
 		{
 			name:       "existing row, shared",
 			anchors:    []sqlstore.Anchor{{Table: "farms", ID: "f", Mode: sqlstore.LockShare}},
@@ -208,7 +216,7 @@ func TestLockAnchors_LocksExistingRowsOnly(t *testing.T) {
 		{
 			name:       "missing row beside an existing one",
 			anchors:    []sqlstore.Anchor{{Table: "jobs", ID: "nope", Mode: sqlstore.LockUpdate}, farm},
-			wantUpdate: true, wantShare: true,
+			wantUpdate: true, wantShare: true, wantKeyShare: true,
 		},
 		{
 			name:    "disallowed table",
@@ -242,6 +250,9 @@ func TestLockAnchors_LocksExistingRowsOnly(t *testing.T) {
 			}
 			if got := held(t, "SHARE"); got != tc.wantShare {
 				t.Errorf("FOR SHARE NOWAIT refused = %v, want %v", got, tc.wantShare)
+			}
+			if got := held(t, "KEY SHARE"); got != tc.wantKeyShare {
+				t.Errorf("FOR KEY SHARE NOWAIT refused = %v, want %v", got, tc.wantKeyShare)
 			}
 			if err := tx.Rollback(); err != nil {
 				t.Fatal(err)

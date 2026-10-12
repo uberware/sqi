@@ -940,3 +940,54 @@ func TestPGRace_SubmissionDoesNotHoldItsUpstreamWhileInserting(t *testing.T) {
 		t.Fatalf("last submitted task status = %s, want pending", got.Status)
 	}
 }
+
+// TestPGRace_SubmissionDoesNotBlockLeasesOnItsQueue: a submission's new job row
+// references its queue and farm, so PostgreSQL holds FOR KEY SHARE on both rows
+// from the job's insert to the submission's commit. A lease anchors a capped
+// queue and farm; it must use a lock that does not conflict with that, or every
+// lease on a capped queue or farm waits for the whole of a large submission
+// into it.
+func TestPGRace_SubmissionDoesNotBlockLeasesOnItsQueue(t *testing.T) {
+	st, p := pgRace(t)
+	w := seedWorld(t, st, 1, "w1")
+	ctx := t.Context()
+	q, err := st.GetQueue(ctx, w.QueueID)
+	if err != nil {
+		t.Fatalf("GetQueue: %v", err)
+	}
+	q.MaxConcurrentTasks = 5
+	if _, err := st.UpdateQueue(ctx, q); err != nil {
+		t.Fatalf("UpdateQueue: %v", err)
+	}
+	f, err := st.GetFarm(ctx, w.FarmID)
+	if err != nil {
+		t.Fatalf("GetFarm: %v", err)
+	}
+	f.MaxConcurrentTasks = 5
+	if _, err := st.UpdateFarm(ctx, f); err != nil {
+		t.Fatalf("UpdateFarm: %v", err)
+	}
+
+	subID, subStep := "job-"+uuid.NewString()[:8], "step-"+uuid.NewString()[:8]
+	seed := storetest.NewJob(subID, w.FarmID, w.QueueID).Step(subStep, store.StepStatusReady)
+	for i := range 10 {
+		seed.Task(fmt.Sprintf("%s-t%d", subID, i), subStep, store.TaskStatusReady)
+	}
+
+	var lease store.LeaseResult
+	p.atStatement(sqlstore.SQLInsertTasksHead)
+	serr, lerr, waited := interleave(t, p,
+		func() error { _, err := st.CreateJobSubmission(ctx, seed.Sub); return err },
+		func() (err error) { lease, err = st.LeaseTask(ctx, leaseReq(w.Tasks[0], "w1")); return err })
+	assertPausedAt(t, p, sqlstore.SQLInsertTasksHead)
+	if serr != nil || lerr != nil {
+		t.Fatalf("submission err %v, lease err %v", serr, lerr)
+	}
+	if lease.Outcome != store.LeaseLeased {
+		t.Fatalf("lease outcome = %s, want leased", lease.Outcome)
+	}
+	if waited {
+		t.Error("a lease on a capped queue and farm waited for a submission into them: " +
+			"its queue or farm anchor conflicts with the submission's foreign-key locks")
+	}
+}

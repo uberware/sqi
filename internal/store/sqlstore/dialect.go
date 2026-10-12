@@ -46,10 +46,17 @@ const (
 type LockMode int
 
 // LockUpdate excludes other writers of the row; LockShare only keeps the row
-// from changing (an upstream job a dependent waits on).
+// from changing (an upstream job a dependent waits on). LockNoKeyUpdate
+// (PostgreSQL's FOR NO KEY UPDATE) excludes other writers too: it conflicts
+// with itself, with LockUpdate and LockShare, and with an UPDATE or DELETE of
+// the row. It does not conflict with the FOR KEY SHARE lock a foreign-key
+// check takes on a referenced row, so inserting a row that references the
+// anchor (a job referencing its queue and farm, a claim referencing its pool)
+// does not wait for it, nor it for the insert. SQLite ignores every mode.
 const (
 	LockUpdate LockMode = iota
 	LockShare
+	LockNoKeyUpdate
 )
 
 // Anchor is a row a transaction locks before it writes, per the anchor-row

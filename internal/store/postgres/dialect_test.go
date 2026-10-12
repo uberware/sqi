@@ -57,6 +57,10 @@ func TestLockSQL(t *testing.T) {
 	if err != nil || q != "SELECT 1 FROM workers WHERE id = $1 FOR SHARE" {
 		t.Fatalf("share: %q, %v", q, err)
 	}
+	q, err = lockSQL(sqlstore.Anchor{Table: "queues", ID: "q", Mode: sqlstore.LockNoKeyUpdate})
+	if err != nil || q != "SELECT 1 FROM queues WHERE id = $1 FOR NO KEY UPDATE" {
+		t.Fatalf("no key update: %q, %v", q, err)
+	}
 	if _, err := lockSQL(sqlstore.Anchor{Table: "tasks; DROP TABLE jobs", ID: "x"}); err == nil {
 		t.Fatal("lockSQL accepted a table outside the allow-list")
 	}

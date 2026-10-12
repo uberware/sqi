@@ -83,8 +83,11 @@ func lockSQL(a sqlstore.Anchor) (string, error) {
 		return "", fmt.Errorf("postgres: anchor table %q is not allowed", a.Table)
 	}
 	mode := "FOR UPDATE"
-	if a.Mode == sqlstore.LockShare {
+	switch a.Mode {
+	case sqlstore.LockShare:
 		mode = "FOR SHARE"
+	case sqlstore.LockNoKeyUpdate:
+		mode = "FOR NO KEY UPDATE"
 	}
 	return "SELECT 1 FROM " + a.Table + " WHERE id = $1 " + mode, nil
 }
