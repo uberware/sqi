@@ -12,9 +12,11 @@ import (
 	"io/fs"
 	"net/url"
 	"os"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
+	"weak"
 
 	_ "github.com/jackc/pgx/v5/stdlib" // registers "pgx"
 
@@ -144,7 +146,7 @@ func PostgresWith(t testing.TB, opts postgres.Options) *postgres.Store {
 	}
 	// The lock-order checker sits beneath any wrapper the caller supplied, so
 	// every transaction of every PostgreSQL test store is checked.
-	check := &lockOrderDialect{t: t, last: map[*sql.Tx]int{}}
+	check := newLockOrderDialect(t, nil)
 	outer := opts.WrapDialect
 	opts.WrapDialect = func(d sqlstore.Dialect) sqlstore.Dialect {
 		check.Dialect = d
@@ -175,32 +177,62 @@ var lockRank = map[string]int{"workers": 0, "jobs": 1, "queues": 2, "farms": 3, 
 // locked, or rows of one table and mode out of id order within one call.
 // (ReleaseBlockedJob and CancelBlockedJob lock their job exclusively, then its
 // upstream jobs shared: the two modes are checked separately.)
+//
+// It remembers, per transaction, the rank of the last table locked. It never
+// sees a commit or a rollback, so the entry cannot be dropped when its
+// transaction ends; it is keyed by a weak pointer to the *sql.Tx instead, and
+// dropped by a cleanup once that transaction is garbage. A strong key would
+// keep every transaction of a long test alive, and clearing an entry on some
+// other signal (such as a new transaction's first anchor) would either drop a
+// live transaction's rank, missing an inversion, or never fire.
 type lockOrderDialect struct {
 	sqlstore.Dialect
 
 	t    testing.TB
 	mu   sync.Mutex
-	last map[*sql.Tx]int
+	last map[weak.Pointer[sql.Tx]]int
+}
+
+// newLockOrderDialect returns a lockOrderDialect over d reporting to t.
+func newLockOrderDialect(t testing.TB, d sqlstore.Dialect) *lockOrderDialect {
+	return &lockOrderDialect{Dialect: d, t: t, last: map[weak.Pointer[sql.Tx]]int{}}
+}
+
+// tracked returns how many transactions d holds a rank for.
+func (d *lockOrderDialect) tracked() int {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return len(d.last)
 }
 
 func (d *lockOrderDialect) LockAnchors(ctx context.Context, tx *sql.Tx, anchors ...sqlstore.Anchor) error {
+	key := weak.Make(tx)
 	d.mu.Lock()
-	prev, seen := d.last[tx]
-	for i, a := range anchors {
+	prev, seen := d.last[key]
+	if !seen {
+		runtime.AddCleanup(tx, d.forget, key)
+	}
+	var before *sqlstore.Anchor // the anchor before a in this call
+	for _, a := range anchors {
 		r := lockRank[a.Table]
 		if seen && r < prev {
 			d.t.Errorf("lock order: %s locked after a higher-ranked row in the same transaction: %v", a.Table, anchors)
 		}
-		if i > 0 {
-			if b := anchors[i-1]; b.Table == a.Table && b.Mode == a.Mode && b.ID > a.ID {
-				d.t.Errorf("lock order: %s rows not in id order: %v", a.Table, anchors)
-			}
+		if before != nil && before.Table == a.Table && before.Mode == a.Mode && before.ID > a.ID {
+			d.t.Errorf("lock order: %s rows not in id order: %v", a.Table, anchors)
 		}
-		prev, seen = r, true
+		prev, seen, before = r, true, &a
 	}
-	d.last[tx] = prev
+	d.last[key] = prev
 	d.mu.Unlock()
 	return d.Dialect.LockAnchors(ctx, tx, anchors...)
+}
+
+// forget drops a transaction's rank once the transaction is garbage.
+func (d *lockOrderDialect) forget(key weak.Pointer[sql.Tx]) {
+	d.mu.Lock()
+	delete(d.last, key)
+	d.mu.Unlock()
 }
 
 // withDatabase returns dsn (URL form) pointed at database name.

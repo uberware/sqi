@@ -6,7 +6,9 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"runtime"
 	"testing"
+	"time"
 
 	"github.com/uberware/sqi/internal/store/sqlstore"
 )
@@ -27,7 +29,7 @@ func (noLockDialect) LockAnchors(context.Context, *sql.Tx, ...sqlstore.Anchor) e
 
 func TestLockOrderDialect_FlagsAnInversion(t *testing.T) {
 	rec := &recordTB{TB: t}
-	d := &lockOrderDialect{Dialect: noLockDialect{}, t: rec, last: map[*sql.Tx]int{}}
+	d := newLockOrderDialect(rec, noLockDialect{})
 	lock := func(tx *sql.Tx, anchors ...sqlstore.Anchor) {
 		t.Helper()
 		if err := d.LockAnchors(t.Context(), tx, anchors...); err != nil {
@@ -40,5 +42,25 @@ func TestLockOrderDialect_FlagsAnInversion(t *testing.T) {
 	lock(new(sql.Tx), sqlstore.Anchor{Table: "jobs", ID: "b"}, sqlstore.Anchor{Table: "jobs", ID: "a"})
 	if len(rec.errs) != 2 {
 		t.Fatalf("errors = %v, want the two inversions", rec.errs)
+	}
+}
+
+// TestLockOrderDialect_ForgetsEndedTransactions pins that the checker does not
+// keep a rank for every transaction it has seen: once a transaction is
+// garbage, its entry goes.
+func TestLockOrderDialect_ForgetsEndedTransactions(t *testing.T) {
+	d := newLockOrderDialect(t, noLockDialect{})
+	for range 100 {
+		if err := d.LockAnchors(t.Context(), new(sql.Tx), sqlstore.Anchor{Table: "jobs", ID: "j"}); err != nil {
+			t.Fatalf("LockAnchors: %v", err)
+		}
+	}
+	deadline := time.Now().Add(10 * time.Second)
+	for d.tracked() > 0 {
+		if time.Now().After(deadline) {
+			t.Fatalf("%d transactions still tracked after they became garbage", d.tracked())
+		}
+		runtime.GC()
+		time.Sleep(10 * time.Millisecond)
 	}
 }
