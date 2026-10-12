@@ -4,12 +4,14 @@ package scheduler
 
 // The concurrent store stress test. Racers run the store's atomic task and
 // worker operations concurrently against one job whose tasks claim capped
-// usage pools, on the real SQLite store, and a monitor racing alongside them
-// checks the invariants on the snapshots it reads. SQLite serializes writers,
-// so this cannot exercise races that only concurrent writers could produce (as
-// on PostgreSQL); what it catches, non-deterministically, is an operation
-// whose own transaction leaves the database in a state the invariants forbid,
-// or two operations whose composition does.
+// usage pools, on a real store, and a monitor racing alongside them checks the
+// invariants on the snapshots it reads. It runs on both backends. SQLite
+// serializes writers, so TestConcurrentStress_SQLite cannot exercise races that
+// only concurrent writers could produce; what it catches, non-deterministically,
+// is an operation whose own transaction leaves the database in a state the
+// invariants forbid, or two operations whose composition does.
+// TestConcurrentStress_Postgres runs the same schedule where writers are
+// concurrent, so the races SQLite's single writer hides are live there.
 //
 // The run is a sequence of rounds. In each round every racer due that round
 // makes one call, all of them started together so they race, and the next round
@@ -32,6 +34,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	_ "github.com/jackc/pgx/v5/stdlib" // the "pgx" driver for the history connection
 
 	"github.com/uberware/sqi/internal/metrics"
 	"github.com/uberware/sqi/internal/store"
@@ -78,6 +81,29 @@ var stressHistoryDDL = []string{
 	WHEN OLD.status IS NOT NEW.status BEGIN
 		INSERT INTO stress_task_history (task_id, from_status, to_status) VALUES (NEW.id, OLD.status, NEW.status);
 	END`,
+}
+
+// stressHistoryDDLPostgres is stressHistoryDDL for PostgreSQL. A row's history
+// stays in commit order per task: two writers of one task row serialize on its
+// lock, so the second's trigger fires after the first committed.
+var stressHistoryDDLPostgres = []string{
+	`CREATE TABLE stress_task_history (
+		seq         BIGSERIAL PRIMARY KEY,
+		task_id     TEXT NOT NULL,
+		from_status TEXT,
+		to_status   TEXT NOT NULL)`,
+	`CREATE FUNCTION stress_task_history_fn() RETURNS trigger LANGUAGE plpgsql AS $$
+	BEGIN
+		IF TG_OP = 'INSERT' THEN
+			INSERT INTO stress_task_history (task_id, from_status, to_status) VALUES (NEW.id, NULL, NEW.status);
+		ELSE
+			INSERT INTO stress_task_history (task_id, from_status, to_status) VALUES (NEW.id, OLD.status, NEW.status);
+		END IF;
+		RETURN NEW;
+	END $$`,
+	`CREATE TRIGGER stress_task_inserted AFTER INSERT ON tasks FOR EACH ROW EXECUTE FUNCTION stress_task_history_fn()`,
+	`CREATE TRIGGER stress_task_moved AFTER UPDATE OF status ON tasks FOR EACH ROW
+		WHEN (OLD.status IS DISTINCT FROM NEW.status) EXECUTE FUNCTION stress_task_history_fn()`,
 }
 
 // stressRetryArrows are the task arrows the history may contain beyond
@@ -137,13 +163,21 @@ type stressRacer struct {
 	fn            func(round int)
 }
 
+// stressStore is the store the stress run races: any backend with the I3
+// diagnostic.
+type stressStore interface {
+	store.Store
+	storetest.InvariantChecker
+}
+
 // stressRun is one run of the stress test.
 type stressRun struct {
-	t  *testing.T
-	st *sqlite.Store
-	db *sql.DB // a second connection to the same file: history and diagnostics
-	s  *Scheduler
-	fx stressFixture
+	t      *testing.T
+	st     stressStore
+	db     *sql.DB             // a second connection to the same database: history and diagnostics
+	rebind func(string) string // the history connection's placeholder form
+	s      *Scheduler
+	fx     stressFixture
 	// reportedBy[g] is reporter g's scheduler. Two schedulers share the store as
 	// two server processes on one database would (handlers inside one server
 	// share one *Scheduler): reporter 0's lets every failure go terminal and
@@ -176,8 +210,9 @@ type stressRun struct {
 // status history is made of legal arrows, and fails a run in which any racer
 // never took effect. It cannot exercise races that need concurrent writers,
 // because SQLite serializes writes; it catches regressions inside one
-// operation or a composition of them non-deterministically. Runs in make test,
-// with or without -race.
+// operation or a composition of them non-deterministically.
+// TestConcurrentStress_Postgres runs the same schedule where writers are
+// concurrent. Runs in make test, with or without -race.
 func TestConcurrentStress_SQLite(t *testing.T) {
 	if testing.Short() {
 		t.Skip("stress test: races the store's atomic operations on SQLite")
@@ -192,12 +227,46 @@ func TestConcurrentStress_SQLite(t *testing.T) {
 			t.Errorf("close sqlite store: %v", err)
 		}
 	})
+	runStress(t, st, openStressHistory(t, path), func(q string) string { return q })
+}
+
+// TestConcurrentStress_Postgres is the stress run on PostgreSQL, where writers
+// really are concurrent: the races SQLite's single writer hides are live here.
+func TestConcurrentStress_Postgres(t *testing.T) {
+	if testing.Short() {
+		t.Skip("stress test")
+	}
+	st := storetest.Postgres(t)
+	db, err := sql.Open("pgx", st.DSNForTest())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := db.Close(); err != nil {
+			t.Errorf("close history connection: %v", err)
+		}
+	})
+	for _, ddl := range stressHistoryDDLPostgres {
+		if _, err := db.ExecContext(t.Context(), ddl); err != nil {
+			t.Fatalf("install task history: %v", err)
+		}
+	}
+	runStress(t, st, db, func(q string) string { return strings.Replace(q, "?", "$1", 1) })
+	t.Logf("transaction retries: %d", st.TxRetries())
+}
+
+// runStress races the schedule on st, whose task history db records (its
+// triggers installed before this seeds the fixture); rebind turns a query's
+// "?" placeholder into db's form.
+func runStress(t *testing.T, st stressStore, db *sql.DB, rebind func(string) string) {
+	t.Helper()
 	r := &stressRun{
-		t:  t,
-		st: st,
-		db: openStressHistory(t, path),
-		s:  newStressScheduler(t, st, 1),
-		fx: seedStressJob(t, st, stressTasks),
+		t:      t,
+		st:     st,
+		db:     db,
+		rebind: rebind,
+		s:      newStressScheduler(t, st, 1),
+		fx:     seedStressJob(t, st, stressTasks),
 	}
 	r.reportedBy = [2]*Scheduler{r.s, newStressScheduler(t, st, 3)}
 	r.instances = map[string][]string{}
@@ -774,9 +843,9 @@ func (r *stressRun) describeClaims(ids []string) string {
 	var b strings.Builder
 	for _, id := range ids {
 		var poolID, attemptID, attemptStatus, taskID, taskStatus sql.NullString
-		err := r.db.QueryRowContext(ctx, `SELECT c.pool_id, c.task_attempt_id, a.status, a.task_id, t.status
+		err := r.db.QueryRowContext(ctx, r.rebind(`SELECT c.pool_id, c.task_attempt_id, a.status, a.task_id, t.status
 			FROM usage_claims c LEFT JOIN task_attempts a ON a.id = c.task_attempt_id LEFT JOIN tasks t ON t.id = a.task_id
-			WHERE c.id = ?`, id).Scan(&poolID, &attemptID, &attemptStatus, &taskID, &taskStatus)
+			WHERE c.id = ?`), id).Scan(&poolID, &attemptID, &attemptStatus, &taskID, &taskStatus)
 		if err != nil {
 			fmt.Fprintf(&b, "  claim %s: %v\n", id, err)
 			continue
@@ -929,7 +998,7 @@ func openStressHistory(t *testing.T, path string) *sql.DB {
 
 // seedStressJob seeds one farm, queue, job and step with n ready tasks, the
 // usage pools and four online workers.
-func seedStressJob(t *testing.T, st *sqlite.Store, n int) stressFixture {
+func seedStressJob(t *testing.T, st store.Store, n int) stressFixture {
 	t.Helper()
 	ctx := t.Context()
 	now := time.Now().UTC()
@@ -978,7 +1047,7 @@ func seedStressJob(t *testing.T, st *sqlite.Store, n int) stressFixture {
 
 // assertAtMostOneOpenAttempt fails if any of taskIDs has more than one running
 // attempt: a task must never be held twice.
-func assertAtMostOneOpenAttempt(t *testing.T, st *sqlite.Store, taskIDs []string) {
+func assertAtMostOneOpenAttempt(t *testing.T, st store.Store, taskIDs []string) {
 	t.Helper()
 	for _, id := range taskIDs {
 		attempts, err := st.ListTaskAttempts(t.Context(), id)
