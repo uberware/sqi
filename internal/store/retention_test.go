@@ -60,7 +60,7 @@ func TestCreateJobSubmission_UnsatisfiableUpstream(t *testing.T) {
 // assertDependencyError checks that err carries the typed
 // [store.DependencyUnsatisfiableError] naming the upstream and why: its
 // status, or empty when the upstream no longer exists. The submitter words its
-// 422 from these two fields, so both backends must fill them in.
+// 422 from these two fields, so every backend must fill them in.
 func assertDependencyError(t *testing.T, err error, upstreamID string, status store.JobStatus) {
 	t.Helper()
 	dep, ok := errors.AsType[*store.DependencyUnsatisfiableError](err)

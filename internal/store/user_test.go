@@ -5,6 +5,7 @@ package store_test
 import (
 	"context"
 	"errors"
+	"os"
 	"testing"
 	"time"
 
@@ -13,8 +14,11 @@ import (
 	"github.com/uberware/sqi/internal/store"
 	"github.com/uberware/sqi/internal/store/fake"
 	"github.com/uberware/sqi/internal/store/sqlite"
+	"github.com/uberware/sqi/internal/store/storetest"
 )
 
+// newStores returns a fresh store for every backend (the fake, SQLite, and
+// PostgreSQL when configured), keyed by subtest name.
 func newStores(t *testing.T) map[string]store.Store {
 	t.Helper()
 	db := t.TempDir() + "/test.db"
@@ -23,7 +27,11 @@ func newStores(t *testing.T) map[string]store.Store {
 		t.Fatalf("sqlite.Open: %v", err)
 	}
 	t.Cleanup(func() { _ = sq.Close() })
-	return map[string]store.Store{"sqlite": sq, "fake": fake.New()}
+	out := map[string]store.Store{"sqlite": sq, "fake": fake.New()}
+	if os.Getenv("SQI_TEST_POSTGRES_DSN") != "" || os.Getenv("SQI_TEST_REQUIRE_POSTGRES") == "1" {
+		out["postgres"] = storetest.Postgres(t)
+	}
+	return out
 }
 
 func mkUser(role string) store.User {
@@ -110,7 +118,7 @@ func TestUserStore_CRUD(t *testing.T) {
 }
 
 // TestUserStore_ListUsers verifies ListUsers returns users ordered
-// case-insensitively by username — matching SQLite's `ORDER BY username`
+// case-insensitively by username — matching SQLite's ordering
 // over the `username` column, which is declared COLLATE NOCASE (see
 // sqlListUsers in internal/store/sqlstore/user.go). The fake store must sort
 // the same way; a case-sensitive ASCII sort would put "Zeta" before "bob"

@@ -8,6 +8,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"testing"
 	"time"
 
@@ -1812,6 +1813,9 @@ func TestComputeLocationCRUD_Parity(t *testing.T) {
 			return s
 		},
 		"fake": func(_ *testing.T) store.Store { return fake.New() },
+	}
+	if os.Getenv("SQI_TEST_POSTGRES_DSN") != "" || os.Getenv("SQI_TEST_REQUIRE_POSTGRES") == "1" {
+		backends["postgres"] = func(t *testing.T) store.Store { return storetest.Postgres(t) }
 	}
 
 	for name, mk := range backends {

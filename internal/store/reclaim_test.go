@@ -42,7 +42,7 @@ func TestReclaimStaleAssignedTasks_ClosesAndReleases(t *testing.T) {
 }
 
 // TestReclaimStaleAssignedTasks_ReturnsPostResetRows pins invariant I2: the
-// returned rows are the rows as the UPDATE left them, on both backends, so a
+// returned rows are the rows as the UPDATE left them, on every backend, so a
 // caller can never read a worker or status the reset already cleared.
 func TestReclaimStaleAssignedTasks_ReturnsPostResetRows(t *testing.T) {
 	for name, st := range newStores(t) {

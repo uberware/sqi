@@ -392,7 +392,7 @@ func seedPoolWithID(t *testing.T, st store.Store, prefix string, maxConcurrent i
 }
 
 // TestLeaseTask_PoolsVisitedInIDOrder pins that pools are checked in pool-ID
-// order, whatever order the request lists them in, so both backends report
+// order, whatever order the request lists them in, so every backend reports
 // the same full pool, and that a pool found full after an earlier pool's claim
 // was written leaves that earlier claim unwritten too.
 func TestLeaseTask_PoolsVisitedInIDOrder(t *testing.T) {

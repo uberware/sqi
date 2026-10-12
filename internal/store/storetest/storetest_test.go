@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"testing"
 	"time"
 
@@ -13,10 +14,13 @@ import (
 
 	"github.com/uberware/sqi/internal/store"
 	"github.com/uberware/sqi/internal/store/fake"
+	"github.com/uberware/sqi/internal/store/postgres"
 	"github.com/uberware/sqi/internal/store/sqlite"
 	"github.com/uberware/sqi/internal/store/storetest"
 )
 
+// newStores returns a fresh store for every backend (the fake, SQLite, and
+// PostgreSQL when configured), keyed by subtest name.
 func newStores(t *testing.T) map[string]store.Store {
 	t.Helper()
 	sq, err := sqlite.Open(context.Background(), t.TempDir()+"/test.db", sqlite.DefaultOptions())
@@ -28,7 +32,11 @@ func newStores(t *testing.T) map[string]store.Store {
 			t.Errorf("Close: %v", err)
 		}
 	})
-	return map[string]store.Store{"sqlite": sq, "fake": fake.New()}
+	out := map[string]store.Store{"sqlite": sq, "fake": fake.New()}
+	if os.Getenv("SQI_TEST_POSTGRES_DSN") != "" || os.Getenv("SQI_TEST_REQUIRE_POSTGRES") == "1" {
+		out["postgres"] = storetest.Postgres(t)
+	}
+	return out
 }
 
 // oneTaskJob builds a farm and queue and returns a one-step, one-task
@@ -180,16 +188,24 @@ func TestInjectClaim_OnAClosedAttempt(t *testing.T) {
 	}
 }
 
-func TestInjectClaim_SQLiteKeepsForeignKeys(t *testing.T) {
-	st := newStores(t)["sqlite"]
-	pool, err := st.CreateUsagePool(t.Context(), store.UsagePool{ID: uuid.NewString(), Name: "p", MaxConcurrent: 1})
-	if err != nil {
-		t.Fatalf("CreateUsagePool: %v", err)
-	}
-	_, err = storetest.InjectorFor(t, st).InjectClaim(t.Context(),
-		store.UsageClaim{ID: uuid.NewString(), PoolID: pool.ID, TaskAttemptID: "no-such-attempt"})
-	if !errors.Is(err, store.ErrConflict) {
-		t.Fatalf("InjectClaim with a missing attempt = %v on SQLite; want a foreign-key store.ErrConflict", err)
+func TestInjectClaim_SQLStoresKeepForeignKeys(t *testing.T) {
+	stores := newStores(t)
+	for _, name := range []string{"sqlite", "postgres"} {
+		st, ok := stores[name]
+		if !ok {
+			continue
+		}
+		t.Run(name, func(t *testing.T) {
+			pool, err := st.CreateUsagePool(t.Context(), store.UsagePool{ID: uuid.NewString(), Name: "p", MaxConcurrent: 1})
+			if err != nil {
+				t.Fatalf("CreateUsagePool: %v", err)
+			}
+			_, err = storetest.InjectorFor(t, st).InjectClaim(t.Context(),
+				store.UsageClaim{ID: uuid.NewString(), PoolID: pool.ID, TaskAttemptID: "no-such-attempt"})
+			if !errors.Is(err, store.ErrConflict) {
+				t.Fatalf("InjectClaim with a missing attempt = %v; want a foreign-key store.ErrConflict", err)
+			}
+		})
 	}
 }
 
@@ -239,10 +255,13 @@ func TestInjectors_RefuseADuplicateID(t *testing.T) {
 
 var (
 	_ storetest.Injector         = (*sqlite.Store)(nil)
+	_ storetest.Injector         = (*postgres.Store)(nil)
 	_ storetest.Injector         = (*fake.Store)(nil)
 	_ storetest.InvariantChecker = (*sqlite.Store)(nil)
+	_ storetest.InvariantChecker = (*postgres.Store)(nil)
 	_ storetest.InvariantChecker = (*fake.Store)(nil)
 	_ storetest.AuditReader      = (*sqlite.Store)(nil)
+	_ storetest.AuditReader      = (*postgres.Store)(nil)
 	_ storetest.AuditReader      = (*fake.Store)(nil)
 )
 

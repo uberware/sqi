@@ -176,8 +176,8 @@ func TestSessionStore_CreateSession_DuplicateID(t *testing.T) {
 }
 
 // TestSessionStore_GetSessionUserByTokenHash covers the joined lookup used on
-// every cookie-authenticated request. It runs against both backends so the
-// fake cannot drift from SQLite's JOIN semantics.
+// every cookie-authenticated request. It runs against every backend so the
+// fake cannot drift from the SQL stores' JOIN semantics.
 func TestSessionStore_GetSessionUserByTokenHash(t *testing.T) {
 	for name, st := range newStores(t) {
 		t.Run(name, func(t *testing.T) {
