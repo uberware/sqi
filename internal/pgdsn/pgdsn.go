@@ -2,7 +2,8 @@
 
 // Package pgdsn reads PostgreSQL connection strings (DSNs) the way the driver
 // does, to keep their secrets out of places they must not reach: [Redact]
-// for `sqi-server config print`.
+// for `sqi-server config print`, and [WithoutPassword] for a pg_dump command
+// line, which any local user can read from the process list.
 //
 // It imports only the standard library, so any package can use it. The
 // keyword/value tokenizer mirrors pgx's (and libpq's), because a regular

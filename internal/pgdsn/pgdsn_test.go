@@ -16,72 +16,76 @@ import (
 	"github.com/uberware/sqi/internal/pgdsn"
 )
 
+// secretDSNs carry a secret each, with a part of it that must not survive
+// [pgdsn.Redact] or [pgdsn.WithoutPassword]: the plain forms, and every form
+// that has been found to leak through a DSN parser that is not pgx's own.
+var secretDSNs = []struct{ in, secret string }{
+	{"postgres://sqi:hunter2@db:5432/sqi?sslmode=require", "hunter2"},
+	{"postgresql://sqi:p%40ss@db/sqi", "p%40ss"},
+	{"postgres://sqi@db/sqi?password=hunter2", "hunter2"},
+	{"host=db user=sqi password=hunter2 dbname=sqi", "hunter2"},
+	{"host=db password='p@ss word' dbname=sqi", "p@ss word"},
+	{`host=db password='it\'s' dbname=sqi`, `it\'s`},
+	// Beyond the plain forms: a keyword the operator capitalised or spaced out,
+	// an unquoted value with a backslash-escaped space, an unterminated quote,
+	// a multi-host URL, and URLs that url.Parse refuses.
+	{"host=db PASSWORD = hunter2 dbname=sqi", "hunter2"},
+	{`host=db password=hun\ ter2 dbname=sqi`, `hun\ ter2`},
+	{"host=db password='hunter2 dbname=sqi", "hunter2"},
+	{"postgres://sqi:hunter2@h1:5432,h2:5432/sqi", "hunter2"},
+	{"postgres://sqi:hun ter2@db/sqi", "hunter2"},
+	{"postgres://sqi:hunter2%zz@db/sqi", "hunter2"},
+	{"POSTGRES://sqi:hunter2@db/sqi", "hunter2"},
+	// A password that starts with digits and then runs into "#", "?" or "/"
+	// reads as host:port with a fragment, query or path after it, so no
+	// userinfo is parsed out; the "@" is what gives it away.
+	{"postgres://sqi:123#ss@db/sqi", "123#ss"},
+	{"postgres://sqi:123?ss@db/sqi", "123?ss"},
+	{"postgres://sqi:123/ss@db/sqi", "123/ss"},
+	// An unescaped "@" in the password before one of those characters parses
+	// with userinfo, but only up to the first "@", leaking the rest.
+	{"postgres://sqi:p@ss#word@db/sqi", "word"},
+	{"postgres://sqi:p@ss/word@db/sqi", "word"},
+	{"postgres://sqi:p@ss?word@db/sqi", "word"},
+	{"postgres://sqi:1@2#3@db/sqi", "2#3"},
+	// pgx reads a URL the way libpq does, not as RFC 3986. A "#" does not
+	// start a fragment there, so it can sit inside a query password or hide
+	// a query altogether.
+	{"postgres://sqi@db/sqi?password=XQ#YR", "YR"},
+	{"postgres://sqi@db/sqi#x?password=hunter2", "hunter2"},
+	{"postgres://sqi@db/sqi?sslpassword=XQ#YR", "YR"},
+	// pgx percent-decodes query keys, so an encoded name is still a password.
+	{"postgres://sqi@db/sqi?pass%77ord=hunter2", "hunter2"},
+	{"postgres://sqi@db/sqi?%70assword=hunter2", "hunter2"},
+	{"postgres://sqi@db/sqi?ssl%70assword=hunter2", "hunter2"},
+	{"postgres://sqi@db/sqi?sslmode=disable&pass%77ord=hunter2", "hunter2"},
+	{"postgres://sqi@db/sqi?application_name=x;pass%77ord=hunter2", "hunter2"},
+	// pgx trims spaces around a key, so a padded name is still a password.
+	{"postgres://sqi@db/sqi?password =hunter2", "hunter2"},
+	// An upper-case key is not a password to pgx, but the regex still
+	// redacts it, which is the safe side.
+	{"postgres://sqi@db/sqi?PASSWORD=hunter2", "hunter2"},
+	// The client key's passphrase is a secret too, as is a query password
+	// url.Values would drop for its semicolon.
+	{"host=db sslpassword=hunter2 dbname=sqi", "hunter2"},
+	{"postgres://sqi@db/sqi?sslpassword=hunter2&sslmode=require", "hunter2"},
+	{"postgres://sqi@db/sqi?sslmode=require&password=hun;ter2", "hun;ter2"},
+	// pgx reads keyword/value text with its own rules, which no regex
+	// mirrored: a backslash escapes any byte (a line feed included), "\v"
+	// is whitespace, whitespace may follow "=" and precede a quote, and
+	// "password=" inside another key's value is not a key at all.
+	{"host=db password='ab\\\ncd'", "cd"},
+	{"host=db password=hun\\\nter2", "ter2"},
+	{"host=db password\v=hunter2", "hunter2"},
+	{"host=db password=\v'abc def'", "def"},
+	{"host=db password =\v hunter2", "hunter2"},
+	{"host=db application_name=password= password =hunter2", "hunter2"},
+	// A query pair with no "=" is refused (pgx rejects the DSN anyway).
+	{"postgres://sqi@db/sqi?password=ab&cd", "&cd"},
+}
+
 func TestRedact(t *testing.T) {
-	tests := []struct{ in, secret string }{
-		{"postgres://sqi:hunter2@db:5432/sqi?sslmode=require", "hunter2"},
-		{"postgresql://sqi:p%40ss@db/sqi", "p%40ss"},
-		{"postgres://sqi@db/sqi?password=hunter2", "hunter2"},
-		{"host=db user=sqi password=hunter2 dbname=sqi", "hunter2"},
-		{"host=db password='p@ss word' dbname=sqi", "p@ss word"},
-		{`host=db password='it\'s' dbname=sqi`, `it\'s`},
-		// Beyond the plain forms: a keyword the operator capitalised or spaced out,
-		// an unquoted value with a backslash-escaped space, an unterminated quote,
-		// a multi-host URL, and URLs that url.Parse refuses.
-		{"host=db PASSWORD = hunter2 dbname=sqi", "hunter2"},
-		{`host=db password=hun\ ter2 dbname=sqi`, `hun\ ter2`},
-		{"host=db password='hunter2 dbname=sqi", "hunter2"},
-		{"postgres://sqi:hunter2@h1:5432,h2:5432/sqi", "hunter2"},
-		{"postgres://sqi:hun ter2@db/sqi", "hunter2"},
-		{"postgres://sqi:hunter2%zz@db/sqi", "hunter2"},
-		{"POSTGRES://sqi:hunter2@db/sqi", "hunter2"},
-		// A password that starts with digits and then runs into "#", "?" or "/"
-		// reads as host:port with a fragment, query or path after it, so no
-		// userinfo is parsed out; the "@" is what gives it away.
-		{"postgres://sqi:123#ss@db/sqi", "123#ss"},
-		{"postgres://sqi:123?ss@db/sqi", "123?ss"},
-		{"postgres://sqi:123/ss@db/sqi", "123/ss"},
-		// An unescaped "@" in the password before one of those characters parses
-		// with userinfo, but only up to the first "@", leaking the rest.
-		{"postgres://sqi:p@ss#word@db/sqi", "word"},
-		{"postgres://sqi:p@ss/word@db/sqi", "word"},
-		{"postgres://sqi:p@ss?word@db/sqi", "word"},
-		{"postgres://sqi:1@2#3@db/sqi", "2#3"},
-		// pgx reads a URL the way libpq does, not as RFC 3986. A "#" does not
-		// start a fragment there, so it can sit inside a query password or hide
-		// a query altogether.
-		{"postgres://sqi@db/sqi?password=XQ#YR", "YR"},
-		{"postgres://sqi@db/sqi#x?password=hunter2", "hunter2"},
-		{"postgres://sqi@db/sqi?sslpassword=XQ#YR", "YR"},
-		// pgx percent-decodes query keys, so an encoded name is still a password.
-		{"postgres://sqi@db/sqi?pass%77ord=hunter2", "hunter2"},
-		{"postgres://sqi@db/sqi?%70assword=hunter2", "hunter2"},
-		{"postgres://sqi@db/sqi?ssl%70assword=hunter2", "hunter2"},
-		{"postgres://sqi@db/sqi?sslmode=disable&pass%77ord=hunter2", "hunter2"},
-		{"postgres://sqi@db/sqi?application_name=x;pass%77ord=hunter2", "hunter2"},
-		// pgx trims spaces around a key, so a padded name is still a password.
-		{"postgres://sqi@db/sqi?password =hunter2", "hunter2"},
-		// An upper-case key is not a password to pgx, but the regex still
-		// redacts it, which is the safe side.
-		{"postgres://sqi@db/sqi?PASSWORD=hunter2", "hunter2"},
-		// The client key's passphrase is a secret too, as is a query password
-		// url.Values would drop for its semicolon.
-		{"host=db sslpassword=hunter2 dbname=sqi", "hunter2"},
-		{"postgres://sqi@db/sqi?sslpassword=hunter2&sslmode=require", "hunter2"},
-		{"postgres://sqi@db/sqi?sslmode=require&password=hun;ter2", "hun;ter2"},
-		// pgx reads keyword/value text with its own rules, which no regex
-		// mirrored: a backslash escapes any byte (a line feed included), "\v"
-		// is whitespace, whitespace may follow "=" and precede a quote, and
-		// "password=" inside another key's value is not a key at all.
-		{"host=db password='ab\\\ncd'", "cd"},
-		{"host=db password=hun\\\nter2", "ter2"},
-		{"host=db password\v=hunter2", "hunter2"},
-		{"host=db password=\v'abc def'", "def"},
-		{"host=db password =\v hunter2", "hunter2"},
-		{"host=db application_name=password= password =hunter2", "hunter2"},
-		// A query pair with no "=" is refused (pgx rejects the DSN anyway).
-		{"postgres://sqi@db/sqi?password=ab&cd", "&cd"},
-	}
-	for _, tc := range tests {
+	for _, tc := range secretDSNs {
 		got := pgdsn.Redact(tc.in)
 		if strings.Contains(got, tc.secret) || !strings.Contains(got, "redacted") {
 			t.Errorf("Redact(%q) = %q", tc.in, got)
@@ -142,10 +146,10 @@ func TestRedact_KeepsEverythingElse(t *testing.T) {
 	}
 }
 
-// TestRedact_PgxReadsTheSameSettings checks the keyword/value rebuild against
-// pgx itself: every DSN here is one pgx accepts, and pgx must read the redacted
-// DSN with the same settings and no password but the placeholder.
-func TestRedact_PgxReadsTheSameSettings(t *testing.T) {
+// isolatePGEnv clears the environment pgx falls back to, so only the DSN
+// under test decides what pgx reads.
+func isolatePGEnv(t *testing.T) {
+	t.Helper()
 	// pgx falls back to the environment and the password file for anything the
 	// DSN leaves out, which must not leak into the comparison.
 	for _, env := range []string{
@@ -155,32 +159,41 @@ func TestRedact_PgxReadsTheSameSettings(t *testing.T) {
 		t.Setenv(env, "")
 	}
 	t.Setenv("PGPASSFILE", filepath.Join(t.TempDir(), "no-pgpass"))
+}
 
-	dsns := []string{
-		// The inputs the regex used to leak.
-		"host=db password='ab\\\ncd'",
-		"host=db password=hun\\\nter2",
-		"host=db password\v=hunter2",
-		"host=db password=\v'abc def'",
-		"host=db password =\v hunter2",
-		"host=db application_name=password= password =hunter2",
-		// Ordinary and awkward ones.
-		"host=db user=sqi password=hunter2 dbname=sqi sslmode=disable",
-		"host=db port=5433 dbname=sqi user=sqi password='p@ss word' sslmode=require",
-		`host=db application_name='it\'s a \\ test' password=x database=sqi`,
-		`host=db application_name=a\ b password='' dbname=sqi`,
-		"host=db sslpassword=secret sslmode=disable user=sqi",
-		"host=db password=a password=b dbname=sqi",
-		"host=db options='-c search_path=x' password=hunter2",
-		"host=db user= password=hunter2 dbname=sqi",
-		`host=db password=x dbname=trail\`,
-		`host=db dbname=trail\ password=x`,
-		"host=db\vpassword=hunter2\fdbname=sqi\r",
-		`  host=db   password='a\'b'sslmode=disable  `,
-		"host=db PASSWORD=hunter2 dbname=sqi",
-		"host=db dbname=sqi",
-	}
-	for _, dsn := range dsns {
+// keywordValueDSNs are keyword/value DSNs pgx accepts, each with a password or
+// some other setting a careless rewrite would get wrong.
+var keywordValueDSNs = []string{
+	// The inputs the regex used to leak.
+	"host=db password='ab\\\ncd'",
+	"host=db password=hun\\\nter2",
+	"host=db password\v=hunter2",
+	"host=db password=\v'abc def'",
+	"host=db password =\v hunter2",
+	"host=db application_name=password= password =hunter2",
+	// Ordinary and awkward ones.
+	"host=db user=sqi password=hunter2 dbname=sqi sslmode=disable",
+	"host=db port=5433 dbname=sqi user=sqi password='p@ss word' sslmode=require",
+	`host=db application_name='it\'s a \\ test' password=x database=sqi`,
+	`host=db application_name=a\ b password='' dbname=sqi`,
+	"host=db sslpassword=secret sslmode=disable user=sqi",
+	"host=db password=a password=b dbname=sqi",
+	"host=db options='-c search_path=x' password=hunter2",
+	"host=db user= password=hunter2 dbname=sqi",
+	`host=db password=x dbname=trail\`,
+	`host=db dbname=trail\ password=x`,
+	"host=db\vpassword=hunter2\fdbname=sqi\r",
+	`  host=db   password='a\'b'sslmode=disable  `,
+	"host=db PASSWORD=hunter2 dbname=sqi",
+	"host=db dbname=sqi",
+}
+
+// TestRedact_PgxReadsTheSameSettings checks the keyword/value rebuild against
+// pgx itself: every DSN here is one pgx accepts, and pgx must read the redacted
+// DSN with the same settings and no password but the placeholder.
+func TestRedact_PgxReadsTheSameSettings(t *testing.T) {
+	isolatePGEnv(t)
+	for _, dsn := range keywordValueDSNs {
 		want, err := pgconn.ParseConfig(dsn)
 		if err != nil {
 			t.Fatalf("pgx rejects test input %q: %v", dsn, err)

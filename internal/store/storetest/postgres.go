@@ -35,6 +35,23 @@ import (
 // advisory lock, because go test runs packages in parallel processes.
 func PostgresDSN(t testing.TB) string {
 	t.Helper()
+	return postgresDatabase(t, true)
+}
+
+// PostgresEmptyDSN is [PostgresDSN] for an empty database: created with a
+// plain CREATE DATABASE, no sqi template and no migrations, for a test that
+// fills it some other way (a pg_restore, say). It is dropped when the test
+// ends, and skips or fails without SQI_TEST_POSTGRES_DSN as PostgresDSN does.
+func PostgresEmptyDSN(t testing.TB) string {
+	t.Helper()
+	return postgresDatabase(t, false)
+}
+
+// postgresDatabase creates a database for the test, cloned from the migrated
+// template when migrated is set and empty otherwise, under the advisory lock
+// that serializes creation across test processes, and returns its DSN.
+func postgresDatabase(t testing.TB, migrated bool) string {
+	t.Helper()
 	admin := os.Getenv("SQI_TEST_POSTGRES_DSN")
 	if admin == "" {
 		if os.Getenv("SQI_TEST_REQUIRE_POSTGRES") == "1" {
@@ -58,27 +75,14 @@ func PostgresDSN(t testing.TB) string {
 	}
 	defer conn.ExecContext(ctx, `SELECT pg_advisory_unlock(7371692)`) //nolint:errcheck // released with the connection anyway
 
-	tmpl := "sqi_tmpl_" + schemaHash(t)
-	var exists bool
-	if err := conn.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM pg_database WHERE datname = $1)`, tmpl).Scan(&exists); err != nil {
-		t.Fatalf("look up template: %v", err)
-	}
-	if !exists {
-		if _, err := conn.ExecContext(ctx, `CREATE DATABASE `+tmpl); err != nil {
-			t.Fatalf("create template: %v", err)
-		}
-		st, err := postgres.Open(ctx, withDatabase(t, admin, tmpl), postgres.DefaultOptions())
-		if err != nil {
-			// A half-migrated template would be cloned by every later run.
-			_, derr := conn.ExecContext(ctx, `DROP DATABASE `+tmpl+` WITH (FORCE)`)
-			t.Fatalf("migrate template: %v (dropping it: %v)", err, derr)
-		}
-		if err := st.Close(); err != nil {
-			t.Fatalf("close template: %v", err)
-		}
-	}
 	name := "sqi_t_" + randomHex(t, 8)
-	if _, err := conn.ExecContext(ctx, `CREATE DATABASE `+name+` TEMPLATE `+tmpl+` STRATEGY FILE_COPY`); err != nil {
+	if migrated {
+		tmpl := migratedTemplate(ctx, t, conn, admin)
+		_, err = conn.ExecContext(ctx, `CREATE DATABASE `+name+` TEMPLATE `+tmpl+` STRATEGY FILE_COPY`)
+	} else {
+		_, err = conn.ExecContext(ctx, `CREATE DATABASE `+name)
+	}
+	if err != nil {
 		t.Fatalf("create test database: %v", err)
 	}
 	t.Cleanup(func() {
@@ -93,6 +97,34 @@ func PostgresDSN(t testing.TB) string {
 		}
 	})
 	return withDatabase(t, admin, name)
+}
+
+// migratedTemplate returns the name of the template database migrated to the
+// current schema, creating it if this schema has none yet. The caller holds
+// the creation lock.
+func migratedTemplate(ctx context.Context, t testing.TB, conn *sql.Conn, admin string) string {
+	t.Helper()
+	tmpl := "sqi_tmpl_" + schemaHash(t)
+	var exists bool
+	if err := conn.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM pg_database WHERE datname = $1)`, tmpl).Scan(&exists); err != nil {
+		t.Fatalf("look up template: %v", err)
+	}
+	if exists {
+		return tmpl
+	}
+	if _, err := conn.ExecContext(ctx, `CREATE DATABASE `+tmpl); err != nil {
+		t.Fatalf("create template: %v", err)
+	}
+	st, err := postgres.Open(ctx, withDatabase(t, admin, tmpl), postgres.DefaultOptions())
+	if err != nil {
+		// A half-migrated template would be cloned by every later run.
+		_, derr := conn.ExecContext(ctx, `DROP DATABASE `+tmpl+` WITH (FORCE)`)
+		t.Fatalf("migrate template: %v (dropping it: %v)", err, derr)
+	}
+	if err := st.Close(); err != nil {
+		t.Fatalf("close template: %v", err)
+	}
+	return tmpl
 }
 
 // Postgres opens a store on a fresh database (see PostgresDSN), closed when
