@@ -848,5 +848,10 @@ func (s *Store) RequeueTaskForRetry(ctx context.Context, taskID, attemptID strin
 		requeued = n > 0
 		return txCommit, nil
 	})
-	return requeued, err
+	if err != nil {
+		// requeued is set before the commit, so a failed commit leaves it true
+		// for a write that did not land.
+		return false, err
+	}
+	return requeued, nil
 }

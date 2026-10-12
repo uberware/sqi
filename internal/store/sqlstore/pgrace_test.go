@@ -372,16 +372,20 @@ func TestPGRace_G1_AReportedTaskIsNeverReaped(t *testing.T) {
 		w := seedWorld(t, st, 1, fmt.Sprintf("w%d", i))
 		a := storetest.Lease(t, st, leaseReq(w.Tasks[0], w.Workers[0]))
 		var started bool
+		var startErr error
 		var reaped []store.Task
 		var reapErr error
 		var wg sync.WaitGroup
 		wg.Go(func() {
-			started, _ = st.StartTaskAttempt(t.Context(), a.ID, w.Tasks[0], "sess", time.Now()) //nolint:errcheck // asserted through started
+			started, startErr = st.StartTaskAttempt(t.Context(), a.ID, w.Tasks[0], "sess", time.Now())
 		})
 		wg.Go(func() {
 			reaped, reapErr = st.ReclaimStaleAssignedTasks(t.Context(), time.Now().Add(time.Hour))
 		})
 		wg.Wait()
+		if startErr != nil {
+			t.Fatalf("iteration %d: the start failed, so the iteration checked nothing: %v", i, startErr)
+		}
 		if reapErr != nil {
 			t.Fatalf("iteration %d: the reaper failed, so the test checked nothing: %v", i, reapErr)
 		}
