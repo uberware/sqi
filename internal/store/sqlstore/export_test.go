@@ -32,6 +32,19 @@ const (
 	SQLExpiredJobByID = sqlExpiredJobByID
 	SQLFinalizeStep   = sqlFinalizeStep
 	SQLListStuckSteps = sqlListStuckSteps
+
+	SQLCancelJobTasks           = sqlCancelJobTasks
+	SQLNextAttemptNumber        = sqlNextAttemptNumber
+	SQLWorkerInFlightJobIDs     = sqlWorkerInFlightJobIDs
+	SQLSelectTaskStatus         = sqlSelectTaskStatus
+	SQLIsLatestAttempt          = sqlIsLatestAttempt
+	SQLCloseTaskRunningAttempts = sqlCloseTaskRunningAttempts
+	SQLInsertClaim              = sqlInsertClaim
+	SQLDeleteJobAttempts        = sqlDeleteJobAttempts
+	SQLRetryTasksPrefix         = sqlRetryTasksPrefix
+	SQLDeleteUserKeepingAdmin   = sqlDeleteUserKeepingAdmin
+	SQLFinalizeJob              = sqlFinalizeJob
+	SQLReclaimTaskSet           = sqlReclaimTaskSet
 )
 
 var (

@@ -13,12 +13,14 @@ import (
 	"net/url"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 
 	_ "github.com/jackc/pgx/v5/stdlib" // registers "pgx"
 
 	"github.com/uberware/sqi/internal/store/migrations"
 	"github.com/uberware/sqi/internal/store/postgres"
+	"github.com/uberware/sqi/internal/store/sqlstore"
 )
 
 // PostgresDSN returns the DSN of a fresh, migrated database, dropped when the
@@ -108,6 +110,18 @@ func PostgresWith(t testing.TB, opts postgres.Options) *postgres.Store {
 	if os.Getenv("SQI_TEST_PG_FORCE_TX_RETRY") == "1" {
 		opts.ForceTxRetry = true
 	}
+	// The lock-order checker sits beneath any wrapper the caller supplied, so
+	// every transaction of every PostgreSQL test store is checked.
+	check := &lockOrderDialect{t: t, last: map[*sql.Tx]int{}}
+	outer := opts.WrapDialect
+	opts.WrapDialect = func(d sqlstore.Dialect) sqlstore.Dialect {
+		check.Dialect = d
+		var out sqlstore.Dialect = check
+		if outer != nil {
+			out = outer(out)
+		}
+		return out
+	}
 	st, err := postgres.Open(context.Background(), dsn, opts)
 	if err != nil {
 		t.Fatalf("postgres.Open: %v", err)
@@ -118,6 +132,43 @@ func PostgresWith(t testing.TB, opts postgres.Options) *postgres.Store {
 		}
 	})
 	return st
+}
+
+// lockRank is each anchor table's place in the global lock order
+// (docs/architecture.md, "Anchor rows").
+var lockRank = map[string]int{"workers": 0, "jobs": 1, "queues": 2, "farms": 3, "usage_pools": 4, "users": 5}
+
+// lockOrderDialect fails the test when a transaction takes an anchor out of
+// the global lock order: a table ranked below one this transaction already
+// locked, or rows of one table and mode out of id order within one call.
+// (ReleaseBlockedJob and CancelBlockedJob lock their job exclusively, then its
+// upstream jobs shared: the two modes are checked separately.)
+type lockOrderDialect struct {
+	sqlstore.Dialect
+
+	t    testing.TB
+	mu   sync.Mutex
+	last map[*sql.Tx]int
+}
+
+func (d *lockOrderDialect) LockAnchors(ctx context.Context, tx *sql.Tx, anchors ...sqlstore.Anchor) error {
+	d.mu.Lock()
+	prev, seen := d.last[tx]
+	for i, a := range anchors {
+		r := lockRank[a.Table]
+		if seen && r < prev {
+			d.t.Errorf("lock order: %s locked after a higher-ranked row in the same transaction: %v", a.Table, anchors)
+		}
+		if i > 0 {
+			if b := anchors[i-1]; b.Table == a.Table && b.Mode == a.Mode && b.ID > a.ID {
+				d.t.Errorf("lock order: %s rows not in id order: %v", a.Table, anchors)
+			}
+		}
+		prev, seen = r, true
+	}
+	d.last[tx] = prev
+	d.mu.Unlock()
+	return d.Dialect.LockAnchors(ctx, tx, anchors...)
 }
 
 // withDatabase returns dsn (URL form) pointed at database name.
