@@ -80,6 +80,7 @@ Run `make` (no arguments) to see all available targets with descriptions.
 | `make test-integration` | Run integration tests (build tag `integration`) |
 | `make test-ldap` | Run the LDAP tests against a real OpenLDAP directory in a container (needs Docker; **skips** without it) |
 | `make test-oidc` | Run the SSO tests against a real Keycloak in a container (needs Docker; **skips** without it) |
+| `make test-postgres` | Run the PostgreSQL-backed tests against a throwaway PostgreSQL in a container (`PG_VERSION=16` or `18`, default 18; needs Docker; **skips** without it) — see [Testing against PostgreSQL](#testing-against-postgresql) |
 | `make test-isolation` | Run run-as-user task-isolation tests as real root against real OS accounts in a container (needs Docker; **skips** without it) |
 | `make test-isolation-windows` | Run the Windows run-as-user isolation tests against real local accounts — must be run from an **elevated** shell on a real Windows host (no container); exits 0 with a message when not elevated |
 | `make test-service-windows` | Drive `sqi-server` and `sqi-worker` through the real Windows service manager — it **really installs, starts, stops and deletes services** (`sqi-test-*`) and creates and deletes a throwaway local account (`sqisvc-*`); must be run from an **elevated** shell on a real Windows host (no container); exits 0 with a "not elevated" message, having done nothing, when not elevated |
@@ -200,6 +201,10 @@ make test-ldap
 
 # SSO tests against a real Keycloak in a container (needs Docker)
 make test-oidc
+
+# PostgreSQL-backed tests against a throwaway PostgreSQL 16 or 18 in a
+# container (needs Docker)
+make test-postgres PG_VERSION=16
 
 # Run-as-user task-isolation tests as real root against real OS accounts in a
 # container (needs Docker)
@@ -403,6 +408,92 @@ you have checked that nothing else on the machine uses them.
 
 ---
 
+### Testing against PostgreSQL
+
+Plain `make test` runs every store test against SQLite and the in-memory fake,
+and needs no Docker. The PostgreSQL store is tested by `make test-postgres`:
+
+```sh
+make test-postgres                 # PostgreSQL 18 (the default)
+make test-postgres PG_VERSION=16   # PostgreSQL 16, the oldest supported
+```
+
+`scripts/test-postgres.sh` starts a throwaway PostgreSQL container (the
+pinned image tag for `PG_VERSION`, data on tmpfs), points
+`SQI_TEST_POSTGRES_DSN` at it, sets `SQI_TEST_REQUIRE_POSTGRES=1`, and runs
+three passes:
+
+1. the store, scheduler, API, server and `cmd` packages, with the race
+   detector (`RACE=off` drops it);
+2. the store packages again with `SQI_TEST_PG_FORCE_TX_RETRY=1`, which runs
+   every transaction once, rolls it back and runs it again, so a transaction
+   body that keeps state from a failed attempt fails a test (the store retries
+   aborted transactions, so every body must be safe to re-run);
+3. the integration suite (`-tags integration`, `./test/integration/`) with the
+   server on PostgreSQL (`SQI_TEST_STORE_DRIVER=postgres`), skipping the LDAP,
+   OIDC and isolation tests, which have targets of their own.
+
+It ends with `POSTGRES TESTS PASSED (PG_VERSION=…)`. The variables it uses can
+also be set by hand:
+
+| Variable | Effect |
+|---|---|
+| `SQI_TEST_POSTGRES_DSN` | An existing server to test against instead of a container (a `postgres://` URL for a role that can create databases). Each test gets a fresh database, cloned from a migrated template and dropped when the test ends. |
+| `SQI_TEST_REQUIRE_POSTGRES=1` | A PostgreSQL test **fails** instead of skipping when no DSN is set. |
+| `SQI_TEST_PG_FORCE_TX_RETRY=1` | Rehearse every transaction once (the second pass above). The forced-interleaving race tests skip under it. |
+| `SQI_TEST_STORE_DRIVER=postgres` | Run the `test/integration` harness's server on a fresh PostgreSQL database instead of SQLite; any value but `sqlite` or `postgres` fails. |
+| `SQI_TEST_POSTGRES_IMAGE` | Override the container image (CI passes the image it pulled). |
+
+**Without Docker the target prints `docker unavailable — skipping PostgreSQL
+tests` and exits 0, and without `SQI_TEST_POSTGRES_DSN` every PostgreSQL test
+skips. A skip verifies nothing.** Confirm the run with `--- PASS` lines for
+`/postgres` subtests and the final `POSTGRES TESTS PASSED` line. CI's
+`postgres-integration` job runs the target on PostgreSQL 16 and 18. It fails
+when Docker is unavailable, when any of its named tests (G1–G12, the schema
+parity, atomic-submission, readiness and backup round-trip tests, the
+PostgreSQL stress test and the EXPR end-to-end job) does not pass, when any
+`/postgres` subtest is skipped, and when none passed at all. The 18 leg also
+runs `make smoke` with the server on PostgreSQL.
+
+A local `PG_VERSION=16` run needs a PostgreSQL 16 `pg_dump` and `pg_restore`
+**first on `PATH`**. The backup round trip restores a dump into the test
+server, and a newer client's dump carries settings (such as
+`SET transaction_timeout`) that a PostgreSQL 16 server rejects; CI installs the
+matching client tools for each leg.
+
+**Every cross-backend test runs three ways.** The store packages' `newStores`,
+the scheduler's `raceBackends` and the API's `seedBackends` return the fake
+and SQLite always, plus PostgreSQL when `SQI_TEST_POSTGRES_DSN` is set (or
+`SQI_TEST_REQUIRE_POSTGRES=1`), keyed by subtest name (`.../fake`,
+`.../sqlite`, `.../postgres`). A test written over one of them needs no change
+to run on PostgreSQL. Every PostgreSQL store a test opens through
+`storetest.Postgres` also checks the [lock
+order](architecture.md#lock-order): a transaction that locks anchor rows out of
+order fails the test.
+
+**Concurrency tests force their interleaving.** A race that a single writer
+cannot produce is tested on PostgreSQL with the pause hook in
+`internal/store/sqlstore/pause_test.go`. `pgRace(t)` opens a PostgreSQL store
+whose dialect parks the first transaction that reaches an armed point:
+`p.atStatement(sql)` arms the first dynamic statement whose text contains
+`sql` (a prepared statement was rebound when it was prepared and never fires),
+and `p.atAnchor(table, id)` arms the lock of one anchor row. `interleave(t, p,
+paused, competitor)` runs `paused` until it parks, runs `competitor`, resumes
+`paused` (after up to 750 ms, if `competitor` is still blocked on a lock), and
+reports both errors and whether `competitor` had to wait. The race tests are
+`TestPGRace_*` in `internal/store/sqlstore/pgrace_test.go`; G1 to G12 are the
+named ones CI asserts. To add one:
+
+1. Write the test first and run it against the code **without** the fix. It
+   must go red, every run, for the reason it names. Assert on `p.matched()` as
+   well, so it is known to have parked at the statement it meant, not at
+   another that merely contains the armed text.
+2. Make the fix, and run it green.
+
+The hook runs on PostgreSQL only, so these tests skip without a DSN, and
+under `SQI_TEST_PG_FORCE_TX_RETRY=1`, where the pause would fire in the
+rehearsal that is rolled back.
+
 ### Differential-testing EXPR against the reference implementation
 
 `make test-expr-oracle` evaluates a corpus of expressions with **both** sqi's Go
@@ -556,7 +647,7 @@ sqi/
 │   ├── product/           Products/presets — the catalog layer over OpenJD templates
 │   ├── scheduler/         Assignment loop, worker registry, heartbeat sweep
 │   ├── server/            Process boot, graceful shutdown orchestration
-│   ├── store/             Store interface; sqlstore (shared SQL implementation) and sqlite (the SQLite database); migrations
+│   ├── store/             Store interface; sqlstore (shared SQL implementation), sqlite and postgres (the two databases), backend (opens the configured one), fake; migrations (migrations/postgres for PostgreSQL)
 │   ├── ui/                Embeds web/dist; SPA fallback handler
 │   ├── version/           Build metadata (version, commit, date, Go version)
 │   ├── worker/            sqi-worker binary internals (executor, lease, heartbeat, capabilities, …); only worker/protocol is shared with the server
@@ -693,19 +784,50 @@ statement. Write the SQL with `?` placeholders and run it through the
 `dbPool`/`dbTx`/`dbStmt` wrappers, never directly on `*sql.DB` or `*sql.Tx`;
 `TestNoRawStatementCalls` enforces this.
 
-**A wholly new aggregate — a new table, not just a new method on an
-existing one — needs a migration.** Add a numbered SQL file to
-`internal/store/migrations/` (e.g. `00038_my_feature.sql`, continuing the
-existing sequence), with `+goose Up`/`+goose Down` sections following the
-pattern of the surrounding files. A new column or index on an existing table
-needs one too. A new method on an *existing* table (like `ListStepsForJob`
-above, assuming `steps` already exists) needs no schema change at all.
+**The same SQL runs on SQLite and PostgreSQL, so keep it portable.** The
+dialect supplies what differs: `?` placeholders are rewritten to `$1, $2, …`
+on PostgreSQL (`TestSQLConstants_NoQuestionMarkInLiteralsOrComments` keeps any
+`?` out of string literals and comments, where the rewrite would corrupt it),
+the wrappers bind Go `time.Time` and `bool` arguments through the dialect
+(`BindTime`, `BindBool`; a time is stored as `TimeText`'s 30-character form),
+booleans are scanned through `dbBool`, and a case-insensitive match is
+`Dialect.CIEqual` or `Dialect.CILike`. Any `ORDER BY` behind a `LIMIT` or a
+page ends with an `id` tiebreaker, and a nullable sort column states where its
+NULLs go (`(col IS NULL) DESC, col ASC`, as `orderByClause` renders it), since
+the two databases put NULLs at opposite ends by default. Build a query by
+concatenation only from constants and the audited fragments
+`TestSQL_ConcatenatesOnlyAuditedPieces` allows. A new method
+needs nothing PostgreSQL-specific beyond that: it runs on both through the
+shared layer, and its tests must pass three ways (the fake, SQLite and
+PostgreSQL; see [Testing against PostgreSQL](#testing-against-postgresql)).
+A method that reads rows to decide a write takes its anchor rows first, in
+the [global lock order](architecture.md#lock-order) (see
+[Store invariants](architecture.md#store-invariants)).
 
-SQL that stamps a time itself must write the store's 30-character form,
-`strftime('%Y-%m-%dT%H:%M:%f', 'now') || '000000Z'` (see "Timestamps" under
-the SQLite schema overview in `docs/architecture.md`).
-`TestMigrations_StampTimesInTheStoredForm` fails on a migration whose SQL,
-comments aside, uses strftime's `%SZ` or `%fZ`.
+**A wholly new aggregate — a new table, not just a new method on an
+existing one — needs a migration, and every migration ships as a pair.** Add a
+numbered SQL file to `internal/store/migrations/` (e.g. `00038_my_feature.sql`,
+continuing the existing sequence) **and** one with the same number to
+`internal/store/migrations/postgres/`, each with `+goose Up`/`+goose Down`
+sections following the pattern of the surrounding files. A new column or
+index on an existing table needs a pair too. `TestSchemaParity`
+(`internal/store/postgres`, run by `make test-postgres` and in CI) migrates a
+fresh database of each kind and fails when their newest versions, tables,
+columns, indexes or foreign keys differ, so a change made on one backend only
+fails it. Write the PostgreSQL file natively: every `TEXT` column `COLLATE
+"C"`, every timestamp column of the `ts` domain, integers `BIGINT`, flags
+`BOOLEAN NOT NULL DEFAULT false`, and a case-insensitive unique as a unique
+index on `lower(col)` (see [Two backends](architecture.md#two-backends)). A
+new method on an *existing* table (like `ListStepsForJob` above, assuming
+`steps` already exists) needs no schema change at all.
+
+SQL that stamps a time itself must write the store's 30-character form:
+`strftime('%Y-%m-%dT%H:%M:%f', 'now') || '000000Z'` on SQLite, and on
+PostgreSQL, where the `ts` domain's `CHECK` refuses any other form,
+`to_char(now() AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"000Z"')` (see
+"Timestamps" under the SQLite schema overview in `docs/architecture.md`).
+`TestMigrations_StampTimesInTheStoredForm` fails on a SQLite migration whose
+SQL, comments aside, uses strftime's `%SZ` or `%fZ`.
 
 Finally, add a corresponding stub to the in-memory fake. The fake is split
 per aggregate, mirroring `internal/store/sqlstore/`, not one
@@ -830,8 +952,8 @@ Run the tests: `go test -race ./internal/api/...`
 
 **Seed store state through the production writes.** A test that needs jobs,
 steps or tasks in some state builds them with `internal/store/storetest`, which
-is written against `store.Store` so the same test runs on the SQLite store and
-the in-memory fake:
+is written against `store.Store` so the same test runs on the SQLite store, the
+in-memory fake and, when it is configured, the PostgreSQL store:
 
 - `storetest.Submit` creates a whole job (job, `DependsOn` edges, steps and
   tasks) in one `CreateJobSubmission`, the call production makes. Put every
@@ -952,6 +1074,8 @@ make docs
 |---|---|
 | `SQI_HTTP_ADDR` | Override the listen address (e.g. `127.0.0.1:9090`) |
 | `SQI_STORE_SQLITE_PATH` | Point at a specific database file |
+| `SQI_STORE_DRIVER` | `postgres` to run against PostgreSQL (with `SQI_STORE_POSTGRES_DSN`) |
+| `SQI_STORE_POSTGRES_DSN` | The PostgreSQL database to use when the driver is `postgres` |
 | `SQI_LOG_LEVEL` | Set to `debug` for verbose output |
 | `SQI_LOG_FORMAT` | Set to `text` for human-readable logs |
 | `SQI_HTTP_ENABLE_PPROF` | Set to `true` to enable profiling endpoints |
