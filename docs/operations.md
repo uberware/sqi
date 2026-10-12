@@ -499,12 +499,13 @@ startup failed: open store: another sqi-server is already using this database (P
 
 That error means what it says: another server, or one that has not finished
 stopping, is connected to this database. Every connection a server opens
-carries `application_name` `sqi-server`, so look for the one holding the
+carries `application_name` `sqi-server`, unless the DSN sets its own. To find
+the holder whatever it is called, look for the connection holding the
 advisory lock (its key's two 32-bit halves are `1936812333` and
-`1936881266`), connected to the database in question:
+`1936881266`) on the database in question:
 
 ```sql
-SELECT a.pid, a.client_addr, a.backend_start
+SELECT a.pid, a.application_name, a.client_addr, a.backend_start
 FROM   pg_locks l JOIN pg_stat_activity a ON a.pid = l.pid
 WHERE  l.locktype = 'advisory' AND l.granted
   AND  l.classid = 1936812333 AND l.objid = 1936881266
