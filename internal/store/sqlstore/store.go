@@ -391,16 +391,16 @@ func (s *Store) prepareAll(ctx context.Context) error {
 	if s.stmtInsertProduct, err = s.prepare(ctx, sqlInsertProduct); err != nil {
 		return err
 	}
-	if s.stmtGetProductByName, err = s.prepare(ctx, sqlGetProductByName); err != nil {
+	if s.stmtGetProductByName, err = s.prepare(ctx, sqlGetProductByName+s.d.CIEqual("name")); err != nil {
 		return err
 	}
 	if s.stmtListProducts, err = s.prepare(ctx, sqlListProducts); err != nil {
 		return err
 	}
-	if s.stmtUpdateProduct, err = s.prepare(ctx, sqlUpdateProduct); err != nil {
+	if s.stmtUpdateProduct, err = s.prepare(ctx, sqlUpdateProductHead+s.d.CIEqual("name")+sqlUpdateProductTail); err != nil {
 		return err
 	}
-	if s.stmtDeleteProduct, err = s.prepare(ctx, sqlDeleteProduct); err != nil {
+	if s.stmtDeleteProduct, err = s.prepare(ctx, sqlDeleteProduct+s.d.CIEqual("name")); err != nil {
 		return err
 	}
 

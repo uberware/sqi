@@ -188,6 +188,7 @@ var concatAllowed = []string{
 	"where",                   // List{Jobs,Queues,Tasks,Workers}: literal fragments, CIEqual of a literal, a "?" IN list, and searchClause output
 	`s.d.CIEqual("owner")`,    // job.go: Dialect method, literal column
 	`s.d.CIEqual("username")`, // store.go prepareAll: Dialect method, literal column
+	`s.d.CIEqual("name")`,     // store.go prepareAll (products): Dialect method, literal column
 	`strings.TrimSuffix(strings.Repeat("?,", len(deps)), ",")`, // finalize.go: only "?" and ","
 	"placeholders",         // job.go expiredJobsQuery, task.go RetryTasks: strings.Repeat("?,", n) trimmed, only "?" and ","
 	"string(placeholders)", // task.go ListTasks: a byte slice that only receives ',' and '?'

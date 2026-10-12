@@ -29,9 +29,12 @@ FROM users WHERE ` // + Dialect.CIEqual("username"), appended in prepareAll
 SELECT id, username, display_name, password_hash, role, auth_source, external_id, disabled, created_at, updated_at
 FROM users WHERE auth_source = ? AND external_id = ? AND external_id != ''`
 
+	// sqlListUsers orders by lower(username) and then username: the column is
+	// COLLATE NOCASE on SQLite and COLLATE "C" on PostgreSQL, and lower() folds
+	// ASCII only on both, exactly as NOCASE does.
 	sqlListUsers = `
 SELECT id, username, display_name, password_hash, role, auth_source, external_id, disabled, created_at, updated_at
-FROM users ORDER BY username`
+FROM users ORDER BY lower(username), username`
 
 	// sqlUpdateUserHead is the write that plain and guarded updates share, so a
 	// future column lands in both or in neither; its placeholders are bound by

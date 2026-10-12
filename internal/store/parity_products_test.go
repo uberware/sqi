@@ -90,7 +90,7 @@ func TestParity_ListProducts(t *testing.T) {
 
 // TestParity_ListProducts_MixedCase pins name order across case. Product names
 // are case-insensitive identities (a case-only duplicate is a conflict and a
-// lookup ignores case on both backends), and SQLite orders them that way too.
+// lookup ignores case on every backend), and every backend orders them that way.
 func TestParity_ListProducts_MixedCase(t *testing.T) {
 	for name, st := range newStores(t) {
 		t.Run(name, func(t *testing.T) {
@@ -153,6 +153,58 @@ func TestParity_DeleteProduct(t *testing.T) {
 			}
 			if _, err := st.GetProductByName(ctx, "studio/maya"); err != nil {
 				t.Fatalf("other product: %v, want it kept", err)
+			}
+		})
+	}
+}
+
+// TestParity_CaseInsensitiveColumns pins the columns SQLite declares COLLATE
+// NOCASE, users.username and products.name: an equality or ORDER BY on either
+// ignores ASCII case on every backend. PostgreSQL holds them COLLATE "C", so
+// the shared SQL must ask for the fold itself.
+func TestParity_CaseInsensitiveColumns(t *testing.T) {
+	for name, st := range newStores(t) {
+		t.Run(name, func(t *testing.T) {
+			ctx := t.Context()
+			for _, username := range []string{"Bob", "alice"} {
+				u := mkUser("viewer")
+				u.Username = username
+				if _, err := st.CreateUser(ctx, u); err != nil {
+					t.Fatalf("CreateUser %s: %v", username, err)
+				}
+			}
+			users, err := st.ListUsers(ctx)
+			if err != nil {
+				t.Fatalf("ListUsers: %v", err)
+			}
+			if got, want := project(users, func(u store.User) string { return u.Username }), []string{"alice", "Bob"}; !slices.Equal(got, want) {
+				t.Errorf("ListUsers = %v, want %v", got, want)
+			}
+
+			for _, n := range []string{"Zeta", "script", "Alpha", "beta"} {
+				mustCreateProduct(t, st, n)
+			}
+			products, err := st.ListProducts(ctx)
+			if err != nil {
+				t.Fatalf("ListProducts: %v", err)
+			}
+			if got, want := project(products, func(p store.Product) string { return p.Name }), []string{"Alpha", "beta", "script", "Zeta"}; !slices.Equal(got, want) {
+				t.Errorf("ListProducts = %v, want %v", got, want)
+			}
+
+			if p, err := st.GetProductByName(ctx, "Script"); err != nil || p.Name != "script" {
+				t.Errorf("GetProductByName(Script) = (%q, %v), want script", p.Name, err)
+			}
+			upd := mkProduct("SCRIPT")
+			upd.Title = "renamed"
+			if p, err := st.UpdateProduct(ctx, upd); err != nil || p.Name != "script" || p.Title != "renamed" {
+				t.Errorf("UpdateProduct(SCRIPT) = (%q, %q, %v), want script updated", p.Name, p.Title, err)
+			}
+			if err := st.DeleteProduct(ctx, "ZETA"); err != nil {
+				t.Errorf("DeleteProduct(ZETA) = %v, want Zeta deleted", err)
+			}
+			if _, err := st.GetProductByName(ctx, "Zeta"); !errors.Is(err, store.ErrNotFound) {
+				t.Errorf("GetProductByName(Zeta) after delete = %v, want ErrNotFound", err)
 			}
 		})
 	}
