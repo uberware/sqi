@@ -137,9 +137,11 @@ func (s *Store) LeaseTask(ctx context.Context, req store.LeaseRequest) (store.Le
 //   - the latest-attempt checks. CompleteTaskAttempt and the other
 //     job-anchored attempt writers hold the job row from the check to the task
 //     write, so no lease adds a newer attempt between the two;
-//   - demotion. A demotion that holds the job row while it re-checks that no
-//     task of the job is in flight waits for a lease in flight and sees its
-//     task, or is waited for and leaves a job the lease then finds stopped.
+//   - demotion. DemoteStalledJobs holds the job row FOR UPDATE while it
+//     re-checks that no task of the job is in flight: it waits for a lease in
+//     flight and sees the task that lease assigned, so the job stays running,
+//     or it is waited for and the lease then lands on the pending job, as a
+//     lease on any job with only waiting tasks does.
 //
 // The cost: completions and other job-row writers serialize briefly with
 // leases on the same job (they already serialized among themselves on that

@@ -48,9 +48,8 @@
 // anchor rows via Dialect.LockAnchors, which the SQLite dialect leaves a
 // no-op because the one write connection already serializes every write
 // transaction. A store with concurrent writers must lock those rows instead,
-// and the anchors alone do not suffice there: ReclaimStaleAssignedTasks and
-// DemoteStalledJobs name none, and docs/architecture.md lists the gaps the
-// anchor table leaves open.
+// and the anchors alone do not suffice there: ReclaimStaleAssignedTasks names
+// none, and docs/architecture.md lists the gaps the anchor table leaves open.
 // Single-row writes carry their own precondition in their WHERE clause on
 // either kind of store.
 //

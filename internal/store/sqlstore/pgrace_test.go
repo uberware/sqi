@@ -25,6 +25,23 @@ type world struct {
 
 func seedWorld(t *testing.T, st store.Store, nTasks int, workers ...string) world {
 	t.Helper()
+	farmID, queueID := seedFarmQueueRace(t, st)
+	w := world{FarmID: farmID, QueueID: queueID, JobID: "job-" + uuid.NewString()[:8], StepID: "step-" + uuid.NewString()[:8]}
+	seed := storetest.NewJob(w.JobID, farmID, queueID).Step(w.StepID, store.StepStatusReady)
+	for i := range nTasks {
+		id := fmt.Sprintf("%s-t%d", w.JobID, i)
+		seed.Task(id, w.StepID, store.TaskStatusReady)
+		w.Tasks = append(w.Tasks, id)
+	}
+	seed.Submit(t, st)
+	registerOnline(t, st, farmID, workers...)
+	w.Workers = append(w.Workers, workers...)
+	return w
+}
+
+// seedFarmQueueRace creates one farm and one queue in it, with unique names.
+func seedFarmQueueRace(t *testing.T, st store.Store) (farmID, queueID string) {
+	t.Helper()
 	ctx := t.Context()
 	farm, err := st.CreateFarm(ctx, store.Farm{ID: "farm-" + uuid.NewString()[:8], Name: "f-" + uuid.NewString()[:8]})
 	if err != nil {
@@ -34,24 +51,21 @@ func seedWorld(t *testing.T, st store.Store, nTasks int, workers ...string) worl
 	if err != nil {
 		t.Fatalf("CreateQueue: %v", err)
 	}
-	w := world{FarmID: farm.ID, QueueID: queue.ID, JobID: "job-" + uuid.NewString()[:8], StepID: "step-" + uuid.NewString()[:8]}
-	seed := storetest.NewJob(w.JobID, farm.ID, queue.ID).Step(w.StepID, store.StepStatusReady)
-	for i := range nTasks {
-		id := fmt.Sprintf("%s-t%d", w.JobID, i)
-		seed.Task(id, w.StepID, store.TaskStatusReady)
-		w.Tasks = append(w.Tasks, id)
-	}
-	seed.Submit(t, st)
+	return farm.ID, queue.ID
+}
+
+// registerOnline registers each named worker in the farm, online with a fresh
+// heartbeat.
+func registerOnline(t *testing.T, st store.Store, farmID string, ids ...string) {
+	t.Helper()
 	now := time.Now().UTC()
-	for _, id := range workers {
-		if _, _, err := st.RegisterWorker(ctx, store.Worker{
-			ID: id, FarmID: farm.ID, Hostname: id, Status: store.WorkerStatusOnline, LastHeartbeatAt: &now,
+	for _, id := range ids {
+		if _, _, err := st.RegisterWorker(t.Context(), store.Worker{
+			ID: id, FarmID: farmID, Hostname: id, Status: store.WorkerStatusOnline, LastHeartbeatAt: &now,
 		}); err != nil {
 			t.Fatalf("RegisterWorker %s: %v", id, err)
 		}
-		w.Workers = append(w.Workers, id)
 	}
-	return w
 }
 
 func leaseReq(taskID, workerID string) store.LeaseRequest {
@@ -276,6 +290,38 @@ func TestPGRace_LeaseRefusesAJobMovedBeforeItsLock(t *testing.T) {
 	}
 	if got := mustTask(t, st, w.Tasks[0]); got.Status != store.TaskStatusReady {
 		t.Fatalf("task status = %s, want ready (the refused lease writes nothing)", got.Status)
+	}
+}
+
+// TestPGRace_G8_NoDemotionUnderALease: the stall sweep must not demote a
+// running job while a lease of one of its tasks is in flight.
+func TestPGRace_G8_NoDemotionUnderALease(t *testing.T) {
+	st, p := pgRace(t)
+	farm, queue := seedFarmQueueRace(t, st)
+	storetest.NewJob("job-g8", farm, queue).As(store.JobStatusRunning).
+		Step("step-g8", store.StepStatusReady).
+		Task("job-g8-done", "step-g8", store.TaskStatusSucceeded).
+		Task("job-g8-next", "step-g8", store.TaskStatusReady).
+		Submit(t, st)
+	registerOnline(t, st, farm, "w1")
+	p.atStatement(sqlstore.SQLNextAttemptNumber) // the lease has moved the task, not committed
+	var demoted []string
+	lerr, derr, waited := interleave(t, p,
+		func() error { _, err := st.LeaseTask(t.Context(), leaseReq("job-g8-next", "w1")); return err },
+		func() (err error) { demoted, err = st.DemoteStalledJobs(t.Context(), time.Now()); return })
+	assertPausedAt(t, p, sqlstore.SQLNextAttemptNumber)
+	if lerr != nil || derr != nil {
+		t.Fatalf("lease err %v, demote err %v", lerr, derr)
+	}
+	if !waited {
+		t.Errorf("the sweep did not wait for the lease's job-row lock")
+	}
+	job, err := st.GetJob(t.Context(), "job-g8")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if job.Status != store.JobStatusRunning || len(demoted) != 0 {
+		t.Fatalf("job %s demoted to %s (sweep returned %v) while its lease was in flight", job.ID, job.Status, demoted)
 	}
 }
 

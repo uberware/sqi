@@ -74,21 +74,27 @@ SET status       = 'canceled',
 WHERE id = ?
   AND status NOT IN ('completed', 'failed', 'canceled')`
 
-	// sqlDemoteStalledJobs demotes any running job with no in-flight (assigned or
-	// running) task back to pending, but only while it still has schedulable
-	// (ready or pending) work — a job whose tasks are all terminal is left for the
-	// completion logic to finalize. started_at is intentionally preserved.
-	// RETURNING yields the demoted job IDs so the caller can fan out WS events.
-	sqlDemoteStalledJobs = `
-UPDATE jobs
-SET status = 'pending', updated_at = ?
-WHERE status = 'running'
-  AND NOT EXISTS (
-        SELECT 1 FROM tasks t
-        WHERE t.job_id = jobs.id AND t.status IN ('assigned', 'running'))
-  AND EXISTS (
-        SELECT 1 FROM tasks t
-        WHERE t.job_id = jobs.id AND t.status IN ('ready', 'pending'))
+	// sqlStalledJobPredicate is a running job with no task assigned or running
+	// and at least one waiting (ready or pending): stalled, so the sweep shows
+	// it pending again. A job whose tasks are all terminal is left for the
+	// completion logic to finalize. It names jobs.id, so it is only valid where
+	// jobs is in scope.
+	sqlStalledJobPredicate = `jobs.status = 'running'
+  AND NOT EXISTS (SELECT 1 FROM tasks t WHERE t.job_id = jobs.id AND t.status IN ('assigned', 'running'))
+  AND EXISTS     (SELECT 1 FROM tasks t WHERE t.job_id = jobs.id AND t.status IN ('ready', 'pending'))`
+
+	// sqlStalledJobCandidates lists the stalled jobs, unlocked: each is then
+	// locked and re-checked before it is demoted.
+	sqlStalledJobCandidates = `SELECT id FROM jobs WHERE ` + sqlStalledJobPredicate + ` ORDER BY id`
+
+	// sqlDemoteStalledJob demotes one job if it is still stalled. It runs under
+	// the job's lock, and its predicate is evaluated afresh then, so a lease that
+	// committed in between (it holds the job row shared) is seen. started_at is
+	// intentionally preserved. RETURNING yields the job ID only when a row was
+	// demoted, so the caller can fan out the WS event.
+	sqlDemoteStalledJob = `
+UPDATE jobs SET status = 'pending', updated_at = ?
+WHERE  id = ? AND ` + sqlStalledJobPredicate + `
 RETURNING id`
 
 	// Job-deletion cascade. Each statement scopes to one job via job_id (or a
@@ -661,26 +667,64 @@ func (s *Store) CancelJobStatus(ctx context.Context, id string) error {
 
 // DemoteStalledJobs implements [store.JobStore].
 //
-// The single UPDATE ... RETURNING statement is atomic here: the single write
-// connection serializes it against every lease, so a concurrent task transition
-// to assigned/running cannot slip between the EXISTS check and the write, and a
-// job that has just been re-activated is never spuriously demoted. That is a
-// property of SQLite's single writer, not of the statement: under PostgreSQL
-// READ COMMITTED the NOT EXISTS subquery is not re-checked against a lease that
-// commits concurrently, and it takes no anchor. How a PostgreSQL store closes
-// that is left open (see "Store invariants" in docs/architecture.md).
+// It lists the stalled jobs unlocked, then demotes each in its own
+// transaction: the job row locked, the stalled predicate checked again under
+// the lock, then the write. A lease holds the job row shared, so a lease in
+// flight is waited for and the re-check sees the task it assigned; a job that
+// is no longer stalled is left alone. On SQLite the re-check is a redundant
+// re-read.
+//
+// The returned IDs are in id order, the order the candidates are locked in.
 func (s *Store) DemoteStalledJobs(ctx context.Context, now time.Time) ([]string, error) {
-	rows, err := s.w.QueryContext(ctx, sqlDemoteStalledJobs, TimeText(now.UTC()))
+	candidates, err := s.stalledJobCandidates(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("store: demote stalled jobs: %w", mapErr(err))
+		return nil, err
+	}
+	nowText := TimeText(now.UTC())
+	var demoted []string
+	for _, id := range candidates {
+		var got bool
+		err := s.inTx(ctx, "demote stalled job", func(tx *dbTx) (txOutcome, error) {
+			got = false
+			if err := tx.lockAnchors(ctx, jobAnchor(id)); err != nil {
+				return txRollback, err
+			}
+			var out string
+			err := tx.QueryRowContext(ctx, sqlDemoteStalledJob, nowText, id).Scan(&out)
+			if errors.Is(err, sql.ErrNoRows) {
+				return txRollback, nil
+			}
+			if err != nil {
+				return txRollback, fmt.Errorf("store: demote job %s: %w", id, mapErr(err))
+			}
+			got = true
+			return txCommit, nil
+		})
+		if err != nil {
+			return demoted, err
+		}
+		if got {
+			demoted = append(demoted, id)
+		}
+	}
+	return demoted, nil
+}
+
+// stalledJobCandidates lists, in id order, the jobs the stall sweep will
+// re-check. It reads through the write pool on purpose: it must see the latest
+// commits, and on SQLite the read pool is a separate connection whose snapshot
+// can lag.
+func (s *Store) stalledJobCandidates(ctx context.Context) ([]string, error) {
+	rows, err := s.w.QueryContext(ctx, sqlStalledJobCandidates)
+	if err != nil {
+		return nil, fmt.Errorf("store: list stalled jobs: %w", mapErr(err))
 	}
 	defer rows.Close()
-
 	var ids []string
 	for rows.Next() {
 		var id string
 		if err := rows.Scan(&id); err != nil {
-			return nil, fmt.Errorf("store: scan demoted job id: %w", err)
+			return nil, fmt.Errorf("store: scan stalled job id: %w", err)
 		}
 		ids = append(ids, id)
 	}
