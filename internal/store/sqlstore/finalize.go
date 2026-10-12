@@ -101,11 +101,9 @@ ORDER BY j.id`
 
 // FinalizeStep implements [store.StepStore].
 //
-// Anchor: the step's job row. The step's current status is read before the
-// anchor and is used only to report an already-terminal step when the guarded
-// UPDATE writes nothing. On Postgres a finalize committing between that read
-// and the UPDATE makes it stale (the step is reported in flight rather than
-// terminal), so a PostgreSQL store should re-read it under the lock.
+// Anchor: the step's job row. The current status, used only to report an
+// already-terminal step, is read under the anchor, so it is current against
+// every job-anchored writer.
 func (s *Store) FinalizeStep(ctx context.Context, id string, now time.Time) (store.StepStatus, bool, error) {
 	// terminal is the already-terminal status the no-op branch reports. It is
 	// returned even when that branch's commit fails.
@@ -115,12 +113,16 @@ func (s *Store) FinalizeStep(ctx context.Context, id string, now time.Time) (sto
 	)
 	err := s.inTx(ctx, "finalize step", func(tx *dbTx) (txOutcome, error) {
 		status, terminal, finalized = "", "", false
-		var jobID, current string
-		if err := tx.QueryRowContext(ctx, `SELECT job_id, status FROM steps WHERE id = ?`, id).Scan(&jobID, &current); err != nil {
+		var jobID string
+		if err := tx.QueryRowContext(ctx, `SELECT job_id FROM steps WHERE id = ?`, id).Scan(&jobID); err != nil {
 			return txRollback, mapErr(err)
 		}
 		if err := tx.lockAnchors(ctx, jobAnchor(jobID)); err != nil {
 			return txRollback, err
+		}
+		var current string
+		if err := tx.QueryRowContext(ctx, `SELECT status FROM steps WHERE id = ?`, id).Scan(&current); err != nil {
+			return txRollback, mapErr(err)
 		}
 		var written string
 		err := tx.QueryRowContext(ctx, sqlFinalizeStep, TimeText(now.UTC()), id).Scan(&written)
@@ -147,9 +149,9 @@ func (s *Store) FinalizeStep(ctx context.Context, id string, now time.Time) (sto
 
 // FinalizeJob implements [store.JobStore].
 //
-// Anchor: the job row. As in [Store.FinalizeStep], the current status is read
-// before the anchor, only to report an already-terminal job, and a PostgreSQL
-// store should re-read it under the lock.
+// Anchor: the job row. As in [Store.FinalizeStep], the current status, used
+// only to report an already-terminal job, is read under the anchor, so it is
+// current against every job-anchored writer.
 func (s *Store) FinalizeJob(ctx context.Context, id string, now time.Time) (store.JobStatus, bool, error) {
 	// terminal is as in [Store.FinalizeStep].
 	var (
@@ -158,12 +160,14 @@ func (s *Store) FinalizeJob(ctx context.Context, id string, now time.Time) (stor
 	)
 	err := s.inTx(ctx, "finalize job", func(tx *dbTx) (txOutcome, error) {
 		status, terminal, finalized = "", "", false
+		// The lock on a missing job locks nothing, so the SELECT after it
+		// returns sql.ErrNoRows, which mapErr turns into ErrNotFound.
+		if err := tx.lockAnchors(ctx, jobAnchor(id)); err != nil {
+			return txRollback, err
+		}
 		var current string
 		if err := tx.QueryRowContext(ctx, `SELECT status FROM jobs WHERE id = ?`, id).Scan(&current); err != nil {
 			return txRollback, mapErr(err)
-		}
-		if err := tx.lockAnchors(ctx, jobAnchor(id)); err != nil {
-			return txRollback, err
 		}
 		nowText := TimeText(now.UTC())
 		var written string

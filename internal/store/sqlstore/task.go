@@ -5,6 +5,7 @@ package sqlstore
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"slices"
 	"strings"
@@ -819,17 +820,33 @@ func (s *Store) RecordTaskFailure(
 
 // RequeueTaskForRetry implements [store.TaskStore]. Zero rows (task missing,
 // no longer assigned/running, or attemptID not the task's latest attempt) is a
-// legitimate no-op reported as false — NOT an error, so a stale redelivery
+// legitimate no-op reported as false: NOT an error, so a stale redelivery
 // never naks into a redelivery loop.
+//
+// Anchor: the task's job row, so the latest-attempt check in the guard cannot
+// be overtaken by a lease committing a new attempt (a lease holds the job row
+// shared).
 func (s *Store) RequeueTaskForRetry(ctx context.Context, taskID, attemptID string, retryAfter, now time.Time) (bool, error) {
-	res, err := s.w.ExecContext(ctx, sqlRequeueTaskForRetry,
-		TimeText(retryAfter.UTC()), TimeText(now.UTC()), taskID, attemptID, taskID, taskID)
-	if err != nil {
-		return false, mapErr(err)
-	}
-	n, err := res.RowsAffected()
-	if err != nil {
-		return false, err
-	}
-	return n > 0, nil
+	var requeued bool
+	err := s.inTx(ctx, "requeue task for retry", func(tx *dbTx) (txOutcome, error) {
+		requeued = false
+		if err := lockTaskJobTx(ctx, tx, taskID); err != nil {
+			if errors.Is(err, store.ErrNotFound) {
+				return txRollback, nil // missing task: a no-op, not an error
+			}
+			return txRollback, err
+		}
+		res, err := tx.ExecContext(ctx, sqlRequeueTaskForRetry,
+			TimeText(retryAfter.UTC()), TimeText(now.UTC()), taskID, attemptID, taskID, taskID)
+		if err != nil {
+			return txRollback, mapErr(err)
+		}
+		n, err := res.RowsAffected()
+		if err != nil {
+			return txRollback, err
+		}
+		requeued = n > 0
+		return txCommit, nil
+	})
+	return requeued, err
 }

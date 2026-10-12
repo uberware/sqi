@@ -417,6 +417,37 @@ func TestPGRace_G3_ReaperReturnsExactlyWhatItReset(t *testing.T) {
 	}
 }
 
+// TestPGRace_FinalizeJobReportsTheStatusUnderTheLock: a FinalizeJob that waits
+// for another finalize of the same job reports the job's status as the other
+// left it (already terminal), not as it read it before waiting.
+func TestPGRace_FinalizeJobReportsTheStatusUnderTheLock(t *testing.T) {
+	st, p := pgRace(t)
+	farm, queue := seedFarmQueueRace(t, st)
+	storetest.NewJob("job-fin", farm, queue).As(store.JobStatusRunning).
+		Step("step-fin", store.StepStatusCompleted).
+		Task("job-fin-t", "step-fin", store.TaskStatusSucceeded).
+		Submit(t, st)
+	p.atStatement(sqlstore.SQLFinalizeJob)
+	var status store.JobStatus
+	var finalized bool
+	pausedErr, competitorErr, waited := interleave(t, p,
+		func() error { _, _, err := st.FinalizeJob(t.Context(), "job-fin", time.Now()); return err },
+		func() (err error) {
+			status, finalized, err = st.FinalizeJob(t.Context(), "job-fin", time.Now())
+			return
+		})
+	assertPausedAt(t, p, sqlstore.SQLFinalizeJob)
+	if pausedErr != nil || competitorErr != nil {
+		t.Fatalf("finalize errors: paused %v, competitor %v", pausedErr, competitorErr)
+	}
+	if !waited {
+		t.Error("the second finalize did not wait for the first's job-row lock")
+	}
+	if finalized || status != store.JobStatusCompleted {
+		t.Fatalf("second FinalizeJob = (%s, %v), want (completed, false): it must report the status it found under the lock", status, finalized)
+	}
+}
+
 func mustTask(t *testing.T, st store.Store, id string) store.Task {
 	t.Helper()
 	task, err := st.GetTask(t.Context(), id)
