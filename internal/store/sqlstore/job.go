@@ -805,13 +805,13 @@ func purgeExpiredJobTx(ctx context.Context, tx *dbTx, recheck string, args []any
 // and the transaction is rolled back with [store.ErrNotFound].
 //
 // The job anchor is taken first, which serializes the cascade against the other
-// job-anchored writers (cancel, retry, finalize, completion, retention). It
-// does not by itself stop a log append (CreateTaskLog, no transaction, no
-// anchor) or a lease (LeaseTask, which anchors only the queue, farm and pool
-// rows) from inserting a child row after its table was cleared, so on
-// PostgreSQL a later DELETE in the cascade (claims, logs, attempts, tasks,
-// steps, dependency edges, then the job row) can still fail on a foreign key. A
-// PostgreSQL store must retry the cascade on a foreign-key or deadlock error.
+// job-anchored writers (cancel, retry, finalize, completion, retention), and
+// against leases, which hold the job row FOR SHARE. It does not stop a log
+// append (CreateTaskLog, no transaction, no anchor) from inserting a child row
+// after its table was cleared, so on PostgreSQL a later DELETE in the cascade
+// (claims, logs, attempts, tasks, steps, dependency edges, then the job row)
+// can still fail on a foreign key. A PostgreSQL store must retry the cascade on
+// a foreign-key or deadlock error.
 // SQLite cannot produce either error: its single write connection serializes
 // every writer.
 func (s *Store) DeleteJob(ctx context.Context, id string) error {

@@ -197,8 +197,9 @@ func workerBindArgs(w store.Worker, now string) ([]any, error) {
 // RegisterWorker implements [store.WorkerStore].
 //
 // Anchor: the worker row, then (on a restart) the reclaim's job rows, the same
-// order as offlineWorker, and sharing the gap it leaves on PostgreSQL
-// (LeaseTask does not anchor the worker row).
+// order as offlineWorker. A restart's reclaim is ordered against leases the way
+// offlineWorker is: LeaseTask holds the worker row FOR SHARE, so a lease in
+// flight is waited for and its task reclaimed.
 func (s *Store) RegisterWorker(ctx context.Context, worker store.Worker) (store.Worker, []store.Task, error) {
 	now := time.Now().UTC()
 	args, err := workerBindArgs(worker, TimeText(now))

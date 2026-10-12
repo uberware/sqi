@@ -139,13 +139,13 @@ func closeAttemptAndReleaseTx(ctx context.Context, tx *dbTx, c store.AttemptComp
 // move the task. The claims are released before the task row is touched, and
 // the release commits even when the task move is refused, so a canceled task's
 // late report still frees its pool slots. The latest-attempt check runs after
-// the release and before the task move. Here the single write connection makes
-// the check and the move one step. On Postgres it does not: a LeaseTask
-// committing between the check and the compare-and-set's read would make a
-// superseded report look current, and LeaseTask does not take the job row, so a
-// PostgreSQL store must lock the task row (FOR UPDATE, after the job anchor)
-// before the check, so that a lease in flight is waited for and its attempt is
-// seen.
+// the release and before the task move, and the job anchor makes the two one
+// step on every store: LeaseTask holds the task's job row FOR SHARE, so a lease
+// in flight when the anchor is taken is waited for and its attempt is seen by
+// the check, and a lease that starts later waits for this commit. No lease can
+// therefore add a newer attempt between the check and the compare-and-set's
+// read, which would make a superseded report look current, and no task-row
+// lock is needed. On SQLite the single write connection gives the same.
 func (s *Store) CompleteTaskAttempt(ctx context.Context, c store.AttemptCompletion) (store.CompletionResult, error) {
 	var result store.CompletionResult
 	err := s.inTx(ctx, "complete task attempt", func(tx *dbTx) (txOutcome, error) {
@@ -293,19 +293,20 @@ func closeTaskAttemptsTx(ctx context.Context, tx *dbTx, taskID string, status st
 // then are their attempts closed and their claims released. The job's steps are
 // finalized after that, and the job row itself is canceled last, under the same
 // guard as [Store.CancelJobStatus], so a job cancel is one write: no stop or
-// failed second write can leave a job live with all of its work canceled. A
-// LeaseTask that holds one of the tasks is therefore waited for by the task
-// UPDATE (whose predicate matches the task both as ready and as assigned), and
-// the attempt and claims it committed are seen by the two statements after it.
-// Closing attempts first would miss an attempt a lease created in between.
+// failed second write can leave a job live with all of its work canceled. The
+// task UPDATE's predicate matches a task both as ready and as assigned, and the
+// attempts and claims are closed only after it, so whatever any writer
+// committed to a task before the UPDATE is seen by the two statements after it.
+// Closing attempts first would miss an attempt created in between.
 //
-// The anchor does not make the reported set exact on Postgres. LeaseTask does
-// not take the job row, so a lease that commits between the SELECT and the task
-// UPDATE is canceled, and its attempt and claims closed, but it is not in the
-// returned set and its worker gets no cancel signal. A PostgreSQL store must
-// close that: either LeaseTask also anchors the job row, or the set comes from
-// the UPDATE itself. None of it can arise here, where the single write
-// connection serializes the lease against this whole transaction.
+// The anchor also makes the reported set exact. LeaseTask holds the job row FOR
+// SHARE, so no lease commits between the SELECT and the task UPDATE: a lease in
+// flight when the anchor is taken is waited for, and its task is reported as
+// assigned; a lease that starts later waits for this commit and then finds the
+// job canceled, which is Lost. Every task the UPDATE takes out of flight is
+// therefore in the returned set, and its worker gets a cancel signal. On
+// SQLite the single write connection serializes the lease against this whole
+// transaction, to the same effect.
 func (s *Store) CancelJobExecution(ctx context.Context, jobID, reason string, now time.Time) ([]store.Task, error) {
 	var active []store.Task
 	err := s.inTx(ctx, "cancel job execution", func(tx *dbTx) (txOutcome, error) {
@@ -357,11 +358,11 @@ func (s *Store) CancelJobExecution(ctx context.Context, jobID, reason string, no
 // is closed and its claims released. The task row is read after the lock rather
 // than before it, so on Postgres the returned prior task is current against
 // every job-anchored writer. The "already terminal" answer comes from the
-// guarded UPDATE itself, so it is exact on any store. The prior task is NOT
-// protected against a LeaseTask, which does not take the job row: on Postgres a
-// lease that commits between the read and the UPDATE is canceled while prior
-// still shows the task ready with no worker, so no cancel signal reaches that
-// worker. That is CancelJobExecution's gap, and both close the same way.
+// guarded UPDATE itself, so it is exact on any store. The prior task is current
+// against LeaseTask too, which holds the job row FOR SHARE: no lease commits
+// between the read and the UPDATE, so a task leased just before the anchor is
+// read as assigned to its worker, which then gets a cancel signal, and a lease
+// that waited for this commit finds the task canceled and is Lost.
 func (s *Store) CancelTaskExecution(ctx context.Context, taskID, reason string, now time.Time) (store.Task, bool, error) {
 	var (
 		prior    store.Task
@@ -472,25 +473,25 @@ func (s *Store) OfflineWorker(ctx context.Context, id, instanceID string, now ti
 // re-checks its predicate against the committed row), and the attempt and claims
 // that report committed are seen by the statements after it. Closing attempts
 // first would let a report move the task (assigned to running, say) after its
-// attempt was already closed as failed. A LeaseTask still in flight is NOT waited
-// for: it is moving a ready row, which the reclaim's predicate does not match in
-// the version its snapshot sees, so the UPDATE skips that row. The gap that
-// leaves is the one described next (LeaseTask does not anchor the worker); until
-// a PostgreSQL store closes it, the stale-assignment reaper recovers a task a
-// lease hands a worker that has already gone offline.
+// attempt was already closed as failed.
 //
-// What a PostgreSQL store must do. The marking UPDATE takes the worker row lock
-// itself, so the worker anchor is already first. The in-flight job IDs are read
-// UNLOCKED, after the worker row is held and before any task row is touched, and
-// the job rows are locked sorted before the reclaim UPDATE; a task row locked
-// before its job row is the inversion every job-level operation would deadlock
-// on. That read is only a candidate set: a task leased to this worker after it
-// has an unanchored job row, because LeaseTask does not take the worker row.
-// It must either have LeaseTask take the worker row FOR SHARE, or re-read the
-// set once the worker row is held and repeat until it is stable. None of that
-// arises on SQLite: its single write connection serializes every writer, so
-// the set read below cannot change before the reclaim, and its LockAnchors
-// does nothing.
+// Against LeaseTask, the worker anchor is what orders the two. LeaseTask holds
+// the worker row FOR SHARE from before it moves the task to its commit, and
+// re-checks under it that the worker is online and enabled. A lease in flight
+// when the anchor is requested is therefore waited for: it commits first, and
+// its task, now assigned to this worker, is in the in-flight set read after the
+// lock and is reclaimed. A lease that starts later waits for this commit and
+// then sees the worker offline, and is Lost. No lease can hand this worker a
+// task between the mark and the commit, so no task is left assigned to a
+// worker that is offline.
+//
+// The in-flight job IDs are read UNLOCKED, after the worker row is held and
+// before any task row is touched, and the job rows are locked sorted before the
+// reclaim UPDATE; a task row locked before its job row is the inversion every
+// job-level operation would deadlock on. Because no lease can add a task for
+// this worker while its row is held, that read is the complete set. None of
+// that matters on SQLite: its single write connection serializes every writer,
+// and its LockAnchors does nothing.
 func (s *Store) offlineWorker(ctx context.Context, id string, now time.Time, markSQL string, markArgs ...any) ([]store.Task, bool, error) {
 	var (
 		reclaimed []store.Task

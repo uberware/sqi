@@ -448,3 +448,36 @@ func TestLeaseTask_SamePoolTwice(t *testing.T) {
 		})
 	}
 }
+
+// TestLeaseTask_RefusedForAnOfflineOrDisabledWorker: a lease for a worker whose
+// row says it cannot take work is Lost and writes nothing. A worker with no
+// row is not refused (the store does not require registration; the scheduler
+// does).
+func TestLeaseTask_RefusedForAnOfflineOrDisabledWorker(t *testing.T) {
+	for name, st := range newStores(t) {
+		t.Run(name, func(t *testing.T) {
+			g := seedStepA(t, st, graphOpts{}, store.TaskStatusReady, store.TaskStatusReady, store.TaskStatusReady)
+			now := time.Now().UTC()
+			for _, w := range []store.Worker{
+				{ID: "w-off", FarmID: g.Farm.ID, Hostname: "off", Status: store.WorkerStatusOffline},
+				{ID: "w-dis", FarmID: g.Farm.ID, Hostname: "dis", Status: store.WorkerStatusOnline, LastHeartbeatAt: &now},
+			} {
+				if _, _, err := st.RegisterWorker(t.Context(), w); err != nil {
+					t.Fatalf("RegisterWorker: %v", err)
+				}
+			}
+			if _, err := st.SetWorkerDisabled(t.Context(), "w-dis", true); err != nil {
+				t.Fatalf("SetWorkerDisabled: %v", err)
+			}
+			for i, worker := range []string{"w-off", "w-dis"} {
+				req := leaseReq(g.Tasks["a"][i])
+				req.WorkerID = worker
+				mustLease(t, st, req, store.LeaseLost)
+				assertNothingWritten(t, st, g.Tasks["a"][i])
+			}
+			req := leaseReq(g.Tasks["a"][2])
+			req.WorkerID = "never-registered"
+			mustLease(t, st, req, store.LeaseLeased)
+		})
+	}
+}

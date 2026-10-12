@@ -15,15 +15,31 @@ import (
 
 const (
 	// sqlLeaseScope reads what LeaseTask needs before it takes its anchors: the
-	// task's queue and farm, and their caps. The inner joins make a task whose
-	// job, queue or farm row is missing read as unknown, which is Lost.
+	// task's job, queue and farm, and the queue's and farm's caps. The inner
+	// joins make a task whose job, queue or farm row is missing read as
+	// unknown, which is Lost. A task's job never changes; the caps can, so the
+	// anchored ones are re-read under their locks (sqlLeaseCaps).
 	sqlLeaseScope = `
-SELECT j.queue_id, j.farm_id, q.max_concurrent_tasks, f.max_concurrent_tasks
+SELECT t.job_id, j.queue_id, j.farm_id, q.max_concurrent_tasks, f.max_concurrent_tasks
 FROM   tasks  t
 JOIN   jobs   j ON t.job_id   = j.id
 JOIN   queues q ON j.queue_id = q.id
 JOIN   farms  f ON j.farm_id  = f.id
 WHERE  t.id = ?`
+
+	// sqlLeaseWorkerRefuses is true when the worker's row says it cannot take
+	// work: offline, or disabled. It runs under the worker row's shared lock, so
+	// a sweep or a deregister taking the worker offline is either waited for or
+	// seen. A worker with no row is not refused: the store does not require
+	// registration (the scheduler does, before it leases).
+	sqlLeaseWorkerRefuses = `
+SELECT EXISTS (SELECT 1 FROM workers WHERE id = ? AND (status <> 'online' OR disabled))`
+
+	// sqlLeaseCaps re-reads the queue's and the farm's caps under their locks.
+	sqlLeaseCaps = `
+SELECT q.max_concurrent_tasks, f.max_concurrent_tasks
+FROM   queues q, farms f
+WHERE  q.id = ? AND f.id = ?`
 
 	// sqlLeaseTaskGuarded moves one task ready → assigned only while it passes
 	// sqlLeasableTask, the predicate ListReadyTasks lists by, so a task that
@@ -45,11 +61,11 @@ WHERE  t.id = ?`
 SELECT COALESCE(MAX(attempt_number), 0) + 1 FROM task_attempts WHERE task_id = ?`
 )
 
-// leaseScope is the task's queue and farm, with the caps read for them. A cap
-// of 0 means unlimited.
+// leaseScope is the task's job, queue and farm, with the caps read for the
+// queue and the farm. A cap of 0 means unlimited.
 type leaseScope struct {
-	queueID, farmID   string
-	queueCap, farmCap int
+	jobID, queueID, farmID string
+	queueCap, farmCap      int
 }
 
 // LeaseTask implements [store.TaskStore].
@@ -74,23 +90,54 @@ func (s *Store) LeaseTask(ctx context.Context, req store.LeaseRequest) (store.Le
 // leaseTx runs the lease's statements inside tx. The caller commits only a
 // Leased result.
 //
-// Statement order. The anchors are the queue row and the farm row,
-// each only when it has a cap, then every requested pool row in pool-ID order:
-// the anchor table's order, so two leases lock the rows they share in the same
-// order and cannot deadlock on Postgres. The scope read precedes them only
-// because it names those rows and says which are capped. The task's guarded
-// UPDATE runs before any count: it takes the task's row lock, so a concurrent
-// cancel of this task is ordered against the lease, and every count
-// after it includes the task itself. The queue, farm and pool counts each run
-// under their anchor, so no other lease can change them between this count
-// and this write (I5). The attempt is inserted before its claims, which
-// reference it. The queue and farm caps used here were read before the
-// anchors were taken, so on Postgres they must be re-read under the anchor
-// locks, and a queue or farm read as uncapped is not anchored at all, so a cap
-// set on it concurrently is not seen by this lease. The pool caps are read
-// under their anchors already. The lease takes neither the task's job row nor
-// the worker row; "Store invariants" in docs/architecture.md lists what that
-// leaves open on Postgres.
+// Statement order. The scope read comes first, only because it names the
+// anchor rows and says which of the queue and the farm are capped. The anchors
+// follow, in the global lock order (worker, job, queue, farm, pools): the
+// requesting worker's row and the task's job row FOR SHARE, then the queue row
+// and the farm row FOR UPDATE, each only when it has a cap, then every
+// requested pool row FOR UPDATE in pool-ID order. Two leases therefore never
+// wait on each other for a worker or a job row, and take the rows they both
+// lock exclusively in the same order, so they cannot deadlock on Postgres.
+//
+// Under those locks the lease re-checks the worker (sqlLeaseWorkerRefuses: the
+// lease of an offline or disabled worker is Lost and writes nothing) and
+// re-reads the anchored caps (rereadCapsTx), so the worker state and the caps
+// it decides on are the committed ones, not the ones read before the locks.
+// Every operation that holds the worker row or the job row FOR UPDATE and this
+// lease now wait for each other, which closes, on Postgres:
+//
+//   - a cancel's reported set. CancelJobExecution and CancelTaskExecution hold
+//     the job row from the read of the tasks they report to the UPDATE that
+//     cancels them, so no lease commits in between: the set is exact, and a
+//     lease that waited finds the job or task no longer leasable;
+//   - a worker going offline against a lease. Taking a worker offline (the
+//     heartbeat sweep, a deregister, a restart's reclaim) holds the worker row
+//     from its marking UPDATE to commit: a lease already holding the row is
+//     waited for and its task reclaimed, and a lease that waited sees the
+//     worker offline and is Lost;
+//   - the latest-attempt checks. CompleteTaskAttempt and the other
+//     job-anchored attempt writers hold the job row from the check to the task
+//     write, so no lease adds a newer attempt between the two;
+//   - demotion. A demotion that holds the job row while it re-checks that no
+//     task of the job is in flight waits for a lease in flight and sees its
+//     task, or is waited for and leaves a job the lease then finds stopped.
+//
+// The cost: completions and other job-row writers serialize briefly with
+// leases on the same job (they already serialized among themselves on that
+// row), and a write to a worker row, such as a heartbeat, waits briefly for
+// that worker's lease in flight. Leases among themselves never wait.
+//
+// The task's guarded UPDATE runs before any count: it takes the task's row
+// lock, and every count after it includes the task itself. The queue, farm and
+// pool counts each run under their anchor, so no other lease can change them
+// between this count and this write (I5). A queue or farm read as uncapped is
+// not anchored: a cap set on it concurrently orders after this lease, exactly
+// as if the lease had committed first, and setting a cap never evicts running
+// work. The pool caps are read under their anchors already. The attempt is
+// inserted before its claims, which reference it. On SQLite the locks do
+// nothing, since the single write connection serializes the whole
+// transaction, but the worker re-check is a real check there too: it refuses a
+// worker that went offline or was disabled after the scheduler read it.
 func leaseTx(ctx context.Context, tx *dbTx, req store.LeaseRequest) (store.LeaseResult, error) {
 	lost := store.LeaseResult{Outcome: store.LeaseLost}
 	scope, found, err := readLeaseScopeTx(ctx, tx, req.TaskID)
@@ -102,8 +149,15 @@ func leaseTx(ctx context.Context, tx *dbTx, req store.LeaseRequest) (store.Lease
 	}
 	claims := slices.Clone(req.Claims)
 	slices.SortStableFunc(claims, func(a, b store.UsagePoolClaim) int { return cmp.Compare(a.PoolID, b.PoolID) })
-	if err := tx.lockAnchors(ctx, scope.anchors(claims)...); err != nil {
+	if err := tx.lockAnchors(ctx, scope.anchors(req.WorkerID, claims)...); err != nil {
 		return store.LeaseResult{}, err
+	}
+	ok, err := scope.recheckUnderLocksTx(ctx, tx, req.WorkerID)
+	if err != nil {
+		return store.LeaseResult{}, err
+	}
+	if !ok {
+		return lost, nil
 	}
 
 	nowText := TimeText(req.Now)
@@ -129,10 +183,11 @@ func leaseTx(ctx context.Context, tx *dbTx, req store.LeaseRequest) (store.Lease
 	return store.LeaseResult{Outcome: store.LeaseLeased, Attempt: attempt}, nil
 }
 
-// readLeaseScopeTx reads the task's queue and farm and their caps. found is
-// false when the task, or its job, queue or farm row, does not exist.
+// readLeaseScopeTx reads the task's job, queue and farm and the queue's and
+// farm's caps. found is false when the task, or its job, queue or farm row,
+// does not exist.
 func readLeaseScopeTx(ctx context.Context, tx *dbTx, taskID string) (scope leaseScope, found bool, err error) {
-	err = tx.QueryRowContext(ctx, sqlLeaseScope, taskID).Scan(&scope.queueID, &scope.farmID, &scope.queueCap, &scope.farmCap)
+	err = tx.QueryRowContext(ctx, sqlLeaseScope, taskID).Scan(&scope.jobID, &scope.queueID, &scope.farmID, &scope.queueCap, &scope.farmCap)
 	if errors.Is(err, sql.ErrNoRows) {
 		return leaseScope{}, false, nil
 	}
@@ -142,11 +197,15 @@ func readLeaseScopeTx(ctx context.Context, tx *dbTx, taskID string) (scope lease
 	return scope, true, nil
 }
 
-// anchors lists the lease's anchor rows in lock order: the queue and the farm,
-// each only when capped, then each pool in the order of claims, which the
-// caller has sorted by pool ID.
-func (sc leaseScope) anchors(claims []store.UsagePoolClaim) []Anchor {
-	out := make([]Anchor, 0, 2+len(claims))
+// anchors lists the lease's anchor rows in the global lock order: the worker
+// row and the task's job row shared (leases never wait on each other, but
+// every operation holding either row FOR UPDATE waits for the lease and is
+// waited for by it), then the queue and the farm exclusively, each only when
+// capped, then each pool exclusively in the order of claims, which the caller
+// has sorted by pool ID.
+func (sc *leaseScope) anchors(workerID string, claims []store.UsagePoolClaim) []Anchor {
+	out := make([]Anchor, 0, 4+len(claims))
+	out = append(out, sharedAnchor(workerAnchor(workerID)), sharedAnchor(jobAnchor(sc.jobID)))
 	if sc.queueCap > 0 {
 		out = append(out, queueAnchor(sc.queueID))
 	}
@@ -157,6 +216,49 @@ func (sc leaseScope) anchors(claims []store.UsagePoolClaim) []Anchor {
 		out = append(out, poolAnchor(c.PoolID))
 	}
 	return out
+}
+
+// recheckUnderLocksTx runs the lease's checks that must see the rows as they are
+// under its anchors: the worker re-check, then the cap re-read. ok is false when
+// the lease must be Lost: the worker's row says it cannot take work.
+func (sc *leaseScope) recheckUnderLocksTx(ctx context.Context, tx *dbTx, workerID string) (ok bool, err error) {
+	var refuses bool
+	if err := tx.QueryRowContext(ctx, sqlLeaseWorkerRefuses, workerID).Scan(&refuses); err != nil {
+		return false, fmt.Errorf("store: check worker %s for lease: %w", workerID, mapErr(err))
+	}
+	if refuses {
+		return false, nil
+	}
+	return sc.rereadCapsTx(ctx, tx)
+}
+
+// rereadCapsTx replaces the caps read before the locks with the values under
+// them, for the rows that were anchored (capped). A row read as uncapped stays
+// unanchored and uncapped: a cap committed concurrently orders after this
+// lease, exactly as if the lease had committed first, and setting a cap never
+// evicts running work. An anchored row whose cap was cleared meanwhile re-reads
+// as 0, unlimited, which fullTx skips. ok is false when the queue or the farm
+// row is gone, which the lease's job-row lock and the foreign keys rule out
+// but which reads as Lost, as the scope read's inner joins do.
+func (sc *leaseScope) rereadCapsTx(ctx context.Context, tx *dbTx) (ok bool, err error) {
+	if sc.queueCap <= 0 && sc.farmCap <= 0 {
+		return true, nil
+	}
+	var q, f int
+	err = tx.QueryRowContext(ctx, sqlLeaseCaps, sc.queueID, sc.farmID).Scan(&q, &f)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("store: re-read lease caps: %w", mapErr(err))
+	}
+	if sc.queueCap > 0 {
+		sc.queueCap = q
+	}
+	if sc.farmCap > 0 {
+		sc.farmCap = f
+	}
+	return true, nil
 }
 
 // leaseTaskRowTx makes the guarded ready → assigned write and reports whether
@@ -178,7 +280,7 @@ func leaseTaskRowTx(ctx context.Context, tx *dbTx, req store.LeaseRequest, nowTe
 // lease's own task update, so each count includes the task being leased: a
 // count above the cap means the task did not fit. It returns the outcome of
 // the first full one, queue before farm, or "" when both have room.
-func (sc leaseScope) fullTx(ctx context.Context, tx *dbTx) (store.LeaseOutcome, error) {
+func (sc *leaseScope) fullTx(ctx context.Context, tx *dbTx) (store.LeaseOutcome, error) {
 	checks := []struct {
 		capacity  int
 		query, id string
