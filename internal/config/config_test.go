@@ -2657,6 +2657,12 @@ func TestRedactDSN(t *testing.T) {
 		{"postgres://sqi:hun ter2@db/sqi", "hunter2"},
 		{"postgres://sqi:hunter2%zz@db/sqi", "hunter2"},
 		{"POSTGRES://sqi:hunter2@db/sqi", "hunter2"},
+		// A password that starts with digits and then runs into "#", "?" or "/"
+		// reads as host:port with a fragment, query or path after it, so no
+		// userinfo is parsed out; the "@" is what gives it away.
+		{"postgres://sqi:123#ss@db/sqi", "123#ss"},
+		{"postgres://sqi:123?ss@db/sqi", "123?ss"},
+		{"postgres://sqi:123/ss@db/sqi", "123/ss"},
 		// The client key's passphrase is a secret too, as is a query password
 		// url.Values would drop for its semicolon.
 		{"host=db sslpassword=hunter2 dbname=sqi", "hunter2"},
@@ -2684,6 +2690,12 @@ func TestRedactDSN_KeepsEverythingElse(t *testing.T) {
 		{"postgres:///sqi?host=/var/run/postgresql", "postgres:///sqi?host=/var/run/postgresql"},
 		{"postgres://sqi:@db/sqi", "postgres://sqi:@db/sqi"},
 		{"", ""},
+		// Failing closed reduces the DSN to its scheme and a placeholder. This
+		// includes a DSN whose "@" sits outside any userinfo, which is
+		// indistinguishable from a truncated authority.
+		{"postgres://sqi:123#ss@db/sqi", "postgres://<redacted>"},
+		{"postgres://sqi:hunter2%zz@db/sqi", "postgres://<redacted>"},
+		{"postgres://db/sqi?application_name=a@b", "postgres://<redacted>"},
 	}
 	for _, tc := range tests {
 		if got := config.RedactDSN(tc.in); got != tc.want {

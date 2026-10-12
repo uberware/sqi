@@ -256,22 +256,27 @@ var queryPassword = regexp.MustCompile(`(?i)((?:^|&)(?:ssl)?password=)[^&]+`)
 // RedactDSN returns dsn with its password replaced by a placeholder, in either
 // DSN form. A DSN without a password is returned unchanged.
 //
-// It fails closed: a URL-form DSN that [url.Parse] refuses (and so whose
-// password cannot be located) is reduced to its scheme and a placeholder
-// rather than returned as it came.
+// It fails closed: a URL-form DSN whose password cannot be located, because
+// [url.Parse] refuses it or because the password truncated the authority (see
+// below), is reduced to its scheme and a placeholder rather than returned as it
+// came.
 func RedactDSN(dsn string) string {
 	if scheme, ok := dsnURLScheme(dsn); ok {
 		u, err := url.Parse(dsn)
-		if err != nil {
+		// An "@" with no userinfo parsed out of it means the authority was cut
+		// short: a password that starts with digits and is followed by "#", "?"
+		// or "/" reads as host:port, with the rest taken for a fragment, query
+		// or path. The password is then somewhere in the result, so fail closed.
+		if err != nil || (u.User == nil && strings.Contains(dsn, "@")) {
 			return scheme + "://" + redactedPassword
 		}
 		changed := false
 		if pw, has := u.User.Password(); has && pw != "" {
-			u.User = url.UserPassword(u.User.Username(), "redacted")
+			u.User = url.UserPassword(u.User.Username(), redactedURLPassword)
 			changed = true
 		}
 		if queryPassword.MatchString(u.RawQuery) {
-			u.RawQuery = queryPassword.ReplaceAllString(u.RawQuery, "${1}redacted")
+			u.RawQuery = queryPassword.ReplaceAllString(u.RawQuery, "${1}"+redactedURLPassword)
 			changed = true
 		}
 		if !changed {
@@ -471,6 +476,11 @@ type BootstrapConfig struct {
 // in place of a non-empty Password. It is a marker, not a valid credential —
 // unmarshaling it back would not reproduce the original password.
 const redactedPassword = "<redacted>"
+
+// redactedURLPassword is the placeholder [RedactDSN] writes into a URL-form DSN
+// in place of its password. It is the bare word because [url.URL] would
+// percent-encode the angle brackets of [redactedPassword].
+const redactedURLPassword = "redacted"
 
 // MarshalYAML redacts Password so it never appears in YAML output (e.g.
 // `sqi-server config print`, logs of a marshaled config). It does not affect
