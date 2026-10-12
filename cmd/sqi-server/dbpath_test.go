@@ -318,6 +318,16 @@ func TestResolveStoreTarget(t *testing.T) {
 		t.Fatalf("postgres from config = %+v, %v", got, err)
 	}
 
+	// A driver the server would reject must not resolve to SQLite: that would
+	// let "migrate up" create ./sqi.db and exit 0 for a config the server
+	// refuses to start on.
+	t.Setenv("SQI_STORE_DRIVER", "postgresql")
+	if got, err := resolveStoreTarget(cmd, "sqi.db", ""); err == nil ||
+		!strings.Contains(err.Error(), `store.driver must be sqlite or postgres, got "postgresql"`) {
+		t.Fatalf("unknown driver = %+v, %v; want a store.driver error", got, err)
+	}
+	t.Setenv("SQI_STORE_DRIVER", "postgres")
+
 	if err := cmd.Flags().Set("db", "other.db"); err != nil {
 		t.Fatal(err)
 	}
@@ -331,5 +341,90 @@ func TestResolveStoreTarget(t *testing.T) {
 	got, err = resolveStoreTarget(cmd, "other.db", "postgres://flag@db/sqi")
 	if err != nil || got.Driver != "postgres" || got.DSN != "postgres://flag@db/sqi" {
 		t.Fatalf("--dsn wins = %+v, %v", got, err)
+	}
+}
+
+// isolateConfigDiscovery makes config.Load's default search find nothing a
+// developer has on disk: the working directory (for ./config/sqi-server.yaml)
+// and the home directory (for ~/.sqi/sqi-server.yaml) both become empty temp
+// directories, and no -c is set.
+func isolateConfigDiscovery(t *testing.T) {
+	t.Helper()
+	withConfigFile(t, "")
+	t.Chdir(t.TempDir())
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+}
+
+// TestResolveStoreTarget_UnloadableConfigWithoutExplicitConfig pins the limit
+// of the no -c lenience. A failed load returns a zero Config, losing every
+// env setting, SQI_STORE_DRIVER included; falling back to SQLite is fine when
+// the operator asked for SQLite (or nothing), but not when SQI_STORE_DRIVER
+// names another driver, where it would quietly open (or, for migrate, create)
+// the wrong store.
+func TestResolveStoreTarget_UnloadableConfigWithoutExplicitConfig(t *testing.T) {
+	for _, tc := range []struct {
+		driver  string
+		wantErr bool
+	}{
+		{"postgres", true},
+		{"postgresql", true},
+		{"sqlite", false},
+		{"", false},
+	} {
+		t.Run("SQI_STORE_DRIVER="+tc.driver, func(t *testing.T) {
+			unsetStoreSQLitePathEnv(t)
+			isolateConfigDiscovery(t)
+			t.Setenv("SQI_SCHEDULER_TICK_INTERVAL", "not-a-duration")
+			t.Setenv("SQI_STORE_DRIVER", tc.driver)
+			t.Setenv("SQI_STORE_POSTGRES_DSN", "postgres://x@db/sqi")
+
+			cmd := &cobra.Command{}
+			cmd.Flags().String("db", "sqi.db", "")
+			cmd.Flags().String("dsn", "", "")
+
+			var got storeTarget
+			var err error
+			_ = captureStderr(t, func() { got, err = resolveStoreTarget(cmd, "sqi.db", "") })
+			if tc.wantErr {
+				if err == nil || !strings.Contains(err.Error(), "load config") ||
+					!strings.Contains(err.Error(), "SQI_SCHEDULER_TICK_INTERVAL") {
+					t.Fatalf("resolveStoreTarget = %+v, %v; want the load error", got, err)
+				}
+				return
+			}
+			if err != nil || got.Driver != "sqlite" || got.SQLitePath != "sqi.db" {
+				t.Fatalf("resolveStoreTarget = %+v, %v; want the lenient SQLite default", got, err)
+			}
+		})
+	}
+}
+
+// TestResolveStoreTarget_ExplicitConfigMustLoadWithDSN pins that an explicit
+// -c is loaded, and its failure reported, even when --dsn means the config
+// decides nothing, exactly as it is with --db.
+func TestResolveStoreTarget_ExplicitConfigMustLoadWithDSN(t *testing.T) {
+	unsetStoreSQLitePathEnv(t)
+	t.Setenv("SQI_STORE_DRIVER", "")
+	t.Setenv("SQI_STORE_POSTGRES_DSN", "")
+
+	cmd := &cobra.Command{}
+	cmd.Flags().String("db", "sqi.db", "")
+	cmd.Flags().String("dsn", "", "")
+	if err := cmd.Flags().Set("dsn", "postgres://flag@db/sqi"); err != nil {
+		t.Fatal(err)
+	}
+
+	withConfigFile(t, filepath.Join(t.TempDir(), "does-not-exist.yaml"))
+	if got, err := resolveStoreTarget(cmd, "sqi.db", "postgres://flag@db/sqi"); err == nil ||
+		!strings.Contains(err.Error(), "load config") {
+		t.Fatalf("-c missing.yaml --dsn = %+v, %v; want the load error", got, err)
+	}
+
+	withConfigFile(t, writeEmptyServerConfigFile(t))
+	got, err := resolveStoreTarget(cmd, "sqi.db", "postgres://flag@db/sqi")
+	if err != nil || got.Driver != "postgres" || got.DSN != "postgres://flag@db/sqi" {
+		t.Fatalf("-c good.yaml --dsn = %+v, %v", got, err)
 	}
 }

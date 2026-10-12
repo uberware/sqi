@@ -132,26 +132,31 @@ type storeTarget struct{ Driver, SQLitePath, DSN string }
 // resolveStoreTarget decides which store a CLI command uses. In order: an
 // explicit --dsn (PostgreSQL); an explicit --db (SQLite at that path); the
 // configured store.driver, with store.postgres.dsn for PostgreSQL and
-// resolveDBPath's layering for SQLite. Configuration-load failures follow
-// resolveDBPath's rules.
+// resolveDBPath's layering for SQLite.
+//
+// Configuration-load failures follow resolveDBPath's rules, with two
+// tightenings. An explicit -c must load whichever flag decides the store, so
+// "-c broken.yaml --dsn ..." fails as "-c broken.yaml --db ..." does. And the
+// no -c lenience (fall back to SQLite) stops where SQI_STORE_DRIVER names
+// another driver, because the failed load has discarded that setting and
+// SQLite is then the wrong store, not a safe default. A driver the server
+// would reject is an error, never SQLite.
 func resolveStoreTarget(cmd *cobra.Command, dbFlag, dsnFlag string) (storeTarget, error) {
 	if flagChanged(cmd, "dsn") {
 		if dsnFlag == "" {
 			return storeTarget{}, errors.New("--dsn is empty")
 		}
+		if persistentFlags.ConfigFile != "" {
+			if _, _, err := config.LoadWithSources(persistentFlags.ConfigFile, config.FlagOverrides{}); err != nil {
+				return storeTarget{}, fmt.Errorf("load config: %w", err)
+			}
+		}
 		return storeTarget{Driver: backend.DriverPostgres, DSN: dsnFlag}, nil
 	}
 	if !flagChanged(cmd, "db") {
-		cfg, _, err := config.LoadWithSources(persistentFlags.ConfigFile, config.FlagOverrides{})
-		if err != nil && persistentFlags.ConfigFile != "" {
-			return storeTarget{}, fmt.Errorf("load config: %w", err)
-		}
-		if err == nil && cfg.Store.Driver == config.StoreDriverPostgres {
-			if cfg.Store.Postgres.DSN == "" {
-				return storeTarget{}, errors.New("store.driver is postgres but no DSN is set; " +
-					"use --dsn, set store.postgres.dsn, or set SQI_STORE_POSTGRES_DSN")
-			}
-			return storeTarget{Driver: backend.DriverPostgres, DSN: cfg.Store.Postgres.DSN}, nil
+		tgt, decided, err := configuredStoreTarget()
+		if err != nil || decided {
+			return tgt, err
 		}
 	}
 	path, err := resolveDBPath(dbFlag, flagChanged(cmd, "db"))
@@ -159,6 +164,38 @@ func resolveStoreTarget(cmd *cobra.Command, dbFlag, dsnFlag string) (storeTarget
 		return storeTarget{}, err
 	}
 	return storeTarget{Driver: backend.DriverSQLite, SQLitePath: path}, nil
+}
+
+// configuredStoreTarget resolves the store from configuration alone. It
+// reports decided only for PostgreSQL; SQLite (and the lenient fallback after
+// a failed load without -c) is left to resolveDBPath's layering.
+func configuredStoreTarget() (tgt storeTarget, decided bool, err error) {
+	cfg, _, err := config.LoadWithSources(persistentFlags.ConfigFile, config.FlagOverrides{})
+	if err != nil {
+		if persistentFlags.ConfigFile != "" {
+			return storeTarget{}, false, fmt.Errorf("load config: %w", err)
+		}
+		if d := os.Getenv("SQI_STORE_DRIVER"); d != "" && d != config.StoreDriverSQLite {
+			return storeTarget{}, false, fmt.Errorf(
+				"load config: %w (SQI_STORE_DRIVER is %q, so falling back to SQLite would use the wrong store)", err, d,
+			)
+		}
+		return storeTarget{}, false, nil
+	}
+	switch cfg.Store.Driver {
+	case "", config.StoreDriverSQLite:
+		return storeTarget{}, false, nil
+	case config.StoreDriverPostgres:
+		if cfg.Store.Postgres.DSN == "" {
+			return storeTarget{}, false, errors.New("store.driver is postgres but no DSN is set; " +
+				"use --dsn, set store.postgres.dsn, or set SQI_STORE_POSTGRES_DSN")
+		}
+		return storeTarget{Driver: backend.DriverPostgres, DSN: cfg.Store.Postgres.DSN}, true, nil
+	default:
+		return storeTarget{}, false, fmt.Errorf(
+			"store.driver must be sqlite or postgres, got %q; set SQI_STORE_DRIVER or store.driver", cfg.Store.Driver,
+		)
+	}
 }
 
 // flagChanged reports whether the operator passed the flag name to cmd. A nil
