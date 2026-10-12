@@ -3,6 +3,9 @@
 package sqlstore_test
 
 import (
+	"context"
+	"database/sql"
+	"errors"
 	"fmt"
 	"slices"
 	"strings"
@@ -13,6 +16,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/uberware/sqi/internal/store"
+	"github.com/uberware/sqi/internal/store/postgres"
 	"github.com/uberware/sqi/internal/store/sqlstore"
 	"github.com/uberware/sqi/internal/store/storetest"
 )
@@ -494,4 +498,187 @@ func assertNoTaskWithOfflineWorker(t *testing.T, st store.Store, w world) {
 			t.Fatalf("task %s is %s on worker %s, which is offline", id, task.Status, wk.ID)
 		}
 	}
+}
+
+// TestPGRace_G6_RetentionSparesAJobRetriedMeanwhile: a job revived between the
+// retention sweep's candidate read and its lock is not purged.
+func TestPGRace_G6_RetentionSparesAJobRetriedMeanwhile(t *testing.T) {
+	st, p := pgRace(t)
+	farm, queue := seedFarmQueueRace(t, st)
+	storetest.NewJob("job-g6", farm, queue).As(store.JobStatusCanceled).
+		Step("step-g6", store.StepStatusCanceled).
+		Task("job-g6-t", "step-g6", store.TaskStatusCanceled).
+		Submit(t, st)
+	p.atAnchor("jobs", "job-g6")
+	var deleted []store.DeletedJob
+	var revived []store.Task
+	sweepErr, retryErr, waited := interleave(t, p,
+		func() (err error) {
+			deleted, err = st.DeleteTerminalJobsBefore(t.Context(), time.Now().Add(time.Hour), true)
+			return
+		},
+		func() (err error) { revived, err = st.RetryTasks(t.Context(), "job-g6", nil, time.Now()); return })
+	assertPausedAt(t, p, "anchor jobs/job-g6")
+	if sweepErr != nil || retryErr != nil {
+		t.Fatalf("errors: sweep %v, retry %v", sweepErr, retryErr)
+	}
+	if waited {
+		t.Fatal("the retry waited: the sweep held the job before its anchor, so nothing raced it")
+	}
+	if len(revived) != 1 {
+		t.Fatalf("the retry revived %d tasks, want 1: the race did not happen", len(revived))
+	}
+	if len(deleted) != 0 {
+		t.Fatalf("retention purged %v, a job retried before the sweep locked it", deleted)
+	}
+	job, err := st.GetJob(t.Context(), "job-g6")
+	if err != nil {
+		t.Fatalf("job gone: %v", err)
+	}
+	if job.Status == store.JobStatusCanceled {
+		t.Fatalf("job status = %s, want it revived by the retry", job.Status)
+	}
+	if got := mustTask(t, st, "job-g6-t").Status; got == store.TaskStatusCanceled {
+		t.Fatalf("task status = %s, want it revived by the retry", got)
+	}
+}
+
+// TestPGRace_G7_DeleteJobRetriesALogThatRaced: a log line appended after the
+// delete cleared the logs must not fail the delete; the cascade runs again and
+// removes it.
+func TestPGRace_G7_DeleteJobRetriesALogThatRaced(t *testing.T) {
+	st, p := pgRace(t)
+	w := seedWorld(t, st, 1, "w1")
+	a := storetest.Lease(t, st, leaseReq(w.Tasks[0], "w1"))
+	p.atStatement(sqlstore.SQLDeleteJobAttempts) // logs cleared, attempts not yet
+	derr, lerr, _ := interleave(t, p,
+		func() error { return st.DeleteJob(t.Context(), w.JobID) },
+		func() error {
+			_, err := st.CreateTaskLog(t.Context(), store.TaskLog{
+				ID: uuid.NewString(), TaskID: w.Tasks[0], AttemptID: a.ID, SeqNum: 1, NATSSeq: 1,
+				At: time.Now(), Stream: store.LogStreamStdout, Data: "late line",
+			})
+			return err
+		})
+	assertPausedAt(t, p, sqlstore.SQLDeleteJobAttempts)
+	if lerr != nil {
+		t.Fatalf("the log append failed, so no log line raced the delete: %v", lerr)
+	}
+	if derr != nil {
+		t.Fatalf("DeleteJob failed on a log line that raced it: %v", derr)
+	}
+	if _, err := st.GetJob(t.Context(), w.JobID); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("job still present after DeleteJob: %v", err)
+	}
+	logs, err := st.ListTaskLogs(t.Context(), a.ID, 0, 10)
+	if err != nil {
+		t.Fatalf("ListTaskLogs: %v", err)
+	}
+	if len(logs) != 0 {
+		t.Fatalf("%d log lines survive the deleted job", len(logs))
+	}
+}
+
+// TestPGRace_G7_RetentionRetriesALogThatRaced: the retention sweep's cascade
+// has the same hole as DeleteJob's. A log line appended after it cleared the
+// logs must not fail the sweep; the sweep runs again and purges the job.
+func TestPGRace_G7_RetentionRetriesALogThatRaced(t *testing.T) {
+	st, p := pgRace(t)
+	w := seedWorld(t, st, 1, "w1")
+	a := storetest.Lease(t, st, leaseReq(w.Tasks[0], "w1"))
+	if _, err := st.CancelJobExecution(t.Context(), w.JobID, "retire", time.Now()); err != nil {
+		t.Fatalf("CancelJobExecution: %v", err)
+	}
+	p.atStatement(sqlstore.SQLDeleteJobAttempts) // logs cleared, attempts not yet
+	var deleted []store.DeletedJob
+	serr, lerr, _ := interleave(t, p,
+		func() (err error) {
+			deleted, err = st.DeleteTerminalJobsBefore(t.Context(), time.Now().Add(time.Hour), true)
+			return
+		},
+		func() error {
+			_, err := st.CreateTaskLog(t.Context(), store.TaskLog{
+				ID: uuid.NewString(), TaskID: w.Tasks[0], AttemptID: a.ID, SeqNum: 1, NATSSeq: 1,
+				At: time.Now(), Stream: store.LogStreamStdout, Data: "late line",
+			})
+			return err
+		})
+	assertPausedAt(t, p, sqlstore.SQLDeleteJobAttempts)
+	if lerr != nil {
+		t.Fatalf("the log append failed, so no log line raced the sweep: %v", lerr)
+	}
+	if serr != nil {
+		t.Fatalf("the retention sweep failed on a log line that raced it: %v", serr)
+	}
+	if len(deleted) != 1 || deleted[0].ID != w.JobID {
+		t.Fatalf("retention purged %v, want exactly %s", deleted, w.JobID)
+	}
+	if _, err := st.GetJob(t.Context(), w.JobID); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("job still present after the sweep: %v", err)
+	}
+}
+
+// anchorRecorder is the PostgreSQL dialect with the job anchors a store takes
+// recorded in order.
+type anchorRecorder struct {
+	sqlstore.Dialect
+
+	mu   *sync.Mutex
+	jobs *[]string
+}
+
+func (d anchorRecorder) LockAnchors(ctx context.Context, tx *sql.Tx, anchors ...sqlstore.Anchor) error {
+	d.mu.Lock()
+	for _, a := range anchors {
+		if a.Table == "jobs" {
+			*d.jobs = append(*d.jobs, a.ID)
+		}
+	}
+	d.mu.Unlock()
+	return d.Dialect.LockAnchors(ctx, tx, anchors...)
+}
+
+// TestPGRace_RetentionLocksItsCandidatesInIDOrder: the sweep holds every lock
+// until its one commit, so it must take the job anchors in id order whatever
+// order its SELECT returned them in (insertion order here, with no ORDER BY).
+func TestPGRace_RetentionLocksItsCandidatesInIDOrder(t *testing.T) {
+	var mu sync.Mutex
+	var locked []string
+	opts := postgres.DefaultOptions()
+	opts.WrapDialect = func(d sqlstore.Dialect) sqlstore.Dialect { return anchorRecorder{Dialect: d, mu: &mu, jobs: &locked} }
+	st := storetest.PostgresWith(t, opts)
+	farm, queue := seedFarmQueueRace(t, st)
+	ids := []string{"job-c", "job-a", "job-d", "job-b"}
+	for _, id := range ids {
+		storetest.NewJob(id, farm, queue).As(store.JobStatusCompleted).
+			Step("step-"+id, store.StepStatusCompleted).
+			Task(id+"-t", "step-"+id, store.TaskStatusSucceeded).
+			Submit(t, st)
+	}
+	mu.Lock()
+	locked = nil
+	mu.Unlock()
+	deleted, err := st.DeleteTerminalJobsBefore(t.Context(), time.Now().Add(time.Hour), true)
+	if err != nil {
+		t.Fatalf("DeleteTerminalJobsBefore: %v", err)
+	}
+	if len(deleted) != len(ids) {
+		t.Fatalf("purged %d jobs, want %d: %v", len(deleted), len(ids), deleted)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if want := []string{"job-a", "job-b", "job-c", "job-d"}; !slices.Equal(locked, want) {
+		t.Fatalf("job anchors taken in the order %v, want %v", locked, want)
+	}
+	if got := idsOf(deleted); !slices.IsSorted(got) {
+		t.Fatalf("purged jobs reported in the order %v, want id order", got)
+	}
+}
+
+func idsOf(ds []store.DeletedJob) []string {
+	out := make([]string, len(ds))
+	for i, d := range ds {
+		out[i] = d.ID
+	}
+	return out
 }

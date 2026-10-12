@@ -3,6 +3,7 @@
 package sqlstore
 
 import (
+	"cmp"
 	"context"
 	"database/sql"
 	"errors"
@@ -746,11 +747,10 @@ func (s *Store) stalledJobCandidates(ctx context.Context) ([]string, error) {
 // longer matches is skipped, neither deleted nor reported. On SQLite the
 // single write connection means the snapshot cannot go stale, so the re-check
 // never skips; it is a PostgreSQL store's guard, where the job-row lock is
-// what makes it sound. The candidates are anchored in the order the SELECT
-// returns them, which has no ORDER BY, and the sweep holds every lock it takes
-// until its one commit, so a PostgreSQL store should sort the candidates by id
-// (or commit per job) to keep a lock order other job-anchored writers can
-// agree with.
+// what makes it sound. The sweep holds every lock it takes until its one
+// commit, so the candidates are sorted by id before they are anchored: the
+// SELECT has no ORDER BY, and an unsorted sweep could take two jobs' locks in
+// the opposite order to another writer that locks several jobs in id order.
 func (s *Store) DeleteTerminalJobsBefore(
 	ctx context.Context, cutoff time.Time, includeFailed bool,
 ) ([]store.DeletedJob, error) {
@@ -765,6 +765,9 @@ func (s *Store) DeleteTerminalJobsBefore(
 		if err != nil {
 			return txRollback, err
 		}
+		// Lock in id order, so the sweep's locks follow the global order every
+		// other job-anchored writer uses.
+		slices.SortFunc(candidates, func(a, b store.DeletedJob) int { return cmp.Compare(a.ID, b.ID) })
 		deleted = candidates[:0]
 		for _, d := range candidates {
 			purged, err := purgeExpiredJobTx(ctx, tx, recheck, args, d.ID)
@@ -821,8 +824,9 @@ func selectExpiredJobsTx(ctx context.Context, tx *dbTx, query string, args []any
 // DELETE; the re-check comes before any child row is touched because the sweep
 // is one transaction and a half-purged job cannot be skipped after the fact. As
 // for [Store.DeleteJob], the anchor does not stop a log append or a lease from
-// inserting a child row mid-cascade, so a PostgreSQL store must retry on a
-// foreign-key error.
+// inserting a child row mid-cascade; the cascade's foreign-key error is
+// reclassified as retryable ([cascadeErr]), so the sweep's transaction runs
+// again and the next run deletes the new row too.
 func purgeExpiredJobTx(ctx context.Context, tx *dbTx, recheck string, args []any, id string) (bool, error) {
 	if err := tx.lockAnchors(ctx, jobAnchor(id)); err != nil {
 		return false, err
@@ -841,10 +845,23 @@ func purgeExpiredJobTx(ctx context.Context, tx *dbTx, recheck string, args []any
 		sqlDeleteJobTasks, sqlDeleteJobSteps, sqlDeleteJobDependencies, sqlDeleteJobRow,
 	} {
 		if _, err := tx.ExecContext(ctx, q, id); err != nil {
-			return false, mapErr(err)
+			return false, mapErr(cascadeErr(err))
 		}
 	}
 	return true, nil
+}
+
+// cascadeErr reclassifies a foreign-key violation inside a job's delete
+// cascade as retryable. On PostgreSQL a child row inserted after its table was
+// cleared (a log line: CreateTaskLog takes no anchor) makes a later DELETE in
+// the cascade fail on its foreign key; running the cascade again deletes the
+// new row too, and inTx does that for a retryable error. SQLite's single
+// writer never produces the error.
+func cascadeErr(err error) error {
+	if errClass(err) == ErrClassConflict {
+		return &classifiedError{class: ErrClassRetry, err: err}
+	}
+	return err
 }
 
 // DeleteJob implements [store.JobStore]. The cascade runs in a single
@@ -857,10 +874,11 @@ func purgeExpiredJobTx(ctx context.Context, tx *dbTx, recheck string, args []any
 // append (CreateTaskLog, no transaction, no anchor) from inserting a child row
 // after its table was cleared, so on PostgreSQL a later DELETE in the cascade
 // (claims, logs, attempts, tasks, steps, dependency edges, then the job row)
-// can still fail on a foreign key. A PostgreSQL store must retry the cascade on
-// a foreign-key or deadlock error.
-// SQLite cannot produce either error: its single write connection serializes
-// every writer.
+// can still fail on a foreign key. The store retries the cascade: a
+// foreign-key violation inside it is reclassified as retryable ([cascadeErr]),
+// and the next run, which starts by clearing the logs again, deletes the new
+// row too. A deadlock is already retryable. SQLite cannot produce either
+// error: its single write connection serializes every writer.
 func (s *Store) DeleteJob(ctx context.Context, id string) error {
 	return s.inTx(ctx, "delete job", func(tx *dbTx) (txOutcome, error) {
 		if err := tx.lockAnchors(ctx, jobAnchor(id)); err != nil {
@@ -876,13 +894,13 @@ func (s *Store) DeleteJob(ctx context.Context, id string) error {
 			sqlDeleteJobDependencies,
 		} {
 			if _, err := tx.ExecContext(ctx, q, id); err != nil {
-				return txRollback, mapErr(err)
+				return txRollback, mapErr(cascadeErr(err))
 			}
 		}
 
 		res, err := tx.ExecContext(ctx, sqlDeleteJobRow, id)
 		if err != nil {
-			return txRollback, mapErr(err)
+			return txRollback, mapErr(cascadeErr(err))
 		}
 		n, err := res.RowsAffected()
 		if err != nil {
