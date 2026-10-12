@@ -5,11 +5,12 @@ package sqlstore
 // The anchor constructors name the rows an invariant-guarding transaction must
 // hold before it reads the other rows its decision depends on, and pass them
 // to [Dialect.LockAnchors]. Every anchor is exclusive ([LockUpdate]) except
-// the upstream job rows of the blocked-job operations and of a submission's
-// dependency check, which only need a shared lock ([sharedAnchor]). Callers
-// pass anchors in the order the anchor-row table specifies, so every backend
-// agrees on lock order. See "Store invariants" in docs/architecture.md for the
-// full anchor-row table and the gaps it leaves open.
+// the lease's worker and job rows and the upstream job rows of the blocked-job
+// operations and of a submission's dependency check, which only need a shared
+// lock ([sharedAnchor]). Callers pass anchors in the global lock order (worker,
+// jobs by id, queue, farm, usage pools by id, users by id). See "Store
+// invariants" in docs/architecture.md for the full anchor-row table, the lock
+// order and the races the anchors leave open.
 //
 // On SQLite LockAnchors does nothing: the store's single write connection
 // (SetMaxOpenConns(1)) already serializes every write transaction, so a row

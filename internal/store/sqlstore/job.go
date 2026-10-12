@@ -930,10 +930,10 @@ func selectExpiredJobsTx(ctx context.Context, tx *dbTx, query string, args []any
 // other job-anchored writer can change the job's status before the final
 // DELETE; the re-check comes before any child row is touched because the sweep
 // is one transaction and a half-purged job cannot be skipped after the fact. As
-// for [Store.DeleteJob], the anchor does not stop a log append or a lease from
-// inserting a child row mid-cascade; the cascade's foreign-key error is
-// reclassified as retryable ([cascadeErr]), so the sweep's transaction runs
-// again and the next run deletes the new row too.
+// for [Store.DeleteJob], the anchor does not stop a log append (which takes no
+// anchor) from inserting a child row mid-cascade; the cascade's foreign-key
+// error is reclassified as retryable ([cascadeErr]), so the sweep's
+// transaction runs again and the next run deletes the new row too.
 func purgeExpiredJobTx(ctx context.Context, tx *dbTx, recheck string, args []any, id string) (bool, error) {
 	if err := tx.lockAnchors(ctx, jobAnchor(id)); err != nil {
 		return false, err

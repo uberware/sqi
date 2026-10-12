@@ -115,9 +115,9 @@ WHERE  id = ? AND status IN ('assigned', 'running')`
 // (lockTaskJobTx), then the task, then its attempts and claims
 // (closeTaskAttemptsTx). No worker anchor is taken, because the worker row is
 // neither read nor written here. The task is written before its attempt is
-// closed for offlineWorker's reason. On Postgres the task row must be
-// locked FOR UPDATE after the anchor and before the latest-attempt check, as
-// for StartTaskAttempt.
+// closed for offlineWorker's reason. As for StartTaskAttempt, no task-row
+// lock is needed for the latest-attempt check: a lease holds the job row FOR
+// SHARE, so none commits between the check and the write.
 func (s *Store) ReclaimTaskAttempt(ctx context.Context, attemptID, taskID string, now time.Time) (bool, error) {
 	var reclaimed bool
 	err := s.inTx(ctx, "reclaim task attempt", func(tx *dbTx) (txOutcome, error) {

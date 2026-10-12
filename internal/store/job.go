@@ -305,15 +305,15 @@ type JobStore interface {
 	//
 	// The job's anchor row is locked first, which serializes the cascade
 	// against the other job-anchored writers (cancel, retry, finalize,
-	// completion, retention). It does NOT by itself stop a concurrent log
-	// append ([TaskLogStore.CreateTaskLog]) or a lease ([TaskStore.LeaseTask])
-	// from inserting a child row mid-cascade, because neither takes the job
-	// anchor: on a store without a single writer such an insert can land after
-	// its table was cleared and make a later DELETE in the cascade fail on a
-	// foreign key. A PostgreSQL store must therefore retry the cascade
-	// itself, inside DeleteJob, on a foreign-key or deadlock error; the REST
-	// handler that calls it does not retry. The SQLite store cannot produce
-	// either, because its single write connection serializes every writer.
+	// completion, retention) and against leases, which hold it FOR SHARE. It
+	// does NOT stop a concurrent log append ([TaskLogStore.CreateTaskLog]),
+	// which takes no anchor, from inserting a child row mid-cascade: on a
+	// store without a single writer such an insert can land after its table
+	// was cleared and make a later DELETE in the cascade fail on a foreign
+	// key. The SQL store therefore retries the cascade itself, inside
+	// DeleteJob, on a foreign-key or deadlock error; the REST handler that
+	// calls it does not retry. SQLite cannot produce either error, because
+	// its single write connection serializes every writer.
 	DeleteJob(ctx context.Context, id string) error
 
 	// DeleteTerminalJobsBefore hard-deletes terminal jobs whose completion time

@@ -264,8 +264,8 @@ type WorkerStore interface {
 	// Anchor rows and statement order: the worker row first, then each affected
 	// job row sorted by id; within the transaction the worker is marked
 	// offline, the tasks are reclaimed, and only then are their attempts closed
-	// and their claims released. See the SQLite implementation for the exact
-	// Postgres order.
+	// and their claims released. See the shared SQL implementation
+	// (internal/store/sqlstore) for the exact order.
 	OfflineStaleWorker(ctx context.Context, id string, cutoff, now time.Time) ([]Task, bool, error)
 
 	// OfflineWorker is the sibling of [WorkerStore.OfflineStaleWorker] for a

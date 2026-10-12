@@ -244,8 +244,9 @@ func (s *Store) DeleteUser(ctx context.Context, id string) error {
 // On SQLite LockAnchors does nothing and the single write connection provides
 // the serialization; the guard in the statement is what makes the answer right.
 // The admin set is read before its rows are locked, so on Postgres an
-// account made an enabled admin in between is not anchored; re-read the set
-// under the locks (and repeat until it is stable) or lock a wider range.
+// account made an enabled admin in between is not anchored. That is safe: the
+// guard re-counts the enabled admins in the statement, after the locks, and a
+// promotion only adds admins, so it cannot make the guard pass wrongly.
 func (s *Store) withAdminAnchors(ctx context.Context, fn func(*dbTx) error) error {
 	return s.inTx(ctx, "admin-guarded user write", func(tx *dbTx) (txOutcome, error) {
 		anchors, err := liveAdminAnchorsTx(ctx, tx)

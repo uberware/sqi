@@ -257,8 +257,9 @@ type TaskStore interface {
 	// sessionID on the attempt when non-empty. started is false, with a nil
 	// error, when the report is stale: the attempt was closed by a reap, an
 	// offline reclaim or a cancel, or a newer lease superseded it. An unknown
-	// task is [ErrNotFound]. On PostgreSQL the task row must be locked FOR
-	// UPDATE after the anchor and before the latest-attempt check.
+	// task is [ErrNotFound]. No task-row lock is needed for the latest-attempt
+	// check: a lease holds the job row FOR SHARE, so none commits between the
+	// check and the write.
 	StartTaskAttempt(ctx context.Context, attemptID, taskID, sessionID string, now time.Time) (started bool, err error)
 
 	// ReclaimTaskAttempt hands one task back as the offline reclaim does: it
@@ -302,13 +303,13 @@ type TaskStore interface {
 	// the result lists the tasks already reclaimed.
 	//
 	// Statement order: the tasks are reset first, then their attempts are
-	// closed, then their claims released. A Postgres implementation must take
-	// its anchors (each candidate task's job row, sorted by id) BEFORE the
-	// UPDATE and without locking a task row first: read the candidates
-	// unlocked, lock their job rows, then run the UPDATE re-guarded on the
-	// candidate IDs, status assigned and the cutoff. Locking the task rows
-	// first, or anchoring after the UPDATE ... RETURNING, takes a task row
-	// before its job row, the reverse of every job-level operation's order.
+	// closed, then their claims released. The anchors (each candidate task's
+	// job row, sorted by id) are taken BEFORE the UPDATE and without locking a
+	// task row first: the candidates are read unlocked, their job rows locked,
+	// then the UPDATE runs re-guarded on the candidate IDs, status assigned and
+	// the cutoff. Locking the task rows first, or anchoring after the UPDATE
+	// ... RETURNING, would take a task row before its job row, the reverse of
+	// every job-level operation's order.
 	ReclaimStaleAssignedTasks(ctx context.Context, cutoff time.Time) ([]Task, error)
 
 	// CountActiveTasksInQueue returns the number of tasks for the given queue
@@ -507,7 +508,7 @@ type TaskStore interface {
 	//
 	// It acts only while attemptID is the task's latest attempt, so a reclaim
 	// and a new lease landing between RecordTaskFailure and this call leave the
-	// new lease alone. On PostgreSQL, take the job-row anchor first.
+	// new lease alone. The task's job-row anchor is taken first.
 	RequeueTaskForRetry(ctx context.Context, taskID, attemptID string, retryAfter, now time.Time) (bool, error)
 }
 
