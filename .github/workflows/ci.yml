@@ -911,7 +911,10 @@ jobs:
   #
   # Docker is preinstalled on the ubuntu runners, and scripts/test-postgres.sh
   # starts its own throwaway container. The image tags are pinned patch
-  # releases mirrored from that script: change them in both places.
+  # releases. The matrix is what CI runs: it pulls each image and passes the
+  # same one to the script (SQI_TEST_POSTGRES_IMAGE), so the image pulled is the
+  # image tested. The script keeps the same pins as its default for local runs;
+  # change them in both places.
   #
   # `make test-postgres` exits 0 with a message when Docker is unavailable, and
   # every PostgreSQL test skips when it has no DSN, so a bare green here could
@@ -930,9 +933,9 @@ jobs:
       matrix:
         include:
           - pg: '16'
-            image: postgres:16.15 # keep in step with scripts/test-postgres.sh
+            image: postgres:16.15 # keep in step with scripts/test-postgres.sh's default
           - pg: '18'
-            image: postgres:18.6 # keep in step with scripts/test-postgres.sh
+            image: postgres:18.6 # keep in step with scripts/test-postgres.sh's default
 
     steps:
       - name: Checkout
@@ -963,21 +966,38 @@ jobs:
           sudo apt-get install -y postgresql-client-${{ matrix.pg }}
           echo "/usr/lib/postgresql/${{ matrix.pg }}/bin" >> "$GITHUB_PATH"
 
+      # test-postgres.sh's last phase runs the whole ./test/integration/ package
+      # on PostgreSQL, preset tier tests included (only the LDAP, OIDC and
+      # isolation tests are skipped by name). presets/validation-tiers.yaml marks
+      # the ffmpeg presets' tier-2 cases required on linux, so
+      # TestZZPresetTierRegistrySatisfied turns the real-ffmpeg cases' skip into
+      # a failure on a runner without ffmpeg, and a stock ubuntu runner has none.
+      # The same step as the test and integration-tests jobs; the version line
+      # makes a missing install fail here, loudly.
+      - name: Install ffmpeg (the registry's tier-2 claims require it)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends ffmpeg
+          ffmpeg -version | head -1
+
       # Does not trust a bare exit 0: a missing Docker or DSN would skip every
       # PostgreSQL test. Asserts the suite ran to its last line, that each named
-      # test passed, and that no `/postgres` subtest was skipped.
+      # test passed, that `/postgres` subtests really ran (a PASS line for at
+      # least one), and that none was skipped.
       #
       # The pattern's trailing space matters twice. It keeps a name from
       # matching a longer one that shares its prefix, and it makes a parent
-      # test's own `--- PASS: Name (0.1s)` line the match: go test prints that
-      # line only when every one of the parent's subtests passed.
+      # test's own `--- PASS: Name (0.1s)` line the match. That line means no
+      # subtest failed; it does NOT mean none was skipped (a parent passes with
+      # skipped subtests too), which is why the `/postgres` skip check below
+      # exists.
       #
       # G7 is listed twice on purpose: the race it describes has two call
       # sites (DeleteJob and retention), each with its own test.
       - name: Run PostgreSQL tests
         run: |
           set +e
-          make test-postgres PG_VERSION=${{ matrix.pg }} 2>&1 | tee pg-output.log
+          SQI_TEST_POSTGRES_IMAGE=${{ matrix.image }} make test-postgres PG_VERSION=${{ matrix.pg }} 2>&1 | tee pg-output.log
           status=${PIPESTATUS[0]}
           set -e
 
@@ -1017,6 +1037,13 @@ jobs:
           done
           if grep -E -- '--- SKIP: .*/postgres' pg-output.log; then
             echo "::error::a PostgreSQL subtest was skipped"
+            missing=1
+          fi
+          # No skip is not the same as ran: a build that collected no
+          # three-way tests at all would also have none to skip.
+          pg_passes=$(grep -c -E -- '--- PASS: .*/postgres' pg-output.log || true)
+          if [ "$pg_passes" -lt 1 ]; then
+            echo "::error::no /postgres subtest passed; the PostgreSQL backend was not exercised"
             missing=1
           fi
           if ! grep -q "POSTGRES TESTS PASSED (PG_VERSION=${{ matrix.pg }})" pg-output.log; then
@@ -1086,6 +1113,10 @@ jobs:
             exit 1
           fi
           port="$(docker port "$name" 5432/tcp | head -n 1 | sed 's/.*://')"
+          if [ -z "$port" ]; then
+            echo "::error::could not read the published port of $name"
+            exit 1
+          fi
 
           # Declare and assign separately so the command substitution's exit
           # status is not masked by `export` (shellcheck SC2155).

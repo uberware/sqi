@@ -5,16 +5,27 @@
 # PG_VERSION selects the major version (16 or 18). Without Docker it says so
 # and exits 0, so a local run proves nothing on its own; CI asserts the tests
 # by name. Set SQI_TEST_POSTGRES_DSN to use an existing server instead.
+#
+# SQI_TEST_POSTGRES_IMAGE overrides the image the throwaway container runs.
+# CI passes its matrix image through it, so the image CI pulled is the image
+# the suite ran on.
+#
+# A local PG_VERSION=16 run needs a PG 16 pg_dump and pg_restore FIRST on PATH:
+# TestPostgres_BackupRestoreRoundTrip restores a dump into the server, and a
+# newer client's dump carries settings (e.g. SET transaction_timeout) that an
+# older server rejects. CI installs the matching client for each leg.
 set -euo pipefail
 
 PG_VERSION="${PG_VERSION:-18}"
-# Pinned patch tags. Keep in step with the matrix images of the
-# postgres-integration job in .github/workflows/ci.yml, which pulls them.
+# Default pinned patch tags, used when SQI_TEST_POSTGRES_IMAGE is unset. Keep
+# in step with the matrix images of the postgres-integration job in
+# .github/workflows/ci.yml, which pulls (and passes) them.
 case "$PG_VERSION" in
   16) IMAGE="postgres:16.15" ;;
   18) IMAGE="postgres:18.6" ;;
   *) echo "PG_VERSION must be 16 or 18" >&2; exit 2 ;;
 esac
+IMAGE="${SQI_TEST_POSTGRES_IMAGE:-$IMAGE}"
 # -race unless TEST_FLAGS is set; make passes it empty for RACE=off.
 RACE_FLAG="${TEST_FLAGS--race}"
 
