@@ -17,8 +17,9 @@ const (
 	// sqlLeaseScope reads what LeaseTask needs before it takes its anchors: the
 	// task's job, queue and farm, and the queue's and farm's caps. The inner
 	// joins make a task whose job, queue or farm row is missing read as
-	// unknown, which is Lost. A task's job never changes; the caps can, so the
-	// anchored ones are re-read under their locks (sqlLeaseCaps).
+	// unknown, which is Lost. A task's job never changes, but the job's queue
+	// and farm can (UpdateJob moves a job), and so can the caps: all four are
+	// re-read under the job lock (sqlLeaseRescope).
 	sqlLeaseScope = `
 SELECT t.job_id, j.queue_id, j.farm_id, q.max_concurrent_tasks, f.max_concurrent_tasks
 FROM   tasks  t
@@ -39,11 +40,15 @@ WHERE  t.id = ?`
 	sqlLeaseWorkerRefuses = `
 SELECT EXISTS (SELECT 1 FROM workers WHERE id = ? AND disabled)`
 
-	// sqlLeaseCaps re-reads the queue's and the farm's caps under their locks.
-	sqlLeaseCaps = `
-SELECT q.max_concurrent_tasks, f.max_concurrent_tasks
-FROM   queues q, farms f
-WHERE  q.id = ? AND f.id = ?`
+	// sqlLeaseRescope re-reads the job's queue and farm, and their caps, under
+	// the lease's anchors. The job row is held FOR SHARE, so a move (UpdateJob)
+	// either committed before it, and is seen here, or waits for the lease.
+	sqlLeaseRescope = `
+SELECT j.queue_id, j.farm_id, q.max_concurrent_tasks, f.max_concurrent_tasks
+FROM   jobs   j
+JOIN   queues q ON j.queue_id = q.id
+JOIN   farms  f ON j.farm_id  = f.id
+WHERE  j.id = ?`
 
 	// sqlLeaseTaskGuarded moves one task ready → assigned only while it passes
 	// sqlLeasableTask, the predicate ListReadyTasks lists by, so a task that
@@ -104,9 +109,12 @@ func (s *Store) LeaseTask(ctx context.Context, req store.LeaseRequest) (store.Le
 // lock exclusively in the same order, so they cannot deadlock on Postgres.
 //
 // Under those locks the lease re-checks the worker (sqlLeaseWorkerRefuses: the
-// lease of a disabled worker is Lost and writes nothing) and re-reads the
-// anchored caps (rereadCapsTx), so the disabled flag and the caps it decides
-// on are the committed ones, not the ones read before the locks. An offline
+// lease of a disabled worker is Lost and writes nothing) and re-reads the job's
+// queue and farm and the anchored caps (rescopeTx: a job moved to another
+// queue or farm since the scope read is Lost, since its anchors and counts
+// would be for the old rows), so the disabled flag, the scope and the caps it
+// decides on are the committed ones, not the ones read before the locks. An
+// offline
 // worker is deliberately not refused: the sweep can mark a live worker offline
 // after one missed heartbeat window and nothing marks it online again, so
 // refusing it would starve it for good (see "Known gaps" in
@@ -230,9 +238,8 @@ func (sc *leaseScope) anchors(workerID string, claims []store.UsagePoolClaim) []
 }
 
 // recheckUnderLocksTx runs the lease's checks that must see the rows as they are
-// under its anchors: the worker re-check, then the cap re-read. ok is false when
-// the lease must be Lost: the worker is disabled, or the queue or farm row is
-// gone.
+// under its anchors: the worker re-check, then the scope re-read. ok is false
+// when the lease must be Lost: the worker is disabled, or the job moved.
 func (sc *leaseScope) recheckUnderLocksTx(ctx context.Context, tx *dbTx, workerID string) (ok bool, err error) {
 	var refuses bool
 	if err := tx.QueryRowContext(ctx, sqlLeaseWorkerRefuses, workerID).Scan(&refuses); err != nil {
@@ -241,28 +248,41 @@ func (sc *leaseScope) recheckUnderLocksTx(ctx context.Context, tx *dbTx, workerI
 	if refuses {
 		return false, nil
 	}
-	return sc.rereadCapsTx(ctx, tx)
+	return sc.rescopeTx(ctx, tx)
 }
 
-// rereadCapsTx replaces the caps read before the locks with the values under
+// rescopeTx re-reads the job's queue and farm and their caps under the job
+// lock. It runs whether or not either was capped, because a job moved from an
+// uncapped queue to a capped one must be caught too.
+//
+// A job whose queue or farm is no longer the one the scope read named is Lost:
+// the anchors were taken, and the counts would run, for the old rows, so the
+// lease cannot decide against the new ones (I5). The scheduler re-selects on
+// its next pass. The job row is held FOR SHARE from here to commit, so the
+// queue and farm read here cannot change before the lease commits.
+//
+// Otherwise the caps read before the locks are replaced with the values under
 // them, for the rows that were anchored (capped). A row read as uncapped stays
 // unanchored and uncapped: a cap committed concurrently orders after this
 // lease, exactly as if the lease had committed first, and setting a cap never
 // evicts running work. An anchored row whose cap was cleared meanwhile re-reads
-// as 0, unlimited, which fullTx skips. ok is false when the queue or the farm
-// row is gone, which the lease's job-row lock and the foreign keys rule out
-// but which reads as Lost, as the scope read's inner joins do.
-func (sc *leaseScope) rereadCapsTx(ctx context.Context, tx *dbTx) (ok bool, err error) {
-	if sc.queueCap <= 0 && sc.farmCap <= 0 {
-		return true, nil
-	}
-	var q, f int
-	err = tx.QueryRowContext(ctx, sqlLeaseCaps, sc.queueID, sc.farmID).Scan(&q, &f)
+// as 0, unlimited, which fullTx skips. A missing job, queue or farm row, which
+// the job lock and the foreign keys rule out, reads as Lost, as the scope
+// read's inner joins do.
+func (sc *leaseScope) rescopeTx(ctx context.Context, tx *dbTx) (ok bool, err error) {
+	var (
+		queueID, farmID string
+		q, f            int
+	)
+	err = tx.QueryRowContext(ctx, sqlLeaseRescope, sc.jobID).Scan(&queueID, &farmID, &q, &f)
 	if errors.Is(err, sql.ErrNoRows) {
 		return false, nil
 	}
 	if err != nil {
-		return false, fmt.Errorf("store: re-read lease caps: %w", mapErr(err))
+		return false, fmt.Errorf("store: re-read lease scope of job %s: %w", sc.jobID, mapErr(err))
+	}
+	if queueID != sc.queueID || farmID != sc.farmID {
+		return false, nil
 	}
 	if sc.queueCap > 0 {
 		sc.queueCap = q

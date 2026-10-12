@@ -234,6 +234,51 @@ func TestPGRace_LeaseEnforcesTheCapUnderTheLock(t *testing.T) {
 	}
 }
 
+// TestPGRace_LeaseRefusesAJobMovedBeforeItsLock: a job moved to another queue
+// between the lease's scope read and its job lock must not be leased against
+// the old queue. The move here is from an uncapped queue to one whose cap is
+// already full, so a lease that kept the queue it read first would anchor and
+// count nothing and land past the new queue's cap (I5).
+func TestPGRace_LeaseRefusesAJobMovedBeforeItsLock(t *testing.T) {
+	st, p := pgRace(t)
+	w := seedWorld(t, st, 1, "w1")
+	full, err := st.CreateQueue(t.Context(), store.Queue{
+		ID: "queue-" + uuid.NewString()[:8], FarmID: w.FarmID, Name: "full", MaxConcurrentTasks: 1,
+	})
+	if err != nil {
+		t.Fatalf("CreateQueue: %v", err)
+	}
+	other := "job-" + uuid.NewString()[:8]
+	storetest.NewJob(other, w.FarmID, full.ID).Step(other+"-s", store.StepStatusReady).
+		Task(other+"-t0", other+"-s", store.TaskStatusReady).Submit(t, st)
+	storetest.Lease(t, st, leaseReq(other+"-t0", "w1")) // the full queue's one slot
+	job, err := st.GetJob(t.Context(), w.JobID)
+	if err != nil {
+		t.Fatalf("GetJob: %v", err)
+	}
+	p.atAnchor("jobs", w.JobID) // after the scope read (the old queue), before the job lock
+	var lease store.LeaseResult
+	lerr, merr, _ := interleave(t, p,
+		func() (err error) { lease, err = st.LeaseTask(t.Context(), leaseReq(w.Tasks[0], "w1")); return },
+		func() error {
+			job.QueueID = full.ID
+			_, err := st.UpdateJob(t.Context(), job)
+			return err
+		})
+	if got, want := p.matched(), "anchor jobs/"+w.JobID; got != want {
+		t.Fatalf("paused at %q, want %q", got, want)
+	}
+	if lerr != nil || merr != nil {
+		t.Fatalf("lease err %v, move err %v", lerr, merr)
+	}
+	if lease.Outcome == store.LeaseLeased {
+		t.Fatalf("lease landed in queue %s past its cap of 1: it was decided against the queue read before the job moved", full.ID)
+	}
+	if got := mustTask(t, st, w.Tasks[0]); got.Status != store.TaskStatusReady {
+		t.Fatalf("task status = %s, want ready (the refused lease writes nothing)", got.Status)
+	}
+}
+
 func mustTask(t *testing.T, st store.Store, id string) store.Task {
 	t.Helper()
 	task, err := st.GetTask(t.Context(), id)
