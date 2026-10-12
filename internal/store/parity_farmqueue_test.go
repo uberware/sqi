@@ -292,14 +292,29 @@ func TestParity_GetQueue(t *testing.T) {
 	}
 }
 
+// waitClockPast blocks until the wall clock reads later than ts, so a row the
+// store stamps next gets a strictly later created_at. The store stamps with
+// time.Now and takes no clock, and a coarse clock (Windows) gives two
+// consecutive creations the same stamp; ordering by created_at then falls to
+// the id tiebreak, a random UUID.
+func waitClockPast(ts time.Time) {
+	for !time.Now().After(ts) {
+		time.Sleep(time.Millisecond)
+	}
+}
+
 // seedQueues creates two farms: farm A with queues q-b (priority 10, paused),
-// q-a (30) and q-c (20), created in that order, and farm B with q-d.
+// q-a (30) and q-c (20), created in that order with strictly increasing
+// created_at, and farm B with q-d.
 func seedQueues(t *testing.T, st store.Store) (farmA, farmB store.Farm) {
 	t.Helper()
 	farmA, farmB = mustCreateFarm(t, st, "a"), mustCreateFarm(t, st, "b")
-	mustCreateQueue(t, st, store.Queue{FarmID: farmA.ID, Name: "q-b", Priority: 10, Paused: true})
-	mustCreateQueue(t, st, store.Queue{FarmID: farmA.ID, Name: "q-a", Priority: 30})
-	mustCreateQueue(t, st, store.Queue{FarmID: farmA.ID, Name: "q-c", Priority: 20})
+	b := mustCreateQueue(t, st, store.Queue{FarmID: farmA.ID, Name: "q-b", Priority: 10, Paused: true})
+	waitClockPast(b.CreatedAt)
+	a := mustCreateQueue(t, st, store.Queue{FarmID: farmA.ID, Name: "q-a", Priority: 30})
+	waitClockPast(a.CreatedAt)
+	c := mustCreateQueue(t, st, store.Queue{FarmID: farmA.ID, Name: "q-c", Priority: 20})
+	waitClockPast(c.CreatedAt)
 	mustCreateQueue(t, st, store.Queue{FarmID: farmB.ID, Name: "q-d", Priority: 50})
 	return farmA, farmB
 }
