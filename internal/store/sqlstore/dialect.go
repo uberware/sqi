@@ -24,7 +24,9 @@ type Dialect interface {
 	BindBool(b bool) any
 	// CIEqual returns "<col> = ?" compared case-insensitively.
 	CIEqual(col string) string
-	// CILike returns "<col> LIKE ?" matched case-insensitively.
+	// CILike returns "<col> LIKE ?" matched case-insensitively, in the dialect's
+	// own form (PostgreSQL: "<col> ILIKE ? ESCAPE ''"). Like CIEqual it may carry
+	// only the column, a "?" and literals.
 	CILike(col string) string
 }
 

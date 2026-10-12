@@ -193,7 +193,7 @@ var concatAllowed = []string{
 	"string(placeholders)", // task.go ListTasks: a byte slice that only receives ',' and '?'
 	"inSuffix",             // task.go RetryTasks: "" or a literal around a "?" list
 	"query",                // job.go DeleteTerminalJobsBefore: expiredJobsQuery output, two literals around a "?" list
-	"frag",                 // job.go ListJobs, worker.go ListWorkers: searchClause (search.go) output, literals and Dialect.CILike over literal column lists, "?" for each term, which is bound
+	"frag",                 // job.go ListJobs, worker.go ListWorkers: searchClause (search.go) output, literals and Dialect.CILike over literal column lists (each renders as the column, a "?" and literals only: `col LIKE ?` on SQLite, `col ILIKE ? ESCAPE ''` on PostgreSQL), "?" for each term, which is bound
 }
 
 // sqlKeyword marks a string literal as SQL.
