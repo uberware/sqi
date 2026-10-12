@@ -112,7 +112,7 @@ func startLoadServer(tb testing.TB) *testServer {
 	natsAddr := fmt.Sprintf("127.0.0.1:%d", natsPort)
 
 	tmpDir := tb.TempDir()
-	sqlitePath := tmpDir + "/sqi-load.db"
+	so := storeFor(tb, tmpDir+"/sqi-load.db")
 	natsDir := tmpDir + "/nats"
 
 	cfg := server.Config{
@@ -122,7 +122,6 @@ func startLoadServer(tb testing.TB) *testServer {
 		NATSAddr:           natsAddr,
 		NATSDataDir:        natsDir,
 		NATSMaxStoreMB:     128,
-		SQLitePath:         sqlitePath,
 		CheckpointInterval: time.Minute,
 		Scheduler: scheduler.Config{
 			AssignInterval:         50 * time.Millisecond,
@@ -134,6 +133,7 @@ func startLoadServer(tb testing.TB) *testServer {
 		DiscoveryEnabled: false,
 		DisableRateLimit: true,
 	}
+	applyStore(&cfg, so)
 
 	logger := slog.New(slog.DiscardHandler)
 	srv := server.New(cfg, logger, nil)
@@ -162,6 +162,8 @@ func startLoadServer(tb testing.TB) *testServer {
 	ts := &testServer{
 		HTTPAddr: httpAddr,
 		NATSAddr: natsAddr,
+		Store:    so,
+		DBPath:   so.SQLitePath,
 		cancel:   cancel,
 		done:     done,
 	}

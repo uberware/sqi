@@ -187,14 +187,14 @@ func TestDiscovery_RealBinaryFindsItsServerOverMDNS(t *testing.T) {
 	host = strings.TrimSuffix(host, ".local")
 	dir := tlsMaterialFor(t, []string{host, host + ".local", "localhost", "127.0.0.1", "::1"})
 
-	dbPath := filepath.Join(t.TempDir(), "sqi.db")
-	joinToken := seedJoinToken(t, dbPath, "discovery-e2e")
+	so := storeFor(t, filepath.Join(t.TempDir(), "sqi.db"))
+	joinToken := seedJoinToken(t, so, "discovery-e2e")
 
 	certFile := filepath.Join(dir, "server.crt")
 	keyFile := filepath.Join(dir, "server.key")
 	instance := instanceName(t, "sqi-e2e")
 
-	ts := startBrokerAuthServer(t, dbPath, func(cfg *server.Config) {
+	ts := startBrokerAuthServer(t, so, func(cfg *server.Config) {
 		cfg.HTTPTLS = config.TLSConfig{Enabled: true, CertFile: certFile, KeyFile: keyFile}
 		cfg.NATSTLS = config.NATSTLSConfig{Enabled: true, CertFile: certFile, KeyFile: keyFile}
 		cfg.NATSAuthEnrollmentEndpointEnabled = true

@@ -2,7 +2,8 @@
 
 // Package integration provides an end-to-end test harness for sqi-server.
 //
-// The harness boots a full [server.Server] (SQLite on a temp file, embedded
+// The harness boots a full [server.Server] (SQLite on a temp file by default,
+// or a fresh PostgreSQL database when SQI_TEST_STORE_DRIVER=postgres; embedded
 // NATS, scheduler, HTTP) inside the test process, then drives a mock worker
 // over NATS to verify the complete job lifecycle:
 //
@@ -40,8 +41,48 @@ import (
 	"github.com/uberware/sqi/internal/bus"
 	"github.com/uberware/sqi/internal/scheduler"
 	"github.com/uberware/sqi/internal/server"
+	"github.com/uberware/sqi/internal/store"
+	"github.com/uberware/sqi/internal/store/backend"
+	"github.com/uberware/sqi/internal/store/storetest"
 	"github.com/uberware/sqi/internal/worker/protocol"
 )
+
+// ── Store selection ───────────────────────────────────────────────────────────
+
+// storeFor returns the store a test server uses: SQLite at sqlitePath by
+// default, or, when SQI_TEST_STORE_DRIVER=postgres, a fresh PostgreSQL
+// database (make test-postgres sets both). It takes a [testing.TB] because
+// the load harness also serves benchmarks.
+func storeFor(tb testing.TB, sqlitePath string) backend.Options {
+	tb.Helper()
+	if os.Getenv("SQI_TEST_STORE_DRIVER") == backend.DriverPostgres {
+		return backend.Options{Driver: backend.DriverPostgres, PostgresDSN: storetest.PostgresDSN(tb), MaxConns: 8}
+	}
+	return backend.Options{Driver: backend.DriverSQLite, SQLitePath: sqlitePath}
+}
+
+// applyStore points a server config at o.
+func applyStore(cfg *server.Config, o backend.Options) {
+	cfg.StoreDriver = backend.Name(o.Driver)
+	cfg.SQLitePath = o.SQLitePath
+	cfg.PostgresDSN = o.PostgresDSN
+	if o.MaxConns > 0 {
+		cfg.PostgresMaxConns = o.MaxConns
+	}
+}
+
+// openTestStore opens a second handle on a test server's store (migrating a
+// SQLite file that does not exist yet), closed when the test ends.
+func openTestStore(tb testing.TB, o backend.Options) store.Store {
+	tb.Helper()
+	o.AutoMigrate = true
+	st, err := backend.Open(context.Background(), o)
+	if err != nil {
+		tb.Fatalf("open test store: %v", err)
+	}
+	tb.Cleanup(func() { _ = st.Close() })
+	return st
+}
 
 // ── Port helpers ──────────────────────────────────────────────────────────────
 
@@ -84,12 +125,19 @@ type testServer struct {
 	// default plaintext client; a TLS server sets one trusting its farm CA.
 	Client *http.Client
 
-	// DBPath is the SQLite file this server was started against. Set by
-	// constructors that know it, empty otherwise. A caller that needs to
-	// inspect store state the REST API does not expose (e.g. confirming no
-	// row was ever written to a table) can open a second, independent
-	// connection to this same path — safe because the store runs in WAL
-	// mode, which allows a reader to run alongside the server's own writer.
+	// Store is the store this server was started against: SQLite at a temp
+	// path by default, a fresh PostgreSQL database under
+	// SQI_TEST_STORE_DRIVER=postgres. A caller that needs to inspect store
+	// state the REST API does not expose (e.g. confirming no row was ever
+	// written to a table) passes it to openTestStore for a second, independent
+	// handle — safe on SQLite because the store runs in WAL mode, which allows
+	// a reader to run alongside the server's own writer, and on PostgreSQL
+	// because a second handle takes no single-server lock.
+	Store backend.Options
+
+	// DBPath is the SQLite file this server was started against. SQLite only:
+	// empty on PostgreSQL. Set by constructors that know it, empty otherwise.
+	// Prefer Store, which names the right database on either driver.
 	DBPath string
 
 	cancel context.CancelFunc
@@ -113,7 +161,7 @@ func startServer(t *testing.T) *testServer {
 
 	// Temp directories for SQLite and NATS JetStream storage.
 	tmpDir := t.TempDir()
-	sqlitePath := tmpDir + "/sqi-test.db"
+	so := storeFor(t, tmpDir+"/sqi-test.db")
 	natsDir := tmpDir + "/nats"
 
 	cfg := server.Config{
@@ -123,7 +171,6 @@ func startServer(t *testing.T) *testServer {
 		NATSAddr:           natsAddr,
 		NATSDataDir:        natsDir,
 		NATSMaxStoreMB:     64,
-		SQLitePath:         sqlitePath,
 		CheckpointInterval: time.Minute,
 		// Tight scheduler timing so tests don't wait a full second per poll.
 		Scheduler: scheduler.Config{
@@ -141,6 +188,7 @@ func startServer(t *testing.T) *testServer {
 		// rather than skips when one is not possible.
 		DiscoveryEnabled: false,
 	}
+	applyStore(&cfg, so)
 
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{
 		Level: slog.LevelWarn, // suppress info noise in test output
@@ -181,7 +229,8 @@ func startServer(t *testing.T) *testServer {
 	ts := &testServer{
 		HTTPAddr: httpAddr,
 		NATSAddr: natsAddr,
-		DBPath:   sqlitePath,
+		Store:    so,
+		DBPath:   so.SQLitePath,
 		cancel:   cancel,
 		done:     done,
 	}

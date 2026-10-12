@@ -14,7 +14,6 @@ import (
 	"github.com/uberware/sqi/internal/presetlib"
 	"github.com/uberware/sqi/internal/product"
 	"github.com/uberware/sqi/internal/store"
-	"github.com/uberware/sqi/internal/store/sqlite"
 )
 
 // presetDef is a minimal product definition that satisfies ParseDefinition:
@@ -35,7 +34,8 @@ template:
 // fixture HTTP server acting as the community library:
 //
 //  1. Spin up an httptest.Server serving /index.json and /maya.yaml.
-//  2. Open a temp SQLite store and wire presetlib.Service + product.Catalog.
+//  2. Open a temp SQLite store (a fresh PostgreSQL database under
+//     SQI_TEST_STORE_DRIVER=postgres) and wire presetlib.Service + product.Catalog.
 //  3. FetchIndex → FetchDefinition → Install.
 //  4. Assert the returned product carries Source=installed, correct fingerprint,
 //     and OriginRef; then verify the row is retrievable by name from the store.
@@ -54,12 +54,7 @@ func TestPresetInstall_RoundTrip(t *testing.T) {
 	defer srv.Close()
 
 	ctx := context.Background()
-	dbPath := t.TempDir() + "/test.db"
-	st, err := sqlite.Open(ctx, dbPath, sqlite.DefaultOptions())
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = st.Close() }()
+	st := openTestStore(t, storeFor(t, t.TempDir()+"/test.db"))
 
 	lib := presetlib.New(srv.URL+"/index.json", time.Minute)
 	cat := product.NewCatalog(st)

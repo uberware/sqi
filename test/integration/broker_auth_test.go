@@ -42,7 +42,7 @@ import (
 	"github.com/uberware/sqi/internal/scheduler"
 	"github.com/uberware/sqi/internal/server"
 	"github.com/uberware/sqi/internal/store"
-	"github.com/uberware/sqi/internal/store/sqlite"
+	"github.com/uberware/sqi/internal/store/backend"
 )
 
 // ── Server boot (broker auth on, auth off) ──────────────────────────────────
@@ -56,13 +56,14 @@ import (
 // so nothing about the revocation path this test exercises needs a login
 // flow.
 //
-// sqlitePath is the caller's choice, not a generated temp path, so a caller
-// can open its own store.Store on the same file and seed rows (e.g. an
+// so is the caller's choice (from storeFor), not a generated store, so a
+// caller can open its own handle on the same database and seed rows (e.g. an
 // enrolled worker credential) BEFORE calling this — see
-// seedWorkerCredential. The store's write pool is a single connection;
-// seeding must complete and close its handle before this server opens its
-// own, not run concurrently with it.
-func startBrokerAuthServer(t *testing.T, sqlitePath string, mutate func(*server.Config)) *testServer {
+// seedWorkerCredential. On SQLite the store's write pool is a single
+// connection; seeding must complete and close its handle before this server
+// opens its own, not run concurrently with it. The same order is kept on
+// PostgreSQL, though a second handle would do no harm there.
+func startBrokerAuthServer(t *testing.T, so backend.Options, mutate func(*server.Config)) *testServer {
 	t.Helper()
 
 	httpAddr := fmt.Sprintf("127.0.0.1:%d", freePort(t))
@@ -75,7 +76,6 @@ func startBrokerAuthServer(t *testing.T, sqlitePath string, mutate func(*server.
 		NATSAddr:           natsAddr,
 		NATSDataDir:        tmpDir + "/nats",
 		NATSMaxStoreMB:     64,
-		SQLitePath:         sqlitePath,
 		CheckpointInterval: time.Minute,
 		Scheduler: scheduler.Config{
 			AssignInterval:  100 * time.Millisecond,
@@ -97,6 +97,7 @@ func startBrokerAuthServer(t *testing.T, sqlitePath string, mutate func(*server.
 		// TestEnrollment_ConnectsToRunningBrokerWithoutRestart.
 		NATSAuthEnabled: true,
 	}
+	applyStore(&cfg, so)
 	if mutate != nil {
 		mutate(&cfg)
 	}
@@ -115,7 +116,7 @@ func startBrokerAuthServer(t *testing.T, sqlitePath string, mutate func(*server.
 	case <-time.After(200 * time.Millisecond):
 	}
 
-	ts := &testServer{HTTPAddr: httpAddr, NATSAddr: natsAddr, cancel: cancel, done: done}
+	ts := &testServer{HTTPAddr: httpAddr, NATSAddr: natsAddr, Store: so, DBPath: so.SQLitePath, cancel: cancel, done: done}
 	// Derive the transport from the config this server was actually given, so
 	// every shared helper (apiURL, seedFarmAndQueue, pollForOnlineWorker, the
 	// readiness probe below) speaks the right scheme with no TLS-specific
@@ -148,7 +149,7 @@ func startBrokerAuthServer(t *testing.T, sqlitePath string, mutate func(*server.
 }
 
 // seedWorkerCredential inserts an already-enrolled [store.WorkerCredential]
-// row directly into the SQLite database at dbPath, mirroring what
+// row directly into the database o names, mirroring what
 // "sqi-server worker enroll" (the offline CLI enrollment path) writes — a
 // direct store.CreateWorkerCredential call from a process holding no broker
 // handle, so (unlike POST /workers/enroll, see enrollWorker below) it never
@@ -156,14 +157,13 @@ func startBrokerAuthServer(t *testing.T, sqlitePath string, mutate func(*server.
 // TestRevocation_DisconnectsAndReclaims, which wants both its workers
 // connectable from the moment the server boots and has no other reason to
 // exercise the REST enrollment surface. Must run before the server opens
-// its own connection to the same file — see startBrokerAuthServer.
-func seedWorkerCredential(t *testing.T, dbPath, workerID, publicKey string) {
+// its own connection to the same database — see startBrokerAuthServer.
+func seedWorkerCredential(t *testing.T, o backend.Options, workerID, publicKey string) {
 	t.Helper()
 	ctx := context.Background()
-	st, err := sqlite.Open(ctx, dbPath, sqlite.DefaultOptions())
-	if err != nil {
-		t.Fatalf("seedWorkerCredential: sqlite.Open: %v", err)
-	}
+	st := openTestStore(t, o)
+	// Closed here, not left to the test's cleanup: on SQLite this handle must
+	// be gone before the server opens its own. Closing twice is harmless.
 	defer func() { _ = st.Close() }()
 
 	if _, err := st.CreateWorkerCredential(ctx, store.WorkerCredential{
@@ -176,13 +176,13 @@ func seedWorkerCredential(t *testing.T, dbPath, workerID, publicKey string) {
 	}
 }
 
-// seedJoinToken inserts a join token row directly into the SQLite database
-// at dbPath and returns the raw token, bypassing POST /workers/join-tokens
+// seedJoinToken inserts a join token row directly into the database o names
+// and returns the raw token, bypassing POST /workers/join-tokens
 // (which requires session auth this suite does not otherwise need — minting
 // is not what either enrollment or revocation testing is about here). Must
-// run before the server opens its own connection to the same file, same
-// rule as seedWorkerCredential.
-func seedJoinToken(t *testing.T, dbPath, name string) string {
+// run before the server opens its own connection to the same database,
+// same rule as seedWorkerCredential.
+func seedJoinToken(t *testing.T, o backend.Options, name string) string {
 	t.Helper()
 	raw, hash, prefix, err := jointoken.Generate()
 	if err != nil {
@@ -190,10 +190,8 @@ func seedJoinToken(t *testing.T, dbPath, name string) string {
 	}
 
 	ctx := context.Background()
-	st, err := sqlite.Open(ctx, dbPath, sqlite.DefaultOptions())
-	if err != nil {
-		t.Fatalf("seedJoinToken: sqlite.Open: %v", err)
-	}
+	st := openTestStore(t, o)
+	// Closed here for the reason given in seedWorkerCredential.
 	defer func() { _ = st.Close() }()
 
 	now := time.Now().UTC()
@@ -322,7 +320,7 @@ func newMockWorkerWithNkey(t *testing.T, natsURL, workerID, farmID, queueID stri
 // ── The test ─────────────────────────────────────────────────────────────────
 
 func TestRevocation_DisconnectsAndReclaims(t *testing.T) {
-	sqlitePath := t.TempDir() + "/sqi-broker-auth.db"
+	so := storeFor(t, t.TempDir()+"/sqi-broker-auth.db")
 
 	seedA, pubA, err := brokerauth.GenerateSeed()
 	if err != nil {
@@ -337,10 +335,10 @@ func TestRevocation_DisconnectsAndReclaims(t *testing.T) {
 	// initial authorized-key set (built once, at Start, from
 	// ListActiveWorkerCredentials) includes both — see seedWorkerCredential's
 	// doc comment for why this test does not use POST /workers/enroll.
-	seedWorkerCredential(t, sqlitePath, "worker-a", pubA)
-	seedWorkerCredential(t, sqlitePath, "worker-b", pubB)
+	seedWorkerCredential(t, so, "worker-a", pubA)
+	seedWorkerCredential(t, so, "worker-b", pubB)
 
-	ts := startBrokerAuthServer(t, sqlitePath, nil)
+	ts := startBrokerAuthServer(t, so, nil)
 
 	farmID, queueID := seedFarmAndQueue(t, ts)
 
@@ -443,15 +441,15 @@ func pollWorkerOffline(t *testing.T, ts *testServer, workerID string, timeout ti
 // ReloadCredentials call TestRevocation_DisconnectsAndReclaims already
 // proves is synchronous for the dedicated credential-revoke endpoint.
 func TestWorkerDeletion_RevokesCredentialAndDisconnects(t *testing.T) {
-	sqlitePath := t.TempDir() + "/sqi-broker-auth-delete.db"
+	so := storeFor(t, t.TempDir()+"/sqi-broker-auth-delete.db")
 
 	seedA, pubA, err := brokerauth.GenerateSeed()
 	if err != nil {
 		t.Fatalf("GenerateSeed(A): %v", err)
 	}
-	seedWorkerCredential(t, sqlitePath, "worker-a", pubA)
+	seedWorkerCredential(t, so, "worker-a", pubA)
 
-	ts := startBrokerAuthServer(t, sqlitePath, nil)
+	ts := startBrokerAuthServer(t, so, nil)
 	farmID, queueID := seedFarmAndQueue(t, ts)
 	natsURL := "nats://" + ts.NATSAddr
 
@@ -490,11 +488,11 @@ func TestWorkerDeletion_RevokesCredentialAndDisconnects(t *testing.T) {
 // wire protocol AFTER the server is already up, with no restart in between,
 // and asserts it connects and registers successfully.
 func TestEnrollment_ConnectsToRunningBrokerWithoutRestart(t *testing.T) {
-	sqlitePath := t.TempDir() + "/sqi-broker-auth-enroll.db"
+	so := storeFor(t, t.TempDir()+"/sqi-broker-auth-enroll.db")
 
-	rawToken := seedJoinToken(t, sqlitePath, "worker-c")
+	rawToken := seedJoinToken(t, so, "worker-c")
 
-	ts := startBrokerAuthServer(t, sqlitePath, func(cfg *server.Config) {
+	ts := startBrokerAuthServer(t, so, func(cfg *server.Config) {
 		cfg.NATSAuthEnrollmentEndpointEnabled = true
 	})
 
@@ -525,21 +523,19 @@ func TestEnrollment_ConnectsToRunningBrokerWithoutRestart(t *testing.T) {
 
 // ── The default-config regression ───────────────────────────────────────────
 
-// listActiveWorkerCredentials opens a second, independent connection to the
-// SQLite database a running server was started against and calls
+// listActiveWorkerCredentials opens a second, independent handle on the
+// database a running server was started against and calls
 // ListActiveWorkerCredentials. This is safe to run WHILE that server is
-// still up: the store opens every database in WAL mode, which allows a
-// reader to run alongside the server's own single-connection writer.
-// AutoMigrate is left off — the server that owns dbPath has already applied
-// every migration, and re-running goose's version check here would be pure
-// overhead against a live file for no benefit.
-func listActiveWorkerCredentials(t *testing.T, dbPath string) []store.WorkerCredential {
+// still up: on SQLite the store opens every database in WAL mode, which
+// allows a reader to run alongside the server's own single-connection
+// writer, and on PostgreSQL a second handle takes no single-server lock
+// (openTestStore leaves ServerLock off). Its migration pass finds the schema
+// already current, because the server that owns o has applied every
+// migration.
+func listActiveWorkerCredentials(t *testing.T, o backend.Options) []store.WorkerCredential {
 	t.Helper()
 	ctx := context.Background()
-	st, err := sqlite.Open(ctx, dbPath, sqlite.Options{AutoMigrate: false})
-	if err != nil {
-		t.Fatalf("listActiveWorkerCredentials: sqlite.Open: %v", err)
-	}
+	st := openTestStore(t, o)
 	defer func() { _ = st.Close() }()
 
 	creds, err := st.ListActiveWorkerCredentials(ctx)
@@ -603,7 +599,7 @@ func TestDefaultConfig_NoBrokerAuth(t *testing.T) {
 	// Criterion 3: nothing enrolled anything. Broker auth was never engaged
 	// on this path, so no row should ever have been written to the
 	// worker-credential table.
-	if creds := listActiveWorkerCredentials(t, ts.DBPath); len(creds) != 0 {
+	if creds := listActiveWorkerCredentials(t, ts.Store); len(creds) != 0 {
 		t.Errorf("default path created %d worker credentials, want 0: %+v", len(creds), creds)
 	}
 }
