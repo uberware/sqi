@@ -4,14 +4,19 @@ package main
 
 import (
 	"bytes"
+	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
+
+	"github.com/uberware/sqi/internal/store/storetest"
 )
 
 // captureStdout redirects os.Stdout to a pipe for the duration of fn, then
@@ -110,10 +115,49 @@ func resetFlagsChanged(cmd *cobra.Command) {
 	}
 }
 
+// resetFlagValues puts every subcommand flag's bound variable back to its
+// default, recursing into every subcommand. Changed is not the only sticky
+// state: the variable a flag writes keeps an earlier test's value too, so
+// "worker token issue" without --ttl would otherwise run with whatever --ttl
+// the last test passed (an out-of-range one, say), and a later --dsn-less
+// command would carry a stale DSN were it ever consulted without Changed.
+//
+// The root command's persistent flags (-c/--config and the serve overrides)
+// are left alone: tests set persistentFlags directly (withConfigFile) before
+// prepareRoot, and resetting them here would undo that. A subcommand's
+// Flags() also holds those inherited flags once cobra has merged them, so
+// they are skipped by identity, not just on rootCmd.
+//
+// A default that does not parse back is a programming error in the flag's
+// registration, so it panics rather than taking a *testing.T that
+// prepareRoot does not have.
+func resetFlagValues(cmd *cobra.Command) {
+	reset := func(f *pflag.Flag) {
+		if rootCmd.PersistentFlags().Lookup(f.Name) == f {
+			return
+		}
+		if sv, ok := f.Value.(pflag.SliceValue); ok {
+			if err := sv.Replace(nil); err != nil {
+				panic(fmt.Sprintf("reset flag --%s: %v", f.Name, err))
+			}
+			return
+		}
+		if err := f.Value.Set(f.DefValue); err != nil {
+			panic(fmt.Sprintf("reset flag --%s to %q: %v", f.Name, f.DefValue, err))
+		}
+	}
+	cmd.Flags().VisitAll(reset)
+	cmd.PersistentFlags().VisitAll(reset)
+	for _, c := range cmd.Commands() {
+		resetFlagValues(c)
+	}
+}
+
 // prepareRoot sets the args that rootCmd will parse on the next Execute() call
 // and redirects cobra's own output writers (help, usage, error messages) to a
 // discard buffer so test output stays clean.
 func prepareRoot(args []string) {
+	resetFlagValues(rootCmd)
 	resetFlagsChanged(rootCmd)
 	rootCmd.SetArgs(args)
 	var sink bytes.Buffer
@@ -183,7 +227,7 @@ func TestOpenMigrateDB_ErrorPaths(t *testing.T) {
 }
 
 // TestOpenMigrateDB_ValidPath verifies that openMigrateDB opens an SQLite
-// database, applies pragmas, and configures goose when given a real path.
+// database and applies pragmas when given a real path.
 func TestOpenMigrateDB_ValidPath(t *testing.T) {
 	t.Run("valid path succeeds and returns open db", func(t *testing.T) {
 		dbPath := filepath.Join(t.TempDir(), "test-migrate.db")
@@ -373,32 +417,74 @@ func TestConfigPrintCmd(t *testing.T) {
 	})
 }
 
-// TestMigrateCmd_WithTempDB exercises the migrate subcommands (status, up)
-// against a real temporary SQLite database.  These tests cover the RunE
-// closures that call openMigrateDB and goose operations.
+// TestMigrateCmd_WithTempDB exercises the migrate subcommands (status, up,
+// status again) against a real temporary SQLite database, and pins the
+// status format: one line per migration, its applied time (RFC 3339, UTC) or
+// "pending", then its file name.
 func TestMigrateCmd_WithTempDB(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "test-migrate.db")
 
-	t.Run("migrate status succeeds on fresh database", func(t *testing.T) {
+	t.Run("migrate status on a fresh database lists every migration pending", func(t *testing.T) {
 		prepareRoot([]string{"migrate", "status", "--db", dbPath})
-		// goose.Status prints to its default logger; suppress stdout so we
-		// don't pollute test output.
-		_ = captureStdout(t, func() {
-			err := Execute()
-			if err != nil {
+		out := captureStdout(t, func() {
+			if err := Execute(); err != nil {
 				t.Errorf("Execute(migrate status) error = %v", err)
 			}
 		})
+		lines := strings.Split(strings.TrimSpace(out), "\n")
+		if len(lines) < 2 {
+			t.Fatalf("migrate status listed %d migrations:\n%s", len(lines), out)
+		}
+		for _, l := range lines {
+			if !strings.HasPrefix(l, "pending ") || !strings.HasSuffix(l, ".sql") {
+				t.Errorf("migrate status line %q, want \"pending   <file>.sql\"", l)
+			}
+		}
+		if !strings.Contains(out, "00001_placeholder.sql") {
+			t.Errorf("migrate status does not list 00001_placeholder.sql:\n%s", out)
+		}
 	})
 
 	t.Run("migrate up applies all pending migrations", func(t *testing.T) {
 		prepareRoot([]string{"migrate", "up", "--db", dbPath})
-		_ = captureStdout(t, func() {
-			err := Execute()
-			if err != nil {
+		out := captureStdout(t, func() {
+			if err := Execute(); err != nil {
 				t.Errorf("Execute(migrate up) error = %v", err)
 			}
 		})
+		if !strings.Contains(out, "00001_placeholder.sql") {
+			t.Errorf("migrate up does not report the migrations it applied:\n%s", out)
+		}
+	})
+
+	t.Run("migrate status after up lists nothing pending", func(t *testing.T) {
+		prepareRoot([]string{"migrate", "status", "--db", dbPath})
+		out := captureStdout(t, func() {
+			if err := Execute(); err != nil {
+				t.Errorf("Execute(migrate status) error = %v", err)
+			}
+		})
+		for l := range strings.SplitSeq(strings.TrimSpace(out), "\n") {
+			stamp, _, ok := strings.Cut(l, " ")
+			if !ok || !strings.HasSuffix(l, ".sql") {
+				t.Fatalf("migrate status line %q, want \"<time> <file>.sql\"", l)
+			}
+			if _, err := time.Parse(time.RFC3339, stamp); err != nil {
+				t.Errorf("migrate status line %q: applied time %q is not RFC 3339: %v", l, stamp, err)
+			}
+		}
+	})
+
+	t.Run("migrate up again reports nothing pending", func(t *testing.T) {
+		prepareRoot([]string{"migrate", "up", "--db", dbPath})
+		out := captureStdout(t, func() {
+			if err := Execute(); err != nil {
+				t.Errorf("Execute(migrate up) error = %v", err)
+			}
+		})
+		if strings.TrimSpace(out) != "no pending migrations" {
+			t.Errorf("second migrate up printed %q, want \"no pending migrations\"", out)
+		}
 	})
 }
 
@@ -515,5 +601,46 @@ func TestBackupCmd_DBPath_ConfigFileHonoredWhenFlagOmitted(t *testing.T) {
 
 	if _, err := os.Stat(outPath); err != nil {
 		t.Errorf("expected a backup file at %q: %v", outPath, err)
+	}
+}
+
+// TestMigrateCmd_Postgres_UpThenStatus migrates an empty PostgreSQL database
+// through the CLI and checks that status then reports every migration applied.
+func TestMigrateCmd_Postgres_UpThenStatus(t *testing.T) {
+	dsn := storetest.PostgresEmptyDSN(t)
+	prepareRoot([]string{"migrate", "up", "--dsn", dsn})
+	_ = captureStdout(t, func() {
+		if err := Execute(); err != nil {
+			t.Fatalf("migrate up: %v", err)
+		}
+	})
+	prepareRoot([]string{"migrate", "status", "--dsn", dsn})
+	out := captureStdout(t, func() {
+		if err := Execute(); err != nil {
+			t.Fatalf("migrate status: %v", err)
+		}
+	})
+	if !strings.Contains(out, "00037_baseline.sql") || strings.Contains(out, "pending") {
+		t.Fatalf("migrate status after up:\n%s", out)
+	}
+}
+
+// TestBackupCmd_Postgres backs up a migrated PostgreSQL database through the
+// CLI with pg_dump.
+func TestBackupCmd_Postgres(t *testing.T) {
+	if _, err := exec.LookPath("pg_dump"); err != nil {
+		if os.Getenv("SQI_TEST_REQUIRE_POSTGRES") == "1" {
+			t.Fatal("pg_dump not on PATH")
+		}
+		t.Skip("pg_dump not on PATH")
+	}
+	dsn := storetest.PostgresDSN(t)
+	out := filepath.Join(t.TempDir(), "sqi.dump")
+	prepareRoot([]string{"backup", "--dsn", dsn, "--out", out})
+	if err := Execute(); err != nil {
+		t.Fatalf("backup: %v", err)
+	}
+	if fi, err := os.Stat(out); err != nil || fi.Size() == 0 {
+		t.Fatalf("backup archive: %v, %v", fi, err)
 	}
 }

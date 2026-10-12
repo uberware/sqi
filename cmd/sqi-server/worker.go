@@ -17,23 +17,24 @@ import (
 	"github.com/uberware/sqi/internal/brokerauth"
 	"github.com/uberware/sqi/internal/config"
 	"github.com/uberware/sqi/internal/store"
-	"github.com/uberware/sqi/internal/store/sqlite"
+	"github.com/uberware/sqi/internal/store/backend"
 )
 
 // workerFlags holds the values bound to the "worker" parent command's
 // persistent flags, inherited by every subcommand.
 var workerFlags struct {
 	DBPath string
+	DSN    string
 }
 
 // workerCmd groups worker broker-credential and enrollment subcommands.
 //
-// These commands open the SQLite database directly, exactly like backup and
-// migrate, and never start an HTTP server or NATS broker. That is
-// deliberate: broker authentication (nats.auth.enabled) is independent of
-// the user-facing auth.enabled gate, and the REST enrollment endpoints only
-// exist when auth.enabled is on (otherwise there would be no RBAC in front
-// of them). This CLI is what makes credential minting available regardless
+// These commands open the state store (SQLite or PostgreSQL) directly,
+// exactly like backup and migrate, and never start an HTTP server or NATS
+// broker. That is deliberate: broker authentication (nats.auth.enabled) is
+// independent of the user-facing auth.enabled gate, and the REST enrollment
+// endpoints only exist when auth.enabled is on (otherwise there would be no
+// RBAC in front of them). This CLI is what makes credential minting available regardless
 // — an operator with a shell on the server host is already trusted.
 var workerCmd = &cobra.Command{
 	Use:   "worker",
@@ -41,15 +42,18 @@ var workerCmd = &cobra.Command{
 	Long: `Manage worker broker credentials and enrollment for NATS broker
 authentication (the nats.auth.* settings).
 
-These subcommands operate directly on the SQLite database file and do not
-require sqi-server to be running, and work regardless of whether
-auth.enabled (the separate, user-facing auth gate) is on.
+These subcommands operate directly on the state store (SQLite or
+PostgreSQL) and do not require sqi-server to be running, and work regardless
+of whether auth.enabled (the separate, user-facing auth gate) is on.
 
-The database path defaults to store.sqlite_path from the resolved
-configuration (the root -c/--config file and SQI_STORE_SQLITE_PATH), falling
-back to the legacy SQI_SQLITE_PATH environment variable and then to "sqi.db".
-Pass --db to override it explicitly. The database must already exist — these
-subcommands never create one; run "sqi-server migrate up" first.
+The store is chosen as follows: --dsn names a PostgreSQL database; --db names
+a SQLite file; otherwise store.driver from the resolved configuration (the
+root -c/--config file and SQI_STORE_DRIVER) decides. For PostgreSQL the
+connection string is store.postgres.dsn (SQI_STORE_POSTGRES_DSN). For SQLite
+the path is store.sqlite_path (SQI_STORE_SQLITE_PATH), falling back to the
+legacy SQI_SQLITE_PATH environment variable and then to "sqi.db". The
+database must already exist and carry the schema — these subcommands never
+create or migrate one; run "sqi-server migrate up" first.
 
 Subcommands:
   token issue   Issue a one-time join token for self-service enrollment.
@@ -134,6 +138,11 @@ func init() {
 		"db", "sqi.db",
 		"path to SQLite database file (defaults to store.sqlite_path from config, then the deprecated SQI_SQLITE_PATH, then \"sqi.db\")",
 	)
+	workerCmd.PersistentFlags().StringVar(
+		&workerFlags.DSN,
+		"dsn", "",
+		"PostgreSQL connection string (defaults to store.postgres.dsn when store.driver is postgres)",
+	)
 
 	workerTokenIssueCmd.Flags().DurationVar(
 		&workerTokenIssueFlags.TTL,
@@ -160,31 +169,18 @@ func init() {
 	workerCmd.AddCommand(workerTokenCmd, workerEnrollCmd, workerRevokeCmd, workerListCmd)
 }
 
-// openWorkerStore resolves the database path (see [resolveDBPath]) and opens
-// it without applying migrations. These commands write rows into an existing
-// schema; they never create or migrate the database — a worker subcommand
-// pointed at the wrong file must fail with an actionable error, not conjure
-// an empty one. Run "sqi-server migrate up" first against a fresh database.
-func openWorkerStore(ctx context.Context, cmd *cobra.Command) (*sqlite.Store, error) {
-	dbPath, err := resolveDBPath(workerFlags.DBPath, cmd != nil && cmd.Flags().Changed("db"))
+// openWorkerStore resolves the store (see [resolveStoreTarget]) — a SQLite
+// file or a PostgreSQL database — and opens it without applying migrations.
+// These commands write rows into an existing schema; they never create or
+// migrate the database — a worker subcommand pointed at the wrong file or
+// database must fail with an actionable error, not conjure an empty one. Run
+// "sqi-server migrate up" first against a fresh database.
+func openWorkerStore(ctx context.Context, cmd *cobra.Command) (backend.Backend, error) {
+	tgt, err := resolveStoreTarget(cmd, workerFlags.DBPath, workerFlags.DSN)
 	if err != nil {
 		return nil, err
 	}
-	if dbPath == "" {
-		return nil, errors.New("database path is empty; use --db, set store.sqlite_path, or set SQI_STORE_SQLITE_PATH")
-	}
-	if err := requireExistingDB(dbPath); err != nil {
-		return nil, err
-	}
-	if err := requireMigratedDB(dbPath); err != nil {
-		return nil, err
-	}
-
-	st, err := sqlite.Open(ctx, dbPath, sqlite.Options{AutoMigrate: false})
-	if err != nil {
-		return nil, fmt.Errorf("open database: %w", err)
-	}
-	return st, nil
+	return openExistingStore(ctx, tgt)
 }
 
 func runWorkerTokenIssue(cmd *cobra.Command, _ []string) error {

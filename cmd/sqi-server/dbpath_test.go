@@ -8,7 +8,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/pressly/goose/v3"
+	"github.com/spf13/cobra"
+
+	"github.com/uberware/sqi/internal/store/migrations"
 )
 
 // withConfigFile points persistentFlags.ConfigFile at path for the duration
@@ -275,12 +277,59 @@ func TestRequireMigratedDB(t *testing.T) {
 			t.Fatalf("openMigrateDB: %v", err)
 		}
 		t.Cleanup(func() { db.Close() })
-		if err := goose.Up(db, "."); err != nil {
-			t.Fatalf("goose.Up: %v", err)
+		p, err := migrations.NewProvider(db, "sqlite")
+		if err != nil {
+			t.Fatalf("migrations.NewProvider: %v", err)
+		}
+		if _, err := p.Up(t.Context()); err != nil {
+			t.Fatalf("migrate up: %v", err)
 		}
 
 		if err := requireMigratedDB(path); err != nil {
 			t.Errorf("requireMigratedDB(%q) = %v; want nil", path, err)
 		}
 	})
+}
+
+// TestResolveStoreTarget walks resolveStoreTarget's precedence: an explicit
+// --dsn, then an explicit --db, then the configured store.driver.
+func TestResolveStoreTarget(t *testing.T) {
+	unsetStoreSQLitePathEnv(t)
+	withConfigFile(t, writeEmptyServerConfigFile(t))
+	t.Setenv("SQI_STORE_DRIVER", "")
+	t.Setenv("SQI_STORE_POSTGRES_DSN", "")
+
+	cmd := &cobra.Command{}
+	cmd.Flags().String("db", "sqi.db", "")
+	cmd.Flags().String("dsn", "", "")
+
+	got, err := resolveStoreTarget(cmd, "sqi.db", "")
+	if err != nil || got.Driver != "sqlite" {
+		t.Fatalf("default = %+v, %v; want sqlite", got, err)
+	}
+
+	t.Setenv("SQI_STORE_DRIVER", "postgres")
+	if _, err := resolveStoreTarget(cmd, "sqi.db", ""); err == nil || !strings.Contains(err.Error(), "SQI_STORE_POSTGRES_DSN") {
+		t.Fatalf("postgres without a dsn = %v", err)
+	}
+	t.Setenv("SQI_STORE_POSTGRES_DSN", "postgres://x@db/sqi")
+	got, err = resolveStoreTarget(cmd, "sqi.db", "")
+	if err != nil || got.Driver != "postgres" || got.DSN != "postgres://x@db/sqi" {
+		t.Fatalf("postgres from config = %+v, %v", got, err)
+	}
+
+	if err := cmd.Flags().Set("db", "other.db"); err != nil {
+		t.Fatal(err)
+	}
+	got, err = resolveStoreTarget(cmd, "other.db", "")
+	if err != nil || got.Driver != "sqlite" || got.SQLitePath != "other.db" {
+		t.Fatalf("--db wins over a postgres config = %+v, %v", got, err)
+	}
+	if err := cmd.Flags().Set("dsn", "postgres://flag@db/sqi"); err != nil {
+		t.Fatal(err)
+	}
+	got, err = resolveStoreTarget(cmd, "other.db", "postgres://flag@db/sqi")
+	if err != nil || got.Driver != "postgres" || got.DSN != "postgres://flag@db/sqi" {
+		t.Fatalf("--dsn wins = %+v, %v", got, err)
+	}
 }

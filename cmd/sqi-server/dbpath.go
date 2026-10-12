@@ -9,9 +9,14 @@ import (
 	"fmt"
 	"os"
 
+	_ "github.com/jackc/pgx/v5/stdlib" // register "pgx" driver
+	"github.com/spf13/cobra"
 	_ "modernc.org/sqlite" // register "sqlite" driver
 
 	"github.com/uberware/sqi/internal/config"
+	"github.com/uberware/sqi/internal/pgdsn"
+	"github.com/uberware/sqi/internal/store/backend"
+	"github.com/uberware/sqi/internal/store/postgres"
 )
 
 // resolveDBPath applies the database-path precedence shared by backup,
@@ -119,4 +124,101 @@ func requireMigratedDB(path string) error {
 		return fmt.Errorf("the database at %s has no schema; run \"sqi-server migrate up\" first", path)
 	}
 	return nil
+}
+
+// storeTarget is the store a CLI command reads and writes.
+type storeTarget struct{ Driver, SQLitePath, DSN string }
+
+// resolveStoreTarget decides which store a CLI command uses. In order: an
+// explicit --dsn (PostgreSQL); an explicit --db (SQLite at that path); the
+// configured store.driver, with store.postgres.dsn for PostgreSQL and
+// resolveDBPath's layering for SQLite. Configuration-load failures follow
+// resolveDBPath's rules.
+func resolveStoreTarget(cmd *cobra.Command, dbFlag, dsnFlag string) (storeTarget, error) {
+	if flagChanged(cmd, "dsn") {
+		if dsnFlag == "" {
+			return storeTarget{}, errors.New("--dsn is empty")
+		}
+		return storeTarget{Driver: backend.DriverPostgres, DSN: dsnFlag}, nil
+	}
+	if !flagChanged(cmd, "db") {
+		cfg, _, err := config.LoadWithSources(persistentFlags.ConfigFile, config.FlagOverrides{})
+		if err != nil && persistentFlags.ConfigFile != "" {
+			return storeTarget{}, fmt.Errorf("load config: %w", err)
+		}
+		if err == nil && cfg.Store.Driver == config.StoreDriverPostgres {
+			if cfg.Store.Postgres.DSN == "" {
+				return storeTarget{}, errors.New("store.driver is postgres but no DSN is set; " +
+					"use --dsn, set store.postgres.dsn, or set SQI_STORE_POSTGRES_DSN")
+			}
+			return storeTarget{Driver: backend.DriverPostgres, DSN: cfg.Store.Postgres.DSN}, nil
+		}
+	}
+	path, err := resolveDBPath(dbFlag, flagChanged(cmd, "db"))
+	if err != nil {
+		return storeTarget{}, err
+	}
+	return storeTarget{Driver: backend.DriverSQLite, SQLitePath: path}, nil
+}
+
+// flagChanged reports whether the operator passed the flag name to cmd. A nil
+// cmd (a direct, non-cobra caller) passed nothing.
+func flagChanged(cmd *cobra.Command, name string) bool {
+	if cmd == nil {
+		return false
+	}
+	f := cmd.Flags().Lookup(name)
+	return f != nil && f.Changed
+}
+
+// requireMigratedPostgres fails, with the same advice as requireMigratedDB,
+// when the database has no schema.
+func requireMigratedPostgres(ctx context.Context, dsn string) error {
+	db, err := sql.Open("pgx", dsn)
+	if err != nil {
+		return fmt.Errorf("open %s: %w", pgdsn.Redact(dsn), err)
+	}
+	defer db.Close()
+	v, err := postgres.SchemaVersion(ctx, db)
+	if err != nil {
+		return fmt.Errorf("check schema at %s: %w", pgdsn.Redact(dsn), err)
+	}
+	if v == 0 {
+		return fmt.Errorf("the database at %s has no schema; run \"sqi-server migrate up\" first", pgdsn.Redact(dsn))
+	}
+	return nil
+}
+
+// openExistingStore opens tgt's store without migrating it, after checking it
+// exists and has a schema. These commands write into an existing schema; they
+// never create one.
+func openExistingStore(ctx context.Context, tgt storeTarget) (backend.Backend, error) {
+	switch tgt.Driver {
+	case backend.DriverPostgres:
+		if err := requireMigratedPostgres(ctx, tgt.DSN); err != nil {
+			return nil, err
+		}
+		st, err := backend.Open(ctx, backend.Options{
+			Driver: backend.DriverPostgres, PostgresDSN: tgt.DSN, MaxConns: 2, AutoMigrate: false,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("open %s: %w", pgdsn.Redact(tgt.DSN), err)
+		}
+		return st, nil
+	default:
+		if tgt.SQLitePath == "" {
+			return nil, errors.New("database path is empty; use --db, set store.sqlite_path, or set SQI_STORE_SQLITE_PATH")
+		}
+		if err := requireExistingDB(tgt.SQLitePath); err != nil {
+			return nil, err
+		}
+		if err := requireMigratedDB(tgt.SQLitePath); err != nil {
+			return nil, err
+		}
+		st, err := backend.Open(ctx, backend.Options{SQLitePath: tgt.SQLitePath, AutoMigrate: false})
+		if err != nil {
+			return nil, fmt.Errorf("open database: %w", err)
+		}
+		return st, nil
+	}
 }
