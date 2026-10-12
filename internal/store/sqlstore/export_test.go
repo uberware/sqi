@@ -45,6 +45,7 @@ const (
 	SQLDeleteUserKeepingAdmin   = sqlDeleteUserKeepingAdmin
 	SQLFinalizeJob              = sqlFinalizeJob
 	SQLReclaimTaskSet           = sqlReclaimTaskSet
+	SQLInsertTasksHead          = sqlInsertTasksHead
 )
 
 var (

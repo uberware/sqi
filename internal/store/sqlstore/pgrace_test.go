@@ -888,3 +888,55 @@ func TestPGRace_G10_TwoAdminDeletionsLeaveOneAdmin(t *testing.T) {
 		t.Error("the second delete did not wait for the first's admin-row locks")
 	}
 }
+
+// TestPGRace_SubmissionDoesNotHoldItsUpstreamWhileInserting: a submission with
+// depends_on takes its upstream job rows FOR SHARE only for the dependency
+// re-check at the end of its transaction. While it is still inserting its
+// tasks, a writer that locks an upstream job exclusively (here a worker's
+// completion of an upstream task) must not wait for it: a 1M-task submission
+// takes tens of seconds to insert.
+func TestPGRace_SubmissionDoesNotHoldItsUpstreamWhileInserting(t *testing.T) {
+	st, p := pgRace(t)
+	up := seedWorld(t, st, 1, "w1")
+	attempt := storetest.Running(t, st, leaseReq(up.Tasks[0], "w1"))
+
+	downID, downStep := "job-"+uuid.NewString()[:8], "step-"+uuid.NewString()[:8]
+	seed := storetest.NewJob(downID, up.FarmID, up.QueueID).As(store.JobStatusBlocked).Step(downStep, store.StepStatusPending)
+	for i := range 10 {
+		seed.Task(fmt.Sprintf("%s-t%d", downID, i), downStep, store.TaskStatusPending)
+	}
+	seed.Sub.DependsOn = []string{up.JobID}
+
+	var done store.CompletionResult
+	p.atStatement(sqlstore.SQLInsertTasksHead)
+	serr, cerr, waited := interleave(t, p,
+		func() error { _, err := st.CreateJobSubmission(t.Context(), seed.Sub); return err },
+		func() (err error) {
+			done, err = st.CompleteTaskAttempt(t.Context(), store.AttemptCompletion{
+				AttemptID: attempt.ID, TaskID: attempt.TaskID, TaskStatus: store.TaskStatusSucceeded,
+				AttemptStatus: store.AttemptStatusSucceeded, EndedAt: time.Now().UTC(),
+			})
+			return err
+		})
+	assertPausedAt(t, p, sqlstore.SQLInsertTasksHead)
+	if serr != nil || cerr != nil {
+		t.Fatalf("submission err %v, completion err %v", serr, cerr)
+	}
+	if !done.Applied {
+		t.Fatalf("completion not applied: %+v", done)
+	}
+	if waited {
+		t.Error("a completion on the upstream job waited for a submission still inserting its tasks: " +
+			"the submission locked its upstream before its inserts, not just for the re-check before commit")
+	}
+	job, err := st.GetJob(t.Context(), downID)
+	if err != nil {
+		t.Fatalf("GetJob: %v", err)
+	}
+	if job.Status != store.JobStatusBlocked {
+		t.Fatalf("submitted job status = %s, want blocked", job.Status)
+	}
+	if got := mustTask(t, st, downID+"-t9"); got.Status != store.TaskStatusPending {
+		t.Fatalf("last submitted task status = %s, want pending", got.Status)
+	}
+}

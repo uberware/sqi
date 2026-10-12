@@ -286,18 +286,21 @@ func (s *Store) CreateJobSubmission(ctx context.Context, sub store.JobSubmission
 				return txRollback, fmt.Errorf("store: create job dependency %s->%s: %w", sub.Job.ID, up, mapErr(err))
 			}
 		}
-		// The edges are written first and checked after. job_dependencies has
-		// no foreign key on depends_on_job_id, so inserting an edge to a missing or
-		// doomed upstream is harmless, and an unsatisfiable one rolls the whole
-		// submission back.
-		if err := checkUpstreamsTx(ctx, tx, sub.DependsOn); err != nil {
-			return txRollback, err
-		}
 		var clock rowClock
 		if out.Steps, err = insertStepsTx(ctx, tx, &clock, sub.Steps); err != nil {
 			return txRollback, err
 		}
 		if out.Tasks, err = insertTasksTx(ctx, tx, &clock, sub.Tasks, s.taskInsertBatch); err != nil {
+			return txRollback, err
+		}
+		// The upstreams are checked last, after every insert and just before
+		// the commit. job_dependencies has no foreign key on depends_on_job_id,
+		// so the edges to a missing or doomed upstream are harmless until then,
+		// and an unsatisfiable one rolls the whole submission back. Checking last
+		// keeps the upstream rows' share locks (PostgreSQL) to the window between
+		// this check and the commit: a large submission still inserting its
+		// tasks makes no writer on an upstream job wait.
+		if err := checkUpstreamsTx(ctx, tx, sub.DependsOn); err != nil {
 			return txRollback, err
 		}
 		return txCommit, nil
@@ -316,7 +319,8 @@ func (s *Store) CreateJobSubmission(ctx context.Context, sub store.JobSubmission
 // after the submitter's read, is left to sweepBlockedJobs, which releases the
 // job within one sweep tick. A PostgreSQL store locks each upstream row FOR
 // SHARE here, in ID order so two submissions naming the same upstreams cannot
-// deadlock.
+// deadlock. CreateJobSubmission calls it last, so those locks are held only
+// from here to the commit.
 func checkUpstreamsTx(ctx context.Context, tx *dbTx, upstreams []string) error {
 	ids := slices.Clone(upstreams)
 	slices.Sort(ids)
