@@ -5,6 +5,7 @@ package postgres_test
 import (
 	"errors"
 	"fmt"
+	"os"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -27,6 +28,20 @@ func (d *taskInsertCounter) Rebind(q string) string {
 		d.n.Add(1)
 	}
 	return d.Dialect.Rebind(q)
+}
+
+// runsPerTx is how many times the store runs each transaction's body:
+// twice under SQI_TEST_PG_FORCE_TX_RETRY=1, where storetest.PostgresWith
+// rehearses every transaction once (rolled back) before the run that counts,
+// once otherwise. The counter sees the statements of every run, and Rebind is
+// not told which transaction a statement belongs to, so the tests expect the
+// per-run count times this rather than count per transaction. Each run of CreateJobSubmission
+// issues the same statements, the rehearsal included.
+func runsPerTx() int64 {
+	if os.Getenv("SQI_TEST_PG_FORCE_TX_RETRY") == "1" {
+		return 2
+	}
+	return 1
 }
 
 // batchStore returns a store over a fresh database that counts task INSERTs,
@@ -68,8 +83,8 @@ func TestCreateJobSubmission_InsertsTasksInBatches(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateJobSubmission: %v", err)
 	}
-	if got := count.n.Load(); got != 3 {
-		t.Errorf("%d task INSERT statements for %d tasks, want 3", got, n)
+	if got, want := count.n.Load(), 3*runsPerTx(); got != want {
+		t.Errorf("%d task INSERT statements for %d tasks over %d run(s), want %d (3 per run)", got, n, runsPerTx(), want)
 	}
 	if len(out.Tasks) != n {
 		t.Fatalf("returned %d tasks, want %d", len(out.Tasks), n)
@@ -101,8 +116,8 @@ func TestCreateJobSubmission_BatchedFailureRollsBackEntirely(t *testing.T) {
 	if !errors.Is(err, store.ErrConflict) {
 		t.Fatalf("CreateJobSubmission = %v, want store.ErrConflict", err)
 	}
-	if got := count.n.Load(); got != 3 {
-		t.Errorf("%d task INSERT statements, want 3: the duplicate has to be in the last one", got)
+	if got, want := count.n.Load(), 3*runsPerTx(); got != want {
+		t.Errorf("%d task INSERT statements over %d run(s), want %d: 3 per run, the duplicate in the last one", got, runsPerTx(), want)
 	}
 	if _, err := st.GetJob(t.Context(), "bj"); !errors.Is(err, store.ErrNotFound) {
 		t.Errorf("GetJob = %v; the job row survived a failed submission", err)
