@@ -25,6 +25,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"os"
 	"slices"
 	"sort"
 	"strings"
@@ -175,7 +176,7 @@ type stressRun struct {
 	t      *testing.T
 	st     stressStore
 	db     *sql.DB             // a second connection to the same database: history and diagnostics
-	rebind func(string) string // the history connection's placeholder form
+	rebind func(string) string // rewrites a query's single "?" into the history connection's placeholder form
 	s      *Scheduler
 	fx     stressFixture
 	// reportedBy[g] is reporter g's scheduler. Two schedulers share the store as
@@ -211,8 +212,10 @@ type stressRun struct {
 // never took effect. It cannot exercise races that need concurrent writers,
 // because SQLite serializes writes; it catches regressions inside one
 // operation or a composition of them non-deterministically.
+//
+// TestConcurrentStress_SQLite runs in make test, with or without -race.
 // TestConcurrentStress_Postgres runs the same schedule where writers are
-// concurrent. Runs in make test, with or without -race.
+// concurrent, when PostgreSQL is configured.
 func TestConcurrentStress_SQLite(t *testing.T) {
 	if testing.Short() {
 		t.Skip("stress test: races the store's atomic operations on SQLite")
@@ -232,9 +235,16 @@ func TestConcurrentStress_SQLite(t *testing.T) {
 
 // TestConcurrentStress_Postgres is the stress run on PostgreSQL, where writers
 // really are concurrent: the races SQLite's single writer hides are live here.
+//
+// It skips under SQI_TEST_PG_FORCE_TX_RETRY=1: with every transaction
+// rehearsed once, the restart-reclaim liveness check can starve and hit its
+// 3000-round cap.
 func TestConcurrentStress_Postgres(t *testing.T) {
 	if testing.Short() {
 		t.Skip("stress test")
+	}
+	if os.Getenv("SQI_TEST_PG_FORCE_TX_RETRY") == "1" {
+		t.Skip("under rehearsal the restart-reclaim liveness check can starve and hit its 3000-round cap")
 	}
 	st := storetest.Postgres(t)
 	db, err := sql.Open("pgx", st.DSNForTest())
@@ -251,13 +261,14 @@ func TestConcurrentStress_Postgres(t *testing.T) {
 			t.Fatalf("install task history: %v", err)
 		}
 	}
+	// rebind rewrites only the first "?": every history query has exactly one.
 	runStress(t, st, db, func(q string) string { return strings.Replace(q, "?", "$1", 1) })
 	t.Logf("transaction retries: %d", st.TxRetries())
 }
 
 // runStress races the schedule on st, whose task history db records (its
 // triggers installed before this seeds the fixture); rebind turns a query's
-// "?" placeholder into db's form.
+// single "?" placeholder into db's form.
 func runStress(t *testing.T, st stressStore, db *sql.DB, rebind func(string) string) {
 	t.Helper()
 	r := &stressRun{
