@@ -732,3 +732,159 @@ func idsOf(ds []store.DeletedJob) []string {
 	}
 	return out
 }
+
+// TestPGRace_G2_PoolCapHoldsUnderConcurrentLeases: a lease held between its
+// claim count and its claim insert keeps a second lease from taking the last
+// slot too.
+func TestPGRace_G2_PoolCapHoldsUnderConcurrentLeases(t *testing.T) {
+	st, p := pgRace(t)
+	w := seedWorld(t, st, 2, "w1")
+	pool, err := st.CreateUsagePool(t.Context(), store.UsagePool{ID: "pool-g2", Name: "lic-g2", MaxConcurrent: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	claim := func(task string) store.LeaseRequest {
+		r := leaseReq(task, "w1")
+		r.Claims = []store.UsagePoolClaim{{ClaimID: uuid.NewString(), PoolID: pool.ID, PoolName: pool.Name}}
+		return r
+	}
+	p.atStatement(sqlstore.SQLInsertClaim) // the first lease has counted 0 claims, not inserted its own
+	var first, second store.LeaseResult
+	ferr, serr, waited := interleave(t, p,
+		func() (err error) { first, err = st.LeaseTask(t.Context(), claim(w.Tasks[0])); return },
+		func() (err error) { second, err = st.LeaseTask(t.Context(), claim(w.Tasks[1])); return })
+	assertPausedAt(t, p, sqlstore.SQLInsertClaim)
+	if ferr != nil || serr != nil {
+		t.Fatalf("first lease err %v, second lease err %v", ferr, serr)
+	}
+	if n, err := st.ActiveClaimCount(t.Context(), pool.ID); err != nil || n != 1 {
+		t.Fatalf("active claims = %d (err %v), want exactly 1 under the cap of 1", n, err)
+	}
+	if !waited {
+		t.Error("the second lease did not wait for the first's pool-row lock")
+	}
+	if first.Outcome != store.LeaseLeased || second.Outcome != store.LeasePoolFull || second.FullPool != pool.Name {
+		t.Fatalf("outcomes: first %s, second %s (full pool %q); want leased and pool_full on %q",
+			first.Outcome, second.Outcome, second.FullPool, pool.Name)
+	}
+}
+
+// TestPGRace_G5_RetryAndCancelSerialize: a single-task cancel that arrives
+// while a retry is reviving the task waits for the retry and then cancels
+// the revived task.
+func TestPGRace_G5_RetryAndCancelSerialize(t *testing.T) {
+	st, p := pgRace(t)
+	farm, queue := seedFarmQueueRace(t, st)
+	storetest.NewJob("job-g5", farm, queue).As(store.JobStatusFailed).
+		Step("step-g5", store.StepStatusFailed).
+		Task("job-g5-t", "step-g5", store.TaskStatusFailed).
+		Submit(t, st)
+	p.atStatement(sqlstore.SQLRetryTasksPrefix) // the retry holds the job row, has not revived the task
+	var (
+		revived  []store.Task
+		prior    store.Task
+		canceled bool
+	)
+	rerr, cerr, waited := interleave(t, p,
+		func() (err error) { revived, err = st.RetryTasks(t.Context(), "job-g5", nil, time.Now()); return },
+		func() (err error) {
+			prior, canceled, err = st.CancelTaskExecution(t.Context(), "job-g5-t", "user", time.Now())
+			return
+		})
+	assertPausedAt(t, p, sqlstore.SQLRetryTasksPrefix)
+	if rerr != nil || cerr != nil {
+		t.Fatalf("retry err %v, cancel err %v", rerr, cerr)
+	}
+	if len(revived) != 1 {
+		t.Fatalf("the retry revived %d tasks, want 1", len(revived))
+	}
+	if !canceled || prior.Status != revived[0].Status {
+		t.Fatalf("cancel = (canceled %v, found the task %s); want it to cancel the task as the retry left it (%s), not read it %s before the retry",
+			canceled, prior.Status, revived[0].Status, store.TaskStatusFailed)
+	}
+	if !waited {
+		t.Error("the cancel did not wait for the retry's job-row lock")
+	}
+	if got := mustTask(t, st, "job-g5-t"); got.Status != store.TaskStatusCanceled {
+		t.Fatalf("task status = %s, want canceled", got.Status)
+	}
+}
+
+// TestPGRace_G10_TwoAdminDeletionsLeaveOneAdmin: deleting the only two
+// enabled admins at once refuses one of them.
+//
+// The guard counts the other enabled admins inside the DELETE, and under READ
+// COMMITTED a statement reads its snapshot when it starts. Parking one delete
+// before its statement therefore proves nothing: the other delete would finish
+// first and the parked one would count a fresh snapshot, so it would refuse
+// even with no anchors. The race needs both snapshots taken before either
+// commit, so the test makes the second delete hold its snapshot while the
+// first one runs: admin-b has a session, whose row a separate connection
+// holds, and the cascade that removes it stalls the second delete after its
+// guard has counted two admins. Without the admin anchors the second delete
+// has counted (and removed admin-b) when the first one, parked at its DELETE,
+// resumes, counts admin-b still alive and removes admin-a: no admin is left.
+// With them the second delete waits for the first one's locks and, when it
+// finally runs, counts one admin and is refused.
+func TestPGRace_G10_TwoAdminDeletionsLeaveOneAdmin(t *testing.T) {
+	st, p := pgRace(t)
+	for _, id := range []string{"admin-a", "admin-b"} {
+		if _, err := st.CreateUser(t.Context(), store.User{ID: id, Username: id, PasswordHash: "x", Role: "admin"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	now := time.Now().UTC()
+	if _, err := st.CreateSession(t.Context(), store.Session{
+		ID: "sess-b", TokenHash: "tok-b", UserID: "admin-b", ExpiresAt: now.Add(time.Hour), CreatedAt: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := sql.Open("pgx", st.DSNForTest())
+	if err != nil {
+		t.Fatalf("open a separate connection: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := raw.Close(); err != nil {
+			t.Errorf("close the separate connection: %v", err)
+		}
+	})
+	hold, err := raw.BeginTx(t.Context(), nil)
+	if err != nil {
+		t.Fatalf("begin the holding transaction: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := hold.Rollback(); err != nil && !errors.Is(err, sql.ErrTxDone) {
+			t.Errorf("roll back the holding transaction: %v", err)
+		}
+	})
+	var one int
+	if err := hold.QueryRowContext(t.Context(), `SELECT 1 FROM sessions WHERE id = $1 FOR UPDATE`, "sess-b").Scan(&one); err != nil {
+		t.Fatalf("hold admin-b's session row: %v", err)
+	}
+
+	p.atStatement(sqlstore.SQLDeleteUserKeepingAdmin) // admin-a's delete, before its statement reads a snapshot
+	errA, errB, waited := interleave(t, p,
+		func() error {
+			err := st.DeleteUser(t.Context(), "admin-a")
+			// Let admin-b's delete finish its cascade once admin-a's has committed.
+			if rerr := hold.Rollback(); rerr != nil {
+				t.Errorf("release admin-b's session row: %v", rerr)
+			}
+			return err
+		},
+		func() error { return st.DeleteUser(t.Context(), "admin-b") })
+	assertPausedAt(t, p, sqlstore.SQLDeleteUserKeepingAdmin)
+	users, err := st.ListUsers(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(users) != 1 {
+		t.Fatalf("users left = %d (errs %v, %v); the last enabled admin must never be deleted", len(users), errA, errB)
+	}
+	if errA != nil || !errors.Is(errB, store.ErrLastAdmin) {
+		t.Fatalf("delete admin-a err %v, delete admin-b err %v; want nil and ErrLastAdmin", errA, errB)
+	}
+	if !waited {
+		t.Error("the second delete did not wait for the first's admin-row locks")
+	}
+}
