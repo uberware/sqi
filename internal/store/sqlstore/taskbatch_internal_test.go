@@ -95,3 +95,51 @@ func TestInInsertOrder(t *testing.T) {
 		t.Error("a row for a task that was not inserted was accepted")
 	}
 }
+
+// TestTaskBatchRows pins the statement sizes a submission's tasks are cut
+// into: full batches while a batch is left, then the largest power of two
+// that fits, so every task is inserted and no statement exceeds the batch.
+func TestTaskBatchRows(t *testing.T) {
+	for _, c := range []struct{ left, batch, want int }{
+		{1201, 500, 500},
+		{500, 500, 500},
+		{499, 500, 256},
+		{256, 500, 256},
+		{255, 500, 128},
+		{201, 500, 128},
+		{1, 500, 1},
+		{2, 3, 2},
+		{1, 3, 1},
+	} {
+		if got := taskBatchRows(c.left, c.batch); got != c.want {
+			t.Errorf("taskBatchRows(%d, %d) = %d, want %d", c.left, c.batch, got, c.want)
+		}
+	}
+}
+
+// TestTaskBatchRows_FewShapes pins the property the power-of-two remainder
+// exists for: across every submission size up to four batches, the statements
+// come in at most 1+log2(batch) row counts (10 at 500), so the distinct SQL
+// texts a connection prepares stay bounded however the sizes vary.
+func TestTaskBatchRows_FewShapes(t *testing.T) {
+	const batch = 500
+	shapes := map[int]bool{}
+	for n := 1; n <= 4*batch; n++ {
+		inserted := 0
+		for left := n; left > 0; {
+			rows := taskBatchRows(left, batch)
+			if rows < 1 || rows > left || rows > batch {
+				t.Fatalf("n=%d: taskBatchRows(%d, %d) = %d", n, left, batch, rows)
+			}
+			shapes[rows] = true
+			inserted += rows
+			left -= rows
+		}
+		if inserted != n {
+			t.Fatalf("n=%d: inserted %d", n, inserted)
+		}
+	}
+	if len(shapes) > 10 {
+		t.Errorf("%d distinct statement sizes for submissions of 1 to %d tasks, want at most 10", len(shapes), 4*batch)
+	}
+}

@@ -8,6 +8,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"math/bits"
 	"slices"
 	"strings"
 	"time"
@@ -479,11 +480,17 @@ func taskInsertArgs(task store.Task, now string) ([]any, error) {
 // same columns, the same per-row stamp from clock (in input order, so the
 // ordering insertTasksTx documents holds), and the same rows back, for a
 // database where a round trip per task is what a large submission costs.
+//
+// The statements come in few shapes ([taskBatchRows]): full batches, then the
+// remainder in power-of-two pieces.
 func insertTasksBatchedTx(
 	ctx context.Context, tx *dbTx, clock *rowClock, tasks []store.Task, batchRows int,
 ) ([]store.Task, error) {
 	out := make([]store.Task, 0, len(tasks))
-	for chunk := range slices.Chunk(tasks, batchRows) {
+	for len(tasks) > 0 {
+		n := taskBatchRows(len(tasks), batchRows)
+		chunk := tasks[:n]
+		tasks = tasks[n:]
 		args := make([]any, 0, len(chunk)*taskInsertColumns)
 		for _, task := range chunk {
 			row, err := taskInsertArgs(task, clock.next())
@@ -499,6 +506,24 @@ func insertTasksBatchedTx(
 		out = append(out, stored...)
 	}
 	return out, nil
+}
+
+// taskBatchRows returns how many of the left tasks the next statement inserts:
+// a full batch while one is left, then the largest power of two that fits.
+//
+// Every distinct row count is a distinct SQL text, and pgx prepares each text
+// it has not seen as a named statement on its connection (up to 512 of them,
+// each binding up to batchRows*taskInsertColumns parameters). Cutting the
+// remainder into plain chunks would let a long-lived connection collect one
+// statement per remainder size, up to batchRows-1 of them; powers of two hold
+// the batched path to at most 1+log2(batchRows) shapes (10 at 500 rows) for at
+// most that many statements per submission. Inserting the remainder a row at a
+// time would hold it to two shapes, but at up to batchRows-1 round trips.
+func taskBatchRows(left, batchRows int) int {
+	if left >= batchRows {
+		return batchRows
+	}
+	return 1 << (bits.Len(uint(left)) - 1)
 }
 
 // runInsertTasks inserts chunk's tasks with one statement, whose values are

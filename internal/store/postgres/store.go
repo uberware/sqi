@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"log/slog"
 	"sync"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/stdlib"
@@ -156,8 +157,26 @@ func openPool(dsn string, maxConns int) (*sql.DB, error) {
 	db := stdlib.OpenDB(*cfg)
 	db.SetMaxOpenConns(maxConns)
 	db.SetMaxIdleConns(maxConns)
+	// pgx prepares every distinct statement text as a named server-side
+	// statement on its connection and keeps up to 512 of them, so a connection
+	// that lives for the server's whole life holds every shape it has ever
+	// run. Recycling connections bounds that, and the memory the server
+	// process behind each one has grown, whatever the statements are.
+	// database/sql recycles only connections back in the pool: the server
+	// lock's *sql.Conn is checked out for the store's life, so it is never
+	// closed under the lock it holds (the cleaner and putConn see only free
+	// connections).
+	db.SetConnMaxLifetime(connMaxLifetime)
+	db.SetConnMaxIdleTime(connMaxIdleTime)
 	return db, nil
 }
+
+// connMaxLifetime and connMaxIdleTime bound how long a pooled connection
+// lives, and sits unused, before database/sql closes it (see openPool).
+const (
+	connMaxLifetime = time.Hour
+	connMaxIdleTime = 10 * time.Minute
+)
 
 // Ping checks the read pool, so a burst of writers holding every write
 // connection does not fail readiness.

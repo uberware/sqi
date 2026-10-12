@@ -92,6 +92,8 @@ func TestCreateJobSubmission_BatchedTasksMatchSingleRow(t *testing.T) {
 			}
 			// Not vacuous: the batched store really sent n tasks three to a
 			// statement, and the other one a statement each.
+			// Three to a statement leaves a remainder of 1 or 2, each a power
+			// of two and so one statement (taskBatchRows).
 			if got, want := taskInserts(batchedStmts), (n+2)/3; got != want {
 				t.Errorf("batched store sent %d task INSERTs, want %d", got, want)
 			}
@@ -141,5 +143,28 @@ func TestCreateJobSubmission_BatchedTasksRollBackEntirely(t *testing.T) {
 	}
 	if tasks, err := batched.ListTasks(t.Context(), store.ListTasksOptions{JobID: "bj"}); err != nil || len(tasks.Items) != 0 {
 		t.Errorf("ListTasks = %d tasks, %v; want none", len(tasks.Items), err)
+	}
+}
+
+// TestCreateJobSubmission_BatchedTaskInsertsFewShapes pins that submissions of
+// every size from 1 to 15 tasks, eight to a statement, send task INSERTs of at
+// most four distinct texts (8, 4, 2 and 1 rows), where cutting the remainder
+// as it falls would send eight. Each distinct text is a statement a PostgreSQL
+// connection prepares and keeps.
+func TestCreateJobSubmission_BatchedTaskInsertsFewShapes(t *testing.T) {
+	texts := map[string]bool{}
+	for n := 1; n <= 15; n++ {
+		st, d := storeWithBatch(t, 8)
+		if _, err := st.CreateJobSubmission(t.Context(), batchTasksSeed(n)); err != nil {
+			t.Fatalf("%d tasks: %v", n, err)
+		}
+		for _, q := range d.queries {
+			if strings.HasPrefix(strings.TrimSpace(q), "INSERT INTO tasks") {
+				texts[q] = true
+			}
+		}
+	}
+	if len(texts) > 4 {
+		t.Errorf("%d distinct task INSERT texts across submissions of 1 to 15 tasks, want at most 4", len(texts))
 	}
 }

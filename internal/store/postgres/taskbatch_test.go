@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 
@@ -16,18 +17,35 @@ import (
 	"github.com/uberware/sqi/internal/store/storetest"
 )
 
-// taskInsertCounter counts the task INSERT statements that reach the database.
+// taskInsertCounter counts the task INSERT statements that reach the database,
+// and the distinct texts among them.
 type taskInsertCounter struct {
 	sqlstore.Dialect
 
 	n atomic.Int64
+
+	mu    sync.Mutex
+	texts map[string]bool
 }
 
 func (d *taskInsertCounter) Rebind(q string) string {
 	if strings.HasPrefix(strings.TrimSpace(q), "INSERT INTO tasks") {
 		d.n.Add(1)
+		d.mu.Lock()
+		if d.texts == nil {
+			d.texts = map[string]bool{}
+		}
+		d.texts[q] = true
+		d.mu.Unlock()
 	}
 	return d.Dialect.Rebind(q)
+}
+
+// distinct returns how many distinct task INSERT texts d has seen.
+func (d *taskInsertCounter) distinct() int {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return len(d.texts)
 }
 
 // runsPerTx is how many times the store runs each transaction's body:
@@ -64,16 +82,21 @@ func batchStore(t *testing.T) (*postgres.Store, *taskInsertCounter) {
 	return st, count
 }
 
-func batchSeed(n int) *storetest.JobSeed {
-	seed := storetest.NewJob("bj", "bf", "bq").Step("bs", store.StepStatusReady)
+func batchSeed(n int) *storetest.JobSeed { return batchSeedNamed("b", n) }
+
+// batchSeedNamed is batchSeed with every ID prefixed by name, so one store can
+// take several.
+func batchSeedNamed(name string, n int) *storetest.JobSeed {
+	seed := storetest.NewJob(name+"j", "bf", "bq").Step(name+"s", store.StepStatusReady)
 	for i := range n {
-		seed.Task(fmt.Sprintf("bt-%05d", i), "bs", store.TaskStatusReady)
+		seed.Task(fmt.Sprintf("%st-%05d", name, i), name+"s", store.TaskStatusReady)
 	}
 	return seed
 }
 
-// TestCreateJobSubmission_InsertsTasksInBatches: 1,201 tasks go in as three
-// statements (500, 500 and 201 rows), come back in the order they were given,
+// TestCreateJobSubmission_InsertsTasksInBatches: 1,201 tasks go in as six
+// statements (500 and 500, then the remainder of 201 as 128, 64, 8 and 1
+// rows), come back in the order they were given,
 // each stamped strictly later than the one before, and all are stored.
 func TestCreateJobSubmission_InsertsTasksInBatches(t *testing.T) {
 	st, count := batchStore(t)
@@ -83,8 +106,8 @@ func TestCreateJobSubmission_InsertsTasksInBatches(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateJobSubmission: %v", err)
 	}
-	if got, want := count.n.Load(), 3*runsPerTx(); got != want {
-		t.Errorf("%d task INSERT statements for %d tasks over %d run(s), want %d (3 per run)", got, n, runsPerTx(), want)
+	if got, want := count.n.Load(), 6*runsPerTx(); got != want {
+		t.Errorf("%d task INSERT statements for %d tasks over %d run(s), want %d (6 per run)", got, n, runsPerTx(), want)
 	}
 	if len(out.Tasks) != n {
 		t.Fatalf("returned %d tasks, want %d", len(out.Tasks), n)
@@ -105,7 +128,7 @@ func TestCreateJobSubmission_InsertsTasksInBatches(t *testing.T) {
 }
 
 // TestCreateJobSubmission_BatchedFailureRollsBackEntirely: a duplicate task ID
-// in the third statement leaves no job, step or task, the statements before it
+// in the last statement leaves no job, step or task, the statements before it
 // included.
 func TestCreateJobSubmission_BatchedFailureRollsBackEntirely(t *testing.T) {
 	st, count := batchStore(t)
@@ -116,8 +139,8 @@ func TestCreateJobSubmission_BatchedFailureRollsBackEntirely(t *testing.T) {
 	if !errors.Is(err, store.ErrConflict) {
 		t.Fatalf("CreateJobSubmission = %v, want store.ErrConflict", err)
 	}
-	if got, want := count.n.Load(), 3*runsPerTx(); got != want {
-		t.Errorf("%d task INSERT statements over %d run(s), want %d: 3 per run, the duplicate in the last one", got, runsPerTx(), want)
+	if got, want := count.n.Load(), 6*runsPerTx(); got != want {
+		t.Errorf("%d task INSERT statements over %d run(s), want %d: 6 per run, the duplicate in the last one", got, runsPerTx(), want)
 	}
 	if _, err := st.GetJob(t.Context(), "bj"); !errors.Is(err, store.ErrNotFound) {
 		t.Errorf("GetJob = %v; the job row survived a failed submission", err)
@@ -127,5 +150,23 @@ func TestCreateJobSubmission_BatchedFailureRollsBackEntirely(t *testing.T) {
 	}
 	if counts, err := st.CountTasksByJob(t.Context(), "bj"); err != nil || len(counts) != 0 {
 		t.Errorf("CountTasksByJob = %v, %v; want no tasks", counts, err)
+	}
+}
+
+// TestCreateJobSubmission_BatchedTaskInsertsFewShapes: submissions of a dozen
+// odd sizes send task INSERTs of at most ten distinct texts (500 rows, then
+// 256 down to 1). pgx prepares every distinct text as a named statement on its
+// connection and keeps it, so cutting the remainder as it falls would leave a
+// long-lived connection holding one statement per remainder size (twelve
+// here, up to 499 over a server's life).
+func TestCreateJobSubmission_BatchedTaskInsertsFewShapes(t *testing.T) {
+	st, count := batchStore(t)
+	for i, n := range []int{1, 3, 5, 13, 31, 63, 77, 255, 333, 499, 999, 1201} {
+		if _, err := st.CreateJobSubmission(t.Context(), batchSeedNamed(fmt.Sprintf("s%02d", i), n).Sub); err != nil {
+			t.Fatalf("CreateJobSubmission of %d tasks: %v", n, err)
+		}
+	}
+	if got := count.distinct(); got > 10 {
+		t.Errorf("%d distinct task INSERT texts, want at most 10", got)
 	}
 }
