@@ -2663,6 +2663,12 @@ func TestRedactDSN(t *testing.T) {
 		{"postgres://sqi:123#ss@db/sqi", "123#ss"},
 		{"postgres://sqi:123?ss@db/sqi", "123?ss"},
 		{"postgres://sqi:123/ss@db/sqi", "123/ss"},
+		// An unescaped "@" in the password before one of those characters parses
+		// with userinfo, but only up to the first "@", leaking the rest.
+		{"postgres://sqi:p@ss#word@db/sqi", "word"},
+		{"postgres://sqi:p@ss/word@db/sqi", "word"},
+		{"postgres://sqi:p@ss?word@db/sqi", "word"},
+		{"postgres://sqi:1@2#3@db/sqi", "2#3"},
 		// The client key's passphrase is a secret too, as is a query password
 		// url.Values would drop for its semicolon.
 		{"host=db sslpassword=hunter2 dbname=sqi", "hunter2"},
@@ -2694,6 +2700,7 @@ func TestRedactDSN_KeepsEverythingElse(t *testing.T) {
 		// includes a DSN whose "@" sits outside any userinfo, which is
 		// indistinguishable from a truncated authority.
 		{"postgres://sqi:123#ss@db/sqi", "postgres://<redacted>"},
+		{"postgres://sqi:p@ss#word@db/sqi", "postgres://<redacted>"},
 		{"postgres://sqi:hunter2%zz@db/sqi", "postgres://<redacted>"},
 		{"postgres://db/sqi?application_name=a@b", "postgres://<redacted>"},
 	}

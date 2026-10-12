@@ -256,18 +256,14 @@ var queryPassword = regexp.MustCompile(`(?i)((?:^|&)(?:ssl)?password=)[^&]+`)
 // RedactDSN returns dsn with its password replaced by a placeholder, in either
 // DSN form. A DSN without a password is returned unchanged.
 //
-// It fails closed: a URL-form DSN whose password cannot be located, because
-// [url.Parse] refuses it or because the password truncated the authority (see
-// below), is reduced to its scheme and a placeholder rather than returned as it
-// came.
+// It fails closed: a URL-form DSN whose password cannot be reliably located,
+// because [url.Parse] refuses it or because its authority is ambiguous (see
+// [ambiguousAuthority]), is reduced to its scheme and a placeholder rather than
+// returned as it came.
 func RedactDSN(dsn string) string {
 	if scheme, ok := dsnURLScheme(dsn); ok {
 		u, err := url.Parse(dsn)
-		// An "@" with no userinfo parsed out of it means the authority was cut
-		// short: a password that starts with digits and is followed by "#", "?"
-		// or "/" reads as host:port, with the rest taken for a fragment, query
-		// or path. The password is then somewhere in the result, so fail closed.
-		if err != nil || (u.User == nil && strings.Contains(dsn, "@")) {
+		if err != nil || ambiguousAuthority(u, dsn) {
 			return scheme + "://" + redactedPassword
 		}
 		changed := false
@@ -285,6 +281,28 @@ func RedactDSN(dsn string) string {
 		return u.String()
 	}
 	return kvPassword.ReplaceAllString(dsn, "${1}"+redactedPassword)
+}
+
+// ambiguousAuthority reports whether a URL-form DSN that parsed cannot be
+// trusted to have had its userinfo, and so its password, located. [url.Parse]
+// ends the authority at the first "#", "?" or "/", so an unescaped "@" in the
+// password makes the parse come out wrong in one of two ways:
+//
+//   - A password that starts with digits and runs into one of those characters
+//     (sqi:123#ss@db) reads as host:port with the rest a fragment, query or
+//     path. No userinfo is parsed out of it, yet the DSN holds an "@".
+//   - A password with an "@" before one of those characters (sqi:p@ss#word@db)
+//     parses with userinfo, but only the part up to the first "@" is taken as
+//     the password, and the rest leaks into the result.
+//
+// A well-formed DSN has at most one "@", the one that ends the userinfo, so
+// more than one, or one with no userinfo to end, is ambiguous. That is
+// deliberately conservative: it also refuses an unescaped "@" in a password
+// that did parse correctly (sqi:p@ss@db), and an "@" in a query value, where
+// the only cost is a less informative `config print`.
+func ambiguousAuthority(u *url.URL, dsn string) bool {
+	ats := strings.Count(dsn, "@")
+	return ats > 1 || (ats == 1 && u.User == nil)
 }
 
 // dsnURLScheme reports whether dsn is in URL form (postgres:// or
