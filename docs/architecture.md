@@ -1248,6 +1248,17 @@ Upgrading from v0.3.0 changes the following behaviour.
   scheduler chose it: the store re-checks the flag inside the lease's
   transaction. Before, a task leased in that window went to the disabled
   worker anyway.
+- The stale-assignment reaper commits a batch of at most 500 tasks at a time,
+  each batch its own transaction, where it used to reclaim every stale task in
+  one. A sweep that fails part-way therefore keeps the batches it already
+  committed: those tasks are `ready` again, and the scheduler announces them
+  (a ready event each, and the warning log line) before it logs the error.
+  Before, a failure rolled the whole sweep back and the next sweep retried it.
+- Stalled-job demotion (a `running` job with tasks waiting but none assigned
+  or running returns to `pending`) demotes each job in its own transaction,
+  re-checking under the job row's lock that it is still stalled, where it used
+  to be one statement. A sweep that fails part-way keeps, and announces, the
+  jobs it already demoted.
 
 Timestamp values are unchanged from v0.3.0, though the writes that stamp them
 moved. A released claim's `released_at` is always server time. A terminal report
