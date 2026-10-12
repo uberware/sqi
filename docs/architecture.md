@@ -212,8 +212,9 @@ transaction instead of through N gaps. `GET /healthz` (liveness) registers no
 checkers and is not affected.
 
 **On PostgreSQL a submission holds one connection of the write pool**
-(`store.postgres.max_conns`), so other writers run on the rest, and only one
-kind ever waits for it, briefly: writers on an upstream job. A submission with
+(`store.postgres.max_conns`), so other writers run on the rest. Writers on an
+upstream job wait for it, briefly; administrative writes to its own queue or
+farm row wait for all of it (below). A submission with
 `depends_on` reads its upstream jobs once without locking them, before it
 inserts a step or a task, so a submission naming a failed, canceled or missing
 upstream fails before doing that work (on both backends). It re-checks them
@@ -231,7 +232,13 @@ farm rows from the job's insert to the commit, and a lease anchors a capped
 queue or farm `FOR NO KEY UPDATE`, which does not conflict with it
 (`TestPGRace_SubmissionDoesNotBlockLeasesOnItsQueue`). With `FOR UPDATE`
 every lease on a capped queue or farm would wait for the whole submission:
-33 s at 1,000,000 tasks on the host below.
+33 s at 1,000,000 tasks on the host below. What does wait for the whole
+submission is a write that takes `FOR UPDATE` on that queue or farm row, which
+conflicts with `FOR KEY SHARE`: deleting the queue or the farm, and renaming
+either (or moving the queue to another farm), since those columns are in a
+unique index and an `UPDATE` that changes a uniquely indexed column locks the
+row `FOR UPDATE`. An update that leaves them unchanged does not wait. Those are rare administrative actions, and
+they wait until the submission commits or rolls back.
 
 `Ping`
 uses a separate four-connection read pool, as on SQLite, and
