@@ -1,11 +1,17 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-// Package migrations embeds the SQL migration files used by goose to manage
-// the sqi-server SQLite schema.
+// Package migrations embeds the SQL migration files goose uses to manage the
+// sqi-server state store schema, one set per driver: [FS] for SQLite (this
+// directory, from 00001) and [PostgresFS] for PostgreSQL (the postgres
+// subdirectory, from 00037_baseline.sql). Version N is the same schema on
+// both backends, so every schema change after 00037 ships as a pair.
 //
-// The embedded [FS] is passed to goose via [goose.SetBaseFS] so that migration
-// files are included in the binary and do not need to be present on disk at
-// runtime.
+// [NewProvider] returns a goose provider over a database and its driver's set.
+// The provider carries its own dialect and file system, so production code
+// never touches goose's package-level SetBaseFS/SetDialect state: the SQLite
+// and PostgreSQL stores' AutoMigrate and the "sqi-server migrate" subcommands
+// all go through it. Embedding means the migration files ship inside the
+// binary and need not be present on disk at runtime.
 //
 // Migration files follow the goose naming convention:
 //
@@ -13,9 +19,6 @@
 //
 // where <version> is a zero-padded integer and each file contains
 // "-- +goose Up" and "-- +goose Down" sections.
-//
-// The full schema lives in the numbered migration files; this package is wired
-// up by the migrate subcommand so the CLI is operational from the start.
 package migrations
 
 import (

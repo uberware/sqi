@@ -3,6 +3,7 @@
 package backend_test
 
 import (
+	"path/filepath"
 	"testing"
 
 	"github.com/uberware/sqi/internal/store/backend"
@@ -38,9 +39,31 @@ func TestOpen_Postgres(t *testing.T) {
 	}
 }
 
-func TestOpen_UnknownDriver(t *testing.T) {
-	if _, err := backend.Open(t.Context(), backend.Options{Driver: "mysql"}); err == nil {
-		t.Fatal("Open accepted driver mysql")
+// TestOpen_ErrorReturnsNilBackend pins that every failing Open returns a nil
+// Backend interface, not a non-nil interface holding a nil *Store: a caller's
+// "if st != nil { st.Close() }" would otherwise call Close on a nil store.
+// None of the cases needs a database, so the test runs everywhere.
+func TestOpen_ErrorReturnsNilBackend(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		opts backend.Options
+	}{
+		{"unknown driver", backend.Options{Driver: "mysql"}},
+		{"postgres with an empty DSN", backend.Options{Driver: "postgres"}},
+		{"sqlite in a directory that does not exist", backend.Options{
+			SQLitePath: filepath.Join(t.TempDir(), "missing", "dir", "test.db"), AutoMigrate: true,
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			st, err := backend.Open(t.Context(), tc.opts)
+			if err == nil {
+				_ = st.Close()
+				t.Fatalf("Open(%+v) succeeded", tc.opts)
+			}
+			if st != nil {
+				t.Fatalf("Open(%+v) returned a non-nil Backend %#v with error %v", tc.opts, st, err)
+			}
+		})
 	}
 }
 

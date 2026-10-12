@@ -58,8 +58,9 @@
 //
 // # Migrations
 //
-// When [Options.AutoMigrate] is true (the default), [Open] calls goose.Up
-// against the embedded migration FS before returning. Set AutoMigrate to false
+// When [Options.AutoMigrate] is true (the default), [Open] applies every
+// pending migration through a goose provider over the embedded SQLite
+// migration set ([migrations.NewProvider]) before returning. Set AutoMigrate to false
 // in HA deployments where migrations are applied explicitly with
 // "sqi-server migrate up" before rolling out new server instances.
 package sqlite
@@ -98,8 +99,8 @@ var _ store.Store = (*Store)(nil)
 
 // Options configures [Open].
 type Options struct {
-	// AutoMigrate controls whether Open runs goose.Up to apply any pending
-	// migrations before returning. Default: true.
+	// AutoMigrate controls whether Open applies any pending migrations (via
+	// [migrations.NewProvider]) before returning. Default: true.
 	//
 	// Set to false in HA deployments where migrations are applied explicitly
 	// via "sqi-server migrate up" before starting new server instances.
