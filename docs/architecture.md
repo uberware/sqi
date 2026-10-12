@@ -212,25 +212,23 @@ transaction instead of through N gaps. `GET /healthz` (liveness) registers no
 checkers and is not affected.
 
 **On PostgreSQL a submission holds one connection of the write pool**
-(`store.postgres.max_conns`), so other writers run on the rest, and most never
-wait for it. Two kinds can:
+(`store.postgres.max_conns`), so other writers run on the rest, and only one
+kind ever waits for it, briefly: writers on an upstream job. A submission with
+`depends_on` re-checks its upstream jobs last, after every insert, and holds
+their rows `FOR SHARE` from that check to its commit. In that short window a
+writer that locks an upstream job row exclusively (a completion, a cancel, a
+retry or a reap of one of its tasks, a finalize, a delete) waits for the
+commit. While the submission is still inserting, nothing on the upstream waits
+(`TestPGRace_SubmissionDoesNotHoldItsUpstreamWhileInserting`). A submission
+without `depends_on` locks no other job's row.
 
-- **Writers on an upstream job, briefly.** A submission with `depends_on`
-  re-checks its upstream jobs last, after every insert, and holds their rows
-  `FOR SHARE` from that check to its commit. In that short window a writer
-  that locks an upstream job row exclusively (a completion, a cancel, a retry
-  or a reap of one of its tasks, a finalize, a delete) waits for the commit.
-  While the submission is still inserting, nothing on the upstream waits
-  (`TestPGRace_SubmissionDoesNotHoldItsUpstreamWhileInserting`). A submission
-  without `depends_on` locks no other job's row.
-- **Leases on a capped queue or farm, for the whole submission.** The new job
-  row's foreign keys to its queue and farm make PostgreSQL lock those two rows
-  `FOR KEY SHARE` from the job's insert, the submission's first statement, to
-  its commit. A lease on a queue or farm that has a cap locks that row `FOR
-  UPDATE`, which conflicts, so every lease on a capped queue or farm waits for
-  an in-flight submission into it: 33 s for a 1,000,000-task submission on the
-  host below. A lease on an uncapped queue or farm takes no lock on it and
-  does not wait.
+Leases into the submission's own queue and farm do not wait either. The new
+job row's foreign keys make PostgreSQL hold `FOR KEY SHARE` on its queue and
+farm rows from the job's insert to the commit, and a lease anchors a capped
+queue or farm `FOR NO KEY UPDATE`, which does not conflict with it
+(`TestPGRace_SubmissionDoesNotBlockLeasesOnItsQueue`). With `FOR UPDATE`
+every lease on a capped queue or farm would wait for the whole submission:
+33 s at 1,000,000 tasks on the host below.
 
 `Ping`
 uses a separate four-connection read pool, as on SQLite, and
@@ -983,19 +981,26 @@ Under READ COMMITTED, I1 and I2 hold as written, because a guarded single-row
 not: their conditions read *other* rows. Each operation that guards one of them
 therefore names **anchor rows** to lock before it reads, by calling
 `Dialect.LockAnchors` (`internal/store/sqlstore/dialect.go`). Each anchor
-carries a lock mode: `LockUpdate` (`FOR UPDATE`) or `LockShare` (`FOR SHARE`).
+carries a lock mode: `LockUpdate`, `LockShare` or `LockNoKeyUpdate`.
 A missing anchor row locks nothing and is not an error: the operation's own
 guarded statements decide what its absence means.
 
 **On SQLite the dialect's `LockAnchors` is a no-op, and I3–I5 hold because the
 single write connection serializes every write transaction. On PostgreSQL the
 dialect locks each anchor row with `SELECT 1 FROM <table> WHERE id = $1 FOR
-UPDATE` (or `FOR SHARE`), in the order given.** The anchors each operation
-takes, all exclusive unless marked shared:
+UPDATE` (`LockUpdate`), `FOR SHARE` (`LockShare`) or `FOR NO KEY UPDATE`
+(`LockNoKeyUpdate`), in the order given.** Job, worker and user anchors are
+`FOR UPDATE` unless marked shared. Queue, farm and usage-pool anchors (the
+lease's capacity anchors, the only ones on those tables) are `FOR NO KEY
+UPDATE`: it conflicts with itself, so two leases on one capped row still
+serialize, and with an `UPDATE` or `DELETE` of the row, so a cap change waits
+for a lease in flight, but not with the `FOR KEY SHARE` lock a foreign-key
+check takes, so inserting a job into the queue and farm never waits for a
+lease, nor a lease for it. The anchors each operation takes:
 
 | Operation | Anchor rows, in lock order | Notes |
 |---|---|---|
-| `LeaseTask` | the requesting worker's row (shared), the task's job row (shared), the queue row (only if it has a cap), the farm row (only if it has a cap), then each requested usage-pool row, sorted by id | A scope read before the locks names the anchors and says which caps exist. Under the locks the lease refuses a worker that is now **disabled**, and re-reads the job's queue and farm and their caps: if the job moved to another queue or farm meanwhile the lease is `Lost` (its anchors and counts would be for the old rows), and otherwise the caps it enforces are the re-read ones. See [Lock order](#lock-order) for why the worker and job rows are shared. |
+| `LeaseTask` | the requesting worker's row (shared), the task's job row (shared), the queue row (only if it has a cap), the farm row (only if it has a cap), then each requested usage-pool row, sorted by id; the queue, farm and pool rows `FOR NO KEY UPDATE` | A scope read before the locks names the anchors and says which caps exist. Under the locks the lease refuses a worker that is now **disabled**, and re-reads the job's queue and farm and their caps: if the job moved to another queue or farm meanwhile the lease is `Lost` (its anchors and counts would be for the old rows), and otherwise the caps it enforces are the re-read ones. See [Lock order](#lock-order) for why the worker and job rows are shared. |
 | `CompleteTaskAttempt`, `RecordTaskFailure` | the task's job row | |
 | `StartTaskAttempt`, `ReclaimTaskAttempt` | the task's job row | No task-row lock is needed for the latest-attempt check: a lease holds the job row shared, so no lease commits between the check and the write. `ReclaimTaskAttempt` takes no worker row: it neither reads nor writes one. |
 | `RequeueTaskForRetry` | the task's job row | As above: the guarded `UPDATE`'s latest-attempt check runs under it. |
@@ -1048,6 +1053,12 @@ briefly with leases on the same job (they already serialized among themselves
 on that row), a write to a worker row, such as a heartbeat, waits briefly for
 that worker's lease in flight, and a share lock taken on a row another
 transaction also share-locks costs PostgreSQL multixact bookkeeping.
+
+**The lease's capacity anchors are `FOR NO KEY UPDATE`.** Leases on the same
+capped queue, farm or pool still wait for each other, which is what makes I5's
+count and write atomic (G2 pins it for pools), and a cap change waits for a
+lease in flight. A submission into the queue and farm does not make them wait,
+because its job row's foreign-key locks are `FOR KEY SHARE`.
 
 ### Statement order
 
@@ -1107,11 +1118,6 @@ serializes every writer. On PostgreSQL they are left open on purpose:
   concurrently on one read as uncapped orders after the lease, exactly as if
   the lease had committed first. Setting a cap never evicts running work, so
   this is not a violation of I5.
-- **A submission blocks leases on its capped queue or farm.** The lease
-  anchors a capped queue or farm `FOR UPDATE`, and a submission's job insert
-  holds `FOR KEY SHARE` on both rows (its foreign keys) until it commits, so a
-  lease on a capped queue or farm waits for a submission into it to finish
-  (see [Submission](#1-submission)).
 - **The single-server lock can be lost.** If the connection holding the
   advisory lock drops, the lock goes with it. The server logs that at Error and
   keeps running, and a second server could then start on the same database.
