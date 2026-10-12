@@ -191,6 +191,45 @@ func TestReapStaleAssignedTasks_NotifiesReclaimedTask(t *testing.T) {
 	}
 }
 
+// partialReapSt fails ReclaimStaleAssignedTasks part-way: it reports the tasks
+// it had already reclaimed, with an error, as the store does when a later
+// batch's transaction fails.
+type partialReapSt struct {
+	store.Store
+
+	reclaimed []store.Task
+}
+
+func (s *partialReapSt) ReclaimStaleAssignedTasks(context.Context, time.Time) ([]store.Task, error) {
+	return s.reclaimed, errors.New("store unavailable")
+}
+
+// TestReapStaleAssignedTasks_AnnouncesTasksReclaimedBeforeAnError: a reap that
+// fails after committing some batches must still announce those tasks; they
+// are ready now and no later reap lists them again.
+func TestReapStaleAssignedTasks_AnnouncesTasksReclaimedBeforeAnError(t *testing.T) {
+	st := &partialReapSt{Store: newCheckedFake(t), reclaimed: []store.Task{
+		{ID: "t1", JobID: "j1", Status: store.TaskStatusReady},
+		{ID: "t2", JobID: "j1", Status: store.TaskStatusReady},
+	}}
+	s := newMetricsScheduler(st, &recordBus{}, "farm-1")
+	notifier := &recordingNotifier{}
+	s.notifier = notifier
+
+	s.reapStaleAssignedTasks(t.Context())
+
+	var got []string
+	for _, e := range notifier.tasks {
+		if e.Status != string(store.TaskStatusReady) {
+			t.Errorf("event for %s has status %q, want ready", e.TaskID, e.Status)
+		}
+		got = append(got, e.TaskID)
+	}
+	if !slices.Equal(got, []string{"t1", "t2"}) {
+		t.Fatalf("announced tasks = %v, want [t1 t2]", got)
+	}
+}
+
 // TestReapStaleAssignedTasks_LeavesFreshAssignment verifies that a recently
 // assigned task (within AssignedTaskTimeout) is not disturbed by the reaper.
 func TestReapStaleAssignedTasks_LeavesFreshAssignment(t *testing.T) {

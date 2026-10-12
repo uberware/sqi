@@ -1282,16 +1282,22 @@ func (s *Scheduler) announceDemoted(ctx context.Context, demoted []string) {
 // attempt and releases its usage-pool claims inside the same transaction that
 // returns the task to ready (invariant I3), and reports exactly the tasks it
 // reclaimed, so a task that is leased again right afterwards keeps its new
-// attempt and claims.
+// attempt and claims. A reap that fails part-way still returns the tasks it had
+// already reclaimed (the store commits them a batch at a time), so those are
+// announced before the error is handled: they are ready now and no later reap
+// will list them again.
 func (s *Scheduler) reapStaleAssignedTasks(ctx context.Context) {
 	cutoff := time.Now().UTC().Add(-s.cfg.AssignedTaskTimeout)
 	reclaimed, err := s.store.ReclaimStaleAssignedTasks(ctx, cutoff)
-	if err != nil {
-		if !errors.Is(err, context.Canceled) {
-			s.logger.WarnContext(ctx, "scheduler: reclaim stale assigned tasks failed", slog.Any("error", err))
-		}
-		return
+	s.announceReaped(ctx, reclaimed)
+	if err != nil && !errors.Is(err, context.Canceled) {
+		s.logger.WarnContext(ctx, "scheduler: reclaim stale assigned tasks failed", slog.Any("error", err))
 	}
+}
+
+// announceReaped logs the reap and fans out a ready TaskEvent for each
+// reclaimed task, waking the lease waiters on its queue.
+func (s *Scheduler) announceReaped(ctx context.Context, reclaimed []store.Task) {
 	if len(reclaimed) == 0 {
 		return
 	}
