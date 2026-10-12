@@ -34,6 +34,7 @@ type pause struct {
 	table   string
 	id      string
 	what    string // the point the pause fired at, for matched
+	dsn     string // the store's database, which interleave watches for lock waits
 	hit     chan struct{}
 	release chan struct{}
 	once    sync.Once
@@ -127,22 +128,26 @@ func pgRace(t *testing.T) (*postgres.Store, *pause) {
 	opts := postgres.DefaultOptions()
 	opts.WrapDialect = func(d sqlstore.Dialect) sqlstore.Dialect { return pauseDialect{Dialect: d, p: p} }
 	st := storetest.PostgresWith(t, opts)
+	p.dsn = st.DSNForTest()
 	t.Cleanup(p.resume)
 	return st, p
 }
 
 // interleave runs paused until it reaches the armed point, then runs
-// competitor; it waits up to settle for competitor to finish (it will not if
-// it is waiting on a lock the paused transaction holds), resumes paused, and
-// waits for both. competitorWaited reports whether competitor was still
-// running when paused resumed, that is, whether a lock made it wait.
+// competitor, and watches until competitor either finishes or is seen waiting
+// on a lock (a backend of the store's database, other than the watcher's,
+// with wait_event_type 'Lock' in pg_stat_activity; the paused transaction is
+// idle, not waiting). Then it resumes paused and waits for both.
+// competitorWaited reports which came first: whether a lock made competitor
+// wait. Watching the database rather than a timer means a competitor that is
+// merely slow (a loaded runner) is not mistaken for one that waited.
 //
 // It fails the test at once if paused finishes without reaching the armed
-// point (reporting paused's error), if the point is not reached within 10s,
-// or if either operation is still running 30s after the resume.
+// point (reporting paused's error), if the point is not reached within 10s, if
+// competitor neither finishes nor waits on a lock within 30s, or if either
+// operation is still running 30s after the resume.
 func interleave(t *testing.T, p *pause, paused, competitor func() error) (pausedErr, competitorErr error, competitorWaited bool) {
 	t.Helper()
-	const settle = 750 * time.Millisecond
 	pdone := make(chan error, 1)
 	go func() { pdone <- paused() }()
 	select {
@@ -152,17 +157,56 @@ func interleave(t *testing.T, p *pause, paused, competitor func() error) (paused
 	case <-time.After(10 * time.Second):
 		t.Fatal("pause point never reached: the operation did not run the armed statement or anchor dynamically")
 	}
+	waiting := lockWaitProbe(t, p.dsn)
 	cdone := make(chan error, 1)
 	go func() { cdone <- competitor() }()
-	select {
-	case competitorErr = <-cdone:
-		p.resume()
-		return finish(t, pdone, "paused operation"), competitorErr, false
-	case <-time.After(settle):
+	tick := time.NewTicker(5 * time.Millisecond)
+	defer tick.Stop()
+	deadline := time.After(30 * time.Second)
+	for {
+		select {
+		case competitorErr = <-cdone:
+			p.resume()
+			return finish(t, pdone, "paused operation"), competitorErr, false
+		case <-tick.C:
+			if !waiting() {
+				continue
+			}
+			p.resume()
+			pausedErr = finish(t, pdone, "paused operation")
+			return pausedErr, finish(t, cdone, "competitor"), true
+		case <-deadline:
+			p.resume()
+			t.Fatal("competitor neither finished nor waited on a lock within 30s of the pause")
+		}
 	}
-	p.resume()
-	pausedErr = finish(t, pdone, "paused operation")
-	return pausedErr, finish(t, cdone, "competitor"), true
+}
+
+// lockWaitProbe returns a check, over its own connection to the database at
+// dsn, of whether any other backend of that database is waiting on a lock.
+func lockWaitProbe(t *testing.T, dsn string) func() bool {
+	t.Helper()
+	db, err := sql.Open("pgx", dsn)
+	if err != nil {
+		t.Fatalf("open the lock-wait watcher: %v", err)
+	}
+	db.SetMaxOpenConns(1)
+	t.Cleanup(func() {
+		if err := db.Close(); err != nil {
+			t.Errorf("close the lock-wait watcher: %v", err)
+		}
+	})
+	return func() bool {
+		var waiting bool
+		err := db.QueryRowContext(context.Background(), `
+SELECT EXISTS (
+	SELECT 1 FROM pg_stat_activity
+	WHERE datname = current_database() AND pid <> pg_backend_pid() AND wait_event_type = 'Lock')`).Scan(&waiting)
+		if err != nil {
+			t.Fatalf("watch for a lock wait: %v", err)
+		}
+		return waiting
+	}
 }
 
 // finish waits for an operation interleave started, failing the test if it is
@@ -239,5 +283,24 @@ func TestPause_StopsBeforeTheArmedAnchorIsLocked(t *testing.T) {
 	}
 	if task.Status != store.TaskStatusCanceled {
 		t.Fatalf("task status = %s, want canceled: the resumed cancel did not see the leased task", task.Status)
+	}
+}
+
+// TestPause_ASlowCompetitorHasNotWaited proves interleave reads "waited" from
+// the database, not from a timer: a competitor that takes longer than any
+// settle time but waits on no lock (as a loaded runner can make one) is
+// reported as not having waited.
+func TestPause_ASlowCompetitorHasNotWaited(t *testing.T) {
+	st, p := pgRace(t)
+	w := seedWorld(t, st, 1)
+	p.atStatement(sqlstore.SQLCancelJobTasks)
+	cancelErr, sleepErr, waited := interleave(t, p,
+		func() error { _, err := st.CancelJobExecution(t.Context(), w.JobID, "cancel", time.Now()); return err },
+		func() error { time.Sleep(1500 * time.Millisecond); return nil })
+	if cancelErr != nil || sleepErr != nil {
+		t.Fatalf("cancel: %v, competitor: %v", cancelErr, sleepErr)
+	}
+	if waited {
+		t.Fatal("a competitor that only took its time was reported as having waited on a lock")
 	}
 }
