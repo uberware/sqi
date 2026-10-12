@@ -1245,15 +1245,20 @@ func (s *Scheduler) runHeartbeatSweep(ctx context.Context) {
 // though nothing is in flight; this returns such jobs to 'pending' so their
 // status reflects reality until a worker picks the work back up. Self-healing
 // and idempotent: a job with work still in flight, or already terminal, is
-// untouched.
+// untouched. A sweep that fails part-way still returns the jobs it had already
+// demoted (each demotion is its own committed transaction), so those are
+// announced before the error is handled: they are pending now and no later
+// sweep will list them again.
 func (s *Scheduler) demoteStalledJobs(ctx context.Context) {
 	demoted, err := s.store.DemoteStalledJobs(ctx, time.Now().UTC())
-	if err != nil {
-		if !errors.Is(err, context.Canceled) {
-			s.logger.WarnContext(ctx, "scheduler: demote stalled jobs failed", slog.Any("error", err))
-		}
-		return
+	s.announceDemoted(ctx, demoted)
+	if err != nil && !errors.Is(err, context.Canceled) {
+		s.logger.WarnContext(ctx, "scheduler: demote stalled jobs failed", slog.Any("error", err))
 	}
+}
+
+// announceDemoted logs and fans out a pending JobEvent for each demoted job.
+func (s *Scheduler) announceDemoted(ctx context.Context, demoted []string) {
 	now := time.Now().UTC()
 	for _, jobID := range demoted {
 		s.logger.InfoContext(

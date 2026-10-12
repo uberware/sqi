@@ -289,7 +289,8 @@ type JobStore interface {
 	// ready queue with no worker to pick it up, leaving the job spuriously marked
 	// running. Jobs whose tasks are all terminal are left untouched so the
 	// completion logic can finalize them to completed/failed. StartedAt is
-	// preserved (the job did start). Returns the IDs of the demoted jobs.
+	// preserved (the job did start). Returns the IDs of the demoted jobs; on
+	// error, the result lists the jobs already demoted.
 	DemoteStalledJobs(ctx context.Context, now time.Time) ([]string, error)
 
 	// DeleteJob hard-deletes a job and every row that belongs to it, in one

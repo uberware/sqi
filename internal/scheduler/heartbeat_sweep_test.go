@@ -10,6 +10,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"slices"
 	"testing"
 	"time"
 
@@ -522,6 +523,42 @@ func TestSweepThenDemote_StalledJobReturnsToPending(t *testing.T) {
 	}
 	if !found {
 		t.Errorf("no pending JobEvent emitted for %q; events = %+v", jobID, notifier.jobs)
+	}
+}
+
+// partialDemoteSt fails DemoteStalledJobs part-way: it reports the jobs it had
+// already demoted, with an error, as the store does when a later job's
+// transaction fails.
+type partialDemoteSt struct {
+	store.Store
+
+	demoted []string
+}
+
+func (s *partialDemoteSt) DemoteStalledJobs(context.Context, time.Time) ([]string, error) {
+	return s.demoted, errors.New("store unavailable")
+}
+
+// TestDemoteStalledJobs_AnnouncesJobsDemotedBeforeAnError: a sweep that fails
+// after committing some demotions must still tell the UI about those jobs;
+// they are pending now and no later sweep lists them again.
+func TestDemoteStalledJobs_AnnouncesJobsDemotedBeforeAnError(t *testing.T) {
+	st := &partialDemoteSt{Store: newCheckedFake(t), demoted: []string{"j1", "j2"}}
+	s := newMetricsScheduler(st, &recordBus{}, "farm-1")
+	notifier := &jobRecordingNotifier{}
+	s.notifier = notifier
+
+	s.demoteStalledJobs(t.Context())
+
+	var got []string
+	for _, e := range notifier.jobs {
+		if e.Status != string(store.JobStatusPending) {
+			t.Errorf("event for %s has status %q, want pending", e.JobID, e.Status)
+		}
+		got = append(got, e.JobID)
+	}
+	if !slices.Equal(got, []string{"j1", "j2"}) {
+		t.Fatalf("announced jobs = %v, want [j1 j2]", got)
 	}
 }
 

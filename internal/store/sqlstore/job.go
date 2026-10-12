@@ -674,7 +674,9 @@ func (s *Store) CancelJobStatus(ctx context.Context, id string) error {
 // is no longer stalled is left alone. On SQLite the re-check is a redundant
 // re-read.
 //
-// The returned IDs are in id order, the order the candidates are locked in.
+// The returned IDs are in id order, the order the candidates are locked in. On
+// error, the result lists the jobs already demoted: each demotion is its own
+// committed transaction.
 func (s *Store) DemoteStalledJobs(ctx context.Context, now time.Time) ([]string, error) {
 	candidates, err := s.stalledJobCandidates(ctx)
 	if err != nil {
@@ -711,9 +713,10 @@ func (s *Store) DemoteStalledJobs(ctx context.Context, now time.Time) ([]string,
 }
 
 // stalledJobCandidates lists, in id order, the jobs the stall sweep will
-// re-check. It reads through the write pool on purpose: it must see the latest
-// commits, and on SQLite the read pool is a separate connection whose snapshot
-// can lag.
+// re-check. The read goes through the write pool so that it sees this store's
+// own committed writes. Correctness does not rest on how fresh the list is:
+// every job in it is locked and re-checked before it is demoted, so a stale
+// entry is skipped and a missing one is found by the next sweep.
 func (s *Store) stalledJobCandidates(ctx context.Context) ([]string, error) {
 	rows, err := s.w.QueryContext(ctx, sqlStalledJobCandidates)
 	if err != nil {
