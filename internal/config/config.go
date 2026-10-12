@@ -23,6 +23,9 @@
 package config
 
 import (
+	"net/url"
+	"regexp"
+	"strings"
 	"time"
 
 	"github.com/uberware/sqi/internal/auth/oidc"
@@ -176,10 +179,23 @@ const (
 	MaxNATSAuthJoinTokenTTL = 24 * time.Hour
 )
 
-// StoreConfig controls the embedded SQLite state store.
+// The store drivers.
+const (
+	StoreDriverSQLite   = "sqlite"
+	StoreDriverPostgres = "postgres"
+)
+
+// StoreConfig controls the state store: the embedded SQLite database (the
+// default) or an external PostgreSQL server.
 type StoreConfig struct {
+	// Driver selects the store: "sqlite" (the default, embedded) or
+	// "postgres" (an external PostgreSQL 16 or later).
+	// Env: SQI_STORE_DRIVER
+	Driver string `yaml:"driver"`
+
 	// SQLitePath is the path to the SQLite database file.
 	// Created at startup if it does not exist.
+	// Ignored when Driver is postgres.
 	// Env: SQI_STORE_SQLITE_PATH
 	SQLitePath string `yaml:"sqlite_path"`
 
@@ -190,8 +206,94 @@ type StoreConfig struct {
 	// TRUNCATE checkpoint runs only on clean shutdown.
 	// Must be > 0. Set to a large value (e.g. "24h") to effectively disable
 	// periodic checkpointing (a final checkpoint always runs on shutdown).
+	// Ignored when Driver is postgres.
 	// Env: SQI_STORE_CHECKPOINT_INTERVAL
 	CheckpointInterval time.Duration `yaml:"checkpoint_interval"`
+
+	// Postgres configures the PostgreSQL store. Used only when Driver is
+	// postgres.
+	Postgres PostgresStoreConfig `yaml:"postgres"`
+}
+
+// PostgresStoreConfig configures the PostgreSQL store.
+type PostgresStoreConfig struct {
+	// DSN is the connection string, in URL (postgres://user:pass@host/db) or
+	// keyword/value (host=… dbname=…) form. Its password is redacted in YAML
+	// output.
+	// Env: SQI_STORE_POSTGRES_DSN
+	DSN string `yaml:"dsn"`
+
+	// MaxConns is the write pool's size; one connection holds the
+	// single-server lock. 2–1000.
+	// Env: SQI_STORE_POSTGRES_MAX_CONNS
+	MaxConns int `yaml:"max_conns"`
+}
+
+// MarshalYAML redacts the DSN's password so it never appears in YAML output
+// (e.g. `sqi-server config print`), as [LDAPConfig.MarshalYAML] does the bind
+// password. It does not affect unmarshaling or the loaded value. Round-tripping
+// a redacted dump is intentionally not supported — redaction wins.
+func (p PostgresStoreConfig) MarshalYAML() (any, error) {
+	type plain PostgresStoreConfig
+	out := plain(p)
+	out.DSN = RedactDSN(out.DSN)
+	return out, nil
+}
+
+// kvPassword matches a keyword/value DSN's password, in libpq's value grammar:
+// single-quoted (a backslash escapes the next character; an unterminated quote
+// runs to the end, so it cannot leave a tail behind) or unquoted (ends at
+// whitespace, a backslash escaping the next character).
+//
+// It also covers sslpassword, the passphrase of the client key.
+var kvPassword = regexp.MustCompile(`(?i)(\b(?:ssl)?password\s*=\s*)('(?:[^'\\]|\\.)*(?:'|$)|(?:\\.|\S)+)`)
+
+// queryPassword matches a URL-form DSN's password parameter (and sslpassword)
+// in the raw query string. It works on the raw text because [url.Values] drops
+// a pair that does not parse, which would leave that password in place.
+var queryPassword = regexp.MustCompile(`(?i)((?:^|&)(?:ssl)?password=)[^&]+`)
+
+// RedactDSN returns dsn with its password replaced by a placeholder, in either
+// DSN form. A DSN without a password is returned unchanged.
+//
+// It fails closed: a URL-form DSN that [url.Parse] refuses (and so whose
+// password cannot be located) is reduced to its scheme and a placeholder
+// rather than returned as it came.
+func RedactDSN(dsn string) string {
+	if scheme, ok := dsnURLScheme(dsn); ok {
+		u, err := url.Parse(dsn)
+		if err != nil {
+			return scheme + "://" + redactedPassword
+		}
+		changed := false
+		if pw, has := u.User.Password(); has && pw != "" {
+			u.User = url.UserPassword(u.User.Username(), "redacted")
+			changed = true
+		}
+		if queryPassword.MatchString(u.RawQuery) {
+			u.RawQuery = queryPassword.ReplaceAllString(u.RawQuery, "${1}redacted")
+			changed = true
+		}
+		if !changed {
+			return dsn
+		}
+		return u.String()
+	}
+	return kvPassword.ReplaceAllString(dsn, "${1}"+redactedPassword)
+}
+
+// dsnURLScheme reports whether dsn is in URL form (postgres:// or
+// postgresql://, either case) and returns the scheme as written.
+func dsnURLScheme(dsn string) (string, bool) {
+	scheme, _, found := strings.Cut(dsn, "://")
+	if !found {
+		return "", false
+	}
+	switch strings.ToLower(scheme) {
+	case "postgres", "postgresql":
+		return scheme, true
+	}
+	return "", false
 }
 
 // LogConfig controls structured log output.
@@ -816,8 +918,10 @@ func DefaultConfig() Config {
 			},
 		},
 		Store: StoreConfig{
+			Driver:             StoreDriverSQLite,
 			SQLitePath:         "sqi.db",
 			CheckpointInterval: 5 * time.Minute,
+			Postgres:           PostgresStoreConfig{MaxConns: 16},
 		},
 		Log: LogConfig{
 			Level:      "info",

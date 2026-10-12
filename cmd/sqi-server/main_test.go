@@ -349,6 +349,28 @@ func TestConfigPrintCmd(t *testing.T) {
 			t.Errorf("config print YAML missing 'http:' key\ngot:\n%s", out)
 		}
 	})
+
+	t.Run("redacts the PostgreSQL DSN password", func(t *testing.T) {
+		t.Chdir(t.TempDir())
+		t.Setenv("SQI_STORE_DRIVER", "postgres")
+		t.Setenv("SQI_STORE_POSTGRES_DSN", "postgres://sqi:hunter2@db:5432/sqi?sslmode=require")
+		prepareRoot([]string{"config", "print"})
+
+		out := captureStdout(t, func() {
+			if err := Execute(); err != nil {
+				t.Errorf("Execute(config print) unexpected error: %v", err)
+			}
+		})
+
+		if strings.Contains(out, "hunter2") {
+			t.Fatalf("config print leaks the DSN password\ngot:\n%s", out)
+		}
+		for _, want := range []string{"driver: postgres", "postgres://sqi:redacted@db:5432/sqi?sslmode=require", "max_conns: 16"} {
+			if !strings.Contains(out, want) {
+				t.Errorf("config print YAML missing %q\ngot:\n%s", want, out)
+			}
+		}
+	})
 }
 
 // TestMigrateCmd_WithTempDB exercises the migrate subcommands (status, up)

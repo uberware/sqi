@@ -2444,3 +2444,325 @@ func TestValidate_NATSAuthJoinTokenTTL(t *testing.T) {
 		})
 	}
 }
+
+// ── Store driver ──────────────────────────────────────────────────────────────
+
+func TestDefaultConfig_StoreDriver(t *testing.T) {
+	cfg := config.DefaultConfig()
+	if cfg.Store.Driver != config.StoreDriverSQLite || cfg.Store.Postgres.MaxConns != 16 {
+		t.Fatalf("driver %q, max_conns %d; want sqlite, 16", cfg.Store.Driver, cfg.Store.Postgres.MaxConns)
+	}
+}
+
+func TestLoad_StorePostgresFromEnv(t *testing.T) {
+	t.Chdir(t.TempDir())
+	t.Setenv("SQI_STORE_DRIVER", "postgres")
+	t.Setenv("SQI_STORE_POSTGRES_DSN", "postgres://sqi:pw@db/sqi")
+	t.Setenv("SQI_STORE_POSTGRES_MAX_CONNS", "32")
+	cfg, err := config.Load("", config.FlagOverrides{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Store.Driver != "postgres" || cfg.Store.Postgres.DSN != "postgres://sqi:pw@db/sqi" || cfg.Store.Postgres.MaxConns != 32 {
+		t.Fatalf("store = %+v", cfg.Store)
+	}
+}
+
+func TestLoad_StorePostgresMaxConnsNotANumber(t *testing.T) {
+	t.Chdir(t.TempDir())
+	t.Setenv("SQI_STORE_POSTGRES_MAX_CONNS", "lots")
+	if _, err := config.Load("", config.FlagOverrides{}); err == nil {
+		t.Fatal("Load accepted a non-numeric SQI_STORE_POSTGRES_MAX_CONNS")
+	}
+}
+
+func TestLoad_StorePostgresFromFile(t *testing.T) {
+	t.Chdir(t.TempDir())
+	f := filepath.Join(t.TempDir(), "sqi-server.yaml")
+	body := `
+store:
+  driver: postgres
+  postgres:
+    dsn: "postgres://sqi:pw@db/sqi"
+    max_conns: 24
+`
+	if err := os.WriteFile(f, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := config.Load(f, config.FlagOverrides{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Store.Driver != "postgres" || cfg.Store.Postgres.DSN != "postgres://sqi:pw@db/sqi" || cfg.Store.Postgres.MaxConns != 24 {
+		t.Fatalf("store = %+v", cfg.Store)
+	}
+	// The sqlite keys keep their defaults: setting the driver changes nothing else.
+	if cfg.Store.SQLitePath != "sqi.db" {
+		t.Errorf("sqlite_path = %q, want the default", cfg.Store.SQLitePath)
+	}
+}
+
+func TestLoad_StorePostgresEnvOverridesFile(t *testing.T) {
+	t.Chdir(t.TempDir())
+	f := filepath.Join(t.TempDir(), "sqi-server.yaml")
+	body := `
+store:
+  driver: sqlite
+  postgres:
+    dsn: "postgres://file/db"
+    max_conns: 8
+`
+	if err := os.WriteFile(f, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("SQI_STORE_DRIVER", "postgres")
+	t.Setenv("SQI_STORE_POSTGRES_DSN", "postgres://env/db")
+	t.Setenv("SQI_STORE_POSTGRES_MAX_CONNS", "40")
+	cfg, err := config.Load(f, config.FlagOverrides{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Store.Driver != "postgres" || cfg.Store.Postgres.DSN != "postgres://env/db" || cfg.Store.Postgres.MaxConns != 40 {
+		t.Fatalf("env did not override the file: %+v", cfg.Store)
+	}
+}
+
+func TestLoadWithSources_StoreCheckpointInterval(t *testing.T) {
+	tests := []struct {
+		name           string
+		file           string
+		env            string
+		wantCheckpoint bool
+		wantSQLitePath bool
+	}{
+		{"neither", "http:\n  addr: 127.0.0.1:1\n", "", false, false},
+		{"file key present", "store:\n  checkpoint_interval: 5m\n", "", true, false},
+		{"file restates only the sqlite path", "store:\n  sqlite_path: x.db\n", "", false, true},
+		{"env set", "", "10m", true, false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Chdir(t.TempDir())
+			t.Setenv("SQI_STORE_CHECKPOINT_INTERVAL", tc.env)
+			t.Setenv("SQI_STORE_SQLITE_PATH", "")
+			path := ""
+			if tc.file != "" {
+				path = filepath.Join(t.TempDir(), "sqi-server.yaml")
+				if err := os.WriteFile(path, []byte(tc.file), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			_, src, err := config.LoadWithSources(path, config.FlagOverrides{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if src.StoreCheckpointInterval != tc.wantCheckpoint {
+				t.Errorf("StoreCheckpointInterval = %v, want %v", src.StoreCheckpointInterval, tc.wantCheckpoint)
+			}
+			// The two source flags are independent of one another.
+			if src.StoreSQLitePath != tc.wantSQLitePath {
+				t.Errorf("StoreSQLitePath = %v, want %v", src.StoreSQLitePath, tc.wantSQLitePath)
+			}
+		})
+	}
+}
+
+func TestValidate_StoreDriver(t *testing.T) {
+	tests := []struct {
+		name      string
+		mutate    func(*config.Config)
+		wantField string
+	}{
+		{"unknown driver", func(c *config.Config) { c.Store.Driver = "mysql" }, "store.driver"},
+		{"postgres without dsn", func(c *config.Config) { c.Store.Driver = "postgres" }, "store.postgres.dsn"},
+		{"max_conns too small", func(c *config.Config) {
+			c.Store.Driver, c.Store.Postgres.DSN, c.Store.Postgres.MaxConns = "postgres", "postgres://x/y", 1
+		}, "store.postgres.max_conns"},
+		{"max_conns too large", func(c *config.Config) {
+			c.Store.Driver, c.Store.Postgres.DSN, c.Store.Postgres.MaxConns = "postgres", "postgres://x/y", 1001
+		}, "store.postgres.max_conns"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := config.DefaultConfig()
+			tc.mutate(&cfg)
+			errs := config.Validate(cfg)
+			found := false
+			for _, e := range errs {
+				if e.Field == tc.wantField {
+					found = true
+				}
+			}
+			if !found {
+				t.Fatalf("Validate = %v, want an error naming %s", errs, tc.wantField)
+			}
+		})
+	}
+
+	// A postgres store needs no sqlite_path or checkpoint_interval.
+	cfg := config.DefaultConfig()
+	cfg.Store.Driver, cfg.Store.Postgres.DSN, cfg.Store.SQLitePath = "postgres", "postgres://x/y", ""
+	cfg.Store.CheckpointInterval = 0
+	for _, e := range config.Validate(cfg) {
+		if strings.HasPrefix(e.Field, "store.") {
+			t.Fatalf("a valid postgres store was refused: %v", e)
+		}
+	}
+
+	// A sqlite store needs no postgres settings, whatever they hold.
+	cfg = config.DefaultConfig()
+	cfg.Store.Postgres.DSN, cfg.Store.Postgres.MaxConns = "", 0
+	if errs := config.Validate(cfg); len(errs) != 0 {
+		t.Fatalf("a sqlite store was refused for its postgres settings: %v", errs)
+	}
+
+	// The bounds are inclusive.
+	for _, n := range []int{2, 1000} {
+		cfg = config.DefaultConfig()
+		cfg.Store.Driver, cfg.Store.Postgres.DSN, cfg.Store.Postgres.MaxConns = "postgres", "postgres://x/y", n
+		if errs := config.Validate(cfg); len(errs) != 0 {
+			t.Errorf("max_conns %d refused: %v", n, errs)
+		}
+	}
+
+	// An explicit sqlite driver and the empty driver both validate the sqlite keys.
+	for _, driver := range []string{"sqlite", ""} {
+		cfg = config.DefaultConfig()
+		cfg.Store.Driver, cfg.Store.SQLitePath = driver, ""
+		found := false
+		for _, e := range config.Validate(cfg) {
+			found = found || e.Field == "store.sqlite_path"
+		}
+		if !found {
+			t.Errorf("driver %q: an empty sqlite_path was accepted", driver)
+		}
+	}
+}
+
+func TestRedactDSN(t *testing.T) {
+	tests := []struct{ in, secret string }{
+		{"postgres://sqi:hunter2@db:5432/sqi?sslmode=require", "hunter2"},
+		{"postgresql://sqi:p%40ss@db/sqi", "p%40ss"},
+		{"postgres://sqi@db/sqi?password=hunter2", "hunter2"},
+		{"host=db user=sqi password=hunter2 dbname=sqi", "hunter2"},
+		{"host=db password='p@ss word' dbname=sqi", "p@ss word"},
+		{`host=db password='it\'s' dbname=sqi`, `it\'s`},
+		// Beyond the plain forms: a keyword the operator capitalised or spaced out,
+		// an unquoted value with a backslash-escaped space, an unterminated quote,
+		// a multi-host URL, and URLs that url.Parse refuses.
+		{"host=db PASSWORD = hunter2 dbname=sqi", "hunter2"},
+		{`host=db password=hun\ ter2 dbname=sqi`, `hun\ ter2`},
+		{"host=db password='hunter2 dbname=sqi", "hunter2"},
+		{"postgres://sqi:hunter2@h1:5432,h2:5432/sqi", "hunter2"},
+		{"postgres://sqi:hun ter2@db/sqi", "hunter2"},
+		{"postgres://sqi:hunter2%zz@db/sqi", "hunter2"},
+		{"POSTGRES://sqi:hunter2@db/sqi", "hunter2"},
+		// The client key's passphrase is a secret too, as is a query password
+		// url.Values would drop for its semicolon.
+		{"host=db sslpassword=hunter2 dbname=sqi", "hunter2"},
+		{"postgres://sqi@db/sqi?sslpassword=hunter2&sslmode=require", "hunter2"},
+		{"postgres://sqi@db/sqi?sslmode=require&password=hun;ter2", "hun;ter2"},
+	}
+	for _, tc := range tests {
+		got := config.RedactDSN(tc.in)
+		if strings.Contains(got, tc.secret) || !strings.Contains(got, "redacted") {
+			t.Errorf("RedactDSN(%q) = %q", tc.in, got)
+		}
+	}
+	if got := config.RedactDSN("postgres://sqi@db/sqi"); got != "postgres://sqi@db/sqi" {
+		t.Errorf("a DSN with no password changed: %q", got)
+	}
+}
+
+func TestRedactDSN_KeepsEverythingElse(t *testing.T) {
+	tests := []struct{ in, want string }{
+		{"postgres://sqi:hunter2@db:5432/sqi?sslmode=require", "postgres://sqi:redacted@db:5432/sqi?sslmode=require"},
+		{"host=db user=sqi password=hunter2 dbname=sqi", "host=db user=sqi password=<redacted> dbname=sqi"},
+		{"host=db password='p@ss word' dbname=sqi", "host=db password=<redacted> dbname=sqi"},
+		// No password: returned byte for byte.
+		{"host=db user=sqi dbname=sqi", "host=db user=sqi dbname=sqi"},
+		{"postgres:///sqi?host=/var/run/postgresql", "postgres:///sqi?host=/var/run/postgresql"},
+		{"postgres://sqi:@db/sqi", "postgres://sqi:@db/sqi"},
+		{"", ""},
+	}
+	for _, tc := range tests {
+		if got := config.RedactDSN(tc.in); got != tc.want {
+			t.Errorf("RedactDSN(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}
+
+func TestMarshalYAML_StorePostgresDSNRedacted(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.Store.Postgres.DSN = "host=db password='p@ss word' dbname=sqi"
+	out, err := yaml.Marshal(&cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(out), "p@ss word") {
+		t.Fatalf("marshaled config contains the DSN password:\n%s", out)
+	}
+	if !strings.Contains(string(out), "<redacted>") {
+		t.Fatalf("marshaled config does not carry the redaction placeholder:\n%s", out)
+	}
+}
+
+func TestMarshalYAML_StorePostgresFieldsSurviveRedaction(t *testing.T) {
+	// The alias-type indirection in PostgresStoreConfig.MarshalYAML must not
+	// drop a field, and the keys must be spelled as the loader reads them.
+	cfg := config.DefaultConfig()
+	cfg.Store.Driver = "postgres"
+	cfg.Store.Postgres.DSN = "postgres://sqi:hunter2@db:5432/sqi?sslmode=require"
+	cfg.Store.Postgres.MaxConns = 37
+	out, err := yaml.Marshal(&cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var back struct {
+		Store struct {
+			Driver   string `yaml:"driver"`
+			Postgres struct {
+				DSN      string `yaml:"dsn"`
+				MaxConns int    `yaml:"max_conns"`
+			} `yaml:"postgres"`
+		} `yaml:"store"`
+	}
+	if err := yaml.Unmarshal(out, &back); err != nil {
+		t.Fatalf("unmarshal: %v\n%s", err, out)
+	}
+	if back.Store.Driver != "postgres" || back.Store.Postgres.MaxConns != 37 ||
+		back.Store.Postgres.DSN != "postgres://sqi:redacted@db:5432/sqi?sslmode=require" {
+		t.Fatalf("store block = %+v\n%s", back.Store, out)
+	}
+}
+
+func TestMarshalYAML_StorePostgresEmptyDSNUnchanged(t *testing.T) {
+	cfg := config.DefaultConfig()
+	out, err := yaml.Marshal(&cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(out), "redacted") {
+		t.Fatalf("a config with no DSN carries a redaction marker:\n%s", out)
+	}
+}
+
+func TestLoad_StorePostgresDSNSurvivesRedactedMarshal(t *testing.T) {
+	// Redaction happens on marshal only; the loaded value is the real DSN.
+	t.Chdir(t.TempDir())
+	t.Setenv("SQI_STORE_POSTGRES_DSN", "postgres://sqi:s3cret@db/sqi")
+	cfg, err := config.Load("", config.FlagOverrides{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Store.Postgres.DSN != "postgres://sqi:s3cret@db/sqi" {
+		t.Fatalf("loaded DSN = %q", cfg.Store.Postgres.DSN)
+	}
+	out, err := yaml.Marshal(&cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(out), "s3cret") {
+		t.Fatalf("marshaled loaded config leaks the DSN password:\n%s", out)
+	}
+}

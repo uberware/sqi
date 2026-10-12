@@ -161,7 +161,40 @@ func validateNATS(cfg NATSConfig) []ValidationError {
 	return errs
 }
 
+// validateStore checks the selected driver's settings. An empty driver is the
+// SQLite default, so a zero Config still reports store.sqlite_path.
 func validateStore(cfg StoreConfig) []ValidationError {
+	switch cfg.Driver {
+	case "", StoreDriverSQLite:
+		return validateSQLiteStore(cfg)
+	case StoreDriverPostgres:
+		return validatePostgresStore(cfg.Postgres)
+	default:
+		return []ValidationError{{
+			Field:   "store.driver",
+			Message: fmt.Sprintf("must be sqlite or postgres, got %q; set SQI_STORE_DRIVER or store.driver", cfg.Driver),
+		}}
+	}
+}
+
+func validatePostgresStore(cfg PostgresStoreConfig) []ValidationError {
+	var errs []ValidationError
+	if cfg.DSN == "" {
+		errs = append(errs, ValidationError{
+			Field:   "store.postgres.dsn",
+			Message: "must not be empty when store.driver is postgres; set SQI_STORE_POSTGRES_DSN or store.postgres.dsn",
+		})
+	}
+	if cfg.MaxConns < 2 || cfg.MaxConns > 1000 {
+		errs = append(errs, ValidationError{
+			Field:   "store.postgres.max_conns",
+			Message: fmt.Sprintf("must be between 2 and 1000, got %d; set SQI_STORE_POSTGRES_MAX_CONNS or store.postgres.max_conns", cfg.MaxConns),
+		})
+	}
+	return errs
+}
+
+func validateSQLiteStore(cfg StoreConfig) []ValidationError {
 	var errs []ValidationError
 	if cfg.SQLitePath == "" {
 		errs = append(errs, ValidationError{

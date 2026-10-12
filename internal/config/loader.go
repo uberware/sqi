@@ -100,6 +100,10 @@ type Sources struct {
 	// StoreSQLitePath is true when store.sqlite_path was set by the config
 	// file or by SQI_STORE_SQLITE_PATH.
 	StoreSQLitePath bool
+
+	// StoreCheckpointInterval is true when store.checkpoint_interval was set
+	// by the config file or by SQI_STORE_CHECKPOINT_INTERVAL.
+	StoreCheckpointInterval bool
 }
 
 // LoadWithSources is [Load], additionally reporting which of a subset of
@@ -119,6 +123,9 @@ func LoadWithSources(filePath string, flags FlagOverrides) (Config, Sources, err
 		if fc.Store != nil && fc.Store.SQLitePath != nil {
 			src.StoreSQLitePath = true
 		}
+		if fc.Store != nil && fc.Store.CheckpointInterval != nil {
+			src.StoreCheckpointInterval = true
+		}
 	}
 
 	// ── Layer 3: environment variables ───────────────────────────────────
@@ -127,6 +134,9 @@ func LoadWithSources(filePath string, flags FlagOverrides) (Config, Sources, err
 	}
 	if os.Getenv("SQI_STORE_SQLITE_PATH") != "" {
 		src.StoreSQLitePath = true
+	}
+	if os.Getenv("SQI_STORE_CHECKPOINT_INTERVAL") != "" {
+		src.StoreCheckpointInterval = true
 	}
 
 	// ── Layer 4: CLI flag overrides ───────────────────────────────────────
@@ -178,8 +188,13 @@ type fileConfig struct {
 	} `yaml:"nats"`
 
 	Store *struct {
+		Driver             *string `yaml:"driver"`
 		SQLitePath         *string `yaml:"sqlite_path"`
 		CheckpointInterval *string `yaml:"checkpoint_interval"`
+		Postgres           *struct {
+			DSN      *string `yaml:"dsn"`
+			MaxConns *int    `yaml:"max_conns"`
+		} `yaml:"postgres"`
 	} `yaml:"store"`
 
 	Log *struct {
@@ -437,12 +452,19 @@ func mergeStoreFile(cfg *Config, fc fileConfig) {
 	if fc.Store == nil {
 		return
 	}
+	setIfNotNilString(&cfg.Store.Driver, fc.Store.Driver)
 	if fc.Store.SQLitePath != nil {
 		cfg.Store.SQLitePath = *fc.Store.SQLitePath
 	}
 	if fc.Store.CheckpointInterval != nil {
 		if d, err := time.ParseDuration(*fc.Store.CheckpointInterval); err == nil {
 			cfg.Store.CheckpointInterval = d
+		}
+	}
+	if pg := fc.Store.Postgres; pg != nil {
+		setIfNotNilString(&cfg.Store.Postgres.DSN, pg.DSN)
+		if pg.MaxConns != nil {
+			cfg.Store.Postgres.MaxConns = *pg.MaxConns
 		}
 	}
 }
@@ -787,8 +809,11 @@ func applyEnv(cfg *Config) error {
 	collect(setBool(&cfg.NATS.Auth.JoinTokenSingleUse, "SQI_NATS_AUTH_JOIN_TOKEN_SINGLE_USE"))
 	collect(setBool(&cfg.NATS.Auth.EnrollmentEndpointEnabled, "SQI_NATS_AUTH_ENROLLMENT_ENDPOINT_ENABLED"))
 
+	setString(&cfg.Store.Driver, "SQI_STORE_DRIVER")
 	setString(&cfg.Store.SQLitePath, "SQI_STORE_SQLITE_PATH")
 	collect(setDuration(&cfg.Store.CheckpointInterval, "SQI_STORE_CHECKPOINT_INTERVAL"))
+	setString(&cfg.Store.Postgres.DSN, "SQI_STORE_POSTGRES_DSN")
+	collect(setInt(&cfg.Store.Postgres.MaxConns, "SQI_STORE_POSTGRES_MAX_CONNS"))
 
 	setString(&cfg.Log.Level, "SQI_LOG_LEVEL")
 	setString(&cfg.Log.Format, "SQI_LOG_FORMAT")
