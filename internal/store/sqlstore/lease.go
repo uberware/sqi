@@ -27,13 +27,17 @@ JOIN   queues q ON j.queue_id = q.id
 JOIN   farms  f ON j.farm_id  = f.id
 WHERE  t.id = ?`
 
-	// sqlLeaseWorkerRefuses is true when the worker's row says it cannot take
-	// work: offline, or disabled. It runs under the worker row's shared lock, so
-	// a sweep or a deregister taking the worker offline is either waited for or
-	// seen. A worker with no row is not refused: the store does not require
-	// registration (the scheduler does, before it leases).
+	// sqlLeaseWorkerRefuses is true when the worker's row says it is disabled,
+	// the one worker state that refuses new work. It runs under the worker
+	// row's shared lock, so a disable that commits before the lease takes the
+	// lock is seen. An offline worker is not refused: the heartbeat sweep can
+	// mark a live worker offline after one missed window and heartbeats never
+	// restore online, so refusing it would starve it for good (see "Known gaps"
+	// in docs/architecture.md). A worker with no row is not refused either: the
+	// store does not require registration (the scheduler does, before it
+	// leases).
 	sqlLeaseWorkerRefuses = `
-SELECT EXISTS (SELECT 1 FROM workers WHERE id = ? AND (status <> 'online' OR disabled))`
+SELECT EXISTS (SELECT 1 FROM workers WHERE id = ? AND disabled)`
 
 	// sqlLeaseCaps re-reads the queue's and the farm's caps under their locks.
 	sqlLeaseCaps = `
@@ -100,11 +104,15 @@ func (s *Store) LeaseTask(ctx context.Context, req store.LeaseRequest) (store.Le
 // lock exclusively in the same order, so they cannot deadlock on Postgres.
 //
 // Under those locks the lease re-checks the worker (sqlLeaseWorkerRefuses: the
-// lease of an offline or disabled worker is Lost and writes nothing) and
-// re-reads the anchored caps (rereadCapsTx), so the worker state and the caps
-// it decides on are the committed ones, not the ones read before the locks.
-// Every operation that holds the worker row or the job row FOR UPDATE and this
-// lease now wait for each other, which closes, on Postgres:
+// lease of a disabled worker is Lost and writes nothing) and re-reads the
+// anchored caps (rereadCapsTx), so the disabled flag and the caps it decides
+// on are the committed ones, not the ones read before the locks. An offline
+// worker is deliberately not refused: the sweep can mark a live worker offline
+// after one missed heartbeat window and nothing marks it online again, so
+// refusing it would starve it for good (see "Known gaps" in
+// docs/architecture.md). Every operation that holds the worker row or the job
+// row FOR UPDATE and this lease now wait for each other, which closes, on
+// Postgres:
 //
 //   - a cancel's reported set. CancelJobExecution and CancelTaskExecution hold
 //     the job row from the read of the tasks they report to the UPDATE that
@@ -113,8 +121,11 @@ func (s *Store) LeaseTask(ctx context.Context, req store.LeaseRequest) (store.Le
 //   - a worker going offline against a lease. Taking a worker offline (the
 //     heartbeat sweep, a deregister, a restart's reclaim) holds the worker row
 //     from its marking UPDATE to commit: a lease already holding the row is
-//     waited for and its task reclaimed, and a lease that waited sees the
-//     worker offline and is Lost;
+//     waited for, and its committed task is in the set the transition reclaims,
+//     so the transition never leaves behind a task it could not see. A lease
+//     that waited for the transition then proceeds, as a lease to an offline
+//     worker always has: served if the worker is alive, recovered by the
+//     stale-assignment reaper if not;
 //   - the latest-attempt checks. CompleteTaskAttempt and the other
 //     job-anchored attempt writers hold the job row from the check to the task
 //     write, so no lease adds a newer attempt between the two;
@@ -137,7 +148,7 @@ func (s *Store) LeaseTask(ctx context.Context, req store.LeaseRequest) (store.Le
 // inserted before its claims, which reference it. On SQLite the locks do
 // nothing, since the single write connection serializes the whole
 // transaction, but the worker re-check is a real check there too: it refuses a
-// worker that went offline or was disabled after the scheduler read it.
+// worker that was disabled after the scheduler read it.
 func leaseTx(ctx context.Context, tx *dbTx, req store.LeaseRequest) (store.LeaseResult, error) {
 	lost := store.LeaseResult{Outcome: store.LeaseLost}
 	scope, found, err := readLeaseScopeTx(ctx, tx, req.TaskID)
@@ -220,7 +231,8 @@ func (sc *leaseScope) anchors(workerID string, claims []store.UsagePoolClaim) []
 
 // recheckUnderLocksTx runs the lease's checks that must see the rows as they are
 // under its anchors: the worker re-check, then the cap re-read. ok is false when
-// the lease must be Lost: the worker's row says it cannot take work.
+// the lease must be Lost: the worker is disabled, or the queue or farm row is
+// gone.
 func (sc *leaseScope) recheckUnderLocksTx(ctx context.Context, tx *dbTx, workerID string) (ok bool, err error) {
 	var refuses bool
 	if err := tx.QueryRowContext(ctx, sqlLeaseWorkerRefuses, workerID).Scan(&refuses); err != nil {

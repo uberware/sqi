@@ -732,17 +732,11 @@ func TestRemoveWorker(t *testing.T) {
 
 	t.Run("offline worker with a running task returns 409 until it is idle", func(t *testing.T) {
 		// The guarded delete refuses a worker with work in flight, which the
-		// status-only pre-check cannot see. A lease refuses an offline worker,
-		// so the task is leased while the worker is online, and the worker's
-		// row is then re-registered offline, which reclaims nothing.
+		// status-only pre-check cannot see.
 		st := fake.New()
 		r := newWorkerRouter(st)
-		w := seedWorker(t, st, store.WorkerStatusOnline)
+		w := seedWorker(t, st, store.WorkerStatusOffline)
 		task := seedWorkerTask(t, st, w.ID, store.TaskStatusRunning, "busy")
-		w.Status = store.WorkerStatusOffline
-		if _, _, err := st.RegisterWorker(t.Context(), w); err != nil {
-			t.Fatalf("re-register the worker offline: %v", err)
-		}
 
 		req := newReq(t, http.MethodDelete, "/api/v1/workers/"+w.ID, nil)
 		rr := httptest.NewRecorder()

@@ -476,20 +476,23 @@ func (s *Store) OfflineWorker(ctx context.Context, id, instanceID string, now ti
 // attempt was already closed as failed.
 //
 // Against LeaseTask, the worker anchor is what orders the two. LeaseTask holds
-// the worker row FOR SHARE from before it moves the task to its commit, and
-// re-checks under it that the worker is online and enabled. A lease in flight
-// when the anchor is requested is therefore waited for: it commits first, and
-// its task, now assigned to this worker, is in the in-flight set read after the
-// lock and is reclaimed. A lease that starts later waits for this commit and
-// then sees the worker offline, and is Lost. No lease can hand this worker a
-// task between the mark and the commit, so no task is left assigned to a
-// worker that is offline.
+// the worker row FOR SHARE from before it moves the task to its commit. A lease
+// in flight when the anchor is requested is therefore waited for: it commits
+// first, and its task, now assigned to this worker, is in the in-flight set
+// read after the lock and is reclaimed. A lease that starts later waits for
+// this commit and then proceeds: LeaseTask refuses only a disabled worker, not
+// an offline one, because the sweep can take a live worker offline and nothing
+// brings it back online (see "Known gaps" in docs/architecture.md). Such a
+// task is served if the worker is alive and recovered by the stale-assignment
+// reaper if not. What the anchor guarantees is that this transition reclaims
+// every task assigned to the worker when it commits.
 //
 // The in-flight job IDs are read UNLOCKED, after the worker row is held and
 // before any task row is touched, and the job rows are locked sorted before the
 // reclaim UPDATE; a task row locked before its job row is the inversion every
 // job-level operation would deadlock on. Because no lease can add a task for
-// this worker while its row is held, that read is the complete set. None of
+// this worker while its row is held, that read is the complete set at commit.
+// None of
 // that matters on SQLite: its single write connection serializes every writer,
 // and its LockAnchors does nothing.
 func (s *Store) offlineWorker(ctx context.Context, id string, now time.Time, markSQL string, markArgs ...any) ([]store.Task, bool, error) {

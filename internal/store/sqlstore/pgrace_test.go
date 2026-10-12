@@ -96,22 +96,25 @@ func TestPGRace_G4_CancelReportsALeaseThatRaced(t *testing.T) {
 	}
 }
 
-// TestPGRace_G9_NoTaskIsLeftWithAnOfflineWorker races a lease against the
-// heartbeat sweep taking its worker offline, in both orders.
-func TestPGRace_G9_NoTaskIsLeftWithAnOfflineWorker(t *testing.T) {
-	offline := func(st store.Store) func() error {
-		return func() error {
-			_, _, err := st.OfflineStaleWorker(t.Context(), "w1", time.Now().Add(time.Hour), time.Now())
-			return err
-		}
-	}
+// TestPGRace_G9_OfflineReclaimsEveryTaskALeaseCommitted races a lease against
+// the heartbeat sweep taking its worker offline, in both orders. The worker
+// row's shared lock serializes the two: an offline transition never commits
+// while a lease to its worker is in flight, so it reclaims every task assigned
+// to the worker when it commits. A lease that waits for the transition then
+// lands on the offline worker, which is the documented behavior (ruling R10:
+// the lease refuses only a disabled worker; see "Known gaps" in
+// docs/architecture.md).
+func TestPGRace_G9_OfflineReclaimsEveryTaskALeaseCommitted(t *testing.T) {
 	t.Run("lease first", func(t *testing.T) {
 		st, p := pgRace(t)
 		w := seedWorld(t, st, 1, "w1")
 		p.atStatement(sqlstore.SQLNextAttemptNumber) // the lease has moved the task, not committed
 		lerr, oerr, waited := interleave(t, p,
 			func() error { _, err := st.LeaseTask(t.Context(), leaseReq(w.Tasks[0], "w1")); return err },
-			offline(st))
+			func() error {
+				_, _, err := st.OfflineStaleWorker(t.Context(), "w1", time.Now().Add(time.Hour), time.Now())
+				return err
+			})
 		assertPausedAt(t, p, sqlstore.SQLNextAttemptNumber)
 		if lerr != nil || oerr != nil {
 			t.Fatalf("lease err %v, offline err %v", lerr, oerr)
@@ -123,12 +126,19 @@ func TestPGRace_G9_NoTaskIsLeftWithAnOfflineWorker(t *testing.T) {
 	})
 	t.Run("offline first", func(t *testing.T) {
 		st, p := pgRace(t)
-		w := seedWorld(t, st, 1, "w1")
-		p.atStatement(sqlstore.SQLWorkerInFlightJobIDs) // the worker is marked offline, not committed
-		var lease store.LeaseResult
+		w := seedWorld(t, st, 2, "w1")
+		storetest.Lease(t, st, leaseReq(w.Tasks[0], "w1")) // in flight before the sweep
+		p.atStatement(sqlstore.SQLWorkerInFlightJobIDs)    // the worker is marked offline, not committed
+		var (
+			reclaimed []store.Task
+			lease     store.LeaseResult
+		)
 		oerr, lerr, waited := interleave(t, p,
-			offline(st),
-			func() (err error) { lease, err = st.LeaseTask(t.Context(), leaseReq(w.Tasks[0], "w1")); return })
+			func() (err error) {
+				reclaimed, _, err = st.OfflineStaleWorker(t.Context(), "w1", time.Now().Add(time.Hour), time.Now())
+				return
+			},
+			func() (err error) { lease, err = st.LeaseTask(t.Context(), leaseReq(w.Tasks[1], "w1")); return })
 		assertPausedAt(t, p, sqlstore.SQLWorkerInFlightJobIDs)
 		if lerr != nil || oerr != nil {
 			t.Fatalf("lease err %v, offline err %v", lerr, oerr)
@@ -136,10 +146,18 @@ func TestPGRace_G9_NoTaskIsLeftWithAnOfflineWorker(t *testing.T) {
 		if !waited {
 			t.Errorf("the lease did not wait for the offline sweep's worker-row lock")
 		}
-		if lease.Outcome == store.LeaseLeased {
-			t.Errorf("a lease to a worker the sweep had just taken offline landed")
+		if len(reclaimed) != 1 || reclaimed[0].ID != w.Tasks[0] {
+			t.Fatalf("offline reclaimed %+v, want exactly task %s, the one assigned to w1 when it committed", reclaimed, w.Tasks[0])
 		}
-		assertNoTaskWithOfflineWorker(t, st, w)
+		if got := mustTask(t, st, w.Tasks[0]); got.Status != store.TaskStatusReady {
+			t.Fatalf("reclaimed task status = %s, want ready", got.Status)
+		}
+		if lease.Outcome != store.LeaseLeased {
+			t.Fatalf("lease outcome = %s, want leased: an offline worker is not refused (R10)", lease.Outcome)
+		}
+		if got := mustTask(t, st, w.Tasks[1]); got.Status != store.TaskStatusAssigned || got.AssignedWorkerID != "w1" {
+			t.Fatalf("leased task = %s on %q, want assigned on w1", got.Status, got.AssignedWorkerID)
+		}
 	})
 }
 
