@@ -195,6 +195,11 @@ var concatAllowed = []string{
 	"inSuffix",             // task.go RetryTasks: "" or a literal around a "?" list
 	"query",                // job.go DeleteTerminalJobsBefore: expiredJobsQuery output, two literals around a "?" list
 	"frag",                 // job.go ListJobs, worker.go ListWorkers: searchClause (search.go) output, literals and Dialect.CILike over literal column lists (each renders as the column, a "?" and literals only: `col LIKE ?` on SQLite, `col ILIKE ? ESCAPE ''` on PostgreSQL), "?" for each term, which is bound
+
+	// job.go runInsertTasks: taskRowsValues is one constant "(?, …)" row per
+	// task joined by ",", only "?" marks, parentheses, commas and spaces; its
+	// argument is an int, so the length of a chunk of tasks is all that varies.
+	"taskRowsValues(len(chunk))",
 }
 
 // sqlKeyword marks a string literal as SQL.

@@ -47,6 +47,9 @@ type Store struct {
 	forceRetry bool
 	// log receives retry diagnostics; slog.Default() when nil.
 	log *slog.Logger
+	// taskInsertBatch is how many tasks CreateJobSubmission inserts per
+	// statement; below 2 it inserts them one row per statement ([WithTaskInsertBatch]).
+	taskInsertBatch int
 
 	// ── farms ────────────────────────────────────────────────────────────
 	stmtInsertFarm *dbStmt
@@ -177,6 +180,24 @@ type Option func(*Store)
 // run rolled back, as if the database had aborted it for a concurrent writer.
 // Tests only: it proves each function keeps no state from a failed run.
 func WithForcedRetry() Option { return func(s *Store) { s.forceRetry = true } }
+
+// WithTaskInsertBatch makes CreateJobSubmission insert a submission's tasks
+// rows at a time, several per statement, instead of one statement per task.
+// Without it (or below 2) the statements are the single-row ones.
+//
+// It is an option rather than a Dialect method the store looks for on its
+// dialect, because a wrapped dialect (the tests wrap one to check lock order
+// and to pause a transaction) embeds the [Dialect] interface and so does not
+// carry a method outside it: the batched path would silently turn off under
+// every wrapper.
+func WithTaskInsertBatch(rows int) Option {
+	return func(s *Store) { s.taskInsertBatch = min(rows, maxTaskInsertBatch) }
+}
+
+// maxTaskInsertBatch caps [WithTaskInsertBatch]: a statement binds
+// taskInsertColumns values per task, and both PostgreSQL (65535) and SQLite
+// (32766) refuse a statement with more parameters than their limit.
+const maxTaskInsertBatch = 2000
 
 // WithLogger sets the logger retry diagnostics go to.
 func WithLogger(l *slog.Logger) Option { return func(s *Store) { s.log = l } }

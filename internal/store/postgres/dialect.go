@@ -65,6 +65,12 @@ func (pgDialect) Classify(err error) sqlstore.ErrClass {
 	return sqlstore.ErrClassOther
 }
 
+// taskInsertBatchRows is how many tasks a submission inserts per statement. A
+// task per statement costs a round trip each, which dominates a large
+// submission (design spec §8.5); 500 rows bind 7,500 parameters, well inside
+// PostgreSQL's 65,535 per statement.
+const taskInsertBatchRows = 500
+
 // anchorTables are the tables an anchor may name. lockSQL interpolates the
 // table name, so it must come from here.
 var anchorTables = map[string]bool{

@@ -297,7 +297,7 @@ func (s *Store) CreateJobSubmission(ctx context.Context, sub store.JobSubmission
 		if out.Steps, err = insertStepsTx(ctx, tx, &clock, sub.Steps); err != nil {
 			return txRollback, err
 		}
-		if out.Tasks, err = insertTasksTx(ctx, tx, &clock, sub.Tasks); err != nil {
+		if out.Tasks, err = insertTasksTx(ctx, tx, &clock, sub.Tasks, s.taskInsertBatch); err != nil {
 			return txRollback, err
 		}
 		return txCommit, nil
@@ -429,29 +429,136 @@ func insertStepsTx(ctx context.Context, tx *dbTx, clock *rowClock, steps []store
 // randomly rather than in expansion order, which is a different behavior
 // change wearing the same clothes. Stamping per row is what preserves the
 // behavior submission has always had.
-func insertTasksTx(ctx context.Context, tx *dbTx, clock *rowClock, tasks []store.Task) ([]store.Task, error) {
+//
+// With batchRows above 1 ([WithTaskInsertBatch]) the tasks go in that many to a
+// statement; otherwise one statement each, as it always has.
+func insertTasksTx(
+	ctx context.Context, tx *dbTx, clock *rowClock, tasks []store.Task, batchRows int,
+) ([]store.Task, error) {
+	if batchRows > 1 {
+		return insertTasksBatchedTx(ctx, tx, clock, tasks, batchRows)
+	}
 	out := make([]store.Task, 0, len(tasks))
 	for _, task := range tasks {
-		paramsJSON, err := marshalJSON(task.Parameters)
+		args, err := taskInsertArgs(task, clock.next())
 		if err != nil {
 			return nil, err
 		}
-		var reqCores sql.NullInt64
-		if task.RequiredCores != nil {
-			reqCores = sql.NullInt64{Int64: int64(*task.RequiredCores), Valid: true}
-		}
-		now := clock.next()
-		row := tx.QueryRowContext(ctx, sqlInsertTask,
-			task.ID, task.JobID, task.StepID, task.Name, paramsJSON, string(task.Status),
-			nullString(task.AssignedWorkerID), nullTimeToText(task.AssignedAt), now, now, reqCores,
-			task.UnschedulableReason, task.FailedAttempts, nullTimeToText(task.RetryAfter), task.FailureReason)
-		stored, err := scanTask(row)
+		stored, err := scanTask(tx.QueryRowContext(ctx, sqlInsertTask, args...))
 		if err != nil {
 			return nil, mapErr(err)
 		}
 		out = append(out, stored)
 	}
 	return out, nil
+}
+
+// taskInsertArgs returns the values of one task's insert, in the column order
+// of [sqlInsertTasksHead], stamped now.
+func taskInsertArgs(task store.Task, now string) ([]any, error) {
+	paramsJSON, err := marshalJSON(task.Parameters)
+	if err != nil {
+		return nil, err
+	}
+	var reqCores sql.NullInt64
+	if task.RequiredCores != nil {
+		reqCores = sql.NullInt64{Int64: int64(*task.RequiredCores), Valid: true}
+	}
+	return []any{
+		task.ID, task.JobID, task.StepID, task.Name, paramsJSON, string(task.Status),
+		nullString(task.AssignedWorkerID), nullTimeToText(task.AssignedAt), now, now, reqCores,
+		task.UnschedulableReason, task.FailedAttempts, nullTimeToText(task.RetryAfter), task.FailureReason,
+	}, nil
+}
+
+// insertTasksBatchedTx is insertTasksTx at batchRows tasks per statement: the
+// same columns, the same per-row stamp from clock (in input order, so the
+// ordering insertTasksTx documents holds), and the same rows back, for a
+// database where a round trip per task is what a large submission costs.
+func insertTasksBatchedTx(
+	ctx context.Context, tx *dbTx, clock *rowClock, tasks []store.Task, batchRows int,
+) ([]store.Task, error) {
+	out := make([]store.Task, 0, len(tasks))
+	for chunk := range slices.Chunk(tasks, batchRows) {
+		args := make([]any, 0, len(chunk)*taskInsertColumns)
+		for _, task := range chunk {
+			row, err := taskInsertArgs(task, clock.next())
+			if err != nil {
+				return nil, err
+			}
+			args = append(args, row...)
+		}
+		stored, err := runInsertTasks(ctx, tx, chunk, args)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, stored...)
+	}
+	return out, nil
+}
+
+// runInsertTasks inserts chunk's tasks with one statement, whose values are
+// args, and returns them as the database stored them, in chunk's order.
+func runInsertTasks(ctx context.Context, tx *dbTx, chunk []store.Task, args []any) ([]store.Task, error) {
+	rs, err := tx.QueryContext(ctx, sqlInsertTasksHead+taskRowsValues(len(chunk))+sqlInsertTasksTail, args...)
+	if err != nil {
+		return nil, mapErr(err)
+	}
+	defer rs.Close()
+
+	stored := make([]store.Task, 0, len(chunk))
+	for rs.Next() {
+		t, err := scanTask(rs)
+		if err != nil {
+			return nil, mapErr(classifyErr(tx.d, err))
+		}
+		stored = append(stored, t)
+	}
+	if err := rs.Err(); err != nil {
+		return nil, mapErr(classifyErr(tx.d, err))
+	}
+	if len(stored) != len(chunk) {
+		return nil, fmt.Errorf("store: insert tasks: %d rows returned for %d inserted", len(stored), len(chunk))
+	}
+	return inInsertOrder(stored, chunk)
+}
+
+// inInsertOrder returns stored in the order of the tasks that were inserted. A
+// VALUES list's RETURNING rows come back in list order in practice, but SQL
+// does not promise it and a submission's tasks must come back in the order they
+// were given, so rows out of place are put back by task ID.
+func inInsertOrder(stored, inserted []store.Task) ([]store.Task, error) {
+	inOrder := true
+	for i := range stored {
+		if stored[i].ID != inserted[i].ID {
+			inOrder = false
+			break
+		}
+	}
+	if inOrder {
+		return stored, nil
+	}
+	byID := make(map[string]store.Task, len(stored))
+	for _, t := range stored {
+		byID[t.ID] = t
+	}
+	out := make([]store.Task, len(inserted))
+	for i, t := range inserted {
+		row, ok := byID[t.ID]
+		if !ok {
+			return nil, fmt.Errorf("store: insert tasks: no row returned for task %q", t.ID)
+		}
+		out[i] = row
+	}
+	return out, nil
+}
+
+// taskRowsValues returns the VALUES list of rows tasks: one
+// [sqlTaskRowPlaceholders] row each, comma-separated. It is built from the
+// constant row alone, so it holds only "?" marks, parentheses, commas and
+// spaces; every task value is bound.
+func taskRowsValues(rows int) string {
+	return strings.TrimSuffix(strings.Repeat(sqlTaskRowPlaceholders+",", rows), ",")
 }
 
 // GetJob implements [store.JobStore].

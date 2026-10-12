@@ -19,13 +19,26 @@ const taskCols = `
 	assigned_worker_id, assigned_at, created_at, updated_at, required_cores,
 	unschedulable_reason, failed_attempts, retry_after, failure_reason`
 
+// taskInsertColumns is how many values one task's insert binds: the "?" count
+// of [sqlTaskRowPlaceholders].
+const taskInsertColumns = 15
+
 const (
-	sqlInsertTask = `
+	// sqlInsertTask is one row's insert; it is the three parts below joined, so
+	// the batched insert (insertTasksBatchedTx) and this one cannot name
+	// different columns.
+	sqlInsertTask = sqlInsertTasksHead + sqlTaskRowPlaceholders + sqlInsertTasksTail
+
+	sqlInsertTasksHead = `
 INSERT INTO tasks (
 	id, job_id, step_id, name, parameters, status,
 	assigned_worker_id, assigned_at, created_at, updated_at, required_cores,
 	unschedulable_reason, failed_attempts, retry_after, failure_reason)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+VALUES `
+	// sqlTaskRowPlaceholders is one task's VALUES row: one "?" per column of
+	// sqlInsertTasksHead.
+	sqlTaskRowPlaceholders = `(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+	sqlInsertTasksTail     = `
 RETURNING ` + taskCols
 
 	sqlGetTask = `SELECT ` + taskCols + ` FROM tasks WHERE id = ?`

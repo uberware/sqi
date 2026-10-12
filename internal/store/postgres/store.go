@@ -133,7 +133,7 @@ func sharedConfig(opts Options, log *slog.Logger) (sqlstore.Dialect, []sqlstore.
 	if opts.WrapDialect != nil {
 		d = opts.WrapDialect(d)
 	}
-	sopts := []sqlstore.Option{sqlstore.WithLogger(log)}
+	sopts := []sqlstore.Option{sqlstore.WithLogger(log), sqlstore.WithTaskInsertBatch(taskInsertBatchRows)}
 	if opts.ForceTxRetry {
 		sopts = append(sopts, sqlstore.WithForcedRetry())
 	}
