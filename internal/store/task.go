@@ -363,12 +363,12 @@ type TaskStore interface {
 	// Statement order is part of the contract on Postgres: tasks are canceled
 	// first, then attempts closed and claims released, so a concurrent LeaseTask
 	// holding a task row is waited for and its attempt and claims are seen. The
-	// returned set is read before step 1 under the job-row anchor only, and
-	// LeaseTask does not take the job row, so on Postgres a lease that commits
-	// between that read and step 1 is canceled (and its attempt and claims
-	// closed) but not returned, and its worker gets no cancel signal. A Postgres
-	// implementation must close that gap (see "Store invariants" in
-	// docs/architecture.md).
+	// returned set is read before step 1 under the job-row anchor, which
+	// LeaseTask also takes (shared), so no lease commits between that read and
+	// step 1: a lease in flight is waited for and its task is returned as
+	// assigned, and a later lease waits for the cancel and finds the job
+	// canceled. Every task step 1 takes out of flight is therefore returned,
+	// and its worker can be signaled.
 	CancelJobExecution(ctx context.Context, jobID, reason string, now time.Time) ([]Task, error)
 
 	// CancelTaskExecution cancels one task in one transaction (invariant I3),
@@ -384,10 +384,10 @@ type TaskStore interface {
 	// started or it completed first, is returned unchanged with false and a
 	// nil error: that is the "lost the race to completion" outcome, not a
 	// failure. An unknown task is [ErrNotFound]. The same statement-order
-	// contract applies on Postgres, and so does CancelJobExecution's gap: the
-	// prior task is read under the job-row anchor, which a LeaseTask does not
-	// take, so a lease committing between that read and the cancel's write is
-	// canceled while the returned task still shows it ready with no worker.
+	// contract applies on Postgres, and the returned prior task is exact for
+	// the same reason: it is read under the job-row anchor, which LeaseTask
+	// also takes (shared), so no lease commits between that read and the
+	// cancel's write.
 	CancelTaskExecution(ctx context.Context, taskID, reason string, now time.Time) (Task, bool, error)
 
 	// RetryTasks revives failed/canceled tasks so they can run again. It
