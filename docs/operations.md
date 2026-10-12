@@ -346,8 +346,10 @@ sqi-server backup \
   --out /backups/sqi/sqi-$(date +%Y%m%d-%H%M%S).db
 ```
 
-`--db` is optional: omitted, the source path resolves through the same
-config layer the server uses (the root `-c/--config` file and
+`--db` is optional: omitted, the store is chosen as described under
+[`store.driver`](configuration.md#storedriver) (a `--dsn`, or `store.driver:
+postgres`, selects PostgreSQL). For SQLite the source path then resolves
+through the same config layer the server uses (the root `-c/--config` file and
 `SQI_STORE_SQLITE_PATH`, i.e. `store.sqlite_path`), falling back to the
 legacy `SQI_SQLITE_PATH` environment variable and then to `sqi.db` in the
 working directory. Passing `--db` explicitly, as in the example above,
@@ -415,8 +417,8 @@ external PostgreSQL server instead. Everything else — the API, the scheduler,
 workers, NATS — is the same on both. How the two stores differ inside is
 described under [Two backends](architecture.md#two-backends).
 
-**PostgreSQL 16 or later is required.** CI runs the full suite against 16
-and 18.
+**PostgreSQL 16 or later is required.** CI runs the PostgreSQL-backed test
+packages and the integration suite against 16 and 18.
 
 ### Creating the database
 
@@ -496,10 +498,20 @@ startup failed: open store: another sqi-server is already using this database (P
 ```
 
 That error means what it says: another server, or one that has not finished
-stopping, is connected to this database. To find it, run
-`SELECT pid, application_name, client_addr FROM pg_stat_activity WHERE datname = 'sqi';`
-(the server connects with `application_name` `sqi-server` unless the DSN sets
-another). Two consequences:
+stopping, is connected to this database. Every connection a server opens
+carries `application_name` `sqi-server`, so look for the one holding the
+advisory lock (its key's two 32-bit halves are `1936812333` and
+`1936881266`), connected to the database in question:
+
+```sql
+SELECT a.pid, a.client_addr, a.backend_start
+FROM   pg_locks l JOIN pg_stat_activity a ON a.pid = l.pid
+WHERE  l.locktype = 'advisory' AND l.granted
+  AND  l.classid = 1936812333 AND l.objid = 1936881266
+  AND  l.database = (SELECT oid FROM pg_database WHERE datname = 'sqi');
+```
+
+Two consequences:
 
 - **No overlapping restarts.** Stop the old server before starting the new
   one. A supervisor that starts the replacement first (a rolling update with
@@ -509,7 +521,8 @@ another). Two consequences:
   (a network failure, the PostgreSQL server restarting, an administrator
   terminating the backend), the server logs `store: lost the PostgreSQL server
   lock's connection; another sqi-server could now start on this database` at
-  Error, within about 30 s, and keeps running. Nothing then stops a second
+  Error within about 30–35 s (it pings that connection every 30 s, with a 5 s
+  timeout), and keeps running. Nothing then stops a second
   server starting on the same database. Restart the server to take the lock
   again.
 
@@ -573,7 +586,8 @@ pg_restore --no-owner --dbname "postgres://sqi@db.example.com:5432/sqi_restored"
 
 Then point `store.postgres.dsn` at the restored database and start the server.
 A tested, step-by-step restore procedure, and moving an existing SQLite farm
-onto PostgreSQL, are not yet documented.
+onto PostgreSQL, are not yet documented; both are planned production-hardening
+work (see the [roadmap](roadmap.md)).
 
 ---
 
@@ -588,8 +602,10 @@ store directly (the SQLite file, or the PostgreSQL database with `--dsn` or
 they work whether or not `sqi-server` is running — and, independently,
 whether or not the user-facing `auth.enabled` is on.
 
-> **These commands resolve the database path the same way `backup` and
-> `migrate` do** — an explicit `--db`, then `store.sqlite_path` (the root
+> **These commands choose their store the same way `backup` and `migrate`
+> do** (see [`store.driver`](configuration.md#storedriver): `--dsn` or
+> `store.driver: postgres` selects PostgreSQL). For SQLite the path is an
+> explicit `--db`, then `store.sqlite_path` (the root
 > `-c/--config` file and `SQI_STORE_SQLITE_PATH`), then the legacy
 > `SQI_SQLITE_PATH` environment variable, then `sqi.db`. Unlike `migrate`,
 > they never create or migrate the database: pointing one at a path with no

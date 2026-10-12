@@ -212,10 +212,27 @@ transaction instead of through N gaps. `GET /healthz` (liveness) registers no
 checkers and is not affected.
 
 **On PostgreSQL a submission holds one connection of the write pool**
-(`store.postgres.max_conns`), so other writers run on the rest. The only
-writers it makes wait are those that need one of its upstream job rows
-exclusively (finalizing, canceling or deleting an upstream job), because the
-dependency re-check holds those rows `FOR SHARE` until it commits. `Ping`
+(`store.postgres.max_conns`), so other writers run on the rest, and most never
+wait for it. Two kinds can:
+
+- **Writers on an upstream job, briefly.** A submission with `depends_on`
+  re-checks its upstream jobs last, after every insert, and holds their rows
+  `FOR SHARE` from that check to its commit. In that short window a writer
+  that locks an upstream job row exclusively (a completion, a cancel, a retry
+  or a reap of one of its tasks, a finalize, a delete) waits for the commit.
+  While the submission is still inserting, nothing on the upstream waits
+  (`TestPGRace_SubmissionDoesNotHoldItsUpstreamWhileInserting`). A submission
+  without `depends_on` locks no other job's row.
+- **Leases on a capped queue or farm, for the whole submission.** The new job
+  row's foreign keys to its queue and farm make PostgreSQL lock those two rows
+  `FOR KEY SHARE` from the job's insert, the submission's first statement, to
+  its commit. A lease on a queue or farm that has a cap locks that row `FOR
+  UPDATE`, which conflicts, so every lease on a capped queue or farm waits for
+  an in-flight submission into it: 33 s for a 1,000,000-task submission on the
+  host below. A lease on an uncapped queue or farm takes no lock on it and
+  does not wait.
+
+`Ping`
 uses a separate four-connection read pool, as on SQLite, and
 `TestPostgres_PingWhileLargeSubmission` pins that it answers within the
 health budget during a 50,000-task submission. The store inserts a PostgreSQL
@@ -1004,11 +1021,17 @@ Every operation takes the anchors it needs in one global order:
 > users, sorted by id
 
 Rows of one table are locked in id order, and a table is never locked after a
-table later in the list. Two transactions that lock rows in common therefore
-take them in the same order and cannot deadlock on them. The one deliberate
-mix within a table is the blocked-job operations: `ReleaseBlockedJob` and
-`CancelBlockedJob` lock their own job exclusively, then its upstream jobs
-shared. Every PostgreSQL test store checks the order: `storetest.Postgres`
+table later in the list, so two transactions whose anchors overlap take them in
+the same order and do not deadlock on them. The one deliberate exception is
+the blocked-job operations: `ReleaseBlockedJob` and `CancelBlockedJob` lock
+their own job exclusively first, then its upstream jobs shared, and their own
+job can sort after an upstream. Such a transaction can therefore deadlock with
+another that locks the same jobs in id order. PostgreSQL detects the deadlock
+and aborts one of the two with `40P01`, which the store retries like any
+aborted transaction (see [Two backends](#two-backends)); the same holds for
+locks PostgreSQL takes implicitly, outside this order (the row an `UPDATE`
+writes, the referenced row a foreign key checks). Every PostgreSQL test store
+checks the anchor order: `storetest.Postgres`
 wraps the dialect in a checker that fails the test when a transaction locks a
 table out of order, or rows of one table and mode out of id order within one
 call.
@@ -1084,6 +1107,11 @@ serializes every writer. On PostgreSQL they are left open on purpose:
   concurrently on one read as uncapped orders after the lease, exactly as if
   the lease had committed first. Setting a cap never evicts running work, so
   this is not a violation of I5.
+- **A submission blocks leases on its capped queue or farm.** The lease
+  anchors a capped queue or farm `FOR UPDATE`, and a submission's job insert
+  holds `FOR KEY SHARE` on both rows (its foreign keys) until it commits, so a
+  lease on a capped queue or farm waits for a submission into it to finish
+  (see [Submission](#1-submission)).
 - **The single-server lock can be lost.** If the connection holding the
   advisory lock drops, the lock goes with it. The server logs that at Error and
   keeps running, and a second server could then start on the same database.

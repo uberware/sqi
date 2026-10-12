@@ -565,9 +565,11 @@ The password is never printed: `sqi-server config print` and the server's
 start-up log show the DSN with its `password` (and `sslpassword`) replaced by
 `redacted` (URL form) or `<redacted>` (keyword/value form). The redaction
 fails closed. A URL it cannot read the way the driver reads it prints as its
-scheme and a placeholder, `postgres://<redacted>`, and nothing more: one with more than one `@`, any
-`#`, any `;` in its query, a `password` key that is percent-encoded or padded
-with spaces, a query pair without `=`, or a query value holding a second `=`.
+scheme and a placeholder, `postgres://<redacted>`, and nothing more: one with
+more than one `@`, or a single `@` that does not end a user name (one in a
+query value, say), any `#`, any `;` in its query, a `password` key that is
+percent-encoded or padded with spaces, a query pair without `=`, or a query
+value holding a second `=`.
 A keyword/value DSN is parsed the way the driver parses it, so `config print`
 may show it with different spacing or quoting but the same settings, and one
 it cannot parse prints as `<redacted>`. **In a URL, percent-encode any `@` or
